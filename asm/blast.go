@@ -227,6 +227,8 @@ func (bl *blaster) blastUncached(t *term) []int {
 		out = permuteBits(t.op, left)
 	case "clz":
 		out = bl.countLeadingZeros(left)
+	case "cnt":
+		out = bl.popCount(left)
 	case "cls":
 		// CLZ(x ^ (x >>s 1)) - 1
 		shifted := shiftRightArith(left, 1)
@@ -486,6 +488,26 @@ func permuteBits(op string, a []int) []int {
 
 // countLeadingZeros is a priority encoder: the count is the number of
 // leading bits before the highest set bit, width when none is set.
+// popCount is the number of set bits, at the operand's width: each bit is
+// widened to a word and the words are summed by the adder; the count is
+// at most the width, so no sum wraps.
+func (bl *blaster) popCount(a []int) []int {
+	n := len(a)
+	total := make([]int, n)
+	for i := range total {
+		total[i] = bddFalse
+	}
+	for _, bit := range a {
+		one := make([]int, n)
+		one[0] = bit
+		for i := 1; i < n; i++ {
+			one[i] = bddFalse
+		}
+		total = bl.add(total, one, bddFalse)
+	}
+	return total
+}
+
 func (bl *blaster) countLeadingZeros(a []int) []int {
 	n := len(a)
 	b := bl.bdd

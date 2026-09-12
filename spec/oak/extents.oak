@@ -1,0 +1,76 @@
+// The extent laws (docs/spec/50-borrowing.md; spec/lean/Oak/Extents.lean)
+// stated in Oak, over the fixed-width integers the checker reasons about
+// and discharged by `oak prove` at the bit level. The Lean module states
+// each law over the naturals; here every sum or product that the law
+// forms carries the premise that it did not wrap, spelled as the checker
+// spells it (`i + k >= i`), so the u32 statement is exactly the law the
+// facts rely on. `midpoint_*` and `div_bound_*` divide and live in
+// extents_lean.oak, where Lean's `omega` proves them.
+
+// static_extent: a constant below a static length is in range.
+static_extent: theorem (c: u32, n: u32) { !(c < n) || c < n }
+
+// constant_under_min_length: from K <= len and c < K, c < len.
+constant_under_min_length: theorem (c: u32, k: u32, len: u32) { !(k <= len && c < k) || c < len }
+
+// bound_transfers: a bound on one length is a bound on an equal length.
+bound_transfers: theorem (i: u32, a: u32, b: u32) { !(i < a && a == b) || i < b }
+
+// bound_through_upper: from i < n and n <= len, i < len.
+bound_through_upper: theorem (i: u32, n: u32, len: u32) { !(i < n && n <= len) || i < len }
+
+// offset_under_bound: i + K < len bounds i + j for every j <= K.
+offset_under_bound: theorem (i: u32, k: u32, j: u32, len: u32) { !(i + k >= i && i + k < len && j <= k) || i + j < len }
+
+// guard_without_wrap: with K <= len, i < len - K is i + K < len.
+guard_without_wrap: theorem (i: u32, k: u32, len: u32) { !(k <= len && i < len - k) || i + k < len }
+
+// inclusive_guard_without_wrap: with 1 <= K <= len, i <= len - K is i + (K - 1) < len.
+inclusive_guard_without_wrap: theorem (i: u32, k: u32, len: u32) { !(k <= len && u32(1) <= k && i <= len - k) || i + (k - u32(1)) < len }
+
+// subslice_extent: start + n <= len puts start + c below len for c < n.
+subslice_extent: theorem (start: u32, n: u32, len: u32, c: u32) { !(start + n >= start && start + n <= len && c < n) || start + c < len }
+
+// subslice_check_iff: the wrap-free check is the sum's inequality.
+subslice_check_iff: theorem (start: u32, n: u32, len: u32) { (start <= len && n <= len - start) == (start + n >= start && start + n <= len) }
+
+// literal_bound_under_length: i < K and K + j <= len give i + j < len.
+literal_bound_under_length: theorem (i: u32, k: u32, j: u32, len: u32) { !(i < k && k + j >= k && k + j <= len) || i + j < len }
+
+// subtraction_under_bounds: L <= i, K <= L, i < U, U - K <= len give i - K < len.
+subtraction_under_bounds: theorem (i: u32, k: u32, l: u32, u: u32, len: u32) { !(l <= i && k <= l && i < u && u - k <= len) || i - k < len }
+
+// subtraction_under_length: K <= i and i < len give i - K < len.
+subtraction_under_length: theorem (i: u32, k: u32, len: u32) { !(k <= i && i < len) || i - k < len }
+
+// scaled_under_bound, at the scale of a word load: i < U and
+// (U - 1) * K + j < len give i * K + j < len, with the products in range
+// (the 512-key page scale is in extents_lean.oak: its BDD exceeds the budget).
+scaled_under_bound_4: theorem (i: u32, j: u32, u: u32, len: u32) { !(i < u && u >= u32(1) && u <= u32(1073741824) && j < u32(4) && (u - u32(1)) * u32(4) + j < len) || i * u32(4) + j < len }
+
+// masked_under_length: e & M < len whenever M < len.
+masked_under_length: theorem (x: u32, m: u32, len: u32) { !(m < len) || (x & m) < len }
+
+// loop_exit_lower_bound: leaving `while i < K` leaves K <= i.
+loop_exit_lower_bound: theorem (i: u32, k: u32) { i < k || k <= i }
+
+// increment_keeps_lower_bound: K0 <= i gives K0 <= i + c when the sum does not wrap.
+increment_keeps_lower_bound: theorem (i: u32, c: u32, k: u32) { !(k <= i && i + c >= i) || k <= i + c }
+
+// increment_without_wrap: i < U and U + c within the word keep i + c from wrapping.
+increment_without_wrap: theorem (i: u32, c: u32, u: u32) { !(i < u && u + c >= u) || i + c >= i }
+
+// decreasing_keeps_upper_bound: m < x and x <= n give m <= n; below a literal likewise.
+decreasing_keeps_upper_bound: theorem (m: u32, x: u32, n: u32) { !(m < x && x <= n) || m <= n }
+decreasing_keeps_literal_bound: theorem (m: u32, x: u32, b: u32) { !(m < x && x < b) || m < b }
+
+// vector_under_min_length: K <= len and c + L <= K keep lane c + k in range for k < L.
+vector_under_min_length: theorem (c: u32, l: u32, k: u32, cap: u32, len: u32) { !(cap <= len && c + l >= c && c + l <= cap && k < l) || c + k < len }
+
+// vector_under_offset_bound: i + K < len and j + L - 1 <= K keep lane i + j + k in range for k < L.
+vector_under_offset_bound: theorem (i: u32, cap: u32, j: u32, l: u32, k: u32, len: u32) { !(i + cap >= i && i + cap < len && u32(1) <= l && j + l >= j && j + l - u32(1) <= cap && k < l) || i + j + k < len }
+
+// vector_under_literal_bound: i < U and U - 1 + j + L <= len keep lane i + j + k in range for k < L.
+vector_under_literal_bound: theorem (i: u32, u: u32, j: u32, l: u32, k: u32, len: u32) { !(i < u && u >= u32(1) && u - u32(1) + j >= j && u - u32(1) + j + l >= l && u - u32(1) + j + l <= len && k < l) || i + j + k < len }
+
+main: (): i32 = 0

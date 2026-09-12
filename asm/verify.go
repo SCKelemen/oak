@@ -359,7 +359,7 @@ func (t *term) evalUncached(env map[string]uint64, memo map[*term]uint64) uint64
 		return uint64(int64(l<<shift)>>shift>>(r%uint64(t.width))) & m
 	case "mul":
 		return (l * r) & m
-	case "rev", "rev16", "rev32", "rbit", "clz", "cls":
+	case "rev", "rev16", "rev32", "rbit", "clz", "cls", "cnt":
 		return evalUnary(t.op, l, t.width) & m
 	}
 	if value, ok := evalBinaryExtra(t.op, l, r, t.width); ok {
@@ -1231,7 +1231,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 				result = truncate(result, widthOf(x.resultClass))
 			}
 			return result, "", true
-		case "brk":
+		case "brk", "ebreak":
 			// A trap: this path delivers no result. The Oak body traps on
 			// the same inputs (a failed bounds check, division by zero, an
 			// overflowing shift, a failed assert), so the path is outside
@@ -2991,6 +2991,39 @@ func (lo *oakLowering) lowerGuard(name string, guard Guard, arg ast.Expression, 
 	return truncate(value, width), "", true
 }
 
+// instructionFunction recognizes a call to a scalar arm64 instruction
+// function and names the verifier's term for it with its operand width.
+func instructionFunction(call *ast.InvocationExpression) (op string, width int, ok bool) {
+	access, isDot := call.Function.(*ast.IndexExpression)
+	if !isDot || !access.Dot || len(call.Arguments) != 1 {
+		return "", 0, false
+	}
+	library, isLibrary := access.Left.(*ast.Identifier)
+	member, isMember := access.Index.(*ast.Identifier)
+	if !isLibrary || !isMember || library.Value != "arm64" {
+		return "", 0, false
+	}
+	switch member.Value {
+	case "rev32":
+		return "rev", 32, true
+	case "rev64":
+		return "rev", 64, true
+	case "rbit32":
+		return "rbit", 32, true
+	case "rbit64":
+		return "rbit", 64, true
+	case "clz32":
+		return "clz", 32, true
+	case "clz64":
+		return "clz", 64, true
+	case "cnt32":
+		return "cnt", 32, true
+	case "cnt64":
+		return "cnt", 64, true
+	}
+	return "", 0, false
+}
+
 // spanLength recognizes len(v) over a span parameter.
 func (lo *oakLowering) spanLength(expr ast.Expression) (string, bool) {
 	call, isCall := expr.(*ast.InvocationExpression)
@@ -3070,6 +3103,20 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		}
 		return adaptWidth(element, width), "", true
 	case *ast.InvocationExpression:
+		// The scalar instruction functions (docs/spec/92-ffi.md section 3.2)
+		// are the verifier's own unary instruction terms — the ISA lowering
+		// and the Oak lowering share their semantics (Oak.Intrinsics).
+		if member, memberWidth, isInstruction := instructionFunction(e); isInstruction {
+			operand, reason, ok := lo.lower(e.Arguments[0], memberWidth)
+			if !ok {
+				return nil, reason, false
+			}
+			value := binaryTerm(member, truncate(operand, memberWidth), constTerm(0, memberWidth))
+			if memberWidth < width {
+				return zeroExtend(value, width), "", true
+			}
+			return truncate(value, width), "", true
+		}
 		if ident, isIdent := e.Function.(*ast.Identifier); isIdent && ident.Value == "len" && len(e.Arguments) == 1 && lo.aggregateChain(e.Arguments[0]) {
 			// len of an owned array: its declared length.
 			place, reason, ok := lo.placeOf(e.Arguments[0])

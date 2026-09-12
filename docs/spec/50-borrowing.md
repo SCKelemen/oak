@@ -479,7 +479,10 @@ each resource-typed field the provenance of its initializer: `b: Box = Box
 { inner: h }` makes the path `b.inner` an alias of `h`, so consuming
 through either consumes both and pairing them exclusively conflicts; a field
 initialized from a fresh-return call is its own authority; any other
-initializer leaves the field with unknown provenance. Paths extend through
+initializer leaves the field with unknown provenance. A `Buffer` field
+(`92-ffi.md` §2.8.6) is the strict form of this rule: the literal takes
+the buffer binding by name and consumes it, and consuming through the
+path consumes the record. Paths extend through
 nested records (`p.left.inner`) and through a record copied from a named
 record. A projection in use, argument, or consuming position is a use of
 that field's authority, not of the whole record. An aggregate write

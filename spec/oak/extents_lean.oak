@@ -1,0 +1,22 @@
+// The extent laws that divide (spec/lean/Oak/Extents.lean): the bit-level
+// decider has no division, so these are proved by Lean from the
+// projection — `oak prove -lean out.lean -check` — as the Formal
+// Verification workflow does.
+
+// midpoint_under_bound: under a < b, a + (b - a) / 2 < b.
+midpoint_under_bound: theorem (a: u32, b: u32) { !(a < b) || a + (b - a) / u32(2) < b }
+
+// midpoint_under_length: with b <= len besides, the midpoint is below len.
+midpoint_under_length: theorem (a: u32, b: u32, len: u32) { !(a < b && b <= len) || a + (b - a) / u32(2) < len }
+
+// div_bound_scaled: i < n / 512 and j < 512 give i * 512 + j < n.
+div_bound_scaled_512: theorem (i: u32, j: u32, n: u32) { !(i < n / u32(512) && j < u32(512)) || i * u32(512) + j < n }
+
+// div_bound_under_length: the same premise puts i + j below n.
+div_bound_under_length_512: theorem (i: u32, j: u32, n: u32) { !(i < n / u32(512) && j < u32(512)) || i + j < n }
+
+// scaled_under_bound at the page scale: the bit-level decision exceeds its
+// node budget, Lean's omega does not.
+scaled_under_bound_512: theorem (i: u32, j: u32, u: u32, len: u32) { !(i < u && u >= u32(1) && u <= u32(8388608) && j < u32(512) && (u - u32(1)) * u32(512) + j < len) || i * u32(512) + j < len }
+
+main: (): i32 = 0

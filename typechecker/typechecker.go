@@ -518,6 +518,11 @@ type TypeChecker struct {
 	operatorBindings map[string]string
 	operatorLaws     []OperatorLaw
 	lawLowerings     []LawLowering
+	// bufferRecordInitializer is the record literal a declaration of a
+	// record holding a Buffer field is being initialized from: the one
+	// position such a literal may stand in (docs/spec/92-ffi.md section
+	// 2.8.6), so the record has exactly one live name.
+	bufferRecordInitializer ast.Expression
 	// reinterpretFactors maps a view_as/span_as call (position-keyed) to
 	// the scalars per record its source holds.
 	reinterpretFactors map[string]Reinterpretation
@@ -2566,8 +2571,8 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		if _, wantsBuffer := expectedType.(*BufferType); wantsBuffer && isExtern {
 			// A custody transition moves the buffer (docs/spec/92-ffi.md
 			// section 2.8.5): the argument is the binding itself.
-			if _, isIdent := arg.(*ast.Identifier); !isIdent {
-				tc.addError(arg, "a custody transition takes the Buffer binding itself, not an expression")
+			if !isBufferPath(arg) {
+				tc.addError(arg, "a custody transition takes the Buffer binding itself (or a record's Buffer field), not an expression")
 				validCall = false
 				continue
 			}
@@ -3388,6 +3393,10 @@ func (tc *TypeChecker) checkIndexAssignmentStatement(stmt *ast.IndexAssignmentSt
 			tc.addError(stmt.Target.Index, "field %s not found in %s", fieldIdent.Value, record.DisplayName())
 			return
 		}
+		if _, isBuffer := fieldType.(*BufferType); isBuffer {
+			tc.addError(stmt.Target, "field %s holds a Buffer and is set once, by the record literal; move it out with a custody transition or c.disown instead (docs/spec/92-ffi.md section 2.8.6)", fieldIdent.Value)
+			return
+		}
 		valueType := tc.checkExpression(stmt.Value, fieldType)
 		if valueType != nil && !tc.isAssignable(valueType, fieldType) {
 			tc.addError(stmt.Value, "cannot assign %s to field %s of type %s", valueType, fieldIdent.Value, fieldType)
@@ -3405,6 +3414,11 @@ func (tc *TypeChecker) checkIndexAssignmentStatement(stmt *ast.IndexAssignmentSt
 		return
 	}
 	indexType := tc.checkExpression(stmt.Target.Index, &PrimitiveType{Name: "u32"})
+	if arr, isArray := seqType.(*ArrayType); isArray && !stmt.Target.Dot && indexType != nil {
+		// A store through a refined index is proven like a read
+		// (typechecker/refinements.go).
+		tc.recordRefinedIndexProof(stmt.Target, arr, indexType)
+	}
 	if indexType != nil {
 		if prim, isPrim := indexType.(*PrimitiveType); !isPrim || !tc.isNumericType(prim) {
 			tc.addError(stmt.Target.Index, "index must be an integer, got %s", indexType)
@@ -3757,6 +3771,7 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 	}
 
 	fields := make(map[string]Type)
+	holdsBuffer := false
 	for name, fieldExpr := range expr.Fields {
 		// Check if this looks like a type definition context
 		// In type definitions, field expressions are type annotations (identifiers like u8, i32)
@@ -3787,6 +3802,16 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 				expectedFieldType = fieldType
 			}
 		}
+		if _, wantsBuffer := expectedFieldType.(*BufferType); wantsBuffer {
+			// A Buffer field takes the Buffer binding itself and moves it
+			// into the record (docs/spec/92-ffi.md section 2.8.6); the
+			// borrow checker consumes the binding.
+			if _, isIdent := fieldExpr.(*ast.Identifier); !isIdent {
+				tc.addError(fieldExpr, "field %s takes the Buffer binding itself, not an expression: bind the buffer first, then name it (docs/spec/92-ffi.md section 2.8.6)", name)
+				continue
+			}
+			holdsBuffer = true
+		}
 		fieldType := tc.checkExpression(fieldExpr, expectedFieldType)
 		if fieldType == nil {
 			continue
@@ -3798,6 +3823,11 @@ func (tc *TypeChecker) checkRecordLiteral(expr *ast.RecordLiteral, expectedType 
 		}
 		fields[name] = fieldType
 	}
+	if holdsBuffer && tc.bufferRecordInitializer != ast.Expression(expr) {
+		tc.addError(expr, "a record holding a Buffer is built only as the initializer of a named binding, w: %s = %s { ... }, so the buffer keeps exactly one live name (docs/spec/92-ffi.md section 2.8.6)", expr.TypeName.String(), expr.TypeName.String())
+		return nil
+	}
+	tc.bufferRecordInitializer = nil
 
 	// Against a declared record type, the literal must cover the fields
 	// exactly: no unknown fields, no missing fields, each value at its
@@ -4070,6 +4100,16 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 			tc.addError(stmt.Type, "variable %s: invalid type annotation", stmt.Name.Value)
 			return
 		}
+		if stmt.Value == nil {
+			// A zero-initialized binding whose type holds a refinement is
+			// admitted only when zero satisfies the predicate: nothing else
+			// may produce a refined value (typechecker/refinements.go).
+			if path, refinement, outside := tc.zeroOutsideRefinement(varType, "", map[string]bool{}); outside {
+				tc.addTypeDiagnostic(stmt.Name, CodeRefinementShape,
+					fmt.Sprintf("variable %s: the zero value of %s%s is outside the refinement %s; initialize it", stmt.Name.Value, varType.String(), path, refinement))
+				return
+			}
+		}
 		savedDeclared := tc.initializerDeclaredType
 		tc.initializerDeclaredType = varType
 		defer func() { tc.initializerDeclaredType = savedDeclared }()
@@ -4102,10 +4142,19 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 		if ContainsBufferStorage(varType) {
 			// A Buffer binding is created by c.own and nothing else
 			// (docs/spec/92-ffi.md section 2.8): never copied from another
-			// binding, never inside an array.
+			// binding, never inside an array. A record holding a Buffer
+			// field is built by its literal, from Buffer bindings, and
+			// likewise never copied (section 2.8.6).
 			_, direct := varType.(*BufferType)
 			_, transition := tc.custodyTransitionCall(stmt.Value)
-			if !direct || stmt.Value == nil || (!isForeignOwnCall(stmt.Value) && !transition) {
+			_, isRecord := varType.(*RecordType)
+			_, isLiteral := stmt.Value.(*ast.RecordLiteral)
+			if isRecord && isLiteral {
+				tc.bufferRecordInitializer = stmt.Value
+			} else if isRecord {
+				tc.addError(stmt, "variable %s: a record holding a Buffer is built only by its literal from Buffer bindings, and cannot be copied (docs/spec/92-ffi.md section 2.8.6)", stmt.Name.Value)
+				return
+			} else if !direct || stmt.Value == nil || (!isForeignOwnCall(stmt.Value) && !transition) {
 				tc.addError(stmt, "variable %s: a Buffer[T] binding is created only by c.own[T](ptr, count) inside an unsafe block or by a custody transition extern, and cannot be copied or nested (docs/spec/92-ffi.md section 2.8)", stmt.Name.Value)
 				return
 			}
@@ -4742,7 +4791,10 @@ func (tc *TypeChecker) checkRecordTypeDefinition(typeName string, recordLit *ast
 		// Parse field type from the expression
 		// In a record type definition, fieldExpr should be a type expression (identifier)
 		fieldType := tc.parseTypeExpression(fieldExpr)
-		if tc.rejectBufferValue(fieldExpr, fieldType, "a record field") {
+		// A record may hold a Buffer[T, S] as a field (docs/spec/92-ffi.md
+		// section 2.8.6): the record then carries the custody. Deeper
+		// nesting — a record of records, an array — stays outside.
+		if _, directBuffer := fieldType.(*BufferType); !directBuffer && tc.rejectBufferValue(fieldExpr, fieldType, "a record field") {
 			return
 		}
 		if !atomicFieldShapeLegal(fieldType) {

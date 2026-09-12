@@ -318,6 +318,9 @@ func evalUnary(op string, x uint64, width int) uint64 {
 			return uint64(bits.LeadingZeros32(uint32(x)))
 		}
 		return uint64(bits.LeadingZeros64(x))
+	case "cnt":
+		// Population count at the operand width (x is already masked).
+		return uint64(bits.OnesCount64(x))
 	case "cls":
 		// Leading bits equal to the sign bit, minus one: CLZ(x ^ (x >>s 1)) - 1.
 		shift := uint(64 - width)

@@ -339,4 +339,10 @@ main: (): i32 {
 	if abnormal || code != 7 {
 		t.Fatalf("exit = (%d, abnormal=%v), want 7", code, abnormal)
 	}
+	// A zero-initialized binding is admitted only when zero satisfies every
+	// refinement it holds.
+	bad := "Pos: type = u16 where value >= u16(1)\nRec: type = struct { p: Pos }\nmain: (): i32 {\n  r: Rec\n  i32(u16(r.p))\n}\n"
+	if _, err := New().WithSource("refzero.oak", bad).EmitC().Get(); err == nil || !strings.Contains(err.Error(), "the zero value of Rec.p is outside the refinement Pos") {
+		t.Fatalf("zero outside the refinement must be refused, got %v", err)
+	}
 }
