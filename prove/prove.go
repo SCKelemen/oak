@@ -749,6 +749,14 @@ func leafCounterexample(leafNames []string, setBits []uint32) string {
 	for i, name := range leafNames {
 		parts = append(parts, fmt.Sprintf("%s=%d", name, values[i]))
 	}
+	// Leaves past the parameters are the fresh symbols a NaN min or max
+	// yields, which no law may pin down.
+	for _, lb := range setBits {
+		if leaf := int(lb / 64); leaf >= len(leafNames) {
+			parts = append(parts, fmt.Sprintf("fresh#%d set", leaf-len(leafNames)))
+			break
+		}
+	}
 	return strings.Join(parts, ", ")
 }
 

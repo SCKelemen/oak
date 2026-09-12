@@ -1869,6 +1869,7 @@ type oakType struct {
 	kind     oakKind
 	width    int
 	signed   bool
+	float    bool // a scalar that is an IEEE bit pattern (the syntax table only)
 	name     string
 	fields   []oakField   // record
 	variants []oakVariant // adt

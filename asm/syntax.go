@@ -2,6 +2,7 @@ package asm
 
 import (
 	"fmt"
+	"math"
 	"sort"
 
 	"github.com/SCKelemen/oak/ast"
@@ -55,7 +56,15 @@ const (
 	synRecordLit   = 16 // a = type, b = list start, c = field count (declaration order)
 	synArrayLit    = 17 // a = type, b = list start, c = element count
 	synAssignPlace = 18 // a = place (a field/index chain on a symbol), b = value
+	synFloatLit    = 19 // a = the f32 bits, vlo/vhi = the f64 bits (the context's width picks)
+	synFloatCall   = 20 // a = intrinsic code, b = list start, c = argument count
 )
+
+// The float intrinsics the lowering knows as bit operations
+// (asm/floats_lowering.go).
+var synFloatIntrinsics = map[string]uint32{
+	"abs": 0, "copysign": 1, "is_nan": 2, "is_finite": 3, "is_infinite": 4, "is_normal": 5, "total_order": 6, "min": 7, "max": 8,
+}
 
 const (
 	synKindScalar = 0
@@ -86,6 +95,7 @@ type synType struct {
 	kind   int
 	width  int
 	signed bool
+	float  bool
 	leaves []synLeaf
 	fields []synFieldRef
 	elem   int
@@ -145,11 +155,11 @@ func ExportSyntax(sig *ast.FunctionStatement, functions map[string]*ast.Function
 		}
 	}
 	for _, t := range w.types {
-		signed := uint32(0)
-		if t.signed {
-			signed = 1
+		isFloat := uint32(0)
+		if t.float {
+			isFloat = 1
 		}
-		types = append(types, uint32(t.kind), uint32(len(t.leaves)), uint32(len(typeLeaves)/2), uint32(len(fields)/2), uint32(len(t.fields)), uint32(t.elem), uint32(t.length), signed)
+		types = append(types, uint32(t.kind), uint32(len(t.leaves)), uint32(len(typeLeaves)/2), uint32(len(fields)/2), uint32(len(t.fields)), uint32(t.elem), uint32(t.length), isFloat)
 		for _, leaf := range t.leaves {
 			s := uint32(0)
 			if leaf.signed {
@@ -182,7 +192,7 @@ func (w *syntaxWriter) typeID(typ *oakType) (int, string, bool) {
 	var key string
 	switch typ.kind {
 	case oakScalar:
-		key = fmt.Sprintf("s%d:%v", typ.width, typ.signed)
+		key = fmt.Sprintf("s%d:%v:%v", typ.width, typ.signed, typ.float)
 	case oakArray:
 		elem, reason, ok := w.typeID(typ.elem)
 		if !ok {
@@ -203,7 +213,7 @@ func (w *syntaxWriter) typeID(typ *oakType) (int, string, bool) {
 	w.typeIndex[key] = id
 	switch typ.kind {
 	case oakScalar:
-		t.kind, t.width, t.signed = synKindScalar, typ.width, typ.signed
+		t.kind, t.width, t.signed, t.float = synKindScalar, typ.width, typ.signed, typ.float
 		t.leaves = []synLeaf{{width: typ.width, signed: typ.signed}}
 	case oakArray:
 		elem, _, _ := w.typeID(typ.elem)
@@ -236,8 +246,11 @@ func (w *syntaxWriter) typeOfExpr(expr ast.Expression) (int, string, bool) {
 		return 0, fmt.Sprintf("the type %s", typeText(expr)), false
 	}
 	switch typeText(expr) {
-	case "f32", "f64", "f16", "bf16":
-		return 0, "a float type", false
+	case "f32", "f64":
+		// A float is its IEEE bit pattern: a scalar with the float flag.
+		typ = &oakType{kind: oakScalar, width: typ.width, float: true}
+	case "f16", "bf16", "f8":
+		return 0, "a narrow float type", false
 	}
 	return w.typeID(typ)
 }
@@ -245,6 +258,16 @@ func (w *syntaxWriter) typeOfExpr(expr ast.Expression) (int, string, bool) {
 func (w *syntaxWriter) scalarType(width int, signed bool) int {
 	id, _, _ := w.typeID(&oakType{kind: oakScalar, width: width, signed: signed})
 	return id
+}
+
+// isFloatNode reports a node of a float type (a float literal has none of
+// its own but is a float).
+func (w *syntaxWriter) isFloatNode(id uint32) bool {
+	if w.nodes[id*8] == synFloatLit {
+		return true
+	}
+	t := w.nodeType(id)
+	return t >= 0 && w.types[t].float
 }
 
 func (w *syntaxWriter) function(sig *ast.FunctionStatement, theorem bool) (*synFunction, string, bool) {
@@ -363,6 +386,9 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 			bit = 1
 		}
 		return w.node(synBoolLit, bit, 0, 0, 0, 0, 0, w.scalarType(1, false)), "", true
+	case *ast.FloatLiteral:
+		f64 := math.Float64bits(e.Value)
+		return w.node(synFloatLit, uint32(math.Float32bits(float32(e.Value))), 0, 0, 0, uint32(f64), uint32(f64>>32), -1), "", true
 	case *ast.Identifier:
 		sym, known := f.symbols[e.Value]
 		if !known {
@@ -400,6 +426,9 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 		typ := w.nodeType(left)
 		if typ < 0 {
 			typ = w.nodeType(right)
+		}
+		if (w.isFloatNode(left) || w.isFloatNode(right)) && code < 10 {
+			return 0, fmt.Sprintf("floating-point %s (not a bit operation)", e.Operator), false
 		}
 		if code >= 10 {
 			typ = w.scalarType(1, false)
@@ -533,6 +562,34 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 			}
 			return w.node(synCall, uint32(cf.index), w.list(args), uint32(len(args)), 0, 0, 0, cf.ret), "", true
 		}
+		if code, isFloatIntrinsic := synFloatIntrinsics[ident.Value]; isFloatIntrinsic && typechecker.FloatIntrinsicName(ident.Value) {
+			var args []uint32
+			floatType := -1
+			for _, arg := range e.Arguments {
+				id, reason, ok := w.expr(f, arg)
+				if !ok {
+					return 0, reason, false
+				}
+				args = append(args, id)
+				if t := w.nodeType(id); floatType < 0 && t >= 0 && w.types[t].float {
+					floatType = t
+				}
+			}
+			if (code <= 1 || code >= 7) && len(args) != map[uint32]int{0: 1, 1: 2, 7: 2, 8: 2}[code] {
+				return 0, fmt.Sprintf("the float intrinsic %s with %d arguments", ident.Value, len(args)), false
+			}
+			if code >= 2 && code <= 5 && len(args) != 1 || code == 6 && len(args) != 2 {
+				return 0, fmt.Sprintf("the float intrinsic %s with %d arguments", ident.Value, len(args)), false
+			}
+			typ := floatType
+			if code >= 2 && code <= 6 {
+				typ = w.scalarType(1, false)
+			}
+			return w.node(synFloatCall, code, w.list(args), uint32(len(args)), 0, 0, 0, typ), "", true
+		}
+		if typechecker.FloatIntrinsicName(ident.Value) {
+			return 0, fmt.Sprintf("the float intrinsic %s (not a bit operation)", ident.Value), false
+		}
 		if len(e.Arguments) != 1 {
 			return 0, fmt.Sprintf("call to %s", ident.Value), false
 		}
@@ -557,7 +614,12 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 		if signed {
 			signedWord = 1
 		}
-		return w.node(synConv, uint32(width), signedWord, operand, 0, 0, 0, w.scalarType(width, signed)), "", true
+		resultType := w.scalarType(width, signed)
+		if target == "f32" || target == "f64" {
+			// A bits row into a float: the pattern, typed float.
+			resultType, _, _ = w.typeID(&oakType{kind: oakScalar, width: width, float: true})
+		}
+		return w.node(synConv, uint32(width), signedWord, operand, 0, 0, 0, resultType), "", true
 	}
 	return 0, fmt.Sprintf("%T", e), false
 }
