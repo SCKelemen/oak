@@ -127,17 +127,27 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 		// A theorem the extractor cannot state (a recursive callee, a
 		// construct outside the subset) stays open with the extractor's
 		// reason; the projection carries the rest.
+		// One extraction over every theorem is the common case; only when
+		// it fails is each theorem tried alone, to name the ones the
+		// extractor cannot state.
 		var roots []string
-		for i, r := range results {
-			if _, err := comp.EmitLeanRoots("Oak.Theorems", []string{r.Name}).Get(); err != nil {
-				if r.Status == prove.Open {
-					results[i].Detail += " (not projected: " + err.Error() + ")"
-				}
-				continue
-			}
+		for _, r := range results {
 			roots = append(roots, r.Name)
 		}
 		text, err := comp.EmitLeanRoots("Oak.Theorems", roots).Get()
+		if err != nil {
+			roots = roots[:0]
+			for i, r := range results {
+				if _, probe := comp.EmitLeanRoots("Oak.Theorems", []string{r.Name}).Get(); probe != nil {
+					if r.Status == prove.Open {
+						results[i].Detail += " (not projected: " + probe.Error() + ")"
+					}
+					continue
+				}
+				roots = append(roots, r.Name)
+			}
+			text, err = comp.EmitLeanRoots("Oak.Theorems", roots).Get()
+		}
 		if err != nil {
 			fmt.Fprintf(stderr, "oak prove: lean: %v\n", err)
 			return 2

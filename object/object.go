@@ -310,7 +310,10 @@ type Environment struct {
 }
 
 func NewEnvironment() *Environment {
-	return &Environment{adtTypes: make(map[string]*ADTType)}
+	// A root is never pooled, so it is captured from the start: the mark
+	// then stops at it, and goroutines evaluating in scopes under one root
+	// never write to it (prove.TheoremsWith runs theorems in parallel).
+	return &Environment{adtTypes: make(map[string]*ADTType), captured: true}
 }
 
 // NewEnclosedEnvironment opens a scope inside outer. It allocates only the

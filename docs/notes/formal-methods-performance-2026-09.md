@@ -1,6 +1,6 @@
 # Note: the most performant formal-methods implementation — what the codecs, os, ml, simdjson and Futhark teach the prover
 
-**Status: in progress — benchmarks, the first enumeration increment, resident runner workers, the BDD tables, the id-indexed witness evaluator and cached slots with pooled scopes landed.** 2026-09-12, `specification` branch.
+**Status: in progress — benchmarks, the first enumeration increment, resident runner workers, the BDD tables, the id-indexed witness evaluator, cached slots with pooled scopes, parallel theorems and one Lean extraction landed.** 2026-09-12, `specification` branch.
 Source: a read of Oak's own verification engines (`prove/`, `asm/`,
 `repl/leancheck.go`, `testrunner/`, `experiments/verification-poc`), of
 `github.com/SCKelemen/os` and `github.com/SCKelemen/ml` for techniques those
@@ -336,6 +336,35 @@ What remains in the enumeration profile is the evaluation itself — the
 which only compiling theorem bodies to closures over slots would remove.
 That is the third step of item 5, and it is now a smaller share of the
 whole than the deciders (`effects.oak` is BDD-bound at 0.72 s).
+
+## 4f. Sixth increment landed: theorems in parallel; one Lean extraction (items 6 and 8)
+
+`prove.TheoremsWith` now prepares every theorem in declaration order —
+its parameter domains through the checker and the interpreter, the
+loop-heavy flag, the loaded function value — and decides them on a worker
+per CPU: the enumeration and the bit-level rung read shared state only.
+That reading is made safe by construction rather than by locks: a root
+environment is captured from creation so no goroutine marks it, the
+identifier caches are atomic, scopes are pooled through `sync.Pool`, the
+witness evaluator leaves constant terms unnumbered (one, `trapPath`, is
+shared between theorems), and a static walk over each theorem body and
+the functions it names (`writesGlobals`, a reflective AST walk) looks for
+an assignment to a name the function does not declare — a write to the
+program's state — and keeps the whole file sequential when it finds one.
+Results keep declaration order. `oak prove -lean` performs one Lean
+extraction over every theorem and probes theorems one at a time only when
+that fails, so the common case is one compilation instead of N+1.
+
+| Benchmark | Before | After (16 CPUs) |
+| --- | ---: | ---: |
+| `BenchmarkTheoremsProtocols` | 3.30 s | 0.87 s |
+| `BenchmarkTheoremsPatterns` | 0.16 s | 0.06 s |
+| `BenchmarkTheoremsLattice` | 1.00 s | 0.60 s |
+| `BenchmarkTheoremsEffects` | 0.73 s | 0.71 s (one diagram dominates) |
+
+Against the baselines of section 1: protocols 19.98 s to 0.87 s, lattice
+3.78 s to 0.60 s, patterns 0.84 s to 0.06 s, effects 2.54 s to 0.71 s.
+The race detector is clean over the prover under the parallel path.
 
 ## 5. What carries over from the codec track, unchanged
 
