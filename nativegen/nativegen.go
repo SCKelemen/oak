@@ -71,13 +71,50 @@ func (s scalar) wide() bool { return s.bits == 64 }
 type span struct {
 	elem     scalar
 	writable bool
-	baseReg  int // x register holding the base
-	lenReg   int // w register holding the length
+	// elemLayout: the element type when the span holds records (elem unused).
+	elemLayout *recordLayout
+	baseReg    int // x register holding the base
+	lenReg     int // w register holding the length
 	// argBase/argLen: the argument registers the pair arrived in. In a
 	// function that calls, the pair is parked in callee-saved registers
 	// (baseReg/lenReg) by the prologue — the checker follows the copies —
 	// so the callee's clobber of x0–x17 never touches it.
 	argBase, argLen int
+}
+
+// spanTypeOf reads a span or view type of scalar or record elements.
+func (g *generator) spanTypeOf(expr ast.Expression) (span, bool) {
+	if sp, ok := spanOf(expr); ok {
+		return sp, true
+	}
+	index, ok := expr.(*ast.IndexExpression)
+	if !ok || index.Dot {
+		return span{}, false
+	}
+	marker, isIdent := index.Index.(*ast.Identifier)
+	if !isIdent || (marker.Value != "*" && marker.Value != "") {
+		return span{}, false
+	}
+	name, isRecord := g.recordTypeName(index.Left)
+	if !isRecord {
+		return span{}, false
+	}
+	layout, err := g.layoutOf(name)
+	if err != nil {
+		return span{}, false
+	}
+	return span{elemLayout: layout, writable: marker.Value == "*"}, true
+}
+
+// sameElements reports two span shapes over the same element type.
+func sameElements(a, b span) bool { return a.elem == b.elem && a.elemLayout == b.elemLayout }
+
+// stride is the span's element size in bytes.
+func (sp span) stride() int64 {
+	if sp.elemLayout != nil {
+		return sp.elemLayout.size
+	}
+	return int64(sp.elem.bits / 8)
 }
 
 // spanOf reads a span or view type of the subset.
@@ -259,11 +296,12 @@ type recordField struct {
 // scalarPlace is a scalar field's location (a frame slot, or an offset from
 // an element address register).
 type scalarPlace struct {
-	offset int64
-	typ    scalar
-	inReg  bool
-	reg    int
-	temps  []int
+	offset   int64
+	typ      scalar
+	inReg    bool
+	reg      int
+	temps    []int
+	readOnly bool
 }
 
 func (s *scalarPlace) loc() loc { return loc{inReg: s.inReg, reg: s.reg, offset: s.offset} }
@@ -337,6 +375,8 @@ type recordLocal struct {
 	inReg  bool
 	reg    int
 	temps  []int // scratch registers to release once the place is consumed
+	// readOnly: an element of a view ([]T): stores are refused.
+	readOnly bool
 }
 
 func (r *recordLocal) loc() loc { return loc{inReg: r.inReg, reg: r.reg, offset: r.offset} }
@@ -581,7 +621,12 @@ func (g *generator) placeOf(expr ast.Expression) (place, error) {
 		}
 	case *ast.IndexExpression:
 		if !e.Dot {
-			// An element of an array of records: `pool[i]`.
+			// An element of an array or span of records: `pool[i]`.
+			if ident, isIdent := e.Left.(*ast.Identifier); isIdent {
+				if sp, isSpan := g.spans[ident.Value]; isSpan && sp.elemLayout != nil {
+					return g.spanRecordElement(sp, e.Index)
+				}
+			}
 			base, err := g.placeOf(e.Left)
 			if err != nil {
 				return place{}, err
@@ -618,10 +663,13 @@ func (g *generator) placeOf(expr ast.Expression) (place, error) {
 		at := base.rec.loc().plus(field.offset)
 		switch field.kind {
 		case fieldScalar:
-			return place{sc: &scalarPlace{offset: at.offset, typ: field.typ, inReg: at.inReg, reg: at.reg, temps: base.rec.temps}}, nil
+			return place{sc: &scalarPlace{offset: at.offset, typ: field.typ, inReg: at.inReg, reg: at.reg, temps: base.rec.temps, readOnly: base.rec.readOnly}}, nil
 		case fieldRecord:
-			return place{rec: &recordLocal{offset: at.offset, layout: field.layout, inReg: at.inReg, reg: at.reg, temps: base.rec.temps}}, nil
+			return place{rec: &recordLocal{offset: at.offset, layout: field.layout, inReg: at.inReg, reg: at.reg, temps: base.rec.temps, readOnly: base.rec.readOnly}}, nil
 		default:
+			if base.rec.readOnly {
+				return place{}, unsupported("the array field %s of an element read through a view", e.String())
+			}
 			return place{arr: &arrayLocal{offset: at.offset, elem: field.typ, elemLayout: field.layout, length: field.length, inReg: at.inReg, reg: at.reg, temps: base.rec.temps}}, nil
 		}
 	}
@@ -736,6 +784,38 @@ func (g *generator) recordLayoutOfExpr(expr ast.Expression) (*recordLayout, erro
 	return nil, unsupported("%s is not a record", expr.String())
 }
 
+// spanRecordElement addresses one element of a span of records through the
+// checker's span element idiom: the index guarded against the length
+// register, then `add xE, xB, wI, uxtw #s` or `movz`/`umaddl` by the
+// record's stride; the place is read-only through a view.
+func (g *generator) spanRecordElement(sp span, index ast.Expression) (place, error) {
+	r, err := g.guardedIndex(sp, index)
+	if err != nil {
+		return place{}, err
+	}
+	element, err := g.alloc(scalars["u64"])
+	if err != nil {
+		return place{}, err
+	}
+	stride := sp.elemLayout.size
+	if stride > 0 && stride&(stride-1) == 0 && stride <= 16 {
+		g.emit("add", xr(element), xr(sp.baseReg), asm.Extended{Reg: wr(r), Kind: "uxtw", Amount: int64(log2Bytes(int(stride)))})
+	} else {
+		if stride >= 1<<16 {
+			return place{}, unsupported("a record stride of %d bytes", stride)
+		}
+		strideReg, err := g.alloc(scalars["u32"])
+		if err != nil {
+			return place{}, err
+		}
+		g.emit("movz", wr(strideReg), imm(stride))
+		g.emit("umaddl", xr(element), wr(r), wr(strideReg), xr(sp.baseReg))
+		g.release(strideReg)
+	}
+	g.release(r)
+	return place{rec: &recordLocal{layout: sp.elemLayout, inReg: true, reg: element, temps: []int{element}, readOnly: !sp.writable}}, nil
+}
+
 // recordArrayElementLayout is the element type of an array of records the
 // expression names (a local, or an array field through any nesting), or
 // nil. Resolved without emitting code.
@@ -744,6 +824,9 @@ func (g *generator) recordArrayElementLayout(expr ast.Expression) *recordLayout 
 	case *ast.Identifier:
 		if arr, isArray := g.arrays[e.Value]; isArray {
 			return arr.elemLayout
+		}
+		if sp, isSpan := g.spans[e.Value]; isSpan {
+			return sp.elemLayout
 		}
 	case *ast.IndexExpression:
 		if e.Dot {
@@ -971,7 +1054,7 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 			nextReg += regs
 			continue
 		}
-		if sp, ok := spanOf(p.Type); ok {
+		if sp, ok := g.spanTypeOf(p.Type); ok {
 			sp.argBase, sp.argLen = nextReg, nextReg+1
 			sp.baseReg, sp.lenReg = sp.argBase, sp.argLen
 			nextReg += 2
@@ -1178,6 +1261,15 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 			out.Composites = map[string]asm.Composite{}
 		}
 		out.Composites[g.resultRecord.name] = asm.Composite{Size: g.resultRecord.size}
+	}
+	for _, p := range fn.Parameters {
+		if sp, isSpan := g.spans[p.Name.Value]; isSpan && sp.elemLayout != nil {
+			// A span of records: the checker sizes its elements from the table.
+			if out.Composites == nil {
+				out.Composites = map[string]asm.Composite{}
+			}
+			out.Composites[sp.elemLayout.name] = asm.Composite{Size: sp.elemLayout.size}
+		}
 	}
 	return out, nil
 }
@@ -2071,7 +2163,7 @@ func (g *generator) lowerSpanDeclaration(s *ast.VariableDeclaration, target span
 		g.emit("mov", xr(baseReg), xr(value.baseReg))
 		g.emit("mov", wr(lenReg), wr(value.lenReg))
 	}
-	local := span{elem: target.elem, writable: target.writable, baseReg: baseReg, lenReg: lenReg, argBase: -1, argLen: -1}
+	local := span{elem: target.elem, elemLayout: target.elemLayout, writable: target.writable, baseReg: baseReg, lenReg: lenReg, argBase: -1, argLen: -1}
 	delete(g.slots, s.Name.Value)
 	delete(g.types, s.Name.Value)
 	delete(g.regs, s.Name.Value)
@@ -2092,7 +2184,7 @@ func (g *generator) spanValue(expr ast.Expression, target *span, baseReg, lenReg
 		if !isSpan {
 			return span{}, false, unsupported("%s is not a span", ident.Value)
 		}
-		if target != nil && (sp.elem != target.elem || (target.writable && !sp.writable)) {
+		if target != nil && (!sameElements(sp, *target) || (target.writable && !sp.writable)) {
 			return span{}, false, unsupported("%s does not fit the span type", ident.Value)
 		}
 		return sp, true, nil
@@ -2132,10 +2224,13 @@ func (g *generator) spanValue(expr ast.Expression, target *span, baseReg, lenReg
 		if arr == nil {
 			return span{}, false, unsupported("%s of %s (only an owned array)", fn.Value, borrow.Right.String())
 		}
-		if target != nil && arr.elem != target.elem {
-			return span{}, false, unsupported("%s over [%d]%s where %s elements are expected", fn.Value, arr.length, arr.elem.name, target.elem.name)
+		if target != nil && (arr.elem != target.elem || arr.elemLayout != target.elemLayout) {
+			return span{}, false, unsupported("%s over %s where the span type's elements are expected", fn.Value, borrow.Right.String())
 		}
-		out.elem, out.writable = arr.elem, shape.writable
+		if arr.inReg {
+			return span{}, false, unsupported("%s of an array inside a computed element", fn.Value)
+		}
+		out.elem, out.elemLayout, out.writable = arr.elem, arr.elemLayout, shape.writable
 		g.emit("add", xr(baseReg), sp(), imm(g.slotMem(arr.offset).Offset))
 		g.constant(lenReg, uint64(arr.length), scalars["u32"])
 		return out, false, nil
@@ -2144,8 +2239,11 @@ func (g *generator) spanValue(expr ast.Expression, target *span, baseReg, lenReg
 		if err != nil {
 			return span{}, false, err
 		}
-		if target != nil && (src.elem != target.elem || (target.writable && !src.writable)) {
+		if target != nil && (!sameElements(src, *target) || (target.writable && !src.writable)) {
 			return span{}, false, unsupported("subslice of %s does not fit the span type", call.Arguments[0].String())
+		}
+		if stride := src.stride(); stride&(stride-1) != 0 || stride > 16 {
+			return span{}, false, unsupported("subslice over %d-byte elements (the derived-span idiom scales by a power of two up to 16)", stride)
 		}
 		u32 := scalars["u32"]
 		for _, bound := range call.Arguments[1:] {
@@ -2176,7 +2274,7 @@ func (g *generator) spanValue(expr ast.Expression, target *span, baseReg, lenReg
 		g.emit("sub", wr(rest), wr(src.lenReg), wr(start))
 		g.emit("cmp", wr(count), wr(rest))
 		g.branch("hi", g.trap)
-		g.emit("add", xr(baseReg), xr(src.baseReg), asm.Extended{Reg: wr(start), Kind: "uxtw", Amount: int64(log2Bytes(src.elem.bits / 8))})
+		g.emit("add", xr(baseReg), xr(src.baseReg), asm.Extended{Reg: wr(start), Kind: "uxtw", Amount: int64(log2Bytes(int(src.stride())))})
 		g.emit("mov", wr(lenReg), wr(count))
 		g.release(rest)
 		g.release(count)
@@ -2185,7 +2283,7 @@ func (g *generator) spanValue(expr ast.Expression, target *span, baseReg, lenReg
 			g.release(src.baseReg)
 			g.release(src.lenReg)
 		}
-		out.elem, out.writable = src.elem, src.writable
+		out.elem, out.elemLayout, out.writable = src.elem, src.elemLayout, src.writable
 		return out, false, nil
 	}
 	return span{}, false, unsupported("a span value %s", expr.String())
@@ -2660,7 +2758,7 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 				}
 				continue
 			}
-			if target, isSpan := spanOf(s.Type); isSpan {
+			if target, isSpan := g.spanTypeOf(s.Type); isSpan {
 				if err := g.lowerSpanDeclaration(s, target); err != nil {
 					return err
 				}
@@ -3816,7 +3914,7 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 			args = append(args, argument{regs: chunks, types: kinds})
 			continue
 		}
-		target, isSpan := spanOf(p.Type)
+		target, isSpan := g.spanTypeOf(p.Type)
 		if !isSpan {
 			return 0, unsupported("a call to %s (parameter %s: %s)", ident.Value, p.Name.Value, p.Type.String())
 		}
@@ -4193,6 +4291,9 @@ func (g *generator) arrayElement(arr *arrayLocal, index ast.Expression) (int, er
 func (g *generator) storeToPlace(target place, s *ast.IndexAssignmentStatement) error {
 	switch {
 	case target.sc != nil:
+		if target.sc.readOnly {
+			return unsupported("a store into %s through a read-only view", s.Target.String())
+		}
 		value, err := g.expr(s.Value, &target.sc.typ)
 		if err != nil {
 			return err
@@ -4202,6 +4303,9 @@ func (g *generator) storeToPlace(target place, s *ast.IndexAssignmentStatement) 
 		g.releaseTemps(target.sc.temps)
 		return nil
 	case target.rec != nil:
+		if target.rec.readOnly {
+			return unsupported("a store into %s through a read-only view", s.Target.String())
+		}
 		src, err := g.recordValueAs(s.Value, target.rec.layout)
 		if err != nil {
 			return err

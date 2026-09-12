@@ -1160,11 +1160,33 @@ by index, a 12-byte record array updated in place through `umaddl` with an
 element copied out and passed on, and a record array field inside a record
 read and written by computed index — natively against the C backend and
 the portable realization.
+**Twelfth increment — spans and views of records.** `pool: []Node` and
+`[*]Node` as parameters and locals, `view(&arr)`/`span(&arr)` over arrays
+of records, and `subslice` over them (for power-of-two strides up to 16
+bytes, the derived-span idiom's scale). An element `pool[i]` is a
+register-addressed record place produced by the span element idiom: the
+index guarded against the length register (`cmp wI, wL; b.hs trap`), then
+`add xE, xB, wI, uxtw #s` or `movz wK, #stride; umaddl xE, wI, wK, xB` by
+the record's stride; field reads, field stores, whole-element replacement,
+and copies out follow, and a view's elements refuse stores. The checker
+sizes a span of records from the composites table (the compiler adds
+every span parameter's element record) and derives the element region
+from a span base: `add`/`umaddl` over a span fact whose element size
+equals the stride, with the index guarded below the span's length
+register or below a constant the span's proven minimum length covers,
+makes `xE` a one-element region writable iff the span is a `[*]T`
+(`TestCheckerRecordSpans`: three accepted shapes, five refusals — a store
+through a view, no guard, the wrong stride, a guard against an unrelated
+register, a field past the element). The verifier never models a record
+element as a scalar: spans of records leave a body trusted. Executed
+(`TestE2ENativeRecordSpans`): a link pool passed as a view and walked by
+index, a span of 12-byte records renumbered in place with an element
+replaced whole and one copied out, and a subslice of a record view walked
+by a leaf — natively against the C backend and the portable realization.
 Next increments: the verifier's frame addresses, record locals, and
 derived spans (so array, record, ADT, and subslice bodies are proven, not
-trusted), `break` as a second loop exit in the recognizer, spans of
-records, and the slicing syntax `v[lo:hi]` once the C backend lowers `len`
-over it.
+trusted), `break` as a second loop exit in the recognizer, and the slicing
+syntax `v[lo:hi]` once the C backend lowers `len` over it.
 
 
 

@@ -406,6 +406,28 @@ func spanShape(expr ast.Expression) (elem int64, writable bool, ok bool) {
 	return elem, marker.Value == "*", true
 }
 
+// spanShapeOf is spanShape extended with record elements: a span or view
+// of a declared record (asm.Function.Composites) has the record's placed
+// size as its element size.
+func (c *checker) spanShapeOf(expr ast.Expression) (elem int64, writable bool, ok bool) {
+	if elem, writable, ok = spanShape(expr); ok {
+		return elem, writable, true
+	}
+	indexExpr, isIndex := expr.(*ast.IndexExpression)
+	if !isIndex || indexExpr.Dot {
+		return 0, false, false
+	}
+	marker, isMarker := indexExpr.Index.(*ast.Identifier)
+	if !isMarker || (marker.Value != "*" && marker.Value != "") {
+		return 0, false, false
+	}
+	comp, isComposite := c.fn.Composites[typeText(indexExpr.Left)]
+	if !isComposite || comp.Size <= 0 {
+		return 0, false, false
+	}
+	return comp.Size, marker.Value == "*", true
+}
+
 func (c *checker) errorf(line int, format string, args ...interface{}) {
 	c.errors = append(c.errors, fmt.Sprintf("%s:%d: %s", c.fn.Name, line, fmt.Sprintf(format, args...)))
 }
@@ -508,7 +530,7 @@ func (c *checker) bindContract() {
 			nextGeneral += regs
 			continue
 		}
-		if elem, writable, isSpan := spanShape(param.Type); isSpan {
+		if elem, writable, isSpan := c.spanShapeOf(param.Type); isSpan {
 			if nextGeneral > 6 {
 				c.errorf(c.fn.Line, "span parameter %s needs two registers; the integer register contract is exhausted", param.Name.Value)
 				continue
@@ -1445,22 +1467,30 @@ func (c *checker) deriveElement(instr Instruction, dest Register) {
 	}
 }
 
-// elementRegion records xE = xB + wI·size as a region of size bytes when xB
-// is a frame address, wI is guarded below a constant K, and every one of
-// the K elements lies inside the declared frame.
+// elementRegion records xE = xB + wI·size as a region of size bytes: over
+// a frame address xB when wI is guarded below a constant K and every one
+// of the K elements lies inside the declared frame; over a span at xB
+// whose elements are size bytes when wI is guarded below the span's
+// length (or below a constant its proven minimum length covers) — the
+// element of a span of records, writable iff the span is.
 func (c *checker) elementRegion(dest, base Register, index int, size int64) {
-	addr, isFrame := c.frameAddrs[base.Num]
-	if !isFrame {
-		return
-	}
 	bound, guarded := c.idxFacts[index]
-	if !guarded || bound.boundReg >= 0 || bound.bound <= 0 {
+	if !guarded {
 		return
 	}
-	if addr < -c.fn.Frame || addr+bound.bound*size > 0 {
+	if addr, isFrame := c.frameAddrs[base.Num]; isFrame {
+		if bound.boundReg >= 0 || bound.bound <= 0 || addr < -c.fn.Frame || addr+bound.bound*size > 0 {
+			return
+		}
+		c.regions[dest.Num] = region{size: size, writable: true}
 		return
 	}
-	c.regions[dest.Num] = region{size: size, writable: true}
+	if fact, isSpan := c.spans[base.Num]; isSpan && fact.elem == size {
+		inBounds := (bound.boundReg >= 0 && fact.holdsLen(bound.boundReg)) || (bound.boundReg < 0 && fact.hasMin && bound.bound <= fact.minLen)
+		if inBounds {
+			c.regions[dest.Num] = region{size: size, writable: fact.writable}
+		}
+	}
 }
 
 // aliasSpan records a register move that copies a span's base or length:
