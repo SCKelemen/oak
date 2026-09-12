@@ -311,6 +311,28 @@ If capture escape requires arena/slab/heap allocation, the effect is explicit an
 
 Enforcement today: captureless function literals are accepted as bare code pointers; capturing closures are rejected (`OAK-T0401`) until a storage justification surface exists, per `Oak.ClosureCapture`.
 
+Implemented, first increment (`compiler/closures.go`): **static
+specialization at the call site.** A typed literal that captures enclosing
+locals is accepted when it is passed directly to a top-level, non-generic
+Oak function whose corresponding parameter is only ever called — never
+stored, returned, compared, or passed on — and every capture is a
+parameter or annotated local of scalar type (fixed-width and platform
+integers, `Bool`, `f32`, `f64`) that the literal does not assign. The
+compiler lifts the literal to a top-level function with the captures as
+trailing parameters, clones the callee for that call site with the
+function parameter removed and the captures appended, replaces each call
+through the parameter by a direct call to the lifted literal carrying the
+captures, and rewrites the call to pass the captured values. The
+environment is the argument list: caller-owned storage alive exactly for
+the call (the non-escaping stack capture `Oak.ClosureCapture` proves
+safe), no closure object, no allocation, no pointer into the frame, and the
+effect analysis sees a direct call. Anything outside the shape — a literal
+bound to a local first, a callee that forwards its parameter, a capture
+that is a view, a record, a string, or an unannotated local — still
+reaches `OAK-T0401`, whose notes name the shape.
+`compiler/e2e_closures_test.go` runs the accepted shape in both
+realizations and the rejections.
+
 Static higher-order specialization may eliminate a callable wrapper or closure representation only when the specialized lowering preserves the same ownership and effect semantics. It must not use specialization as a way to hide an otherwise-required allocation.
 
 ## 12. Realtime/bounded code
