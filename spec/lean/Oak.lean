@@ -80,7 +80,9 @@ import Oak.Normalization
 import Oak.Stdlib.VarintExtracted
 import Oak.Stdlib.EncodingExtracted
 import Oak.Stdlib.HashExtracted
+import Oak.FloatOps
 import Oak.Stdlib.FloatExtracted
+import Oak.Stdlib.MathExtracted
 import Oak.Stdlib.FloatKernelsExtracted
 import Oak.Stdlib.RandomExtracted
 import Oak.Stdlib.UuidExtracted
