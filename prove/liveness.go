@@ -537,6 +537,7 @@ func exploreInvariants(results []Result, model *compiler.SemanticModel, env *obj
 	}
 	graphs := map[string]*liveGraph{}
 	reasons := map[string]string{}
+	superseded := map[string]bool{}
 	for i, r := range results {
 		decl, isCandidate := candidates[r.Name]
 		if !isCandidate || r.Status == Decided {
@@ -572,10 +573,23 @@ func exploreInvariants(results []Result, model *compiler.SemanticModel, env *obj
 		if failing >= 0 {
 			results[i] = Result{Name: r.Name, Status: Refuted,
 				Detail: fmt.Sprintf("invariant fails at the reachable state %s (%s)", graph.describe(failing), r.Detail)}
-			continue
+		} else {
+			results[i] = Result{Name: r.Name, Status: Decided,
+				Detail: fmt.Sprintf("invariant: holds on all %d reachable states (%s)", len(graph.states), r.Detail)}
 		}
-		results[i] = Result{Name: r.Name, Status: Decided,
-			Detail: fmt.Sprintf("invariant: holds on all %d reachable states (%s)", len(graph.states), r.Detail)}
+		superseded[r.Name+BaseSuffix] = true
+		superseded[r.Name+StepSuffix] = true
 	}
-	return results
+	if len(superseded) == 0 {
+		return results
+	}
+	// The reachable verdict stands for the candidate: its obligation rows,
+	// summarized in the candidate's detail, no longer count on their own.
+	kept := results[:0]
+	for _, r := range results {
+		if !superseded[r.Name] {
+			kept = append(kept, r)
+		}
+	}
+	return kept
 }

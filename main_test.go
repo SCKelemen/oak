@@ -641,3 +641,27 @@ func TestProveCommand(t *testing.T) {
 		t.Fatalf("missing file: exit %d, want 2:\n%s", code, out)
 	}
 }
+
+// The verification example decides every row: refined domains
+// exhaustively, a u32 claim at the bit level, the protocol's invariant over
+// its reachable states, and its liveness under the declared fairness.
+func TestProveVerificationExample(t *testing.T) {
+	code, out := runCLI(t, func(args []string) int { return proveCommand(args, os.Stdout, os.Stderr) },
+		[]string{filepath.Join("examples", "verification_quantum.oak")})
+	if code != 0 {
+		t.Fatalf("exit %d, want 0:\n%s", code, out)
+	}
+	for _, want := range []string{
+		"decided   lookup_nonzero: all 8 cases",
+		"decided   irq_low: all 4 cases",
+		"decided   add_commutes: at the bit level",
+		"decided   budget_bounded: invariant: holds on all 3 reachable states",
+		"decided   quantum_live1: eventually Yielded: holds on all 3 reachable states under fair tick, fair resume",
+		"decided   quantum_live2: eventually Running -> Yielded",
+		"oak prove: 6 decided",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}

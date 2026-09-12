@@ -238,7 +238,7 @@ main: (): i32 = 0
 		got[r.Name] = r
 	}
 	want := map[string]Status{
-		"paid": Refuted, "paid__base": Decided, "paid__step": Refuted,
+		"paid":    Refuted,
 		"counted": Decided, "counted__base": Decided, "counted__step": Decided,
 		"never_stuck": Decided, "never_stuck__base": Decided, "never_stuck__step": Decided,
 	}
@@ -252,14 +252,17 @@ main: (): i32 = 0
 			t.Errorf("%s: status %s (%s), want %s", name, r.Status, r.Detail, status)
 		}
 	}
-	if !strings.Contains(got["paid__step"].Detail, "coins: 255") {
-		t.Errorf("paid__step: %s", got["paid__step"].Detail)
+	if !strings.Contains(got["paid"].Detail, "coins: 255") {
+		t.Errorf("paid: %s", got["paid"].Detail)
 	}
 	// The inductive step's counterexample sits at coins = 255; the reachable
 	// exploration then names a state a run actually reaches (the wrapped
 	// counter, Unlocked with no coins), keeping the inductive detail.
 	if !strings.HasPrefix(got["paid"].Detail, "invariant fails at the reachable state Unlocked with {coins: 0} (invariant is not preserved: ") {
 		t.Errorf("paid: %s", got["paid"].Detail)
+	}
+	if _, kept := got["paid__step"]; kept {
+		t.Errorf("paid__step: the obligation rows are folded into the reachable verdict")
 	}
 	if !strings.HasPrefix(got["counted"].Detail, "invariant: base all 1 cases, step all") {
 		t.Errorf("counted: %s", got["counted"].Detail)
