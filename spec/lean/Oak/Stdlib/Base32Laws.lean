@@ -629,6 +629,19 @@ structure Encoded32 (src enc : Array UInt8) (hex pad : Bool) : Prop where
   syms : ∀ k, k < symCount32 src.size → enc.getD k 0 = encSym32 src hex k
   pads : ∀ k, symCount32 src.size ≤ k → k < encSize32 src.size pad → enc.getD k 0 = 61
 
+/-- The encoding as the decoder reads it: it only looks at symbol values and
+    at which bytes are pads, so this is what the decode laws need. A text
+    that is an encoding up to letter case satisfies it. -/
+structure Encoded32V (src enc : Array UInt8) (hex pad : Bool) : Prop where
+  size : enc.size = encSize32 src.size pad
+  vals : ∀ k, k < symCount32 src.size → val32 hex (enc.getD k 0) = (fld (w40 src (k / 8)) (k % 8).toUInt32).toUInt32
+  nopad : ∀ k, k < symCount32 src.size → enc.getD k 0 ≠ 61
+  pads : ∀ k, symCount32 src.size ≤ k → k < encSize32 src.size pad → enc.getD k 0 = 61
+
+theorem Encoded32.toV {src enc : Array UInt8} {hex pad : Bool} (he : Encoded32 src enc hex pad) : Encoded32V src enc hex pad :=
+  ⟨he.size, fun k hk => by rw [he.syms k hk, val32_encSym32], fun k hk => by rw [he.syms k hk]; exact encSym32_ne_pad src hex k,
+    he.pads⟩
+
 theorem pads32_le (n : Nat) (pad : Bool) : encSize32 n pad - symCount32 n ≤ 6 := by
   unfold encSize32 symCount32
   have := partial32_pos (n % 5); have := partial32_lt (n % 5)
@@ -640,7 +653,7 @@ theorem symCount32_zero (n : Nat) (h : symCount32 n = 0) : n = 0 := by
 theorem encSize32_zero (pad : Bool) : encSize32 0 pad = 0 := by simp [encSize32]
 
 /-- The padding strip: the count of trailing `=` is exactly the padding written. -/
-theorem unpad_loop32 (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32 src enc hex pad) (hsrc : src.size ≤ 2684354555)
+theorem unpad_loop32 (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32V src enc hex pad) (hsrc : src.size ≤ 2684354555)
     (fuel : Nat) :
     ∀ pads : UInt32, pads.toNat ≤ encSize32 src.size pad - symCount32 src.size →
       (encSize32 src.size pad - symCount32 src.size) - pads.toNat < fuel →
@@ -692,12 +705,12 @@ theorem unpad_loop32 (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32 sr
               · rw [UInt32.le_iff_toNat_le, UInt32.toNat_sub_of_le, hsz, show (1 : UInt32).toNat = 1 by decide]
                 · rw [he.size]; omega
                 · rw [UInt32.le_iff_toNat_le, hsz, show (1 : UInt32).toNat = 1 by decide]; rw [he.size]; omega
-            have hbyte : enc.getD ((enc.size.toUInt32 - 1) - pads).toNat 0 = encSym32 src hex (symCount32 src.size - 1) := by
+            have hbyte : enc.getD ((enc.size.toUInt32 - 1) - pads).toNat 0 ≠ 61 := by
               rw [hidx, he.size, hpe,
                 show encSize32 src.size pad - 1 - (encSize32 src.size pad - symCount32 src.size) = symCount32 src.size - 1 by omega]
-              exact he.syms _ (by omega)
+              exact he.nopad _ (by omega)
             have : (enc.getD ((enc.size.toUInt32 - 1) - pads).toNat 0 == 61) = false := by
-              rw [beq_eq_false_iff_ne, hbyte]; exact encSym32_ne_pad src hex _
+              rw [beq_eq_false_iff_ne]; exact hbyte
             exact Bool.and_eq_false_iff.mpr (Or.inr this)
       rw [if_neg (by simpa using hstop)]
       simp only [Option.pure_def, Option.some.injEq]
@@ -705,7 +718,7 @@ theorem unpad_loop32 (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32 sr
       rw [hpe, toUInt32_toNat_of_lt _ (by omega)]
 
 /-- No symbol of an encoding is a pad, so the misplaced-pad scan runs to the end clean. -/
-theorem scan_loop32 (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32 src enc hex pad) (body : UInt32)
+theorem scan_loop32 (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32V src enc hex pad) (body : UInt32)
     (hbody : body.toNat = symCount32 src.size) (hb32 : body.toNat < 2 ^ 32) (fuel : Nat) :
     ∀ i : UInt32, i.toNat ≤ body.toNat → body.toNat - i.toNat < fuel →
       base32_unpadded_length.loop2 enc body false i fuel = some (false, body) := by
@@ -717,7 +730,7 @@ theorem scan_loop32 (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32 src
     by_cases hlt : i.toNat < body.toNat
     · have hc : decide (i < body) = true := by apply decide_eq_true; rw [UInt32.lt_iff_toNat_lt]; exact hlt
       have hb : (enc.getD i.toNat 0 == 61) = false := by
-        rw [beq_eq_false_iff_ne, he.syms _ (by omega)]; exact encSym32_ne_pad src hex _
+        rw [beq_eq_false_iff_ne]; exact he.nopad _ (by omega)
       simp only [hc, Bool.not_false, Bool.and_self, ↓reduceIte, hb]
       have hi1 : (i + 1).toNat = i.toNat + 1 := uadd i 1 1 (by decide) (by omega)
       exact ih (i + 1) (by omega) (by omega)
@@ -727,7 +740,7 @@ theorem scan_loop32 (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32 src
       rw [this]
 
 /-- Every symbol of an encoding has a value below 32, so the validity scan runs to the end. -/
-theorem valid_loop32 (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32 src enc hex pad) (body : UInt32)
+theorem valid_loop32 (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32V src enc hex pad) (body : UInt32)
     (hbody : body.toNat = symCount32 src.size) (hb32 : body.toNat < 2 ^ 32) (fuel : Nat) :
     ∀ i : UInt32, i.toNat ≤ body.toNat → body.toNat - i.toNat < fuel →
       base32_decoded_size.loop1 enc hex body true i fuel = some (true, body) := by
@@ -739,8 +752,8 @@ theorem valid_loop32 (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32 sr
     by_cases hlt : i.toNat < body.toNat
     · have hc : decide (i < body) = true := by apply decide_eq_true; rw [UInt32.lt_iff_toNat_lt]; exact hlt
       have hv : decide (val32 hex (enc.getD i.toNat 0) < (32 : UInt32)) = true := by
-        apply decide_eq_true; rw [UInt32.lt_iff_toNat_lt, show (32 : UInt32).toNat = 32 by decide, he.syms _ (by omega)]
-        exact val32_encSym32_lt src hex _
+        apply decide_eq_true; rw [UInt32.lt_iff_toNat_lt, show (32 : UInt32).toNat = 32 by decide, he.vals _ (by omega)]
+        exact fld_lt' _ _
       simp only [hc, Bool.and_true, ↓reduceIte, base32_value_def, Option.bind_eq_bind, Option.bind_some, hv]
       have hi1 : (i + 1).toNat = i.toNat + 1 := uadd i 1 1 (by decide) (by omega)
       exact ih (i + 1) (by omega) (by omega)
@@ -756,7 +769,7 @@ theorem symCount32_le2 (n : Nat) : symCount32 n ≤ 2 * n := by
   rw [symCount32_eq]; unfold partial32
   split <;> (try split) <;> (try split) <;> (try split) <;> omega
 
-theorem unpadded_length_spec32 (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32 src enc hex pad)
+theorem unpadded_length_spec32 (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32V src enc hex pad)
     (hsrc : src.size ≤ 2684354555) (fuel : Nat) (hf : 2 * src.size + 16 < fuel) :
     base32_unpadded_length enc fuel = some (.Ok (symCount32 src.size).toUInt32) := by
   have hle := symCount32_le src.size pad
@@ -860,7 +873,7 @@ theorem size_arith (sc n g P q : Nat) (q32 : UInt32) (hq : q32.toNat = q) (hsc32
   omega
 
 /-- The value of the last symbol of an encoding with a partial final group. -/
-theorem last_value (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32 src enc hex pad) (g P : Nat)
+theorem last_value (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32V src enc hex pad) (g P : Nat)
     (hsc : symCount32 src.size = 8 * g + P) (hP1 : 1 ≤ P) (hP8 : P < 8) (hsc32 : symCount32 src.size < 2 ^ 32)
     (P32 : UInt32) (hP : P32.toNat = P - 1) (fuel : Nat) :
     (if ((symCount32 src.size).toUInt32 == 0) then some (0 : UInt32)
@@ -873,7 +886,7 @@ theorem last_value (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32 src 
   have hidx : ((symCount32 src.size).toUInt32 - 1).toNat = symCount32 src.size - 1 := by
     rw [UInt32.toNat_sub_of_le, hcount', show (1 : UInt32).toNat = 1 by decide]
     rw [UInt32.le_iff_toNat_le, hcount', show (1 : UInt32).toNat = 1 by decide]; omega
-  rw [hidx, he.syms _ (by omega), val32_encSym32, hsc, show (8 * g + P - 1) / 8 = g by omega,
+  rw [hidx, he.vals _ (by omega), hsc, show (8 * g + P - 1) / 8 = g by omega,
     show (8 * g + P - 1) % 8 = P - 1 by omega]
   have : (P - 1).toUInt32 = P32 := UInt32.toNat.inj (by rw [toUInt32_toNat_of_lt _ (by omega), hP])
   rw [this]
@@ -899,7 +912,7 @@ theorem decoded_size_tail (enc : Array UInt8) (hex : Bool) (fuel : Nat) (sc32 n3
   rw [hq]
   simp only [Option.bind_some, hsum]
 
-theorem decoded_size_spec32 (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32 src enc hex pad)
+theorem decoded_size_spec32 (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32V src enc hex pad)
     (hsrc : src.size ≤ 2684354555) (fuel : Nat) (hf : 2 * src.size + 16 < fuel) :
     base32_decoded_size enc hex fuel = some (.Ok src.size.toUInt32) := by
   have hle := symCount32_le src.size pad
@@ -954,7 +967,7 @@ theorem decoded_size_spec32 (src enc : Array UInt8) (hex pad : Bool) (he : Encod
 
 /-- The decoder's word of a symbol group of an encoding is the encoder's word:
     the symbols give back the fields, and the fields past a partial group are zero. -/
-theorem dec_word (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32 src enc hex pad) (i take : UInt32) (g : Nat)
+theorem dec_word (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32V src enc hex pad) (i take : UInt32) (g : Nat)
     (hi : i.toNat = 8 * g) (hi8 : i.toNat + 7 < 2 ^ 32) (hg : 8 * g < symCount32 src.size)
     (htake : take.toNat = min 8 (symCount32 src.size - 8 * g)) :
     mk8 (dv enc hex i take 0) (dv enc hex i take 1) (dv enc hex i take 2) (dv enc hex i take 3)
@@ -968,7 +981,7 @@ theorem dec_word (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32 src en
     by_cases hlt : s < take
     · rw [if_pos (decide_eq_true hlt), uadd i s s.toNat rfl (by omega), hi]
       have hlt' := UInt32.lt_iff_toNat_lt.mp hlt
-      rw [he.syms _ (by omega), val32_encSym32, show (8 * g + s.toNat) / 8 = g by omega,
+      rw [he.vals _ (by omega), show (8 * g + s.toNat) / 8 = g by omega,
         show (8 * g + s.toNat) % 8 = s.toNat by omega,
         show s.toNat.toUInt32 = s from UInt32.toNat.inj (toUInt32_toNat_of_lt _ (by omega)), fld_roundtrip]
     · rw [if_neg (by simpa using hlt)]
@@ -1061,7 +1074,7 @@ theorem byteAt_w40 (src : Array UInt8) (g t : Nat) (ht : t < 5) : byteAt (w40 sr
   · exact h.2.2.2.2
 
 /-- The decoder's group loop over an encoding writes the source back, group by group. -/
-theorem dec_loop1_spec (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32 src enc hex pad) (hsrc : src.size ≤ 2684354555)
+theorem dec_loop1_spec (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32V src enc hex pad) (hsrc : src.size ≤ 2684354555)
     (body : UInt32) (hbody : body.toNat = symCount32 src.size) (fuel : Nat) :
     ∀ (dst : Array UInt8) (i out : UInt32) (g : Nat), i.toNat = 8 * g → out.toNat = 5 * g → 8 * g ≤ symCount32 src.size →
       src.size ≤ dst.size → dst.size < 2 ^ 32 → symCount32 src.size - 8 * g + 10 < fuel →
@@ -1177,21 +1190,14 @@ theorem dec_loop1_spec (src enc : Array UInt8) (hex pad : Bool) (he : Encoded32 
         rw [symCount32_eq] at hge; split at hge <;> omega
       rw [if_neg (by omega)]
 
-/-- The base32 round trip, for every source of at most `2684354555` bytes,
-both alphabets, padded or not, a destination that holds exactly the encoding,
-and a decode destination that holds the source. -/
-theorem base32_round_trip (src enc dst : Array UInt8) (hex pad : Bool) (fuel : Nat)
-    (hsrc : src.size ≤ 2684354555) (henc : enc.size = encSize32 src.size pad) (hdst : src.size ≤ dst.size)
-    (hdst_small : dst.size < 2 ^ 32) (hf : 2 * src.size + 16 < fuel) :
-    ∃ enc' dst', base32_encode enc src hex pad fuel = some (.Ok enc.size.toUInt32, enc') ∧
-      base32_decode dst enc' hex fuel = some (.Ok src.size.toUInt32, dst') ∧ dst'.size = dst.size ∧
+/-- The decoder on an encoding: for every source of at most `2684354555`
+bytes, either alphabet, padded or not, and a decode destination that holds
+the source, `base32_decode` of the encoding reports the source length and
+writes the source back. -/
+theorem base32_decode_encoded (src enc dst : Array UInt8) (hex pad : Bool) (fuel : Nat) (he : Encoded32V src enc hex pad)
+    (hsrc : src.size ≤ 2684354555) (hdst : src.size ≤ dst.size) (hdst_small : dst.size < 2 ^ 32) (hf : 2 * src.size + 16 < fuel) :
+    ∃ dst', base32_decode dst enc hex fuel = some (.Ok src.size.toUInt32, dst') ∧ dst'.size = dst.size ∧
       ∀ k, k < src.size → dst'.getD k 0 = src.getD k 0 := by
-  have hsize := encSize32_lt src.size pad hsrc
-  obtain ⟨enc', hencode, hencsize, hsyms, hpads, -⟩ :=
-    b32_encode_spec src enc hex pad fuel hsrc (by omega) (by rw [henc]; exact hsize) (by omega)
-  have he : Encoded32 src enc' hex pad := ⟨by rw [hencsize, henc], hsyms, hpads⟩
-  rw [henc]
-  refine ⟨enc', ?_⟩
   have hsc_le := symCount32_le' src.size
   have hsc2 := symCount32_le2 src.size
   have hp8 := partial32_lt (src.size % 5)
@@ -1220,14 +1226,31 @@ theorem base32_round_trip (src enc dst : Array UInt8) (hex pad : Bool) (fuel : N
   have hbodyN : (src.size.toUInt32 / 5 * 8 + P32).toNat = symCount32 src.size := by
     rw [UInt32.toNat_add, hmul, hP32, toUInt32_toNat_of_lt _ (by split <;> omega), Nat.mod_eq_of_lt hsum, symCount32_eq]
   unfold base32_decode
-  rw [decoded_size_spec32 src enc' hex pad he hsrc fuel hf]
+  rw [decoded_size_spec32 src enc hex pad he hsrc fuel hf]
   simp only [Option.pure_def, Option.bind_eq_bind, Option.bind_some, hfits, Bool.false_eq_true, ↓reduceIte]
   rw [hr4]
   simp only [Option.bind_some]
-  obtain ⟨dst', i', out', hloop, hsize', hget⟩ := dec_loop1_spec src enc' hex pad he hsrc _ hbodyN fuel dst 0 0 0 (by simp) (by simp)
+  obtain ⟨dst', i', out', hloop, hsize', hget⟩ := dec_loop1_spec src enc hex pad he hsrc _ hbodyN fuel dst 0 0 0 (by simp) (by simp)
     (Nat.zero_le _) hdst hdst_small (by simp only [Nat.mul_zero, Nat.sub_zero]; omega)
   rw [hloop]
   simp only [Option.bind_some]
-  exact ⟨dst', hencode, rfl, hsize', fun k hk => by rw [hget k, if_pos ⟨by omega, hk⟩]⟩
+  exact ⟨dst', rfl, hsize', fun k hk => by rw [hget k, if_pos ⟨by omega, hk⟩]⟩
+
+/-- The base32 round trip, for every source of at most `2684354555` bytes,
+both alphabets, padded or not, a destination that holds exactly the encoding,
+and a decode destination that holds the source. -/
+theorem base32_round_trip (src enc dst : Array UInt8) (hex pad : Bool) (fuel : Nat)
+    (hsrc : src.size ≤ 2684354555) (henc : enc.size = encSize32 src.size pad) (hdst : src.size ≤ dst.size)
+    (hdst_small : dst.size < 2 ^ 32) (hf : 2 * src.size + 16 < fuel) :
+    ∃ enc' dst', base32_encode enc src hex pad fuel = some (.Ok enc.size.toUInt32, enc') ∧
+      base32_decode dst enc' hex fuel = some (.Ok src.size.toUInt32, dst') ∧ dst'.size = dst.size ∧
+      ∀ k, k < src.size → dst'.getD k 0 = src.getD k 0 := by
+  have hsize := encSize32_lt src.size pad hsrc
+  obtain ⟨enc', hencode, hencsize, hsyms, hpads, -⟩ :=
+    b32_encode_spec src enc hex pad fuel hsrc (by omega) (by rw [henc]; exact hsize) (by omega)
+  have he : Encoded32 src enc' hex pad := ⟨by rw [hencsize, henc], hsyms, hpads⟩
+  obtain ⟨dst', hdec, hsize', hget⟩ := base32_decode_encoded src enc' dst hex pad fuel he.toV hsrc hdst hdst_small hf
+  rw [henc]
+  exact ⟨enc', dst', hencode, hdec, hsize', hget⟩
 
 end Oak.Stdlib.Encoding
