@@ -106,11 +106,12 @@ func reportAsmVerdict(d *diagnostic.Diagnostic) {
 // unit, which the system C compiler turns into an executable named after the
 // package (or `-o out`); `-emit-c`, or an `-o` ending in .c, writes the C.
 func buildPackage(args []string) int {
-	output, header, leanOut, metalOut, profile, targetFlag := "", "", "", "", "", ""
+	output, header, leanOut, metalOut, profile, targetFlag, cpu := "", "", "", "", "", "", ""
 	lines, emitC, nativeBodies := false, false, false
 	asmMode := ""
-	fs := newFlagSet("build", "oak build [-o out] [-target os/arch] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-profile default|strict] [-asm native|c] [-native] [-lines] [dir|file.oak|pattern]...")
-	fs.StringVar(&targetFlag, "target", "", "platform os/arch, e.g. linux/riscv64 (default: OAKOS/OAKARCH, else the host; docs/spec/90-backend.md section 2a)")
+	fs := newFlagSet("build", "oak build [-o out] [-target os/arch] [-cpu name] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-profile default|strict] [-asm native|c] [-native] [-lines] [dir|file.oak|pattern]...")
+	fs.StringVar(&targetFlag, "target", "", "platform os/arch, e.g. linux/riscv64 or freestanding/arm (default: OAKOS/OAKARCH, else the host; docs/spec/90-backend.md section 2a)")
+	fs.StringVar(&cpu, "cpu", "", "processor for the C compiler's -mcpu, e.g. cortex_m0 (default: OAKCPU, else the target's default)")
 	fs.StringVar(&output, "o", "", "output file: an executable, or C when it ends in .c")
 	fs.BoolVar(&emitC, "emit-c", false, "write C instead of an executable")
 	fs.StringVar(&header, "header", "", "write the C header of the exported surface (docs/spec/92-ffi.md section 2.6)")
@@ -150,7 +151,7 @@ func buildPackage(args []string) int {
 		return 2
 	}
 	for _, dir := range targets {
-		if code := buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, tgt, lines, emitC, nativeBodies); code != 0 {
+		if code := buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, tgt, cpu, lines, emitC, nativeBodies); code != 0 {
 			return code
 		}
 	}
@@ -158,7 +159,7 @@ func buildPackage(args []string) int {
 }
 
 // buildOne builds a single package or file.
-func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode string, tgt target.Target, lines, emitC, nativeBodies bool) int {
+func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode string, tgt target.Target, cpu string, lines, emitC, nativeBodies bool) int {
 	comp, err := compilationFor(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
@@ -258,7 +259,7 @@ func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode string, t
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
-	drv, err := toolchain.Resolve(tgt, nil, nil)
+	drv, err := toolchain.Resolve(tgt, toolchain.Options{CPU: cpu}, nil, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
 		return 1
@@ -868,7 +869,7 @@ func runPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
-	drv, err := toolchain.Resolve(tgt, nil, nil)
+	drv, err := toolchain.Resolve(tgt, toolchain.Options{}, nil, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak run: %v\n", err)
 		return 1

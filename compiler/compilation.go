@@ -215,6 +215,11 @@ func (comp Compilation) WithNativeAsm() Compilation {
 // (docs/spec/90-backend.md §2a).
 func (comp Compilation) WithTarget(t target.Target) Compilation {
 	comp.options.Target = t
+	// The target's C data model decides the machine-sized Oak types
+	// (int, uint, ptr, uptr): ILP32 on the 32-bit microcontroller
+	// architectures, LP64 everywhere else.
+	intBits, ptrBits := t.DataModel()
+	comp.options.IntSize, comp.options.PtrSize = intBits, ptrBits
 	return comp
 }
 

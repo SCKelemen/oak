@@ -134,7 +134,10 @@ foreign-contract violation, exactly like a wrong prototype in C.
 ### 2.4 Target model (recorded assumption)
 
 v1 code generation assumes an ILP32 or LP64 C target: `int` is exactly 32
-bits, `size_t` is at least 32 bits. Targets outside this model (16-bit `int`)
+bits, `size_t` is at least 32 bits. Both are realized (`90-backend.md`
+§2a): the 64-bit targets are LP64, `freestanding/arm` and
+`freestanding/riscv32` are ILP32, and the target's data model sets Oak's
+machine-sized types. Targets outside this model (16-bit `int`)
 are not supported by the v1 `c.Int`/`c.Size` conversion rows; the fixed-width
 rows are unconditional.
 

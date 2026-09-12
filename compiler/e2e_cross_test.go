@@ -113,7 +113,7 @@ func TestCrossTargetForeignLaneWithoutFallbackFails(t *testing.T) {
 // compiler for the target.
 func crossLink(t *testing.T, tgt target.Target, comp Compilation) string {
 	t.Helper()
-	drv, err := toolchain.Resolve(tgt, nil, nil)
+	drv, err := toolchain.Resolve(tgt, toolchain.Options{}, nil, nil)
 	if err != nil || drv.Kind == "host" {
 		t.Skipf("no cross compiler for %s on this host (%v)", tgt, err)
 	}
