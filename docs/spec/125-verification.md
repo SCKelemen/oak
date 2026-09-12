@@ -269,7 +269,16 @@ the toolchain.
 | `machine_agrees_two_bytes` | the `Utf8` machine, stepped through `utf8_legal`/`utf8_next`, accepts `[b0, b1]` exactly when `is_valid_utf8` does | decided, all 65536 cases |
 | `machine_agrees_three_bytes_e0/ed/e1` | the same under the three-byte leads with special ranges | decided, all 65536 cases each |
 
-The witnesses are the three-witness rule (`92-ffi.md` §3.1) as proof
+| Library law (`Oak.Stdlib.*Laws`) | Oak theorem (`spec/oak/stdlib_*/`) | Rung |
+| --- | --- | --- |
+| `VarintLaws` | `roundtrip_u16` (encode then decode is the identity, in `varint_size` bytes), `size_u16`, `zigzag_roundtrip_i16`, `zigzag_small` | decided, all 65536 cases each |
+| `EncodingLaws`, `Base64Laws` | `hex_roundtrip` (both alphabets), `base64_roundtrip_two` (padded), `base64_url_roundtrip_one` | decided, exhaustively |
+| `SortLaws`, `PdqsortLaws` | `pair_sorted_and_permuted`, `pair_search_finds` | decided, all 65536 pairs |
+
+The library laws are stated over the library itself — the packages
+import `varint`, `encoding`, and `sort` — where the Lean laws are stated
+over the extraction; the two meet in the faithfulness harness
+(`95-extraction.md` §6). The witnesses are the three-witness rule (`92-ffi.md` §3.1) as proof
 rather than test: the portable lowering, transcribed as an Oak function,
 is stated equal to the instruction function and the decider settles it
 for every input; the validity intrinsic is stated against the table it

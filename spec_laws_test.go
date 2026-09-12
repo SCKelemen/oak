@@ -8,14 +8,20 @@ import (
 	"testing"
 )
 
-// The self-hosted laws (docs/spec/125-verification.md section 7): every
-// theorem under spec/oak is decided by the compiler, except the files
-// named *_lean.oak, which Lean proves from the projection when a Lean
-// toolchain is present.
+// The self-hosted laws (docs/spec/125-verification.md section 6): every
+// theorem under spec/oak — the single files and the standard-library
+// packages — is decided by the compiler, except the files named
+// *_lean.oak, which Lean proves from the projection when a Lean toolchain
+// is present.
 func TestSelfHostedLaws(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("spec", "oak", "*.oak"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("spec/oak: %v (%d files)", err, len(files))
+	}
+	// The standard-library laws import the library, so they are packages.
+	packages, _ := filepath.Glob(filepath.Join("spec", "oak", "*", "main.oak"))
+	for _, main := range packages {
+		files = append(files, filepath.Dir(main))
 	}
 	for _, file := range files {
 		file := file
