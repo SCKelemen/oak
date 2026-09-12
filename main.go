@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SCKelemen/oak/codegen/metal/gpu"
 	"github.com/SCKelemen/oak/target"
 	"github.com/SCKelemen/oak/toolchain"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/SCKelemen/oak/compiler"
 	"github.com/SCKelemen/oak/diagnostic"
@@ -107,6 +109,7 @@ func reportAsmVerdict(d *diagnostic.Diagnostic) {
 // package (or `-o out`); `-emit-c`, or an `-o` ending in .c, writes the C.
 func buildPackage(args []string) int {
 	output, header, leanOut, metalOut, profile, targetFlag, cpu := "", "", "", "", "", "", ""
+	metalCheck := false
 	lines, emitC, nativeBodies := false, false, false
 	asmMode := ""
 	fs := newFlagSet("build", "oak build [-o out] [-target os/arch] [-cpu name] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-profile default|strict] [-asm native|c] [-native] [-lines] [dir|file.oak|pattern]...")
@@ -117,6 +120,7 @@ func buildPackage(args []string) int {
 	fs.StringVar(&header, "header", "", "write the C header of the exported surface (docs/spec/92-ffi.md section 2.6)")
 	fs.StringVar(&leanOut, "lean", "", "write the Lean 4 extraction of the package (docs/spec/95-extraction.md)")
 	fs.StringVar(&metalOut, "metal", "", "write the Metal Shading Language of the package's kernels (docs/spec/56-kernels.md)")
+	fs.BoolVar(&metalCheck, "metal-check", false, "with -metal, compile the emitted kernels on this machine's GPU device and report the driver's errors (docs/spec/56-kernels.md section 9)")
 	fs.StringVar(&profile, "profile", "", "discipline profile: default or strict (docs/spec/85-discipline.md)")
 	fs.StringVar(&asmMode, "asm", "", "asm units: native (Oak assembler companion object) or c (inline __asm__; default native where the target has a lane; docs/spec/94-assembler.md section 9)")
 	fs.BoolVar(&lines, "lines", false, "emit #line directives so C diagnostics point at Oak source")
@@ -151,7 +155,7 @@ func buildPackage(args []string) int {
 		return 2
 	}
 	for _, dir := range targets {
-		if code := buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, tgt, cpu, lines, emitC, nativeBodies); code != 0 {
+		if code := buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, tgt, cpu, lines, emitC, nativeBodies, metalCheck); code != 0 {
 			return code
 		}
 	}
@@ -159,7 +163,7 @@ func buildPackage(args []string) int {
 }
 
 // buildOne builds a single package or file.
-func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode string, tgt target.Target, cpu string, lines, emitC, nativeBodies bool) int {
+func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode string, tgt target.Target, cpu string, lines, emitC, nativeBodies, metalCheck bool) int {
 	comp, err := compilationFor(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
@@ -204,6 +208,23 @@ func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode string, t
 		if err := os.WriteFile(metalOut, []byte(result.Source), 0o644); err != nil {
 			fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
 			return 1
+		}
+		if metalCheck {
+			// The device's own compiler judges the emitted source
+			// (docs/spec/56-kernels.md section 9): no Xcode toolchain, the
+			// Metal framework at run time.
+			if reason := gpu.Available(); reason != "" {
+				fmt.Fprintf(os.Stderr, "oak build: -metal-check: %s\n", reason)
+				return 2
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if err := gpu.Check(ctx, result.Source); err != nil {
+				fmt.Fprintf(os.Stderr, "oak build: the device rejects %s:\n%v\n", metalOut, err)
+				return 1
+			}
+			device, _ := gpu.Device()
+			fmt.Fprintf(os.Stderr, "oak build: %s compiles on %s (%d kernels)\n", metalOut, device, len(result.Kernels))
 		}
 	}
 	if header != "" {

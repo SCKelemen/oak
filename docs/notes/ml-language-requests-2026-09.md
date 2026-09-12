@@ -104,6 +104,11 @@ list, in the order the pilot would meet them:
    zero — at every `(i, j)` in shape (the loops equal a store model,
    `writeRows`, and the model keeps every entry it wrote because later
    rows write later indices).
-8. **GPU execution from the tools**: `oak test` running a kernel through
-   a Metal device when the toolchain is present.
+8. ~~**GPU execution from the tools**~~ — landed after #264 (`56-kernels.md`
+   §9): the Metal framework compiles shader source at run time, so no Xcode
+   toolchain is needed. `codegen/metal/gpu` runs a kernel on this machine's
+   device from Go (`Check`, `Run`), `oak build -metal out.metal
+   -metal-check` compiles the emitted source on the device, and the
+   chapter's kernels run on the GPU in the tests against the C results.
+   Open: a launch sequence under `oak test` (inputs, trace schema, replay).
 
