@@ -90,18 +90,35 @@ func ProtocolTLAWithRecords(decl *ast.ProtocolDeclaration, origin string, record
 	}
 	var b strings.Builder
 	var constants []string
+	var domains []string
 	seen := map[string]bool{}
 	for _, step := range m.steps {
 		if step.payload != nil {
 			domain := domainName(step.payload.Name.Value)
-			if !seen[domain] {
-				seen[domain] = true
-				constants = append(constants, domain)
+			if seen[domain] {
+				continue
 			}
+			seen[domain] = true
+			if fields, isRecord := payloadRecordFields(step.payload.Type, m.records); isRecord {
+				// A record payload's domain is the record set of its
+				// fields' domains, each a constant the configuration
+				// assigns (TLC's configuration reads no record sets).
+				var pairs []string
+				for _, field := range fields {
+					constants = append(constants, domain+fieldConstant(field.Name))
+					pairs = append(pairs, fmt.Sprintf("%s: %s", field.Name, domain+fieldConstant(field.Name)))
+				}
+				domains = append(domains, fmt.Sprintf("%s == [%s]", domain, strings.Join(pairs, ", ")))
+				continue
+			}
+			constants = append(constants, domain)
 		}
 	}
 	if len(constants) > 0 {
 		fmt.Fprintf(&b, "CONSTANTS %s\n\n", strings.Join(constants, ", "))
+	}
+	for _, domain := range domains {
+		fmt.Fprintf(&b, "%s\n\n", domain)
 	}
 	vars := []string{"state"}
 	for _, f := range fields {
@@ -296,6 +313,43 @@ func ProtocolTLAWithRecords(decl *ast.ProtocolDeclaration, origin string, record
 // (Bool's two values; four values for a scalar) that a model widens as it
 // needs.
 func ProtocolTLCConfig(decl *ast.ProtocolDeclaration) string {
+	return ProtocolTLCConfigWith(decl, nil)
+}
+
+// payloadDomain is the small model domain of a scalar payload or field:
+// four values for an integer, both Booleans.
+func payloadDomain(typ ast.Expression) string {
+	if typeName, isIdent := typ.(*ast.Identifier); isIdent && typeName.Value == "Bool" {
+		return "{TRUE, FALSE}"
+	}
+	return "{0, 1, 2, 3}"
+}
+
+// payloadRecordFields is the field list of a record payload type.
+func payloadRecordFields(typ ast.Expression, records map[string]*ast.RecordLiteral) ([]ast.RecordField, bool) {
+	typeName, isIdent := typ.(*ast.Identifier)
+	if !isIdent {
+		return nil, false
+	}
+	record, isRecord := records[typeName.Value]
+	if !isRecord {
+		return nil, false
+	}
+	return record.FieldOrder, true
+}
+
+// fieldConstant names a record payload field's domain constant: Cmd + Slot.
+func fieldConstant(field string) string {
+	if field == "" {
+		return ""
+	}
+	return strings.ToUpper(field[:1]) + field[1:]
+}
+
+// ProtocolTLCConfigWith is ProtocolTLCConfig with the program's record
+// declarations, so a record payload's domain is the record set of its
+// fields' domains.
+func ProtocolTLCConfigWith(decl *ast.ProtocolDeclaration, records map[string]*ast.RecordLiteral) string {
 	var b strings.Builder
 	b.WriteString("SPECIFICATION Spec\nINVARIANT TypeOK\n")
 	if len(decl.Liveness) > 0 {
@@ -312,11 +366,13 @@ func ProtocolTLCConfig(decl *ast.ProtocolDeclaration) string {
 			continue
 		}
 		seen[domain] = true
-		values := "{0, 1, 2, 3}"
-		if typeName, isIdent := t.Param.Type.(*ast.Identifier); isIdent && typeName.Value == "Bool" {
-			values = "{TRUE, FALSE}"
+		if fields, isRecord := payloadRecordFields(t.Param.Type, records); isRecord {
+			for _, field := range fields {
+				constants = append(constants, fmt.Sprintf("    %s%s = %s", domain, fieldConstant(field.Name), payloadDomain(field.Value)))
+			}
+			continue
 		}
-		constants = append(constants, fmt.Sprintf("    %s = %s", domain, values))
+		constants = append(constants, fmt.Sprintf("    %s = %s", domain, payloadDomain(t.Param.Type)))
 	}
 	if len(constants) > 0 {
 		b.WriteString("CONSTANTS\n" + strings.Join(constants, "\n") + "\n")
@@ -373,6 +429,19 @@ func dataField(target *ast.IndexExpression) (string, bool) {
 	base, okBase := target.Left.(*ast.Identifier)
 	field, okField := target.Index.(*ast.Identifier)
 	if !okBase || !okField || base.Value != "data" {
+		return "", false
+	}
+	return field.Value, true
+}
+
+// payloadField recognizes `payload.field`, a read of a record payload.
+func payloadField(target *ast.IndexExpression, payload string) (string, bool) {
+	if target == nil || !target.Dot || payload == "" {
+		return "", false
+	}
+	base, okBase := target.Left.(*ast.Identifier)
+	field, okField := target.Index.(*ast.Identifier)
+	if !okBase || !okField || base.Value != payload {
 		return "", false
 	}
 	return field.Value, true
@@ -497,6 +566,10 @@ func tlaExpr(e ast.Expression, env *tlaEnv) (string, error) {
 		}
 		return "", fmt.Errorf("identifier %s is not the payload or a data field", n.Value)
 	case *ast.IndexExpression:
+		if field, ok := payloadField(n, payload); ok {
+			// A record payload's field reads as the TLA+ record field.
+			return payload + "." + field, nil
+		}
 		if field, ok := dataField(n); ok {
 			return field, nil
 		}

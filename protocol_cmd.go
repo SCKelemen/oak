@@ -74,7 +74,7 @@ func protocolCommand(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		if *cfgOut != "" {
-			if err := os.WriteFile(*cfgOut, []byte(compiler.ProtocolTLCConfig(decl)), 0o644); err != nil {
+			if err := os.WriteFile(*cfgOut, []byte(compiler.ProtocolTLCConfigWith(decl, compiler.RecordDeclarations(tree.Root))), 0o644); err != nil {
 				fmt.Fprintf(stderr, "oak protocol: %v\n", err)
 				return 1
 			}

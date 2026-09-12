@@ -100,7 +100,7 @@ func ProtocolRefinement(decl *ast.ProtocolDeclaration, handModule string, record
 
 	var extraConstants []string
 	var extraAssignments []string
-	for _, line := range strings.Split(ProtocolTLCConfig(decl), "\n") {
+	for _, line := range strings.Split(ProtocolTLCConfigWith(decl, records), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if !strings.Contains(trimmed, " = ") || !strings.HasPrefix(line, "    ") {
 			continue
@@ -154,7 +154,7 @@ func ProtocolRefinement(decl *ast.ProtocolDeclaration, handModule string, record
 	if len(handConstants) > 0 && handConfig == "" {
 		var names []string
 		for name := range handConstants {
-			if !seenIn(extraConstants, name) && !constantAssignedBy(ProtocolTLCConfig(decl), name) {
+			if !seenIn(extraConstants, name) && !constantAssignedBy(ProtocolTLCConfigWith(decl, records), name) {
 				names = append(names, name)
 			}
 		}
@@ -164,7 +164,7 @@ func ProtocolRefinement(decl *ast.ProtocolDeclaration, handModule string, record
 		}
 		// The hand-written module's constants are the projection's payload
 		// domains by name: assign them the projection's defaults.
-		for _, line := range strings.Split(ProtocolTLCConfig(decl), "\n") {
+		for _, line := range strings.Split(ProtocolTLCConfigWith(decl, records), "\n") {
 			if strings.HasPrefix(line, "    ") && strings.Contains(line, " = ") {
 				name := strings.TrimSpace(line[:strings.Index(line, " = ")])
 				if handConstants[name] {
