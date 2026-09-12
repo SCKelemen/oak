@@ -770,6 +770,28 @@ twin without a range check when the checker proved every byte
 separators after values and elements are one byte read under its guard,
 no token record; the whitespace after the opening brace is skipped once.
 
+String tokens are validated where they are scanned: `json_string_scan`
+takes a run sixteen bytes at a time with the escape lanes and the high
+bits of each block as two `movemask` masks, locates the first escape byte
+with `ctz` and folds in the high bits of the lanes before it, takes the
+tail through a block ending at the input's end with its earlier lanes
+shifted off, and reports whether the run was all ASCII; `json_token_full`
+validates a run with a byte above ASCII with `is_valid_utf8` (the SIMD
+validator) before accepting the token. Every other byte a successful
+decode consumed is ASCII by construction, so the borrowed-record success
+path no longer validates the whole input; failures keep the whole-input
+pass for InvalidEncoding precedence.
+
+The scanner also hands the reader the byte that ended the number: the
+compact status's low byte is the code as before, and when a word saw the
+terminator, bit 9 is set with that byte in bits 10 to 17. The record
+reader and the array loop take a comma or a closing bracket or brace from
+it without a whitespace skip or a load, and an element after such a comma
+goes straight to the scanner when the byte after the comma starts a
+number; a closing bracket or whitespace there still takes the lookahead,
+so `[1,]` stays InvalidSyntax at the bracket. The public
+`json_read_integer` masks the code.
+
 On the local harness (`benchmarks/json/run.py --samples 9`, Apple arm64,
 the machine otherwise idle, the simdjson control in every run) the fourth
 pass took the derived decoder from 1.20 times simdjson's time to 1.00 —

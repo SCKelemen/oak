@@ -149,27 +149,44 @@ func decideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Functio
 			return Decision{Kind: DecisionRefuted, Message: "counterexample " + describeEnv(names, env)}
 		}
 	}
-	bl := newBlaster(names, widths)
-	// Every recorded trap condition must be impossible.
+	decision, exceeded := decideBlasted(newBlaster(names, widths), traps, t, names)
+	if exceeded && paramGroups(names) > 1 {
+		decision, exceeded = decideBlasted(newGroupedBlaster(names, widths), traps, t, names)
+	}
+	if exceeded {
+		return Decision{Kind: DecisionUndecided, Message: "the bit-level decision exceeded its node budget"}
+	}
+	return decision
+}
+
+// decideBlasted settles the theorem with one blaster: every recorded trap
+// condition must be impossible and the claim must be the true node. The
+// second result reports a blown node budget, which the caller may answer
+// with another variable order.
+func decideBlasted(bl *blaster, traps []*term, t *term, names []string) (Decision, bool) {
 	for _, trap := range traps {
 		bits := bl.blast(trap)
 		if bits == nil || bl.bdd.exceeded {
-			return Decision{Kind: DecisionUndecided, Message: "the bit-level decision exceeded its node budget"}
+			return Decision{}, true
 		}
 		if bits[0] != bddFalse {
 			env := bl.counterexample(bits[0], bddFalse)
-			return Decision{Kind: DecisionRefuted, Message: "the body traps (a shift count at the width, a failed assert, or a construction outside its predicate) at " + describeEnv(names, env)}
+			return Decision{Kind: DecisionRefuted, Message: "the body traps (a shift count at the width, a failed assert, or a construction outside its predicate) at " + describeEnv(names, env)}, false
 		}
 	}
 	bits := bl.blast(t)
 	if bits == nil || bl.bdd.exceeded {
-		return Decision{Kind: DecisionUndecided, Message: "the bit-level decision exceeded its node budget"}
+		return Decision{}, true
 	}
 	if bits[0] == bddTrue {
-		return Decision{Kind: DecisionProven, Message: fmt.Sprintf("at the bit level (%d BDD nodes)", len(bl.bdd.nodes))}
+		order := ""
+		if bl.grouped {
+			order = ", parameters in blocks"
+		}
+		return Decision{Kind: DecisionProven, Message: fmt.Sprintf("at the bit level (%d BDD nodes%s)", len(bl.bdd.nodes), order)}, false
 	}
 	env := bl.counterexample(bits[0], bddTrue)
-	return Decision{Kind: DecisionRefuted, Message: "counterexample " + describeEnv(names, env)}
+	return Decision{Kind: DecisionRefuted, Message: "counterexample " + describeEnv(names, env)}, false
 }
 
 // tagsNameVariants is the 1-bit term stating that every union tag inside

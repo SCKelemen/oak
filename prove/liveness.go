@@ -179,6 +179,12 @@ func exploreProtocol(tc *typechecker.TypeChecker, env *object.Environment, decl 
 	if stepType == nil {
 		return nil, "the step type does not resolve"
 	}
+	// The step values are enumerated once and tried at every reachable
+	// state, so their number is bounded by cases before they are built: a
+	// payload record of two u8 fields alone is 65536 steps.
+	if size, sizeReason := domainSize(tc, env, stepType); sizeReason == "" && size > int64(cases) {
+		return nil, fmt.Sprintf("steps: %d step values exceed %d cases (refine the payload types, or raise -cases)", size, cases)
+	}
 	steps, reason := valuesOf(tc, env, stepType)
 	if reason != "" {
 		return nil, "steps: " + reason

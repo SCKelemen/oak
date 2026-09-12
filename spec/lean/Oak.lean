@@ -78,6 +78,7 @@ import Oak.CausalFrontierRefinement
 import Oak.Modules
 import Oak.ModulesRefinement
 import Oak.ArithmeticRefinement
+import Oak.ViewRefinement
 import Oak.Semver
 import Oak.Loops
 import Oak.Regions
@@ -132,5 +133,6 @@ import Oak.ProtocolQuorum
 import Oak.TimeInterval
 import Oak.ProtocolConformance
 import Oak.RiscV
+import Oak.RiscVMemory
 import Oak.Target
 import Oak.Freestanding

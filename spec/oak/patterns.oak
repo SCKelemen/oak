@@ -1,0 +1,86 @@
+// The pattern algebra of coverage, in Oak (docs/spec/35-pattern-analysis.md
+// sections 2, 4, 5, 8, 11; spec/lean/Oak/Exhaustiveness.lean;
+// spec/lean/Oak/PatternAnalysis.lean; typechecker/pattern_analysis.go). A
+// closed case universe of eight semantic cases: a set of cases (the
+// constructors of a sum type, the arms listed, the cases reachable under
+// the refinements at the match site, the cases covered so far) is a bitset
+// and a case is a bit position, so membership is one mask test and coverage
+// one subset test. Every law is decided at the bit level or exhaustively.
+
+member: (set: u8, i: u8): Bool = ((set >> (i & u8(7))) & u8(1)) == u8(1)
+single: (i: u8): u8 = u8(1) << (i & u8(7))
+subset: (small: u8, large: u8): Bool = (small & ^large) == u8(0)
+
+// --- Finite matches (Oak.Exhaustiveness) ---
+
+// Exhaustive: a wildcard arm, or every constructor among the arms.
+exhaustive_finite: (constructors: u8, arms: u8, wildcard: Bool): Bool = wildcard || subset(constructors, arms)
+
+wildcard_is_exhaustive: theorem (constructors: u8, arms: u8) { exhaustive_finite(constructors, arms, true) }
+all_constructors_are_exhaustive: theorem (constructors: u8, arms: u8) { !subset(constructors, arms) || exhaustive_finite(constructors, arms, false) }
+missing_constructor_is_not_exhaustive: theorem (constructors: u8, arms: u8, missing: u8) { !(member(constructors, missing) && !member(arms, missing)) || !exhaustive_finite(constructors, arms, false) }
+adding_arms_preserves_exhaustiveness: theorem (constructors: u8, arms: u8, extra: u8, wildcard: Bool) { !exhaustive_finite(constructors, arms, wildcard) || exhaustive_finite(constructors, arms | extra, wildcard) }
+constructor_membership_drives_coverage: theorem (constructors: u8, arms: u8) { exhaustive_finite(constructors, arms, false) == subset(constructors, arms) }
+
+// --- Reachable cases, coverage, usefulness (Oak.PatternAnalysis) ---
+
+// ReachableCase: in the closed universe and surviving the refinements.
+reachable_case: (cases: u8, reachable: u8, value: u8): Bool = member(cases, value) && member(reachable, value)
+
+// Exhaustive: every reachable case is covered.
+exhaustive: (cases: u8, reachable: u8, covered: u8): Bool = subset(cases & reachable, covered)
+
+// Redundant: the arm adds no case outside prior coverage; Useful: it adds one.
+redundant: (covered: u8, arm: u8): Bool = subset(arm, covered)
+useful: (covered: u8, arm: u8): Bool = (arm & ^covered) != u8(0)
+
+// Counterexample: a reachable case the match does not cover.
+counterexample: (cases: u8, reachable: u8, covered: u8, value: u8): Bool = reachable_case(cases, reachable, value) && !member(covered, value)
+
+counterexample_refutes_exhaustive: theorem (cases: u8, reachable: u8, covered: u8, value: u8) { !counterexample(cases, reachable, covered, value) || !exhaustive(cases, reachable, covered) }
+missing_reachable_is_counterexample: theorem (cases: u8, reachable: u8, covered: u8, value: u8) { !(member(cases, value) && member(reachable, value) && !member(covered, value)) || counterexample(cases, reachable, covered, value) }
+redundant_not_useful: theorem (covered: u8, arm: u8) { !redundant(covered, arm) || !useful(covered, arm) }
+adding_redundant_preserves_exhaustive: theorem (cases: u8, reachable: u8, covered: u8, arm: u8) { !exhaustive(cases, reachable, covered) || exhaustive(cases, reachable, covered | arm) }
+refinement_excludes_other: theorem (cases: u8, selected: u8, other: u8) { (other & u8(7)) == (selected & u8(7)) || !reachable_case(cases, single(selected), other) }
+unreachable_case_not_required: theorem (cases: u8, reachable: u8, value: u8) { member(reachable, value) || !reachable_case(cases, reachable, value) }
+
+// The exhaustiveness of a match is the absence of a counterexample: the
+// procedure and the witness it reports agree (properties 1 and 2 of
+// 35-pattern-analysis.md section 12), stated with the first uncovered
+// reachable case as the witness.
+first_counterexample: (cases: u8, reachable: u8, covered: u8): u8 {
+  found: Bool = false
+  witness: u8 = 0
+  i: u8 = 0
+  while i < u8(8) {
+    witness = (!found && counterexample(cases, reachable, covered, i)) ? { i } | { witness }
+    found = found || counterexample(cases, reachable, covered, i)
+    i = i + u8(1)
+  }
+  witness
+}
+
+exhaustive_or_counterexample: theorem (cases: u8, reachable: u8, covered: u8) { exhaustive(cases, reachable, covered) || counterexample(cases, reachable, covered, first_counterexample(cases, reachable, covered)) }
+
+// --- Constructor arms (ArmPattern, Matches) ---
+
+// An arm pattern: the wildcard, or one constructor.
+Pattern: type = struct { any: Bool, ctor: u8 }
+
+any_pattern: (): Pattern = Pattern { any: true, ctor: u8(0) }
+ctor: (c: u8): Pattern = Pattern { any: false, ctor: c }
+
+// Matches: the wildcard matches every value; a constructor arm its constructor.
+matches: (p: Pattern, value: u8): Bool = p.any || value == p.ctor
+
+// constructor_match_introduces_refinement: entering a constructor arm
+// establishes the constructor equality.
+constructor_match_introduces_refinement: theorem (c: u8, value: u8) { !matches(ctor(c), value) || value == c }
+
+// excluded_constructor_arm_is_unreachable: an arm for a constructor the
+// refinement excludes matches no reachable value.
+excluded_constructor_arm_is_unreachable: theorem (reachable: u8, c: u8, value: u8) { !(!member(reachable, c) && member(reachable, value) && matches(ctor(c & u8(7)), value & u8(7))) }
+
+wildcard_matches: theorem (value: u8) { matches(any_pattern(), value) }
+
+main: (): i32 = 0

@@ -17,6 +17,9 @@ package compiler
 // moves through decodable commands toward the smallest variant payloads.
 
 import (
+	"fmt"
+	"reflect"
+
 	"github.com/SCKelemen/oak/ast"
 )
 
@@ -25,7 +28,103 @@ var commandScalars = map[string]uint64{"u8": 255, "u16": 65535, "u32": 429496729
 
 type commandField struct {
 	name string // "" for a bare scalar payload
-	typ  string
+	typ  string // the declared type: a carrier scalar or a refinement of u8/u16
+	base string // the carrier scalar the field's word holds (typ, or the refinement's base)
+	// refinement is the declaration when typ refines base: its predicate
+	// over `value` is inlined by the generator (which scans the base range
+	// for a value it admits) and the decoder (which refuses a word it
+	// rejects), and `typ(v)` constructs the value (docs/spec/20-types.md
+	// section 12; docs/spec/112-protocols.md section 1).
+	refinement *ast.ADTType
+}
+
+// carrierScalar resolves a payload or field type name to the scalar its
+// carrier word holds: the name itself, or the base of a refinement of u8 or
+// u16. A u32 base is refused: the generator scans the base range for an
+// admitted value, which u32 makes unbounded in practice.
+func (d *deriver) carrierScalar(name string) (field commandField, ok bool) {
+	if _, scalar := commandScalars[name]; scalar {
+		return commandField{typ: name, base: name}, true
+	}
+	decl := d.types[name]
+	if base := refinementBase(decl); base == "u8" || base == "u16" {
+		return commandField{typ: name, base: base, refinement: decl}, true
+	}
+	return commandField{}, false
+}
+
+// admits is the refinement's predicate with every `value` replaced by a
+// freshly made candidate expression, or nil for an unrefined field. The
+// candidate is made per occurrence, so no synthesized node is shared or
+// copied (the parsed predicate itself is copied once).
+func (f commandField) admits(candidate func() ast.Expression) ast.Expression {
+	if f.refinement == nil {
+		return nil
+	}
+	return substituteIdentifier(f.refinement.Refinement, "value", candidate)
+}
+
+// construct is the field's value from its base: `Name(base)` for a
+// refinement, the base itself otherwise.
+func (f commandField) construct(s *synth, base ast.Expression) ast.Expression {
+	if f.refinement == nil {
+		return base
+	}
+	return s.call(f.typ, base)
+}
+
+// substituteIdentifier is a copy of expr with every occurrence of the
+// variable `name` replaced by a value `with` makes for that occurrence.
+// Unlike rewriteExpressions it does not descend into what it inserts (the
+// carrier field `command.value` names a field, not the variable, and would
+// otherwise be substituted without end), and it leaves the field name of a
+// dotted access alone for the same reason.
+func substituteIdentifier(expr ast.Expression, name string, with func() ast.Expression) ast.Expression {
+	if id, isIdent := expr.(*ast.Identifier); isIdent {
+		if id.Value == name {
+			return with()
+		}
+		return cloneExpression(expr)
+	}
+	clone := cloneExpression(expr)
+	substituteValue(reflect.ValueOf(clone), name, with)
+	return clone
+}
+
+func substituteValue(v reflect.Value, name string, with func() ast.Expression) {
+	switch v.Kind() {
+	case reflect.Ptr:
+		if v.IsNil() {
+			return
+		}
+		if access, isAccess := v.Interface().(*ast.IndexExpression); isAccess && access.Dot {
+			// `x.field`: the field name is not a variable.
+			substituteValue(reflect.ValueOf(&access.Left).Elem(), name, with)
+			return
+		}
+		substituteValue(v.Elem(), name, with)
+	case reflect.Interface:
+		if v.IsNil() {
+			return
+		}
+		if v.Type() == expressionType && v.CanSet() {
+			if id, isIdent := v.Interface().(*ast.Identifier); isIdent && id.Value == name {
+				v.Set(reflect.ValueOf(with()))
+				return // never into the replacement
+			}
+		}
+		substituteValue(v.Elem(), name, with)
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if v.Field(i).CanSet() {
+				substituteValue(v.Field(i), name, with)
+			}
+		}
+	case reflect.Slice:
+		for i := 0; i < v.Len(); i++ {
+			substituteValue(v.Index(i), name, with)
+		}
+	}
 }
 
 type commandVariant struct {
@@ -120,8 +219,8 @@ func (d *deriver) commandVariants(kind, typeName string, decl *ast.ADTType, node
 			if !ok {
 				return unsupported("variant %s has a payload the generator cannot carry", v.name)
 			}
-			if _, scalar := commandScalars[ident.Value]; scalar {
-				v.fields = []commandField{{"", ident.Value}}
+			if field, scalar := d.carrierScalar(ident.Value); scalar {
+				v.fields = []commandField{field}
 			} else {
 				payload := d.types[ident.Value]
 				if payload == nil || len(payload.TypeParams) != 0 {
@@ -137,10 +236,12 @@ func (d *deriver) commandVariants(kind, typeName string, decl *ast.ADTType, node
 					if !ok {
 						return unsupported("field %s.%s has a type the carrier cannot hold", v.record, field.Name)
 					}
-					if _, scalar := commandScalars[typ.Value]; !scalar {
-						return unsupported("field %s.%s has type %s; carrier scalars are u8, u16, u32 and Bool", v.record, field.Name, typ.Value)
+					carrier, scalar := d.carrierScalar(typ.Value)
+					if !scalar {
+						return unsupported("field %s.%s has type %s; carrier scalars are u8, u16, u32 and Bool, or a refinement of u8 or u16", v.record, field.Name, typ.Value)
 					}
-					v.fields = append(v.fields, commandField{field.Name, typ.Value})
+					carrier.name = field.Name
+					v.fields = append(v.fields, carrier)
 				}
 			}
 		}
@@ -211,10 +312,25 @@ func (d *deriver) testGenerateHelper(name, typeName string, decl *ast.ADTType, n
 	for i := len(variants) - 1; i >= 0; i-- {
 		v := variants[i]
 		fields := make([]ast.Expression, 0, len(v.fields))
-		for _, field := range v.fields {
-			fields = append(fields, scalarGenerate(s, field.typ))
+		var leading []ast.Statement
+		for j, field := range v.fields {
+			local := fmt.Sprintf("field%d", j)
+			leading = append(leading, s.decl(local, s.id(field.base), scalarGenerate(s, field.base)))
+			if field.refinement != nil {
+				// Scan the base range from the drawn value, wrapping, to the
+				// first value the refinement admits: deterministic, and a
+				// zero tape lands on the smallest admitted value. A
+				// refinement that admits nothing traps at the construction.
+				tries := fmt.Sprintf("tries%d", j)
+				leading = append(leading,
+					s.decl(tries, s.id("u32"), s.u32(0)),
+					s.loop(s.and(s.not(field.admits(func() ast.Expression { return s.id(local) })), s.lt(s.id(tries), s.u32(int64(commandScalars[field.base])+1))),
+						s.assign(local, s.add(s.id(local), s.conv(field.base, s.intLit(1)))),
+						s.assign(tries, s.add(s.id(tries), s.u32(1)))))
+			}
+			fields = append(fields, field.construct(s, s.id(local)))
 		}
-		value := s.block(s.expr(v.construct(s, typeName, fields)))
+		value := s.block(append(leading, s.expr(v.construct(s, typeName, fields)))...)
 		if chain == nil {
 			chain = value
 			continue
@@ -246,7 +362,7 @@ func (d *deriver) testEncodeHelper(name, typeName string, decl *ast.ADTType, nod
 			if v.record != "" {
 				access = s.field(s.id("x"), field.name)
 			}
-			words[j] = scalarToWord(s, field.typ, access)
+			words[j] = scalarToWord(s, field.base, access)
 		}
 		arms = append(arms, s.arm(v.name, binding, s.record("TestCommand", s.set("kind", s.u32(int64(i))), s.set("target", words[0]), s.set("value", words[1]))))
 	}
@@ -270,10 +386,16 @@ func (d *deriver) testDecodeHelper(name, typeName string, decl *ast.ADTType, nod
 		var fields []ast.Expression
 		for j, word := range words {
 			if j < len(v.fields) {
-				if bound := commandScalars[v.fields[j].typ]; bound < 4294967295 {
+				field := v.fields[j]
+				if bound := commandScalars[field.base]; bound < 4294967295 {
 					conditions = append(conditions, s.le(word(), s.u32(int64(bound))))
 				}
-				fields = append(fields, scalarFromWord(s, v.fields[j].typ, word()))
+				if admits := field.admits(func() ast.Expression { return scalarFromWord(s, field.base, word()) }); admits != nil {
+					// A word the refinement rejects decodes to None, never to
+					// a trapping construction.
+					conditions = append(conditions, admits)
+				}
+				fields = append(fields, field.construct(s, scalarFromWord(s, field.base, word())))
 			} else {
 				conditions = append(conditions, s.eq(word(), s.u32(0)))
 			}

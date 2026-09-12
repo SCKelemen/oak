@@ -314,7 +314,7 @@ constants; `lsl` by a constant as multiplication; the `wN` write/read masks
 are transparent modulo 32), **mismatch** when any witness input disagrees
 (a hard error naming the input and both values — a wrong body never
 compiles), **proven at the bit level** when, beyond the linear form, both sides
-bit-blast (`asm/blast.go`, a small ROBDD with interleaved variable order)
+bit-blast (`asm/blast.go`, a small ROBDD with interleaved variable order, retried with each root parameter's bits in a block of their own when the first order exceeds the node budget)
 to the same canonical decision diagram for every result bit — the complete
 decision for the term language (`and`/`orr`/`eor`, shifts by constants and
 by registers as a mux barrel, `add`/`sub` as a ripple-carry chain), with a

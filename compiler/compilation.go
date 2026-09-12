@@ -366,6 +366,10 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		if err := lowerQualifiedVariants(tree.Root); err != nil {
 			return nil, err
 		}
+		// Capturing literals in the one justified shape are specialized
+		// away before checking (compiler/closures.go); every other capture
+		// reaches the checker and its OAK-T0401.
+		specializeCapturingLiterals(tree.Root)
 		if comp.simulation {
 			if err := checkSimulation(tree.Root, comp.simulationBindings); err != nil {
 				return nil, err

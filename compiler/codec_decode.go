@@ -110,9 +110,10 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 	// validated literals or pass Unicode decoding. On failure, scan the full
 	// input to retain InvalidEncoding precedence even beyond the first
 	// syntax error — positioned at the first ill-formed byte. A view field's
-	// bytes are handed back unvalidated by the scan, so a borrowed record
-	// also checks the input on success. The positioned root does the work;
-	// the plain root drops the offset.
+	// bytes are a string token the tokenizer validated (json_token_full
+	// checks every run with a byte above ASCII), so a borrowed record needs
+	// no pass on success either. The positioned root does the work; the
+	// plain root drops the offset.
 	loc := newSynth("codec:" + locateName)
 	locateResult := loc.app("Result", loc.id(typ), loc.id("JsonFault"))
 	readResultType := decodedResult(loc, typ)
@@ -123,10 +124,6 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 	if region != "" {
 		locateResult = loc.app("Result", loc.app(typ, loc.id(region)), loc.id("JsonFault"))
 		readResultType = loc.app("Result", loc.app(codecName("decoded", typ), loc.id(region)), loc.id("JsonFault"))
-		success = loc.block(loc.expr(loc.cond(
-			loc.call("json_valid_utf8", loc.id("src")),
-			loc.block(loc.expr(loc.variant("Ok", loc.field(loc.id("item"), "value")))),
-			loc.block(loc.expr(encodingFault(loc))))))
 	}
 	locateFn := loc.fnRegions(locateName, regions,
 		[]*ast.FunctionParameter{loc.param("src", srcType(loc))},
@@ -259,9 +256,12 @@ func integerReader(s *synth, typ string) []ast.Statement {
 	// one call, docs/spec/71-codecs.md section 19).
 	return []ast.Statement{
 		s.decl("raw", s.id("JsonIntegerScan"), s.call("json_scan_integer", s.id("src"), s.id("offset"))),
-		s.decl("negative", s.id("Bool"), s.eq(s.field(s.id("raw"), "status"), s.u32(1))),
-		s.expr(s.cond(s.gt(s.field(s.id("raw"), "status"), s.u32(1)),
-			s.block(s.expr(faultCode(s, s.sub(s.field(s.id("raw"), "status"), s.u32(1)), valueStart(s, s.id("offset"))))),
+		// The status's low byte: 0/1 for positive/negative, or the error code
+		// plus one; the bits above carry the terminator the scanner saw.
+		s.decl("code", s.id("u32"), s.infix(s.field(s.id("raw"), "status"), "&", s.u32(255))),
+		s.decl("negative", s.id("Bool"), s.eq(s.id("code"), s.u32(1))),
+		s.expr(s.cond(s.gt(s.id("code"), s.u32(1)),
+			s.block(s.expr(faultCode(s, s.sub(s.id("code"), s.u32(1)), valueStart(s, s.id("offset"))))),
 			success)),
 	}
 }
@@ -341,7 +341,8 @@ func scalarDecode(s *synth, typ string, from ast.Expression, store func(ast.Expr
 		bits, _ := strconv.Atoi(typ[1:])
 		magnitude := func() ast.Expression { return s.field(s.id("raw"), "magnitude") }
 		next := func() ast.Expression { return s.field(s.id("raw"), "next") }
-		negative := func() ast.Expression { return s.eq(s.field(s.id("raw"), "status"), s.u32(1)) }
+		code := func() ast.Expression { return s.infix(s.field(s.id("raw"), "status"), "&", s.u32(255)) }
+		negative := func() ast.Expression { return s.eq(code(), s.u32(1)) }
 		var checked ast.Expression
 		if codecPrimitive(typ) == "u64" {
 			maximum := ^uint64(0)
@@ -371,9 +372,12 @@ func scalarDecode(s *synth, typ string, from ast.Expression, store func(ast.Expr
 		}
 		return []ast.Statement{
 			s.decl("raw", s.id("JsonIntegerScan"), s.call("json_scan_integer", s.id("src"), from)),
-			// A scanner status above one is json_decode_error_code + 1.
-			s.expr(s.cond(s.gt(s.field(s.id("raw"), "status"), s.u32(1)),
-				s.block(s.assign("status", s.sub(s.field(s.id("raw"), "status"), s.u32(1))), s.assign("fault_at", valueStart(s, from))),
+			// The terminator the scanner saw, for the separator step: bit 0
+			// known, the byte above it.
+			s.assign("term", s.infix(s.field(s.id("raw"), "status"), ">>", s.u32(9))),
+			// The status's low byte above one is json_decode_error_code + 1.
+			s.expr(s.cond(s.gt(code(), s.u32(1)),
+				s.block(s.assign("status", s.sub(code(), s.u32(1))), s.assign("fault_at", valueStart(s, from))),
 				checked)),
 		}
 	case "bool":
@@ -492,7 +496,10 @@ func recordReader(s *synth, typ, keyName string, fields []codecField, decodedNam
 		s.decl("at", s.id("u32"), s.field(s.id("opening"), "end")),
 		s.decl("status", s.id("u32"), s.intLit(0)),
 		s.decl("fault_at", s.id("u32"), s.intLit(0)),
-		s.decl("done", s.id("Bool"), s.boolean(false)))
+		s.decl("done", s.id("Bool"), s.boolean(false)),
+		// The byte that ended the last scalar, when the scanner saw it:
+		// bit 0 known, the byte above. Zero when unknown.
+		s.decl("term", s.id("u32"), s.intLit(0)))
 	for i := range fields {
 		inner = append(inner, s.decl(fmt.Sprintf("seen%d", i), s.id("Bool"), s.boolean(false)))
 	}
@@ -602,28 +609,45 @@ func recordReader(s *synth, typ, keyName string, fields []codecField, decodedNam
 			// and a closing bracket means too few. One byte under its guard,
 			// no token record; every fault is positioned at the byte read.
 			sepEnd := func() ast.Expression { return s.add(s.id("separator_at"), s.u32(1)) }
-			afterElement := []ast.Statement{
-				s.decl("separator_at", s.id("u32"), s.call("json_skip_space", s.id("src"), at())),
-				s.expr(s.cond(s.lt(s.id("separator_at"), srcLen()),
-					s.block(
-						s.decl("unit", s.id("u8"), s.index(s.id("src"), s.id("separator_at"))),
-						s.expr(s.cond(s.eq(s.id("index"), s.u32(field.length)),
-							s.block(s.expr(s.cond(s.eq(s.id("unit"), s.u8(93)), s.block(s.assign("at", sepEnd())),
-								s.cond(s.eq(s.id("unit"), s.u8(44)), s.block(
-									s.decl("extra", s.id("JsonToken"), s.call("json_token", s.id("src"), sepEnd())),
-									s.expr(s.cond(s.or(s.le(s.field(s.id("extra"), "kind"), s.u32(1)), s.eq(s.field(s.id("extra"), "kind"), s.u32(12))),
-										setStatus(2, s.field(s.id("extra"), "start")), setStatus(8, s.field(s.id("extra"), "start"))))),
-									setStatus(2, s.id("separator_at")))))),
-							s.cond(s.eq(s.id("unit"), s.u8(93)), setStatus(8, s.id("separator_at")),
-								s.cond(s.eq(s.id("unit"), s.u8(44)), s.block(s.assign("at", sepEnd())), setStatus(2, s.id("separator_at"))))))),
-					setStatus(2, s.id("separator_at")))),
+			termIs := func(b int64) ast.Expression {
+				return s.and(s.ne(s.infix(s.id("term"), "&", s.u32(1)), s.u32(0)), s.eq(s.infix(s.id("term"), ">>", s.u32(1)), s.u32(b)))
 			}
-			// Each element decodes in place when it is a scalar; the per-type
-			// reader otherwise.
-			// A scalar element scans from the lookahead position, which the
-			// closing-bracket test has already moved past the whitespace.
+			// Too many elements after a comma: what follows decides between
+			// InvalidSyntax and LengthMismatch.
+			extra := func(after ast.Expression) ast.Expression {
+				return s.block(
+					s.decl("extra", s.id("JsonToken"), s.call("json_token", s.id("src"), after)),
+					s.expr(s.cond(s.or(s.le(s.field(s.id("extra"), "kind"), s.u32(1)), s.eq(s.field(s.id("extra"), "kind"), s.u32(12))),
+						setStatus(2, s.field(s.id("extra"), "start")), setStatus(8, s.field(s.id("extra"), "start")))))
+			}
+			// The separator read from the input, one byte under its guard: at
+			// the declared length a closing bracket ends the array and a comma
+			// means too many elements; before it a comma continues and a
+			// closing bracket means too few.
+			atLength := s.cond(s.eq(s.id("unit"), s.u8(93)), s.block(s.assign("at", sepEnd())),
+				s.cond(s.eq(s.id("unit"), s.u8(44)), extra(sepEnd()), setStatus(2, s.id("separator_at"))))
+			beforeLength := s.cond(s.eq(s.id("unit"), s.u8(93)), setStatus(8, s.id("separator_at")),
+				s.cond(s.eq(s.id("unit"), s.u8(44)), s.block(s.assign("at", sepEnd())), setStatus(2, s.id("separator_at"))))
+			withUnit := s.block(
+				s.decl("unit", s.id("u8"), s.index(s.id("src"), s.id("separator_at"))),
+				s.expr(s.cond(s.eq(s.id("index"), s.u32(field.length)), s.block(s.expr(atLength)), beforeLength)))
+			skipSeparator := s.block(
+				s.assign("direct", s.boolean(false)),
+				s.decl("separator_at", s.id("u32"), s.call("json_skip_space", s.id("src"), at())),
+				s.expr(s.cond(s.lt(s.id("separator_at"), srcLen()), withUnit, setStatus(2, s.id("separator_at")))))
+			// The separator the scanner already saw needs neither skip nor
+			// load: a comma continues and the next element scans from the
+			// byte after it; a closing bracket ends.
+			commaKnown := s.cond(s.eq(s.id("index"), s.u32(field.length)), extra(s.add(at(), s.u32(1))),
+				s.block(s.assign("at", s.add(at(), s.u32(1))), s.assign("direct", s.boolean(true))))
+			bracketKnown := s.cond(s.eq(s.id("index"), s.u32(field.length)), s.block(s.assign("at", s.add(at(), s.u32(1)))), setStatus(8, at()))
+			afterElement := []ast.Statement{
+				s.expr(s.cond(termIs(44), commaKnown, s.cond(termIs(93), bracketKnown, skipSeparator))),
+			}
+			// A scalar element scans from `at`, which the closing-bracket test
+			// or the comma the scanner saw has moved to the element.
 			var elementDecode ast.Expression
-			if inline := scalarDecode(s, field.typ, s.id("lookahead"), func(value ast.Expression) ast.Statement {
+			if inline := scalarDecode(s, field.typ, at(), func(value ast.Expression) ast.Statement {
 				return s.store(s.index(fieldOf(field.name), s.id("index")), value)
 			}, s.assign("index", s.add(s.id("index"), s.u32(1)))); inline != nil {
 				elementDecode = s.block(inline...)
@@ -646,11 +670,24 @@ func recordReader(s *synth, typ, keyName string, fields []codecField, decodedNam
 					s.block(
 						s.assign("at", s.add(s.id("array_at"), s.u32(1))),
 						s.decl("index", s.id("u32"), s.intLit(0)),
+						// After a comma the scanner saw, the element scans from the
+						// byte after it: the scanner skips whitespace itself, and a
+						// closing bracket there fails as InvalidSyntax at that byte
+						// as before. Otherwise the closing bracket is looked for past
+						// the whitespace first.
+						s.decl("direct", s.id("Bool"), s.boolean(false)),
 						s.loop(s.and(s.lt(s.id("index"), s.u32(field.length)), s.eq(status(), s.u32(0))),
-							s.decl("lookahead", s.id("u32"), s.call("json_skip_space", s.id("src"), at())),
-							s.expr(s.cond(s.and(s.lt(s.id("lookahead"), srcLen()), s.eq(s.index(s.id("src"), s.id("lookahead")), s.u8(93))),
-								s.block(s.assign("status", s.cond(s.eq(s.id("index"), s.u32(0)), s.u32(8), s.u32(2))), s.assign("fault_at", s.id("lookahead"))),
-								elementDecode)),
+							s.assign("term", s.u32(0)),
+							// Straight to the scanner only when the byte after the comma
+							// starts a number; a closing bracket or whitespace there takes
+							// the lookahead, so `[1,]` stays InvalidSyntax at the bracket.
+							s.expr(s.cond(s.or(s.not(s.id("direct")), s.not(s.and(s.lt(at(), srcLen()),
+								s.or(s.call("json_digit", s.index(s.id("src"), at())), s.eq(s.index(s.id("src"), at()), s.u8(45)))))), s.block(
+								s.decl("lookahead", s.id("u32"), s.call("json_skip_space", s.id("src"), at())),
+								s.expr(s.cond(s.and(s.lt(s.id("lookahead"), srcLen()), s.eq(s.index(s.id("src"), s.id("lookahead")), s.u8(93))),
+									s.block(s.assign("status", s.cond(s.eq(s.id("index"), s.u32(0)), s.u32(8), s.u32(2))), s.assign("fault_at", s.id("lookahead"))),
+									s.block(s.assign("at", s.id("lookahead")))))), nil)),
+							s.expr(s.cond(s.eq(status(), s.u32(0)), elementDecode, nil)),
 							s.expr(s.cond(s.eq(status(), s.u32(0)), s.block(afterElement...), nil))),
 						s.assign(seen, s.eq(status(), s.u32(0)))))))
 		}
@@ -662,7 +699,10 @@ func recordReader(s *synth, typ, keyName string, fields []codecField, decodedNam
 	// After a value: a comma continues, a closing brace ends, anything else
 	// (the end of the input included) is InvalidSyntax at that byte — one
 	// byte read under its own guard, no token record.
-	afterValue := []ast.Statement{
+	termIs := func(b int64) ast.Expression {
+		return s.and(s.ne(s.infix(s.id("term"), "&", s.u32(1)), s.u32(0)), s.eq(s.infix(s.id("term"), ">>", s.u32(1)), s.u32(b)))
+	}
+	afterValueSkip := s.block(
 		s.decl("separator_at", s.id("u32"), s.call("json_skip_space", s.id("src"), at())),
 		s.expr(s.cond(s.lt(s.id("separator_at"), srcLen()),
 			s.block(
@@ -670,10 +710,16 @@ func recordReader(s *synth, typ, keyName string, fields []codecField, decodedNam
 				s.expr(s.cond(s.eq(s.id("unit"), s.u8(44)), s.block(s.assign("at", s.add(s.id("separator_at"), s.u32(1)))),
 					s.cond(s.eq(s.id("unit"), s.u8(125)), s.block(s.assign("done", s.boolean(true)), s.assign("at", s.add(s.id("separator_at"), s.u32(1)))),
 						setStatus(2, s.id("separator_at")))))),
-			setStatus(2, s.id("separator_at")))),
+			setStatus(2, s.id("separator_at")))))
+	// The separator a scalar's scanner already saw needs no skip and no load.
+	afterValue := []ast.Statement{
+		s.expr(s.cond(termIs(44), s.block(s.assign("at", s.add(at(), s.u32(1)))),
+			s.cond(termIs(125), s.block(s.assign("done", s.boolean(true)), s.assign("at", s.add(at(), s.u32(1)))),
+				afterValueSkip))),
 	}
 
 	inner = append(inner, s.loop(s.and(s.not(s.id("done")), s.eq(status(), s.u32(0))),
+		s.assign("term", s.u32(0)),
 		s.assign("at", s.call("json_skip_space", s.id("src"), at())),
 		s.decl("key", s.id("JsonToken"), nil),
 		s.decl("field_index", s.id("u32"), s.intLit(0)),
