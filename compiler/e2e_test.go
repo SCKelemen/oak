@@ -559,3 +559,14 @@ main: (): i32 {
 		t.Fatal("out-of-bounds store must trap, not return normally")
 	}
 }
+
+// skipInShort marks the two dozen tests that dominate the package's wall
+// time — conformance corpora, differential sweeps, the QEMU boards — so
+// `go test -short ./...` fits the default ten-minute limit on a laptop
+// while CI's sharded full run (.github/workflows/ci.yml) keeps every test.
+func skipInShort(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("long test; run without -short")
+	}
+}

@@ -1166,6 +1166,10 @@ minute limit on a laptop, so run the suite with an explicit timeout:
 go test -timeout 30m ./...
 ```
 
+For a quick local pass, `go test -short ./...` skips the two dozen conformance
+corpora, differential sweeps, and QEMU boards that dominate the wall time
+(`skipInShort` in `compiler/e2e_test.go`) and fits the default limit.
+
 CI shards the same suite by test name (`.github/workflows/ci.yml`); the
 `packages` shard is everything but `./compiler`, and the `e2e-*` shards
 split `./compiler` by `-run` pattern.

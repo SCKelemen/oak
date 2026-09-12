@@ -183,6 +183,7 @@ main: (): i32 {
 }
 
 func TestE2EJsonFastBytePack(t *testing.T) {
+	skipInShort(t)
 	var source strings.Builder
 	source.WriteString("import(std)\n")
 	for _, bits := range []int{32, 64} {

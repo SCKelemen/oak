@@ -178,6 +178,7 @@ main: (): i32 {
 }
 
 func TestE2EStdlibSpliceRejectsCorruptSource(t *testing.T) {
+	skipInShort(t)
 	for _, family := range []string{"slist", "dlist"} {
 		for _, next := range []uint32{1, 99} {
 			src := transferTestPrelude + fmt.Sprintf(`

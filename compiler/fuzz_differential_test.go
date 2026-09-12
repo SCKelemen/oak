@@ -286,6 +286,7 @@ func fuzzProgram(seed int64) string {
 }
 
 func TestDifferentialGeneratedPrograms(t *testing.T) {
+	skipInShort(t)
 	count := 24
 	if env := os.Getenv("OAK_FUZZ_PROGRAMS"); env != "" {
 		if n, err := strconv.Atoi(env); err == nil && n > 0 {
