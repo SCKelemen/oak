@@ -263,7 +263,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.emitStringEquality(tc)
 	cg.emitComparisonADT()
 	cg.emitAssertHelper()
-	cg.emitUtf8Helper()
+	cg.emitUtf8Helper(program)
 	cg.emitIntrinsicHelpers(program)
 	cg.emitArgvHelper(program)
 	cg.emitSimdSupport(program)
@@ -2193,6 +2193,20 @@ func (cg *CodeGenerator) emitFieldAccessorHelpers() {
 	cg.write("\n")
 }
 
+// programDefinesFunction reports whether the merged program declares a
+// function under the given (package-internal) name.
+func programDefinesFunction(program *ast.Program, name string) bool {
+	if program == nil {
+		return false
+	}
+	for _, stmt := range program.Statements {
+		if fn, isFn := stmt.(*ast.FunctionStatement); isFn && fn.Name != nil && fn.Name.Value == name {
+			return true
+		}
+	}
+	return false
+}
+
 // runtimeBuiltins maps Oak builtins to the C runtime helpers emitted with
 // every compilation unit.
 var runtimeBuiltins = map[string]string{
@@ -2200,14 +2214,26 @@ var runtimeBuiltins = map[string]string{
 	"is_valid_utf8": "oak_is_valid_utf8", // 70-strings: Oak.Utf8Validity brackets
 }
 
-// emitUtf8Helper emits the zero-allocation UTF-8 validator: a C
-// transliteration of the well-formed sequences proven in Oak.Utf8Validity
-// (the third projection of one fact, after the Lean model and the Go
-// ingestion validator). Bounds checks use u64 arithmetic so no view length
-// can wrap them; the helper reads only v.len bytes and fails closed.
-func (cg *CodeGenerator) emitUtf8Helper() {
+// emitUtf8Helper emits the zero-allocation UTF-8 validator behind
+// is_valid_utf8 and str_from_utf8. In a module build the loader has pulled
+// in the standard library's utf8 package whenever the program reaches
+// either (compiler/modules.go reachesUtf8Builtin), and the helper is a call
+// to the compiled utf8.valid — the vector program Oak.Utf8Blocks.program_valid
+// proves decides Oak.Utf8Validity.Valid (docs/spec/70-strings.md section 8,
+// 93-simd.md section 1.5). A bare source build has no packages, so it keeps
+// the C transliteration of the well-formed sequences of Oak.Utf8Validity (the
+// third projection of one fact, after the Lean model and the Go ingestion
+// validator). Bounds checks use u64 arithmetic so no view length can wrap
+// them; the helper reads only v.len bytes and fails closed.
+func (cg *CodeGenerator) emitUtf8Helper(program *ast.Program) {
 	viewType := cg.emitViewType("u8")
 	cg.write("/* core_slice: view construction as a brace initializer (declaration\n   position); field order matches the view/span structs {base, len} */\n#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }\n\n/* bounds-checked owned-array indexing: out-of-range traps, never UB */\nstatic inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }\n#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])\n/* checked index in lvalue position: pool[ oak_lv_idx(i, len) ].field = v */\nstatic inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }\n\n/* checked shifts: a count reaching the operand width traps, never UB\n   (docs/spec/10-syntax.md section 3b); constant counts fold the check away */\n#define OAK_SHIFT_HELPERS(T, W) \\\n  static inline T oak_shl_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v << n); } \\\n  static inline T oak_shr_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v >> n); }\nOAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u) OAK_SHIFT_HELPERS(u64, 64u)\n\n/* total fixed-width arithmetic (docs/spec/20-types.md section 11.1, 90-backend.md\n   section 7): results wrap mod 2^N, computed in unsigned space so no C\n   promotion overflows; signed results come back through a union pun (defined\n   since C99 TC3). Division by zero traps; MIN / -1 wraps. Never UB. */\n#define OAK_ARITH_U(T) \\\n  static inline T oak_add_##T(T a, T b) { return (T)((u64)a + (u64)b); } \\\n  static inline T oak_sub_##T(T a, T b) { return (T)((u64)a - (u64)b); } \\\n  static inline T oak_neg_##T(T a) { return (T)(0u - (u64)a); } \\\n  static inline T oak_mul_##T(T a, T b) { return (T)((u64)a * (u64)b); } \\\n  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a / b); } \\\n  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a % b); }\n#define OAK_ARITH_I(T, U, MIN) \\\n  static inline T oak_pun_##T(U bits) { union { U from; T to; } pun; pun.from = bits; return pun.to; } \\\n  static inline T oak_add_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a + (u64)(U)b)); } \\\n  static inline T oak_sub_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a - (u64)(U)b)); } \\\n  static inline T oak_neg_##T(T a) { return oak_pun_##T((U)(0u - (u64)(U)a)); } \\\n  static inline T oak_mul_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a * (u64)(U)b)); } \\\n  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (a == MIN && b == -1) { return a; } return (T)(a / b); } \\\n  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (b == -1) { return 0; } return (T)(a % b); }\nOAK_ARITH_U(u8) OAK_ARITH_U(u16) OAK_ARITH_U(u32) OAK_ARITH_U(u64)\nOAK_ARITH_I(i8, u8, INT8_MIN) OAK_ARITH_I(i16, u16, INT16_MIN) OAK_ARITH_I(i32, u32, INT32_MIN) OAK_ARITH_I(i64, u64, INT64_MIN)\n#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)\n\n/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */\n")
+	if programDefinesFunction(program, "utf8__valid") {
+		cg.write("/* is_valid_utf8: lowered to the standard library's vector validator utf8.valid\n   (stdlib/utf8.oak), which Oak.Utf8Blocks.program_valid proves decides Oak.Utf8Validity.Valid */\n")
+		cg.write(fmt.Sprintf("Bool %s( %s bytes );\n", cg.cFunctionName("utf8__valid"), viewType))
+		cg.write(fmt.Sprintf("static inline Bool oak_is_valid_utf8(%s v) { return %s( v ); }\n\n", viewType, cg.cFunctionName("utf8__valid")))
+		return
+	}
 	cg.write(fmt.Sprintf("static Bool oak_is_valid_utf8(%s v) {\n", viewType))
 	cg.write("  u64 i = 0;\n")
 	cg.write("  u64 n = (u64)v.len;\n")

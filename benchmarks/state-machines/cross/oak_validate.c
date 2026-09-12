@@ -1,5 +1,6 @@
-// Oak: the stdlib SIMD validator utf8.valid, the protocol-declared machine
-// (utf8_run), and the scalar is_valid_utf8 builtin, all as emitted by the
+// Oak: the stdlib SIMD validator utf8.valid (also what the is_valid_utf8
+// builtin lowers to), the protocol-declared machine (utf8_run), and a
+// scalar Table 3-7 transliteration written in Oak, all as emitted by the
 // C backend into ../utf8_protocol.c. Build: cc -std=c11 -O2 -o oak_validate oak_validate.c
 #define main oak_program_main
 #include "../utf8_protocol.c"
@@ -19,7 +20,7 @@ int main(void) {
     }
     REPORT("Oak stdlib utf8.valid (SIMD, Oak source)", best_simd, n);
     REPORT("Oak protocol utf8_run (shift DFA)", best_run, n);
-    REPORT("Oak builtin is_valid_utf8 (scalar)", best_builtin, n);
+    REPORT("Oak scalar Table 3-7 (Oak source)", best_builtin, n);
     if (!ok_run || !ok_builtin || !ok_simd) { printf("MISMATCH: input judged invalid\n"); return 1; }
     return 0;
 }

@@ -474,6 +474,7 @@ func (tc *TypeChecker) checkLibraryInvocation(expr *ast.InvocationExpression) (T
 				}
 				info.simdCalls[expr] = member
 			}
+			tc.recordVectorAccessProof(expr, member)
 		}
 		return typ, true
 	}

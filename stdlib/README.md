@@ -111,9 +111,12 @@ extraction.
 
 `utf8.valid(bytes: []u8): Bool` is the well-formedness predicate of Unicode
 Table 3-7 over Oak's portable vectors (`docs/spec/93-simd.md` §1.5): the
-Keiser and Lemire lookup-table classification, sixteen bytes a step, zero
-allocation, the same verdict as the `is_valid_utf8` builtin on every input.
-Measured at 9.6 GB/s beside the builtin's 0.35 (`benchmarks/state-machines/cross/`).
+Keiser and Lemire lookup-table classification, sixty-four bytes a step,
+zero allocation, no bounds check in its loop. The program is proved to
+accept exactly the valid streams of `Oak.Utf8Validity`
+(`Oak.Utf8Blocks.program_valid`), and the `is_valid_utf8` builtin lowers
+to it in every module build. Measured at 13.1 GB/s beside simdutf's 13.3
+(`benchmarks/state-machines/cross/`).
 
 | Function | Semantics |
 | --- | --- |

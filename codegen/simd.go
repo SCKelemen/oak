@@ -322,17 +322,28 @@ func simdHelperSource(op, vec, elem string, lanes int) string {
 		fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { r.lanes[i] = x; }\n#endif\n  return r;\n}\n", lanes)
 
 	case "load":
-		fmt.Fprintf(&b, "static inline %s oak_simd_load_%s( oak_view_%s v, u32 off ) {\n", vec, vec, elem)
-		fmt.Fprintf(&b, "  if ((u64)off + %du > (u64)v.len) { __builtin_trap(); }\n", lanes)
-		fmt.Fprintf(&b, "  %s r;\n%s\n", vec, neonGuard)
-		fmt.Fprintf(&b, "  vst1q_%s(r.lanes, vld1q_%s(v.base + off));\n#else\n", neon, neon)
-		fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { r.lanes[i] = v.base[off + (u32)i]; }\n#endif\n  return r;\n}\n", lanes)
+		// The checked helper traps past the end; the `_proven` twin is emitted
+		// only where the checker proved `off + L <= len` (Oak.Extents
+		// vector_under_*), so it carries no check.
+		for _, variant := range []string{"", "_proven"} {
+			fmt.Fprintf(&b, "static inline %s oak_simd_load_%s%s( oak_view_%s v, u32 off ) {\n", vec, vec, variant, elem)
+			if variant == "" {
+				fmt.Fprintf(&b, "  if ((u64)off + %du > (u64)v.len) { __builtin_trap(); }\n", lanes)
+			}
+			fmt.Fprintf(&b, "  %s r;\n%s\n", vec, neonGuard)
+			fmt.Fprintf(&b, "  vst1q_%s(r.lanes, vld1q_%s(v.base + off));\n#else\n", neon, neon)
+			fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { r.lanes[i] = v.base[off + (u32)i]; }\n#endif\n  return r;\n}\n", lanes)
+		}
 
 	case "store":
-		fmt.Fprintf(&b, "static inline void oak_simd_store_%s( oak_span_%s s, u32 off, %s val ) {\n", vec, elem, vec)
-		fmt.Fprintf(&b, "  if ((u64)off + %du > (u64)s.len) { __builtin_trap(); }\n", lanes)
-		fmt.Fprintf(&b, "%s\n  vst1q_%s(s.base + off, vld1q_%s(val.lanes));\n#else\n", neonGuard, neon, neon)
-		fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { s.base[off + (u32)i] = val.lanes[i]; }\n#endif\n}\n", lanes)
+		for _, variant := range []string{"", "_proven"} {
+			fmt.Fprintf(&b, "static inline void oak_simd_store_%s%s( oak_span_%s s, u32 off, %s val ) {\n", vec, variant, elem, vec)
+			if variant == "" {
+				fmt.Fprintf(&b, "  if ((u64)off + %du > (u64)s.len) { __builtin_trap(); }\n", lanes)
+			}
+			fmt.Fprintf(&b, "%s\n  vst1q_%s(s.base + off, vld1q_%s(val.lanes));\n#else\n", neonGuard, neon, neon)
+			fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { s.base[off + (u32)i] = val.lanes[i]; }\n#endif\n}\n", lanes)
+		}
 
 	case "shr":
 		// Lane-wise logical shift right; a count reaching the lane width
@@ -545,16 +556,27 @@ func simdFloatHelperSource(op, vec, elem string, lanes int) string {
 		fmt.Fprintf(&b, "  vst1q_%s(r.lanes, vdupq_n_%s(x));\n#else\n", neon, neon)
 		fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { r.lanes[i] = x; }\n#endif\n  return r;\n}\n", lanes)
 	case "load":
-		fmt.Fprintf(&b, "static inline %s oak_simd_load_%s( oak_view_%s v, u32 off ) {\n", vec, vec, elem)
-		fmt.Fprintf(&b, "  if ((u64)off + %du > (u64)v.len) { __builtin_trap(); }\n", lanes)
-		fmt.Fprintf(&b, "  %s r;\n%s\n", vec, neonGuard)
-		fmt.Fprintf(&b, "  vst1q_%s(r.lanes, vld1q_%s(v.base + off));\n#else\n", neon, neon)
-		fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { r.lanes[i] = v.base[off + (u32)i]; }\n#endif\n  return r;\n}\n", lanes)
+		// The checked helper traps past the end; the `_proven` twin is emitted
+		// only where the checker proved `off + L <= len` (Oak.Extents
+		// vector_under_*), so it carries no check.
+		for _, variant := range []string{"", "_proven"} {
+			fmt.Fprintf(&b, "static inline %s oak_simd_load_%s%s( oak_view_%s v, u32 off ) {\n", vec, vec, variant, elem)
+			if variant == "" {
+				fmt.Fprintf(&b, "  if ((u64)off + %du > (u64)v.len) { __builtin_trap(); }\n", lanes)
+			}
+			fmt.Fprintf(&b, "  %s r;\n%s\n", vec, neonGuard)
+			fmt.Fprintf(&b, "  vst1q_%s(r.lanes, vld1q_%s(v.base + off));\n#else\n", neon, neon)
+			fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { r.lanes[i] = v.base[off + (u32)i]; }\n#endif\n  return r;\n}\n", lanes)
+		}
 	case "store":
-		fmt.Fprintf(&b, "static inline void oak_simd_store_%s( oak_span_%s s, u32 off, %s val ) {\n", vec, elem, vec)
-		fmt.Fprintf(&b, "  if ((u64)off + %du > (u64)s.len) { __builtin_trap(); }\n", lanes)
-		fmt.Fprintf(&b, "%s\n  vst1q_%s(s.base + off, vld1q_%s(val.lanes));\n#else\n", neonGuard, neon, neon)
-		fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { s.base[off + (u32)i] = val.lanes[i]; }\n#endif\n}\n", lanes)
+		for _, variant := range []string{"", "_proven"} {
+			fmt.Fprintf(&b, "static inline void oak_simd_store_%s%s( oak_span_%s s, u32 off, %s val ) {\n", vec, variant, elem, vec)
+			if variant == "" {
+				fmt.Fprintf(&b, "  if ((u64)off + %du > (u64)s.len) { __builtin_trap(); }\n", lanes)
+			}
+			fmt.Fprintf(&b, "%s\n  vst1q_%s(s.base + off, vld1q_%s(val.lanes));\n#else\n", neonGuard, neon, neon)
+			fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { s.base[off + (u32)i] = val.lanes[i]; }\n#endif\n}\n", lanes)
+		}
 	case "add", "sub", "mul", "div", "min", "max":
 		neonName := map[string]string{"add": "vaddq", "sub": "vsubq", "mul": "vmulq", "div": "vdivq", "min": "vminq", "max": "vmaxq"}[op]
 		lane := map[string]string{"add": "x + y", "sub": "x - y", "mul": "x * y", "div": "x / y",

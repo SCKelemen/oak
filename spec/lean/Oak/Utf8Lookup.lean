@@ -82,11 +82,14 @@ theorem incomplete_last (b : BitVec 8) : (b - 191#8 ≠ 0#8 ∧ 191#8 ≤ b) ↔
 theorem incomplete_second (b : BitVec 8) : (b - 223#8 ≠ 0#8 ∧ 223#8 ≤ b) ↔ 0xE0#8 ≤ b := by bv_decide
 theorem incomplete_third (b : BitVec 8) : (b - 239#8 ≠ 0#8 ∧ 239#8 ≤ b) ↔ 0xF0#8 ≤ b := by bv_decide
 
-/-- The permission for two continuations: a byte at or above 0xE0 two back,
-or at or above 0xF0 three back, is what `subs(prev2, 223) | subs(prev3, 239)`
-detects. -/
+/-- The permission for two continuations: saturating subtraction of 0x60
+from the byte two back leaves its high bit set exactly when that byte is at
+or above 0xE0, and of 0x70 from the byte three back exactly when it is at or
+above 0xF0. So `subs(prev2, 96) | subs(prev3, 112)` masked to 0x80 is the
+TWO_CONTS bit of precisely the lanes a third or fourth continuation is
+permitted in, with no comparison. -/
 theorem permission (p2 p3 : BitVec 8) :
-    ((if 223 ≤ p2 then p2 - 223 else 0) ||| (if 239 ≤ p3 then p3 - 239 else 0)) ≠ 0
+    (((if 96 ≤ p2 then p2 - 96 else 0) ||| (if 112 ≤ p3 then p3 - 112 else 0)) &&& 0x80) ≠ 0
       ↔ (0xE0 ≤ p2 ∨ 0xF0 ≤ p3) := by
   bv_decide
 

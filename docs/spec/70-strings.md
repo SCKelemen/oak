@@ -90,6 +90,21 @@ without either validation or a proof/unsafe precondition.
 
 When external protocol guarantees establish validity, an explicit unsafe/proof-bearing conversion may exist.
 
+The runtime validator behind `is_valid_utf8` and `str_from_utf8` is, in
+every module build, the standard library's `utf8.valid` (`93-simd.md`
+§1.5): the Keiser–Lemire lookup validator written in Oak over the portable
+vectors, sixty-four bytes a step, at simdutf's speed. It is used on a
+proof, not a test: `Oak.Utf8Blocks.program_valid` states that the program
+as written — blocks shifted against their predecessors, the
+sixty-four-byte step, both ASCII shortcuts, the zero-padded tail — accepts
+exactly the byte lists that are `Oak.Utf8Validity.Valid`, the Table 3-7
+model this section's guarantees rest on. A program that reaches either
+spelling loads `utf8` implicitly (`compiler/modules.go`), and the runtime
+helper `oak_is_valid_utf8` is a call to the compiled validator. A bare
+source build has no packages and keeps the scalar C transliteration of
+the same brackets; the interpreter's builtin stays scalar as the
+reference the differential tests run against.
+
 ## 5. Borrowing
 
 A string view preserves the provenance/lifetime of its underlying view. Wrapping bytes as text does not extend storage lifetime.
@@ -130,7 +145,7 @@ A generic `len` or indexing operator should not hide an O(n) scan where programm
 
 ## 8. Literals
 
-Ordinary source string literals are UTF-8 semantic strings after the source decoder validates them. This is enforced: compilation validates the entire source file against the well-formed byte sequences of `Oak.Utf8Validity` (Unicode Table 3-7) before scanning, via `source.ValidateUTF8`, so no literal can carry invalid bytes into `string` values. Runtime byte validation exists as `is_valid_utf8(v: []u8) -> Bool`, a zero-allocation builtin lowered to a C helper transliterating the same brackets — one fact, three projections (Lean model, Go ingestion validator, C runtime). The standard library adds `utf8.valid` (`93-simd.md` §1.5), the same predicate over the portable vectors at SIMD speed, proved against the same table pair by pair and checked against the builtin differentially.
+Ordinary source string literals are UTF-8 semantic strings after the source decoder validates them. This is enforced: compilation validates the entire source file against the well-formed byte sequences of `Oak.Utf8Validity` (Unicode Table 3-7) before scanning, via `source.ValidateUTF8`, so no literal can carry invalid bytes into `string` values. Runtime byte validation exists as `is_valid_utf8(v: []u8) -> Bool`, a zero-allocation builtin. In a module build it lowers to the standard library's `utf8.valid` (`93-simd.md` §1.5), the same predicate over the portable vectors at simdutf's speed, whose program is proved to accept exactly the valid streams of `Oak.Utf8Validity` (`Oak.Utf8Blocks.program_valid`); a program that reaches the builtin, or `str_from_utf8`, loads `utf8` implicitly. A bare source build keeps a C helper transliterating the same brackets — one fact, three projections (Lean model, Go ingestion validator, C runtime).
 
 The compiler may emit their bytes in readonly static storage.
 

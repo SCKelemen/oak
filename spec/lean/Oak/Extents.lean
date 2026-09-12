@@ -137,6 +137,25 @@ theorem loop_exit_lower_bound (i K : Nat) (h : ¬ i < K) : K ≤ i := Nat.le_of_
     through a loop whose only write to `i` is the trailing increment). -/
 theorem increment_keeps_lower_bound (i c K0 : Nat) (h : K0 ≤ i) : K0 ≤ i + c := by omega
 
+/-- A vector access covers `L` lanes from its index. Under a min-length
+    fact `K ≤ len`, a constant index `c` with `c + L ≤ K` keeps every lane
+    `c + k`, `k < L`, in range (`recordVectorAccessProof`, constant index). -/
+theorem vector_under_min_length (c L k K len : Nat) (hfact : K ≤ len) (hc : c + L ≤ K)
+    (hk : k < L) : c + k < len := by omega
+
+/-- Under an offset bound `i + K < len`, the lanes `i + j + k`, `k < L`, are
+    in range whenever `j + L - 1 ≤ K` — the sixty-four-byte step of
+    `utf8.valid`, four loads at `off`, `off + 16`, `off + 32`, `off + 48`
+    under `off <= len(bytes) - 64` (`recordVectorAccessProof`, offset index). -/
+theorem vector_under_offset_bound (i K j L k len : Nat) (hbound : i + K < len)
+    (hL : 1 ≤ L) (hj : j + L - 1 ≤ K) (hk : k < L) : i + j + k < len := by omega
+
+/-- Under a literal bound `i < U` and a length of at least `U - 1 + j + L`,
+    the lanes `i + j + k`, `k < L`, are in range
+    (`recordVectorAccessProof`, literal bound). -/
+theorem vector_under_literal_bound (i U j L k len : Nat) (hi : i < U)
+    (hlen : U - 1 + j + L ≤ len) (hk : k < L) : i + j + k < len := by omega
+
 theorem increment_without_wrap (i c U w : Nat) (hi : i < U) (hU : U + c ≤ 2 ^ w) :
     i + c < 2 ^ w := by omega
 

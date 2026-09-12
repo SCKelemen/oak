@@ -1359,3 +1359,65 @@ func containsBreak(node ast.Node) bool {
 	}
 	return false
 }
+
+// recordVectorAccessProof marks `simd.load_E(v, index)` or
+// `simd.store_E(s, index, x)` proven when the live facts cover every one
+// of its L lanes, `index .. index + L - 1`: a constant index under a
+// min-length fact of at least `index + L` (Oak.Extents.vector_under_min_length),
+// `i + j` under an offset bound `i + K < len` with `j + L - 1 <= K`
+// (vector_under_offset_bound), or `i + j` under a literal bound `i < U`
+// with the length known to be at least `U - 1 + j + L`
+// (vector_under_literal_bound). The backend then emits the access without
+// its trap check. Anything else stays checked (docs/spec/93-simd.md
+// section 1.2: a load past the end traps, never reads).
+func (tc *TypeChecker) recordVectorAccessProof(call *ast.InvocationExpression, member string) {
+	splitAt := strings.LastIndex(member, "_")
+	if splitAt <= 0 || call == nil || len(call.Arguments) < 2 {
+		return
+	}
+	op, suffix := member[:splitAt], member[splitAt+1:]
+	if op != "load" && op != "store" {
+		return
+	}
+	var lanes int64
+	for _, shape := range SimdShapes {
+		if shape.Suffix == suffix {
+			lanes = int64(shape.Lanes)
+		}
+	}
+	name, isPath := pathOf(call.Arguments[0])
+	if lanes == 0 || !isPath || !tc.localBinding(name) {
+		return
+	}
+	lengthAtLeast := func(n int64) bool {
+		for _, fact := range tc.extentFacts {
+			if !fact.dead && fact.kind == factMinLen && fact.container == name && fact.bound >= n {
+				return true
+			}
+		}
+		return false
+	}
+	proven := false
+	if constant, isConst := constantIndex(call.Arguments[1]); isConst && constant >= 0 {
+		proven = lengthAtLeast(constant + lanes)
+	} else if index, offset, isIndex := offsetIndex(call.Arguments[1]); isIndex {
+		for _, fact := range tc.extentFacts {
+			if fact.dead || fact.other != index {
+				continue
+			}
+			if fact.kind == factIndexBound && fact.container == name && offset+lanes-1 <= fact.offset {
+				proven = true
+			}
+			if fact.kind == factIndexLit && fact.bound >= 1 && lengthAtLeast(fact.bound-1+offset+lanes) {
+				proven = true
+			}
+		}
+	}
+	if !proven {
+		return
+	}
+	if tc.provenIndices == nil {
+		tc.provenIndices = make(map[string]bool)
+	}
+	tc.provenIndices[positionKey(call.Token)] = true
+}

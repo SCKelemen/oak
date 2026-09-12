@@ -56,8 +56,8 @@ with its type suffix, e.g. `simd.add_u8x16`):
 | Function | Type | Semantics |
 | --- | --- | --- |
 | `simd.splat_E` | `(uN) -> E` | every lane is the operand |
-| `simd.load_E` | `([]uN, u32) -> E` | lanes `v[off] .. v[off+L-1]`; **traps** unless `off + L ≤ len(v)` |
-| `simd.store_E` | `([*]uN, u32, E) -> ()` | stores the `L` lanes; **traps** unless `off + L ≤ len(s)` |
+| `simd.load_E` | `([]uN, u32) -> E` | lanes `v[off] .. v[off+L-1]`; **traps** unless `off + L ≤ len(v)` — the check is elided where an extent fact proves it (`50-borrowing.md`, vector access) |
+| `simd.store_E` | `([*]uN, u32, E) -> ()` | stores the `L` lanes; **traps** unless `off + L ≤ len(s)` — elided under a proving fact likewise |
 | `simd.add_E` / `simd.sub_E` | `(E, E) -> E` | lane-wise, wrapping mod `2^N` |
 | `simd.and_E` / `simd.or_E` / `simd.xor_E` | `(E, E) -> E` | lane-wise bitwise |
 | `simd.min_E` / `simd.max_E` | `(E, E) -> E` | lane-wise unsigned |
@@ -187,28 +187,46 @@ and simdutf, written in Oak over `U8x16`: three 16-entry tables indexed by
 the previous byte's two nibbles and the current byte's high nibble classify
 every byte pair in one `tbl` each and one `and`; a saturating subtraction
 against the bytes two and three back permits a continuation after a
-continuation exactly under a three- or four-byte lead; a block that ends inside a sequence carries an `incomplete` mask into the
-next block; the tail is zero-padded, since zero is ASCII and cannot
-complete anything. The outer step is simdutf's sixty-four bytes: four
-blocks loaded and tested for ASCII together, each checked against the one
-before it when the step is not ASCII. The measured result
-(`benchmarks/state-machines/cross/`) is 12.3 GB/s on Apple arm64 beside
-simdutf's 12.9 and the scalar builtin's 0.40: the portable vectors
-express the algorithm at its speed, without `unsafe` and without reading
-past the input.
+continuation exactly under a three- or four-byte lead; a block that ends
+inside a sequence carries an `incomplete` mask into the next block; the
+tail is zero-padded, since zero is ASCII and cannot complete anything. The
+stream is taken sixty-four bytes at a step — four loads, one reduction to
+decide whether the step is pure ASCII, and the classification only when
+it is not — under the wrap-free guard
+`while len(bytes) >= u32(64) && off <= len(bytes) - u32(64)`, so every
+load is proven in range and emitted without its check (`50-borrowing.md`,
+vector access); the continuation permission is read off the high bit of
+`subs(prev2, 0x60) | subs(prev3, 0x70)` with no comparison. The measured
+result (`benchmarks/state-machines/cross/`) is 13.1 GB/s on Apple arm64
+beside simdutf's 13.3 and simdjson's 13.3; a scalar Table 3-7
+transliteration written in Oak runs at 0.37, Go's speed.
 
-Two proofs bracket the source. `Oak.Utf8Lookup` decides, by bit-blasting
-over all 65,536 byte pairs, that the tables' low seven bits are nonzero
-exactly on the pairs Unicode Table 3-7 forbids on their own (`sc_error`),
-that the top bit is set exactly when both bytes are continuations
-(`sc_two_conts`), and that the incomplete maxima and the two- and
-three-back permission thresholds are the ones the algorithm needs. The
-stream composition — the block-boundary carry and the TWO_CONTS
-cancellation — is checked against the scalar builtin, which is the
-transliteration of `Oak.Utf8Validity`, by differential tests over edge
-cases and three thousand random corrupted inputs under both lowerings
-(`compiler/e2e_stdlib_utf8_test.go`). The scalar builtin `is_valid_utf8`
-remains the reference the interpreter and the proofs run on.
+The proof runs from the tables to the program. `Oak.Utf8Lookup` decides,
+by bit-blasting over all 65,536 byte pairs, that the tables' low seven
+bits are nonzero exactly on the pairs Unicode Table 3-7 forbids on their
+own (`sc_error`), that the top bit is set exactly when both bytes are
+continuations (`sc_two_conts`), and that the incomplete maxima and the
+permission thresholds are the ones the algorithm needs. `Oak.Utf8Stream`
+states the lane function exactly as the source spells it and proves that,
+composed down the stream from the zero context, every lane is zero and
+the stream ends at a boundary **iff** the bytes are valid under
+`Oak.Utf8Validity.Valid` (`scan_valid`; each sequence class is one
+bit-blasted fact, the induction is over the sequences). `Oak.Utf8Flat`
+restates it by position, and `Oak.Utf8Blocks` is the program — blocks of
+sixteen lanes shifted against the block before them (`checkBlock_lane`:
+lane `i` of block `b` is stream position `16 b + i`), the sixty-four-byte
+step, the ASCII shortcut (`ascii_block`: for a block with no high bit, the
+error lanes are nonzero exactly when the previous block's `incomplete`
+lanes are), the zero-padded tail — proved to accept exactly the valid
+streams (`program_valid`). The differential test
+(`compiler/e2e_stdlib_utf8_test.go`) checks the emitted C under both
+lowerings against a scalar Table 3-7 transliteration written in Oak over
+edge cases and three thousand random corrupted inputs. On this proof the
+builtin `is_valid_utf8` lowers to `utf8.valid` in every module build
+(`70-strings.md` §4): a program that reaches it, or `str_from_utf8`, loads
+`utf8` implicitly and the runtime helper is a call to the compiled
+validator. A bare source build, which has no packages, keeps the scalar C
+transliteration of `Oak.Utf8Validity`.
 
 ## 2. arm64 vector instruction functions
 
