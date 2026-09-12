@@ -70,6 +70,10 @@ func tryKindOf(returnType ast.Expression) (tryKind, bool) {
 
 type tryLowering struct {
 	diags []*diagnostic.Diagnostic
+	// sites counts the tries lowered in the current function: binder names
+	// are numbered per function, so they are unique (no shadowing) and
+	// stable under edits elsewhere in the file.
+	sites int
 }
 
 func (l *tryLowering) report(node ast.Node, format string, args ...interface{}) {
@@ -88,6 +92,7 @@ func lowerTry(program *ast.Program) error {
 		if !propagates {
 			continue
 		}
+		l.sites = 0
 		fn.Body = l.lowerTail(fn.Body, kind)
 	}
 	// Whatever is left is a try the rule does not cover.
@@ -122,7 +127,8 @@ func (l *tryLowering) lowerTail(expr ast.Expression, kind tryKind) ast.Expressio
 		// `try e` as a block's value: propagate and re-wrap. Lean:
 		// Oak.Propagation.tryResult_id — this is `e` itself, spelled as
 		// the match so one form reaches the backends.
-		name := tryName(e.Token, "ok")
+		l.sites++
+		name := tryName(l.sites, "ok")
 		rewrap := &ast.VariantExpression{Token: e.Token, Variant: ident(e.Token, kind.ok), Payload: ident(e.Token, name)}
 		return l.match(e, kind, &ast.BindingPattern{Token: e.Token, Name: ident(e.Token, name)}, rewrap)
 	}
@@ -182,7 +188,8 @@ func (l *tryLowering) lowerBlock(stmts []ast.Statement, kind tryKind) []ast.Stat
 func (l *tryLowering) match(t *ast.TryExpression, kind tryKind, okPattern ast.Pattern, body ast.Expression) *ast.MatchExpression {
 	errArm := &ast.MatchArm{Token: t.Token}
 	if kind.errPayload {
-		name := tryName(t.Token, "err")
+		l.sites++
+		name := tryName(l.sites, "err")
 		errArm.Pattern = &ast.VariantPattern{Token: t.Token, Variant: ident(t.Token, kind.err), Payload: &ast.BindingPattern{Token: t.Token, Name: ident(t.Token, name)}}
 		errArm.Body = &ast.VariantExpression{Token: t.Token, Variant: ident(t.Token, kind.err), Payload: ident(t.Token, name)}
 	} else {
@@ -193,10 +200,11 @@ func (l *tryLowering) match(t *ast.TryExpression, kind tryKind, okPattern ast.Pa
 	return &ast.MatchExpression{Token: t.Token, Scrutinee: t.Operand, Arms: []*ast.MatchArm{errArm, okArm}}
 }
 
-// tryName is a binder no program spells, unique per try so nested forms
-// never shadow (Oak forbids shadowing).
-func tryName(tok token.Token, role string) string {
-	return fmt.Sprintf("_try_%s_%d_%d", role, tok.Line, tok.Column)
+// tryName is a binder no program spells, numbered per function so nested
+// forms never shadow (Oak forbids shadowing) and the name does not move
+// when unrelated lines do.
+func tryName(site int, role string) string {
+	return fmt.Sprintf("_try_%s_%d", role, site)
 }
 
 func ident(at token.Token, name string) *ast.Identifier {
