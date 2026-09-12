@@ -434,6 +434,11 @@ type BlockStatement struct {
 	BaseNode
 	Token      token.Token // { token
 	Statements []Statement
+	// Order is the reduction order the block declares once for the
+	// `reduce.reduce` calls inside it (docs/spec/55-parallelism.md section
+	// 4): "tree", "left", or "any" for `order tree { ... }`; "" for an
+	// ordinary block.
+	Order string
 	// DeferredFrom, when positive, is the index of the first statement the
 	// parser moved here from a `defer` (docs/spec/10-syntax.md section 4b):
 	// Statements[DeferredFrom-1] is the block's original tail and
@@ -450,6 +455,11 @@ func (bs *BlockStatement) String() string {
 
 	for _, s := range bs.Statements {
 		out.WriteString(s.String())
+	}
+	if bs.Order != "" {
+		// An order block prints as declared (docs/spec/55-parallelism.md
+		// section 4): the order once, then its statements.
+		return "order " + bs.Order + " { " + out.String() + " }"
 	}
 
 	return out.String()
@@ -470,6 +480,9 @@ func (be *BlockExpression) TokenLiteral() string { return be.Token.Literal }
 func (be *BlockExpression) String() string {
 	if be.Block == nil {
 		return "{}"
+	}
+	if be.Block.Order != "" {
+		return be.Block.String()
 	}
 	return "{ " + be.Block.String() + " }"
 }

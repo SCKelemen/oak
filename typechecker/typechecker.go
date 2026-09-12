@@ -521,6 +521,10 @@ type TypeChecker struct {
 	// kernels names the program's kernel declarations (docs/spec/56-kernels.md);
 	// test_launch (110-testing.md, "Launch targets") takes one.
 	kernels map[string]bool
+	// orderScopes is the stack of enclosing `order` blocks' orders
+	// (docs/spec/55-parallelism.md section 4): the innermost decides what
+	// reduce.reduce inside it names.
+	orderScopes []string
 	// bufferRecordInitializer is the record literal a declaration of a
 	// record holding a Buffer field is being initialized from: the one
 	// position such a literal may stand in (docs/spec/92-ffi.md section
@@ -1161,6 +1165,25 @@ func (tc *TypeChecker) checkTestLaunch(expr *ast.InvocationExpression) Type {
 	return &UnitType{}
 }
 
+// enterOrder pushes an order block's order for the statements inside it
+// and returns the pop (docs/spec/55-parallelism.md section 4).
+func (tc *TypeChecker) enterOrder(block *ast.BlockStatement) func() {
+	if block == nil || block.Order == "" {
+		return func() {}
+	}
+	tc.orderScopes = append(tc.orderScopes, block.Order)
+	return func() { tc.orderScopes = tc.orderScopes[:len(tc.orderScopes)-1] }
+}
+
+// currentOrder is the innermost enclosing order block's order, or "" outside
+// every order block.
+func (tc *TypeChecker) currentOrder() string {
+	if len(tc.orderScopes) == 0 {
+		return ""
+	}
+	return tc.orderScopes[len(tc.orderScopes)-1]
+}
+
 // LawLowering records one call site regrouped on a declared operator law:
 // a reduce.tree over an operator declaring associative, lowered to
 // reduce.chain (docs/spec/10-syntax.md section 14a; the ml pilot's F3).
@@ -1189,16 +1212,44 @@ func (tc *TypeChecker) lowerAssociativeTree(expr *ast.InvocationExpression) {
 		return
 	}
 	path, name, ok := modules.Demangle(callee.Value)
-	if !ok || path != "reduce" || name != "tree" {
+	if !ok || path != "reduce" {
 		return
 	}
-	combine, ok := expr.Arguments[2].(*ast.Identifier)
-	if !ok || !tc.HasOperatorLaw(combine.Value, "associative") {
-		return
+	combine, combineIsIdent := expr.Arguments[2].(*ast.Identifier)
+	associative := combineIsIdent && tc.HasOperatorLaw(combine.Value, "associative")
+	switch name {
+	case "reduce":
+		// The scope-ordered reduction (docs/spec/55-parallelism.md section
+		// 4, "Declaring the order once"): the enclosing order block names
+		// the grouping; outside one it is the exact tree. `any` is the
+		// permission to regroup, and it is refused without the claim.
+		target := "tree"
+		switch tc.currentOrder() {
+		case "left":
+			target = "left"
+		case "any":
+			if !associative {
+				spelled := expr.Arguments[2].String()
+				tc.addError(expr.Arguments[2], "reduce in an `order any` block regroups only an operator declaring laws { associative }; %s declares none — name the order (`order tree`, `order left`) or declare the law (docs/spec/55-parallelism.md section 4)", spelled)
+				return
+			}
+			target = "chain"
+		}
+		lowered := modules.Mangle(path, target)
+		function := ""
+		if combineIsIdent {
+			function = combine.Value
+		}
+		tc.lawLowerings = append(tc.lawLowerings, LawLowering{Token: expr.Token, Function: function, From: callee.Value, To: lowered})
+		callee.Value = lowered
+	case "tree":
+		if !associative {
+			return
+		}
+		lowered := modules.Mangle(path, "chain")
+		tc.lawLowerings = append(tc.lawLowerings, LawLowering{Token: expr.Token, Function: combine.Value, From: callee.Value, To: lowered})
+		callee.Value = lowered
 	}
-	lowered := modules.Mangle(path, "chain")
-	tc.lawLowerings = append(tc.lawLowerings, LawLowering{Token: expr.Token, Function: combine.Value, From: callee.Value, To: lowered})
-	callee.Value = lowered
 }
 
 // HasOperatorLaw reports whether the function bound as an operator declares
@@ -5060,6 +5111,7 @@ func (tc *TypeChecker) checkBlockStatement(block *ast.BlockStatement) {
 	outerEnv := tc.env
 	tc.env = NewEnclosedTypeEnvironment(outerEnv)
 	defer func() { tc.env = outerEnv }()
+	defer tc.enterOrder(block)()
 	// Type check all statements in the block. A view/span declaration with
 	// literal bounds establishes its extent for the rest of the block
 	// (typechecker/extents.go); the facts pop with the block.
@@ -5099,6 +5151,7 @@ func (tc *TypeChecker) killFactsAfterStatement(stmt ast.Statement) {
 // checkBlockExpression type checks a block expression and returns the type of
 // the last expression, inferring it against the expected type when given.
 func (tc *TypeChecker) checkBlockExpression(block *ast.BlockStatement, expectedType ...Type) Type {
+	defer tc.enterOrder(block)()
 	var expected Type
 	if len(expectedType) > 0 {
 		expected = expectedType[0]
