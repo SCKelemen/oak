@@ -401,6 +401,12 @@ severity — listed by `oak vet`, rejected by no profile (85-discipline.md
 because `off <= cap - len` is the recommended shape and its precondition
 (`len <= cap`) is a guard the reader can see.
 
+`spec/lean/Oak/CheckedArithmeticRefinement.lean` transliterates the C helper
+bodies over the builtins' contract and proves them to this section — in
+particular that each saturating side test picks the bound the exact result
+left — with the emitted text pinned by
+`codegen/checked_arithmetic_refinement_test.go`.
+
 The interpreter computes the exact result in arbitrary precision and
 compares it with the range (a trapping overflow is its error, as a failed
 assertion is); the C backend uses the type-generic overflow builtins
