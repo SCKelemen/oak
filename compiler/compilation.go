@@ -351,6 +351,12 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		if err != nil {
 			return nil, err
 		}
+		// Declared layout claims (compiler/layout_claims.go): a record that
+		// says struct(no_padding) is measured now, so the diagnostic names
+		// the padded field instead of the backend failing closed.
+		if err := checkLayoutClaims(tree, comp.options); err != nil {
+			return nil, err
+		}
 		if len(protocolFacts) != 0 {
 			resourceProtocols = append(cloneResourceProtocolDeclarations(resourceProtocols), protocolFacts...)
 		}

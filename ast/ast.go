@@ -216,11 +216,14 @@ type RecordLiteral struct {
 
 // RecordLayoutSpec is the source-declared layout discipline of a struct type
 // (docs/spec/40-records.md): Packed forbids padding between fields, Align
-// raises the record's alignment (0 means natural). Semantics and arithmetic
-// live in semir.RecordLayoutWithSpec; this node only carries the declaration.
+// raises the record's alignment (0 means natural), NoPadding claims the
+// natural placement is already dense — every byte a field byte — which the
+// compiler checks rather than arranges. Semantics and arithmetic live in
+// semir.RecordLayoutWithSpec; this node only carries the declaration.
 type RecordLayoutSpec struct {
-	Packed bool
-	Align  uint32
+	Packed    bool
+	Align     uint32
+	NoPadding bool
 }
 
 // AddField appends a uniquely named field in declaration order, rejecting

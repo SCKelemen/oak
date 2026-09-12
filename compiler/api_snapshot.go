@@ -686,6 +686,7 @@ func resolveRecordLayout(record *ast.RecordLiteral, resolved map[string]resolved
 	if record.Layout != nil {
 		spec.Packed = record.Layout.Packed
 		spec.Align = record.Layout.Align
+		spec.NoPadding = record.Layout.NoPadding
 	}
 	layout, err := semir.RecordLayoutWithSpec(fields, spec)
 	return layout, spec, err == nil, err
