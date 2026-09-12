@@ -154,7 +154,7 @@ func (cg *CodeGenerator) emitCompareExchangeHelpers(program *ast.Program) {
 		if err != nil {
 			continue
 		}
-		success, err := cMemoryOrder(spec.Order)
+		success, err := cMemoryOrderFor(semir.AtomicCompareExchange, spec.Order)
 		if err != nil {
 			continue
 		}

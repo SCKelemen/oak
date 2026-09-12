@@ -285,3 +285,5 @@ The next machine-memory work should add:
 Once this AArch64 refinement gate is stable, Oak has enough demonstrated
 shared-memory machinery to begin `SpscRing[T, N]` as the first higher-level
 lock-free proof consumer.
+
+The RISC-V counterpart is `69-riscv-memory-refinement.md`.

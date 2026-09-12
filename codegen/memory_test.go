@@ -56,7 +56,7 @@ func TestAtomicLoadStoreRejectIllegalOrders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if load != "atomic_load_explicit(&x, memory_order_acquire)" {
+	if load != "atomic_load_explicit(&x, OAK_ORDER_LOAD_ACQUIRE)" {
 		t.Fatalf("unexpected load lowering: %s", load)
 	}
 	store, err := atomicStoreC("&x", "7", semir.MemoryOrderRelease)
