@@ -38,6 +38,11 @@ func evalLibraryCall(library, member string, args []ast.Expression, env *object.
 			return newError("c.null requires the native backend; the interpreter has no foreign pointers")
 		case "disown", "borrow_string", "fn_at":
 			return newError("c.%s requires the native backend; the interpreter has no foreign memory", member)
+		case "const":
+			// A target constant's value is the target's, defined by a C
+			// header (docs/spec/92-ffi.md section 2.11); the interpreter
+			// has no target.
+			return newError("c.const requires the native backend; the interpreter has no target headers to read the constant from")
 		}
 		if len(args) != 1 {
 			return newError("c.%s takes exactly one argument", member)

@@ -286,7 +286,8 @@ func KnownLibraryMember(library, member string) bool {
 		_, isType := cTypeSpellings[member]
 		return isType || member == "extern" || member == "span_of" || member == "span_mut_of" ||
 			member == "borrow" || member == "borrow_mut" || member == "own" || member == "disown" ||
-			member == "cstr" || member == "borrow_string" || member == "argv_of" || member == "out" || member == "null"
+			member == "cstr" || member == "borrow_string" || member == "argv_of" || member == "out" || member == "null" ||
+			member == "const"
 	case "arm64":
 		_, isIntrinsic := arm64Intrinsics[member]
 		return isIntrinsic
@@ -461,6 +462,15 @@ func (tc *TypeChecker) checkCLibraryCall(expr *ast.InvocationExpression, member 
 		return nil
 	}
 	switch member {
+	case "const":
+		// A target constant exists only as the initializer of a top-level
+		// binding with a c.* scalar annotation (docs/spec/92-ffi.md
+		// section 2.11); checkVariableDeclaration consumes that form, so
+		// reaching it here means it was written somewhere else.
+		d := tc.addTypeDiagnostic(expr, CodeTargetConstant,
+			"c.const is only the initializer of a top-level binding with a c.* integer annotation, not an expression")
+		d.AddHelp("write NAME: c.Int = c.const(\"CLOCK_MONOTONIC\", \"<time.h>\") at package level and read NAME")
+		return nil
 	case "disown":
 		return tc.checkForeignDisown(expr)
 	case "borrow_string":
