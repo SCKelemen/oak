@@ -33,6 +33,13 @@ func ProtocolTLA(decl *ast.ProtocolDeclaration, origin string) (string, error) {
 type tlaEnv struct {
 	payload string
 	initial bool
+	// dataRoot is the identifier data paths are rooted at: `data` in a
+	// declaration, the theorem's data parameter in an invariant; stateVar
+	// is an invariant's state parameter, read as `state`; bound are the
+	// invariant's loop counters, read as the bound variables they become.
+	dataRoot  string
+	stateVar  string
+	boundVars map[string]bool
 	// bound counts the enclosing function constructors of an init value,
 	// so a nested array (a record's array field inside an array of
 	// records) binds k, k1, k2 rather than shadowing k.
@@ -50,7 +57,7 @@ func (env *tlaEnv) with(payload string, initial bool) *tlaEnv {
 	if root == nil {
 		root = env
 	}
-	return &tlaEnv{payload: payload, initial: initial, bound: env.bound, lengths: env.lengths, records: env.records, root: root}
+	return &tlaEnv{payload: payload, initial: initial, bound: env.bound, dataRoot: env.dataRoot, stateVar: env.stateVar, boundVars: env.boundVars, lengths: env.lengths, records: env.records, root: root}
 }
 
 // deeper is env inside one more function constructor.
@@ -78,6 +85,14 @@ func (env *tlaEnv) useFiniteSets() {
 // ProtocolTLAWithRecords renders the module with the program's record
 // declarations available for array-of-records data fields.
 func ProtocolTLAWithRecords(decl *ast.ProtocolDeclaration, origin string, records map[string]*ast.RecordLiteral) (string, error) {
+	return ProtocolTLAFull(decl, origin, records, nil)
+}
+
+// ProtocolTLAFull renders the module with the program's record declarations
+// and its invariant theorems over the protocol (InvariantTheorems): each
+// theorem in the invariant subset becomes `Invariant_<name>`, which the
+// configuration lists as an INVARIANT (docs/spec/112-protocols.md section 4).
+func ProtocolTLAFull(decl *ast.ProtocolDeclaration, origin string, records map[string]*ast.RecordLiteral, theorems []*ast.FunctionStatement) (string, error) {
 	var problems []string
 	m, ok := analyzeProtocolWith(decl, records, func(code string, node ast.Node, format string, args ...interface{}) {
 		problems = append(problems, fmt.Sprintf(format, args...))
@@ -251,6 +266,14 @@ func ProtocolTLAWithRecords(decl *ast.ProtocolDeclaration, origin string, record
 		typeTerms = append(typeTerms, fmt.Sprintf("%s \\in %s", f.Name, tlaDomainWith(f.Value, env.records)))
 	}
 	fmt.Fprintf(&b, "TypeOK ==\n    %s\n\n", strings.Join(typeTerms, "\n    /\\ "))
+	for _, theorem := range theorems {
+		body, err := tlaInvariant(theorem, env)
+		if err != nil {
+			fmt.Fprintf(&b, "\\* theorem %s is outside the invariant subset (%v); `oak prove` decides it alone.\n\n", theorem.Name.Value, err)
+			continue
+		}
+		fmt.Fprintf(&b, "Invariant_%s ==\n    %s\n\n", theorem.Name.Value, body)
+	}
 	// Declared fairness joins the specification: weak or strong fairness
 	// on each named step, its payload quantified; declared liveness is the
 	// `Liveness` property, `<>` for a target alone and `~>` (leads to) for
@@ -357,8 +380,20 @@ func fieldConstant(field string) string {
 // declarations, so a record payload's domain is the record set of its
 // fields' domains.
 func ProtocolTLCConfigWith(decl *ast.ProtocolDeclaration, records map[string]*ast.RecordLiteral) string {
+	return ProtocolTLCConfigFull(decl, records, nil)
+}
+
+// ProtocolTLCConfigFull is ProtocolTLCConfigWith plus an INVARIANT line for
+// every theorem the module states (ProtocolTLAFull).
+func ProtocolTLCConfigFull(decl *ast.ProtocolDeclaration, records map[string]*ast.RecordLiteral, theorems []*ast.FunctionStatement) string {
 	var b strings.Builder
 	b.WriteString("SPECIFICATION Spec\nINVARIANT TypeOK\n")
+	env := &tlaEnv{lengths: map[string]int64{}, records: records}
+	for _, theorem := range theorems {
+		if _, err := tlaInvariant(theorem, env); err == nil {
+			fmt.Fprintf(&b, "INVARIANT Invariant_%s\n", theorem.Name.Value)
+		}
+	}
 	if len(decl.Liveness) > 0 {
 		b.WriteString("PROPERTY Liveness\n")
 	}
@@ -430,12 +465,17 @@ func tlaDomainWith(typ ast.Expression, records map[string]*ast.RecordLiteral) st
 
 // dataField recognizes `data.field`.
 func dataField(target *ast.IndexExpression) (string, bool) {
+	return dataFieldOf(target, "data")
+}
+
+// dataFieldOf recognizes `root.field` for the given data root.
+func dataFieldOf(target *ast.IndexExpression, root string) (string, bool) {
 	if target == nil || !target.Dot {
 		return "", false
 	}
 	base, okBase := target.Left.(*ast.Identifier)
 	field, okField := target.Index.(*ast.Identifier)
-	if !okBase || !okField || base.Value != "data" {
+	if !okBase || !okField || base.Value != root {
 		return "", false
 	}
 	return field.Value, true
@@ -448,7 +488,11 @@ func tlaDataPath(target *ast.IndexExpression, env *tlaEnv) (field, selector stri
 	if target == nil {
 		return "", "", fmt.Errorf("only data.field paths translate")
 	}
-	if name, ok := dataField(target); ok {
+	root := env.dataRoot
+	if root == "" {
+		root = "data"
+	}
+	if name, ok := dataFieldOf(target, root); ok {
 		return name, "", nil
 	}
 	inner, ok := target.Left.(*ast.IndexExpression)
@@ -583,7 +627,19 @@ func tlaExpr(e ast.Expression, env *tlaEnv) (string, error) {
 		if n.Value == payload && payload != "" {
 			return n.Value, nil
 		}
+		if env.stateVar != "" && n.Value == env.stateVar {
+			return "state", nil
+		}
+		if env.boundVars[n.Value] {
+			return n.Value, nil
+		}
 		return "", fmt.Errorf("identifier %s is not the payload or a data field", n.Value)
+	case *ast.VariantExpression:
+		// A state named as a variant (`s == .Locked`) is its string.
+		if n.Payload == nil && n.Variant != nil {
+			return fmt.Sprintf("%q", n.Variant.Value), nil
+		}
+		return "", fmt.Errorf("variant %s does not translate", n.String())
 	case *ast.IndexExpression:
 		if field, ok := payloadField(n, payload); ok {
 			// A record payload's field reads as the TLA+ record field.
