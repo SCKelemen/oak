@@ -38,7 +38,8 @@ everything.
 
 ## Results
 
-Apple arm64, clang `-O2`, best of five, 2026-09-12. Taken while another
+Apple arm64, clang `-O2`, best of five, 2026-09-12 (the validator table
+re-taken the same evening after the sixty-four-byte step). Taken while another
 process occupied the machine; the ordering is stable across runs, the
 absolute figures are upper bounds.
 
@@ -76,14 +77,14 @@ levels.
 
 | Implementation | ns/byte | GB/s |
 | --- | --- | --- |
-| simdjson `validate_utf8` (SIMD) | 0.07 | 13.5 |
-| simdutf `validate_utf8` (SIMD) | 0.07 | 13.4 |
-| **Oak stdlib `utf8.valid` (SIMD, written in Oak over `simd.U8x16`)** | **0.10** | **9.6** |
-| **Oak protocol `utf8_run` (shift DFA, emitted from the declaration)** | **0.51** | **1.97** |
+| simdjson `validate_utf8` (SIMD) | 0.08 | 12.9 |
+| simdutf `validate_utf8` (SIMD) | 0.08 | 12.9 |
+| **Oak stdlib `utf8.valid` (SIMD, written in Oak over `simd.U8x16`)** | **0.08** | **12.3** |
+| **Oak protocol `utf8_run` (shift DFA, emitted from the declaration)** | **0.52** | **1.92** |
 | Oak builtin `is_valid_utf8` (scalar, Table 3-7 transliteration) | 2.50 | 0.40 |
-| Zig `std.unicode.utf8ValidateSlice` | 2.55 | 0.39 |
-| Rust `std::str::from_utf8` | 2.56 | 0.39 |
-| Go `unicode/utf8.Valid` | 2.73 | 0.37 |
+| Zig `std.unicode.utf8ValidateSlice` | 2.73 | 0.37 |
+| Rust `std::str::from_utf8` | 2.66 | 0.38 |
+| Go `unicode/utf8.Valid` | 2.80 | 0.36 |
 
 What the comparison says:
 
@@ -99,11 +100,11 @@ What the comparison says:
   scalar lowering reaches it.
 - The consequence for Oak: for byte-driven machines that are validators of
   a fixed format, the peak structure is a SIMD algorithm, not a DFA, and
-  Oak's portable 128-bit vectors express it. `stdlib/utf8.oak` is that
-  algorithm in Oak (four operations were added to the `simd` catalog for
-  it: `subs`, `shr`, `tbl`, `prev`); at 9.6 GB/s it sits at four fifths of
-  simdutf, and the gap is its sixteen-byte step against simdutf's
-  sixty-four. Its lookup tables are proved against Table 3-7 pair by pair
+  Oak's portable 128-bit vectors express it. `stdlib/utf8.oak` is that algorithm in Oak (four operations were added
+  to the `simd` catalog for it: `subs`, `shr`, `tbl`, `prev`); with
+  simdutf's sixty-four-byte step — four blocks loaded and tested for ASCII
+  together — it runs at 12.3 GB/s, within five percent of simdutf and
+  simdjson on the same run (the sixteen-byte step measured 9.6). Its lookup tables are proved against Table 3-7 pair by pair
   (`Oak.Utf8Lookup`); the stream is checked differentially against the
   scalar builtin. General protocol machines keep the DFA lowering; it is
   the best structure for a machine that is not a fixed format.

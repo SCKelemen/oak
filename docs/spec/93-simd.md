@@ -187,13 +187,15 @@ and simdutf, written in Oak over `U8x16`: three 16-entry tables indexed by
 the previous byte's two nibbles and the current byte's high nibble classify
 every byte pair in one `tbl` each and one `and`; a saturating subtraction
 against the bytes two and three back permits a continuation after a
-continuation exactly under a three- or four-byte lead; a block that ends
-inside a sequence carries an `incomplete` mask into the next block; the
-tail is zero-padded, since zero is ASCII and cannot complete anything. The
-measured result (`benchmarks/state-machines/cross/`) is 9.6 GB/s on Apple
-arm64 beside simdutf's 12 and the scalar builtin's 0.35: the portable
-vectors express the algorithm, and the remaining gap is the sixteen-byte
-step against simdutf's sixty-four.
+continuation exactly under a three- or four-byte lead; a block that ends inside a sequence carries an `incomplete` mask into the
+next block; the tail is zero-padded, since zero is ASCII and cannot
+complete anything. The outer step is simdutf's sixty-four bytes: four
+blocks loaded and tested for ASCII together, each checked against the one
+before it when the step is not ASCII. The measured result
+(`benchmarks/state-machines/cross/`) is 12.3 GB/s on Apple arm64 beside
+simdutf's 12.9 and the scalar builtin's 0.40: the portable vectors
+express the algorithm at its speed, without `unsafe` and without reading
+past the input.
 
 Two proofs bracket the source. `Oak.Utf8Lookup` decides, by bit-blasting
 over all 65,536 byte pairs, that the tables' low seven bits are nonzero
