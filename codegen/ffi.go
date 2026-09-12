@@ -324,6 +324,7 @@ var arm64IntrinsicWidths = map[string]bool{
 	"rev32": true, "rev64": true,
 	"rbit32": true, "rbit64": true,
 	"clz32": true, "clz64": true,
+	"cnt32": true, "cnt64": true,
 }
 
 // collectUsedIntrinsics scans the program for scalar arm64 instruction
@@ -580,6 +581,36 @@ var arm64HelperSources = map[string]string{
   return r;
 #else
   return x == 0u ? 64u : (u64)__builtin_clzll(x);
+#endif
+}
+`,
+	// Population count: AArch64 has no scalar popcount; CNT counts per byte
+	// lane of a vector register and ADDV sums the lanes. The instruction
+	// form goes through the compiler's ctpop (which lowers to exactly
+	// fmov, cnt, addv, fmov) rather than inline assembly, because a pinned
+	// vector register would stop the loop vectorizer from widening the
+	// count across lanes — the whole point of the instruction for a bitmap
+	// scan. The portable form is the SWAR sequence, a genuinely different
+	// witness. Total: the zero word counts 0.
+	"cnt32": `static inline u32 oak_arm64_cnt32( u32 x ) {
+#if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)
+  return (u32)__builtin_popcount(x);
+#else
+  x = x - ((x >> 1) & 0x55555555u);
+  x = (x & 0x33333333u) + ((x >> 2) & 0x33333333u);
+  x = (x + (x >> 4)) & 0x0F0F0F0Fu;
+  return (x * 0x01010101u) >> 24;
+#endif
+}
+`,
+	"cnt64": `static inline u64 oak_arm64_cnt64( u64 x ) {
+#if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)
+  return (u64)__builtin_popcountll(x);
+#else
+  x = x - ((x >> 1) & 0x5555555555555555u);
+  x = (x & 0x3333333333333333u) + ((x >> 2) & 0x3333333333333333u);
+  x = (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0Fu;
+  return (x * 0x0101010101010101u) >> 56;
 #endif
 }
 `,

@@ -114,6 +114,10 @@ func evalArm64Intrinsic(member string, args []ast.Expression, env *object.Enviro
 		return &object.Integer{Value: int64(bits.LeadingZeros32(uint32(operand.Value)))}
 	case "clz64":
 		return &object.Integer{Value: int64(bits.LeadingZeros64(uint64(operand.Value)))}
+	case "cnt32":
+		return &object.Integer{Value: int64(bits.OnesCount32(uint32(operand.Value)))}
+	case "cnt64":
+		return &object.Integer{Value: int64(bits.OnesCount64(uint64(operand.Value)))}
 	}
 	return newError("the arm64 library has no instruction function arm64.%s", member)
 }

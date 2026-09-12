@@ -3,8 +3,8 @@ namespace Oak.Intrinsics
 /-! # Abstract assembly intrinsics
 
 Model for `docs/spec/92-ffi.md` §3: the v1 AArch64 instruction functions
-`rev` (byte reverse), `rbit` (bit reverse), and `clz` (count leading
-zeros). The model works over the value's digits — bytes for `rev`, bits
+`rev` (byte reverse), `rbit` (bit reverse), `clz` (count leading
+zeros), and `cnt` (population count). The model works over the value's digits — bytes for `rev`, bits
 for `rbit` — as lists of fixed width, which is exactly the register-lane
 view the instructions are specified over in the ARM ARM. Laws proven:
 
@@ -12,7 +12,10 @@ view the instructions are specified over in the ARM ARM. Laws proven:
 - `clz` is total, bounded by the width, hits the width exactly on the
   zero word, and is zero exactly when the leading bit is set — the ARM
   `CLZ` semantics, including the `CLZ(0) = width` case that C's
-  `__builtin_clz` leaves undefined (the backend's guard supplies it).
+  `__builtin_clz` leaves undefined (the backend's guard supplies it);
+- `popcount` is total, bounded by the width, zero exactly on the zero
+  word, the width on the all-ones word, and complementary under bitwise
+  not — the law an allocator's free-bit count over `cnt(~word)` rests on.
 -/
 
 /-- Register-lane view: a word is its list of digits (bits or bytes),
@@ -88,5 +91,55 @@ theorem clz_lt_of_mem_true (bits : List Bool) (h : true ∈ bits) :
       have := ih hrest
       show clz rest + 1 < rest.length + 1
       exact Nat.succ_lt_succ this
+
+/-- `CNT` (summed over the lanes by `ADDV`): the number of `true` bits.
+    Total by construction. -/
+def popcount : List Bool → Nat
+  | [] => 0
+  | true :: rest => popcount rest + 1
+  | false :: rest => popcount rest
+
+/-- **Bounded by the width**: `popcount x ≤ width`, so the result fits the
+    operand's own type. -/
+theorem popcount_le_width (bits : List Bool) : popcount bits ≤ bits.length := by
+  induction bits with
+  | nil => simp [popcount]
+  | cons b rest ih =>
+    cases b with
+    | true =>
+      show popcount rest + 1 ≤ rest.length + 1
+      exact Nat.succ_le_succ ih
+    | false =>
+      show popcount rest ≤ rest.length + 1
+      exact Nat.le_succ_of_le ih
+
+/-- **The zero word counts zero.** -/
+theorem popcount_zero (width : Nat) :
+    popcount (List.replicate width false) = 0 := by
+  induction width with
+  | zero => simp [popcount]
+  | succ n ih => simp [List.replicate, popcount, ih]
+
+/-- **The all-ones word counts the width.** -/
+theorem popcount_ones (width : Nat) :
+    popcount (List.replicate width true) = width := by
+  induction width with
+  | zero => simp [popcount]
+  | succ n ih => simp [List.replicate, popcount, ih]
+
+/-- **Complement**: the set bits of `~w` and of `w` partition the width —
+    a free-bit count is `cnt(~word)`, and it equals `width - cnt(word)`. -/
+theorem popcount_not (bits : List Bool) :
+    popcount (bits.map not) + popcount bits = bits.length := by
+  induction bits with
+  | nil => simp [popcount]
+  | cons b rest ih =>
+    cases b with
+    | true =>
+      show popcount (rest.map not) + (popcount rest + 1) = rest.length + 1
+      omega
+    | false =>
+      show popcount (rest.map not) + 1 + popcount rest = rest.length + 1
+      omega
 
 end Oak.Intrinsics

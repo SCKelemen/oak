@@ -1,0 +1,233 @@
+{
+  "schema": "oak-kernels-benchmark-v1",
+  "machine": "arm64",
+  "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+  "cpu": "Apple M4 Max",
+  "oak": "88af1059991422cf294553837365802299210b65",
+  "cc": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+  "go": "go version go1.27.1 darwin/arm64",
+  "rustc": "rustc 1.93.0 (254b59607 2026-01-19) (Homebrew)",
+  "c_flags": [
+    "-O3",
+    "-DNDEBUG"
+  ],
+  "rust_flags": [
+    "-O"
+  ],
+  "go_flags": [],
+  "size": 1048576,
+  "rounds": 5,
+  "samples": 7,
+  "core_affinity": "not controlled",
+  "cache_flush": false,
+  "results": [
+    {
+      "impl": "oak",
+      "kernel": "bitmap",
+      "size": 1048576,
+      "checksum": "5655550300000000",
+      "ns_per_op_median": 150600.0,
+      "samples": [
+        144400.0,
+        145400.0,
+        149000.0,
+        150600.0,
+        150800.0,
+        163800.0,
+        170800.0
+      ]
+    },
+    {
+      "impl": "go-stdlib",
+      "kernel": "bitmap",
+      "size": 1048576,
+      "checksum": "5655550300000000",
+      "ns_per_op_median": 346675.0,
+      "samples": [
+        340708.2,
+        341600.0,
+        341633.4,
+        346675.0,
+        357808.4,
+        362933.4,
+        371900.0
+      ]
+    },
+    {
+      "impl": "go-generic",
+      "kernel": "bitmap",
+      "size": 1048576,
+      "checksum": "5655550300000000",
+      "ns_per_op_median": 644525.0,
+      "samples": [
+        620891.6,
+        625616.6,
+        627658.4,
+        644525.0,
+        667666.6,
+        683241.8,
+        690183.4
+      ]
+    },
+    {
+      "impl": "rust",
+      "kernel": "bitmap",
+      "size": 1048576,
+      "checksum": "5655550300000000",
+      "ns_per_op_median": 139758.4,
+      "samples": [
+        136075.0,
+        138266.6,
+        139566.8,
+        139758.4,
+        139816.8,
+        141066.6,
+        142483.2
+      ]
+    },
+    {
+      "impl": "oak",
+      "kernel": "page_probe",
+      "size": 1048576,
+      "checksum": "d9540000",
+      "ns_per_op_median": 7913200.0,
+      "samples": [
+        7109600.0,
+        7212000.0,
+        7609000.0,
+        7913200.0,
+        8005600.0,
+        8208200.0,
+        8482400.0
+      ]
+    },
+    {
+      "impl": "go",
+      "kernel": "page_probe",
+      "size": 1048576,
+      "checksum": "d9540000",
+      "ns_per_op_median": 11041675.0,
+      "samples": [
+        10723050.0,
+        10916716.6,
+        11024108.2,
+        11041675.0,
+        11339091.8,
+        11378591.6,
+        11628366.6
+      ]
+    },
+    {
+      "impl": "rust",
+      "kernel": "page_probe",
+      "size": 1048576,
+      "checksum": "d9540000",
+      "ns_per_op_median": 7735183.2,
+      "samples": [
+        6875600.0,
+        7326941.8,
+        7594991.8,
+        7735183.2,
+        7811225.0,
+        8403358.2,
+        8925275.0
+      ]
+    },
+    {
+      "impl": "oak",
+      "kernel": "dispatch",
+      "size": 1048576,
+      "checksum": "3ceea264312970dd",
+      "ns_per_op_median": 6902600.0,
+      "samples": [
+        6814800.0,
+        6826600.0,
+        6878800.0,
+        6902600.0,
+        6925200.0,
+        6956200.0,
+        7306800.0
+      ]
+    },
+    {
+      "impl": "go",
+      "kernel": "dispatch",
+      "size": 1048576,
+      "checksum": "3ceea264312970dd",
+      "ns_per_op_median": 6953241.8,
+      "samples": [
+        6892825.0,
+        6917666.8,
+        6919833.4,
+        6953241.8,
+        7011475.0,
+        7062050.0,
+        7064058.4
+      ]
+    },
+    {
+      "impl": "rust",
+      "kernel": "dispatch",
+      "size": 1048576,
+      "checksum": "3ceea264312970dd",
+      "ns_per_op_median": 7070558.4,
+      "samples": [
+        6999683.4,
+        7014908.4,
+        7031300.0,
+        7070558.4,
+        7106366.6,
+        7136850.0,
+        7145425.0
+      ]
+    },
+    {
+      "impl": "oak",
+      "kernel": "tiled",
+      "size": 1048576,
+      "checksum": "14e5aa48",
+      "ns_per_op_median": 131400.0,
+      "samples": [
+        130800.0,
+        131200.0,
+        131200.0,
+        131400.0,
+        131800.0,
+        136600.0,
+        140800.0
+      ]
+    },
+    {
+      "impl": "go",
+      "kernel": "tiled",
+      "size": 1048576,
+      "checksum": "14e5aa48",
+      "ns_per_op_median": 329316.6,
+      "samples": [
+        325541.6,
+        326541.6,
+        329066.6,
+        329316.6,
+        331883.2,
+        332066.8,
+        335466.8
+      ]
+    },
+    {
+      "impl": "rust",
+      "kernel": "tiled",
+      "size": 1048576,
+      "checksum": "14e5aa48",
+      "ns_per_op_median": 156750.0,
+      "samples": [
+        152183.4,
+        153058.2,
+        155775.0,
+        156750.0,
+        159583.4,
+        161950.0,
+        169341.6
+      ]
+    }
+  ]
+}

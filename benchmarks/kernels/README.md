@@ -25,8 +25,8 @@ which uses the CPU's SHA-256 and CRC-32C instructions on this class of
 machine and its population-count instruction for `bitmap`, and
 `go-generic` is the plain pure-Go algorithm of the same shape as Oak's
 (the SWAR popcount for `bitmap`). Rust's `bitmap` row uses `count_ones`,
-also the hardware instruction; Oak has no popcount intrinsic yet, so its
-row is the SWAR form. Rust's rows are hand-written plain algorithms
+also the hardware instruction, and so does Oak's, through
+`arm64.cnt64` (`docs/spec/92-ffi.md` §3.2). Rust's rows are hand-written plain algorithms
 (word-at-a-time SHA-256, table-driven CRC-32C); no crates are used, so they
 are not the `sha2` or `crc32c` crates.
 
