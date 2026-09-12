@@ -67,8 +67,11 @@ list, in the order the pilot would meet them:
    to the named functions bound to their function-valued parameters, and
    result-position conditionals joined the subset, and `reduce`'s combine
    parameters carry the empty effect row.
-4. **Records as kernel parameters**, so a kernel takes a `Tensor2` rather
-   than its parts (`56-kernels.md` §7, §8).
+4. ~~**Records as kernel parameters**~~ — landed after #232: a kernel
+   takes `Tensor2[R]`/`MutTensor2[S]`; the Metal entry flattens the fields
+   into buffers and rebuilds the struct, helpers take and return records
+   by value, `assert` is fault 5. Still open: `tensor_set` through a
+   record's span inside a kernel (the row-major independence shape).
 5. **A `Buffer` inside a record, and custody states carrying a device
    identity** (`92-ffi.md` §2.8.6).
 6. **A backend consuming declared laws**: nothing regroups on

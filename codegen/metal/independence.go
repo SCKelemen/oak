@@ -38,11 +38,12 @@ func (em *emitter) independence(fn *ast.FunctionStatement) (string, error) {
 	gid := fn.Parameters[0].Name.Value
 	spans := map[string]bool{}
 	scalars := map[string]bool{}
+	spanRecords := map[string]bool{}
 	for i, p := range fn.Parameters {
 		if i == 0 || p == nil || p.Name == nil {
 			continue
 		}
-		t, err := kernelTypeOf(p.Type)
+		t, err := em.paramType(fn, i)
 		if err != nil {
 			return "", nil // the subset check reports the type
 		}
@@ -51,9 +52,19 @@ func (em *emitter) independence(fn *ast.FunctionStatement) (string, error) {
 			spans[p.Name.Value] = true
 		case "scalar":
 			scalars[p.Name.Value] = true
+		case "record":
+			// A span field is a span named `p.field`; a record holding
+			// one cannot be handed to a helper or copied (its indices
+			// would leave the kernel's sight).
+			for _, f := range em.records[t.record] {
+				if f.typ.kind == "span" {
+					spans[p.Name.Value+"."+f.name] = true
+					spanRecords[p.Name.Value] = true
+				}
+			}
 		}
 	}
-	in := &independenceWalk{gid: gid, spans: spans, scalars: scalars, tileBases: map[string]string{}, tileIndices: map[string]string{}, functions: em.functions, body: fn.Body, shape: "element"}
+	in := &independenceWalk{gid: gid, spans: spans, scalars: scalars, spanRecords: spanRecords, tileBases: map[string]string{}, tileIndices: map[string]string{}, functions: em.functions, body: fn.Body, shape: "element"}
 	if len(spans) == 0 {
 		return in.shape, nil
 	}
@@ -73,9 +84,10 @@ func (em *emitter) independence(fn *ast.FunctionStatement) (string, error) {
 }
 
 type independenceWalk struct {
-	gid     string
-	spans   map[string]bool
-	scalars map[string]bool
+	gid         string
+	spans       map[string]bool
+	scalars     map[string]bool
+	spanRecords map[string]bool
 	// tileBases maps a local never reassigned to T for `local = gid * T`;
 	// tileIndices names locals never reassigned that hold `gid * T + k`
 	// under a loop bounding k by T, so `y[i]` is the tile shape by name.
@@ -169,8 +181,11 @@ func (in *independenceWalk) expr(e ast.Expression, loops []loopBound) error {
 		if callee, ok := v.Function.(*ast.Identifier); ok {
 			if target := in.functions[callee.Value]; target != nil {
 				for _, a := range v.Arguments {
-					if id, isIdent := a.(*ast.Identifier); isIdent && in.spans[id.Value] {
+					if id, isIdent := a.(*ast.Identifier); isIdent && (in.spans[id.Value] || in.spanRecords[id.Value]) {
 						return in.fail(v, "span %s is handed to %s, whose accesses the kernel cannot see; index the span in the kernel body", id.Value, callee.Value)
+					}
+					if key, isField := in.spanField(a); isField {
+						return in.fail(v, "span field %s is handed to %s, whose accesses the kernel cannot see; index it in the kernel body", key, callee.Value)
 					}
 				}
 			}
@@ -207,12 +222,33 @@ func (in *independenceWalk) expr(e ast.Expression, loops []loopBound) error {
 	return nil
 }
 
+// spanField renders `p.field` for a span field of a record parameter.
+func (in *independenceWalk) spanField(e ast.Expression) (string, bool) {
+	dot, ok := e.(*ast.IndexExpression)
+	if !ok || !dot.Dot {
+		return "", false
+	}
+	base, ok := dot.Left.(*ast.Identifier)
+	field, isField := dot.Index.(*ast.Identifier)
+	if !ok || !isField {
+		return "", false
+	}
+	key := base.Value + "." + field.Value
+	return key, in.spans[key]
+}
+
 // access checks one span index against the two shapes.
 func (in *independenceWalk) access(ix *ast.IndexExpression, loops []loopBound) error {
-	base, ok := ix.Left.(*ast.Identifier)
-	if !ok || !in.spans[base.Value] {
+	name := ""
+	if base, ok := ix.Left.(*ast.Identifier); ok && in.spans[base.Value] {
+		name = base.Value
+	} else if key, isField := in.spanField(ix.Left); isField {
+		name = key
+	}
+	if name == "" {
 		return nil
 	}
+	base := &ast.Identifier{Value: name}
 	if id, isIdent := ix.Index.(*ast.Identifier); isIdent && id.Value == in.gid {
 		return nil
 	}
@@ -310,13 +346,26 @@ func (in *independenceWalk) counterBound(cond ast.Expression) (string, string, b
 func (in *independenceWalk) spanSource(value ast.Expression) (string, bool) {
 	switch v := value.(type) {
 	case *ast.Identifier:
-		if in.spans[v.Value] {
+		if in.spans[v.Value] || in.spanRecords[v.Value] {
 			return v.Value, true
+		}
+	case *ast.IndexExpression:
+		if key, isField := in.spanField(v); isField {
+			return key, true
 		}
 	case *ast.InvocationExpression:
 		if callee, ok := v.Function.(*ast.Identifier); ok && callee.Value == "subslice" && len(v.Arguments) == 3 {
 			if base, ok := v.Arguments[0].(*ast.Identifier); ok && in.spans[base.Value] {
 				return base.Value, true
+			}
+			if key, isField := in.spanField(v.Arguments[0]); isField {
+				return key, true
+			}
+		}
+	case *ast.RecordLiteral:
+		for _, f := range v.FieldOrder {
+			if src, ok := in.spanSource(f.Value); ok {
+				return src, true
 			}
 		}
 	}

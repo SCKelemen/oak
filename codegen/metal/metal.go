@@ -73,6 +73,8 @@ func Emit(program *ast.Program, tc *typechecker.TypeChecker) (*Result, error) {
 		functions:  map[string]*ast.FunctionStatement{},
 		helperDone: map[string]bool{},
 		helperBusy: map[string]bool{},
+		records:    map[string][]recordField{},
+		structDone: map[string]bool{},
 	}
 	var kernels []*ast.FunctionStatement
 	for _, stmt := range program.Statements {
@@ -115,6 +117,7 @@ func Emit(program *ast.Program, tc *typechecker.TypeChecker) (*Result, error) {
 	out.WriteString("\n#include <metal_stdlib>\nusing namespace metal;\n")
 	out.WriteString("#pragma METAL fp math_mode(safe)\n#pragma METAL fp contract(off)\n\n")
 	out.WriteString(prelude)
+	out.WriteString(em.structText.String())
 	out.WriteString(em.helperText.String())
 	out.WriteString(bodies.String())
 	result.Source = out.String()
@@ -199,6 +202,14 @@ type emitter struct {
 	helperDone map[string]bool
 	helperBusy map[string]bool
 	fnSubst    map[string]string
+	// records maps a record's internal name to its fields in declaration
+	// order; structText holds the MSL struct of each record used.
+	records    map[string][]recordField
+	structText strings.Builder
+	structDone map[string]bool
+	// currentRet is the result type of the function being emitted, for the
+	// zero an assertion failure returns.
+	currentRet oakType
 	// per-function state
 	current string
 	locals  map[string]oakType
@@ -210,9 +221,17 @@ type emitter struct {
 // oakType is the kernel subset's view of a type: a scalar name, or a view
 // or span of a scalar.
 type oakType struct {
-	kind    string // "scalar", "view", "span", "array", "func", "unit"
+	kind    string // "scalar", "view", "span", "array", "record", "func", "unit"
 	element string // Oak scalar name: u8..u64, i8..i64, f32, Bool
 	length  int64  // "array": the fixed length of a local [N]T
+	record  string // "record": the declared record's internal name
+}
+
+// recordField is one field of a record in the subset: a scalar or a
+// buffer (docs/spec/56-kernels.md section 2; nested records are outside).
+type recordField struct {
+	name string
+	typ  oakType
 }
 
 func (t oakType) String() string {
@@ -227,9 +246,14 @@ func (t oakType) String() string {
 		return fmt.Sprintf("[%d]%s", t.length, t.element)
 	case "func":
 		return "a function value"
+	case "record":
+		return t.record
 	}
 	return t.element
 }
+
+// isBuffer reports a view or span.
+func (t oakType) isBuffer() bool { return t.kind == "view" || t.kind == "span" }
 
 var scalarMSL = map[string]string{
 	"u8": "uchar", "u16": "ushort", "u32": "uint", "u64": "ulong",
@@ -246,6 +270,66 @@ var intWidth = map[string]int{"u8": 8, "i8": 8, "u16": 16, "i16": 16, "u32": 32,
 
 func isInt(name string) bool    { _, ok := intWidth[name]; return ok }
 func isSigned(name string) bool { return strings.HasPrefix(name, "i") }
+
+// paramType is the type of a function's i-th parameter: the checker's
+// recorded signature when it has one (records resolve only there), else
+// the syntax.
+func (em *emitter) paramType(fn *ast.FunctionStatement, i int) (oakType, error) {
+	if scheme, ok := em.env.Get(fn.Name.Value); ok && scheme != nil {
+		if ft, isFn := scheme.Type.(*typechecker.FunctionType); isFn && i < len(ft.Parameters) {
+			if t, ok := em.fromChecker(ft.Parameters[i]); ok {
+				return t, nil
+			}
+		}
+	}
+	return kernelTypeOf(fn.Parameters[i].Type)
+}
+
+// returnType is a function's result type, checker first.
+func (em *emitter) returnType(fn *ast.FunctionStatement) (oakType, error) {
+	if scheme, ok := em.env.Get(fn.Name.Value); ok && scheme != nil {
+		if ft, isFn := scheme.Type.(*typechecker.FunctionType); isFn {
+			if t, ok := em.fromChecker(ft.ReturnType); ok {
+				return t, nil
+			}
+		}
+	}
+	return kernelTypeOf(fn.ReturnType)
+}
+
+// requireStruct emits the MSL struct of a record once: a buffer field is
+// a pointer and its length, a scalar field its scalar.
+func (em *emitter) requireStruct(t oakType) string {
+	name := ident(t.record)
+	if em.structDone[t.record] {
+		return name
+	}
+	em.structDone[t.record] = true
+	var b strings.Builder
+	fmt.Fprintf(&b, "struct %s {\n", name)
+	for _, f := range em.records[t.record] {
+		msl := scalarMSL[f.typ.element]
+		switch f.typ.kind {
+		case "view":
+			fmt.Fprintf(&b, "  device const %s* %s;\n  uint %s_len;\n", msl, f.name, f.name)
+		case "span":
+			fmt.Fprintf(&b, "  device %s* %s;\n  uint %s_len;\n", msl, f.name, f.name)
+		default:
+			fmt.Fprintf(&b, "  %s %s;\n", msl, f.name)
+		}
+	}
+	b.WriteString("};\n\n")
+	em.structText.WriteString(b.String())
+	return name
+}
+
+// mslType renders a scalar or record type for a declaration or signature.
+func (em *emitter) mslType(t oakType) string {
+	if t.kind == "record" {
+		return em.requireStruct(t)
+	}
+	return scalarMSL[t.element]
+}
 
 // kernelTypeOf reads a parameter or declaration type from syntax.
 func kernelTypeOf(expr ast.Expression) (oakType, error) {
@@ -316,6 +400,24 @@ func (em *emitter) fromChecker(typ typechecker.Type) (oakType, bool) {
 		return oakType{kind: "scalar", element: "Bool"}, true
 	case *typechecker.UnitType:
 		return oakType{kind: "unit"}, true
+	case *typechecker.FunctionType:
+		return oakType{kind: "func"}, true
+	case *typechecker.RecordType:
+		if t.Name == "" {
+			return oakType{}, false
+		}
+		if _, known := em.records[t.Name]; !known {
+			var fields []recordField
+			for _, name := range t.Order {
+				ft, ok := em.fromChecker(t.Fields[name])
+				if !ok || (ft.kind != "scalar" && !ft.isBuffer()) {
+					return oakType{}, false
+				}
+				fields = append(fields, recordField{name: name, typ: ft})
+			}
+			em.records[t.Name] = fields
+		}
+		return oakType{kind: "record", record: t.Name}, true
 	case *typechecker.ArrayType:
 		element, ok := em.fromChecker(t.ElementType)
 		if !ok || element.kind != "scalar" {
@@ -370,18 +472,49 @@ func (em *emitter) kernel(fn *ast.FunctionStatement) (*Kernel, string, error) {
 	desc := &Kernel{Name: fn.Name.Value}
 	var args []string
 	next := 0
+	var prologue []string
 	for i, p := range fn.Parameters {
 		if p == nil || p.Name == nil || p.Variadic {
 			return nil, "", em.fail("parameters are named and not variadic")
 		}
-		t, err := kernelTypeOf(p.Type)
+		t, err := em.paramType(fn, i)
 		if err != nil {
 			return nil, "", em.fail("parameter %s: %v", p.Name.Value, err)
 		}
 		if t.kind == "array" || t.kind == "func" {
-			return nil, "", em.fail("parameter %s: a kernel takes buffers and scalars, got %s", p.Name.Value, t)
+			return nil, "", em.fail("parameter %s: a kernel takes buffers, scalars, and records of those, got %s", p.Name.Value, t)
 		}
 		name := ident(p.Name.Value)
+		if t.kind == "record" && i > 0 {
+			// A record parameter is its fields, flattened into buffers, and
+			// rebuilt as a struct local for the body.
+			em.locals[p.Name.Value] = t
+			structName := em.requireStruct(t)
+			var init []string
+			for _, f := range em.records[t.record] {
+				fname := name + "__" + f.name
+				msl := scalarMSL[f.typ.element]
+				switch f.typ.kind {
+				case "view":
+					args = append(args, fmt.Sprintf("device const %s* %s [[buffer(%d)]]", msl, fname, next), fmt.Sprintf("constant uint& %s_len [[buffer(%d)]]", fname, next+1))
+					desc.Params = append(desc.Params, Param{Name: p.Name.Value + "." + f.name, Kind: "view", Element: f.typ.element, Buffers: []int{next, next + 1}})
+					init = append(init, fname, fname+"_len")
+					next += 2
+				case "span":
+					args = append(args, fmt.Sprintf("device %s* %s [[buffer(%d)]]", msl, fname, next), fmt.Sprintf("constant uint& %s_len [[buffer(%d)]]", fname, next+1))
+					desc.Params = append(desc.Params, Param{Name: p.Name.Value + "." + f.name, Kind: "span", Element: f.typ.element, Buffers: []int{next, next + 1}})
+					init = append(init, fname, fname+"_len")
+					next += 2
+				default:
+					args = append(args, fmt.Sprintf("constant %s& %s [[buffer(%d)]]", msl, fname, next))
+					desc.Params = append(desc.Params, Param{Name: p.Name.Value + "." + f.name, Kind: "scalar", Element: f.typ.element, Buffers: []int{next}})
+					init = append(init, fname)
+					next++
+				}
+			}
+			prologue = append(prologue, fmt.Sprintf("  %s %s = { %s };", structName, name, strings.Join(init, ", ")))
+			continue
+		}
 		if i == 0 {
 			if t.kind != "scalar" || t.element != "u32" {
 				return nil, "", em.fail("the first parameter %s is the grid position and must be a u32, got %s", p.Name.Value, t)
@@ -416,6 +549,9 @@ func (em *emitter) kernel(fn *ast.FunctionStatement) (*Kernel, string, error) {
 	body, err := em.functionBody(fn, oakType{kind: "unit"})
 	if err != nil {
 		return nil, "", err
+	}
+	for _, line := range prologue {
+		out.WriteString(line + "\n")
 	}
 	out.WriteString(body)
 	out.WriteString("}\n")
@@ -477,20 +613,20 @@ func (em *emitter) helper(fn *ast.FunctionStatement, instance string, subst map[
 	if err := em.shapeOK(fn); err != nil {
 		return "", err
 	}
-	ret, err := kernelTypeOf(fn.ReturnType)
+	ret, err := em.returnType(fn)
 	if err != nil {
 		return "", em.fail("result: %v", err)
 	}
-	if ret.kind != "scalar" && ret.kind != "unit" {
-		return "", em.fail("a helper returns a scalar or (), got %s", ret)
+	if ret.kind != "scalar" && ret.kind != "unit" && ret.kind != "record" {
+		return "", em.fail("a helper returns a scalar, a record, or (), got %s", ret)
 	}
 	em.locals = map[string]oakType{}
 	var args []string
-	for _, p := range fn.Parameters {
+	for i, p := range fn.Parameters {
 		if p == nil || p.Name == nil || p.Variadic {
 			return "", em.fail("parameters are named and not variadic")
 		}
-		t, err := kernelTypeOf(p.Type)
+		t, err := em.paramType(fn, i)
 		if err != nil {
 			return "", em.fail("parameter %s: %v", p.Name.Value, err)
 		}
@@ -511,14 +647,16 @@ func (em *emitter) helper(fn *ast.FunctionStatement, instance string, subst map[
 			args = append(args, fmt.Sprintf("device const %s* %s, uint %s_len", msl, name, name))
 		case "span":
 			args = append(args, fmt.Sprintf("device %s* %s, uint %s_len", msl, name, name))
+		case "record":
+			args = append(args, fmt.Sprintf("%s %s", em.requireStruct(t), name))
 		default:
 			args = append(args, fmt.Sprintf("%s %s", msl, name))
 		}
 	}
 	args = append(args, "device atomic_uint* oak_fault")
 	retMSL := "void"
-	if ret.kind == "scalar" {
-		retMSL = scalarMSL[ret.element]
+	if ret.kind == "scalar" || ret.kind == "record" {
+		retMSL = em.mslType(ret)
 	}
 	var out strings.Builder
 	fmt.Fprintf(&out, "static inline %s %s(%s) {\n", retMSL, ident(instance), strings.Join(args, ", "))
@@ -549,6 +687,7 @@ func (em *emitter) shapeOK(fn *ast.FunctionStatement) error {
 // functionBody emits a body: a block, or an expression body returned (or
 // evaluated, for unit).
 func (em *emitter) functionBody(fn *ast.FunctionStatement, ret oakType) (string, error) {
+	em.currentRet = ret
 	var lines []string
 	switch body := fn.Body.(type) {
 	case *ast.BlockExpression:
@@ -577,7 +716,7 @@ func (em *emitter) functionBody(fn *ast.FunctionStatement, ret oakType) (string,
 // its result.
 func (em *emitter) block(statements []ast.Statement, lines *[]string, ret oakType) error {
 	for i, stmt := range statements {
-		last := i == len(statements)-1 && ret.kind == "scalar"
+		last := i == len(statements)-1 && (ret.kind == "scalar" || ret.kind == "record")
 		if err := em.statement(stmt, lines, ret, last); err != nil {
 			return err
 		}
@@ -595,20 +734,34 @@ func (em *emitter) statement(stmt ast.Statement, lines *[]string, ret oakType, t
 			return em.fail("a declaration without a name")
 		}
 		var t oakType
-		if s.Type != nil {
+		resolved := false
+		if declared := em.env.CheckedDeclarationType(s); declared != nil {
+			if ct, ok := em.fromChecker(declared); ok {
+				t, resolved = ct, true
+			}
+		}
+		if !resolved && s.Type != nil {
 			var err error
 			if t, err = kernelTypeOf(s.Type); err != nil {
 				return em.fail("declaration %s: %v", s.Name.Value, err)
 			}
-		} else if declared := em.env.CheckedDeclarationType(s); declared != nil {
-			var ok bool
-			if t, ok = em.fromChecker(declared); !ok {
-				return em.fail("declaration %s has type %s, outside the kernel subset", s.Name.Value, declared.String())
-			}
-		} else {
-			return em.fail("declaration %s has no recorded type", s.Name.Value)
+			resolved = true
+		}
+		if !resolved {
+			return em.fail("declaration %s has no type in the kernel subset", s.Name.Value)
 		}
 		switch t.kind {
+		case "record":
+			if s.Value == nil {
+				return em.fail("declaration %s: a record local needs a value", s.Name.Value)
+			}
+			term, err := em.expr(s.Value, t)
+			if err != nil {
+				return err
+			}
+			emit("%s %s = %s;", em.requireStruct(t), ident(s.Name.Value), term)
+			em.locals[s.Name.Value] = t
+			return nil
 		case "view", "span":
 			// A window on a buffer: subslice(buf, start, n) checks
 			// start + n <= len (fault 4) and aliases the pointer; a bare
@@ -654,13 +807,9 @@ func (em *emitter) statement(stmt ast.Statement, lines *[]string, ret oakType, t
 		if s.Target.Dot {
 			return em.fail("field assignment %s is outside the kernel subset", s.Target.String())
 		}
-		base, ok := s.Target.Left.(*ast.Identifier)
-		if !ok {
-			return em.fail("store into %s is outside the kernel subset (store through a named span)", s.Target.String())
-		}
-		t, known := em.locals[base.Value]
-		if !known || (t.kind != "span" && t.kind != "array") {
-			return em.fail("store into %s: not a span or a local array", base.Value)
+		ref, t, ok := em.bufferRef(s.Target.Left)
+		if !ok || (t.kind != "span" && t.kind != "array") {
+			return em.fail("store into %s: not a span, a span field, or a local array", s.Target.Left.String())
 		}
 		index, err := em.expr(s.Target.Index, oakType{kind: "scalar", element: "u32"})
 		if err != nil {
@@ -670,7 +819,7 @@ func (em *emitter) statement(stmt ast.Statement, lines *[]string, ret oakType, t
 		if err != nil {
 			return err
 		}
-		emit("%s = %s;", em.element(base.Value, index, s.Target.Token), value)
+		emit("%s = %s;", em.elementRef(ref, t, index, s.Target.Token), value)
 		return nil
 	case *ast.WhileStatement:
 		cond, err := em.expr(s.Condition, oakType{kind: "scalar", element: "Bool"})
@@ -701,6 +850,16 @@ func (em *emitter) statement(stmt ast.Statement, lines *[]string, ret oakType, t
 			return em.returnValue(s.Expression, ret, lines)
 		}
 		if call, ok := s.Expression.(*ast.InvocationExpression); ok {
+			if callee, isIdent := call.Function.(*ast.Identifier); isIdent && callee.Value == "assert" && len(call.Arguments) == 1 {
+				// A failed assertion is a trap: fault 5, and the thread
+				// leaves the function with a zero result.
+				cond, err := em.expr(call.Arguments[0], oakType{kind: "scalar", element: "Bool"})
+				if err != nil {
+					return err
+				}
+				emit("if (!%s) { oak_raise(oak_fault, 5u); return %s; }", parens(cond), em.zeroOf(em.currentRet))
+				return nil
+			}
 			term, err := em.call(call, oakType{kind: "unit"})
 			if err != nil {
 				return err
@@ -919,7 +1078,7 @@ func (em *emitter) expr(expr ast.Expression, want oakType) (string, error) {
 		if !ok {
 			return "", em.fail("identifier %s is not a parameter or local (globals and constants are outside the kernel subset)", e.Value)
 		}
-		if t.kind != "scalar" {
+		if t.kind != "scalar" && t.kind != "record" {
 			return "", em.fail("%s is a buffer and can only be indexed, measured with len, or passed on", e.Value)
 		}
 		return ident(e.Value), nil
@@ -929,21 +1088,62 @@ func (em *emitter) expr(expr ast.Expression, want oakType) (string, error) {
 		return em.infix(e, want)
 	case *ast.IndexExpression:
 		if e.Dot {
-			return "", em.fail("field access %s is outside the kernel subset", e.String())
+			// A scalar field of a record local; buffer fields are read
+			// only through indexing, len, windows, and calls.
+			base, ok := e.Left.(*ast.Identifier)
+			field, isField := e.Index.(*ast.Identifier)
+			if !ok || !isField {
+				return "", em.fail("field access %s is outside the kernel subset", e.String())
+			}
+			rt, known := em.locals[base.Value]
+			if !known || rt.kind != "record" {
+				return "", em.fail("%s is not a record local", base.Value)
+			}
+			for _, f := range em.records[rt.record] {
+				if f.name == field.Value {
+					if f.typ.kind != "scalar" {
+						return "", em.fail("%s is a buffer field and can only be indexed, measured with len, windowed, or passed on", e.String())
+					}
+					return ident(base.Value) + "." + f.name, nil
+				}
+			}
+			return "", em.fail("%s has no field %s", rt.record, field.Value)
 		}
-		base, ok := e.Left.(*ast.Identifier)
+		ref, t, ok := em.bufferRef(e.Left)
 		if !ok {
-			return "", em.fail("index into %s is outside the kernel subset (index a named buffer)", e.Left.String())
-		}
-		t, known := em.locals[base.Value]
-		if !known || t.kind == "scalar" {
-			return "", em.fail("%s is not a buffer", base.Value)
+			return "", em.fail("%s is not a buffer (index a named buffer, a buffer field, or a local array)", e.Left.String())
 		}
 		index, err := em.expr(e.Index, oakType{kind: "scalar", element: "u32"})
 		if err != nil {
 			return "", err
 		}
-		return em.element(base.Value, index, e.Token), nil
+		return em.elementRef(ref, t, index, e.Token), nil
+	case *ast.RecordLiteral:
+		t, ok := em.checkedTypeOf(e)
+		if !ok || t.kind != "record" {
+			return "", em.fail("record literal %s has no record type in the kernel subset", e.String())
+		}
+		var terms []string
+		for _, f := range em.records[t.record] {
+			value, given := e.Fields[f.name]
+			if !given {
+				return "", em.fail("record literal %s lacks the field %s", e.String(), f.name)
+			}
+			if f.typ.isBuffer() {
+				ref, src, ok := em.bufferRef(value)
+				if !ok || !src.isBuffer() || (f.typ.kind == "span" && src.kind != "span") {
+					return "", em.fail("record literal field %s: %s is not a matching buffer", f.name, value.String())
+				}
+				terms = append(terms, ref, em.lengthRef(ref, src))
+				continue
+			}
+			term, err := em.expr(value, f.typ)
+			if err != nil {
+				return "", err
+			}
+			terms = append(terms, term)
+		}
+		return fmt.Sprintf("%s{ %s }", em.requireStruct(t), strings.Join(terms, ", ")), nil
 	case *ast.InvocationExpression:
 		return em.call(e, want)
 	case *ast.MatchExpression:
@@ -980,18 +1180,71 @@ func (em *emitter) expr(expr ast.Expression, want oakType) (string, error) {
 // — a guard such as `gid < len(y)` or a canonical loop bound over a binding
 // of `len(x)` discharges it, and the access is then the raw load or store.
 func (em *emitter) element(buffer, index string, at token.Token) string {
-	if em.tc != nil && em.tc.IndexProven(at) {
-		return fmt.Sprintf("%s[%s]", ident(buffer), index)
-	}
-	return fmt.Sprintf("%s[oak_check(%s, %s, oak_fault)]", ident(buffer), index, em.lengthOf(buffer))
+	return em.elementRef(ident(buffer), em.locals[buffer], index, at)
 }
 
-// lengthOf is the length term of a buffer or local array.
+// elementRef renders ref[index] for a rendered buffer reference.
+func (em *emitter) elementRef(ref string, t oakType, index string, at token.Token) string {
+	if em.tc != nil && em.tc.IndexProven(at) {
+		return fmt.Sprintf("%s[%s]", ref, index)
+	}
+	return fmt.Sprintf("%s[oak_check(%s, %s, oak_fault)]", ref, index, em.lengthRef(ref, t))
+}
+
+// lengthOf is the length term of a named buffer or local array.
 func (em *emitter) lengthOf(name string) string {
-	if t, ok := em.locals[name]; ok && t.kind == "array" {
+	return em.lengthRef(ident(name), em.locals[name])
+}
+
+// lengthRef is the length term of a rendered buffer reference.
+func (em *emitter) lengthRef(ref string, t oakType) string {
+	if t.kind == "array" {
 		return fmt.Sprintf("%du", t.length)
 	}
-	return ident(name) + "_len"
+	return ref + "_len"
+}
+
+// bufferRef resolves an expression naming a buffer — a local, or a buffer
+// field of a record local (`t.data`) — to its rendered reference and type.
+func (em *emitter) bufferRef(e ast.Expression) (string, oakType, bool) {
+	switch v := e.(type) {
+	case *ast.Identifier:
+		t, ok := em.locals[v.Value]
+		if !ok || (!t.isBuffer() && t.kind != "array") {
+			return "", oakType{}, false
+		}
+		return ident(v.Value), t, true
+	case *ast.IndexExpression:
+		if !v.Dot {
+			return "", oakType{}, false
+		}
+		base, ok := v.Left.(*ast.Identifier)
+		field, isField := v.Index.(*ast.Identifier)
+		if !ok || !isField {
+			return "", oakType{}, false
+		}
+		rt, known := em.locals[base.Value]
+		if !known || rt.kind != "record" {
+			return "", oakType{}, false
+		}
+		for _, f := range em.records[rt.record] {
+			if f.name == field.Value && f.typ.isBuffer() {
+				return ident(base.Value) + "." + f.name, f.typ, true
+			}
+		}
+	}
+	return "", oakType{}, false
+}
+
+// zeroOf is the value an aborted function returns.
+func (em *emitter) zeroOf(t oakType) string {
+	switch t.kind {
+	case "scalar":
+		return fmt.Sprintf("(%s)0", scalarMSL[t.element])
+	case "record":
+		return em.requireStruct(t) + "{}"
+	}
+	return ""
 }
 
 // bufferLocal emits a view or span local.
@@ -1003,32 +1256,28 @@ func (em *emitter) bufferLocal(s *ast.VariableDeclaration, t oakType, emit func(
 	msl := scalarMSL[t.element]
 	name := ident(s.Name.Value)
 	switch v := s.Value.(type) {
-	case *ast.Identifier:
-		src, known := em.locals[v.Value]
-		if !known || (src.kind != "view" && src.kind != "span") {
-			return em.fail("declaration %s: %s is not a buffer", s.Name.Value, v.Value)
+	case *ast.Identifier, *ast.IndexExpression:
+		ref, src, ok := em.bufferRef(v)
+		if !ok || !src.isBuffer() {
+			return em.fail("declaration %s: %s is not a buffer", s.Name.Value, v.String())
 		}
 		if t.kind == "span" && src.kind != "span" {
-			return em.fail("declaration %s: a span cannot alias the view %s", s.Name.Value, v.Value)
+			return em.fail("declaration %s: a span cannot alias the view %s", s.Name.Value, v.String())
 		}
-		emit("%s %s* %s = %s;", qualifier, msl, name, ident(v.Value))
-		emit("uint %s_len = %s_len;", name, ident(v.Value))
+		emit("%s %s* %s = %s;", qualifier, msl, name, ref)
+		emit("uint %s_len = %s;", name, em.lengthRef(ref, src))
 		return nil
 	case *ast.InvocationExpression:
 		callee, ok := v.Function.(*ast.Identifier)
 		if !ok || callee.Value != "subslice" || len(v.Arguments) != 3 {
 			break
 		}
-		base, ok := v.Arguments[0].(*ast.Identifier)
-		if !ok {
-			return em.fail("declaration %s: subslice takes a named buffer", s.Name.Value)
-		}
-		src, known := em.locals[base.Value]
-		if !known || (src.kind != "view" && src.kind != "span") {
-			return em.fail("declaration %s: %s is not a buffer", s.Name.Value, base.Value)
+		ref, src, ok := em.bufferRef(v.Arguments[0])
+		if !ok || !src.isBuffer() {
+			return em.fail("declaration %s: subslice takes a named buffer or a buffer field", s.Name.Value)
 		}
 		if t.kind == "span" && src.kind != "span" {
-			return em.fail("declaration %s: a span cannot window the view %s", s.Name.Value, base.Value)
+			return em.fail("declaration %s: a span cannot window the view %s", s.Name.Value, v.Arguments[0].String())
 		}
 		u32 := oakType{kind: "scalar", element: "u32"}
 		start, err := em.expr(v.Arguments[1], u32)
@@ -1040,7 +1289,7 @@ func (em *emitter) bufferLocal(s *ast.VariableDeclaration, t oakType, emit func(
 			return err
 		}
 		emit("uint %s_len = %s;", name, count)
-		emit("%s %s* %s = %s + oak_subslice(%s, %s_len, %s, oak_fault);", qualifier, msl, name, ident(base.Value), start, name, em.lengthOf(base.Value))
+		emit("%s %s* %s = %s + oak_subslice(%s, %s_len, %s, oak_fault);", qualifier, msl, name, ref, start, name, em.lengthRef(ref, src))
 		return nil
 	}
 	return em.fail("declaration %s: a buffer local is subslice(buf, start, n) or a buffer name", s.Name.Value)
@@ -1218,14 +1467,11 @@ func (em *emitter) call(call *ast.InvocationExpression, want oakType) (string, e
 		if len(args) != 1 {
 			return "", em.fail("len takes one argument")
 		}
-		base, ok := args[0].(*ast.Identifier)
+		ref, t, ok := em.bufferRef(args[0])
 		if !ok {
-			return "", em.fail("len of %s is outside the kernel subset (measure a named buffer)", args[0].String())
+			return "", em.fail("len of %s: not a buffer, a buffer field, or a local array", args[0].String())
 		}
-		if t, known := em.locals[base.Value]; !known || t.kind == "scalar" {
-			return "", em.fail("len of %s: not a buffer", base.Value)
-		}
-		return em.lengthOf(base.Value), nil
+		return em.lengthRef(ref, t), nil
 	case scalarMSL[name] != "" && name != "Bool":
 		// Constructor conversions: widening and float constructors.
 		if len(args) != 1 {
@@ -1296,7 +1542,7 @@ func (em *emitter) call(call *ast.InvocationExpression, want oakType) (string, e
 	var rendered []string
 	subst := map[string]string{}
 	for i, a := range args {
-		pt, err := kernelTypeOf(target.Parameters[i].Type)
+		pt, err := em.paramType(target, i)
 		if err != nil {
 			return "", em.fail("call to %s: parameter %s: %v", name, target.Parameters[i].Name.Value, err)
 		}
@@ -1318,18 +1564,14 @@ func (em *emitter) call(call *ast.InvocationExpression, want oakType) (string, e
 			continue
 		}
 		if pt.kind == "view" || pt.kind == "span" {
-			base, ok := a.(*ast.Identifier)
-			if !ok {
-				return "", em.fail("call to %s: a buffer argument is a named buffer, got %s", name, a.String())
-			}
-			at, known := em.locals[base.Value]
-			if !known || at.kind == "scalar" {
-				return "", em.fail("call to %s: %s is not a buffer", name, base.Value)
+			ref, at, ok := em.bufferRef(a)
+			if !ok || !at.isBuffer() {
+				return "", em.fail("call to %s: a buffer argument is a named buffer or buffer field, got %s", name, a.String())
 			}
 			if pt.kind == "span" && at.kind != "span" {
-				return "", em.fail("call to %s: %s is a view, the parameter wants a span", name, base.Value)
+				return "", em.fail("call to %s: %s is a view, the parameter wants a span", name, a.String())
 			}
-			rendered = append(rendered, ident(base.Value), ident(base.Value)+"_len")
+			rendered = append(rendered, ref, em.lengthRef(ref, at))
 			continue
 		}
 		term, err := em.expr(a, pt)
@@ -1436,6 +1678,10 @@ func walk(node ast.Node, visit func(ast.Node)) {
 		walk(n.Scrutinee, visit)
 		for _, arm := range n.Arms {
 			walk(arm.Body, visit)
+		}
+	case *ast.RecordLiteral:
+		for _, f := range n.FieldOrder {
+			walk(f.Value, visit)
 		}
 	}
 }
