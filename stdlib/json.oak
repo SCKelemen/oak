@@ -348,10 +348,13 @@ pub json_decode_error_code: (reason: JsonDecodeError): u32 = reason ?
  | .UnknownField => u32(7)
  | .LengthMismatch => u32(8)
 pub json_decode_error: (code: u32): JsonDecodeError = code == u32(1) ? { .InvalidEncoding } | code == u32(3) ? { .TypeMismatch } | code == u32(4) ? { .NumericOverflow } | code == u32(5) ? { .MissingField } | code == u32(6) ? { .DuplicateField } | code == u32(7) ? { .UnknownField } | code == u32(8) ? { .LengthMismatch } | { .InvalidSyntax }
-pub json_space: (unit: u8): Bool = unit == u8(32) || unit == u8(9) || unit == u8(10) || unit == u8(13)
+// One comparison decides the common case: a byte above the space is never
+// whitespace, so the skip loops test the rest only for the few that are.
+pub json_space: (unit: u8): Bool = unit <= u8(32) && (unit == u8(32) || unit == u8(9) || unit == u8(10) || unit == u8(13))
 pub json_digit: (unit: u8): Bool = unit >= u8(48) && unit <= u8(57)
+// Total: an offset at or past the end is returned unchanged (nothing to
+// skip), so the derived readers' hot path carries no precondition check.
 pub json_skip_space: (src: []u8, offset: u32): u32 {
- assert(offset <= len(src))
  at: u32 = offset
  while at < len(src) && json_space(src[at]) {
   at = at + u32(1)
@@ -461,6 +464,52 @@ pub json_key_equal: (src: []u8, key: JsonToken, expected: []u8): Bool {
   plain ? { same } | { json_key_equal_unicode(src, key, expected) }
  }
 }
+// The bytes of a string token with its escapes decoded, written into dst:
+// the decoded length, or 4294967295 when the token is not a string, an
+// escape is malformed, or the decoding does not fit. A derived key
+// classifier decodes an escaped key once and compares bytes
+// (docs/spec/71-codecs.md section 19) — the verdict of
+// json_key_equal_unicode, since code points compare equal exactly when
+// their canonical UTF-8 does.
+pub json_key_decode: (src: []u8, key: JsonToken, dst: [*]u8): u32 {
+ valid: Bool = key.kind == u32(6) && key.start < key.end && key.end <= len(src)
+ at: u32 = key.start + u32(1)
+ out: u32 = 0
+ limit: u32 = valid ? key.end - u32(1) | u32(0)
+ while valid && at < limit {
+  unit: u8 = src[at]
+  unit == u8(92) ? {
+   item: strings.TextScalar = json_escape(src, at)
+   valid = item.next <= limit
+   valid ? {
+    written: Result[u32, strings.TextError] = strings.utf8_encode(dst, out, item.value)
+    valid = strings.text_result_ok(written)
+    valid ? {
+     out = out + strings.text_result_value(written)
+     at = item.next
+    }
+   }
+  } | {
+   valid = out < len(dst)
+   valid ? {
+    dst[out] = unit
+    out = out + u32(1)
+    at = at + u32(1)
+   }
+  }
+ }
+ valid ? out | u32(4294967295)
+}
+// Byte equality of a decoded key against a literal spelling.
+pub json_key_decoded_equal: (decoded: []u8, expected: []u8): Bool {
+ same: Bool = len(decoded) == len(expected)
+ i: u32 = 0
+ while same && i < len(expected) {
+  same = decoded[i] == expected[i]
+  i = i + u32(1)
+ }
+ same
+}
 pub json_key_equal_unicode: (src: []u8, key: JsonToken, expected: []u8): Bool {
  valid: Bool = key.kind == u32(6) && key.start < key.end && key.end <= len(src)
  at: u32 = key.start + u32(1)
@@ -496,36 +545,77 @@ pub json_scan_integer_slow: (src: []u8, offset: u32): JsonIntegerScan {
  | .Err(reason) => JsonIntegerScan { magnitude: u64(0), next: offset, status: json_decode_error_code(reason) + u32(1) }
  | .Ok(value) => JsonIntegerScan { magnitude: value.magnitude, next: value.next, status: value.negative ? u32(1) | u32(0) }
 }
+// Word-parallel digit scanning (docs/spec/71-codecs.md section 19). The
+// three functions and the table below are what `json_scan_integer` runs
+// per eight bytes; Oak.JsonDigits proves each by bit-blasting.
+
+// Bit 7 of every byte that is not an ASCII decimal digit. A byte the mask
+// leaves clear is a digit (non_digit_mask_sound); a carry between lanes can
+// only mark a digit as a non-digit, which shortens a run by a byte-loop
+// step and changes nothing else.
+json_non_digit_mask: (word: u64): u64 =
+ ((word + u64(5063812098665367110)) | (word - u64(3472328296227680304))) & (u64(2155905152) * u64(4294967296) + u64(2155905152))
+
+// The number of digit bytes at the front of a word from its non-digit
+// mask, with no branch and no count-trailing-zeros instruction: the lowest
+// set bit isolated and turned into 256^k, which multiplied by the constant
+// whose byte j holds 7 - j puts k in the top byte (digit_run). A mask with
+// no bit set — all eight bytes digits — reads as zero, and the scanner
+// takes that word whole or leaves it to the byte loop.
+json_digit_run: (mask: u64): u32 {
+ lowest: u64 = mask & (u64(0) - mask)
+ power: u64 = lowest >> u64(7)
+ u32_trunc_u64((power * u64(283686952306183)) >> u64(56))
+}
+
+// Eight ASCII digits, the first in the low byte, to their value (word_value).
+json_word_value: (word: u64): u64 {
+ digits: u64 = word & u64(1085102592571150095)
+ pairs: u64 = ((digits * u64(10)) + (digits >> u64(8))) & u64(71777214294589695)
+ quads: u64 = ((pairs * u64(100)) + (pairs >> u64(16))) & u64(281470681808895)
+ ((quads * u64(10000)) + (quads >> u64(32))) & u64(4294967295)
+}
+
+// 10^k for k = 0..8, indexed by a run masked to sixteen so the access is proven.
+json_pow10: [16]u64 = [
+ u64(1), u64(10), u64(100), u64(1000), u64(10000), u64(100000), u64(1000000), u64(10000000),
+ u64(100000000), u64(1), u64(1), u64(1), u64(1), u64(1), u64(1), u64(1)]
+
 pub json_scan_integer: (src: []u8, offset: u32): JsonIntegerScan {
- assert(offset <= len(src))
+ // An offset past the end takes the slow reader, which checks it.
  start: u32 = json_skip_space(src, offset)
  at: u32 = start
  negative: Bool = at < len(src) && src[at] == u8(45)
  negative ? { at = at + u32(1) }
  at >= len(src) || !json_digit(src[at]) ? { json_scan_integer_slow(src, offset) } | {
   leading_zero: Bool = src[at] == u8(48)
-  magnitude: u64 = u64(src[at] - u8(48))
-  // Every sequence of at most 19 decimal digits fits in u64. Keep the
-  // common loop free of overflow state; check the twentieth and later digits.
-  fast_end: u32 = len(src) - at > u32(19) ? at + u32(19) | len(src)
-  at = at + u32(1)
-  chunks: Bool = true
-  while fast_end - at >= u32(8) && chunks {
+  magnitude: u64 = u64(0)
+  count: u32 = u32(0)
+  // A word at a time while eight bytes remain (docs/spec/71-codecs.md
+  // section 19, Oak.JsonDigits): eight digits when the word is all digits
+  // and they keep the count within the nineteen that never overflow;
+  // otherwise the digit run at the word's front, scaled in with no branch
+  // per digit, and the word loop ends. The byte loop below takes the
+  // twentieth digit on and the last seven bytes of the input.
+  words: Bool = true
+  while words && len(src) - at >= u32(8) {
    word: u64 = ((u64(src[at + u32(0)]) << u64(0)) | (u64(src[at + u32(1)]) << u64(8)) | (u64(src[at + u32(2)]) << u64(16)) | (u64(src[at + u32(3)]) << u64(24)) | (u64(src[at + u32(4)]) << u64(32)) | (u64(src[at + u32(5)]) << u64(40)) | (u64(src[at + u32(6)]) << u64(48)) | (u64(src[at + u32(7)]) << u64(56)))
-   // SWAR: all eight lanes must contain ASCII decimal digits.
-   chunks = (((word + u64(5063812098665367110)) | (word - u64(3472328296227680304))) & (u64(2155905152) * u64(4294967296) + u64(2155905152))) == u64(0)
-   chunks ? {
-    digits: u64 = word & u64(1085102592571150095)
-    pairs: u64 = ((digits * u64(10)) + (digits >> u64(8))) & u64(71777214294589695)
-    quads: u64 = ((pairs * u64(100)) + (pairs >> u64(16))) & u64(281470681808895)
-    number: u64 = ((quads * u64(10000)) + (quads >> u64(32))) & u64(4294967295)
-    magnitude = magnitude * u64(100000000) + number
+   mask: u64 = json_non_digit_mask(word)
+   mask == u64(0) && count + u32(8) <= u32(19) ? {
+    magnitude = magnitude * u64(100000000) + json_word_value(word)
     at = at + u32(8)
+    count = count + u32(8)
+   } | {
+    words = false
+    run: u32 = json_digit_run(mask)
+    run > u32(0) && count + run <= u32(19) ? {
+     // The run's digits moved to the high bytes, ASCII zeros filled below.
+     shifted: u64 = (word << (u64(64) - u64(8) * u64(run))) | (u64(3472328296227680304) >> (u64(8) * u64(run)))
+     magnitude = magnitude * json_pow10[run & u32(15)] + json_word_value(shifted)
+     at = at + run
+     count = count + run
+    }
    }
-  }
-  while at < fast_end && json_digit(src[at]) {
-   magnitude = magnitude * u64(10) + u64(src[at] - u8(48))
-   at = at + u32(1)
   }
   overflow: Bool = false
   while at < len(src) && json_digit(src[at]) {

@@ -24,6 +24,7 @@ import Oak.Utf8Lookup
 import Oak.Utf8Stream
 import Oak.Utf8Flat
 import Oak.Utf8Blocks
+import Oak.JsonDigits
 import Oak.BorrowRegions
 import Oak.Reborrow
 import Oak.ReborrowRefinement

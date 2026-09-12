@@ -59,7 +59,11 @@ func Theorems(model *compiler.SemanticModel, cases int) ([]Result, error) {
 		cases = DefaultCases
 	}
 	theorems := typechecker.Theorems(model.Tree.Root)
-	if len(theorems) == 0 {
+	liveness := 0
+	for _, decl := range compiler.Protocols(model.Tree) {
+		liveness += len(decl.Liveness)
+	}
+	if len(theorems) == 0 && liveness == 0 {
 		return nil, nil
 	}
 	env := object.NewEnvironment()
@@ -79,7 +83,9 @@ func Theorems(model *compiler.SemanticModel, cases int) ([]Result, error) {
 	for _, theorem := range theorems {
 		results = append(results, decide(env, model.TypeChecker, functions, theorem, cases))
 	}
-	return summarizeInvariants(results), nil
+	// A protocol's `eventually` entries are decided over its reachable
+	// states (prove/liveness.go), after the theorems.
+	return append(summarizeInvariants(results), protocolLiveness(model, env, cases)...), nil
 }
 
 // summarizeInvariants folds the generated obligations of an invariant

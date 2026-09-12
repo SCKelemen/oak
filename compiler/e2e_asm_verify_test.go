@@ -3,6 +3,8 @@ package compiler
 import (
 	"strings"
 	"testing"
+
+	"github.com/SCKelemen/oak/target"
 )
 
 // §8 verification at the asm gate: a wrong body never compiles; a proven
@@ -22,7 +24,7 @@ add_asm: (left, right: u32) -> u32 = {
   sub w0, w0, w1
   ret
 }
-`).EmitC().Get()
+`).WithTarget(target.Target{OS: target.OSLinux, Arch: target.ArchArm64}).EmitC().Get()
 	if err == nil || !strings.Contains(err.Error(), "disagrees with its Oak body") {
 		t.Fatalf("a body disagreeing with its Oak specification must be rejected, got %v", err)
 	}

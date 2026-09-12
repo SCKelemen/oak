@@ -22,6 +22,12 @@ type CodeGenerator struct {
 	// equalityTypes caches the aggregates whose equality functions the
 	// program needs (typechecker.EqualityTypes); nil until first asked.
 	equalityTypes map[string]bool
+	// atomicCarriers records every Atomic[T] carrier the program declares
+	// storage for, so the lock-free admission block asserts exactly those
+	// (docs/spec/65-machine-memory.md §6); atomicsIncluded says whether
+	// <stdatomic.h> was emitted, which the block's macros need.
+	atomicCarriers  map[string]bool
+	atomicsIncluded bool
 	// constantContext is set while emitting C integer constant expressions
 	// (file-scope initializers, static_assert), where arithmetic must stay
 	// a plain operator rather than a helper call.
@@ -324,6 +330,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.emitExportWrappers(program)
 
 	cg.emitEntryPoint()
+	cg.emitAtomicAdmission()
 
 	output := cg.output.String()
 	if cg.liftedLiterals.Len() != 0 {
@@ -1938,6 +1945,31 @@ func (cg *CodeGenerator) computeInlineHelpers(program *ast.Program) {
 			cg.inlineHelpers[name] = true
 		}
 	}
+	// The derived JSON readers' hot helpers (compiler/codec_decode.go) are
+	// forced inline wherever they are compiled in: the integer scanner and
+	// its word arithmetic, whitespace skipping, the value boundary test,
+	// and the decoded-key comparison sit inside every derived record
+	// reader's loop, and a call there costs more than their bodies
+	// (docs/spec/71-codecs.md section 19). They are exported and some
+	// contain loops, so the shape rule above would not pick them.
+	for _, name := range codecHotHelpers {
+		fn := functions[name]
+		if fn == nil || fn.Body == nil || fn.Receiver != nil || fn.ExternSymbol != "" || fn.AsmBacked ||
+			fn.NativeBacked || len(fn.TypeParams) > 0 {
+			continue
+		}
+		if _, isMember := cg.trampolineMember[name]; isMember {
+			continue
+		}
+		cg.inlineHelpers[name] = true
+	}
+}
+
+// codecHotHelpers are the standard library functions the derived JSON
+// record readers call on their hot path (stdlib/json.oak).
+var codecHotHelpers = []string{
+	"json_scan_integer", "json_non_digit_mask", "json_digit_run", "json_word_value",
+	"json_skip_space", "json_value_boundary", "json_key_decoded_equal",
 }
 
 // linkage returns the storage-class prefix for a function's prototype and
@@ -3428,6 +3460,7 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 	// The parser represents array types as IndexExpression
 	if indexExpr, ok := expr.(*ast.IndexExpression); ok {
 		if cType, atomic := atomicTypeC(indexExpr); atomic {
+			cg.noteAtomicCarrier(indexExpr)
 			return cType
 		}
 		// Phantom-encoded strings share one representation: every Str[E]
@@ -3985,6 +4018,7 @@ func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, 
 
 	if stmt.Type != nil {
 		if cType, atomic := atomicTypeC(stmt.Type); atomic {
+			cg.noteAtomicCarrier(stmt.Type)
 			if stmt.Value != nil {
 				cg.write("  OAK_ATOMIC_INITIALIZER_MUST_BE_ZERO_INIT;\n")
 				return

@@ -42,7 +42,8 @@ compiler's internals, which move freely.
 | Assembler units and the AArch64 surfaces | `94-assembler.md`, `95`–`101` | stabilizing | verification-driven; instruction coverage grows |
 | Attributes other than the clauses above (layout `struct(packed)`, section names) | `40-records.md` §6b, `65-machine-memory.md` | stabilizing | no general attribute syntax exists; none is planned before the effect and protocol clauses settle |
 | Parameterized effects, typestate-indexed handles, `via` parameter modes | `60-effects-allocation.md`, `112-protocols.md` §7 | direction | |
-| IO surface (files, fsync, sockets, io_uring) | `120-io.md` | direction | `#106`; interface designed, no realization yet |
+| IO port: caller-owned completion rings, `open`/`close`/`pread`/`pwrite`/`fsync`/`fdatasync`/`fsyncdir`, `replace io => iosim\|ionative` | `120-io.md` §8 increments 2–3 | stabilizing | `#106`; `iosim` and the portable `ionative` landed 2026-09-11 with `Oak.IoPort`; the ring shape is fixed by the io_uring increment to come |
+| IO surface beyond the port (io_uring realization, registered buffers, sockets) | `120-io.md` §8 increment 4 | direction | `#106`; designed, no realization yet |
 | Floating point beyond `f32`/`f64` arithmetic and the two float vectors | `20-types.md` §11.3 | stabilizing | |
 
 ## How marks change
