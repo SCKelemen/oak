@@ -1,0 +1,815 @@
+// The bit-level solver, in Oak (docs/spec/125-verification.md section 7;
+// asm/blast.go and asm/bdd.go are the Go decider this is the twin of). A
+// reduced ordered binary decision diagram over a runtime buffer, and a bit
+// blaster that turns a theorem's term table into one diagram per result
+// bit. The program that embeds a problem (a word table the Go decider
+// serializes: the leaves and their variable order, the terms in dependency
+// order, the roots) calls `solve` and reads a status: 0 when every trap
+// root is the false node and the claim root the true node, 1 when not, 2
+// when the node budget was exceeded, 3 when a term is outside this
+// solver's subset. Operation for operation this is the Go blaster — the
+// same terminal cases, the same ripple carry, the same barrels, the same
+// condition table — so the two build the same nodes in the same order and
+// agree on the node count, which is how the twins are checked against one
+// another over the whole law corpus.
+//
+// Layout: node fields in structure-of-arrays form (variable, low, high),
+// an open-addressing unique table, a direct-mapped apply cache, an
+// explicit frame stack for the iterative apply (the strict profile admits
+// no unbounded recursion), the blasted bits of every term, and the select
+// slots. Every offset is a word index into one buffer the caller owns.
+package main
+
+NONE: u32 = 4294967295
+TERMINAL_VAR: u32 = 4294967295
+BDD_FALSE: u32 = 0
+BDD_TRUE: u32 = 1
+
+OP_AND: u32 = 0
+OP_OR: u32 = 1
+OP_XOR: u32 = 2
+
+// Term kinds and operators, as the serializer numbers them.
+KIND_PARAM: u32 = 0
+KIND_CONST: u32 = 1
+KIND_BINARY: u32 = 2
+KIND_CMP: u32 = 3
+KIND_ITE: u32 = 4
+KIND_SELECT: u32 = 5
+
+BOP_AND: u32 = 0
+BOP_OR: u32 = 1
+BOP_XOR: u32 = 2
+BOP_ADD: u32 = 3
+BOP_SUB: u32 = 4
+BOP_SHL: u32 = 5
+BOP_SHR: u32 = 6
+BOP_SAR: u32 = 7
+BOP_MUL: u32 = 8
+BOP_ROR: u32 = 9
+BOP_REV: u32 = 10
+BOP_REV16: u32 = 11
+BOP_REV32: u32 = 12
+BOP_RBIT: u32 = 13
+BOP_CLZ: u32 = 14
+BOP_CNT: u32 = 15
+BOP_CLS: u32 = 16
+
+STATUS_PROVEN: u32 = 0
+STATUS_REFUTED: u32 = 1
+STATUS_EXCEEDED: u32 = 2
+STATUS_UNSUPPORTED: u32 = 3
+
+// The problem's word table: an 8-word header, the leaves (65 words each:
+// the declared width, then the variable of each of 64 bits), the terms (8
+// words each: kind, op, width, a, b, c, value low, value high), the roots
+// (traps first, the claim last), then the select slots' variables (64
+// words per slot).
+HEADER_WORDS: u32 = 8
+LEAF_WORDS: u32 = 65
+TERM_WORDS: u32 = 8
+SELECT_SLOT_WORDS: u32 = 34
+FRAME_WORDS: u32 = 16
+
+Layout: type = struct {
+  cap: u32,
+  var_at: u32,
+  low_at: u32,
+  high_at: u32,
+  unique_at: u32,
+  umask: u32,
+  cache_at: u32,
+  cmask: u32,
+  stack_at: u32,
+  stack_cap: u32,
+  bits_at: u32,
+  selects_at: u32,
+  select_cap: u32,
+  state_at: u32,
+  total: u32
+}
+
+// The state words: the node count, the exceeded flag, the select slots in
+// use, the status of the run.
+STATE_COUNT: u32 = 0
+STATE_EXCEEDED: u32 = 1
+STATE_SELECTS: u32 = 2
+
+next_pow2: (n: u32): u32 {
+  p: u32 = 1
+  while p < n {
+    p = p * u32(2)
+  }
+  p
+}
+
+// layout_for sizes the buffer for a node budget and a term count: the unique
+// table twice the budget rounded up, a million-entry cache, a 32768-frame
+// stack.
+layout_for: (cap: u32, terms: u32): Layout {
+  ucap: u32 = next_pow2(cap * u32(2))
+  ccap: u32 = 1048576
+  scap: u32 = 32768
+  var_at: u32 = 0
+  low_at: u32 = cap
+  high_at: u32 = cap * u32(2)
+  unique_at: u32 = cap * u32(3)
+  cache_at: u32 = unique_at + ucap
+  stack_at: u32 = cache_at + ccap * u32(4)
+  bits_at: u32 = stack_at + scap * FRAME_WORDS
+  selects_at: u32 = bits_at + terms * u32(64)
+  state_at: u32 = selects_at + u32(16) * SELECT_SLOT_WORDS
+  Layout {
+    cap: cap,
+    var_at: var_at,
+    low_at: low_at,
+    high_at: high_at,
+    unique_at: unique_at,
+    umask: ucap - u32(1),
+    cache_at: cache_at,
+    cmask: ccap - u32(1),
+    stack_at: stack_at,
+    stack_cap: scap,
+    bits_at: bits_at,
+    selects_at: selects_at,
+    select_cap: u32(16),
+    state_at: state_at,
+    total: state_at + u32(16)
+  }
+}
+
+// solver_init clears the tables and places the two terminals.
+solver_init: (l: Layout, mem: [*]u32): () {
+  i: u32 = 0
+  while i <= l.umask {
+    mem[l.unique_at + i] = u32(0)
+    i = i + u32(1)
+  }
+  i = u32(0)
+  while i <= l.cmask {
+    mem[l.cache_at + i * u32(4)] = u32(0)
+    i = i + u32(1)
+  }
+  i = u32(0)
+  while i < l.select_cap {
+    mem[l.selects_at + i * SELECT_SLOT_WORDS + u32(1)] = u32(0)
+    i = i + u32(1)
+  }
+  mem[l.var_at] = TERMINAL_VAR
+  mem[l.var_at + u32(1)] = TERMINAL_VAR
+  mem[l.low_at] = u32(0)
+  mem[l.low_at + u32(1)] = u32(1)
+  mem[l.high_at] = u32(0)
+  mem[l.high_at + u32(1)] = u32(1)
+  mem[l.state_at + STATE_COUNT] = u32(2)
+  mem[l.state_at + STATE_EXCEEDED] = u32(0)
+  mem[l.state_at + STATE_SELECTS] = u32(0)
+}
+
+node_count: (l: Layout, mem: [*]u32): u32 = mem[l.state_at + STATE_COUNT]
+exceeded: (l: Layout, mem: [*]u32): Bool = mem[l.state_at + STATE_EXCEEDED] != u32(0)
+
+hash3: (a: u32, b: u32, c: u32): u32 {
+  h: u32 = a * u32(0x9E3779B1)
+  h = h ^ (b * u32(0x85EBCA77))
+  h = h ^ (c * u32(0xC2B2AE3D))
+  h = h ^ (h >> u32(15))
+  h = h * u32(0x27D4EB2F)
+  h ^ (h >> u32(13))
+}
+
+// mk returns the canonical node for (variable, low, high): the existing one
+// from the unique table, or a new one within the budget. Past the budget
+// the exceeded flag is set and the false node stands in, as in the Go
+// decider, whose verdict is then withheld.
+mk: (l: Layout, mem: [*]u32, v: u32, low: u32, high: u32): u32 {
+  low == high ? { low } | {
+    h: u32 = hash3(v, low, high) & l.umask
+    found: u32 = NONE
+    while found == NONE {
+      e: u32 = mem[l.unique_at + h]
+      e == u32(0) ? {
+        count: u32 = mem[l.state_at + STATE_COUNT]
+        count >= l.cap ? {
+          mem[l.state_at + STATE_EXCEEDED] = u32(1)
+          found = BDD_FALSE
+        } | {
+          mem[l.var_at + count] = v
+          mem[l.low_at + count] = low
+          mem[l.high_at + count] = high
+          mem[l.unique_at + h] = count + u32(1)
+          mem[l.state_at + STATE_COUNT] = count + u32(1)
+          found = count
+        }
+      } | {
+        n: u32 = e - u32(1)
+        (mem[l.var_at + n] == v && mem[l.low_at + n] == low && mem[l.high_at + n] == high) ? {
+          found = n
+        } | {
+          h = (h + u32(1)) & l.umask
+        }
+      }
+    }
+    found
+  }
+}
+
+variable_node: (l: Layout, mem: [*]u32, v: u32): u32 = mk(l, mem, v, BDD_FALSE, BDD_TRUE)
+
+// The terminal cases of apply, NONE when there is none.
+terminal_case: (op: u32, x: u32, y: u32): u32 {
+  op == OP_AND ? {
+    (x == BDD_FALSE || y == BDD_FALSE) ? { BDD_FALSE } | {
+      x == BDD_TRUE ? { y } | { y == BDD_TRUE ? { x } | { x == y ? { x } | { NONE } } }
+    }
+  } | {
+    op == OP_OR ? {
+      (x == BDD_TRUE || y == BDD_TRUE) ? { BDD_TRUE } | {
+        x == BDD_FALSE ? { y } | { y == BDD_FALSE ? { x } | { x == y ? { x } | { NONE } } }
+      }
+    } | {
+      x == BDD_FALSE ? { y } | { y == BDD_FALSE ? { x } | { x == y ? { BDD_FALSE } | { NONE } } }
+    }
+  }
+}
+
+cache_get: (l: Layout, mem: [*]u32, op: u32, x: u32, y: u32): u32 {
+  e: u32 = l.cache_at + (hash3(op, x, y) & l.cmask) * u32(4)
+  (mem[e] == ((op << u32(28)) | x) && mem[e + u32(1)] == y) ? { mem[e + u32(2)] } | { NONE }
+}
+
+cache_put: (l: Layout, mem: [*]u32, op: u32, x: u32, y: u32, r: u32): () {
+  e: u32 = l.cache_at + (hash3(op, x, y) & l.cmask) * u32(4)
+  mem[e] = (op << u32(28)) | x
+  mem[e + u32(1)] = y
+  mem[e + u32(2)] = r
+}
+
+// deliver hands a finished result to the frame below the popped one: into
+// its low result while it waits on the low cofactor, its high result after.
+deliver: (l: Layout, mem: [*]u32, sp: u32, r: u32): () {
+  sp > u32(0) ? {
+    p: u32 = l.stack_at + (sp - u32(1)) * FRAME_WORDS
+    mem[p + u32(3)] == u32(1) ? { mem[p + u32(7)] = r } | { mem[p + u32(8)] = r }
+  } | { }
+}
+
+push_frame: (l: Layout, mem: [*]u32, sp: u32, op: u32, x: u32, y: u32): () {
+  f: u32 = l.stack_at + sp * FRAME_WORDS
+  mem[f] = op
+  mem[f + u32(1)] = x
+  mem[f + u32(2)] = y
+  mem[f + u32(3)] = u32(0)
+}
+
+// apply is Shannon expansion on the lower variable of the two operands,
+// memoized in the cache, run with an explicit stack. A frame is (op, x, y,
+// phase, v, xh, yh, low result, high result): phase 0 has not looked at its
+// operands, phase 1 waits on the low cofactor, phase 2 on the high one.
+apply: (l: Layout, mem: [*]u32, op: u32, x0: u32, y0: u32): u32 {
+  result: u32 = BDD_FALSE
+  sp: u32 = 1
+  push_frame(l, mem, u32(0), op, x0, y0)
+  while sp > u32(0) {
+    exceeded_now: Bool = mem[l.state_at + STATE_EXCEEDED] != u32(0)
+    f: u32 = l.stack_at + (sp - u32(1)) * FRAME_WORDS
+    phase: u32 = mem[f + u32(3)]
+    x: u32 = mem[f + u32(1)]
+    y: u32 = mem[f + u32(2)]
+    exceeded_now ? {
+      sp = u32(0)
+      result = BDD_FALSE
+    } | {
+      phase == u32(0) ? {
+        t: u32 = terminal_case(op, x, y)
+        t != NONE ? {
+          sp = sp - u32(1)
+          result = t
+          deliver(l, mem, sp, t)
+        } | {
+          cx: u32 = x > y ? { y } | { x }
+          cy: u32 = x > y ? { x } | { y }
+          cached: u32 = cache_get(l, mem, op, cx, cy)
+          cached != NONE ? {
+            sp = sp - u32(1)
+            result = cached
+            deliver(l, mem, sp, cached)
+          } | {
+            vx: u32 = mem[l.var_at + cx]
+            vy: u32 = mem[l.var_at + cy]
+            v: u32 = vy < vx ? { vy } | { vx }
+            xl: u32 = vx == v ? { mem[l.low_at + cx] } | { cx }
+            xh: u32 = vx == v ? { mem[l.high_at + cx] } | { cx }
+            yl: u32 = vy == v ? { mem[l.low_at + cy] } | { cy }
+            yh: u32 = vy == v ? { mem[l.high_at + cy] } | { cy }
+            mem[f + u32(1)] = cx
+            mem[f + u32(2)] = cy
+            mem[f + u32(3)] = u32(1)
+            mem[f + u32(4)] = v
+            mem[f + u32(5)] = xh
+            mem[f + u32(6)] = yh
+            sp >= l.stack_cap ? {
+              mem[l.state_at + STATE_EXCEEDED] = u32(1)
+            } | {
+              push_frame(l, mem, sp, op, xl, yl)
+              sp = sp + u32(1)
+            }
+          }
+        }
+      } | {
+        phase == u32(1) ? {
+          mem[f + u32(3)] = u32(2)
+          sp >= l.stack_cap ? {
+            mem[l.state_at + STATE_EXCEEDED] = u32(1)
+          } | {
+            push_frame(l, mem, sp, op, mem[f + u32(5)], mem[f + u32(6)])
+            sp = sp + u32(1)
+          }
+        } | {
+          r: u32 = mk(l, mem, mem[f + u32(4)], mem[f + u32(7)], mem[f + u32(8)])
+          cache_put(l, mem, op, x, y, r)
+          sp = sp - u32(1)
+          result = r
+          deliver(l, mem, sp, r)
+        }
+      }
+    }
+  }
+  result
+}
+
+bdd_not: (l: Layout, mem: [*]u32, a: u32): u32 = apply(l, mem, OP_XOR, a, BDD_TRUE)
+
+// ite is (c and t) or (not c and e), as the Go decider spells it.
+bdd_ite: (l: Layout, mem: [*]u32, c: u32, t: u32, e: u32): u32 {
+  ct: u32 = apply(l, mem, OP_AND, c, t)
+  nce: u32 = apply(l, mem, OP_AND, bdd_not(l, mem, c), e)
+  apply(l, mem, OP_OR, ct, nce)
+}
+
+// --- the blaster --------------------------------------------------------
+
+Bits: type = struct { at: [64]u32 }
+
+Sum: type = struct { bits: Bits, carry: u32 }
+
+zero_bits: (): Bits {
+  out: Bits
+  out
+}
+
+const_bits: (lo: u32, hi: u32, w: u32): Bits {
+  out: Bits
+  i: u32 = 0
+  while i < w {
+    word: u32 = i < u32(32) ? { lo } | { hi }
+    out.at[i] = ((word >> (i & u32(31))) & u32(1)) == u32(1) ? { BDD_TRUE } | { BDD_FALSE }
+    i = i + u32(1)
+  }
+  out
+}
+
+// load_bits reads a term's bits zero-extended or truncated to w (adapt).
+load_bits: (l: Layout, mem: [*]u32, t: u32, source_width: u32, w: u32): Bits {
+  out: Bits
+  i: u32 = 0
+  while i < w {
+    out.at[i] = i < source_width ? { mem[l.bits_at + t * u32(64) + i] } | { BDD_FALSE }
+    i = i + u32(1)
+  }
+  out
+}
+
+store_bits: (l: Layout, mem: [*]u32, t: u32, b: Bits, w: u32): () {
+  i: u32 = 0
+  while i < w {
+    mem[l.bits_at + t * u32(64) + i] = b.at[i]
+    i = i + u32(1)
+  }
+}
+
+pointwise: (l: Layout, mem: [*]u32, op: u32, a: Bits, b: Bits, w: u32): Bits {
+  out: Bits
+  i: u32 = 0
+  while i < w {
+    out.at[i] = apply(l, mem, op, a.at[i], b.at[i])
+    i = i + u32(1)
+  }
+  out
+}
+
+// add_carry is the ripple-carry chain with its carry out.
+add_carry: (l: Layout, mem: [*]u32, a: Bits, b: Bits, carry0: u32, w: u32): Sum {
+  out: Bits
+  carry: u32 = carry0
+  i: u32 = 0
+  while i < w {
+    axb: u32 = apply(l, mem, OP_XOR, a.at[i], b.at[i])
+    out.at[i] = apply(l, mem, OP_XOR, axb, carry)
+    carry = apply(l, mem, OP_OR, apply(l, mem, OP_AND, a.at[i], b.at[i]), apply(l, mem, OP_AND, carry, axb))
+    i = i + u32(1)
+  }
+  Sum { bits: out, carry: carry }
+}
+
+add_bits: (l: Layout, mem: [*]u32, a: Bits, b: Bits, carry: u32, w: u32): Bits = add_carry(l, mem, a, b, carry, w).bits
+
+not_bits: (l: Layout, mem: [*]u32, a: Bits, w: u32): Bits {
+  out: Bits
+  i: u32 = 0
+  while i < w {
+    out.at[i] = bdd_not(l, mem, a.at[i])
+    i = i + u32(1)
+  }
+  out
+}
+
+shift_const: (a: Bits, k: u32, left: Bool, w: u32): Bits {
+  out: Bits
+  i: u32 = 0
+  while i < w {
+    out.at[i] = left ? {
+      i >= k ? { a.at[i - k] } | { BDD_FALSE }
+    } | {
+      i + k < w ? { a.at[i + k] } | { BDD_FALSE }
+    }
+    i = i + u32(1)
+  }
+  out
+}
+
+shift_right_arith: (a: Bits, k: u32, w: u32): Bits {
+  out: Bits
+  sign: u32 = a.at[w - u32(1)]
+  i: u32 = 0
+  while i < w {
+    out.at[i] = i + k < w ? { a.at[i + k] } | { sign }
+    i = i + u32(1)
+  }
+  out
+}
+
+rotate_right: (a: Bits, k: u32, w: u32): Bits {
+  out: Bits
+  i: u32 = 0
+  while i < w {
+    out.at[i] = a.at[(i + k) % w]
+    i = i + u32(1)
+  }
+  out
+}
+
+// stages is the number of count bits a barrel over w bits reads.
+stages_for: (w: u32): u32 {
+  s: u32 = 0
+  while (u32(1) << s) < w {
+    s = s + u32(1)
+  }
+  s
+}
+
+mux_bits: (l: Layout, mem: [*]u32, c: u32, t: Bits, e: Bits, w: u32): Bits {
+  out: Bits
+  i: u32 = 0
+  while i < w {
+    out.at[i] = bdd_ite(l, mem, c, t.at[i], e.at[i])
+    i = i + u32(1)
+  }
+  out
+}
+
+// The barrels: one mux stage per count bit.
+shift_barrel: (l: Layout, mem: [*]u32, a: Bits, count: Bits, left: Bool, w: u32): Bits {
+  current: Bits = a
+  s: u32 = 0
+  stages: u32 = stages_for(w)
+  while s < stages {
+    current = mux_bits(l, mem, count.at[s], shift_const(current, u32(1) << s, left, w), current, w)
+    s = s + u32(1)
+  }
+  current
+}
+
+shift_barrel_arith: (l: Layout, mem: [*]u32, a: Bits, count: Bits, w: u32): Bits {
+  current: Bits = a
+  s: u32 = 0
+  stages: u32 = stages_for(w)
+  while s < stages {
+    current = mux_bits(l, mem, count.at[s], shift_right_arith(current, u32(1) << s, w), current, w)
+    s = s + u32(1)
+  }
+  current
+}
+
+rotate_barrel: (l: Layout, mem: [*]u32, a: Bits, count: Bits, w: u32): Bits {
+  current: Bits = a
+  s: u32 = 0
+  stages: u32 = stages_for(w)
+  while s < stages {
+    current = mux_bits(l, mem, count.at[s], rotate_right(current, u32(1) << s, w), current, w)
+    s = s + u32(1)
+  }
+  current
+}
+
+// multiply is the shift-and-add product modulo the width.
+multiply: (l: Layout, mem: [*]u32, a: Bits, b: Bits, w: u32): Bits {
+  out: Bits
+  i: u32 = 0
+  while i < w && !exceeded(l, mem) {
+    b.at[i] != BDD_FALSE ? {
+      partial: Bits = shift_const(a, i, true, w)
+      j: u32 = 0
+      while j < w {
+        partial.at[j] = apply(l, mem, OP_AND, partial.at[j], b.at[i])
+        j = j + u32(1)
+      }
+      out = add_bits(l, mem, out, partial, BDD_FALSE, w)
+    } | { }
+    i = i + u32(1)
+  }
+  out
+}
+
+permute_source: (op: u32, i: u32, w: u32): u32 {
+  op == BOP_RBIT ? { w - u32(1) - i } | {
+    op == BOP_REV ? { (w / u32(8) - u32(1) - i / u32(8)) * u32(8) + i % u32(8) } | {
+      op == BOP_REV16 ? {
+        within: u32 = i % u32(16)
+        (i / u32(16)) * u32(16) + (u32(1) - within / u32(8)) * u32(8) + within % u32(8)
+      } | {
+        within32: u32 = i % u32(32)
+        (i / u32(32)) * u32(32) + (u32(3) - within32 / u32(8)) * u32(8) + within32 % u32(8)
+      }
+    }
+  }
+}
+
+permute_bits: (op: u32, a: Bits, w: u32): Bits {
+  out: Bits
+  i: u32 = 0
+  while i < w {
+    out.at[i] = a.at[permute_source(op, i, w)]
+    i = i + u32(1)
+  }
+  out
+}
+
+// count_leading_zeros scans from the top: ite(a[0], w-1, ite(a[1], w-2, ...)).
+count_leading_zeros: (l: Layout, mem: [*]u32, a: Bits, w: u32): Bits {
+  acc: Bits = const_bits(w, u32(0), w)
+  pos: u32 = 0
+  while pos < w {
+    acc = mux_bits(l, mem, a.at[pos], const_bits(w - u32(1) - pos, u32(0), w), acc, w)
+    pos = pos + u32(1)
+  }
+  acc
+}
+
+pop_count: (l: Layout, mem: [*]u32, a: Bits, w: u32): Bits {
+  total: Bits
+  i: u32 = 0
+  while i < w {
+    one: Bits
+    one.at[u32(0)] = a.at[i]
+    total = add_bits(l, mem, total, one, BDD_FALSE, w)
+    i = i + u32(1)
+  }
+  total
+}
+
+all_ones: (w: u32): Bits {
+  out: Bits
+  i: u32 = 0
+  while i < w {
+    out.at[i] = BDD_TRUE
+    i = i + u32(1)
+  }
+  out
+}
+
+// condition is a condition code over the NZCV flags: of left - right by
+// default, of left + right for the `add:` codes, of left & right for the
+// `and:` codes (code = kind * 16 + bare; bare: eq ne hs lo mi pl vs vc hi
+// ls ge lt gt le).
+condition: (l: Layout, mem: [*]u32, code: u32, left: Bits, right: Bits, w: u32): u32 {
+  kind: u32 = code / u32(16)
+  bare: u32 = code % u32(16)
+  msb: u32 = w - u32(1)
+  result: Bits
+  c: u32 = BDD_FALSE
+  v: u32 = BDD_FALSE
+  kind == u32(1) ? {
+    s: Sum = add_carry(l, mem, left, right, BDD_FALSE, w)
+    result = s.bits
+    c = s.carry
+    v = apply(l, mem, OP_AND, bdd_not(l, mem, apply(l, mem, OP_XOR, left.at[msb], right.at[msb])), apply(l, mem, OP_XOR, result.at[msb], left.at[msb]))
+  } | {
+    kind == u32(2) ? {
+      result = pointwise(l, mem, OP_AND, left, right, w)
+    } | {
+      s: Sum = add_carry(l, mem, left, not_bits(l, mem, right, w), BDD_TRUE, w)
+      result = s.bits
+      c = s.carry
+      v = apply(l, mem, OP_AND, apply(l, mem, OP_XOR, left.at[msb], right.at[msb]), apply(l, mem, OP_XOR, result.at[msb], left.at[msb]))
+    }
+  }
+  n: u32 = result.at[msb]
+  z: u32 = BDD_TRUE
+  i: u32 = 0
+  while i < w {
+    z = apply(l, mem, OP_AND, z, bdd_not(l, mem, result.at[i]))
+    i = i + u32(1)
+  }
+  n_eq_v: u32 = bdd_not(l, mem, apply(l, mem, OP_XOR, n, v))
+  bare == u32(0) ? { z } | {
+  bare == u32(1) ? { bdd_not(l, mem, z) } | {
+  bare == u32(2) ? { c } | {
+  bare == u32(3) ? { bdd_not(l, mem, c) } | {
+  bare == u32(4) ? { n } | {
+  bare == u32(5) ? { bdd_not(l, mem, n) } | {
+  bare == u32(6) ? { v } | {
+  bare == u32(7) ? { bdd_not(l, mem, v) } | {
+  bare == u32(8) ? { apply(l, mem, OP_AND, c, bdd_not(l, mem, z)) } | {
+  bare == u32(9) ? { apply(l, mem, OP_OR, bdd_not(l, mem, c), z) } | {
+  bare == u32(10) ? { n_eq_v } | {
+  bare == u32(11) ? { bdd_not(l, mem, n_eq_v) } | {
+  bare == u32(12) ? { apply(l, mem, OP_AND, bdd_not(l, mem, z), n_eq_v) } | {
+  apply(l, mem, OP_OR, z, bdd_not(l, mem, n_eq_v)) } } } } } } } } } } } } }
+}
+
+// --- the problem table ----------------------------------------------------
+
+problem_terms: (p: []u32): u32 = p[u32(0)]
+problem_leaves: (p: []u32): u32 = p[u32(1)]
+problem_roots: (p: []u32): u32 = p[u32(2)]
+problem_budget: (p: []u32): u32 = p[u32(3)]
+problem_select_slots: (p: []u32): u32 = p[u32(4)]
+
+terms_at: (p: []u32): u32 = HEADER_WORDS + problem_leaves(p) * LEAF_WORDS
+roots_at: (p: []u32): u32 = terms_at(p) + problem_terms(p) * TERM_WORDS
+select_vars_at: (p: []u32): u32 = roots_at(p) + problem_roots(p)
+
+term_word: (p: []u32, t: u32, k: u32): u32 = p[terms_at(p) + t * TERM_WORDS + k]
+term_kind: (p: []u32, t: u32): u32 = term_word(p, t, u32(0))
+term_op: (p: []u32, t: u32): u32 = term_word(p, t, u32(1))
+term_width: (p: []u32, t: u32): u32 = term_word(p, t, u32(2))
+term_a: (p: []u32, t: u32): u32 = term_word(p, t, u32(3))
+term_b: (p: []u32, t: u32): u32 = term_word(p, t, u32(4))
+term_c: (p: []u32, t: u32): u32 = term_word(p, t, u32(5))
+term_vlo: (p: []u32, t: u32): u32 = term_word(p, t, u32(6))
+term_vhi: (p: []u32, t: u32): u32 = term_word(p, t, u32(7))
+
+leaf_width: (p: []u32, leaf: u32): u32 = p[HEADER_WORDS + leaf * LEAF_WORDS]
+leaf_variable: (p: []u32, leaf: u32, bit: u32): u32 = p[HEADER_WORDS + leaf * LEAF_WORDS + u32(1) + bit]
+
+// A constant shift count reduced modulo the width (the machine's rule).
+const_count: (p: []u32, t: u32, w: u32): u32 {
+  value: u64 = (u64(term_vhi(p, t)) << u64(32)) | u64(term_vlo(p, t))
+  u32_trunc_u64(value % u64(w))
+}
+
+// Loads operand a or b of term t at width w.
+operand: (l: Layout, mem: [*]u32, p: []u32, t: u32, which: u32, w: u32): Bits {
+  o: u32 = which == u32(0) ? { term_a(p, t) } | { term_b(p, t) }
+  load_bits(l, mem, o, term_width(p, o), w)
+}
+
+// select_bits abstracts a span element at a symbolic index as fresh
+// variables, one slot per distinct (span, index), the index compared node
+// by node; NONE-filled bits when the slots given run out.
+select_bits: (l: Layout, mem: [*]u32, p: []u32, span: u32, idx: Bits, w: u32): Bits {
+  out: Bits
+  used: u32 = mem[l.state_at + STATE_SELECTS]
+  slot: u32 = NONE
+  s: u32 = 0
+  while s < used && slot == NONE {
+    e: u32 = l.selects_at + s * SELECT_SLOT_WORDS
+    same: Bool = mem[e] == span
+    i: u32 = 0
+    while i < u32(32) && same {
+      same = mem[e + u32(2) + i] == idx.at[i]
+      i = i + u32(1)
+    }
+    slot = same ? { s } | { slot }
+    s = s + u32(1)
+  }
+  slot == NONE ? {
+    (used < l.select_cap && used < problem_select_slots(p)) ? {
+      e: u32 = l.selects_at + used * SELECT_SLOT_WORDS
+      mem[e] = span
+      mem[e + u32(1)] = u32(1)
+      i: u32 = 0
+      while i < u32(32) {
+        mem[e + u32(2) + i] = idx.at[i]
+        i = i + u32(1)
+      }
+      mem[l.state_at + STATE_SELECTS] = used + u32(1)
+      slot = used
+    } | { }
+  } | { }
+  slot == NONE ? {
+    i: u32 = 0
+    while i < w {
+      out.at[i] = NONE
+      i = i + u32(1)
+    }
+  } | {
+    i: u32 = 0
+    while i < w {
+      out.at[i] = variable_node(l, mem, p[select_vars_at(p) + slot * u32(64) + i])
+      i = i + u32(1)
+    }
+  }
+  out
+}
+
+// blast_term computes term t's bits from its operands' (already blasted,
+// the table is in dependency order); false when the term is unsupported.
+blast_term: (l: Layout, mem: [*]u32, p: []u32, t: u32): Bool {
+  kind: u32 = term_kind(p, t)
+  w: u32 = term_width(p, t)
+  ok: Bool = true
+  out: Bits
+  kind == KIND_CONST ? {
+    out = const_bits(term_vlo(p, t), term_vhi(p, t), w)
+  } | {
+  kind == KIND_PARAM ? {
+    leaf: u32 = term_a(p, t)
+    declared: u32 = leaf_width(p, leaf)
+    i: u32 = 0
+    while i < w {
+      out.at[i] = i < declared ? { variable_node(l, mem, leaf_variable(p, leaf, i)) } | { BDD_FALSE }
+      i = i + u32(1)
+    }
+  } | {
+  kind == KIND_SELECT ? {
+    idx: Bits = operand(l, mem, p, t, u32(0), u32(32))
+    out = select_bits(l, mem, p, term_op(p, t), idx, w)
+    ok = out.at[u32(0)] != NONE
+  } | {
+  kind == KIND_CMP ? {
+    ow: u32 = term_width(p, term_a(p, t))
+    left: Bits = operand(l, mem, p, t, u32(0), ow)
+    right: Bits = operand(l, mem, p, t, u32(1), ow)
+    out.at[u32(0)] = condition(l, mem, term_op(p, t), left, right, ow)
+  } | {
+  kind == KIND_ITE ? {
+    c: u32 = term_c(p, t)
+    cond: u32 = mem[l.bits_at + c * u32(64)]
+    out = mux_bits(l, mem, cond, operand(l, mem, p, t, u32(0), w), operand(l, mem, p, t, u32(1), w), w)
+  } | {
+    op: u32 = term_op(p, t)
+    left: Bits = operand(l, mem, p, t, u32(0), w)
+    unary: Bool = op >= BOP_REV
+    right: Bits = unary ? { zero_bits() } | { operand(l, mem, p, t, u32(1), w) }
+    right_const: Bool = !unary && term_kind(p, term_b(p, t)) == KIND_CONST
+    op == BOP_AND ? { out = pointwise(l, mem, OP_AND, left, right, w) } | {
+    op == BOP_OR ? { out = pointwise(l, mem, OP_OR, left, right, w) } | {
+    op == BOP_XOR ? { out = pointwise(l, mem, OP_XOR, left, right, w) } | {
+    op == BOP_ADD ? { out = add_bits(l, mem, left, right, BDD_FALSE, w) } | {
+    op == BOP_SUB ? { out = add_bits(l, mem, left, not_bits(l, mem, right, w), BDD_TRUE, w) } | {
+    op == BOP_SHL ? { out = right_const ? { shift_const(left, const_count(p, term_b(p, t), w), true, w) } | { shift_barrel(l, mem, left, right, true, w) } } | {
+    op == BOP_SHR ? { out = right_const ? { shift_const(left, const_count(p, term_b(p, t), w), false, w) } | { shift_barrel(l, mem, left, right, false, w) } } | {
+    op == BOP_SAR ? { out = right_const ? { shift_right_arith(left, const_count(p, term_b(p, t), w), w) } | { shift_barrel_arith(l, mem, left, right, w) } } | {
+    op == BOP_MUL ? { out = multiply(l, mem, left, right, w) } | {
+    op == BOP_ROR ? { out = right_const ? { rotate_right(left, const_count(p, term_b(p, t), w), w) } | { rotate_barrel(l, mem, left, right, w) } } | {
+    (op == BOP_REV || op == BOP_REV16 || op == BOP_REV32 || op == BOP_RBIT) ? { out = permute_bits(op, left, w) } | {
+    op == BOP_CLZ ? { out = count_leading_zeros(l, mem, left, w) } | {
+    op == BOP_CNT ? { out = pop_count(l, mem, left, w) } | {
+    op == BOP_CLS ? {
+      x: Bits = pointwise(l, mem, OP_XOR, left, shift_right_arith(left, u32(1), w), w)
+      out = add_bits(l, mem, count_leading_zeros(l, mem, x, w), all_ones(w), BDD_FALSE, w)
+    } | { ok = false } } } } } } } } } } } } } }
+  } } } } }
+  ok ? { store_bits(l, mem, t, out, w) } | { }
+  ok
+}
+
+// solve blasts every term and reads the roots: every trap root must be the
+// false node and the claim root (the last) the true node.
+solve: (l: Layout, mem: [*]u32, p: []u32): u32 {
+  solver_init(l, mem)
+  n: u32 = problem_terms(p)
+  t: u32 = 0
+  supported: Bool = true
+  while t < n && supported && !exceeded(l, mem) {
+    supported = blast_term(l, mem, p, t)
+    t = t + u32(1)
+  }
+  status: u32 = STATUS_PROVEN
+  !supported ? { status = STATUS_UNSUPPORTED } | {
+    exceeded(l, mem) ? { status = STATUS_EXCEEDED } | {
+      roots: u32 = problem_roots(p)
+      r: u32 = 0
+      while r < roots {
+        root: u32 = p[roots_at(p) + r]
+        bit: u32 = mem[l.bits_at + root * u32(64)]
+        want: u32 = r + u32(1) == roots ? { BDD_TRUE } | { BDD_FALSE }
+        status = bit == want ? { status } | { STATUS_REFUTED }
+        r = r + u32(1)
+      }
+    }
+  }
+  status
+}

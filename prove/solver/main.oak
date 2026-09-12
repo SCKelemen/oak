@@ -1,0 +1,91 @@
+// The solver's own check: the diagram's laws on a few nodes, and one
+// problem table built by hand (x ^ y == y ^ x over u8, and the refutable
+// x ^ y == x) through `solve`. `oak run prove/solver` exits 0 when all hold.
+package main
+
+malloc: (n: c.Size): c.Ptr = c.extern("malloc")
+free: (p: c.Ptr): () = c.extern("free")
+
+// xor_problem writes the table of `x op y == y op x` (commute = true) or
+// `x op y == x` over two u8 leaves in the interleaved order (stride 10:
+// two parameters and eight select slots), five terms, one root.
+xor_problem: (commute: Bool): [192]u32 {
+  p: [192]u32
+  p[u32(0)] = u32(5)
+  p[u32(1)] = u32(2)
+  p[u32(2)] = u32(1)
+  p[u32(3)] = u32(4096)
+  p[u32(4)] = u32(0)
+  leaf: u32 = 0
+  while leaf < u32(2) {
+    base: u32 = HEADER_WORDS + leaf * LEAF_WORDS
+    p[base] = u32(8)
+    bit: u32 = 0
+    while bit < u32(64) {
+      p[base + u32(1) + bit] = bit < u32(8) ? { bit * u32(10) + leaf } | { NONE }
+      bit = bit + u32(1)
+    }
+    leaf = leaf + u32(1)
+  }
+  t: u32 = HEADER_WORDS + u32(2) * LEAF_WORDS
+  // term 0: param x; term 1: param y
+  p[t] = KIND_PARAM
+  p[t + u32(2)] = u32(8)
+  p[t + u32(3)] = u32(0)
+  p[t + TERM_WORDS] = KIND_PARAM
+  p[t + TERM_WORDS + u32(2)] = u32(8)
+  p[t + TERM_WORDS + u32(3)] = u32(1)
+  // term 2: x ^ y; term 3: y ^ x (or x); term 4: term 2 == term 3
+  t2: u32 = t + u32(2) * TERM_WORDS
+  p[t2] = KIND_BINARY
+  p[t2 + u32(1)] = BOP_XOR
+  p[t2 + u32(2)] = u32(8)
+  p[t2 + u32(3)] = u32(0)
+  p[t2 + u32(4)] = u32(1)
+  t3: u32 = t + u32(3) * TERM_WORDS
+  p[t3] = KIND_BINARY
+  p[t3 + u32(1)] = BOP_XOR
+  p[t3 + u32(2)] = u32(8)
+  p[t3 + u32(3)] = u32(1)
+  p[t3 + u32(4)] = commute ? { u32(0) } | { u32(1) }
+  commute ? { } | { p[t3 + u32(1)] = BOP_AND }
+  t4: u32 = t + u32(4) * TERM_WORDS
+  p[t4] = KIND_CMP
+  p[t4 + u32(1)] = u32(0)
+  p[t4 + u32(2)] = u32(8)
+  p[t4 + u32(3)] = u32(2)
+  p[t4 + u32(4)] = u32(3)
+  p[t + u32(5) * TERM_WORDS] = u32(4)
+  p
+}
+
+main: (): i32 {
+  l: Layout = layout_for(u32(4096), u32(8))
+  raw: c.Ptr = malloc(c.Size(l.total * u32(4)))
+  failures: u32 = 0
+  unsafe {
+    mem: Buffer[u32] = c.own[u32](raw, l.total)
+    solver_init(l, span(&mem))
+    x: u32 = variable_node(l, span(&mem), u32(0))
+    y: u32 = variable_node(l, span(&mem), u32(1))
+    xy: u32 = apply(l, span(&mem), OP_AND, x, y)
+    yx: u32 = apply(l, span(&mem), OP_AND, y, x)
+    either: u32 = apply(l, span(&mem), OP_OR, x, y)
+    nx: u32 = bdd_not(l, span(&mem), x)
+    ny: u32 = bdd_not(l, span(&mem), y)
+    neither: u32 = apply(l, span(&mem), OP_AND, nx, ny)
+    de_morgan: u32 = bdd_not(l, span(&mem), neither)
+    self_xor: u32 = apply(l, span(&mem), OP_XOR, x, x)
+    chosen: u32 = bdd_ite(l, span(&mem), x, y, BDD_FALSE)
+    failures = xy == yx ? { failures } | { failures + u32(1) }
+    failures = de_morgan == either ? { failures } | { failures + u32(2) }
+    failures = self_xor == BDD_FALSE ? { failures } | { failures + u32(4) }
+    failures = chosen == xy ? { failures } | { failures + u32(8) }
+    commuting: [192]u32 = xor_problem(true)
+    failures = solve(l, span(&mem), view(&commuting)) == STATUS_PROVEN ? { failures } | { failures + u32(16) }
+    absorbing: [192]u32 = xor_problem(false)
+    failures = solve(l, span(&mem), view(&absorbing)) == STATUS_REFUTED ? { failures } | { failures + u32(32) }
+    free(c.disown(mem))
+  }
+  i32_bits_u32(failures)
+}

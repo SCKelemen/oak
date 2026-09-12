@@ -33,6 +33,21 @@ const (
 type Decision struct {
 	Kind    DecisionKind
 	Message string
+	// Order names the variable order that proved the theorem at the bit
+	// level (interleaved, blocks, control) and Nodes the diagram's size, so
+	// the decision can be replayed by the Oak solver (ExportProblem).
+	Order string
+	Nodes int
+}
+
+// loweredTheorem is a theorem in the decider's term language: the claim
+// under its hypotheses, the trap obligations, and the parameters with
+// their widths.
+type loweredTheorem struct {
+	claim  *term
+	traps  []*term
+	names  []string
+	widths map[string]int
 }
 
 // Guard is a refinement's construction as the decider sees it
@@ -72,8 +87,21 @@ func DecideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Functio
 }
 
 func decideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, guards map[string]Guard, decls Declarations) Decision {
+	lowered, undecided := lowerTheorem(sig, functions, guards, decls)
+	if undecided != nil {
+		return *undecided
+	}
+	return decideLowered(lowered)
+}
+
+// lowerTheorem lowers a theorem to the decider's terms, or says why it
+// cannot be decided at the bit level.
+func lowerTheorem(sig *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, guards map[string]Guard, decls Declarations) (*loweredTheorem, *Decision) {
+	undecided := func(message string) (*loweredTheorem, *Decision) {
+		return nil, &Decision{Kind: DecisionUndecided, Message: message}
+	}
 	if sig == nil || sig.Name == nil || sig.Body == nil {
-		return Decision{Kind: DecisionUndecided, Message: "no body"}
+		return undecided("no body")
 	}
 	lowering := newLowering(sig)
 	lowering.functions = functions
@@ -87,8 +115,7 @@ func decideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Functio
 		if typ, ok := lowering.oakTypeOf(param.Type); ok && typ.kind != oakScalar {
 			continue // bound below as an aggregate of leaves
 		}
-		return Decision{Kind: DecisionUndecided,
-			Message: fmt.Sprintf("parameter %s: %s is not a fixed-width scalar, record, or sum type", param.Name.Value, typeText(param.Type))}
+		return undecided(fmt.Sprintf("parameter %s: %s is not a fixed-width scalar, record, or sum type", param.Name.Value, typeText(param.Type)))
 	}
 	lowering.bindAggregateParams(sig)
 	// Every union tag among the parameters names a variant: the hypothesis
@@ -106,10 +133,10 @@ func decideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Functio
 	}
 	t, reason, ok := lowering.lower(body, 1)
 	if !ok {
-		return Decision{Kind: DecisionUndecided, Message: fmt.Sprintf("the body contains %s", reason)}
+		return undecided(fmt.Sprintf("the body contains %s", reason))
 	}
 	if len(lowering.loops) > 0 {
-		return Decision{Kind: DecisionUndecided, Message: "the body has a data-dependent loop"}
+		return undecided("the body has a data-dependent loop")
 	}
 	t = truncate(t, 1)
 	if assume.kind != termConst || assume.value != 1 {
@@ -137,6 +164,13 @@ func decideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Functio
 		widths[name] = lowering.declaredWidth(name)
 	}
 	sort.Strings(names)
+	return &loweredTheorem{claim: t, traps: traps, names: names, widths: widths}, nil
+}
+
+// decideLowered settles the lowered theorem: the witness inputs first, then
+// the diagrams under every variable order at once.
+func decideLowered(lowered *loweredTheorem) Decision {
+	t, traps, names, widths := lowered.claim, lowered.traps, lowered.names, lowered.widths
 
 	// Witnesses first: a trapping or false case is a counterexample
 	// regardless of what the canonical form would say.
@@ -243,7 +277,7 @@ func decideBlasted(bl *blaster, traps []*term, t *term, names []string) (Decisio
 		if bl.grouped {
 			order = ", " + bl.label
 		}
-		return Decision{Kind: DecisionProven, Message: fmt.Sprintf("at the bit level (%d BDD nodes%s)", len(bl.bdd.nodes), order)}, false
+		return Decision{Kind: DecisionProven, Message: fmt.Sprintf("at the bit level (%d BDD nodes%s)", len(bl.bdd.nodes), order), Order: orderNames[bl.label], Nodes: len(bl.bdd.nodes)}, false
 	}
 	env := bl.counterexample(bits[0], bddTrue)
 	return Decision{Kind: DecisionRefuted, Message: "counterexample " + describeEnv(names, env)}, false

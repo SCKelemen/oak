@@ -204,6 +204,15 @@ A compact enum-like representation is valid only when constructor payload semant
 
 ## 6. Records and structs
 
+A binding declared without a value is the zero of its type in every
+backend (`20-types.md` §12.2 relies on it: the zero must satisfy every
+refinement the type carries): the C emitter initializes a value-less
+scalar with `0` and a value-less record, union, or owned array with `{0}`,
+and never leaves a local's storage uninitialized — a value-less record
+local that read as stack garbage was the one difference between the Go
+bit-level decider and its Oak twin (`125-verification.md` §7) when the
+twin was first run.
+
 A **record** is semantic product/shape information. It may be consumed entirely at compile time and therefore may have no runtime representation at all.
 
 A **struct** selects a concrete product representation policy. Plain `struct` selects Oak's natural ordered policy; target primitive representations must still be known before numeric field offsets and total size are resolved.
