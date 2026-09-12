@@ -69,8 +69,12 @@ and Rust twins of identical arithmetic (`benchmarks/kernels/RESULTS.md`,
 | tiled | tiled f32 reduction (ml) | 131,400 | 156,750 | 329,317 | 0.84× |
 
 Every access in `tiled`, `bitmap`, and `dispatch` is proven and emitted
-unchecked; `page_probe` keeps two checked reads under a binary search's
-decreasing bound, which the extent facts do not yet track. `bitmap` is
+unchecked, and so is every read of `search` and `page_probe` now: the
+probes by the midpoint and decreasing-bound laws (a binary search's `hi =
+mid` only lowers the bound), the fence key `keys[mid * 512]` by the
+quotient bound (`mid < len(keys) / 512`); re-measured with every read
+unchecked, `search` is at 0.90× of Rust and `page_probe` at 0.83×
+(`m-series-2026-09-12-search.json`). `bitmap` is
 the population-count instruction in all three languages now that
 `arm64.cnt64` exists (`docs/spec/92-ffi.md` §3.2); the numbers are from
 `m-series-2026-09-12-popcount.json`, a later run of the same machine on

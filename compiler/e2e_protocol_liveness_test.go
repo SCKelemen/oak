@@ -113,7 +113,9 @@ main: (): i32 = 0
 	cmd = exec.CommandContext(ctx, "java", "-cp", jar, "tlc2.TLC", "-deadlock", "Quantum.tla")
 	cmd.Dir = dir
 	out, _ = cmd.CombinedOutput()
-	if !strings.Contains(string(out), "Temporal property Liveness was violated") {
+	// TLC 2.19 says "Temporal properties were violated", later releases
+	// name the property; both report the violation.
+	if !strings.Contains(string(out), "Temporal propert") || !strings.Contains(string(out), "violated") {
 		t.Fatalf("TLC without fairness should report the violation:\n%s", out)
 	}
 }

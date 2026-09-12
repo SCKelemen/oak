@@ -1420,6 +1420,73 @@ theorem rup_text_check_sound (cnf proof : Array UInt8) (hc : cnf.size < UInt32.s
       hcb (by omega)] at haccept
     exact CertifiedStream.check_sound raw (Option.some_inj.mp haccept)
 
+/-! ## The string-level corollary
+
+`rup_text_check_sound` is stated over the byte arrays the extracted program
+takes. The certificate model (`CertificateFile.bytesOf`, `OakText.layout`)
+is stated over `String`s through `ByteArray.toList`, and core Lean does not
+relate `ByteArray.toList` to the array's data, so the three lemmas below
+state that relation and the corollary follows by rewriting. -/
+
+theorem byteArray_get!_eq_getElem (bs : ByteArray) (i : Nat) (h : i < bs.size) :
+    bs.get! i = bs.data[i]'h := by
+  cases bs with
+  | mk data =>
+    show data[i]! = data[i]'h
+    exact getElem!_pos data i h
+
+theorem byteArray_toList_loop_eq (bs : ByteArray) (i : Nat) (r : List UInt8) :
+    ByteArray.toList.loop bs i r = r.reverse ++ bs.data.toList.drop i := by
+  induction hn : bs.size - i generalizing i r with
+  | zero =>
+    rw [ByteArray.toList.loop.eq_def]
+    have hge : ¬ i < bs.size := by omega
+    simp only [hge, if_false]
+    have hlen : bs.data.toList.length ≤ i := by
+      rw [Array.length_toList, ByteArray.size_data]; omega
+    rw [List.drop_eq_nil_of_le hlen, List.append_nil]
+  | succ n ih =>
+    rw [ByteArray.toList.loop.eq_def]
+    have hlt : i < bs.size := by omega
+    simp only [hlt, if_true]
+    rw [ih (i + 1) (bs.get! i :: r) (by omega)]
+    have hl : i < bs.data.toList.length := by
+      rw [Array.length_toList, ByteArray.size_data]; exact hlt
+    rw [List.drop_eq_getElem_cons hl, byteArray_get!_eq_getElem bs i hlt, List.reverse_cons,
+      List.append_assoc, List.singleton_append, Array.getElem_toList]
+
+/-- `ByteArray.toList` is the list of the array's data. -/
+theorem byteArray_toList_eq_data_toList (bs : ByteArray) : bs.toList = bs.data.toList := by
+  unfold ByteArray.toList
+  rw [byteArray_toList_loop_eq, List.reverse_nil, List.nil_append, List.drop_zero]
+
+/-- The certificate model's bytes of a text are the extracted program's bytes
+of its UTF-8 array. -/
+theorem bytesOf_eq_toBytes (text : String) :
+    CertificateFile.bytesOf text = toBytes text.toUTF8.data := by
+  unfold CertificateFile.bytesOf toBytes
+  rw [byteArray_toList_eq_data_toList]
+
+/-- **String-level soundness.** When the extracted `rup_text_check` accepts
+the UTF-8 bytes of two texts below the `UInt32` range with enough fuel, the
+certificate model's layout of the texts themselves exists and its initial
+database is unsatisfiable. -/
+theorem rup_text_check_sound_text (cnf proof : String)
+    (hc : cnf.toUTF8.size < UInt32.size) (hp : proof.toUTF8.size < UInt32.size)
+    (fuel : Nat) (hf : 2 * cnf.toUTF8.size + 2 * proof.toUTF8.size + 9101 < fuel)
+    (haccept : rup_text_check cnf.toUTF8.data proof.toUTF8.data fuel = some true) :
+    ∃ raw : Layout, OakText.layout cnf proof = some raw ∧ Unsatisfiable (origin raw) := by
+  have hc' : cnf.toUTF8.data.size < UInt32.size := by rw [ByteArray.size_data]; exact hc
+  have hp' : proof.toUTF8.data.size < UInt32.size := by rw [ByteArray.size_data]; exact hp
+  have hf' : 2 * cnf.toUTF8.data.size + 2 * proof.toUTF8.data.size + 9101 < fuel := by
+    rw [ByteArray.size_data, ByteArray.size_data]; exact hf
+  obtain ⟨raw, hlayout, hunsat⟩ :=
+    rup_text_check_sound cnf.toUTF8.data proof.toUTF8.data hc' hp' fuel hf' haccept
+  refine ⟨raw, ?_, hunsat⟩
+  rw [layout_eq, bytesOf_eq_toBytes, bytesOf_eq_toBytes]
+  exact hlayout
+
 #print axioms rup_stream_check_spec
 #print axioms rup_text_check_sound
+#print axioms rup_text_check_sound_text
 end OakVerification.Extraction

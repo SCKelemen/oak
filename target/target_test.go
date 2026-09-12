@@ -57,4 +57,24 @@ func TestSpellings(t *testing.T) {
 	if (Target{OSLinux, ArchAmd64}).AsmArch() != "" {
 		t.Error("amd64 has no assembler lane")
 	}
+	// The microcontroller members: freestanding only, ILP32, no lane.
+	for _, arch := range []string{ArchArm, ArchRiscv32} {
+		mcu := Target{OSFreestanding, arch}
+		if !mcu.Supported() || (Target{OSLinux, arch}).Supported() || mcu.AsmArch() != "" {
+			t.Errorf("%s: supported freestanding only, without a lane", arch)
+		}
+		if i, p := mcu.DataModel(); i != 32 || p != 32 {
+			t.Errorf("%s data model %d/%d, want ILP32", arch, i, p)
+		}
+	}
+	if i, p := rv.DataModel(); i != 32 || p != 64 {
+		t.Errorf("linux/riscv64 data model %d/%d, want LP64", i, p)
+	}
+	arm := Target{OSFreestanding, ArchArm}
+	if arm.ZigTriple() != "thumb-freestanding-eabi" || arm.LLVMTriple() != "thumbv7em-none-eabi" || arm.GNUPrefixes()[0] != "arm-none-eabi-" || arm.DefaultCPU() != "cortex_m4" {
+		t.Errorf("freestanding/arm spellings: %s %s %v %s", arm.ZigTriple(), arm.LLVMTriple(), arm.GNUPrefixes(), arm.DefaultCPU())
+	}
+	if bare.DefaultCPU() != "generic_rv64" || rv.DefaultCPU() != "" {
+		t.Errorf("default cpus: %q %q", bare.DefaultCPU(), rv.DefaultCPU())
+	}
 }
