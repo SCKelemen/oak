@@ -1,6 +1,6 @@
 # Note: the most performant formal-methods implementation — what the codecs, os, ml, simdjson and Futhark teach the prover
 
-**Status: proposed, baselines taken.** 2026-09-12, `specification` branch.
+**Status: proposed, baselines taken, benchmarks landed.** 2026-09-12, `specification` branch.
 Source: a read of Oak's own verification engines (`prove/`, `asm/`,
 `repl/leancheck.go`, `testrunner/`, `experiments/verification-poc`), of
 `github.com/SCKelemen/os` and `github.com/SCKelemen/ml` for techniques those
@@ -17,17 +17,35 @@ records what the engines do today, what the neighbouring repositories
 actually measured, and the increments in leverage order, each with its
 measurement and its proof obligation.
 
-## 1. Baselines (this machine, load average 30–60, `go build -o /tmp/oakbin .`)
+## 1. Baselines
 
-| Command | Wall | Theorems decided | Largest BDD |
-| --- | ---: | ---: | ---: |
-| `oak prove spec/oak/lattice.oak` | 5.71 s | 31 | 1,482,423 nodes |
-| `oak prove spec/oak/effects.oak` | 3.19 s | 14 | — |
-| `oak prove spec/oak/patterns.oak` | 0.97 s | 15 | — |
+Go benchmarks now pin them (`prove/bench_test.go`, `asm/bench_test.go`,
+`testrunner/bench_test.go`; run with `go test ./prove ./asm ./testrunner
+-run xxx -bench . -benchtime=1x`). This machine, load average 14–20,
+`-benchtime=1x`:
 
-There are no Go benchmarks for `prove`, `asm`, the liveness checker or the
-test runner; the first increment adds them, because every later item is
-judged against them.
+| Benchmark | Wall | Reported |
+| --- | ---: | --- |
+| `BenchmarkTheoremsLattice` | 3.78 s | 31 decided, largest BDD 1,482,423 nodes |
+| `BenchmarkTheoremsEffects` | 2.54 s | 14 decided, largest BDD 950,634 nodes |
+| `BenchmarkTheoremsPatterns` | 0.84 s | 15 decided, largest BDD 3,287 nodes |
+| `BenchmarkTheoremsProtocols` | 19.98 s | 7 decided (liveness exploration through the interpreter) |
+| `BenchmarkBDDAdd32` / `Add64` | 0.74 ms / 2.57 ms | 4,595 / 18,403 nodes; 6.2 / 7.2 M nodes/s |
+| `BenchmarkBDDMul8` / `Mul12` | 3.2 ms / 372 ms | 21,338 / 1,133,955 nodes; 6.6 / 3.0 M nodes/s |
+| `BenchmarkCampaign` | 32.1 s for 2,000 cases | 62 cases/s |
+
+Earlier command-line timings (`oak prove spec/oak/lattice.oak` 5.71 s,
+`effects.oak` 3.19 s, `patterns.oak` 0.97 s, load 30–60) include model
+construction and the Lean projection; the benchmarks time the deciders.
+
+Two of these numbers reorder the plan below: the liveness exploration of
+`protocols.oak` at twenty seconds is the largest single cost in the
+repository's own specification, and the test runner at sixty-two cases a
+second — a process and a temporary file per case — is three orders of
+magnitude from what a compiled property test costs to run. Items 7 and 9
+therefore come right after the benchmarks, before the BDD engine, whose
+throughput of six to seven million nodes a second through Go maps is the
+next largest.
 
 ## 2. What the engines do today (file:line, `specification` at fbc9b1f8)
 
@@ -101,7 +119,8 @@ work).
 
 Each item names the structure, the measurement that decides it, and the
 proof obligation that keeps the engine sound. Nothing lands without all
-three.
+three. With the baselines in hand the order of execution is 1, 7, 9, 2,
+3, 5, 6, 4, 8, 10; the numbering below is kept as first written.
 
 1. **Benchmarks first.** `prove/`: `BenchmarkProveLattice`, `Effects`,
    `Patterns` over the three files above; `asm/`: `BenchmarkBlast` over the
