@@ -118,7 +118,7 @@ main: (): i32 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"static u32 base = ( 8 + 2 )", "static i32 ratio = ( 100 / 7 )", "oak_add_u32( oak_mul_u32( n, 2 ), 1 )"} {
+	for _, want := range []string{"static const u32 base = ( 8 + 2 )", "static const i32 ratio = ( 100 / 7 )", "oak_add_u32( oak_mul_u32( n, 2 ), 1 )"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("generated C lacks %q:\n%s", want, output)
 		}

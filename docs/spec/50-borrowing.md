@@ -410,6 +410,44 @@ This is the ml pilot's F6 — the `[q | k | v]` cache row as a record, `k`
 across positions as a column view of a field — with the stride arithmetic
 in the type rather than in an emitter.
 
+## 8e. Live instances behind a span (implemented)
+
+Several live instances of a stateful record — three regimes of one ported
+machine, each with a large pool — are an owned array of the record and one
+span over it, mutated and read **in place** through the span's elements:
+
+```oak
+Stage2: type = struct { pool: [65536]u32, count: u32 }
+
+step: (s: [*]Stage2, dom: u32, v: u32): () {
+  s[dom].pool[s[dom].count] = v          // a store through the element
+  s[dom].count = s[dom].count + u32(1)   // a field write in place
+}
+
+main: (): i32 {
+  doms: [3]Stage2
+  true ? {
+    s: [*]Stage2 = span(&doms)           // the span lives for this block
+    step(s, 0, 7)
+    step(s, 2, 9)
+  }
+  i32(doms[2].count)                     // the owner is readable again
+}
+```
+
+Nothing is copied: an element store is a checked store through the
+span's base, a field write is an lvalue path, and a field **read** through
+a span or view element (`s[dom].count`, `v[i].count`) selects the element
+in place — the backend never returns a record element by value from a
+checked helper (`90-backend.md` §8). Binding a whole element to a local
+(`st: Stage2 = s[dom]`) is the explicit copy the value semantics of §9
+name, and the one to avoid for a large record. The span is a writable
+borrow of the whole array under the rules above: it ends with its block,
+the owner is not read while it lives, and a function that takes `[*]T`
+mutates the caller's instances for the span's duration. This is the
+"mutable reference to N instances" of a ported module; no new construct is
+needed for it (the OS pilot's R1).
+
 ## 9. Move/consume and resource flow
 
 Owned aggregates (`[N]T` and resolved records) retain explicit value semantics in v1: binding or passing one is an explicit-cost copy, never a hidden allocation and never an ownership transfer.
@@ -956,10 +994,19 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   `while` condition proves `v[i]`. For the loop, the body must change `i`
   only as its final statement — the canonical increment — so every access
   before it executes under the most recent evaluation of the condition
-  (`loop_invariant`).
-- **Offset bound**: `i + K < len(v)` (K a literal) proves `v[i + j]` for
-  every literal `j <= K` and `v[i]` itself (`offset_under_bound`) — the
-  shape of pairwise and multi-byte scans.
+  (`loop_invariant`). The container may be a local binding or a
+  **top-level owned array** (a state table), whose static extent no
+  statement can change; the index stays local, since a callee may write a
+  global.
+- **Offset bound**: `i < len(v) - K` or `i <= len(v) - (K + 1)` (K a
+  literal), with `len(v) >= K` established earlier in the same condition
+  or block, proves `v[i + j]` for every literal `j <= K` and `v[i]` itself
+  (`offset_under_bound`, `guard_without_wrap`) — the shape of pairwise and
+  multi-byte scans: `len(b) >= u32(4) && o <= len(b) - u32(4)` proves
+  `b[o]` through `b[o + 3]`. The addition form `o + 3 < len(b)` proves
+  **nothing**, on purpose: fixed-width `o + 3` wraps (`20-types.md` §11.1),
+  so the guard can hold for an `o` far past the end, and the typechecker
+  reports that shape as `OAK-T0701` (`85-discipline.md` §6a).
 - **Same length**: `len(a) == len(b)` transfers an index bound from one
   container to the other (`bound_transfers`).
 - **Subslice extent**: `s: []T = subslice(v, start, n)` with a literal `n`

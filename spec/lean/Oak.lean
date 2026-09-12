@@ -79,6 +79,7 @@ import Oak.Modules
 import Oak.ModulesRefinement
 import Oak.ArithmeticRefinement
 import Oak.ViewRefinement
+import Oak.MemoryOrderRefinement
 import Oak.Semver
 import Oak.Loops
 import Oak.Regions

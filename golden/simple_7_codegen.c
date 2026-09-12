@@ -429,8 +429,8 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
 }
 
 /* static globals: constant-initialized, zero otherwise */
-static i32 x = 5;
-static i32 y = 10;
+static const i32 x = 5;
+static const i32 y = 10;
 
 /* forward declarations; OAK_INLINE marks private leaf helpers the C
    compiler must inline at every optimization level (the external

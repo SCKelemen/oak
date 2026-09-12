@@ -36,6 +36,7 @@ type blaster struct {
 	// property that relates two aggregates only through their own normal
 	// forms is exponential interleaved and linear grouped.
 	grouped   bool
+	label     string         // how the grouped order was chosen, for the verdict
 	groupBase map[string]int // parameter -> first variable of its block
 	groupSize map[string]int // parameter -> parameters in its block
 	groupPos  map[string]int // parameter -> position within its block
@@ -88,28 +89,60 @@ func paramGroups(params []string) int {
 // newGroupedBlaster orders each root parameter's bits in a block of its
 // own, the blocks in order of first appearance.
 func newGroupedBlaster(params []string, widths map[string]int) *blaster {
+	return newBlockedBlaster(params, widths, rootParam, nil, "parameters in blocks")
+}
+
+// newControlFirstBlaster orders the control parameters — those a
+// comparison, a conditional, or a shift count reads — in a first block and
+// the data parameters after them. Once the control bits are read the
+// residual is one of few data functions (a selection resolved), so a
+// property over several selectors compared to constants or to one another,
+// exponential under either interleaving, is linear here.
+func newControlFirstBlaster(params []string, widths map[string]int, control map[string]bool) *blaster {
+	role := func(name string) string {
+		if control[name] {
+			return "control"
+		}
+		return "data"
+	}
+	return newBlockedBlaster(params, widths, role, []string{"control", "data"}, "control bits first")
+}
+
+// newBlockedBlaster orders the parameters in blocks by groupOf, the blocks
+// in the order given (or of first appearance), the bits of a block's
+// parameters interleaved.
+func newBlockedBlaster(params []string, widths map[string]int, groupOf func(string) string, order []string, label string) *blaster {
 	bl := newBlaster(params, widths)
 	bl.grouped = true
+	bl.label = label
 	bl.groupBase = map[string]int{}
 	bl.groupSize = map[string]int{}
 	bl.groupPos = map[string]int{}
-	var roots []string
+	var groups []string
 	members := map[string][]string{}
 	for _, name := range params {
-		root := rootParam(name)
-		if _, seen := members[root]; !seen {
-			roots = append(roots, root)
+		group := groupOf(name)
+		if _, seen := members[group]; !seen {
+			groups = append(groups, group)
 		}
-		members[root] = append(members[root], name)
+		members[group] = append(members[group], name)
+	}
+	if order != nil {
+		groups = groups[:0]
+		for _, group := range order {
+			if _, present := members[group]; present {
+				groups = append(groups, group)
+			}
+		}
 	}
 	base := 0
-	for _, root := range roots {
-		for pos, name := range members[root] {
+	for _, group := range groups {
+		for pos, name := range members[group] {
 			bl.groupBase[name] = base
-			bl.groupSize[name] = len(members[root])
+			bl.groupSize[name] = len(members[group])
 			bl.groupPos[name] = pos
 		}
-		base += 64 * len(members[root])
+		base += 64 * len(members[group])
 	}
 	return bl
 }

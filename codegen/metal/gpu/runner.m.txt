@@ -1,0 +1,108 @@
+// The Oak Metal runner (codegen/metal/gpu): compiles an emitted Metal
+// source on this machine's GPU device at run time — the framework's own
+// compiler, no Xcode toolchain — binds buffers by a JSON manifest, dispatches
+// the kernel, and writes the spans and the fault word back
+// (docs/spec/56-kernels.md section 9).
+//
+//   oak_metal_run --probe              prints the device name, exit 0
+//   oak_metal_run --check <src.metal>  compiles the source, exit 0 or 3 with the errors
+//   oak_metal_run <manifest.json>      runs one kernel launch
+//
+// Manifest: {"source": path, "kernel": name, "threads": n, "threadgroup": g,
+//            "buffers": [{"index": i, "kind": "data"|"len"|"scalar"|"fault",
+//                         "path": in, "out": out, "count": n}]}
+#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+
+static int fail(const char *what, NSError *err) {
+  fprintf(stderr, "oak_metal_run: %s: %s\n", what, err ? err.localizedDescription.UTF8String : "unknown error");
+  return 3;
+}
+
+static id<MTLLibrary> compileSource(id<MTLDevice> dev, NSString *path, NSError **err) {
+  NSString *src = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:err];
+  if (!src) { return nil; }
+  MTLCompileOptions *opts = [MTLCompileOptions new];
+  return [dev newLibraryWithSource:src options:opts error:err];
+}
+
+int main(int argc, const char *argv[]) {
+  @autoreleasepool {
+    if (argc < 2) { fprintf(stderr, "usage: oak_metal_run --probe | --check src.metal | manifest.json\n"); return 2; }
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+    if (!dev) { fprintf(stderr, "oak_metal_run: no Metal device\n"); return 4; }
+    if (strcmp(argv[1], "--probe") == 0) { printf("%s\n", dev.name.UTF8String); return 0; }
+    NSError *err = nil;
+    if (strcmp(argv[1], "--check") == 0) {
+      if (argc < 3) { fprintf(stderr, "usage: oak_metal_run --check src.metal\n"); return 2; }
+      id<MTLLibrary> lib = compileSource(dev, [NSString stringWithUTF8String:argv[2]], &err);
+      if (!lib) { return fail("compile", err); }
+      printf("ok %lu\n", (unsigned long)lib.functionNames.count);
+      return 0;
+    }
+    NSData *manifestData = [NSData dataWithContentsOfFile:[NSString stringWithUTF8String:argv[1]]];
+    if (!manifestData) { fprintf(stderr, "oak_metal_run: cannot read %s\n", argv[1]); return 2; }
+    NSDictionary *manifest = [NSJSONSerialization JSONObjectWithData:manifestData options:0 error:&err];
+    if (!manifest) { return fail("manifest", err); }
+    id<MTLLibrary> lib = compileSource(dev, manifest[@"source"], &err);
+    if (!lib) { return fail("compile", err); }
+    id<MTLFunction> fn = [lib newFunctionWithName:manifest[@"kernel"]];
+    if (!fn) { fprintf(stderr, "oak_metal_run: no kernel %s\n", [manifest[@"kernel"] UTF8String]); return 3; }
+    id<MTLComputePipelineState> pso = [dev newComputePipelineStateWithFunction:fn error:&err];
+    if (!pso) { return fail("pipeline", err); }
+    NSMutableDictionary *buffers = [NSMutableDictionary new];
+    NSMutableArray *outputs = [NSMutableArray new];
+    for (NSDictionary *spec in manifest[@"buffers"]) {
+      NSNumber *index = spec[@"index"];
+      NSString *kind = spec[@"kind"];
+      id<MTLBuffer> buf = nil;
+      if ([kind isEqualToString:@"len"]) {
+        uint32_t count = [spec[@"count"] unsignedIntValue];
+        buf = [dev newBufferWithBytes:&count length:sizeof count options:MTLResourceStorageModeShared];
+      } else if ([kind isEqualToString:@"fault"]) {
+        uint32_t zero = 0;
+        buf = [dev newBufferWithBytes:&zero length:sizeof zero options:MTLResourceStorageModeShared];
+      } else {
+        NSData *data = [NSData dataWithContentsOfFile:spec[@"path"]];
+        if (!data) { fprintf(stderr, "oak_metal_run: cannot read %s\n", [spec[@"path"] UTF8String]); return 2; }
+        if (data.length == 0) {
+          buf = [dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
+        } else {
+          buf = [dev newBufferWithBytes:data.bytes length:data.length options:MTLResourceStorageModeShared];
+        }
+      }
+      buffers[index] = buf;
+      if (spec[@"out"]) { [outputs addObject:spec]; }
+    }
+    id<MTLCommandQueue> queue = [dev newCommandQueue];
+    id<MTLCommandBuffer> cb = [queue commandBuffer];
+    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    [enc setComputePipelineState:pso];
+    for (NSNumber *index in buffers) {
+      [enc setBuffer:buffers[index] offset:0 atIndex:index.unsignedIntegerValue];
+    }
+    NSUInteger threads = [manifest[@"threads"] unsignedIntegerValue];
+    NSUInteger group = [manifest[@"threadgroup"] unsignedIntegerValue];
+    if (group == 0) {
+      group = pso.maxTotalThreadsPerThreadgroup;
+      if (group > threads) { group = threads; }
+      if (group == 0) { group = 1; }
+    }
+    if (threads > 0) {
+      [enc dispatchThreads:MTLSizeMake(threads, 1, 1) threadsPerThreadgroup:MTLSizeMake(group, 1, 1)];
+    }
+    [enc endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    if (cb.error) { return fail("execution", cb.error); }
+    for (NSDictionary *spec in outputs) {
+      id<MTLBuffer> buf = buffers[spec[@"index"]];
+      NSUInteger length = [spec[@"length"] unsignedIntegerValue];
+      if (length == 0 || length > buf.length) { length = buf.length; }
+      NSData *out = [NSData dataWithBytes:buf.contents length:length];
+      if (![out writeToFile:spec[@"out"] atomically:YES]) { fprintf(stderr, "oak_metal_run: cannot write %s\n", [spec[@"out"] UTF8String]); return 2; }
+    }
+    printf("done\n");
+    return 0;
+  }
+}

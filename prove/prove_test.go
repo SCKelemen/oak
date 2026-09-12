@@ -9,7 +9,7 @@ import (
 
 func check(t *testing.T, src string) *compiler.SemanticModel {
 	t.Helper()
-	model, err := compiler.New().WithSyntaxRewrite(ProtocolObligations).WithSource("theorems.oak", src).Check().Get()
+	model, err := compiler.New().WithSyntaxRewrite(Obligations).WithSource("theorems.oak", src).Check().Get()
 	if err != nil {
 		t.Fatalf("check failed: %v", err)
 	}

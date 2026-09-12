@@ -205,6 +205,8 @@ Machine-readable diagnostic data for `OAK-T0201` should carry the generated coun
 
 The formal model is intentionally independent of parser syntax and runtime tag representation.
 
+The same model is stated in Oak over a closed universe of eight cases — every set a bitset, a case a bit — and decided by `oak prove` (`spec/oak/patterns.oak`; `125-verification.md` §6.2), including the tie between the verdict and the reported witness: a match is exhaustive or its first uncovered reachable case is a counterexample.
+
 A proved semantic model is not an implementation refinement. The Go coverage tree is tested against the same laws, but an explicit machine-checked correspondence is still required before this feature receives `R` status.
 
 ## 12. Required properties

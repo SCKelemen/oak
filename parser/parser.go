@@ -4646,12 +4646,22 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 		if !p.expectPeek(token.LBRACE) {
 			return nil
 		}
-		stmt.Laws = []string{}
+		stmt.Laws = []*ast.LawClause{}
 		for !p.peekTokenIs(token.RBRACE) {
 			if !p.expectPeek(token.IDENT) {
 				return nil
 			}
-			stmt.Laws = append(stmt.Laws, p.currentToken.Literal)
+			law := &ast.LawClause{Name: p.currentToken.Literal}
+			// `identity(e)`: the law's element, an ordinary expression.
+			if p.peekTokenIs(token.LPAREN) {
+				p.nextToken()
+				p.nextToken()
+				law.Argument = p.parseExpression(LOWEST)
+				if law.Argument == nil || !p.expectPeek(token.RPAREN) {
+					return nil
+				}
+			}
+			stmt.Laws = append(stmt.Laws, law)
 			if p.peekTokenIs(token.COMMA) {
 				p.nextToken()
 			} else if !p.peekTokenIs(token.RBRACE) {
@@ -4661,7 +4671,7 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 		}
 		p.nextToken() // '}'
 		if len(stmt.Laws) == 0 {
-			p.addErrorAtCurrentToken("a laws clause names at least one law (associative, commutative)")
+			p.addErrorAtCurrentToken("a laws clause names at least one law (associative, commutative, identity(e), idempotent)")
 			return nil
 		}
 	}

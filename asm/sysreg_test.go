@@ -136,3 +136,18 @@ func TestGeneratedTablesCurrent(t *testing.T) {
 		}
 	}
 }
+
+// The registers the OS pilot's kernel adapter moves onto the verified
+// assembler (docs/notes/os-language-requests-2026-09.md, R6): MMU enable,
+// vector install, and EL0 entry read and write these four.
+func TestKernelAdapterSystemRegisters(t *testing.T) {
+	for _, name := range []string{"mair_el1", "sp_el0", "elr_el1", "spsr_el1"} {
+		enc, known := systemRegisterEncodings[name]
+		if !known {
+			t.Fatalf("%s is not in the system register table", name)
+		}
+		if !enc.Read || !enc.Write {
+			t.Fatalf("%s must be readable and writable (MRS and MSR): %+v", name, enc)
+		}
+	}
+}

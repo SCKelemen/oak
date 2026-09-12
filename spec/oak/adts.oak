@@ -1,0 +1,94 @@
+// ADT values and match dispatch, in Oak (docs/spec/30-adts-patterns.md;
+// spec/lean/Oak/ADTSemantics.lean). An ADT value is a constructor tag and
+// its payload; a match dispatches to the first source-ordered arm whose tag
+// matches, evaluating that arm's handler on the payload as constructed and
+// nothing else. Up to four arms; a handler is a key the payload is combined
+// with, an injective family that keeps distinct handlers distinguishable.
+// Every law is decided.
+
+Value: type = struct { tag: u8, payload: u8 }
+
+// Source-ordered arms: a tag guard and a handler each; count arms are live.
+Arms: type = struct { tag: [4]u8, handler: [4]u8, count: u8 }
+
+// A dispatch: whether an arm was selected, which, and the handler's result.
+Selection: type = struct { some: Bool, arm: u8, result: u8 }
+
+live: (arms: Arms): u8 = arms.count > u8(4) ? { u8(4) } | { arms.count }
+
+apply: (handler: u8, payload: u8): u8 = payload ^ handler
+
+// select: the first live arm whose tag is the value's.
+select: (arms: Arms, v: Value): Selection {
+  out: Selection = Selection { some: false, arm: u8(0), result: u8(0) }
+  k: u8 = 0
+  while k < u8(4) {
+    hit: Bool = !out.some && k < live(arms) && arms.tag[u32(k)] == v.tag
+    out = hit ? { Selection { some: true, arm: k, result: apply(arms.handler[u32(k)], v.payload) } } | { out }
+    k = k + u8(1)
+  }
+  out
+}
+
+// The arms after the head.
+tail: (arms: Arms): Arms {
+  n: u8 = live(arms)
+  Arms {
+    tag: [4]u8{ arms.tag[u32(1)], arms.tag[u32(2)], arms.tag[u32(3)], 0 },
+    handler: [4]u8{ arms.handler[u32(1)], arms.handler[u32(2)], arms.handler[u32(3)], 0 },
+    count: n == u8(0) ? { u8(0) } | { n - u8(1) }
+  }
+}
+
+selections_equal: (a: Selection, b: Selection): Bool = a.some == b.some && (!a.some || (a.arm == b.arm && a.result == b.result))
+
+// Whether no live arm guards the tag.
+no_arm_guards: (arms: Arms, tag: u8): Bool {
+  none: Bool = true
+  k: u8 = 0
+  while k < u8(4) {
+    none = none && (k >= live(arms) || arms.tag[u32(k)] != tag)
+    k = k + u8(1)
+  }
+  none
+}
+
+// Whether every arm before k guards another tag (k is the first match).
+first_match: (arms: Arms, tag: u8, k: u8): Bool {
+  first: Bool = true
+  j: u8 = 0
+  while j < u8(4) {
+    first = first && (j >= k || arms.tag[u32(j)] != tag)
+    j = j + u8(1)
+  }
+  first
+}
+
+// constructors_disjoint: distinct constructors yield values no tag test
+// confuses.
+constructors_disjoint: theorem (t: u8, u: u8, p: u8, q: u8) { t == u || (Value { tag: t, payload: p }).tag != (Value { tag: u, payload: q }).tag }
+
+// select_head_match: a matching head arm is taken, with its handler on the
+// payload.
+select_head_match: theorem (arms: Arms, v: Value) { !(live(arms) > u8(0) && v.tag == arms.tag[u32(0)]) || (select(arms, v).some && select(arms, v).arm == u8(0) && select(arms, v).result == apply(arms.handler[u32(0)], v.payload)) }
+
+// select_head_skip: a non-matching head arm is skipped, and dispatch
+// continues in the rest.
+select_head_skip: theorem (arms: Arms, v: Value) { !(live(arms) > u8(0) && v.tag != arms.tag[u32(0)]) || (select(arms, v).some == select(tail(arms), v).some && (!select(arms, v).some || (select(arms, v).arm == select(tail(arms), v).arm + u8(1) && select(arms, v).result == select(tail(arms), v).result))) }
+
+// select_result_from_selected_handler: a successful dispatch is a live arm
+// guarding the value's tag, the first such, applied to the payload.
+select_result_from_selected_handler: theorem (arms: Arms, v: Value) { !select(arms, v).some || (select(arms, v).arm < live(arms) && arms.tag[u32(select(arms, v).arm)] == v.tag && first_match(arms, v.tag, select(arms, v).arm) && select(arms, v).result == apply(arms.handler[u32(select(arms, v).arm)], v.payload)) }
+
+// construct_then_dispatch: a fresh value through an arm for its own
+// constructor hands the arm exactly the constructed payload.
+construct_then_dispatch: theorem (arms: Arms, payload: u8) { live(arms) == u8(0) || select(arms, Value { tag: arms.tag[u32(0)], payload: payload }).result == apply(arms.handler[u32(0)], payload) }
+
+// select_none_of_no_arm: a value no arm guards falls through; dispatch
+// invents no branch.
+select_none_of_no_arm: theorem (arms: Arms, v: Value) { !no_arm_guards(arms, v.tag) || !select(arms, v).some }
+
+// The converse: a value some live arm guards is dispatched.
+select_some_of_arm: theorem (arms: Arms, v: Value) { no_arm_guards(arms, v.tag) || select(arms, v).some }
+
+main: (): i32 = 0

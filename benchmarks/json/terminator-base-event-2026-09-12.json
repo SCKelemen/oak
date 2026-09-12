@@ -1,0 +1,170 @@
+{
+  "metadata": {
+    "schema": "oak-json-benchmark-v1",
+    "workload_name": "event",
+    "workload": "required id:u64 kind:View[u8] message:View[u8] latencies:[64]u32 deltas:[8]i32; strings as raw tokens, arrays materialized",
+    "corpus": "deterministic-event-v1; ~1.5 KB documents; two key orders; messages with occasional escapes; integer boundaries",
+    "mode": "resident corpus, reused parser, steady state",
+    "machine": "arm64",
+    "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+    "cpu": "Apple M4 Max",
+    "logical_cpu_count": 16,
+    "oak": {
+      "sha": "d23f134a27221903dd5f8a23df28c0969f45973e",
+      "tracked_changes": false
+    },
+    "simdjson": {
+      "sha": "f9c973a359ea7de2a4ae02ffec95bae85f68a6d7",
+      "tracked_changes": false
+    },
+    "cc": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin25.3.0\nThread model: posix\nInstalledDir: /Library/Developer/CommandLineTools/usr/bin",
+    "cxx": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin25.3.0\nThread model: posix\nInstalledDir: /Library/Developer/CommandLineTools/usr/bin",
+    "go": "go version go1.27.1 darwin/arm64",
+    "flags": [
+      "-O3",
+      "-DNDEBUG"
+    ],
+    "documents_per_round": 1024,
+    "rounds": 100,
+    "samples": 5,
+    "allocation_counts": null,
+    "core_affinity": "not controlled",
+    "cache_flush": false,
+    "generated_c_sha256": "60dc649e638633087e29c2e931c8ec381221de9bf2a8fc50d75b80776dc332fd",
+    "simdjson_implementation": "arm64",
+    "corpus_bytes": 910316,
+    "max_document_capacity": 1081,
+    "commands": [
+      [
+        "go",
+        "run",
+        ".",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-json-bench-mrv729d6/schema.oak"
+      ],
+      [
+        "cc",
+        "-std=c99",
+        "-O3",
+        "-DNDEBUG",
+        "-I/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-json-bench-mrv729d6",
+        "-c",
+        "/Users/sam/Desktop/fwd-cloudsec/mojo/oak/benchmarks/json/bridge_event.c",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-json-bench-mrv729d6/oak.o"
+      ],
+      [
+        "c++",
+        "-std=c++17",
+        "-O3",
+        "-DNDEBUG",
+        "-pthread",
+        "-DOAK_JSON_WORKLOAD_HEADER=\"workload_event.h\"",
+        "-I/Users/sam/Desktop/fwd-cloudsec/mojo/oak/benchmarks/json",
+        "-I/private/tmp/claude-501/-Users-sam-Desktop-fwd-cloudsec-mojo-oak/151ef38d-5848-4937-a3d3-da0e01b8f578/scratchpad/simdjson/singleheader",
+        "/Users/sam/Desktop/fwd-cloudsec/mojo/oak/benchmarks/json/runner.cpp",
+        "/private/tmp/claude-501/-Users-sam-Desktop-fwd-cloudsec-mojo-oak/151ef38d-5848-4937-a3d3-da0e01b8f578/scratchpad/simdjson/singleheader/simdjson.cpp",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-json-bench-mrv729d6/oak.o",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-json-bench-mrv729d6/benchmark"
+      ],
+      [
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-json-bench-mrv729d6/benchmark",
+        "1024",
+        "100",
+        "5"
+      ]
+    ]
+  },
+  "summary": {
+    "oak": {
+      "median_ns_per_document": 761.078291015625,
+      "median_bytes_per_second": 1168053903.578954
+    },
+    "simdjson_ondemand": {
+      "median_ns_per_document": 547.579755859375,
+      "median_bytes_per_second": 1623472122.9875064
+    }
+  },
+  "samples": [
+    {
+      "backend": "oak",
+      "sample": 0,
+      "ns": 74193709,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "simdjson_ondemand",
+      "sample": 0,
+      "ns": 53688250,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "simdjson_ondemand",
+      "sample": 1,
+      "ns": 54107584,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "oak",
+      "sample": 1,
+      "ns": 77934417,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "oak",
+      "sample": 2,
+      "ns": 77629542,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "simdjson_ondemand",
+      "sample": 2,
+      "ns": 56072167,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "simdjson_ondemand",
+      "sample": 3,
+      "ns": 62986500,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "oak",
+      "sample": 3,
+      "ns": 84540708,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "oak",
+      "sample": 4,
+      "ns": 84357916,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "simdjson_ondemand",
+      "sample": 4,
+      "ns": 64179292,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    }
+  ]
+}

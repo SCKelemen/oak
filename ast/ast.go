@@ -1107,6 +1107,21 @@ func (tp *TypeParameter) String() string {
 }
 
 // Function declaration (top-level)
+// LawClause is one declared operator law: its name and, for `identity(e)`,
+// the identity element (docs/spec/10-syntax.md section 14a).
+type LawClause struct {
+	Name     string
+	Argument Expression // nil for a bare law name
+}
+
+// String prints the clause as declared: `identity(zero())`, `associative`.
+func (l *LawClause) String() string {
+	if l.Argument == nil {
+		return l.Name
+	}
+	return l.Name + "(" + l.Argument.String() + ")"
+}
+
 type FunctionStatement struct {
 	BaseNode
 	Token      token.Token        // 'fn' token
@@ -1171,11 +1186,12 @@ type FunctionStatement struct {
 	EffectsDeclared bool
 	Forbids         []*EffectName
 	// Laws are the algebraic properties an operator definition declares on
-	// the author's authority (`laws { associative, commutative }`,
-	// docs/spec/10-syntax.md section 14a): the permission a backend has to
-	// regroup or reorder applications of the operator, and a statement the
-	// REPL's :lean can put to Lean. Empty for ordinary functions.
-	Laws []string
+	// the author's authority (`laws { associative, commutative,
+	// identity(zero()), idempotent }`, docs/spec/10-syntax.md section
+	// 14a): the permission a backend has to regroup or reorder applications
+	// of the operator, and a statement the REPL's :lean can put to Lean and
+	// `oak prove` can decide. Empty for ordinary functions.
+	Laws []*LawClause
 	// Lowering, when set, is the compiler-known lowering of a projected
 	// protocol step function (docs/spec/112-protocols.md section 2a,
 	// 90-backend.md section 14): the C backend emits a transition table
@@ -1265,8 +1281,12 @@ func (fs *FunctionStatement) String() string {
 		writeEffects("forbids", fs.Forbids)
 	}
 	if len(fs.Laws) > 0 {
+		names := make([]string, 0, len(fs.Laws))
+		for _, law := range fs.Laws {
+			names = append(names, law.String())
+		}
 		out.WriteString(" laws { ")
-		out.WriteString(strings.Join(fs.Laws, ", "))
+		out.WriteString(strings.Join(names, ", "))
 		out.WriteString(" }")
 	}
 	out.WriteRune(' ')

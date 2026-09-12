@@ -37,7 +37,7 @@ func TestE2EDerivedJsonReaderDecodesScalarsInline(t *testing.T) {
 	reader = reader[:strings.Index(reader, "\n}\n")]
 	for _, want := range []string{
 		"oak_json_scan_integer( src, colon.end )",  // the u64 field, in place
-		"oak_json_scan_integer( src, lookahead )",  // the array elements, from the lookahead
+		"oak_json_scan_integer( src, at )",         // the array elements, from the element start
 		"( src ).base[ open_at ] == ((u8)( 123 ))", // the opening brace by byte
 		"( src ).base[ array_at ] == ((u8)( 91 ))", // the opening bracket by byte
 	} {

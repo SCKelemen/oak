@@ -1,5 +1,7 @@
 package asm
 
+import "sync/atomic"
+
 // A small reduced ordered binary decision diagram (ROBDD) for the §8
 // verifier's bit-blaster (docs/spec/94-assembler.md). Nodes are canonical:
 // two equal boolean functions are the same node index, so equivalence of
@@ -30,6 +32,9 @@ type bdd struct {
 	memo     map[bddOpKey]int
 	budget   int
 	exceeded bool
+	// stop, when set, ends this diagram as if its budget were exceeded:
+	// another variable order over the same terms has already decided.
+	stop *atomic.Bool
 }
 
 const (
@@ -55,7 +60,7 @@ func (b *bdd) mk(variable, low, high int) int {
 	if n, ok := b.unique[key]; ok {
 		return n
 	}
-	if len(b.nodes) >= b.budget {
+	if len(b.nodes) >= b.budget || (b.stop != nil && b.stop.Load()) {
 		b.exceeded = true
 		return bddFalse
 	}

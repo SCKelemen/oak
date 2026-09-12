@@ -83,12 +83,50 @@ main: (): i32 = {
 	if printed := tree.Modules.Public.String(); !strings.Contains(printed, "laws { associative, commutative }") {
 		t.Fatalf("laws must print back: %s", printed)
 	}
+	// The vocabulary beyond associative/commutative: identity(e) with its
+	// element checked at the operand type, idempotent; each recorded with
+	// its element and printed back.
+	monoid := `package main
+
+Hist: type = struct { n: u32 }
+hist_zero: (): Hist = Hist { n: u32(0) }
+operator(+) merge: (a: Hist, b: Hist): Hist laws { associative, commutative, identity(hist_zero()) } = Hist { n: a.n + b.n }
+operator(*) both: (a: Hist, b: Hist): Hist laws { idempotent, commutative } = Hist { n: a.n > b.n ? a.n | b.n }
+
+main: (): i32 {
+  forty_one: Hist = Hist { n: u32(41) }
+  one: Hist = Hist { n: u32(1) }
+  h: Hist = hist_zero() + forty_one + one
+  i32(h.n == u32(42) && (h * h).n == u32(42) ? 42 | 1)
+}
+`
+	root = writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": monoid})
+	if code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root)); abnormal || code != 42 {
+		t.Fatalf("monoid: exit=(%d,%v)", code, abnormal)
+	}
+	model, err = New().WithPackageDir(root).SemanticModel().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded := model.TypeChecker.OperatorLaws()
+	if len(recorded) != 5 || recorded[2].Law != "identity" || recorded[2].Argument == nil || recorded[2].Argument.String() != "hist_zero()" || recorded[3].Law != "idempotent" || recorded[3].Function != "both" {
+		t.Fatalf("recorded laws = %+v", recorded)
+	}
+	if tree, err := New().WithPackageDir(root).Parse().Get(); err != nil {
+		t.Fatal(err)
+	} else if printed := tree.Modules.Public.String(); !strings.Contains(printed, "laws { associative, commutative, identity(hist_zero()) }") || !strings.Contains(printed, "laws { idempotent, commutative }") {
+		t.Fatalf("laws must print back with their elements: %s", printed)
+	}
 	for name, bad := range map[string]string{
-		"unknown":    "operator(+) add: (a: Vec, b: Vec): Vec laws { magic } = a",
-		"twice":      "operator(+) add: (a: Vec, b: Vec): Vec laws { associative, associative } = a",
-		"mismatch":   "operator(*) scale: (v: Vec, k: f32): Vec laws { commutative } = v",
-		"nonoperand": "operator(==) same: (a: Vec, b: Vec): Bool laws { associative } = true",
-		"plain":      "join: (a: Vec, b: Vec): Vec laws { associative } = a",
+		"unknown":                  "operator(+) add: (a: Vec, b: Vec): Vec laws { magic } = a",
+		"identity without element": "operator(+) add: (a: Vec, b: Vec): Vec laws { identity } = a",
+		"element on associative":   "operator(+) add: (a: Vec, b: Vec): Vec laws { associative(a) } = a",
+		"element of another type":  "operator(+) add: (a: Vec, b: Vec): Vec laws { identity(u32(0)) } = a",
+		"idempotent nonoperand":    "operator(==) same: (a: Vec, b: Vec): Bool laws { idempotent } = true",
+		"twice":                    "operator(+) add: (a: Vec, b: Vec): Vec laws { associative, associative } = a",
+		"mismatch":                 "operator(*) scale: (v: Vec, k: f32): Vec laws { commutative } = v",
+		"nonoperand":               "operator(==) same: (a: Vec, b: Vec): Bool laws { associative } = true",
+		"plain":                    "join: (a: Vec, b: Vec): Vec laws { associative } = a",
 	} {
 		root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": "package main\n\nVec: type = struct { x: f32, y: f32 }\n" + bad + "\n\nmain: (): i32 = 0\n"})
 		if _, err := New().WithPackageDir(root).SemanticModel().Get(); err == nil {
