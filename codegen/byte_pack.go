@@ -5,13 +5,17 @@ import (
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
 // emitBytePack recognizes a complete little-endian byte pack over one u8
-// view and a side-effect-free offset. One range check subsumes the original
-// per-byte checks. Byte accesses retain portable alignment and alias semantics;
-// the native compiler can combine them into an unaligned word load.
+// view and a side-effect-free offset, `src[o + K] .. src[o + K + L - 1]`
+// for a literal base `K`. One range check subsumes the original per-byte
+// checks, and when the checker proved every byte in range
+// (typechecker/extents.go) the `_proven` twin carries none. Byte accesses
+// retain portable alignment and alias semantics; the native compiler can
+// combine them into an unaligned word load.
 func (cg *CodeGenerator) emitBytePack(expr *ast.InfixExpression, tc *typechecker.TypeChecker) bool {
 	if expr.Operator != "|" {
 		return false
@@ -32,6 +36,8 @@ func (cg *CodeGenerator) emitBytePack(expr *ast.InfixExpression, tc *typechecker
 	}
 	width := fmt.Sprintf("u%d", len(terms)*8)
 	var view, offset *ast.Identifier
+	base := int64(0)
+	proven := tc != nil
 	for lane, term := range terms {
 		shift, ok := term.(*ast.InfixExpression)
 		if !ok || shift.Operator != "<<" || !bytePackConstant(shift.Right, width, int64(lane*8)) {
@@ -41,22 +47,23 @@ func (cg *CodeGenerator) emitBytePack(expr *ast.InfixExpression, tc *typechecker
 		if !ok || len(cast.Arguments) != 1 || !bytePackName(cast.Function, width) {
 			return false
 		}
-		var base, index ast.Expression
+		var container, index ast.Expression
+		var token token.Token
 		switch access := cast.Arguments[0].(type) {
 		case *ast.IndexExpression:
 			if access.Dot {
 				return false
 			}
-			base, index = access.Left, access.Index
+			container, index, token = access.Left, access.Index, access.Token
 		case *ast.InvocationExpression:
 			if !bytePackName(access.Function, "core_index") || len(access.Arguments) != 2 {
 				return false
 			}
-			base, index = access.Arguments[0], access.Arguments[1]
+			container, index, token = access.Arguments[0], access.Arguments[1], access.Token
 		default:
 			return false
 		}
-		v, ok := base.(*ast.Identifier)
+		v, ok := container.(*ast.Identifier)
 		if !ok {
 			return false
 		}
@@ -65,8 +72,20 @@ func (cg *CodeGenerator) emitBytePack(expr *ast.InfixExpression, tc *typechecker
 			return false
 		}
 		add, ok := index.(*ast.InfixExpression)
-		if !ok || add.Operator != "+" || !bytePackConstant(add.Right, "u32", int64(lane)) {
+		if !ok || add.Operator != "+" {
 			return false
+		}
+		if lane == 0 {
+			k, isConst := bytePackLiteral(add.Right, "u32")
+			if !isConst || k < 0 {
+				return false
+			}
+			base = k
+		} else if !bytePackConstant(add.Right, "u32", base+int64(lane)) {
+			return false
+		}
+		if proven && !tc.IndexProven(token) {
+			proven = false
 		}
 		o, ok := add.Left.(*ast.Identifier)
 		if !ok || (lane != 0 && (v.Value != view.Value || o.Value != offset.Value)) {
@@ -75,9 +94,16 @@ func (cg *CodeGenerator) emitBytePack(expr *ast.InfixExpression, tc *typechecker
 		view, offset = v, o
 	}
 	name := "oak_byte_pack_le_" + width
+	if proven {
+		name += "_proven"
+	}
 	var body strings.Builder
 	fmt.Fprintf(&body, "static inline %s %s(oak_view_u8 src, u64 off) {\n", width, name)
-	fmt.Fprintf(&body, "  if (off > (u64)src.len || %du > (u64)src.len - off) { __builtin_trap(); }\n", len(terms))
+	if proven {
+		body.WriteString("  /* every byte proven in range by the checker (Oak.Extents): no check */\n")
+	} else {
+		fmt.Fprintf(&body, "  if (off > (u64)src.len || %du > (u64)src.len - off) { __builtin_trap(); }\n", len(terms))
+	}
 	body.WriteString("  const u8 *p = src.base + off;\n  return ")
 	for lane := range terms {
 		if lane != 0 {
@@ -90,9 +116,28 @@ func (cg *CodeGenerator) emitBytePack(expr *ast.InfixExpression, tc *typechecker
 	cg.output.WriteString(name + "( ")
 	cg.emitExpressionFragment(view, tc)
 	cg.output.WriteString(", ")
-	cg.emitExpressionFragment(offset, tc)
+	if base != 0 {
+		cg.output.WriteString("(u64)( ")
+		cg.emitExpressionFragment(offset, tc)
+		cg.output.WriteString(fmt.Sprintf(" ) + %du", base))
+	} else {
+		cg.emitExpressionFragment(offset, tc)
+	}
 	cg.output.WriteString(" )")
 	return true
+}
+
+// bytePackLiteral reads a width-typed literal constructor `u32(K)`.
+func bytePackLiteral(expr ast.Expression, width string) (int64, bool) {
+	call, ok := expr.(*ast.InvocationExpression)
+	if !ok || len(call.Arguments) != 1 || !bytePackName(call.Function, width) {
+		return 0, false
+	}
+	literal, ok := call.Arguments[0].(*ast.IntegerLiteral)
+	if !ok {
+		return 0, false
+	}
+	return literal.Value, true
 }
 
 func bytePackName(expr ast.Expression, name string) bool {

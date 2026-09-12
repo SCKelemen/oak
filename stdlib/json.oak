@@ -368,7 +368,27 @@ pub json_skip_space: (src: []u8, offset: u32): u32 {
  }
  at
 }
-pub json_value_boundary: (src: []u8, at: u32): Bool = at == len(src) || (at < len(src) && (json_space(src[at]) || src[at] == u8(44) || src[at] == u8(93) || src[at] == u8(125)))
+// One byte ends a value: whitespace, a comma, a closing bracket or brace.
+// The table replaces a chain of seven comparisons on the scanner's hot
+// path with one load; the index is masked so the access is proven.
+json_boundary_table: [256]u8 = [
+ u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(1), u8(1), u8(0), u8(0), u8(1), u8(0), u8(0),
+ u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0),
+ u8(1), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(1), u8(0), u8(0), u8(0),
+ u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0),
+ u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0),
+ u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(1), u8(0), u8(0),
+ u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0),
+ u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(1), u8(0), u8(0),
+ u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0),
+ u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0),
+ u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0),
+ u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0),
+ u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0),
+ u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0),
+ u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0),
+ u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0)]
+pub json_value_boundary: (src: []u8, at: u32): Bool = at == len(src) || (at < len(src) && json_boundary_table[u32(src[at]) & u32(255)] != u8(0))
 // Token kinds: 0 end, 1 invalid, 2 {, 3 }, 4 :, 5 comma, 6 string,
 // 7 number, 8 true, 9 false, 10 null, 11 [, 12 ]. No token allocation.
 pub json_token: (src: []u8, offset: u32): JsonToken {
@@ -583,6 +603,22 @@ json_word_value: (word: u64): u64 {
  ((quads * u64(10000)) + (quads >> u64(32))) & u64(4294967295)
 }
 
+// The same three functions over a four-byte word, for a tail of four to
+// seven bytes where no eight-byte word fits (Oak.JsonDigits, the 32-bit
+// theorems).
+json_non_digit_mask32: (word: u32): u32 =
+ ((word + u32(1179010630)) | (word - u32(808464432))) & u32(2155905152)
+json_digit_run32: (mask: u32): u32 {
+ lowest: u32 = mask & (u32(0) - mask)
+ power: u32 = lowest >> u32(7)
+ (power * u32(66051)) >> u32(24)
+}
+json_word_value32: (word: u32): u32 {
+ digits: u32 = word & u32(252645135)
+ pairs: u32 = ((digits * u32(10)) + (digits >> u32(8))) & u32(16711935)
+ ((pairs * u32(100)) + (pairs >> u32(16))) & u32(65535)
+}
+
 // 10^k for k = 0..8, indexed by a run masked to sixteen so the access is proven.
 json_pow10: [16]u64 = [
  u64(1), u64(10), u64(100), u64(1000), u64(10000), u64(100000), u64(1000000), u64(10000000),
@@ -594,7 +630,8 @@ pub json_scan_integer: (src: []u8, offset: u32): JsonIntegerScan {
  at: u32 = start
  negative: Bool = at < len(src) && src[at] == u8(45)
  negative ? { at = at + u32(1) }
- at >= len(src) || !json_digit(src[at]) ? { json_scan_integer_slow(src, offset) } | {
+ // Spelled so the first digit's read is under its guard and proven.
+ !(at < len(src) && json_digit(src[at])) ? { json_scan_integer_slow(src, offset) } | {
   leading_zero: Bool = src[at] == u8(48)
   magnitude: u64 = u64(0)
   count: u32 = u32(0)
@@ -614,14 +651,35 @@ pub json_scan_integer: (src: []u8, offset: u32): JsonIntegerScan {
     count = count + u32(8)
    } | {
     words = false
+    // Up to the nineteenth digit of the run is taken here (a twentieth
+    // could overflow and goes to the byte loop with its check).
     run: u32 = json_digit_run(mask)
-    run > u32(0) && count + run <= u32(19) ? {
+    take: u32 = run > u32(19) - count ? u32(19) - count | run
+    take > u32(0) && take < u32(8) ? {
      // The run's digits moved to the high bytes, ASCII zeros filled below.
-     shifted: u64 = (word << (u64(64) - u64(8) * u64(run))) | (u64(3472328296227680304) >> (u64(8) * u64(run)))
-     magnitude = magnitude * json_pow10[run & u32(15)] + json_word_value(shifted)
-     at = at + run
-     count = count + run
+     shifted: u64 = (word << (u64(64) - u64(8) * u64(take))) | (u64(3472328296227680304) >> (u64(8) * u64(take)))
+     magnitude = magnitude * json_pow10[take & u32(15)] + json_word_value(shifted)
+     at = at + take
+     count = count + take
     }
+   }
+  }
+  // A tail of four to seven bytes, when the word loop ran out of bytes
+  // rather than digits: one four-byte word the same way.
+  words && len(src) - at >= u32(4) && count < u32(19) ? {
+   word4: u32 = (u32(src[at + u32(0)]) << u32(0)) | (u32(src[at + u32(1)]) << u32(8)) | (u32(src[at + u32(2)]) << u32(16)) | (u32(src[at + u32(3)]) << u32(24))
+   mask4: u32 = json_non_digit_mask32(word4)
+   run4: u32 = mask4 == u32(0) ? u32(4) | json_digit_run32(mask4)
+   take4: u32 = run4 > u32(19) - count ? u32(19) - count | run4
+   take4 == u32(4) ? {
+    magnitude = magnitude * u64(10000) + u64(json_word_value32(word4))
+    at = at + u32(4)
+    count = count + u32(4)
+   } | take4 > u32(0) ? {
+    shifted4: u32 = (word4 << (u32(32) - u32(8) * take4)) | (u32(808464432) >> (u32(8) * take4))
+    magnitude = magnitude * json_pow10[take4 & u32(15)] + u64(json_word_value32(shifted4))
+    at = at + take4
+    count = count + take4
    }
   }
   overflow: Bool = false

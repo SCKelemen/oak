@@ -754,6 +754,22 @@ they are exported and some contain loops, so the leaf-helper shape rule
 would not pick them, and a call inside every derived reader's loop costs
 more than their bodies.
 
+A second pass, guided by a program-counter profile of the emitted reader
+(lldb sampling; Instruments is not installed on the benchmark machine):
+the value-boundary test is one table load on a masked index
+(`json_boundary_table`, proven in range) instead of seven comparisons; the
+run at a word's front is taken up to the nineteenth digit and a tail of
+four to seven bytes goes through one four-byte word with the same three
+functions (`Oak.JsonDigits`, the 32-bit theorems), so the byte loop is
+left the twentieth digit and fewer than four bytes; the deriver's
+remaining-bytes guard is the wrap-free `len(src) >= n && at <= len(src) - n`,
+under which every key and Boolean byte read is proven, and the backend's
+byte-pack coalescer accepts a literal base offset and emits the `_proven`
+twin without a range check when the checker proved every byte
+(`codegen/byte_pack.go`); eight-byte key spellings compare as one word;
+separators after values and elements are one byte read under its guard,
+no token record; the whitespace after the opening brace is skipped once.
+
 On the local harness (`benchmarks/json/run.py --samples 9`, Apple arm64,
 the machine otherwise idle, the simdjson control in every run) the derived
 decoder went from 1.20 times simdjson's time to 1.00 — 75.5 ns per

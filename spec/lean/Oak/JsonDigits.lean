@@ -118,4 +118,62 @@ theorem partial_value_7 (w : BitVec 64) (h0 : isDigit (byteAt w 0) = true) (h1 :
   unfold wordValue partialWord digitValue byteAt isDigit at *
   bv_decide (config := { timeout := 300 })
 
+/-! ## The four-byte tail
+
+`json_scan_integer` takes a tail of four to seven bytes through one 32-bit
+word with the same three functions. -/
+
+def nonDigitMask32 (w : BitVec 32) : BitVec 32 :=
+  ((w + 0x46464646#32) ||| (w - 0x30303030#32)) &&& 0x80808080#32
+
+def byteAt32 (w : BitVec 32) (i : Nat) : BitVec 8 := BitVec.extractLsb' (8 * i) 8 w
+
+theorem non_digit_mask32_sound (w : BitVec 32) :
+    ((nonDigitMask32 w).getLsbD 7 = false → isDigit (byteAt32 w 0) = true) ∧
+    ((nonDigitMask32 w).getLsbD 15 = false → isDigit (byteAt32 w 1) = true) ∧
+    ((nonDigitMask32 w).getLsbD 23 = false → isDigit (byteAt32 w 2) = true) ∧
+    ((nonDigitMask32 w).getLsbD 31 = false → isDigit (byteAt32 w 3) = true) := by
+  unfold nonDigitMask32 byteAt32 isDigit
+  bv_decide
+
+def digitRun32 (mask : BitVec 32) : BitVec 32 :=
+  let lowest := mask &&& (0 - mask)
+  let power := lowest >>> 7
+  (power * 0x00010203#32) >>> 24
+
+theorem digit_run32 (mask : BitVec 32) (h : mask &&& 0x7F7F7F7F#32 = 0) :
+    digitRun32 mask = (if mask.getLsbD 7 then 0 else if mask.getLsbD 15 then 1 else if mask.getLsbD 23 then 2 else if mask.getLsbD 31 then 3 else 0) := by
+  unfold digitRun32
+  bv_decide
+
+def wordValue32 (w : BitVec 32) : BitVec 32 :=
+  let digits := w &&& 0x0F0F0F0F#32
+  let pairs := ((digits * 10) + (digits >>> 8)) &&& 0x00FF00FF#32
+  ((pairs * 100) + (pairs >>> 16)) &&& 0xFFFF#32
+
+def digitValue32 (w : BitVec 32) (i : Nat) : BitVec 32 := (byteAt32 w i - 0x30#8).setWidth 32
+
+theorem word_value32 (w : BitVec 32) (h : nonDigitMask32 w = 0) :
+    wordValue32 w = (((digitValue32 w 0) * 10 + digitValue32 w 1) * 10 + digitValue32 w 2) * 10 + digitValue32 w 3 := by
+  unfold wordValue32 digitValue32 byteAt32 nonDigitMask32 at *
+  bv_decide
+
+def partialWord32 (w : BitVec 32) (k : Nat) : BitVec 32 :=
+  (w <<< (8 * (4 - k))) ||| (0x30303030#32 >>> (8 * k))
+
+theorem partial_value32_1 (w : BitVec 32) (h0 : isDigit (byteAt32 w 0) = true) :
+    wordValue32 (partialWord32 w 1) = digitValue32 w 0 := by
+  unfold wordValue32 partialWord32 digitValue32 byteAt32 isDigit at *
+  bv_decide
+
+theorem partial_value32_2 (w : BitVec 32) (h0 : isDigit (byteAt32 w 0) = true) (h1 : isDigit (byteAt32 w 1) = true) :
+    wordValue32 (partialWord32 w 2) = (digitValue32 w 0) * 10 + digitValue32 w 1 := by
+  unfold wordValue32 partialWord32 digitValue32 byteAt32 isDigit at *
+  bv_decide
+
+theorem partial_value32_3 (w : BitVec 32) (h0 : isDigit (byteAt32 w 0) = true) (h1 : isDigit (byteAt32 w 1) = true) (h2 : isDigit (byteAt32 w 2) = true) :
+    wordValue32 (partialWord32 w 3) = ((digitValue32 w 0) * 10 + digitValue32 w 1) * 10 + digitValue32 w 2 := by
+  unfold wordValue32 partialWord32 digitValue32 byteAt32 isDigit at *
+  bv_decide
+
 end Oak.JsonDigits
