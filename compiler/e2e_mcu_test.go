@@ -103,7 +103,7 @@ func TestE2EMicrocontrollerTargetsUnderQEMU(t *testing.T) {
 			origin:   "0x00000000",
 		},
 		{
-			tgt: target.Target{OS: target.OSFreestanding, Arch: target.ArchRiscv32}, cpu: "generic_rv32",
+			tgt: target.Target{OS: target.OSFreestanding, Arch: target.ArchRiscv32}, cpu: "generic_rv32+m",
 			qemu: "qemu-system-riscv32", machine: []string{"-M", "virt", "-bios", "none"},
 			uart:     "0x10000000",
 			exitCode: `*(volatile unsigned *)0x100000 = 0x5555; /* sifive_test: exit 0 */`,

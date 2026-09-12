@@ -194,6 +194,29 @@ func (p *Parser) nextToken() {
 	}
 }
 
+// parseOrderBlock parses `order <tree|left|any> { ... }`: a block statement
+// whose Order the typechecker applies to the reduce.reduce calls inside it
+// (docs/spec/55-parallelism.md section 4, "Declaring the order once").
+func (p *Parser) parseOrderBlock() ast.Statement {
+	orderToken := p.currentToken
+	p.nextToken() // the order name
+	name := p.currentToken.Literal
+	switch name {
+	case "tree", "left", "any":
+	default:
+		p.addErrorAtCurrentToken(fmt.Sprintf("order block: the order is tree, left, or any, got %q", name))
+		return nil
+	}
+	p.nextToken() // {
+	block := p.parseBlockStatement()
+	if block == nil {
+		return nil
+	}
+	block.Order = name
+	block.Token = orderToken
+	return block
+}
+
 func (p *Parser) parseBlockStatement() *ast.BlockStatement {
 	// A brace block restores '|' as bitwise or, wherever it sits inside a
 	// ?-match arm (docs/spec/10-syntax.md section 3b).
@@ -323,6 +346,12 @@ func (p *Parser) parseStatement() ast.Statement {
 		// `module` is contextual, so `module := 1` stays an ordinary binding.
 		if p.currentToken.Literal == "module" && p.peekTokenIs(token.IDENT) && p.lookaheadSignificant(2).TokenKind == token.LBRACE {
 			return p.parseModuleDeclaration()
+		}
+		// `order tree { ... }` declares a block's reduction order once
+		// (docs/spec/55-parallelism.md section 4); `order` is contextual, so
+		// `order := 1` and `order: u32 = 1` stay ordinary bindings.
+		if p.currentToken.Literal == "order" && p.peekTokenIs(token.IDENT) && p.lookaheadSignificant(2).TokenKind == token.LBRACE {
+			return p.parseOrderBlock()
 		}
 		// Variable declarations and assignments:
 		// - x := expr -> declaration with type inference (short declaration)

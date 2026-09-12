@@ -61,9 +61,14 @@ target comes from `-target`, else `OAKOS`/`OAKARCH` (each defaulting to the
 host's component, as `GOOS`/`GOARCH` do), else the host. A **processor**
 (`-cpu`, else `OAKCPU`, else the target's default) is passed to the C
 compiler as `-mcpu`: `cortex_m0`, `cortex_m3`, `cortex_m7`, `cortex_m33`,
-… for Cortex-M (default `cortex_m4`); `generic_rv32`/`generic_rv64` — soft
-float, matching the companion object — for freestanding RISC-V; the
-toolchain baseline for hosted targets (`Oak.Target.defaultCPU`).
+… for Cortex-M (default `cortex_m4`); `generic_rv32+m`/`generic_rv64+m` — soft
+float with the integer multiply, matching the companion object — for
+freestanding RISC-V; the toolchain baseline for hosted targets
+(`Oak.Target.defaultCPU`). A feature suffix extends a processor
+(`generic_rv64+m+v` for the vector extension, `93-simd.md` §1.4).
+Freestanding RISC-V objects are compiled with the medium-any code model
+so they link at the user's address (RAM at `0x80000000` on the `virt`
+machines).
 
 The compiler emits the same C translation unit for every target; what the
 target decides is:
@@ -203,6 +208,15 @@ Payload defaults/metadata are not automatically discriminant values.
 A compact enum-like representation is valid only when constructor payload semantics allow it and the representation mapping is injective over observable constructor values.
 
 ## 6. Records and structs
+
+A binding declared without a value is the zero of its type in every
+backend (`20-types.md` §12.2 relies on it: the zero must satisfy every
+refinement the type carries): the C emitter initializes a value-less
+scalar with `0` and a value-less record, union, or owned array with `{0}`,
+and never leaves a local's storage uninitialized — a value-less record
+local that read as stack garbage was the one difference between the Go
+bit-level decider and its Oak twin (`125-verification.md` §7) when the
+twin was first run.
 
 A **record** is semantic product/shape information. It may be consumed entirely at compile time and therefore may have no runtime representation at all.
 

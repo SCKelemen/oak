@@ -586,7 +586,7 @@ func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 		// signbit from it (the transcendental functions are Oak code in the
 		// standard library), so a freestanding build (docs/spec/90-backend.md
 		// §2a) takes the compiler's builtin and stays free of libm.
-		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n#include <math.h>\n#else\n#ifndef signbit\n#define signbit(x) __builtin_signbit(x)\n#endif\n#endif\n")
+		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n#include <math.h>\n#else\n#ifndef signbit\n#define signbit(x) __builtin_signbit(x)\n#endif\n#ifndef isnan\n#define isnan(x) __builtin_isnan(x)\n#endif\n#ifndef isinf\n#define isinf(x) __builtin_isinf(x)\n#endif\n#ifndef isfinite\n#define isfinite(x) __builtin_isfinite(x)\n#endif\n#endif\n")
 		cg.write("#include <float.h>\n")
 		// Every operation rounds to its own type: no excess intermediate
 		// precision (docs/spec/20-types.md section 11.3.3). A target that
@@ -4219,8 +4219,9 @@ func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, 
 	}
 
 	// Owned arrays are wrapper-struct values (codegen/arrays.go); value-less
-	// arrays are zero-filled (definite-initialization semantics pending —
-	// the backend never leaves storage uninitialized). A literal initializer
+	// arrays are zero-filled, as every value-less binding is (the zero of
+	// its type; the backend never leaves storage uninitialized). A literal
+	// initializer
 	// is a brace initializer; any other initializer is a struct copy.
 	if stmt.Type != nil {
 		if info := cg.classifyContainer(stmt.Type); info.kind == containerOwnedArray {
@@ -4281,9 +4282,29 @@ func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, 
 	if stmt.Value != nil {
 		cg.write(" = ")
 		cg.emitExpressionFragment(stmt.Value, tc)
+	} else {
+		// A binding declared without a value is its type's zero
+		// (docs/spec/20-types.md section 12.2: the zero value must satisfy
+		// every refinement it carries): a scalar is 0, a record or union
+		// the all-zero aggregate. The backend never leaves storage
+		// uninitialized.
+		cg.write(zeroInitializerFor(varType))
 	}
 
 	cg.write(";\n")
+}
+
+// zeroInitializerFor is the C zero of a local by its C type: `= 0` for the
+// scalar carriers, `= {0}` for a struct or union carrier.
+func zeroInitializerFor(cType string) string {
+	switch cType {
+	case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f16", "f32", "f64", "bf16", "f8", "Bool", "bool", "_Bool", "size_t", "void *", "uintptr_t":
+		return " = 0"
+	}
+	if strings.HasSuffix(cType, "*") {
+		return " = 0"
+	}
+	return " = {0}"
 }
 
 // emitAssignmentStatement emits an assignment statement

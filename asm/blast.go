@@ -58,6 +58,9 @@ type selectAbstraction struct {
 
 const blastNodeBudget = 2000000
 
+// NodeBudget is the decider's node budget, which the Oak solver is sized to.
+const NodeBudget = blastNodeBudget
+
 func newBlaster(params []string, widths map[string]int) *blaster {
 	index := make(map[string]int, len(params))
 	for i, name := range params {

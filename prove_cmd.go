@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/compiler"
 	"github.com/SCKelemen/oak/prove"
 )
@@ -26,12 +27,13 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 	check := flags.Bool("check", false, "run Lean on the projection (-lean) and report the statements it proves")
 	leanBinary := flags.String("lean-binary", "lean", "the Lean executable -check runs")
 	cases := flags.Int("cases", prove.DefaultCases, "largest parameter domain the exhaustive decider enumerates")
+	solver := flags.String("solver", "", "\"oak\": replay every bit-level decision through the solver written in Oak and require agreement")
 	witness := flags.Bool("witness", false, "also evaluate the exhaustively decided theorems in the compiled program")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() > 1 || (*check && *leanOut == "") {
-		fmt.Fprintln(stderr, "usage: oak prove [-lean out.lean [-check [-lean-binary lean]]] [-cases N] [-witness] [dir|file.oak]")
+		fmt.Fprintln(stderr, "usage: oak prove [-lean out.lean [-check [-lean-binary lean]]] [-cases N] [-witness] [-solver oak] [dir|file.oak]")
 		return 2
 	}
 	target := "."
@@ -97,6 +99,44 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 			results = checked
+		}
+	}
+	if *solver == "oak" {
+		// The Oak solver (prove/solver/bdd.oak): the same terms under the
+		// same variable order, decided by the solver written in Oak, which
+		// must reach the same verdict with the same number of nodes.
+		var problems []asm.Problem
+		var indices []int
+		for i, r := range results {
+			if r.Status != prove.Decided || r.Order == "" {
+				continue
+			}
+			problem, reason, err := prove.ProblemFor(model, r.Name, r.Order, asm.NodeBudget)
+			if err != nil {
+				fmt.Fprintf(stderr, "oak prove: %v\n", err)
+				return 2
+			}
+			if reason != "" {
+				results[i].Status = prove.Open
+				results[i].Detail += " (the Oak solver cannot restate it: " + reason + ")"
+				continue
+			}
+			problems = append(problems, problem)
+			indices = append(indices, i)
+		}
+		verdicts, err := runOakSolver(problems, asm.NodeBudget)
+		if err != nil {
+			fmt.Fprintf(stderr, "oak prove: %v\n", err)
+			return 2
+		}
+		for k, i := range indices {
+			v := verdicts[k]
+			if v.Status == 0 && v.Nodes == results[i].Nodes {
+				results[i].Detail += fmt.Sprintf("; the Oak solver agrees (same %d nodes)", v.Nodes)
+				continue
+			}
+			results[i].Status = prove.Open
+			results[i].Detail = fmt.Sprintf("the Oak solver disagrees: status %d with %d nodes, where the Go decider proved it with %d (%s)", v.Status, v.Nodes, results[i].Nodes, results[i].Detail)
 		}
 	}
 	if *witness {

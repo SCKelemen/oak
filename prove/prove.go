@@ -43,6 +43,11 @@ type Result struct {
 	// Detail says how the status was reached: the number of cases decided,
 	// the counterexample, or why the deciders do not apply.
 	Detail string
+	// Order and Nodes are set for a theorem decided at the bit level: the
+	// variable order that proved it and the diagram's size, which the Oak
+	// solver replays (ProblemFor).
+	Order string
+	Nodes int
 }
 
 // DefaultCases bounds the exhaustive decider: the product of the parameter
@@ -427,7 +432,7 @@ func blastOr(tc *typechecker.TypeChecker, decls asm.Declarations, theorem *ast.F
 	decision := asm.DecideTheoremWith(stated, callees, guards, decls)
 	switch decision.Kind {
 	case asm.DecisionProven:
-		return Result{Name: open.Name, Status: Decided, Detail: decision.Message}
+		return Result{Name: open.Name, Status: Decided, Detail: decision.Message, Order: decision.Order, Nodes: decision.Nodes}
 	case asm.DecisionRefuted:
 		return Result{Name: open.Name, Status: Refuted, Detail: decision.Message}
 	}

@@ -191,6 +191,15 @@ message; an error outside every statement leaves them all open with it.
 `oak build` checks theorems like any declaration and does not run the
 ladder; a theorem is never a build error for being open.
 
+`-solver oak` replays every theorem decided at the bit level through the
+solver written in Oak (`prove/solver/bdd.oak`, §7): the same lowered terms
+under the same variable order are serialized as a word table, embedded in
+a generated package with the solver, compiled through the backend, and
+run on the host; the row gains `the Oak solver agrees (same N nodes)`
+when the Oak solver reaches the same verdict with the same node count,
+and becomes `open` naming the difference otherwise. `TestOakSolverAgrees`
+runs it over the whole law corpus.
+
 `-witness` evaluates every decided theorem in the compiled program as
 well, whichever decider settled it: `main` is replaced by a generated
 driver that loops over the parameter domains (u8, u16, i8, i16, `Bool`,
@@ -419,8 +428,15 @@ In order of payoff, each reusing a surface that exists:
   ADT dispatch, generalization, and instantiation (§6.3; all done) — each
   as an Oak procedure over words with its laws decided,
   the standard library's laws left in Lean; then the solver: the ROBDD and
-  the bit blaster of `asm/blast.go` as an Oak program, compiled and run
-  beside the Go decider on the whole corpus until it replaces it; then
+  the bit blaster of `asm/blast.go` as an Oak program
+  (`prove/solver/bdd.oak`: the node table in structure-of-arrays form, an
+  open-addressing unique table, a direct-mapped apply cache, an iterative
+  apply over an explicit frame stack, and the blaster operation for
+  operation the Go one — done as the twin; `oak prove -solver oak` runs it
+  beside the Go decider on every bit-level law and requires the same
+  verdict with the same node count, which it reaches on the whole corpus),
+  next made the decider `oak prove` runs by default with the Go one as the
+  check; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
   producers of certificates, so speed and trust are separated; then an

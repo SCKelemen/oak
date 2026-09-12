@@ -71,6 +71,16 @@ pub left[T]: (xs: []T, zero: T, f: (T, T) -> T effects { }): T = {
   acc
 }
 
+// reduce is the reduction whose order the enclosing scope declares
+// (docs/spec/55-parallelism.md section 4, "Declaring the order once"):
+// inside `order tree { }` it is tree, inside `order left { }` left, and
+// inside `order any { }` chain — for an f whose operator declares
+// `laws { associative }`, and a type error otherwise. Outside any order
+// block it is tree, the exact grouping, so the default never regroups.
+// The checker rewrites each call to the named order, so every backend
+// and the extraction see the order by name.
+pub reduce[T]: (xs: []T, zero: T, f: (T, T) -> T effects { }): T = tree(xs, zero, f)
+
 // chain is the left fold from the first element: f(f(x0, x1), x2) and so
 // on, zero only for the empty view — the grouping tree computes when f is
 // associative (Oak.Reduce.tree_eq_chainFold), with no stack of partials. A call

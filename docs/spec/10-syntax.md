@@ -802,7 +802,10 @@ model lists every such site (`LawLowerings`: the operator, the call
 lowered from and to). `reduce.tree` with any other combine — a plain
 function, an operator without the law — is the tree it names, and so is a
 kernel's reduction (`56-kernels.md` §7): operators are declared over
-records, which are outside the kernel subset.
+records, which are outside the kernel subset. A block declares the order
+once with `order tree { }`, `order left { }`, or `order any { }` for the
+`reduce.reduce` calls inside it (`55-parallelism.md` §4); `any` is refused
+without the claim.
 
 Laws are declared, not checked by the type checker: like `effects { }` on
 an extern, the declaration is the author's claim. The tooling keeps it

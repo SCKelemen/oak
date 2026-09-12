@@ -113,6 +113,40 @@ theorem that names which two orders it makes equal. The canonical order
 is the one the program calls; the grouping named is the grouping
 computed.
 
+**Declaring the order once.** A block may declare the order for every
+reduction inside it, so a routine says it once rather than at each call:
+
+```oak
+order left {                       // every reduce.reduce here is the left fold
+  s: f32 = r.reduce(view(&xs), zero, plus)
+}
+order any {                        // permission to regroup — needs the claim
+  t: Sum = r.reduce(view(&sums), Sum { v: 0 }, add)   // add declares associative
+}
+```
+
+`reduce.reduce(xs, zero, f)` is the reduction whose order the enclosing
+`order` block names: `tree` (the binary-counter tree), `left` (the
+sequential fold), or `any` — the permission to regroup, which lowers the
+call to `reduce.chain` and is **refused** unless `f` is an operator
+declaring `laws { associative }` (`10-syntax.md` §14a): without the claim
+the checker reports the call and names the two spellings that state the
+intent. Outside every order block `reduce.reduce` is `tree`: **the exact
+order is the default**, and nothing regroups unless a block says `any`
+and the operator carries the claim. The innermost block wins; an explicit
+`reduce.tree` or `reduce.left` keeps its name inside any block. The
+checker rewrites each call to the order it resolved to, so the C backend,
+the interpreter, and the extraction see a named order (the semantic model
+lists the rewrites, `LawLowerings`), and the theorems above relate the
+orders — `tree_eq_chainFold` is what `any` rests on. The precise reading
+for floating point: under `order any`, a reduction over an `f32` add
+declared associative computes *some* grouping's value — a bounded
+quantity whose bound is the remaining theorem (`Oak.Floats`, roadmap E4)
+— while `order tree`, `order left`, and the default compute the exact
+named grouping bit for bit. `commutative` is recorded with `associative`
+and consumed by nothing yet; a backend that reorders operands, not just
+groupings, is what would read it.
+
 The identity element, if required by the operation, is likewise a semantic law and not merely an optimization hint.
 
 ## 5. Work and span
