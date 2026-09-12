@@ -211,7 +211,10 @@ Oak is not a purely functional language. It has mutation, unique authority,
 arenas/regions, raw pointers, effects, and explicit storage.
 
 Therefore Oak must not adopt unrestricted ML let-polymorphism in cases where it
-would make mutable or region-bound state polymorphically aliasable.
+would make mutable or region-bound state polymorphically aliasable. The
+decision over its blocking facts (`Oak.GeneralizationSafety`) is restated in
+Oak and decided exhaustively by `oak prove` (`spec/oak/generalization.oak`,
+`125-verification.md` §6.3).
 
 The soundness rule is:
 

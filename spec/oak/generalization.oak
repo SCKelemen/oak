@@ -1,0 +1,45 @@
+// Generalization safety, in Oak (docs/spec/25-type-inference.md;
+// spec/lean/Oak/GeneralizationSafety.lean). Generalization is a decision
+// apart from inference: seven authority, effect, and region facts may
+// forbid universal quantification of an inferred local type, and blocking
+// polymorphism never rewrites the inferred monotype. Every law is decided
+// exhaustively over every fact set and inferred type.
+
+Facts: type = struct {
+  mutable_authority: Bool,
+  unique_authority: Bool,
+  region_bound: Bool,
+  external_authority: Bool,
+  effectful_capture: Bool,
+  unsafe_assumption: Bool,
+  unknown_authority: Bool
+}
+
+Binding: type = struct { inferred_type: u8, generalized: Bool }
+
+// Safe: no fact forbids generalization.
+safe: (facts: Facts): Bool = !(facts.mutable_authority || facts.unique_authority || facts.region_bound || facts.external_authority || facts.effectful_capture || facts.unsafe_assumption || facts.unknown_authority)
+
+// decideGeneralization: the inferred type, generalized exactly when safe.
+decide_generalization: (inferred_type: u8, facts: Facts): Binding = Binding { inferred_type: inferred_type, generalized: safe(facts) }
+
+// decision_preserves_inferred_type: the policy cannot change the type.
+decision_preserves_inferred_type: theorem (inferred_type: u8, facts: Facts) { decide_generalization(inferred_type, facts).inferred_type == inferred_type }
+
+// safe_generalizes: a fully safe fact set permits generalization.
+safe_generalizes: theorem (inferred_type: u8, facts: Facts) { !safe(facts) || decide_generalization(inferred_type, facts).generalized }
+
+// Each fact blocks on its own.
+mutable_authority_blocks: theorem (inferred_type: u8, facts: Facts) { !facts.mutable_authority || !decide_generalization(inferred_type, facts).generalized }
+unique_authority_blocks: theorem (inferred_type: u8, facts: Facts) { !facts.unique_authority || !decide_generalization(inferred_type, facts).generalized }
+region_bound_blocks: theorem (inferred_type: u8, facts: Facts) { !facts.region_bound || !decide_generalization(inferred_type, facts).generalized }
+external_authority_blocks: theorem (inferred_type: u8, facts: Facts) { !facts.external_authority || !decide_generalization(inferred_type, facts).generalized }
+unknown_authority_blocks: theorem (inferred_type: u8, facts: Facts) { !facts.unknown_authority || !decide_generalization(inferred_type, facts).generalized }
+effectful_capture_blocks: theorem (inferred_type: u8, facts: Facts) { !facts.effectful_capture || !decide_generalization(inferred_type, facts).generalized }
+unsafe_assumption_blocks: theorem (inferred_type: u8, facts: Facts) { !facts.unsafe_assumption || !decide_generalization(inferred_type, facts).generalized }
+
+// The decision is exactly safety: generalized when and only when no fact
+// forbids it.
+generalized_iff_safe: theorem (inferred_type: u8, facts: Facts) { decide_generalization(inferred_type, facts).generalized == safe(facts) }
+
+main: (): i32 = 0

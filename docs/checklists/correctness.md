@@ -220,6 +220,22 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       `string_view` lifetimes) — Oak: `50-borrowing.md` §8c and
       `71-codecs.md` §13a for whole inputs; streaming refill is design
       work (`71-codecs.md` §16).
+- [ ] **Root metadata has copies with intersecting quorums.** Is
+      fixed-position root state stored as N copies, written to a write
+      quorum and opened from a read quorum with write + read = N + 1, the
+      copy index outside the checksum, sequence plus parent checksum
+      ordering versions, and broken copies repaired on open? (TB
+      `superblock_quorums.zig`) — Oak: not stated.
+- [ ] **Staging is never externalized.** Is state that is not yet durable
+      held apart from working state, so no reply, ack, or in-memory
+      guarantee depends on it? (TB `superblock.zig` `working`/`staging`)
+      — Oak: `120-io.md` §3 durability clause; the program-side rule: not
+      stated.
+- [ ] **Checksums point outward.** Is every block reached by pointer
+      checksummed by its parent (address, checksum pairs), with
+      self-checksum reserved for the root, so a misdirected write of
+      well-formed data is detected? (TB `BlockReference`, `data_file.md`)
+      — Oak: not stated.
 
 ## 4. Memory, ownership, and aliasing
 
@@ -247,9 +263,13 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
 - [ ] **Alignment and layout are facts.** Is every record layout derived
       from one stated rule, exposed via `size_of`/`offset_of`, asserted in
       the emitted code, and ratified against the C compiler? Do `(align:
-      N)` annotations produce an emitted assertion? (Zig, Rust
-      `#[repr(C)]`, DOD) — Oak: `40-records.md`, `45-representations.md`,
-      `92-ffi.md` §2.6.
+      N)` annotations produce an emitted assertion? Is a padding-free,
+      unique-representation predicate asserted for every record compared
+      by bytes or written to a device, with checksum fields at 16- or
+      32-byte offsets asserted? (Zig, Rust `#[repr(C)]`, DOD, TB
+      `stdx.no_padding`) — Oak: `40-records.md` §6a–§6b,
+      `45-representations.md`, `92-ffi.md` §2.6; the predicate: not
+      stated.
 - [ ] **Endianness explicit at every byte boundary.** Is every multi-byte
       read or write from a byte buffer through a named-endianness function
       that returns a result, never a cast or a reinterpret? (TB, MISRA,
@@ -266,9 +286,11 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       `60-effects-allocation.md` §8, `standard-library-design.md` §6.
 - [ ] **Capacity is declared, exhaustion is a value.** Does every
       fixed-capacity container declare its capacity and return a result on
-      exhaustion rather than growing or trapping? (TB static allocation,
-      P10 rule 3) — Oak: `60-effects-allocation.md` §6–§9,
-      `85-discipline.md` §4.
+      exhaustion rather than growing or trapping? Is the capacity a
+      written sum of named per-consumer maxima, asserted sufficient for
+      progress, rather than a round number? (TB static allocation,
+      `message_pool.zig`, P10 rule 3) — Oak: `60-effects-allocation.md`
+      §6–§9, `85-discipline.md` §4; the sum discipline: not stated.
 - [ ] **Resource cleanup is guaranteed and ordered.** Is every acquired
       resource released on every path, including error paths, in reverse
       acquisition order, with the release visible at the acquisition site?
@@ -291,6 +313,19 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       elided by the optimizer? (MISRA volatile, Linux kernel memory
       barriers doc) — Oak: `65-machine-memory.md` §9, `95-aarch64-barriers.md`,
       `96-aarch64-mmio.md`.
+- [ ] **Wire and disk records have no implicit padding, and reserved bytes
+      are zero on both sides.** Is every on-disk or on-wire record declared
+      with a layout clause and asserted padding-free, with reserved fields
+      asserted zero before write and checked zero after read, and paddings
+      zeroed before they reach a device ("buffer bleed")? (TB
+      `stdx.no_padding`, `Header.invalid()`, `journal.zig`) — Oak:
+      `40-records.md` §6a `struct(packed)`, §6b `static_assert`; reserved
+      field checks: not stated.
+- [ ] **Reserved slots name their own address.** Does an empty slot in a
+      ring or table carry its own index (as the op, address, or copy
+      number) so a misdirected read of a valid-looking empty slot is
+      detected? (TB `journal.zig` reserved headers, `SuperBlockHeader.copy`)
+      — Oak: not stated; the dbs frame scan needs it.
 
 ## 5. Control-flow and coding discipline
 
@@ -310,20 +345,56 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       including through externs? (P10 rule 3, TB, MISRA 21.3) — Oak:
       `85-discipline.md` §4, `steady` manifest lines, `OAK-E0104`.
 - [ ] **Functions are short and do one thing.** Is any function over
-      roughly seventy lines, or doing two things a name cannot cover?
-      Long functions hide the control flow a reviewer must hold in mind.
-      (P10 rule 4, TB) — Oak: not stated as a rule; a strict-profile lint
-      is a candidate.
-- [ ] **Assertion density.** Does every function assert its preconditions,
-      postconditions, and the invariants it relies on — at least two per
-      function — and are assertions compiled in for every build mode?
-      (P10 rule 5, TB) — Oak: `85-discipline.md` §5 (density lint
-      planned).
+      seventy lines, or doing two things a name cannot cover? Is the
+      limit mechanical, with a ratchet so a small function cannot grow
+      past it while legacy exceptions shrink? Do long functions keep the
+      branching in the parent and pure leaves below ("push ifs up, fors
+      down")? (P10 rule 4, TB `tidy.zig` red zone 70–73) — Oak: not
+      stated as a rule; a strict-profile lint is a candidate.
+- [ ] **Assertion density.** Does every function assert its arguments,
+      results, and the invariants it relies on — at least two per
+      function on average (TB `replica.zig`: about seven) — one condition
+      per assertion, the negative space as well as the positive, with
+      relationships between compile-time constants asserted at compile
+      time? Are assertions on in every build mode, and does the simulator
+      refuse a mode that strips them? (P10 rule 5, TB) — Oak:
+      `85-discipline.md` §5, `40-records.md` §6b `static_assert`
+      (density lint planned).
 - [ ] **Pair assertions.** Where a property is established in one place
       and relied on in another, is it asserted at both — the producer
       asserting what it guarantees, the consumer asserting what it needs —
-      so a violation is caught at the boundary it crosses? (TB) — Oak:
-      practice; not stated.
+      so a violation is caught at the boundary it crosses? The canonical
+      pair: assert validity immediately before writing to disk or sending,
+      and immediately after reading or receiving. (TB) — Oak: practice;
+      not stated.
+- [ ] **Assert the negative space, one condition per assert.** Does every
+      function assert what must *not* be true as well as what must, with
+      compound conditions split (`assert(a); assert(b)`) and implications
+      written `if a { assert(b) }`, so a failure names one condition? (TB
+      `TIGER_STYLE.md` §Safety, `journal.zig` recovery matchers) — Oak:
+      `85-discipline.md` §5 has `assert`/`assert_eq`; the rule: not
+      stated.
+- [ ] **Two assertion tiers.** Are cheap invariant asserts always on, and
+      O(N) verification of O(1) operations behind one named build
+      constant that CI and the simulator turn on? (TB `constants.verify`)
+      — Oak: only always-on `assert`; not stated.
+- [ ] **Possibly-false conditions are marked.** Where a condition may
+      legitimately be true or false, is that written as `maybe(cond)`
+      beside the asserts, so a reader can tell "not asserted" from
+      "forgot to assert"? (TB `stdx.maybe`) — Oak: not stated.
+- [ ] **Division rounding is spelled.** Does every division that can round
+      name its rounding (`div_exact`, `div_floor`, `div_ceil`) rather than
+      use `/`? (TB §Off-By-One, `stdx.div_ceil`) — Oak: `20-types.md`
+      §11.1 has `/` only; not stated.
+- [ ] **Result dimensionality is minimized.** Is the simplest sufficient
+      result type used (`()` over `Bool` over `u64` over `Option` over
+      `Result`), so callers branch on the fewest cases? (TB §Cache
+      Invalidation) — Oak: not stated.
+- [ ] **The hot loop performs no I/O.** Is the apply or commit step
+      declared to forbid syscalls, blocking, and allocation, with every
+      read done in a preceding prefetch phase? (TB `ARCHITECTURE.md`
+      §Synchronous Execution) — Oak: `60-effects-allocation.md` §2
+      `forbids` can state it; the storage-engine use: not stated.
 - [ ] **Assertions name both values.** Does a failed comparison report
       got and want, not just "assertion failed"? Does a trap say which
       source line? (TB, Go testing) — Oak: `85-discipline.md` §5
@@ -368,8 +439,25 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       `85-discipline.md` §7.
 - [ ] **Naming carries meaning.** Do names avoid abbreviations, carry units
       or qualifiers where the type does not, and put the most significant
-      word first so related names sort together? (TB, Go) — Oak: style;
-      not stated.
+      word first so related names sort together — units and qualifiers
+      last in descending significance (`latency_ms_max`), related names
+      the same length (`source`/`target`), a helper prefixed with its
+      caller's name, callbacks last, an options record when two adjacent
+      parameters share a type? (TB §Naming, Go) — Oak: style; not stated.
+- [ ] **Ambiguous operator mixes are rejected.** Is mixing bitwise and
+      arithmetic operators in one expression without parentheses a
+      diagnostic? (TB `tidy.zig`) — Oak: `10-syntax.md`; not stated.
+- [ ] **Style rules are tests with a ratchet.** Are line length, banned
+      spellings with a named replacement, leftover `FIXME`s and debug
+      prints, dead private declarations and dead files, and function
+      length enforced by a test, with limits ratcheted from the bottom so
+      legacy exceptions cannot grow? (TB `src/tidy.zig` under `zig build
+      test`) — Oak: `oak vet` lists obligations only; not stated.
+- [ ] **Tooling in the language.** Are generators, CI scripts, and release
+      checks written in Oak or in the compiler's language rather than
+      shell or Python, so they are typed and portable? (TB
+      `src/scripts/*.zig`) — Oak: `stdlib/generate_*.py`,
+      `stdlib/extract_*.py` are Python — finding.
 - [ ] **Comments say why, not what.** Is every non-obvious decision,
       especially every unsafe block and every admitted assumption, given a
       reason a future reader can test? Are specification references linked
@@ -481,16 +569,62 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
 - [ ] **Deterministic simulation testing.** Does the component run under
       simulated time, storage, network, and scheduling from a single seed,
       so a failure replays exactly and shrinks? Is production code and
-      test code the same code with the I/O port swapped? (TB VOPR,
-      FoundationDB, dbs) — Oak: `110-testing.md`, `120-io.md` `io/sim`
-      vs `io/native`, `stdlib/sim_storage.oak`.
+      test code the same code with the I/O port swapped? Does one `u64`
+      seed reproduce the run, is it printed on failure, does the tool
+      refuse to run unseeded in a mode that strips assertions, and can the
+      simulator speed time arbitrarily? (TB VOPR, FoundationDB, dbs) —
+      Oak: `110-testing.md`, `120-io.md` `iosim` vs `ionative`,
+      `stdlib/sim_storage.oak`.
 - [ ] **Fault injection covers the real fault model.** Are the faults
       injected the ones hardware and operating systems actually produce —
       torn writes, misdirected writes, dropped writes, lost fsync, bit
       flips, latent sector errors, crashes between write and sync, clock
-      jumps, partitions — not just "the call returned an error"? (TB, dbs,
-      "Protocol-Aware Recovery") — Oak: `110-testing.md` Simulated
-      storage (six kinds), Simulated time.
+      jumps, partitions — not just "the call returned an error"? Is
+      corruption sticky under retry (its position seeded from the
+      pristine bytes), does a misdirect keep the target's old data, are
+      faults off during first format, and are the double faults the
+      design does not claim to survive listed? (TB `testing/storage.zig`,
+      dbs, "Protocol-Aware Recovery") — Oak: `110-testing.md` Simulated
+      storage (six kinds, flipped/latent persist), Simulated time.
+- [ ] **Swarm the configuration.** Does the simulation draw every knob —
+      counts, capacities, latencies, fault probabilities, which fault
+      kinds are enabled — from the seed, with some kinds disabled entirely
+      per run, so no fixed mask hides an interaction? (TB `vopr.zig`
+      `options_swarm`, `fuzz.random_enum_weights`; Regehr's swarm
+      testing) — Oak: `sim_storage.oak` takes a caller-fixed fault mask
+      and rate; not stated.
+- [ ] **Heavy-tailed simulated latency and bursty ids.** Are simulated
+      delays minimum plus exponential(mean), and ids drawn bimodally
+      (hot/cold) or Zipfian so caches overflow and collide? (TB
+      `fuzz.random_int_exponential`, `random_id`, `stdx/zipfian.zig`) —
+      Oak: `sim_schedule_delayed` and `test_range` are uniform; no
+      exponential or Zipfian generator — gap.
+- [ ] **Liveness is checked after the faults stop, against a named core.**
+      After the safety phase, does the scenario pick a fault-free, fully
+      connected quorum, make every other failure permanent, and require
+      convergence within a stated budget, diagnosing *why* not (which op
+      or block the core lacks)? (TB `vopr.zig` liveness mode) — Oak:
+      `112-protocols.md` §1 `eventually`, `sim_sched_max_wait`; a
+      simulation-level convergence phase: not stated.
+- [ ] **Failures are classified.** Does a failing run say crash, liveness,
+      or correctness (distinct exit codes or signatures), so triage and
+      corpus routing differ? (TB `Failure{crash=127, liveness=128,
+      correctness=129}`) — Oak: `110-testing.md` signatures
+      `invariant:<id>` vs signal; classes: not stated.
+- [ ] **The fault atlas matches the redundancy claim.** Is fault placement
+      constrained so the design's redundancy can recover (at least one
+      good copy across replicas; a single-disk log corrupted only by
+      crash), with out-of-model double faults listed? (TB
+      `ClusterFaultAtlas`) — Oak: `110-testing.md` "three a single-disk
+      log can honestly keep"; per-zone atlas: not stated.
+- [ ] **Exhaustive tapes for small choice spaces.** Where a scenario's
+      choices are few, are all tapes enumerated rather than sampled? (TB
+      `exhaustigen.zig`; matklad) — Oak: `oak prove` enumerates theorem
+      domains (`125-verification.md` §3); tape enumeration for `Sim`
+      tests: not stated.
+- [ ] **A canary fuzzer.** Does the fuzz registry include a target that
+      must fail, so a green board proves the harness can see failures?
+      (TB `fuzz_tests.zig` `canary`) — Oak: not stated.
 - [ ] **Durability and detection are separate obligations.** Does the
       storage test distinguish "this block must survive" from "corruption
       of this block must be detected", tracked by provenance, so neither
@@ -519,12 +653,18 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
 - [ ] **Counters prove the optimization fired.** Does a test assert that
       the fast path was actually taken (a counter, an absence check over
       the emitted C), so a silent fallback to the slow path is a test
-      failure? (ml, TB) — Oak: `71-codecs.md` §4 wrapper-absence checks.
+      failure? Is each hot-path log line bound to one named test that
+      must hit it, so traceability rather than coverage percent is the
+      claim? (ml, TB `marks.zig`) — Oak: `71-codecs.md` §4
+      wrapper-absence checks; `testing_classify` labels.
 - [ ] **Known-answer vectors.** Are standard test vectors (RFC, NIST,
       Unicode conformance, JSON test suite) run, with the vector file in
-      tree and its provenance noted? (NIST CAVP, simdjson's JSONTestSuite `minefield`)
-      — Oak: `stdlib/hash.oak` KATs; no in-tree JSONTestSuite vectors for
-      `stdlib/json.oak` — gap.
+      tree and its provenance noted? Is an on-disk hash frozen by a
+      change detector (hundreds of structured cases hashed to one
+      constant) and shown independent of buffer alignment? (NIST CAVP,
+      simdjson's JSONTestSuite `minefield`, TB `checksum.zig`) — Oak:
+      `stdlib/hash.oak` KATs; no in-tree JSONTestSuite vectors for
+      `stdlib/json.oak` — gap; stability constant: not stated.
 - [ ] **Interpreter and every backend agree.** Is each language feature
       differentially tested across the interpreter, the C backend, and any
       other backend at every boundary value? (csmith, TB) — Oak: e2e
@@ -555,7 +695,14 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
 - [ ] **Tests are hermetic and deterministic.** No wall clock, no real
       network, no shared temp state, no order dependence; a failing seed
       is printed and re-runnable. Flakiness is a bug filed against the
-      test. (Go, TB) — Oak: `110-testing.md` Isolation.
+      test. Does CI seed each simulation run from the commit hash, and
+      does the merge queue test the merge commit? (Go, TB
+      `fuzz.parse_seed`) — Oak: `110-testing.md` Isolation; `-seed`
+      flag; commit seeding: not stated.
+- [ ] **Release artifacts rebuild bit-identically.** Is a published binary
+      rebuilt from its tag and required to hash-match? (TB
+      `scripts/ci.zig validate_release`) — Oak: `15-diagnostics.md` §11
+      covers emitted C only.
 - [ ] **Fuzz continuously, structure-aware.** Is every parser exported to
       a fuzzer (libFuzzer) with a structure-aware generator, run
       continuously, with the corpus checked in? (simdjson, Hyperscan,
@@ -633,9 +780,10 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
 - [ ] **Validate once, at the boundary, and record it.** Is every external
       input (bytes from disk, network, FFI, user) validated exactly once
       on entry, with the result a distinct type, and is the interior of the
-      program free of re-validation and of unvalidated data? (langsec,
-      "parse, don't validate", simdjson) — Oak: `71-codecs.md` §6,
-      `70-strings.md`.
+      program free of re-validation and of unvalidated data? Are bytes
+      never reinterpreted as a record before the checksum over them is
+      verified? (langsec, "parse, don't validate", simdjson, TB) — Oak:
+      `71-codecs.md` §6, `70-strings.md`.
 - [ ] **Never read past the input.** Is the padding contract (if any)
       explicit in the type or the call, and is reading beyond `len`
       impossible in safe code even when the SIMD block would? (simdjson's
@@ -826,6 +974,15 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       `SIMDJSON_DEVELOPMENT_CHECKS`) — Oak: `50-borrowing.md` §9 consume,
       `112-protocols.md` §5a typestate; a JSON iterator using them: not
       stated.
+- [ ] **Recovery is a total decision table.** Is crash recovery a table
+      over the observable predicates (header valid, body valid, reserved,
+      op relations, epoch) with every impossible combination asserted and
+      one decision per row, rather than nested ifs? Does a single-copy
+      store report "corrupt, cannot recover safely" instead of truncating
+      on a checksum mismatch alone? (TB `journal.zig` cases `@A..@P`,
+      "Protocol-Aware Recovery") — Oak: expressible as a `theorem` over
+      `Bool` parameters decided exhaustively (`125-verification.md` §3);
+      not stated as practice.
 
 ## 11. Compiler and toolchain correctness
 

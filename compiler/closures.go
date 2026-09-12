@@ -16,8 +16,8 @@ import (
 // checker rejects it (OAK-T0401) unless the environment's storage is
 // justified. This pass justifies the one shape whose storage is already
 // there: the literal is passed directly to a top-level Oak function whose
-// parameter is only ever called, and every capture is a scalar the caller
-// holds. Then the callee is specialized for the call site — cloned with the
+// parameter is only ever called, and every capture is a scalar, a string, a
+// view or a span the caller holds. Then the callee is specialized for the call site — cloned with the
 // function parameter removed and the captures appended as by-value
 // parameters, each call through the parameter replaced by a direct call to
 // the lifted literal — and the call site passes the captured values as
@@ -29,11 +29,12 @@ import (
 // Everything outside the shape is left untouched, so the checker's
 // rejection still names the captures: a literal bound to a local first,
 // a callee that stores, returns or forwards its function parameter, a
-// generic or extern callee, a capture that is a view, a record, a string or
+// generic or extern callee, a capture that is a record, a Buffer, an ADT or
 // an unannotated local, or a capture the literal assigns to.
 
-// closureScalarTypes are the capture types this increment copies by value:
+// closureScalarTypes are the scalar capture types, copied by value:
 // fixed-width and platform integers, Bool, and the two arithmetic floats.
+// Strings, views and spans of these are capturable too (captureTypeSpelling).
 var closureScalarTypes = map[string]bool{
 	"u8": true, "u16": true, "u32": true, "u64": true,
 	"i8": true, "i16": true, "i32": true, "i64": true,
@@ -81,27 +82,25 @@ func specializeCapturingLiterals(program *ast.Program) {
 }
 
 // enclosingScalars maps every parameter and annotated local of the function
-// to its scalar type name. A name declared twice with different types, or
-// once with a non-scalar type, is not a candidate: capturing it stays
-// rejected.
-func enclosingScalars(fn *ast.FunctionStatement) map[string]string {
-	types := map[string]string{}
+// to its declared type when that type is capturable (captureTypeSpelling). A
+// name declared twice with different types, or with an uncapturable type,
+// is not a candidate: capturing it stays rejected.
+func enclosingScalars(fn *ast.FunctionStatement) map[string]ast.Expression {
+	types := map[string]ast.Expression{}
+	spellings := map[string]string{}
 	blocked := map[string]bool{}
 	note := func(name string, typeExpr ast.Expression) {
-		if name == "" || typeExpr == nil {
+		spelled, ok := captureTypeSpelling(typeExpr)
+		if name == "" || !ok {
 			blocked[name] = true
 			return
 		}
-		ident, isIdent := typeExpr.(*ast.Identifier)
-		if !isIdent || !closureScalarTypes[ident.Value] {
+		if prior, seen := spellings[name]; seen && prior != spelled {
 			blocked[name] = true
 			return
 		}
-		if prior, seen := types[name]; seen && prior != ident.Value {
-			blocked[name] = true
-			return
-		}
-		types[name] = ident.Value
+		spellings[name] = spelled
+		types[name] = typeExpr
 	}
 	for _, param := range fn.Parameters {
 		if param != nil && param.Name != nil {
@@ -162,7 +161,7 @@ func walkStatements(node ast.Node, visit func(ast.Statement)) {
 // specializeCall rewrites one call in place when exactly one argument is a
 // capturing typed literal in the supported shape, returning the lifted
 // literal and the specialized callee to append to the program.
-func specializeCall(call *ast.InvocationExpression, functions map[string]*ast.FunctionStatement, candidates map[string]string, counter int) (lifted, clone *ast.FunctionStatement, ok bool) {
+func specializeCall(call *ast.InvocationExpression, functions map[string]*ast.FunctionStatement, candidates map[string]ast.Expression, counter int) (lifted, clone *ast.FunctionStatement, ok bool) {
 	calleeIdent, isIdent := call.Function.(*ast.Identifier)
 	if !isIdent {
 		return nil, nil, false
@@ -212,7 +211,7 @@ func specializeCall(call *ast.InvocationExpression, functions map[string]*ast.Fu
 	captureParams := func() []*ast.FunctionParameter {
 		params := make([]*ast.FunctionParameter, 0, len(captures))
 		for _, name := range captures {
-			params = append(params, &ast.FunctionParameter{Token: tok, Name: ident(name), Type: ident(candidates[name])})
+			params = append(params, &ast.FunctionParameter{Token: tok, Name: ident(name), Type: cloneExpression(candidates[name])})
 		}
 		return params
 	}
@@ -278,7 +277,7 @@ func specializeCall(call *ast.InvocationExpression, functions map[string]*ast.Fu
 // local, a pattern binding — shadows the enclosing one and is not a
 // capture; the checker's own analysis (typechecker.closureCaptures) is the
 // authority for the rejection, this is the pass's conservative view.
-func literalCaptures(lit *ast.FunctionLiteral, candidates map[string]string) []string {
+func literalCaptures(lit *ast.FunctionLiteral, candidates map[string]ast.Expression) []string {
 	bound := map[string]bool{}
 	for _, p := range lit.Parameters {
 		if p != nil && p.Name != nil {
@@ -364,8 +363,11 @@ func callOnly(body ast.Expression, name string) bool {
 	return mentions > 0 && mentions == heads
 }
 
-// assignsAny reports whether the body assigns to any of the names: a
-// by-value capture would then diverge from the caller's variable.
+// assignsAny reports whether the body rebinds any of the names: a by-value
+// capture would then diverge from the caller's variable. An element store
+// through a captured span (`s[i] = v`) is a write through the borrow, not a
+// rebinding, and stays allowed; on a scalar or view it is the checker's
+// ordinary type error.
 func assignsAny(body ast.Node, names []string) bool {
 	set := map[string]bool{}
 	for _, n := range names {
@@ -378,13 +380,36 @@ func assignsAny(body ast.Node, names []string) bool {
 			if a.Name != nil && set[a.Name.Value] {
 				found = true
 			}
-		case *ast.IndexAssignmentStatement:
-			if a.Target != nil {
-				if root, ok := a.Target.Left.(*ast.Identifier); ok && set[root.Value] {
-					found = true
-				}
-			}
 		}
 	})
 	return found
+}
+
+// captureTypeSpelling reports whether a declared type may be captured by
+// value and returns its canonical spelling for comparing declarations: the
+// scalars (closureScalarTypes), `string`, and views `[]T` and spans `[*]T`
+// of a scalar — the parser spells `[]T` as an IndexExpression with the
+// element on the left and an empty identifier index, `[*]T` with `*`. A
+// view or span travels as the ordinary borrowed parameter it already is,
+// so the borrow checker's call-local exclusivity rules judge the
+// specialized call exactly as they judge a hand-written one.
+func captureTypeSpelling(typeExpr ast.Expression) (string, bool) {
+	switch t := typeExpr.(type) {
+	case *ast.Identifier:
+		if closureScalarTypes[t.Value] || t.Value == "string" {
+			return t.Value, true
+		}
+	case *ast.IndexExpression:
+		element, isIdent := t.Left.(*ast.Identifier)
+		marker, isMarker := t.Index.(*ast.Identifier)
+		if !t.Dot && isIdent && isMarker && closureScalarTypes[element.Value] {
+			switch marker.Value {
+			case "":
+				return "[]" + element.Value, true
+			case "*":
+				return "[*]" + element.Value, true
+			}
+		}
+	}
+	return "", false
 }

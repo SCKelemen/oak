@@ -1,0 +1,85 @@
+// Generic-ADT monomorphization, in Oak (docs/spec/30-adts-patterns.md
+// section 1; spec/lean/Oak/Monomorphization.lean; codegen/mono.go). A
+// generic ADT template is its variants — a tag and an optional payload type
+// that is a parameter reference or a ground type — and instantiation
+// substitutes the arguments into every payload and touches nothing else.
+// Up to four variants and four arguments; tags, ground types, and
+// arguments are bytes. Every law is decided at the bit level.
+
+// A template: count variants, each a tag, whether it carries a payload,
+// and the payload as a parameter index (is_param) or a ground type name.
+Template: type = struct { tag: [4]u8, has_payload: [4]Bool, is_param: [4]Bool, ref: [4]u8, count: u8 }
+
+// The arguments of one instantiation, len of them, and the fallback an
+// out-of-range parameter reads.
+Args: type = struct { a: [4]u8, len: u8, fallback: u8 }
+
+// An instantiation: the same count, tags, and payload presence; every
+// payload ground.
+Instance: type = struct { tag: [4]u8, has_payload: [4]Bool, ground: [4]u8, count: u8 }
+
+arg_at: (args: Args, k: u8): u8 {
+  k >= args.len || k >= u8(4) ? { args.fallback } | {
+    k == u8(0) ? { args.a[u32(0)] } | { k == u8(1) ? { args.a[u32(1)] } | { k == u8(2) ? { args.a[u32(2)] } | { args.a[u32(3)] } } }
+  }
+}
+
+// substPayload: a parameter reference becomes its argument (the fallback
+// out of range); a ground type is itself.
+subst_payload: (args: Args, is_param: Bool, ref: u8): u8 = is_param ? { arg_at(args, ref) } | { ref }
+
+// instantiate: substitute in every variant's payload.
+instantiate: (args: Args, t: Template): Instance {
+  out: Instance = Instance { tag: t.tag, has_payload: t.has_payload, ground: [4]u8{ 0, 0, 0, 0 }, count: t.count }
+  i: u8 = 0
+  while i < u8(4) {
+    out.ground[u32(i)] = t.has_payload[u32(i)] ? { subst_payload(args, t.is_param[u32(i)], t.ref[u32(i)]) } | { u8(0) }
+    i = i + u8(1)
+  }
+  out
+}
+
+tag_at: (inst: Instance, i: u8): u8 = i == u8(0) ? { inst.tag[u32(0)] } | { i == u8(1) ? { inst.tag[u32(1)] } | { i == u8(2) ? { inst.tag[u32(2)] } | { inst.tag[u32(3)] } } }
+template_tag_at: (t: Template, i: u8): u8 = i == u8(0) ? { t.tag[u32(0)] } | { i == u8(1) ? { t.tag[u32(1)] } | { i == u8(2) ? { t.tag[u32(2)] } | { t.tag[u32(3)] } } }
+payload_at: (inst: Instance, i: u8): Bool = i == u8(0) ? { inst.has_payload[u32(0)] } | { i == u8(1) ? { inst.has_payload[u32(1)] } | { i == u8(2) ? { inst.has_payload[u32(2)] } | { inst.has_payload[u32(3)] } } }
+template_payload_at: (t: Template, i: u8): Bool = i == u8(0) ? { t.has_payload[u32(0)] } | { i == u8(1) ? { t.has_payload[u32(1)] } | { i == u8(2) ? { t.has_payload[u32(2)] } | { t.has_payload[u32(3)] } } }
+template_is_param_at: (t: Template, i: u8): Bool = i == u8(0) ? { t.is_param[u32(0)] } | { i == u8(1) ? { t.is_param[u32(1)] } | { i == u8(2) ? { t.is_param[u32(2)] } | { t.is_param[u32(3)] } } }
+template_ref_at: (t: Template, i: u8): u8 = i == u8(0) ? { t.ref[u32(0)] } | { i == u8(1) ? { t.ref[u32(1)] } | { i == u8(2) ? { t.ref[u32(2)] } | { t.ref[u32(3)] } } }
+ground_at: (inst: Instance, i: u8): u8 = i == u8(0) ? { inst.ground[u32(0)] } | { i == u8(1) ? { inst.ground[u32(1)] } | { i == u8(2) ? { inst.ground[u32(2)] } | { inst.ground[u32(3)] } } }
+
+// Two instantiations are the same when their live variants agree.
+instances_equal: (x: Instance, y: Instance): Bool {
+  same: Bool = x.count == y.count
+  i: u8 = 0
+  while i < u8(4) {
+    same = same && (i >= x.count || (x.tag[u32(i)] == y.tag[u32(i)] && x.has_payload[u32(i)] == y.has_payload[u32(i)] && (!x.has_payload[u32(i)] || x.ground[u32(i)] == y.ground[u32(i)])))
+    i = i + u8(1)
+  }
+  same
+}
+
+// instantiate_length: the variant count is preserved.
+instantiate_length: theorem (args: Args, t: Template) { instantiate(args, t).count == t.count }
+
+// instantiate_tags: every tag is preserved, in order.
+instantiate_tags: theorem (args: Args, t: Template, i: u8) { tag_at(instantiate(args, t), i & u8(3)) == template_tag_at(t, i & u8(3)) }
+
+// instantiate_payload_shape: payload-less variants stay payload-less and
+// payload variants stay payload variants.
+instantiate_payload_shape: theorem (args: Args, t: Template, i: u8) { payload_at(instantiate(args, t), i & u8(3)) == template_payload_at(t, i & u8(3)) }
+
+// substPayload_param: an in-range parameter reference becomes exactly its
+// argument.
+subst_payload_param: theorem (args: Args, k: u8) { k >= args.len || k >= u8(4) || subst_payload(args, true, k) == arg_at(args, k) }
+
+// substPayload_ground: ground payloads are untouched.
+subst_payload_ground: theorem (args: Args, name: u8) { subst_payload(args, false, name) == name }
+
+// instantiate_injective_on_used: two instantiations of one template agree
+// only when every parameter a live payload references receives an equal
+// argument. Stated with the hypothesis the law needs — the two instances
+// agree at the variant referencing the parameter — which their equality
+// implies, so this is the Lean law with a weaker premise.
+instantiate_injective_on_used: theorem (t: Template, args1: Args, args2: Args, i: u8) { !(i < t.count && i < u8(4) && template_payload_at(t, i) && template_is_param_at(t, i) && template_ref_at(t, i) < args1.len && template_ref_at(t, i) < args2.len && template_ref_at(t, i) < u8(4) && ground_at(instantiate(args1, t), i) == ground_at(instantiate(args2, t), i)) || arg_at(args1, template_ref_at(t, i)) == arg_at(args2, template_ref_at(t, i)) }
+
+main: (): i32 = 0

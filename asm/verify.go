@@ -2106,11 +2106,11 @@ func (lo *oakLowering) aggregateValue(expr ast.Expression, typ *oakType) (*oakVa
 		}
 		return out, "", true
 	case *ast.Identifier, *ast.IndexExpression:
-		place, reason, ok := lo.placeOf(expr)
+		place, reason, ok := lo.readPlace(expr)
 		if !ok {
 			return nil, reason, false
 		}
-		if place.typ != typ {
+		if !sameType(place.typ, typ) {
 			return nil, fmt.Sprintf("%s is not a %s", expr.String(), typ.name), false
 		}
 		return place.copy(), "", true
@@ -2248,6 +2248,19 @@ func (lo *oakLowering) valueOf(expr ast.Expression, typ *oakType) (*oakValue, st
 // placeOf resolves an access chain over aggregate locals: a local, `p.f`,
 // `arr[k]` with a constant index.
 func (lo *oakLowering) placeOf(expr ast.Expression) (*oakValue, string, bool) {
+	return lo.placeIn(expr, false)
+}
+
+// readPlace is placeOf for a read: the base may also be a call or a
+// literal yielding an aggregate (the value is materialized), and an array
+// element may be at a data-dependent index (a mux over the elements under
+// the index, with the out-of-range trap Oak takes as an obligation). The
+// value returned is not a place to write through.
+func (lo *oakLowering) readPlace(expr ast.Expression) (*oakValue, string, bool) {
+	return lo.placeIn(expr, true)
+}
+
+func (lo *oakLowering) placeIn(expr ast.Expression, read bool) (*oakValue, string, bool) {
 	switch e := expr.(type) {
 	case *ast.Identifier:
 		local, isLocal := lo.locals[e.Value]
@@ -2255,8 +2268,14 @@ func (lo *oakLowering) placeOf(expr ast.Expression) (*oakValue, string, bool) {
 			return nil, fmt.Sprintf("%s is not an aggregate local", e.Value), false
 		}
 		return local.agg, "", true
+	case *ast.InvocationExpression, *ast.RecordLiteral, *ast.VariantExpression:
+		typ, isRoot := lo.aggregateRoot(e)
+		if !read || !isRoot {
+			return nil, fmt.Sprintf("%s as a place", e.String()), false
+		}
+		return lo.aggregateValue(e, typ)
 	case *ast.IndexExpression:
-		base, reason, ok := lo.placeOf(e.Left)
+		base, reason, ok := lo.placeIn(e.Left, read)
 		if !ok {
 			return nil, reason, false
 		}
@@ -2276,7 +2295,10 @@ func (lo *oakLowering) placeOf(expr ast.Expression) (*oakValue, string, bool) {
 		}
 		k, isConst := lo.constantIndexValue(e.Index)
 		if !isConst {
-			return nil, "an array element at a data-dependent index", false
+			if !read {
+				return nil, "an array element at a data-dependent index", false
+			}
+			return lo.elementUnderIndex(base, e.Index)
 		}
 		if k < 0 || k >= base.typ.length {
 			return nil, fmt.Sprintf("the index %d past [%d]", k, base.typ.length), false
@@ -2284,6 +2306,49 @@ func (lo *oakLowering) placeOf(expr ast.Expression) (*oakValue, string, bool) {
 		return base.elems[k], "", true
 	}
 	return nil, fmt.Sprintf("%T as a place", expr), false
+}
+
+// elementUnderIndex reads an array element at a symbolic index: the
+// elements merged leaf by leaf under `index == k`, and the index at or past
+// the length recorded as a trap obligation (the bounds check Oak keeps).
+func (lo *oakLowering) elementUnderIndex(base *oakValue, indexExpr ast.Expression) (*oakValue, string, bool) {
+	index, reason, ok := lo.lower(indexExpr, 32)
+	if !ok {
+		return nil, reason, false
+	}
+	if len(base.elems) == 0 {
+		return nil, "an element of an empty array", false
+	}
+	lo.addTrap(cmpTerm("hs", index, constTerm(uint64(base.typ.length), 32)))
+	out := base.elems[len(base.elems)-1].copy()
+	for k := len(base.elems) - 2; k >= 0; k-- {
+		out = mergeValues(cmpTerm("eq", index, constTerm(uint64(k), 32)), base.elems[k], out)
+	}
+	return out, "", true
+}
+
+// assignUnderIndex executes `arr[i] = e` at a symbolic index: the value is
+// lowered once, and every element takes it under `i == k`.
+func (lo *oakLowering) assignUnderIndex(base *oakValue, indexExpr ast.Expression, value ast.Expression) (string, bool) {
+	index, reason, ok := lo.lower(indexExpr, 32)
+	if !ok {
+		return reason, false
+	}
+	if len(base.elems) == 0 {
+		return "an element of an empty array", false
+	}
+	lo.addTrap(cmpTerm("hs", index, constTerm(uint64(base.typ.length), 32)))
+	fresh := base.elems[0].copy()
+	if reason, ok := lo.assignPlace(fresh, value); !ok {
+		return reason, false
+	}
+	for k, element := range base.elems {
+		cond := cmpTerm("eq", index, constTerm(uint64(k), 32))
+		leaves(fresh, element, func(f, e *oakValue) {
+			e.scalar = iteTerm(truncate(cond, 1), f.scalar, e.scalar)
+		})
+	}
+	return "", true
 }
 
 // paramAggregate builds a record or union parameter's aggregate: every
@@ -2433,7 +2498,7 @@ type matchArm struct {
 // folds decides statically through the same chain.
 func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index int, body ast.Expression) (string, bool)) (cases []matchArm, fallback int, reason string, ok bool) {
 	fallback = -1
-	place, _, isAggregate := lo.placeOf(match.Scrutinee)
+	place, _, isAggregate := lo.readPlace(match.Scrutinee)
 	var tag, scrutinee *term
 	var width int
 	if isAggregate && place.typ.kind == oakADT {
@@ -2551,13 +2616,71 @@ func (lo *oakLowering) selectMatch(match *ast.MatchExpression, body func(ast.Exp
 	return result, "", true
 }
 
+// sameType is structural identity: declared records and unions by name,
+// arrays by element and length, scalars by width and signedness (an array
+// type is built afresh at each mention, so pointer identity would part
+// `[4]u8` from `[4]u8`).
+func sameType(a, b *oakType) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil || a.kind != b.kind {
+		return false
+	}
+	switch a.kind {
+	case oakScalar:
+		return a.width == b.width && a.signed == b.signed
+	case oakArray:
+		return a.length == b.length && sameType(a.elem, b.elem)
+	}
+	return a.name == b.name
+}
+
+// aggregateRoot reports an expression that yields an aggregate without
+// being a local: a call to a program function returning a record, union,
+// or array, or a typed record literal or variant. A field or element read
+// off such a value is lowered from the value (readPlace).
+func (lo *oakLowering) aggregateRoot(expr ast.Expression) (*oakType, bool) {
+	switch e := expr.(type) {
+	case *ast.InvocationExpression:
+		ident, isIdent := e.Function.(*ast.Identifier)
+		if !isIdent {
+			return nil, false
+		}
+		callee, known := lo.functions[ident.Value]
+		if !known || callee.ReturnType == nil {
+			return nil, false
+		}
+		typ, ok := lo.oakTypeOf(callee.ReturnType)
+		if !ok || typ.kind == oakScalar {
+			return nil, false
+		}
+		return typ, true
+	case *ast.RecordLiteral:
+		if e.TypeName == nil {
+			return nil, false
+		}
+		return lo.namedType(e.TypeName.Value)
+	case *ast.VariantExpression:
+		if e.TypeName == nil {
+			return nil, false
+		}
+		return lo.namedType(e.TypeName.Value)
+	}
+	return nil, false
+}
+
 // aggregateChain reports an access chain rooted at an aggregate local.
 func (lo *oakLowering) aggregateChain(expr ast.Expression) bool {
 	switch e := expr.(type) {
 	case *ast.Identifier:
 		return lo.aggregateLocal(e.Value)
 	case *ast.IndexExpression:
-		return lo.aggregateChain(e.Left)
+		if lo.aggregateChain(e.Left) {
+			return true
+		}
+		_, isRoot := lo.aggregateRoot(e.Left)
+		return isRoot
 	}
 	return false
 }
@@ -2719,6 +2842,18 @@ func (lo *oakLowering) assignLocal(s *ast.AssignmentStatement) (string, bool) {
 // assignIndexed executes `p.f = e` / `arr[k] = e` / `pool[k].f = e` over
 // aggregate locals.
 func (lo *oakLowering) assignIndexed(s *ast.IndexAssignmentStatement) (string, bool) {
+	if index := s.Target; index != nil && !index.Dot {
+		if _, isConst := lo.constantIndexValue(index.Index); !isConst {
+			base, reason, ok := lo.placeOf(index.Left)
+			if !ok {
+				return reason, false
+			}
+			if base.typ.kind != oakArray {
+				return fmt.Sprintf("an index into %s (not an array)", index.Left.String()), false
+			}
+			return lo.assignUnderIndex(base, index.Index, s.Value)
+		}
+	}
 	target, reason, ok := lo.placeOf(s.Target)
 	if !ok {
 		return reason, false
@@ -3325,8 +3460,9 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		return constTerm(0, width), "", true
 	case *ast.IndexExpression:
 		if lo.aggregateChain(e) {
-			// A scalar leaf of an aggregate local: a field or a constant-index element.
-			leaf, reason, ok := lo.placeOf(e)
+			// A scalar leaf of an aggregate: a field, an element, or a field
+			// of a call's or a literal's value.
+			leaf, reason, ok := lo.readPlace(e)
 			if !ok {
 				return nil, reason, false
 			}
@@ -3637,7 +3773,7 @@ func (lo *oakLowering) operandContract(expr ast.Expression) (int, bool, bool) {
 		}
 	case *ast.IndexExpression:
 		if lo.aggregateChain(e) {
-			if leaf, _, ok := lo.placeOf(e); ok && leaf.typ.kind == oakScalar {
+			if leaf, _, ok := lo.readPlace(e); ok && leaf.typ.kind == oakScalar {
 				return leaf.typ.width, leaf.typ.signed, true
 			}
 			return 0, false, false

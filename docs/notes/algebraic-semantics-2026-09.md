@@ -176,7 +176,13 @@ rewrite fired):
 1. **Law vocabulary.** `identity(e)`, `idempotent`, `involutive` beside
    `associative`/`commutative` in `10-syntax.md` §14a; `:lean` shapes for
    each; `oak prove` deciding small instances; `LawLowerings` carrying the
-   theorem name into `oak vet`. Then the monad laws for `Result`/`Option`
+   theorem name into `oak vet`. *Status (2026-09-12): `identity(e)` and
+   `idempotent` landed — parser, checker (element typed against the
+   operand), `:lean` shapes, and `oak prove` deciding or refuting
+   `law_<fn>_<law>` over record operands of small scalars
+   (`prove/laws.go`). `involutive` waits for unary operators; the
+   `identity`-drops-the-empty-case lowering and the vet theorem name are
+   the next consumer.* Then the monad laws for `Result`/`Option`
    and `fold_eq_tree_map`'s siblings stated over the stdlib extraction in
    `spec/lean/Oak/` — most are provable today.
 2. **Propagation form for `Result`/`Option`.** Check first that nothing
