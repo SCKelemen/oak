@@ -64,6 +64,10 @@ func aggregateName(typ Type) (string, bool) {
 		if t.Name != "" {
 			return t.Name, true
 		}
+	case *StringType:
+		// Strings compare by their bytes (docs/spec/70-strings.md): one
+		// helper, named like an aggregate's.
+		return "string", true
 	}
 	return "", false
 }
@@ -71,7 +75,7 @@ func aggregateName(typ Type) (string, bool) {
 // equalityReason is empty when typ has an equality, else why it has none.
 func (tc *TypeChecker) equalityReason(typ Type, visiting map[string]bool) string {
 	switch t := typ.(type) {
-	case *BoolType, *UnitType:
+	case *BoolType, *UnitType, *StringType:
 		return ""
 	case *PrimitiveType:
 		if IsFloatName(t.Name) && t.Name != "f32" && t.Name != "f64" {
@@ -177,6 +181,8 @@ func (tc *TypeChecker) EqualityTypes() map[string]bool {
 	var visit func(typ Type)
 	visit = func(typ Type) {
 		switch t := typ.(type) {
+		case *StringType:
+			needed["string"] = true
 		case *NarrowedADTVariantType:
 			visit(&ADTType{Name: t.ADTName})
 		case *ADTType:
@@ -204,7 +210,9 @@ func (tc *TypeChecker) EqualityTypes() map[string]bool {
 		}
 	}
 	for _, name := range tc.equalityTypes {
-		if _, isADT := tc.adtTypes[name]; isADT {
+		if name == "string" {
+			needed[name] = true
+		} else if _, isADT := tc.adtTypes[name]; isADT {
 			visit(&ADTType{Name: name})
 		} else {
 			visit(&RecordType{Name: name})

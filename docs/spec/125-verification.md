@@ -148,7 +148,7 @@ theorem add_commutes_holds (x : UInt8) (y : UInt8) (fuel : Nat) :
     add_commutes x y fuel = some true := by
   unfold add_commutes
   simp only [pure, bind, Option.bind_some, Option.bind_none, oak_bind_ite, Option.ite_none_right_eq_some, Option.some.injEq, decide_eq_true_eq] at *
-  first | rfl | decide | omega | bv_decide
+  first | rfl | decide | omega | bv_decide | ((repeat' split) <;> (try simp_all) <;> first | rfl | decide | omega | bv_decide)
 ```
 
 The claim is over every argument and every fuel: the extracted definition
@@ -158,8 +158,11 @@ guard becomes a conjunct through the module's own `oak_bind_ite`), and
 tries the kernel's deciders in turn — `decide` for closed and small
 statements, `omega` for linear arithmetic, `bv_decide` for fixed-width
 bit-vector claims (the module imports `Std.Tactic.BVDecide` when it states
-a theorem). A parameter of a refinement type (`20-types.md` §12) carries
-its predicate as a hypothesis `h_x`, which the deciders use. A statement none
+a theorem) — and, when none applies whole, splits the statement on its
+matches and conditionals (a sum-type method's cases, a validity guard) and
+sends each case to the same deciders. A parameter of a refinement type
+(`20-types.md` §12) carries its predicate as a hypothesis `h_x`, which the
+deciders use. A statement none
 of them settles fails to check, and its proof is written by hand in a
 module that imports the projection; the projection is regenerated, never
 edited. The axioms of a checked statement are the standard three at most

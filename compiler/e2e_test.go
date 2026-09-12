@@ -309,6 +309,11 @@ main: (): i32 {
   assert(arm64.rev64(arm64.rev64(w)) == w)
   assert(arm64.rbit32(u32(1)) == u32(2147483648))
   assert(arm64.rbit64(arm64.rbit64(u64(1234567890))) == u64(1234567890))
+  assert(arm64.cnt32(u32(0)) == u32(0))
+  assert(arm64.cnt32(u32(2864434397)) == u32(20))
+  assert(arm64.cnt64(u64(255)) == u64(8))
+  assert(arm64.cnt64(^u64(0)) == u64(64))
+  assert(arm64.cnt64(^w) == u64(64) - arm64.cnt64(w))
   assert(arm64.clz64(u64(255)) == u64(56))
   56
 }

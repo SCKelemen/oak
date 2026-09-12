@@ -108,7 +108,9 @@ while m != u32(0) {
 
 runs exactly `popcount(m)` times. All three are total: `ctz` of zero is
 the width, as `RBIT` then `CLZ` gives on AArch64, and `popcount` is `CNT`
-then `ADDV`. `movemask` is not one instruction on NEON, and the cost is
+then `ADDV` — the same instructions as `arm64.cnt32`/`arm64.cnt64`
+(`92-ffi.md` §3.2), of which `simd.popcount_u32/u64` is the portable
+spelling; the two share `Oak.Intrinsics.popcount`. `movemask` is not one instruction on NEON, and the cost is
 stated so the emulation is no surprise: `U8x16` is a test against the top
 bit, an `and` with a bit table, and three pairwise adds; `U16x8` and
 `U32x4` a test, an `and`, and one horizontal add; `U64x2` two lane

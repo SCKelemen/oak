@@ -39,6 +39,67 @@ arena/slab                 -> explicit allocator calls/storage
 
 C is not Oak's semantic definition and should not prevent future native/LLVM/etc. backends.
 
+## 2a. Targets and cross builds
+
+Status: implemented (`target`, `toolchain`; `oak build -target os/arch`;
+`compiler/e2e_cross_test.go`, `Oak.Target`). Motivated by dbs ask 6
+(`docs/notes/dbs-feedback-2026-09.md`): AArch64 and RISC-V are its only
+targets, and a build must work from any developer machine.
+
+Every build is a cross build; the host is only the default target. A
+**target** is an operating system and an architecture spelled `os/arch`
+as Go spells them: `linux/arm64`, `linux/amd64`, `linux/riscv64`,
+`darwin/arm64`, `darwin/amd64`, and the operating-system-less
+`freestanding/{arm64,amd64,riscv64}`. The set is closed and every member is
+LP64 — 32-bit `int`, 64-bit `long` and pointers — the one C data model the
+backend assumes (`92-ffi.md` §2.4; `Oak.Target.supported_lp64`). The target
+comes from `-target`, else `OAKOS`/`OAKARCH` (each defaulting to the host's
+component, as `GOOS`/`GOARCH` do), else the host.
+
+The compiler emits the same C translation unit for every target; what the
+target decides is:
+
+- **the assembler lane** (`94-assembler.md` §9): a `.oakasm` unit applies
+  when its lane is the target architecture's (`arm64`, `rv64`; amd64 has
+  none). One unit per lane may realize a signature — an `arm64` and an
+  `rv64` unit side by side, the target picking. A unit of another lane
+  yields to the declaration's Oak fallback body, which then compiles as an
+  ordinary function; without a fallback the build fails closed at compile
+  time with the lane and the target named, never in the C compiler
+  (`Oak.Target.unitApplies_iff`, `lanes_exclusive`). The Oak fallback body
+  of an applying unit is emitted under the negation of the lane's
+  preprocessor condition, so the C is still right when compiled for
+  another architecture by hand.
+- **the companion object**: Mach-O for Darwin, ELF elsewhere; an ELF for a
+  hosted RISC-V target declares the lp64d float ABI its libc uses, a
+  freestanding one lp64 (`Oak.Target.rv64FloatABI`). No object is written
+  when no unit applies. Native body lowering (the AArch64 backend of
+  `nativegen`) runs only for arm64 targets.
+- **the C compiler** (`toolchain.Resolve`), in a fixed order, first match
+  wins: `OAK_CC` (an executable taken as already targeting the platform,
+  `OAK_CFLAGS` added); `cc` for the host target; `zig cc --target=…` —
+  one compiler for every target, carrying musl, so a Linux cross build is
+  static and hermetic; `clang --target=…` with `--sysroot=$OAK_SYSROOT`
+  for a hosted target (skipped without one) or `-ffreestanding -nostdlib`
+  for freestanding; a GNU cross compiler by prefix (`riscv64-linux-gnu-gcc`,
+  `riscv64-elf-gcc`). Nothing found is a refusal naming what to install.
+  The driver is an argv the tooling executes directly, never a shell. A
+  resolved driver targets the requested platform, `OAK_CC` wins, the host
+  resolves whenever `cc` exists, and with zig every supported target
+  resolves from any host (`Oak.Target.resolve_targets`, `resolve_explicit`,
+  `resolve_host`, `resolve_zig`).
+- **linking**: Linux cross builds link statically (a binary that runs on
+  any distribution); Darwin never does; a freestanding target compiles to
+  a relocatable object (`name.o`) the user links with their own startup.
+  `framework` manifest lines apply to Darwin targets, not Darwin hosts.
+
+`oak run` executes on the host and refuses a foreign target; `oak install
+-target` places the executable under `$OAKBIN/<os>_<arch>/`, as `go install`
+does. The build cache keys on the target, the driver's path and identity,
+and the exact flag list (`115-tooling.md` §3.1), so one C built for two
+targets never shares an entry. Not yet: running cross-built Linux binaries
+under an emulator from the tooling, and `oak test -target`.
+
 ## 3. No hidden runtime
 
 The backend may not silently introduce:

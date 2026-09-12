@@ -157,10 +157,15 @@ no surrogates, nothing above U+10FFFF, stopping at the first ill-formed
 sequence. It is a definition, not the relation `Oak.Utf8Validity.Valid`;
 the theorem relating the two is listed in section 7, and the faithfulness
 harness compares the definition with the compiled intrinsic on valid,
-damaged, and random inputs. The `string` type itself (a value the compiler
-guarantees valid) is still outside the subset: the text library's
-functions take and return `[]u8` views, which is why `strings`, `unicode`,
-`url`, `path`, `grapheme`, and `normalize` extract without it.
+damaged, and random inputs. The `string` type itself is its UTF-8 bytes,
+an `Array UInt8` like a `[]u8` view (`70-strings.md` §2): a literal is the
+byte array the source decoder validated, `str_bytes` is the identity, and
+`str_from_utf8` is the view under the guard `if Oak.Utf8Exec.valid v then
+pure () else none` — the compiled helper traps on invalid bytes, the
+extraction yields no result, and a theorem over it states validity as its
+condition (`is_valid_utf8(v) ? ... | true`). The text library's functions
+take and return `[]u8` views, which is why `strings`, `unicode`, `url`,
+`path`, `grapheme`, and `normalize` extracted before the type did.
 
 ## 4. The subset, and what fails closed
 
@@ -180,12 +185,16 @@ assignment and element assignment into a record's array field, one level
 deep, and field assignment through an element of a span (`arr[i].field`);
 array literals; top-level constants, including constant tables read
 through `view` and target constants (`c.const`, as opaque constants of
-their `c.*` scalar type); `is_valid_utf8` through `Oak.Utf8Exec`. The extraction closes over the roots'
+their `c.*` scalar type); `is_valid_utf8` through `Oak.Utf8Exec`; the
+`string` type, its literals, `str_bytes`, and `str_from_utf8` (section 3);
+methods on ADT receivers, extracted under the receiver type's name with
+the receiver as the first parameter (`def Handle.peek (h : Handle) ...`)
+and called through the identity the checker resolved, so a plain function
+`Handle_peek` never collides. The extraction closes over the roots'
 callees, so a program that calls the standard library extracts the library
-functions it reaches. Everything else — the `string` type and its
-literals (the text library works over `[]u8` views and extracts; code that
-holds `string` values, such as `json`, does not), generic templates
-themselves, recursion, methods, extern functions, closures, the storage
+functions it reaches. Everything else — strings in encodings other than
+UTF-8, generic templates
+themselves, mutual recursion, extern functions, closures, the storage
 float formats and the intrinsics named in section 3, the `checked`
 float rows, SIMD, FFI (extern calls, `c.fn_at`, `c.msg_send`), assignment to a global — is an
 error naming the construct. Nothing is approximated.
@@ -623,9 +632,10 @@ most; the kernel-decided facts use no axioms.
   extraction (`utf8_decode` inverts `utf8_encode`, `utf8_count` counts the
   scalars `utf8_decode` yields) and the `url`/`path` laws (`url_parse`
   ranges partition the input; `path_clean` is idempotent).
-- The subset: the `string` type and its literals (so `json` extracts),
-  methods, and recursion; instantiations whose arguments are arrays or
-  views; the `checked` float rows.
+- The subset: mutual recursion; instantiations whose arguments are arrays
+  or views; the `checked` float rows; `json` and the other `string`-holding
+  libraries as committed extractions with faithfulness coverage, now that
+  the type is in.
 The string-level corollary of `rup_text_check_sound` once
 `ByteArray.toList` has its data lemma; then the constructs
 the verification programs need next (matches over records, the `checked`

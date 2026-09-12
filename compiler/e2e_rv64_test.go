@@ -6,7 +6,13 @@ import (
 	"testing"
 
 	"github.com/SCKelemen/oak/asm"
+	"github.com/SCKelemen/oak/target"
 )
+
+// rv64Linux is the target whose lane the units below belong to
+// (docs/spec/90-backend.md §2a): on any other target they would yield to
+// their Oak bodies or fail closed.
+var rv64Linux = target.Target{OS: target.OSLinux, Arch: target.ArchRiscv64}
 
 // An rv64 unit (docs/spec/94-assembler.md §9) stitches like an AArch64
 // one: the `.rv64.oakasm` path selects the lane, the seam checker's
@@ -34,7 +40,7 @@ small:
 `
 
 func TestE2ERV64UnitStitches(t *testing.T) {
-	comp := New().WithSource("pick.oak", rv64PickOak).WithAsmUnit("pick.rv64.oakasm", rv64PickUnit)
+	comp := New().WithSource("pick.oak", rv64PickOak).WithAsmUnit("pick.rv64.oakasm", rv64PickUnit).WithTarget(rv64Linux)
 	output, err := comp.EmitC().Get()
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +67,7 @@ func TestE2ERV64UnitStitches(t *testing.T) {
 
 func TestE2ERV64CheckerFindingsReject(t *testing.T) {
 	bad := strings.Replace(rv64PickUnit, "  mv a0, a1\n", "  mv t0, a1\n  mv a0, t0\n", 1)
-	_, err := New().WithSource("pick.oak", rv64PickOak).WithAsmUnit("pick.rv64.oakasm", bad).EmitC().Get()
+	_, err := New().WithSource("pick.oak", rv64PickOak).WithAsmUnit("pick.rv64.oakasm", bad).WithTarget(rv64Linux).EmitC().Get()
 	if err == nil || !strings.Contains(err.Error(), "write to t0") {
 		t.Fatalf("checker finding not reported: %v", err)
 	}
@@ -80,11 +86,11 @@ main: (): i32 {
 }
 `
 	unit := strings.ReplaceAll(rv64PickUnit, "pick_rv", "umin_rv")
-	if _, err := New().WithSource("umin.oak", source).WithAsmUnit("umin.rv64.oakasm", unit).EmitC().Get(); err != nil {
+	if _, err := New().WithSource("umin.oak", source).WithAsmUnit("umin.rv64.oakasm", unit).WithTarget(rv64Linux).EmitC().Get(); err != nil {
 		t.Fatal(err)
 	}
 	wrong := strings.Replace(source, "x < y ? x | y", "x < y ? y | x", 1)
-	_, err := New().WithSource("umin.oak", wrong).WithAsmUnit("umin.rv64.oakasm", unit).EmitC().Get()
+	_, err := New().WithSource("umin.oak", wrong).WithAsmUnit("umin.rv64.oakasm", unit).WithTarget(rv64Linux).EmitC().Get()
 	if err == nil || !strings.Contains(err.Error(), "disagrees") {
 		t.Fatalf("mismatch not reported: %v", err)
 	}

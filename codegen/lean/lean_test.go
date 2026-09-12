@@ -163,7 +163,6 @@ func TestExtractionFailsClosed(t *testing.T) {
 		"f16 row":        {"f: (x: f32): u16 = u16_bits_f16(f16_round_f32(x))", "f32/f64 conversions only"},
 		"mixed patterns": {"f: (n: u32): u32 = n ? | 0 => u32(1) | k => k", "outside the extracted subset"},
 		"template call":  {"Kind: type = Word | Line\nf[T]: (k: T): T = k\ng: (k: Kind): Kind = f[Kind](k)\nh: (): u32 = u32(1)", ""},
-		"string":         {"s: (): string = \"x\"", "outside the extracted subset"},
 	}
 	for name, c := range cases {
 		out, err := extract(t, c.src)
@@ -473,5 +472,44 @@ count: (src: []u8): u32 = len(src)
 	}
 	if strings.Contains(out, "Oak.Utf8Exec") {
 		t.Fatalf("Utf8Exec imported without a use:\n%s", out)
+	}
+}
+
+// Methods extract under the receiver type's name with the receiver first,
+// and strings as their UTF-8 bytes: literals, `str_bytes`, and
+// `str_from_utf8` under its validity guard (docs/spec/95-extraction.md
+// section 4).
+func TestExtractionMethodsAndStrings(t *testing.T) {
+	out, err := extract(t, `
+Handle: type = Live: u32 | Dead
+fn (h: Handle) peek(): u32 = h ? | .Live(id) => id | .Dead => u32(0)
+fn (h: Handle) merge(other: Handle): u32 = h.peek() + other.peek()
+Handle_peek: (h: Handle): u32 = u32(7)
+greet: (): string = "hi"
+size: (s: string): u32 = len(str_bytes(s))
+retag: (v: []u8): string = str_from_utf8(v)
+total: (h: Handle, g: Handle): u32 = h.merge(g) + size(greet()) + Handle_peek(h)
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"def Handle.peek (h : Handle) (fuel : Nat) : Option (UInt32) := do",
+		"def Handle.merge (h : Handle) (other : Handle) (fuel : Nat) : Option (UInt32) := do",
+		"let r1 ← Handle.peek h fuel",
+		"let r2 ← Handle.peek other fuel",
+		"def Handle_peek (h : Handle) (fuel : Nat)",
+		"pure (#[104, 105] : Array UInt8)",
+		"def size (s : Array UInt8) (fuel : Nat) : Option (UInt32) := do",
+		"pure (s.size.toUInt32)",
+		"def retag (v : Array UInt8) (fuel : Nat) : Option (Array UInt8) := do",
+		"let r1 : Array UInt8 := v",
+		"let () ← (if Oak.Utf8Exec.valid r1 then pure () else none)",
+		"let r1 ← Handle.merge h g fuel",
+		"let r4 ← Handle_peek h fuel",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
 	}
 }

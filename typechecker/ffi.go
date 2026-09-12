@@ -283,6 +283,8 @@ var arm64Intrinsics = map[string]*FunctionType{
 	"rbit64": {Parameters: []Type{&PrimitiveType{Name: "u64"}}, ReturnType: &PrimitiveType{Name: "u64"}},
 	"clz32":  {Parameters: []Type{&PrimitiveType{Name: "u32"}}, ReturnType: &PrimitiveType{Name: "u32"}},
 	"clz64":  {Parameters: []Type{&PrimitiveType{Name: "u64"}}, ReturnType: &PrimitiveType{Name: "u64"}},
+	"cnt32":  {Parameters: []Type{&PrimitiveType{Name: "u32"}}, ReturnType: &PrimitiveType{Name: "u32"}},
+	"cnt64":  {Parameters: []Type{&PrimitiveType{Name: "u64"}}, ReturnType: &PrimitiveType{Name: "u64"}},
 
 	// Horizontal vector instructions (docs/spec/93-simd.md section 2).
 	"uaddlv_u8x16": {Parameters: []Type{&SimdType{Name: "U8x16"}}, ReturnType: &PrimitiveType{Name: "u32"}},

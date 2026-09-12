@@ -1208,10 +1208,15 @@ unit form is a design direction, not part of v1.
 | `arm64.rbit64` | `(u64) -> u64` | `RBIT` | reverse the 64 bits |
 | `arm64.clz32` | `(u32) -> u32` | `CLZ` | leading zeros; `clz32(0) = 32` |
 | `arm64.clz64` | `(u64) -> u64` | `CLZ` | leading zeros; `clz64(0) = 64` |
+| `arm64.cnt32` | `(u32) -> u32` | `CNT` + `ADDV` | population count; `cnt32(0) = 0` |
+| `arm64.cnt64` | `(u64) -> u64` | `CNT` + `ADDV` | population count; `cnt64(0) = 0` |
 
 Laws proven in `Oak.Intrinsics`: `rev` and `rbit` are involutions that
 preserve width; `clz` is bounded by the width, hits the width exactly at
-zero, and is zero exactly when the top bit is set.
+zero, and is zero exactly when the top bit is set; `popcount` is bounded
+by the width, zero on the zero word, the width on the all-ones word, and
+complementary under bitwise not (`popcount_not`: the free-bit count
+`cnt64(^word)` is `64 - cnt64(word)`, the allocator bitmap law).
 
 ### 3.3 Lowering
 
@@ -1219,8 +1224,15 @@ On an AArch64 C target the backend emits the instruction via a
 `static inline` helper with inline assembly, so the guarantee is the
 instruction itself. On every other target it emits a portable C99 sequence:
 `__builtin_bswap` for `rev`, a guarded `__builtin_clz` (the guard supplies
-the total `clz(0) = width` case the builtin leaves undefined), and the
-branch-free swap network for `rbit`. Both lowerings are exercised by the
+the total `clz(0) = width` case the builtin leaves undefined),
+the SWAR sequence for `cnt`, and the branch-free swap network for
+`rbit`. `cnt` is the one row whose instruction form is not inline
+assembly: AArch64 has no scalar population count — `CNT` counts the byte
+lanes of a vector register and `ADDV` sums them — and the backend emits
+the compiler's own `__builtin_popcount`, which lowers to exactly `fmov`,
+`cnt`, `addv`, `fmov`, so that a loop over a bitmap is still widened across
+lanes; an inline-assembly form pinning a vector register serialized the
+scan at half the speed of the SWAR loop (`benchmarks/kernels`). Both lowerings are exercised by the
 executable test suite; the interpreter implementation is the third witness.
 
 ## 4. Interpreter semantics

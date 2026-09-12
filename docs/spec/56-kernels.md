@@ -326,8 +326,15 @@ at: t.Tensor2 = t.tensor_transpose(a)               // strides swapped, same sto
 over the extraction (`TensorExtracted.lean`, regenerated from the Oak
 source) that reading the transpose at `(i, j)` is reading the original at
 `(j, i)`, shape check included (`at_transpose`), that transposing twice is
-the identity (`transpose_transpose`), and that a row reads as the original
-(`at_row`). Specifications of `tensor_matmul` and `tensor_sum` against a
-mathematical definition are the recorded next step, with the checker rule
-for kernel-thread independence over `tensor_index`.
+the identity (`transpose_transpose`), that a row reads as the original
+(`at_row`), that the flat store of the kernel idiom writes the element
+`tensor_set` would (`flat_index`), and that **`tensor_sum` is the
+row-major left fold from zero** (`tensor_sum_spec`: the extracted loops
+compute `tensorFold`, given fuel for the rows and the columns — with
+floating-point addition the order is the whole content of the statement,
+and it is the order every backend computes). The specification of
+`tensor_matmul` waits on the extractor: a store through a record's span
+field extracts to `Option Unit`, so the written array is not threaded and
+the function's effect is invisible to Lean; threading record-held spans
+through the extraction is the recorded next step.
 

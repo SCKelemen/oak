@@ -421,6 +421,42 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 			_, valid := source.ValidateUTF8(string(bytes))
 			return nativeBoolToBooleanObject(valid)
 		},
+		"str_bytes": func(args ...object.Object) object.Object {
+			// The bytes of a string as a read-only view
+			// (docs/spec/70-strings.md): the same window the compiled
+			// helper returns, over a copy the interpreter owns.
+			if len(args) != 1 {
+				return newError("str_bytes expects exactly one string argument, got %d", len(args))
+			}
+			text, ok := args[0].(*object.String)
+			if !ok {
+				return newError("str_bytes requires a string, got %s", args[0].Type())
+			}
+			elements := make([]object.Object, len(text.Value))
+			for i := 0; i < len(text.Value); i++ {
+				elements[i] = &object.Integer{Value: int64(text.Value[i])}
+			}
+			return &object.View{Array: &object.Array{Elements: elements}, Start: 0, Len: len(elements)}
+		},
+		"str_from_utf8": func(args ...object.Object) object.Object {
+			// A string from a []u8 view: the compiled helper traps on
+			// invalid UTF-8, the interpreter stops with an error.
+			if len(args) != 1 {
+				return newError("str_from_utf8 expects exactly one []u8 argument, got %d", len(args))
+			}
+			w, ok := elementWindow(args[0])
+			if !ok {
+				return newError("str_from_utf8 requires a []u8 view, got %s", args[0].Type())
+			}
+			bytes, isBytes := w.bytes()
+			if !isBytes {
+				return newError("str_from_utf8 requires byte elements")
+			}
+			if _, valid := source.ValidateUTF8(string(bytes)); !valid {
+				return newError("str_from_utf8: the bytes are not valid UTF-8")
+			}
+			return &object.String{Value: string(bytes)}
+		},
 		"len": func(args ...object.Object) object.Object {
 			if len(args) != 1 {
 				return newError("wrong number of arguments. got=%d, want=1", len(args))
