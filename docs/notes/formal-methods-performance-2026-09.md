@@ -288,7 +288,12 @@ body of code as before.
 | `BenchmarkTheoremsEffects` | 2.54 s | 0.83 s | 0.82 s |
 
 Hash-consing the terms themselves (structural equality as pointer
-equality, the blast memo keyed by id) is the rest of item 3.
+equality, the blast memo keyed by id) is the rest of item 3. Two smaller
+cuts followed from the same profile: the tables start at 65,536 entries
+(the 18,403-node adder no longer rehashes its way up: 2.4 ms to 0.9 ms),
+and the control-parameter walk shares one visited set across its
+collections instead of a map per conditional; paired under load, the
+lattice file went from 1.83 s to 1.62 s.
 
 ## 5. What carries over from the codec track, unchanged
 

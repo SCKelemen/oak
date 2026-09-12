@@ -226,6 +226,9 @@ func decideLowered(lowered *loweredTheorem) Decision {
 func controlParams(terms []*term) map[string]bool {
 	control := map[string]bool{}
 	visited := map[*term]bool{}
+	// One visited set for every collection: the parameters of a subterm
+	// already collected are in control, so a second walk of it adds nothing.
+	collected := map[*term]bool{}
 	var walk func(t *term)
 	walk = func(t *term) {
 		if t == nil || visited[t] {
@@ -234,14 +237,14 @@ func controlParams(terms []*term) map[string]bool {
 		visited[t] = true
 		switch t.kind {
 		case termIte:
-			collectParams(t.cond, control)
+			collectParamsVisited(t.cond, control, collected)
 			walk(t.left)
 			walk(t.right)
 			return
 		case termBinary:
 			switch t.op {
 			case "shl", "shr", "lsr", "asr", "sar", "ror":
-				collectParams(t.right, control)
+				collectParamsVisited(t.right, control, collected)
 			}
 		}
 		walk(t.cond)

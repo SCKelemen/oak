@@ -167,7 +167,7 @@ const (
 )
 
 func newBDD(budget int) *bdd {
-	b := &bdd{unique: newUniqueTable(1 << 10), memo: newOpTable(1 << 10), budget: budget}
+	b := &bdd{unique: newUniqueTable(1 << 16), memo: newOpTable(1 << 16), budget: budget}
 	b.nodes = []bddNode{{variable: bddTerminalVar}, {variable: bddTerminalVar}}
 	return b
 }
