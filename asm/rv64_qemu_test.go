@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -34,6 +35,11 @@ type rv64Oracle struct {
 	// the verifier's fixed element values (elementValue); inputs[i][0] is
 	// then the length and inputs[i][1] the scalar parameter.
 	span string
+	// float marks an (f64, f64) -> f64 unit: the inputs are IEEE-754 bit
+	// patterns, the expected result is Go's float64 arithmetic (the same
+	// IEEE-754 semantics, round to nearest even) given by expect.
+	float  bool
+	expect func(a, b float64) float64
 }
 
 // rv64Machine is one execution oracle: how the bare-metal harness writes a
@@ -54,7 +60,7 @@ var rv64QEMU = rv64Machine{
 	name:       "qemu-system-riscv64",
 	putc:       "*(volatile unsigned char *)0x10000000 = c;",
 	exit:       "*(volatile unsigned int *)0x100000 = 0x5555; /* sifive_test: exit 0 */",
-	start:      ".section .text.init\n.globl _start\n_start:\n  la sp, _stack_top\n  call cmain\n1: j 1b\n",
+	start:      ".section .text.init\n.globl _start\n_start:\n  li t0, 0x6000\n  csrs mstatus, t0\n  la sp, _stack_top\n  call cmain\n1: j 1b\n",
 	linkScript: "ENTRY(_start)\nSECTIONS {\n  . = 0x80000000;\n  .text : { *(.text.init) *(.text*) }\n  .rodata : { *(.rodata*) *(.srodata*) }\n  .data : { *(.data*) *(.sdata*) }\n  .bss : { *(.bss*) *(.sbss*) }\n  . = ALIGN(16);\n  . += 0x10000;\n  _stack_top = .;\n}\n",
 	run: func(t *testing.T, image string) string {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -191,6 +197,27 @@ pos:
   ret`},
 	}
 
+	oracles = append(oracles, rv64Oracle{decl: "fmix: (x, y: f64) -> f64", cType: "double", width: 64, float: true,
+		expect: func(a, b float64) float64 { return math.Sqrt(math.Abs((a*b+a)/(b-0.5))) * 3.5 },
+		inputs: [][2]uint64{{math.Float64bits(1), math.Float64bits(2)}, {math.Float64bits(-7.25), math.Float64bits(0.125)}, {math.Float64bits(1e300), math.Float64bits(3)}, {math.Float64bits(0.5), math.Float64bits(0.5)}, {math.Float64bits(2.5e-310), math.Float64bits(-9)}},
+		body: `
+  bind fa0 = x
+  bind fa1 = y
+  clobber ft0, ft1, t0
+  fmul.d ft0, fa0, fa1
+  fadd.d ft0, ft0, fa0
+  lui t0, 261632
+  slli t0, t0, 32
+  fmv.d.x ft1, t0
+  fsub.d ft1, fa1, ft1
+  fdiv.d ft0, ft0, ft1
+  fsgnjx.d ft0, ft0, ft0
+  fsqrt.d ft0, ft0
+  lui t0, 262336
+  slli t0, t0, 32
+  fmv.d.x ft1, t0
+  fmul.d fa0, ft0, ft1
+  ret`})
 	oracles = append(oracles, rv64Oracle{decl: "vsum: (v: []u32, k: u32) -> u32", cType: "unsigned int", width: 32, span: "v", inputs: [][2]uint64{{0, 7}, {1, 0}, {3, 5}, {8, 1}, {13, 0xffffffff}}, body: `
   bind a0, a1 = v
   bind a2 = k
@@ -214,6 +241,8 @@ done:
 	var harness strings.Builder
 	harness.WriteString("typedef struct { const unsigned int *base; unsigned int len; } view_u32;\n")
 	harness.WriteString("typedef unsigned long long u64;\n")
+	harness.WriteString("static double bits_to_double(u64 b) { double d; __builtin_memcpy(&d, &b, 8); return d; }\n")
+	harness.WriteString("static u64 double_to_bits(double d) { u64 b; __builtin_memcpy(&b, &d, 8); return b; }\n")
 	harness.WriteString(machine.globals)
 	harness.WriteString("static void putc_(char c) { " + machine.putc + " }\n")
 	harness.WriteString("static void puthex(u64 v) { for (int i = 60; i >= 0; i -= 4) putc_(\"0123456789abcdef\"[(v >> i) & 15]); putc_('\\n'); }\n")
@@ -231,6 +260,13 @@ done:
 			t.Fatalf("%s: checker %v", fn.Name, findings)
 		}
 		functions = append(functions, fn)
+		if oracle.float {
+			fmt.Fprintf(&harness, "extern double %s(double, double);\n", fn.Name)
+			for _, in := range oracle.inputs {
+				expected = append(expected, fmt.Sprintf("%016x", math.Float64bits(oracle.expect(math.Float64frombits(in[0]), math.Float64frombits(in[1])))))
+			}
+			continue
+		}
 		if oracle.span != "" {
 			fmt.Fprintf(&harness, "extern %s %s(view_u32, %s);\n", oracle.cType, fn.Name, oracle.cType)
 			// The array holds the verifier's fixed memory for this span.
@@ -262,6 +298,12 @@ done:
 	harness.WriteString("void cmain(void) {\n")
 	for _, oracle := range oracles {
 		name := strings.SplitN(oracle.decl, ":", 2)[0]
+		if oracle.float {
+			for _, in := range oracle.inputs {
+				fmt.Fprintf(&harness, "  { double r = %s(bits_to_double(%dull), bits_to_double(%dull)); puthex(double_to_bits(r)); }\n", name, in[0], in[1])
+			}
+			continue
+		}
 		if oracle.span != "" {
 			for _, in := range oracle.inputs {
 				fmt.Fprintf(&harness, "  puthex((u64)%s((view_u32){%s_elems, %du}, (%s)%dull) & 0x%xull);\n", name, oracle.span, in[0], oracle.cType, in[1]&mask(oracle.width), mask(oracle.width))
@@ -282,7 +324,10 @@ done:
 	if err != nil {
 		t.Fatal(err)
 	}
-	object, err := WriteObject(ELF, encoded)
+	// The harness is lp64d (the units carry f64 through fa registers), so
+	// the companion object declares the double-float ABI as a hosted
+	// target's would.
+	object, err := WriteObjectWith(ELF, encoded, ObjectOptions{RV64FloatABI: "double"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +346,7 @@ done:
 	harnessPath := write("harness.c", harness.String())
 	linkPath := write("link.ld", machine.linkScript)
 	image := filepath.Join(dir, "harness.elf")
-	if out, err := exec.Command("riscv64-elf-gcc", "-march=rv64im", "-mabi=lp64", "-mcmodel=medany", "-nostdlib", "-nostartfiles", "-ffreestanding", "-O1", "-T", linkPath, "-o", image, harnessPath, unitPath).CombinedOutput(); err != nil {
+	if out, err := exec.Command("riscv64-elf-gcc", "-march=rv64imafdc", "-mabi=lp64d", "-mcmodel=medany", "-nostdlib", "-nostartfiles", "-ffreestanding", "-O1", "-T", linkPath, "-o", image, harnessPath, unitPath).CombinedOutput(); err != nil {
 		t.Fatalf("link: %v\n%s", err, out)
 	}
 	output := machine.run(t, image)
@@ -322,7 +367,11 @@ done:
 	for _, oracle := range oracles {
 		for _, in := range oracle.inputs {
 			if got[index] != expected[index] {
-				t.Errorf("%s: %s(%#x, %#x): machine %s, verifier %s", machine.name, strings.SplitN(oracle.decl, ":", 2)[0], in[0]&mask(oracle.width), in[1]&mask(oracle.width), got[index], expected[index])
+				side := "verifier"
+				if oracle.float {
+					side = "IEEE-754 (Go)"
+				}
+				t.Errorf("%s: %s(%#x, %#x): machine %s, %s %s", machine.name, strings.SplitN(oracle.decl, ":", 2)[0], in[0]&mask(oracle.width), in[1]&mask(oracle.width), got[index], side, expected[index])
 			}
 			index++
 		}

@@ -2,6 +2,7 @@ package asm
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 )
@@ -44,6 +45,17 @@ type rvChecker struct {
 	written   map[int]bool // registers written on this path
 	freed     map[int]bool // caller-saved registers released by a call
 	saved     map[int]*savedState
+
+	// The floating-point file (LP64D): fa0–fa7 carry f32/f64 parameters and
+	// fa0 the result; fs0–fs11 are callee-saved under the same obligation
+	// as s0–s11; ft0–ft11 and the fa registers are clobberable.
+	floatResult   bool
+	fbound        map[int]bool
+	fclobbered    map[int]bool
+	fwritten      map[int]bool
+	ffreed        map[int]bool
+	fsaved        map[int]*savedState
+	usesFloatFile bool
 
 	disp        int64
 	labelDisp   map[string]int64
@@ -96,7 +108,8 @@ type rvRegion struct {
 }
 
 func checkRV64(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool) []string {
-	c := &rvChecker{fn: fn, symbols: symbols, bound: map[int]bool{}, clobbered: map[int]bool{}, written: map[int]bool{}, freed: map[int]bool{}, saved: map[int]*savedState{}, labelDisp: map[string]int64{}, labels: map[string]bool{}, spans: map[int]*rvSpan{}, writes: map[int]int{}}
+	c := &rvChecker{fn: fn, symbols: symbols, bound: map[int]bool{}, clobbered: map[int]bool{}, written: map[int]bool{}, freed: map[int]bool{}, saved: map[int]*savedState{}, labelDisp: map[string]int64{}, labels: map[string]bool{}, spans: map[int]*rvSpan{}, writes: map[int]int{},
+		fbound: map[int]bool{}, fclobbered: map[int]bool{}, fwritten: map[int]bool{}, ffreed: map[int]bool{}, fsaved: map[int]*savedState{}}
 	shared := &checker{fn: fn}
 	shared.checkSignature(decl)
 	if len(shared.errors) > 0 {
@@ -112,6 +125,15 @@ func checkRV64(fn *Function, decl *ast.FunctionStatement, symbols map[string]boo
 	c.countWrites()
 	c.forgetGuards()
 	c.walk()
+	for _, b := range fn.Bindings {
+		if b.Register.Class == ClassRV64F {
+			c.usesFloatFile = true
+		}
+	}
+	if c.floatResult {
+		c.usesFloatFile = true
+	}
+	fn.FloatFile = c.usesFloatFile
 	return c.errors
 }
 
@@ -124,9 +146,24 @@ func (c *rvChecker) errorf(line int, format string, args ...interface{}) {
 func (c *rvChecker) bindContract() {
 	sig := c.fn.Signature
 	next := 10
+	nextFloat := 10 // fa0–fa7
 	expect := map[string]int{}
 	expectLen := map[string]int{}
+	expectFloat := map[string]int{}
 	for _, param := range sig.Parameters {
+		if class, ok := contractClass(param.Type); ok && class == ClassV {
+			// f32/f64 under LP64D: fa0–fa7 in declaration order, independent
+			// of the integer registers (Oak.RiscV.lp64dBinding).
+			if !strings.HasPrefix(typeText(param.Type), "simd.") {
+				if nextFloat > 17 {
+					c.errorf(c.fn.Line, "parameter %s: the floating-point register contract fa0–fa7 is exhausted", param.Name.Value)
+					continue
+				}
+				expectFloat[param.Name.Value] = nextFloat
+				nextFloat++
+				continue
+			}
+		}
 		if _, _, isSpan := spanShape(param.Type); isSpan {
 			if next+1 > 17 {
 				c.errorf(c.fn.Line, "span parameter %s needs two registers; the integer register contract a0–a7 is exhausted", param.Name.Value)
@@ -138,7 +175,7 @@ func (c *rvChecker) bindContract() {
 			continue
 		}
 		if class, ok := contractClass(param.Type); !ok || class == ClassV {
-			c.errorf(c.fn.Line, "parameter %s has type %s, which the rv64 contract does not carry in this increment", param.Name.Value, typeText(param.Type))
+			c.errorf(c.fn.Line, "parameter %s has type %s, which the rv64 contract does not carry", param.Name.Value, typeText(param.Type))
 			continue
 		}
 		if next > 17 {
@@ -151,8 +188,10 @@ func (c *rvChecker) bindContract() {
 	if sig.ReturnType != nil && typeText(sig.ReturnType) != "()" {
 		if typeText(sig.ReturnType) == "never" {
 			c.never = true
-		} else if class, ok := contractClass(sig.ReturnType); !ok || class == ClassV {
-			c.errorf(c.fn.Line, "result type %s is not carried by the rv64 contract in this increment", typeText(sig.ReturnType))
+		} else if class, ok := contractClass(sig.ReturnType); ok && class == ClassV && !strings.HasPrefix(typeText(sig.ReturnType), "simd.") {
+			c.floatResult = true // f32/f64 in fa0
+		} else if !ok || class == ClassV {
+			c.errorf(c.fn.Line, "result type %s is not carried by the rv64 contract", typeText(sig.ReturnType))
 		} else {
 			c.hasResult = true
 		}
@@ -160,7 +199,7 @@ func (c *rvChecker) bindContract() {
 	seen := map[string]bool{}
 	for _, b := range c.fn.Bindings {
 		want, declared := expect[b.Param]
-		if !declared {
+		if _, isFloat := expectFloat[b.Param]; !declared && !isFloat {
 			c.errorf(b.Line, "bind names %s, which is not a parameter", b.Param)
 			continue
 		}
@@ -169,6 +208,14 @@ func (c *rvChecker) bindContract() {
 			continue
 		}
 		seen[b.Param] = true
+		if freg, isFloat := expectFloat[b.Param]; isFloat {
+			if b.Register.Class != ClassRV64F || b.Register.Num != freg || b.Length != nil {
+				c.errorf(b.Line, "parameter %s must be bound to %s (its LP64D contract register), not %s", b.Param, rv64FloatRegisterName(freg), b.Register.Text)
+				continue
+			}
+			c.fbound[freg] = true
+			continue
+		}
 		if b.Register.Class != ClassRV64X || b.Register.Num != want {
 			c.errorf(b.Line, "parameter %s must be bound to %s (its LP64 contract register), not %s", b.Param, rv64RegisterName(want), b.Register.Text)
 			continue
@@ -192,7 +239,20 @@ func (c *rvChecker) bindContract() {
 			c.errorf(c.fn.Line, "parameter %s is not bound (`bind %s = %s`)", name, rv64RegisterName(reg), name)
 		}
 	}
+	for name, reg := range expectFloat {
+		if !seen[name] {
+			c.errorf(c.fn.Line, "parameter %s is not bound (`bind %s = %s`)", name, rv64FloatRegisterName(reg), name)
+		}
+	}
 	for _, reg := range c.fn.Clobbers {
+		if reg.Class == ClassRV64F {
+			if rv64FloatCalleeSaved(reg.Num) {
+				c.errorf(c.fn.Line, "%s is callee-saved (fs0–fs11): save it to the frame (fsd) and restore it before ret instead of clobbering it", reg.Text)
+				continue
+			}
+			c.fclobbered[reg.Num] = true
+			continue
+		}
 		switch {
 		case reg.Class == ClassSP:
 			c.errorf(c.fn.Line, "sp cannot be a clobber; the frame directive governs it")
@@ -220,6 +280,14 @@ func (c *rvChecker) readable(reg Register) bool {
 	if reg.Class == ClassSP {
 		return true
 	}
+	if reg.Class == ClassRV64F {
+		num := reg.Num
+		if rv64FloatCalleeSaved(num) {
+			state := c.fsaved[num]
+			return state == nil || !state.written || c.fwritten[num]
+		}
+		return c.fbound[num] || c.fwritten[num]
+	}
 	if reg.Class != ClassRV64X {
 		return false
 	}
@@ -245,6 +313,26 @@ func (c *rvChecker) read(reg Register, line int) {
 func (c *rvChecker) write(reg Register, line int) {
 	if reg.Class == ClassSP {
 		c.errorf(line, "sp is written only by `addi sp, sp, imm`")
+		return
+	}
+	if reg.Class == ClassRV64F {
+		c.usesFloatFile = true
+		num := reg.Num
+		switch {
+		case num == 10 && c.floatResult, c.fbound[num], c.fclobbered[num], c.ffreed[num]:
+			c.fwritten[num] = true
+		case rv64FloatCalleeSaved(num):
+			state := c.fsaved[num]
+			if !state.saved {
+				c.errorf(line, "%s is callee-saved (fs0–fs11): save it to the frame (`fsd %s, imm(sp)`) before writing it", reg.Text, reg.Text)
+				return
+			}
+			state.written = true
+			state.restored = false
+			c.fwritten[num] = true
+		default:
+			c.errorf(line, "write to %s, which is neither bound, the result register fa0, nor a declared clobber", reg.Text)
+		}
 		return
 	}
 	if reg.Class != ClassRV64X {
@@ -289,6 +377,9 @@ func (c *rvChecker) walk() {
 	for num := 0; num < 32; num++ {
 		if rv64Preserved(num) {
 			c.saved[num] = &savedState{}
+		}
+		if rv64FloatCalleeSaved(num) {
+			c.fsaved[num] = &savedState{}
 		}
 	}
 	terminated := false
@@ -493,6 +584,16 @@ func (c *rvChecker) call(target string, line int) {
 	c.saved[1].written = true
 	c.saved[1].restored = false
 	c.forgetGuards()
+	for num := 0; num <= 31; num++ {
+		if !rv64FloatCalleeSaved(num) {
+			delete(c.fwritten, num)
+			delete(c.fbound, num)
+			c.ffreed[num] = true
+		}
+	}
+	if c.floatResult {
+		c.fwritten[10] = true // the callee's floating-point result
+	}
 	for num := 5; num <= 31; num++ {
 		if num >= 5 && num <= 7 || num >= 10 && num <= 17 || num >= 28 {
 			delete(c.written, num)
@@ -601,6 +702,58 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 		c.errorf(line, "%s is outside the rv64 subset of this increment", name)
 		return false
 	}
+	if width, isLoad := rv64FloatLoads[name]; isLoad {
+		mem := ops[1].(Memory)
+		dest := reg(0)
+		if mem.Base.Class != ClassSP {
+			c.errorf(line, "floating-point memory through %s: only the sp frame is admitted", mem.Base.Text)
+			return false
+		}
+		addr, ok := c.frameAddress(mem, int64(width), line)
+		if ok && rv64FloatCalleeSaved(dest.Num) {
+			state := c.fsaved[dest.Num]
+			if state.saved && width == 8 && state.slot == addr {
+				state.restored = true
+				state.written = false
+				delete(c.fwritten, dest.Num)
+				return false
+			}
+			if state.saved {
+				c.errorf(line, "%s is restored from entry-relative %d, but was saved at %d", dest.Text, addr, state.slot)
+				return false
+			}
+		}
+		c.write(dest, line)
+		return false
+	}
+	if width, isStore := rv64FloatStores[name]; isStore {
+		mem := ops[1].(Memory)
+		src := reg(0)
+		c.read(src, line)
+		if mem.Base.Class != ClassSP {
+			c.errorf(line, "floating-point memory through %s: only the sp frame is admitted", mem.Base.Text)
+			return false
+		}
+		addr, ok := c.frameAddress(mem, int64(width), line)
+		if ok && rv64FloatCalleeSaved(src.Num) && width == 8 {
+			state := c.fsaved[src.Num]
+			if !state.saved && !state.written {
+				state.saved, state.slot = true, addr
+			}
+		}
+		return false
+	}
+	if shape, isFloat := rv64FloatShapes[name]; isFloat {
+		// Destination first, sources after; a trailing rounding mode reads
+		// nothing. Comparisons and integer conversions write an x register.
+		c.usesFloatFile = true
+		required := strings.TrimSuffix(shape, "r")
+		for i := 1; i < len(required); i++ {
+			c.read(reg(i), line)
+		}
+		c.write(reg(0), line)
+		return false
+	}
 	if width, isLoad := rv64Loads[name]; isLoad {
 		mem := ops[1].(Memory)
 		if mem.Base.Class != ClassSP {
@@ -702,6 +855,15 @@ func (c *rvChecker) ret(line int) bool {
 	}
 	if c.hasResult && !c.written[10] && !c.bound[10] {
 		c.errorf(line, "ret without writing the result register a0")
+	}
+	for num := 0; num < 32; num++ {
+		state := c.fsaved[num]
+		if state != nil && state.written && !state.restored {
+			c.errorf(line, "ret with %s written but not restored from its frame slot", rv64FloatRegisterName(num))
+		}
+	}
+	if c.floatResult && !c.fwritten[10] && !c.fbound[10] {
+		c.errorf(line, "ret without writing the result register fa0")
 	}
 	c.unreachable = true
 	return true

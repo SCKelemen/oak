@@ -11,6 +11,11 @@ import "fmt"
 // Labels resolve within the function; `call sym` (auipc ra + jalr ra)
 // leaves an R_RISCV_CALL_PLT relocation on its first word.
 
+// rv64ExactConversions are the conversions whose result is always exact
+// (a 32-bit integer or a single fits a double): the rounding-mode field is
+// meaningless and GNU as encodes rne (0) unless a mode is spelled.
+var rv64ExactConversions = map[string]bool{"fcvt.d.w": true, "fcvt.d.wu": true, "fcvt.d.s": true}
+
 // rv64Words is the number of 32-bit words an instruction spends: one,
 // except a 32-bit `li` (lui, then addiw unless the low part is zero).
 func rv64Words(instr Instruction) int {
@@ -135,6 +140,35 @@ func encodeRV64Instruction(instr Instruction, pc int64, labels map[string]int64)
 		return delta, nil
 	}
 	switch {
+	case rv64FloatShapes[instr.Mnemonic] != "":
+		// rd, rs1, rs2, rs3 by position; the rounding mode (rm) from the
+		// trailing option, dyn (0b111) when absent — GNU as's default.
+		names := []string{"rd", "rs1", "rs2", "rs3"}
+		fields["rm"] = 7
+		if rv64ExactConversions[instr.Mnemonic] {
+			// An exact conversion never rounds; the assemblers encode rne.
+			fields["rm"] = 0
+		}
+		for i, operand := range ops {
+			switch o := operand.(type) {
+			case Register:
+				if i < len(names) {
+					fields[names[i]] = int64(rv64Number(o))
+				}
+			case Option:
+				fields["rm"] = rv64RoundingModes[o.Name]
+			}
+		}
+	case rv64FloatLoads[instr.Mnemonic] != 0:
+		mem := ops[1].(Memory)
+		fields["rd"], fields["rs1"], fields["imm12"] = regNum(0), int64(rv64Number(mem.Base)), mem.Offset
+	case rv64FloatStores[instr.Mnemonic] != 0:
+		mem := ops[1].(Memory)
+		if mem.Offset < -2048 || mem.Offset > 2047 {
+			return 0, fmt.Errorf("store offset %d is outside the 12-bit signed range", mem.Offset)
+		}
+		fields["rs2"], fields["rs1"] = regNum(0), int64(rv64Number(mem.Base))
+		fields["imm12hi"], fields["imm12lo"] = mem.Offset>>5&0x7f, mem.Offset&0x1f
 	case rv64Branches[instr.Mnemonic]:
 		delta, err := branchOffset(ops[2].(Symbol), 13)
 		if err != nil {

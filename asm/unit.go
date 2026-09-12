@@ -48,6 +48,10 @@ type Function struct {
 	Frame    int64 // declared stack frame in bytes, 0 when none
 	System   bool  // capability for mrs/msr/eret
 	Align    int64 // function entry alignment, 0 for the default
+	// FloatFile marks an rv64 unit that reads or writes the floating-point
+	// register file (the F and D extensions): its contract is LP64D, so
+	// the target must link against an lp64d toolchain (set by the checker).
+	FloatFile bool
 	// Fallback marks that the Oak declaration also carries an Oak body: the
 	// backend emits it for non-AArch64 targets (and under
 	// OAK_PORTABLE_INTRINSICS), so the asm and the Oak body are two
@@ -351,6 +355,7 @@ const (
 	ClassZA                    // arm64.ZA — a ZA tile (za0.s), or the whole array (za)
 	ClassZT                    // arm64.ZT — the ZT0 lookup table register
 	ClassRV64X                 // rv64.X — a RISC-V 64-bit general register x0–x31 (x2 parses as ClassSP)
+	ClassRV64F                 // rv64.F — a RISC-V floating-point register f0–f31 (the F and D extensions)
 )
 
 func (c RegClass) String() string {
@@ -375,6 +380,8 @@ func (c RegClass) String() string {
 		return "arm64.ZT"
 	case ClassRV64X:
 		return "rv64.X"
+	case ClassRV64F:
+		return "rv64.F"
 	}
 	return "?"
 }

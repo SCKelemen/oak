@@ -103,6 +103,11 @@ var rv64ALUImmW = map[string]string{"addiw": "add", "slliw": "shl", "srliw": "sh
 
 // stepRV64 executes one non-control instruction.
 func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string, bool) {
+	for _, operand := range instr.Operands {
+		if reg, isReg := operand.(Register); isReg && reg.Class == ClassRV64F {
+			return "a floating-point instruction (" + instr.Mnemonic + ")", false
+		}
+	}
 	if instr.Mnemonic == "li" {
 		// One constant, however many words the encoder spends on it.
 		state.write(instr.Operands[0].(Register), constTerm(uint64(instr.Operands[1].(Immediate).Value), 64))
