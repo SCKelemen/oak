@@ -21,7 +21,7 @@ package reduce
 
 // tree reduces xs by f in the balanced binary-counter tree; an empty view
 // yields zero, and zero takes no other part in the result.
-pub tree[T]: (xs: []T, zero: T, f: (T, T) -> T): T = {
+pub tree[T]: (xs: []T, zero: T, f: (T, T) -> T effects { }): T = {
   stack: [64]T = [zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero]
   levels: [64]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
   count: u32 = 0
@@ -60,7 +60,7 @@ pub tree[T]: (xs: []T, zero: T, f: (T, T) -> T): T = {
 
 // left is the sequential left fold: f applied to the running value and each
 // element in order, starting from zero.
-pub left[T]: (xs: []T, zero: T, f: (T, T) -> T): T = {
+pub left[T]: (xs: []T, zero: T, f: (T, T) -> T effects { }): T = {
   acc: T = zero
   n: u32 = len(xs)
   i: u32 = 0

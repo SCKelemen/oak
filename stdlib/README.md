@@ -79,7 +79,10 @@ Reductions whose grouping is a language fact (`docs/spec/55-parallelism.md`
 | `left[T](xs: []T, zero: T, f: (T, T) -> T)` | The sequential left fold `f(f(zero, x0), x1) ...`. |
 
 When `f` is an operator declaring `laws { associative }` the two agree on
-non-empty input (`Oak.Reduce.tree_assoc`).
+non-empty input (`Oak.Reduce.tree_assoc`). `f` carries the empty effect
+row (`(T, T) -> T effects { }`, `60-effects-allocation.md` §2a): a
+combine performs no effects, which is what lets a kernel body call
+`reduce.tree` (`56-kernels.md` §7) and what a regrouping backend relies on.
 
 ## Tensors (`import("tensor")`)
 

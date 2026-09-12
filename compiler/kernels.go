@@ -84,6 +84,19 @@ func analyzeKernels(program *ast.Program, tc *typechecker.TypeChecker) []*diagno
 			if f := facts[name]; f != nil {
 				queue = append(queue, f.callees...)
 			}
+			// A function named as a value (bound to a helper's function
+			// parameter) is reached too: its loops are the kernel's.
+			if f := functions[name]; f != nil && f.Body != nil {
+				walkNodes(f.Body, func(n ast.Node) {
+					if call, ok := n.(*ast.InvocationExpression); ok {
+						for _, a := range call.Arguments {
+							if id, ok := a.(*ast.Identifier); ok && functions[id.Value] != nil {
+								queue = append(queue, id.Value)
+							}
+						}
+					}
+				})
+			}
 		}
 	}
 	for _, loop := range discipline.UnboundedLoops(program) {

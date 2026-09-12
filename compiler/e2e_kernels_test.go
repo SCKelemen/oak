@@ -298,3 +298,98 @@ main: (): i32 = 0
 		t.Fatalf("descriptor = %+v", result.Kernels[0])
 	}
 }
+
+// A per-thread reduction inside a kernel: reduce.tree over a window of the
+// input, its combine bound to a named function, so the grouping in Metal
+// is the binary-counter tree the host computes. Exercises buffer windows
+// (subslice), fixed-size thread-private arrays, specialized helpers, and
+// value-position conditionals in result position.
+const kernelReduceProgram = `package main
+
+r := import("reduce")
+
+add: (a: f32, b: f32): f32 = a + b
+
+kernel tile_sum: (gid: u32, x: []f32, partials: [*]f32, tile: u32): () = {
+  start: u32 = gid * tile
+  start + tile <= len(x) && gid < len(partials) ? {
+    part: []f32 = subslice(x, start, tile)
+    zero: f32 = 0.0
+    partials[gid] = r.tree(part, zero, add)
+  }
+}
+
+main: (): i32 = {
+  xs: [8]f32 = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+  ps: [2]f32 = [0.0, 0.0]
+  tile_sum(0, view(&xs), span(&ps), 4)
+  tile_sum(1, view(&xs), span(&ps), 4)
+  ps[0] == 10.0 && ps[1] == 26.0 ? 42 | 1
+}
+`
+
+func TestE2EKernelsReduceTree(t *testing.T) {
+	root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": kernelReduceProgram})
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+	result, err := New().WithPackageDir(root).EmitMetal().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := result.Source
+	for _, want := range []string{
+		"// oak-kernel tile_sum: gid grid; x view f32 buffer 0,1; partials span f32 buffer 2,3; tile scalar u32 buffer 4; fault buffer 5; independence element",
+		"static inline float add(float a, float b, device atomic_uint* oak_fault) {",
+		"static inline float reduce__tree_f32__add(device const float* xs, uint xs_len, float zero, device atomic_uint* oak_fault) {",
+		"float stack[64] = { zero, zero,",
+		"uchar levels[64] = {",
+		"stack[oak_check((count - 2u), 64u, oak_fault)] = add(stack[oak_check((count - 2u), 64u, oak_fault)], stack[oak_check((count - 1u), 64u, oak_fault)], oak_fault);",
+		"if (count == 0u) {\n    return zero;\n  } else {",
+		"uint part_len = tile;\n    device const float* part = x + oak_subslice(start, part_len, x_len, oak_fault);",
+		"partials[gid] = reduce__tree_f32__add(part, part_len, zero, oak_fault);",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("missing %q in:\n%s", want, src)
+		}
+	}
+	// Callee-first: the bound function precedes the helper that calls it.
+	if strings.Index(src, "static inline float add(") > strings.Index(src, "static inline float reduce__tree_f32__add(") {
+		t.Fatalf("helpers must be emitted callee-first:\n%s", src)
+	}
+	// The window's loads are proven by the helper's own loop bound.
+	if !strings.Contains(src, "stack[oak_check(count, 64u, oak_fault)] = xs[i];") {
+		t.Fatalf("the loop-bounded load must be raw:\n%s", src)
+	}
+}
+
+// The new forms fail closed where the rules require: a span window hides
+// the indices independence is judged on, fixed arrays and function values
+// are not kernel parameters, and a function parameter takes a named
+// function.
+func TestKernelsReduceTreeRejections(t *testing.T) {
+	cases := map[string][2]string{
+		"span window to helper": {`fill: (s: [*]f32): () = { s[0] = 1.0 }
+kernel k: (gid: u32, y: [*]f32, tile: u32): () = {
+  gid * tile + tile <= len(y) ? {
+    w: [*]f32 = subslice(y, gid * tile, tile)
+    fill(w)
+  }
+}
+main: (): i32 = 0`, CodeKernelIndependence},
+		"fixed array parameter": {`kernel k: (gid: u32, t: [4]f32, y: [*]f32): () = { y[gid] = t[0] }
+main: (): i32 = 0`, CodeKernelSubset},
+		"function parameter on a kernel": {`kernel k: (gid: u32, f: (f32) -> f32 effects { }, y: [*]f32): () = { y[gid] = f(1.0) }
+main: (): i32 = 0`, CodeKernelSubset},
+	}
+	for name, c := range cases {
+		_, err := New().WithSource("k.oak", c[0]).EmitC().Get()
+		if err == nil {
+			t.Fatalf("%s: compiled; want %s", name, c[1])
+		}
+		if !strings.Contains(err.Error(), c[1]) {
+			t.Fatalf("%s: want %s, got %v", name, c[1], err)
+		}
+	}
+}

@@ -98,14 +98,19 @@ Inside the subset:
 | `cond ? a \| b` | `if`/`else` in statement position (an empty else is dropped), `cond ? a : b` in value position with expression arms |
 | `while cond { }`, `break` | the same |
 | a call to a helper | a call to the emitted `static inline` function, buffers passed as pointer and length, the fault word last |
+| a helper with function-valued parameters, called with named functions (`r.tree(part, zero, add)`) | the helper is emitted once **per binding** — `reduce__tree_f32__add` — with calls through the parameter replaced by calls to the bound function; the argument must name a function of the program (no function pointers reach the GPU) |
+| `w: []T = subslice(buf, start, n)`, `v: []T = buf` | a **window**: `device const T* w = buf + oak_subslice(start, n, buf_len, fault); uint w_len = n;` — `start + n <= len` is checked in 64-bit and a miss raises fault 4; a bare name aliases the buffer whole; a span window needs a span source |
+| `a: [N]T = [ ... ]`, `a: [N]T` | a thread-private fixed array, `T a[N] = { ... };` (zeroed when uninitialized), indexed with the check against `N` unless proven |
+| `cond ? a \| { stmts; v }` in result position | `if`/`else` whose arms return, the block's statements emitted in place |
 
-Outside the subset in this increment, each failing closed by name:
-`f64`, `f16`/`bf16`, records and their fields, fixed arrays as
-parameters or locals, ADTs and variant matches, strings, `subslice`,
-`view`/`span` of a local, `assert`, `total_order`, the saturating,
-checked, and trapping conversion rows, integer-constant matches, block
-arms in value position, calls through function values, globals and
-constants, generics (call an instantiation), methods, recursion.
+Outside the subset, each failing closed by name: `f64`, `f16`/`bf16`,
+records and their fields, fixed arrays as parameters, ADTs and variant
+matches, strings, `subslice` outside a window declaration, `view`/`span`
+of a local, `assert`, `total_order`, the saturating, checked, and trapping
+conversion rows, integer-constant matches, block arms in value position
+other than a result, calls through function values that are not bound to
+a named function, globals and constants, generics (call an
+instantiation), methods, recursion.
 
 ## 3. Traps and the fault word
 
@@ -113,7 +118,7 @@ Oak traps on an index past the end, a zero divisor, and a shift count
 reaching the width. A GPU thread cannot trap. Every emitted kernel takes one
 more buffer, the **fault word** (`device atomic_uint* oak_fault`, the last
 buffer index in the descriptor): a trapping condition stores a nonzero code
-into it (1 index, 2 divisor, 3 shift) and yields zero to the expression, and
+into it (1 index, 2 divisor, 3 shift, 4 window past the end) and yields zero to the expression, and
 the thread continues with unspecified results. **The host checks the fault
 word after the command buffer completes; a nonzero value is the trap.** The
 outputs of a faulted launch are unspecified, exactly as the state after an
@@ -209,10 +214,14 @@ index, which any buffer the tiles cover already guarantees.
   part of the compiler's tests; the emitted text is checked against its
   stated form and the C realization is executed.
 - Threadgroup memory, SIMD-group operations, barriers, atomics beyond the
-  fault word, or reductions across threads. `reduce.tree` (`55-parallelism.md`
-  section 4) inside a kernel body is a helper call like any other and runs
-  per thread; a cross-thread reduction with the same fixed grouping is the
-  planned second increment.
+  fault word, or reductions **across** threads. Reductions **within** a
+  thread are in: `reduce.tree` over a window of the input, its combine
+  bound to a named function, runs per thread with the binary-counter
+  grouping the host computes (`r.tree(subslice(x, gid * tile, tile),
+  zero, add)` into `partials[gid]`); the partials then reduce on the host
+  with `reduce.tree` again, so a launch's grouping is "tree of tile
+  trees" — a language fact, the same on every backend. A cooperative
+  threadgroup reduction with the same grouping is the next increment.
 - Records and fixed arrays as kernel parameters (F6's tensors are records
   over views; the kernel takes the views).
 
