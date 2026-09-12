@@ -1,0 +1,14 @@
+name = "oak-sail-bridge"
+defaultTargets = ["OakSailBridge"]
+
+[[lean_lib]]
+name = "OakSailBridge"
+
+# The Sail RISC-V model's Lean export, generated locally (not vendored):
+#   cd external/sail-riscv && cmake --build build --target generated_lean_rv64d
+#   cd build/model/Lean_RV64D && lake update && lake build
+# external/ is gitignored; the Go test asm/rv64_sail_bridge_test.go builds
+# this project only when the export is present.
+[[require]]
+name = "Lean_RV64D"
+path = "../../external/sail-riscv/build/model/Lean_RV64D"

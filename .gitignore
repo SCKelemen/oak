@@ -12,3 +12,4 @@ __pycache__/
 
 # Third-party specifications and models read by generators and tests; never committed.
 external/
+spec/lean-sail/.lake/
