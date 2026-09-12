@@ -56,6 +56,9 @@ type Result struct {
 	// order, for the Oak solver; fallback is what stands when the solver
 	// cannot decide (enumeration, or the open result with its reason).
 	Problems []asm.Problem
+	// Syntax is the theorem serialized for the lowering written in Oak
+	// (asm.ExportSyntax), when it is in that lowering's subset.
+	Syntax   []uint32
 	fallback func() Result
 }
 
@@ -68,6 +71,9 @@ type SolverVerdict struct {
 	Winner int
 	Nodes  int
 	Vars   []uint32
+	// Lowered is set when the Oak lowering produced the terms (the
+	// interleaved order), not the Go lowering's serialized problem.
+	Lowered bool
 }
 
 // DefaultCases bounds the exhaustive decider: the product of the parameter
@@ -487,7 +493,11 @@ func bitLevel(deferred bool, tc *typechecker.TypeChecker, decls asm.Declarations
 		return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + reason + ")"}
 	}
 	fallback := Result{Name: open.Name, Status: Open, Detail: open.Detail}
-	return Result{Name: open.Name, Status: Pending, Problems: problems, fallback: func() Result { return fallback }}
+	syntax, _, inSubset := asm.ExportSyntax(stated, callees)
+	if !inSubset {
+		syntax = nil
+	}
+	return Result{Name: open.Name, Status: Pending, Problems: problems, Syntax: syntax, fallback: func() Result { return fallback }}
 }
 
 // ResolvePending settles the pending results from the Oak solver's
@@ -504,6 +514,10 @@ func ResolvePending(results []Result, verdicts map[string]SolverVerdict, goDecid
 		v, has := verdicts[r.Name]
 		settled := Result{Name: r.Name}
 		switch {
+		case has && v.Lowered && v.Status == 0:
+			settled = Result{Name: r.Name, Status: Decided, Detail: fmt.Sprintf("at the bit level (%d BDD nodes; lowered and decided in Oak)", v.Nodes), Order: "interleaved", Nodes: v.Nodes}
+		case has && v.Lowered && v.Status == 1 && len(r.Problems) > 0:
+			settled = Result{Name: r.Name, Status: Refuted, Detail: "counterexample " + r.Problems[0].Counterexample(v.Vars) + " (lowered and decided in Oak)"}
 		case has && v.Status == 0 && v.Winner >= 0 && v.Winner < len(r.Problems):
 			order := r.Problems[v.Winner].Order
 			label := ""

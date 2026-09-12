@@ -27,9 +27,22 @@ func TestOakSolverAgrees(t *testing.T) {
 			if code != 0 || strings.Contains(out, "disagrees") || strings.Contains(out, "cannot restate") {
 				t.Fatalf("exit %d:\n%s", code, out)
 			}
+			// The scalar law files are in the Oak lowering's subset: every
+			// bit-level row there must have been lowered in Oak as well.
+			if scalarLawFiles[filepath.Base(file)] {
+				for _, line := range strings.Split(out, "\n") {
+					if strings.Contains(line, "at the bit level") && !strings.Contains(line, "lowered and decided in Oak") {
+						t.Fatalf("not lowered in Oak: %s", line)
+					}
+				}
+			}
 		})
 	}
 }
+
+// scalarLawFiles are the law files whose theorems are all in the Oak
+// lowering's scalar subset (integers and Bool only).
+var scalarLawFiles = map[string]bool{"layout.oak": true, "discharge.oak": true, "extents.oak": true, "intrinsics.oak": true, "witnesses.oak": true}
 
 // TestOakSolverSelfCheck runs the solver package's own main: the diagram
 // laws on a few nodes and a hand-built problem through solve.
