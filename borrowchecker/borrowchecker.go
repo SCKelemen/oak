@@ -102,6 +102,10 @@ type BorrowChecker struct {
 	// writable-disjointness assumption, recording it as an auditable
 	// warning; every other invariant remains checked.
 	unsafeDepth int
+	// bufferOwners names the owners that hold a Buffer — a Buffer binding
+	// or a record with a Buffer field (docs/spec/92-ffi.md section 2.8.6);
+	// named as a record literal's field value, such an owner moves.
+	bufferOwners map[string]bool
 	// consumedOwners names the Buffer bindings c.disown has handed back
 	// (docs/spec/92-ffi.md section 2.8); any later use is rejected.
 	consumedOwners map[string]bool
@@ -137,6 +141,7 @@ func (bc *BorrowChecker) addError(msg string) {
 func (bc *BorrowChecker) CheckProgram(program *ast.Program, env *typechecker.TypeEnvironment) {
 	bc.ClearErrors()
 	bc.ownerStates = make(map[string]BorrowState)
+	bc.bufferOwners = make(map[string]bool)
 	bc.ownerOf = make(map[string]string)
 	bc.activeBorrows = make(map[string]borrowInfo)
 	bc.currentBlockDepth = 0
@@ -244,6 +249,10 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 	for k, v := range bc.ownerOf {
 		savedOwnerOf[k] = v
 	}
+	savedBufferOwners := make(map[string]bool)
+	for k, v := range bc.bufferOwners {
+		savedBufferOwners[k] = v
+	}
 	savedBlockDepth := bc.currentBlockDepth
 	savedPendingReturn := bc.pendingReturn
 	savedInitializers, savedPayloads := bc.initializers, bc.payloadBindings
@@ -336,6 +345,7 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 	bc.ownerStates = savedOwnerStates
 	bc.activeBorrows = savedActiveBorrows
 	bc.ownerOf = savedOwnerOf
+	bc.bufferOwners = savedBufferOwners
 	bc.currentBlockDepth = savedBlockDepth
 	bc.pendingReturn = savedPendingReturn
 	bc.initializers, bc.payloadBindings = savedInitializers, savedPayloads
@@ -619,10 +629,13 @@ func (bc *BorrowChecker) checkVariableDeclaration(vd *ast.VariableDeclaration, e
 			}
 			// Views ([]T) and spans ([*]T) are tracked as borrows, not owners
 		}
-		if _, isBuffer := typ.(*typechecker.BufferType); isBuffer {
+		if typechecker.ContainsBufferStorage(typ) {
 			// An owned foreign buffer is an owner of runtime length
-			// (docs/spec/92-ffi.md section 2.8).
+			// (docs/spec/92-ffi.md section 2.8), and so is a record holding
+			// one as a field (section 2.8.6): custody sits with the record.
 			bc.ownerStates[varName] = Free
+			bc.bufferOwners[varName] = true
+			delete(bc.consumedOwners, varName)
 		}
 	} else if vd.Type != nil {
 		// Function-local declarations are not in the surviving global
@@ -633,8 +646,12 @@ func (bc *BorrowChecker) checkVariableDeclaration(vd *ast.VariableDeclaration, e
 		if declared == nil {
 			declared = bc.parseTypeFromAST(vd.Type, env)
 		}
-		if _, isBuffer := declared.(*typechecker.BufferType); isBuffer {
+		if typechecker.ContainsBufferStorage(declared) {
+			// A fresh declaration is a fresh owner: the name may have been
+			// consumed in another function's body.
 			bc.ownerStates[varName] = Free
+			bc.bufferOwners[varName] = true
+			delete(bc.consumedOwners, varName)
 		}
 		if arrType, ok := declared.(*typechecker.ArrayType); ok {
 			if !arrType.IsSlice && !arrType.IsSpan && arrType.Length >= 0 {
@@ -709,6 +726,14 @@ func (bc *BorrowChecker) checkExpression(expr ast.Expression, env *typechecker.T
 		}
 	case *ast.RecordLiteral:
 		for _, field := range e.Fields {
+			// A Buffer binding named as a field value moves into the record
+			// (docs/spec/92-ffi.md section 2.8.6): rejected while a borrow
+			// of it is live, dead afterward; the record binding holds the
+			// custody from here on.
+			if ident, isIdent := field.(*ast.Identifier); isIdent && bc.bufferOwners[ident.Value] {
+				bc.consumeBuffer(ident.Value, e, "move into a record")
+				continue
+			}
 			bc.checkExpression(field, env)
 		}
 	case *ast.ArrayLiteral:
@@ -906,15 +931,57 @@ func (bc *BorrowChecker) extractOwnerName(expr ast.Expression) string {
 	case *ast.PrefixExpression:
 		// Handle *arr (pointer dereference) and &arr (address-of) for view()/span() calls
 		if e.Operator == "*" || e.Operator == "&" {
-			if ident, ok := e.Right.(*ast.Identifier); ok {
-				// Only return non-empty if the identifier is an owned array
-				if _, exists := bc.ownerStates[ident.Value]; exists {
-					return ident.Value
+			// &owner, or &record.field for a Buffer field: the borrow is of
+			// the record binding that holds the buffer (section 2.8.6).
+			if owner, isPath := bufferPathOwner(e.Right); isPath {
+				if _, exists := bc.ownerStates[owner]; exists {
+					return owner
 				}
 			}
 		}
 	}
 	return ""
+}
+
+// consumeBuffer moves a buffer owner out of the program's hands — a custody
+// transition, a move into a record — or reports why it cannot: the owner
+// was already moved or handed back, or a borrow of it is live. Through a
+// record field (`submit(w.data)`) the owner is the record: the whole
+// record is dead afterward, so the buffer keeps exactly one live name
+// (docs/spec/92-ffi.md section 2.8.6).
+func (bc *BorrowChecker) consumeBuffer(owner string, site ast.Node, action string) {
+	if bc.consumedOwners[owner] {
+		bc.reportBorrow(site, CodeResourceUsedAfterConsume,
+			fmt.Sprintf("buffer %q was already moved or handed back", owner))
+		return
+	}
+	for _, kind := range []borrowKind{BorrowSpan, BorrowView} {
+		if borrowName, info, live := bc.firstActiveBorrow(owner, kind); live {
+			d := bc.reportBorrow(site, CodeBorrowGeneric,
+				fmt.Sprintf("buffer %q cannot %s while borrow %q is live", owner, action, borrowName))
+			bc.addBorrowContext(d, borrowName, info, fmt.Sprintf("borrow %q still reads the buffer's memory", borrowName))
+			d.AddHelp("let the view or span leave scope first")
+			return
+		}
+	}
+	bc.consumedOwners[owner] = true
+}
+
+// bufferPathOwner names the binding a Buffer operand belongs to: the
+// binding itself, or the record binding of a field path `w.data`
+// (docs/spec/92-ffi.md section 2.8.6).
+func bufferPathOwner(expr ast.Expression) (string, bool) {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		return e.Value, true
+	case *ast.IndexExpression:
+		if e.Dot {
+			if base, isIdent := e.Left.(*ast.Identifier); isIdent {
+				return base.Value, true
+			}
+		}
+	}
+	return "", false
 }
 
 // checkIndexExpression checks index operations
@@ -1097,21 +1164,7 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 	// buffer: rejected while any borrow of it is live, and the old binding
 	// is consumed; the result is the same resource under its new name.
 	if owner, isTransition := custodyTransitionOperand(call, env); isTransition {
-		if bc.consumedOwners[owner] {
-			bc.reportBorrow(call, CodeResourceUsedAfterConsume,
-				fmt.Sprintf("buffer %q was already moved or handed back", owner))
-			return
-		}
-		for _, kind := range []borrowKind{BorrowSpan, BorrowView} {
-			if borrowName, info, live := bc.firstActiveBorrow(owner, kind); live {
-				d := bc.reportBorrow(call, CodeBorrowGeneric,
-					fmt.Sprintf("buffer %q cannot change custody while borrow %q is live", owner, borrowName))
-				bc.addBorrowContext(d, borrowName, info, fmt.Sprintf("borrow %q still reads the buffer's memory", borrowName))
-				d.AddHelp("let the view or span leave scope before the transition")
-				return
-			}
-		}
-		bc.consumedOwners[owner] = true
+		bc.consumeBuffer(owner, call, "change custody")
 		return
 	}
 	// 2. Then apply borrow-sensitive builtins
@@ -1447,8 +1500,8 @@ func (bc *BorrowChecker) checkSpanAsCall(call *ast.InvocationExpression, env *ty
 func (bc *BorrowChecker) checkIdentifierUse(node ast.Node, name string, env *typechecker.TypeEnvironment, isWrite bool) {
 	if bc.consumedOwners[name] {
 		d := bc.reportBorrow(node, CodeResourceUsedAfterConsume,
-			fmt.Sprintf("buffer %q cannot be used after c.disown handed its memory back", name))
-		d.AddHelp("create a new buffer with c.own, or move the use before c.disown")
+			fmt.Sprintf("%q cannot be used after its buffer was handed back or moved", name))
+		d.AddHelp("create a new buffer with c.own, or move the use before c.disown, the transition, or the record literal")
 		return
 	}
 	if info, isBorrow := bc.activeBorrows[name]; isBorrow && len(info.reborrows) > 0 {
@@ -1768,13 +1821,13 @@ func custodyTransitionOperand(call *ast.InvocationExpression, env *typechecker.T
 		return "", false
 	}
 	for i, arg := range call.Arguments {
-		ident, isIdent := arg.(*ast.Identifier)
-		if !isIdent {
+		owner, isPath := bufferPathOwner(arg)
+		if !isPath {
 			continue
 		}
 		if i < len(fn.Parameters) {
 			if _, isBuffer := fn.Parameters[i].(*typechecker.BufferType); isBuffer {
-				return ident.Value, true
+				return owner, true
 			}
 		}
 	}
@@ -1791,9 +1844,5 @@ func foreignDisownOperand(call *ast.InvocationExpression) (string, bool) {
 	if !isIdent || !memberIsIdent || base.Value != "c" || member.Value != "disown" {
 		return "", false
 	}
-	owner, isOwner := call.Arguments[0].(*ast.Identifier)
-	if !isOwner {
-		return "", false
-	}
-	return owner.Value, true
+	return bufferPathOwner(call.Arguments[0])
 }

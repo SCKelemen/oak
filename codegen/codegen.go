@@ -1426,7 +1426,7 @@ func (cg *CodeGenerator) preEmitContainerTypes(program *ast.Program) {
 			switch info.kind {
 			case containerView:
 				cg.emitViewType(info.element)
-			case containerSpan:
+			case containerSpan, containerBuffer:
 				cg.emitSpanType(info.element)
 			case containerOwnedArray:
 				// Resolving the spelling places the wrapper typedef (and

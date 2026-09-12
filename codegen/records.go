@@ -100,7 +100,10 @@ func (cg *CodeGenerator) naturalFieldRepresentation(name string, typeExpr ast.Ex
 	// natural layout (docs/spec/92-ffi.md section 2.4); the emitted
 	// assertions make cc ratify the numbers.
 	if indexExpr, isIndex := typeExpr.(*ast.IndexExpression); isIndex {
-		if marker, isMarker := indexExpr.Index.(*ast.Identifier); isMarker && (marker.Value == "" || marker.Value == "*") {
+		// A Buffer field (docs/spec/92-ffi.md section 2.8.6) is the span
+		// struct over its element type, the buffer's one representation.
+		_, isBuffer := bufferElementSyntax(indexExpr)
+		if marker, isMarker := indexExpr.Index.(*ast.Identifier); isBuffer || (isMarker && (marker.Value == "" || marker.Value == "*")) {
 			layout, err := semir.NaturalRecordLayout([]semir.RecordFieldRepresentation{{Name: "base", Size: 8, Alignment: 8}, {Name: "len", Size: 4, Alignment: 4}})
 			if err != nil {
 				return semir.RecordFieldRepresentation{}, false

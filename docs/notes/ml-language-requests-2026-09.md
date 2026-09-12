@@ -77,8 +77,14 @@ list, in the order the pilot would meet them:
    `out.data[gid]` under a contiguity guard, with
    `Oak.Stdlib.Tensor.flat_index` proving it writes the element
    `tensor_set` would (`56-kernels.md` §8, the matmul kernel).
-5. **A `Buffer` inside a record, and custody states carrying a device
-   identity** (`92-ffi.md` §2.8.6).
+5. ~~**A `Buffer` inside a record, and custody states carrying a device
+   identity**~~ — landed after #246 (`92-ffi.md` §2.8.6): a record may
+   hold a `Buffer[T, S]` field and carries the custody — the literal moves
+   the binding in, borrows go through the field at Host, a transition or
+   `c.disown` through the field consumes the whole record — and a state
+   with a device identity is such a record over the buffer
+   (`Submitted { data: Buffer[f32, Device], device: u32 }`,
+   `Oak.BufferCustody.Tagged`).
 6. ~~**A backend consuming declared laws**~~ — landed after #244:
    `reduce.tree` over an operator declaring `laws { associative }` is
    lowered to `reduce.chain`, the left fold from the first element, by

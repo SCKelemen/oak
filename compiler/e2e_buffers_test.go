@@ -102,9 +102,12 @@ f: (): u32 {
 }
 main: (): i32 = 0
 `, "created only by c.own"},
-		"parameter":    {"f: (b: Buffer[f32]): u32 = len(b)\nmain: (): i32 = 0\n", "cannot be a parameter"},
-		"record field": {"W: type = struct { b: Buffer[f32] }\nmain: (): i32 = 0\n", "cannot be a record field"},
-		"return":       {"f: (b: u32): Buffer[f32] { unsafe { x: Buffer[f32] = c.own[f32](c.Ptr(u32(0)), b) } }\nmain: (): i32 = 0\n", "cannot be returned"},
+		"parameter": {"f: (b: Buffer[f32]): u32 = len(b)\nmain: (): i32 = 0\n", "cannot be a parameter"},
+		// A direct Buffer field is admitted (docs/spec/92-ffi.md section
+		// 2.8.6); a record holding such a record is not.
+		"nested record field": {"W: type = struct { b: Buffer[f32] }\nOuter: type = struct { w: W }\nmain: (): i32 = 0\n", "cannot be a record field"},
+		"array field":         {"W: type = struct { bs: [2]Buffer[f32] }\nmain: (): i32 = 0\n", "cannot be a record field"},
+		"return":              {"f: (b: u32): Buffer[f32] { unsafe { x: Buffer[f32] = c.own[f32](c.Ptr(u32(0)), b) } }\nmain: (): i32 = 0\n", "cannot be returned"},
 		"argument": {prelude + `
 id[T]: (x: T): T = x
 f: (): u32 {
