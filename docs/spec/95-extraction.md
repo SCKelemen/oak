@@ -64,6 +64,8 @@ proofs written against them transfer.
 | `TABLE: [256]u8 = [256]u8{ ... }` at top level, `[16]u32{ m[2], ... }` anywhere | `def TABLE : Array UInt8 := (#[...] : Array UInt8)`; an array literal is the Lean array literal, split into `++`-joined chunks of 128 beyond that length so a 2048-entry table elaborates |
 | `view(&TABLE)` of a top-level constant | the constant's array value (a view is the array it views); `span(&TABLE)` would mutate the global and fails closed |
 | `r.field[i] = v` | `let r := { r with field := r.field.setIfInBounds i.toNat v }` (one level of fields) |
+| `arr[i].field = v` | `let arr := arr.setIfInBounds i.toNat { (arr.getD i.toNat zero) with field := v }` — the element record read, one field replaced, stored back at the same index (the text cursors of `strings`) |
+| `is_valid_utf8(v)` | `Oak.Utf8Exec.valid v` — the same Table 3-7 decision procedure over the carrier (section 3), imported only when used |
 | `^x` | `~~~x`, the complement over the operand's width |
 | `subslice(v, start, n)` | `v.extract start.toNat (start.toNat + n.toNat)` — the window as the array it views (section 3 on the clamp) |
 | `f32`, `f64` | `Float32`, `Float` — the host's binary32 and binary64 (section 3) |
@@ -145,6 +147,20 @@ for every value the constant could have, which is the only claim the
 program itself makes. The C identifier and the header never appear in the
 Lean text.
 
+**Fifth: UTF-8 validity is decided the same way twice.** The compiler's
+`is_valid_utf8` intrinsic (`70-strings.md`) decides Unicode Table 3-7 over a
+view; the extraction renders it as `Oak.Utf8Exec.valid`
+(`spec/lean/Oak/Utf8Exec.lean`), an executable definition of the same
+procedure over the `Array UInt8` carrier — one to four bytes, no overlongs,
+no surrogates, nothing above U+10FFFF, stopping at the first ill-formed
+sequence. It is a definition, not the relation `Oak.Utf8Validity.Valid`;
+the theorem relating the two is listed in section 7, and the faithfulness
+harness compares the definition with the compiled intrinsic on valid,
+damaged, and random inputs. The `string` type itself (a value the compiler
+guarantees valid) is still outside the subset: the text library's
+functions take and return `[]u8` views, which is why `strings`, `unicode`,
+`url`, `path`, `grapheme`, and `normalize` extract without it.
+
 ## 4. The subset, and what fails closed
 
 Records and sum types of extractable fields and payloads, generic ADTs per
@@ -160,11 +176,14 @@ comparisons, negation, the `round`/`bits`/`saturating`/`trunc` rows between
 them and the integers, and the intrinsics of the table above (`fma`,
 `copysign`, and `round_even` through `Oak.FloatOps`); field
 assignment and element assignment into a record's array field, one level
-deep; array literals; top-level constants, including constant tables read
+deep, and field assignment through an element of a span (`arr[i].field`);
+array literals; top-level constants, including constant tables read
 through `view` and target constants (`c.const`, as opaque constants of
-their `c.*` scalar type). The extraction closes over the roots'
+their `c.*` scalar type); `is_valid_utf8` through `Oak.Utf8Exec`. The extraction closes over the roots'
 callees, so a program that calls the standard library extracts the library
-functions it reaches. Everything else — strings, generic templates
+functions it reaches. Everything else — the `string` type and its
+literals (the text library works over `[]u8` views and extracts; code that
+holds `string` values, such as `json`, does not), generic templates
 themselves, recursion, methods, extern functions, closures, the storage
 float formats and the intrinsics named in section 3, the `checked`
 float rows, SIMD, FFI (extern calls, `c.fn_at`, `c.msg_send`), assignment to a global — is an
@@ -184,7 +203,13 @@ verification workflow and the certificate gate build and run it.
 builds one Oak module and one Lean driver over the committed extractions
 from a fixed-seed corpus — the heap, pdq and insertion sorts, LEB128
 encode and decode, hex and base64 round trips, xoshiro256** draws,
-CRC-32C and SHA-256, and the float packages: `float_format`,
+CRC-32C and SHA-256, the text library (UTF-8 validation, counting, and a
+decode scan over valid, damaged, and random byte strings; grapheme
+boundary chains over ZWJ sequences, flags, Hangul, and conjuncts;
+`normalize_nfc`/`normalize_nfd`/`normalize_is_nfc` over composed,
+decomposed, singleton, and reordering inputs; `url_parse` ranges over the
+RFC 3986 examples and malformed references; `path_clean` over Go's table
+shapes), and the float packages: `float_format`,
 `float_format_fixed`, `float_format_f32`, `float_parse`/`float_parse_f32`
 on hard values and spellings, the ml-shaped kernels (`dot_f32`, `sum_f32`,
 `sum_f64`, `axpy_f32`, `max_abs_f32`, `widen_mean`, `quantize_u8`), and
@@ -224,7 +249,10 @@ test and each fails this one.
 whole packages — `varint`, `encoding`, `hash`, `random`, `uuid`, `float`
 (the decimal text package, integer code over `f64` bit patterns), `math`
 (the transcendentals: pure binary64 arithmetic with `fma`, `copysign`, and
-`round_even` through `Oak.FloatOps`, 1,883 lines), and `sort` at `u32` —
+`round_even` through `Oak.FloatOps`, 1,883 lines), `sort` at `u32`, and
+the text library — `unicode`, `strings` (2,540 lines: the UTF-8 codec,
+case folding, the split and fold cursors), `url`, `path`, `grapheme`, and
+`normalize`, each closing over the `strings` functions it calls —
 into `spec/lean/Oak/Stdlib/*Extracted.lean`, regenerating and
 failing on drift the same way. A package's program is the core prelude
 plus the flattened texts of its dependencies and itself (`stdlib.Flatten`);
@@ -588,9 +616,15 @@ most; the kernel-decided facts use no axioms.
 - The SHA-256 and CRC-32C
   extractions against reference definitions (the streaming laws hold; the
   compression and the table remain opaque to the proofs).
-- The subset: strings and the text library, methods, and recursion;
-  instantiations whose arguments are arrays or views; the `checked` float
-  rows and `fma` once Lean carries them exactly.
+- `Oak.Utf8Exec.valid bytes = true ↔ Oak.Utf8Validity.Valid bytes.toList`,
+  tying the executable procedure the extraction uses to the relation the
+  source gate is proved against; then the `strings` laws on the
+  extraction (`utf8_decode` inverts `utf8_encode`, `utf8_count` counts the
+  scalars `utf8_decode` yields) and the `url`/`path` laws (`url_parse`
+  ranges partition the input; `path_clean` is idempotent).
+- The subset: the `string` type and its literals (so `json` extracts),
+  methods, and recursion; instantiations whose arguments are arrays or
+  views; the `checked` float rows.
 The string-level corollary of `rup_text_check_sound` once
 `ByteArray.toList` has its data lemma; then the constructs
 the verification programs need next (matches over records, the `checked`

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // TestLeanStdlibFaithful runs the committed Lean extractions and the
@@ -112,7 +113,15 @@ type faithfulCorpus struct {
 	floatTexts []string    // float_parse, float_parse_f32
 	kernelVecs [][]uint32  // f32 bit patterns for dot/sum/axpy/max_abs/widen_mean
 	mathPairs  [][2]uint64 // pow(x, y), atan2(y, x)
-	lines      int
+	// Text: byte strings for the strings package (valid, damaged, and
+	// random), grapheme and normalization inputs (valid UTF-8 with
+	// combining marks, ZWJ sequences, Hangul), URL references, and paths.
+	textInputs  [][]byte
+	graphInputs [][]byte
+	normInputs  [][]byte
+	urlInputs   []string
+	pathInputs  []string
+	lines       int
 }
 
 func newFaithfulCorpus(seed int64) *faithfulCorpus {
@@ -219,13 +228,101 @@ func newFaithfulCorpus(seed int64) *faithfulCorpus {
 		y := uint64(rng.Intn(2))<<63 | uint64(1023-3+rng.Intn(7))<<52 | rng.Uint64()&((1<<52)-1)
 		c.mathPairs = append(c.mathPairs, [2]uint64{x, y})
 	}
+	// Text: valid strings from random scalars, the same with one byte
+	// damaged, and raw random bytes, so both the accepting and the
+	// rejecting paths of the UTF-8 decoder and validator are compared.
+	randomScalar := func() rune {
+		for {
+			r := rune(rng.Intn(0x110000))
+			if r >= 0xD800 && r <= 0xDFFF {
+				continue
+			}
+			if rng.Intn(3) == 0 {
+				r = rune(rng.Intn(0x80))
+			}
+			return r
+		}
+	}
+	for i := 0; i < 36; i++ {
+		var b []byte
+		switch i % 3 {
+		case 0:
+			for k := 0; k < 1+rng.Intn(8); k++ {
+				b = utf8.AppendRune(b, randomScalar())
+			}
+		case 1:
+			for k := 0; k < 1+rng.Intn(8); k++ {
+				b = utf8.AppendRune(b, randomScalar())
+			}
+			b[rng.Intn(len(b))] ^= byte(1 << uint(rng.Intn(8)))
+		default:
+			b = make([]byte, 1+rng.Intn(12))
+			rng.Read(b)
+		}
+		c.textInputs = append(c.textInputs, b)
+	}
+	graphemeRunes := [][]rune{
+		{'a', 'b', 'c'},
+		{'e', 0x301, 'x'}, // e + combining acute
+		{0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F467}, // family ZWJ sequence
+		{0x1F1FA, 0x1F1F8, 0x1F1EC, 0x1F1E7},        // two flags
+		{0x1100, 0x1161, 0x11A8, 'k'},               // Hangul L V T
+		{'\r', '\n', 'a', '\n'},
+		{0x915, 0x94D, 0x937, 0x93F}, // Devanagari conjunct with virama
+		{0x1F600, 0x1F3FB, 0x200D, 0x2640, 0xFE0F},
+	}
+	for _, rs := range graphemeRunes {
+		var b []byte
+		for _, r := range rs {
+			b = utf8.AppendRune(b, r)
+		}
+		c.graphInputs = append(c.graphInputs, b)
+	}
+	for i := 0; i < 8; i++ {
+		var b []byte
+		for k := 0; k < 1+rng.Intn(6); k++ {
+			b = utf8.AppendRune(b, randomScalar())
+		}
+		c.graphInputs = append(c.graphInputs, b)
+	}
+	normRunes := [][]rune{
+		{'e', 0x301},     // decomposed e-acute
+		{0xE9},           // composed e-acute
+		{0x212B},         // ANGSTROM SIGN singleton
+		{0xAC00, 0xD7A3}, // Hangul syllables
+		{0x1100, 0x1161, 0x11A8},
+		{'a', 0x315, 0x300, 0x5AE, 0x300}, // CCC reordering
+		{0x1E0A, 0x323},                   // D-dot-above + dot-below
+		{0x0958},                          // composition exclusion
+		{'A', 'S', 'C', 'I', 'I'},
+	}
+	for _, rs := range normRunes {
+		var b []byte
+		for _, r := range rs {
+			b = utf8.AppendRune(b, r)
+		}
+		c.normInputs = append(c.normInputs, b)
+	}
+	c.urlInputs = []string{
+		"foo://example.com:8042/over/there?name=ferret#nose",
+		"http://a/b/c/d;p?q", "g:h", "//g", "?y", "#s", "../g", "mailto:John.Doe@example.com",
+		"urn:example:animal:ferret:nose", "http://[2001:db8::7]/c=GB?objectClass?one",
+		"ht tp://bad", "http://host:8x/", "%G1", "http://host/[",
+	}
+	c.pathInputs = []string{
+		"", ".", "/", "a/b/c", "a//b", "a/./b", "a/../b", "/../a", "abc/../..", "/a/b/../../..", "abc/def/..", ".//..//a",
+	}
 	// sorts: 3 per input; varint: encode+decode lines; bytes: hex enc/dec,
 	// b64 enc/dec; random: one line per seed; hash: crc and sha per input;
 	// f64: format, fixed, and eleven math functions per value; f32: format
 	// plus exp_f32/sin_f32; texts: parse f64 and f32; kernels: five
 	// reductions, quantize, and axpy per vector; pairs: pow and atan2.
+	// text: validate, count, and a decode scan per input; grapheme: one
+	// boundary chain per input; normalize: nfc, nfd, is_nfc per input; url:
+	// one line per reference; path: one line per path.
 	c.lines = 3*len(c.sortInputs) + 2*len(c.varintValues) + 4*len(c.bytesInputs) + len(c.seeds) + 2*len(c.hashInputs) +
-		13*len(c.f64Bits) + 3*len(c.f32Bits) + 2*len(c.floatTexts) + 7*len(c.kernelVecs) + 2*len(c.mathPairs)
+		13*len(c.f64Bits) + 3*len(c.f32Bits) + 2*len(c.floatTexts) + 7*len(c.kernelVecs) + 2*len(c.mathPairs) +
+		3*len(c.textInputs) + len(c.graphInputs) + 3*len(c.normInputs) + len(c.urlInputs) + len(c.pathInputs)
 	return c
 }
 
@@ -288,6 +385,11 @@ import("random")
 import("hash")
 import("float")
 import("math")
+import("strings")
+import("grapheme")
+import("normalize")
+import("url")
+import("path")
 
 putchar: (ch: c.Int): c.Int = c.extern("putchar")
 
@@ -443,6 +545,64 @@ put_f32: (x: f32): () { put_sep(); put_u64(bits_f32(x)) }
 		fmt.Fprintf(&b, "  put_text(text_literal(\"math_pow %d\")); put_f64(math.pow(x, y)); put_nl()\n", i)
 		fmt.Fprintf(&b, "  put_text(text_literal(\"math_atan2 %d\")); put_f64(math.atan2(y, x)); put_nl()\n}\n", i)
 	}
+	// Text: UTF-8 validation, the count, and a decode scan that follows
+	// `next` until the end or the first error.
+	b.WriteString(`text_ok: (r: Result[u32, strings.TextError]): u32 = r ? | .Ok(v) => u32(0) | .Err(e) => u32(1)
+text_count_value: (r: Result[u32, strings.TextError]): u32 = r ? | .Ok(v) => v | .Err(e) => u32(0)
+scan_text: (src: []u8): () {
+  at: u32 = 0
+  more: Bool = true
+  steps: u32 = 0
+  while more && steps < u32(64) {
+    r: Result[strings.TextScalar, strings.TextError] = strings.utf8_decode(src, at)
+    r ? | .Ok(item) => { put_sep(); put_u64(u64(item.value)); put_sep(); put_u64(u64(item.next))
+      at = item.next
+      at >= len(src) ? { more = false } }
+      | .Err(e) => { put_sep(); put_u64(u64(999)); more = false }
+    steps = steps + u32(1)
+  }
+}
+`)
+	for i, src := range c.textInputs {
+		fmt.Fprintf(&b, "text_case_%d: (): () {\n  src: [%d]u8 = %s\n  s: []u8 = view(&src)\n", i, len(src), oakU8Array(src))
+		fmt.Fprintf(&b, "  put_text(text_literal(\"utf8_validate %d\")); put_sep(); put_u64(strings.utf8_validate(s) ? u64(1) | u64(0)); put_nl()\n", i)
+		fmt.Fprintf(&b, "  r: Result[u32, strings.TextError] = strings.utf8_count(s)\n")
+		fmt.Fprintf(&b, "  put_text(text_literal(\"utf8_count %d\")); put_sep(); put_u64(u64(text_ok(r))); put_sep(); put_u64(u64(text_count_value(r))); put_nl()\n", i)
+		fmt.Fprintf(&b, "  put_text(text_literal(\"utf8_scan %d\")); scan_text(s); put_nl()\n}\n", i)
+	}
+	for i, src := range c.graphInputs {
+		fmt.Fprintf(&b, "grapheme_case_%d: (): () {\n  src: [%d]u8 = %s\n  s: []u8 = view(&src)\n", i, len(src), oakU8Array(src))
+		fmt.Fprintf(&b, "  put_text(text_literal(\"grapheme %d\"))\n  at: u32 = 0\n  steps: u32 = 0\n  while at < len(s) && steps < u32(64) { at = grapheme.grapheme_next(s, at); put_sep(); put_u64(u64(at))\n    steps = steps + u32(1)\n  }\n  put_nl()\n}\n", i)
+	}
+	for i, src := range c.normInputs {
+		fmt.Fprintf(&b, "norm_case_%d: (): () {\n  src: [%d]u8 = %s\n  s: []u8 = view(&src)\n", i, len(src), oakU8Array(src))
+		b.WriteString("  out: [96]u8\n  n: u32 = 0\n  true ? { d: [*]u8 = span(&out)\n    n = normalize.normalize_written(normalize.normalize_nfc(d, s)) }\n  ov: []u8 = view(&out)\n")
+		fmt.Fprintf(&b, "  put_text(text_literal(\"normalize_nfc %d\")); put_sep(); put_u64(u64(n)); put_u8s(ov[u32(0):n]); put_nl()\n", i)
+		b.WriteString("  out2: [96]u8\n  m: u32 = 0\n  true ? { d: [*]u8 = span(&out2)\n    m = normalize.normalize_written(normalize.normalize_nfd(d, s)) }\n  ov2: []u8 = view(&out2)\n")
+		fmt.Fprintf(&b, "  put_text(text_literal(\"normalize_nfd %d\")); put_sep(); put_u64(u64(m)); put_u8s(ov2[u32(0):m]); put_nl()\n", i)
+		fmt.Fprintf(&b, "  put_text(text_literal(\"normalize_is_nfc %d\")); put_sep(); put_u64(normalize.normalize_is_nfc(s) ? u64(1) | u64(0)); put_nl()\n}\n", i)
+	}
+	b.WriteString(`put_range: (r: url.UrlRange): () {
+  put_sep(); put_u64(r.present ? u64(1) | u64(0)); put_sep(); put_u64(u64(r.start)); put_sep(); put_u64(u64(r.end))
+}
+put_url: (r: Result[url.Url, url.UrlError]): () {
+  r ? | .Ok(u) => { put_sep(); put_u64(u64(0)); put_range(u.scheme); put_range(u.userinfo); put_range(u.host); put_range(u.port); put_range(u.path); put_range(u.query); put_range(u.fragment) }
+    | .Err(e) => { put_sep(); put_u64(u64(1)) }
+}
+`)
+	for i, src := range c.urlInputs {
+		fmt.Fprintf(&b, "url_case_%d: (): () {\n  src: [%d]u8 = %s\n  s: []u8 = view(&src)\n", i, len(src), oakU8Array([]byte(src)))
+		fmt.Fprintf(&b, "  put_text(text_literal(\"url_parse %d\")); put_url(url.url_parse(s)); put_nl()\n}\n", i)
+	}
+	for i, src := range c.pathInputs {
+		if len(src) == 0 {
+			fmt.Fprintf(&b, "path_case_%d: (): () {\n  src: [1]u8\n  sv: []u8 = view(&src)\n  s: []u8 = sv[u32(0):u32(0)]\n", i)
+		} else {
+			fmt.Fprintf(&b, "path_case_%d: (): () {\n  src: [%d]u8 = %s\n  s: []u8 = view(&src)\n", i, len(src), oakU8Array([]byte(src)))
+		}
+		b.WriteString("  out: [32]u8\n  n: u32 = 0\n  true ? { d: [*]u8 = span(&out)\n    n = path.path_written(path.path_clean(d, s)) }\n  ov: []u8 = view(&out)\n")
+		fmt.Fprintf(&b, "  put_text(text_literal(\"path_clean %d\")); put_sep(); put_u64(u64(n)); put_u8s(ov[u32(0):n]); put_nl()\n}\n", i)
+	}
 	b.WriteString("main: (): i32 {\n")
 	for i := range c.sortInputs {
 		fmt.Fprintf(&b, "  sort_case_%d()\n", i)
@@ -470,6 +630,21 @@ put_f32: (x: f32): () { put_sep(); put_u64(bits_f32(x)) }
 	for i := range c.mathPairs {
 		fmt.Fprintf(&b, "  pair_case_%d()\n", i)
 	}
+	for i := range c.textInputs {
+		fmt.Fprintf(&b, "  text_case_%d()\n", i)
+	}
+	for i := range c.graphInputs {
+		fmt.Fprintf(&b, "  grapheme_case_%d()\n", i)
+	}
+	for i := range c.normInputs {
+		fmt.Fprintf(&b, "  norm_case_%d()\n", i)
+	}
+	for i := range c.urlInputs {
+		fmt.Fprintf(&b, "  url_case_%d()\n", i)
+	}
+	for i := range c.pathInputs {
+		fmt.Fprintf(&b, "  path_case_%d()\n", i)
+	}
 	b.WriteString("  0\n}\n")
 	return b.String()
 }
@@ -487,6 +662,11 @@ import Oak.Stdlib.HashExtracted
 import Oak.Stdlib.FloatExtracted
 import Oak.Stdlib.FloatKernelsExtracted
 import Oak.Stdlib.MathExtracted
+import Oak.Stdlib.StringsExtracted
+import Oak.Stdlib.GraphemeExtracted
+import Oak.Stdlib.NormalizeExtracted
+import Oak.Stdlib.UrlExtracted
+import Oak.Stdlib.PathExtracted
 
 set_option maxRecDepth 65536
 
@@ -658,6 +838,81 @@ def pairLines (i : Nat) (xb yb : UInt64) : IO Unit := do
   IO.println s!"math_pow {i}{showF64 (Oak.Stdlib.Math.pow x y fuel)}"
   IO.println s!"math_atan2 {i}{showF64 (Oak.Stdlib.Math.atan2 y x fuel)}"
 
+def textLines (i : Nat) (src : Array UInt8) : IO Unit := do
+  match Oak.Stdlib.Strings.utf8_validate src fuel with
+  | none => IO.println s!"utf8_validate {i} none"
+  | some ok => IO.println s!"utf8_validate {i} {if ok then 1 else 0}"
+  match Oak.Stdlib.Strings.utf8_count src fuel with
+  | none => IO.println s!"utf8_count {i} none"
+  | some (.Ok v) => IO.println s!"utf8_count {i} 0 {v.toNat}"
+  | some (.Err _) => IO.println s!"utf8_count {i} 1 0"
+  let mut line := s!"utf8_scan {i}"
+  let mut pos : UInt32 := 0
+  let mut more := true
+  let mut steps := 0
+  while more && steps < 64 do
+    match Oak.Stdlib.Strings.utf8_decode src pos fuel with
+    | none => line := line ++ " none"; more := false
+    | some (.Ok item) =>
+      line := line ++ s!" {item.value.toNat} {item.next.toNat}"
+      pos := item.next
+      if pos.toNat >= src.size then more := false
+    | some (.Err _) => line := line ++ " 999"; more := false
+    steps := steps + 1
+  IO.println line
+
+def graphemeLine (i : Nat) (src : Array UInt8) : IO Unit := do
+  let mut line := s!"grapheme {i}"
+  let mut pos : UInt32 := 0
+  let mut steps := 0
+  while pos.toNat < src.size && steps < 64 do
+    match Oak.Stdlib.Grapheme.grapheme_next src pos fuel with
+    | none => line := line ++ " none"; pos := src.size.toUInt32
+    | some next => line := line ++ s!" {next.toNat}"; pos := next
+    steps := steps + 1
+  IO.println line
+
+def normWritten (r : Oak.Stdlib.Normalize.Result_u32_NormalizeError) : UInt32 :=
+  match r with
+  | .Ok n => n
+  | .Err _ => 0
+
+def normLines (i : Nat) (src : Array UInt8) : IO Unit := do
+  match Oak.Stdlib.Normalize.normalize_nfc (Array.replicate 96 (0 : UInt8)) src fuel with
+  | none => IO.println s!"normalize_nfc {i} none"
+  | some (r, out) =>
+    let n := normWritten r
+    IO.println s!"normalize_nfc {i} {n.toNat}{showU8s (out.extract 0 n.toNat)}"
+  match Oak.Stdlib.Normalize.normalize_nfd (Array.replicate 96 (0 : UInt8)) src fuel with
+  | none => IO.println s!"normalize_nfd {i} none"
+  | some (r, out) =>
+    let n := normWritten r
+    IO.println s!"normalize_nfd {i} {n.toNat}{showU8s (out.extract 0 n.toNat)}"
+  match Oak.Stdlib.Normalize.normalize_is_nfc src fuel with
+  | none => IO.println s!"normalize_is_nfc {i} none"
+  | some ok => IO.println s!"normalize_is_nfc {i} {if ok then 1 else 0}"
+
+def showRange (r : Oak.Stdlib.Url.UrlRange) : String :=
+  s!" {if r.present then 1 else 0} {r.start.toNat} {r.end_.toNat}"
+
+def urlLine (i : Nat) (src : Array UInt8) : IO Unit := do
+  match Oak.Stdlib.Url.url_parse src fuel with
+  | none => IO.println s!"url_parse {i} none"
+  | some (.Ok u) => IO.println (s!"url_parse {i} 0" ++ showRange u.scheme ++ showRange u.userinfo ++ showRange u.host ++ showRange u.port ++ showRange u.path ++ showRange u.query ++ showRange u.fragment)
+  | some (.Err _) => IO.println s!"url_parse {i} 1"
+
+def pathWritten (r : Oak.Stdlib.Path.Result_u32_PathError) : UInt32 :=
+  match r with
+  | .Ok n => n
+  | .Err _ => 0
+
+def pathLine (i : Nat) (src : Array UInt8) : IO Unit := do
+  match Oak.Stdlib.Path.path_clean (Array.replicate 32 (0 : UInt8)) src fuel with
+  | none => IO.println s!"path_clean {i} none"
+  | some (r, out) =>
+    let n := pathWritten r
+    IO.println s!"path_clean {i} {n.toNat}{showU8s (out.extract 0 n.toNat)}"
+
 def main : IO Unit := do
 `)
 	for i, items := range c.sortInputs {
@@ -692,6 +947,21 @@ def main : IO Unit := do
 	}
 	for i, pair := range c.mathPairs {
 		fmt.Fprintf(&b, "  pairLines %d (%d : UInt64) (%d : UInt64)\n", i, pair[0], pair[1])
+	}
+	for i, src := range c.textInputs {
+		fmt.Fprintf(&b, "  textLines %d %s\n", i, leanU8Array(src))
+	}
+	for i, src := range c.graphInputs {
+		fmt.Fprintf(&b, "  graphemeLine %d %s\n", i, leanU8Array(src))
+	}
+	for i, src := range c.normInputs {
+		fmt.Fprintf(&b, "  normLines %d %s\n", i, leanU8Array(src))
+	}
+	for i, src := range c.urlInputs {
+		fmt.Fprintf(&b, "  urlLine %d %s\n", i, leanU8Array([]byte(src)))
+	}
+	for i, src := range c.pathInputs {
+		fmt.Fprintf(&b, "  pathLine %d %s\n", i, leanU8Array([]byte(src)))
 	}
 	return b.String()
 }

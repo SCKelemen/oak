@@ -433,3 +433,43 @@ nearest: (x: f64): f64 = round_even(x)
 		t.Fatalf("a module without the three intrinsics must not import Oak.FloatOps:\n%s", plain)
 	}
 }
+
+// The UTF-8 validity intrinsic decides Table 3-7 over the carrier through
+// Oak.Utf8Exec.valid, imported only when used; a field store through an
+// element of a span reads the element record, replaces the field, and
+// stores it back at the same index.
+func TestExtractionUtf8ValidAndElementFieldStore(t *testing.T) {
+	src := `
+Cursor: type = struct { next: u32, done: Bool }
+advance: (cursor: [*]Cursor, src: []u8): Bool {
+  ok: Bool = is_valid_utf8(src)
+  cursor[0].next = cursor[0].next + u32(1)
+  cursor[0].next >= len(src) ? { cursor[0].done = true }
+  ok
+}
+`
+	out, err := extract(t, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"import Oak.Utf8Exec",
+		"(Oak.Utf8Exec.valid src)",
+		"let cursor := cursor.setIfInBounds 0 { (cursor.getD 0 (default : Cursor)) with next :=",
+		"let cursor := cursor.setIfInBounds 0 { (cursor.getD 0 (default : Cursor)) with done := true }",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+	plain := `
+count: (src: []u8): u32 = len(src)
+`
+	out, err = extract(t, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "Oak.Utf8Exec") {
+		t.Fatalf("Utf8Exec imported without a use:\n%s", out)
+	}
+}
