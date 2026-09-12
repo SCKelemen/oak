@@ -199,3 +199,33 @@ func TestLeanObligationsStateOperatorLaws(t *testing.T) {
 		t.Fatalf("a declared law is an open claim:\n%s", text)
 	}
 }
+
+// The vocabulary beyond associative and commutative (docs/spec/10-syntax.md
+// section 14a): identity(e) states a left and a right theorem with the
+// element as the extracted nullary function, idempotent one theorem.
+func TestLeanStatesIdentityAndIdempotent(t *testing.T) {
+	session := NewSession(t.TempDir())
+	for _, input := range []string{
+		"Hist: type = struct { n: u32 }",
+		"hist_zero: (): Hist = Hist { n: u32(0) }",
+		"operator(+) merge: (a: Hist, b: Hist): Hist laws { identity(hist_zero()), idempotent } = Hist { n: a.n + b.n }",
+	} {
+		if _, err := session.Submit(input); err != nil {
+			t.Fatal(err)
+		}
+	}
+	text, err := session.LeanObligations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"declares `identity(hist_zero())`",
+		"theorem law_merge_identity_left (a : Defs.Hist) (fuel : Nat) :\n    (Defs.hist_zero fuel >>= fun e => Defs.merge e a fuel) = some a := by\n  sorry",
+		"theorem law_merge_identity_right (a : Defs.Hist) (fuel : Nat) :\n    (Defs.hist_zero fuel >>= fun e => Defs.merge a e fuel) = some a := by\n  sorry",
+		"theorem law_merge_idempotent (a : Defs.Hist) (fuel : Nat) :\n    Defs.merge a a fuel = some a := by\n  sorry",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in:\n%s", want, text)
+		}
+	}
+}

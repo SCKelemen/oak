@@ -307,7 +307,11 @@ func vetOne(target, profile string) int {
 	// assumptions so nothing that licenses a regrouping goes unseen.
 	if model.TypeChecker != nil {
 		for _, law := range model.TypeChecker.OperatorLaws() {
-			fmt.Printf("law: operator(%s) %s on %s declares %s — declared, not checked; the REPL's :lean states it\n", law.Symbol, modules.DemangleText(law.Function), modules.DemangleText(law.Type), law.Law)
+			declared := law.Law
+			if law.Argument != nil {
+				declared = fmt.Sprintf("%s(%s)", law.Law, law.Argument.String())
+			}
+			fmt.Printf("law: operator(%s) %s on %s declares %s — declared, not checked; the REPL's :lean states it and oak prove decides it over small domains\n", law.Symbol, modules.DemangleText(law.Function), modules.DemangleText(law.Type), declared)
 		}
 		// Refinement constructions are proof status made explicit
 		// (docs/spec/20-types.md section 12): a guard that stayed is a

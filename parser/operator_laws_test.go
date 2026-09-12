@@ -11,19 +11,22 @@ import (
 // The `laws { ... }` clause on an operator definition (docs/spec/10-syntax.md
 // section 14a) parses after the effect clauses, at most once, and prints back.
 func TestOperatorLawsClause(t *testing.T) {
-	src := "operator(+) add: (a: Vec, b: Vec): Vec effects { } laws { associative, commutative } = a\n"
+	src := "operator(+) add: (a: Vec, b: Vec): Vec effects { } laws { associative, commutative, identity(zero()), idempotent } = a\n"
 	program := parseLaws(t, src)
 	fn, ok := program.Statements[0].(*ast.FunctionStatement)
 	if !ok || fn.Operator != "+" {
 		t.Fatalf("statement = %T %v", program.Statements[0], program.Statements[0])
 	}
-	if len(fn.Laws) != 2 || fn.Laws[0] != "associative" || fn.Laws[1] != "commutative" {
+	if len(fn.Laws) != 4 || fn.Laws[0].Name != "associative" || fn.Laws[1].Name != "commutative" || fn.Laws[2].Name != "identity" || fn.Laws[3].Name != "idempotent" {
 		t.Fatalf("laws = %v", fn.Laws)
+	}
+	if fn.Laws[2].Argument == nil || fn.Laws[2].Argument.String() != "zero()" || fn.Laws[0].Argument != nil {
+		t.Fatalf("identity carries its element and the others none: %v", fn.Laws)
 	}
 	if !fn.EffectsDeclared {
 		t.Fatal("the effects clause before laws must still be recorded")
 	}
-	if printed := fn.String(); !strings.Contains(printed, "laws { associative, commutative }") {
+	if printed := fn.String(); !strings.Contains(printed, "laws { associative, commutative, identity(zero()), idempotent }") {
 		t.Fatalf("laws must print back: %s", printed)
 	}
 	// A plain function accepts the clause syntactically; the checker rejects it.

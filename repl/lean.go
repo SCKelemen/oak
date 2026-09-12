@@ -161,23 +161,60 @@ func writeOperatorLaws(out *strings.Builder, model *compiler.SemanticModel) int 
 		out.WriteString(extracted)
 		out.WriteString("\n")
 	}
+	stated := 0
 	for _, law := range laws {
 		fn := identifierPart(modules.DemangleText(law.Function))
 		typ := identifierPart(modules.DemangleText(law.Type))
 		name := fmt.Sprintf("law_%s_%s", fn, law.Law)
-		fmt.Fprintf(out, "/-- `operator(%s) %s` on `%s` declares `%s`. -/\n", law.Symbol, fn, typ, law.Law)
+		declared := law.Law
+		if law.Argument != nil {
+			declared = fmt.Sprintf("%s(%s)", law.Law, law.Argument.String())
+		}
+		fmt.Fprintf(out, "/-- `operator(%s) %s` on `%s` declares `%s`. -/\n", law.Symbol, fn, typ, declared)
+		// The identity element in Lean: a nullary function `zero()` (or its
+		// bare name) is `Defs.zero fuel`, an Option like every extracted
+		// definition; any other element is stated informally.
+		element, elementOK := "", false
+		if law.Law == "identity" {
+			element, elementOK = leanElement(law.Argument)
+		}
 		switch {
 		case err != nil && law.Law == "associative":
 			fmt.Fprintf(out, "-- theorem %s : ∀ a b c, (a %s b) %s c = a %s (b %s c)\n\n", name, law.Symbol, law.Symbol, law.Symbol, law.Symbol)
-		case err != nil:
+		case err != nil && law.Law == "commutative":
 			fmt.Fprintf(out, "-- theorem %s : ∀ a b, a %s b = b %s a\n\n", name, law.Symbol, law.Symbol)
+		case err != nil && law.Law == "idempotent":
+			fmt.Fprintf(out, "-- theorem %s : ∀ a, a %s a = a\n\n", name, law.Symbol)
+		case err != nil || (law.Law == "identity" && !elementOK):
+			fmt.Fprintf(out, "-- theorem %s_left : ∀ a, %s %s a = a\n-- theorem %s_right : ∀ a, a %s %s = a\n\n", name, declared, law.Symbol, name, law.Symbol, declared)
 		case law.Law == "associative":
 			fmt.Fprintf(out, "theorem %s (a b c : Defs.%s) (fuel : Nat) :\n    (Defs.%s a b fuel >>= fun ab => Defs.%s ab c fuel) = (Defs.%s b c fuel >>= fun bc => Defs.%s a bc fuel) := by\n  sorry\n\n", name, typ, fn, fn, fn, fn)
-		default:
+		case law.Law == "commutative":
 			fmt.Fprintf(out, "theorem %s (a b : Defs.%s) (fuel : Nat) :\n    Defs.%s a b fuel = Defs.%s b a fuel := by\n  sorry\n\n", name, typ, fn, fn)
+		case law.Law == "idempotent":
+			fmt.Fprintf(out, "theorem %s (a : Defs.%s) (fuel : Nat) :\n    Defs.%s a a fuel = some a := by\n  sorry\n\n", name, typ, fn)
+		default: // identity, with an extracted element
+			fmt.Fprintf(out, "theorem %s_left (a : Defs.%s) (fuel : Nat) :\n    (Defs.%s fuel >>= fun e => Defs.%s e a fuel) = some a := by\n  sorry\n\n", name, typ, element, fn)
+			fmt.Fprintf(out, "theorem %s_right (a : Defs.%s) (fuel : Nat) :\n    (Defs.%s fuel >>= fun e => Defs.%s a e fuel) = some a := by\n  sorry\n\n", name, typ, element, fn)
+			stated++
+		}
+		stated++
+	}
+	return stated
+}
+
+// leanElement names the extracted definition an identity element refers
+// to: `zero()` or `zero` is `Defs.zero`. Other expressions are not stated.
+func leanElement(e ast.Expression) (string, bool) {
+	switch n := e.(type) {
+	case *ast.Identifier:
+		return identifierPart(modules.DemangleText(n.Value)), true
+	case *ast.InvocationExpression:
+		if fn, ok := n.Function.(*ast.Identifier); ok && len(n.Arguments) == 0 {
+			return identifierPart(modules.DemangleText(fn.Value)), true
 		}
 	}
-	return len(laws)
+	return "", false
 }
 
 func regionsDisjoint(a, b borrowchecker.RegionFact) bool {
