@@ -304,7 +304,13 @@ func (cg *CodeGenerator) emitLibraryCall(call *ast.InvocationExpression, tc *typ
 			cg.output.WriteString("OAK_UNSUPPORTED_SIMD_OP")
 			return true
 		}
-		cg.output.WriteString(fmt.Sprintf("oak_simd_%s( ", member))
+		helper := "oak_simd_" + member
+		// A load or store the checker proved in range (typechecker/extents.go,
+		// recordVectorAccessProof) takes the helper without the trap check.
+		if op, _, _ := simdOpSplit(member); (op == "load" || op == "store") && tc != nil && tc.IndexProven(call.Token) {
+			helper += "_proven"
+		}
+		cg.output.WriteString(helper + "( ")
 		for i, arg := range call.Arguments {
 			cg.emitExpressionFragment(arg, tc)
 			if i < len(call.Arguments)-1 {

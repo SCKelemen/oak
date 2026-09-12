@@ -495,6 +495,21 @@ func (l *moduleLoader) load(dir string) (*SyntaxTree, bool) {
 // orderAndElaborate orders the loaded graph, elaborates every package in
 // dependency order, and merges the program.
 func (l *moduleLoader) orderAndElaborate(rootPkg *loadedPackage) (*SyntaxTree, bool) {
+	// The builtin is_valid_utf8, and str_from_utf8 through it, lower to the
+	// standard library's vector validator utf8.valid (docs/spec/70-strings.md
+	// section 8; Oak.Utf8Blocks.program_valid is the proof it decides the
+	// same Table 3-7 model): a program that reaches either loads `utf8`
+	// implicitly, so the backend can call it.
+	if l.reachesUtf8Builtin() {
+		if existing, loaded := l.packages["utf8"]; loaded && existing.Dir != "<stdlib>" {
+			l.report(CodeImportUnresolvable, nil, "the import path %q is taken by a module package, but is_valid_utf8 lowers to the standard library's utf8 package", "utf8")
+			return nil, false
+		} else if !loaded {
+			if l.loadStdlibPackage("utf8", stdlib.Packages["utf8"]) == nil || len(l.diagnostics) != 0 {
+				return nil, false
+			}
+		}
+	}
 	// Order the closed graph.
 	nodes := make([]string, 0, len(l.packages))
 	graph := map[string][]string{}
@@ -878,6 +893,22 @@ func (l *moduleLoader) stdlibReplacement(path string) (string, bool) {
 		return "", false
 	}
 	return target, true
+}
+
+// reachesUtf8Builtin reports whether any loaded file names is_valid_utf8 or
+// str_from_utf8, the two spellings that lower to utf8.valid.
+func (l *moduleLoader) reachesUtf8Builtin() bool {
+	found := false
+	for _, pkg := range l.packages {
+		for _, file := range pkg.Files {
+			(&syntaxVisitor{ident: func(id *ast.Identifier, label bool) {
+				if !label && (id.Value == "is_valid_utf8" || id.Value == "str_from_utf8") {
+					found = true
+				}
+			}}).walk(reflect.ValueOf(file.Root), false)
+		}
+	}
+	return found
 }
 
 // aliasStdlibSource rewrites a library file's package clause from its own

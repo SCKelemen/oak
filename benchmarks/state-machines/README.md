@@ -23,7 +23,9 @@ the declaration.
   one shared input file: Go's `unicode/utf8.Valid`, Rust's
   `std::str::from_utf8`, Zig's `std.unicode.utf8ValidateSlice`,
   `simdutf::validate_utf8`, and `simdjson::validate_utf8`, plus Oak's
-  `is_valid_utf8` builtin and the stdlib's SIMD `utf8.valid`. `cross/run.sh` builds and runs everything.
+  stdlib SIMD `utf8.valid` (what the `is_valid_utf8` builtin lowers to) and
+  a scalar Table 3-7 transliteration written in Oak. `cross/run.sh` builds
+  and runs everything.
 
 ```sh
 cc -std=c11 -O2 -o lowerings lowerings.c && ./lowerings
@@ -77,19 +79,27 @@ levels.
 
 | Implementation | ns/byte | GB/s |
 | --- | --- | --- |
-| simdjson `validate_utf8` (SIMD) | 0.08 | 12.9 |
-| simdutf `validate_utf8` (SIMD) | 0.08 | 12.9 |
-| **Oak stdlib `utf8.valid` (SIMD, written in Oak over `simd.U8x16`)** | **0.08** | **12.3** |
-| **Oak protocol `utf8_run` (shift DFA, emitted from the declaration)** | **0.52** | **1.92** |
-| Oak builtin `is_valid_utf8` (scalar, Table 3-7 transliteration) | 2.50 | 0.40 |
-| Zig `std.unicode.utf8ValidateSlice` | 2.73 | 0.37 |
-| Rust `std::str::from_utf8` | 2.66 | 0.38 |
-| Go `unicode/utf8.Valid` | 2.80 | 0.36 |
+| simdutf `validate_utf8` (SIMD) | 0.08 | 13.3 |
+| simdjson `validate_utf8` (SIMD) | 0.08 | 13.3 |
+| **Oak stdlib `utf8.valid` (SIMD, written in Oak over `simd.U8x16`; the `is_valid_utf8` builtin)** | **0.08** | **13.1** |
+| **Oak protocol `utf8_run` (shift DFA, emitted from the declaration)** | **0.52** | **1.94** |
+| Rust `std::str::from_utf8` | 2.55 | 0.39 |
+| Zig `std.unicode.utf8ValidateSlice` | 2.59 | 0.39 |
+| Oak scalar Table 3-7 transliteration (written in Oak) | 2.69 | 0.37 |
+| Go `unicode/utf8.Valid` | 2.73 | 0.37 |
+
+The first `utf8.valid` increment, at a sixteen-byte step with a comparison
+per block for the continuation permission and a bounds check per load,
+measured 9.6 GB/s on the same harness; the sixty-four-byte step, the
+permission read off the high bit of a saturating subtraction, and loads the
+checker proves in range (`50-borrowing.md`, vector access) took it to
+simdutf's speed.
 
 What the comparison says:
 
 - Among scalar validators the declaration-derived machine is five times
-  faster than the three standard libraries and than Oak's own builtin. The
+  faster than the three standard libraries and than a Table 3-7
+  transliteration written in Oak, which runs at Go's speed. The
   standard libraries branch on byte classes; their ASCII fast paths rarely
   fire on this input because multi-byte sequences interleave every few
   bytes. Real text with long ASCII runs would narrow the gap for them.
@@ -100,14 +110,17 @@ What the comparison says:
   scalar lowering reaches it.
 - The consequence for Oak: for byte-driven machines that are validators of
   a fixed format, the peak structure is a SIMD algorithm, not a DFA, and
-  Oak's portable 128-bit vectors express it. `stdlib/utf8.oak` is that algorithm in Oak (four operations were added
-  to the `simd` catalog for it: `subs`, `shr`, `tbl`, `prev`); with
-  simdutf's sixty-four-byte step — four blocks loaded and tested for ASCII
-  together — it runs at 12.3 GB/s, within five percent of simdutf and
-  simdjson on the same run (the sixteen-byte step measured 9.6). Its lookup tables are proved against Table 3-7 pair by pair
-  (`Oak.Utf8Lookup`); the stream is checked differentially against the
-  scalar builtin. General protocol machines keep the DFA lowering; it is
-  the best structure for a machine that is not a fixed format.
+  Oak's portable 128-bit vectors express it. `stdlib/utf8.oak` is that
+  algorithm in Oak (four operations were added to the `simd` catalog for
+  it: `subs`, `shr`, `tbl`, `prev`), and at 13.1 GB/s it runs at simdutf's
+  speed with no bounds check in its loop. Its lookup tables are proved
+  against Table 3-7 pair by pair (`Oak.Utf8Lookup`), and the program as
+  written — blocks shifted against their predecessors, the sixty-four-byte
+  step, both ASCII shortcuts, the zero-padded tail — is proved to accept
+  exactly the valid streams of the Table 3-7 model
+  (`Oak.Utf8Stream`, `Oak.Utf8Blocks.program_valid`); the `is_valid_utf8`
+  builtin lowers to it. General protocol machines keep the DFA lowering; it
+  is the best structure for a machine that is not a fixed format.
 - Hyperscan and Vectorscan are regex engines and are the right comparison
   for the next golden case, multi-pattern byte scanning; neither is
   installed here, and this table does not include them.

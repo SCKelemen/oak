@@ -268,6 +268,18 @@ byte-classification operations (`93-simd.md` §1.2, §1.5, `stdlib/utf8.oak`):
 tables proved against Table 3-7 pair by pair (`Oak.Utf8Lookup`), the stream
 checked differentially against the builtin.
 
+**Third increment (2026-09-12):** the validator at simdutf's speed and
+under proof. A sixty-four-byte step under the wrap-free guard, whose four
+loads the extent facts prove in range and emit without a check
+(`50-borrowing.md`, vector access; `Oak.Extents.vector_under_*`), and the
+continuation permission read off a high bit: 13.1 GB/s against simdutf's
+13.3. The stream argument in Lean: `Oak.Utf8Stream.scan_valid` (the lane
+function composed down the stream decides `Oak.Utf8Validity.Valid`),
+`Oak.Utf8Blocks.program_valid` (the vector program — block shift,
+sixty-four-byte step, ASCII shortcuts, zero-padded tail — accepts exactly
+the valid streams). On that proof `is_valid_utf8` lowers to `utf8.valid`
+in module builds (`70-strings.md` §4).
+
 ## 10. Device custody and concurrency
 
 Transferable custody vs concurrent sharing. Pilot one real CPU → device →

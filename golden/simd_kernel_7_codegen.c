@@ -458,6 +458,15 @@ static inline u8x16 oak_simd_load_u8x16( oak_view_u8 v, u32 off ) {
 #endif
   return r;
 }
+static inline u8x16 oak_simd_load_u8x16_proven( oak_view_u8 v, u32 off ) {
+  u8x16 r;
+#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
+  vst1q_u8(r.lanes, vld1q_u8(v.base + off));
+#else
+  for (int i = 0; i < 16; i++) { r.lanes[i] = v.base[off + (u32)i]; }
+#endif
+  return r;
+}
 
 static inline u8x16 oak_simd_splat_u8x16( u8 x ) {
   u8x16 r;
@@ -491,6 +500,13 @@ static inline oak_span_u8 oak_span_subslice_u8(oak_span_u8 v, u64 start, u64 n) 
 
 static inline void oak_simd_store_u8x16( oak_span_u8 s, u32 off, u8x16 val ) {
   if ((u64)off + 16u > (u64)s.len) { __builtin_trap(); }
+#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
+  vst1q_u8(s.base + off, vld1q_u8(val.lanes));
+#else
+  for (int i = 0; i < 16; i++) { s.base[off + (u32)i] = val.lanes[i]; }
+#endif
+}
+static inline void oak_simd_store_u8x16_proven( oak_span_u8 s, u32 off, u8x16 val ) {
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
   vst1q_u8(s.base + off, vld1q_u8(val.lanes));
 #else

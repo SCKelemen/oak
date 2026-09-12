@@ -1025,6 +1025,17 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   path dies when the path itself or any prefix of it (the record) is
   assigned; an element write into a field never changes an owned array's
   length and kills nothing (`kill_is_conservative` applied per path).
+- **Vector access**: `simd.load_E(v, i)` and `simd.store_E(s, i, x)` read
+  or write `L` lanes, `v[i] .. v[i + L - 1]`, and are proven under the same
+  facts widened by the lane count: a constant `c` needs a min-length of
+  `c + L` (`vector_under_min_length`); `i + j` under an offset bound
+  `i + K < len(v)` needs `j + L - 1 <= K` (`vector_under_offset_bound`);
+  `i + j` under a literal bound `i < U` needs a length of at least
+  `U - 1 + j + L` (`vector_under_literal_bound`). The stream idiom is the
+  wrap-free guard `while len(v) >= u32(64) && off <= len(v) - u32(64)`
+  with loads at `off`, `off + u32(16)`, `off + u32(32)`, `off + u32(48)`
+  (`stdlib/utf8.oak`); a proven access is emitted as the `_proven` twin of
+  the load or store helper, which carries no trap check.
 - Conjunctions (`&&`) contribute every fact of both sides.
 
 Facts are refused, not weakened, whenever soundness would need dataflow

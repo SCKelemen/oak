@@ -17,8 +17,13 @@ package utf8
 // sequence is carried as `incomplete` into the next block.
 //
 // The classification tables are proved to agree with the standard's
-// Table 3-7 pair by pair in `Oak.Utf8Lookup`; the stream composition is
-// checked against the scalar validator by differential tests.
+// Table 3-7 pair by pair in `Oak.Utf8Lookup`; `Oak.Utf8Stream` proves the
+// lane function, composed down the stream, is zero everywhere exactly on
+// the valid streams of `Oak.Utf8Validity`; `Oak.Utf8Blocks` proves this
+// program — blocks shifted against their predecessors, the sixty-four-byte
+// step, both ASCII shortcuts, the zero-padded tail — computes that lane
+// function and so accepts exactly the valid streams (`program_valid`). The
+// builtin `is_valid_utf8` lowers to `valid` in a module build.
 
 // Error classes, one bit each (TOO_LARGE_1000 and OVERLONG_4 share a bit:
 // they are distinguished by the lead nibble, never both possible).
@@ -73,18 +78,41 @@ check_block: (high1: simd.U8x16, low1: simd.U8x16, high2: simd.U8x16, prev_input
   prev2: simd.U8x16 = simd.prev_u8x16(prev_input, input, u32(2))
   prev3: simd.U8x16 = simd.prev_u8x16(prev_input, input, u32(3))
   sc: simd.U8x16 = special_cases(high1, low1, high2, input, prev1)
-  third: simd.U8x16 = simd.subs_u8x16(prev2, simd.splat_u8x16(u8(223)))
-  fourth: simd.U8x16 = simd.subs_u8x16(prev3, simd.splat_u8x16(u8(239)))
-  // Where either is nonzero the lane permits a continuation: an all-ones
-  // mask there, then its TWO_CONTS bit.
-  permitted: simd.U8x16 = simd.xor_u8x16(
-    simd.eq_u8x16(simd.or_u8x16(third, fourth), simd.splat_u8x16(u8(0))),
-    simd.splat_u8x16(u8(255)))
-  must23: simd.U8x16 = simd.and_u8x16(permitted, simd.splat_u8x16(u8(128)))
+  // Subtracting 0x60 leaves the high bit set exactly for bytes at or above
+  // 0xE0, and 0x70 exactly for bytes at or above 0xF0
+  // (Oak.Utf8Lookup.permission): the TWO_CONTS bit of the lanes a third or
+  // fourth continuation is permitted in, with no comparison.
+  third: simd.U8x16 = simd.subs_u8x16(prev2, simd.splat_u8x16(u8(96)))
+  fourth: simd.U8x16 = simd.subs_u8x16(prev3, simd.splat_u8x16(u8(112)))
+  must23: simd.U8x16 = simd.and_u8x16(simd.or_u8x16(third, fourth), simd.splat_u8x16(u8(128)))
   simd.xor_u8x16(must23, sc)
 }
 
+// The error lanes of four consecutive blocks, each checked against the
+// block before it; the first against the block that ended the previous
+// step. Chaining the blocks this way is the composition proved in
+// Oak.Utf8Stream: the lane function sees the same four-byte window
+// whether the stream is cut every sixteen or every sixty-four bytes.
+check_blocks: (high1: simd.U8x16, low1: simd.U8x16, high2: simd.U8x16, prev_input: simd.U8x16, a: simd.U8x16, b: simd.U8x16, c: simd.U8x16, d: simd.U8x16): simd.U8x16 {
+  ea: simd.U8x16 = check_block(high1, low1, high2, prev_input, a)
+  eb: simd.U8x16 = check_block(high1, low1, high2, a, b)
+  ec: simd.U8x16 = check_block(high1, low1, high2, b, c)
+  ed: simd.U8x16 = check_block(high1, low1, high2, c, d)
+  simd.or_u8x16(simd.or_u8x16(ea, eb), simd.or_u8x16(ec, ed))
+}
+
 // valid reports whether bytes is well-formed UTF-8 (Unicode Table 3-7).
+//
+// The stream is consumed sixty-four bytes at a step: one reduction decides
+// whether the step is pure ASCII, and only a step with a high bit set pays
+// for the classification. An ASCII step completes nothing, so a sequence
+// left open by the step before it is an error and the step leaves none
+// open (Oak.Utf8Stream.ascii_step). The remainder is consumed sixteen
+// bytes at a time, then a zero-padded final block: zero bytes are ASCII,
+// so a sequence cut short by the end of the input is caught as a lead byte
+// without its continuation. Every load sits under the guard that proves it
+// in range (the wrap-free spelling of docs/spec/50-borrowing.md), so the
+// emitted code carries no bounds check.
 pub valid: (bytes: []u8): Bool {
   high1: simd.U8x16 = simd.load_u8x16(view(&table_high1), u32(0))
   low1: simd.U8x16 = simd.load_u8x16(view(&table_low1), u32(0))
@@ -97,45 +125,34 @@ pub valid: (bytes: []u8): Bool {
   prev_incomplete: simd.U8x16 = zero
   n: u32 = len(bytes)
   off: u32 = u32(0)
-  // Sixty-four bytes per step while they last (simdutf's step): four
-  // blocks loaded and tested for ASCII together. A non-ASCII step checks
-  // each block against the one before it; an all-ASCII step, like an
-  // ASCII block below, only closes a sequence the step before left open.
-  while off + u32(64) <= n {
-    b0: simd.U8x16 = simd.load_u8x16(bytes, off)
-    b1: simd.U8x16 = simd.load_u8x16(bytes, off + u32(16))
-    b2: simd.U8x16 = simd.load_u8x16(bytes, off + u32(32))
-    b3: simd.U8x16 = simd.load_u8x16(bytes, off + u32(48))
-    joined: simd.U8x16 = simd.or_u8x16(simd.or_u8x16(b0, b1), simd.or_u8x16(b2, b3))
-    simd.any_u8x16(simd.and_u8x16(joined, high_bit)) ? {
-      error = simd.or_u8x16(error, check_block(high1, low1, high2, prev_input, b0))
-      error = simd.or_u8x16(error, check_block(high1, low1, high2, b0, b1))
-      error = simd.or_u8x16(error, check_block(high1, low1, high2, b1, b2))
-      error = simd.or_u8x16(error, check_block(high1, low1, high2, b2, b3))
-      prev_incomplete = simd.subs_u8x16(b3, maxima)
+  while len(bytes) >= u32(64) && off <= len(bytes) - u32(64) {
+    a: simd.U8x16 = simd.load_u8x16(bytes, off)
+    b: simd.U8x16 = simd.load_u8x16(bytes, off + u32(16))
+    c: simd.U8x16 = simd.load_u8x16(bytes, off + u32(32))
+    d: simd.U8x16 = simd.load_u8x16(bytes, off + u32(48))
+    step_bits: simd.U8x16 = simd.or_u8x16(simd.or_u8x16(a, b), simd.or_u8x16(c, d))
+    simd.any_u8x16(simd.and_u8x16(step_bits, high_bit)) ? {
+      error = simd.or_u8x16(error, check_blocks(high1, low1, high2, prev_input, a, b, c, d))
+      prev_incomplete = simd.subs_u8x16(d, maxima)
     } | {
       error = simd.or_u8x16(error, prev_incomplete)
       prev_incomplete = zero
     }
-    prev_input = b3
+    prev_input = d
     off = off + u32(64)
   }
-  while off + u32(16) <= n {
+  while len(bytes) >= u32(16) && off <= len(bytes) - u32(16) {
     input: simd.U8x16 = simd.load_u8x16(bytes, off)
     simd.any_u8x16(simd.and_u8x16(input, high_bit)) ? {
       error = simd.or_u8x16(error, check_block(high1, low1, high2, prev_input, input))
       prev_incomplete = simd.subs_u8x16(input, maxima)
     } | {
-      // An ASCII block completes nothing: a sequence left open by the
-      // block before it is an error, and this block leaves none open.
       error = simd.or_u8x16(error, prev_incomplete)
       prev_incomplete = zero
     }
     prev_input = input
     off = off + u32(16)
   }
-  // The tail, zero-padded: zero bytes are ASCII, so a sequence cut short
-  // by the end of the input is caught as a lead byte without continuation.
   tail: [16]u8 = [
     u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0),
     u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0)]
