@@ -88,6 +88,7 @@ const (
 	UNSAFE
 	FN
 	PUB
+	TRY
 	_keywords_end
 )
 
@@ -158,6 +159,7 @@ var tokens = [...]string{
 	UNSAFE:    "unsafe",
 	FN:        "fn",
 	PUB:       "pub",
+	TRY:       "try",
 }
 
 func (token TokenKind) String() string {

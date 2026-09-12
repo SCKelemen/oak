@@ -2,6 +2,7 @@ package asm
 
 import (
 	"fmt"
+	"math"
 	"sort"
 
 	"github.com/SCKelemen/oak/ast"
@@ -55,13 +56,42 @@ const (
 	synRecordLit   = 16 // a = type, b = list start, c = field count (declaration order)
 	synArrayLit    = 17 // a = type, b = list start, c = element count
 	synAssignPlace = 18 // a = place (a field/index chain on a symbol), b = value
+	synFloatLit    = 19 // a = the f32 bits, vlo/vhi = the f64 bits (the context's width picks)
+	synFloatCall   = 20 // a = intrinsic code, b = list start, c = argument count
+	synVariantLit  = 21 // a = type, b = variant index, c = payload node (NONE for none)
+	synMatch       = 22 // a = scrutinee, b = arms list start, c = arm count (value position)
+	synMatchStmt   = 23 // a = scrutinee, b = arms list start, c = arm count (arms are blocks)
+
+	// An arm in the lists: pattern kind, variant index or literal node,
+	// binding symbol (NONE for none), body node.
+	synArmWords   = 4
+	synPatVariant = 0
+	synPatLiteral = 1
+	synPatWild    = 2
+	synPatBinding = 3
 )
+
+// The float intrinsics the lowering knows as bit operations
+// (asm/floats_lowering.go).
+var synFloatIntrinsics = map[string]uint32{
+	"abs": 0, "copysign": 1, "is_nan": 2, "is_finite": 3, "is_infinite": 4, "is_normal": 5, "total_order": 6, "min": 7, "max": 8,
+}
 
 const (
 	synKindScalar = 0
 	synKindRecord = 1
 	synKindArray  = 2
+	synKindSum    = 3
 )
+
+// synVariantRef is a sum type's variant: its tag value, payload type (-1
+// for none), and the payload's leaf offset in the value.
+type synVariantRef struct {
+	name   string
+	tag    int
+	typ    int
+	offset int
+}
 
 var synInfixOps = map[string]uint32{
 	"+": 0, "-": 1, "*": 2, "&": 3, "|": 4, "^": 5, "<<": 6, ">>": 7, "/": 8, "%": 9,
@@ -83,14 +113,16 @@ type synFieldRef struct {
 }
 
 type synType struct {
-	kind   int
-	width  int
-	signed bool
-	leaves []synLeaf
-	fields []synFieldRef
-	elem   int
-	length int
-	key    string
+	kind     int
+	width    int
+	signed   bool
+	float    bool
+	leaves   []synLeaf
+	fields   []synFieldRef
+	variants []synVariantRef
+	elem     int
+	length   int
+	key      string
 }
 
 type synFunction struct {
@@ -133,7 +165,7 @@ func ExportSyntax(sig *ast.FunctionStatement, functions map[string]*ast.Function
 	if !ok {
 		return nil, nil, reason, false
 	}
-	var funcs, params, types, typeLeaves, fields []uint32
+	var funcs, params, types, typeLeaves, fields, variants []uint32
 	for _, f := range w.order {
 		funcs = append(funcs, uint32(len(params)/4), uint32(len(f.params)), uint32(f.ret), f.body, uint32(len(f.symbols)), 0, 0, 0)
 		for i, t := range f.params {
@@ -145,11 +177,16 @@ func ExportSyntax(sig *ast.FunctionStatement, functions map[string]*ast.Function
 		}
 	}
 	for _, t := range w.types {
-		signed := uint32(0)
-		if t.signed {
-			signed = 1
+		isFloat := uint32(0)
+		if t.float {
+			isFloat = 1
 		}
-		types = append(types, uint32(t.kind), uint32(len(t.leaves)), uint32(len(typeLeaves)/2), uint32(len(fields)/2), uint32(len(t.fields)), uint32(t.elem), uint32(t.length), signed)
+		fieldStart, fieldCount := uint32(len(fields)/2), uint32(len(t.fields))
+		if t.kind == synKindSum {
+			// A sum type's field words index the variants table instead.
+			fieldStart, fieldCount = uint32(len(variants)/3), uint32(len(t.variants))
+		}
+		types = append(types, uint32(t.kind), uint32(len(t.leaves)), uint32(len(typeLeaves)/2), fieldStart, fieldCount, uint32(t.elem), uint32(t.length), isFloat)
 		for _, leaf := range t.leaves {
 			s := uint32(0)
 			if leaf.signed {
@@ -160,15 +197,23 @@ func ExportSyntax(sig *ast.FunctionStatement, functions map[string]*ast.Function
 		for _, field := range t.fields {
 			fields = append(fields, uint32(field.typ), uint32(field.offset))
 		}
+		for _, v := range t.variants {
+			payload := problemNone
+			if v.typ >= 0 {
+				payload = uint32(v.typ)
+			}
+			variants = append(variants, uint32(v.tag), payload, uint32(v.offset))
+		}
 	}
-	header := []uint32{uint32(len(w.order)), uint32(len(w.nodes) / 8), uint32(len(w.lists)), uint32(w.maxSyms), uint32(theorem.index), uint32(w.leaves), uint32(len(w.types)), uint32(len(typeLeaves) / 2), uint32(len(fields) / 2), uint32(len(w.leafIdx)), 0, 0, 0, 0, 0, 0}
-	words := make([]uint32, 0, len(header)+len(funcs)+len(params)+len(types)+len(typeLeaves)+len(fields)+len(w.leafIdx)+len(w.nodes)+len(w.lists))
+	header := []uint32{uint32(len(w.order)), uint32(len(w.nodes) / 8), uint32(len(w.lists)), uint32(w.maxSyms), uint32(theorem.index), uint32(w.leaves), uint32(len(w.types)), uint32(len(typeLeaves) / 2), uint32(len(fields) / 2), uint32(len(w.leafIdx)), uint32(len(variants) / 3), 0, 0, 0, 0, 0}
+	words := make([]uint32, 0, len(header)+len(funcs)+len(params)+len(types)+len(typeLeaves)+len(fields)+len(variants)+len(w.leafIdx)+len(w.nodes)+len(w.lists))
 	words = append(words, header...)
 	words = append(words, funcs...)
 	words = append(words, params...)
 	words = append(words, types...)
 	words = append(words, typeLeaves...)
 	words = append(words, fields...)
+	words = append(words, variants...)
 	words = append(words, w.leafIdx...)
 	words = append(words, w.nodes...)
 	words = append(words, w.lists...)
@@ -182,7 +227,7 @@ func (w *syntaxWriter) typeID(typ *oakType) (int, string, bool) {
 	var key string
 	switch typ.kind {
 	case oakScalar:
-		key = fmt.Sprintf("s%d:%v", typ.width, typ.signed)
+		key = fmt.Sprintf("s%d:%v:%v", typ.width, typ.signed, typ.float)
 	case oakArray:
 		elem, reason, ok := w.typeID(typ.elem)
 		if !ok {
@@ -191,8 +236,10 @@ func (w *syntaxWriter) typeID(typ *oakType) (int, string, bool) {
 		key = fmt.Sprintf("a%d:%d", elem, typ.length)
 	case oakRecord:
 		key = "r:" + typ.name
+	case oakADT:
+		key = "u:" + typ.name
 	default:
-		return 0, fmt.Sprintf("the sum type %s", typ.name), false
+		return 0, fmt.Sprintf("the type %s", typ.name), false
 	}
 	if id, seen := w.typeIndex[key]; seen {
 		return id, "", true
@@ -203,7 +250,7 @@ func (w *syntaxWriter) typeID(typ *oakType) (int, string, bool) {
 	w.typeIndex[key] = id
 	switch typ.kind {
 	case oakScalar:
-		t.kind, t.width, t.signed = synKindScalar, typ.width, typ.signed
+		t.kind, t.width, t.signed, t.float = synKindScalar, typ.width, typ.signed, typ.float
 		t.leaves = []synLeaf{{width: typ.width, signed: typ.signed}}
 	case oakArray:
 		elem, _, _ := w.typeID(typ.elem)
@@ -225,8 +272,37 @@ func (w *syntaxWriter) typeID(typ *oakType) (int, string, bool) {
 				t.leaves = append(t.leaves, synLeaf{width: leaf.width, signed: leaf.signed, name: "." + f.name + leaf.name})
 			}
 		}
+	case oakADT:
+		// The tag (32 bits, as the decider carries it) then every
+		// variant's payload, in variant order.
+		t.kind = synKindSum
+		t.leaves = append(t.leaves, synLeaf{width: 32, name: ".tag"})
+		for _, v := range typ.variants {
+			ref := synVariantRef{name: v.name, tag: int(v.tag), typ: -1, offset: len(t.leaves)}
+			if v.payload != nil {
+				pt, reason, ok := w.typeID(v.payload)
+				if !ok {
+					return 0, reason, false
+				}
+				ref.typ = pt
+				for _, leaf := range w.types[pt].leaves {
+					t.leaves = append(t.leaves, synLeaf{width: leaf.width, signed: leaf.signed, name: "." + v.name + leaf.name})
+				}
+			}
+			t.variants = append(t.variants, ref)
+		}
 	}
 	return id, "", true
+}
+
+// variantIndex finds a variant of a sum type by name.
+func (w *syntaxWriter) variantIndex(typ int, name string) (int, bool) {
+	for i, v := range w.types[typ].variants {
+		if v.name == name {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // typeOfExpr resolves a type expression of the subset.
@@ -236,8 +312,11 @@ func (w *syntaxWriter) typeOfExpr(expr ast.Expression) (int, string, bool) {
 		return 0, fmt.Sprintf("the type %s", typeText(expr)), false
 	}
 	switch typeText(expr) {
-	case "f32", "f64", "f16", "bf16":
-		return 0, "a float type", false
+	case "f32", "f64":
+		// A float is its IEEE bit pattern: a scalar with the float flag.
+		typ = &oakType{kind: oakScalar, width: typ.width, float: true}
+	case "f16", "bf16", "f8":
+		return 0, "a narrow float type", false
 	}
 	return w.typeID(typ)
 }
@@ -245,6 +324,16 @@ func (w *syntaxWriter) typeOfExpr(expr ast.Expression) (int, string, bool) {
 func (w *syntaxWriter) scalarType(width int, signed bool) int {
 	id, _, _ := w.typeID(&oakType{kind: oakScalar, width: width, signed: signed})
 	return id
+}
+
+// isFloatNode reports a node of a float type (a float literal has none of
+// its own but is a float).
+func (w *syntaxWriter) isFloatNode(id uint32) bool {
+	if w.nodes[id*8] == synFloatLit {
+		return true
+	}
+	t := w.nodeType(id)
+	return t >= 0 && w.types[t].float
 }
 
 func (w *syntaxWriter) function(sig *ast.FunctionStatement, theorem bool) (*synFunction, string, bool) {
@@ -363,6 +452,9 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 			bit = 1
 		}
 		return w.node(synBoolLit, bit, 0, 0, 0, 0, 0, w.scalarType(1, false)), "", true
+	case *ast.FloatLiteral:
+		f64 := math.Float64bits(e.Value)
+		return w.node(synFloatLit, uint32(math.Float32bits(float32(e.Value))), 0, 0, 0, uint32(f64), uint32(f64>>32), -1), "", true
 	case *ast.Identifier:
 		sym, known := f.symbols[e.Value]
 		if !known {
@@ -401,16 +493,47 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 		if typ < 0 {
 			typ = w.nodeType(right)
 		}
+		if (w.isFloatNode(left) || w.isFloatNode(right)) && code < 10 {
+			return 0, fmt.Sprintf("floating-point %s (not a bit operation)", e.Operator), false
+		}
 		if code >= 10 {
 			typ = w.scalarType(1, false)
 		}
 		return w.node(synInfix, code, left, right, 0, 0, 0, typ), "", true
 	case *ast.BlockExpression:
 		return w.block(f, e.Block, true)
+	case *ast.VariantExpression:
+		if e.TypeName == nil {
+			return 0, "a variant without its type name", false
+		}
+		t, reason, ok := w.typeOfExpr(e.TypeName)
+		if !ok {
+			return 0, reason, false
+		}
+		if w.types[t].kind != synKindSum {
+			return 0, fmt.Sprintf("a variant of %s (not a sum type)", e.TypeName.Value), false
+		}
+		vi, known := w.variantIndex(t, e.Variant.Value)
+		if !known {
+			return 0, fmt.Sprintf("the variant %s of %s", e.Variant.Value, e.TypeName.Value), false
+		}
+		v := w.types[t].variants[vi]
+		if (e.Payload == nil) != (v.typ < 0) {
+			return 0, fmt.Sprintf("the variant %s.%s with the wrong payload shape", e.TypeName.Value, e.Variant.Value), false
+		}
+		payload := problemNone
+		if e.Payload != nil {
+			id, reason, ok := w.expr(f, e.Payload)
+			if !ok {
+				return 0, reason, false
+			}
+			payload = id
+		}
+		return w.node(synVariantLit, uint32(t), uint32(vi), payload, 0, 0, 0, t), "", true
 	case *ast.MatchExpression:
 		whenTrue, whenFalse, isBool := boolConditional(e)
 		if !isBool {
-			return 0, "a match that is not a Bool conditional", false
+			return w.match(f, e, true)
 		}
 		cond, reason, ok := w.expr(f, e.Scrutinee)
 		if !ok {
@@ -533,6 +656,34 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 			}
 			return w.node(synCall, uint32(cf.index), w.list(args), uint32(len(args)), 0, 0, 0, cf.ret), "", true
 		}
+		if code, isFloatIntrinsic := synFloatIntrinsics[ident.Value]; isFloatIntrinsic && typechecker.FloatIntrinsicName(ident.Value) {
+			var args []uint32
+			floatType := -1
+			for _, arg := range e.Arguments {
+				id, reason, ok := w.expr(f, arg)
+				if !ok {
+					return 0, reason, false
+				}
+				args = append(args, id)
+				if t := w.nodeType(id); floatType < 0 && t >= 0 && w.types[t].float {
+					floatType = t
+				}
+			}
+			if (code <= 1 || code >= 7) && len(args) != map[uint32]int{0: 1, 1: 2, 7: 2, 8: 2}[code] {
+				return 0, fmt.Sprintf("the float intrinsic %s with %d arguments", ident.Value, len(args)), false
+			}
+			if code >= 2 && code <= 5 && len(args) != 1 || code == 6 && len(args) != 2 {
+				return 0, fmt.Sprintf("the float intrinsic %s with %d arguments", ident.Value, len(args)), false
+			}
+			typ := floatType
+			if code >= 2 && code <= 6 {
+				typ = w.scalarType(1, false)
+			}
+			return w.node(synFloatCall, code, w.list(args), uint32(len(args)), 0, 0, 0, typ), "", true
+		}
+		if typechecker.FloatIntrinsicName(ident.Value) {
+			return 0, fmt.Sprintf("the float intrinsic %s (not a bit operation)", ident.Value), false
+		}
 		if len(e.Arguments) != 1 {
 			return 0, fmt.Sprintf("call to %s", ident.Value), false
 		}
@@ -557,7 +708,12 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 		if signed {
 			signedWord = 1
 		}
-		return w.node(synConv, uint32(width), signedWord, operand, 0, 0, 0, w.scalarType(width, signed)), "", true
+		resultType := w.scalarType(width, signed)
+		if target == "f32" || target == "f64" {
+			// A bits row into a float: the pattern, typed float.
+			resultType, _, _ = w.typeID(&oakType{kind: oakScalar, width: width, float: true})
+		}
+		return w.node(synConv, uint32(width), signedWord, operand, 0, 0, 0, resultType), "", true
 	}
 	return 0, fmt.Sprintf("%T", e), false
 }
@@ -577,7 +733,14 @@ func (w *syntaxWriter) block(f *synFunction, block *ast.BlockStatement, value bo
 		switch s := stmt.(type) {
 		case *ast.ExpressionStatement:
 			if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch && (!last || !value) {
-				id, reason, ok := w.condStmt(f, match)
+				var id uint32
+				var reason string
+				var ok bool
+				if _, _, isBool := boolConditional(match); isBool {
+					id, reason, ok = w.condStmt(f, match)
+				} else {
+					id, reason, ok = w.match(f, match, false)
+				}
 				if !ok {
 					return 0, reason, false
 				}
@@ -656,6 +819,111 @@ func (w *syntaxWriter) block(f *synFunction, block *ast.BlockStatement, value bo
 		}
 	}
 	return w.node(synBlock, w.list(ids), uint32(len(ids)), 0, 0, 0, 0, resultType), "", true
+}
+
+// match serializes a match over a sum type or a scalar: the arms with
+// their patterns (a variant with an optional payload binding or wildcard,
+// a literal, a wildcard, a binding of the whole value) and bodies, in
+// value position expressions, in statement position blocks.
+func (w *syntaxWriter) match(f *synFunction, e *ast.MatchExpression, value bool) (uint32, string, bool) {
+	scrutinee, reason, ok := w.expr(f, e.Scrutinee)
+	if !ok {
+		return 0, reason, false
+	}
+	st := w.nodeType(scrutinee)
+	if st < 0 {
+		return 0, "a match scrutinee whose type is not known", false
+	}
+	isSum := w.types[st].kind == synKindSum
+	var arms []uint32
+	resultType := -1
+	bind := func(name *ast.Identifier, typ int) uint32 {
+		if name == nil || name.Value == "_" {
+			return problemNone
+		}
+		sym, seen := f.symbols[name.Value]
+		if !seen {
+			sym = len(f.symbols)
+			f.symbols[name.Value] = sym
+			f.symTypes = append(f.symTypes, typ)
+		} else {
+			f.symTypes[sym] = typ
+		}
+		return uint32(sym)
+	}
+	for _, arm := range e.Arms {
+		kind, operand, binding := uint32(synPatWild), problemNone, problemNone
+		switch pattern := arm.Pattern.(type) {
+		case *ast.VariantPattern:
+			if !isSum {
+				return 0, "a variant pattern over a scalar", false
+			}
+			vi, known := w.variantIndex(st, pattern.Variant.Value)
+			if !known {
+				return 0, fmt.Sprintf("the variant %s in a pattern", pattern.Variant.Value), false
+			}
+			kind, operand = synPatVariant, uint32(vi)
+			v := w.types[st].variants[vi]
+			switch payload := pattern.Payload.(type) {
+			case nil:
+			case *ast.WildcardPattern:
+			case *ast.BindingPattern:
+				if payload.Name != nil && payload.Name.Value != "_" {
+					if v.typ < 0 {
+						return 0, "a binding on a bare variant", false
+					}
+					binding = bind(payload.Name, v.typ)
+				}
+			default:
+				return 0, fmt.Sprintf("the payload pattern %s", pattern.Payload.String()), false
+			}
+		case *ast.LiteralPattern:
+			if isSum {
+				return 0, "a literal pattern over a sum type", false
+			}
+			id, reason, ok := w.expr(f, pattern.Value)
+			if !ok {
+				return 0, reason, false
+			}
+			kind, operand = synPatLiteral, id
+		case *ast.WildcardPattern:
+		case *ast.BindingPattern:
+			if pattern.Name != nil && pattern.Name.Value != "_" {
+				if !isSum {
+					return 0, "a binding pattern over a scalar", false
+				}
+				kind, binding = synPatBinding, bind(pattern.Name, st)
+			}
+		default:
+			return 0, fmt.Sprintf("the pattern %s", arm.Pattern.String()), false
+		}
+		var body uint32
+		if value {
+			body, reason, ok = w.expr(f, arm.Body)
+		} else {
+			block, isBlock := arm.Body.(*ast.BlockExpression)
+			if !isBlock {
+				return 0, "a match arm in statement position that is not a block", false
+			}
+			body, reason, ok = w.block(f, block.Block, false)
+		}
+		if !ok {
+			return 0, reason, false
+		}
+		if value && resultType < 0 {
+			resultType = w.nodeType(body)
+		}
+		arms = append(arms, kind, operand, binding, body)
+	}
+	if len(arms) == 0 {
+		return 0, "a match without arms", false
+	}
+	kind := uint32(synMatch)
+	if !value {
+		kind = synMatchStmt
+		resultType = -1
+	}
+	return w.node(kind, scrutinee, w.list(arms), uint32(len(arms)/synArmWords), 0, 0, 0, resultType), "", true
 }
 
 // condStmt serializes `c ? { ... } | { ... }` in statement position: the

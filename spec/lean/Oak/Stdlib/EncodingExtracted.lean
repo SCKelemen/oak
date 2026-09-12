@@ -85,10 +85,9 @@ def hex_encode.loop1 (dst : Array UInt8) (src : Array UInt8) (symbols : Array UI
 
 def hex_encode (dst : Array UInt8) (src : Array UInt8) (upper : Bool) (fuel : Nat) : Option (Result_u32_EncodingError × Array UInt8) := do
   let r1 ← hex_encoded_size (src.size.toUInt32) fuel
-  let size : Result_u32_EncodingError := r1
-  let (r2, dst) ← (match size with
-    | (.Err reason) => (do
-      pure ((Result_u32_EncodingError.Err reason), dst))
+  let (r2, dst) ← (match r1 with
+    | (.Err _try_err_1) => (do
+      pure ((Result_u32_EncodingError.Err _try_err_1), dst))
     | (.Ok needed) => (do
       let (r3, dst) ← (
         if (decide (needed > (dst.size.toUInt32))) then (do
@@ -149,10 +148,9 @@ def hex_decode.loop1 (dst : Array UInt8) (src : Array UInt8) (needed : UInt32) (
 
 def hex_decode (dst : Array UInt8) (src : Array UInt8) (fuel : Nat) : Option (Result_u32_EncodingError × Array UInt8) := do
   let r1 ← hex_decoded_size src fuel
-  let size : Result_u32_EncodingError := r1
-  let (r2, dst) ← (match size with
-    | (.Err reason) => (do
-      pure ((Result_u32_EncodingError.Err reason), dst))
+  let (r2, dst) ← (match r1 with
+    | (.Err _try_err_1) => (do
+      pure ((Result_u32_EncodingError.Err _try_err_1), dst))
     | (.Ok needed) => (do
       let (r3, dst) ← (
         if (decide (needed > (dst.size.toUInt32))) then (do
@@ -199,10 +197,9 @@ def base64_encode.loop1 (dst : Array UInt8) (src : Array UInt8) (symbols : Array
 
 def base64_encode (dst : Array UInt8) (src : Array UInt8) (url : Bool) (pad : Bool) (fuel : Nat) : Option (Result_u32_EncodingError × Array UInt8) := do
   let r1 ← base64_encoded_size (src.size.toUInt32) pad fuel
-  let size : Result_u32_EncodingError := r1
-  let (r2, dst) ← (match size with
-    | (.Err reason) => (do
-      pure ((Result_u32_EncodingError.Err reason), dst))
+  let (r2, dst) ← (match r1 with
+    | (.Err _try_err_1) => (do
+      pure ((Result_u32_EncodingError.Err _try_err_1), dst))
     | (.Ok needed) => (do
       let (r3, dst) ← (
         if (decide (needed > (dst.size.toUInt32))) then (do
@@ -302,10 +299,9 @@ def base64_classify (src : Array UInt8) (body : UInt32) (fuel : Nat) : Option (E
 
 def base64_decoded_size (src : Array UInt8) (url : Bool) (fuel : Nat) : Option (Result_u32_EncodingError) := do
   let r1 ← base64_unpadded_length src fuel
-  let stripped : Result_u32_EncodingError := r1
-  let r2 ← (match stripped with
-    | (.Err reason) => (do
-      pure (Result_u32_EncodingError.Err reason))
+  let r2 ← (match r1 with
+    | (.Err _try_err_1) => (do
+      pure (Result_u32_EncodingError.Err _try_err_1))
     | (.Ok body) => (do
       let r3 ← base64_scan src body url fuel
       let r4 ← (
@@ -346,10 +342,9 @@ def base64_decode.loop1 (dst : Array UInt8) (src : Array UInt8) (values : Array 
 
 def base64_decode (dst : Array UInt8) (src : Array UInt8) (url : Bool) (fuel : Nat) : Option (Result_u32_EncodingError × Array UInt8) := do
   let r1 ← base64_decoded_size src url fuel
-  let size : Result_u32_EncodingError := r1
-  let (r2, dst) ← (match size with
-    | (.Err reason) => (do
-      pure ((Result_u32_EncodingError.Err reason), dst))
+  let (r2, dst) ← (match r1 with
+    | (.Err _try_err_1) => (do
+      pure ((Result_u32_EncodingError.Err _try_err_1), dst))
     | (.Ok needed) => (do
       let (r3, dst) ← (
         if (decide (needed > (dst.size.toUInt32))) then (do
@@ -464,10 +459,9 @@ def base32_encode.loop1 (dst : Array UInt8) (src : Array UInt8) (hex : Bool) (pa
 
 def base32_encode (dst : Array UInt8) (src : Array UInt8) (hex : Bool) (pad : Bool) (fuel : Nat) : Option (Result_u32_EncodingError × Array UInt8) := do
   let r1 ← base32_encoded_size (src.size.toUInt32) pad fuel
-  let size : Result_u32_EncodingError := r1
-  let (r2, dst) ← (match size with
-    | (.Err reason) => (do
-      pure ((Result_u32_EncodingError.Err reason), dst))
+  let (r2, dst) ← (match r1 with
+    | (.Err _try_err_1) => (do
+      pure ((Result_u32_EncodingError.Err _try_err_1), dst))
     | (.Ok needed) => (do
       let (r3, dst) ← (
         if (decide (needed > (dst.size.toUInt32))) then (do
@@ -521,10 +515,9 @@ def base32_decoded_size.loop1 (src : Array UInt8) (hex : Bool) (body : UInt32) (
 
 def base32_decoded_size (src : Array UInt8) (hex : Bool) (fuel : Nat) : Option (Result_u32_EncodingError) := do
   let r1 ← base32_unpadded_length src fuel
-  let stripped : Result_u32_EncodingError := r1
-  let r2 ← (match stripped with
-    | (.Err reason) => (do
-      pure (Result_u32_EncodingError.Err reason))
+  let r2 ← (match r1 with
+    | (.Err _try_err_1) => (do
+      pure (Result_u32_EncodingError.Err _try_err_1))
     | (.Ok body) => (do
       let rest : UInt32 := (body % (8 : UInt32))
       let r3 ← (
@@ -605,10 +598,9 @@ def base32_decode.loop1 (dst : Array UInt8) (src : Array UInt8) (hex : Bool) (bo
 
 def base32_decode (dst : Array UInt8) (src : Array UInt8) (hex : Bool) (fuel : Nat) : Option (Result_u32_EncodingError × Array UInt8) := do
   let r1 ← base32_decoded_size src hex fuel
-  let size : Result_u32_EncodingError := r1
-  let (r2, dst) ← (match size with
-    | (.Err reason) => (do
-      pure ((Result_u32_EncodingError.Err reason), dst))
+  let (r2, dst) ← (match r1 with
+    | (.Err _try_err_1) => (do
+      pure ((Result_u32_EncodingError.Err _try_err_1), dst))
     | (.Ok needed) => (do
       let (r3, dst) ← (
         if (decide (needed > (dst.size.toUInt32))) then (do

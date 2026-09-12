@@ -160,6 +160,32 @@ solve_one: (l: Layout, mem: [*]u32, p: []u32, index: u32, lowered: u32): () {
   report(index, status, node_count(l, mem), lowered, view(&vars), listed)
 }
 
+// dump_problem prints a built problem's words as a D line (index, count, words) when
+// OAK_SOLVER_DUMP is set (a debugging aid: the Oak lowering's terms beside
+// the Go lowering's).
+dump_problem: (p: []u32, index: u32): () {
+  flag: c.Ptr = c_getenv(c.cstr("OAK_SOLVER_DUMP\0"))
+  wanted: Bool = false
+  unsafe {
+    value: []u8 = c.borrow_string(flag)
+    wanted = len(value) > u32(0)
+  }
+  wanted ? {
+    write_byte(u8(68))
+    write_byte(u8(32))
+    write_u32(index)
+    write_byte(u8(32))
+    write_u32(len(p))
+    i: u32 = 0
+    while i < len(p) {
+      write_byte(u8(32))
+      write_u32(p[i])
+      i = i + u32(1)
+    }
+    write_byte(u8(10))
+  } | { }
+}
+
 // leaf_bit_of finds the leaf and bit a variable of the problem stands for
 // (leaf * 64 + bit), NONE for a select variable.
 leaf_bit_of: (p: []u32, v: u32): u32 {
@@ -182,6 +208,7 @@ leaf_bit_of: (p: []u32, v: u32): u32 {
 // reporting a refutation's witness as leaf and bit.
 solve_prefix: (l: Layout, mem: [*]u32, whole: []u32, n: u32, index: u32): () {
   p: []u32 = subslice(whole, u32(0), n)
+  dump_problem(p, index)
   status: u32 = solve(l, mem, p)
   vars: [256]u32
   listed: u32 = status == STATUS_REFUTED ? { witness_vars(l, mem, p, span(&vars)) } | { u32(0) }
@@ -482,6 +509,16 @@ func runOakSolver(theorems []oakTheorem, budget int) ([]prove.SolverVerdict, err
 	remaining := len(theorems)
 	var firstErr error
 	for l := range lines {
+		if strings.HasPrefix(l.text, "D ") {
+			if dump := os.Getenv("OAK_SOLVER_DUMP"); dump != "" {
+				f, _ := os.OpenFile(dump, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+				if f != nil {
+					fmt.Fprintf(f, "slot %d %s\n", l.slot, l.text)
+					f.Close()
+				}
+			}
+			continue
+		}
 		v, index, err := parseOakVerdict(l.text)
 		if err != nil {
 			if firstErr == nil {
