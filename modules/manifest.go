@@ -80,6 +80,7 @@ type Manifest struct {
 // error is never admissible; neither is a warning that is not an assumption.
 var AdmissibleAssumptions = map[string]string{
 	"OAK-B0110": "an unsafe block's writable-disjointness or foreign-buffer assumption",
+	"OAK-B0122": "an unsafe block's foreign-function-pointer assumption (c.fn_at)",
 	"OAK-D0102": "a tail-recursion obligation",
 	"OAK-D0103": "a loop without a static iteration bound",
 }

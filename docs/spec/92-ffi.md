@@ -814,6 +814,95 @@ and adding a marker to a published function is classified as an ABI change
 too — conservative, since a consumer linking the old symbol set is unaffected
 by an addition, but the snapshot laws classify any ABI difference as major.
 
+### 2.10 Calls through a foreign function pointer
+
+Status: implemented (`c.Fn[...]`, `c.fn_at`, `OAK-F0113`, `OAK-B0122`;
+`compiler/e2e_ffi_fnptr_test.go`). Motivated by ml roadmap D3: a `c.Ptr`
+from `dlsym` invoked with a declared signature, so the runtime's dispatch
+loop over compiled kernels can move out of Zig.
+
+An extern binding (§2.3) names a symbol the linker resolves. A function
+whose address is known only at run time — a kernel `dlsym` found in a
+library `dlopen` loaded — has no symbol Oak can name. This section gives it
+a **declared signature and a scope** instead, in the shape of §2.7: a
+foreign pointer becomes a callable value for the extent of one unsafe block,
+under a contract the program states, and for nothing else.
+
+#### 2.10.1 The type and the form
+
+`c.Fn[(params) -> ret]` is the type of a foreign function of the given
+signature. Its parameter types and its return type obey exactly the extern
+rule (§2.3, `OAK-F0101`): `c.*` types, proven-layout structs by value, and
+`()` for the return. The type exists in one position only — the annotation
+of a local binding, inside an `unsafe` block, that `c.fn_at` initializes:
+
+```oak
+dlopen: (path: c.Ptr, mode: c.Int): c.Ptr = c.extern("dlopen")
+dlsym: (handle: c.Ptr, name: c.String): c.Ptr = c.extern("dlsym")
+
+kernel_length: (text: []u8): u64 {
+  handle: c.Ptr = dlopen(c.null(), c.Int(i32(2)))
+  p: c.Ptr = dlsym(handle, c.String("strlen"))
+  n: u64 = 0
+  unsafe {
+    strlen_at: c.Fn[(c.String) -> c.UInt64] = c.fn_at(p)
+    n = u64(strlen_at(c.cstr(text)))
+  }
+  n
+}
+```
+
+- `c.fn_at(p)` takes one `c.Ptr` and is admitted only inside an `unsafe`
+  block, as the initializer of a named binding (`OAK-F0107`, the placement
+  rule of `c.borrow`), and that binding must carry a `c.Fn` annotation
+  (`OAK-F0113`): the annotation *is* the declared ABI, as an extern binding's
+  signature is; Oak never infers a foreign signature.
+- `c.Fn` anywhere else — a record field, a global, a parameter, a return
+  type, an array element, a binding outside `unsafe` or without `c.fn_at` —
+  is `OAK-F0113`. A foreign function pointer never crosses back into Oak
+  semantics: it is not an Oak function value, cannot be captured, compared,
+  stored, or passed to Oak code, and is dropped when its block ends.
+- A signature naming a type that cannot cross the boundary (an Oak scalar,
+  a view, a string) is `OAK-F0113` at that type.
+
+#### 2.10.2 Calls
+
+A call `f(args)` through a `c.Fn` binding is checked **exactly as a call to
+an extern binding of the annotated signature**: the same argument forms
+(`c.span_of`/`c.span_mut_of` §2.5.2, `c.cstr` §2.5.3, `c.argv_of` §2.5.6,
+`c.out` §2.5.7, `c.null()`, `c.*` scalars, structs by value), the same
+arity and type rules, the same borrow uses for the call's extent. The
+backend lowers the binding to an opaque pointer and every call to a cast
+and a call, `((ret (*)(params))f)(args)`, with each C spelling taken from
+the same table extern prototypes use — so the cast is precisely the
+prototype an extern binding of that signature would have declared, and no
+program text reaches the generated C except through that table.
+
+**Effects.** The effect checker (`60-effects-allocation.md`) cannot know
+what a function at a run-time address does; a call through a `c.Fn` binding
+is a call through a function value whose effects nothing declares, so a
+function that `forbids` any effect and reaches such a call fails closed with
+`OAK-E0103`, exactly as a call through an Oak function value does. A
+declared-effects form for foreign pointers is deliberately not provided in
+this increment.
+
+#### 2.10.3 The contract, recorded
+
+`c.fn_at` is a trust assumption of the same kind as `c.borrow`'s (§2.7): the
+program asserts that the pointer is a function of the annotated signature,
+callable for the block's extent. The borrow checker records it on every
+binding as **`OAK-B0122`**, a warning with the recorded-assumption
+treatment: `oak vet` and the REPL's `:obligations` list it, the strict
+profile rejects the module unless its `oak.mod` says `admit OAK-B0122`
+(`85-discipline.md` §7), and admitting the foreign-buffer contract
+(`OAK-B0110`) does not admit this one — they are different claims about
+different things. The one check the compiler can make it makes: `c.fn_at`
+of a NULL pointer traps at the conversion, naming the Oak source position
+as an assertion does, so a call through the binding never dereferences NULL.
+
+The interpreter rejects `c.fn_at` (it has no foreign code to call), as it
+rejects every native-only form (§4).
+
 ## 3. The abstract assembly interface
 
 ### 3.1 Shape

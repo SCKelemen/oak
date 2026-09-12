@@ -254,9 +254,10 @@ so the audit trail is exactly as long as before and the acceptance is a
 reviewable line in the manifest rather than a weaker profile. Only the
 recorded assumptions are admissible — `OAK-B0110` (an unsafe block's
 writable-disjointness or foreign-buffer contract, `92-ffi.md` section 2.7),
-`OAK-D0102` (a tail-recursion obligation), `OAK-D0103` (a loop without a
-static bound); an error code, or a warning that is not an assumption, fails
-the manifest (`OAK-M0112`). Admissions are per module, like profiles: a
+`OAK-B0122` (an unsafe block's foreign-function-pointer contract, `c.fn_at`,
+`92-ffi.md` section 2.10), `OAK-D0102` (a tail-recursion obligation),
+`OAK-D0103` (a loop without a static bound); an error code, or a warning
+that is not an assumption, fails the manifest (`OAK-M0112`). Admissions are per module, like profiles: a
 dependency's manifest speaks for its own packages and the root's for the
 root's; the command-line `-profile` flag grants none, and a single-source
 build has no manifest and admits nothing. The motivating case (ml finding

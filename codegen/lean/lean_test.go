@@ -156,7 +156,8 @@ narrow: (x: u64, y: i32): u32 {
 func TestExtractionFailsClosed(t *testing.T) {
 	cases := map[string]struct{ src, want string }{
 		"recursion":      {"f: (n: u32): u32 = n == u32(0) ? u32(0) | f(n - u32(1))", "recursive"},
-		"fma":            {"f: (x: f32): f32 = fma(x, x, x)", "no Lean carrier"},
+		"trunc":          {"f: (x: f32): f32 = trunc(x)", "no Lean carrier"},
+		"min":            {"f: (x: f32, y: f32): f32 = min(x, y)", "no Lean carrier"},
 		"f16 row":        {"f: (x: f32): u16 = u16_bits_f16(f16_round_f32(x))", "f32/f64 conversions only"},
 		"mixed patterns": {"f: (n: u32): u32 = n ? | 0 => u32(1) | k => k", "outside the extracted subset"},
 		"template call":  {"Kind: type = Word | Line\nf[T]: (k: T): T = k\ng: (k: Kind): Kind = f[Kind](k)\nh: (): u32 = u32(1)", ""},
@@ -372,5 +373,36 @@ rows: (x: f64, n: i32, bits: u64): u32 {
 		if !strings.Contains(out, want) {
 			t.Fatalf("extraction lacks %q:\n%s", want, out)
 		}
+	}
+}
+
+// fma, copysign, and round_even go through the bit-exact carriers of
+// Oak.FloatOps, and a module using them imports it.
+func TestExtractionFloatOps(t *testing.T) {
+	src := `
+kernel: (a: f64, b: f64, c: f64): f64 = fma(a, b, -c)
+signed: (x: f32, y: f32): f32 = copysign(abs(x), y)
+nearest: (x: f64): f64 = round_even(x)
+`
+	out, err := extract(t, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"import Oak.FloatOps",
+		"(Oak.FloatOps.fma64 a b (-c))",
+		"(Oak.FloatOps.copysign32 (Float32.abs x) y)",
+		"(Oak.FloatOps.roundEven64 x)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+	plain, err := extract(t, "f: (x: f64): f64 = sqrt(x)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plain, "import Oak.FloatOps") {
+		t.Fatalf("a module without the three intrinsics must not import Oak.FloatOps:\n%s", plain)
 	}
 }
