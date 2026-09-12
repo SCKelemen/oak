@@ -1,6 +1,10 @@
 package codegen
 
-import "github.com/SCKelemen/oak/semir"
+import (
+	"fmt"
+
+	"github.com/SCKelemen/oak/semir"
+)
 
 // ERET is emitted as a pay-for-use noreturn helper. The C bootstrap backend
 // needs a syntactic carrier for Oak's uninhabited `never` type because the
@@ -17,13 +21,31 @@ func init() {
 		if !ok {
 			continue
 		}
+		// A carried register is a local register variable pinned to the
+		// architectural register and named as an input of the asm
+		// statement, so the value is in that register at the instruction;
+		// the C compiler moves it there (`mov x0, xN`) and emits nothing
+		// else. The handoff adds no instruction of its own.
+		params, pins, inputs := "void", "", ""
+		for i, reg := range spec.Carries {
+			name := fmt.Sprintf("value%d", i)
+			if i == 0 {
+				params = ""
+			} else {
+				params += ", "
+				inputs += ", "
+			}
+			params += "u64 " + name
+			pins += fmt.Sprintf("  register u64 %s_%s __asm__(%q) = %s;\n", reg, name, reg, name)
+			inputs += fmt.Sprintf("\"r\"(%s_%s)", reg, name)
+		}
 		arm64HelperSources[member] = `/* oak_never (the uninhabited bottom carrier) is emitted with the primitive typedefs; ERET never produces it */
-__attribute__((noreturn)) static inline oak_never oak_arm64_eret( void ) {
+__attribute__((noreturn)) static inline oak_never oak_arm64_` + member + `( ` + params + ` ) {
 #if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)
-  __asm__ volatile("` + spec.Instruction + `" ::: "memory");
+` + pins + `  __asm__ volatile("` + spec.Instruction + `" :: ` + inputs + ` : "memory");
   __builtin_unreachable();
 #else
-#error "arm64.eret requires an AArch64 target"
+#error "arm64.` + member + ` requires an AArch64 target"
 #endif
 }
 `

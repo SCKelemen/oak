@@ -53,9 +53,9 @@ func evalLibraryCall(library, member string, args []ast.Expression, env *object.
 }
 
 func evalArm64Intrinsic(member string, args []ast.Expression, env *object.Environment) object.Object {
-	if _, controlTransfer := semir.LookupArm64ControlTransfer(member); controlTransfer {
-		if len(args) != 0 {
-			return newError("arm64.%s takes exactly zero arguments", member)
+	if spec, controlTransfer := semir.LookupArm64ControlTransfer(member); controlTransfer {
+		if len(args) != spec.Arity() {
+			return newError("arm64.%s takes exactly %d argument(s)", member, spec.Arity())
 		}
 		return newError("arm64.%s is a non-returning control-transfer machine operation and requires the native AArch64 backend", member)
 	}

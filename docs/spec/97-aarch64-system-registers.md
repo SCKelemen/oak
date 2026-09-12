@@ -43,7 +43,7 @@ Read/write:
 - `SP_EL1`, `SCTLR_EL1`, `TTBR0_EL1`, `TCR_EL1`, `VBAR_EL1`;
 - `MAIR_EL1`, `SP_EL0`, `ELR_EL1`, `SPSR_EL1` — the kernel adapter's MMU
   register program and EL0 entry (`write_sp_el0`, `write_elr_el1`,
-  `write_spsr_el1`, then `eret`).
+  `write_spsr_el1`, then `eret_x0(arg)`; `100-aarch64-control-transfer.md`).
 
 The library catalog here and the assembler's encoding table
 (`asm/sysregs_gen.go`, every register MRS/MSR can name; `94-assembler.md`)

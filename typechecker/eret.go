@@ -9,8 +9,13 @@ import "github.com/SCKelemen/oak/semir"
 // paths.
 func init() {
 	for _, member := range semir.Arm64ControlTransferMembers() {
+		spec, _ := semir.LookupArm64ControlTransfer(member)
+		params := make([]Type, spec.Arity())
+		for i := range params {
+			params[i] = &PrimitiveType{Name: "u64"} // one u64 per carried register
+		}
 		arm64Intrinsics[member] = &FunctionType{
-			Parameters: []Type{},
+			Parameters: params,
 			ReturnType: &NeverType{},
 		}
 	}

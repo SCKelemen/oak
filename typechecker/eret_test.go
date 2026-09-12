@@ -49,3 +49,37 @@ fn bad(x: u64) -> never
 		t.Fatal("ERET with an operand must be rejected")
 	}
 }
+
+// eret_x0 carries one u64 and is still never-typed; the plain form stays
+// nullary and the carrying form refuses a second value.
+func TestEretX0CarriesOneU64(t *testing.T) {
+	p := parser.New(scanner.New(`
+package main
+fn enter(arg: u64) -> never
+  arm64.eret_x0(arg)
+`))
+	program := p.ParseProgram()
+	tc := New(object.NewEnvironment())
+	tc.CheckProgram(program)
+	if len(tc.Errors()) != 0 {
+		t.Fatalf("eret_x0 with one u64 must typecheck: %v", tc.Errors())
+	}
+	ft, ok := arm64Intrinsics["eret_x0"]
+	if !ok || len(ft.Parameters) != 1 {
+		t.Fatalf("eret_x0 signature: %#v", ft)
+	}
+	if _, isNever := ft.ReturnType.(*NeverType); !isNever {
+		t.Fatalf("eret_x0 return type = %T, want NeverType", ft.ReturnType)
+	}
+	p = parser.New(scanner.New(`
+package main
+fn bad(a: u64, b: u64) -> never
+  arm64.eret_x0(a, b)
+`))
+	program = p.ParseProgram()
+	tc = New(object.NewEnvironment())
+	tc.CheckProgram(program)
+	if len(tc.Errors()) == 0 {
+		t.Fatal("eret_x0 with two operands must be rejected")
+	}
+}
