@@ -1,6 +1,11 @@
 # Oak Language Specification (Draft)
 
 > **Status:** Exploratory design, focused on MCU-friendly, C-like compilation with strong static guarantees.
+>
+> This document is the early draft. The normative specification is the
+> chapter set in [`docs/spec/`](docs/spec/), and the authoritative feature
+> and verification matrix is [`docs/spec/STATUS.md`](docs/spec/STATUS.md);
+> where this draft and a chapter disagree, the chapter wins.
 
 ---
 
