@@ -494,3 +494,117 @@ func TestRV64EmitC(t *testing.T) {
 		t.Errorf("extern guard:\n%s", extern)
 	}
 }
+
+// Span element memory (docs/spec/94-assembler.md §9): the LP64 length
+// register carries padding above bit 31, so a bound needs the normalized
+// copy; an element is addressed through a guarded index scaled by the
+// element size, or at a constant offset below a proven minimum length.
+const rv64SumDecl = "sum_rv: (v: []u32) -> u32"
+const rv64SumBody = `
+  bind a0, a1 = v
+  clobber t0, t1, t2, t3
+  slli t1, a1, 32
+  srli t1, t1, 32
+  li t0, 0
+  li t3, 0
+loop:
+  bgeu t0, t1, done
+  slli t2, t0, 2
+  add t2, a0, t2
+  lw t2, 0(t2)
+  addw t3, t3, t2
+  addi t0, t0, 1
+  j loop
+done:
+  mv a0, t3
+  ret`
+
+const rv64FirstDecl = "first_rv: (v: []u32) -> u32"
+const rv64FirstBody = `
+  bind a0, a1 = v
+  clobber t0, t1
+  slli t1, a1, 32
+  srli t1, t1, 32
+  li t0, 1
+  bltu t1, t0, empty
+  lw a0, 0(a0)
+  ret
+empty:
+  ebreak`
+
+func TestRV64SpanMemoryChecker(t *testing.T) {
+	for name, c := range map[string][2]string{
+		"guarded loop":   {rv64SumDecl, rv64SumBody},
+		"minimum length": {rv64FirstDecl, rv64FirstBody},
+		"store through a span": {"zero_rv: (s: [*]u32) -> u32", `
+  bind a0, a1 = s
+  clobber t0, t1
+  slli t1, a1, 32
+  srli t1, t1, 32
+  li t0, 1
+  bltu t1, t0, empty
+  sw zero, 0(a0)
+  li a0, 0
+  ret
+empty:
+  ebreak`},
+		"constant bound within the minimum": {"third_rv: (v: []u64) -> u64", `
+  bind a0, a1 = v
+  clobber t0, t1, t2
+  slli t1, a1, 32
+  srli t1, t1, 32
+  li t0, 4
+  bltu t1, t0, empty
+  li t2, 2
+  li t0, 4
+  bgeu t2, t0, empty
+  slli t2, t2, 3
+  add t2, a0, t2
+  ld a0, 0(t2)
+  ret
+empty:
+  ebreak`},
+	} {
+		if findings := rv64Check(t, c[0], c[1]); len(findings) != 0 {
+			t.Errorf("%s: %v", name, findings)
+		}
+	}
+	rejections := map[string][3]string{
+		"no guard":                    {rv64FirstDecl, "  bind a0, a1 = v\n  lw a0, 0(a0)\n  ret", "without a length guard"},
+		"raw length as bound":         {rv64SumDecl, strings.Replace(rv64SumBody, "  bgeu t0, t1, done", "  bgeu t0, a1, done", 1), "only the sp frame, a bound span base under a length guard, or a guarded element address"},
+		"wrong scale":                 {rv64SumDecl, strings.Replace(rv64SumBody, "  slli t2, t0, 2", "  slli t2, t0, 3", 1), "guarded element address"},
+		"width mismatch":              {rv64SumDecl, strings.Replace(rv64SumBody, "  lw t2, 0(t2)", "  ld t2, 0(t2)", 1), "outside its 4-byte element"},
+		"offset past element":         {rv64SumDecl, strings.Replace(rv64SumBody, "  lw t2, 0(t2)", "  lw t2, 4(t2)", 1), "outside its 4-byte element"},
+		"store to a view":             {rv64FirstDecl, strings.Replace(rv64FirstBody, "  lw a0, 0(a0)", "  sw t0, 0(a0)\n  li a0, 0", 1), "read-only view"},
+		"guard lost at label":         {rv64FirstDecl, strings.Replace(rv64FirstBody, "  lw a0, 0(a0)", "again:\n  lw a0, 0(a0)", 1), "without a length guard"},
+		"past the minimum":            {rv64FirstDecl, strings.Replace(rv64FirstBody, "  lw a0, 0(a0)", "  lw a0, 4(a0)", 1), "reaches past the 1 elements"},
+		"guard on the wrong register": {rv64SumDecl, strings.Replace(rv64SumBody, "  slli t2, t0, 2", "  slli t2, t3, 2", 1), "guarded element address"},
+	}
+	for name, c := range rejections {
+		findings := rv64Check(t, c[0], c[1])
+		if len(findings) == 0 {
+			t.Errorf("%s: accepted", name)
+			continue
+		}
+		if !strings.Contains(strings.Join(findings, "\n"), c[2]) {
+			t.Errorf("%s: findings %v lack %q", name, findings, c[2])
+		}
+	}
+}
+
+func TestRV64SpanMemoryVerify(t *testing.T) {
+	v := rv64Verify(t, rv64FirstDecl, "{ v[0] }", rv64FirstBody)
+	if v.Kind != VerdictProven {
+		t.Errorf("first element: %s (%s)", v.Kind, v.Message)
+	}
+	v = rv64Verify(t, rv64FirstDecl, "{ v[0] + u32(1) }", rv64FirstBody)
+	if v.Kind != VerdictMismatch {
+		t.Errorf("first element mismatch not reported: %s (%s)", v.Kind, v.Message)
+	}
+	// The data-dependent loop: the loop machinery's verdict, never a mismatch.
+	v = rv64Verify(t, rv64SumDecl, "{\n  total: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < len(v) {\n    total = total + v[i]\n    i = i + u32(1)\n  }\n  total\n}", rv64SumBody)
+	if v.Kind == VerdictMismatch {
+		t.Errorf("span sum: %s", v.Message)
+	}
+	t.Logf("span sum verdict: %s (%s)", v.Kind, v.Message)
+}

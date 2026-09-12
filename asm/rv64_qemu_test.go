@@ -30,6 +30,10 @@ type rv64Oracle struct {
 	cType      string // the C type of every parameter and the result
 	width      int
 	inputs     [][2]uint64
+	// span names a []u32 parameter the harness materializes as an array of
+	// the verifier's fixed element values (elementValue); inputs[i][0] is
+	// then the length and inputs[i][1] the scalar parameter.
+	span string
 }
 
 func TestRV64QEMUDifferential(t *testing.T) {
@@ -147,8 +151,28 @@ pos:
   ret`},
 	}
 
+	oracles = append(oracles, rv64Oracle{decl: "vsum: (v: []u32, k: u32) -> u32", cType: "unsigned int", width: 32, span: "v", inputs: [][2]uint64{{0, 7}, {1, 0}, {3, 5}, {8, 1}, {13, 0xffffffff}}, body: `
+  bind a0, a1 = v
+  bind a2 = k
+  clobber t0, t1, t2, t3
+  slli t1, a1, 32
+  srli t1, t1, 32
+  li t0, 0
+  mv t3, a2
+loop:
+  bgeu t0, t1, done
+  slli t2, t0, 2
+  add t2, a0, t2
+  lw t2, 0(t2)
+  addw t3, t3, t2
+  addi t0, t0, 1
+  j loop
+done:
+  mv a0, t3
+  ret`})
 	var functions []*Function
 	var harness strings.Builder
+	harness.WriteString("typedef struct { const unsigned int *base; unsigned int len; } view_u32;\n")
 	harness.WriteString("typedef unsigned long long u64;\n")
 	harness.WriteString("static void putc_(char c) { *(volatile unsigned char *)0x10000000 = c; }\n")
 	harness.WriteString("static void puthex(u64 v) { for (int i = 60; i >= 0; i -= 4) putc_(\"0123456789abcdef\"[(v >> i) & 15]); putc_('\\n'); }\n")
@@ -166,6 +190,24 @@ pos:
 			t.Fatalf("%s: checker %v", fn.Name, findings)
 		}
 		functions = append(functions, fn)
+		if oracle.span != "" {
+			fmt.Fprintf(&harness, "extern %s %s(view_u32, %s);\n", oracle.cType, fn.Name, oracle.cType)
+			// The array holds the verifier's fixed memory for this span.
+			fmt.Fprintf(&harness, "static const unsigned int %s_elems[16] = {", oracle.span)
+			for k := 0; k < 16; k++ {
+				fmt.Fprintf(&harness, "%du,", elementValue(oracle.span, uint64(k), 32))
+			}
+			harness.WriteString("};\n")
+			for _, in := range oracle.inputs {
+				env := map[string]uint64{spanLenName(oracle.span): in[0], "k": in[1] & mask(oracle.width)}
+				result, _, reason, ok := executeBody(fn, sig, env)
+				if !ok {
+					t.Fatalf("%s: verifier: %s", fn.Name, reason)
+				}
+				expected = append(expected, fmt.Sprintf("%016x", result.eval(env)&mask(oracle.width)))
+			}
+			continue
+		}
 		fmt.Fprintf(&harness, "extern %s %s(%s, %s);\n", oracle.cType, fn.Name, oracle.cType, oracle.cType)
 		for _, in := range oracle.inputs {
 			a, b := in[0]&mask(oracle.width), in[1]&mask(oracle.width)
@@ -179,6 +221,12 @@ pos:
 	harness.WriteString("void cmain(void) {\n")
 	for _, oracle := range oracles {
 		name := strings.SplitN(oracle.decl, ":", 2)[0]
+		if oracle.span != "" {
+			for _, in := range oracle.inputs {
+				fmt.Fprintf(&harness, "  puthex((u64)%s((view_u32){%s_elems, %du}, (%s)%dull) & 0x%xull);\n", name, oracle.span, in[0], oracle.cType, in[1]&mask(oracle.width), mask(oracle.width))
+			}
+			continue
+		}
 		for _, in := range oracle.inputs {
 			a, b := in[0]&mask(oracle.width), in[1]&mask(oracle.width)
 			// The result is printed at its contract width: a signed narrow
