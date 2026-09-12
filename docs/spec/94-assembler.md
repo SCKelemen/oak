@@ -1438,9 +1438,30 @@ model; `TestRV64SailDifferential`), the harness reporting through the
 HTIF `tohost` device — device 1 for the console, device 0 to exit — which
 the emulator locates by the ELF symbol. QEMU and Sail both agree with the
 verifier's concrete execution on every input, so the term semantics are
-now checked against two independent machines. Not yet: the Sail model's
-Lean export as the semantics the transliteration is checked against
-theorem by theorem.
+now checked against two independent machines.
+
+**The Sail bridge (landed, in two halves).** The Sail model's Lean export
+(`sail --lean`) spells each instruction's `execute` as register plumbing
+around a pure expression over the Sail Lean library's bit-vector
+primitives and the model's prelude helpers. `spec/lean/Oak/SailRiscVBridge.lean`
+restates those definitions verbatim — `asm/rv64_sail_bridge_test.go`
+fails if they drift from the fetched library (lean-sail `v4`) or the
+export — and proves that the expression the model computes for each
+instruction the verifier decides is `Oak.RiscV`'s function of the same
+register values: `addw`, `subw`, `sllw`, `srlw`, `sraw` (the
+`execute_RTYPEW` result), `slt` and `sltu` (the `execute_RTYPE`
+comparisons), and the six branch conditions of `execute_BTYPE`. The
+register plumbing (`wX_bits rd <expression>`, `if taken then jump_to`) is
+read off the generated definitions by inspection; the data semantics are
+the theorems. The second half, `spec/lean-sail/`, states the same theorems
+against the export itself, imported as a lake dependency, so nothing is
+restated there; it builds once the export compiles. It does not compile
+today: the opam release of Sail (0.20.2) emits type-level variables
+unbound in `Defs.lean` and an `Int` shift amount the pinned lean-sail has
+no instance for — sail-riscv's own CI uses Sail from git, whose opam
+build fails in the sandbox at its manifest step on this host. The
+generation and build steps are in `spec/lean-sail/README.md`; the Go test
+builds the project when the export is present and skips otherwise.
 
 Still to come in this lane: F/D under the LP64D contract,
 compressed encodings (RVC changes the label arithmetic), the RVWMO

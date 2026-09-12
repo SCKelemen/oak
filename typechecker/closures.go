@@ -36,7 +36,7 @@ func (tc *TypeChecker) checkClosureCaptures(fn *ast.FunctionLiteral) {
 		fmt.Sprintf("closure captures %v without established environment storage", captures))
 	d.AddNote("a capturing closure's environment must live in explicitly justified storage: a non-escaping stack frame, caller-owned storage, an arena/region, or static storage (Oak.ClosureCapture)")
 	d.AddNote("capturing a local never silently heap-promotes it; storage justification surfaces are planned")
-	d.AddNote("one shape is justified today (60-effects-allocation.md section 11): a literal passed directly to a top-level, non-generic Oak function whose parameter is only ever called, capturing parameters or annotated locals of scalar type (fixed-width and platform integers, Bool, f32, f64), string, or a view or span of a scalar, that the literal does not assign — the compiler specializes the callee for the call site and passes the captured values as arguments")
+	d.AddNote("one shape is justified today (60-effects-allocation.md section 11): a literal passed — directly, or bound to a local used once — to a top-level, non-generic Oak function whose parameter only flows into calls (its own, or those of functions it forwards the parameter to), capturing parameters or annotated locals of scalar type (fixed-width and platform integers, Bool, f32, f64), string, a view or span of a scalar, or a plain-data record or sum type, that the literal does not rebind — the compiler specializes the callee chain for the call site and passes the captured values as arguments")
 	d.AddHelp("pass the value as a parameter, or use a captureless function value")
 }
 

@@ -313,27 +313,36 @@ If capture escape requires arena/slab/heap allocation, the effect is explicit an
 
 Enforcement today: captureless function literals are accepted as bare code pointers; capturing closures are rejected (`OAK-T0401`) until a storage justification surface exists, per `Oak.ClosureCapture`.
 
-Implemented, first increment (`compiler/closures.go`): **static
-specialization at the call site.** A typed literal that captures enclosing
-locals is accepted when it is passed directly to a top-level, non-generic
-Oak function whose corresponding parameter is only ever called — never
-stored, returned, compared, or passed on — and every capture is a
-parameter or annotated local of scalar type (fixed-width and platform
-integers, `Bool`, `f32`, `f64`), of type `string`, or a view or span of a
-scalar, that the literal does not rebind (a store through a captured span
-is a write through the borrow and stays allowed). The
+Implemented (`compiler/closures.go`): **static specialization at the call
+site.** A typed literal that captures enclosing locals is accepted when it
+is passed to a top-level, non-generic Oak function whose corresponding
+parameter only ever *flows into calls* — it is the head of a call, or a
+direct argument to another such function whose parameter does the same
+(a forwarding chain, self-recursion included), never stored, returned or
+compared — and every capture is a parameter or annotated local of scalar
+type (fixed-width and platform integers, `Bool`, `f32`, `f64`), of type
+`string`, a view or span of a scalar, or a plain-data record or sum type
+(non-generic, fields and payloads recursively of these types; no `Buffer`
+field, no packed layout), that the literal does not rebind (a store
+through a captured span is a write through the borrow and stays allowed).
+A literal bound to a local (`g := fn(...)`) and passed exactly once as a
+call argument, with neither it nor any captured name assigned anywhere in
+the function, is inlined into that call first. The
 compiler lifts the literal to a top-level function with the captures as
 trailing parameters, clones the callee for that call site with the
-function parameter removed and the captures appended, replaces each call
-through the parameter by a direct call to the lifted literal carrying the
-captures, and rewrites the call to pass the captured values. The
+function parameter removed and the captures appended — and every function
+the parameter is forwarded to, once per call site, a recursive forward
+resolving to the clone itself — replaces each call through the parameter
+by a direct call to the lifted literal carrying the captures, and rewrites
+the call to pass the captured values. The
 environment is the argument list: caller-owned storage alive exactly for
 the call (the non-escaping stack capture `Oak.ClosureCapture` proves
 safe), no closure object, no allocation, no pointer into the frame, and the
-effect analysis sees a direct call. Anything outside the shape — a literal
-bound to a local first, a callee that forwards its parameter, a capture
-that is a record, an ADT, a `Buffer`, or an unannotated local — still
-reaches `OAK-T0401`, whose notes name the shape. A captured view or span
+effect analysis sees a direct call. Anything outside the shape — a bound
+literal used more than once, a callee that stores or returns its
+parameter anywhere along the chain, a capture of a `Buffer`-carrying,
+generic or packed type or of an unannotated local — still reaches
+`OAK-T0401`, whose notes name the shape. A captured view or span
 travels as the borrowed parameter it already is, so the borrow checker's
 call-local exclusivity judges the specialized call exactly as a
 hand-written one: a second span of the same owner at that call is its

@@ -362,10 +362,13 @@ Rules:
 - A literal is a code pointer, never an environment: capturing an enclosing
   local is rejected (`OAK-T0401`, `60-effects-allocation.md` §11) unless
   the capture has justified storage. One shape does today: a literal
-  passed directly to a top-level, non-generic function that only calls its
-  function parameter, capturing scalar, string, view or span parameters or
-  annotated locals it does not rebind, is specialized away — the callee is cloned for the call
-  site and the captured values travel as arguments (`60-effects-allocation.md`
+  passed (directly, or bound to a local used once) to a top-level,
+  non-generic function whose function parameter only flows into calls —
+  its own, or those of functions it forwards the parameter to — capturing
+  scalar, string, view, span, or plain-data record and sum-type parameters
+  or annotated locals it does not rebind, is specialized away — the callee
+  chain is cloned for the call site and the captured values travel as
+  arguments (`60-effects-allocation.md`
   §11, `compiler/closures.go`). A typed literal lowers
   to a plain top-level C function (`90-backend.md` §9); the expression is
   that function's address — no closure object, no allocation, no indirect
