@@ -1,6 +1,6 @@
 # Note: the most performant formal-methods implementation — what the codecs, os, ml, simdjson and Futhark teach the prover
 
-**Status: in progress — benchmarks landed, the first enumeration increment landed.** 2026-09-12, `specification` branch.
+**Status: in progress — benchmarks, the first enumeration increment and resident runner workers landed.** 2026-09-12, `specification` branch.
 Source: a read of Oak's own verification engines (`prove/`, `asm/`,
 `repl/leancheck.go`, `testrunner/`, `experiments/verification-poc`), of
 `github.com/SCKelemen/os` and `github.com/SCKelemen/ml` for techniques those
@@ -229,6 +229,28 @@ once per function instead of name lookup per identifier, and the theorem
 body compiled to a closure tree — which the remaining profile (match-arm
 scopes at two thirds of the allocation, `Environment.Get` walking the
 chain per identifier) now points at directly.
+
+## 4b. Second increment landed: resident test-runner workers (item 9)
+
+The runner's 62 cases a second were not the cases: a trivial property case
+is microseconds of work, and the campaign's time was one process start per
+case with the sanitizer runtime's initialization in each (measured on this
+Mac at roughly 35 ms more per exec for a sanitized binary than a plain
+one). The harness now has a resident mode (`test serve`): the runner
+starts one harness process per concurrent case slot, sends each case as a
+length-checked record on the worker's stdin, and the worker runs it in a
+fresh `fork()` of itself — the child sees exactly the state a new process
+would, so isolation and determinism are unchanged and every existing
+report, timeout, shrink and replay path is untouched — then replies with
+the wait status and the child's bounded output. A timed-out case kills the
+worker's process group; the pool replaces workers on demand. Windows and
+cross-built harnesses keep one process per case, as does `-resident=false`.
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| 500 trivial cases, `oak test -runs 500` | 7.84 s | 0.67 s |
+| 2,000 trivial cases | 32.1 s (62 cases/s) | 1.83 s (1,090 cases/s) |
+| `go test ./testrunner` | 74 s | 35 s |
 
 ## 5. What carries over from the codec track, unchanged
 
