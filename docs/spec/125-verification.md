@@ -196,12 +196,16 @@ The bit-level rung is decided by the solver written in Oak
 does not reach is lowered to the decider's terms, passed the Go decider's
 witness inputs (a counterexample among them settles it at once), and
 serialized under every variable order that applies as a word table — and,
-when it is in the scalar subset (integer and Bool parameters, locals, and
-results; the arithmetic, bitwise, shift, comparison, and Boolean
-operators; conversions; the scalar instruction functions; conditionals;
-counted loops; calls to program functions), also as a syntax table for
-the lowering written in Oak (`prove/solver/lower.oak`), which builds the
-terms itself and whose verdict is preferred whenever it decides; the
+when it is in that lowering's subset (integers, Bool, records of them,
+and fixed arrays as parameters, locals, arguments, and results; the
+arithmetic, bitwise, shift, comparison, and Boolean operators;
+conversions; the scalar instruction functions; conditionals; counted
+loops; field and element reads and stores, an element at a
+data-dependent index included; record and array literals; calls to
+program functions), also as a syntax table for the lowering written in
+Oak (`prove/solver/lower.oak`), which builds the terms itself under each
+of the three variable orders and whose verdict is preferred whenever it
+decides; the
 solver and its driver are one fixed Oak program, built once through the
 backend and kept, and the pending theorems of a run are streamed to it on
 standard input, one process per order at the same time, each theorem
@@ -463,12 +467,14 @@ In order of payoff, each reusing a surface that exists:
   now the decider `oak prove` runs by default, the Go one replaying the
   winning order as the check on every verdict); then the term lowering
   in Oak (`prove/solver/lower.oak`: the theorem and its callees as a
-  syntax table, run by an explicit stack machine — Oak admits no
-  unbounded recursion — that builds the terms the way the Go lowering
-  does, over the scalar subset; 96 of the corpus's 155 bit-level laws are
-  lowered and decided in Oak today, the rest, over records, arrays, and
-  floats, by the Go lowering and the Oak solver), next widened to
-  aggregates so the bit-level path is Oak code end to end; then
+  syntax table with its types, run by an explicit stack machine — Oak
+  admits no unbounded recursion — that builds the terms the way the Go
+  lowering does, records and arrays as blocks of leaf terms, under the
+  three variable orders; 123 of the corpus's 155 bit-level laws are
+  lowered and decided in Oak today, every one but the float laws and
+  two whose blocked-order diagrams the Oak lowering does not yet fit,
+  the rest by the Go lowering and the Oak solver), next the floats and
+  sum types, so the bit-level path is Oak code end to end; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
   producers of certificates, so speed and trust are separated; then an

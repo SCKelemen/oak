@@ -10,39 +10,57 @@ import (
 
 // The syntax table: a theorem and the functions it calls, serialized for
 // the lowering written in Oak (prove/solver/lower.oak), which turns it
-// into the decider's terms the way asm/verify.go does. The scalar subset:
-// fixed-width integer and Bool parameters, locals, and results; integer
-// and Bool literals; the prefix operators ! ^ -; the infix arithmetic,
-// bitwise, shift, comparison, and Boolean operators, with / and % by an
-// unsigned constant power of two; the primitive constructors and the
-// trunc/bits conversions; the scalar instruction functions; conditionals
-// in value and statement position; typed locals and assignments; counted
-// while loops; calls to program functions, inlined. Everything else —
-// records, arrays, spans, floats, refinements, asserts, matches over sum
-// types, recursion — keeps the theorem with the Go lowering.
+// into the decider's terms the way asm/verify.go does. The subset:
+// fixed-width integer and Bool scalars, records of them, and fixed arrays,
+// as parameters, locals, arguments, and results; integer and Bool
+// literals; the prefix operators ! ^ -; the infix arithmetic, bitwise,
+// shift, comparison, and Boolean operators, with / and % by an unsigned
+// constant power of two; the primitive constructors and the trunc/bits
+// conversions; the scalar instruction functions; conditionals in value and
+// statement position; typed locals and assignments, field and element
+// stores at constant indexes; field and element reads, an element at a
+// data-dependent index included; record and array literals; counted while
+// loops; calls to program functions, inlined. Everything else — sum
+// types, spans, floats, refinements, asserts, recursion — keeps the
+// theorem with the Go lowering.
 //
-// Words: a header (functions, nodes, list words, largest symbol count,
-// theorem function, leaves), the function table (8 words each: parameter
-// start, parameter count, result width, result signedness, body node,
-// symbol count), the parameter table (4 words each: width, signedness,
-// leaf index for the theorem's parameters), the nodes (8 words each:
-// kind, a, b, c, d, value low, value high), and the lists (node ids).
+// Words: a 16-word header (functions, nodes, list words, largest symbol
+// count, theorem function, leaves, types, type leaves, fields, leaf
+// indices), the function table (8 words each: parameter start, parameter
+// count, result type, body node, symbol count), the parameter table (4
+// words each: type, leaf-index start, leaf count), the type table (8
+// words each: kind, leaf count, leaf start, field start, field count,
+// element type, length), the type leaves (width, signedness), the record
+// fields (type, leaf offset), the leaf indices of the theorem's parameter
+// leaves in the decider's name order, the nodes (8 words each: kind, a, b,
+// c, d, value low, value high, type), and the lists (node ids).
 
 const (
-	synIntLit   = 0  // vlo, vhi
-	synBoolLit  = 1  // a = 1 or 0
-	synSym      = 2  // a = symbol
-	synPrefix   = 3  // a = op (0 !, 1 ^, 2 -), b = operand
-	synInfix    = 4  // a = op, b = left, c = right
-	synCond     = 5  // a = condition, b = then, c = else (value position)
-	synCall     = 6  // a = function, b = list start, c = argument count
-	synConv     = 7  // a = target width, b = target signedness, c = operand
-	synBlock    = 8  // a = list start, b = statement count
-	synVarDecl  = 9  // a = symbol, b = width, c = signedness, d = initializer
-	synAssign   = 10 // a = symbol, b = value
-	synWhile    = 11 // a = condition, b = body block
-	synInstr    = 12 // a = operator code, b = member width, c = operand
-	synCondStmt = 13 // a = condition, b = then block, c = else block
+	synIntLit      = 0  // vlo, vhi
+	synBoolLit     = 1  // a = 1 or 0
+	synSym         = 2  // a = symbol
+	synPrefix      = 3  // a = op (0 !, 1 ^, 2 -), b = operand
+	synInfix       = 4  // a = op, b = left, c = right
+	synCond        = 5  // a = condition, b = then, c = else (value position)
+	synCall        = 6  // a = function, b = list start, c = argument count
+	synConv        = 7  // a = target width, b = target signedness, c = operand
+	synBlock       = 8  // a = list start, b = statement count
+	synVarDecl     = 9  // a = symbol, b = type, d = initializer (NONE: the zero)
+	synAssign      = 10 // a = symbol, b = value
+	synWhile       = 11 // a = condition, b = body block
+	synInstr       = 12 // a = operator code, b = member width, c = operand
+	synCondStmt    = 13 // a = condition, b = then block, c = else block
+	synField       = 14 // a = base, b = field index
+	synIndex       = 15 // a = base, b = index node
+	synRecordLit   = 16 // a = type, b = list start, c = field count (declaration order)
+	synArrayLit    = 17 // a = type, b = list start, c = element count
+	synAssignPlace = 18 // a = place (a field/index chain on a symbol), b = value
+)
+
+const (
+	synKindScalar = 0
+	synKindRecord = 1
+	synKindArray  = 2
 )
 
 var synInfixOps = map[string]uint32{
@@ -52,79 +70,181 @@ var synInfixOps = map[string]uint32{
 
 var synInstrOps = map[string]uint32{"rev": 10, "rev16": 11, "rev32": 12, "rbit": 13, "clz": 14, "cnt": 15, "cls": 16}
 
-type synFunction struct {
-	sig     *ast.FunctionStatement
-	index   int
-	symbols map[string]int
-	params  []synParam
-	body    uint32
-}
-
-type synParam struct {
+type synLeaf struct {
 	width  int
 	signed bool
-	leaf   int // -1 for a callee's parameter
+	name   string // the leaf's path suffix, for the decider's parameter names
+}
+
+type synFieldRef struct {
+	typ    int
+	offset int // in leaves
+	name   string
+}
+
+type synType struct {
+	kind   int
+	width  int
+	signed bool
+	leaves []synLeaf
+	fields []synFieldRef
+	elem   int
+	length int
+	key    string
+}
+
+type synFunction struct {
+	sig      *ast.FunctionStatement
+	index    int
+	symbols  map[string]int
+	symTypes []int
+	params   []int // parameter types
+	ret      int
+	body     uint32
 }
 
 type syntaxWriter struct {
+	lo        *oakLowering
 	functions map[string]*ast.FunctionStatement
 	order     []*synFunction
 	byName    map[string]*synFunction
+	types     []*synType
+	typeIndex map[string]int
 	nodes     []uint32
 	lists     []uint32
 	maxSyms   int
+	leafIdx   []uint32 // the theorem parameters' leaf indices, per parameter in order
+	leafSpans [][2]int // per theorem parameter: start and count in leafIdx
+	leaves    int
+	leafNames []string // the theorem's leaves in the decider's name order
 }
 
 // ExportSyntax serializes the theorem and its callees for the Oak
 // lowering, or says which construct keeps it with the Go lowering.
-func ExportSyntax(sig *ast.FunctionStatement, functions map[string]*ast.FunctionStatement) ([]uint32, string, bool) {
+func ExportSyntax(sig *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, decls Declarations) ([]uint32, []string, string, bool) {
 	if sig == nil || sig.Name == nil || sig.Body == nil {
-		return nil, "no body", false
+		return nil, nil, "no body", false
 	}
-	w := &syntaxWriter{functions: functions, byName: map[string]*synFunction{}}
+	lo := newLowering(sig)
+	lo.functions = functions
+	lo.records, lo.adts = decls.Records, decls.ADTs
+	w := &syntaxWriter{lo: lo, functions: functions, byName: map[string]*synFunction{}, typeIndex: map[string]int{}}
 	theorem, reason, ok := w.function(sig, true)
 	if !ok {
-		return nil, reason, false
+		return nil, nil, reason, false
 	}
-	// Functions in call order, the theorem first.
-	words := make([]uint32, 0, 8+len(w.order)*8+64+len(w.nodes)+len(w.lists))
-	var params []uint32
-	funcs := make([]uint32, 0, len(w.order)*8)
+	var funcs, params, types, typeLeaves, fields []uint32
 	for _, f := range w.order {
-		funcs = append(funcs, uint32(len(params)/4), uint32(len(f.params)), 0, 0, f.body, uint32(len(f.symbols)), 0, 0)
-		width, signed, _ := scalarBits(f.sig.ReturnType)
-		funcs[len(funcs)-6] = uint32(width)
-		if signed {
-			funcs[len(funcs)-5] = 1
-		}
-		for _, p := range f.params {
-			leaf := problemNone
-			if p.leaf >= 0 {
-				leaf = uint32(p.leaf)
+		funcs = append(funcs, uint32(len(params)/4), uint32(len(f.params)), uint32(f.ret), f.body, uint32(len(f.symbols)), 0, 0, 0)
+		for i, t := range f.params {
+			start, count := problemNone, uint32(0)
+			if f == theorem {
+				start, count = uint32(w.leafSpans[i][0]), uint32(w.leafSpans[i][1])
 			}
-			signedWord := uint32(0)
-			if p.signed {
-				signedWord = 1
-			}
-			params = append(params, uint32(p.width), signedWord, leaf, 0)
+			params = append(params, uint32(t), start, count, 0)
 		}
 	}
-	words = append(words, uint32(len(w.order)), uint32(len(w.nodes)/8), uint32(len(w.lists)), uint32(w.maxSyms), uint32(theorem.index), uint32(len(theorem.params)), 0, 0)
+	for _, t := range w.types {
+		signed := uint32(0)
+		if t.signed {
+			signed = 1
+		}
+		types = append(types, uint32(t.kind), uint32(len(t.leaves)), uint32(len(typeLeaves)/2), uint32(len(fields)/2), uint32(len(t.fields)), uint32(t.elem), uint32(t.length), signed)
+		for _, leaf := range t.leaves {
+			s := uint32(0)
+			if leaf.signed {
+				s = 1
+			}
+			typeLeaves = append(typeLeaves, uint32(leaf.width), s)
+		}
+		for _, field := range t.fields {
+			fields = append(fields, uint32(field.typ), uint32(field.offset))
+		}
+	}
+	header := []uint32{uint32(len(w.order)), uint32(len(w.nodes) / 8), uint32(len(w.lists)), uint32(w.maxSyms), uint32(theorem.index), uint32(w.leaves), uint32(len(w.types)), uint32(len(typeLeaves) / 2), uint32(len(fields) / 2), uint32(len(w.leafIdx)), 0, 0, 0, 0, 0, 0}
+	words := make([]uint32, 0, len(header)+len(funcs)+len(params)+len(types)+len(typeLeaves)+len(fields)+len(w.leafIdx)+len(w.nodes)+len(w.lists))
+	words = append(words, header...)
 	words = append(words, funcs...)
 	words = append(words, params...)
+	words = append(words, types...)
+	words = append(words, typeLeaves...)
+	words = append(words, fields...)
+	words = append(words, w.leafIdx...)
 	words = append(words, w.nodes...)
 	words = append(words, w.lists...)
-	return words, "", true
+	return words, w.leafNames, "", true
 }
 
-// scalarBits is contractBits without the floats (their arithmetic is not
-// in the Oak lowering's subset).
-func scalarBits(typ ast.Expression) (int, bool, bool) {
-	switch typeText(typ) {
-	case "f32", "f64", "f16", "bf16":
-		return 0, false, false
+// typeID interns a type of the subset: scalars by width and signedness,
+// arrays by element and length, records by name (their fields interned
+// in declaration order).
+func (w *syntaxWriter) typeID(typ *oakType) (int, string, bool) {
+	var key string
+	switch typ.kind {
+	case oakScalar:
+		key = fmt.Sprintf("s%d:%v", typ.width, typ.signed)
+	case oakArray:
+		elem, reason, ok := w.typeID(typ.elem)
+		if !ok {
+			return 0, reason, false
+		}
+		key = fmt.Sprintf("a%d:%d", elem, typ.length)
+	case oakRecord:
+		key = "r:" + typ.name
+	default:
+		return 0, fmt.Sprintf("the sum type %s", typ.name), false
 	}
-	return contractBits(typ)
+	if id, seen := w.typeIndex[key]; seen {
+		return id, "", true
+	}
+	t := &synType{key: key}
+	id := len(w.types)
+	w.types = append(w.types, t)
+	w.typeIndex[key] = id
+	switch typ.kind {
+	case oakScalar:
+		t.kind, t.width, t.signed = synKindScalar, typ.width, typ.signed
+		t.leaves = []synLeaf{{width: typ.width, signed: typ.signed}}
+	case oakArray:
+		elem, _, _ := w.typeID(typ.elem)
+		t.kind, t.elem, t.length = synKindArray, elem, int(typ.length)
+		for k := 0; k < t.length; k++ {
+			for _, leaf := range w.types[elem].leaves {
+				t.leaves = append(t.leaves, synLeaf{width: leaf.width, signed: leaf.signed, name: fmt.Sprintf("[%d]%s", k, leaf.name)})
+			}
+		}
+	case oakRecord:
+		t.kind = synKindRecord
+		for _, f := range typ.fields {
+			ft, reason, ok := w.typeID(f.typ)
+			if !ok {
+				return 0, reason, false
+			}
+			t.fields = append(t.fields, synFieldRef{typ: ft, offset: len(t.leaves), name: f.name})
+			for _, leaf := range w.types[ft].leaves {
+				t.leaves = append(t.leaves, synLeaf{width: leaf.width, signed: leaf.signed, name: "." + f.name + leaf.name})
+			}
+		}
+	}
+	return id, "", true
+}
+
+// typeOfExpr resolves a type expression of the subset.
+func (w *syntaxWriter) typeOfExpr(expr ast.Expression) (int, string, bool) {
+	typ, ok := w.lo.oakTypeOf(expr)
+	if !ok {
+		return 0, fmt.Sprintf("the type %s", typeText(expr)), false
+	}
+	switch typeText(expr) {
+	case "f32", "f64", "f16", "bf16":
+		return 0, "a float type", false
+	}
+	return w.typeID(typ)
+}
+
+func (w *syntaxWriter) scalarType(width int, signed bool) int {
+	id, _, _ := w.typeID(&oakType{kind: oakScalar, width: width, signed: signed})
+	return id
 }
 
 func (w *syntaxWriter) function(sig *ast.FunctionStatement, theorem bool) (*synFunction, string, bool) {
@@ -138,33 +258,58 @@ func (w *syntaxWriter) function(sig *ast.FunctionStatement, theorem bool) (*synF
 	if sig.Receiver != nil || len(sig.TypeParams) != 0 || sig.Body == nil || sig.ExternSymbol != "" {
 		return nil, fmt.Sprintf("a call to %s (a method, generic, foreign, or definition-less function)", name), false
 	}
-	if _, _, ok := scalarBits(sig.ReturnType); !ok && !theorem {
-		return nil, fmt.Sprintf("a call to %s returning %s", name, typeText(sig.ReturnType)), false
-	}
 	f := &synFunction{sig: sig, index: len(w.order), symbols: map[string]int{}, body: problemNone}
 	w.order = append(w.order, f)
 	w.byName[name] = f
-	names := make([]string, 0, len(sig.Parameters))
-	for _, param := range sig.Parameters {
+	if theorem {
+		f.ret = w.scalarType(1, false)
+	} else {
+		ret, reason, ok := w.typeOfExpr(sig.ReturnType)
+		if !ok {
+			return nil, fmt.Sprintf("a call to %s returning %s", name, reason), false
+		}
+		f.ret = ret
+	}
+	type leafName struct {
+		name  string
+		param int
+		leaf  int
+	}
+	var leafNames []leafName
+	for i, param := range sig.Parameters {
 		if param.Variadic {
 			return nil, fmt.Sprintf("parameter %s is variadic", param.Name.Value), false
 		}
-		width, signed, ok := scalarBits(param.Type)
+		t, reason, ok := w.typeOfExpr(param.Type)
 		if !ok {
-			return nil, fmt.Sprintf("parameter %s: %s is not a fixed-width integer or Bool", param.Name.Value, typeText(param.Type)), false
+			return nil, fmt.Sprintf("parameter %s: %s", param.Name.Value, reason), false
 		}
 		f.symbols[param.Name.Value] = len(f.params)
-		f.params = append(f.params, synParam{width: width, signed: signed, leaf: -1})
-		names = append(names, param.Name.Value)
+		f.symTypes = append(f.symTypes, t)
+		f.params = append(f.params, t)
+		if theorem {
+			for k, leaf := range w.types[t].leaves {
+				leafNames = append(leafNames, leafName{name: param.Name.Value + leaf.name, param: i, leaf: k})
+			}
+		}
 	}
 	if theorem {
-		// The leaves are the parameters in name order (the decider's
+		// The leaves are the decider's parameters in name order (its
 		// interleaved variable order sorts the parameter names).
-		sorted := append([]string{}, names...)
-		sort.Strings(sorted)
-		for leaf, pname := range sorted {
-			f.params[f.symbols[pname]].leaf = leaf
+		sort.Slice(leafNames, func(a, b int) bool { return leafNames[a].name < leafNames[b].name })
+		position := map[[2]int]int{}
+		for idx, ln := range leafNames {
+			position[[2]int{ln.param, ln.leaf}] = idx
+			w.leafNames = append(w.leafNames, ln.name)
 		}
+		for i, t := range f.params {
+			start := len(w.leafIdx)
+			for k := range w.types[t].leaves {
+				w.leafIdx = append(w.leafIdx, uint32(position[[2]int{i, k}]))
+			}
+			w.leafSpans = append(w.leafSpans, [2]int{start, len(w.types[t].leaves)})
+		}
+		w.leaves = len(leafNames)
 	}
 	body, reason, ok := w.expr(f, sig.Body)
 	if !ok {
@@ -180,10 +325,22 @@ func (w *syntaxWriter) function(sig *ast.FunctionStatement, theorem bool) (*synF
 	return f, "", true
 }
 
-func (w *syntaxWriter) node(kind, a, b, c, d, vlo, vhi uint32) uint32 {
+func (w *syntaxWriter) node(kind, a, b, c, d, vlo, vhi uint32, typ int) uint32 {
 	id := uint32(len(w.nodes) / 8)
-	w.nodes = append(w.nodes, kind, a, b, c, d, vlo, vhi, 0)
+	t := problemNone
+	if typ >= 0 {
+		t = uint32(typ)
+	}
+	w.nodes = append(w.nodes, kind, a, b, c, d, vlo, vhi, t)
 	return id
+}
+
+func (w *syntaxWriter) nodeType(id uint32) int {
+	t := w.nodes[id*8+7]
+	if t == problemNone {
+		return -1
+	}
+	return int(t)
 }
 
 func (w *syntaxWriter) list(ids []uint32) uint32 {
@@ -192,24 +349,26 @@ func (w *syntaxWriter) list(ids []uint32) uint32 {
 	return start
 }
 
-// expr serializes an expression, failing closed outside the subset.
+// expr serializes an expression, failing closed outside the subset. The
+// node carries its static type when the subset determines one (a bare
+// literal takes the context's).
 func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, bool) {
 	switch e := e.(type) {
 	case *ast.IntegerLiteral:
 		v := uint64(e.Value)
-		return w.node(synIntLit, 0, 0, 0, 0, uint32(v), uint32(v>>32)), "", true
+		return w.node(synIntLit, 0, 0, 0, 0, uint32(v), uint32(v>>32), -1), "", true
 	case *ast.Boolean:
 		bit := uint32(0)
 		if e.Value {
 			bit = 1
 		}
-		return w.node(synBoolLit, bit, 0, 0, 0, 0, 0), "", true
+		return w.node(synBoolLit, bit, 0, 0, 0, 0, 0, w.scalarType(1, false)), "", true
 	case *ast.Identifier:
 		sym, known := f.symbols[e.Value]
 		if !known {
 			return 0, fmt.Sprintf("identifier %s (not a parameter or local)", e.Value), false
 		}
-		return w.node(synSym, uint32(sym), 0, 0, 0, 0, 0), "", true
+		return w.node(synSym, uint32(sym), 0, 0, 0, 0, 0, f.symTypes[sym]), "", true
 	case *ast.PrefixExpression:
 		op := map[string]uint32{"!": 0, "^": 1, "-": 2}
 		code, known := op[e.Operator]
@@ -220,7 +379,11 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 		if !ok {
 			return 0, reason, false
 		}
-		return w.node(synPrefix, code, operand, 0, 0, 0, 0), "", true
+		typ := w.nodeType(operand)
+		if code == 0 {
+			typ = w.scalarType(1, false)
+		}
+		return w.node(synPrefix, code, operand, 0, 0, 0, 0, typ), "", true
 	case *ast.InfixExpression:
 		code, known := synInfixOps[e.Operator]
 		if !known {
@@ -234,7 +397,14 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 		if !ok {
 			return 0, reason, false
 		}
-		return w.node(synInfix, code, left, right, 0, 0, 0), "", true
+		typ := w.nodeType(left)
+		if typ < 0 {
+			typ = w.nodeType(right)
+		}
+		if code >= 10 {
+			typ = w.scalarType(1, false)
+		}
+		return w.node(synInfix, code, left, right, 0, 0, 0, typ), "", true
 	case *ast.BlockExpression:
 		return w.block(f, e.Block, true)
 	case *ast.MatchExpression:
@@ -254,7 +424,81 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 		if !ok {
 			return 0, reason, false
 		}
-		return w.node(synCond, cond, then, otherwise, 0, 0, 0), "", true
+		typ := w.nodeType(then)
+		if typ < 0 {
+			typ = w.nodeType(otherwise)
+		}
+		return w.node(synCond, cond, then, otherwise, 0, 0, 0, typ), "", true
+	case *ast.IndexExpression:
+		base, reason, ok := w.expr(f, e.Left)
+		if !ok {
+			return 0, reason, false
+		}
+		bt := w.nodeType(base)
+		if bt < 0 {
+			return 0, fmt.Sprintf("an access on %s, whose type is not known", e.Left.String()), false
+		}
+		if e.Dot {
+			name, isName := e.Index.(*ast.Identifier)
+			if !isName || w.types[bt].kind != synKindRecord {
+				return 0, fmt.Sprintf("the field access %s", e.String()), false
+			}
+			for k, field := range w.types[bt].fields {
+				if field.name == name.Value {
+					return w.node(synField, base, uint32(k), 0, 0, 0, 0, field.typ), "", true
+				}
+			}
+			return 0, fmt.Sprintf("the field %s", name.Value), false
+		}
+		if w.types[bt].kind != synKindArray {
+			return 0, fmt.Sprintf("an index into %s (not an array)", e.Left.String()), false
+		}
+		index, reason, ok := w.expr(f, e.Index)
+		if !ok {
+			return 0, reason, false
+		}
+		return w.node(synIndex, base, index, 0, 0, 0, 0, w.types[bt].elem), "", true
+	case *ast.RecordLiteral:
+		if e.TypeName == nil {
+			return 0, "a record literal without a type name", false
+		}
+		t, reason, ok := w.typeOfExpr(e.TypeName)
+		if !ok {
+			return 0, reason, false
+		}
+		var values []uint32
+		for _, field := range w.types[t].fields {
+			value, given := e.Fields[field.name]
+			if !given {
+				return 0, fmt.Sprintf("a %s literal without the field %s", e.TypeName.Value, field.name), false
+			}
+			id, reason, ok := w.expr(f, value)
+			if !ok {
+				return 0, reason, false
+			}
+			values = append(values, id)
+		}
+		return w.node(synRecordLit, uint32(t), w.list(values), uint32(len(values)), 0, 0, 0, t), "", true
+	case *ast.ArrayLiteral:
+		if e.Type == nil {
+			return 0, "an array literal without a type", false
+		}
+		t, reason, ok := w.typeOfExpr(e.Type)
+		if !ok {
+			return 0, reason, false
+		}
+		if w.types[t].kind != synKindArray || len(e.Elements) != w.types[t].length {
+			return 0, "an array literal of the wrong shape", false
+		}
+		var values []uint32
+		for _, element := range e.Elements {
+			id, reason, ok := w.expr(f, element)
+			if !ok {
+				return 0, reason, false
+			}
+			values = append(values, id)
+		}
+		return w.node(synArrayLit, uint32(t), w.list(values), uint32(len(values)), 0, 0, 0, t), "", true
 	case *ast.InvocationExpression:
 		if member, width, isInstruction := instructionFunction(e); isInstruction {
 			code, known := synInstrOps[member]
@@ -265,7 +509,7 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 			if !ok {
 				return 0, reason, false
 			}
-			return w.node(synInstr, code, uint32(width), operand, 0, 0, 0), "", true
+			return w.node(synInstr, code, uint32(width), operand, 0, 0, 0, w.scalarType(width, false)), "", true
 		}
 		ident, isIdent := e.Function.(*ast.Identifier)
 		if !isIdent {
@@ -287,7 +531,7 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 				}
 				args = append(args, id)
 			}
-			return w.node(synCall, uint32(cf.index), w.list(args), uint32(len(args)), 0, 0, 0), "", true
+			return w.node(synCall, uint32(cf.index), w.list(args), uint32(len(args)), 0, 0, 0, cf.ret), "", true
 		}
 		if len(e.Arguments) != 1 {
 			return 0, fmt.Sprintf("call to %s", ident.Value), false
@@ -313,7 +557,7 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 		if signed {
 			signedWord = 1
 		}
-		return w.node(synConv, uint32(width), signedWord, operand, 0, 0, 0), "", true
+		return w.node(synConv, uint32(width), signedWord, operand, 0, 0, 0, w.scalarType(width, signed)), "", true
 	}
 	return 0, fmt.Sprintf("%T", e), false
 }
@@ -324,9 +568,10 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 // them a statement conditional.
 func (w *syntaxWriter) block(f *synFunction, block *ast.BlockStatement, value bool) (uint32, string, bool) {
 	if block == nil {
-		return w.node(synBlock, 0, 0, 0, 0, 0, 0), "", true
+		return w.node(synBlock, 0, 0, 0, 0, 0, 0, -1), "", true
 	}
 	var ids []uint32
+	resultType := -1
 	for i, stmt := range block.Statements {
 		last := i == len(block.Statements)-1
 		switch s := stmt.(type) {
@@ -347,28 +592,35 @@ func (w *syntaxWriter) block(f *synFunction, block *ast.BlockStatement, value bo
 				return 0, reason, false
 			}
 			ids = append(ids, id)
+			resultType = w.nodeType(id)
 		case *ast.VariableDeclaration:
-			if s.Type == nil || s.Value == nil {
-				return 0, "a local without both a type and an initializer", false
+			if s.Type == nil {
+				return 0, "a local without a type", false
 			}
-			width, signed, ok := scalarBits(s.Type)
+			t, reason, ok := w.typeOfExpr(s.Type)
 			if !ok {
-				return 0, fmt.Sprintf("a local of type %s", typeText(s.Type)), false
+				return 0, fmt.Sprintf("a local of %s", reason), false
 			}
-			init, reason, ok := w.expr(f, s.Value)
-			if !ok {
-				return 0, reason, false
+			init := problemNone
+			if s.Value == nil {
+				// The Go lowering zero-fills a value-less array only.
+				if w.types[t].kind != synKindArray {
+					return 0, fmt.Sprintf("the local %s without an initializer", s.Name.Value), false
+				}
+			} else {
+				id, reason, ok := w.expr(f, s.Value)
+				if !ok {
+					return 0, reason, false
+				}
+				init = id
 			}
 			sym, seen := f.symbols[s.Name.Value]
 			if !seen {
 				sym = len(f.symbols)
 				f.symbols[s.Name.Value] = sym
+				f.symTypes = append(f.symTypes, t)
 			}
-			signedWord := uint32(0)
-			if signed {
-				signedWord = 1
-			}
-			ids = append(ids, w.node(synVarDecl, uint32(sym), uint32(width), signedWord, init, 0, 0))
+			ids = append(ids, w.node(synVarDecl, uint32(sym), uint32(t), 0, init, 0, 0, -1))
 		case *ast.AssignmentStatement:
 			sym, known := f.symbols[s.Name.Value]
 			if !known {
@@ -378,7 +630,17 @@ func (w *syntaxWriter) block(f *synFunction, block *ast.BlockStatement, value bo
 			if !ok {
 				return 0, reason, false
 			}
-			ids = append(ids, w.node(synAssign, uint32(sym), value, 0, 0, 0, 0))
+			ids = append(ids, w.node(synAssign, uint32(sym), value, 0, 0, 0, 0, -1))
+		case *ast.IndexAssignmentStatement:
+			place, reason, ok := w.expr(f, s.Target)
+			if !ok {
+				return 0, reason, false
+			}
+			value, reason, ok := w.expr(f, s.Value)
+			if !ok {
+				return 0, reason, false
+			}
+			ids = append(ids, w.node(synAssignPlace, place, value, 0, 0, 0, 0, -1))
 		case *ast.WhileStatement:
 			cond, reason, ok := w.expr(f, s.Condition)
 			if !ok {
@@ -388,12 +650,12 @@ func (w *syntaxWriter) block(f *synFunction, block *ast.BlockStatement, value bo
 			if !ok {
 				return 0, reason, false
 			}
-			ids = append(ids, w.node(synWhile, cond, body, 0, 0, 0, 0))
+			ids = append(ids, w.node(synWhile, cond, body, 0, 0, 0, 0, -1))
 		default:
 			return 0, fmt.Sprintf("%T", stmt), false
 		}
 	}
-	return w.node(synBlock, w.list(ids), uint32(len(ids)), 0, 0, 0, 0), "", true
+	return w.node(synBlock, w.list(ids), uint32(len(ids)), 0, 0, 0, 0, resultType), "", true
 }
 
 // condStmt serializes `c ? { ... } | { ... }` in statement position: the
@@ -422,5 +684,5 @@ func (w *syntaxWriter) condStmt(f *synFunction, match *ast.MatchExpression) (uin
 	if !ok {
 		return 0, reason, false
 	}
-	return w.node(synCondStmt, cond, then, otherwise, 0, 0, 0), "", true
+	return w.node(synCondStmt, cond, then, otherwise, 0, 0, 0, -1), "", true
 }

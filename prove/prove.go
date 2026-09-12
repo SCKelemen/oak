@@ -58,8 +58,11 @@ type Result struct {
 	Problems []asm.Problem
 	// Syntax is the theorem serialized for the lowering written in Oak
 	// (asm.ExportSyntax), when it is in that lowering's subset.
-	Syntax   []uint32
-	fallback func() Result
+	Syntax []uint32
+	// LeafNames are the theorem's parameter leaves in the decider's name
+	// order, which the Oak lowering's counterexamples (leaf and bit) name.
+	LeafNames []string
+	fallback  func() Result
 }
 
 // SolverVerdict is what the Oak solver reports for one theorem: the
@@ -493,11 +496,11 @@ func bitLevel(deferred bool, tc *typechecker.TypeChecker, decls asm.Declarations
 		return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + reason + ")"}
 	}
 	fallback := Result{Name: open.Name, Status: Open, Detail: open.Detail}
-	syntax, _, inSubset := asm.ExportSyntax(stated, callees)
+	syntax, leafNames, _, inSubset := asm.ExportSyntax(stated, callees, decls)
 	if !inSubset {
-		syntax = nil
+		syntax, leafNames = nil, nil
 	}
-	return Result{Name: open.Name, Status: Pending, Problems: problems, Syntax: syntax, fallback: func() Result { return fallback }}
+	return Result{Name: open.Name, Status: Pending, Problems: problems, Syntax: syntax, LeafNames: leafNames, fallback: func() Result { return fallback }}
 }
 
 // ResolvePending settles the pending results from the Oak solver's
@@ -515,9 +518,14 @@ func ResolvePending(results []Result, verdicts map[string]SolverVerdict, goDecid
 		settled := Result{Name: r.Name}
 		switch {
 		case has && v.Lowered && v.Status == 0:
-			settled = Result{Name: r.Name, Status: Decided, Detail: fmt.Sprintf("at the bit level (%d BDD nodes; lowered and decided in Oak)", v.Nodes), Order: "interleaved", Nodes: v.Nodes}
-		case has && v.Lowered && v.Status == 1 && len(r.Problems) > 0:
-			settled = Result{Name: r.Name, Status: Refuted, Detail: "counterexample " + r.Problems[0].Counterexample(v.Vars) + " (lowered and decided in Oak)"}
+			order := []string{"interleaved", "blocks", "control"}[v.Winner%3]
+			label := ""
+			if order != "interleaved" {
+				label = ", " + map[string]string{"blocks": "parameters in blocks", "control": "control bits first"}[order]
+			}
+			settled = Result{Name: r.Name, Status: Decided, Detail: fmt.Sprintf("at the bit level (%d BDD nodes%s; lowered and decided in Oak)", v.Nodes, label), Order: order, Nodes: v.Nodes}
+		case has && v.Lowered && v.Status == 1:
+			settled = Result{Name: r.Name, Status: Refuted, Detail: "counterexample " + leafCounterexample(r.LeafNames, v.Vars) + " (lowered and decided in Oak)"}
 		case has && v.Status == 0 && v.Winner >= 0 && v.Winner < len(r.Problems):
 			order := r.Problems[v.Winner].Order
 			label := ""
@@ -542,6 +550,24 @@ func ResolvePending(results []Result, verdicts map[string]SolverVerdict, goDecid
 		results[i] = settled
 	}
 	return results
+}
+
+// leafCounterexample renders the Oak lowering's witness — the leaf bits set
+// on a path to the failing root, each as leaf * 64 + bit — over the
+// theorem's leaves, every unset bit zero.
+func leafCounterexample(leafNames []string, setBits []uint32) string {
+	values := make([]uint64, len(leafNames))
+	for _, lb := range setBits {
+		leaf, bit := int(lb/64), lb%64
+		if leaf < len(values) {
+			values[leaf] |= uint64(1) << bit
+		}
+	}
+	parts := make([]string, 0, len(leafNames))
+	for i, name := range leafNames {
+		parts = append(parts, fmt.Sprintf("%s=%d", name, values[i]))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // GoDecision runs the Go decider on the named theorem: the cross-check of

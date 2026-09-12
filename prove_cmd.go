@@ -99,8 +99,12 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 				if _, oak := byName[r.Name]; !oak || !(strings.Contains(r.Detail, "the Oak solver") || strings.Contains(r.Detail, "decided in Oak")) || (r.Status != prove.Decided && r.Status != prove.Refuted) {
 					continue
 				}
-				fromGo, ok := prove.GoDecision(model, r.Name, r.Order)
 				loweredInOak := strings.Contains(r.Detail, "lowered and decided in Oak")
+				replayOrder := r.Order
+				if loweredInOak {
+					replayOrder = "" // the Oak lowering's orders are its own; any order of the Go decider's may confirm the verdict
+				}
+				fromGo, ok := prove.GoDecision(model, r.Name, replayOrder)
 				switch {
 				case !ok:
 					continue

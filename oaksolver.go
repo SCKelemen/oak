@@ -160,10 +160,42 @@ solve_one: (l: Layout, mem: [*]u32, p: []u32, index: u32, lowered: u32): () {
   report(index, status, node_count(l, mem), lowered, view(&vars), listed)
 }
 
-// solve_prefix solves the problem in the first n words of a view (the
-// slice taken here, so the view ends with the call).
+// leaf_bit_of finds the leaf and bit a variable of the problem stands for
+// (leaf * 64 + bit), NONE for a select variable.
+leaf_bit_of: (p: []u32, v: u32): u32 {
+  leaves: u32 = problem_leaves(p)
+  out: u32 = NONE
+  li: u32 = 0
+  while li < leaves && out == NONE {
+    bit: u32 = 0
+    while bit < u32(64) && out == NONE {
+      out = p[HEADER_WORDS + li * LEAF_WORDS + u32(1) + bit] == v ? { li * u32(64) + bit } | { out }
+      bit = bit + u32(1)
+    }
+    li = li + u32(1)
+  }
+  out
+}
+
+// solve_prefix solves the problem the Oak lowering built in the first n
+// words of a view (the slice taken here, so the view ends with the call),
+// reporting a refutation's witness as leaf and bit.
 solve_prefix: (l: Layout, mem: [*]u32, whole: []u32, n: u32, index: u32): () {
-  solve_one(l, mem, subslice(whole, u32(0), n), index, u32(1))
+  p: []u32 = subslice(whole, u32(0), n)
+  status: u32 = solve(l, mem, p)
+  vars: [256]u32
+  listed: u32 = status == STATUS_REFUTED ? { witness_vars(l, mem, p, span(&vars)) } | { u32(0) }
+  kept: u32 = 0
+  i: u32 = 0
+  while i < listed {
+    lb: u32 = leaf_bit_of(p, vars[i])
+    lb == NONE ? { } | {
+      vars[kept] = lb
+      kept = kept + u32(1)
+    }
+    i = i + u32(1)
+  }
+  report(index, status, node_count(l, mem), u32(1), view(&vars), kept)
 }
 
 // solve_variant solves one Go-lowered problem in a fresh view of the
@@ -178,12 +210,12 @@ solve_variant: (l: Layout, table_raw: c.Ptr, p: []u32, index: u32): () {
 
 // lower_in_oak runs the Oak lowering on a syntax table into the built
 // buffer's memory; the problem's word count, 0 outside the subset.
-lower_in_oak: (lw: Lower, work_raw: c.Ptr, built_raw: c.Ptr, sx: []u32, budget: u32): u32 {
+lower_in_oak: (lw: Lower, work_raw: c.Ptr, built_raw: c.Ptr, sx: []u32, budget: u32, order: u32): u32 {
   n: u32 = 0
   unsafe {
     wbuf: Buffer[u32] = c.own[u32](work_raw, lw.total)
     bbuf: Buffer[u32] = c.own[u32](built_raw, lw.built_total)
-    n = lower_theorem(lw, span(&wbuf), span(&bbuf), sx, budget)
+    n = lower_theorem(lw, span(&wbuf), span(&bbuf), sx, budget, order)
     n = n == u32(0) ? { NONE - lower_reason(lw, span(&wbuf)) } | { n }
     released_w: c.Ptr = c.disown(wbuf)
     released_b: c.Ptr = c.disown(bbuf)
@@ -227,7 +259,7 @@ main: (): i32 {
   }
   bytes_raw: c.Ptr = malloc(c.Size(total * u32(4)))
   words_raw: c.Ptr = malloc(c.Size(total * u32(4)))
-  lowered_terms: u32 = 65536
+  lowered_terms: u32 = 131072
   terms_cap: u32 = max_terms > lowered_terms ? { max_terms } | { lowered_terms }
   l: Layout = layout_for(budget, terms_cap)
   lw: Lower = lower_layout(lowered_terms, u32(64))
@@ -251,9 +283,10 @@ main: (): i32 {
 }
 
 // solve_stream walks the problems stream: per theorem the Go-lowered
-// variants and, when present, the syntax table. With a syntax table, slot
-// 0 lowers and solves it in Oak and slot k solves variant k - 1; without,
-// slot k solves variant k.
+// variants and, when present, the syntax table. With a syntax table,
+// slots 0, 1, and 2 lower it in Oak under the interleaved, blocked, and
+// control-first orders and solve, and slot k solves Go-lowered variant
+// k - 3; without, slot k solves variant k.
 solve_stream: (l: Layout, lw: Lower, data: []u32, table_raw: c.Ptr, work_raw: c.Ptr, built_raw: c.Ptr, count: u32, slot: u32, budget: u32): () {
   off: u32 = 0
   i: u32 = 0
@@ -272,12 +305,13 @@ solve_stream: (l: Layout, lw: Lower, data: []u32, table_raw: c.Ptr, work_raw: c.
     off = off + u32(1)
     syntax_start: u32 = off
     off = off + syntax_words
-    shift: u32 = syntax_words > u32(0) ? { u32(1) } | { u32(0) }
-    (syntax_words > u32(0) && slot == u32(0)) ? {
-      n: u32 = lower_in_oak(lw, work_raw, built_raw, subslice(data, syntax_start, syntax_words), budget)
+    shift: u32 = syntax_words > u32(0) ? { u32(3) } | { u32(0) }
+    (syntax_words > u32(0) && slot < u32(3)) ? {
+      n: u32 = lower_in_oak(lw, work_raw, built_raw, subslice(data, syntax_start, syntax_words), budget, slot)
       n < u32(0x80000000) ? { solve_lowered(l, lw, table_raw, built_raw, n, i) } | {
         none: [1]u32
-        report(i, STATUS_UNSUPPORTED, NONE - n, u32(1), view(&none), u32(0))
+        reason: u32 = NONE - n
+        report(i, reason == REASON_ORDER ? { STATUS_EXCEEDED } | { STATUS_UNSUPPORTED }, reason, u32(1), view(&none), u32(0))
       }
     } | {
       want: u32 = slot - shift
@@ -369,11 +403,17 @@ type oakTheorem struct {
 	Syntax   []uint32
 }
 
+// oakOrders is the number of variable orders the Oak lowering races when
+// a theorem has a syntax table (interleaved, blocks, control), in slots
+// 0 to 2, the Go-lowered variants following.
+const oakOrders = 3
+
 // slots is the number of solver processes the theorem's verdict can come
-// from: its Go-lowered variants, plus the Oak lowering when it applies.
+// from: its Go-lowered variants, plus the Oak lowering's orders when it
+// applies.
 func (th oakTheorem) slots() int {
 	if len(th.Syntax) > 0 {
-		return len(th.Problems) + 1
+		return len(th.Problems) + oakOrders
 	}
 	return len(th.Problems)
 }
@@ -437,6 +477,7 @@ func runOakSolver(theorems []oakTheorem, budget int) ([]prove.SolverVerdict, err
 	answered := make([]int, len(theorems)) // applicable slots heard from
 	failing := make([]int, len(theorems))  // 2 exceeded, 3 unsupported among them
 	oakLoweringDone := make([]bool, len(theorems))
+	oakPending := make([]int, len(theorems)) // Oak orders yet to answer
 	held := make([]*prove.SolverVerdict, len(theorems))
 	remaining := len(theorems)
 	var firstErr error
@@ -454,36 +495,47 @@ func runOakSolver(theorems []oakTheorem, budget int) ([]prove.SolverVerdict, err
 			continue
 		}
 		answered[index]++
-		v.Winner = l.slot
 		hasSyntax := len(theorems[index].Syntax) > 0
+		isOak := hasSyntax && l.slot < oakOrders
+		v.Winner = l.slot
 		if hasSyntax {
-			// Slot 0 is the Oak lowering; the Go-lowered variants follow.
-			v.Winner = l.slot - 1
+			// Slots 0 to 2 are the Oak lowering's orders; the Go-lowered
+			// variants follow.
+			v.Winner = l.slot - oakOrders
+		}
+		if isOak {
+			v.Winner = l.slot // the order
+			if oakPending[index] == 0 {
+				oakPending[index] = oakOrders
+			}
 		}
 		decided := v.Status == 0 || v.Status == 1
 		switch {
-		case decided && (!hasSyntax || l.slot == 0 || oakLoweringDone[index]):
+		case decided && (!hasSyntax || isOak || oakLoweringDone[index]):
 			// The Oak lowering's verdict is preferred when it applies: a
-			// Go-lowered verdict stands only once the Oak lowering has
+			// Go-lowered verdict stands only once every Oak order has
 			// answered without deciding.
 			verdicts[index] = v
 			settled[index] = true
 			remaining--
 		case decided:
 			// A Go-lowered verdict ahead of the Oak lowering: held until the
-			// Oak lowering answers.
+			// Oak lowering's orders have answered.
 			held[index] = &v
 		default:
 			// Unsupported outranks exceeded: the Go decider is then asked.
 			if v.Status == 3 || failing[index] == 0 {
 				failing[index] = v.Status
 			}
-			if hasSyntax && l.slot == 0 {
-				oakLoweringDone[index] = true
-				if h := held[index]; h != nil {
-					verdicts[index] = *h
-					settled[index] = true
-					remaining--
+			if isOak {
+				oakPending[index]--
+				if oakPending[index] == 0 {
+					oakLoweringDone[index] = true
+					if h := held[index]; h != nil {
+						verdicts[index] = *h
+						settled[index] = true
+						remaining--
+					}
 				}
 			}
 			if !settled[index] && answered[index] == theorems[index].slots() {
