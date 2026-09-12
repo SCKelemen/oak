@@ -140,11 +140,41 @@ the interpreter, and the extraction see a named order (the semantic model
 lists the rewrites, `LawLowerings`), and the theorems above relate the
 orders — `tree_eq_chainFold` is what `any` rests on. The precise reading
 for floating point: under `order any`, a reduction over an `f32` add
-declared associative computes *some* grouping's value — a bounded
-quantity whose bound is the remaining theorem (`Oak.Floats`, roadmap E4)
-— while `order tree`, `order left`, and the default compute the exact
-named grouping bit for bit. `commutative` is recorded with `associative`
-and consumed by nothing yet; a backend that reorders operands, not just
+declared associative computes *some* grouping's value — a **bounded**
+quantity — while `order tree`, `order left`, and the default compute the
+exact named grouping bit for bit. The bound is a theorem
+(`Oak.FloatBounds`, over the rounding model of `Oak.Floats`: a value is an
+integer rounded to `p` significant bits after every addition, `u = 2^-p`
+the unit roundoff):
+
+- `round_error`: one rounding moves a value by at most `u·|x|`
+  (`2^p · |round p x − x| ≤ |x|`).
+- `rounded_error`: for **any grouping** of the additions, of depth `d`
+  over leaves `xᵢ`, the computed sum is within `((1 + u)^d − 1) · Σ|xᵢ|`
+  of the exact sum — stated over the integers as
+  `2^(p·d) · |rounded − exact| ≤ B p d · Σ|xᵢ|` with
+  `B p d + 2^(p·d) = (2^p + 1)^d` (`bound_closed`), so the reading needs
+  no first-order approximation.
+- `chain_error`: `reduce.chain` — the left fold from the first element,
+  what `any` lowers the reduction to — is the grouping of depth `n − 1`
+  over `n` values, so what Oak computes under `order any` is within
+  `((1 + u)^(n−1) − 1) · Σ|xᵢ|` of the exact sum.
+- `groupings_differ`: two groupings of the same values differ by at most
+  the sum of their bounds — the distance between any two orders a
+  program might name, and the whole content of "bounded".
+
+- `tree_is_grouping`: `reduce.tree` over a non-empty list is the rounded
+  sum of some grouping of exactly those leaves, so `rounded_error` bounds
+  it by that grouping's depth and `groupings_differ` bounds its distance
+  from the chain.
+
+The claim `laws { associative }` on a floating-point add is therefore a
+permission with a stated cost, not a lie about the format. What the
+theorems do not state is a closed form for the depth of `tree`'s grouping
+(the binary-counter tree is `⌈log₂ n⌉ + O(log n)` deep; the bound holds
+for whatever depth it has), and the bound is over the idealized format
+without overflow or subnormals, as `Oak.Floats` is. `commutative` is recorded with `associative` and
+consumed by nothing yet; a backend that reorders operands, not just
 groupings, is what would read it.
 
 The identity element, if required by the operation, is likewise a semantic law and not merely an optimization hint.

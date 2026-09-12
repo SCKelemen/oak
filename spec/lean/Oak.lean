@@ -89,6 +89,7 @@ import Oak.SessionObligations
 import Oak.SessionObligationsProved
 import Oak.Reduce
 import Oak.Floats
+import Oak.FloatBounds
 import Oak.GraphemeBreak
 import Oak.Normalization
 import Oak.Stdlib.VarintExtracted
