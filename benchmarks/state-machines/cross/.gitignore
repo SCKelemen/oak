@@ -1,0 +1,9 @@
+input.bin
+gen_input
+oak_validate
+validate_go
+validate_rs
+validate_zig
+validate_simd
+lowerings
+*.o

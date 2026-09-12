@@ -16,7 +16,15 @@ func TestEmitStateMachineBenchmarkSource(t *testing.T) {
 	if os.Getenv("OAK_UPDATE_BENCH") == "" {
 		t.Skip("set OAK_UPDATE_BENCH=1 to regenerate benchmarks/state-machines/utf8_protocol.c")
 	}
-	src := utf8Machine + "\nmain: (): u32 = u32(0)\n"
+	// main also calls the is_valid_utf8 builtin so the backend emits its
+	// scalar validator beside the protocol's tables; the cross-language
+	// harness times both.
+	src := utf8Machine + `
+main: (): u32 {
+  text: [4]u8 = [u8(104), u8(105), u8(195), u8(169)]
+  is_valid_utf8(view(&text)) ? u32(0) | u32(1)
+}
+`
 	c, err := New().WithSource("utf8_protocol.oak", src).EmitC().Get()
 	if err != nil {
 		t.Fatal(err)

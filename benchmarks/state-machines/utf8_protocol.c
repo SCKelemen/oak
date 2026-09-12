@@ -294,6 +294,8 @@ static inline oak_Utf8Step oak_Utf8Step_Byte( u8 value ) {
     return res;
 }
 
+typedef struct oak_arr_u8_4 { u8 v[ 4 ]; } oak_arr_u8_4;
+
 /* forward declarations; OAK_INLINE marks private leaf helpers the C
    compiler must inline at every optimization level (the external
    definition is still emitted: C99 extern inline) */
@@ -422,13 +424,18 @@ oak_Utf8State oak_utf8_run( oak_Utf8State state, oak_view_u8 bytes ) {
     return result;
 }
 
-// @source: utf8_protocol.oak:20:0-20:22
+// @source: utf8_protocol.oak:20:0-23:1
 // @package: main
 // @kind: function
 // @identifier: main
 // @signature: fn main() -> u32
 u32 oak_main(  ) {
-    return ((u32)( 0 ))  ;
+    oak_arr_u8_4 text = { { ((u8)( 104 )), ((u8)( 105 )), ((u8)( 195 )), ((u8)( 169 )) } };
+    if ( oak_is_valid_utf8( (oak_view_u8){ text.v, 4 } ) ) {
+      return ((u32)( 0 ))    ;
+    } else {
+      return ((u32)( 1 ))    ;
+    }
 }
 
 int main(void) {
