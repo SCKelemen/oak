@@ -35,4 +35,32 @@ theorem at_row (t : Tensor2) (i j : UInt32) (fuel : Nat) :
   simp only [tensor_row, tensor_at, tensor_index, bind, Option.bind, pure]
   by_cases hi : i < t.rows <;> by_cases hj : j < t.cols <;> simp [hi, hj]
 
+/-- **The flat store.** In a contiguous tensor (row stride `cols`, column
+stride 1, offset 0) the element `(gid / cols, gid % cols)` sits at storage
+index `gid`, for every `gid` below `rows * cols` — so a kernel that reads
+through `tensor_at` and stores at `out.data[gid]` under the contiguity
+guard writes the element `tensor_set` would (docs/spec/56-kernels.md
+section 8). -/
+theorem flat_index (rows cols gid : UInt32) (fuel : Nat)
+    (h : gid.toNat < rows.toNat * cols.toNat) :
+    tensor_index rows cols cols 1 0 (gid / cols) (gid % cols) fuel = some gid := by
+  have hcols : 0 < cols.toNat := Nat.pos_of_ne_zero (fun hz => by
+    rw [hz, Nat.mul_zero] at h
+    exact Nat.not_lt_zero _ h)
+  have hi : gid / cols < rows := by
+    rw [UInt32.lt_iff_toNat_lt, UInt32.toNat_div]
+    exact (Nat.div_lt_iff_lt_mul hcols).mpr h
+  have hj : gid % cols < cols := by
+    rw [UInt32.lt_iff_toNat_lt, UInt32.toNat_mod]
+    exact Nat.mod_lt _ hcols
+  simp only [tensor_index, hi, hj, decide_true, Bool.and_self, ite_true, bind, Option.bind, pure]
+  congr 1
+  apply UInt32.toNat_inj.mp
+  simp only [UInt32.toNat_add, UInt32.toNat_mul, UInt32.toNat_div, UInt32.toNat_mod, UInt32.toNat_ofNat]
+  have hle : gid.toNat / cols.toNat * cols.toNat ≤ gid.toNat := Nat.div_mul_le_self _ _
+  have hlt : gid.toNat < 2 ^ 32 := gid.toNat_lt
+  have hdm : gid.toNat / cols.toNat * cols.toNat + gid.toNat % cols.toNat = gid.toNat := Nat.div_add_mod' _ _
+  have hmod : gid.toNat % cols.toNat < 2 ^ 32 := Nat.lt_of_le_of_lt (Nat.mod_le _ _) hlt
+  omega
+
 end Oak.Stdlib.Tensor

@@ -292,9 +292,35 @@ at: t.Tensor2 = t.tensor_transpose(a)               // strides swapped, same sto
   j)` runs as a helper taking the record by value, and `out.data[gid]` is
   the store the independence rule judges. A helper that writes through a
   record's span (`tensor_set(out, …)`) is rejected inside a kernel because
-  its indices leave the kernel's sight; the row-major shape `offset + i *
-  row_stride + j * col_stride` as an admitted independence shape is the
-  next step.
+  its indices leave the kernel's sight. **The idiom for a tensor-shaped
+  output** is one element per position, stored flat under a contiguity
+  guard:
+
+  ```oak
+  kernel matmul[A, B, C]: (gid: u32, a: Tensor2[A], b: Tensor2[B], out: MutTensor2[C]): () = {
+    contiguous: Bool = out.row_stride == out.cols && out.col_stride == 1 && out.offset == 0
+    contiguous && gid < out.rows * out.cols && gid < len(out.data) && a.cols == b.rows ? {
+      i: u32 = gid / out.cols
+      j: u32 = gid % out.cols
+      acc: f32 = 0.0
+      k: u32 = 0
+      n: u32 = a.cols
+      while k < n {
+        acc = acc + tensor_at(a, i, k) * tensor_at(b, k, j)
+        k = k + 1
+      }
+      out.data[gid] = acc
+    }
+  }
+  ```
+
+  `Oak.Stdlib.Tensor.flat_index` proves, over the extraction, that in a
+  contiguous tensor `tensor_index` places `(gid / cols, gid % cols)` at
+  `gid` for every `gid` below `rows * cols`, so the flat store writes the
+  element `tensor_set` would; the guard makes the kernel's store the
+  element shape and its loads go through the shape-checked helper. The
+  inner product is the sequential left fold of `tensor_matmul`, so the
+  kernel and the library compute the same bits.
 
 `Oak.Stdlib.TensorLaws` (`spec/lean/Oak/Stdlib/TensorLaws.lean`) proves
 over the extraction (`TensorExtracted.lean`, regenerated from the Oak
