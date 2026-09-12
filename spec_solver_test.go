@@ -44,7 +44,7 @@ func TestOakSolverAgrees(t *testing.T) {
 // lowering must all take (scalars, records, arrays, and floats; the
 // lattice file keeps two laws whose blocked-order diagrams the Oak
 // lowering does not yet fit).
-var scalarLawFiles = map[string]bool{"layout.oak": true, "discharge.oak": true, "extents.oak": true, "intrinsics.oak": true, "witnesses.oak": true, "floats.oak": true, "adts.oak": true, "effects.oak": true, "mono.oak": true, "shapes.oak": true, "patterns.oak": true}
+var scalarLawFiles = map[string]bool{"layout.oak": true, "discharge.oak": true, "extents.oak": true, "intrinsics.oak": true, "witnesses.oak": true, "floats.oak": true, "adts.oak": true, "effects.oak": true, "mono.oak": true, "shapes.oak": true, "patterns.oak": true, "sums.oak": true}
 
 // TestOakSolverSelfCheck runs the solver package's own main: the diagram
 // laws on a few nodes and a hand-built problem through solve.

@@ -1,0 +1,46 @@
+// Sum types at the bit level (docs/spec/30-adts-patterns.md sections 4
+// and 5; spec/lean/Oak/ADTSemantics.lean): a value is a constructor tag
+// and its payload, a match dispatches to the first arm in source order
+// whose pattern matches and evaluates only that arm, and a parameter of a
+// sum type is decided under the hypothesis that its tag names a variant.
+// Every law is decided at the bit level: a Maybe over u16 has 65537
+// values, one past what the exhaustive decider enumerates.
+
+Maybe: type = Nothing | Just: u16
+Corner: type = struct { x: u8, y: u8 }
+Shape: type = Dot | Line: u16 | Box: Corner
+
+unwrap_or: (m: Maybe, d: u16): u16 = m ? | .Just(v) => v | .Nothing => d
+is_just: (m: Maybe): Bool = m ? | .Just(v) => true | .Nothing => false
+map_inc: (m: Maybe): Maybe = m ? | .Just(v) => Maybe.Just(v + u16(1)) | .Nothing => Maybe.Nothing
+or_else: (m: Maybe, fallback: Maybe): Maybe = m ? | .Just(v) => m | .Nothing => fallback
+first_arm_wins: (m: Maybe): u16 = m ? | .Just(v) => u16(1) | _ => u16(0)
+area: (s: Shape): u32 = s ? | .Dot => u32(0) | .Line(n) => u32(n) | .Box(c) => u32(c.x) * u32(c.y)
+
+// construct_then_dispatch: a fresh value through the arm for its own
+// constructor hands the arm exactly the constructed payload.
+unwrap_just: theorem (x: u16, d: u16) { unwrap_or(Maybe.Just(x), d) == x }
+unwrap_nothing: theorem (d: u16, k: u16) { unwrap_or(Maybe.Nothing, d) == d && unwrap_or(Maybe.Nothing, k) == k }
+
+// select_result_from_selected_handler: the result is the selected arm's.
+unwrap_or_is_operand: theorem (m: Maybe, d: u16) { is_just(m) || unwrap_or(m, d) == d }
+
+// Dispatch preserves the constructor a value was built with.
+map_inc_keeps_shape: theorem (m: Maybe) { is_just(map_inc(m)) == is_just(m) }
+map_inc_value: theorem (x: u16, d: u16) { unwrap_or(map_inc(Maybe.Just(x)), d) == x + u16(1) }
+
+// A sum-typed argument and result: or_else keeps a Just and takes the
+// fallback for Nothing.
+or_else_left: theorem (m: Maybe, fallback: Maybe) { !is_just(m) || unwrap_or(or_else(m, fallback), u16(0)) == unwrap_or(m, u16(0)) }
+or_else_right: theorem (m: Maybe, fallback: Maybe) { is_just(m) || unwrap_or(or_else(m, fallback), u16(7)) == unwrap_or(fallback, u16(7)) }
+
+// select_head_skip: a wildcard after a constructor arm takes what the
+// constructor arm did not.
+wildcard_after_variant: theorem (m: Maybe, d: u16) { first_arm_wins(m) == (is_just(m) ? { u16(1) } | { u16(0) }) && d == d }
+
+// A record payload arrives as constructed, and the arms of a three-way
+// dispatch are disjoint.
+area_box_line: theorem (c: Corner, n: u16) { area(Shape.Box(c)) + area(Shape.Line(n)) == u32(c.x) * u32(c.y) + u32(n) }
+area_dot: theorem (n: u16, k: u16) { area(Shape.Dot) == u32(0) && area(Shape.Line(n)) + area(Shape.Line(k)) == u32(n) + u32(k) }
+
+main: (): i32 = 0

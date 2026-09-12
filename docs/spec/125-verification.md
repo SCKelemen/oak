@@ -197,13 +197,17 @@ does not reach is lowered to the decider's terms, passed the Go decider's
 witness inputs (a counterexample among them settles it at once), and
 serialized under every variable order that applies as a word table — and,
 when it is in that lowering's subset (integers, Bool, floats as their
-IEEE patterns, records of them, and fixed arrays as parameters, locals,
-arguments, and results; the arithmetic, bitwise, shift, comparison, and
-Boolean operators; conversions; the scalar instruction functions; the
-total float operations, comparisons, classifiers, `total_order`, `min`,
-and `max`; conditionals; counted loops; field and element reads and
-stores, an element at a data-dependent index included; record and
-array literals; calls to program functions), also as a syntax table for
+IEEE patterns, records of them, fixed arrays, and sum types as
+parameters, locals, arguments, and results; the arithmetic, bitwise,
+shift, comparison, and Boolean operators; conversions; the scalar
+instruction functions; the total float operations, comparisons,
+classifiers, `total_order`, `min`, and `max`; conditionals; matches over
+sum types and scalars with variant, literal, wildcard, and binding
+patterns, in value and statement position; variant construction; counted
+loops; field and element reads and stores, an element at a
+data-dependent index included; record and array literals; calls to
+program functions — a parameter of a sum type decided under the
+hypothesis that every tag names a variant), also as a syntax table for
 the lowering written in
 Oak (`prove/solver/lower.oak`), which builds the terms itself under each
 of the three variable orders and whose verdict is preferred whenever it
@@ -426,6 +430,7 @@ as bitsets, with the procedure's verdict tied to the witness it reports
 | `Exhaustiveness.wildcard_is_exhaustive`, `all_constructors_are_exhaustive`, `missing_constructor_is_not_exhaustive`, `adding_arms_preserves_exhaustiveness`, `constructor_membership_drives_coverage` | same names (`patterns.oak`) | decided |
 | `PatternAnalysis.counterexample_refutes_exhaustive`, `missing_reachable_is_counterexample`, `redundant_not_useful`, `adding_redundant_preserves_exhaustive`, `refinement_excludes_other`, `unreachable_case_not_required`, `constructor_match_introduces_refinement`, `excluded_constructor_arm_is_unreachable` | same names | decided |
 | (properties 1 and 2 of `35-pattern-analysis.md` §12) | `exhaustive_or_counterexample`, `wildcard_matches` | decided, bit level |
+| `ADTSemantics.construct_then_dispatch`, `select_result_from_selected_handler`, `select_head_skip`, over the language's own sum types (`30-adts-patterns.md` §5) | `spec/oak/sums.oak`: `unwrap_just`, `unwrap_nothing`, `unwrap_or_is_operand`, `map_inc_keeps_shape`, `map_inc_value`, `or_else_left`, `or_else_right`, `wildcard_after_variant`, `area_box_line`, `area_dot` | decided, bit level (lowered in Oak, under the tag hypothesis) |
 
 ### 6.3 Shapes, dispatch, generalization, instantiation
 
@@ -472,12 +477,15 @@ In order of payoff, each reusing a surface that exists:
   syntax table with its types, run by an explicit stack machine — Oak
   admits no unbounded recursion — that builds the terms the way the Go
   lowering does, records and arrays as blocks of leaf terms, floats as
-  bit patterns with the fresh symbol a NaN `min` or `max` yields, under
-  the three variable orders; 153 of the corpus's 155 bit-level laws are
+  bit patterns with the fresh symbol a NaN `min` or `max` yields, sum
+  types with first-match dispatch and the tag hypothesis, under the
+  three variable orders; 163 of the corpus's 165 bit-level laws are
   lowered and decided in Oak today, every one but two lattice laws whose
   blocked-order diagrams the Oak lowering does not yet fit, those by the
-  Go lowering and the Oak solver), next sum types and their tag
-  hypotheses, so the bit-level path is Oak code end to end; then
+  Go lowering and the Oak solver), so on the bit-level path the Go that
+  remains is the parser, the type checker, the witness pass, and the
+  serialization; next those two laws, then the parser and checker
+  themselves; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
   producers of certificates, so speed and trust are separated; then an
