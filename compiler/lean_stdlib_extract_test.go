@@ -111,6 +111,12 @@ drive_shuffle_u32: (state: [*]Xoshiro, items: [*]u32): () { random_shuffle[u32](
 	// reductions over f32 and f64 in the stated sequential order, an axpy
 	// into a span, and the f32/f64 rows of 20-types.md section 11.3.4.
 	{name: "floatkernels", file: "FloatKernelsExtracted.lean", namespace: "Oak.Stdlib.FloatKernels", source: leanFloatKernelsSource},
+	{name: "unicode", file: "UnicodeExtracted.lean", namespace: "Oak.Stdlib.Unicode"},
+	{name: "strings", file: "StringsExtracted.lean", namespace: "Oak.Stdlib.Strings", deps: []string{"unicode"}},
+	{name: "url", file: "UrlExtracted.lean", namespace: "Oak.Stdlib.Url"},
+	{name: "path", file: "PathExtracted.lean", namespace: "Oak.Stdlib.Path", deps: []string{"unicode", "strings"}},
+	{name: "grapheme", file: "GraphemeExtracted.lean", namespace: "Oak.Stdlib.Grapheme", deps: []string{"unicode", "strings"}},
+	{name: "normalize", file: "NormalizeExtracted.lean", namespace: "Oak.Stdlib.Normalize", deps: []string{"unicode", "strings"}},
 	{name: "sort", file: "SortU32Extracted.lean", namespace: "Oak.Stdlib.SortU32", driver: `
 sort_u32_is_sorted: (items: []u32): Bool = sort_is_sorted[u32](items)
 sort_u32_insertion: (items: [*]u32): () { sort_insertion[u32](items) }

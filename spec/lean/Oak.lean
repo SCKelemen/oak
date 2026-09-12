@@ -83,6 +83,7 @@ import Oak.Stdlib.VarintExtracted
 import Oak.Stdlib.EncodingExtracted
 import Oak.Stdlib.HashExtracted
 import Oak.FloatOps
+import Oak.Utf8Exec
 import Oak.Stdlib.FloatExtracted
 import Oak.Stdlib.TensorExtracted
 import Oak.Stdlib.MathExtracted
@@ -90,6 +91,12 @@ import Oak.Stdlib.FloatKernelsExtracted
 import Oak.Stdlib.RandomExtracted
 import Oak.Stdlib.UuidExtracted
 import Oak.Stdlib.SortU32Extracted
+import Oak.Stdlib.UnicodeExtracted
+import Oak.Stdlib.StringsExtracted
+import Oak.Stdlib.UrlExtracted
+import Oak.Stdlib.PathExtracted
+import Oak.Stdlib.GraphemeExtracted
+import Oak.Stdlib.NormalizeExtracted
 import Oak.Stdlib.VarintLaws
 import Oak.Stdlib.SortLaws
 import Oak.Stdlib.TensorLaws
