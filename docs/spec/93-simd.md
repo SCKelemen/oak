@@ -228,6 +228,18 @@ builtin `is_valid_utf8` lowers to `utf8.valid` in every module build
 validator. A bare source build, which has no packages, keeps the scalar C
 transliteration of `Oak.Utf8Validity`.
 
+`utf8.locate` is the positioned form (`70-strings.md` §4a): the same
+steps, classified one at a time, and the first step whose error lanes — or
+carried `incomplete` mask — are nonzero hands over to
+`strings.utf8_first_error_at` from a sequence boundary found by stepping
+three bytes back and advancing over continuation bytes; everything before
+the step passed the vector classification, so the failing lead is within
+those three bytes. Reject fast, locate slow, as simdutf's `_with_errors`
+variants do; the differential test checks `locate` against the library's
+scalar decoder and against a third scalar oracle written in the test, on
+every edge case (including a lead left open at byte 63 before an ASCII
+step, and a stray continuation at byte 64) and the random corrupted inputs.
+
 ## 2. arm64 vector instruction functions
 
 Horizontal (across-vector) operations do not abstract portably at fixed

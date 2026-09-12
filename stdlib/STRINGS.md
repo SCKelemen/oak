@@ -40,6 +40,8 @@ are evaluated once, and reversed or out-of-range bounds trap.
 | `unicode_is_scalar(value)` | Excludes surrogates and values above U+10FFFF |
 | `utf8_validate(src)`, `utf16_validate(src)`, `utf32_validate(src)` | Complete strict validation |
 | `utf8_count(src)`, `utf16_count(src)`, `utf32_count(src)` | `Result[u32, TextError]`, number of scalars |
+| `utf8_first_error(src)`, `utf8_first_error_at(src, start)` | Offset of the first ill-formed byte, or `len(src)` when well-formed |
+| `utf8_check(src)` | `Result[u32, TextFault]`: the scalar count, or `{ error: .InvalidEncoding, at }` |
 | `utf8_decode(src, offset)` and corresponding UTF-16/32 functions | `TextScalar { value, next }`, next code-unit offset |
 | `utf8_decode_previous(src, end)` | Scalar ending exactly at `end`; `next` is its starting byte offset |
 

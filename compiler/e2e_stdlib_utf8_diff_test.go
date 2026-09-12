@@ -124,12 +124,16 @@ walk: (src: []u8): Walk {
 		writeBytes(&src, "input", input)
 		fmt.Fprintf(&src, "  w: Walk = walk(input)\n")
 		fmt.Fprintf(&src, "  ok: Bool = w.count == u32(%d) && w.stop == u32(%d) && w.sum == u64(%d)\n", count, stop, sum)
-		fmt.Fprintf(&src, "  ok && utf8_validate(input) == %t && text_result_value(utf8_count(input)) == u32(%d)\n}\n", utf8.Valid(input), func() uint32 {
+		firstError := uint32(len(input))
+		if !utf8.Valid(input) {
+			firstError = stop
+		}
+		fmt.Fprintf(&src, "  ok && utf8_validate(input) == %t && text_result_value(utf8_count(input)) == u32(%d) && utf8_first_error(input) == u32(%d)\n}\n", utf8.Valid(input), func() uint32 {
 			if utf8.Valid(input) {
 				return count
 			}
 			return 4294967295
-		}())
+		}(), firstError)
 	}
 	src.WriteString("main: (): i32 {\n")
 	for i := range inputs {

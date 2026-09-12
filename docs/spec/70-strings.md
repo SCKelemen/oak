@@ -105,6 +105,35 @@ source build has no packages and keeps the scalar C transliteration of
 the same brackets; the interpreter's builtin stays scalar as the
 reference the differential tests run against.
 
+### 4a. Error positions
+
+A validator that only answers `Bool` cannot say where; the position is
+what a negative test asserts and what a user is shown. The text library
+reports it as a typed value, never as a count whose meaning flips on error
+(the checklist's rule against in-band sentinels):
+
+- `strings.utf8_first_error_at(src, start): u32` is the offset of the first
+  ill-formed byte at or after `start` — the lead of the sequence that
+  fails: truncated, overlong, a surrogate, above U+10FFFF, or a stray
+  continuation — or `len(src)` when the bytes from `start` on are
+  well-formed. `utf8_first_error(src)` starts at zero. Both are total and
+  walk the bounds-checked scalar decoder one sequence at a time.
+- `strings.utf8_check(src): Result[u32, TextFault]` is the scalar count on
+  success and, on failure, `TextFault { error: .InvalidEncoding, at }`.
+  `TextFault` pairs a `TextError` with the offset it was detected at.
+- `utf8.locate(bytes): u32` (`93-simd.md` §1.5) is the vector twin of
+  `utf8_first_error`: it rejects fast, step by step, and locates slow — the
+  first step whose error lanes are nonzero hands over to the scalar decoder
+  from a sequence boundary just before it. It agrees with
+  `utf8_first_error` byte for byte, which the differential tests check
+  under both lowerings against a third, independent scalar oracle;
+  `utf8.valid` stays the fast path when only the verdict is wanted.
+
+The position is the first ill-formed byte in Unicode's sense (Table 3-7,
+maximal subparts): the lead of the failing sequence, not the byte inside
+it that failed to continue it. Go's `utf8.DecodeRune` reports the same
+offset, which is how the differential test computes its expectation.
+
 ## 5. Borrowing
 
 A string view preserves the provenance/lifetime of its underlying view. Wrapping bytes as text does not extend storage lifetime.

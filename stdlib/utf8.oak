@@ -1,5 +1,7 @@
 package utf8
 
+import("strings")
+
 // UTF-8 validation over Oak's portable vectors (docs/spec/70-strings.md,
 // docs/spec/93-simd.md section 1.5): the lookup-table classification of
 // Keiser and Lemire ("Validating UTF-8 In Less Than One Instruction Per
@@ -170,4 +172,106 @@ pub valid: (bytes: []u8): Bool {
     prev_incomplete = zero
   }
   !simd.any_u8x16(simd.or_u8x16(error, prev_incomplete))
+}
+
+// locate_from: the first ill-formed byte at or after the sequence boundary
+// nearest before `off`, by the scalar decoder. Everything before `off`
+// passed the vector classification, so the faulty sequence's lead is at
+// most three bytes before it; starting three bytes back and advancing over
+// continuation bytes lands on a boundary — a lead or an ASCII byte — from
+// which the scalar walk either decodes whole sequences and continues, or
+// reports the lead of the one that fails (the truncated sequence a carried
+// `incomplete` mask stands for included).
+locate_from: (bytes: []u8, off: u32): u32 {
+  n: u32 = len(bytes)
+  start: u32 = off >= u32(3) ? { off - u32(3) } | { u32(0) }
+  while start < off && start < n && (bytes[start] & u8(192)) == u8(128) {
+    start = start + u32(1)
+  }
+  strings.utf8_first_error_at(bytes, start)
+}
+
+// locate reports the offset of the first ill-formed byte, or len(bytes)
+// when the input is well-formed — the position simdutf's `_with_errors`
+// variants return. Reject fast, locate slow: the steps are classified
+// exactly as `valid` classifies them, and the first step whose error lanes
+// (or carried `incomplete` mask) are nonzero hands over to the scalar
+// decoder from a boundary just before it (locate_from). It agrees with
+// `strings.utf8_first_error` on every input, which the differential tests
+// check under both lowerings; `valid` remains the fast path when only the
+// verdict is wanted.
+pub locate: (bytes: []u8): u32 {
+  high1: simd.U8x16 = simd.load_u8x16(view(&table_high1), u32(0))
+  low1: simd.U8x16 = simd.load_u8x16(view(&table_low1), u32(0))
+  high2: simd.U8x16 = simd.load_u8x16(view(&table_high2), u32(0))
+  maxima: simd.U8x16 = simd.load_u8x16(view(&incomplete_max), u32(0))
+  high_bit: simd.U8x16 = simd.splat_u8x16(u8(128))
+  zero: simd.U8x16 = simd.splat_u8x16(u8(0))
+  prev_input: simd.U8x16 = zero
+  prev_incomplete: simd.U8x16 = zero
+  n: u32 = len(bytes)
+  off: u32 = u32(0)
+  found: u32 = n
+  done: Bool = false
+  while !done && len(bytes) >= u32(64) && off <= len(bytes) - u32(64) {
+    a: simd.U8x16 = simd.load_u8x16(bytes, off)
+    b: simd.U8x16 = simd.load_u8x16(bytes, off + u32(16))
+    c: simd.U8x16 = simd.load_u8x16(bytes, off + u32(32))
+    d: simd.U8x16 = simd.load_u8x16(bytes, off + u32(48))
+    step_bits: simd.U8x16 = simd.or_u8x16(simd.or_u8x16(a, b), simd.or_u8x16(c, d))
+    step_error: simd.U8x16 = zero
+    simd.any_u8x16(simd.and_u8x16(step_bits, high_bit)) ? {
+      step_error = check_blocks(high1, low1, high2, prev_input, a, b, c, d)
+      prev_incomplete = simd.subs_u8x16(d, maxima)
+    } | {
+      step_error = prev_incomplete
+      prev_incomplete = zero
+    }
+    simd.any_u8x16(step_error) ? {
+      found = locate_from(bytes, off)
+      done = true
+    } | {
+      prev_input = d
+      off = off + u32(64)
+    }
+  }
+  while !done && len(bytes) >= u32(16) && off <= len(bytes) - u32(16) {
+    input: simd.U8x16 = simd.load_u8x16(bytes, off)
+    step_error: simd.U8x16 = zero
+    simd.any_u8x16(simd.and_u8x16(input, high_bit)) ? {
+      step_error = check_block(high1, low1, high2, prev_input, input)
+      prev_incomplete = simd.subs_u8x16(input, maxima)
+    } | {
+      step_error = prev_incomplete
+      prev_incomplete = zero
+    }
+    simd.any_u8x16(step_error) ? {
+      found = locate_from(bytes, off)
+      done = true
+    } | {
+      prev_input = input
+      off = off + u32(16)
+    }
+  }
+  !done ? {
+    tail: [16]u8 = [
+      u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0),
+      u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0)]
+    i: u32 = u32(0)
+    while off + i < n {
+      tail[i] = bytes[off + i]
+      i = i + u32(1)
+    }
+    last: simd.U8x16 = simd.load_u8x16(view(&tail), u32(0))
+    step_error: simd.U8x16 = zero
+    simd.any_u8x16(simd.and_u8x16(last, high_bit)) ? {
+      step_error = check_block(high1, low1, high2, prev_input, last)
+      prev_incomplete = simd.subs_u8x16(last, maxima)
+    } | {
+      step_error = prev_incomplete
+      prev_incomplete = zero
+    }
+    simd.any_u8x16(simd.or_u8x16(step_error, prev_incomplete)) ? { found = locate_from(bytes, off) }
+  }
+  found
 }
