@@ -484,6 +484,29 @@ the compiler compiles, up to the extractor and the compiler being correct:
   of the destination untouched. `percent_decoded_size_ok_iff` is the size
   pass alone; `pdec_size_loop` and `pdec_decode_loop` relate the extracted
   loops to `pdec` by strong induction on the remaining input.
+- `Oak/Stdlib/Base32StrictLaws.lean`: `base32_decode_ok_iff` — for every text
+  below `2^32 - 8` bytes, `base32_decode` succeeds iff the text with its
+  letters uppercased (`src.map upper32`) is an encoding of a source the
+  destination holds: the decoder folds case (its value tables read `a`–`z`
+  as `A`–`Z`), so strictness holds up to case, as `hex_decode_ok_iff` does
+  for hexadecimal. `base32_decode_strict` builds the witness: the bytes the
+  decoder wrote are a source whose encoding — padded iff the text carries
+  padding — is the uppercased text (`Encoded32`); the converse goes through
+  `Encoded32V`, the encoding as the decoder reads it (symbol values and pad
+  positions only), which `base32_decode_encoded` in `Base32Laws.lean` now
+  takes and which an encoding up to case satisfies (`Encoded32V_of_upper`,
+  by `val32_upper`). The rejection half follows the decoder on arbitrary
+  input: `unpadded_length_gen32` (the strip counts up to six trailing `=`,
+  the misplaced-pad scan refuses a `=` in the body, the padding must
+  complete a group), `valid_loop_gen32` (the scan reports clean only when
+  every value is below 32), `decoded_size_gen32` (the length check refuses
+  one, three, or six symbols past a group; the canonical check reads the
+  last symbol's unused bits), `b32_decode_of_size` (the group loop on any
+  accepted text writes the bytes of `decWord32`), and `encoded_of_decoded32`
+  (the decoded bytes reassemble into words whose five-bit fields are the
+  symbol values — `fld_reW8` for a full group, `fld_reW2` … `fld_reW7` for
+  the four tail lengths under their canonical bits — and `symbol_val32`
+  inverts the value table onto the uppercased byte).
 - `Oak/Stdlib/UuidLaws.lean`: for every one-cell generator state and every
   sixteen-byte destination, `uuid_v4_spec` — `uuid_v4` succeeds and the
   value reports version 4 (`uuid_version`) and the RFC variant
@@ -512,9 +535,8 @@ most; the kernel-decided facts use no axioms.
 - State the pdqsort laws beyond the insertion threshold and the exhausted
   budget: the range-stack invariant (ranges disjoint, everything between them
   in final position, every swap in bounds) over `sort_span_budget.loop1`,
-  with `writeback_perm` and the heap and insertion laws as the leaves;
-  strictness for base32 (`base32_decode` accepts a text iff it is an
-  encoding) as `base64_decode_ok_iff` does for base64; the SHA-256 and CRC-32C
+  with `writeback_perm` and the heap and insertion laws as the leaves; the
+  SHA-256 and CRC-32C
   extractions against reference definitions (the streaming laws hold; the
   compression and the table remain opaque to the proofs).
 - The subset: strings and the text library, methods, and recursion;
