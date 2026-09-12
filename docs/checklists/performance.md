@@ -309,6 +309,25 @@ remains that a fact could elide" is a finding.
 - [ ] **Hot/cold splitting.** Can a record's rarely-touched fields be
       moved to a side table without changing call sites? (DOD) — Oak:
       representation axis; not stated as a mechanism.
+- [ ] **Wire records as typed views over bytes, with wide scalars.** Can
+      a 256-byte header be declared padding-free with `u128` checksum and
+      id fields at 16- and 32-byte alignment, its layout asserted at
+      compile time, and read as a borrowed record view at an offset into
+      a `[]u8` after its checksum is verified? (TB `message_header.zig`
+      `extern struct`, `stdx.no_padding`) — Oak: `struct(packed)`,
+      `static_assert(size_of/offset_of)` (`40-records.md` §6a–§6b), C
+      header asserts (`92-ffi.md` §2.6); no `u128`/`u256`
+      (`20-types.md`), no no-padding predicate, record views only for
+      JSON-derived fields (`71-codecs.md` §13a); the fixed-layout binary
+      codec is wanted (dbs note round 3 ask 9) — gap, class (a).
+- [ ] **Bounded arrays and busy-bitset pools.** Can a fixed array carry
+      its count as a refinement bounded by its capacity, and a pool hand
+      out slots by index with acquire returning "none" when full? (TB
+      `BoundedArrayType`, `IOPSType`) — Oak: `count: u32 where value <=
+      N` (`20-types.md` §12) can carry the bound, `stdlib/slab.oak` is
+      the generational form; `Ring`/`BitSet` planned
+      (`standard-library-design.md`); pointer-to-index recovery is (b) by
+      design — handles replace it.
 - [ ] **Niche and tag compression.** Does `Option[View]` cost zero extra
       bytes (null niche), does a tag share storage with padding or an
       unused range, and is the optimization proof-preserving? (Rust
@@ -596,8 +615,14 @@ remains that a fact could elide" is a finding.
       grouped into one submission? (TB, io_uring) — Oak: `120-io.md`.
 - [ ] **Direct I/O with aligned buffers.** Are block buffers
       sector-aligned and sized so the kernel page cache is bypassed
-      deliberately, with alignment a type fact? (TB, databases) — Oak:
-      §2a alignment; check `120-io.md`.
+      deliberately, with alignment a type fact? Is the sector size a
+      named constant, every file size and I/O offset asserted a multiple,
+      alignment carried in the buffer's type, Direct I/O a tri-state
+      (required, optional, disabled) with a filesystem probe, and `pread`
+      size capped by the OS limit constant? (TB `io/linux.zig`,
+      databases) — Oak: §2a alignment on records only; `120-io.md` §5
+      Direct I/O is increment two; no alignment fact on an `IoBuffer`
+      window — gap.
 - [ ] **Zero-copy from device to consumer.** Does data cross layers as
       views into the receive buffer, never re-copied for convenience?
       (dbs, DPDK) — Oak: `71-codecs.md` §13a.
@@ -608,10 +633,12 @@ remains that a fact could elide" is a finding.
       unbounded buffering? (TB, Reactive Streams) — Oak: rings with
       declared capacity.
 - [ ] **Simulated and native I/O agree on cost shape.** Does the
-      simulation model the *latency and batching* the native path has,
-      so a design validated in sim is not slow in native? (TB VOPR) —
-      Oak: `120-io.md` two realizations differ only in fault model —
-      cost model: check.
+      simulation model the *latency and batching* the native path has —
+      minimum plus exponential(mean) per operation, per-path clogging,
+      capacity drop — so a design validated in sim is not slow in
+      native? (TB VOPR `packet_simulator.zig`) — Oak: `120-io.md` two
+      realizations differ only in fault model; `SimSched` delays are
+      uniform — cost model: check.
 
 ## 9. Compilers, fusion, and specialization
 
