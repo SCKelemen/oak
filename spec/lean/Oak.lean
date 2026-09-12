@@ -130,3 +130,4 @@ import Oak.TimeInterval
 import Oak.ProtocolConformance
 import Oak.RiscV
 import Oak.Target
+import Oak.Freestanding

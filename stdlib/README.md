@@ -1170,6 +1170,20 @@ the reading contains the true time exactly when the clock's departure is
 within the bound, that definitely-ordered honest intervals order their true
 times the same way, and that an unattested source yields no ordering.
 
+## `timehost`: the host's clocks for freestanding targets (`import("timehost")`)
+
+`stdlib/timehost.oak` is `timenative`'s twin for a kernel, a hypervisor,
+or firmware (`docs/spec/90-backend.md` §2a): `timehost_source(out)` and
+`timehost_refresh(source)` read two extern hooks the host defines —
+`int64_t oak_time_host_realtime_nanos(void)` and
+`int64_t oak_time_host_monotonic_nanos(void)` — instead of `clock_gettime`
+and the `CLOCK_*` target constants, so the package compiles freestanding on
+every target in the closed set, ILP32 microcontrollers included. The
+monotonic hook must not go backwards (a stalled reading is admitted; the
+source keeps its value), the wall clock may be zero when the host has
+none. `Oak.Freestanding` carries the invariants; `compiler/e2e_mcu_test.go`
+runs it on a Cortex-M3 and an RV32 core under QEMU.
+
 ## `timesim`: simulated time with clock faults (`import("timesim")`)
 
 `stdlib/timesim.oak` (a library package over `time` and `import(testing)`,
