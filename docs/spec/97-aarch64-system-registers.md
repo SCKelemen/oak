@@ -40,7 +40,16 @@ Read/write:
 - `CNTHCTL_EL2`, `CNTVOFF_EL2`;
 - `ELR_EL2`, `SPSR_EL2`;
 - `CNTV_CTL_EL0`, `CNTV_CVAL_EL0`;
-- `SP_EL1`, `SCTLR_EL1`, `TTBR0_EL1`, `TCR_EL1`, `VBAR_EL1`.
+- `SP_EL1`, `SCTLR_EL1`, `TTBR0_EL1`, `TCR_EL1`, `VBAR_EL1`;
+- `MAIR_EL1`, `SP_EL0`, `ELR_EL1`, `SPSR_EL1` — the kernel adapter's MMU
+  register program and EL0 entry (`write_sp_el0`, `write_elr_el1`,
+  `write_spsr_el1`, then `eret`).
+
+The library catalog here and the assembler's encoding table
+(`asm/sysregs_gen.go`, every register MRS/MSR can name; `94-assembler.md`)
+are two surfaces: an `.oakasm` unit may name any encoded register, while
+`arm64.read_X`/`arm64.write_X` in Oak source exist only for the registers
+listed above.
 
 Adding a register is a language change. Its architectural access direction,
 privilege assumptions, source spelling, effect, and backend spelling must be

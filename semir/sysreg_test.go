@@ -4,8 +4,8 @@ import "testing"
 
 func TestArm64SysRegCatalogIsLegalAndUnique(t *testing.T) {
 	regs := Arm64SysRegs()
-	if len(regs) != 24 {
-		t.Fatalf("system-register catalog has %d entries, want 24", len(regs))
+	if len(regs) != 28 {
+		t.Fatalf("system-register catalog has %d entries, want 28", len(regs))
 	}
 	seenReg := map[string]bool{}
 	seenMember := map[string]bool{}
@@ -56,5 +56,23 @@ func TestSysRegLookupAllocatesNothing(t *testing.T) {
 	})
 	if allocs != 0 {
 		t.Fatalf("system-register lookup allocated %.2f objects per call; want zero", allocs)
+	}
+}
+
+// The four registers the OS pilot's kernel adapter needs beyond the EL2
+// path (docs/notes/os-language-requests-2026-09.md, R6): the MMU register
+// program writes mair_el1; the EL0 entry writes sp_el0, elr_el1 and
+// spsr_el1 before ERET. Round one pinned them in the assembler's encoding
+// table only; the library catalog is a separate surface and must carry
+// them too.
+func TestKernelAdapterSysRegsAreInTheLibraryCatalog(t *testing.T) {
+	for _, name := range []string{"mair_el1", "sp_el0", "elr_el1", "spsr_el1"} {
+		reg, found, write := LookupArm64SysRegMember("write_" + name)
+		if !found || !write || reg.Name != name {
+			t.Fatalf("arm64.write_%s is missing from the library catalog", name)
+		}
+		if _, found, write := LookupArm64SysRegMember("read_" + name); !found || write {
+			t.Fatalf("arm64.read_%s is missing from the library catalog", name)
+		}
 	}
 }
