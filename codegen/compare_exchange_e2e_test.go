@@ -26,7 +26,7 @@ func TestCompareExchangeLowersToStrongC11WithoutHeapOrOrderDispatch(t *testing.T
 	generated := generateSourceC(t, compareExchangeSource)
 	for _, required := range []string{
 		"atomic_compare_exchange_strong_explicit",
-		"memory_order_acq_rel, memory_order_acquire",
+		"OAK_ORDER_CAS_ACQ_REL, memory_order_acquire",
 		"memory_order_relaxed, memory_order_relaxed",
 		"_Generic((cell)",
 		"__oak_cas_acq_rel_acquire(&(counter)",

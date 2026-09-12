@@ -324,3 +324,8 @@ The next work is to verify that generated C and AArch64 code preserve these
 relations through assembly inspection and weak-memory litmus tests. Only then
 should a lock-free queue be accepted as relying on Oak's memory model end to
 end.
+
+The RISC-V refinement layer is `69-riscv-memory-refinement.md`: the same
+evidence stack over RVWMO, with Oak's RCsc acquire realized by the seq_cst
+load sequence and `.aqrl` annotations because the ISA's C11 acquire mapping
+is RCpc.

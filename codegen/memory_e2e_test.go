@@ -64,7 +64,7 @@ func TestAtomicSourceLowersWithoutHeapOrRuntimeOrderDispatch(t *testing.T) {
 		"atomic_thread_fence(memory_order_acq_rel)",
 		"atomic_fetch_add_explicit(&(counter)",
 		"memory_order_relaxed",
-		"atomic_load_explicit(&(counter), memory_order_acquire)",
+		"atomic_load_explicit(&(counter), OAK_ORDER_LOAD_ACQUIRE)",
 	} {
 		if !strings.Contains(generated, required) {
 			t.Fatalf("generated C missing %q:\n%s", required, generated)

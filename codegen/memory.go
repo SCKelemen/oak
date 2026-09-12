@@ -25,6 +25,49 @@ func cMemoryOrder(order semir.MemoryOrder) (string, error) {
 	}
 }
 
+// cMemoryOrderFor spells the order an operation kind uses. Acquire is
+// spelled through a macro: the emitted C is one translation unit for every
+// target, and on RISC-V Oak's OS-profile acquire (RCsc,
+// docs/spec/69-riscv-memory-refinement.md §2) is stronger than the C11
+// acquire mapping the ISA recommends (`ld; fence r,rw` and `amo.aq` are
+// RCpc, the analogue of LDAPR), so the prelude defines the macro as
+// seq_cst for loads and acq_rel for read-modify-writes there, and as
+// memory_order_acquire everywhere else.
+func cMemoryOrderFor(kind semir.AtomicOperation, order semir.MemoryOrder) (string, error) {
+	switch {
+	case order == semir.MemoryOrderAcquire && kind == semir.AtomicLoad:
+		return "OAK_ORDER_LOAD_ACQUIRE", nil
+	case order == semir.MemoryOrderAcquire && kind == semir.AtomicRMW:
+		return "OAK_ORDER_RMW_ACQUIRE", nil
+	case order == semir.MemoryOrderAcquire && kind == semir.AtomicCompareExchange:
+		return "OAK_ORDER_CAS_ACQUIRE", nil
+	case order == semir.MemoryOrderAcqRel && kind == semir.AtomicCompareExchange:
+		// The C11 acq_rel pair lr.aq / sc.rl is RCpc on its acquire side
+		// (Oak.RiscVMemory.c11_acqrel_lrsc_is_rcpc): seq_cst on RISC-V.
+		return "OAK_ORDER_CAS_ACQ_REL", nil
+	}
+	return cMemoryOrder(order)
+}
+
+// atomicOrderMacros is the prelude that selects the acquire spelling per
+// target (docs/spec/69-riscv-memory-refinement.md §2).
+const atomicOrderMacros = `/* Oak acquire orders per target: RISC-V's C11 acquire mapping is RCpc, so the
+   OS profile's RCsc acquire takes the seq_cst load sequence and .aqrl RMWs
+   there (docs/spec/69-riscv-memory-refinement.md section 2) */
+#if defined(__riscv)
+#define OAK_ORDER_LOAD_ACQUIRE memory_order_seq_cst
+#define OAK_ORDER_RMW_ACQUIRE memory_order_acq_rel
+#define OAK_ORDER_CAS_ACQUIRE memory_order_seq_cst
+#define OAK_ORDER_CAS_ACQ_REL memory_order_seq_cst
+#else
+#define OAK_ORDER_LOAD_ACQUIRE memory_order_acquire
+#define OAK_ORDER_RMW_ACQUIRE memory_order_acquire
+#define OAK_ORDER_CAS_ACQUIRE memory_order_acquire
+#define OAK_ORDER_CAS_ACQ_REL memory_order_acq_rel
+#endif
+
+`
+
 func atomicCType(carrier string) (string, error) {
 	if !semir.AtomicCarrierAllowed(carrier) {
 		return "", fmt.Errorf("unsupported atomic carrier %q", carrier)
@@ -199,6 +242,7 @@ func (cg *CodeGenerator) emitAtomicGlobals(program *ast.Program) {
 		return
 	}
 	cg.write("#include <stdatomic.h>\n\n")
+	cg.write(atomicOrderMacros)
 	cg.atomicsIncluded = true
 
 	emitted := false
@@ -247,7 +291,7 @@ func (cg *CodeGenerator) emitAtomicInvocation(call *ast.InvocationExpression, tc
 	}
 
 	if spec.Kind == semir.AtomicBuiltinFence {
-		order, err := cMemoryOrder(spec.Order)
+		order, err := cMemoryOrderFor(spec.Operation, spec.Order)
 		if err != nil {
 			cg.output.WriteString("OAK_INVALID_ATOMIC_ORDER")
 			return true
@@ -289,7 +333,7 @@ func (cg *CodeGenerator) emitAtomicInvocation(call *ast.InvocationExpression, tc
 		return true
 	}
 
-	order, err := cMemoryOrder(spec.Order)
+	order, err := cMemoryOrderFor(spec.Operation, spec.Order)
 	if err != nil {
 		cg.output.WriteString("OAK_INVALID_ATOMIC_ORDER")
 		return true
@@ -335,7 +379,7 @@ func atomicLoadC(address string, order semir.MemoryOrder) (string, error) {
 	if !semir.LegalAtomicOrder(semir.AtomicLoad, order) {
 		return "", fmt.Errorf("illegal atomic load order %q", order)
 	}
-	cOrder, err := cMemoryOrder(order)
+	cOrder, err := cMemoryOrderFor(semir.AtomicLoad, order)
 	if err != nil {
 		return "", err
 	}
@@ -357,7 +401,7 @@ func atomicExchangeC(address, value string, order semir.MemoryOrder) (string, er
 	if !semir.LegalAtomicOrder(semir.AtomicRMW, order) {
 		return "", fmt.Errorf("illegal atomic exchange order %q", order)
 	}
-	cOrder, err := cMemoryOrder(order)
+	cOrder, err := cMemoryOrderFor(semir.AtomicRMW, order)
 	if err != nil {
 		return "", err
 	}
@@ -368,7 +412,7 @@ func atomicFetchAddC(address, value string, order semir.MemoryOrder) (string, er
 	if !semir.LegalAtomicOrder(semir.AtomicRMW, order) {
 		return "", fmt.Errorf("illegal atomic fetch-add order %q", order)
 	}
-	cOrder, err := cMemoryOrder(order)
+	cOrder, err := cMemoryOrderFor(semir.AtomicRMW, order)
 	if err != nil {
 		return "", err
 	}

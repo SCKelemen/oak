@@ -132,5 +132,6 @@ import Oak.ProtocolQuorum
 import Oak.TimeInterval
 import Oak.ProtocolConformance
 import Oak.RiscV
+import Oak.RiscVMemory
 import Oak.Target
 import Oak.Freestanding
