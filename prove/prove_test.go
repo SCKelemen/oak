@@ -348,3 +348,21 @@ main: (): i32 = 0
 		t.Errorf("construct_safe: %+v", r)
 	}
 }
+
+// Strings evaluate in the interpreter (str_bytes, str_from_utf8, len), so
+// a closed theorem over them is decided exhaustively.
+func TestStringTheorems(t *testing.T) {
+	src := `
+greet: (): string = "hi"
+size: (s: string): u32 = len(str_bytes(s))
+greeting_size: theorem () { size(greet()) == u32(2) }
+main: (): i32 = 0
+`
+	results, err := Theorems(check(t, src), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Status != Decided || results[0].Detail != "all 1 cases" {
+		t.Fatalf("results: %+v", results)
+	}
+}
