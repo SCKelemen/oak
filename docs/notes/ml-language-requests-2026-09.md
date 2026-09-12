@@ -110,5 +110,8 @@ list, in the order the pilot would meet them:
    device from Go (`Check`, `Run`), `oak build -metal out.metal
    -metal-check` compiles the emitted source on the device, and the
    chapter's kernels run on the GPU in the tests against the C results.
-   Open: a launch sequence under `oak test` (inputs, trace schema, replay).
+   The launch sequence under `oak test` followed (`110-testing.md`, "Launch
+   targets"): `test_launch(kernel, grid, args...)` runs on the host, is
+   recorded with its inputs and outputs, and the runner replays every
+   launch on the device and compares spans and the fault word.
 

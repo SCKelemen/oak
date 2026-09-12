@@ -232,7 +232,7 @@ func Discover(paths []string) ([]Package, error) {
 }
 
 func testKind(name string) string {
-	for _, p := range []struct{ prefix, kind string }{{"Property", "property"}, {"Fuzz", "fuzz"}, {"Sim", "simulation"}, {"Table", "table"}, {"Test", "unit"}} {
+	for _, p := range []struct{ prefix, kind string }{{"Property", "property"}, {"Fuzz", "fuzz"}, {"Sim", "simulation"}, {"Table", "table"}, {"Launch", "launch"}, {"Test", "unit"}} {
 		if strings.HasPrefix(name, p.prefix) && len(name) > len(p.prefix) {
 			next := name[len(p.prefix)]
 			if next == '_' || next >= 'A' && next <= 'Z' {
@@ -245,7 +245,7 @@ func testKind(name string) string {
 
 func validateTest(fn *ast.FunctionStatement, kind string) error {
 	bad := func() error {
-		return fmt.Errorf("%s must be a non-generic %s test returning (), with %s", fn.Name.Value, kind, map[bool]string{true: "no arguments", false: "one []u8 argument"}[kind == "unit"])
+		return fmt.Errorf("%s must be a non-generic %s test returning (), with %s", fn.Name.Value, kind, map[bool]string{true: "no arguments", false: "one []u8 argument"}[kind == "unit" || kind == "launch"])
 	}
 	if !cIdentifier.MatchString(fn.Name.Value) || fn.Receiver != nil || len(fn.TypeParams) != 0 || fn.ExternSymbol != "" {
 		return bad()
@@ -254,7 +254,7 @@ func validateTest(fn *ast.FunctionStatement, kind string) error {
 	if !ok || ret.Value != "()" {
 		return bad()
 	}
-	if kind == "unit" {
+	if kind == "unit" || kind == "launch" {
 		if len(fn.Parameters) != 0 {
 			return bad()
 		}

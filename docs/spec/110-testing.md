@@ -28,6 +28,7 @@ and start with a prefix followed by an uppercase ASCII letter or underscore:
 | `Fuzz` | `(data: []u8): ()` | Corpus plus four built-in seeds |
 | `Sim` | `(data: []u8): ()` | Corpus plus generated simulation inputs |
 | `Table` | `(row: []u8): ()` | One execution per row file under `testdata/oak/<Test>/rows` |
+| `Launch` | `(): ()` | One execution; every `test_launch` it makes is replayed on the GPU and compared |
 
 Methods, generic tests, extern tests, variadics, and other signatures reject.
 All functions still undergo the normal type, borrow, and discipline checks.
@@ -231,6 +232,41 @@ bit patterns — the check for a bit-exact contract such as the `math`
 package's (`20-types.md` §11.3.6). A numeric conformance table produced by
 another implementation is therefore a directory of rows and a `Table`
 function of a few lines, and its report says which row disagreed.
+
+## Launch targets
+
+A `Launch` target runs kernels (`56-kernels.md`) on both realizations and
+holds them to the same bits. Inside it, `test_launch(kernel, grid,
+args...)` names a kernel declaration, a `u32` grid, and the kernel's
+arguments after the position — views, spans, scalars, and record
+parameters as the launch descriptor flattens them:
+
+```oak
+LaunchRelu: (): () {
+  x: [4]f32 = [-1.0, 2.0, -3.0, 4.0]
+  y: [4]f32 = [0.0, 0.0, 0.0, 0.0]
+  test_launch(relu, 4, view(&x), span(&y))
+  test_check(y[0] == 0.0 && y[1] == 2.0 && y[3] == 4.0, u32(1))
+}
+```
+
+The launch runs on the **host** first — the C realization, one call per
+position in order — so the test's own checks read the host's result, and
+the harness records the launch: the kernel and grid, every argument's
+bytes before the run, and every span's bytes after, in a sidecar beside
+the report. After the case passes, the runner **replays each record on
+this machine's GPU** (`56-kernels.md` §9: the Metal framework compiles the
+emitted kernels at run time, no Xcode toolchain) with the recorded inputs
+and compares: every span must be the same bytes and the fault word zero.
+A difference fails the target as `device divergence: launch 2 of axpy:
+span y element 1: device 2.75, host 2.5`, the first differing element
+spelled in the element's type; a fault the host did not raise fails it
+too. The result carries `launches`, the number recorded, and `device`,
+the GPU's name — or `skipped: <reason>` where there is none (not macOS,
+no C compiler, no device), in which case the host run alone decides and
+the target still passes. `-device=false` records and counts without
+replaying. A `Launch` target takes no input and has no corpus; it is a
+unit test whose launches are checked twice.
 
 ## Trace schema
 

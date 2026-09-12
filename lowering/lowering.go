@@ -177,6 +177,7 @@ func lowerFunctionStatement(fn *ast.FunctionStatement, tc *typechecker.TypeCheck
 			NativeBacked: fn.NativeBacked,
 			Exported:     fn.Exported,
 			Opaque:       fn.Opaque,
+			Kernel:       fn.Kernel,
 			// The C ABI symbol of an explicit export travels with the
 			// definition to the backend (docs/spec/92-ffi.md section 2.9).
 			ExportSymbol: fn.ExportSymbol,

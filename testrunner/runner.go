@@ -34,13 +34,17 @@ type Config struct {
 	Timeout, BuildTimeout, ShrinkTimeout time.Duration
 	Run, Fuzz, Sim, Replay               string
 	JSON, List, Verbose, Sanitize        bool
-	Cover                                string
-	Workers                              int
-	Campaign                             string
+	// Device replays recorded kernel launches on this machine's GPU and
+	// compares them with the host's run (docs/spec/110-testing.md, "Launch
+	// targets"); off, launches are recorded and counted but not replayed.
+	Device   bool
+	Cover    string
+	Workers  int
+	Campaign string
 }
 
 func Defaults() Config {
-	return Config{CC: "cc", Runs: 100, MaxBytes: 256, Shrink: 200, Seed: 1, Timeout: 2 * time.Second, BuildTimeout: time.Minute, ShrinkTimeout: 10 * time.Second, MaxDiscards: 1000, Workers: 1}
+	return Config{CC: "cc", Runs: 100, MaxBytes: 256, Shrink: 200, Seed: 1, Timeout: 2 * time.Second, BuildTimeout: time.Minute, ShrinkTimeout: 10 * time.Second, MaxDiscards: 1000, Workers: 1, Device: true}
 }
 
 type Result struct {
@@ -56,7 +60,12 @@ type Result struct {
 	Status     string           `json:"status"`
 	// Row names the failing row of a table target (docs/spec/110-testing.md,
 	// "Table targets"): the file under testdata/oak/<Test>/rows.
-	Row      string `json:"row,omitempty"`
+	Row string `json:"row,omitempty"`
+	// Launches counts the kernel launches a launch target recorded, and
+	// Device names the GPU they were replayed on, or says why they were
+	// skipped (docs/spec/110-testing.md, "Launch targets").
+	Launches int    `json:"launches,omitempty"`
+	Device   string `json:"device,omitempty"`
 	Cases    int    `json:"cases"`
 	Discards int    `json:"discards"`
 	Seed     uint64 `json:"seed"`
@@ -130,6 +139,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	flags.BoolVar(&cfg.JSON, "json", false, "emit one JSON result per test")
 	flags.BoolVar(&cfg.List, "list", false, "list matching tests without compilation")
 	flags.BoolVar(&cfg.Verbose, "v", false, "include successful test output")
+	flags.BoolVar(&cfg.Device, "device", cfg.Device, "replay recorded kernel launches on this machine's GPU and compare with the host (docs/spec/110-testing.md, \"Launch targets\")")
 	flags.BoolVar(&cfg.Sanitize, "sanitize", false, "enable native address and undefined-behavior sanitizers")
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: oak test [flags] [directory | ./... ...]\nFlags precede paths. Tests live in *_test.oak files.")
@@ -273,7 +283,18 @@ func Main(args []string, stdout, stderr io.Writer) int {
 				code = 2
 			}
 		} else {
-			fmt.Fprintf(stdout, "%s %s/%s (%d cases, %d discarded, seed %d)\n", strings.ToUpper(result.Status), result.Package, result.Name, result.Cases, result.Discards, result.Seed)
+			launches := ""
+			if result.Launches > 0 {
+				switch {
+				case result.Device == "":
+					launches = fmt.Sprintf(", %d launches", result.Launches)
+				case strings.HasPrefix(result.Device, "skipped"):
+					launches = fmt.Sprintf(", %d launches, device %s", result.Launches, result.Device)
+				default:
+					launches = fmt.Sprintf(", %d launches on %s", result.Launches, result.Device)
+				}
+			}
+			fmt.Fprintf(stdout, "%s %s/%s (%d cases, %d discarded, seed %d%s)\n", strings.ToUpper(result.Status), result.Package, result.Name, result.Cases, result.Discards, result.Seed, launches)
 			if result.Failure != "" {
 				fmt.Fprintln(stdout, "  "+result.Failure)
 			}
@@ -460,7 +481,7 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 	consume := func(input []byte, out outcome, attempt int) bool {
 		if out.status == "discard" {
 			result.Discards++
-			if test.Kind == "unit" || result.Discards > cfg.MaxDiscards {
+			if test.Kind == "unit" || test.Kind == "launch" || result.Discards > cfg.MaxDiscards {
 				result.Status = "fail"
 				result.Failure = "discard budget exhausted; rejected inputs are not passing tests"
 				return false
@@ -468,6 +489,24 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 			return true
 		}
 		result.Cases++
+		if out.status == "pass" && len(out.launches) > 0 {
+			// The host ran the launches; the device must agree with it.
+			result.Launches += len(out.launches)
+			if cfg.Device {
+				device, failure, err := replayLaunches(context.Background(), native.metal, out.launches)
+				result.Device = device
+				if err != nil {
+					result.Status, result.Failure = "error", err.Error()
+					return false
+				}
+				if failure != "" {
+					result.Status, result.Failure = "fail", "device divergence: "+failure
+					return false
+				}
+			} else {
+				result.Device = "skipped: -device=false"
+			}
+		}
 		if out.status == "pass" {
 			for id := range out.classes {
 				result.Classes[id]++
@@ -489,7 +528,7 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		result.Output = out.output
 		best := input
 		// Timeouts and infrastructure failures are not stable shrink predicates.
-		if test.Kind != "unit" && test.Kind != "table" && cfg.Shrink > 0 && out.signature != "timeout" && !strings.HasPrefix(out.signature, "harness:") {
+		if test.Kind != "unit" && test.Kind != "launch" && test.Kind != "table" && cfg.Shrink > 0 && out.signature != "timeout" && !strings.HasPrefix(out.signature, "harness:") {
 			confirmation := native.run(index, input)
 			if confirmation.status != "fail" || confirmation.signature != out.signature || !sameTrace(confirmation, out) {
 				result.Failure = "non-reproducible failure: " + out.signature
@@ -542,7 +581,7 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		}
 		return consume(input, native.run(index, input), attempt)
 	}
-	if test.Kind == "unit" {
+	if test.Kind == "unit" || test.Kind == "launch" {
 		execute(nil, 0)
 		return result
 	}
