@@ -185,6 +185,16 @@ func (em *emitter) emitGlobals() (string, error) {
 			if err != nil {
 				return "", fmt.Errorf("lean: %w", err)
 			}
+			if _, isTargetConstant := typechecker.TargetConstantCall(decl.Value); isTargetConstant {
+				// A target constant (docs/spec/92-ffi.md section 2.11) is a
+				// value the target's C headers define; the extraction knows
+				// only its type, so it is an uninterpreted constant and a
+				// theorem about code reading it holds for every value
+				// (95-extraction.md section 3).
+				rendered[name] = fmt.Sprintf("opaque %s : %s\n\n", ident(name), typ)
+				progressed = true
+				continue
+			}
 			em.fnName = name
 			em.scope = newScope(nil)
 			var hoisted []string
@@ -355,6 +365,14 @@ func (em *emitter) callees(fn *ast.FunctionStatement) []string {
 
 // ---- types ----
 
+// cScalarLean renders the c.* integer scalars a target constant may carry
+// (docs/spec/92-ffi.md section 2.11) at the widths of the section 2.4
+// target model, LP64: int is 32 bits, long and size_t 64.
+var cScalarLean = map[string]string{
+	"c.Int": "Int32", "c.UInt": "UInt32", "c.Int32": "Int32", "c.UInt32": "UInt32",
+	"c.Int64": "Int64", "c.UInt64": "UInt64", "c.Long": "Int64", "c.ULong": "UInt64", "c.Size": "UInt64",
+}
+
 var primitiveLean = map[string]string{
 	"u8": "UInt8", "u16": "UInt16", "u32": "UInt32", "u64": "UInt64",
 	"i8": "Int8", "i16": "Int16", "i32": "Int32", "i64": "Int64",
@@ -372,6 +390,12 @@ func (em *emitter) leanType(expr ast.Expression) (string, error) {
 			return lean, nil
 		}
 		if lean, ok := em.adtLeanName(t.Value); ok {
+			return lean, nil
+		}
+		if lean, ok := cScalarLean[t.Value]; ok {
+			// The c.* integer scalars, at the widths of the §2.4 target
+			// model (LP64: long and size_t are 64 bits); they appear as
+			// the types of target constants.
 			return lean, nil
 		}
 		return "", fmt.Errorf("lean: type %s is outside the extracted subset", t.Value)

@@ -52,6 +52,12 @@ type CodeGenerator struct {
 	// globalTypes classifies top-level bindings (static globals) the same
 	// way localTypes classifies function locals.
 	globalTypes map[string]localContainer
+	// targetConstants are the program's `c.const` bindings and
+	// foreignHeaders the distinct headers they name, sorted; a program with
+	// any declares its extern bindings through asm labels so the headers'
+	// own prototypes cannot conflict (docs/spec/92-ffi.md section 2.11).
+	targetConstants map[string]*typechecker.TargetConstant
+	foreignHeaders  []string
 	// globalErrors collects top-level initializers the backend could not
 	// place in static storage; Generate reports the first (OAK-T0501 as an
 	// error at emission, ml finding F19).
@@ -184,6 +190,22 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 			cg.packageName = pkgStmt.Name.Value
 			break
 		}
+	}
+
+	// Target constants and the foreign headers they need (docs/spec/92-ffi.md
+	// section 2.11), before the header is emitted.
+	cg.targetConstants = make(map[string]*typechecker.TargetConstant)
+	cg.foreignHeaders = nil
+	if tc != nil {
+		seen := map[string]bool{}
+		for _, constant := range tc.TargetConstants() {
+			cg.targetConstants[constant.Name] = constant
+			if !seen[constant.Header] {
+				seen[constant.Header] = true
+				cg.foreignHeaders = append(cg.foreignHeaders, constant.Header)
+			}
+		}
+		sort.Strings(cg.foreignHeaders)
 	}
 
 	// First pass: collect all string literals
@@ -513,6 +535,7 @@ func (cg *CodeGenerator) escapeCString(s string) string {
 // emitHeader emits the standard header with includes and type aliases
 func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 	cg.write("/* Generated C code from Oak */\n")
+	cg.emitForeignHeaders()
 	cg.write("#include <stdint.h>\n")
 	cg.write("#include <stddef.h>\n")
 	// <math.h> and the float helpers only when the program uses floating
@@ -2609,10 +2632,16 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		_, isLocal := cg.localTypes[e.Value]
 		if target := cg.programFunctions[e.Value]; target != nil && target.Receiver == nil && !isLocal {
 			if target.ExternSymbol != "" && typechecker.ValidCSymbol(target.ExternSymbol) {
-				cg.output.WriteString(target.ExternSymbol)
+				cg.output.WriteString(cg.externCallee(target.ExternSymbol))
 			} else {
 				cg.output.WriteString(cg.cFunctionName(e.Value))
 			}
+			return
+		}
+		if _, isTargetConstant := cg.targetConstants[e.Value]; isTargetConstant && !isLocal {
+			// A target constant's static carries a prefixed C name
+			// (codegen/globals.go, docs/spec/92-ffi.md section 2.11).
+			cg.output.WriteString(targetConstantCName(e.Value))
 			return
 		}
 		cg.output.WriteString(cIdent(e.Value))
@@ -2899,7 +2928,7 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			// (docs/spec/92-ffi.md section 2.3).
 			if target := cg.programFunctions[ident.Value]; target.ExternSymbol != "" {
 				if typechecker.ValidCSymbol(target.ExternSymbol) {
-					cg.output.WriteString(target.ExternSymbol)
+					cg.output.WriteString(cg.externCallee(target.ExternSymbol))
 				} else {
 					cg.output.WriteString("OAK_INVALID_EXTERN_SYMBOL")
 				}

@@ -21,6 +21,13 @@ func (tc *TypeChecker) checkGlobalInitializer(decl *ast.VariableDeclaration) {
 	if decl == nil || decl.Value == nil {
 		return // zero initialization is always constant
 	}
+	if _, isTargetConstant := TargetConstantCall(decl.Value); isTargetConstant {
+		// A target constant is a C constant expression on the target — the
+		// header's definition — so static storage holds it; its value is
+		// unknown to Oak, so it is not a constant later initializers may
+		// read (a C `static const` is not a constant expression either).
+		return
+	}
 	if tc.IsConstantInitializer(decl.Value) {
 		// A constant global may be read by the constant initializers that
 		// follow it (a derived constant such as TOTAL = ROWS * COLS).
