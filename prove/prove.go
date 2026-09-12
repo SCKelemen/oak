@@ -78,7 +78,38 @@ func Theorems(model *compiler.SemanticModel, cases int) ([]Result, error) {
 	for _, theorem := range theorems {
 		results = append(results, decide(env, model.TypeChecker, functions, theorem, cases))
 	}
-	return results, nil
+	return summarizeInvariants(results), nil
+}
+
+// summarizeInvariants folds the generated obligations of an invariant
+// candidate into the candidate's own row: an invariant is a claim about
+// the reachable states, not every state, so the candidate is reported by
+// its base and step obligations rather than as a universal statement.
+func summarizeInvariants(results []Result) []Result {
+	byName := map[string]Result{}
+	for _, r := range results {
+		byName[r.Name] = r
+	}
+	for i, r := range results {
+		base, hasBase := byName[r.Name+BaseSuffix]
+		step, hasStep := byName[r.Name+StepSuffix]
+		if !hasBase || !hasStep {
+			continue
+		}
+		switch {
+		case base.Status == Decided && step.Status == Decided:
+			results[i] = Result{Name: r.Name, Status: Decided,
+				Detail: fmt.Sprintf("invariant: base %s, step %s", base.Detail, step.Detail)}
+		case base.Status == Refuted:
+			results[i] = Result{Name: r.Name, Status: Refuted, Detail: "invariant fails initially: " + base.Detail}
+		case step.Status == Refuted:
+			results[i] = Result{Name: r.Name, Status: Refuted, Detail: "invariant is not preserved: " + step.Detail}
+		default:
+			results[i] = Result{Name: r.Name, Status: Open,
+				Detail: fmt.Sprintf("invariant: base %s (%s), step %s (%s)", base.Status, base.Detail, step.Status, step.Detail)}
+		}
+	}
+	return results
 }
 
 // domain is the finite set of values a parameter type ranges over.
@@ -123,11 +154,20 @@ func valuesOf(tc *typechecker.TypeChecker, typ typechecker.Type) ([]object.Objec
 		if !ok {
 			return nil, fmt.Sprintf("%s is generic or unknown", t.Name)
 		}
+		// Every variant, and for a variant with a payload every payload
+		// value: a protocol's steps with their scalar payloads enumerate.
 		var values []object.Object
 		for _, variant := range variants {
 			if variant.Payload != nil {
 				if _, isUnit := variant.Payload.(*typechecker.UnitType); !isUnit {
-					return nil, fmt.Sprintf("%s carries a payload in %s; only payload-free sum types are enumerated", t.Name, variant.Name)
+					payloads, reason := valuesOf(tc, variant.Payload)
+					if reason != "" {
+						return nil, fmt.Sprintf("%s.%s: payload: %s", t.Name, variant.Name, reason)
+					}
+					for _, payload := range payloads {
+						values = append(values, &object.ADTValue{TypeName: t.Name, Variant: variant.Name, Value: payload})
+					}
+					continue
 				}
 			}
 			values = append(values, &object.ADTValue{TypeName: t.Name, Variant: variant.Name})

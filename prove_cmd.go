@@ -36,7 +36,9 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 		target = flags.Arg(0)
 	}
 	target = filepath.Clean(target)
-	comp := compiler.New()
+	// Invariant candidates get their base and step obligations generated
+	// before checking (prove/protocols.go).
+	comp := compiler.New().WithSyntaxRewrite(prove.ProtocolObligations)
 	if info, err := os.Stat(target); err == nil && info.IsDir() {
 		comp = comp.WithPackageDir(target)
 	} else {

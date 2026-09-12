@@ -9,7 +9,7 @@ import (
 
 func check(t *testing.T, src string) *compiler.SemanticModel {
 	t.Helper()
-	model, err := compiler.New().WithSource("theorems.oak", src).Check().Get()
+	model, err := compiler.New().WithSyntaxRewrite(ProtocolObligations).WithSource("theorems.oak", src).Check().Get()
 	if err != nil {
 		t.Fatalf("check failed: %v", err)
 	}
@@ -193,5 +193,77 @@ main: (): i32 = 0
 		if r.Name == "unmasked" && !strings.Contains(r.Detail, "traps") {
 			t.Errorf("unmasked: detail %q", r.Detail)
 		}
+	}
+}
+
+// An invariant candidate — a theorem over a protocol's projected state and
+// data — gets its base and step obligations generated; a machine without
+// data, with a payload-carrying step, enumerates the payload
+// (docs/spec/125-verification.md §6).
+func TestGeneratedObligations(t *testing.T) {
+	src := `
+Turnstile: protocol = {
+  data { coins: u8 }
+  init { coins: u8(0) }
+  initial Locked
+  coin: Locked -> Unlocked then { data.coins = data.coins + u8(1) }
+  coin: Unlocked -> Unlocked then { data.coins = data.coins + u8(1) }
+  push: Unlocked -> Locked
+  push: Locked -> Locked
+}
+
+paid: theorem (s: TurnstileState, d: TurnstileData) { s == .Locked || d.coins > u8(0) }
+counted: theorem (s: TurnstileState, d: TurnstileData) { d.coins == d.coins }
+
+Irq: protocol = {
+  initial Idle
+  inject: Idle -> Pending
+  acknowledge: Pending -> Active
+  eoi: Active -> Idle
+  program(compare: u8): Idle -> Idle
+}
+
+never_stuck: theorem (s: IrqState) { s == .Idle || s == .Pending || s == .Active }
+
+main: (): i32 = 0
+`
+	results, err := Theorems(check(t, src), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]Result{}
+	for _, r := range results {
+		got[r.Name] = r
+	}
+	want := map[string]Status{
+		"paid": Refuted, "paid__base": Decided, "paid__step": Refuted,
+		"counted": Decided, "counted__base": Decided, "counted__step": Decided,
+		"never_stuck": Decided, "never_stuck__base": Decided, "never_stuck__step": Decided,
+	}
+	for name, status := range want {
+		r, found := got[name]
+		if !found {
+			t.Errorf("%s: missing (%v)", name, results)
+			continue
+		}
+		if r.Status != status {
+			t.Errorf("%s: status %s (%s), want %s", name, r.Status, r.Detail, status)
+		}
+	}
+	if !strings.Contains(got["paid__step"].Detail, "coins: 255") {
+		t.Errorf("paid__step: %s", got["paid__step"].Detail)
+	}
+	if !strings.HasPrefix(got["paid"].Detail, "invariant is not preserved: ") {
+		t.Errorf("paid: %s", got["paid"].Detail)
+	}
+	if !strings.HasPrefix(got["counted"].Detail, "invariant: base all 1 cases, step all") {
+		t.Errorf("counted: %s", got["counted"].Detail)
+	}
+	// The payload-carrying step enumerates: 3 states × (3 + 256) steps.
+	if got["never_stuck__step"].Detail != "all 777 cases" {
+		t.Errorf("never_stuck__step: %s", got["never_stuck__step"].Detail)
+	}
+	if inv, ok := IsObligation("paid__step"); !ok || inv != "paid" {
+		t.Errorf("IsObligation: %s %v", inv, ok)
 	}
 }
