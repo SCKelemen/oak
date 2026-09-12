@@ -39,6 +39,18 @@ fn sysreg_read_vbar() -> u64
   arm64.read_vbar_el2()
 fn sysreg_write_vbar(value: u64) -> ()
   arm64.write_vbar_el2(value)
+fn sysreg_write_mair(value: u64) -> ()
+  arm64.write_mair_el1(value)
+fn sysreg_read_mair() -> u64
+  arm64.read_mair_el1()
+fn sysreg_write_sp_el0(value: u64) -> ()
+  arm64.write_sp_el0(value)
+fn sysreg_write_elr_el1(value: u64) -> ()
+  arm64.write_elr_el1(value)
+fn sysreg_write_spsr_el1(value: u64) -> ()
+  arm64.write_spsr_el1(value)
+fn sysreg_read_spsr_el1() -> u64
+  arm64.read_spsr_el1()
 `
 
 func compileSysRegAArch64Assembly(t *testing.T) (generated, assembly string) {
@@ -94,6 +106,14 @@ func TestAArch64SystemRegisterInstructionRefinement(t *testing.T) {
 		{"sysreg_write_vtcr", "msr", "vtcr_el2"},
 		{"sysreg_read_vbar", "mrs", "vbar_el2"},
 		{"sysreg_write_vbar", "msr", "vbar_el2"},
+		// The kernel adapter's MMU register program and EL0 entry (the OS
+		// pilot's R6, reopened: the library catalog lacked these four).
+		{"sysreg_write_mair", "msr", "mair_el1"},
+		{"sysreg_read_mair", "mrs", "mair_el1"},
+		{"sysreg_write_sp_el0", "msr", "sp_el0"},
+		{"sysreg_write_elr_el1", "msr", "elr_el1"},
+		{"sysreg_write_spsr_el1", "msr", "spsr_el1"},
+		{"sysreg_read_spsr_el1", "mrs", "spsr_el1"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fn, func(t *testing.T) {

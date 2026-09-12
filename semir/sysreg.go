@@ -73,6 +73,14 @@ var arm64SysRegs = [...]SysRegSpec{
 	{Name: "ttbr0_el1", Asm: "TTBR0_EL1", Access: SysRegReadWrite},
 	{Name: "tcr_el1", Asm: "TCR_EL1", Access: SysRegReadWrite},
 	{Name: "vbar_el1", Asm: "VBAR_EL1", Access: SysRegReadWrite},
+	// The kernel adapter's MMU register program and EL0 entry (the OS
+	// pilot's R6, docs/notes/os-language-requests-2026-09.md): memory
+	// attributes, the EL0 stack, and the return address and state that
+	// ERET from EL1 restores.
+	{Name: "mair_el1", Asm: "MAIR_EL1", Access: SysRegReadWrite},
+	{Name: "sp_el0", Asm: "SP_EL0", Access: SysRegReadWrite},
+	{Name: "elr_el1", Asm: "ELR_EL1", Access: SysRegReadWrite},
+	{Name: "spsr_el1", Asm: "SPSR_EL1", Access: SysRegReadWrite},
 }
 
 // Arm64SysRegs returns the fixed catalog by value. Callers cannot mutate the
