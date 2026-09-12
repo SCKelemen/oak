@@ -445,7 +445,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		if tree.Modules != nil {
 			steady = applySteadyEntries(tree.Root, tree.Modules.Steady)
 		}
-		effectDiagnostics := analyzeEffects(tree.Root, steady)
+		effectDiagnostics := analyzeEffects(tree.Root, steady, tc)
 		model.Diagnostics = append(model.Diagnostics, effectDiagnostics...)
 		if err := comp.gate("effects", effectDiagnostics, tree.Modules); err != nil {
 			return nil, err

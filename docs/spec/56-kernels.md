@@ -79,6 +79,15 @@ the kernel. Two rules the emitter cannot judge alone are checked beside it:
   is empty and fully known: an undeclared extern or an unrowed function
   value in reach rejects.
 
+**Statement order is emitted order.** Every statement of a kernel or
+helper body is emitted in place, in source order; an expression's
+operands are emitted left to right; the lines a cooperative reduction
+needs go immediately before the statement that holds its value. A body
+that loads after it multiplies is emitted loading after it multiplies
+(`TestKernelsPreserveStatementOrder`). What the C compiler or the Metal
+compiler reorders afterward is behind the language's memory model and
+changes no result; the author's order is the program's order.
+
 Inside the subset:
 
 | Oak | Metal Shading Language |
