@@ -58,9 +58,32 @@ func EncodeFunctions(functions []*Function, symbolFor func(string) string) ([]En
 // WriteObject lays the functions out in one text section, in order, each
 // at its entry alignment, and writes the object in the given format.
 func WriteObject(format ObjectFormat, functions []EncodedFunction) ([]byte, error) {
+	return WriteObjectWith(format, functions, ObjectOptions{})
+}
+
+// ObjectOptions are the target facts an object records beyond its machine.
+type ObjectOptions struct {
+	// RV64FloatABI is the RISC-V floating-point calling convention the
+	// object declares in e_flags: "" or "soft" (lp64: EF_RISCV_FLOAT_ABI_SOFT,
+	// the bare-metal rv64im toolchains), "double" (lp64d: the Linux
+	// distributions' and musl's rv64gc). The units carry no floating-point
+	// arguments in this increment, so the declaration only has to agree
+	// with what the object links against — a linker refuses to mix them.
+	RV64FloatABI string
+}
+
+// WriteObjectWith is WriteObject with the target facts.
+func WriteObjectWith(format ObjectFormat, functions []EncodedFunction, options ObjectOptions) ([]byte, error) {
 	layout, err := layOut(functions)
 	if err != nil {
 		return nil, err
+	}
+	switch options.RV64FloatABI {
+	case "", "soft":
+	case "double":
+		layout.elfFlags = 0x0004 // EF_RISCV_FLOAT_ABI_DOUBLE
+	default:
+		return nil, fmt.Errorf("object: RISC-V float ABI %q (soft or double)", options.RV64FloatABI)
 	}
 	switch format {
 	case MachO:
@@ -77,6 +100,7 @@ func WriteObject(format ObjectFormat, functions []EncodedFunction) ([]byte, erro
 // textLayout is the text section with symbol offsets and relocations.
 type textLayout struct {
 	arch      string // ArchArm64 or ArchRV64
+	elfFlags  uint32 // e_flags: the RISC-V float ABI, 0 otherwise
 	text      []byte
 	align     int64 // section alignment in bytes
 	defined   []definedSymbol
@@ -415,7 +439,7 @@ func writeELF(l *textLayout) ([]byte, error) {
 	out = append(out, 0x7f, 'E', 'L', 'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 	put16(1) // ET_REL
 	if l.arch == ArchRV64 {
-		put16(243) // EM_RISCV; e_flags 0 below is the LP64 soft-float ABI without RVC
+		put16(243) // EM_RISCV; e_flags below carries the float ABI, never RVC
 	} else {
 		put16(183) // EM_AARCH64
 	}
@@ -423,13 +447,13 @@ func writeELF(l *textLayout) ([]byte, error) {
 	put64(0) // entry
 	put64(0) // phoff
 	put64(uint64(shOff))
-	put32(0)  // flags
-	put16(64) // ehsize
-	put16(0)  // phentsize
-	put16(0)  // phnum
-	put16(64) // shentsize
-	put16(6)  // shnum
-	put16(5)  // shstrndx
+	put32(l.elfFlags) // flags: the RISC-V float ABI (ObjectOptions), 0 for AArch64
+	put16(64)         // ehsize
+	put16(0)          // phentsize
+	put16(0)          // phnum
+	put16(64)         // shentsize
+	put16(6)          // shnum
+	put16(5)          // shstrndx
 	pad := func(to int) {
 		for len(out) < to {
 			out = append(out, 0)
