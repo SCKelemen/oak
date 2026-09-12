@@ -38,7 +38,7 @@ for `-march=rv64gc`:
 | load seq_cst | `fence rw,rw; ld; fence r,rw` |
 | store relaxed | `sd` |
 | store release | `fence rw,w; sd` |
-| store seq_cst | `fence rw,w; sd; fence rw,rw` |
+| store seq_cst | `fence rw,w; sd; fence rw,rw` (LLVM 20+; clang 18 emits Table A.6's `fence rw,w; sd` — both admitted, `c11_store_seqCst_trailing_fence_optional`) |
 | RMW relaxed / acquire / release / acq_rel, seq_cst | `amo*` / `amo*.aq` / `amo*.rl` / `amo*.aqrl` |
 | CAS relaxed / acq_rel / seq_cst | `lr; sc` / `lr.aq; sc.rl` / `lr.aqrl; sc.rl` |
 | fence acquire / release / acq_rel / seq_cst | `fence r,rw` / `fence rw,w` / `fence.tso` / `fence rw,rw` |

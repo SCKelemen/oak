@@ -226,4 +226,15 @@ theorem oak_acqrel_lrsc_is_seqCst_pair : oakLrSc .acqRel = ⟨.aqrl, .rl⟩ := r
 theorem oak_seqCst_amo_is_aqrl : oakAMO .seqCst = .aqrl := rfl
 theorem oak_seqCst_fence_is_full : oakFence .seqCst = some .rwRW := rfl
 
+/-- The seq_cst store has two Appendix A spellings: `fence rw,w; sd` (the
+    original Table A.6, what clang 18 emits) and `fence rw,w; sd; fence
+    rw,rw` (later LLVM, the spelling `c11Store` records). The model judges
+    both `releaseOnly`: the trailing full fence adds no local ordering the
+    store needs, because sequential consistency among seq_cst accesses is
+    carried by the full fence *before* every seq_cst load. Either spelling
+    is therefore admitted by the refinement test
+    (`codegen/riscv64_memory_refinement_test.go`). -/
+theorem c11_store_seqCst_trailing_fence_optional :
+    storeProvided ⟨some .rwW, none⟩ = storeProvided ⟨some .rwW, some .rwRW⟩ := rfl
+
 end Oak.RiscVMemory
