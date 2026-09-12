@@ -56,6 +56,20 @@ SYN_INDEX: u32 = 15
 SYN_RECORDLIT: u32 = 16
 SYN_ARRAYLIT: u32 = 17
 SYN_ASSIGNPLACE: u32 = 18
+SYN_FLOATLIT: u32 = 19
+SYN_FLOATCALL: u32 = 20
+
+// Float intrinsic codes (asm/syntax.go).
+FI_ABS: u32 = 0
+FI_COPYSIGN: u32 = 1
+FI_IS_NAN: u32 = 2
+FI_IS_FINITE: u32 = 3
+FI_IS_INFINITE: u32 = 4
+FI_IS_NORMAL: u32 = 5
+FI_TOTAL_ORDER: u32 = 6
+FI_MIN: u32 = 7
+FI_MAX: u32 = 8
+MAX_FRESH: u32 = 8
 
 TY_SCALAR: u32 = 0
 TY_RECORD: u32 = 1
@@ -155,6 +169,7 @@ LS_TERMS_AT: u32 = 11
 LS_RET_TYPE: u32 = 12
 LS_RET_BLOCK: u32 = 13
 LS_LEAF_SP: u32 = 14
+LS_FRESH: u32 = 15
 
 lower_layout: (max_terms: u32, leaves: u32): Lower {
   sym_at: u32 = 0
@@ -176,7 +191,7 @@ lower_layout: (max_terms: u32, leaves: u32): Lower {
     state_at: state_at,
     total: state_at + u32(32),
     max_terms: max_terms,
-    built_total: HEADER_WORDS + leaves * LEAF_WORDS + max_terms * TERM_WORDS + MAX_TRAPS + u32(1) + SELECT_SLOTS_OUT * u32(64)
+    built_total: HEADER_WORDS + (leaves + MAX_FRESH) * LEAF_WORDS + max_terms * TERM_WORDS + MAX_TRAPS + u32(1) + SELECT_SLOTS_OUT * u32(64)
   }
 }
 
@@ -236,6 +251,7 @@ scalar_signed: (sx: []u32, t: u32): Bool = type_leaf_signed(sx, t, u32(0))
 field_type: (sx: []u32, t: u32, k: u32): u32 = sx[syn_fields_at(sx) + (type_field_start(sx, t) + k) * u32(2)]
 field_offset: (sx: []u32, t: u32, k: u32): u32 = sx[syn_fields_at(sx) + (type_field_start(sx, t) + k) * u32(2) + u32(1)]
 is_scalar_type: (sx: []u32, t: u32): Bool = t != NONE && type_kind(sx, t) == TY_SCALAR
+is_float_type: (sx: []u32, t: u32): Bool = t != NONE && type_word(sx, t, u32(7)) != u32(0)
 
 node_word: (sx: []u32, n: u32, k: u32): u32 = sx[syn_nodes_at(sx) + n * SYN_NODE_WORDS + k]
 node_kind: (sx: []u32, n: u32): u32 = node_word(sx, n, u32(0))
@@ -247,6 +263,13 @@ node_vlo: (sx: []u32, n: u32): u32 = node_word(sx, n, u32(5))
 node_vhi: (sx: []u32, n: u32): u32 = node_word(sx, n, u32(6))
 node_type: (sx: []u32, n: u32): u32 = node_word(sx, n, u32(7))
 list_item: (sx: []u32, start: u32, i: u32): u32 = sx[syn_lists_at(sx) + start + i]
+
+// is_float_node: a node of a float type, or a float literal (typed by its context).
+is_float_node: (sx: []u32, n: u32): Bool = node_kind(sx, n) == SYN_FLOATLIT || is_float_type(sx, node_type(sx, n))
+
+// float_width_of: the width of a float node with a type, 0 for a literal
+// or a node that is not a float.
+float_width_of: (sx: []u32, n: u32): u32 = is_float_type(sx, node_type(sx, n)) ? { scalar_width(sx, node_type(sx, n)) } | { u32(0) }
 
 // --- state, terms ---------------------------------------------------------
 
@@ -476,6 +499,99 @@ t_extend: (lw: Lower, w: [*]u32, b: [*]u32, t: u32, from_width: u32, width: u32,
 
 t_not1: (lw: Lower, w: [*]u32, b: [*]u32, t: u32): u32 = t_binary(lw, w, b, BOP_XOR, t_truncate(lw, w, b, t, u32(1)), t_const(lw, w, b, u32(1), u32(1)))
 
+// --- floats as bit patterns (asm/floats_lowering.go) ------------------------
+
+t_bit: (lw: Lower, w: [*]u32, b: [*]u32, t: u32): u32 = t_truncate(lw, w, b, t, u32(1))
+t_andbit: (lw: Lower, w: [*]u32, b: [*]u32, x: u32, y: u32): u32 = t_binary(lw, w, b, BOP_AND, t_bit(lw, w, b, x), t_bit(lw, w, b, y))
+t_orbit: (lw: Lower, w: [*]u32, b: [*]u32, x: u32, y: u32): u32 = t_binary(lw, w, b, BOP_OR, t_bit(lw, w, b, x), t_bit(lw, w, b, y))
+is_bits: (lw: Lower, w: [*]u32, b: [*]u32, x: u32, y: u32): u32 = t_bit(lw, w, b, t_cmp(lw, w, b, CC_EQ, x, y))
+is_not_bits: (lw: Lower, w: [*]u32, b: [*]u32, x: u32, y: u32): u32 = t_bit(lw, w, b, t_cmp(lw, w, b, CC_NE, x, y))
+
+float_sign_mask: (fw: u32): u64 = u64(1) << u64(fw - u32(1))
+float_magnitude_mask: (fw: u32): u64 = float_sign_mask(fw) - u64(1)
+float_exponent_mask: (fw: u32): u64 = fw == u32(32) ? { u64(0x7F800000) } | { u64(0x7FF0000000000000) }
+float_mantissa_mask: (fw: u32): u64 = float_magnitude_mask(fw) & (u64(0xFFFFFFFFFFFFFFFF) ^ float_exponent_mask(fw))
+
+// float_is_nan: exponent all ones and a nonzero mantissa.
+float_is_nan: (lw: Lower, w: [*]u32, b: [*]u32, x: u32, fw: u32): u32 {
+  exponent: u32 = t_const64(lw, w, b, float_exponent_mask(fw), fw)
+  mantissa: u32 = t_const64(lw, w, b, float_mantissa_mask(fw), fw)
+  t_andbit(lw, w, b, is_bits(lw, w, b, t_binary(lw, w, b, BOP_AND, x, exponent), exponent), is_not_bits(lw, w, b, t_binary(lw, w, b, BOP_AND, x, mantissa), t_const(lw, w, b, u32(0), fw)))
+}
+
+float_sign_bit: (lw: Lower, w: [*]u32, b: [*]u32, x: u32, fw: u32): u32 = t_bit(lw, w, b, t_binary(lw, w, b, BOP_SHR, x, t_const(lw, w, b, fw - u32(1), fw)))
+float_magnitude: (lw: Lower, w: [*]u32, b: [*]u32, x: u32, fw: u32): u32 = t_binary(lw, w, b, BOP_AND, x, t_const64(lw, w, b, float_magnitude_mask(fw), fw))
+
+// float_less: x < y in the sign-magnitude order, neither NaN, not both zero.
+float_less: (lw: Lower, w: [*]u32, b: [*]u32, nan: u32, both_zero: u32, sx: u32, sy: u32, mag_x: u32, mag_y: u32): u32 {
+  neg_only: u32 = t_andbit(lw, w, b, sx, t_not1(lw, w, b, sy))
+  both_neg: u32 = t_andbit(lw, w, b, t_andbit(lw, w, b, sx, sy), t_bit(lw, w, b, t_cmp(lw, w, b, CC_HI, mag_x, mag_y)))
+  both_pos: u32 = t_andbit(lw, w, b, t_andbit(lw, w, b, t_not1(lw, w, b, sx), t_not1(lw, w, b, sy)), t_bit(lw, w, b, t_cmp(lw, w, b, CC_LO, mag_x, mag_y)))
+  t_andbit(lw, w, b, t_not1(lw, w, b, nan), t_andbit(lw, w, b, t_not1(lw, w, b, both_zero), t_orbit(lw, w, b, neg_only, t_orbit(lw, w, b, both_neg, both_pos))))
+}
+
+// float_compare lowers an IEEE comparison (an infix code) of two fw-bit
+// patterns to a 1-bit term: NaN compares false to everything, the zeros
+// are equal, the rest is the sign-magnitude order.
+float_compare: (lw: Lower, w: [*]u32, b: [*]u32, op: u32, x: u32, y: u32, fw: u32): u32 {
+  nan: u32 = t_orbit(lw, w, b, float_is_nan(lw, w, b, x, fw), float_is_nan(lw, w, b, y, fw))
+  sx: u32 = float_sign_bit(lw, w, b, x, fw)
+  sy: u32 = float_sign_bit(lw, w, b, y, fw)
+  mag_x: u32 = float_magnitude(lw, w, b, x, fw)
+  mag_y: u32 = float_magnitude(lw, w, b, y, fw)
+  both_zero: u32 = is_bits(lw, w, b, t_binary(lw, w, b, BOP_OR, mag_x, mag_y), t_const(lw, w, b, u32(0), fw))
+  eq: u32 = t_andbit(lw, w, b, t_not1(lw, w, b, nan), t_orbit(lw, w, b, is_bits(lw, w, b, x, y), both_zero))
+  op == IOP_EQ ? { eq } | {
+  op == IOP_NE ? { t_not1(lw, w, b, eq) } | {
+  op == IOP_LT ? { float_less(lw, w, b, nan, both_zero, sx, sy, mag_x, mag_y) } | {
+  op == IOP_GT ? { float_less(lw, w, b, nan, both_zero, sy, sx, mag_y, mag_x) } | {
+  op == IOP_LE ? { t_orbit(lw, w, b, float_less(lw, w, b, nan, both_zero, sx, sy, mag_x, mag_y), eq) } | {
+  t_orbit(lw, w, b, float_less(lw, w, b, nan, both_zero, sy, sx, mag_y, mag_x), eq) } } } } }
+}
+
+// fresh_leaf is a symbol no law may pin down (the NaN a min or max
+// yields): a leaf past the parameters, its width recorded.
+fresh_leaf: (lw: Lower, w: [*]u32, b: [*]u32, fw: u32): u32 {
+  k: u32 = state(lw, w, LS_FRESH)
+  k >= MAX_FRESH ? { fail_at(lw, w, u32(29)) } | { set_state(lw, w, LS_FRESH, k + u32(1)) }
+  li: u32 = state(lw, w, LS_LEAVES) + k
+  k >= MAX_FRESH ? { } | { b[HEADER_WORDS + li * LEAF_WORDS] = fw }
+  t_param(lw, w, b, li, fw)
+}
+
+// float_intrinsic builds a float intrinsic over its lowered arguments (at
+// the float width fw), adapted to the context width.
+float_intrinsic: (lw: Lower, w: [*]u32, b: [*]u32, code: u32, x: u32, y: u32, fw: u32, width: u32): u32 {
+  sign: u32 = t_const64(lw, w, b, float_sign_mask(fw), fw)
+  magnitude: u32 = t_const64(lw, w, b, float_magnitude_mask(fw), fw)
+  exponent: u32 = t_const64(lw, w, b, float_exponent_mask(fw), fw)
+  mantissa: u32 = t_const64(lw, w, b, float_mantissa_mask(fw), fw)
+  zero: u32 = t_const(lw, w, b, u32(0), fw)
+  code == FI_ABS ? { t_adapt(lw, w, b, t_binary(lw, w, b, BOP_AND, x, magnitude), width) } | {
+  code == FI_COPYSIGN ? { t_adapt(lw, w, b, t_binary(lw, w, b, BOP_OR, t_binary(lw, w, b, BOP_AND, x, magnitude), t_binary(lw, w, b, BOP_AND, y, sign)), width) } | {
+  code == FI_IS_NAN ? { t_zero_extend(lw, w, b, float_is_nan(lw, w, b, x, fw), width) } | {
+  code == FI_IS_FINITE ? { t_zero_extend(lw, w, b, is_not_bits(lw, w, b, t_binary(lw, w, b, BOP_AND, x, exponent), exponent), width) } | {
+  code == FI_IS_INFINITE ? { t_zero_extend(lw, w, b, t_andbit(lw, w, b, is_bits(lw, w, b, t_binary(lw, w, b, BOP_AND, x, exponent), exponent), is_bits(lw, w, b, t_binary(lw, w, b, BOP_AND, x, mantissa), zero)), width) } | {
+  code == FI_IS_NORMAL ? {
+    field: u32 = t_binary(lw, w, b, BOP_AND, x, exponent)
+    t_zero_extend(lw, w, b, t_andbit(lw, w, b, is_not_bits(lw, w, b, field, zero), is_not_bits(lw, w, b, field, exponent)), width)
+  } | {
+  code == FI_TOTAL_ORDER ? {
+    key_x: u32 = t_ite(lw, w, b, float_sign_bit(lw, w, b, x, fw), t_binary(lw, w, b, BOP_XOR, x, magnitude), x)
+    key_y: u32 = t_ite(lw, w, b, float_sign_bit(lw, w, b, y, fw), t_binary(lw, w, b, BOP_XOR, y, magnitude), y)
+    t_zero_extend(lw, w, b, t_bit(lw, w, b, t_cmp(lw, w, b, CC_LE, key_x, key_y)), width)
+  } | {
+    // min and max: equal operands pick by sign, the rest by order; a NaN
+    // operand yields a fresh symbol.
+    nan: u32 = t_orbit(lw, w, b, float_is_nan(lw, w, b, x, fw), float_is_nan(lw, w, b, y, fw))
+    eq: u32 = float_compare(lw, w, b, IOP_EQ, x, y, fw)
+    lt: u32 = float_compare(lw, w, b, IOP_LT, x, y, fw)
+    sx: u32 = float_sign_bit(lw, w, b, x, fw)
+    ordered: u32 = code == FI_MIN ? { t_ite(lw, w, b, eq, t_ite(lw, w, b, sx, x, y), t_ite(lw, w, b, lt, x, y)) } | { t_ite(lw, w, b, eq, t_ite(lw, w, b, sx, y, x), t_ite(lw, w, b, lt, y, x)) }
+    t_adapt(lw, w, b, t_ite(lw, w, b, nan, fresh_leaf(lw, w, b, fw), ordered), width)
+  } } } } } } }
+}
+
 // --- paths, traps -----------------------------------------------------------
 
 current_path: (lw: Lower, w: [*]u32): u32 {
@@ -682,7 +798,7 @@ contract_of: (lw: Lower, w: [*]u32, sx: []u32, node: u32): Contract {
       (sym_value(lw, w, sym) != NONE && sym_value(lw, w, sym) != AGG) ? { out = Contract { width: scalar_width(sx, sym_type(lw, w, sym)), signed: scalar_signed(sx, sym_type(lw, w, sym)), ok: true } } | { }
     } | {
     kind == SYN_CONV ? { out = Contract { width: node_a(sx, n), signed: node_b(sx, n) != u32(0), ok: true } } | {
-    (kind == SYN_CALL && is_scalar_type(sx, typ)) ? { out = Contract { width: scalar_width(sx, typ), signed: scalar_signed(sx, typ), ok: true } } | {
+    ((kind == SYN_CALL || kind == SYN_FLOATCALL) && is_scalar_type(sx, typ)) ? { out = Contract { width: scalar_width(sx, typ), signed: scalar_signed(sx, typ), ok: true } } | {
     kind == SYN_INSTR ? { out = Contract { width: node_b(sx, n), signed: false, ok: true } } | {
     ((kind == SYN_FIELD || kind == SYN_INDEX) && is_scalar_type(sx, typ)) ? { out = Contract { width: scalar_width(sx, typ), signed: scalar_signed(sx, typ), ok: true } } | {
     kind == SYN_INFIX ? {
@@ -988,6 +1104,13 @@ step_expr: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
     set_state(lw, w, LS_RET, t_const(lw, w, b, node_a(sx, node), width))
     pop_frame_l(lw, w)
   } | {
+  kind == SYN_FLOATLIT ? {
+    width == u32(32) ? { set_state(lw, w, LS_RET, t_const(lw, w, b, node_a(sx, node), u32(32))) } | {
+      width == u32(64) ? { set_state(lw, w, LS_RET, t_const64(lw, w, b, (u64(node_vhi(sx, node)) << u64(32)) | u64(node_vlo(sx, node)), u32(64))) } | { fail_at(lw, w, u32(30)) }
+    }
+    pop_frame_l(lw, w)
+  } | {
+  kind == SYN_FLOATCALL ? { step_float_call(lw, w, b, sx, f, node, width, phase, ret) } | {
   kind == SYN_SYM ? {
     t: u32 = sym_value(lw, w, node_a(sx, node))
     (t == NONE || t == AGG) ? { fail_at(lw, w, u32(11)) } | { set_state(lw, w, LS_RET, t_adapt(lw, w, b, t, width)) }
@@ -1001,7 +1124,12 @@ step_expr: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
     } | {
       op == u32(0) ? { set_state(lw, w, LS_RET, t_zero_extend(lw, w, b, t_truncate(lw, w, b, ret, u32(1)), width)) } | {
         op == u32(1) ? { set_state(lw, w, LS_RET, t_binary(lw, w, b, BOP_XOR, ret, t_const64(lw, w, b, mask64(width), width))) } | {
-          set_state(lw, w, LS_RET, t_binary(lw, w, b, BOP_SUB, t_const(lw, w, b, u32(0), width), ret))
+          is_float_node(sx, node_b(sx, node)) ? {
+            // Negation of a float flips the sign bit (total, NaN included).
+            set_state(lw, w, LS_RET, t_binary(lw, w, b, BOP_XOR, ret, t_const64(lw, w, b, float_sign_mask(width), width)))
+          } | {
+            set_state(lw, w, LS_RET, t_binary(lw, w, b, BOP_SUB, t_const(lw, w, b, u32(0), width), ret))
+          }
         }
       }
       pop_frame_l(lw, w)
@@ -1065,7 +1193,34 @@ step_expr: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
       pop_frame_l(lw, w)
     }
   } | {
-  (kind == SYN_FIELD || kind == SYN_INDEX) ? { step_access(lw, w, b, sx, f, node, width, phase, ret) } | { fail_at(lw, w, u32(12)) } } } } } } } } } } }
+  (kind == SYN_FIELD || kind == SYN_INDEX) ? { step_access(lw, w, b, sx, f, node, width, phase, ret) } | { fail_at(lw, w, u32(12)) } } } } } } } } } } } } }
+}
+
+// step_float_call advances a float intrinsic: the arguments at the float
+// width (a typed argument's, else the context's: 64 or 32), then the bit
+// operation.
+step_float_call: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, width: u32, phase: u32, ret: u32): () {
+  code: u32 = node_a(sx, node)
+  args: u32 = node_b(sx, node)
+  nargs: u32 = node_c(sx, node)
+  phase == u32(0) ? {
+    fw: u32 = float_width_of(sx, list_item(sx, args, u32(0)))
+    fw = (fw == u32(0) && nargs > u32(1)) ? { float_width_of(sx, list_item(sx, args, u32(1))) } | { fw }
+    fw = fw == u32(0) ? { width == u32(64) ? { u32(64) } | { u32(32) } } | { fw }
+    w[f + u32(6)] = fw
+    w[f + u32(3)] = u32(1)
+    push_frame_l(lw, w, F_EXPR, list_item(sx, args, u32(0)), fw)
+  } | {
+  (phase == u32(1) && nargs > u32(1)) ? {
+    w[f + u32(4)] = ret
+    w[f + u32(3)] = u32(2)
+    push_frame_l(lw, w, F_EXPR, list_item(sx, args, u32(1)), w[f + u32(6)])
+  } | {
+    x: u32 = nargs > u32(1) ? { w[f + u32(4)] } | { ret }
+    y: u32 = nargs > u32(1) ? { ret } | { NONE }
+    set_state(lw, w, LS_RET, float_intrinsic(lw, w, b, code, x, y, w[f + u32(6)], width))
+    pop_frame_l(lw, w)
+  } }
 }
 
 // step_literal advances a record or array literal (F_AGG): each field or
@@ -1211,21 +1366,36 @@ step_cond: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
     } }
   } | {
   (kind == SYN_INFIX && is_comparison(node_a(sx, node))) ? {
+    left_node: u32 = node_b(sx, node)
+    right_node: u32 = node_c(sx, node)
+    floats: Bool = is_float_node(sx, left_node) || is_float_node(sx, right_node)
     phase == u32(0) ? {
-      contract: Contract = contract_of(lw, w, sx, node)
-      contract.ok ? {
-        w[f + u32(2)] = contract.width
-        w[f + u32(5)] = contract.signed ? { u32(1) } | { u32(0) }
+      floats ? {
+        // IEEE comparison over the bit patterns at the typed operand's width.
+        fw: u32 = float_width_of(sx, left_node)
+        fw = fw == u32(0) ? { float_width_of(sx, right_node) } | { fw }
+        fw = fw == u32(0) ? { u32(64) } | { fw }
+        w[f + u32(2)] = fw
         w[f + u32(3)] = u32(1)
-        push_frame_l(lw, w, F_EXPR, node_b(sx, node), contract.width)
-      } | { fail_at(lw, w, u32(16)) }
+        push_frame_l(lw, w, F_EXPR, left_node, fw)
+      } | {
+        contract: Contract = contract_of(lw, w, sx, node)
+        contract.ok ? {
+          w[f + u32(2)] = contract.width
+          w[f + u32(5)] = contract.signed ? { u32(1) } | { u32(0) }
+          w[f + u32(3)] = u32(1)
+          push_frame_l(lw, w, F_EXPR, left_node, contract.width)
+        } | { fail_at(lw, w, u32(16)) }
+      }
     } | {
     phase == u32(1) ? {
       w[f + u32(4)] = ret
       w[f + u32(3)] = u32(2)
-      push_frame_l(lw, w, F_EXPR, node_c(sx, node), w[f + u32(2)])
+      push_frame_l(lw, w, F_EXPR, right_node, w[f + u32(2)])
     } | {
-      set_state(lw, w, LS_RET, t_cmp(lw, w, b, cmp_code(node_a(sx, node), w[f + u32(5)] != u32(0)), w[f + u32(4)], ret))
+      floats ? { set_state(lw, w, LS_RET, float_compare(lw, w, b, node_a(sx, node), w[f + u32(4)], ret, w[f + u32(2)])) } | {
+        set_state(lw, w, LS_RET, t_cmp(lw, w, b, cmp_code(node_a(sx, node), w[f + u32(5)] != u32(0)), w[f + u32(4)], ret))
+      }
       pop_frame_l(lw, w)
     } }
   } | {
@@ -1543,8 +1713,11 @@ leaf_blocks: (lw: Lower, w: [*]u32, sx: []u32, leaves: u32, control: Bool): () {
 // outside the lowering's subset or the order does not apply (reason 28).
 lower_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, budget: u32, order: u32): u32 {
   leaves: u32 = syn_leaves(sx)
-  stride: u32 = leaves + u32(8)
-  term_base: u32 = HEADER_WORDS + leaves * LEAF_WORDS
+  // The fresh symbols a NaN min or max yields are parameters of the
+  // interleaved order too (the Go decider names them among its
+  // parameters), so the stride counts them beside the eight select slots.
+  stride: u32 = leaves + MAX_FRESH + u32(8)
+  term_base: u32 = HEADER_WORDS + (leaves + MAX_FRESH) * LEAF_WORDS
   i: u32 = 0
   while i < u32(32) {
     set_state(lw, w, i, u32(0))
@@ -1554,6 +1727,13 @@ lower_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, budget: u32, order: 
   set_state(lw, w, LS_STRIDE, stride)
   set_state(lw, w, LS_TERMS_AT, term_base)
   leaves > MAX_LEAVES ? { fail_at(lw, w, u32(27)) } | { }
+  // The fresh leaves' entries follow the parameters' (MAX_FRESH of them,
+  // width 0 while unused): the table's leaf count includes them all.
+  fresh: u32 = 0
+  while fresh < MAX_FRESH {
+    b[HEADER_WORDS + (leaves + fresh) * LEAF_WORDS] = u32(0)
+    fresh = fresh + u32(1)
+  }
   clear_depth(lw, w, u32(0))
   theorem: u32 = syn_theorem(sx)
   n: u32 = fn_param_count(sx, theorem)
@@ -1588,12 +1768,19 @@ lower_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, budget: u32, order: 
     applies ? {
       order == ORDER_INTERLEAVED ? { } | { leaf_blocks(lw, w, sx, leaves, order == ORDER_CONTROL) }
       li: u32 = 0
-      while li < leaves {
+      while li < leaves + MAX_FRESH {
         base: u32 = HEADER_WORDS + li * LEAF_WORDS
         pw: u32 = b[base]
         bit: u32 = 0
         while bit < u32(64) {
-          v: u32 = order == ORDER_INTERLEAVED ? { bit * stride + li } | { w[lw.argv_at + li * u32(3)] + bit * w[lw.argv_at + li * u32(3) + u32(1)] + w[lw.argv_at + li * u32(3) + u32(2)] }
+          // A fresh leaf is interleaved with the parameters (after them in
+          // the stride); under a blocked order it takes a block of its own
+          // past the parameters' blocks.
+          v: u32 = li >= leaves ? {
+            order == ORDER_INTERLEAVED ? { bit * stride + li } | { u32(64) * leaves + (li - leaves) * u32(64) + bit }
+          } | {
+            order == ORDER_INTERLEAVED ? { bit * stride + li } | { w[lw.argv_at + li * u32(3)] + bit * w[lw.argv_at + li * u32(3) + u32(1)] + w[lw.argv_at + li * u32(3) + u32(2)] }
+          }
           b[base + u32(1) + bit] = bit < pw ? { v } | { NONE }
           bit = bit + u32(1)
         }
@@ -1611,7 +1798,7 @@ lower_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, budget: u32, order: 
       while slot < SELECT_SLOTS_OUT {
         bit: u32 = 0
         while bit < u32(64) {
-          b[select_base + slot * u32(64) + bit] = (order == ORDER_INTERLEAVED && slot < u32(8)) ? { bit * stride + leaves + slot } | {
+          b[select_base + slot * u32(64) + bit] = (order == ORDER_INTERLEAVED && slot < u32(8)) ? { bit * stride + leaves + MAX_FRESH + slot } | {
             order == ORDER_INTERLEAVED ? { u32(64) * stride + (slot - u32(8)) * u32(64) + bit } | { u32(64) * stride + slot * u32(64) + bit }
           }
           bit = bit + u32(1)
@@ -1619,7 +1806,7 @@ lower_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, budget: u32, order: 
         slot = slot + u32(1)
       }
       b[u32(0)] = nterms
-      b[u32(1)] = leaves
+      b[u32(1)] = leaves + MAX_FRESH
       b[u32(2)] = ntraps + u32(1)
       b[u32(3)] = budget
       b[u32(4)] = SELECT_SLOTS_OUT

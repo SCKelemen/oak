@@ -261,10 +261,17 @@ var simdOps = func() map[string]*FunctionType {
 		ops["splat_"+shape.Suffix] = &FunctionType{Parameters: []Type{elem, active}, ReturnType: vector}
 		ops["load_"+shape.Suffix] = &FunctionType{Parameters: []Type{view, u32, active}, ReturnType: vector}
 		ops["store_"+shape.Suffix] = &FunctionType{Parameters: []Type{span, u32, vector, active}, ReturnType: &UnitType{}}
-		for _, binary := range []string{"add", "sub", "subs", "and", "or", "xor", "min", "max", "eq"} {
+		for _, binary := range []string{"add", "sub", "subs", "and", "or", "xor", "min", "max", "eq", "ne", "lt", "gt"} {
 			ops[binary+"_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, vector, active}, ReturnType: vector}
 		}
 		ops["shr_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, u32, active}, ReturnType: vector}
+		// The predicated operations (docs/spec/93-simd.md section 4.1): a
+		// mask is a two-valued vector, and preservation is visible in the
+		// operation — select merges, store_masked writes only masked lanes.
+		ops["select_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, vector, vector, active}, ReturnType: vector}
+		ops["load_masked_"+shape.Suffix] = &FunctionType{Parameters: []Type{view, u32, vector, active}, ReturnType: vector}
+		ops["store_masked_"+shape.Suffix] = &FunctionType{Parameters: []Type{span, u32, vector, vector, active}, ReturnType: &UnitType{}}
+		ops["count_nonzero_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, active}, ReturnType: u32}
 		for _, reduction := range []string{"any", "all"} {
 			ops[reduction+"_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, active}, ReturnType: &BoolType{}}
 		}

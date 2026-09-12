@@ -196,13 +196,15 @@ The bit-level rung is decided by the solver written in Oak
 does not reach is lowered to the decider's terms, passed the Go decider's
 witness inputs (a counterexample among them settles it at once), and
 serialized under every variable order that applies as a word table — and,
-when it is in that lowering's subset (integers, Bool, records of them,
-and fixed arrays as parameters, locals, arguments, and results; the
-arithmetic, bitwise, shift, comparison, and Boolean operators;
-conversions; the scalar instruction functions; conditionals; counted
-loops; field and element reads and stores, an element at a
-data-dependent index included; record and array literals; calls to
-program functions), also as a syntax table for the lowering written in
+when it is in that lowering's subset (integers, Bool, floats as their
+IEEE patterns, records of them, and fixed arrays as parameters, locals,
+arguments, and results; the arithmetic, bitwise, shift, comparison, and
+Boolean operators; conversions; the scalar instruction functions; the
+total float operations, comparisons, classifiers, `total_order`, `min`,
+and `max`; conditionals; counted loops; field and element reads and
+stores, an element at a data-dependent index included; record and
+array literals; calls to program functions), also as a syntax table for
+the lowering written in
 Oak (`prove/solver/lower.oak`), which builds the terms itself under each
 of the three variable orders and whose verdict is preferred whenever it
 decides; the
@@ -469,12 +471,13 @@ In order of payoff, each reusing a surface that exists:
   in Oak (`prove/solver/lower.oak`: the theorem and its callees as a
   syntax table with its types, run by an explicit stack machine — Oak
   admits no unbounded recursion — that builds the terms the way the Go
-  lowering does, records and arrays as blocks of leaf terms, under the
-  three variable orders; 123 of the corpus's 155 bit-level laws are
-  lowered and decided in Oak today, every one but the float laws and
-  two whose blocked-order diagrams the Oak lowering does not yet fit,
-  the rest by the Go lowering and the Oak solver), next the floats and
-  sum types, so the bit-level path is Oak code end to end; then
+  lowering does, records and arrays as blocks of leaf terms, floats as
+  bit patterns with the fresh symbol a NaN `min` or `max` yields, under
+  the three variable orders; 153 of the corpus's 155 bit-level laws are
+  lowered and decided in Oak today, every one but two lattice laws whose
+  blocked-order diagrams the Oak lowering does not yet fit, those by the
+  Go lowering and the Oak solver), next sum types and their tag
+  hypotheses, so the bit-level path is Oak code end to end; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
   producers of certificates, so speed and trust are separated; then an
