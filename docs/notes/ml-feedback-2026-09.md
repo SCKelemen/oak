@@ -156,8 +156,11 @@ endorses:
 
 `#line` directives in generated C are **done** (`oak build -lines`,
 `90-backend.md` §10: every function and statement maps to its Oak line).
-Per-module profiles (tier 1.2) and a trace schema for FFI calls so
-`oak test -sim` can replay a kernel launch sequence remain recorded.
+Per-module profiles (tier 1.2) are done. A kernel launch sequence under
+`oak test` landed as `Launch` targets (`110-testing.md`): `test_launch`
+runs the kernel on the host, the harness records the launch, and the
+runner replays it on the device and compares; a trace schema for a
+program's own FFI launches remains recorded.
 
 ## Tier 7 — the numeric-runtime asks (2026-09-10)
 
@@ -177,8 +180,8 @@ disposition, in the order to work them:
 | --- | --- | --- |
 | O1 | `f32`/`f64` with literals, arithmetic, core intrinsics, `f32 ↔ c.Float` | **implemented**, `c.Float`/`c.Double` rows included (`20-types.md` §11.3); the complete v1 `math` package implemented bit-exactly |
 | O2 | `c.Ptr` plus length constructible from `[*]T`/`[]T`, checked at the boundary | **implemented** (`92-ffi.md` §2.5; integer, float, `Bool`, tagged-union, and proven-layout struct elements) |
-| O3 | Any runtime-sized allocation surface | direction |
-| O4 | Views or spans in records or as return values | roadmap |
+| O3 | Any runtime-sized allocation surface | **implemented**: `Buffer[T]` owning runtime memory with custody states and Buffer fields in records (`92-ffi.md` §2.8), the `arena` package |
+| O4 | Views or spans in records or as return values | **implemented**: borrows inside aggregates and region records (`50-borrowing.md` §8b), region-indexed borrowed returns (§8c), scalar views of record views (§8d) |
 | O5 | `F32x4` with `mul` and `fma` | **implemented** (`93-simd.md` §1.2a; NEON and portable lowerings agree with the interpreter) |
 | O6 | A frontend surface for `x.matmul(w).relu()` | **implemented**: uniform call syntax (`10-syntax.md` §13), operator definitions (§14), and the pipeline operator (`x \|> matmul(w) \|> relu`) |
 

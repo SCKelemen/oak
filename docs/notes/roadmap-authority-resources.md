@@ -282,6 +282,13 @@ in module builds (`70-strings.md` §4).
 
 ## 10. Device custody and concurrency
 
+**Status (2026-09-12): the custody half landed.** `Buffer[T, S]` custody
+states with transition externs (`92-ffi.md` §2.8.5), a record holding a
+buffer as the custody state with a device identity (§2.8.6), and
+`Oak.BufferCustody` as the typestate model; the pilot protocol is the
+`mlrt_submit`/`mlrt_complete` round trip of `compiler/e2e_buffer_custody_test.go`.
+Completion obligations (ordering, visibility, coherence) remain the open half.
+
 Transferable custody vs concurrent sharing. Pilot one real CPU → device →
 CPU protocol; track reachable storage and dependent borrows; completion
 needs the target's event, ordering, visibility, and coherence

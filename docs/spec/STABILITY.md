@@ -34,14 +34,19 @@ compiler's internals, which move freely.
 | Derived declarations (`derive.equal/hash/compare/format`) | `30-adts-patterns.md`, `compiler/derive.go` | stabilizing | |
 | Typed test commands (`derive.test_generate/encode/decode`), `oak test` flags, artifact and campaign formats | `110-testing.md` | stabilizing | artifact schema is versioned; the runner rejects other versions |
 | Simulated storage, crashes, scheduling adapters (`SimDisk`, `SimProcess`, `SimSched`) | `110-testing.md` | stabilizing | landed 2026-09-10 |
-| Effect clauses `effects { }` / `forbids { }` | `60-effects-allocation.md` §2 | stabilizing | v1 surface; parameterized effects are direction |
-| Protocol declarations `Name: protocol = { ... }` | `112-protocols.md` | stabilizing | control graph plus data record; array-valued data is direction |
+| Effect clauses `effects { }` / `forbids { }`, effect rows on function types and record fields | `60-effects-allocation.md` §2, §2a | stabilizing | v1 surface; parameterized effects are direction |
+| Protocol declarations `Name: protocol = { ... }`, record payloads, array and record data, quantifier forms, `fair`/`eventually`, invariant theorems | `112-protocols.md` | stabilizing | the TLA+ projection, `-conform`, and the TLC refinement fallback are tools over it |
 | Discipline profiles (`default`/`strict`), safe recursion, bounded loops, located assertions | `85-discipline.md` | stabilizing | |
 | C FFI: `c.extern`, scalar and span boundaries, generated headers | `92-ffi.md` | stabilizing | |
 | Portable SIMD (`simd.*` 128-bit unsigned, `F32x4`/`F64x2`), `arm64` library | `93-simd.md` | stabilizing | wider, signed, and x86-64 vectors are direction (`#111`) |
 | Assembler units and the AArch64 surfaces | `94-assembler.md`, `95`–`101` | stabilizing | verification-driven; instruction coverage grows |
 | Attributes other than the clauses above (layout `struct(packed)`, section names) | `40-records.md` §6b, `65-machine-memory.md` | stabilizing | no general attribute syntax exists; none is planned before the effect and protocol clauses settle |
-| Parameterized effects, typestate-indexed handles, `via` parameter modes | `60-effects-allocation.md`, `112-protocols.md` §7 | direction | |
+| Typestate-indexed handles, `via` parameter modes, `Buffer[T, S]` custody and Buffer fields in records | `112-protocols.md` §5a, `92-ffi.md` §2.8 | stabilizing | landed 2026-09-12 |
+| Parameterized effects | `60-effects-allocation.md` | direction | |
+| Kernels (`kernel` declarations, launch descriptors, `reduce.group_tree`), the `tensor` and `reduce` packages | `56-kernels.md`, `55-parallelism.md` §4 | stabilizing | the Metal emitter's subset grows; the descriptor line is versioned by its shape |
+| `order tree \| left \| any { }` blocks and `reduce.reduce` | `55-parallelism.md` §4 | direction | first increment 2026-09-12 |
+| `view_as[U]` / `span_as[U]` scalar views of record views | `50-borrowing.md` §8d | stabilizing | |
+| `Launch` test targets and `test_launch` | `110-testing.md` | direction | first increment 2026-09-12; the sidecar format is the runner's own |
 | IO port: caller-owned completion rings, `open`/`close`/`pread`/`pwrite`/`fsync`/`fdatasync`/`fsyncdir`, `replace io => iosim\|ionative` | `120-io.md` §8 increments 2–3 | stabilizing | `#106`; `iosim` and the portable `ionative` landed 2026-09-11 with `Oak.IoPort`; the ring shape is fixed by the io_uring increment to come |
 | IO surface beyond the port (io_uring realization, registered buffers, sockets) | `120-io.md` §8 increment 4 | direction | `#106`; designed, no realization yet |
 | Floating point beyond `f32`/`f64` arithmetic and the two float vectors | `20-types.md` §11.3 | stabilizing | |
