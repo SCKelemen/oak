@@ -110,6 +110,7 @@ func TestE2EStdlibGrapheme(t *testing.T) {
 // GraphemeBreakTest.txt through the compiled segmenter: the boundary chain
 // must reproduce the ÷ marks exactly.
 func TestE2EStdlibGraphemeConformance(t *testing.T) {
+	skipInShort(t)
 	path := filepath.Join("..", "stdlib", "testdata", "GraphemeBreakTest-17.0.0.txt")
 	file, err := os.Open(path)
 	if err != nil {

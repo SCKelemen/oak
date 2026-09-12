@@ -35,7 +35,7 @@ names or the module cache.
 | `oak run [-profile p] [dir]` | `go run` | Build into a temporary directory and run with this process's stdio; the program's exit status is propagated. |
 | `oak install [-profile p] [dir]` | `go install` | Build the executable into `$OAKBIN` (default `$HOME/.oak/bin`), named after the package directory. |
 | `oak vet [-profile p] [dir\|file.oak]` | `go vet` | Run every semantic gate without generating code and print what the checker recorded: errors, and the assumptions it could not discharge (the same list as the REPL's `:obligations`). |
-| `oak test [flags] [dir]` | `go test` | Run the package's tests (`110-testing.md`). |
+| `oak test [flags] [dir]` | `go test` | Run the package's tests (`110-testing.md`); `-target os/arch` builds them for a target and reports `built`, not run. |
 | `oak doc [-package P] [dir] [name]` | `go doc` | The public declarations of the module's packages (or one package) with their canonical types, from the API snapshot; a name filters. |
 | `oak fmt [-l] [-w] [file\|dir]...` | `gofmt` | Canonicalize whitespace: CRLF to LF, trailing whitespace removed, blank-line runs collapsed, one final newline. A file is rewritten only when the result parses to the same syntax tree, so formatting cannot change meaning; a file that does not parse is reported and left alone. `-l` lists, `-w` writes, neither prints. Layout-sensitive indentation is never touched. |
 | `oak list [-json] [-deps] [dir]` | `go list` | The packages of the module with their imports; `-deps` includes every package a build reaches (dependencies and standard library), `-json` emits one object per package with `path`, `dir`, `module`, `imports`. |

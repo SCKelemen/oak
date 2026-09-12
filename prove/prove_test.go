@@ -106,7 +106,7 @@ main: (): i32 = even_or_odd(u8(3)) ? 0 | 1
 // A protocol is a model: its projections are ordinary functions, so an
 // inductive invariant is two theorems over the projected types, and the
 // exhaustive decider checks them on the finite state space — here finding
-// the wraparound of an 8-bit counter (docs/spec/125-verification.md §6).
+// the wraparound of an 8-bit counter (docs/spec/125-verification.md §2a).
 func TestProtocolInvariant(t *testing.T) {
 	src := `
 Turnstile: protocol = {
@@ -201,7 +201,7 @@ main: (): i32 = 0
 // An invariant candidate — a theorem over a protocol's projected state and
 // data — gets its base and step obligations generated; a machine without
 // data, with a payload-carrying step, enumerates the payload
-// (docs/spec/125-verification.md §6).
+// (docs/spec/125-verification.md §2a).
 func TestGeneratedObligations(t *testing.T) {
 	src := `
 Turnstile: protocol = {
@@ -443,8 +443,8 @@ main: (): i32 = 0
 }
 
 // An invariant over a data domain the exhaustive decider cannot enumerate
-// (a u32 budget) is decided over the reachable states, which are few even
-// though the domain is not; a false one is refuted at a reachable state.
+// (a u32 budget) is decided inductively at the bit level; a false one is
+// refuted there and reported at a state a run reaches.
 func TestInvariantOverReachableStates(t *testing.T) {
 	src := `
 Quantum: protocol = {
@@ -468,7 +468,9 @@ main: (): i32 = 0
 	for _, r := range results {
 		got[r.Name] = r
 	}
-	if r := got["bounded"]; r.Status != Decided || !strings.Contains(r.Detail, "holds on all 3 reachable states") {
+	// The inductive step over the u32 record decides at the bit level; the
+	// false candidate is refuted there and then named at a reachable state.
+	if r := got["bounded"]; r.Status != Decided || !strings.Contains(r.Detail, "step at the bit level") {
 		t.Errorf("bounded: %+v", r)
 	}
 	if r := got["always_full"]; r.Status != Refuted || !strings.Contains(r.Detail, "fails at the reachable state Running with {budget: 1}") {

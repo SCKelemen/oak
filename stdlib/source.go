@@ -182,6 +182,20 @@ var timehostSource string
 //go:embed objc.oak
 var objcSource string
 
+// host is a library package only (import("host")): the host boundary's
+// write hook from Oak (docs/spec/90-backend.md §2a) — the same program
+// prints on the host and over a UART on firmware.
+//
+//go:embed host.oak
+var hostSource string
+
+// slab is a library package only (import("slab")): a bounded typed slab
+// over caller-owned storage with generation handles
+// (docs/spec/60-effects-allocation.md sections 7 and 8).
+//
+//go:embed slab.oak
+var slabSource string
+
 // arena is a library package only (import("arena")): bump reservations of
 // element ranges over an owner such as a Buffer[T]
 // (docs/spec/60-effects-allocation.md section 6).
@@ -289,6 +303,8 @@ var Packages = map[string]string{
 	"timenative":      timenativeSource,
 	"timehost":        timehostSource,
 	"arena":           arenaSource,
+	"host":            hostSource,
+	"slab":            slabSource,
 	"objc":            objcSource,
 }
 

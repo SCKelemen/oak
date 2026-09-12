@@ -21,6 +21,7 @@ job_priority: (result: Result[Job, CollectionError]): u64 = result ?
 `
 
 func TestE2EStdlibMinHeapTrace(t *testing.T) {
+	skipInShort(t)
 	type entry struct {
 		priority uint64
 		value    uint32
@@ -107,6 +108,7 @@ func TestE2EStdlibMinHeapTrace(t *testing.T) {
 }
 
 func TestE2EStdlibMinHeapBuild(t *testing.T) {
+	skipInShort(t)
 	for _, count := range []int{0, 1, 2, 3, 8, 9} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
 			var src strings.Builder

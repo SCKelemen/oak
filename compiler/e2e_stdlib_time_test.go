@@ -402,6 +402,7 @@ func goRFC3339(nanos int64, off int32, digits int) string {
 }
 
 func TestE2EStdlibTimeRfc3339(t *testing.T) {
+	skipInShort(t)
 	b := &timeChecks{}
 	type vector struct {
 		nanos  int64

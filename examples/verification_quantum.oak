@@ -40,8 +40,8 @@ Quantum: protocol = {
   eventually Running -> Yielded
 }
 
-// An invariant candidate: decided over the reachable states, where the
-// u32 budget takes only two values.
+// An invariant candidate: its base and inductive step obligations are
+// generated and decided, the step at the bit level over the u32 record.
 budget_bounded: theorem (s: QuantumState, d: QuantumData) { d.budget >= u32(1) && d.budget <= u32(2) }
 
 main: (): i32 {

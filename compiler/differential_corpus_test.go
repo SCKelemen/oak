@@ -25,6 +25,7 @@ var corpusSkips = map[string]string{
 var mainI32 = regexp.MustCompile(`(?m)^main\s*:\s*\(\s*\)\s*(:|->)\s*i32\b`)
 
 func TestDifferentialCorpus(t *testing.T) {
+	skipInShort(t)
 	type program struct{ name, src string }
 	var programs []program
 	for _, gc := range serialize.GoldenCases() {

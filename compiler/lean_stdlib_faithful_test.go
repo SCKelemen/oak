@@ -20,6 +20,7 @@ import (
 // needs the Lean toolchain (`lake` on PATH or under ~/.elan/bin) and the
 // `spec/lean` library built; the Formal Verification workflow runs it.
 func TestLeanStdlibFaithful(t *testing.T) {
+	skipInShort(t)
 	lake := findLake()
 	if lake == "" {
 		t.Skip("lake not found (PATH or ~/.elan/bin); the faithfulness check needs the Lean toolchain")

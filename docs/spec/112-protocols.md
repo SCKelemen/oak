@@ -44,16 +44,26 @@ sequence of entries separated by newlines or commas:
 - `initial S` — exactly once. The initial control state.
 - `data { field: T, ... }` and `init { field: value, ... }` — together or not
   at all: the machine's data record (an ordinary record type body; fields
-  may be fixed arrays `[N]T`) and its initial value (a record literal setting
-  every field; arrays as typed array literals).
+  may be fixed arrays `[N]T`, declared records, and arrays of declared
+  records whose fields may themselves be fixed arrays — a per-replica log
+  is `replicas: [2]Replica` with `Replica: type = struct { log: [3]u8,
+  len: u8 }`) and its initial value (a record literal setting every field;
+  arrays as typed array literals, records as record literals).
 - `resource T` — zero or more nominal types the protocol governs (§5).
 - `name(param: T)?: From -> To (when guard)? (then { effects })? (via callable)?`
-  — one transition line. The guard is a Bool expression over `data.field`,
-  `data.field[i]` and `data.field[i].sub` reads (an array of records: the
-  element type is a declared record), the payload, and the **quantifier
-  forms** below; the effects are statements over `data.field = e`,
-  `data.field[i] = e` and `data.field[i].sub = e` and the payload. Both use
-  ordinary Oak and are checked by every gate once projected.
+  — one transition line. The guard is a Bool expression over data paths
+  of any depth — `data.field`, `data.field[i]`, `data.field[i].sub`,
+  `data.leader.log[j]`, `data.replicas[i].log[data.replicas[i].len]` —
+  the payload, and the **quantifier forms** below; the effects are
+  statements storing through the same paths, `data.path = e`, and the
+  payload. Both use ordinary Oak and are checked by every gate once
+  projected; the model-checker module reads a path as the same path over
+  the variable and folds the stores below one field into one `EXCEPT` on
+  it (`replicas' = [replicas EXCEPT ![who].log[replicas[who].len] = ...,
+  ![who].len = ...]`). A property over the logs — every replica's log is a
+  prefix of the leader's — is a theorem over the projection with loops
+  over the indices, which `oak prove` decides on the reachable states
+  (`125-verification.md` §2a; `prove/replica_logs_test.go`).
 - Quantifier forms over a fixed array field: `count(data.f)` (`u32`, the
   number of true slots of an `[N]Bool` field), `all(data.f)`,
   `any(data.f)`, `none(data.f)`, and over an array of records
@@ -72,8 +82,16 @@ sequence of entries separated by newlines or commas:
   (`OAK-M0301`): a form over a field `data` does not declare, over a
   non-array field, a one-argument form over non-`Bool` elements, a
   two-argument form whose element is not a declared record or whose named
-  field is not `Bool`. Multi-field payloads per step remain one scalar
-  (the typed-command derive admits one); a record payload is a follow-up. An index is checked at
+  field is not `Bool`. A **record payload** carries several fields per
+  step: `write(cmd: Cmd)` with `Cmd: type = struct { slot: u8, value: u8 }`
+  a declared record whose fields are command scalars, read as `cmd.slot`
+  in guards and effects; the model-checker module quantifies it over the
+  record set `Cmd == [slot: CmdSlot, value: CmdValue]`, one constant per
+  field for the configuration to assign (`CmdSlot = {0, 1, 2, 3}`), and
+  reads the fields as `cmd.slot`; the typed-command derive generates and encodes it
+  field by field, and `oak prove` enumerates it with the step when its
+  fields are 8- or 16-bit. A field outside the command scalars is a shape
+  error naming it. An index is checked at
   run time like any Oak index, so a guard that indexes by the payload
   bounds it first (`u32(who) < u32(2) && data.parked[u32(who)]`); the
   model-checker module gets the same conjunct and a payload domain that
@@ -102,14 +120,15 @@ first appearance with the initial state first; they are spelled like variants
 (initial capital), because they become variants. Transition names are spelled
 like functions; several lines may share a name (one step from several
 states), and all lines of one name carry the same payload or none. A payload
-is one fixed-width scalar or `Bool` — the shape typed test commands carry —
-named so the model-checker module can quantify over it. Several lines may
+is one fixed-width scalar or `Bool`, or a declared record of those — the
+shapes typed test commands carry — named so the model-checker module can
+quantify over it. Several lines may
 share both name and source state when every such line carries a guard: in
 Oak the first line whose guard holds is taken, in declaration order; the
 model checker explores every line whose guard holds.
 
 Shape errors (`OAK-M0301`): no `initial`, no transitions, a lowercase state,
-a payload that is not a scalar, a payload that changes between lines of one
+a payload that is not a scalar or a record of scalars, a payload that changes between lines of one
 step, a `(name, from)` pair declared twice without guards, `data` without
 `init` or `init` without `data`, an `init` that misses or invents a field, a
 guard or effect that names `data` when none is declared, a data field named `state`, `step` or `data` (the projection's own names), a `via` without a
@@ -171,6 +190,13 @@ Under the shift form the state type's tags are the field offsets `6 * i`
 (`ADTType.TagValues`), a representation choice matching compares by name
 and nothing else observes. The sentinel is the sink, one past the last
 state; `next` traps on it exactly where the branch tree asserted.
+
+The branch-tree realization stays beside the lowered one as
+`name_legal_tree` and `name_next_tree` (the same projected bodies, never
+lowered), so a program holds both realizations of the declaration and
+`spec/oak/protocols.oak` states that they agree on every state and byte —
+decided in the interpreter and witnessed in the compiled program, where
+`name_next` is the table (`125-verification.md` §6).
 
 A byte-driven machine also projects **`name_run`**:
 
@@ -277,8 +303,29 @@ prints the report as data.
 
 What the reader does not understand it reports as **unsupported** by line
 — a disjunct without the state conjuncts, a quantifier outside a guard, a
-definition it cannot place — and never judges: for such modules TLC
-refinement against the projection remains the check. Helper operators
+definition it cannot place — and never judges: for such modules **TLC
+refinement is the check, and the tool runs it**. When the report has an
+unsupported form (or on `-tlc`, for any module), the projection is written
+as a module of its own, `<Name>Projection`, and a refinement module
+`<Module>Refinement` extends the hand-written module, instantiates the
+projection under the state mapping — `INSTANCE <Name>Projection WITH state
+<- state, count <- n` (`-map state=st,...` renames; unmapped variables
+keep their names and must be declared by the module) — and states
+`RefinementSpec == Projection!Spec`; its configuration is `SPECIFICATION
+Spec`, `PROPERTY RefinementSpec`, the module's own constant values from
+`-against-cfg module.cfg`, and the projection's payload domains at their
+defaults unless the module declares the same constant. TLC then decides
+whether **every behavior of the hand-written module is a behavior of the
+projection**: "No error has been found" is agreement (exit 0); a violated
+action property is a behavior the projection does not admit, reported with
+TLC's counterexample (exit 1); and without a Java runtime and
+`tla2tools.jar` (`OAK_JAVA`, `OAK_TLA2TOOLS_JAR`, or
+`~/.cache/tla2tools/tla2tools.jar`) the four files wait in the directory
+the report names (`-out dir` to choose it), exit 2. A set-and-function
+module — `Parked == {k \in 0..1 : parked[k]}`, `Halt == ... Parked = 0..1
+...` — is thereby checked against the same projection the normal form
+reads, and a module that halts one parked slot early is caught at the
+`Halt` step (`compiler/protocol_refine_test.go`). Helper operators
 inlined in the hand-written module compare as their expanded guard text
 only when the projection spells the same text; a module that names a
 quorum predicate of its own is therefore reported as a guard difference,

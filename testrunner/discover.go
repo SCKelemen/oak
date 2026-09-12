@@ -13,6 +13,7 @@ import (
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/compiler"
+	"github.com/SCKelemen/oak/target"
 )
 
 type Test struct {
@@ -32,7 +33,11 @@ type Package struct {
 	Source string
 	// Profile is the discipline profile the test build is judged under
 	// ("" or "default", or "strict"; docs/spec/85-discipline.md section 1).
-	Profile  string
+	Profile string
+	// Target is the build target of the test binary (`oak test -target`,
+	// docs/spec/90-backend.md section 2a); the zero value is the host. A
+	// foreign target is built through its cross toolchain and not run.
+	Target   target.Target
 	Tests    []Test
 	Registry []Test
 	// Schema decodes semantic trace events for people and tools; nil when the

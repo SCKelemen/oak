@@ -1,0 +1,21 @@
+// The sort laws (spec/lean/Oak/Stdlib/SortLaws.lean, PdqsortLaws.lean) as
+// Oak theorems over the library itself, decided exhaustively on pairs:
+// the result is sorted and a permutation of the input, and a present key
+// is found.
+package main
+import("sort")
+
+pair_sorted_and_permuted: theorem (a: u8, b: u8) {
+  items: [2]u8 = [2]u8{ a, b }
+  sort.sort_span[u8](span(&items))
+  sort.sort_is_sorted[u8](view(&items)) && ((items[0] == a && items[1] == b) || (items[0] == b && items[1] == a))
+}
+
+pair_search_finds: theorem (a: u8, b: u8) {
+  items: [2]u8 = [2]u8{ a, b }
+  sort.sort_span[u8](span(&items))
+  found: Option[u32] = sort.sort_search[u8](view(&items), a)
+  found ? | .Some(at) => items[at] == a | .None => false
+}
+
+main: (): i32 = 0

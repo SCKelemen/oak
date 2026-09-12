@@ -89,6 +89,7 @@ type mcuMachine struct {
 }
 
 func TestE2EMicrocontrollerTargetsUnderQEMU(t *testing.T) {
+	skipInShort(t)
 	machines := []mcuMachine{
 		{
 			tgt: target.Target{OS: target.OSFreestanding, Arch: target.ArchArm}, cpu: "cortex_m3",

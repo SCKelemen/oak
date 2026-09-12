@@ -43,3 +43,9 @@ jobs:
 
       - name: Check extracted standard library against compiled Oak
         run: go test ./compiler -run 'TestLeanStdlibFaithful' -count=1 -v
+
+      # The self-hosted laws (docs/spec/125-verification.md section 7): the
+      # decided files everywhere, the Lean-proved file here, where the
+      # toolchain is installed.
+      - name: Prove the self-hosted laws
+        run: go test . -run 'TestSelfHostedLaws' -count=1 -v

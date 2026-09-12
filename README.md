@@ -1166,6 +1166,10 @@ minute limit on a laptop, so run the suite with an explicit timeout:
 go test -timeout 30m ./...
 ```
 
+For a quick local pass, `go test -short ./...` skips the two dozen conformance
+corpora, differential sweeps, and QEMU boards that dominate the wall time
+(`skipInShort` in `compiler/e2e_test.go`) and fits the default limit.
+
 CI shards the same suite by test name (`.github/workflows/ci.yml`); the
 `packages` shard is everything but `./compiler`, and the `e2e-*` shards
 split `./compiler` by `-run` pattern.
@@ -1186,5 +1190,6 @@ to the TLA+ module for TLC. Refinement types (`Slot: type = u16 where value <
 u16(8)`, generic as `IrqId[N: u32]: type = u16 where value < N`) carry their
 predicate as a fact, so an index of a refined type is proven at every access
 and checked once, at construction — or not at all when the facts in scope
-discharge it. `examples/verification_quantum.oak` exercises all of it; see
+discharge it. `examples/verification_quantum.oak` exercises all of it, and `spec/oak/`
+restates the checker's own laws as Oak theorems the prover discharges; see
 [the verification spec](docs/spec/125-verification.md).

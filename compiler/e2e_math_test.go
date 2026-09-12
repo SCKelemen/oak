@@ -847,6 +847,7 @@ var mathBounds = map[string]float64{
 }
 
 func TestMathLibraryFourthWitness(t *testing.T) {
+	skipInShort(t)
 	seed := int64(20260910)
 	if env := os.Getenv("OAK_MATH_SEED"); env != "" {
 		parsed, err := strconv.ParseInt(env, 10, 64)

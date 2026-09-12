@@ -249,6 +249,7 @@ main: (): i32 {
 // TestE2EStdlibNormalizeConformance runs every line of the Unicode 17.0.0
 // NormalizationTest.txt through the compiled normalizer in chunks.
 func TestE2EStdlibNormalizeConformance(t *testing.T) {
+	skipInShort(t)
 	cases := readNormalizationTest(t)
 	const chunkBytes = 96 * 1024
 	start := 0

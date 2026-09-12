@@ -83,9 +83,13 @@ The candidate's own row reports the obligations: `decided` when both are,
 `refuted` naming which one fails and where (this turnstile's 8-bit
 counter wraps: `invariant is not preserved: counterexample ... coins:
 255`), `open` otherwise; the obligation rows follow with their detail.
-A candidate the inductive check leaves short of `decided` — a data
-domain too large to enumerate, a step that fails only at a state no run
-reaches — is then evaluated on the reachable states themselves, the
+A step obligation over a `u32` record decides at the bit level (§3):
+the record and sum-type parameters are aggregates of leaves, the
+projection's `next` is inlined through its span, and its `assert` is a
+trap obligation on the legal path only. A candidate the inductive check
+still leaves short of `decided` — a body outside the decider's subset, a
+step that fails only at a state no run reaches — is then evaluated on
+the reachable states themselves, the
 exploration §2b uses (bounded by `-cases`): `invariant: holds on all 3
 reachable states` decides a `u32` budget whose reachable values are few,
 and `invariant fails at the reachable state Unlocked with {coins: 0}`
@@ -139,7 +143,7 @@ Every theorem is placed on one rung, from the strongest evidence down:
 
 | Status | Meaning |
 | --- | --- |
-| `decided` | The compiler decided the statement itself, one of two ways. **Exhaustively**: it evaluated the body on every element of its finite parameter domain and every case held — domains are `Bool`, `u8`, `i8`, `u16`, `i16`, payload-free sum types, and declared records of those (the product of the field domains), with the product of the parameter domains bounded (`-cases`, 65536 by default); the evaluator is the interpreter the differential witnesses hold to the compiled program. **At the bit level**: for parameters that are fixed-width scalars or `Bool` of any width, the body was lowered to the assembler verifier's term language (`94-assembler.md` §8; wrapping arithmetic, bitwise operators, comparisons, conditionals, typed locals, counted loops, calls to program functions of the same shape inlined; no views, recursion, or data-dependent loops) and bit-blasted, and its bit is the constant true. A construct that traps on some inputs — a variable shift count reaching the width, a refinement's construction `Name(e)` whose predicate may fail — records its trap condition as an obligation the decider proves impossible first, so a theorem whose body traps is `refuted` at the trapping input rather than read as true; a parameter of a refinement type is its base under the predicate as a hypothesis (the claim is about the values the construction admits), and a callee's refined parameter or return is its base; the term semantics are those of `Oak.AssemblerSemantics`, proved against Arm's ASL and checked against the silicon. The detail names which, and the case count or BDD node count. |
+| `decided` | The compiler decided the statement itself, one of two ways. **Exhaustively**: it evaluated the body on every element of its finite parameter domain and every case held — domains are `Bool`, `u8`, `i8`, `u16`, `i16`, payload-free sum types, and declared records of those (the product of the field domains), with the product of the parameter domains bounded (`-cases`, 65536 by default); the evaluator is the interpreter the differential witnesses hold to the compiled program. **At the bit level**: for parameters that are fixed-width scalars or `Bool` of any width, the body was lowered to the assembler verifier's term language (`94-assembler.md` §8; wrapping arithmetic, bitwise operators, comparisons, conditionals, typed locals, counted loops, calls to program functions of the same shape inlined; no views, recursion, or data-dependent loops) and bit-blasted, and its bit is the constant true. A construct that traps on some inputs — a variable shift count reaching the width, a refinement's construction `Name(e)` whose predicate may fail — records its trap condition as an obligation the decider proves impossible first, so a theorem whose body traps is `refuted` at the trapping input rather than read as true; a parameter of a refinement type is its base under the predicate as a hypothesis (the claim is about the values the construction admits), and a callee's refined parameter or return is its base; a parameter of a record or sum type is an aggregate of scalar leaves — one symbolic parameter per field, a tag per union under the hypothesis that it names a variant — and calls pass such values by copy, a span of a local array as an alias (so a callee's write-back is seen), and return them merged leaf by leaf across match arms, so a protocol invariant's inductive step over a `u32` record decides here; an `assert` in a reached body is a trap obligation like a shift's, and every trap obligation carries the path condition under which the program reaches it (the right operand of a short-circuit or only when the left is false, a match arm only when its pattern is the first to match); the term semantics are those of `Oak.AssemblerSemantics`, proved against Arm's ASL and checked against the silicon. The detail names which, and the case count or BDD node count. |
 | `refuted` | One of the deciders found a counterexample. The theorem is false; the assignment is reported. |
 | `proved` | Lean checked the theorem's statement over the extraction of the program (§5): `oak prove -lean out.lean -check` ran Lean on the projection and its statement drew no error. The compiler never awards this rung on its own; it reads Lean's diagnostics. A hand-written proof lives in a module of its own that imports the projection. |
 | `open` | No decider applies (a domain too large, a parameter type that is not finite) and the statement awaits its Lean proof. The reason is reported. |
@@ -179,6 +183,17 @@ message; an error outside every statement leaves them all open with it.
 `oak build` checks theorems like any declaration and does not run the
 ladder; a theorem is never a build error for being open.
 
+`-witness` evaluates every exhaustively decided theorem in the compiled
+program as well: `main` is replaced by a generated driver that loops over
+the same domains (u8, u16, i8, i16, `Bool`, payload-free sum types and a
+protocol's state type) through the width-conversion rows, calls each
+theorem, and exits with the index of the first theorem that fails; the
+row gains `witnessed in the compiled program`, and a disagreement between
+the interpreter and the backend is reported as `refuted` — the
+differential witness of `85-discipline.md`, stated per theorem. A theorem
+whose parameters the driver cannot enumerate is left to the interpreter's
+verdict and named in the summary.
+
 ## 5. The Lean projection
 
 A theorem extracts like the function it is (`95-extraction.md`), followed
@@ -216,7 +231,90 @@ What the projection does not say: the extractor's and the compiler's
 fidelity to the binary, which the extraction lane's tests and the
 differential witnesses cover, and are stated as the assumption they are.
 
-## 6. Direction
+## 6. Self-hosted laws
+
+The laws the checker rests on are stated in Lean (`spec/lean/Oak`) over
+the naturals, and in Oak — `spec/oak/*.oak` — over the fixed-width
+integers the checker actually reasons about, each as a theorem `oak prove`
+discharges. The Oak statement makes the wrap-free premise explicit where
+the Lean one has none to make (`i + k >= i` before `i + k < len`), so it is
+the law the facts rely on, not an idealization of it. `TestSelfHostedLaws`
+proves every file: the decided ones on every run of the test suite, the
+`*_lean.oak` files through Lean where the Formal Verification workflow has
+the toolchain.
+
+| Lean law (`Oak.Extents`) | Oak theorem (`spec/oak/extents.oak`) | Rung |
+| --- | --- | --- |
+| `static_extent`, `constant_under_min_length`, `bound_transfers`, `bound_through_upper` | same names, over `u32` | decided, bit level |
+| `offset_under_bound`, `guard_without_wrap`, `inclusive_guard_without_wrap` | same names, the sums wrap-free | decided, bit level |
+| `subslice_extent`, `subslice_check_iff` | same names | decided, bit level |
+| `literal_bound_under_length`, `subtraction_under_bounds`, `subtraction_under_length` | same names | decided, bit level |
+| `scaled_under_bound` | `scaled_under_bound_4`; `scaled_under_bound_512` (`extents_lean.oak`) | decided; proved (the page scale exceeds the BDD budget) |
+| `masked_under_length`, `loop_exit_lower_bound`, `increment_keeps_lower_bound`, `increment_without_wrap` | same names | decided, bit level |
+| `decreasing_keeps_upper_bound`, `decreasing_keeps_literal_bound` | same names | decided, bit level |
+| `vector_under_min_length`, `vector_under_offset_bound`, `vector_under_literal_bound` | same names | decided, bit level |
+| `midpoint_under_bound`, `midpoint_under_length`, `div_bound_scaled`, `div_bound_under_length` | same names at scale 2 and 512 (`extents_lean.oak`) | proved by Lean (the decider has no division) |
+| `facts_monotone`, `kill_is_conservative`, `bool_binding_*`, `loop_invariant` | — | about the fact stack, not arithmetic; Lean only |
+
+| Lean law (`Oak.Intrinsics`) | Oak theorem (`spec/oak/intrinsics.oak`) | Rung |
+| --- | --- | --- |
+| `reverse_involutive` | `rev32/rev64/rbit32/rbit64_involutive` | decided, bit level |
+| `clz_le_width`, `clz_zero`, `clz_leading_one`, `clz_lt_of_mem_true` | `clz32_le_width`, `clz32_zero`, `clz64_zero`, `clz32_leading_one`, `clz32_lt_of_set` | decided |
+| `ctz_zero`, `ctz_lt_of_mem_true` | `ctz32_zero`, `ctz32_odd` (through `rbit`) | decided |
+| `popcount_le_width`, `popcount_zero`, `popcount_ones`, `popcount_not`, `popcount_eq_zero_iff` | `popcount32/64_*` | decided, bit level |
+
+| Witness (`spec/oak/witnesses.oak`) | Statement | Rung |
+| --- | --- | --- |
+| the SWAR population count | `swar_popcount32(x) == arm64.cnt32(x)`, and at 64 bits | decided, bit level |
+| the byte shuffle, the swap network | `shuffle_rev32(x) == arm64.rev32(x)`, `network_rbit32(x) == arm64.rbit32(x)` | decided, bit level |
+| leading zeros as thresholds | `threshold_clz32(x) == arm64.clz32(x)` | decided, bit level |
+| Unicode Table 3-7, one and two bytes | `is_valid_utf8` over `[b0, b1]` equals the table's predicate | decided, all 65536 cases |
+| Table 3-7, the special three- and four-byte rows | `E0`, `E1`, `ED`; `F0`, `F4` with a fixed last byte, over every continuation pair | decided, all 65536 cases each |
+
+| Discharge law (`Oak.Discharge`, `spec/oak/discharge.oak`) | Statement | Rung |
+| --- | --- | --- |
+| `shift_multiple`, `mask_multiple`, `product_multiple` | a shift by log2 K, a mask with a multiple of K, a product with a multiple of K is a multiple of K, wrapping included | decided, bit level; `bv_decide` in Lean |
+| `sum_of_multiples`, `difference_of_multiples`, `or_of_multiples`, `xor_of_multiples` | combinations of multiples are multiples | decided; `bv_decide` |
+| `narrowing_keeps_multiple`, `widening_keeps_multiple` | a conversion keeps the low bits | decided; `bv_decide` |
+| `offset_below_bound`, `lower_bound_from_guard` | the bound rules | decided |
+| `product_multiple_needs_power_of_two` | `∃ x : BitVec 8, (x * 3) % 3 ≠ 0` — why the rule admits powers of two only | Lean only (a counterexample, not a law) |
+
+| Protocol against intrinsic (`spec/oak/protocols.oak`) | Statement | Rung |
+| --- | --- | --- |
+| `machine_agrees_two_bytes` | the `Utf8` machine, stepped through `utf8_legal`/`utf8_next`, accepts `[b0, b1]` exactly when `is_valid_utf8` does | decided, all 65536 cases, and witnessed in the compiled program — where `utf8_next` is the shift DFA the backend lowers (`112-protocols.md` §2a) and `is_valid_utf8` the C helper |
+| `machine_agrees_three_bytes_e0/ed/e1` | the same under the three-byte leads with special ranges | decided and witnessed, all 65536 cases each |
+| `lowering_legal`, `lowering_next` (`Oak.Protocol`: the table computes the tree) | `utf8_legal_tree`/`utf8_next_tree`, the branch tree the projection keeps beside the lowering, agree with `utf8_legal`/`utf8_next` on every state and byte | decided (2048 cases) and witnessed in the compiled program, where `utf8_next` is the shift DFA |
+| `run_is_iterated_next` (`Oak.Protocol.runSink_correct`) | `utf8_run` over a legal two-byte input is `utf8_next` iterated | decided and witnessed, all 65536 cases |
+
+| Layout law (`Oak.RecordLayout`, `spec/oak/layout.oak`) | Statement | Rung |
+| --- | --- | --- |
+| `alignUp_ge`, `alignUp_aligned` | `align_up(v, 8)` and `align_up(v, 64)` are at least `v` and multiples of the alignment | decided, bit level |
+| — | the rounding is minimal, idempotent, and fixes aligned values | decided, bit level |
+
+| Library law (`Oak.Stdlib.*Laws`) | Oak theorem (`spec/oak/stdlib_*/`) | Rung |
+| --- | --- | --- |
+| `VarintLaws` | `roundtrip_u16` (encode then decode is the identity, in `varint_size` bytes), `size_u16`, `zigzag_roundtrip_i16`, `zigzag_small` | decided, all 65536 cases each |
+| `EncodingLaws`, `Base64Laws` | `hex_roundtrip` (both alphabets), `base64_roundtrip_two` (padded), `base64_url_roundtrip_one` | decided, exhaustively |
+| `SortLaws`, `PdqsortLaws` | `pair_sorted_and_permuted`, `pair_search_finds` | decided, all 65536 pairs |
+
+Every decided law of the corpus is also witnessed in the compiled
+program (`TestSelfHostedLaws` passes `-witness`), so the interpreter that
+decided it and the backend that runs it agree on every case. The library laws are stated over the library itself — the packages
+import `varint`, `encoding`, and `sort` — where the Lean laws are stated
+over the extraction; the two meet in the faithfulness harness
+(`95-extraction.md` §6). The witnesses are the three-witness rule (`92-ffi.md` §3.1) as proof
+rather than test: the portable lowering, transcribed as an Oak function,
+is stated equal to the instruction function and the decider settles it
+for every input; the validity intrinsic is stated against the table it
+implements and decided exhaustively. The instruction functions decide because the bit-level decider lowers
+`arm64.rev32`, `rbit`, `clz`, and `cnt` to the verifier's own instruction
+terms — the semantics the assembler lane is checked against — with `cnt`
+as a population-count term (an adder tree over the operand's bits), and
+divides by an unsigned constant power of two as a shift or a mask. What
+is not yet restated: `Oak.Floats` (the decider has no floats), and the laws over
+lists and layouts, which have no fixed-width statement.
+
+## 7. Direction
 
 In order of payoff, each reusing a surface that exists:
 
@@ -225,8 +323,10 @@ In order of payoff, each reusing a surface that exists:
   budget is decided; liveness with declared fairness is decided over the
   same reachable states (§2b) and projected to the TLA+ module
   (`112-protocols.md` §1: `fair step`, `eventually from -> target`) for
-  TLC. Next: the inductive obligations at the bit level over record and
-  sum-type parameters, for machines whose reachable graph is not finite. The Boolean
+  TLC. The inductive obligations decide at the bit level over record and
+  sum-type parameters, so a machine whose reachable graph is not finite
+  still gets its invariant decided when the step is inductive. Next:
+  strengthening non-inductive candidates from the reachable states. The Boolean
   transition-model export of the verification experiment already checks
   inductive invariants through certificates; §2a is that check on the
   language's own state.

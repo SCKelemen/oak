@@ -329,7 +329,11 @@ integers follow the same operand rule as arithmetic: one signedness, with
 widths promoting, and mixed signedness rejected. The C lowering realizes all
 of this with width-specific helpers (unsigned computation, union punning for
 signed results), never with C's promoted operators, whose signed overflow
-would be undefined.
+would be undefined. The helper bodies are transliterated line for line
+and proved equal to the fixed-width operators — the extraction's
+semantics — in `spec/lean/Oak/ArithmeticRefinement.lean`, with the emitted
+text pinned by `codegen/arithmetic_refinement_test.go`
+(`65-machine-memory.md` §12).
 
 ### 11.1a Checked, saturating and trapping arithmetic
 

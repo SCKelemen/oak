@@ -1,0 +1,21 @@
+// The extent laws the bit-level decider leaves to Lean: a division by a
+// constant that is not a power of two, and the page scale whose BDD
+// exceeds the budget. They are proved from the projection —
+// `oak prove -lean out.lean -check` — as the Formal Verification workflow
+// does.
+
+// midpoint_under_bound for a divisor that is not a power of two: the
+// decider divides by powers of two only, Lean's omega by any constant.
+midpoint_under_bound_3: theorem (a: u32, b: u32) { !(a < b) || a + (b - a) / u32(3) < b }
+
+// div_bound_scaled: i < n / 512 and j < 512 give i * 512 + j < n.
+div_bound_scaled_512: theorem (i: u32, j: u32, n: u32) { !(i < n / u32(512) && j < u32(512)) || i * u32(512) + j < n }
+
+// div_bound_under_length: the same premise puts i + j below n.
+div_bound_under_length_512: theorem (i: u32, j: u32, n: u32) { !(i < n / u32(512) && j < u32(512)) || i + j < n }
+
+// scaled_under_bound at the page scale: the bit-level decision exceeds its
+// node budget, Lean's omega does not.
+scaled_under_bound_512: theorem (i: u32, j: u32, u: u32, len: u32) { !(i < u && u >= u32(1) && u <= u32(8388608) && j < u32(512) && (u - u32(1)) * u32(512) + j < len) || i * u32(512) + j < len }
+
+main: (): i32 = 0

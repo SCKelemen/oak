@@ -18,6 +18,7 @@ import (
 // valid, on the offset of the first ill-formed byte when not, and on every
 // decoded scalar value and width along the way.
 func TestE2EStdlibUtf8Differential(t *testing.T) {
+	skipInShort(t)
 	random := rand.New(rand.NewSource(0x0f8))
 	scalar := func() rune {
 		switch c := random.Intn(100); {

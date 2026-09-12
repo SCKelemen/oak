@@ -96,7 +96,7 @@ type Compilation struct {
 	diagnosticSink func(*diagnostic.Diagnostic)
 	// syntaxRewrites run on the parsed tree before checking, in order: how
 	// a driver adds declarations the program did not write, such as the
-	// prover's protocol obligations (docs/spec/125-verification.md §6).
+	// prover's protocol obligations (docs/spec/125-verification.md §2a).
 	syntaxRewrites []func(*SyntaxTree) error
 }
 
@@ -586,6 +586,7 @@ func (comp Compilation) EmitC() Stage[string] {
 		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
 		generator.SetAsmFunctions(lowered.Model.AsmFunctions)
 		generator.SetNativeAsm(comp.options.NativeAsm)
+		generator.SetStrictAdmission(comp.options.Profile == "strict")
 		generator.SetSourceFile(lowered.Model.Tree.Source.Path)
 		generator.SetLineDirectives(comp.options.LineDirectives)
 		if lowered.Model.Tree.Modules != nil {
@@ -629,6 +630,7 @@ func (comp Compilation) EmitNative(format asm.ObjectFormat) Stage[NativeOutput] 
 		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
 		generator.SetAsmFunctions(lowered.Model.AsmFunctions)
 		generator.SetNativeAsm(true)
+		generator.SetStrictAdmission(comp.options.Profile == "strict")
 		generator.SetSourceFile(lowered.Model.Tree.Source.Path)
 		generator.SetLineDirectives(comp.options.LineDirectives)
 		if lowered.Model.Tree.Modules != nil {

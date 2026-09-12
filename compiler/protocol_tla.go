@@ -33,6 +33,10 @@ func ProtocolTLA(decl *ast.ProtocolDeclaration, origin string) (string, error) {
 type tlaEnv struct {
 	payload string
 	initial bool
+	// bound counts the enclosing function constructors of an init value,
+	// so a nested array (a record's array field inside an array of
+	// records) binds k, k1, k2 rather than shadowing k.
+	bound   int
 	lengths map[string]int64
 	records map[string]*ast.RecordLiteral
 	// finiteSets is shared by every derived env: set when Cardinality is
@@ -46,7 +50,22 @@ func (env *tlaEnv) with(payload string, initial bool) *tlaEnv {
 	if root == nil {
 		root = env
 	}
-	return &tlaEnv{payload: payload, initial: initial, lengths: env.lengths, records: env.records, root: root}
+	return &tlaEnv{payload: payload, initial: initial, bound: env.bound, lengths: env.lengths, records: env.records, root: root}
+}
+
+// deeper is env inside one more function constructor.
+func (env *tlaEnv) deeper() *tlaEnv {
+	inner := env.with(env.payload, env.initial)
+	inner.bound = env.bound + 1
+	return inner
+}
+
+// boundVar names the bound variable at a nesting depth: k, k1, k2, ...
+func boundVar(depth int) string {
+	if depth == 0 {
+		return "k"
+	}
+	return fmt.Sprintf("k%d", depth)
 }
 
 func (env *tlaEnv) useFiniteSets() {
@@ -90,18 +109,35 @@ func ProtocolTLAWithRecords(decl *ast.ProtocolDeclaration, origin string, record
 	}
 	var b strings.Builder
 	var constants []string
+	var domains []string
 	seen := map[string]bool{}
 	for _, step := range m.steps {
 		if step.payload != nil {
 			domain := domainName(step.payload.Name.Value)
-			if !seen[domain] {
-				seen[domain] = true
-				constants = append(constants, domain)
+			if seen[domain] {
+				continue
 			}
+			seen[domain] = true
+			if fields, isRecord := payloadRecordFields(step.payload.Type, m.records); isRecord {
+				// A record payload's domain is the record set of its
+				// fields' domains, each a constant the configuration
+				// assigns (TLC's configuration reads no record sets).
+				var pairs []string
+				for _, field := range fields {
+					constants = append(constants, domain+fieldConstant(field.Name))
+					pairs = append(pairs, fmt.Sprintf("%s: %s", field.Name, domain+fieldConstant(field.Name)))
+				}
+				domains = append(domains, fmt.Sprintf("%s == [%s]", domain, strings.Join(pairs, ", ")))
+				continue
+			}
+			constants = append(constants, domain)
 		}
 	}
 	if len(constants) > 0 {
 		fmt.Fprintf(&b, "CONSTANTS %s\n\n", strings.Join(constants, ", "))
+	}
+	for _, domain := range domains {
+		fmt.Fprintf(&b, "%s\n\n", domain)
 	}
 	vars := []string{"state"}
 	for _, f := range fields {
@@ -162,7 +198,11 @@ func ProtocolTLAWithRecords(decl *ast.ProtocolDeclaration, origin string, record
 					if err != nil {
 						return "", fmt.Errorf("protocol %s: %s from %s: effect: %v", m.name, step.name, line.From.Value, err)
 					}
-					if field, ok := dataField(store.Target); ok {
+					field, selector, err := tlaDataPath(store.Target, env.with(payload, false))
+					if err != nil {
+						return "", fmt.Errorf("protocol %s: %s from %s: effects: %v", m.name, step.name, line.From.Value, err)
+					}
+					if selector == "" {
 						if assigned[field] {
 							return "", fmt.Errorf("protocol %s: %s from %s: effects assign %s twice", m.name, step.name, line.From.Value, field)
 						}
@@ -170,30 +210,14 @@ func ProtocolTLAWithRecords(decl *ast.ProtocolDeclaration, origin string, record
 						assigned[field] = true
 						continue
 					}
-					if field, indexExpr, ok := dataElement(store.Target); ok {
-						index, err := tlaExpr(indexExpr, env.with(payload, false))
-						if err != nil {
-							return "", fmt.Errorf("protocol %s: %s from %s: effect index: %v", m.name, step.name, line.From.Value, err)
-						}
-						if _, seen := excepts[field]; !seen {
-							fieldOrder = append(fieldOrder, field)
-						}
-						excepts[field] = append(excepts[field], fmt.Sprintf("![%s] = %s", index, value))
-						continue
+					// A store below the field — data.f[i], data.f[i].sub,
+					// data.f.sub[j], any depth — folds into one EXCEPT on
+					// the field with the path as its selector.
+					if _, seen := excepts[field]; !seen {
+						fieldOrder = append(fieldOrder, field)
 					}
-					if field, indexExpr, sub, ok := dataElementField(store.Target); ok {
-						// data.peers[i].acked = v folds into the element's record.
-						index, err := tlaExpr(indexExpr, env.with(payload, false))
-						if err != nil {
-							return "", fmt.Errorf("protocol %s: %s from %s: effect index: %v", m.name, step.name, line.From.Value, err)
-						}
-						if _, seen := excepts[field]; !seen {
-							fieldOrder = append(fieldOrder, field)
-						}
-						excepts[field] = append(excepts[field], fmt.Sprintf("![%s].%s = %s", index, sub, value))
-						continue
-					}
-					return "", fmt.Errorf("protocol %s: %s from %s: effects: only `data.field = expr` and `data.field[i] = expr` translate", m.name, step.name, line.From.Value)
+					excepts[field] = append(excepts[field], fmt.Sprintf("!%s = %s", selector, value))
+					continue
 				}
 				for _, field := range fieldOrder {
 					if assigned[field] {
@@ -296,6 +320,43 @@ func ProtocolTLAWithRecords(decl *ast.ProtocolDeclaration, origin string, record
 // (Bool's two values; four values for a scalar) that a model widens as it
 // needs.
 func ProtocolTLCConfig(decl *ast.ProtocolDeclaration) string {
+	return ProtocolTLCConfigWith(decl, nil)
+}
+
+// payloadDomain is the small model domain of a scalar payload or field:
+// four values for an integer, both Booleans.
+func payloadDomain(typ ast.Expression) string {
+	if typeName, isIdent := typ.(*ast.Identifier); isIdent && typeName.Value == "Bool" {
+		return "{TRUE, FALSE}"
+	}
+	return "{0, 1, 2, 3}"
+}
+
+// payloadRecordFields is the field list of a record payload type.
+func payloadRecordFields(typ ast.Expression, records map[string]*ast.RecordLiteral) ([]ast.RecordField, bool) {
+	typeName, isIdent := typ.(*ast.Identifier)
+	if !isIdent {
+		return nil, false
+	}
+	record, isRecord := records[typeName.Value]
+	if !isRecord {
+		return nil, false
+	}
+	return record.FieldOrder, true
+}
+
+// fieldConstant names a record payload field's domain constant: Cmd + Slot.
+func fieldConstant(field string) string {
+	if field == "" {
+		return ""
+	}
+	return strings.ToUpper(field[:1]) + field[1:]
+}
+
+// ProtocolTLCConfigWith is ProtocolTLCConfig with the program's record
+// declarations, so a record payload's domain is the record set of its
+// fields' domains.
+func ProtocolTLCConfigWith(decl *ast.ProtocolDeclaration, records map[string]*ast.RecordLiteral) string {
 	var b strings.Builder
 	b.WriteString("SPECIFICATION Spec\nINVARIANT TypeOK\n")
 	if len(decl.Liveness) > 0 {
@@ -312,11 +373,13 @@ func ProtocolTLCConfig(decl *ast.ProtocolDeclaration) string {
 			continue
 		}
 		seen[domain] = true
-		values := "{0, 1, 2, 3}"
-		if typeName, isIdent := t.Param.Type.(*ast.Identifier); isIdent && typeName.Value == "Bool" {
-			values = "{TRUE, FALSE}"
+		if fields, isRecord := payloadRecordFields(t.Param.Type, records); isRecord {
+			for _, field := range fields {
+				constants = append(constants, fmt.Sprintf("    %s%s = %s", domain, fieldConstant(field.Name), payloadDomain(field.Value)))
+			}
+			continue
 		}
-		constants = append(constants, fmt.Sprintf("    %s = %s", domain, values))
+		constants = append(constants, fmt.Sprintf("    %s = %s", domain, payloadDomain(t.Param.Type)))
 	}
 	if len(constants) > 0 {
 		b.WriteString("CONSTANTS\n" + strings.Join(constants, "\n") + "\n")
@@ -378,37 +441,49 @@ func dataField(target *ast.IndexExpression) (string, bool) {
 	return field.Value, true
 }
 
-// dataElement recognizes `data.field[index]`.
-func dataElement(target *ast.IndexExpression) (string, ast.Expression, bool) {
-	if target == nil || target.Dot {
-		return "", nil, false
+// tlaDataPath reads a data path of any depth rooted at `data.field`: the
+// field, and the TLA+ selector below it (`[i]`, `.sub`, `[i].log[j]`), as
+// EXCEPT spells it and as a read spells it after the variable.
+func tlaDataPath(target *ast.IndexExpression, env *tlaEnv) (field, selector string, err error) {
+	if target == nil {
+		return "", "", fmt.Errorf("only data.field paths translate")
+	}
+	if name, ok := dataField(target); ok {
+		return name, "", nil
 	}
 	inner, ok := target.Left.(*ast.IndexExpression)
 	if !ok {
-		return "", nil, false
+		return "", "", fmt.Errorf("only data.field paths translate, not %s", target.String())
 	}
-	field, isField := dataField(inner)
-	if !isField {
-		return "", nil, false
+	field, prefix, err := tlaDataPath(inner, env)
+	if err != nil {
+		return "", "", err
 	}
-	return field, target.Index, true
+	if target.Dot {
+		sub, isIdent := target.Index.(*ast.Identifier)
+		if !isIdent {
+			return "", "", fmt.Errorf("a field selector names a field, not %s", target.Index.String())
+		}
+		return field, prefix + "." + sub.Value, nil
+	}
+	index, err := tlaExpr(target.Index, env)
+	if err != nil {
+		return "", "", err
+	}
+	return field, prefix + "[" + index + "]", nil
 }
 
-// dataElementField recognizes `data.field[index].sub`.
-func dataElementField(target *ast.IndexExpression) (string, ast.Expression, string, bool) {
-	if target == nil || !target.Dot {
-		return "", nil, "", false
+// payloadField recognizes `payload.field`, a read of a record payload.
+func payloadField(target *ast.IndexExpression, payload string) (string, bool) {
+	if target == nil || !target.Dot || payload == "" {
+		return "", false
 	}
-	inner, ok := target.Left.(*ast.IndexExpression)
-	sub, isSub := target.Index.(*ast.Identifier)
-	if !ok || !isSub || sub == nil {
-		return "", nil, "", false
+	base, okBase := target.Left.(*ast.Identifier)
+	field, okField := target.Index.(*ast.Identifier)
+	if !okBase || !okField || base.Value != payload {
+		return "", false
 	}
-	field, indexExpr, isElement := dataElement(inner)
-	if !isElement {
-		return "", nil, "", false
-	}
-	return field, indexExpr, sub.Value, true
+	return field.Value, true
 }
 
 // arrayShape reads `[N]T` (an index expression over the element type).
@@ -438,8 +513,9 @@ func tlaInitValue(value ast.Expression, typ ast.Expression, env *tlaEnv) (string
 		}
 		var rendered []string
 		same := true
+		inner := env.with("", true).deeper()
 		for _, e := range lit.Elements {
-			v, err := tlaExpr(e, env.with("", true))
+			v, err := tlaExpr(e, inner)
 			if err != nil {
 				return "", err
 			}
@@ -448,14 +524,15 @@ func tlaInitValue(value ast.Expression, typ ast.Expression, env *tlaEnv) (string
 				same = false
 			}
 		}
+		k := boundVar(env.bound)
 		if same {
-			return fmt.Sprintf("[k \\in 0..%d |-> %s]", length-1, rendered[0]), nil
+			return fmt.Sprintf("[%s \\in 0..%d |-> %s]", k, length-1, rendered[0]), nil
 		}
 		var cases []string
 		for i, v := range rendered {
-			cases = append(cases, fmt.Sprintf("k = %d -> %s", i, v))
+			cases = append(cases, fmt.Sprintf("%s = %d -> %s", k, i, v))
 		}
-		return fmt.Sprintf("[k \\in 0..%d |-> CASE %s]", length-1, strings.Join(cases, " [] ")), nil
+		return fmt.Sprintf("[%s \\in 0..%d |-> CASE %s]", k, length-1, strings.Join(cases, " [] ")), nil
 	}
 	return tlaExpr(value, env.with("", true))
 }
@@ -474,10 +551,21 @@ func tlaExpr(e ast.Expression, env *tlaEnv) (string, error) {
 	payload := env.payload
 	switch n := e.(type) {
 	case *ast.RecordLiteral:
-		// A record element value (init of an array of records).
+		// A record element value (init of an array of records); an array
+		// field of the record is a function, by the declared field type.
+		var declared *ast.RecordLiteral
+		if n.TypeName != nil && env.records != nil {
+			declared = env.records[n.TypeName.Value]
+		}
 		var fields []string
 		for _, f := range n.FieldOrder {
-			v, err := tlaExpr(f.Value, env)
+			var v string
+			var err error
+			if _, isArray := f.Value.(*ast.ArrayLiteral); isArray && declared != nil {
+				v, err = tlaInitValue(f.Value, declared.Fields[f.Name], env)
+			} else {
+				v, err = tlaExpr(f.Value, env)
+			}
 			if err != nil {
 				return "", err
 			}
@@ -497,24 +585,17 @@ func tlaExpr(e ast.Expression, env *tlaEnv) (string, error) {
 		}
 		return "", fmt.Errorf("identifier %s is not the payload or a data field", n.Value)
 	case *ast.IndexExpression:
-		if field, ok := dataField(n); ok {
-			return field, nil
+		if field, ok := payloadField(n, payload); ok {
+			// A record payload's field reads as the TLA+ record field.
+			return payload + "." + field, nil
 		}
-		if field, indexExpr, ok := dataElement(n); ok {
-			index, err := tlaExpr(indexExpr, env)
-			if err != nil {
-				return "", err
-			}
-			return fmt.Sprintf("%s[%s]", field, index), nil
+		// A data path of any depth — data.f, data.f[i], data.f[i].sub,
+		// data.f.sub[j] — reads as the same path over the variable.
+		field, selector, err := tlaDataPath(n, env)
+		if err != nil {
+			return "", err
 		}
-		if field, indexExpr, sub, ok := dataElementField(n); ok {
-			index, err := tlaExpr(indexExpr, env)
-			if err != nil {
-				return "", err
-			}
-			return fmt.Sprintf("%s[%s].%s", field, index, sub), nil
-		}
-		return "", fmt.Errorf("only data.field, data.field[i] and data.field[i].sub reads translate")
+		return field + selector, nil
 	case *ast.InvocationExpression:
 		fn, ok := n.Function.(*ast.Identifier)
 		if ok && conversionNames[fn.Value] && len(n.Arguments) == 1 {

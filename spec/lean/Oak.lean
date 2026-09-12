@@ -63,6 +63,7 @@ import Oak.Assembler
 import Oak.AssemblerSemantics
 import Oak.ArmASL
 import Oak.Extents
+import Oak.Discharge
 import Oak.RecordShape
 import Oak.RecordShapeRefinement
 import Oak.GenericConstraintRefinement
@@ -75,6 +76,7 @@ import Oak.CausalFrontier
 import Oak.CausalFrontierRefinement
 import Oak.Modules
 import Oak.ModulesRefinement
+import Oak.ArithmeticRefinement
 import Oak.Semver
 import Oak.Loops
 import Oak.Regions

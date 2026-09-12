@@ -112,7 +112,7 @@ symbols the kernel or firmware defines, and nothing else
 
 | Hook | Who defines it | Used by |
 | --- | --- | --- |
-| `int64_t oak_host_write(int64_t fd, const uint8_t *buf, size_t len)` — weak | the host, optionally | every diagnostic a hosted build prints to stderr (a failed assertion, an arithmetic overflow, a NULL `c.fn_at`, a `c.cstr` without terminator, `c.argv_of`): one bounded line `oak: <what> at <file>:<line>` on fd 2, assembled from compile-time text and the source position, then the trap as before. Without the hook the path is the bare trap (`report_traps`, `report_delivers_iff`). |
+| `int64_t oak_host_write(int64_t fd, const uint8_t *buf, size_t len)` — weak | the host, optionally | every diagnostic a hosted build prints to stderr; `import("host")` (`stdlib/host.oak`) writes through it (a failed assertion, an arithmetic overflow, a NULL `c.fn_at`, a `c.cstr` without terminator, `c.argv_of`): one bounded line `oak: <what> at <file>:<line>` on fd 2, assembled from compile-time text and the source position, then the trap as before. Without the hook the path is the bare trap (`report_traps`, `report_delivers_iff`). |
 | `int64_t oak_time_host_realtime_nanos(void)`, `int64_t oak_time_host_monotonic_nanos(void)` | the host | `import("timehost")`, the freestanding realization of the time port: `timehost_source`/`timehost_refresh` are `timenative`'s twins over the hooks instead of `clock_gettime` and `c.const`, so they compile on every member of the closed set, ILP32 included; the monotonic reading never moves backwards whatever the hook does (`hostRefresh_mono_le`). |
 | `oak_io_host_open/close/pread/pwrite/fsync/fsyncdir/last_errno` | the host | `replace io => ionative`: the io port's native realization already crosses this boundary; `stdlib/native/oak_io_host.c` is its POSIX definition, and a kernel or firmware supplies its own (`120-io.md` §5). |
 
@@ -126,13 +126,13 @@ are always lock-free (`65-machine-memory.md` §6), so a `-cpu cortex_m0`
 build of a program with a `u32` fetch-add fails in the C compiler rather
 than pulling a locked `__atomic_fetch_add_4` from libatomic;
 `-DOAK_ATOMIC_ACCEPT_LOCKED` in `OAK_CFLAGS` accepts the fallback
-knowingly. `compiler/e2e_mcu_test.go` is
-the shape: the Oak object, a vector table or `_start`, a UART, linked and
-run under `qemu-system-arm -M mps2-an385` (Cortex-M3) and
-`qemu-system-riscv32 -M virt`, printing what `oak_main` returned. What a
-freestanding program cannot yet do is allocate or print through Oak's own
-runtime; that is the runtime-in-Oak item, and its consumer is now
-concrete. `compiler/e2e_mcu_test.go` is the shape: the Oak object, a vector
+knowingly. A freestanding program prints through `import("host")`
+(`stdlib/host.oak`: `host_write` hands a view to the hook below through a
+null-checked shim) and manages bounded object storage through
+`import("slab")` (`stdlib/slab.oak`; `60-effects-allocation.md` §7) — the
+runtime-in-Oak item, both halves in Oak over the boundary and storage the
+program owns; what it cannot do is grow storage, and it should not: Oak has
+no hidden heap (§3). `compiler/e2e_mcu_test.go` is the shape: the Oak object, a vector
 table or `_start`, a UART behind `oak_host_write`, a counter behind the
 two clocks, linked and run under `qemu-system-arm -M mps2-an385`
 (Cortex-M3) and `qemu-system-riscv32 -M virt`; the program reads the host
@@ -144,8 +144,10 @@ there is no allocation hook to define.
 -target` places the executable under `$OAKBIN/<os>_<arch>/`, as `go install`
 does. The build cache keys on the target, the driver's path and identity,
 and the exact flag list (`115-tooling.md` §3.1), so one C built for two
-targets never shares an entry. Not yet: running cross-built Linux binaries
-under an emulator from the tooling, and `oak test -target`.
+targets never shares an entry. `oak test -target os/arch` builds a package's tests through the same
+toolchain and reports each test `built`, not run; a freestanding target is
+refused, since the test harness is hosted C. Not yet: running cross-built
+binaries under an emulator from the tooling.
 
 ## 3. No hidden runtime
 

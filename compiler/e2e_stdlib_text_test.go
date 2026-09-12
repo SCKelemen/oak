@@ -366,6 +366,7 @@ func TestE2EStdlibTextBuilder(t *testing.T) {
 }
 
 func TestE2EStdlibTextExample(t *testing.T) {
+	skipInShort(t)
 	for _, path := range []string{"stdlib_strings.oak", "strings/strings.oak", "strings/encoding/ascii.oak", "strings/encoding/utf8.oak", "strings/encoding/utf16.oak", "strings/encoding/utf32.oak", "strings/logascii.oak", "strings_encoding.oak"} {
 		source, err := os.ReadFile("../examples/" + path)
 		if err != nil {

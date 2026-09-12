@@ -359,7 +359,7 @@ func (t *term) evalUncached(env map[string]uint64, memo map[*term]uint64) uint64
 		return uint64(int64(l<<shift)>>shift>>(r%uint64(t.width))) & m
 	case "mul":
 		return (l * r) & m
-	case "rev", "rev16", "rev32", "rbit", "clz", "cls":
+	case "rev", "rev16", "rev32", "rbit", "clz", "cls", "cnt":
 		return evalUnary(t.op, l, t.width) & m
 	}
 	if value, ok := evalBinaryExtra(t.op, l, r, t.width); ok {
@@ -1822,6 +1822,11 @@ type oakLowering struct {
 	// verifier leaves it off: there the machine wraps where Oak traps.
 	trapsTracked bool
 	traps        []*term
+	// path is the condition under which the construct being lowered runs
+	// (nil: always) — the branches of conditionals and the right operands
+	// of the short-circuit operators taken so far — so a recorded trap is
+	// an obligation only where the program reaches it.
+	path *term
 	// The program's record and tagged-union declarations (asm.Function
 	// Records/ADTs) and the shapes resolved from them.
 	records map[string]*ast.RecordLiteral
@@ -2105,6 +2110,15 @@ func (lo *oakLowering) aggregateValue(expr ast.Expression, typ *oakType) (*oakVa
 			return nil, fmt.Sprintf("%s is not a %s", expr.String(), typ.name), false
 		}
 		return place.copy(), "", true
+	case *ast.InvocationExpression:
+		// A call to a program function returning a record or sum type is
+		// inlined as an aggregate value.
+		if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
+			if callee, known := lo.functions[ident.Value]; known {
+				return lo.inlineCallValue(callee, e, typ)
+			}
+		}
+		return nil, fmt.Sprintf("the call %s as an aggregate value", e.String()), false
 	case *ast.BlockExpression:
 		if e.Block == nil || len(e.Block.Statements) == 0 {
 			return nil, "an empty block as an aggregate value", false
@@ -2126,11 +2140,15 @@ func (lo *oakLowering) aggregateValue(expr ast.Expression, typ *oakType) (*oakVa
 			if !ok {
 				return nil, reason, false
 			}
+			restore := lo.underPath(cond)
 			t, reason, ok := lo.aggregateValue(whenTrue, typ)
+			restore()
 			if !ok {
 				return nil, reason, false
 			}
+			restore = lo.underPath(notTerm(cond))
 			f, reason, ok := lo.aggregateValue(whenFalse, typ)
+			restore()
 			if !ok {
 				return nil, reason, false
 			}
@@ -2156,9 +2174,59 @@ func (lo *oakLowering) runStatement(stmt ast.Statement) (string, bool) {
 		if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
 			return lo.lowerConditionalStatement(match)
 		}
+		if reason, isAssert, ok := lo.lowerAssert(s.Expression); isAssert {
+			return reason, ok
+		}
 		return "an expression statement before the end of a block", false
 	}
 	return fmt.Sprintf("%T", stmt), false
+}
+
+// addTrap records a trap condition under the current path condition.
+func (lo *oakLowering) addTrap(t *term) {
+	t = truncate(t, 1)
+	if lo.path != nil {
+		t = binaryTerm("and", lo.path, t)
+	}
+	lo.traps = append(lo.traps, t)
+}
+
+// underPath narrows the path condition for the construct lowered next and
+// returns the restore.
+func (lo *oakLowering) underPath(cond *term) func() {
+	saved := lo.path
+	cond = truncate(cond, 1)
+	if saved == nil {
+		lo.path = cond
+	} else {
+		lo.path = binaryTerm("and", saved, cond)
+	}
+	return func() { lo.path = saved }
+}
+
+func notTerm(t *term) *term { return binaryTerm("xor", truncate(t, 1), constTerm(1, 1)) }
+
+// lowerAssert records `assert(cond)` as a trap obligation under the
+// theorem decider (docs/spec/85-discipline.md section 5: an assert is
+// never elided; here the decider proves it cannot fire), and refuses it
+// where traps are not tracked.
+func (lo *oakLowering) lowerAssert(expr ast.Expression) (reason string, isAssert bool, ok bool) {
+	call, isCall := expr.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != 1 {
+		return "", false, false
+	}
+	if fn, isIdent := call.Function.(*ast.Identifier); !isIdent || fn.Value != "assert" {
+		return "", false, false
+	}
+	if !lo.trapsTracked {
+		return "an assert", true, false
+	}
+	cond, reason, ok := lo.lowerCondition(call.Arguments[0])
+	if !ok {
+		return reason, true, false
+	}
+	lo.addTrap(binaryTerm("xor", truncate(cond, 1), constTerm(1, 1)))
+	return "", true, true
 }
 
 // valueOf lowers an expression at a type: a scalar term or an aggregate.
@@ -2378,6 +2446,7 @@ func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index in
 		}
 		scrutinee = value
 	}
+	taken := constTerm(0, 1)
 	for i, arm := range match.Arms {
 		var cond *term
 		switch pattern := arm.Pattern.(type) {
@@ -2428,7 +2497,16 @@ func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index in
 		default:
 			return nil, -1, fmt.Sprintf("the pattern %s", arm.Pattern.String()), false
 		}
-		if reason, ok := visit(i, arm.Body); !ok {
+		// The arm runs when its pattern matches and no earlier one did.
+		armPath := notTerm(taken)
+		if cond != nil {
+			armPath = binaryTerm("and", armPath, cond)
+			taken = binaryTerm("or", taken, cond)
+		}
+		restore := lo.underPath(armPath)
+		reason, ok := visit(i, arm.Body)
+		restore()
+		if !ok {
 			return nil, -1, reason, false
 		}
 		if cond == nil {
@@ -2579,6 +2657,12 @@ func (lo *oakLowering) lowerBlock(block *ast.BlockStatement, width int) (*term, 
 					}
 					continue
 				}
+				if reason, isAssert, ok := lo.lowerAssert(s.Expression); isAssert {
+					if !ok {
+						return nil, reason, false
+					}
+					continue
+				}
 				return nil, "an expression statement before the end of a block", false
 			}
 			return lo.lower(s.Expression, width)
@@ -2709,12 +2793,18 @@ func (lo *oakLowering) lowerConditionalStatement(match *ast.MatchExpression) (st
 		return reason, false
 	}
 	before := lo.snapshotLocals()
-	if reason, ok := lo.lowerArm(whenTrue); !ok {
+	restore := lo.underPath(cond)
+	reason, ok = lo.lowerArm(whenTrue)
+	restore()
+	if !ok {
 		return reason, false
 	}
 	afterTrue := lo.snapshotLocals()
 	lo.restoreLocals(before)
-	if reason, ok := lo.lowerArm(whenFalse); !ok {
+	restore = lo.underPath(notTerm(cond))
+	reason, ok = lo.lowerArm(whenFalse)
+	restore()
+	if !ok {
 		return reason, false
 	}
 	for name, local := range lo.locals {
@@ -2909,6 +2999,65 @@ func (lo *oakLowering) constantIndexValue(expr ast.Expression) (int64, bool) {
 // and recursion fail closed.
 func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.InvocationExpression, width int) (*term, string, bool) {
 	name := callee.Name.Value
+	if callee.ReturnType == nil {
+		return nil, fmt.Sprintf("a call to %s, which returns nothing", name), false
+	}
+	resultWidth, resultSigned, ok := contractBits(callee.ReturnType)
+	if !ok {
+		return nil, fmt.Sprintf("a call to %s returning %s in scalar position", name, typeText(callee.ReturnType)), false
+	}
+	restore, reason, ok := lo.enterCall(callee, call)
+	if !ok {
+		return nil, reason, false
+	}
+	defer restore()
+	// A tail-recursive callee is the loop it compiles to
+	// (docs/spec/85-discipline.md), over its parameters as locals.
+	body := callee.Body
+	if loop, isTail := tailRecursionAsLoop(callee, body); isTail {
+		body = loop
+	}
+	result, reason, ok := lo.lower(body, resultWidth)
+	if !ok {
+		return nil, fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
+	}
+	if resultWidth < width {
+		return extendTerm(result, resultWidth, width, resultSigned), "", true
+	}
+	return truncate(result, width), "", true
+}
+
+// inlineCallValue inlines a call whose result is a record or a sum type
+// (docs/spec/125-verification.md section 3): the body as an aggregate
+// value, the arms of its matches merged leaf by leaf.
+func (lo *oakLowering) inlineCallValue(callee *ast.FunctionStatement, call *ast.InvocationExpression, typ *oakType) (*oakValue, string, bool) {
+	name := callee.Name.Value
+	if callee.ReturnType == nil {
+		return nil, fmt.Sprintf("a call to %s, which returns nothing", name), false
+	}
+	returned, ok := lo.oakTypeOf(callee.ReturnType)
+	if !ok || returned != typ {
+		return nil, fmt.Sprintf("a call to %s returning %s where %s is expected", name, typeText(callee.ReturnType), typ.name), false
+	}
+	restore, reason, ok := lo.enterCall(callee, call)
+	if !ok {
+		return nil, reason, false
+	}
+	defer restore()
+	value, reason, ok := lo.aggregateValue(callee.Body, typ)
+	if !ok {
+		return nil, fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
+	}
+	return value, "", true
+}
+
+// enterCall binds a callee's parameters to the call's arguments as the
+// callee's locals — scalars by value, records and sum types by value
+// (a copy), a span or view of a caller's aggregate array as an alias, so
+// the callee's writes through it reach the caller — and returns the
+// function that restores the caller's scope.
+func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.InvocationExpression) (func(), string, bool) {
+	name := callee.Name.Value
 	if callee.Receiver != nil || len(callee.TypeParams) != 0 || callee.Body == nil || callee.ExternSymbol != "" {
 		return nil, fmt.Sprintf("a call to %s (a method, generic, foreign, or definition-less function)", name), false
 	}
@@ -2918,24 +3067,49 @@ func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.Invoc
 	if lo.inlining[name] {
 		return nil, fmt.Sprintf("a recursive call to %s", name), false
 	}
-	if callee.ReturnType == nil {
-		return nil, fmt.Sprintf("a call to %s, which returns nothing", name), false
-	}
-	resultWidth, resultSigned, ok := contractBits(callee.ReturnType)
-	if !ok {
-		return nil, fmt.Sprintf("a call to %s returning %s", name, typeText(callee.ReturnType)), false
-	}
 	bound := map[string]*oakLocal{}
+	// A span or view parameter borrows a caller's array: the callee works
+	// on a copy and, since the conditional lowering re-points locals at
+	// copies, the final contents are written back leaf by leaf on return.
+	type borrow struct {
+		param string
+		owner *oakValue
+	}
+	var borrows []borrow
 	for i, param := range callee.Parameters {
-		w, signed, ok := contractBits(param.Type)
-		if !ok || param.Variadic {
-			return nil, fmt.Sprintf("a call to %s: parameter %s is not a fixed-width scalar", name, param.Name.Value), false
+		if param.Variadic {
+			return nil, fmt.Sprintf("a call to %s: parameter %s is variadic", name, param.Name.Value), false
 		}
-		value, reason, ok := lo.lower(call.Arguments[i], w)
+		arg := call.Arguments[i]
+		if isBorrowType(param.Type) {
+			owner := addressOfOperand(arg)
+			local, isLocal := lo.locals[owner]
+			if !isLocal || local.agg == nil || local.agg.typ.kind != oakArray {
+				return nil, fmt.Sprintf("a call to %s: the span argument %s is not a borrow of an aggregate local", name, arg.String()), false
+			}
+			bound[param.Name.Value] = &oakLocal{agg: local.agg.copy()}
+			if isWritableSpan(param.Type) {
+				borrows = append(borrows, borrow{param: param.Name.Value, owner: local.agg})
+			}
+			continue
+		}
+		if w, signed, isScalar := contractBits(param.Type); isScalar {
+			value, reason, ok := lo.lower(arg, w)
+			if !ok {
+				return nil, reason, false
+			}
+			bound[param.Name.Value] = &oakLocal{value: value, width: w, signed: signed}
+			continue
+		}
+		typ, ok := lo.oakTypeOf(param.Type)
+		if !ok || typ.kind == oakScalar {
+			return nil, fmt.Sprintf("a call to %s: parameter %s is not a fixed-width scalar, record, or sum type", name, param.Name.Value), false
+		}
+		value, reason, ok := lo.valueOf(arg, typ)
 		if !ok {
 			return nil, reason, false
 		}
-		bound[param.Name.Value] = &oakLocal{value: value, width: w, signed: signed}
+		bound[param.Name.Value] = &oakLocal{agg: value}
 	}
 	saved := lo.locals
 	lo.locals = bound
@@ -2943,22 +3117,54 @@ func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.Invoc
 		lo.inlining = map[string]bool{}
 	}
 	lo.inlining[name] = true
-	// A tail-recursive callee is the loop it compiles to
-	// (docs/spec/85-discipline.md), over its parameters as locals.
-	body := callee.Body
-	if loop, isTail := tailRecursionAsLoop(callee, body); isTail {
-		body = loop
+	return func() {
+		for _, b := range borrows {
+			if final, has := lo.locals[b.param]; has && final.agg != nil {
+				leaves(final.agg, b.owner, func(from, to *oakValue) { to.scalar = from.scalar })
+			}
+		}
+		delete(lo.inlining, name)
+		lo.locals = saved
+	}, "", true
+}
+
+// isWritableSpan recognizes `[*]T`, the borrow a callee may write through.
+func isWritableSpan(expr ast.Expression) bool {
+	index, isIndex := expr.(*ast.IndexExpression)
+	if !isIndex || index.Dot {
+		return false
 	}
-	result, reason, ok := lo.lower(body, resultWidth)
-	delete(lo.inlining, name)
-	lo.locals = saved
-	if !ok {
-		return nil, fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
+	marker, isMarker := index.Index.(*ast.Identifier)
+	return isMarker && marker.Value == "*"
+}
+
+// isBorrowType recognizes a view or span type, `[]T` or `[*]T`, whatever
+// the element.
+func isBorrowType(expr ast.Expression) bool {
+	index, isIndex := expr.(*ast.IndexExpression)
+	if !isIndex || index.Dot {
+		return false
 	}
-	if resultWidth < width {
-		return extendTerm(result, resultWidth, width, resultSigned), "", true
+	marker, isMarker := index.Index.(*ast.Identifier)
+	return isMarker && (marker.Value == "" || marker.Value == "*")
+}
+
+// addressOfOperand names the local a `span(&x)` / `view(&x)` argument
+// borrows, or a bare span local passed on.
+func addressOfOperand(arg ast.Expression) string {
+	if call, isCall := arg.(*ast.InvocationExpression); isCall && len(call.Arguments) == 1 {
+		if fn, isIdent := call.Function.(*ast.Identifier); isIdent && (fn.Value == "span" || fn.Value == "view") {
+			if prefix, isPrefix := call.Arguments[0].(*ast.PrefixExpression); isPrefix && prefix.Operator == "&" {
+				if ident, isIdent := prefix.Right.(*ast.Identifier); isIdent {
+					return ident.Value
+				}
+			}
+		}
 	}
-	return truncate(result, width), "", true
+	if ident, isIdent := arg.(*ast.Identifier); isIdent {
+		return ident.Value
+	}
+	return ""
 }
 
 // lowerGuard lowers a refinement's construction Name(e): the argument at
@@ -2984,11 +3190,44 @@ func (lo *oakLowering) lowerGuard(name string, guard Guard, arg ast.Expression, 
 	if !ok {
 		return nil, fmt.Sprintf("a construction of %s whose predicate contains %s", name, reason), false
 	}
-	lo.traps = append(lo.traps, binaryTerm("xor", truncate(holds, 1), constTerm(1, 1)))
+	lo.addTrap(binaryTerm("xor", truncate(holds, 1), constTerm(1, 1)))
 	if baseWidth < width {
 		return extendTerm(value, baseWidth, width, signed), "", true
 	}
 	return truncate(value, width), "", true
+}
+
+// instructionFunction recognizes a call to a scalar arm64 instruction
+// function and names the verifier's term for it with its operand width.
+func instructionFunction(call *ast.InvocationExpression) (op string, width int, ok bool) {
+	access, isDot := call.Function.(*ast.IndexExpression)
+	if !isDot || !access.Dot || len(call.Arguments) != 1 {
+		return "", 0, false
+	}
+	library, isLibrary := access.Left.(*ast.Identifier)
+	member, isMember := access.Index.(*ast.Identifier)
+	if !isLibrary || !isMember || library.Value != "arm64" {
+		return "", 0, false
+	}
+	switch member.Value {
+	case "rev32":
+		return "rev", 32, true
+	case "rev64":
+		return "rev", 64, true
+	case "rbit32":
+		return "rbit", 32, true
+	case "rbit64":
+		return "rbit", 64, true
+	case "clz32":
+		return "clz", 32, true
+	case "clz64":
+		return "clz", 64, true
+	case "cnt32":
+		return "cnt", 32, true
+	case "cnt64":
+		return "cnt", 64, true
+	}
+	return "", 0, false
 }
 
 // spanLength recognizes len(v) over a span parameter.
@@ -3070,6 +3309,20 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		}
 		return adaptWidth(element, width), "", true
 	case *ast.InvocationExpression:
+		// The scalar instruction functions (docs/spec/92-ffi.md section 3.2)
+		// are the verifier's own unary instruction terms — the ISA lowering
+		// and the Oak lowering share their semantics (Oak.Intrinsics).
+		if member, memberWidth, isInstruction := instructionFunction(e); isInstruction {
+			operand, reason, ok := lo.lower(e.Arguments[0], memberWidth)
+			if !ok {
+				return nil, reason, false
+			}
+			value := binaryTerm(member, truncate(operand, memberWidth), constTerm(0, memberWidth))
+			if memberWidth < width {
+				return zeroExtend(value, width), "", true
+			}
+			return truncate(value, width), "", true
+		}
 		if ident, isIdent := e.Function.(*ast.Identifier); isIdent && ident.Value == "len" && len(e.Arguments) == 1 && lo.aggregateChain(e.Arguments[0]) {
 			// len of an owned array: its declared length.
 			place, reason, ok := lo.placeOf(e.Arguments[0])
@@ -3151,6 +3404,28 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			}
 			return zeroExtend(truncate(cond, width), width), "", true
 		}
+		if e.Operator == "/" || e.Operator == "%" {
+			// Unsigned division and remainder by a constant power of two
+			// are a shift and a mask; anything else stays outside the
+			// subset (the Lean projection states it).
+			if _, signed, isScalar := lo.operandContract(e); isScalar && !signed {
+				right, reason, okR := lo.lower(e.Right, width)
+				if !okR {
+					return nil, reason, false
+				}
+				if right.kind == termConst && right.value != 0 && right.value&(right.value-1) == 0 {
+					left, reason, okL := lo.lower(e.Left, width)
+					if !okL {
+						return nil, reason, false
+					}
+					if e.Operator == "%" {
+						return binaryTerm("and", left, constTerm(right.value-1, width)), "", true
+					}
+					return binaryTerm("shr", left, constTerm(uint64(bits.TrailingZeros64(right.value)), width)), "", true
+				}
+			}
+			return nil, fmt.Sprintf("operator %s (only by an unsigned constant power of two)", e.Operator), false
+		}
 		op, ok := oakOps[e.Operator]
 		if !ok {
 			return nil, fmt.Sprintf("operator %s", e.Operator), false
@@ -3170,7 +3445,7 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			if !lo.trapsTracked {
 				return nil, "a non-constant shift count", false
 			}
-			lo.traps = append(lo.traps, cmpTerm("hs", right, constTerm(uint64(width), width)))
+			lo.addTrap(cmpTerm("hs", right, constTerm(uint64(width), width)))
 		}
 		return binaryTerm(op, left, right), "", true
 	case *ast.BlockExpression:
@@ -3197,11 +3472,15 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		if !ok {
 			return nil, reason, false
 		}
+		restore := lo.underPath(cond)
 		left, reason, okL := lo.lower(whenTrue, width)
+		restore()
 		if !okL {
 			return nil, reason, false
 		}
+		restore = lo.underPath(notTerm(cond))
 		right, reason, okR := lo.lower(whenFalse, width)
+		restore()
 		if !okR {
 			return nil, reason, false
 		}
@@ -3240,7 +3519,14 @@ func (lo *oakLowering) lowerCondition(expr ast.Expression) (*term, string, bool)
 		if !okL {
 			return nil, reason, false
 		}
+		// The right operand runs only when the left one did not decide.
+		guard := left
+		if infix.Operator == "||" {
+			guard = notTerm(left)
+		}
+		restore := lo.underPath(guard)
 		right, reason, okR := lo.lowerCondition(infix.Right)
+		restore()
 		if !okR {
 			return nil, reason, false
 		}
@@ -3308,6 +3594,18 @@ func (lo *oakLowering) operandContract(expr ast.Expression) (int, bool, bool) {
 		}
 		if ident, isIdent := e.Function.(*ast.Identifier); isIdent && ident.Value == "len" && len(e.Arguments) == 1 && lo.aggregateChain(e.Arguments[0]) {
 			return 32, false, true
+		}
+		// A call to a program function has its return type's width; an
+		// instruction function its member's.
+		if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
+			if callee, known := lo.functions[ident.Value]; known && callee.ReturnType != nil {
+				if w, signed, ok := contractBits(callee.ReturnType); ok {
+					return w, signed, true
+				}
+			}
+		}
+		if _, w, isInstruction := instructionFunction(e); isInstruction {
+			return w, false, true
 		}
 		if len(e.Arguments) == 1 {
 			return lo.operandContract(e.Arguments[0])

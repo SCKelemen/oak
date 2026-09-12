@@ -42,12 +42,23 @@ type Guard struct {
 	Predicate ast.Expression
 }
 
+// Declarations are the program's record and sum-type declarations, so a
+// theorem may take and pass record and sum-type values: a parameter of
+// such a type is bound as an aggregate of scalar leaves — one symbolic
+// parameter per field, a tag per union — under the hypothesis that every
+// tag names a variant.
+type Declarations struct {
+	Records map[string]*ast.RecordLiteral
+	ADTs    map[string]*ast.ADTType
+}
+
 // DecideTheoremWith is DecideTheorem over a program whose refinements are
-// given as guards, keyed by the refinement's name: a construction in the
+// given as guards, keyed by the refinement's name — a construction in the
 // body is its argument, with the predicate recorded as a trap condition
-// the decider must prove impossible.
-func DecideTheoremWith(sig *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, guards map[string]Guard) Decision {
-	return decideTheorem(sig, functions, guards)
+// the decider must prove impossible — and whose record and sum-type
+// declarations let aggregate parameters, arguments, and results through.
+func DecideTheoremWith(sig *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, guards map[string]Guard, decls Declarations) Decision {
+	return decideTheorem(sig, functions, guards, decls)
 }
 
 // DecideTheorem decides a theorem declaration: every parameter a
@@ -56,23 +67,38 @@ func DecideTheoremWith(sig *ast.FunctionStatement, functions map[string]*ast.Fun
 // counted loops, calls to program functions in the same subset — given in
 // functions — inlined; no views or data-dependent loops).
 func DecideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.FunctionStatement) Decision {
-	return decideTheorem(sig, functions, nil)
+	return decideTheorem(sig, functions, nil, Declarations{})
 }
 
-func decideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, guards map[string]Guard) Decision {
+func decideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, guards map[string]Guard, decls Declarations) Decision {
 	if sig == nil || sig.Name == nil || sig.Body == nil {
 		return Decision{Kind: DecisionUndecided, Message: "no body"}
-	}
-	for _, param := range sig.Parameters {
-		if _, _, ok := contractBits(param.Type); !ok {
-			return Decision{Kind: DecisionUndecided,
-				Message: fmt.Sprintf("parameter %s: %s is not a fixed-width scalar", param.Name.Value, typeText(param.Type))}
-		}
 	}
 	lowering := newLowering(sig)
 	lowering.functions = functions
 	lowering.guards = guards
+	lowering.records, lowering.adts = decls.Records, decls.ADTs
 	lowering.trapsTracked = true
+	for _, param := range sig.Parameters {
+		if _, _, ok := contractBits(param.Type); ok {
+			continue
+		}
+		if typ, ok := lowering.oakTypeOf(param.Type); ok && typ.kind != oakScalar {
+			continue // bound below as an aggregate of leaves
+		}
+		return Decision{Kind: DecisionUndecided,
+			Message: fmt.Sprintf("parameter %s: %s is not a fixed-width scalar, record, or sum type", param.Name.Value, typeText(param.Type))}
+	}
+	lowering.bindAggregateParams(sig)
+	// Every union tag among the parameters names a variant: the hypothesis
+	// under which the body is decided (a tag outside the declaration is
+	// not a value of the type).
+	assume := constTerm(1, 1)
+	for _, param := range sig.Parameters {
+		if local, isLocal := lowering.locals[param.Name.Value]; isLocal && local.agg != nil {
+			assume = binaryTerm("and", assume, tagsNameVariants(local.agg))
+		}
+	}
 	body := sig.Body
 	if loop, isTail := tailRecursionAsLoop(sig, body); isTail {
 		body = loop
@@ -85,9 +111,17 @@ func decideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Functio
 		return Decision{Kind: DecisionUndecided, Message: "the body has a data-dependent loop"}
 	}
 	t = truncate(t, 1)
+	if assume.kind != termConst || assume.value != 1 {
+		// Under the tag hypothesis: the claim holds, and no trap fires.
+		t = binaryTerm("or", binaryTerm("xor", assume, constTerm(1, 1)), t)
+	}
 	traps := make([]*term, 0, len(lowering.traps))
 	for _, trap := range lowering.traps {
-		traps = append(traps, truncate(trap, 1))
+		trap = truncate(trap, 1)
+		if assume.kind != termConst || assume.value != 1 {
+			trap = binaryTerm("and", assume, trap)
+		}
+		traps = append(traps, trap)
 	}
 
 	mentioned := map[string]bool{}
@@ -108,7 +142,7 @@ func decideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Functio
 	for _, env := range witnessInputs(names, widths) {
 		for _, trap := range traps {
 			if trap.eval(env) != 0 {
-				return Decision{Kind: DecisionRefuted, Message: "the body traps (a shift count at the width, or a construction outside its predicate) at " + describeEnv(names, env)}
+				return Decision{Kind: DecisionRefuted, Message: "the body traps (a shift count at the width, a failed assert, or a construction outside its predicate) at " + describeEnv(names, env)}
 			}
 		}
 		if t.eval(env) != 1 {
@@ -124,7 +158,7 @@ func decideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Functio
 		}
 		if bits[0] != bddFalse {
 			env := bl.counterexample(bits[0], bddFalse)
-			return Decision{Kind: DecisionRefuted, Message: "the body traps (a shift count at the width, or a construction outside its predicate) at " + describeEnv(names, env)}
+			return Decision{Kind: DecisionRefuted, Message: "the body traps (a shift count at the width, a failed assert, or a construction outside its predicate) at " + describeEnv(names, env)}
 		}
 	}
 	bits := bl.blast(t)
@@ -136,4 +170,36 @@ func decideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Functio
 	}
 	env := bl.counterexample(bits[0], bddTrue)
 	return Decision{Kind: DecisionRefuted, Message: "counterexample " + describeEnv(names, env)}
+}
+
+// tagsNameVariants is the 1-bit term stating that every union tag inside
+// an aggregate parameter is one of its declared variants' tags.
+func tagsNameVariants(v *oakValue) *term {
+	valid := constTerm(1, 1)
+	if v == nil || v.typ == nil {
+		return valid
+	}
+	switch v.typ.kind {
+	case oakADT:
+		tag := v.fields["tag"].scalar
+		names := constTerm(0, 1)
+		for _, variant := range v.typ.variants {
+			names = binaryTerm("or", names, truncate(cmpTerm("eq", tag, constTerm(uint64(variant.tag), 32)), 1))
+			if variant.payload != nil {
+				if payload, has := v.fields[variant.name]; has {
+					valid = binaryTerm("and", valid, tagsNameVariants(payload))
+				}
+			}
+		}
+		valid = binaryTerm("and", valid, names)
+	case oakRecord:
+		for _, f := range v.typ.fields {
+			valid = binaryTerm("and", valid, tagsNameVariants(v.fields[f.name]))
+		}
+	case oakArray:
+		for _, element := range v.elems {
+			valid = binaryTerm("and", valid, tagsNameVariants(element))
+		}
+	}
+	return valid
 }

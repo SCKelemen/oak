@@ -265,7 +265,10 @@ room(off: u32, len: u32, cap: u32): Bool = len <= cap && off <= cap - len
 The strict profile promotes every warning — including recorded unsafe
 assumptions (`OAK-B0110`) and tail-recursion obligations (`OAK-D0102`) — to
 a rejection. Auditable assumptions remain expressible; silently accumulated
-ones do not.
+ones do not. The posture reaches the C build: a strict build's lock-free
+admission block (`65-machine-memory.md` §6) is emitted without the
+`OAK_ATOMIC_ACCEPT_LOCKED` opt-out, so a locked atomic fallback is refused
+outright rather than admitted from the build line.
 
 **Admitted assumptions.** A module may state, once and in the open, which
 recorded assumptions it accepts: `admit <code>` in its `oak.mod`

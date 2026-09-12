@@ -79,9 +79,10 @@ func Theorems(model *compiler.SemanticModel, cases int) ([]Result, error) {
 			functions[fn.Name.Value] = fn
 		}
 	}
+	decls := declarationsOf(model.Tree.Root)
 	var results []Result
 	for _, theorem := range theorems {
-		results = append(results, decide(env, model.TypeChecker, functions, theorem, cases))
+		results = append(results, decide(env, model.TypeChecker, functions, decls, theorem, cases))
 	}
 	// A protocol's `eventually` entries are decided over its reachable
 	// states (prove/liveness.go), after the theorems.
@@ -242,7 +243,7 @@ func integers(low, high int64) []object.Object {
 }
 
 // decide runs the exhaustive decider on one theorem.
-func decide(env *object.Environment, tc *typechecker.TypeChecker, functions map[string]*ast.FunctionStatement, theorem *ast.FunctionStatement, cases int) Result {
+func decide(env *object.Environment, tc *typechecker.TypeChecker, functions map[string]*ast.FunctionStatement, decls asm.Declarations, theorem *ast.FunctionStatement, cases int) Result {
 	name := theorem.Name.Value
 	fn, found := env.Get(name)
 	if !found {
@@ -253,12 +254,12 @@ func decide(env *object.Environment, tc *typechecker.TypeChecker, functions map[
 	for _, param := range theorem.Parameters {
 		d, reason := domainOf(tc, env, param)
 		if reason != "" {
-			return blastOr(tc, theorem, functions, Result{Name: name, Status: Open, Detail: reason + "; stated for Lean"})
+			return blastOr(tc, decls, theorem, functions, Result{Name: name, Status: Open, Detail: reason + "; stated for Lean"})
 		}
 		domains = append(domains, d)
 		total *= len(d.values)
 		if total > cases {
-			return blastOr(tc, theorem, functions, Result{Name: name, Status: Open,
+			return blastOr(tc, decls, theorem, functions, Result{Name: name, Status: Open,
 				Detail: fmt.Sprintf("the domain exceeds %d cases; stated for Lean", cases)})
 		}
 	}
@@ -298,12 +299,12 @@ func decide(env *object.Environment, tc *typechecker.TypeChecker, functions map[
 // blastOr runs the bit-level decider (asm.DecideTheorem) on a theorem the
 // exhaustive decider does not reach, and keeps the given open result when
 // the decider does not apply either.
-func blastOr(tc *typechecker.TypeChecker, theorem *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, open Result) Result {
+func blastOr(tc *typechecker.TypeChecker, decls asm.Declarations, theorem *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, open Result) Result {
 	stated, callees, guards, reason := forDecider(tc, theorem, functions)
 	if reason != "" {
 		return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + reason + ")"}
 	}
-	decision := asm.DecideTheoremWith(stated, callees, guards)
+	decision := asm.DecideTheoremWith(stated, callees, guards, decls)
 	switch decision.Kind {
 	case asm.DecisionProven:
 		return Result{Name: open.Name, Status: Decided, Detail: decision.Message}
@@ -398,6 +399,30 @@ func forDecider(tc *typechecker.TypeChecker, theorem *ast.FunctionStatement, fun
 		guards[name] = asm.Guard{Base: &ast.Identifier{Value: base}, Predicate: predicate}
 	}
 	return stated, callees, guards, ""
+}
+
+// declarationsOf collects the checked program's record and sum-type
+// declarations for the decider, which binds parameters of those types as
+// aggregates of scalar leaves.
+func declarationsOf(program *ast.Program) asm.Declarations {
+	decls := asm.Declarations{Records: map[string]*ast.RecordLiteral{}, ADTs: map[string]*ast.ADTType{}}
+	if program == nil {
+		return decls
+	}
+	for _, stmt := range program.Statements {
+		adt, isADT := stmt.(*ast.ADTType)
+		if !isADT || adt.Name == nil || len(adt.TypeParams) != 0 || adt.Refinement != nil {
+			continue
+		}
+		if len(adt.Variants) == 1 && adt.Variants[0].Literal != nil {
+			if literal, isRecord := adt.Variants[0].Literal.(*ast.RecordLiteral); isRecord {
+				decls.Records[adt.Name.Value] = literal
+				continue
+			}
+		}
+		decls.ADTs[adt.Name.Value] = adt
+	}
+	return decls
 }
 
 // underHypothesis states `!hypothesis || body`. A block body keeps its
