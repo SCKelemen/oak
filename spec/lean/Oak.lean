@@ -95,6 +95,7 @@ import Oak.Stdlib.PercentLaws
 import Oak.Stdlib.RandomLaws
 import Oak.Stdlib.UuidLaws
 import Oak.Stdlib.HashLaws
+import Oak.Stdlib.Sha256Laws
 import Oak.Stdlib.KeyTree
 import Oak.Stdlib.NormalizeTables
 import Oak.Stdlib.Normalize17
