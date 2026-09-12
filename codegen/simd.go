@@ -235,6 +235,10 @@ func (cg *CodeGenerator) emitSimdSupport(program *ast.Program) {
 	// LMUL=1 intrinsics with the vector length fixed to the lane count, so
 	// the fixed 128-bit vectors run unchanged on every VLEN >= 128.
 	cg.write(rvvGuard + "\n#include <riscv_vector.h>\n#endif\n")
+	// The SVE realization of the scalable API (docs/spec/93-simd.md
+	// section 4): sizeless block-local values under a predicate derived from
+	// the extent; the fixed 128-bit vectors stay with NEON.
+	cg.write(sveGuard + "\n#include <arm_sve.h>\n#endif\n")
 	for _, shape := range typechecker.SimdShapes {
 		cg.write(fmt.Sprintf("typedef struct oak_%s { %s lanes[%d]; } %s;\n",
 			shape.Suffix, shape.ElemName, shape.Lanes, shape.Suffix))
@@ -674,6 +678,14 @@ func laneBits(elem string) int {
 // the portable lane loop; the choice is the preprocessor's, at build time.
 const rvvGuard = "#if defined(__riscv) && defined(__riscv_vector) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)"
 
+// sveGuard selects the SVE realization of the scalable API: an AArch64
+// target whose processor has SVE (`-cpu generic+sve`, `neoverse_v2`, …),
+// unless the portable lowering is forced.
+const sveGuard = "#if defined(__aarch64__) && defined(__ARM_FEATURE_SVE) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)"
+
+// sveElifGuard is sveGuard as the second branch of a realization chain.
+const sveElifGuard = "#elif defined(__aarch64__) && defined(__ARM_FEATURE_SVE) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)"
+
 // withRVV splices the RISC-V Vector branch into a generated helper: the
 // helper's `#else` (its portable branch) becomes `#elif <rvv> ... #else`.
 // Operations without an RVV body — the reductions any/all/movemask/
@@ -844,6 +856,14 @@ typedef vuint8m1_t oak_scalable_u8;
 typedef vuint32m1_t oak_scalable_u32;
 #define OAK_SCALABLE_CAP_U8(remaining) __riscv_vsetvl_e8m1((size_t)(remaining))
 #define OAK_SCALABLE_CAP_U32(remaining) __riscv_vsetvl_e32m1((size_t)(remaining))
+` + sveElifGuard + `
+typedef uint32_t oak_active;
+typedef svuint8_t oak_scalable_u8;
+typedef svuint32_t oak_scalable_u32;
+#define OAK_SCALABLE_CAP_U8(remaining) ((uint64_t)(remaining) < svcntb() ? (uint32_t)(remaining) : (uint32_t)svcntb())
+#define OAK_SCALABLE_CAP_U32(remaining) ((uint64_t)(remaining) < svcntw() ? (uint32_t)(remaining) : (uint32_t)svcntw())
+#define OAK_SVE_PG_U8(a) svwhilelt_b8((uint32_t)0, (uint32_t)(a))
+#define OAK_SVE_PG_U32(a) svwhilelt_b32((uint32_t)0, (uint32_t)(a))
 #else
 typedef u32 oak_active;
 typedef struct oak_scalable_u8 { u8 lanes[16]; } oak_scalable_u8;
@@ -874,42 +894,51 @@ func scalableHelperSource(member string) string {
 		return b.String()
 	}
 	op := member[:strings.Index(member, "_active_")]
-	rvv := func(text string) string { return rvvGuard + "\n" + text + "#else\n" }
+	// The realization branches: RVV, then SVE, then the portable loop.
+	pg := "OAK_SVE_PG_U8(a)"
+	if elem == "u32" {
+		pg = "OAK_SVE_PG_U32(a)"
+	}
+	rvv := func(rvvText, sveText string) string {
+		return rvvGuard + "\n" + rvvText + sveElifGuard + "\n" + sveText + "#else\n"
+	}
 	load := func(ptr string) string { return fmt.Sprintf("__riscv_vle%s_v_%s(%s, a)", bits, sfx, ptr) }
 	switch op {
 	case "splat":
 		fmt.Fprintf(&b, "static inline %s oak_simd_%s( %s x, oak_active a ) {\n", vec, member, elem)
-		b.WriteString(rvv(fmt.Sprintf("  return __riscv_vmv_v_x_%s(x, a);\n", sfx)))
+		b.WriteString(rvv(fmt.Sprintf("  return __riscv_vmv_v_x_%s(x, a);\n", sfx), fmt.Sprintf("  return svdup_n_%s(x);\n", elem)))
 		fmt.Fprintf(&b, "  %s r;\n  for (u32 i = 0; i < a; i++) { r.lanes[i] = x; }\n  return r;\n#endif\n}\n", vec)
 	case "load":
 		fmt.Fprintf(&b, "static inline %s oak_simd_%s( oak_view_%s v, u32 off, oak_active a ) {\n", vec, member, elem)
 		b.WriteString("  if ((u64)off + (u64)a > (u64)v.len) { __builtin_trap(); }\n")
-		b.WriteString(rvv(fmt.Sprintf("  return %s;\n", load("v.base + off"))))
+		b.WriteString(rvv(fmt.Sprintf("  return %s;\n", load("v.base + off")), fmt.Sprintf("  return svld1_%s(%s, v.base + off);\n", elem, pg)))
 		fmt.Fprintf(&b, "  %s r;\n  for (u32 i = 0; i < a; i++) { r.lanes[i] = v.base[off + i]; }\n  return r;\n#endif\n}\n", vec)
 	case "store":
 		fmt.Fprintf(&b, "static inline void oak_simd_%s( oak_span_%s s, u32 off, %s val, oak_active a ) {\n", member, elem, vec)
 		b.WriteString("  if ((u64)off + (u64)a > (u64)s.len) { __builtin_trap(); }\n")
-		b.WriteString(rvv(fmt.Sprintf("  __riscv_vse%s_v_%s(s.base + off, val, a);\n", bits, sfx)))
+		b.WriteString(rvv(fmt.Sprintf("  __riscv_vse%s_v_%s(s.base + off, val, a);\n", bits, sfx), fmt.Sprintf("  svst1_%s(%s, s.base + off, val);\n", elem, pg)))
 		b.WriteString("  for (u32 i = 0; i < a; i++) { s.base[off + i] = val.lanes[i]; }\n#endif\n}\n")
 	case "shr":
 		fmt.Fprintf(&b, "static inline %s oak_simd_%s( %s v, u32 n, oak_active a ) {\n", vec, member, vec)
 		fmt.Fprintf(&b, "  if (n >= %su) { __builtin_trap(); }\n", bits)
-		b.WriteString(rvv(fmt.Sprintf("  return __riscv_vsrl_vx_%s(v, (size_t)n, a);\n", sfx)))
+		// The count is below the lane width here, so narrowing it to the
+		// lane type for SVE's per-lane shift loses nothing.
+		b.WriteString(rvv(fmt.Sprintf("  return __riscv_vsrl_vx_%s(v, (size_t)n, a);\n", sfx), fmt.Sprintf("  return svlsr_%s_z(%s, v, svdup_n_%s((%s)n));\n", elem, pg, elem, elem)))
 		fmt.Fprintf(&b, "  %s r;\n  for (u32 i = 0; i < a; i++) { r.lanes[i] = (%s)(v.lanes[i] >> n); }\n  return r;\n#endif\n}\n", vec, elem)
 	case "any", "all":
 		fmt.Fprintf(&b, "static inline Bool oak_simd_%s( %s v, oak_active a ) {\n", member, vec)
 		if op == "any" {
-			b.WriteString(rvv(fmt.Sprintf("  return __riscv_vcpop_m_b%s(__riscv_vmsne_vx_%s_b%s(v, 0, a), a) != 0 ? oak_Bool_True : oak_Bool_False;\n", bits, sfx, bits)))
+			b.WriteString(rvv(fmt.Sprintf("  return __riscv_vcpop_m_b%s(__riscv_vmsne_vx_%s_b%s(v, 0, a), a) != 0 ? oak_Bool_True : oak_Bool_False;\n", bits, sfx, bits), fmt.Sprintf("  { svbool_t pg = %s; return svptest_any(pg, svcmpne_n_%s(pg, v, 0)) ? oak_Bool_True : oak_Bool_False; }\n", pg, elem)))
 			b.WriteString("  for (u32 i = 0; i < a; i++) { if (v.lanes[i] != 0) { return oak_Bool_True; } }\n  return oak_Bool_False;\n#endif\n}\n")
 		} else {
-			b.WriteString(rvv(fmt.Sprintf("  return __riscv_vcpop_m_b%s(__riscv_vmseq_vx_%s_b%s(v, 0, a), a) == 0 ? oak_Bool_True : oak_Bool_False;\n", bits, sfx, bits)))
+			b.WriteString(rvv(fmt.Sprintf("  return __riscv_vcpop_m_b%s(__riscv_vmseq_vx_%s_b%s(v, 0, a), a) == 0 ? oak_Bool_True : oak_Bool_False;\n", bits, sfx, bits), fmt.Sprintf("  { svbool_t pg = %s; return svptest_any(pg, svcmpeq_n_%s(pg, v, 0)) ? oak_Bool_False : oak_Bool_True; }\n", pg, elem)))
 			b.WriteString("  for (u32 i = 0; i < a; i++) { if (v.lanes[i] == 0) { return oak_Bool_False; } }\n  return oak_Bool_True;\n#endif\n}\n")
 		}
 	case "reduce_add":
 		// The wrapping sum is associative and commutative, so a tree
 		// reduction is the lane-order sum exactly.
 		fmt.Fprintf(&b, "static inline %s oak_simd_%s( %s v, oak_active a ) {\n", elem, member, vec)
-		b.WriteString(rvv(fmt.Sprintf("  return __riscv_vmv_x_s_%s_%s(__riscv_vredsum_vs_%s_%s(v, __riscv_vmv_v_x_%s(0, 1), a));\n", sfx, elem+"", sfx, sfx, sfx)))
+		b.WriteString(rvv(fmt.Sprintf("  return __riscv_vmv_x_s_%s_%s(__riscv_vredsum_vs_%s_%s(v, __riscv_vmv_v_x_%s(0, 1), a));\n", sfx, elem+"", sfx, sfx, sfx), fmt.Sprintf("  return (%s)svaddv_%s(%s, v);\n", elem, elem, pg)))
 		fmt.Fprintf(&b, "  %s sum = 0;\n  for (u32 i = 0; i < a; i++) { sum = (%s)(sum + v.lanes[i]); }\n  return sum;\n#endif\n}\n", elem, elem)
 	default:
 		laneExpr, isBinary := simdBinaryOps[op]
@@ -919,9 +948,16 @@ func scalableHelperSource(member string) string {
 		rvvName := map[string]string{"add": "vadd_vv", "sub": "vsub_vv", "subs": "vssubu_vv", "and": "vand_vv", "or": "vor_vv", "xor": "vxor_vv", "min": "vminu_vv", "max": "vmaxu_vv"}[op]
 		fmt.Fprintf(&b, "static inline %s oak_simd_%s( %s a_, %s b_, oak_active a ) {\n", vec, member, vec, vec)
 		if op == "eq" {
-			b.WriteString(rvv(fmt.Sprintf("  return __riscv_vmerge_vxm_%s(__riscv_vmv_v_x_%s(0, a), (%s)~(%s)0, __riscv_vmseq_vv_%s_b%s(a_, b_, a), a);\n", sfx, sfx, elem, elem, sfx, bits)))
+			b.WriteString(rvv(fmt.Sprintf("  return __riscv_vmerge_vxm_%s(__riscv_vmv_v_x_%s(0, a), (%s)~(%s)0, __riscv_vmseq_vv_%s_b%s(a_, b_, a), a);\n", sfx, sfx, elem, elem, sfx, bits), fmt.Sprintf("  { svbool_t pg = %s; return svdup_n_%s_z(svcmpeq_%s(pg, a_, b_), (%s)~(%s)0); }\n", pg, elem, elem, elem, elem)))
 		} else {
-			b.WriteString(rvv(fmt.Sprintf("  return __riscv_%s_%s(a_, b_, a);\n", rvvName, sfx)))
+			sveName := map[string]string{"add": "svadd", "sub": "svsub", "subs": "svqsub", "and": "svand", "or": "svorr", "xor": "sveor", "min": "svmin", "max": "svmax"}[op]
+			sveText := fmt.Sprintf("  return %s_%s_z(%s, a_, b_);\n", sveName, elem, pg)
+			if op == "subs" {
+				// Saturating subtract is unpredicated in SVE; inactive lanes
+				// are never read, so the unpredicated form is exact.
+				sveText = fmt.Sprintf("  return svqsub_%s(a_, b_);\n", elem)
+			}
+			b.WriteString(rvv(fmt.Sprintf("  return __riscv_%s_%s(a_, b_, a);\n", rvvName, sfx), sveText))
 		}
 		laneCode := laneExpr
 		if strings.Contains(laneCode, "%") {

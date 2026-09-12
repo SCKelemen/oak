@@ -197,7 +197,9 @@ target, by design: the reductions `any`/`all`/`movemask`/`reduce_add`
 `maximumNumber` (a NaN operand suppressed, `-0.0` equal to `+0.0`), not
 the catalog's 754-2019 `minimum`/`maximum`. The choice is static: no
 runtime dispatch, no hidden state, one lane-array representation for every
-realization.
+realization. On an SVE processor the fixed vectors stay NEON (the
+`Z` registers' low 128 bits are the `V` registers); SVE enters only through
+the scalable API of §4.
 
 ### 1.5 A byte-classification kernel: the UTF-8 validator
 
@@ -372,7 +374,17 @@ hold them in sizeless registers.
 Realizations: the portable one is a 16-byte vector and a `u32` extent
 (capacity 16 lanes for `u8`, 4 for `u32`); RISC-V Vector holds
 `vuint8m1_t`/`vuint32m1_t` block-locals with the extent from `vsetvl`
-(capacity `VLEN/8` and `VLEN/32` lanes); the interpreter uses the portable
+(capacity `VLEN/8` and `VLEN/32` lanes); **AArch64 SVE (third increment)**
+holds `svuint8_t`/`svuint32_t` block-locals with the extent as a lane
+count, capacity `svcntb()`/`svcntw()`, and every operation under the
+predicate `whilelt(0, count)` rebuilt from the extent — zeroing forms for
+the lane-wise operations, `ld1`/`st1` under the predicate, `cmpeq` widened
+to all-ones lanes for `eq`, `ptest` for `any`/`all`, `addv` for the sum,
+and the unpredicated `uqsub` for `subs` (inactive lanes are never read).
+It is selected by an SVE processor (`-target linux/arm64 -cpu
+neoverse_v2`, or `generic+sve` freestanding; `__ARM_FEATURE_SVE`); the
+fixed 128-bit vectors keep their NEON realization on the same processor.
+The interpreter uses the portable
 capacity, lowered on request so a test can stress a program at extents of
 one, three, or five lanes. **Extent independence** is the semantics
 (`Oak.Simd.chunked_map_eq`, `chunked_sum_eq`, `chunked_any_eq`,
@@ -459,7 +471,9 @@ emulated hardware vector lengths. Discharged for the scalable API's landed
 subset (`compiler/e2e_scalable_test.go`): final partial chunks of every
 size from zero through the maximum (inputs of every length 0..40), the
 same program at extents 1, 3, 5, and 16 in the interpreter, portable C,
-and RVV at VLEN 128 and 256 (extents 16 and 32), and tail lanes unable to
+RVV at VLEN 128 and 256 (extents 16 and 32), and SVE at 128, 256, and 512
+bits (extents 16, 32, and 64, `compiler/e2e_sve_test.go` under
+`qemu-system-aarch64 -cpu max,sve-max-vq=1|2|4`), and tail lanes unable to
 affect stores, reductions, or returned values — every operation takes its
 extent, and Lean states the independence. Still open: predicated
 (masked) operations, fault-first loads, and the call-boundary

@@ -479,6 +479,9 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
 #if defined(__riscv) && defined(__riscv_vector) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
 #include <riscv_vector.h>
 #endif
+#if defined(__aarch64__) && defined(__ARM_FEATURE_SVE) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
+#include <arm_sve.h>
+#endif
 typedef struct oak_u8x16 { u8 lanes[16]; } u8x16;
 typedef struct oak_u16x8 { u16 lanes[8]; } u16x8;
 typedef struct oak_u32x4 { u32 lanes[4]; } u32x4;
