@@ -827,8 +827,13 @@ conversion with no guard. Conversely an index that is a construction
 guard trapped otherwise. So `TABLE[Slot(i)]` under `i < 8` costs nothing at
 all, and `TABLE[Slot(n)]` for an arbitrary `n` costs the one guard.
 
+A refined return type is a postcondition: `low: (x: u16): Slot =
+Slot(x & u16(7))` must construct (returning the bare `u16` is refused), and
+a caller may index through the call directly — `TABLE[low(x)]` is proven,
+because any expression of a refined type is below the bound.
+
 Not yet: refinements over records and floats, generic refinements
-(`IrqId[N]: type = u16 where value < N`), refined return types as
-postconditions, and predicates beyond a literal bound in the discharge.
-Each stays a runtime check until then, never a silent one.
+(`IrqId[N]: type = u16 where value < N`), and predicates beyond a literal
+bound in the discharge. Each stays a runtime check until then, never a
+silent one.
 

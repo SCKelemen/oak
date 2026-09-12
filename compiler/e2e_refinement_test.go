@@ -108,3 +108,32 @@ main: (): i32 = i32_bits_u32(sum(u16(9), u16(1)) - u32(36))
 		t.Fatalf("exit = (%d, abnormal=%v), want 7", code, abnormal)
 	}
 }
+
+// A refined return type is a postcondition: the callee constructs, and the
+// caller's index through the call is proven without a binding.
+func TestE2ERefinementReturn(t *testing.T) {
+	src := `
+Slot: type = u16 where value < u16(8)
+TABLE: [8]u8 = [8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }
+
+low: (x: u16): Slot = Slot(x & u16(7))
+
+main: (): i32 = i32_bits_u32(u32(TABLE[low(u16(13))]) + u32(TABLE[low(u16(2))]))
+`
+	output, err := New().WithSource("refret.oak", src).EmitC().Get()
+	if err != nil {
+		t.Fatalf("compilation failed: %v", err)
+	}
+	if strings.Contains(output, "oak_index( ") || strings.Count(output, "oak_refine_oak_Slot( ")-1 != 0 {
+		t.Fatalf("expected proven accesses and a discharged construction:\n%s", output)
+	}
+	// TABLE[5] + TABLE[2] = 6 + 3
+	code, abnormal := buildAndRun(t, "refret", src)
+	if abnormal || code != 9 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 9", code, abnormal)
+	}
+	bad := "Slot: type = u16 where value < u16(8)\nlow: (x: u16): Slot = x & u16(7)\nmain: (): i32 = 0\n"
+	if _, err := New().WithSource("refretbad.oak", bad).Check().Get(); err == nil {
+		t.Fatalf("a base value must not be returned as the refinement without construction")
+	}
+}

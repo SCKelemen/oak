@@ -236,3 +236,25 @@ func (tc *TypeChecker) refinedBelow(expr ast.Expression) (string, int64, bool) {
 	}
 	return name, bound, true
 }
+
+// recordRefinedIndexProof proves `c[e]` when e has a refined type whose
+// predicate bounds it below the container's static extent: the value was
+// constructed through the guard, whatever expression produced it.
+func (tc *TypeChecker) recordRefinedIndexProof(expr *ast.IndexExpression, arr *ArrayType, indexType Type) {
+	prim, isPrim := indexType.(*PrimitiveType)
+	if !isPrim || prim.Refinement == "" || arr == nil || arr.Length < 0 || arr.IsSlice || arr.IsSpan {
+		return
+	}
+	info, ok := tc.refinements[prim.Refinement]
+	if !ok {
+		return
+	}
+	bound, ok := predicateBound(info.predicate)
+	if !ok || bound > arr.Length {
+		return
+	}
+	if tc.provenIndices == nil {
+		tc.provenIndices = make(map[string]bool)
+	}
+	tc.provenIndices[positionKey(expr.Token)] = true
+}
