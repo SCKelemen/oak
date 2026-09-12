@@ -929,6 +929,12 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   `K` and `j` literals, either operand order) are proven when the length
   is known to be at least `(U - 1) * K + j + 1` (`scaled_under_bound`) —
   the word loads of a block, `block[i * 4 + 3]` under `i < 16`.
+- **Upper bound through a binding**: `n <= len(v)` or `n < len(v)` as a
+  condition, or the declaration `n: u32 = len(v)`, makes `n` an upper bound
+  for indices into `v`, so a later `i < n` proves `v[i]`
+  (`bound_through_upper`) — the canonical strict loop shape, whose bound
+  must be a binding (`85-discipline.md` §3). A declaration's fact holds for
+  the rest of its block unless the block reassigns `n` or `v`.
 - **Lower bound and subtraction**: a literal initializer `i: u32 = K`
   establishes `K <= i`; leaving `while i < K` (a bare comparison, no
   `break` in the body) establishes `K <= i` for the rest of the block

@@ -169,7 +169,7 @@ package main
 
 fn sum(buf: [8]u8) -> u32 {
   v: []u8 = buf[0:8]
-  n: u32 = len(v)
+  n: u32 = len(v) / 2
   total: u32 = 0
   i: u32 = 0
   while i < n {
@@ -179,6 +179,8 @@ fn sum(buf: [8]u8) -> u32 {
   total + u32(buf[0]) + len(buf)
 }
 `)
+	// The bound n is not a binding of len(v) (that shape is proven,
+	// Oak.Extents.bound_through_upper), so v[i] stays checked.
 	for _, wanted := range []string{
 		"oak_view_index_u8( v, (u64)( i ) )",
 		"if (i >= (u64)v.len) { __builtin_trap(); }",
