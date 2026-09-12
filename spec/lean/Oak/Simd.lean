@@ -164,3 +164,96 @@ theorem store_preserves_prefix {off : Nat} {buf : List Nat} {v : Vec}
   rw [List.getElem?_append_left hTake, List.getElem?_take_of_lt hi]
 
 end Oak.Simd
+
+/-! ## Byte-classification operations (docs/spec/93-simd.md §1.2)
+
+The four operations a byte-classification kernel is built from: saturating
+subtract, lane shift right, the 16-entry byte-table lookup, and the
+cross-block byte shift. Each is stated lane by lane; the executable
+witnesses (interpreter, NEON, portable loop) are checked to agree by
+`compiler/e2e_simd_bytes_test.go`. -/
+
+namespace Oak.Simd
+
+/-- Saturating subtract: never below zero. -/
+def subSat (a b : Vec) : Vec := List.zipWith (fun x y => x - y) a b
+
+/-- Natural subtraction is already saturating, which is the point: the lane
+is `x - y` when `y ≤ x` and `0` otherwise. -/
+theorem subSat_lane (a b : Vec) (i : Nat) (hi : i < a.length) (hib : i < b.length) :
+    (subSat a b)[i]'(by simp [subSat, List.length_zipWith]; omega) = a[i] - b[i] := by
+  simp [subSat]
+
+theorem subSat_le (a b : Vec) (i : Nat) (hi : i < a.length) (hib : i < b.length) :
+    (subSat a b)[i]'(by simp [subSat, List.length_zipWith]; omega) ≤ a[i] := by
+  simp [subSat]
+
+theorem subSat_zero_iff (a b : Vec) (i : Nat) (hi : i < a.length) (hib : i < b.length) :
+    (subSat a b)[i]'(by simp [subSat, List.length_zipWith]; omega) = 0 ↔ a[i] ≤ b[i] := by
+  simp [subSat]
+  omega
+
+/-- Lane-wise logical shift right by `n`; the count is below the lane width
+(a count reaching it traps before this function is reached). -/
+def shr (n : Nat) (v : Vec) : Vec := v.map (fun x => x >>> n)
+
+theorem shr_lane (n : Nat) (v : Vec) (i : Nat) (hi : i < v.length) :
+    (shr n v)[i]'(by simpa [shr] using hi) = v[i] >>> n := by
+  simp [shr]
+
+/-- Byte-table lookup: lane `i` is `table[idx[i]]` when the index is below
+sixteen and `0` otherwise, NEON's `tbl` rule. -/
+def tbl (table idx : Vec) : Vec :=
+  idx.map (fun j => if h : j < table.length ∧ j < 16 then table[j] else 0)
+
+theorem tbl_length (table idx : Vec) : (tbl table idx).length = idx.length := by
+  simp [tbl]
+
+theorem tbl_lane_in_range (table idx : Vec) (i : Nat) (hi : i < idx.length)
+    (hj : idx[i] < 16) (ht : table.length = 16) :
+    (tbl table idx)[i]'(by simpa [tbl] using hi) = table[idx[i]]'(by omega) := by
+  simp [tbl, ht, hj]
+
+theorem tbl_lane_out_of_range (table idx : Vec) (i : Nat) (hi : i < idx.length)
+    (hj : 16 ≤ idx[i]) :
+    (tbl table idx)[i]'(by simpa [tbl] using hi) = 0 := by
+  simp [tbl]
+  omega
+
+/-- The cross-block byte shift: the sixteen lanes ending `n` before the end
+of `prev ++ cur` — lane `i` is `prev[16 - n + i]` for `i < n` and
+`cur[i - n]` otherwise. -/
+def prev (n : Nat) (prevBlock cur : Vec) : Vec :=
+  (prevBlock ++ cur).drop (16 - n) |>.take 16
+
+theorem prev_length (n : Nat) (prevBlock cur : Vec)
+    (hp : prevBlock.length = 16) (hc : cur.length = 16) (hn : n ≤ 16) :
+    (prev n prevBlock cur).length = 16 := by
+  simp [prev, List.length_take, List.length_drop, hp, hc]
+  omega
+
+theorem prev_lane_from_prev (n : Nat) (prevBlock cur : Vec)
+    (hp : prevBlock.length = 16) (hc : cur.length = 16) (hn : n ≤ 16)
+    (i : Nat) (hi : i < n) :
+    (prev n prevBlock cur)[i]'(by rw [prev_length n prevBlock cur hp hc hn]; omega)
+      = prevBlock[16 - n + i]'(by omega) := by
+  simp only [prev]
+  rw [List.getElem_take, List.getElem_drop, List.getElem_append_left (by omega)]
+
+theorem prev_lane_from_cur (n : Nat) (prevBlock cur : Vec)
+    (hp : prevBlock.length = 16) (hc : cur.length = 16) (hn : n ≤ 16)
+    (i : Nat) (hi : n ≤ i) (hi16 : i < 16) :
+    (prev n prevBlock cur)[i]'(by rw [prev_length n prevBlock cur hp hc hn]; omega)
+      = cur[i - n]'(by omega) := by
+  simp only [prev]
+  rw [List.getElem_take, List.getElem_drop, List.getElem_append_right (by omega)]
+  congr 1
+  omega
+
+/-- `prev 0` is the current block and `prev 16` the previous one. -/
+theorem prev_zero (prevBlock cur : Vec) (hp : prevBlock.length = 16) (hc : cur.length = 16) :
+    prev 0 prevBlock cur = cur := by
+  simp [prev, hp, hc]
+  exact List.take_of_length_le (by omega)
+
+end Oak.Simd

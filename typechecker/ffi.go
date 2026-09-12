@@ -241,11 +241,21 @@ var simdOps = func() map[string]*FunctionType {
 			ops["reduce_add_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector}, ReturnType: elem}
 			continue
 		}
-		for _, binary := range []string{"add", "sub", "and", "or", "xor", "min", "max", "eq"} {
+		for _, binary := range []string{"add", "sub", "subs", "and", "or", "xor", "min", "max", "eq"} {
 			ops[binary+"_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, vector}, ReturnType: vector}
 		}
 		for _, reduction := range []string{"any", "all"} {
 			ops[reduction+"_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector}, ReturnType: &BoolType{}}
+		}
+		// Lane-wise logical shift right by a count; a count reaching the
+		// lane width traps, as scalar shifts do (docs/spec/93-simd.md §1.2).
+		ops["shr_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, offset}, ReturnType: vector}
+		if shape.Suffix == "u8x16" {
+			// Byte-table lookup and the cross-block byte shift: the two
+			// operations byte-classification kernels (a UTF-8 validator)
+			// are built from (docs/spec/93-simd.md §1.2).
+			ops["tbl_u8x16"] = &FunctionType{Parameters: []Type{vector, vector}, ReturnType: vector}
+			ops["prev_u8x16"] = &FunctionType{Parameters: []Type{vector, vector, offset}, ReturnType: vector}
 		}
 	}
 	return ops

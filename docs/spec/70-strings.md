@@ -130,7 +130,7 @@ A generic `len` or indexing operator should not hide an O(n) scan where programm
 
 ## 8. Literals
 
-Ordinary source string literals are UTF-8 semantic strings after the source decoder validates them. This is enforced: compilation validates the entire source file against the well-formed byte sequences of `Oak.Utf8Validity` (Unicode Table 3-7) before scanning, via `source.ValidateUTF8`, so no literal can carry invalid bytes into `string` values. Runtime byte validation exists as `is_valid_utf8(v: []u8) -> Bool`, a zero-allocation builtin lowered to a C helper transliterating the same brackets — one fact, three projections (Lean model, Go ingestion validator, C runtime).
+Ordinary source string literals are UTF-8 semantic strings after the source decoder validates them. This is enforced: compilation validates the entire source file against the well-formed byte sequences of `Oak.Utf8Validity` (Unicode Table 3-7) before scanning, via `source.ValidateUTF8`, so no literal can carry invalid bytes into `string` values. Runtime byte validation exists as `is_valid_utf8(v: []u8) -> Bool`, a zero-allocation builtin lowered to a C helper transliterating the same brackets — one fact, three projections (Lean model, Go ingestion validator, C runtime). The standard library adds `utf8.valid` (`93-simd.md` §1.5), the same predicate over the portable vectors at SIMD speed, proved against the same table pair by pair and checked against the builtin differentially.
 
 The compiler may emit their bytes in readonly static storage.
 
