@@ -105,14 +105,15 @@ func reportAsmVerdict(d *diagnostic.Diagnostic) {
 // unit, which the system C compiler turns into an executable named after the
 // package (or `-o out`); `-emit-c`, or an `-o` ending in .c, writes the C.
 func buildPackage(args []string) int {
-	output, header, leanOut, profile := "", "", "", ""
+	output, header, leanOut, metalOut, profile := "", "", "", "", ""
 	lines, emitC, nativeBodies := false, false, false
 	asmMode := defaultAsmMode()
-	fs := newFlagSet("build", "oak build [-o out] [-emit-c] [-header out.h] [-lean out.lean] [-profile default|strict] [-asm native|c] [-native] [-lines] [dir|file.oak|pattern]...")
+	fs := newFlagSet("build", "oak build [-o out] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-profile default|strict] [-asm native|c] [-native] [-lines] [dir|file.oak|pattern]...")
 	fs.StringVar(&output, "o", "", "output file: an executable, or C when it ends in .c")
 	fs.BoolVar(&emitC, "emit-c", false, "write C instead of an executable")
 	fs.StringVar(&header, "header", "", "write the C header of the exported surface (docs/spec/92-ffi.md section 2.6)")
 	fs.StringVar(&leanOut, "lean", "", "write the Lean 4 extraction of the package (docs/spec/95-extraction.md)")
+	fs.StringVar(&metalOut, "metal", "", "write the Metal Shading Language of the package's kernels (docs/spec/56-kernels.md)")
 	fs.StringVar(&profile, "profile", "", "discipline profile: default or strict (docs/spec/85-discipline.md)")
 	fs.StringVar(&asmMode, "asm", asmMode, "asm units: native (Oak assembler companion object) or c (inline __asm__; docs/spec/94-assembler.md section 9)")
 	fs.BoolVar(&lines, "lines", false, "emit #line directives so C diagnostics point at Oak source")
@@ -134,12 +135,12 @@ func buildPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
 		return 1
 	}
-	if len(targets) > 1 && (output != "" || header != "" || leanOut != "") {
-		fmt.Fprintln(os.Stderr, "oak build: -o, -header, and -lean apply to a single package")
+	if len(targets) > 1 && (output != "" || header != "" || leanOut != "" || metalOut != "") {
+		fmt.Fprintln(os.Stderr, "oak build: -o, -header, -lean, and -metal apply to a single package")
 		return 2
 	}
 	for _, dir := range targets {
-		if code := buildOne(dir, output, header, leanOut, profile, asmMode, lines, emitC, nativeBodies); code != 0 {
+		if code := buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, lines, emitC, nativeBodies); code != 0 {
 			return code
 		}
 	}
@@ -147,7 +148,7 @@ func buildPackage(args []string) int {
 }
 
 // buildOne builds a single package or file.
-func buildOne(dir, output, header, leanOut, profile, asmMode string, lines, emitC, nativeBodies bool) int {
+func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode string, lines, emitC, nativeBodies bool) int {
 	comp, err := compilationFor(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
@@ -175,6 +176,21 @@ func buildOne(dir, output, header, leanOut, profile, asmMode string, lines, emit
 			return 1
 		}
 		if err := os.WriteFile(leanOut, []byte(extracted), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
+			return 1
+		}
+	}
+	if metalOut != "" {
+		result, err := comp.EmitMetal().Get()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 1
+		}
+		if len(result.Kernels) == 0 {
+			fmt.Fprintf(os.Stderr, "oak build: %s declares no kernels\n", dir)
+			return 1
+		}
+		if err := os.WriteFile(metalOut, []byte(result.Source), 0o644); err != nil {
 			fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
 			return 1
 		}

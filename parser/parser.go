@@ -307,6 +307,12 @@ func (p *Parser) parseStatement() ast.Statement {
 		if p.currentToken.Literal == "operator" && p.peekTokenIs(token.LPAREN) {
 			return p.parseOperatorDeclaration()
 		}
+		// `kernel name: (gid: u32, ...): () = ...` declares a compute kernel
+		// (docs/spec/56-kernels.md); `kernel` is contextual, so `kernel := 1`
+		// and `kernel: u32 = 1` stay ordinary bindings.
+		if p.currentToken.Literal == "kernel" && p.peekTokenIs(token.IDENT) && p.lookaheadSignificant(2).TokenKind == token.COLON {
+			return p.parseKernelDeclaration()
+		}
 		// `export("symbol") pub name: (...)` gives a pub function a C ABI
 		// symbol (docs/spec/92-ffi.md section 2.9); `export` is contextual,
 		// so `export := 1` stays an ordinary binding.
@@ -1657,6 +1663,24 @@ func (p *Parser) parseOperatorDeclaration() ast.Statement {
 		return nil
 	}
 	fn.Operator = symbol
+	return fn
+}
+
+// parseKernelDeclaration parses the `kernel` marker followed by a function
+// declaration (docs/spec/56-kernels.md section 1).
+func (p *Parser) parseKernelDeclaration() ast.Statement {
+	marker := p.currentToken
+	p.nextToken()
+	stmt := p.parseStatement()
+	if stmt == nil {
+		return nil
+	}
+	fn, isFunction := stmt.(*ast.FunctionStatement)
+	if !isFunction {
+		p.addErrorAtToken(&marker, "kernel must be followed by a function declaration")
+		return nil
+	}
+	fn.Kernel = true
 	return fn
 }
 
