@@ -480,7 +480,7 @@ static inline oak_Status oak_Status_Unauthorized(  ) {
 }
 
 /* static globals: constant-initialized, zero otherwise */
-static i32 x = ( 5 + 3 );
+static const i32 x = ( 5 + 3 );
 
 /* forward declarations; OAK_INLINE marks private leaf helpers the C
    compiler must inline at every optimization level (the external

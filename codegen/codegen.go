@@ -46,16 +46,19 @@ type CodeGenerator struct {
 	constantContext bool
 	// inlineHelpers names the functions emitted as forced-inline helpers
 	// (OAK_INLINE): private, leaf, loop-free, and short.
-	inlineHelpers    map[string]bool
-	asmFunctions     []*asm.Function
-	nativeAsm        bool // asm units go to a companion object, not inline __asm__
-	packageName      string
-	sourceFile       string // Source file path for source location comments
-	sourceText       string // Full source text for UTF-8 to UTF-16 conversion
-	abstractAliases  map[string]string
-	sourceIndex      *lsp.PositionIndex
-	output           strings.Builder
-	bareCondition    bool // the next infix emitted is a statement condition (emitCondition)
+	inlineHelpers   map[string]bool
+	asmFunctions    []*asm.Function
+	nativeAsm       bool // asm units go to a companion object, not inline __asm__
+	packageName     string
+	sourceFile      string // Source file path for source location comments
+	sourceText      string // Full source text for UTF-8 to UTF-16 conversion
+	abstractAliases map[string]string
+	sourceIndex     *lsp.PositionIndex
+	output          strings.Builder
+	bareCondition   bool // the next infix emitted is a statement condition (emitCondition)
+	// mutatedGlobals names the top-level bindings some statement writes,
+	// borrows, or addresses; the others may be C constants (globals.go).
+	mutatedGlobals   map[string]bool
 	indentLevel      int
 	types            map[string]bool // Track emitted types to avoid duplicates
 	typeChecker      *typechecker.TypeChecker
@@ -1720,6 +1723,21 @@ func (cg *CodeGenerator) emitCoreIndex(call *ast.InvocationExpression, tc *typec
 			return
 		}
 	}
+	if (info.kind == containerView || info.kind == containerSpan) && strings.HasPrefix(info.element, "oak_") {
+		// A record element is read in place — the checked index selects
+		// the element, and the field read that follows reads through it —
+		// never returned by value from a helper: a 400 KiB state record
+		// behind a span is one live instance, not a copy per read (the OS
+		// pilot's R1; docs/spec/50-borrowing.md section 8e).
+		cg.output.WriteString("( ")
+		cg.emitExpressionFragment(seq, tc)
+		cg.output.WriteString(" ).base[ oak_lv_idx( (u64)( ")
+		cg.emitExpressionFragment(index, tc)
+		cg.output.WriteString(" ), (u64)( ( ")
+		cg.emitExpressionFragment(seq, tc)
+		cg.output.WriteString(" ).len ) ) ]")
+		return
+	}
 	switch info.kind {
 	case containerView:
 		cg.output.WriteString(fmt.Sprintf("oak_view_index_%s( ", elementIdent(info.element)))
@@ -2805,6 +2823,17 @@ func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *type
 		width, known := tc.ShiftWidth(expr.Token)
 		if !known {
 			cg.output.WriteString("OAK_UNSUPPORTED_SHIFT")
+			return
+		}
+		if cg.constantContext {
+			// A constant context (a global initializer) needs a C integer
+			// constant expression: the shift is the plain operator at the
+			// checked width, which the checker has already bounded.
+			cg.output.WriteString(fmt.Sprintf("((u%d)( ", width))
+			cg.emitExpressionFragment(expr.Left, tc)
+			cg.output.WriteString(fmt.Sprintf(" ) %s ", expr.Operator))
+			cg.emitExpressionFragment(expr.Right, tc)
+			cg.output.WriteString(" )")
 			return
 		}
 		helper := "oak_shl_u"
