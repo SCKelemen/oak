@@ -19,29 +19,9 @@
       }
     },
     {
-      "type": "ExpressionStatement",
-      "data": {},
-      "position": {
-        "line": 8,
-        "column": 15,
-        "byte_start": 74,
-        "byte_end": 75
-      }
-    },
-    {
       "type": "Unknown",
       "data": {
         "string": "import(\"strings\")"
-      }
-    },
-    {
-      "type": "ExpressionStatement",
-      "data": {},
-      "position": {
-        "line": 10,
-        "column": 17,
-        "byte_start": 111,
-        "byte_end": 112
       }
     },
     {
@@ -65,16 +45,6 @@
         "column": 19,
         "byte_start": 113,
         "byte_end": 128
-      }
-    },
-    {
-      "type": "ExpressionStatement",
-      "data": {},
-      "position": {
-        "line": 10,
-        "column": 34,
-        "byte_start": 128,
-        "byte_end": 129
       }
     }
   ],
