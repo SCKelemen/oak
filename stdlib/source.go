@@ -133,8 +133,8 @@ var timeSource string
 var timesimSource string
 
 // timenative is a library package only (import("timenative")): the native
-// TimeSource realization through two host clock symbols the platform layer
-// provides (stdlib/native/oak_time_host.c is the reference).
+// TimeSource realization in pure Oak — clock_gettime as an extern, the
+// clock ids as target constants (docs/spec/92-ffi.md section 2.11).
 //
 //go:embed timenative.oak
 var timenativeSource string

@@ -31,7 +31,7 @@ names or the module cache.
 
 | Command | Go counterpart | What it does |
 |---|---|---|
-| `oak build [-o out] [-emit-c] [-header out.h] [-lean out.lean] [-profile p] [-lines] [dir\|file.oak]` | `go build` | Compile a package (or one file) to an **executable**, named after the package directory unless `-o` says otherwise. `-emit-c`, or an `-o` ending in `.c`, writes the C instead. `-header` and `-lean` write the exported C header and the Lean extraction alongside. |
+| `oak build [-o out] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-profile p] [-lines] [dir\|file.oak]` | `go build` | Compile a package (or one file) to an **executable**, named after the package directory unless `-o` says otherwise. `-emit-c`, or an `-o` ending in `.c`, writes the C instead. `-header` and `-lean` write the exported C header and the Lean extraction alongside; `-metal` writes the Metal Shading Language of the package's kernels (`56-kernels.md`), an error when it declares none. |
 | `oak run [-profile p] [dir]` | `go run` | Build into a temporary directory and run with this process's stdio; the program's exit status is propagated. |
 | `oak install [-profile p] [dir]` | `go install` | Build the executable into `$OAKBIN` (default `$HOME/.oak/bin`), named after the package directory. |
 | `oak vet [-profile p] [dir\|file.oak]` | `go vet` | Run every semantic gate without generating code and print what the checker recorded: errors, and the assumptions it could not discharge (the same list as the REPL's `:obligations`). |

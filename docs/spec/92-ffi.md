@@ -126,8 +126,10 @@ declaration site instead of every call site). Discipline profiles may later
 require an audit manifest of extern bindings; the strict profile does not yet.
 
 The C backend emits its own `extern` prototype derived from the binding — it
-does not include foreign headers. A mismatch between the binding and the true
-symbol is a foreign-contract violation, exactly like a wrong prototype in C.
+does not include foreign headers (the one exception, a target constant's
+header, §2.11, is why a program with target constants declares its externs
+through asm labels). A mismatch between the binding and the true symbol is a
+foreign-contract violation, exactly like a wrong prototype in C.
 
 ### 2.4 Target model (recorded assumption)
 
@@ -394,12 +396,12 @@ now: (): Timeval {
 - it is not an expression (`OAK-F0103` elsewhere) and the interpreter
   rejects it (§4).
 
-This closes the out-pointer half of the clock gap recorded in oak #179: a
-`struct timespec` declared as a boundary struct can be filled through
-`c.out(ts)`. What still keeps `time_source_native()` on the host shim is
-that `CLOCK_MONOTONIC`'s value differs between hosts (1 on Linux, 6 on
-Darwin) and Oak has no target-constant facility yet; `gettimeofday`, whose
-arguments are portable, is the executed example instead.
+This closed the out-pointer half of the clock gap recorded in oak #179: a
+`struct timespec` declared as a boundary struct is filled through
+`c.out(ts)`. The other half — `CLOCK_MONOTONIC`'s value differs between
+hosts (1 on Linux, 6 on Darwin) — is a target constant (§2.11), and
+`stdlib/timenative.oak` now reads both clocks through `clock_gettime` in
+Oak with nothing linked but the C library.
 
 The test runner's native adapter rules (`110-testing.md`) continue to exclude
 pointer interfaces from the adapters themselves; a test may nonetheless call
@@ -714,24 +716,81 @@ carves the ranges it reserved with `subslice` over `view(&b)` or
 any number of views, or one span and its reborrows. Everything is `u32`
 arithmetic that the interpreter and the backends compute identically.
 
-#### 2.8.5 What stays outside
+#### 2.8.5 Custody states
+
+**Status: implemented and tested** (`compiler/e2e_buffer_custody_test.go`;
+the ml pilot's request F5, `docs/notes/ml-language-requests-2026-09.md`).
+The DMA and ownership states of `50-borrowing.md` §11, on `Buffer`:
+
+```oak
+submit:   (b: Buffer[f32, Host]):   Buffer[f32, Device] = c.extern("mlrt_submit")
+complete: (b: Buffer[f32, Device]): Buffer[f32, Host]   = c.extern("mlrt_complete")
+
+unsafe {
+  host: Buffer[f32] = c.own[f32](p, n)          // Buffer[f32, Host]
+  fill(span(&host))
+  device: Buffer[f32, Device] = submit(host)    // host is consumed
+  back: Buffer[f32] = complete(device)          // device is consumed
+  total = sum(view(&back))
+  free(c.disown(back))
+}
+```
+
+- `Buffer[T, S]` is a buffer in **custody state** `S`, a bare marker name;
+  `Buffer[T]` is `Buffer[T, Host]`. `Host` is the initial state, the one
+  `c.own` produces. States are phantom: every `Buffer[T, S]` has one
+  representation, and `Buffer[f32, Host]` and `Buffer[f32, Device]` are
+  distinct types. A state may not name a declared type.
+- **Only a `Host` buffer can be borrowed or handed back.** `view(&b)`,
+  `span(&b)`, and `c.disown(b)` on a buffer in another state are type
+  errors naming the state: CPU code cannot touch device-owned memory
+  because it lacks the state, not because the pointer is gone.
+- **A custody transition is an extern binding** with exactly one
+  `Buffer[T, From]` parameter and the return type `Buffer[T, To]`
+  (`To ≠ From`, same `T`); any other extern shape over a `Buffer` is
+  `OAK-F0110`. The binding is the trust boundary as for every extern
+  (§2.3): the runtime's function receives the buffer as `T *base, size_t
+  len` and returns nothing; the Oak result is the argument re-typed —
+  the same resource in its next state, nothing copied. Ordinary Oak
+  functions still take no `Buffer` (§2.8.1).
+- **Calling a transition consumes the binding**: the argument is the
+  `Buffer` binding itself, rejected while any view or span of it is live
+  (`OAK-B0000`), dead afterward (`OAK-B0111`), and the call stands only as
+  the initializer of a new `Buffer[T, To]` binding — the buffer always has
+  exactly one live name.
+- Lowering: the call is `( mlrt_submit( b.base, (size_t)b.len ), (oak_span_T){ b.base, b.len } )`,
+  the prototype `extern void mlrt_submit( T *b, size_t b_len );`. The
+  interpreter has no foreign memory and rejects the calls as it rejects
+  `c.own`.
+
+`Oak.BufferCustody` (`spec/lean/Oak/BufferCustody.lean`) instantiates the
+typestate calculus of `112-protocols.md` §5a with `Host ⇄ Device`: the
+round trip types (`round_trip`), a device handle only comes from a submit
+(`device_from_submit`), borrowing is admitted only at host
+(`no_borrow_in_device`, `borrow_state_is_host`), and the wrong-way
+transitions have no derivation.
+
+#### 2.8.6 What stays outside
 
 A `Buffer[T]` in a record or a global (a `Weights` record owning its
 arena, a package-level buffer loaded once) needs the record to carry
-custody, which is the `Buffer[CpuOwned]` typestate of `50-borrowing.md`
-§11 and the resource-consumption machinery of §9 applied to a field. The
-element-space arena admits one span at a time; carving several writable
-ranges from one buffer at once is the disjoint-region proof of
-`50-borrowing.md` §6, or an `unsafe` disjointness assumption.
+custody — the resource-consumption machinery of `50-borrowing.md` §9
+applied to a field, the increment after §2.8.5. The element-space arena
+admits one span at a time; carving several writable ranges from one buffer
+at once is the disjoint-region proof of `50-borrowing.md` §6, or an
+`unsafe` disjointness assumption. Custody states with more than a name —
+a device identity, a queue — are records over the buffer, which waits on
+the same increment.
 
-#### 2.8.6 Diagnostics
+#### 2.8.7 Diagnostics
 
 | Code | Meaning |
 | --- | --- |
 | `OAK-F0107` | `c.own` outside an `unsafe` block, or not the initializer of a named binding |
+| `OAK-F0110` | an extern binding over a `Buffer` that is not a custody transition |
 | `OAK-B0110` | (warning) the foreign buffer contract assumed for an owner |
-| `OAK-B0111` | a buffer used after `c.disown` |
-| `OAK-B0000` | `c.disown` while a view or span of the buffer is live |
+| `OAK-B0111` | a buffer used after `c.disown` or after a custody transition moved it |
+| `OAK-B0000` | `c.disown` or a custody transition while a view or span of the buffer is live |
 
 ### 2.9 C ABI exports from any package
 
@@ -902,6 +961,101 @@ as an assertion does, so a call through the binding never dereferences NULL.
 
 The interpreter rejects `c.fn_at` (it has no foreign code to call), as it
 rejects every native-only form (§4).
+
+### 2.11 Target constants
+
+Status: implemented (`c.const`, `OAK-F0114`; `compiler/e2e_ffi_const_test.go`;
+`stdlib/timenative.oak` is the first consumer). Motivated by oak #211 and
+ml roadmap D6: the runtime-in-Oak touches `CLOCK_MONOTONIC`, `O_RDONLY`,
+`SEEK_SET`, `EINTR`, `PROT_READ`, the signal numbers — values a C header
+defines and every target defines differently.
+
+A **target constant** is a top-level binding whose value is a C constant
+the target's headers define:
+
+```oak
+CLOCK_REALTIME: c.Int = c.const("CLOCK_REALTIME", "<time.h>")
+CLOCK_MONOTONIC: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")
+clock_gettime: (id: c.Int, ts: c.Ptr): c.Int effects { Os.Syscall } = c.extern("clock_gettime")
+Timespec: type = struct { sec: i64, nsec: i64 }
+
+monotonic_nanos: (): i64 {
+  ts: Timespec = Timespec { sec: i64(0), nsec: i64(0) }
+  r: c.Int = clock_gettime(CLOCK_MONOTONIC, c.out(ts))
+  i32(r) != i32(0) ? { i64(0) } | { ts.sec * i64(1000000000) + ts.nsec }
+}
+```
+
+Oak never learns the value. The C backend emits the identifier and the C
+compiler resolves it for the target it compiles for — `CLOCK_MONOTONIC` is 1
+on Linux and 6 on Darwin, and the same Oak source is right on both. What Oak
+checks is the shape, and the shape is what makes the emission injection-free.
+
+#### 2.11.1 The form
+
+- `NAME: c.T = c.const("IDENTIFIER", "HEADER")` is admitted **only as a
+  top-level binding with an explicit `c.*` integer annotation** — `c.Int`,
+  `c.UInt`, `c.Int32`, `c.UInt32`, `c.Int64`, `c.UInt64`, `c.Long`,
+  `c.ULong`, `c.Size`. A local binding, an expression position, an Oak
+  type, `c.Ptr`, or `c.String` is `OAK-F0114` (pointers and strings are not
+  constants a header spells; floats have no boundary constants in this
+  increment).
+- The identifier is a string literal satisfying the C identifier grammar
+  of `OAK-F0102` (`[A-Za-z_][A-Za-z0-9_]*`); the header is a string literal
+  spelled `<name.h>`, `<dir/name.h>`, or `"name.h"` — identifier characters,
+  dots, hyphens, and slashes, no `..` segment. Anything else is `OAK-F0114`.
+  Both are re-validated in the backend before they reach the generated
+  source, as extern symbols are.
+- The binding is read-only: assignment to it is `OAK-F0114`. It is **not a
+  compile-time constant for Oak**: a later global initialized from it is the
+  ordinary `OAK-T0501` case (a C `static const` is not a constant
+  expression either), and the layout builtins do not fold it.
+- Reading it is ordinary safe Oak — a `c.Int` value that converts through
+  the §2.2 rows or passes at a `c.Int` extern parameter, as above.
+
+#### 2.11.2 What the backend emits
+
+At the head of the generated C, before every other header, the program's
+distinct target-constant headers are included, preceded by a POSIX.1-2008
+feature-test macro when none is defined (strict `-std=c99` builds on glibc
+otherwise withhold `clock_gettime` and the `CLOCK_*` identifiers from
+`<time.h>`); a freestanding build (`OAK_FREESTANDING`, or a non-hosted
+compiler) fails with an `#error`, because a target constant needs the
+target's headers. Each constant is a file-scope
+`static const int oak_const_NAME = IDENTIFIER;` — the initializer is the
+header's definition, a constant expression on the target; the `oak_const_`
+prefix keeps the binding clear of the identifier itself, which on Darwin is a
+macro over an enumerator.
+
+A foreign header may declare functions the program also binds with
+`c.extern` — `<time.h>` declares `clock_gettime` — and Oak's own prototype
+for that binding would then be a conflicting redeclaration. So **in a program
+with target constants every extern binding is declared under Oak's own
+identifier bound to the symbol by an asm label**:
+
+```c
+extern int oak_extern_clock_gettime( int id, void * ts ) __asm__(OAK_ASM_SYMBOL("clock_gettime"));
+```
+
+with `OAK_ASM_SYMBOL` prepending the target's `__USER_LABEL_PREFIX__`
+(`_` on Darwin, nothing on Linux), and every call names
+`oak_extern_clock_gettime`. The prototype Oak asserts is unchanged, the
+header's declaration stands beside it untouched, and the linker still binds
+the one symbol. A program without target constants emits the plain
+prototype it always did, so no other program's C changes.
+
+#### 2.11.3 Elsewhere
+
+The interpreter rejects `c.const` (it has no target whose headers define the
+value, §4). The Lean extraction renders the binding as an `opaque` constant
+of the `c.*` scalar's Lean type (`95-extraction.md` §3): a theorem about a
+function that reads it holds for every value, which is exactly the claim the
+program makes. A target constant carries no effect and records no
+assumption — the trust it asks for is the extern rule's (§2.3): that the
+named header defines the named identifier with the annotated type is the
+author's assertion, checked by the C compiler as far as C checks it (an
+undefined identifier fails the build; a wrong width converts silently, as a
+wrong extern prototype would).
 
 ## 3. The abstract assembly interface
 

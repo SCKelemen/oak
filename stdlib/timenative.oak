@@ -4,33 +4,41 @@
 // the platform layer that imports it: the code that owns timeouts and
 // leases takes a `[*]time.TimeSource` and never sees this package.
 //
-// Library Oak cannot call clock_gettime itself today: the FFI passes owned
-// storage to C only as a (pointer, length) pair that must line up with a
-// `c.Ptr, c.Size` parameter pair (92-ffi.md section 2.5), and clock_gettime
-// takes a bare out-pointer. Until the boundary grows an out-parameter form,
-// the two readings cross as plain integers through host symbols the
-// platform provides (the same shape as the test runner's oak_test_host_*):
-//
-//   int64_t  oak_time_host_wall_nanos(void);        // CLOCK_REALTIME
-//   uint64_t oak_time_host_monotonic_nanos(void);   // CLOCK_MONOTONIC
-//
-// stdlib/native/oak_time_host.c is the reference implementation for POSIX
-// hosts; link it (or your own) into any program that imports this package.
-// A program that imports timenative without providing the symbols fails to
-// link, which is the intended failure: the dependency on a real clock is
-// visible at build time, never at run time.
+// The clocks are read in Oak, through the boundary (docs/spec/92-ffi.md):
+// `clock_gettime` is an extern binding declared with the `Os.Syscall`
+// effect, the clock ids are target constants the target's <time.h>
+// defines (CLOCK_MONOTONIC is 1 on Linux and 6 on Darwin; Oak never learns
+// which, the C compiler does, section 2.11), and the `struct timespec` the
+// call fills is a boundary struct passed through `c.out` (section 2.5.7).
+// A program that imports this package links against the C library's
+// clock_gettime, which every POSIX.1-2001 host provides (macOS 10.12+);
+// that is the package's one platform assumption, and it is visible at
+// build time, never at run time. There is no host shim to link.
 package timenative
 
 import("time")
 
-timenative_wall_host: (): c.Int64 = c.extern("oak_time_host_wall_nanos")
-timenative_monotonic_host: (): c.UInt64 = c.extern("oak_time_host_monotonic_nanos")
+// struct timespec on the LP64 targets of the section 2.4 model: time_t and
+// long are 64-bit on macOS and 64-bit Linux, so both fields are i64. The
+// layout is asserted where the boundary struct is emitted; an ILP32 target
+// would need a different declaration and is not supported by this package.
+Timespec: type = struct { sec: i64, nsec: i64 }
 
-// The host's monotonic reading as i64 nanoseconds; the top bit is never set
-// by a sane host, and a value beyond i64 is clamped rather than reinterpreted.
-timenative_monotonic_nanos: (): i64 {
-  raw: u64 = u64(timenative_monotonic_host())
-  raw > u64(9223372036854775807) ? { i64(9223372036854775807) } | { i64_bits_u64(raw) }
+CLOCK_REALTIME: c.Int = c.const("CLOCK_REALTIME", "<time.h>")
+CLOCK_MONOTONIC: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")
+
+// int clock_gettime(clockid_t, struct timespec *): clockid_t is an int on
+// Linux and an int-sized enum on Darwin, so c.Int crosses both.
+clock_gettime: (id: c.Int, ts: c.Ptr): c.Int effects { Os.Syscall } = c.extern("clock_gettime")
+
+// timenative_read reads one clock as nanoseconds. A failing call (an id the
+// host does not support) reads as zero: the source's refresh then sees a
+// stalled clock rather than a garbage one, and `time_source_refresh` keeps
+// the monotonic reading from moving backwards.
+timenative_read: (id: c.Int): i64 {
+  ts: Timespec = Timespec { sec: i64(0), nsec: i64(0) }
+  r: c.Int = clock_gettime(id, c.out(ts))
+  i32(r) != i32(0) ? { i64(0) } | { ts.sec * i64(1000000000) + ts.nsec }
 }
 
 // timenative_refresh reads both host clocks into a native source. False,
@@ -38,7 +46,7 @@ timenative_monotonic_nanos: (): i64 {
 // a test source to production code; that is a bug to surface, not to hide).
 pub timenative_refresh: (source: [*]time.TimeSource): Bool {
   assert(len(source) == u32(1))
-  time.time_source_refresh(source, i64(timenative_wall_host()), timenative_monotonic_nanos())
+  time.time_source_refresh(source, timenative_read(CLOCK_REALTIME), timenative_read(CLOCK_MONOTONIC))
 }
 
 // timenative_source is a native source already refreshed once, so the first

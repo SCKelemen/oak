@@ -1126,19 +1126,19 @@ Go suite; `.github/workflows/testing.yml` runs it with `oak test`.
 platform layer is the only code that imports it. `timenative_source(out)`
 fills a refreshed native source; `timenative_refresh(source)` reads both
 host clocks into it (false, unchanged, for a fixed or simulated source
-handed to production code by mistake). The readings cross the boundary as
-plain integers through two symbols the platform provides —
-`int64_t oak_time_host_wall_nanos(void)` (CLOCK_REALTIME) and `uint64_t
-oak_time_host_monotonic_nanos(void)` (CLOCK_MONOTONIC) — because library
-Oak cannot call `clock_gettime` itself yet: the FFI passes owned storage to
-C only as a `c.Ptr, c.Size` pair and `clock_gettime` takes a bare
-out-pointer. `stdlib/native/oak_time_host.c` is the reference shim for
-POSIX hosts; a program that imports `timenative` without providing the
-symbols fails to link, which is the intended failure: the dependency on a
-real clock is visible at build time, never at run time.
-`compiler/e2e_stdlib_timesim_test.go` links the shim and checks the wall
-clock is plausible, the monotonic clock starts at zero and never decreases
-over a thousand refreshes, and a fixed source is refused.
+handed to production code by mistake). The clocks are read in Oak through
+the boundary: `clock_gettime` is an extern binding with `effects {
+Os.Syscall }`, `CLOCK_REALTIME` and `CLOCK_MONOTONIC` are target constants
+(`c.const`, `docs/spec/92-ffi.md` §2.11 — their values differ per host and
+the C compiler, not Oak, resolves them), and the `struct timespec` the call
+fills is a boundary struct passed through `c.out`. Nothing is linked but the
+C library, which every POSIX.1-2001 host provides; that is the package's one
+platform assumption, visible at build time. The earlier host-symbol shim
+(`stdlib/native/oak_time_host.c`, `oak_time_host_*_nanos`) that stood in
+while the FFI lacked out-pointers and target constants is gone.
+`compiler/e2e_stdlib_timesim_test.go` checks the wall clock against Go's
+within a minute, that the monotonic clock starts at zero and never decreases
+over a thousand refreshes, and that a fixed source is refused.
 
 ## `arena`: reservations over an owner (`import("arena")`)
 

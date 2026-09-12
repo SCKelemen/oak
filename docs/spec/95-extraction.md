@@ -135,6 +135,16 @@ canonically. Intrinsics still without an exact carrier — `trunc`, `min`/`max`
 — the `checked` rows into integers, and the storage formats
 `f16`/`bf16`/`f8` fail closed rather than approximate.
 
+**Fourth: a target constant is uninterpreted.** A top-level binding
+`NAME: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")` (`92-ffi.md` §2.11)
+holds a value the target's C headers define and Oak never learns. The
+extraction renders it as `opaque NAME : Int32` — the `c.*` scalar at the
+width of the §2.4 target model, LP64 (`c.Int` 32 bits, `c.Long` and
+`c.Size` 64) — so a theorem about a function that reads it is a theorem
+for every value the constant could have, which is the only claim the
+program itself makes. The C identifier and the header never appear in the
+Lean text.
+
 ## 4. The subset, and what fails closed
 
 Records and sum types of extractable fields and payloads, generic ADTs per
@@ -151,7 +161,8 @@ them and the integers, and the intrinsics of the table above (`fma`,
 `copysign`, and `round_even` through `Oak.FloatOps`); field
 assignment and element assignment into a record's array field, one level
 deep; array literals; top-level constants, including constant tables read
-through `view`. The extraction closes over the roots'
+through `view` and target constants (`c.const`, as opaque constants of
+their `c.*` scalar type). The extraction closes over the roots'
 callees, so a program that calls the standard library extracts the library
 functions it reaches. Everything else — strings, generic templates
 themselves, recursion, methods, extern functions, closures, the storage

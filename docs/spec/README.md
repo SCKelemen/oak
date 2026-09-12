@@ -58,6 +58,7 @@ Use these terms precisely:
 - `40-records.md` — products, record identity, composition, order, layout separation
 - `45-representations.md` — multiple checked representations per semantic type and representation selection
 - `50-borrowing.md` — ownership, views, spans, safe/unsafe boundaries
+- `56-kernels.md` — kernels: the kernel subset, its Metal and C realizations, fault semantics, launch descriptors
 - `60-effects-allocation.md` — effects, arenas, slabs, handles, realtime prohibitions
 - `70-strings.md` — encoded text, validation, borrowing and representation
 - `80-metadata.md` — typed attributes/tags and phantom semantic types

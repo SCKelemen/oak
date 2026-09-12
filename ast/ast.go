@@ -1137,6 +1137,11 @@ type FunctionStatement struct {
 	// `pub(opaque)`: the name is exported, the definition is not.
 	Exported bool
 	Opaque   bool
+	// Kernel marks a `kernel name: (gid: u32, ...): () = ...` declaration
+	// (docs/spec/56-kernels.md): a function in the kernel subset that the
+	// Metal emitter compiles to a compute kernel and the C backend to an
+	// ordinary function whose first parameter is the grid position.
+	Kernel bool
 	// Operator is the symbol an `operator(SYM)` marker binds to this
 	// function for a left operand of its first parameter's type
 	// (docs/spec/10-syntax.md section 14); empty for ordinary functions.
@@ -1210,6 +1215,8 @@ func (fs *FunctionStatement) String() string {
 	var out bytes.Buffer
 	if fs.Theorem {
 		out.WriteString("theorem ")
+	} else if fs.Kernel {
+		out.WriteString("kernel ")
 	} else {
 		out.WriteString("fn ")
 	}
