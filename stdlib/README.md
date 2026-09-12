@@ -106,6 +106,18 @@ position over `t.data` and the shape scalars, since kernels take no
 records. `Oak.Stdlib.TensorLaws` proves the transposition laws over the
 extraction.
 
+## UTF-8 validation (`import("utf8")`)
+
+`utf8.valid(bytes: []u8): Bool` is the well-formedness predicate of Unicode
+Table 3-7 over Oak's portable vectors (`docs/spec/93-simd.md` §1.5): the
+Keiser and Lemire lookup-table classification, sixteen bytes a step, zero
+allocation, the same verdict as the `is_valid_utf8` builtin on every input.
+Measured at 9.6 GB/s beside the builtin's 0.35 (`benchmarks/state-machines/cross/`).
+
+| Function | Semantics |
+| --- | --- |
+| `valid` | true iff `bytes` is well-formed UTF-8: no overlong forms, no surrogates, nothing above U+10FFFF, no truncated sequence, no stray continuation |
+
 ## Bytes
 
 | Function | Result and work |

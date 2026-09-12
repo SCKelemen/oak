@@ -23,7 +23,7 @@ the declaration.
   one shared input file: Go's `unicode/utf8.Valid`, Rust's
   `std::str::from_utf8`, Zig's `std.unicode.utf8ValidateSlice`,
   `simdutf::validate_utf8`, and `simdjson::validate_utf8`, plus Oak's
-  `is_valid_utf8` builtin. `cross/run.sh` builds and runs everything.
+  `is_valid_utf8` builtin and the stdlib's SIMD `utf8.valid`. `cross/run.sh` builds and runs everything.
 
 ```sh
 cc -std=c11 -O2 -o lowerings lowerings.c && ./lowerings
@@ -78,6 +78,7 @@ levels.
 | --- | --- | --- |
 | simdjson `validate_utf8` (SIMD) | 0.07 | 13.5 |
 | simdutf `validate_utf8` (SIMD) | 0.07 | 13.4 |
+| **Oak stdlib `utf8.valid` (SIMD, written in Oak over `simd.U8x16`)** | **0.10** | **9.6** |
 | **Oak protocol `utf8_run` (shift DFA, emitted from the declaration)** | **0.51** | **1.97** |
 | Oak builtin `is_valid_utf8` (scalar, Table 3-7 transliteration) | 2.50 | 0.40 |
 | Zig `std.unicode.utf8ValidateSlice` | 2.55 | 0.39 |
@@ -98,11 +99,14 @@ What the comparison says:
   scalar lowering reaches it.
 - The consequence for Oak: for byte-driven machines that are validators of
   a fixed format, the peak structure is a SIMD algorithm, not a DFA, and
-  Oak's portable 128-bit vectors (`docs/spec/93-simd.md`) can express it.
-  The next increment for this golden case is `is_valid_utf8` written over
-  `simd.U8x16` with a proof against `Oak.Utf8Validity`, made the builtin's
-  lowering. General protocol machines keep the DFA lowering; it is the
-  best structure for a machine that is not a fixed format.
+  Oak's portable 128-bit vectors express it. `stdlib/utf8.oak` is that
+  algorithm in Oak (four operations were added to the `simd` catalog for
+  it: `subs`, `shr`, `tbl`, `prev`); at 9.6 GB/s it sits at four fifths of
+  simdutf, and the gap is its sixteen-byte step against simdutf's
+  sixty-four. Its lookup tables are proved against Table 3-7 pair by pair
+  (`Oak.Utf8Lookup`); the stream is checked differentially against the
+  scalar builtin. General protocol machines keep the DFA lowering; it is
+  the best structure for a machine that is not a fixed format.
 - Hyperscan and Vectorscan are regex engines and are the right comparison
   for the next golden case, multi-pattern byte scanning; neither is
   installed here, and this table does not include them.

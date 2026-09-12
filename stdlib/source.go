@@ -26,6 +26,9 @@ var unicodeSource string
 //go:embed json.oak
 var jsonSource string
 
+//go:embed utf8.oak
+var utf8Source string
+
 //go:embed filters.oak
 var filtersSource string
 
@@ -254,6 +257,7 @@ var Packages = map[string]string{
 	"strings":         stringsSource,
 	"unicode":         unicodeSource,
 	"json":            jsonSource,
+	"utf8":            utf8Source,
 	"filters":         filtersSource,
 	"hash_table":      hashTableSource,
 	"bitset_algebra":  bitsetAlgebraSource,

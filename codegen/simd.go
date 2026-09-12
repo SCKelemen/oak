@@ -19,21 +19,22 @@ import (
 // simdBinaryOps are the lane-wise binary operations and their portable C
 // lane expressions (over element values x and y).
 var simdBinaryOps = map[string]string{
-	"add": "(%[1]s)(x + y)",
-	"sub": "(%[1]s)(x - y)",
-	"and": "(%[1]s)(x & y)",
-	"or":  "(%[1]s)(x | y)",
-	"xor": "(%[1]s)(x ^ y)",
-	"min": "(x < y ? x : y)",
-	"max": "(x > y ? x : y)",
-	"eq":  "(%[1]s)(x == y ? (%[1]s)~(%[1]s)0 : (%[1]s)0)",
+	"add":  "(%[1]s)(x + y)",
+	"sub":  "(%[1]s)(x - y)",
+	"subs": "(x > y ? (%[1]s)(x - y) : (%[1]s)0)",
+	"and":  "(%[1]s)(x & y)",
+	"or":   "(%[1]s)(x | y)",
+	"xor":  "(%[1]s)(x ^ y)",
+	"min":  "(x < y ? x : y)",
+	"max":  "(x > y ? x : y)",
+	"eq":   "(%[1]s)(x == y ? (%[1]s)~(%[1]s)0 : (%[1]s)0)",
 }
 
 // neonBinary maps binary ops to their NEON intrinsic name stems. 64-bit
 // lane min/max have no NEON instruction and use compare-and-select; they
 // are handled specially.
 var neonBinary = map[string]string{
-	"add": "vaddq", "sub": "vsubq", "and": "vandq", "or": "vorrq",
+	"add": "vaddq", "sub": "vsubq", "subs": "vqsubq", "and": "vandq", "or": "vorrq",
 	"xor": "veorq", "min": "vminq", "max": "vmaxq", "eq": "vceqq",
 }
 
@@ -67,8 +68,10 @@ func simdOpSplit(member string) (op string, shape typechecker.SimdShape, ok bool
 		return "", shape, false
 	}
 	switch op {
-	case "splat", "load", "store", "any", "all":
+	case "splat", "load", "store", "any", "all", "shr":
 		return op, shape, true
+	case "tbl", "prev":
+		return op, shape, shape.Suffix == "u8x16"
 	default:
 		_, isBinary := simdBinaryOps[op]
 		return op, shape, isBinary
@@ -265,6 +268,48 @@ func simdHelperSource(op, vec, elem string, lanes int) string {
 		fmt.Fprintf(&b, "%s\n  vst1q_%s(s.base + off, vld1q_%s(val.lanes));\n#else\n", neonGuard, neon, neon)
 		fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { s.base[off + (u32)i] = val.lanes[i]; }\n#endif\n}\n", lanes)
 
+	case "shr":
+		// Lane-wise logical shift right; a count reaching the lane width
+		// traps (the scalar shift rule, docs/spec/10-syntax.md section 3b).
+		// NEON's vshlq with a negative per-lane count shifts right; a
+		// constant count folds to the immediate form.
+		signed := map[string]string{"u8": "s8", "u16": "s16", "u32": "s32", "u64": "s64"}[elem]
+		fmt.Fprintf(&b, "static inline %s oak_simd_shr_%s( %s v, u32 n ) {\n", vec, vec, vec)
+		fmt.Fprintf(&b, "  if (n >= %du) { __builtin_trap(); }\n", laneBits(elem))
+		fmt.Fprintf(&b, "  %s r;\n%s\n", vec, neonGuard)
+		fmt.Fprintf(&b, "  vst1q_%s(r.lanes, vshlq_%s(vld1q_%s(v.lanes), vdupq_n_%s(-(int%d_t)n)));\n#else\n", neon, neon, neon, signed, laneBits(elem))
+		fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { r.lanes[i] = (%s)(v.lanes[i] >> n); }\n#endif\n  return r;\n}\n", lanes, elem)
+
+	case "tbl":
+		// Byte-table lookup: lane i is table[idx[i]] when idx[i] < 16, else
+		// 0 — exactly NEON's vqtbl1q_u8 (and pshufb's high-bit rule).
+		fmt.Fprintf(&b, "static inline %s oak_simd_tbl_%s( %s table, %s idx ) {\n", vec, vec, vec, vec)
+		fmt.Fprintf(&b, "  %s r;\n%s\n", vec, neonGuard)
+		fmt.Fprintf(&b, "  vst1q_u8(r.lanes, vqtbl1q_u8(vld1q_u8(table.lanes), vld1q_u8(idx.lanes)));\n#else\n")
+		fmt.Fprintf(&b, "  for (int i = 0; i < 16; i++) { r.lanes[i] = idx.lanes[i] < 16 ? table.lanes[idx.lanes[i]] : (u8)0; }\n#endif\n  return r;\n}\n")
+
+	case "prev":
+		// Cross-block byte shift: the 16 bytes ending n before the end of
+		// prev ++ cur, i.e. lane i is prev[16-n+i] for i < n and cur[i-n]
+		// otherwise; n above 16 traps. NEON's vextq_u8 wants an immediate,
+		// so the count selects among the seventeen forms; a constant count
+		// leaves one.
+		fmt.Fprintf(&b, "static inline %s oak_simd_prev_%s( %s prev, %s cur, u32 n ) {\n", vec, vec, vec, vec)
+		fmt.Fprintf(&b, "  if (n > 16u) { __builtin_trap(); }\n")
+		fmt.Fprintf(&b, "  %s r;\n%s\n", vec, neonGuard)
+		fmt.Fprintf(&b, "  uint8x16_t p = vld1q_u8(prev.lanes), c = vld1q_u8(cur.lanes);\n  switch (n) {\n")
+		for n := 0; n <= 16; n++ {
+			if n == 0 {
+				fmt.Fprintf(&b, "    case 0: vst1q_u8(r.lanes, c); break;\n")
+			} else if n == 16 {
+				fmt.Fprintf(&b, "    case 16: vst1q_u8(r.lanes, p); break;\n")
+			} else {
+				fmt.Fprintf(&b, "    case %d: vst1q_u8(r.lanes, vextq_u8(p, c, %d)); break;\n", n, 16-n)
+			}
+		}
+		fmt.Fprintf(&b, "    default: __builtin_trap();\n  }\n#else\n")
+		fmt.Fprintf(&b, "  for (int i = 0; i < 16; i++) { r.lanes[i] = (u32)i < n ? prev.lanes[16u - n + (u32)i] : cur.lanes[(u32)i - n]; }\n#endif\n  return r;\n}\n")
+
 	case "any", "all":
 		fmt.Fprintf(&b, "static inline Bool oak_simd_%s_%s( %s v ) {\n", op, vec, vec)
 		fmt.Fprintf(&b, "%s\n", neonGuard)
@@ -453,4 +498,17 @@ func simdFloatHelperSource(op, vec, elem string, lanes int) string {
 		return "OAK_UNSUPPORTED_SIMD_OP\n"
 	}
 	return b.String()
+}
+
+// laneBits is the lane width in bits of an integer element type name.
+func laneBits(elem string) int {
+	switch elem {
+	case "u8":
+		return 8
+	case "u16":
+		return 16
+	case "u32":
+		return 32
+	}
+	return 64
 }

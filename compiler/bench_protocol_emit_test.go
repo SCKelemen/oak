@@ -19,13 +19,18 @@ func TestEmitStateMachineBenchmarkSource(t *testing.T) {
 	// main also calls the is_valid_utf8 builtin so the backend emits its
 	// scalar validator beside the protocol's tables; the cross-language
 	// harness times both.
-	src := utf8Machine + `
+	src := "package main\nutf8 := import(\"utf8\")\n" + utf8Machine + `
+// The three validators the harness times: the protocol machine's
+// utf8_run, the scalar builtin, and the stdlib's SIMD validator.
+pub scalar_valid: (bytes: []u8): Bool = is_valid_utf8(bytes)
+pub simd_valid: (bytes: []u8): Bool = utf8.valid(bytes)
 main: (): u32 {
   text: [4]u8 = [u8(104), u8(105), u8(195), u8(169)]
-  is_valid_utf8(view(&text)) ? u32(0) | u32(1)
+  scalar_valid(view(&text)) && simd_valid(view(&text)) ? u32(0) | u32(1)
 }
 `
-	c, err := New().WithSource("utf8_protocol.oak", src).EmitC().Get()
+	root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": src})
+	c, err := New().WithPackageDir(root).EmitC().Get()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -20,6 +20,7 @@ import Oak.ResourceResult
 import Oak.MethodMangling
 import Oak.StatementBoundary
 import Oak.Protocol
+import Oak.Utf8Lookup
 import Oak.BorrowRegions
 import Oak.Reborrow
 import Oak.ReborrowRefinement

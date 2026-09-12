@@ -147,7 +147,65 @@ func evalSimdOp(member string, args []ast.Expression, env *object.Environment) o
 		}
 		return NULL
 
-	case "add", "sub", "and", "or", "xor", "min", "max", "eq":
+	case "shr":
+		// Lane-wise logical shift right; a count reaching the lane width
+		// traps, as the scalar shift does (docs/spec/93-simd.md §1.2).
+		vec, isVec := evaluated[0].(*object.Vector)
+		count, okCount := argInteger(evaluated, 1)
+		if len(evaluated) != 2 || !isVec || vec.VectorKind != layout.VectorKind || !okCount {
+			return newError("simd.%s requires a simd.%s value and a u32 count", member, layout.VectorKind)
+		}
+		if count < 0 || count >= int64((layout.ElemBytes*8)) {
+			return newError("simd.%s: shift count %d reaches the lane width %d (trap)", member, count, (layout.ElemBytes * 8))
+		}
+		result := &object.Vector{VectorKind: layout.VectorKind}
+		for i := 0; i < layout.Lanes; i++ {
+			layout.setLane(result, i, layout.getLane(vec, i)>>uint(count))
+		}
+		return result
+
+	case "tbl":
+		// Byte-table lookup: an index at or above 16 selects 0 (Oak.Simd.tbl).
+		table, idx, ok := argVectorPair(evaluated, layout.VectorKind)
+		if !ok || layout.VectorKind != "U8x16" {
+			return newError("simd.%s requires two simd.U8x16 values", member)
+		}
+		result := &object.Vector{VectorKind: layout.VectorKind}
+		for i := 0; i < 16; i++ {
+			index := layout.getLane(idx, i)
+			var lane uint64
+			if index < 16 {
+				lane = layout.getLane(table, int(index))
+			}
+			layout.setLane(result, i, lane)
+		}
+		return result
+
+	case "prev":
+		// The 16 bytes ending n before the end of prev ++ cur (Oak.Simd.prev).
+		if len(evaluated) != 3 || layout.VectorKind != "U8x16" {
+			return newError("simd.%s requires two simd.U8x16 values and a u32 count", member)
+		}
+		prev, cur, ok := argVectorPair(evaluated[:2], layout.VectorKind)
+		count, okCount := argInteger(evaluated, 2)
+		if !ok || !okCount {
+			return newError("simd.%s requires two simd.U8x16 values and a u32 count", member)
+		}
+		if count < 0 || count > 16 {
+			return newError("simd.%s: byte count %d exceeds the vector (trap)", member, count)
+		}
+		n := int(count)
+		result := &object.Vector{VectorKind: layout.VectorKind}
+		for i := 0; i < 16; i++ {
+			if i < n {
+				layout.setLane(result, i, layout.getLane(prev, 16-n+i))
+			} else {
+				layout.setLane(result, i, layout.getLane(cur, i-n))
+			}
+		}
+		return result
+
+	case "add", "sub", "subs", "and", "or", "xor", "min", "max", "eq":
 		a, b, ok := argVectorPair(evaluated, layout.VectorKind)
 		if !ok {
 			return newError("simd.%s requires two simd.%s values", member, layout.VectorKind)
@@ -162,6 +220,13 @@ func evalSimdOp(member string, args []ast.Expression, env *object.Environment) o
 				lane = (x + y) & mask
 			case "sub":
 				lane = (x - y) & mask
+			case "subs":
+				// Saturating: never below zero (Oak.Simd.subSat).
+				if x > y {
+					lane = x - y
+				} else {
+					lane = 0
+				}
 			case "and":
 				lane = x & y
 			case "or":

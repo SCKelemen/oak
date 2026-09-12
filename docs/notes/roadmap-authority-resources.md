@@ -261,6 +261,13 @@ find the fastest structure for a golden use case, prove it computes the
 declaration, make the declaration the only thing the user writes — is the
 one this milestone continues with.
 
+**Second increment (2026-09-12):** the UTF-8 validator, the golden case's
+fixed-format instance, written in Oak over `simd.U8x16` with four new
+byte-classification operations (`93-simd.md` §1.2, §1.5, `stdlib/utf8.oak`):
+9.6 GB/s against simdutf's 12 and the scalar builtin's 0.35, the lookup
+tables proved against Table 3-7 pair by pair (`Oak.Utf8Lookup`), the stream
+checked differentially against the builtin.
+
 ## 10. Device custody and concurrency
 
 Transferable custody vs concurrent sharing. Pilot one real CPU → device →
