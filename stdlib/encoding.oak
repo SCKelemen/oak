@@ -157,10 +157,8 @@ pub hex_value: (unit: u8): u32 = u32(HEX_VALUES[u32(unit)])
 pub hex_encoded_size: (length: u32): Result[u32, EncodingError] = length > u32(2147483647) ? .Err(.SizeOverflow) | .Ok(length * u32(2))
 
 pub hex_encode: (dst: [*]u8, src: []u8, upper: Bool): Result[u32, EncodingError] {
-  size: Result[u32, EncodingError] = hex_encoded_size(len(src))
-  size ?
-   | .Err(reason) => .Err(reason)
-   | .Ok(needed) => needed > len(dst) ? .Err(.DestinationTooSmall) | {
+  needed: u32 = try hex_encoded_size(len(src))
+  needed > len(dst) ? .Err(.DestinationTooSmall) | {
     symbols: []u8 = upper ? view(&HEX_UPPER_SYMBOLS) | view(&HEX_LOWER_SYMBOLS)
     i: u32 = u32(0)
     out: u32 = u32(0)
@@ -203,10 +201,8 @@ pub hex_decoded_size: (src: []u8): Result[u32, EncodingError] {
 // store, so a rejected input leaves `dst` unchanged; the second pass then
 // decodes without re-checking symbols.
 pub hex_decode: (dst: [*]u8, src: []u8): Result[u32, EncodingError] {
-  size: Result[u32, EncodingError] = hex_decoded_size(src)
-  size ?
-   | .Err(reason) => .Err(reason)
-   | .Ok(needed) => needed > len(dst) ? .Err(.DestinationTooSmall) | {
+  needed: u32 = try hex_decoded_size(src)
+  needed > len(dst) ? .Err(.DestinationTooSmall) | {
     values: []u8 = view(&HEX_VALUES)
     i: u32 = u32(0)
     at: u32 = u32(0)
@@ -238,10 +234,8 @@ pub base64_encoded_size: (length: u32, pad: Bool): Result[u32, EncodingError] {
 }
 
 pub base64_encode: (dst: [*]u8, src: []u8, url: Bool, pad: Bool): Result[u32, EncodingError] {
-  size: Result[u32, EncodingError] = base64_encoded_size(len(src), pad)
-  size ?
-   | .Err(reason) => .Err(reason)
-   | .Ok(needed) => needed > len(dst) ? .Err(.DestinationTooSmall) | {
+  needed: u32 = try base64_encoded_size(len(src), pad)
+  needed > len(dst) ? .Err(.DestinationTooSmall) | {
     symbols: []u8 = url ? view(&BASE64_URL_SYMBOLS) | view(&BASE64_STD_SYMBOLS)
     i: u32 = u32(0)
     out: u32 = u32(0)
@@ -316,10 +310,8 @@ base64_classify: (src: []u8, body: u32): EncodingError {
 }
 
 pub base64_decoded_size: (src: []u8, url: Bool): Result[u32, EncodingError] {
-  stripped: Result[u32, EncodingError] = base64_unpadded_length(src)
-  stripped ?
-   | .Err(reason) => .Err(reason)
-   | .Ok(body) => base64_scan(src, body, url) >= u32(64) ? .Err(base64_classify(src, body)) | {
+  body: u32 = try base64_unpadded_length(src)
+  base64_scan(src, body, url) >= u32(64) ? .Err(base64_classify(src, body)) | {
     rest: u32 = body % u32(4)
     rest == u32(1) ? .Err(.InvalidLength) | {
       last: u32 = body == u32(0) ? u32(0) | base64_value(src[body - u32(1)], url)
@@ -333,10 +325,8 @@ pub base64_decoded_size: (src: []u8, url: Bool): Result[u32, EncodingError] {
 // before the first store, so a rejected input leaves `dst` unchanged; this
 // pass then decodes four symbols per 24-bit word without re-checking them.
 pub base64_decode: (dst: [*]u8, src: []u8, url: Bool): Result[u32, EncodingError] {
-  size: Result[u32, EncodingError] = base64_decoded_size(src, url)
-  size ?
-   | .Err(reason) => .Err(reason)
-   | .Ok(needed) => needed > len(dst) ? .Err(.DestinationTooSmall) | {
+  needed: u32 = try base64_decoded_size(src, url)
+  needed > len(dst) ? .Err(.DestinationTooSmall) | {
     values: []u8 = url ? view(&BASE64_URL_VALUES) | view(&BASE64_STD_VALUES)
     body: u32 = (needed / u32(3)) * u32(4) + (needed % u32(3) == u32(0) ? u32(0) | needed % u32(3) + u32(1))
     i: u32 = u32(0)
@@ -388,10 +378,8 @@ pub base32_encoded_size: (length: u32, pad: Bool): Result[u32, EncodingError] {
 }
 
 pub base32_encode: (dst: [*]u8, src: []u8, hex: Bool, pad: Bool): Result[u32, EncodingError] {
-  size: Result[u32, EncodingError] = base32_encoded_size(len(src), pad)
-  size ?
-   | .Err(reason) => .Err(reason)
-   | .Ok(needed) => needed > len(dst) ? .Err(.DestinationTooSmall) | {
+  needed: u32 = try base32_encoded_size(len(src), pad)
+  needed > len(dst) ? .Err(.DestinationTooSmall) | {
     i: u32 = u32(0)
     out: u32 = u32(0)
     while i < len(src) {
@@ -433,30 +421,24 @@ base32_unpadded_length: (src: []u8): Result[u32, EncodingError] {
 }
 
 pub base32_decoded_size: (src: []u8, hex: Bool): Result[u32, EncodingError] {
-  stripped: Result[u32, EncodingError] = base32_unpadded_length(src)
-  stripped ?
-   | .Err(reason) => .Err(reason)
-   | .Ok(body) => {
-    rest: u32 = body % u32(8)
-    rest == u32(1) || rest == u32(3) || rest == u32(6) ? .Err(.InvalidLength) | {
-      valid: Bool = true
-      i: u32 = u32(0)
-      while i < body && valid {
-        valid = base32_value(src[i], hex) < u32(32)
-        i = i + u32(1)
-      }
-      last: u32 = body == u32(0) ? u32(0) | base32_value(src[body - u32(1)], hex)
-      unused: u32 = rest == u32(2) ? u32(3) | (rest == u32(4) ? u32(15) | (rest == u32(5) ? u32(1) | (rest == u32(7) ? u32(7) | u32(0))))
-      !valid ? .Err(.InvalidCharacter) | ((last & unused) != u32(0) ? .Err(.NonCanonical) | .Ok((body / u32(8)) * u32(5) + base32_partial_bytes(rest)))
+  body: u32 = try base32_unpadded_length(src)
+  rest: u32 = body % u32(8)
+  rest == u32(1) || rest == u32(3) || rest == u32(6) ? .Err(.InvalidLength) | {
+    valid: Bool = true
+    i: u32 = u32(0)
+    while i < body && valid {
+      valid = base32_value(src[i], hex) < u32(32)
+      i = i + u32(1)
     }
+    last: u32 = body == u32(0) ? u32(0) | base32_value(src[body - u32(1)], hex)
+    unused: u32 = rest == u32(2) ? u32(3) | (rest == u32(4) ? u32(15) | (rest == u32(5) ? u32(1) | (rest == u32(7) ? u32(7) | u32(0))))
+    !valid ? .Err(.InvalidCharacter) | ((last & unused) != u32(0) ? .Err(.NonCanonical) | .Ok((body / u32(8)) * u32(5) + base32_partial_bytes(rest)))
   }
 }
 
 pub base32_decode: (dst: [*]u8, src: []u8, hex: Bool): Result[u32, EncodingError] {
-  size: Result[u32, EncodingError] = base32_decoded_size(src, hex)
-  size ?
-   | .Err(reason) => .Err(reason)
-   | .Ok(needed) => needed > len(dst) ? .Err(.DestinationTooSmall) | {
+  needed: u32 = try base32_decoded_size(src, hex)
+  needed > len(dst) ? .Err(.DestinationTooSmall) | {
     tail: u32 = needed % u32(5)
     body: u32 = (needed / u32(5)) * u32(8) + (tail == u32(0) ? u32(0) | base32_partial(tail))
     i: u32 = u32(0)

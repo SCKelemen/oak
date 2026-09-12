@@ -122,14 +122,15 @@ the *additional* fact that makes a value-changing reordering value-preserving.
   codec `from[Json](x).to[T]()`, and test generators all desugar to calls on
   operations of a known shape, and the same rewrite engine (the type
   checker's law lowering today) applies the laws. No new special forms.
-- **Propagation.** Today `Result` chaining is spelled by hand
+- **Propagation.** `Result` chaining was spelled by hand
   (`size ? \| .Err(reason) => .Err(reason) \| .Ok(needed) => …`,
-  `stdlib/encoding.oak`). A propagation form — spelling to be chosen so it
-  does not collide with the `?` match (a postfix `?` is taken; `try e` or
-  `e!` are candidates) — lowers to exactly that match with the `Err` arm
-  re-raising, so it is sugar for what the library already writes and costs
-  what a match costs. The `MonadError` view says what the re-raise may do:
-  nothing but pass the error, or apply the declared precedence.
+  `stdlib/encoding.oak`). The propagation form is `try e` (`10-syntax.md`
+  §2d): it lowers to exactly that match with the `Err` arm re-raising, so
+  it is sugar for what the library already wrote and costs what a match
+  costs; the eight `encoding.oak` sites now read `needed: u32 = try …`.
+  The `MonadError` view says what the re-raise may do: today nothing but
+  pass the error (`Oak.Propagation.tryResult_err`); applying the declared
+  precedence is the codecs' next use of the same form.
 - **Explaining a lowering.** Because each rewrite cites a theorem, the LSP
   and `oak vet` can say *why* a program's `reduce.tree` became a chain or
   why two maps became one loop, and a user who reads `LawLowerings` sees the
@@ -189,7 +190,12 @@ rewrite fired):
    exists beyond the `?` match; choose a spelling that does not collide with
    it; lower to the tag-test match the stdlib already writes; rewrite one
    stdlib module (`encoding.oak`) as the differential witness; state the
-   lowering's identity theorem.
+   lowering's identity theorem. *Status (2026-09-13): done as `try`
+   (`10-syntax.md` §2d, `compiler/try.go`, `Oak.Propagation`): nothing
+   existed beyond the match; `try e` was chosen (postfix `?` is the
+   match); the lowering nests the rest of the block into the Ok arm; all
+   eight `encoding.oak` sites rewritten with tests unchanged; the identity
+   theorems are `tryResult_eq_bind`, `tryResult_id`, `tryResult_assoc`.*
 3. **Map fusion in the combinator lowering.** When `map`/`filter` over views
    land (`05-ergonomics-and-cost.md` names them; `stdlib/reduce.oak` has the
    folds), fuse `map f ∘ map g` by `map_compose` with the unfused pipeline as

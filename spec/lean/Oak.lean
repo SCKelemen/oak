@@ -58,6 +58,7 @@ import Oak.Layout
 import Oak.RecordLayout
 import Oak.RecordLayoutRefinement
 import Oak.LayoutSpec
+import Oak.Propagation
 import Oak.FieldTags
 import Oak.Assembler
 import Oak.AssemblerSemantics
