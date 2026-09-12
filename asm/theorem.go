@@ -174,13 +174,14 @@ func decideLowered(lowered *loweredTheorem) Decision {
 
 	// Witnesses first: a trapping or false case is a counterexample
 	// regardless of what the canonical form would say.
+	evaluator := newTermEvaluator(append([]*term{t}, traps...)...)
 	for _, env := range witnessInputs(names, widths) {
 		for _, trap := range traps {
-			if trap.eval(env) != 0 {
+			if evaluator.evaluate(trap, env) != 0 {
 				return Decision{Kind: DecisionRefuted, Message: "the body traps (a shift count at the width, a failed assert, or a construction outside its predicate) at " + describeEnv(names, env)}
 			}
 		}
-		if t.eval(env) != 1 {
+		if evaluator.evaluate(t, env) != 1 {
 			return Decision{Kind: DecisionRefuted, Message: "counterexample " + describeEnv(names, env)}
 		}
 	}

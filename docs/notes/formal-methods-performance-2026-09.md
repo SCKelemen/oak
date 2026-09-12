@@ -1,6 +1,6 @@
 # Note: the most performant formal-methods implementation — what the codecs, os, ml, simdjson and Futhark teach the prover
 
-**Status: in progress — benchmarks, the first enumeration increment, resident runner workers and the BDD tables landed.** 2026-09-12, `specification` branch.
+**Status: in progress — benchmarks, the first enumeration increment, resident runner workers, the BDD tables and the id-indexed witness evaluator landed.** 2026-09-12, `specification` branch.
 Source: a read of Oak's own verification engines (`prove/`, `asm/`,
 `repl/leancheck.go`, `testrunner/`, `experiments/verification-poc`), of
 `github.com/SCKelemen/os` and `github.com/SCKelemen/ml` for techniques those
@@ -269,6 +269,26 @@ so need the canonicity invariant stated first.
 | `BenchmarkBDDAdd64` | 2.57 ms | 1.78 ms |
 | `BenchmarkTheoremsLattice` | 3.59 s | 3.26 s |
 | `BenchmarkTheoremsEffects` | 1.04 s | 0.83 s |
+
+## 4d. Fourth increment landed: id-indexed witness evaluation (item 3, first step)
+
+After the tables, the lattice profile's largest cost was not the diagrams
+but the witness pass before them: every witness input evaluated the
+theorem's term DAG through a fresh `map[*term]uint64` (3.5 GB allocated,
+a fifth of the time). A `termEvaluator` numbers the subterms of the claim
+and its traps once per theorem and remembers values in slices indexed by
+that number under a generation stamp, so an input costs no allocation and
+no hashing. The single-evaluation `eval` keeps its map through the same
+`termMemo` interface, so the semantics (`Oak.AssemblerSemantics`) is one
+body of code as before.
+
+| Benchmark | Baseline | After tables | After the evaluator |
+| --- | ---: | ---: | ---: |
+| `BenchmarkTheoremsLattice` | 3.78 s | 3.26 s | 1.08 s |
+| `BenchmarkTheoremsEffects` | 2.54 s | 0.83 s | 0.82 s |
+
+Hash-consing the terms themselves (structural equality as pointer
+equality, the blast memo keyed by id) is the rest of item 3.
 
 ## 5. What carries over from the codec track, unchanged
 
