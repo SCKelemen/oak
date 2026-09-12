@@ -45,12 +45,16 @@ func TestE2EDerivedJsonReaderDecodesScalarsInline(t *testing.T) {
 			t.Fatalf("record reader lacks %q:\n%s", want, reader)
 		}
 	}
-	for _, unwanted := range []string{"oak___oak_json_read_u64( src", "oak___oak_json_read_i32( src", "oak___oak_json_read_Bool( src"} {
+	for _, unwanted := range []string{"oak___oak_json_read_u64( src", "oak___oak_json_read_i32( src", "oak___oak_json_read_Bool( src", "oak_byte_pack_le_u32( src", "oak_byte_pack_le_u64( src", "oak_JsonToken separator"} {
 		if strings.Contains(reader, unwanted) {
 			t.Fatalf("record reader still calls the per-type reader %q:\n%s", unwanted, reader)
 		}
 	}
 	for _, want := range []string{
+		// Key and Boolean spellings load through packs the checker proved
+		// in range under the wrap-free remaining guard: no check.
+		"oak_byte_pack_le_u64_proven( src, at )",
+		"oak_byte_pack_le_u32_proven( src, value_at )",
 		"OAK_INLINE oak_JsonIntegerScan oak_json_scan_integer(",
 		"OAK_INLINE u32 oak_json_skip_space(",
 		"oak_json_key_decode( src, key, (oak_span_u8){ storage.v, 64 } )",

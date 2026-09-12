@@ -601,10 +601,11 @@ func TestRV64SpanMemoryVerify(t *testing.T) {
 	if v.Kind != VerdictMismatch {
 		t.Errorf("first element mismatch not reported: %s (%s)", v.Kind, v.Message)
 	}
-	// The data-dependent loop: the loop machinery's verdict, never a mismatch.
+	// The data-dependent element loop is coupled inductively: the 64-bit
+	// counter is the zero-extended i, the W-form accumulator the
+	// sign-extended total (docs/spec/94-assembler.md §9).
 	v = rv64Verify(t, rv64SumDecl, "{\n  total: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < len(v) {\n    total = total + v[i]\n    i = i + u32(1)\n  }\n  total\n}", rv64SumBody)
-	if v.Kind == VerdictMismatch {
-		t.Errorf("span sum: %s", v.Message)
+	if v.Kind != VerdictProven {
+		t.Errorf("span sum: %s (%s)", v.Kind, v.Message)
 	}
-	t.Logf("span sum verdict: %s (%s)", v.Kind, v.Message)
 }

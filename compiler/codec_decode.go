@@ -276,9 +276,23 @@ func srcWord(s *synth, at func() ast.Expression, base int) ast.Expression {
 	return s.chain("|", terms...)
 }
 
-// srcRemaining is len(src) - at >= n.
+// srcWord64 is the little-endian u64 of src[at+base .. at+base+7]; the
+// backend coalesces the eight bytes into one checked load.
+func srcWord64(s *synth, at func() ast.Expression, base int) ast.Expression {
+	terms := make([]ast.Expression, 0, 8)
+	for k := 0; k < 8; k++ {
+		terms = append(terms, s.infix(s.conv("u64", s.index(s.id("src"), s.add(at(), s.u32(int64(base+k))))), "<<", s.u64(uint64(8*k))))
+	}
+	return s.chain("|", terms...)
+}
+
+// srcRemaining is the wrap-free guard that n bytes remain at `at`:
+// `len(src) >= n && at <= len(src) - n`, the spelling the extent facts
+// accept (docs/spec/50-borrowing.md), so the byte reads under it are
+// proven and the packed loads carry no check.
 func srcRemaining(s *synth, at func() ast.Expression, n int) ast.Expression {
-	return s.ge(s.sub(s.call("len", s.id("src")), at()), s.u32(int64(n)))
+	return s.and(s.ge(s.call("len", s.id("src")), s.u32(int64(n))),
+		s.le(at(), s.sub(s.call("len", s.id("src")), s.u32(int64(n)))))
 }
 
 // tokenAt is JsonToken { kind, start: at, end: at + n }.
@@ -416,22 +430,6 @@ func keyClassifier(k *synth, name string, fields []codecField) *ast.FunctionStat
 	return k.fn(name, []*ast.FunctionParameter{k.param("src", k.view(k.id("u8"))), k.param("key", k.id("JsonToken"))}, k.id("u32"), body...)
 }
 
-// separatorScan reads the byte after a value into separator.kind: 5 for a
-// comma, 12 for a closing bracket, 3 for a closing brace, 1 otherwise.
-func separatorScan(s *synth) []ast.Statement {
-	return []ast.Statement{
-		s.decl("separator_at", s.id("u32"), s.call("json_skip_space", s.id("src"), s.id("at"))),
-		s.decl("separator", s.id("JsonToken"), s.record("JsonToken", s.set("kind", s.u32(1)), s.set("start", s.id("separator_at")), s.set("end", s.id("separator_at")))),
-		s.expr(s.cond(s.lt(s.id("separator_at"), s.call("len", s.id("src"))), s.block(
-			s.decl("unit", s.id("u8"), s.index(s.id("src"), s.id("separator_at"))),
-			s.store(s.field(s.id("separator"), "kind"),
-				s.cond(s.eq(s.id("unit"), s.u8(44)), s.u32(5),
-					s.cond(s.eq(s.id("unit"), s.u8(93)), s.u32(12),
-						s.cond(s.eq(s.id("unit"), s.u8(125)), s.u32(3), s.u32(1))))),
-			s.store(s.field(s.id("separator"), "end"), s.add(s.id("separator_at"), s.u32(1)))), nil)),
-	}
-}
-
 // recordReader reads an object: braces, keys classified by the fast path
 // or the classifier, each field decoded once, separators checked, and
 // every field required.
@@ -498,8 +496,11 @@ func recordReader(s *synth, typ, keyName string, fields []codecField, decodedNam
 	for i := range fields {
 		inner = append(inner, s.decl(fmt.Sprintf("seen%d", i), s.id("Bool"), s.boolean(false)))
 	}
+	// The whitespace after the brace is skipped once: the first key's
+	// detection starts at `first`.
 	inner = append(inner,
 		s.decl("first", s.id("u32"), s.call("json_skip_space", s.id("src"), at())),
+		s.assign("at", s.id("first")),
 		s.expr(s.cond(s.and(s.lt(s.id("first"), srcLen()), s.eq(s.index(s.id("src"), s.id("first")), s.u8(125))),
 			s.block(s.assign("done", s.boolean(true)), s.assign("at", s.add(s.id("first"), s.u32(1)))), nil)))
 
@@ -519,7 +520,14 @@ func recordReader(s *synth, typ, keyName string, fields []codecField, decodedNam
 		}
 		terms := []ast.Expression{srcRemaining(s, at, len(literal))}
 		for j := 0; j < len(literal); {
-			if len(literal)-j >= 4 {
+			if j == 0 && len(literal) >= 8 {
+				var word uint64
+				for k := 0; k < 8; k++ {
+					word |= uint64(literal[k]) << (8 * k)
+				}
+				terms = append(terms, s.eq(srcWord64(s, at, 0), s.u64(word)))
+				j += 8
+			} else if len(literal)-j >= 4 {
 				var word uint32
 				for k := 0; k < 4; k++ {
 					word |= uint32(literal[j+k]) << (8 * k)
@@ -588,18 +596,28 @@ func recordReader(s *synth, typ, keyName string, fields []codecField, decodedNam
 					s.assign("at", s.field(s.id("decoded"), "next")),
 					s.assign(seen, s.boolean(true)))))))
 		default:
-			sepKind := func() ast.Expression { return s.field(s.id("separator"), "kind") }
-			sepEnd := func() ast.Expression { return s.field(s.id("separator"), "end") }
-			afterElement := append(separatorScan(s),
-				s.expr(s.cond(s.eq(s.id("index"), s.u32(field.length)),
-					s.block(s.expr(s.cond(s.eq(sepKind(), s.u32(12)), s.block(s.assign("at", sepEnd())),
-						s.cond(s.eq(sepKind(), s.u32(5)), s.block(
-							s.decl("extra", s.id("JsonToken"), s.call("json_token", s.id("src"), sepEnd())),
-							s.expr(s.cond(s.or(s.le(s.field(s.id("extra"), "kind"), s.u32(1)), s.eq(s.field(s.id("extra"), "kind"), s.u32(12))),
-								setStatus(2, s.field(s.id("extra"), "start")), setStatus(8, s.field(s.id("extra"), "start"))))),
-							setStatus(2, s.id("separator_at")))))),
-					s.cond(s.eq(sepKind(), s.u32(12)), setStatus(8, s.id("separator_at")),
-						s.cond(s.eq(sepKind(), s.u32(5)), s.block(s.assign("at", sepEnd())), setStatus(2, s.id("separator_at")))))))
+			// After an element: at the declared length a closing bracket ends
+			// the array and a comma means too many elements (LengthMismatch,
+			// unless what follows is malformed); before it a comma continues
+			// and a closing bracket means too few. One byte under its guard,
+			// no token record; every fault is positioned at the byte read.
+			sepEnd := func() ast.Expression { return s.add(s.id("separator_at"), s.u32(1)) }
+			afterElement := []ast.Statement{
+				s.decl("separator_at", s.id("u32"), s.call("json_skip_space", s.id("src"), at())),
+				s.expr(s.cond(s.lt(s.id("separator_at"), srcLen()),
+					s.block(
+						s.decl("unit", s.id("u8"), s.index(s.id("src"), s.id("separator_at"))),
+						s.expr(s.cond(s.eq(s.id("index"), s.u32(field.length)),
+							s.block(s.expr(s.cond(s.eq(s.id("unit"), s.u8(93)), s.block(s.assign("at", sepEnd())),
+								s.cond(s.eq(s.id("unit"), s.u8(44)), s.block(
+									s.decl("extra", s.id("JsonToken"), s.call("json_token", s.id("src"), sepEnd())),
+									s.expr(s.cond(s.or(s.le(s.field(s.id("extra"), "kind"), s.u32(1)), s.eq(s.field(s.id("extra"), "kind"), s.u32(12))),
+										setStatus(2, s.field(s.id("extra"), "start")), setStatus(8, s.field(s.id("extra"), "start"))))),
+									setStatus(2, s.id("separator_at")))))),
+							s.cond(s.eq(s.id("unit"), s.u8(93)), setStatus(8, s.id("separator_at")),
+								s.cond(s.eq(s.id("unit"), s.u8(44)), s.block(s.assign("at", sepEnd())), setStatus(2, s.id("separator_at"))))))),
+					setStatus(2, s.id("separator_at")))),
+			}
 			// Each element decodes in place when it is a scalar; the per-type
 			// reader otherwise.
 			// A scalar element scans from the lookahead position, which the
@@ -641,10 +659,19 @@ func recordReader(s *synth, typ, keyName string, fields []codecField, decodedNam
 			dispatch)
 	}
 
-	sepKind := func() ast.Expression { return s.field(s.id("separator"), "kind") }
-	afterValue := append(separatorScan(s),
-		s.expr(s.cond(s.eq(sepKind(), s.u32(3)), s.block(s.assign("done", s.boolean(true)), s.assign("at", s.field(s.id("separator"), "end"))),
-			s.cond(s.eq(sepKind(), s.u32(5)), s.block(s.assign("at", s.field(s.id("separator"), "end"))), setStatus(2, s.id("separator_at"))))))
+	// After a value: a comma continues, a closing brace ends, anything else
+	// (the end of the input included) is InvalidSyntax at that byte — one
+	// byte read under its own guard, no token record.
+	afterValue := []ast.Statement{
+		s.decl("separator_at", s.id("u32"), s.call("json_skip_space", s.id("src"), at())),
+		s.expr(s.cond(s.lt(s.id("separator_at"), srcLen()),
+			s.block(
+				s.decl("unit", s.id("u8"), s.index(s.id("src"), s.id("separator_at"))),
+				s.expr(s.cond(s.eq(s.id("unit"), s.u8(44)), s.block(s.assign("at", s.add(s.id("separator_at"), s.u32(1)))),
+					s.cond(s.eq(s.id("unit"), s.u8(125)), s.block(s.assign("done", s.boolean(true)), s.assign("at", s.add(s.id("separator_at"), s.u32(1)))),
+						setStatus(2, s.id("separator_at")))))),
+			setStatus(2, s.id("separator_at")))),
+	}
 
 	inner = append(inner, s.loop(s.and(s.not(s.id("done")), s.eq(status(), s.u32(0))),
 		s.assign("at", s.call("json_skip_space", s.id("src"), at())),
