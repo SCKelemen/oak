@@ -398,6 +398,17 @@ the compiler compiles, up to the extractor and the compiler being correct:
   and the group loop with its tails close the decode. The 24-bit word
   identities are bit-vector facts (`bv_decide`); the symbol tables are read
   in the kernel.
+- `Oak/Stdlib/PercentLaws.lean`: `percent_round_trip` — for every source
+  below the size limit and every keep set that holds no `%` (and no `+`
+  when `+` decodes as a space), `percent_encode` reports the length of the
+  blocks it writes (`encFrom`: a kept byte as itself, any other as `%` and
+  two upper-case digits) and `percent_decode` of those bytes reports the
+  source length and writes the source back. `kept_spec` relates the
+  keep-set scan to `unres || anyFrom`; `percent_encode_loop` characterizes
+  the encoder position by position; `decoded_size_loop` shows the
+  validation scan stays valid on the blocks (every `%` has three bytes and
+  two digits below sixteen); `percent_decode_loop` reads each block back,
+  the two digits through `upper_digits_join'` (decided over the 256 bytes).
 - `Oak/Stdlib/UuidLaws.lean`: for every one-cell generator state and every
   sixteen-byte destination, `uuid_v4_spec` — `uuid_v4` succeeds and the
   value reports version 4 (`uuid_version`) and the RFC variant
@@ -429,8 +440,9 @@ most; the kernel-decided facts use no axioms.
   with `writeback_perm` and the heap and insertion laws as the leaves; the
   universal base32 round trip (the base64 proof's shape, with five-to-eight
   groups and four tail lengths); strictness for base64 (`base64_decode`
-  accepts a string iff it is a canonical encoding) as `hex_decode_ok_iff`
-  does for hexadecimal; the SHA-256 and CRC-32C extractions against
+  accepts a string iff it is a canonical encoding) and for percent-decoding
+  (accepted iff every `%` starts two hexadecimal digits) as
+  `hex_decode_ok_iff` does for hexadecimal; the SHA-256 and CRC-32C extractions against
   reference definitions.
 - The subset: strings and the text library, methods, and recursion;
   instantiations whose arguments are arrays or views; the `checked` float

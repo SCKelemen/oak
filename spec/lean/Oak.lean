@@ -91,8 +91,12 @@ import Oak.Stdlib.VarintLaws
 import Oak.Stdlib.SortLaws
 import Oak.Stdlib.EncodingLaws
 import Oak.Stdlib.Base64Laws
+import Oak.Stdlib.PercentLaws
 import Oak.Stdlib.RandomLaws
 import Oak.Stdlib.UuidLaws
+import Oak.Stdlib.KeyTree
+import Oak.Stdlib.NormalizeTables
+import Oak.Stdlib.Normalize17
 import Oak.Typestate
 import Oak.IoPort
 import Oak.ProtocolQuorum
