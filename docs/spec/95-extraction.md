@@ -638,7 +638,9 @@ most; the kernel-decided facts use no axioms.
 - The subset: mutual recursion; instantiations whose arguments are arrays
   or views; the `checked` float rows; `json` and the other `string`-holding
   libraries as committed extractions with faithfulness coverage, now that
-  the type is in.
+  the type is in — `json` first needs the portable vectors in the subset
+  (`json_string_run` scans with `simd.U8x16`), the one construct its
+  extraction stops on today.
 The constructs
 the verification programs need next (matches over records, the `checked`
 rows), each added with its own fail-closed test. Integer-constant matches and the integer
