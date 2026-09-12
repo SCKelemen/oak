@@ -95,6 +95,10 @@ type CodeGenerator struct {
 	// foreignFnLocals maps the `c.Fn[...]` locals of the function being
 	// emitted to their annotated signatures (docs/spec/92-ffi.md section
 	// 2.10), so a call through one is cast to exactly that signature;
+	// usesMessageSend gates the objc_msgSend declaration and the arm64
+	// target guard on programs that send Objective-C messages
+	// (docs/spec/92-ffi.md section 2.12).
+	usesMessageSend bool
 	// usesForeignFunctionAt gates the oak_fn_at helper on programs that
 	// name a foreign function.
 	foreignFnLocals       map[string]*ast.FunctionTypeExpression
@@ -211,9 +215,13 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	// Programs that name a foreign function at a pointer (docs/spec/92-ffi.md
 	// section 2.10) get the oak_fn_at helper; no other program's C changes.
 	cg.usesForeignFunctionAt = false
+	cg.usesMessageSend = false
 	scanCalls(program, func(library, member string) {
 		if library == "c" && member == "fn_at" {
 			cg.usesForeignFunctionAt = true
+		}
+		if library == "c" && member == "msg_send" {
+			cg.usesMessageSend = true
 		}
 	})
 
@@ -2251,6 +2259,19 @@ func (cg *CodeGenerator) emitAssertHelper() {
 		cg.write("}\n")
 	}
 	cg.write("#endif\n\n")
+	if cg.usesMessageSend {
+		// c.msg_send (docs/spec/92-ffi.md section 2.12): the Objective-C
+		// runtime's one dispatch entry point, declared with no prototype so
+		// each call casts it to the signature the program asserts. On arm64
+		// every message goes through objc_msgSend itself; other targets
+		// split struct and float returns into _stret/_fpret variants the
+		// form does not select, so the build fails closed there. Emitted
+		// only for programs that send messages.
+		cg.write("#if !defined(__aarch64__) && !defined(__arm64__)\n")
+		cg.write("#error \"c.msg_send is arm64-only in this increment: other targets route struct and float returns through objc_msgSend_stret/_fpret (docs/spec/92-ffi.md section 2.12)\"\n")
+		cg.write("#endif\n")
+		cg.write("extern void objc_msgSend(void);\n\n")
+	}
 	cg.emitAssertValueHelpers()
 }
 
@@ -2896,7 +2917,13 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.output.WriteString(" )")
 			return
 		}
-		if ident, ok := e.Function.(*ast.Identifier); ok && cg.foreignFnLocals[ident.Value] != nil {
+		if signature, isSend := typechecker.MessageSendCallee(e.Function); isSend {
+			// An Objective-C message send (docs/spec/92-ffi.md section
+			// 2.12): objc_msgSend cast to the receiver, the selector, and
+			// the bracketed signature, spelled from the extern prototype
+			// table exactly as a c.Fn call is.
+			cg.emitMessageSendCallee(signature)
+		} else if ident, ok := e.Function.(*ast.Identifier); ok && cg.foreignFnLocals[ident.Value] != nil {
 			// A call through a foreign function pointer (docs/spec/92-ffi.md
 			// section 2.10): the opaque pointer cast to the annotated
 			// signature, spelled from the extern prototype table.

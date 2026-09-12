@@ -197,6 +197,13 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 				}
 			}
 		}
+		// An Objective-C message send (docs/spec/92-ffi.md section 2.12)
+		// calls the runtime's objc_msgSend; the interpreter has no runtime.
+		if _, isSend := typechecker.MessageSendCallee(node.Function); isSend {
+			if _, bound := env.Get("c"); !bound {
+				return newError("c.msg_send requires the native backend; the interpreter cannot call the Objective-C runtime")
+			}
+		}
 		// Check if this is a method call: recv.method(args)
 		// Method calls have an IndexExpression as the function
 		if indexExpr, ok := node.Function.(*ast.IndexExpression); ok {

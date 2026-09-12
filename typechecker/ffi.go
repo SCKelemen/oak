@@ -462,6 +462,15 @@ func (tc *TypeChecker) checkCLibraryCall(expr *ast.InvocationExpression, member 
 		return nil
 	}
 	switch member {
+	case "msg_send":
+		// A message send carries its signature in brackets and is a call
+		// (docs/spec/92-ffi.md section 2.12); the parser and the invocation
+		// checker handle that form, so reaching it here means the brackets
+		// were left out.
+		d := tc.addTypeDiagnostic(expr, CodeMessageSend,
+			"c.msg_send takes the selector's signature in brackets: c.msg_send[(params) -> ret](receiver, selector, args...)")
+		d.AddNote("the bracketed signature is the declared ABI of the selector's implementation, as an extern binding's signature is (docs/spec/92-ffi.md section 2.12)")
+		return nil
 	case "const":
 		// A target constant exists only as the initializer of a top-level
 		// binding with a c.* scalar annotation (docs/spec/92-ffi.md

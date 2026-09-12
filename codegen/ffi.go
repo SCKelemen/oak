@@ -175,6 +175,27 @@ func (cg *CodeGenerator) emitForeignFunctionCallee(signature *ast.FunctionTypeEx
 	cg.output.WriteString(" ))")
 }
 
+// emitMessageSendCallee lowers the callee of `c.msg_send[(params) -> ret]`
+// (docs/spec/92-ffi.md section 2.12): objc_msgSend cast to the prototype
+// `ret (*)(void *, void *, params)` — the receiver (`id`) and the selector
+// (`SEL`) are opaque pointers, and the declared parameters are spelled from
+// the same table extern prototypes use. On arm64 every message goes through
+// this one entry point (no `_stret`/`_fpret` variants), which is why the
+// form is arm64-only in this increment; the emitted `#error` guard says so.
+func (cg *CodeGenerator) emitMessageSendCallee(signature *ast.FunctionTypeExpression) {
+	returnType := "void"
+	if signature.Return != nil {
+		if ident, isIdent := signature.Return.(*ast.Identifier); !isIdent || ident.Value != "()" {
+			returnType = cg.parseTypeExpression(signature.Return)
+		}
+	}
+	params := []string{"void *", "void *"}
+	for _, param := range signature.Parameters {
+		params = append(params, cg.parseTypeExpression(param))
+	}
+	cg.output.WriteString(fmt.Sprintf("(( %s (*)( %s ) )( objc_msgSend ))", returnType, strings.Join(params, ", ")))
+}
+
 // emitCStringArgument lowers `c.cstr(v)` at its extern call site (docs/spec/
 // 92-ffi.md section 2.5.3): a literal operand is the interned literal (the
 // typechecker required its trailing NUL); a named view goes through
@@ -335,6 +356,11 @@ func scanCalls(program *ast.Program, visit func(library, member string)) {
 		case *ast.InvocationExpression:
 			if library, member, ok := libraryCallTarget(e.Function); ok {
 				visit(library, member)
+			} else if _, isSend := typechecker.MessageSendCallee(e.Function); isSend {
+				// c.msg_send[sig](...) (docs/spec/92-ffi.md section 2.12):
+				// the callee carries a type in its bracket, so it is not a
+				// plain library access; visited under its member name.
+				visit("c", "msg_send")
 			} else if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
 				// Plain callees are visited with an empty library, so
 				// helper collectors (conversions) can see them.

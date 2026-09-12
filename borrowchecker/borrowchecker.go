@@ -927,6 +927,17 @@ func (bc *BorrowChecker) checkIndexExpression(index *ast.IndexExpression, env *t
 // checkInvocationExpression checks function calls for borrow operations
 func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpression, env *typechecker.TypeEnvironment, targetVar string) {
 	bc.checkCallGlobalWrites(call, env)
+	// An Objective-C message send (docs/spec/92-ffi.md section 2.12) calls
+	// the runtime under a signature the program asserts for the selector's
+	// implementation: the same kind of contract c.fn_at records, under the
+	// same code, so `admit OAK-B0122` accepts both and nothing else does.
+	if signature, isSend := typechecker.MessageSendCallee(call.Function); isSend {
+		d := bc.reportForeignFunctionAssumption(call,
+			"message send contract assumed: the selector's implementation has the bracketed signature, with the receiver and selector as its two leading pointer parameters",
+			"c.msg_send")
+		d.AddNote("the assumption is the sender's, as for an extern prototype (docs/spec/92-ffi.md section 2.12); every argument passes exactly the declared boundary types, and the receiver and selector are opaque c.Ptr values")
+		_ = signature
+	}
 	// A borrow named as the first argument of a bound derive builtin is a
 	// derivation source, not a direct use; createSubsliceWithRegion is the
 	// single authority for whether the derivation is allowed.

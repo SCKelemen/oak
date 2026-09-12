@@ -2294,7 +2294,15 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 	}
 
 	beforeCall := len(tc.Errors())
-	funcType := tc.checkExpression(expr.Function)
+	var funcType Type
+	if signature, isSend := MessageSendCallee(expr.Function); isSend {
+		// An Objective-C message send (docs/spec/92-ffi.md section 2.12):
+		// the callee is objc_msgSend under the bracketed signature with the
+		// receiver and selector prepended, checked below as an extern call.
+		funcType = tc.checkMessageSendCallee(expr, signature)
+	} else {
+		funcType = tc.checkExpression(expr.Function)
+	}
 	if funcType == nil {
 		return nil
 	}

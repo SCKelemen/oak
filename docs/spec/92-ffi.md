@@ -1000,6 +1000,124 @@ author's assertion, checked by the C compiler as far as C checks it (an
 undefined identifier fails the build; a wrong width converts silently, as a
 wrong extern prototype would).
 
+### 2.12 Objective-C message sends
+
+Status: implemented (`c.msg_send`, `OAK-F0115`, `OAK-B0122`;
+`compiler/e2e_ffi_objc_test.go`; `stdlib/objc.oak`). Motivated by ml
+roadmap D5: Metal in Oak — device, library, pipeline, encoder, dispatch,
+sync — is seven hundred lines of Objective-C message sends, and every one
+of them is a call to `objc_msgSend` under a signature the caller knows and
+the runtime does not check. Zig spells that as a cast of `objc_msgSend` to
+a function pointer type; this section gives Oak the same thing with the
+signature checked at the call, and nothing more. Oak learns no
+Objective-C: a class, an instance, and a selector are opaque `c.Ptr`
+values, resolved by the runtime's own functions (`objc_getClass`,
+`sel_registerName`, ordinary externs the `objc` package declares), and
+every send states its own ABI.
+
+#### 2.12.1 The form
+
+```oak
+import("objc")
+
+length_of: (text: []u8): u64 {
+  string_class: c.Ptr = objc.objc_class(str_bytes("NSString\0"))
+  alloc: c.Ptr = objc.objc_sel(str_bytes("alloc\0"))
+  init_utf8: c.Ptr = objc.objc_sel(str_bytes("initWithUTF8String:\0"))
+  length: c.Ptr = objc.objc_sel(str_bytes("length\0"))
+  n: u64 = 0
+  unsafe {
+    fresh: c.Ptr = c.msg_send[() -> c.Ptr](string_class, alloc)
+    s: c.Ptr = c.msg_send[(c.String) -> c.Ptr](fresh, init_utf8, c.cstr(text))
+    n = u64(c.msg_send[() -> c.UInt64](s, length))
+  }
+  n
+}
+```
+
+`c.msg_send[(params) -> ret](receiver, selector, args...)` is a call and
+only a call: the bracket carries a boundary function type — the one place a
+function type appears in expression position, and the parser reads it with
+the type grammar — and the parenthesized list starts with the receiver
+(`id`) and the selector (`SEL`), both `c.Ptr`, followed by exactly the
+declared arguments.
+
+- The bracketed signature obeys the extern rule (§2.3, `OAK-F0101`) as a
+  `c.Fn` signature does (§2.10): `c.*` types and proven-layout structs by
+  value for the parameters, those or `()` for the return; a type that
+  cannot cross the boundary is `OAK-F0113` at that type. A struct return by
+  value (`NSRange`, `MTLSize`) is admitted, because on arm64 it comes back
+  through the same entry point (below).
+- The call is checked **exactly as a call to an extern binding of type
+  `(c.Ptr, c.Ptr, params) -> ret`**: the same argument forms (`c.span_of`,
+  `c.cstr`, `c.argv_of`, `c.out`, `c.null()`, scalars, structs), the same
+  arity and type rules, the same borrow uses for the call's extent. The
+  receiver and the selector are the two leading pointers; there is no
+  Oak-side notion of which class answers which selector.
+- `c.msg_send` is admitted only inside an `unsafe` block (`OAK-F0115`), only
+  as the callee of a call; the bracket must be a function type and the call
+  must name at least the receiver and selector (`OAK-F0115`); `c.msg_send`
+  without its bracket is `OAK-F0115` with the form spelled out.
+- **arm64 only, in this increment.** On arm64 every message goes through
+  `objc_msgSend` itself; other Objective-C targets route struct returns
+  through `objc_msgSend_stret` and floating-point returns through
+  `objc_msgSend_fpret`, and this form does not select among them. The
+  backend emits an `#error` for any other target, so a program that sends
+  messages fails to build rather than misdispatching; the receiver-and-
+  selector prefix and the checked signature are target-independent, so
+  lifting the restriction is a backend change alone.
+
+#### 2.12.2 Lowering
+
+The backend declares the runtime's entry point once per program that sends
+messages, with no prototype — `extern void objc_msgSend(void);` — and
+lowers every send to a cast and a call:
+
+```c
+(( uint64_t (*)( void *, void * ) )( objc_msgSend ))( s, length )
+(( void * (*)( void *, void *, const char * ) )( objc_msgSend ))( fresh, init_utf8, oak_cstr_u8( text, "main.oak", 12 ) )
+```
+
+Each C spelling comes from the same table extern prototypes use, so the cast
+is precisely the prototype an extern binding of `(c.Ptr, c.Ptr, params) ->
+ret` would have declared. The runtime library itself is not a link input
+Oak names: the framework the module declares (`framework Foundation`,
+`framework Metal`; `83-modules.md` §4.6) brings `libobjc` with it. A program
+without message sends emits no mention of `objc_msgSend`.
+
+#### 2.12.3 The contract, recorded
+
+A send asserts that the selector's implementation on that receiver has the
+bracketed signature — the same kind of claim `c.fn_at` makes about a pointer
+(§2.10.3), made per call rather than per binding. The borrow checker records
+every send as **`OAK-B0122`**, worded for the selector, with the
+recorded-assumption treatment: `oak vet` and `:obligations` list it, the
+strict profile rejects the module unless its `oak.mod` says `admit
+OAK-B0122` (`85-discipline.md` §7), and the one admission covers both forms
+because they are the one claim — a foreign function of a declared
+signature — while `admit OAK-B0110` covers neither. The effect checker
+treats a send as a call through a function value whose effects nothing
+declares: a function that `forbids` any effect and reaches one fails closed
+with `OAK-E0103` (`60-effects-allocation.md`). The runtime's nil-receiver
+rule (a message to NULL returns zero) is the runtime's; Oak does not check
+the receiver.
+
+The interpreter rejects `c.msg_send` (it has no Objective-C runtime, §4),
+before evaluating the arguments. The Lean extraction fails closed on it, as
+on every foreign call (`95-extraction.md` §4).
+
+#### 2.12.4 The `objc` package
+
+`stdlib/objc.oak` (`import("objc")`, Darwin-only, library package) declares
+the runtime's lookups as ordinary externs and wraps them for Oak bytes:
+`objc_class(name)` (`objc_getClass` over `c.cstr` of a NUL-terminated view)
+and `objc_sel(name)` (`sel_registerName`). It deliberately models nothing
+else: no class hierarchy, no method signatures, no retain/release policy —
+those are the sender's, stated at each `c.msg_send`. Metal itself is not
+attempted here; `compiler/e2e_ffi_objc_test.go` drives Foundation
+(`NSString` length, `NSNumber` round trip, an `NSRange` returned by value
+through `NSValue`) as the acceptance case.
+
 ## 3. The abstract assembly interface
 
 ### 3.1 Shape
