@@ -94,6 +94,7 @@ import Oak.Stdlib.SortLaws
 import Oak.Stdlib.EncodingLaws
 import Oak.Stdlib.Base64Laws
 import Oak.Stdlib.PercentLaws
+import Oak.Stdlib.PercentStrictLaws
 import Oak.Stdlib.RandomLaws
 import Oak.Stdlib.UuidLaws
 import Oak.Stdlib.HashLaws
