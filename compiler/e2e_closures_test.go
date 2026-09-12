@@ -110,14 +110,6 @@ main: (): i32 {
   i32_bits_u32(apply(fn(x: u32): u32 = x * k, u32(2)))
 }
 `,
-		"record capture": `package main
-Pair: type = struct { a: u32, b: u32 }
-apply: (f: (u32) -> u32, x: u32): u32 = f(x)
-main: (): i32 {
-  p: Pair = Pair { a: u32(1), b: u32(2) }
-  i32_bits_u32(apply(fn(x: u32): u32 = x + p.a, u32(2)))
-}
-`,
 		"callee returns its parameter": `package main
 keep: (f: (u32) -> u32): (u32) -> u32 = f
 main: (): i32 {
@@ -126,12 +118,31 @@ main: (): i32 {
   i32_bits_u32(g(u32(1)))
 }
 `,
-		"literal bound before the call": `package main
+		"bound literal used twice": `package main
 apply: (f: (u32) -> u32, x: u32): u32 = f(x)
 main: (): i32 {
   k: u32 = u32(3)
   g := fn(x: u32): u32 = x * k
-  i32_bits_u32(apply(g, u32(2)))
+  i32_bits_u32(apply(g, u32(2)) + apply(g, u32(3)))
+}
+`,
+		"record with a Buffer field": `package main
+Held: type = struct { n: u32, bytes: Buffer[u8] }
+apply: (f: (u32) -> u32, x: u32): u32 = f(x)
+malloc: (n: c.Size): c.Ptr = c.extern("malloc")
+main: (): i32 {
+  unsafe {
+    h: Held = Held { n: u32(1), bytes: c.own[u8](malloc(c.Size(u32(8))), u32(8)) }
+    i32_bits_u32(apply(fn(x: u32): u32 = x + h.n, u32(2)))
+  }
+}
+`,
+		"forward into a callee that keeps the parameter": `package main
+keep: (f: (u32) -> u32): (u32) -> u32 = f
+outer: (f: (u32) -> u32, x: u32): u32 { g: (u32) -> u32 = keep(f); g(x) }
+main: (): i32 {
+  k: u32 = u32(3)
+  i32_bits_u32(outer(fn(x: u32): u32 = x + k, u32(2)))
 }
 `,
 		"assigns the capture": `package main
@@ -174,5 +185,78 @@ main: (): i32 {
 	_, err := New().WithPackageDir(closureModule(t, program)).Check().Get()
 	if err == nil {
 		t.Fatal("two writable spans of one owner at the specialized call were accepted")
+	}
+}
+
+// Records and sum types as captures, a literal bound before its one call, a
+// callee that forwards its parameter along a chain, and self-recursion
+// passing the parameter along: every shape specialized, in both realizations.
+const closureShapesProgram = `package main
+
+Scale: type = struct { mul: u32, add: u32 }
+Mode: type = Plain | Offset: u32 | Scaled: Scale
+
+apply: (f: (u32) -> u32, x: u32): u32 = f(x)
+
+launch: (f: (u32) -> u32, x: u32): u32 = f(x) + f(x)
+outer: (f: (u32) -> u32, x: u32): u32 = launch(f, x)
+twice_outer: (f: (u32) -> u32, x: u32): u32 = outer(f, outer(f, x))
+
+sum_to: (f: (u32) -> u32, n: u32, acc: u32): u32 {
+  n == u32(0) ? acc | sum_to(f, n - u32(1), acc + f(n))
+}
+
+run: (): u32 {
+  s: Scale = Scale { mul: u32(3), add: u32(1) }
+  // a record captured and read by field
+  a: u32 = apply(fn(x: u32): u32 = x * s.mul + s.add, u32(2))
+  assert(a == u32(7))
+  m: Mode = Mode.Scaled(s)
+  // a sum type captured and matched inside the literal
+  b: u32 = apply(fn(x: u32): u32 = m ? | .Plain => x | .Offset(o) => x + o | .Scaled(sc) => x * sc.mul, u32(2))
+  assert(b == u32(6))
+  k: u32 = u32(10)
+  // a literal bound to a local and passed once
+  g := fn(x: u32): u32 = x + k
+  c: u32 = apply(g, u32(5))
+  assert(c == u32(15))
+  // forwarding: outer hands f to launch, twice_outer hands it to outer twice
+  d: u32 = twice_outer(fn(x: u32): u32 = x + k, u32(1))
+  assert(d == u32(64))
+  // self-recursion forwarding f along
+  e: u32 = sum_to(fn(x: u32): u32 = x * k, u32(3), u32(0))
+  assert(e == u32(60))
+  a + b + c + u32(14)
+}
+
+main: (): i32 {
+  i32_bits_u32(run())
+}
+`
+
+func TestE2ECapturingClosureShapesInterpreted(t *testing.T) {
+	if got := interpretModule(t, closureModule(t, closureShapesProgram)); got != 42 {
+		t.Fatalf("main() returned %d, want 42", got)
+	}
+}
+
+func TestE2ECapturingClosureShapesCompiled(t *testing.T) {
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(closureModule(t, closureShapesProgram)))
+	if abnormal || code != 42 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 42", code, abnormal)
+	}
+	output, err := New().WithPackageDir(closureModule(t, closureShapesProgram)).EmitC().Get()
+	if err != nil {
+		t.Fatalf("compilation failed: %v", err)
+	}
+	// The forwarding chain is cloned once per call site: twice_outer, outer
+	// and launch each get a clone for the same literal.
+	for _, want := range []string{"twice_outer", "_outer", "_launch", "_sum_to"} {
+		if !strings.Contains(output, "0clos_") || !strings.Contains(output, want) {
+			t.Fatalf("clone for %s missing from the C:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "OAK_UNSUPPORTED") {
+		t.Fatalf("unsupported construct reached the backend:\n%s", output)
 	}
 }
