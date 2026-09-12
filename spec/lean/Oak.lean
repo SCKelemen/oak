@@ -2,6 +2,7 @@ import Oak.TypeLattice
 import Oak.Effects
 import Oak.EffectRows
 import Oak.Kernel
+import Oak.BufferCustody
 import Oak.MemoryOrder
 import Oak.HappensBefore
 import Oak.SequentialConsistency

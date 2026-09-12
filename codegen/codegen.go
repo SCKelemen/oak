@@ -84,8 +84,10 @@ type CodeGenerator struct {
 	// localTypes maps in-scope names to their container kind while a
 	// function body is being emitted, so element access lowers to the right
 	// bounds-checked form. Unknown containers fail closed.
-	localTypes   map[string]localContainer
-	sliceHelpers map[string]string
+	localTypes map[string]localContainer
+	// inCustodyWrap marks the inner emission of a custody transition call.
+	inCustodyWrap bool
+	sliceHelpers  map[string]string
 	// foreignFnLocals maps the `c.Fn[...]` locals of the function being
 	// emitted to their annotated signatures (docs/spec/92-ffi.md section
 	// 2.10), so a call through one is cast to exactly that signature;
@@ -1367,8 +1369,8 @@ func (cg *CodeGenerator) classifyContainer(typeExpr ast.Expression) localContain
 		if base, ok := t.Left.(*ast.Identifier); ok && base.Value == "Str" {
 			return localContainer{kind: containerString}
 		}
-		if base, ok := t.Left.(*ast.Identifier); ok && base.Value == "Buffer" {
-			return localContainer{kind: containerBuffer, element: cg.parseTypeExpression(t.Index), elementType: t.Index}
+		if element, isBuffer := bufferElementSyntax(t); isBuffer {
+			return localContainer{kind: containerBuffer, element: cg.parseTypeExpression(element), elementType: element}
 		}
 		if mangled, isGeneric := cg.genericAnnotationName(t); isGeneric {
 			return localContainer{kind: containerADT, adtName: mangled}
@@ -2715,6 +2717,23 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.output.WriteString(")")
 		}
 	case *ast.InvocationExpression:
+		// A custody transition (docs/spec/92-ffi.md section 2.8.5) hands the
+		// buffer over as pointer and count and yields the same buffer under
+		// its new type: the foreign call is sequenced before the copy.
+		if operand := cg.custodyTransitionOperand(e); operand != nil && !cg.inCustodyWrap {
+			cg.inCustodyWrap = true
+			cg.output.WriteString("( ")
+			cg.emitExpressionFragment(e, tc)
+			cg.inCustodyWrap = false
+			cg.output.WriteString(", (")
+			cg.output.WriteString(cg.parseTypeExpression(cg.programFunctions[e.Function.(*ast.Identifier).Value].ReturnType))
+			cg.output.WriteString("){ ( ")
+			cg.emitExpressionFragment(operand, tc)
+			cg.output.WriteString(" ).base, ( ")
+			cg.emitExpressionFragment(operand, tc)
+			cg.output.WriteString(" ).len } )")
+			return
+		}
 		// An inbound buffer borrow (docs/spec/92-ffi.md section 2.7) is
 		// spelled as an index over a library member, so it comes before the
 		// generic index-call paths.
@@ -2892,7 +2911,15 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		}
 		cg.output.WriteString("( ")
 		for i, arg := range e.Arguments {
-			if operand, isSpan := boundarySpanArgument(arg); isSpan {
+			if cg.localContainerOf(arg).kind == containerBuffer && cg.isExternCallee(e.Function) {
+				// A Buffer parameter of an extern binding is the pointer and
+				// the element count (section 2.8.5).
+				cg.output.WriteString("( ")
+				cg.emitExpressionFragment(arg, tc)
+				cg.output.WriteString(" ).base, (size_t)( ")
+				cg.emitExpressionFragment(arg, tc)
+				cg.output.WriteString(" ).len")
+			} else if operand, isSpan := boundarySpanArgument(arg); isSpan {
 				// A boundary span lowers to the pointer and the element
 				// count of the view or span, for this call only
 				// (docs/spec/92-ffi.md section 2.5.4). No copy, no thunk.
@@ -3219,8 +3246,8 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 		}
 		// An owned foreign buffer is the span struct over its element type
 		// (docs/spec/92-ffi.md section 2.8).
-		if base, ok := indexExpr.Left.(*ast.Identifier); ok && base.Value == "Buffer" {
-			return cg.emitSpanType(cg.parseTypeExpression(indexExpr.Index))
+		if element, isBuffer := bufferElementSyntax(indexExpr); isBuffer {
+			return cg.emitSpanType(cg.parseTypeExpression(element))
 		}
 		// Atomic cells embed as C11 _Atomic members (docs/spec/65).
 		if atomicC, isAtomic := atomicTypeC(indexExpr); isAtomic {

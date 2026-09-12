@@ -620,19 +620,80 @@ func (cg *CodeGenerator) emitExternPrototype(fn *ast.FunctionStatement) {
 	}
 	returnType := "void"
 	if fn.ReturnType != nil {
-		returnType = cg.parseTypeExpression(fn.ReturnType)
+		if _, returnsBuffer := bufferElementSyntax(fn.ReturnType); !returnsBuffer {
+			returnType = cg.parseTypeExpression(fn.ReturnType)
+		}
+		// A custody transition returns its buffer argument re-typed; the
+		// foreign function itself returns nothing (section 2.8.5).
 	}
 	cg.write(fmt.Sprintf("extern %s %s( ", returnType, symbol))
 	if len(fn.Parameters) == 0 {
 		cg.write("void")
 	}
 	for i, param := range fn.Parameters {
-		cg.write(fmt.Sprintf("%s %s", cg.parseTypeExpression(param.Type), cIdent(param.Name.Value)))
+		if element, isBuffer := bufferElementSyntax(param.Type); isBuffer {
+			// The buffer crosses as pointer and element count.
+			cg.write(fmt.Sprintf("%s *%s, size_t %s_len", cg.parseTypeExpression(element), cIdent(param.Name.Value), cIdent(param.Name.Value)))
+		} else {
+			cg.write(fmt.Sprintf("%s %s", cg.parseTypeExpression(param.Type), cIdent(param.Name.Value)))
+		}
 		if i < len(fn.Parameters)-1 {
 			cg.write(", ")
 		}
 	}
 	cg.write(" );\n")
+}
+
+// bufferElementSyntax recognizes the type syntax Buffer[T] or Buffer[T, S]
+// (docs/spec/92-ffi.md section 2.8) and returns the element type syntax.
+func bufferElementSyntax(typ ast.Expression) (ast.Expression, bool) {
+	index, ok := typ.(*ast.IndexExpression)
+	if !ok {
+		return nil, false
+	}
+	if base, ok := index.Left.(*ast.Identifier); ok && base.Value == "Buffer" {
+		return index.Index, true
+	}
+	if inner, ok := index.Left.(*ast.IndexExpression); ok {
+		if base, ok := inner.Left.(*ast.Identifier); ok && base.Value == "Buffer" {
+			return inner.Index, true
+		}
+	}
+	return nil, false
+}
+
+// custodyTransitionOperand returns the Buffer argument of a call to a
+// custody transition extern (docs/spec/92-ffi.md section 2.8.5), or nil.
+func (cg *CodeGenerator) custodyTransitionOperand(call *ast.InvocationExpression) ast.Expression {
+	ident, ok := call.Function.(*ast.Identifier)
+	if !ok {
+		return nil
+	}
+	target := cg.programFunctions[ident.Value]
+	if target == nil || target.ExternSymbol == "" || target.ReturnType == nil {
+		return nil
+	}
+	if _, returnsBuffer := bufferElementSyntax(target.ReturnType); !returnsBuffer {
+		return nil
+	}
+	for i, arg := range call.Arguments {
+		if i < len(target.Parameters) {
+			if _, isBuffer := bufferElementSyntax(target.Parameters[i].Type); isBuffer {
+				return arg
+			}
+		}
+	}
+	return nil
+}
+
+// isExternCallee reports whether a call target names an extern binding.
+func (cg *CodeGenerator) isExternCallee(fn ast.Expression) bool {
+	ident, ok := fn.(*ast.Identifier)
+	if !ok {
+		return false
+	}
+	target := cg.programFunctions[ident.Value]
+	return target != nil && target.ExternSymbol != ""
 }
 
 // emitForeignBorrow lowers an inbound buffer borrow (docs/spec/92-ffi.md

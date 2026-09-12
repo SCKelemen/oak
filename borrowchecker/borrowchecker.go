@@ -1082,6 +1082,27 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 		bc.consumedOwners[owner] = true
 		return
 	}
+	// A custody transition (docs/spec/92-ffi.md section 2.8.5) moves the
+	// buffer: rejected while any borrow of it is live, and the old binding
+	// is consumed; the result is the same resource under its new name.
+	if owner, isTransition := custodyTransitionOperand(call, env); isTransition {
+		if bc.consumedOwners[owner] {
+			bc.reportBorrow(call, CodeResourceUsedAfterConsume,
+				fmt.Sprintf("buffer %q was already moved or handed back", owner))
+			return
+		}
+		for _, kind := range []borrowKind{BorrowSpan, BorrowView} {
+			if borrowName, info, live := bc.firstActiveBorrow(owner, kind); live {
+				d := bc.reportBorrow(call, CodeBorrowGeneric,
+					fmt.Sprintf("buffer %q cannot change custody while borrow %q is live", owner, borrowName))
+				bc.addBorrowContext(d, borrowName, info, fmt.Sprintf("borrow %q still reads the buffer's memory", borrowName))
+				d.AddHelp("let the view or span leave scope before the transition")
+				return
+			}
+		}
+		bc.consumedOwners[owner] = true
+		return
+	}
 	// 2. Then apply borrow-sensitive builtins
 	// Arguments are already validated, so we can safely create borrows
 	if ident, ok := call.Function.(*ast.Identifier); ok {
@@ -1709,6 +1730,38 @@ func (bc *BorrowChecker) createSubsliceWithRegion(sourceBorrowName, subsliceName
 // foreignDisownOperand recognizes `c.disown(b)` and names the buffer
 // binding (docs/spec/92-ffi.md section 2.8). A local named `c` would have
 // made this an ordinary call, which the typechecker never accepts here.
+// custodyTransitionOperand recognizes a call to an extern binding that
+// returns a Buffer and names the Buffer binding it moves.
+func custodyTransitionOperand(call *ast.InvocationExpression, env *typechecker.TypeEnvironment) (string, bool) {
+	callee, isIdent := call.Function.(*ast.Identifier)
+	if !isIdent || env == nil {
+		return "", false
+	}
+	scheme, bound := env.Get(callee.Value)
+	if !bound || scheme == nil {
+		return "", false
+	}
+	fn, isFn := scheme.Type.(*typechecker.FunctionType)
+	if !isFn {
+		return "", false
+	}
+	if _, returnsBuffer := fn.ReturnType.(*typechecker.BufferType); !returnsBuffer {
+		return "", false
+	}
+	for i, arg := range call.Arguments {
+		ident, isIdent := arg.(*ast.Identifier)
+		if !isIdent {
+			continue
+		}
+		if i < len(fn.Parameters) {
+			if _, isBuffer := fn.Parameters[i].(*typechecker.BufferType); isBuffer {
+				return ident.Value, true
+			}
+		}
+	}
+	return "", false
+}
+
 func foreignDisownOperand(call *ast.InvocationExpression) (string, bool) {
 	access, isAccess := call.Function.(*ast.IndexExpression)
 	if !isAccess || len(call.Arguments) != 1 {
