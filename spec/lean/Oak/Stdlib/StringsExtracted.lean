@@ -46,6 +46,12 @@ structure TextSplitCursor where
   deriving Repr, BEq, DecidableEq
 instance : Inhabited TextSplitCursor := ⟨{ next := (0 : UInt32), done := false }⟩
 
+structure TextFault where
+  error : TextError
+  at_ : UInt32
+  deriving Repr, BEq, DecidableEq
+instance : Inhabited TextFault := ⟨{ error := (default : TextError), at_ := (0 : UInt32) }⟩
+
 structure TextFoldCursor where
   next : UInt32
   index : UInt32
@@ -89,6 +95,11 @@ inductive Result_i64_TextParseError where
 inductive Result_u32_TextError where
   | Ok (payload : UInt32)
   | Err (payload : TextError)
+  deriving Repr, Inhabited, BEq, DecidableEq
+
+inductive Result_u32_TextFault where
+  | Ok (payload : UInt32)
+  | Err (payload : TextFault)
   deriving Repr, Inhabited, BEq, DecidableEq
 
 inductive Result_u64_TextParseError where
@@ -378,6 +389,66 @@ def utf32_encode (dst : Array UInt32) (offset : UInt32) (value : UInt32) (fuel :
           pure ((Result_u32_TextError.Ok (1 : UInt32)), dst)))
       pure (r4, dst)))
   pure (r2, dst)
+
+def utf8_first_error_at.loop1 (src : Array UInt8) (at_ : UInt32) (found : UInt32) (stop : Bool) : Nat → Option (UInt32 × UInt32 × Bool)
+  | 0 => none
+  | fuel + 1 => do
+    if (!stop) then do
+      let r1 ← utf8_decode src at_ fuel
+      let decoded : Result_TextScalar_TextError := r1
+      let r2 ← text_decode_ok decoded fuel
+      let (at_, found, stop) ← (if r2 then (do
+          let r3 ← text_decoded decoded fuel
+          let item : TextScalar := r3
+          let at_ := item.next
+          let stop := (decide (at_ >= (src.size.toUInt32)))
+          pure (at_, found, stop))
+        else (do
+          let found := at_
+          let stop := true
+          pure (at_, found, stop)))
+      utf8_first_error_at.loop1 src at_ found stop fuel
+    else pure (at_, found, stop)
+
+def utf8_first_error_at (src : Array UInt8) (start : UInt32) (fuel : Nat) : Option (UInt32) := do
+  let at_ : UInt32 := start
+  let found : UInt32 := (src.size.toUInt32)
+  let stop : Bool := (decide (at_ >= (src.size.toUInt32)))
+  let (at_, found, stop) ← utf8_first_error_at.loop1 src at_ found stop fuel
+  pure found
+
+def utf8_first_error (src : Array UInt8) (fuel : Nat) : Option (UInt32) := do
+  let r1 ← utf8_first_error_at src (0 : UInt32) fuel
+  pure r1
+
+def utf8_check.loop1 (src : Array UInt8) (at_ : UInt32) (count : UInt32) (fault : UInt32) (stop : Bool) : Nat → Option (UInt32 × UInt32 × UInt32 × Bool)
+  | 0 => none
+  | fuel + 1 => do
+    if (!stop) then do
+      let r1 ← utf8_decode src at_ fuel
+      let decoded : Result_TextScalar_TextError := r1
+      let r2 ← text_decode_ok decoded fuel
+      let (at_, count, fault, stop) ← (if r2 then (do
+          let r3 ← text_decoded decoded fuel
+          let item : TextScalar := r3
+          let at_ := item.next
+          let count := (count + (1 : UInt32))
+          let stop := (decide (at_ >= (src.size.toUInt32)))
+          pure (at_, count, fault, stop))
+        else (do
+          let fault := at_
+          let stop := true
+          pure (at_, count, fault, stop)))
+      utf8_check.loop1 src at_ count fault stop fuel
+    else pure (at_, count, fault, stop)
+
+def utf8_check (src : Array UInt8) (fuel : Nat) : Option (Result_u32_TextFault) := do
+  let at_ : UInt32 := (0 : UInt32)
+  let count : UInt32 := (0 : UInt32)
+  let fault : UInt32 := (src.size.toUInt32)
+  let stop : Bool := (decide (at_ >= (src.size.toUInt32)))
+  let (at_, count, fault, stop) ← utf8_check.loop1 src at_ count fault stop fuel
+  pure (if (decide (fault < (src.size.toUInt32))) then (Result_u32_TextFault.Err ({ error := TextError.InvalidEncoding, at_ := fault } : TextFault)) else (Result_u32_TextFault.Ok count))
 
 def utf8_count.loop1 (src : Array UInt8) (at_ : UInt32) (count : UInt32) (valid : Bool) : Nat → Option (UInt32 × UInt32 × Bool)
   | 0 => none

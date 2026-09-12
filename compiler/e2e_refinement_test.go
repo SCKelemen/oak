@@ -203,7 +203,7 @@ main: (): i32 {
 	for _, bad := range []struct{ name, src, want string }{
 		{"mixed", "IrqId[N: u32]: type = u16 where value < N\nf: (i: IrqId[4]): u16 = i\nmain: (): i32 { x: IrqId[8] = IrqId[8](u16(1))\n i32(f(x)) }", "IrqId_4"},
 		{"range", "IrqId[N: u8]: type = u16 where value < N\nmain: (): i32 { x: IrqId[300] = IrqId[300](u16(1))\n i32(x) }", "literal 300 does not fit in type u8"},
-		{"arity", "IrqId[N: u32]: type = u16 where value < N\nmain: (): i32 { x: IrqId[1, 2] = IrqId[1, 2](u16(0))\n i32(x) }", "takes 1 constant argument(s), got 2"},
+		{"arity", "Rng[Lo: u32, Hi: u32]: type = u16 where value >= Lo && value < Hi\nmain: (): i32 { x: Rng[1] = Rng[1](u16(0))\n i32(x) }", "takes 2 constant argument(s), got 1"},
 		{"kind", "Boxed[T]: type = u16 where value < u16(4)\nmain: (): i32 = 0", "integer constants (N: u32), not types"},
 	} {
 		_, err := New().WithSource(bad.name+".oak", bad.src).EmitC().Get()
@@ -267,5 +267,76 @@ main: (): i32 {
 	code, abnormal := buildAndRun(t, "shapes", src)
 	if abnormal || code != 49 {
 		t.Fatalf("exit = (%d, abnormal=%v), want 49", code, abnormal)
+	}
+}
+
+// A generic refinement applied to an enclosing template's const parameter
+// (docs/spec/20-types.md section 12.1): a record template's field
+// `IrqId[N]`, a generic function's parameter, return, and construction.
+// Each instantiation specializes the refinement on demand, and the
+// specialized name reaches the backend's struct and the extent facts.
+func TestE2ERefinementTemplatesInTemplates(t *testing.T) {
+	src := `
+IrqId[N: u32]: type = u16 where value < N
+
+Table[N: u32]: type = struct { slot: IrqId[N], rows: [8]u8 }
+
+make[N: u32]: (v: u16): IrqId[N] = IrqId[N](v)
+
+pick[N: u32]: (t: Table[N]): u8 = t.rows[t.slot]
+
+main: (): i32 {
+  t: Table[8]
+  t.rows = [8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }
+  t.slot = make[8](u16(6))
+  i32(pick(t)) * i32(6)
+}
+`
+	output, err := New().WithSource("refinetpl2.oak", src).EmitC().Get()
+	if err != nil {
+		t.Fatalf("compilation failed: %v", err)
+	}
+	for _, want := range []string{"typedef u16 oak_IrqId_8;", "oak_IrqId_8 slot", "oak_refine_oak_IrqId_8( v )"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "oak_index( ") {
+		t.Fatalf("the refined field index should be proven:\n%s", output)
+	}
+	code, abnormal := buildAndRun(t, "refinetpl2", src)
+	if abnormal || code != 42 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 42", code, abnormal)
+	}
+}
+
+// A record field of a refinement type has its base's representation: the
+// refinement's typedef is emitted ahead of every record, and the layout
+// assertions hold (docs/spec/20-types.md section 12).
+func TestE2ERefinementRecordField(t *testing.T) {
+	src := `
+Slot: type = u16 where value < u16(8)
+Rec: type = struct { slot: Slot, x: u8 }
+
+main: (): i32 {
+  r: Rec
+  r.slot = Slot(u16(3))
+  r.x = u8(4)
+  i32(r.x) + i32(u16(r.slot))
+}
+`
+	output, err := New().WithSource("refrec.oak", src).EmitC().Get()
+	if err != nil {
+		t.Fatalf("compilation failed: %v", err)
+	}
+	if strings.Contains(output, "OAK_UNSUPPORTED_RECORD_LAYOUT") || !strings.Contains(output, "oak_Slot slot;") {
+		t.Fatalf("the refined field should lay out as its base:\n%s", output)
+	}
+	if strings.Index(output, "typedef u16 oak_Slot;") > strings.Index(output, "oak_Slot slot;") {
+		t.Fatalf("the refinement typedef must precede the record:\n%s", output)
+	}
+	code, abnormal := buildAndRun(t, "refrec", src)
+	if abnormal || code != 7 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 7", code, abnormal)
 	}
 }

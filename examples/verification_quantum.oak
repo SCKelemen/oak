@@ -1,0 +1,55 @@
+// Verification in the language's own terms (docs/spec/125-verification.md):
+// refinement types carry their predicate as a fact, theorems state claims
+// in the type system's own vocabulary, and a protocol declares its
+// invariant and its liveness. `oak prove examples/verification_quantum.oak`
+// decides every row; `oak run` executes the same program.
+
+// A refinement: a u16 below 8, so TABLE[i] is proven at every access and
+// checked once, at the construction Slot(v).
+Slot: type = u16 where value < u16(8)
+
+// A generic refinement: one declaration, one specialization per bound.
+IrqId[N: u32]: type = u16 where value < N
+
+TABLE: [8]u8 = [8]u8{ 1, 2, 4, 8, 16, 32, 64, 128 }
+
+lookup: (i: Slot): u8 = TABLE[i]
+
+first_irq: (i: IrqId[4]): u8 = TABLE[i]
+
+// Decided exhaustively: the refined domains are 8 and 4 values.
+lookup_nonzero: theorem (i: Slot) { lookup(i) > u8(0) }
+irq_low: theorem (i: IrqId[4]) { u32(first_irq(i)) < u32(16) }
+
+// Decided at the bit level: u32 is too wide to enumerate, so the body is
+// bit-blasted through the assembler verifier.
+add_commutes: theorem (x: u32, y: u32) { x + y == y + x }
+
+// A scheduler quantum: a budget that counts down, a yield when it is
+// spent, fairness on the steps that make progress, and what must follow.
+Quantum: protocol = {
+  data { budget: u32 }
+  init { budget: u32(2) }
+  initial Running
+  tick: Running -> Running when data.budget > u32(1) then { data.budget = data.budget - u32(1) }
+  tick: Running -> Yielded when data.budget <= u32(1) then { data.budget = u32(2) }
+  resume: Yielded -> Running
+  fair tick
+  fair resume
+  eventually Yielded
+  eventually Running -> Yielded
+}
+
+// An invariant candidate: decided over the reachable states, where the
+// u32 budget takes only two values.
+budget_bounded: theorem (s: QuantumState, d: QuantumData) { d.budget >= u32(1) && d.budget <= u32(2) }
+
+main: (): i32 {
+  s: QuantumState = quantum_initial()
+  buf: [1]QuantumData = [1]QuantumData{ quantum_initial_data() }
+  s = quantum_next(s, span(&buf), QuantumStep.Tick)
+  s = quantum_next(s, span(&buf), QuantumStep.Tick)
+  yielded: u32 = s == QuantumState.Yielded ? u32(1) | u32(0)
+  // 8 + 4 + 1 + 2 + 27 = 42
+  i32_bits_u32(u32(lookup(Slot(u16(3)))) + u32(first_irq(IrqId[4](u16(2)))) + yielded + buf[0].budget + u32(27))
+}

@@ -19,6 +19,10 @@ import (
 
 // CodeGenerator generates C code from Oak AST
 type CodeGenerator struct {
+	// refinementName resolves an application of a generic refinement to
+	// literals (IrqId[4]) in a re-substituted template field to its
+	// specialization's name (typechecker.RefinementApplicationName).
+	refinementName func(ast.Expression) (string, bool)
 	// equalityTypes caches the aggregates whose equality functions the
 	// program needs (typechecker.EqualityTypes); nil until first asked.
 	equalityTypes map[string]bool
@@ -43,6 +47,7 @@ type CodeGenerator struct {
 	abstractAliases  map[string]string
 	sourceIndex      *lsp.PositionIndex
 	output           strings.Builder
+	bareCondition    bool // the next infix emitted is a statement condition (emitCondition)
 	indentLevel      int
 	types            map[string]bool // Track emitted types to avoid duplicates
 	typeChecker      *typechecker.TypeChecker
@@ -185,6 +190,9 @@ func (cg *CodeGenerator) SetSourceText(text string) {
 
 // Generate generates C code from an Oak program
 func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChecker) (string, error) {
+	if tc != nil {
+		cg.refinementName = tc.RefinementApplicationName
+	}
 	cg.output.Reset()
 	cg.sliceHelpers = make(map[string]string)
 	cg.types = make(map[string]bool)
@@ -554,6 +562,7 @@ func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 	cg.emitForeignHeaders()
 	cg.write("#include <stdint.h>\n")
 	cg.write("#include <stddef.h>\n")
+	cg.emitHostBoundary()
 	// <math.h> and the float helpers only when the program uses floating
 	// point, so every other program stays freestanding.
 	usesFloats := programUsesFloats(program)
@@ -1153,7 +1162,7 @@ func boolMatchBranches(match *ast.MatchExpression) (trueBody, falseBody ast.Expr
 // if/else with both branches in return position.
 func (cg *CodeGenerator) emitBoolMatchReturn(condition, trueBody, falseBody ast.Expression, tc *typechecker.TypeChecker) {
 	cg.write("  if ( ")
-	cg.emitExpressionFragment(condition, tc)
+	cg.emitCondition(condition, tc)
 	cg.output.WriteString(" ) {\n")
 	cg.indentLevel++
 	cg.emitFunctionBody(trueBody, tc)
@@ -1267,7 +1276,7 @@ func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *type
 	// Evaluate a Boolean condition once, before either arm can mutate its inputs.
 	if trueBody, falseBody, isBool := boolMatchBranches(match); isBool {
 		cg.write("  if ( ")
-		cg.emitExpressionFragment(match.Scrutinee, tc)
+		cg.emitCondition(match.Scrutinee, tc)
 		cg.output.WriteString(" ) {\n")
 		cg.indentLevel++
 		emitBody(trueBody)
@@ -2355,8 +2364,8 @@ func (cg *CodeGenerator) emitAssertHelper() {
 	cg.write("}\n")
 	cg.write("#else\n")
 	cg.write("static inline void oak_assert(Bool cond, const char *file, u32 line) {\n")
-	cg.write("  (void)file; (void)line;\n")
 	cg.write("  if (!cond) {\n")
+	cg.write("    oak_report(\"assertion failed\", file, line);\n")
 	cg.write("    __builtin_trap();\n")
 	cg.write("  }\n")
 	cg.write("}\n")
@@ -2378,8 +2387,7 @@ func (cg *CodeGenerator) emitAssertHelper() {
 		cg.write("}\n")
 		cg.write("#else\n")
 		cg.write("static inline void *oak_fn_at(void *p, const char *file, u32 line) {\n")
-		cg.write("  (void)file; (void)line;\n")
-		cg.write("  if (p == 0) { __builtin_trap(); }\n")
+		cg.write("  if (p == 0) { oak_report(\"c.fn_at of a NULL pointer\", file, line); __builtin_trap(); }\n")
 		cg.write("  return p;\n")
 		cg.write("}\n")
 	}
@@ -2398,6 +2406,33 @@ func (cg *CodeGenerator) emitAssertHelper() {
 		cg.write("extern void objc_msgSend(void);\n\n")
 	}
 	cg.emitAssertValueHelpers()
+}
+
+// emitHostBoundary emits the freestanding host boundary (docs/spec/90-backend.md
+// §2a): one weak hook, oak_host_write, that a kernel or firmware may
+// define; a diagnostic that a hosted build prints to stderr reaches the
+// hook as one bounded line (fd 2) and then traps as before. Without the
+// hook the diagnostic path is the bare trap. The text is assembled from
+// compile-time literals and the Oak source position — no format strings,
+// no libc — so the block is exactly what the object can promise: the
+// hook is the only foreign symbol it introduces.
+func (cg *CodeGenerator) emitHostBoundary() {
+	cg.write("#if !__STDC_HOSTED__ || defined(OAK_FREESTANDING)\n")
+	cg.write("/* freestanding host boundary (docs/spec/90-backend.md section 2a): a weak\n   hook the kernel or firmware may define; diagnostics reach it, then trap */\n")
+	cg.write("extern int64_t oak_host_write(int64_t fd, const uint8_t *buf, size_t len) __attribute__((weak));\n")
+	cg.write("static void oak_report(const char *what, const char *file, uint32_t line) {\n")
+	cg.write("  if (&oak_host_write == 0) { return; }\n")
+	cg.write("  uint8_t buf[192]; size_t n = 0;\n")
+	cg.write("  const char *parts[4] = { \"oak: \", what, \" at \", file };\n")
+	cg.write("  for (int p = 0; p < 4; p++) { for (const char *c = parts[p]; *c != 0 && n < sizeof buf - 16; c++) { buf[n++] = (uint8_t)*c; } }\n")
+	cg.write("  buf[n++] = ':';\n")
+	cg.write("  uint8_t digits[10]; int d = 0;\n")
+	cg.write("  do { digits[d++] = (uint8_t)('0' + line % 10u); line /= 10u; } while (line != 0u);\n")
+	cg.write("  while (d > 0) { buf[n++] = digits[--d]; }\n")
+	cg.write("  buf[n++] = '\\n';\n")
+	cg.write("  (void)oak_host_write(2, buf, n);\n")
+	cg.write("}\n")
+	cg.write("#endif\n")
 }
 
 // assertValueFormats spells each comparable operand type for the failure
@@ -2428,26 +2463,26 @@ func (cg *CodeGenerator) emitAssertValueHelpers() {
 		cg.write("  if (!(got == want)) {\n")
 		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
 		cg.write(fmt.Sprintf("    fprintf(stderr, \"oak: assertion failed at %%s:%%u: got %s, want %s\\n\", file, (unsigned)line, %sgot, %swant);\n", f.format, f.format, f.cast, f.cast))
-		cg.write("#else\n    (void)file; (void)line;\n#endif\n")
+		cg.write("#else\n    oak_report(\"assertion failed (assert_eq; values need a hosted build)\", file, line);\n#endif\n")
 		cg.write("    __builtin_trap();\n  }\n}\n")
 		cg.write(fmt.Sprintf("static inline void oak_assert_ne_%s(%s got, %s want, const char *file, u32 line) {\n", f.name, f.ctype, f.ctype))
 		cg.write("  if (got == want) {\n")
 		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
 		cg.write(fmt.Sprintf("    fprintf(stderr, \"oak: assertion failed at %%s:%%u: got %s, want anything but %s\\n\", file, (unsigned)line, %sgot, %swant);\n", f.format, f.format, f.cast, f.cast))
-		cg.write("#else\n    (void)file; (void)line;\n#endif\n")
+		cg.write("#else\n    oak_report(\"assertion failed (assert_ne; values need a hosted build)\", file, line);\n#endif\n")
 		cg.write("    __builtin_trap();\n  }\n}\n")
 	}
 	cg.write("static inline void oak_assert_eq_Bool(Bool got, Bool want, const char *file, u32 line) {\n")
 	cg.write("  if (!(got == want)) {\n")
 	cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
 	cg.write("    fprintf(stderr, \"oak: assertion failed at %s:%u: got %s, want %s\\n\", file, (unsigned)line, got ? \"true\" : \"false\", want ? \"true\" : \"false\");\n")
-	cg.write("#else\n    (void)file; (void)line;\n#endif\n")
+	cg.write("#else\n    oak_report(got ? \"assertion failed: got true, want false\" : \"assertion failed: got false, want true\", file, line);\n#endif\n")
 	cg.write("    __builtin_trap();\n  }\n}\n")
 	cg.write("static inline void oak_assert_ne_Bool(Bool got, Bool want, const char *file, u32 line) {\n")
 	cg.write("  if (got == want) {\n")
 	cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
 	cg.write("    fprintf(stderr, \"oak: assertion failed at %s:%u: got %s, want anything but %s\\n\", file, (unsigned)line, got ? \"true\" : \"false\", want ? \"true\" : \"false\");\n")
-	cg.write("#else\n    (void)file; (void)line;\n#endif\n")
+	cg.write("#else\n    oak_report(got ? \"assertion failed: got true, want anything but true\" : \"assertion failed: got false, want anything but false\", file, line);\n#endif\n")
 	cg.write("    __builtin_trap();\n  }\n}\n\n")
 }
 
@@ -2677,6 +2712,11 @@ var arithmeticHelpers = map[string]string{
 
 // emitInfixExpression emits C code for an infix expression (as fragment)
 func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *typechecker.TypeChecker) {
+	// A statement condition (emitCondition) drops the grouping parentheses
+	// of its top-level infix: `if ( a == b )`, not `if ( ( a == b ) )`,
+	// which clang reports as -Wparentheses-equality. Operands group as usual.
+	bare := cg.bareCondition
+	cg.bareCondition = false
 	if cg.emitBytePack(expr, tc) {
 		return
 	}
@@ -2737,11 +2777,26 @@ func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *type
 		}
 	}
 	// C style: space around operators, parentheses for grouping
-	cg.output.WriteString("( ")
+	if !bare {
+		cg.output.WriteString("( ")
+	}
 	cg.emitExpressionFragment(expr.Left, tc)
 	cg.output.WriteString(fmt.Sprintf(" %s ", expr.Operator))
 	cg.emitExpressionFragment(expr.Right, tc)
-	cg.output.WriteString(" )")
+	if !bare {
+		cg.output.WriteString(" )")
+	}
+}
+
+// emitCondition emits the condition of an if or while: an infix at the
+// top level is written without its grouping parentheses, since the
+// statement's own parentheses already hold it.
+func (cg *CodeGenerator) emitCondition(expr ast.Expression, tc *typechecker.TypeChecker) {
+	if _, isInfix := expr.(*ast.InfixExpression); isInfix {
+		cg.bareCondition = true
+	}
+	cg.emitExpressionFragment(expr, tc)
+	cg.bareCondition = false
 }
 
 // emitExpressionFragment emits a fragment of an expression (no return statement)
@@ -3549,7 +3604,7 @@ func (cg *CodeGenerator) emitViewType(elementType string) string {
 		cg.write("    fprintf(stderr, \"oak: c.cstr view is not NUL-terminated at %s:%u\\n\", file, (unsigned)line);\n")
 		cg.write("    __builtin_trap();\n  }\n  return (const char *)v.base;\n}\n#else\n")
 		cg.write(fmt.Sprintf("static inline const char *oak_cstr_u8(%s v, const char *file, u32 line) {\n", viewTypeName))
-		cg.write("  (void)file; (void)line;\n  if (v.len == 0u || v.base[v.len - 1u] != 0u) { __builtin_trap(); }\n  return (const char *)v.base;\n}\n#endif\n\n")
+		cg.write("  if (v.len == 0u || v.base[v.len - 1u] != 0u) { oak_report(\"c.cstr view is not NUL-terminated\", file, line); __builtin_trap(); }\n  return (const char *)v.base;\n}\n#endif\n\n")
 		// c.borrow_string(p) (section 2.7.1): the terminator's offset,
 		// counted without libc so freestanding builds stay free of it; a
 		// NULL pointer is the empty string, and a length past u32 traps.
@@ -4118,7 +4173,7 @@ func (cg *CodeGenerator) emitAssignmentStatement(stmt *ast.AssignmentStatement, 
 // emitWhileStatement emits a while loop
 func (cg *CodeGenerator) emitWhileStatement(stmt *ast.WhileStatement, tc *typechecker.TypeChecker) {
 	cg.write("  while ( ")
-	cg.emitExpressionFragment(stmt.Condition, tc)
+	cg.emitCondition(stmt.Condition, tc)
 	cg.write(" ) {\n")
 	cg.indentLevel++
 
@@ -4133,7 +4188,7 @@ func (cg *CodeGenerator) emitWhileStatement(stmt *ast.WhileStatement, tc *typech
 // (docs/spec/10-syntax.md).
 func (cg *CodeGenerator) emitIfStatement(stmt *ast.IfStatement, tc *typechecker.TypeChecker) {
 	cg.write("  if ( ")
-	cg.emitExpressionFragment(stmt.Condition, tc)
+	cg.emitCondition(stmt.Condition, tc)
 	cg.write(" ) {\n")
 	cg.indentLevel++
 	if stmt.Consequence != nil {

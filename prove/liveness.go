@@ -520,3 +520,76 @@ func deepCopy(value object.Object) object.Object {
 	}
 	return value
 }
+
+// exploreInvariants gives an invariant candidate the inductive check left
+// short of `decided` — a data domain too large to enumerate, or an
+// inductive step that fails only at a state no run reaches — a verdict
+// over the reachable states themselves: the candidate is evaluated on
+// every state the projection reaches (prove/liveness.go's exploration,
+// bounded by cases). The reachable graph of a machine over a u32 budget
+// is small even though the domain is not, so the row is decided or
+// refuted with a reachable counterexample; a graph beyond the bound keeps
+// the inductive summary.
+func exploreInvariants(results []Result, model *compiler.SemanticModel, env *object.Environment, cases int) []Result {
+	candidates := invariantCandidates(model.Tree)
+	if len(candidates) == 0 {
+		return results
+	}
+	graphs := map[string]*liveGraph{}
+	reasons := map[string]string{}
+	superseded := map[string]bool{}
+	for i, r := range results {
+		decl, isCandidate := candidates[r.Name]
+		if !isCandidate || r.Status == Decided {
+			continue
+		}
+		name := decl.Name.Value
+		graph, explored := graphs[name]
+		if !explored {
+			if _, failed := reasons[name]; failed {
+				continue
+			}
+			var reason string
+			graph, reason = exploreProtocol(model.TypeChecker, env, decl, cases)
+			if reason != "" {
+				reasons[name] = reason
+				results[i].Detail += " (reachable states: " + reason + ")"
+				continue
+			}
+			graphs[name] = graph
+		}
+		holds, reason := graph.evaluate(env, r.Name)
+		if reason != "" {
+			results[i].Detail += " (reachable states: " + reason + ")"
+			continue
+		}
+		failing := -1
+		for at, ok := range holds {
+			if !ok {
+				failing = at
+				break
+			}
+		}
+		if failing >= 0 {
+			results[i] = Result{Name: r.Name, Status: Refuted,
+				Detail: fmt.Sprintf("invariant fails at the reachable state %s (%s)", graph.describe(failing), r.Detail)}
+		} else {
+			results[i] = Result{Name: r.Name, Status: Decided,
+				Detail: fmt.Sprintf("invariant: holds on all %d reachable states (%s)", len(graph.states), r.Detail)}
+		}
+		superseded[r.Name+BaseSuffix] = true
+		superseded[r.Name+StepSuffix] = true
+	}
+	if len(superseded) == 0 {
+		return results
+	}
+	// The reachable verdict stands for the candidate: its obligation rows,
+	// summarized in the candidate's detail, no longer count on their own.
+	kept := results[:0]
+	for _, r := range results {
+		if !superseded[r.Name] {
+			kept = append(kept, r)
+		}
+	}
+	return kept
+}

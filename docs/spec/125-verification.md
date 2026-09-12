@@ -83,6 +83,14 @@ The candidate's own row reports the obligations: `decided` when both are,
 `refuted` naming which one fails and where (this turnstile's 8-bit
 counter wraps: `invariant is not preserved: counterexample ... coins:
 255`), `open` otherwise; the obligation rows follow with their detail.
+A candidate the inductive check leaves short of `decided` — a data
+domain too large to enumerate, a step that fails only at a state no run
+reaches — is then evaluated on the reachable states themselves, the
+exploration §2b uses (bounded by `-cases`): `invariant: holds on all 3
+reachable states` decides a `u32` budget whose reachable values are few,
+and `invariant fails at the reachable state Unlocked with {coins: 0}`
+names a state a run actually reaches, the inductive detail kept in
+parentheses. A graph beyond the bound keeps the inductive summary.
 Steps that carry a payload enumerate it with the step (`program(compare:
 u8)` is 256 steps). Nothing is added to the language: the generated
 theorems are the ones a programmer would write, produced so the
@@ -212,11 +220,13 @@ differential witnesses cover, and are stated as the assumption they are.
 
 In order of payoff, each reusing a surface that exists:
 
-- **Protocol invariants, further.** §2a covers safety on finite state
-  spaces; liveness with declared fairness is projected to the TLA+ module
-  (`112-protocols.md` §1: `fair step`, `eventually from -> target`) and
-  checked by TLC. Next: the larger domains of §3 so a `u32` budget is
-  decided rather than left open. The Boolean
+- **Protocol invariants, further.** §2a covers safety inductively on
+  finite domains and over the reachable states otherwise, so a `u32`
+  budget is decided; liveness with declared fairness is decided over the
+  same reachable states (§2b) and projected to the TLA+ module
+  (`112-protocols.md` §1: `fair step`, `eventually from -> target`) for
+  TLC. Next: the inductive obligations at the bit level over record and
+  sum-type parameters, for machines whose reachable graph is not finite. The Boolean
   transition-model export of the verification experiment already checks
   inductive invariants through certificates; §2a is that check on the
   language's own state.

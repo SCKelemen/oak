@@ -14,6 +14,7 @@ import "testing"
 const utf8Program = `package main
 utf8 := import("utf8")
 r := import("random")
+strs := import("strings")
 
 // A scalar transliteration of Unicode Table 3-7 in Oak, the oracle the
 // vector validator is checked against: byte by byte, each lead's required
@@ -48,7 +49,41 @@ utf8_scalar: (v: []u8): Bool {
   ok
 }
 
+// The same walk, reporting the offset of the first ill-formed byte (the
+// lead of the sequence that fails), or len(v) when well-formed.
+utf8_scalar_first_error: (v: []u8): u32 {
+  n: u32 = len(v)
+  i: u32 = u32(0)
+  ok: Bool = true
+  while ok && i < n {
+    b0: u8 = v[i]
+    b0 <= u8(127) ? { i = i + u32(1) }
+    | b0 >= u8(194) && b0 <= u8(223) ? {
+      i + u32(1) < n && utf8_cont(v[i + u32(1)]) ? { i = i + u32(2) } | { ok = false }
+    }
+    | b0 >= u8(224) && b0 <= u8(239) ? {
+      i + u32(2) < n && utf8_second3(b0, v[i + u32(1)]) && utf8_cont(v[i + u32(2)]) ? { i = i + u32(3) } | { ok = false }
+    }
+    | b0 >= u8(240) && b0 <= u8(244) ? {
+      i + u32(3) < n && utf8_second4(b0, v[i + u32(1)]) && utf8_cont(v[i + u32(2)]) && utf8_cont(v[i + u32(3)]) ? { i = i + u32(4) } | { ok = false }
+    }
+    | { ok = false }
+  }
+  i
+}
+
+
+// The verdicts agree across the three validators, and so do the
+// positions: utf8.locate (vector, reject fast then locate with the scalar
+// decoder), strings.utf8_first_error (the library's scalar decoder), and
+// the oracle above name the same first ill-formed byte, and all say len(v)
+// exactly when the input is valid.
 agree: (v: []u8): Bool = utf8.valid(v) == utf8_scalar(v) && is_valid_utf8(v) == utf8.valid(v)
+  && utf8.locate(v) == utf8_scalar_first_error(v) && strs.utf8_first_error(v) == utf8_scalar_first_error(v)
+  && (utf8.locate(v) == len(v)) == utf8.valid(v)
+
+// The first ill-formed byte is at the given offset.
+faults_at: (v: []u8, at: u32): Bool = agree(v) && utf8.locate(v) == at
 
 // The first n bytes of v: valid by both validators, or invalid by both.
 prefix_valid: (v: []u8, n: u32): Bool = utf8.valid(subslice(v, u32(0), n)) && agree(subslice(v, u32(0), n))
@@ -74,11 +109,11 @@ main: (): i32 {
   ok = ok && utf8.valid(subslice(empty_view, u32(0), u32(0)))
   // Every class of error.
   stray: [1]u8 = [u8(128)]
-  ok = ok && !utf8.valid(view(&stray)) && agree(view(&stray))
+  ok = ok && !utf8.valid(view(&stray)) && faults_at(view(&stray), u32(0))
   truncated: [2]u8 = [u8(226), u8(130)]
-  ok = ok && !utf8.valid(view(&truncated)) && agree(view(&truncated))
+  ok = ok && !utf8.valid(view(&truncated)) && faults_at(view(&truncated), u32(0))
   truncated_mid: [3]u8 = [u8(226), u8(65), u8(66)]
-  ok = ok && !utf8.valid(view(&truncated_mid)) && agree(view(&truncated_mid))
+  ok = ok && !utf8.valid(view(&truncated_mid)) && faults_at(view(&truncated_mid), u32(0))
   overlong2: [2]u8 = [u8(192), u8(128)]
   ok = ok && !utf8.valid(view(&overlong2)) && agree(view(&overlong2))
   overlong2b: [2]u8 = [u8(193), u8(191)]
@@ -106,15 +141,15 @@ main: (): i32 {
   ff: [1]u8 = [u8(255)]
   ok = ok && !utf8.valid(view(&ff)) && agree(view(&ff))
   extra_cont: [3]u8 = [u8(195), u8(169), u8(128)]
-  ok = ok && !utf8.valid(view(&extra_cont)) && agree(view(&extra_cont))
+  ok = ok && !utf8.valid(view(&extra_cont)) && faults_at(view(&extra_cont), u32(2))
   cont_after_3: [4]u8 = [u8(226), u8(130), u8(172), u8(128)]
-  ok = ok && !utf8.valid(view(&cont_after_3)) && agree(view(&cont_after_3))
+  ok = ok && !utf8.valid(view(&cont_after_3)) && faults_at(view(&cont_after_3), u32(3))
   lead_lead: [3]u8 = [u8(226), u8(226), u8(130)]
-  ok = ok && !utf8.valid(view(&lead_lead)) && agree(view(&lead_lead))
+  ok = ok && !utf8.valid(view(&lead_lead)) && faults_at(view(&lead_lead), u32(0))
   truncated_at_16: [16]u8 = [u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(226)]
-  ok = ok && !utf8.valid(view(&truncated_at_16)) && agree(view(&truncated_at_16))
+  ok = ok && !utf8.valid(view(&truncated_at_16)) && faults_at(view(&truncated_at_16), u32(15))
   cont_at_17: [17]u8 = [u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(128)]
-  ok = ok && !utf8.valid(view(&cont_at_17)) && agree(view(&cont_at_17))
+  ok = ok && !utf8.valid(view(&cont_at_17)) && faults_at(view(&cont_at_17), u32(16))
 
   // Around the sixty-four-byte step: lengths on both sides of it, a
   // four-byte sequence straddling byte 64, a lead left open at byte 63
@@ -142,12 +177,12 @@ main: (): i32 {
   text200[64] = u8(97)
   text200[65] = u8(97)
   text200[63] = u8(226)
-  ok = ok && prefix_invalid(view(&text200), u32(200))
+  ok = ok && prefix_invalid(view(&text200), u32(200)) && faults_at(view(&text200), u32(63))
   ok = ok && prefix_invalid(view(&text200), u32(128))
   ok = ok && prefix_invalid(view(&text200), u32(64))
   text200[63] = u8(97)
   text200[64] = u8(128)
-  ok = ok && prefix_invalid(view(&text200), u32(200))
+  ok = ok && prefix_invalid(view(&text200), u32(200)) && faults_at(view(&text200), u32(64))
   text200[64] = u8(97)
   text200[127] = u8(226)
   text200[128] = u8(130)

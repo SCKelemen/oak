@@ -85,7 +85,9 @@ func Theorems(model *compiler.SemanticModel, cases int) ([]Result, error) {
 	}
 	// A protocol's `eventually` entries are decided over its reachable
 	// states (prove/liveness.go), after the theorems.
-	return append(summarizeInvariants(results), protocolLiveness(model, env, cases)...), nil
+	results = summarizeInvariants(results)
+	results = exploreInvariants(results, model, env, cases)
+	return append(results, protocolLiveness(model, env, cases)...), nil
 }
 
 // summarizeInvariants folds the generated obligations of an invariant

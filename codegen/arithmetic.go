@@ -60,7 +60,7 @@ func (cg *CodeGenerator) emitArithmeticHelpers(program *ast.Program) {
 	cg.write("  __builtin_trap();\n}\n")
 	cg.write("#else\n")
 	cg.write("static inline void oak_overflow_trap(const char *file, u32 line) {\n")
-	cg.write("  (void)file; (void)line;\n  __builtin_trap();\n}\n")
+	cg.write("  oak_report(\"arithmetic overflow\", file, line);\n  __builtin_trap();\n}\n")
 	cg.write("#endif\n")
 	for _, name := range used {
 		cg.writeRaw(cg.arithmeticHelperSource(name))

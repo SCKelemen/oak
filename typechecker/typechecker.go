@@ -578,10 +578,11 @@ type TypeChecker struct {
 	// refinements are the declared refinement types by name, and
 	// refinementChecks the constructions by call position
 	// (typechecker/refinements.go).
-	refinements          map[string]*refinementInfo
-	refinementTemplates  map[string][]string // generic refinement -> its specializations
-	refinementChecks     map[string]string
-	refinementDischarged map[string]bool
+	refinements           map[string]*refinementInfo
+	refinementTemplates   map[string][]string // generic refinement -> its specializations
+	refinementTemplateSet *refinementTemplateSet
+	refinementChecks      map[string]string
+	refinementDischarged  map[string]bool
 	// equalityTypes records, per `==`/`!=` operator position, the named
 	// sum type or record the operands have, so the backend emits that
 	// type's equality function (typechecker/equality.go).
@@ -938,6 +939,9 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 		}
 		program.Statements = kept
 	}
+	// Refinements specialized on demand while checking join the program
+	// (typechecker/refinement_templates.go).
+	tc.appendLateRefinementInstances(program)
 }
 
 // recordGlobalOwners notes, for every package-level function and binding,
@@ -5416,6 +5420,12 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 		// Record-template applications (Ring[u8, 16]) resolve before array
 		// syntax: template knowledge is the const-parameter disambiguator
 		// (typechecker/mono.go).
+		// An application of a generic refinement to literals (IrqId[4]) —
+		// a record template's substituted field, or any late type —
+		// specializes on demand (typechecker/refinement_templates.go).
+		if refined := tc.refinementTemplateApplication(indexExpr); refined != nil {
+			return tc.parseTypeExpression(refined)
+		}
 		if instantiated, isTemplate := tc.resolveRecordTemplateApplication(indexExpr); isTemplate {
 			return instantiated
 		}
@@ -5627,6 +5637,12 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 
 	// Record-template applications (Ring[u8, 16]): typechecker/mono.go.
 	if indexExpr, ok := expr.(*ast.IndexExpression); ok {
+		// An application of a generic refinement to literals (IrqId[4]) —
+		// a record template's substituted field, or any late type —
+		// specializes on demand (typechecker/refinement_templates.go).
+		if refined := tc.refinementTemplateApplication(indexExpr); refined != nil {
+			return tc.parseTypeExpression(refined)
+		}
 		if instantiated, isTemplate := tc.resolveRecordTemplateApplication(indexExpr); isTemplate {
 			return instantiated
 		}

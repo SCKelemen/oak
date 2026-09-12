@@ -238,7 +238,7 @@ main: (): i32 = 0
 		got[r.Name] = r
 	}
 	want := map[string]Status{
-		"paid": Refuted, "paid__base": Decided, "paid__step": Refuted,
+		"paid":    Refuted,
 		"counted": Decided, "counted__base": Decided, "counted__step": Decided,
 		"never_stuck": Decided, "never_stuck__base": Decided, "never_stuck__step": Decided,
 	}
@@ -252,11 +252,17 @@ main: (): i32 = 0
 			t.Errorf("%s: status %s (%s), want %s", name, r.Status, r.Detail, status)
 		}
 	}
-	if !strings.Contains(got["paid__step"].Detail, "coins: 255") {
-		t.Errorf("paid__step: %s", got["paid__step"].Detail)
-	}
-	if !strings.HasPrefix(got["paid"].Detail, "invariant is not preserved: ") {
+	if !strings.Contains(got["paid"].Detail, "coins: 255") {
 		t.Errorf("paid: %s", got["paid"].Detail)
+	}
+	// The inductive step's counterexample sits at coins = 255; the reachable
+	// exploration then names a state a run actually reaches (the wrapped
+	// counter, Unlocked with no coins), keeping the inductive detail.
+	if !strings.HasPrefix(got["paid"].Detail, "invariant fails at the reachable state Unlocked with {coins: 0} (invariant is not preserved: ") {
+		t.Errorf("paid: %s", got["paid"].Detail)
+	}
+	if _, kept := got["paid__step"]; kept {
+		t.Errorf("paid__step: the obligation rows are folded into the reachable verdict")
 	}
 	if !strings.HasPrefix(got["counted"].Detail, "invariant: base all 1 cases, step all") {
 		t.Errorf("counted: %s", got["counted"].Detail)
@@ -433,5 +439,39 @@ main: (): i32 = 0
 	}
 	if len(results) != 1 || results[0].Status != Refuted || !strings.Contains(results[0].Detail, "staying within {A; B}") {
 		t.Fatalf("weak: %+v", results)
+	}
+}
+
+// An invariant over a data domain the exhaustive decider cannot enumerate
+// (a u32 budget) is decided over the reachable states, which are few even
+// though the domain is not; a false one is refuted at a reachable state.
+func TestInvariantOverReachableStates(t *testing.T) {
+	src := `
+Quantum: protocol = {
+  data { budget: u32 }
+  init { budget: u32(2) }
+  initial Running
+  tick: Running -> Running when data.budget > u32(1) then { data.budget = data.budget - u32(1) }
+  tick: Running -> Yielded when data.budget <= u32(1) then { data.budget = u32(2) }
+  resume: Yielded -> Running
+}
+
+bounded: theorem (s: QuantumState, d: QuantumData) { d.budget >= u32(1) && d.budget <= u32(2) }
+always_full: theorem (s: QuantumState, d: QuantumData) { d.budget == u32(2) }
+main: (): i32 = 0
+`
+	results, err := Theorems(check(t, src), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]Result{}
+	for _, r := range results {
+		got[r.Name] = r
+	}
+	if r := got["bounded"]; r.Status != Decided || !strings.Contains(r.Detail, "holds on all 3 reachable states") {
+		t.Errorf("bounded: %+v", r)
+	}
+	if r := got["always_full"]; r.Status != Refuted || !strings.Contains(r.Detail, "fails at the reachable state Running with {budget: 1}") {
+		t.Errorf("always_full: %+v", r)
 	}
 }

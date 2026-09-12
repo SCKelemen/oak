@@ -1179,7 +1179,12 @@ exhaustive evaluation over finite domains or at the bit level through the
 assembler verifier's blaster, `refuted` with a counterexample, or `open` with a
 Lean projection (`-lean out.lean`) whose automatic proof Lean checks. A
 theorem over a protocol's projected state is an invariant: its base and step
-obligations are generated. Refinement types (`Slot: type = u16 where value <
-u16(8)`) carry their predicate as a fact, so an index of a refined type is
-proven at every access and checked once, at construction. See [the
-verification spec](docs/spec/125-verification.md).
+obligations are generated, and a candidate the inductive check cannot
+enumerate is decided over the reachable states. A protocol's `fair step` and
+`eventually from -> target` entries are decided the same way and projected
+to the TLA+ module for TLC. Refinement types (`Slot: type = u16 where value <
+u16(8)`, generic as `IrqId[N: u32]: type = u16 where value < N`) carry their
+predicate as a fact, so an index of a refined type is proven at every access
+and checked once, at construction — or not at all when the facts in scope
+discharge it. `examples/verification_quantum.oak` exercises all of it; see
+[the verification spec](docs/spec/125-verification.md).

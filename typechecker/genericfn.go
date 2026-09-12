@@ -426,6 +426,12 @@ func (tc *TypeChecker) instantiateFunctionTemplate(template *ast.FunctionStateme
 	if !ok {
 		return "", false
 	}
+	// A refinement applied to a const parameter (IrqId[N]) is now an
+	// application to a literal: specialize it before the clone is checked
+	// (typechecker/refinement_templates.go).
+	if tc.refinementTemplateSet != nil {
+		tc.rewriteRefinementApplications(reflect.ValueOf(specialized), tc.refinementTemplateSet)
+	}
 	// Every instantiation shares the template's source positions; the
 	// position-keyed resolution records (variants, matches, shift widths)
 	// disambiguate through the token's SemanticContext, stamped with the

@@ -545,10 +545,11 @@ remains that a fact could elide" is a finding.
       errors in lanes and decide once per block, with the error position
       and class produced by the scalar oracle re-run from the last
       known-good block (rewinding at most three continuation bytes), and
-      is the "detected one block late" case tested? (simdutf
-      `rewind_and_validate_with_errors`, `puzzler2`) — Oak:
-      `stdlib/strings.oak` returns at the first bad step and `TextError`
-      carries no position — not stated.
+      is the "detected one block late" case tested? (simdutf `rewind_and_validate_with_errors`, `puzzler2`) — Oak:
+      `utf8.locate` (`93-simd.md` §1.5, landed 2026-09-12): per-step
+      rejection, then `strings.utf8_first_error_at` from a boundary three
+      bytes back; the lead-at-63 and continuation-at-64 cases are in the
+      differential test.
 - [ ] **Structure mask indexes a generated shuffle table.** For
       transcoding, is the per-block continuation bitmask the index into a
       generated (shuffle, consumed) table over ≤12-bit patterns, with the
