@@ -44,16 +44,26 @@ sequence of entries separated by newlines or commas:
 - `initial S` — exactly once. The initial control state.
 - `data { field: T, ... }` and `init { field: value, ... }` — together or not
   at all: the machine's data record (an ordinary record type body; fields
-  may be fixed arrays `[N]T`) and its initial value (a record literal setting
-  every field; arrays as typed array literals).
+  may be fixed arrays `[N]T`, declared records, and arrays of declared
+  records whose fields may themselves be fixed arrays — a per-replica log
+  is `replicas: [2]Replica` with `Replica: type = struct { log: [3]u8,
+  len: u8 }`) and its initial value (a record literal setting every field;
+  arrays as typed array literals, records as record literals).
 - `resource T` — zero or more nominal types the protocol governs (§5).
 - `name(param: T)?: From -> To (when guard)? (then { effects })? (via callable)?`
-  — one transition line. The guard is a Bool expression over `data.field`,
-  `data.field[i]` and `data.field[i].sub` reads (an array of records: the
-  element type is a declared record), the payload, and the **quantifier
-  forms** below; the effects are statements over `data.field = e`,
-  `data.field[i] = e` and `data.field[i].sub = e` and the payload. Both use
-  ordinary Oak and are checked by every gate once projected.
+  — one transition line. The guard is a Bool expression over data paths
+  of any depth — `data.field`, `data.field[i]`, `data.field[i].sub`,
+  `data.leader.log[j]`, `data.replicas[i].log[data.replicas[i].len]` —
+  the payload, and the **quantifier forms** below; the effects are
+  statements storing through the same paths, `data.path = e`, and the
+  payload. Both use ordinary Oak and are checked by every gate once
+  projected; the model-checker module reads a path as the same path over
+  the variable and folds the stores below one field into one `EXCEPT` on
+  it (`replicas' = [replicas EXCEPT ![who].log[replicas[who].len] = ...,
+  ![who].len = ...]`). A property over the logs — every replica's log is a
+  prefix of the leader's — is a theorem over the projection with loops
+  over the indices, which `oak prove` decides on the reachable states
+  (`125-verification.md` §2a; `prove/replica_logs_test.go`).
 - Quantifier forms over a fixed array field: `count(data.f)` (`u32`, the
   number of true slots of an `[N]Bool` field), `all(data.f)`,
   `any(data.f)`, `none(data.f)`, and over an array of records
