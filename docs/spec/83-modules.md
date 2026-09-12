@@ -252,6 +252,7 @@ replace example.com/dep => ../dep
 - `admit <diagnostic-code>` — a recorded assumption this module accepts
   under the strict profile (`85-discipline.md` section 7): the assumption
   stays recorded and audited but does not reject this module's packages.
+  Admissible codes: `OAK-B0110`, `OAK-B0122`, `OAK-D0102`, `OAK-D0103`.
   Only recorded-assumption codes are admissible (`OAK-B0110`, `OAK-D0102`,
   `OAK-D0103`); an error code or any other warning fails the manifest
   (`OAK-M0112`). Admissions apply to the packages of the module whose

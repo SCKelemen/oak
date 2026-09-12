@@ -74,6 +74,23 @@ columns are re-measured here rather than copied from the table above:
 | sha256 | 2,563,400 | 2,636,150 | 3,197,708 | 357,192 (hardware) | 0.97× |
 | blake3 | 1,874,200 | — | — | — | — |
 
+## AArch64 hash units, 2026-09-12 (`m-series-2026-09-12-hw.json`)
+
+`stdlib/hash.arm64.oakasm` puts `crc32c_step7` on `crc32cx` and
+`sha256_block_hw` on the SHA-2 extension; the Oak bodies remain the
+portable definition (`stdlib/README.md`, `stdlib/VERIFICATION.md`). Same
+run shape as the baseline; all checksums agree.
+
+| Kernel | Oak ns/op | Go stdlib ns/op (hardware) | Go generic ns/op | Rust ns/op | Oak / Go stdlib | Oak / Rust |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| crc32c | 101,400 | 102,600 | 2,136,600 | 2,021,158 | 0.99× | 0.05× |
+| sha256 | 435,000 | 358,550 | 3,256,042 | 2,653,275 | 1.21× | 0.16× |
+
+CRC-32C is at parity with Go's hardware path. SHA-256 pays one call, one
+eight-word state copy, and one `subslice` per 64-byte block on the Oak
+side; a multi-block unit waits on the assembler admitting vector loads at
+a byte index (see `benchmarks/stdlib/RESULTS.md`).
+
 ## Workload shapes from dbs, os, and ml (`m-series-2026-09-11-shapes.json`)
 
 Four kernels shaped like the hot loops of the sibling projects, each with

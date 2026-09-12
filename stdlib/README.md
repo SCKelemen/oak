@@ -68,6 +68,53 @@ A future owning `Ring[T,N]` wrapper can bind storage and cursor once borrowing o
 aggregate storage is fully supported. The current API exposes both borrows rather
 than accidentally passing a whole fixed-size ring by value.
 
+## Reductions (`import("reduce")`)
+
+Reductions whose grouping is a language fact (`docs/spec/55-parallelism.md`
+§4; `Oak.Reduce` in Lean).
+
+| Function | Semantics |
+| --- | --- |
+| `tree[T](xs: []T, zero: T, f: (T, T) -> T)` | The balanced binary-counter tree: four elements give `f(f(x0, x1), f(x2, x3))`, the `simd.reduce_add` grouping; an empty view yields `zero`, which takes no other part. Identical on every backend, no associativity assumed. O(n) work, one 64-entry stack. |
+| `left[T](xs: []T, zero: T, f: (T, T) -> T)` | The sequential left fold `f(f(zero, x0), x1) ...`. |
+
+When `f` is an operator declaring `laws { associative }` the two agree on
+non-empty input (`Oak.Reduce.tree_assoc`).
+
+## Tensors (`import("tensor")`)
+
+Rank-2 tensors as records over borrowed views (`docs/spec/56-kernels.md`
+§8; the ml pilot's request F6): a shape, strides, and an offset into
+row-major storage. Transposition and row selection are new records over
+the same view, never copies; results leave through `MutTensor2` over a
+caller-owned span, so nothing allocates.
+
+| Function | Semantics |
+| --- | --- |
+| `tensor_of[R](data: View[f32, R], rows, cols)` / `tensor_mut_of[R](data: Span[f32, R], rows, cols)` | Contiguous row-major matrices over a view or span; the shape must fit (`assert`). |
+| `tensor_at(t, i, j)`, `tensor_get(t, i, j)`, `tensor_set(t, i, j, v)` | Element access through `tensor_index`, which traps on an out-of-shape pair; the view's bounds check guards the rest. |
+| `tensor_transpose(t)`, `tensor_row(t, i)` | The transposed view (strides swapped) and row `i` as a `1 x cols` tensor, both over the same storage. |
+| `tensor_sum(t)` | Every element in row-major order, left to right, from 0. |
+| `tensor_matmul(a, b, out)` | `out[i, j]` is the inner product of row `i` of `a` and column `j` of `b`, accumulated left to right from 0; shapes `m x k`, `k x n`, `m x n` asserted. |
+| `tensor_relu(x, out)`, `tensor_add(a, b, out)`, `tensor_scale(x, s, out)`, `tensor_fill(t, v)` | Elementwise into `out`, shapes asserted. |
+
+A kernel (`56-kernels.md`) computes the same element function per grid
+position over `t.data` and the shape scalars, since kernels take no
+records. `Oak.Stdlib.TensorLaws` proves the transposition laws over the
+extraction.
+
+## UTF-8 validation (`import("utf8")`)
+
+`utf8.valid(bytes: []u8): Bool` is the well-formedness predicate of Unicode
+Table 3-7 over Oak's portable vectors (`docs/spec/93-simd.md` §1.5): the
+Keiser and Lemire lookup-table classification, sixteen bytes a step, zero
+allocation, the same verdict as the `is_valid_utf8` builtin on every input.
+Measured at 9.6 GB/s beside the builtin's 0.35 (`benchmarks/state-machines/cross/`).
+
+| Function | Semantics |
+| --- | --- |
+| `valid` | true iff `bytes` is well-formed UTF-8: no overlong forms, no surrogates, nothing above U+10FFFF, no truncated sequence, no stray continuation |
+
 ## Bytes
 
 | Function | Result and work |
@@ -679,9 +726,13 @@ and every one of its 20,034 lines passes all five-column invariants in
 `compiler/e2e_stdlib_normalize_test.go`, `e2e_stdlib_normalize_laws_test.go`
 compares the compiled code with an independent Go transliteration on random
 sequences, and `spec/lean/Oak/Normalization.lean` proves canonical ordering
-is a stable sorted permutation and NFD idempotent (composition is defined
-there, its laws are remaining work). Invalid UTF-8 is `InvalidEncoding`, never
-normalized.
+is a stable sorted permutation, NFD idempotent, and the NFC laws (`nfd (nfc x)
+= nfd x`, NFC idempotent) for any data that is closed under decomposition
+and whose primary composites invert it; `spec/lean/Oak/Stdlib/Normalize17.lean`
+discharges both for the Unicode 17.0.0 tables (generated as key trees by
+`generate_normalize.py`, decided in the kernel, with the Hangul syllables by
+arithmetic), so the laws hold unconditionally for the shipped data. Invalid
+UTF-8 is `InvalidEncoding`, never normalized.
 
 ## Grapheme clusters
 
@@ -748,8 +799,8 @@ file is derived from the tree and names the theorem and test functions, so
 it is the place to look before believing a sentence in this README.
 
 Three kinds of evidence back the packages, and they are not interchangeable.
-For `sort`, `varint`, `random`, and the hexadecimal codec the laws are
-theorems about the Lean image `oak build -lean` produces from the same
+For `sort`, `varint`, `random`, `uuid`, and the hexadecimal and base64
+codecs the laws are theorems about the Lean image `oak build -lean` produces from the same
 source the C backend compiles (`docs/spec/95-extraction.md`): a drift test
 keeps the committed image current and `TestLeanStdlibFaithful` runs the image
 and the compiled program on one corpus and compares them byte for byte, so
@@ -758,7 +809,7 @@ compiler. For `grapheme`, `normalize`, `causal_frontier`, the interval time
 readings, and the IO port the theorems are about a hand-written model of the
 published rules, and a Go law test or a transliteration relates the Oak code
 to that model on enumerated or random inputs. Everything else — the prelude
-collections, `strings`, `json`, `hash`, `math`, `mx`, `url`, `uuid`, `path`,
+collections, `strings`, `json`, `hash`, `math`, `mx`, `url`, `path`,
 `float`, `time`'s calendar, the simulation packages — is checked by
 implementation tests against sequence models, Go's standard library,
 conformance files, or reference implementations; those are not refinement
@@ -830,9 +881,32 @@ checksum of `a ++ b`. BLAKE3 has the same incremental shape —
 `blake3(view, out)`; the state carries the open chunk and the chaining-value
 stack (room for the 54 levels a 64-bit length can need), and the tree is the
 specification's: 1024-byte chunks, parents merged by the chunk counter's
-trailing zeros, the last parent taking the root flag. All three are
-bit-serial or byte-serial today; word-at-a-time and table paths are measured
-changes for later.
+trailing zeros, the last parent taking the root flag.
+
+On AArch64 the two hot kernels run through the CPU's instructions:
+`stdlib/hash.arm64.oakasm` (embedded and attached by the loader whenever
+`hash` is imported, its function names rewritten to the package's internal
+names) realizes `crc32c_step7` — seven `crc32cx` steps over the 64-bit
+words `crc32c_update` folds 56 bytes at a time — and `sha256_block_hw` — one
+compression through `sha256h`/`sha256h2`/`sha256su0`/`sha256su1`, the state
+read from and written to a span and the block and round constants read
+through views under the assembler checker's dominating length guards. Each
+unit pairs with an Oak declaration that keeps its portable body, so the body
+is the definition: the seam checker admits the unit only within the
+declared registers and proven memory, the extraction and the interpreter see
+the Oak body, non-AArch64 targets and `-DOAK_PORTABLE_INTRINSICS` builds run
+it, and the differential tests (`compiler/e2e_stdlib_crc_sha_hw_test.go`)
+plus the faithfulness harness compare the two paths byte for byte. The CRC
+and SHA-2 instructions have no semantics in the asm verifier, so their
+verdicts are "trusted" (`94-assembler.md` §5), which is exactly what the
+differential tests cover. An AArch64 build requires FEAT_CRC32 and
+FEAT_SHA256 (every Apple M-series core and Armv8.1+ server core has both;
+a core without them takes SIGILL at the first call — build with
+`-DOAK_PORTABLE_INTRINSICS` for such a target). Measured on an M4 Max
+(`benchmarks/stdlib/RESULTS.md`): CRC-32C at parity with Go's hardware path
+(0.97×, from 20×), SHA-256 within 1.26× (from 7.3×); the remaining SHA gap
+is one call and one 96-byte state copy per 64-byte block. BLAKE3 stays
+portable.
 
 `compiler/e2e_hash_test.go` checks the FIPS known-answer vectors, the
 RFC 3720 CRC-32C check value (`0xE3069283` for `"123456789"`), and random
@@ -1109,19 +1183,38 @@ Go suite; `.github/workflows/testing.yml` runs it with `oak test`.
 platform layer is the only code that imports it. `timenative_source(out)`
 fills a refreshed native source; `timenative_refresh(source)` reads both
 host clocks into it (false, unchanged, for a fixed or simulated source
-handed to production code by mistake). The readings cross the boundary as
-plain integers through two symbols the platform provides —
-`int64_t oak_time_host_wall_nanos(void)` (CLOCK_REALTIME) and `uint64_t
-oak_time_host_monotonic_nanos(void)` (CLOCK_MONOTONIC) — because library
-Oak cannot call `clock_gettime` itself yet: the FFI passes owned storage to
-C only as a `c.Ptr, c.Size` pair and `clock_gettime` takes a bare
-out-pointer. `stdlib/native/oak_time_host.c` is the reference shim for
-POSIX hosts; a program that imports `timenative` without providing the
-symbols fails to link, which is the intended failure: the dependency on a
-real clock is visible at build time, never at run time.
-`compiler/e2e_stdlib_timesim_test.go` links the shim and checks the wall
-clock is plausible, the monotonic clock starts at zero and never decreases
-over a thousand refreshes, and a fixed source is refused.
+handed to production code by mistake). The clocks are read in Oak through
+the boundary: `clock_gettime` is an extern binding with `effects {
+Os.Syscall }`, `CLOCK_REALTIME` and `CLOCK_MONOTONIC` are target constants
+(`c.const`, `docs/spec/92-ffi.md` §2.11 — their values differ per host and
+the C compiler, not Oak, resolves them), and the `struct timespec` the call
+fills is a boundary struct passed through `c.out`. Nothing is linked but the
+C library, which every POSIX.1-2001 host provides; that is the package's one
+platform assumption, visible at build time. The earlier host-symbol shim
+(`stdlib/native/oak_time_host.c`, `oak_time_host_*_nanos`) that stood in
+while the FFI lacked out-pointers and target constants is gone.
+`compiler/e2e_stdlib_timesim_test.go` checks the wall clock against Go's
+within a minute, that the monotonic clock starts at zero and never decreases
+over a thousand refreshes, and that a fixed source is refused.
+
+## `objc`: the Objective-C runtime (`import("objc")`)
+
+`stdlib/objc.oak` is Darwin-only and deliberately thin: `objc_class(name)`
+resolves a class by its NUL-terminated name (`objc_getClass` over `c.cstr`)
+and `objc_sel(name)` registers a selector (`sel_registerName`), both as
+opaque `c.Ptr` values. Sending a message is the language form
+`c.msg_send[(params) -> ret](receiver, selector, args...)` inside `unsafe`
+(`docs/spec/92-ffi.md` §2.12): the bracketed signature is the sender's
+assertion about the selector's implementation, checked at the call like an
+extern signature, lowered to `objc_msgSend` cast to that prototype, and
+recorded as the `OAK-B0122` assumption a strict module admits explicitly.
+Nothing models Objective-C types, ownership, or dispatch beyond that; the
+runtime's nil-receiver rule applies unchanged. A module that imports the
+package declares the framework it drives (`framework Foundation`) in its
+`oak.mod`, which brings the runtime library. arm64 only in this increment.
+`compiler/e2e_ffi_objc_test.go` drives Foundation: `[[NSString alloc]
+initWithUTF8String:"oak"]` has length 3, `[NSNumber numberWithInt:41]`
+answers 41, and an `NSRange` boxed in an `NSValue` comes back by value.
 
 ## `arena`: reservations over an owner (`import("arena")`)
 

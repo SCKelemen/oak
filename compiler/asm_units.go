@@ -7,6 +7,7 @@ import (
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/lsp"
+	"github.com/SCKelemen/oak/nativegen"
 )
 
 // stitchAsmUnits parses the compilation's `.oakasm` units, pairs each unit
@@ -25,7 +26,24 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*d
 	declarations := map[string]*ast.FunctionStatement{}
 	fallbacks := map[string]*ast.FunctionStatement{}
 	symbols := map[string]bool{}
+	records := map[string]*ast.RecordLiteral{}
+	adts := map[string]*ast.ADTType{}
+	templates := map[string]*ast.ADTType{}
 	for _, stmt := range root.Statements {
+		// A record type declaration (one record-literal variant): the
+		// checker binds records at the boundary by their placed size.
+		if adt, isADT := stmt.(*ast.ADTType); isADT && adt.Name != nil {
+			if len(adt.TypeParams) > 0 {
+				templates[adt.Name.Value] = adt
+				continue
+			}
+			if literal, isRecord := recordShape(adt); isRecord {
+				records[adt.Name.Value] = literal
+			} else {
+				adts[adt.Name.Value] = adt
+			}
+			continue
+		}
 		fn, ok := stmt.(*ast.FunctionStatement)
 		if !ok || fn.Name == nil || fn.ExternSymbol != "" || len(fn.TypeParams) > 0 || fn.Receiver != nil {
 			if ok && fn.Name != nil {
@@ -70,6 +88,8 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*d
 				}
 			}
 			decl.AsmBacked = true
+			fn.Composites = nativegen.Composites(records, adts)
+			fn.Records, fn.ADTs = records, adts
 			findings := asm.Check(fn, decl, symbols)
 			for _, finding := range findings {
 				report("%s: %s", unitText.Path, finding)

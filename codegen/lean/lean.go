@@ -127,6 +127,12 @@ func Emit(program *ast.Program, tc *typechecker.TypeChecker, namespace string, n
 			break
 		}
 	}
+	if em.usesFloatOps {
+		out.WriteString("import Oak.FloatOps\n\n")
+	}
+	if em.usesUtf8 {
+		out.WriteString("import Oak.Utf8Exec\n\n")
+	}
 	out.WriteString("set_option autoImplicit false\n")
 	// Straight-line translation rebinds and returns variables the source
 	// never reads again; that is the source's shape, not a defect.
@@ -182,6 +188,16 @@ func (em *emitter) emitGlobals() (string, error) {
 			if err != nil {
 				return "", fmt.Errorf("lean: %w", err)
 			}
+			if _, isTargetConstant := typechecker.TargetConstantCall(decl.Value); isTargetConstant {
+				// A target constant (docs/spec/92-ffi.md section 2.11) is a
+				// value the target's C headers define; the extraction knows
+				// only its type, so it is an uninterpreted constant and a
+				// theorem about code reading it holds for every value
+				// (95-extraction.md section 3).
+				rendered[name] = fmt.Sprintf("opaque %s : %s\n\n", ident(name), typ)
+				progressed = true
+				continue
+			}
 			em.fnName = name
 			em.scope = newScope(nil)
 			var hoisted []string
@@ -226,6 +242,12 @@ type emitter struct {
 	globals     map[string]*ast.VariableDeclaration
 	globalOrder []string
 	usedGlobals map[string]bool
+	// usesFloatOps records a call to fma, copysign, or round_even, whose
+	// bit-exact carriers live in Oak.FloatOps rather than in Lean's core.
+	usesFloatOps bool
+	// usesUtf8 records a call to is_valid_utf8, decided over the carrier by
+	// Oak.Utf8Exec.valid (docs/spec/95-extraction.md section 3).
+	usesUtf8 bool
 
 	// Per-function state.
 	fnName  string
@@ -349,6 +371,14 @@ func (em *emitter) callees(fn *ast.FunctionStatement) []string {
 
 // ---- types ----
 
+// cScalarLean renders the c.* integer scalars a target constant may carry
+// (docs/spec/92-ffi.md section 2.11) at the widths of the section 2.4
+// target model, LP64: int is 32 bits, long and size_t 64.
+var cScalarLean = map[string]string{
+	"c.Int": "Int32", "c.UInt": "UInt32", "c.Int32": "Int32", "c.UInt32": "UInt32",
+	"c.Int64": "Int64", "c.UInt64": "UInt64", "c.Long": "Int64", "c.ULong": "UInt64", "c.Size": "UInt64",
+}
+
 var primitiveLean = map[string]string{
 	"u8": "UInt8", "u16": "UInt16", "u32": "UInt32", "u64": "UInt64",
 	"i8": "Int8", "i16": "Int16", "i32": "Int32", "i64": "Int64",
@@ -366,6 +396,12 @@ func (em *emitter) leanType(expr ast.Expression) (string, error) {
 			return lean, nil
 		}
 		if lean, ok := em.adtLeanName(t.Value); ok {
+			return lean, nil
+		}
+		if lean, ok := cScalarLean[t.Value]; ok {
+			// The c.* integer scalars, at the widths of the §2.4 target
+			// model (LP64: long and size_t are 64 bits); they appear as
+			// the types of target constants.
 			return lean, nil
 		}
 		return "", fmt.Errorf("lean: type %s is outside the extracted subset", t.Value)
@@ -748,6 +784,36 @@ func (em *emitter) statementInner(stmt ast.Statement, lines *[]string) error {
 		return nil
 	case *ast.IndexAssignmentStatement:
 		if s.Target.Dot {
+			if elementAccess, isElement := s.Target.Left.(*ast.IndexExpression); isElement && !elementAccess.Dot {
+				// arr[i].field = v: the element record is read, its field
+				// replaced, and the record stored back at the same index
+				// (docs/spec/95-extraction.md section 2); out-of-range
+				// stores are dropped like every other element store.
+				array, isIdent := elementAccess.Left.(*ast.Identifier)
+				field, isName := s.Target.Index.(*ast.Identifier)
+				if !isIdent || !isName {
+					return fmt.Errorf("field assignment %s is outside the extracted subset (one level of fields)", s.Target.String())
+				}
+				arrayType, known := em.scope.lookup(array.Value)
+				element, isArray := elementOf(arrayType)
+				if !known || !isArray {
+					return fmt.Errorf("field assignment into non-array %s", array.Value)
+				}
+				fieldType, err := em.recordFieldType(element, field.Value)
+				if err != nil {
+					return err
+				}
+				index, err := em.indexTerm(elementAccess.Index)
+				if err != nil {
+					return err
+				}
+				term, err := em.expr(s.Value, fieldType)
+				if err != nil {
+					return err
+				}
+				emit("let %s := %s.setIfInBounds %s { (%s.getD %s %s) with %s := %s }", ident(array.Value), ident(array.Value), index, ident(array.Value), index, zeroOf(element), ident(field.Value), term)
+				return nil
+			}
 			base, ok := s.Target.Left.(*ast.Identifier)
 			field, isField := s.Target.Index.(*ast.Identifier)
 			if !ok || !isField {
@@ -1723,6 +1789,19 @@ func (em *emitter) call(call *ast.InvocationExpression, want string) (string, er
 			return "", err
 		}
 		return "(" + base + ".size.toUInt32)", nil
+	case "is_valid_utf8":
+		// The compiler's UTF-8 validity intrinsic (docs/spec/70-strings.md)
+		// decides Table 3-7 over a view; the extraction runs the same
+		// decision procedure over the carrier (Oak.Utf8Exec.valid).
+		if len(call.Arguments) != 1 {
+			return "", fmt.Errorf("is_valid_utf8 takes one argument")
+		}
+		base, err := em.expr(call.Arguments[0], "")
+		if err != nil {
+			return "", err
+		}
+		em.usesUtf8 = true
+		return "(Oak.Utf8Exec.valid " + base + ")", nil
 	case "subslice":
 		// subslice(v, start, n) is the window of n elements from start
 		// (docs/spec/50-borrowing.md); Oak traps past the end, the extraction
@@ -2214,10 +2293,48 @@ func floatConversion(name, op, targetLean, sourceLean, inner string) (string, er
 // floatIntrinsic renders the correctly rounded intrinsics of section 11.3.5
 // that Lean's Float and Float32 carry with the same contract: square root,
 // absolute value, floor, ceiling, `round` (ties away from zero, as Lean's
-// `Float.round`), and the classifications. fma, copysign, trunc,
-// round_even, min/max, is_normal, and total_order have no exact Lean
-// counterpart and fail closed.
+// `Float.round`), and the classifications; fma, copysign, and round_even
+// go through the bit-exact carriers in Oak.FloatOps. trunc, min/max,
+// is_normal, and total_order have no exact Lean counterpart yet and fail
+// closed.
 func (em *emitter) floatIntrinsic(name string, call *ast.InvocationExpression, want string) (string, error) {
+	// The bit-exact carriers of Oak.FloatOps (spec/lean/Oak/FloatOps.lean):
+	// fma as one rounding of the exact product-sum over the bit patterns,
+	// copysign as a bit operation, round_even from Lean's ties-away round
+	// with the ties moved to even.
+	arity := map[string]int{"fma": 3, "copysign": 2, "round_even": 1}[name]
+	if arity != 0 {
+		if len(call.Arguments) != arity {
+			return "", fmt.Errorf("floating-point intrinsic %s: expected %d operands", name, arity)
+		}
+		width := ""
+		for _, argument := range call.Arguments {
+			if width = em.checkedLeanType(argument); width != "" {
+				break
+			}
+		}
+		if width == "" && isFloatLean(want) {
+			width = want
+		}
+		if !isFloatLean(width) {
+			return "", fmt.Errorf("floating-point intrinsic %s: operand width is not f32 or f64", name)
+		}
+		suffix := "64"
+		if width == "Float32" {
+			suffix = "32"
+		}
+		carrier := map[string]string{"fma": "fma", "copysign": "copysign", "round_even": "roundEven"}[name]
+		terms := make([]string, len(call.Arguments))
+		for i, argument := range call.Arguments {
+			term, err := em.expr(argument, width)
+			if err != nil {
+				return "", err
+			}
+			terms[i] = term
+		}
+		em.usesFloatOps = true
+		return fmt.Sprintf("(Oak.FloatOps.%s%s %s)", carrier, suffix, strings.Join(terms, " ")), nil
+	}
 	leanName := map[string]string{
 		"sqrt": "sqrt", "abs": "abs", "floor": "floor", "ceil": "ceil", "round": "round",
 		"is_nan": "isNaN", "is_finite": "isFinite", "is_infinite": "isInf",

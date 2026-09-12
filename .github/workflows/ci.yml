@@ -17,8 +17,12 @@ jobs:
         # The compiler package's end-to-end suite under the race detector
         # passed the 40-minute ceiling once the standard library grew; the
         # shards partition every test name exactly once (compiler E2E A-R,
-        # compiler E2E S-Z, the rest of compiler, every other package).
-        shard: [e2e-a-r, e2e-s-z, compiler-rest, packages]
+        # the standard-library E2E tests in two halves (the text tests,
+        # the rest), the remaining compiler E2E S-Z, the rest of compiler,
+        # every other package). The S-Z shard alone reached the 45-minute
+        # limit once TestE2EStd* passed eighty tests, and those alone did
+        # too under the race detector on a slow runner.
+        shard: [e2e-a-r, e2e-stdlib-text, e2e-stdlib-rest, e2e-s-z, compiler-rest, packages]
 
     steps:
     - name: Checkout code
@@ -52,7 +56,9 @@ jobs:
       run: |
         case "${{ matrix.shard }}" in
           e2e-a-r) go test -v -race -timeout 45m ./compiler -run '^TestE2E[A-R]' ;;
-          e2e-s-z) go test -v -race -timeout 45m ./compiler -run '^TestE2E[S-Z]' ;;
+          e2e-stdlib-text) go test -v -race -timeout 60m ./compiler -run '^TestE2EStdlibT' ;;
+          e2e-stdlib-rest) go test -v -race -timeout 60m ./compiler -run '^TestE2EStd(lib[^T]|[^l])' ;;
+          e2e-s-z) go test -v -race -timeout 45m ./compiler -run '^TestE2E(S[^t]|St[^d]|[T-Z])' ;;
           compiler-rest) go test -v -race -timeout 45m ./compiler -run '^Test([^E]|E[^2]|E2[^E])' ;;
           packages) go test -v -race -timeout 45m $(go list ./... | grep -v '/compiler$') ;;
         esac

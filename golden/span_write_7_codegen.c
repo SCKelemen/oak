@@ -450,7 +450,7 @@ i32 oak_fill( oak_span_u8 s ) {
     u32 n   = ((u32)( s ).len)  ;
     u32 i   = 0  ;
     while ( ( i < n )   ) {
-      oak_span_store_u8( s, (u64)( i ), ((u8)( 7 )) );
+      ( s ).base[ i ] = ((u8)( 7 ));
       i     = oak_add_u32( i, 1 )    ;
     }
     return oak_add_i32( ((i32)( oak_span_index_u8( s, (u64)( 0 ) ) )), ((i32)( oak_span_index_u8( s, (u64)( 3 ) ) )) )  ;

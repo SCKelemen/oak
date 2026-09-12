@@ -51,7 +51,7 @@ jobs:
       - name: Check generated normalization tables
         run: |
           python3 stdlib/generate_normalize.py
-          git diff --exit-code -- stdlib/normalize.oak
+          git diff --exit-code -- stdlib/normalize.oak spec/lean/Oak/Stdlib/NormalizeTables.lean
       - name: Test normalize
         run: go test ./compiler -run 'TestE2EStdlibNormalize' -count=1
       - name: Test float
@@ -74,7 +74,7 @@ jobs:
       - name: Test standard library packages under the race detector
         run: |
           go test -race -timeout 45m $(go list ./... | grep -v '/compiler$')
-          go test -race -timeout 45m ./compiler -run 'Stdlib|Lean|Hash|Text'
+          go test -race -timeout 90m ./compiler -run 'Stdlib|Lean|Hash|Text'
       - name: Check formatting
         if: always()
         run: |

@@ -64,6 +64,10 @@ with its type suffix, e.g. `simd.add_u8x16`):
 | `simd.eq_E` | `(E, E) -> E` | mask: lane is all-ones where equal, zero where not |
 | `simd.any_E` | `(E) -> Bool` | true iff **some** lane is nonzero |
 | `simd.all_E` | `(E) -> Bool` | true iff **every** lane is nonzero |
+| `simd.subs_E` | `(E, E) -> E` | lane-wise saturating subtract: `x - y` when `y ≤ x`, else `0` |
+| `simd.shr_E` | `(E, u32) -> E` | lane-wise logical shift right by the count; a count reaching the lane width **traps** (the scalar shift rule) |
+| `simd.tbl_u8x16` | `(U8x16, U8x16) -> U8x16` | byte-table lookup: lane `i` is `table[idx[i]]` when `idx[i] < 16`, else `0` (NEON `tbl`, and `pshufb`'s high-bit rule) |
+| `simd.prev_u8x16` | `(U8x16, U8x16, u32) -> U8x16` | the sixteen bytes ending `n` before the end of `prev ++ cur`: lane `i` is `prev[16-n+i]` for `i < n`, `cur[i-n]` otherwise; `n > 16` **traps** |
 
 Every operation is **total** — no lane produces undefined behavior for any
 input — and loads/stores carry the same never-UB obligation as scalar
@@ -75,6 +79,17 @@ is responsible for unaligned-safe lowering.
 `simd.any_u8x16(simd.eq_u8x16(chunk, simd.splat_u8x16(needle)))` is the
 canonical byte-search kernel, and its law — the reduction is true exactly
 when some lane matches — is proven in `Oak.Simd`.
+
+The last four are the byte-classification vocabulary (added 2026-09-12 for
+the UTF-8 validator of §1.5): a table lookup indexed by nibbles, the two
+nibble extractions (`shr` by four and `and` with fifteen), a saturating
+subtraction that turns "at or above a threshold" into a nonzero lane, and
+the shift that lets a block see the bytes before it. `Oak.Simd` states each
+lane by lane (`subSat_lane`, `subSat_zero_iff`, `shr_lane`,
+`tbl_lane_in_range`, `tbl_lane_out_of_range`, `prev_lane_from_prev`,
+`prev_lane_from_cur`, `prev_zero`); `compiler/e2e_simd_bytes_test.go` checks
+the interpreter, the NEON lowering, and the portable loop agree, and that
+the out-of-range counts trap.
 
 ### 1.2a Floating-point vectors
 
@@ -131,6 +146,35 @@ On a scalable-vector target such as RISC-V V or AArch64 SVE, fixed vectors
 remain fixed semantic values. The backend may use a scalable register to
 implement them, but physical VLEN is never observable through `U8x16` or any
 other fixed type.
+
+### 1.5 A byte-classification kernel: the UTF-8 validator
+
+`stdlib/utf8.oak` (`utf8 := import("utf8")`, `utf8.valid: ([]u8) -> Bool`)
+is the lookup-table validator of Keiser and Lemire, as shipped in simdjson
+and simdutf, written in Oak over `U8x16`: three 16-entry tables indexed by
+the previous byte's two nibbles and the current byte's high nibble classify
+every byte pair in one `tbl` each and one `and`; a saturating subtraction
+against the bytes two and three back permits a continuation after a
+continuation exactly under a three- or four-byte lead; a block that ends
+inside a sequence carries an `incomplete` mask into the next block; the
+tail is zero-padded, since zero is ASCII and cannot complete anything. The
+measured result (`benchmarks/state-machines/cross/`) is 9.6 GB/s on Apple
+arm64 beside simdutf's 12 and the scalar builtin's 0.35: the portable
+vectors express the algorithm, and the remaining gap is the sixteen-byte
+step against simdutf's sixty-four.
+
+Two proofs bracket the source. `Oak.Utf8Lookup` decides, by bit-blasting
+over all 65,536 byte pairs, that the tables' low seven bits are nonzero
+exactly on the pairs Unicode Table 3-7 forbids on their own (`sc_error`),
+that the top bit is set exactly when both bytes are continuations
+(`sc_two_conts`), and that the incomplete maxima and the two- and
+three-back permission thresholds are the ones the algorithm needs. The
+stream composition — the block-boundary carry and the TWO_CONTS
+cancellation — is checked against the scalar builtin, which is the
+transliteration of `Oak.Utf8Validity`, by differential tests over edge
+cases and three thousand random corrupted inputs under both lowerings
+(`compiler/e2e_stdlib_utf8_test.go`). The scalar builtin `is_valid_utf8`
+remains the reference the interpreter and the proofs run on.
 
 ## 2. arm64 vector instruction functions
 

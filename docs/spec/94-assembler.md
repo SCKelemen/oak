@@ -222,6 +222,17 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   as its fallback body. Verification verdicts (§8) are informational
   diagnostics the CLI prints as `asm: …` lines; a mismatch is an error.
   `examples/asm` is the reference: four kernels, all proven, run both ways.
+  **Library units.** A standard library package may carry units too
+  (`stdlib/hash.arm64.oakasm`, embedded as `stdlib.AsmUnits`): the module
+  loader attaches them when the package is imported, rewriting each unit
+  function's header to the package's internal name
+  (`83-modules.md` §7), so the pairing rule is the root package's; the
+  emitted block adds `.arch_extension crc`/`sha2` when a unit uses the
+  CRC-32 or SHA-256 mnemonics, for host assemblers whose default
+  architecture lacks them. The `hash` units keep their Oak bodies as
+  fallbacks, so the interpreter, the Lean extraction, and non-AArch64
+  builds see the portable definition and the differential tests compare it
+  with the hardware path.
 - **Typed pointer memory.** A span (`[*]T`) or view (`[]T`) parameter of
   fixed-width elements crosses as its `{base, u32 len}` pair and binds
   both registers explicitly — `bind x0, w1 = frame` (the base pointer,
@@ -955,10 +966,320 @@ trapping in both realizations — the program's `main` is now itself lowered
 natively. Bodies with owned arrays are trusted by the verifier (§5): it
 models frame memory only through `sp`, not through a frame address in a
 register.
-Next increments: the verifier's frame-address memory (so array bodies are
-proven, not trusted), `break` as a second loop exit in the recognizer,
-records, and spans with calls (spilling the pair under a re-derivable
-fact).
+**Fifth increment — spans in functions that call.** A span or view
+parameter arrives in its argument pair, which a `bl` clobbers; the
+lowering of a function that calls now parks each pair in two callee-saved
+registers in the prologue (`mov x19, x0; mov w20, w1`, from the pool the
+variables use, saved and restored with them) and walks the span from
+there, and a span parameter passed on to a callee moves its parked pair
+into consecutive argument registers. The checker follows the copies: `mov
+xD, xB` over a span base makes `xD` a base of the same span, `mov wD, wL`
+over a length register adds `wD` to that span's length registers (one set
+shared by a base and its copies), guards accept any register in the set,
+a write drops the register from it, and a call forgets every fact on
+`x0`–`x17` (a span parked there does not survive the callee — which also
+closes the latitude that had let a bound argument base be dereferenced
+after a `bl`). `TestCheckerSpanAliases`: walking the parked pair after a
+call is accepted; the original base after the call, an overwritten length
+copy, and a guard against an unrelated register are refused; a length
+guard through the copy holds. Executed (`TestE2ENativeSpanCalls`): a view
+forwarded twice with `len` read after the calls, a store loop calling a
+helper for every element, and two parked views with a leaf called before
+and inside the loop — natively against the C backend and the portable
+realization. Bodies that call remain trusted by the verifier (§5).
+**Sixth increment — record locals.** A declared record type of scalar
+fields (`Point: type = struct { x: i32, y: i32 }`) is placed by
+`semir.RecordLayoutWithSpec` over the C backend's field representations
+(`u8`…`u64`, `i8`…`i64`, `f32`, `f64`; `Bool` the 4-byte C enum; a declared
+per-field alignment raising the natural one; packed layouts and non-scalar
+fields left to the C backend) — the same numbers `codegen/records.go`
+asserts against the C compiler, so a natively compiled body and a
+C-compiled one agree on every offset. A local `p: Point = Point { x: e, y:
+e }` occupies the layout's size in whole 8-byte frame slots with every
+field value evaluated before the name is bound; `p: Point = q` and `p = q`
+copy the record slot-wise (padding travels, as C's struct assignment copies
+it); `p.f` loads the field at its own width and offset with the field
+type's extension (`ldrb`/`ldrh`/`ldrsb`/`ldrsh`/`ldr`, a Bool field's
+32-bit `ldr`), `p.f = e` stores it likewise — through `[sp, #imm]`, which
+the checker bounds to the declared frame and requires naturally aligned. A
+record local without an initializer is left to the C backend (which leaves
+it uninitialized; no semantics are invented natively), and records as
+parameters, results, or call arguments are not yet lowered (AAPCS64
+composite passing is a later increment). Executed (`TestE2ENativeRecords`):
+absolute-value updates through a `Point`, a five-field record of mixed
+widths updated in a loop with a Bool field written from a comparison and
+read as a condition, a copy diverging from its source, whole-record
+assignment, and a float field — natively against the C backend and the
+portable realization. Record bodies are trusted by the verifier (§5): its
+Oak side has no record locals.
+**Seventh increment — records across the call boundary.** AAPCS64's
+composite rules, as the C compiler applies them on the host: a record of
+up to 16 bytes travels as `ceil(size/8)` consecutive `x` registers, each
+an 8-byte chunk of its memory image (so `Point {x: i32, y: i32}` is one
+register, `Pair {lo, hi: u64}` two), and a larger record by reference to
+a copy the caller owns; a result of up to 16 bytes comes back in `x0`
+(and `x1`), a larger one is written into the area whose address the
+caller passes in `x8`. The lowering stores a parameter's chunks into its
+frame slots in the prologue (or copies the referenced record in, whole
+words then a 4/2/1-byte tail, since the body may write its own copy),
+loads a record argument's chunks from its local (or copies it into a
+fresh temp and passes `add xN, sp, #off`), places a record result by
+loading its chunks into `x0`/`x1` or copying into the `x8` area — `x8`
+parked in a callee-saved register when the body calls — and receives a
+call's record into a temp (chunks stored from `x0`/`x1`, or `add x8, sp,
+#temp` before the `bl`). Record literals and record-returning calls are
+admitted wherever a record value is needed (initializers, assignments,
+arguments, results, conditional result arms). Homogeneous floating-point
+aggregates (all fields one float type, at most four), which AAPCS64
+passes in `v` registers, are left to the C backend. The checker learned
+the same rules from a composites table the compiler builds from the
+program's record declarations (`asm.Function.Composites`, never from the
+unit text; hand-written units get it too): a record parameter binds `bind
+x0 = p` or `bind x0, x1 = p` by its size, a larger one binds the address
+as a read-only memory region of exactly the record's size (`[xN, #off]`
+inside it, naturally aligned, no indexing or moving, dying with a write to
+the register or a call, copied by `mov`), a two-chunk result must leave
+`x1` written at `ret`, a larger result makes `x8` a writable region of the
+size on entry, and a call's result may now occupy `x1` as well as `x0`
+(`TestCheckerComposites`: five accepted shapes, nine refusals). Executed
+(`TestE2ENativeRecordABI`): 8-, 16-, 4-, and 24-byte records in and out,
+a by-reference chain of calls with scalars interleaved, a callee mutating
+its copy without touching the caller's, and a record result chosen by a
+condition — natively, through the C backend, and as the portable
+realization; and (`TestE2ENativeRecordMixed`) natively lowered leaves
+called from a C-compiled `main`, so the two compilers' composite passing
+agrees on the host ABI. `OAK_NATIVE_DUMP=1` prints every lowered
+function's assembly as the checker sees it. Record bodies remain trusted
+by the verifier (§5).
+**Eighth increment — nested records and array fields.** A record field
+may itself be a declared record or an owned array of scalars, placed by
+the same natural layout the C backend asserts (a nested record at its own
+size and alignment, `[N]T` as `N·sizeof(T)` at the element's alignment; a
+record containing itself is refused). An access chain resolves to a frame
+place — a record (a local, a nested field, or a call's record result
+landed in a temp), an array (a local or an array field), or a scalar field
+— and each shape has one lowering: scalar fields load and store at their
+offset and width, nested records copy by their exact size in the widest
+naturally aligned units then a narrowing tail (never a neighbor's bytes;
+`r.b = shift(r.b, d)` replaces a nested field in place), and array fields
+go through the owned-array idiom (`add xB, sp, #off`, the constant guard,
+`[xB, wI, uxtw #s]`; `len(h.counts)` is the constant, `view(&h.counts)` a
+call argument). Record literals take record-valued and array-valued
+fields (a record place, a typed literal, a call's result; an array literal
+or an array place). A nested record at an offset that is not 8-aligned is
+copied into an aligned temp before its chunks are loaded for a call or a
+result. Arrays of records and records holding spans remain with the C
+backend. Executed (`TestE2ENativeNestedRecords`): the corpus's
+`Rect {a: Point, b: Point, tag}` sum, nested field stores and a nested
+record passed on and copied out, a histogram record with a `[4]u32` field
+walked by a loop index, and a field of a call's result — natively against
+the C backend and the portable realization.
+**Ninth increment — `subslice` and local spans.** `subslice(v, start, n)`
+lowers to the C helper's exact check and derivation: `cmp wS, wL; b.hi
+trap` (start > len traps), `sub wT, wL, wS`, `cmp wN, wT; b.hi trap`
+(n > len − start traps), `add xD, xB, wS, uxtw #s`, `mov wD', wN` — the
+derived pair {base + start·elem, n}, bounds typed `u32`. A local span or
+view (`field: []u8 = subslice(v, start, n)`, `w: []u8 = v`) holds its pair
+in two callee-saved registers, scoped like any local, so it survives calls
+and is walked, stored through, forwarded, and re-sliced exactly like a
+parameter; a `subslice` in argument position takes scratch registers. The
+checker gained the derived-span idiom as three facts: `cmp wS, wL; b.hi
+<trap>` proves wS ≤ wL for a span's length register, `sub wT, wL, wS` under
+it makes wT = wL − wS, `cmp wN, wT; b.hi <trap>` proves wN ≤ wL − wS, and
+`add xD, xB, wS, uxtw #s` over the span at xB (with s the element size's
+log2) then creates the span fact at xD whose length registers are every
+such wN — so every index below it stays below the original length. The
+facts die with a write to any register involved, at labels, and at calls;
+the original span, its writability, and every other rule are untouched
+(`TestCheckerSubslice`: three accepted shapes, six refusals — a missing
+start or count check, the wrong scale, a rewritten start, a store through
+a derived view, a guard against an unrelated register). Lean lemmas for
+the rules added since the frame-array idiom (frame arrays, record regions,
+the derived span) are pending — Lean is not installed on the development
+host — and are listed as proof debt in `docs/spec/STATUS.md`. Executed
+(`TestE2ENativeSubslice`): a tokenizer-like walk splitting a byte view at
+zero bytes into local views summed by a leaf, a span re-sliced twice and
+written through, an empty subslice at the end, a local view copied from a
+parameter, and a subslice past the end trapping in both realizations.
+Array literals now store element by element (a long literal no longer
+exhausts the scratch registers).
+**Tenth increment — tagged unions and `match`.** A monomorphic ADT
+(`Shape: type = | Circle: i32 | Square: i32 | Empty`) is the synthetic
+record `semir.TaggedUnionLayout` places: the `u32` tag at offset 0 (its
+value the declaration index, or the declaration's `TagValues`) and one
+field per payload-carrying variant, named after the variant, at the
+payload union's offset — the numbers `codegen/records.go` asserts against
+the C compiler — so an ADT is a record local, crosses calls under the
+composite rules (`Shape` is 8 bytes, one chunk), and joins the composites
+table. `.Circle(5)` / `Shape.Circle(5)` (the type from the written name,
+the checker's resolution, or the expected type) stores the tag with a
+32-bit `str` and the payload at its field (a scalar, a record place, a
+call's result). A general `match` loads the tag once and compares it per
+arm (`cmp wT, #tag; b.ne next`); a payload binding becomes a local of the
+payload type (a scalar loaded at its width, a record copied into a fresh
+local, as the C backend binds a copy), `_` or a bare binding ends the
+chain, and a chain no arm closes falls to the trap block (the checker
+proved exhaustiveness, so it never runs). Matches lower in statement
+position (arm blocks, calls, asserts), value position (arms moved into one
+register), result position (scalar and record results, each arm placed
+directly), and as record values (arms copied into one temp); a scalar
+scrutinee takes literal patterns. Generic ADTs, string or span payloads,
+array payload bindings, and nested payload patterns stay with the C
+backend. Executed (`TestE2ENativeADTs`): the corpus `Shape`/`area2`
+program, a record payload bound and read in an arm, an ADT built by a
+nested conditional and returned then matched by the caller with the call
+as the scrutinee, a statement-position match updating a local, a literal
+match over `u32`, and reassignment of an ADT local — natively against the
+C backend and the portable realization. ADT bodies are trusted by the
+verifier (§5).
+**Eleventh increment — arrays of records.** `pool: [N]Rec` as a local
+(zero-filled, or from a literal of record values) and as a record field,
+with C's stride (`sizeof(Rec)`, the layout the C backend asserts). A
+literal index is a static place; a computed `pool[i]` is a record place
+addressed through a register, produced by the element idiom the checker
+now admits: the array's frame address, the constant guard `cmp wI, #N;
+b.hs trap`, then `add xE, xB, wI, uxtw #s` for a power-of-two stride up to
+16 bytes (the extended-register form's limit) or `movz wK, #stride; umaddl
+xE, wI, wK, xB` otherwise. The checker records `xE` as a writable region of
+exactly one element — `add xE, xB, wI, uxtw #s` or `umaddl` over a frame
+address with the index guarded below a constant `K` and `base + K·stride`
+inside the declared frame (`movz`/`mov wK, #c` records the stride as a
+constant fact, dying with a write, at labels, and at calls) — and narrows
+it through `add xD, xE, #imm` to a field's tail; memory through a region
+now also takes the indexed form `[xR, wJ, uxtw #t]` under a constant guard
+whose `K'·2^t` fits the region (an array field inside the element). Every
+place-taking path — field loads and stores, exact-size copies, chunk loads
+for calls (a register-addressed element is copied into an aligned frame
+temp first, so its last chunk never reads past the element), results,
+match scrutinees, payload bindings — takes the base register into
+account. Computed indexing into an array of records that itself lies
+inside a computed element stays with the C backend
+(`TestCheckerElementRegions`: three accepted shapes, six refusals).
+Executed (`TestE2ENativeRecordArrays`): a link pool of 8-byte nodes walked
+by index, a 12-byte record array updated in place through `umaddl` with an
+element copied out and passed on, and a record array field inside a record
+read and written by computed index — natively against the C backend and
+the portable realization.
+**Twelfth increment — spans and views of records.** `pool: []Node` and
+`[*]Node` as parameters and locals, `view(&arr)`/`span(&arr)` over arrays
+of records, and `subslice` over them (for power-of-two strides up to 16
+bytes, the derived-span idiom's scale). An element `pool[i]` is a
+register-addressed record place produced by the span element idiom: the
+index guarded against the length register (`cmp wI, wL; b.hs trap`), then
+`add xE, xB, wI, uxtw #s` or `movz wK, #stride; umaddl xE, wI, wK, xB` by
+the record's stride; field reads, field stores, whole-element replacement,
+and copies out follow, and a view's elements refuse stores. The checker
+sizes a span of records from the composites table (the compiler adds
+every span parameter's element record) and derives the element region
+from a span base: `add`/`umaddl` over a span fact whose element size
+equals the stride, with the index guarded below the span's length
+register or below a constant the span's proven minimum length covers,
+makes `xE` a one-element region writable iff the span is a `[*]T`
+(`TestCheckerRecordSpans`: three accepted shapes, five refusals — a store
+through a view, no guard, the wrong stride, a guard against an unrelated
+register, a field past the element). The verifier never models a record
+element as a scalar: spans of records leave a body trusted. Executed
+(`TestE2ENativeRecordSpans`): a link pool passed as a view and walked by
+index, a span of 12-byte records renumbered in place with an element
+replaced whole and one copied out, and a subslice of a record view walked
+by a leaf — natively against the C backend and the portable realization.
+**Thirteenth increment — the verifier reaches aggregates.** On the
+assembly side, frame slots tile: a store records its term at its width and
+splits any older slot it partly covers into the untouched aligned pieces,
+and a load reads back one slot, a sub-range of it (the low bytes of a
+64-bit slot for a 32-bit reload, little-endian), or the exact concatenation
+of adjacent pieces, zero- or sign-extending as its mnemonic says — so byte
+and halfword element accesses over word-zeroed storage and word copies over
+field stores resolve where they used to fail on a width mismatch (the
+narrow-reload case in `TestVerifyFrameMemory` is now proven for the low
+half and refuted for the high half). `add xN, sp, #imm` yields a frame
+address term (`sp#A`), constant element and field offsets fold onto it, and
+a load or store whose base resolves to a frame address reads or writes that
+slot; a data-dependent index leaves the body trusted. A span base plus a
+constant byte offset (a `subslice` with a constant start) is the element at
+the shifted index. On the Oak side, locals may be aggregates — records and
+tagged unions as field trees of leaf terms (the ADT's `u32` tag and one
+payload per carrying variant), owned arrays as element lists — built from
+typed literals, variants, array literals, copies, value-less arrays
+(zero-filled, as both backends fill them), field and constant-index element
+stores, and read through access chains; conditional arms merge aggregates
+leaf-wise; a `match` over a tagged union whose tag is decided on the path
+runs exactly its arm and binds the payload; a value-position `match` over a
+scalar that does not fold becomes a chain of selects on equality ending in
+its wildcard arm; unary minus wraps at the width. Aggregates across a
+data-dependent loop, data-dependent indices, and matches over undecided
+tags stay outside the subset (trusted), as do record and union parameters
+and results, which the executor does not yet bind (their chunk terms and
+leaf terms are the next increment's work). The declarations reach the
+verifier through the function (`asm.Function.Records`/`ADTs`, set by the
+compiler for native bodies and hand-written units alike). Proven now among
+the executed suites: `manhattan` (a record local with conditional field
+updates and unary minus), `copy_point` and `swap_in` (copies and
+whole-record assignment), `name_len` (a literal match over a parameter),
+beside the loop kernels proven before.
+**Fourteenth increment — records and unions at the verifier's boundary.**
+The composites table now carries the placed layout (`asm.Composite.Fields`:
+scalar, nested, and array members with offsets; `Variants` with tag
+values), filled by the native backend from the same layouts the C backend
+asserts and passed to every function (nested types included). The executor
+binds a record or union parameter's scalar leaves as parameters named by
+access path (`p.x`, `r.a.y`, `h.buf[2]`, `s.tag`, `s.Circle`): a
+chunk-passed argument's registers hold the chunks assembled from those
+leaves at their byte offsets (a union payload selected by its tag — the
+other variants' bytes are zero, which is also what constructed values now
+hold, since `.Variant(…)` zero-fills its temp before storing tag and
+payload), and a by-reference argument's loads assemble the leaves inside
+the accessed bytes (padding zero; a load cutting through a leaf is outside
+the subset). A one-chunk record or union result comes back in `x0` and is
+compared over its fields (padding masked) against the Oak result aggregate
+packed the same way; the Oak side binds those parameters as aggregates of
+the same leaf terms, lowers aggregate results through blocks, Bool
+conditionals (merged leaf-wise), and matches, and decides matches in value
+and statement position as chains of selects on the tag or literal equality
+(each arm on a copy of the locals, the wildcard — or, exhaustively, the
+last arm — standing for the rest). A Bool parameter is the C enum, an int
+holding 0 or 1 with every bit of the low word defined (the earlier model
+of unspecified upper bits produced an impossible counterexample for
+`pick`). Bool fields at the boundary, two-chunk and `x8`-area results, and
+aggregates across data-dependent loops stay trusted. Proven now: `shift`,
+`wide_sum` (a 24-byte record by reference), `pick` (a one-chunk result
+chosen by a Bool), `small_total`, `sum_cell` (a 12-byte record in two
+chunks), `classify` (a union built by nested conditionals and returned),
+`tally` (a statement-position match over a union parameter); `area2` and
+`score` agree on every witness (their products exceed the BDD budget).
+Witness runs assign leaves like scalars.
+**Fifteenth increment — generic instantiations.** A survey of the
+examples under `-native` showed the dominant reason bodies stayed with the
+C backend was generic instantiations (`Option[u32]`, `Result[u32, …]` — some
+two hundred functions), so the compiler now specializes every instantiation
+the type checker recorded (`ADTInstantiations`) into a monomorphic
+declaration under its mangled name (`Option_u32`, `Result_u32_Bool`), the
+template's variants with the type parameters substituted by the one
+substitution authority (`typechecker.SubstituteTypeAST`), record templates
+included (`Ring[u8, 4]`), and hands them to the native backend and the
+verifier beside the declared types. A type application in a signature or a
+local's type resolves to that name (`asm.TypeApplicationName`, the
+typechecker's mangling: the base name and the argument atoms joined by
+underscores), `.Some(v)` resolves through the checker's variant resolution,
+and everything else — construction, matches, parameters, results, spans of
+them — follows the tagged-union and record paths unchanged; the composites
+table is keyed both by mangled name and by each signature type's own
+spelling, which is what the checker and verifier look up. The verifier's
+boundary model now takes Bool fields as 1-bit leaves whose zero-extension
+is the field's whole word (the C enum holds 0 or 1), so `Result[u32, Bool]`
+crosses. Element indices of type `u64` are admitted: the high word is
+checked (`lsr x9, xI, #32; cbnz x9, trap` — an index of 2^32 or more is
+past every span and array) and the low word walks the checker's 32-bit
+index idiom. Hand-written `.oakasm` units see declared types only (they are
+checked before type checking records instantiations). Executed
+(`TestE2ENativeGenerics`): `Option[u32]` returned from a search over a byte
+view and unwrapped, `Result[u32, Bool]` from a checked add and matched, a
+wide index, and a wide index past 2^32 trapping in both realizations;
+`unwrap_or`, `checked_add`, `value_of`, and `at_wide` proven.
+Next increments: two-chunk and `x8`-area record results in the verifier,
+`break` as a second loop exit in the recognizer, `view` over record fields
+and the other survey items, and the slicing syntax `v[lo:hi]` once the C
+backend lowers `len` over it.
 
 
 

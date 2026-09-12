@@ -79,6 +79,123 @@ func cStringArgument(arg ast.Expression) (operand ast.Expression, ok bool) {
 	return call.Arguments[0], true
 }
 
+// argvArgument recognizes `c.argv_of(bytes, slots)` in the argument list of
+// an extern call (docs/spec/92-ffi.md section 2.5.6) and returns both
+// operands, as the typechecker confirmed them: a named []u8 view and a
+// named [*]c.Ptr span.
+func argvArgument(arg ast.Expression) (bytes, slots ast.Expression, ok bool) {
+	call, isCall := arg.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != 2 {
+		return nil, nil, false
+	}
+	library, member, isLibrary := libraryCallTarget(call.Function)
+	if !isLibrary || library != "c" || member != "argv_of" {
+		return nil, nil, false
+	}
+	return call.Arguments[0], call.Arguments[1], true
+}
+
+// outArgument recognizes `c.out(x)` in the argument list of an extern call
+// (docs/spec/92-ffi.md section 2.5.7) and returns the local binding.
+func outArgument(arg ast.Expression) (operand ast.Expression, ok bool) {
+	call, isCall := arg.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != 1 {
+		return nil, false
+	}
+	library, member, isLibrary := libraryCallTarget(call.Function)
+	if !isLibrary || library != "c" || member != "out" {
+		return nil, false
+	}
+	return call.Arguments[0], true
+}
+
+// emitArgvArgument lowers `c.argv_of(bytes, slots)` at its extern call site
+// (docs/spec/92-ffi.md section 2.5.6): oak_argv_u8 walks the view, records
+// each string's start in the slots, appends the trailing NULL, and returns
+// the slots' base; it traps naming the source position when the view is not
+// NUL-terminated or the slots are too few. No copy of the strings.
+func (cg *CodeGenerator) emitArgvArgument(bytes, slots ast.Expression, arg ast.Expression, tc *typechecker.TypeChecker) {
+	cg.emitViewType("u8")
+	line := 0
+	file := cg.sourceFile
+	if call, isCall := arg.(*ast.InvocationExpression); isCall {
+		file = cg.tokenSourceFile(call.Token)
+		line = call.Token.Line
+	}
+	cg.output.WriteString("oak_argv_u8( ")
+	cg.emitExpressionFragment(bytes, tc)
+	cg.output.WriteString(", (void **)( ")
+	cg.emitExpressionFragment(slots, tc)
+	cg.output.WriteString(" ).base, (u64)( ")
+	cg.emitExpressionFragment(slots, tc)
+	cg.output.WriteString(fmt.Sprintf(" ).len, %q, %d )", file, line))
+}
+
+// emitOutArgument lowers `c.out(x)` at its extern call site (docs/spec/
+// 92-ffi.md section 2.5.7): the address of the local, valid for the call.
+func (cg *CodeGenerator) emitOutArgument(operand ast.Expression, tc *typechecker.TypeChecker) {
+	cg.output.WriteString("(void *)&( ")
+	cg.emitExpressionFragment(operand, tc)
+	cg.output.WriteString(" )")
+}
+
+// emitForeignFunctionAt lowers `c.fn_at(p)` (docs/spec/92-ffi.md section
+// 2.10): the pointer itself, after oak_fn_at has trapped on NULL naming the
+// Oak source position. The binding it initializes is an opaque `void *`;
+// the signature lives in the annotation and is applied at each call.
+func (cg *CodeGenerator) emitForeignFunctionAt(call *ast.InvocationExpression, tc *typechecker.TypeChecker) {
+	file := cg.tokenSourceFile(call.Token)
+	cg.output.WriteString("oak_fn_at( (void *)( ")
+	cg.emitExpressionFragment(call.Arguments[0], tc)
+	cg.output.WriteString(fmt.Sprintf(" ), %q, %d )", file, call.Token.Line))
+}
+
+// emitForeignFunctionCallee lowers the callee of a call through a `c.Fn`
+// binding (docs/spec/92-ffi.md section 2.10): the opaque pointer cast to
+// the annotated signature, `((ret (*)(params))f)`, with every C spelling
+// taken from the same table extern prototypes use, so the cast is exactly
+// the prototype an extern binding of that signature would have declared.
+func (cg *CodeGenerator) emitForeignFunctionCallee(signature *ast.FunctionTypeExpression, callee ast.Expression, tc *typechecker.TypeChecker) {
+	returnType := "void"
+	if signature.Return != nil {
+		if ident, isIdent := signature.Return.(*ast.Identifier); !isIdent || ident.Value != "()" {
+			returnType = cg.parseTypeExpression(signature.Return)
+		}
+	}
+	params := make([]string, 0, len(signature.Parameters))
+	for _, param := range signature.Parameters {
+		params = append(params, cg.parseTypeExpression(param))
+	}
+	paramList := "void"
+	if len(params) > 0 {
+		paramList = strings.Join(params, ", ")
+	}
+	cg.output.WriteString(fmt.Sprintf("(( %s (*)( %s ) )( ", returnType, paramList))
+	cg.emitExpressionFragment(callee, tc)
+	cg.output.WriteString(" ))")
+}
+
+// emitMessageSendCallee lowers the callee of `c.msg_send[(params) -> ret]`
+// (docs/spec/92-ffi.md section 2.12): objc_msgSend cast to the prototype
+// `ret (*)(void *, void *, params)` — the receiver (`id`) and the selector
+// (`SEL`) are opaque pointers, and the declared parameters are spelled from
+// the same table extern prototypes use. On arm64 every message goes through
+// this one entry point (no `_stret`/`_fpret` variants), which is why the
+// form is arm64-only in this increment; the emitted `#error` guard says so.
+func (cg *CodeGenerator) emitMessageSendCallee(signature *ast.FunctionTypeExpression) {
+	returnType := "void"
+	if signature.Return != nil {
+		if ident, isIdent := signature.Return.(*ast.Identifier); !isIdent || ident.Value != "()" {
+			returnType = cg.parseTypeExpression(signature.Return)
+		}
+	}
+	params := []string{"void *", "void *"}
+	for _, param := range signature.Parameters {
+		params = append(params, cg.parseTypeExpression(param))
+	}
+	cg.output.WriteString(fmt.Sprintf("(( %s (*)( %s ) )( objc_msgSend ))", returnType, strings.Join(params, ", ")))
+}
+
 // emitCStringArgument lowers `c.cstr(v)` at its extern call site (docs/spec/
 // 92-ffi.md section 2.5.3): a literal operand is the interned literal (the
 // typechecker required its trailing NUL); a named view goes through
@@ -118,6 +235,11 @@ func (cg *CodeGenerator) emitLibraryCall(call *ast.InvocationExpression, tc *typ
 	}
 	switch library {
 	case "c":
+		if member == "null" && len(call.Arguments) == 0 {
+			// c.null(): the null pointer (docs/spec/92-ffi.md section 2.1).
+			cg.output.WriteString("((void *)0)")
+			return true
+		}
 		if member == "disown" && len(call.Arguments) == 1 {
 			// c.disown(b): the buffer's pointer, for the runtime to free
 			// (docs/spec/92-ffi.md section 2.8).
@@ -126,7 +248,7 @@ func (cg *CodeGenerator) emitLibraryCall(call *ast.InvocationExpression, tc *typ
 			cg.output.WriteString(" ).base)")
 			return true
 		}
-		if member == "extern" || member == "span_of" || member == "span_mut_of" || member == "cstr" || len(call.Arguments) != 1 {
+		if member == "extern" || member == "span_of" || member == "span_mut_of" || member == "cstr" || member == "argv_of" || member == "out" || len(call.Arguments) != 1 {
 			// Boundary spans are expanded at their extern call site
 			// (emitExpressionFragment); anywhere else they are not
 			// expressions and the typechecker has already rejected them.
@@ -234,6 +356,11 @@ func scanCalls(program *ast.Program, visit func(library, member string)) {
 		case *ast.InvocationExpression:
 			if library, member, ok := libraryCallTarget(e.Function); ok {
 				visit(library, member)
+			} else if _, isSend := typechecker.MessageSendCallee(e.Function); isSend {
+				// c.msg_send[sig](...) (docs/spec/92-ffi.md section 2.12):
+				// the callee carries a type in its bracket, so it is not a
+				// plain library access; visited under its member name.
+				visit("c", "msg_send")
 			} else if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
 				// Plain callees are visited with an empty library, so
 				// helper collectors (conversions) can see them.
@@ -332,6 +459,38 @@ func scanCalls(program *ast.Program, visit func(library, member string)) {
 	for _, stmt := range program.Statements {
 		scanStmt(stmt)
 	}
+}
+
+// emitArgvHelper emits oak_argv_u8 when the program uses c.argv_of
+// (docs/spec/92-ffi.md section 2.5.6), so programs without an argument
+// vector keep their C output unchanged. The view holds the strings back to
+// back, each NUL-terminated; every string's start goes into a slot and a
+// NULL closes the vector. The view must end in NUL and the slots must
+// number at least strings + 1; both are checked at the foreign call, naming
+// the Oak source position before trapping, as an assertion does.
+func (cg *CodeGenerator) emitArgvHelper(program *ast.Program) {
+	used := false
+	scanCalls(program, func(library, member string) {
+		if library == "c" && member == "argv_of" {
+			used = true
+		}
+	})
+	if !used {
+		return
+	}
+	viewTypeName := cg.emitViewType("u8")
+	cg.write("/* c.argv_of: a NUL-terminated pointer vector over Oak strings, for one call */\n")
+	cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n#include <stdio.h>\n")
+	cg.write("#define OAK_ARGV_FAIL(msg) do { fprintf(stderr, \"oak: c.argv_of %s at %s:%u\\n\", msg, file, (unsigned)line); __builtin_trap(); } while (0)\n")
+	cg.write("#else\n#define OAK_ARGV_FAIL(msg) do { (void)file; (void)line; __builtin_trap(); } while (0)\n#endif\n")
+	cg.write(fmt.Sprintf("static inline void *oak_argv_u8(%s v, void **slots, u64 nslots, const char *file, u32 line) {\n", viewTypeName))
+	cg.write("  u64 count = 0;\n  u64 i;\n")
+	cg.write("  if (v.len != 0u && v.base[v.len - 1u] != 0u) { OAK_ARGV_FAIL(\"strings are not NUL-terminated\"); }\n")
+	cg.write("  for (i = 0; i < (u64)v.len; i++) { if (v.base[i] == 0u) { count++; } }\n")
+	cg.write("  if (nslots < count + 1u) { OAK_ARGV_FAIL(\"has too few pointer slots\"); }\n")
+	cg.write("  count = 0;\n  for (i = 0; i < (u64)v.len; i++) {\n")
+	cg.write("    if (i == 0u || v.base[i - 1u] == 0u) { slots[count++] = (void *)(v.base + i); }\n  }\n")
+	cg.write("  slots[count] = 0;\n  return (void *)slots;\n}\n#undef OAK_ARGV_FAIL\n\n")
 }
 
 // emitIntrinsicHelpers emits only helpers referenced by the program. Scalar
@@ -487,19 +646,124 @@ func (cg *CodeGenerator) emitExternPrototype(fn *ast.FunctionStatement) {
 	}
 	returnType := "void"
 	if fn.ReturnType != nil {
-		returnType = cg.parseTypeExpression(fn.ReturnType)
+		if _, returnsBuffer := bufferElementSyntax(fn.ReturnType); !returnsBuffer {
+			returnType = cg.parseTypeExpression(fn.ReturnType)
+		}
+		// A custody transition returns its buffer argument re-typed; the
+		// foreign function itself returns nothing (section 2.8.5).
 	}
-	cg.write(fmt.Sprintf("extern %s %s( ", returnType, symbol))
+	cg.write(fmt.Sprintf("extern %s %s( ", returnType, cg.externCallee(symbol)))
 	if len(fn.Parameters) == 0 {
 		cg.write("void")
 	}
 	for i, param := range fn.Parameters {
-		cg.write(fmt.Sprintf("%s %s", cg.parseTypeExpression(param.Type), cIdent(param.Name.Value)))
+		if element, isBuffer := bufferElementSyntax(param.Type); isBuffer {
+			// The buffer crosses as pointer and element count.
+			cg.write(fmt.Sprintf("%s *%s, size_t %s_len", cg.parseTypeExpression(element), cIdent(param.Name.Value), cIdent(param.Name.Value)))
+		} else {
+			cg.write(fmt.Sprintf("%s %s", cg.parseTypeExpression(param.Type), cIdent(param.Name.Value)))
+		}
 		if i < len(fn.Parameters)-1 {
 			cg.write(", ")
 		}
 	}
-	cg.write(" );\n")
+	cg.write(" )")
+	if len(cg.foreignHeaders) != 0 {
+		// The declaration is Oak's own identifier bound to the foreign
+		// symbol by an asm label, so a header the program includes for a
+		// target constant may declare the same function with its own
+		// prototype without a conflicting redeclaration (section 2.11).
+		cg.write(fmt.Sprintf(" __asm__(OAK_ASM_SYMBOL(\"%s\"))", symbol))
+	}
+	cg.write(";\n")
+}
+
+// externCallee is the C identifier a call to an extern binding names: the
+// foreign symbol itself, or — in a program that includes foreign headers
+// for target constants — Oak's asm-labeled declaration of it (section
+// 2.11). The symbol has passed ValidCSymbol at the call sites that use this.
+func (cg *CodeGenerator) externCallee(symbol string) string {
+	if len(cg.foreignHeaders) != 0 {
+		return "oak_extern_" + symbol
+	}
+	return symbol
+}
+
+// emitForeignHeaders emits the includes the program's target constants
+// need (docs/spec/92-ffi.md section 2.11), before any other header so a
+// feature-test macro can precede them: POSIX.1-2008 visibility, which
+// strict -std=c99 builds on glibc would otherwise withhold from <time.h>
+// and friends. Every header spelling passed ValidCHeader at check time and
+// is re-validated here; an invalid one fails the C build closed instead of
+// being emitted.
+func (cg *CodeGenerator) emitForeignHeaders() {
+	if len(cg.foreignHeaders) == 0 {
+		return
+	}
+	cg.write("/* target constants (docs/spec/92-ffi.md section 2.11): the headers that\n   define them, then Oak's extern declarations carry asm labels so these\n   headers' prototypes never conflict with them */\n")
+	cg.write("#if !__STDC_HOSTED__ || defined(OAK_FREESTANDING)\n#error \"target constants (c.const) need the hosted C library headers\"\n#endif\n")
+	cg.write("#if !defined(_POSIX_C_SOURCE) && !defined(_GNU_SOURCE) && !defined(_XOPEN_SOURCE) && !defined(_DEFAULT_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n")
+	for _, header := range cg.foreignHeaders {
+		if !typechecker.ValidCHeader(header) {
+			cg.write("OAK_INVALID_TARGET_CONSTANT_HEADER;\n")
+			continue
+		}
+		cg.write(fmt.Sprintf("#include %s\n", header))
+	}
+	cg.write("#define OAK_STRINGIFY_(x) #x\n#define OAK_STRINGIFY(x) OAK_STRINGIFY_(x)\n")
+	cg.write("#define OAK_ASM_SYMBOL(name) OAK_STRINGIFY(__USER_LABEL_PREFIX__) name\n")
+}
+
+// bufferElementSyntax recognizes the type syntax Buffer[T] or Buffer[T, S]
+// (docs/spec/92-ffi.md section 2.8) and returns the element type syntax.
+func bufferElementSyntax(typ ast.Expression) (ast.Expression, bool) {
+	index, ok := typ.(*ast.IndexExpression)
+	if !ok {
+		return nil, false
+	}
+	if base, ok := index.Left.(*ast.Identifier); ok && base.Value == "Buffer" {
+		return index.Index, true
+	}
+	if inner, ok := index.Left.(*ast.IndexExpression); ok {
+		if base, ok := inner.Left.(*ast.Identifier); ok && base.Value == "Buffer" {
+			return inner.Index, true
+		}
+	}
+	return nil, false
+}
+
+// custodyTransitionOperand returns the Buffer argument of a call to a
+// custody transition extern (docs/spec/92-ffi.md section 2.8.5), or nil.
+func (cg *CodeGenerator) custodyTransitionOperand(call *ast.InvocationExpression) ast.Expression {
+	ident, ok := call.Function.(*ast.Identifier)
+	if !ok {
+		return nil
+	}
+	target := cg.programFunctions[ident.Value]
+	if target == nil || target.ExternSymbol == "" || target.ReturnType == nil {
+		return nil
+	}
+	if _, returnsBuffer := bufferElementSyntax(target.ReturnType); !returnsBuffer {
+		return nil
+	}
+	for i, arg := range call.Arguments {
+		if i < len(target.Parameters) {
+			if _, isBuffer := bufferElementSyntax(target.Parameters[i].Type); isBuffer {
+				return arg
+			}
+		}
+	}
+	return nil
+}
+
+// isExternCallee reports whether a call target names an extern binding.
+func (cg *CodeGenerator) isExternCallee(fn ast.Expression) bool {
+	ident, ok := fn.(*ast.Identifier)
+	if !ok {
+		return false
+	}
+	target := cg.programFunctions[ident.Value]
+	return target != nil && target.ExternSymbol != ""
 }
 
 // emitForeignBorrow lowers an inbound buffer borrow (docs/spec/92-ffi.md

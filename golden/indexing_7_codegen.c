@@ -436,7 +436,7 @@ u32 oak_sum( oak_arr_u8_8 buf ) {
     u32 total   = 0  ;
     u32 i   = 0  ;
     while ( ( i < n )   ) {
-      total     = oak_add_u32( total, ((u32)( oak_view_index_u8( v, (u64)( i ) ) )) )    ;
+      total     = oak_add_u32( total, ((u32)( ( v ).base[ i ] )) )    ;
       i     = oak_add_u32( i, 1 )    ;
     }
     return oak_add_u32( oak_add_u32( total, ((u32)( buf.v[ 0 ] )) ), 8 )  ;

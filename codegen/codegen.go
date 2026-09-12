@@ -52,6 +52,12 @@ type CodeGenerator struct {
 	// globalTypes classifies top-level bindings (static globals) the same
 	// way localTypes classifies function locals.
 	globalTypes map[string]localContainer
+	// targetConstants are the program's `c.const` bindings and
+	// foreignHeaders the distinct headers they name, sorted; a program with
+	// any declares its extern bindings through asm labels so the headers'
+	// own prototypes cannot conflict (docs/spec/92-ffi.md section 2.11).
+	targetConstants map[string]*typechecker.TargetConstant
+	foreignHeaders  []string
 	// globalErrors collects top-level initializers the backend could not
 	// place in static storage; Generate reports the first (OAK-T0501 as an
 	// error at emission, ml finding F19).
@@ -84,8 +90,21 @@ type CodeGenerator struct {
 	// localTypes maps in-scope names to their container kind while a
 	// function body is being emitted, so element access lowers to the right
 	// bounds-checked form. Unknown containers fail closed.
-	localTypes   map[string]localContainer
-	sliceHelpers map[string]string
+	localTypes map[string]localContainer
+	// inCustodyWrap marks the inner emission of a custody transition call.
+	inCustodyWrap bool
+	sliceHelpers  map[string]string
+	// foreignFnLocals maps the `c.Fn[...]` locals of the function being
+	// emitted to their annotated signatures (docs/spec/92-ffi.md section
+	// 2.10), so a call through one is cast to exactly that signature;
+	// usesMessageSend gates the objc_msgSend declaration and the arm64
+	// target guard on programs that send Objective-C messages
+	// (docs/spec/92-ffi.md section 2.12).
+	usesMessageSend bool
+	// usesForeignFunctionAt gates the oak_fn_at helper on programs that
+	// name a foreign function.
+	foreignFnLocals       map[string]*ast.FunctionTypeExpression
+	usesForeignFunctionAt bool
 	// liftedLiterals is the C text of every typed function literal lifted
 	// to a top-level function (emitFunctionLiteral); liftedCount names them
 	// in emission order; liftedOffset is where the text is spliced — after
@@ -177,8 +196,36 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 		}
 	}
 
+	// Target constants and the foreign headers they need (docs/spec/92-ffi.md
+	// section 2.11), before the header is emitted.
+	cg.targetConstants = make(map[string]*typechecker.TargetConstant)
+	cg.foreignHeaders = nil
+	if tc != nil {
+		seen := map[string]bool{}
+		for _, constant := range tc.TargetConstants() {
+			cg.targetConstants[constant.Name] = constant
+			if !seen[constant.Header] {
+				seen[constant.Header] = true
+				cg.foreignHeaders = append(cg.foreignHeaders, constant.Header)
+			}
+		}
+		sort.Strings(cg.foreignHeaders)
+	}
+
 	// First pass: collect all string literals
 	cg.collectStringLiterals(program)
+	// Programs that name a foreign function at a pointer (docs/spec/92-ffi.md
+	// section 2.10) get the oak_fn_at helper; no other program's C changes.
+	cg.usesForeignFunctionAt = false
+	cg.usesMessageSend = false
+	scanCalls(program, func(library, member string) {
+		if library == "c" && member == "fn_at" {
+			cg.usesForeignFunctionAt = true
+		}
+		if library == "c" && member == "msg_send" {
+			cg.usesMessageSend = true
+		}
+	})
 
 	// Discipline analysis drives recursion lowering: self tail loops and
 	// mutual tail trampolines (docs/spec/85-discipline.md).
@@ -217,6 +264,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.emitAssertHelper()
 	cg.emitUtf8Helper()
 	cg.emitIntrinsicHelpers(program)
+	cg.emitArgvHelper(program)
 	cg.emitSimdSupport(program)
 	cg.emitAtomicGlobals(program)
 
@@ -399,6 +447,15 @@ func (cg *CodeGenerator) collectStringLiterals(program *ast.Program) {
 			for _, st := range s.Statements {
 				collectFromStmt(st)
 			}
+		case *ast.UnsafeBlock:
+			// Literals inside an unsafe block (a `c.cstr("...\0")` at a
+			// call through a foreign function pointer) are interned like
+			// every other.
+			if s.Body != nil {
+				for _, st := range s.Body.Statements {
+					collectFromStmt(st)
+				}
+			}
 		case *ast.AssignmentStatement:
 			collectFromExpr(s.Value)
 		case *ast.IndexAssignmentStatement:
@@ -486,6 +543,7 @@ func (cg *CodeGenerator) escapeCString(s string) string {
 // emitHeader emits the standard header with includes and type aliases
 func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 	cg.write("/* Generated C code from Oak */\n")
+	cg.emitForeignHeaders()
 	cg.write("#include <stdint.h>\n")
 	cg.write("#include <stddef.h>\n")
 	// <math.h> and the float helpers only when the program uses floating
@@ -959,8 +1017,9 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	cg.write(" ) {\n")
 	cg.indentLevel++
 
+	cg.foreignFnLocals = nil
 	cg.localTypes = cg.buildLocalTypes(fn)
-	defer func() { cg.localTypes = nil }()
+	defer func() { cg.localTypes = nil; cg.foreignFnLocals = nil }()
 
 	// A projected protocol step function has a compiler-known lowering
 	// (docs/spec/90-backend.md section 14): the table or shift-DFA body
@@ -1341,8 +1400,8 @@ func (cg *CodeGenerator) classifyContainer(typeExpr ast.Expression) localContain
 		if base, ok := t.Left.(*ast.Identifier); ok && base.Value == "Str" {
 			return localContainer{kind: containerString}
 		}
-		if base, ok := t.Left.(*ast.Identifier); ok && base.Value == "Buffer" {
-			return localContainer{kind: containerBuffer, element: cg.parseTypeExpression(t.Index), elementType: t.Index}
+		if element, isBuffer := bufferElementSyntax(t); isBuffer {
+			return localContainer{kind: containerBuffer, element: cg.parseTypeExpression(element), elementType: element}
 		}
 		if mangled, isGeneric := cg.genericAnnotationName(t); isGeneric {
 			return localContainer{kind: containerADT, adtName: mangled}
@@ -1391,6 +1450,17 @@ func (cg *CodeGenerator) buildLocalTypes(fn *ast.FunctionStatement) map[string]l
 		case *ast.VariableDeclaration:
 			if s.Name != nil && s.Type != nil {
 				table[s.Name.Value] = cg.classifyContainer(s.Type)
+				// A `c.Fn[...]` local names a foreign function pointer
+				// (docs/spec/92-ffi.md section 2.10); calls through it are
+				// lowered as a cast to the annotated signature. Names are
+				// unique within a function (no redeclaration), so the
+				// annotation is looked up by name at the call.
+				if fnExpr, isCFn := typechecker.CFnTypeExpression(s.Type); isCFn {
+					if cg.foreignFnLocals == nil {
+						cg.foreignFnLocals = make(map[string]*ast.FunctionTypeExpression)
+					}
+					cg.foreignFnLocals[s.Name.Value] = fnExpr
+				}
 			}
 		case *ast.WhileStatement:
 			if s.Body != nil {
@@ -1562,13 +1632,13 @@ func (cg *CodeGenerator) emitCoreIndex(call *ast.InvocationExpression, tc *typec
 	}
 	switch info.kind {
 	case containerView:
-		cg.output.WriteString(fmt.Sprintf("oak_view_index_%s( ", info.element))
+		cg.output.WriteString(fmt.Sprintf("oak_view_index_%s( ", elementIdent(info.element)))
 		cg.emitExpressionFragment(seq, tc)
 		cg.output.WriteString(", (u64)( ")
 		cg.emitExpressionFragment(index, tc)
 		cg.output.WriteString(" ) )")
 	case containerSpan:
-		cg.output.WriteString(fmt.Sprintf("oak_span_index_%s( ", info.element))
+		cg.output.WriteString(fmt.Sprintf("oak_span_index_%s( ", elementIdent(info.element)))
 		cg.emitExpressionFragment(seq, tc)
 		cg.output.WriteString(", (u64)( ")
 		cg.emitExpressionFragment(index, tc)
@@ -2167,7 +2237,43 @@ func (cg *CodeGenerator) emitAssertHelper() {
 	cg.write("    __builtin_trap();\n")
 	cg.write("  }\n")
 	cg.write("}\n")
+	if cg.usesForeignFunctionAt {
+		// c.fn_at(p) (docs/spec/92-ffi.md section 2.10): the one check the
+		// backend can make on a foreign function pointer is that it is not
+		// NULL, so a call through it never dereferences NULL; the trap
+		// names the Oak source position as an assertion does. Emitted only
+		// for programs that use the form, so every other program's C is
+		// unchanged.
+		cg.write("#endif\n")
+		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
+		cg.write("static inline void *oak_fn_at(void *p, const char *file, u32 line) {\n")
+		cg.write("  if (p == 0) {\n")
+		cg.write("    fprintf(stderr, \"oak: c.fn_at of a NULL pointer at %s:%u\\n\", file, (unsigned)line);\n")
+		cg.write("    __builtin_trap();\n")
+		cg.write("  }\n")
+		cg.write("  return p;\n")
+		cg.write("}\n")
+		cg.write("#else\n")
+		cg.write("static inline void *oak_fn_at(void *p, const char *file, u32 line) {\n")
+		cg.write("  (void)file; (void)line;\n")
+		cg.write("  if (p == 0) { __builtin_trap(); }\n")
+		cg.write("  return p;\n")
+		cg.write("}\n")
+	}
 	cg.write("#endif\n\n")
+	if cg.usesMessageSend {
+		// c.msg_send (docs/spec/92-ffi.md section 2.12): the Objective-C
+		// runtime's one dispatch entry point, declared with no prototype so
+		// each call casts it to the signature the program asserts. On arm64
+		// every message goes through objc_msgSend itself; other targets
+		// split struct and float returns into _stret/_fpret variants the
+		// form does not select, so the build fails closed there. Emitted
+		// only for programs that send messages.
+		cg.write("#if !defined(__aarch64__) && !defined(__arm64__)\n")
+		cg.write("#error \"c.msg_send is arm64-only in this increment: other targets route struct and float returns through objc_msgSend_stret/_fpret (docs/spec/92-ffi.md section 2.12)\"\n")
+		cg.write("#endif\n")
+		cg.write("extern void objc_msgSend(void);\n\n")
+	}
 	cg.emitAssertValueHelpers()
 }
 
@@ -2540,6 +2646,25 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.output.WriteString("oak_Bool_False")
 		}
 	case *ast.Identifier:
+		// A program function named as a value (passed to a higher-order
+		// function, stored in a function-typed binding) is its C symbol. A
+		// local of the same name — scope is per package, so an imported
+		// package's local may share a root function's name — stays a local.
+		_, isLocal := cg.localTypes[e.Value]
+		if target := cg.programFunctions[e.Value]; target != nil && target.Receiver == nil && !isLocal {
+			if target.ExternSymbol != "" && typechecker.ValidCSymbol(target.ExternSymbol) {
+				cg.output.WriteString(cg.externCallee(target.ExternSymbol))
+			} else {
+				cg.output.WriteString(cg.cFunctionName(e.Value))
+			}
+			return
+		}
+		if _, isTargetConstant := cg.targetConstants[e.Value]; isTargetConstant && !isLocal {
+			// A target constant's static carries a prefixed C name
+			// (codegen/globals.go, docs/spec/92-ffi.md section 2.11).
+			cg.output.WriteString(targetConstantCName(e.Value))
+			return
+		}
 		cg.output.WriteString(cIdent(e.Value))
 	case *ast.InfixExpression:
 		cg.emitInfixExpression(e, tc)
@@ -2642,11 +2767,34 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.output.WriteString(")")
 		}
 	case *ast.InvocationExpression:
+		// A custody transition (docs/spec/92-ffi.md section 2.8.5) hands the
+		// buffer over as pointer and count and yields the same buffer under
+		// its new type: the foreign call is sequenced before the copy.
+		if operand := cg.custodyTransitionOperand(e); operand != nil && !cg.inCustodyWrap {
+			cg.inCustodyWrap = true
+			cg.output.WriteString("( ")
+			cg.emitExpressionFragment(e, tc)
+			cg.inCustodyWrap = false
+			cg.output.WriteString(", (")
+			cg.output.WriteString(cg.parseTypeExpression(cg.programFunctions[e.Function.(*ast.Identifier).Value].ReturnType))
+			cg.output.WriteString("){ ( ")
+			cg.emitExpressionFragment(operand, tc)
+			cg.output.WriteString(" ).base, ( ")
+			cg.emitExpressionFragment(operand, tc)
+			cg.output.WriteString(" ).len } )")
+			return
+		}
 		// An inbound buffer borrow (docs/spec/92-ffi.md section 2.7) is
 		// spelled as an index over a library member, so it comes before the
 		// generic index-call paths.
 		if member, element, isForeign := typechecker.ForeignBorrowCall(e); isForeign && (len(e.Arguments) == 2 || (member == "borrow_string" && len(e.Arguments) == 1)) {
 			cg.emitForeignBorrow(member, element, e, tc)
+			return
+		}
+		// A foreign function pointer named by c.fn_at(p) (docs/spec/92-ffi.md
+		// section 2.10): the pointer, NULL-checked at the conversion.
+		if typechecker.ForeignFunctionAtCall(e) && len(e.Arguments) == 1 {
+			cg.emitForeignFunctionAt(e, tc)
 			return
 		}
 		// Sealed-boundary coercions are identities: the fresh abstract type is
@@ -2737,9 +2885,9 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 				helper := ""
 				switch info.kind {
 				case containerView:
-					helper = fmt.Sprintf("oak_view_subslice_%s", info.element)
+					helper = fmt.Sprintf("oak_view_subslice_%s", elementIdent(info.element))
 				case containerSpan:
-					helper = fmt.Sprintf("oak_span_subslice_%s", info.element)
+					helper = fmt.Sprintf("oak_span_subslice_%s", elementIdent(info.element))
 				}
 				if helper == "" {
 					cg.output.WriteString("OAK_UNSUPPORTED_SUBSLICE_SOURCE")
@@ -2788,7 +2936,18 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.output.WriteString(" )")
 			return
 		}
-		if ident, ok := e.Function.(*ast.Identifier); ok && runtimeBuiltins[ident.Value] != "" {
+		if signature, isSend := typechecker.MessageSendCallee(e.Function); isSend {
+			// An Objective-C message send (docs/spec/92-ffi.md section
+			// 2.12): objc_msgSend cast to the receiver, the selector, and
+			// the bracketed signature, spelled from the extern prototype
+			// table exactly as a c.Fn call is.
+			cg.emitMessageSendCallee(signature)
+		} else if ident, ok := e.Function.(*ast.Identifier); ok && cg.foreignFnLocals[ident.Value] != nil {
+			// A call through a foreign function pointer (docs/spec/92-ffi.md
+			// section 2.10): the opaque pointer cast to the annotated
+			// signature, spelled from the extern prototype table.
+			cg.emitForeignFunctionCallee(cg.foreignFnLocals[ident.Value], e.Function, tc)
+		} else if ident, ok := e.Function.(*ast.Identifier); ok && runtimeBuiltins[ident.Value] != "" {
 			cg.output.WriteString(runtimeBuiltins[ident.Value])
 		} else if ident, ok := e.Function.(*ast.Identifier); ok && cg.programFunctions[ident.Value] != nil {
 			// Calls to program functions use the mangled C name; calls to
@@ -2796,7 +2955,7 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			// (docs/spec/92-ffi.md section 2.3).
 			if target := cg.programFunctions[ident.Value]; target.ExternSymbol != "" {
 				if typechecker.ValidCSymbol(target.ExternSymbol) {
-					cg.output.WriteString(target.ExternSymbol)
+					cg.output.WriteString(cg.externCallee(target.ExternSymbol))
 				} else {
 					cg.output.WriteString("OAK_INVALID_EXTERN_SYMBOL")
 				}
@@ -2808,7 +2967,15 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		}
 		cg.output.WriteString("( ")
 		for i, arg := range e.Arguments {
-			if operand, isSpan := boundarySpanArgument(arg); isSpan {
+			if cg.localContainerOf(arg).kind == containerBuffer && cg.isExternCallee(e.Function) {
+				// A Buffer parameter of an extern binding is the pointer and
+				// the element count (section 2.8.5).
+				cg.output.WriteString("( ")
+				cg.emitExpressionFragment(arg, tc)
+				cg.output.WriteString(" ).base, (size_t)( ")
+				cg.emitExpressionFragment(arg, tc)
+				cg.output.WriteString(" ).len")
+			} else if operand, isSpan := boundarySpanArgument(arg); isSpan {
 				// A boundary span lowers to the pointer and the element
 				// count of the view or span, for this call only
 				// (docs/spec/92-ffi.md section 2.5.4). No copy, no thunk.
@@ -2819,6 +2986,10 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 				cg.output.WriteString(" ).len")
 			} else if operand, isCString := cStringArgument(arg); isCString {
 				cg.emitCStringArgument(operand, arg, tc)
+			} else if bytes, slots, isArgv := argvArgument(arg); isArgv {
+				cg.emitArgvArgument(bytes, slots, arg, tc)
+			} else if operand, isOut := outArgument(arg); isOut {
+				cg.emitOutArgument(operand, tc)
 			} else {
 				cg.emitExpressionFragment(arg, tc)
 			}
@@ -3114,6 +3285,11 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 	}
 
 	// Handle array types: [N]T or []T
+	// A foreign function pointer (docs/spec/92-ffi.md section 2.10) is
+	// stored as an opaque pointer and cast to its signature at each call.
+	if _, isCFn := typechecker.CFnTypeExpression(expr); isCFn {
+		return "void *"
+	}
 	// The parser represents array types as IndexExpression
 	if indexExpr, ok := expr.(*ast.IndexExpression); ok {
 		if cType, atomic := atomicTypeC(indexExpr); atomic {
@@ -3126,8 +3302,8 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 		}
 		// An owned foreign buffer is the span struct over its element type
 		// (docs/spec/92-ffi.md section 2.8).
-		if base, ok := indexExpr.Left.(*ast.Identifier); ok && base.Value == "Buffer" {
-			return cg.emitSpanType(cg.parseTypeExpression(indexExpr.Index))
+		if element, isBuffer := bufferElementSyntax(indexExpr); isBuffer {
+			return cg.emitSpanType(cg.parseTypeExpression(element))
 		}
 		// Atomic cells embed as C11 _Atomic members (docs/spec/65).
 		if atomicC, isAtomic := atomicTypeC(indexExpr); isAtomic {
@@ -3170,7 +3346,7 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 
 // emitViewType emits a view type struct and returns the type name
 func (cg *CodeGenerator) emitViewType(elementType string) string {
-	viewTypeName := fmt.Sprintf("oak_view_%s", elementType)
+	viewTypeName := fmt.Sprintf("oak_view_%s", elementIdent(elementType))
 
 	// Check if already emitted
 	if cg.types[viewTypeName] {
@@ -3189,7 +3365,7 @@ func (cg *CodeGenerator) emitViewType(elementType string) string {
 
 	// Bounds-checked element access: out-of-range is a trap, never UB
 	// (docs/spec/50-borrowing.md).
-	cg.write(fmt.Sprintf("static inline %s oak_view_index_%s(%s v, u64 i) {\n", elementType, elementType, viewTypeName))
+	cg.write(fmt.Sprintf("static inline %s oak_view_index_%s(%s v, u64 i) {\n", elementType, elementIdent(elementType), viewTypeName))
 	cg.write("  if (i >= (u64)v.len) { __builtin_trap(); }\n")
 	cg.write("  return v.base[i];\n")
 	cg.write("}\n\n")
@@ -3217,7 +3393,7 @@ func (cg *CodeGenerator) emitViewType(elementType string) string {
 	// subslice(v, start, n): the derived view is exactly n elements starting
 	// at start, admitted only when start + n <= len (no overflow: both
 	// comparisons stay within u64 without adding).
-	cg.write(fmt.Sprintf("static inline %s oak_view_subslice_%s(%s v, u64 start, u64 n) {\n", viewTypeName, elementType, viewTypeName))
+	cg.write(fmt.Sprintf("static inline %s oak_view_subslice_%s(%s v, u64 start, u64 n) {\n", viewTypeName, elementIdent(elementType), viewTypeName))
 	cg.write("  if (start > (u64)v.len || n > (u64)v.len - start) { __builtin_trap(); }\n")
 	cg.write(fmt.Sprintf("  return (%s){ v.base + start, (u32)n };\n", viewTypeName))
 	cg.write("}\n\n")
@@ -3227,7 +3403,7 @@ func (cg *CodeGenerator) emitViewType(elementType string) string {
 
 // emitSpanType emits a span type struct and returns the type name
 func (cg *CodeGenerator) emitSpanType(elementType string) string {
-	spanTypeName := fmt.Sprintf("oak_span_%s", elementType)
+	spanTypeName := fmt.Sprintf("oak_span_%s", elementIdent(elementType))
 
 	// Check if already emitted
 	if cg.types[spanTypeName] {
@@ -3246,18 +3422,18 @@ func (cg *CodeGenerator) emitSpanType(elementType string) string {
 
 	// Bounds-checked element access: out-of-range is a trap, never UB
 	// (docs/spec/50-borrowing.md).
-	cg.write(fmt.Sprintf("static inline %s oak_span_index_%s(%s v, u64 i) {\n", elementType, elementType, spanTypeName))
+	cg.write(fmt.Sprintf("static inline %s oak_span_index_%s(%s v, u64 i) {\n", elementType, elementIdent(elementType), spanTypeName))
 	cg.write("  if (i >= (u64)v.len) { __builtin_trap(); }\n")
 	cg.write("  return v.base[i];\n")
 	cg.write("}\n\n")
 
 	// Bounds-checked element store, symmetric with the load.
-	cg.write(fmt.Sprintf("static inline void oak_span_store_%s(%s v, u64 i, %s value) {\n", elementType, spanTypeName, elementType))
+	cg.write(fmt.Sprintf("static inline void oak_span_store_%s(%s v, u64 i, %s value) {\n", elementIdent(elementType), spanTypeName, elementType))
 	cg.write("  if (i >= (u64)v.len) { __builtin_trap(); }\n")
 	cg.write("  v.base[i] = value;\n")
 	cg.write("}\n\n")
 
-	cg.write(fmt.Sprintf("static inline %s oak_span_subslice_%s(%s v, u64 start, u64 n) {\n", spanTypeName, elementType, spanTypeName))
+	cg.write(fmt.Sprintf("static inline %s oak_span_subslice_%s(%s v, u64 start, u64 n) {\n", spanTypeName, elementIdent(elementType), spanTypeName))
 	cg.write("  if (start > (u64)v.len || n > (u64)v.len - start) { __builtin_trap(); }\n")
 	cg.write(fmt.Sprintf("  return (%s){ v.base + start, (u32)n };\n", spanTypeName))
 	cg.write("}\n\n")
@@ -3639,7 +3815,7 @@ func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement,
 	}
 	switch info.kind {
 	case containerSpan:
-		cg.write(fmt.Sprintf("  oak_span_store_%s( ", info.element))
+		cg.write(fmt.Sprintf("  oak_span_store_%s( ", elementIdent(info.element)))
 		cg.emitExpressionFragment(stmt.Target.Left, tc)
 		cg.output.WriteString(", (u64)( ")
 		cg.emitExpressionFragment(stmt.Target.Index, tc)
@@ -3827,9 +4003,9 @@ func (cg *CodeGenerator) emitArrayLiteral(expr *ast.ArrayLiteral, tc *typechecke
 			// automatic storage lives to the end of the enclosing block —
 			// long enough for the call or initializer it appears in
 			// (docs/spec/10-syntax.md section 2c).
-			viewType := fmt.Sprintf("oak_view_%s", info.element)
+			viewType := fmt.Sprintf("oak_view_%s", elementIdent(info.element))
 			if info.kind == containerSpan {
-				viewType = fmt.Sprintf("oak_span_%s", info.element)
+				viewType = fmt.Sprintf("oak_span_%s", elementIdent(info.element))
 			}
 			cg.output.WriteString(fmt.Sprintf("(%s){ (%s[]){ ", viewType, info.element))
 			for i, elem := range expr.Elements {

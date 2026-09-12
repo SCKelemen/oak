@@ -927,6 +927,17 @@ func (bc *BorrowChecker) checkIndexExpression(index *ast.IndexExpression, env *t
 // checkInvocationExpression checks function calls for borrow operations
 func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpression, env *typechecker.TypeEnvironment, targetVar string) {
 	bc.checkCallGlobalWrites(call, env)
+	// An Objective-C message send (docs/spec/92-ffi.md section 2.12) calls
+	// the runtime under a signature the program asserts for the selector's
+	// implementation: the same kind of contract c.fn_at records, under the
+	// same code, so `admit OAK-B0122` accepts both and nothing else does.
+	if signature, isSend := typechecker.MessageSendCallee(call.Function); isSend {
+		d := bc.reportForeignFunctionAssumption(call,
+			"message send contract assumed: the selector's implementation has the bracketed signature, with the receiver and selector as its two leading pointer parameters",
+			"c.msg_send")
+		d.AddNote("the assumption is the sender's, as for an extern prototype (docs/spec/92-ffi.md section 2.12); every argument passes exactly the declared boundary types, and the receiver and selector are opaque c.Ptr values")
+		_ = signature
+	}
 	// A borrow named as the first argument of a bound derive builtin is a
 	// derivation source, not a direct use; createSubsliceWithRegion is the
 	// single authority for whether the derivation is allowed.
@@ -987,6 +998,18 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 			}
 			continue
 		}
+		// An argument vector (docs/spec/92-ffi.md section 2.5.6) reads the
+		// strings' owner and writes the slots' owner for the extent of the
+		// foreign call; an out-parameter (section 2.5.7) writes its local.
+		if bytes, slots, isArgv := argvOperands(arg, env); isArgv {
+			bc.checkIdentifierUse(bytes, bytes.Value, env, false)
+			bc.checkIdentifierUse(slots, slots.Value, env, true)
+			continue
+		}
+		if operand, isOut := outOperand(arg, env); isOut {
+			bc.checkIdentifierUse(operand, operand.Value, env, true)
+			continue
+		}
 		// A borrow-carrying record may be passed to a parameter that
 		// declares its region (docs/spec/50-borrowing.md section 8c) when
 		// the argument's borrows are tracked; otherwise aggregates fail
@@ -1011,6 +1034,17 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 	// enclosing block, so the view or span is dropped at the block's end
 	// and cannot escape it, and the assumption the program makes about the
 	// runtime's memory is recorded where every other unsafe assumption is.
+	// A foreign function pointer (docs/spec/92-ffi.md section 2.10): the
+	// binding names a function at an address the program vouches for;
+	// the contract is recorded like the foreign-buffer one, under its own
+	// code, so a module accepts it explicitly (`admit OAK-B0122`).
+	if typechecker.ForeignFunctionAtCall(call) && targetVar != "" {
+		d := bc.reportForeignFunctionAssumption(call,
+			fmt.Sprintf("foreign function contract assumed for %q: the pointer is a function of the annotated signature, callable until the block ends", targetVar),
+			targetVar)
+		d.AddNote("the assumption is the binding author's, as for an extern prototype (docs/spec/92-ffi.md section 2.10); a NULL pointer traps at c.fn_at, and every call passes exactly the annotated argument types")
+		return
+	}
 	if member, _, isForeign := typechecker.ForeignBorrowCall(call); isForeign && targetVar != "" {
 		if member == "own" {
 			// An owned foreign buffer (docs/spec/92-ffi.md section 2.8):
@@ -1053,6 +1087,27 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 					fmt.Sprintf("buffer %q cannot be handed back while borrow %q is live", owner, borrowName))
 				bc.addBorrowContext(d, borrowName, info, fmt.Sprintf("borrow %q still reads the buffer's memory", borrowName))
 				d.AddHelp("let the view or span leave scope before c.disown")
+				return
+			}
+		}
+		bc.consumedOwners[owner] = true
+		return
+	}
+	// A custody transition (docs/spec/92-ffi.md section 2.8.5) moves the
+	// buffer: rejected while any borrow of it is live, and the old binding
+	// is consumed; the result is the same resource under its new name.
+	if owner, isTransition := custodyTransitionOperand(call, env); isTransition {
+		if bc.consumedOwners[owner] {
+			bc.reportBorrow(call, CodeResourceUsedAfterConsume,
+				fmt.Sprintf("buffer %q was already moved or handed back", owner))
+			return
+		}
+		for _, kind := range []borrowKind{BorrowSpan, BorrowView} {
+			if borrowName, info, live := bc.firstActiveBorrow(owner, kind); live {
+				d := bc.reportBorrow(call, CodeBorrowGeneric,
+					fmt.Sprintf("buffer %q cannot change custody while borrow %q is live", owner, borrowName))
+				bc.addBorrowContext(d, borrowName, info, fmt.Sprintf("borrow %q still reads the buffer's memory", borrowName))
+				d.AddHelp("let the view or span leave scope before the transition")
 				return
 			}
 		}
@@ -1151,6 +1206,57 @@ func cStringOperand(arg ast.Expression, env *typechecker.TypeEnvironment) (opera
 		return nil, false, false
 	}
 	return operand, false, true
+}
+
+// cLibraryMemberCall recognizes `c.<member>(...)` in argument position when
+// no local binding named `c` shadows the library, returning the call.
+func cLibraryMemberCall(arg ast.Expression, member string, arity int, env *typechecker.TypeEnvironment) (*ast.InvocationExpression, bool) {
+	call, isCall := arg.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != arity {
+		return nil, false
+	}
+	access, isAccess := call.Function.(*ast.IndexExpression)
+	if !isAccess {
+		return nil, false
+	}
+	library, isIdent := access.Left.(*ast.Identifier)
+	name, nameIsIdent := access.Index.(*ast.Identifier)
+	if !isIdent || !nameIsIdent || library.Value != "c" || name.Value != member {
+		return nil, false
+	}
+	if _, bound := env.Get("c"); bound {
+		return nil, false
+	}
+	return call, true
+}
+
+// argvOperands recognizes `c.argv_of(bytes, slots)` in argument position
+// (docs/spec/92-ffi.md section 2.5.6): the named view and span operands.
+func argvOperands(arg ast.Expression, env *typechecker.TypeEnvironment) (bytes, slots *ast.Identifier, ok bool) {
+	call, isArgv := cLibraryMemberCall(arg, "argv_of", 2, env)
+	if !isArgv {
+		return nil, nil, false
+	}
+	bytes, bytesIsIdent := call.Arguments[0].(*ast.Identifier)
+	slots, slotsIsIdent := call.Arguments[1].(*ast.Identifier)
+	if !bytesIsIdent || !slotsIsIdent {
+		return nil, nil, false
+	}
+	return bytes, slots, true
+}
+
+// outOperand recognizes `c.out(x)` in argument position (docs/spec/92-ffi.md
+// section 2.5.7): the named local the foreign callee writes.
+func outOperand(arg ast.Expression, env *typechecker.TypeEnvironment) (operand *ast.Identifier, ok bool) {
+	call, isOut := cLibraryMemberCall(arg, "out", 1, env)
+	if !isOut {
+		return nil, false
+	}
+	operand, isIdent := call.Arguments[0].(*ast.Identifier)
+	if !isIdent {
+		return nil, false
+	}
+	return operand, true
 }
 
 // checkViewCall handles view() calls: creates a read-only borrow
@@ -1635,6 +1741,38 @@ func (bc *BorrowChecker) createSubsliceWithRegion(sourceBorrowName, subsliceName
 // foreignDisownOperand recognizes `c.disown(b)` and names the buffer
 // binding (docs/spec/92-ffi.md section 2.8). A local named `c` would have
 // made this an ordinary call, which the typechecker never accepts here.
+// custodyTransitionOperand recognizes a call to an extern binding that
+// returns a Buffer and names the Buffer binding it moves.
+func custodyTransitionOperand(call *ast.InvocationExpression, env *typechecker.TypeEnvironment) (string, bool) {
+	callee, isIdent := call.Function.(*ast.Identifier)
+	if !isIdent || env == nil {
+		return "", false
+	}
+	scheme, bound := env.Get(callee.Value)
+	if !bound || scheme == nil {
+		return "", false
+	}
+	fn, isFn := scheme.Type.(*typechecker.FunctionType)
+	if !isFn {
+		return "", false
+	}
+	if _, returnsBuffer := fn.ReturnType.(*typechecker.BufferType); !returnsBuffer {
+		return "", false
+	}
+	for i, arg := range call.Arguments {
+		ident, isIdent := arg.(*ast.Identifier)
+		if !isIdent {
+			continue
+		}
+		if i < len(fn.Parameters) {
+			if _, isBuffer := fn.Parameters[i].(*typechecker.BufferType); isBuffer {
+				return ident.Value, true
+			}
+		}
+	}
+	return "", false
+}
+
 func foreignDisownOperand(call *ast.InvocationExpression) (string, bool) {
 	access, isAccess := call.Function.(*ast.IndexExpression)
 	if !isAccess || len(call.Arguments) != 1 {

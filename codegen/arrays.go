@@ -25,6 +25,16 @@ import (
 // the mangling maps * to ptr and every other non-identifier character to an
 // underscore, collapsing and trimming runs.
 func arrayWrapperName(element string, length int64) string {
+	return fmt.Sprintf("oak_arr_%s_%d", elementIdent(element), length)
+}
+
+// elementIdent mangles an element's C spelling into an identifier fragment
+// for the container typedefs and helpers derived from it (oak_view_*,
+// oak_span_*, oak_arr_*): * becomes ptr and every other non-identifier
+// character an underscore, with runs collapsed and trimmed, so `void *`
+// (a span of c.Ptr slots) names oak_span_void_ptr rather than an invalid
+// identifier.
+func elementIdent(element string) string {
 	var mangled strings.Builder
 	pendingUnderscore := false
 	for _, r := range element {
@@ -46,7 +56,7 @@ func arrayWrapperName(element string, length int64) string {
 			pendingUnderscore = true
 		}
 	}
-	return fmt.Sprintf("oak_arr_%s_%d", mangled.String(), length)
+	return mangled.String()
 }
 
 // arrayTypeName returns the wrapper typedef name for [length]element,

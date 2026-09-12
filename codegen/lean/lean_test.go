@@ -156,7 +156,8 @@ narrow: (x: u64, y: i32): u32 {
 func TestExtractionFailsClosed(t *testing.T) {
 	cases := map[string]struct{ src, want string }{
 		"recursion":      {"f: (n: u32): u32 = n == u32(0) ? u32(0) | f(n - u32(1))", "recursive"},
-		"fma":            {"f: (x: f32): f32 = fma(x, x, x)", "no Lean carrier"},
+		"trunc":          {"f: (x: f32): f32 = trunc(x)", "no Lean carrier"},
+		"min":            {"f: (x: f32, y: f32): f32 = min(x, y)", "no Lean carrier"},
 		"f16 row":        {"f: (x: f32): u16 = u16_bits_f16(f16_round_f32(x))", "f32/f64 conversions only"},
 		"mixed patterns": {"f: (n: u32): u32 = n ? | 0 => u32(1) | k => k", "outside the extracted subset"},
 		"template call":  {"Kind: type = Word | Line\nf[T]: (k: T): T = k\ng: (k: Kind): Kind = f[Kind](k)\nh: (): u32 = u32(1)", ""},
@@ -309,6 +310,33 @@ window_sum: (src: []u8, at: u32): u32 {
 	}
 }
 
+// A target constant (docs/spec/92-ffi.md section 2.11) is a value the
+// target's C headers define, unknown to Oak: it extracts as an opaque
+// constant of its c.* scalar type, so a theorem about code that reads it
+// holds for every value (95-extraction.md section 3).
+func TestExtractionTargetConstant(t *testing.T) {
+	src := `
+CLOCK_MONOTONIC: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")
+BUFFER_BYTES: c.Size = c.const("BUFSIZ", "<stdio.h>")
+clock_id: (): c.Int = CLOCK_MONOTONIC
+`
+	out, err := extract(t, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"opaque CLOCK_MONOTONIC : Int32",
+		"def clock_id",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("extraction lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "BUFSIZ") || strings.Contains(out, "time.h") {
+		t.Fatalf("the C identifier or header leaked into the extraction:\n%s", out)
+	}
+}
+
 // f32 and f64 extract onto Lean's Float32 and Float: literals exactly by bit
 // pattern, the operators and comparisons as themselves, negation as the sign
 // flip, the conversion rows of section 11.3.4 onto toFloat/toFloat32/ofBits/
@@ -372,5 +400,76 @@ rows: (x: f64, n: i32, bits: u64): u32 {
 		if !strings.Contains(out, want) {
 			t.Fatalf("extraction lacks %q:\n%s", want, out)
 		}
+	}
+}
+
+// fma, copysign, and round_even go through the bit-exact carriers of
+// Oak.FloatOps, and a module using them imports it.
+func TestExtractionFloatOps(t *testing.T) {
+	src := `
+kernel: (a: f64, b: f64, c: f64): f64 = fma(a, b, -c)
+signed: (x: f32, y: f32): f32 = copysign(abs(x), y)
+nearest: (x: f64): f64 = round_even(x)
+`
+	out, err := extract(t, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"import Oak.FloatOps",
+		"(Oak.FloatOps.fma64 a b (-c))",
+		"(Oak.FloatOps.copysign32 (Float32.abs x) y)",
+		"(Oak.FloatOps.roundEven64 x)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+	plain, err := extract(t, "f: (x: f64): f64 = sqrt(x)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plain, "import Oak.FloatOps") {
+		t.Fatalf("a module without the three intrinsics must not import Oak.FloatOps:\n%s", plain)
+	}
+}
+
+// The UTF-8 validity intrinsic decides Table 3-7 over the carrier through
+// Oak.Utf8Exec.valid, imported only when used; a field store through an
+// element of a span reads the element record, replaces the field, and
+// stores it back at the same index.
+func TestExtractionUtf8ValidAndElementFieldStore(t *testing.T) {
+	src := `
+Cursor: type = struct { next: u32, done: Bool }
+advance: (cursor: [*]Cursor, src: []u8): Bool {
+  ok: Bool = is_valid_utf8(src)
+  cursor[0].next = cursor[0].next + u32(1)
+  cursor[0].next >= len(src) ? { cursor[0].done = true }
+  ok
+}
+`
+	out, err := extract(t, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"import Oak.Utf8Exec",
+		"(Oak.Utf8Exec.valid src)",
+		"let cursor := cursor.setIfInBounds 0 { (cursor.getD 0 (default : Cursor)) with next :=",
+		"let cursor := cursor.setIfInBounds 0 { (cursor.getD 0 (default : Cursor)) with done := true }",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+	plain := `
+count: (src: []u8): u32 = len(src)
+`
+	out, err = extract(t, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "Oak.Utf8Exec") {
+		t.Fatalf("Utf8Exec imported without a use:\n%s", out)
 	}
 }

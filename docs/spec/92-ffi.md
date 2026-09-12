@@ -52,7 +52,11 @@ implicit conversion in either direction, no arithmetic, and no ordering on
 `c.*` values in v1: they exist to be constructed, passed across the boundary,
 and converted back. `c.Ptr` and `c.String` cannot be dereferenced, indexed, or
 stored through from Oak — the borrow checker never sees a foreign pointer as
-an owner.
+an owner. The one `c.Ptr` Oak constructs itself is **`c.null()`**, the null
+pointer, for the optional pointer parameters of foreign calls
+(`posix_spawn`'s file actions and attributes, `gettimeofday`'s time zone);
+it is as opaque as any other `c.Ptr` and the interpreter rejects it like every
+foreign pointer.
 
 ### 2.2 Conversions
 
@@ -122,8 +126,10 @@ declaration site instead of every call site). Discipline profiles may later
 require an audit manifest of extern bindings; the strict profile does not yet.
 
 The C backend emits its own `extern` prototype derived from the binding — it
-does not include foreign headers. A mismatch between the binding and the true
-symbol is a foreign-contract violation, exactly like a wrong prototype in C.
+does not include foreign headers (the one exception, a target constant's
+header, §2.11, is why a program with target constants declares its externs
+through asm labels). A mismatch between the binding and the true symbol is a
+foreign-contract violation, exactly like a wrong prototype in C.
 
 ### 2.4 Target model (recorded assumption)
 
@@ -272,8 +278,11 @@ is the point of the form — the terminator is the contract.
 `c.span_of(v)` lowers to the two C arguments `(void *)v.base, (size_t)v.len`
 and `c.span_mut_of(s)` to `(void *)s.base, (size_t)s.len` — the base pointer
 and element count of the view/span struct the backend already uses. No copy,
-no allocation, no thunk. The interpreter cannot call externs (§4) and rejects
-these forms with the same diagnostic it gives an extern call.
+no allocation, no thunk. `c.argv_of(bytes, slots)` (§2.5.6) lowers to a call
+of the helper `oak_argv_u8`, emitted only for programs that use the form, and
+`c.out(x)` (§2.5.7) to `(void *)&x`. The interpreter cannot call externs
+(§4) and rejects these forms with the same diagnostic it gives an extern
+call.
 
 **Implemented.** Every element type of §2.5.1 is admitted: fixed-width
 integers, `f32`/`f64` and the `f16`/`bf16`/`f8e4m3`/`f8e5m2` storage
@@ -292,6 +301,107 @@ addresses exactly the layout it expects). Semantic records without the
 | `OAK-F0105` | `c.span_of`/`c.span_mut_of` argument does not line up with a `c.Ptr, c.Size` parameter pair |
 | `OAK-F0106` | `c.String` constructed from a non-literal string |
 | `OAK-F0110` | `c.cstr` argument does not stand for a `c.String` parameter, its operand is not a named `[]u8` view or a string literal, or a literal operand is not NUL-terminated |
+| `OAK-F0111` | `c.argv_of` argument does not stand for a `c.Ptr` parameter, or its operands are not a named `[]u8` view and a named `[*]c.Ptr` span |
+| `OAK-F0112` | `c.out` argument does not stand for a `c.Ptr` parameter, or its operand is not a local binding of a `c.*` scalar type or of a declared struct with boundary fields |
+
+#### 2.5.6 Argument vectors: `c.argv_of`
+
+**Status: implemented and tested** (ml roadmap D4, process spawning).
+`posix_spawn` and `execve` take `char *const argv[]`: a NUL-terminated array
+of pointers to NUL-terminated strings. Oak has no `[]c.String` value — a
+`c.String` is formed at a call and lives no longer (§2.5.3) — so the vector
+is formed the same way, at the call, from storage the program owns:
+
+```oak
+posix_spawn: (pid: c.Ptr, path: c.String, actions: c.Ptr, attr: c.Ptr, argv: c.Ptr, envp: c.Ptr): c.Int = c.extern("posix_spawn")
+
+spawn_echo: (): c.Int {
+  // "echo\0" "d4\0": the strings back to back, each NUL-terminated
+  words: [8]u8 = [8]u8{ 101, 99, 104, 111, 0, 100, 52, 0 }
+  args: []u8 = view(&words)
+  slot_storage: [4]c.Ptr
+  slots: [*]c.Ptr = span(&slot_storage)
+  no_env: [0]u8
+  empty: []u8 = view(&no_env)
+  env_storage: [1]c.Ptr
+  env_slots: [*]c.Ptr = span(&env_storage)
+  pid: c.Int = c.Int(i32(0))
+  posix_spawn(c.out(pid), c.cstr("/bin/echo\0"), c.null(), c.null(), c.argv_of(args, slots), c.argv_of(empty, env_slots))
+}
+```
+
+`c.argv_of(bytes, slots)` is an argument form in the shape of §2.5.1:
+
+- it stands for one `c.Ptr` parameter of the extern binding (`OAK-F0111`
+  otherwise);
+- `bytes` is a named read-only view `[]u8` holding the strings back to back,
+  **each NUL-terminated, the last byte of the view included**; an empty
+  view is the empty vector (`{ NULL }`, the shape of an empty environment);
+- `slots` is a named writable span `[*]c.Ptr` with at least one slot per
+  string plus one for the trailing NULL;
+- at the call the backend walks the view, stores each string's start in
+  the slots, appends the NULL, and passes the slots' base; when the view
+  does not end in NUL or the slots are too few it traps naming the Oak
+  source position, like a failed assertion, so C never receives an
+  unterminated string or an unterminated vector. The strings are not
+  copied;
+- for the borrow checker the call is a read use of the view's owner and a
+  write use of the slots' owner for the call's extent (§2.5.2); the
+  pointers cannot escape because the form is not an expression
+  (`OAK-F0103` anywhere but an extern parameter position), and the
+  interpreter rejects it with the extern-call diagnostic (§4).
+
+The slots are ordinary Oak storage; after the call they hold pointers into
+`bytes` that the program cannot dereference, exactly like any other `c.Ptr`.
+Under §2.4's target model a `c.Ptr` slot is what `char *const argv[]`
+addresses.
+
+#### 2.5.7 Out-parameters: `c.out`
+
+**Status: implemented and tested.** `waitpid(pid, &status, 0)`,
+`posix_spawn(&pid, ...)`, `gettimeofday(&tv, NULL)`, and `clock_gettime(id,
+&ts)` fill caller storage through a pointer. `c.out(x)` is the argument
+form for that pointer:
+
+```oak
+waitpid: (pid: c.Int, status: c.Ptr, options: c.Int): c.Int = c.extern("waitpid")
+gettimeofday: (tv: c.Ptr, tz: c.Ptr): c.Int = c.extern("gettimeofday")
+Timeval: type = struct { sec: i64, usec: i64 }
+
+exit_code: (pid: c.Int): u32 {
+  status: c.Int = c.Int(i32(0))
+  waited: c.Int = waitpid(pid, c.out(status), c.Int(i32(0)))
+  (u32_bits_i32(i32(status)) >> u32(8)) & u32(255)
+}
+
+now: (): Timeval {
+  tv: Timeval = Timeval { sec: i64(0), usec: i64(0) }
+  r: c.Int = gettimeofday(c.out(tv), c.null())
+  tv
+}
+```
+
+- it stands for one `c.Ptr` parameter of the extern binding (`OAK-F0112`
+  otherwise);
+- the operand is a **local binding** of a `c.*` scalar type (never `c.Ptr`
+  or `c.String`, which are not storage C fills) or of a declared `struct`
+  whose fields are boundary types (§2.5.1) — the same layout guarantee a
+  boundary span of structs relies on; a global is rejected (static storage
+  is written only by Oak code) and so is an Oak scalar (§2.3: Oak scalars
+  never cross raw; declare the binding with the `c.*` type the callee
+  writes and convert after the call);
+- it lowers to the binding's address for the duration of the call; for the
+  borrow checker the call is a write use of the binding (§2.5.2), so a
+  view or span of it cannot be live across the call;
+- it is not an expression (`OAK-F0103` elsewhere) and the interpreter
+  rejects it (§4).
+
+This closed the out-pointer half of the clock gap recorded in oak #179: a
+`struct timespec` declared as a boundary struct is filled through
+`c.out(ts)`. The other half — `CLOCK_MONOTONIC`'s value differs between
+hosts (1 on Linux, 6 on Darwin) — is a target constant (§2.11), and
+`stdlib/timenative.oak` now reads both clocks through `clock_gettime` in
+Oak with nothing linked but the C library.
 
 The test runner's native adapter rules (`110-testing.md`) continue to exclude
 pointer interfaces from the adapters themselves; a test may nonetheless call
@@ -606,24 +716,81 @@ carves the ranges it reserved with `subslice` over `view(&b)` or
 any number of views, or one span and its reborrows. Everything is `u32`
 arithmetic that the interpreter and the backends compute identically.
 
-#### 2.8.5 What stays outside
+#### 2.8.5 Custody states
+
+**Status: implemented and tested** (`compiler/e2e_buffer_custody_test.go`;
+the ml pilot's request F5, `docs/notes/ml-language-requests-2026-09.md`).
+The DMA and ownership states of `50-borrowing.md` §11, on `Buffer`:
+
+```oak
+submit:   (b: Buffer[f32, Host]):   Buffer[f32, Device] = c.extern("mlrt_submit")
+complete: (b: Buffer[f32, Device]): Buffer[f32, Host]   = c.extern("mlrt_complete")
+
+unsafe {
+  host: Buffer[f32] = c.own[f32](p, n)          // Buffer[f32, Host]
+  fill(span(&host))
+  device: Buffer[f32, Device] = submit(host)    // host is consumed
+  back: Buffer[f32] = complete(device)          // device is consumed
+  total = sum(view(&back))
+  free(c.disown(back))
+}
+```
+
+- `Buffer[T, S]` is a buffer in **custody state** `S`, a bare marker name;
+  `Buffer[T]` is `Buffer[T, Host]`. `Host` is the initial state, the one
+  `c.own` produces. States are phantom: every `Buffer[T, S]` has one
+  representation, and `Buffer[f32, Host]` and `Buffer[f32, Device]` are
+  distinct types. A state may not name a declared type.
+- **Only a `Host` buffer can be borrowed or handed back.** `view(&b)`,
+  `span(&b)`, and `c.disown(b)` on a buffer in another state are type
+  errors naming the state: CPU code cannot touch device-owned memory
+  because it lacks the state, not because the pointer is gone.
+- **A custody transition is an extern binding** with exactly one
+  `Buffer[T, From]` parameter and the return type `Buffer[T, To]`
+  (`To ≠ From`, same `T`); any other extern shape over a `Buffer` is
+  `OAK-F0110`. The binding is the trust boundary as for every extern
+  (§2.3): the runtime's function receives the buffer as `T *base, size_t
+  len` and returns nothing; the Oak result is the argument re-typed —
+  the same resource in its next state, nothing copied. Ordinary Oak
+  functions still take no `Buffer` (§2.8.1).
+- **Calling a transition consumes the binding**: the argument is the
+  `Buffer` binding itself, rejected while any view or span of it is live
+  (`OAK-B0000`), dead afterward (`OAK-B0111`), and the call stands only as
+  the initializer of a new `Buffer[T, To]` binding — the buffer always has
+  exactly one live name.
+- Lowering: the call is `( mlrt_submit( b.base, (size_t)b.len ), (oak_span_T){ b.base, b.len } )`,
+  the prototype `extern void mlrt_submit( T *b, size_t b_len );`. The
+  interpreter has no foreign memory and rejects the calls as it rejects
+  `c.own`.
+
+`Oak.BufferCustody` (`spec/lean/Oak/BufferCustody.lean`) instantiates the
+typestate calculus of `112-protocols.md` §5a with `Host ⇄ Device`: the
+round trip types (`round_trip`), a device handle only comes from a submit
+(`device_from_submit`), borrowing is admitted only at host
+(`no_borrow_in_device`, `borrow_state_is_host`), and the wrong-way
+transitions have no derivation.
+
+#### 2.8.6 What stays outside
 
 A `Buffer[T]` in a record or a global (a `Weights` record owning its
 arena, a package-level buffer loaded once) needs the record to carry
-custody, which is the `Buffer[CpuOwned]` typestate of `50-borrowing.md`
-§11 and the resource-consumption machinery of §9 applied to a field. The
-element-space arena admits one span at a time; carving several writable
-ranges from one buffer at once is the disjoint-region proof of
-`50-borrowing.md` §6, or an `unsafe` disjointness assumption.
+custody — the resource-consumption machinery of `50-borrowing.md` §9
+applied to a field, the increment after §2.8.5. The element-space arena
+admits one span at a time; carving several writable ranges from one buffer
+at once is the disjoint-region proof of `50-borrowing.md` §6, or an
+`unsafe` disjointness assumption. Custody states with more than a name —
+a device identity, a queue — are records over the buffer, which waits on
+the same increment.
 
-#### 2.8.6 Diagnostics
+#### 2.8.7 Diagnostics
 
 | Code | Meaning |
 | --- | --- |
 | `OAK-F0107` | `c.own` outside an `unsafe` block, or not the initializer of a named binding |
+| `OAK-F0110` | an extern binding over a `Buffer` that is not a custody transition |
 | `OAK-B0110` | (warning) the foreign buffer contract assumed for an owner |
-| `OAK-B0111` | a buffer used after `c.disown` |
-| `OAK-B0000` | `c.disown` while a view or span of the buffer is live |
+| `OAK-B0111` | a buffer used after `c.disown` or after a custody transition moved it |
+| `OAK-B0000` | `c.disown` or a custody transition while a view or span of the buffer is live |
 
 ### 2.9 C ABI exports from any package
 
@@ -705,6 +872,308 @@ An explicit export is part of a package's public surface: the snapshot
 and adding a marker to a published function is classified as an ABI change
 too — conservative, since a consumer linking the old symbol set is unaffected
 by an addition, but the snapshot laws classify any ABI difference as major.
+
+### 2.10 Calls through a foreign function pointer
+
+Status: implemented (`c.Fn[...]`, `c.fn_at`, `OAK-F0113`, `OAK-B0122`;
+`compiler/e2e_ffi_fnptr_test.go`). Motivated by ml roadmap D3: a `c.Ptr`
+from `dlsym` invoked with a declared signature, so the runtime's dispatch
+loop over compiled kernels can move out of Zig.
+
+An extern binding (§2.3) names a symbol the linker resolves. A function
+whose address is known only at run time — a kernel `dlsym` found in a
+library `dlopen` loaded — has no symbol Oak can name. This section gives it
+a **declared signature and a scope** instead, in the shape of §2.7: a
+foreign pointer becomes a callable value for the extent of one unsafe block,
+under a contract the program states, and for nothing else.
+
+#### 2.10.1 The type and the form
+
+`c.Fn[(params) -> ret]` is the type of a foreign function of the given
+signature. Its parameter types and its return type obey exactly the extern
+rule (§2.3, `OAK-F0101`): `c.*` types, proven-layout structs by value, and
+`()` for the return. The type exists in one position only — the annotation
+of a local binding, inside an `unsafe` block, that `c.fn_at` initializes:
+
+```oak
+dlopen: (path: c.Ptr, mode: c.Int): c.Ptr = c.extern("dlopen")
+dlsym: (handle: c.Ptr, name: c.String): c.Ptr = c.extern("dlsym")
+
+kernel_length: (text: []u8): u64 {
+  handle: c.Ptr = dlopen(c.null(), c.Int(i32(2)))
+  p: c.Ptr = dlsym(handle, c.String("strlen"))
+  n: u64 = 0
+  unsafe {
+    strlen_at: c.Fn[(c.String) -> c.UInt64] = c.fn_at(p)
+    n = u64(strlen_at(c.cstr(text)))
+  }
+  n
+}
+```
+
+- `c.fn_at(p)` takes one `c.Ptr` and is admitted only inside an `unsafe`
+  block, as the initializer of a named binding (`OAK-F0107`, the placement
+  rule of `c.borrow`), and that binding must carry a `c.Fn` annotation
+  (`OAK-F0113`): the annotation *is* the declared ABI, as an extern binding's
+  signature is; Oak never infers a foreign signature.
+- `c.Fn` anywhere else — a record field, a global, a parameter, a return
+  type, an array element, a binding outside `unsafe` or without `c.fn_at` —
+  is `OAK-F0113`. A foreign function pointer never crosses back into Oak
+  semantics: it is not an Oak function value, cannot be captured, compared,
+  stored, or passed to Oak code, and is dropped when its block ends.
+- A signature naming a type that cannot cross the boundary (an Oak scalar,
+  a view, a string) is `OAK-F0113` at that type.
+
+#### 2.10.2 Calls
+
+A call `f(args)` through a `c.Fn` binding is checked **exactly as a call to
+an extern binding of the annotated signature**: the same argument forms
+(`c.span_of`/`c.span_mut_of` §2.5.2, `c.cstr` §2.5.3, `c.argv_of` §2.5.6,
+`c.out` §2.5.7, `c.null()`, `c.*` scalars, structs by value), the same
+arity and type rules, the same borrow uses for the call's extent. The
+backend lowers the binding to an opaque pointer and every call to a cast
+and a call, `((ret (*)(params))f)(args)`, with each C spelling taken from
+the same table extern prototypes use — so the cast is precisely the
+prototype an extern binding of that signature would have declared, and no
+program text reaches the generated C except through that table.
+
+**Effects.** The effect checker (`60-effects-allocation.md`) cannot know
+what a function at a run-time address does; a call through a `c.Fn` binding
+is a call through a function value whose effects nothing declares, so a
+function that `forbids` any effect and reaches such a call fails closed with
+`OAK-E0103`, exactly as a call through an Oak function value does. A
+declared-effects form for foreign pointers is deliberately not provided in
+this increment.
+
+#### 2.10.3 The contract, recorded
+
+`c.fn_at` is a trust assumption of the same kind as `c.borrow`'s (§2.7): the
+program asserts that the pointer is a function of the annotated signature,
+callable for the block's extent. The borrow checker records it on every
+binding as **`OAK-B0122`**, a warning with the recorded-assumption
+treatment: `oak vet` and the REPL's `:obligations` list it, the strict
+profile rejects the module unless its `oak.mod` says `admit OAK-B0122`
+(`85-discipline.md` §7), and admitting the foreign-buffer contract
+(`OAK-B0110`) does not admit this one — they are different claims about
+different things. The one check the compiler can make it makes: `c.fn_at`
+of a NULL pointer traps at the conversion, naming the Oak source position
+as an assertion does, so a call through the binding never dereferences NULL.
+
+The interpreter rejects `c.fn_at` (it has no foreign code to call), as it
+rejects every native-only form (§4).
+
+### 2.11 Target constants
+
+Status: implemented (`c.const`, `OAK-F0114`; `compiler/e2e_ffi_const_test.go`;
+`stdlib/timenative.oak` is the first consumer). Motivated by oak #211 and
+ml roadmap D6: the runtime-in-Oak touches `CLOCK_MONOTONIC`, `O_RDONLY`,
+`SEEK_SET`, `EINTR`, `PROT_READ`, the signal numbers — values a C header
+defines and every target defines differently.
+
+A **target constant** is a top-level binding whose value is a C constant
+the target's headers define:
+
+```oak
+CLOCK_REALTIME: c.Int = c.const("CLOCK_REALTIME", "<time.h>")
+CLOCK_MONOTONIC: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")
+clock_gettime: (id: c.Int, ts: c.Ptr): c.Int effects { Os.Syscall } = c.extern("clock_gettime")
+Timespec: type = struct { sec: i64, nsec: i64 }
+
+monotonic_nanos: (): i64 {
+  ts: Timespec = Timespec { sec: i64(0), nsec: i64(0) }
+  r: c.Int = clock_gettime(CLOCK_MONOTONIC, c.out(ts))
+  i32(r) != i32(0) ? { i64(0) } | { ts.sec * i64(1000000000) + ts.nsec }
+}
+```
+
+Oak never learns the value. The C backend emits the identifier and the C
+compiler resolves it for the target it compiles for — `CLOCK_MONOTONIC` is 1
+on Linux and 6 on Darwin, and the same Oak source is right on both. What Oak
+checks is the shape, and the shape is what makes the emission injection-free.
+
+#### 2.11.1 The form
+
+- `NAME: c.T = c.const("IDENTIFIER", "HEADER")` is admitted **only as a
+  top-level binding with an explicit `c.*` integer annotation** — `c.Int`,
+  `c.UInt`, `c.Int32`, `c.UInt32`, `c.Int64`, `c.UInt64`, `c.Long`,
+  `c.ULong`, `c.Size`. A local binding, an expression position, an Oak
+  type, `c.Ptr`, or `c.String` is `OAK-F0114` (pointers and strings are not
+  constants a header spells; floats have no boundary constants in this
+  increment).
+- The identifier is a string literal satisfying the C identifier grammar
+  of `OAK-F0102` (`[A-Za-z_][A-Za-z0-9_]*`); the header is a string literal
+  spelled `<name.h>`, `<dir/name.h>`, or `"name.h"` — identifier characters,
+  dots, hyphens, and slashes, no `..` segment. Anything else is `OAK-F0114`.
+  Both are re-validated in the backend before they reach the generated
+  source, as extern symbols are.
+- The binding is read-only: assignment to it is `OAK-F0114`. It is **not a
+  compile-time constant for Oak**: a later global initialized from it is the
+  ordinary `OAK-T0501` case (a C `static const` is not a constant
+  expression either), and the layout builtins do not fold it.
+- Reading it is ordinary safe Oak — a `c.Int` value that converts through
+  the §2.2 rows or passes at a `c.Int` extern parameter, as above.
+
+#### 2.11.2 What the backend emits
+
+At the head of the generated C, before every other header, the program's
+distinct target-constant headers are included, preceded by a POSIX.1-2008
+feature-test macro when none is defined (strict `-std=c99` builds on glibc
+otherwise withhold `clock_gettime` and the `CLOCK_*` identifiers from
+`<time.h>`); a freestanding build (`OAK_FREESTANDING`, or a non-hosted
+compiler) fails with an `#error`, because a target constant needs the
+target's headers. Each constant is a file-scope
+`static const int oak_const_NAME = IDENTIFIER;` — the initializer is the
+header's definition, a constant expression on the target; the `oak_const_`
+prefix keeps the binding clear of the identifier itself, which on Darwin is a
+macro over an enumerator.
+
+A foreign header may declare functions the program also binds with
+`c.extern` — `<time.h>` declares `clock_gettime` — and Oak's own prototype
+for that binding would then be a conflicting redeclaration. So **in a program
+with target constants every extern binding is declared under Oak's own
+identifier bound to the symbol by an asm label**:
+
+```c
+extern int oak_extern_clock_gettime( int id, void * ts ) __asm__(OAK_ASM_SYMBOL("clock_gettime"));
+```
+
+with `OAK_ASM_SYMBOL` prepending the target's `__USER_LABEL_PREFIX__`
+(`_` on Darwin, nothing on Linux), and every call names
+`oak_extern_clock_gettime`. The prototype Oak asserts is unchanged, the
+header's declaration stands beside it untouched, and the linker still binds
+the one symbol. A program without target constants emits the plain
+prototype it always did, so no other program's C changes.
+
+#### 2.11.3 Elsewhere
+
+The interpreter rejects `c.const` (it has no target whose headers define the
+value, §4). The Lean extraction renders the binding as an `opaque` constant
+of the `c.*` scalar's Lean type (`95-extraction.md` §3): a theorem about a
+function that reads it holds for every value, which is exactly the claim the
+program makes. A target constant carries no effect and records no
+assumption — the trust it asks for is the extern rule's (§2.3): that the
+named header defines the named identifier with the annotated type is the
+author's assertion, checked by the C compiler as far as C checks it (an
+undefined identifier fails the build; a wrong width converts silently, as a
+wrong extern prototype would).
+
+### 2.12 Objective-C message sends
+
+Status: implemented (`c.msg_send`, `OAK-F0115`, `OAK-B0122`;
+`compiler/e2e_ffi_objc_test.go`; `stdlib/objc.oak`). Motivated by ml
+roadmap D5: Metal in Oak — device, library, pipeline, encoder, dispatch,
+sync — is seven hundred lines of Objective-C message sends, and every one
+of them is a call to `objc_msgSend` under a signature the caller knows and
+the runtime does not check. Zig spells that as a cast of `objc_msgSend` to
+a function pointer type; this section gives Oak the same thing with the
+signature checked at the call, and nothing more. Oak learns no
+Objective-C: a class, an instance, and a selector are opaque `c.Ptr`
+values, resolved by the runtime's own functions (`objc_getClass`,
+`sel_registerName`, ordinary externs the `objc` package declares), and
+every send states its own ABI.
+
+#### 2.12.1 The form
+
+```oak
+import("objc")
+
+length_of: (text: []u8): u64 {
+  string_class: c.Ptr = objc.objc_class(str_bytes("NSString\0"))
+  alloc: c.Ptr = objc.objc_sel(str_bytes("alloc\0"))
+  init_utf8: c.Ptr = objc.objc_sel(str_bytes("initWithUTF8String:\0"))
+  length: c.Ptr = objc.objc_sel(str_bytes("length\0"))
+  n: u64 = 0
+  unsafe {
+    fresh: c.Ptr = c.msg_send[() -> c.Ptr](string_class, alloc)
+    s: c.Ptr = c.msg_send[(c.String) -> c.Ptr](fresh, init_utf8, c.cstr(text))
+    n = u64(c.msg_send[() -> c.UInt64](s, length))
+  }
+  n
+}
+```
+
+`c.msg_send[(params) -> ret](receiver, selector, args...)` is a call and
+only a call: the bracket carries a boundary function type — the one place a
+function type appears in expression position, and the parser reads it with
+the type grammar — and the parenthesized list starts with the receiver
+(`id`) and the selector (`SEL`), both `c.Ptr`, followed by exactly the
+declared arguments.
+
+- The bracketed signature obeys the extern rule (§2.3, `OAK-F0101`) as a
+  `c.Fn` signature does (§2.10): `c.*` types and proven-layout structs by
+  value for the parameters, those or `()` for the return; a type that
+  cannot cross the boundary is `OAK-F0113` at that type. A struct return by
+  value (`NSRange`, `MTLSize`) is admitted, because on arm64 it comes back
+  through the same entry point (below).
+- The call is checked **exactly as a call to an extern binding of type
+  `(c.Ptr, c.Ptr, params) -> ret`**: the same argument forms (`c.span_of`,
+  `c.cstr`, `c.argv_of`, `c.out`, `c.null()`, scalars, structs), the same
+  arity and type rules, the same borrow uses for the call's extent. The
+  receiver and the selector are the two leading pointers; there is no
+  Oak-side notion of which class answers which selector.
+- `c.msg_send` is admitted only inside an `unsafe` block (`OAK-F0115`), only
+  as the callee of a call; the bracket must be a function type and the call
+  must name at least the receiver and selector (`OAK-F0115`); `c.msg_send`
+  without its bracket is `OAK-F0115` with the form spelled out.
+- **arm64 only, in this increment.** On arm64 every message goes through
+  `objc_msgSend` itself; other Objective-C targets route struct returns
+  through `objc_msgSend_stret` and floating-point returns through
+  `objc_msgSend_fpret`, and this form does not select among them. The
+  backend emits an `#error` for any other target, so a program that sends
+  messages fails to build rather than misdispatching; the receiver-and-
+  selector prefix and the checked signature are target-independent, so
+  lifting the restriction is a backend change alone.
+
+#### 2.12.2 Lowering
+
+The backend declares the runtime's entry point once per program that sends
+messages, with no prototype — `extern void objc_msgSend(void);` — and
+lowers every send to a cast and a call:
+
+```c
+(( uint64_t (*)( void *, void * ) )( objc_msgSend ))( s, length )
+(( void * (*)( void *, void *, const char * ) )( objc_msgSend ))( fresh, init_utf8, oak_cstr_u8( text, "main.oak", 12 ) )
+```
+
+Each C spelling comes from the same table extern prototypes use, so the cast
+is precisely the prototype an extern binding of `(c.Ptr, c.Ptr, params) ->
+ret` would have declared. The runtime library itself is not a link input
+Oak names: the framework the module declares (`framework Foundation`,
+`framework Metal`; `83-modules.md` §4.6) brings `libobjc` with it. A program
+without message sends emits no mention of `objc_msgSend`.
+
+#### 2.12.3 The contract, recorded
+
+A send asserts that the selector's implementation on that receiver has the
+bracketed signature — the same kind of claim `c.fn_at` makes about a pointer
+(§2.10.3), made per call rather than per binding. The borrow checker records
+every send as **`OAK-B0122`**, worded for the selector, with the
+recorded-assumption treatment: `oak vet` and `:obligations` list it, the
+strict profile rejects the module unless its `oak.mod` says `admit
+OAK-B0122` (`85-discipline.md` §7), and the one admission covers both forms
+because they are the one claim — a foreign function of a declared
+signature — while `admit OAK-B0110` covers neither. The effect checker
+treats a send as a call through a function value whose effects nothing
+declares: a function that `forbids` any effect and reaches one fails closed
+with `OAK-E0103` (`60-effects-allocation.md`). The runtime's nil-receiver
+rule (a message to NULL returns zero) is the runtime's; Oak does not check
+the receiver.
+
+The interpreter rejects `c.msg_send` (it has no Objective-C runtime, §4),
+before evaluating the arguments. The Lean extraction fails closed on it, as
+on every foreign call (`95-extraction.md` §4).
+
+#### 2.12.4 The `objc` package
+
+`stdlib/objc.oak` (`import("objc")`, Darwin-only, library package) declares
+the runtime's lookups as ordinary externs and wraps them for Oak bytes:
+`objc_class(name)` (`objc_getClass` over `c.cstr` of a NUL-terminated view)
+and `objc_sel(name)` (`sel_registerName`). It deliberately models nothing
+else: no class hierarchy, no method signatures, no retain/release policy —
+those are the sender's, stated at each `c.msg_send`. Metal itself is not
+attempted here; `compiler/e2e_ffi_objc_test.go` drives Foundation
+(`NSString` length, `NSNumber` round trip, an `NSRange` returned by value
+through `NSValue`) as the acceptance case.
 
 ## 3. The abstract assembly interface
 

@@ -1,0 +1,133 @@
+package utf8
+
+// UTF-8 validation over Oak's portable vectors (docs/spec/70-strings.md,
+// docs/spec/93-simd.md section 1.5): the lookup-table classification of
+// Keiser and Lemire ("Validating UTF-8 In Less Than One Instruction Per
+// Byte", 2021), as shipped in simdjson and simdutf, written in Oak.
+//
+// Each byte is classified against the byte before it through three
+// 16-entry tables indexed by nibbles; the AND of the three lookups is
+// nonzero exactly when the pair is an error on its own — a continuation
+// after ASCII, a lead byte not followed by a continuation, an overlong
+// two- or three- or four-byte form, a surrogate, a code point above
+// U+10FFFF — or when both bytes are continuations, which is legal only as
+// the third or fourth byte of a longer sequence. That last case is decided
+// by the bytes two and three back: a byte at or above 0xE0 two back, or at
+// or above 0xF0 three back, permits it. A block that ends inside a
+// sequence is carried as `incomplete` into the next block.
+//
+// The classification tables are proved to agree with the standard's
+// Table 3-7 pair by pair in `Oak.Utf8Lookup`; the stream composition is
+// checked against the scalar validator by differential tests.
+
+// Error classes, one bit each (TOO_LARGE_1000 and OVERLONG_4 share a bit:
+// they are distinguished by the lead nibble, never both possible).
+too_short: u8 = u8(1)
+too_long: u8 = u8(2)
+overlong_3: u8 = u8(4)
+too_large: u8 = u8(8)
+surrogate: u8 = u8(16)
+overlong_2: u8 = u8(32)
+too_large_1000: u8 = u8(64)
+overlong_4: u8 = u8(64)
+two_conts: u8 = u8(128)
+carry: u8 = u8(131)
+
+// Indexed by the high nibble of the previous byte.
+table_high1: [16]u8 = [
+  u8(2), u8(2), u8(2), u8(2), u8(2), u8(2), u8(2), u8(2),
+  u8(128), u8(128), u8(128), u8(128),
+  u8(33), u8(1), u8(21), u8(73)]
+
+// Indexed by the low nibble of the previous byte.
+table_low1: [16]u8 = [
+  u8(231), u8(163), u8(131), u8(131), u8(139), u8(203), u8(203), u8(203),
+  u8(203), u8(203), u8(203), u8(203), u8(203), u8(219), u8(203), u8(203)]
+
+// Indexed by the high nibble of the current byte.
+table_high2: [16]u8 = [
+  u8(1), u8(1), u8(1), u8(1), u8(1), u8(1), u8(1), u8(1),
+  u8(230), u8(174), u8(186), u8(186),
+  u8(1), u8(1), u8(1), u8(1)]
+
+// A block is incomplete when its last byte starts a two-byte sequence, its
+// second-to-last a three-byte one, or its third-to-last a four-byte one:
+// saturating subtraction of these maxima is nonzero exactly there.
+incomplete_max: [16]u8 = [
+  u8(255), u8(255), u8(255), u8(255), u8(255), u8(255), u8(255), u8(255),
+  u8(255), u8(255), u8(255), u8(255), u8(255), u8(239), u8(223), u8(191)]
+
+// The pairwise classification of every byte against its predecessor.
+special_cases: (high1: simd.U8x16, low1: simd.U8x16, high2: simd.U8x16, input: simd.U8x16, prev1: simd.U8x16): simd.U8x16 {
+  byte_1_high: simd.U8x16 = simd.tbl_u8x16(high1, simd.shr_u8x16(prev1, u32(4)))
+  byte_1_low: simd.U8x16 = simd.tbl_u8x16(low1, simd.and_u8x16(prev1, simd.splat_u8x16(u8(15))))
+  byte_2_high: simd.U8x16 = simd.tbl_u8x16(high2, simd.shr_u8x16(input, u32(4)))
+  simd.and_u8x16(simd.and_u8x16(byte_1_high, byte_1_low), byte_2_high)
+}
+
+// The error lanes of one block given the block before it. Two
+// continuations in a row are legal exactly under a third or fourth lead
+// byte; the TWO_CONTS bit cancels against that permission.
+check_block: (high1: simd.U8x16, low1: simd.U8x16, high2: simd.U8x16, prev_input: simd.U8x16, input: simd.U8x16): simd.U8x16 {
+  prev1: simd.U8x16 = simd.prev_u8x16(prev_input, input, u32(1))
+  prev2: simd.U8x16 = simd.prev_u8x16(prev_input, input, u32(2))
+  prev3: simd.U8x16 = simd.prev_u8x16(prev_input, input, u32(3))
+  sc: simd.U8x16 = special_cases(high1, low1, high2, input, prev1)
+  third: simd.U8x16 = simd.subs_u8x16(prev2, simd.splat_u8x16(u8(223)))
+  fourth: simd.U8x16 = simd.subs_u8x16(prev3, simd.splat_u8x16(u8(239)))
+  // Where either is nonzero the lane permits a continuation: an all-ones
+  // mask there, then its TWO_CONTS bit.
+  permitted: simd.U8x16 = simd.xor_u8x16(
+    simd.eq_u8x16(simd.or_u8x16(third, fourth), simd.splat_u8x16(u8(0))),
+    simd.splat_u8x16(u8(255)))
+  must23: simd.U8x16 = simd.and_u8x16(permitted, simd.splat_u8x16(u8(128)))
+  simd.xor_u8x16(must23, sc)
+}
+
+// valid reports whether bytes is well-formed UTF-8 (Unicode Table 3-7).
+pub valid: (bytes: []u8): Bool {
+  high1: simd.U8x16 = simd.load_u8x16(view(&table_high1), u32(0))
+  low1: simd.U8x16 = simd.load_u8x16(view(&table_low1), u32(0))
+  high2: simd.U8x16 = simd.load_u8x16(view(&table_high2), u32(0))
+  maxima: simd.U8x16 = simd.load_u8x16(view(&incomplete_max), u32(0))
+  high_bit: simd.U8x16 = simd.splat_u8x16(u8(128))
+  zero: simd.U8x16 = simd.splat_u8x16(u8(0))
+  error: simd.U8x16 = zero
+  prev_input: simd.U8x16 = zero
+  prev_incomplete: simd.U8x16 = zero
+  n: u32 = len(bytes)
+  off: u32 = u32(0)
+  while off + u32(16) <= n {
+    input: simd.U8x16 = simd.load_u8x16(bytes, off)
+    simd.any_u8x16(simd.and_u8x16(input, high_bit)) ? {
+      error = simd.or_u8x16(error, check_block(high1, low1, high2, prev_input, input))
+      prev_incomplete = simd.subs_u8x16(input, maxima)
+    } | {
+      // An ASCII block completes nothing: a sequence left open by the
+      // block before it is an error, and this block leaves none open.
+      error = simd.or_u8x16(error, prev_incomplete)
+      prev_incomplete = zero
+    }
+    prev_input = input
+    off = off + u32(16)
+  }
+  // The tail, zero-padded: zero bytes are ASCII, so a sequence cut short
+  // by the end of the input is caught as a lead byte without continuation.
+  tail: [16]u8 = [
+    u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0),
+    u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0)]
+  i: u32 = u32(0)
+  while off + i < n {
+    tail[i] = bytes[off + i]
+    i = i + u32(1)
+  }
+  last: simd.U8x16 = simd.load_u8x16(view(&tail), u32(0))
+  simd.any_u8x16(simd.and_u8x16(last, high_bit)) ? {
+    error = simd.or_u8x16(error, check_block(high1, low1, high2, prev_input, last))
+    prev_incomplete = simd.subs_u8x16(last, maxima)
+  } | {
+    error = simd.or_u8x16(error, prev_incomplete)
+    prev_incomplete = zero
+  }
+  !simd.any_u8x16(simd.or_u8x16(error, prev_incomplete))
+}

@@ -419,6 +419,9 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	if len(lo.loops) >= loopEventBudget {
 		return "more data-dependent loops than the verifier's budget", false
 	}
+	if lo.hasAggregates() {
+		return "an aggregate local across a data-dependent loop", false
+	}
 	// The loop-carried locals are those the body assigns and that exist
 	// before the loop; a local declared inside the body is the body's own.
 	assigned := map[string]bool{}
@@ -506,15 +509,19 @@ func declaredLocals(body *ast.BlockStatement, into map[string]bool) {
 // loopWitnessInputs are small concrete inputs: under them the loops
 // unroll within budget. Scalars and span lengths vary; elements come from
 // the fixed memory.
-func loopWitnessInputs(sig *ast.FunctionStatement) []map[string]uint64 {
+func loopWitnessInputs(fn *Function, sig *ast.FunctionStatement) []map[string]uint64 {
 	var names []string
 	for _, param := range sig.Parameters {
 		if _, _, isSpan := spanShape(param.Type); isSpan {
 			names = append(names, spanLenName(param.Name.Value))
 			continue
 		}
+		if comp, isComposite := fn.Composites[typeText(param.Type)]; isComposite && len(comp.Fields) > 0 {
+			continue // its leaves are appended below
+		}
 		names = append(names, param.Name.Value)
 	}
+	names = append(names, compositeParamLeaves(fn, sig)...)
 	small := []uint64{0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 33}
 	var inputs []map[string]uint64
 	if len(names) == 0 {
@@ -567,15 +574,14 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	}
 	// Witnesses: concrete inputs decide every loop.
 	checked := 0
-	for _, env := range loopWitnessInputs(sig) {
+	for _, env := range loopWitnessInputs(fn, sig) {
 		asmValue, _, _, okA := executeBody(fn, sig, env)
-		concrete := newLowering(sig)
-		concrete.concrete = env
-		oakValue, _, okO := concrete.lower(oakBody, width)
+		concrete := prepareLowering(fn, sig, env)
+		oakValue, _, _, okO := concrete.resultTerm(fn, sig, oakBody)
 		if !okA || !okO {
 			continue // beyond the unrolling budget on this input
 		}
-		got, want := truncate(asmValue, width).eval(env), oakValue.eval(env)
+		got, want := truncate(maskResult(fn, sig, asmValue), width).eval(env), oakValue.eval(env)
 		if got != want {
 			names := make([]string, 0, len(env))
 			for name := range env {

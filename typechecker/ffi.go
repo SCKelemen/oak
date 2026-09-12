@@ -19,6 +19,9 @@ const (
 	// mention non-c.* parameter or return types: Oak types never cross the
 	// boundary raw ("ABI honesty").
 	CodeExternSignatureNotC = "OAK-F0101"
+	// CodeExternCustody reports an extern binding that moves a Buffer without
+	// the shape of a custody transition (docs/spec/92-ffi.md section 2.8.5).
+	CodeExternCustody = "OAK-F0110"
 	// CodeExternSymbolInvalid rejects extern symbols that are not C
 	// identifiers. This is the injection-freedom rule: the symbol is
 	// emitted verbatim into generated C source, and the identifier grammar
@@ -55,6 +58,22 @@ const (
 	// or a string literal, or whose literal operand is not NUL-terminated
 	// (docs/spec/92-ffi.md section 2.5.3).
 	CodeCStringArgument = "OAK-F0110"
+	// CodeArgvArgument rejects a `c.argv_of(bytes, slots)` argument that
+	// does not stand for a `c.Ptr` parameter, or whose operands are not a
+	// named read-only `[]u8` view and a named writable `[*]c.Ptr` span
+	// (docs/spec/92-ffi.md section 2.5.6).
+	CodeArgvArgument = "OAK-F0111"
+	// CodeOutArgument rejects a `c.out(x)` argument that does not stand for
+	// a `c.Ptr` parameter, or whose operand is not a local binding of a
+	// `c.*` scalar type or of a declared struct with boundary fields
+	// (docs/spec/92-ffi.md section 2.5.7).
+	CodeOutArgument = "OAK-F0112"
+	// CodeForeignFunctionType rejects a `c.Fn[...]` type anywhere but as
+	// the annotation of a local binding that `c.fn_at(p)` initializes inside
+	// an unsafe block, a `c.fn_at` without that annotation, and a `c.Fn`
+	// signature whose parameter or return types are not boundary types
+	// (docs/spec/92-ffi.md section 2.10).
+	CodeForeignFunctionType = "OAK-F0113"
 )
 
 // CType is a member of the `c` interface library (docs/spec/92-ffi.md
@@ -222,11 +241,21 @@ var simdOps = func() map[string]*FunctionType {
 			ops["reduce_add_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector}, ReturnType: elem}
 			continue
 		}
-		for _, binary := range []string{"add", "sub", "and", "or", "xor", "min", "max", "eq"} {
+		for _, binary := range []string{"add", "sub", "subs", "and", "or", "xor", "min", "max", "eq"} {
 			ops[binary+"_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, vector}, ReturnType: vector}
 		}
 		for _, reduction := range []string{"any", "all"} {
 			ops[reduction+"_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector}, ReturnType: &BoolType{}}
+		}
+		// Lane-wise logical shift right by a count; a count reaching the
+		// lane width traps, as scalar shifts do (docs/spec/93-simd.md §1.2).
+		ops["shr_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, offset}, ReturnType: vector}
+		if shape.Suffix == "u8x16" {
+			// Byte-table lookup and the cross-block byte shift: the two
+			// operations byte-classification kernels (a UTF-8 validator)
+			// are built from (docs/spec/93-simd.md §1.2).
+			ops["tbl_u8x16"] = &FunctionType{Parameters: []Type{vector, vector}, ReturnType: vector}
+			ops["prev_u8x16"] = &FunctionType{Parameters: []Type{vector, vector, offset}, ReturnType: vector}
 		}
 	}
 	return ops
@@ -270,7 +299,8 @@ func KnownLibraryMember(library, member string) bool {
 		_, isType := cTypeSpellings[member]
 		return isType || member == "extern" || member == "span_of" || member == "span_mut_of" ||
 			member == "borrow" || member == "borrow_mut" || member == "own" || member == "disown" ||
-			member == "cstr" || member == "borrow_string"
+			member == "cstr" || member == "borrow_string" || member == "argv_of" || member == "out" || member == "null" ||
+			member == "const"
 	case "arm64":
 		_, isIntrinsic := arm64Intrinsics[member]
 		return isIntrinsic
@@ -445,10 +475,30 @@ func (tc *TypeChecker) checkCLibraryCall(expr *ast.InvocationExpression, member 
 		return nil
 	}
 	switch member {
+	case "msg_send":
+		// A message send carries its signature in brackets and is a call
+		// (docs/spec/92-ffi.md section 2.12); the parser and the invocation
+		// checker handle that form, so reaching it here means the brackets
+		// were left out.
+		d := tc.addTypeDiagnostic(expr, CodeMessageSend,
+			"c.msg_send takes the selector's signature in brackets: c.msg_send[(params) -> ret](receiver, selector, args...)")
+		d.AddNote("the bracketed signature is the declared ABI of the selector's implementation, as an extern binding's signature is (docs/spec/92-ffi.md section 2.12)")
+		return nil
+	case "const":
+		// A target constant exists only as the initializer of a top-level
+		// binding with a c.* scalar annotation (docs/spec/92-ffi.md
+		// section 2.11); checkVariableDeclaration consumes that form, so
+		// reaching it here means it was written somewhere else.
+		d := tc.addTypeDiagnostic(expr, CodeTargetConstant,
+			"c.const is only the initializer of a top-level binding with a c.* integer annotation, not an expression")
+		d.AddHelp("write NAME: c.Int = c.const(\"CLOCK_MONOTONIC\", \"<time.h>\") at package level and read NAME")
+		return nil
 	case "disown":
 		return tc.checkForeignDisown(expr)
 	case "borrow_string":
 		return tc.checkForeignStringBorrow(expr)
+	case "fn_at":
+		return tc.checkForeignFunctionAt(expr)
 	case "cstr":
 		// A C string from Oak bytes is not an expression either: it exists
 		// only as the argument standing for a c.String parameter of an
@@ -456,6 +506,15 @@ func (tc *TypeChecker) checkCLibraryCall(expr *ast.InvocationExpression, member 
 		d := tc.addTypeDiagnostic(expr, CodeExternOutsideDefinition,
 			"c.cstr is only an argument to an extern binding, not an expression")
 		d.AddNote("c.cstr(v) hands C the base pointer of a NUL-terminated []u8 view for the duration of one foreign call and cannot be bound, stored, returned, or passed to Oak code")
+		return nil
+	case "argv_of", "out":
+		// An argument vector and an out-parameter are not expressions
+		// either: each stands for one c.Ptr parameter of an extern binding
+		// for the duration of that call (docs/spec/92-ffi.md sections 2.5.6
+		// and 2.5.7).
+		d := tc.addTypeDiagnostic(expr, CodeExternOutsideDefinition,
+			fmt.Sprintf("c.%s is only an argument to an extern binding, not an expression", member))
+		d.AddNote("the pointer it forms exists for the duration of one foreign call and cannot be bound, stored, returned, or passed to Oak code")
 		return nil
 	case "span_of", "span_mut_of":
 		// Boundary spans are not expressions: they exist only as arguments
@@ -465,6 +524,16 @@ func (tc *TypeChecker) checkCLibraryCall(expr *ast.InvocationExpression, member 
 			fmt.Sprintf("c.%s is only an argument to an extern binding, not an expression", member))
 		d.AddNote("a boundary span yields a c.Ptr, c.Size pair for the duration of one foreign call and cannot be bound, stored, returned, or passed to Oak code")
 		return nil
+	case "null":
+		// c.null() is the one c.Ptr Oak may construct: the null pointer, for
+		// the optional pointer parameters of foreign calls (posix_spawn's
+		// file actions, attributes, and environment). It is as opaque as
+		// every other c.Ptr (docs/spec/92-ffi.md section 2.1).
+		if len(expr.Arguments) != 0 {
+			tc.addError(expr, "c.null takes no arguments")
+			return nil
+		}
+		return &CType{Name: "Ptr"}
 	case "String":
 		// c.String is constructible from a literal only: the backend emits
 		// the literal NUL-terminated, and a runtime string would need a
@@ -615,6 +684,7 @@ func (tc *TypeChecker) checkExternFunction(stmt *ast.FunctionStatement) {
 	}
 	paramTypes := make([]Type, 0, len(stmt.Parameters))
 	valid := true
+	var bufferParams []*BufferType
 	for _, param := range stmt.Parameters {
 		if param.Variadic {
 			tc.addError(param.Name, "extern binding %s cannot be variadic", stmt.Name.Value)
@@ -622,6 +692,14 @@ func (tc *TypeChecker) checkExternFunction(stmt *ast.FunctionStatement) {
 			continue
 		}
 		paramType := tc.parseTypeExpression(param.Type)
+		if buffer, isBuffer := paramType.(*BufferType); isBuffer {
+			// A custody transition (docs/spec/92-ffi.md section 2.8.5): the
+			// buffer crosses as pointer and count and comes back in its
+			// next custody state.
+			bufferParams = append(bufferParams, buffer)
+			paramTypes = append(paramTypes, paramType)
+			continue
+		}
 		if !tc.boundaryValue(paramType) {
 			d := tc.addTypeDiagnostic(param.Name, CodeExternSignatureNotC,
 				fmt.Sprintf("extern binding %s: parameter %s must have a c.* type or a proven-layout struct", stmt.Name.Value, param.Name.Value))
@@ -635,12 +713,32 @@ func (tc *TypeChecker) checkExternFunction(stmt *ast.FunctionStatement) {
 	if stmt.ReturnType != nil {
 		returnType = tc.parseTypeExpression(stmt.ReturnType)
 		_, isUnit := returnType.(*UnitType)
-		if !isUnit && !tc.boundaryValue(returnType) {
+		if returned, returnsBuffer := returnType.(*BufferType); returnsBuffer {
+			switch {
+			case len(bufferParams) != 1:
+				d := tc.addTypeDiagnostic(stmt.ReturnType, CodeExternCustody, fmt.Sprintf("extern binding %s: a custody transition takes exactly one Buffer parameter and returns the same buffer in its next state", stmt.Name.Value))
+				d.AddNote("the buffer crosses the boundary as pointer and count; the returned Buffer is the argument re-typed, nothing is copied (docs/spec/92-ffi.md section 2.8.5)")
+				valid = false
+			case !bufferParams[0].Element.Equals(returned.Element):
+				tc.addTypeDiagnostic(stmt.ReturnType, CodeExternCustody, fmt.Sprintf("extern binding %s: the returned %s must have the parameter's element type %s", stmt.Name.Value, returned, bufferParams[0].Element))
+				valid = false
+			case bufferParams[0].CustodyState() == returned.CustodyState():
+				tc.addTypeDiagnostic(stmt.ReturnType, CodeExternCustody, fmt.Sprintf("extern binding %s: a custody transition changes the state; %s to %s is not a transition", stmt.Name.Value, bufferParams[0], returned))
+				valid = false
+			}
+		} else if len(bufferParams) != 0 {
+			tc.addTypeDiagnostic(stmt.ReturnType, CodeExternCustody, fmt.Sprintf("extern binding %s: a Buffer parameter is a custody transition and must return the buffer in its next state", stmt.Name.Value))
+			valid = false
+		} else if !isUnit && !tc.boundaryValue(returnType) {
 			d := tc.addTypeDiagnostic(stmt.ReturnType, CodeExternSignatureNotC,
 				fmt.Sprintf("extern binding %s: return type must be a c.* type, a proven-layout struct, or ()", stmt.Name.Value))
 			d.AddNote("Oak scalars never cross the foreign boundary raw; convert explicitly at the call site. A declared struct whose fields are boundary types returns by value with its layout asserted (docs/spec/92-ffi.md section 2.3)")
 			valid = false
 		}
+	}
+	if stmt.ReturnType == nil && len(bufferParams) != 0 {
+		tc.addTypeDiagnostic(stmt.Name, CodeExternCustody, fmt.Sprintf("extern binding %s: a Buffer parameter is a custody transition and must return the buffer in its next state", stmt.Name.Value))
+		valid = false
 	}
 	if !valid {
 		return
@@ -765,6 +863,176 @@ func (tc *TypeChecker) checkCStringArgument(arg ast.Expression, operand ast.Expr
 	}
 	d := tc.addTypeDiagnostic(operand, CodeCStringArgument, "c.cstr takes a named []u8 view binding or a string literal")
 	d.AddHelp("bind the bytes first: text: []u8 = view(&buffer)")
+	return false
+}
+
+// ArgvArgument recognizes `c.argv_of(bytes, slots)` in argument position
+// (docs/spec/92-ffi.md section 2.5.6), returning both operands. A local
+// binding named `c` shadows the library, as for every other library call.
+func (tc *TypeChecker) ArgvArgument(arg ast.Expression) (bytes, slots ast.Expression, ok bool) {
+	call, isCall := arg.(*ast.InvocationExpression)
+	if !isCall {
+		return nil, nil, false
+	}
+	library, member, isLibrary := libraryAccess(call.Function)
+	if !isLibrary || library != "c" || member != "argv_of" {
+		return nil, nil, false
+	}
+	if _, bound := tc.env.Get("c"); bound {
+		return nil, nil, false
+	}
+	if len(call.Arguments) != 2 {
+		return nil, nil, true
+	}
+	return call.Arguments[0], call.Arguments[1], true
+}
+
+// OutArgument recognizes `c.out(x)` in argument position (docs/spec/
+// 92-ffi.md section 2.5.7), returning the operand.
+func (tc *TypeChecker) OutArgument(arg ast.Expression) (operand ast.Expression, ok bool) {
+	call, isCall := arg.(*ast.InvocationExpression)
+	if !isCall {
+		return nil, false
+	}
+	library, member, isLibrary := libraryAccess(call.Function)
+	if !isLibrary || library != "c" || member != "out" {
+		return nil, false
+	}
+	if _, bound := tc.env.Get("c"); bound {
+		return nil, false
+	}
+	if len(call.Arguments) != 1 {
+		return nil, true
+	}
+	return call.Arguments[0], true
+}
+
+// pointerParameter reports whether the parameter at pos is `c.Ptr`.
+func pointerParameter(parameters []Type, pos int) bool {
+	if pos >= len(parameters) {
+		return false
+	}
+	ptr, isC := parameters[pos].(*CType)
+	return isC && ptr.Name == "Ptr"
+}
+
+// checkArgvArgument validates one `c.argv_of(bytes, slots)` argument of an
+// extern call (docs/spec/92-ffi.md section 2.5.6): the parameter at pos is
+// `c.Ptr`; `bytes` is a named read-only `[]u8` view holding the
+// NUL-terminated strings back to back, and `slots` a named writable
+// `[*]c.Ptr` span the backend fills with each string's start pointer and a
+// trailing NULL at the call. The terminator and the slot count are checked
+// at the call, which traps naming the source position otherwise.
+func (tc *TypeChecker) checkArgvArgument(arg ast.Expression, bytes, slots ast.Expression, parameters []Type, pos int) bool {
+	if bytes == nil || slots == nil {
+		tc.addError(arg, "c.argv_of takes exactly two arguments: a []u8 view of NUL-terminated strings and a [*]c.Ptr span of slots")
+		return false
+	}
+	if !pointerParameter(parameters, pos) {
+		got := "no parameter"
+		if pos < len(parameters) {
+			got = parameters[pos].String()
+		}
+		d := tc.addTypeDiagnostic(arg, CodeArgvArgument,
+			fmt.Sprintf("c.argv_of must stand for a `c.Ptr` parameter of the extern binding, got %s", got))
+		d.AddNote("the extern's prototype declares the argument vector C receives as c.Ptr (char *const argv[]) (docs/spec/92-ffi.md section 2.5.6)")
+		return false
+	}
+	bytesIdent, bytesIsIdent := bytes.(*ast.Identifier)
+	slotsIdent, slotsIsIdent := slots.(*ast.Identifier)
+	if !bytesIsIdent || !slotsIsIdent {
+		d := tc.addTypeDiagnostic(arg, CodeArgvArgument, "c.argv_of takes named bindings: a []u8 view and a [*]c.Ptr span")
+		d.AddHelp("bind them first: text: []u8 = view(&buffer); slots: [*]c.Ptr = span(&pointers)")
+		return false
+	}
+	bytesType := tc.checkExpression(bytesIdent)
+	slotsType := tc.checkExpression(slotsIdent)
+	if bytesType == nil || slotsType == nil {
+		return false
+	}
+	bytesArray, bytesIsArray := bytesType.(*ArrayType)
+	bytesIsU8 := false
+	if bytesIsArray {
+		if prim, isPrim := bytesArray.ElementType.(*PrimitiveType); isPrim {
+			bytesIsU8 = prim.Name == "u8" || prim.Name == "byte"
+		}
+	}
+	if !bytesIsArray || !bytesArray.IsSlice || !bytesIsU8 {
+		d := tc.addTypeDiagnostic(bytes, CodeArgvArgument,
+			fmt.Sprintf("c.argv_of takes a read-only view []u8 of NUL-terminated strings, got %s", bytesType))
+		d.AddNote("every string in the view ends in NUL, the view's last byte included; the backend checks it at the call (docs/spec/92-ffi.md section 2.5.6)")
+		return false
+	}
+	slotsArray, slotsIsArray := slotsType.(*ArrayType)
+	slotsIsPtr := false
+	if slotsIsArray {
+		if elem, isC := slotsArray.ElementType.(*CType); isC {
+			slotsIsPtr = elem.Name == "Ptr"
+		}
+	}
+	if !slotsIsArray || !slotsArray.IsSpan || !slotsIsPtr {
+		d := tc.addTypeDiagnostic(slots, CodeArgvArgument,
+			fmt.Sprintf("c.argv_of takes a writable span [*]c.Ptr of pointer slots, got %s", slotsType))
+		d.AddNote("the span needs one slot per string plus one for the trailing NULL; the backend checks the count at the call (docs/spec/92-ffi.md section 2.5.6)")
+		return false
+	}
+	return true
+}
+
+// checkOutArgument validates one `c.out(x)` argument of an extern call
+// (docs/spec/92-ffi.md section 2.5.7): the parameter at pos is `c.Ptr` and
+// the operand a local binding of a `c.*` scalar type (never c.Ptr or
+// c.String, which are not storage C may fill) or of a declared struct whose
+// fields are boundary types. The foreign callee receives the binding's
+// address for the duration of the call and may write through it.
+func (tc *TypeChecker) checkOutArgument(arg ast.Expression, operand ast.Expression, parameters []Type, pos int) bool {
+	if operand == nil {
+		tc.addError(arg, "c.out takes exactly one local binding argument")
+		return false
+	}
+	if !pointerParameter(parameters, pos) {
+		got := "no parameter"
+		if pos < len(parameters) {
+			got = parameters[pos].String()
+		}
+		d := tc.addTypeDiagnostic(arg, CodeOutArgument,
+			fmt.Sprintf("c.out must stand for a `c.Ptr` parameter of the extern binding, got %s", got))
+		d.AddNote("the extern's prototype declares an out-parameter as c.Ptr; C writes the value through it (docs/spec/92-ffi.md section 2.5.7)")
+		return false
+	}
+	ident, isIdent := operand.(*ast.Identifier)
+	if !isIdent {
+		d := tc.addTypeDiagnostic(operand, CodeOutArgument, "c.out takes a named local binding")
+		d.AddHelp("declare the storage first: status: c.Int = c.Int(i32(0))")
+		return false
+	}
+	if _, isGlobal := tc.globalOwners[ident.Value]; isGlobal {
+		d := tc.addTypeDiagnostic(operand, CodeOutArgument,
+			fmt.Sprintf("c.out takes a local binding, not the global %s", ident.Value))
+		d.AddNote("static storage is written only by Oak code; copy the global into a local, pass that, and store it back")
+		return false
+	}
+	operandType := tc.checkExpression(ident)
+	if operandType == nil {
+		return false
+	}
+	switch t := operandType.(type) {
+	case *CType:
+		if t.Name == "Ptr" || t.Name == "String" {
+			d := tc.addTypeDiagnostic(operand, CodeOutArgument,
+				fmt.Sprintf("c.out takes a c.* scalar or a boundary struct, got %s", operandType))
+			d.AddNote("an opaque foreign pointer is not storage C fills; to receive a pointer, declare the out-parameter's target as c.Ptr and read it back through c.borrow (docs/spec/92-ffi.md section 2.7)")
+			return false
+		}
+		return true
+	case *RecordType:
+		if tc.boundaryStruct(t, map[string]bool{}) {
+			return true
+		}
+	}
+	d := tc.addTypeDiagnostic(operand, CodeOutArgument,
+		fmt.Sprintf("c.out takes a c.* scalar or a declared struct with boundary fields, got %s", operandType))
+	d.AddNote("Oak scalars never cross the boundary raw (docs/spec/92-ffi.md section 2.3); declare the binding with the c.* type the callee writes, and convert after the call")
 	return false
 }
 
@@ -1005,7 +1273,7 @@ func (tc *TypeChecker) checkForeignBorrow(expr *ast.InvocationExpression, member
 	case "own":
 		// An owner of runtime length (section 2.8): the binding borrows
 		// it like an owned array until c.disown hands the memory back.
-		return &BufferType{Element: element}
+		return &BufferType{Element: element, Custody: HostCustody}
 	}
 	return &ArrayType{Length: -1, IsSpan: true, ElementType: element}
 }
@@ -1027,8 +1295,13 @@ func (tc *TypeChecker) checkForeignDisown(expr *ast.InvocationExpression) Type {
 		tc.addError(ident, "undefined variable: %s", ident.Value)
 		return nil
 	}
-	if _, isBuffer := scheme.Type.(*BufferType); !isBuffer {
+	buffer, isBuffer := scheme.Type.(*BufferType)
+	if !isBuffer {
 		tc.addError(ident, "c.disown takes a Buffer[T] binding, got %s", scheme.Type)
+		return nil
+	}
+	if !buffer.InHostCustody() {
+		tc.addError(ident, "buffer %s is in %s custody and cannot be handed back; a transition extern returns it to Host first (docs/spec/92-ffi.md section 2.8.5)", ident.Value, buffer.CustodyState())
 		return nil
 	}
 	return &CType{Name: "Ptr"}

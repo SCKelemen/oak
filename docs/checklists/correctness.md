@@ -1,0 +1,709 @@
+# Correctness checklist
+
+Everything that must be true. One flat list, grouped by where the question
+bites. Each item is a question; "no" is a finding. See [README](README.md)
+for the shape of an item and how to run a pass.
+
+Sources, abbreviated in parentheses: TigerStyle/TigerBeetle (TB), NASA
+Power of Ten (P10), MISRA C (MISRA), Rust, Zig, Odin, Go, Swift, Elm, the
+ML family (ML), Scala, Futhark, Mojo, Idris, Coq, Lean, TLA+, Apalache, Z3,
+simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
+
+---
+
+## 1. Principles the rest depends on
+
+- [ ] **Correctness first.** When a design trades correctness for speed or
+      simplicity, is the trade written down and rejected? A faster design
+      whose invariants cannot be stated and checked is not acceptable.
+      (constitution) — Oak: `00-constitution.md` Priorities.
+- [ ] **One fact, many projections.** Does every semantic fact — field
+      order, a refinement, a protocol transition, a layout — have exactly
+      one authoritative statement from which type checking, layout, proof
+      assumptions, runtime checks, tests, and debugger output are derived?
+      Is the compiler ever reconstructing a lost fact by guesswork?
+      (constitution, Idris/Lean: definition once, theorems many) —
+      Oak: `00-constitution.md`, `125-verification.md` §1.
+- [ ] **Five axes stay separate.** Does a feature overload one axis (type,
+      representation, authority, proposition, protocol) to smuggle in
+      another — a doc tag that changes ABI, a default that acts as a wire
+      discriminant? (constitution) — Oak: `00-constitution.md`.
+- [ ] **Safe by default, unsafe visible.** Can safe code reach undefined
+      behavior by any ordinary operation? Does every unsafe operation cross
+      a syntactically visible boundary that records exactly which
+      assumption it introduces, leaving every unrelated invariant checked?
+      (Rust, Zig, constitution) — Oak: `00-constitution.md`,
+      `50-borrowing.md`, `OAK-B0110`/`OAK-B0122` recorded assumptions.
+- [ ] **No hidden work.** Does any ordinary operation silently allocate,
+      block, do I/O, take a contended lock, dispatch dynamically without
+      bound, or copy unbounded data? Hidden work is a correctness problem
+      before it is a performance one: it is an effect the checker cannot
+      see. (constitution, Zig) — Oak: `00-constitution.md`,
+      `60-effects-allocation.md` §3.
+- [ ] **Machine semantics are semantics.** Are width, overflow behavior,
+      alignment, endianness, pointer size, atomics, and volatile access
+      specified as language semantics rather than left to a backend? Is a
+      mathematical integer ever confused with a machine integer?
+      (constitution, MISRA essential types) — Oak: `00-constitution.md`,
+      `20-types.md` §11.
+- [ ] **Sugar normalizes to a core.** Does every surface convenience lower
+      to a smaller core with one semantics, or does it create a parallel
+      semantics that must be kept in sync by hand? (constitution, Elm's
+      small core, Scala's desugaring pitfalls) — Oak: `00-constitution.md`
+      Syntax equivalence.
+- [ ] **Fail closed on unknowns.** When the checker cannot know something
+      — the effects of a call through an unknown value, the independence of
+      loop iterations, the layout of a foreign type — does it reject rather
+      than assume? (TB, P10 rule 10) — Oak: `60-effects-allocation.md` §2
+      (`OAK-E0103`), `55-parallelism.md` §2.
+
+## 2. Specify and model before you build
+
+- [ ] **Design document first.** Is there a written statement of what the
+      component must do, its invariants, and its failure modes, before
+      code? TB: the time spent designing is the cheapest time in the
+      project. (TB) — Oak: `docs/spec/` is normative; legacy docs retire
+      only after reconciliation (`docs/spec/README.md`).
+- [ ] **Five layers named.** For the feature, which of surface syntax,
+      static semantics, dynamic/machine semantics, formal model, and
+      implementation correspondence exist, and which are missing? Is the
+      maturity stated with the exact vocabulary — specified, implemented,
+      tested, modeled, proved, refined — and never rounded up? (Lean, Coq,
+      constitution) — Oak: `docs/spec/README.md`, `STATUS.md`.
+- [ ] **A proof of the model is not a proof of the compiler.** Where a
+      Lean or TLA+ result is cited, is the gap to the implementation
+      stated: extraction faithfulness, refinement, or differential testing
+      against the model? (Coq/CompCert lesson, TB's "simulation is a
+      witness, not a proof") — Oak: `00-constitution.md` Verification
+      discipline, `95-extraction.md`, `125-verification.md` §3.
+- [ ] **Invariants stated, not implied.** Does every stateful component
+      write down its invariants as predicates over its state — the TLA+
+      `TypeOK` plus safety properties — in a form a test, an assertion, and
+      a model checker can all consume? (TLA+, TB) — Oak:
+      `112-protocols.md` (invariant obligations, `oak prove`).
+- [ ] **Inductive, not just true.** Is the stated invariant inductive
+      (preserved by every step from any state satisfying it), or merely
+      true of reachable states? A non-inductive invariant will not
+      discharge in Apalache or Lean and hides which step is dangerous.
+      (TLA+, Apalache) — Oak: `125-verification.md` §2a.
+- [ ] **Temporal properties separated from safety.** Are liveness and
+      fairness stated separately from safety, with the fairness assumption
+      explicit? Most bugs are safety bugs; most unprovable claims are
+      liveness claims with hidden fairness. (TLA+) — Oak: `112-protocols.md`
+      §7 direction.
+- [ ] **Small model, then big test.** Was the protocol model-checked with a
+      small finite instance (two or three nodes, tiny data) before being
+      property-tested at scale? Exhaustive on the small model, statistical
+      on the large one. (TLA+/TLC, Apalache bounded symbolic) — Oak:
+      `112-protocols.md`, TLA+ export.
+- [ ] **Refinement mapping written.** Where an optimized implementation
+      claims to implement a simpler specification, is the refinement
+      mapping (abstraction function from concrete to abstract state)
+      written down and checked, not argued? (TLA+, Lamport; Coq) — Oak:
+      `112-protocols.md` §4a conformance, `STATUS.md` refinement policy.
+- [ ] **Decidable fragment chosen deliberately.** For each obligation sent
+      to an SMT solver, is it in a decidable fragment (linear integer
+      arithmetic, bit-vectors, arrays) so the answer is yes/no rather than
+      unknown/timeout? Quantifiers and non-linear arithmetic are where
+      solvers become oracles. (Z3, Apalache) — Oak: `125-verification.md`
+      §3 discharge ladder.
+- [ ] **Counterexamples are first-class.** When a check fails — pattern
+      exhaustiveness, a protocol invariant, a property test — does the tool
+      hand back a concrete, minimal counterexample the author can run?
+      (TLA+, Elm, property testing) — Oak: `35-pattern-analysis.md`,
+      `110-testing.md` shrinking, `15-diagnostics.md`.
+- [ ] **Assumptions have an audit trail.** Is every admitted assumption
+      listed in one place, reviewable, and stated as a theorem the proof
+      layer could later discharge? An assumption that is not listed is a
+      hidden axiom. (Lean `sorry`, Coq `Admitted`, TB) — Oak:
+      `85-discipline.md` §7 `admit`, `oak vet`, `:obligations`, `:lean`.
+
+## 3. Make illegal states unrepresentable
+
+- [ ] **Sum types for alternatives.** Are mutually exclusive states a
+      closed ADT rather than a record with flags and nullable fields whose
+      combinations are mostly invalid? (Elm, ML, Rust, Swift) — Oak:
+      `30-adts-patterns.md`.
+- [ ] **Exhaustive matching, no default arm.** Is every match over a sum
+      exhaustive without a wildcard, so adding a constructor is a compile
+      error at every consumer? Is redundancy also an error? (Elm, ML,
+      Rust, Swift; MISRA's "every switch has a default" is the weaker C
+      form) — Oak: `35-pattern-analysis.md`.
+- [ ] **No null.** Is absence `Option[T]`, with no nullable reference,
+      sentinel integer, or zero-length-means-missing convention? (Elm,
+      Rust, Swift, Odin/Zig optionals) — Oak: `30-adts-patterns.md` §1a,
+      hypervisor note ask 9.
+- [ ] **Errors are values.** Does fallible code return `Result[T, E]` with
+      a closed error type, rather than throwing, returning a status code
+      the caller may ignore, or returning an in-band sentinel? (Rust, Go,
+      Zig error unions, Swift `throws` as sugar over results) — Oak:
+      `20-types.md` §11.1a, `resource-contracts-and-results.md`.
+- [ ] **Newtypes for identities and units.** Are ids, offsets, byte
+      counts, element counts, durations, and monetary amounts distinct
+      types so that an offset cannot be passed as a length? Are units in
+      names when the type does not carry them (`timeout_ms`)? (TB, Rust,
+      F# units of measure, Haskell newtypes) — Oak: `80-metadata.md`
+      phantom semantic types, `20-types.md` nominal identity.
+- [ ] **Validated state lives in the type.** Once input is validated
+      (UTF-8 checked, JSON parsed, signature verified), is the fact carried
+      as a phantom type parameter or a distinct type so it cannot be
+      re-validated or skipped by accident — "parse, don't validate"? Is
+      the validated type constructible *only* through the validator?
+      (Alexis King, simdjson, Idris) — Oak: `71-codecs.md` §2, §6;
+      `70-strings.md`.
+- [ ] **Typestate for protocols.** Where a value must be used in a fixed
+      order (open→read→close, Host→Device custody), is the state an index
+      on the type so a misordered call fails to compile, with the index
+      erased at run time? (Rust typestate, Idris, session types) — Oak:
+      `112-protocols.md` §5a, `Oak.Typestate`, `92-ffi.md` §2.8.5.
+- [ ] **Refinements over raw scalars.** Where an integer must be nonzero,
+      in range, aligned, or a power of two, is that a proposition the
+      checker knows (and elides checks from) rather than a comment?
+      (Idris, Liquid Haskell, Z3-backed refinement) — Oak: proposition
+      axis, extent facts in `50-borrowing.md`, `20-types.md`.
+- [ ] **Sizes in types.** Are fixed capacities const parameters
+      (`[N]T`, `Ring[T, N]`) rather than runtime fields checked at every
+      access? Are size relations (`[M*K]T`) folded at instantiation?
+      (Futhark size types, Idris vectors, Zig comptime, Rust const
+      generics) — Oak: `20-types.md` §11.0.
+- [ ] **Effects in types.** Does a function's type say what it may do
+      (allocate, block, read host memory, touch a device) so a caller's
+      `forbids` sees through the call, including through function values?
+      (Koka, effect rows; TB's "no allocation after init") — Oak:
+      `60-effects-allocation.md` §2, §2a.
+- [ ] **Uniqueness or ownership for in-place update.** When a function
+      mutates its argument in place, does the type system guarantee no
+      other reader sees the mutation — uniqueness types, `&mut`, or a
+      consuming parameter mode? (Futhark uniqueness, Rust `&mut`, Clean)
+      — Oak: `50-borrowing.md`, receiver/parameter modes.
+- [ ] **Closed by default.** Are types, modules, and enumerations closed
+      unless explicitly opened, so exhaustiveness and layout facts hold?
+      Is `pub` opt-in and `pub(opaque)` available so representation does
+      not leak? (Elm, Rust, Go, Swift `final`) — Oak: `83-modules.md`.
+- [ ] **No implicit conversions.** Is every change of width, signedness,
+      or numeric kind spelled out, with truncating, saturating, checked,
+      and bit-reinterpreting forms distinct? (Swift, Rust, MISRA essential
+      types, Go) — Oak: `20-types.md` §11.1.
+- [ ] **Literals are typed exactly.** Does an out-of-range literal fail to
+      compile rather than wrap or promote? Do integer constructors over
+      literals fold without changing meaning? (Rust, Swift, MISRA) — Oak:
+      `25-type-inference.md` §3a.
+- [ ] **Structural sharing is explicit.** Does the type distinguish a view
+      (borrowed, read-only), a span (borrowed, writable), an owned value,
+      and a handle (index into an owner), with no implicit conversion from
+      owned to borrowed that outlives the owner? (Rust, Zig slices, Odin)
+      — Oak: `50-borrowing.md`, `60-effects-allocation.md` §8.
+
+## 4. Memory, ownership, and aliasing
+
+- [ ] **Every access bounds-checked or proven.** Is every indexed access
+      either checked at run time or discharged by a fact the checker holds
+      (`i < len`)? Is the elided check recorded as a proof obligation, not
+      a flag? (Rust, Zig, Swift, TB) — Oak: `50-borrowing.md` extents,
+      `56-kernels.md` §3 (elision open).
+- [ ] **No dangling, no use-after-free, no double free.** Is every borrow
+      bounded by its owner's region, every consuming operation invalidating
+      its binding, every owner freed exactly once? Is this checked, not
+      convention? (Rust, Cyclone regions) — Oak: `50-borrowing.md` §8c
+      regions, `Oak.Escape`.
+- [ ] **Mutable aliasing forbidden.** Can two live paths write the same
+      memory without an atomic or a proven disjointness fact? Are
+      writable-disjointness assumptions on unsafe blocks recorded?
+      (Rust, Futhark, MISRA restrict) — Oak: `50-borrowing.md`,
+      `OAK-B0110`.
+- [ ] **No uninitialized reads.** Is every variable, field, and buffer
+      element initialized before any read, including padding that a
+      serializer might copy? Is "zero is a valid value" true for every
+      zero-initialized type, or is zero-init forbidden for that type?
+      (Rust, Zig `undefined` is explicit, MISRA 9.1, TB) — Oak:
+      `60-effects-allocation.md` §10a static initializers.
+- [ ] **Alignment and layout are facts.** Is every record layout derived
+      from one stated rule, exposed via `size_of`/`offset_of`, asserted in
+      the emitted code, and ratified against the C compiler? Do `(align:
+      N)` annotations produce an emitted assertion? (Zig, Rust
+      `#[repr(C)]`, DOD) — Oak: `40-records.md`, `45-representations.md`,
+      `92-ffi.md` §2.6.
+- [ ] **Endianness explicit at every byte boundary.** Is every multi-byte
+      read or write from a byte buffer through a named-endianness function
+      that returns a result, never a cast or a reinterpret? (TB, MISRA,
+      Zig `readInt`) — Oak: `bytes_read_*_le/be` in `stdlib/std.oak`,
+      hypervisor note ask 12.
+- [ ] **Pointer arithmetic only in unsafe, and rarely.** Does safe code
+      compute offsets over views and spans, with pointer arithmetic
+      confined to the FFI and MMIO layers under a recorded contract?
+      (P10 rule 9, MISRA 18.x, Rust) — Oak: `92-ffi.md`, `96-aarch64-mmio.md`.
+- [ ] **Handles over pointers, with generations.** For pooled objects, is
+      the reference a typed index plus a generation counter so a stale
+      handle is detected rather than dereferencing freed storage?
+      (DOD, TB, Andre Weissflog's handles) — Oak:
+      `60-effects-allocation.md` §8, `standard-library-design.md` §6.
+- [ ] **Capacity is declared, exhaustion is a value.** Does every
+      fixed-capacity container declare its capacity and return a result on
+      exhaustion rather than growing or trapping? (TB static allocation,
+      P10 rule 3) — Oak: `60-effects-allocation.md` §6–§9,
+      `85-discipline.md` §4.
+- [ ] **Resource cleanup is guaranteed and ordered.** Is every acquired
+      resource released on every path, including error paths, in reverse
+      acquisition order, with the release visible at the acquisition site?
+      (Zig/Go `defer`, Rust `Drop`, Odin) — Oak: `defer` in
+      `10-syntax.md` (block-scoped, one statement); terminal-state
+      obligations in `112-protocols.md`.
+- [ ] **Foreign memory is a contract, not a type cast.** Does every buffer
+      that crosses the FFI carry pointer, count, and ownership as a typed
+      triple, with the foreign side's aliasing and lifetime assumptions
+      recorded per borrow? (Rust FFI, Zig extern, Swift unsafe pointers) —
+      Oak: `92-ffi.md` §2.6–§2.8, `c.borrow`.
+- [ ] **Custody across devices is a state, not a comment.** When memory
+      moves between host and device, or between processes, is the custody a
+      typestate whose transition is the only place the side effect can
+      occur? (mlx unified memory pitfalls, CUDA) — Oak: `92-ffi.md`
+      §2.8.5 `Buffer[T, S]`.
+- [ ] **MMIO and volatile are effects with barriers.** Is every device
+      register access typed (width, access kind, side effect), volatile,
+      ordered by an explicit barrier, and never merged, reordered, or
+      elided by the optimizer? (MISRA volatile, Linux kernel memory
+      barriers doc) — Oak: `65-machine-memory.md` §9, `95-aarch64-barriers.md`,
+      `96-aarch64-mmio.md`.
+
+## 5. Control-flow and coding discipline
+
+- [ ] **Every loop has a static bound.** Does each loop carry a bound the
+      compiler can see (canonical counter, declared bound with runtime
+      guard, or a ranking function proven decreasing), so a runaway loop
+      is impossible by construction? (P10 rule 2, TB, MISRA 14.x) — Oak:
+      `85-discipline.md` §3, `OAK-D0103`, `Oak.BoundedLoop`.
+- [ ] **Recursion is bounded or absent.** Is stack depth statically
+      bounded — tail calls lowered to loops or trampolines, stack-consuming
+      cycles rejected, declared depth bounds with runtime checks otherwise?
+      (P10 rule 1, MISRA 17.2, TB) — Oak: `85-discipline.md` §2,
+      `Oak.Discipline`.
+- [ ] **No allocation after initialization.** Does every steady-state
+      entry point (event loop, request handler, interrupt path) forbid
+      allocation, with the compiler rejecting any reachable allocation
+      including through externs? (P10 rule 3, TB, MISRA 21.3) — Oak:
+      `85-discipline.md` §4, `steady` manifest lines, `OAK-E0104`.
+- [ ] **Functions are short and do one thing.** Is any function over
+      roughly seventy lines, or doing two things a name cannot cover?
+      Long functions hide the control flow a reviewer must hold in mind.
+      (P10 rule 4, TB) — Oak: not stated as a rule; a strict-profile lint
+      is a candidate.
+- [ ] **Assertion density.** Does every function assert its preconditions,
+      postconditions, and the invariants it relies on — at least two per
+      function — and are assertions compiled in for every build mode?
+      (P10 rule 5, TB) — Oak: `85-discipline.md` §5 (density lint
+      planned).
+- [ ] **Pair assertions.** Where a property is established in one place
+      and relied on in another, is it asserted at both — the producer
+      asserting what it guarantees, the consumer asserting what it needs —
+      so a violation is caught at the boundary it crosses? (TB) — Oak:
+      practice; not stated.
+- [ ] **Assertions name both values.** Does a failed comparison report
+      got and want, not just "assertion failed"? Does a trap say which
+      source line? (TB, Go testing) — Oak: `85-discipline.md` §5
+      `assert_eq`/`assert_ne`.
+- [ ] **Assertions may not have side effects.** Is every assertion
+      condition pure, so compiling it in or out cannot change behavior?
+      (MISRA 13.x, P10) — Oak: assertions are always on, which makes this
+      moot only if the language forbids effects in the condition; check.
+- [ ] **Every result is used or discarded on purpose.** Is a non-unit
+      result that is neither consumed nor explicitly discarded (`_ =`) a
+      rejection? Is discarding a unit value itself an error, so `_ =`
+      always marks a real choice? (P10 rule 7, MISRA 17.7, Rust
+      `#[must_use]`, Go `errcheck`) — Oak: `85-discipline.md` §6
+      (`OAK-D0104` planned).
+- [ ] **Data scope is minimal.** Is every variable declared at the
+      smallest scope, every block its own scope, and shadowing either
+      forbidden or confined? Is mutable global state absent or a typed
+      static with an explicit initializer? (P10 rule 6, MISRA 8.x) — Oak:
+      block scoping (hypervisor note ask 6), `60-effects-allocation.md`
+      §10a.
+- [ ] **No side effects in conditions or operands.** Is the order of
+      evaluation of operands irrelevant to the result because operands are
+      pure, or is the order specified and the effects visible? (MISRA
+      13.x, Go's spec on evaluation order) — Oak: `10-syntax.md` fixes
+      left-to-right for operands and call arguments; effects in operands
+      are otherwise unrestricted — a strict-profile lint is a candidate.
+- [ ] **Simple control flow.** No `goto`, no `setjmp`/`longjmp`, no
+      exceptions, no non-local exit other than a result value; `break`
+      leaves exactly one loop. (P10 rule 1, MISRA 15.x) — Oak:
+      `85-discipline.md` §3a.
+- [ ] **No dead or unreachable code.** Is unreachable code (an
+      unreachable match arm, code after a diverging call) a diagnostic,
+      and is dead code deleted rather than commented out? (MISRA 2.x) —
+      Oak: `35-pattern-analysis.md` unreachable arms.
+- [ ] **Magic numbers named.** Is every literal that carries meaning a
+      named constant with its unit, and does the compiler fold it? (MISRA,
+      TB) — Oak: `sam/literals-and-constants` branch.
+- [ ] **Zero warnings, all checkers.** Does the build reject every warning
+      under the strict profile, with each accepted assumption an explicit
+      `admit` line that keeps its audit trail? Are all available static
+      analyzers run every day? (P10 rule 10, MISRA, TB) — Oak:
+      `85-discipline.md` §7.
+- [ ] **Naming carries meaning.** Do names avoid abbreviations, carry units
+      or qualifiers where the type does not, and put the most significant
+      word first so related names sort together? (TB, Go) — Oak: style;
+      not stated.
+- [ ] **Comments say why, not what.** Is every non-obvious decision,
+      especially every unsafe block and every admitted assumption, given a
+      reason a future reader can test? Are specification references linked
+      with section numbers? (TB, P10) — Oak: practice.
+
+## 6. Integer and floating-point semantics
+
+- [ ] **Overflow behavior is chosen per operation.** Is the default
+      (wrap) stated, and are checked, saturating, and truncating forms
+      distinct named operations with total semantics — no
+      implementation-defined C? Does `MIN / -1` have a stated answer?
+      (Rust, Zig, Swift traps, MISRA) — Oak: `20-types.md` §11.1, §11.1a;
+      `90-backend.md` §7.
+- [ ] **Division by zero traps, everywhere.** Does the interpreter, the C
+      backend, the Metal lowering, and the Lean model agree? (Zig, Rust)
+      — Oak: `20-types.md` §11.1, `56-kernels.md` §3 fault word.
+- [ ] **Shifts are bounded.** Is a shift by more than the width a compile
+      error for constants and a trap or defined result for variables, never
+      C's undefined behavior? (MISRA 12.2, Rust) — Oak: `20-types.md`
+      §11 requires shift semantics to be specified per operation; the
+      rule itself is not written — gap.
+- [ ] **No signed/unsigned mixing.** Are comparisons and arithmetic across
+      signedness or width rejected rather than promoted? (MISRA essential
+      types, Go, Rust) — Oak: `20-types.md`; `OAK-T0601` for assertions.
+- [ ] **Float addition is not associative, and the language knows it.**
+      Is the grouping of every reduction a stated fact (`reduce.tree`'s
+      balanced counter tree, `reduce.left`), so two backends and the Lean
+      model produce the same bits? Is regrouping permitted only by a
+      declared law? (ml pilot F2/F3, Futhark, numerical analysis) — Oak:
+      `55-parallelism.md` §4, `stdlib/reduce.oak`, `10-syntax.md` §14a
+      `laws { associative }`.
+- [ ] **No fast-math.** Are FMA contraction, reassociation, reciprocal
+      approximation, flush-to-zero, and NaN assumptions all off unless
+      explicitly requested per operation, and is the request visible in
+      the type or the call? (LLVM fast-math hazards, Mojo, mlx) — Oak:
+      `56-kernels.md` §4, `93-simd.md` §1.2a.
+- [ ] **NaN, infinities, and signed zero have stated behavior.** Does
+      every comparison, min/max, sort, and hash on floats say what it does
+      with NaN and `-0.0`? Is the ordering total where a sort needs it?
+      (IEEE 754, Rust `total_cmp`, Swift) — Oak: `20-types.md` §11.3.3
+      semantics fixed in the specification; `stdlib/float`; the Lean
+      float model.
+- [ ] **Float text round-trips.** Does printing use enough digits
+      (`%.9g`/`%.17g` or shortest-round-trip) and does parsing produce the
+      correctly rounded value? (Ryu, Eisel-Lemire, simdjson) — Oak:
+      `85-discipline.md` §5 assertion printing; parsing in codecs.
+- [ ] **Denormals and rounding mode are not assumed.** Does any kernel
+      depend on the default rounding mode or on denormals being preserved
+      without saying so? Does the Metal target differ from C here, and is
+      the difference stated? (mlx, Metal shading language spec) — Oak:
+      `56-kernels.md` §4.
+- [ ] **Differential float testing against the model.** Is every float
+      operation tested bit-for-bit against the interpreter and against the
+      Lean model's definition, not just against "close enough"? (simdutf,
+      TB) — Oak: `20-types.md` §11.3.5 three-witness rule (interpreter,
+      C, Lean), §11.3.6 fourth witness for transcendentals.
+
+## 7. Concurrency and the memory model
+
+- [ ] **A data race is undefined, so it is forbidden.** Are conflicting
+      unsynchronized accesses rejected by ownership or typed as atomics,
+      never permitted with a comment? (Rust, C11/C++11, Go race detector)
+      — Oak: `66-memory-model.md` §7.
+- [ ] **Happens-before is the vocabulary.** Are synchronization arguments
+      written in terms of sequenced-before, synchronizes-with, and
+      happens-before, with the executions model the Lean theorems use,
+      rather than in terms of "the compiler won't reorder this"?
+      (C11, Java memory model, herd/litmus) — Oak: `66-memory-model.md`
+      §1–§5, `MemoryOrder.lean`.
+- [ ] **Orders are explicit and minimal but never weaker than proven.**
+      Does every atomic operation name its order? Is relaxed used only
+      with an argument the model checks? Is sequential consistency the
+      default when no argument is given? (Rust, C11, Preshing) — Oak:
+      `65-machine-memory.md` §2, `67-memory-ordering.md`,
+      `68-sequential-consistency.md`.
+- [ ] **Litmus tests per target.** Does each target's refinement (C11
+      atomics, AArch64 barriers, RISC-V RVWMO) come with the standard
+      litmus shapes (message passing, store buffering, load buffering,
+      IRIW) run against the model and against hardware or a simulator?
+      (herd7, Sail, ARM ARM) — Oak: `69-aarch64-memory-refinement.md`,
+      `spec/sail`.
+- [ ] **Single writer where possible.** Does the design prefer
+      single-producer single-consumer rings, per-core ownership, and
+      message passing over shared mutable state and locks? (TB, LMAX
+      Disruptor, DOD) — Oak: `standard-library-design.md` Ring, dbs asks
+      8.
+- [ ] **Ownership transfer across threads is a protocol.** When a value
+      changes owner across a synchronization edge, is that a typed
+      transition with the barrier at the transition, model-checked as a
+      state machine? (Rust `Send`, TLA+) — Oak: `112-protocols.md`,
+      `Buffer[T, S]` custody.
+- [ ] **No blocking in bounded paths.** Is blocking (locks, I/O, sleeps)
+      an effect that realtime and interrupt entry points forbid? (TB,
+      realtime audio rules) — Oak: `60-effects-allocation.md` §12,
+      `55-parallelism.md` §8.
+- [ ] **Parallel iterations are proven independent.** Is a parallel loop
+      admitted only when the checker proves iterations do not conflict
+      (one element per thread, tiles disjoint), failing closed otherwise?
+      Is the theorem named? (Futhark, ml pilot, OpenMP's unchecked
+      `parallel for` as the anti-pattern) — Oak: `55-parallelism.md` §2,
+      `Oak.Kernel.run_perm` (checker rule open).
+- [ ] **Deterministic under simulation.** Can every concurrent component
+      run under a simulated scheduler with a seed so that any interleaving
+      bug is replayable? (TB VOPR, FoundationDB) — Oak: `110-testing.md`
+      Deterministic event simulation, Crashes and scheduling.
+
+## 8. Testing as an engineering discipline
+
+- [ ] **Deterministic simulation testing.** Does the component run under
+      simulated time, storage, network, and scheduling from a single seed,
+      so a failure replays exactly and shrinks? Is production code and
+      test code the same code with the I/O port swapped? (TB VOPR,
+      FoundationDB, dbs) — Oak: `110-testing.md`, `120-io.md` `io/sim`
+      vs `io/native`, `stdlib/sim_storage.oak`.
+- [ ] **Fault injection covers the real fault model.** Are the faults
+      injected the ones hardware and operating systems actually produce —
+      torn writes, misdirected writes, dropped writes, lost fsync, bit
+      flips, latent sector errors, crashes between write and sync, clock
+      jumps, partitions — not just "the call returned an error"? (TB, dbs,
+      "Protocol-Aware Recovery") — Oak: `110-testing.md` Simulated
+      storage (six kinds), Simulated time.
+- [ ] **Durability and detection are separate obligations.** Does the
+      storage test distinguish "this block must survive" from "corruption
+      of this block must be detected", tracked by provenance, so neither
+      hides the other? (dbs note) — Oak: `110-testing.md` provenance
+      ledger.
+- [ ] **Property tests with shrinking and replay.** Does every generated
+      input come from a choice tape that shrinks toward a minimal failing
+      case, and is the failing tape stored in a corpus and replayed on
+      every run thereafter? (QuickCheck, Hypothesis, TB) — Oak:
+      `110-testing.md` Choice tapes, Corpus and replay.
+- [ ] **Stateful command testing.** Are stateful components tested by
+      generated command sequences against a model with invariants checked
+      after every command, with shrinking that removes commands? (Erlang
+      QuickCheck, Hypothesis stateful) — Oak: `110-testing.md` Stateful
+      command properties, typed commands.
+- [ ] **Differential testing against references.** Is every codec, hash,
+      sort, UTF-8 validator, and numeric routine tested bit-for-bit
+      against at least one independent implementation (Go, Rust, Zig,
+      simdjson, simdutf) on the same inputs? (simdutf, TB, csmith for
+      compilers) — Oak: `stdlib/hash.oak` differential vs Go,
+      `benchmarks/state-machines`, `sam/float-differential`.
+- [ ] **Oracle is the slow path, kept in tree.** Does every optimized
+      routine keep its pre-optimization form as an oracle and test the two
+      agree on generated inputs, including adversarial ones? (simdjson, ml
+      fusion oracle) — Oak: `71-codecs.md` §4a, codec-fusion note.
+- [ ] **Counters prove the optimization fired.** Does a test assert that
+      the fast path was actually taken (a counter, an absence check over
+      the emitted C), so a silent fallback to the slow path is a test
+      failure? (ml, TB) — Oak: `71-codecs.md` §4 wrapper-absence checks.
+- [ ] **Known-answer vectors.** Are standard test vectors (RFC, NIST,
+      Unicode conformance, JSON test suite) run, with the vector file in
+      tree and its provenance noted? (NIST CAVP, simdjson's JSONTestSuite)
+      — Oak: `stdlib/hash.oak` KATs, `sam/tla-conformance`.
+- [ ] **Interpreter and every backend agree.** Is each language feature
+      differentially tested across the interpreter, the C backend, and any
+      other backend at every boundary value? (csmith, TB) — Oak: e2e
+      tests in `compiler/`, hypervisor note ask 2.
+- [ ] **Boundary values every time.** Zero, one, capacity, capacity minus
+      one, capacity plus one, empty, maximum width, minimum signed,
+      unaligned offset, input exactly at a SIMD block edge, input one byte
+      past padding. (classic, simdjson block edges) — Oak: `110-testing.md`
+      generated inputs; check per module.
+- [ ] **Negative tests.** Does every validator have tests that must
+      reject, with the exact error and precedence asserted, not just tests
+      that must accept? (langsec, simdjson) — Oak: `71-codecs.md` error
+      precedence (`InvalidEncoding` over `InvalidSyntax`).
+- [ ] **Roundtrip and algebraic laws.** Are encode∘decode = id,
+      decode∘encode = canonicalize, sort idempotence and permutation
+      preservation, hash determinism, and ordering laws stated as
+      properties and, where possible, as Lean theorems over the same
+      definition? (QuickCheck, Lean) — Oak: `sam/codec-laws`,
+      `sam/pdqsort-laws`, `sam/sort-laws-universal`, `sam/stdlib-laws-*`.
+- [ ] **Exhaustive on small domains.** Where the input space is small
+      (all byte pairs, all u8 values, all three-node protocol states), is
+      it enumerated rather than sampled? (Hyperscan's byte-class tests,
+      TLC) — Oak: practice per module.
+- [ ] **Every bug becomes a test first.** Is the reproducer committed
+      before the fix, in the corpus if generated, as a table row if
+      hand-written? (classic) — Oak: `110-testing.md` Corpus, Table
+      targets.
+- [ ] **Tests are hermetic and deterministic.** No wall clock, no real
+      network, no shared temp state, no order dependence; a failing seed
+      is printed and re-runnable. Flakiness is a bug filed against the
+      test. (Go, TB) — Oak: `110-testing.md` Isolation.
+- [ ] **Fuzz continuously, structure-aware.** Is every parser exported to
+      a fuzzer (libFuzzer) with a structure-aware generator, run
+      continuously, with the corpus checked in? (simdjson, Hyperscan,
+      oss-fuzz) — Oak: `110-testing.md` Fuzzing.
+- [ ] **Diagnostics are tested.** Does every stable diagnostic code have a
+      test asserting the code, the primary label location, and the help
+      text, and is output deterministic across runs and machines? (Rust's
+      UI tests, Elm) — Oak: `15-diagnostics.md` §11–§12.
+- [ ] **Race detector and sanitizers in CI.** Are the Go race detector,
+      ASan/UBSan on the emitted C, and Miri-equivalent interpretation run
+      on the standard library and compiler tests? (Go, LLVM) — Oak: `-race` in `ci.yml`; ASan and UBSan on emitted
+      C in `stdlib-benchmark.yml` only — extend to the compiler e2e
+      suites.
+
+## 9. Parsing, input validation, and boundaries
+
+- [ ] **Validate once, at the boundary, and record it.** Is every external
+      input (bytes from disk, network, FFI, user) validated exactly once
+      on entry, with the result a distinct type, and is the interior of the
+      program free of re-validation and of unvalidated data? (langsec,
+      "parse, don't validate", simdjson) — Oak: `71-codecs.md` §6,
+      `70-strings.md`.
+- [ ] **Never read past the input.** Is the padding contract (if any)
+      explicit in the type or the call, and is reading beyond `len`
+      impossible in safe code even when the SIMD block would? (simdjson's
+      `SIMDJSON_PADDING`, simdutf) — Oak: `71-codecs.md` §11, §16 forbid
+      over-read.
+- [ ] **Output unchanged on failure.** When an encoder or writer fails
+      partway, is the destination left exactly as it was (two-pass
+      size-then-write, or a rollback), so the caller cannot see a partial
+      record? (TB, codec note) — Oak: `71-codecs.md` §7 contracts.
+- [ ] **Length before content.** Is every length prefix checked against
+      the remaining input and against a declared maximum before any
+      allocation or loop uses it? (langsec, every CVE) — Oak:
+      `bytes_read_*` return results; check derived binary codec (dbs ask
+      9, wanted).
+- [ ] **Depth and size limits.** Does every recursive format (JSON
+      nesting, ASN.1, protocol payload trees) have a declared depth limit
+      and total size limit, enforced before recursion? (simdjson depth,
+      P10 recursion rule) — Oak: derived codecs nest only as deep as
+      the finite schema, so no runtime depth stack exists
+      (`71-codecs.md`); a schemaless JSON reader would need the limit;
+      `110-testing.md` `-max-bytes` bounds input size.
+- [ ] **Canonical encodings only.** Are non-canonical forms (overlong
+      UTF-8, non-minimal varints, leading zeros where forbidden, duplicate
+      keys) rejected rather than normalized silently, so two encodings of
+      one value cannot bypass a check? (WHATWG, RFC 3629, Protobuf
+      pitfalls) — Oak: `sam/varint-canonical`, `70-strings.md`.
+- [ ] **Error precedence is specified.** When an input is wrong in two
+      ways, which error is reported? Is that order stated, tested, and
+      preserved by every fast path? (simdjson, codec note) — Oak:
+      `71-codecs.md` §4a.
+- [ ] **Total functions on untrusted input.** Does any input, however
+      adversarial, cause a trap rather than a result in a parser? A trap on
+      external input is a denial-of-service bug; a trap on an internal
+      invariant is correct. (langsec, TB's distinction) — Oak: check every
+      `assert` in `stdlib/json.oak`, `stdlib/strings.oak` is on an
+      internal invariant, not on input.
+- [ ] **Bounded work per byte.** Is the worst-case work of every parser
+      linear in input size with no backtracking, no quadratic string
+      building, no hash-collision blowup on attacker-chosen keys?
+      (Hyperscan's no-backtracking DFA/NFA, simdjson two-stage) — Oak:
+      `71-codecs.md` §11, §19; hash seeding in `stdlib/hash.oak` — check.
+- [ ] **UTF-8 validation is exact and tested against the table.** Does the
+      validator reject every ill-formed sequence in Unicode Table 3-7
+      (overlongs, surrogates, above U+10FFFF, truncated sequences) and is
+      it differentially tested against simdutf? (simdutf, Keiser–Lemire)
+      — Oak: `benchmarks/state-machines` UTF-8 against Go, Rust, Zig,
+      simdutf, simdjson.
+- [ ] **FFI boundary is a validator.** Does every value entering from C —
+      spans, records, unions, function pointers — get its contract checked
+      or recorded at the boundary, with an unknown layout a rejection?
+      (Rust FFI, Swift C interop) — Oak: `92-ffi.md` §2.6, §2.10;
+      `feat(verify): records and unions at the boundary`.
+
+## 10. Errors, failure, and diagnostics
+
+- [ ] **Crash on invariant violation, return on expected failure.** Does
+      the code trap (fail fast, loudly, with location) when an internal
+      invariant is broken, and return a result when the environment does
+      something legal but unwelcome? Is the line between the two written
+      down per module? (TB, Erlang "let it crash", Go panics vs errors) —
+      Oak: `85-discipline.md` §5; state the line per stdlib module.
+- [ ] **Errors carry cause and location.** Does every error value and every
+      diagnostic identify the primary cause, secondary causes, and exact
+      source positions, and explain in the programmer's concepts rather
+      than the solver's? (Elm, Rust) — Oak: `15-diagnostics.md` §1–§4,
+      §10.
+- [ ] **Stable codes.** Does every diagnostic have a stable code that
+      tests, documentation, `admit` lines, and users can name, and is a
+      code never reused for a different meaning? (Rust `E0xxx`, MISRA
+      rule numbers) — Oak: `15-diagnostics.md` §2.
+- [ ] **Help is mechanically credible.** Does a suggested fix compile and
+      preserve meaning, or is it labeled as a hint? A wrong "help" is worse
+      than none. (Elm, Rust `rustfix`) — Oak: `15-diagnostics.md` §8.
+- [ ] **Cascades suppressed.** Does one root error produce one diagnostic,
+      with dependent errors suppressed, so the first line printed is the
+      thing to fix? (Elm, Rust) — Oak: `15-diagnostics.md` §9.
+- [ ] **Internal compiler errors are bugs, not diagnostics.** Is an ICE
+      reported with a reproducer request and never as a user error, and
+      does the compiler never emit code after an ICE? (Rust) — Oak:
+      `15-diagnostics.md` §13.
+- [ ] **No silent truncation or coercion in error paths.** Does an error
+      message print values exactly (full width, correct signedness, float
+      round-trip digits)? (TB) — Oak: `85-discipline.md` §5.
+
+## 11. Compiler and toolchain correctness
+
+- [ ] **Deterministic output.** Does the same input produce byte-identical
+      emitted C, diagnostics, API snapshots, and Lean extraction, across
+      runs, machines, and map iteration orders? (reproducible builds, Go)
+      — Oak: `15-diagnostics.md` §11; check emitted C ordering.
+- [ ] **Public API snapshots gate SemVer.** Is every public surface
+      snapshotted, diffed on every change, and the version bump computed
+      rather than chosen? (Elm's enforced SemVer, Rust `cargo semver-checks`)
+      — Oak: `82-package-semver.md`, `feat/canonical-api-snapshots`.
+- [ ] **Extraction is faithful and fails closed.** Does the Lean
+      extraction reject any construct it cannot model rather than
+      approximating, and are the modeling choices (traps as `none`, wrap
+      semantics) stated? Is faithfulness itself tested? (CompCert, hs-to-coq)
+      — Oak: `95-extraction.md` §3–§4, `feat(lean)` faithfulness.
+- [ ] **Foundational laws refined first.** Are the smallest load-bearing
+      components — type lattice, parser cursor contract, borrow-state
+      transitions, effect subsumption, span conversions, diagnostic
+      structure — the ones with machine-checked refinement, before larger
+      features claim proofs? (constitution) — Oak: `docs/spec/README.md`
+      Proof/code relationship, `STATUS.md`.
+- [ ] **Transformations are licensed.** Is every optimization (fusion,
+      inlining, vectorization, tiling, reassociation, check elision)
+      permitted only by a stated legality rule — values, machine numerics,
+      borrow flow, effect order, observable traps, synchronization, ABI —
+      and ideally by a theorem? (ml license theorem, Futhark, CompCert) —
+      Oak: `05-ergonomics-and-cost.md` Optimization is constrained by
+      semantics, `55-parallelism.md` §6.
+- [ ] **Generic code is checked once, instantiated many.** Are constraints
+      checked at the definition (no C++-style post-monomorphization
+      errors), and is every instantiation's specialized code differentially
+      tested against the generic semantics? (Rust, ML modules, Swift) —
+      Oak: `25-type-inference.md`, `feat(nativegen): generic
+      instantiations`.
+- [ ] **Type inference is predictable and local.** Does inference never
+      generalize unsoundly (value restriction), never depend on declaration
+      order across a module boundary, and always admit an explicit
+      annotation that means exactly what inference would have chosen?
+      (ML value restriction, Go's locality, Swift's inference blowups as
+      the anti-pattern) — Oak: `25-type-inference.md` safe generalization.
+- [ ] **The spec and the implementation are reconciled continuously.** Is
+      every behavior in the compiler traceable to a spec section, and every
+      spec sentence either implemented, marked planned, or marked
+      direction? Are legacy documents retired only after reconciliation?
+      (TB "the code is the design, the design is the code") — Oak:
+      `docs/spec/README.md`, `LEGACY_RECONCILIATION.md`, `STATUS.md`.
+- [ ] **Obligations are enumerable.** Can a user list every unproven
+      assumption in a build — unsafe contracts, unbounded loops, tail
+      obligations, admitted warnings — with one command? (Lean `#print
+      axioms`, TB) — Oak: `oak vet`, `:obligations`.
+- [ ] **Bootstrap trust is stated.** Which parts of the toolchain (the Go
+      compiler, the C compiler, Lean, the Metal compiler) are trusted, and
+      is the trusted computing base written down and minimized? (Thompson
+      "Reflections on Trusting Trust", CompCert TCB) — Oak: not stated;
+      candidate for `125-verification.md`.
+
+## 12. Process
+
+- [ ] **Small commits, always green.** Is every commit buildable and
+      tested, small enough to review in one sitting, with the spec change
+      and the code change together? (TB, Go) — Oak: practice.
+- [ ] **Review walks the list.** Does a review of a security- or
+      correctness-sensitive change walk this checklist's relevant sections
+      and record the "no"s in the note? (MISRA compliance matrix, P10) —
+      Oak: this document.
+- [ ] **Feedback from consumers is dispositioned, not lost.** Is every
+      ask from the os, dbs, and ml consumers recorded with a disposition
+      and revisit criteria, so the same gap is not rediscovered?
+      (practice) — Oak: `docs/notes/*-feedback-*.md`.
+- [ ] **Every pass writes back.** When a pass over a source teaches a new
+      question, is the question added here with provenance, so the next
+      pass starts from the list and not from the source? (this README) —
+      Oak: `docs/checklists/README.md`.

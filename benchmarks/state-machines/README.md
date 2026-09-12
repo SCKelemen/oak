@@ -19,6 +19,11 @@ the declaration.
   `OAK_UPDATE_BENCH=1 go test ./compiler -run TestEmitStateMachineBenchmarkSource`).
 - `run_utf8.c` — times the emitted `oak_utf8_run` over the same 64 MB of
   random valid UTF-8 that `lowerings.c` uses.
+- `cross/` — the same validation against other fast implementations over
+  one shared input file: Go's `unicode/utf8.Valid`, Rust's
+  `std::str::from_utf8`, Zig's `std.unicode.utf8ValidateSlice`,
+  `simdutf::validate_utf8`, and `simdjson::validate_utf8`, plus Oak's
+  `is_valid_utf8` builtin and the stdlib's SIMD `utf8.valid`. `cross/run.sh` builds and runs everything.
 
 ```sh
 cc -std=c11 -O2 -o lowerings lowerings.c && ./lowerings
@@ -61,3 +66,48 @@ What the numbers say:
 - Where the caller knows the state at compile time, none of this applies:
   the branch tree folds away entirely, and the phantom-typestate form has
   no run-time state at all (`docs/notes`, "Oak State Machines").
+
+## Against other implementations
+
+`cross/run.sh`, same machine and conditions, one 64 MB input file shared by
+every program (`cross/gen_input.c`), best of five. Go 1.27, Rust 1.93,
+Zig 0.16, simdutf 9.1, simdjson 4.6, all at their release optimization
+levels.
+
+| Implementation | ns/byte | GB/s |
+| --- | --- | --- |
+| simdjson `validate_utf8` (SIMD) | 0.07 | 13.5 |
+| simdutf `validate_utf8` (SIMD) | 0.07 | 13.4 |
+| **Oak stdlib `utf8.valid` (SIMD, written in Oak over `simd.U8x16`)** | **0.10** | **9.6** |
+| **Oak protocol `utf8_run` (shift DFA, emitted from the declaration)** | **0.51** | **1.97** |
+| Oak builtin `is_valid_utf8` (scalar, Table 3-7 transliteration) | 2.50 | 0.40 |
+| Zig `std.unicode.utf8ValidateSlice` | 2.55 | 0.39 |
+| Rust `std::str::from_utf8` | 2.56 | 0.39 |
+| Go `unicode/utf8.Valid` | 2.73 | 0.37 |
+
+What the comparison says:
+
+- Among scalar validators the declaration-derived machine is five times
+  faster than the three standard libraries and than Oak's own builtin. The
+  standard libraries branch on byte classes; their ASCII fast paths rarely
+  fire on this input because multi-byte sequences interleave every few
+  bytes. Real text with long ASCII runs would narrow the gap for them.
+- SIMD is a different regime: the lookup-table validators (Keiser and
+  Lemire's algorithm, as shipped in simdutf and simdjson) process sixteen
+  or more bytes per step and run seven times faster than any scalar DFA.
+  That is the ceiling on today's hardware for this golden case, and no
+  scalar lowering reaches it.
+- The consequence for Oak: for byte-driven machines that are validators of
+  a fixed format, the peak structure is a SIMD algorithm, not a DFA, and
+  Oak's portable 128-bit vectors express it. `stdlib/utf8.oak` is that
+  algorithm in Oak (four operations were added to the `simd` catalog for
+  it: `subs`, `shr`, `tbl`, `prev`); at 9.6 GB/s it sits at four fifths of
+  simdutf, and the gap is its sixteen-byte step against simdutf's
+  sixty-four. Its lookup tables are proved against Table 3-7 pair by pair
+  (`Oak.Utf8Lookup`); the stream is checked differentially against the
+  scalar builtin. General protocol machines keep the DFA lowering; it is
+  the best structure for a machine that is not a fixed format.
+- Hyperscan and Vectorscan are regex engines and are the right comparison
+  for the next golden case, multi-pattern byte scanning; neither is
+  installed here, and this table does not include them.
+

@@ -319,6 +319,10 @@ func variantName(transition string) string {
 
 // snakeCase spells CamelCase as snake_case for the generated functions:
 // VirtualIrq -> virtual_irq.
+// ProtocolPrefix is the snake_case prefix of a protocol's projected
+// functions: `Turnstile` -> `turnstile` (docs/spec/112-protocols.md §2).
+func ProtocolPrefix(name string) string { return snakeCase(name) }
+
 func snakeCase(name string) string {
 	var out strings.Builder
 	for i, r := range name {

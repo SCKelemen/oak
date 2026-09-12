@@ -58,6 +58,38 @@ about), has no receiver, no variadic tail, no effect clauses, and no
 foreign binding. Whatever else the body may do is the deciders' concern:
 each fails closed on its own subset and says so in the status.
 
+### 2a. Protocol invariants
+
+A protocol (`112-protocols.md`) is the model. A theorem whose parameters
+are exactly its projected state and data — `(s: NameState, d: NameData)`,
+or `(s: NameState)` for a machine without data — is an **invariant
+candidate**, and `oak prove` reads it as a claim about the reachable
+states rather than about every state. Before checking, the prover adds
+the two obligations the declaration determines, as ordinary theorems over
+the projections (`prove/protocols.go`):
+
+```oak
+paid: theorem (s: TurnstileState, d: TurnstileData) { s == .Locked || d.coins > u8(0) }
+
+// generated
+paid__base: theorem () { paid(turnstile_initial(), turnstile_initial_data()) }
+paid__step: theorem (s: TurnstileState, d: TurnstileData, step: TurnstileStep) {
+  buf: [1]TurnstileData = [1]TurnstileData{ d }
+  !(paid(s, d) && turnstile_legal(s, d, step)) || paid(turnstile_next(s, span(&buf), step), buf[0])
+}
+```
+
+The candidate's own row reports the obligations: `decided` when both are,
+`refuted` naming which one fails and where (this turnstile's 8-bit
+counter wraps: `invariant is not preserved: counterexample ... coins:
+255`), `open` otherwise; the obligation rows follow with their detail.
+Steps that carry a payload enumerate it with the step (`program(compare:
+u8)` is 256 steps). Nothing is added to the language: the generated
+theorems are the ones a programmer would write, produced so the
+preservation shape is never misspelled. The generation is a syntax
+rewrite on the parsed program (`Compilation.WithSyntaxRewrite`), so a
+build never sees it.
+
 ## 3. The discharge ladder
 
 Every theorem is placed on one rung, from the strongest evidence down:
@@ -138,28 +170,13 @@ differential witnesses cover, and are stated as the assumption they are.
 
 In order of payoff, each reusing a surface that exists:
 
-- **Protocol invariants.** A protocol's projections (`112-protocols.md`
-  §2) are ordinary functions over ordinary types, so an inductive invariant
-  is two theorems today, with nothing added:
-
-  ```oak
-  paid: (s: TurnstileState, d: TurnstileData): Bool = s == .Locked || d.coins > u8(0)
-  paid_initially: theorem () { paid(turnstile_initial(), turnstile_initial_data()) }
-  paid_preserved: theorem (s: TurnstileState, d: TurnstileData, step: TurnstileStep) {
-    buf: [1]TurnstileData = [1]TurnstileData{ d }
-    !(paid(s, d) && turnstile_legal(s, d, step)) || paid(turnstile_next(s, span(&buf), step), buf[0])
-  }
-  ```
-
-  On a finite state space the exhaustive decider settles them (and finds,
-  for this turnstile, the 8-bit counter wrapping to zero: `refuted` at
-  `coins: 255`). What remains is convenience and reach: `oak prove`
-  generating the two obligations from the declaration for a theorem over
-  the projected state and data, so the preservation shape is never
-  misspelled, and the larger domains of §3's direction so a `u32` budget is
-  decided rather than left open. The Boolean transition-model export of
-  the verification experiment already checks inductive invariants through
-  certificates; this is that check on the language's own state.
+- **Protocol invariants, further.** §2a covers safety on finite state
+  spaces. Next: the larger domains of §3 so a `u32` budget is decided
+  rather than left open, and liveness with declared fairness projected to
+  the TLA+ module the protocol command already renders. The Boolean
+  transition-model export of the verification experiment already checks
+  inductive invariants through certificates; §2a is that check on the
+  language's own state.
 - **Refinements.** `IrqId[N]: type = u16 where value < N`
   (`LANGUAGE_MODEL.md`): the proposition is a `Bool` expression over
   `value`, checked at construction, discharged statically where the extent

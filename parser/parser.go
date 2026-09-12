@@ -307,6 +307,12 @@ func (p *Parser) parseStatement() ast.Statement {
 		if p.currentToken.Literal == "operator" && p.peekTokenIs(token.LPAREN) {
 			return p.parseOperatorDeclaration()
 		}
+		// `kernel name: (gid: u32, ...): () = ...` declares a compute kernel
+		// (docs/spec/56-kernels.md); `kernel` is contextual, so `kernel := 1`
+		// and `kernel: u32 = 1` stay ordinary bindings.
+		if p.currentToken.Literal == "kernel" && p.peekTokenIs(token.IDENT) && p.lookaheadSignificant(2).TokenKind == token.COLON {
+			return p.parseKernelDeclaration()
+		}
 		// `export("symbol") pub name: (...)` gives a pub function a C ABI
 		// symbol (docs/spec/92-ffi.md section 2.9); `export` is contextual,
 		// so `export := 1` stays an ordinary binding.
@@ -948,10 +954,46 @@ func (p *Parser) parseFieldAccess(left ast.Expression) ast.Expression {
 
 // parseIndexOrSliceExpression handles both array[index] and array[low:high] syntax
 // This is a unified Pratt hook for '[' that pattern-matches on ':' to choose index vs slice
+// isMessageSendAccess reports whether expr is the library access
+// `c.msg_send` (docs/spec/92-ffi.md section 2.12), whose bracket argument
+// is a boundary function type rather than a value.
+func isMessageSendAccess(expr ast.Expression) bool {
+	access, isAccess := expr.(*ast.IndexExpression)
+	if !isAccess || !access.Dot {
+		return false
+	}
+	base, isIdent := access.Left.(*ast.Identifier)
+	member, memberIsIdent := access.Index.(*ast.Identifier)
+	return isIdent && memberIsIdent && base.Value == "c" && member.Value == "msg_send"
+}
+
 func (p *Parser) parseIndexOrSliceExpression(left ast.Expression) ast.Expression {
 	tok := p.currentToken // '['
 	defer p.operatorPipe()()
 	p.nextToken() // move to first token after '['
+
+	// `c.msg_send[(params) -> ret](receiver, selector, args...)` (docs/spec/
+	// 92-ffi.md section 2.12): the bracket carries a boundary function
+	// type, not a value, so it is read with the type grammar. The callee
+	// is the one place a function type appears in expression position.
+	if isMessageSendAccess(left) && p.currentTokenIs(token.LPAREN) {
+		signature := p.parseTypeExpression()
+		if signature == nil {
+			return nil
+		}
+		if _, isFn := signature.(*ast.FunctionTypeExpression); !isFn {
+			p.addErrorAtCurrentToken("c.msg_send takes a function type in brackets: c.msg_send[(params) -> ret]")
+			return nil
+		}
+		if !p.expectPeek(token.RBRACK) {
+			return nil
+		}
+		if !p.peekTokenIs(token.LPAREN) {
+			p.peekError(token.LPAREN)
+			return nil
+		}
+		return &ast.IndexExpression{Token: tok, Left: left, Index: signature}
+	}
 
 	// Case 1: a[:...] or a[:]
 	if p.currentTokenIs(token.COLON) {
@@ -1660,6 +1702,24 @@ func (p *Parser) parseOperatorDeclaration() ast.Statement {
 	return fn
 }
 
+// parseKernelDeclaration parses the `kernel` marker followed by a function
+// declaration (docs/spec/56-kernels.md section 1).
+func (p *Parser) parseKernelDeclaration() ast.Statement {
+	marker := p.currentToken
+	p.nextToken()
+	stmt := p.parseStatement()
+	if stmt == nil {
+		return nil
+	}
+	fn, isFunction := stmt.(*ast.FunctionStatement)
+	if !isFunction {
+		p.addErrorAtToken(&marker, "kernel must be followed by a function declaration")
+		return nil
+	}
+	fn.Kernel = true
+	return fn
+}
+
 // parseExportDeclaration parses `export("symbol")` followed by a `pub`
 // function declaration and records the C ABI symbol on it
 // (docs/spec/92-ffi.md section 2.9). The symbol's grammar, uniqueness, and
@@ -2132,6 +2192,54 @@ func (p *Parser) parseTypeExpression() ast.Expression {
 
 // parseTypePrimary parses the "atomic" type forms: identifiers, records,
 // struct{ ... }, array types, and parens/unit.
+// parseEffectNameList parses `{ A.B, C.D }` after an `effects`/`forbids`
+// keyword at currentToken, leaving currentToken at '}'.
+func (p *Parser) parseEffectNameList() ([]*ast.EffectName, bool) {
+	if !p.expectPeek(token.LBRACE) {
+		return nil, false
+	}
+	names := []*ast.EffectName{}
+	for !p.peekTokenIs(token.RBRACE) {
+		if !p.expectPeek(token.IDENT) {
+			return nil, false
+		}
+		effect := &ast.EffectName{Token: p.currentToken, Namespace: p.currentToken.Literal}
+		if !p.expectPeek(token.DOT) {
+			return nil, false
+		}
+		if !p.expectPeek(token.IDENT) {
+			return nil, false
+		}
+		effect.Name = p.currentToken.Literal
+		names = append(names, effect)
+		if p.peekTokenIs(token.COMMA) {
+			p.nextToken()
+		} else if !p.peekTokenIs(token.RBRACE) {
+			p.peekError(token.RBRACE)
+			return nil, false
+		}
+	}
+	p.nextToken() // '}'
+	return names, true
+}
+
+// parseFunctionTypeRow reads an optional effect row after a function type's
+// return type (docs/spec/60-effects-allocation.md section 2a): `effects {
+// A.B, ... }`, contextual, at most once. The row binds to the innermost
+// function type; a function statement returning a function type and
+// declaring its own clause parenthesizes the return type.
+func (p *Parser) parseFunctionTypeRow(ft *ast.FunctionTypeExpression) ast.Expression {
+	if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "effects" {
+		p.nextToken()
+		names, ok := p.parseEffectNameList()
+		if !ok {
+			return nil
+		}
+		ft.Effects, ft.EffectsDeclared = names, true
+	}
+	return ft
+}
+
 // Contract: Assumes currentToken is at the first token of the type,
 // leaves currentToken at the last token of the type (does NOT advance beyond it).
 func (p *Parser) parseTypePrimary() ast.Expression {
@@ -2157,7 +2265,7 @@ func (p *Parser) parseTypePrimary() ast.Expression {
 				if returnType == nil {
 					return nil
 				}
-				return &ast.FunctionTypeExpression{Token: openToken, Return: returnType}
+				return p.parseFunctionTypeRow(&ast.FunctionTypeExpression{Token: openToken, Return: returnType})
 			}
 			// Unit type: ()
 			return &ast.Identifier{
@@ -2191,7 +2299,7 @@ func (p *Parser) parseTypePrimary() ast.Expression {
 			if returnType == nil {
 				return nil
 			}
-			return &ast.FunctionTypeExpression{Token: openToken, Parameters: parameters, Return: returnType}
+			return p.parseFunctionTypeRow(&ast.FunctionTypeExpression{Token: openToken, Parameters: parameters, Return: returnType})
 		}
 		if len(parameters) > 1 {
 			p.addErrorAtCurrentToken("a parenthesized type list must be a function type: (T1, T2) -> R")
@@ -4478,23 +4586,34 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 			p.addErrorAtCurrentToken(fmt.Sprintf("a function declares one %s clause", keyword))
 			return nil
 		}
+		names, ok := p.parseEffectNameList()
+		if !ok {
+			return nil
+		}
+		if keyword == "effects" {
+			stmt.Effects, stmt.EffectsDeclared = names, true
+		} else {
+			stmt.Forbids = names
+		}
+	}
+
+	// Operator laws (docs/spec/10-syntax.md section 14a): `laws { associative,
+	// commutative }`, contextual like the effect clauses, at most once.
+	if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "laws" {
+		p.nextToken()
+		if stmt.Laws != nil {
+			p.addErrorAtCurrentToken("a function declares one laws clause")
+			return nil
+		}
 		if !p.expectPeek(token.LBRACE) {
 			return nil
 		}
-		names := []*ast.EffectName{}
+		stmt.Laws = []string{}
 		for !p.peekTokenIs(token.RBRACE) {
 			if !p.expectPeek(token.IDENT) {
 				return nil
 			}
-			effect := &ast.EffectName{Token: p.currentToken, Namespace: p.currentToken.Literal}
-			if !p.expectPeek(token.DOT) {
-				return nil
-			}
-			if !p.expectPeek(token.IDENT) {
-				return nil
-			}
-			effect.Name = p.currentToken.Literal
-			names = append(names, effect)
+			stmt.Laws = append(stmt.Laws, p.currentToken.Literal)
 			if p.peekTokenIs(token.COMMA) {
 				p.nextToken()
 			} else if !p.peekTokenIs(token.RBRACE) {
@@ -4503,10 +4622,9 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 			}
 		}
 		p.nextToken() // '}'
-		if keyword == "effects" {
-			stmt.Effects, stmt.EffectsDeclared = names, true
-		} else {
-			stmt.Forbids = names
+		if len(stmt.Laws) == 0 {
+			p.addErrorAtCurrentToken("a laws clause names at least one law (associative, commutative)")
+			return nil
 		}
 	}
 
