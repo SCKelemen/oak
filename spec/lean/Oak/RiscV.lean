@@ -328,3 +328,67 @@ def fmvXD (f : BitVec 64) : X := f
 theorem fmv_round_trip (x : X) : fmvXD (fmvDX x) = x := rfl
 
 end Oak.RiscV
+
+/-! ## The vector configuration as checker state (`94-assembler.md` §9, RVV 1.0 §6.3)
+
+`vsetvli rd, rs1, vtype` chooses the vector length `vl` for the application
+vector length `avl` in `rs1` under the hardware maximum `vlmax`: `avl` when
+it fits, otherwise any `vl` with `ceil(avl/2) ≤ vl ≤ vlmax` (the
+implementation's choice; QEMU and Sail take `vlmax`). What every choice
+satisfies — and all the checker relies on — is `vl ≤ avl`, `vl ≤ vlmax`,
+and progress: `vl > 0` when `avl > 0`. A strip-mining loop hands
+`len - idx` to vsetvli under the guard `idx < len` and loads `vl` elements
+at `&v[idx]`: the access lies within the span, and the loop advances. -/
+
+namespace Oak.RiscV
+
+/-- The constraint every legal vsetvl choice satisfies (RVV 1.0 §6.3). -/
+def vsetvlOK (avl vlmax vl : Nat) : Prop :=
+  vl ≤ avl ∧ vl ≤ vlmax ∧ (avl ≤ vlmax → vl = avl) ∧ (0 < avl → 0 < vl)
+
+/-- QEMU's and Sail's choice, `min avl vlmax`, is a legal one. -/
+theorem vsetvl_min_ok (avl vlmax : Nat) (h : 0 < vlmax) : vsetvlOK avl vlmax (min avl vlmax) := by
+  refine ⟨Nat.min_le_left _ _, Nat.min_le_right _ _, fun hle => Nat.min_eq_left hle, fun hpos => ?_⟩
+  omega
+
+/-- The strip-mining access: `vl` elements at index `idx`, with `vl` chosen
+    for the remaining count `len - idx`, stay within `len`. -/
+theorem strip_access_in_bounds (len idx vlmax vl : Nat) (hguard : idx < len)
+    (hv : vsetvlOK (len - idx) vlmax vl) : idx + vl ≤ len := by
+  have hle : vl ≤ len - idx := hv.1
+  omega
+
+/-- The loop advances: under the guard the remaining count is positive, so
+    `vl` is, and `idx + vl > idx`. -/
+theorem strip_progress (len idx vlmax vl : Nat) (hguard : idx < len)
+    (hv : vsetvlOK (len - idx) vlmax vl) : idx < idx + vl := by
+  have hpos : 0 < vl := hv.2.2.2 (by omega)
+  omega
+
+/-- An immediate AVL within a proven minimum length keeps the access from the
+    span's base within the span (`bltu len, K` then `vsetivli rd, k`, k ≤ K). -/
+theorem immediate_access_in_bounds (len minLen k vlmax vl : Nat) (hmin : minLen ≤ len)
+    (hk : k ≤ minLen) (hv : vsetvlOK k vlmax vl) : vl ≤ len := by
+  have := hv.1
+  omega
+
+/-- The vtype immediate (RVV 1.0 §3.4): vlmul in bits 2:0, vsew in bits 5:3,
+    vta bit 6, vma bit 7. -/
+def vtype (vsew vlmul : Nat) (ta ma : Bool) : Nat :=
+  vlmul + vsew * 8 + (if ta then 64 else 0) + (if ma then 128 else 0)
+
+/-- `e32, m1, ta, ma` is 0xd0 — the field GNU as places in `vsetvli t0, a1, e32, m1, ta, ma`
+    (`0d05f2d7`, bits 30:20). -/
+theorem vtype_e32_m1_ta_ma : vtype 2 0 true true = 0xd0 := by decide
+
+/-- `e8, m1, tu, mu` is 0. -/
+theorem vtype_e8_m1_tu_mu : vtype 0 0 false false = 0 := by decide
+
+/-- The vtype fits its 8 significant bits, so an 11-bit (vsetvli) or 10-bit
+    (vsetivli) field carries it with the reserved bits zero. -/
+theorem vtype_lt (vsew vlmul : Nat) (ta ma : Bool) (hs : vsew < 8) (hl : vlmul < 8) :
+    vtype vsew vlmul ta ma < 256 := by
+  unfold vtype
+  split <;> split <;> omega
+
+end Oak.RiscV

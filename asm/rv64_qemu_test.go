@@ -40,6 +40,10 @@ type rv64Oracle struct {
 	// IEEE-754 semantics, round to nearest even) given by expect.
 	float  bool
 	expect func(a, b float64) float64
+	// spanExpect, for a span unit the verifier declines (a vector unit is
+	// checked and trusted), computes the expected result in Go over the
+	// harness's element values and the scalar parameter.
+	spanExpect func(elems []uint64, k uint64) uint64
 }
 
 // rv64Machine is one execution oracle: how the bare-metal harness writes a
@@ -60,12 +64,12 @@ var rv64QEMU = rv64Machine{
 	name:       "qemu-system-riscv64",
 	putc:       "*(volatile unsigned char *)0x10000000 = c;",
 	exit:       "*(volatile unsigned int *)0x100000 = 0x5555; /* sifive_test: exit 0 */",
-	start:      ".section .text.init\n.globl _start\n_start:\n  li t0, 0x6000\n  csrs mstatus, t0\n  la sp, _stack_top\n  call cmain\n1: j 1b\n",
+	start:      ".section .text.init\n.globl _start\n_start:\n  li t0, 0x6600\n  csrs mstatus, t0\n  la sp, _stack_top\n  call cmain\n1: j 1b\n",
 	linkScript: "ENTRY(_start)\nSECTIONS {\n  . = 0x80000000;\n  .text : { *(.text.init) *(.text*) }\n  .rodata : { *(.rodata*) *(.srodata*) }\n  .data : { *(.data*) *(.sdata*) }\n  .bss : { *(.bss*) *(.sbss*) }\n  . = ALIGN(16);\n  . += 0x10000;\n  _stack_top = .;\n}\n",
 	run: func(t *testing.T, image string) string {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "qemu-system-riscv64", "-machine", "virt", "-bios", "none", "-nographic", "-monitor", "none", "-kernel", image)
+		cmd := exec.CommandContext(ctx, "qemu-system-riscv64", "-machine", "virt", "-cpu", "rv64,v=true,vlen=128", "-bios", "none", "-nographic", "-monitor", "none", "-kernel", image)
 		var out bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &out
 		if err := cmd.Run(); err != nil {
@@ -237,6 +241,16 @@ loop:
 done:
   mv a0, t3
   ret`})
+	// The vector unit (docs/spec/94-assembler.md §9): the strip-mined sum
+	// the checker proves in bounds, expected from Go's wrapping u32 sum.
+	oracles = append(oracles, rv64Oracle{decl: rv64VStripDecl, cType: "unsigned int", width: 32, span: "v", inputs: [][2]uint64{{0, 7}, {1, 0}, {3, 5}, {4, 1}, {5, 9}, {8, 1}, {13, 0xffffffff}, {16, 2}},
+		spanExpect: func(elems []uint64, k uint64) uint64 {
+			total := uint32(k)
+			for _, e := range elems {
+				total += uint32(e)
+			}
+			return uint64(total)
+		}, body: rv64VStripBody})
 	var functions []*Function
 	var harness strings.Builder
 	harness.WriteString("typedef struct { const unsigned int *base; unsigned int len; } view_u32;\n")
@@ -247,6 +261,7 @@ done:
 	harness.WriteString("static void putc_(char c) { " + machine.putc + " }\n")
 	harness.WriteString("static void puthex(u64 v) { for (int i = 60; i >= 0; i -= 4) putc_(\"0123456789abcdef\"[(v >> i) & 15]); putc_('\\n'); }\n")
 	var expected []string
+	spanArrays := map[string]bool{} // one element array per span name
 	for _, oracle := range oracles {
 		fn, errs := rv64Unit(t, oracle.decl, oracle.body)
 		if len(errs) != 0 {
@@ -270,12 +285,23 @@ done:
 		if oracle.span != "" {
 			fmt.Fprintf(&harness, "extern %s %s(view_u32, %s);\n", oracle.cType, fn.Name, oracle.cType)
 			// The array holds the verifier's fixed memory for this span.
-			fmt.Fprintf(&harness, "static const unsigned int %s_elems[16] = {", oracle.span)
-			for k := 0; k < 16; k++ {
-				fmt.Fprintf(&harness, "%du,", elementValue(oracle.span, uint64(k), 32))
+			if !spanArrays[oracle.span] {
+				spanArrays[oracle.span] = true
+				fmt.Fprintf(&harness, "static const unsigned int %s_elems[16] = {", oracle.span)
+				for k := 0; k < 16; k++ {
+					fmt.Fprintf(&harness, "%du,", elementValue(oracle.span, uint64(k), 32))
+				}
+				harness.WriteString("};\n")
 			}
-			harness.WriteString("};\n")
 			for _, in := range oracle.inputs {
+				if oracle.spanExpect != nil {
+					elems := make([]uint64, in[0])
+					for k := range elems {
+						elems[k] = elementValue(oracle.span, uint64(k), 32)
+					}
+					expected = append(expected, fmt.Sprintf("%016x", oracle.spanExpect(elems, in[1]&mask(oracle.width))&mask(oracle.width)))
+					continue
+				}
 				env := map[string]uint64{spanLenName(oracle.span): in[0], "k": in[1] & mask(oracle.width)}
 				result, _, reason, ok := executeBody(fn, sig, env)
 				if !ok {
@@ -368,8 +394,8 @@ done:
 		for _, in := range oracle.inputs {
 			if got[index] != expected[index] {
 				side := "verifier"
-				if oracle.float {
-					side = "IEEE-754 (Go)"
+				if oracle.float || oracle.spanExpect != nil {
+					side = "Go"
 				}
 				t.Errorf("%s: %s(%#x, %#x): machine %s, %s %s", machine.name, strings.SplitN(oracle.decl, ":", 2)[0], in[0]&mask(oracle.width), in[1]&mask(oracle.width), got[index], side, expected[index])
 			}

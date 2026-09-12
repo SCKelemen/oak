@@ -108,6 +108,11 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 			return "a floating-point instruction (" + instr.Mnemonic + ")", false
 		}
 	}
+	if rv64VectorShapes[instr.Mnemonic] != "" {
+		// The vector state (vl, vtype, the register file) is outside the
+		// term language: a vector unit is checked and trusted.
+		return "a vector instruction (" + instr.Mnemonic + ")", false
+	}
 	if instr.Mnemonic == "li" {
 		// One constant, however many words the encoder spends on it.
 		state.write(instr.Operands[0].(Register), constTerm(uint64(instr.Operands[1].(Immediate).Value), 64))
