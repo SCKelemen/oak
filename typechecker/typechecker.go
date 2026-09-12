@@ -3823,6 +3823,10 @@ func (tc *TypeChecker) checkIndexExpression(expr *ast.IndexExpression) Type {
 			tc.addError(expr.Index, "array index must be numeric type, got %s", indexType)
 			return nil
 		}
+		// An index of a refined type is below the refinement's bound
+		// wherever it came from — a call, a field, a binding
+		// (typechecker/refinements.go).
+		tc.recordRefinedIndexProof(expr, arrayType, indexType)
 		// Index should ideally be unsigned, but we allow any numeric for now
 		// In the future, we could require u32 specifically for array indices
 		return arrayType.ElementType

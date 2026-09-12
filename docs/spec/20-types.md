@@ -814,8 +814,11 @@ folded away (a literal argument) or discharged by a theorem
 Representation: the base's. The backend emits `typedef` of the base and one
 guard function per refinement (`oak_refine_Name`); the interpreter binds the
 name to the assertion; the prover enumerates a refined parameter as the
-base values the construction accepts. The Lean extraction does not yet
-state constructions and fails closed on them.
+base values the construction accepts. The Lean extraction types a
+refinement as its base, states a construction as the value guarded by its
+predicate (`none`, the trap, otherwise), and gives a theorem over a
+refined parameter the predicate as a hypothesis (`125-verification.md`
+§5).
 
 Static discharge: when the predicate is `value < K` or `value <= K` with a
 literal `K` and the facts in scope prove the argument below the bound — a
@@ -827,8 +830,16 @@ conversion with no guard. Conversely an index that is a construction
 guard trapped otherwise. So `TABLE[Slot(i)]` under `i < 8` costs nothing at
 all, and `TABLE[Slot(n)]` for an arbitrary `n` costs the one guard.
 
+A refined return type is a postcondition: `low: (x: u16): Slot =
+Slot(x & u16(7))` must construct (returning the bare `u16` is refused), and
+a caller may index through the call directly — `TABLE[low(x)]` is proven,
+because any expression of a refined type is below the bound.
+
+`oak vet` reports the count of constructions discharged statically and
+guarded at run time, so the checks a program still pays are never hidden.
+
 Not yet: refinements over records and floats, generic refinements
-(`IrqId[N]: type = u16 where value < N`), refined return types as
-postconditions, and predicates beyond a literal bound in the discharge.
-Each stays a runtime check until then, never a silent one.
+(`IrqId[N]: type = u16 where value < N`), and predicates beyond a literal
+bound in the discharge. Each stays a runtime check until then, never a
+silent one.
 

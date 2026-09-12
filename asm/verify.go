@@ -542,6 +542,7 @@ func (f *linearForm) equal(g *linearForm) bool {
 // --- symbolic execution of the asm body ------------------------------------
 
 type symbolicState struct {
+	arch  string        // the lane: ArchArm64 or ArchRV64 (callee-saved numbering)
 	regs  map[int]*term // physical register -> 64-bit term
 	flags *flagsFact    // NZCV as the operands that produced them; nil until set
 	// The frame: sp's displacement below its entry value (the seam checker
@@ -576,7 +577,7 @@ func (s *symbolicState) read(reg Register) (*term, bool) {
 		return constTerm(0, widthOf(reg.Class)), true
 	}
 	value, ok := s.regs[reg.Num]
-	if !ok && calleeSavedRegister(reg.Num) {
+	if !ok && ((s.arch == ArchRV64 && rv64Preserved(reg.Num)) || (s.arch != ArchRV64 && calleeSavedRegister(reg.Num))) {
 		// A callee-saved register carries the caller's value on entry: an
 		// opaque symbol, which a save/restore pair round-trips unchanged.
 		value = paramTerm(fmt.Sprintf("entry.x%d", reg.Num), 64)
@@ -652,13 +653,30 @@ var verifiableOps = map[string]string{"add": "add", "sub": "sub", "adds": "add",
 // term, "", true) or ("", reason, false) when the body is outside the
 // verified subset.
 func executeBody(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64) (*term, *pathExecutor, string, bool) {
-	state := &symbolicState{regs: map[int]*term{}}
+	state := &symbolicState{arch: fn.Arch, regs: map[int]*term{}}
 	params := map[string]RegClass{}
 	spans := map[string]int64{} // span/view parameter -> element size in bytes
 	declared := map[string]int{}
 	composites := map[string]compositeArg{}
 	boolParams := map[string]bool{}
+	// input is a parameter's entry term: symbolic, or the witness value in
+	// a concrete run (which is what lets a data-dependent loop unroll).
+	input := func(name string, width int) *term {
+		if value, isConcrete := concrete[name]; isConcrete {
+			return constTerm(value, width)
+		}
+		return paramTerm(name, width)
+	}
+	if fn.Arch == ArchRV64 {
+		// The RV64 lane binds under the LP64 psABI (asm/rv64_verify.go).
+		if reason, ok := bindRV64Params(fn, sig, state, input, spans, declared); !ok {
+			return nil, nil, reason, false
+		}
+	}
 	for _, param := range sig.Parameters {
+		if fn.Arch == ArchRV64 {
+			break
+		}
 		if comp, isComposite := fn.Composites[typeText(param.Type)]; isComposite && len(comp.Fields) > 0 {
 			// A record or tagged union: its scalar leaves are the parameters
 			// (p.f, p.a.x, p.buf[2], p.tag, p.Circle); it arrives as x-register
@@ -696,15 +714,10 @@ func executeBody(fn *Function, sig *ast.FunctionStatement, concrete map[string]u
 			declared[upperBitsName(param.Name.Value)] = 32 - bits
 		}
 	}
-	// input is a parameter's entry term: symbolic, or the witness value in
-	// a concrete run (which is what lets a data-dependent loop unroll).
-	input := func(name string, width int) *term {
-		if value, isConcrete := concrete[name]; isConcrete {
-			return constTerm(value, width)
-		}
-		return paramTerm(name, width)
-	}
 	for _, binding := range fn.Bindings {
+		if fn.Arch == ArchRV64 {
+			break
+		}
 		if cp, isComposite := composites[binding.Param]; isComposite {
 			if cp.size > 16 {
 				// By reference: loads through the base at a leaf's exact
@@ -766,7 +779,11 @@ func executeBody(fn *Function, sig *ast.FunctionStatement, concrete map[string]u
 			return nil, nil, "alignment directives", false
 		}
 	}
-	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass, spans: spans, declared: declared, concrete: concrete != nil, env: concrete, records: composites}
+	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass, spans: spans, declared: declared, concrete: concrete != nil, env: concrete, records: composites, arch: fn.Arch}
+	exec.resultReg = Register{Class: resultClass, Num: 0}
+	if fn.Arch == ArchRV64 {
+		exec.resultReg = rv64ResultRegister
+	}
 	exec.loopExits = findLoops(fn.Items, labels)
 	result, reason, ok := exec.run(0, state)
 	return result, exec, reason, ok
@@ -800,6 +817,8 @@ const (
 type pathExecutor struct {
 	items       []Item
 	labels      map[string]int
+	arch        string   // the lane
+	resultReg   Register // the register ret delivers: w0/x0, or a0 on rv64
 	resultClass RegClass
 	spans       map[string]int64 // span parameter -> element size in bytes
 	declared    map[string]int   // parameter -> declared width
@@ -956,7 +975,7 @@ func (s *symbolicState) clone() *symbolicState {
 	for addr, slot := range s.frame {
 		frame[addr] = slot
 	}
-	return &symbolicState{regs: regs, flags: s.flags, disp: s.disp, frame: frame}
+	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame}
 }
 
 // frameAccess executes a load or store through the sp frame: the address
@@ -1203,9 +1222,13 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 		}
 		switch instr.Mnemonic {
 		case "ret":
-			result, ok := state.read(Register{Class: x.resultClass, Num: 0})
+			result, ok := state.read(x.resultReg)
 			if !ok {
 				return nil, "result register never written", false
+			}
+			if x.arch == ArchRV64 {
+				// a0 holds the widened result; the contract width reads it.
+				result = truncate(result, widthOf(x.resultClass))
 			}
 			return result, "", true
 		case "brk":
@@ -1214,14 +1237,14 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 			// overflowing shift, a failed assert), so the path is outside
 			// the equivalence and drops from the fork it came from.
 			return trapPath, "", true
-		case "b":
+		case "b", "j":
 			target, ok := x.labels[instr.Operands[0].(Symbol).Name]
 			if !ok {
 				return nil, "a branch to an unknown label", false
 			}
 			pc = target - 1 // backward: a loop, bounded by the budgets
 			continue
-		case "b.", "cbz", "cbnz", "tbz", "tbnz":
+		case "b.", "cbz", "cbnz", "tbz", "tbnz", "beq", "bne", "blt", "bge", "bltu", "bgeu", "beqz", "bnez", "bgez", "bltz", "blez", "bgtz":
 			cond, reason, ok := branchCondition(instr, state)
 			if !ok {
 				return nil, reason, false
@@ -1264,6 +1287,12 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 				return taken, "", true
 			}
 			return iteTerm(cond, taken, fallThrough), "", true
+		}
+		if x.arch == ArchRV64 {
+			if reason, ok := x.stepRV64(instr, state); !ok {
+				return nil, reason, false
+			}
+			continue
 		}
 		if isFrameMemory(instr) {
 			if reason, ok := x.frameAccess(instr, state); !ok {
@@ -1683,6 +1712,9 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 // reads the flags; cbz/cbnz compare a register with zero; tbz/tbnz test one
 // bit (Oak.AssemblerSemantics.cbz, tbz).
 func branchCondition(instr Instruction, state *symbolicState) (*term, string, bool) {
+	if rv64ConditionalBranches[instr.Mnemonic] {
+		return rv64BranchCondition(instr, state)
+	}
 	switch instr.Mnemonic {
 	case "b.":
 		if state.flags == nil || state.flags.unknown {
@@ -2907,7 +2939,13 @@ func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.Invoc
 		lo.inlining = map[string]bool{}
 	}
 	lo.inlining[name] = true
-	result, reason, ok := lo.lower(callee.Body, resultWidth)
+	// A tail-recursive callee is the loop it compiles to
+	// (docs/spec/85-discipline.md), over its parameters as locals.
+	body := callee.Body
+	if loop, isTail := tailRecursionAsLoop(callee, body); isTail {
+		body = loop
+	}
+	result, reason, ok := lo.lower(body, resultWidth)
 	delete(lo.inlining, name)
 	lo.locals = saved
 	if !ok {

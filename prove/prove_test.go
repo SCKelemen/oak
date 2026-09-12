@@ -154,6 +154,7 @@ double: (x: u32): u32 = x + x
 rotl: (x: u32, n: u32): u32 = (x << (n & u32(31))) | (x >> ((u32(32) - n) & u32(31)))
 rotr: (x: u32, n: u32): u32 = (x >> (n & u32(31))) | (x << ((u32(32) - n) & u32(31)))
 loops_forever: (x: u32): u32 = x == u32(0) ? u32(0) | loops_forever(x - u32(1))
+count8: (i: u32, acc: u32): u32 = i == u32(8) ? acc | count8(i + u32(1), acc + u32(2))
 
 shift_is_double: theorem (x: u32) { x << u32(1) == x + x }
 mask_bound: theorem (x: u64, m: u64) { (x & m) <= m }
@@ -164,6 +165,7 @@ calls: theorem (x: u32) { double(x) == x * u32(2) }
 rotations: theorem (x: u32, n: u32) { rotr(rotl(x, n), n) == x }
 unmasked: theorem (x: u32, n: u32) { (x << n) >> n <= x }
 recursion: theorem (x: u32) { loops_forever(x) == u32(0) }
+tail_counted: theorem (x: u32) { count8(u32(0), x) == x + u32(16) }
 counted: theorem (x: u32) {
   acc: u32 = 0
   i: u32 = 0
@@ -181,7 +183,7 @@ main: (): i32 = 0
 	}
 	want := map[string]Status{
 		"shift_is_double": Decided, "mask_bound": Decided, "xor_cancel": Decided, "overflow": Refuted,
-		"signed_wrap": Decided, "calls": Decided, "counted": Decided, "rotations": Decided, "recursion": Open, "unmasked": Refuted,
+		"signed_wrap": Decided, "calls": Decided, "counted": Decided, "rotations": Decided, "recursion": Open, "unmasked": Refuted, "tail_counted": Decided,
 	}
 	for _, r := range results {
 		if r.Status != want[r.Name] {

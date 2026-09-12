@@ -1319,19 +1319,77 @@ its Oak fallback (`TestE2EExampleSMEPackage`). Not modeled, reported by the
 audit: strided multi-vector lists, `psel`, `movt` to `zt0[…]`, and the SME
 features beyond the M4's.
 
-**RISC-V and RVV (planned lane).** The second architecture, RV64GC first
-(user-level integer and FP — the profile a hypervisor or firmware needs),
-then the V extension. The plan mirrors this chapter with a better
-specification situation: the instruction list comes from riscv-opcodes
-(redistributable, so the table is generated and committed, not only
-audited); the semantics come from riscv/sail-riscv, the ratified golden
-model, which already targets Lean — the bridge of §8 applies to the whole
-model rather than to a transliterated fragment; the differential oracle is
-the Sail C emulator (no RISC-V silicon on the host). What is new: no flags
-(the checker's dataflow rule becomes a comparison-branch rule), the RISC-V
-calling convention as a second binding profile, compressed encodings, and
-for RVV the vector-length and type registers (`vsetvli`) as checker state.
-The term language and the BDD blaster carry over unchanged.
+**RISC-V: the RV64 lane (first increment landed).** The second
+architecture, RV64IM first (the base integer set with multiplication,
+control transfer, loads and stores — what a hypervisor's or a database
+engine's hot integer paths need), then the F/D and V extensions. A unit
+names the lane in its path (`name.rv64.oakasm`) or with an `arch rv64`
+directive before its bindings; every phase dispatches on it
+(`Function.Arch`). The specification situation is better than Arm's: the
+instruction list comes from riscv-opcodes (redistributable, so the table
+`asm/rv64_encodings_gen.go` is *generated and committed* by
+`asm/internal/riscvgen`, recording the upstream commit); the semantics
+have riscv/sail-riscv as the ratified golden model, which already targets
+Lean. What is new against the AArch64 lane, and how it landed:
+
+- *The contract* is the LP64 psABI (`asm/rv64_check.go`): integer
+  parameters in `a0`–`a7` in declaration order, a span or view as the
+  `a_i`/`a_{i+1}` pair, the result in `a0`; `sp` is x2 and parses as the
+  frame register so the frame machinery is shared. The psABI widens a
+  narrow integer by its own sign to 32 bits and then sign-extends — so a
+  `u32` arrives sign-extended and the verifier binds it so
+  (`Oak.RiscV.widen`), unlike AAPCS64's unspecified upper half.
+- *No flags*: the checker's flags dataflow rule becomes the
+  comparison-branch rule — a conditional branch reads two registers, so it
+  needs them readable and nothing else. In the verifier the branch is the
+  same comparison term (`cmpTerm`) the AArch64 flags produced;
+  `Oak.RiscV.Br.holds_eq_condHolds` proves each branch holds exactly when
+  the condition code the verifier assigns to it (`beq`↔`eq`, `bne`↔`ne`,
+  `blt`↔`lt`, `bge`↔`ge`, `bltu`↔`lo`, `bgeu`↔`hs`) holds on the flags of
+  the same subtraction, so the shared term has one meaning across lanes.
+- *The link register* `ra` and the callee-saved `s0`–`s11` carry the
+  AArch64 lane's obligation: save to the frame (`sd reg, imm(sp)`) before
+  a write, restore from the same entry-relative slot before `ret`; a call
+  (`call sym`, `jal ra`, `jalr ra`) requires `ra` saved first and forgets
+  the caller-saved `a1`–`a7`, `t0`–`t6` (`a0` carries the callee's
+  result). `ra` and `s*` cannot be clobbers. The frame moves only by
+  `addi sp, sp, ±imm` in multiples of 16 within the declaration, and every
+  `imm(sp)` access is inside `[-frame, 0)` and aligned. Memory through any
+  other base is outside this increment and refused (fail closed; the span
+  element rule follows).
+- *The W-forms* (`addw`, `subw`, `sllw`, `srlw`, `sraw`, `mulw`, `addiw`,
+  …) compute at 32 bits and sign-extend (`Oak.RiscV.addw_eq`); `slt`/`sltu`
+  are comparison terms; division and remainder carry RISC-V's total
+  semantics (a zero divisor gives all ones and the dividend, the signed
+  overflow the dividend and 0 — `Oak.RiscV.div_zero` and its kin,
+  `rv64Divide` in Go); `auipc` and calls are outside the verified subset
+  (checked, trusted). The pseudo-instructions `mv li not neg negw sext.w
+  j jr ret nop beqz bnez bgez bltz blez bgtz call` are the assembler's
+  spellings of base encodings (`li` up to 32 bits as `lui`+`addiw`,
+  `call` as `auipc`+`jalr` under one `R_RISCV_CALL_PLT`).
+- *The encoder* (`asm/rv64_encode.go`) places the fields by name from the
+  generated table (the permuted `jimm20`, `bimm12hi/lo`, `imm12hi/lo`
+  forms); the ELF writer emits `EM_RISCV` objects (e_flags 0: LP64
+  soft-float, no RVC) that link with `riscv64-elf-gcc -march=rv64im
+  -mabi=lp64`; the C emitter guards the unit with `defined(__riscv) &&
+  (__riscv_xlen == 64)` in GNU syntax and fails closed elsewhere.
+- *The oracles*: `TestRV64EncoderAgreesWithGNUAs` encodes every mnemonic
+  of the lane and compares words with `riscv64-elf-as`;
+  `TestRV64QEMUDifferential` links four units into a bare-metal image and
+  runs them under `qemu-system-riscv64 -machine virt` on edge and random
+  inputs, comparing the machine's results with the verifier's concrete
+  execution of the same units — the silicon-differential shape of the
+  AArch64 lane with the emulator as the machine (no RISC-V silicon on the
+  host). Both skip without the tools.
+
+Still to come in this lane: the span element memory rule (loads and stores
+through a bound base under a length guard), F/D under the LP64D contract,
+compressed encodings (RVC changes the label arithmetic), the RVWMO
+instantiation of `MemoryOrder.lean`, the sail-riscv bridge (the Sail C
+emulator as a second oracle, the Lean export as the semantics the
+transliteration is checked against), and for RVV the vector-length and
+type registers (`vsetvli`) as checker state. The term language and the BDD
+blaster carry over unchanged.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed

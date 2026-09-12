@@ -1180,7 +1180,8 @@ through `NSValue`) as the acceptance case.
 ### 3.1 Shape
 
 Each architecture is a compiler-known library of **instruction functions**
-(`arm64` today; `x64`, `rv64` reserved). An instruction function:
+(`arm64` today; `x64`, `rv64` reserved — the `rv64` *assembler* lane of
+`94-assembler.md` §9 is landed, its instruction-function library is not). An instruction function:
 
 - has an ordinary Oak type over fixed-width Oak integers — no `c.*` types,
   no pointers, no flags registers;

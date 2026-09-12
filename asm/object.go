@@ -34,6 +34,7 @@ type EncodedFunction struct {
 	Bytes  []byte
 	Relocs []Relocation // Symbol fields already carry C symbol names
 	Align  int64        // entry alignment in bytes (0 = 4)
+	Arch   string       // the lane; every function of an object shares it
 }
 
 // EncodeFunctions encodes checked functions for an object; symbolFor maps
@@ -49,7 +50,7 @@ func EncodeFunctions(functions []*Function, symbolFor func(string) string) ([]En
 		for i := range relocs {
 			relocs[i].Symbol = symbolFor(relocs[i].Symbol)
 		}
-		out = append(out, EncodedFunction{Symbol: symbolFor(fn.Name), Bytes: code, Relocs: relocs, Align: fn.Align})
+		out = append(out, EncodedFunction{Symbol: symbolFor(fn.Name), Bytes: code, Relocs: relocs, Align: fn.Align, Arch: fn.Arch})
 	}
 	return out, nil
 }
@@ -63,6 +64,9 @@ func WriteObject(format ObjectFormat, functions []EncodedFunction) ([]byte, erro
 	}
 	switch format {
 	case MachO:
+		if layout.arch == ArchRV64 {
+			return nil, fmt.Errorf("object: rv64 units are written as ELF (EM_RISCV), not Mach-O")
+		}
 		return writeMachO(layout)
 	case ELF:
 		return writeELF(layout)
@@ -72,6 +76,7 @@ func WriteObject(format ObjectFormat, functions []EncodedFunction) ([]byte, erro
 
 // textLayout is the text section with symbol offsets and relocations.
 type textLayout struct {
+	arch      string // ArchArm64 or ArchRV64
 	text      []byte
 	align     int64 // section alignment in bytes
 	defined   []definedSymbol
@@ -92,12 +97,21 @@ type placedReloc struct {
 }
 
 func layOut(functions []EncodedFunction) (*textLayout, error) {
-	l := &textLayout{align: 4}
+	l := &textLayout{align: 4, arch: ArchArm64}
 	defined := map[string]bool{}
 	referenced := map[string]bool{}
-	for _, fn := range functions {
+	for i, fn := range functions {
 		if fn.Symbol == "" {
 			return nil, fmt.Errorf("object: a function without a symbol")
+		}
+		arch := fn.Arch
+		if arch == "" {
+			arch = ArchArm64
+		}
+		if i == 0 {
+			l.arch = arch
+		} else if arch != l.arch {
+			return nil, fmt.Errorf("object: function %s is %s, but the object is %s (one lane per object)", fn.Symbol, arch, l.arch)
 		}
 		if defined[fn.Symbol] {
 			return nil, fmt.Errorf("object: symbol %s defined twice", fn.Symbol)
@@ -364,8 +378,13 @@ func writeELF(l *textLayout) ([]byte, error) {
 			typ = 274 // R_AARCH64_ADR_PREL_LO21
 		case "adrp21":
 			typ = 275 // R_AARCH64_ADR_PREL_PG_HI21
+		case "riscv_call_plt":
+			typ = 19 // R_RISCV_CALL_PLT: the auipc/jalr pair of `call`
 		default:
 			return nil, fmt.Errorf("object: relocation kind %q", r.kind)
+		}
+		if (l.arch == ArchRV64) != (r.kind == "riscv_call_plt") {
+			return nil, fmt.Errorf("object: relocation kind %q in an %s object", r.kind, l.arch)
 		}
 		relas = append(relas, rela{offset: uint64(r.offset), info: uint64(index[r.symbol])<<32 | typ})
 	}
@@ -394,8 +413,12 @@ func writeELF(l *textLayout) ([]byte, error) {
 	put64 := func(v uint64) { out = le.AppendUint64(out, v) }
 	// ELF header.
 	out = append(out, 0x7f, 'E', 'L', 'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-	put16(1)   // ET_REL
-	put16(183) // EM_AARCH64
+	put16(1) // ET_REL
+	if l.arch == ArchRV64 {
+		put16(243) // EM_RISCV; e_flags 0 below is the LP64 soft-float ABI without RVC
+	} else {
+		put16(183) // EM_AARCH64
+	}
 	put32(1)
 	put64(0) // entry
 	put64(0) // phoff

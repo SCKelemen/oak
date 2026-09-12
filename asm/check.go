@@ -30,6 +30,9 @@ import (
 //   - the result register written before every `ret`; no `ret` from a
 //     `never` function; no fall-through past the end.
 func Check(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool) []string {
+	if fn.Arch == ArchRV64 {
+		return checkRV64(fn, decl, symbols)
+	}
 	// Guard facts across labels are a dataflow fixpoint: each pass assumes
 	// a guard state at every label, records the meet of the states that
 	// actually arrive there (by fall-through and by every branch, forward

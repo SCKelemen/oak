@@ -46,6 +46,7 @@ proofs written against them transfer.
 | `c ? a \| b` (value) | `if c then a else b` |
 | `op ? \| 0 => a \| 1 => b \| _ => c` (integer constants) | `if op == 0 then a else if op == 1 then b else c`, in value and statement position; the last arm is the else |
 | `while c { body }` | `def f.loopN (reads...) : Nat → Option (writes...)` with `0 => none`, recursing on the fuel |
+| a function that calls itself | `def f (params) : Nat → Option R` with `\| 0 => none \| fuel + 1 => do ...`, the recursive call passing the fuel that remains; mutual recursion stays outside the subset |
 | `g(args)` | `let (r, spans...) ← g args fuel`, hoisted before the statement; the span owners are rebound — and such a rebinding inside a loop body or a conditional arm is a write of that loop or arm, so the owner is in the tuple the helper returns (oak #186) |
 | `s: [*]T = items[a:b]`, `s: [*]T = span(&buf)` (a writable window) | `let s := items.extract a b` plus `let s_lo : Nat := a`; after every statement that rebinds `s` (a store, a call), the window is written back — `let items := (items.extract 0 s_lo) ++ s ++ (items.extract (s_lo + s.size) items.size)`, or `let buf := s` for a whole span — transitively through nested windows, and the owner joins the enclosing write sets, because in Oak the window aliases the owner's storage |
 | `assert(c)` | `let () ← if c then pure () else none` |
