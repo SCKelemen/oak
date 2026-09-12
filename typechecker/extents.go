@@ -792,7 +792,7 @@ func (tc *TypeChecker) recordIndexProof(expr *ast.IndexExpression, arr *ArrayTyp
 		return
 	}
 	if tc.provenIndices == nil {
-		tc.provenIndices = make(map[string]bool)
+		tc.provenIndices = make(map[tokenKey]bool)
 	}
 	tc.provenIndices[positionKey(expr.Token)] = true
 }
@@ -1439,7 +1439,7 @@ func (tc *TypeChecker) recordVectorAccessProof(call *ast.InvocationExpression, m
 		return
 	}
 	if tc.provenIndices == nil {
-		tc.provenIndices = make(map[string]bool)
+		tc.provenIndices = make(map[tokenKey]bool)
 	}
 	tc.provenIndices[positionKey(call.Token)] = true
 }

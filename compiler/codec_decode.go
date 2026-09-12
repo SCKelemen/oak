@@ -401,6 +401,93 @@ func scalarDecode(s *synth, typ string, from ast.Expression, store func(ast.Expr
 	return nil
 }
 
+// arrayIndexPath is the structural-index fast path of a fixed array of
+// integers (docs/spec/71-codecs.md section 21), a statement that either
+// decodes every element and moves `at` past the closing bracket with
+// `index` at the length, or leaves everything for the sequential loop. The
+// index gives every element's extent, so each is parsed from its own bytes
+// by json_digits_at with no run count and no dependency on the element
+// before it. For other element types it is an empty statement.
+func arrayIndexPath(s *synth, field codecField, fieldOf func(string) ast.Expression, setStatus func(int64, ast.Expression) ast.Expression) ast.Statement {
+	primitive := codecPrimitive(field.typ)
+	if primitive != "u64" && primitive != "i64" {
+		// No index for other element types: the terminator reset the loop
+		// performs anyway stands in for the statement.
+		return s.assign("term", s.u32(0))
+	}
+	length := field.length
+	last := func() ast.Expression { return s.index(s.id("marks"), s.u32(length-1)) }
+	magnitude := func() ast.Expression { return s.field(s.id("raw"), "magnitude") }
+	store := func(value ast.Expression) ast.Statement {
+		return s.store(s.index(fieldOf(field.name), s.id("fi")), value)
+	}
+	fail := s.block(s.assign("fast", s.boolean(false)))
+	advance := func() []ast.Statement {
+		return []ast.Statement{s.assign("start", s.add(s.index(s.id("marks"), s.id("fi")), s.u32(1))), s.assign("fi", s.add(s.id("fi"), s.u32(1)))}
+	}
+	bits, _ := strconv.Atoi(field.typ[1:])
+	var checked ast.Expression
+	if primitive == "u64" {
+		maximum := ^uint64(0)
+		if bits < 64 {
+			maximum = (uint64(1) << bits) - 1
+		}
+		conversion := magnitude()
+		if bits < 64 {
+			conversion = s.call(field.typ+"_trunc_u64", magnitude())
+		}
+		// An unsigned element takes no sign: the sign byte is left to the
+		// sequential loop, which reports TypeMismatch.
+		checked = s.cond(s.or(s.id("negative"), s.gt(magnitude(), s.u64(maximum))), fail,
+			s.block(append([]ast.Statement{store(conversion)}, advance()...)...))
+	} else {
+		negativeMax := uint64(1) << (bits - 1)
+		conversion := ast.Expression(s.id("number"))
+		if bits < 64 {
+			conversion = s.call(field.typ+"_trunc_i64", s.id("number"))
+		}
+		checked = s.block(
+			s.decl("limit", s.id("u64"), s.cond(s.id("negative"), s.u64(negativeMax), s.u64(negativeMax-1))),
+			s.expr(s.cond(s.gt(magnitude(), s.id("limit")), fail,
+				s.block(append([]ast.Statement{
+					s.decl("number", s.id("i64"), s.i64(0)),
+					s.expr(s.cond(s.and(s.id("negative"), s.gt(magnitude(), s.u64(0))),
+						s.block(s.assign("number", s.sub(s.sub(s.i64(0), s.call("i64_bits_u64", s.sub(magnitude(), s.u64(1)))), s.i64(1)))),
+						s.block(s.assign("number", s.call("i64_bits_u64", magnitude())))))},
+					append([]ast.Statement{store(conversion)}, advance()...)...)...))))
+	}
+	// One element: its bytes run from `start` to the recorded separator.
+	// A space before the number is skipped; a sign is noted; a leading zero
+	// on more than one digit, a byte that is not a digit anywhere (a space
+	// before the separator included), or an unsupported length leaves the
+	// array to the sequential loop and its exact errors.
+	element := s.block(
+		s.decl("sep", s.id("u32"), s.index(s.id("marks"), s.id("fi"))),
+		s.expr(s.cond(s.and(s.lt(s.id("start"), srcLenExpr(s)), s.call("json_space", s.index(s.id("src"), s.id("start")))),
+			s.block(s.assign("start", s.call("json_skip_space", s.id("src"), s.id("start")))), nil)),
+		s.decl("negative", s.id("Bool"), s.and(s.lt(s.id("start"), s.id("sep")), s.eq(s.index(s.id("src"), s.id("start")), s.u8(45)))),
+		s.decl("digits_at", s.id("u32"), s.cond(s.id("negative"), s.add(s.id("start"), s.u32(1)), s.id("start"))),
+		s.expr(s.cond(s.or(s.ge(s.id("digits_at"), s.id("sep")),
+			s.and(s.gt(s.sub(s.id("sep"), s.id("digits_at")), s.u32(1)), s.eq(s.index(s.id("src"), s.id("digits_at")), s.u8(48)))),
+			fail,
+			s.block(
+				s.decl("raw", s.id("JsonIntegerScan"), s.call("json_digits_at", s.id("src"), s.id("digits_at"), s.sub(s.id("sep"), s.id("digits_at")))),
+				s.expr(s.cond(s.ne(s.field(s.id("raw"), "status"), s.u32(0)), fail, checked))))))
+	return s.block(
+		s.decl("marks", s.array(length, s.id("u32")), nil),
+		s.decl("found", s.id("u32"), s.call("json_array_index", s.id("src"), s.id("at"), s.call("span", s.addressOf("marks")))),
+		s.decl("fast", s.id("Bool"), s.and(s.eq(s.id("found"), s.u32(length)), s.lt(last(), srcLenExpr(s)), s.eq(s.index(s.id("src"), last()), s.u8(93)))),
+		s.expr(s.cond(s.id("fast"), s.block(
+			s.decl("start", s.id("u32"), s.id("at")),
+			s.decl("fi", s.id("u32"), s.intLit(0)),
+			s.loop(s.and(s.lt(s.id("fi"), s.u32(length)), s.id("fast")), element.Block.Statements...),
+			s.expr(s.cond(s.id("fast"), s.block(
+				s.assign("at", s.add(last(), s.u32(1))),
+				s.assign("index", s.u32(length))), nil))), nil))).Block
+}
+
+func srcLenExpr(s *synth) ast.Expression { return s.call("len", s.id("src")) }
+
 // keyClassifier maps an object key token to its 1-based field index, 0 for
 // an unknown key. Key storage stays out of the record reader's live state.
 func keyClassifier(k *synth, name string, fields []codecField) *ast.FunctionStatement {
@@ -659,6 +746,13 @@ func recordReader(s *synth, typ, keyName string, fields []codecField, decodedNam
 						s.assign("at", s.field(s.id("decoded"), "next")),
 						s.assign("index", s.add(s.id("index"), s.u32(1))))))))
 			}
+			// A fixed array of integers is indexed first: one vector pass
+			// records the separator positions, then every element scans from
+			// its own start and ends at its recorded separator, so the scans
+			// wait on nothing but their own bytes. Any element that fails, or
+			// ends elsewhere, leaves the sequential loop to reparse from the
+			// bracket with the errors and positions it always produced.
+			fastArray := arrayIndexPath(s, field, fieldOf, setStatus)
 			// The opening bracket is one byte after whitespace; anything else
 			// is classified by the tokenizer only to pick the error.
 			decode = s.block(
@@ -670,6 +764,7 @@ func recordReader(s *synth, typ, keyName string, fields []codecField, decodedNam
 					s.block(
 						s.assign("at", s.add(s.id("array_at"), s.u32(1))),
 						s.decl("index", s.id("u32"), s.intLit(0)),
+						fastArray,
 						// After a comma the scanner saw, the element scans from the
 						// byte after it: the scanner skips whitespace itself, and a
 						// closing bracket there fails as InvalidSyntax at that byte

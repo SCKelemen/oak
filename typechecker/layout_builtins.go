@@ -125,7 +125,7 @@ func (tc *TypeChecker) resolveLayoutBuiltin(expr *ast.InvocationExpression) (Typ
 	rewritten := &ast.Identifier{Token: callee.Token, Value: callee.Value}
 	expr.Function = rewritten
 	if tc.layoutQueries == nil {
-		tc.layoutQueries = make(map[string]LayoutQuery)
+		tc.layoutQueries = make(map[tokenKey]LayoutQuery)
 	}
 	tc.layoutQueries[positionKey(callee.Token)] = query
 	return u32, true

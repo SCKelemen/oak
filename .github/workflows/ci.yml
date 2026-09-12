@@ -85,7 +85,7 @@ jobs:
       run: sudo apt-get update && sudo apt-get install -y qemu-system-arm qemu-system-misc qemu-user-static
 
     - name: Cross-build every Linux target, run them under user-mode QEMU, and run the microcontroller targets
-      run: go test -v ./target ./toolchain ./compiler -run '^Test(ParseAndEnv|Spellings|ResolveOrder|ResolveEmulator|Cross|E2EMicrocontroller)'
+      run: go test -v ./target ./toolchain ./compiler -run '^Test(ParseAndEnv|Spellings|ResolveOrder|ResolveEmulator|Cross|E2EMicrocontroller|E2ERVV)'
 
   riscv64-memory-refinement:
     name: RISC-V Memory Refinement

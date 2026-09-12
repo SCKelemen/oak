@@ -586,7 +586,7 @@ func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 		// signbit from it (the transcendental functions are Oak code in the
 		// standard library), so a freestanding build (docs/spec/90-backend.md
 		// §2a) takes the compiler's builtin and stays free of libm.
-		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n#include <math.h>\n#else\n#ifndef signbit\n#define signbit(x) __builtin_signbit(x)\n#endif\n#endif\n")
+		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n#include <math.h>\n#else\n#ifndef signbit\n#define signbit(x) __builtin_signbit(x)\n#endif\n#ifndef isnan\n#define isnan(x) __builtin_isnan(x)\n#endif\n#ifndef isinf\n#define isinf(x) __builtin_isinf(x)\n#endif\n#ifndef isfinite\n#define isfinite(x) __builtin_isfinite(x)\n#endif\n#endif\n")
 		cg.write("#include <float.h>\n")
 		// Every operation rounds to its own type: no excess intermediate
 		// precision (docs/spec/20-types.md section 11.3.3). A target that
@@ -2025,7 +2025,7 @@ func (cg *CodeGenerator) computeInlineHelpers(program *ast.Program) {
 // codecHotHelpers are the standard library functions the derived JSON
 // record readers call on their hot path (stdlib/json.oak).
 var codecHotHelpers = []string{
-	"json_scan_integer", "json_non_digit_mask", "json_word_value", "json_non_digit_mask32", "json_word_value32",
+	"json_scan_integer", "json_non_digit_mask", "json_word_value", "json_non_digit_mask32", "json_word_value32", "json_digits_at",
 	"json_skip_space", "json_value_boundary", "json_key_decoded_equal",
 }
 

@@ -231,22 +231,33 @@ func (tc *TypeChecker) recordVariantResolution(expr *ast.VariantExpression, name
 		return
 	}
 	if tc.variantResolutions == nil {
-		tc.variantResolutions = make(map[string]string)
+		tc.variantResolutions = make(map[tokenKey]string)
 	}
 	tc.variantResolutions[positionKey(expr.Token)] = mangled
 }
 
 // positionKey identifies a node by source position, so resolutions survive
 // the lowering pass's node reconstruction.
-func positionKey(tok token.Token) string {
-	return fmt.Sprintf("%s:%d:%d:%s", tok.SemanticContext, tok.Line, tok.Column, tok.Literal)
+// tokenKey identifies a token by its position and spelling. It is a struct,
+// not a formatted string: the checker records and the interpreter and
+// backend look up a fact per expression token, and a string key would be
+// one allocation per lookup.
+type tokenKey struct {
+	context string
+	line    int
+	column  int
+	literal string
+}
+
+func positionKey(tok token.Token) tokenKey {
+	return tokenKey{context: tok.SemanticContext, line: tok.Line, column: tok.Column, literal: tok.Literal}
 }
 
 // recordShiftWidth notes the operand width of one shift expression, so the
 // backend emits the right checked helper without re-deriving types.
 func (tc *TypeChecker) recordShiftWidth(expr *ast.InfixExpression, width int) {
 	if tc.shiftWidths == nil {
-		tc.shiftWidths = make(map[string]int)
+		tc.shiftWidths = make(map[tokenKey]int)
 	}
 	tc.shiftWidths[positionKey(expr.Token)] = width
 }
@@ -300,7 +311,7 @@ func (tc *TypeChecker) recordArithmetic(expr *ast.InfixExpression, result Type) 
 		return result
 	}
 	if tc.arithmeticTypes == nil {
-		tc.arithmeticTypes = make(map[string]string)
+		tc.arithmeticTypes = make(map[tokenKey]string)
 	}
 	tc.arithmeticTypes[positionKey(expr.Token)] = name
 	return result
@@ -311,7 +322,7 @@ func (tc *TypeChecker) recordArithmetic(expr *ast.InfixExpression, result Type) 
 func (tc *TypeChecker) recordNegation(expr *ast.PrefixExpression, prim *PrimitiveType) Type {
 	if name := tc.FixedWidthName(prim.Name); name != "" {
 		if tc.arithmeticTypes == nil {
-			tc.arithmeticTypes = make(map[string]string)
+			tc.arithmeticTypes = make(map[tokenKey]string)
 		}
 		tc.arithmeticTypes[positionKey(expr.Token)] = name
 	}
@@ -335,7 +346,7 @@ func (tc *TypeChecker) recordMatchResolution(match *ast.MatchExpression, name st
 		return
 	}
 	if tc.matchResolutions == nil {
-		tc.matchResolutions = make(map[string]string)
+		tc.matchResolutions = make(map[tokenKey]string)
 	}
 	tc.matchResolutions[positionKey(match.Token)] = mangled
 }

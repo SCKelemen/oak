@@ -53,9 +53,23 @@ imported packages are compiled as their clients see them.
 
 ## Isolation, outcomes, and reporting
 
-Every normal runner case starts a fresh native child process. Assertions and
+Every normal runner case runs in a fresh native child process. Assertions and
 bounds traps cannot terminate the host runner. `-timeout` bounds each execution;
-`-build-timeout` bounds C compilation. Native stdout/stderr and the control
+`-build-timeout` bounds C compilation.
+
+**Resident workers.** The fresh process is a fork, not an exec: the runner
+starts one harness process per concurrent case slot in serve mode, sends each
+case to it as a length-checked record (test index, control-report path, input
+bytes), and the worker runs the case in a `fork()` of itself — the child sees
+exactly the state a new process would, so isolation, determinism, timeouts,
+shrinking and replay are unchanged, while the process start-up (and, under
+`-sanitize`, the sanitizer runtime's initialization) is paid once per worker
+rather than once per case. The worker relays the child's wait status and its
+bounded output; a timed-out case kills the worker's process group and the pool
+replaces the worker. `-resident=false` runs one process per case, as Windows
+and cross-built harnesses do. Measured on a trivial property: 62 cases a
+second per process, 1,080 a second resident
+(`testrunner.BenchmarkCampaign`, `BenchmarkCampaignPerProcess`). Native stdout/stderr and the control
 report are independently bounded to 64 KiB. Excess user output is truncated;
 control-report overflow fails the case. The control report is separate from
 stdout, so ordinary test output cannot corrupt `-json` results.

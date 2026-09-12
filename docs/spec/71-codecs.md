@@ -803,3 +803,63 @@ under load; `benchmarks/json/RESULTS.md`). The remaining gap on the large
 document is the per-number dependency chain of the array and the reader's
 per-element bookkeeping, and is the next target.
 
+## 21. A structural index for fixed integer arrays
+
+A program-counter profile of the event reader after section 20 put every
+hot line on one dependency chain: a number's word load waited on the
+previous number's run count, so the sixty-four elements of a `[64]u32`
+parsed strictly one after another, and simdjson — whose first stage
+finds every structural character of the input at once — stayed ahead on
+the workload by a quarter.
+
+The derived reader of a fixed array whose element type is an integer now
+opens with a local structural index. `json_array_index` takes one pass
+over the array's span sixteen bytes at a time: the comma and
+closing-bracket lanes of each block as `movemask` masks, the position of
+each set lane by `ctz`, the last block overlapping what the loop covered
+with its earlier lanes shifted off, a byte loop only for an input shorter
+than a block; it stops at the first closing bracket or when the marks
+array — the declared length, on the stack — is full, and returns the
+count. When the count is the length and the last mark is a closing
+bracket, every element's extent is known, and each is parsed from its own
+bytes by `json_digits_at`: whitespace before it skipped, a sign noted,
+then one word for up to eight digits (the partial word of section 20) or
+two words for up to sixteen (a whole word times `10^k` plus the partial
+word of the remaining `k`), the words loaded from the input's last eight
+or sixteen bytes and shifted when the number lies that close to the end,
+so the loads are proven and no byte past the input is read. No run count
+is taken and no element depends on the one before it, so the parses
+overlap as far as the machine allows; the marks the index recorded are
+the separators, and a mark that is not where a number ends shows up as a
+byte that is not a digit.
+
+The index is an accelerator, never an authority. A sign on an unsigned
+type, a leading zero on more than one digit, a byte that is not a digit
+anywhere in the extent (a space before the separator included), more
+than sixteen digits, a magnitude past the width, or a count other than
+the declared length leaves `at` and the count where they were, and the
+sequential loop of section 14 reads the array with the same error codes
+and the same fault offsets as before; the fast path stores into the
+result only on its own success, and the sequential loop then overwrites
+nothing it did not itself read. For other element types the statement is
+empty.
+
+`Oak.JsonDigits` licenses the arithmetic: `partial_value_k` gives the
+value of a partial word of `k` digits (`json_digits_at` builds exactly
+`partialWord`), `word_value_bound` shows a word of eight digits reads
+below `10^8`, and `two_words_fit` that a whole word times `10^k`, `k ≤ 8`,
+plus a partial word stays below `2^64`, so the 64-bit combination never
+wraps. The tests pin the emitted shape (the index call, the extent call,
+the `_proven` packs) and the verdicts: the fast path and the sequential
+loop agree on whitespace around elements, signs, sixteen-digit values and
+the width boundaries, and every shape the index does not cover reaches
+the loop's code (`compiler/e2e_json_array_test.go`).
+
+Measured on the local harness with the simdjson control in every run
+(`benchmarks/json/RESULTS.md`, eighth pass, load average 55 to 135): the
+event workload from 1.23 times simdjson's time to 0.91 in two repeats,
+the record workload from 0.91 to 0.81 and 0.95 to 0.82 — the derived
+decoder below simdjson On-Demand on both workloads. A first version that
+indexed the array and then ran the sequential scanner from each recorded
+start, verifying each separator with a whitespace skip, measured 1.42×:
+the index pays only when each element parses from its own bytes.

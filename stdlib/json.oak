@@ -85,6 +85,70 @@ pub json_string_scan: (src: []u8, offset: u32): JsonRun {
  JsonRun { end: at, ascii: high == u32(0) }
 }
 pub json_string_run: (src: []u8, offset: u32): u32 = json_string_scan(src, offset).end
+
+// The positions of the commas and the closing bracket of an array, from
+// the byte after its opening bracket: sixteen bytes at a time under the
+// wrap-free guard, the lanes read off two movemasks with ctz, the tail
+// byte by byte; stops after the first closing bracket or when marks is
+// full, and returns the count written. A derived reader uses it as a
+// structural index for a fixed array of numbers: with the separators
+// known, every element scans from its own start and the scans no longer
+// wait on one another (docs/spec/71-codecs.md section 21). It is only an
+// accelerator — the reader checks each element ends at its recorded
+// separator and otherwise reparses sequentially, so nothing it records
+// can change a verdict.
+pub json_array_index: (src: []u8, at: u32, marks: [*]u32): u32 {
+ count: u32 = 0
+ pos: u32 = at
+ scanning: Bool = true
+ while scanning && count < len(marks) && len(src) >= u32(16) && pos <= len(src) - u32(16) {
+  chunk: simd.U8x16 = simd.load_u8x16(src, pos)
+  commas: u32 = simd.movemask_u8x16(simd.eq_u8x16(chunk, simd.splat_u8x16(u8(44))))
+  brackets: u32 = simd.movemask_u8x16(simd.eq_u8x16(chunk, simd.splat_u8x16(u8(93))))
+  lanes: u32 = commas | brackets
+  while lanes != u32(0) && scanning && count < len(marks) {
+   k: u32 = simd.ctz_u32(lanes)
+   marks[count] = pos + k
+   count = count + u32(1)
+   (brackets >> k) & u32(1) == u32(1) ? { scanning = false }
+   lanes = lanes & (lanes - u32(1))
+  }
+  pos = pos + u32(16)
+ }
+ scanning && count < len(marks) && pos < len(src) ? {
+  len(src) >= u32(16) ? {
+   // The last block of the input, overlapping what the loop covered: the
+   // loop left pos above len - 16, so the shift is one through fifteen.
+   base: u32 = len(src) - u32(16)
+   shift: u32 = pos - base
+   chunk: simd.U8x16 = simd.load_u8x16(src, base)
+   commas: u32 = simd.movemask_u8x16(simd.eq_u8x16(chunk, simd.splat_u8x16(u8(44)))) >> shift
+   brackets: u32 = simd.movemask_u8x16(simd.eq_u8x16(chunk, simd.splat_u8x16(u8(93)))) >> shift
+   lanes: u32 = commas | brackets
+   while lanes != u32(0) && scanning && count < len(marks) {
+    k: u32 = simd.ctz_u32(lanes)
+    marks[count] = pos + k
+    count = count + u32(1)
+    (brackets >> k) & u32(1) == u32(1) ? { scanning = false }
+    lanes = lanes & (lanes - u32(1))
+   }
+  } | {
+   while scanning && count < len(marks) && pos < len(src) {
+    unit: u8 = src[pos]
+    unit == u8(44) ? {
+     marks[count] = pos
+     count = count + u32(1)
+    } | unit == u8(93) ? {
+     marks[count] = pos
+     count = count + u32(1)
+     scanning = false
+    }
+    pos = pos + u32(1)
+   }
+  }
+ }
+ count
+}
 pub json_copy_run: (dst: [*]u8, output: u32, src: []u8, start: u32, end: u32): () {
  assert(start <= end && end <= len(src))
  assert(output <= len(dst) && end - start <= len(dst) - output)
@@ -626,6 +690,50 @@ json_word_value32: (word: u32): u32 {
  digits: u32 = word & u32(252645135)
  pairs: u32 = ((digits * u32(10)) + (digits >> u32(8))) & u32(16711935)
  ((pairs * u32(100)) + (pairs >> u32(16))) & u32(65535)
+}
+
+// The value of exactly n decimal digits at start, 1 through 16, when eight
+// bytes are readable from each word's start: one word for up to eight
+// digits, two for more, each checked against the non-digit mask and read
+// by json_word_value (Oak.JsonDigits: word_value, partial_value_k). Status
+// 2 means the shape is not covered — a byte that is not a digit, a length
+// outside the range, or too few bytes — and the caller reparses. A reader
+// that knows where a number ends (the array index) parses it here with no
+// run count and no dependency on the number before it.
+pub json_digits_at: (src: []u8, start: u32, n: u32): JsonIntegerScan {
+ miss: JsonIntegerScan = JsonIntegerScan { magnitude: u64(0), next: start, status: u32(2) }
+ // Each word loads from start when a whole word remains and otherwise
+ // from the input's last word, shifted so its first byte is the first
+ // digit; the bytes the shift brings in are zero and lie beyond the kept
+ // lanes. The base is at most len - 8 (len - 16) by construction; the
+ // guard restates it so the loads are proven.
+ n >= u32(1) && n <= u32(8) && len(src) >= u32(8) && start + n <= len(src) ? {
+  base: u32 = start <= len(src) - u32(8) ? { start } | { len(src) - u32(8) }
+  base <= len(src) - u32(8) ? {
+   loaded: u64 = (u64(src[base + u32(0)]) << u64(0)) | (u64(src[base + u32(1)]) << u64(8)) | (u64(src[base + u32(2)]) << u64(16)) | (u64(src[base + u32(3)]) << u64(24)) | (u64(src[base + u32(4)]) << u64(32)) | (u64(src[base + u32(5)]) << u64(40)) | (u64(src[base + u32(6)]) << u64(48)) | (u64(src[base + u32(7)]) << u64(56))
+   word: u64 = loaded >> (u64(8) * u64(start - base))
+   keep: u64 = n == u32(8) ? { u64(0) - u64(1) } | { (u64(1) << (u64(8) * u64(n))) - u64(1) }
+   (json_non_digit_mask(word) & keep) != u64(0) ? { miss } | {
+    shifted: u64 = n == u32(8) ? { word } | { (word << (u64(64) - u64(8) * u64(n))) | (u64(3472328296227680304) >> (u64(8) * u64(n))) }
+    JsonIntegerScan { magnitude: json_word_value(shifted), next: start + n, status: u32(0) }
+   }
+  } | { miss }
+ } | n >= u32(9) && n <= u32(16) && len(src) >= u32(16) && start + n <= len(src) ? {
+  base: u32 = start <= len(src) - u32(16) ? { start } | { len(src) - u32(16) }
+  base <= len(src) - u32(16) ? {
+   low: u64 = (u64(src[base + u32(0)]) << u64(0)) | (u64(src[base + u32(1)]) << u64(8)) | (u64(src[base + u32(2)]) << u64(16)) | (u64(src[base + u32(3)]) << u64(24)) | (u64(src[base + u32(4)]) << u64(32)) | (u64(src[base + u32(5)]) << u64(40)) | (u64(src[base + u32(6)]) << u64(48)) | (u64(src[base + u32(7)]) << u64(56))
+   high: u64 = (u64(src[base + u32(8)]) << u64(0)) | (u64(src[base + u32(9)]) << u64(8)) | (u64(src[base + u32(10)]) << u64(16)) | (u64(src[base + u32(11)]) << u64(24)) | (u64(src[base + u32(12)]) << u64(32)) | (u64(src[base + u32(13)]) << u64(40)) | (u64(src[base + u32(14)]) << u64(48)) | (u64(src[base + u32(15)]) << u64(56))
+   shift: u64 = u64(8) * u64(start - base)
+   word: u64 = shift == u64(0) ? { low } | { (low >> shift) | (high << (u64(64) - shift)) }
+   word2: u64 = high >> shift
+   m: u32 = n - u32(8)
+   keep2: u64 = m == u32(8) ? { u64(0) - u64(1) } | { (u64(1) << (u64(8) * u64(m))) - u64(1) }
+   json_non_digit_mask(word) != u64(0) || (json_non_digit_mask(word2) & keep2) != u64(0) ? { miss } | {
+    shifted2: u64 = m == u32(8) ? { word2 } | { (word2 << (u64(64) - u64(8) * u64(m))) | (u64(3472328296227680304) >> (u64(8) * u64(m))) }
+    JsonIntegerScan { magnitude: json_word_value(word) * json_pow10[m & u32(15)] + json_word_value(shifted2), next: start + n, status: u32(0) }
+   }
+  } | { miss }
+ } | { miss }
 }
 
 // 10^k for k = 0..8, indexed by a run masked to sixteen so the access is proven.

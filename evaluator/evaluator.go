@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/SCKelemen/oak/token"
 	"strings"
+	"sync"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/object"
@@ -309,13 +310,43 @@ func evalProgram(program *ast.Program, env *object.Environment) object.Object {
 	return result
 }
 
+// blockDeclares reports whether any statement of the block can bind a name
+// or a type in the block's scope. Expression, assignment, loop, conditional
+// and break statements cannot; everything else is taken to.
+func blockDeclares(block *ast.BlockStatement) bool {
+	for _, statement := range block.Statements {
+		switch statement.(type) {
+		case *ast.ExpressionStatement, *ast.AssignmentStatement, *ast.IndexAssignmentStatement,
+			*ast.WhileStatement, *ast.IfStatement, *ast.BreakStatement:
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// patternBinds reports whether matching the pattern binds a name.
+func patternBinds(pattern ast.Pattern) bool {
+	switch p := pattern.(type) {
+	case *ast.BindingPattern:
+		return true
+	case *ast.VariantPattern:
+		return p.Payload != nil && patternBinds(p.Payload)
+	}
+	return false
+}
+
 func evalBlockStatement(block *ast.BlockStatement, env *object.Environment) object.Object {
 	var result object.Object
 
 	// A brace block is a scope (docs/spec/10-syntax.md section 4c): its
 	// declarations live in an enclosed environment; assignments reach the
-	// declaring scope through Environment.Assign.
-	env = object.NewEnclosedEnvironment(env)
+	// declaring scope through Environment.Assign. A block that declares
+	// nothing binds nothing, so it evaluates in the enclosing scope and
+	// allocates none.
+	if blockDeclares(block) {
+		env = object.NewEnclosedEnvironment(env)
+	}
 	for _, statement := range block.Statements {
 		result = Eval(statement, env)
 
@@ -372,8 +403,27 @@ func evalIdentifier(node *ast.Identifier, env *object.Environment) object.Object
 }
 
 // Built-in functions
+// builtinTable is built once: the interpreter looks a builtin up on every
+// identifier it cannot find in scope, and building the table of closures
+// per lookup was a measurable share of the prover's enumeration.
+var (
+	builtinTable map[string]*object.Builtin
+	builtinOnce  sync.Once
+)
+
 func getBuiltin(name string) (*object.Builtin, bool) {
-	builtins := map[string]object.BuiltinFunction{
+	builtinOnce.Do(func() {
+		builtinTable = make(map[string]*object.Builtin, len(builtinFunctions()))
+		for name, fn := range builtinFunctions() {
+			builtinTable[name] = &object.Builtin{Fn: fn}
+		}
+	})
+	builtin, ok := builtinTable[name]
+	return builtin, ok
+}
+
+func builtinFunctions() map[string]object.BuiltinFunction {
+	return map[string]object.BuiltinFunction{
 		// Layout introspection and code addresses exist only in the
 		// compiled backend, where the C compiler is the authority; the
 		// interpreter has no struct layout or code symbols to report.
@@ -530,26 +580,32 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 			return makeOptionSome(slice)
 		},
 	}
-
-	if fn, ok := builtins[name]; ok {
-		return &object.Builtin{Fn: fn}, true
-	}
-	return nil, false
 }
 
 // evalPrimitiveConstructor evaluates primitive type constructors like u32(x), u64(y)
 // These are widening conversions that are total and non-failing
+// fieldTypeNames are the identifiers a record field position reads as a
+// type annotation rather than a value.
+var fieldTypeNames = map[string]bool{
+	"i8": true, "i16": true, "i32": true, "i64": true,
+	"u8": true, "u16": true, "u32": true, "u64": true, "u128": true,
+	"string": true, "Bool": true, "byte": true, "()": true,
+}
+
+// primitiveConstructorTypes is the set of names that construct a primitive
+// value; one table for every call rather than a literal per call.
+var primitiveConstructorTypes = map[string]bool{
+	"u8": true, "u16": true, "u32": true, "u64": true, "u128": true,
+	"i8": true, "i16": true, "i32": true, "i64": true,
+	"int": true, "uint": true, "ptr": true, "uptr": true, // platform types
+	"byte": true,              // alias of u8
+	"rune": true,              // alias of u32 (docs/spec/70-strings.md section 9)
+	"f32":  true, "f64": true, // floating point (docs/spec/20-types.md section 11.3)
+}
+
 func evalPrimitiveConstructor(typeName string, args []ast.Expression, env *object.Environment) object.Object {
 	// Check if it's a primitive type name (including aliases and platform types)
-	primitiveTypes := map[string]bool{
-		"u8": true, "u16": true, "u32": true, "u64": true, "u128": true,
-		"i8": true, "i16": true, "i32": true, "i64": true,
-		"int": true, "uint": true, "ptr": true, "uptr": true, // platform types
-		"byte": true,              // alias of u8
-		"rune": true,              // alias of u32 (docs/spec/70-strings.md section 9)
-		"f32":  true, "f64": true, // floating point (docs/spec/20-types.md section 11.3)
-	}
-	if !primitiveTypes[typeName] {
+	if !primitiveConstructorTypes[typeName] {
 		return nil // Not a primitive constructor
 	}
 
@@ -998,7 +1054,11 @@ func unwrapReturnValue(obj object.Object) object.Object {
 func evalMatchExpression(scrutinee object.Object, arms []*ast.MatchArm, env *object.Environment) object.Object {
 	for _, arm := range arms {
 		if matchesPattern(scrutinee, arm.Pattern) {
-			// Create new environment for pattern bindings
+			// The arm's bindings live in their own scope; an arm that binds
+			// nothing evaluates in the enclosing one.
+			if !patternBinds(arm.Pattern) {
+				return Eval(arm.Body, env)
+			}
 			matchEnv := object.NewEnclosedEnvironment(env)
 			bindPattern(scrutinee, arm.Pattern, matchEnv)
 			return Eval(arm.Body, matchEnv)
@@ -1466,12 +1526,7 @@ func evalRecordLiteral(rl *ast.RecordLiteral, env *object.Environment) object.Ob
 		// In value contexts, field expressions are values
 		// If the field expression is an identifier that's a primitive type name, skip evaluation
 		if ident, ok := fieldExpr.(*ast.Identifier); ok {
-			primitiveTypes := map[string]bool{
-				"i8": true, "i16": true, "i32": true, "i64": true,
-				"u8": true, "u16": true, "u32": true, "u64": true, "u128": true,
-				"string": true, "Bool": true, "byte": true, "()": true,
-			}
-			if primitiveTypes[ident.Value] {
+			if fieldTypeNames[ident.Value] {
 				// This is a type annotation in a type definition context
 				// Don't evaluate it as a value - just skip it
 				// The type definition is handled by evalADTType()

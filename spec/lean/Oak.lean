@@ -81,6 +81,7 @@ import Oak.ArithmeticRefinement
 import Oak.ViewRefinement
 import Oak.MemoryOrderRefinement
 import Oak.CompareExchangeRefinement
+import Oak.CheckedArithmeticRefinement
 import Oak.Semver
 import Oak.Loops
 import Oak.Regions

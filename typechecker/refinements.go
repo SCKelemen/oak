@@ -88,7 +88,7 @@ func (tc *TypeChecker) checkRefinementConstruction(name string, call *ast.Invoca
 		}
 	}
 	if tc.refinementChecks == nil {
-		tc.refinementChecks = map[string]string{}
+		tc.refinementChecks = map[tokenKey]string{}
 	}
 	tc.refinementChecks[positionKey(call.Token)] = name
 	// Static discharge: the facts in scope prove the predicate of the
@@ -97,7 +97,7 @@ func (tc *TypeChecker) checkRefinementConstruction(name string, call *ast.Invoca
 	// guard is then never emitted.
 	if tc.dischargePredicate(info.predicate, call.Arguments[0], argType, info.base.Name) {
 		if tc.refinementDischarged == nil {
-			tc.refinementDischarged = map[string]bool{}
+			tc.refinementDischarged = map[tokenKey]bool{}
 		}
 		tc.refinementDischarged[positionKey(call.Token)] = true
 	}
@@ -254,7 +254,7 @@ func (tc *TypeChecker) recordRefinedIndexProof(expr *ast.IndexExpression, arr *A
 		return
 	}
 	if tc.provenIndices == nil {
-		tc.provenIndices = make(map[string]bool)
+		tc.provenIndices = make(map[tokenKey]bool)
 	}
 	tc.provenIndices[positionKey(expr.Token)] = true
 }

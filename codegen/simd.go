@@ -222,6 +222,10 @@ func (cg *CodeGenerator) emitSimdSupport(program *ast.Program) {
 	cg.write("#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)\n")
 	cg.write("#include <arm_neon.h>\n")
 	cg.write("#endif\n")
+	// The RISC-V Vector realization (docs/spec/93-simd.md section 1.4):
+	// LMUL=1 intrinsics with the vector length fixed to the lane count, so
+	// the fixed 128-bit vectors run unchanged on every VLEN >= 128.
+	cg.write(rvvGuard + "\n#include <riscv_vector.h>\n#endif\n")
 	for _, shape := range typechecker.SimdShapes {
 		cg.write(fmt.Sprintf("typedef struct oak_%s { %s lanes[%d]; } %s;\n",
 			shape.Suffix, shape.ElemName, shape.Lanes, shape.Suffix))
@@ -246,11 +250,13 @@ func (cg *CodeGenerator) emitSimdSupport(program *ast.Program) {
 		if op == "store" {
 			cg.emitSpanType(shape.ElemName)
 		}
+		var helper string
 		if shape.Float {
-			cg.writeRaw(simdFloatHelperSource(op, shape.Suffix, shape.ElemName, shape.Lanes))
+			helper = simdFloatHelperSource(op, shape.Suffix, shape.ElemName, shape.Lanes)
 		} else {
-			cg.writeRaw(simdHelperSource(op, shape.Suffix, shape.ElemName, shape.Lanes))
+			helper = simdHelperSource(op, shape.Suffix, shape.ElemName, shape.Lanes)
 		}
+		cg.writeRaw(withRVV(helper, op, shape.ElemName, shape.Lanes, shape.Float))
 		cg.write("\n")
 	}
 	for _, member := range arm64Vector {
@@ -631,4 +637,108 @@ func laneBits(elem string) int {
 		return 32
 	}
 	return 64
+}
+
+// rvvGuard selects the RISC-V Vector realization: a RISC-V target whose
+// processor has the V extension (`-cpu generic_rv64+v`), unless the
+// portable lowering is forced. It is the third realization beside NEON and
+// the portable lane loop; the choice is the preprocessor's, at build time.
+const rvvGuard = "#if defined(__riscv) && defined(__riscv_vector) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)"
+
+// withRVV splices the RISC-V Vector branch into a generated helper: the
+// helper's `#else` (its portable branch) becomes `#elif <rvv> ... #else`.
+// Operations without an RVV body — the reductions any/all/movemask/
+// reduce_add, whose pairwise order is the specification, and the lane
+// accessors — keep the portable code on every target.
+func withRVV(helper, op, elem string, lanes int, float bool) string {
+	body, ok := rvvBody(op, elem, lanes, float)
+	if !ok {
+		return helper
+	}
+	elif := strings.Replace(rvvGuard, "#if", "#elif", 1)
+	return strings.ReplaceAll(helper, "\n#else\n", "\n"+elif+"\n"+body+"#else\n")
+}
+
+// rvvType and rvvSuffix spell the LMUL=1 vector type and intrinsic suffix
+// of an element type: u8 -> vuint8m1_t / u8m1, f32 -> vfloat32m1_t / f32m1.
+func rvvType(elem string) string {
+	switch elem {
+	case "f32":
+		return "vfloat32m1_t"
+	case "f64":
+		return "vfloat64m1_t"
+	}
+	return "vuint" + elem[1:] + "m1_t"
+}
+
+func rvvSuffix(elem string) string { return elem + "m1" }
+
+func rvvBits(elem string) string { return elem[1:] }
+
+// rvvBody is the RVV branch of one helper, over the same lane-array
+// variables the NEON branch uses (a, b, c, v, val, r, s, off, n, prev, cur,
+// table, idx).
+func rvvBody(op, elem string, lanes int, float bool) (string, bool) {
+	t, sfx, bits := rvvType(elem), rvvSuffix(elem), rvvBits(elem)
+	vl := fmt.Sprintf("%d", lanes)
+	load := func(ptr string) string { return fmt.Sprintf("__riscv_vle%s_v_%s(%s, %s)", bits, sfx, ptr, vl) }
+	store := func(ptr, value string) string {
+		return fmt.Sprintf("  __riscv_vse%s_v_%s(%s, %s, %s);\n", bits, sfx, ptr, value, vl)
+	}
+	splat := func(x string) string {
+		if float {
+			return fmt.Sprintf("__riscv_vfmv_v_f_%s(%s, %s)", sfx, x, vl)
+		}
+		return fmt.Sprintf("__riscv_vmv_v_x_%s(%s, %s)", sfx, x, vl)
+	}
+	switch op {
+	case "splat":
+		return store("r.lanes", splat("x")), true
+	case "load":
+		return store("r.lanes", load("v.base + off")), true
+	case "store":
+		return store("s.base + off", load("val.lanes")), true
+	case "shr":
+		if float {
+			return "", false
+		}
+		return store("r.lanes", fmt.Sprintf("__riscv_vsrl_vx_%s(%s, (size_t)n, %s)", sfx, load("v.lanes"), vl)), true
+	case "tbl":
+		// vrgather reads lane idx[i] of the table for idx[i] below VLMAX and
+		// gives zero above it; VLMAX depends on VLEN, so the index < 16 rule
+		// is applied explicitly and the result is the same on every VLEN.
+		return fmt.Sprintf("  %s ix = %s;\n  vbool8_t in = __riscv_vmsltu_vx_u8m1_b8(ix, 16, %s);\n  %s g = __riscv_vrgather_vv_u8m1(%s, ix, %s);\n", t, load("idx.lanes"), vl, t, load("table.lanes"), vl) +
+			store("r.lanes", fmt.Sprintf("__riscv_vmerge_vvm_u8m1(%s, g, in, %s)", splat("0"), vl)), true
+	case "prev":
+		// Lane i is prev[16-n+i] below n and cur[i-n] from n on: slide prev
+		// down by 16-n, then slide cur up by n over it (undisturbed lanes
+		// below n keep the slid prev).
+		return fmt.Sprintf("  %s p = __riscv_vslidedown_vx_u8m1(%s, (size_t)(16u - n), %s);\n", t, load("prev.lanes"), vl) +
+			store("r.lanes", fmt.Sprintf("__riscv_vslideup_vx_u8m1(p, %s, (size_t)n, %s)", load("cur.lanes"), vl)), true
+	case "fma":
+		// vfmacc(c, a, b) is c + a*b in one rounding, as vfmaq and fma().
+		return store("r.lanes", fmt.Sprintf("__riscv_vfmacc_vv_%s(%s, %s, %s, %s)", sfx, load("c.lanes"), load("a.lanes"), load("b.lanes"), vl)), true
+	case "sqrt", "neg", "abs":
+		name := map[string]string{"sqrt": "vfsqrt_v", "neg": "vfneg_v", "abs": "vfabs_v"}[op]
+		return store("r.lanes", fmt.Sprintf("__riscv_%s_%s(%s, %s)", name, sfx, load("a.lanes"), vl)), true
+	case "eq":
+		if float {
+			return "", false
+		}
+		return fmt.Sprintf("  vbool%s_t m = __riscv_vmseq_vv_%s_b%s(%s, %s, %s);\n", bits, sfx, bits, load("a.lanes"), load("b.lanes"), vl) +
+			store("r.lanes", fmt.Sprintf("__riscv_vmerge_vxm_%s(%s, (%s)~(%s)0, m, %s)", sfx, splat("0"), elem, elem, vl)), true
+	}
+	binary := map[string]string{"add": "vadd_vv", "sub": "vsub_vv", "subs": "vssubu_vv", "and": "vand_vv", "or": "vor_vv", "xor": "vxor_vv", "min": "vminu_vv", "max": "vmaxu_vv"}
+	if float {
+		// No RVV min/max: vfmin/vfmax are IEEE minimumNumber/maximumNumber
+		// (a NaN operand is suppressed, -0.0 and +0.0 are equal), while the
+		// catalog's min/max are IEEE 754-2019 minimum/maximum; the portable
+		// lane loop stays the realization there.
+		binary = map[string]string{"add": "vfadd_vv", "sub": "vfsub_vv", "mul": "vfmul_vv", "div": "vfdiv_vv"}
+	}
+	name, isBinary := binary[op]
+	if !isBinary {
+		return "", false
+	}
+	return store("r.lanes", fmt.Sprintf("__riscv_%s_%s(%s, %s, %s)", name, sfx, load("a.lanes"), load("b.lanes"), vl)), true
 }

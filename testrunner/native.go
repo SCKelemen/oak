@@ -17,6 +17,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
@@ -50,6 +52,12 @@ type nativeProgram struct {
 	bin, dir, build string
 	maxBytes        int
 	timeout         time.Duration
+	// resident runs cases through resident harness workers (nativeServe);
+	// idle holds the workers not running a case, workers every one alive.
+	resident bool
+	mu       sync.Mutex
+	idle     []*residentWorker
+	workers  map[*residentWorker]bool
 	// metal is the program's kernels as Metal source and launch descriptors
 	// (docs/spec/56-kernels.md section 5), nil when it declares none; the
 	// runner replays recorded launches on the device with it.
@@ -126,23 +134,18 @@ func buildNative(pkg Package, cfg Config) (*nativeProgram, error) {
 		return nil, err
 	}
 	var source strings.Builder
-	fmt.Fprintf(&source, "#define OAK_COMMAND_LIMIT %d\n", min(commandLimit, cfg.MaxBytes/commandWidth))
+	fmt.Fprintf(&source, "#define OAK_COMMAND_LIMIT %d\n#define OAK_MAX_BYTES %d\n#define OAK_OUTPUT_LIMIT %d\n", min(commandLimit, cfg.MaxBytes/commandWidth), cfg.MaxBytes, outputLimit)
 	source.WriteString(nativePreamble)
 	source.WriteString("\n#define main oak_test_application_entry\n")
 	source.WriteString(generated)
 	source.WriteString("\n#undef main\n")
-	fmt.Fprintf(&source, `
-int main(int argc, char **argv) {
- if (argc != 3) return 120;
- oak_test_report_path = argv[2];
- oak_test_report = fopen(argv[2], "w");
+	source.WriteString(`
+static int oak_test_case(long index, const char *report_path, unsigned char *data, size_t size) {
+ oak_test_report_path = report_path;
+ oak_test_report = fopen(report_path, "w");
  if (!oak_test_report) return 121;
- unsigned char *data = calloc(%d + 1u, 1u);
- if (!data) return 122;
- size_t size = fread(data, 1, %d + 1u, stdin);
- if (ferror(stdin) || size > %d) return 123;
- switch (strtol(argv[1], NULL, 10)) {
-`, cfg.MaxBytes, cfg.MaxBytes, cfg.MaxBytes)
+ switch (index) {
+`)
 	for i, test := range pkg.Registry {
 		fmt.Fprintf(&source, "case %d: oak_test_generating = %d; %s(", i, map[bool]int{true: 1, false: 0}[test.Kind == "generator"], pkg.symbol(test.Name))
 		if test.Kind != "unit" && test.Kind != "launch" {
@@ -150,7 +153,23 @@ int main(int argc, char **argv) {
 		}
 		source.WriteString("); break;\n")
 	}
-	source.WriteString("default: return 124;\n}\nfputs(\"pass\\n\", oak_test_report);\nfclose(oak_test_report);\nfree(data);\nreturn 0;\n}\n")
+	source.WriteString("default: return 124;\n}\nfputs(\"pass\\n\", oak_test_report);\nfclose(oak_test_report);\nreturn 0;\n}\n")
+	source.WriteString(nativeServe)
+	source.WriteString(`
+int main(int argc, char **argv) {
+#ifndef _WIN32
+ if (argc == 2 && strcmp(argv[1], "serve") == 0) return oak_test_serve();
+#endif
+ if (argc != 3) return 120;
+ unsigned char *data = calloc(OAK_MAX_BYTES + 1u, 1u);
+ if (!data) return 122;
+ size_t size = fread(data, 1, OAK_MAX_BYTES + 1u, stdin);
+ if (ferror(stdin) || size > OAK_MAX_BYTES) return 123;
+ int code = oak_test_case(strtol(argv[1], NULL, 10), argv[2], data, size);
+ free(data);
+ return code;
+}
+`)
 	cpath := filepath.Join(dir, "test.c")
 	if err := os.WriteFile(cpath, []byte(source.String()), 0600); err != nil {
 		return nil, err
@@ -236,7 +255,11 @@ int main(int argc, char **argv) {
 		}
 	}
 	keep = true
-	return &nativeProgram{bin: filepath.Join(dir, "test"), dir: dir, build: hex.EncodeToString(hash[:]), maxBytes: cfg.MaxBytes, timeout: cfg.Timeout, metal: kernels}, nil
+	// Resident workers fork per case, which the host's own harness supports
+	// everywhere but Windows; a cross-built harness runs one process per
+	// case as before.
+	resident := cfg.Resident && residentSupported && (pkg.Target.OS == "" || pkg.Target.IsHost())
+	return &nativeProgram{bin: filepath.Join(dir, "test"), dir: dir, build: hex.EncodeToString(hash[:]), maxBytes: cfg.MaxBytes, timeout: cfg.Timeout, metal: kernels, resident: resident, workers: map[*residentWorker]bool{}}, nil
 }
 
 // linkArguments spells the manifests' native inputs as C compiler arguments
@@ -346,6 +369,97 @@ void oak_test_host_classify(uint32_t id) {
 }
 `
 
+// nativeServe is the harness's resident mode (docs/spec/110-testing.md,
+// "Resident workers"): started once as `test serve`, the process reads case
+// records from stdin — index, report path and input bytes, each length
+// checked before it is read — and runs every case in a fresh fork of
+// itself, so a case sees exactly the state a new process would, while the
+// process start-up and the sanitizer runtime's initialization are paid
+// once per worker instead of once per case. The child's output is drained
+// into the same bound the per-process path applies; the reply carries the
+// wait status, the output, and whether it was truncated. The parent uses
+// read and write, never stdio, so the child inherits no buffered bytes.
+const nativeServe = `
+#include <string.h>
+#ifndef _WIN32
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/wait.h>
+static int oak_test_read_exact(int fd, void *buf, size_t n) {
+ unsigned char *p = (unsigned char *)buf;
+ while (n) {
+  ssize_t r = read(fd, p, n);
+  if (r < 0) { if (errno == EINTR) continue; return 0; }
+  if (r == 0) return 0;
+  p += r; n -= (size_t)r;
+ }
+ return 1;
+}
+static int oak_test_write_all(int fd, const void *buf, size_t n) {
+ const unsigned char *p = (const unsigned char *)buf;
+ while (n) {
+  ssize_t w = write(fd, p, n);
+  if (w < 0) { if (errno == EINTR) continue; return 0; }
+  p += w; n -= (size_t)w;
+ }
+ return 1;
+}
+static int oak_test_serve(void) {
+ unsigned char *out = malloc(OAK_OUTPUT_LIMIT);
+ unsigned char *data = malloc(OAK_MAX_BYTES + 1u);
+ char *path = malloc(4097);
+ if (!out || !data || !path) return 122;
+ for (;;) {
+  uint32_t header[3];
+  if (!oak_test_read_exact(0, header, sizeof header)) return 0;
+  if (header[1] == 0 || header[1] > 4096 || header[2] > OAK_MAX_BYTES) return 123;
+  if (!oak_test_read_exact(0, path, header[1])) return 123;
+  path[header[1]] = 0;
+  if (header[2] && !oak_test_read_exact(0, data, header[2])) return 123;
+  int pipefd[2];
+  if (pipe(pipefd) != 0) return 126;
+  fflush(NULL);
+  pid_t pid = fork();
+  if (pid < 0) return 126;
+  if (pid == 0) {
+   close(pipefd[0]);
+   if (dup2(pipefd[1], 1) < 0 || dup2(pipefd[1], 2) < 0) _exit(126);
+   close(pipefd[1]);
+   int devnull = open("/dev/null", O_RDONLY);
+   if (devnull < 0 || dup2(devnull, 0) < 0) _exit(126);
+   close(devnull);
+   exit(oak_test_case((long)header[0], path, data, header[2]));
+  }
+  close(pipefd[1]);
+  size_t got = 0;
+  uint32_t flags = 0;
+  for (;;) {
+   unsigned char sink[4096];
+   ssize_t r = read(pipefd[0], sink, sizeof sink);
+   if (r < 0) { if (errno == EINTR) continue; break; }
+   if (r == 0) break;
+   size_t room = OAK_OUTPUT_LIMIT - got;
+   if ((size_t)r > room) { memcpy(out + got, sink, room); got += room; flags |= 1u; }
+   else { memcpy(out + got, sink, (size_t)r); got += (size_t)r; }
+  }
+  close(pipefd[0]);
+  int status = 0;
+  while (waitpid(pid, &status, 0) < 0) { if (errno != EINTR) return 126; }
+  uint32_t reply[4];
+  reply[0] = WIFSIGNALED(status) ? 1u : 0u;
+  reply[1] = WIFSIGNALED(status) ? (uint32_t)WTERMSIG(status) : (uint32_t)WEXITSTATUS(status);
+  reply[2] = (uint32_t)got;
+#ifdef WCOREDUMP
+  if (WIFSIGNALED(status) && WCOREDUMP(status)) flags |= 2u;
+#endif
+  reply[3] = flags;
+  if (!oak_test_write_all(1, reply, sizeof reply) || (got && !oak_test_write_all(1, out, got))) return 126;
+ }
+}
+#endif
+`
+
 func (p *nativeProgram) run(index int, input []byte) (result outcome) {
 	result = outcome{status: "fail", classes: map[uint32]bool{}}
 	if len(input) > p.maxBytes {
@@ -363,17 +477,23 @@ func (p *nativeProgram) run(index int, input []byte) (result outcome) {
 	_ = reportFile.Close()
 	defer os.Remove(reportPath)
 	defer os.Remove(reportPath + ".launches")
-	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, p.bin, strconv.Itoa(index), reportPath)
-	cmd.Stdin = bytes.NewReader(input)
-	var output limitedBuffer
-	cmd.Stdout, cmd.Stderr = &output, &output
-	// Bound pipe draining too: a descendant must not keep the runner waiting.
-	cmd.WaitDelay = 100 * time.Millisecond
-	err = cmd.Run()
-	result.output = output.text()
-	timedOut := ctx.Err() != nil
+	var status exitStatus
+	var timedOut bool
+	if p.resident {
+		status, result.output, timedOut = p.runResident(index, input, reportPath)
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, p.bin, strconv.Itoa(index), reportPath)
+		cmd.Stdin = bytes.NewReader(input)
+		var output limitedBuffer
+		cmd.Stdout, cmd.Stderr = &output, &output
+		// Bound pipe draining too: a descendant must not keep the runner waiting.
+		cmd.WaitDelay = 100 * time.Millisecond
+		status = statusOf(cmd.Run())
+		result.output = output.text()
+		timedOut = ctx.Err() != nil
+	}
 	// Read the flushed prefix even when a watchdog killed the process. A
 	// partial final report line must not hide the original timeout outcome.
 	defer func() {
@@ -461,24 +581,72 @@ func (p *nativeProgram) run(index int, input []byte) (result outcome) {
 			return result
 		}
 	}
-	if err == nil && terminal == "pass" {
+	if status.passed() && terminal == "pass" {
 		result.status = "pass"
 		return result
 	}
-	if exit, ok := err.(*exec.ExitError); ok {
-		if exit.ExitCode() == 102 && terminal == "discard" {
+	if status.ran && !status.passed() {
+		if status.exited && status.code == 102 && terminal == "discard" {
 			result.status = "discard"
 			return result
 		}
-		if exit.ExitCode() == 101 && terminal == "fail" {
+		if status.exited && status.code == 101 && terminal == "fail" {
 			return result
 		}
-		result.signature = "exit:" + exit.ProcessState.String()
+		result.signature = "exit:" + status.String()
 		return result
 	}
 	result.signature = "harness:missing-result"
-	if err != nil {
-		result.output += "\n" + err.Error()
+	if status.err != nil {
+		result.output += "\n" + status.err.Error()
 	}
 	return result
+}
+
+// exitStatus is how a case's process ended, the same for a process the
+// runner started and for a fork a resident worker reported.
+type exitStatus struct {
+	ran    bool // the process ran to an end: exited or killed by a signal
+	exited bool
+	code   int
+	signal syscall.Signal
+	core   bool
+	err    error // when !ran: why it did not
+}
+
+func (s exitStatus) passed() bool { return s.ran && s.exited && s.code == 0 }
+
+// String spells the status as os.ProcessState does, so signatures are the
+// same on both paths.
+func (s exitStatus) String() string {
+	text := ""
+	switch {
+	case s.exited:
+		text = "exit status " + strconv.Itoa(s.code)
+	default:
+		text = "signal: " + s.signal.String()
+	}
+	if s.core {
+		text += " (core dumped)"
+	}
+	return text
+}
+
+// statusOf reads a finished exec.Cmd's error.
+func statusOf(err error) exitStatus {
+	if err == nil {
+		return exitStatus{ran: true, exited: true}
+	}
+	exit, ok := err.(*exec.ExitError)
+	if !ok {
+		return exitStatus{err: err}
+	}
+	ws, ok := exit.Sys().(syscall.WaitStatus)
+	if !ok {
+		return exitStatus{ran: true, exited: true, code: exit.ExitCode()}
+	}
+	if ws.Signaled() {
+		return exitStatus{ran: true, signal: ws.Signal(), core: ws.CoreDump()}
+	}
+	return exitStatus{ran: true, exited: true, code: ws.ExitStatus()}
 }

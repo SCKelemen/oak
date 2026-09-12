@@ -264,7 +264,22 @@ type ADTVariantDef struct {
 	ResultIndices []string // constructor result indices in source order
 }
 
+// A binding is one name in a scope.
+type binding struct {
+	name  string
+	value Object
+}
+
+// inlineBindings is how many bindings a scope holds in its own frame before
+// spilling to a map: a block, a match arm or a call body rarely declares
+// more, so the common scope is one allocation with no map at all.
+const inlineBindings = 4
+
 type Environment struct {
+	// The first bindings live in the frame itself; the rest, if any, in
+	// store. A name is in exactly one of the two.
+	inline   [inlineBindings]binding
+	bound    int
 	store    map[string]Object
 	adtTypes map[string]*ADTType
 	// recordDecls retains record type declarations' field structure
@@ -281,37 +296,68 @@ type Environment struct {
 }
 
 func NewEnvironment() *Environment {
-	return &Environment{
-		store:    make(map[string]Object),
-		adtTypes: make(map[string]*ADTType),
-		outer:    nil,
-	}
+	return &Environment{adtTypes: make(map[string]*ADTType)}
 }
 
+// NewEnclosedEnvironment opens a scope inside outer. It allocates only the
+// binding store: ADT types are looked up through the chain (GetADTType),
+// so nothing is copied — a block, a call or a match arm costs one small
+// map, not a copy of every declared type. This is what the prover's
+// exhaustive enumeration and the REPL pay per evaluated scope
+// (docs/notes/formal-methods-performance-2026-09.md, item 5).
 func NewEnclosedEnvironment(outer *Environment) *Environment {
-	env := NewEnvironment()
-	env.outer = outer
+	env := &Environment{outer: outer}
 	if outer != nil {
 		env.arithmeticWidths = outer.arithmeticWidths
-	}
-	// Copy ADT types from outer environment
-	if outer != nil {
-		for name, adtType := range outer.GetAllADTTypes() {
-			env.adtTypes[name] = adtType
-		}
 	}
 	return env
 }
 
-func (e *Environment) Get(name string) (Object, bool) {
-	obj, ok := e.store[name]
-	if !ok && e.outer != nil {
-		obj, ok = e.outer.Get(name)
+// lookup finds a binding in this scope alone.
+func (e *Environment) lookup(name string) (Object, bool) {
+	for i := 0; i < e.bound; i++ {
+		if e.inline[i].name == name {
+			return e.inline[i].value, true
+		}
 	}
-	return obj, ok
+	if e.store != nil {
+		obj, ok := e.store[name]
+		return obj, ok
+	}
+	return nil, false
 }
 
+func (e *Environment) Get(name string) (Object, bool) {
+	for scope := e; scope != nil; scope = scope.outer {
+		if obj, ok := scope.lookup(name); ok {
+			return obj, true
+		}
+	}
+	return nil, false
+}
+
+// Set binds name in this scope, replacing an existing binding of the name.
 func (e *Environment) Set(name string, val Object) Object {
+	for i := 0; i < e.bound; i++ {
+		if e.inline[i].name == name {
+			e.inline[i].value = val
+			return val
+		}
+	}
+	if e.store != nil {
+		if _, spilled := e.store[name]; spilled {
+			e.store[name] = val
+			return val
+		}
+	}
+	if e.bound < inlineBindings {
+		e.inline[e.bound] = binding{name: name, value: val}
+		e.bound++
+		return val
+	}
+	if e.store == nil {
+		e.store = make(map[string]Object)
+	}
 	e.store[name] = val
 	return val
 }
@@ -322,8 +368,8 @@ func (e *Environment) Set(name string, val Object) Object {
 // holds the name.
 func (e *Environment) Assign(name string, val Object) bool {
 	for scope := e; scope != nil; scope = scope.outer {
-		if _, ok := scope.store[name]; ok {
-			scope.store[name] = val
+		if _, ok := scope.lookup(name); ok {
+			scope.Set(name, val)
 			return true
 		}
 	}
@@ -358,14 +404,21 @@ type recordTemplate struct {
 }
 
 func (e *Environment) GetADTType(name string) (*ADTType, bool) {
-	adt, ok := e.adtTypes[name]
-	if !ok && e.outer != nil {
-		adt, ok = e.outer.GetADTType(name)
+	for scope := e; scope != nil; scope = scope.outer {
+		if scope.adtTypes == nil {
+			continue
+		}
+		if adt, ok := scope.adtTypes[name]; ok {
+			return adt, true
+		}
 	}
-	return adt, ok
+	return nil, false
 }
 
 func (e *Environment) SetADTType(name string, adt *ADTType) {
+	if e.adtTypes == nil {
+		e.adtTypes = make(map[string]*ADTType)
+	}
 	e.adtTypes[name] = adt
 }
 
@@ -405,8 +458,23 @@ func (e *Environment) GetRecordDecl(name string) (*ast.RecordLiteral, bool) {
 	return decl, ok
 }
 
+// GetAllADTTypes is every ADT type visible from this scope. The root
+// environment returns its own table (the type checker is built on the
+// root and records declarations into it); an enclosed scope returns a
+// merged copy over the chain, inner declarations shadowing outer ones.
 func (e *Environment) GetAllADTTypes() map[string]*ADTType {
-	return e.adtTypes
+	if e.outer == nil {
+		return e.adtTypes
+	}
+	merged := make(map[string]*ADTType)
+	for scope := e; scope != nil; scope = scope.outer {
+		for name, adt := range scope.adtTypes {
+			if _, shadowed := merged[name]; !shadowed {
+				merged[name] = adt
+			}
+		}
+	}
+	return merged
 }
 
 func (e *Environment) GetOuter() *Environment {

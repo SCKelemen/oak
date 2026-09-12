@@ -42,7 +42,7 @@ func (tc *TypeChecker) checkAggregateEquality(expr *ast.InfixExpression, typ Typ
 		return false
 	}
 	if tc.equalityTypes == nil {
-		tc.equalityTypes = map[string]string{}
+		tc.equalityTypes = map[tokenKey]string{}
 	}
 	tc.equalityTypes[positionKey(expr.Token)] = name
 	return true

@@ -37,14 +37,19 @@ type Config struct {
 	// Device replays recorded kernel launches on this machine's GPU and
 	// compares them with the host's run (docs/spec/110-testing.md, "Launch
 	// targets"); off, launches are recorded and counted but not replayed.
-	Device   bool
+	Device bool
+	// Resident runs the cases of a package through resident harness
+	// processes that fork once per case (the same fresh state as a new
+	// process, without paying its start-up and the sanitizer runtime's
+	// initialization each time); off, every case is its own process.
+	Resident bool
 	Cover    string
 	Workers  int
 	Campaign string
 }
 
 func Defaults() Config {
-	return Config{CC: "cc", Runs: 100, MaxBytes: 256, Shrink: 200, Seed: 1, Timeout: 2 * time.Second, BuildTimeout: time.Minute, ShrinkTimeout: 10 * time.Second, MaxDiscards: 1000, Workers: 1, Device: true}
+	return Config{CC: "cc", Runs: 100, MaxBytes: 256, Shrink: 200, Seed: 1, Timeout: 2 * time.Second, BuildTimeout: time.Minute, ShrinkTimeout: 10 * time.Second, MaxDiscards: 1000, Workers: 1, Device: true, Resident: true}
 }
 
 type Result struct {
@@ -139,6 +144,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	flags.BoolVar(&cfg.JSON, "json", false, "emit one JSON result per test")
 	flags.BoolVar(&cfg.List, "list", false, "list matching tests without compilation")
 	flags.BoolVar(&cfg.Verbose, "v", false, "include successful test output")
+	flags.BoolVar(&cfg.Resident, "resident", cfg.Resident, "run cases in resident harness workers, one fresh fork per case; off runs one process per case")
 	flags.BoolVar(&cfg.Device, "device", cfg.Device, "replay recorded kernel launches on this machine's GPU and compare with the host (docs/spec/110-testing.md, \"Launch targets\")")
 	flags.BoolVar(&cfg.Sanitize, "sanitize", false, "enable native address and undefined-behavior sanitizers")
 	flags.Usage = func() {
@@ -356,6 +362,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 			for _, test := range pkg.Tests {
 				emit(Result{Test: test, Package: pkg.Dir, Status: "built", Output: "  built for " + cfg.target.String() + ", not run", Seed: cfg.Seed})
 			}
+			native.close()
 			_ = os.RemoveAll(native.dir)
 			continue
 		}
@@ -376,6 +383,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 			}
 			emit(result)
 		}
+		native.close()
 		_ = os.RemoveAll(native.dir)
 	}
 	return code

@@ -134,7 +134,7 @@ func (tc *TypeChecker) checkFloatLiteral(lit *ast.FloatLiteral, expected Type) T
 // for integer widths (ArithmeticType): "f32" or "f64" instead of u8..i64.
 func (tc *TypeChecker) recordFloatWidth(tok token.Token, name string) {
 	if tc.arithmeticTypes == nil {
-		tc.arithmeticTypes = make(map[string]string)
+		tc.arithmeticTypes = make(map[tokenKey]string)
 	}
 	tc.arithmeticTypes[positionKey(tok)] = name
 }

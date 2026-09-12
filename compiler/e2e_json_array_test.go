@@ -162,3 +162,68 @@ main: (): i32 = 0
 		}
 	}
 }
+
+// The structural-index fast path of a fixed integer array (section 21)
+// agrees with the sequential loop on every shape the corpus exercises, and
+// hands the loop every shape it does not cover: whitespace around
+// elements, a space before a separator, signs, a leading zero, more than
+// sixteen digits, and the width boundaries.
+func TestE2EJsonArrayIndexedPath(t *testing.T) {
+	var source strings.Builder
+	source.WriteString(`import(std)
+json: tag = { name: string }
+Wide: type = struct { a: [6]i64, b: [3]u32, c: [2]u64 }
+main: (): i32 {
+`)
+	writeTextView(&source, "input", `{"a":[ 1, -2 ,3,1234567890123456,-999999999 , 0],"b":[7,08,4294967295],"c":[18446744073709551615,12345678901234567]}`)
+	writeTextView(&source, "fixed", `{"a":[1,-2,3,1234567890123456,-999999999,0],"b":[7,8,4294967295],"c":[18446744073709551615,12345678901234567]}`)
+	source.WriteString(`
+ first: Result[Wide, JsonDecodeError] = decode[Wide, Json](input)
+ first ?
+  | .Ok(value) => { assert(false) }
+  | .Err(reason) => { assert(json_decode_error_code(reason) == u32(2)) }
+ second: Result[Wide, JsonDecodeError] = decode[Wide, Json](fixed)
+ second ?
+  | .Err(reason) => { assert(false) }
+  | .Ok(value) => {
+   assert(value.a[0] == i64(1) && value.a[1] == i64(0) - i64(2) && value.a[2] == i64(3))
+   assert(value.a[3] == i64(1234567890123456) && value.a[4] == i64(0) - i64(999999999) && value.a[5] == i64(0))
+   assert(value.b[0] == u32(7) && value.b[1] == u32(8) && value.b[2] == u32(4294967295))
+   assert(value.c[0] == (u64(9223372036854775807) * u64(2) + u64(1)) && value.c[1] == u64(12345678901234567))
+  }
+ 42
+}
+`)
+	_, code, abnormal := buildAndRunOutput(t, "json_array_indexed", source.String(), "-fsanitize=address,undefined", "-DOAK_PORTABLE_INTRINSICS")
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+	for _, fixture := range []struct {
+		input string
+		code  int
+	}{
+		{`{"a":[1,2,3,4,5,6],"b":[-1,2,3],"c":[1,2]}`, 3},                   // a sign on an unsigned element
+		{`{"a":[1,2,3,4,5,6],"b":[1,2,3],"c":[1,18446744073709551616]}`, 4}, // one past the width
+		{`{"a":[1,2,3,4,5,6],"b":[1,2,3],"c":[1,99999999999999999999]}`, 4}, // twenty digits
+		{`{"a":[1,2,3,4,5,6],"b":[1,4294967296,3],"c":[1,2]}`, 4},           // one past u32
+		{`{"a":[1,2,3,4,5,6],"b":[1,2,3],"c":[1,2,3]}`, 8},                  // too long
+		{`{"a":[1,2,3,4,5,6],"b":[1,2],"c":[1,2]}`, 8},                      // too short
+		{`{"a":[1,2,3,4,5,6],"b":[1,2,3],"c":[1,"2"]}`, 3},                  // a string element
+		{`{"a":[1,2,3,4,5,6],"b":[1,2,3],"c":[1,2.5]}`, 3},                  // a fraction: the terminator is not structural
+		{`{"a":[1,2,3,4,5,6],"b":[1,2,3],"c":[1,]}`, 2},                     // a trailing comma
+		{`{"a":[1,2,3,4,5,6],"b":[1,2,3],"c":[1,[2]]}`, 3},                  // a nested array
+	} {
+		var errSource strings.Builder
+		errSource.WriteString(`import(std)
+json: tag = { name: string }
+Wide: type = struct { a: [6]i64, b: [3]u32, c: [2]u64 }
+main: (): i32 {
+`)
+		writeTextView(&errSource, "input", fixture.input)
+		fmt.Fprintf(&errSource, "result: Result[Wide, JsonDecodeError] = decode[Wide, Json](input)\nresult ? | .Ok(value) => { assert(false) } | .Err(reason) => { assert(json_decode_error_code(reason) == u32(%d)) }\n42\n}\n", fixture.code)
+		_, code, abnormal := buildAndRunOutput(t, "json_array_indexed_error", errSource.String(), "-fsanitize=address,undefined", "-DOAK_PORTABLE_INTRINSICS")
+		if abnormal || code != 42 {
+			t.Fatalf("%s: exit=(%d,%v), want code %d", fixture.input, code, abnormal, fixture.code)
+		}
+	}
+}

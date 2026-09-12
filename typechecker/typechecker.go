@@ -532,12 +532,12 @@ type TypeChecker struct {
 	bufferRecordInitializer ast.Expression
 	// reinterpretFactors maps a view_as/span_as call (position-keyed) to
 	// the scalars per record its source holds.
-	reinterpretFactors map[string]Reinterpretation
+	reinterpretFactors map[tokenKey]Reinterpretation
 	// custodyInitializer is the custody transition call currently checked
 	// as a Buffer declaration's initializer, the one position such a call
 	// may stand in (docs/spec/92-ffi.md section 2.8.5).
 	custodyInitializer ast.Expression
-	operatorCalls      map[string]string
+	operatorCalls      map[tokenKey]string
 	// packageExports is every loaded package's member table, for uniform
 	// call syntax (docs/spec/10-syntax.md section 13).
 	packageExports          map[string]modules.Exports
@@ -562,8 +562,8 @@ type TypeChecker struct {
 	// loopDepth counts the while bodies enclosing the statement being
 	// checked; a function body starts a fresh count.
 	loopDepth          int
-	variantResolutions map[string]string
-	matchResolutions   map[string]string
+	variantResolutions map[tokenKey]string
+	matchResolutions   map[tokenKey]string
 	// recordTemplates holds generic record declarations (Ring[T, N: u32]);
 	// instantiations are cached by mangled name.
 	recordTemplates map[string]*ast.ADTType
@@ -581,19 +581,19 @@ type TypeChecker struct {
 	boolFacts map[string][]extentFact
 	// arithmeticTypes records the fixed-width result type of each arithmetic
 	// expression (position-keyed), so the backend emits the total helper.
-	arithmeticTypes map[string]string
+	arithmeticTypes map[tokenKey]string
 	// refinements are the declared refinement types by name, and
 	// refinementChecks the constructions by call position
 	// (typechecker/refinements.go).
 	refinements           map[string]*refinementInfo
 	refinementTemplates   map[string][]string // generic refinement -> its specializations
 	refinementTemplateSet *refinementTemplateSet
-	refinementChecks      map[string]string
-	refinementDischarged  map[string]bool
+	refinementChecks      map[tokenKey]string
+	refinementDischarged  map[tokenKey]bool
 	// equalityTypes records, per `==`/`!=` operator position, the named
 	// sum type or record the operands have, so the backend emits that
 	// type's equality function (typechecker/equality.go).
-	equalityTypes map[string]string
+	equalityTypes map[tokenKey]string
 	// unsafeDepth counts the enclosing unsafe blocks; initializerUnderCheck
 	// is the initializer expression of the declaration being checked. Both
 	// gate the inbound buffer borrows of docs/spec/92-ffi.md section 2.7.
@@ -620,7 +620,7 @@ type TypeChecker struct {
 	predeclaredGlobals map[string]bool
 	// shiftWidths records the operand width of each shift expression
 	// (position-keyed), consumed by the backend's checked-shift emission.
-	shiftWidths map[string]int
+	shiftWidths map[tokenKey]int
 	// Generic function templates and their monomorphized instantiations
 	// (typechecker/genericfn.go).
 	globalEnv *TypeEnvironment
@@ -631,10 +631,10 @@ type TypeChecker struct {
 	// externFunctions names the extern bindings (docs/spec/92-ffi.md section 2.3),
 	// whose calls may carry boundary spans (section 2.5).
 	externFunctions        map[string]bool
-	layoutQueries          map[string]LayoutQuery
+	layoutQueries          map[tokenKey]LayoutQuery
 	checkingSpecialization bool
 	extentFacts            []extentFact
-	provenIndices          map[string]bool
+	provenIndices          map[tokenKey]bool
 	asmBackedFunctions     map[string]bool
 	functionTemplates      map[string]*ast.FunctionStatement
 	functionInstantiations map[string]*ast.FunctionStatement
@@ -1313,7 +1313,7 @@ func (tc *TypeChecker) checkOperatorCall(expr *ast.InfixExpression, callee strin
 		return nil
 	}
 	if tc.operatorCalls == nil {
-		tc.operatorCalls = make(map[string]string)
+		tc.operatorCalls = make(map[tokenKey]string)
 	}
 	tc.operatorCalls[positionKey(expr.Token)] = callee
 	return fnType.ReturnType
@@ -2861,7 +2861,7 @@ func (tc *TypeChecker) checkReinterpretCast(callee *ast.Identifier, targetSyntax
 		return nil
 	}
 	if tc.reinterpretFactors == nil {
-		tc.reinterpretFactors = make(map[string]Reinterpretation)
+		tc.reinterpretFactors = make(map[tokenKey]Reinterpretation)
 	}
 	tc.reinterpretFactors[positionKey(expr.Token)] = Reinterpretation{Factor: count, Element: prim.Name}
 	expr.Function = &ast.Identifier{Token: callee.Token, Value: name}
