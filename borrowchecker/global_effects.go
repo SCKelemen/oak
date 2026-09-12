@@ -176,7 +176,7 @@ func pureBorrowBuiltin(name string) bool {
 		return true
 	}
 	switch name {
-	case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64",
+	case "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64",
 		"int", "uint", "uptr", "iptr", "f32", "f64", "byte", "rune",
 		"len", "assert", "assert_eq", "assert_ne", "is_valid_utf8", "str_from_utf8", "str_bytes",
 		"view", "span", "subslice", "view_as", "span_as",
@@ -188,7 +188,7 @@ func pureBorrowBuiltin(name string) bool {
 
 func scalarIntegerName(name string) bool {
 	switch name {
-	case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f32", "f64":
+	case "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "f32", "f64":
 		return true
 	}
 	return false

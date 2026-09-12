@@ -49,7 +49,7 @@ import (
 // Strings, views and spans of these, and plain-data records and sum types
 // over them, are capturable too (captureTypes.spelling).
 var closureScalarTypes = map[string]bool{
-	"u8": true, "u16": true, "u32": true, "u64": true,
+	"u8": true, "u16": true, "u32": true, "u64": true, "u128": true,
 	"i8": true, "i16": true, "i32": true, "i64": true,
 	"int": true, "uint": true, "ptr": true, "uptr": true,
 	"byte": true, "rune": true, "Bool": true, "f32": true, "f64": true,

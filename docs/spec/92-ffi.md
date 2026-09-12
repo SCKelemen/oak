@@ -139,7 +139,10 @@ bits, `size_t` is at least 32 bits. Both are realized (`90-backend.md`
 `freestanding/riscv32` are ILP32, and the target's data model sets Oak's
 machine-sized types. Targets outside this model (16-bit `int`)
 are not supported by the v1 `c.Int`/`c.Size` conversion rows; the fixed-width
-rows are unconditional.
+rows are unconditional. `u128` (`20-types.md` §11) is `unsigned __int128`
+and so requires a C compiler defining `__SIZEOF_INT128__` — gcc and clang
+on every LP64 target; it has no `c.*` spelling and crosses the boundary
+only inside a record whose layout the emitted assertions ratify.
 
 ### 2.5 Spans at the boundary
 
@@ -614,8 +617,9 @@ with the diagnostic it gives an extern call (§4).
 
 A borrow ends with its block. An owner that holds a foreign allocation
 until the program hands it back is `Buffer[T]`, §2.8. The custody
-typestate that lets a device own the memory for a while
-(`Buffer[DeviceOwned]`, `50-borrowing.md` §11) is the increment after it.
+typestate that lets a device own the memory for a while is `Buffer[T, S]`
+(§2.8.5), and a record that holds a buffer carries its custody (§2.8.6);
+`50-borrowing.md` §11 is the design those sections realized.
 
 #### 2.7.6 Diagnostics
 

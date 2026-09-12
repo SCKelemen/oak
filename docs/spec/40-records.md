@@ -149,6 +149,14 @@ Its inputs are:
 - an already-established machine size for each field;
 - a non-zero power-of-two alignment for each field.
 
+For the fixed-width scalars both are the width: `u8`..`u64` and
+`i8`..`i64` are 1, 2, 4, 8 bytes at their own size, and `u128` is 16 bytes
+at 16 (`unsigned __int128` on every LP64 ABI Oak targets), so a record
+holding a `u128` checksum is 16-aligned and a header of two `u128` fields
+and a `u32` is 48 bytes; the emitted layout assertions (§6a) and
+`static_assert(size_of[T]())` (§6b) both see the same numbers
+(`compiler/e2e_u128_test.go`).
+
 The following is **specification pseudocode, not Oak source syntax**. It does not introduce `for`, `place`, `align_up`, or mutable assignment as Oak language constructs.
 
 ```text

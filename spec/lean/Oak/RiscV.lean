@@ -259,4 +259,72 @@ theorem addw_sext_truncate (x y : BitVec 32) :
     (addw (x.signExtend 64) (y.signExtend 64)).truncate 32 = x + y := by
   rw [addw_sext]; bv_decide
 
+/-! ## The LP64D contract (`94-assembler.md` §9)
+
+Parameters are placed in two independent files: integers (and span pairs)
+in `a0`–`a7` in declaration order, `f32`/`f64` in `fa0`–`fa7` in
+declaration order; the result in `a0` or `fa0` by its type. The checker
+computes exactly this (`bindContract`); the model states that the
+placement is injective and order-preserving within each file, so two
+parameters never share a register and a binding names each register at
+most once. -/
+
+inductive Kind where
+  | int | float
+  deriving DecidableEq, Repr
+
+/-- A register of the contract: the file and the index into `a0`–`a7` or
+    `fa0`–`fa7`. -/
+structure Reg where
+  kind : Kind
+  index : Nat
+  deriving DecidableEq, Repr
+
+/-- The placement of a parameter list: the k-th parameter of each kind
+    takes the k-th register of its file. -/
+def lp64dBinding : List Kind → List Reg
+  | ks => go ks 0 0
+where
+  go : List Kind → Nat → Nat → List Reg
+    | [], _, _ => []
+    | .int :: rest, i, f => ⟨.int, i⟩ :: go rest (i + 1) f
+    | .float :: rest, i, f => ⟨.float, f⟩ :: go rest i (f + 1)
+
+theorem lp64dBinding_length (ks : List Kind) : (lp64dBinding ks).length = ks.length := by
+  suffices h : ∀ ks i f, (lp64dBinding.go ks i f).length = ks.length from h ks 0 0
+  intro ks
+  induction ks with
+  | nil => intros; rfl
+  | cons k rest ih => intro i f; cases k <;> simp [lp64dBinding.go, ih]
+
+/-- Each parameter keeps its kind's file. -/
+theorem lp64dBinding_kinds (ks : List Kind) : (lp64dBinding ks).map Reg.kind = ks := by
+  suffices h : ∀ ks i f, (lp64dBinding.go ks i f).map Reg.kind = ks from h ks 0 0
+  intro ks
+  induction ks with
+  | nil => intros; rfl
+  | cons k rest ih => intro i f; cases k <;> simp [lp64dBinding.go, ih]
+
+/-- Every list of kinds up to the contract's width (eight of each file)
+    places its parameters in distinct registers: decided exhaustively. -/
+def allKinds : Nat → List (List Kind)
+  | 0 => [[]]
+  | n + 1 => [] :: ((allKinds n).flatMap fun ks => [Kind.int :: ks, Kind.float :: ks])
+
+set_option maxRecDepth 20000 in
+theorem lp64dBinding_nodup_upto8 : ∀ ks ∈ allKinds 8, (lp64dBinding ks).Nodup := by decide
+
+/-- Two examples the tests use: `(a, b, c : f64)` and `(n : u32, x : f64)`. -/
+theorem lp64dBinding_fma : lp64dBinding [.float, .float, .float] = [⟨.float, 0⟩, ⟨.float, 1⟩, ⟨.float, 2⟩] := rfl
+theorem lp64dBinding_mixed : lp64dBinding [.int, .float, .int, .float] = [⟨.int, 0⟩, ⟨.float, 0⟩, ⟨.int, 1⟩, ⟨.float, 1⟩] := rfl
+
+/-- The move instructions between the files are bit identities: a value
+    moved to the floating-point file and back is unchanged, so an integer
+    carrier of an `f64` pattern survives the round trip (`fmv.d.x`/`fmv.x.d`
+    in the differential's constant loading). -/
+def fmvDX (x : X) : BitVec 64 := x
+def fmvXD (f : BitVec 64) : X := f
+
+theorem fmv_round_trip (x : X) : fmvXD (fmvDX x) = x := rfl
+
 end Oak.RiscV

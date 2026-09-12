@@ -855,6 +855,14 @@ Creating/dereferencing/reinterpreting raw pointers therefore requires the releva
 
 ## 11. DMA and ownership states
 
+**Status: realized** as `Buffer[T, S]` custody states and Buffer fields in
+records (`92-ffi.md` §2.8.5, §2.8.6; `Oak.BufferCustody`): a transition
+extern moves the buffer between `Host` and a device state, only a `Host`
+buffer is borrowed or handed back, and a record holding a buffer is the
+custody state with more than a name (a device identity beside the handle).
+The text below is the design as it was written; the sections above are
+normative where they differ.
+
 The same ownership vocabulary should extend to machine/device custody without special pointer syntax.
 
 Conceptually:

@@ -21,7 +21,7 @@ type Type interface {
 
 // PrimitiveType represents primitive integer types
 type PrimitiveType struct {
-	Name string // "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "ptr", "uptr"
+	Name string // "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "u128", "int", "uint", "ptr", "uptr"
 	// Refinement names the refinement type this value carries
 	// (typechecker/refinements.go): `Small: type = u16 where value < 256`
 	// gives PrimitiveType{Name: "u16", Refinement: "Small"}. A refined
@@ -2122,6 +2122,8 @@ func (tc *TypeChecker) getBitWidth(typeName string) int {
 		return 32
 	case "i64", "u64":
 		return 64
+	case "u128":
+		return 128
 	default:
 		return 0
 	}
@@ -2886,7 +2888,8 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 	// Check if it's a primitive type name (including aliases and platform types)
 	primitiveTypes := map[string]bool{
 		"u8": true, "u16": true, "u32": true, "u64": true,
-		"i8": true, "i16": true, "i32": true, "i64": true,
+		"u128": true, // widens from every unsigned type (docs/spec/20-types.md section 11)
+		"i8":   true, "i16": true, "i32": true, "i64": true,
 		"int": true, "uint": true, "ptr": true, "uptr": true, // platform types
 		"byte": true,              // alias of u8
 		"rune": true,              // alias of u32 (docs/spec/70-strings.md section 9)
@@ -2974,7 +2977,7 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 func (tc *TypeChecker) literalFits(lit *ast.IntegerLiteral, typeName string) bool {
 	if lit.Wide {
 		switch typeName {
-		case "u64":
+		case "u64", "u128":
 			return true
 		case "uint", "uptr":
 			return tc.intSize == 64
@@ -2999,8 +3002,8 @@ func (tc *TypeChecker) literalFitsInType(value int64, typeName string) bool {
 		return value >= 0 && value <= 65535
 	case "u32":
 		return value >= 0 && value <= 4294967295
-	case "u64":
-		return value >= 0 // u64 can hold any non-negative int64
+	case "u64", "u128":
+		return value >= 0 // u64 and u128 hold any non-negative int64
 	case "i8":
 		return value >= -128 && value <= 127
 	case "i16":
@@ -3080,6 +3083,8 @@ func (tc *TypeChecker) getTypeWidth(typeName string) int {
 		return 32
 	case "u64", "i64":
 		return 64
+	case "u128":
+		return 128
 	case "int", "uint":
 		// Platform types: use configured int size
 		return tc.intSize
@@ -3134,7 +3139,7 @@ func (tc *TypeChecker) checkNarrowingFunction(funcName string, args []ast.Expres
 
 	// Validate that target and source are primitive types
 	primitiveTypes := map[string]bool{
-		"u8": true, "u16": true, "u32": true, "u64": true,
+		"u8": true, "u16": true, "u32": true, "u64": true, "u128": true,
 		"i8": true, "i16": true, "i32": true, "i64": true,
 	}
 	targetFloat := IsFloatName(targetType) || IsStorageFloatName(targetType)
@@ -5631,7 +5636,7 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 		}
 		// Check if it's a primitive type
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16", "f8e4m3", "f8e5m2":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "u128", "f32", "f64", "f16", "bf16", "f8e4m3", "f8e5m2":
 			return &PrimitiveType{Name: ident.Value}
 		case "int", "uint", "ptr", "uptr":
 			// Platform-dependent types
@@ -5820,7 +5825,7 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 		}
 		// Check if it's a primitive type
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16", "f8e4m3", "f8e5m2":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "u128", "f32", "f64", "f16", "bf16", "f8e4m3", "f8e5m2":
 			return &PrimitiveType{Name: ident.Value}
 		case "int", "uint", "ptr", "uptr":
 			// Platform-dependent types
@@ -6438,6 +6443,12 @@ func (tc *TypeChecker) noteGuardWrap(cmp *ast.InfixExpression, leftType, rightTy
 		verb := map[string]string{"+": "add", "*": "mul"}[inner.Operator]
 		d := tc.addTypeInformation(inner, CodeGuardWrap,
 			fmt.Sprintf("unsigned `%s` on %s inside an ordering guard wraps before the comparison", inner.Operator, fixed))
+		if fixed == "u128" {
+			// The checked family stops at 64 bits (20-types.md §11.1a).
+			d.Advice = append(d.Advice, diagnostic.Advice{Kind: diagnostic.AdviceNote,
+				Message: "compare against the remaining room so the guard cannot wrap"})
+			continue
+		}
 		d.Advice = append(d.Advice, diagnostic.Advice{Kind: diagnostic.AdviceNote,
 			Message: fmt.Sprintf("spell the intent: `%s_checked_%s` or `%s_saturating_%s` (20-types.md §11.1a), or compare against the remaining room so the guard cannot wrap", fixed, verb, fixed, verb)})
 	}

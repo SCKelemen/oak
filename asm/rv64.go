@@ -60,6 +60,60 @@ var rv64Branches = map[string]bool{"beq": true, "bne": true, "blt": true, "bge":
 var rv64Loads = map[string]int{"lb": 1, "lh": 2, "lw": 4, "ld": 8, "lbu": 1, "lhu": 2, "lwu": 4}
 var rv64Stores = map[string]int{"sb": 1, "sh": 2, "sw": 4, "sd": 8}
 
+// The F and D extensions (docs/spec/94-assembler.md §9): loads and stores
+// of the floating-point file, the arithmetic, fused multiply-adds,
+// comparisons (writing an integer register), conversions, and moves
+// between the files. The verifier's term language does not reach them;
+// a unit using them is checked and trusted.
+var rv64FloatLoads = map[string]int{"flw": 4, "fld": 8}
+var rv64FloatStores = map[string]int{"fsw": 4, "fsd": 8}
+
+// rv64FloatShapes maps each F/D mnemonic to its operand classes: f for a
+// floating-point register, x for an integer register, r for an optional
+// rounding mode.
+var rv64FloatShapes = map[string]string{
+	"fadd.s": "fffr", "fsub.s": "fffr", "fmul.s": "fffr", "fdiv.s": "fffr", "fsqrt.s": "ffr",
+	"fadd.d": "fffr", "fsub.d": "fffr", "fmul.d": "fffr", "fdiv.d": "fffr", "fsqrt.d": "ffr",
+	"fmin.s": "fff", "fmax.s": "fff", "fmin.d": "fff", "fmax.d": "fff",
+	"fsgnj.s": "fff", "fsgnjn.s": "fff", "fsgnjx.s": "fff", "fsgnj.d": "fff", "fsgnjn.d": "fff", "fsgnjx.d": "fff",
+	"fmadd.s": "ffffr", "fmsub.s": "ffffr", "fnmadd.s": "ffffr", "fnmsub.s": "ffffr",
+	"fmadd.d": "ffffr", "fmsub.d": "ffffr", "fnmadd.d": "ffffr", "fnmsub.d": "ffffr",
+	"feq.s": "xff", "flt.s": "xff", "fle.s": "xff", "feq.d": "xff", "flt.d": "xff", "fle.d": "xff",
+	"fclass.s": "xf", "fclass.d": "xf",
+	"fmv.x.w": "xf", "fmv.w.x": "fx", "fmv.x.d": "xf", "fmv.d.x": "fx",
+	"fcvt.w.s": "xfr", "fcvt.wu.s": "xfr", "fcvt.l.s": "xfr", "fcvt.lu.s": "xfr",
+	"fcvt.w.d": "xfr", "fcvt.wu.d": "xfr", "fcvt.l.d": "xfr", "fcvt.lu.d": "xfr",
+	"fcvt.s.w": "fxr", "fcvt.s.wu": "fxr", "fcvt.s.l": "fxr", "fcvt.s.lu": "fxr",
+	"fcvt.d.w": "fxr", "fcvt.d.wu": "fxr", "fcvt.d.l": "fxr", "fcvt.d.lu": "fxr",
+	"fcvt.s.d": "ffr", "fcvt.d.s": "ffr",
+}
+
+// rv64RoundingModes are the rounding-mode operands the arithmetic and
+// conversions take; absent, the encoder uses dyn (the fcsr's mode).
+var rv64RoundingModes = map[string]int64{"rne": 0, "rtz": 1, "rdn": 2, "rup": 3, "rmm": 4, "dyn": 7}
+
+// rv64FloatABINames maps the floating-point ABI names to numbers.
+var rv64FloatABINames = map[string]int{
+	"ft0": 0, "ft1": 1, "ft2": 2, "ft3": 3, "ft4": 4, "ft5": 5, "ft6": 6, "ft7": 7,
+	"fs0": 8, "fs1": 9,
+	"fa0": 10, "fa1": 11, "fa2": 12, "fa3": 13, "fa4": 14, "fa5": 15, "fa6": 16, "fa7": 17,
+	"fs2": 18, "fs3": 19, "fs4": 20, "fs5": 21, "fs6": 22, "fs7": 23, "fs8": 24, "fs9": 25, "fs10": 26, "fs11": 27,
+	"ft8": 28, "ft9": 29, "ft10": 30, "ft11": 31,
+}
+
+// rv64FloatRegisterName is the ABI spelling of a floating-point register.
+func rv64FloatRegisterName(num int) string {
+	for name, n := range rv64FloatABINames {
+		if n == num {
+			return name
+		}
+	}
+	return fmt.Sprintf("f%d", num)
+}
+
+// rv64FloatCalleeSaved reports fs0–fs11 (f8, f9, f18–f27).
+func rv64FloatCalleeSaved(num int) bool { return num == 8 || num == 9 || (num >= 18 && num <= 27) }
+
 // rv64ABINames maps the ABI register names to numbers; x2 is sp, parsed
 // as ClassSP so the frame machinery shared with the AArch64 lane applies.
 var rv64ABINames = map[string]int{
@@ -99,6 +153,15 @@ func parseRV64Register(text string) (Register, bool) {
 		num, err := strconv.Atoi(lower[1:])
 		if err == nil && num >= 0 && num <= 31 {
 			return Register{Text: lower, Class: ClassRV64X, Num: num, Lane: -1}, true
+		}
+	}
+	if num, known := rv64FloatABINames[lower]; known {
+		return Register{Text: lower, Class: ClassRV64F, Num: num, Lane: -1}, true
+	}
+	if strings.HasPrefix(lower, "f") {
+		num, err := strconv.Atoi(lower[1:])
+		if err == nil && num >= 0 && num <= 31 {
+			return Register{Text: lower, Class: ClassRV64F, Num: num, Lane: -1}, true
 		}
 	}
 	return Register{}, false
@@ -158,6 +221,9 @@ func parseRV64Operand(text, mnemonic string) (Operand, error) {
 	if value, err := parseImmediate(strings.TrimPrefix(text, "#")); err == nil {
 		return Immediate{Value: value}, nil
 	}
+	if _, isMode := rv64RoundingModes[strings.ToLower(text)]; isMode && rv64FloatShapes[mnemonic] != "" {
+		return Option{Name: strings.ToLower(text)}, nil
+	}
 	if isRV64Label(text) {
 		return Symbol{Name: text}, nil
 	}
@@ -209,6 +275,19 @@ func rv64CheckShape(instr Instruction) error {
 		return nil
 	}
 	name := instr.Mnemonic
+	if shape, isFloat := rv64FloatShapes[name]; isFloat {
+		return rv64CheckFloatShape(instr, shape)
+	}
+	if width, isFloat := rv64FloatLoads[name]; isFloat || rv64FloatStores[name] != 0 {
+		_ = width
+		if len(ops) != 2 || !is(1, "m") {
+			return fmt.Errorf("%s takes a floating-point register and a memory operand imm(base)", name)
+		}
+		if r, isReg := ops[0].(Register); !isReg || r.Class != ClassRV64F {
+			return fmt.Errorf("%s: operand 1 must be a floating-point register", name)
+		}
+		return nil
+	}
 	switch {
 	case name == "add" || name == "sub" || name == "and" || name == "or" || name == "xor" || name == "sll" || name == "srl" || name == "sra" || name == "slt" || name == "sltu" ||
 		name == "addw" || name == "subw" || name == "sllw" || name == "srlw" || name == "sraw" || name == "mul" || name == "mulh" || name == "mulhsu" || name == "mulhu" || name == "div" || name == "divu" || name == "rem" || name == "remu" ||
@@ -251,6 +330,37 @@ func rv64CheckShape(instr Instruction) error {
 		return nil
 	}
 	return fmt.Errorf("instruction %s is not admitted by the RV64 checker", name)
+}
+
+// rv64CheckFloatShape validates an F/D instruction's operands against its
+// shape: f a floating-point register, x an integer register, r an
+// optional trailing rounding mode.
+func rv64CheckFloatShape(instr Instruction, shape string) error {
+	ops := instr.Operands
+	required := strings.TrimSuffix(shape, "r")
+	optionalMode := strings.HasSuffix(shape, "r")
+	if len(ops) < len(required) || len(ops) > len(required)+map[bool]int{true: 1, false: 0}[optionalMode] {
+		return fmt.Errorf("%s takes %d operands (and an optional rounding mode), got %d", instr.Mnemonic, len(required), len(ops))
+	}
+	for i, kind := range required {
+		reg, isReg := ops[i].(Register)
+		switch kind {
+		case 'f':
+			if !isReg || reg.Class != ClassRV64F {
+				return fmt.Errorf("%s: operand %d must be a floating-point register", instr.Mnemonic, i+1)
+			}
+		case 'x':
+			if !isReg || (reg.Class != ClassRV64X && reg.Class != ClassSP) {
+				return fmt.Errorf("%s: operand %d must be an integer register", instr.Mnemonic, i+1)
+			}
+		}
+	}
+	if len(ops) > len(required) {
+		if _, isMode := ops[len(ops)-1].(Option); !isMode {
+			return fmt.Errorf("%s: the last operand must be a rounding mode (rne, rtz, rdn, rup, rmm, dyn)", instr.Mnemonic)
+		}
+	}
+	return nil
 }
 
 // rv64Base rewrites a pseudo-instruction to its base spelling (docs/spec/

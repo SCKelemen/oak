@@ -302,6 +302,8 @@ func renderRV64Operand(operand Operand, symbolFor func(string) string, numbers m
 		return fmt.Sprintf("%d", o.Value)
 	case Memory:
 		return fmt.Sprintf("%d(%s)", o.Offset, o.Base.Text)
+	case Option:
+		return o.Name
 	case Symbol:
 		if number, isLabel := numbers[o.Name]; isLabel {
 			if defined[o.Name] {
