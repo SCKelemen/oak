@@ -28,6 +28,9 @@ typedef uint8_t  u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
 typedef uint64_t u64;
+#if defined(__SIZEOF_INT128__)
+typedef unsigned __int128 u128;
+#endif
 
 typedef int8_t   i8;
 typedef int16_t i16;
@@ -279,6 +282,28 @@ static inline void oak_assert_ne_f64(f64 got, f64 want, const char *file, u32 li
     __builtin_trap();
   }
 }
+#if defined(__SIZEOF_INT128__)
+static inline void oak_assert_eq_u128(u128 got, u128 want, const char *file, u32 line) {
+  if (!(got == want)) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got 0x%016llx%016llx, want 0x%016llx%016llx\n", file, (unsigned)line, (unsigned long long)(got >> 64), (unsigned long long)got, (unsigned long long)(want >> 64), (unsigned long long)want);
+#else
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_ne_u128(u128 got, u128 want, const char *file, u32 line) {
+  if (got == want) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got 0x%016llx%016llx, want anything but 0x%016llx%016llx\n", file, (unsigned)line, (unsigned long long)(got >> 64), (unsigned long long)got, (unsigned long long)(want >> 64), (unsigned long long)want);
+#else
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
+#endif
+    __builtin_trap();
+  }
+}
+#endif
 static inline void oak_assert_eq_Bool(Bool got, Bool want, const char *file, u32 line) {
   if (!(got == want)) {
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
@@ -377,6 +402,17 @@ OAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u
   static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (b == -1) { return 0; } return (T)(a % b); }
 OAK_ARITH_U(u8) OAK_ARITH_U(u16) OAK_ARITH_U(u32) OAK_ARITH_U(u64)
 OAK_ARITH_I(i8, u8, INT8_MIN) OAK_ARITH_I(i16, u16, INT16_MIN) OAK_ARITH_I(i32, u32, INT32_MIN) OAK_ARITH_I(i64, u64, INT64_MIN)
+#if defined(__SIZEOF_INT128__)
+/* u128: unsigned __int128 arithmetic is defined mod 2^128 by C itself; the
+   helpers keep the one shape (division by zero traps, shifts checked) */
+OAK_SHIFT_HELPERS(u128, 128u)
+static inline u128 oak_add_u128(u128 a, u128 b) { return a + b; }
+static inline u128 oak_sub_u128(u128 a, u128 b) { return a - b; }
+static inline u128 oak_neg_u128(u128 a) { return (u128)0 - a; }
+static inline u128 oak_mul_u128(u128 a, u128 b) { return a * b; }
+static inline u128 oak_div_u128(u128 a, u128 b) { if (b == 0) { __builtin_trap(); } return a / b; }
+static inline u128 oak_rem_u128(u128 a, u128 b) { if (b == 0) { __builtin_trap(); } return a % b; }
+#endif
 #define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)
 
 /* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */
@@ -440,6 +476,9 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
 #include <arm_neon.h>
 #endif
+#if defined(__riscv) && defined(__riscv_vector) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
+#include <riscv_vector.h>
+#endif
 typedef struct oak_u8x16 { u8 lanes[16]; } u8x16;
 typedef struct oak_u16x8 { u16 lanes[8]; } u16x8;
 typedef struct oak_u32x4 { u32 lanes[4]; } u32x4;
@@ -460,6 +499,9 @@ static inline u8x16 oak_simd_eq_u8x16( u8x16 a, u8x16 b ) {
   u8x16 r;
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
   vst1q_u8(r.lanes, vceqq_u8(vld1q_u8(a.lanes), vld1q_u8(b.lanes)));
+#elif defined(__riscv) && defined(__riscv_vector) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
+  vbool8_t m = __riscv_vmseq_vv_u8m1_b8(__riscv_vle8_v_u8m1(a.lanes, 16), __riscv_vle8_v_u8m1(b.lanes, 16), 16);
+  __riscv_vse8_v_u8m1(r.lanes, __riscv_vmerge_vxm_u8m1(__riscv_vmv_v_x_u8m1(0, 16), (u8)~(u8)0, m, 16), 16);
 #else
   for (int i = 0; i < 16; i++) {
     u8 x = a.lanes[i]; u8 y = b.lanes[i];
@@ -474,6 +516,8 @@ static inline u8x16 oak_simd_load_u8x16( oak_view_u8 v, u32 off ) {
   u8x16 r;
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
   vst1q_u8(r.lanes, vld1q_u8(v.base + off));
+#elif defined(__riscv) && defined(__riscv_vector) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
+  __riscv_vse8_v_u8m1(r.lanes, __riscv_vle8_v_u8m1(v.base + off, 16), 16);
 #else
   for (int i = 0; i < 16; i++) { r.lanes[i] = v.base[off + (u32)i]; }
 #endif
@@ -483,6 +527,8 @@ static inline u8x16 oak_simd_load_u8x16_proven( oak_view_u8 v, u32 off ) {
   u8x16 r;
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
   vst1q_u8(r.lanes, vld1q_u8(v.base + off));
+#elif defined(__riscv) && defined(__riscv_vector) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
+  __riscv_vse8_v_u8m1(r.lanes, __riscv_vle8_v_u8m1(v.base + off, 16), 16);
 #else
   for (int i = 0; i < 16; i++) { r.lanes[i] = v.base[off + (u32)i]; }
 #endif
@@ -493,6 +539,8 @@ static inline u8x16 oak_simd_splat_u8x16( u8 x ) {
   u8x16 r;
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
   vst1q_u8(r.lanes, vdupq_n_u8(x));
+#elif defined(__riscv) && defined(__riscv_vector) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
+  __riscv_vse8_v_u8m1(r.lanes, __riscv_vmv_v_x_u8m1(x, 16), 16);
 #else
   for (int i = 0; i < 16; i++) { r.lanes[i] = x; }
 #endif
@@ -523,6 +571,8 @@ static inline void oak_simd_store_u8x16( oak_span_u8 s, u32 off, u8x16 val ) {
   if ((u64)off + 16u > (u64)s.len) { __builtin_trap(); }
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
   vst1q_u8(s.base + off, vld1q_u8(val.lanes));
+#elif defined(__riscv) && defined(__riscv_vector) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
+  __riscv_vse8_v_u8m1(s.base + off, __riscv_vle8_v_u8m1(val.lanes, 16), 16);
 #else
   for (int i = 0; i < 16; i++) { s.base[off + (u32)i] = val.lanes[i]; }
 #endif
@@ -530,6 +580,8 @@ static inline void oak_simd_store_u8x16( oak_span_u8 s, u32 off, u8x16 val ) {
 static inline void oak_simd_store_u8x16_proven( oak_span_u8 s, u32 off, u8x16 val ) {
 #if defined(__aarch64__) && defined(__ARM_NEON) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
   vst1q_u8(s.base + off, vld1q_u8(val.lanes));
+#elif defined(__riscv) && defined(__riscv_vector) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)
+  __riscv_vse8_v_u8m1(s.base + off, __riscv_vle8_v_u8m1(val.lanes, 16), 16);
 #else
   for (int i = 0; i < 16; i++) { s.base[off + (u32)i] = val.lanes[i]; }
 #endif

@@ -28,6 +28,9 @@ typedef uint8_t  u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
 typedef uint64_t u64;
+#if defined(__SIZEOF_INT128__)
+typedef unsigned __int128 u128;
+#endif
 
 typedef int8_t   i8;
 typedef int16_t i16;
@@ -282,6 +285,28 @@ static inline void oak_assert_ne_f64(f64 got, f64 want, const char *file, u32 li
     __builtin_trap();
   }
 }
+#if defined(__SIZEOF_INT128__)
+static inline void oak_assert_eq_u128(u128 got, u128 want, const char *file, u32 line) {
+  if (!(got == want)) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got 0x%016llx%016llx, want 0x%016llx%016llx\n", file, (unsigned)line, (unsigned long long)(got >> 64), (unsigned long long)got, (unsigned long long)(want >> 64), (unsigned long long)want);
+#else
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
+#endif
+    __builtin_trap();
+  }
+}
+static inline void oak_assert_ne_u128(u128 got, u128 want, const char *file, u32 line) {
+  if (got == want) {
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
+    fprintf(stderr, "oak: assertion failed at %s:%u: got 0x%016llx%016llx, want anything but 0x%016llx%016llx\n", file, (unsigned)line, (unsigned long long)(got >> 64), (unsigned long long)got, (unsigned long long)(want >> 64), (unsigned long long)want);
+#else
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
+#endif
+    __builtin_trap();
+  }
+}
+#endif
 static inline void oak_assert_eq_Bool(Bool got, Bool want, const char *file, u32 line) {
   if (!(got == want)) {
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
@@ -380,6 +405,17 @@ OAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u
   static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (b == -1) { return 0; } return (T)(a % b); }
 OAK_ARITH_U(u8) OAK_ARITH_U(u16) OAK_ARITH_U(u32) OAK_ARITH_U(u64)
 OAK_ARITH_I(i8, u8, INT8_MIN) OAK_ARITH_I(i16, u16, INT16_MIN) OAK_ARITH_I(i32, u32, INT32_MIN) OAK_ARITH_I(i64, u64, INT64_MIN)
+#if defined(__SIZEOF_INT128__)
+/* u128: unsigned __int128 arithmetic is defined mod 2^128 by C itself; the
+   helpers keep the one shape (division by zero traps, shifts checked) */
+OAK_SHIFT_HELPERS(u128, 128u)
+static inline u128 oak_add_u128(u128 a, u128 b) { return a + b; }
+static inline u128 oak_sub_u128(u128 a, u128 b) { return a - b; }
+static inline u128 oak_neg_u128(u128 a) { return (u128)0 - a; }
+static inline u128 oak_mul_u128(u128 a, u128 b) { return a * b; }
+static inline u128 oak_div_u128(u128 a, u128 b) { if (b == 0) { __builtin_trap(); } return a / b; }
+static inline u128 oak_rem_u128(u128 a, u128 b) { if (b == 0) { __builtin_trap(); } return a % b; }
+#endif
 #define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)
 
 /* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */
