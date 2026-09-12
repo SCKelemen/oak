@@ -193,9 +193,8 @@ ladder; a theorem is never a build error for being open.
 
 The bit-level rung is decided by the solver written in Oak
 (`prove/solver/bdd.oak`, §7) by default: a theorem the exhaustive decider
-does not reach is lowered to the decider's terms, passed the Go decider's
-witness inputs (a counterexample among them settles it at once), and
-serialized under every variable order that applies as a word table — and,
+does not reach is lowered to the decider's terms and serialized under
+every variable order that applies as a word table — and,
 when it is in that lowering's subset (integers, Bool, floats as their
 IEEE patterns, records of them, fixed arrays, and sum types as
 parameters, locals, arguments, and results; the arithmetic, bitwise,
@@ -210,8 +209,13 @@ program functions — a parameter of a sum type decided under the
 hypothesis that every tag names a variant), also as a syntax table for
 the lowering written in
 Oak (`prove/solver/lower.oak`), which builds the terms itself under each
-of the three variable orders and whose verdict is preferred whenever it
-decides; the
+of the three variable orders, runs the witness pass on them (the boundary
+values of the parameters the terms mention, the first two crossed, then
+256 inputs of a fixed xorshift sequence; an input that falsifies the
+claim or fires a trap obligation settles the theorem before any diagram
+is built, and is reported as the counterexample), and whose verdict is
+preferred whenever it decides; a theorem outside that lowering's subset
+takes the Go decider's witness pass instead. The
 solver and its driver are one fixed Oak program, built once through the
 backend and kept, and the pending theorems of a run are streamed to it on
 standard input, one process per order at the same time, each theorem
@@ -480,12 +484,13 @@ In order of payoff, each reusing a surface that exists:
   bit patterns with the fresh symbol a NaN `min` or `max` yields, sum
   types with first-match dispatch and the tag hypothesis, under the
   three variable orders, the built terms compacted to what the roots
-  reach before solving; every one of the corpus's 165 bit-level laws is
-  lowered and decided in Oak today, node for node the Go decider's
-  counts wherever the orders coincide), so on the bit-level path the Go
-  that remains is the parser, the type checker, the witness pass, and
-  the serialization of the syntax table; next the witness pass and the
-  serialization, then the parser and checker themselves; then
+  reach before solving, and the witness pass run in Oak on the built
+  terms; every one of the corpus's 165 bit-level laws is lowered and
+  decided in Oak today, node for node the Go decider's counts wherever
+  the orders coincide, and every refutation names the counterexample the
+  Go decider names), so on the bit-level path the Go that remains is the
+  parser, the type checker, and the serialization of the syntax table;
+  next the serialization, then the parser and checker themselves; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
   producers of certificates, so speed and trust are separated; then an
