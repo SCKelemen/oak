@@ -260,6 +260,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 
 	// Emit standard library ADTs first
 	cg.emitBoolADT()
+	cg.emitStringEquality(tc)
 	cg.emitComparisonADT()
 	cg.emitAssertHelper()
 	cg.emitUtf8Helper()
@@ -821,6 +822,8 @@ func (cg *CodeGenerator) equalityTerm(typ typechecker.Type, l, r string) string 
 		if t.Name != "" {
 			return fmt.Sprintf("oak_eq_%s( %s, %s )", cg.cTypeName(t.Name), l, r)
 		}
+	case *typechecker.StringType:
+		return fmt.Sprintf("oak_eq_string( %s, %s )", l, r)
 	case *typechecker.ArrayType:
 		if !t.IsSlice && !t.IsSpan {
 			element := cg.parseTypeExpression(typeExpressionOf(t.ElementType))
@@ -872,6 +875,21 @@ func (cg *CodeGenerator) emitADTEquality(typeName, cName string, tc *typechecker
 	}
 	cg.write("    default: return oak_Bool_True;\n")
 	cg.write("  }\n")
+	cg.write("}\n\n")
+}
+
+// emitStringEquality emits the string equality the program compares
+// with, when it compares strings at all (typechecker/equality.go records
+// the comparison): the lengths first, then the bytes, never a read past
+// the shorter operand (docs/spec/70-strings.md).
+func (cg *CodeGenerator) emitStringEquality(tc *typechecker.TypeChecker) {
+	if tc == nil || !cg.equalityNeeded(tc)["string"] {
+		return
+	}
+	cg.write("static inline Bool oak_eq_string( string a, string b ) {\n")
+	cg.write("  if ( a.len != b.len ) { return oak_Bool_False; }\n")
+	cg.write("  for ( u32 i = 0; i < a.len; i++ ) { if ( a.data[i] != b.data[i] ) { return oak_Bool_False; } }\n")
+	cg.write("  return oak_Bool_True;\n")
 	cg.write("}\n\n")
 }
 
@@ -2587,7 +2605,11 @@ func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *type
 			if expr.Operator == "!=" {
 				cg.output.WriteString("!")
 			}
-			cg.output.WriteString(fmt.Sprintf("oak_eq_%s( ", cg.cTypeName(name)))
+			helper := "oak_eq_" + cg.cTypeName(name)
+			if name == "string" {
+				helper = "oak_eq_string"
+			}
+			cg.output.WriteString(helper + "( ")
 			cg.emitExpressionFragment(expr.Left, tc)
 			cg.output.WriteString(", ")
 			cg.emitExpressionFragment(expr.Right, tc)

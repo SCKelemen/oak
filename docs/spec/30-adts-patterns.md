@@ -260,11 +260,13 @@ Formal obligations include:
 variant tags first, then, when they agree, the payloads by the payload
 type's own equality. The comparison is admitted when every payload has an
 equality — machine integers, `Bool`, `f32`/`f64` (IEEE: NaN differs from
-itself), nested named sum types and records (`40-records.md` §16), fixed
+itself), `string` (by its bytes, `70-strings.md`), nested named sum types
+and records (`40-records.md` §16), fixed
 arrays of integers or `Bool` — and refused otherwise (`OAK-T0601`): a view
 or span payload, a storage float (`f16`, `bf16`, `f8e4m3`, `f8e5m2`), an
 anonymous record shape, or a generic instantiation. The backend emits one
-equality function per compared type (`oak_eq_T`), and the interpreter
+equality function per compared type (`oak_eq_T`; `oak_eq_string` compares
+lengths, then bytes), and the interpreter
 compares the same way, so the two realizations agree by construction and
 the differential sweep holds them to it.
 
