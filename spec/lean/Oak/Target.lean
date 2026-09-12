@@ -28,6 +28,7 @@ inductive OS where
 
 inductive Arch where
   | arm64 | amd64 | riscv64
+  | arm | riscv32 -- the 32-bit microcontroller architectures (Cortex-M, RV32)
   deriving DecidableEq, Repr
 
 structure Target where
@@ -35,14 +36,20 @@ structure Target where
   arch : Arch
   deriving DecidableEq, Repr
 
-/-- The closed set: Darwin has no RISC-V platform. -/
+/-- The 32-bit microcontroller architectures. -/
+def Arch.mcu : Arch → Bool
+  | .arm | .riscv32 => true
+  | _ => false
+
+/-- The closed set: Darwin has no RISC-V platform; the microcontroller
+    architectures exist freestanding only. -/
 def supported (t : Target) : Bool :=
   match t.os, t.arch with
   | .darwin, .riscv64 => false
+  | .linux, .arm | .linux, .riscv32 | .darwin, .arm | .darwin, .riscv32 => false
   | _, _ => true
 
-/-- The C data model every supported target has: `int` 32, `long` and
-    pointers 64 bits. -/
+/-- A C data model: the widths of `int`, `long`, and pointers. -/
 structure DataModel where
   intBits : Nat
   longBits : Nat
@@ -50,10 +57,27 @@ structure DataModel where
   deriving DecidableEq, Repr
 
 def lp64 : DataModel := ⟨32, 64, 64⟩
+def ilp32 : DataModel := ⟨32, 32, 32⟩
 
-def dataModel (_ : Target) : DataModel := lp64
+/-- `Target.DataModel` in Go: ILP32 for the microcontroller architectures,
+    LP64 otherwise — the two models `92-ffi.md` §2.4 admits. -/
+def dataModel (t : Target) : DataModel := if t.arch.mcu then ilp32 else lp64
 
-theorem supported_lp64 (t : Target) (_ : supported t = true) : dataModel t = lp64 := rfl
+theorem dataModel_lp64_or_ilp32 (t : Target) : dataModel t = lp64 ∨ dataModel t = ilp32 := by
+  unfold dataModel; split <;> simp
+
+/-- `int` is 32 bits on every target: the fixed-width rows of the FFI are
+    unconditional and the `c.Int` row never moves. -/
+theorem int_bits_32 (t : Target) : (dataModel t).intBits = 32 := by
+  unfold dataModel; split <;> rfl
+
+/-- Pointers are the machine word: 32 bits exactly on the microcontrollers. -/
+theorem ptr_bits (t : Target) : (dataModel t).ptrBits = (if t.arch.mcu then 32 else 64) := by
+  unfold dataModel; split <;> simp_all [lp64, ilp32]
+
+theorem hosted_lp64 (t : Target) (h : supported t = true) (hos : t.os ≠ .freestanding) : dataModel t = lp64 := by
+  obtain ⟨os, arch⟩ := t
+  cases os <;> cases arch <;> simp_all [supported, dataModel, Arch.mcu]
 
 /-- The assembler lane of an architecture (`Function.Arch` in Go): arm64,
     rv64, or none for amd64. -/
@@ -64,7 +88,7 @@ inductive Lane where
 def lane : Target → Option Lane
   | ⟨_, .arm64⟩ => some .arm64
   | ⟨_, .riscv64⟩ => some .rv64
-  | ⟨_, .amd64⟩ => none
+  | ⟨_, .amd64⟩ | ⟨_, .arm⟩ | ⟨_, .riscv32⟩ => none
 
 /-- The lane depends on the architecture alone. -/
 theorem lane_arch (t u : Target) (h : t.arch = u.arch) : lane t = lane u := by
@@ -109,6 +133,26 @@ def rv64FloatABI (t : Target) : FloatABI :=
 
 theorem linux_riscv64_lp64d : rv64FloatABI ⟨.linux, .riscv64⟩ = .double := rfl
 theorem bare_riscv64_lp64 : rv64FloatABI ⟨.freestanding, .riscv64⟩ = .soft := rfl
+
+/-- The processor a target compiles for when the build names none
+    (`Target.DefaultCPU`): the toolchain's baseline for hosted targets, and
+    for freestanding ones a processor whose defaults match the companion
+    object — soft-float RISC-V, the Cortex-M4 for Arm. -/
+def defaultCPU (t : Target) : Option String :=
+  if t.os ≠ .freestanding then none
+  else match t.arch with
+    | .riscv64 => some "generic_rv64"
+    | .riscv32 => some "generic_rv32"
+    | .arm => some "cortex_m4"
+    | _ => none
+
+/-- The default processor of a freestanding RISC-V target is soft-float,
+    which is what the companion object declares for it. -/
+theorem defaultCPU_bare_rv64 : defaultCPU ⟨.freestanding, .riscv64⟩ = some "generic_rv64" ∧ rv64FloatABI ⟨.freestanding, .riscv64⟩ = .soft := ⟨rfl, rfl⟩
+
+/-- Hosted targets take the toolchain's baseline. -/
+theorem defaultCPU_hosted (t : Target) (h : t.os ≠ .freestanding) : defaultCPU t = none := by
+  simp [defaultCPU, h]
 
 /-! ## Driver resolution (`toolchain.Resolve`) -/
 
