@@ -122,6 +122,78 @@ func summarizeInvariants(results []Result) []Result {
 	return results
 }
 
+// domainSize is the number of values valuesOf would materialize for a
+// type, computed before any of them is built so a wide record or sum is
+// refused against the cases bound rather than enumerated. A refinement
+// counts exactly the base values its constructor admits (one pass over an
+// 8- or 16-bit base), so `Replica: type = u8 where value < u8(2)` is two
+// values, not 256. The reason is valuesOf's.
+func domainSize(tc *typechecker.TypeChecker, env *object.Environment, typ typechecker.Type) (int64, string) {
+	switch t := typ.(type) {
+	case *typechecker.BoolType:
+		return 2, ""
+	case *typechecker.PrimitiveType:
+		var base int64
+		switch t.Name {
+		case "u8", "i8":
+			base = 256
+		case "u16", "i16":
+			base = 65536
+		default:
+			return 0, fmt.Sprintf("%s is not a finite scalar, enum, or record type", typ.String())
+		}
+		if t.Refinement == "" {
+			return base, ""
+		}
+		values, reason := valuesOf(tc, env, typ)
+		if reason != "" {
+			return 0, reason
+		}
+		return int64(len(values)), ""
+	case *typechecker.ADTType:
+		variants, ok := tc.ADTVariants(t.Name)
+		if !ok {
+			return 0, fmt.Sprintf("%s is generic or unknown", t.Name)
+		}
+		var total int64
+		for _, variant := range variants {
+			if variant.Payload != nil {
+				if _, isUnit := variant.Payload.(*typechecker.UnitType); !isUnit {
+					n, reason := domainSize(tc, env, variant.Payload)
+					if reason != "" {
+						return 0, fmt.Sprintf("%s.%s: payload: %s", t.Name, variant.Name, reason)
+					}
+					total += n
+					continue
+				}
+			}
+			total++
+		}
+		return total, ""
+	case *typechecker.RecordType:
+		if t.Name == "" {
+			return 0, "an anonymous record shape is not enumerated"
+		}
+		order, fields, ok := tc.RecordFields(t.Name)
+		if !ok {
+			return 0, fmt.Sprintf("%s is not a declared record", t.Name)
+		}
+		total := int64(1)
+		for _, field := range order {
+			n, reason := domainSize(tc, env, fields[field])
+			if reason != "" {
+				return 0, fmt.Sprintf("field %s: %s", field, reason)
+			}
+			total *= n
+			if total > 1<<40 {
+				return total, ""
+			}
+		}
+		return total, ""
+	}
+	return 0, fmt.Sprintf("%s is not a finite scalar, enum, or record type", typ.String())
+}
+
 // domain is the finite set of values a parameter type ranges over.
 type domain struct {
 	name   string
@@ -252,6 +324,15 @@ func decide(env *object.Environment, tc *typechecker.TypeChecker, functions map[
 	var domains []domain
 	total := 1
 	for _, param := range theorem.Parameters {
+		// Size before materializing: a payload record of two u8 fields is
+		// 65536 values, and the product of several is refused here rather
+		// than built.
+		if typ := tc.ParseTypeExpression(param.Type); typ != nil {
+			if size, reason := domainSize(tc, env, typ); reason == "" && int64(total)*size > int64(cases) {
+				return blastOr(tc, decls, theorem, functions, Result{Name: name, Status: Open,
+					Detail: fmt.Sprintf("the domain exceeds %d cases; stated for Lean", cases)})
+			}
+		}
 		d, reason := domainOf(tc, env, param)
 		if reason != "" {
 			return blastOr(tc, decls, theorem, functions, Result{Name: name, Status: Open, Detail: reason + "; stated for Lean"})

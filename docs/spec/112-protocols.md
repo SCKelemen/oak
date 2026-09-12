@@ -119,10 +119,19 @@ States are the names `initial` and the transition lines mention, in order of
 first appearance with the initial state first; they are spelled like variants
 (initial capital), because they become variants. Transition names are spelled
 like functions; several lines may share a name (one step from several
-states), and all lines of one name carry the same payload or none. A payload
-is one fixed-width scalar or `Bool`, or a declared record of those — the
-shapes typed test commands carry — named so the model-checker module can
-quantify over it. Several lines may
+states), and all lines of one name carry the same payload or none. A payload is one fixed-width scalar or `Bool`, a refinement of `u8` or
+`u16` (`Replica: type = u8 where value < u8(2)`, `20-types.md` §12), or a
+declared record of those — the shapes typed test commands carry — named so
+the model-checker module can quantify over it. A refinement is the way to
+say a payload's domain once: the Oak projection carries the refined type
+(a step with an inadmissible value cannot be constructed), the
+model-checker module defines the domain as the set the predicate carves
+from the base (§4), `oak prove` enumerates exactly the admitted values
+(two replicas, not 256 — the difference between a replication model whose
+reachable graph is decided in a second and one that is refused as too
+wide), and the typed-command derive generates, packs and decodes the field
+through the predicate (`110-testing.md`, "Typed commands"). A `u32` base
+is refused: the generator scans the base range for an admitted value. Several lines may
 share both name and source state when every such line carries a guard: in
 Oak the first line whose guard holds is taken, in declaration order; the
 model checker explores every line whose guard holds.
@@ -246,9 +255,13 @@ renders a TLA+ module from the parsed declaration alone: one `VARIABLE` per
 data field plus `state`, `vars`, `States`, `Init` from `initial` and `init`,
 one action per step name — the disjunction of its lines, each
 `state = "From" /\ guard /\ state' = "To" /\ field' = value ... /\ UNCHANGED
-<<rest>>`, with a parameter for the payload — `Next` as the disjunction of
-the actions with payloads quantified over a declared `CONSTANT` per payload
-name (`on` -> `On`), `TypeOK` (`Nat`, `Int`, `BOOLEAN` by field type), and
+<<rest>>`, with a parameter for the payload — `Next` as the disjunction of the actions with payloads quantified over a
+declared `CONSTANT` per payload name (`on` -> `On`) — or, for a refined
+payload or a refined field of a record payload, over a **defined set**
+rather than a constant: `Op == {value \in 0..255 : (value < 2)}`, the
+predicate translated like a guard with `value` as its variable, so the
+configuration assigns nothing for it (`oak protocol -cfg` omits it) and
+the domain cannot drift from the declaration — `TypeOK` (`Nat`, `Int`, `BOOLEAN` by field type), and
 `Spec`. Guards and effects translate from the subset a line may use: field,
 element and element-field reads (`peers[i].acked`), the payload, literals,
 width conversions, `+ - * / %`, comparisons, `&& || !`, the quantifier

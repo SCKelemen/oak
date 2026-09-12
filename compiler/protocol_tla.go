@@ -78,8 +78,34 @@ func (env *tlaEnv) useFiniteSets() {
 // ProtocolTLAWithRecords renders the module with the program's record
 // declarations available for array-of-records data fields.
 func ProtocolTLAWithRecords(decl *ast.ProtocolDeclaration, origin string, records map[string]*ast.RecordLiteral) (string, error) {
+	return ProtocolTLAWithDeclarations(decl, origin, ProtocolDeclarations{Records: records})
+}
+
+// refinementRanges are the TLA+ ranges of the refinable base scalars.
+var refinementRanges = map[string]string{"u8": "0..255", "u16": "0..65535", "u32": "0..4294967295", "i8": "-128..127", "i16": "-32768..32767", "i32": "-2147483648..2147483647"}
+
+// refinementSet renders a refinement's domain as the set its predicate
+// carves from the base range: `Name == {value \in 0..255 : (value < 2)}`.
+// The predicate translates like a guard with `value` as its one variable.
+func refinementSet(name string, decl *ast.ADTType, env *tlaEnv) (string, error) {
+	base := refinementBase(decl)
+	span, known := refinementRanges[base]
+	if !known {
+		return "", fmt.Errorf("refinement %s: base %s has no model range", name, base)
+	}
+	pred, err := tlaExpr(decl.Refinement, env.with("value", false))
+	if err != nil {
+		return "", fmt.Errorf("refinement %s: predicate: %v", name, err)
+	}
+	return fmt.Sprintf("%s == {value \\in %s : %s}", name, span, pred), nil
+}
+
+// ProtocolTLAWithDeclarations is ProtocolTLAWithRecords with the program's
+// refinement types as well: a refined payload's or field's domain is a
+// defined set, not a constant the configuration assigns.
+func ProtocolTLAWithDeclarations(decl *ast.ProtocolDeclaration, origin string, decls ProtocolDeclarations) (string, error) {
 	var problems []string
-	m, ok := analyzeProtocolWith(decl, records, func(code string, node ast.Node, format string, args ...interface{}) {
+	m, ok := analyzeProtocolDecls(decl, decls, func(code string, node ast.Node, format string, args ...interface{}) {
 		problems = append(problems, fmt.Sprintf(format, args...))
 	})
 	if !ok {
@@ -121,14 +147,39 @@ func ProtocolTLAWithRecords(decl *ast.ProtocolDeclaration, origin string, record
 			if fields, isRecord := payloadRecordFields(step.payload.Type, m.records); isRecord {
 				// A record payload's domain is the record set of its
 				// fields' domains, each a constant the configuration
-				// assigns (TLC's configuration reads no record sets).
+				// assigns (TLC's configuration reads no record sets) — or,
+				// for a refined field, the set its predicate defines.
 				var pairs []string
 				for _, field := range fields {
-					constants = append(constants, domain+fieldConstant(field.Name))
-					pairs = append(pairs, fmt.Sprintf("%s: %s", field.Name, domain+fieldConstant(field.Name)))
+					fieldDomain := domain + fieldConstant(field.Name)
+					if fieldType, isIdent := field.Value.(*ast.Identifier); isIdent {
+						if refinement, refined := m.refinements[fieldType.Value]; refined {
+							set, err := refinementSet(fieldDomain, refinement, env)
+							if err != nil {
+								return "", fmt.Errorf("protocol %s: %s", m.name, err)
+							}
+							domains = append(domains, set)
+							pairs = append(pairs, fmt.Sprintf("%s: %s", field.Name, fieldDomain))
+							continue
+						}
+					}
+					constants = append(constants, fieldDomain)
+					pairs = append(pairs, fmt.Sprintf("%s: %s", field.Name, fieldDomain))
 				}
 				domains = append(domains, fmt.Sprintf("%s == [%s]", domain, strings.Join(pairs, ", ")))
 				continue
+			}
+			if payloadType, isIdent := step.payload.Type.(*ast.Identifier); isIdent {
+				if refinement, refined := m.refinements[payloadType.Value]; refined {
+					// A refined payload's domain is the set its predicate
+					// defines; the configuration assigns nothing.
+					set, err := refinementSet(domain, refinement, env)
+					if err != nil {
+						return "", fmt.Errorf("protocol %s: %s", m.name, err)
+					}
+					domains = append(domains, set)
+					continue
+				}
 			}
 			constants = append(constants, domain)
 		}
@@ -357,6 +408,22 @@ func fieldConstant(field string) string {
 // declarations, so a record payload's domain is the record set of its
 // fields' domains.
 func ProtocolTLCConfigWith(decl *ast.ProtocolDeclaration, records map[string]*ast.RecordLiteral) string {
+	return ProtocolTLCConfigWithDeclarations(decl, ProtocolDeclarations{Records: records})
+}
+
+// ProtocolTLCConfigWithDeclarations is ProtocolTLCConfigWith with the
+// program's refinement types: a refined payload or field has its domain
+// defined in the module and gets no constant here.
+func ProtocolTLCConfigWithDeclarations(decl *ast.ProtocolDeclaration, decls ProtocolDeclarations) string {
+	records := decls.Records
+	refined := func(typ ast.Expression) bool {
+		id, isIdent := typ.(*ast.Identifier)
+		if !isIdent || decls.Refinements == nil {
+			return false
+		}
+		_, is := decls.Refinements[id.Value]
+		return is
+	}
 	var b strings.Builder
 	b.WriteString("SPECIFICATION Spec\nINVARIANT TypeOK\n")
 	if len(decl.Liveness) > 0 {
@@ -375,8 +442,14 @@ func ProtocolTLCConfigWith(decl *ast.ProtocolDeclaration, records map[string]*as
 		seen[domain] = true
 		if fields, isRecord := payloadRecordFields(t.Param.Type, records); isRecord {
 			for _, field := range fields {
+				if refined(field.Value) {
+					continue
+				}
 				constants = append(constants, fmt.Sprintf("    %s%s = %s", domain, fieldConstant(field.Name), payloadDomain(field.Value)))
 			}
+			continue
+		}
+		if refined(t.Param.Type) {
 			continue
 		}
 		constants = append(constants, fmt.Sprintf("    %s = %s", domain, payloadDomain(t.Param.Type)))

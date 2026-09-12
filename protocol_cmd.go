@@ -68,13 +68,13 @@ func protocolCommand(args []string, stdout, stderr io.Writer) int {
 		if decl.Name.Value != *tla {
 			continue
 		}
-		module, err := compiler.ProtocolTLAWithRecords(decl, path, compiler.RecordDeclarations(tree.Root))
+		module, err := compiler.ProtocolTLAWithDeclarations(decl, path, compiler.ProtocolDeclarationsOf(tree.Root))
 		if err != nil {
 			fmt.Fprintf(stderr, "oak protocol: %v\n", err)
 			return 1
 		}
 		if *cfgOut != "" {
-			if err := os.WriteFile(*cfgOut, []byte(compiler.ProtocolTLCConfigWith(decl, compiler.RecordDeclarations(tree.Root))), 0o644); err != nil {
+			if err := os.WriteFile(*cfgOut, []byte(compiler.ProtocolTLCConfigWithDeclarations(decl, compiler.ProtocolDeclarationsOf(tree.Root))), 0o644); err != nil {
 				fmt.Fprintf(stderr, "oak protocol: %v\n", err)
 				return 1
 			}
