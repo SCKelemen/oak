@@ -1,6 +1,23 @@
 /* Generated C code from Oak */
 #include <stdint.h>
 #include <stddef.h>
+#if !__STDC_HOSTED__ || defined(OAK_FREESTANDING)
+/* freestanding host boundary (docs/spec/90-backend.md section 2a): a weak
+   hook the kernel or firmware may define; diagnostics reach it, then trap */
+extern int64_t oak_host_write(int64_t fd, const uint8_t *buf, size_t len) __attribute__((weak));
+static void oak_report(const char *what, const char *file, uint32_t line) {
+  if (&oak_host_write == 0) { return; }
+  uint8_t buf[192]; size_t n = 0;
+  const char *parts[4] = { "oak: ", what, " at ", file };
+  for (int p = 0; p < 4; p++) { for (const char *c = parts[p]; *c != 0 && n < sizeof buf - 16; c++) { buf[n++] = (uint8_t)*c; } }
+  buf[n++] = ':';
+  uint8_t digits[10]; int d = 0;
+  do { digits[d++] = (uint8_t)('0' + line % 10u); line /= 10u; } while (line != 0u);
+  while (d > 0) { buf[n++] = digits[--d]; }
+  buf[n++] = '\n';
+  (void)oak_host_write(2, buf, n);
+}
+#endif
 
 typedef uint8_t  u8;
 typedef uint16_t u16;
@@ -49,8 +66,8 @@ static inline void oak_assert(Bool cond, const char *file, u32 line) {
 }
 #else
 static inline void oak_assert(Bool cond, const char *file, u32 line) {
-  (void)file; (void)line;
   if (!cond) {
+    oak_report("assertion failed", file, line);
     __builtin_trap();
   }
 }
@@ -62,7 +79,7 @@ static inline void oak_assert_eq_u8(u8 got, u8 want, const char *file, u32 line)
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -72,7 +89,7 @@ static inline void oak_assert_ne_u8(u8 got, u8 want, const char *file, u32 line)
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want anything but %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -82,7 +99,7 @@ static inline void oak_assert_eq_u16(u16 got, u16 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -92,7 +109,7 @@ static inline void oak_assert_ne_u16(u16 got, u16 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want anything but %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -102,7 +119,7 @@ static inline void oak_assert_eq_u32(u32 got, u32 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -112,7 +129,7 @@ static inline void oak_assert_ne_u32(u32 got, u32 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want anything but %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -122,7 +139,7 @@ static inline void oak_assert_eq_u64(u64 got, u64 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -132,7 +149,7 @@ static inline void oak_assert_ne_u64(u64 got, u64 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want anything but %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -142,7 +159,7 @@ static inline void oak_assert_eq_i8(i8 got, i8 want, const char *file, u32 line)
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want %lld\n", file, (unsigned)line, (long long)got, (long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -152,7 +169,7 @@ static inline void oak_assert_ne_i8(i8 got, i8 want, const char *file, u32 line)
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want anything but %lld\n", file, (unsigned)line, (long long)got, (long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -162,7 +179,7 @@ static inline void oak_assert_eq_i16(i16 got, i16 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want %lld\n", file, (unsigned)line, (long long)got, (long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -172,7 +189,7 @@ static inline void oak_assert_ne_i16(i16 got, i16 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want anything but %lld\n", file, (unsigned)line, (long long)got, (long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -182,7 +199,7 @@ static inline void oak_assert_eq_i32(i32 got, i32 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want %lld\n", file, (unsigned)line, (long long)got, (long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -192,7 +209,7 @@ static inline void oak_assert_ne_i32(i32 got, i32 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want anything but %lld\n", file, (unsigned)line, (long long)got, (long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -202,7 +219,7 @@ static inline void oak_assert_eq_i64(i64 got, i64 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want %lld\n", file, (unsigned)line, (long long)got, (long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -212,7 +229,7 @@ static inline void oak_assert_ne_i64(i64 got, i64 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want anything but %lld\n", file, (unsigned)line, (long long)got, (long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -222,7 +239,7 @@ static inline void oak_assert_eq_f32(f32 got, f32 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %.9g, want %.9g\n", file, (unsigned)line, (double)got, (double)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -232,7 +249,7 @@ static inline void oak_assert_ne_f32(f32 got, f32 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %.9g, want anything but %.9g\n", file, (unsigned)line, (double)got, (double)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -242,7 +259,7 @@ static inline void oak_assert_eq_f64(f64 got, f64 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %.17g, want %.17g\n", file, (unsigned)line, (double)got, (double)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -252,7 +269,7 @@ static inline void oak_assert_ne_f64(f64 got, f64 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %.17g, want anything but %.17g\n", file, (unsigned)line, (double)got, (double)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -262,7 +279,7 @@ static inline void oak_assert_eq_Bool(Bool got, Bool want, const char *file, u32
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %s, want %s\n", file, (unsigned)line, got ? "true" : "false", want ? "true" : "false");
 #else
-    (void)file; (void)line;
+    oak_report(got ? "assertion failed: got true, want false" : "assertion failed: got false, want true", file, line);
 #endif
     __builtin_trap();
   }
@@ -272,7 +289,7 @@ static inline void oak_assert_ne_Bool(Bool got, Bool want, const char *file, u32
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %s, want anything but %s\n", file, (unsigned)line, got ? "true" : "false", want ? "true" : "false");
 #else
-    (void)file; (void)line;
+    oak_report(got ? "assertion failed: got true, want anything but true" : "assertion failed: got false, want anything but false", file, line);
 #endif
     __builtin_trap();
   }
@@ -299,8 +316,7 @@ static inline const char *oak_cstr_u8(oak_view_u8 v, const char *file, u32 line)
 }
 #else
 static inline const char *oak_cstr_u8(oak_view_u8 v, const char *file, u32 line) {
-  (void)file; (void)line;
-  if (v.len == 0u || v.base[v.len - 1u] != 0u) { __builtin_trap(); }
+  if (v.len == 0u || v.base[v.len - 1u] != 0u) { oak_report("c.cstr view is not NUL-terminated", file, line); __builtin_trap(); }
   return (const char *)v.base;
 }
 #endif
@@ -592,7 +608,7 @@ typedef char oak_layout_size_DequeCursor[ (sizeof(oak_DequeCursor) == 8u) ? 1 : 
 typedef char oak_layout_off_DequeCursor_head[ (offsetof(oak_DequeCursor, head) == 0u) ? 1 : -1 ];
 typedef char oak_layout_off_DequeCursor_count[ (offsetof(oak_DequeCursor, count) == 4u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:3:4-3:23
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:3:4-3:23
 // @package: main
 // @kind: ADT
 // @identifier: Overflow
@@ -606,7 +622,7 @@ typedef struct oak_Overflow {
 
 typedef char oak_union_layout_Overflow[ (sizeof(oak_Overflow) == 4u && _Alignof(oak_Overflow) == 4u && offsetof(oak_Overflow, tag) == 0u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:3:23
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:3:23
 // @package: main
 // @kind: constructor
 // @identifier: oak_Overflow::Overflow
@@ -616,7 +632,7 @@ static inline oak_Overflow oak_Overflow_Overflow(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:15:4-15:32
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:15:4-15:32
 // @package: main
 // @kind: ADT
 // @identifier: RingPush
@@ -631,7 +647,7 @@ typedef struct oak_RingPush {
 
 typedef char oak_union_layout_RingPush[ (sizeof(oak_RingPush) == 4u && _Alignof(oak_RingPush) == 4u && offsetof(oak_RingPush, tag) == 0u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:15:21
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:15:21
 // @package: main
 // @kind: constructor
 // @identifier: oak_RingPush::Inserted
@@ -641,7 +657,7 @@ static inline oak_RingPush oak_RingPush_Inserted(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:15:32
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:15:32
 // @package: main
 // @kind: constructor
 // @identifier: oak_RingPush::Full
@@ -651,7 +667,7 @@ static inline oak_RingPush oak_RingPush_Full(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:54:4-54:24
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:54:4-54:24
 // @package: main
 // @kind: ADT
 // @identifier: CopyError
@@ -665,7 +681,7 @@ typedef struct oak_CopyError {
 
 typedef char oak_union_layout_CopyError[ (sizeof(oak_CopyError) == 4u && _Alignof(oak_CopyError) == 4u && offsetof(oak_CopyError, tag) == 0u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:54:24
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:54:24
 // @package: main
 // @kind: constructor
 // @identifier: oak_CopyError::DestinationTooSmall
@@ -675,7 +691,7 @@ static inline oak_CopyError oak_CopyError_DestinationTooSmall(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:97:4-97:42
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:97:4-97:42
 // @package: main
 // @kind: ADT
 // @identifier: BitSetError
@@ -690,7 +706,7 @@ typedef struct oak_BitSetError {
 
 typedef char oak_union_layout_BitSetError[ (sizeof(oak_BitSetError) == 4u && _Alignof(oak_BitSetError) == 4u && offsetof(oak_BitSetError, tag) == 0u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:97:24
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:97:24
 // @package: main
 // @kind: constructor
 // @identifier: oak_BitSetError::StorageTooSmall
@@ -700,7 +716,7 @@ static inline oak_BitSetError oak_BitSetError_StorageTooSmall(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:97:42
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:97:42
 // @package: main
 // @kind: constructor
 // @identifier: oak_BitSetError::BitOutOfRange
@@ -710,7 +726,7 @@ static inline oak_BitSetError oak_BitSetError_BitOutOfRange(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:156:4-156:26
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:156:4-156:26
 // @package: main
 // @kind: ADT
 // @identifier: EndianError
@@ -724,7 +740,7 @@ typedef struct oak_EndianError {
 
 typedef char oak_union_layout_EndianError[ (sizeof(oak_EndianError) == 4u && _Alignof(oak_EndianError) == 4u && offsetof(oak_EndianError, tag) == 0u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:156:26
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:156:26
 // @package: main
 // @kind: constructor
 // @identifier: oak_EndianError::BufferTooSmall
@@ -734,7 +750,7 @@ static inline oak_EndianError oak_EndianError_BufferTooSmall(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:320:4-320:29
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:320:4-320:29
 // @package: main
 // @kind: ADT
 // @identifier: ByteRangeError
@@ -748,7 +764,7 @@ typedef struct oak_ByteRangeError {
 
 typedef char oak_union_layout_ByteRangeError[ (sizeof(oak_ByteRangeError) == 4u && _Alignof(oak_ByteRangeError) == 4u && offsetof(oak_ByteRangeError, tag) == 0u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:320:29
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:320:29
 // @package: main
 // @kind: constructor
 // @identifier: oak_ByteRangeError::OutOfBounds
@@ -758,7 +774,7 @@ static inline oak_ByteRangeError oak_ByteRangeError_OutOfBounds(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:384:4-384:31
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:384:4-384:31
 // @package: main
 // @kind: ADT
 // @identifier: BufferError
@@ -773,7 +789,7 @@ typedef struct oak_BufferError {
 
 typedef char oak_union_layout_BufferError[ (sizeof(oak_BufferError) == 4u && _Alignof(oak_BufferError) == 4u && offsetof(oak_BufferError, tag) == 0u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:384:24
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:384:24
 // @package: main
 // @kind: constructor
 // @identifier: oak_BufferError::Full
@@ -783,7 +799,7 @@ static inline oak_BufferError oak_BufferError_Full(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:384:31
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:384:31
 // @package: main
 // @kind: constructor
 // @identifier: oak_BufferError::InsufficientData
@@ -793,7 +809,7 @@ static inline oak_BufferError oak_BufferError_InsufficientData(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:520:4-520:73
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:520:4-520:73
 // @package: main
 // @kind: ADT
 // @identifier: CollectionError
@@ -811,7 +827,7 @@ typedef struct oak_CollectionError {
 
 typedef char oak_union_layout_CollectionError[ (sizeof(oak_CollectionError) == 4u && _Alignof(oak_CollectionError) == 4u && offsetof(oak_CollectionError, tag) == 0u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:520:28
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:520:28
 // @package: main
 // @kind: constructor
 // @identifier: oak_CollectionError::Full
@@ -821,7 +837,7 @@ static inline oak_CollectionError oak_CollectionError_Full(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:520:35
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:520:35
 // @package: main
 // @kind: constructor
 // @identifier: oak_CollectionError::Empty
@@ -831,7 +847,7 @@ static inline oak_CollectionError oak_CollectionError_Empty(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:520:43
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:520:43
 // @package: main
 // @kind: constructor
 // @identifier: oak_CollectionError::OutOfBounds
@@ -841,7 +857,7 @@ static inline oak_CollectionError oak_CollectionError_OutOfBounds(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:520:57
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:520:57
 // @package: main
 // @kind: constructor
 // @identifier: oak_CollectionError::AlreadyLinked
@@ -851,7 +867,7 @@ static inline oak_CollectionError oak_CollectionError_AlreadyLinked(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:520:73
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:520:73
 // @package: main
 // @kind: constructor
 // @identifier: oak_CollectionError::NotMember
@@ -861,7 +877,7 @@ static inline oak_CollectionError oak_CollectionError_NotMember(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:890:4-890:55
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:890:4-890:55
 // @package: main
 // @kind: ADT
 // @identifier: ListTransferError
@@ -877,7 +893,7 @@ typedef struct oak_ListTransferError {
 
 typedef char oak_union_layout_ListTransferError[ (sizeof(oak_ListTransferError) == 4u && _Alignof(oak_ListTransferError) == 4u && offsetof(oak_ListTransferError, tag) == 0u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:890:30
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:890:30
 // @package: main
 // @kind: constructor
 // @identifier: oak_ListTransferError::SameList
@@ -887,7 +903,7 @@ static inline oak_ListTransferError oak_ListTransferError_SameList(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:890:41
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:890:41
 // @package: main
 // @kind: constructor
 // @identifier: oak_ListTransferError::OutOfBounds
@@ -897,7 +913,7 @@ static inline oak_ListTransferError oak_ListTransferError_OutOfBounds(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:890:55
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:890:55
 // @package: main
 // @kind: constructor
 // @identifier: oak_ListTransferError::NotMember
@@ -907,7 +923,7 @@ static inline oak_ListTransferError oak_ListTransferError_NotMember(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1324:4-1324:82
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1324:4-1324:82
 // @package: main
 // @kind: ADT
 // @identifier: IdPoolError
@@ -925,7 +941,7 @@ typedef struct oak_IdPoolError {
 
 typedef char oak_union_layout_IdPoolError[ (sizeof(oak_IdPoolError) == 4u && _Alignof(oak_IdPoolError) == 4u && offsetof(oak_IdPoolError, tag) == 0u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1324:24
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1324:24
 // @package: main
 // @kind: constructor
 // @identifier: oak_IdPoolError::StorageTooSmall
@@ -935,7 +951,7 @@ static inline oak_IdPoolError oak_IdPoolError_StorageTooSmall(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1324:42
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1324:42
 // @package: main
 // @kind: constructor
 // @identifier: oak_IdPoolError::Full
@@ -945,7 +961,7 @@ static inline oak_IdPoolError oak_IdPoolError_Full(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1324:49
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1324:49
 // @package: main
 // @kind: constructor
 // @identifier: oak_IdPoolError::OutOfBounds
@@ -955,7 +971,7 @@ static inline oak_IdPoolError oak_IdPoolError_OutOfBounds(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1324:63
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1324:63
 // @package: main
 // @kind: constructor
 // @identifier: oak_IdPoolError::AlreadyAllocated
@@ -965,7 +981,7 @@ static inline oak_IdPoolError oak_IdPoolError_AlreadyAllocated(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1324:82
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1324:82
 // @package: main
 // @kind: constructor
 // @identifier: oak_IdPoolError::NotAllocated
@@ -975,7 +991,7 @@ static inline oak_IdPoolError oak_IdPoolError_NotAllocated(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:-1:19--1:15
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:-1:19--1:15
 // @package: main
 // @kind: ADT
 // @identifier: Utf8State
@@ -996,7 +1012,7 @@ typedef struct oak_Utf8State {
 
 typedef char oak_union_layout_Utf8State[ (sizeof(oak_Utf8State) == 4u && _Alignof(oak_Utf8State) == 4u && offsetof(oak_Utf8State, tag) == 0u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:-1:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:-1:0
 // @package: main
 // @kind: constructor
 // @identifier: oak_Utf8State::Accept
@@ -1006,7 +1022,7 @@ static inline oak_Utf8State oak_Utf8State_Accept(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:-1:2
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:-1:2
 // @package: main
 // @kind: constructor
 // @identifier: oak_Utf8State::Two
@@ -1016,7 +1032,7 @@ static inline oak_Utf8State oak_Utf8State_Two(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:-1:4
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:-1:4
 // @package: main
 // @kind: constructor
 // @identifier: oak_Utf8State::ThreeE0
@@ -1026,7 +1042,7 @@ static inline oak_Utf8State oak_Utf8State_ThreeE0(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:-1:6
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:-1:6
 // @package: main
 // @kind: constructor
 // @identifier: oak_Utf8State::Three
@@ -1036,7 +1052,7 @@ static inline oak_Utf8State oak_Utf8State_Three(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:-1:8
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:-1:8
 // @package: main
 // @kind: constructor
 // @identifier: oak_Utf8State::ThreeED
@@ -1046,7 +1062,7 @@ static inline oak_Utf8State oak_Utf8State_ThreeED(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:-1:10
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:-1:10
 // @package: main
 // @kind: constructor
 // @identifier: oak_Utf8State::FourF0
@@ -1056,7 +1072,7 @@ static inline oak_Utf8State oak_Utf8State_FourF0(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:-1:12
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:-1:12
 // @package: main
 // @kind: constructor
 // @identifier: oak_Utf8State::Four
@@ -1066,7 +1082,7 @@ static inline oak_Utf8State oak_Utf8State_Four(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:-1:14
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:-1:14
 // @package: main
 // @kind: constructor
 // @identifier: oak_Utf8State::FourF4
@@ -1076,7 +1092,7 @@ static inline oak_Utf8State oak_Utf8State_FourF4(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:-1:22--1:17
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:-1:22--1:17
 // @package: main
 // @kind: ADT
 // @identifier: Utf8Step
@@ -1093,7 +1109,7 @@ typedef struct oak_Utf8Step {
 
 typedef char oak_union_layout_Utf8Step[ (sizeof(oak_Utf8Step) == 8u && _Alignof(oak_Utf8Step) == 4u && offsetof(oak_Utf8Step, tag) == 0u && offsetof(oak_Utf8Step, payload) == 4u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:-1:16
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:-1:16
 // @package: main
 // @kind: constructor
 // @identifier: oak_Utf8Step::Byte
@@ -1104,7 +1120,7 @@ static inline oak_Utf8Step oak_Utf8Step_Byte( u8 value ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1:4-1:32
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1:4-1:32
 // @package: main
 // @kind: ADT
 // @identifier: Option_u32
@@ -1122,7 +1138,7 @@ typedef struct oak_Option_u32 {
 
 typedef char oak_union_layout_Option_u32[ (sizeof(oak_Option_u32) == 8u && _Alignof(oak_Option_u32) == 4u && offsetof(oak_Option_u32, tag) == 0u && offsetof(oak_Option_u32, payload) == 4u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1:22
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1:22
 // @package: main
 // @kind: constructor
 // @identifier: oak_Option_u32::Some
@@ -1133,7 +1149,7 @@ static inline oak_Option_u32 oak_Option_u32_Some( u32 value ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1:32
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1:32
 // @package: main
 // @kind: constructor
 // @identifier: oak_Option_u32::None
@@ -1143,7 +1159,7 @@ static inline oak_Option_u32 oak_Option_u32_None(  ) {
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:4-2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:4-2:33
 // @package: main
 // @kind: ADT
 // @identifier: Result_Bool_BitSetError
@@ -1162,7 +1178,7 @@ typedef struct oak_Result_Bool_BitSetError {
 
 typedef char oak_union_layout_Result_Bool_BitSetError[ (sizeof(oak_Result_Bool_BitSetError) == 8u && _Alignof(oak_Result_Bool_BitSetError) == 4u && offsetof(oak_Result_Bool_BitSetError, tag) == 0u && offsetof(oak_Result_Bool_BitSetError, payload) == 4u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:25
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:25
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_Bool_BitSetError::Ok
@@ -1173,7 +1189,7 @@ static inline oak_Result_Bool_BitSetError oak_Result_Bool_BitSetError_Ok( Bool v
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:33
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_Bool_BitSetError::Err
@@ -1184,7 +1200,7 @@ static inline oak_Result_Bool_BitSetError oak_Result_Bool_BitSetError_Err( oak_B
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:4-2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:4-2:33
 // @package: main
 // @kind: ADT
 // @identifier: Result_Bool_IdPoolError
@@ -1203,7 +1219,7 @@ typedef struct oak_Result_Bool_IdPoolError {
 
 typedef char oak_union_layout_Result_Bool_IdPoolError[ (sizeof(oak_Result_Bool_IdPoolError) == 8u && _Alignof(oak_Result_Bool_IdPoolError) == 4u && offsetof(oak_Result_Bool_IdPoolError, tag) == 0u && offsetof(oak_Result_Bool_IdPoolError, payload) == 4u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:25
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:25
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_Bool_IdPoolError::Ok
@@ -1214,7 +1230,7 @@ static inline oak_Result_Bool_IdPoolError oak_Result_Bool_IdPoolError_Ok( Bool v
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:33
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_Bool_IdPoolError::Err
@@ -1225,7 +1241,7 @@ static inline oak_Result_Bool_IdPoolError oak_Result_Bool_IdPoolError_Err( oak_I
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:4-2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:4-2:33
 // @package: main
 // @kind: ADT
 // @identifier: Result_u16_EndianError
@@ -1244,7 +1260,7 @@ typedef struct oak_Result_u16_EndianError {
 
 typedef char oak_union_layout_Result_u16_EndianError[ (sizeof(oak_Result_u16_EndianError) == 8u && _Alignof(oak_Result_u16_EndianError) == 4u && offsetof(oak_Result_u16_EndianError, tag) == 0u && offsetof(oak_Result_u16_EndianError, payload) == 4u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:25
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:25
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u16_EndianError::Ok
@@ -1255,7 +1271,7 @@ static inline oak_Result_u16_EndianError oak_Result_u16_EndianError_Ok( u16 valu
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:33
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u16_EndianError::Err
@@ -1266,7 +1282,7 @@ static inline oak_Result_u16_EndianError oak_Result_u16_EndianError_Err( oak_End
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:4-2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:4-2:33
 // @package: main
 // @kind: ADT
 // @identifier: Result_u32_BitSetError
@@ -1285,7 +1301,7 @@ typedef struct oak_Result_u32_BitSetError {
 
 typedef char oak_union_layout_Result_u32_BitSetError[ (sizeof(oak_Result_u32_BitSetError) == 8u && _Alignof(oak_Result_u32_BitSetError) == 4u && offsetof(oak_Result_u32_BitSetError, tag) == 0u && offsetof(oak_Result_u32_BitSetError, payload) == 4u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:25
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:25
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u32_BitSetError::Ok
@@ -1296,7 +1312,7 @@ static inline oak_Result_u32_BitSetError oak_Result_u32_BitSetError_Ok( u32 valu
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:33
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u32_BitSetError::Err
@@ -1307,7 +1323,7 @@ static inline oak_Result_u32_BitSetError oak_Result_u32_BitSetError_Err( oak_Bit
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:4-2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:4-2:33
 // @package: main
 // @kind: ADT
 // @identifier: Result_u32_BufferError
@@ -1326,7 +1342,7 @@ typedef struct oak_Result_u32_BufferError {
 
 typedef char oak_union_layout_Result_u32_BufferError[ (sizeof(oak_Result_u32_BufferError) == 8u && _Alignof(oak_Result_u32_BufferError) == 4u && offsetof(oak_Result_u32_BufferError, tag) == 0u && offsetof(oak_Result_u32_BufferError, payload) == 4u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:25
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:25
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u32_BufferError::Ok
@@ -1337,7 +1353,7 @@ static inline oak_Result_u32_BufferError oak_Result_u32_BufferError_Ok( u32 valu
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:33
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u32_BufferError::Err
@@ -1348,7 +1364,7 @@ static inline oak_Result_u32_BufferError oak_Result_u32_BufferError_Err( oak_Buf
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:4-2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:4-2:33
 // @package: main
 // @kind: ADT
 // @identifier: Result_u32_ByteRangeError
@@ -1367,7 +1383,7 @@ typedef struct oak_Result_u32_ByteRangeError {
 
 typedef char oak_union_layout_Result_u32_ByteRangeError[ (sizeof(oak_Result_u32_ByteRangeError) == 8u && _Alignof(oak_Result_u32_ByteRangeError) == 4u && offsetof(oak_Result_u32_ByteRangeError, tag) == 0u && offsetof(oak_Result_u32_ByteRangeError, payload) == 4u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:25
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:25
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u32_ByteRangeError::Ok
@@ -1378,7 +1394,7 @@ static inline oak_Result_u32_ByteRangeError oak_Result_u32_ByteRangeError_Ok( u3
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:33
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u32_ByteRangeError::Err
@@ -1389,7 +1405,7 @@ static inline oak_Result_u32_ByteRangeError oak_Result_u32_ByteRangeError_Err( o
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:4-2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:4-2:33
 // @package: main
 // @kind: ADT
 // @identifier: Result_u32_CollectionError
@@ -1408,7 +1424,7 @@ typedef struct oak_Result_u32_CollectionError {
 
 typedef char oak_union_layout_Result_u32_CollectionError[ (sizeof(oak_Result_u32_CollectionError) == 8u && _Alignof(oak_Result_u32_CollectionError) == 4u && offsetof(oak_Result_u32_CollectionError, tag) == 0u && offsetof(oak_Result_u32_CollectionError, payload) == 4u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:25
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:25
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u32_CollectionError::Ok
@@ -1419,7 +1435,7 @@ static inline oak_Result_u32_CollectionError oak_Result_u32_CollectionError_Ok( 
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:33
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u32_CollectionError::Err
@@ -1430,7 +1446,7 @@ static inline oak_Result_u32_CollectionError oak_Result_u32_CollectionError_Err(
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:4-2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:4-2:33
 // @package: main
 // @kind: ADT
 // @identifier: Result_u32_CopyError
@@ -1449,7 +1465,7 @@ typedef struct oak_Result_u32_CopyError {
 
 typedef char oak_union_layout_Result_u32_CopyError[ (sizeof(oak_Result_u32_CopyError) == 8u && _Alignof(oak_Result_u32_CopyError) == 4u && offsetof(oak_Result_u32_CopyError, tag) == 0u && offsetof(oak_Result_u32_CopyError, payload) == 4u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:25
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:25
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u32_CopyError::Ok
@@ -1460,7 +1476,7 @@ static inline oak_Result_u32_CopyError oak_Result_u32_CopyError_Ok( u32 value ) 
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:33
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u32_CopyError::Err
@@ -1471,7 +1487,7 @@ static inline oak_Result_u32_CopyError oak_Result_u32_CopyError_Err( oak_CopyErr
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:4-2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:4-2:33
 // @package: main
 // @kind: ADT
 // @identifier: Result_u32_EndianError
@@ -1490,7 +1506,7 @@ typedef struct oak_Result_u32_EndianError {
 
 typedef char oak_union_layout_Result_u32_EndianError[ (sizeof(oak_Result_u32_EndianError) == 8u && _Alignof(oak_Result_u32_EndianError) == 4u && offsetof(oak_Result_u32_EndianError, tag) == 0u && offsetof(oak_Result_u32_EndianError, payload) == 4u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:25
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:25
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u32_EndianError::Ok
@@ -1501,7 +1517,7 @@ static inline oak_Result_u32_EndianError oak_Result_u32_EndianError_Ok( u32 valu
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:33
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u32_EndianError::Err
@@ -1512,7 +1528,7 @@ static inline oak_Result_u32_EndianError oak_Result_u32_EndianError_Err( oak_End
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:4-2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:4-2:33
 // @package: main
 // @kind: ADT
 // @identifier: Result_u32_IdPoolError
@@ -1531,7 +1547,7 @@ typedef struct oak_Result_u32_IdPoolError {
 
 typedef char oak_union_layout_Result_u32_IdPoolError[ (sizeof(oak_Result_u32_IdPoolError) == 8u && _Alignof(oak_Result_u32_IdPoolError) == 4u && offsetof(oak_Result_u32_IdPoolError, tag) == 0u && offsetof(oak_Result_u32_IdPoolError, payload) == 4u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:25
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:25
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u32_IdPoolError::Ok
@@ -1542,7 +1558,7 @@ static inline oak_Result_u32_IdPoolError oak_Result_u32_IdPoolError_Ok( u32 valu
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:33
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u32_IdPoolError::Err
@@ -1553,7 +1569,7 @@ static inline oak_Result_u32_IdPoolError oak_Result_u32_IdPoolError_Err( oak_IdP
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:4-2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:4-2:33
 // @package: main
 // @kind: ADT
 // @identifier: Result_u32_ListTransferError
@@ -1572,7 +1588,7 @@ typedef struct oak_Result_u32_ListTransferError {
 
 typedef char oak_union_layout_Result_u32_ListTransferError[ (sizeof(oak_Result_u32_ListTransferError) == 8u && _Alignof(oak_Result_u32_ListTransferError) == 4u && offsetof(oak_Result_u32_ListTransferError, tag) == 0u && offsetof(oak_Result_u32_ListTransferError, payload) == 4u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:25
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:25
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u32_ListTransferError::Ok
@@ -1583,7 +1599,7 @@ static inline oak_Result_u32_ListTransferError oak_Result_u32_ListTransferError_
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:33
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u32_ListTransferError::Err
@@ -1594,7 +1610,7 @@ static inline oak_Result_u32_ListTransferError oak_Result_u32_ListTransferError_
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:4-2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:4-2:33
 // @package: main
 // @kind: ADT
 // @identifier: Result_u64_EndianError
@@ -1613,7 +1629,7 @@ typedef struct oak_Result_u64_EndianError {
 
 typedef char oak_union_layout_Result_u64_EndianError[ (sizeof(oak_Result_u64_EndianError) == 16u && _Alignof(oak_Result_u64_EndianError) == 8u && offsetof(oak_Result_u64_EndianError, tag) == 0u && offsetof(oak_Result_u64_EndianError, payload) == 8u) ? 1 : -1 ];
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:25
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:25
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u64_EndianError::Ok
@@ -1624,7 +1640,7 @@ static inline oak_Result_u64_EndianError oak_Result_u64_EndianError_Ok( u64 valu
     return res;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:2:33
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:2:33
 // @package: main
 // @kind: constructor
 // @identifier: oak_Result_u64_EndianError::Err
@@ -1950,7 +1966,7 @@ u32 oak_main( void );
     0x0030c30c30c30c30ULL, 0x0030c30c30c30c30ULL, 0x0030c30c30c30c30ULL, 0x0030c30c30c30c30ULL,
     0x0030c30c30c30c30ULL, 0x0030c30c30c30c30ULL, 0x0030c30c30c30c30ULL, 0x0030c30c30c30c30ULL
   };
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:17:4-22:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:17:4-22:0
 // @package: main
 // @kind: function
 // @identifier: ring_check
@@ -1962,7 +1978,7 @@ oak_assert( ( oak_span_index_oak_RingCursor( cursor, (u64)( 0 ) ).head < capacit
     return oak_assert( ( oak_span_index_oak_RingCursor( cursor, (u64)( 0 ) ).count <= capacity ), "stdlib.oak", 22 )  ;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:55:4-67:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:55:4-67:0
 // @package: main
 // @kind: function
 // @identifier: bytes_copy_into
@@ -1981,7 +1997,7 @@ oak_Result_u32_CopyError oak_bytes_copy_into( oak_span_u8 dst, oak_view_u8 src )
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:69:4-82:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:69:4-82:0
 // @package: main
 // @kind: function
 // @identifier: bytes_equal
@@ -2001,7 +2017,7 @@ Bool oak_bytes_equal( oak_view_u8 left, oak_view_u8 right ) {
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:84:4-93:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:84:4-93:0
 // @package: main
 // @kind: function
 // @identifier: bytes_find
@@ -2023,7 +2039,7 @@ oak_Option_u32 oak_bytes_find( oak_view_u8 src, u8 needle ) {
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:99:4-102:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:99:4-102:0
 // @package: main
 // @kind: function
 // @identifier: bitset_storage_bytes
@@ -2037,7 +2053,7 @@ u32 oak_bitset_storage_bytes( u32 bits ) {
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:104:4-115:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:104:4-115:0
 // @package: main
 // @kind: function
 // @identifier: bitset_contains
@@ -2055,7 +2071,7 @@ oak_Result_Bool_BitSetError oak_bitset_contains( oak_view_u8 storage, u32 bits, 
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:118:4-136:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:118:4-136:0
 // @package: main
 // @kind: function
 // @identifier: bitset_set
@@ -2080,7 +2096,7 @@ oak_Result_Bool_BitSetError oak_bitset_set( oak_span_u8 storage, u32 bits, u32 i
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:139:4-153:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:139:4-153:0
 // @package: main
 // @kind: function
 // @identifier: bitset_count
@@ -2103,7 +2119,7 @@ oak_Result_u32_BitSetError oak_bitset_count( oak_view_u8 storage, u32 bits ) {
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:157:4-159:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:157:4-159:0
 // @package: main
 // @kind: function
 // @identifier: bytes_range_fits
@@ -2116,7 +2132,7 @@ Bool oak_bytes_range_fits( u32 length, u32 offset, u32 width ) {
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:161:4-170:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:161:4-170:0
 // @package: main
 // @kind: function
 // @identifier: bytes_read_u16_le
@@ -2132,7 +2148,7 @@ oak_Result_u16_EndianError oak_bytes_read_u16_le( oak_view_u8 src, u32 offset ) 
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:172:4-180:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:172:4-180:0
 // @package: main
 // @kind: function
 // @identifier: bytes_write_u16_le
@@ -2147,7 +2163,7 @@ oak_Result_u32_EndianError oak_bytes_write_u16_le( oak_span_u8 dst, u32 offset, 
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:182:4-191:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:182:4-191:0
 // @package: main
 // @kind: function
 // @identifier: bytes_read_u16_be
@@ -2163,7 +2179,7 @@ oak_Result_u16_EndianError oak_bytes_read_u16_be( oak_view_u8 src, u32 offset ) 
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:193:4-201:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:193:4-201:0
 // @package: main
 // @kind: function
 // @identifier: bytes_write_u16_be
@@ -2178,7 +2194,7 @@ oak_Result_u32_EndianError oak_bytes_write_u16_be( oak_span_u8 dst, u32 offset, 
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:203:4-214:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:203:4-214:0
 // @package: main
 // @kind: function
 // @identifier: bytes_read_u32_le
@@ -2196,7 +2212,7 @@ oak_Result_u32_EndianError oak_bytes_read_u32_le( oak_view_u8 src, u32 offset ) 
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:216:4-226:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:216:4-226:0
 // @package: main
 // @kind: function
 // @identifier: bytes_write_u32_le
@@ -2213,7 +2229,7 @@ oak_Result_u32_EndianError oak_bytes_write_u32_le( oak_span_u8 dst, u32 offset, 
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:228:4-239:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:228:4-239:0
 // @package: main
 // @kind: function
 // @identifier: bytes_read_u32_be
@@ -2231,7 +2247,7 @@ oak_Result_u32_EndianError oak_bytes_read_u32_be( oak_view_u8 src, u32 offset ) 
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:241:4-251:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:241:4-251:0
 // @package: main
 // @kind: function
 // @identifier: bytes_write_u32_be
@@ -2248,7 +2264,7 @@ oak_Result_u32_EndianError oak_bytes_write_u32_be( oak_span_u8 dst, u32 offset, 
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:253:4-268:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:253:4-268:0
 // @package: main
 // @kind: function
 // @identifier: bytes_read_u64_le
@@ -2270,7 +2286,7 @@ oak_Result_u64_EndianError oak_bytes_read_u64_le( oak_view_u8 src, u32 offset ) 
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:270:4-284:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:270:4-284:0
 // @package: main
 // @kind: function
 // @identifier: bytes_write_u64_le
@@ -2291,7 +2307,7 @@ oak_Result_u32_EndianError oak_bytes_write_u64_le( oak_span_u8 dst, u32 offset, 
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:286:4-301:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:286:4-301:0
 // @package: main
 // @kind: function
 // @identifier: bytes_read_u64_be
@@ -2313,7 +2329,7 @@ oak_Result_u64_EndianError oak_bytes_read_u64_be( oak_view_u8 src, u32 offset ) 
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:303:4-317:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:303:4-317:0
 // @package: main
 // @kind: function
 // @identifier: bytes_write_u64_be
@@ -2334,7 +2350,7 @@ oak_Result_u32_EndianError oak_bytes_write_u64_be( oak_span_u8 dst, u32 offset, 
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:321:4-327:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:321:4-327:0
 // @package: main
 // @kind: function
 // @identifier: bytes_fill
@@ -2347,7 +2363,7 @@ void oak_bytes_fill( oak_span_u8 dst, u8 value ) {
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:329:4-339:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:329:4-339:0
 // @package: main
 // @kind: function
 // @identifier: bytes_copy_at
@@ -2366,7 +2382,7 @@ oak_Result_u32_ByteRangeError oak_bytes_copy_at( oak_span_u8 dst, u32 offset, oa
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:342:4-360:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:342:4-360:0
 // @package: main
 // @kind: function
 // @identifier: bytes_move_within
@@ -2393,7 +2409,7 @@ oak_Result_u32_ByteRangeError oak_bytes_move_within( oak_span_u8 storage, u32 ds
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:363:4-377:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:363:4-377:0
 // @package: main
 // @kind: function
 // @identifier: bytes_compare
@@ -2423,7 +2439,7 @@ i32 oak_bytes_compare( oak_view_u8 left, oak_view_u8 right ) {
     return order  ;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:386:4-390:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:386:4-390:0
 // @package: main
 // @kind: function
 // @identifier: buffer_check
@@ -2434,7 +2450,7 @@ oak_assert( ( oak_span_index_oak_ByteBufferCursor( cursor, (u64)( 0 ) ).start <=
     return oak_assert( ( oak_span_index_oak_ByteBufferCursor( cursor, (u64)( 0 ) ).end <= capacity ), "stdlib.oak", 390 )  ;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:392:4-395:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:392:4-395:0
 // @package: main
 // @kind: function
 // @identifier: buffer_len
@@ -2444,7 +2460,7 @@ oak_buffer_check( cursor, capacity )  ;
     return oak_sub_u32( oak_span_index_oak_ByteBufferCursor( cursor, (u64)( 0 ) ).end, oak_span_index_oak_ByteBufferCursor( cursor, (u64)( 0 ) ).start )  ;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:397:4-400:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:397:4-400:0
 // @package: main
 // @kind: function
 // @identifier: buffer_tail_space
@@ -2454,7 +2470,7 @@ oak_buffer_check( cursor, capacity )  ;
     return oak_sub_u32( capacity, oak_span_index_oak_ByteBufferCursor( cursor, (u64)( 0 ) ).end )  ;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:403:4-415:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:403:4-415:0
 // @package: main
 // @kind: function
 // @identifier: buffer_append
@@ -2475,7 +2491,7 @@ oak_buffer_check( cursor, ((u32)( storage ).len) )  ;
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:418:4-429:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:418:4-429:0
 // @package: main
 // @kind: function
 // @identifier: buffer_peek_into
@@ -2495,7 +2511,7 @@ oak_buffer_check( cursor, ((u32)( storage ).len) )  ;
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:432:4-442:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:432:4-442:0
 // @package: main
 // @kind: function
 // @identifier: buffer_consume
@@ -2514,7 +2530,7 @@ oak_buffer_check( cursor, capacity )  ;
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:444:4-449:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:444:4-449:0
 // @package: main
 // @kind: function
 // @identifier: buffer_read_into
@@ -2532,7 +2548,7 @@ oak_Result_u32_BufferError oak_buffer_read_into( oak_span_oak_ByteBufferCursor c
     __builtin_trap(); /* unreachable: exhaustive match */
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:452:4-465:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:452:4-465:0
 // @package: main
 // @kind: function
 // @identifier: buffer_compact
@@ -2552,7 +2568,7 @@ oak_buffer_check( cursor, ((u32)( storage ).len) )  ;
     return n  ;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:468:4-472:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:468:4-472:0
 // @package: main
 // @kind: function
 // @identifier: buffer_reset
@@ -2563,7 +2579,7 @@ oak_assert( ( ((u32)( cursor ).len) == ((u32)( 1 )) ), "stdlib.oak", 470 )  ;
     cursor.base[ oak_lv_idx( (u64)( 0 ), (u64)(cursor.len) ) ].end = ((u32)( 0 ));
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:481:4-484:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:481:4-484:0
 // @package: main
 // @kind: function
 // @identifier: byte_builder
@@ -2573,7 +2589,7 @@ oak_ByteBuilder oak_byte_builder(  ) {
     return initial  ;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:486:4-501:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:486:4-501:0
 // @package: main
 // @kind: function
 // @identifier: append_bytes
@@ -2599,7 +2615,7 @@ oak_assert( ( builder.length <= ((u32)( storage ).len) ), "stdlib.oak", 490 )   
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:503:4-513:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:503:4-513:0
 // @package: main
 // @kind: function
 // @identifier: append_byte
@@ -2620,7 +2636,7 @@ oak_assert( ( builder.length <= ((u32)( storage ).len) ), "stdlib.oak", 507 )   
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:515:4-517:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:515:4-517:0
 // @package: main
 // @kind: function
 // @identifier: finish_bytes
@@ -2633,7 +2649,7 @@ oak_Result_u32_BufferError oak_finish_bytes( oak_ByteBuilder builder ) {
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:523:4-526:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:523:4-526:0
 // @package: main
 // @kind: function
 // @identifier: array_list_check
@@ -2643,7 +2659,7 @@ oak_assert( ( ((u32)( cursor ).len) == ((u32)( 1 )) ), "stdlib.oak", 525 )  ;
     return oak_assert( ( oak_span_index_oak_ArrayListCursor( cursor, (u64)( 0 ) ).length <= capacity ), "stdlib.oak", 526 )  ;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:602:4-605:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:602:4-605:0
 // @package: main
 // @kind: function
 // @identifier: array_list_clear
@@ -2653,7 +2669,7 @@ oak_array_list_check( cursor, capacity )  ;
     cursor.base[ oak_lv_idx( (u64)( 0 ), (u64)(cursor.len) ) ].length = ((u32)( 0 ));
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:613:4-618:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:613:4-618:0
 // @package: main
 // @kind: function
 // @identifier: intrusive_init
@@ -2665,7 +2681,7 @@ oak_assert( ( ( ( oak_span_index_oak_IntrusiveCursor( cursor, (u64)( 0 ) ).count
     cursor.base[ oak_lv_idx( (u64)( 0 ), (u64)(cursor.len) ) ].id = id;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:620:4-631:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:620:4-631:0
 // @package: main
 // @kind: function
 // @identifier: intrusive_check
@@ -2686,7 +2702,7 @@ oak_assert( ( ( oak_span_index_oak_IntrusiveCursor( cursor, (u64)( 0 ) ).tail > 
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1110:4-1113:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1110:4-1113:0
 // @package: main
 // @kind: function
 // @identifier: min_heap_check
@@ -2696,7 +2712,7 @@ oak_assert( ( ((u32)( cursor ).len) == ((u32)( 1 )) ), "stdlib.oak", 1112 )  ;
     return oak_assert( ( oak_span_index_oak_MinHeapCursor( cursor, (u64)( 0 ) ).length <= capacity ), "stdlib.oak", 1113 )  ;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1208:4-1211:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1208:4-1211:0
 // @package: main
 // @kind: function
 // @identifier: min_heap_clear
@@ -2706,7 +2722,7 @@ oak_min_heap_check( cursor, capacity )  ;
     cursor.base[ oak_lv_idx( (u64)( 0 ), (u64)(cursor.len) ) ].length = ((u32)( 0 ));
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1227:4-1233:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1227:4-1233:0
 // @package: main
 // @kind: function
 // @identifier: deque_check
@@ -2721,7 +2737,7 @@ oak_assert( ( oak_span_index_oak_DequeCursor( cursor, (u64)( 0 ) ).count <= capa
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1236:4-1240:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1236:4-1240:0
 // @package: main
 // @kind: function
 // @identifier: deque_offset
@@ -2736,7 +2752,7 @@ oak_assert( ( ( head < capacity ) && ( offset < capacity ) ), "stdlib.oak", 1238
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1316:4-1320:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1316:4-1320:0
 // @package: main
 // @kind: function
 // @identifier: deque_clear
@@ -2747,7 +2763,7 @@ oak_deque_check( cursor, capacity )  ;
     cursor.base[ oak_lv_idx( (u64)( 0 ), (u64)(cursor.len) ) ].count = ((u32)( 0 ));
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1326:4-1333:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1326:4-1333:0
 // @package: main
 // @kind: function
 // @identifier: id_pool_contains
@@ -2765,7 +2781,7 @@ oak_Result_Bool_IdPoolError oak_id_pool_contains( oak_view_u8 storage, u32 limit
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1335:4-1347:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1335:4-1347:0
 // @package: main
 // @kind: function
 // @identifier: id_pool_reserve
@@ -2790,7 +2806,7 @@ oak_Result_u32_IdPoolError oak_id_pool_reserve( oak_span_u8 storage, u32 limit, 
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1349:4-1361:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1349:4-1361:0
 // @package: main
 // @kind: function
 // @identifier: id_pool_release
@@ -2815,7 +2831,7 @@ oak_Result_u32_IdPoolError oak_id_pool_release( oak_span_u8 storage, u32 limit, 
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1364:4-1383:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1364:4-1383:0
 // @package: main
 // @kind: function
 // @identifier: id_pool_allocate
@@ -2849,7 +2865,7 @@ oak_Result_u32_IdPoolError oak_id_pool_allocate( oak_span_u8 storage, u32 limit 
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:1386:4-1400:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:1386:4-1400:0
 // @package: main
 // @kind: function
 // @identifier: id_pool_clear
@@ -2873,7 +2889,7 @@ oak_Result_u32_IdPoolError oak_id_pool_clear( oak_span_u8 storage, u32 limit ) {
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:65:0-70:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:65:0-70:0
 // @package: main
 // @kind: function
 // @identifier: utf8__special_ucases
@@ -2885,7 +2901,7 @@ OAK_INLINE u8x16 oak_utf8__special_ucases( u8x16 high1, u8x16 low1, u8x16 high2,
     return oak_simd_and_u8x16( oak_simd_and_u8x16( byte_1_high, byte_1_low ), byte_2_high )  ;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:75:0-88:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:75:0-88:0
 // @package: main
 // @kind: function
 // @identifier: utf8__check_ublock
@@ -2901,7 +2917,7 @@ u8x16 oak_utf8__check_ublock( u8x16 high1, u8x16 low1, u8x16 high2, u8x16 prev_i
     return oak_simd_xor_u8x16( must23, sc )  ;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:95:0-101:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:95:0-101:0
 // @package: main
 // @kind: function
 // @identifier: utf8__check_ublocks
@@ -2914,7 +2930,7 @@ u8x16 oak_utf8__check_ublocks( u8x16 high1, u8x16 low1, u8x16 high2, u8x16 prev_
     return oak_simd_or_u8x16( oak_simd_or_u8x16( ea, eb ), oak_simd_or_u8x16( ec, ed ) )  ;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:115:4-172:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:115:4-172:0
 // @package: main
 // @kind: function
 // @identifier: utf8__valid
@@ -2976,7 +2992,7 @@ Bool oak_utf8__valid( oak_view_u8 bytes ) {
     return !( oak_simd_any_u8x16( oak_simd_or_u8x16( error, prev_incomplete ) ) )  ;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:-1:28
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:-1:28
 // @package: main
 // @kind: function
 // @identifier: utf8_initial
@@ -2985,7 +3001,7 @@ oak_Utf8State oak_utf8_initial(  ) {
     return oak_Utf8State_Accept()  ;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:-1:791
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:-1:791
 // @package: main
 // @kind: function
 // @identifier: utf8_legal
@@ -2994,7 +3010,7 @@ Bool oak_utf8_legal( oak_Utf8State state, oak_Utf8Step step ) {
     return (u32)( ( oak_utf8_transitions[ step.payload.Byte ] >> state.tag ) & 63u ) != 48u ? oak_Bool_True : oak_Bool_False;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:-1:819
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:-1:819
 // @package: main
 // @kind: function
 // @identifier: utf8_next
@@ -3007,7 +3023,7 @@ oak_Utf8State oak_utf8_next( oak_Utf8State state, oak_Utf8Step step ) {
     return result;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:-1:869
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:-1:869
 // @package: main
 // @kind: function
 // @identifier: utf8_run
@@ -3025,7 +3041,7 @@ oak_Utf8State oak_utf8_run( oak_Utf8State state, oak_view_u8 bytes ) {
     return result;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:27:0-27:54
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:27:0-27:54
 // @package: main
 // @kind: function
 // @identifier: utf8_cont
@@ -3034,7 +3050,7 @@ OAK_INLINE Bool oak_utf8_cont( u8 b ) {
     return ( ( b >= ((u8)( 128 )) ) && ( b <= ((u8)( 191 )) ) )  ;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:28:0-31:16
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:28:0-31:16
 // @package: main
 // @kind: function
 // @identifier: utf8_second3
@@ -3051,7 +3067,7 @@ Bool oak_utf8_second3( u8 b0, u8 b1 ) {
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:32:0-35:16
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:32:0-35:16
 // @package: main
 // @kind: function
 // @identifier: utf8_second4
@@ -3068,7 +3084,7 @@ Bool oak_utf8_second4( u8 b0, u8 b1 ) {
     }
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:36:0-55:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:36:0-55:0
 // @package: main
 // @kind: function
 // @identifier: utf8_scalar
@@ -3112,7 +3128,7 @@ Bool oak_utf8_scalar( oak_view_u8 v ) {
     return ok  ;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:56:4-56:57
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:56:4-56:57
 // @package: main
 // @kind: function
 // @identifier: scalar_valid
@@ -3121,7 +3137,7 @@ Bool oak_scalar_valid( oak_view_u8 bytes ) {
     return oak_utf8_scalar( bytes )  ;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:57:4-57:54
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:57:4-57:54
 // @package: main
 // @kind: function
 // @identifier: simd_valid
@@ -3130,7 +3146,7 @@ Bool oak_simd_valid( oak_view_u8 bytes ) {
     return oak_utf8__valid( bytes )  ;
 }
 
-// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource3181297127/001:58:0-61:0
+// @source: /var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/TestEmitStateMachineBenchmarkSource856440581/001:58:0-61:0
 // @package: main
 // @kind: function
 // @identifier: main

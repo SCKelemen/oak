@@ -1,6 +1,23 @@
 /* Generated C code from Oak */
 #include <stdint.h>
 #include <stddef.h>
+#if !__STDC_HOSTED__ || defined(OAK_FREESTANDING)
+/* freestanding host boundary (docs/spec/90-backend.md section 2a): a weak
+   hook the kernel or firmware may define; diagnostics reach it, then trap */
+extern int64_t oak_host_write(int64_t fd, const uint8_t *buf, size_t len) __attribute__((weak));
+static void oak_report(const char *what, const char *file, uint32_t line) {
+  if (&oak_host_write == 0) { return; }
+  uint8_t buf[192]; size_t n = 0;
+  const char *parts[4] = { "oak: ", what, " at ", file };
+  for (int p = 0; p < 4; p++) { for (const char *c = parts[p]; *c != 0 && n < sizeof buf - 16; c++) { buf[n++] = (uint8_t)*c; } }
+  buf[n++] = ':';
+  uint8_t digits[10]; int d = 0;
+  do { digits[d++] = (uint8_t)('0' + line % 10u); line /= 10u; } while (line != 0u);
+  while (d > 0) { buf[n++] = digits[--d]; }
+  buf[n++] = '\n';
+  (void)oak_host_write(2, buf, n);
+}
+#endif
 
 typedef uint8_t  u8;
 typedef uint16_t u16;
@@ -54,8 +71,8 @@ static inline void oak_assert(Bool cond, const char *file, u32 line) {
 }
 #else
 static inline void oak_assert(Bool cond, const char *file, u32 line) {
-  (void)file; (void)line;
   if (!cond) {
+    oak_report("assertion failed", file, line);
     __builtin_trap();
   }
 }
@@ -67,7 +84,7 @@ static inline void oak_assert_eq_u8(u8 got, u8 want, const char *file, u32 line)
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -77,7 +94,7 @@ static inline void oak_assert_ne_u8(u8 got, u8 want, const char *file, u32 line)
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want anything but %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -87,7 +104,7 @@ static inline void oak_assert_eq_u16(u16 got, u16 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -97,7 +114,7 @@ static inline void oak_assert_ne_u16(u16 got, u16 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want anything but %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -107,7 +124,7 @@ static inline void oak_assert_eq_u32(u32 got, u32 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -117,7 +134,7 @@ static inline void oak_assert_ne_u32(u32 got, u32 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want anything but %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -127,7 +144,7 @@ static inline void oak_assert_eq_u64(u64 got, u64 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -137,7 +154,7 @@ static inline void oak_assert_ne_u64(u64 got, u64 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %llu, want anything but %llu\n", file, (unsigned)line, (unsigned long long)got, (unsigned long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -147,7 +164,7 @@ static inline void oak_assert_eq_i8(i8 got, i8 want, const char *file, u32 line)
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want %lld\n", file, (unsigned)line, (long long)got, (long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -157,7 +174,7 @@ static inline void oak_assert_ne_i8(i8 got, i8 want, const char *file, u32 line)
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want anything but %lld\n", file, (unsigned)line, (long long)got, (long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -167,7 +184,7 @@ static inline void oak_assert_eq_i16(i16 got, i16 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want %lld\n", file, (unsigned)line, (long long)got, (long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -177,7 +194,7 @@ static inline void oak_assert_ne_i16(i16 got, i16 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want anything but %lld\n", file, (unsigned)line, (long long)got, (long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -187,7 +204,7 @@ static inline void oak_assert_eq_i32(i32 got, i32 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want %lld\n", file, (unsigned)line, (long long)got, (long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -197,7 +214,7 @@ static inline void oak_assert_ne_i32(i32 got, i32 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want anything but %lld\n", file, (unsigned)line, (long long)got, (long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -207,7 +224,7 @@ static inline void oak_assert_eq_i64(i64 got, i64 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want %lld\n", file, (unsigned)line, (long long)got, (long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -217,7 +234,7 @@ static inline void oak_assert_ne_i64(i64 got, i64 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %lld, want anything but %lld\n", file, (unsigned)line, (long long)got, (long long)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -227,7 +244,7 @@ static inline void oak_assert_eq_f32(f32 got, f32 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %.9g, want %.9g\n", file, (unsigned)line, (double)got, (double)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -237,7 +254,7 @@ static inline void oak_assert_ne_f32(f32 got, f32 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %.9g, want anything but %.9g\n", file, (unsigned)line, (double)got, (double)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -247,7 +264,7 @@ static inline void oak_assert_eq_f64(f64 got, f64 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %.17g, want %.17g\n", file, (unsigned)line, (double)got, (double)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_eq; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -257,7 +274,7 @@ static inline void oak_assert_ne_f64(f64 got, f64 want, const char *file, u32 li
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %.17g, want anything but %.17g\n", file, (unsigned)line, (double)got, (double)want);
 #else
-    (void)file; (void)line;
+    oak_report("assertion failed (assert_ne; values need a hosted build)", file, line);
 #endif
     __builtin_trap();
   }
@@ -267,7 +284,7 @@ static inline void oak_assert_eq_Bool(Bool got, Bool want, const char *file, u32
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %s, want %s\n", file, (unsigned)line, got ? "true" : "false", want ? "true" : "false");
 #else
-    (void)file; (void)line;
+    oak_report(got ? "assertion failed: got true, want false" : "assertion failed: got false, want true", file, line);
 #endif
     __builtin_trap();
   }
@@ -277,7 +294,7 @@ static inline void oak_assert_ne_Bool(Bool got, Bool want, const char *file, u32
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
     fprintf(stderr, "oak: assertion failed at %s:%u: got %s, want anything but %s\n", file, (unsigned)line, got ? "true" : "false", want ? "true" : "false");
 #else
-    (void)file; (void)line;
+    oak_report(got ? "assertion failed: got true, want anything but true" : "assertion failed: got false, want anything but false", file, line);
 #endif
     __builtin_trap();
   }
@@ -304,8 +321,7 @@ static inline const char *oak_cstr_u8(oak_view_u8 v, const char *file, u32 line)
 }
 #else
 static inline const char *oak_cstr_u8(oak_view_u8 v, const char *file, u32 line) {
-  (void)file; (void)line;
-  if (v.len == 0u || v.base[v.len - 1u] != 0u) { __builtin_trap(); }
+  if (v.len == 0u || v.base[v.len - 1u] != 0u) { oak_report("c.cstr view is not NUL-terminated", file, line); __builtin_trap(); }
   return (const char *)v.base;
 }
 #endif
