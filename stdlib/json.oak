@@ -21,74 +21,70 @@ pub json_error_code: (error: JsonError): u32 = error ?
  | .DestinationTooSmall => u32(3)
  | .SizeOverflow => u32(4)
 
-// Find a maximal span needing no JSON escaping: sixteen bytes at a time
-// under the wrap-free guard (every load proven in range), the first
-// escape byte located in the register by movemask and ctz, and the tail
-// taken through one more block that ends at the input's end, its lanes
-// before the current byte masked off. No padding, no read past the input.
-json_escape_lanes: (chunk: simd.U8x16): u32 {
+// The lanes of a block that end a run — a control byte, a quote, a
+// backslash — and its high bits, as sixteen-bit masks.
+JsonLanes: type = struct { escape: u32, high: u32 }
+json_block_lanes: (chunk: simd.U8x16): JsonLanes {
  low: simd.U8x16 = simd.eq_u8x16(simd.min_u8x16(chunk, simd.splat_u8x16(u8(31))), chunk)
  quote: simd.U8x16 = simd.eq_u8x16(chunk, simd.splat_u8x16(u8(34)))
  slash: simd.U8x16 = simd.eq_u8x16(chunk, simd.splat_u8x16(u8(92)))
- simd.movemask_u8x16(simd.or_u8x16(low, simd.or_u8x16(quote, slash)))
+ JsonLanes { escape: simd.movemask_u8x16(simd.or_u8x16(low, simd.or_u8x16(quote, slash))), high: simd.movemask_u8x16(chunk) }
 }
-pub json_string_run: (src: []u8, offset: u32): u32 {
- assert(offset <= len(src))
- at: u32 = offset
- scanning: Bool = true
- while scanning && len(src) >= u32(16) && at <= len(src) - u32(16) {
-  lanes: u32 = json_escape_lanes(simd.load_u8x16(src, at))
-  lanes != u32(0) ? {
-   at = at + simd.ctz_u32(lanes)
-   scanning = false
-  } | { at = at + u32(16) }
- }
- scanning && at < len(src) ? {
-  len(src) >= u32(16) ? {
-   // The last block of the input, overlapping what the loop covered.
-   base: u32 = len(src) - u32(16)
-   lanes: u32 = json_escape_lanes(simd.load_u8x16(src, base)) >> (at - base)
-   at = lanes != u32(0) ? at + simd.ctz_u32(lanes) | len(src)
-  } | {
-   while scanning && at < len(src) {
-    unit: u8 = src[at]
-    unit < u8(32) || unit == u8(34) || unit == u8(92) ? { scanning = false } | { at = at + u32(1) }
-   }
-  }
- }
- at
-}
-// The run and whether it was all ASCII, from one pass: the same loads that
-// classify escape bytes also OR the high bits (docs/spec/71-codecs.md
-// section 4a). Every ASCII byte is a valid UTF-8 scalar, so a string whose
-// runs and escape bytes are all ASCII needs no separate validation pass.
+// The maximal span needing no JSON escaping from offset, and whether it
+// was all ASCII, in one pass: sixteen bytes at a time under the wrap-free
+// guard (every load proven in range), the first escape byte located in
+// the register by movemask and ctz with the high bits of the lanes before
+// it folded in, and the tail taken through one more block that ends at
+// the input's end, its lanes before the current byte shifted off. No
+// padding, no read past the input (docs/spec/71-codecs.md section 4a).
 pub JsonRun: type = struct { end: u32, ascii: Bool }
 pub json_string_scan: (src: []u8, offset: u32): JsonRun {
  assert(offset <= len(src))
  at: u32 = offset
- high: simd.U8x16 = simd.splat_u8x16(u8(0))
+ high: u32 = u32(0)
  scanning: Bool = true
- while scanning && len(src) - at >= u32(16) {
-  chunk: simd.U8x16 = simd.load_u8x16(src, at)
-  low: simd.U8x16 = simd.eq_u8x16(simd.min_u8x16(chunk, simd.splat_u8x16(u8(31))), chunk)
-  quote: simd.U8x16 = simd.eq_u8x16(chunk, simd.splat_u8x16(u8(34)))
-  slash: simd.U8x16 = simd.eq_u8x16(chunk, simd.splat_u8x16(u8(92)))
-  simd.any_u8x16(simd.or_u8x16(low, simd.or_u8x16(quote, slash))) ? { scanning = false } | {
-   high = simd.or_u8x16(high, chunk)
+ while scanning && len(src) >= u32(16) && at <= len(src) - u32(16) {
+  lanes: JsonLanes = json_block_lanes(simd.load_u8x16(src, at))
+  lanes.escape != u32(0) ? {
+   k: u32 = simd.ctz_u32(lanes.escape)
+   high = high | (lanes.high & ((u32(1) << k) - u32(1)))
+   at = at + k
+   scanning = false
+  } | {
+   high = high | lanes.high
    at = at + u32(16)
   }
  }
- ascii: Bool = !simd.any_u8x16(simd.and_u8x16(high, simd.splat_u8x16(u8(128))))
- scanning = true
- while scanning && at < len(src) {
-  unit: u8 = src[at]
-  unit < u8(32) || unit == u8(34) || unit == u8(92) ? { scanning = false } | {
-   ascii = ascii && unit < u8(128)
-   at = at + u32(1)
+ scanning && at < len(src) ? {
+  len(src) >= u32(16) ? {
+   // The last block of the input, overlapping what the loop covered: the
+   // loop left at above len - 16, so the shift is one through fifteen.
+   base: u32 = len(src) - u32(16)
+   shift: u32 = at - base
+   lanes: JsonLanes = json_block_lanes(simd.load_u8x16(src, base))
+   escape: u32 = lanes.escape >> shift
+   highs: u32 = lanes.high >> shift
+   escape != u32(0) ? {
+    k: u32 = simd.ctz_u32(escape)
+    high = high | (highs & ((u32(1) << k) - u32(1)))
+    at = at + k
+   } | {
+    high = high | highs
+    at = len(src)
+   }
+  } | {
+   while scanning && at < len(src) {
+    unit: u8 = src[at]
+    unit < u8(32) || unit == u8(34) || unit == u8(92) ? { scanning = false } | {
+     high = high | (u32(unit) & u32(128))
+     at = at + u32(1)
+    }
+   }
   }
  }
- JsonRun { end: at, ascii: ascii }
+ JsonRun { end: at, ascii: high == u32(0) }
 }
+pub json_string_run: (src: []u8, offset: u32): u32 = json_string_scan(src, offset).end
 pub json_copy_run: (dst: [*]u8, output: u32, src: []u8, start: u32, end: u32): () {
  assert(start <= end && end <= len(src))
  assert(output <= len(dst) && end - start <= len(dst) - output)
@@ -430,16 +426,23 @@ pub json_token_full: (src: []u8, offset: u32): JsonToken {
   unit == u8(34) ? {
    valid: Bool = true
    done: Bool = false
+   // Every run is scanned once; a run with a byte above ASCII is
+   // validated here, so a string token is well-formed UTF-8 and a decoder
+   // whose every other byte is ASCII by construction needs no pass over
+   // the input on success (docs/spec/71-codecs.md section 19).
    while at < len(src) && valid && !done {
-    at = json_string_run(src, at)
-    at < len(src) ? {
-     src[at] == u8(34) ? { at = at + u32(1)
-      done = true
-     } | src[at] == u8(92) ? {
-      item: strings.TextScalar = json_escape(src, at)
-      valid = item.next <= len(src)
-      valid ? { at = item.next }
-     } | { valid = false }
+    run: JsonRun = json_string_scan(src, at)
+    !run.ascii && !is_valid_utf8(subslice(src, at, run.end - at)) ? { valid = false } | {
+     at = run.end
+     at < len(src) ? {
+      src[at] == u8(34) ? { at = at + u32(1)
+       done = true
+      } | src[at] == u8(92) ? {
+       item: strings.TextScalar = json_escape(src, at)
+       valid = item.next <= len(src)
+       valid ? { at = item.next }
+      } | { valid = false }
+     }
     }
    }
    kind = valid && done ? u32(6) | u32(1)

@@ -110,9 +110,10 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 	// validated literals or pass Unicode decoding. On failure, scan the full
 	// input to retain InvalidEncoding precedence even beyond the first
 	// syntax error — positioned at the first ill-formed byte. A view field's
-	// bytes are handed back unvalidated by the scan, so a borrowed record
-	// also checks the input on success. The positioned root does the work;
-	// the plain root drops the offset.
+	// bytes are a string token the tokenizer validated (json_token_full
+	// checks every run with a byte above ASCII), so a borrowed record needs
+	// no pass on success either. The positioned root does the work; the
+	// plain root drops the offset.
 	loc := newSynth("codec:" + locateName)
 	locateResult := loc.app("Result", loc.id(typ), loc.id("JsonFault"))
 	readResultType := decodedResult(loc, typ)
@@ -123,10 +124,6 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 	if region != "" {
 		locateResult = loc.app("Result", loc.app(typ, loc.id(region)), loc.id("JsonFault"))
 		readResultType = loc.app("Result", loc.app(codecName("decoded", typ), loc.id(region)), loc.id("JsonFault"))
-		success = loc.block(loc.expr(loc.cond(
-			loc.call("json_valid_utf8", loc.id("src")),
-			loc.block(loc.expr(loc.variant("Ok", loc.field(loc.id("item"), "value")))),
-			loc.block(loc.expr(encodingFault(loc))))))
 	}
 	locateFn := loc.fnRegions(locateName, regions,
 		[]*ast.FunctionParameter{loc.param("src", srcType(loc))},
