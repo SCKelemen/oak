@@ -590,7 +590,7 @@ i32 oak_main(  ) {
     f32 n   = oak_norm( ((f32)0x1.8p+01f), ((f32)0x1p+02f) )  ;
     u32 bits   = oak_conv_u32_bits_f32( n )  ;
     f64 half   = ( ((f64)( n )) * ((f64)0x1p-01) )  ;
-    if ( ( ( bits == ((u32)( 1084227584 )) ) && ( half == ((f64)0x1.4p+01) ) ) ) {
+    if ( ( bits == ((u32)( 1084227584 )) ) && ( half == ((f64)0x1.4p+01) ) ) {
       return 0    ;
     } else {
       return 1    ;

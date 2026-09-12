@@ -542,10 +542,10 @@ i32 oak_main( void );
 // @identifier: first_even
 // @signature: fn first_even(a: u32, b: u32) -> /* type */
 OAK_INLINE oak_Option_u32 oak_first_even( u32 a, u32 b ) {
-    if ( ( oak_sub_u32( a, oak_mul_u32( oak_div_u32( a, ((u32)( 2 )) ), ((u32)( 2 )) ) ) == ((u32)( 0 )) ) ) {
+    if ( oak_sub_u32( a, oak_mul_u32( oak_div_u32( a, ((u32)( 2 )) ), ((u32)( 2 )) ) ) == ((u32)( 0 )) ) {
       return oak_Option_u32_Some(a)    ;
     } else {
-      if ( ( oak_sub_u32( b, oak_mul_u32( oak_div_u32( b, ((u32)( 2 )) ), ((u32)( 2 )) ) ) == ((u32)( 0 )) ) ) {
+      if ( oak_sub_u32( b, oak_mul_u32( oak_div_u32( b, ((u32)( 2 )) ), ((u32)( 2 )) ) ) == ((u32)( 0 )) ) {
         return oak_Option_u32_Some(b)      ;
       } else {
         return oak_Option_u32_None()      ;
