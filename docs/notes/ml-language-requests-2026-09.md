@@ -1,6 +1,6 @@
 # Note: the ml pilot's language requests F1–F6, assessment and plan
 
-**Status: in progress, 2026-09-12.** Baseline: `specification` at `ed56b3e`; round one (F2 + F3) landed as #207, round two (F4) as #213; round three (F1, first increment) as #217; round four (F5) follows.
+**Status: all six landed, 2026-09-12.** Baseline: `specification` at `ed56b3e`; round one (F2 + F3) landed as #207, round two (F4) as #213, round three (F1, first increment) as #217, round four (F5) as #219, round five (F6) as #223. The follow-ups each round recorded are collected at the end.
 Source: the ml tensor-compiler pilot's second request list, relayed after
 its kernels moved from emitted strings toward code. The pilot's stated goal
 is the design principle this note adopts: **find the optimal structure for
@@ -15,7 +15,7 @@ implementation; the user never fights for performance.
 | F3 | Declared operator properties as the permission to reorder | Operator definitions (`10-syntax.md` §14) bind `+` to one named function; ml's fast-matmul flag reorders on the author's say-so | **Round one — landed.** `laws { associative, commutative }` on an operator definition (`10-syntax.md` §14a), validated against the signature and recorded by the checker (`OperatorLaws`, `HasOperatorLaw`); the only permission a backend has to regroup. `oak vet` lists declared laws beside the recorded assumptions; the REPL's `:lean` extracts the operator function and states each law as a theorem over it (`law_add_associative`, elaborates with `sorry`). Not yet consumed by a backend — F1's kernel lowering is the first consumer. |
 | F4 | Effect-typed steps, so a host read inside a step is a compile error | `effects`/`forbids` clauses checked over the concrete call graph (`60-effects-allocation.md` §2); a call through a function value has unknown effects and fails a `forbids` (`OAK-E0103`) | **Round two — landed.** Effect rows on **function types** (`60-effects-allocation.md` §2a): `step: ([]u8) -> () effects { }` is a type; a call through a rowed value contributes the row, so a `forbids` sees through it; every value entering a rowed type is checked against the row after specialization (`OAK-E0105`), unknown effects failing closed. `Host.Read`/`Device.*` are ordinary `Namespace.Name` classes the runtime's externs declare. `Oak.EffectRows` proves the check sound (`perform_subset_bound`, `forbids_sound`). Not checked: flows other than arguments and declaration initializers (assignment, fields, returns). |
 | F5 | Custody typestates on buffers | Typestate-indexed resources (`112-protocols.md` §5a) with `via` transitions and consumption; `Buffer[T]` owning runtime memory (`92-ffi.md` §2.8); the `Buffer[CpuOwned] → Buffer[DeviceOwned]` design (`50-borrowing.md` §11) | **Round four — landed** (`92-ffi.md` §2.8.5). `Buffer[T, S]` with `Host` initial; a custody transition is an extern binding `(b: Buffer[T, Host]): Buffer[T, Device]` — the runtime's function gets pointer and count, the Oak result is the same buffer re-typed, the old binding is consumed; `view`/`span`/`c.disown` only at `Host`. Chosen over `via` callables because the transition's side effect (enqueue, fence) is the runtime's, so the extern binding is the natural trust boundary. `Oak.BufferCustody` instantiates `Oak.Typestate`. Not yet: a buffer inside a record, states carrying a device identity. |
-| F6 | Tensors as typed records over shapes and views | Const parameters and generic records (`Ring[T, N]`), views and spans, operator definitions, uniform call syntax | **Round five, library-first.** `Tensor[T, R]` as a record of a shape `[R]u32`, strides, and a view; `matmul`, `relu`, and reductions written over it with `operator` bindings and F2's `reduce`; strict-subset kernels (F1) are the bodies. What needs the compiler — shape arithmetic on const parameters — is decided by writing the library first. |
+| F6 | Tensors as typed records over shapes and views | Const parameters and generic records (`Ring[T, N]`), views and spans, operator definitions, uniform call syntax | **Round five — landed, library-first** (`56-kernels.md` §8, `stdlib/tensor.oak`). `Tensor2[R]`/`MutTensor2[R]` as records of shape, strides, and offset over `View[f32, R]`/`Span[f32, R]`; transpose and row as new records over the same storage; matmul, relu, add, scale, fill, sum into caller-owned spans with the grouping named. Needed nothing new from the compiler: region records, region parameters, and `assert` carried it. `TensorLaws.lean` proves the transposition and row laws over the extraction. Next: matmul/sum specifications, records as kernel parameters, `Tensor[T, Rank]` once const-parameter shape arithmetic is wanted. |
 
 ## Order and why
 
@@ -41,3 +41,32 @@ for the matching loop. A regex engine as a golden use case would be a
 stdlib workstream after this list: a DFA compiler in Oak, SIMD prefilters
 for literal fragments (the simdjson technique), and extraction of the DFA
 step for proofs of match semantics. It is recorded here, not started.
+
+## What the rounds left open
+
+Each landed round recorded its next increment in its spec section; the
+list, in the order the pilot would meet them:
+
+1. **Check elision in kernels** (`56-kernels.md` §3): every buffer access
+   in an emitted kernel is a compare today; the checker's discharged
+   bounds (`while i < n` with `n = len(x)`) should elide them, which is the
+   performance fight this design asks the author to win with a proof.
+2. **Thread independence as a checker rule** (`56-kernels.md` §6): the
+   one-element-per-thread and tile-per-thread shapes over `tensor_index`,
+   failing closed on unknown independence as `55-parallelism.md` §2
+   requires; `Oak.Kernel.run_perm` is the theorem the rule discharges.
+3. **Cross-thread reductions with `reduce.tree`'s grouping** inside kernels
+   (`56-kernels.md` §7), which needs threadgroup memory and a barrier in
+   the subset.
+4. **Records as kernel parameters**, so a kernel takes a `Tensor2` rather
+   than its parts (`56-kernels.md` §7, §8).
+5. **A `Buffer` inside a record, and custody states carrying a device
+   identity** (`92-ffi.md` §2.8.6).
+6. **A backend consuming declared laws**: nothing regroups on
+   `laws { associative }` yet; the kernel lowering of a reduction is the
+   first consumer (`10-syntax.md` §14a).
+7. **Specifications of `tensor_matmul` and `tensor_sum`** against a
+   mathematical definition over the extraction (`TensorLaws.lean`).
+8. **GPU execution from the tools**: `oak test` running a kernel through
+   a Metal device when the toolchain is present.
+

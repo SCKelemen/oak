@@ -51,6 +51,29 @@ var randomSource string
 // uuid: RFC 9562 version 4 and 7 values over the random and encoding
 // packages (stdlib/README.md); a library package and part of the flat prelude.
 //
+// AsmUnit is an AArch64 `.oakasm` translation unit beside a library
+// package (docs/spec/94-assembler.md section 7): the loader attaches it when
+// the package is imported, with its function names rewritten to the
+// package's internal names, so the units pair with the package's
+// declarations exactly as a root package's units do.
+type AsmUnit struct {
+	Path string
+	Text string
+}
+
+// The hash package's AArch64 kernels: CRC-32C through crc32cx and SHA-256
+// through the SHA-2 extension. Each pairs with an Oak declaration that keeps
+// its portable body, so the extraction, the interpreter, and non-AArch64
+// builds see the same definition the unit is checked against.
+//
+//go:embed hash.arm64.oakasm
+var hashAsmSource string
+
+// AsmUnits lists the asm units of each library package by package path.
+var AsmUnits = map[string][]AsmUnit{
+	"hash": {{Path: "<stdlib>/hash.arm64.oakasm", Text: hashAsmSource}},
+}
+
 //go:embed uuid.oak
 var uuidSource string
 
@@ -66,6 +89,9 @@ var pathSource string
 //
 //go:embed reduce.oak
 var reduceSource string
+
+//go:embed tensor.oak
+var tensorSource string
 
 // grapheme: UAX #29 extended grapheme cluster segmentation over UTF-8 views
 // (stdlib/README.md); a library package and part of the flat prelude.
@@ -138,6 +164,13 @@ var timesimSource string
 //
 //go:embed timenative.oak
 var timenativeSource string
+
+// objc is a library package only (import("objc")), Darwin-only: the
+// Objective-C runtime's class and selector lookups; messages are sent with
+// the language form c.msg_send (docs/spec/92-ffi.md section 2.12).
+//
+//go:embed objc.oak
+var objcSource string
 
 // arena is a library package only (import("arena")): bump reservations of
 // element ranges over an owner such as a Buffer[T]
@@ -230,6 +263,7 @@ var Packages = map[string]string{
 	"uuid":            uuidSource,
 	"path":            pathSource,
 	"reduce":          reduceSource,
+	"tensor":          tensorSource,
 	"grapheme":        graphemeSource,
 	"normalize":       normalizeSource,
 	"float":           floatSource,
@@ -243,6 +277,7 @@ var Packages = map[string]string{
 	"timesim":         timesimSource,
 	"timenative":      timenativeSource,
 	"arena":           arenaSource,
+	"objc":            objcSource,
 }
 
 // Flatten derives the prelude spelling of one library package's text: no

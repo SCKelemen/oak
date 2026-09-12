@@ -245,6 +245,10 @@ type checker struct {
 	leFacts   map[int]int
 	diffFacts map[int]diffFact
 	subFacts  map[int]subFact
+	// constFacts: w register -> the constant a `movz`/`mov` just put in it
+	// (the stride of an array of records for `umaddl`); dies with a write,
+	// at labels, and at calls.
+	constFacts map[int]int64
 	// The label fixpoint: assumed guard states entering each label (nil on
 	// the first, optimistic pass), the meet of the states arriving there
 	// during this pass, and the conservative fallback that forgets all.
@@ -402,6 +406,28 @@ func spanShape(expr ast.Expression) (elem int64, writable bool, ok bool) {
 	return elem, marker.Value == "*", true
 }
 
+// spanShapeOf is spanShape extended with record elements: a span or view
+// of a declared record (asm.Function.Composites) has the record's placed
+// size as its element size.
+func (c *checker) spanShapeOf(expr ast.Expression) (elem int64, writable bool, ok bool) {
+	if elem, writable, ok = spanShape(expr); ok {
+		return elem, writable, true
+	}
+	indexExpr, isIndex := expr.(*ast.IndexExpression)
+	if !isIndex || indexExpr.Dot {
+		return 0, false, false
+	}
+	marker, isMarker := indexExpr.Index.(*ast.Identifier)
+	if !isMarker || (marker.Value != "*" && marker.Value != "") {
+		return 0, false, false
+	}
+	comp, isComposite := c.fn.Composites[typeText(indexExpr.Left)]
+	if !isComposite || comp.Size <= 0 {
+		return 0, false, false
+	}
+	return comp.Size, marker.Value == "*", true
+}
+
 func (c *checker) errorf(line int, format string, args ...interface{}) {
 	c.errors = append(c.errors, fmt.Sprintf("%s:%d: %s", c.fn.Name, line, fmt.Sprintf(format, args...)))
 }
@@ -504,7 +530,7 @@ func (c *checker) bindContract() {
 			nextGeneral += regs
 			continue
 		}
-		if elem, writable, isSpan := spanShape(param.Type); isSpan {
+		if elem, writable, isSpan := c.spanShapeOf(param.Type); isSpan {
 			if nextGeneral > 6 {
 				c.errorf(c.fn.Line, "span parameter %s needs two registers; the integer register contract is exhausted", param.Name.Value)
 				continue
@@ -692,6 +718,7 @@ func (c *checker) walk() {
 	c.leFacts = map[int]int{}
 	c.diffFacts = map[int]diffFact{}
 	c.subFacts = map[int]subFact{}
+	c.constFacts = map[int]int64{}
 	c.labelDisp = map[string]int64{}
 	c.pendingDisp = map[string]int64{}
 	c.labels = map[string]bool{}
@@ -817,6 +844,7 @@ func (c *checker) forgetGuards() {
 	c.leFacts = map[int]int{}
 	c.diffFacts = map[int]diffFact{}
 	c.subFacts = map[int]subFact{}
+	c.constFacts = map[int]int64{}
 }
 
 // instruction checks one instruction and reports whether it ends control.
@@ -1137,6 +1165,7 @@ func (c *checker) instruction(instr Instruction) bool {
 	}
 	c.write(instr, dest)
 	c.deriveSpan(instr, dest, regs)
+	c.deriveElement(instr, dest)
 	if instr.Mnemonic == "mov" && len(regs) == 2 && len(instr.Operands) == 2 {
 		if _, isReg := instr.Operands[1].(Register); isReg {
 			c.aliasSpan(dest, regs[1])
@@ -1335,6 +1364,7 @@ func (c *checker) forgetRegisterFacts(num int) {
 			delete(c.subFacts, reg)
 		}
 	}
+	delete(c.constFacts, num)
 }
 
 // deriveSpan advances the subslice idiom: `sub wT, wL, wS` under wS <= wL
@@ -1382,6 +1412,84 @@ func (c *checker) deriveSpan(instr Instruction, dest Register, regs []Register) 
 			return
 		}
 		c.spans[dest.Num] = &spanFact{lenReg: primary, elem: fact.elem, writable: fact.writable, lenRegs: lens}
+	}
+}
+
+// deriveElement advances the array-of-records idiom, producing a bounded
+// writable region for one element of a frame array (docs/spec/94-assembler.md
+// §9): `movz wK, #c` / `mov wK, #c` records the constant; `add xE, xB, wI,
+// uxtw #s` over a frame address xB with wI guarded below a constant K and
+// base + K·2^s inside the frame makes xE a 2^s-byte region; `umaddl xE, wI,
+// wK, xB` likewise with the stride c in wK makes xE a c-byte region; `add
+// xD, xS, #imm` over a region of n bytes with 0 <= imm <= n makes xD the
+// region's tail of n - imm bytes (a field inside the element).
+func (c *checker) deriveElement(instr Instruction, dest Register) {
+	switch instr.Mnemonic {
+	case "movz", "mov":
+		if dest.Class != ClassW || len(instr.Operands) != 2 {
+			return
+		}
+		if imm, isImm := instr.Operands[1].(Immediate); isImm && imm.Shift == 0 && imm.Value >= 0 {
+			c.constFacts[dest.Num] = imm.Value
+		}
+	case "add":
+		if dest.Class != ClassX || len(instr.Operands) != 3 {
+			return
+		}
+		base, okB := instr.Operands[1].(Register)
+		if !okB || base.Class != ClassX || dest.Num == base.Num {
+			return
+		}
+		switch tail := instr.Operands[2].(type) {
+		case Extended:
+			if tail.Kind != "uxtw" || tail.Reg.Class != ClassW {
+				return
+			}
+			c.elementRegion(dest, base, tail.Reg.Num, int64(1)<<uint(tail.Amount))
+		case Immediate:
+			if extent, isRegion := c.regions[base.Num]; isRegion && tail.Shift == 0 && tail.Value >= 0 && tail.Value <= extent.size {
+				c.regions[dest.Num] = region{size: extent.size - tail.Value, writable: extent.writable}
+			}
+		}
+	case "umaddl":
+		if dest.Class != ClassX || len(instr.Operands) != 4 {
+			return
+		}
+		index, okI := instr.Operands[1].(Register)
+		stride, okS := instr.Operands[2].(Register)
+		base, okB := instr.Operands[3].(Register)
+		if !okI || !okS || !okB || index.Class != ClassW || stride.Class != ClassW || base.Class != ClassX || dest.Num == base.Num {
+			return
+		}
+		if size, known := c.constFacts[stride.Num]; known && size > 0 {
+			c.elementRegion(dest, base, index.Num, size)
+		}
+	}
+}
+
+// elementRegion records xE = xB + wI·size as a region of size bytes: over
+// a frame address xB when wI is guarded below a constant K and every one
+// of the K elements lies inside the declared frame; over a span at xB
+// whose elements are size bytes when wI is guarded below the span's
+// length (or below a constant its proven minimum length covers) — the
+// element of a span of records, writable iff the span is.
+func (c *checker) elementRegion(dest, base Register, index int, size int64) {
+	bound, guarded := c.idxFacts[index]
+	if !guarded {
+		return
+	}
+	if addr, isFrame := c.frameAddrs[base.Num]; isFrame {
+		if bound.boundReg >= 0 || bound.bound <= 0 || addr < -c.fn.Frame || addr+bound.bound*size > 0 {
+			return
+		}
+		c.regions[dest.Num] = region{size: size, writable: true}
+		return
+	}
+	if fact, isSpan := c.spans[base.Num]; isSpan && fact.elem == size {
+		inBounds := (bound.boundReg >= 0 && fact.holdsLen(bound.boundReg)) || (bound.boundReg < 0 && fact.hasMin && bound.bound <= fact.minLen)
+		if inBounds {
+			c.regions[dest.Num] = region{size: size, writable: fact.writable}
+		}
 	}
 }
 
@@ -1530,8 +1638,8 @@ func (c *checker) calleeSavedState(reg Register) *savedState {
 // or the indirect result area in x8 (writable): `[xN, #off]` with the whole
 // access inside the extent, naturally aligned, never moved or indexed.
 func (c *checker) regionAccess(instr Instruction, matched form, mem Memory, extent region, regs []Register, isStore bool) {
-	if mem.Mode != MemOffset || mem.Index != nil {
-		c.errorf(instr.Line, "%s: a record's memory is addressed as [%s, #off] only (no indexing, no pre/post-index)", instr.Mnemonic, mem.Base.Text)
+	if mem.Mode != MemOffset {
+		c.errorf(instr.Line, "%s: a record's memory is never moved; pre/post-index addressing is refused on %s", instr.Mnemonic, mem.Base.Text)
 		return
 	}
 	if isStore && !extent.writable {
@@ -1541,6 +1649,35 @@ func (c *checker) regionAccess(instr Instruction, matched form, mem Memory, exte
 	size := accessBytes(instr.Mnemonic, matched[0])
 	if len(regs) > 0 {
 		size = memorySizeReg(instr.Mnemonic, regs[0]) // pairs already count both registers
+	}
+	if mem.Index != nil {
+		// An array inside the region, walked by a guarded element index:
+		// `[xR, wJ, uxtw #t]` with wJ < K' and K'·2^t inside the region.
+		index := *mem.Index
+		c.read(instr, index)
+		if index.Class != ClassW || mem.Extend != "" && mem.Extend != "uxtw" {
+			c.errorf(instr.Line, "%s: a record's array is indexed by a 32-bit element index, `[base, wI, uxtw #s]`; %s is not one", instr.Mnemonic, index.Text)
+			return
+		}
+		if int64(1)<<uint(mem.Shift) != size {
+			c.errorf(instr.Line, "%s: indexed access must move by whole elements: a %d-byte access needs `uxtw #%d`", instr.Mnemonic, size, log2(size))
+			return
+		}
+		bound, guarded := c.idxFacts[index.Num]
+		if !guarded || bound.boundReg >= 0 {
+			c.errorf(instr.Line, "%s indexed by %s without a dominating constant index guard: `cmp %s, #K` then `b.hs <exit>` bounds the array's index", instr.Mnemonic, index.Text, index.Text)
+			return
+		}
+		if bound.bound*size > extent.size {
+			c.errorf(instr.Line, "%s: the guard admits %d elements of %d bytes, past the %d bytes addressed by %s", instr.Mnemonic, bound.bound, size, extent.size, mem.Base.Text)
+			return
+		}
+		if !isStore {
+			for _, reg := range regs {
+				c.write(instr, reg)
+			}
+		}
+		return
 	}
 	if mem.Offset < 0 || mem.Offset+size > extent.size {
 		c.errorf(instr.Line, "%s touches record bytes [%d, %d) through %s, outside its %d bytes", instr.Mnemonic, mem.Offset, mem.Offset+size, mem.Base.Text, extent.size)

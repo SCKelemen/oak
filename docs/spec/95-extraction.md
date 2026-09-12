@@ -167,7 +167,7 @@ callees, so a program that calls the standard library extracts the library
 functions it reaches. Everything else — strings, generic templates
 themselves, recursion, methods, extern functions, closures, the storage
 float formats and the intrinsics named in section 3, the `checked`
-float rows, SIMD, FFI, assignment to a global — is an
+float rows, SIMD, FFI (extern calls, `c.fn_at`, `c.msg_send`), assignment to a global — is an
 error naming the construct. Nothing is approximated.
 
 ## 5. Where it runs
@@ -388,11 +388,64 @@ the compiler compiles, up to the extractor and the compiler being correct:
   sorted permutation (it is insertion sort); `sort_span_budget_zero` — with
   the depth budget spent the whole span is heap sorted, so the fallback path
   is a sorted permutation for every array below `2^31`. The pattern-defeating
-  path beyond the threshold is decided on twenty-four-element sorted,
+  path beyond the threshold is also decided on twenty-four-element sorted,
   reversed, all-equal, organ-pipe, few-distinct and sawtooth inputs and a
-  budget of one on the reversed sixteen; its universal laws need the
-  range-stack invariant and the in-bounds proof of every swap (the extraction
-  drops an out-of-range store, so permutation itself depends on them).
+  budget of one on the reversed sixteen; its universal laws are the two
+  entries below (the extraction drops an out-of-range store, so permutation
+  itself depends on the in-bounds proof of every swap).
+- `Oak/Stdlib/PdqsortLaws.lean`: `sort_span_perm`, `sort_span_budget_perm`
+  and `sort_u32_span_perm` — the pattern-defeating quicksort returns a
+  permutation of its input for every array below `2^31` elements, every
+  depth budget and every fuel (partial correctness: whenever the extraction
+  returns). Every helper is shown to permute the window when its indices are
+  in bounds — `swap_perm` (the two guarded stores are `Array.swap`),
+  `insertion_perm`, `heap_perm`, `reverse_perm`, `break_patterns_perm` (the
+  three pattern-breaking swaps stay inside `[a, b)` because `bit_length_spec`
+  bounds the mask below twice the length), `choose_pivot_spec` (the array is
+  untouched and the pivot lies in `[a, b)`), `partial_insertion_perm`,
+  `partition_equal_spec` (the returned index lies in `[a + 1, b]`) and
+  `partition_spec` (the split lies in `[a, b - 1]`) — and the main loop
+  `sort_span_budget_u32.loop1` carries the range-stack invariant `StackInv`
+  by fuel induction: every pushed range `[a_k, b_k)` satisfies
+  `a_k ≤ b_k ≤ n` and `(b_k - a_k) · 2^k ≤ n`, the live range satisfies the
+  same at the current depth, and because the loop continues with the smaller
+  side and pushes only ranges of thirteen or more elements the depth never
+  exceeds 28, so no stack index wraps or leaves the 144 slots
+  (`stack_index_toNat`, `StackInv.push`).
+- `Oak/Stdlib/PdqsortWindows.lean`, `PdqsortHelpers.lean`,
+  `PdqsortSorted.lean`: `sort_span_sorted`, `sort_span_budget_sorted`,
+  `sort_u32_span_sorted` and the conjunction `sort_u32_span_correct` — the
+  pattern-defeating quicksort returns a *sorted* permutation of its input
+  under the same hypotheses (every array below `2^31` elements, every depth
+  budget, every fuel, whenever it returns). `WinPerm a b xs ys` says `ys`
+  agrees with `xs` outside `[a, b)` and draws every value inside from inside;
+  every helper is one (`swap_win`, `break_patterns_win`, the window
+  write-back `writeback_win`), and the insertion and heap windows are sorted
+  by `sort_insertion_spec`/`sort_heap_spec` transported to any fuel through
+  the fuel-monotonicity lemmas `insertion_mono_le`/`heap_mono_le`. The three
+  helpers that decide the order carry postconditions: `partition_post` (the
+  pivot value sits at `mid`, `[a, mid)` is at most it, `(mid, b)` at least
+  it — the scans keep `a + 1 ≤ i ≤ j + 1 ≤ b` and cross exactly at
+  `i = j + 1`), `partition_equal_post` (`[a, i')` at most the pivot value,
+  `[i', b)` above it), and `partial_insertion_spec` (when it reports the
+  range sorted, `SortedRange ys a b`; the left shift keeps the `ShiftInv`
+  "sorted except at the moving hole" invariant and the right shift never
+  touches positions below `i`). The main loop then carries the ordered-stack
+  invariant by the same fuel induction as `span_loop_perm`: `Ord items stack
+  depth a b` — any two positions that do not share a pending range (the
+  current `[a, b)` or a stacked one) are already in order — and `Disj` —
+  the pending ranges are pairwise disjoint. A window permutation of the
+  current range keeps `Ord` (`ord_win`, because a value moved inside the
+  range is compared against a position outside it that no stacked range
+  shares); finishing a window drops the range (`ord_finish`); a partition
+  replaces it by its two sides around the final pivot, one pushed at level
+  `depth` and one continued (`ord_split`/`disj_split`, with `push_slots`
+  showing the lower levels untouched); the equal-elements partition shrinks
+  it to `[i', b)` because the element before the range is at least the pivot
+  and, by `Ord`, at most everything inside, so the low side is all equal
+  (`ord_equal_step`); a pop makes the top of the stack current (`ord_pop`).
+  When the stack is empty and the range is done, `Ord` is `SortedPrefix`
+  (`sorted_of_ord0`).
 - `Oak/Stdlib/EncodingLaws.lean`: `hex_round_trip` — for every source below
   `2^31 - 2` bytes, either symbol case, a destination that holds exactly the
   encoding, and a decode destination that holds the source, `hex_encode`
@@ -532,11 +585,7 @@ most; the kernel-decided facts use no axioms.
 
 ## 7. Next
 
-- State the pdqsort laws beyond the insertion threshold and the exhausted
-  budget: the range-stack invariant (ranges disjoint, everything between them
-  in final position, every swap in bounds) over `sort_span_budget.loop1`,
-  with `writeback_perm` and the heap and insertion laws as the leaves; the
-  SHA-256 and CRC-32C
+- The SHA-256 and CRC-32C
   extractions against reference definitions (the streaming laws hold; the
   compression and the table remain opaque to the proofs).
 - The subset: strings and the text library, methods, and recursion;

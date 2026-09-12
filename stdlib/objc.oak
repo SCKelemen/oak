@@ -1,0 +1,32 @@
+// The Objective-C runtime's entry points, for programs that drive Metal,
+// Foundation, or any other Objective-C framework from Oak (docs/spec/92-ffi.md
+// section 2.12; ml roadmap D5). This package is Darwin-only and thin by
+// design: it names the runtime functions that resolve classes and
+// selectors, and a message is sent with the language form
+// `c.msg_send[(params) -> ret](receiver, selector, args...)`, which casts
+// `objc_msgSend` to the signature the sender asserts. Nothing here models
+// Objective-C types: a class, an instance, and a selector are opaque
+// `c.Ptr` values, and every send states its own ABI.
+//
+// A module that imports this package declares `framework Foundation` (or
+// the framework it drives) in its oak.mod (83-modules.md section 4.6); the
+// runtime library comes with the framework.
+package objc
+
+// id objc_getClass(const char *name): the class object, or NULL.
+objc_getClass: (name: c.String): c.Ptr = c.extern("objc_getClass")
+
+// SEL sel_registerName(const char *name): the selector for a method name,
+// registering it on first use.
+sel_registerName: (name: c.String): c.Ptr = c.extern("sel_registerName")
+
+// objc_class resolves a class by its NUL-terminated name, as bytes:
+// `objc_class(name)` where `name: []u8` ends in 0. The runtime answers NULL
+// for a class that is not loaded; a message sent to NULL returns zero, as
+// Objective-C's nil-receiver rule says, so a missing class surfaces as a
+// zero result rather than a trap.
+pub objc_class: (name: []u8): c.Ptr = objc_getClass(c.cstr(name))
+
+// objc_sel registers and returns the selector for a NUL-terminated method
+// name, colons included (`initWithUTF8String:`).
+pub objc_sel: (name: []u8): c.Ptr = sel_registerName(c.cstr(name))

@@ -52,6 +52,11 @@ type Function struct {
 	// declarations (never from the unit text), so the checker binds them
 	// under AAPCS64's composite rules (docs/spec/94-assembler.md §9).
 	Composites map[string]Composite
+	// Records and ADTs: the program's monomorphic record and tagged-union
+	// declarations, by name — set by the compiler so the verifier can model
+	// aggregate locals of the Oak body (docs/spec/94-assembler.md §8).
+	Records map[string]*ast.RecordLiteral
+	ADTs    map[string]*ast.ADTType
 }
 
 // Composite is a record type's shape at the boundary: its size in bytes
