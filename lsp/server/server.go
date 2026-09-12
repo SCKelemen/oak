@@ -849,7 +849,7 @@ func (s *Server) documentSymbols(path string) interface{} {
 
 // builtinTypes are the type names highlighted as types.
 var builtinTypes = map[string]bool{
-	"u8": true, "u16": true, "u32": true, "u64": true, "i8": true, "i16": true, "i32": true, "i64": true,
+	"u8": true, "u16": true, "u32": true, "u64": true, "u128": true, "i8": true, "i16": true, "i32": true, "i64": true,
 	"int": true, "uint": true, "uptr": true, "byte": true, "rune": true, "f32": true, "f64": true, "f16": true, "bf16": true,
 	"Bool": true, "String": true, "string": true, "type": true,
 }

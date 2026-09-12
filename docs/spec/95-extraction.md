@@ -28,6 +28,7 @@ proofs written against them transfer.
 | Oak | Lean |
 | --- | --- |
 | `u8` `u16` `u32` `u64`, `i8`..`i64` | `UInt8` .. `UInt64`, `Int8` .. `Int64` — wrapping arithmetic, the same widths |
+| `u128` | outside the subset: Lean has no 128-bit machine integer, and a `BitVec 128` rendering is not yet stated, so a function over `u128` is refused rather than narrowed (`compiler/e2e_u128_test.go`) |
 | `Bool`, `()` | `Bool`, `Unit` |
 | `[N]T`, `[]T`, `[*]T` | `Array T` — a value; a view is the array it views, a span is returned |
 | `Name: type = struct { ... }` | `structure Name where ...` deriving `Repr, Inhabited, BEq` |

@@ -95,3 +95,19 @@ main: (): i32 {
 		t.Fatalf("mismatch not reported: %v", err)
 	}
 }
+
+// An F/D unit binds the LP64D contract; a hosted RISC-V target carries it
+// (the companion object already declares lp64d), the freestanding one is
+// refused with the alternative named.
+func TestE2ERV64FloatUnitNeedsLP64D(t *testing.T) {
+	source := "fma_rv: (a, b, c: f64) -> f64\n\nmain: (): i32 {\n  0\n}\n"
+	unit := "fma_rv: (a, b, c: f64) -> f64 = {\n  bind fa0 = a\n  bind fa1 = b\n  bind fa2 = c\n  fmadd.d fa0, fa0, fa1, fa2\n  ret\n}\n"
+	if _, err := New().WithSource("fma.oak", source).WithAsmUnit("fma.rv64.oakasm", unit).WithTarget(rv64Linux).EmitC().Get(); err != nil {
+		t.Fatalf("linux/riscv64: %v", err)
+	}
+	bare := target.Target{OS: target.OSFreestanding, Arch: target.ArchRiscv64}
+	_, err := New().WithSource("fma.oak", source).WithAsmUnit("fma.rv64.oakasm", unit).WithTarget(bare).EmitC().Get()
+	if err == nil || !strings.Contains(err.Error(), "LP64D") {
+		t.Fatalf("freestanding/riscv64 with an F/D unit: %v", err)
+	}
+}

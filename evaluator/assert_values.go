@@ -20,6 +20,12 @@ func evalAssertValues(name string, wantEqual bool, args []object.Object) object.
 			return newError("%s operands must have one type, got %s and %s", name, got.Type(), want.Type())
 		}
 		equal = g.Value == w.Value
+	case *object.U128:
+		w, ok := want.(*object.U128)
+		if !ok {
+			return newError("%s operands must have one type, got %s and %s", name, got.Type(), want.Type())
+		}
+		equal = g.Equal(w)
 	case *object.Boolean:
 		w, ok := want.(*object.Boolean)
 		if !ok {

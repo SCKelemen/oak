@@ -8,6 +8,7 @@ import (
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/lsp"
 	"github.com/SCKelemen/oak/nativegen"
+	"github.com/SCKelemen/oak/target"
 )
 
 // stitchAsmUnits parses the compilation's `.oakasm` units, pairs each unit
@@ -109,6 +110,13 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*d
 			findings := asm.Check(fn, decl, symbols)
 			for _, finding := range findings {
 				report("%s: %s", unitText.Path, finding)
+			}
+			if len(findings) == 0 && fn.FloatFile && comp.options.Target.Freestanding() && comp.options.Target.Arch == target.ArchRiscv64 {
+				// The F/D contract is LP64D; the freestanding RISC-V target
+				// compiles soft-float (generic_rv64) and its object declares
+				// lp64, so the unit's values would not meet the C caller's.
+				report("%s: asm unit %s uses the floating-point file (LP64D), which the freestanding/riscv64 target does not carry: build for linux/riscv64, or keep the floating-point work in the Oak body (docs/spec/94-assembler.md section 9)", unitText.Path, fn.Name)
+				continue
 			}
 			// With an Oak fallback body as the specification, verify the
 			// asm against it (docs/spec/94-assembler.md §8): a definite

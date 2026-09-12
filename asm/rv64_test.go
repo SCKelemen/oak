@@ -293,6 +293,12 @@ func requireRV64Tools(t *testing.T, tools ...string) {
 // text section.
 func gnuAssemble(t *testing.T, text string) []byte {
 	t.Helper()
+	return gnuAssembleWith(t, text, "rv64im", "lp64")
+}
+
+// gnuAssembleWith assembles for the given architecture string and ABI.
+func gnuAssembleWith(t *testing.T, text, march, mabi string) []byte {
+	t.Helper()
 	dir := t.TempDir()
 	src := filepath.Join(dir, "u.s")
 	obj := filepath.Join(dir, "u.o")
@@ -300,7 +306,7 @@ func gnuAssemble(t *testing.T, text string) []byte {
 	if err := os.WriteFile(src, []byte(text), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("riscv64-elf-as", "-march=rv64im", "-mabi=lp64", "-o", obj, src).CombinedOutput(); err != nil {
+	if out, err := exec.Command("riscv64-elf-as", "-march="+march, "-mabi="+mabi, "-o", obj, src).CombinedOutput(); err != nil {
 		t.Fatalf("riscv64-elf-as: %v\n%s\n%s", err, out, text)
 	}
 	if out, err := exec.Command("riscv64-elf-objcopy", "-O", "binary", "-j", ".text", obj, bin).CombinedOutput(); err != nil {
@@ -607,5 +613,195 @@ func TestRV64SpanMemoryVerify(t *testing.T) {
 	v = rv64Verify(t, rv64SumDecl, "{\n  total: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < len(v) {\n    total = total + v[i]\n    i = i + u32(1)\n  }\n  total\n}", rv64SumBody)
 	if v.Kind != VerdictProven {
 		t.Errorf("span sum: %s (%s)", v.Kind, v.Message)
+	}
+}
+
+// The F and D extensions under LP64D (docs/spec/94-assembler.md §9): f32/f64
+// parameters in fa0–fa7, the result in fa0, fs0–fs11 under the frame
+// obligation, ft* and fa* clobberable; a unit touching the floating-point
+// file is checked and trusted (the verifier's terms are integers).
+const rv64FmaDecl = "fma_rv: (a, b, c: f64) -> f64"
+const rv64FmaBody = `
+  bind fa0 = a
+  bind fa1 = b
+  bind fa2 = c
+  fmadd.d fa0, fa0, fa1, fa2
+  ret`
+
+func TestRV64FloatChecker(t *testing.T) {
+	accept := map[string][2]string{
+		"fused multiply-add": {rv64FmaDecl, rv64FmaBody},
+		"mixed integer and float contract": {"scale_rv: (n: u32, x: f64) -> f64", `
+  bind a0 = n
+  bind fa0 = x
+  clobber ft0
+  fcvt.d.wu ft0, a0
+  fmul.d fa0, fa0, ft0, rne
+  ret`},
+		"callee-saved fs0 saved and restored": {"hyp_rv: (x, y: f64) -> f64", `
+  bind fa0 = x
+  bind fa1 = y
+  frame 16
+  addi sp, sp, -16
+  fsd fs0, 8(sp)
+  fmul.d fs0, fa0, fa0
+  fmadd.d fa0, fa1, fa1, fs0
+  fsqrt.d fa0, fa0
+  fld fs0, 8(sp)
+  addi sp, sp, 16
+  ret`},
+		"comparison writes an integer result": {"below_rv: (x, y: f64) -> Bool", `
+  bind fa0 = x
+  bind fa1 = y
+  flt.d a0, fa0, fa1
+  ret`},
+		"f32 through the file": {"half_rv: (x: f32) -> f32", `
+  bind fa0 = x
+  clobber ft0
+  fcvt.s.w ft0, zero
+  fadd.s fa0, fa0, ft0
+  ret`},
+	}
+	for name, c := range accept {
+		if findings := rv64Check(t, c[0], c[1]); len(findings) != 0 {
+			t.Errorf("%s: %v", name, findings)
+		}
+	}
+	reject := map[string][3]string{
+		"wrong contract register":      {rv64FmaDecl, strings.Replace(rv64FmaBody, "bind fa1 = b", "bind fa3 = b", 1), "must be bound to fa1"},
+		"integer register for a float": {rv64FmaDecl, strings.Replace(rv64FmaBody, "bind fa0 = a", "bind a0 = a", 1), "must be bound to fa0"},
+		"unbound temporary":            {rv64FmaDecl, strings.Replace(rv64FmaBody, "  fmadd.d fa0, fa0, fa1, fa2", "  fmul.d ft0, fa0, fa1\n  fadd.d fa0, ft0, fa2", 1), "write to ft0"},
+		"callee-saved unsaved":         {rv64FmaDecl, strings.Replace(rv64FmaBody, "  fmadd.d fa0, fa0, fa1, fa2", "  fmul.d fs0, fa0, fa1\n  fadd.d fa0, fs0, fa2", 1), "callee-saved (fs0"},
+		"clobber callee-saved":         {rv64FmaDecl, "  clobber fs1\n" + rv64FmaBody, "callee-saved"},
+		"result never written":         {"zero_rv: (x: f64) -> f64", "  bind fa0 = x\n  clobber ft0\n  fmv.d.x ft0, zero\n  ret", ""},
+		"float memory off the frame":   {"peek_rv: (x: f64) -> f64", "  bind fa0 = x\n  fld fa0, 0(a0)\n  ret", "only the sp frame"},
+		"contract exhausted":           {"many_rv: (a, b, c, d, e, f, g, h, i: f64) -> f64", "  ret", "fa0–fa7 is exhausted"},
+	}
+	for name, c := range reject {
+		findings := rv64Check(t, c[0], c[1])
+		if name == "result never written" {
+			// fa0 is bound (the parameter) so a plain ret returns x: legal.
+			if len(findings) != 0 {
+				t.Errorf("%s: %v", name, findings)
+			}
+			continue
+		}
+		if len(findings) == 0 {
+			t.Errorf("%s: accepted", name)
+			continue
+		}
+		if !strings.Contains(strings.Join(findings, "\n"), c[2]) {
+			t.Errorf("%s: findings %v lack %q", name, findings, c[2])
+		}
+	}
+	// Parse-time shape errors.
+	for _, bad := range []string{"  fadd.d fa0, fa1", "  fadd.d fa0, a0, fa1", "  fmadd.d fa0, fa1, fa2", "  fadd.d fa0, fa1, fa2, nearest", "  fld a0, 0(sp)"} {
+		if _, errs := rv64Unit(t, rv64FmaDecl, "  bind fa0 = a\n  bind fa1 = b\n  bind fa2 = c\n"+bad+"\n  ret"); len(errs) == 0 {
+			t.Errorf("%q parsed", strings.TrimSpace(bad))
+		}
+	}
+	// Trusted, never mismatched.
+	fn, _ := rv64Unit(t, rv64FmaDecl, rv64FmaBody)
+	sig, _ := parseSignature(rv64FmaDecl)
+	spec, err := parseSignatureWithBody(rv64FmaDecl + " = { a * b + c }")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := Verify(fn, sig, spec.Body); v.Kind != VerdictTrusted {
+		t.Errorf("float unit verdict %s (%s), want trusted", v.Kind, v.Message)
+	}
+}
+
+// Every F/D mnemonic of the lane agrees with GNU as under lp64d.
+func TestRV64FloatEncoderAgreesWithGNUAs(t *testing.T) {
+	requireRV64Tools(t, "riscv64-elf-as", "riscv64-elf-objcopy")
+	body := `
+  bind fa0 = x
+  bind fa1 = y
+  bind a0 = n
+  clobber ft0, ft1, ft2, t0, t1
+  frame 32
+  addi sp, sp, -32
+  fsd fs0, 24(sp)
+  fld fs0, 24(sp)
+  fcvt.s.d ft2, fa0
+  fsw ft2, 16(sp)
+  flw ft2, 16(sp)
+  fadd.d ft0, fa0, fa1
+  fsub.d ft1, fa0, fa1, rne
+  fmul.d ft2, fa0, fa1, rtz
+  fdiv.d ft0, fa0, fa1, rdn
+  fsqrt.d ft1, fa0, rup
+  fmin.d ft2, fa0, fa1
+  fmax.d ft0, fa0, fa1
+  fsgnj.d ft1, fa0, fa1
+  fsgnjn.d ft2, fa0, fa1
+  fsgnjx.d ft0, fa0, fa1
+  fmadd.d ft1, fa0, fa1, ft0
+  fmsub.d ft2, fa0, fa1, ft0, rmm
+  fnmadd.d ft0, fa0, fa1, ft1
+  fnmsub.d ft1, fa0, fa1, ft2
+  feq.d t0, fa0, fa1
+  flt.d t1, fa0, fa1
+  fle.d t0, fa0, fa1
+  fclass.d t1, fa0
+  fmv.x.d t0, fa0
+  fmv.d.x ft0, a0
+  fcvt.w.d t1, fa0, rtz
+  fcvt.wu.d t0, fa0
+  fcvt.l.d t1, fa0
+  fcvt.lu.d t0, fa0
+  fcvt.d.w ft1, a0
+  fcvt.d.wu ft2, a0
+  fcvt.d.l ft0, a0
+  fcvt.d.lu ft1, a0
+  fcvt.s.d ft2, fa0
+  fcvt.d.s ft0, ft2
+  fadd.s ft1, ft2, ft2
+  fsub.s ft0, ft2, ft2
+  fmul.s ft1, ft2, ft2
+  fdiv.s ft0, ft2, ft2
+  fsqrt.s ft1, ft2
+  fmin.s ft0, ft2, ft2
+  fmax.s ft1, ft2, ft2
+  fsgnj.s ft0, ft2, ft2
+  fmadd.s ft1, ft2, ft2, ft0
+  feq.s t0, ft2, ft2
+  flt.s t1, ft2, ft2
+  fle.s t0, ft2, ft2
+  fclass.s t1, ft2
+  fmv.x.w t0, ft2
+  fmv.w.x ft0, a0
+  fcvt.w.s t1, ft2
+  fcvt.wu.s t0, ft2
+  fcvt.l.s t1, ft2
+  fcvt.lu.s t0, ft2
+  fcvt.s.w ft1, a0
+  fcvt.s.wu ft0, a0
+  fcvt.s.l ft1, a0
+  fcvt.s.lu ft0, a0
+  fmv.d fa0, ft0
+  addi sp, sp, 32
+  ret`
+	body = strings.Replace(body, "  fmv.d fa0, ft0\n", "  fsgnj.d fa0, ft0, ft0\n", 1)
+	fn, errs := rv64Unit(t, "fenc: (x, y: f64, n: u32) -> f64", body)
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	sig, _ := parseSignature("fenc: (x, y: f64, n: u32) -> f64")
+	if findings := Check(fn, sig, nil); len(findings) != 0 {
+		t.Fatalf("checker: %v", findings)
+	}
+	ours, _, err := EncodeFunction(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs := gnuAssembleWith(t, rv64GNUText(fn), "rv64imfd", "lp64d")
+	if !bytes.Equal(ours, theirs) {
+		offset := 0
+		for offset < len(ours) && offset < len(theirs) && bytes.Equal(ours[offset:offset+4], theirs[offset:offset+4]) {
+			offset += 4
+		}
+		t.Fatalf("encodings differ at byte %d: ours %x, GNU as %x", offset, ours[offset:min(offset+4, len(ours))], theirs[offset:min(offset+4, len(theirs))])
 	}
 }
