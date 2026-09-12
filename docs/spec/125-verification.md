@@ -179,6 +179,17 @@ message; an error outside every statement leaves them all open with it.
 `oak build` checks theorems like any declaration and does not run the
 ladder; a theorem is never a build error for being open.
 
+`-witness` evaluates every exhaustively decided theorem in the compiled
+program as well: `main` is replaced by a generated driver that loops over
+the same domains (u8, u16, i8, i16, `Bool`, payload-free sum types and a
+protocol's state type) through the width-conversion rows, calls each
+theorem, and exits with the index of the first theorem that fails; the
+row gains `witnessed in the compiled program`, and a disagreement between
+the interpreter and the backend is reported as `refuted` — the
+differential witness of `85-discipline.md`, stated per theorem. A theorem
+whose parameters the driver cannot enumerate is left to the interpreter's
+verdict and named in the summary.
+
 ## 5. The Lean projection
 
 A theorem extracts like the function it is (`95-extraction.md`), followed
@@ -266,8 +277,13 @@ the toolchain.
 
 | Protocol against intrinsic (`spec/oak/protocols.oak`) | Statement | Rung |
 | --- | --- | --- |
-| `machine_agrees_two_bytes` | the `Utf8` machine, stepped through `utf8_legal`/`utf8_next`, accepts `[b0, b1]` exactly when `is_valid_utf8` does | decided, all 65536 cases |
-| `machine_agrees_three_bytes_e0/ed/e1` | the same under the three-byte leads with special ranges | decided, all 65536 cases each |
+| `machine_agrees_two_bytes` | the `Utf8` machine, stepped through `utf8_legal`/`utf8_next`, accepts `[b0, b1]` exactly when `is_valid_utf8` does | decided, all 65536 cases, and witnessed in the compiled program — where `utf8_next` is the shift DFA the backend lowers (`112-protocols.md` §2a) and `is_valid_utf8` the C helper |
+| `machine_agrees_three_bytes_e0/ed/e1` | the same under the three-byte leads with special ranges | decided and witnessed, all 65536 cases each |
+
+| Layout law (`Oak.RecordLayout`, `spec/oak/layout.oak`) | Statement | Rung |
+| --- | --- | --- |
+| `alignUp_ge`, `alignUp_aligned` | `align_up(v, 8)` and `align_up(v, 64)` are at least `v` and multiples of the alignment | decided, bit level |
+| — | the rounding is minimal, idempotent, and fixes aligned values | decided, bit level |
 
 | Library law (`Oak.Stdlib.*Laws`) | Oak theorem (`spec/oak/stdlib_*/`) | Rung |
 | --- | --- | --- |
@@ -275,7 +291,9 @@ the toolchain.
 | `EncodingLaws`, `Base64Laws` | `hex_roundtrip` (both alphabets), `base64_roundtrip_two` (padded), `base64_url_roundtrip_one` | decided, exhaustively |
 | `SortLaws`, `PdqsortLaws` | `pair_sorted_and_permuted`, `pair_search_finds` | decided, all 65536 pairs |
 
-The library laws are stated over the library itself — the packages
+Every decided law of the corpus is also witnessed in the compiled
+program (`TestSelfHostedLaws` passes `-witness`), so the interpreter that
+decided it and the backend that runs it agree on every case. The library laws are stated over the library itself — the packages
 import `varint`, `encoding`, and `sort` — where the Lean laws are stated
 over the extraction; the two meet in the faithfulness harness
 (`95-extraction.md` §6). The witnesses are the three-witness rule (`92-ffi.md` §3.1) as proof

@@ -3378,6 +3378,18 @@ func (lo *oakLowering) operandContract(expr ast.Expression) (int, bool, bool) {
 		if ident, isIdent := e.Function.(*ast.Identifier); isIdent && ident.Value == "len" && len(e.Arguments) == 1 && lo.aggregateChain(e.Arguments[0]) {
 			return 32, false, true
 		}
+		// A call to a program function has its return type's width; an
+		// instruction function its member's.
+		if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
+			if callee, known := lo.functions[ident.Value]; known && callee.ReturnType != nil {
+				if w, signed, ok := contractBits(callee.ReturnType); ok {
+					return w, signed, true
+				}
+			}
+		}
+		if _, w, isInstruction := instructionFunction(e); isInstruction {
+			return w, false, true
+		}
 		if len(e.Arguments) == 1 {
 			return lo.operandContract(e.Arguments[0])
 		}
