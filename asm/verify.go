@@ -1811,6 +1811,10 @@ type oakLowering struct {
 	// in the subset is inlined (inlineCall). Nil outside the theorem decider.
 	functions map[string]*ast.FunctionStatement
 	inlining  map[string]bool // callees on the inlining stack, against recursion
+	// guards are the program's refinements (Guard); a construction lowers
+	// to its argument with the predicate as a trap obligation. Nil outside
+	// the theorem decider.
+	guards map[string]Guard
 	// trapsTracked lets a body contain a construct that traps on some
 	// inputs — a variable shift count reaching the width — by recording
 	// the trap condition in traps instead of refusing the body; the
@@ -2957,6 +2961,36 @@ func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.Invoc
 	return truncate(result, width), "", true
 }
 
+// lowerGuard lowers a refinement's construction Name(e): the argument at
+// the base width, the predicate over it recorded as a trap obligation (the
+// construction traps when the predicate fails; the decider proves every
+// recorded trap impossible, or reports the input that reaches it).
+func (lo *oakLowering) lowerGuard(name string, guard Guard, arg ast.Expression, width int) (*term, string, bool) {
+	if !lo.trapsTracked {
+		return nil, fmt.Sprintf("a construction of %s", name), false
+	}
+	baseWidth, signed, ok := contractBits(guard.Base)
+	if !ok {
+		return nil, fmt.Sprintf("a construction of %s over %s", name, typeText(guard.Base)), false
+	}
+	value, reason, ok := lo.lower(arg, baseWidth)
+	if !ok {
+		return nil, reason, false
+	}
+	saved := lo.locals
+	lo.locals = map[string]*oakLocal{"value": {value: value, width: baseWidth, signed: signed}}
+	holds, reason, ok := lo.lowerCondition(guard.Predicate)
+	lo.locals = saved
+	if !ok {
+		return nil, fmt.Sprintf("a construction of %s whose predicate contains %s", name, reason), false
+	}
+	lo.traps = append(lo.traps, binaryTerm("xor", truncate(holds, 1), constTerm(1, 1)))
+	if baseWidth < width {
+		return extendTerm(value, baseWidth, width, signed), "", true
+	}
+	return truncate(value, width), "", true
+}
+
 // spanLength recognizes len(v) over a span parameter.
 func (lo *oakLowering) spanLength(expr ast.Expression) (string, bool) {
 	call, isCall := expr.(*ast.InvocationExpression)
@@ -3058,6 +3092,9 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
 			if callee, known := lo.functions[ident.Value]; known {
 				return lo.inlineCall(callee, e, width)
+			}
+			if guard, isGuard := lo.guards[ident.Value]; isGuard && len(e.Arguments) == 1 {
+				return lo.lowerGuard(ident.Value, guard, e.Arguments[0], width)
 			}
 		}
 		// Primitive constructors (u32(x), widening) and the explicit

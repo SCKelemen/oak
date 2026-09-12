@@ -19,6 +19,7 @@ import (
 	"github.com/SCKelemen/oak/compiler"
 	"github.com/SCKelemen/oak/evaluator"
 	"github.com/SCKelemen/oak/object"
+	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
@@ -244,12 +245,12 @@ func decide(env *object.Environment, tc *typechecker.TypeChecker, functions map[
 	for _, param := range theorem.Parameters {
 		d, reason := domainOf(tc, env, param)
 		if reason != "" {
-			return blastOr(theorem, functions, Result{Name: name, Status: Open, Detail: reason + "; stated for Lean"})
+			return blastOr(tc, theorem, functions, Result{Name: name, Status: Open, Detail: reason + "; stated for Lean"})
 		}
 		domains = append(domains, d)
 		total *= len(d.values)
 		if total > cases {
-			return blastOr(theorem, functions, Result{Name: name, Status: Open,
+			return blastOr(tc, theorem, functions, Result{Name: name, Status: Open,
 				Detail: fmt.Sprintf("the domain exceeds %d cases; stated for Lean", cases)})
 		}
 	}
@@ -289,8 +290,12 @@ func decide(env *object.Environment, tc *typechecker.TypeChecker, functions map[
 // blastOr runs the bit-level decider (asm.DecideTheorem) on a theorem the
 // exhaustive decider does not reach, and keeps the given open result when
 // the decider does not apply either.
-func blastOr(theorem *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, open Result) Result {
-	decision := asm.DecideTheorem(theorem, functions)
+func blastOr(tc *typechecker.TypeChecker, theorem *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, open Result) Result {
+	stated, callees, guards, reason := forDecider(tc, theorem, functions)
+	if reason != "" {
+		return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + reason + ")"}
+	}
+	decision := asm.DecideTheoremWith(stated, callees, guards)
 	switch decision.Kind {
 	case asm.DecisionProven:
 		return Result{Name: open.Name, Status: Decided, Detail: decision.Message}
@@ -298,6 +303,116 @@ func blastOr(theorem *ast.FunctionStatement, functions map[string]*ast.FunctionS
 		return Result{Name: open.Name, Status: Refuted, Detail: decision.Message}
 	}
 	return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + decision.Message + ")"}
+}
+
+// forDecider restates a theorem and the program's functions for the
+// bit-level decider, which knows fixed-width scalars and nothing of
+// refinements (docs/spec/20-types.md section 12): a refined parameter is
+// its base with the predicate as a hypothesis (`!pred || body`, so the
+// claim is about the values the construction admits), a refined
+// parameter or return type of a callee is its base, and each refinement
+// is handed over as a guard so a construction in a body is a trap
+// obligation. reason is set when a predicate cannot be restated.
+func forDecider(tc *typechecker.TypeChecker, theorem *ast.FunctionStatement, functions map[string]*ast.FunctionStatement) (*ast.FunctionStatement, map[string]*ast.FunctionStatement, map[string]asm.Guard, string) {
+	baseOf := func(typ ast.Expression) (ast.Expression, string, bool) {
+		ident, isIdent := typ.(*ast.Identifier)
+		if !isIdent {
+			return typ, "", false
+		}
+		base, _, isRefinement := tc.Refinement(ident.Value)
+		if !isRefinement {
+			return typ, "", false
+		}
+		return &ast.Identifier{Token: ident.Token, Value: base}, ident.Value, true
+	}
+	retype := func(fn *ast.FunctionStatement) (*ast.FunctionStatement, []string) {
+		var refined []string
+		changed := false
+		params := make([]*ast.FunctionParameter, len(fn.Parameters))
+		for i, p := range fn.Parameters {
+			params[i] = p
+			if p == nil || p.Type == nil {
+				refined = append(refined, "")
+				continue
+			}
+			base, name, isRefined := baseOf(p.Type)
+			refined = append(refined, name)
+			if isRefined {
+				clone := *p
+				clone.Type = base
+				params[i] = &clone
+				changed = true
+			}
+		}
+		out := fn
+		ret := fn.ReturnType
+		if fn.ReturnType != nil {
+			if base, _, isRefined := baseOf(fn.ReturnType); isRefined {
+				ret = base
+				changed = true
+			}
+		}
+		if changed {
+			clone := *fn
+			clone.Parameters = params
+			clone.ReturnType = ret
+			out = &clone
+		}
+		return out, refined
+	}
+	stated, refined := retype(theorem)
+	body := stated.Body
+	for i := len(refined) - 1; i >= 0; i-- {
+		if refined[i] == "" {
+			continue
+		}
+		param := theorem.Parameters[i]
+		hypothesis, ok := tc.RefinementPredicateOver(refined[i], param.Name.Value)
+		if !ok {
+			return nil, nil, nil, fmt.Sprintf("the predicate of %s cannot be stated over %s", refined[i], param.Name.Value)
+		}
+		body = underHypothesis(theorem.Token, hypothesis, body)
+	}
+	if body != stated.Body {
+		if stated == theorem {
+			clone := *theorem
+			stated = &clone
+		}
+		stated.Body = body
+	}
+	callees := make(map[string]*ast.FunctionStatement, len(functions))
+	for name, fn := range functions {
+		callees[name], _ = retype(fn)
+	}
+	guards := map[string]asm.Guard{}
+	for _, name := range tc.Refinements() {
+		base, predicate, _ := tc.Refinement(name)
+		guards[name] = asm.Guard{Base: &ast.Identifier{Value: base}, Predicate: predicate}
+	}
+	return stated, callees, guards, ""
+}
+
+// underHypothesis states `!hypothesis || body`. A block body keeps its
+// statements and takes the disjunction on its final expression, so the
+// decider still sees the locals before the claim.
+func underHypothesis(tok token.Token, hypothesis, body ast.Expression) ast.Expression {
+	if block, isBlock := body.(*ast.BlockExpression); isBlock && block.Block != nil && len(block.Block.Statements) > 0 {
+		last := len(block.Block.Statements) - 1
+		if final, isExpr := block.Block.Statements[last].(*ast.ExpressionStatement); isExpr {
+			statements := append([]ast.Statement(nil), block.Block.Statements...)
+			finalClone := *final
+			finalClone.Expression = underHypothesis(tok, hypothesis, final.Expression)
+			statements[last] = &finalClone
+			inner := *block.Block
+			inner.Statements = statements
+			outer := *block
+			outer.Block = &inner
+			return &outer
+		}
+	}
+	return &ast.InfixExpression{Token: tok, Operator: "||",
+		Left:  &ast.PrefixExpression{Token: tok, Operator: "!", Right: hypothesis},
+		Right: body}
 }
 
 // assignment renders one argument tuple as `x = 3, y = Red`.

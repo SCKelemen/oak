@@ -2,6 +2,7 @@ package typechecker
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/token"
@@ -90,11 +91,11 @@ func (tc *TypeChecker) checkRefinementConstruction(name string, call *ast.Invoca
 		tc.refinementChecks = map[string]string{}
 	}
 	tc.refinementChecks[positionKey(call.Token)] = name
-	// Static discharge: a predicate `value < K` (or `value <= K`) with a
-	// literal K holds when the facts in scope prove the argument below the
-	// bound — the same laws that prove an index; the guard is then never
-	// emitted (Oak.Extents, the index laws).
-	if bound, ok := predicateBound(info.predicate); ok && tc.provenBelow(call.Arguments[0], bound) {
+	// Static discharge: the facts in scope prove the predicate of the
+	// argument — by the index laws for a bound, by evaluation for a
+	// constant, by shape for divisibility (typechecker/discharge.go); the
+	// guard is then never emitted.
+	if tc.dischargePredicate(info.predicate, call.Arguments[0], argType, info.base.Name) {
 		if tc.refinementDischarged == nil {
 			tc.refinementDischarged = map[string]bool{}
 		}
@@ -103,28 +104,27 @@ func (tc *TypeChecker) checkRefinementConstruction(name string, call *ast.Invoca
 	return &PrimitiveType{Name: info.base.Name, Refinement: name}
 }
 
-// predicateBound reads `value < K` or `value <= K` with a literal K as the
-// exclusive bound K or K + 1.
+// predicateBound reads the exclusive upper bound a predicate puts on
+// `value`: `value < K` or `value <= K` with a literal K (either order),
+// the tightest such conjunct of an `&&`.
 func predicateBound(predicate ast.Expression) (int64, bool) {
 	infix, isInfix := predicate.(*ast.InfixExpression)
 	if !isInfix {
 		return 0, false
 	}
-	left, isIdent := infix.Left.(*ast.Identifier)
-	if !isIdent || left.Value != "value" {
-		return 0, false
+	if infix.Operator == "&&" {
+		left, okLeft := predicateBound(infix.Left)
+		right, okRight := predicateBound(infix.Right)
+		switch {
+		case okLeft && okRight && right < left:
+			return right, true
+		case okLeft:
+			return left, true
+		default:
+			return right, okRight
+		}
 	}
-	k, isConst := constantIndex(infix.Right)
-	if !isConst || k < 0 {
-		return 0, false
-	}
-	switch infix.Operator {
-	case "<":
-		return k, true
-	case "<=":
-		return k + 1, true
-	}
-	return 0, false
+	return upperBoundOf(infix)
 }
 
 // RefinementDischarged reports whether the construction at tok was proven
@@ -273,3 +273,25 @@ func (tc *TypeChecker) RefinementConstructions() (guarded, discharged int) {
 	return guarded, discharged
 }
 
+// Refinements lists the declared refinements by name, sorted.
+func (tc *TypeChecker) Refinements() []string {
+	names := make([]string, 0, len(tc.refinements))
+	for name := range tc.refinements {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// RefinementPredicateOver returns name's predicate with `value` read as
+// binding — the hypothesis a theorem over a refined parameter carries.
+// False when name is not a refinement or the predicate is outside the
+// copyable forms.
+func (tc *TypeChecker) RefinementPredicateOver(name, binding string) (ast.Expression, bool) {
+	info, ok := tc.refinements[name]
+	if !ok {
+		return nil, false
+	}
+	predicate := substituteIdentifier(info.predicate, "value", binding)
+	return predicate, predicate != nil
+}

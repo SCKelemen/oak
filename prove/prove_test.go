@@ -290,3 +290,61 @@ main: (): i32 = 0
 		t.Fatalf("results: %+v", results)
 	}
 }
+
+// A generic refinement's instantiation is enumerated like any refinement:
+// the specialized predicate filters the base (docs/spec/20-types.md
+// section 12.1).
+func TestRefinedTemplateDomains(t *testing.T) {
+	src := `
+IrqId[N: u32]: type = u16 where value < N
+
+irq_small: theorem (i: IrqId[4]) { u32(i) + u32(1) < u32(5) }
+irq_wide: theorem (i: IrqId[300]) { u32(i) < u32(300) }
+main: (): i32 = 0
+`
+	results, err := Theorems(check(t, src), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || results[0].Status != Decided || results[0].Detail != "all 4 cases" ||
+		results[1].Status != Decided || results[1].Detail != "all 300 cases" {
+		t.Fatalf("results: %+v", results)
+	}
+}
+
+// The bit-level decider sees a refined parameter as its base under the
+// predicate as a hypothesis, and a construction in a body as a trap
+// obligation (docs/spec/125-verification.md section 3).
+func TestRefinedBitLevel(t *testing.T) {
+	src := `
+Pos: type = u32 where value >= u32(1) && value < u32(1000)
+
+step: (p: Pos): u32 = u32(p) - u32(1)
+
+step_bounded: theorem (p: Pos) { step(p) < u32(999) }
+step_wide: theorem (p: Pos) { step(p) < u32(500) }
+construct_traps: theorem (n: u32) { u32(Pos(n)) < u32(1000) }
+construct_safe: theorem (n: u32) { u32(Pos((n & u32(511)) + u32(1))) < u32(1000) }
+main: (): i32 = 0
+`
+	results, err := Theorems(check(t, src), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]Result{}
+	for _, r := range results {
+		got[r.Name] = r
+	}
+	if r := got["step_bounded"]; r.Status != Decided || !strings.Contains(r.Detail, "bit level") {
+		t.Errorf("step_bounded: %+v", r)
+	}
+	if r := got["step_wide"]; r.Status != Refuted || !strings.Contains(r.Detail, "counterexample") {
+		t.Errorf("step_wide: %+v", r)
+	}
+	if r := got["construct_traps"]; r.Status != Refuted || !strings.Contains(r.Detail, "traps") {
+		t.Errorf("construct_traps: %+v", r)
+	}
+	if r := got["construct_safe"]; r.Status != Decided || !strings.Contains(r.Detail, "bit level") {
+		t.Errorf("construct_safe: %+v", r)
+	}
+}

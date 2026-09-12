@@ -137,3 +137,134 @@ main: (): i32 = i32_bits_u32(u32(TABLE[low(u16(13))]) + u32(TABLE[low(u16(2))]))
 		t.Fatalf("a base value must not be returned as the refinement without construction")
 	}
 }
+
+// Generic refinements (docs/spec/20-types.md section 12.1): a refinement
+// over integer constants is specialized per application before checking.
+// `IrqId[4]` and `IrqId[8]` are distinct nominal types with their own
+// guards; a parameter of either carries the substituted predicate as a
+// fact, and a construction under a proving guard is discharged.
+func TestE2ERefinementTemplates(t *testing.T) {
+	src := `
+IrqId[N: u32]: type = u16 where value < N
+
+Table: type = struct { rows: [4]u8, wide: [8]u8 }
+
+pick: (t: Table, i: IrqId[4]): u8 = t.rows[i]
+
+pick_wide: (t: Table, i: IrqId[8]): u8 = t.wide[i]
+
+sum_rows: (t: Table): u32 {
+  total: u32 = 0
+  k: u16 = 0
+  while k < u16(4) {
+    total = total + u32(t.rows[IrqId[4](k)])
+    k = k + u16(1)
+  }
+  total
+}
+
+main: (): i32 {
+  t: Table
+  t.rows = [4]u8{ 1, 2, 3, 4 }
+  t.wide = [8]u8{ 0, 0, 0, 0, 0, 0, 0, 30 }
+  n: u16 = 7
+  last: IrqId[8] = IrqId[8](n)
+  i: IrqId[4] = IrqId[4](u16(2))
+  base: u16 = i
+  i32_bits_u32(sum_rows(t) + u32(pick(t, i)) + u32(pick_wide(t, last)) + u32(base) - u32(1))
+}
+`
+	output, err := New().WithSource("refinetpl.oak", src).EmitC().Get()
+	if err != nil {
+		t.Fatalf("compilation failed: %v", err)
+	}
+	for _, want := range []string{"typedef u16 oak_IrqId_4;", "typedef u16 oak_IrqId_8;", "oak_refine_oak_IrqId_8( n )"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("missing %q:\n%s", want, output)
+		}
+	}
+	// The literal construction and the loop-guarded one are discharged: the
+	// only guard left is the one over the arbitrary n.
+	if got := strings.Count(output, "oak_refine_oak_IrqId_"); got != 3 {
+		t.Fatalf("expected two guard definitions and one guarded construction, found %d:\n%s", got, output)
+	}
+	if strings.Contains(output, "oak_index( ") {
+		t.Fatalf("refined indices should be proven:\n%s", output)
+	}
+	// 10 + 3 + 30 + 2 - 1 = 44
+	code, abnormal := buildAndRun(t, "refinetpl", src)
+	if abnormal || code != 44 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 44", code, abnormal)
+	}
+
+	// Instantiations are distinct types; arguments are checked against the
+	// parameter's kind; a type parameter is not a const parameter.
+	for _, bad := range []struct{ name, src, want string }{
+		{"mixed", "IrqId[N: u32]: type = u16 where value < N\nf: (i: IrqId[4]): u16 = i\nmain: (): i32 { x: IrqId[8] = IrqId[8](u16(1))\n i32(f(x)) }", "IrqId_4"},
+		{"range", "IrqId[N: u8]: type = u16 where value < N\nmain: (): i32 { x: IrqId[300] = IrqId[300](u16(1))\n i32(x) }", "literal 300 does not fit in type u8"},
+		{"arity", "IrqId[N: u32]: type = u16 where value < N\nmain: (): i32 { x: IrqId[1, 2] = IrqId[1, 2](u16(0))\n i32(x) }", "takes 1 constant argument(s), got 2"},
+		{"kind", "Boxed[T]: type = u16 where value < u16(4)\nmain: (): i32 = 0", "integer constants (N: u32), not types"},
+	} {
+		_, err := New().WithSource(bad.name+".oak", bad.src).EmitC().Get()
+		if err == nil || !strings.Contains(err.Error(), bad.want) {
+			t.Fatalf("%s: expected an error mentioning %q, got %v", bad.name, bad.want, err)
+		}
+	}
+}
+
+// Discharge beyond a literal bound (docs/spec/20-types.md section 12,
+// typechecker/discharge.go): a constant argument is evaluated, a lower
+// bound comes from the facts, a power-of-two divisibility from the shape
+// of the argument, a conjunction from its parts, and an argument already
+// of the same refinement needs no second guard.
+func TestE2ERefinementDischargeShapes(t *testing.T) {
+	src := `
+Page: type = u32 where value % u32(4096) == u32(0)
+Slot: type = u16 where value >= u16(1) && value < u16(8)
+Even: type = u8 where value % u8(2) == u8(0)
+TABLE: [8]u8 = [8]u8{ 0, 1, 2, 3, 4, 5, 6, 7 }
+
+frame: (p: u32): Page = Page(p << u32(12))
+aligned: (a: u32): Page = Page(a & u32(4294963200))
+raw: (n: u32): Page = Page(n)
+
+sum_slots: (): u32 {
+  total: u32 = 0
+  k: u16 = 1
+  while k >= u16(1) && k < u16(8) {
+    total = total + u32(TABLE[Slot(k)])
+    k = k + u16(1)
+  }
+  total + u32(TABLE[Slot(u16(7))])
+}
+
+twice: (x: u8): Even = Even(x * u8(2))
+recheck: (e: Even): Even = Even(e)
+
+main: (): i32 {
+  a: Page = frame(u32(2))
+  b: Page = aligned(u32(8191))
+  c: Page = raw(u32(4096))
+  i32_bits_u32(u32(a) / u32(4096) + u32(b) / u32(4096) + u32(c) / u32(4096) + sum_slots() + u32(twice(u8(3))) + u32(recheck(Even(u8(4)))))
+}
+`
+	output, err := New().WithSource("shapes.oak", src).EmitC().Get()
+	if err != nil {
+		t.Fatalf("compilation failed: %v", err)
+	}
+	// Each count includes the guard's definition: only raw's construction
+	// keeps a guard.
+	for name, want := range map[string]int{"Page": 2, "Slot": 1, "Even": 1} {
+		if got := strings.Count(output, "oak_refine_oak_"+name+"( "); got != want {
+			t.Fatalf("%s: expected %d guard occurrences, found %d:\n%s", name, want, got, output)
+		}
+	}
+	if strings.Contains(output, "oak_index( ") {
+		t.Fatalf("the slot indices should be proven through the conjunction's bound:\n%s", output)
+	}
+	// 2 + 1 + 1 + (28 + 7) + 6 + 4 = 49
+	code, abnormal := buildAndRun(t, "shapes", src)
+	if abnormal || code != 49 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 49", code, abnormal)
+	}
+}

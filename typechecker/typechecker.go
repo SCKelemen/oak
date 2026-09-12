@@ -570,6 +570,7 @@ type TypeChecker struct {
 	// refinementChecks the constructions by call position
 	// (typechecker/refinements.go).
 	refinements          map[string]*refinementInfo
+	refinementTemplates  map[string][]string // generic refinement -> its specializations
 	refinementChecks     map[string]string
 	refinementDischarged map[string]bool
 	// equalityTypes records, per `==`/`!=` operator position, the named
@@ -838,6 +839,10 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 	// later phase sees View[T, R] as []T and a region-only type parameter as
 	// absent; the borrow checker reads the recorded structure.
 	tc.eraseRegions(program)
+	// Generic refinements are specialized next, for the same reason: every
+	// later phase sees plain refinement declarations
+	// (typechecker/refinement_templates.go).
+	tc.specializeRefinementTemplates(program)
 	// Resolve declared types before caching function signatures. Otherwise a
 	// span of a named record can retain an unresolved type variable.
 	for _, stmt := range program.Statements {

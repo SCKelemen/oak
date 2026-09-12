@@ -34,12 +34,32 @@ type Decision struct {
 	Message string
 }
 
+// Guard is a refinement's construction as the decider sees it
+// (docs/spec/20-types.md section 12): the value at its base type, and a
+// trap obligation that the predicate — a Bool over `value` — holds.
+type Guard struct {
+	Base      ast.Expression
+	Predicate ast.Expression
+}
+
+// DecideTheoremWith is DecideTheorem over a program whose refinements are
+// given as guards, keyed by the refinement's name: a construction in the
+// body is its argument, with the predicate recorded as a trap condition
+// the decider must prove impossible.
+func DecideTheoremWith(sig *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, guards map[string]Guard) Decision {
+	return decideTheorem(sig, functions, guards)
+}
+
 // DecideTheorem decides a theorem declaration: every parameter a
 // fixed-width scalar or Bool, the body in the verifier's subset (wrapping
 // arithmetic, bitwise operators, comparisons, conditionals, typed locals,
 // counted loops, calls to program functions in the same subset — given in
 // functions — inlined; no views or data-dependent loops).
 func DecideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.FunctionStatement) Decision {
+	return decideTheorem(sig, functions, nil)
+}
+
+func decideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, guards map[string]Guard) Decision {
 	if sig == nil || sig.Name == nil || sig.Body == nil {
 		return Decision{Kind: DecisionUndecided, Message: "no body"}
 	}
@@ -51,6 +71,7 @@ func DecideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Functio
 	}
 	lowering := newLowering(sig)
 	lowering.functions = functions
+	lowering.guards = guards
 	lowering.trapsTracked = true
 	body := sig.Body
 	if loop, isTail := tailRecursionAsLoop(sig, body); isTail {
@@ -87,7 +108,7 @@ func DecideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Functio
 	for _, env := range witnessInputs(names, widths) {
 		for _, trap := range traps {
 			if trap.eval(env) != 0 {
-				return Decision{Kind: DecisionRefuted, Message: "the body traps (a shift count reaches the width) at " + describeEnv(names, env)}
+				return Decision{Kind: DecisionRefuted, Message: "the body traps (a shift count at the width, or a construction outside its predicate) at " + describeEnv(names, env)}
 			}
 		}
 		if t.eval(env) != 1 {
@@ -103,7 +124,7 @@ func DecideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Functio
 		}
 		if bits[0] != bddFalse {
 			env := bl.counterexample(bits[0], bddFalse)
-			return Decision{Kind: DecisionRefuted, Message: "the body traps (a shift count reaches the width) at " + describeEnv(names, env)}
+			return Decision{Kind: DecisionRefuted, Message: "the body traps (a shift count at the width, or a construction outside its predicate) at " + describeEnv(names, env)}
 		}
 	}
 	bits := bl.blast(t)

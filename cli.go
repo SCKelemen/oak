@@ -274,6 +274,16 @@ func vetOne(target, profile string) int {
 		if guarded, discharged := model.TypeChecker.RefinementConstructions(); guarded+discharged != 0 {
 			fmt.Printf("refinements: %d construction(s) discharged statically, %d guarded at run time\n", discharged, guarded)
 		}
+		if templates := model.TypeChecker.RefinementTemplates(); len(templates) != 0 {
+			names := make([]string, 0, len(templates))
+			for name := range templates {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				fmt.Printf("refinement %s: specialized as %s\n", name, strings.Join(templates[name], ", "))
+			}
+		}
 		if theorems := len(typechecker.Theorems(model.Tree.Root)); theorems != 0 {
 			fmt.Printf("theorems: %d declared; `oak prove` discharges them\n", theorems)
 		}

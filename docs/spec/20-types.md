@@ -820,15 +820,36 @@ predicate (`none`, the trap, otherwise), and gives a theorem over a
 refined parameter the predicate as a hypothesis (`125-verification.md`
 §5).
 
-Static discharge: when the predicate is `value < K` or `value <= K` with a
-literal `K` and the facts in scope prove the argument below the bound — a
-loop counter under its guard, a masked value, a literal, a value already
-refined by a tighter type — by the same laws that prove an index
-(`50-borrowing.md`, `Oak.Extents`), the construction is emitted as a plain
-conversion with no guard. Conversely an index that is a construction
-`Name(e)` is proven below `K` whether or not the guard was discharged: the
-guard trapped otherwise. So `TABLE[Slot(i)]` under `i < 8` costs nothing at
-all, and `TABLE[Slot(n)]` for an arbitrary `n` costs the one guard.
+Static discharge: when the facts in scope prove the predicate of the
+argument, the construction is emitted as a plain conversion with no guard.
+The predicate is read by shape, and each shape is discharged by a law the
+extent facts already carry (`50-borrowing.md`, `Oak.Extents`) or by
+evaluation:
+
+- `value < K`, `value <= K` with a literal `K`: the argument is proven
+  below the bound by the index laws — a loop counter under its guard, a
+  masked value, a literal, a value already refined by a tighter type;
+- `value >= K`, `value > K`: a literal lower bound on the binding in scope
+  (a guard `k >= 1`, a refined parameter), or a constant;
+- `value % K == 0` with `K` a power of two: the argument's low bits are
+  zero by its shape — `p << 12`, `a & ~4095`, `x * 2`, a sum, difference,
+  or bitwise combination of such terms, a conversion of one. Wrapping
+  arithmetic keeps a power-of-two divisor's low bits, which is why `K`
+  must be one;
+- `a && b`: both parts; `a || b`: either;
+- a constant argument: the predicate is evaluated at the base width, with
+  the base's wrapping arithmetic (`Even(u8(4))` costs nothing, `Even(u8(7))`
+  keeps its guard and traps);
+- an argument already of a refinement with the same predicate
+  (`Even(e)` with `e: Even`).
+
+Conversely an index that is a construction `Name(e)` is proven below the
+predicate's upper bound — the tightest `value < K` conjunct — whether or
+not the guard was discharged: the guard trapped otherwise. So
+`TABLE[Slot(i)]` under `i < 8` costs nothing at all, and `TABLE[Slot(n)]`
+for an arbitrary `n` costs the one guard. Anything the shapes do not cover
+keeps its guard: a check that stays is a runtime check, never a silent
+assumption.
 
 A refined return type is a postcondition: `low: (x: u16): Slot =
 Slot(x & u16(7))` must construct (returning the bare `u16` is refused), and
@@ -838,8 +859,32 @@ because any expression of a refined type is below the bound.
 `oak vet` reports the count of constructions discharged statically and
 guarded at run time, so the checks a program still pays are never hidden.
 
-Not yet: refinements over records and floats, generic refinements
-(`IrqId[N]: type = u16 where value < N`), and predicates beyond a literal
-bound in the discharge. Each stays a runtime check until then, never a
-silent one.
+### 12.1 Generic refinements
+
+```oak
+IrqId[N: u32]: type = u16 where value < N
+
+route: (table: [4]Handler, i: IrqId[4]): Handler = table[i]
+```
+
+A refinement whose type parameters are integer constants (§11, const
+parameters) is a template over the predicate. Each application `IrqId[4]`
+— in a parameter or binding type, in a field type, in a construction
+`IrqId[4](v)` — is a distinct nominal refinement whose predicate has the
+literal substituted (`value < 4`), so `IrqId[4]` and `IrqId[8]` are not
+assignable to each other and each carries its own bound as a fact:
+`table[i]` above is proven, and `table[IrqId[4](k)]` under `k < 4` is
+discharged at the construction too. Applications are specialized before
+checking, into declarations named like record instantiations (`IrqId_4`),
+and every later phase — the extent facts, the backends' guards, the Lean
+projection, the interpreter, the prover — sees only those. Arguments are
+integer literals within the parameter's kind (`IrqId[300]` with `N: u8` is
+an error, `OAK-T0602`); an application with the wrong count of arguments
+or a parameter that is a type rather than a constant is refused the same
+way. An application whose argument is the const parameter of an enclosing
+template (`IrqId[N]` inside `Table[N: u32]`) is not yet specialized.
+
+Not yet: refinements over records and floats, and the discharge of a
+construction from a declared theorem rather than the facts in scope. Each
+stays a runtime check until then, never a silent one.
 

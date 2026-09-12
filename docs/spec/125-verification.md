@@ -96,7 +96,7 @@ Every theorem is placed on one rung, from the strongest evidence down:
 
 | Status | Meaning |
 | --- | --- |
-| `decided` | The compiler decided the statement itself, one of two ways. **Exhaustively**: it evaluated the body on every element of its finite parameter domain and every case held — domains are `Bool`, `u8`, `i8`, `u16`, `i16`, payload-free sum types, and declared records of those (the product of the field domains), with the product of the parameter domains bounded (`-cases`, 65536 by default); the evaluator is the interpreter the differential witnesses hold to the compiled program. **At the bit level**: for parameters that are fixed-width scalars or `Bool` of any width, the body was lowered to the assembler verifier's term language (`94-assembler.md` §8; wrapping arithmetic, bitwise operators, comparisons, conditionals, typed locals, counted loops, calls to program functions of the same shape inlined; no views, recursion, or data-dependent loops) and bit-blasted, and its bit is the constant true. A construct that traps on some inputs — a variable shift count reaching the width — records its trap condition as an obligation the decider proves impossible first, so a theorem whose body traps is `refuted` at the trapping input rather than read as true; the term semantics are those of `Oak.AssemblerSemantics`, proved against Arm's ASL and checked against the silicon. The detail names which, and the case count or BDD node count. |
+| `decided` | The compiler decided the statement itself, one of two ways. **Exhaustively**: it evaluated the body on every element of its finite parameter domain and every case held — domains are `Bool`, `u8`, `i8`, `u16`, `i16`, payload-free sum types, and declared records of those (the product of the field domains), with the product of the parameter domains bounded (`-cases`, 65536 by default); the evaluator is the interpreter the differential witnesses hold to the compiled program. **At the bit level**: for parameters that are fixed-width scalars or `Bool` of any width, the body was lowered to the assembler verifier's term language (`94-assembler.md` §8; wrapping arithmetic, bitwise operators, comparisons, conditionals, typed locals, counted loops, calls to program functions of the same shape inlined; no views, recursion, or data-dependent loops) and bit-blasted, and its bit is the constant true. A construct that traps on some inputs — a variable shift count reaching the width, a refinement's construction `Name(e)` whose predicate may fail — records its trap condition as an obligation the decider proves impossible first, so a theorem whose body traps is `refuted` at the trapping input rather than read as true; a parameter of a refinement type is its base under the predicate as a hypothesis (the claim is about the values the construction admits), and a callee's refined parameter or return is its base; the term semantics are those of `Oak.AssemblerSemantics`, proved against Arm's ASL and checked against the silicon. The detail names which, and the case count or BDD node count. |
 | `refuted` | One of the deciders found a counterexample. The theorem is false; the assignment is reported. |
 | `proved` | Lean checked the theorem's statement over the extraction of the program (§5): `oak prove -lean out.lean -check` ran Lean on the projection and its statement drew no error. The compiler never awards this rung on its own; it reads Lean's diagnostics. A hand-written proof lives in a module of its own that imports the projection. |
 | `open` | No decider applies (a domain too large, a parameter type that is not finite) and the statement awaits its Lean proof. The reason is reported. |
@@ -175,19 +175,23 @@ differential witnesses cover, and are stated as the assumption they are.
 In order of payoff, each reusing a surface that exists:
 
 - **Protocol invariants, further.** §2a covers safety on finite state
-  spaces. Next: the larger domains of §3 so a `u32` budget is decided
-  rather than left open, and liveness with declared fairness projected to
-  the TLA+ module the protocol command already renders. The Boolean
+  spaces; liveness with declared fairness is projected to the TLA+ module
+  (`112-protocols.md` §1: `fair step`, `eventually from -> target`) and
+  checked by TLC. Next: the larger domains of §3 so a `u32` budget is
+  decided rather than left open. The Boolean
   transition-model export of the verification experiment already checks
   inductive invariants through certificates; §2a is that check on the
   language's own state.
 - **Refinements, further.** `Name: type = u16 where pred` is in
   (`20-types.md` §12): the predicate is a `Bool` expression over `value`,
   checked at construction, carried as extent facts by every binding of the
-  type. Next: generic refinements (`IrqId[N]: type = u16 where value < N`),
-  the static discharge of a construction from the facts in scope or a
-  theorem so the guard disappears, refined return types as postconditions,
-  and the construction in the Lean projection.
+  type, discharged statically under a literal bound, a postcondition as a
+  return type, projected to Lean as a guarded value, and generic over
+  integer constants (`IrqId[N: u32]: type = u16 where value < N`, §12.1,
+  specialized per application). The discharge reads lower bounds,
+  power-of-two divisibility, conjunctions, and constant arguments besides
+  the literal upper bound. Next: discharge from a declared theorem, and
+  applications over an enclosing template's const parameter.
 - **Contracts.** Leading `assert`s of a body are its preconditions; a
   caller discharges them statically or keeps the check. No `requires`
   keyword.
@@ -195,6 +199,7 @@ In order of payoff, each reusing a surface that exists:
   already models them, division with its zero-divisor obligation like the
   shift's, and the extent facts for linear bounds, inside the compiler,
   each with its Lean law.
-- **Temporal properties.** Safety first, through the invariants above;
-  liveness with declared fairness, projected to the TLA+ module the
-  protocol command already renders.
+- **Temporal properties.** Safety through the invariants above; liveness
+  with declared fairness through the TLA+ module (`112-protocols.md` §4).
+  Next: liveness decided inside the compiler for finite machines, so a
+  declaration without TLC still gets a verdict.

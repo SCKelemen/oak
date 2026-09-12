@@ -154,8 +154,10 @@ narrow: (x: u64, y: i32): u32 {
 }
 
 func TestExtractionFailsClosed(t *testing.T) {
+	// Self-recursion is extracted with a fuel argument since
+	// compiler/e2e_lean_recursion_test.go; only the shapes below stay
+	// outside the subset.
 	cases := map[string]struct{ src, want string }{
-		"recursion":      {"f: (n: u32): u32 = n == u32(0) ? u32(0) | f(n - u32(1))", "recursive"},
 		"trunc":          {"f: (x: f32): f32 = trunc(x)", "no Lean carrier"},
 		"min":            {"f: (x: f32, y: f32): f32 = min(x, y)", "no Lean carrier"},
 		"f16 row":        {"f: (x: f32): u16 = u16_bits_f16(f16_round_f32(x))", "f32/f64 conversions only"},
