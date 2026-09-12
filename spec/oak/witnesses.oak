@@ -1,0 +1,93 @@
+// The three-witness rule, proved (docs/spec/92-ffi.md section 3.1;
+// docs/spec/125-verification.md section 6). Each instruction function has
+// an instruction lowering, a portable C lowering, and the interpreter;
+// the executable tests run the lowerings on the same inputs. Here the
+// portable lowerings are transcribed as Oak functions and stated equal to
+// the instruction functions for every input, and the decider settles the
+// claim at the bit level — so the portable witness is not merely tested
+// against the instruction, it is proved to be it. The UTF-8 validity
+// intrinsic is stated against Unicode Table 3-7 written out as a predicate
+// and decided exhaustively over every two-byte input and over every
+// continuation pair under the three-byte leads with special ranges.
+
+// The SWAR population count (the portable lowering of arm64.cnt32/cnt64).
+swar_popcount32: (x: u32): u32 {
+  a: u32 = x - ((x >> u32(1)) & u32(0x55555555))
+  b: u32 = (a & u32(0x33333333)) + ((a >> u32(2)) & u32(0x33333333))
+  c: u32 = (b + (b >> u32(4))) & u32(0x0F0F0F0F)
+  (c * u32(0x01010101)) >> u32(24)
+}
+
+swar_popcount64: (x: u64): u64 {
+  a: u64 = x - ((x >> u64(1)) & u64(0x5555555555555555))
+  b: u64 = (a & u64(0x3333333333333333)) + ((a >> u64(2)) & u64(0x3333333333333333))
+  c: u64 = (b + (b >> u64(4))) & u64(0x0F0F0F0F0F0F0F0F)
+  (c * u64(0x0101010101010101)) >> u64(56)
+}
+
+swar_popcount32_is_cnt: theorem (x: u32) { swar_popcount32(x) == arm64.cnt32(x) }
+swar_popcount64_is_cnt: theorem (x: u64) { swar_popcount64(x) == arm64.cnt64(x) }
+
+// The byte shuffle (the portable lowering of arm64.rev32 is the compiler's
+// byte swap; this is that swap spelled out).
+shuffle_rev32: (x: u32): u32 = (x << u32(24)) | ((x & u32(0xFF00)) << u32(8)) | ((x >> u32(8)) & u32(0xFF00)) | (x >> u32(24))
+
+shuffle_rev32_is_rev: theorem (x: u32) { shuffle_rev32(x) == arm64.rev32(x) }
+
+// The swap network (the portable lowering of arm64.rbit32): bits, pairs,
+// nibbles, then the byte swap.
+network_rbit32: (x: u32): u32 {
+  a: u32 = ((x & u32(0x55555555)) << u32(1)) | ((x >> u32(1)) & u32(0x55555555))
+  b: u32 = ((a & u32(0x33333333)) << u32(2)) | ((a >> u32(2)) & u32(0x33333333))
+  c: u32 = ((b & u32(0x0F0F0F0F)) << u32(4)) | ((b >> u32(4)) & u32(0x0F0F0F0F))
+  shuffle_rev32(c)
+}
+
+network_rbit32_is_rbit: theorem (x: u32) { network_rbit32(x) == arm64.rbit32(x) }
+
+// The leading zeros as thresholds: the count is the number of powers of
+// two above x, the instruction's total semantics (clz(0) = 32) included.
+// (A binary search with data-dependent shifts states the same function but
+// exceeds the decider's node budget; thresholds against constants do not.)
+threshold_clz32: (x: u32): u32 =
+  x >= u32(2147483648) ? u32(0) | x >= u32(1073741824) ? u32(1) | x >= u32(536870912) ? u32(2) | x >= u32(268435456) ? u32(3) | x >= u32(134217728) ? u32(4) | x >= u32(67108864) ? u32(5) | x >= u32(33554432) ? u32(6) | x >= u32(16777216) ? u32(7) | x >= u32(8388608) ? u32(8) | x >= u32(4194304) ? u32(9) | x >= u32(2097152) ? u32(10) | x >= u32(1048576) ? u32(11) | x >= u32(524288) ? u32(12) | x >= u32(262144) ? u32(13) | x >= u32(131072) ? u32(14) | x >= u32(65536) ? u32(15) | x >= u32(32768) ? u32(16) | x >= u32(16384) ? u32(17) | x >= u32(8192) ? u32(18) | x >= u32(4096) ? u32(19) | x >= u32(2048) ? u32(20) | x >= u32(1024) ? u32(21) | x >= u32(512) ? u32(22) | x >= u32(256) ? u32(23) | x >= u32(128) ? u32(24) | x >= u32(64) ? u32(25) | x >= u32(32) ? u32(26) | x >= u32(16) ? u32(27) | x >= u32(8) ? u32(28) | x >= u32(4) ? u32(29) | x >= u32(2) ? u32(30) | x >= u32(1) ? u32(31) | u32(32)
+
+threshold_clz32_is_clz: theorem (x: u32) { threshold_clz32(x) == arm64.clz32(x) }
+
+// Unicode Table 3-7 for the inputs of one and two bytes: an ASCII byte, or
+// a two-byte lead C2..DF with one continuation byte.
+continuation: (b: u8): Bool = b >= u8(0x80) && b <= u8(0xBF)
+
+table_two: (b0: u8, b1: u8): Bool =
+  (b0 <= u8(0x7F) && b1 <= u8(0x7F)) || (b0 >= u8(0xC2) && b0 <= u8(0xDF) && continuation(b1))
+
+valid_two: (b0: u8, b1: u8): Bool {
+  bytes: [2]u8 = [2]u8{ b0, b1 }
+  is_valid_utf8(view(&bytes))
+}
+
+utf8_two_bytes: theorem (b0: u8, b1: u8) { valid_two(b0, b1) == table_two(b0, b1) }
+
+// The three-byte rows with a special second byte: E0 excludes overlongs
+// (A0..BF), ED excludes surrogates (80..9F), and E1 stands for the plain
+// rows E1..EC and EE..EF (80..BF).
+valid_three: (b0: u8, b1: u8, b2: u8): Bool {
+  bytes: [3]u8 = [3]u8{ b0, b1, b2 }
+  is_valid_utf8(view(&bytes))
+}
+
+utf8_three_bytes_e0: theorem (b1: u8, b2: u8) { valid_three(u8(0xE0), b1, b2) == (b1 >= u8(0xA0) && b1 <= u8(0xBF) && continuation(b2)) }
+utf8_three_bytes_e1: theorem (b1: u8, b2: u8) { valid_three(u8(0xE1), b1, b2) == (continuation(b1) && continuation(b2)) }
+utf8_three_bytes_ed: theorem (b1: u8, b2: u8) { valid_three(u8(0xED), b1, b2) == (b1 >= u8(0x80) && b1 <= u8(0x9F) && continuation(b2)) }
+
+// The four-byte rows with a special second byte, under a fixed final
+// continuation: F0 excludes overlongs (90..BF), F4 stops at U+10FFFF (80..8F).
+valid_four: (b0: u8, b1: u8, b2: u8, b3: u8): Bool {
+  bytes: [4]u8 = [4]u8{ b0, b1, b2, b3 }
+  is_valid_utf8(view(&bytes))
+}
+
+utf8_four_bytes_f0: theorem (b1: u8, b2: u8) { valid_four(u8(0xF0), b1, b2, u8(0x80)) == (b1 >= u8(0x90) && b1 <= u8(0xBF) && continuation(b2)) }
+utf8_four_bytes_f4: theorem (b1: u8, b2: u8) { valid_four(u8(0xF4), b1, b2, u8(0x80)) == (b1 >= u8(0x80) && b1 <= u8(0x8F) && continuation(b2)) }
+
+main: (): i32 = 0

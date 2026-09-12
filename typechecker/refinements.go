@@ -9,7 +9,7 @@ import (
 )
 
 // Refinement types (docs/spec/20-types.md section 12, docs/spec/125-verification.md
-// §6). `Small: type = u16 where value < u16(256)` declares a nominal type
+// §7). `Small: type = u16 where value < u16(256)` declares a nominal type
 // whose values are the base type's values satisfying the predicate. The
 // predicate is a Bool expression over `value`, checked like any expression
 // with `value` bound at the base type. A refined value flows to its base
