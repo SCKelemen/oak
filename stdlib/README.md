@@ -692,9 +692,13 @@ and every one of its 20,034 lines passes all five-column invariants in
 `compiler/e2e_stdlib_normalize_test.go`, `e2e_stdlib_normalize_laws_test.go`
 compares the compiled code with an independent Go transliteration on random
 sequences, and `spec/lean/Oak/Normalization.lean` proves canonical ordering
-is a stable sorted permutation and NFD idempotent (composition is defined
-there, its laws are remaining work). Invalid UTF-8 is `InvalidEncoding`, never
-normalized.
+is a stable sorted permutation, NFD idempotent, and the NFC laws (`nfd (nfc x)
+= nfd x`, NFC idempotent) for any data that is closed under decomposition
+and whose primary composites invert it; `spec/lean/Oak/Stdlib/Normalize17.lean`
+discharges both for the Unicode 17.0.0 tables (generated as key trees by
+`generate_normalize.py`, decided in the kernel, with the Hangul syllables by
+arithmetic), so the laws hold unconditionally for the shipped data. Invalid
+UTF-8 is `InvalidEncoding`, never normalized.
 
 ## Grapheme clusters
 

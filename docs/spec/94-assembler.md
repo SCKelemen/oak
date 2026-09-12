@@ -1001,11 +1001,49 @@ read as a condition, a copy diverging from its source, whole-record
 assignment, and a float field — natively against the C backend and the
 portable realization. Record bodies are trusted by the verifier (§5): its
 Oak side has no record locals.
-Next increments: record parameters and results (AAPCS64 composites: up to
-16 bytes in `x` registers, larger by reference), the verifier's frame
-addresses and record locals (so array and record bodies are proven, not
-trusted), `break` as a second loop exit in the recognizer, and
-`subslice`/local span variables.
+**Seventh increment — records across the call boundary.** AAPCS64's
+composite rules, as the C compiler applies them on the host: a record of
+up to 16 bytes travels as `ceil(size/8)` consecutive `x` registers, each
+an 8-byte chunk of its memory image (so `Point {x: i32, y: i32}` is one
+register, `Pair {lo, hi: u64}` two), and a larger record by reference to
+a copy the caller owns; a result of up to 16 bytes comes back in `x0`
+(and `x1`), a larger one is written into the area whose address the
+caller passes in `x8`. The lowering stores a parameter's chunks into its
+frame slots in the prologue (or copies the referenced record in, whole
+words then a 4/2/1-byte tail, since the body may write its own copy),
+loads a record argument's chunks from its local (or copies it into a
+fresh temp and passes `add xN, sp, #off`), places a record result by
+loading its chunks into `x0`/`x1` or copying into the `x8` area — `x8`
+parked in a callee-saved register when the body calls — and receives a
+call's record into a temp (chunks stored from `x0`/`x1`, or `add x8, sp,
+#temp` before the `bl`). Record literals and record-returning calls are
+admitted wherever a record value is needed (initializers, assignments,
+arguments, results, conditional result arms). Homogeneous floating-point
+aggregates (all fields one float type, at most four), which AAPCS64
+passes in `v` registers, are left to the C backend. The checker learned
+the same rules from a composites table the compiler builds from the
+program's record declarations (`asm.Function.Composites`, never from the
+unit text; hand-written units get it too): a record parameter binds `bind
+x0 = p` or `bind x0, x1 = p` by its size, a larger one binds the address
+as a read-only memory region of exactly the record's size (`[xN, #off]`
+inside it, naturally aligned, no indexing or moving, dying with a write to
+the register or a call, copied by `mov`), a two-chunk result must leave
+`x1` written at `ret`, a larger result makes `x8` a writable region of the
+size on entry, and a call's result may now occupy `x1` as well as `x0`
+(`TestCheckerComposites`: five accepted shapes, nine refusals). Executed
+(`TestE2ENativeRecordABI`): 8-, 16-, 4-, and 24-byte records in and out,
+a by-reference chain of calls with scalars interleaved, a callee mutating
+its copy without touching the caller's, and a record result chosen by a
+condition — natively, through the C backend, and as the portable
+realization; and (`TestE2ENativeRecordMixed`) natively lowered leaves
+called from a C-compiled `main`, so the two compilers' composite passing
+agrees on the host ABI. `OAK_NATIVE_DUMP=1` prints every lowered
+function's assembly as the checker sees it. Record bodies remain trusted
+by the verifier (§5).
+Next increments: the verifier's frame addresses and record locals (so
+array and record bodies are proven, not trusted), `break` as a second loop
+exit in the recognizer, `subslice`/local span variables, and records
+holding arrays or nested records.
 
 
 

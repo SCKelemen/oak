@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
@@ -56,6 +57,11 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			}
 			diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
 			continue
+		}
+		if os.Getenv("OAK_NATIVE_DUMP") != "" {
+			// A debugging aid: the lowered assembly of every function, as the
+			// checker sees it.
+			fmt.Fprint(os.Stderr, nativegen.Describe(asmFn))
 		}
 		if findings := asm.Check(asmFn, fn, symbols); len(findings) != 0 {
 			for _, finding := range findings {

@@ -127,6 +127,9 @@ func Emit(program *ast.Program, tc *typechecker.TypeChecker, namespace string, n
 			break
 		}
 	}
+	if em.usesFloatOps {
+		out.WriteString("import Oak.FloatOps\n\n")
+	}
 	out.WriteString("set_option autoImplicit false\n")
 	// Straight-line translation rebinds and returns variables the source
 	// never reads again; that is the source's shape, not a defect.
@@ -236,6 +239,9 @@ type emitter struct {
 	globals     map[string]*ast.VariableDeclaration
 	globalOrder []string
 	usedGlobals map[string]bool
+	// usesFloatOps records a call to fma, copysign, or round_even, whose
+	// bit-exact carriers live in Oak.FloatOps rather than in Lean's core.
+	usesFloatOps bool
 
 	// Per-function state.
 	fnName  string
@@ -2238,10 +2244,48 @@ func floatConversion(name, op, targetLean, sourceLean, inner string) (string, er
 // floatIntrinsic renders the correctly rounded intrinsics of section 11.3.5
 // that Lean's Float and Float32 carry with the same contract: square root,
 // absolute value, floor, ceiling, `round` (ties away from zero, as Lean's
-// `Float.round`), and the classifications. fma, copysign, trunc,
-// round_even, min/max, is_normal, and total_order have no exact Lean
-// counterpart and fail closed.
+// `Float.round`), and the classifications; fma, copysign, and round_even
+// go through the bit-exact carriers in Oak.FloatOps. trunc, min/max,
+// is_normal, and total_order have no exact Lean counterpart yet and fail
+// closed.
 func (em *emitter) floatIntrinsic(name string, call *ast.InvocationExpression, want string) (string, error) {
+	// The bit-exact carriers of Oak.FloatOps (spec/lean/Oak/FloatOps.lean):
+	// fma as one rounding of the exact product-sum over the bit patterns,
+	// copysign as a bit operation, round_even from Lean's ties-away round
+	// with the ties moved to even.
+	arity := map[string]int{"fma": 3, "copysign": 2, "round_even": 1}[name]
+	if arity != 0 {
+		if len(call.Arguments) != arity {
+			return "", fmt.Errorf("floating-point intrinsic %s: expected %d operands", name, arity)
+		}
+		width := ""
+		for _, argument := range call.Arguments {
+			if width = em.checkedLeanType(argument); width != "" {
+				break
+			}
+		}
+		if width == "" && isFloatLean(want) {
+			width = want
+		}
+		if !isFloatLean(width) {
+			return "", fmt.Errorf("floating-point intrinsic %s: operand width is not f32 or f64", name)
+		}
+		suffix := "64"
+		if width == "Float32" {
+			suffix = "32"
+		}
+		carrier := map[string]string{"fma": "fma", "copysign": "copysign", "round_even": "roundEven"}[name]
+		terms := make([]string, len(call.Arguments))
+		for i, argument := range call.Arguments {
+			term, err := em.expr(argument, width)
+			if err != nil {
+				return "", err
+			}
+			terms[i] = term
+		}
+		em.usesFloatOps = true
+		return fmt.Sprintf("(Oak.FloatOps.%s%s %s)", carrier, suffix, strings.Join(terms, " ")), nil
+	}
 	leanName := map[string]string{
 		"sqrt": "sqrt", "abs": "abs", "floor": "floor", "ceil": "ceil", "round": "round",
 		"is_nan": "isNaN", "is_finite": "isFinite", "is_infinite": "isInf",

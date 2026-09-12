@@ -221,6 +221,20 @@ type checker struct {
 	// `[sp, #imm]`; the fact dies with a write to the register, a label, or
 	// a call.
 	frameAddrs map[int]int64
+	// compositeParams: record parameters (asm.Composite) and how they
+	// arrive: up to 16 bytes as ceil(size/8) consecutive x registers, larger
+	// as one x register addressing the caller's copy.
+	compositeParams map[string]compositeParam
+	// regions: register -> a memory extent it addresses: a record argument
+	// beyond 16 bytes (read-only, the caller's copy) or the indirect result
+	// area in x8 (writable). Memory through it is admitted as [xN, #off]
+	// inside the extent; the fact dies with a write to the register or a
+	// call and copies through `mov xD, xS`.
+	regions map[int]region
+	// resultRegs: a composite result's chunk count in x0/x1 (1 for scalars);
+	// resultIndirect: the result is written through x8.
+	resultRegs     int
+	resultIndirect bool
 	// The label fixpoint: assumed guard states entering each label (nil on
 	// the first, optimistic pass), the meet of the states arriving there
 	// during this pass, and the conservative fallback that forgets all.
@@ -279,6 +293,18 @@ type spanParam struct {
 // spanFact is the live knowledge about a bound span base register. hasMin
 // holds after a dominating guard `cmp wL, #N` + `b.lo <fail>`: on the
 // fall-through path len >= N, so offsets below N*elem are in bounds.
+type compositeParam struct {
+	reg      int
+	regs     int
+	size     int64
+	indirect bool
+}
+
+type region struct {
+	size     int64
+	writable bool
+}
+
 type spanFact struct {
 	lenReg   int // the primary length register (messages)
 	elem     int64
@@ -437,8 +463,33 @@ func (c *checker) bindContract() {
 	c.spans = map[int]*spanFact{}
 	c.idxFacts = map[int]idxFact{}
 	c.spanParams = map[string]spanParam{}
+	c.compositeParams = map[string]compositeParam{}
+	c.regions = map[int]region{}
+	c.resultRegs = 1
 	nextGeneral, nextVector := 0, 0
 	for _, param := range c.fn.Signature.Parameters {
+		if comp, isComposite := c.fn.Composites[typeText(param.Type)]; isComposite {
+			// AAPCS64 composites: up to 16 bytes in consecutive x registers
+			// (each an 8-byte chunk of the memory image), larger by reference
+			// to a copy the caller owns.
+			if comp.HFA {
+				c.errorf(c.fn.Line, "parameter %s: %s is a homogeneous floating-point aggregate (v registers); v1 leaves it to the C backend", param.Name.Value, typeText(param.Type))
+				continue
+			}
+			regs, indirect := 1, comp.Size > 16
+			if !indirect {
+				regs = int((comp.Size + 7) / 8)
+			}
+			if nextGeneral+regs > 8 {
+				c.errorf(c.fn.Line, "record parameter %s needs %d registers; the integer register contract is exhausted", param.Name.Value, regs)
+				continue
+			}
+			c.paramClass[param.Name.Value] = ClassX
+			c.paramRegister[param.Name.Value] = nextGeneral
+			c.compositeParams[param.Name.Value] = compositeParam{reg: nextGeneral, regs: regs, size: comp.Size, indirect: indirect}
+			nextGeneral += regs
+			continue
+		}
 		if elem, writable, isSpan := spanShape(param.Type); isSpan {
 			if nextGeneral > 6 {
 				c.errorf(c.fn.Line, "span parameter %s needs two registers; the integer register contract is exhausted", param.Name.Value)
@@ -481,6 +532,21 @@ func (c *checker) bindContract() {
 	case "never":
 		c.never = true
 	default:
+		if comp, isComposite := c.fn.Composites[ret]; isComposite {
+			switch {
+			case comp.HFA:
+				c.errorf(c.fn.Line, "return type %s is a homogeneous floating-point aggregate (v registers); v1 leaves it to the C backend", ret)
+			case comp.Size > 16:
+				// The caller passes the result area in x8; the body stores
+				// into it (a writable region of the record's size).
+				c.resultIndirect = true
+			default:
+				c.hasResult = true
+				c.resultClass = ClassX
+				c.resultRegs = int((comp.Size + 7) / 8)
+			}
+			break
+		}
 		class, ok := contractClass(c.fn.Signature.ReturnType)
 		if !ok {
 			c.errorf(c.fn.Line, "return type %s cannot cross the asm boundary in v1", ret)
@@ -515,6 +581,31 @@ func (c *checker) bindContract() {
 			c.bound[span.baseReg] = true
 			c.bound[span.lenReg] = true
 			c.spans[span.baseReg] = &spanFact{lenReg: span.lenReg, elem: span.elem, writable: span.writable, lenRegs: map[int]bool{span.lenReg: true}}
+			continue
+		}
+		if comp, isComposite := c.compositeParams[binding.Param]; isComposite {
+			if binding.Register.Class != ClassX || binding.Register.Num != comp.reg {
+				c.errorf(binding.Line, "bind: record parameter %s arrives in x%d, not %s", binding.Param, comp.reg, binding.Register.Text)
+				continue
+			}
+			switch {
+			case comp.regs == 2 && (binding.Length == nil || binding.Length.Class != ClassX || binding.Length.Num != comp.reg+1):
+				c.errorf(binding.Line, "bind: record parameter %s (%d bytes) arrives as two chunks: bind x%d, x%d = %s", binding.Param, comp.size, comp.reg, comp.reg+1, binding.Param)
+				continue
+			case comp.regs == 1 && binding.Length != nil:
+				if comp.indirect {
+					c.errorf(binding.Line, "bind: record parameter %s (%d bytes) arrives by reference in x%d alone", binding.Param, comp.size, comp.reg)
+				} else {
+					c.errorf(binding.Line, "bind: record parameter %s (%d bytes) arrives in x%d alone", binding.Param, comp.size, comp.reg)
+				}
+				continue
+			}
+			for i := 0; i < comp.regs; i++ {
+				c.bound[comp.reg+i] = true
+			}
+			if comp.indirect {
+				c.regions[comp.reg] = region{size: comp.size}
+			}
 			continue
 		}
 		if binding.Length != nil {
@@ -578,6 +669,11 @@ func (c *checker) walk() {
 	c.written = map[int]bool{}
 	c.writtenV = map[int]bool{}
 	c.writtenP = map[int]bool{}
+	if c.resultIndirect {
+		// x8 addresses the caller's result area on entry.
+		c.written[8] = true
+		c.regions[8] = region{size: c.fn.Composites[typeText(c.fn.Signature.ReturnType)].Size, writable: true}
+	}
 	c.frameAddrs = map[int]int64{}
 	c.labelDisp = map[string]int64{}
 	c.pendingDisp = map[string]int64{}
@@ -1190,6 +1286,7 @@ func (c *checker) forgetRegisterFacts(num int) {
 		}
 	}
 	delete(c.frameAddrs, num)
+	delete(c.regions, num)
 }
 
 // aliasSpan records a register move that copies a span's base or length:
@@ -1200,6 +1297,9 @@ func (c *checker) aliasSpan(dest, src Register) {
 	if dest.Class == ClassX && src.Class == ClassX {
 		if fact, isSpan := c.spans[src.Num]; isSpan {
 			c.spans[dest.Num] = fact.copy()
+		}
+		if extent, isRegion := c.regions[src.Num]; isRegion {
+			c.regions[dest.Num] = extent
 		}
 		return
 	}
@@ -1253,6 +1353,10 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 		}
 		if addr, isFrame := c.frameAddrs[mem.Base.Num]; isFrame {
 			c.frameArrayAccess(instr, matched, mem, addr, regs, isStore)
+			return
+		}
+		if extent, isRegion := c.regions[mem.Base.Num]; isRegion {
+			c.regionAccess(instr, matched, mem, extent, regs, isStore)
 			return
 		}
 	}
@@ -1323,6 +1427,37 @@ func (c *checker) calleeSavedState(reg Register) *savedState {
 		return c.calleeSavedV[reg.Num]
 	}
 	return nil
+}
+
+// regionAccess admits memory through a register addressing a bounded
+// extent — a record argument beyond 16 bytes (the caller's copy, read-only)
+// or the indirect result area in x8 (writable): `[xN, #off]` with the whole
+// access inside the extent, naturally aligned, never moved or indexed.
+func (c *checker) regionAccess(instr Instruction, matched form, mem Memory, extent region, regs []Register, isStore bool) {
+	if mem.Mode != MemOffset || mem.Index != nil {
+		c.errorf(instr.Line, "%s: a record's memory is addressed as [%s, #off] only (no indexing, no pre/post-index)", instr.Mnemonic, mem.Base.Text)
+		return
+	}
+	if isStore && !extent.writable {
+		c.errorf(instr.Line, "%s through %s: a record argument is the caller's read-only copy", instr.Mnemonic, mem.Base.Text)
+		return
+	}
+	size := accessBytes(instr.Mnemonic, matched[0])
+	if len(regs) > 0 {
+		size = memorySizeReg(instr.Mnemonic, regs[0]) // pairs already count both registers
+	}
+	if mem.Offset < 0 || mem.Offset+size > extent.size {
+		c.errorf(instr.Line, "%s touches record bytes [%d, %d) through %s, outside its %d bytes", instr.Mnemonic, mem.Offset, mem.Offset+size, mem.Base.Text, extent.size)
+		return
+	}
+	if unit := size / int64(max(1, len(regs))); unit <= 8 && mem.Offset%unit != 0 {
+		c.errorf(instr.Line, "%s: offset %d is not aligned to the %d-byte access", instr.Mnemonic, mem.Offset, unit)
+	}
+	if !isStore {
+		for _, reg := range regs {
+			c.write(instr, reg)
+		}
+	}
 }
 
 // frameArrayAccess admits memory through a register holding a frame address
@@ -1482,9 +1617,11 @@ func (c *checker) clobberCallerSaved() {
 	for num := 0; num <= 7; num++ {
 		delete(c.writtenV, num)
 	}
-	// The call's result: x0 for an integer, v0 for a floating-point one (the
-	// checker does not see the callee's signature; either is readable).
+	// The call's result: x0 for an integer (x1 too for a record of two
+	// chunks), v0 for a floating-point one — the checker does not see the
+	// callee's signature; each is readable.
 	c.written[0] = true
+	c.written[1] = true
 	c.writtenV[0] = true
 	c.flagsValid = false
 	c.forgetGuards()
@@ -1666,9 +1803,11 @@ func (c *checker) call(instr Instruction) {
 	for num := 0; num <= 7; num++ {
 		delete(c.writtenV, num)
 	}
-	// The call's result: x0 for an integer, v0 for a floating-point one (the
-	// checker does not see the callee's signature; either is readable).
+	// The call's result: x0 for an integer (x1 too for a record of two
+	// chunks), v0 for a floating-point one — the checker does not see the
+	// callee's signature; each is readable.
 	c.written[0] = true
+	c.written[1] = true
 	c.writtenV[0] = true
 	c.flagsValid = false
 	c.forgetGuards()
@@ -1698,6 +1837,8 @@ func (c *checker) ret(instr Instruction) bool {
 			}
 		} else if !c.written[0] && !c.bound[0] {
 			c.errorf(instr.Line, "ret without producing the result in %s0", classPrefix(c.resultClass))
+		} else if c.resultRegs == 2 && !c.written[1] && !c.bound[1] {
+			c.errorf(instr.Line, "ret without producing the record result's second chunk in x1")
 		}
 	}
 	if c.sm || c.za {

@@ -20,29 +20,10 @@ import (
 // declarations (plus a driver instantiating generic templates, which the
 // checker materializes under mangled names), and the extraction closes over
 // their callees.
-var leanStdlibPackages = []struct {
-	name      string
-	file      string
-	namespace string
-	deps      []string
-	driver    string
-	// source, when set, is the program itself (over the core prelude and
-	// deps) instead of a library package: a committed extraction of a
-	// program shape rather than of a package.
-	source string
-}{
-	{name: "varint", file: "VarintExtracted.lean", namespace: "Oak.Stdlib.Varint"},
-	{name: "encoding", file: "EncodingExtracted.lean", namespace: "Oak.Stdlib.Encoding"},
-	{name: "hash", file: "HashExtracted.lean", namespace: "Oak.Stdlib.Hash"},
-	{name: "random", file: "RandomExtracted.lean", namespace: "Oak.Stdlib.Random", driver: `
-drive_shuffle_u32: (state: [*]Xoshiro, items: [*]u32): () { random_shuffle[u32](state, items) }
-`},
-	{name: "uuid", file: "UuidExtracted.lean", namespace: "Oak.Stdlib.Uuid", deps: []string{"random", "encoding"}},
-	{name: "float", file: "FloatExtracted.lean", namespace: "Oak.Stdlib.Float"},
-	// The ml shape (docs/notes/ml-feedback-2026-09.md, roadmap E4): fixed
-	// reductions over f32 and f64 in the stated sequential order, an axpy
-	// into a span, and the f32/f64 rows of 20-types.md section 11.3.4.
-	{name: "floatkernels", file: "FloatKernelsExtracted.lean", namespace: "Oak.Stdlib.FloatKernels", source: `
+// leanFloatKernelsSource is the ml-shaped float program (roadmap E4) whose
+// extraction is committed as FloatKernelsExtracted.lean; the faithfulness
+// test compiles the same text.
+const leanFloatKernelsSource = `
 // dot_f32 combines products left to right (docs/spec/20-types.md section 11.3.3).
 pub dot_f32: (a: []f32, b: []f32): f32 {
   acc: f32 = 0.0
@@ -100,7 +81,32 @@ pub widen_mean: (xs: []f32): f64 {
 }
 pub quantize_u8: (x: f32, scale: f32): u8 = u8_saturating_f32(round(x / scale))
 pub bits_roundtrip: (x: f64): Bool = f64_bits_u64(u64_bits_f64(x)) == x || is_nan(x)
+`
+
+var leanStdlibPackages = []struct {
+	name      string
+	file      string
+	namespace string
+	deps      []string
+	driver    string
+	// source, when set, is the program itself (over the core prelude and
+	// deps) instead of a library package: a committed extraction of a
+	// program shape rather than of a package.
+	source string
+}{
+	{name: "varint", file: "VarintExtracted.lean", namespace: "Oak.Stdlib.Varint"},
+	{name: "encoding", file: "EncodingExtracted.lean", namespace: "Oak.Stdlib.Encoding"},
+	{name: "hash", file: "HashExtracted.lean", namespace: "Oak.Stdlib.Hash"},
+	{name: "random", file: "RandomExtracted.lean", namespace: "Oak.Stdlib.Random", driver: `
+drive_shuffle_u32: (state: [*]Xoshiro, items: [*]u32): () { random_shuffle[u32](state, items) }
 `},
+	{name: "uuid", file: "UuidExtracted.lean", namespace: "Oak.Stdlib.Uuid", deps: []string{"random", "encoding"}},
+	{name: "float", file: "FloatExtracted.lean", namespace: "Oak.Stdlib.Float"},
+	{name: "math", file: "MathExtracted.lean", namespace: "Oak.Stdlib.Math"},
+	// The ml shape (docs/notes/ml-feedback-2026-09.md, roadmap E4): fixed
+	// reductions over f32 and f64 in the stated sequential order, an axpy
+	// into a span, and the f32/f64 rows of 20-types.md section 11.3.4.
+	{name: "floatkernels", file: "FloatKernelsExtracted.lean", namespace: "Oak.Stdlib.FloatKernels", source: leanFloatKernelsSource},
 	{name: "sort", file: "SortU32Extracted.lean", namespace: "Oak.Stdlib.SortU32", driver: `
 sort_u32_is_sorted: (items: []u32): Bool = sort_is_sorted[u32](items)
 sort_u32_insertion: (items: [*]u32): () { sort_insertion[u32](items) }
