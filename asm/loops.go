@@ -366,6 +366,24 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 					return nil, reason, false
 				}
 			default:
+				if x.arch == ArchRV64 {
+					// The RV64 lane: its own semantics; frame memory and
+					// stores stay outside a summarized body as on AArch64.
+					base := rv64Base(instr)
+					if len(base.Operands) == 2 {
+						if mem, isMem := base.Operands[1].(Memory); isMem && (mem.Base.Class == ClassSP || rv64Stores[base.Mnemonic] != 0) {
+							if mem.Base.Class == ClassSP {
+								return nil, "frame memory in a loop body", false
+							}
+							return nil, "a store in a loop body", false
+						}
+					}
+					if reason, ok := x.stepRV64(instr, st); !ok {
+						return nil, reason, false
+					}
+					pc++
+					continue
+				}
 				if reason, ok := step(instr, st); !ok {
 					return nil, reason, false
 				}
@@ -551,6 +569,18 @@ type coupling struct {
 	a     int
 	b     *term
 	show  string
+	ext   string // "" (same width), "zext" or "sext": a 64-bit register carrying a widened 32-bit variable
+}
+
+// widen applies a coupling's widening to a 32-bit term.
+func widen(t *term, ext string) *term {
+	switch ext {
+	case "zext":
+		return zeroExtend(t, 64)
+	case "sext":
+		return extendTerm(zeroExtend(t, 64), 32, 64, true)
+	}
+	return t
 }
 
 // verifyLoops is the loop-mode verdict: witnesses, then the coupling proof.
@@ -701,38 +731,56 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		hx := oakEv.header[s.local]
 		var out []coupling
 		for _, reg := range asmEv.vars {
-			if asmEv.width[reg] != oakEv.width[s.local] || used[asmEv.freshName(reg)] {
+			if used[asmEv.freshName(reg)] {
 				continue
 			}
-			hr := substitute(asmEv.header[reg], sigma)
-			for _, a := range []int{1, -1} {
-				var b *term
-				if a == 1 {
-					b = binaryTerm("sub", hr, hx)
-				} else {
-					b = binaryTerm("add", hr, hx)
-				}
-				mentioned := map[string]bool{}
-				collectParams(b, mentioned)
-				own := fmt.Sprintf("loop%d.", oakEv.index)
-				invariant := true
-				for name := range mentioned {
-					if strings.HasPrefix(name, own) || strings.HasPrefix(name, fmt.Sprintf("loop%d.r", asmEv.index)) {
-						invariant = false
+			// A 64-bit register may carry a 32-bit Oak variable widened (the
+			// RV64 lane has no 32-bit register view): zero-extended by a
+			// 64-bit increment kept below 2^32 by the loop's premise, or
+			// sign-extended by the W-forms (addw, Oak.RiscV.addw_eq). Each
+			// widening is a candidate image; the coupling is r = ext(x) + b at
+			// 64 bits and one iteration must preserve it.
+			var widenings []string
+			switch {
+			case asmEv.width[reg] == oakEv.width[s.local]:
+				widenings = []string{""}
+			case asmEv.width[reg] == 64 && oakEv.width[s.local] == 32:
+				widenings = []string{"zext", "sext"}
+			default:
+				continue
+			}
+			for _, ext := range widenings {
+				hx := widen(hx, ext)
+				hr := substitute(asmEv.header[reg], sigma)
+				for _, a := range []int{1, -1} {
+					var b *term
+					if a == 1 {
+						b = binaryTerm("sub", hr, hx)
+					} else {
+						b = binaryTerm("add", hr, hx)
 					}
+					mentioned := map[string]bool{}
+					collectParams(b, mentioned)
+					own := fmt.Sprintf("loop%d.", oakEv.index)
+					invariant := true
+					for name := range mentioned {
+						if strings.HasPrefix(name, own) || strings.HasPrefix(name, fmt.Sprintf("loop%d.r", asmEv.index)) {
+							invariant = false
+						}
+					}
+					if !invariant {
+						continue
+					}
+					show := s.local + "↔" + reg
+					switch {
+					case a == 1 && b.kind == termConst && b.value == 0:
+					case a == 1:
+						show = fmt.Sprintf("%s = %s + %s", reg, s.local, b)
+					default:
+						show = fmt.Sprintf("%s = %s - %s", reg, b, s.local)
+					}
+					out = append(out, coupling{event: s.event, local: s.local, reg: reg, a: a, b: b, show: show, ext: ext})
 				}
-				if !invariant {
-					continue
-				}
-				show := s.local + "↔" + reg
-				switch {
-				case a == 1 && b.kind == termConst && b.value == 0:
-				case a == 1:
-					show = fmt.Sprintf("%s = %s + %s", reg, s.local, b)
-				default:
-					show = fmt.Sprintf("%s = %s - %s", reg, b, s.local)
-				}
-				out = append(out, coupling{event: s.event, local: s.local, reg: reg, a: a, b: b, show: show})
 			}
 		}
 		return out
@@ -751,6 +799,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 					c := chosen[slot{event: k, local: local}]
 					// r' = a*x' + b must hold after one iteration.
 					next := substitute(oakEv.next[local], sigma)
+					next = widen(next, c.ext)
 					if c.a == 1 {
 						next = binaryTerm("add", next, c.b)
 					} else {
@@ -771,6 +820,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			chosen[s] = c
 			// r = a*x + b: the register's fresh symbol expressed for x.
 			x := paramTerm(oakLoops[s.event].freshName(s.local), oakLoops[s.event].width[s.local])
+			x = widen(x, c.ext)
 			if c.a == 1 {
 				sigma[asmName] = binaryTerm("add", x, c.b)
 			} else {

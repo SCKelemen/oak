@@ -36,8 +36,48 @@ type rv64Oracle struct {
 	span string
 }
 
+// rv64Machine is one execution oracle: how the bare-metal harness writes a
+// character and exits on it, how it starts, where it links, and how it runs.
+type rv64Machine struct {
+	name       string
+	putc       string // C statement writing char c
+	exit       string // C statements ending the run with success
+	globals    string // C declarations the harness needs
+	start      string // the _start assembly
+	linkScript string
+	run        func(t *testing.T, image string) string // returns the machine's output
+}
+
+// rv64QEMU is the virt machine: a 16550 UART at 0x10000000 and the
+// sifive_test finisher at 0x100000.
+var rv64QEMU = rv64Machine{
+	name:       "qemu-system-riscv64",
+	putc:       "*(volatile unsigned char *)0x10000000 = c;",
+	exit:       "*(volatile unsigned int *)0x100000 = 0x5555; /* sifive_test: exit 0 */",
+	start:      ".section .text.init\n.globl _start\n_start:\n  la sp, _stack_top\n  call cmain\n1: j 1b\n",
+	linkScript: "ENTRY(_start)\nSECTIONS {\n  . = 0x80000000;\n  .text : { *(.text.init) *(.text*) }\n  .rodata : { *(.rodata*) *(.srodata*) }\n  .data : { *(.data*) *(.sdata*) }\n  .bss : { *(.bss*) *(.sbss*) }\n  . = ALIGN(16);\n  . += 0x10000;\n  _stack_top = .;\n}\n",
+	run: func(t *testing.T, image string) string {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "qemu-system-riscv64", "-machine", "virt", "-bios", "none", "-nographic", "-monitor", "none", "-kernel", image)
+		var out bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("qemu: %v\n%s", err, out.String())
+		}
+		return out.String()
+	},
+}
+
 func TestRV64QEMUDifferential(t *testing.T) {
 	requireRV64Tools(t, "riscv64-elf-gcc", "qemu-system-riscv64")
+	runRV64Differential(t, rv64QEMU)
+}
+
+// runRV64Differential encodes the differential units into an ELF object,
+// links them with a bare-metal harness for the machine, runs it, and
+// compares every printed result with the verifier's concrete execution.
+func runRV64Differential(t *testing.T, machine rv64Machine) {
 	rng := rand.New(rand.NewSource(0x5f3759df))
 	edge64 := []uint64{0, 1, 2, 0xffffffffffffffff, 0x8000000000000000, 0x7fffffffffffffff, 0x100000000, 0xffffffff}
 	edge32 := []uint64{0, 1, 0xffffffff, 0x80000000, 0x7fffffff, 3, 0x12345678}
@@ -174,7 +214,8 @@ done:
 	var harness strings.Builder
 	harness.WriteString("typedef struct { const unsigned int *base; unsigned int len; } view_u32;\n")
 	harness.WriteString("typedef unsigned long long u64;\n")
-	harness.WriteString("static void putc_(char c) { *(volatile unsigned char *)0x10000000 = c; }\n")
+	harness.WriteString(machine.globals)
+	harness.WriteString("static void putc_(char c) { " + machine.putc + " }\n")
 	harness.WriteString("static void puthex(u64 v) { for (int i = 60; i >= 0; i -= 4) putc_(\"0123456789abcdef\"[(v >> i) & 15]); putc_('\\n'); }\n")
 	var expected []string
 	for _, oracle := range oracles {
@@ -234,8 +275,8 @@ done:
 			fmt.Fprintf(&harness, "  puthex((u64)%s((%s)%dull, (%s)%dull) & 0x%xull);\n", name, oracle.cType, a, oracle.cType, b, mask(oracle.width))
 		}
 	}
-	harness.WriteString("  *(volatile unsigned int *)0x100000 = 0x5555; /* sifive_test: exit 0 */\n  for (;;) {}\n}\n")
-	harness.WriteString("__asm__(\".section .text.init\\n.globl _start\\n_start:\\n  la sp, _stack_top\\n  call cmain\\n1: j 1b\\n\");\n")
+	harness.WriteString("  " + machine.exit + "\n  for (;;) {}\n}\n")
+	harness.WriteString("__asm__(" + quoteAsmRV64(machine.start) + ");\n")
 
 	encoded, err := EncodeFunctions(functions, func(s string) string { return s })
 	if err != nil {
@@ -258,22 +299,14 @@ done:
 		t.Fatal(err)
 	}
 	harnessPath := write("harness.c", harness.String())
-	linkPath := write("link.ld", "ENTRY(_start)\nSECTIONS {\n  . = 0x80000000;\n  .text : { *(.text.init) *(.text*) }\n  .rodata : { *(.rodata*) *(.srodata*) }\n  .data : { *(.data*) *(.sdata*) }\n  .bss : { *(.bss*) *(.sbss*) }\n  . = ALIGN(16);\n  . += 0x10000;\n  _stack_top = .;\n}\n")
+	linkPath := write("link.ld", machine.linkScript)
 	image := filepath.Join(dir, "harness.elf")
 	if out, err := exec.Command("riscv64-elf-gcc", "-march=rv64im", "-mabi=lp64", "-mcmodel=medany", "-nostdlib", "-nostartfiles", "-ffreestanding", "-O1", "-T", linkPath, "-o", image, harnessPath, unitPath).CombinedOutput(); err != nil {
 		t.Fatalf("link: %v\n%s", err, out)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "qemu-system-riscv64", "-machine", "virt", "-bios", "none", "-nographic", "-monitor", "none", "-kernel", image)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stdout
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("qemu: %v\n%s", err, stdout.String())
-	}
+	output := machine.run(t, image)
 	var got []string
-	scanner := bufio.NewScanner(&stdout)
+	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if len(line) == 16 {
@@ -283,15 +316,20 @@ done:
 		}
 	}
 	if len(got) != len(expected) {
-		t.Fatalf("qemu printed %d results, expected %d:\n%s", len(got), len(expected), stdout.String())
+		t.Fatalf("%s printed %d results, expected %d:\n%s", machine.name, len(got), len(expected), output)
 	}
 	index := 0
 	for _, oracle := range oracles {
 		for _, in := range oracle.inputs {
 			if got[index] != expected[index] {
-				t.Errorf("%s(%#x, %#x): machine %s, verifier %s", strings.SplitN(oracle.decl, ":", 2)[0], in[0]&mask(oracle.width), in[1]&mask(oracle.width), got[index], expected[index])
+				t.Errorf("%s: %s(%#x, %#x): machine %s, verifier %s", machine.name, strings.SplitN(oracle.decl, ":", 2)[0], in[0]&mask(oracle.width), in[1]&mask(oracle.width), got[index], expected[index])
 			}
 			index++
 		}
 	}
+}
+
+// quoteAsmRV64 spells assembly text as a C string literal.
+func quoteAsmRV64(text string) string {
+	return `"` + strings.ReplaceAll(strings.ReplaceAll(text, `"`, `\"`), "\n", `\n`) + `"`
 }

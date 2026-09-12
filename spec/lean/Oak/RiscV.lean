@@ -226,4 +226,37 @@ theorem scaled_index_exact (idx len : X) (s : Nat) (hs : s ≤ 31)
     _ = 2 ^ (32 + s) := by rw [Nat.pow_add]
     _ ≤ 2 ^ 64 := Nat.pow_le_pow_right (by decide) (by omega)
 
+/-! ## Loop couplings of widened variables (`94-assembler.md` §9)
+
+The verifier couples a 64-bit register to a 32-bit Oak loop variable as
+`r = ext(x) + b` for one of the two widenings the ISA produces, and one
+iteration must preserve it. The two lemmas are the preservation steps:
+a 64-bit increment of a zero-extended counter stays its zero extension
+while the counter is below `2^32 - 1` (the loop's guard `i < len` with
+`len < 2^32` supplies it), and `addw` on sign-extended operands is the
+sign extension of the 32-bit sum. -/
+
+theorem zext_increment (x : BitVec 32) (h : x ≠ BitVec.allOnes 32) :
+    x.zeroExtend 64 + 1 = (x + 1).zeroExtend 64 := by
+  bv_decide
+
+/-- The loop guard supplies the side condition: a counter below any bound
+    is not all ones. -/
+theorem lt_bound_ne_allOnes (x n : BitVec 32) (h : x.ult n) : x ≠ BitVec.allOnes 32 := by
+  intro hx
+  subst hx
+  simp [BitVec.ult_iff_toNat_lt, BitVec.toNat_allOnes] at h
+  have := n.isLt
+  omega
+
+theorem addw_sext (x y : BitVec 32) :
+    addw (x.signExtend 64) (y.signExtend 64) = (x + y).signExtend 64 := by
+  simp only [addw, sextW]; bv_decide
+
+/-- The accumulator's coupling is a fixed point of `sext.w`, so reading it
+    at 32 bits (the contract width of the result) gives the Oak sum. -/
+theorem addw_sext_truncate (x y : BitVec 32) :
+    (addw (x.signExtend 64) (y.signExtend 64)).truncate 32 = x + y := by
+  rw [addw_sext]; bv_decide
+
 end Oak.RiscV
