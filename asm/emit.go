@@ -24,8 +24,8 @@ func EmitCExtern(fn *Function, cSymbol string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "/* asm unit: %s — encoded by the Oak assembler into the companion object as %s */\n", fn.Name, cSymbol)
 	if !fn.Fallback {
-		b.WriteString("#if !defined(__aarch64__) || defined(OAK_PORTABLE_INTRINSICS)\n")
-		fmt.Fprintf(&b, "#error \"asm unit %s requires an AArch64 target (no Oak fallback body declared)\"\n", fn.Name)
+		fmt.Fprintf(&b, "#if !(%s) || defined(OAK_PORTABLE_INTRINSICS)\n", archCondition(fn))
+		fmt.Fprintf(&b, "#error \"asm unit %s requires %s (no Oak fallback body declared)\"\n", fn.Name, archName(fn))
 		b.WriteString("#endif\n")
 	}
 	b.WriteString("\n")
@@ -38,7 +38,7 @@ func EmitCExtern(fn *Function, cSymbol string) string {
 func EmitC(fn *Function, cSymbol string, symbolFor func(string) string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "/* asm unit: %s */\n", fn.Name)
-	b.WriteString("#if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)\n")
+	fmt.Fprintf(&b, "#if (%s) && !defined(OAK_PORTABLE_INTRINSICS)\n", archCondition(fn))
 	b.WriteString("__asm__(\n")
 	b.WriteString("  \"  .text\\n\"\n")
 	align := fn.Align
@@ -91,9 +91,26 @@ func EmitC(fn *Function, cSymbol string, symbolFor func(string) string) string {
 		return b.String()
 	}
 	b.WriteString("#else\n")
-	fmt.Fprintf(&b, "#error \"asm unit %s requires an AArch64 target (no Oak fallback body declared)\"\n", fn.Name)
+	fmt.Fprintf(&b, "#error \"asm unit %s requires %s (no Oak fallback body declared)\"\n", fn.Name, archName(fn))
 	b.WriteString("#endif\n\n")
 	return b.String()
+}
+
+// archCondition is the preprocessor test selecting the unit's lane: the
+// C toolchain's target must be the lane's architecture, else the Oak
+// fallback body (or #error) applies.
+func archCondition(fn *Function) string {
+	if fn.Arch == ArchRV64 {
+		return "defined(__riscv) && (__riscv_xlen == 64)"
+	}
+	return "defined(__aarch64__)"
+}
+
+func archName(fn *Function) string {
+	if fn.Arch == ArchRV64 {
+		return "an RV64 target"
+	}
+	return "an AArch64 target"
 }
 
 // usesScalableFile reports a function with SVE/SME instructions.
@@ -130,6 +147,9 @@ func (instr Instruction) String() string {
 }
 
 func renderInstruction(fn *Function, instr Instruction, symbolFor func(string) string, numbers map[string]int, defined map[string]bool) string {
+	if fn.Arch == ArchRV64 {
+		return renderRV64Instruction(instr, symbolFor, numbers, defined)
+	}
 	mnemonic := instr.Mnemonic
 	if mnemonic == "b." {
 		mnemonic = "b." + instr.Cond
@@ -220,6 +240,43 @@ func renderOperand(operand Operand, symbolFor func(string) string, numbers map[s
 		return o.Name
 	case Condition:
 		return o.Code
+	}
+	return "?"
+}
+
+// renderRV64Instruction spells an instruction in GNU RISC-V syntax:
+// registers by ABI name, bare immediates, `imm(base)` memory, labels as
+// numeric local labels, and other symbols through symbolFor.
+func renderRV64Instruction(instr Instruction, symbolFor func(string) string, numbers map[string]int, defined map[string]bool) string {
+	if len(instr.Operands) == 0 {
+		return instr.Mnemonic
+	}
+	parts := make([]string, 0, len(instr.Operands))
+	for _, operand := range instr.Operands {
+		parts = append(parts, renderRV64Operand(operand, symbolFor, numbers, defined))
+	}
+	return instr.Mnemonic + " " + strings.Join(parts, ", ")
+}
+
+func renderRV64Operand(operand Operand, symbolFor func(string) string, numbers map[string]int, defined map[string]bool) string {
+	switch o := operand.(type) {
+	case Register:
+		return o.Text
+	case Immediate:
+		return fmt.Sprintf("%d", o.Value)
+	case Memory:
+		return fmt.Sprintf("%d(%s)", o.Offset, o.Base.Text)
+	case Symbol:
+		if number, isLabel := numbers[o.Name]; isLabel {
+			if defined[o.Name] {
+				return fmt.Sprintf("%db", number)
+			}
+			return fmt.Sprintf("%df", number)
+		}
+		if symbolFor == nil {
+			return o.Name
+		}
+		return "\" OAK_ASM_SYMBOL(" + symbolFor(o.Name) + ") \""
 	}
 	return "?"
 }

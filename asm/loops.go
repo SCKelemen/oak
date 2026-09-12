@@ -47,7 +47,7 @@ func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 	innerHeaders := map[int]int{} // header index -> back edge index of a recognized loop
 	for back, item := range items {
 		branch, isBranch := item.(Instruction)
-		if !isBranch || branch.Mnemonic != "b" {
+		if !isBranch || !isUnconditionalJump(branch.Mnemonic) {
 			continue
 		}
 		header, ok := labels[branch.Operands[0].(Symbol).Name]
@@ -78,14 +78,14 @@ func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 				continue // an inner label
 			}
 			switch instr.Mnemonic {
-			case "bl", "ret", "eret":
+			case "bl", "ret", "eret", "jal", "jalr", "auipc", "jr", "call":
 				wellFormed = false
-			case "b", "b.", "cbz", "cbnz", "tbz", "tbnz":
+			case "b", "j", "b.", "cbz", "cbnz", "tbz", "tbnz", "beq", "bne", "blt", "bge", "bltu", "bgeu", "beqz", "bnez", "bgez", "bltz", "blez", "bgtz":
 				target, ok := labels[instr.Operands[len(instr.Operands)-1].(Symbol).Name]
 				if !ok || target >= back {
 					// A guard's branch to the trap block is not an exit: the
 					// path it takes delivers no result (docs/spec/94-assembler.md §8).
-					if !ok || !isTrapBlock(items, target) || instr.Mnemonic == "b" {
+					if !ok || !isTrapBlock(items, target) || isUnconditionalJump(instr.Mnemonic) {
 						wellFormed = false
 					}
 				} else if target <= i {
@@ -122,8 +122,11 @@ func isConditionalBranch(mnemonic string) bool {
 	case "b.", "cbz", "cbnz", "tbz", "tbnz":
 		return true
 	}
-	return false
+	return rv64ConditionalBranches[mnemonic]
 }
+
+// isUnconditionalJump reports the plain jump of either lane (b, j).
+func isUnconditionalJump(mnemonic string) bool { return mnemonic == "b" || mnemonic == "j" }
 
 // loopEvent is one side's summary of a data-dependent loop.
 type loopEvent struct {
@@ -166,7 +169,7 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	allW := map[int]bool{}
 	for i := shape.bodyStart; i < shape.bodyEnd; i++ {
 		instr, isInstr := x.items[i].(Instruction)
-		if !isInstr || instr.Mnemonic == "cmp" || instr.Mnemonic == "tst" || isConditionalBranch(instr.Mnemonic) || instr.Mnemonic == "b" || isStoreMnemonic(instr.Mnemonic) || len(instr.Operands) == 0 {
+		if !isInstr || instr.Mnemonic == "cmp" || instr.Mnemonic == "tst" || isConditionalBranch(instr.Mnemonic) || isUnconditionalJump(instr.Mnemonic) || isStoreMnemonic(instr.Mnemonic) || rv64Stores[instr.Mnemonic] != 0 || len(instr.Operands) == 0 {
 			continue // no register written: compares, branches, stores
 		}
 		dest, isReg := instr.Operands[0].(Register)
@@ -309,10 +312,10 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 				return nil, "more instructions than the verifier's unrolling budget", false
 			}
 			switch instr.Mnemonic {
-			case "b":
+			case "b", "j":
 				pc = x.labels[instr.Operands[0].(Symbol).Name]
 				continue
-			case "b.", "cbz", "cbnz", "tbz", "tbnz":
+			case "b.", "cbz", "cbnz", "tbz", "tbnz", "beq", "bne", "blt", "bge", "bltu", "bgeu", "beqz", "bnez", "bgez", "bltz", "blez", "bgtz":
 				branch, reason, ok := branchCondition(instr, st)
 				if !ok {
 					return nil, reason, false

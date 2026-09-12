@@ -1,0 +1,91 @@
+package compiler
+
+import (
+	"encoding/binary"
+	"strings"
+	"testing"
+
+	"github.com/SCKelemen/oak/asm"
+)
+
+// An rv64 unit (docs/spec/94-assembler.md §9) stitches like an AArch64
+// one: the `.rv64.oakasm` path selects the lane, the seam checker's
+// findings reject at compile time, the C carries the unit under the
+// `__riscv` guard (fail closed elsewhere), and the companion object is an
+// EM_RISCV ELF. Execution is covered by the assembler's QEMU differential.
+
+const rv64PickOak = `
+pick_rv: (x, y: u64) -> u64
+
+main: (): i32 {
+  0
+}
+`
+
+const rv64PickUnit = `
+pick_rv: (x, y: u64) -> u64 = {
+  bind a0 = x
+  bind a1 = y
+  bltu a0, a1, small
+  mv a0, a1
+small:
+  ret
+}
+`
+
+func TestE2ERV64UnitStitches(t *testing.T) {
+	comp := New().WithSource("pick.oak", rv64PickOak).WithAsmUnit("pick.rv64.oakasm", rv64PickUnit)
+	output, err := comp.EmitC().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"#if (defined(__riscv) && (__riscv_xlen == 64)) && !defined(OAK_PORTABLE_INTRINSICS)", `"  bltu a0, a1, 1f\n"`, "requires an RV64 target"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("C lacks %q", want)
+		}
+	}
+	native, err := comp.EmitNative(asm.ELF).Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if machine := binary.LittleEndian.Uint16(native.Object[18:20]); machine != 243 {
+		t.Fatalf("companion object e_machine %d, want EM_RISCV (243)", machine)
+	}
+	if !strings.Contains(native.C, "encoded by the Oak assembler into the companion object") {
+		t.Error("native C lacks the extern prototype comment")
+	}
+	if _, err := comp.EmitNative(asm.MachO).Get(); err == nil || !strings.Contains(err.Error(), "ELF") {
+		t.Fatalf("Mach-O for an rv64 unit: %v", err)
+	}
+}
+
+func TestE2ERV64CheckerFindingsReject(t *testing.T) {
+	bad := strings.Replace(rv64PickUnit, "  mv a0, a1\n", "  mv t0, a1\n  mv a0, t0\n", 1)
+	_, err := New().WithSource("pick.oak", rv64PickOak).WithAsmUnit("pick.rv64.oakasm", bad).EmitC().Get()
+	if err == nil || !strings.Contains(err.Error(), "write to t0") {
+		t.Fatalf("checker finding not reported: %v", err)
+	}
+}
+
+// With an Oak fallback body, the verifier proves the rv64 unit against it
+// and a disagreeing body rejects.
+func TestE2ERV64VerifiesAgainstFallback(t *testing.T) {
+	source := `
+umin_rv: (x, y: u64) -> u64 {
+  x < y ? x | y
+}
+
+main: (): i32 {
+  0
+}
+`
+	unit := strings.ReplaceAll(rv64PickUnit, "pick_rv", "umin_rv")
+	if _, err := New().WithSource("umin.oak", source).WithAsmUnit("umin.rv64.oakasm", unit).EmitC().Get(); err != nil {
+		t.Fatal(err)
+	}
+	wrong := strings.Replace(source, "x < y ? x | y", "x < y ? y | x", 1)
+	_, err := New().WithSource("umin.oak", wrong).WithAsmUnit("umin.rv64.oakasm", unit).EmitC().Get()
+	if err == nil || !strings.Contains(err.Error(), "disagrees") {
+		t.Fatalf("mismatch not reported: %v", err)
+	}
+}
