@@ -202,3 +202,34 @@ fn sum(buf: [8]u8) -> u32 {
 		t.Fatalf("unlowered builtin survived:\n%s", output)
 	}
 }
+
+// Statement conditions carry the statement's parentheses only: a top-level
+// comparison is `if ( a == b )`, not `if ( ( a == b ) )`, which clang
+// reports as -Wparentheses-equality on every such line of a build.
+func TestConditionsDropRedundantParentheses(t *testing.T) {
+	output := generateC(t, `
+package main
+
+fn classify(code: u32, n: u32) -> u32 {
+  total: u32 = 0
+  i: u32 = 0
+  while i < n {
+    code == 1 ? { total = total + 1 } | { total = total + 2 }
+    i = i + 1
+  }
+  code == 7 && n > 0 ? total | 0
+}
+`)
+	// The emitter pads statements; compare on single spaces.
+	spaced := strings.Join(strings.Fields(output), " ")
+	for _, wanted := range []string{"while ( i < n ) {", "if ( code == 1 ) {", "if ( ( code == 7 ) && ( n > 0 ) ) {"} {
+		if !strings.Contains(spaced, wanted) {
+			t.Fatalf("missing %q in:\n%s", wanted, output)
+		}
+	}
+	for _, unwanted := range []string{"if ( ( code == 1 ) )", "while ( ( i < n ) )"} {
+		if strings.Contains(spaced, unwanted) {
+			t.Fatalf("redundant parentheses %q in:\n%s", unwanted, output)
+		}
+	}
+}

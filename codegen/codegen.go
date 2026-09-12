@@ -47,6 +47,7 @@ type CodeGenerator struct {
 	abstractAliases  map[string]string
 	sourceIndex      *lsp.PositionIndex
 	output           strings.Builder
+	bareCondition    bool // the next infix emitted is a statement condition (emitCondition)
 	indentLevel      int
 	types            map[string]bool // Track emitted types to avoid duplicates
 	typeChecker      *typechecker.TypeChecker
@@ -1161,7 +1162,7 @@ func boolMatchBranches(match *ast.MatchExpression) (trueBody, falseBody ast.Expr
 // if/else with both branches in return position.
 func (cg *CodeGenerator) emitBoolMatchReturn(condition, trueBody, falseBody ast.Expression, tc *typechecker.TypeChecker) {
 	cg.write("  if ( ")
-	cg.emitExpressionFragment(condition, tc)
+	cg.emitCondition(condition, tc)
 	cg.output.WriteString(" ) {\n")
 	cg.indentLevel++
 	cg.emitFunctionBody(trueBody, tc)
@@ -1275,7 +1276,7 @@ func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *type
 	// Evaluate a Boolean condition once, before either arm can mutate its inputs.
 	if trueBody, falseBody, isBool := boolMatchBranches(match); isBool {
 		cg.write("  if ( ")
-		cg.emitExpressionFragment(match.Scrutinee, tc)
+		cg.emitCondition(match.Scrutinee, tc)
 		cg.output.WriteString(" ) {\n")
 		cg.indentLevel++
 		emitBody(trueBody)
@@ -2711,6 +2712,11 @@ var arithmeticHelpers = map[string]string{
 
 // emitInfixExpression emits C code for an infix expression (as fragment)
 func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *typechecker.TypeChecker) {
+	// A statement condition (emitCondition) drops the grouping parentheses
+	// of its top-level infix: `if ( a == b )`, not `if ( ( a == b ) )`,
+	// which clang reports as -Wparentheses-equality. Operands group as usual.
+	bare := cg.bareCondition
+	cg.bareCondition = false
 	if cg.emitBytePack(expr, tc) {
 		return
 	}
@@ -2771,11 +2777,26 @@ func (cg *CodeGenerator) emitInfixExpression(expr *ast.InfixExpression, tc *type
 		}
 	}
 	// C style: space around operators, parentheses for grouping
-	cg.output.WriteString("( ")
+	if !bare {
+		cg.output.WriteString("( ")
+	}
 	cg.emitExpressionFragment(expr.Left, tc)
 	cg.output.WriteString(fmt.Sprintf(" %s ", expr.Operator))
 	cg.emitExpressionFragment(expr.Right, tc)
-	cg.output.WriteString(" )")
+	if !bare {
+		cg.output.WriteString(" )")
+	}
+}
+
+// emitCondition emits the condition of an if or while: an infix at the
+// top level is written without its grouping parentheses, since the
+// statement's own parentheses already hold it.
+func (cg *CodeGenerator) emitCondition(expr ast.Expression, tc *typechecker.TypeChecker) {
+	if _, isInfix := expr.(*ast.InfixExpression); isInfix {
+		cg.bareCondition = true
+	}
+	cg.emitExpressionFragment(expr, tc)
+	cg.bareCondition = false
 }
 
 // emitExpressionFragment emits a fragment of an expression (no return statement)
@@ -4152,7 +4173,7 @@ func (cg *CodeGenerator) emitAssignmentStatement(stmt *ast.AssignmentStatement, 
 // emitWhileStatement emits a while loop
 func (cg *CodeGenerator) emitWhileStatement(stmt *ast.WhileStatement, tc *typechecker.TypeChecker) {
 	cg.write("  while ( ")
-	cg.emitExpressionFragment(stmt.Condition, tc)
+	cg.emitCondition(stmt.Condition, tc)
 	cg.write(" ) {\n")
 	cg.indentLevel++
 
@@ -4167,7 +4188,7 @@ func (cg *CodeGenerator) emitWhileStatement(stmt *ast.WhileStatement, tc *typech
 // (docs/spec/10-syntax.md).
 func (cg *CodeGenerator) emitIfStatement(stmt *ast.IfStatement, tc *typechecker.TypeChecker) {
 	cg.write("  if ( ")
-	cg.emitExpressionFragment(stmt.Condition, tc)
+	cg.emitCondition(stmt.Condition, tc)
 	cg.write(" ) {\n")
 	cg.indentLevel++
 	if stmt.Consequence != nil {
