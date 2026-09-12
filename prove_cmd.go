@@ -104,7 +104,7 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 		var plan prove.WitnessPlan
 		binary := filepath.Join(os.TempDir(), fmt.Sprintf("oak-witness-%d", os.Getpid()))
 		defer os.Remove(binary)
-		witnessed := comp.WithSyntaxRewrite(prove.WitnessRewrite(results, &plan))
+		witnessed := comp.WithSyntaxRewrite(prove.WitnessRewriteWithin(results, *cases, &plan))
 		host := oaktarget.Host()
 		if err := compileBinary(witnessed, binary, defaultAsmMode(host), host, ""); err != nil {
 			fmt.Fprintf(stderr, "oak prove: witness: %v\n", err)

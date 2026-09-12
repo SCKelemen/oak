@@ -76,6 +76,8 @@ A meet (A join B) = A
 
 The compiler may canonicalize joins/meets internally. Surface syntax need not expose arbitrary union/intersection values merely because the checker uses these operations.
 
+These laws, and the soundness and completeness of the normal-form procedure the checker decides them with, are stated in Oak over that procedure and decided by `oak prove` (`spec/oak/lattice.oak`; `125-verification.md` §6.1): a clause is the mask of the atoms it requires, a normal form the bitset of its clauses, and the procedure agrees with the pointwise semantics on every normal form of three atoms and every four-node type. `spec/lean/Oak/TypeLattice.lean` and `TypeLatticeRefinement.lean` prove the same for any number of atoms.
+
 ## 4. ADTs are tagged sums, not ordinary union values
 
 An Oak declaration such as:

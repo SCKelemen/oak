@@ -28,6 +28,25 @@ type blaster struct {
 	// loop-carried value or a local appears in every place it is read),
 	// and re-blasting each reference is exponential in the nesting depth.
 	memo map[*term][]int
+	// grouped orders the bits of each root parameter (a record, an array,
+	// a scalar) in a block of their own — the leaves of one aggregate still
+	// interleaved, independent aggregates apart. The interleaved order is
+	// the first choice (adders across parameters stay linear); the grouped
+	// order is the second when the first exceeds the budget, since a
+	// property that relates two aggregates only through their own normal
+	// forms is exponential interleaved and linear grouped.
+	grouped   bool
+	groupBase map[string]int // parameter -> first variable of its block
+	groupSize map[string]int // parameter -> parameters in its block
+	groupPos  map[string]int // parameter -> position within its block
+	// owners maps a parameter variable back to its parameter bit, for
+	// counterexamples under either order.
+	owners map[int]variableOwner
+}
+
+type variableOwner struct {
+	param string
+	bit   int
 }
 
 type selectAbstraction struct {
@@ -36,14 +55,63 @@ type selectAbstraction struct {
 	vars []int // the fresh variable indices holding the value
 }
 
-const blastNodeBudget = 400000
+const blastNodeBudget = 2000000
 
 func newBlaster(params []string, widths map[string]int) *blaster {
 	index := make(map[string]int, len(params))
 	for i, name := range params {
 		index[name] = i
 	}
-	return &blaster{bdd: newBDD(blastNodeBudget), params: params, index: index, widths: widths}
+	return &blaster{bdd: newBDD(blastNodeBudget), params: params, index: index, widths: widths, owners: map[int]variableOwner{}}
+}
+
+// rootParam is the parameter a leaf belongs to: the name before the first
+// field or element path (`f.op[1]` belongs to `f`; a scalar is its own root).
+func rootParam(name string) string {
+	for i := 0; i < len(name); i++ {
+		if name[i] == '.' || name[i] == '[' {
+			return name[:i]
+		}
+	}
+	return name
+}
+
+// paramGroups counts the root parameters among the names.
+func paramGroups(params []string) int {
+	seen := map[string]bool{}
+	for _, name := range params {
+		seen[rootParam(name)] = true
+	}
+	return len(seen)
+}
+
+// newGroupedBlaster orders each root parameter's bits in a block of its
+// own, the blocks in order of first appearance.
+func newGroupedBlaster(params []string, widths map[string]int) *blaster {
+	bl := newBlaster(params, widths)
+	bl.grouped = true
+	bl.groupBase = map[string]int{}
+	bl.groupSize = map[string]int{}
+	bl.groupPos = map[string]int{}
+	var roots []string
+	members := map[string][]string{}
+	for _, name := range params {
+		root := rootParam(name)
+		if _, seen := members[root]; !seen {
+			roots = append(roots, root)
+		}
+		members[root] = append(members[root], name)
+	}
+	base := 0
+	for _, root := range roots {
+		for pos, name := range members[root] {
+			bl.groupBase[name] = base
+			bl.groupSize[name] = len(members[root])
+			bl.groupPos[name] = pos
+		}
+		base += 64 * len(members[root])
+	}
+	return bl
 }
 
 // selectSlots is the number of distinct element reads that share the
@@ -56,15 +124,29 @@ const selectSlots = 8
 // stride is the number of interleaved operands: parameters plus select slots.
 func (bl *blaster) stride() int { return len(bl.params) + selectSlots }
 
-// variableIndex is the interleaved ordering position of parameter bit j.
+// variableIndex is the ordering position of parameter bit j: interleaved
+// across the parameters, or within its root's block under the grouped order.
 func (bl *blaster) variableIndex(param string, bit int) int {
-	return bit*bl.stride() + bl.index[param]
+	var v int
+	if bl.grouped {
+		v = bl.groupBase[param] + bit*bl.groupSize[param] + bl.groupPos[param]
+	} else {
+		v = bit*bl.stride() + bl.index[param]
+	}
+	bl.owners[v] = variableOwner{param: param, bit: bit}
+	return v
 }
 
-// selectVariable is the interleaved position of bit j of select slot s.
+// selectVariable is the position of bit j of select slot s: interleaved with
+// the parameters for the first slots, past every parameter bit after them
+// (and always past them under the grouped order, whose parameter blocks
+// fill the interleaved region).
 func (bl *blaster) selectVariable(slot, bit int) int {
-	if slot < selectSlots {
+	if slot < selectSlots && !bl.grouped {
 		return bit*bl.stride() + len(bl.params) + slot
+	}
+	if bl.grouped {
+		return 64*bl.stride() + slot*64 + bit
 	}
 	return 64*bl.stride() + (slot-selectSlots)*64 + bit
 }
@@ -561,13 +643,11 @@ func (bl *blaster) counterexample(x, y int) map[string]uint64 {
 	assignment := bl.bdd.satisfyingPath(diff)
 	env := make(map[string]uint64, len(bl.params))
 	for variable, value := range assignment {
-		position := variable % bl.stride()
-		if !value || variable >= 64*bl.stride() || position >= len(bl.params) {
+		owner, isParam := bl.owners[variable]
+		if !value || !isParam {
 			continue // select variables have no parameter to report
 		}
-		param := bl.params[position]
-		bit := variable / bl.stride()
-		env[param] |= uint64(1) << uint(bit)
+		env[owner.param] |= uint64(1) << uint(owner.bit)
 	}
 	return env
 }

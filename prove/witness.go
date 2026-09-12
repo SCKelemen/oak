@@ -32,12 +32,30 @@ type WitnessPlan struct {
 }
 
 // WitnessRewrite builds the rewrite that installs the driver for the
-// exhaustively decided theorems among results, reporting into plan.
+// decided theorems among results whose domains it enumerates within
+// DefaultCases, reporting into plan.
 func WitnessRewrite(results []Result, plan *WitnessPlan) func(*compiler.SyntaxTree) error {
+	return WitnessRewriteWithin(results, DefaultCases, plan)
+}
+
+// WitnessRewriteWithin is WitnessRewrite with the case bound given: a
+// decided theorem is witnessed whichever decider settled it (the compiled
+// program is checked against the statement, not against the interpreter),
+// as long as the product of its parameter domains is within cases.
+func WitnessRewriteWithin(results []Result, cases int, plan *WitnessPlan) func(*compiler.SyntaxTree) error {
+	if cases <= 0 {
+		cases = DefaultCases
+	}
+	// Every decided theorem is a candidate; one the interpreter enumerated
+	// is expected to be enumerable by the driver too, so its skip is
+	// reported, while a bit-level theorem over wide or aggregate parameters
+	// is passed over quietly.
+	decided := map[string]bool{}
 	exhaustive := map[string]bool{}
 	for _, r := range results {
-		if r.Status == Decided && strings.HasPrefix(r.Detail, "all ") {
-			exhaustive[r.Name] = true
+		if r.Status == Decided {
+			decided[r.Name] = true
+			exhaustive[r.Name] = strings.HasPrefix(r.Detail, "all ")
 		}
 	}
 	return func(tree *compiler.SyntaxTree) error {
@@ -53,12 +71,14 @@ func WitnessRewrite(results []Result, plan *WitnessPlan) func(*compiler.SyntaxTr
 				continue // the driver is the program's main
 			}
 			kept = append(kept, stmt)
-			if !isFn || !fn.Theorem || fn.Name == nil || !exhaustive[fn.Name.Value] {
+			if !isFn || !fn.Theorem || fn.Name == nil || !decided[fn.Name.Value] {
 				continue
 			}
-			body, reason := theoremDriver(fn, enums, index+1)
+			body, reason := theoremDriver(fn, enums, index+1, cases)
 			if reason != "" {
-				plan.Skipped[fn.Name.Value] = reason
+				if exhaustive[fn.Name.Value] {
+					plan.Skipped[fn.Name.Value] = reason
+				}
 				continue
 			}
 			index++
@@ -123,12 +143,13 @@ func enumDomains(tree *compiler.SyntaxTree) map[string][]string {
 
 // theoremDriver writes the nested loops that call one theorem on every
 // element of its parameter domains.
-func theoremDriver(fn *ast.FunctionStatement, enums map[string][]string, index int) (string, string) {
+func theoremDriver(fn *ast.FunctionStatement, enums map[string][]string, index int, cases int) (string, string) {
 	var out strings.Builder
 	indent := "  "
 	out.WriteString(indent + "{\n")
 	indent += "  "
 	var args []string
+	total := 1
 	for i, param := range fn.Parameters {
 		typeName, isIdent := param.Type.(*ast.Identifier)
 		if !isIdent || param.Variadic {
@@ -164,6 +185,10 @@ func theoremDriver(fn *ast.FunctionStatement, enums map[string][]string, index i
 				}
 			}
 			binding = fmt.Sprintf("%s: %s = %s", name, typeName.Value, chain.String())
+		}
+		total *= count
+		if total > cases {
+			return "", fmt.Sprintf("the domain exceeds %d cases", cases)
 		}
 		fmt.Fprintf(&out, "%s%s: u32 = 0\n%swhile %s < u32(%d) {\n", indent, counter, indent, counter, count)
 		indent += "  "

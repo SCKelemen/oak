@@ -146,7 +146,7 @@ Every theorem is placed on one rung, from the strongest evidence down:
 
 | Status | Meaning |
 | --- | --- |
-| `decided` | The compiler decided the statement itself, one of two ways. **Exhaustively**: it evaluated the body on every element of its finite parameter domain and every case held — domains are `Bool`, `u8`, `i8`, `u16`, `i16`, payload-free sum types, and declared records of those (the product of the field domains), with the product of the parameter domains bounded (`-cases`, 65536 by default); the evaluator is the interpreter the differential witnesses hold to the compiled program. **At the bit level**: for parameters that are fixed-width scalars or `Bool` of any width, the body was lowered to the assembler verifier's term language (`94-assembler.md` §8; wrapping arithmetic, bitwise operators, comparisons, conditionals, typed locals, counted loops, calls to program functions of the same shape inlined; no views, recursion, or data-dependent loops) and bit-blasted, and its bit is the constant true. A construct that traps on some inputs — a variable shift count reaching the width, a refinement's construction `Name(e)` whose predicate may fail — records its trap condition as an obligation the decider proves impossible first, so a theorem whose body traps is `refuted` at the trapping input rather than read as true; a parameter of a refinement type is its base under the predicate as a hypothesis (the claim is about the values the construction admits), and a callee's refined parameter or return is its base; an `f32` or `f64` is its IEEE 754 bit pattern, with the total operations, comparisons, `min`, `max`, and `total_order` as bit operations (`Oak.FloatBits`) and arithmetic outside the rung; a parameter of a record or sum type is an aggregate of scalar leaves — one symbolic parameter per field, a tag per union under the hypothesis that it names a variant — and calls pass such values by copy, a span of a local array as an alias (so a callee's write-back is seen), and return them merged leaf by leaf across match arms, so a protocol invariant's inductive step over a `u32` record decides here; an `assert` in a reached body is a trap obligation like a shift's, and every trap obligation carries the path condition under which the program reaches it (the right operand of a short-circuit or only when the left is false, a match arm only when its pattern is the first to match); the term semantics are those of `Oak.AssemblerSemantics`, proved against Arm's ASL and checked against the silicon. The detail names which, and the case count or BDD node count. |
+| `decided` | The compiler decided the statement itself, one of two ways. **Exhaustively**: it evaluated the body on every element of its finite parameter domain and every case held — domains are `Bool`, `u8`, `i8`, `u16`, `i16`, payload-free sum types, and declared records of those (the product of the field domains), with the product of the parameter domains bounded (`-cases`, 65536 by default); the evaluator is the interpreter the differential witnesses hold to the compiled program. **At the bit level**: for parameters that are fixed-width scalars or `Bool` of any width, the body was lowered to the assembler verifier's term language (`94-assembler.md` §8; wrapping arithmetic, bitwise operators, comparisons, conditionals, typed locals, counted loops, calls to program functions of the same shape inlined; no views, recursion, or data-dependent loops) and bit-blasted, and its bit is the constant true. A construct that traps on some inputs — a variable shift count reaching the width, a refinement's construction `Name(e)` whose predicate may fail — records its trap condition as an obligation the decider proves impossible first, so a theorem whose body traps is `refuted` at the trapping input rather than read as true; a parameter of a refinement type is its base under the predicate as a hypothesis (the claim is about the values the construction admits), and a callee's refined parameter or return is its base; an `f32` or `f64` is its IEEE 754 bit pattern, with the total operations, comparisons, `min`, `max`, and `total_order` as bit operations (`Oak.FloatBits`) and arithmetic outside the rung; a parameter of a record or sum type is an aggregate of scalar leaves — one symbolic parameter per field, a tag per union under the hypothesis that it names a variant — and calls pass such values by copy, a span of a local array as an alias (so a callee's write-back is seen), and return them merged leaf by leaf across match arms, so a protocol invariant's inductive step over a `u32` record decides here; an `assert` in a reached body is a trap obligation like a shift's, and every trap obligation carries the path condition under which the program reaches it (the right operand of a short-circuit or only when the left is false, a match arm only when its pattern is the first to match); the term semantics are those of `Oak.AssemblerSemantics`, proved against Arm's ASL and checked against the silicon. The blast orders the parameters' bits interleaved (bit j of every leaf adjacent, so an adder across parameters stays linear) and, when that order exceeds the node budget, tries once more with each root parameter's leaves in a block of their own — two aggregates related only through their normal forms are exponential interleaved and linear apart — which the detail reports as `parameters in blocks`. The detail names which, and the case count or BDD node count. |
 | `refuted` | One of the deciders found a counterexample. The theorem is false; the assignment is reported. |
 | `proved` | Lean checked the theorem's statement over the extraction of the program (§5): `oak prove -lean out.lean -check` ran Lean on the projection and its statement drew no error. The compiler never awards this rung on its own; it reads Lean's diagnostics. A hand-written proof lives in a module of its own that imports the projection. |
 | `open` | No decider applies (a domain too large, a parameter type that is not finite) and the statement awaits its Lean proof. The reason is reported. |
@@ -157,7 +157,12 @@ exhaustive decider, or `proved` by Lean, or `open`. Properties run by
 and a theorem is not one — though a theorem may be called from one.
 
 The order is exhaustive first when the domain fits (a concrete count is
-the plainest evidence), then the bit-level decider, then Lean. Direction
+the plainest evidence), then the bit-level decider, then Lean — except
+that a body with a counted loop, in the theorem or in a function it names,
+goes to the bit level first, where the unrolled loop is one term, and falls
+back to enumeration when the bit level does not apply (a 64-step product
+evaluated 65536 times is the interpreter's costly case; the bit level
+settles it in milliseconds). Direction
 (§6): the extent facts (`50-borrowing.md`) decide a linear fragment inside
 the checker and are the next `decided` rung.
 
@@ -186,16 +191,17 @@ message; an error outside every statement leaves them all open with it.
 `oak build` checks theorems like any declaration and does not run the
 ladder; a theorem is never a build error for being open.
 
-`-witness` evaluates every exhaustively decided theorem in the compiled
-program as well: `main` is replaced by a generated driver that loops over
-the same domains (u8, u16, i8, i16, `Bool`, payload-free sum types and a
-protocol's state type) through the width-conversion rows, calls each
-theorem, and exits with the index of the first theorem that fails; the
-row gains `witnessed in the compiled program`, and a disagreement between
-the interpreter and the backend is reported as `refuted` — the
-differential witness of `85-discipline.md`, stated per theorem. A theorem
-whose parameters the driver cannot enumerate is left to the interpreter's
-verdict and named in the summary.
+`-witness` evaluates every decided theorem in the compiled program as
+well, whichever decider settled it: `main` is replaced by a generated
+driver that loops over the parameter domains (u8, u16, i8, i16, `Bool`,
+payload-free sum types and a protocol's state type, their product within
+`-cases`) through the width-conversion rows, calls each theorem, and exits
+with the index of the first theorem that fails; the row gains `witnessed
+in the compiled program`, and a disagreement between the decider and the
+backend is reported as `refuted` — the differential witness of
+`85-discipline.md`, stated per theorem. A theorem whose parameters the
+driver cannot enumerate, or whose domain exceeds the bound, is left to the
+decider's verdict and named in the summary.
 
 ## 5. The Lean projection
 
@@ -327,9 +333,56 @@ divides by an unsigned constant power of two as a shift or a mask. What
 is not yet restated: `Oak.Floats`' rounding contract (arithmetic is not a bit operation) (the decider has no floats), and the laws over
 lists and layouts, which have no fixed-width statement.
 
+### 6.1 The type lattice
+
+The semantic lattice of `20-types.md` §3 and the procedure the checker
+decides it with (`typechecker/lattice.go`: both sides to disjunctive normal
+form over the nominal atoms, every left clause implied by some right
+clause) are restated in `spec/oak/lattice.oak` over words rather than
+lists — a clause is the mask of the atoms it requires, a normal form the
+bitset of its clauses, a valuation the mask of the atoms holding at a point
+— and the laws of `Oak.TypeLattice` and `Oak.TypeLatticeRefinement` are
+decided at the bit level over every normal form and valuation of three
+atoms and every lattice type of four nodes (the fewest that exercise every
+law; the Lean modules prove them for any number of atoms). The word form is
+also the fast form: a clause implication is one mask test, and the
+procedure over up to 64 atoms is a handful of word operations per clause
+pair, where the list form compares types pairwise.
+
+| Lean law | Oak theorem (`spec/oak/lattice.oak`) | Rung |
+| --- | --- | --- |
+| `TypeLatticeRefinement.decide_sound`, `decide_complete` | `decide_sound`; `decide_complete` (the countermodel computed by `dnf_countermodel`); `decide_is_containment` (both at once against the pointwise semantics) | decided, bit level |
+| `clauseDenote_merge`, `dnfDenote_product`, `dnfOf_denotes` | `clause_merge_denotes`, `dnf_union_denotes`, `dnf_product_denotes`, `dnf_of_denotes` | decided, bit level |
+| `isSubtype_sound`, `isSubtype_complete` | same names, over two four-node types | decided, bit level (parameters in blocks) |
+| `TypeLattice.subtype_refl`, `subtype_trans`, `bottom_le`, `le_top`, `le_join_left/right`, `join_least`, `meet_le_left/right`, `meet_greatest` | same names, on the procedure | decided |
+| `join_comm`, `meet_comm`, `join_assoc`, `meet_assoc`, `join_idem`, `join_bottom`, `meet_top`, `meet_bottom` | same names, as equations on the normal forms | decided |
+| `meet_idem`, `join_top`, `join_absorption`, `meet_absorption` | same names, as mutual containment (the meet's normal form is larger) | decided |
+
+Every law is also witnessed in the compiled program; the file proves in
+about eight seconds.
+
 ## 7. Direction
 
 In order of payoff, each reusing a surface that exists:
+
+- **The verifier in Oak.** The aim is a compiler whose semantics, solver,
+  and proofs are Oak programs, the language's own laws stated and decided
+  by the language. The order of work: the algebras of the language
+  semantics first — the type lattice (§6.1, done), the effect rows
+  (`Oak.EffectRows`), the pattern algebra of `35-pattern-analysis.md`
+  (`Oak.PatternAnalysis`, `Oak.Exhaustiveness`), record shapes and ADT
+  semantics — each as an Oak procedure over words with its laws decided,
+  the standard library's laws left in Lean; then the solver: the ROBDD and
+  the bit blaster of `asm/blast.go` as an Oak program, compiled and run
+  beside the Go decider on the whole corpus until it replaces it; then
+  proof certificates — a small checking kernel (clausal steps and
+  equational rewrites) proved once in Lean, with the fast solvers untrusted
+  producers of certificates, so speed and trust are separated; then an
+  inductive prover, which is what the unbounded laws (the list-level layout
+  laws, the fact stack, the stream proofs) need. The data layout is the
+  method throughout: an algebra stated over words is word-parallel, and the
+  solver is the kind of program Oak's layout, SIMD, and proof tools were
+  built for.
 
 - **Protocol invariants, further.** §2a covers safety inductively on
   finite domains and over the reachable states otherwise, so a `u32`

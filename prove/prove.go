@@ -344,6 +344,15 @@ func decide(env *object.Environment, tc *typechecker.TypeChecker, functions map[
 				Detail: fmt.Sprintf("the domain exceeds %d cases; stated for Lean", cases)})
 		}
 	}
+	// A body with a counted loop goes to the bit-level decider first: the
+	// unrolled loop is one term there and the interpreter's costly case
+	// (a 64-step product evaluated 65536 times). Enumeration remains the
+	// answer when the bit level does not apply.
+	if loopHeavy(theorem, functions) {
+		if r := blastOr(tc, decls, theorem, functions, Result{Name: name, Status: Open}); r.Status != Open {
+			return r
+		}
+	}
 	args := make([]object.Object, len(domains))
 	indices := make([]int, len(domains))
 	for {
@@ -375,6 +384,36 @@ func decide(env *object.Environment, tc *typechecker.TypeChecker, functions map[
 		}
 	}
 	return Result{Name: name, Status: Decided, Detail: fmt.Sprintf("all %d cases", total)}
+}
+
+// loopHeavy reports whether a theorem's body, or the body of a program
+// function it names, contains a `while`.
+func loopHeavy(theorem *ast.FunctionStatement, functions map[string]*ast.FunctionStatement) bool {
+	if theorem.Body == nil {
+		return false
+	}
+	body := theorem.Body.String()
+	if strings.Contains(body, "while") {
+		return true
+	}
+	seen := map[string]bool{}
+	pending := []string{body}
+	for len(pending) > 0 {
+		text := pending[0]
+		pending = pending[1:]
+		for name, fn := range functions {
+			if seen[name] || fn.Body == nil || !strings.Contains(text, name) {
+				continue
+			}
+			seen[name] = true
+			callee := fn.Body.String()
+			if strings.Contains(callee, "while") {
+				return true
+			}
+			pending = append(pending, callee)
+		}
+	}
+	return false
 }
 
 // blastOr runs the bit-level decider (asm.DecideTheorem) on a theorem the

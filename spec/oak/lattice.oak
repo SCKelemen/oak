@@ -1,0 +1,258 @@
+// The semantic type lattice and its decision procedure, in Oak
+// (docs/spec/20-types.md section 3; spec/lean/Oak/TypeLattice.lean;
+// spec/lean/Oak/TypeLatticeRefinement.lean; typechecker/lattice.go).
+//
+// `never` is bottom, `any` is top, union is join, intersection is meet, and
+// the atoms are nominal types with no order among them. The compiler decides
+// `IsSubtype` by normalizing both sides to disjunctive normal form over the
+// atoms and checking that every left clause is implied by some right clause.
+// Here that procedure is written over words instead of lists: a clause (a
+// conjunction of atoms) is the mask of the atoms it requires, a DNF is the
+// bitset of the clauses it contains, and a valuation of the atoms at one point
+// of the semantic domain (Oak.TypeLattice's `V a x`) is the mask of the atoms
+// that hold there. Three atoms: a clause is the low three bits of a u8, a DNF
+// is a u8 with bit c set when the clause with mask c is present. The empty
+// clause is mask 0, so `any` is the DNF u8(1) and `never` is u8(0).
+//
+// Every law below is decided at the bit level over all DNFs and valuations of
+// the bounded atom set, and over every lattice type of four nodes. Three atoms
+// are the fewest that exercise every law (associativity needs three, the
+// absorptions two), and keep each decision under a second. The Lean
+// modules prove the same laws for any number of atoms; the two agree on the
+// semantics (a clause holds when its atoms hold, a DNF when some clause
+// does), which is how the word procedure here and the list procedure the
+// compiler runs are tied to one another.
+
+// ClauseDenote: a clause holds at a point when every atom it requires holds.
+clause_holds: (c: u8, v: u8): Bool = (c & ^v) == u8(0)
+
+// clauseImplies: conjunction l implies conjunction r exactly when every atom
+// r requires is required by l.
+clause_implies: (l: u8, r: u8): Bool = (r & ^l) == u8(0)
+
+// mergeClauses: the conjunction of two clauses (deduplication is free).
+clause_merge: (l: u8, r: u8): u8 = l | r
+
+dnf_has: (d: u8, c: u32): Bool = ((u32(d) >> c) & u32(1)) == u32(1)
+
+bit_if: (b: Bool): u32 = b ? { u32(1) } | { u32(0) }
+
+// DNFDenote: a DNF holds at a point when some clause of it holds.
+dnf_holds: (d: u8, v: u8): Bool {
+  found: Bool = false
+  c: u32 = 0
+  while c < u32(8) {
+    found = found || (dnf_has(d, c) && clause_holds(u8_trunc_u32(c), v))
+    c = c + u32(1)
+  }
+  found
+}
+
+// Some clause of d is implied by c.
+clause_covered: (d: u8, c: u8): Bool {
+  ok: Bool = false
+  k: u32 = 0
+  while k < u32(8) {
+    ok = ok || (dnf_has(d, k) && clause_implies(c, u8_trunc_u32(k)))
+    k = k + u32(1)
+  }
+  ok
+}
+
+// decide (IsSubtype's clause loop): every left clause is implied by some
+// right clause.
+dnf_decide: (d1: u8, d2: u8): Bool {
+  ok: Bool = true
+  c: u32 = 0
+  while c < u32(8) {
+    ok = ok && (!dnf_has(d1, c) || clause_covered(d2, u8_trunc_u32(c)))
+    c = c + u32(1)
+  }
+  ok
+}
+
+// The countermodel of a rejected pair: the atoms of the first left clause no
+// right clause is implied by, taken as the valuation (decide_complete's
+// witness).
+dnf_countermodel: (d1: u8, d2: u8): u8 {
+  found: Bool = false
+  failing: Bool = false
+  model: u8 = 0
+  c: u32 = 0
+  while c < u32(8) {
+    failing = dnf_has(d1, c) && !clause_covered(d2, u8_trunc_u32(c))
+    model = (failing && !found) ? { u8_trunc_u32(c) } | { model }
+    found = found || failing
+    c = c + u32(1)
+  }
+  model
+}
+
+// Semantic containment, spelled out: the left DNF implies the right one at
+// every point (every valuation of the three atoms).
+dnf_contained: (d1: u8, d2: u8): Bool {
+  ok: Bool = true
+  v: u32 = 0
+  while v < u32(8) {
+    ok = ok && (!dnf_holds(d1, u8_trunc_u32(v)) || dnf_holds(d2, u8_trunc_u32(v)))
+    v = v + u32(1)
+  }
+  ok
+}
+
+dnf_equiv: (d1: u8, d2: u8): Bool = dnf_decide(d1, d2) && dnf_decide(d2, d1)
+
+// The union case of latticeDNFOf: the clauses of both sides.
+dnf_union: (d1: u8, d2: u8): u8 = d1 | d2
+
+// productDNF, the intersection case of latticeDNFOf: the cartesian product
+// of the clause sets, each pair merged.
+dnf_product: (d1: u8, d2: u8): u8 {
+  out: u32 = 0
+  a: u32 = 0
+  b: u32 = 0
+  while a < u32(8) {
+    b = u32(0)
+    while b < u32(8) {
+      out = out | (bit_if(dnf_has(d1, a) && dnf_has(d2, b)) << (a | b))
+      b = b + u32(1)
+    }
+    a = a + u32(1)
+  }
+  u8_trunc_u32(out)
+}
+
+dnf_never: (): u8 = u8(0)
+dnf_any: (): u8 = u8(1)
+// An atom is a bit position; the low two bits of a name it, 3 reading as 2.
+atom_index: (a: u8): u8 = (a & u8(3)) == u8(3) ? { u8(2) } | { a & u8(3) }
+dnf_atom: (a: u8): u8 = u8_trunc_u32(u32(1) << (u32(1) << u32(atom_index(a))))
+
+// --- The procedure against the semantics (Oak.TypeLatticeRefinement) ---
+
+// clauseDenote_merge: a merged clause holds exactly when both parts hold.
+clause_merge_denotes: theorem (l: u8, r: u8, v: u8) { clause_holds(clause_merge(l, r), v) == (clause_holds(l, v) && clause_holds(r, v)) }
+
+// The union of DNFs denotes the join.
+dnf_union_denotes: theorem (d1: u8, d2: u8, v: u8) { dnf_holds(dnf_union(d1, d2), v) == (dnf_holds(d1, v) || dnf_holds(d2, v)) }
+
+// dnfDenote_product: the product of DNFs denotes the meet.
+dnf_product_denotes: theorem (d1: u8, d2: u8, v: u8) { dnf_holds(dnf_product(d1, d2), v) == (dnf_holds(d1, v) && dnf_holds(d2, v)) }
+
+// decide_sound: an accepted pair is contained at every point.
+decide_sound: theorem (d1: u8, d2: u8, v: u8) { !dnf_decide(d1, d2) || !dnf_holds(d1, v) || dnf_holds(d2, v) }
+
+// decide_complete: a rejected pair has a countermodel, the failing clause's
+// own atoms.
+decide_complete: theorem (d1: u8, d2: u8) { dnf_decide(d1, d2) || (dnf_holds(d1, dnf_countermodel(d1, d2)) && !dnf_holds(d2, dnf_countermodel(d1, d2))) }
+
+// Soundness and completeness in one line: the procedure is containment.
+decide_is_containment: theorem (d1: u8, d2: u8) { dnf_decide(d1, d2) == dnf_contained(d1, d2) }
+
+// --- The lattice laws (Oak.TypeLattice), on the procedure ---
+
+subtype_refl: theorem (d: u8) { dnf_decide(d, d) }
+subtype_trans: theorem (a: u8, b: u8, c: u8) { !(dnf_decide(a, b) && dnf_decide(b, c)) || dnf_decide(a, c) }
+bottom_le: theorem (d: u8) { dnf_decide(dnf_never(), d) }
+le_top: theorem (d: u8) { dnf_decide(d, dnf_any()) }
+le_join_left: theorem (a: u8, b: u8) { dnf_decide(a, dnf_union(a, b)) }
+le_join_right: theorem (a: u8, b: u8) { dnf_decide(b, dnf_union(a, b)) }
+join_least: theorem (a: u8, b: u8, c: u8) { !(dnf_decide(a, c) && dnf_decide(b, c)) || dnf_decide(dnf_union(a, b), c) }
+meet_le_left: theorem (a: u8, b: u8) { dnf_decide(dnf_product(a, b), a) }
+meet_le_right: theorem (a: u8, b: u8) { dnf_decide(dnf_product(a, b), b) }
+meet_greatest: theorem (a: u8, b: u8, c: u8) { !(dnf_decide(c, a) && dnf_decide(c, b)) || dnf_decide(c, dnf_product(a, b)) }
+
+// The equational laws. Where the normal forms coincide the equation is on
+// the words; where they differ (idempotence and absorption of the meet
+// produce a larger clause set) it is mutual containment.
+join_comm: theorem (a: u8, b: u8) { dnf_union(a, b) == dnf_union(b, a) }
+meet_comm: theorem (a: u8, b: u8) { dnf_product(a, b) == dnf_product(b, a) }
+join_assoc: theorem (a: u8, b: u8, c: u8) { dnf_union(dnf_union(a, b), c) == dnf_union(a, dnf_union(b, c)) }
+meet_assoc: theorem (a: u8, b: u8, c: u8) { dnf_product(dnf_product(a, b), c) == dnf_product(a, dnf_product(b, c)) }
+join_idem: theorem (a: u8) { dnf_union(a, a) == a }
+meet_idem: theorem (a: u8) { dnf_equiv(dnf_product(a, a), a) }
+join_bottom: theorem (a: u8) { dnf_union(a, dnf_never()) == a }
+meet_top: theorem (a: u8) { dnf_product(a, dnf_any()) == a }
+join_top: theorem (a: u8) { dnf_equiv(dnf_union(a, dnf_any()), dnf_any()) }
+meet_bottom: theorem (a: u8) { dnf_product(a, dnf_never()) == dnf_never() }
+join_absorption: theorem (a: u8, b: u8) { dnf_equiv(dnf_union(a, dnf_product(a, b)), a) }
+meet_absorption: theorem (a: u8, b: u8) { dnf_equiv(dnf_product(a, dnf_union(a, b)), a) }
+
+// --- Lattice types of bounded size (LatticeTy, latticeDNFOf) ---
+
+// A lattice type of four nodes in dependency order: node i names only nodes
+// below it, and node 3 is the root. op 0 is never, 1 any, 2 an atom (the
+// low two bits of arg name it, 3 reading as atom 2), 3 a union and 4 an
+// intersection of the nodes l = arg & 3 and r = (arg >> 2) & 3; any other
+// op, and a child at or above the node, reads as never.
+Formula: type = struct { op: [4]u8, arg: [4]u8 }
+
+node_l: (f: Formula, i: u32): u8 = f.arg[i] & u8(3)
+node_r: (f: Formula, i: u32): u8 = (f.arg[i] >> u8(2)) & u8(3)
+
+// The value of node i from the values of the nodes below it.
+node_denote: (op: u8, l: u8, lv: Bool, rv: Bool, v: u8): Bool {
+  op == u8(0) ? { false } | {
+    op == u8(1) ? { true } | {
+      op == u8(2) ? { clause_holds(u8(1) << atom_index(l), v) } | {
+        op == u8(3) ? { lv || rv } | {
+          op == u8(4) ? { lv && rv } | { false }
+        }
+      }
+    }
+  }
+}
+
+pick_denote: (idx: u8, below: u8, v0: Bool, v1: Bool, v2: Bool): Bool {
+  idx >= below ? { false } | {
+    idx == u8(0) ? { v0 } | { idx == u8(1) ? { v1 } | { v2 } }
+  }
+}
+
+// denote: the semantic value of the type at a point.
+denote: (f: Formula, v: u8): Bool {
+  v0: Bool = node_denote(f.op[u32(0)], node_l(f, u32(0)), false, false, v)
+  v1: Bool = node_denote(f.op[u32(1)], node_l(f, u32(1)), pick_denote(node_l(f, u32(1)), u8(1), v0, false, false), pick_denote(node_r(f, u32(1)), u8(1), v0, false, false), v)
+  v2: Bool = node_denote(f.op[u32(2)], node_l(f, u32(2)), pick_denote(node_l(f, u32(2)), u8(2), v0, v1, false), pick_denote(node_r(f, u32(2)), u8(2), v0, v1, false), v)
+  node_denote(f.op[u32(3)], node_l(f, u32(3)), pick_denote(node_l(f, u32(3)), u8(3), v0, v1, v2), pick_denote(node_r(f, u32(3)), u8(3), v0, v1, v2), v)
+}
+
+node_dnf: (op: u8, l: u8, ld: u8, rd: u8): u8 {
+  op == u8(0) ? { dnf_never() } | {
+    op == u8(1) ? { dnf_any() } | {
+      op == u8(2) ? { dnf_atom(l) } | {
+        op == u8(3) ? { dnf_union(ld, rd) } | {
+          op == u8(4) ? { dnf_product(ld, rd) } | { dnf_never() }
+        }
+      }
+    }
+  }
+}
+
+pick_dnf: (idx: u8, below: u8, d0: u8, d1: u8, d2: u8): u8 {
+  idx >= below ? { dnf_never() } | {
+    idx == u8(0) ? { d0 } | { idx == u8(1) ? { d1 } | { d2 } }
+  }
+}
+
+// dnfOf (latticeDNFOf): the normal form of the type.
+dnf_of: (f: Formula): u8 {
+  d0: u8 = node_dnf(f.op[u32(0)], node_l(f, u32(0)), dnf_never(), dnf_never())
+  d1: u8 = node_dnf(f.op[u32(1)], node_l(f, u32(1)), pick_dnf(node_l(f, u32(1)), u8(1), d0, dnf_never(), dnf_never()), pick_dnf(node_r(f, u32(1)), u8(1), d0, dnf_never(), dnf_never()))
+  d2: u8 = node_dnf(f.op[u32(2)], node_l(f, u32(2)), pick_dnf(node_l(f, u32(2)), u8(2), d0, d1, dnf_never()), pick_dnf(node_r(f, u32(2)), u8(2), d0, d1, dnf_never()))
+  node_dnf(f.op[u32(3)], node_l(f, u32(3)), pick_dnf(node_l(f, u32(3)), u8(3), d0, d1, d2), pick_dnf(node_r(f, u32(3)), u8(3), d0, d1, d2))
+}
+
+// IsSubtype: normalize both sides and decide.
+is_subtype: (f: Formula, g: Formula): Bool = dnf_decide(dnf_of(f), dnf_of(g))
+
+// dnfOf_denotes: normalization preserves denotation.
+dnf_of_denotes: theorem (f: Formula, v: u8) { dnf_holds(dnf_of(f), v) == denote(f, v) }
+
+// isSubtype_sound: an accepted pair of types is contained at every point.
+is_subtype_sound: theorem (f: Formula, g: Formula, v: u8) { !is_subtype(f, g) || !denote(f, v) || denote(g, v) }
+
+// isSubtype_complete: a rejected pair of types has a countermodel.
+is_subtype_complete: theorem (f: Formula, g: Formula) { is_subtype(f, g) || (denote(f, dnf_countermodel(dnf_of(f), dnf_of(g))) && !denote(g, dnf_countermodel(dnf_of(f), dnf_of(g)))) }
+
+main: (): i32 = 0
