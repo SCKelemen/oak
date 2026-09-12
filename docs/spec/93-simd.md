@@ -412,6 +412,40 @@ This lets out-of-order RVV/SVE implementations avoid unnecessary preservation
 work while preserving Oak's rule that every observable value has exact
 semantics.
 
+**Landed (dbs ask 7, fourth increment).** A mask is a two-valued vector of
+the lane type — all-ones lanes where a condition holds, zero elsewhere —
+and a lane "holds" when it is nonzero, so masks combine with the ordinary
+`and`/`or`/`xor`. The comparisons `eq ne lt gt _active_E(x, y, a)` produce
+masks (`lt`/`gt` are the unsigned orders of the lane type). The predicated
+operations, each taking the extent last:
+
+| operation | signature | semantics |
+|---|---|---|
+| `simd.select_active_E` | `(E', E', E', Active) -> E'` | lane `i` is `x[i]` where `m[i]` holds, else `y[i]` |
+| `simd.load_masked_active_E` | `([]E, u32, E', Active) -> E'` | lanes where `m` holds read `v[off + i]`, the others are `0`; traps unless `off + count ≤ len(v)` |
+| `simd.store_masked_active_E` | `([*]E, u32, E', E', Active) -> ()` | lanes where `m` holds are written, the others keep the span's values; traps unless `off + count ≤ len(s)` |
+| `simd.count_nonzero_active_E` | `(E', Active) -> u32` | the number of active lanes where `m` holds |
+
+(`E'` is the scalable vector of `E`.) Preservation is visible exactly where
+the policy above demands it: `store_masked` is the merge of the stored lanes
+into the span's existing values (`Oak.Simd.storeMasked_preserves`,
+`storeMasked_writes`), and `load_masked` never reads an unmasked lane
+(`loadMasked_lane`), so a realization may use a fault-suppressing masked
+load and an undisturbed masked store. The whole extent still lies within
+the view or span — masks narrow what is touched, not what is proven. Every
+predicated operation is lane-wise, so chunking aligned inputs any way
+computes the whole (`chunked_zipWith_eq`), and the holding-lane counts of
+the chunks sum to the count of the whole (`chunked_count_nonzero_eq`): a
+range filter written over these — compare, count, masked store of the
+matches over a marker, masked reload, select — is the worked program of
+`compiler/e2e_scalable_test.go` (`maskedProgram`), run at extents 1, 3, 5,
+and 16, under RVV at VLEN 128 and 256, and under SVE at 128, 256, and 512
+bits. Realizations: RVV `vmsltu`/`vmsgtu`/`vmsne` merged to all-ones lanes,
+`vmerge.vvm` for `select`, `vle` under the mask with a zero destination
+(undisturbed policy) for the masked load, `vse` under the mask, `vcpop.m`;
+SVE `cmplt`/`cmpgt`/`cmpne` under the extent predicate, `sel`, `ld1`/`st1`
+under the combined predicate, `cntp`; the portable loop.
+
 ### 4.2 Fault-only-first and restartable vector memory
 
 RISC-V V's fault-only-first loads are useful for vectorizing bounded scans with
@@ -475,7 +509,10 @@ RVV at VLEN 128 and 256 (extents 16 and 32), and SVE at 128, 256, and 512
 bits (extents 16, 32, and 64, `compiler/e2e_sve_test.go` under
 `qemu-system-aarch64 -cpu max,sve-max-vq=1|2|4`), and tail lanes unable to
 affect stores, reductions, or returned values — every operation takes its
-extent, and Lean states the independence. Still open: predicated
-(masked) operations, fault-first loads, and the call-boundary
-re-establishment of vector state (no scalable value crosses a call by the
-locality rule; the backend's `vsetvl` is re-issued per chunk).
+extent, and Lean states the independence. Discharged for the predicated
+operations (§4.1): the range-filter program's masked stores leave the
+marker in every unmatched lane and its masked reloads see zeros there, at
+the same extents and under the same realizations. Still open: fault-first
+loads and the call-boundary re-establishment of vector state (no scalable
+value crosses a call by the locality rule; the backend's `vsetvl` is
+re-issued per chunk).

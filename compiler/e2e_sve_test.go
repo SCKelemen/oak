@@ -33,7 +33,7 @@ func TestE2ESVEAgreesWithInterpreter(t *testing.T) {
 	if err != nil || drv.Kind != "zig" {
 		t.Skipf("no zig for %s (%v)", tgt, err)
 	}
-	for _, program := range []struct{ name, source, marker string }{{"scalable", scalableProgram, "svwhilelt_b8"}, {"simd_bytes", simdBytesProgram, "vld1q_u8"}, {"simd_float", floatSimdProgram, "vld1q_f32"}} {
+	for _, program := range []struct{ name, source, marker string }{{"scalable", scalableProgram, "svwhilelt_b8"}, {"masked", maskedProgram, "svcntp_b8"}, {"simd_bytes", simdBytesProgram, "vld1q_u8"}, {"simd_float", floatSimdProgram, "vld1q_f32"}} {
 		t.Run(program.name, func(t *testing.T) {
 			want := uint32(interpretChecked(t, program.source))
 			code, err := New().WithSource(program.name+".oak", program.source).WithTarget(tgt).EmitC().Get()

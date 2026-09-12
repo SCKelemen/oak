@@ -135,6 +135,78 @@ func evalScalableOp(member string, args []ast.Expression, env *object.Environmen
 			buffer.set(offset+i, &object.Integer{Value: int64(layout.getLane(v, i))})
 		}
 		return NULL
+	case "load_masked":
+		// Lanes whose mask lane is zero are not read and come back zero;
+		// the whole extent still lies within the view.
+		buffer, offset, ok := argArrayOffset(evaluated)
+		m, isVector := vector(2)
+		if !ok || !isVector {
+			return newError("simd.%s requires a view, a u32 offset, and a %s mask", member, layout.VectorKind)
+		}
+		if offset < 0 || offset+count > buffer.length {
+			return newError("simd.%s out of bounds: offset %d, %d active lanes, length %d", member, offset, count, buffer.length)
+		}
+		result := &object.Vector{VectorKind: layout.VectorKind}
+		for i := 0; i < count; i++ {
+			if layout.getLane(m, i) == 0 {
+				continue
+			}
+			element, isInt := buffer.get(offset + i).(*object.Integer)
+			if !isInt {
+				return newError("simd.%s requires integer elements", member)
+			}
+			layout.setLane(result, i, uint64(element.Value)&layout.laneMask())
+		}
+		return result
+	case "store_masked":
+		// Only lanes whose mask lane is nonzero are written; the others
+		// keep the span's values.
+		buffer, offset, ok := argArrayOffset(evaluated)
+		m, isMask := vector(2)
+		v, isVector := vector(3)
+		if !ok || !isMask || !isVector {
+			return newError("simd.%s requires a span, a u32 offset, a %s mask, and a %s", member, layout.VectorKind, layout.VectorKind)
+		}
+		if !buffer.writable {
+			return newError("simd.%s requires a span, not a view", member)
+		}
+		if offset < 0 || offset+count > buffer.length {
+			return newError("simd.%s out of bounds: offset %d, %d active lanes, length %d", member, offset, count, buffer.length)
+		}
+		for i := 0; i < count; i++ {
+			if layout.getLane(m, i) != 0 {
+				buffer.set(offset+i, &object.Integer{Value: int64(layout.getLane(v, i))})
+			}
+		}
+		return NULL
+	case "select":
+		m, isMask := vector(0)
+		x, okX := vector(1)
+		y, okY := vector(2)
+		if !isMask || !okX || !okY {
+			return newError("simd.%s requires a %s mask and two %s operands", member, layout.VectorKind, layout.VectorKind)
+		}
+		result := &object.Vector{VectorKind: layout.VectorKind}
+		for i := 0; i < count; i++ {
+			if layout.getLane(m, i) != 0 {
+				layout.setLane(result, i, layout.getLane(x, i))
+			} else {
+				layout.setLane(result, i, layout.getLane(y, i))
+			}
+		}
+		return result
+	case "count_nonzero":
+		m, isMask := vector(0)
+		if !isMask {
+			return newError("simd.%s requires a %s mask", member, layout.VectorKind)
+		}
+		n := 0
+		for i := 0; i < count; i++ {
+			if layout.getLane(m, i) != 0 {
+				n++
+			}
+		}
+		return &object.Integer{Value: int64(n)}
 	case "shr":
 		v, isVector := vector(0)
 		n, isInt := argInteger(evaluated, 1)
@@ -212,6 +284,18 @@ func evalScalableOp(member string, args []ast.Expression, env *object.Environmen
 			}
 		case "eq":
 			if x == y {
+				lane = mask
+			}
+		case "ne":
+			if x != y {
+				lane = mask
+			}
+		case "lt":
+			if x < y {
+				lane = mask
+			}
+		case "gt":
+			if x > y {
 				lane = mask
 			}
 		default:
