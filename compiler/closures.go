@@ -135,8 +135,76 @@ func (ct captureTypes) spelling(typeExpr ast.Expression) (string, bool) {
 				return "[*]" + element.Value, true
 			}
 		}
+		// A generic instantiation (`Option[u32]`, `Result[u32, Overflow]`,
+		// `Ring[u8, 4]`) parses as a chain of index expressions with the
+		// head on the innermost left; every argument must itself be
+		// capturable (a scalar, a const-parameter literal, or a plain type)
+		// and the head a plain generic ADT.
+		if head, args, ok := instantiationChain(t); ok {
+			spelled := head
+			for _, arg := range args {
+				switch a := arg.(type) {
+				case *ast.IntegerLiteral:
+					spelled += "," + a.String()
+				default:
+					argSpelling, argOK := ct.spelling(arg)
+					if !argOK {
+						return "", false
+					}
+					spelled += "," + argSpelling
+				}
+			}
+			if ct.plainGeneric(head, len(args)) {
+				return spelled, true
+			}
+		}
 	}
 	return "", false
+}
+
+// instantiationChain flattens `Head[a, b, c]` — nested index expressions —
+// into the head's name and its arguments in source order.
+func instantiationChain(expr *ast.IndexExpression) (head string, args []ast.Expression, ok bool) {
+	if expr.Dot {
+		return "", nil, false
+	}
+	args = []ast.Expression{expr.Index}
+	left := expr.Left
+	for {
+		switch l := left.(type) {
+		case *ast.Identifier:
+			// reverse args into source order
+			for i, j := 0, len(args)-1; i < j; i, j = i+1, j-1 {
+				args[i], args[j] = args[j], args[i]
+			}
+			return l.Value, args, true
+		case *ast.IndexExpression:
+			if l.Dot {
+				return "", nil, false
+			}
+			args = append(args, l.Index)
+			left = l.Left
+		default:
+			return "", nil, false
+		}
+	}
+}
+
+// plainGeneric reports whether the named generic ADT of the given arity is
+// plain data once its type parameters are taken as plain — the arguments
+// were checked by the caller.
+func (ct captureTypes) plainGeneric(name string, arity int) bool {
+	decl := ct.adts[name]
+	if decl == nil || len(decl.TypeParams) != arity {
+		return false
+	}
+	params := map[string]bool{}
+	for _, tp := range decl.TypeParams {
+		if tp != nil && tp.Name != nil {
+			params[tp.Name.Value] = true
+		}
+	}
+	return ct.plainBody(decl, map[string]bool{}, params)
 }
 
 // plain reports whether the named top-level type is plain data: a
@@ -156,11 +224,20 @@ func (ct captureTypes) plain(name string, visiting map[string]bool) bool {
 	}
 	visiting[name] = true
 	defer delete(visiting, name)
+	return ct.plainBody(decl, visiting, map[string]bool{})
+}
+
+// plainBody checks a declaration's variants with the given names taken as
+// plain (a generic's type parameters).
+func (ct captureTypes) plainBody(decl *ast.ADTType, visiting map[string]bool, params map[string]bool) bool {
 	component := func(typeExpr ast.Expression) bool {
 		if typeExpr == nil {
 			return true
 		}
-		if ident, ok := typeExpr.(*ast.Identifier); ok && !closureScalarTypes[ident.Value] && ident.Value != "string" {
+		if ident, ok := typeExpr.(*ast.Identifier); ok {
+			if params[ident.Value] || closureScalarTypes[ident.Value] || ident.Value == "string" {
+				return true
+			}
 			return ct.plain(ident.Value, visiting)
 		}
 		_, ok := ct.spelling(typeExpr)

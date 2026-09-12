@@ -266,4 +266,11 @@ theorem shl32_eq (v n : UInt32) (h : n < 32) : shl32 v n = v <<< n := by
 theorem shr32_eq (v n : UInt32) (h : n < 32) : shr32 v n = v >>> n := by
   unfold shr32; bv_decide
 
+/-- At the widest width the promotion is the identity and the `(T)` cast a
+    no-op: the body is the operator. -/
+def shl64 (v n : UInt64) : UInt64 := v <<< n
+def shr64 (v n : UInt64) : UInt64 := v >>> n
+theorem shl64_eq (v n : UInt64) : shl64 v n = v <<< n := rfl
+theorem shr64_eq (v n : UInt64) : shr64 v n = v >>> n := rfl
+
 end Oak.CheckedArithmeticRefinement

@@ -3031,7 +3031,15 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 	case *ast.VariantExpression:
 		// ADT variant construction: .Ok or Status::Ok
 		if e.TypeName != nil {
+			// A qualified construction of a generic ADT (`Box.Full(x)` where
+			// `Box[T]`) names the template, not the instantiation; the
+			// checker's recorded resolution knows which instantiation it
+			// was checked against, so that wins when present and the
+			// spelled name is the concrete-ADT fallback.
 			typeName := cg.cTypeName(e.TypeName.Value)
+			if mangled, resolved := tc.VariantResolution(e); resolved && mangled != "" {
+				typeName = cg.cTypeName(mangled)
+			}
 			variantName := e.Variant.Value
 			constructorName := fmt.Sprintf("%s_%s", typeName, variantName)
 			cg.output.WriteString(fmt.Sprintf("%s(", constructorName))
