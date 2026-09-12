@@ -15,6 +15,13 @@ what both `iosim` and `ionative` are held to:
   completed after the fsync was submitted is claimed.
 * `read_sees_write`: a read of a range after a completed write to it
   observes the write, whatever else was written elsewhere.
+* The directory (§2, ops 8–13): exclusive `create` fails exactly when the
+  name exists and otherwise adds it (`create_excl`); `rename` moves a name
+  (`rename_moves`); `unlink` removes it; a directory change is durable
+  exactly after `fsyncdir` (`syncdir_makes_durable`) and a crash forgets
+  the changes no `fsyncdir` covered (`crash_forgets_unsynced`); `readdir`
+  lists exactly the existing names (`readdir_lists_iff`); `truncate` bounds
+  what a read can see (`read_bounded_by_size`).
 
 The model is deliberately small: a request is its tag, whether it
 succeeds, and its link flag; a chain is executed in order; a file is a
@@ -125,5 +132,110 @@ theorem write_elsewhere (f : File) (off : Nat) (bytes : List Nat) (i : Nat)
   · simp [Nat.not_le.mpr h]
   · have : ¬ (off ≤ i ∧ i < off + bytes.length) := fun hh => Nat.lt_irrefl _ (Nat.lt_of_lt_of_le hh.2 h)
     simp [this]
+
+/-! ## The directory (docs/spec/120-io.md §2, ops 8–13)
+
+A directory is the list of names that exist; the port keeps two — the one
+the process sees and the durable one a crash reverts to — and `fsyncdir`
+is the only operation that copies the first to the second. `create`,
+`rename` and `unlink` act on the visible list. Names are `Nat`s here; the
+realizations spell them as NUL-terminated bytes. -/
+
+/-- Exclusive create: `Exists` when the name is present, else the name is
+added. -/
+def create (d : List Nat) (n : Nat) : Option (List Nat) :=
+  if n ∈ d then none else some (n :: d)
+
+theorem create_excl (d : List Nat) (n : Nat) :
+    create d n = none ↔ n ∈ d := by
+  unfold create
+  by_cases h : n ∈ d <;> simp [h]
+
+theorem create_adds (d : List Nat) (n : Nat) (h : n ∉ d) :
+    create d n = some (n :: d) := by
+  simp [create, h]
+
+/-- `unlink` removes every occurrence of the name. -/
+def unlink (d : List Nat) (n : Nat) : List Nat := d.filter (fun m => m ≠ n)
+
+theorem unlink_removes (d : List Nat) (n : Nat) : n ∉ unlink d n := by
+  simp [unlink]
+
+theorem unlink_keeps (d : List Nat) (n m : Nat) (hm : m ∈ d) (hne : m ≠ n) :
+    m ∈ unlink d n := by
+  simp [unlink, hm, hne]
+
+/-- `rename a b`: `a` must exist; afterwards `b` exists and `a` does not
+(unless they are the same name), and an old `b` is replaced. -/
+def rename (d : List Nat) (a b : Nat) : Option (List Nat) :=
+  if a ∈ d then some (b :: unlink (unlink d a) b) else none
+
+theorem rename_not_found (d : List Nat) (a b : Nat) (h : a ∉ d) : rename d a b = none := by
+  simp [rename, h]
+
+theorem rename_moves (d d' : List Nat) (a b : Nat) (hab : a ≠ b)
+    (h : rename d a b = some d') : b ∈ d' ∧ a ∉ d' := by
+  unfold rename at h
+  by_cases ha : a ∈ d
+  · simp [ha] at h
+    subst h
+    refine ⟨List.mem_cons_self .., ?_⟩
+    intro hmem
+    rcases List.mem_cons.mp hmem with heq | hin
+    · exact hab heq
+    · exact absurd (List.mem_filter.mp hin).1 (unlink_removes d a)
+  · simp [ha] at h
+
+theorem rename_keeps_others (d d' : List Nat) (a b m : Nat)
+    (hm : m ∈ d) (hma : m ≠ a) (hmb : m ≠ b) (h : rename d a b = some d') : m ∈ d' := by
+  unfold rename at h
+  by_cases ha : a ∈ d
+  · simp [ha] at h
+    subst h
+    exact List.mem_cons_of_mem _ (unlink_keeps _ _ _ (unlink_keeps _ _ _ hm hma) hmb)
+  · simp [ha] at h
+
+/-- The two directories: visible and durable. -/
+structure Dir where
+  visible : List Nat
+  durable : List Nat
+
+def syncdir (s : Dir) : Dir := { s with durable := s.visible }
+def crash (s : Dir) : Dir := { s with visible := s.durable }
+
+/-- **fsyncdir makes the directory durable**: after it, a crash changes
+nothing the process can see. -/
+theorem syncdir_makes_durable (s : Dir) : (crash (syncdir s)).visible = s.visible := by
+  simp [crash, syncdir]
+
+/-- **A crash forgets unsynced changes**: what the process sees after a
+crash is exactly what the last fsyncdir made durable — a name created,
+renamed or unlinked since is forgotten. -/
+theorem crash_forgets_unsynced (s : Dir) : (crash s).visible = s.durable := rfl
+
+theorem crash_forgets_create (s : Dir) (n : Nat) (hn : n ∉ s.durable) (d' : List Nat)
+    (h : create s.visible n = some d') :
+    n ∉ (crash { s with visible := d' }).visible := by
+  simpa [crash] using hn
+
+/-- `readdir` lists the visible names. -/
+def readdir (s : Dir) : List Nat := s.visible
+
+theorem readdir_lists_iff (s : Dir) (n : Nat) : n ∈ readdir s ↔ n ∈ s.visible := Iff.rfl
+
+/-- **Truncate bounds reads**: bytes at or past the file's size read as
+absent, so a read of `len` bytes at `off` returns at most `size - off`. -/
+def readBounded (f : File) (size off len : Nat) : List Nat :=
+  readAt f off (min len (size - off))
+
+theorem read_bounded_by_size (f : File) (size off len : Nat) :
+    (readBounded f size off len).length ≤ size - off := by
+  simp [readBounded, readAt]
+  omega
+
+theorem read_bounded_full (f : File) (size off len : Nat) (h : off + len ≤ size) :
+    (readBounded f size off len).length = len := by
+  simp [readBounded, readAt]
+  omega
 
 end Oak.IoPort

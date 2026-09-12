@@ -1,9 +1,11 @@
 // The simulated realization of the IO port (docs/spec/120-io.md): files are
-// byte ranges over SimDisk blocks, completions are delivered in a
-// tape-chosen order, faults come from the device's mask, and a crash closes
-// every file. Pure Oak over the testing module's device; it links into no
-// native program, which is the intended failure (a program that reaches the
-// operating system imports ionative and says so).
+// byte ranges over SimDisk blocks named in a bounded directory, completions
+// are delivered in a tape-chosen order under a fairness bound, faults come
+// from the device's mask, and a crash closes every file and forgets every
+// directory change no fsyncdir covered. Pure Oak over the testing module's
+// device, scheduler and process pieces; it links into no native program,
+// which is the intended failure (a program that reaches the operating
+// system imports ionative and says so).
 //
 // The port surface — io_attach, io_open_region, io_submit, io_wait, io_poll,
 // the request/completion records, the op and error codes, and the sync
@@ -11,11 +13,13 @@
 // against `import("io")` selects a realization with
 // `replace io => iosim` (or ionative) and changes no text.
 //
-// Storage is package-owned and bounded: one device of 64 blocks × 8 words
-// (64 bytes a block, 4 KiB in all) holding up to 8 files of 8 blocks (512
-// bytes each). Every operation appends to a ledger the scenario forwards to
-// the trace (testing_trace) — the reporter itself is the runner's and stays
-// out of this package so that the interpreter can run it too.
+// Storage is package-owned and bounded: one device of 1024 blocks × 8 words
+// (64 bytes a block, 64 KiB in all) holding up to 16 named files of 64
+// blocks (4 KiB each) in one flat directory; names are at most 32 bytes
+// including their NUL. Every operation appends to a ledger the scenario
+// forwards to the trace (testing_trace) — the reporter itself is the
+// runner's and stays out of this package so that the interpreter can run
+// it too.
 package iosim
 
 import(testing)
@@ -26,7 +30,7 @@ pub IoRequest: type = struct { op: u32, file: u32, offset: u64, buf: IoBuffer, t
 pub IoCompletion: type = struct { tag: u64, result: u32, error: u32 }
 pub IoRing: type = struct { submitted: u32, completed: u32, files: u32, pending: u32, region_len: u32 }
 
-// Operation codes carried in IoRequest.op.
+// Operation codes carried in IoRequest.op (docs/spec/120-io.md §2).
 pub io_op_open: (): u32 = u32(1)
 pub io_op_close: (): u32 = u32(2)
 pub io_op_pread: (): u32 = u32(3)
@@ -34,6 +38,12 @@ pub io_op_pwrite: (): u32 = u32(4)
 pub io_op_fsync: (): u32 = u32(5)
 pub io_op_fdatasync: (): u32 = u32(6)
 pub io_op_fsyncdir: (): u32 = u32(7)
+pub io_op_create: (): u32 = u32(8)
+pub io_op_truncate: (): u32 = u32(9)
+pub io_op_readdir: (): u32 = u32(10)
+pub io_op_rename: (): u32 = u32(11)
+pub io_op_stat: (): u32 = u32(12)
+pub io_op_unlink: (): u32 = u32(13)
 
 // The closed error set carried in IoCompletion.error; 0 is success.
 pub io_err_not_found: (): u32 = u32(1)
@@ -54,40 +64,65 @@ pub io_buffer: (base: u32, len: u32): IoBuffer = IoBuffer { base: base, len: len
 pub io_request: (op: u32, file: u32, offset: u64, base: u32, len: u32, tag: u64, link: Bool): IoRequest =
   IoRequest { op: op, file: file, offset: offset, buf: IoBuffer { base: base, len: len }, tag: tag, link: link }
 
-// Device geometry.
-iosim_blocks: (): u32 = u32(64)
+// Device and directory geometry.
+iosim_blocks: (): u32 = u32(1024)
 iosim_words: (): u32 = u32(8)
 iosim_block_bytes: (): u32 = u32(64)
-iosim_file_blocks: (): u32 = u32(8)
-iosim_file_bytes: (): u32 = u32(512)
-iosim_slots: (): u32 = u32(8)
+iosim_file_blocks: (): u32 = u32(64)
+iosim_file_bytes: (): u32 = u32(4096)
+iosim_entries: (): u32 = u32(16)
+iosim_name_bytes: (): u32 = u32(32)
+iosim_slots: (): u32 = u32(16)
+iosim_sched_actors: (): u32 = u32(32)
+iosim_sched_bound: (): u32 = u32(4)
 
 iosim_disk: [1]SimDisk
-iosim_durable: [512]u64
-iosim_volatile: [512]u64
-iosim_flags: [128]u32
+iosim_durable: [8192]u64
+iosim_volatile: [8192]u64
+iosim_flags: [2048]u32
 iosim_block: [8]u64
 iosim_tape: [256]u8
 iosim_choices: [1]TestChoices
 iosim_faults: u32
-iosim_open: [8]Bool
-// iosim_lied records, per file, that the device acknowledged an operation
+
+// The directory: entry e owns blocks [e * file_blocks, (e + 1) * file_blocks)
+// and 32 bytes of name at e * 32. Existence and name have a volatile copy
+// the process sees and a durable copy a crash reverts to; fsyncdir copies
+// volatile to durable, as fsync does for a file's size.
+iosim_names: [512]u8
+iosim_names_durable: [512]u8
+iosim_exists: [16]Bool
+iosim_exists_durable: [16]Bool
+iosim_size: [16]u32
+iosim_size_durable: [16]u32
+// iosim_lied records, per entry, that the device acknowledged an operation
 // on it and did not perform it faithfully (a torn, misdirected or dropped
 // write, or a lost fsync). A later clean rewrite heals the block's own
 // ledger, but the acknowledgement stays a lie: the file's bytes are not
 // what the program was told. Sticky until the next io_attach.
-iosim_lied: [8]Bool
-iosim_size: [8]u32
-iosim_size_durable: [8]u32
+iosim_lied: [16]Bool
+
+// Handles: a slot is open on one entry; the entry stays recorded after
+// close so iosim_trusted can name the file a slot last held.
+iosim_open: [16]Bool
+iosim_slot_entry: [16]u32
+
+// The process the port belongs to (no operation while down, an epoch per
+// restart) and the scheduler that picks completion chains fairly.
+iosim_process: [1]SimProcess
+iosim_sched: [1]SimSched
+iosim_waits: [32]u32
+
 // Ledger: three words per event — kind (1 submit, 2 complete), tag, and
 // for a completion result | error << 32.
-iosim_ledger: [384]u64
+iosim_ledger: [3072]u64
 iosim_ledger_count: u32
 
 // io_attach binds the realization to a run: the choice tape (its first 256
 // bytes; beyond them the tape reads as exhausted, which injects nothing)
-// and the device fault mask. It resets the device, the file table and the
-// ledger. The native realization ignores both arguments.
+// and the device fault mask. It resets the device, the directory, the file
+// table, the process and the ledger. The native realization ignores both
+// arguments.
 pub io_attach: (data: []u8, faults: u32): () {
   n: u32 = len(data)
   n > u32(256) ? { n = u32(256) }
@@ -99,33 +134,77 @@ pub io_attach: (data: []u8, faults: u32): () {
   iosim_choices[0].offset = u32(0)
   iosim_faults = faults
   sim_disk_init(span(&iosim_disk), span(&iosim_durable), span(&iosim_volatile), span(&iosim_flags), iosim_blocks(), iosim_words())
+  e: u32 = u32(0)
+  while e < iosim_entries() {
+    iosim_exists[e] = false
+    iosim_exists_durable[e] = false
+    iosim_size[e] = u32(0)
+    iosim_size_durable[e] = u32(0)
+    iosim_lied[e] = false
+    e = e + u32(1)
+  }
+  b: u32 = u32(0)
+  while b < u32(512) {
+    iosim_names[b] = u8(0)
+    iosim_names_durable[b] = u8(0)
+    b = b + u32(1)
+  }
   s: u32 = u32(0)
   while s < iosim_slots() {
     iosim_open[s] = false
-    iosim_lied[s] = false
-    iosim_size[s] = u32(0)
-    iosim_size_durable[s] = u32(0)
+    iosim_slot_entry[s] = u32(0)
     s = s + u32(1)
   }
+  iosim_process[0] = sim_process_new()
+  sim_sched_init(span(&iosim_sched), span(&iosim_waits), iosim_sched_actors(), iosim_sched_bound())
   iosim_ledger_count = u32(0)
 }
 
-// iosim_crash is the scenario's crash event: every file closes, the device
-// drops what no fsync covered, and file sizes revert to their durable
-// values. iosim_restart brings the device back; files must be reopened.
-pub iosim_crash: (): () {
+// iosim_crash_at is the scenario's crash event at simulated time `now`:
+// every file closes, the device drops what no fsync covered, file sizes
+// revert to their durable values, and the directory to what fsyncdir made
+// durable — a create, rename or unlink without one is forgotten. The
+// process is down until iosim_restart; submitting or waiting while down is
+// a scenario error (SimProcess's rule) and asserts.
+pub iosim_crash_at: (now: u64): () {
   sim_disk_crash(span(&iosim_disk), span(&iosim_durable), span(&iosim_volatile), span(&iosim_flags))
+  clock_store: [1]SimClock
+  clock_store[0] = SimClock { now: now }
+  sim_process_crash(span(&iosim_process), span(&clock_store))
   s: u32 = u32(0)
   while s < iosim_slots() {
     iosim_open[s] = false
-    iosim_size[s] = iosim_size_durable[s]
     s = s + u32(1)
+  }
+  e: u32 = u32(0)
+  while e < iosim_entries() {
+    iosim_size[e] = iosim_size_durable[e]
+    iosim_exists[e] = iosim_exists_durable[e]
+    e = e + u32(1)
+  }
+  b: u32 = u32(0)
+  while b < u32(512) {
+    iosim_names[b] = iosim_names_durable[b]
+    b = b + u32(1)
   }
 }
 
+// iosim_crash is the same event with no simulated clock (time zero).
+pub iosim_crash: (): () = iosim_crash_at(u64(0))
+
+// iosim_restart brings the device and the process back; files must be
+// reopened, and the restart epoch advances.
 pub iosim_restart: (): () {
   sim_disk_restart(span(&iosim_disk))
+  sim_process_restart(span(&iosim_process))
 }
+
+pub iosim_up: (): Bool = iosim_process[0].up
+pub iosim_restarts: (): u32 = iosim_process[0].restarts
+
+// The longest a pending chain has waited to be picked, in picks; at most
+// bound + actors - 2 by SimSched's construction (docs/spec/110-testing.md).
+pub iosim_max_wait: (): u32 = sim_sched_max_wait(span(&iosim_sched), span(&iosim_waits))
 
 // The device's fault ledger, for testing_classify: torn, misdirected,
 // dropped, lost, flipped, latent counts.
@@ -137,22 +216,29 @@ pub iosim_fault_count: (kind: u32): u32 {
   kind == u32(16) ? { iosim_disk[0].flipped } | { iosim_disk[0].latent } } } } }
 }
 
-// iosim_trusted reports whether the durability contract applies to a
-// file: the device never lied about an operation on it (iosim_lied) and
-// every block its bytes occupy is trusted on both copies. A file that is
-// trusted holds every acknowledged, fsynced byte across a crash; the
-// bytes of one that is not are the program's detection obligation
-// (checksums, sequence numbers), as the WAL scenario states it.
+// iosim_trusted reports whether the durability contract applies to the
+// file a slot holds (or last held): the device never lied about an
+// operation on it (iosim_lied) and every block its bytes occupy is trusted
+// on both copies. A file that is trusted holds every acknowledged, fsynced
+// byte across a crash; the bytes of one that is not are the program's
+// detection obligation (checksums, sequence numbers), as the WAL scenario
+// states it.
 pub iosim_trusted: (slot: u32): Bool {
-  ok: Bool = !iosim_lied[slot]
+  entry: u32 = iosim_slot_entry[slot]
+  ok: Bool = !iosim_lied[entry]
   b: u32 = u32(0)
   while b < iosim_file_blocks() {
-    block: u32 = slot * iosim_file_blocks() + b
+    block: u32 = entry * iosim_file_blocks() + b
     ok = ok && sim_disk_trusted(span(&iosim_flags), block) && sim_disk_durable_trusted(span(&iosim_flags), block)
     b = b + u32(1)
   }
   ok
 }
+
+// Directory queries for scenarios: whether a name exists as the process
+// sees it, and as a crash would leave it.
+pub iosim_exists_now: (name: [*]u8): Bool = iosim_find(name, false) < iosim_entries()
+pub iosim_exists_durably: (name: [*]u8): Bool = iosim_find(name, true) < iosim_entries()
 
 pub iosim_ledger_len: (): u32 = iosim_ledger_count
 pub iosim_ledger_kind: (i: u32): u64 = iosim_ledger[i * u32(3)]
@@ -160,7 +246,7 @@ pub iosim_ledger_tag: (i: u32): u64 = iosim_ledger[i * u32(3) + u32(1)]
 pub iosim_ledger_value: (i: u32): u64 = iosim_ledger[i * u32(3) + u32(2)]
 
 iosim_record: (kind: u64, tag: u64, value: u64): () {
-  iosim_ledger_count < u32(128) ? {
+  iosim_ledger_count < u32(1024) ? {
     iosim_ledger[iosim_ledger_count * u32(3)] = kind
     iosim_ledger[iosim_ledger_count * u32(3) + u32(1)] = tag
     iosim_ledger[iosim_ledger_count * u32(3) + u32(2)] = value
@@ -181,9 +267,10 @@ pub io_open_region: (ring: [*]IoRing, region: [*]u8, files: u32): () {
 }
 
 // io_submit appends a request to the caller's submission storage; false,
-// and no change, when it is full.
+// and no change, when it is full. The process must be up.
 pub io_submit: (ring: [*]IoRing, requests: [*]IoRequest, request: IoRequest): Bool {
   assert(len(ring) == u32(1))
+  assert(iosim_process[0].up)
   ring[0].pending >= len(requests) ? { false } | {
     requests[ring[0].pending] = request
     ring[0].pending = ring[0].pending + u32(1)
@@ -201,45 +288,159 @@ iosim_with_byte: (word: u64, i: u32, b: u8): u64 {
   cleared | (u64(b) << shift)
 }
 
-// One block of a file into the scratch words; false when the device's read
-// fails (latent sector error).
-iosim_load_block: (slot: u32, block: u32): Bool =
-  sim_disk_read(span(&iosim_disk), span(&iosim_durable), span(&iosim_volatile), span(&iosim_flags), slot * iosim_file_blocks() + block, span(&iosim_block), span(&iosim_choices), view(&iosim_tape), iosim_faults)
+// --- names -------------------------------------------------------------
 
-iosim_store_block: (slot: u32, block: u32): () {
-  fault: u32 = sim_disk_write(span(&iosim_disk), span(&iosim_durable), span(&iosim_volatile), span(&iosim_flags), slot * iosim_file_blocks() + block, span(&iosim_block), span(&iosim_choices), view(&iosim_tape), iosim_faults)
-  fault != u32(0) ? { iosim_lied[slot] = true }
+// A path window is well formed when it lies in the region, is one to 32
+// bytes long, and ends in NUL: the same rule the native realization
+// applies before handing the bytes to the operating system.
+iosim_path_ok: (ring: [*]IoRing, region: [*]u8, base: u32, n: u32): Bool =
+  base <= ring[0].region_len && n <= ring[0].region_len - base && n > u32(0) && n <= iosim_name_bytes() && region[base + n - u32(1)] == u8(0)
+
+// Whether entry e's name (volatile, or durable) is exactly `name`.
+iosim_name_is: (e: u32, name: [*]u8, durable: Bool): Bool {
+  n: u32 = len(name)
+  ok: Bool = n <= iosim_name_bytes()
+  i: u32 = u32(0)
+  while ok && i < n {
+    stored: u8 = durable ? { iosim_names_durable[e * iosim_name_bytes() + i] } | { iosim_names[e * iosim_name_bytes() + i] }
+    ok = stored == name[i]
+    i = i + u32(1)
+  }
+  // The stored name ends where the given one does.
+  ok && (n == iosim_name_bytes() || (durable ? { iosim_names_durable[e * iosim_name_bytes() + n] } | { iosim_names[e * iosim_name_bytes() + n] }) == u8(0))
 }
+
+// The existing entry with this name, or iosim_entries() when there is none.
+iosim_find: (name: [*]u8, durable: Bool): u32 {
+  found: u32 = iosim_entries()
+  e: u32 = u32(0)
+  while e < iosim_entries() {
+    exists: Bool = durable ? { iosim_exists_durable[e] } | { iosim_exists[e] }
+    exists && found == iosim_entries() && iosim_name_is(e, name, durable) ? { found = e }
+    e = e + u32(1)
+  }
+  found
+}
+
+iosim_set_name: (e: u32, name: [*]u8): () {
+  i: u32 = u32(0)
+  while i < iosim_name_bytes() {
+    iosim_names[e * iosim_name_bytes() + i] = i < len(name) ? { name[i] } | { u8(0) }
+    i = i + u32(1)
+  }
+}
+
+// Whether any slot is open on entry e.
+iosim_entry_open: (e: u32): Bool {
+  open: Bool = false
+  s: u32 = u32(0)
+  while s < iosim_slots() {
+    iosim_open[s] && iosim_slot_entry[s] == e ? { open = true }
+    s = s + u32(1)
+  }
+  open
+}
+
+// A fresh entry for a new name: not existing now or durably, and held by
+// no slot (an unlinked file stays readable through its handles until they
+// close). iosim_entries() when the directory is full.
+iosim_alloc: (name: [*]u8): u32 {
+  chosen: u32 = iosim_entries()
+  e: u32 = u32(0)
+  while e < iosim_entries() {
+    chosen == iosim_entries() && !iosim_exists[e] && !iosim_exists_durable[e] && !iosim_entry_open(e) ? { chosen = e }
+    e = e + u32(1)
+  }
+  chosen < iosim_entries() ? {
+    iosim_set_name(chosen, name)
+    iosim_exists[chosen] = true
+    iosim_size[chosen] = u32(0)
+    iosim_lied[chosen] = false
+  }
+  chosen
+}
+
+// --- blocks ------------------------------------------------------------
+
+// One block of an entry into the scratch words; false when the device's
+// read fails (latent sector error).
+iosim_load_block: (entry: u32, block: u32): Bool =
+  sim_disk_read(span(&iosim_disk), span(&iosim_durable), span(&iosim_volatile), span(&iosim_flags), entry * iosim_file_blocks() + block, span(&iosim_block), span(&iosim_choices), view(&iosim_tape), iosim_faults)
+
+iosim_store_block: (entry: u32, block: u32): () {
+  fault: u32 = sim_disk_write(span(&iosim_disk), span(&iosim_durable), span(&iosim_volatile), span(&iosim_flags), entry * iosim_file_blocks() + block, span(&iosim_block), span(&iosim_choices), view(&iosim_tape), iosim_faults)
+  fault != u32(0) ? { iosim_lied[entry] = true }
+}
+
+// Zero the bytes [from, to) of an entry through the device (read, modify,
+// write per block): the hole a write past the end or a growing truncate
+// leaves, so a reused entry's old bytes are never visible. False on a
+// read failure.
+iosim_zero_range: (entry: u32, lo: u32, hi: u32): Bool {
+  i: u32 = lo
+  failed: Bool = false
+  while i < hi && !failed {
+    b: u32 = i / iosim_block_bytes()
+    failed = !iosim_load_block(entry, b)
+    !failed ? {
+      while i < hi && i / iosim_block_bytes() == b {
+        within: u32 = i % iosim_block_bytes()
+        iosim_block[within / u32(8)] = iosim_with_byte(iosim_block[within / u32(8)], within % u32(8), u8(0))
+        i = i + u32(1)
+      }
+      iosim_store_block(entry, b)
+    }
+  }
+  !failed
+}
+
+// --- execution ---------------------------------------------------------
+
+iosim_done: (tag: u64, result: u32): IoCompletion = IoCompletion { tag: tag, result: result, error: u32(0) }
+iosim_fail: (tag: u64, error: u32): IoCompletion = IoCompletion { tag: tag, result: u32(0), error: error }
 
 // Execute one request against the device; the completion's result and
 // error. Bounds are checked before any storage is touched: a window
 // outside the region is Invalid, a range beyond the file's capacity is
-// TooLarge, an unopened slot is Closed.
+// TooLarge, an unopened slot is Closed, a malformed path is Invalid.
 iosim_execute: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletion {
   op: u32 = request.op
   slot: u32 = request.file
   base: u32 = request.buf.base
   n: u32 = request.buf.len
+  tag: u64 = request.tag
   in_region: Bool = base <= ring[0].region_len && n <= ring[0].region_len - base
-  op == io_op_open() ? {
-    slot >= ring[0].files || !in_region || n == u32(0) ? { IoCompletion { tag: request.tag, result: u32(0), error: io_err_invalid() } } | {
-    iosim_open[slot] ? { IoCompletion { tag: request.tag, result: u32(0), error: io_err_busy() } } | {
-      iosim_open[slot] = true
-      IoCompletion { tag: request.tag, result: slot, error: u32(0) }
+  op == io_op_open() || op == io_op_create() ? { iosim_open_or_create(ring, region, request, op == io_op_create()) } | {
+  op == io_op_unlink() ? {
+    !iosim_path_ok(ring, region, base, n) ? { iosim_fail(tag, io_err_invalid()) } | {
+    e: u32 = iosim_find(subslice(region, base, n), false)
+    e >= iosim_entries() ? { iosim_fail(tag, io_err_not_found()) } | {
+      iosim_exists[e] = false
+      iosim_done(tag, u32(0))
     } }
   } | {
+  op == io_op_rename() ? { iosim_rename(ring, region, request) } | {
+  op == io_op_readdir() ? { iosim_readdir(ring, region, request) } | {
   op == io_op_fsyncdir() ? {
-    s: u32 = u32(0)
-    while s < iosim_slots() {
-      iosim_size_durable[s] = iosim_size[s]
-      s = s + u32(1)
+    // The directory's path is accepted and ignored: the device is one
+    // directory. Its entries — names and existence — become durable.
+    !iosim_path_ok(ring, region, base, n) ? { iosim_fail(tag, io_err_invalid()) } | {
+    e: u32 = u32(0)
+    while e < iosim_entries() {
+      iosim_exists_durable[e] = iosim_exists[e]
+      e = e + u32(1)
     }
-    IoCompletion { tag: request.tag, result: u32(0), error: u32(0) }
+    b: u32 = u32(0)
+    while b < u32(512) {
+      iosim_names_durable[b] = iosim_names[b]
+      b = b + u32(1)
+    }
+    iosim_done(tag, u32(0)) }
   } | {
-  slot >= ring[0].files || !iosim_open[slot] ? { IoCompletion { tag: request.tag, result: u32(0), error: io_err_closed() } } | {
+  slot >= ring[0].files || !iosim_open[slot] ? { iosim_fail(tag, io_err_closed()) } | {
   op == io_op_close() ? {
     iosim_open[slot] = false
-    IoCompletion { tag: request.tag, result: u32(0), error: u32(0) }
+    iosim_done(tag, u32(0))
   } | {
   op == io_op_fsync() || op == io_op_fdatasync() ? {
     fault: u32 = sim_disk_fsync(span(&iosim_disk), span(&iosim_durable), span(&iosim_volatile), span(&iosim_flags), span(&iosim_choices), view(&iosim_tape), iosim_faults)
@@ -249,24 +450,151 @@ iosim_execute: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletio
     fault != u32(0) ? {
       s: u32 = u32(0)
       while s < iosim_slots() {
-        iosim_open[s] ? { iosim_lied[s] = true } | { }
+        iosim_open[s] ? { iosim_lied[iosim_slot_entry[s]] = true } | { }
         s = s + u32(1)
       }
     }
-    iosim_size_durable[slot] = iosim_size[slot]
-    IoCompletion { tag: request.tag, result: u32(0), error: u32(0) }
+    entry: u32 = iosim_slot_entry[slot]
+    iosim_size_durable[entry] = iosim_size[entry]
+    iosim_done(tag, u32(0))
   } | {
-  !in_region ? { IoCompletion { tag: request.tag, result: u32(0), error: io_err_invalid() } } | {
-  request.offset > u64(iosim_file_bytes()) || u64(n) > u64(iosim_file_bytes()) - request.offset ? { IoCompletion { tag: request.tag, result: u32(0), error: io_err_too_large() } } | {
-  op == io_op_pread() ? { iosim_pread(region, slot, u32_trunc_u64(request.offset), base, n, request.tag) } | {
-  op == io_op_pwrite() ? { iosim_pwrite(region, slot, u32_trunc_u64(request.offset), base, n, request.tag) } | {
-    IoCompletion { tag: request.tag, result: u32(0), error: io_err_invalid() }
-  } } } } } } } } }
+  op == io_op_stat() ? { iosim_stat(ring, region, request) } | {
+  op == io_op_truncate() ? { iosim_truncate(request) } | {
+  !in_region ? { iosim_fail(tag, io_err_invalid()) } | {
+  request.offset > u64(iosim_file_bytes()) || u64(n) > u64(iosim_file_bytes()) - request.offset ? { iosim_fail(tag, io_err_too_large()) } | {
+  op == io_op_pread() ? { iosim_pread(region, iosim_slot_entry[slot], u32_trunc_u64(request.offset), base, n, tag) } | {
+  op == io_op_pwrite() ? { iosim_pwrite(region, iosim_slot_entry[slot], u32_trunc_u64(request.offset), base, n, tag) } | {
+    iosim_fail(tag, io_err_invalid())
+  } } } } } } } } } } } } } }
 }
 
-iosim_pread: (region: [*]u8, slot: u32, offset: u32, base: u32, n: u32, tag: u64): IoCompletion {
+// open (op 1) opens the named file, creating it when absent; create (op 8)
+// creates it and fails with Exists when it is present. Both bind the
+// caller's slot to the entry; the completion's result is the slot.
+iosim_open_or_create: (ring: [*]IoRing, region: [*]u8, request: IoRequest, exclusive: Bool): IoCompletion {
+  slot: u32 = request.file
+  base: u32 = request.buf.base
+  n: u32 = request.buf.len
+  tag: u64 = request.tag
+  slot >= ring[0].files || !iosim_path_ok(ring, region, base, n) ? { iosim_fail(tag, io_err_invalid()) } | {
+  iosim_open[slot] ? { iosim_fail(tag, io_err_busy()) } | {
+  name: [*]u8 = subslice(region, base, n)
+  existing: u32 = iosim_find(name, false)
+  existing < iosim_entries() && exclusive ? { iosim_fail(tag, io_err_exists()) } | {
+    entry: u32 = existing < iosim_entries() ? { existing } | { iosim_alloc(name) }
+    entry >= iosim_entries() ? { iosim_fail(tag, io_err_no_space()) } | {
+      iosim_open[slot] = true
+      iosim_slot_entry[slot] = entry
+      iosim_done(tag, slot)
+    }
+  } } }
+}
+
+// rename (op 11): the old name is the window's first `offset` bytes, the
+// new name the rest; each is a path. An existing file under the new name
+// is replaced, as POSIX rename does; the change is durable after fsyncdir.
+iosim_rename: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletion {
+  base: u32 = request.buf.base
+  n: u32 = request.buf.len
+  tag: u64 = request.tag
+  split: u64 = request.offset
+  split == u64(0) || split >= u64(n) ? { iosim_fail(tag, io_err_invalid()) } | {
+  old_len: u32 = u32_trunc_u64(split)
+  new_len: u32 = n - old_len
+  !iosim_path_ok(ring, region, base, old_len) || !iosim_path_ok(ring, region, base + old_len, new_len) ? { iosim_fail(tag, io_err_invalid()) } | {
+  // One reborrow of the region at a time: the borrow checker holds the
+  // two names apart.
+  source: u32 = iosim_find(subslice(region, base, old_len), false)
+  source >= iosim_entries() ? { iosim_fail(tag, io_err_not_found()) } | {
+    target: u32 = iosim_find(subslice(region, base + old_len, new_len), false)
+    target < iosim_entries() && target != source ? { iosim_exists[target] = false }
+    iosim_set_name(source, subslice(region, base + old_len, new_len))
+    iosim_done(tag, u32(0))
+  } } }
+}
+
+// readdir (op 10): the directory's path is the window's first `offset`
+// bytes (accepted and ignored: one directory); the existing names are
+// written NUL-terminated, one after another, into the rest of the window,
+// in entry order — the port promises no order. The result is the bytes
+// written; TooLarge, with the window's contents unspecified, when they do
+// not fit.
+iosim_readdir: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletion {
+  base: u32 = request.buf.base
+  n: u32 = request.buf.len
+  tag: u64 = request.tag
+  split: u64 = request.offset
+  split == u64(0) || split > u64(n) ? { iosim_fail(tag, io_err_invalid()) } | {
+  dir_len: u32 = u32_trunc_u64(split)
+  out_base: u32 = base + dir_len
+  out_len: u32 = n - dir_len
+  !iosim_path_ok(ring, region, base, dir_len) || !(out_base <= ring[0].region_len && out_len <= ring[0].region_len - out_base) ? { iosim_fail(tag, io_err_invalid()) } | {
+  written: u32 = u32(0)
+  overflow: Bool = false
+  e: u32 = u32(0)
+  while e < iosim_entries() && !overflow {
+    iosim_exists[e] ? {
+      i: u32 = u32(0)
+      finished: Bool = false
+      while !finished && !overflow {
+        b: u8 = iosim_names[e * iosim_name_bytes() + i]
+        written < out_len ? {
+          region[out_base + written] = b
+          written = written + u32(1)
+        } | { overflow = true }
+        b == u8(0) ? { finished = true }
+        i = i + u32(1)
+        i >= iosim_name_bytes() && !finished ? {
+          // A full-width name has no stored NUL: write one.
+          written < out_len ? {
+            region[out_base + written] = u8(0)
+            written = written + u32(1)
+          } | { overflow = true }
+          finished = true
+        }
+      }
+    }
+    e = e + u32(1)
+  }
+  overflow ? { iosim_fail(tag, io_err_too_large()) } | { iosim_done(tag, written) } } }
+}
+
+// stat (op 12): the result is the file's size; when the window holds eight
+// bytes the size is also written into it, little-endian, as a u64.
+iosim_stat: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletion {
+  entry: u32 = iosim_slot_entry[request.file]
+  base: u32 = request.buf.base
+  n: u32 = request.buf.len
+  in_region: Bool = base <= ring[0].region_len && n <= ring[0].region_len - base
+  in_region && n >= u32(8) ? {
+    size: u64 = u64(iosim_size[entry])
+    i: u32 = u32(0)
+    while i < u32(8) {
+      region[base + i] = u8_trunc_u64((size >> (u64(i) * u64(8))) & u64(255))
+      i = i + u32(1)
+    }
+  }
+  iosim_done(request.tag, iosim_size[entry])
+}
+
+// truncate (op 9): the file's size becomes `offset`. Shrinking hides the
+// tail (its bytes are never visible again, and a later growth zero-fills
+// them); growing zero-fills the new range through the device. The size is
+// durable after fsync.
+iosim_truncate: (request: IoRequest): IoCompletion {
+  entry: u32 = iosim_slot_entry[request.file]
+  tag: u64 = request.tag
+  request.offset > u64(iosim_file_bytes()) ? { iosim_fail(tag, io_err_too_large()) } | {
+  target: u32 = u32_trunc_u64(request.offset)
+  target > iosim_size[entry] && !iosim_zero_range(entry, iosim_size[entry], target) ? { iosim_fail(tag, io_err_io_failed()) } | {
+    iosim_size[entry] = target
+    iosim_done(tag, u32(0))
+  } }
+}
+
+iosim_pread: (region: [*]u8, entry: u32, offset: u32, base: u32, n: u32, tag: u64): IoCompletion {
   // Bytes past the file's size read as absent: a short read.
-  avail: u32 = offset < iosim_size[slot] ? { iosim_size[slot] - offset } | { u32(0) }
+  avail: u32 = offset < iosim_size[entry] ? { iosim_size[entry] - offset } | { u32(0) }
   count: u32 = n < avail ? { n } | { avail }
   i: u32 = u32(0)
   failed: Bool = false
@@ -276,7 +604,7 @@ iosim_pread: (region: [*]u8, slot: u32, offset: u32, base: u32, n: u32, tag: u64
     b: u32 = at / iosim_block_bytes()
     b != block ? {
       block = b
-      failed = !iosim_load_block(slot, b)
+      failed = !iosim_load_block(entry, b)
     }
     !failed ? {
       within: u32 = at % iosim_block_bytes()
@@ -284,30 +612,31 @@ iosim_pread: (region: [*]u8, slot: u32, offset: u32, base: u32, n: u32, tag: u64
     }
     i = i + u32(1)
   }
-  failed ? { IoCompletion { tag: tag, result: u32(0), error: io_err_io_failed() } } | { IoCompletion { tag: tag, result: count, error: u32(0) } }
+  failed ? { iosim_fail(tag, io_err_io_failed()) } | { iosim_done(tag, count) }
 }
 
-iosim_pwrite: (region: [*]u8, slot: u32, offset: u32, base: u32, n: u32, tag: u64): IoCompletion {
+iosim_pwrite: (region: [*]u8, entry: u32, offset: u32, base: u32, n: u32, tag: u64): IoCompletion {
+  // A write past the end leaves a hole of zeros, as the file system does.
+  failed: Bool = offset > iosim_size[entry] && !iosim_zero_range(entry, iosim_size[entry], offset)
   i: u32 = u32(0)
-  failed: Bool = false
   while i < n && !failed {
     b: u32 = (offset + i) / iosim_block_bytes()
     // Read-modify-write one block: the device tears, misdirects, or drops
     // the write exactly as its mask allows, and ledgers it.
-    failed = !iosim_load_block(slot, b)
+    failed = !iosim_load_block(entry, b)
     !failed ? {
       while i < n && (offset + i) / iosim_block_bytes() == b {
         within: u32 = (offset + i) % iosim_block_bytes()
         iosim_block[within / u32(8)] = iosim_with_byte(iosim_block[within / u32(8)], within % u32(8), region[base + i])
         i = i + u32(1)
       }
-      iosim_store_block(slot, b)
+      iosim_store_block(entry, b)
     }
   }
-  failed ? { IoCompletion { tag: tag, result: u32(0), error: io_err_io_failed() } } | {
+  failed ? { iosim_fail(tag, io_err_io_failed()) } | {
     end: u32 = offset + n
-    end > iosim_size[slot] ? { iosim_size[slot] = end }
-    IoCompletion { tag: tag, result: n, error: u32(0) }
+    end > iosim_size[entry] ? { iosim_size[entry] = end }
+    iosim_done(tag, n)
   }
 }
 
@@ -323,19 +652,24 @@ iosim_chain_len: (requests: [*]IoRequest, start: u32, pending: u32): u32 {
 
 iosim_complete: (ring: [*]IoRing, requests: [*]IoRequest, completions: [*]IoCompletion, region: [*]u8, at_least: u32, may_stop: Bool): u32 {
   assert(len(ring) == u32(1))
+  assert(iosim_process[0].up)
   assert(len(completions) >= ring[0].pending)
   done: u32 = u32(0)
   stop: Bool = false
   while ring[0].pending > u32(0) && !stop {
-    // Count the chains, pick one from the tape: completions are unordered
-    // except along a link chain.
+    // Count the chains and let the scheduler pick one: completions are
+    // unordered except along a link chain, and the oldest pending chain
+    // (index 0, which keeps its index until it is picked) is served within
+    // the scheduler's fairness bound.
     chains: u32 = u32(0)
     scan: u32 = u32(0)
     while scan < ring[0].pending {
       scan = scan + iosim_chain_len(requests, scan, ring[0].pending)
       chains = chains + u32(1)
     }
-    pick: u32 = chains > u32(1) ? { test_range(span(&iosim_choices), view(&iosim_tape), u32(0), chains - u32(1)) } | { u32(0) }
+    candidates: u32 = chains > iosim_sched_actors() ? { iosim_sched_actors() } | { chains }
+    runnable: u32 = candidates >= u32(32) ? { u32(4294967295) } | { (u32(1) << candidates) - u32(1) }
+    pick: u32 = sim_sched_pick(span(&iosim_sched), span(&iosim_waits), span(&iosim_choices), view(&iosim_tape), runnable)
     start: u32 = u32(0)
     k: u32 = u32(0)
     while k < pick {
@@ -348,7 +682,7 @@ iosim_complete: (ring: [*]IoRing, requests: [*]IoRequest, completions: [*]IoComp
     j: u32 = u32(0)
     while j < length {
       request: IoRequest = requests[start + j]
-      completion: IoCompletion = canceled ? { IoCompletion { tag: request.tag, result: u32(0), error: io_err_canceled() } } | { iosim_execute(ring, region, request) }
+      completion: IoCompletion = canceled ? { iosim_fail(request.tag, io_err_canceled()) } | { iosim_execute(ring, region, request) }
       completion.error != u32(0) && request.link ? { canceled = true }
       completions[done] = completion
       iosim_record(u64(2), completion.tag, u64(completion.result) | (u64(completion.error) << u64(32)))
