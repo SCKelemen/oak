@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/typechecker"
@@ -94,7 +95,7 @@ func VerifyGoldenCase(tc GoldenCase, expectedDir, scratchDir string) ([]string, 
 		return nil, fmt.Errorf("reading regenerated C: %w", err)
 	}
 	if string(expectedCode) != string(actualCode) {
-		mismatches = append(mismatches, fmt.Sprintf("%s/codegen: C output differs", tc.Name))
+		mismatches = append(mismatches, fmt.Sprintf("%s/codegen: C output differs%s", tc.Name, firstDifference(string(expectedCode), string(actualCode))))
 	}
 
 	return mismatches, nil
@@ -125,4 +126,23 @@ func jsonFilesEqual(expectedPath, actualPath string) (bool, error) {
 		return false, err
 	}
 	return string(expectedNormalized) == string(actualNormalized), nil
+}
+
+// firstDifference locates the first line where two texts diverge and spells
+// both sides around it, so a golden drift report names what moved rather
+// than only that something did — a CI runner cannot be asked for the diff
+// afterwards.
+func firstDifference(expected, actual string) string {
+	want := strings.Split(expected, "\n")
+	got := strings.Split(actual, "\n")
+	n := len(want)
+	if len(got) < n {
+		n = len(got)
+	}
+	for i := 0; i < n; i++ {
+		if want[i] != got[i] {
+			return fmt.Sprintf(" (first difference at line %d:\n      golden: %q\n      actual: %q)", i+1, want[i], got[i])
+		}
+	}
+	return fmt.Sprintf(" (identical for %d lines; golden has %d lines, actual %d)", n, len(want), len(got))
 }
