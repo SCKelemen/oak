@@ -33,6 +33,9 @@ type TLAConformance struct {
 	Conforms    bool            `json:"conforms"`
 	Differences []TLADifference `json:"differences,omitempty"`
 	Unsupported []string        `json:"unsupported,omitempty"`
+	// Refinement is the TLC fallback's report when it was generated: for a
+	// module with unsupported forms, or on request (protocol_refine.go).
+	Refinement *TLCRefinement `json:"refinement,omitempty"`
 }
 
 // tlaLine is one disjunct of an action in normal form.
@@ -523,6 +526,17 @@ func FormatTLAConformance(report TLAConformance) string {
 	var b strings.Builder
 	if report.Conforms {
 		fmt.Fprintf(&b, "%s: the module agrees with the projection\n", report.Protocol)
+		formatRefinement(&b, report.Refinement)
+		return b.String()
+	}
+	if ref := report.Refinement; ref != nil && len(report.Unsupported) > 0 {
+		// Outside the normal form the line comparison is not a judgment
+		// (docs/spec/112-protocols.md section 4a); the refinement is.
+		fmt.Fprintf(&b, "%s: the module is outside the normal form; TLC refinement is the check\n", report.Protocol)
+		for _, u := range report.Unsupported {
+			fmt.Fprintf(&b, "  unsupported: %s\n", u)
+		}
+		formatRefinement(&b, ref)
 		return b.String()
 	}
 	fmt.Fprintf(&b, "%s: the module does not agree with the projection\n", report.Protocol)
@@ -545,5 +559,26 @@ func FormatTLAConformance(report TLAConformance) string {
 			fmt.Fprintf(&b, "    module:     %s\n", d.Right)
 		}
 	}
+	formatRefinement(&b, report.Refinement)
 	return b.String()
+}
+
+// formatRefinement prints the TLC fallback's outcome: the verdict when TLC
+// ran, otherwise where the generated modules wait for it.
+func formatRefinement(b *strings.Builder, ref *TLCRefinement) {
+	if ref == nil {
+		return
+	}
+	switch {
+	case ref.Ran && ref.Refines:
+		fmt.Fprintf(b, "  refinement: TLC finds every behavior of %s is a behavior of the projection (%s)\n", ref.Module, ref.Dir)
+	case ref.Ran:
+		fmt.Fprintf(b, "  refinement: TLC finds a behavior of %s the projection does not admit (%s)\n", ref.Module, ref.Dir)
+		for _, line := range strings.Split(ref.Output, "\n") {
+			fmt.Fprintf(b, "    %s\n", line)
+		}
+	default:
+		fmt.Fprintf(b, "  refinement: not run — %s\n", ref.Reason)
+		fmt.Fprintf(b, "    the modules are written to %s: run TLC on %sRefinement.tla there\n", ref.Dir, ref.Module)
+	}
 }

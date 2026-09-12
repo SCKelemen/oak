@@ -1,0 +1,373 @@
+package compiler
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/SCKelemen/oak/ast"
+)
+
+// The TLC refinement fallback of `oak protocol -conform`
+// (docs/spec/112-protocols.md section 4a). A hand-written module the
+// normal-form reader cannot judge — sets and functions of its own,
+// quantifiers outside guards — is checked semantically instead: the
+// projection is written as a module of its own, a refinement module
+// instantiates it under the state mapping and states `Projection!Spec` as
+// a property of the hand-written specification, and TLC decides whether
+// every behavior of the hand-written module is a behavior of the
+// projection. The verdict is TLC's; the tool generates the modules and
+// reads the answer.
+
+// TLCRefinement is the fallback's report: the generated modules and, when
+// TLC ran, its verdict.
+type TLCRefinement struct {
+	Module     string `json:"module"`     // the hand-written module's name
+	Projection string `json:"projection"` // the projection, as module <Protocol>Projection
+	Refinement string `json:"refinement"` // the refinement module <Module>Refinement
+	Config     string `json:"config"`     // its TLC configuration
+	Ran        bool   `json:"ran"`
+	Refines    bool   `json:"refines"`
+	Output     string `json:"output,omitempty"` // TLC's verdict and counterexample, when it ran
+	Reason     string `json:"reason,omitempty"` // why it did not run
+	Dir        string `json:"dir,omitempty"`    // where the modules were written
+}
+
+var tlaModuleName = regexp.MustCompile(`(?m)^-+\s*MODULE\s+(\w+)\s*-+`)
+
+// ProtocolRefinement generates the refinement check of handModule against
+// decl's projection. mapping renames projection variables to the
+// hand-written module's (`state` -> `st`); unmapped variables keep their
+// names and must be declared by the hand-written module. handConfig is the
+// hand-written module's own TLC configuration, whose constant assignments
+// carry over; the projection's payload domains are assigned their defaults
+// unless the hand-written module declares the same constant.
+func ProtocolRefinement(decl *ast.ProtocolDeclaration, handModule string, records map[string]*ast.RecordLiteral, mapping map[string]string, handConfig string) (TLCRefinement, error) {
+	projected, err := ProtocolTLAWithRecords(decl, "projection", records)
+	if err != nil {
+		return TLCRefinement{}, err
+	}
+	match := tlaModuleName.FindStringSubmatch(handModule)
+	if match == nil {
+		return TLCRefinement{}, fmt.Errorf("the hand-written module has no MODULE header")
+	}
+	handName := match[1]
+	projectionName := decl.Name.Value + "Projection"
+	if handName == projectionName || handName == handName+"Refinement" {
+		return TLCRefinement{}, fmt.Errorf("the hand-written module is named %s, which the refinement check reserves", handName)
+	}
+	projection := tlaModuleName.ReplaceAllString(projected, fmt.Sprintf("---- MODULE %s ----", projectionName))
+
+	projectionForm, _ := parseTLAModule(projected)
+	handVariables := map[string]bool{}
+	handConstants := map[string]bool{}
+	for _, name := range tlaDeclared(handModule, "VARIABLE") {
+		handVariables[name] = true
+	}
+	for _, name := range tlaDeclared(handModule, "CONSTANT") {
+		handConstants[name] = true
+	}
+	var with []string
+	var missing []string
+	for _, variable := range projectionForm.Variables {
+		target := variable
+		if mapped, isMapped := mapping[variable]; isMapped {
+			target = mapped
+		}
+		if !handVariables[target] && !strings.ContainsAny(target, " ()[]{}<>.") {
+			missing = append(missing, fmt.Sprintf("%s (for the projection's %s)", target, variable))
+		}
+		with = append(with, fmt.Sprintf("%s <- %s", variable, target))
+	}
+	if len(missing) > 0 {
+		return TLCRefinement{}, fmt.Errorf("the hand-written module %s declares no variable %s; map the projection's variables with -map proj=hand", handName, strings.Join(missing, ", "))
+	}
+	for name := range mapping {
+		found := false
+		for _, variable := range projectionForm.Variables {
+			found = found || variable == name
+		}
+		if !found {
+			return TLCRefinement{}, fmt.Errorf("-map names %s, which is not a variable of the projection (%s)", name, strings.Join(projectionForm.Variables, ", "))
+		}
+	}
+
+	var extraConstants []string
+	var extraAssignments []string
+	for _, line := range strings.Split(ProtocolTLCConfig(decl), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.Contains(trimmed, " = ") || !strings.HasPrefix(line, "    ") {
+			continue
+		}
+		name := strings.TrimSpace(trimmed[:strings.Index(trimmed, " = ")])
+		if handConstants[name] {
+			continue
+		}
+		extraConstants = append(extraConstants, name)
+		extraAssignments = append(extraAssignments, line)
+	}
+
+	var refinement strings.Builder
+	refinementName := handName + "Refinement"
+	fmt.Fprintf(&refinement, "---- MODULE %s ----\n", refinementName)
+	fmt.Fprintf(&refinement, "\\* Generated by `oak protocol -conform %s -against %s.tla`: every behavior of %s\n", decl.Name.Value, handName, handName)
+	fmt.Fprintf(&refinement, "\\* must be a behavior of the projection; TLC checks RefinementSpec as a property.\n")
+	fmt.Fprintf(&refinement, "EXTENDS %s\n", handName)
+	if len(extraConstants) > 0 {
+		fmt.Fprintf(&refinement, "CONSTANTS %s\n", strings.Join(extraConstants, ", "))
+	}
+	fmt.Fprintf(&refinement, "Projection == INSTANCE %s WITH %s\n", projectionName, strings.Join(with, ", "))
+	fmt.Fprintf(&refinement, "RefinementSpec == Projection!Spec\n")
+	fmt.Fprintf(&refinement, "====\n")
+
+	var config strings.Builder
+	config.WriteString("SPECIFICATION Spec\nPROPERTY RefinementSpec\n")
+	var carried []string
+	for _, line := range strings.Split(handConfig, "\n") {
+		upper := strings.ToUpper(strings.TrimSpace(line))
+		if upper == "" || strings.HasPrefix(upper, "SPECIFICATION") || strings.HasPrefix(upper, "INVARIANT") || strings.HasPrefix(upper, "PROPERT") || strings.HasPrefix(upper, "INIT") || strings.HasPrefix(upper, "NEXT") || strings.HasPrefix(upper, "\\*") {
+			continue
+		}
+		carried = append(carried, line)
+	}
+	hasConstantsHeader := false
+	for _, line := range carried {
+		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(line)), "CONSTANT") {
+			hasConstantsHeader = true
+		}
+	}
+	if len(carried) > 0 {
+		config.WriteString(strings.Join(carried, "\n") + "\n")
+	}
+	if len(extraAssignments) > 0 {
+		if !hasConstantsHeader {
+			config.WriteString("CONSTANTS\n")
+		}
+		config.WriteString(strings.Join(extraAssignments, "\n") + "\n")
+	}
+	if len(handConstants) > 0 && handConfig == "" {
+		var names []string
+		for name := range handConstants {
+			if !seenIn(extraConstants, name) && !constantAssignedBy(ProtocolTLCConfig(decl), name) {
+				names = append(names, name)
+			}
+		}
+		sort.Strings(names)
+		if len(names) > 0 {
+			return TLCRefinement{}, fmt.Errorf("the hand-written module's constants %s need values: pass its TLC configuration with -against-cfg", strings.Join(names, ", "))
+		}
+		// The hand-written module's constants are the projection's payload
+		// domains by name: assign them the projection's defaults.
+		for _, line := range strings.Split(ProtocolTLCConfig(decl), "\n") {
+			if strings.HasPrefix(line, "    ") && strings.Contains(line, " = ") {
+				name := strings.TrimSpace(line[:strings.Index(line, " = ")])
+				if handConstants[name] {
+					if !hasConstantsHeader && len(extraAssignments) == 0 {
+						config.WriteString("CONSTANTS\n")
+						hasConstantsHeader = true
+					}
+					config.WriteString(line + "\n")
+				}
+			}
+		}
+	}
+	return TLCRefinement{Module: handName, Projection: projection, Refinement: refinement.String(), Config: config.String()}, nil
+}
+
+func seenIn(names []string, name string) bool {
+	for _, n := range names {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
+func constantAssignedBy(config, name string) bool {
+	for _, line := range strings.Split(config, "\n") {
+		if strings.HasPrefix(line, "    ") && strings.HasPrefix(strings.TrimSpace(line), name+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+// tlaDeclared lists the names a module declares under keyword (VARIABLE or
+// CONSTANT, singular or plural), one declaration per line.
+func tlaDeclared(module, keyword string) []string {
+	var names []string
+	for _, raw := range strings.Split(module, "\n") {
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, keyword) {
+			continue
+		}
+		rest := strings.TrimPrefix(strings.TrimPrefix(line, keyword+"S"), keyword)
+		if rest == "" || (rest[0] != ' ' && rest[0] != '\t') {
+			continue
+		}
+		for _, name := range splitCommaList(strings.TrimSpace(rest)) {
+			if open := strings.Index(name, "("); open >= 0 {
+				name = name[:open]
+			}
+			names = append(names, strings.TrimSpace(name))
+		}
+	}
+	return names
+}
+
+// LocateTLC finds a Java runtime and the TLA+ tools jar: OAK_JAVA or
+// `java` on the path (verified to run, since macOS ships a stub that only
+// reports no runtime), and OAK_TLA2TOOLS_JAR or a cached
+// ~/.cache/tla2tools/tla2tools.jar.
+func LocateTLC() (java, jar string, reason string) {
+	java = os.Getenv("OAK_JAVA")
+	if java == "" {
+		found, err := exec.LookPath("java")
+		if err != nil {
+			return "", "", "no java on the path (set OAK_JAVA)"
+		}
+		java = found
+	}
+	if err := exec.Command(java, "-version").Run(); err != nil {
+		return "", "", fmt.Sprintf("%s does not run (%v); set OAK_JAVA to a Java runtime", java, err)
+	}
+	jar = os.Getenv("OAK_TLA2TOOLS_JAR")
+	if jar == "" {
+		home, _ := os.UserHomeDir()
+		for _, candidate := range []string{filepath.Join(home, ".cache", "tla2tools", "tla2tools.jar"), filepath.Join(home, ".cache", "tlaplus", "tla2tools.jar")} {
+			if _, err := os.Stat(candidate); err == nil {
+				jar = candidate
+				break
+			}
+		}
+	}
+	if jar == "" {
+		return "", "", "no tla2tools.jar (set OAK_TLA2TOOLS_JAR, or cache it at ~/.cache/tla2tools/tla2tools.jar)"
+	}
+	if _, err := os.Stat(jar); err != nil {
+		return "", "", fmt.Sprintf("tla2tools.jar: %v", err)
+	}
+	return java, jar, ""
+}
+
+// WriteRefinement writes the hand-written module and the generated modules
+// into dir, so TLC (or a reader) can run the check there.
+func WriteRefinement(dir string, ref TLCRefinement, handModule string) error {
+	files := map[string]string{
+		ref.Module + ".tla":                           handModule,
+		refinementModuleName(ref) + ".tla":            ref.Refinement,
+		refinementModuleName(ref) + ".cfg":            ref.Config,
+		projectionModuleName(ref.Projection) + ".tla": ref.Projection,
+	}
+	for name, text := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func refinementModuleName(ref TLCRefinement) string { return ref.Module + "Refinement" }
+
+func projectionModuleName(projection string) string {
+	if match := tlaModuleName.FindStringSubmatch(projection); match != nil {
+		return match[1]
+	}
+	return "Projection"
+}
+
+// RunRefinement runs TLC on the refinement in dir (WriteRefinement) and
+// reads its verdict: refines when TLC finds no error, otherwise the error
+// and the counterexample behavior.
+func RunRefinement(ctx context.Context, dir string, ref TLCRefinement) TLCRefinement {
+	ref.Dir = dir
+	java, jar, reason := LocateTLC()
+	if reason != "" {
+		ref.Reason = reason
+		return ref
+	}
+	cmd := exec.CommandContext(ctx, java, "-cp", jar, "tlc2.TLC", "-deadlock", "-workers", "1", refinementModuleName(ref)+".tla")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	text := string(out)
+	ref.Ran = true
+	switch {
+	case strings.Contains(text, "No error has been found"):
+		ref.Refines = true
+		ref.Output = "Model checking completed. No error has been found."
+	case strings.Contains(text, "Error:"):
+		ref.Output = tlcErrorExcerpt(text)
+	default:
+		ref.Ran = false
+		ref.Reason = fmt.Sprintf("TLC gave no verdict (%v):\n%s", err, tail(text, 20))
+	}
+	return ref
+}
+
+// tlcErrorExcerpt keeps TLC's error lines and the behavior that led there.
+func tlcErrorExcerpt(text string) string {
+	lines := strings.Split(text, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, "Error:") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return tail(text, 20)
+	}
+	var kept []string
+	for _, line := range lines[start:] {
+		if strings.HasSuffix(strings.TrimSpace(line), "states generated.") || strings.HasPrefix(line, "Finished in") || strings.Contains(line, "states generated,") {
+			break
+		}
+		kept = append(kept, line)
+		if len(kept) >= 80 {
+			kept = append(kept, "...")
+			break
+		}
+	}
+	return strings.TrimRight(strings.Join(kept, "\n"), "\n")
+}
+
+func tail(text string, n int) string {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// CheckRefinement is the whole fallback: generate, write into a fresh
+// directory, run when TLC is present. The directory is kept, so the
+// generated modules are there to read or to run TLC on by hand.
+func CheckRefinement(ctx context.Context, decl *ast.ProtocolDeclaration, handModule string, records map[string]*ast.RecordLiteral, mapping map[string]string, handConfig, dir string) (TLCRefinement, error) {
+	ref, err := ProtocolRefinement(decl, handModule, records, mapping, handConfig)
+	if err != nil {
+		return TLCRefinement{}, err
+	}
+	if dir == "" {
+		dir, err = os.MkdirTemp("", "oak-refinement-")
+		if err != nil {
+			return TLCRefinement{}, err
+		}
+	} else if err := os.MkdirAll(dir, 0o755); err != nil {
+		return TLCRefinement{}, err
+	}
+	if err := WriteRefinement(dir, ref, handModule); err != nil {
+		return TLCRefinement{}, err
+	}
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+	}
+	return RunRefinement(ctx, dir, ref), nil
+}
