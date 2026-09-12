@@ -477,3 +477,32 @@ main: (): i32 = 0
 		t.Errorf("always_full: %+v", r)
 	}
 }
+
+// Floats at the bit level: a law about a NaN min is not provable (the
+// backend's NaN result is a fresh symbol), and arithmetic is not a bit
+// operation, so it stays open.
+func TestFloatBitLevel(t *testing.T) {
+	src := `
+min_nan_commutes: theorem (x: f32, y: f32) { u32_bits_f32(min(x, y)) == u32_bits_f32(min(y, x)) }
+add_commutes: theorem (x: f32, y: f32) { x + y == y + x }
+abs_nonnegative: theorem (x: f32) { is_nan(x) || abs(x) >= f32_bits_u32(u32(0)) }
+main: (): i32 = 0
+`
+	results, err := Theorems(check(t, src), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]Result{}
+	for _, r := range results {
+		got[r.Name] = r
+	}
+	if r := got["min_nan_commutes"]; r.Status != Refuted {
+		t.Errorf("min_nan_commutes: %+v", r)
+	}
+	if r := got["add_commutes"]; r.Status != Open || !strings.Contains(r.Detail, "floating-point +") {
+		t.Errorf("add_commutes: %+v", r)
+	}
+	if r := got["abs_nonnegative"]; r.Status != Decided {
+		t.Errorf("abs_nonnegative: %+v", r)
+	}
+}

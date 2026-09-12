@@ -1,0 +1,59 @@
+// The total floating-point operations (docs/spec/20-types.md section
+// 11.3.5; spec/lean/Oak/FloatBits.lean) stated over f32 and f64 values and
+// decided at the bit level: the decider models a float as its IEEE 754
+// pattern, so negation, abs, copysign, the classifiers, the comparisons,
+// min, max, and total_order are bit operations it settles for every
+// pattern, NaNs and both zeros included. Bit equality is stated through
+// the bits rows (`u32_bits_f32`) where IEEE equality would not do (NaN is
+// unequal to itself; the zeros are equal). Arithmetic and rounding are not
+// bit operations; their laws stay in Oak.Floats.
+
+// Negation and abs.
+neg_involutive: theorem (x: f32) { u32_bits_f32(-(-x)) == u32_bits_f32(x) }
+neg_involutive_64: theorem (x: f64) { u64_bits_f64(-(-x)) == u64_bits_f64(x) }
+abs_idempotent: theorem (x: f32) { u32_bits_f32(abs(abs(x))) == u32_bits_f32(abs(x)) }
+abs_of_neg: theorem (x: f32) { u32_bits_f32(abs(-x)) == u32_bits_f32(abs(x)) }
+abs_clears_sign: theorem (x: f32) { (u32_bits_f32(abs(x)) & u32(2147483648)) == u32(0) }
+abs_keeps_magnitude: theorem (x: f32) { (u32_bits_f32(abs(x)) & u32(2147483647)) == (u32_bits_f32(x) & u32(2147483647)) }
+
+// copysign composes and recovers the value from its magnitude.
+copysign_composes: theorem (x: f32, y: f32, z: f32) { u32_bits_f32(copysign(copysign(x, y), z)) == u32_bits_f32(copysign(x, z)) }
+copysign_abs: theorem (x: f32) { u32_bits_f32(copysign(abs(x), x)) == u32_bits_f32(x) }
+copysign_takes_sign: theorem (x: f32, y: f32) { (u32_bits_f32(copysign(x, y)) & u32(2147483648)) == (u32_bits_f32(y) & u32(2147483648)) }
+
+// Classification: NaN is exactly the unequal-to-itself value; NaN,
+// infinite, and finite partition the patterns; normal is finite.
+nan_is_unequal: theorem (x: f32) { is_nan(x) == !(x == x) }
+classes_cover: theorem (x: f32) { is_nan(x) || is_infinite(x) || is_finite(x) }
+classes_disjoint: theorem (x: f32) { !(is_nan(x) && is_infinite(x)) && !(is_nan(x) && is_finite(x)) && !(is_infinite(x) && is_finite(x)) }
+normal_is_finite: theorem (x: f32) { !is_normal(x) || is_finite(x) }
+neg_keeps_class: theorem (x: f32) { is_nan(-x) == is_nan(x) && is_finite(-x) == is_finite(x) && is_normal(-x) == is_normal(x) }
+
+// The IEEE order: irreflexive, asymmetric, total on the non-NaN values,
+// with the zeros equal and NaN below nothing.
+less_irreflexive: theorem (x: f32) { !(x < x) }
+less_asymmetric: theorem (x: f32, y: f32) { !(x < y) || !(y < x) }
+trichotomy_non_nan: theorem (x: f32, y: f32) { is_nan(x) || is_nan(y) || x < y || x == y || x > y }
+le_is_lt_or_eq: theorem (x: f32, y: f32) { (x <= y) == (x < y || x == y) }
+nan_below_nothing: theorem (x: f32, y: f32) { !is_nan(x) || (!(x < y) && !(x <= y) && !(x == y) && !(y < x)) }
+zeros_equal: theorem () { f32_bits_u32(u32(2147483648)) == f32_bits_u32(u32(0)) }
+neg_reverses_order: theorem (x: f32, y: f32) { (x < y) == (-y < -x) }
+
+// total_order is a total order on the patterns that refines the IEEE one.
+total_order_reflexive: theorem (x: f32) { total_order(x, x) }
+total_order_total: theorem (x: f32, y: f32) { total_order(x, y) || total_order(y, x) }
+total_order_antisymmetric: theorem (x: f32, y: f32) { !(total_order(x, y) && total_order(y, x)) || u32_bits_f32(x) == u32_bits_f32(y) }
+total_order_refines_less: theorem (x: f32, y: f32) { !(x < y) || total_order(x, y) }
+total_order_zeros: theorem () { total_order(f32_bits_u32(u32(2147483648)), f32_bits_u32(u32(0))) && !total_order(f32_bits_u32(u32(0)), f32_bits_u32(u32(2147483648))) }
+
+// min and max on non-NaN operands: commutative, one of the operands, below
+// and above both, and the zeros ordered with -0.0 first.
+min_commutative: theorem (x: f32, y: f32) { is_nan(x) || is_nan(y) || u32_bits_f32(min(x, y)) == u32_bits_f32(min(y, x)) }
+max_commutative: theorem (x: f32, y: f32) { is_nan(x) || is_nan(y) || u32_bits_f32(max(x, y)) == u32_bits_f32(max(y, x)) }
+min_is_operand: theorem (x: f32, y: f32) { is_nan(x) || is_nan(y) || u32_bits_f32(min(x, y)) == u32_bits_f32(x) || u32_bits_f32(min(x, y)) == u32_bits_f32(y) }
+min_below_both: theorem (x: f32, y: f32) { is_nan(x) || is_nan(y) || (min(x, y) <= x && min(x, y) <= y) }
+max_above_both: theorem (x: f32, y: f32) { is_nan(x) || is_nan(y) || (max(x, y) >= x && max(x, y) >= y) }
+min_max_cover: theorem (x: f32, y: f32) { is_nan(x) || is_nan(y) || (u32_bits_f32(min(x, y)) ^ u32_bits_f32(max(x, y))) == (u32_bits_f32(x) ^ u32_bits_f32(y)) }
+min_orders_zeros: theorem () { u32_bits_f32(min(f32_bits_u32(u32(0)), f32_bits_u32(u32(2147483648)))) == u32(2147483648) }
+
+main: (): i32 = 0

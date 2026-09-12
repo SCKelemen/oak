@@ -1822,6 +1822,10 @@ type oakLowering struct {
 	// verifier leaves it off: there the machine wraps where Oak traps.
 	trapsTracked bool
 	traps        []*term
+	// floats names the parameters and locals of f32/f64 type (their width),
+	// whose operations and comparisons are IEEE (asm/floats_lowering.go).
+	floats      map[string]int
+	freshFloats int
 	// path is the condition under which the construct being lowered runs
 	// (nil: always) — the branches of conditionals and the right operands
 	// of the short-circuit operators taken so far — so a recorded trap is
@@ -2590,6 +2594,11 @@ func (lo *oakLowering) declareLocal(s *ast.VariableDeclaration) (string, bool) {
 		if s.Value == nil {
 			return "a local without both a type and an initializer", false
 		}
+		if text := typeText(s.Type); text == "f32" || text == "f64" {
+			lo.floats[s.Name.Value] = typ.width
+		} else {
+			delete(lo.floats, s.Name.Value)
+		}
 		value, reason, ok := lo.lower(s.Value, typ.width)
 		if !ok {
 			return reason, false
@@ -3068,6 +3077,7 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 		return nil, fmt.Sprintf("a recursive call to %s", name), false
 	}
 	bound := map[string]*oakLocal{}
+	calleeFloats := map[string]int{}
 	// A span or view parameter borrows a caller's array: the callee works
 	// on a copy and, since the conditional lowering re-points locals at
 	// copies, the final contents are written back leaf by leaf on return.
@@ -3099,6 +3109,9 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 				return nil, reason, false
 			}
 			bound[param.Name.Value] = &oakLocal{value: value, width: w, signed: signed}
+			if text := typeText(param.Type); text == "f32" || text == "f64" {
+				calleeFloats[param.Name.Value] = w
+			}
 			continue
 		}
 		typ, ok := lo.oakTypeOf(param.Type)
@@ -3112,12 +3125,15 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 		bound[param.Name.Value] = &oakLocal{agg: value}
 	}
 	saved := lo.locals
+	savedFloats := lo.floats
 	lo.locals = bound
+	lo.floats = calleeFloats
 	if lo.inlining == nil {
 		lo.inlining = map[string]bool{}
 	}
 	lo.inlining[name] = true
 	return func() {
+		lo.floats = savedFloats
 		for _, b := range borrows {
 			if final, has := lo.locals[b.param]; has && final.agg != nil {
 				leaves(final.agg, b.owner, func(from, to *oakValue) { to.scalar = from.scalar })
@@ -3267,8 +3283,20 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		return nil, fmt.Sprintf("identifier %s (not a parameter)", e.Value), false
 	case *ast.IntegerLiteral:
 		return constTerm(uint64(e.Value), width), "", true
+	case *ast.FloatLiteral:
+		if t, ok := floatLiteralBits(e.Value, width); ok {
+			return t, "", true
+		}
+		return nil, "a float literal outside a float context", false
 	case *ast.PrefixExpression:
 		switch e.Operator {
+		case "!":
+			// A negated condition in value position: 1 or 0 at the width.
+			cond, reason, ok := lo.lowerCondition(e)
+			if !ok {
+				return nil, reason, false
+			}
+			return zeroExtend(truncate(cond, 1), width), "", true
 		case "^":
 			operand, reason, ok := lo.lower(e.Right, width)
 			if !ok {
@@ -3276,12 +3304,16 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			}
 			return binaryTerm("xor", operand, constTerm(mask(width), width)), "", true
 		case "-":
-			// Unary minus wraps at the width (two's complement), as the
-			// backend's `neg` does.
 			operand, reason, ok := lo.lower(e.Right, width)
 			if !ok {
 				return nil, reason, false
 			}
+			if _, isFloat := lo.floatWidthOf(e.Right); isFloat {
+				// Negation of a float flips the sign bit (total, NaN included).
+				return binaryTerm("xor", operand, constTerm(uint64(1)<<uint(width-1), width)), "", true
+			}
+			// Unary minus wraps at the width (two's complement), as the
+			// backend's `neg` does.
 			return binaryTerm("sub", constTerm(0, width), operand), "", true
 		}
 		return nil, fmt.Sprintf("prefix operator %s", e.Operator), false
@@ -3349,6 +3381,9 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			if guard, isGuard := lo.guards[ident.Value]; isGuard && len(e.Arguments) == 1 {
 				return lo.lowerGuard(ident.Value, guard, e.Arguments[0], width)
 			}
+			if typechecker.FloatIntrinsicName(ident.Value) {
+				return lo.lowerFloatIntrinsic(ident.Value, e, width)
+			}
 		}
 		// Primitive constructors (u32(x), widening) and the explicit
 		// conversions {target}_trunc_{source} / {target}_bits_{source}.
@@ -3403,6 +3438,12 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 				return nil, reason, false
 			}
 			return zeroExtend(truncate(cond, width), width), "", true
+		}
+		if _, isFloat := lo.floatWidthOf(e.Left); isFloat {
+			return nil, fmt.Sprintf("floating-point %s (not a bit operation)", e.Operator), false
+		}
+		if _, isFloat := lo.floatWidthOf(e.Right); isFloat {
+			return nil, fmt.Sprintf("floating-point %s (not a bit operation)", e.Operator), false
 		}
 		if e.Operator == "/" || e.Operator == "%" {
 			// Unsigned division and remainder by a constant power of two
@@ -3540,6 +3581,29 @@ func (lo *oakLowering) lowerCondition(expr ast.Expression) (*term, string, bool)
 	if !isComparison {
 		return nil, fmt.Sprintf("condition operator %s", infix.Operator), false
 	}
+	if w, isFloat := lo.floatWidthOf(infix.Left); isFloat || func() bool { w, isFloat = lo.floatWidthOf(infix.Right); return isFloat }() {
+		// IEEE comparison over the bit patterns (asm/floats_lowering.go).
+		if w == 0 {
+			if other, ok := lo.floatWidthOf(infix.Right); ok && other != 0 {
+				w = other
+			} else {
+				w = 64
+			}
+		}
+		left, reason, okL := lo.lower(infix.Left, w)
+		if !okL {
+			return nil, reason, false
+		}
+		right, reason, okR := lo.lower(infix.Right, w)
+		if !okR {
+			return nil, reason, false
+		}
+		compared, ok := floatCompare(infix.Operator, left, right, w)
+		if !ok {
+			return nil, fmt.Sprintf("float comparison %s", infix.Operator), false
+		}
+		return compared, "", true
+	}
 	width, signed, ok := lo.operandContract(infix)
 	if !ok {
 		return nil, "a comparison with no parameter operand (its width is unknown)", false
@@ -3596,11 +3660,30 @@ func (lo *oakLowering) operandContract(expr ast.Expression) (int, bool, bool) {
 			return 32, false, true
 		}
 		// A call to a program function has its return type's width; an
-		// instruction function its member's.
+		// instruction function its member's; a conversion or constructor
+		// its target's; a float intrinsic its operands' (Bool for the
+		// classifiers and total_order).
 		if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
 			if callee, known := lo.functions[ident.Value]; known && callee.ReturnType != nil {
 				if w, signed, ok := contractBits(callee.ReturnType); ok {
 					return w, signed, true
+				}
+			}
+			if _, known := lo.functions[ident.Value]; !known {
+				if target, _, _, isConv := typechecker.ConversionParts(ident.Value); isConv {
+					if w, signed, ok := contractBits(&ast.Identifier{Value: target}); ok {
+						return w, signed, true
+					}
+				}
+				if w, signed, ok := contractBits(ident); ok && len(e.Arguments) == 1 {
+					return w, signed, true
+				}
+				if typechecker.FloatIntrinsicName(ident.Value) {
+					switch ident.Value {
+					case "is_nan", "is_finite", "is_infinite", "is_normal", "total_order":
+						return 1, false, true
+					}
+					return lo.floatArgumentWidth(e, 0), false, true
 				}
 			}
 		}
@@ -3892,7 +3975,7 @@ func negateCondition(expr ast.Expression) (ast.Expression, bool) {
 
 // newLowering builds the Oak-side contract from the signature.
 func newLowering(sig *ast.FunctionStatement) *oakLowering {
-	lowering := &oakLowering{params: map[string]int{}, signed: map[string]bool{}, spans: map[string]spanContract{}, fresh: map[string]int{}}
+	lowering := &oakLowering{params: map[string]int{}, signed: map[string]bool{}, spans: map[string]spanContract{}, fresh: map[string]int{}, floats: map[string]int{}}
 	for _, param := range sig.Parameters {
 		if elem, _, isSpan := spanShape(param.Type); isSpan {
 			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
@@ -3902,6 +3985,9 @@ func newLowering(sig *ast.FunctionStatement) *oakLowering {
 		bits, signed, _ := contractBits(param.Type)
 		lowering.params[param.Name.Value] = bits
 		lowering.signed[param.Name.Value] = signed
+		if text := typeText(param.Type); text == "f32" || text == "f64" {
+			lowering.floats[param.Name.Value] = bits
+		}
 		if bits < 32 {
 			lowering.fresh[upperBitsName(param.Name.Value)] = 32 - bits
 		}
@@ -3932,6 +4018,11 @@ func contractBits(expr ast.Expression) (bits int, signed bool, ok bool) {
 		return 64, true, true
 	case "Bool":
 		return 1, false, true
+	case "f32":
+		// A float is its IEEE bit pattern to the decider (asm/floats_lowering.go).
+		return 32, false, true
+	case "f64":
+		return 64, false, true
 	}
 	return 0, false, false
 }
