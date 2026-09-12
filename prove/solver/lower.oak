@@ -58,6 +58,17 @@ SYN_ARRAYLIT: u32 = 17
 SYN_ASSIGNPLACE: u32 = 18
 SYN_FLOATLIT: u32 = 19
 SYN_FLOATCALL: u32 = 20
+SYN_VARIANTLIT: u32 = 21
+SYN_MATCH: u32 = 22
+SYN_MATCHSTMT: u32 = 23
+
+// An arm in the lists: pattern kind, variant index or literal node,
+// binding symbol, body node.
+ARM_WORDS: u32 = 4
+PAT_VARIANT: u32 = 0
+PAT_LITERAL: u32 = 1
+PAT_WILD: u32 = 2
+PAT_BINDING: u32 = 3
 
 // Float intrinsic codes (asm/syntax.go).
 FI_ABS: u32 = 0
@@ -74,6 +85,7 @@ MAX_FRESH: u32 = 8
 TY_SCALAR: u32 = 0
 TY_RECORD: u32 = 1
 TY_ARRAY: u32 = 2
+TY_SUM: u32 = 3
 
 // Infix operator codes (asm/syntax.go).
 IOP_ADD: u32 = 0
@@ -102,6 +114,8 @@ F_STMTS: u32 = 2
 F_WHILE: u32 = 3
 F_CONDSTMT: u32 = 4
 F_AGG: u32 = 5
+F_MATCH: u32 = 6
+F_MATCHSTMT: u32 = 7
 
 // Condition codes (bdd.oak's condition: kind 0, the flags of left - right).
 CC_EQ: u32 = 0
@@ -206,6 +220,7 @@ syn_types: (sx: []u32): u32 = sx[u32(6)]
 syn_type_leaves: (sx: []u32): u32 = sx[u32(7)]
 syn_fields: (sx: []u32): u32 = sx[u32(8)]
 syn_leaf_indices: (sx: []u32): u32 = sx[u32(9)]
+syn_variants: (sx: []u32): u32 = sx[u32(10)]
 
 syn_params_at: (sx: []u32): u32 = SYN_HEADER + syn_functions(sx) * SYN_FUNC_WORDS
 syn_param_total: (sx: []u32): u32 {
@@ -221,7 +236,8 @@ syn_param_total: (sx: []u32): u32 {
 syn_types_at: (sx: []u32): u32 = syn_params_at(sx) + syn_param_total(sx) * SYN_PARAM_WORDS
 syn_type_leaves_at: (sx: []u32): u32 = syn_types_at(sx) + syn_types(sx) * SYN_TYPE_WORDS
 syn_fields_at: (sx: []u32): u32 = syn_type_leaves_at(sx) + syn_type_leaves(sx) * u32(2)
-syn_leaf_indices_at: (sx: []u32): u32 = syn_fields_at(sx) + syn_fields(sx) * u32(2)
+syn_variants_at: (sx: []u32): u32 = syn_fields_at(sx) + syn_fields(sx) * u32(2)
+syn_leaf_indices_at: (sx: []u32): u32 = syn_variants_at(sx) + syn_variants(sx) * u32(3)
 syn_nodes_at: (sx: []u32): u32 = syn_leaf_indices_at(sx) + syn_leaf_indices(sx)
 syn_lists_at: (sx: []u32): u32 = syn_nodes_at(sx) + syn_nodes(sx) * SYN_NODE_WORDS
 
@@ -251,6 +267,13 @@ scalar_signed: (sx: []u32, t: u32): Bool = type_leaf_signed(sx, t, u32(0))
 field_type: (sx: []u32, t: u32, k: u32): u32 = sx[syn_fields_at(sx) + (type_field_start(sx, t) + k) * u32(2)]
 field_offset: (sx: []u32, t: u32, k: u32): u32 = sx[syn_fields_at(sx) + (type_field_start(sx, t) + k) * u32(2) + u32(1)]
 is_scalar_type: (sx: []u32, t: u32): Bool = t != NONE && type_kind(sx, t) == TY_SCALAR
+is_sum_type: (sx: []u32, t: u32): Bool = t != NONE && type_kind(sx, t) == TY_SUM
+// A sum type's field words index the variants table: tag value, payload
+// type (NONE for none), payload leaf offset.
+variant_word: (sx: []u32, t: u32, i: u32, k: u32): u32 = sx[syn_variants_at(sx) + (type_field_start(sx, t) + i) * u32(3) + k]
+variant_tag: (sx: []u32, t: u32, i: u32): u32 = variant_word(sx, t, i, u32(0))
+variant_payload: (sx: []u32, t: u32, i: u32): u32 = variant_word(sx, t, i, u32(1))
+variant_offset: (sx: []u32, t: u32, i: u32): u32 = variant_word(sx, t, i, u32(2))
 is_float_type: (sx: []u32, t: u32): Bool = t != NONE && type_word(sx, t, u32(7)) != u32(0)
 
 node_word: (sx: []u32, n: u32, k: u32): u32 = sx[syn_nodes_at(sx) + n * SYN_NODE_WORDS + k]
@@ -800,7 +823,7 @@ contract_of: (lw: Lower, w: [*]u32, sx: []u32, node: u32): Contract {
     kind == SYN_CONV ? { out = Contract { width: node_a(sx, n), signed: node_b(sx, n) != u32(0), ok: true } } | {
     ((kind == SYN_CALL || kind == SYN_FLOATCALL) && is_scalar_type(sx, typ)) ? { out = Contract { width: scalar_width(sx, typ), signed: scalar_signed(sx, typ), ok: true } } | {
     kind == SYN_INSTR ? { out = Contract { width: node_b(sx, n), signed: false, ok: true } } | {
-    ((kind == SYN_FIELD || kind == SYN_INDEX) && is_scalar_type(sx, typ)) ? { out = Contract { width: scalar_width(sx, typ), signed: scalar_signed(sx, typ), ok: true } } | {
+    ((kind == SYN_FIELD || kind == SYN_INDEX || kind == SYN_MATCH) && is_scalar_type(sx, typ)) ? { out = Contract { width: scalar_width(sx, typ), signed: scalar_signed(sx, typ), ok: true } } | {
     kind == SYN_INFIX ? {
       sp + u32(2) <= u32(64) ? {
         stack[sp] = node_c(sx, n)
@@ -1193,7 +1216,12 @@ step_expr: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
       pop_frame_l(lw, w)
     }
   } | {
-  (kind == SYN_FIELD || kind == SYN_INDEX) ? { step_access(lw, w, b, sx, f, node, width, phase, ret) } | { fail_at(lw, w, u32(12)) } } } } } } } } } } } } }
+  (kind == SYN_FIELD || kind == SYN_INDEX) ? { step_access(lw, w, b, sx, f, node, width, phase, ret) } | {
+  kind == SYN_MATCH ? {
+    pop_frame_l(lw, w)
+    push_frame_l(lw, w, F_MATCH, node, width)
+    w[frame_at(lw, w, state(lw, w, LS_SP) - u32(1)) + u32(6)] = u32(0)
+  } | { fail_at(lw, w, u32(12)) } } } } } } } } } } } } } }
 }
 
 // step_float_call advances a float intrinsic: the arguments at the float
@@ -1330,7 +1358,37 @@ step_agg: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
   kind == SYN_BLOCK ? {
     pop_frame_l(lw, w)
     push_stmts(lw, w, sx, node, typ, true, true)
-  } | { fail_at(lw, w, u32(15)) } } } } } } }
+  } | {
+  kind == SYN_VARIANTLIT ? {
+    vi: u32 = node_b(sx, node)
+    payload_node: u32 = node_c(sx, node)
+    phase == u32(0) ? {
+      block: u32 = zero_block(lw, w, b, sx, typ)
+      w[f + u32(4)] = block
+      block == NONE ? { pop_frame_l(lw, w) } | {
+        set_leaf(lw, w, block, u32(0), t_const(lw, w, b, variant_tag(sx, typ, vi), u32(32)))
+        payload_node == NONE ? {
+          set_ret_agg(lw, w, typ, block)
+          pop_frame_l(lw, w)
+        } | {
+          w[f + u32(3)] = u32(1)
+          push_value(lw, w, sx, payload_node, variant_payload(sx, typ, vi))
+        }
+      }
+    } | {
+      block: u32 = w[f + u32(4)]
+      ptype: u32 = variant_payload(sx, typ, vi)
+      offset: u32 = variant_offset(sx, typ, vi)
+      is_scalar_type(sx, ptype) ? { set_leaf(lw, w, block, offset, state(lw, w, LS_RET)) } | { copy_leaves(lw, w, state(lw, w, LS_RET_BLOCK), block + offset, type_leaves(sx, ptype)) }
+      set_ret_agg(lw, w, typ, block)
+      pop_frame_l(lw, w)
+    }
+  } | {
+  kind == SYN_MATCH ? {
+    pop_frame_l(lw, w)
+    push_frame_l(lw, w, F_MATCH, node, typ)
+    w[frame_at(lw, w, state(lw, w, LS_SP) - u32(1)) + u32(6)] = u32(1)
+  } | { fail_at(lw, w, u32(15)) } } } } } } } } }
 }
 
 // step_cond advances a condition frame (F_COND: a 1-bit term).
@@ -1502,11 +1560,15 @@ step_stmts: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
       w[f + u32(4)] = index + u32(1)
       push_frame_l(lw, w, F_CONDSTMT, stmt, u32(0))
     } | {
+    kind == SYN_MATCHSTMT ? {
+      w[f + u32(4)] = index + u32(1)
+      push_frame_l(lw, w, F_MATCHSTMT, stmt, u32(0))
+    } | {
       (value && last) ? {
         w[f + u32(3)] = u32(3)
         agg_result ? { push_frame_l(lw, w, F_AGG, stmt, width_or_type) } | { push_frame_l(lw, w, F_EXPR, stmt, width_or_type) }
       } | { fail_at(lw, w, u32(22)) }
-    } } } } }
+    } } } } } }
   } } } } }
 }
 
@@ -1573,6 +1635,262 @@ step_condstmt: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
   } } }
 }
 
+// tags_name_variants is the 1-bit term stating that every sum tag inside
+// a value names a variant (the hypothesis a theorem over a sum type is
+// decided under); the frames region is the stack of (type, block) pairs
+// still to visit.
+tags_name_variants: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, typ: u32, block: u32): u32 {
+  valid: u32 = t_const(lw, w, b, u32(1), u32(1))
+  sp: u32 = 1
+  w[lw.frames_at] = typ
+  w[lw.frames_at + u32(1)] = block
+  while sp > u32(0) {
+    sp = sp - u32(1)
+    t: u32 = w[lw.frames_at + sp * u32(2)]
+    blk: u32 = w[lw.frames_at + sp * u32(2) + u32(1)]
+    kind: u32 = type_kind(sx, t)
+    kind == TY_SUM ? {
+      tag: u32 = leaf_at(lw, w, blk, u32(0))
+      names: u32 = t_const(lw, w, b, u32(0), u32(1))
+      n: u32 = type_field_count(sx, t)
+      i: u32 = 0
+      while i < n {
+        names = t_binary(lw, w, b, BOP_OR, names, t_truncate(lw, w, b, t_cmp(lw, w, b, CC_EQ, tag, t_const(lw, w, b, variant_tag(sx, t, i), u32(32))), u32(1)))
+        payload: u32 = variant_payload(sx, t, i)
+        (payload != NONE && sp + u32(1) < MAX_LFRAMES * u32(8)) ? {
+          w[lw.frames_at + sp * u32(2)] = payload
+          w[lw.frames_at + sp * u32(2) + u32(1)] = blk + variant_offset(sx, t, i)
+          sp = sp + u32(1)
+        } | { }
+        i = i + u32(1)
+      }
+      valid = t_binary(lw, w, b, BOP_AND, valid, names)
+    } | {
+    kind == TY_RECORD ? {
+      n: u32 = type_field_count(sx, t)
+      i: u32 = 0
+      while i < n {
+        w[lw.frames_at + sp * u32(2)] = field_type(sx, t, i)
+        w[lw.frames_at + sp * u32(2) + u32(1)] = blk + field_offset(sx, t, i)
+        sp = sp + u32(1)
+        i = i + u32(1)
+      }
+    } | {
+    kind == TY_ARRAY ? {
+      n: u32 = type_length(sx, t)
+      elem: u32 = type_elem(sx, t)
+      i: u32 = 0
+      while i < n {
+        w[lw.frames_at + sp * u32(2)] = elem
+        w[lw.frames_at + sp * u32(2) + u32(1)] = blk + i * type_leaves(sx, elem)
+        sp = sp + u32(1)
+        i = i + u32(1)
+      }
+    } | { } } }
+  }
+  valid
+}
+
+// arm_condition computes an arm's condition over the scrutinee (word 4 of
+// the match frame: a block for a sum, a term for a scalar), binds its
+// pattern's symbol, and returns the condition (NONE for an arm that always
+// matches).
+arm_condition: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, i: u32): u32 {
+  arms: u32 = node_b(sx, node)
+  st: u32 = node_type(sx, node_a(sx, node))
+  pat: u32 = list_item(sx, arms, i * ARM_WORDS)
+  pat_operand: u32 = list_item(sx, arms, i * ARM_WORDS + u32(1))
+  binding: u32 = list_item(sx, arms, i * ARM_WORDS + u32(2))
+  scrutinee: u32 = w[f + u32(4)]
+  cond: u32 = NONE
+  pat == PAT_VARIANT ? {
+    tag: u32 = leaf_at(lw, w, scrutinee, u32(0))
+    cond = t_truncate(lw, w, b, t_cmp(lw, w, b, CC_EQ, tag, t_const(lw, w, b, variant_tag(sx, st, pat_operand), u32(32))), u32(1))
+    binding == NONE ? { } | {
+      ptype: u32 = variant_payload(sx, st, pat_operand)
+      offset: u32 = variant_offset(sx, st, pat_operand)
+      is_scalar_type(sx, ptype) ? { bind_scalar(lw, w, binding, leaf_at(lw, w, scrutinee, offset), ptype) } | { bind_aggregate(lw, w, binding, ptype, scrutinee + offset) }
+    }
+  } | {
+  pat == PAT_LITERAL ? {
+    // A literal pattern over a scalar: an integer or Bool literal.
+    lk: u32 = node_kind(sx, pat_operand)
+    width: u32 = twidth(lw, w, b, scrutinee)
+    lk == SYN_INTLIT ? {
+      cond = t_truncate(lw, w, b, t_cmp(lw, w, b, CC_EQ, scrutinee, t_const64(lw, w, b, (u64(node_vhi(sx, pat_operand)) << u64(32)) | u64(node_vlo(sx, pat_operand)), width)), u32(1))
+    } | {
+      lk == SYN_BOOLLIT ? { cond = t_truncate(lw, w, b, t_cmp(lw, w, b, CC_EQ, scrutinee, t_const(lw, w, b, node_a(sx, pat_operand), width)), u32(1)) } | { fail_at(lw, w, u32(31)) }
+    }
+  } | {
+  pat == PAT_BINDING ? {
+    binding == NONE ? { } | { bind_aggregate(lw, w, binding, st, scrutinee) }
+  } | { } } }
+  cond
+}
+
+// step_match advances a match in value position (F_MATCH; word 2 the
+// result width or type, word 6 whether the result is an aggregate): the
+// scrutinee first, then arm by arm the condition under the path of no
+// earlier match, the body, and its value; the values merged from the
+// fallback back through the cases. Phase 1 + 2i starts arm i, 2 + 2i
+// receives its value; word 5 is the taken term, word 7 the argv base
+// (condition and value per arm), word 8 the fallback arm.
+step_match: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
+  node: u32 = w[f + u32(1)]
+  width_or_type: u32 = w[f + u32(2)]
+  phase: u32 = w[f + u32(3)]
+  agg_result: Bool = w[f + u32(6)] != u32(0)
+  count: u32 = node_c(sx, node)
+  st: u32 = node_type(sx, node_a(sx, node))
+  phase == u32(0) ? {
+    argv_sp: u32 = state(lw, w, LS_ARGV_SP)
+    argv_sp + count * u32(2) > MAX_ARGV ? { fail_at(lw, w, u32(32)) } | {
+      w[f + u32(7)] = argv_sp
+      set_state(lw, w, LS_ARGV_SP, argv_sp + count * u32(2))
+      w[f + u32(5)] = t_const(lw, w, b, u32(0), u32(1))
+      w[f + u32(8)] = NONE
+      w[f + u32(3)] = u32(9)
+      is_sum_type(sx, st) ? { push_frame_l(lw, w, F_AGG, node_a(sx, node), st) } | {
+        contract: Contract = contract_of(lw, w, sx, node_a(sx, node))
+        contract.ok ? { push_frame_l(lw, w, F_EXPR, node_a(sx, node), contract.width) } | { fail_at(lw, w, u32(33)) }
+      }
+    }
+  } | {
+  phase == u32(9) ? {
+    // The scrutinee arrived: start arm 0.
+    w[f + u32(4)] = is_sum_type(sx, st) ? { state(lw, w, LS_RET_BLOCK) } | { state(lw, w, LS_RET) }
+    w[f + u32(3)] = u32(11)
+  } | {
+  (phase >= u32(11) && (phase - u32(11)) % u32(2) == u32(0)) ? {
+    i: u32 = (phase - u32(11)) / u32(2)
+    cond: u32 = arm_condition(lw, w, b, sx, f, node, i)
+    base: u32 = w[f + u32(7)]
+    w[lw.argv_at + base + i * u32(2)] = cond
+    taken: u32 = w[f + u32(5)]
+    arm_path: u32 = t_not1(lw, w, b, taken)
+    cond == NONE ? { } | {
+      arm_path = t_binary(lw, w, b, BOP_AND, arm_path, cond)
+      w[f + u32(5)] = t_binary(lw, w, b, BOP_OR, taken, cond)
+    }
+    push_path(lw, w, b, arm_path)
+    w[f + u32(3)] = phase + u32(1)
+    body: u32 = list_item(sx, node_b(sx, node), i * ARM_WORDS + u32(3))
+    agg_result ? { push_frame_l(lw, w, F_AGG, body, width_or_type) } | { push_frame_l(lw, w, F_EXPR, body, width_or_type) }
+  } | {
+    i: u32 = (phase - u32(12)) / u32(2)
+    pop_path(lw, w)
+    base: u32 = w[f + u32(7)]
+    w[lw.argv_at + base + i * u32(2) + u32(1)] = agg_result ? { state(lw, w, LS_RET_BLOCK) } | { state(lw, w, LS_RET) }
+    cond: u32 = w[lw.argv_at + base + i * u32(2)]
+    last: Bool = i + u32(1) == count
+    (cond == NONE || last) ? {
+      // The fallback: this arm; the cases are the arms before it.
+      result: u32 = w[lw.argv_at + base + i * u32(2) + u32(1)]
+      j: u32 = i
+      while j > u32(0) {
+        j = j - u32(1)
+        cj: u32 = w[lw.argv_at + base + j * u32(2)]
+        vj: u32 = w[lw.argv_at + base + j * u32(2) + u32(1)]
+        result = agg_result ? { merge_blocks(lw, w, b, cj, vj, result, type_leaves(sx, width_or_type)) } | { t_ite(lw, w, b, cj, vj, result) }
+      }
+      agg_result ? { set_ret_agg(lw, w, width_or_type, result) } | { set_state(lw, w, LS_RET, result) }
+      set_state(lw, w, LS_ARGV_SP, base)
+      pop_frame_l(lw, w)
+    } | {
+      w[f + u32(3)] = phase + u32(1)
+    }
+  } } }
+}
+
+// step_matchstmt runs a match in statement position: each arm's block
+// from the locals as they were, under the path of no earlier match, its
+// locals snapshotted; the locals that existed before merged from the
+// fallback back through the cases. Word 5 the taken term, word 7 the argv
+// base (a condition per arm), word 9 the snapshot slot of the state before
+// (the arms' outcomes follow it).
+step_matchstmt: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
+  node: u32 = w[f + u32(1)]
+  phase: u32 = w[f + u32(3)]
+  count: u32 = node_c(sx, node)
+  st: u32 = node_type(sx, node_a(sx, node))
+  phase == u32(0) ? {
+    argv_sp: u32 = state(lw, w, LS_ARGV_SP)
+    slot: u32 = state(lw, w, LS_SNAP_SP)
+    (argv_sp + count > MAX_ARGV || slot + count + u32(1) > MAX_SNAPS) ? { fail_at(lw, w, u32(34)) } | {
+      w[f + u32(7)] = argv_sp
+      set_state(lw, w, LS_ARGV_SP, argv_sp + count)
+      w[f + u32(9)] = slot
+      set_state(lw, w, LS_SNAP_SP, slot + count + u32(1))
+      w[f + u32(5)] = t_const(lw, w, b, u32(0), u32(1))
+      w[f + u32(3)] = u32(9)
+      is_sum_type(sx, st) ? { push_frame_l(lw, w, F_AGG, node_a(sx, node), st) } | {
+        contract: Contract = contract_of(lw, w, sx, node_a(sx, node))
+        contract.ok ? { push_frame_l(lw, w, F_EXPR, node_a(sx, node), contract.width) } | { fail_at(lw, w, u32(35)) }
+      }
+    }
+  } | {
+  phase == u32(9) ? {
+    w[f + u32(4)] = is_sum_type(sx, st) ? { state(lw, w, LS_RET_BLOCK) } | { state(lw, w, LS_RET) }
+    snapshot(lw, w, w[f + u32(9)])
+    w[f + u32(3)] = u32(11)
+  } | {
+  (phase >= u32(11) && (phase - u32(11)) % u32(2) == u32(0)) ? {
+    i: u32 = (phase - u32(11)) / u32(2)
+    i > u32(0) ? { restore_snapshot(lw, w, w[f + u32(9)]) } | { }
+    cond: u32 = arm_condition(lw, w, b, sx, f, node, i)
+    w[lw.argv_at + w[f + u32(7)] + i] = cond
+    taken: u32 = w[f + u32(5)]
+    arm_path: u32 = t_not1(lw, w, b, taken)
+    cond == NONE ? { } | {
+      arm_path = t_binary(lw, w, b, BOP_AND, arm_path, cond)
+      w[f + u32(5)] = t_binary(lw, w, b, BOP_OR, taken, cond)
+    }
+    push_path(lw, w, b, arm_path)
+    w[f + u32(3)] = phase + u32(1)
+    push_stmts(lw, w, sx, list_item(sx, node_b(sx, node), i * ARM_WORDS + u32(3)), u32(0), false, false)
+  } | {
+    i: u32 = (phase - u32(12)) / u32(2)
+    pop_path(lw, w)
+    slot: u32 = w[f + u32(9)]
+    snapshot(lw, w, slot + u32(1) + i)
+    cond: u32 = w[lw.argv_at + w[f + u32(7)] + i]
+    last: Bool = i + u32(1) == count
+    (cond == NONE || last) ? {
+      // Merge every local that existed before from the fallback (arm i)
+      // back through the cases.
+      restore_snapshot(lw, w, slot)
+      sym: u32 = 0
+      while sym < MAX_SYMBOLS {
+        before_at: u32 = lw.snap_at + (slot * MAX_SYMBOLS + sym) * u32(3)
+        w[before_at] == NONE ? { } | {
+          typ: u32 = w[before_at + u32(1)]
+          fb_at: u32 = lw.snap_at + ((slot + u32(1) + i) * MAX_SYMBOLS + sym) * u32(3)
+          merged_value: u32 = w[fb_at]
+          merged_block: u32 = w[fb_at + u32(2)]
+          j: u32 = i
+          while j > u32(0) {
+            j = j - u32(1)
+            cj: u32 = w[lw.argv_at + w[f + u32(7)] + j]
+            oj_at: u32 = lw.snap_at + ((slot + u32(1) + j) * MAX_SYMBOLS + sym) * u32(3)
+            merged_value == AGG ? {
+              w[oj_at + u32(2)] != merged_block ? { merged_block = merge_blocks(lw, w, b, cj, w[oj_at + u32(2)], merged_block, type_leaves(sx, typ)) } | { }
+            } | {
+              w[oj_at] != merged_value ? { merged_value = t_ite(lw, w, b, cj, w[oj_at], merged_value) } | { }
+            }
+          }
+          merged_value == AGG ? { bind_aggregate(lw, w, sym, typ, merged_block) } | { bind_scalar(lw, w, sym, merged_value, typ) }
+        }
+        sym = sym + u32(1)
+      }
+      set_state(lw, w, LS_SNAP_SP, slot)
+      set_state(lw, w, LS_ARGV_SP, w[f + u32(7)])
+      pop_frame_l(lw, w)
+    } | {
+      w[f + u32(3)] = phase + u32(1)
+    }
+  } } }
+}
+
 // run_machine steps frames until the stack is empty or the lowering fails.
 run_machine: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32): () {
   while state(lw, w, LS_SP) > u32(0) && !failed(lw, w) {
@@ -1583,7 +1901,9 @@ run_machine: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32): () {
     kind == F_STMTS ? { step_stmts(lw, w, b, sx, f) } | {
     kind == F_WHILE ? { step_while(lw, w, b, sx, f) } | {
     kind == F_CONDSTMT ? { step_condstmt(lw, w, b, sx, f) } | {
-    kind == F_AGG ? { step_agg(lw, w, b, sx, f) } | { fail_at(lw, w, u32(26)) } } } } } }
+    kind == F_AGG ? { step_agg(lw, w, b, sx, f) } | {
+    kind == F_MATCH ? { step_match(lw, w, b, sx, f) } | {
+    kind == F_MATCHSTMT ? { step_matchstmt(lw, w, b, sx, f) } | { fail_at(lw, w, u32(26)) } } } } } } } }
   }
 }
 
@@ -1706,6 +2026,252 @@ leaf_blocks: (lw: Lower, w: [*]u32, sx: []u32, leaves: u32, control: Bool): () {
   }
 }
 
+// reachable_terms flags every term the roots reach (the trap obligations
+// in the traps region and the claim): the argv region as the bitmap, the
+// snapshot region as the stack. False when the stack cannot hold the walk,
+// in which case nothing is compacted.
+reachable_terms: (lw: Lower, w: [*]u32, b: [*]u32, nterms: u32, ntraps: u32, claim: u32): Bool {
+  i: u32 = 0
+  while i < MAX_ARGV {
+    w[lw.argv_at + i] = u32(0)
+    i = i + u32(1)
+  }
+  stack_cap: u32 = MAX_SNAPS * MAX_SYMBOLS * u32(3)
+  sp: u32 = 0
+  ok: Bool = true
+  r: u32 = 0
+  while r <= ntraps && ok {
+    root: u32 = r < ntraps ? { w[lw.traps_at + r] } | { claim }
+    sp < stack_cap ? {
+      w[lw.snap_at + sp] = root
+      sp = sp + u32(1)
+    } | { ok = false }
+    r = r + u32(1)
+  }
+  while sp > u32(0) && ok {
+    sp = sp - u32(1)
+    t: u32 = w[lw.snap_at + sp]
+    word: u32 = lw.argv_at + t / u32(32)
+    bitmask: u32 = u32(1) << (t % u32(32))
+    (t == NONE || (w[word] & bitmask) != u32(0)) ? { } | {
+      w[word] = w[word] | bitmask
+      kind: u32 = tkind(lw, w, b, t)
+      (kind == KIND_PARAM || kind == KIND_CONST) ? { } | {
+        sp + u32(3) <= stack_cap ? {
+          w[lw.snap_at + sp] = tword(lw, w, b, t, u32(3))
+          w[lw.snap_at + sp + u32(1)] = kind == KIND_SELECT ? { NONE } | { tword(lw, w, b, t, u32(4)) }
+          w[lw.snap_at + sp + u32(2)] = kind == KIND_ITE ? { tword(lw, w, b, t, u32(5)) } | { NONE }
+          sp = sp + u32(3)
+        } | { ok = false }
+      }
+    }
+  }
+  ok
+}
+
+// compact_terms keeps only the reachable terms, renumbered in their
+// creation order (a dependency order still), operands and roots remapped
+// (the leaf store, free once the terms are built, holds the map); the
+// number of terms kept. The Go serializer emits only what the roots
+// reach, and the blaster's work — and the node budget — should be the
+// same here.
+compact_terms: (lw: Lower, w: [*]u32, b: [*]u32, nterms: u32, ntraps: u32, claim: u32): u32 {
+  reachable_terms(lw, w, b, nterms, ntraps, claim) ? {
+    kept: u32 = 0
+    t: u32 = 0
+    while t < nterms {
+      live: Bool = (w[lw.argv_at + t / u32(32)] & (u32(1) << (t % u32(32)))) != u32(0)
+      live ? {
+        w[lw.leaves_at + t] = kept
+        src: u32 = term_at(lw, w, t)
+        dst: u32 = term_at(lw, w, kept)
+        kind: u32 = b[src]
+        b[dst] = kind
+        b[dst + u32(1)] = b[src + u32(1)]
+        b[dst + u32(2)] = b[src + u32(2)]
+        remap: Bool = kind == KIND_BINARY || kind == KIND_CMP || kind == KIND_ITE || kind == KIND_SELECT
+        a: u32 = b[src + u32(3)]
+        bb: u32 = b[src + u32(4)]
+        c: u32 = b[src + u32(5)]
+        b[dst + u32(3)] = (remap && a != NONE) ? { w[lw.leaves_at + a] } | { a }
+        b[dst + u32(4)] = (remap && bb != NONE && kind != KIND_SELECT) ? { w[lw.leaves_at + bb] } | { bb }
+        b[dst + u32(5)] = (kind == KIND_ITE && c != NONE) ? { w[lw.leaves_at + c] } | { c }
+        b[dst + u32(6)] = b[src + u32(6)]
+        b[dst + u32(7)] = b[src + u32(7)]
+        kept = kept + u32(1)
+      } | { }
+      t = t + u32(1)
+    }
+    r: u32 = 0
+    while r < ntraps {
+      w[lw.traps_at + r] = w[lw.leaves_at + w[lw.traps_at + r]]
+      r = r + u32(1)
+    }
+    set_state(lw, w, LS_RET, w[lw.leaves_at + claim])
+    kept
+  } | {
+    set_state(lw, w, LS_RET, claim)
+    nterms
+  }
+}
+
+// --- the witness pass (the Go decider's witnessInputs) ---------------------
+
+WITNESS_BOUNDARY: u32 = 18
+WITNESS_RANDOM: u32 = 256
+
+// boundary_value is the k-th of the 18 boundary values at a width.
+boundary_value: (k: u32, width: u32): u64 {
+  m: u64 = mask64(width)
+  v: u64 = k == u32(0) ? { u64(0) } | { k == u32(1) ? { u64(1) } | { k == u32(2) ? { u64(2) } | { k == u32(3) ? { u64(3) } | {
+    k == u32(4) ? { u64(7) } | { k == u32(5) ? { u64(8) } | { k == u32(6) ? { u64(15) } | { k == u32(7) ? { u64(16) } | {
+    k == u32(8) ? { u64(31) } | { k == u32(9) ? { u64(32) } | { k == u32(10) ? { u64(127) } | { k == u32(11) ? { u64(128) } | {
+    k == u32(12) ? { u64(255) } | { k == u32(13) ? { u64(256) } | { k == u32(14) ? { m - u64(1) } | { k == u32(15) ? { m } | {
+    k == u32(16) ? { m >> u64(1) } | { (m >> u64(1)) + u64(1) } } } } } } } } } } } } } } } } }
+  v & m
+}
+
+// witness_count is the number of witness inputs over n leaves: the
+// boundary grid over the first two (or the first alone), then 256 random.
+witness_count: (n: u32): u32 = (n == u32(0) ? { u32(1) } | { n == u32(1) ? { WITNESS_BOUNDARY } | { WITNESS_BOUNDARY * WITNESS_BOUNDARY } }) + WITNESS_RANDOM
+
+// fill_witness writes the k-th input's values for every leaf (the snapshot
+// region, two words per leaf): the mentioned leaves (path words 2..,
+// `m` of them, in leaf order, as the Go decider takes the parameters the
+// claim mentions in sorted order) get the boundary grid then the xorshift
+// sequence carried in path words 0 and 1; an unmentioned leaf is zero.
+fill_witness: (lw: Lower, w: [*]u32, b: [*]u32, k: u32, leaves: u32, m: u32): () {
+  grid: u32 = m == u32(0) ? { u32(1) } | { m == u32(1) ? { WITNESS_BOUNDARY } | { WITNESS_BOUNDARY * WITNESS_BOUNDARY } }
+  li: u32 = 0
+  while li < leaves {
+    w[lw.snap_at + li * u32(2)] = u32(0)
+    w[lw.snap_at + li * u32(2) + u32(1)] = u32(0)
+    li = li + u32(1)
+  }
+  first_width: u32 = m > u32(0) ? { b[HEADER_WORDS + w[lw.path_at + u32(2)] * LEAF_WORDS] } | { u32(0) }
+  second_width: u32 = m > u32(1) ? { b[HEADER_WORDS + w[lw.path_at + u32(3)] * LEAF_WORDS] } | { u32(0) }
+  i: u32 = 0
+  while i < m {
+    leaf_i: u32 = w[lw.path_at + u32(2) + i]
+    width: u32 = b[HEADER_WORDS + leaf_i * LEAF_WORDS]
+    value: u64 = 0
+    k < grid ? {
+      a: u64 = boundary_value(k / WITNESS_BOUNDARY, first_width)
+      bv: u64 = m > u32(1) ? { boundary_value(k % WITNESS_BOUNDARY, second_width) } | { u64(0) }
+      value = i == u32(0) ? { m == u32(1) ? { boundary_value(k, width) } | { a } } | { i == u32(1) ? { bv } | { (a ^ bv) & mask64(width) } }
+    } | {
+      seed: u64 = (u64(w[lw.path_at + u32(1)]) << u64(32)) | u64(w[lw.path_at])
+      seed = seed ^ (seed << u64(13))
+      seed = seed ^ (seed >> u64(7))
+      seed = seed ^ (seed << u64(17))
+      w[lw.path_at] = u32_trunc_u64(seed)
+      w[lw.path_at + u32(1)] = u32_trunc_u64(seed >> u64(32))
+      value = seed & mask64(width)
+    }
+    w[lw.snap_at + leaf_i * u32(2)] = u32_trunc_u64(value)
+    w[lw.snap_at + leaf_i * u32(2) + u32(1)] = u32_trunc_u64(value >> u64(32))
+    i = i + u32(1)
+  }
+}
+
+leaf_value: (lw: Lower, w: [*]u32, li: u32): u64 = (u64(w[lw.snap_at + li * u32(2) + u32(1)]) << u64(32)) | u64(w[lw.snap_at + li * u32(2)])
+term_value: (lw: Lower, w: [*]u32, t: u32): u64 = (u64(w[lw.leaves_at + t * u32(2) + u32(1)]) << u64(32)) | u64(w[lw.leaves_at + t * u32(2)])
+
+// eval_terms evaluates every term in order under the leaf values (the
+// leaf store holds the values, two words per term); false when a term is
+// outside the evaluator (a select).
+eval_terms: (lw: Lower, w: [*]u32, b: [*]u32, nterms: u32): Bool {
+  ok: Bool = true
+  t: u32 = 0
+  while t < nterms && ok {
+    kind: u32 = tkind(lw, w, b, t)
+    width: u32 = twidth(lw, w, b, t)
+    m: u64 = mask64(width)
+    a: u32 = tword(lw, w, b, t, u32(3))
+    bb: u32 = tword(lw, w, b, t, u32(4))
+    value: u64 = 0
+    kind == KIND_PARAM ? { value = leaf_value(lw, w, a) & m } | {
+    kind == KIND_CONST ? { value = tvalue(lw, w, b, t) } | {
+    kind == KIND_BINARY ? { value = fold_binary(tword(lw, w, b, t, u32(1)), term_value(lw, w, a) & m, bb == NONE ? { u64(0) } | { term_value(lw, w, bb) & m }, width) } | {
+    kind == KIND_CMP ? { value = fold_cmp(tword(lw, w, b, t, u32(1)), term_value(lw, w, a), term_value(lw, w, bb), twidth(lw, w, b, a)) } | {
+    kind == KIND_ITE ? { value = (term_value(lw, w, tword(lw, w, b, t, u32(5))) & u64(1)) != u64(0) ? { term_value(lw, w, a) & m } | { term_value(lw, w, bb) & m } } | { ok = false } } } } }
+    w[lw.leaves_at + t * u32(2)] = u32_trunc_u64(value)
+    w[lw.leaves_at + t * u32(2) + u32(1)] = u32_trunc_u64(value >> u64(32))
+    t = t + u32(1)
+  }
+  ok
+}
+
+// mentioned_leaves lists the leaves some parameter term reads (path
+// words 2.., in leaf order) and returns their count.
+mentioned_leaves: (lw: Lower, w: [*]u32, b: [*]u32, nterms: u32, leaves: u32): u32 {
+  li: u32 = 0
+  while li < leaves {
+    w[lw.snap_at + li] = u32(0)
+    li = li + u32(1)
+  }
+  t: u32 = 0
+  while t < nterms {
+    tkind(lw, w, b, t) == KIND_PARAM ? { w[lw.snap_at + tword(lw, w, b, t, u32(3))] = u32(1) } | { }
+    t = t + u32(1)
+  }
+  m: u32 = 0
+  li = u32(0)
+  while li < leaves {
+    w[lw.snap_at + li] != u32(0) ? {
+      w[lw.path_at + u32(2) + m] = li
+      m = m + u32(1)
+    } | { }
+    li = li + u32(1)
+  }
+  m
+}
+
+// witness_pass evaluates the roots on every witness input: 1 when an input
+// falsifies the claim, 4 when one fires a trap obligation, else 0 (the
+// input's leaf values stay in the snapshot region for the report).
+witness_pass: (lw: Lower, w: [*]u32, b: [*]u32, nterms: u32, ntraps: u32, claim: u32, leaves: u32): u32 {
+  m: u32 = mentioned_leaves(lw, w, b, nterms, leaves)
+  w[lw.path_at] = u32(0x7F4A7C15)
+  w[lw.path_at + u32(1)] = u32(0x9E3779B9)
+  total: u32 = witness_count(m)
+  k: u32 = 0
+  verdict: u32 = 0
+  while k < total && verdict == u32(0) {
+    fill_witness(lw, w, b, k, leaves, m)
+    eval_terms(lw, w, b, nterms) ? {
+      r: u32 = 0
+      while r < ntraps && verdict == u32(0) {
+        verdict = (term_value(lw, w, w[lw.traps_at + r]) & u64(1)) != u64(0) ? { u32(4) } | { u32(0) }
+        r = r + u32(1)
+      }
+      verdict = (verdict == u32(0) && (term_value(lw, w, claim) & u64(1)) != u64(1)) ? { u32(1) } | { verdict }
+    } | { k = total }
+    k = k + u32(1)
+  }
+  verdict
+}
+
+// witness_bits lists the set bits of the witness's leaf values as
+// leaf * 64 + bit into out (word 0 the count).
+witness_bits: (lw: Lower, w: [*]u32, leaves: u32, out: [*]u32): () {
+  count: u32 = 0
+  li: u32 = 0
+  while li < leaves {
+    v: u64 = leaf_value(lw, w, li)
+    bit: u32 = 0
+    while bit < u32(64) && count + u32(1) < len(out) {
+      ((v >> u64(bit)) & u64(1)) != u64(0) ? {
+        out[count + u32(1)] = li * u32(64) + bit
+        count = count + u32(1)
+      } | { }
+      bit = bit + u32(1)
+    }
+    li = li + u32(1)
+  }
+  out[u32(0)] = count
+}
+
 // lower_theorem lowers the syntax table into the problem buffer under the
 // variable order asked for: the leaves' variables, the claim at one bit
 // after the trap obligations as the roots, and the select slots'
@@ -1754,12 +2320,24 @@ lower_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, budget: u32, order: 
     is_scalar_type(sx, ptype) ? { bind_scalar(lw, w, p, leaf_at(lw, w, block, u32(0)), ptype) } | { bind_aggregate(lw, w, p, ptype, block) }
     p = p + u32(1)
   }
+  // Every sum tag among the parameters names a variant: the hypothesis
+  // the body is decided under.
+  assume: u32 = t_const(lw, w, b, u32(1), u32(1))
+  p = u32(0)
+  while p < n && !failed(lw, w) {
+    ptype: u32 = param_type(sx, fn_param_start(sx, theorem) + p)
+    is_scalar_type(sx, ptype) ? { } | { assume = t_binary(lw, w, b, BOP_AND, assume, tags_name_variants(lw, w, b, sx, ptype, sym_block(lw, w, p))) }
+    p = p + u32(1)
+  }
   push_frame_l(lw, w, F_EXPR, fn_body(sx, theorem), u32(1))
   run_machine(lw, w, b, sx)
   failed(lw, w) ? { u32(0) } | {
-    claim: u32 = t_truncate(lw, w, b, state(lw, w, LS_RET), u32(1))
-    nterms: u32 = state(lw, w, LS_TERMS)
+    body_claim: u32 = t_truncate(lw, w, b, state(lw, w, LS_RET), u32(1))
+    assumed: Bool = is_const(lw, w, b, assume) && tvalue(lw, w, b, assume) == u64(1)
+    full_claim: u32 = assumed ? { body_claim } | { t_binary(lw, w, b, BOP_OR, t_binary(lw, w, b, BOP_XOR, assume, t_const(lw, w, b, u32(1), u32(1))), body_claim) }
     ntraps: u32 = state(lw, w, LS_TRAPS)
+    nterms: u32 = compact_terms(lw, w, b, state(lw, w, LS_TERMS), ntraps, full_claim)
+    claim: u32 = state(lw, w, LS_RET)
     // The order: does it apply, and the leaves' block placement.
     ncontrol: u32 = order == ORDER_CONTROL ? { control_leaves(lw, w, b, nterms, leaves) } | { u32(0) }
     applies: Bool = order == ORDER_INTERLEAVED ? { true } | {

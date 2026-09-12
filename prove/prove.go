@@ -667,21 +667,23 @@ func bitLevel(deferred bool, tc *typechecker.TypeChecker, decls asm.Declarations
 	if reason != "" {
 		return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + reason + ")"}
 	}
-	if decision, settled := asm.WitnessRefutation(stated, callees, guards, decls); settled {
-		if decision.Kind == asm.DecisionRefuted {
-			return Result{Name: open.Name, Status: Refuted, Detail: decision.Message}
+	// The Oak lowering runs the witness pass itself; the Go decider's runs
+	// only for a theorem outside the Oak lowering's subset.
+	syntax, leafNames, _, inSubset := asm.ExportSyntax(stated, callees, decls)
+	if !inSubset {
+		syntax, leafNames = nil, nil
+		if decision, settled := asm.WitnessRefutation(stated, callees, guards, decls); settled {
+			if decision.Kind == asm.DecisionRefuted {
+				return Result{Name: open.Name, Status: Refuted, Detail: decision.Message}
+			}
+			return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + decision.Message + ")"}
 		}
-		return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + decision.Message + ")"}
 	}
 	problems, reason, ok := asm.ExportProblems(stated, callees, guards, decls, asm.NodeBudget)
 	if !ok {
 		return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + reason + ")"}
 	}
 	fallback := Result{Name: open.Name, Status: Open, Detail: open.Detail}
-	syntax, leafNames, _, inSubset := asm.ExportSyntax(stated, callees, decls)
-	if !inSubset {
-		syntax, leafNames = nil, nil
-	}
 	return Result{Name: open.Name, Status: Pending, Problems: problems, Syntax: syntax, LeafNames: leafNames, fallback: func() Result { return fallback }}
 }
 
@@ -708,6 +710,8 @@ func ResolvePending(results []Result, verdicts map[string]SolverVerdict, goDecid
 			settled = Result{Name: r.Name, Status: Decided, Detail: fmt.Sprintf("at the bit level (%d BDD nodes%s; lowered and decided in Oak)", v.Nodes, label), Order: order, Nodes: v.Nodes}
 		case has && v.Lowered && v.Status == 1:
 			settled = Result{Name: r.Name, Status: Refuted, Detail: "counterexample " + leafCounterexample(r.LeafNames, v.Vars) + " (lowered and decided in Oak)"}
+		case has && v.Lowered && v.Status == 4:
+			settled = Result{Name: r.Name, Status: Refuted, Detail: "the body traps (a shift count at the width, a failed assert, or a construction outside its predicate) at " + leafCounterexample(r.LeafNames, v.Vars) + " (lowered and decided in Oak)"}
 		case has && v.Status == 0 && v.Winner >= 0 && v.Winner < len(r.Problems):
 			order := r.Problems[v.Winner].Order
 			label := ""
@@ -739,7 +743,18 @@ func ResolvePending(results []Result, verdicts map[string]SolverVerdict, goDecid
 // theorem's leaves, every unset bit zero.
 func leafCounterexample(leafNames []string, setBits []uint32) string {
 	values := make([]uint64, len(leafNames))
+	var mentioned map[int]bool
 	for _, lb := range setBits {
+		if lb&leafMentioned != 0 {
+			// The Oak solver names the leaves the theorem reads: the
+			// counterexample lists those, as the Go decider lists the
+			// parameters the claim mentions.
+			if mentioned == nil {
+				mentioned = map[int]bool{}
+			}
+			mentioned[int(lb&^leafMentioned)] = true
+			continue
+		}
 		leaf, bit := int(lb/64), lb%64
 		if leaf < len(values) {
 			values[leaf] |= uint64(1) << bit
@@ -747,11 +762,17 @@ func leafCounterexample(leafNames []string, setBits []uint32) string {
 	}
 	parts := make([]string, 0, len(leafNames))
 	for i, name := range leafNames {
+		if mentioned != nil && !mentioned[i] {
+			continue
+		}
 		parts = append(parts, fmt.Sprintf("%s=%d", name, values[i]))
 	}
 	// Leaves past the parameters are the fresh symbols a NaN min or max
 	// yields, which no law may pin down.
 	for _, lb := range setBits {
+		if lb&leafMentioned != 0 {
+			continue
+		}
 		if leaf := int(lb / 64); leaf >= len(leafNames) {
 			parts = append(parts, fmt.Sprintf("fresh#%d set", leaf-len(leafNames)))
 			break
@@ -759,6 +780,10 @@ func leafCounterexample(leafNames []string, setBits []uint32) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// leafMentioned marks, in the Oak solver's variable list, a leaf the
+// theorem's terms read rather than a set bit.
+const leafMentioned = uint32(1) << 31
 
 // GoDecision runs the Go decider on the named theorem: the cross-check of
 // the Oak solver, under one order when given (the node counts must match)

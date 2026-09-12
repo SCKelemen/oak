@@ -160,6 +160,32 @@ solve_one: (l: Layout, mem: [*]u32, p: []u32, index: u32, lowered: u32): () {
   report(index, status, node_count(l, mem), lowered, view(&vars), listed)
 }
 
+// dump_problem prints a built problem's words as a D line (index, count, words) when
+// OAK_SOLVER_DUMP is set (a debugging aid: the Oak lowering's terms beside
+// the Go lowering's).
+dump_problem: (p: []u32, index: u32): () {
+  flag: c.Ptr = c_getenv(c.cstr("OAK_SOLVER_DUMP\0"))
+  wanted: Bool = false
+  unsafe {
+    value: []u8 = c.borrow_string(flag)
+    wanted = len(value) > u32(0)
+  }
+  wanted ? {
+    write_byte(u8(68))
+    write_byte(u8(32))
+    write_u32(index)
+    write_byte(u8(32))
+    write_u32(len(p))
+    i: u32 = 0
+    while i < len(p) {
+      write_byte(u8(32))
+      write_u32(p[i])
+      i = i + u32(1)
+    }
+    write_byte(u8(10))
+  } | { }
+}
+
 // leaf_bit_of finds the leaf and bit a variable of the problem stands for
 // (leaf * 64 + bit), NONE for a select variable.
 leaf_bit_of: (p: []u32, v: u32): u32 {
@@ -180,10 +206,40 @@ leaf_bit_of: (p: []u32, v: u32): u32 {
 // solve_prefix solves the problem the Oak lowering built in the first n
 // words of a view (the slice taken here, so the view ends with the call),
 // reporting a refutation's witness as leaf and bit.
+// MENTIONED marks, in a refutation's variable list, a leaf some parameter
+// term reads (MENTIONED + leaf): the counterexample names those leaves
+// only, as the Go decider names the parameters the claim mentions.
+MENTIONED: u32 = 2147483648
+
+// mentioned_marks appends the MENTIONED marks of the problem's leaves to
+// out from the given position; the new count.
+mentioned_marks: (p: []u32, out: [*]u32, start: u32): u32 {
+  nterms: u32 = p[u32(0)]
+  leaves: u32 = p[u32(1)]
+  count: u32 = start
+  li: u32 = 0
+  while li < leaves && count < len(out) {
+    t: u32 = 0
+    read: Bool = false
+    while t < nterms && !read {
+      at: u32 = HEADER_WORDS + leaves * LEAF_WORDS + t * TERM_WORDS
+      read = p[at] == KIND_PARAM && p[at + u32(3)] == li
+      t = t + u32(1)
+    }
+    read ? {
+      out[count] = MENTIONED + li
+      count = count + u32(1)
+    } | { }
+    li = li + u32(1)
+  }
+  count
+}
+
 solve_prefix: (l: Layout, mem: [*]u32, whole: []u32, n: u32, index: u32): () {
   p: []u32 = subslice(whole, u32(0), n)
+  dump_problem(p, index)
   status: u32 = solve(l, mem, p)
-  vars: [256]u32
+  vars: [512]u32
   listed: u32 = status == STATUS_REFUTED ? { witness_vars(l, mem, p, span(&vars)) } | { u32(0) }
   kept: u32 = 0
   i: u32 = 0
@@ -195,6 +251,7 @@ solve_prefix: (l: Layout, mem: [*]u32, whole: []u32, n: u32, index: u32): () {
     }
     i = i + u32(1)
   }
+  kept = status == STATUS_REFUTED ? { mentioned_marks(p, span(&vars), kept) } | { kept }
   report(index, status, node_count(l, mem), u32(1), view(&vars), kept)
 }
 
@@ -210,17 +267,59 @@ solve_variant: (l: Layout, table_raw: c.Ptr, p: []u32, index: u32): () {
 
 // lower_in_oak runs the Oak lowering on a syntax table into the built
 // buffer's memory; the problem's word count, 0 outside the subset.
-lower_in_oak: (lw: Lower, work_raw: c.Ptr, built_raw: c.Ptr, sx: []u32, budget: u32, order: u32): u32 {
+// lower_in_oak lowers a syntax table in the work and built memory: the
+// problem's word count, NONE minus the reason when the theorem is outside
+// the subset. With the problem built, the witness pass runs over the
+// fixed inputs; a refuting input is reported through witness (word 0 the
+// verdict, 1 refuted or 4 trapped, then the set leaf bits) and the word
+// count comes back as WITNESSED.
+WITNESSED: u32 = 4294967293
+
+lower_in_oak: (lw: Lower, work_raw: c.Ptr, built_raw: c.Ptr, sx: []u32, budget: u32, order: u32, witness: [*]u32): u32 {
   n: u32 = 0
+  witness[u32(0)] = u32(0)
   unsafe {
     wbuf: Buffer[u32] = c.own[u32](work_raw, lw.total)
     bbuf: Buffer[u32] = c.own[u32](built_raw, lw.built_total)
     n = lower_theorem(lw, span(&wbuf), span(&bbuf), sx, budget, order)
     n = n == u32(0) ? { NONE - lower_reason(lw, span(&wbuf)) } | { n }
+    n < u32(0x80000000) ? {
+      verdict: u32 = witness_check(lw, span(&wbuf), span(&bbuf), witness)
+      verdict == u32(0) ? { } | {
+        whole: []u32 = view(&bbuf)
+        built: []u32 = subslice(whole, u32(0), n)
+        listed: u32 = witness[u32(0)] % u32(65536)
+        marked: u32 = mentioned_marks(built, witness, listed + u32(1))
+        witness[u32(0)] = verdict * u32(65536) + marked - u32(1)
+      }
+      n = verdict == u32(0) ? { n } | { WITNESSED }
+    } | { }
     released_w: c.Ptr = c.disown(wbuf)
     released_b: c.Ptr = c.disown(bbuf)
   }
   n
+}
+
+// witness_check runs the witness pass on the built problem and, on a
+// refutation, writes the verdict and the set leaf bits into witness.
+witness_check: (lw: Lower, w: [*]u32, b: [*]u32, witness: [*]u32): u32 {
+  nterms: u32 = b[u32(0)]
+  leaves: u32 = b[u32(1)]
+  roots: u32 = b[u32(2)]
+  root_base: u32 = HEADER_WORDS + leaves * LEAF_WORDS + nterms * TERM_WORDS
+  ntraps: u32 = roots - u32(1)
+  claim: u32 = b[root_base + ntraps]
+  r: u32 = 0
+  while r < ntraps {
+    w[lw.traps_at + r] = b[root_base + r]
+    r = r + u32(1)
+  }
+  verdict: u32 = witness_pass(lw, w, b, nterms, ntraps, claim, leaves)
+  verdict == u32(0) ? { } | {
+    witness_bits(lw, w, leaves, witness)
+    witness[u32(0)] = verdict * u32(65536) + witness[u32(0)]
+  }
+  verdict
 }
 
 // solve_lowered solves the problem the Oak lowering built (n words at the
@@ -307,11 +406,21 @@ solve_stream: (l: Layout, lw: Lower, data: []u32, table_raw: c.Ptr, work_raw: c.
     off = off + syntax_words
     shift: u32 = syntax_words > u32(0) ? { u32(3) } | { u32(0) }
     (syntax_words > u32(0) && slot < u32(3)) ? {
-      n: u32 = lower_in_oak(lw, work_raw, built_raw, subslice(data, syntax_start, syntax_words), budget, slot)
-      n < u32(0x80000000) ? { solve_lowered(l, lw, table_raw, built_raw, n, i) } | {
-        none: [1]u32
-        reason: u32 = NONE - n
-        report(i, reason == REASON_ORDER ? { STATUS_EXCEEDED } | { STATUS_UNSUPPORTED }, reason, u32(1), view(&none), u32(0))
+      witness: [512]u32
+      n: u32 = lower_in_oak(lw, work_raw, built_raw, subslice(data, syntax_start, syntax_words), budget, slot, span(&witness))
+      n == WITNESSED ? {
+        // A witness input refuted the theorem (or fired a trap): reported
+        // with the input's set leaf bits, no diagram built.
+        verdict: u32 = witness[u32(0)] / u32(65536)
+        listed: u32 = witness[u32(0)] % u32(65536)
+        bits: []u32 = view(&witness)
+        report(i, verdict, u32(0), u32(1), subslice(bits, u32(1), listed), listed)
+      } | {
+        n < u32(0x80000000) ? { solve_lowered(l, lw, table_raw, built_raw, n, i) } | {
+          none: [1]u32
+          reason: u32 = NONE - n
+          report(i, reason == REASON_ORDER ? { STATUS_EXCEEDED } | { STATUS_UNSUPPORTED }, reason, u32(1), view(&none), u32(0))
+        }
       }
     } | {
       want: u32 = slot - shift
@@ -482,6 +591,16 @@ func runOakSolver(theorems []oakTheorem, budget int) ([]prove.SolverVerdict, err
 	remaining := len(theorems)
 	var firstErr error
 	for l := range lines {
+		if strings.HasPrefix(l.text, "D ") {
+			if dump := os.Getenv("OAK_SOLVER_DUMP"); dump != "" {
+				f, _ := os.OpenFile(dump, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+				if f != nil {
+					fmt.Fprintf(f, "slot %d %s\n", l.slot, l.text)
+					f.Close()
+				}
+			}
+			continue
+		}
 		v, index, err := parseOakVerdict(l.text)
 		if err != nil {
 			if firstErr == nil {
@@ -509,7 +628,7 @@ func runOakSolver(theorems []oakTheorem, budget int) ([]prove.SolverVerdict, err
 				oakPending[index] = oakOrders
 			}
 		}
-		decided := v.Status == 0 || v.Status == 1
+		decided := v.Status == 0 || v.Status == 1 || v.Status == 4 // 4: a witness input trapped
 		switch {
 		case decided && (!hasSyntax || isOak || oakLoweringDone[index]):
 			// The Oak lowering's verdict is preferred when it applies: a
