@@ -198,7 +198,8 @@ Cortex-M0+ compiling a `u32` fetch-add, for instance — fails the C build
 instead of linking a hidden lock. A build that has audited the fallback and
 accepts it defines `OAK_ATOMIC_ACCEPT_LOCKED`; that define is the "accepted
 bounded implementation" and is visible in the build line, not in the
-program. Carriers the program never declares are not asserted, so a
+program. Under the strict profile the block has no opt-out: the
+zero-warning posture reaches the C build (`85-discipline.md` §7). Carriers the program never declares are not asserted, so a
 `u32`-only program still builds on a core without 64-bit exclusives.
 (`codegen/memory.go` `emitAtomicAdmission`; `compiler/e2e_atomic_admission_test.go`
 cross-compiles the same C for Cortex-M4, where it builds, and Cortex-M0+,
@@ -306,7 +307,8 @@ Acceptance spans the whole executable stack:
 | modification order/release sequences/fences | specified + implemented + Lean-modeled in chapter 67 |
 | global seq-cst order/read visibility | specified + implemented + Lean-modeled in chapter 68 |
 | language-level memory relation set | explicit through seq-cst |
-| C/ISA formal refinement | not yet proved |
+| C refinement of the total arithmetic macros | proved: `Oak.ArithmeticRefinement` transliterates `OAK_ARITH_U`/`OAK_ARITH_I` and proves each body equal to the fixed-width operator; `codegen/arithmetic_refinement_test.go` pins the emitted text |
+| C/ISA refinement of atomics and ordering | not yet proved |
 | AArch64 weak-memory litmus suite | next major layer |
 | target lock-free admission (C backend) | implemented + cross-compile-tested (§6) |
 

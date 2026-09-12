@@ -466,9 +466,14 @@ func (cg *CodeGenerator) emitAtomicAdmission() {
 	}
 	cg.write("\n/* lock-free admission (docs/spec/65-machine-memory.md section 6): every\n")
 	cg.write("   atomic carrier this program declares must be always lock-free on the\n")
-	cg.write("   target; a libatomic fallback would be a hidden lock. Define\n")
-	cg.write("   OAK_ATOMIC_ACCEPT_LOCKED to accept one knowingly. */\n")
-	cg.write("#if !defined(OAK_ATOMIC_ACCEPT_LOCKED)\n")
+	if cg.strictAdmission {
+		cg.write("   target; a libatomic fallback would be a hidden lock. Strict profile:\n")
+		cg.write("   no opt-out (docs/spec/85-discipline.md section 7). */\n")
+	} else {
+		cg.write("   target; a libatomic fallback would be a hidden lock. Define\n")
+		cg.write("   OAK_ATOMIC_ACCEPT_LOCKED to accept one knowingly. */\n")
+		cg.write("#if !defined(OAK_ATOMIC_ACCEPT_LOCKED)\n")
+	}
 	for _, carrier := range carriers {
 		condition, err := lockFreeConditionC(carrier)
 		if err != nil {
@@ -476,5 +481,7 @@ func (cg *CodeGenerator) emitAtomicAdmission() {
 		}
 		cg.write(fmt.Sprintf("typedef char oak_atomic_lock_free_%s[ (%s) ? 1 : -1 ];\n", carrier, condition))
 	}
-	cg.write("#endif\n")
+	if !cg.strictAdmission {
+		cg.write("#endif\n")
+	}
 }

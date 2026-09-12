@@ -1,0 +1,115 @@
+package slab
+
+// A bounded typed slab over storage the caller owns (docs/spec/60-effects-
+// allocation.md sections 7 and 8; stdlib/README.md). Like arena, the slab
+// hands out slot indices, never memory: the program owns a `[N]T` payload
+// array and a `[N]SlabSlot` metadata array, asks the slab for a slot, and
+// indexes the payload with the slot it gets back. A slot is named by a
+// handle — the slot index and the generation the slot had when it was
+// handed out — so a handle kept past its object's free never resolves to
+// the object that reused the slot (Oak.Handles: reuse advances the
+// generation before the slot goes live again). Capacity is the length of
+// the metadata array and is never exceeded (Oak.Slab); allocation from a
+// full slab fails explicitly and leaves the slab as it was.
+//
+// Every count is u32 arithmetic with the overflow cases decided, so the
+// interpreter and every backend agree: a slot whose generation reaches the
+// largest u32 is retired rather than wrapped — it is never handed out
+// again, so no stale handle can resolve after 2^32 reuses — and the live
+// count never exceeds the capacity.
+
+pub SlabSlot: type = struct {
+  generation: u32
+  next_free: u32
+  live: Bool
+}
+
+pub Slab: type = struct {
+  free_head: u32
+  live: u32
+  capacity: u32
+}
+
+pub SlabHandle: type = struct {
+  slot: u32
+  generation: u32
+}
+
+// The outcome of an allocation: the handle and the slab after it, or
+// ok = false with the slab unchanged.
+pub SlabAlloc: type = struct {
+  ok: Bool
+  handle: SlabHandle
+  slab: Slab
+}
+
+// The outcome of a free: the slab after it, or ok = false (the handle did
+// not resolve) with the slab unchanged.
+pub SlabFree: type = struct {
+  ok: Bool
+  slab: Slab
+}
+
+// slab_retired is the generation of a slot that is never handed out again.
+pub slab_retired: (): u32 = u32(4294967295)
+
+// slab_init threads every slot onto the free list and returns the empty
+// slab; the capacity is len(slots). An empty metadata array is a slab that
+// is always full.
+pub slab_init: (slots: [*]SlabSlot): Slab {
+  n: u32 = len(slots)
+  i: u32 = u32(0)
+  while i < n {
+    slots[i] = SlabSlot { generation: u32(0), next_free: i + u32(1), live: false }
+    i = i + u32(1)
+  }
+  Slab { free_head: u32(0), live: u32(0), capacity: n }
+}
+
+pub slab_live: (s: Slab): u32 = s.live
+
+pub slab_remaining: (s: Slab): u32 = s.capacity - s.live
+
+// slab_resolves holds when the handle names the object currently in its
+// slot: the slot is live and its generation is the handle's. A handle to a
+// freed or reused slot, or one with an out-of-range slot, does not resolve.
+pub slab_resolves: (slots: [*]SlabSlot, h: SlabHandle): Bool {
+  h.slot < len(slots) && slots[h.slot].live && slots[h.slot].generation == h.generation
+}
+
+// slab_alloc takes the first free slot whose generation can still advance,
+// advances it, and marks the slot live. Retired slots at the head of the
+// free list are dropped from it as they are met; a slab whose free list
+// holds only retired slots is full.
+pub slab_alloc: (s: Slab, slots: [*]SlabSlot): SlabAlloc {
+  assert(len(slots) == s.capacity)
+  head: u32 = s.free_head
+  // Each step drops one retired slot from the free list, so this runs at
+  // most capacity times.
+  steps: u32 = u32(0)
+  while head < s.capacity && slots[head].generation == slab_retired() && steps < s.capacity {
+    head = slots[head].next_free
+    steps = steps + u32(1)
+  }
+  head >= s.capacity ? SlabAlloc { ok: false, handle: SlabHandle { slot: u32(0), generation: u32(0) }, slab: Slab { free_head: head, live: s.live, capacity: s.capacity } } | {
+    gen: u32 = slots[head].generation + u32(1)
+    next: u32 = slots[head].next_free
+    slots[head] = SlabSlot { generation: gen, next_free: s.capacity, live: true }
+    SlabAlloc {
+      ok: true,
+      handle: SlabHandle { slot: head, generation: gen },
+      slab: Slab { free_head: next, live: s.live + u32(1), capacity: s.capacity }
+    }
+  }
+}
+
+// slab_free returns the handle's slot to the free list, keeping its
+// generation so the handle stops resolving; a handle that does not resolve
+// frees nothing.
+pub slab_free: (s: Slab, slots: [*]SlabSlot, h: SlabHandle): SlabFree {
+  assert(len(slots) == s.capacity)
+  slab_resolves(slots, h) ? {
+    slots[h.slot] = SlabSlot { generation: h.generation, next_free: s.free_head, live: false }
+    SlabFree { ok: true, slab: Slab { free_head: h.slot, live: s.live - u32(1), capacity: s.capacity } }
+  } | SlabFree { ok: false, slab: s }
+}

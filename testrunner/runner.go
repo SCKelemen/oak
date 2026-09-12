@@ -12,13 +12,23 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/SCKelemen/oak/target"
 )
 
 type Config struct {
-	Adapter                              string
-	EmitFuzz                             string
-	CC                                   string
-	Profile                              string // discipline profile: "", "default", or "strict"
+	Adapter  string
+	EmitFuzz string
+	CC       string
+	Profile  string // discipline profile: "", "default", or "strict"
+	// Target and CPU select the build target of the test binaries
+	// (`-target os/arch`, `-cpu`; docs/spec/90-backend.md section 2a). The
+	// empty target is the host, resolved as `oak build` resolves it
+	// (OAKOS/OAKARCH, else the host). A foreign hosted target is built
+	// through its cross toolchain and every test is reported "built", not
+	// run; a freestanding target has no test harness and is refused.
+	Target, CPU                          string
+	target                               target.Target
 	Runs, MaxBytes, Shrink, MaxDiscards  int
 	Seed                                 uint64
 	Timeout, BuildTimeout, ShrinkTimeout time.Duration
@@ -98,6 +108,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	flags.StringVar(&cfg.CC, "cc", cfg.CC, "C compiler executable")
 	flags.StringVar(&cfg.Profile, "profile", "", "discipline profile: default or strict (docs/spec/85-discipline.md)")
+	flags.StringVar(&cfg.Target, "target", "", "build target os/arch (docs/spec/90-backend.md section 2a); a foreign target is built, not run")
+	flags.StringVar(&cfg.CPU, "cpu", "", "processor for -mcpu (default: the target's)")
 	flags.StringVar(&cfg.Adapter, "adapter", "", "trusted deterministic native adapter manifest (also required for replay)")
 	flags.IntVar(&cfg.Runs, "runs", cfg.Runs, "accepted generated cases per property/simulation/fuzz campaign")
 	flags.IntVar(&cfg.MaxBytes, "max-bytes", cfg.MaxBytes, "maximum input/choice-tape bytes (0..1048576)")
@@ -136,6 +148,26 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	if cfg.Profile != "" && cfg.Profile != "default" && cfg.Profile != "strict" {
 		fmt.Fprintf(stderr, "unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)\n", cfg.Profile)
 		return 2
+	}
+	tgt, err := target.FromEnv(cfg.Target, nil)
+	if err != nil {
+		fmt.Fprintf(stderr, "oak test: %v\n", err)
+		return 2
+	}
+	cfg.target = tgt
+	if !tgt.IsHost() {
+		// The test harness is hosted C (it opens the report file, allocates
+		// the case bytes, prints the verdict), so a freestanding target has
+		// nothing to link it against; and a foreign hosted binary cannot run
+		// here, so the modes that need a run are refused up front.
+		if tgt.Freestanding() {
+			fmt.Fprintf(stderr, "oak test -target %s: freestanding targets have no test harness; build the package with oak build -target instead\n", tgt)
+			return 2
+		}
+		if cfg.Replay != "" || cfg.Fuzz != "" || cfg.EmitFuzz != "" || cfg.Campaign != "" || cfg.Sanitize {
+			fmt.Fprintf(stderr, "oak test -target %s builds the tests without running them; -replay, -fuzz, -emit-fuzz-harness, -campaign and -sanitize need the host target\n", tgt)
+			return 2
+		}
 	}
 	if cfg.EmitFuzz != "" && (cfg.Fuzz == "" || cfg.Replay != "" || cfg.List) {
 		fmt.Fprintln(stderr, "-emit-fuzz-harness requires -fuzz and cannot combine with replay/list")
@@ -181,6 +213,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	matched := 0
 	for i := range packages {
 		packages[i].Profile = cfg.Profile
+		packages[i].Target = cfg.target
 		var selected []Test
 		for _, test := range packages[i].Tests {
 			if !run.MatchString(test.Name) || cfg.Fuzz != "" && (test.Kind != "fuzz" || !fuzz.MatchString(test.Name)) || cfg.Sim != "" && (test.Kind != "simulation" || !sim.MatchString(test.Name)) {
@@ -293,6 +326,16 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			emit(Result{Package: pkg.Dir, Status: "error", Failure: err.Error(), Seed: cfg.Seed})
 			code = 2
+			continue
+		}
+		if !cfg.target.IsHost() {
+			// A foreign target's binary cannot run here: the build is the
+			// verdict (docs/spec/90-backend.md section 2a). Running it under
+			// an emulator from the tooling is not yet.
+			for _, test := range pkg.Tests {
+				emit(Result{Test: test, Package: pkg.Dir, Status: "built", Output: "  built for " + cfg.target.String() + ", not run", Seed: cfg.Seed})
+			}
+			_ = os.RemoveAll(native.dir)
 			continue
 		}
 		for _, test := range pkg.Tests {

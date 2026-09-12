@@ -263,6 +263,7 @@ func goParseBits(s string, size int) (uint64, int) {
 // TestE2EStdlibFloatHardCases: the values that break naive conversions,
 // formatted and parsed both ways, compiled and interpreted.
 func TestE2EStdlibFloatHardCases(t *testing.T) {
+	skipInShort(t)
 	b := &floatChecks{}
 	values := []float64{
 		0.1, 1.0 / 3, 5e-324, 2.2250738585072011e-308, 2.2250738585072012e-308, 2.2250738585072014e-308,
@@ -627,6 +628,7 @@ func exactMidpoint(v, next float64) string {
 }
 
 func TestE2EStdlibFloatDifferential(t *testing.T) {
+	skipInShort(t)
 	rng := rand.New(rand.NewSource(20260911))
 	const perProgram = 400
 	// Formatting of random f64 bit patterns and parsing of their shortest text.

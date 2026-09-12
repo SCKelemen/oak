@@ -1,0 +1,59 @@
+// The host boundary's write hook, from Oak (docs/spec/90-backend.md §2a;
+// stdlib/README.md). A program that has something to say — a log line, a
+// test verdict, the digits of a result — says it through host_write, and
+// the same program prints on the host and over a UART on firmware: hosted
+// builds define the hook over the C library (fd 2 is stderr, anything else
+// stdout), a freestanding build takes the kernel's or firmware's
+// definition, and a build with neither writes nothing and reports zero
+// bytes. Importing this package is the one place a program admits it
+// writes to the host; code that formats text into caller-owned storage
+// (`float`, `strings`) never sees it.
+//
+//   int64_t oak_host_write(int64_t fd, const uint8_t *buf, size_t len);
+//
+// The hook is weak on every target, so a host that defines nothing gets
+// the null address and host_write returns 0 rather than calling it. The
+// bytes cross the boundary as a pointer and a length for the duration of
+// the one call and for nothing else (docs/spec/92-ffi.md §2.5); the hook
+// may read them and may not keep them.
+package host
+
+// The extern binding names the hook's C signature (docs/spec/92-ffi.md
+// section 2.3). It binds the code generator's shim over the weak hook —
+// declared once, with the boundary's signature, in both build modes —
+// which returns 0 when no host defined the hook instead of calling the
+// null address.
+oak_host_write: (fd: c.Int64, data: c.Ptr, count: c.Size): c.Int64 effects { Host.Write } = c.extern("oak_host_write_call")
+
+// host_write hands bytes to the host on descriptor fd and returns how many
+// the host took: len(bytes) when the write completed, fewer when the host
+// stopped early, and a negative count for a host error, exactly as the
+// hook reports it. An empty view writes nothing and returns 0 without
+// crossing the boundary.
+pub host_write: (fd: i64, bytes: []u8): i64 effects { Host.Write } {
+  len(bytes) == u32(0) ? i64(0) | i64(oak_host_write(c.Int64(fd), c.span_of(bytes)))
+}
+
+// host_write_all writes the whole view, retrying a short write from where
+// it stopped, and returns true when every byte was taken. A host that
+// takes nothing or reports an error ends the loop: false, and the bytes
+// from that point on were not written. Every iteration takes at least one
+// byte or stops, so the loop runs at most len(bytes) times.
+pub host_write_all: (fd: i64, bytes: []u8): Bool effects { Host.Write } {
+  offset: u32 = u32(0)
+  ok: Bool = true
+  while ok && offset < len(bytes) {
+    rest: []u8 = subslice(bytes, offset, len(bytes) - offset)
+    took: i64 = host_write(fd, rest)
+    took <= i64(0) ? { ok = false } | {
+      // took is at most len(rest), a u32, so the narrowing to i32 then the
+      // same-width reinterpretation are both exact.
+      offset = offset + u32_bits_i32(i32_trunc_i64(took))
+    }
+  }
+  ok
+}
+
+// The two descriptors a host is expected to distinguish.
+pub host_stdout: (): i64 = i64(1)
+pub host_stderr: (): i64 = i64(2)

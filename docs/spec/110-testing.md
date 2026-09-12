@@ -10,7 +10,12 @@ implemented bootstrap contract and explicitly identifies its limits.
 one bootstrap package through the ordinary checked C backend. Flags precede
 paths. An omitted path means the current directory. Recursive discovery skips
 hidden directories, `vendor`, and `testdata`. Discovery and execution order are
-stable, and overlapping directory arguments are deduplicated.
+stable, and overlapping directory arguments are deduplicated. `-target os/arch`
+(`90-backend.md` §2a) builds the tests for that target through its cross
+toolchain and reports each test `built`, not run — a foreign binary cannot
+run here — and refuses a freestanding target, whose harness would need a C
+library; the modes that need a run (`-replay`, `-fuzz`, `-campaign`,
+`-sanitize`) need the host target.
 
 All immediate `.oak` siblings participate in the compilation. Only top-level
 functions in `*_test.oak` register tests. Names have an ASCII identifier spelling

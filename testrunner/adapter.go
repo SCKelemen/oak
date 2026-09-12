@@ -132,6 +132,12 @@ func packageCompilation(pkg Package, adapter *nativeAdapter) compiler.Compilatio
 	// `oak test -profile strict` judges the test build under the strict
 	// profile (docs/spec/85-discipline.md section 1).
 	comp = comp.WithProfile(pkg.Profile)
+	if pkg.Target.OS != "" {
+		// `oak test -target` compiles the tests for that target — data model,
+		// asm lane, host boundary — exactly as `oak build -target` would
+		// (docs/spec/90-backend.md section 2a).
+		comp = comp.WithTarget(pkg.Target)
+	}
 	// All invocations of a package containing Sim tests use the same profile,
 	// preserving fingerprints across test selection and exact replay.
 	for _, test := range pkg.Registry {

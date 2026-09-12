@@ -162,3 +162,16 @@ func TestAtomicAdmissionEmitsOnlyRecordedCarriers(t *testing.T) {
 		t.Fatalf("unrecorded carrier asserted:\n%s", out)
 	}
 }
+
+func TestAtomicAdmissionStrictDropsOptOut(t *testing.T) {
+	cg := &CodeGenerator{atomicsIncluded: true, atomicCarriers: map[string]bool{"u32": true}}
+	cg.SetStrictAdmission(true)
+	cg.emitAtomicAdmission()
+	out := cg.output.String()
+	if strings.Contains(out, "OAK_ATOMIC_ACCEPT_LOCKED") || strings.Contains(out, "#if") || strings.Contains(out, "#endif") {
+		t.Fatalf("strict admission kept a preprocessor opt-out:\n%s", out)
+	}
+	if !strings.Contains(out, "typedef char oak_atomic_lock_free_u32[") {
+		t.Fatalf("strict admission lost the assertion:\n%s", out)
+	}
+}

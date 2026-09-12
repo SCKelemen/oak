@@ -118,6 +118,7 @@ func TestProtocolLoweringMatchesInterpreterByteMachines(t *testing.T) {
 }
 
 func TestProtocolLoweringMatchesInterpreterStepMachines(t *testing.T) {
+	skipInShort(t)
 	// VirtualIrq: three states, shift form; its program step carries a
 	// payload no guard reads, so the step is one symbol. Ten states: dense.
 	ten := "Ten: protocol = {\n  initial S0\n"

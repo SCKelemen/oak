@@ -8,6 +8,7 @@ import (
 )
 
 func TestE2EStdlibEndian(t *testing.T) {
+	skipInShort(t)
 	for _, width := range []int{16, 32, 64} {
 		for _, order := range []string{"le", "be"} {
 			t.Run(fmt.Sprintf("u%d_%s", width, order), func(t *testing.T) {
@@ -76,6 +77,7 @@ func TestE2EStdlibEndian(t *testing.T) {
 }
 
 func TestE2EStdlibBitset(t *testing.T) {
+	skipInShort(t)
 	for _, bits := range []int{0, 1, 7, 8, 9, 63, 64, 65} {
 		t.Run(fmt.Sprint(bits), func(t *testing.T) {
 			var src strings.Builder

@@ -56,6 +56,7 @@ func oakFilterIndex(hash, seed uint64, cells, probe int, blocked bool) int {
 }
 
 func TestE2EOakLibrariesFilters(t *testing.T) {
+	skipInShort(t)
 	for _, tc := range []struct {
 		cells   int
 		probes  int
@@ -151,6 +152,7 @@ main: (): i32 {
 }
 
 func TestE2EOakLibrariesHashTable(t *testing.T) {
+	skipInShort(t)
 	for _, capacity := range []int{1, 7} {
 		t.Run(fmt.Sprint(capacity), func(t *testing.T) {
 			var src strings.Builder

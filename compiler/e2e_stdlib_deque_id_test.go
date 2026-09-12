@@ -8,6 +8,7 @@ import (
 )
 
 func TestE2EStdlibDequeTrace(t *testing.T) {
+	skipInShort(t)
 	for _, capacity := range []int{0, 1, 3, 8} {
 		t.Run(fmt.Sprint(capacity), func(t *testing.T) {
 			var src strings.Builder
@@ -126,6 +127,7 @@ id_present: (result: Result[Bool, IdPoolError]): Bool = result ?
 `
 
 func TestE2EStdlibIdPoolTrace(t *testing.T) {
+	skipInShort(t)
 	for _, limit := range []int{0, 1, 7, 8, 9, 17} {
 		t.Run(fmt.Sprint(limit), func(t *testing.T) {
 			var src strings.Builder
@@ -246,6 +248,7 @@ main: (): i32 {
 }
 
 func TestE2EStdlibDequeGuards(t *testing.T) {
+	skipInShort(t)
 	for _, body := range []string{
 		"q[0].head = u32(2)\ndeque_check(q, u32(2))",
 		"q[0].count = u32(3)\ndeque_check(q, u32(2))",
