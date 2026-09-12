@@ -136,7 +136,10 @@ func parseTLAModule(text string) (*tlaNormalForm, []string) {
 	for _, d := range definitions {
 		body := strings.Join(d.body, " ")
 		switch d.name {
-		case "vars", "Spec":
+		case "vars", "Spec", "Liveness":
+			// The specification's fairness and the liveness property are
+			// not part of the normal form (docs/spec/112-protocols.md
+			// section 4a compares the machine).
 			continue
 		case "States":
 			form.States = splitCommaList(strings.Trim(strings.TrimSpace(body), "{}"))

@@ -10,7 +10,7 @@ import (
 	"github.com/SCKelemen/oak/compiler"
 )
 
-// protocolCommand implements `oak protocol -tla Name [-o out.tla] file.oak`
+// protocolCommand implements `oak protocol -tla Name [-o out.tla] [-cfg out.cfg] file.oak`
 // (docs/spec/112-protocols.md): the TLA+ projection of one protocol
 // declaration, from the parsed source alone.
 func protocolCommand(args []string, stdout, stderr io.Writer) int {
@@ -18,6 +18,7 @@ func protocolCommand(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	tla := flags.String("tla", "", "protocol name to render as a TLA+ module")
 	output := flags.String("o", "", "write the module here instead of standard output")
+	cfgOut := flags.String("cfg", "", "also write a TLC configuration for the module here")
 	conform := flags.String("conform", "", "protocol name whose projection a hand-written module must agree with")
 	against := flags.String("against", "", "the hand-written TLA+ module to check (with -conform)")
 	jsonOut := flags.Bool("json", false, "with -conform, print the report as JSON")
@@ -32,7 +33,7 @@ func protocolCommand(args []string, stdout, stderr io.Writer) int {
 		return conformCommand(*conform, *against, flags.Arg(0), *jsonOut, stdout, stderr)
 	}
 	if *tla == "" || flags.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: oak protocol -tla Name [-o out.tla] file.oak\n       oak protocol -conform Name -against module.tla [-json] file.oak")
+		fmt.Fprintln(stderr, "usage: oak protocol -tla Name [-o out.tla] [-cfg out.cfg] file.oak\n       oak protocol -conform Name -against module.tla [-json] file.oak")
 		return 2
 	}
 	path := flags.Arg(0)
@@ -54,6 +55,12 @@ func protocolCommand(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			fmt.Fprintf(stderr, "oak protocol: %v\n", err)
 			return 1
+		}
+		if *cfgOut != "" {
+			if err := os.WriteFile(*cfgOut, []byte(compiler.ProtocolTLCConfig(decl)), 0o644); err != nil {
+				fmt.Fprintf(stderr, "oak protocol: %v\n", err)
+				return 1
+			}
 		}
 		if *output == "" {
 			fmt.Fprint(stdout, module)

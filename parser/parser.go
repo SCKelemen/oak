@@ -2707,10 +2707,48 @@ func (p *Parser) parseProtocolDeclarationFromName(name *ast.Identifier) *ast.Pro
 			return nil
 		}
 		if !p.currentTokenIs(token.IDENT) {
-			p.addErrorAtCurrentToken("protocol entries are `resource T`, `initial S`, or `name: From -> To`")
+			p.addErrorAtCurrentToken("protocol entries are `resource T`, `initial S`, `fair step`, `eventually S`, or `name: From -> To`")
 			return nil
 		}
 		switch p.currentToken.Literal {
+		case "fair", "strongly":
+			// `fair step` / `strongly fair step` (docs/spec/112-protocols.md
+			// section 1): a fairness assumption on one step.
+			fairness := &ast.ProtocolFairness{Token: p.currentToken}
+			if p.currentToken.Literal == "strongly" {
+				fairness.Strong = true
+				if !p.peekTokenIs(token.IDENT) || p.peekToken.Literal != "fair" {
+					p.addErrorAtCurrentToken("`strongly` is followed by `fair step`")
+					return nil
+				}
+				p.nextToken()
+			}
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			fairness.Step = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+			decl.Fairness = append(decl.Fairness, fairness)
+			p.nextToken()
+		case "eventually":
+			// `eventually target` / `eventually from -> target`: a liveness
+			// property over states or data.
+			liveness := &ast.ProtocolLiveness{Token: p.currentToken}
+			p.nextToken()
+			liveness.Target = p.parseExpression(LOWEST)
+			if liveness.Target == nil {
+				return nil
+			}
+			if p.peekTokenIs(token.ARROW) {
+				p.nextToken() // ->
+				p.nextToken() // first token of the target
+				liveness.From = liveness.Target
+				liveness.Target = p.parseExpression(LOWEST)
+				if liveness.Target == nil {
+					return nil
+				}
+			}
+			decl.Liveness = append(decl.Liveness, liveness)
+			p.nextToken()
 		case "data", "init":
 			keyword := p.currentToken.Literal
 			if !p.expectPeek(token.LBRACE) {

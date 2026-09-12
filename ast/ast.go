@@ -1456,7 +1456,31 @@ type ProtocolDeclaration struct {
 	Data        *RecordLiteral // `data { field: T, ... }`: the machine's data record, or nil
 	Init        *RecordLiteral // `init { field: value, ... }`: the initial data, required with Data
 	Transitions []*ProtocolTransition
-	Exported    bool
+	// Fairness and Liveness are the `fair step` / `strongly fair step` and
+	// `eventually target` / `eventually from -> target` entries
+	// (docs/spec/112-protocols.md section 1): assumptions and temporal
+	// properties the model-checker module states; the projection into
+	// Oak reads neither.
+	Fairness []*ProtocolFairness
+	Liveness []*ProtocolLiveness
+	Exported bool
+}
+
+// ProtocolFairness is one `fair step` (weak) or `strongly fair step`
+// entry: every line of the step, its payload quantified.
+type ProtocolFairness struct {
+	Token  token.Token
+	Step   *Identifier
+	Strong bool
+}
+
+// ProtocolLiveness is one `eventually target` or `eventually from ->
+// target` entry. Each side is a state name (spelled like a variant) or a
+// Bool expression over `data` in the guard subset.
+type ProtocolLiveness struct {
+	Token  token.Token
+	From   Expression // nil for `eventually target`
+	Target Expression
 }
 
 // ProtocolTransition is one

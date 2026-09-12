@@ -44,6 +44,20 @@ type protocolStep struct {
 	node    *ast.ProtocolTransition
 }
 
+// livenessState reads a liveness term that names a state: an identifier
+// with an initial capital (states are spelled like variants).
+func livenessState(expr ast.Expression) (string, bool) {
+	ident, isIdent := expr.(*ast.Identifier)
+	if !isIdent {
+		return "", false
+	}
+	r := []rune(ident.Value)
+	if len(r) == 0 || !unicode.IsUpper(r[0]) {
+		return "", false
+	}
+	return ident.Value, true
+}
+
 // protocolMachine is the checked shape of one declaration.
 type protocolMachine struct {
 	decl    *ast.ProtocolDeclaration
@@ -406,6 +420,39 @@ func analyzeProtocolWith(decl *ast.ProtocolDeclaration, records map[string]*ast.
 	steps := map[string]*protocolStep{}
 	pairs := map[string]bool{}
 	guarded := map[string]bool{}
+	defer func() {
+		// Fairness names declared steps; liveness names reached states or
+		// Bool data expressions in the guard subset (checked after the
+		// transitions, which declare both).
+		for _, f := range decl.Fairness {
+			if _, known := steps[f.Step.Value]; !known {
+				report(CodeProtocolShape, f.Step, "fairness names step %s, which protocol %s does not declare", f.Step.Value, decl.Name.Value)
+				ok = false
+			}
+		}
+		for _, l := range decl.Liveness {
+			for _, side := range []ast.Expression{l.From, l.Target} {
+				if side == nil {
+					continue
+				}
+				if state, isState := livenessState(side); isState {
+					if !seen[state] {
+						report(CodeProtocolShape, side, "eventually names state %s, which protocol %s does not reach", state, decl.Name.Value)
+						ok = false
+					}
+					continue
+				}
+				if decl.Data == nil {
+					report(CodeProtocolShape, side, "eventually refers to data, but protocol %s declares none", decl.Name.Value)
+					ok = false
+					continue
+				}
+				if !m.checkQuantifiers(&ast.ExpressionStatement{Expression: side}, "eventually", report) {
+					ok = false
+				}
+			}
+		}
+	}()
 	for _, t := range decl.Transitions {
 		addState(t.From)
 		addState(t.To)

@@ -79,6 +79,20 @@ sequence of entries separated by newlines or commas:
   model-checker module gets the same conjunct and a payload domain that
   matches.
 
+- `fair step` and `strongly fair step` — a fairness assumption on one step
+  name: every line of the step, its payload quantified. The model-checker
+  module conjoins `WF_vars(Step)` or `SF_vars(Step)` to `Spec` (§4); the
+  projection into Oak reads neither, since fairness is a claim about the
+  environment, not about the program.
+- `eventually target` and `eventually from -> target` — a liveness
+  property, where each side is a state name or a `Bool` expression over
+  `data` in the guard subset: `eventually Yielded`, `eventually Running ->
+  Yielded`, `eventually Running -> data.budget == u32(1)`. The module
+  states them as `<>` and `~>` (leads to) under the property `Liveness`,
+  which TLC checks against the declared fairness. A state no transition
+  reaches, an unknown step, or data in a protocol that declares none is a
+  shape error (`OAK-M0301`).
+
 States are the names `initial` and the transition lines mention, in order of
 first appearance with the initial state first; they are spelled like variants
 (initial capital), because they become variants. Transition names are spelled
@@ -218,10 +232,20 @@ agrees and as a `CASE` otherwise, and an element record `R` is the record
 set `[f1: D1, f2: D2]` from the program's declaration (`oak protocol -tla`
 reads it from the same file; `ProtocolTLAWithRecords` takes it);
 anything else stops the export naming the line. The module is complete for what the declaration says and
-checkable as is (TLC checks the modules of both examples above); scenarios
-extend it for liveness and environment assumptions in a module of their own,
-so regenerating never overwrites hand-written properties. The generated
-header names the source it came from.
+checkable as is (TLC checks the modules of both examples above). Declared
+fairness joins `Spec` — `Spec == Init /\ [][Next]_vars /\ WF_vars(Tick) /\
+SF_vars(Resume)`, a payload step as `WF_vars(\E on \in On : Signal(on))` —
+and declared liveness is the property `Liveness`, one conjunct per entry:
+`<>(state = "Yielded")`, `((state = "Running") ~> (state = "Yielded"))`, a
+data side through the same translation as a guard. `oak protocol -tla Name
+-cfg out.cfg` also writes the TLC configuration: `SPECIFICATION Spec`,
+`INVARIANT TypeOK`, `PROPERTY Liveness` when the declaration states one,
+and a small domain per payload constant (`{TRUE, FALSE}`; `{0, 1, 2, 3}`
+for a scalar) to widen as the model needs. Scenarios extend the module for
+environment assumptions beyond the declared fairness in a module of their
+own, so regenerating never overwrites hand-written properties. The
+generated header names the source it came from. Conformance (§4a)
+compares the machine and skips `Spec` and `Liveness`.
 
 ## 4a. Conformance of a hand-written module
 
@@ -444,9 +468,11 @@ obligation.
 
 ## 6. What is not derived
 
-Liveness and environment assumptions (fairness, device progress) are the
-TLA+ extension module's; the declaration states what may happen, not what
-must. Guards and effects beyond the translated subset — loops, calls into
+Environment assumptions beyond fairness on the declared steps (device
+progress, timing) are the TLA+ extension module's, and liveness is the
+model checker's verdict, not the compiler's: `oak prove` decides safety
+invariants (`125-verification.md` §2a) and leaves `eventually` to TLC under
+the declared fairness. Guards and effects beyond the translated subset — loops, calls into
 the program, indices computed from other fields — stay in hand-written
 models. The declaration does
 not generate Lean definitions, state diagrams, or debugger decoding
