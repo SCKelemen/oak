@@ -1765,6 +1765,18 @@ func (cg *CodeGenerator) emitCoreIndex(call *ast.InvocationExpression, tc *typec
 		cg.emitExpressionFragment(index, tc)
 		cg.output.WriteString(" ) )")
 	case containerOwnedArray:
+		if strings.HasPrefix(info.element, "oak_") {
+			// An aggregate element — a row of a [N][M]T grid, a record —
+			// is selected in place behind the checked index: the ternary
+			// of oak_index would yield an rvalue and copy the whole
+			// element on every read (the OS pilot's R11: a 16 KiB row per
+			// table access). oak_lv_idx checks and returns the index.
+			cg.emitExpressionFragment(seq, tc)
+			cg.output.WriteString(fmt.Sprintf(".v[ oak_lv_idx( (u64)( "))
+			cg.emitExpressionFragment(index, tc)
+			cg.output.WriteString(fmt.Sprintf(" ), %d ) ]", info.length))
+			return
+		}
 		cg.output.WriteString("oak_index( ")
 		cg.emitExpressionFragment(seq, tc)
 		cg.output.WriteString(fmt.Sprintf(".v, %d, (u64)( ", info.length))

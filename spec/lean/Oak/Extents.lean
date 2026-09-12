@@ -126,6 +126,18 @@ theorem scaled_under_bound (i K j U len : Nat) (hi : i < U) (hlen : (U - 1) * K 
 theorem masked_under_length (x M len : Nat) (hM : M < len) : x &&& M < len :=
   Nat.lt_of_le_of_lt (Nat.and_le_right) hM
 
+/-- The mask survives an unsigned truncation: `(x &&& M) % 2^w ≤ x &&& M`
+    (`valuePreservingBound`, `u32_trunc_u64(e & M)`). -/
+theorem masked_trunc_under_length (x M w len : Nat) (hM : M < len) :
+    (x &&& M) % 2 ^ w < len :=
+  Nat.lt_of_le_of_lt (Nat.le_trans (Nat.mod_le _ _) Nat.and_le_right) hM
+
+/-- And an unsigned saturation: `min (x &&& M) B ≤ x &&& M`
+    (`valuePreservingBound`, `u32_saturating_u64(e & M)`). -/
+theorem masked_saturating_under_length (x M B len : Nat) (hM : M < len) :
+    min (x &&& M) B < len :=
+  Nat.lt_of_le_of_lt (Nat.le_trans (Nat.min_le_left _ _) Nat.and_le_right) hM
+
 /-- Leaving a loop `while i < K` normally means `K ≤ i`
     (`checkWhileStatement`, the exit fact; a body with `break` gets none). -/
 theorem loop_exit_lower_bound (i K : Nat) (h : ¬ i < K) : K ≤ i := Nat.le_of_not_lt h

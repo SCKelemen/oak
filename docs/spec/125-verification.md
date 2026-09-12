@@ -287,7 +287,7 @@ the toolchain.
 | `subslice_extent`, `subslice_check_iff` | same names | decided, bit level |
 | `literal_bound_under_length`, `subtraction_under_bounds`, `subtraction_under_length` | same names | decided, bit level |
 | `scaled_under_bound` | `scaled_under_bound_4`; `scaled_under_bound_512` (`extents_lean.oak`) | decided; proved (the page scale exceeds the BDD budget) |
-| `masked_under_length`, `loop_exit_lower_bound`, `increment_keeps_lower_bound`, `increment_without_wrap` | same names | decided, bit level |
+| `masked_under_length`, `masked_trunc_under_length`, `masked_saturating_under_length`, `loop_exit_lower_bound`, `increment_keeps_lower_bound`, `increment_without_wrap` | same names | decided, bit level |
 | `decreasing_keeps_upper_bound`, `decreasing_keeps_literal_bound` | same names | decided, bit level |
 | `vector_under_min_length`, `vector_under_offset_bound`, `vector_under_literal_bound` | same names | decided, bit level |
 | `midpoint_under_bound`, `midpoint_under_length`, `div_bound_scaled`, `div_bound_under_length` | same names at scale 2 and 512 (`extents_lean.oak`) | proved by Lean (the decider has no division) |

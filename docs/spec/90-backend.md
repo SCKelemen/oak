@@ -260,7 +260,12 @@ A record element read through a span or view (`s[i].field`) selects the
 element in place behind the checked index; the C backend never returns a
 record element by value from a helper, so a large state record behind a
 span is read at the cost of the field, not the record
-(`50-borrowing.md` §8e).
+(`50-borrowing.md` §8e). The same holds for an aggregate element of an
+owned array — a row of a `[N][M]T` grid, a record of a `[N]R` table: an
+unproven `a[i][j]` or `a[i].f` bounds-checks the index and selects the
+element by address (`a.v[ oak_lv_idx(i, N) ]`), never by value. The
+ternary form (`oak_index`), which yields an rvalue and would copy the
+whole element, is reserved for scalar elements.
 
 ## 8a. Constant globals
 

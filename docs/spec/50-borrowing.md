@@ -1092,7 +1092,15 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   (hi - lo) / 2; keys[mid * 512] ... hi = mid }` reads without a check.
 - **Masked index**: `v[e & M]` with `M` a literal is proven, for any `e`,
   when the length is known to be at least `M + 1`
-  (`masked_under_length`) — the byte table `CRC32C_TABLE[x & 255]`.
+  (`masked_under_length`) — the byte table `CRC32C_TABLE[x & 255]`. The
+  mask survives the conversions under which a value cannot grow: a
+  widening `u64(e & M)`, an unsigned truncation `u32_trunc_u64(e & M)`
+  (`masked_trunc_under_length`) and an unsigned saturation
+  (`masked_saturating_under_length`) — the page-table walk
+  `table[u32_trunc_u64((va >> 12) & 511)]` over a `[512]u64` reads
+  without a check. A binding initialized to a masked value carries the
+  bound, `idx: u32 = u32_trunc_u64((va >> 21) & 511)` is `idx < 512`
+  until `idx` is written, so `table[idx]` is direct as well.
 - **Field paths**: a container or an index in any of the above may be a
   record field path rooted at a local binding — `t.block[t.filled]` under
   `while t.filled < u32(64)`, `t.h[j]` under `j < 8`, the trailing
