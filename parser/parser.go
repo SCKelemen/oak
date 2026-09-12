@@ -310,7 +310,7 @@ func (p *Parser) parseStatement() ast.Statement {
 		// `kernel name: (gid: u32, ...): () = ...` declares a compute kernel
 		// (docs/spec/56-kernels.md); `kernel` is contextual, so `kernel := 1`
 		// and `kernel: u32 = 1` stay ordinary bindings.
-		if p.currentToken.Literal == "kernel" && p.peekTokenIs(token.IDENT) && p.lookaheadSignificant(2).TokenKind == token.COLON {
+		if p.currentToken.Literal == "kernel" && p.peekTokenIs(token.IDENT) && (p.lookaheadSignificant(2).TokenKind == token.COLON || p.lookaheadSignificant(2).TokenKind == token.LBRACK) {
 			return p.parseKernelDeclaration()
 		}
 		// `export("symbol") pub name: (...)` gives a pub function a C ABI

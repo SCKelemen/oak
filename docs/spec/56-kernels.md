@@ -51,10 +51,13 @@ which may be `pub`. Rules:
   the launch runs the body once per position in `0 .. grid`. The C
   realization is exactly `relu(g, view(&xs), span(&ys))` for each `g`.
 - Other parameters are **buffers** — views `[]T` (read) and spans `[*]T`
-  (read and write) of a scalar `T` — or **scalars**. Scalars are `u8`
-  through `u64`, `i8` through `i64`, `f32`, and `Bool`. `f64` is outside
-  the subset (Apple GPUs have no double precision); records, fixed arrays,
-  strings, and ADTs are outside this increment.
+  (read and write) of a scalar `T` — **scalars**, or **records** of those
+  (a `Tensor2[R]`: its view and its shape scalars; `kernel relu[R, S]:
+  (gid: u32, x: Tensor2[R], out: MutTensor2[S])` with the region
+  parameters a record over borrows needs). Scalars are `u8` through `u64`,
+  `i8` through `i64`, `f32`, and `Bool`. `f64` is outside the subset
+  (Apple GPUs have no double precision); records inside records, fixed
+  arrays as parameters, strings, and ADTs are outside.
 - The result is `()`: results leave through spans.
 - The body is in the kernel subset (section 2). A kernel calls **helpers**
   — ordinary functions in the subset — and never another kernel.
@@ -84,6 +87,10 @@ Inside the subset:
 | `[]T` parameter | `device const T* x [[buffer(n)]], constant uint& x_len [[buffer(n+1)]]` |
 | `[*]T` parameter | `device T* y [[buffer(n)]], constant uint& y_len [[buffer(n+1)]]` |
 | scalar parameter | `constant T& s [[buffer(n)]]` |
+| record parameter `t: Tensor2[R]` | its fields **flattened** into consecutive buffers in declaration order (`t.data view f32 buffer 0,1; t.rows scalar u32 buffer 2; …` in the descriptor) and rebuilt as a struct local, `tensor__Tensor2 t = { t__data, t__data_len, t__rows, … };`, for the body |
+| a record in a helper: parameter, result, local, literal | the MSL `struct` of the record (a buffer field is a pointer and its length), passed and returned by value; `Tensor2 { data: v, rows: r, … }` is `tensor__Tensor2{ v, v_len, r, … }` |
+| `t.rows`, `t.data[i]`, `len(t.data)`, `t.data[i] = v` | the struct field; a buffer field is indexed, measured, windowed, or passed on like a buffer parameter |
+| `assert(cond)` | `if (!cond) { oak_raise(oak_fault, 5u); return zero; }` — a failed assertion is a trap (section 3), and the thread leaves the function with a zero result |
 | the grid position | `uint gid [[thread_position_in_grid]]` |
 | locals `x: T = e`, `x := e`, assignment | the same, scalars only |
 | `x[i]`, `y[i] = v` | `x[oak_check(i, x_len, oak_fault)]` — the index is checked against the length and a miss raises the fault word (section 3) |
@@ -104,9 +111,9 @@ Inside the subset:
 | `cond ? a \| { stmts; v }` in result position | `if`/`else` whose arms return, the block's statements emitted in place |
 
 Outside the subset, each failing closed by name: `f64`, `f16`/`bf16`,
-records and their fields, fixed arrays as parameters, ADTs and variant
+records inside records, fixed arrays as parameters, ADTs and variant
 matches, strings, `subslice` outside a window declaration, `view`/`span`
-of a local, `assert`, `total_order`, the saturating, checked, and trapping
+of a local, `total_order`, the saturating, checked, and trapping
 conversion rows, integer-constant matches, block arms in value position
 other than a result, calls through function values that are not bound to
 a named function, globals and constants, generics (call an
@@ -118,7 +125,7 @@ Oak traps on an index past the end, a zero divisor, and a shift count
 reaching the width. A GPU thread cannot trap. Every emitted kernel takes one
 more buffer, the **fault word** (`device atomic_uint* oak_fault`, the last
 buffer index in the descriptor): a trapping condition stores a nonzero code
-into it (1 index, 2 divisor, 3 shift, 4 window past the end) and yields zero to the expression, and
+into it (1 index, 2 divisor, 3 shift, 4 window past the end, 5 assertion) and yields zero to the expression, and
 the thread continues with unspecified results. **The host checks the fault
 word after the command buffer completes; a nonzero value is the trap.** The
 outputs of a faulted launch are unspecified, exactly as the state after an
@@ -197,9 +204,11 @@ independence:
   is a scalar parameter or a literal; none of `gid`, `base`, `i`, or `T`
   is reassigned.
 
-Views are read-only and impose nothing; a span handed to a helper takes
-its accesses out of the kernel's sight and is rejected (index the span in
-the kernel body). `Oak.Kernel.element_disjoint` and `tile_disjoint` prove
+Views are read-only and impose nothing; a span — or a record holding one
+— handed to a helper, windowed, or rebuilt in a literal takes its accesses
+out of the kernel's sight and is rejected (index the span, or the span
+field, in the kernel body). A span field `out.data` is judged as the span
+`out.data`. `Oak.Kernel.element_disjoint` and `tile_disjoint` prove
 the two footprints pairwise disjoint for distinct positions, which is
 `Independent` for the spans, so `run_perm` applies. The tile fact is over
 the natural numbers: the descriptor records the shape (`independence:
@@ -222,8 +231,8 @@ index, which any buffer the tiles cover already guarantees.
   with `reduce.tree` again, so a launch's grouping is "tree of tile
   trees" — a language fact, the same on every backend. A cooperative
   threadgroup reduction with the same grouping is the next increment.
-- Records and fixed arrays as kernel parameters (F6's tensors are records
-  over views; the kernel takes the views).
+- Fixed arrays as kernel parameters (a fixed array is thread-private; a
+  buffer is a view or span).
 
 ## 8. Tensors over views (`import("tensor")`)
 
@@ -261,11 +270,15 @@ at: t.Tensor2 = t.tensor_transpose(a)               // strides swapped, same sto
   of `tensor_matmul` are the sequential left fold in row-major order, the
   grouping every backend computes; a tree-grouped variant is `reduce.tree`
   (`55-parallelism.md` §4) over the same elements.
-- **Kernels take the tensor's parts.** A kernel takes `t.data` as a view
-  or span and the shape scalars as `u32` parameters (§1); the per-element
-  body is the library function's inner statement. Records as kernel
-  parameters are the increment that would let a kernel take the tensor
-  itself.
+- **Kernels take tensors.** `kernel relu[R, S]: (gid: u32, x: Tensor2[R],
+  out: MutTensor2[S])` takes the records themselves (§1): the Metal entry
+  flattens each into its buffers and rebuilds the struct, `tensor_at(x, i,
+  j)` runs as a helper taking the record by value, and `out.data[gid]` is
+  the store the independence rule judges. A helper that writes through a
+  record's span (`tensor_set(out, …)`) is rejected inside a kernel because
+  its indices leave the kernel's sight; the row-major shape `offset + i *
+  row_stride + j * col_stride` as an admitted independence shape is the
+  next step.
 
 `Oak.Stdlib.TensorLaws` (`spec/lean/Oak/Stdlib/TensorLaws.lean`) proves
 over the extraction (`TensorExtracted.lean`, regenerated from the Oak

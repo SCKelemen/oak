@@ -393,3 +393,101 @@ main: (): i32 = 0`, CodeKernelSubset},
 		}
 	}
 }
+
+// Records as kernel parameters (docs/spec/56-kernels.md section 1): a
+// kernel takes a Tensor2 and a MutTensor2; the Metal entry flattens each
+// record into its fields' buffers and rebuilds the struct for the body,
+// helpers take records by value, and a failed assert raises fault 5.
+const kernelRecordProgram = `package main
+
+t := import("tensor")
+
+kernel relu_t[R, S]: (gid: u32, x: t.Tensor2[R], out: t.MutTensor2[S]): () = {
+  gid < len(out.data) && gid < x.rows * x.cols ? {
+    i: u32 = gid / x.cols
+    j: u32 = gid % x.cols
+    v: f32 = t.tensor_at(x, i, j)
+    out.data[gid] = v < 0.0 ? 0.0 | v
+  }
+}
+
+main: (): i32 = {
+  xs: [4]f32 = [-1.0, 2.0, -3.0, 4.0]
+  ys: [4]f32 = [0.0, 0.0, 0.0, 0.0]
+  a: t.Tensor2 = t.tensor_of(view(&xs), 2, 2)
+  {
+    o: t.MutTensor2 = t.tensor_mut_of(span(&ys), 2, 2)
+    g: u32 = 0
+    while g < 4 {
+      relu_t(g, a, o)
+      g = g + 1
+    }
+  }
+  ys[0] == 0.0 && ys[1] == 2.0 && ys[2] == 0.0 && ys[3] == 4.0 ? 42 | 1
+}
+`
+
+func TestE2EKernelsRecordParameters(t *testing.T) {
+	root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": kernelRecordProgram})
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+	result, err := New().WithPackageDir(root).EmitMetal().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := result.Source
+	for _, want := range []string{
+		"// oak-kernel relu_t: gid grid; x.data view f32 buffer 0,1; x.rows scalar u32 buffer 2; x.cols scalar u32 buffer 3; x.row_stride scalar u32 buffer 4; x.col_stride scalar u32 buffer 5; x.offset scalar u32 buffer 6; out.data span f32 buffer 7,8; out.rows scalar u32 buffer 9; out.cols scalar u32 buffer 10; out.row_stride scalar u32 buffer 11; out.col_stride scalar u32 buffer 12; out.offset scalar u32 buffer 13; fault buffer 14; independence element",
+		"struct tensor__Tensor2 {\n  device const float* data;\n  uint data_len;\n  uint rows;",
+		"struct tensor__MutTensor2 {\n  device float* data;\n  uint data_len;",
+		"device const float* x__data [[buffer(0)]], constant uint& x__data_len [[buffer(1)]], constant uint& x__rows [[buffer(2)]]",
+		"  tensor__Tensor2 x = { x__data, x__data_len, x__rows, x__cols, x__row_stride, x__col_stride, x__offset };",
+		"static inline float tensor__tensor_uat(tensor__Tensor2 t, uint i, uint j, device atomic_uint* oak_fault) {",
+		"if (!((i < rows) && (j < cols))) { oak_raise(oak_fault, 5u); return (uint)0; }",
+		"return t.data[oak_check(tensor__tensor_uindex(t.rows, t.cols, t.row_stride, t.col_stride, t.offset, i, j, oak_fault), t.data_len, oak_fault)];",
+		"out.data[gid] = ((v < 0.0f) ? 0.0f : v);",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("missing %q in:\n%s", want, src)
+		}
+	}
+	if len(result.Kernels[0].Params) != 13 || result.Kernels[0].Params[7].Name != "out.data" || result.Kernels[0].Params[7].Kind != "span" {
+		t.Fatalf("descriptor = %+v", result.Kernels[0].Params)
+	}
+}
+
+// A record holding a span cannot leave the kernel's sight: handing it to a
+// helper, windowing its span field, or rebuilding it in a literal is
+// rejected; a record inside a record is outside the subset.
+func TestKernelsRecordRejections(t *testing.T) {
+	prelude := "t := import(\"tensor\")\n\n"
+	cases := map[string][2]string{
+		"span record to helper": {prelude + `kernel k[R, S]: (gid: u32, x: t.Tensor2[R], out: t.MutTensor2[S]): () = {
+  gid < out.rows && gid < x.rows ? { t.tensor_set(out, gid, 0, t.tensor_at(x, gid, 0)) }
+}
+main: (): i32 = 0`, CodeKernelIndependence},
+		"span field windowed": {prelude + `kernel k[S]: (gid: u32, out: t.MutTensor2[S]): () = {
+  gid + 1 <= len(out.data) ? {
+    w: [*]f32 = subslice(out.data, gid, 1)
+    w[0] = 1.0
+  }
+}
+main: (): i32 = 0`, CodeKernelIndependence},
+		"nested record": {`Inner: type = struct { a: u32 }
+Outer: type = struct { in: Inner, k: u32 }
+kernel k: (gid: u32, o: Outer, y: [*]u32): () = { y[gid] = o.k }
+main: (): i32 = 0`, CodeKernelSubset},
+	}
+	for name, c := range cases {
+		root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": "package main\n\n" + c[0] + "\n"})
+		_, err := New().WithPackageDir(root).EmitC().Get()
+		if err == nil {
+			t.Fatalf("%s: compiled; want %s", name, c[1])
+		}
+		if !strings.Contains(err.Error(), c[1]) {
+			t.Fatalf("%s: want %s, got %v", name, c[1], err)
+		}
+	}
+}
