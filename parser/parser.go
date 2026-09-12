@@ -492,7 +492,25 @@ func (p *Parser) parseExpressionStatementOrIndexAssignment() ast.Statement {
 func (p *Parser) parseExpressionStatement() *ast.ExpressionStatement {
 	stmt := &ast.ExpressionStatement{Token: p.currentToken}
 
+	errorsBefore := len(p.diagnostics.Errors())
 	stmt.Expression = p.parseExpression(LOWEST)
+	if stmt.Expression == nil {
+		// A token that cannot begin an expression in statement position
+		// is a syntax error here and now — an extra `}` after a function
+		// body, a stray `)` — never a statement with no expression that a
+		// later phase reports without a position.
+		if len(p.diagnostics.Errors()) == errorsBefore {
+			switch p.currentToken.TokenKind {
+			case token.RBRACE:
+				p.addErrorAtCurrentToken("unexpected '}': no block is open here (one closing brace too many?)")
+			case token.RPAREN, token.RBRACK:
+				p.addErrorAtCurrentToken(fmt.Sprintf("unexpected '%s': nothing is open here", p.currentToken.Literal))
+			default:
+				p.addErrorAtCurrentToken(fmt.Sprintf("unexpected %s '%s': not a statement", p.currentToken.TokenKind, p.currentToken.Literal))
+			}
+		}
+		return nil
+	}
 
 	if p.peekTokenIs(token.SEMI) {
 		p.nextToken()

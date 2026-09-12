@@ -30,6 +30,7 @@ package typechecker
 import (
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/token"
+	"math"
 	"strings"
 )
 
@@ -295,9 +296,42 @@ func scaledIndex(expr ast.Expression) (name string, scale int64, offset int64, o
 	return "", 0, 0, false
 }
 
-// maskedIndex recognizes `e & M` (either order) with M a literal mask.
+// valuePreservingBound strips the conversions under which a value cannot
+// grow: a widening `u64(e)` (identity), an unsigned truncation
+// `u32_trunc_u64(e)` (`e mod 2^w <= e`, Oak.Extents.masked_trunc_under_length)
+// and an unsigned saturation `u32_saturating_u64(e)` (`min e B <= e`,
+// masked_saturating_under_length). The page-table walk narrows its masked
+// index — `table[u32_trunc_u64((va >> 12) & 511)]` — and the mask still
+// bounds it (the OS pilot's R3 residual).
+func valuePreservingBound(expr ast.Expression) ast.Expression {
+	for {
+		call, isCall := expr.(*ast.InvocationExpression)
+		if !isCall || len(call.Arguments) != 1 {
+			return expr
+		}
+		ident, isIdent := call.Function.(*ast.Identifier)
+		if !isIdent {
+			return expr
+		}
+		if _, isPrim := conversionPrimitives[ident.Value]; isPrim && !IsFloatName(ident.Value) {
+			expr = call.Arguments[0]
+			continue
+		}
+		parts := splitNarrowingFunctionName(ident.Value)
+		if parts == nil || (parts[1] != "trunc" && parts[1] != "saturating") {
+			return expr
+		}
+		if _, isPrim := conversionPrimitives[parts[0]]; !isPrim || !strings.HasPrefix(parts[0], "u") || !strings.HasPrefix(parts[2], "u") {
+			return expr
+		}
+		expr = call.Arguments[0]
+	}
+}
+
+// maskedIndex recognizes `e & M` (either order) with M a literal mask,
+// possibly under value-preserving conversions (valuePreservingBound).
 func maskedIndex(expr ast.Expression) (mask int64, ok bool) {
-	infix, isInfix := expr.(*ast.InfixExpression)
+	infix, isInfix := valuePreservingBound(expr).(*ast.InfixExpression)
 	if !isInfix || infix.Operator != "&" {
 		return 0, false
 	}
@@ -948,6 +982,14 @@ func (tc *TypeChecker) declarationFacts(decl *ast.VariableDeclaration) []extentF
 			{kind: factLowerLit, other: decl.Name.Value, bound: k},
 			{kind: factIndexLit, other: decl.Name.Value, bound: k + 1},
 		}
+	}
+	// A masked initializer bounds the binding by its mask: `idx: u32 =
+	// u32_trunc_u64((va >> 12) & 511)` is `idx < 512` until the binding is
+	// written (Oak.Extents.masked_under_length through the narrowing) —
+	// the level index of a page-table walk, bound once and used to read
+	// the table.
+	if mask, isMasked := maskedIndex(decl.Value); isMasked && mask < math.MaxInt64 {
+		return []extentFact{{kind: factIndexLit, other: decl.Name.Value, bound: mask + 1}}
 	}
 	// The midpoint `m = a + (b - a) / K` (K a literal >= 2) under a live
 	// `a < b` is below b (Oak.Extents.midpoint_under_bound: the

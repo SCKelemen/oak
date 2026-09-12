@@ -1,29 +1,39 @@
 // The theorem lowering, in Oak (docs/spec/125-verification.md section 7;
-// asm/verify.go is the Go lowering this is the twin of, over its scalar
-// subset). A theorem and the functions it calls arrive as a syntax table
-// (asm/syntax.go: nodes, lists, functions, symbols); the lowering runs it
-// as an explicit stack machine — the strict profile admits no unbounded
-// recursion, so the recursive descent of the Go lowering is a frame stack
-// here, as apply's is in bdd.oak — and builds the decider's terms in the
-// problem table format the blaster reads (bdd.oak), so `solve` decides the
-// result in the same process.
+// asm/verify.go is the Go lowering this is the twin of, over its subset).
+// A theorem and the functions it calls arrive as a syntax table
+// (asm/syntax.go: nodes, lists, functions, symbols, types); the lowering
+// runs it as an explicit stack machine — the strict profile admits no
+// unbounded recursion, so the recursive descent of the Go lowering is a
+// frame stack here, as apply's is in bdd.oak — and builds the decider's
+// terms in the problem table format the blaster reads (bdd.oak), so
+// `solve` decides the result in the same process.
+//
+// Values: a scalar is a term; a record or array is a block of leaf terms
+// in the leaf store (record fields in declaration order, array elements in
+// order), immutable once built — a store into a field or element copies
+// the block — so a symbol is a term or a (type, block) pair, a call binds
+// an aggregate argument to a copy, and a snapshot of the locals is the
+// symbol table alone.
 //
 // What the machine does, operation for operation the Go lowering: a
-// literal is a constant at the context width; a symbol is its term adapted
-// to the width; `!` `^` `-` and the infix operators build binary terms
-// with constants folded and the additive identities dropped; a comparison
-// happens at the operands' own width and signedness and yields a 1-bit
-// term; `&&` and `||` lower their right operand under the path of the
-// left; a conditional lowers its arms under the path of its condition and
-// merges them with ite; a conversion extends by the source's signedness
-// or truncates, then sits in the context at the target's; a shift by a
-// non-constant count records the count reaching the width as a trap
-// obligation under the current path; `/` and `%` by an unsigned constant
-// power of two are a shift and a mask; a typed local binds its symbol, an
-// assignment rebinds it, a counted loop unrolls while its condition folds,
-// a statement conditional merges the locals its arms assign, and a call is
-// inlined with the arguments bound at the callee's parameter widths and
-// the result adapted by the callee's result signedness.
+// literal is a constant at the context width; a symbol is its term
+// adapted to the width; `!` `^` `-` and the infix operators build binary
+// terms with constants folded and the additive identities dropped; a
+// comparison happens at the operands' own width and signedness and yields
+// a 1-bit term; `&&` and `||` lower their right operand under the path of
+// the left; a conditional lowers its arms under the path of its condition
+// and merges them with ite, leaf by leaf for an aggregate; a conversion
+// extends by the source's signedness or truncates, then sits in the
+// context at the target's; a shift by a non-constant count records the
+// count reaching the width as a trap obligation under the current path;
+// `/` and `%` by an unsigned constant power of two are a shift and a mask;
+// an element at a data-dependent index is the elements merged under the
+// index with the bounds check as a trap obligation; a typed local binds its
+// symbol, an assignment or a field store rebinds it, a counted loop unrolls
+// while its condition folds, a statement conditional merges the locals its
+// arms assign, and a call is inlined with the arguments bound at the
+// callee's parameter types and the result adapted by the callee's result
+// signedness.
 package main
 
 // Syntax node kinds (asm/syntax.go).
@@ -41,6 +51,15 @@ SYN_ASSIGN: u32 = 10
 SYN_WHILE: u32 = 11
 SYN_INSTR: u32 = 12
 SYN_CONDSTMT: u32 = 13
+SYN_FIELD: u32 = 14
+SYN_INDEX: u32 = 15
+SYN_RECORDLIT: u32 = 16
+SYN_ARRAYLIT: u32 = 17
+SYN_ASSIGNPLACE: u32 = 18
+
+TY_SCALAR: u32 = 0
+TY_RECORD: u32 = 1
+TY_ARRAY: u32 = 2
 
 // Infix operator codes (asm/syntax.go).
 IOP_ADD: u32 = 0
@@ -68,7 +87,7 @@ F_COND: u32 = 1
 F_STMTS: u32 = 2
 F_WHILE: u32 = 3
 F_CONDSTMT: u32 = 4
-F_CALL: u32 = 5
+F_AGG: u32 = 5
 
 // Condition codes (bdd.oak's condition: kind 0, the flags of left - right).
 CC_EQ: u32 = 0
@@ -82,11 +101,16 @@ CC_LT: u32 = 11
 CC_GT: u32 = 12
 CC_LE: u32 = 13
 
-SYN_HEADER: u32 = 8
+// A symbol holding an aggregate has this in place of a term.
+AGG: u32 = 4294967294
+
+SYN_HEADER: u32 = 16
 SYN_FUNC_WORDS: u32 = 8
 SYN_PARAM_WORDS: u32 = 4
+SYN_TYPE_WORDS: u32 = 8
 SYN_NODE_WORDS: u32 = 8
 LOWER_FRAME_WORDS: u32 = 16
+SYM_WORDS: u32 = 4
 MAX_SYMBOLS: u32 = 256
 MAX_DEPTH: u32 = 64
 MAX_SNAPS: u32 = 128
@@ -94,6 +118,8 @@ MAX_LFRAMES: u32 = 4096
 MAX_PATH: u32 = 512
 MAX_TRAPS: u32 = 4096
 MAX_ARGV: u32 = 4096
+MAX_LEAFSTORE: u32 = 262144
+MAX_LEAVES: u32 = 64
 LOOP_BUDGET: u32 = 4096
 SELECT_SLOTS_OUT: u32 = 16
 
@@ -106,6 +132,7 @@ Lower: type = struct {
   path_at: u32,
   traps_at: u32,
   argv_at: u32,
+  leaves_at: u32,
   state_at: u32,
   total: u32,
   max_terms: u32,
@@ -125,15 +152,19 @@ LS_RET: u32 = 8
 LS_LEAVES: u32 = 9
 LS_STRIDE: u32 = 10
 LS_TERMS_AT: u32 = 11
+LS_RET_TYPE: u32 = 12
+LS_RET_BLOCK: u32 = 13
+LS_LEAF_SP: u32 = 14
 
 lower_layout: (max_terms: u32, leaves: u32): Lower {
   sym_at: u32 = 0
-  snap_at: u32 = sym_at + MAX_DEPTH * MAX_SYMBOLS * u32(3)
-  frames_at: u32 = snap_at + MAX_SNAPS * MAX_SYMBOLS
+  snap_at: u32 = sym_at + MAX_DEPTH * MAX_SYMBOLS * SYM_WORDS
+  frames_at: u32 = snap_at + MAX_SNAPS * MAX_SYMBOLS * u32(3)
   path_at: u32 = frames_at + MAX_LFRAMES * LOWER_FRAME_WORDS
   traps_at: u32 = path_at + MAX_PATH
   argv_at: u32 = traps_at + MAX_TRAPS
-  state_at: u32 = argv_at + MAX_ARGV
+  leaves_at: u32 = argv_at + MAX_ARGV
+  state_at: u32 = leaves_at + MAX_LEAFSTORE
   Lower {
     sym_at: sym_at,
     snap_at: snap_at,
@@ -141,6 +172,7 @@ lower_layout: (max_terms: u32, leaves: u32): Lower {
     path_at: path_at,
     traps_at: traps_at,
     argv_at: argv_at,
+    leaves_at: leaves_at,
     state_at: state_at,
     total: state_at + u32(32),
     max_terms: max_terms,
@@ -153,13 +185,15 @@ lower_layout: (max_terms: u32, leaves: u32): Lower {
 syn_functions: (sx: []u32): u32 = sx[u32(0)]
 syn_nodes: (sx: []u32): u32 = sx[u32(1)]
 syn_lists: (sx: []u32): u32 = sx[u32(2)]
-syn_max_symbols: (sx: []u32): u32 = sx[u32(3)]
 syn_theorem: (sx: []u32): u32 = sx[u32(4)]
 syn_leaves: (sx: []u32): u32 = sx[u32(5)]
+syn_types: (sx: []u32): u32 = sx[u32(6)]
+syn_type_leaves: (sx: []u32): u32 = sx[u32(7)]
+syn_fields: (sx: []u32): u32 = sx[u32(8)]
+syn_leaf_indices: (sx: []u32): u32 = sx[u32(9)]
 
-syn_funcs_at: (sx: []u32): u32 = SYN_HEADER
 syn_params_at: (sx: []u32): u32 = SYN_HEADER + syn_functions(sx) * SYN_FUNC_WORDS
-syn_nodes_at: (sx: []u32): u32 {
+syn_param_total: (sx: []u32): u32 {
   params: u32 = 0
   f: u32 = 0
   n: u32 = syn_functions(sx)
@@ -167,18 +201,41 @@ syn_nodes_at: (sx: []u32): u32 {
     params = params + sx[SYN_HEADER + f * SYN_FUNC_WORDS + u32(1)]
     f = f + u32(1)
   }
-  syn_params_at(sx) + params * SYN_PARAM_WORDS
+  params
 }
+syn_types_at: (sx: []u32): u32 = syn_params_at(sx) + syn_param_total(sx) * SYN_PARAM_WORDS
+syn_type_leaves_at: (sx: []u32): u32 = syn_types_at(sx) + syn_types(sx) * SYN_TYPE_WORDS
+syn_fields_at: (sx: []u32): u32 = syn_type_leaves_at(sx) + syn_type_leaves(sx) * u32(2)
+syn_leaf_indices_at: (sx: []u32): u32 = syn_fields_at(sx) + syn_fields(sx) * u32(2)
+syn_nodes_at: (sx: []u32): u32 = syn_leaf_indices_at(sx) + syn_leaf_indices(sx)
 syn_lists_at: (sx: []u32): u32 = syn_nodes_at(sx) + syn_nodes(sx) * SYN_NODE_WORDS
 
 fn_word: (sx: []u32, f: u32, k: u32): u32 = sx[SYN_HEADER + f * SYN_FUNC_WORDS + k]
 fn_param_start: (sx: []u32, f: u32): u32 = fn_word(sx, f, u32(0))
 fn_param_count: (sx: []u32, f: u32): u32 = fn_word(sx, f, u32(1))
-fn_ret_width: (sx: []u32, f: u32): u32 = fn_word(sx, f, u32(2))
-fn_ret_signed: (sx: []u32, f: u32): Bool = fn_word(sx, f, u32(3)) != u32(0)
-fn_body: (sx: []u32, f: u32): u32 = fn_word(sx, f, u32(4))
+fn_ret_type: (sx: []u32, f: u32): u32 = fn_word(sx, f, u32(2))
+fn_body: (sx: []u32, f: u32): u32 = fn_word(sx, f, u32(3))
 
 param_word: (sx: []u32, p: u32, k: u32): u32 = sx[syn_params_at(sx) + p * SYN_PARAM_WORDS + k]
+param_type: (sx: []u32, p: u32): u32 = param_word(sx, p, u32(0))
+param_leaf_start: (sx: []u32, p: u32): u32 = param_word(sx, p, u32(1))
+leaf_index_at: (sx: []u32, k: u32): u32 = sx[syn_leaf_indices_at(sx) + k]
+
+type_word: (sx: []u32, t: u32, k: u32): u32 = sx[syn_types_at(sx) + t * SYN_TYPE_WORDS + k]
+type_kind: (sx: []u32, t: u32): u32 = type_word(sx, t, u32(0))
+type_leaves: (sx: []u32, t: u32): u32 = type_word(sx, t, u32(1))
+type_leaf_start: (sx: []u32, t: u32): u32 = type_word(sx, t, u32(2))
+type_field_start: (sx: []u32, t: u32): u32 = type_word(sx, t, u32(3))
+type_field_count: (sx: []u32, t: u32): u32 = type_word(sx, t, u32(4))
+type_elem: (sx: []u32, t: u32): u32 = type_word(sx, t, u32(5))
+type_length: (sx: []u32, t: u32): u32 = type_word(sx, t, u32(6))
+type_leaf_width: (sx: []u32, t: u32, i: u32): u32 = sx[syn_type_leaves_at(sx) + (type_leaf_start(sx, t) + i) * u32(2)]
+type_leaf_signed: (sx: []u32, t: u32, i: u32): Bool = sx[syn_type_leaves_at(sx) + (type_leaf_start(sx, t) + i) * u32(2) + u32(1)] != u32(0)
+scalar_width: (sx: []u32, t: u32): u32 = type_leaf_width(sx, t, u32(0))
+scalar_signed: (sx: []u32, t: u32): Bool = type_leaf_signed(sx, t, u32(0))
+field_type: (sx: []u32, t: u32, k: u32): u32 = sx[syn_fields_at(sx) + (type_field_start(sx, t) + k) * u32(2)]
+field_offset: (sx: []u32, t: u32, k: u32): u32 = sx[syn_fields_at(sx) + (type_field_start(sx, t) + k) * u32(2) + u32(1)]
+is_scalar_type: (sx: []u32, t: u32): Bool = t != NONE && type_kind(sx, t) == TY_SCALAR
 
 node_word: (sx: []u32, n: u32, k: u32): u32 = sx[syn_nodes_at(sx) + n * SYN_NODE_WORDS + k]
 node_kind: (sx: []u32, n: u32): u32 = node_word(sx, n, u32(0))
@@ -188,12 +245,14 @@ node_c: (sx: []u32, n: u32): u32 = node_word(sx, n, u32(3))
 node_d: (sx: []u32, n: u32): u32 = node_word(sx, n, u32(4))
 node_vlo: (sx: []u32, n: u32): u32 = node_word(sx, n, u32(5))
 node_vhi: (sx: []u32, n: u32): u32 = node_word(sx, n, u32(6))
+node_type: (sx: []u32, n: u32): u32 = node_word(sx, n, u32(7))
 list_item: (sx: []u32, start: u32, i: u32): u32 = sx[syn_lists_at(sx) + start + i]
 
-// --- terms in the problem buffer -----------------------------------------
+// --- state, terms ---------------------------------------------------------
 
 state: (lw: Lower, w: [*]u32, k: u32): u32 = w[lw.state_at + k]
 set_state: (lw: Lower, w: [*]u32, k: u32, v: u32): () { w[lw.state_at + k] = v }
+
 // fail_at marks the lowering failed with the code of the site (a reason
 // the driver reports).
 fail_at: (lw: Lower, w: [*]u32, code: u32): () {
@@ -237,7 +296,7 @@ t_const64: (lw: Lower, w: [*]u32, b: [*]u32, value: u64, width: u32): u32 {
 
 t_const: (lw: Lower, w: [*]u32, b: [*]u32, value: u32, width: u32): u32 = t_const64(lw, w, b, u64(value), width)
 
-t_param: (lw: Lower, w: [*]u32, b: [*]u32, leaf: u32, width: u32): u32 = term_new(lw, w, b, KIND_PARAM, u32(0), width, leaf, NONE, NONE, u32(0), u32(0))
+t_param: (lw: Lower, w: [*]u32, b: [*]u32, leaf_id: u32, width: u32): u32 = term_new(lw, w, b, KIND_PARAM, u32(0), width, leaf_id, NONE, NONE, u32(0), u32(0))
 
 clz_of: (x: u64, width: u32): u64 {
   n: u64 = 0
@@ -406,7 +465,7 @@ t_zero_extend: (lw: Lower, w: [*]u32, b: [*]u32, t: u32, width: u32): u32 {
 
 t_adapt: (lw: Lower, w: [*]u32, b: [*]u32, t: u32, width: u32): u32 = twidth(lw, w, b, t) < width ? { t_zero_extend(lw, w, b, t, width) } | { t_truncate(lw, w, b, t, width) }
 
-// t_extend widens a value of `from` bits to `width`, by sign when signed.
+// t_extend widens a value of from_width bits to width, by sign when signed.
 t_extend: (lw: Lower, w: [*]u32, b: [*]u32, t: u32, from_width: u32, width: u32, signed: Bool): u32 {
   low: u32 = t_binary(lw, w, b, BOP_AND, t_adapt(lw, w, b, t, width), t_const64(lw, w, b, mask64(from_width), width))
   signed ? {
@@ -417,7 +476,7 @@ t_extend: (lw: Lower, w: [*]u32, b: [*]u32, t: u32, from_width: u32, width: u32,
 
 t_not1: (lw: Lower, w: [*]u32, b: [*]u32, t: u32): u32 = t_binary(lw, w, b, BOP_XOR, t_truncate(lw, w, b, t, u32(1)), t_const(lw, w, b, u32(1), u32(1)))
 
-// --- paths, traps, symbols, snapshots ----------------------------------
+// --- paths, traps -----------------------------------------------------------
 
 current_path: (lw: Lower, w: [*]u32): u32 {
   sp: u32 = state(lw, w, LS_PATH_SP)
@@ -449,31 +508,121 @@ add_trap: (lw: Lower, w: [*]u32, b: [*]u32, t: u32): () {
   }
 }
 
-sym_slot: (lw: Lower, w: [*]u32, sym: u32): u32 = lw.sym_at + (state(lw, w, LS_DEPTH) * MAX_SYMBOLS + sym) * u32(3)
-sym_term: (lw: Lower, w: [*]u32, sym: u32): u32 = w[sym_slot(lw, w, sym)]
-sym_width: (lw: Lower, w: [*]u32, sym: u32): u32 = w[sym_slot(lw, w, sym) + u32(1)]
-sym_signed: (lw: Lower, w: [*]u32, sym: u32): Bool = w[sym_slot(lw, w, sym) + u32(2)] != u32(0)
+// --- leaf blocks, symbols, snapshots ----------------------------------------
 
-bind_sym: (lw: Lower, w: [*]u32, sym: u32, t: u32, width: u32, signed: Bool): () {
+// alloc_block reserves count leaf words; NONE when the store is full.
+alloc_block: (lw: Lower, w: [*]u32, count: u32): u32 {
+  sp: u32 = state(lw, w, LS_LEAF_SP)
+  sp + count > MAX_LEAFSTORE ? { fail_at(lw, w, u32(5)) } | { set_state(lw, w, LS_LEAF_SP, sp + count) }
+  sp + count > MAX_LEAFSTORE ? { NONE } | { sp }
+}
+
+leaf_at: (lw: Lower, w: [*]u32, block: u32, i: u32): u32 = w[lw.leaves_at + block + i]
+set_leaf: (lw: Lower, w: [*]u32, block: u32, i: u32, t: u32): () { w[lw.leaves_at + block + i] = t }
+
+// copy_block copies count leaves into a fresh block.
+copy_block: (lw: Lower, w: [*]u32, block: u32, count: u32): u32 {
+  out: u32 = alloc_block(lw, w, count)
+  i: u32 = 0
+  while i < count && out != NONE {
+    set_leaf(lw, w, out, i, leaf_at(lw, w, block, i))
+    i = i + u32(1)
+  }
+  out
+}
+
+copy_leaves: (lw: Lower, w: [*]u32, src: u32, dst: u32, count: u32): () {
+  i: u32 = 0
+  while i < count {
+    set_leaf(lw, w, dst, i, leaf_at(lw, w, src, i))
+    i = i + u32(1)
+  }
+}
+
+// zero_block is a type's all-zero value.
+zero_block: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, t: u32): u32 {
+  n: u32 = type_leaves(sx, t)
+  out: u32 = alloc_block(lw, w, n)
+  i: u32 = 0
+  while i < n && out != NONE {
+    set_leaf(lw, w, out, i, t_const(lw, w, b, u32(0), type_leaf_width(sx, t, i)))
+    i = i + u32(1)
+  }
+  out
+}
+
+// merge_blocks selects between two blocks leaf by leaf on a 1-bit condition
+// (equal leaves stay).
+merge_blocks: (lw: Lower, w: [*]u32, b: [*]u32, c: u32, when_true: u32, when_false: u32, count: u32): u32 {
+  out: u32 = alloc_block(lw, w, count)
+  i: u32 = 0
+  while i < count && out != NONE {
+    t: u32 = leaf_at(lw, w, when_true, i)
+    e: u32 = leaf_at(lw, w, when_false, i)
+    set_leaf(lw, w, out, i, t == e ? { e } | { t_ite(lw, w, b, c, t, e) })
+    i = i + u32(1)
+  }
+  out
+}
+
+// element_under_index reads element idx (a 32-bit term) of an array block:
+// the elements merged under the index, the index at or past the length a
+// trap obligation.
+element_under_index: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, block: u32, array_type: u32, idx: u32): u32 {
+  elem: u32 = type_elem(sx, array_type)
+  n: u32 = type_leaves(sx, elem)
+  length: u32 = type_length(sx, array_type)
+  add_trap(lw, w, b, t_cmp(lw, w, b, CC_HS, idx, t_const(lw, w, b, length, u32(32))))
+  out: u32 = alloc_block(lw, w, n)
+  j: u32 = 0
+  while j < n && out != NONE {
+    acc: u32 = leaf_at(lw, w, block, (length - u32(1)) * n + j)
+    k: u32 = length - u32(1)
+    while k > u32(0) {
+      k = k - u32(1)
+      acc = t_ite(lw, w, b, t_cmp(lw, w, b, CC_EQ, idx, t_const(lw, w, b, k, u32(32))), leaf_at(lw, w, block, k * n + j), acc)
+    }
+    set_leaf(lw, w, out, j, acc)
+    j = j + u32(1)
+  }
+  out
+}
+
+sym_slot: (lw: Lower, w: [*]u32, sym: u32): u32 = lw.sym_at + (state(lw, w, LS_DEPTH) * MAX_SYMBOLS + sym) * SYM_WORDS
+sym_value: (lw: Lower, w: [*]u32, sym: u32): u32 = w[sym_slot(lw, w, sym)]
+sym_type: (lw: Lower, w: [*]u32, sym: u32): u32 = w[sym_slot(lw, w, sym) + u32(1)]
+sym_block: (lw: Lower, w: [*]u32, sym: u32): u32 = w[sym_slot(lw, w, sym) + u32(2)]
+
+bind_scalar: (lw: Lower, w: [*]u32, sym: u32, t: u32, typ: u32): () {
   at: u32 = sym_slot(lw, w, sym)
   w[at] = t
-  w[at + u32(1)] = width
-  w[at + u32(2)] = signed ? { u32(1) } | { u32(0) }
+  w[at + u32(1)] = typ
+  w[at + u32(2)] = NONE
+}
+
+bind_aggregate: (lw: Lower, w: [*]u32, sym: u32, typ: u32, block: u32): () {
+  at: u32 = sym_slot(lw, w, sym)
+  w[at] = AGG
+  w[at + u32(1)] = typ
+  w[at + u32(2)] = block
 }
 
 clear_depth: (lw: Lower, w: [*]u32, depth: u32): () {
   i: u32 = 0
   while i < MAX_SYMBOLS {
-    w[lw.sym_at + (depth * MAX_SYMBOLS + i) * u32(3)] = NONE
+    w[lw.sym_at + (depth * MAX_SYMBOLS + i) * SYM_WORDS] = NONE
     i = i + u32(1)
   }
 }
 
-// A snapshot is the current depth's symbol terms.
+// A snapshot is the current depth's symbols: value, type, block.
 snapshot: (lw: Lower, w: [*]u32, slot: u32): () {
   i: u32 = 0
   while i < MAX_SYMBOLS {
-    w[lw.snap_at + slot * MAX_SYMBOLS + i] = sym_term(lw, w, i)
+    at: u32 = lw.snap_at + (slot * MAX_SYMBOLS + i) * u32(3)
+    w[at] = sym_value(lw, w, i)
+    w[at + u32(1)] = sym_type(lw, w, i)
+    w[at + u32(2)] = sym_block(lw, w, i)
     i = i + u32(1)
   }
 }
@@ -481,21 +630,34 @@ snapshot: (lw: Lower, w: [*]u32, slot: u32): () {
 restore_snapshot: (lw: Lower, w: [*]u32, slot: u32): () {
   i: u32 = 0
   while i < MAX_SYMBOLS {
-    w[sym_slot(lw, w, i)] = w[lw.snap_at + slot * MAX_SYMBOLS + i]
+    at: u32 = lw.snap_at + (slot * MAX_SYMBOLS + i) * u32(3)
+    s: u32 = sym_slot(lw, w, i)
+    w[s] = w[at]
+    w[s + u32(1)] = w[at + u32(1)]
+    w[s + u32(2)] = w[at + u32(2)]
     i = i + u32(1)
   }
 }
 
 // merge_snapshot: every symbol bound in both the true arm's snapshot and
-// now, with different terms, becomes a select on the condition.
-merge_snapshot: (lw: Lower, w: [*]u32, b: [*]u32, slot: u32, cond: u32): () {
+// now, with different values, becomes a select on the condition.
+merge_snapshot: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, slot: u32, cond: u32): () {
   c: u32 = t_truncate(lw, w, b, cond, u32(1))
   i: u32 = 0
   while i < MAX_SYMBOLS {
-    then_term: u32 = w[lw.snap_at + slot * MAX_SYMBOLS + i]
-    now: u32 = sym_term(lw, w, i)
-    (then_term != NONE && now != NONE && then_term != now) ? {
-      w[sym_slot(lw, w, i)] = t_ite(lw, w, b, c, then_term, now)
+    at: u32 = lw.snap_at + (slot * MAX_SYMBOLS + i) * u32(3)
+    then_value: u32 = w[at]
+    now: u32 = sym_value(lw, w, i)
+    (then_value != NONE && now != NONE) ? {
+      now == AGG ? {
+        then_block: u32 = w[at + u32(2)]
+        then_block != sym_block(lw, w, i) ? {
+          typ: u32 = sym_type(lw, w, i)
+          bind_aggregate(lw, w, i, typ, merge_blocks(lw, w, b, c, then_block, sym_block(lw, w, i), type_leaves(sx, typ)))
+        } | { }
+      } | {
+        then_value != now ? { w[sym_slot(lw, w, i)] = t_ite(lw, w, b, c, then_value, now) } | { }
+      }
     } | { }
     i = i + u32(1)
   }
@@ -514,20 +676,22 @@ contract_of: (lw: Lower, w: [*]u32, sx: []u32, node: u32): Contract {
     sp = sp - u32(1)
     n: u32 = stack[sp]
     kind: u32 = node_kind(sx, n)
+    typ: u32 = node_type(sx, n)
     kind == SYN_SYM ? {
       sym: u32 = node_a(sx, n)
-      sym_term(lw, w, sym) != NONE ? { out = Contract { width: sym_width(lw, w, sym), signed: sym_signed(lw, w, sym), ok: true } } | { }
+      (sym_value(lw, w, sym) != NONE && sym_value(lw, w, sym) != AGG) ? { out = Contract { width: scalar_width(sx, sym_type(lw, w, sym)), signed: scalar_signed(sx, sym_type(lw, w, sym)), ok: true } } | { }
     } | {
     kind == SYN_CONV ? { out = Contract { width: node_a(sx, n), signed: node_b(sx, n) != u32(0), ok: true } } | {
-    kind == SYN_CALL ? { out = Contract { width: fn_ret_width(sx, node_a(sx, n)), signed: fn_ret_signed(sx, node_a(sx, n)), ok: true } } | {
+    (kind == SYN_CALL && is_scalar_type(sx, typ)) ? { out = Contract { width: scalar_width(sx, typ), signed: scalar_signed(sx, typ), ok: true } } | {
     kind == SYN_INSTR ? { out = Contract { width: node_b(sx, n), signed: false, ok: true } } | {
+    ((kind == SYN_FIELD || kind == SYN_INDEX) && is_scalar_type(sx, typ)) ? { out = Contract { width: scalar_width(sx, typ), signed: scalar_signed(sx, typ), ok: true } } | {
     kind == SYN_INFIX ? {
       sp + u32(2) <= u32(64) ? {
         stack[sp] = node_c(sx, n)
         stack[sp + u32(1)] = node_b(sx, n)
         sp = sp + u32(2)
       } | { }
-    } | { } } } } }
+    } | { } } } } } }
   }
   out
 }
@@ -538,7 +702,7 @@ frame_at: (lw: Lower, w: [*]u32, i: u32): u32 = lw.frames_at + i * LOWER_FRAME_W
 
 push_frame_l: (lw: Lower, w: [*]u32, kind: u32, node: u32, width: u32): () {
   sp: u32 = state(lw, w, LS_SP)
-  sp >= MAX_LFRAMES ? { fail_at(lw, w, u32(5)) } | {
+  sp >= MAX_LFRAMES ? { fail_at(lw, w, u32(6)) } | {
     f: u32 = frame_at(lw, w, sp)
     w[f] = kind
     w[f + u32(1)] = node
@@ -550,20 +714,34 @@ push_frame_l: (lw: Lower, w: [*]u32, kind: u32, node: u32, width: u32): () {
     w[f + u32(7)] = NONE
     w[f + u32(8)] = u32(0)
     w[f + u32(9)] = u32(0)
+    w[f + u32(10)] = u32(0)
     set_state(lw, w, LS_SP, sp + u32(1))
   }
 }
 
 pop_frame_l: (lw: Lower, w: [*]u32): () { set_state(lw, w, LS_SP, state(lw, w, LS_SP) - u32(1)) }
 
+// push_value pushes the frame that lowers node as a value of type typ: a
+// scalar at its width, an aggregate into a block.
+push_value: (lw: Lower, w: [*]u32, sx: []u32, node: u32, typ: u32): () {
+  is_scalar_type(sx, typ) ? { push_frame_l(lw, w, F_EXPR, node, scalar_width(sx, typ)) } | { push_frame_l(lw, w, F_AGG, node, typ) }
+}
+
 // push_stmts runs a block's statements; in value position the last is
-// the block's result.
-push_stmts: (lw: Lower, w: [*]u32, sx: []u32, block: u32, width: u32, value: Bool): () {
-  push_frame_l(lw, w, F_STMTS, block, width)
+// the block's result (word 2 its width, or its type when word 6 is set).
+push_stmts: (lw: Lower, w: [*]u32, sx: []u32, block: u32, width_or_type: u32, value: Bool, agg: Bool): () {
+  push_frame_l(lw, w, F_STMTS, block, width_or_type)
   sp: u32 = state(lw, w, LS_SP)
   f: u32 = frame_at(lw, w, sp - u32(1))
   w[f + u32(4)] = u32(0)
   w[f + u32(5)] = value ? { u32(1) } | { u32(0) }
+  w[f + u32(6)] = agg ? { u32(1) } | { u32(0) }
+}
+
+set_ret_agg: (lw: Lower, w: [*]u32, typ: u32, block: u32): () {
+  set_state(lw, w, LS_RET, AGG)
+  set_state(lw, w, LS_RET_TYPE, typ)
+  set_state(lw, w, LS_RET_BLOCK, block)
 }
 
 // cmp_code picks the condition code of a comparison by signedness.
@@ -594,6 +772,118 @@ trailing_zeros: (v: u64): u32 {
   n
 }
 
+// Place resolution (a field/index chain on a symbol with constant
+// indexes): the root symbol, the leaf offset, the type at the place.
+Place: type = struct { sym: u32, offset: u32, typ: u32, ok: Bool }
+
+// constant_index reads a constant index node: a literal, a conversion of
+// one, or a local whose term is a constant.
+constant_index: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, node: u32): u32 {
+  n: u32 = node
+  out: u32 = NONE
+  going: Bool = true
+  while going {
+    kind: u32 = node_kind(sx, n)
+    kind == SYN_INTLIT ? {
+      out = node_vlo(sx, n)
+      going = false
+    } | {
+    kind == SYN_CONV ? { n = node_c(sx, n) } | {
+    kind == SYN_SYM ? {
+      t: u32 = sym_value(lw, w, node_a(sx, n))
+      (t != NONE && t != AGG && is_const(lw, w, b, t)) ? { out = u32_trunc_u64(tvalue(lw, w, b, t)) } | { }
+      going = false
+    } | { going = false } } }
+  }
+  out
+}
+
+resolve_place: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, node: u32): Place {
+  n: u32 = node
+  offset: u32 = 0
+  ok: Bool = true
+  going: Bool = true
+  while going && ok {
+    kind: u32 = node_kind(sx, n)
+    kind == SYN_SYM ? { going = false } | {
+    kind == SYN_FIELD ? {
+      base_type: u32 = node_type(sx, node_a(sx, n))
+      offset = offset + field_offset(sx, base_type, node_b(sx, n))
+      n = node_a(sx, n)
+    } | {
+    kind == SYN_INDEX ? {
+      base_type: u32 = node_type(sx, node_a(sx, n))
+      k: u32 = constant_index(lw, w, b, sx, node_b(sx, n))
+      (k == NONE || k >= type_length(sx, base_type)) ? { ok = false } | {
+        offset = offset + k * type_leaves(sx, type_elem(sx, base_type))
+        n = node_a(sx, n)
+      }
+    } | { ok = false } } }
+  }
+  ok ? { Place { sym: node_a(sx, n), offset: offset, typ: node_type(sx, node), ok: sym_value(lw, w, node_a(sx, n)) == AGG } } | { Place { sym: NONE, offset: u32(0), typ: NONE, ok: false } }
+}
+
+// enter_call binds the collected arguments as the callee's parameters in
+// a fresh depth and pushes the body at the result type.
+enter_call: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32): () {
+  callee: u32 = node_a(sx, node)
+  nargs: u32 = node_c(sx, node)
+  base: u32 = w[f + u32(4)]
+  depth: u32 = state(lw, w, LS_DEPTH) + u32(1)
+  set_state(lw, w, LS_DEPTH, depth)
+  clear_depth(lw, w, depth)
+  i: u32 = 0
+  while i < nargs {
+    p: u32 = fn_param_start(sx, callee) + i
+    ptype: u32 = param_type(sx, p)
+    is_scalar_type(sx, ptype) ? { bind_scalar(lw, w, i, w[lw.argv_at + base + i], ptype) } | { bind_aggregate(lw, w, i, ptype, w[lw.argv_at + base + i]) }
+    i = i + u32(1)
+  }
+  w[f + u32(3)] = nargs + u32(1)
+  push_value(lw, w, sx, fn_body(sx, callee), fn_ret_type(sx, callee))
+}
+
+// step_call advances a call: the arguments at the callee's parameter
+// types (an aggregate by copy), then the body in a new symbol depth, then
+// the result adapted (a scalar by the result's signedness to the context
+// width; an aggregate as built).
+step_call: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, width: u32, phase: u32): () {
+  callee: u32 = node_a(sx, node)
+  args: u32 = node_b(sx, node)
+  nargs: u32 = node_c(sx, node)
+  argv_sp: u32 = state(lw, w, LS_ARGV_SP)
+  phase == u32(0) ? {
+    (argv_sp + nargs > MAX_ARGV || state(lw, w, LS_DEPTH) + u32(1) >= MAX_DEPTH) ? { fail_at(lw, w, u32(7)) } | {
+      w[f + u32(4)] = argv_sp
+      set_state(lw, w, LS_ARGV_SP, argv_sp + nargs)
+      w[f + u32(3)] = u32(1)
+      nargs == u32(0) ? { enter_call(lw, w, b, sx, f, node) } | {
+        push_value(lw, w, sx, list_item(sx, args, u32(0)), param_type(sx, fn_param_start(sx, callee)))
+      }
+    }
+  } | {
+  phase <= nargs ? {
+    ret: u32 = state(lw, w, LS_RET)
+    ptype: u32 = param_type(sx, fn_param_start(sx, callee) + phase - u32(1))
+    w[lw.argv_at + w[f + u32(4)] + phase - u32(1)] = is_scalar_type(sx, ptype) ? { ret } | { copy_block(lw, w, state(lw, w, LS_RET_BLOCK), type_leaves(sx, ptype)) }
+    phase == nargs ? { enter_call(lw, w, b, sx, f, node) } | {
+      w[f + u32(3)] = phase + u32(1)
+      push_value(lw, w, sx, list_item(sx, args, phase), param_type(sx, fn_param_start(sx, callee) + phase))
+    }
+  } | {
+    // The body returned: leave the callee's depth, adapt the result.
+    set_state(lw, w, LS_DEPTH, state(lw, w, LS_DEPTH) - u32(1))
+    set_state(lw, w, LS_ARGV_SP, w[f + u32(4)])
+    rt: u32 = fn_ret_type(sx, callee)
+    is_scalar_type(sx, rt) ? {
+      rw: u32 = scalar_width(sx, rt)
+      ret: u32 = state(lw, w, LS_RET)
+      set_state(lw, w, LS_RET, rw < width ? { t_extend(lw, w, b, ret, rw, width, scalar_signed(sx, rt)) } | { t_truncate(lw, w, b, ret, width) })
+    } | { }
+    pop_frame_l(lw, w)
+  } }
+}
+
 // step_infix advances an infix node in value position.
 step_infix: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, width: u32, phase: u32, ret: u32): () {
   op: u32 = node_a(sx, node)
@@ -612,7 +902,7 @@ step_infix: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, widt
       (contract.ok && !contract.signed) ? {
         w[f + u32(3)] = u32(1)
         push_frame_l(lw, w, F_EXPR, node_c(sx, node), width)
-      } | { fail_at(lw, w, u32(6)) }
+      } | { fail_at(lw, w, u32(8)) }
     } | {
     phase == u32(1) ? {
       v: u64 = tvalue(lw, w, b, ret)
@@ -620,7 +910,7 @@ step_infix: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, widt
         w[f + u32(4)] = ret
         w[f + u32(3)] = u32(2)
         push_frame_l(lw, w, F_EXPR, node_b(sx, node), width)
-      } | { fail_at(lw, w, u32(7)) }
+      } | { fail_at(lw, w, u32(9)) }
     } | {
       v2: u64 = tvalue(lw, w, b, w[f + u32(4)])
       set_state(lw, w, LS_RET, op == IOP_MOD ? { t_binary(lw, w, b, BOP_AND, ret, t_const64(lw, w, b, v2 - u64(1), width)) } | { t_binary(lw, w, b, BOP_SHR, ret, t_const(lw, w, b, trailing_zeros(v2), width)) })
@@ -646,55 +936,39 @@ step_infix: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, widt
   } }
 }
 
-// enter_call binds the collected arguments as the callee's parameters in
-// a fresh depth and pushes the body.
-enter_call: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32): () {
-  callee: u32 = node_a(sx, node)
-  nargs: u32 = node_c(sx, node)
-  base: u32 = w[f + u32(4)]
-  depth: u32 = state(lw, w, LS_DEPTH) + u32(1)
-  set_state(lw, w, LS_DEPTH, depth)
-  clear_depth(lw, w, depth)
-  i: u32 = 0
-  while i < nargs {
-    p: u32 = fn_param_start(sx, callee) + i
-    bind_sym(lw, w, i, w[lw.argv_at + base + i], param_word(sx, p, u32(0)), param_word(sx, p, u32(1)) != u32(0))
-    i = i + u32(1)
-  }
-  w[f + u32(3)] = nargs + u32(1)
-  push_frame_l(lw, w, F_EXPR, fn_body(sx, callee), fn_ret_width(sx, callee))
-}
-
-// step_call advances a call: the arguments at the callee's parameter
-// widths, then the body at the result width in a new symbol depth, then
-// the result adapted by the result's signedness.
-step_call: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, width: u32, phase: u32, ret: u32): () {
-  callee: u32 = node_a(sx, node)
-  args: u32 = node_b(sx, node)
-  nargs: u32 = node_c(sx, node)
-  argv_sp: u32 = state(lw, w, LS_ARGV_SP)
+// step_access advances a field or element read in scalar position
+// (F_EXPR): the base as an aggregate, then the leaf (a constant element
+// index) or the elements merged under the index.
+step_access: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, width: u32, phase: u32, ret: u32): () {
+  kind: u32 = node_kind(sx, node)
+  base_node: u32 = node_a(sx, node)
+  base_type: u32 = node_type(sx, base_node)
   phase == u32(0) ? {
-    (argv_sp + nargs > MAX_ARGV || state(lw, w, LS_DEPTH) + u32(1) >= MAX_DEPTH) ? { fail_at(lw, w, u32(8)) } | {
-      w[f + u32(4)] = argv_sp
-      set_state(lw, w, LS_ARGV_SP, argv_sp + nargs)
-      w[f + u32(3)] = u32(1)
-      nargs == u32(0) ? { enter_call(lw, w, b, sx, f, node) } | {
-        push_frame_l(lw, w, F_EXPR, list_item(sx, args, u32(0)), param_word(sx, fn_param_start(sx, callee), u32(0)))
+    w[f + u32(3)] = u32(1)
+    push_frame_l(lw, w, F_AGG, base_node, base_type)
+  } | {
+  phase == u32(1) ? {
+    block: u32 = state(lw, w, LS_RET_BLOCK)
+    kind == SYN_FIELD ? {
+      set_state(lw, w, LS_RET, t_adapt(lw, w, b, leaf_at(lw, w, block, field_offset(sx, base_type, node_b(sx, node))), width))
+      pop_frame_l(lw, w)
+    } | {
+      w[f + u32(4)] = block
+      w[f + u32(3)] = u32(2)
+      push_frame_l(lw, w, F_EXPR, node_b(sx, node), u32(32))
+    }
+  } | {
+    block: u32 = w[f + u32(4)]
+    elem_leaves: u32 = type_leaves(sx, type_elem(sx, base_type))
+    is_const(lw, w, b, ret) ? {
+      k: u32 = u32_trunc_u64(tvalue(lw, w, b, ret))
+      k >= type_length(sx, base_type) ? { fail_at(lw, w, u32(10)) } | {
+        set_state(lw, w, LS_RET, t_adapt(lw, w, b, leaf_at(lw, w, block, k * elem_leaves), width))
       }
+    } | {
+      merged: u32 = element_under_index(lw, w, b, sx, block, base_type, ret)
+      merged == NONE ? { } | { set_state(lw, w, LS_RET, t_adapt(lw, w, b, leaf_at(lw, w, merged, u32(0)), width)) }
     }
-  } | {
-  phase <= nargs ? {
-    w[lw.argv_at + w[f + u32(4)] + phase - u32(1)] = ret
-    phase == nargs ? { enter_call(lw, w, b, sx, f, node) } | {
-      w[f + u32(3)] = phase + u32(1)
-      push_frame_l(lw, w, F_EXPR, list_item(sx, args, phase), param_word(sx, fn_param_start(sx, callee) + phase, u32(0)))
-    }
-  } | {
-    // The body returned: leave the callee's depth, adapt the result.
-    set_state(lw, w, LS_DEPTH, state(lw, w, LS_DEPTH) - u32(1))
-    set_state(lw, w, LS_ARGV_SP, w[f + u32(4)])
-    rw: u32 = fn_ret_width(sx, callee)
-    set_state(lw, w, LS_RET, rw < width ? { t_extend(lw, w, b, ret, rw, width, fn_ret_signed(sx, callee)) } | { t_truncate(lw, w, b, ret, width) })
     pop_frame_l(lw, w)
   } }
 }
@@ -715,9 +989,8 @@ step_expr: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
     pop_frame_l(lw, w)
   } | {
   kind == SYN_SYM ? {
-    sym: u32 = node_a(sx, node)
-    t: u32 = sym_term(lw, w, sym)
-    t == NONE ? { fail_at(lw, w, u32(9)) } | { set_state(lw, w, LS_RET, t_adapt(lw, w, b, t, width)) }
+    t: u32 = sym_value(lw, w, node_a(sx, node))
+    (t == NONE || t == AGG) ? { fail_at(lw, w, u32(11)) } | { set_state(lw, w, LS_RET, t_adapt(lw, w, b, t, width)) }
     pop_frame_l(lw, w)
   } | {
   kind == SYN_PREFIX ? {
@@ -758,7 +1031,7 @@ step_expr: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
       pop_frame_l(lw, w)
     } } }
   } | {
-  kind == SYN_CALL ? { step_call(lw, w, b, sx, f, node, width, phase, ret) } | {
+  kind == SYN_CALL ? { step_call(lw, w, b, sx, f, node, width, phase) } | {
   kind == SYN_CONV ? {
     target: u32 = node_a(sx, node)
     target_signed: Bool = node_b(sx, node) != u32(0)
@@ -779,7 +1052,7 @@ step_expr: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
   } | {
   kind == SYN_BLOCK ? {
     pop_frame_l(lw, w)
-    push_stmts(lw, w, sx, node, width, true)
+    push_stmts(lw, w, sx, node, width, true, false)
   } | {
   kind == SYN_INSTR ? {
     mw: u32 = node_b(sx, node)
@@ -791,7 +1064,118 @@ step_expr: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
       set_state(lw, w, LS_RET, mw < width ? { t_zero_extend(lw, w, b, value, width) } | { t_truncate(lw, w, b, value, width) })
       pop_frame_l(lw, w)
     }
-  } | { fail_at(lw, w, u32(10)) } } } } } } } } } }
+  } | {
+  (kind == SYN_FIELD || kind == SYN_INDEX) ? { step_access(lw, w, b, sx, f, node, width, phase, ret) } | { fail_at(lw, w, u32(12)) } } } } } } } } } } }
+}
+
+// step_literal advances a record or array literal (F_AGG): each field or
+// element lowered as a value of its type into the fresh block (word 4).
+step_literal: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, typ: u32, phase: u32): () {
+  count: u32 = node_c(sx, node)
+  items: u32 = node_b(sx, node)
+  record: Bool = node_kind(sx, node) == SYN_RECORDLIT
+  phase == u32(0) ? {
+    block: u32 = alloc_block(lw, w, type_leaves(sx, typ))
+    w[f + u32(4)] = block
+    (block == NONE || count == u32(0)) ? {
+      set_ret_agg(lw, w, typ, block)
+      pop_frame_l(lw, w)
+    } | {
+      w[f + u32(3)] = u32(1)
+      push_value(lw, w, sx, list_item(sx, items, u32(0)), record ? { field_type(sx, typ, u32(0)) } | { type_elem(sx, typ) })
+    }
+  } | {
+    i: u32 = phase - u32(1)
+    itype: u32 = record ? { field_type(sx, typ, i) } | { type_elem(sx, typ) }
+    offset: u32 = record ? { field_offset(sx, typ, i) } | { i * type_leaves(sx, type_elem(sx, typ)) }
+    block: u32 = w[f + u32(4)]
+    is_scalar_type(sx, itype) ? { set_leaf(lw, w, block, offset, state(lw, w, LS_RET)) } | { copy_leaves(lw, w, state(lw, w, LS_RET_BLOCK), block + offset, type_leaves(sx, itype)) }
+    phase == count ? {
+      set_ret_agg(lw, w, typ, block)
+      pop_frame_l(lw, w)
+    } | {
+      w[f + u32(3)] = phase + u32(1)
+      push_value(lw, w, sx, list_item(sx, items, phase), record ? { field_type(sx, typ, phase) } | { type_elem(sx, typ) })
+    }
+  }
+}
+
+// step_agg advances an aggregate value frame (F_AGG: node of type typ,
+// result a block in the return registers).
+step_agg: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
+  node: u32 = w[f + u32(1)]
+  typ: u32 = w[f + u32(2)]
+  phase: u32 = w[f + u32(3)]
+  kind: u32 = node_kind(sx, node)
+  kind == SYN_SYM ? {
+    sym: u32 = node_a(sx, node)
+    sym_value(lw, w, sym) != AGG ? { fail_at(lw, w, u32(13)) } | { set_ret_agg(lw, w, sym_type(lw, w, sym), sym_block(lw, w, sym)) }
+    pop_frame_l(lw, w)
+  } | {
+  kind == SYN_CALL ? { step_call(lw, w, b, sx, f, node, u32(0), phase) } | {
+  kind == SYN_FIELD ? {
+    base_node: u32 = node_a(sx, node)
+    phase == u32(0) ? {
+      w[f + u32(3)] = u32(1)
+      push_frame_l(lw, w, F_AGG, base_node, node_type(sx, base_node))
+    } | {
+      base_type: u32 = node_type(sx, base_node)
+      set_ret_agg(lw, w, typ, state(lw, w, LS_RET_BLOCK) + field_offset(sx, base_type, node_b(sx, node)))
+      pop_frame_l(lw, w)
+    }
+  } | {
+  kind == SYN_INDEX ? {
+    base_node: u32 = node_a(sx, node)
+    base_type: u32 = node_type(sx, base_node)
+    phase == u32(0) ? {
+      w[f + u32(3)] = u32(1)
+      push_frame_l(lw, w, F_AGG, base_node, base_type)
+    } | {
+    phase == u32(1) ? {
+      w[f + u32(4)] = state(lw, w, LS_RET_BLOCK)
+      w[f + u32(3)] = u32(2)
+      push_frame_l(lw, w, F_EXPR, node_b(sx, node), u32(32))
+    } | {
+      idx: u32 = state(lw, w, LS_RET)
+      block: u32 = w[f + u32(4)]
+      elem_leaves: u32 = type_leaves(sx, type_elem(sx, base_type))
+      is_const(lw, w, b, idx) ? {
+        k: u32 = u32_trunc_u64(tvalue(lw, w, b, idx))
+        k >= type_length(sx, base_type) ? { fail_at(lw, w, u32(14)) } | { set_ret_agg(lw, w, typ, block + k * elem_leaves) }
+      } | {
+        set_ret_agg(lw, w, typ, element_under_index(lw, w, b, sx, block, base_type, idx))
+      }
+      pop_frame_l(lw, w)
+    } }
+  } | {
+  (kind == SYN_RECORDLIT || kind == SYN_ARRAYLIT) ? { step_literal(lw, w, b, sx, f, node, typ, phase) } | {
+  kind == SYN_COND ? {
+    phase == u32(0) ? {
+      w[f + u32(3)] = u32(1)
+      push_frame_l(lw, w, F_COND, node_a(sx, node), u32(1))
+    } | {
+    phase == u32(1) ? {
+      w[f + u32(4)] = state(lw, w, LS_RET)
+      w[f + u32(3)] = u32(2)
+      push_path(lw, w, b, state(lw, w, LS_RET))
+      push_frame_l(lw, w, F_AGG, node_b(sx, node), typ)
+    } | {
+    phase == u32(2) ? {
+      pop_path(lw, w)
+      w[f + u32(5)] = state(lw, w, LS_RET_BLOCK)
+      w[f + u32(3)] = u32(3)
+      push_path(lw, w, b, t_not1(lw, w, b, w[f + u32(4)]))
+      push_frame_l(lw, w, F_AGG, node_c(sx, node), typ)
+    } | {
+      pop_path(lw, w)
+      set_ret_agg(lw, w, typ, merge_blocks(lw, w, b, t_truncate(lw, w, b, w[f + u32(4)], u32(1)), w[f + u32(5)], state(lw, w, LS_RET_BLOCK), type_leaves(sx, typ)))
+      pop_frame_l(lw, w)
+    } } }
+  } | {
+  kind == SYN_BLOCK ? {
+    pop_frame_l(lw, w)
+    push_stmts(lw, w, sx, node, typ, true, true)
+  } | { fail_at(lw, w, u32(15)) } } } } } } }
 }
 
 // step_cond advances a condition frame (F_COND: a 1-bit term).
@@ -834,7 +1218,7 @@ step_cond: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
         w[f + u32(5)] = contract.signed ? { u32(1) } | { u32(0) }
         w[f + u32(3)] = u32(1)
         push_frame_l(lw, w, F_EXPR, node_b(sx, node), contract.width)
-      } | { fail_at(lw, w, u32(11)) }
+      } | { fail_at(lw, w, u32(16)) }
     } | {
     phase == u32(1) ? {
       w[f + u32(4)] = ret
@@ -851,59 +1235,94 @@ step_cond: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
       (contract.ok && contract.width == u32(1)) ? {
         w[f + u32(3)] = u32(1)
         push_frame_l(lw, w, F_EXPR, node, u32(1))
-      } | { fail_at(lw, w, u32(12)) }
+      } | { fail_at(lw, w, u32(17)) }
     } | {
       pop_frame_l(lw, w)
     }
   } } }
 }
 
-// step_stmts advances a statement list: t0 is the index, t1 whether the
-// block is in value position, phase 1 waits on a declaration's initializer
-// (t2 the symbol, t3 the width, t4 the signedness), phase 2 on an
-// assignment's value (t2 the symbol), phase 3 on the result expression.
+// step_stmts advances a statement list: word 4 is the index, word 5
+// whether the block is in value position, word 6 whether its result is an
+// aggregate (word 2 then its type, else the width); phase 1 waits on a
+// declaration's initializer (word 7 the symbol, word 8 the type), phase 2
+// on an assignment's value (word 7 the symbol), phase 3 on the result,
+// phase 4 on a place store's value (word 7 the symbol, word 8 the leaf
+// offset, word 9 the place type).
 step_stmts: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
   block: u32 = w[f + u32(1)]
-  width: u32 = w[f + u32(2)]
+  width_or_type: u32 = w[f + u32(2)]
   phase: u32 = w[f + u32(3)]
   index: u32 = w[f + u32(4)]
   value: Bool = w[f + u32(5)] != u32(0)
+  agg_result: Bool = w[f + u32(6)] != u32(0)
   count: u32 = node_b(sx, block)
   start: u32 = node_a(sx, block)
   ret: u32 = state(lw, w, LS_RET)
   phase == u32(1) ? {
-    bind_sym(lw, w, w[f + u32(6)], ret, w[f + u32(7)], w[f + u32(8)] != u32(0))
+    typ: u32 = w[f + u32(8)]
+    is_scalar_type(sx, typ) ? { bind_scalar(lw, w, w[f + u32(7)], ret, typ) } | { bind_aggregate(lw, w, w[f + u32(7)], typ, copy_block(lw, w, state(lw, w, LS_RET_BLOCK), type_leaves(sx, typ))) }
     w[f + u32(3)] = u32(0)
     w[f + u32(4)] = index + u32(1)
   } | {
   phase == u32(2) ? {
-    sym: u32 = w[f + u32(6)]
-    bind_sym(lw, w, sym, ret, sym_width(lw, w, sym), sym_signed(lw, w, sym))
+    sym: u32 = w[f + u32(7)]
+    typ: u32 = sym_type(lw, w, sym)
+    is_scalar_type(sx, typ) ? { bind_scalar(lw, w, sym, ret, typ) } | { bind_aggregate(lw, w, sym, typ, copy_block(lw, w, state(lw, w, LS_RET_BLOCK), type_leaves(sx, typ))) }
     w[f + u32(3)] = u32(0)
     w[f + u32(4)] = index + u32(1)
   } | {
   phase == u32(3) ? { pop_frame_l(lw, w) } | {
+  phase == u32(4) ? {
+    sym: u32 = w[f + u32(7)]
+    offset: u32 = w[f + u32(8)]
+    place_type: u32 = w[f + u32(9)]
+    root_type: u32 = sym_type(lw, w, sym)
+    fresh: u32 = copy_block(lw, w, sym_block(lw, w, sym), type_leaves(sx, root_type))
+    fresh == NONE ? { } | {
+      is_scalar_type(sx, place_type) ? { set_leaf(lw, w, fresh, offset, ret) } | { copy_leaves(lw, w, state(lw, w, LS_RET_BLOCK), fresh + offset, type_leaves(sx, place_type)) }
+      bind_aggregate(lw, w, sym, root_type, fresh)
+    }
+    w[f + u32(3)] = u32(0)
+    w[f + u32(4)] = index + u32(1)
+  } | {
   index >= count ? {
-    value ? { fail_at(lw, w, u32(13)) } | { }
+    value ? { fail_at(lw, w, u32(18)) } | { }
     pop_frame_l(lw, w)
   } | {
     stmt: u32 = list_item(sx, start, index)
     kind: u32 = node_kind(sx, stmt)
     last: Bool = index + u32(1) == count
     kind == SYN_VARDECL ? {
-      w[f + u32(6)] = node_a(sx, stmt)
-      w[f + u32(7)] = node_b(sx, stmt)
-      w[f + u32(8)] = node_c(sx, stmt)
-      w[f + u32(3)] = u32(1)
-      push_frame_l(lw, w, F_EXPR, node_d(sx, stmt), node_b(sx, stmt))
+      typ: u32 = node_b(sx, stmt)
+      init: u32 = node_d(sx, stmt)
+      w[f + u32(7)] = node_a(sx, stmt)
+      w[f + u32(8)] = typ
+      init == NONE ? {
+        is_scalar_type(sx, typ) ? { fail_at(lw, w, u32(19)) } | { bind_aggregate(lw, w, node_a(sx, stmt), typ, zero_block(lw, w, b, sx, typ)) }
+        w[f + u32(4)] = index + u32(1)
+      } | {
+        w[f + u32(3)] = u32(1)
+        push_value(lw, w, sx, init, typ)
+      }
     } | {
     kind == SYN_ASSIGN ? {
       sym: u32 = node_a(sx, stmt)
-      sym_term(lw, w, sym) == NONE ? { fail_at(lw, w, u32(14)) } | {
-        w[f + u32(6)] = sym
+      sym_value(lw, w, sym) == NONE ? { fail_at(lw, w, u32(20)) } | {
+        w[f + u32(7)] = sym
         w[f + u32(3)] = u32(2)
-        push_frame_l(lw, w, F_EXPR, node_b(sx, stmt), sym_width(lw, w, sym))
+        push_value(lw, w, sx, node_b(sx, stmt), sym_type(lw, w, sym))
       }
+    } | {
+    kind == SYN_ASSIGNPLACE ? {
+      place: Place = resolve_place(lw, w, b, sx, node_a(sx, stmt))
+      place.ok ? {
+        w[f + u32(7)] = place.sym
+        w[f + u32(8)] = place.offset
+        w[f + u32(9)] = place.typ
+        w[f + u32(3)] = u32(4)
+        push_value(lw, w, sx, node_b(sx, stmt), place.typ)
+      } | { fail_at(lw, w, u32(21)) }
     } | {
     kind == SYN_WHILE ? {
       w[f + u32(4)] = index + u32(1)
@@ -915,10 +1334,10 @@ step_stmts: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
     } | {
       (value && last) ? {
         w[f + u32(3)] = u32(3)
-        push_frame_l(lw, w, F_EXPR, stmt, width)
-      } | { fail_at(lw, w, u32(15)) }
-    } } } }
-  } } } }
+        agg_result ? { push_frame_l(lw, w, F_AGG, stmt, width_or_type) } | { push_frame_l(lw, w, F_EXPR, stmt, width_or_type) }
+      } | { fail_at(lw, w, u32(22)) }
+    } } } } }
+  } } } } }
 }
 
 // step_while unrolls a counted loop: the condition must fold to a
@@ -933,21 +1352,21 @@ step_while: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
   } | {
     is_const(lw, w, b, ret) ? {
       (tvalue(lw, w, b, ret) == u64(0) || w[f + u32(8)] > LOOP_BUDGET) ? {
-        w[f + u32(8)] > LOOP_BUDGET ? { fail_at(lw, w, u32(16)) } | { }
+        w[f + u32(8)] > LOOP_BUDGET ? { fail_at(lw, w, u32(23)) } | { }
         pop_frame_l(lw, w)
       } | {
         w[f + u32(8)] = w[f + u32(8)] + u32(1)
         w[f + u32(3)] = u32(0)
-        push_stmts(lw, w, sx, node_b(sx, node), u32(0), false)
+        push_stmts(lw, w, sx, node_b(sx, node), u32(0), false, false)
       }
-    } | { fail_at(lw, w, u32(17)) }
+    } | { fail_at(lw, w, u32(24)) }
   }
 }
 
 // step_condstmt runs `c ? { ... } | { ... }` in statement position: the
 // arms under their paths, the locals both assign merged on the condition
-// (t0 the condition, t1 the snapshot slot of the state before, t1 + 1 the
-// state after the true arm).
+// (word 4 the condition, word 5 the snapshot slot of the state before,
+// slot + 1 the state after the true arm).
 step_condstmt: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
   node: u32 = w[f + u32(1)]
   phase: u32 = w[f + u32(3)]
@@ -958,14 +1377,14 @@ step_condstmt: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
   } | {
   phase == u32(1) ? {
     slot: u32 = state(lw, w, LS_SNAP_SP)
-    slot + u32(2) > MAX_SNAPS ? { fail_at(lw, w, u32(18)) } | {
+    slot + u32(2) > MAX_SNAPS ? { fail_at(lw, w, u32(25)) } | {
       set_state(lw, w, LS_SNAP_SP, slot + u32(2))
       w[f + u32(4)] = ret
       w[f + u32(5)] = slot
       snapshot(lw, w, slot)
       w[f + u32(3)] = u32(2)
       push_path(lw, w, b, ret)
-      push_stmts(lw, w, sx, node_b(sx, node), u32(0), false)
+      push_stmts(lw, w, sx, node_b(sx, node), u32(0), false, false)
     }
   } | {
   phase == u32(2) ? {
@@ -975,10 +1394,10 @@ step_condstmt: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
     restore_snapshot(lw, w, slot)
     w[f + u32(3)] = u32(3)
     push_path(lw, w, b, t_not1(lw, w, b, w[f + u32(4)]))
-    push_stmts(lw, w, sx, node_c(sx, node), u32(0), false)
+    push_stmts(lw, w, sx, node_c(sx, node), u32(0), false, false)
   } | {
     pop_path(lw, w)
-    merge_snapshot(lw, w, b, w[f + u32(5)] + u32(1), w[f + u32(4)])
+    merge_snapshot(lw, w, b, sx, w[f + u32(5)] + u32(1), w[f + u32(4)])
     set_state(lw, w, LS_SNAP_SP, w[f + u32(5)])
     pop_frame_l(lw, w)
   } } }
@@ -993,17 +1412,136 @@ run_machine: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32): () {
     kind == F_COND ? { step_cond(lw, w, b, sx, f) } | {
     kind == F_STMTS ? { step_stmts(lw, w, b, sx, f) } | {
     kind == F_WHILE ? { step_while(lw, w, b, sx, f) } | {
-    kind == F_CONDSTMT ? { step_condstmt(lw, w, b, sx, f) } | { fail_at(lw, w, u32(19)) } } } } }
+    kind == F_CONDSTMT ? { step_condstmt(lw, w, b, sx, f) } | {
+    kind == F_AGG ? { step_agg(lw, w, b, sx, f) } | { fail_at(lw, w, u32(26)) } } } } } }
   }
 }
 
-// lower_theorem lowers the syntax table into the problem buffer: the
-// leaves in the interleaved order (the parameters in name order, bit j of
-// every parameter adjacent, eight select slots beside them), the claim at
-// one bit after the trap obligations as the roots, and the select slots'
+// Variable orders (asm/blast.go): the parameters' leaves interleaved (bit
+// j of every leaf adjacent), each root parameter's leaves in a block of
+// their own, or the control leaves — those a conditional's guard or a
+// shift count reads — before the data leaves.
+ORDER_INTERLEAVED: u32 = 0
+ORDER_BLOCKS: u32 = 1
+ORDER_CONTROL: u32 = 2
+REASON_ORDER: u32 = 28
+
+// mark_control_subtree flags every parameter leaf under term root (the
+// frames region as the stack, the snapshot region as the visited set,
+// both free once the lowering is done; the path region as the flags).
+mark_control_subtree: (lw: Lower, w: [*]u32, b: [*]u32, root: u32): () {
+  sp: u32 = 1
+  w[lw.frames_at] = root
+  while sp > u32(0) {
+    sp = sp - u32(1)
+    t: u32 = w[lw.frames_at + sp]
+    seen: Bool = w[lw.snap_at + t] != u32(0)
+    (t == NONE || seen) ? { } | {
+      w[lw.snap_at + t] = u32(1)
+      kind: u32 = tkind(lw, w, b, t)
+      kind == KIND_PARAM ? { w[lw.path_at + tword(lw, w, b, t, u32(3))] = u32(1) } | {
+        (kind == KIND_CONST) ? { } | {
+          (sp + u32(3) <= MAX_LFRAMES * LOWER_FRAME_WORDS) ? {
+            w[lw.frames_at + sp] = tword(lw, w, b, t, u32(3))
+            w[lw.frames_at + sp + u32(1)] = tword(lw, w, b, t, u32(4))
+            w[lw.frames_at + sp + u32(2)] = kind == KIND_ITE ? { tword(lw, w, b, t, u32(5)) } | { NONE }
+            sp = sp + u32(3)
+          } | { }
+        }
+      }
+    }
+  }
+}
+
+// control_leaves flags the leaves under every conditional's guard and
+// every shift count among the built terms; the count flagged.
+control_leaves: (lw: Lower, w: [*]u32, b: [*]u32, nterms: u32, leaves: u32): u32 {
+  i: u32 = 0
+  while i < leaves {
+    w[lw.path_at + i] = u32(0)
+    i = i + u32(1)
+  }
+  t: u32 = 0
+  while t < nterms {
+    w[lw.snap_at + t] = u32(0)
+    t = t + u32(1)
+  }
+  t = u32(0)
+  while t < nterms {
+    kind: u32 = tkind(lw, w, b, t)
+    op: u32 = tword(lw, w, b, t, u32(1))
+    kind == KIND_ITE ? { mark_control_subtree(lw, w, b, tword(lw, w, b, t, u32(5))) } | {
+      (kind == KIND_BINARY && (op == BOP_SHL || op == BOP_SHR || op == BOP_SAR || op == BOP_ROR)) ? { mark_control_subtree(lw, w, b, tword(lw, w, b, t, u32(4))) } | { }
+    }
+    t = t + u32(1)
+  }
+  n: u32 = 0
+  i = u32(0)
+  while i < leaves {
+    n = n + w[lw.path_at + i]
+    i = i + u32(1)
+  }
+  n
+}
+
+// leaf_variable_base computes, per leaf, the block base, block size, and
+// position within the block for a blocked order (the argv region holds
+// them, three words per leaf): by root parameter, or control then data.
+leaf_blocks: (lw: Lower, w: [*]u32, sx: []u32, leaves: u32, control: Bool): () {
+  theorem: u32 = syn_theorem(sx)
+  n: u32 = fn_param_count(sx, theorem)
+  control ? {
+    ncontrol: u32 = 0
+    i: u32 = 0
+    while i < leaves {
+      ncontrol = ncontrol + w[lw.path_at + i]
+      i = i + u32(1)
+    }
+    cpos: u32 = 0
+    dpos: u32 = 0
+    i = u32(0)
+    while i < leaves {
+      is_control: Bool = w[lw.path_at + i] != u32(0)
+      w[lw.argv_at + i * u32(3)] = is_control ? { u32(0) } | { u32(64) * ncontrol }
+      w[lw.argv_at + i * u32(3) + u32(1)] = is_control ? { ncontrol } | { leaves - ncontrol }
+      w[lw.argv_at + i * u32(3) + u32(2)] = is_control ? { cpos } | { dpos }
+      cpos = is_control ? { cpos + u32(1) } | { cpos }
+      dpos = is_control ? { dpos } | { dpos + u32(1) }
+      i = i + u32(1)
+    }
+  } | {
+    // Root blocks: a parameter's leaves are contiguous in name order; the
+    // blocks follow the leaves' order.
+    p: u32 = 0
+    while p < n {
+      pidx: u32 = fn_param_start(sx, theorem) + p
+      count: u32 = type_leaves(sx, param_type(sx, pidx))
+      first: u32 = leaf_index_at(sx, param_leaf_start(sx, pidx))
+      k: u32 = 0
+      while k < count {
+        li: u32 = leaf_index_at(sx, param_leaf_start(sx, pidx) + k)
+        first = li < first ? { li } | { first }
+        k = k + u32(1)
+      }
+      k = u32(0)
+      while k < count {
+        li: u32 = leaf_index_at(sx, param_leaf_start(sx, pidx) + k)
+        w[lw.argv_at + li * u32(3)] = u32(64) * first
+        w[lw.argv_at + li * u32(3) + u32(1)] = count
+        w[lw.argv_at + li * u32(3) + u32(2)] = li - first
+        k = k + u32(1)
+      }
+      p = p + u32(1)
+    }
+  }
+}
+
+// lower_theorem lowers the syntax table into the problem buffer under the
+// variable order asked for: the leaves' variables, the claim at one bit
+// after the trap obligations as the roots, and the select slots'
 // variables; the word count of the problem, or 0 when the theorem is
-// outside the lowering's subset.
-lower_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, budget: u32): u32 {
+// outside the lowering's subset or the order does not apply (reason 28).
+lower_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, budget: u32, order: u32): u32 {
   leaves: u32 = syn_leaves(sx)
   stride: u32 = leaves + u32(8)
   term_base: u32 = HEADER_WORDS + leaves * LEAF_WORDS
@@ -1015,21 +1553,25 @@ lower_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, budget: u32): u32 {
   set_state(lw, w, LS_LEAVES, leaves)
   set_state(lw, w, LS_STRIDE, stride)
   set_state(lw, w, LS_TERMS_AT, term_base)
+  leaves > MAX_LEAVES ? { fail_at(lw, w, u32(27)) } | { }
   clear_depth(lw, w, u32(0))
   theorem: u32 = syn_theorem(sx)
   n: u32 = fn_param_count(sx, theorem)
   p: u32 = 0
-  while p < n {
-    pw: u32 = param_word(sx, fn_param_start(sx, theorem) + p, u32(0))
-    leaf: u32 = param_word(sx, fn_param_start(sx, theorem) + p, u32(2))
-    base: u32 = HEADER_WORDS + leaf * LEAF_WORDS
-    b[base] = pw
-    bit: u32 = 0
-    while bit < u32(64) {
-      b[base + u32(1) + bit] = bit < pw ? { bit * stride + leaf } | { NONE }
-      bit = bit + u32(1)
+  while p < n && !failed(lw, w) {
+    pidx: u32 = fn_param_start(sx, theorem) + p
+    ptype: u32 = param_type(sx, pidx)
+    nleaves: u32 = type_leaves(sx, ptype)
+    block: u32 = alloc_block(lw, w, nleaves)
+    k: u32 = 0
+    while k < nleaves && block != NONE {
+      li: u32 = leaf_index_at(sx, param_leaf_start(sx, pidx) + k)
+      pw: u32 = type_leaf_width(sx, ptype, k)
+      b[HEADER_WORDS + li * LEAF_WORDS] = pw
+      set_leaf(lw, w, block, k, t_param(lw, w, b, li, pw))
+      k = k + u32(1)
     }
-    bind_sym(lw, w, p, t_param(lw, w, b, leaf, pw), pw, param_word(sx, fn_param_start(sx, theorem) + p, u32(1)) != u32(0))
+    is_scalar_type(sx, ptype) ? { bind_scalar(lw, w, p, leaf_at(lw, w, block, u32(0)), ptype) } | { bind_aggregate(lw, w, p, ptype, block) }
     p = p + u32(1)
   }
   push_frame_l(lw, w, F_EXPR, fn_body(sx, theorem), u32(1))
@@ -1038,31 +1580,56 @@ lower_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, budget: u32): u32 {
     claim: u32 = t_truncate(lw, w, b, state(lw, w, LS_RET), u32(1))
     nterms: u32 = state(lw, w, LS_TERMS)
     ntraps: u32 = state(lw, w, LS_TRAPS)
-    root_base: u32 = term_base + nterms * TERM_WORDS
-    r: u32 = 0
-    while r < ntraps {
-      b[root_base + r] = w[lw.traps_at + r]
-      r = r + u32(1)
+    // The order: does it apply, and the leaves' block placement.
+    ncontrol: u32 = order == ORDER_CONTROL ? { control_leaves(lw, w, b, nterms, leaves) } | { u32(0) }
+    applies: Bool = order == ORDER_INTERLEAVED ? { true } | {
+      order == ORDER_BLOCKS ? { n > u32(1) } | { ncontrol > u32(0) && ncontrol < leaves }
     }
-    b[root_base + ntraps] = claim
-    select_base: u32 = root_base + ntraps + u32(1)
-    slot: u32 = 0
-    while slot < SELECT_SLOTS_OUT {
-      bit: u32 = 0
-      while bit < u32(64) {
-        b[select_base + slot * u32(64) + bit] = slot < u32(8) ? { bit * stride + leaves + slot } | { u32(64) * stride + (slot - u32(8)) * u32(64) + bit }
-        bit = bit + u32(1)
+    applies ? {
+      order == ORDER_INTERLEAVED ? { } | { leaf_blocks(lw, w, sx, leaves, order == ORDER_CONTROL) }
+      li: u32 = 0
+      while li < leaves {
+        base: u32 = HEADER_WORDS + li * LEAF_WORDS
+        pw: u32 = b[base]
+        bit: u32 = 0
+        while bit < u32(64) {
+          v: u32 = order == ORDER_INTERLEAVED ? { bit * stride + li } | { w[lw.argv_at + li * u32(3)] + bit * w[lw.argv_at + li * u32(3) + u32(1)] + w[lw.argv_at + li * u32(3) + u32(2)] }
+          b[base + u32(1) + bit] = bit < pw ? { v } | { NONE }
+          bit = bit + u32(1)
+        }
+        li = li + u32(1)
       }
-      slot = slot + u32(1)
+      root_base: u32 = term_base + nterms * TERM_WORDS
+      r: u32 = 0
+      while r < ntraps {
+        b[root_base + r] = w[lw.traps_at + r]
+        r = r + u32(1)
+      }
+      b[root_base + ntraps] = claim
+      select_base: u32 = root_base + ntraps + u32(1)
+      slot: u32 = 0
+      while slot < SELECT_SLOTS_OUT {
+        bit: u32 = 0
+        while bit < u32(64) {
+          b[select_base + slot * u32(64) + bit] = (order == ORDER_INTERLEAVED && slot < u32(8)) ? { bit * stride + leaves + slot } | {
+            order == ORDER_INTERLEAVED ? { u32(64) * stride + (slot - u32(8)) * u32(64) + bit } | { u32(64) * stride + slot * u32(64) + bit }
+          }
+          bit = bit + u32(1)
+        }
+        slot = slot + u32(1)
+      }
+      b[u32(0)] = nterms
+      b[u32(1)] = leaves
+      b[u32(2)] = ntraps + u32(1)
+      b[u32(3)] = budget
+      b[u32(4)] = SELECT_SLOTS_OUT
+      b[u32(5)] = u32(0)
+      b[u32(6)] = u32(0)
+      b[u32(7)] = u32(0)
+      select_base + SELECT_SLOTS_OUT * u32(64)
+    } | {
+      fail_at(lw, w, REASON_ORDER)
+      u32(0)
     }
-    b[u32(0)] = nterms
-    b[u32(1)] = leaves
-    b[u32(2)] = ntraps + u32(1)
-    b[u32(3)] = budget
-    b[u32(4)] = SELECT_SLOTS_OUT
-    b[u32(5)] = u32(0)
-    b[u32(6)] = u32(0)
-    b[u32(7)] = u32(0)
-    select_base + SELECT_SLOTS_OUT * u32(64)
   }
 }

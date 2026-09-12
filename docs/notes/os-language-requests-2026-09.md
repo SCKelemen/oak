@@ -1,6 +1,6 @@
 # Note: the OS pilot's consolidated requests — assessment and dispositions
 
-**Status: round one landed, 2026-09-12.** Source: the OS (hypervisor) pilot's
+**Status: rounds one and two landed, 2026-09-13.** Source: the OS (hypervisor) pilot's
 consolidated list, synthesized from its `OAK-NEEDS.md` and its design logs
 0102–0105, grouped by leverage. The pilot's numbering is kept.
 
@@ -16,6 +16,17 @@ consolidated list, synthesized from its `OAK-NEEDS.md` and its design logs
 | R8 | Resource contracts on function types, borrow-by-provenance (`OAK-B0111`) | **Already present**: `50-borrowing.md` §9 (contracts across callable boundaries, provenance, `OAK-B0111`–`B0115`). | **No change**; the capability and process tables can adopt `consume`/`borrowed` modes as written. |
 | R9 | A time library (instants, civil time, RFC 3339) | **Already present**: `stdlib/time.oak` (`Instant`, `Duration`, `Civil`, `Zoned`, RFC 3339 text), with `timesim` and `timenative` realizations. | **No change.** |
 | R10 | Inlinable emission or the maturing native backend | **Direction**, sequenced after R1 by the pilot itself. | Open. Hot pure functions already carry `OAK_INLINE`; a header-emitting mode is the increment when perf is on the critical path. |
+
+## Round two (2026-09-13)
+
+The pilot's second list, after the round-one migration: one new request
+with the highest impact, one residual, one direction.
+
+| # | Request | Determination | Disposition |
+| --- | --- | --- | --- |
+| R11 | `oak_index` must not materialize aggregate elements: `a[i][j]` over `[N][M]u64` copied a whole row per read, `a[i].f` a whole record | **A codegen gap, confirmed from the generated C.** The `oak_index` ternary yields an rvalue, so an aggregate element is copied out before the row index or the field is applied; the span/view path (R1) already selected in place. | **Landed** (`90-backend.md` §8): an aggregate element of an owned array is selected by address behind the checked index (`a.v[ oak_lv_idx(i, N) ]`), so `a[i][j]` and `a[i].f` are copy-free without hand-flattening; the check stays. |
+| R3 residual | Page-table walk loops are not the canonical shape: the level index is `(va >> shift) & 511`, narrowed to `u32`, sometimes bound once and reused | **Confirmed** for the narrowing: the mask law applied to a bare `e & M` only, so `table[u32_trunc_u64((va >> 12) & 511)]` stayed checked, as did `idx = ...; table[idx]`. | **Landed** (`50-borrowing.md`, masked index): the mask survives a widening, an unsigned truncation and an unsigned saturation (`masked_trunc_under_length`, `masked_saturating_under_length`), and a binding initialized to a masked value is bounded by the mask until written. If a descend loop still shows checks (an index derived from a descriptor's output address, not a mask), send the loop. |
+| R10 | Inline emission / native backend | **Direction**, unchanged. | Open; sequenced after the perf measurement of the walk. |
 
 ## What the round did not do
 

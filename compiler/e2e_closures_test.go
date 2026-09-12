@@ -292,3 +292,54 @@ func TestE2ECapturingClosurePairCompiled(t *testing.T) {
 		t.Fatalf("exit = (%d, abnormal=%v), want 42", code, abnormal)
 	}
 }
+
+// Generic instantiations as captures: Box[u32] (a generic sum type) and
+// Pair[u32, u8] (a two-parameter record) captured and read inside the
+// literal, in both realizations; a generic with a Buffer payload stays
+// outside the shape.
+const closureGenericProgram = `package main
+
+Box[T]: type = Full: T | Empty
+Pair[A, B]: type = struct { left: A, right: B }
+
+apply: (f: (u32) -> u32, x: u32): u32 = f(x)
+
+main: (): i32 {
+  b: Box[u32] = Box.Full(u32(30))
+  p: Pair[u32, u8] = Pair { left: u32(5), right: u8(2) }
+  a: u32 = apply(fn(x: u32): u32 = b ? | .Full(v) => x + v | .Empty => x, u32(2))
+  c: u32 = apply(fn(x: u32): u32 = x * p.left + u32(p.right), u32(1))
+  i32_bits_u32(a + c + u32(3))
+}
+`
+
+func TestE2ECapturingClosureGenericInterpreted(t *testing.T) {
+	if got := interpretModule(t, closureModule(t, closureGenericProgram)); got != 42 {
+		t.Fatalf("main() returned %d, want 42", got)
+	}
+}
+
+func TestE2ECapturingClosureGenericCompiled(t *testing.T) {
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(closureModule(t, closureGenericProgram)))
+	if abnormal || code != 42 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 42", code, abnormal)
+	}
+}
+
+func TestE2ECapturingClosureGenericBufferRejected(t *testing.T) {
+	program := `package main
+Held[T]: type = struct { n: T, bytes: Buffer[u8] }
+apply: (f: (u32) -> u32, x: u32): u32 = f(x)
+malloc: (n: c.Size): c.Ptr = c.extern("malloc")
+main: (): i32 {
+  unsafe {
+    h: Held[u32] = Held { n: u32(1), bytes: c.own[u8](malloc(c.Size(u32(8))), u32(8)) }
+    i32_bits_u32(apply(fn(x: u32): u32 = x + h.n, u32(2)))
+  }
+}
+`
+	_, err := New().WithPackageDir(closureModule(t, program)).Check().Get()
+	if err == nil || !strings.Contains(err.Error(), "OAK-T0401") {
+		t.Fatalf("want OAK-T0401, got %v", err)
+	}
+}
