@@ -107,6 +107,11 @@ func (in *independenceWalk) stmt(s ast.Statement, loops []loopBound) error {
 	switch v := s.(type) {
 	case *ast.VariableDeclaration:
 		if v.Name != nil && v.Value != nil {
+			// A local that windows or aliases a span hides the index the
+			// shapes are judged on; index the span parameter directly.
+			if src, isSpanLocal := in.spanSource(v.Value); isSpanLocal {
+				return in.fail(v, "local %s windows the span %s, hiding its indices; index the span parameter in the kernel body", v.Name.Value, src)
+			}
 			if !assignsName(in.body, v.Name.Value) {
 				if t, ok := in.tileProduct(v.Value); ok {
 					in.tileBases[v.Name.Value] = t
@@ -299,6 +304,23 @@ func (in *independenceWalk) counterBound(cond ast.Expression) (string, string, b
 		return "", "", false
 	}
 	return k.Value, t, true
+}
+
+// spanSource names the span a declaration's value windows or aliases.
+func (in *independenceWalk) spanSource(value ast.Expression) (string, bool) {
+	switch v := value.(type) {
+	case *ast.Identifier:
+		if in.spans[v.Value] {
+			return v.Value, true
+		}
+	case *ast.InvocationExpression:
+		if callee, ok := v.Function.(*ast.Identifier); ok && callee.Value == "subslice" && len(v.Arguments) == 3 {
+			if base, ok := v.Arguments[0].(*ast.Identifier); ok && in.spans[base.Value] {
+				return base.Value, true
+			}
+		}
+	}
+	return "", false
 }
 
 // assignsName reports whether a body assigns (not declares) the binding.

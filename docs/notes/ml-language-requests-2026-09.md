@@ -62,7 +62,11 @@ list, in the order the pilot would meet them:
    two bounds.
 3. **Cross-thread reductions with `reduce.tree`'s grouping** inside kernels
    (`56-kernels.md` §7), which needs threadgroup memory and a barrier in
-   the subset.
+   the subset. *Per-thread* `reduce.tree` over a window landed after #229:
+   buffer windows, fixed-size thread-private arrays, helpers specialized
+   to the named functions bound to their function-valued parameters, and
+   result-position conditionals joined the subset, and `reduce`'s combine
+   parameters carry the empty effect row.
 4. **Records as kernel parameters**, so a kernel takes a `Tensor2` rather
    than its parts (`56-kernels.md` §7, §8).
 5. **A `Buffer` inside a record, and custody states carrying a device
