@@ -905,7 +905,15 @@ The core borrow/resource model must prove:
 
 `spec/lean/Oak/Borrowing.lean` models the local borrow-state laws. `Oak.ResourceFlow`
 models consumption and alias classes, while `Oak.ResourceCall` models call-local
-parameter-mode compatibility. Symbolic-extent lemmas should extend that proof
+parameter-mode compatibility. `Oak.ViewRefinement` (`spec/lean/Oak/ViewRefinement.lean`)
+refines the C backend's view and span helpers: the emitted index, store and
+subslice guards are transliterated and proved to be exactly the bounds
+conditions above (the two-part `subslice` test free of `u64` wrap), an
+accepted read to land inside the backing array and agree with the
+extraction's `getD`, and a subslice to stay inside its parent;
+`codegen/view_refinement_test.go` pins the helper text to the
+transliteration. Pointer indexing over the owner the checker vouches for is
+the C meaning assumed, not proved. Symbolic-extent lemmas should extend that proof
 surface as the checker representation lands. Temporal ownership transfer across
 asynchronous actors may additionally use TLA+ when introduced.
 
