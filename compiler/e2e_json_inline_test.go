@@ -40,6 +40,10 @@ func TestE2EDerivedJsonReaderDecodesScalarsInline(t *testing.T) {
 		"oak_json_scan_integer( src, at )",         // the array elements, from the element start
 		"( src ).base[ open_at ] == ((u8)( 123 ))", // the opening brace by byte
 		"( src ).base[ array_at ] == ((u8)( 91 ))", // the opening bracket by byte
+		// The fixed integer array: one structural pass over the span, then
+		// every element parsed from its own extent (section 21).
+		"oak_json_array_index( src, at, (oak_span_u32){ marks.v, 4 } )",
+		"oak_json_digits_at( src, digits_at, oak_sub_u32( sep, digits_at ) )",
 	} {
 		if !strings.Contains(reader, want) {
 			t.Fatalf("record reader lacks %q:\n%s", want, reader)
@@ -57,6 +61,9 @@ func TestE2EDerivedJsonReaderDecodesScalarsInline(t *testing.T) {
 		"oak_byte_pack_le_u32_proven( src, value_at )",
 		"OAK_INLINE oak_JsonIntegerScan oak_json_scan_integer(",
 		"OAK_INLINE u32 oak_json_skip_space(",
+		"OAK_INLINE oak_JsonIntegerScan oak_json_digits_at(",
+		// The digit words of an indexed element load through proven packs.
+		"oak_byte_pack_le_u64_proven( src, (u64)( base ) + 8u )",
 		"oak_json_key_decode( src, key, (oak_span_u8){ storage.v, 64 } )",
 		"oak_json_key_decoded_equal( decoded, key",
 	} {

@@ -147,4 +147,29 @@ theorem partial_value32_3 (w : BitVec 32) (h0 : isDigit (byteAt32 w 0) = true) (
   unfold wordValue32 partialWord32 digitValue32 byteAt32 isDigit at *
   bv_decide
 
+/-! **Digits at a known extent** (`json_digits_at`). When a structural
+index gives a number's extent, the reader parses it from its own bytes:
+`n ≤ 8` digits are the partial word `partialWord w n` (the theorems above
+give its value); nine to sixteen digits are one full word and a partial
+word combined as `wordValue w * 10^(n-8) + wordValue (partialWord w2 (n-8))`
+in 64-bit arithmetic. The bound below is what makes that arithmetic exact:
+a word of eight digits reads below 10^8, so the combination stays below
+10^16 < 2^64 and no operation wraps. -/
+theorem word_value_bound (w : BitVec 64) (h : nonDigitMask w = 0) :
+    wordValue w ≤ 99999999#64 := by
+  unfold wordValue nonDigitMask at *
+  bv_decide (config := { timeout := 300 })
+
+theorem two_words_fit (a b : BitVec 64) (ha : a ≤ 99999999#64) (hb : b ≤ 99999999#64) (k : Nat) (hk : k ≤ 8) :
+    a.toNat * 10 ^ k + b.toNat < 2 ^ 64 := by
+  have ha' : a.toNat ≤ 99999999 := by
+    have := BitVec.le_def.mp ha
+    simpa using this
+  have hb' : b.toNat ≤ 99999999 := by
+    have := BitVec.le_def.mp hb
+    simpa using this
+  have hp : 10 ^ k ≤ 10 ^ 8 := Nat.pow_le_pow_right (by decide) hk
+  have : a.toNat * 10 ^ k ≤ 99999999 * 10 ^ 8 := Nat.mul_le_mul ha' hp
+  omega
+
 end Oak.JsonDigits
