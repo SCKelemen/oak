@@ -23,13 +23,136 @@ type bddNode struct {
 
 const bddTerminalVar = int(^uint(0) >> 1)
 
-type bddKey struct{ variable, low, high int }
-type bddOpKey struct{ op, a, b int }
+// The unique table and the operation cache are open-addressed hash tables
+// over the node ids (docs/notes/formal-methods-performance-2026-09.md,
+// item 2): flat slices of fixed-width entries, linear probing, a load
+// factor of at most one half, growth by rehashing into twice the capacity.
+// Node ids fit in 32 bits (the budget is two million). Go maps keyed by
+// the same triples were the engine's measured cost — the diagrams are
+// built and read through these two tables and almost nothing else.
+type uniqueEntry struct{ variable, low, high, node int32 }
+type opEntry struct{ op, a, b, result int32 }
+
+type uniqueTable struct {
+	entries []uniqueEntry // node < 0 marks an empty slot
+	count   int
+}
+
+type opTable struct {
+	entries []opEntry // result < 0 marks an empty slot
+	count   int
+}
+
+func hashMix(a, b, c uint32) uint32 {
+	h := a*0x9E3779B1 ^ b*0x85EBCA77 ^ c*0xC2B2AE3D
+	h ^= h >> 15
+	h *= 0x2C1B3C6D
+	h ^= h >> 12
+	return h
+}
+
+func newUniqueTable(capacity int) *uniqueTable {
+	t := &uniqueTable{entries: make([]uniqueEntry, capacity)}
+	for i := range t.entries {
+		t.entries[i].node = -1
+	}
+	return t
+}
+
+func (t *uniqueTable) lookup(variable, low, high int32) (int32, bool) {
+	mask := uint32(len(t.entries) - 1)
+	for i := hashMix(uint32(variable), uint32(low), uint32(high)) & mask; ; i = (i + 1) & mask {
+		e := &t.entries[i]
+		if e.node < 0 {
+			return 0, false
+		}
+		if e.variable == variable && e.low == low && e.high == high {
+			return e.node, true
+		}
+	}
+}
+
+// insert adds a key known to be absent.
+func (t *uniqueTable) insert(variable, low, high, node int32) {
+	if 2*(t.count+1) > len(t.entries) {
+		t.grow()
+	}
+	mask := uint32(len(t.entries) - 1)
+	i := hashMix(uint32(variable), uint32(low), uint32(high)) & mask
+	for t.entries[i].node >= 0 {
+		i = (i + 1) & mask
+	}
+	t.entries[i] = uniqueEntry{variable, low, high, node}
+	t.count++
+}
+
+func (t *uniqueTable) grow() {
+	old := t.entries
+	t.entries = make([]uniqueEntry, 2*len(old))
+	for i := range t.entries {
+		t.entries[i].node = -1
+	}
+	t.count = 0
+	for _, e := range old {
+		if e.node >= 0 {
+			t.insert(e.variable, e.low, e.high, e.node)
+		}
+	}
+}
+
+func newOpTable(capacity int) *opTable {
+	t := &opTable{entries: make([]opEntry, capacity)}
+	for i := range t.entries {
+		t.entries[i].result = -1
+	}
+	return t
+}
+
+func (t *opTable) lookup(op, a, b int32) (int32, bool) {
+	mask := uint32(len(t.entries) - 1)
+	for i := hashMix(uint32(op), uint32(a), uint32(b)) & mask; ; i = (i + 1) & mask {
+		e := &t.entries[i]
+		if e.result < 0 {
+			return 0, false
+		}
+		if e.a == a && e.b == b && e.op == op {
+			return e.result, true
+		}
+	}
+}
+
+// insert adds a key known to be absent.
+func (t *opTable) insert(op, a, b, result int32) {
+	if 2*(t.count+1) > len(t.entries) {
+		t.grow()
+	}
+	mask := uint32(len(t.entries) - 1)
+	i := hashMix(uint32(op), uint32(a), uint32(b)) & mask
+	for t.entries[i].result >= 0 {
+		i = (i + 1) & mask
+	}
+	t.entries[i] = opEntry{op, a, b, result}
+	t.count++
+}
+
+func (t *opTable) grow() {
+	old := t.entries
+	t.entries = make([]opEntry, 2*len(old))
+	for i := range t.entries {
+		t.entries[i].result = -1
+	}
+	t.count = 0
+	for _, e := range old {
+		if e.result >= 0 {
+			t.insert(e.op, e.a, e.b, e.result)
+		}
+	}
+}
 
 type bdd struct {
 	nodes    []bddNode
-	unique   map[bddKey]int
-	memo     map[bddOpKey]int
+	unique   *uniqueTable
+	memo     *opTable
 	budget   int
 	exceeded bool
 	// stop, when set, ends this diagram as if its budget were exceeded:
@@ -44,7 +167,7 @@ const (
 )
 
 func newBDD(budget int) *bdd {
-	b := &bdd{unique: map[bddKey]int{}, memo: map[bddOpKey]int{}, budget: budget}
+	b := &bdd{unique: newUniqueTable(1 << 16), memo: newOpTable(1 << 16), budget: budget}
 	b.nodes = []bddNode{{variable: bddTerminalVar}, {variable: bddTerminalVar}}
 	return b
 }
@@ -56,9 +179,8 @@ func (b *bdd) mk(variable, low, high int) int {
 	if low == high {
 		return low
 	}
-	key := bddKey{variable, low, high}
-	if n, ok := b.unique[key]; ok {
-		return n
+	if n, ok := b.unique.lookup(int32(variable), int32(low), int32(high)); ok {
+		return int(n)
 	}
 	if len(b.nodes) >= b.budget || (b.stop != nil && b.stop.Load()) {
 		b.exceeded = true
@@ -66,7 +188,7 @@ func (b *bdd) mk(variable, low, high int) int {
 	}
 	b.nodes = append(b.nodes, bddNode{variable: variable, low: low, high: high})
 	n := len(b.nodes) - 1
-	b.unique[key] = n
+	b.unique.insert(int32(variable), int32(low), int32(high), int32(n))
 	return n
 }
 
@@ -124,9 +246,8 @@ func (b *bdd) apply(op, x, y int) int {
 	if x > y && (op == opAnd || op == opOr || op == opXor) {
 		x, y = y, x // commutative: canonical memo key
 	}
-	key := bddOpKey{op, x, y}
-	if r, ok := b.memo[key]; ok {
-		return r
+	if r, ok := b.memo.lookup(int32(op), int32(x), int32(y)); ok {
+		return int(r)
 	}
 	vx, vy := b.variableOf(x), b.variableOf(y)
 	v := vx
@@ -142,7 +263,7 @@ func (b *bdd) apply(op, x, y int) int {
 		yl, yh = b.nodes[y].low, b.nodes[y].high
 	}
 	r := b.mk(v, b.apply(op, xl, yl), b.apply(op, xh, yh))
-	b.memo[key] = r
+	b.memo.insert(int32(op), int32(x), int32(y), int32(r))
 	return r
 }
 

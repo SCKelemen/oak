@@ -208,14 +208,71 @@ var simdTypeNames = func() map[string]bool {
 	for _, shape := range SimdShapes {
 		names[shape.TypeName] = true
 	}
+	for _, name := range ScalableTypeNames {
+		names[name] = true
+	}
 	return names
 }()
+
+// The scalable vector API (docs/spec/93-simd.md section 4): an active
+// extent chosen by the backend, never wider than the remaining count, and
+// vectors whose lanes outside the extent are not Oak values. The types are
+// block-local (section 4 item 7): locals and expressions only, never a
+// record field, global, parameter, result, or array element
+// (checkScalableLocality).
+var ScalableTypeNames = []string{"Active", "ScalableU8", "ScalableU32"}
+
+// ScalableShapes are the scalable lane types: the op suffix, the lane
+// primitive, and the portable realization's capacity in lanes (one fixed
+// 16-byte vector).
+var ScalableShapes = []SimdShape{
+	{TypeName: "ScalableU8", Suffix: "active_u8", ElemName: "u8", Lanes: 16},
+	{TypeName: "ScalableU32", Suffix: "active_u32", ElemName: "u32", Lanes: 4},
+}
+
+// IsScalableType reports a scalable-API type.
+func IsScalableType(t Type) bool {
+	simd, ok := t.(*SimdType)
+	if !ok {
+		return false
+	}
+	for _, name := range ScalableTypeNames {
+		if simd.Name == name {
+			return true
+		}
+	}
+	return false
+}
 
 // simdOps is the operation catalog of docs/spec/93-simd.md section 1.2,
 // built per vector shape: splat, bounds-checked load/store, wrapping
 // add/sub, bitwise and/or/xor, unsigned min/max, eq masks, any/all.
 var simdOps = func() map[string]*FunctionType {
 	ops := make(map[string]*FunctionType)
+	active := &SimdType{Name: "Active"}
+	u32 := &PrimitiveType{Name: "u32"}
+	ops["count"] = &FunctionType{Parameters: []Type{active}, ReturnType: u32}
+	for _, shape := range ScalableShapes {
+		vector := &SimdType{Name: shape.TypeName}
+		elem := &PrimitiveType{Name: shape.ElemName}
+		view := &ArrayType{Length: -1, IsSlice: true, ElementType: elem}
+		span := &ArrayType{Length: -1, IsSpan: true, ElementType: elem}
+		ops[shape.Suffix] = &FunctionType{Parameters: []Type{u32}, ReturnType: active} // active_u8(remaining)
+		ops["splat_"+shape.Suffix] = &FunctionType{Parameters: []Type{elem, active}, ReturnType: vector}
+		ops["load_"+shape.Suffix] = &FunctionType{Parameters: []Type{view, u32, active}, ReturnType: vector}
+		ops["store_"+shape.Suffix] = &FunctionType{Parameters: []Type{span, u32, vector, active}, ReturnType: &UnitType{}}
+		for _, binary := range []string{"add", "sub", "subs", "and", "or", "xor", "min", "max", "eq"} {
+			ops[binary+"_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, vector, active}, ReturnType: vector}
+		}
+		ops["shr_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, u32, active}, ReturnType: vector}
+		for _, reduction := range []string{"any", "all"} {
+			ops[reduction+"_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, active}, ReturnType: &BoolType{}}
+		}
+		if shape.ElemName == "u32" {
+			// The wrapping sum over the active lanes in lane order.
+			ops["reduce_add_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, active}, ReturnType: elem}
+		}
+	}
 	for _, shape := range SimdShapes {
 		vector := &SimdType{Name: shape.TypeName}
 		elem := &PrimitiveType{Name: shape.ElemName}

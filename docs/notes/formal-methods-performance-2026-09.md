@@ -1,6 +1,6 @@
 # Note: the most performant formal-methods implementation — what the codecs, os, ml, simdjson and Futhark teach the prover
 
-**Status: in progress — benchmarks, the first enumeration increment and resident runner workers landed.** 2026-09-12, `specification` branch.
+**Status: in progress — benchmarks, the first enumeration increment, resident runner workers, the BDD tables and the id-indexed witness evaluator landed.** 2026-09-12, `specification` branch.
 Source: a read of Oak's own verification engines (`prove/`, `asm/`,
 `repl/leancheck.go`, `testrunner/`, `experiments/verification-poc`), of
 `github.com/SCKelemen/os` and `github.com/SCKelemen/ml` for techniques those
@@ -151,13 +151,17 @@ three. With the baselines in hand the order of execution is 1, 7, 9, 2,
    variable id. Measurement: the blast benchmark. Proof: none new — the
    term algebra is unchanged; an intern table is a function.
 
-4. **Better circuits.** Carry-lookahead or Kogge–Stone adders, a
-   Wallace or Dadda multiplier for the widths in use, logarithmic popcount
-   and count-leading-zeros (the `simd.popcount`/`ctz` shapes the codec
-   track already relies on). Measurement: node counts for the arithmetic
-   theorems. Proof: each circuit checked against the arithmetic
-   definition by `bv_decide` in Lean for 8, 16, 32 and 64 bits, as
-   `Oak.JsonDigits` checks the digit arithmetic today.
+4. **Better circuits — corrected.** A reduced ordered BDD is canonical:
+   its size depends on the function and the variable order, not on the
+   circuit that built it, so carry-lookahead adders or Wallace multipliers
+   cannot shrink the final diagrams the lattice file builds. What the
+   circuit shape changes is the intermediate work — the diagrams of the
+   partial results — and for the shift-and-add multiplier and the
+   quadratic popcount and count-leading-zeros that work is measurable.
+   Measurement: `BenchmarkBDDMul*` and node-creation counts. Proof: each
+   circuit checked against the arithmetic definition by `bv_decide` in
+   Lean, as `Oak.JsonDigits` checks the digit arithmetic today. Demoted
+   below item 8 by this correction.
 
 5. **Enumeration without the interpreter's heap.** Domains as packed
    `uint64` words, tuples as slot frames, the theorem body compiled once
@@ -251,6 +255,49 @@ cross-built harnesses keep one process per case, as does `-resident=false`.
 | 500 trivial cases, `oak test -runs 500` | 7.84 s | 0.67 s |
 | 2,000 trivial cases | 32.1 s (62 cases/s) | 1.83 s (1,090 cases/s) |
 | `go test ./testrunner` | 74 s | 35 s |
+
+## 4c. Third increment landed: the BDD engine's tables (item 2, first step)
+
+The unique table and the operation cache are open-addressed hash tables of
+fixed-width `int32` entries (linear probing, load factor at most one half,
+growth by rehash) instead of Go maps keyed by structs. Node ids, insertion
+order and every result are unchanged — the lattice file's largest diagram
+is still 1,482,423 nodes and every proof and counterexample the same —
+so the change is judged on throughput alone. Complement edges and a native
+`ite` remain the second step of item 2; they change node identities and
+so need the canonicity invariant stated first.
+
+| Benchmark | Before | After |
+| --- | ---: | ---: |
+| `BenchmarkBDDMul12` (1,133,955 nodes) | 372 ms, 3.0 M nodes/s | 200 ms, 5.7 M nodes/s |
+| `BenchmarkBDDAdd64` | 2.57 ms | 1.78 ms |
+| `BenchmarkTheoremsLattice` | 3.59 s | 3.26 s |
+| `BenchmarkTheoremsEffects` | 1.04 s | 0.83 s |
+
+## 4d. Fourth increment landed: id-indexed witness evaluation (item 3, first step)
+
+After the tables, the lattice profile's largest cost was not the diagrams
+but the witness pass before them: every witness input evaluated the
+theorem's term DAG through a fresh `map[*term]uint64` (3.5 GB allocated,
+a fifth of the time). A `termEvaluator` numbers the subterms of the claim
+and its traps once per theorem and remembers values in slices indexed by
+that number under a generation stamp, so an input costs no allocation and
+no hashing. The single-evaluation `eval` keeps its map through the same
+`termMemo` interface, so the semantics (`Oak.AssemblerSemantics`) is one
+body of code as before.
+
+| Benchmark | Baseline | After tables | After the evaluator |
+| --- | ---: | ---: | ---: |
+| `BenchmarkTheoremsLattice` | 3.78 s | 3.26 s | 1.08 s |
+| `BenchmarkTheoremsEffects` | 2.54 s | 0.83 s | 0.82 s |
+
+Hash-consing the terms themselves (structural equality as pointer
+equality, the blast memo keyed by id) is the rest of item 3. Two smaller
+cuts followed from the same profile: the tables start at 65,536 entries
+(the 18,403-node adder no longer rehashes its way up: 2.4 ms to 0.9 ms),
+and the control-parameter walk shares one visited set across its
+collections instead of a map per conditional; paired under load, the
+lattice file went from 1.83 s to 1.62 s.
 
 ## 5. What carries over from the codec track, unchanged
 

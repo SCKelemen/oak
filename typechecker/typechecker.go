@@ -852,6 +852,7 @@ func constParameterKind(param *ast.TypeParameter) string {
 }
 
 func (tc *TypeChecker) CheckProgram(program *ast.Program) {
+	tc.checkScalableLocality(program)
 	// Region parameters are erased first (typechecker/regions.go): every
 	// later phase sees View[T, R] as []T and a region-only type parameter as
 	// absent; the borrow checker reads the recorded structure.
@@ -2963,8 +2964,22 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 
 	// Check if widening is valid (same signedness, source is narrower or equal)
 	if !tc.isValidWidening(argPrim.Name, normalizedTarget) {
-		tc.addError(args[0], "cannot widen %s to %s (must be same signedness and source must be narrower or equal); narrowing is explicit: %s_trunc_%s(x) wraps, %s_saturating_%s(x) clamps, %s_checked_%s(x) returns Result, and %s_bits_%s(x) reinterprets same-width bits",
-			argPrim.Name, typeName, typeName, argPrim.Name, typeName, argPrim.Name, typeName, argPrim.Name, typeName, argPrim.Name)
+		// The hint names only spellings the checker admits: narrowing within one
+		// signedness has the trunc/saturating/checked forms; the same-width
+		// cross-sign case has bits; a cross-sign change of width has neither
+		// directly and goes through a same-signedness step first.
+		crossSign := (argPrim.Name[0] == 'i') != (normalizedTarget[0] == 'i')
+		sameWidth := tc.getTypeWidth(argPrim.Name) == tc.getTypeWidth(normalizedTarget)
+		hint := ""
+		switch {
+		case !crossSign:
+			hint = fmt.Sprintf("narrowing is explicit: %s_trunc_%s(x) wraps, %s_saturating_%s(x) clamps, %s_checked_%s(x) returns Result", typeName, argPrim.Name, typeName, argPrim.Name, typeName, argPrim.Name)
+		case sameWidth:
+			hint = fmt.Sprintf("a same-width change of signedness is explicit: %s_bits_%s(x) reinterprets the bits", typeName, argPrim.Name)
+		default:
+			hint = "a change of signedness is explicit: reinterpret at one width with {target}_bits_{source} and narrow or widen within one signedness"
+		}
+		tc.addError(args[0], "cannot widen %s to %s (must be same signedness and source must be narrower or equal); %s", argPrim.Name, typeName, hint)
 		return nil
 	}
 

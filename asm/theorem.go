@@ -170,32 +170,15 @@ func lowerTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Function
 // decideLowered settles the lowered theorem: the witness inputs first, then
 // the diagrams under every variable order at once.
 func decideLowered(lowered *loweredTheorem) Decision {
-	t, traps, names, widths := lowered.claim, lowered.traps, lowered.names, lowered.widths
-
-	// Witnesses first: a trapping or false case is a counterexample
-	// regardless of what the canonical form would say.
-	for _, env := range witnessInputs(names, widths) {
-		for _, trap := range traps {
-			if trap.eval(env) != 0 {
-				return Decision{Kind: DecisionRefuted, Message: "the body traps (a shift count at the width, a failed assert, or a construction outside its predicate) at " + describeEnv(names, env)}
-			}
-		}
-		if t.eval(env) != 1 {
-			return Decision{Kind: DecisionRefuted, Message: "counterexample " + describeEnv(names, env)}
-		}
+	t, traps, names := lowered.claim, lowered.traps, lowered.names
+	if refuted, isRefuted := lowered.witnessRefutation(); isRefuted {
+		return refuted
 	}
 	// The variable orders run together over the same terms, and the first
 	// to decide within the node budget stops the others: a proof does not
 	// depend on the order, and a theorem that is small under some order is
 	// decided in that order's time rather than after the others' failures.
-	control := controlParams(append([]*term{t}, traps...))
-	blasters := []*blaster{newBlaster(names, widths)}
-	if paramGroups(names) > 1 {
-		blasters = append(blasters, newGroupedBlaster(names, widths))
-	}
-	if len(control) > 0 && len(control) < len(names) {
-		blasters = append(blasters, newControlFirstBlaster(names, widths, control))
-	}
+	blasters := lowered.blasters()
 	var stop atomic.Bool
 	type attempt struct {
 		decision Decision
@@ -218,6 +201,73 @@ func decideLowered(lowered *loweredTheorem) Decision {
 	return Decision{Kind: DecisionUndecided, Message: "the bit-level decision exceeded its node budget"}
 }
 
+// witnessRefutation evaluates the lowered theorem on the fixed witness
+// inputs first: a trapping or false case is a counterexample regardless
+// of what the canonical form would say.
+func (lowered *loweredTheorem) witnessRefutation() (Decision, bool) {
+	t, traps, names, widths := lowered.claim, lowered.traps, lowered.names, lowered.widths
+	evaluator := newTermEvaluator(append([]*term{t}, traps...)...)
+	for _, env := range witnessInputs(names, widths) {
+		for _, trap := range traps {
+			if evaluator.evaluate(trap, env) != 0 {
+				return Decision{Kind: DecisionRefuted, Message: "the body traps (a shift count at the width, a failed assert, or a construction outside its predicate) at " + describeEnv(names, env)}, true
+			}
+		}
+		if evaluator.evaluate(t, env) != 1 {
+			return Decision{Kind: DecisionRefuted, Message: "counterexample " + describeEnv(names, env)}, true
+		}
+	}
+	return Decision{}, false
+}
+
+// blasters builds the variable orders that apply to the lowered theorem:
+// interleaved always, per-parameter blocks when there is more than one
+// root parameter, control bits first when the control set is proper.
+func (lowered *loweredTheorem) blasters() []*blaster {
+	t, traps, names, widths := lowered.claim, lowered.traps, lowered.names, lowered.widths
+	control := controlParams(append([]*term{t}, traps...))
+	blasters := []*blaster{newBlaster(names, widths)}
+	if paramGroups(names) > 1 {
+		blasters = append(blasters, newGroupedBlaster(names, widths))
+	}
+	if len(control) > 0 && len(control) < len(names) {
+		blasters = append(blasters, newControlFirstBlaster(names, widths, control))
+	}
+	return blasters
+}
+
+// DecideWithOrder decides the theorem under one named variable order
+// (interleaved, blocks, control), with no witness pass: the Go decider as
+// the cross-check of the Oak solver, whose node count it must match.
+func DecideWithOrder(sig *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, guards map[string]Guard, decls Declarations, order string) Decision {
+	lowered, undecided := lowerTheorem(sig, functions, guards, decls)
+	if undecided != nil {
+		return *undecided
+	}
+	for _, bl := range lowered.blasters() {
+		if orderNames[bl.label] != order {
+			continue
+		}
+		decision, exceeded := decideBlasted(bl, lowered.traps, lowered.claim, lowered.names)
+		if exceeded {
+			return Decision{Kind: DecisionUndecided, Message: "the bit-level decision exceeded its node budget under the " + order + " order"}
+		}
+		return decision
+	}
+	return Decision{Kind: DecisionUndecided, Message: "no " + order + " order applies to the theorem"}
+}
+
+// WitnessRefutation runs only the witness pass of the decider: a
+// counterexample among the fixed inputs, or nothing (the theorem may still
+// be false), with the reason when the theorem cannot be lowered.
+func WitnessRefutation(sig *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, guards map[string]Guard, decls Declarations) (Decision, bool) {
+	lowered, undecided := lowerTheorem(sig, functions, guards, decls)
+	if undecided != nil {
+		return *undecided, true
+	}
+	return lowered.witnessRefutation()
+}
+
 // controlParams names the parameters the terms read as control: those
 // under the condition of a conditional (a selector compared to a constant,
 // a guard) or the count of a shift. The rest are data, which flow into
@@ -225,6 +275,9 @@ func decideLowered(lowered *loweredTheorem) Decision {
 func controlParams(terms []*term) map[string]bool {
 	control := map[string]bool{}
 	visited := map[*term]bool{}
+	// One visited set for every collection: the parameters of a subterm
+	// already collected are in control, so a second walk of it adds nothing.
+	collected := map[*term]bool{}
 	var walk func(t *term)
 	walk = func(t *term) {
 		if t == nil || visited[t] {
@@ -233,14 +286,14 @@ func controlParams(terms []*term) map[string]bool {
 		visited[t] = true
 		switch t.kind {
 		case termIte:
-			collectParams(t.cond, control)
+			collectParamsVisited(t.cond, control, collected)
 			walk(t.left)
 			walk(t.right)
 			return
 		case termBinary:
 			switch t.op {
 			case "shl", "shr", "lsr", "asr", "sar", "ror":
-				collectParams(t.right, control)
+				collectParamsVisited(t.right, control, collected)
 			}
 		}
 		walk(t.cond)

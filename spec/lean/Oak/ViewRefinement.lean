@@ -139,4 +139,38 @@ theorem subslice_index (v : View) (start n i : Nat) :
 theorem subslice_len_fits (v : View) (start n : Nat) (hg : start + n ≤ v.len) (hlen : v.len < 2 ^ 32) :
     n < 2 ^ 32 := by omega
 
+
+/-! ## Owned arrays (`[N]T`)
+
+```c
+static inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }
+#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])
+static inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }
+#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)
+```
+
+An owned array's length is its static `N`; the read macro guards with
+`(u64)i < (u64)len`, the lvalue and store helpers with the negation, so the
+three are the view index guard at `start = 0`. -/
+
+/-- `(u64)(i) < (u64)(len)`: the read proceeds. -/
+def ownedIndexGuard (len i : Nat) : Bool := decide (i < len)
+
+theorem owned_index_guard_iff (len i : Nat) : ownedIndexGuard len i = true ↔ i < len := by
+  unfold ownedIndexGuard; simp
+
+/-- The lvalue and store guards trap on `i >= len`: the same admission. -/
+theorem owned_store_guard_iff (len i : Nat) : (!decide (i ≥ len)) = ownedIndexGuard len i := by
+  unfold ownedIndexGuard
+  by_cases h : i < len
+  · have hn : ¬ i ≥ len := Nat.not_le.mpr h
+    simp [h, hn]
+  · have hge : i ≥ len := Nat.not_lt.mp h
+    simp [h, hge]
+
+/-- An owned array is the view of itself at offset zero: its guard is the
+    view guard. -/
+theorem owned_is_view_at_zero (len i : Nat) : ownedIndexGuard len i = indexGuard ⟨0, len⟩ i := by
+  rw [← owned_store_guard_iff]; rfl
+
 end Oak.ViewRefinement

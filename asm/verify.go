@@ -113,6 +113,10 @@ func elementParam(name string) (span string, k uint64, ok bool) {
 type term struct {
 	kind  termKind
 	width int
+	// id is the term's index in the termEvaluator that last numbered it,
+	// one-based; zero before any numbering. Only the witness pass sets it,
+	// before the variable orders' goroutines start reading the terms.
+	id    int32
 	name  string // termParam
 	value uint64 // termConst (already masked to width)
 	op    string // termBinary: add sub and or xor shl shr; termCmp: condition code
@@ -293,10 +297,19 @@ func adaptWidth(t *term, width int) *term {
 // transliterated: every operation is total and wraps to the width). Shared
 // subterms are evaluated once per call.
 func (t *term) eval(env map[string]uint64) uint64 {
-	return t.evalMemo(env, map[*term]uint64{})
+	return mapMemo{}.eval(t, env)
 }
 
-func (t *term) evalMemo(env map[string]uint64, memo map[*term]uint64) uint64 {
+// A termMemo remembers the values of shared subterms during one evaluation:
+// a map for a single evaluation, the id-indexed termEvaluator for a witness
+// pass over many inputs.
+type termMemo interface {
+	eval(t *term, env map[string]uint64) uint64
+}
+
+type mapMemo map[*term]uint64
+
+func (memo mapMemo) eval(t *term, env map[string]uint64) uint64 {
 	if cached, seen := memo[t]; seen {
 		return cached
 	}
@@ -305,7 +318,7 @@ func (t *term) evalMemo(env map[string]uint64, memo map[*term]uint64) uint64 {
 	return value
 }
 
-func (t *term) evalUncached(env map[string]uint64, memo map[*term]uint64) uint64 {
+func (t *term) evalUncached(env map[string]uint64, memo termMemo) uint64 {
 	m := mask(t.width)
 	switch t.kind {
 	case termParam:
@@ -321,24 +334,24 @@ func (t *term) evalUncached(env map[string]uint64, memo map[*term]uint64) uint64
 	case termConst:
 		return t.value & m
 	case termSelect:
-		return elementValue(t.name, t.left.evalMemo(env, memo)&mask(32), t.width) & m
+		return elementValue(t.name, memo.eval(t.left, env)&mask(32), t.width) & m
 	case termCmp:
 		// The comparison happens at the operands' width; t.width is only
 		// the width the 1/0 result is used at.
-		if conditionHolds(t.op, t.left.evalMemo(env, memo), t.right.evalMemo(env, memo), t.left.width) {
+		if conditionHolds(t.op, memo.eval(t.left, env), memo.eval(t.right, env), t.left.width) {
 			return 1
 		}
 		return 0
 	case termIte:
-		if t.cond.evalMemo(env, memo) != 0 {
-			return t.left.evalMemo(env, memo) & m
+		if memo.eval(t.cond, env) != 0 {
+			return memo.eval(t.left, env) & m
 		}
-		return t.right.evalMemo(env, memo) & m
+		return memo.eval(t.right, env) & m
 	}
 	// Operands evaluate at their own widths (a mask node's inner term keeps
 	// its width and modulus); the operation wraps to this term's width.
-	l := t.left.evalMemo(env, memo) & m
-	r := t.right.evalMemo(env, memo) & m
+	l := memo.eval(t.left, env) & m
+	r := memo.eval(t.right, env) & m
 	switch t.op {
 	case "add":
 		return (l + r) & m

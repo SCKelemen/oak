@@ -104,11 +104,12 @@ next_pow2: (n: u32): u32 {
 }
 
 // layout_for sizes the buffer for a node budget and a term count: the unique
-// table twice the budget rounded up, a million-entry cache, a 32768-frame
-// stack.
+// table twice the budget rounded up, an apply cache of the same size (a
+// smaller cache recomputes cofactors and costs more than its words), a
+// 32768-frame stack.
 layout_for: (cap: u32, terms: u32): Layout {
   ucap: u32 = next_pow2(cap * u32(2))
-  ccap: u32 = 1048576
+  ccap: u32 = ucap
   scap: u32 = 32768
   var_at: u32 = 0
   low_at: u32 = cap
@@ -786,8 +787,23 @@ blast_term: (l: Layout, mem: [*]u32, p: []u32, t: u32): Bool {
   ok
 }
 
-// solve blasts every term and reads the roots: every trap root must be the
-// false node and the claim root (the last) the true node.
+// solve_roots reads the roots of a fully blasted problem: every trap root
+// must be the false node and the claim root (the last) the true node.
+solve_roots: (l: Layout, mem: [*]u32, p: []u32): u32 {
+  status: u32 = STATUS_PROVEN
+  roots: u32 = problem_roots(p)
+  r: u32 = 0
+  while r < roots {
+    root: u32 = p[roots_at(p) + r]
+    bit: u32 = mem[l.bits_at + root * u32(64)]
+    want: u32 = r + u32(1) == roots ? { BDD_TRUE } | { BDD_FALSE }
+    status = bit == want ? { status } | { STATUS_REFUTED }
+    r = r + u32(1)
+  }
+  status
+}
+
+// solve blasts every term and reads the roots.
 solve: (l: Layout, mem: [*]u32, p: []u32): u32 {
   solver_init(l, mem)
   n: u32 = problem_terms(p)
@@ -797,19 +813,89 @@ solve: (l: Layout, mem: [*]u32, p: []u32): u32 {
     supported = blast_term(l, mem, p, t)
     t = t + u32(1)
   }
-  status: u32 = STATUS_PROVEN
-  !supported ? { status = STATUS_UNSUPPORTED } | {
-    exceeded(l, mem) ? { status = STATUS_EXCEEDED } | {
-      roots: u32 = problem_roots(p)
-      r: u32 = 0
-      while r < roots {
-        root: u32 = p[roots_at(p) + r]
-        bit: u32 = mem[l.bits_at + root * u32(64)]
-        want: u32 = r + u32(1) == roots ? { BDD_TRUE } | { BDD_FALSE }
-        status = bit == want ? { status } | { STATUS_REFUTED }
-        r = r + u32(1)
+  !supported ? { STATUS_UNSUPPORTED } | { exceeded(l, mem) ? { STATUS_EXCEEDED } | { solve_roots(l, mem, p) } }
+}
+
+// The outcome of a race: the status, which variant decided (NONE when
+// none did), and its node count.
+Race: type = struct { status: u32, winner: u32, nodes: u32 }
+
+// solve_race decides one theorem serialized under up to three variable
+// orders, each in a buffer of its own, round-robin one term at a time:
+// the first variant to blast every term within the budget decides, and a
+// variant that exceeds the budget or meets an unsupported term drops out.
+// Term by term rather than whole, so a variant that is small under its
+// order is not made to wait for one that is exponential under another.
+solve_race: (l: Layout, m0: [*]u32, p0: []u32, m1: [*]u32, p1: []u32, m2: [*]u32, p2: []u32, variants: u32): Race {
+  solver_init(l, m0)
+  variants > u32(1) ? { solver_init(l, m1) } | { }
+  variants > u32(2) ? { solver_init(l, m2) } | { }
+  t0: u32 = 0
+  t1: u32 = 0
+  t2: u32 = 0
+  live0: Bool = true
+  live1: Bool = variants > u32(1)
+  live2: Bool = variants > u32(2)
+  unsupported: Bool = false
+  winner: u32 = NONE
+  while winner == NONE && (live0 || live1 || live2) {
+    live0 ? {
+      ok: Bool = blast_term(l, m0, p0, t0)
+      unsupported = unsupported || !ok
+      live0 = ok && !exceeded(l, m0)
+      t0 = t0 + u32(1)
+      winner = (live0 && t0 == problem_terms(p0)) ? { u32(0) } | { winner }
+    } | { }
+    (live1 && winner == NONE) ? {
+      ok1: Bool = blast_term(l, m1, p1, t1)
+      unsupported = unsupported || !ok1
+      live1 = ok1 && !exceeded(l, m1)
+      t1 = t1 + u32(1)
+      winner = (live1 && t1 == problem_terms(p1)) ? { u32(1) } | { winner }
+    } | { }
+    (live2 && winner == NONE) ? {
+      ok2: Bool = blast_term(l, m2, p2, t2)
+      unsupported = unsupported || !ok2
+      live2 = ok2 && !exceeded(l, m2)
+      t2 = t2 + u32(1)
+      winner = (live2 && t2 == problem_terms(p2)) ? { u32(2) } | { winner }
+    } | { }
+  }
+  winner == u32(0) ? { Race { status: solve_roots(l, m0, p0), winner: u32(0), nodes: node_count(l, m0) } } | {
+    winner == u32(1) ? { Race { status: solve_roots(l, m1, p1), winner: u32(1), nodes: node_count(l, m1) } } | {
+      winner == u32(2) ? { Race { status: solve_roots(l, m2, p2), winner: u32(2), nodes: node_count(l, m2) } } | {
+        Race { status: unsupported ? { STATUS_UNSUPPORTED } | { STATUS_EXCEEDED }, winner: NONE, nodes: u32(0) }
       }
     }
   }
-  status
+}
+
+// witness_vars lists the variables set on a path to the true terminal of
+// the first failing root (a trap root that is not false, or the negated
+// claim), into out; the count listed. Every variable not listed is zero on
+// that path, which the caller reads as a counterexample.
+witness_vars: (l: Layout, mem: [*]u32, p: []u32, out: [*]u32): u32 {
+  roots: u32 = problem_roots(p)
+  failing: u32 = NONE
+  r: u32 = 0
+  while r < roots && failing == NONE {
+    root: u32 = p[roots_at(p) + r]
+    bit: u32 = mem[l.bits_at + root * u32(64)]
+    last: Bool = r + u32(1) == roots
+    failing = last ? { bit != BDD_TRUE ? { bdd_not(l, mem, bit) } | { NONE } } | { bit != BDD_FALSE ? { bit } | { NONE } }
+    r = r + u32(1)
+  }
+  count: u32 = 0
+  n: u32 = failing == NONE ? { BDD_FALSE } | { failing }
+  while n > BDD_TRUE && count < len(out) {
+    high: u32 = mem[l.high_at + n]
+    high != BDD_FALSE ? {
+      out[count] = mem[l.var_at + n]
+      count = count + u32(1)
+      n = high
+    } | {
+      n = mem[l.low_at + n]
+    }
+  }
+  count
 }
