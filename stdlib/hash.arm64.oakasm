@@ -1,0 +1,191 @@
+// AArch64 kernels for stdlib/hash.oak (docs/spec/94-assembler.md §7).
+// Each pairs with the Oak declaration of the same name; the Oak body is the
+// portable definition the unit is checked against, the definition the Lean
+// extraction sees, and the body that runs off AArch64 or under
+// -DOAK_PORTABLE_INTRINSICS. The CRC and SHA-2 instructions have no
+// semantics in the verifier, so the verdicts are "trusted"; the
+// differential tests (compiler/e2e_stdlib_crc_sha_hw_test.go) and the
+// faithfulness harness compare this path with the portable one.
+
+// Seven CRC-32C steps over little-endian 64-bit words: FEAT_CRC32's
+// crc32cx folds eight bytes per instruction, and the seven words arrive in
+// the argument registers, so the unit touches no memory.
+crc32c_step7: (state: u32, a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64) -> u32 = {
+  bind w0 = state
+  bind x1 = a
+  bind x2 = b
+  bind x3 = c
+  bind x4 = d
+  bind x5 = e
+  bind x6 = f
+  bind x7 = g
+  crc32cx w0, w0, x1
+  crc32cx w0, w0, x2
+  crc32cx w0, w0, x3
+  crc32cx w0, w0, x4
+  crc32cx w0, w0, x5
+  crc32cx w0, w0, x6
+  crc32cx w0, w0, x7
+  ret
+}
+
+// One SHA-256 compression through FEAT_SHA256: the chaining value (eight
+// words) is read from and written back to `h`, the 64-byte block and the
+// 64-entry round-constant table are read through their views. Every load
+// and store sits under a dominating length guard the checker proves;
+// a short operand returns without touching anything, as the Oak body does.
+// v0/v1 hold the state (abcd, efgh), v2/v3 the entry state for the final
+// add, v16–v19 the rotating message schedule, v4 the round constants,
+// v5 the round input, v6 the saved abcd for sha256h2.
+sha256_block_hw: (h: [*]u32, block: []u8, k: []u32) -> () = {
+  bind x0, w1 = h
+  bind x2, w3 = block
+  bind x4, w5 = k
+  clobber v0, v1, v2, v3, v4, v5, v6, v16, v17, v18, v19
+  cmp w1, #8
+  b.lo fail
+  cmp w3, #64
+  b.lo fail
+  cmp w5, #64
+  b.lo fail
+  ldr q0, [x0]
+  ldr q1, [x0, #16]
+  mov v2.16b, v0.16b
+  mov v3.16b, v1.16b
+  ldr q16, [x2]
+  ldr q17, [x2, #16]
+  ldr q18, [x2, #32]
+  ldr q19, [x2, #48]
+  rev32 v16.16b, v16.16b
+  rev32 v17.16b, v17.16b
+  rev32 v18.16b, v18.16b
+  rev32 v19.16b, v19.16b
+  // Rounds 0-3
+  ldr q4, [x4]
+  add v5.4s, v16.4s, v4.4s
+  mov v6.16b, v0.16b
+  sha256h q0, q1, v5.4s
+  sha256h2 q1, q6, v5.4s
+  sha256su0 v16.4s, v17.4s
+  sha256su1 v16.4s, v18.4s, v19.4s
+  // Rounds 4-7
+  ldr q4, [x4, #16]
+  add v5.4s, v17.4s, v4.4s
+  mov v6.16b, v0.16b
+  sha256h q0, q1, v5.4s
+  sha256h2 q1, q6, v5.4s
+  sha256su0 v17.4s, v18.4s
+  sha256su1 v17.4s, v19.4s, v16.4s
+  // Rounds 8-11
+  ldr q4, [x4, #32]
+  add v5.4s, v18.4s, v4.4s
+  mov v6.16b, v0.16b
+  sha256h q0, q1, v5.4s
+  sha256h2 q1, q6, v5.4s
+  sha256su0 v18.4s, v19.4s
+  sha256su1 v18.4s, v16.4s, v17.4s
+  // Rounds 12-15
+  ldr q4, [x4, #48]
+  add v5.4s, v19.4s, v4.4s
+  mov v6.16b, v0.16b
+  sha256h q0, q1, v5.4s
+  sha256h2 q1, q6, v5.4s
+  sha256su0 v19.4s, v16.4s
+  sha256su1 v19.4s, v17.4s, v18.4s
+  // Rounds 16-19
+  ldr q4, [x4, #64]
+  add v5.4s, v16.4s, v4.4s
+  mov v6.16b, v0.16b
+  sha256h q0, q1, v5.4s
+  sha256h2 q1, q6, v5.4s
+  sha256su0 v16.4s, v17.4s
+  sha256su1 v16.4s, v18.4s, v19.4s
+  // Rounds 20-23
+  ldr q4, [x4, #80]
+  add v5.4s, v17.4s, v4.4s
+  mov v6.16b, v0.16b
+  sha256h q0, q1, v5.4s
+  sha256h2 q1, q6, v5.4s
+  sha256su0 v17.4s, v18.4s
+  sha256su1 v17.4s, v19.4s, v16.4s
+  // Rounds 24-27
+  ldr q4, [x4, #96]
+  add v5.4s, v18.4s, v4.4s
+  mov v6.16b, v0.16b
+  sha256h q0, q1, v5.4s
+  sha256h2 q1, q6, v5.4s
+  sha256su0 v18.4s, v19.4s
+  sha256su1 v18.4s, v16.4s, v17.4s
+  // Rounds 28-31
+  ldr q4, [x4, #112]
+  add v5.4s, v19.4s, v4.4s
+  mov v6.16b, v0.16b
+  sha256h q0, q1, v5.4s
+  sha256h2 q1, q6, v5.4s
+  sha256su0 v19.4s, v16.4s
+  sha256su1 v19.4s, v17.4s, v18.4s
+  // Rounds 32-35
+  ldr q4, [x4, #128]
+  add v5.4s, v16.4s, v4.4s
+  mov v6.16b, v0.16b
+  sha256h q0, q1, v5.4s
+  sha256h2 q1, q6, v5.4s
+  sha256su0 v16.4s, v17.4s
+  sha256su1 v16.4s, v18.4s, v19.4s
+  // Rounds 36-39
+  ldr q4, [x4, #144]
+  add v5.4s, v17.4s, v4.4s
+  mov v6.16b, v0.16b
+  sha256h q0, q1, v5.4s
+  sha256h2 q1, q6, v5.4s
+  sha256su0 v17.4s, v18.4s
+  sha256su1 v17.4s, v19.4s, v16.4s
+  // Rounds 40-43
+  ldr q4, [x4, #160]
+  add v5.4s, v18.4s, v4.4s
+  mov v6.16b, v0.16b
+  sha256h q0, q1, v5.4s
+  sha256h2 q1, q6, v5.4s
+  sha256su0 v18.4s, v19.4s
+  sha256su1 v18.4s, v16.4s, v17.4s
+  // Rounds 44-47
+  ldr q4, [x4, #176]
+  add v5.4s, v19.4s, v4.4s
+  mov v6.16b, v0.16b
+  sha256h q0, q1, v5.4s
+  sha256h2 q1, q6, v5.4s
+  sha256su0 v19.4s, v16.4s
+  sha256su1 v19.4s, v17.4s, v18.4s
+  // Rounds 48-51: the schedule is complete, no more su0/su1
+  ldr q4, [x4, #192]
+  add v5.4s, v16.4s, v4.4s
+  mov v6.16b, v0.16b
+  sha256h q0, q1, v5.4s
+  sha256h2 q1, q6, v5.4s
+  // Rounds 52-55
+  ldr q4, [x4, #208]
+  add v5.4s, v17.4s, v4.4s
+  mov v6.16b, v0.16b
+  sha256h q0, q1, v5.4s
+  sha256h2 q1, q6, v5.4s
+  // Rounds 56-59
+  ldr q4, [x4, #224]
+  add v5.4s, v18.4s, v4.4s
+  mov v6.16b, v0.16b
+  sha256h q0, q1, v5.4s
+  sha256h2 q1, q6, v5.4s
+  // Rounds 60-63
+  ldr q4, [x4, #240]
+  add v5.4s, v19.4s, v4.4s
+  mov v6.16b, v0.16b
+  sha256h q0, q1, v5.4s
+  sha256h2 q1, q6, v5.4s
+  // Feed forward and write back
+  add v0.4s, v0.4s, v2.4s
+  add v1.4s, v1.4s, v3.4s
+  str q0, [x0]
+  str q1, [x0, #16]
+  ret
+fail:
+  ret
+}

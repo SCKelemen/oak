@@ -53,6 +53,12 @@ func EmitC(fn *Function, cSymbol string, symbolFor func(string) string) string {
 			fmt.Fprintf(&b, "  \"  .arch_extension %s\\n\"\n", ext)
 		}
 	}
+	for _, ext := range extensionDirectives(fn) {
+		// The host assembler must accept the CRC and SHA-2 spellings on
+		// toolchains whose default -march lacks them (GNU as on Linux);
+		// Apple's and the Oak assembler's native path need no directive.
+		fmt.Fprintf(&b, "  \"  .arch_extension %s\\n\"\n", ext)
+	}
 	fmt.Fprintf(&b, "  \"  .globl \" OAK_ASM_SYMBOL(%s) \"\\n\"\n", cSymbol)
 	fmt.Fprintf(&b, "  OAK_ASM_SYMBOL(%s) \":\\n\"\n", cSymbol)
 	// Labels render as GNU numeric local labels (1:, branches 1b/1f), which
@@ -94,6 +100,32 @@ func EmitC(fn *Function, cSymbol string, symbolFor func(string) string) string {
 	fmt.Fprintf(&b, "#error \"asm unit %s requires an AArch64 target (no Oak fallback body declared)\"\n", fn.Name)
 	b.WriteString("#endif\n\n")
 	return b.String()
+}
+
+// extensionDirectives lists the `.arch_extension` names a unit's
+// instructions need beyond the base architecture: `crc` for the CRC-32
+// steps and `sha2` for the SHA-256 rounds (FEAT_CRC32, FEAT_SHA256).
+func extensionDirectives(fn *Function) []string {
+	var exts []string
+	seen := map[string]bool{}
+	for _, item := range fn.Items {
+		instr, ok := item.(Instruction)
+		if !ok {
+			continue
+		}
+		ext := ""
+		switch {
+		case strings.HasPrefix(instr.Mnemonic, "crc32"):
+			ext = "crc"
+		case strings.HasPrefix(instr.Mnemonic, "sha256"):
+			ext = "sha2"
+		}
+		if ext != "" && !seen[ext] {
+			seen[ext] = true
+			exts = append(exts, ext)
+		}
+	}
+	return exts
 }
 
 // usesScalableFile reports a function with SVE/SME instructions.

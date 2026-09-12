@@ -222,6 +222,17 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   as its fallback body. Verification verdicts (§8) are informational
   diagnostics the CLI prints as `asm: …` lines; a mismatch is an error.
   `examples/asm` is the reference: four kernels, all proven, run both ways.
+  **Library units.** A standard library package may carry units too
+  (`stdlib/hash.arm64.oakasm`, embedded as `stdlib.AsmUnits`): the module
+  loader attaches them when the package is imported, rewriting each unit
+  function's header to the package's internal name
+  (`83-modules.md` §7), so the pairing rule is the root package's; the
+  emitted block adds `.arch_extension crc`/`sha2` when a unit uses the
+  CRC-32 or SHA-256 mnemonics, for host assemblers whose default
+  architecture lacks them. The `hash` units keep their Oak bodies as
+  fallbacks, so the interpreter, the Lean extraction, and non-AArch64
+  builds see the portable definition and the differential tests compare it
+  with the hardware path.
 - **Typed pointer memory.** A span (`[*]T`) or view (`[]T`) parameter of
   fixed-width elements crosses as its `{base, u32 len}` pair and binds
   both registers explicitly — `bind x0, w1 = frame` (the base pointer,
