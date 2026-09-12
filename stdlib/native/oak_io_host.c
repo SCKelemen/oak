@@ -6,6 +6,7 @@
 // window of `len` bytes whose last byte must be NUL — checked by the Oak side
 // and refused here too — so no byte string reaches the kernel unterminated. Link this file into a program that imports ionative,
 // or provide the symbols yourself.
+#define _GNU_SOURCE 1
 #define _POSIX_C_SOURCE 200809L
 #define _DARWIN_C_SOURCE 1
 #include <errno.h>
@@ -51,6 +52,39 @@ int64_t oak_io_host_open(const uint8_t *path, size_t len) {
     int fd = open((const char *)path, O_RDWR | O_CREAT, 0644);
     if (fd < 0) return oak_io_fail(errno);
     return (int64_t)fd;
+}
+
+// Direct I/O (docs/spec/120-io.md section 5): the file bypasses the host's
+// page cache — O_DIRECT on Linux, F_NOCACHE on macOS — for an engine that
+// owns its cache. A host with neither refuses with Invalid; a file system
+// that refuses O_DIRECT reports its EINVAL as Invalid too, and the program
+// decides whether to fall back to a plain open. No retry here.
+int64_t oak_io_host_open_direct(const uint8_t *path, size_t len) {
+    if (path == 0 || len == 0 || path[len - 1] != 0) return -OAK_IO_ERR_INVALID;
+#if defined(__linux__)
+    int fd = open((const char *)path, O_RDWR | O_CREAT | O_DIRECT, 0644);
+    if (fd < 0) return oak_io_fail(errno);
+    return (int64_t)fd;
+#elif defined(__APPLE__)
+    int fd = open((const char *)path, O_RDWR | O_CREAT, 0644);
+    if (fd < 0) return oak_io_fail(errno);
+    if (fcntl(fd, F_NOCACHE, 1) != 0) {
+        int err = errno;
+        close(fd);
+        return oak_io_fail(err);
+    }
+    return (int64_t)fd;
+#else
+    return -OAK_IO_ERR_INVALID;
+#endif
+}
+
+// Whether the region's address is a multiple of align: 1 or 0. No byte of
+// the region is read; len is the window's length, unused here.
+int64_t oak_io_host_aligned(const uint8_t *buf, size_t len, size_t align) {
+    (void)len;
+    if (buf == 0 || align == 0) return 0;
+    return ((uintptr_t)buf % (uintptr_t)align) == 0 ? 1 : 0;
 }
 
 int64_t oak_io_host_close(int64_t fd) {

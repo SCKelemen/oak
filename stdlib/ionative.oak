@@ -23,7 +23,7 @@ pub IoFile: type = struct { slot: u32 }
 pub IoBuffer: type = struct { base: u32, len: u32 }
 pub IoRequest: type = struct { op: u32, file: u32, offset: u64, buf: IoBuffer, tag: u64, link: Bool }
 pub IoCompletion: type = struct { tag: u64, result: u32, error: u32 }
-pub IoRing: type = struct { submitted: u32, completed: u32, files: u32, pending: u32, region_len: u32 }
+pub IoRing: type = struct { submitted: u32, completed: u32, files: u32, pending: u32, region_len: u32, sector: u32 }
 
 pub io_op_open: (): u32 = u32(1)
 pub io_op_close: (): u32 = u32(2)
@@ -38,6 +38,20 @@ pub io_op_readdir: (): u32 = u32(10)
 pub io_op_rename: (): u32 = u32(11)
 pub io_op_stat: (): u32 = u32(12)
 pub io_op_unlink: (): u32 = u32(13)
+pub io_op_open_direct: (): u32 = u32(14)
+
+// Direct I/O (docs/spec/120-io.md sections 2, 3, 5): a file opened with
+// open_direct bypasses the host's cache, and its reads and writes must be
+// whole sectors — offset, length, and the window's base each a multiple of
+// the sector — checked here before any system call. The ring records the
+// sector its region can serve: io_sector_bytes when the region's address
+// is sector-aligned, 0 when it is not (open_direct then completes Invalid).
+// IoSectorRegion[N] is the storage a program declares to obtain an aligned
+// region: span(&store.bytes).
+pub io_sector_bytes: (): u32 = u32(4096)
+pub IoSectorRegion[N: u32]: type = struct(align: 4096) { bytes: [N]u8 }
+pub io_direct_admits: (sector: u32, offset: u64, n: u32, base: u32): Bool =
+  sector != u32(0) && offset % u64(sector) == u64(0) && n % sector == u32(0) && base % sector == u32(0)
 
 pub io_err_not_found: (): u32 = u32(1)
 pub io_err_exists: (): u32 = u32(2)
@@ -76,10 +90,16 @@ ionative_host_rename: (buf: c.Ptr, len: c.Size, from_len: c.Size): c.Int64 effec
 ionative_host_stat: (fd: c.Int64): c.Int64 effects { Os.Syscall } = c.extern("oak_io_host_stat")
 ionative_host_unlink: (path: c.Ptr, len: c.Size): c.Int64 effects { Os.Syscall } = c.extern("oak_io_host_unlink")
 pub ionative_last_errno: (): c.Int64 effects { } = c.extern("oak_io_host_last_errno")
+// Direct I/O (docs/spec/120-io.md section 5): O_DIRECT on Linux, F_NOCACHE
+// on macOS, Invalid elsewhere; and whether a region's address is a
+// multiple of the sector — the host reads no byte of it.
+ionative_host_open_direct: (path: c.Ptr, len: c.Size): c.Int64 effects { Os.Syscall } = c.extern("oak_io_host_open_direct")
+ionative_host_aligned: (buf: c.Ptr, len: c.Size, align: c.Size): c.Int64 effects { } = c.extern("oak_io_host_aligned")
 
 ionative_slots: (): u32 = u32(16)
 ionative_fds: [16]i64
 ionative_open: [16]Bool
+ionative_direct: [16]Bool
 
 // io_attach exists for text parity with iosim; the operating system needs
 // no tape and injects its own faults.
@@ -87,6 +107,7 @@ pub io_attach: (data: []u8, faults: u32): () {
   s: u32 = u32(0)
   while s < ionative_slots() {
     ionative_open[s] = false
+    ionative_direct[s] = false
     s = s + u32(1)
   }
 }
@@ -95,6 +116,9 @@ pub io_open_region: (ring: [*]IoRing, region: [*]u8, files: u32): () {
   assert(len(ring) == u32(1))
   ring[0].files = files > ionative_slots() ? { ionative_slots() } | { files }
   ring[0].region_len = len(region)
+  // The sector the region can serve: its address decides, once.
+  aligned: i64 = i64(ionative_host_aligned(c.span_mut_of(region), c.Size(io_sector_bytes())))
+  ring[0].sector = aligned != i64(0) ? { io_sector_bytes() } | { u32(0) }
   ring[0].submitted = u32(0)
   ring[0].completed = u32(0)
   ring[0].pending = u32(0)
@@ -128,24 +152,31 @@ ionative_execute: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoComple
   n: u32 = request.buf.len
   tag: u64 = request.tag
   in_region: Bool = base <= ring[0].region_len && n <= ring[0].region_len - base
-  op == io_op_open() || op == io_op_create() || op == io_op_fsyncdir() || op == io_op_unlink() ? {
+  opens: Bool = op == io_op_open() || op == io_op_create() || op == io_op_open_direct()
+  opens || op == io_op_fsyncdir() || op == io_op_unlink() ? {
     // The path is the window's bytes and must end in NUL inside the window.
     !ionative_path_ok(ring, region, base, n) ? { IoCompletion { tag: tag, result: u32(0), error: io_err_invalid() } } | {
-    (op == io_op_open() || op == io_op_create()) && (slot >= ring[0].files || ionative_open[slot]) ? {
+    opens && (slot >= ring[0].files || ionative_open[slot]) ? {
       code: u32 = slot >= ring[0].files ? { io_err_invalid() } | { io_err_busy() }
       IoCompletion { tag: tag, result: u32(0), error: code }
     } | {
+    op == io_op_open_direct() && ring[0].sector == u32(0) ? {
+      // The region cannot serve a sector: refused before the system call.
+      IoCompletion { tag: tag, result: u32(0), error: io_err_invalid() }
+    } | {
       path: [*]u8 = subslice(region, base, n)
       raw: i64 = op == io_op_open() ? { i64(ionative_host_open(c.span_mut_of(path))) } | {
+        op == io_op_open_direct() ? { i64(ionative_host_open_direct(c.span_mut_of(path))) } | {
         op == io_op_create() ? { i64(ionative_host_create(c.span_mut_of(path))) } | {
         op == io_op_unlink() ? { i64(ionative_host_unlink(c.span_mut_of(path))) } | {
-        i64(ionative_host_fsyncdir(c.span_mut_of(path))) } } }
-      (op == io_op_open() || op == io_op_create()) && raw >= i64(0) ? {
+        i64(ionative_host_fsyncdir(c.span_mut_of(path))) } } } }
+      opens && raw >= i64(0) ? {
         ionative_fds[slot] = raw
         ionative_open[slot] = true
+        ionative_direct[slot] = op == io_op_open_direct()
         IoCompletion { tag: tag, result: slot, error: u32(0) }
       } | { ionative_completion(tag, raw) }
-    } }
+    } } }
   } | {
   op == io_op_rename() || op == io_op_readdir() ? {
     // Two windows in one: the first `offset` bytes are a path (the old
@@ -164,6 +195,7 @@ ionative_execute: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoComple
   slot >= ring[0].files || !ionative_open[slot] ? { IoCompletion { tag: tag, result: u32(0), error: io_err_closed() } } | {
   op == io_op_close() ? {
     ionative_open[slot] = false
+    ionative_direct[slot] = false
     ionative_completion(tag, i64(ionative_host_close(c.Int64(ionative_fds[slot]))))
   } | {
   op == io_op_fsync() || op == io_op_fdatasync() ? {
@@ -188,6 +220,7 @@ ionative_execute: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoComple
     ionative_completion(tag, i64(ionative_host_truncate(c.Int64(ionative_fds[slot]), c.Int64(i64_bits_u64(request.offset)))))
   } | {
   !in_region ? { IoCompletion { tag: tag, result: u32(0), error: io_err_invalid() } } | {
+  ionative_direct[slot] && !io_direct_admits(ring[0].sector, request.offset, n, base) ? { IoCompletion { tag: tag, result: u32(0), error: io_err_invalid() } } | {
   op == io_op_pread() || op == io_op_pwrite() ? {
     window: [*]u8 = subslice(region, base, n)
     fd: c.Int64 = c.Int64(ionative_fds[slot])
@@ -196,7 +229,7 @@ ionative_execute: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoComple
     ionative_completion(tag, raw)
   } | {
     IoCompletion { tag: tag, result: u32(0), error: io_err_invalid() }
-  } } } } } } } } } }
+  } } } } } } } } } } }
 }
 
 // io_wait executes every pending request in submission order and returns
