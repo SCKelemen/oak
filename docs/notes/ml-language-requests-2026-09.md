@@ -1,6 +1,6 @@
 # Note: the ml pilot's language requests F1–F6, assessment and plan
 
-**Status: in progress, 2026-09-12.** Baseline: `specification` at `ed56b3e`; round one (F2 + F3) landed as #207, round two (F4) as #213; round three (F1, first increment) as #217; round four (F5) as #219; round five (F6) follows.
+**Status: all six landed, 2026-09-12.** Baseline: `specification` at `ed56b3e`; round one (F2 + F3) landed as #207, round two (F4) as #213, round three (F1, first increment) as #217, round four (F5) as #219, round five (F6) as #223. The follow-ups each round recorded are collected at the end.
 Source: the ml tensor-compiler pilot's second request list, relayed after
 its kernels moved from emitted strings toward code. The pilot's stated goal
 is the design principle this note adopts: **find the optimal structure for
@@ -41,3 +41,32 @@ for the matching loop. A regex engine as a golden use case would be a
 stdlib workstream after this list: a DFA compiler in Oak, SIMD prefilters
 for literal fragments (the simdjson technique), and extraction of the DFA
 step for proofs of match semantics. It is recorded here, not started.
+
+## What the rounds left open
+
+Each landed round recorded its next increment in its spec section; the
+list, in the order the pilot would meet them:
+
+1. **Check elision in kernels** (`56-kernels.md` §3): every buffer access
+   in an emitted kernel is a compare today; the checker's discharged
+   bounds (`while i < n` with `n = len(x)`) should elide them, which is the
+   performance fight this design asks the author to win with a proof.
+2. **Thread independence as a checker rule** (`56-kernels.md` §6): the
+   one-element-per-thread and tile-per-thread shapes over `tensor_index`,
+   failing closed on unknown independence as `55-parallelism.md` §2
+   requires; `Oak.Kernel.run_perm` is the theorem the rule discharges.
+3. **Cross-thread reductions with `reduce.tree`'s grouping** inside kernels
+   (`56-kernels.md` §7), which needs threadgroup memory and a barrier in
+   the subset.
+4. **Records as kernel parameters**, so a kernel takes a `Tensor2` rather
+   than its parts (`56-kernels.md` §7, §8).
+5. **A `Buffer` inside a record, and custody states carrying a device
+   identity** (`92-ffi.md` §2.8.6).
+6. **A backend consuming declared laws**: nothing regroups on
+   `laws { associative }` yet; the kernel lowering of a reduction is the
+   first consumer (`10-syntax.md` §14a).
+7. **Specifications of `tensor_matmul` and `tensor_sum`** against a
+   mathematical definition over the extraction (`TensorLaws.lean`).
+8. **GPU execution from the tools**: `oak test` running a kernel through
+   a Metal device when the toolchain is present.
+
