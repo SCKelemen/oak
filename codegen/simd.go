@@ -68,7 +68,7 @@ func simdOpSplit(member string) (op string, shape typechecker.SimdShape, ok bool
 		return "", shape, false
 	}
 	switch op {
-	case "splat", "load", "store", "any", "all", "shr":
+	case "splat", "load", "store", "any", "all", "shr", "movemask":
 		return op, shape, true
 	case "tbl", "prev":
 		return op, shape, shape.Suffix == "u8x16"
@@ -76,6 +76,67 @@ func simdOpSplit(member string) (op string, shape typechecker.SimdShape, ok bool
 		_, isBinary := simdBinaryOps[op]
 		return op, shape, isBinary
 	}
+}
+
+// simdScalarOps are the scalar mask operations of the catalog
+// (docs/spec/93-simd.md section 1.2): trailing zeros with ctz(0) the width
+// and population count, over the two mask widths. They have no vector
+// shape, so they bypass simdOpSplit; the map is the closed set the call
+// lowering accepts.
+var simdScalarOps = map[string]bool{
+	"ctz_u32": true, "ctz_u64": true, "popcount_u32": true, "popcount_u64": true,
+}
+
+// simdKnownMember reports whether member is any simd catalog operation the
+// backend can lower: a shaped operation or a scalar mask operation.
+func simdKnownMember(member string) bool {
+	if simdScalarOps[member] {
+		return true
+	}
+	_, _, ok := simdOpSplit(member)
+	return ok
+}
+
+// simdScalarHelperSource emits the helper for one scalar mask operation.
+// AArch64 uses the instructions themselves (RBIT then CLZ for ctz; CNT
+// and ADDV through NEON for popcount); elsewhere the C builtins, guarded
+// so the zero word is total.
+func simdScalarHelperSource(member string) string {
+	elem := "u32"
+	width, bits, builtin, reg := 32, 32, "", "%w"
+	if strings.HasSuffix(member, "_u64") {
+		elem, width, bits, reg = "u64", 64, 64, "%"
+	}
+	var b strings.Builder
+	switch {
+	case strings.HasPrefix(member, "ctz_"):
+		if width == 32 {
+			builtin = "__builtin_ctz"
+		} else {
+			builtin = "__builtin_ctzll"
+		}
+		fmt.Fprintf(&b, "static inline %s oak_simd_%s( %s x ) {\n", elem, member, elem)
+		fmt.Fprintf(&b, "#if defined(__aarch64__) && !defined(OAK_PORTABLE_INTRINSICS)\n")
+		fmt.Fprintf(&b, "  %s r;\n  __asm__(\"rbit %s0, %s1\\n\\tclz %s0, %s0\" : \"=r\"(r) : \"r\"(x));\n  return r;\n", elem, reg, reg, reg, reg)
+		fmt.Fprintf(&b, "#else\n  return x == 0u ? %du : (%s)%s(x);\n#endif\n}\n", bits, elem, builtin)
+	case strings.HasPrefix(member, "popcount_"):
+		if width == 32 {
+			builtin = "__builtin_popcount"
+		} else {
+			builtin = "__builtin_popcountll"
+		}
+		fmt.Fprintf(&b, "static inline %s oak_simd_%s( %s x ) {\n", elem, member, elem)
+		fmt.Fprintf(&b, "%s\n", neonGuard)
+		if width == 32 {
+			fmt.Fprintf(&b, "  return (u32)vaddv_u8(vcnt_u8(vcreate_u8((uint64_t)x)));\n")
+		} else {
+			fmt.Fprintf(&b, "  return (u64)vaddv_u8(vcnt_u8(vcreate_u8((uint64_t)x)));\n")
+		}
+		fmt.Fprintf(&b, "#else\n  return (%s)%s(x);\n#endif\n}\n", elem, builtin)
+	default:
+		return "OAK_UNSUPPORTED_SIMD_OP\n"
+	}
+	return b.String()
 }
 
 // simdQualifiedTypeSpelling resolves "simd.U8x16" to its C typedef name.
@@ -119,7 +180,7 @@ func (cg *CodeGenerator) collectSimdUsage(program *ast.Program) (ops []string, a
 	scanCalls(program, func(library, member string) {
 		switch library {
 		case "simd":
-			if _, _, ok := simdOpSplit(member); ok {
+			if simdKnownMember(member) {
 				opSet[member] = true
 			}
 		case "arm64":
@@ -168,6 +229,11 @@ func (cg *CodeGenerator) emitSimdSupport(program *ast.Program) {
 	cg.write("\n")
 
 	for _, member := range ops {
+		if simdScalarOps[member] {
+			cg.writeRaw(simdScalarHelperSource(member))
+			cg.write("\n")
+			continue
+		}
 		op, shape, ok := simdOpSplit(member)
 		if !ok {
 			continue
@@ -309,6 +375,38 @@ func simdHelperSource(op, vec, elem string, lanes int) string {
 		}
 		fmt.Fprintf(&b, "    default: __builtin_trap();\n  }\n#else\n")
 		fmt.Fprintf(&b, "  for (int i = 0; i < 16; i++) { r.lanes[i] = (u32)i < n ? prev.lanes[16u - n + (u32)i] : cur.lanes[(u32)i - n]; }\n#endif\n  return r;\n}\n")
+
+	case "movemask":
+		// One bit per lane: bit i is the top bit of lane i (Oak.Simd.movemask).
+		// NEON has no movemask: a test against the top bit gives all-ones
+		// lanes, an and with a bit table gives each lane its bit, and the
+		// lanes are summed — pairwise for sixteen bytes (two bytes of
+		// result), horizontally for eight and four lanes, by extraction for
+		// two. The cost is stated in docs/spec/93-simd.md section 1.2.
+		fmt.Fprintf(&b, "static inline u32 oak_simd_movemask_%s( %s v ) {\n", vec, vec)
+		fmt.Fprintf(&b, "%s\n", neonGuard)
+		switch neon {
+		case "u8":
+			fmt.Fprintf(&b, "  static const uint8_t bits[16] = {1,2,4,8,16,32,64,128,1,2,4,8,16,32,64,128};\n")
+			fmt.Fprintf(&b, "  uint8x16_t top = vtstq_u8(vld1q_u8(v.lanes), vdupq_n_u8(0x80));\n")
+			fmt.Fprintf(&b, "  uint8x16_t m = vandq_u8(top, vld1q_u8(bits));\n")
+			fmt.Fprintf(&b, "  m = vpaddq_u8(m, m); m = vpaddq_u8(m, m); m = vpaddq_u8(m, m);\n")
+			fmt.Fprintf(&b, "  return (u32)vgetq_lane_u16(vreinterpretq_u16_u8(m), 0);\n")
+		case "u16":
+			fmt.Fprintf(&b, "  static const uint16_t bits[8] = {1,2,4,8,16,32,64,128};\n")
+			fmt.Fprintf(&b, "  uint16x8_t top = vtstq_u16(vld1q_u16(v.lanes), vdupq_n_u16(0x8000));\n")
+			fmt.Fprintf(&b, "  return (u32)vaddvq_u16(vandq_u16(top, vld1q_u16(bits)));\n")
+		case "u32":
+			fmt.Fprintf(&b, "  static const uint32_t bits[4] = {1,2,4,8};\n")
+			fmt.Fprintf(&b, "  uint32x4_t top = vtstq_u32(vld1q_u32(v.lanes), vdupq_n_u32(0x80000000u));\n")
+			fmt.Fprintf(&b, "  return (u32)vaddvq_u32(vandq_u32(top, vld1q_u32(bits)));\n")
+		default:
+			fmt.Fprintf(&b, "  uint64x2_t lv = vld1q_u64(v.lanes);\n")
+			fmt.Fprintf(&b, "  return (u32)((vgetq_lane_u64(lv, 0) >> 63) | ((vgetq_lane_u64(lv, 1) >> 63) << 1));\n")
+		}
+		fmt.Fprintf(&b, "#else\n  u32 m = 0u;\n")
+		fmt.Fprintf(&b, "  for (int i = 0; i < %d; i++) { if ((v.lanes[i] >> %d) & 1u) { m |= (1u << i); } }\n", lanes, laneBits(elem)-1)
+		fmt.Fprintf(&b, "  return m;\n#endif\n}\n")
 
 	case "any", "all":
 		fmt.Fprintf(&b, "static inline Bool oak_simd_%s_%s( %s v ) {\n", op, vec, vec)

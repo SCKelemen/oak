@@ -68,6 +68,9 @@ with its type suffix, e.g. `simd.add_u8x16`):
 | `simd.shr_E` | `(E, u32) -> E` | lane-wise logical shift right by the count; a count reaching the lane width **traps** (the scalar shift rule) |
 | `simd.tbl_u8x16` | `(U8x16, U8x16) -> U8x16` | byte-table lookup: lane `i` is `table[idx[i]]` when `idx[i] < 16`, else `0` (NEON `tbl`, and `pshufb`'s high-bit rule) |
 | `simd.prev_u8x16` | `(U8x16, U8x16, u32) -> U8x16` | the sixteen bytes ending `n` before the end of `prev ++ cur`: lane `i` is `prev[16-n+i]` for `i < n`, `cur[i-n]` otherwise; `n > 16` **traps** |
+| `simd.movemask_E` | `(E) -> u32` | one bit per lane: bit `i` is the top bit of lane `i`, every other bit zero. Over an `eq` mask this is the lane mask as a scalar |
+| `simd.ctz_u32` / `simd.ctz_u64` | `(uN) -> uN` | trailing zeros; `ctz(0)` is the width |
+| `simd.popcount_u32` / `simd.popcount_u64` | `(uN) -> uN` | the number of set bits |
 
 Every operation is **total** — no lane produces undefined behavior for any
 input — and loads/stores carry the same never-UB obligation as scalar
@@ -90,6 +93,35 @@ lane by lane (`subSat_lane`, `subSat_zero_iff`, `shr_lane`,
 `prev_lane_from_cur`, `prev_zero`); `compiler/e2e_simd_bytes_test.go` checks
 the interpreter, the NEON lowering, and the portable loop agree, and that
 the out-of-range counts trap.
+
+The final three rows are the **mask vocabulary** (added 2026-09-12 for
+structural indexing in the simdjson shape): `movemask` turns a lane mask
+into a scalar, `ctz` walks its set bits, and `popcount` bounds the walk —
+
+```oak
+m: u32 = simd.movemask_u8x16(simd.eq_u8x16(chunk, simd.splat_u8x16(quote)))
+while m != u32(0) {
+  i: u32 = simd.ctz_u32(m)     // the next matching lane
+  m = m & (m - u32(1))          // clear it
+}
+```
+
+runs exactly `popcount(m)` times. All three are total: `ctz` of zero is
+the width, as `RBIT` then `CLZ` gives on AArch64, and `popcount` is `CNT`
+then `ADDV` — the same instructions as `arm64.cnt32`/`arm64.cnt64`
+(`92-ffi.md` §3.2), of which `simd.popcount_u32/u64` is the portable
+spelling; the two share `Oak.Intrinsics.popcount`. `movemask` is not one instruction on NEON, and the cost is
+stated so the emulation is no surprise: `U8x16` is a test against the top
+bit, an `and` with a bit table, and three pairwise adds; `U16x8` and
+`U32x4` a test, an `and`, and one horizontal add; `U64x2` two lane
+extractions. The portable semantics are the specification; on a target
+with `pmovmskb` the lowering is that instruction. `Oak.Simd` states the
+laws (`movemask_lt`: the mask is below `2^lanes`; `movemask_bit_zero`;
+`movemask_eq_zero_iff`: zero exactly when no lane has its top bit set) and
+`Oak.Intrinsics` the scalar ones (`ctz_le_width`, `ctz_zero`,
+`ctz_lt_of_mem_true`, `popcount_le_width`, `popcount_zero`,
+`popcount_eq_zero_iff`); `compiler/e2e_simd_bytes_test.go` runs the three
+witnesses over masks with every shape and the zero and all-ones words.
 
 ### 1.2a Floating-point vectors
 

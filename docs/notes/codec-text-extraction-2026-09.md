@@ -134,6 +134,15 @@ reference minimum) to turn `benchmarks/json/compare.py` into a gate.
 
 ## If taken up
 
+**Status, 2026-09-12 evening.** Findings 1–5 are closed: `tbl`, `shr`,
+`subs`, and `prev` landed in 3587c9b with `stdlib/utf8.oak` at 9.6 GB/s
+(the lookup4 validator in safe Oak, tables proved in `Oak.Utf8Lookup`);
+`movemask_E`, `ctz_u32/u64`, and `popcount_u32/u64` landed the same
+evening as the mask vocabulary of `93-simd.md` §1.2. Finding 6 (the
+`ctz` loop as a bounded shape) stays an `OAK-D0103` obligation. The
+remaining gap to simdutf is the sixteen-byte step against its sixty-four.
+
+
 Order by evidence: findings 1–5 are one `93-simd.md` revision (table
 lookup, lane shift, cross-vector shift, movemask, bit builtins) and they
 alone close the 6.8× UTF-8 gap with a validator that is safe Oak; then 9
