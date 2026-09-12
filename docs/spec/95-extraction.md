@@ -393,6 +393,26 @@ the compiler compiles, up to the extractor and the compiler being correct:
   budget of one on the reversed sixteen; its universal laws need the
   range-stack invariant and the in-bounds proof of every swap (the extraction
   drops an out-of-range store, so permutation itself depends on them).
+- `Oak/Stdlib/PdqsortLaws.lean`: `sort_span_perm`, `sort_span_budget_perm`
+  and `sort_u32_span_perm` — the pattern-defeating quicksort returns a
+  permutation of its input for every array below `2^31` elements, every
+  depth budget and every fuel (partial correctness: whenever the extraction
+  returns). Every helper is shown to permute the window when its indices are
+  in bounds — `swap_perm` (the two guarded stores are `Array.swap`),
+  `insertion_perm`, `heap_perm`, `reverse_perm`, `break_patterns_perm` (the
+  three pattern-breaking swaps stay inside `[a, b)` because `bit_length_spec`
+  bounds the mask below twice the length), `choose_pivot_spec` (the array is
+  untouched and the pivot lies in `[a, b)`), `partial_insertion_perm`,
+  `partition_equal_spec` (the returned index lies in `[a + 1, b]`) and
+  `partition_spec` (the split lies in `[a, b - 1]`) — and the main loop
+  `sort_span_budget_u32.loop1` carries the range-stack invariant `StackInv`
+  by fuel induction: every pushed range `[a_k, b_k)` satisfies
+  `a_k ≤ b_k ≤ n` and `(b_k - a_k) · 2^k ≤ n`, the live range satisfies the
+  same at the current depth, and because the loop continues with the smaller
+  side and pushes only ranges of thirteen or more elements the depth never
+  exceeds 28, so no stack index wraps or leaves the 144 slots
+  (`stack_index_toNat`, `StackInv.push`). Sortedness on this path is not
+  stated; it stays decided on the adversarial inputs above.
 - `Oak/Stdlib/EncodingLaws.lean`: `hex_round_trip` — for every source below
   `2^31 - 2` bytes, either symbol case, a destination that holds exactly the
   encoding, and a decode destination that holds the source, `hex_encode`
@@ -461,10 +481,14 @@ most; the kernel-decided facts use no axioms.
 
 ## 7. Next
 
-- State the pdqsort laws beyond the insertion threshold and the exhausted
-  budget: the range-stack invariant (ranges disjoint, everything between them
-  in final position, every swap in bounds) over `sort_span_budget.loop1`,
-  with `writeback_perm` and the heap and insertion laws as the leaves; the
+- Sortedness of pdqsort beyond the insertion threshold and the exhausted
+  budget: the permutation law and the range-stack bounds are proved
+  (`PdqsortLaws.lean`); what remains is the partition postcondition
+  (everything left of `mid` at most the pivot, everything right at least,
+  through `partition_spec` and `partition_equal_spec`) and the ordering half
+  of the stack invariant (ranges disjoint and ordered, elements between them
+  in final position, elements inside bounded by their neighbours), with
+  `sort_heap_spec` and `sort_insertion_spec` as the leaves; the
   universal base32 round trip (the base64 proof's shape, with five-to-eight
   groups and four tail lengths); strictness for base64 (`base64_decode`
   accepts a string iff it is a canonical encoding) and for percent-decoding
