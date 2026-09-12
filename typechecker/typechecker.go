@@ -879,7 +879,11 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 			if fn.Operator != "" && fn.Name != nil {
 				tc.registerOperator(fn)
 			} else if len(fn.Laws) > 0 {
-				tc.addError(fn, "laws { %s }: only an operator definition declares laws (docs/spec/10-syntax.md section 14a)", strings.Join(fn.Laws, ", "))
+				names := make([]string, 0, len(fn.Laws))
+				for _, law := range fn.Laws {
+					names = append(names, law.String())
+				}
+				tc.addError(fn, "laws { %s }: only an operator definition declares laws (docs/spec/10-syntax.md section 14a)", strings.Join(names, ", "))
 			}
 			if len(fn.TypeParams) > 0 && fn.Receiver == nil && !typeParamsConstrained(fn.TypeParams) {
 				if tc.functionTemplates == nil {
@@ -1028,14 +1032,19 @@ type OperatorLaw struct {
 	Symbol   string
 	Function string
 	Law      string
+	// Argument is the identity element of an `identity(e)` law, checked
+	// at the operand type; nil for the other laws.
+	Argument ast.Expression
 }
 
-// operatorLawNames are the laws a definition may declare.
-var operatorLawNames = map[string]bool{"associative": true, "commutative": true}
+// operatorLawNames are the laws a definition may declare, and whether
+// each takes an element: `identity(e)` does, the others do not.
+var operatorLawNames = map[string]bool{"associative": false, "commutative": false, "identity": true, "idempotent": false}
 
 // recordOperatorLaws validates a `laws { ... }` clause against the
-// operator's signature — both laws need two parameters of one type, and
-// associativity needs the result to be that type too — and records it.
+// operator's signature — every law needs two parameters of one type;
+// associative, identity and idempotent need the result to be that type
+// too; identity's element is checked at that type — and records it.
 func (tc *TypeChecker) recordOperatorLaws(fn *ast.FunctionStatement, typeName string) {
 	if len(fn.Laws) == 0 {
 		return
@@ -1045,9 +1054,11 @@ func (tc *TypeChecker) recordOperatorLaws(fn *ast.FunctionStatement, typeName st
 		fn.Parameters[0].Type.String() == fn.Parameters[1].Type.String()
 	returnsOperand := sameParams && fn.ReturnType != nil && fn.ReturnType.String() == fn.Parameters[0].Type.String()
 	seen := map[string]bool{}
-	for _, law := range fn.Laws {
-		if !operatorLawNames[law] {
-			tc.addError(fn, "operator(%s) %s: unknown law %q (associative, commutative)", fn.Operator, fn.Name.Value, law)
+	for _, clause := range fn.Laws {
+		law := clause.Name
+		takesElement, known := operatorLawNames[law]
+		if !known {
+			tc.addError(fn, "operator(%s) %s: unknown law %q (associative, commutative, identity(e), idempotent)", fn.Operator, fn.Name.Value, law)
 			continue
 		}
 		if seen[law] {
@@ -1055,15 +1066,36 @@ func (tc *TypeChecker) recordOperatorLaws(fn *ast.FunctionStatement, typeName st
 			continue
 		}
 		seen[law] = true
+		if takesElement != (clause.Argument != nil) {
+			if takesElement {
+				tc.addError(fn, "operator(%s) %s: identity names its element, identity(e)", fn.Operator, fn.Name.Value)
+			} else {
+				tc.addError(fn, "operator(%s) %s: %s takes no argument", fn.Operator, fn.Name.Value, law)
+			}
+			continue
+		}
 		if !sameParams {
 			tc.addError(fn, "operator(%s) %s: %s needs two parameters of one type", fn.Operator, fn.Name.Value, law)
 			continue
 		}
-		if law == "associative" && !returnsOperand {
-			tc.addError(fn, "operator(%s) %s: associative needs the result type to be the operand type", fn.Operator, fn.Name.Value)
+		if law != "commutative" && !returnsOperand {
+			tc.addError(fn, "operator(%s) %s: %s needs the result type to be the operand type", fn.Operator, fn.Name.Value, law)
 			continue
 		}
-		tc.operatorLaws = append(tc.operatorLaws, OperatorLaw{Type: typeName, Symbol: fn.Operator, Function: fn.Name.Value, Law: law})
+		if clause.Argument != nil {
+			// The identity element has the operand type.
+			operand := tc.parseTypeExpression(fn.Parameters[0].Type)
+			if operand == nil {
+				continue
+			}
+			if got := tc.checkExpression(clause.Argument, operand); got == nil || !tc.areCompatibleTypes(got, operand) {
+				if got != nil {
+					tc.addError(fn, "operator(%s) %s: the identity element is %s, not the operand type %s", fn.Operator, fn.Name.Value, got.String(), operand.String())
+				}
+				continue
+			}
+		}
+		tc.operatorLaws = append(tc.operatorLaws, OperatorLaw{Type: typeName, Symbol: fn.Operator, Function: fn.Name.Value, Law: law, Argument: clause.Argument})
 	}
 }
 

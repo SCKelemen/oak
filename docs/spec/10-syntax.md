@@ -770,9 +770,17 @@ operator(+) add: (a: Vec, b: Vec): Vec laws { associative, commutative } = ...
 ```
 
 `laws { ... }` follows the effect clauses and names any of `associative`
-(`(a + b) + c = a + (b + c)`) and `commutative` (`a + b = b + a`). Both need
-two parameters of one type; `associative` needs the result to be that type
-too. A law is a **permission, not an optimization hint**: it is the only
+(`(a + b) + c = a + (b + c)`), `commutative` (`a + b = b + a`),
+`identity(e)` (`e + a = a` and `a + e = a`, where `e` is an expression of
+the operand type — a nullary function call such as `hist_zero()` or a
+named constant), and `idempotent` (`a + a = a`). Every law needs two
+parameters of one type; all but `commutative` need the result to be that
+type too, and `identity` needs its element to be of that type — an
+`identity` without an element, or an element on any other law, is a
+diagnostic. `associative` with `identity(e)` is the declaration of a
+monoid; adding `commutative` makes it commutative, and `idempotent` a
+join-semilattice (`docs/notes/algebraic-semantics-2026-09.md` §3). A law
+is a **permission, not an optimization hint**: it is the only
 ground a backend or a library has to regroup or reorder applications of the
 operator (`55-parallelism.md` section 4). Without a declared law, the
 grouping a program names is the grouping computed — floating-point `+`
@@ -793,11 +801,21 @@ function, an operator without the law — is the tree it names, and so is a
 kernel's reduction (`56-kernels.md` §7): operators are declared over
 records, which are outside the kernel subset.
 
-Laws are declared, not checked: like `effects { }` on an extern, the
-declaration is the author's claim. The tooling keeps it visible — `oak vet`
-lists declared laws, and the REPL's `:lean` states each as a theorem over
-the extracted definition (`95-extraction.md`) so the claim can be proved
-rather than repeated. Declaring a false law makes a regrouped result differ
+Laws are declared, not checked by the type checker: like `effects { }` on
+an extern, the declaration is the author's claim. The tooling keeps it
+visible and discharges what it can. `oak vet` lists declared laws with
+their elements. `oak prove` (`125-verification.md` §3) states each law as a
+theorem named `law_<function>_<law>` — `law_merge_associative`,
+`law_merge_identity_left`, `law_merge_identity_right`,
+`law_merge_idempotent` — over the operand type and runs the discharge
+ladder: when the operand is a record of `u8`, `u16`, `Bool`, or a
+refinement of those small enough for `-cases`, the law is decided
+exhaustively or refuted with the counterexample operands; a larger operand
+leaves the theorem open for Lean. The REPL's `:lean` states the same
+theorems over the extracted definition (`95-extraction.md`), each with the
+shape its law fixes (`identity` binds the element through the fuel monad
+before the application), so the claim can be proved rather than repeated.
+Declaring a false law makes a regrouped result differ
 from the named grouping — floating-point addition declared associative
 turns `tree` over `[2^24, 1, 1, 1]` from `2^24 + 2` into the chain's
 `2^24` (`compiler/e2e_laws_consumer_test.go`); nothing else in the
