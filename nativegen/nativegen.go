@@ -138,7 +138,20 @@ type recordLayout struct {
 	hasFloat bool // a float field anywhere inside (the vector save area is reserved)
 	fields   map[string]recordField
 	order    []string
+	// A tagged union (ADT) is a synthetic record: the u32 field "tag" at
+	// offset 0 and one field per payload-carrying variant, named after the
+	// variant, at the payload union's offset (semir.TaggedUnionLayout — the
+	// numbers the C backend asserts). variants maps each variant to its
+	// tag value and payload field ("" for a bare variant).
+	variants map[string]variantInfo
 }
+
+type variantInfo struct {
+	tag     int64
+	payload string
+}
+
+func (l *recordLayout) isADT() bool { return l.variants != nil }
 
 // fieldKind: a scalar field, a nested declared record, or an owned array
 // of scalars.
@@ -207,15 +220,20 @@ func (l *recordLayout) isHFA() bool {
 // chunks is the number of x registers a record of this size travels in.
 func (l *recordLayout) chunks() int { return int((l.size + 7) / 8) }
 
-// Composites is the checker's table of the program's placeable record
-// types (asm.Function.Composites): every declared record whose layout the
-// backend can place, by name.
-func Composites(records map[string]*ast.RecordLiteral) map[string]asm.Composite {
-	g := &generator{recordDecls: records, layouts: map[string]*recordLayout{}}
+// Composites is the checker's table of the program's placeable record and
+// tagged-union types (asm.Function.Composites): every declaration whose
+// layout the backend can place, by name.
+func Composites(records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType) map[string]asm.Composite {
+	g := &generator{recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}}
 	out := map[string]asm.Composite{}
 	for name := range records {
 		if layout, err := g.layoutOf(name); err == nil {
 			out[name] = asm.Composite{Size: layout.size, HFA: layout.isHFA()}
+		}
+	}
+	for name := range adts {
+		if layout, err := g.layoutOf(name); err == nil {
+			out[name] = asm.Composite{Size: layout.size}
 		}
 	}
 	return out
@@ -245,6 +263,9 @@ func (g *generator) layoutOf(name string) (*recordLayout, error) {
 	}
 	decl, isRecord := g.recordDecls[name]
 	if !isRecord {
+		if adt, isADT := g.adtDecls[name]; isADT {
+			return g.adtLayoutOf(name, adt)
+		}
 		return nil, unsupported("the type %s is not a declared record", name)
 	}
 	if decl.Layout != nil && decl.Layout.Packed {
@@ -323,6 +344,117 @@ func (g *generator) layoutOf(name string) (*recordLayout, error) {
 	layout.align = int64(placed.Alignment)
 	g.layouts[name] = layout
 	return layout, nil
+}
+
+// fieldOf places one member type (a scalar, a declared record, an owned
+// array of scalars) as a record field representation and its field shape.
+func (g *generator) fieldOf(owner string, member ast.Expression) (semir.RecordFieldRepresentation, recordField, error) {
+	if typ, isScalar := scalarOf(member); isScalar {
+		fixed, placeable := fieldRepresentations[member.String()]
+		if !placeable {
+			return semir.RecordFieldRepresentation{}, recordField{}, unsupported("%s (member type %s)", owner, member.String())
+		}
+		return fixed, recordField{kind: fieldScalar, typ: typ}, nil
+	}
+	if nestedName, isRecord := g.recordTypeName(member); isRecord {
+		nested, err := g.layoutOf(nestedName)
+		if err != nil {
+			return semir.RecordFieldRepresentation{}, recordField{}, err
+		}
+		return semir.RecordFieldRepresentation{Size: uint32(nested.size), Alignment: uint32(nested.align)}, recordField{kind: fieldRecord, layout: nested}, nil
+	}
+	if elem, length, isArray := arrayOf(member); isArray {
+		fixed, placeable := fieldRepresentations[elem.name]
+		if !placeable {
+			return semir.RecordFieldRepresentation{}, recordField{}, unsupported("%s (member type %s)", owner, member.String())
+		}
+		return semir.RecordFieldRepresentation{Size: fixed.Size * uint32(length), Alignment: fixed.Alignment}, recordField{kind: fieldArray, typ: elem, length: length}, nil
+	}
+	return semir.RecordFieldRepresentation{}, recordField{}, unsupported("%s (member type %s)", owner, member.String())
+}
+
+func (f recordField) mentionsFloat() bool {
+	switch f.kind {
+	case fieldRecord:
+		return f.layout.hasFloat
+	default:
+		return f.typ.isFloat
+	}
+}
+
+// adtLayoutOf places a tagged union as a synthetic record: the u32 tag,
+// then every payload at the union's offset (semir.TaggedUnionLayout).
+func (g *generator) adtLayoutOf(name string, adt *ast.ADTType) (*recordLayout, error) {
+	if len(adt.TypeParams) > 0 {
+		return nil, unsupported("the generic type %s", name)
+	}
+	if g.placing[name] {
+		return nil, unsupported("the type %s contains itself", name)
+	}
+	if g.placing == nil {
+		g.placing = map[string]bool{}
+	}
+	g.placing[name] = true
+	defer delete(g.placing, name)
+	layout := &recordLayout{name: name, fields: map[string]recordField{}, variants: map[string]variantInfo{}}
+	layout.fields["tag"] = recordField{kind: fieldScalar, typ: scalars["u32"], size: 4}
+	layout.order = append(layout.order, "tag")
+	var payloads []semir.RecordFieldRepresentation
+	pending := map[string]recordField{}
+	for i, variant := range adt.Variants {
+		info := variantInfo{tag: int64(i)}
+		if i < len(adt.TagValues) {
+			info.tag = int64(adt.TagValues[i])
+		}
+		if variant.Payload != nil {
+			rep, field, err := g.fieldOf("the type "+name, variant.Payload)
+			if err != nil {
+				return nil, err
+			}
+			rep.Name = variant.Name.Value
+			payloads = append(payloads, rep)
+			field.size = int64(rep.Size)
+			pending[variant.Name.Value] = field
+			info.payload = variant.Name.Value
+			layout.hasFloat = layout.hasFloat || field.mentionsFloat()
+		}
+		layout.variants[variant.Name.Value] = info
+	}
+	placed, err := semir.TaggedUnionLayout(payloads)
+	if err != nil {
+		return nil, unsupported("the type %s has no placeable layout", name)
+	}
+	if len(payloads) > 0 {
+		at := int64(placed.Fields[1].Offset)
+		for _, variant := range adt.Variants {
+			if field, has := pending[variant.Name.Value]; has {
+				field.offset = at
+				layout.fields[variant.Name.Value] = field
+				layout.order = append(layout.order, variant.Name.Value)
+			}
+		}
+	}
+	layout.size = int64(placed.Size)
+	layout.align = int64(placed.Alignment)
+	g.layouts[name] = layout
+	return layout, nil
+}
+
+// variantTypeName names the ADT a variant expression builds: its written
+// type, the checker's resolution, or the expected type.
+func (g *generator) variantTypeName(e *ast.VariantExpression, expected *recordLayout) (string, error) {
+	if e.TypeName != nil {
+		return e.TypeName.Value, nil
+	}
+	if g.tc != nil {
+		if name, resolved := g.tc.VariantResolution(e); resolved {
+			return name, nil
+		}
+	}
+	if expected != nil {
+		return expected.name, nil
+	}
+	return "", unsupported("the variant %s without a resolved type", e.String())
 }
 
 // placeOf resolves an access chain to its frame place: a record or array
@@ -409,6 +541,12 @@ func (g *generator) recordLayoutOfExpr(expr ast.Expression) (*recordLayout, erro
 		if e.TypeName != nil {
 			return g.layoutOf(e.TypeName.Value)
 		}
+	case *ast.VariantExpression:
+		name, err := g.variantTypeName(e, nil)
+		if err != nil {
+			return nil, err
+		}
+		return g.layoutOf(name)
 	case *ast.InvocationExpression:
 		if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
 			if callee, known := g.functions[ident.Value]; known && callee.ReturnType != nil {
@@ -484,8 +622,11 @@ func (g *generator) recordTypeName(expr ast.Expression) (string, bool) {
 	if !isIdent {
 		return "", false
 	}
-	_, isRecord := g.recordDecls[ident.Value]
-	return ident.Value, isRecord
+	if _, isRecord := g.recordDecls[ident.Value]; isRecord {
+		return ident.Value, true
+	}
+	_, isADT := g.adtDecls[ident.Value]
+	return ident.Value, isADT
 }
 
 // Unsupported reports why a function is left to the C backend.
@@ -512,6 +653,7 @@ type generator struct {
 	// Declared record types of the program, their placements, and the
 	// record locals in the frame.
 	recordDecls map[string]*ast.RecordLiteral
+	adtDecls    map[string]*ast.ADTType
 	layouts     map[string]*recordLayout
 	records     map[string]*recordLocal
 	// Record parameters and results under AAPCS64's composite rules: up to
@@ -576,14 +718,14 @@ const vecCalleeLow, vecCalleeHigh = 8, 15
 // Compile lowers one Oak function. functions maps every program function by
 // name (callees' signatures), records every declared record type by name
 // (their field lists); tc is the checker that typed the program.
-func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, tc *typechecker.TypeChecker) (*asm.Function, error) {
+func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	if len(fn.Parameters) > 8 {
 		return nil, unsupported("more than eight parameters")
 	}
-	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, line: fn.Token.Line}
+	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, line: fn.Token.Line}
 	parkSpans := mentionsCall(fn.Body)
 	if hasVariables(fn) || parkSpans {
 		g.saveArea = 8 * (calleeHigh - calleeLow + 1)
@@ -893,7 +1035,47 @@ func (g *generator) tempRecord(layout *recordLayout) *recordLocal {
 // named local or parameter, a typed literal (into a fresh temp), or a call
 // returning a record.
 func (g *generator) recordValue(expr ast.Expression) (*recordLocal, error) {
+	return g.recordValueAs(expr, nil)
+}
+
+// recordValueAs is recordValue with the expected type (a variant literal
+// without a written type takes it).
+func (g *generator) recordValueAs(expr ast.Expression, expected *recordLayout) (*recordLocal, error) {
 	switch e := expr.(type) {
+	case *ast.VariantExpression:
+		name, err := g.variantTypeName(e, expected)
+		if err != nil {
+			return nil, err
+		}
+		layout, err := g.layoutOf(name)
+		if err != nil {
+			return nil, err
+		}
+		return g.buildVariant(layout, e)
+	case *ast.MatchExpression:
+		// A record-valued match: every arm lands in one temp.
+		layout := expected
+		if layout == nil {
+			var err error
+			if layout, err = g.recordLayoutOfExpr(e.Arms[0].Body); err != nil {
+				return nil, err
+			}
+		}
+		out := g.tempRecord(layout)
+		err := g.lowerMatch(e, func(body ast.Expression) error {
+			src, err := g.recordValueAs(body, layout)
+			if err != nil {
+				return err
+			}
+			if src.layout != layout {
+				return unsupported("a %s arm where %s is expected", src.layout.name, layout.name)
+			}
+			return g.copyBytes(out.offset, src.offset, layout.size)
+		})
+		if err != nil {
+			return nil, err
+		}
+		return out, nil
 	case *ast.Identifier, *ast.IndexExpression:
 		p, err := g.placeOf(e)
 		if err != nil {
@@ -916,6 +1098,235 @@ func (g *generator) recordValue(expr ast.Expression) (*recordLocal, error) {
 		return g.callRecord(e)
 	}
 	return nil, unsupported("a record value %s", expr.String())
+}
+
+// buildVariant constructs `.Variant(payload)` in a fresh temp: the tag as a
+// 32-bit store, the payload at its field.
+func (g *generator) buildVariant(layout *recordLayout, e *ast.VariantExpression) (*recordLocal, error) {
+	if !layout.isADT() {
+		return nil, unsupported("the variant %s of the record %s", e.Variant.Value, layout.name)
+	}
+	info, known := layout.variants[e.Variant.Value]
+	if !known {
+		return nil, unsupported("the variant %s of %s", e.Variant.Value, layout.name)
+	}
+	if (e.Payload == nil) != (info.payload == "") {
+		return nil, unsupported("the variant %s.%s with the wrong payload shape", layout.name, e.Variant.Value)
+	}
+	// The payload evaluates first (it may call), then the temp is filled.
+	var payloadReg = -1
+	var payloadSrc *recordLocal
+	var field recordField
+	if e.Payload != nil {
+		field = layout.fields[info.payload]
+		switch field.kind {
+		case fieldScalar:
+			typ := field.typ
+			r, err := g.expr(e.Payload, &typ)
+			if err != nil {
+				return nil, err
+			}
+			payloadReg = r
+		case fieldRecord:
+			src, err := g.recordValueAs(e.Payload, field.layout)
+			if err != nil {
+				return nil, err
+			}
+			if src.layout != field.layout {
+				return nil, unsupported("a %s payload where %s is expected", src.layout.name, field.layout.name)
+			}
+			payloadSrc = src
+		default:
+			return nil, unsupported("an array payload for %s.%s", layout.name, e.Variant.Value)
+		}
+	}
+	rec := g.tempRecord(layout)
+	tag, err := g.alloc(scalars["u32"])
+	if err != nil {
+		return nil, err
+	}
+	g.constant(tag, uint64(info.tag), scalars["u32"])
+	g.emit("str", wr(tag), g.slotMem(rec.offset))
+	g.release(tag)
+	switch {
+	case payloadReg >= 0:
+		g.fieldStore(&scalarPlace{offset: rec.offset + field.offset, typ: field.typ}, payloadReg)
+		g.release(payloadReg)
+	case payloadSrc != nil:
+		if err := g.copyBytes(rec.offset+field.offset, payloadSrc.offset, field.size); err != nil {
+			return nil, err
+		}
+	}
+	return rec, nil
+}
+
+// lowerMatch lowers a general match: over a tagged union (the tag loaded
+// once and compared per arm, a payload binding declared as a local from the
+// payload field — a record payload copied, as the C backend binds a copy),
+// or over a scalar with literal patterns. arm lowers one arm's body in the
+// caller's position (statement, value, or result). A wildcard or bare
+// binding ends the chain; without one, falling off every arm reaches the
+// trap block (the checker proved exhaustiveness, so it never runs).
+func (g *generator) lowerMatch(match *ast.MatchExpression, arm func(body ast.Expression) error) error {
+	end := g.newLabel("match_end")
+	if layout, err := g.recordLayoutOfExpr(match.Scrutinee); err == nil {
+		if !layout.isADT() {
+			return unsupported("a match over the record %s", layout.name)
+		}
+		rec, err := g.recordValueAs(match.Scrutinee, layout)
+		if err != nil {
+			return err
+		}
+		tag, err := g.alloc(scalars["u32"])
+		if err != nil {
+			return err
+		}
+		g.emit("ldr", wr(tag), g.slotMem(rec.offset))
+		closed := false
+		for _, matchArm := range match.Arms {
+			next := g.newLabel("arm")
+			g.pushScope()
+			if isWildcard(matchArm.Pattern) {
+				closed = true
+			}
+			switch pattern := matchArm.Pattern.(type) {
+			case *ast.VariantPattern:
+				info, known := layout.variants[pattern.Variant.Value]
+				if !known {
+					g.popScope()
+					return unsupported("the variant %s of %s in a pattern", pattern.Variant.Value, layout.name)
+				}
+				g.emit("cmp", wr(tag), imm(info.tag))
+				g.branch("ne", next)
+				if binding, isBinding := pattern.Payload.(*ast.BindingPattern); isBinding && binding.Name != nil && !isWildcard(pattern.Payload) {
+					if info.payload == "" {
+						g.popScope()
+						return unsupported("a binding on the bare variant %s", pattern.Variant.Value)
+					}
+					if err := g.bindPayload(binding.Name.Value, rec, layout.fields[info.payload]); err != nil {
+						g.popScope()
+						return err
+					}
+				} else if pattern.Payload != nil && !isWildcard(pattern.Payload) {
+					g.popScope()
+					return unsupported("the payload pattern %s", pattern.Payload.String())
+				}
+			case *ast.WildcardPattern:
+			case *ast.BindingPattern:
+				if !closed {
+					if err := g.bindWhole(pattern.Name.Value, rec); err != nil {
+						g.popScope()
+						return err
+					}
+					closed = true
+				}
+			default:
+				g.popScope()
+				return unsupported("the pattern %s over %s", matchArm.Pattern.String(), layout.name)
+			}
+			err := arm(matchArm.Body)
+			g.popScope()
+			if err != nil {
+				return err
+			}
+			g.emit("b", asm.Symbol{Name: end})
+			if closed {
+				break
+			}
+			g.label(next)
+		}
+		if !closed {
+			g.usedTrap = true
+			g.emit("b", asm.Symbol{Name: g.trap})
+		}
+		g.label(end)
+		g.release(tag)
+		return nil
+	}
+	// A scalar scrutinee with literal patterns.
+	typ, err := g.typeOf(match.Scrutinee, nil)
+	if err != nil {
+		return err
+	}
+	value, err := g.expr(match.Scrutinee, &typ)
+	if err != nil {
+		return err
+	}
+	closed := false
+	for _, matchArm := range match.Arms {
+		next := g.newLabel("arm")
+		switch pattern := matchArm.Pattern.(type) {
+		case *ast.LiteralPattern:
+			lit, err := g.expr(pattern.Value, &typ)
+			if err != nil {
+				return err
+			}
+			g.emit("cmp", reg(value, typ), reg(lit, typ))
+			g.release(lit)
+			g.branch("ne", next)
+		default:
+			if !isWildcard(matchArm.Pattern) {
+				return unsupported("the pattern %s over %s", matchArm.Pattern.String(), typ.name)
+			}
+			closed = true
+		}
+		g.pushScope()
+		err := arm(matchArm.Body)
+		g.popScope()
+		if err != nil {
+			return err
+		}
+		g.emit("b", asm.Symbol{Name: end})
+		if closed {
+			break
+		}
+		g.label(next)
+	}
+	if !closed {
+		g.usedTrap = true
+		g.emit("b", asm.Symbol{Name: g.trap})
+	}
+	g.label(end)
+	g.release(value)
+	return nil
+}
+
+// isWildcard reports a pattern that matches anything without binding: `_`
+// (spelled as a wildcard, or as a binding named "_").
+func isWildcard(pattern ast.Pattern) bool {
+	switch p := pattern.(type) {
+	case *ast.WildcardPattern:
+		return true
+	case *ast.BindingPattern:
+		return p.Name != nil && p.Name.Value == "_"
+	}
+	return false
+}
+
+// bindPayload declares a match arm's payload binding: a scalar loaded into
+// a variable, a record copied into a fresh local.
+func (g *generator) bindPayload(name string, rec *recordLocal, field recordField) error {
+	switch field.kind {
+	case fieldScalar:
+		r, err := g.fieldLoad(&scalarPlace{offset: rec.offset + field.offset, typ: field.typ})
+		if err != nil {
+			return err
+		}
+		g.declare(name, field.typ)
+		g.items = append(g.items, g.storeVar(name, r))
+		g.release(r)
+		return nil
+	case fieldRecord:
+		local := g.declareRecord(name, field.layout)
+		return g.copyBytes(local.offset, rec.offset+field.offset, field.size)
+	}
+	return unsupported("a binding of an array payload")
+}
+
+// bindWhole binds a match arm's name to a copy of the whole value.
+func (g *generator) bindWhole(name string, rec *recordLocal) error {
+	local := g.declareRecord(name, rec.layout)
+	return g.copyRecord(local, rec)
 }
 
 // fillRecord evaluates a literal's fields (in layout order, before the
@@ -948,7 +1359,7 @@ func (g *generator) fillRecord(layout *recordLayout, literal *ast.RecordLiteral,
 			}
 			values = append(values, pending{reg: r})
 		case fieldRecord:
-			src, err := g.recordValue(expr)
+			src, err := g.recordValueAs(expr, field.layout)
 			if err != nil {
 				return nil, err
 			}
@@ -1047,6 +1458,9 @@ func (g *generator) callRecord(e *ast.InvocationExpression) (*recordLocal, error
 func (g *generator) resultRecordExpr(expr ast.Expression) error {
 	switch e := expr.(type) {
 	case *ast.MatchExpression:
+		if _, _, isBool := boolConditional(e); !isBool {
+			return g.lowerMatch(e, g.resultRecordExpr)
+		}
 		if whenTrue, whenFalse, ok := boolConditional(e); ok {
 			elseLabel, end := g.newLabel("else"), g.newLabel("endif")
 			if err := g.condition(e.Scrutinee, elseLabel); err != nil {
@@ -1077,7 +1491,7 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 			return unsupported("a block whose last statement is not its record result")
 		}
 	}
-	rec, err := g.recordValue(expr)
+	rec, err := g.recordValueAs(expr, g.resultRecord)
 	if err != nil {
 		return err
 	}
@@ -1129,8 +1543,18 @@ func hasVariables(fn *ast.FunctionStatement) bool {
 	}
 	found := false
 	walk(fn.Body, func(n ast.Node) {
-		if _, ok := n.(*ast.VariableDeclaration); ok {
+		switch e := n.(type) {
+		case *ast.VariableDeclaration:
 			found = true
+		case *ast.MatchExpression:
+			// A payload binding in a match arm is a variable too.
+			for _, arm := range e.Arms {
+				if pattern, isVariant := arm.Pattern.(*ast.VariantPattern); isVariant && pattern.Payload != nil {
+					if _, isBinding := pattern.Payload.(*ast.BindingPattern); isBinding {
+						found = true
+					}
+				}
+			}
 		}
 	})
 	return found
@@ -1554,8 +1978,9 @@ func (g *generator) lowerRecordDeclaration(s *ast.VariableDeclaration, typeName 
 		_, err := g.fillRecord(layout, literal, s.Name.Value)
 		return err
 	}
-	// A copy of another record value: a local, a parameter, a call's result.
-	src, err := g.recordValue(s.Value)
+	// A copy of another record value: a local, a parameter, a call's
+	// result, a variant literal.
+	src, err := g.recordValueAs(s.Value, layout)
 	if err != nil {
 		return err
 	}
@@ -1827,7 +2252,10 @@ func (g *generator) typeOf(expr ast.Expression, hint *scalar) (scalar, error) {
 	case *ast.MatchExpression:
 		whenTrue, _, ok := boolConditional(e)
 		if !ok {
-			return scalar{}, unsupported("a match that is not a Bool conditional")
+			if len(e.Arms) == 0 {
+				return scalar{}, unsupported("a match without arms")
+			}
+			return g.typeOf(e.Arms[0].Body, hint)
 		}
 		return g.typeOf(whenTrue, hint)
 	case *ast.BlockExpression:
@@ -1966,8 +2394,8 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 			g.release(r)
 		case *ast.AssignmentStatement:
 			if dst, isRecord := g.records[s.Name.Value]; isRecord {
-				// `q = p` / `q = f(p)`: a whole-record copy.
-				from, err := g.recordValue(s.Value)
+				// `q = p` / `q = f(p)` / `q = .Some(x)`: a whole-record copy.
+				from, err := g.recordValueAs(s.Value, dst.layout)
 				if err != nil {
 					return err
 				}
@@ -2146,7 +2574,7 @@ func (g *generator) lowerIf(s *ast.IfStatement) error {
 func (g *generator) lowerConditionalStatement(match *ast.MatchExpression) error {
 	whenTrue, whenFalse, ok := boolConditional(match)
 	if !ok {
-		return unsupported("a statement-level match that is not a Bool conditional")
+		return g.lowerMatch(match, g.lowerArm)
 	}
 	elseLabel, end := g.newLabel("else"), g.newLabel("endif")
 	if err := g.condition(match.Scrutinee, elseLabel); err != nil {
@@ -2167,7 +2595,8 @@ func (g *generator) lowerConditionalStatement(match *ast.MatchExpression) error 
 func (g *generator) lowerArm(arm ast.Expression) error {
 	block, isBlock := arm.(*ast.BlockExpression)
 	if !isBlock {
-		return unsupported("a conditional arm in statement position that is not a block")
+		// An arm that is a call or assert in statement position.
+		return g.effect(arm)
 	}
 	if block.Block == nil {
 		return nil
@@ -2342,7 +2771,26 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 		}
 		return g.call(e)
 	case *ast.MatchExpression:
-		whenTrue, whenFalse, _ := boolConditional(e)
+		whenTrue, whenFalse, isBool := boolConditional(e)
+		if !isBool {
+			out, err := g.alloc(typ)
+			if err != nil {
+				return 0, err
+			}
+			err = g.lowerMatch(e, func(body ast.Expression) error {
+				r, err := g.expr(body, &typ)
+				if err != nil {
+					return err
+				}
+				g.emit(moveOf(typ), reg(out, typ), reg(r, typ))
+				g.release(r)
+				return nil
+			})
+			if err != nil {
+				return 0, err
+			}
+			return out, nil
+		}
 		elseLabel, end := g.newLabel("else"), g.newLabel("endif")
 		if err := g.condition(e.Scrutinee, elseLabel); err != nil {
 			return 0, err
@@ -3022,7 +3470,7 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 			if layout.isHFA() {
 				return 0, unsupported("a call to %s passing a homogeneous floating-point aggregate", ident.Value)
 			}
-			rec, err := g.recordValue(arg)
+			rec, err := g.recordValueAs(arg, layout)
 			if err != nil {
 				return 0, err
 			}
@@ -3287,6 +3735,10 @@ func walk(n ast.Node, visit func(ast.Node)) {
 			if value, given := e.Fields[field.Name]; given {
 				walk(value, visit)
 			}
+		}
+	case *ast.VariantExpression:
+		if e.Payload != nil {
+			walk(e.Payload, visit)
 		}
 	case *ast.MatchExpression:
 		walk(e.Scrutinee, visit)
@@ -3566,6 +4018,9 @@ func (g *generator) resultExpr(expr ast.Expression) error {
 			return g.tailCall(e)
 		}
 	case *ast.MatchExpression:
+		if _, _, isBool := boolConditional(e); !isBool {
+			return g.lowerMatch(e, g.resultExpr)
+		}
 		if whenTrue, whenFalse, ok := boolConditional(e); ok {
 			// With one arm a tail self-call, the loop shape the verifier
 			// recognizes: the exit branch leaves for the value arm, the tail

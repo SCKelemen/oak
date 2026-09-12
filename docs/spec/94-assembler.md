@@ -1103,8 +1103,37 @@ written through, an empty subslice at the end, a local view copied from a
 parameter, and a subslice past the end trapping in both realizations.
 Array literals now store element by element (a long literal no longer
 exhausts the scratch registers).
+**Tenth increment — tagged unions and `match`.** A monomorphic ADT
+(`Shape: type = | Circle: i32 | Square: i32 | Empty`) is the synthetic
+record `semir.TaggedUnionLayout` places: the `u32` tag at offset 0 (its
+value the declaration index, or the declaration's `TagValues`) and one
+field per payload-carrying variant, named after the variant, at the
+payload union's offset — the numbers `codegen/records.go` asserts against
+the C compiler — so an ADT is a record local, crosses calls under the
+composite rules (`Shape` is 8 bytes, one chunk), and joins the composites
+table. `.Circle(5)` / `Shape.Circle(5)` (the type from the written name,
+the checker's resolution, or the expected type) stores the tag with a
+32-bit `str` and the payload at its field (a scalar, a record place, a
+call's result). A general `match` loads the tag once and compares it per
+arm (`cmp wT, #tag; b.ne next`); a payload binding becomes a local of the
+payload type (a scalar loaded at its width, a record copied into a fresh
+local, as the C backend binds a copy), `_` or a bare binding ends the
+chain, and a chain no arm closes falls to the trap block (the checker
+proved exhaustiveness, so it never runs). Matches lower in statement
+position (arm blocks, calls, asserts), value position (arms moved into one
+register), result position (scalar and record results, each arm placed
+directly), and as record values (arms copied into one temp); a scalar
+scrutinee takes literal patterns. Generic ADTs, string or span payloads,
+array payload bindings, and nested payload patterns stay with the C
+backend. Executed (`TestE2ENativeADTs`): the corpus `Shape`/`area2`
+program, a record payload bound and read in an arm, an ADT built by a
+nested conditional and returned then matched by the caller with the call
+as the scrutinee, a statement-position match updating a local, a literal
+match over `u32`, and reassignment of an ADT local — natively against the
+C backend and the portable realization. ADT bodies are trusted by the
+verifier (§5).
 Next increments: the verifier's frame addresses, record locals, and
-derived spans (so array, record, and subslice bodies are proven, not
+derived spans (so array, record, ADT, and subslice bodies are proven, not
 trusted), `break` as a second loop exit in the recognizer, arrays of
 records, and the slicing syntax `v[lo:hi]` once the C backend lowers
 `len` over it.
