@@ -1,6 +1,6 @@
 # Note: the most performant formal-methods implementation — what the codecs, os, ml, simdjson and Futhark teach the prover
 
-**Status: in progress — benchmarks, the first enumeration increment and resident runner workers landed.** 2026-09-12, `specification` branch.
+**Status: in progress — benchmarks, the first enumeration increment, resident runner workers and the BDD tables landed.** 2026-09-12, `specification` branch.
 Source: a read of Oak's own verification engines (`prove/`, `asm/`,
 `repl/leancheck.go`, `testrunner/`, `experiments/verification-poc`), of
 `github.com/SCKelemen/os` and `github.com/SCKelemen/ml` for techniques those
@@ -251,6 +251,24 @@ cross-built harnesses keep one process per case, as does `-resident=false`.
 | 500 trivial cases, `oak test -runs 500` | 7.84 s | 0.67 s |
 | 2,000 trivial cases | 32.1 s (62 cases/s) | 1.83 s (1,090 cases/s) |
 | `go test ./testrunner` | 74 s | 35 s |
+
+## 4c. Third increment landed: the BDD engine's tables (item 2, first step)
+
+The unique table and the operation cache are open-addressed hash tables of
+fixed-width `int32` entries (linear probing, load factor at most one half,
+growth by rehash) instead of Go maps keyed by structs. Node ids, insertion
+order and every result are unchanged — the lattice file's largest diagram
+is still 1,482,423 nodes and every proof and counterexample the same —
+so the change is judged on throughput alone. Complement edges and a native
+`ite` remain the second step of item 2; they change node identities and
+so need the canonicity invariant stated first.
+
+| Benchmark | Before | After |
+| --- | ---: | ---: |
+| `BenchmarkBDDMul12` (1,133,955 nodes) | 372 ms, 3.0 M nodes/s | 200 ms, 5.7 M nodes/s |
+| `BenchmarkBDDAdd64` | 2.57 ms | 1.78 ms |
+| `BenchmarkTheoremsLattice` | 3.59 s | 3.26 s |
+| `BenchmarkTheoremsEffects` | 1.04 s | 0.83 s |
 
 ## 5. What carries over from the codec track, unchanged
 
