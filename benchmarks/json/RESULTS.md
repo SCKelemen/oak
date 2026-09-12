@@ -1,5 +1,27 @@
 # JSON decoder optimization measurements
 
+## Seventh optimization pass: string tokens validated where they are scanned
+
+Measured candidate: `sam/json-decoder-4` at `3cab7543`. Baseline: `218b9cc7` (the
+sixth pass). Data: `tokenvalid-{base,cand}-event-2026-09-12.json`,
+`tokenvalid-cand-record-2026-09-12.json`; five paired samples, load average near 60.
+
+| Workload | Run | Oak ns/document | simdjson ns/document | Paired-ratio median | Paired ratios |
+| --- | --- | ---: | ---: | ---: | --- |
+| event | Baseline | 593.2 | 457.6 | 1.303× | 1.28 1.26 1.30 1.31 1.31 |
+| event | Candidate | 557.5 | 453.5 | 1.228× | 1.24 1.24 1.23 1.23 1.21 |
+| record | Candidate | 61.2 | 65.0 | 0.960× | 0.97 0.94 0.97 0.96 0.94 |
+
+`json_string_scan` takes a run with `movemask` masks for the escape lanes and the
+high bits, locates the first escape byte with `ctz`, and reports whether the run was
+all ASCII; `json_token_full` validates a run with a byte above ASCII with the SIMD
+validator before accepting the token. Every other byte a successful decode consumed is
+ASCII by construction, so the borrowed-record success path no longer validates the
+whole input (`docs/spec/71-codecs.md` §19, §20). Failures keep the whole-input pass
+for InvalidEncoding precedence. A sixteenth off the event workload's time; the
+record workload has no string values and is unchanged.
+
+
 ## Sixth optimization pass: the scanner hands the reader its terminator
 
 Measured candidate: `sam/json-decoder-3` at `218b9cc7`. Baseline: `d23f134a` (the fifth
