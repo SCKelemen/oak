@@ -27,12 +27,15 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*d
 	fallbacks := map[string]*ast.FunctionStatement{}
 	symbols := map[string]bool{}
 	records := map[string]*ast.RecordLiteral{}
+	adts := map[string]*ast.ADTType{}
 	for _, stmt := range root.Statements {
 		// A record type declaration (one record-literal variant): the
 		// checker binds records at the boundary by their placed size.
-		if adt, isADT := stmt.(*ast.ADTType); isADT && adt.Name != nil && len(adt.TypeParams) == 0 && len(adt.Variants) == 1 {
-			if literal, isRecord := adt.Variants[0].Literal.(*ast.RecordLiteral); isRecord {
+		if adt, isADT := stmt.(*ast.ADTType); isADT && adt.Name != nil && len(adt.TypeParams) == 0 {
+			if literal, isRecord := recordShape(adt); isRecord {
 				records[adt.Name.Value] = literal
+			} else {
+				adts[adt.Name.Value] = adt
 			}
 			continue
 		}
@@ -80,7 +83,7 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*d
 				}
 			}
 			decl.AsmBacked = true
-			fn.Composites = nativegen.Composites(records)
+			fn.Composites = nativegen.Composites(records, adts)
 			findings := asm.Check(fn, decl, symbols)
 			for _, finding := range findings {
 				report("%s: %s", unitText.Path, finding)
