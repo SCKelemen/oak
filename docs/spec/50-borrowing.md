@@ -808,6 +808,10 @@ A type containing a view/span inherits its borrow lifetime. Wrapping `[]u8` in `
 
 No special string escape rule is needed if semantic wrappers preserve ownership facts.
 
+A top-level owner (`TABLE: [4]u32 = [...]`) is visible to every function
+of its file, above or below its declaration, like a function or a type
+(ml F24).
+
 The bootstrap return check recursively rejects views/spans stored in resolved
 records, fixed arrays, unions, and intersections with `OAK-B0109`. Owning the
 outer container does not give it ownership of storage referenced by an element.

@@ -185,6 +185,12 @@ When safety is not proved, safe Oak must retain a defined check/failure path rat
 
 A plain function value may lower to a function pointer.
 
+A function-typed record field (`Step: type = struct { run: (u32) -> u32
+effects { } }`) is a plain function pointer member, pointer-sized and
+pointer-aligned on the recorded LP64 target model and asserted like every
+other field; a record literal stores the named function's C symbol. No
+closure environment is ever stored (ml F4, the captured step).
+
 A capturing closure requires an explicit environment representation whose storage lifetime has been established by ownership/effect analysis.
 
 The backend may not silently heap-promote escaping captures.

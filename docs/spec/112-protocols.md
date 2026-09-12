@@ -449,6 +449,15 @@ The rules:
    via callable of a transition **into** that state (`OAK-B0121`). Only the
    transition may make the claim its target state represents.
 
+A typestate resource may also carry **region parameters**
+(`50-borrowing.md` §8c): `Node[R, S]: type = struct { data: View[f32, R],
+n: u32 }` with `initial Lazy` and `realize: Lazy -> Realized` gives
+`realize[R]: (x: Node[R, Lazy]): Node[R, Realized]`, the same borrows in
+the next state, and an operation that needs its operand in storage takes
+`Node[R, Realized]` — a wrong order is a type error, not a run-time trap
+(ml F7). Region parameters are erased before the state is applied, so
+each state's instantiation borrows exactly as the template declares.
+
 `Oak.Typestate` (`spec/lean/Oak/Typestate.lean`) states the calculus —
 construction at the initial state, transitions along legal lines — and
 proves that the machine state always equals the static index

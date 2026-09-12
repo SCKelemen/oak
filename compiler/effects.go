@@ -17,6 +17,7 @@ import (
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/modules"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
@@ -121,7 +122,7 @@ func applySteadyEntries(program *ast.Program, steady map[string]string) map[stri
 // analyzeEffects checks every forbids clause in the program. `steady` names
 // the entry points whose Memory.Allocate clause the manifest implied; their
 // findings carry the steady-state diagnostic and spelling.
-func analyzeEffects(program *ast.Program, steady map[string]string) []*diagnostic.Diagnostic {
+func analyzeEffects(program *ast.Program, steady map[string]string, tc *typechecker.TypeChecker) []*diagnostic.Diagnostic {
 	functions := map[string]*ast.FunctionStatement{}
 	var order []string
 	anyForbids := false
@@ -199,9 +200,70 @@ func analyzeEffects(program *ast.Program, steady map[string]string) []*diagnosti
 		}
 	}
 	if anyRows {
-		diags = append(diags, checkEffectRows(functions, order, facts)...)
+		diags = append(diags, checkEffectRows(program, functions, order, facts, tc)...)
 	}
 	return diags
+}
+
+// recordFieldSyntax maps each declared record (by its internal name) to
+// the type syntax of its fields, where effect rows on function-typed
+// fields live (docs/spec/60-effects-allocation.md section 2a).
+func recordFieldSyntax(program *ast.Program) map[string]map[string]ast.Expression {
+	records := map[string]map[string]ast.Expression{}
+	for _, stmt := range program.Statements {
+		adt, ok := stmt.(*ast.ADTType)
+		if !ok || adt.Name == nil || len(adt.Variants) != 1 {
+			continue
+		}
+		literal, isRecord := adt.Variants[0].Literal.(*ast.RecordLiteral)
+		if !isRecord {
+			continue
+		}
+		fields := map[string]ast.Expression{}
+		for _, f := range literal.FieldOrder {
+			fields[f.Name] = f.Value
+		}
+		records[adt.Name.Value] = fields
+	}
+	return records
+}
+
+// rowContext is what the row checks consult beyond the call facts: the
+// checker's recorded expression types (for record literals and field
+// reads) and the records' field syntax (for the rows on their fields).
+type rowContext struct {
+	tc      *typechecker.TypeChecker
+	records map[string]map[string]ast.Expression
+}
+
+// fieldRow returns the effect row of a record field, when the field has a
+// function type carrying one, and whether the field has a function type
+// at all.
+func (rc *rowContext) fieldRow(recordName, field string) (effectSet, bool, bool) {
+	fields, known := rc.records[recordName]
+	if !known {
+		return nil, false, false
+	}
+	typ, has := fields[field]
+	if !has {
+		return nil, false, false
+	}
+	_, isFn := typ.(*ast.FunctionTypeExpression)
+	row, rowed := rowOf(typ)
+	return row, rowed, isFn
+}
+
+// recordTypeName is the internal name of an expression's record type as
+// the checker recorded it, or "".
+func (rc *rowContext) recordTypeName(expr ast.Expression) string {
+	if rc == nil || rc.tc == nil {
+		return ""
+	}
+	typ := rc.tc.Env().CheckedExpressionType(expr)
+	if record, ok := typ.(*typechecker.RecordType); ok {
+		return record.Name
+	}
+	return ""
 }
 
 // checkEffectRows checks every function value that flows into a rowed
@@ -210,10 +272,18 @@ func analyzeEffects(program *ast.Program, steady map[string]string) []*diagnosti
 // (docs/spec/60-effects-allocation.md section 2a): the value's reachable
 // effects must be known and inside the row. Assignment positions beyond
 // these two are not checked and are documented as such.
-func checkEffectRows(functions map[string]*ast.FunctionStatement, order []string, facts map[string]*effectFacts) []*diagnostic.Diagnostic {
+func checkEffectRows(program *ast.Program, functions map[string]*ast.FunctionStatement, order []string, facts map[string]*effectFacts, tc *typechecker.TypeChecker) []*diagnostic.Diagnostic {
+	rc := &rowContext{tc: tc, records: recordFieldSyntax(program)}
 	var diags []*diagnostic.Diagnostic
+	reported := map[string]bool{}
 	report := func(node ast.Node, format string, args ...interface{}) {
-		diags = append(diags, diagnostic.NewDiagnosticFromNodeWithCode(node, "compiler", CodeEffectRow, fmt.Sprintf(format, args...)))
+		d := diagnostic.NewDiagnosticFromNodeWithCode(node, "compiler", CodeEffectRow, fmt.Sprintf(format, args...))
+		key := d.PlainText()
+		if reported[key] {
+			return
+		}
+		reported[key] = true
+		diags = append(diags, d)
 	}
 	for _, name := range order {
 		fn := functions[name]
@@ -222,7 +292,7 @@ func checkEffectRows(functions map[string]*ast.FunctionStatement, order []string
 		}
 		own := facts[name]
 		check := func(node ast.Node, value ast.Expression, row effectSet, slot string) {
-			effects, unknown, path := valueEffects(value, own, facts, functions)
+			effects, unknown, path := valueEffects(value, own, facts, functions, rc)
 			at := ""
 			if len(path) > 0 {
 				at = " (" + strings.Join(path, " -> ") + ")"
@@ -269,6 +339,18 @@ func checkEffectRows(functions map[string]*ast.FunctionStatement, order []string
 				if row, rowed := rowOf(v.Type); rowed {
 					check(v, v.Value, row, "the declaration of "+v.Name.Value)
 				}
+			case *ast.RecordLiteral:
+				// A function value stored in a rowed record field (a
+				// captured step) is checked where the record is built.
+				recordName := rc.recordTypeName(v)
+				if recordName == "" {
+					return
+				}
+				for _, f := range v.FieldOrder {
+					if row, rowed, _ := rc.fieldRow(recordName, f.Name); rowed {
+						check(f.Value, f.Value, row, fmt.Sprintf("field %s of %s", f.Name, modules.DemangleText(recordName)))
+					}
+				}
 			}
 		})
 	}
@@ -278,8 +360,31 @@ func checkEffectRows(functions map[string]*ast.FunctionStatement, order []string
 // valueEffects computes what a function-valued expression may perform: the
 // effects (each with the call path that reaches it) and, when they cannot
 // all be known, the first unknown site with its path.
-func valueEffects(value ast.Expression, own *effectFacts, facts map[string]*effectFacts, functions map[string]*ast.FunctionStatement) (map[string][]string, string, []string) {
+func valueEffects(value ast.Expression, own *effectFacts, facts map[string]*effectFacts, functions map[string]*ast.FunctionStatement, rc *rowContext) (map[string][]string, string, []string) {
 	switch v := value.(type) {
+	case *ast.IndexExpression:
+		// A function value read from a record field: its row is the fact,
+		// established where the record was built.
+		field, isField := v.Index.(*ast.Identifier)
+		if !v.Dot || !isField {
+			return nil, "the expression " + v.String() + " is not a function value the analysis can follow", nil
+		}
+		recordName := rc.recordTypeName(v.Left)
+		if recordName == "" {
+			return nil, "the record of " + v.String() + " has no recorded type", nil
+		}
+		row, rowed, isFn := rc.fieldRow(recordName, field.Value)
+		if !isFn {
+			return nil, v.String() + " is not a function-typed field", nil
+		}
+		if !rowed {
+			return nil, "the field " + v.String() + " has no effect row", nil
+		}
+		effects := map[string][]string{}
+		for key := range row {
+			effects[key] = []string{v.String()}
+		}
+		return effects, "", nil
 	case *ast.Identifier:
 		if own.valueNames[v.Value] {
 			row, rowed := own.valueRows[v.Value]
