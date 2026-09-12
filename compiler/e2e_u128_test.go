@@ -11,8 +11,9 @@ import (
 // checked narrowings down to u64 — in both realizations. The layout
 // assertions run only compiled: 16 bytes at 16-byte alignment, ratified
 // by the C compiler.
-const u128Body = `
+const u128Body = `package main
 import(std)
+import("wide")
 Header: type = struct { checksum: u128, size: u32, id: u128 }
 two_to_64: (): u128 = u128(1) << u128(64)
 compute: (): i32 {
@@ -30,9 +31,9 @@ compute: (): i32 {
   assert((max ^ u128(255)) == max - u128(255))
   assert((two64 | one) & one == one)
   assert(^u128(0) == max)
-  assert(u128_high(two64 * u128(5)) == u64(5))
-  assert(u128_low(two64 + u128(9)) == u64(9))
-  assert(u128_pack(u64(5), u64(9)) == two64 * u128(5) + u128(9))
+  assert(wide.high(two64 * u128(5)) == u64(5))
+  assert(wide.low(two64 + u128(9)) == u64(9))
+  assert(wide.pack(u64(5), u64(9)) == two64 * u128(5) + u128(9))
   assert(u64_trunc_u128(two64 + u128(3)) == u64(3))
   assert(u64_saturating_u128(two64) == u64(18446744073709551615))
   assert(u64_saturating_u128(u128(77)) == u64(77))
@@ -50,6 +51,14 @@ compute: (): i32 {
 }
 `
 
+func u128Module(t *testing.T, program string) string {
+	t.Helper()
+	return writeModule(t, map[string]string{
+		"oak.mod":  "module example.com/u128_check\noak 0.1.0\n",
+		"main.oak": program,
+	})
+}
+
 func TestE2EU128Compiled(t *testing.T) {
 	src := u128Body + `
 main: (): i32 {
@@ -60,14 +69,14 @@ main: (): i32 {
   compute()
 }
 `
-	code, abnormal := buildAndRun(t, "u128", src)
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(u128Module(t, src)))
 	if abnormal || code != 42 {
 		t.Fatalf("exit=(%d,%v)", code, abnormal)
 	}
 }
 
 func TestE2EU128Interpreted(t *testing.T) {
-	if got := interpretChecked(t, u128Body+"main: (): i32 = compute()\n"); got != 42 {
+	if got := interpretModule(t, u128Module(t, u128Body+"main: (): i32 = compute()\n")); got != 42 {
 		t.Fatalf("interpreter: got %d, want 42", got)
 	}
 }

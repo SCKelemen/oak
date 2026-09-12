@@ -264,9 +264,12 @@ compiler without `__SIZEOF_INT128__` leaves the type undefined, so a
 program using it fails to build there rather than narrowing. The
 interpreter computes every operator exactly and folds into the width; the
 Lean extraction has no 128-bit machine integer and reports a `u128`
-function as outside its subset (`95-extraction.md`). `std` provides
-`u128_pack(high, low)`, `u128_high(x)`, and `u128_low(x)` for the two
-`u64` halves a frame reads and writes.
+function as outside its subset (`95-extraction.md`). The `wide` module
+(`wide := import("wide")`) provides `wide.pack(upper, lower)`,
+`wide.high(x)`, and `wide.low(x)` for the two `u64` halves a frame reads
+and writes; it is a module of its own so a program that never names
+`u128` — a 32-bit freestanding target whose C compiler has no 128-bit
+integer — emits no `u128` declaration.
 
 Mathematical proof integers are never silently substituted for machine integers. Overflow, conversion, division, and shift semantics must be specified for each machine operation.
 
