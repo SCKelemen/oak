@@ -233,4 +233,46 @@ theorem resolve_zig (h : Host) (t : Target) (hz : h.hasZig = true) (hs : support
     · exact ⟨finish .host t (t == h.platform), by simp [ho, hs, hh]⟩
     · exact ⟨finish .zig t (t == h.platform), by simp [ho, hs, hh, hz]⟩
 
+/-! ## Running a cross build (`oak run -target`, `toolchain.ResolveEmulator`) -/
+
+/-- What a host has for running foreign binaries: QEMU's user-mode
+    emulator per architecture, or an explicit `OAK_EMULATOR`. -/
+structure Runners where
+  qemuUser : Arch → Bool
+  explicit : Bool
+
+/-- How `oak run` executes a program for `t` on host platform `p`:
+    directly for the host target; through the explicit emulator when set;
+    through user-mode QEMU for a foreign Linux target; never otherwise. -/
+inductive Run where
+  | direct | explicit | qemu
+  deriving DecidableEq, Repr
+
+def runWith (p : Target) (r : Runners) (t : Target) : Option Run :=
+  if t = p then some .direct
+  else if r.explicit then some .explicit
+  else if t.os = .linux ∧ r.qemuUser t.arch then some .qemu
+  else none
+
+/-- The host target always runs, and directly. -/
+theorem runWith_host (p : Target) (r : Runners) : runWith p r p = some .direct := by
+  simp [runWith]
+
+/-- Without an explicit emulator, a foreign target runs only when it is a
+    Linux target with a user-mode emulator on the host: freestanding and
+    Darwin cross builds are refused (fail closed). -/
+theorem runWith_foreign (p : Target) (r : Runners) (t : Target) (ht : t ≠ p) (he : r.explicit = false) :
+    (runWith p r t).isSome = true ↔ (t.os = .linux ∧ r.qemuUser t.arch = true) := by
+  simp [runWith, ht, he]
+
+theorem runWith_freestanding_none (p : Target) (r : Runners) (a : Arch)
+    (ht : (⟨.freestanding, a⟩ : Target) ≠ p) (he : r.explicit = false) :
+    runWith p r ⟨.freestanding, a⟩ = none := by
+  simp [runWith, ht, he]
+
+/-- An explicit emulator is the user's word: it runs any foreign target. -/
+theorem runWith_explicit (p : Target) (r : Runners) (t : Target) (ht : t ≠ p) (he : r.explicit = true) :
+    runWith p r t = some .explicit := by
+  simp [runWith, ht, he]
+
 end Oak.Target
