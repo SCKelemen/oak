@@ -706,6 +706,26 @@ type MatchExpression struct {
 	Arms      []*MatchArm
 }
 
+// TryExpression is the propagation form `try e` (docs/spec/10-syntax.md
+// section 2d): in a block whose value is the enclosing function's Result
+// or Option, `x: T = try e` binds the Ok/Some payload and re-raises the
+// Err/None. The compiler lowers it to the match the library writes by
+// hand before checking (compiler/try.go); no later phase sees the node.
+type TryExpression struct {
+	BaseNode
+	Token   token.Token // 'try'
+	Operand Expression
+}
+
+func (te *TryExpression) expressionNode()      {}
+func (te *TryExpression) TokenLiteral() string { return te.Token.Literal }
+func (te *TryExpression) String() string {
+	if te.Operand == nil {
+		return "try"
+	}
+	return "try " + te.Operand.String()
+}
+
 // FieldAccessorExpression is Elm-style .field sugar. It is a contextual,
 // structurally polymorphic function: .name(value) is value.name.
 type FieldAccessorExpression struct {

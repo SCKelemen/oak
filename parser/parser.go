@@ -69,6 +69,7 @@ func New(source token.Source) *Parser {
 	p.registerPrefix(token.FN, p.parseFunctionLiteral)
 	p.registerPrefix(token.IMPORT, p.parseImportExpression)
 	p.registerPrefix(token.TYPE, p.parseTypeKindExpression)
+	p.registerPrefix(token.TRY, p.parseTryExpression)
 
 	p.infixParseFns = make(map[token.TokenKind]infixParseFn)
 	p.registerInfix(token.SUM, p.parseInfixExpression)
@@ -1704,6 +1705,19 @@ func (p *Parser) parseImportExpression() ast.Expression {
 // `type` as a value.
 func (p *Parser) parseTypeKindExpression() ast.Expression {
 	return &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+}
+
+// parseTryExpression parses `try e` (docs/spec/10-syntax.md section 2d):
+// the operand is a whole expression, so `try f(x)` takes the call.
+func (p *Parser) parseTryExpression() ast.Expression {
+	tok := p.currentToken
+	p.nextToken()
+	operand := p.parseExpression(LOWEST)
+	if operand == nil {
+		p.addErrorAtToken(&tok, "try needs the Result or Option expression to propagate")
+		return nil
+	}
+	return &ast.TryExpression{Token: tok, Operand: operand}
 }
 
 // parsePubDeclaration parses `pub decl` and `pub(opaque) decl`

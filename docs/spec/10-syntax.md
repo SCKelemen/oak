@@ -83,6 +83,58 @@ code emitter cannot write a newline into its output without it.
 `_: T = expr` and `_ := expr` are not declarations and are rejected as
 they are today. The form is a statement, never an expression.
 
+## 2d. Propagation: `try`
+
+In a block whose value is the enclosing function's `Result` or `Option`,
+`x: T = try e` binds the `Ok` (`Some`) payload of `e` and, when `e` is
+`Err` (`None`), makes that the block's value; `_ = try e` does the same and
+drops the payload on purpose; `try e` alone as the block's value
+propagates and re-wraps. It is sugar for the match the standard library
+wrote by hand — `stdlib/encoding.oak`'s eight
+`size ? | .Err(reason) => .Err(reason) | .Ok(needed) => …` became
+`needed: u32 = try …` — and lowers to exactly that match before checking
+(`compiler/try.go`): the rest of the block nests into the `Ok` arm, the
+`Err` arm re-raises the error unchanged under a binder no program spells.
+So it costs what a match costs, and the checker, the borrow checker, the
+interpreter, and both backends see one form.
+
+```oak
+hex_encode: (dst: [*]u8, src: []u8, upper: Bool): Result[u32, EncodingError] {
+  needed: u32 = try hex_encoded_size(len(src))
+  needed > len(dst) ? .Err(.DestinationTooSmall) | { ... .Ok(needed) }
+}
+```
+
+Which pair of variants is meant is read from the function's declared
+return type, `Result[…]` or `Option[…]` — the same fact that makes the
+re-raise well typed: an `Option` operand in a `Result` function is a type
+error at the generated arm, and so is an operand whose error type differs
+from the function's. The form is legal only where the block's value is
+the function's result: the body, and a block that is the tail expression
+of such a block (the arms of a tail `?`). Anywhere else the re-raise would
+not leave the function — a `while` body, a non-tail block, an operand
+(`f(try g(x))`) — and it is a diagnostic at the `try` (`OAK-M0401`), as
+are a bare `try e` statement (bind it or discard it on purpose) and a
+`try` as a block's last statement (nothing follows to use the value). The
+annotation `T` is the payload's type: the binding takes the payload's type
+and a different annotation is not yet compared — the checker sees the
+pattern binding, not the declaration. There is no `try` for a function
+returning anything else, and no non-local exit: the constitution's rule
+that a result is the only way out stands (`85-discipline.md` §3a).
+
+**Lean** (`Oak.Propagation`): the lowered match is bind on `Except` and
+on `Option` (`tryResult_eq_bind`, `tryOption_eq_bind`); the re-raise
+passes the error unchanged (`tryResult_err`); propagate-then-rewrap is the
+identity (`tryResult_id`); and two propagations associate
+(`tryResult_assoc`) — the monad law that lets the lowering nest the rest
+of the block one `try` at a time (`docs/notes/algebraic-semantics-2026-09.md`
+§5). The eight rewritten `encoding` functions are the differential
+witness: their vectors and the cross-implementation differential tests
+are unchanged (`compiler/e2e_stdlib_encoding_test.go`,
+`compiler/e2e_stdlib_encoding_diff_test.go`), and
+`compiler/e2e_try_test.go` runs a `try` body against its hand-written
+match over forty inputs in both realizations.
+
 ## 2c. List literals take their shape from context
 
 A bare list literal `[e1, e2, ...]` has no type of its own. It takes the

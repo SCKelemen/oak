@@ -372,6 +372,12 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		if err := lowerQualifiedVariants(tree.Root); err != nil {
 			return nil, err
 		}
+		// The propagation form (compiler/try.go): `x: T = try e` becomes
+		// the match the library writes by hand, so the checker, the borrow
+		// checker, both backends, and the interpreter see one form.
+		if err := lowerTry(tree.Root); err != nil {
+			return nil, err
+		}
 		// Capturing literals in the one justified shape are specialized
 		// away before checking (compiler/closures.go); every other capture
 		// reaches the checker and its OAK-T0401.
