@@ -74,6 +74,7 @@ names or the module cache.
 | `OAKCPU` | The processor when `-cpu` is not given, passed as `-mcpu`; default: the target's (`cortex_m4` for `freestanding/arm`, soft-float `generic_rv32`/`generic_rv64` for freestanding RISC-V, the toolchain baseline elsewhere). |
 | `OAK_CC` | A C compiler that already targets `OAKOS/OAKARCH`, taken over every discovered one; `OAK_CFLAGS` adds arguments (split on whitespace). Unset: `cc` for the host, else `zig cc`, a cross `clang` with `OAK_SYSROOT`, or a GNU cross compiler. |
 | `OAK_SYSROOT` | The sysroot a cross `clang` needs for a hosted target. |
+| `OAK_EMULATOR`, `OAK_EMULATOR_ARGS` | The user-mode emulator `oak run -target` executes a foreign Linux program with (default: `qemu-<arch>`, then `qemu-<arch>-static`, on PATH), and its arguments split on whitespace. |
 
 ### 3.1 The build cache
 

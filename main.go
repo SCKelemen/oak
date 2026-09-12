@@ -813,25 +813,34 @@ func validProfile(profile string) bool {
 func runPackage(args []string) int {
 	dir := "."
 	profile := ""
-	tgt, err := target.FromEnv("", nil)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "oak run: %v\n", err)
-		return 2
-	}
-	if !tgt.IsHost() {
-		fmt.Fprintf(os.Stderr, "oak run: cannot execute a %s program on this %s host; use oak build -target %s\n", tgt, target.Host(), tgt)
-		return 2
-	}
-	asmMode := defaultAsmMode(tgt)
 	own, programArgs := splitProgramArgs(args)
 	nativeBodies := false
-	fs := newFlagSet("run", "oak run [-profile default|strict] [-asm native|c] [-native] [dir] [-- program arguments]")
+	targetFlag, cpu := "", ""
+	asmMode := ""
+	fs := newFlagSet("run", "oak run [-profile default|strict] [-target os/arch] [-cpu name] [-asm native|c] [-native] [dir] [-- program arguments]")
 	fs.StringVar(&profile, "profile", "", "discipline profile: default or strict")
+	fs.StringVar(&targetFlag, "target", "", "platform os/arch; a foreign Linux target runs through an emulator (qemu-<arch> or OAK_EMULATOR; docs/spec/90-backend.md section 2a)")
+	fs.StringVar(&cpu, "cpu", "", "processor for the C compiler's -mcpu (default: OAKCPU, else the target's default)")
 	fs.StringVar(&asmMode, "asm", asmMode, "asm units: native or c (docs/spec/94-assembler.md section 9)")
 	fs.BoolVar(&nativeBodies, "native", false, "lower Oak bodies through the native backend where its subset reaches (docs/spec/94-assembler.md section 9)")
 	rest, exit, stop := parseFlags(fs, own)
 	if stop {
 		return exit
+	}
+	tgt, err := target.FromEnv(targetFlag, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak run: %v\n", err)
+		return 2
+	}
+	// A foreign target runs through an emulator, resolved before anything
+	// is built so a refusal costs nothing.
+	emulator, err := toolchain.ResolveEmulator(tgt, nil, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak run: %v\n", err)
+		return 2
+	}
+	if asmMode == "" {
+		asmMode = defaultAsmMode(tgt)
 	}
 	if len(rest) > 1 {
 		fmt.Fprintln(os.Stderr, "oak run: one package directory; pass program arguments after --")
@@ -869,7 +878,7 @@ func runPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
-	drv, err := toolchain.Resolve(tgt, toolchain.Options{}, nil, nil)
+	drv, err := toolchain.Resolve(tgt, toolchain.Options{CPU: cpu}, nil, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak run: %v\n", err)
 		return 1
@@ -878,7 +887,15 @@ func runPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak run: %v\n", err)
 		return 1
 	}
-	program := exec.Command(binary, programArgs...)
+	var program *exec.Cmd
+	if emulator == nil {
+		program = exec.Command(binary, programArgs...)
+	} else {
+		// The emulator's argv, then the binary, then the program's own
+		// arguments — one argument vector, never a shell.
+		argv := append(append([]string{}, emulator.Args...), binary)
+		program = exec.Command(emulator.Path, append(argv, programArgs...)...)
+	}
 	program.Stdin, program.Stdout, program.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := program.Run(); err != nil {
 		var exitErr *exec.ExitError

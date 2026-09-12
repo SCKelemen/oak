@@ -94,3 +94,36 @@ func TestResolveOrder(t *testing.T) {
 		t.Fatalf("explicit compiler got a cpu flag: %+v", d)
 	}
 }
+
+func TestResolveEmulator(t *testing.T) {
+	rv := target.Target{OS: target.OSLinux, Arch: target.ArchRiscv64}
+	none := envOf(nil)
+	if e, err := ResolveEmulator(target.Host(), lookupOf(), none); e != nil || err != nil {
+		t.Fatalf("the host needs no emulator: %+v %v", e, err)
+	}
+	e, err := ResolveEmulator(rv, lookupOf("qemu-riscv64-static", "qemu-riscv64"), none)
+	if err != nil || e.Kind != "qemu" || e.Path != "/tools/qemu-riscv64" {
+		t.Fatalf("qemu: %+v %v", e, err)
+	}
+	if e, err = ResolveEmulator(rv, lookupOf("qemu-riscv64-static"), none); err != nil || e.Path != "/tools/qemu-riscv64-static" {
+		t.Fatalf("qemu static spelling: %+v %v", e, err)
+	}
+	e, err = ResolveEmulator(rv, lookupOf("myemu"), envOf(map[string]string{"OAK_EMULATOR": "myemu", "OAK_EMULATOR_ARGS": "-cpu rv64 -L /sysroot"}))
+	if err != nil || e.Kind != "explicit" || strings.Join(e.Args, " ") != "-cpu rv64 -L /sysroot" {
+		t.Fatalf("explicit: %+v %v", e, err)
+	}
+	if _, err := ResolveEmulator(rv, lookupOf(), envOf(map[string]string{"OAK_EMULATOR": "missing"})); err == nil {
+		t.Fatal("a missing OAK_EMULATOR must fail, not fall through")
+	}
+	if _, err := ResolveEmulator(rv, lookupOf("cc"), none); err == nil || !strings.Contains(err.Error(), "qemu-riscv64") {
+		t.Fatalf("refusal names the emulators: %v", err)
+	}
+	if target.Host().OS != target.OSDarwin {
+		if _, err := ResolveEmulator(target.Target{OS: target.OSDarwin, Arch: target.ArchArm64}, lookupOf("qemu-aarch64"), none); err == nil {
+			t.Fatal("a foreign Darwin target has no user-mode emulator")
+		}
+	}
+	if _, err := ResolveEmulator(target.Target{OS: target.OSFreestanding, Arch: target.ArchArm}, lookupOf("qemu-arm"), none); err == nil || !strings.Contains(err.Error(), "relocatable object") {
+		t.Fatalf("freestanding refusal: %v", err)
+	}
+}

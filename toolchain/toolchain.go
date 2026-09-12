@@ -156,3 +156,65 @@ func prefixedNames(t target.Target) []string {
 	}
 	return names
 }
+
+// Emulator runs a cross-built executable on the host (docs/spec/90-backend.md
+// §2a): an argv prefix — the emulator and its arguments — to which the
+// binary and the program's own arguments are appended.
+type Emulator struct {
+	Kind string // "explicit" (OAK_EMULATOR), "qemu"
+	Path string
+	Args []string
+}
+
+// Command spells the emulator for diagnostics.
+func (e Emulator) Command() string {
+	return strings.Join(append([]string{e.Path}, e.Args...), " ")
+}
+
+// ResolveEmulator chooses how `oak run -target` executes a binary for t.
+// The host target needs none (a nil emulator, no error). A foreign Linux
+// target runs through `OAK_EMULATOR` (an executable, its arguments from
+// `OAK_EMULATOR_ARGS` split on whitespace), else QEMU's user-mode
+// emulator by architecture (`qemu-riscv64`, `qemu-aarch64`, `qemu-x86_64`,
+// or the `-static` spellings distributions install) — a static musl binary
+// needs no sysroot. A foreign Darwin or freestanding target cannot be run
+// from the tooling and is refused.
+func ResolveEmulator(t target.Target, look Lookup, getenv func(string) string) (*Emulator, error) {
+	if look == nil {
+		look = exec.LookPath
+	}
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	if t.IsHost() {
+		return nil, nil
+	}
+	if name := getenv("OAK_EMULATOR"); name != "" {
+		path, err := look(name)
+		if err != nil {
+			return nil, fmt.Errorf("OAK_EMULATOR=%s: %v", name, err)
+		}
+		return &Emulator{Kind: "explicit", Path: path, Args: strings.Fields(getenv("OAK_EMULATOR_ARGS"))}, nil
+	}
+	if t.OS != target.OSLinux {
+		if t.Freestanding() {
+			return nil, fmt.Errorf("a %s build is a relocatable object for your own startup and machine; run it under your own emulator harness (compiler/e2e_mcu_test.go is the shape)", t)
+		}
+		return nil, fmt.Errorf("cannot run a %s program on this %s host: no user-mode emulator exists for it (set OAK_EMULATOR to one)", t, target.Host())
+	}
+	for _, name := range qemuUserNames(t) {
+		if path, err := look(name); err == nil {
+			return &Emulator{Kind: "qemu", Path: path}, nil
+		}
+	}
+	return nil, fmt.Errorf("cannot run a %s program on this %s host: no user-mode emulator on PATH (install QEMU's user-mode emulators — %s — or set OAK_EMULATOR)", t, target.Host(), strings.Join(qemuUserNames(t), ", "))
+}
+
+// qemuUserNames are QEMU's user-mode emulator names for a Linux target.
+func qemuUserNames(t target.Target) []string {
+	arch := map[string]string{target.ArchArm64: "aarch64", target.ArchAmd64: "x86_64", target.ArchRiscv64: "riscv64"}[t.Arch]
+	if arch == "" {
+		return nil
+	}
+	return []string{"qemu-" + arch, "qemu-" + arch + "-static"}
+}

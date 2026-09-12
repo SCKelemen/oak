@@ -81,11 +81,11 @@ jobs:
       with:
         version: 0.15.1
 
-    - name: Install QEMU for the microcontroller targets
-      run: sudo apt-get update && sudo apt-get install -y qemu-system-arm qemu-system-misc
+    - name: Install QEMU (system emulators for the microcontroller targets, user-mode for cross runs)
+      run: sudo apt-get update && sudo apt-get install -y qemu-system-arm qemu-system-misc qemu-user-static
 
-    - name: Cross-build for every Linux target and run the microcontroller targets under QEMU
-      run: go test -v ./target ./toolchain ./compiler -run '^Test(ParseAndEnv|Spellings|ResolveOrder|Cross|E2EMicrocontroller)'
+    - name: Cross-build every Linux target, run them under user-mode QEMU, and run the microcontroller targets
+      run: go test -v ./target ./toolchain ./compiler -run '^Test(ParseAndEnv|Spellings|ResolveOrder|ResolveEmulator|Cross|E2EMicrocontroller)'
 
   aarch64-memory-refinement:
     name: AArch64 Memory Refinement
