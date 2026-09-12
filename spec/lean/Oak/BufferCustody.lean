@@ -75,6 +75,31 @@ theorem borrow_state_is_host {s : State} (h : Handle custody s) (hb : CanBorrow 
   | host => rfl
   | device => exact absurd hb (by simp [CanBorrow])
 
+/-! ## A record over a handle carries its custody
+
+`Submitted { data: Buffer[f32, Device], device: u32 }` (docs/spec/92-ffi.md
+section 2.8.6) is a handle at `device` with a device identity beside it:
+the record's field is the handle, so borrowing through the record needs
+host custody as borrowing the handle does, and completing through the
+record moves the handle out — the record has no handle left to give,
+which is why the record binding is dead after `complete(s.data)`. -/
+
+/-- A record holding a handle at custody state `s` and a device identity. -/
+structure Tagged (s : State) where
+  data : Handle custody s
+  device : Nat
+
+/-- Borrowing through the record happens at host custody. -/
+theorem tagged_borrow_state_is_host {s : State} (t : Tagged s) (hb : CanBorrow s) :
+    t.data.run.state = .host :=
+  borrow_state_is_host t.data hb
+
+/-- Completing through the record: the field's handle moves to host. -/
+def complete_tagged (t : Tagged .device) : Handle custody .host :=
+  .transition t.data .complete (by simp [custody])
+
+example (t : Tagged .device) : (complete_tagged t).run.state = .host := run_sound (complete_tagged t)
+
 theorem no_complete_from_host (b : State) : ¬ custody.legal .host .complete b := by
   intro h
   simp [custody] at h

@@ -651,8 +651,9 @@ the allocator over it.
 `T` is a boundary element type (§2.5.1), checked when the type is spelled.
 `Buffer[T]` is the type of a local binding initialized by `c.own` and of
 nothing else: it cannot be copied into another binding, assigned, passed as
-an argument (a generic parameter included), returned, placed in a record or
-array, or indexed directly. Every one of those is an error naming the
+an argument (a generic parameter included), returned, placed in an array,
+or indexed directly. A record may hold one as a field, and the record then
+carries the custody (§2.8.6). Every one of those is an error naming the
 alternative, so a buffer has exactly one name and the borrow checker's
 owner story holds for it: views and spans of `b` follow the rules of
 `50-borrowing.md` (one writable span at a time, no writes while a view
@@ -773,17 +774,63 @@ round trip types (`round_trip`), a device handle only comes from a submit
 (`no_borrow_in_device`, `borrow_state_is_host`), and the wrong-way
 transitions have no derivation.
 
-#### 2.8.6 What stays outside
+#### 2.8.6 Buffers in records
 
-A `Buffer[T]` in a record or a global (a `Weights` record owning its
-arena, a package-level buffer loaded once) needs the record to carry
-custody — the resource-consumption machinery of `50-borrowing.md` §9
-applied to a field, the increment after §2.8.5. The element-space arena
-admits one span at a time; carving several writable ranges from one buffer
-at once is the disjoint-region proof of `50-borrowing.md` §6, or an
-`unsafe` disjointness assumption. Custody states with more than a name —
-a device identity, a queue — are records over the buffer, which waits on
-the same increment.
+**Status: implemented and tested** (`compiler/e2e_buffer_fields_test.go`;
+the follow-up to the ml pilot's F5). A record may declare a field of type
+`Buffer[T, S]`, and the record then **carries the custody**: the
+resource-consumption machinery of `50-borrowing.md` §9 applied to a field.
+
+```oak
+Weights:   type = struct { data: Buffer[f32], scale: f32 }
+Submitted: type = struct { data: Buffer[f32, Device], device: u32 }
+
+unsafe {
+  host: Buffer[f32] = c.own[f32](p, n)
+  w: Weights = Weights { data: host, scale: 2.0 }   // host moves in; w holds it
+  before: f32 = total(view(&w.data)) * w.scale      // borrowed through the field
+  d: Buffer[f32, Device] = submit(w.data)           // w is consumed
+  s: Submitted = Submitted { data: d, device: 1 }   // a state with a device identity
+  back: Buffer[f32] = complete(s.data)              // s is consumed
+  free(c.disown(back))
+}
+```
+
+- **The literal moves the buffer in.** A Buffer field's value is the
+  Buffer binding itself, by name — an expression in that position is an
+  error — and the literal stands only as the initializer of a named
+  binding (`w: Weights = Weights { ... }`). The named buffer is rejected
+  while a view or span of it is live (`OAK-B0000`) and is dead afterward
+  (`OAK-B0111`): the buffer has exactly one live name, now the record's.
+- **The record is the owner.** `view(&w.data)`, `span(&w.data)`, and
+  `len(w.data)` work as on a binding, in Host custody only, and the
+  borrows are borrows of `w`. `submit(w.data)` and `c.disown(w.data)`
+  move the buffer out and **consume the whole record**: every later use
+  of `w` — the buffer field or any other field — is `OAK-B0111`. Read the
+  scalar fields you need before the move.
+- **Never a value.** A record holding a Buffer is built by its literal
+  and by nothing else: it cannot be copied into another binding, passed
+  as an argument, returned, or placed in an array, and its Buffer field is
+  never reassigned (`w.data = other` is an error naming the literal).
+  Deeper nesting — a record holding such a record, an array of them — is
+  outside this increment.
+- **A custody state with more than a name** is a record over the buffer:
+  `Submitted { data: Buffer[f32, Device], device: u32 }` is a device
+  handle with the device beside it, built where the transition returns
+  and consumed where the buffer comes back. `Oak.BufferCustody.Tagged`
+  models it: borrowing through the record is at host
+  (`tagged_borrow_state_is_host`), completing through it moves the
+  handle (`complete_tagged`).
+- Lowering: the field is the buffer's `{ base, len }` struct, so
+  `view(&w.data)` copies the pointer and the count and a transition
+  passes `( w.data ).base, (size_t)( w.data ).len` as it does for a
+  binding. The interpreter has no foreign memory and rejects `c.own`, so
+  no such record exists there.
+
+**What stays outside.** A package-level `Buffer` loaded once, nested
+records and arrays over buffers, and carving several writable ranges from
+one buffer at once (the disjoint-region proof of `50-borrowing.md` §6, or
+an `unsafe` disjointness assumption).
 
 #### 2.8.7 Diagnostics
 

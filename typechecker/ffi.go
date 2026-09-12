@@ -1299,23 +1299,22 @@ func (tc *TypeChecker) checkForeignDisown(expr *ast.InvocationExpression) Type {
 		tc.addError(expr, "c.disown takes exactly one Buffer[T] binding")
 		return nil
 	}
-	ident, isIdent := expr.Arguments[0].(*ast.Identifier)
-	if !isIdent {
-		tc.addError(expr.Arguments[0], "c.disown takes the Buffer[T] binding itself, not an expression")
+	operand := expr.Arguments[0]
+	if !isBufferPath(operand) {
+		tc.addError(operand, "c.disown takes the Buffer[T] binding itself (or a record's Buffer field), not an expression")
 		return nil
 	}
-	scheme, bound := tc.env.Get(ident.Value)
-	if !bound || scheme == nil {
-		tc.addError(ident, "undefined variable: %s", ident.Value)
+	operandType := tc.checkExpression(operand)
+	if operandType == nil {
 		return nil
 	}
-	buffer, isBuffer := scheme.Type.(*BufferType)
+	buffer, isBuffer := operandType.(*BufferType)
 	if !isBuffer {
-		tc.addError(ident, "c.disown takes a Buffer[T] binding, got %s", scheme.Type)
+		tc.addError(operand, "c.disown takes a Buffer[T] binding, got %s", operandType)
 		return nil
 	}
 	if !buffer.InHostCustody() {
-		tc.addError(ident, "buffer %s is in %s custody and cannot be handed back; a transition extern returns it to Host first (docs/spec/92-ffi.md section 2.8.5)", ident.Value, buffer.CustodyState())
+		tc.addError(operand, "buffer %s is in %s custody and cannot be handed back; a transition extern returns it to Host first (docs/spec/92-ffi.md section 2.8.5)", operand.String(), buffer.CustodyState())
 		return nil
 	}
 	return &CType{Name: "Ptr"}

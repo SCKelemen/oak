@@ -124,6 +124,23 @@ func (tc *TypeChecker) rejectBufferValue(node ast.Node, typ Type, position strin
 	return true
 }
 
+// isBufferPath recognizes the operands that name a buffer to move or hand
+// back: the Buffer binding itself, or a record binding's Buffer field
+// (docs/spec/92-ffi.md section 2.8.6).
+func isBufferPath(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		return true
+	case *ast.IndexExpression:
+		if !e.Dot {
+			return false
+		}
+		_, baseIsIdent := e.Left.(*ast.Identifier)
+		return baseIsIdent
+	}
+	return false
+}
+
 // isForeignOwnCall recognizes the one initializer a Buffer binding admits.
 func isForeignOwnCall(expr ast.Expression) bool {
 	call, isCall := expr.(*ast.InvocationExpression)
