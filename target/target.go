@@ -58,8 +58,9 @@ func (t Target) DataModel() (intBits, ptrBits int) {
 // DefaultCPU is the processor a target compiles for when the build names
 // none (`-cpu`, OAKCPU): the toolchain's baseline for the hosted targets
 // (""), and for the freestanding ones a processor whose defaults match the
-// companion object — soft-float RISC-V (`generic_rv64`, `generic_rv32`) and
-// the Cortex-M4 for Arm (the most common STM32 core; `-cpu cortex_m0`,
+// companion object — soft-float RV64IM/RV32IM (`generic_rv64+m`,
+// `generic_rv32+m`; without M the C runtime's software multiply is called
+// for every product) and the Cortex-M4 for Arm (the most common STM32 core; `-cpu cortex_m0`,
 // `cortex_m3`, `cortex_m7`, `cortex_m33` name the others).
 func (t Target) DefaultCPU() string {
 	if !t.Freestanding() {
@@ -67,9 +68,9 @@ func (t Target) DefaultCPU() string {
 	}
 	switch t.Arch {
 	case ArchRiscv64:
-		return "generic_rv64"
+		return "generic_rv64+m" // RV64IM: the integer multiply the emitted C leans on
 	case ArchRiscv32:
-		return "generic_rv32"
+		return "generic_rv32+m"
 	case ArchArm:
 		return "cortex_m4"
 	}

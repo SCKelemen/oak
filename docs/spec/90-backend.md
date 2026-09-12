@@ -61,9 +61,14 @@ target comes from `-target`, else `OAKOS`/`OAKARCH` (each defaulting to the
 host's component, as `GOOS`/`GOARCH` do), else the host. A **processor**
 (`-cpu`, else `OAKCPU`, else the target's default) is passed to the C
 compiler as `-mcpu`: `cortex_m0`, `cortex_m3`, `cortex_m7`, `cortex_m33`,
-… for Cortex-M (default `cortex_m4`); `generic_rv32`/`generic_rv64` — soft
-float, matching the companion object — for freestanding RISC-V; the
-toolchain baseline for hosted targets (`Oak.Target.defaultCPU`).
+… for Cortex-M (default `cortex_m4`); `generic_rv32+m`/`generic_rv64+m` — soft
+float with the integer multiply, matching the companion object — for
+freestanding RISC-V; the toolchain baseline for hosted targets
+(`Oak.Target.defaultCPU`). A feature suffix extends a processor
+(`generic_rv64+m+v` for the vector extension, `93-simd.md` §1.4).
+Freestanding RISC-V objects are compiled with the medium-any code model
+so they link at the user's address (RAM at `0x80000000` on the `virt`
+machines).
 
 The compiler emits the same C translation unit for every target; what the
 target decides is:

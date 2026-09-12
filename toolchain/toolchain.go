@@ -85,6 +85,12 @@ func Resolve(t target.Target, opts Options, look Lookup, getenv func(string) str
 		if t.Freestanding() {
 			d.Object = true
 			d.Args = append(d.Args, "-ffreestanding", "-nostdlib", "-fno-unwind-tables", "-fno-asynchronous-unwind-tables", "-DOAK_FREESTANDING")
+			if t.Arch == target.ArchRiscv64 || t.Arch == target.ArchRiscv32 {
+				// A freestanding object links at the user's address (RAM at
+				// 0x80000000 on the virt machines): the medium-any code model
+				// addresses relative to pc, medlow cannot reach past 2 GiB.
+				d.Args = append(d.Args, "-mcmodel=medany")
+			}
 		} else if t.StaticLink() && !t.IsHost() {
 			d.Static = true
 		}
