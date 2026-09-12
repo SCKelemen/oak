@@ -139,8 +139,7 @@ reference minimum) to turn `benchmarks/json/compare.py` into a gate.
 (the lookup4 validator in safe Oak, tables proved in `Oak.Utf8Lookup`);
 `movemask_E`, `ctz_u32/u64`, and `popcount_u32/u64` landed the same
 evening as the mask vocabulary of `93-simd.md` §1.2. Finding 6 (the
-`ctz` loop as a bounded shape) stays an `OAK-D0103` obligation. The
-remaining gap to simdutf is the sixteen-byte step against its sixty-four.
+`ctz` loop as a bounded shape) stays an `OAK-D0103` obligation. The sixty-four-byte step followed the same evening: 12.3 GB/s beside simdutf's 12.9 and simdjson's 12.9 on the same run, within five percent of the golden implementations, in safe Oak.
 
 
 Order by evidence: findings 1–5 are one `93-simd.md` revision (table
