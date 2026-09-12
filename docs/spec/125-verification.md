@@ -90,6 +90,41 @@ preservation shape is never misspelled. The generation is a syntax
 rewrite on the parsed program (`Compilation.WithSyntaxRewrite`), so a
 build never sees it.
 
+### 2b. Protocol liveness
+
+A protocol's `eventually` entries (`112-protocols.md` §1) are checked by
+`oak prove` over the reachable states of the projection, without TLC. The
+prover runs `name_initial`, `name_legal`, and `name_next` in the
+interpreter over every step value — payloads enumerated like a theorem's
+parameters, the whole exploration bounded by `-cases` — and labels each
+transition by its step and by whether it changed the state or the data.
+Each entry is then a fair-trap search: `eventually T` fails when a fair
+behavior avoiding `T` exists from the initial state, `eventually P -> T`
+when one exists from a reachable `P` state. A behavior may stutter
+forever, so every state is a candidate trap; a strongly connected set is
+fair when every `fair` step is disabled somewhere in it or taken inside
+it, and every `strongly fair` step is disabled everywhere in it or taken
+inside it (a set that fails only through a strongly fair step is refined
+by dropping the states where that step is enabled, as Emerson and Lei
+do). A step that never changes the state — `signal(on): Running ->
+Running` with no effects — is never enabled as a step, so fairness on it
+asks nothing, as in TLA+.
+
+```text
+decided   quantum_live2: eventually Running -> Yielded: holds on all 3 reachable states under fair tick, strongly fair resume
+refuted   quantum_live1: eventually Yielded: counterexample with no fairness declared: from Running with {budget: 2} a fair behavior never reaches the target, staying within {Running with {budget: 1}; Running with {budget: 2}}
+```
+
+The verdict is about the projection, whose `next` takes the first line
+whose guard holds; the TLA+ module states the same entries over the
+declaration's every-line reading, so a machine with several enabled
+lines of one step from one state can pass here and be refuted by TLC —
+never the reverse for a deterministic machine. An entry whose state
+space exceeds the bound, or whose projection the interpreter cannot run,
+is `open` with the reason. Each side of an entry is projected as a Bool
+predicate (`name_liveK_from`, `name_liveK_to`) so the check evaluates
+the same expression the guards use.
+
 ## 3. The discharge ladder
 
 Every theorem is placed on one rung, from the strongest evidence down:
@@ -202,7 +237,8 @@ In order of payoff, each reusing a surface that exists:
   already models them, division with its zero-divisor obligation like the
   shift's, and the extent facts for linear bounds, inside the compiler,
   each with its Lean law.
-- **Temporal properties.** Safety through the invariants above; liveness
-  with declared fairness through the TLA+ module (`112-protocols.md` §4).
-  Next: liveness decided inside the compiler for finite machines, so a
-  declaration without TLC still gets a verdict.
+- **Temporal properties.** Safety through the invariants above (§2a);
+  liveness with declared fairness decided over the reachable states (§2b)
+  and stated for TLC through the TLA+ module (`112-protocols.md` §4).
+  Next: the every-line reading inside the compiler, and liveness over
+  infinite data domains through Lean.

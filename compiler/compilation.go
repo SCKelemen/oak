@@ -141,6 +141,10 @@ type SyntaxTree struct {
 	// Prelude records which standard library prelude was spliced: "full"
 	// (import(std)), "core" (library packages imported), or "".
 	Prelude string
+	// Protocols keeps the protocol declarations the lowering replaced by
+	// their projections, so a later phase (the prover's liveness check)
+	// can still read the declaration.
+	Protocols []*ast.ProtocolDeclaration
 }
 
 // SemanticModel owns type information for a syntax tree.
