@@ -68,13 +68,14 @@ func protocolCommand(args []string, stdout, stderr io.Writer) int {
 		if decl.Name.Value != *tla {
 			continue
 		}
-		module, err := compiler.ProtocolTLAWithRecords(decl, path, compiler.RecordDeclarations(tree.Root))
+		theorems := compiler.InvariantTheorems(tree.Root, decl)
+		module, err := compiler.ProtocolTLAFull(decl, path, compiler.RecordDeclarations(tree.Root), theorems)
 		if err != nil {
 			fmt.Fprintf(stderr, "oak protocol: %v\n", err)
 			return 1
 		}
 		if *cfgOut != "" {
-			if err := os.WriteFile(*cfgOut, []byte(compiler.ProtocolTLCConfigWith(decl, compiler.RecordDeclarations(tree.Root))), 0o644); err != nil {
+			if err := os.WriteFile(*cfgOut, []byte(compiler.ProtocolTLCConfigFull(decl, compiler.RecordDeclarations(tree.Root), theorems)), 0o644); err != nil {
 				fmt.Fprintf(stderr, "oak protocol: %v\n", err)
 				return 1
 			}
@@ -127,7 +128,7 @@ func conformCommand(name, against, path string, opts conformOptions, stdout, std
 		if decl.Name.Value != name {
 			continue
 		}
-		report, err := compiler.ProtocolConformance(decl, string(module), compiler.RecordDeclarations(tree.Root))
+		report, err := compiler.ProtocolConformanceWith(decl, string(module), compiler.RecordDeclarations(tree.Root), compiler.InvariantTheorems(tree.Root, decl))
 		if err != nil {
 			fmt.Fprintf(stderr, "oak protocol: %v\n", err)
 			return 2

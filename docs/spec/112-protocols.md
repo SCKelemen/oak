@@ -277,6 +277,41 @@ own, so regenerating never overwrites hand-written properties. The
 generated header names the source it came from. Conformance (§4a)
 compares the machine and skips `Spec` and `Liveness`.
 
+**Invariant theorems reach TLC.** A theorem whose parameters are the
+projected state and data (`125-verification.md` §2a) is stated in the
+module as `Invariant_<name>` and listed in the configuration as an
+`INVARIANT` when its body is in the **invariant subset**: a Bool
+expression over the state (`s == .Locked` is `state = "Locked"`), data
+paths, literals, conversions, arithmetic and comparisons — the guard
+subset — or the accumulator form of bounded loops,
+
+```oak
+agree: theorem (s: ReplState, d: ReplData) {
+  ok: Bool = u32(d.replicas[u32(0)].len) <= u32(d.leader.len)
+  i: u32 = 0
+  while i < u32(2) {
+    k: u32 = 0
+    while k < u32(d.replicas[i].len) && k < u32(3) {
+      ok = ok && d.replicas[i].log[k] == d.leader.log[k]
+      k = k + u32(1)
+    }
+    i = i + u32(1)
+  }
+  ok
+}
+```
+
+which is `Invariant_agree == (replicas[0].len <= leader.len) /\ (\A i \in
+0..1 : (\A k \in 0..2 : (k < replicas[i].len) => (replicas[i].log[k] =
+leader.log[k])))`: each loop over a counter from zero is a bounded
+universal quantifier, a literal bound is the domain, every other bound
+guards the body, and each `ok = ok && e` is a conjunct. TLC and `oak
+prove` then check one statement — the prover on the reachable states of
+the projection, TLC on the module — and a false theorem is refuted by
+both. A theorem outside the subset (a call, an `if`, a store) is left to
+the prover, and the module says so in a comment. Conformance (§4a)
+compares the `Invariant_*` definitions by their canonical text.
+
 ## 4a. Conformance of a hand-written module
 
 ```text

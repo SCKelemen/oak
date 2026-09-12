@@ -96,7 +96,10 @@ and `invariant fails at the reachable state Unlocked with {coins: 0}`
 names a state a run actually reaches, the inductive detail kept in
 parentheses. A graph beyond the bound keeps the inductive summary.
 Steps that carry a payload enumerate it with the step (`program(compare:
-u8)` is 256 steps). Nothing is added to the language: the generated
+u8)` is 256 steps). A candidate in the invariant subset is also stated in
+the protocol's model-checker module as `Invariant_<name>` and listed in
+its configuration (`112-protocols.md` §4), so TLC checks the same
+statement. Nothing is added to the language: the generated
 theorems are the ones a programmer would write, produced so the
 preservation shape is never misspelled. The generation is a syntax
 rewrite on the parsed program (`Compilation.WithSyntaxRewrite`), so a
