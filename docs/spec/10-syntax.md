@@ -366,7 +366,7 @@ Rules:
   non-generic function whose function parameter only flows into calls —
   its own, or those of functions it forwards the parameter to — capturing
   scalar, string, view, span, or plain-data record and sum-type parameters
-  or annotated locals it does not rebind, is specialized away — the callee
+  (generic instantiations included) or annotated locals it does not rebind, is specialized away — the callee
   chain is cloned for the call site and the captured values travel as
   arguments (`60-effects-allocation.md`
   §11, `compiler/closures.go`). A typed literal lowers
