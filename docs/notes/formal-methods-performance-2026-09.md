@@ -151,13 +151,17 @@ three. With the baselines in hand the order of execution is 1, 7, 9, 2,
    variable id. Measurement: the blast benchmark. Proof: none new — the
    term algebra is unchanged; an intern table is a function.
 
-4. **Better circuits.** Carry-lookahead or Kogge–Stone adders, a
-   Wallace or Dadda multiplier for the widths in use, logarithmic popcount
-   and count-leading-zeros (the `simd.popcount`/`ctz` shapes the codec
-   track already relies on). Measurement: node counts for the arithmetic
-   theorems. Proof: each circuit checked against the arithmetic
-   definition by `bv_decide` in Lean for 8, 16, 32 and 64 bits, as
-   `Oak.JsonDigits` checks the digit arithmetic today.
+4. **Better circuits — corrected.** A reduced ordered BDD is canonical:
+   its size depends on the function and the variable order, not on the
+   circuit that built it, so carry-lookahead adders or Wallace multipliers
+   cannot shrink the final diagrams the lattice file builds. What the
+   circuit shape changes is the intermediate work — the diagrams of the
+   partial results — and for the shift-and-add multiplier and the
+   quadratic popcount and count-leading-zeros that work is measurable.
+   Measurement: `BenchmarkBDDMul*` and node-creation counts. Proof: each
+   circuit checked against the arithmetic definition by `bv_decide` in
+   Lean, as `Oak.JsonDigits` checks the digit arithmetic today. Demoted
+   below item 8 by this correction.
 
 5. **Enumeration without the interpreter's heap.** Domains as packed
    `uint64` words, tuples as slot frames, the theorem body compiled once
