@@ -11,6 +11,7 @@ package codegen
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/semir"
@@ -219,6 +220,7 @@ func (cg *CodeGenerator) emitRecordTypeDef(typeName string, recordLit *ast.Recor
 	if recordLit.Layout != nil {
 		spec.Packed = recordLit.Layout.Packed
 		spec.Align = recordLit.Layout.Align
+		spec.NoPadding = recordLit.Layout.NoPadding
 	}
 	if spec.Packed {
 		for _, field := range recordLit.FieldOrder {
@@ -294,6 +296,16 @@ func (cg *CodeGenerator) emitRecordTypeDef(typeName string, recordLit *ast.Recor
 	if recordLit.Layout != nil {
 		cg.write(fmt.Sprintf("typedef char oak_layout_align_%s[ (_Alignof(%s) == %du) ? 1 : -1 ];\n",
 			typeName, cName, layout.Alignment))
+	}
+	if spec.NoPadding {
+		// The density claim (docs/spec/40-records.md section 6a), ratified
+		// by the C compiler: the struct is exactly the sum of its members.
+		members := make([]string, 0, len(recordLit.FieldOrder))
+		for _, field := range recordLit.FieldOrder {
+			members = append(members, fmt.Sprintf("sizeof(((%s *)0)->%s)", cName, cIdent(field.Name)))
+		}
+		cg.write(fmt.Sprintf("typedef char oak_layout_dense_%s[ (sizeof(%s) == (%s)) ? 1 : -1 ];\n",
+			typeName, cName, strings.Join(members, " + ")))
 	}
 	for _, placed := range layout.Fields {
 		cg.write(fmt.Sprintf("typedef char oak_layout_off_%s_%s[ (offsetof(%s, %s) == %du) ? 1 : -1 ];\n",

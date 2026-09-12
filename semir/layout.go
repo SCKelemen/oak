@@ -103,11 +103,53 @@ func NaturalRecordLayout(fields []RecordFieldRepresentation) (Representation, er
 type RecordLayoutSpec struct {
 	Packed bool
 	Align  uint32
+	// NoPadding is the claim that the natural (or alignment-raised)
+	// placement is dense: every offset is the sum of the preceding sizes
+	// and the size is the sum of all of them (docs/spec/40-records.md
+	// section 6a). It arranges nothing — the layout is the natural one —
+	// and a placement that is not dense is a PaddingError.
+	NoPadding bool
 }
 
-// Natural reports the default spec: ordered fields, natural padding.
+// Natural reports the default spec: ordered fields, natural padding, no
+// claim to check.
 func (s RecordLayoutSpec) Natural() bool {
-	return !s.Packed && s.Align == 0
+	return !s.Packed && s.Align == 0 && !s.NoPadding
+}
+
+// PaddingError reports where a record declared no_padding has padding: the
+// bytes before Field (Tail false) or after the last field (Tail true).
+type PaddingError struct {
+	Field  string
+	Offset uint32 // the padded field's offset, or the record size for tail padding
+	Bytes  uint32
+	Tail   bool
+}
+
+func (e *PaddingError) Error() string {
+	if e.Tail {
+		return fmt.Sprintf("%d bytes of tail padding after field %q (the fields end at offset %d)", e.Bytes, e.Field, e.Offset-e.Bytes)
+	}
+	return fmt.Sprintf("%d bytes of padding before field %q at offset %d", e.Bytes, e.Field, e.Offset)
+}
+
+// checkNoPadding verifies the density claim over a computed layout: each
+// field starts where the previous ended and the size is the sum of the
+// sizes (Oak.LayoutSpec.NoPadding). Sizes are uint32 and summed in uint64.
+func checkNoPadding(layout Representation) error {
+	cursor := uint64(0)
+	last := ""
+	for _, field := range layout.Fields {
+		if uint64(field.Offset) != cursor {
+			return &PaddingError{Field: field.Name, Offset: field.Offset, Bytes: uint32(uint64(field.Offset) - cursor)}
+		}
+		cursor += uint64(field.Size)
+		last = field.Name
+	}
+	if uint64(layout.Size) != cursor {
+		return &PaddingError{Field: last, Offset: layout.Size, Bytes: uint32(uint64(layout.Size) - cursor), Tail: true}
+	}
+	return nil
 }
 
 // RecordLayoutWithSpec computes the ordered layout under an explicit layout
@@ -125,6 +167,23 @@ func RecordLayoutWithSpec(fields []RecordFieldRepresentation, spec RecordLayoutS
 	}
 	if spec.Natural() {
 		return NaturalRecordLayout(fields)
+	}
+	if spec.Packed && spec.NoPadding {
+		return Representation{}, fmt.Errorf("packed is dense by construction; no_padding states that the natural placement is dense — declare one")
+	}
+	if spec.NoPadding {
+		// The claim, checked: the natural placement (raised if asked),
+		// then density.
+		checked := spec
+		checked.NoPadding = false
+		layout, err := RecordLayoutWithSpec(fields, checked)
+		if err != nil {
+			return Representation{}, err
+		}
+		if err := checkNoPadding(layout); err != nil {
+			return Representation{}, err
+		}
+		return layout, nil
 	}
 	const maxUint32 = uint64(^uint32(0))
 

@@ -3130,15 +3130,16 @@ func (p *Parser) parseFieldTagValue() ast.Expression {
 }
 
 // parseRecordLayoutSpec parses the parenthesized layout clause after
-// `struct`: comma-separated entries, each either the word `packed` or
-// `align: <integer literal>`. Anything else is a parse error — the layout
-// vocabulary is closed. On success the cursor sits on the token after `)`.
+// `struct`: comma-separated entries, each the word `packed`, the word
+// `no_padding`, or `align: <integer literal>`. Anything else is a parse
+// error — the layout vocabulary is closed. On success the cursor sits on
+// the token after `)`.
 func (p *Parser) parseRecordLayoutSpec() *ast.RecordLayoutSpec {
 	spec := &ast.RecordLayoutSpec{}
 	p.nextToken() // consume (
 	for {
 		if !p.currentTokenIs(token.IDENT) {
-			p.addErrorAtCurrentToken("expected 'packed' or 'align' in struct layout spec")
+			p.addErrorAtCurrentToken("expected 'packed', 'no_padding', or 'align' in struct layout spec")
 			return nil
 		}
 		switch p.currentToken.Literal {
@@ -3148,6 +3149,13 @@ func (p *Parser) parseRecordLayoutSpec() *ast.RecordLayoutSpec {
 				return nil
 			}
 			spec.Packed = true
+			p.nextToken()
+		case "no_padding":
+			if spec.NoPadding {
+				p.addErrorAtCurrentToken("duplicate 'no_padding' in struct layout spec")
+				return nil
+			}
+			spec.NoPadding = true
 			p.nextToken()
 		case "align":
 			if spec.Align != 0 {
@@ -3172,7 +3180,7 @@ func (p *Parser) parseRecordLayoutSpec() *ast.RecordLayoutSpec {
 			spec.Align = uint32(value)
 			p.nextToken()
 		default:
-			p.addErrorAtCurrentToken("expected 'packed' or 'align' in struct layout spec")
+			p.addErrorAtCurrentToken("expected 'packed', 'no_padding', or 'align' in struct layout spec")
 			return nil
 		}
 		if p.currentTokenIs(token.COMMA) {

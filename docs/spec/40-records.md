@@ -186,7 +186,7 @@ This algorithm is not a claim that every target ABI uses this layout. Packed rec
 
 The Semantic IR implementation is `NaturalRecordLayout` in `semir/layout.go`.
 
-## 6a. Declared layout specs: `struct(packed)` and `struct(align: N)`
+## 6a. Declared layout specs: `struct(packed)`, `struct(align: N)`, `struct(no_padding)`
 
 A struct declaration may carry an explicit layout spec as a parenthesized
 clause — no attribute syntax, no annotation line:
@@ -204,7 +204,8 @@ Line: type = struct(align: 64) {
 ```
 
 The clause vocabulary is closed: `packed`, `align: N` (a nonzero
-power-of-two `u32` literal), or both, comma-separated.
+power-of-two `u32` literal), `no_padding`, comma-separated; `packed` and
+`no_padding` exclude each other.
 
 Semantics (`semir.RecordLayoutWithSpec`, the transliteration of
 `Oak.LayoutSpec`):
@@ -231,6 +232,36 @@ Semantics (`semir.RecordLayoutWithSpec`, the transliteration of
 - Nesting composes through the ordinary representation registry: a packed
   record used as a field contributes its dense size and alignment 1, so
   a `crc` field after a 7-byte packed header sits at offset 7.
+- **`no_padding`** arranges nothing — the placement is the natural one,
+  every field at its own alignment — and *claims* that placement is
+  already dense: each offset is the sum of the preceding sizes and the
+  size is the sum of all of them, so every byte of the record is a field
+  byte (`Oak.LayoutSpec.NoPadding`). This is the wire-record idiom
+  (TigerBeetle's `extern struct` with `stdx.no_padding`,
+  `docs/notes/tigerbeetle-2026-09.md`): a header ordered by descending
+  alignment reads and writes as bytes with nothing hidden between fields,
+  while `packed` would give the same bytes at the cost of misaligned
+  members. The compiler measures the claim in the Check stage
+  (`compiler/layout_claims.go`, `OAK-R0301`): a false one names the
+  padded field and the bytes — `3 bytes of padding before field "b" at
+  offset 4`, or `3 bytes of tail padding after field "b"` — and the fix is
+  to reorder by descending alignment or pad explicitly with a `reserved`
+  field, which then reads and writes as zero like any other. The emitted
+  C repeats the identity as a compile-time assertion, `sizeof(T)` equal
+  to the sum of `sizeof` over its members, so the C compiler ratifies it.
+  A `no_padding` record holds only what a wire record can carry:
+  fixed-width scalars (`u128` included), `Bool`, owned arrays of those,
+  and nested records that themselves declare `no_padding` or `packed`;
+  views, spans, strings, buffers, atomic cells, function pointers, and
+  the platform-width integers are rejected by shape. `align: N` may
+  accompany it (the raised size must still equal the sum: a
+  `no_padding, align: 16` record of twelve bytes is refused for its tail
+  padding); `packed` may not (packing is dense by construction).
+  Templates cannot carry it — the claim is about one placement.
+  **Proven**: a dense natural placement is the packed placement
+  (`dense_placeFrom_eq_packed`, `noPadding_placement`): `no_padding` buys
+  exactly packed's bytes with every field naturally aligned
+  (`compiler/e2e_no_padding_test.go`).
 
 ### 6a.1 Per-field alignment
 
