@@ -43,6 +43,7 @@ import (
 // compares its function parameter, a generic or extern callee, a capture
 // of a Buffer-carrying or generic type or of an unannotated local, a
 // capture the literal rebinds, or a bound literal mentioned more than once.
+// Several capturing literals in one call are specialized together.
 
 // closureScalarTypes are the scalar capture types, copied by value:
 // fixed-width and platform integers, Bool, and the two arithmetic floats.
@@ -371,10 +372,12 @@ func walkStatements(node ast.Node, visit func(ast.Statement)) {
 	walk(reflect.ValueOf(node))
 }
 
-// specializeCall rewrites one call in place when exactly one argument is a
+// specializeCall rewrites one call in place when at least one argument is a
 // capturing typed literal in the supported shape, returning the lifted
-// literal and the specialized callees (the whole forwarding chain) to
-// append to the program.
+// literals and the specialized callees (the whole forwarding chain) to
+// append to the program. Several capturing literals in one call are
+// specialized together: each is lifted, the captures are the union, and
+// the callee's clone drops every literal-bearing parameter.
 func specializeCall(call *ast.InvocationExpression, functions map[string]*ast.FunctionStatement, candidates map[string]ast.Expression, counter int) ([]ast.Statement, bool) {
 	calleeIdent, isIdent := call.Function.(*ast.Identifier)
 	if !isIdent {
@@ -384,9 +387,8 @@ func specializeCall(call *ast.InvocationExpression, functions map[string]*ast.Fu
 	if !specializable(callee) || len(callee.Parameters) != len(call.Arguments) {
 		return nil, false
 	}
-	position := -1
-	var literal *ast.FunctionLiteral
-	var captures []string
+	literals := map[int]*ast.FunctionLiteral{}
+	captureSet := map[string]bool{}
 	for i, arg := range call.Arguments {
 		lit, isLiteral := arg.(*ast.FunctionLiteral)
 		if !isLiteral {
@@ -396,47 +398,67 @@ func specializeCall(call *ast.InvocationExpression, functions map[string]*ast.Fu
 		if len(names) == 0 {
 			continue // captureless: a code pointer already, nothing to do
 		}
-		if position != -1 {
-			return nil, false // two capturing literals in one call: not this increment
+		if len(lit.Parameters) == 0 && lit.ReturnType == nil || lit.Body == nil {
+			return nil, false
 		}
-		position, literal, captures = i, lit, names
+		if !parameterFlowsIntoCalls(callee, i, functions, map[string]bool{}) || assignsAny(lit.Body, names) {
+			return nil, false
+		}
+		literals[i] = lit
+		for _, name := range names {
+			captureSet[name] = true
+		}
 	}
-	if literal == nil || len(literal.Parameters) == 0 && literal.ReturnType == nil || literal.Body == nil {
+	if len(literals) == 0 {
 		return nil, false
 	}
-	if !parameterFlowsIntoCalls(callee, position, functions, map[string]bool{}) || assignsAny(literal.Body, captures) {
-		return nil, false
+	captures := make([]string, 0, len(captureSet))
+	for name := range captureSet {
+		captures = append(captures, name)
 	}
+	sort.Strings(captures)
 
+	positions := make([]int, 0, len(literals))
+	for position := range literals {
+		positions = append(positions, position)
+	}
+	sort.Ints(positions)
 	spec := &specialization{
 		functions:  functions,
 		candidates: candidates,
 		captures:   captures,
 		counter:    counter,
-		tok:        literal.Token,
+		tok:        literals[positions[0]].Token,
 		clones:     map[string]string{},
 	}
 
-	// The literal, lifted, with the captures as trailing parameters: its
-	// body already names them.
-	spec.litName = fmt.Sprintf("0clos_lit_%d", counter)
-	lifted := &ast.FunctionStatement{
-		Token:      literal.Token,
-		EndToken:   literal.Token,
-		Name:       spec.ident(spec.litName),
-		Parameters: append(append([]*ast.FunctionParameter{}, literal.Parameters...), spec.captureParams()...),
-		ReturnType: literal.ReturnType,
-		Body:       &ast.BlockExpression{Token: literal.Token, Block: literal.Body},
+	// Each literal, lifted, with the captures as trailing parameters: its
+	// body already names the ones it uses and ignores the rest.
+	mapping := map[int]string{}
+	for n, position := range positions {
+		literal := literals[position]
+		litName := fmt.Sprintf("0clos_lit_%d", counter)
+		if n != 0 {
+			litName = fmt.Sprintf("0clos_lit_%d_%d", counter, n)
+		}
+		mapping[position] = litName
+		spec.added = append(spec.added, &ast.FunctionStatement{
+			Token:      literal.Token,
+			EndToken:   literal.Token,
+			Name:       spec.ident(litName),
+			Parameters: append(append([]*ast.FunctionParameter{}, literal.Parameters...), spec.captureParams()...),
+			ReturnType: literal.ReturnType,
+			Body:       &ast.BlockExpression{Token: literal.Token, Block: literal.Body},
+		})
 	}
-	spec.added = append(spec.added, lifted)
 
-	cloneName := spec.cloneOf(callee, position)
+	cloneName := spec.cloneOf(callee, mapping)
 
-	// The call site: the literal's slot removed, the captured values passed.
+	// The call site: the literals' slots removed, the captured values passed.
 	call.Function = spec.ident(cloneName)
-	args := make([]ast.Expression, 0, len(call.Arguments)+len(captures)-1)
+	args := make([]ast.Expression, 0, len(call.Arguments)+len(captures))
 	for i, arg := range call.Arguments {
-		if i != position {
+		if _, dropped := mapping[i]; !dropped {
 			args = append(args, arg)
 		}
 	}
@@ -455,17 +477,16 @@ func specializable(callee *ast.FunctionStatement) bool {
 		!callee.Theorem && len(callee.TypeParams) == 0 && callee.Receiver == nil && callee.Name != nil
 }
 
-// specialization carries one call site's rewrite: the lifted literal's name,
-// the captures, and the clones made so far (callee name and parameter
-// position → clone name), so a forwarding chain is cloned once and a
-// recursive forward resolves to the clone under construction.
+// specialization carries one call site's rewrite: the captures and the
+// clones made so far (callee name and parameter→literal mapping → clone
+// name), so a forwarding chain is cloned once and a recursive forward
+// resolves to the clone under construction.
 type specialization struct {
 	functions  map[string]*ast.FunctionStatement
 	candidates map[string]ast.Expression
 	captures   []string
 	counter    int
 	tok        token.Token
-	litName    string
 	clones     map[string]string
 	added      []ast.Statement
 }
@@ -484,12 +505,27 @@ func (s *specialization) captureParams() []*ast.FunctionParameter {
 	return params
 }
 
-// cloneOf returns the name of the callee's clone for the function parameter
-// at position, making it if needed: the parameter removed, the captures
-// appended, every call through the parameter a direct call to the lifted
-// literal, every forward of the parameter a call to that callee's clone.
-func (s *specialization) cloneOf(callee *ast.FunctionStatement, position int) string {
-	key := fmt.Sprintf("%s#%d", callee.Name.Value, position)
+// mappingKey spells a callee and a parameter→literal mapping for the memo.
+func mappingKey(callee string, mapping map[int]string) string {
+	positions := make([]int, 0, len(mapping))
+	for position := range mapping {
+		positions = append(positions, position)
+	}
+	sort.Ints(positions)
+	key := callee
+	for _, position := range positions {
+		key += fmt.Sprintf("#%d=%s", position, mapping[position])
+	}
+	return key
+}
+
+// cloneOf returns the name of the callee's clone for the given function
+// parameters (position → lifted literal), making it if needed: those
+// parameters removed, the captures appended, every call through one of
+// them a direct call to its lifted literal, every forward of them a call to
+// the target's clone for the forwarded sub-mapping.
+func (s *specialization) cloneOf(callee *ast.FunctionStatement, mapping map[int]string) string {
+	key := mappingKey(callee.Name.Value, mapping)
 	if name, done := s.clones[key]; done {
 		return name
 	}
@@ -498,14 +534,17 @@ func (s *specialization) cloneOf(callee *ast.FunctionStatement, position int) st
 		cloneName = fmt.Sprintf("0clos_%d_%d_%s", s.counter, len(s.clones), callee.Name.Value)
 	}
 	s.clones[key] = cloneName
-	fname := callee.Parameters[position].Name.Value
+	byName := map[string]string{} // parameter name → lifted literal
+	for position, litName := range mapping {
+		byName[callee.Parameters[position].Name.Value] = litName
+	}
 
 	clone := cloneSyntax(reflect.ValueOf(callee)).Interface().(*ast.FunctionStatement)
 	clone.Name = s.ident(cloneName)
 	clone.Exported, clone.Opaque = false, false
-	params := make([]*ast.FunctionParameter, 0, len(clone.Parameters)+len(s.captures)-1)
+	params := make([]*ast.FunctionParameter, 0, len(clone.Parameters)+len(s.captures))
 	for i, p := range clone.Parameters {
-		if i != position {
+		if _, dropped := mapping[i]; !dropped {
 			params = append(params, p)
 		}
 	}
@@ -519,32 +558,35 @@ func (s *specialization) cloneOf(callee *ast.FunctionStatement, position int) st
 		if !isHead {
 			return e, nil
 		}
-		if head.Value == fname {
-			inner.Function = s.ident(s.litName)
+		if litName, direct := byName[head.Value]; direct {
+			inner.Function = s.ident(litName)
 			for _, name := range s.captures {
 				inner.Arguments = append(inner.Arguments, s.ident(name))
 			}
 			return inner, nil
 		}
-		// A forward: the parameter passed on to another function at some
-		// position — that function's clone takes the captures instead.
-		forwardAt := -1
+		// A forward: parameters passed on to another function at some
+		// positions — that function's clone for the sub-mapping takes the
+		// captures instead.
+		forwarded := map[int]string{}
 		for i, arg := range inner.Arguments {
-			if id, ok := arg.(*ast.Identifier); ok && id.Value == fname {
-				forwardAt = i
+			if id, ok := arg.(*ast.Identifier); ok {
+				if litName, isParam := byName[id.Value]; isParam {
+					forwarded[i] = litName
+				}
 			}
 		}
-		if forwardAt == -1 {
+		if len(forwarded) == 0 {
 			return e, nil
 		}
 		target := s.functions[head.Value]
 		if target == nil {
 			return e, nil
 		}
-		inner.Function = s.ident(s.cloneOf(target, forwardAt))
-		args := make([]ast.Expression, 0, len(inner.Arguments)+len(s.captures)-1)
+		inner.Function = s.ident(s.cloneOf(target, forwarded))
+		args := make([]ast.Expression, 0, len(inner.Arguments)+len(s.captures))
 		for i, arg := range inner.Arguments {
-			if i != forwardAt {
+			if _, dropped := forwarded[i]; !dropped {
 				args = append(args, arg)
 			}
 		}

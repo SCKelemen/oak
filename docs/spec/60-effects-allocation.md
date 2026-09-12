@@ -327,7 +327,10 @@ field, no packed layout), that the literal does not rebind (a store
 through a captured span is a write through the borrow and stays allowed).
 A literal bound to a local (`g := fn(...)`) and passed exactly once as a
 call argument, with neither it nor any captured name assigned anywhere in
-the function, is inlined into that call first. The
+the function, is inlined into that call first. Several capturing literals
+in one call are specialized together: each is lifted, the captures are
+the union, and the callee's clone drops every literal-bearing parameter
+(a forward passing several of them on is cloned for that combination). The
 compiler lifts the literal to a top-level function with the captures as
 trailing parameters, clones the callee for that call site with the
 function parameter removed and the captures appended — and every function
