@@ -1363,6 +1363,14 @@ func (bc *BorrowChecker) checkViewAsCall(call *ast.InvocationExpression, env *ty
 		return
 	}
 
+	// view_as[U](view(&owner)): the scalar view borrows the owner whole,
+	// exactly as view(&owner) does (docs/spec/50-borrowing.md section 8d).
+	if inner, isCall := call.Arguments[0].(*ast.InvocationExpression); isCall {
+		if callee, isIdent := inner.Function.(*ast.Identifier); isIdent && callee.Value == "view" && len(inner.Arguments) == 1 {
+			bc.checkViewCall(inner, env, targetVar)
+			return
+		}
+	}
 	// The argument should be an existing view ([]T)
 	// view_as reinterprets the view but doesn't create a new borrow from the owner
 	if ident, ok := call.Arguments[0].(*ast.Identifier); ok {

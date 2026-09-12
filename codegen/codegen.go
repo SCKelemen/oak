@@ -1412,8 +1412,13 @@ func (cg *CodeGenerator) preEmitContainerTypes(program *ast.Program) {
 				cg.emitSpanType(info.element)
 			case containerOwnedArray:
 				// Resolving the spelling places the wrapper typedef (and
-				// the typedefs of nested element arrays) at file scope.
+				// the typedefs of nested element arrays) at file scope; an
+				// inline view(&owner) or span(&owner) of the array — the
+				// source of a view_as — needs the element's view and span
+				// structs at file scope too.
 				cg.parseTypeExpression(t)
+				cg.emitViewType(info.element)
+				cg.emitSpanType(info.element)
 			}
 		}
 	}
@@ -2940,6 +2945,29 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			}
 			if (ident.Value == "view" || ident.Value == "span") && len(e.Arguments) == 1 {
 				cg.emitBorrowConstruction(ident.Value, e, tc)
+				return
+			}
+			if (ident.Value == "view_as" || ident.Value == "span_as") && len(e.Arguments) == 1 {
+				// view_as[U](v) / span_as[U](s) (docs/spec/50-borrowing.md
+				// section 8d): the same storage as a view of U with the
+				// record's scalar count times as many elements; the
+				// checker proved the record's layout contiguous U.
+				reinterpretation, known := tc.ReinterpretationAt(e.Token)
+				if !known {
+					cg.output.WriteString("OAK_UNSUPPORTED_REINTERPRET")
+					return
+				}
+				factor := reinterpretation.Factor
+				element := cg.parseTypeExpression(&ast.Identifier{Value: reinterpretation.Element})
+				if ident.Value == "view_as" {
+					cg.output.WriteString(fmt.Sprintf("(%s){ (const %s *)( ", cg.emitViewType(element), element))
+				} else {
+					cg.output.WriteString(fmt.Sprintf("(%s){ (%s *)( ", cg.emitSpanType(element), element))
+				}
+				cg.emitExpressionFragment(e.Arguments[0], tc)
+				cg.output.WriteString(" ).base, (u32)(( ")
+				cg.emitExpressionFragment(e.Arguments[0], tc)
+				cg.output.WriteString(fmt.Sprintf(" ).len * %du) }", factor))
 				return
 			}
 			if ident.Value == "subslice" && len(e.Arguments) == 3 {

@@ -2054,6 +2054,37 @@ func (em *emitter) call(call *ast.InvocationExpression, want string) (string, er
 		}
 		em.usesUtf8 = true
 		return "(Oak.Utf8Exec.valid " + base + ")", nil
+	case "view_as":
+		// view_as[U](v) (docs/spec/50-borrowing.md section 8d): the fields
+		// of every record in declaration order, fixed arrays spliced.
+		if len(call.Arguments) != 1 {
+			return "", fmt.Errorf("view_as takes one argument")
+		}
+		base, err := em.expr(call.Arguments[0], "")
+		if err != nil {
+			return "", err
+		}
+		recordType := em.elementTypeOf(call.Arguments[0])
+		adt, isRecord := em.records[recordType]
+		if !isRecord {
+			return "", fmt.Errorf("view_as of %s is outside the extracted subset (a view of a declared record)", recordType)
+		}
+		literal := adt.Variants[0].Literal.(*ast.RecordLiteral)
+		element, isArray := elementOf(em.checkedLeanType(call))
+		if !isArray {
+			return "", fmt.Errorf("view_as has no recorded element type")
+		}
+		parts := []string{fmt.Sprintf("([] : List %s)", element)}
+		for _, f := range literal.FieldOrder {
+			if _, fixed := f.Value.(*ast.IndexExpression); fixed {
+				parts = append(parts, fmt.Sprintf("r.%s.toList", ident(f.Name)))
+			} else {
+				parts = append(parts, fmt.Sprintf("[r.%s]", ident(f.Name)))
+			}
+		}
+		return fmt.Sprintf("((%s.toList.flatMap (fun r => %s)).toArray)", base, strings.Join(parts, " ++ ")), nil
+	case "span_as":
+		return "", fmt.Errorf("span_as is outside the extracted subset (a writable alias of a record's storage)")
 	case "subslice":
 		// subslice(v, start, n) is the window of n elements from start
 		// (docs/spec/50-borrowing.md); Oak traps past the end, the extraction

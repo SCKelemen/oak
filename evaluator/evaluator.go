@@ -139,6 +139,17 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		}
 
 	case *ast.InvocationExpression:
+		// view_as[U](v) and span_as[U](s) name their target type in the
+		// source (docs/spec/50-borrowing.md section 8d); the type checker
+		// rewrites the callee to the bare name, and an unchecked program
+		// reaches here with the index form.
+		if idx, ok := node.Function.(*ast.IndexExpression); ok {
+			if ident, isIdent := idx.Left.(*ast.Identifier); isIdent && (ident.Value == "view_as" || ident.Value == "span_as") {
+				if result, recognized := evalBorrowInvocation(ident.Value, node.Arguments, env); recognized {
+					return result
+				}
+			}
+		}
 		if ident, ok := node.Function.(*ast.Identifier); ok {
 			if result, recognized := evalAtomicInvocation(ident.Value, node.Arguments, env); recognized {
 				return result
@@ -1443,7 +1454,13 @@ func evalRecordLiteral(rl *ast.RecordLiteral, env *object.Environment) object.Ob
 		fields[fieldName] = copyValue(fieldValue)
 	}
 
-	return &object.Record{Fields: fields}
+	order := make([]string, 0, len(rl.FieldOrder))
+	for _, field := range rl.FieldOrder {
+		if _, present := fields[field.Name]; present {
+			order = append(order, field.Name)
+		}
+	}
+	return &object.Record{Fields: fields, Order: order}
 }
 
 // Evaluate field access: record.field or array indexing: array[index]

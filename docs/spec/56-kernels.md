@@ -286,6 +286,11 @@ at: t.Tensor2 = t.tensor_transpose(a)               // strides swapped, same sto
   of `tensor_matmul` are the sequential left fold in row-major order, the
   grouping every backend computes; a tree-grouped variant is `reduce.tree`
   (`55-parallelism.md` §4) over the same elements.
+- **A field across positions is a tensor.** The `[q | k | v]` cache row is
+  a record; `k` across positions is `tensor_strided(view_as[f32](rows),
+  positions, D, 3 * D, 1, D)` — the scalar view of the record view
+  (`50-borrowing.md` §8d) under an explicit layout, no copy and no stride
+  arithmetic in an emitter (ml F6).
 - **Kernels take tensors.** `kernel relu[R, S]: (gid: u32, x: Tensor2[R],
   out: MutTensor2[S])` takes the records themselves (§1): the Metal entry
   flattens each into its buffers and rebuilds the struct, `tensor_at(x, i,

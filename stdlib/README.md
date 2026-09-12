@@ -96,6 +96,7 @@ caller-owned span, so nothing allocates.
 | Function | Semantics |
 | --- | --- |
 | `tensor_of[R](data: View[f32, R], rows, cols)` / `tensor_mut_of[R](data: Span[f32, R], rows, cols)` | Contiguous row-major matrices over a view or span; the shape must fit (`assert`). |
+| `tensor_strided[R](data, rows, cols, row_stride, col_stride, offset)` | An explicit layout over a view: element `(i, j)` is `data[offset + i * row_stride + j * col_stride]`; the last element must fit. With `view_as[f32](rows)` (`50-borrowing.md` §8d) a record field across positions is a tensor with no copy: `k` of a `[q \| k \| v]` row is `tensor_strided(view_as[f32](rows), positions, D, 3 * D, 1, D)`. |
 | `tensor_at(t, i, j)`, `tensor_get(t, i, j)`, `tensor_set(t, i, j, v)` | Element access through `tensor_index`, which traps on an out-of-shape pair; the view's bounds check guards the rest. |
 | `tensor_transpose(t)`, `tensor_row(t, i)` | The transposed view (strides swapped) and row `i` as a `1 x cols` tensor, both over the same storage. |
 | `tensor_sum(t)` | Every element in row-major order, left to right, from 0. |
