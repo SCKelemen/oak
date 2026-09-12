@@ -279,6 +279,8 @@ the toolchain.
 | --- | --- | --- |
 | `machine_agrees_two_bytes` | the `Utf8` machine, stepped through `utf8_legal`/`utf8_next`, accepts `[b0, b1]` exactly when `is_valid_utf8` does | decided, all 65536 cases, and witnessed in the compiled program — where `utf8_next` is the shift DFA the backend lowers (`112-protocols.md` §2a) and `is_valid_utf8` the C helper |
 | `machine_agrees_three_bytes_e0/ed/e1` | the same under the three-byte leads with special ranges | decided and witnessed, all 65536 cases each |
+| `lowering_legal`, `lowering_next` (`Oak.Protocol`: the table computes the tree) | `utf8_legal_tree`/`utf8_next_tree`, the branch tree the projection keeps beside the lowering, agree with `utf8_legal`/`utf8_next` on every state and byte | decided (2048 cases) and witnessed in the compiled program, where `utf8_next` is the shift DFA |
+| `run_is_iterated_next` (`Oak.Protocol.runSink_correct`) | `utf8_run` over a legal two-byte input is `utf8_next` iterated | decided and witnessed, all 65536 cases |
 
 | Layout law (`Oak.RecordLayout`, `spec/oak/layout.oak`) | Statement | Rung |
 | --- | --- | --- |
@@ -305,8 +307,7 @@ implements and decided exhaustively. The instruction functions decide because th
 terms — the semantics the assembler lane is checked against — with `cnt`
 as a population-count term (an adder tree over the operand's bits), and
 divides by an unsigned constant power of two as a shift or a mask. What
-is not yet restated: the laws of `Oak.Protocol` (about the lowering, not
-a value), `Oak.Floats` (the decider has no floats), and the laws over
+is not yet restated: `Oak.Floats` (the decider has no floats), and the laws over
 lists and layouts, which have no fixed-width statement.
 
 ## 7. Direction

@@ -971,6 +971,17 @@ func (m *protocolMachine) project() []ast.Statement {
 		// enough, computed here from the declaration; the Oak bodies above
 		// stay the meaning. A byte-driven machine also gets `name_run`.
 		if lowering := m.lowering(); lowering != nil {
+			// The branch-tree realization stays beside the lowered one
+			// (`name_legal_tree`, `name_next_tree`, never lowered), so a
+			// program holds both realizations of the declaration and
+			// spec/oak/protocols.oak can state that they agree
+			// (docs/spec/125-verification.md section 6).
+			legalTree := cloneSyntax(reflect.ValueOf(legal)).Interface().(*ast.FunctionStatement)
+			legalTree.Name = s.id(prefix + "_legal_tree")
+			nextTree := cloneSyntax(reflect.ValueOf(next)).Interface().(*ast.FunctionStatement)
+			nextTree.Name = s.id(prefix + "_next_tree")
+			renameIdentifier(nextTree, prefix+"_legal", prefix+"_legal_tree")
+			out = append(out, legalTree, nextTree)
 			legal.Lowering = loweringKind(lowering, "legal")
 			next.Lowering = loweringKind(lowering, "next")
 			if lowering.Shift {
