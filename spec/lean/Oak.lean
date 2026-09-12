@@ -124,3 +124,4 @@ import Oak.IoPort
 import Oak.ProtocolQuorum
 import Oak.TimeInterval
 import Oak.ProtocolConformance
+import Oak.RiscV

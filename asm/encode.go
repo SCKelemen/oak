@@ -24,13 +24,16 @@ import (
 // Relocation records a reference to a symbol outside the function.
 type Relocation struct {
 	Offset int    // byte offset of the instruction in the function
-	Kind   string // call26 (bl), jump26 (b), condbr19 (b.cond/cbz/ldr literal), tbz14, adr21, adrp21
+	Kind   string // call26 (bl), jump26 (b), condbr19 (b.cond/cbz/ldr literal), tbz14, adr21, adrp21; riscv_call_plt (call, rv64)
 	Symbol string
 }
 
 // EncodeFunction encodes every instruction of a checked function, resolving
 // labels within it; references to other symbols become relocations.
 func EncodeFunction(fn *Function) ([]byte, []Relocation, error) {
+	if fn.Arch == ArchRV64 {
+		return encodeRV64Function(fn)
+	}
 	labels := map[string]int64{}
 	offset := int64(0)
 	for _, item := range fn.Items {

@@ -333,6 +333,8 @@ func evalBinaryExtra(op string, l, r uint64, width int) (uint64, bool) {
 	m := mask(width)
 	l, r = l&m, r&m
 	switch op {
+	case "rv.div", "rv.divu", "rv.rem", "rv.remu":
+		return rv64Divide(op, l, r, width), true
 	case "ror":
 		count := uint(r % uint64(width))
 		if width == 32 {
@@ -376,4 +378,42 @@ func evalBinaryExtra(op string, l, r uint64, width int) (uint64, bool) {
 		return hi, true
 	}
 	return 0, false
+}
+
+// rv64Divide is RISC-V's total division (Oak.RiscV.div and its kin): a
+// zero divisor yields all ones for the quotient and the dividend for the
+// remainder; the signed overflow (most negative / -1) yields the dividend
+// and remainder 0.
+func rv64Divide(op string, l, r uint64, width int) uint64 {
+	m := mask(width)
+	shift := uint(64 - width)
+	sl, sr := int64(l<<shift)>>shift, int64(r<<shift)>>shift
+	switch op {
+	case "rv.divu":
+		if r == 0 {
+			return m
+		}
+		return (l / r) & m
+	case "rv.remu":
+		if r == 0 {
+			return l
+		}
+		return (l % r) & m
+	case "rv.div":
+		if r == 0 {
+			return m
+		}
+		if sr == -1 && uint64(sl)&m == (uint64(1)<<uint(width-1))&m {
+			return l
+		}
+		return uint64(sl/sr) & m
+	default: // rv.rem
+		if r == 0 {
+			return l
+		}
+		if sr == -1 {
+			return 0
+		}
+		return uint64(sl%sr) & m
+	}
 }

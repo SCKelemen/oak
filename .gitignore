@@ -9,3 +9,6 @@ spec/lean/lake-manifest.json
 sail_smt_cache/
 spec/sail/lean/.lake/
 __pycache__/
+
+# Third-party specifications and models read by generators and tests; never committed.
+external/

@@ -35,7 +35,13 @@ type Function struct {
 	Name      string
 	Signature *ast.FunctionStatement
 	Line      int
-	Items     []Item
+	// Arch is the unit's architecture lane (docs/spec/94-assembler.md §9):
+	// ArchArm64 (the default) or ArchRV64, from the unit path's
+	// `.rv64.oakasm` segment or an `arch rv64` directive. Every phase —
+	// parsing, the seam checker, the verifier, the encoder, the object
+	// writer, and the C emitter — dispatches on it.
+	Arch  string
+	Items []Item
 	// Directives collected from the block.
 	Bindings []Binding
 	Clobbers []Register
@@ -335,15 +341,16 @@ func (Option) operandKind() string    { return "option" }
 type RegClass int
 
 const (
-	ClassX  RegClass = iota // arm64.X — 64-bit general
-	ClassW                  // arm64.W — 32-bit view
-	ClassV                  // arm64.V — 128-bit vector
-	ClassSP                 // arm64.SP — the stack pointer
-	ClassZ                  // arm64.Z — a scalable vector register (streaming SVE); zN extends vN
-	ClassP                  // arm64.P — a scalable predicate register p0-p15
-	ClassPN                 // arm64.PN — a predicate-as-counter register pn0-pn15
-	ClassZA                 // arm64.ZA — a ZA tile (za0.s), or the whole array (za)
-	ClassZT                 // arm64.ZT — the ZT0 lookup table register
+	ClassX     RegClass = iota // arm64.X — 64-bit general
+	ClassW                     // arm64.W — 32-bit view
+	ClassV                     // arm64.V — 128-bit vector
+	ClassSP                    // arm64.SP — the stack pointer
+	ClassZ                     // arm64.Z — a scalable vector register (streaming SVE); zN extends vN
+	ClassP                     // arm64.P — a scalable predicate register p0-p15
+	ClassPN                    // arm64.PN — a predicate-as-counter register pn0-pn15
+	ClassZA                    // arm64.ZA — a ZA tile (za0.s), or the whole array (za)
+	ClassZT                    // arm64.ZT — the ZT0 lookup table register
+	ClassRV64X                 // rv64.X — a RISC-V 64-bit general register x0–x31 (x2 parses as ClassSP)
 )
 
 func (c RegClass) String() string {
@@ -366,13 +373,16 @@ func (c RegClass) String() string {
 		return "arm64.ZA"
 	case ClassZT:
 		return "arm64.ZT"
+	case ClassRV64X:
+		return "rv64.X"
 	}
 	return "?"
 }
 
-// ZeroRegister reports xzr/wzr (register number 31 in the general file).
+// ZeroRegister reports xzr/wzr (register number 31 in the general file)
+// and RISC-V's x0 (zero).
 func (r Register) ZeroRegister() bool {
-	return (r.Class == ClassX || r.Class == ClassW) && r.Num == 31
+	return ((r.Class == ClassX || r.Class == ClassW) && r.Num == 31) || (r.Class == ClassRV64X && r.Num == 0)
 }
 
 // ParseError is a unit parse failure with a source line.
@@ -408,6 +418,14 @@ func ParseUnit(path, text string) (*Unit, []error) {
 
 	lines := strings.Split(text, "\n")
 	var current *Function
+	unitArch := archFromPath(path)
+	// parseReg reads a register in the current function's lane.
+	parseReg := func(text string) (Register, bool) {
+		if current != nil && current.Arch == ArchRV64 {
+			return parseRV64Register(text)
+		}
+		return parseRegister(text)
+	}
 	for index, raw := range lines {
 		lineNo := index + 1
 		line := raw
@@ -431,12 +449,12 @@ func ParseUnit(path, text string) (*Unit, []error) {
 				fail(lineNo, "asm function header: %v", err)
 				continue
 			}
-			current = &Function{Name: signature.Name.Value, Signature: signature, Line: lineNo}
+			current = &Function{Name: signature.Name.Value, Signature: signature, Line: lineNo, Arch: unitArch}
 			continue
 		}
 
 		if line == "}" {
-			if usesOperandStack(current) {
+			if current.Arch == ArchArm64 && usesOperandStack(current) {
 				if err := desugarOperandStack(current); err != nil {
 					fail(lineNo, "%v", err)
 				}
@@ -454,19 +472,30 @@ func ParseUnit(path, text string) (*Unit, []error) {
 		fields := splitFields(line)
 		head := strings.ToLower(fields[0])
 		switch head {
+		case "arch":
+			// arch rv64 — the lane, before any binding or instruction.
+			if len(fields) != 2 || (fields[1] != ArchArm64 && fields[1] != ArchRV64) {
+				fail(lineNo, "arch takes one of %s, %s", ArchArm64, ArchRV64)
+				continue
+			}
+			if len(current.Items) != 0 || len(current.Bindings) != 0 || len(current.Clobbers) != 0 {
+				fail(lineNo, "arch must precede every binding, clobber, and instruction")
+				continue
+			}
+			current.Arch = fields[1]
 		case "bind":
 			// bind w0 = left  |  bind x0, w1 = frame
 			switch {
 			case len(fields) == 4 && fields[2] == "=":
-				reg, ok := parseRegister(fields[1])
+				reg, ok := parseReg(fields[1])
 				if !ok {
 					fail(lineNo, "bind: unknown register %q", fields[1])
 					continue
 				}
 				current.Bindings = append(current.Bindings, Binding{Register: reg, Param: fields[3], Line: lineNo})
 			case len(fields) == 5 && fields[3] == "=":
-				base, okBase := parseRegister(fields[1])
-				length, okLen := parseRegister(fields[2])
+				base, okBase := parseReg(fields[1])
+				length, okLen := parseReg(fields[2])
 				if !okBase || !okLen {
 					fail(lineNo, "bind: unknown register in pair %q, %q", fields[1], fields[2])
 					continue
@@ -478,7 +507,7 @@ func ParseUnit(path, text string) (*Unit, []error) {
 			}
 		case "clobber":
 			for _, name := range fields[1:] {
-				reg, ok := parseRegister(name)
+				reg, ok := parseReg(name)
 				if !ok {
 					fail(lineNo, "clobber: unknown register %q", name)
 					continue
@@ -513,6 +542,17 @@ func ParseUnit(path, text string) (*Unit, []error) {
 			}
 			current.Items = append(current.Items, Align{Bytes: bytes, Line: lineNo})
 		default:
+			if current.Arch == ArchRV64 {
+				instrs, err := parseRV64Instruction(fields, lineNo)
+				if err != nil {
+					fail(lineNo, "%v", err)
+					continue
+				}
+				for _, instr := range instrs {
+					current.Items = append(current.Items, instr)
+				}
+				continue
+			}
 			instr, err := parseInstruction(fields, lineNo)
 			if err != nil {
 				fail(lineNo, "%v", err)
@@ -525,6 +565,18 @@ func ParseUnit(path, text string) (*Unit, []error) {
 		fail(len(lines), "asm function %s: missing closing `}`", current.Name)
 	}
 	return unit, errs
+}
+
+// archFromPath reads the lane from the unit path: `name.rv64.oakasm` is
+// the RISC-V lane; `name.arm64.oakasm` and every other spelling the
+// AArch64 lane.
+func archFromPath(path string) string {
+	for _, segment := range strings.Split(strings.ToLower(path), ".") {
+		if segment == ArchRV64 {
+			return ArchRV64
+		}
+	}
+	return ArchArm64
 }
 
 // parseSignatureWithBody parses an Oak function declaration that may carry
