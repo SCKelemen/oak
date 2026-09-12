@@ -142,6 +142,13 @@ var timesimSource string
 //go:embed timenative.oak
 var timenativeSource string
 
+// objc is a library package only (import("objc")), Darwin-only: the
+// Objective-C runtime's class and selector lookups; messages are sent with
+// the language form c.msg_send (docs/spec/92-ffi.md section 2.12).
+//
+//go:embed objc.oak
+var objcSource string
+
 // arena is a library package only (import("arena")): bump reservations of
 // element ranges over an owner such as a Buffer[T]
 // (docs/spec/60-effects-allocation.md section 6).
@@ -247,6 +254,7 @@ var Packages = map[string]string{
 	"timesim":         timesimSource,
 	"timenative":      timenativeSource,
 	"arena":           arenaSource,
+	"objc":            objcSource,
 }
 
 // Flatten derives the prelude spelling of one library package's text: no

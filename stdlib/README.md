@@ -1162,6 +1162,25 @@ while the FFI lacked out-pointers and target constants is gone.
 within a minute, that the monotonic clock starts at zero and never decreases
 over a thousand refreshes, and that a fixed source is refused.
 
+## `objc`: the Objective-C runtime (`import("objc")`)
+
+`stdlib/objc.oak` is Darwin-only and deliberately thin: `objc_class(name)`
+resolves a class by its NUL-terminated name (`objc_getClass` over `c.cstr`)
+and `objc_sel(name)` registers a selector (`sel_registerName`), both as
+opaque `c.Ptr` values. Sending a message is the language form
+`c.msg_send[(params) -> ret](receiver, selector, args...)` inside `unsafe`
+(`docs/spec/92-ffi.md` §2.12): the bracketed signature is the sender's
+assertion about the selector's implementation, checked at the call like an
+extern signature, lowered to `objc_msgSend` cast to that prototype, and
+recorded as the `OAK-B0122` assumption a strict module admits explicitly.
+Nothing models Objective-C types, ownership, or dispatch beyond that; the
+runtime's nil-receiver rule applies unchanged. A module that imports the
+package declares the framework it drives (`framework Foundation`) in its
+`oak.mod`, which brings the runtime library. arm64 only in this increment.
+`compiler/e2e_ffi_objc_test.go` drives Foundation: `[[NSString alloc]
+initWithUTF8String:"oak"]` has length 3, `[NSNumber numberWithInt:41]`
+answers 41, and an `NSRange` boxed in an `NSValue` comes back by value.
+
 ## `arena`: reservations over an owner (`import("arena")`)
 
 `stdlib/arena.oak` is bump allocation over an owner's element index space

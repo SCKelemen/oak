@@ -167,7 +167,7 @@ callees, so a program that calls the standard library extracts the library
 functions it reaches. Everything else — strings, generic templates
 themselves, recursion, methods, extern functions, closures, the storage
 float formats and the intrinsics named in section 3, the `checked`
-float rows, SIMD, FFI, assignment to a global — is an
+float rows, SIMD, FFI (extern calls, `c.fn_at`, `c.msg_send`), assignment to a global — is an
 error naming the construct. Nothing is approximated.
 
 ## 5. Where it runs
@@ -203,6 +203,22 @@ Formal Verification workflow after the Lean build. It is what oak #186
 needed: three faithfulness gaps (spans rebound through calls, windows never
 written back, zero records with empty array fields) each passed the drift
 test and each fails this one.
+
+- `Oak/Stdlib/HashLaws.lean` and `Oak/Stdlib/Sha256Laws.lean`: the streaming
+  laws a storage engine relies on. `crc32c_update_append` — for every pair of
+  byte strings below the size limit, continuing the CRC-32C of the first
+  through the second is one pass over their concatenation (`crc32c_append`
+  states it for the one-shot entry); the proof is the byte loop's fold and
+  its additivity. `sha256_update_append` — feeding `a` then `b` reaches a
+  state *equivalent* to feeding `a ++ b` (`Equiv`: same hash words, fill
+  count, byte total, and buffered prefix), `final_congr` — `sha256_final`
+  cannot tell equivalent states apart, so `sha256_append` — the one-shot
+  digest of `a ++ b` is the streamed digest. The relation is an equivalence
+  rather than an equality because the whole-block fast path compresses
+  input windows without copying them into the buffer. The compression
+  function is never opened: the proof uses only that it is total and
+  fuel-insensitive past its round count (`compress_fuel`), and that it
+  reads the block through its first sixty-four bytes (`compress_congr`).
 
 **The standard library.** `compiler/lean_stdlib_extract_test.go` extracts
 whole packages — `varint`, `encoding`, `hash`, `random`, `uuid`, `float`
@@ -453,8 +469,9 @@ most; the kernel-decided facts use no axioms.
   groups and four tail lengths); strictness for base64 (`base64_decode`
   accepts a string iff it is a canonical encoding) and for percent-decoding
   (accepted iff every `%` starts two hexadecimal digits) as
-  `hex_decode_ok_iff` does for hexadecimal; the SHA-256 and CRC-32C extractions against
-  reference definitions.
+  `hex_decode_ok_iff` does for hexadecimal; the SHA-256 and CRC-32C
+  extractions against reference definitions (the streaming laws hold; the
+  compression and the table remain opaque to the proofs).
 - The subset: strings and the text library, methods, and recursion;
   instantiations whose arguments are arrays or views; the `checked` float
   rows and `fma` once Lean carries them exactly.

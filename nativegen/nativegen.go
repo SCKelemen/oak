@@ -562,6 +562,7 @@ type slotBinding struct {
 	reg    int          // callee-saved register, or -1 for a slot
 	arr    *arrayLocal  // an owned array local (offset/typ/reg unused)
 	rec    *recordLocal // an owned record local (offset/typ/reg unused)
+	sp     *span        // a local span or view, register-resident
 }
 
 const scratchLow, scratchHigh = 9, 15
@@ -1285,6 +1286,9 @@ func (g *generator) popScope() {
 		delete(g.regs, name)
 		delete(g.arrays, name)
 		delete(g.records, name)
+		if top[name].sp != nil {
+			delete(g.spans, name)
+		}
 		// A shadowed outer binding comes back into view.
 		for i := len(g.scopes) - 1; i >= 0; i-- {
 			if b, ok := g.scopes[i][name]; ok {
@@ -1292,6 +1296,8 @@ func (g *generator) popScope() {
 					g.arrays[name] = b.arr
 				} else if b.rec != nil {
 					g.records[name] = b.rec
+				} else if b.sp != nil {
+					g.spans[name] = *b.sp
 				} else {
 					g.slots[name], g.types[name], g.regs[name] = b.offset, b.typ, b.reg
 				}
@@ -1304,15 +1310,26 @@ func (g *generator) popScope() {
 // declareArray gives an owned array local its frame storage: whole 8-byte
 // slots, so every element access stays aligned and spills never overlap.
 func (g *generator) declareArray(name string, elem scalar, length int64) *arrayLocal {
+	arr := g.allocArray(elem, length)
+	g.bindArray(name, arr)
+	return arr
+}
+
+// allocArray reserves an array's frame storage without binding a name.
+func (g *generator) allocArray(elem scalar, length int64) *arrayLocal {
 	bytes := length * int64(elem.bits/8)
 	arr := &arrayLocal{offset: 8 * g.nslots, elem: elem, length: length}
 	g.nslots += (bytes + 7) / 8
+	return arr
+}
+
+// bindArray brings an array's storage into scope under a name.
+func (g *generator) bindArray(name string, arr *arrayLocal) {
 	delete(g.slots, name)
 	delete(g.types, name)
 	delete(g.regs, name)
 	g.arrays[name] = arr
 	g.scopes[len(g.scopes)-1][name] = slotBinding{reg: -1, arr: arr}
-	return arr
 }
 
 // lowerArrayDeclaration lowers `buf: [N]T` (zero-filled, as the C backend
@@ -1348,21 +1365,18 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 	if int64(len(literal.Elements)) != length {
 		return unsupported("an array literal of %d elements for [%d]%s", len(literal.Elements), length, elem.name)
 	}
-	// The elements evaluate before the name is bound (an initializer never
-	// sees the array it fills).
-	var values []int
-	for _, element := range literal.Elements {
+	// The elements evaluate one at a time into storage reserved before the
+	// name is bound (an initializer never sees the array it fills).
+	arr := g.allocArray(elem, length)
+	for i, element := range literal.Elements {
 		r, err := g.expr(element, &elem)
 		if err != nil {
 			return err
 		}
-		values = append(values, r)
-	}
-	arr := g.declareArray(s.Name.Value, elem, length)
-	for i, r := range values {
 		g.emit(storeOf(elem), reg(r, elem), g.slotMem(arr.offset+int64(i)*int64(elem.bits/8)))
 		g.release(r)
 	}
+	g.bindArray(s.Name.Value, arr)
 	return nil
 }
 
@@ -1377,6 +1391,148 @@ func (g *generator) declareRecord(name string, layout *recordLayout) *recordLoca
 	g.records[name] = rec
 	g.scopes[len(g.scopes)-1][name] = slotBinding{reg: -1, rec: rec}
 	return rec
+}
+
+// lowerSpanDeclaration lowers `w: []T = subslice(v, s, n)` / `w: [*]T = …`
+// / `w: []T = v`: the local span takes a callee-saved register pair (so it
+// survives calls and the checker's fact stays on it) and joins the spans
+// the element paths know.
+func (g *generator) lowerSpanDeclaration(s *ast.VariableDeclaration, target span) error {
+	if s.Value == nil {
+		return unsupported("the span local %s without an initializer", s.Name.Value)
+	}
+	if g.usedCallee+2 > calleeHigh-calleeLow+1 {
+		return unsupported("the span local %s: the callee-saved registers are exhausted", s.Name.Value)
+	}
+	baseReg, lenReg := calleeLow+g.usedCallee, calleeLow+g.usedCallee+1
+	g.usedCallee += 2
+	value, owned, err := g.spanValue(s.Value, &target, baseReg, lenReg)
+	if err != nil {
+		return err
+	}
+	if owned {
+		// Another named span's pair: copy it.
+		g.emit("mov", xr(baseReg), xr(value.baseReg))
+		g.emit("mov", wr(lenReg), wr(value.lenReg))
+	}
+	local := span{elem: target.elem, writable: target.writable, baseReg: baseReg, lenReg: lenReg, argBase: -1, argLen: -1}
+	delete(g.slots, s.Name.Value)
+	delete(g.types, s.Name.Value)
+	delete(g.regs, s.Name.Value)
+	g.spans[s.Name.Value] = local
+	g.scopes[len(g.scopes)-1][s.Name.Value] = slotBinding{reg: -1, sp: &local}
+	return nil
+}
+
+// spanValue lowers a span-typed expression: a named span (a parameter or
+// local; returned as is, owned=true: its registers are never released),
+// `view(&buf)`/`span(&buf)` over an array place, or `subslice(v, start,
+// n)` (owned=false). When baseReg/lenReg are given (>= 0) a computed pair
+// is produced there; otherwise in fresh scratch registers the caller
+// releases. target, when non-nil, is the expected shape.
+func (g *generator) spanValue(expr ast.Expression, target *span, baseReg, lenReg int) (span, bool, error) {
+	if ident, isIdent := expr.(*ast.Identifier); isIdent {
+		sp, isSpan := g.spans[ident.Value]
+		if !isSpan {
+			return span{}, false, unsupported("%s is not a span", ident.Value)
+		}
+		if target != nil && (sp.elem != target.elem || (target.writable && !sp.writable)) {
+			return span{}, false, unsupported("%s does not fit the span type", ident.Value)
+		}
+		return sp, true, nil
+	}
+	call, isCall := expr.(*ast.InvocationExpression)
+	if !isCall {
+		return span{}, false, unsupported("a span value %s", expr.String())
+	}
+	fn, isIdent := call.Function.(*ast.Identifier)
+	if !isIdent {
+		return span{}, false, unsupported("a call through a value")
+	}
+	if baseReg < 0 {
+		var err error
+		if baseReg, err = g.alloc(scalars["u64"]); err != nil {
+			return span{}, false, err
+		}
+		if lenReg, err = g.alloc(scalars["u32"]); err != nil {
+			return span{}, false, err
+		}
+	}
+	out := span{baseReg: baseReg, lenReg: lenReg, argBase: -1, argLen: -1}
+	switch {
+	case (fn.Value == "view" || fn.Value == "span") && len(call.Arguments) == 1:
+		shape := span{writable: fn.Value == "span"}
+		if target != nil {
+			shape.elem = target.elem
+			if target.writable && !shape.writable {
+				return span{}, false, unsupported("a view where a span is expected")
+			}
+		}
+		borrow, isBorrow := call.Arguments[0].(*ast.PrefixExpression)
+		if !isBorrow || borrow.Operator != "&" {
+			return span{}, false, unsupported("%s of %s (only &buf over an owned array)", fn.Value, call.Arguments[0].String())
+		}
+		arr := g.arrayOperand(borrow.Right)
+		if arr == nil {
+			return span{}, false, unsupported("%s of %s (only an owned array)", fn.Value, borrow.Right.String())
+		}
+		if target != nil && arr.elem != target.elem {
+			return span{}, false, unsupported("%s over [%d]%s where %s elements are expected", fn.Value, arr.length, arr.elem.name, target.elem.name)
+		}
+		out.elem, out.writable = arr.elem, shape.writable
+		g.emit("add", xr(baseReg), sp(), imm(g.slotMem(arr.offset).Offset))
+		g.constant(lenReg, uint64(arr.length), scalars["u32"])
+		return out, false, nil
+	case fn.Value == "subslice" && len(call.Arguments) == 3:
+		src, srcOwned, err := g.spanValue(call.Arguments[0], nil, -1, -1)
+		if err != nil {
+			return span{}, false, err
+		}
+		if target != nil && (src.elem != target.elem || (target.writable && !src.writable)) {
+			return span{}, false, unsupported("subslice of %s does not fit the span type", call.Arguments[0].String())
+		}
+		u32 := scalars["u32"]
+		for _, bound := range call.Arguments[1:] {
+			typ, err := g.typeOf(bound, &u32)
+			if err != nil {
+				return span{}, false, err
+			}
+			if typ != u32 {
+				return span{}, false, unsupported("a subslice bound of type %s (the native subset takes u32)", typ.name)
+			}
+		}
+		start, err := g.expr(call.Arguments[1], &u32)
+		if err != nil {
+			return span{}, false, err
+		}
+		count, err := g.expr(call.Arguments[2], &u32)
+		if err != nil {
+			return span{}, false, err
+		}
+		rest, err := g.alloc(u32)
+		if err != nil {
+			return span{}, false, err
+		}
+		// The C helper's check: start > len || n > len - start traps.
+		g.usedTrap = true
+		g.emit("cmp", wr(start), wr(src.lenReg))
+		g.branch("hi", g.trap)
+		g.emit("sub", wr(rest), wr(src.lenReg), wr(start))
+		g.emit("cmp", wr(count), wr(rest))
+		g.branch("hi", g.trap)
+		g.emit("add", xr(baseReg), xr(src.baseReg), asm.Extended{Reg: wr(start), Kind: "uxtw", Amount: int64(log2Bytes(src.elem.bits / 8))})
+		g.emit("mov", wr(lenReg), wr(count))
+		g.release(rest)
+		g.release(count)
+		g.release(start)
+		if !srcOwned {
+			g.release(src.baseReg)
+			g.release(src.lenReg)
+		}
+		out.elem, out.writable = src.elem, src.writable
+		return out, false, nil
+	}
+	return span{}, false, unsupported("a span value %s", expr.String())
 }
 
 // lowerRecordDeclaration lowers `p: Point = Point { x: e, … }` (every field
@@ -1774,6 +1930,12 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 			}
 			if typeName, isRecord := g.recordTypeName(s.Type); isRecord {
 				if err := g.lowerRecordDeclaration(s, typeName); err != nil {
+					return err
+				}
+				continue
+			}
+			if target, isSpan := spanOf(s.Type); isSpan {
+				if err := g.lowerSpanDeclaration(s, target); err != nil {
 					return err
 				}
 				continue
@@ -2908,33 +3070,13 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 		if !isSpan {
 			return 0, unsupported("a call to %s (parameter %s: %s)", ident.Value, p.Name.Value, p.Type.String())
 		}
-		if forwarded, isIdent := arg.(*ast.Identifier); isIdent {
-			// A span parameter passed on: its parked pair.
-			sp, isParam := g.spans[forwarded.Value]
-			if !isParam {
-				return 0, unsupported("a call to %s: %s is not a span parameter", ident.Value, forwarded.Value)
-			}
-			if sp.elem != target.elem || (target.writable && !sp.writable) {
-				return 0, unsupported("a call to %s: %s does not fit parameter %s", ident.Value, forwarded.Value, p.Name.Value)
-			}
-			args = append(args, argument{regs: []int{sp.baseReg, sp.lenReg}, types: []scalar{scalars["u64"], scalars["u32"]}, fixed: true})
-			continue
-		}
-		arr, err := g.arrayArgument(arg, target)
+		// A span argument: a named span's pair (a parameter or local, never
+		// released), or a fresh pair from view/span(&buf) or subslice.
+		value, named, err := g.spanValue(arg, &target, -1, -1)
 		if err != nil {
 			return 0, unsupported("a call to %s: %v", ident.Value, err)
 		}
-		base, err := g.alloc(scalars["u64"])
-		if err != nil {
-			return 0, err
-		}
-		length, err := g.alloc(scalars["u32"])
-		if err != nil {
-			return 0, err
-		}
-		g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
-		g.constant(length, uint64(arr.length), scalars["u32"])
-		args = append(args, argument{regs: []int{base, length}, types: []scalar{scalars["u64"], scalars["u32"]}})
+		args = append(args, argument{regs: []int{value.baseReg, value.lenReg}, types: []scalar{scalars["u64"], scalars["u32"]}, fixed: named})
 	}
 	general, vector := 0, 0
 	for _, arg := range args {
@@ -3077,7 +3219,7 @@ func mentionsCall(body ast.Node) bool {
 	walk(body, func(n ast.Node) {
 		if call, ok := n.(*ast.InvocationExpression); ok {
 			if ident, ok := call.Function.(*ast.Identifier); ok {
-				if isConversion(ident.Value) || ident.Value == "assert" || ident.Value == "len" || ident.Value == "view" || ident.Value == "span" || typechecker.FloatIntrinsicName(ident.Value) {
+				if isConversion(ident.Value) || ident.Value == "assert" || ident.Value == "len" || ident.Value == "view" || ident.Value == "span" || ident.Value == "subslice" || typechecker.FloatIntrinsicName(ident.Value) {
 					return
 				}
 			}
