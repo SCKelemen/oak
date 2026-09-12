@@ -125,4 +125,11 @@ on AArch64.
 - A `Bool` data fact refining a typestate index (the engine's caveat on
   ask 1 of the third round) is a proposition-axis question: whether a
   refinement on protocol data can select the state marker.
-
+- The frame-scan port's WAL and recovery should copy TigerBeetle's journal
+  and superblock designs rather than rediscover them; the twelve lessons
+  (redundant header ring written after the body, reserved slots naming
+  their slot, recovery as a total table decided by `oak prove`, the
+  torn-tail rule, faulty ≠ dirty, outward checksums) and the
+  expressiveness gaps they expose (`u128`, a no-padding predicate, an
+  alignment fact on `IoBuffer` windows) are in
+  `docs/notes/tigerbeetle-2026-09.md`.
