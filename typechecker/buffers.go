@@ -85,6 +85,24 @@ func (tc *TypeChecker) custodyTransitionCall(expr ast.Expression) (*BufferType, 
 	return buffer, returnsBuffer
 }
 
+// HoldsOwnedArray reports whether a record type has an owned-array field
+// ([N]T, not a view or span). Such a record is the owner of that storage:
+// span(&record.field) and view(&record.field) borrow the record
+// (docs/spec/50-borrowing.md section 2), the way a record holding a Buffer
+// carries its custody.
+func HoldsOwnedArray(typ Type) bool {
+	record, isRecord := typ.(*RecordType)
+	if !isRecord || record == nil {
+		return false
+	}
+	for _, field := range record.Fields {
+		if array, isArray := field.(*ArrayType); isArray && array != nil && !array.IsSlice && !array.IsSpan && array.Length >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // ContainsBufferStorage reports whether a type is, or holds, a Buffer.
 func ContainsBufferStorage(typ Type) bool {
 	switch t := typ.(type) {

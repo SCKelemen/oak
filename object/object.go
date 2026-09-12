@@ -6,6 +6,8 @@ import (
 	"github.com/SCKelemen/oak/token"
 	"math/big"
 	"strconv"
+	"sync"
+	"sync/atomic"
 
 	"github.com/SCKelemen/oak/ast"
 )
@@ -273,14 +275,26 @@ type binding struct {
 // inlineBindings is how many bindings a scope holds in its own frame before
 // spilling to a map: a block, a match arm or a call body rarely declares
 // more, so the common scope is one allocation with no map at all.
-const inlineBindings = 4
+const inlineBindings = 8
+
+// spillBindings is the largest spill a scope searches linearly before it
+// moves every spilled binding into a map.
+const spillBindings = 32
 
 type Environment struct {
 	// The first bindings live in the frame itself; the rest, if any, in
 	// store. A name is in exactly one of the two.
-	inline   [inlineBindings]binding
-	bound    int
-	store    map[string]Object
+	inline [inlineBindings]binding
+	bound  int
+	// spill holds the bindings past the inline frame, searched linearly
+	// while there are at most spillBindings of them; store takes over
+	// beyond that (the root scope with a whole prelude of names).
+	spill []binding
+	store map[string]Object
+	// captured is set once a function value closes over this scope or a
+	// scope inside it; an uncaptured scope returns to the pool when its
+	// body ends (ReleaseEnvironment).
+	captured bool
 	adtTypes map[string]*ADTType
 	// recordDecls retains record type declarations' field structure
 	// (name/order/type expressions) for zero-value construction of
@@ -306,11 +320,98 @@ func NewEnvironment() *Environment {
 // exhaustive enumeration and the REPL pay per evaluated scope
 // (docs/notes/formal-methods-performance-2026-09.md, item 5).
 func NewEnclosedEnvironment(outer *Environment) *Environment {
-	env := &Environment{outer: outer}
+	env := envPool.Get().(*Environment)
+	env.outer = outer
 	if outer != nil {
 		env.arithmeticWidths = outer.arithmeticWidths
 	}
 	return env
+}
+
+// envPool holds scopes whose bodies have ended uncaptured, so a block, a
+// call or a match arm reuses a frame instead of allocating one.
+var envPool = sync.Pool{New: func() any { return &Environment{} }}
+
+// ReleaseEnvironment returns a scope opened by NewEnclosedEnvironment to
+// the pool once its body has ended, unless a function value captured it
+// (or a scope inside it), in which case the closure keeps it. A root
+// environment is never released. Every field is cleared so the pool holds
+// no values.
+func ReleaseEnvironment(env *Environment) {
+	if env == nil || env.outer == nil || env.captured {
+		return
+	}
+	for i := 0; i < env.bound; i++ {
+		env.inline[i] = binding{}
+	}
+	for i := range env.spill {
+		env.spill[i] = binding{}
+	}
+	// The spill's capacity is kept: a scope that spilled once is likely a
+	// function body that will spill again.
+	spill := env.spill[:0]
+	*env = Environment{spill: spill}
+	envPool.Put(env)
+}
+
+// MarkCaptured records that a function value closes over this scope: it
+// and every scope it can reach stay out of the pool.
+func (e *Environment) MarkCaptured() {
+	for scope := e; scope != nil && !scope.captured; scope = scope.outer {
+		scope.captured = true
+	}
+}
+
+// Locate finds name and says where: hops scopes out, in inline slot slot
+// (slot is -1 when the binding spilled to the map). The interpreter caches
+// (hops, slot) on the identifier and rechecks it with At.
+func (e *Environment) Locate(name string) (value Object, hops, slot int, ok bool) {
+	for scope := e; scope != nil; scope = scope.outer {
+		for i := 0; i < scope.bound; i++ {
+			if scope.inline[i].name == name {
+				return scope.inline[i].value, hops, i, true
+			}
+		}
+		for i := range scope.spill {
+			if scope.spill[i].name == name {
+				return scope.spill[i].value, hops, -1, true
+			}
+		}
+		if scope.store != nil {
+			if obj, spilled := scope.store[name]; spilled {
+				return obj, hops, -1, true
+			}
+		}
+		hops++
+	}
+	return nil, 0, 0, false
+}
+
+// At reads the binding of name at a cached location, or reports false
+// when the scopes have changed shape since the location was cached.
+func (e *Environment) At(hops, slot int, name string) (Object, bool) {
+	scope := e
+	for ; hops > 0 && scope != nil; hops-- {
+		scope = scope.outer
+	}
+	if scope == nil || slot >= scope.bound || scope.inline[slot].name != name {
+		return nil, false
+	}
+	return scope.inline[slot].value, true
+}
+
+// AssignAt updates the binding of name at a cached location, or reports
+// false when the location no longer holds the name.
+func (e *Environment) AssignAt(hops, slot int, name string, val Object) bool {
+	scope := e
+	for ; hops > 0 && scope != nil; hops-- {
+		scope = scope.outer
+	}
+	if scope == nil || slot >= scope.bound || scope.inline[slot].name != name {
+		return false
+	}
+	scope.inline[slot].value = val
+	return true
 }
 
 // lookup finds a binding in this scope alone.
@@ -318,6 +419,11 @@ func (e *Environment) lookup(name string) (Object, bool) {
 	for i := 0; i < e.bound; i++ {
 		if e.inline[i].name == name {
 			return e.inline[i].value, true
+		}
+	}
+	for i := range e.spill {
+		if e.spill[i].name == name {
+			return e.spill[i].value, true
 		}
 	}
 	if e.store != nil {
@@ -344,6 +450,12 @@ func (e *Environment) Set(name string, val Object) Object {
 			return val
 		}
 	}
+	for i := range e.spill {
+		if e.spill[i].name == name {
+			e.spill[i].value = val
+			return val
+		}
+	}
 	if e.store != nil {
 		if _, spilled := e.store[name]; spilled {
 			e.store[name] = val
@@ -355,8 +467,16 @@ func (e *Environment) Set(name string, val Object) Object {
 		e.bound++
 		return val
 	}
+	if e.store == nil && len(e.spill) < spillBindings {
+		e.spill = append(e.spill, binding{name: name, value: val})
+		return val
+	}
 	if e.store == nil {
-		e.store = make(map[string]Object)
+		e.store = make(map[string]Object, 2*spillBindings)
+		for _, b := range e.spill {
+			e.store[b.name] = b.value
+		}
+		e.spill = nil
 	}
 	e.store[name] = val
 	return val
@@ -420,6 +540,27 @@ func (e *Environment) SetADTType(name string, adt *ADTType) {
 		e.adtTypes = make(map[string]*ADTType)
 	}
 	e.adtTypes[name] = adt
+	adtGeneration.Add(1)
+}
+
+// adtGeneration counts type declarations: the interpreter caches "this
+// name was not a type" on an identifier together with the generation it
+// checked, and a declaration anywhere invalidates every such cache.
+var adtGeneration atomic.Uint32
+
+// ADTGeneration is the current type-declaration generation.
+func ADTGeneration() uint32 { return adtGeneration.Load() }
+
+// TypesOnlyAtRoot reports whether every type visible from this scope is
+// declared in the root: then whether a name is a type does not depend on
+// which scope asks, and the answer can be cached per identifier.
+func (e *Environment) TypesOnlyAtRoot() bool {
+	for scope := e; scope != nil; scope = scope.outer {
+		if scope.adtTypes != nil && scope.outer != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // SetRefinementBase retains a refinement declaration's base type, so a

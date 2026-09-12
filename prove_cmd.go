@@ -77,11 +77,11 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 		// and with -check go the Go decider replays the winning order and
 		// must reach the same verdict with the same number of nodes.
 		var names []string
-		var theorems [][]asm.Problem
+		var theorems []oakTheorem
 		for _, r := range results {
 			if r.Status == prove.Pending {
 				names = append(names, r.Name)
-				theorems = append(theorems, r.Problems)
+				theorems = append(theorems, oakTheorem{Problems: r.Problems, Syntax: r.Syntax})
 			}
 		}
 		verdicts, err := runOakSolver(theorems, asm.NodeBudget)
@@ -96,13 +96,18 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 		results = prove.ResolvePending(results, byName, func(name string) (prove.Result, bool) { return prove.GoDecision(model, name, "") })
 		if *cross == "go" {
 			for i, r := range results {
-				if _, oak := byName[r.Name]; !oak || !strings.Contains(r.Detail, "the Oak solver") || (r.Status != prove.Decided && r.Status != prove.Refuted) {
+				if _, oak := byName[r.Name]; !oak || !(strings.Contains(r.Detail, "the Oak solver") || strings.Contains(r.Detail, "decided in Oak")) || (r.Status != prove.Decided && r.Status != prove.Refuted) {
 					continue
 				}
 				fromGo, ok := prove.GoDecision(model, r.Name, r.Order)
+				loweredInOak := strings.Contains(r.Detail, "lowered and decided in Oak")
 				switch {
 				case !ok:
 					continue
+				case loweredInOak && r.Status == fromGo.Status:
+					// The Oak lowering's terms are its own; the verdict is what
+					// the Go lowering and decider must agree on.
+					results[i].Detail += fmt.Sprintf("; the Go lowering and decider agree (%d nodes)", fromGo.Nodes)
 				case r.Status == prove.Decided && fromGo.Status == prove.Decided && fromGo.Nodes == r.Nodes:
 					results[i].Detail += "; the Go decider agrees"
 				case r.Status == prove.Refuted && fromGo.Status == prove.Refuted:

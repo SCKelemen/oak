@@ -29,6 +29,11 @@ import (
 //go:embed prove/solver/bdd.oak
 var oakSolverSource string
 
+// The theorem lowering written in Oak (asm/syntax.go serializes for it).
+//
+//go:embed prove/solver/lower.oak
+var oakLoweringSource string
+
 // oakSolverDriverSource is the driver around the solver: it reads its
 // order slot from OAK_SOLVER_VARIANT and the problems from its standard
 // input (a header of count, largest term count, budget, and word total,
@@ -67,12 +72,14 @@ write_byte: (v: u8): () {
   host.host_write_all(host.host_stdout(), view(&one)) ? { } | { }
 }
 
-report: (index: u32, status: u32, nodes: u32, vars: []u32, listed: u32): () {
+report: (index: u32, status: u32, nodes: u32, lowered: u32, vars: []u32, listed: u32): () {
   write_u32(index)
   write_byte(u8(32))
   write_u32(status)
   write_byte(u8(32))
   write_u32(nodes)
+  write_byte(u8(32))
+  write_u32(lowered)
   write_byte(u8(32))
   write_u32(listed)
   i: u32 = 0
@@ -103,13 +110,6 @@ copy_header: (h: []u32): [4]u32 {
     i = i + u32(1)
   }
   out
-}
-
-solve_one: (l: Layout, mem: [*]u32, p: []u32, index: u32): () {
-  status: u32 = solve(l, mem, p)
-  vars: [256]u32
-  listed: u32 = status == STATUS_REFUTED ? { witness_vars(l, mem, p, span(&vars)) } | { u32(0) }
-  report(index, status, node_count(l, mem), view(&vars), listed)
 }
 
 CHUNK: u32 = 65536
@@ -153,6 +153,56 @@ words_of: (bytes: []u8, words: [*]u32, count: u32): () {
   }
 }
 
+solve_one: (l: Layout, mem: [*]u32, p: []u32, index: u32, lowered: u32): () {
+  status: u32 = solve(l, mem, p)
+  vars: [256]u32
+  listed: u32 = status == STATUS_REFUTED ? { witness_vars(l, mem, p, span(&vars)) } | { u32(0) }
+  report(index, status, node_count(l, mem), lowered, view(&vars), listed)
+}
+
+// solve_prefix solves the problem in the first n words of a view (the
+// slice taken here, so the view ends with the call).
+solve_prefix: (l: Layout, mem: [*]u32, whole: []u32, n: u32, index: u32): () {
+  solve_one(l, mem, subslice(whole, u32(0), n), index, u32(1))
+}
+
+// solve_variant solves one Go-lowered problem in a fresh view of the
+// node table's memory.
+solve_variant: (l: Layout, table_raw: c.Ptr, p: []u32, index: u32): () {
+  unsafe {
+    tbuf: Buffer[u32] = c.own[u32](table_raw, l.total)
+    solve_one(l, span(&tbuf), p, index, u32(0))
+    released: c.Ptr = c.disown(tbuf)
+  }
+}
+
+// lower_in_oak runs the Oak lowering on a syntax table into the built
+// buffer's memory; the problem's word count, 0 outside the subset.
+lower_in_oak: (lw: Lower, work_raw: c.Ptr, built_raw: c.Ptr, sx: []u32, budget: u32): u32 {
+  n: u32 = 0
+  unsafe {
+    wbuf: Buffer[u32] = c.own[u32](work_raw, lw.total)
+    bbuf: Buffer[u32] = c.own[u32](built_raw, lw.built_total)
+    n = lower_theorem(lw, span(&wbuf), span(&bbuf), sx, budget)
+    n = n == u32(0) ? { NONE - lower_reason(lw, span(&wbuf)) } | { n }
+    released_w: c.Ptr = c.disown(wbuf)
+    released_b: c.Ptr = c.disown(bbuf)
+  }
+  n
+}
+
+// solve_lowered solves the problem the Oak lowering built (n words at the
+// built buffer's memory) and reports it as lowered in Oak.
+solve_lowered: (l: Layout, lw: Lower, table_raw: c.Ptr, built_raw: c.Ptr, n: u32, index: u32): () {
+  unsafe {
+    tbuf: Buffer[u32] = c.own[u32](table_raw, l.total)
+    bbuf: Buffer[u32] = c.own[u32](built_raw, lw.built_total)
+    solve_prefix(l, span(&tbuf), view(&bbuf), n, index)
+    released_t: c.Ptr = c.disown(tbuf)
+    released_b: c.Ptr = c.disown(bbuf)
+  }
+}
+
 main: (): i32 {
   slot: u32 = variant_slot()
   chunk_raw: c.Ptr = malloc(c.Size(CHUNK))
@@ -177,38 +227,69 @@ main: (): i32 {
   }
   bytes_raw: c.Ptr = malloc(c.Size(total * u32(4)))
   words_raw: c.Ptr = malloc(c.Size(total * u32(4)))
-  l: Layout = layout_for(budget, max_terms)
-  raw: c.Ptr = malloc(c.Size(l.total * u32(4)))
+  lowered_terms: u32 = 65536
+  terms_cap: u32 = max_terms > lowered_terms ? { max_terms } | { lowered_terms }
+  l: Layout = layout_for(budget, terms_cap)
+  lw: Lower = lower_layout(lowered_terms, u32(64))
+  table_raw: c.Ptr = malloc(c.Size(l.total * u32(4)))
+  work_raw: c.Ptr = malloc(c.Size(lw.total * u32(4)))
+  built_raw: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
   unsafe {
     problem_bytes: Buffer[u8] = c.own[u8](bytes_raw, total * u32(4))
     words_ok: Bool = read_fully(chunk_raw, span(&problem_bytes), total * u32(4))
-    problems: Buffer[u32] = c.own[u32](words_raw, total)
-    words_of(view(&problem_bytes), span(&problems), total)
-    table: Buffer[u32] = c.own[u32](raw, l.total)
-    words_ok ? { solve_all(l, span(&table), view(&problems), count, slot) } | { }
-    free(c.disown(table))
-    free(c.disown(problems))
+    stream: Buffer[u32] = c.own[u32](words_raw, total)
+    words_of(view(&problem_bytes), span(&stream), total)
+    words_ok ? { solve_stream(l, lw, view(&stream), table_raw, work_raw, built_raw, count, slot, budget) } | { }
+    free(c.disown(stream))
     free(c.disown(problem_bytes))
   }
+  free(table_raw)
+  free(work_raw)
+  free(built_raw)
   free(chunk_raw)
   i32_bits_u32(u32(0))
 }
 
-// solve_all walks the problems file and solves every theorem's variant in
-// this process's slot.
-solve_all: (l: Layout, mem: [*]u32, data: []u32, count: u32, slot: u32): () {
+// solve_stream walks the problems stream: per theorem the Go-lowered
+// variants and, when present, the syntax table. With a syntax table, slot
+// 0 lowers and solves it in Oak and slot k solves variant k - 1; without,
+// slot k solves variant k.
+solve_stream: (l: Layout, lw: Lower, data: []u32, table_raw: c.Ptr, work_raw: c.Ptr, built_raw: c.Ptr, count: u32, slot: u32, budget: u32): () {
   off: u32 = 0
   i: u32 = 0
   while i < count {
     variants: u32 = data[off]
     off = off + u32(1)
+    variant_start: u32 = off
     j: u32 = 0
     while j < variants {
       words: u32 = data[off]
       off = off + u32(1)
-      j == slot ? { solve_one(l, mem, subslice(data, off, words), i) } | { }
       off = off + words
       j = j + u32(1)
+    }
+    syntax_words: u32 = data[off]
+    off = off + u32(1)
+    syntax_start: u32 = off
+    off = off + syntax_words
+    shift: u32 = syntax_words > u32(0) ? { u32(1) } | { u32(0) }
+    (syntax_words > u32(0) && slot == u32(0)) ? {
+      n: u32 = lower_in_oak(lw, work_raw, built_raw, subslice(data, syntax_start, syntax_words), budget)
+      n < u32(0x80000000) ? { solve_lowered(l, lw, table_raw, built_raw, n, i) } | {
+        none: [1]u32
+        report(i, STATUS_UNSUPPORTED, NONE - n, u32(1), view(&none), u32(0))
+      }
+    } | {
+      want: u32 = slot - shift
+      k: u32 = 0
+      at: u32 = variant_start
+      while k < variants {
+        words_k: u32 = data[at]
+        at = at + u32(1)
+        k == want ? { solve_variant(l, table_raw, subslice(data, at, words_k), i) } | { }
+        at = at + words_k
+        k = k + u32(1)
+      }
     }
     i = i + u32(1)
   }
@@ -219,7 +300,7 @@ solve_all: (l: Layout, mem: [*]u32, data: []u32, count: u32, slot: u32): () {
 // directory under the temporary directory named by the sources' hash,
 // and returns the binary's path; a later run finds it built.
 func oakSolverBinary() (string, error) {
-	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakSolverDriverSource))
+	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSolverDriverSource))
 	dir := filepath.Join(os.TempDir(), "oak-solver-"+hex.EncodeToString(sum[:6]))
 	binary := filepath.Join(dir, "solver")
 	if info, err := os.Stat(binary); err == nil && info.Mode().IsRegular() {
@@ -228,7 +309,7 @@ func oakSolverBinary() (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	for name, text := range map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "main.oak": oakSolverDriverSource} {
+	for name, text := range map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "main.oak": oakSolverDriverSource} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
 			return "", err
 		}
@@ -245,11 +326,11 @@ func oakSolverBinary() (string, error) {
 }
 
 // encodeProblems writes the problems file the driver reads.
-func encodeProblems(theorems [][]asm.Problem, budget int) []byte {
+func encodeProblems(theorems []oakTheorem, budget int) []byte {
 	maxTerms, total := 1, 0
-	for _, variants := range theorems {
-		total++
-		for _, p := range variants {
+	for _, th := range theorems {
+		total += 2 + len(th.Syntax)
+		for _, p := range th.Problems {
 			total += 1 + len(p.Words)
 			if p.Terms > maxTerms {
 				maxTerms = p.Terms
@@ -258,12 +339,14 @@ func encodeProblems(theorems [][]asm.Problem, budget int) []byte {
 	}
 	words := make([]uint32, 0, 4+total)
 	words = append(words, uint32(len(theorems)), uint32(maxTerms), uint32(budget), uint32(total))
-	for _, variants := range theorems {
-		words = append(words, uint32(len(variants)))
-		for _, p := range variants {
+	for _, th := range theorems {
+		words = append(words, uint32(len(th.Problems)))
+		for _, p := range th.Problems {
 			words = append(words, uint32(len(p.Words)))
 			words = append(words, p.Words...)
 		}
+		words = append(words, uint32(len(th.Syntax)))
+		words = append(words, th.Syntax...)
 	}
 	buf := make([]byte, 4*len(words))
 	for i, w := range words {
@@ -279,7 +362,23 @@ func encodeProblems(theorems [][]asm.Problem, budget int) []byte {
 // runs across goroutines, run across processes, so a theorem that is
 // small under one order is decided in that order's time and the others
 // are stopped.
-func runOakSolver(theorems [][]asm.Problem, budget int) ([]prove.SolverVerdict, error) {
+// oakTheorem is one pending theorem: its Go-lowered problems, one per
+// variable order, and its syntax table when the Oak lowering can take it.
+type oakTheorem struct {
+	Problems []asm.Problem
+	Syntax   []uint32
+}
+
+// slots is the number of solver processes the theorem's verdict can come
+// from: its Go-lowered variants, plus the Oak lowering when it applies.
+func (th oakTheorem) slots() int {
+	if len(th.Syntax) > 0 {
+		return len(th.Problems) + 1
+	}
+	return len(th.Problems)
+}
+
+func runOakSolver(theorems []oakTheorem, budget int) ([]prove.SolverVerdict, error) {
 	if len(theorems) == 0 {
 		return nil, nil
 	}
@@ -294,9 +393,9 @@ func runOakSolver(theorems [][]asm.Problem, budget int) ([]prove.SolverVerdict, 
 		fmt.Fprintf(os.Stderr, "oak solver: keeping %s (binary %s)\n", kept, solver)
 	}
 	slots := 1
-	for _, variants := range theorems {
-		if len(variants) > slots {
-			slots = len(variants)
+	for _, th := range theorems {
+		if th.slots() > slots {
+			slots = th.slots()
 		}
 	}
 	type line struct {
@@ -337,6 +436,8 @@ func runOakSolver(theorems [][]asm.Problem, budget int) ([]prove.SolverVerdict, 
 	settled := make([]bool, len(theorems))
 	answered := make([]int, len(theorems)) // applicable slots heard from
 	failing := make([]int, len(theorems))  // 2 exceeded, 3 unsupported among them
+	oakLoweringDone := make([]bool, len(theorems))
+	held := make([]*prove.SolverVerdict, len(theorems))
 	remaining := len(theorems)
 	var firstErr error
 	for l := range lines {
@@ -349,22 +450,43 @@ func runOakSolver(theorems [][]asm.Problem, budget int) ([]prove.SolverVerdict, 
 		}
 		// A slot the theorem has no variant for reports the budget exceeded
 		// as a placeholder; only its own slots count.
-		if index < 0 || index >= len(theorems) || settled[index] || l.slot >= len(theorems[index]) {
+		if index < 0 || index >= len(theorems) || settled[index] || l.slot >= theorems[index].slots() {
 			continue
 		}
 		answered[index]++
 		v.Winner = l.slot
+		hasSyntax := len(theorems[index].Syntax) > 0
+		if hasSyntax {
+			// Slot 0 is the Oak lowering; the Go-lowered variants follow.
+			v.Winner = l.slot - 1
+		}
+		decided := v.Status == 0 || v.Status == 1
 		switch {
-		case v.Status == 0 || v.Status == 1:
+		case decided && (!hasSyntax || l.slot == 0 || oakLoweringDone[index]):
+			// The Oak lowering's verdict is preferred when it applies: a
+			// Go-lowered verdict stands only once the Oak lowering has
+			// answered without deciding.
 			verdicts[index] = v
 			settled[index] = true
 			remaining--
+		case decided:
+			// A Go-lowered verdict ahead of the Oak lowering: held until the
+			// Oak lowering answers.
+			held[index] = &v
 		default:
 			// Unsupported outranks exceeded: the Go decider is then asked.
 			if v.Status == 3 || failing[index] == 0 {
 				failing[index] = v.Status
 			}
-			if answered[index] == len(theorems[index]) {
+			if hasSyntax && l.slot == 0 {
+				oakLoweringDone[index] = true
+				if h := held[index]; h != nil {
+					verdicts[index] = *h
+					settled[index] = true
+					remaining--
+				}
+			}
+			if !settled[index] && answered[index] == theorems[index].slots() {
 				verdicts[index] = prove.SolverVerdict{Status: failing[index], Winner: -1}
 				settled[index] = true
 				remaining--
@@ -391,10 +513,10 @@ func runOakSolver(theorems [][]asm.Problem, budget int) ([]prove.SolverVerdict, 
 	return verdicts, nil
 }
 
-// parseOakVerdict reads one `index status nodes count vars...` line.
+// parseOakVerdict reads one `index status nodes lowered count vars...` line.
 func parseOakVerdict(text string) (prove.SolverVerdict, int, error) {
 	fields := strings.Fields(text)
-	if len(fields) < 4 {
+	if len(fields) < 5 {
 		return prove.SolverVerdict{}, -1, fmt.Errorf("oak solver: unreadable verdict %q", text)
 	}
 	var numbers []int
@@ -405,12 +527,12 @@ func parseOakVerdict(text string) (prove.SolverVerdict, int, error) {
 		}
 		numbers = append(numbers, n)
 	}
-	index, status, nodes, listed := numbers[0], numbers[1], numbers[2], numbers[3]
-	if len(numbers) != 4+listed {
+	index, status, nodes, lowered, listed := numbers[0], numbers[1], numbers[2], numbers[3], numbers[4]
+	if len(numbers) != 5+listed {
 		return prove.SolverVerdict{}, -1, fmt.Errorf("oak solver: unreadable verdict %q", text)
 	}
-	v := prove.SolverVerdict{Status: status, Nodes: nodes}
-	for _, x := range numbers[4:] {
+	v := prove.SolverVerdict{Status: status, Nodes: nodes, Lowered: lowered != 0}
+	for _, x := range numbers[5:] {
 		v.Vars = append(v.Vars, uint32(x))
 	}
 	return v, index, nil

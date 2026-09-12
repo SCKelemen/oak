@@ -195,7 +195,13 @@ The bit-level rung is decided by the solver written in Oak
 (`prove/solver/bdd.oak`, §7) by default: a theorem the exhaustive decider
 does not reach is lowered to the decider's terms, passed the Go decider's
 witness inputs (a counterexample among them settles it at once), and
-serialized under every variable order that applies as a word table; the
+serialized under every variable order that applies as a word table — and,
+when it is in the scalar subset (integer and Bool parameters, locals, and
+results; the arithmetic, bitwise, shift, comparison, and Boolean
+operators; conversions; the scalar instruction functions; conditionals;
+counted loops; calls to program functions), also as a syntax table for
+the lowering written in Oak (`prove/solver/lower.oak`), which builds the
+terms itself and whose verdict is preferred whenever it decides; the
 solver and its driver are one fixed Oak program, built once through the
 backend and kept, and the pending theorems of a run are streamed to it on
 standard input, one process per order at the same time, each theorem
@@ -205,7 +211,10 @@ walks to the failing root, read back through the parameter bits. With
 `-cross go` (the default) the Go decider replays the winning order and
 must reach the same verdict with the same number of nodes, which the row
 records as `the Go decider agrees`; a difference makes the row `open`
-naming both. `-solver go` keeps the bit-level rung with the Go decider
+naming both. For a theorem the Oak lowering decided the row says `lowered and
+decided in Oak`, and the Go lowering and decider must reach the same
+verdict (`the Go lowering and decider agree`; the node counts are each
+lowering's own). `-solver go` keeps the bit-level rung with the Go decider
 alone; `-cross none` skips the replay. The protocol obligations of §2a
 stay with the Go decider, whose rows are folded into their invariant's.
 `TestOakSolverAgrees` runs the default over the whole law corpus.
@@ -453,7 +462,13 @@ In order of payoff, each reusing a surface that exists:
   verdict with the same node count, which it reaches on the whole corpus),
   now the decider `oak prove` runs by default, the Go one replaying the
   winning order as the check on every verdict); then the term lowering
-  itself in Oak, so the bit-level path is Oak code end to end; then
+  in Oak (`prove/solver/lower.oak`: the theorem and its callees as a
+  syntax table, run by an explicit stack machine — Oak admits no
+  unbounded recursion — that builds the terms the way the Go lowering
+  does, over the scalar subset; 96 of the corpus's 155 bit-level laws are
+  lowered and decided in Oak today, the rest, over records, arrays, and
+  floats, by the Go lowering and the Oak solver), next widened to
+  aggregates so the bit-level path is Oak code end to end; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
   producers of certificates, so speed and trust are separated; then an

@@ -637,6 +637,11 @@ func (bc *BorrowChecker) checkVariableDeclaration(vd *ast.VariableDeclaration, e
 			bc.bufferOwners[varName] = true
 			delete(bc.consumedOwners, varName)
 		}
+		if typechecker.HoldsOwnedArray(typ) {
+			// A record holding an owned array owns that storage:
+			// span(&record.field) borrows the record (section 2).
+			bc.ownerStates[varName] = Free
+		}
 	} else if vd.Type != nil {
 		// Function-local declarations are not in the surviving global
 		// environment; classify owners from the checker's recorded
@@ -657,6 +662,9 @@ func (bc *BorrowChecker) checkVariableDeclaration(vd *ast.VariableDeclaration, e
 			if !arrType.IsSlice && !arrType.IsSpan && arrType.Length >= 0 {
 				bc.ownerStates[varName] = Free
 			}
+		}
+		if typechecker.HoldsOwnedArray(declared) {
+			bc.ownerStates[varName] = Free
 		}
 	}
 }
@@ -1323,7 +1331,7 @@ func (bc *BorrowChecker) checkViewCall(call *ast.InvocationExpression, env *type
 	// Note: extractOwnerName only handles direct &owner or *owner patterns
 	ownerName := bc.extractOwnerName(call.Arguments[0])
 	if ownerName == "" {
-		bc.addError("view() argument must be &owner of an owned array")
+		bc.addError("view() argument must be &owner of an owned array, or &record.field naming an owned-array field")
 		return
 	}
 
@@ -1353,7 +1361,7 @@ func (bc *BorrowChecker) checkSpanCall(call *ast.InvocationExpression, env *type
 	// Note: extractOwnerName only handles direct &owner or *owner patterns
 	ownerName := bc.extractOwnerName(call.Arguments[0])
 	if ownerName == "" {
-		bc.addError("span() argument must be &owner of an owned array")
+		bc.addError("span() argument must be &owner of an owned array, or &record.field naming an owned-array field")
 		return
 	}
 

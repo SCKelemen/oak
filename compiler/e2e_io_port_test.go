@@ -26,7 +26,7 @@ import("io")
 
 // "oak_io_t.bin" followed by NUL at 0, "." followed by NUL at 96 and at
 // 160, "oak_io_a.bin" NUL at 128 and "oak_io_b.bin" NUL at 141 (so the
-// rename window is [128, 154) split at 13).
+// rename window is [128, 154) split at 13), "oak_io_d.bin" NUL at 176.
 io_path: (region: [*]u8): () {
   bytes: [13]u8 = [u8(111), u8(97), u8(107), u8(95), u8(105), u8(111), u8(95), u8(116), u8(46), u8(98), u8(105), u8(110), u8(0)]
   i: u32 = u32(0)
@@ -34,10 +34,12 @@ io_path: (region: [*]u8): () {
     region[i] = bytes[i]
     region[u32(128) + i] = bytes[i]
     region[u32(141) + i] = bytes[i]
+    region[u32(176) + i] = bytes[i]
     i = i + u32(1)
   }
   region[135] = u8(97)
   region[148] = u8(98)
+  region[183] = u8(100)
   region[96] = u8(46)
   region[97] = u8(0)
   region[160] = u8(46)
@@ -79,12 +81,15 @@ main: (): i32 {
   ring_store: [1]io.IoRing
   req_store: [8]io.IoRequest
   cq_store: [8]io.IoCompletion
-  region_store: [256]u8
+  // The region is sector-aligned storage (io.IoSectorRegion): its first
+  // sector holds the paths and small windows, its second the direct I/O
+  // data window.
+  region_store: io.IoSectorRegion[8192]
   tape: [4]u8
   ring: [*]io.IoRing = span(&ring_store)
   requests: [*]io.IoRequest = span(&req_store)
   completions: [*]io.IoCompletion = span(&cq_store)
-  region: [*]u8 = span(&region_store)
+  region: [*]u8 = span(&region_store.bytes)
   io.io_attach(view(&tape), u32(0))
   io.io_open_region(ring, region, u32(2))
   io_path(region)
@@ -210,6 +215,60 @@ main: (): i32 {
   assert(completions[find_tag(completions, u32(2), u64(25))].error == u32(0))
   assert(completions[find_tag(completions, u32(2), u64(26))].error == u32(0))
   assert(ring[0].submitted == u32(26) && ring[0].completed == u32(26) && ring[0].pending == u32(0))
+
+  // Direct I/O (docs/spec/120-io.md section 5): the region serves the
+  // sector (its address is aligned), so open_direct on slot 0 (tag 27)
+  // succeeds — or is refused with Invalid by a file system without direct
+  // I/O, and the program falls back to a plain open (tag 28), after which
+  // the sector rule does not apply.
+  assert(ring[0].sector == io.io_sector_bytes())
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_open_direct(), u32(0), u64(0), u32(176), u32(13), u64(27), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(1)) == u32(1))
+  direct_ok: Bool = completions[0].error == u32(0)
+  !direct_ok ? {
+    assert(completions[0].error == io.io_err_invalid())
+    assert(io.io_submit(ring, requests, io.io_request(io.io_op_open(), u32(0), u64(0), u32(176), u32(13), u64(28), false)))
+    assert(io.io_wait(ring, requests, completions, region, u32(1)) == u32(1))
+    assert(completions[0].error == u32(0))
+  }
+  // One whole sector from the region's second sector: pwrite at offset 0
+  // linked to fsync (tags 29, 30), then read back (tag 31).
+  k: u32 = u32(0)
+  while k < u32(4096) {
+    region[u32(4096) + k] = u8_trunc_u32(k % u32(251))
+    k = k + u32(1)
+  }
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_pwrite(), u32(0), u64(0), u32(4096), u32(4096), u64(29), true)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_fsync(), u32(0), u64(0), u32(0), u32(0), u64(30), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(2)) == u32(2))
+  assert(completions[find_tag(completions, u32(2), u64(29))].result == u32(4096))
+  assert(completions[find_tag(completions, u32(2), u64(30))].error == u32(0))
+  k = u32(0)
+  while k < u32(4096) {
+    region[u32(4096) + k] = u8(0)
+    k = k + u32(1)
+  }
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_pread(), u32(0), u64(0), u32(4096), u32(4096), u64(31), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(1)) == u32(1))
+  assert(completions[0].error == u32(0) && completions[0].result == u32(4096))
+  assert(region[4096] == u8(0) && region[4097] == u8(1) && region[u32(4096) + u32(250)] == u8(250) && region[u32(4096) + u32(251)] == u8(0))
+  direct_ok ? {
+    // The sector rule: a misaligned offset, length, or window base is
+    // Invalid before any system call (tags 32, 33, 34).
+    assert(io.io_submit(ring, requests, io.io_request(io.io_op_pread(), u32(0), u64(512), u32(4096), u32(4096), u64(32), false)))
+    assert(io.io_submit(ring, requests, io.io_request(io.io_op_pread(), u32(0), u64(0), u32(4096), u32(100), u64(33), false)))
+    assert(io.io_submit(ring, requests, io.io_request(io.io_op_pread(), u32(0), u64(0), u32(8), u32(4096), u64(34), false)))
+    assert(io.io_wait(ring, requests, completions, region, u32(3)) == u32(3))
+    assert(completions[find_tag(completions, u32(3), u64(32))].error == io.io_err_invalid())
+    assert(completions[find_tag(completions, u32(3), u64(33))].error == io.io_err_invalid())
+    assert(completions[find_tag(completions, u32(3), u64(34))].error == io.io_err_invalid())
+  }
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_close(), u32(0), u64(0), u32(0), u32(0), u64(35), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_unlink(), u32(0), u64(0), u32(176), u32(13), u64(36), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(2)) == u32(2))
+  assert(completions[find_tag(completions, u32(2), u64(35))].error == u32(0))
+  assert(completions[find_tag(completions, u32(2), u64(36))].error == u32(0))
+  assert(ring[0].pending == u32(0))
   42
 }
 `

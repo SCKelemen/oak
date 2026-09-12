@@ -89,6 +89,16 @@ type Identifier struct {
 	BaseNode
 	Token token.Token // 'ident' token
 	Value string
+	// Cache is the interpreter's resolution cache for this occurrence: the
+	// scope distance and slot where the name was last found, packed as
+	// hops<<16 | slot+1, zero when unknown. It is read and written with
+	// sync/atomic and validated by name on every use, so it can only
+	// speed a lookup up, never change what it finds (object.Environment).
+	Cache uint32
+	// NotType is the interpreter's record that this name was not a type
+	// as of type-declaration generation NotType-1 (zero: unknown), read
+	// and written with sync/atomic (object.ADTGeneration).
+	NotType uint32
 }
 
 func (i *Identifier) expressionNode()      {}
