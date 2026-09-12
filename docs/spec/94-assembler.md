@@ -1418,12 +1418,31 @@ multiple of it; a store needs a writable span; `ebreak` is the failure
 arm's trap. The verifier resolves such a load to the element term — the
 address `&v + K` names element `K / elem`, `&v + (idx << s)` element
 `idx` — so `first(v) = v[0]` is proven and the QEMU differential's `vsum`
-runs the element loop against the verifier's fixed memory. A
-data-dependent loop over elements is reported *trusted* for now: the
-shared loop summarizer does not yet read `slli` in a loop body.
+runs the element loop against the verifier's fixed memory.
 
-Still to come in this lane: loop summaries over scaled indices, F/D under
-the LP64D contract,
+**Loops over elements are proven (landed).** The loop summarizer executes
+an RV64 body with the lane's own semantics, and the inductive coupling of
+loop variables admits a 64-bit register carrying a 32-bit Oak variable
+*widened*: `r = zext(x) + b` for a counter kept below `2^32` by the loop's
+guard (`Oak.RiscV.zext_increment`, `lt_bound_ne_allOnes`), or
+`r = sext(x) + b` for an accumulator the W-forms sign-extend
+(`addw_sext`, `addw_sext_truncate`); the length normalization
+`(len << 32) >> 32` folds to the length's zero extension. The element sum
+`sum_rv` is thereby *proven equal at the bit level* to its Oak `while`
+body, coupled as `i ↔ t0` (zero-extended) and `total ↔ t3`
+(sign-extended) under the invariant `i <= len(v)`.
+
+**The Sail oracle (landed).** The same differential units run under the
+Sail RISC-V model's C emulator (`external/sail-riscv`, the ratified golden
+model; `TestRV64SailDifferential`), the harness reporting through the
+HTIF `tohost` device — device 1 for the console, device 0 to exit — which
+the emulator locates by the ELF symbol. QEMU and Sail both agree with the
+verifier's concrete execution on every input, so the term semantics are
+now checked against two independent machines. Not yet: the Sail model's
+Lean export as the semantics the transliteration is checked against
+theorem by theorem.
+
+Still to come in this lane: F/D under the LP64D contract,
 compressed encodings (RVC changes the label arithmetic), the RVWMO
 instantiation of `MemoryOrder.lean`, the sail-riscv bridge (the Sail C
 emulator as a second oracle, the Lean export as the semantics the

@@ -133,6 +133,13 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 		if !ok {
 			return "unbound register read", false
 		}
+		if name == "srli" && ops[2].(Immediate).Value == 32 && l.kind == termBinary && l.op == "shl" && l.right.kind == termConst && l.right.value == 32 {
+			// (x << 32) >> 32 is the zero extension of x's low half
+			// (Oak.RiscV.normalize_eq): the checker's length normalization,
+			// folded so a normalized length is the length's own term.
+			state.write(reg(0), zeroExtend(truncate(l.left, 32), 64))
+			return "", true
+		}
 		state.write(reg(0), binaryTerm(op, l, imm(2, 64)))
 		return "", true
 	}
