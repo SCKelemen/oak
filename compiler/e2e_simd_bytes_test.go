@@ -53,6 +53,36 @@ main: (): u32 {
   acc = acc + u32(wide[3])
   simd.store_u16x8(span(&wide), u32(0), simd.shr_u16x8(z, u32(2)))
   acc = acc + u32(wide[7])
+  // movemask: one bit per lane's top bit, over every shape; eq masks
+  // collapse to the lane mask
+  m: u32 = simd.movemask_u8x16(b)
+  acc = acc + m
+  acc = acc + simd.movemask_u8x16(simd.eq_u8x16(a, simd.splat_u8x16(u8(3))))
+  acc = acc + simd.movemask_u16x8(z)
+  acc = acc + simd.movemask_u16x8(simd.eq_u16x8(z, z))
+  acc = acc + simd.movemask_u16x8(simd.splat_u16x8(u16(32768)))
+  acc = acc + simd.movemask_u32x4(simd.eq_u32x4(simd.splat_u32x4(u32(9)), simd.splat_u32x4(u32(9))))
+  acc = acc + simd.movemask_u32x4(simd.splat_u32x4(u32(2147483647)))
+  acc = acc + simd.movemask_u64x2(simd.eq_u64x2(simd.splat_u64x2(u64(1)), simd.splat_u64x2(u64(1))))
+  acc = acc + simd.movemask_u64x2(simd.splat_u64x2(u64(9223372036854775808)))
+  // ctz and popcount: total, the zero word gives the width
+  acc = acc + simd.ctz_u32(m) + simd.popcount_u32(m)
+  acc = acc + simd.ctz_u32(u32(0)) + simd.popcount_u32(u32(0))
+  acc = acc + simd.ctz_u32(u32(4294967295)) + simd.popcount_u32(u32(4294967295))
+  acc = acc + simd.ctz_u32(u32(1024))
+  acc = acc + u32_trunc_u64(simd.ctz_u64(u64(0)) + simd.popcount_u64(u64(0)))
+  acc = acc + u32_trunc_u64(simd.ctz_u64(u64(18446744073709551615)) + simd.popcount_u64(u64(18446744073709551615)))
+  acc = acc + u32_trunc_u64(simd.ctz_u64(u64(4294967296)) + simd.popcount_u64(u64(4294967296)))
+  // the mask-iteration loop visits popcount(m) lanes
+  walk: u32 = u32(0)
+  visits: u32 = u32(0)
+  mm: u32 = m
+  while mm != u32(0) {
+    walk = walk + simd.ctz_u32(mm)
+    visits = visits + u32(1)
+    mm = mm & (mm - u32(1))
+  }
+  acc = acc + walk + (visits == simd.popcount_u32(m) ? u32(100) | u32(0))
   acc % u32(251)
 }
 `

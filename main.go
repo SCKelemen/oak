@@ -231,12 +231,17 @@ func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode string, l
 		return 0
 	}
 	// An executable, like `go build`: the emitted C compiled by the system
-	// C compiler into the named output, through the build cache.
-	_, object, err := emitForHost(comp, asmMode)
+	// C compiler into the named output, through the build cache. The C is
+	// re-emitted for the asm mode: in native mode the asm units live in the
+	// companion object and the C carries only their prototypes, so the
+	// inline-assembly C emitted above (the -emit-c form) must not be linked
+	// beside the object — it would define every unit's symbol a second time.
+	hostCode, object, err := emitForHost(comp, asmMode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
+	code = hostCode
 	inputs, err := comp.LinkInputs()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)

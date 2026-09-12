@@ -250,6 +250,9 @@ var simdOps = func() map[string]*FunctionType {
 		// Lane-wise logical shift right by a count; a count reaching the
 		// lane width traps, as scalar shifts do (docs/spec/93-simd.md §1.2).
 		ops["shr_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector, offset}, ReturnType: vector}
+		// A lane mask as a scalar: bit i of the result is the top bit of
+		// lane i (docs/spec/93-simd.md §1.2, the mask vocabulary).
+		ops["movemask_"+shape.Suffix] = &FunctionType{Parameters: []Type{vector}, ReturnType: offset}
 		if shape.Suffix == "u8x16" {
 			// Byte-table lookup and the cross-block byte shift: the two
 			// operations byte-classification kernels (a UTF-8 validator)
@@ -257,6 +260,14 @@ var simdOps = func() map[string]*FunctionType {
 			ops["tbl_u8x16"] = &FunctionType{Parameters: []Type{vector, vector}, ReturnType: vector}
 			ops["prev_u8x16"] = &FunctionType{Parameters: []Type{vector, vector, offset}, ReturnType: vector}
 		}
+	}
+	// The scalar consumers of a mask (docs/spec/93-simd.md §1.2): trailing
+	// zeros, with ctz(0) the width, and population count, over the two mask
+	// widths. Both total; the laws live in Oak.Intrinsics.
+	for _, width := range []string{"u32", "u64"} {
+		scalar := &PrimitiveType{Name: width}
+		ops["ctz_"+width] = &FunctionType{Parameters: []Type{scalar}, ReturnType: scalar}
+		ops["popcount_"+width] = &FunctionType{Parameters: []Type{scalar}, ReturnType: scalar}
 	}
 	return ops
 }()

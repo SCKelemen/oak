@@ -85,7 +85,7 @@ oracle agreeing bit for bit. Add rows; do not remove them.
 | Domain | Golden implementation(s) | Defining techniques (expressiveness questions in §2) | Oak status |
 | --- | --- | --- | --- |
 | JSON parsing | simdjson (Langdale & Lemire 2019), simdjson On-Demand | two-stage parse (structural index then tape); byte classification by nibble shuffle; prefix-XOR quote masks and odd/even backslash runs; `ctz` bitmask-to-index with over-write into slack; two-block software pipelining; sentinel-terminated index; padded input with unspecified content; UTF-8 lookup4 fused into stage 1; SWAR eight-digit parse; Eisel–Lemire floats; word-compare atoms; forward-only On-Demand iterator with recoverable vs fatal errors; grow-only parser buffers from a closed form; runtime CPU dispatch; no backtracking | 1.13× simdjson on M1, 1.40× on EPYC for one typed schema (`BENCHMARKS.md`); `71-codecs.md` §16–§19; structural index, On-Demand, float fast path, table lookup, movemask, `ctz`, `mul_hi` absent; runtime dispatch absent; pass recorded in `docs/notes/codec-text-extraction-2026-09.md` |
-| UTF-8 validation / transcoding | simdutf (Keiser & Lemire 2020, 2021, 2022), Zig/Rust std validators | three nibble-table lookups over each adjacent byte pair plus a saturating third/fourth-continuation check; cross-vector byte shift for the previous block; incomplete-tail compare; ASCII fast path by OR/max reduce; reject fast in lanes, locate the error with the scalar oracle; tail copied into an inert-filled stack block (no over-read); mask-indexed generated shuffle tables for transcoding with pattern fast paths; non-validating lane-count sizers with narrow accumulators; `_valid` API level over validated input; `trim_partial_utf8` for stream cuts; runtime dispatch | Oak shift-DFA 1.97 GB/s vs simdutf 13.4 GB/s (`benchmarks/state-machines`); the whole validator gap is three missing `simd` ops (16-lane table lookup, lane shift by immediate, cross-vector byte shift); transcoder is scalar and three-pass (`stdlib/strings.oak`); no error position; `string` as the `_valid` level exists but no stdlib function consumes it |
+| UTF-8 validation / transcoding | simdutf (Keiser & Lemire 2020, 2021, 2022), Zig/Rust std validators | three nibble-table lookups over each adjacent byte pair plus a saturating third/fourth-continuation check; cross-vector byte shift for the previous block; incomplete-tail compare; ASCII fast path by OR/max reduce; reject fast in lanes, locate the error with the scalar oracle; tail copied into an inert-filled stack block (no over-read); mask-indexed generated shuffle tables for transcoding with pattern fast paths; non-validating lane-count sizers with narrow accumulators; `_valid` API level over validated input; `trim_partial_utf8` for stream cuts; runtime dispatch | `stdlib/utf8.oak` (`utf8.valid`), the lookup4 validator in safe Oak over `tbl`/`shr`/`subs`/`prev`: 9.6 GB/s beside simdutf 12.0 and simdjson 11.9 on Apple arm64 (`benchmarks/state-machines/cross`, 3587c9b), tables proved against Table 3-7 in `Oak.Utf8Lookup`; open: the 64-byte step, the stream composition in Lean; transcoder is scalar and three-pass (`stdlib/strings.oak`); no error position; `string` as the `_valid` level exists but no stdlib function consumes it |
 | Multi-pattern matching / regex | Hyperscan (Teddy, FDR, shift-or, Rose), RE2, `memchr` crate | SIMD literal prefilters (Teddy: shuffle-based multi-literal); shift-or / bit-parallel NFA; DFA with byte-class compression; no backtracking, linear time; state in registers; streaming with saved state | recorded as a stdlib workstream, not started (`ml-language-requests` "The regex question") |
 | Hashing | BLAKE3, xxh3, wyhash, hardware CRC-32C, SipHash for keyed | wide state in registers; tree hashing for parallelism; hardware CRC/AES instructions; unaligned reads; seeded keys against collision DoS | SHA-256, BLAKE3, CRC-32C within ten percent of Rust (`stdlib/hash.oak`, `benchmarks/kernels`); hardware CRC and seeding: check |
 | Sorting | pdqsort (Peters), ips4o, vqsort (Google, Highway), radix sort | pattern-defeating pivots; branchless partition (Edelkamp–Weiß block partition); insertion sort tail; SIMD sorting networks; radix for keys with known width | pdqsort with laws (`sam/stdlib-pdqsort`, `sam/pdqsort-laws`); branchless partition and vqsort: check |
@@ -194,22 +194,28 @@ remains that a fact could elide" is a finding.
 - [ ] **Bit intrinsics as total functions.** `ctz`, `clz`, `popcnt`,
       `bswap`, `rotl/rotr`, `pdep/pext`, `bit_reverse` — all present,
       total (zero input defined), and lowered to single instructions?
-      (simdjson `ctz` loop, Hyperscan) — Oak: `clz`, `popcount`, `rotl`
-      present in `stdlib`; `ctz`, `bswap`, `rotr`, `pdep`/`pext`,
-      `bit_reverse` not found — gap.
+      (simdjson `ctz` loop, Hyperscan) — Oak: `simd.ctz_u32/u64` and
+      `simd.popcount_u32/u64` (total, `ctz(0)` is the width; `93-simd.md`
+      §1.2, landed 2026-09-12); `arm64.clz`, `arm64.rbit`, `arm64.rev`;
+      portable `bswap`, `rotr`, `pdep`/`pext`, `bit_reverse`: not found.
 - [ ] **Bitmask iteration.** Can `while mask != 0 { i = ctz(mask); mask
       &= mask - 1 }` be written in the strict profile with its bound
-      recognized (popcount of the initial mask)? (simdjson stage 1) —
-      Oak: `85-discipline.md` §3 canonical shapes; this shape: check.
+      recognized (popcount of the initial mask)? (simdjson stage 1) — Oak: the loop is spelled in `93-simd.md` §1.2
+      and runs `popcount(m)` times (`Oak.Intrinsics.ctz_lt_of_mem_true` is
+      the progress law); it is not a canonical shape of `85-discipline.md`
+      §3, so it is an `OAK-D0103` obligation until the ranking law is
+      recognized — open.
 - [ ] **Shuffle-based table lookup.** Is a 16-entry nibble lookup
       (`pshufb`/`tbl`) a portable `simd` operation with a stated
-      out-of-range lane result? (simdjson classification, simdutf, Teddy)
-      — Oak: not stated; `93-simd.md` names no table-lookup operation.
+      out-of-range lane result? (simdjson classification, simdutf, Teddy) — Oak: `simd.tbl_u8x16`
+      (`93-simd.md` §1.2, landed in 3587c9b with the UTF-8 validator; NEON
+      `tbl`, `pshufb`'s high-bit rule, `Oak.Simd.tbl_lane_*`).
 - [ ] **Movemask / compress.** Is lane-compare-to-bitmask a portable
       operation on every target, with the emulation cost on targets
       lacking it (NEON) stated? Is lane compaction (`vcompress`,
-      `pext`-based) expressible? (simdjson, Highway) — Oak: not stated;
-      `93-simd.md` names neither movemask nor compress.
+      `pext`-based) expressible? (simdjson, Highway) — Oak: `simd.movemask_E` over the four integer
+      shapes with the NEON cost stated (`93-simd.md` §1.2, landed
+      2026-09-12); compress: absent.
 - [ ] **Prefix operations on masks.** Prefix-XOR for quote-state tracking,
       prefix-sum for compaction indices — expressible, and lowered to
       `pclmul` where it pays? simdjson's arm64 path uses six scalar
@@ -239,15 +245,15 @@ remains that a fact could elide" is a finding.
 
 - [ ] **Lane shifts by immediate.** Is `shr`/`shl` by a constant on `u8`
       and `u16` lanes a portable `simd` operation, so a nibble (`x >> 4`)
-      can index a 16-entry table? (simdutf `prev1.shr<4>()`, simdjson
-      `(byte + 3) >> 4`) — Oak: `93-simd.md` §1.2 has no shift;
-      `codegen/simd.go` lowers none — gap.
+      can index a 16-entry table? (simdutf `prev1.shr<4>()`, simdjson `(byte + 3) >> 4`) — Oak:
+      `simd.shr_E` by a count that traps at the lane width (`93-simd.md`
+      §1.2, 3587c9b); `shl`: absent.
 - [ ] **Cross-vector byte shift.** Can "the last N bytes of the previous
       chunk followed by the first 16−N of this one" (`ext`/`palignr`) be
       formed in one operation rather than through a stack round trip?
-      Every windowed classifier needs it. (simdutf `prev<N>`, simdjson
-      lookup4) — Oak: not stated in `93-simd.md`; emulable via a `[32]u8`
-      store and reload — gap.
+      Every windowed classifier needs it. (simdutf `prev<N>`, simdjson lookup4) — Oak: `simd.prev_u8x16(prev,
+      cur, n)` (`93-simd.md` §1.2, 3587c9b; NEON `ext` selected by the
+      count, `Oak.Simd.prev_lane_*`).
 - [ ] **Unsigned lane comparisons beyond equality.** Are `gt`/`ge` masks
       portable, or is `eq(max(a, b), a)` the stated two-op emulation with
       its cost recorded? (simdutf `gt_bits`, `is_incomplete`) — Oak:

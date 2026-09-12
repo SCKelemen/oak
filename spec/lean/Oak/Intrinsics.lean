@@ -89,4 +89,47 @@ theorem clz_lt_of_mem_true (bits : List Bool) (h : true ∈ bits) :
       show clz rest + 1 < rest.length + 1
       exact Nat.succ_lt_succ this
 
+/-! ## Mask scalars (docs/spec/93-simd.md §1.2)
+
+`ctz` counts trailing zeros — the leading zeros of the reversed word, so
+every `clz` law transfers — and `popcount` counts the set bits. Both are
+total: `ctz` of the zero word is the width, as the architecture's `RBIT`
+then `CLZ` gives. -/
+
+/-- Trailing zeros of a word written most-significant bit first. -/
+def ctz (bits : List Bool) : Nat := clz bits.reverse
+
+theorem ctz_le_width (bits : List Bool) : ctz bits ≤ bits.length := by
+  unfold ctz
+  have h := clz_le_width bits.reverse
+  simpa [List.length_reverse] using h
+
+/-- **The zero word saturates**: `ctz 0 = width`. -/
+theorem ctz_zero (width : Nat) : ctz (List.replicate width false) = width := by
+  unfold ctz
+  rw [List.reverse_replicate]
+  exact clz_zero width
+
+/-- A set bit somewhere keeps `ctz` strictly below the width, so the
+mask-iteration loop `m &= m - 1` makes progress. -/
+theorem ctz_lt_of_mem_true (bits : List Bool) (h : true ∈ bits) : ctz bits < bits.length := by
+  unfold ctz
+  have h' : true ∈ bits.reverse := List.mem_reverse.mpr h
+  have := clz_lt_of_mem_true bits.reverse h'
+  simpa [List.length_reverse] using this
+
+/-- Population count: the number of set bits. -/
+def popcount (bits : List Bool) : Nat := bits.count true
+
+theorem popcount_le_width (bits : List Bool) : popcount bits ≤ bits.length :=
+  List.count_le_length ..
+
+theorem popcount_zero (width : Nat) : popcount (List.replicate width false) = 0 := by
+  simp [popcount, List.count_replicate]
+
+/-- **Zero iff no bit is set** — `popcount m = 0 ↔ m = 0` for the mask loop's
+termination test. -/
+theorem popcount_eq_zero_iff (bits : List Bool) : popcount bits = 0 ↔ true ∉ bits := by
+  simp [popcount, List.count_eq_zero]
+
 end Oak.Intrinsics

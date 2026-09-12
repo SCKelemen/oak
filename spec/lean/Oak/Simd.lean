@@ -257,3 +257,58 @@ theorem prev_zero (prevBlock cur : Vec) (hp : prevBlock.length = 16) (hc : cur.l
   exact List.take_of_length_le (by omega)
 
 end Oak.Simd
+
+/-! ## Mask vocabulary (docs/spec/93-simd.md §1.2)
+
+`movemask` collapses a vector to a scalar with one bit per lane — bit `i`
+is the top bit of lane `i` — the scalar a mask-iteration loop consumes with
+`ctz` and `popcount` (`Oak.Intrinsics`). The interpreter, the NEON
+lowering (a test, an `and` with a bit table, and pairwise adds), and the
+portable loop are checked to agree by `compiler/e2e_simd_bytes_test.go`. -/
+
+namespace Oak.Simd
+
+/-- The top bit of a lane of `laneBits` bits, as `0` or `1`. -/
+def topBit (laneBits : Nat) (x : Nat) : Nat := (x >>> (laneBits - 1)) % 2
+
+theorem topBit_le_one (laneBits x : Nat) : topBit laneBits x ≤ 1 :=
+  Nat.le_of_lt_succ (Nat.mod_lt _ (by decide))
+
+/-- One bit per lane: lane `i` lands at bit `i`. -/
+def movemask (laneBits : Nat) : Vec → Nat
+  | [] => 0
+  | x :: rest => topBit laneBits x + 2 * movemask laneBits rest
+
+/-- **Bounded by the lane count**: a mask over `n` lanes is below `2^n`, so
+it fits the `u32` the operation returns for every v1 shape. -/
+theorem movemask_lt (laneBits : Nat) (v : Vec) : movemask laneBits v < 2 ^ v.length := by
+  induction v with
+  | nil => simp [movemask]
+  | cons x rest ih =>
+    have h := topBit_le_one laneBits x
+    simp only [movemask, List.length_cons, Nat.pow_succ]
+    omega
+
+/-- **Bit zero is lane zero.** -/
+theorem movemask_bit_zero (laneBits x : Nat) (rest : Vec) :
+    movemask laneBits (x :: rest) % 2 = topBit laneBits x := by
+  have h := topBit_le_one laneBits x
+  simp only [movemask]
+  omega
+
+/-- **The mask is zero exactly when no lane has its top bit set** — the
+scalar form of `any` over a mask vector. -/
+theorem movemask_eq_zero_iff (laneBits : Nat) (v : Vec) :
+    movemask laneBits v = 0 ↔ ∀ x ∈ v, topBit laneBits x = 0 := by
+  induction v with
+  | nil => simp [movemask]
+  | cons x rest ih =>
+    have h := topBit_le_one laneBits x
+    simp only [movemask, List.mem_cons, forall_eq_or_imp]
+    constructor
+    · intro hz
+      exact ⟨by omega, ih.mp (by omega)⟩
+    · rintro ⟨hx, hrest⟩
+      rw [hx, ih.mpr hrest]
+
+end Oak.Simd

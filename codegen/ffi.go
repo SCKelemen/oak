@@ -300,7 +300,7 @@ func (cg *CodeGenerator) emitLibraryCall(call *ast.InvocationExpression, tc *typ
 		cg.output.WriteString(" )")
 		return true
 	case "simd":
-		if _, _, valid := simdOpSplit(member); !valid {
+		if !simdKnownMember(member) {
 			cg.output.WriteString("OAK_UNSUPPORTED_SIMD_OP")
 			return true
 		}
