@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
@@ -22,8 +23,17 @@ import (
 func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.TypeChecker) ([]*asm.Function, []*diagnostic.Diagnostic) {
 	var diagnostics []*diagnostic.Diagnostic
 	functions := map[string]*ast.FunctionStatement{}
+	records := map[string]*ast.RecordLiteral{}
 	symbols := map[string]bool{}
 	for _, stmt := range root.Statements {
+		// A record type declaration: an ADT with one record-literal variant
+		// (docs/spec/40-records.md), monomorphic.
+		if adt, isADT := stmt.(*ast.ADTType); isADT && adt.Name != nil && len(adt.TypeParams) == 0 && len(adt.Variants) == 1 {
+			if literal, isRecord := adt.Variants[0].Literal.(*ast.RecordLiteral); isRecord {
+				records[adt.Name.Value] = literal
+			}
+			continue
+		}
 		fn, ok := stmt.(*ast.FunctionStatement)
 		if !ok || fn.Name == nil {
 			continue
@@ -39,7 +49,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		if !ok || fn.Name == nil || fn.Body == nil || fn.AsmBacked || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 {
 			continue
 		}
-		asmFn, err := nativegen.Compile(fn, functions, tc)
+		asmFn, err := nativegen.Compile(fn, functions, records, tc)
 		if err != nil {
 			if _, outside := err.(nativegen.Unsupported); outside {
 				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (%v)", fn.Name.Value, err)))
@@ -47,6 +57,11 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			}
 			diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
 			continue
+		}
+		if os.Getenv("OAK_NATIVE_DUMP") != "" {
+			// A debugging aid: the lowered assembly of every function, as the
+			// checker sees it.
+			fmt.Fprint(os.Stderr, nativegen.Describe(asmFn))
 		}
 		if findings := asm.Check(asmFn, fn, symbols); len(findings) != 0 {
 			for _, finding := range findings {

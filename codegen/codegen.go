@@ -86,6 +86,13 @@ type CodeGenerator struct {
 	// bounds-checked form. Unknown containers fail closed.
 	localTypes   map[string]localContainer
 	sliceHelpers map[string]string
+	// foreignFnLocals maps the `c.Fn[...]` locals of the function being
+	// emitted to their annotated signatures (docs/spec/92-ffi.md section
+	// 2.10), so a call through one is cast to exactly that signature;
+	// usesForeignFunctionAt gates the oak_fn_at helper on programs that
+	// name a foreign function.
+	foreignFnLocals       map[string]*ast.FunctionTypeExpression
+	usesForeignFunctionAt bool
 	// liftedLiterals is the C text of every typed function literal lifted
 	// to a top-level function (emitFunctionLiteral); liftedCount names them
 	// in emission order; liftedOffset is where the text is spliced — after
@@ -179,6 +186,14 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 
 	// First pass: collect all string literals
 	cg.collectStringLiterals(program)
+	// Programs that name a foreign function at a pointer (docs/spec/92-ffi.md
+	// section 2.10) get the oak_fn_at helper; no other program's C changes.
+	cg.usesForeignFunctionAt = false
+	scanCalls(program, func(library, member string) {
+		if library == "c" && member == "fn_at" {
+			cg.usesForeignFunctionAt = true
+		}
+	})
 
 	// Discipline analysis drives recursion lowering: self tail loops and
 	// mutual tail trampolines (docs/spec/85-discipline.md).
@@ -399,6 +414,15 @@ func (cg *CodeGenerator) collectStringLiterals(program *ast.Program) {
 		case *ast.BlockStatement:
 			for _, st := range s.Statements {
 				collectFromStmt(st)
+			}
+		case *ast.UnsafeBlock:
+			// Literals inside an unsafe block (a `c.cstr("...\0")` at a
+			// call through a foreign function pointer) are interned like
+			// every other.
+			if s.Body != nil {
+				for _, st := range s.Body.Statements {
+					collectFromStmt(st)
+				}
 			}
 		case *ast.AssignmentStatement:
 			collectFromExpr(s.Value)
@@ -960,8 +984,9 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	cg.write(" ) {\n")
 	cg.indentLevel++
 
+	cg.foreignFnLocals = nil
 	cg.localTypes = cg.buildLocalTypes(fn)
-	defer func() { cg.localTypes = nil }()
+	defer func() { cg.localTypes = nil; cg.foreignFnLocals = nil }()
 
 	// A projected protocol step function has a compiler-known lowering
 	// (docs/spec/90-backend.md section 14): the table or shift-DFA body
@@ -1392,6 +1417,17 @@ func (cg *CodeGenerator) buildLocalTypes(fn *ast.FunctionStatement) map[string]l
 		case *ast.VariableDeclaration:
 			if s.Name != nil && s.Type != nil {
 				table[s.Name.Value] = cg.classifyContainer(s.Type)
+				// A `c.Fn[...]` local names a foreign function pointer
+				// (docs/spec/92-ffi.md section 2.10); calls through it are
+				// lowered as a cast to the annotated signature. Names are
+				// unique within a function (no redeclaration), so the
+				// annotation is looked up by name at the call.
+				if fnExpr, isCFn := typechecker.CFnTypeExpression(s.Type); isCFn {
+					if cg.foreignFnLocals == nil {
+						cg.foreignFnLocals = make(map[string]*ast.FunctionTypeExpression)
+					}
+					cg.foreignFnLocals[s.Name.Value] = fnExpr
+				}
 			}
 		case *ast.WhileStatement:
 			if s.Body != nil {
@@ -2168,6 +2204,29 @@ func (cg *CodeGenerator) emitAssertHelper() {
 	cg.write("    __builtin_trap();\n")
 	cg.write("  }\n")
 	cg.write("}\n")
+	if cg.usesForeignFunctionAt {
+		// c.fn_at(p) (docs/spec/92-ffi.md section 2.10): the one check the
+		// backend can make on a foreign function pointer is that it is not
+		// NULL, so a call through it never dereferences NULL; the trap
+		// names the Oak source position as an assertion does. Emitted only
+		// for programs that use the form, so every other program's C is
+		// unchanged.
+		cg.write("#endif\n")
+		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
+		cg.write("static inline void *oak_fn_at(void *p, const char *file, u32 line) {\n")
+		cg.write("  if (p == 0) {\n")
+		cg.write("    fprintf(stderr, \"oak: c.fn_at of a NULL pointer at %s:%u\\n\", file, (unsigned)line);\n")
+		cg.write("    __builtin_trap();\n")
+		cg.write("  }\n")
+		cg.write("  return p;\n")
+		cg.write("}\n")
+		cg.write("#else\n")
+		cg.write("static inline void *oak_fn_at(void *p, const char *file, u32 line) {\n")
+		cg.write("  (void)file; (void)line;\n")
+		cg.write("  if (p == 0) { __builtin_trap(); }\n")
+		cg.write("  return p;\n")
+		cg.write("}\n")
+	}
 	cg.write("#endif\n\n")
 	cg.emitAssertValueHelpers()
 }
@@ -2663,6 +2722,12 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.emitForeignBorrow(member, element, e, tc)
 			return
 		}
+		// A foreign function pointer named by c.fn_at(p) (docs/spec/92-ffi.md
+		// section 2.10): the pointer, NULL-checked at the conversion.
+		if typechecker.ForeignFunctionAtCall(e) && len(e.Arguments) == 1 {
+			cg.emitForeignFunctionAt(e, tc)
+			return
+		}
 		// Sealed-boundary coercions are identities: the fresh abstract type is
 		// a typedef alias of its underlying type (docs/spec/83-modules.md
 		// section 6.3).
@@ -2802,7 +2867,12 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.output.WriteString(" )")
 			return
 		}
-		if ident, ok := e.Function.(*ast.Identifier); ok && runtimeBuiltins[ident.Value] != "" {
+		if ident, ok := e.Function.(*ast.Identifier); ok && cg.foreignFnLocals[ident.Value] != nil {
+			// A call through a foreign function pointer (docs/spec/92-ffi.md
+			// section 2.10): the opaque pointer cast to the annotated
+			// signature, spelled from the extern prototype table.
+			cg.emitForeignFunctionCallee(cg.foreignFnLocals[ident.Value], e.Function, tc)
+		} else if ident, ok := e.Function.(*ast.Identifier); ok && runtimeBuiltins[ident.Value] != "" {
 			cg.output.WriteString(runtimeBuiltins[ident.Value])
 		} else if ident, ok := e.Function.(*ast.Identifier); ok && cg.programFunctions[ident.Value] != nil {
 			// Calls to program functions use the mangled C name; calls to
@@ -3132,6 +3202,11 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 	}
 
 	// Handle array types: [N]T or []T
+	// A foreign function pointer (docs/spec/92-ffi.md section 2.10) is
+	// stored as an opaque pointer and cast to its signature at each call.
+	if _, isCFn := typechecker.CFnTypeExpression(expr); isCFn {
+		return "void *"
+	}
 	// The parser represents array types as IndexExpression
 	if indexExpr, ok := expr.(*ast.IndexExpression); ok {
 		if cType, atomic := atomicTypeC(indexExpr); atomic {

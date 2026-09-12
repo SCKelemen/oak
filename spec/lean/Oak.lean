@@ -1,5 +1,6 @@
 import Oak.TypeLattice
 import Oak.Effects
+import Oak.EffectRows
 import Oak.MemoryOrder
 import Oak.HappensBefore
 import Oak.SequentialConsistency
