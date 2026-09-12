@@ -111,8 +111,17 @@ func TestRISCV64AtomicLoadStoreAndFenceRefinement(t *testing.T) {
 			t.Fatalf("%s lacks the release fence before the store:\n%s", name, body)
 		}
 	}
-	if body := aarch64FunctionBody(t, assembly, "store_seq_cst"); !strings.Contains(body, "fence\trw, rw") && !strings.Contains(body, "fence rw, rw") {
-		t.Fatalf("store_seq_cst lacks the trailing full fence:\n%s", body)
+	// The seq_cst store has two Appendix A mappings: `fence rw,w; sd` (the
+	// original Table A.6, which Ubuntu's clang 18 emits) and `fence rw,w;
+	// sd; fence rw,rw` (later LLVM, the mapping the chapter's table shows).
+	// Oak.RiscVMemory judges both `releaseOnly` — the trailing fence adds no
+	// local ordering the model needs, since seq_cst loads carry the leading
+	// full fence (c11_store_seqCst_trailing_fence_optional) — so either is
+	// admitted; which one the toolchain chose is logged, not required.
+	if body := aarch64FunctionBody(t, assembly, "store_seq_cst"); strings.Contains(body, "fence\trw, rw") || strings.Contains(body, "fence rw, rw") {
+		t.Log("store_seq_cst: trailing full fence present (the later Appendix A mapping)")
+	} else {
+		t.Log("store_seq_cst: no trailing fence (Table A.6 mapping); the leading fence rw,w is required and was found")
 	}
 	requireInstruction(t, aarch64FunctionBody(t, assembly, "fence_acquire"), "fence")
 	requireInstruction(t, aarch64FunctionBody(t, assembly, "fence_release"), "fence")
