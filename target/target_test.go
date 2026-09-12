@@ -74,7 +74,7 @@ func TestSpellings(t *testing.T) {
 	if arm.ZigTriple() != "thumb-freestanding-eabi" || arm.LLVMTriple() != "thumbv7em-none-eabi" || arm.GNUPrefixes()[0] != "arm-none-eabi-" || arm.DefaultCPU() != "cortex_m4" {
 		t.Errorf("freestanding/arm spellings: %s %s %v %s", arm.ZigTriple(), arm.LLVMTriple(), arm.GNUPrefixes(), arm.DefaultCPU())
 	}
-	if bare.DefaultCPU() != "generic_rv64" || rv.DefaultCPU() != "" {
+	if bare.DefaultCPU() != "generic_rv64+m" || rv.DefaultCPU() != "" {
 		t.Errorf("default cpus: %q %q", bare.DefaultCPU(), rv.DefaultCPU())
 	}
 }

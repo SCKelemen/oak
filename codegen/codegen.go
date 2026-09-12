@@ -586,7 +586,7 @@ func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 		// signbit from it (the transcendental functions are Oak code in the
 		// standard library), so a freestanding build (docs/spec/90-backend.md
 		// §2a) takes the compiler's builtin and stays free of libm.
-		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n#include <math.h>\n#else\n#ifndef signbit\n#define signbit(x) __builtin_signbit(x)\n#endif\n#endif\n")
+		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n#include <math.h>\n#else\n#ifndef signbit\n#define signbit(x) __builtin_signbit(x)\n#endif\n#ifndef isnan\n#define isnan(x) __builtin_isnan(x)\n#endif\n#ifndef isinf\n#define isinf(x) __builtin_isinf(x)\n#endif\n#ifndef isfinite\n#define isfinite(x) __builtin_isfinite(x)\n#endif\n#endif\n")
 		cg.write("#include <float.h>\n")
 		// Every operation rounds to its own type: no excess intermediate
 		// precision (docs/spec/20-types.md section 11.3.3). A target that

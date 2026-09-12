@@ -179,6 +179,26 @@ remain fixed semantic values. The backend may use a scalable register to
 implement them, but physical VLEN is never observable through `U8x16` or any
 other fixed type.
 
+**The RISC-V Vector realization (landed; dbs ask 7, first increment).**
+Every helper carries a third branch beside NEON and the lane loop, selected
+by the preprocessor when the target is RISC-V with the V extension
+(`-target linux/riscv64 -cpu generic_rv64+m+v`, or `+v` on a freestanding
+processor; `__riscv_vector`): `<riscv_vector.h>` LMUL=1 intrinsics with the
+vector length fixed to the lane count (`vle`/`vse`, `vmv.v.x`, `vadd`,
+`vsub`, `vssubu`, `vand`/`vor`/`vxor`, `vminu`/`vmaxu`, `vmseq` merged to
+all-ones lanes for `eq`, `vsrl.vx` for `shr`, `vrgather` under an explicit
+index-below-16 mask for `tbl` so the out-of-range rule holds on every VLEN,
+`vslidedown` then `vslideup` for `prev`, `vfadd`/`vfsub`/`vfmul`/`vfdiv`,
+`vfsqrt`/`vfneg`/`vfabs`, `vfmacc` for `fma`). Fixed 128-bit vectors run
+unchanged on every VLEN ≥ 128. What keeps the portable code on every
+target, by design: the reductions `any`/`all`/`movemask`/`reduce_add`
+(the pairwise order is the semantics), `extract`/`insert`, and floating
+`min`/`max` — RVV's `vfmin`/`vfmax` are IEEE `minimumNumber`/
+`maximumNumber` (a NaN operand suppressed, `-0.0` equal to `+0.0`), not
+the catalog's 754-2019 `minimum`/`maximum`. The choice is static: no
+runtime dispatch, no hidden state, one lane-array representation for every
+realization.
+
 ### 1.5 A byte-classification kernel: the UTF-8 validator
 
 `stdlib/utf8.oak` (`utf8 := import("utf8")`, `utf8.valid: ([]u8) -> Bool`)
@@ -399,3 +419,11 @@ must cover at least:
 A scalable implementation is not considered portable merely because it runs on
 one VLEN. The same Oak source must retain its semantics across every supported
 hardware vector length.
+
+Discharged for the fixed vectors under the RVV realization
+(`compiler/e2e_rvv_test.go`): the byte-classification and floating-point
+programs of the NEON and portable witnesses run under `qemu-system-riscv64`
+with V at VLEN 128 and 256 and print the interpreter's checksum — the same
+program under portable scalar, NEON, and a scalable backend, at two
+emulated hardware vector lengths. The scalable *API* obligations (active
+extents, masks, fault-first) remain for the scalable model of §4.

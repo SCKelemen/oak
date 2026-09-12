@@ -62,7 +62,7 @@ func TestResolveOrder(t *testing.T) {
 	// Freestanding: an object, no libc, clang needs no sysroot.
 	bare := target.Target{OS: target.OSFreestanding, Arch: target.ArchRiscv64}
 	d, err = Resolve(bare, Options{}, lookupOf("cc", "clang"), none)
-	if err != nil || d.Kind != "clang" || !d.Object || d.Static || !strings.Contains(strings.Join(d.Args, " "), "-mcpu=generic_rv64 -ffreestanding -nostdlib -fno-unwind-tables -fno-asynchronous-unwind-tables -DOAK_FREESTANDING") {
+	if err != nil || d.Kind != "clang" || !d.Object || d.Static || !strings.Contains(strings.Join(d.Args, " "), "-mcpu=generic_rv64+m -ffreestanding -nostdlib -fno-unwind-tables -fno-asynchronous-unwind-tables -DOAK_FREESTANDING -mcmodel=medany") {
 		t.Fatalf("freestanding: %+v %v", d, err)
 	}
 	d, err = Resolve(bare, Options{}, lookupOf("riscv64-elf-gcc"), none)
@@ -86,7 +86,7 @@ func TestResolveOrder(t *testing.T) {
 		t.Fatalf("gnu arm spelling: %+v", d)
 	}
 	rv32 := target.Target{OS: target.OSFreestanding, Arch: target.ArchRiscv32}
-	if d, _ = Resolve(rv32, Options{}, lookupOf("zig"), none); !strings.Contains(strings.Join(d.Args, " "), "--target=riscv32-freestanding-none -mcpu=generic_rv32") {
+	if d, _ = Resolve(rv32, Options{}, lookupOf("zig"), none); !strings.Contains(strings.Join(d.Args, " "), "--target=riscv32-freestanding-none -mcpu=generic_rv32+m") {
 		t.Fatalf("rv32: %+v", d)
 	}
 	// An explicit OAK_CC is never second-guessed with a processor flag.
