@@ -1121,11 +1121,39 @@ as the scrutinee, a statement-position match updating a local, a literal
 match over `u32`, and reassignment of an ADT local — natively against the
 C backend and the portable realization. ADT bodies are trusted by the
 verifier (§5).
+**Eleventh increment — arrays of records.** `pool: [N]Rec` as a local
+(zero-filled, or from a literal of record values) and as a record field,
+with C's stride (`sizeof(Rec)`, the layout the C backend asserts). A
+literal index is a static place; a computed `pool[i]` is a record place
+addressed through a register, produced by the element idiom the checker
+now admits: the array's frame address, the constant guard `cmp wI, #N;
+b.hs trap`, then `add xE, xB, wI, uxtw #s` for a power-of-two stride up to
+16 bytes (the extended-register form's limit) or `movz wK, #stride; umaddl
+xE, wI, wK, xB` otherwise. The checker records `xE` as a writable region of
+exactly one element — `add xE, xB, wI, uxtw #s` or `umaddl` over a frame
+address with the index guarded below a constant `K` and `base + K·stride`
+inside the declared frame (`movz`/`mov wK, #c` records the stride as a
+constant fact, dying with a write, at labels, and at calls) — and narrows
+it through `add xD, xE, #imm` to a field's tail; memory through a region
+now also takes the indexed form `[xR, wJ, uxtw #t]` under a constant guard
+whose `K'·2^t` fits the region (an array field inside the element). Every
+place-taking path — field loads and stores, exact-size copies, chunk loads
+for calls (a register-addressed element is copied into an aligned frame
+temp first, so its last chunk never reads past the element), results,
+match scrutinees, payload bindings — takes the base register into
+account. Computed indexing into an array of records that itself lies
+inside a computed element stays with the C backend
+(`TestCheckerElementRegions`: three accepted shapes, six refusals).
+Executed (`TestE2ENativeRecordArrays`): a link pool of 8-byte nodes walked
+by index, a 12-byte record array updated in place through `umaddl` with an
+element copied out and passed on, and a record array field inside a record
+read and written by computed index — natively against the C backend and
+the portable realization.
 Next increments: the verifier's frame addresses, record locals, and
 derived spans (so array, record, ADT, and subslice bodies are proven, not
-trusted), `break` as a second loop exit in the recognizer, arrays of
-records, and the slicing syntax `v[lo:hi]` once the C backend lowers
-`len` over it.
+trusted), `break` as a second loop exit in the recognizer, spans of
+records, and the slicing syntax `v[lo:hi]` once the C backend lowers `len`
+over it.
 
 
 

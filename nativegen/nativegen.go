@@ -104,9 +104,93 @@ func spanOf(expr ast.Expression) (span, bool) {
 // frameArrayAccess) — and `view(&buf)` / `span(&buf)` hand a callee the
 // {address, N} pair.
 type arrayLocal struct {
-	offset int64 // slot offset (slotMem-relative), 8-byte aligned
+	offset int64 // slot offset (slotMem-relative), or the offset from reg
 	elem   scalar
 	length int64
+	// elemLayout: the element type when the array holds records (elem unused).
+	elemLayout *recordLayout
+	// inReg: the array lives at [x<reg>, #offset] (inside a dynamically
+	// addressed record element) rather than in the frame; temps are the
+	// scratch registers to release once the place is consumed.
+	inReg bool
+	reg   int
+	temps []int
+}
+
+// elemSize is the array's element stride in bytes.
+func (a *arrayLocal) elemSize() int64 {
+	if a.elemLayout != nil {
+		return a.elemLayout.size
+	}
+	return int64(a.elem.bits / 8)
+}
+
+// loc is a memory location: sp-relative (a frame slot) or register-based.
+type loc struct {
+	inReg  bool
+	reg    int
+	offset int64
+}
+
+func (l loc) plus(delta int64) loc { return loc{inReg: l.inReg, reg: l.reg, offset: l.offset + delta} }
+
+// memOf is the memory operand for a location.
+func (g *generator) memOf(l loc) asm.Memory {
+	if l.inReg {
+		return asm.Memory{Base: xr(l.reg), Offset: l.offset}
+	}
+	return g.slotMem(l.offset)
+}
+
+// alignmentOf is the alignment the checker sees for a location: the frame
+// offset's, or the offset from the register (element addresses are
+// multiples of the element's alignment).
+func (g *generator) alignmentOf(l loc) int64 {
+	if l.inReg {
+		return l.offset
+	}
+	return g.slotMem(l.offset).Offset
+}
+
+// arrayTypeOf reads an owned array type [N]T of scalar or record elements.
+func (g *generator) arrayTypeOf(expr ast.Expression) (elem scalar, elemLayout *recordLayout, length int64, err error) {
+	if e, n, ok := arrayOf(expr); ok {
+		return e, nil, n, nil
+	}
+	index, isIndex := expr.(*ast.IndexExpression)
+	if !isIndex || index.Dot {
+		return scalar{}, nil, 0, unsupported("%s is not an array type", expr.String())
+	}
+	n, isLit := index.Index.(*ast.IntegerLiteral)
+	if !isLit || n.Value <= 0 {
+		return scalar{}, nil, 0, unsupported("%s is not an array type", expr.String())
+	}
+	name, isRecord := g.recordTypeName(index.Left)
+	if !isRecord {
+		return scalar{}, nil, 0, unsupported("%s is not an array type of scalars or records", expr.String())
+	}
+	layout, err := g.layoutOf(name)
+	if err != nil {
+		return scalar{}, nil, 0, err
+	}
+	return scalar{}, layout, n.Value, nil
+}
+
+// isArrayType reports an owned array type of any element.
+func (g *generator) isArrayType(expr ast.Expression) bool {
+	index, isIndex := expr.(*ast.IndexExpression)
+	if !isIndex || index.Dot {
+		return false
+	}
+	n, isLit := index.Index.(*ast.IntegerLiteral)
+	if !isLit || n.Value <= 0 {
+		return false
+	}
+	if _, ok := scalarOf(index.Left); ok {
+		return true
+	}
+	_, isRecord := g.recordTypeName(index.Left)
+	return isRecord
 }
 
 // arrayOf reads an owned array type [N]T of scalar elements.
@@ -172,11 +256,17 @@ type recordField struct {
 	length int64         // fieldArray: the element count
 }
 
-// scalarPlace is a scalar field's frame location.
+// scalarPlace is a scalar field's location (a frame slot, or an offset from
+// an element address register).
 type scalarPlace struct {
 	offset int64
 	typ    scalar
+	inReg  bool
+	reg    int
+	temps  []int
 }
+
+func (s *scalarPlace) loc() loc { return loc{inReg: s.inReg, reg: s.reg, offset: s.offset} }
 
 // place is what an access chain names in the frame: a record (a local or a
 // nested record field), an array (a local or an array field), or a scalar
@@ -239,10 +329,26 @@ func Composites(records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTT
 	return out
 }
 
-// recordLocal is an owned record in the frame.
+// recordLocal is an owned record in the frame, or (inReg) a record
+// element addressed through a register: [x<reg>, #offset].
 type recordLocal struct {
-	offset int64 // slot offset (slotMem-relative), 8-byte aligned
+	offset int64 // slot offset (slotMem-relative), or the offset from reg
 	layout *recordLayout
+	inReg  bool
+	reg    int
+	temps  []int // scratch registers to release once the place is consumed
+}
+
+func (r *recordLocal) loc() loc { return loc{inReg: r.inReg, reg: r.reg, offset: r.offset} }
+
+func (a *arrayLocal) loc() loc { return loc{inReg: a.inReg, reg: a.reg, offset: a.offset} }
+
+// releaseTemps frees the scratch registers a dynamically addressed place
+// holds (the element address).
+func (g *generator) releaseTemps(temps []int) {
+	for _, r := range temps {
+		g.release(r)
+	}
 }
 
 // fieldRepresentations: the C backend's sizes and alignments of the scalar
@@ -303,15 +409,13 @@ func (g *generator) layoutOf(name string) (*recordLayout, error) {
 			rep = semir.RecordFieldRepresentation{Size: uint32(nested.size), Alignment: uint32(nested.align)}
 			placed = recordField{kind: fieldRecord, layout: nested}
 			layout.hasFloat = layout.hasFloat || nested.hasFloat
-		case func() bool { _, _, ok := arrayOf(field.Value); return ok }():
-			elem, length, _ := arrayOf(field.Value)
-			fixed, placeable := fieldRepresentations[elem.name]
-			if !placeable {
-				return nil, unsupported("the record %s (field %s: %s)", name, field.Name, field.Value.String())
+		case g.isArrayType(field.Value):
+			arrayRep, arrayField, err := g.fieldOf("the record "+name, field.Value)
+			if err != nil {
+				return nil, err
 			}
-			rep = semir.RecordFieldRepresentation{Size: fixed.Size * uint32(length), Alignment: fixed.Alignment}
-			placed = recordField{kind: fieldArray, typ: elem, length: length}
-			layout.hasFloat = layout.hasFloat || elem.isFloat
+			rep, placed = arrayRep, arrayField
+			layout.hasFloat = layout.hasFloat || placed.mentionsFloat()
 		default:
 			return nil, unsupported("the record %s (field %s: %s)", name, field.Name, field.Value.String())
 		}
@@ -370,16 +474,22 @@ func (g *generator) fieldOf(owner string, member ast.Expression) (semir.RecordFi
 		}
 		return semir.RecordFieldRepresentation{Size: fixed.Size * uint32(length), Alignment: fixed.Alignment}, recordField{kind: fieldArray, typ: elem, length: length}, nil
 	}
+	if g.isArrayType(member) {
+		// An array of records: N contiguous records at the record's alignment.
+		_, elemLayout, length, err := g.arrayTypeOf(member)
+		if err != nil {
+			return semir.RecordFieldRepresentation{}, recordField{}, err
+		}
+		return semir.RecordFieldRepresentation{Size: uint32(elemLayout.size) * uint32(length), Alignment: uint32(elemLayout.align)}, recordField{kind: fieldArray, layout: elemLayout, length: length}, nil
+	}
 	return semir.RecordFieldRepresentation{}, recordField{}, unsupported("%s (member type %s)", owner, member.String())
 }
 
 func (f recordField) mentionsFloat() bool {
-	switch f.kind {
-	case fieldRecord:
+	if f.layout != nil {
 		return f.layout.hasFloat
-	default:
-		return f.typ.isFloat
 	}
+	return f.typ.isFloat
 }
 
 // adtLayoutOf places a tagged union as a synthetic record: the u32 tag,
@@ -471,7 +581,15 @@ func (g *generator) placeOf(expr ast.Expression) (place, error) {
 		}
 	case *ast.IndexExpression:
 		if !e.Dot {
-			return place{}, nil
+			// An element of an array of records: `pool[i]`.
+			base, err := g.placeOf(e.Left)
+			if err != nil {
+				return place{}, err
+			}
+			if base.arr == nil || base.arr.elemLayout == nil {
+				return place{}, nil
+			}
+			return g.recordElement(base.arr, e.Index)
 		}
 		base, err := g.placeOf(e.Left)
 		if err != nil {
@@ -497,17 +615,74 @@ func (g *generator) placeOf(expr ast.Expression) (place, error) {
 		if !has {
 			return place{}, unsupported("the field %s of %s", name.Value, base.rec.layout.name)
 		}
-		offset := base.rec.offset + field.offset
+		at := base.rec.loc().plus(field.offset)
 		switch field.kind {
 		case fieldScalar:
-			return place{sc: &scalarPlace{offset: offset, typ: field.typ}}, nil
+			return place{sc: &scalarPlace{offset: at.offset, typ: field.typ, inReg: at.inReg, reg: at.reg, temps: base.rec.temps}}, nil
 		case fieldRecord:
-			return place{rec: &recordLocal{offset: offset, layout: field.layout}}, nil
+			return place{rec: &recordLocal{offset: at.offset, layout: field.layout, inReg: at.inReg, reg: at.reg, temps: base.rec.temps}}, nil
 		default:
-			return place{arr: &arrayLocal{offset: offset, elem: field.typ, length: field.length}}, nil
+			return place{arr: &arrayLocal{offset: at.offset, elem: field.typ, elemLayout: field.layout, length: field.length, inReg: at.inReg, reg: at.reg, temps: base.rec.temps}}, nil
 		}
 	}
 	return place{}, nil
+}
+
+// recordElement addresses one element of an array of records: a literal
+// index inside the array is a static place; any other index goes through
+// the element idiom the checker admits — the array's frame address, the
+// constant guard `cmp wI, #N; b.hs trap`, then `add xE, xB, wI, uxtw #s`
+// for a power-of-two stride up to 16 bytes or `movz wK, #stride; umaddl
+// xE, wI, wK, xB` otherwise — yielding a record place at [xE].
+func (g *generator) recordElement(arr *arrayLocal, index ast.Expression) (place, error) {
+	stride := arr.elemLayout.size
+	if k, isConst := constantValue(index); isConst && k >= 0 && k < arr.length {
+		at := arr.loc().plus(k * stride)
+		return place{rec: &recordLocal{offset: at.offset, layout: arr.elemLayout, inReg: at.inReg, reg: at.reg, temps: arr.temps}}, nil
+	}
+	if arr.inReg {
+		return place{}, unsupported("a computed index into an array of records inside a computed element")
+	}
+	idxType, err := g.typeOf(index, nil)
+	if err != nil {
+		return place{}, err
+	}
+	if idxType.wide() || idxType.signed || idxType.isBool || idxType.isFloat {
+		return place{}, unsupported("an element index of type %s (the array idiom walks by a u32 index)", idxType.name)
+	}
+	r, err := g.expr(index, &idxType)
+	if err != nil {
+		return place{}, err
+	}
+	base, err := g.alloc(scalars["u64"])
+	if err != nil {
+		return place{}, err
+	}
+	element, err := g.alloc(scalars["u64"])
+	if err != nil {
+		return place{}, err
+	}
+	g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
+	g.usedTrap = true
+	g.emit("cmp", wr(r), imm(arr.length))
+	g.branch("hs", g.trap)
+	if stride > 0 && stride&(stride-1) == 0 && stride <= 16 {
+		g.emit("add", xr(element), xr(base), asm.Extended{Reg: wr(r), Kind: "uxtw", Amount: int64(log2Bytes(int(stride)))})
+	} else {
+		if stride >= 1<<16 {
+			return place{}, unsupported("a record stride of %d bytes", stride)
+		}
+		strideReg, err := g.alloc(scalars["u32"])
+		if err != nil {
+			return place{}, err
+		}
+		g.emit("movz", wr(strideReg), imm(stride))
+		g.emit("umaddl", xr(element), wr(r), wr(strideReg), xr(base))
+		g.release(strideReg)
+	}
+	g.release(base)
+	g.release(r)
+	return place{rec: &recordLocal{layout: arr.elemLayout, inReg: true, reg: element, temps: []int{element}}}, nil
 }
 
 // recordLayoutOfExpr resolves the record type an expression denotes without
@@ -536,6 +711,8 @@ func (g *generator) recordLayoutOfExpr(expr ast.Expression) (*recordLayout, erro
 			if field.kind == fieldRecord {
 				return field.layout, nil
 			}
+		} else if layout := g.recordArrayElementLayout(e.Left); layout != nil {
+			return layout, nil
 		}
 	case *ast.RecordLiteral:
 		if e.TypeName != nil {
@@ -557,6 +734,31 @@ func (g *generator) recordLayoutOfExpr(expr ast.Expression) (*recordLayout, erro
 		}
 	}
 	return nil, unsupported("%s is not a record", expr.String())
+}
+
+// recordArrayElementLayout is the element type of an array of records the
+// expression names (a local, or an array field through any nesting), or
+// nil. Resolved without emitting code.
+func (g *generator) recordArrayElementLayout(expr ast.Expression) *recordLayout {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		if arr, isArray := g.arrays[e.Value]; isArray {
+			return arr.elemLayout
+		}
+	case *ast.IndexExpression:
+		if e.Dot {
+			base, err := g.recordLayoutOfExpr(e.Left)
+			if err != nil {
+				return nil
+			}
+			if name, isName := e.Index.(*ast.Identifier); isName {
+				if field, has := base.fields[name.Value]; has && field.kind == fieldArray {
+					return field.layout
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // copyUnit is the widest access (8, 4, 2, 1 bytes) every offset is aligned
@@ -590,15 +792,15 @@ func accessPair(bytes int64) (load, store string) {
 	return "ldrb", "strb"
 }
 
-// copyBytes copies size bytes between two frame offsets through a scratch
+// copyBytes copies size bytes between two locations through a scratch
 // register, in the widest aligned units then a narrowing tail — exactly the
 // bytes of the value, never a neighbor's.
-func (g *generator) copyBytes(dst, src, size int64) error {
+func (g *generator) copyBytes(dst, src loc, size int64) error {
 	tmp, err := g.alloc(scalars["u64"])
 	if err != nil {
 		return err
 	}
-	unit := copyUnit(g.slotMem(dst).Offset, g.slotMem(src).Offset)
+	unit := copyUnit(g.alignmentOf(dst), g.alignmentOf(src))
 	off := int64(0)
 	for bytes := unit; bytes >= 1; bytes /= 2 {
 		for off+bytes <= size {
@@ -607,14 +809,17 @@ func (g *generator) copyBytes(dst, src, size int64) error {
 			if bytes == 8 {
 				r = xr(tmp)
 			}
-			g.emit(load, r, g.slotMem(src+off))
-			g.emit(store, r, g.slotMem(dst+off))
+			g.emit(load, r, g.memOf(src.plus(off)))
+			g.emit(store, r, g.memOf(dst.plus(off)))
 			off += bytes
 		}
 	}
 	g.release(tmp)
 	return nil
 }
+
+// slotLoc is a frame-slot location.
+func slotLoc(offset int64) loc { return loc{offset: offset} }
 
 // recordTypeName reads a type expression naming a declared record.
 func (g *generator) recordTypeName(expr ast.Expression) (string, bool) {
@@ -1006,7 +1211,7 @@ func (g *generator) copyOut(base int, src *recordLocal) error {
 		return err
 	}
 	size := src.layout.size
-	unit := copyUnit(g.slotMem(src.offset).Offset)
+	unit := copyUnit(g.alignmentOf(src.loc()))
 	off := int64(0)
 	for bytes := unit; bytes >= 1; bytes /= 2 {
 		for off+bytes <= size {
@@ -1015,7 +1220,7 @@ func (g *generator) copyOut(base int, src *recordLocal) error {
 			if bytes == 8 {
 				r = xr(tmp)
 			}
-			g.emit(load, r, g.slotMem(src.offset+off))
+			g.emit(load, r, g.memOf(src.loc().plus(off)))
 			g.emit(store, r, asm.Memory{Base: xr(base), Offset: off})
 			off += bytes
 		}
@@ -1070,7 +1275,9 @@ func (g *generator) recordValueAs(expr ast.Expression, expected *recordLayout) (
 			if src.layout != layout {
 				return unsupported("a %s arm where %s is expected", src.layout.name, layout.name)
 			}
-			return g.copyBytes(out.offset, src.offset, layout.size)
+			err = g.copyBytes(out.loc(), src.loc(), layout.size)
+			g.releaseTemps(src.temps)
+			return err
 		})
 		if err != nil {
 			return nil, err
@@ -1153,9 +1360,10 @@ func (g *generator) buildVariant(layout *recordLayout, e *ast.VariantExpression)
 		g.fieldStore(&scalarPlace{offset: rec.offset + field.offset, typ: field.typ}, payloadReg)
 		g.release(payloadReg)
 	case payloadSrc != nil:
-		if err := g.copyBytes(rec.offset+field.offset, payloadSrc.offset, field.size); err != nil {
+		if err := g.copyBytes(slotLoc(rec.offset+field.offset), payloadSrc.loc(), field.size); err != nil {
 			return nil, err
 		}
+		g.releaseTemps(payloadSrc.temps)
 	}
 	return rec, nil
 }
@@ -1181,7 +1389,7 @@ func (g *generator) lowerMatch(match *ast.MatchExpression, arm func(body ast.Exp
 		if err != nil {
 			return err
 		}
-		g.emit("ldr", wr(tag), g.slotMem(rec.offset))
+		g.emit("ldr", wr(tag), g.memOf(rec.loc()))
 		closed := false
 		for _, matchArm := range match.Arms {
 			next := g.newLabel("arm")
@@ -1241,6 +1449,7 @@ func (g *generator) lowerMatch(match *ast.MatchExpression, arm func(body ast.Exp
 		}
 		g.label(end)
 		g.release(tag)
+		g.releaseTemps(rec.temps)
 		return nil
 	}
 	// A scalar scrutinee with literal patterns.
@@ -1308,7 +1517,8 @@ func isWildcard(pattern ast.Pattern) bool {
 func (g *generator) bindPayload(name string, rec *recordLocal, field recordField) error {
 	switch field.kind {
 	case fieldScalar:
-		r, err := g.fieldLoad(&scalarPlace{offset: rec.offset + field.offset, typ: field.typ})
+		at := rec.loc().plus(field.offset)
+		r, err := g.fieldLoad(&scalarPlace{offset: at.offset, typ: field.typ, inReg: at.inReg, reg: at.reg})
 		if err != nil {
 			return err
 		}
@@ -1318,7 +1528,7 @@ func (g *generator) bindPayload(name string, rec *recordLocal, field recordField
 		return nil
 	case fieldRecord:
 		local := g.declareRecord(name, field.layout)
-		return g.copyBytes(local.offset, rec.offset+field.offset, field.size)
+		return g.copyBytes(local.loc(), rec.loc().plus(field.offset), field.size)
 	}
 	return unsupported("a binding of an array payload")
 }
@@ -1379,7 +1589,7 @@ func (g *generator) fillRecord(layout *recordLayout, literal *ast.RecordLiteral,
 				if err != nil {
 					return nil, err
 				}
-				if p.arr == nil || p.arr.elem != field.typ || p.arr.length != field.length {
+				if p.arr == nil || p.arr.elem != field.typ || p.arr.elemLayout != field.layout || p.arr.length != field.length {
 					return nil, unsupported("the array field %s initialized from %s", fieldName, expr.String())
 				}
 				values = append(values, pending{arraySrc: p.arr})
@@ -1400,14 +1610,33 @@ func (g *generator) fillRecord(layout *recordLayout, literal *ast.RecordLiteral,
 			g.fieldStore(&scalarPlace{offset: at, typ: field.typ}, values[i].reg)
 			g.release(values[i].reg)
 		case values[i].src != nil:
-			if err := g.copyBytes(at, values[i].src.offset, field.size); err != nil {
+			if err := g.copyBytes(slotLoc(at), values[i].src.loc(), field.size); err != nil {
 				return nil, err
 			}
+			g.releaseTemps(values[i].src.temps)
 		case values[i].arraySrc != nil:
-			if err := g.copyBytes(at, values[i].arraySrc.offset, field.size); err != nil {
+			if err := g.copyBytes(slotLoc(at), values[i].arraySrc.loc(), field.size); err != nil {
 				return nil, err
 			}
+			g.releaseTemps(values[i].arraySrc.temps)
 		default:
+			if field.layout != nil {
+				// An array of records: each element copied in.
+				for j, element := range values[i].elements.Elements {
+					src, err := g.recordValueAs(element, field.layout)
+					if err != nil {
+						return nil, err
+					}
+					if src.layout != field.layout {
+						return nil, unsupported("a %s element in the field %s", src.layout.name, fieldName)
+					}
+					if err := g.copyBytes(slotLoc(at+int64(j)*field.layout.size), src.loc(), field.layout.size); err != nil {
+						return nil, err
+					}
+					g.releaseTemps(src.temps)
+				}
+				continue
+			}
 			elemSize := int64(field.typ.bits / 8)
 			for j, element := range values[i].elements.Elements {
 				typ := field.typ
@@ -1499,13 +1728,16 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 		return unsupported("a %s result where %s is declared", rec.layout.name, g.resultRecord.name)
 	}
 	if g.resultIndirect {
-		return g.copyOut(g.resultAreaReg, rec)
+		err := g.copyOut(g.resultAreaReg, rec)
+		g.releaseTemps(rec.temps)
+		return err
 	}
-	if g.slotMem(rec.offset).Offset%8 != 0 {
+	if rec.inReg || g.slotMem(rec.offset).Offset%8 != 0 {
 		aligned := g.tempRecord(g.resultRecord)
 		if err := g.copyRecord(aligned, rec); err != nil {
 			return err
 		}
+		g.releaseTemps(rec.temps)
 		rec = aligned
 	}
 	for i := 0; i < g.resultRecord.chunks(); i++ {
@@ -1988,13 +2220,15 @@ func (g *generator) lowerRecordDeclaration(s *ast.VariableDeclaration, typeName 
 		return unsupported("the %s local %s initialized from a %s", typeName, s.Name.Value, src.layout.name)
 	}
 	rec := g.declareRecord(s.Name.Value, layout)
-	return g.copyRecord(rec, src)
+	err = g.copyRecord(rec, src)
+	g.releaseTemps(src.temps)
+	return err
 }
 
 // copyRecord copies a record slot-wise (the padding travels too, as the C
 // struct assignment copies it).
 func (g *generator) copyRecord(dst, src *recordLocal) error {
-	return g.copyBytes(dst.offset, src.offset, dst.layout.size)
+	return g.copyBytes(dst.loc(), src.loc(), dst.layout.size)
 }
 
 // fieldLoad reads a scalar field into a fresh register at its type: a Bool
@@ -2008,7 +2242,7 @@ func (g *generator) fieldLoad(sc *scalarPlace) (int, error) {
 	if sc.typ.isBool {
 		load = "ldr"
 	}
-	g.emit(load, reg(r, sc.typ), g.slotMem(sc.offset))
+	g.emit(load, reg(r, sc.typ), g.memOf(sc.loc()))
 	return r, nil
 }
 
@@ -2018,7 +2252,7 @@ func (g *generator) fieldStore(sc *scalarPlace, r int) {
 	if sc.typ.isBool {
 		store = "str"
 	}
-	g.emit(store, reg(r, sc.typ), g.slotMem(sc.offset))
+	g.emit(store, reg(r, sc.typ), g.memOf(sc.loc()))
 }
 
 // fieldOperand resolves `p.f` (through any nesting) to a scalar field.
@@ -2042,15 +2276,69 @@ func (g *generator) recordsMentionFloat(fn *ast.FunctionStatement) bool {
 		if !isDecl || decl.Type == nil {
 			return
 		}
-		name, isRecord := g.recordTypeName(decl.Type)
-		if !isRecord {
+		if name, isRecord := g.recordTypeName(decl.Type); isRecord {
+			if layout, err := g.layoutOf(name); err == nil && layout.hasFloat {
+				found = true
+			}
 			return
 		}
-		if layout, err := g.layoutOf(name); err == nil && layout.hasFloat {
-			found = true
+		if g.isArrayType(decl.Type) {
+			if _, elemLayout, _, err := g.arrayTypeOf(decl.Type); err == nil && elemLayout != nil && elemLayout.hasFloat {
+				found = true
+			}
 		}
 	})
 	return found
+}
+
+// lowerRecordArrayDeclaration lowers `pool: [N]Rec` (zero-filled, as the C
+// backend's `{0}`) or `pool: [N]Rec = [r0, …]` (each element copied in).
+func (g *generator) lowerRecordArrayDeclaration(s *ast.VariableDeclaration, elemLayout *recordLayout, length int64) error {
+	if elemLayout.hasFloat {
+		g.usedFloat = true
+	}
+	arr := &arrayLocal{offset: 8 * g.nslots, elemLayout: elemLayout, length: length}
+	g.nslots += (length*elemLayout.size + 7) / 8
+	if s.Value == nil {
+		zero, err := g.alloc(scalars["u64"])
+		if err != nil {
+			return err
+		}
+		g.emit("mov", xr(zero), imm(0))
+		words := (length*elemLayout.size + 7) / 8
+		for w := int64(0); w < words; w += 2 {
+			if w+1 < words {
+				g.emit("stp", xr(zero), xr(zero), g.slotMem(arr.offset+8*w))
+			} else {
+				g.emit("str", xr(zero), g.slotMem(arr.offset+8*w))
+			}
+		}
+		g.release(zero)
+		g.bindArray(s.Name.Value, arr)
+		return nil
+	}
+	literal, isLiteral := s.Value.(*ast.ArrayLiteral)
+	if !isLiteral {
+		return unsupported("an array of records initialized from %s", s.Value.String())
+	}
+	if int64(len(literal.Elements)) != length {
+		return unsupported("an array literal of %d elements for [%d]%s", len(literal.Elements), length, elemLayout.name)
+	}
+	for i, element := range literal.Elements {
+		src, err := g.recordValueAs(element, elemLayout)
+		if err != nil {
+			return err
+		}
+		if src.layout != elemLayout {
+			return unsupported("a %s element in [%d]%s", src.layout.name, length, elemLayout.name)
+		}
+		if err := g.copyBytes(slotLoc(arr.offset+int64(i)*elemLayout.size), src.loc(), elemLayout.size); err != nil {
+			return err
+		}
+		g.releaseTemps(src.temps)
+	}
+	g.bindArray(s.Name.Value, arr)
+	return nil
 }
 
 // storeOf is the whole-element store of a type.
@@ -2356,6 +2644,16 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 				}
 				continue
 			}
+			if s.Type != nil && g.isArrayType(s.Type) {
+				_, elemLayout, length, err := g.arrayTypeOf(s.Type)
+				if err != nil {
+					return err
+				}
+				if err := g.lowerRecordArrayDeclaration(s, elemLayout, length); err != nil {
+					return err
+				}
+				continue
+			}
 			if typeName, isRecord := g.recordTypeName(s.Type); isRecord {
 				if err := g.lowerRecordDeclaration(s, typeName); err != nil {
 					return err
@@ -2405,6 +2703,7 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 				if err := g.copyRecord(dst, from); err != nil {
 					return err
 				}
+				g.releaseTemps(from.temps)
 				continue
 			}
 			typ, ok := g.types[s.Name.Value]
@@ -3483,6 +3782,7 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 				if err := g.copyRecord(copied, rec); err != nil {
 					return 0, err
 				}
+				g.releaseTemps(rec.temps)
 				base, err := g.alloc(scalars["u64"])
 				if err != nil {
 					return 0, err
@@ -3491,13 +3791,15 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 				args = append(args, argument{regs: []int{base}, types: []scalar{scalars["u64"]}})
 				continue
 			}
-			if g.slotMem(rec.offset).Offset%8 != 0 {
-				// A nested record at an unaligned offset: its chunks load from
-				// an aligned copy.
+			if rec.inReg || g.slotMem(rec.offset).Offset%8 != 0 {
+				// A nested record at an unaligned offset, or an array element
+				// addressed through a register: its chunks load from an
+				// aligned frame copy (whose slots cover the last chunk).
 				aligned := g.tempRecord(layout)
 				if err := g.copyRecord(aligned, rec); err != nil {
 					return 0, err
 				}
+				g.releaseTemps(rec.temps)
 				rec = aligned
 			}
 			var chunks []int
@@ -3831,7 +4133,7 @@ func (g *generator) arrayOperand(expr ast.Expression) *arrayLocal {
 func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression) (address asm.Memory, indexReg, baseReg int, err error) {
 	size := int64(arr.elem.bits / 8)
 	if k, isConst := constantValue(index); isConst && k >= 0 && k < arr.length {
-		return g.slotMem(arr.offset + k*size), -1, -1, nil
+		return g.memOf(arr.loc().plus(k * size)), -1, -1, nil
 	}
 	idxType, err := g.typeOf(index, nil)
 	if err != nil {
@@ -3848,7 +4150,13 @@ func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression) (address
 	if err != nil {
 		return asm.Memory{}, 0, 0, err
 	}
-	g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
+	if arr.inReg {
+		// An array field inside a computed element: its address is the
+		// element's plus the field offset (the checker narrows the region).
+		g.emit("add", xr(base), xr(arr.reg), imm(arr.offset))
+	} else {
+		g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
+	}
 	g.usedTrap = true
 	g.emit("cmp", wr(r), imm(arr.length))
 	g.branch("hs", g.trap)
@@ -3876,7 +4184,37 @@ func (g *generator) arrayElement(arr *arrayLocal, index ast.Expression) (int, er
 	if idx >= 0 && out != idx {
 		g.release(idx)
 	}
+	g.releaseTemps(arr.temps)
 	return out, nil
+}
+
+// storeToPlace stores into a resolved place: a scalar field at its width,
+// a record (a nested field or an array element) by its exact size.
+func (g *generator) storeToPlace(target place, s *ast.IndexAssignmentStatement) error {
+	switch {
+	case target.sc != nil:
+		value, err := g.expr(s.Value, &target.sc.typ)
+		if err != nil {
+			return err
+		}
+		g.fieldStore(target.sc, value)
+		g.release(value)
+		g.releaseTemps(target.sc.temps)
+		return nil
+	case target.rec != nil:
+		src, err := g.recordValueAs(s.Value, target.rec.layout)
+		if err != nil {
+			return err
+		}
+		if src.layout != target.rec.layout {
+			return unsupported("a %s stored into %s (a %s)", src.layout.name, s.Target.String(), target.rec.layout.name)
+		}
+		err = g.copyBytes(target.rec.loc(), src.loc(), target.rec.layout.size)
+		g.releaseTemps(src.temps)
+		g.releaseTemps(target.rec.temps)
+		return err
+	}
+	return unsupported("a store to the array %s", s.Target.String())
 }
 
 // element lowers `v[i]`: a guarded, whole-element load through the bound
@@ -3887,7 +4225,12 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		return g.fieldLoad(sc)
+		r, err := g.fieldLoad(sc)
+		if err != nil {
+			return 0, err
+		}
+		g.releaseTemps(sc.temps)
+		return r, nil
 	}
 	if arr := g.arrayOperand(e.Left); arr != nil {
 		return g.arrayElement(arr, e.Index)
@@ -3936,27 +4279,15 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 		if err != nil {
 			return err
 		}
-		switch {
-		case target.sc != nil:
-			value, err := g.expr(s.Value, &target.sc.typ)
-			if err != nil {
-				return err
-			}
-			g.fieldStore(target.sc, value)
-			g.release(value)
-			return nil
-		case target.rec != nil:
-			// `r.b = q`: a nested record replaced by its exact size.
-			src, err := g.recordValue(s.Value)
-			if err != nil {
-				return err
-			}
-			if src.layout != target.rec.layout {
-				return unsupported("a %s stored into the %s field %s", src.layout.name, target.rec.layout.name, s.Target.String())
-			}
-			return g.copyBytes(target.rec.offset, src.offset, target.rec.layout.size)
+		return g.storeToPlace(target, s)
+	}
+	if layout := g.recordArrayElementLayout(s.Target.Left); layout != nil {
+		// `pool[i] = r`: a record element replaced.
+		target, err := g.placeOf(s.Target)
+		if err != nil {
+			return err
 		}
-		return unsupported("a store to the array field %s", s.Target.String())
+		return g.storeToPlace(target, s)
 	}
 	if arr := g.arrayOperand(s.Target.Left); arr != nil {
 		value, err := g.expr(s.Value, &arr.elem)
@@ -3973,6 +4304,7 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 				g.release(r)
 			}
 		}
+		g.releaseTemps(arr.temps)
 		return nil
 	}
 	sp, err := g.spanOperand(s.Target.Left)
