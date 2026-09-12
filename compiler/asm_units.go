@@ -70,15 +70,18 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*d
 			continue
 		}
 		for _, fn := range unit.Functions {
-			if previous, duplicate := seen[fn.Name]; duplicate {
-				report("%s: asm function %s is also defined in %s (one function, one unit)", unitText.Path, fn.Name, previous)
+			// One function, one unit per lane: an arm64 and an rv64 unit
+			// may both realize a signature (the target picks), two units of
+			// one lane may not.
+			if previous, duplicate := seen[fn.Name+"@"+fn.Arch]; duplicate {
+				report("%s: asm function %s is also defined in %s (one function, one unit per lane)", unitText.Path, fn.Name, previous)
 				continue
 			}
-			seen[fn.Name] = unitText.Path
+			seen[fn.Name+"@"+fn.Arch] = unitText.Path
 			decl, declared := declarations[fn.Name]
 			if !declared {
 				// A declaration WITH a body is the Oak fallback: the asm
-				// realizes the same signature on AArch64, the body elsewhere.
+				// realizes the same signature on its lane, the body elsewhere.
 				if fallback, hasFallback := fallbacks[fn.Name]; hasFallback {
 					decl = fallback
 					fn.Fallback = true
@@ -87,7 +90,20 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*d
 					continue
 				}
 			}
+			// A unit of another lane than the target's does not apply
+			// (docs/spec/94-assembler.md §9): with an Oak fallback body the
+			// body compiles as an ordinary function; without one the build
+			// has no realization for the target and fails closed here.
+			if lane := comp.options.Target.AsmArch(); fn.Arch != lane {
+				if fn.Fallback {
+					diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "asm", fmt.Sprintf("asm unit %s is %s; target %s compiles its Oak body", fn.Name, fn.Arch, comp.options.Target)))
+					continue
+				}
+				report("%s: asm unit %s is %s, but the target is %s and the declaration has no Oak fallback body", unitText.Path, fn.Name, fn.Arch, comp.options.Target)
+				continue
+			}
 			decl.AsmBacked = true
+			decl.AsmArch = fn.Arch
 			fn.Composites = nativegen.Composites(records, adts)
 			fn.Records, fn.ADTs = records, adts
 			findings := asm.Check(fn, decl, symbols)

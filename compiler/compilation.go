@@ -2,8 +2,8 @@ package compiler
 
 import (
 	"fmt"
+	"github.com/SCKelemen/oak/target"
 	"reflect"
-	"runtime"
 	"strings"
 
 	"github.com/SCKelemen/oak/asm"
@@ -56,6 +56,10 @@ type Options struct {
 	// into a companion object (EmitAsmObject) instead of inline __asm__
 	// text the C toolchain assembles (docs/spec/94-assembler.md §9).
 	NativeAsm bool
+	// Target is the platform the build is for (package target): it selects
+	// the assembler lane whose units apply, the companion object's format,
+	// and whether the native body backend (AArch64) runs. Default: the host.
+	Target target.Target
 	// NativeBodies runs the native backend over ordinary Oak functions
 	// (nativegen): every function in its subset is lowered to a checked,
 	// verified asm function and realized like an asm unit; the rest keep
@@ -173,6 +177,7 @@ func New() Compilation {
 			PackageName: "main",
 			IntSize:     64,
 			PtrSize:     64,
+			Target:      target.Host(),
 		},
 	}
 }
@@ -205,6 +210,16 @@ func (comp Compilation) WithNativeAsm() Compilation {
 	comp.options.NativeAsm = true
 	return comp
 }
+
+// WithTarget returns a compilation for the given platform
+// (docs/spec/90-backend.md §2a).
+func (comp Compilation) WithTarget(t target.Target) Compilation {
+	comp.options.Target = t
+	return comp
+}
+
+// Target is the platform the compilation builds for.
+func (comp Compilation) Target() target.Target { return comp.options.Target }
 
 // WithNativeBodies lowers ordinary Oak functions through the native backend
 // (nativegen) where its subset reaches, realizing them like asm units.
@@ -388,7 +403,9 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		// The native backend lowers the ordinary functions it reaches into
 		// checked, verified asm functions beside the units
 		// (docs/spec/94-assembler.md §9).
-		if comp.options.NativeBodies {
+		if comp.options.NativeBodies && comp.options.Target.Arch == target.ArchArm64 {
+			// The native body backend lowers to AArch64 (nativegen): on any
+			// other target every body stays with the C backend.
 			nativeFunctions, nativeDiagnostics := comp.lowerNativeBodies(tree.Root, tc)
 			if err := comp.gate("native", nativeDiagnostics, tree.Modules); err != nil {
 				return nil, err
@@ -572,8 +589,12 @@ func (comp Compilation) EmitC() Stage[string] {
 
 // HostObjectFormat is the relocatable object format of the host platform:
 // Mach-O on macOS, ELF elsewhere.
-func HostObjectFormat() asm.ObjectFormat {
-	if runtime.GOOS == "darwin" {
+func HostObjectFormat() asm.ObjectFormat { return ObjectFormat(target.Host()) }
+
+// ObjectFormat is the relocatable object format of a target: Mach-O for
+// Darwin, ELF for every other operating system and for freestanding.
+func ObjectFormat(t target.Target) asm.ObjectFormat {
+	if t.MachO() {
 		return asm.MachO
 	}
 	return asm.ELF
@@ -609,16 +630,31 @@ func (comp Compilation) EmitNative(format asm.ObjectFormat) Stage[NativeOutput] 
 		if err != nil {
 			return NativeOutput{}, err
 		}
+		if len(lowered.Model.AsmFunctions) == 0 {
+			// Nothing to assemble for this target: no companion object (an
+			// empty one would still declare a machine).
+			return NativeOutput{C: code}, nil
+		}
 		encoded, err := asm.EncodeFunctions(lowered.Model.AsmFunctions, generator.CFunctionName)
 		if err != nil {
 			return NativeOutput{}, fmt.Errorf("asm: %w", err)
 		}
-		object, err := asm.WriteObject(format, encoded)
+		object, err := asm.WriteObjectWith(format, encoded, comp.objectOptions())
 		if err != nil {
 			return NativeOutput{}, err
 		}
 		return NativeOutput{C: code, Object: object}, nil
 	})
+}
+
+// objectOptions are the target facts the companion object records: a
+// hosted RISC-V target links against an lp64d libc (rv64gc), a
+// freestanding one against the lp64 bare-metal toolchains.
+func (comp Compilation) objectOptions() asm.ObjectOptions {
+	if comp.options.Target.Arch == target.ArchRiscv64 && !comp.options.Target.Freestanding() {
+		return asm.ObjectOptions{RV64FloatABI: "double"}
+	}
+	return asm.ObjectOptions{}
 }
 
 // EmitAsmObject encodes the compilation's checked asm units with the Oak
@@ -632,7 +668,7 @@ func (comp Compilation) EmitAsmObject(format asm.ObjectFormat) Stage[[]byte] {
 		if err != nil {
 			return nil, fmt.Errorf("asm: %w", err)
 		}
-		return asm.WriteObject(format, encoded)
+		return asm.WriteObjectWith(format, encoded, comp.objectOptions())
 	})
 }
 

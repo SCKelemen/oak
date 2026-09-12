@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SCKelemen/oak/target"
+	"github.com/SCKelemen/oak/toolchain"
 	"github.com/SCKelemen/oak/typechecker"
 	"io"
 	"os"
@@ -26,7 +28,6 @@ import (
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/lsp/server"
 	"github.com/SCKelemen/oak/modules"
-	"runtime"
 )
 
 // command is one top-level oak command.
@@ -42,9 +43,9 @@ var commands []command
 
 func init() {
 	commands = []command{
-		{"build", "compile a package to an executable (or C with -o x.c / -emit-c)", "oak build [-o out] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-profile default|strict] [-lines] [dir|file.oak]", buildPackage},
+		{"build", "compile a package to an executable (or C with -o x.c / -emit-c)", "oak build [-o out] [-target os/arch] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-profile default|strict] [-lines] [dir|file.oak]", buildPackage},
 		{"run", "compile and run a package", "oak run [-profile default|strict] [dir]", runPackage},
-		{"install", "compile a package and install the executable into $OAKBIN", "oak install [-profile default|strict] [dir]", installPackage},
+		{"install", "compile a package and install the executable into $OAKBIN", "oak install [-profile default|strict] [-target os/arch] [dir]", installPackage},
 		{"vet", "check a package without generating code and list what the checker recorded", "oak vet [-profile default|strict] [dir|file.oak]", vetPackage},
 		{"test", "run the tests of a package", "oak test [flags] [dir]", nil},
 		{"list", "list the packages of the module with their imports", "oak list [-json] [-deps] [dir]", listPackages},
@@ -140,6 +141,16 @@ func versionCommand(args []string) int {
 	return 0
 }
 
+// resolvedTarget is the build target of the environment, or the host when
+// the variables name an unsupported platform (oak env reports, it does not
+// refuse).
+func resolvedTarget() target.Target {
+	if tgt, err := target.FromEnv("", nil); err == nil {
+		return tgt
+	}
+	return target.Host()
+}
+
 // envVariables are the environment variables oak reads, with how each
 // default is resolved when unset.
 var envVariables = []struct {
@@ -156,6 +167,16 @@ var envVariables = []struct {
 		return dir
 	}},
 	{"OAK_LEAN_DIR", "spec/lean directory for :lean check (default: found above the working directory)", func() string { return os.Getenv("OAK_LEAN_DIR") }},
+	{"OAKOS", "target operating system (default: the host's)", func() string { return resolvedTarget().OS }},
+	{"OAKARCH", "target architecture (default: the host's)", func() string { return resolvedTarget().Arch }},
+	{"OAK_CC", "C compiler that already targets OAKOS/OAKARCH (default: resolved — cc for the host, else zig cc, clang with OAK_SYSROOT, or a GNU cross compiler)", func() string {
+		if drv, err := toolchain.Resolve(resolvedTarget(), nil, nil); err == nil {
+			return drv.Command()
+		}
+		return ""
+	}},
+	{"OAK_CFLAGS", "extra C compiler arguments, split on whitespace (with OAK_CC)", func() string { return os.Getenv("OAK_CFLAGS") }},
+	{"OAK_SYSROOT", "sysroot for a cross clang targeting a hosted platform", func() string { return os.Getenv("OAK_SYSROOT") }},
 	{"OAKROOT", "the module root of the working directory (derived)", moduleRootOf},
 }
 
@@ -477,8 +498,9 @@ func plural(n int, one, many string) string {
 // compileBinary emits C for the package (and, in native asm mode, the asm
 // units' companion object) and compiles it with the system C compiler into
 // binary (fixed argument list, no shell).
-func compileBinary(comp compiler.Compilation, binary, asmMode string) error {
-	code, object, err := emitForHost(comp, asmMode)
+func compileBinary(comp compiler.Compilation, binary, asmMode string, tgt target.Target) error {
+	comp = comp.WithTarget(tgt)
+	code, object, err := emitFor(comp, asmMode, tgt)
 	if err != nil {
 		return err
 	}
@@ -486,7 +508,11 @@ func compileBinary(comp compiler.Compilation, binary, asmMode string) error {
 	if err != nil {
 		return err
 	}
-	_, err = compileC(code, object, inputs, binary)
+	drv, err := toolchain.Resolve(tgt, nil, nil)
+	if err != nil {
+		return err
+	}
+	_, err = compileC(tgt, drv, code, object, inputs, binary)
 	return err
 }
 
@@ -496,25 +522,32 @@ func compileBinary(comp compiler.Compilation, binary, asmMode string) error {
 var ccFlags = []string{"-std=c99", "-O1", "-ffp-contract=off"}
 
 // compileC turns emitted C (and an optional asm companion object) into the
-// executable at binary, through the build cache: a hit copies the cached
-// binary, a miss compiles with a fixed argument list and stores the result.
+// executable at binary — or, for a freestanding target, the relocatable
+// object — through the build cache: a hit copies the cached output, a miss
+// compiles with a fixed argument list and stores the result. The driver is
+// the target's resolved C compiler (package toolchain): its path and
+// arguments, the target, and the exact flag list are part of the cache
+// identity, so the same C built for two targets never shares an entry.
 // The manifests' native inputs (`link`, `framework`; docs/spec/83-modules.md
 // section 4.6) follow the program on the command line, objects by path and
-// frameworks as `-framework Name` on macOS; their contents are part of the
-// cache identity, so a rebuilt library invalidates the cached executable.
-// It reports whether the binary came from the cache.
-func compileC(code string, object []byte, inputs []compiler.LinkInput, binary string) (bool, error) {
-	cc, err := exec.LookPath("cc")
-	if err != nil {
-		return false, errors.New("no C compiler (cc) on PATH; use -emit-c to write C instead")
-	}
-	linkArgs, linkIdentity, err := linkArguments(inputs, os.Stderr)
+// frameworks as `-framework Name` for Darwin targets; their contents are
+// part of the cache identity, so a rebuilt library invalidates the cached
+// executable. It reports whether the output came from the cache.
+func compileC(tgt target.Target, drv toolchain.Driver, code string, object []byte, inputs []compiler.LinkInput, binary string) (bool, error) {
+	linkArgs, linkIdentity, err := linkArguments(tgt, inputs, os.Stderr)
 	if err != nil {
 		return false, err
 	}
+	flags := append(append([]string{}, drv.Args...), ccFlags...)
+	if drv.Static {
+		flags = append(flags, "-static")
+	}
+	if drv.Object {
+		flags = append(flags, "-c")
+	}
 	key := ""
-	if identity, err := buildcache.CompilerIdentity(cc); err == nil {
-		key = buildcache.Key("oak-exe-v1", code, string(object), identity, strings.Join(ccFlags, " "), linkIdentity)
+	if identity, err := buildcache.CompilerIdentity(drv.Path); err == nil {
+		key = buildcache.Key("oak-exe-v2", tgt.String(), code, string(object), identity, strings.Join(flags, " "), linkIdentity)
 		if cached, ok := buildcache.Lookup(key); ok {
 			if err := buildcache.Copy(cached, binary); err == nil {
 				return true, nil
@@ -530,19 +563,25 @@ func compileC(code string, object []byte, inputs []compiler.LinkInput, binary st
 	if err := os.WriteFile(cPath, []byte(code), 0o600); err != nil {
 		return false, err
 	}
-	ccArgs := append(append([]string{}, ccFlags...), "-o", binary, cPath)
+	ccArgs := append(append([]string{}, flags...), "-o", binary, cPath)
 	if object != nil {
 		objPath := filepath.Join(work, "asm.o")
 		if err := os.WriteFile(objPath, object, 0o600); err != nil {
 			return false, err
 		}
+		if drv.Object {
+			return false, errors.New("a freestanding build with asm units: link the companion object yourself (oak build -asm c inlines the units instead)")
+		}
 		ccArgs = append(ccArgs, objPath)
 	}
-	ccArgs = append(ccArgs, linkArgs...)
-	build := exec.Command(cc, append(ccArgs, "-lm")...)
+	if !drv.Object {
+		ccArgs = append(ccArgs, linkArgs...)
+		ccArgs = append(ccArgs, "-lm")
+	}
+	build := exec.Command(drv.Path, ccArgs...)
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
-		return false, fmt.Errorf("C compilation failed: %v", err)
+		return false, fmt.Errorf("C compilation for %s failed (%s): %v", tgt, drv.Command(), err)
 	}
 	if key != "" {
 		// A failed store is a miss next time, never a failed build.
@@ -555,7 +594,7 @@ func compileC(code string, object []byte, inputs []compiler.LinkInput, binary st
 // (argv, never a shell) and returns an identity string covering each
 // object's bytes and each framework's name, for build-cache keys. On hosts
 // without frameworks a `framework` line is skipped with one note on notes.
-func linkArguments(inputs []compiler.LinkInput, notes io.Writer) ([]string, string, error) {
+func linkArguments(tgt target.Target, inputs []compiler.LinkInput, notes io.Writer) ([]string, string, error) {
 	var args []string
 	var identity strings.Builder
 	noted := false
@@ -571,10 +610,10 @@ func linkArguments(inputs []compiler.LinkInput, notes io.Writer) ([]string, stri
 			args = append(args, input.Path)
 		case "framework":
 			fmt.Fprintf(&identity, "framework %s\n", input.Path)
-			if runtime.GOOS == "darwin" {
+			if tgt.MachO() {
 				args = append(args, "-framework", input.Path)
 			} else if !noted && notes != nil {
-				fmt.Fprintf(notes, "note: framework directives apply on macOS only; %s not linked on %s\n", input.Path, runtime.GOOS)
+				fmt.Fprintf(notes, "note: framework directives apply on macOS only; %s not linked for %s\n", input.Path, tgt)
 				noted = true
 			}
 		}
@@ -624,9 +663,10 @@ func executableName(dir string) (string, error) {
 // installPackage builds the package's executable into $OAKBIN (default
 // $HOME/.oak/bin), named after the package (executableName).
 func installPackage(args []string) int {
-	dir, profile := ".", ""
-	fs := newFlagSet("install", "oak install [-profile default|strict] [dir]")
+	dir, profile, targetFlag := ".", "", ""
+	fs := newFlagSet("install", "oak install [-profile default|strict] [-target os/arch] [dir]")
 	fs.StringVar(&profile, "profile", "", "discipline profile: default or strict")
+	fs.StringVar(&targetFlag, "target", "", "platform os/arch (default: OAKOS/OAKARCH, else the host; docs/spec/90-backend.md section 2a)")
 	rest, code, stop := parseFlags(fs, args)
 	if stop {
 		return code
@@ -638,10 +678,20 @@ func installPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak install: unknown profile %q (default or strict)\n", profile)
 		return 2
 	}
+	tgt, err := target.FromEnv(targetFlag, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oak install: %v\n", err)
+		return 2
+	}
 	bin := defaultBinDir()
 	if bin == "" {
 		fmt.Fprintln(os.Stderr, "oak install: cannot determine $OAKBIN or the home directory")
 		return 1
+	}
+	if !tgt.IsHost() {
+		// A cross-built executable lives under $OAKBIN/<os>_<arch>/, as
+		// go install places them, so it never shadows the host's.
+		bin = filepath.Join(bin, tgt.OS+"_"+tgt.Arch)
 	}
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "oak install: %v\n", err)
@@ -652,12 +702,12 @@ func installPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak install: %v\n", err)
 		return 1
 	}
-	target := filepath.Join(bin, name)
+	output := filepath.Join(bin, name)
 	comp := compiler.New().WithPackageDir(dir).WithProfile(profile).WithDiagnosticSink(reportAsmVerdict)
-	if err := compileBinary(comp, target, defaultAsmMode()); err != nil {
+	if err := compileBinary(comp, output, defaultAsmMode(tgt), tgt); err != nil {
 		fmt.Fprintf(os.Stderr, "oak install: %v\n", err)
 		return 1
 	}
-	fmt.Printf("installed %s\n", target)
+	fmt.Printf("installed %s\n", output)
 	return 0
 }

@@ -70,15 +70,18 @@ names or the module cache.
 | `OAKBIN` | Where `oak install` puts executables. Default `$HOME/.oak/bin`, created on demand. |
 | `OAK_LEAN_DIR` | The `spec/lean` directory for the REPL's `:lean check`; default: found above the working directory. |
 | `OAKCACHE` | The build cache of compiled executables. Default: the user cache directory, `oak/`; `off` disables it. |
+| `OAKOS`, `OAKARCH` | The target platform when `-target` is not given (`90-backend.md` §2a); each defaults to the host's component. |
+| `OAK_CC` | A C compiler that already targets `OAKOS/OAKARCH`, taken over every discovered one; `OAK_CFLAGS` adds arguments (split on whitespace). Unset: `cc` for the host, else `zig cc`, a cross `clang` with `OAK_SYSROOT`, or a GNU cross compiler. |
+| `OAK_SYSROOT` | The sysroot a cross `clang` needs for a hosted target. |
 
 ### 3.1 The build cache
 
 `oak build`, `oak run`, `oak install`, and `oak test` keep the executables
 they compile under `$OAKCACHE/build/`, keyed by a SHA-256 over everything
-that determines the binary: the emitted C (which already captures the Oak
-compiler's lowering), the asm companion object, the C compiler's identity
-(resolved path, size, modification time), the exact flag list, and the host
-OS and architecture; the test runner additionally keys on its engine version
+that determines the binary: the target (`os/arch`), the emitted C (which
+already captures the Oak compiler's lowering), the asm companion object,
+the resolved C compiler driver's identity (path, size, modification time)
+and its target-selecting arguments, and the exact flag list; the test runner additionally keys on its engine version
 and adapter identity. A hit copies the cached binary to the requested
 output (`oak build` reports `(cached)`), a miss compiles and stores. Entries
 are written through a temporary file and rename; any cache failure is a

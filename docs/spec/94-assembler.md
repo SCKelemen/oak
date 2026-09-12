@@ -1382,6 +1382,18 @@ Lean. What is new against the AArch64 lane, and how it landed:
   AArch64 lane with the emulator as the machine (no RISC-V silicon on the
   host). Both skip without the tools.
 
+**Lanes and targets (landed with `90-backend.md` §2a).** The build's
+target selects the lane: a unit applies when its lane is the target
+architecture's; one unit per lane may realize a signature (`pick.arm64.oakasm`
+beside `pick.rv64.oakasm`), and a unit of another lane yields to the Oak
+fallback body or, without one, fails the build at compile time. The
+fallback body is emitted under the negation of *its unit's* lane condition
+(`!(defined(__riscv) && (__riscv_xlen == 64))` for an rv64 unit), the
+companion object follows the target (ELF `EM_RISCV` with the lp64d float
+ABI for a hosted RISC-V target, lp64 for freestanding), and `oak build
+-target linux/riscv64` links the assembled unit into a static musl binary
+through `zig cc` from any host.
+
 Still to come in this lane: the span element memory rule (loads and stores
 through a bound base under a length guard), F/D under the LP64D contract,
 compressed encodings (RVC changes the label arithmetic), the RVWMO

@@ -1133,6 +1133,10 @@ type FunctionStatement struct {
 	// compilation when a unit's matching signature is found; a body-less
 	// declaration with no unit is a compile error.
 	AsmBacked bool
+	// AsmArch is the lane of the unit backing an AsmBacked declaration
+	// ("arm64" or "rv64", docs/spec/94-assembler.md §9): the C backend
+	// emits the Oak fallback body under the lane's negated condition.
+	AsmArch string
 	// NativeBacked marks a body the native backend lowered (nativegen,
 	// docs/spec/94-assembler.md §9): the C backend emits the Oak body only
 	// for the portable realization, as for an asm unit with a fallback.

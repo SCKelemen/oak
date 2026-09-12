@@ -63,6 +63,27 @@ jobs:
           packages) go test -v -race -timeout 45m $(go list ./... | grep -v '/compiler$') ;;
         esac
 
+  cross-targets:
+    name: Cross targets (zig)
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.27.1'
+
+    - name: Set up Zig
+      uses: mlugg/setup-zig@v2
+      with:
+        version: 0.15.1
+
+    - name: Cross-build for every Linux target from the runner
+      run: go test -v ./target ./toolchain ./compiler -run '^Test(ParseAndEnv|Spellings|ResolveOrder|Cross)'
+
   aarch64-memory-refinement:
     name: AArch64 Memory Refinement
     runs-on: ubuntu-24.04

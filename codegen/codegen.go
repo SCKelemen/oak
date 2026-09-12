@@ -940,9 +940,13 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 	}
 	if fn.AsmBacked || fn.NativeBacked {
 		// The Oak fallback body realizes the signature where the asm unit
-		// (or the natively lowered body) does not apply: non-AArch64, or
-		// the portable lowering.
-		cg.write("#if !defined(__aarch64__) || defined(OAK_PORTABLE_INTRINSICS)\n")
+		// (or the natively lowered body) does not apply: another
+		// architecture than the unit's lane, or the portable lowering.
+		arch := fn.AsmArch
+		if arch == "" {
+			arch = asm.ArchArm64 // native bodies are AArch64
+		}
+		cg.write(fmt.Sprintf("#if !(%s) || defined(OAK_PORTABLE_INTRINSICS)\n", asm.ArchCondition(arch)))
 		defer cg.write("#endif\n")
 	}
 
