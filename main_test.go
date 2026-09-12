@@ -643,8 +643,9 @@ func TestProveCommand(t *testing.T) {
 }
 
 // The verification example decides every row: refined domains
-// exhaustively, a u32 claim at the bit level, the protocol's invariant over
-// its reachable states, and its liveness under the declared fairness.
+// exhaustively, a u32 claim at the bit level, the protocol's invariant
+// inductively at the bit level, and its liveness under the declared
+// fairness.
 func TestProveVerificationExample(t *testing.T) {
 	code, out := runCLI(t, func(args []string) int { return proveCommand(args, os.Stdout, os.Stderr) },
 		[]string{filepath.Join("examples", "verification_quantum.oak")})
@@ -655,10 +656,10 @@ func TestProveVerificationExample(t *testing.T) {
 		"decided   lookup_nonzero: all 8 cases",
 		"decided   irq_low: all 4 cases",
 		"decided   add_commutes: at the bit level",
-		"decided   budget_bounded: invariant: holds on all 3 reachable states",
+		"decided   budget_bounded: invariant: base all 1 cases, step at the bit level",
 		"decided   quantum_live1: eventually Yielded: holds on all 3 reachable states under fair tick, fair resume",
 		"decided   quantum_live2: eventually Running -> Yielded",
-		"oak prove: 6 decided",
+		"oak prove: 8 decided",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)

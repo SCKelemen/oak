@@ -83,9 +83,13 @@ The candidate's own row reports the obligations: `decided` when both are,
 `refuted` naming which one fails and where (this turnstile's 8-bit
 counter wraps: `invariant is not preserved: counterexample ... coins:
 255`), `open` otherwise; the obligation rows follow with their detail.
-A candidate the inductive check leaves short of `decided` — a data
-domain too large to enumerate, a step that fails only at a state no run
-reaches — is then evaluated on the reachable states themselves, the
+A step obligation over a `u32` record decides at the bit level (§3):
+the record and sum-type parameters are aggregates of leaves, the
+projection's `next` is inlined through its span, and its `assert` is a
+trap obligation on the legal path only. A candidate the inductive check
+still leaves short of `decided` — a body outside the decider's subset, a
+step that fails only at a state no run reaches — is then evaluated on
+the reachable states themselves, the
 exploration §2b uses (bounded by `-cases`): `invariant: holds on all 3
 reachable states` decides a `u32` budget whose reachable values are few,
 and `invariant fails at the reachable state Unlocked with {coins: 0}`
@@ -139,7 +143,7 @@ Every theorem is placed on one rung, from the strongest evidence down:
 
 | Status | Meaning |
 | --- | --- |
-| `decided` | The compiler decided the statement itself, one of two ways. **Exhaustively**: it evaluated the body on every element of its finite parameter domain and every case held — domains are `Bool`, `u8`, `i8`, `u16`, `i16`, payload-free sum types, and declared records of those (the product of the field domains), with the product of the parameter domains bounded (`-cases`, 65536 by default); the evaluator is the interpreter the differential witnesses hold to the compiled program. **At the bit level**: for parameters that are fixed-width scalars or `Bool` of any width, the body was lowered to the assembler verifier's term language (`94-assembler.md` §8; wrapping arithmetic, bitwise operators, comparisons, conditionals, typed locals, counted loops, calls to program functions of the same shape inlined; no views, recursion, or data-dependent loops) and bit-blasted, and its bit is the constant true. A construct that traps on some inputs — a variable shift count reaching the width, a refinement's construction `Name(e)` whose predicate may fail — records its trap condition as an obligation the decider proves impossible first, so a theorem whose body traps is `refuted` at the trapping input rather than read as true; a parameter of a refinement type is its base under the predicate as a hypothesis (the claim is about the values the construction admits), and a callee's refined parameter or return is its base; the term semantics are those of `Oak.AssemblerSemantics`, proved against Arm's ASL and checked against the silicon. The detail names which, and the case count or BDD node count. |
+| `decided` | The compiler decided the statement itself, one of two ways. **Exhaustively**: it evaluated the body on every element of its finite parameter domain and every case held — domains are `Bool`, `u8`, `i8`, `u16`, `i16`, payload-free sum types, and declared records of those (the product of the field domains), with the product of the parameter domains bounded (`-cases`, 65536 by default); the evaluator is the interpreter the differential witnesses hold to the compiled program. **At the bit level**: for parameters that are fixed-width scalars or `Bool` of any width, the body was lowered to the assembler verifier's term language (`94-assembler.md` §8; wrapping arithmetic, bitwise operators, comparisons, conditionals, typed locals, counted loops, calls to program functions of the same shape inlined; no views, recursion, or data-dependent loops) and bit-blasted, and its bit is the constant true. A construct that traps on some inputs — a variable shift count reaching the width, a refinement's construction `Name(e)` whose predicate may fail — records its trap condition as an obligation the decider proves impossible first, so a theorem whose body traps is `refuted` at the trapping input rather than read as true; a parameter of a refinement type is its base under the predicate as a hypothesis (the claim is about the values the construction admits), and a callee's refined parameter or return is its base; a parameter of a record or sum type is an aggregate of scalar leaves — one symbolic parameter per field, a tag per union under the hypothesis that it names a variant — and calls pass such values by copy, a span of a local array as an alias (so a callee's write-back is seen), and return them merged leaf by leaf across match arms, so a protocol invariant's inductive step over a `u32` record decides here; an `assert` in a reached body is a trap obligation like a shift's, and every trap obligation carries the path condition under which the program reaches it (the right operand of a short-circuit or only when the left is false, a match arm only when its pattern is the first to match); the term semantics are those of `Oak.AssemblerSemantics`, proved against Arm's ASL and checked against the silicon. The detail names which, and the case count or BDD node count. |
 | `refuted` | One of the deciders found a counterexample. The theorem is false; the assignment is reported. |
 | `proved` | Lean checked the theorem's statement over the extraction of the program (§5): `oak prove -lean out.lean -check` ran Lean on the projection and its statement drew no error. The compiler never awards this rung on its own; it reads Lean's diagnostics. A hand-written proof lives in a module of its own that imports the projection. |
 | `open` | No decider applies (a domain too large, a parameter type that is not finite) and the statement awaits its Lean proof. The reason is reported. |
@@ -319,8 +323,10 @@ In order of payoff, each reusing a surface that exists:
   budget is decided; liveness with declared fairness is decided over the
   same reachable states (§2b) and projected to the TLA+ module
   (`112-protocols.md` §1: `fair step`, `eventually from -> target`) for
-  TLC. Next: the inductive obligations at the bit level over record and
-  sum-type parameters, for machines whose reachable graph is not finite. The Boolean
+  TLC. The inductive obligations decide at the bit level over record and
+  sum-type parameters, so a machine whose reachable graph is not finite
+  still gets its invariant decided when the step is inductive. Next:
+  strengthening non-inductive candidates from the reachable states. The Boolean
   transition-model export of the verification experiment already checks
   inductive invariants through certificates; §2a is that check on the
   language's own state.
