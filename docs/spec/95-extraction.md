@@ -74,6 +74,7 @@ proofs written against them transfer.
 | `f64_bits_u64`, `u64_bits_f64`, `f32_bits_u32`, `u32_bits_f32` | `Float.ofBits`, `x.toBits`, and the `Float32` pair |
 | `uM_saturating_fN`, `iM_saturating_fN`; `uM_trunc_fN`, `iM_trunc_fN` | `x.toUIntM`/`x.toIntM`: toward zero, clamped to the range, NaN to zero — the `saturating` row exactly; `trunc` traps out of range where this saturates (section 3) |
 | `sqrt`, `abs`, `floor`, `ceil`, `round`, `is_nan`, `is_finite`, `is_infinite` | `Float.sqrt`, `.abs`, `.floor`, `.ceil`, `.round` (ties away from zero, as section 11.3.5), `.isNaN`, `.isFinite`, `.isInf`, and the `Float32` forms |
+| `fma(a, b, c)`, `copysign(x, y)`, `round_even(x)` | `Oak.FloatOps.fma64`/`fma32`, `copysign64`/`32`, `roundEven64`/`32` (`spec/lean/Oak/FloatOps.lean`): bit-exact definitions over the bit pattern — one rounding of the exact product-sum formed over `Int`, the sign-bit copy, and ties-to-even from Lean's ties-away `round`; a module that uses them imports `Oak.FloatOps` |
 
 Functions are emitted callee-first. Every function takes `fuel : Nat` and
 threads it to every loop and call; the corpus harness supplies a fuel above
@@ -117,11 +118,22 @@ takes part. What this does not give: `Float` is opaque to the kernel, so
 float code stay against `Oak.Floats`, the abstract discipline model; the
 extraction is the executable model an implementation is compared with, the
 way the differential float witness compares the compiled C and the
-interpreter. Intrinsics Lean has no exact counterpart for — `fma`,
-`copysign`, `trunc`, `round_even`, `min`/`max` (2019 `minimum`/`maximum`),
-`min_num`/`max_num`, `is_normal`, `total_order` — the `checked` rows into
-integers, and the storage formats `f16`/`bf16`/`f8` fail closed rather than
-approximate.
+interpreter. `fma`, `copysign`, and `round_even` have no counterpart in
+Lean's core library and are defined in `Oak/FloatOps.lean` from the bit
+pattern, where every step is integer arithmetic: `fma` decodes the three
+operands into `±m · 2^e`, forms the exact product and sum over `Int`, and
+rounds once to the format (nearest even, subnormals, overflow to infinity)
+following IEEE 754-2019 §7.2 and §6.3 for the special values; `copysign` is
+the sign-bit copy; `round_even` starts from Lean's ties-away `round`, whose
+only error is on ties, detects a tie exactly (`x - round x` is exact) and
+moves it to even, and gives a zero result the sign of its argument. The one
+choice beyond IEEE: NaN payloads are not modeled — a NaN result of these
+three is the canonical quiet NaN, whereas the C runtime propagates an
+operand's payload, so a faithfulness comparison prints every NaN
+canonically. Intrinsics still without an exact carrier — `trunc`, `min`/`max`
+(2019 `minimum`/`maximum`), `min_num`/`max_num`, `is_normal`, `total_order`
+— the `checked` rows into integers, and the storage formats
+`f16`/`bf16`/`f8` fail closed rather than approximate.
 
 ## 4. The subset, and what fails closed
 
@@ -135,14 +147,15 @@ checker's specializations of generic templates included), `len`, `view`,
 integer conversion rows, the bitwise operators and the complement,
 `assert`, `subslice`; `f32` and `f64` with their literals, arithmetic,
 comparisons, negation, the `round`/`bits`/`saturating`/`trunc` rows between
-them and the integers, and the intrinsics of the table above; field
+them and the integers, and the intrinsics of the table above (`fma`,
+`copysign`, and `round_even` through `Oak.FloatOps`); field
 assignment and element assignment into a record's array field, one level
 deep; array literals; top-level constants, including constant tables read
 through `view`. The extraction closes over the roots'
 callees, so a program that calls the standard library extracts the library
 functions it reaches. Everything else — strings, generic templates
 themselves, recursion, methods, extern functions, closures, the storage
-float formats and the intrinsics named in section 3, `fma`, the `checked`
+float formats and the intrinsics named in section 3, the `checked`
 float rows, SIMD, FFI, assignment to a global — is an
 error naming the construct. Nothing is approximated.
 
@@ -160,8 +173,19 @@ verification workflow and the certificate gate build and run it.
 builds one Oak module and one Lean driver over the committed extractions
 from a fixed-seed corpus — the heap, pdq and insertion sorts, LEB128
 encode and decode, hex and base64 round trips, xoshiro256** draws,
-CRC-32C and SHA-256 — runs the compiled program and `lake env lean --run`,
-and compares the two outputs byte for byte (336 lines). The drift test
+CRC-32C and SHA-256, and the float packages: `float_format`,
+`float_format_fixed`, `float_format_f32`, `float_parse`/`float_parse_f32`
+on hard values and spellings, the ml-shaped kernels (`dot_f32`, `sum_f32`,
+`sum_f64`, `axpy_f32`, `max_abs_f32`, `widen_mean`, `quantize_u8`), and
+the `math` package (`exp`, `exp2`, `log`, `log2`, `expm1`, `log1p`, `sin`,
+`cos`, `tan`, `tanh`, `atan`, `pow`, `atan2`, `exp_f32`, `sin_f32`) on 58
+binary64 and 40 binary32 bit patterns including the subnormal and range
+ends — runs the compiled program and `lake env lean --run`, and compares
+the two outputs byte for byte (1,428 lines; floats compare as bit patterns
+with every NaN spelled canonically). That the transcendentals agree bit for
+bit says Lean's `Float` and the C runtime evaluate the same binary64
+operations in the same order with `fma` computed exactly, which is the
+premise of section 3. The drift test
 says the committed text is current; this says the text means what the
 compiled code does. It skips without a Lean toolchain and runs in the
 Formal Verification workflow after the Lean build. It is what oak #186
@@ -171,8 +195,10 @@ test and each fails this one.
 
 **The standard library.** `compiler/lean_stdlib_extract_test.go` extracts
 whole packages — `varint`, `encoding`, `hash`, `random`, `uuid`, `float`
-(the decimal text package, integer code over `f64` bit patterns), and `sort`
-at `u32` — into `spec/lean/Oak/Stdlib/*Extracted.lean`, regenerating and
+(the decimal text package, integer code over `f64` bit patterns), `math`
+(the transcendentals: pure binary64 arithmetic with `fma`, `copysign`, and
+`round_even` through `Oak.FloatOps`, 1,883 lines), and `sort` at `u32` —
+into `spec/lean/Oak/Stdlib/*Extracted.lean`, regenerating and
 failing on drift the same way. A package's program is the core prelude
 plus the flattened texts of its dependencies and itself (`stdlib.Flatten`);
 the roots are the package's declarations plus a driver that instantiates
@@ -372,6 +398,17 @@ the compiler compiles, up to the extractor and the compiler being correct:
   and the group loop with its tails close the decode. The 24-bit word
   identities are bit-vector facts (`bv_decide`); the symbol tables are read
   in the kernel.
+- `Oak/Stdlib/PercentLaws.lean`: `percent_round_trip` — for every source
+  below the size limit and every keep set that holds no `%` (and no `+`
+  when `+` decodes as a space), `percent_encode` reports the length of the
+  blocks it writes (`encFrom`: a kept byte as itself, any other as `%` and
+  two upper-case digits) and `percent_decode` of those bytes reports the
+  source length and writes the source back. `kept_spec` relates the
+  keep-set scan to `unres || anyFrom`; `percent_encode_loop` characterizes
+  the encoder position by position; `decoded_size_loop` shows the
+  validation scan stays valid on the blocks (every `%` has three bytes and
+  two digits below sixteen); `percent_decode_loop` reads each block back,
+  the two digits through `upper_digits_join'` (decided over the 256 bytes).
 - `Oak/Stdlib/UuidLaws.lean`: for every one-cell generator state and every
   sixteen-byte destination, `uuid_v4_spec` — `uuid_v4` succeeds and the
   value reports version 4 (`uuid_version`) and the RFC variant
@@ -403,8 +440,9 @@ most; the kernel-decided facts use no axioms.
   with `writeback_perm` and the heap and insertion laws as the leaves; the
   universal base32 round trip (the base64 proof's shape, with five-to-eight
   groups and four tail lengths); strictness for base64 (`base64_decode`
-  accepts a string iff it is a canonical encoding) as `hex_decode_ok_iff`
-  does for hexadecimal; the SHA-256 and CRC-32C extractions against
+  accepts a string iff it is a canonical encoding) and for percent-decoding
+  (accepted iff every `%` starts two hexadecimal digits) as
+  `hex_decode_ok_iff` does for hexadecimal; the SHA-256 and CRC-32C extractions against
   reference definitions.
 - The subset: strings and the text library, methods, and recursion;
   instantiations whose arguments are arrays or views; the `checked` float

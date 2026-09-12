@@ -24,6 +24,12 @@ const (
 	// docs/spec/50-borrowing.md section 9 (use after consume, aliased
 	// exclusive arguments), reserved there.
 	CodeReturnedBorrowRegion diagnostic.Code = "OAK-B0113"
+	// CodeForeignFunctionAssumption is the recorded assumption of
+	// `c.fn_at(p)` (docs/spec/92-ffi.md section 2.10): the pointer is a
+	// function of the annotated signature, callable until the block ends.
+	// OAK-B0114..B0121 are the resource-flow codes of 50-borrowing.md
+	// section 9, reserved there.
+	CodeForeignFunctionAssumption diagnostic.Code = "OAK-B0122"
 )
 
 type diagnosticsState struct {
@@ -115,6 +121,17 @@ func regionFact(region *Region) RegionFact {
 // auditable warning (Oak.Unsafe): the obligation is not silently dropped,
 // it is visibly assumed. The regions travel with the diagnostic as
 // UnsafeAssumptionData.
+// reportForeignFunctionAssumption records the trust contract of `c.fn_at`
+// (docs/spec/92-ffi.md section 2.10) as a warning, so `oak vet`, the REPL's
+// :obligations, and the strict profile see it like every other recorded
+// assumption; a module accepts it with `admit OAK-B0122`.
+func (bc *BorrowChecker) reportForeignFunctionAssumption(node ast.Node, title string, bindingName string) *diagnostic.Diagnostic {
+	d := bc.reportBorrow(node, CodeForeignFunctionAssumption, title)
+	d.Severity = diagnostic.SeverityWarning
+	d.Data = UnsafeAssumptionData{RequestedName: bindingName}
+	return d
+}
+
 func (bc *BorrowChecker) reportUnsafeAssumption(node ast.Node, title string, requestedName string, requested *Region, existingName string, existing *Region) *diagnostic.Diagnostic {
 	d := bc.reportBorrow(node, CodeUnsafeAssumption, title)
 	d.Severity = diagnostic.SeverityWarning

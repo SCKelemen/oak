@@ -17,6 +17,7 @@ import (
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/typechecker"
 )
 
 const (
@@ -409,6 +410,12 @@ func collectBodyFacts(f *effectFacts, params []*ast.FunctionParameter, body ast.
 				if row, rowed := rowOf(v.Type); rowed {
 					f.valueRows[v.Name.Value] = row
 				}
+			}
+			// A foreign function pointer (docs/spec/92-ffi.md section
+			// 2.10) is a function value whose effects nothing declares:
+			// a call through it fails closed like any other.
+			if _, isForeign := typechecker.CFnTypeExpression(v.Type); isForeign {
+				valueNames[v.Name.Value] = true
 			}
 			if _, isLit := v.Value.(*ast.FunctionLiteral); isLit {
 				valueNames[v.Name.Value] = true

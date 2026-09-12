@@ -47,6 +47,19 @@ type Function struct {
 	// OAK_PORTABLE_INTRINSICS), so the asm and the Oak body are two
 	// realizations of one signature.
 	Fallback bool
+	// Composites: the record types that may cross this function's boundary,
+	// by type name — set by the compiler from the program's record
+	// declarations (never from the unit text), so the checker binds them
+	// under AAPCS64's composite rules (docs/spec/94-assembler.md §9).
+	Composites map[string]Composite
+}
+
+// Composite is a record type's shape at the boundary: its size in bytes
+// and whether it is a homogeneous floating-point aggregate (which AAPCS64
+// passes in v registers; v1 leaves those to the C backend).
+type Composite struct {
+	Size int64
+	HFA  bool
 }
 
 // Item is one line of the block: a label, an align directive, or an

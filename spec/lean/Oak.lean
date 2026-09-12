@@ -81,7 +81,9 @@ import Oak.Normalization
 import Oak.Stdlib.VarintExtracted
 import Oak.Stdlib.EncodingExtracted
 import Oak.Stdlib.HashExtracted
+import Oak.FloatOps
 import Oak.Stdlib.FloatExtracted
+import Oak.Stdlib.MathExtracted
 import Oak.Stdlib.FloatKernelsExtracted
 import Oak.Stdlib.RandomExtracted
 import Oak.Stdlib.UuidExtracted
@@ -90,8 +92,12 @@ import Oak.Stdlib.VarintLaws
 import Oak.Stdlib.SortLaws
 import Oak.Stdlib.EncodingLaws
 import Oak.Stdlib.Base64Laws
+import Oak.Stdlib.PercentLaws
 import Oak.Stdlib.RandomLaws
 import Oak.Stdlib.UuidLaws
+import Oak.Stdlib.KeyTree
+import Oak.Stdlib.NormalizeTables
+import Oak.Stdlib.Normalize17
 import Oak.Typestate
 import Oak.IoPort
 import Oak.ProtocolQuorum

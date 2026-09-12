@@ -31,7 +31,9 @@ Three definitions are stated and proved about:
   decomposing a composed text is canonically equivalent to the text it came
   from (`nfd_compose`), so NFC loses nothing NFD sees (`nfd_nfc`:
   `nfd (nfc x) = nfd x`) and NFC is idempotent (`nfc_idem`). The proof is
-  below, after the composer's invariant. -/
+  below, after the composer's invariant. `Oak.Stdlib.Normalize17` instantiates the
+  UCD with the Unicode 17.0.0 tables the library ships and discharges both
+  hypotheses, so the laws hold there unconditionally. -/
 
 /-- The Unicode data normalization reads. -/
 structure UCD where
