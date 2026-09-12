@@ -737,6 +737,29 @@ func (tc *TypeChecker) recordIndexProof(expr *ast.IndexExpression, arr *ArrayTyp
 	if !isPath || arr == nil {
 		return
 	}
+	if !tc.indexUnder(expr.Index, name, arr) {
+		return
+	}
+	if tc.provenIndices == nil {
+		tc.provenIndices = make(map[string]bool)
+	}
+	tc.provenIndices[positionKey(expr.Token)] = true
+}
+
+// provenBelow reports whether the live facts prove `index < bound` for a
+// literal bound: the index laws applied to a virtual container of static
+// extent bound and no name (typechecker/refinements.go discharges a
+// construction `Name(v)` with it when the predicate is `value < K`).
+func (tc *TypeChecker) provenBelow(index ast.Expression, bound int64) bool {
+	if bound <= 0 {
+		return false
+	}
+	return tc.indexUnder(index, "", &ArrayType{Length: bound, ElementType: &UnitType{}})
+}
+
+// indexUnder decides whether the live facts prove index < the extent of
+// the container name (typed arr), by the laws of Oak.Extents.
+func (tc *TypeChecker) indexUnder(indexExpr ast.Expression, name string, arr *ArrayType) bool {
 	proven := false
 	// lengthAtLeast: the container is known to hold at least n elements —
 	// its declared static extent, or a live min-length fact.
@@ -770,16 +793,20 @@ func (tc *TypeChecker) recordIndexProof(expr *ast.IndexExpression, arr *ArrayTyp
 		}
 		return bound, found
 	}
-	if mask, isMasked := maskedIndex(expr.Index); isMasked {
+	if _, bound, isRefined := tc.refinedBelow(indexExpr); isRefined {
+		// Name(e) with `Name: type = T where value < K` is below K: the
+		// construction's guard trapped otherwise (typechecker/refinements.go).
+		proven = lengthAtLeast(bound)
+	} else if mask, isMasked := maskedIndex(indexExpr); isMasked {
 		// e & M < len whenever M < len (Oak.Extents.masked_under_length).
 		proven = lengthAtLeast(mask + 1)
-	} else if index, scale, offset, isScaled := scaledIndex(expr.Index); isScaled {
+	} else if index, scale, offset, isScaled := scaledIndex(indexExpr); isScaled {
 		// i * K + j under i < U needs (U - 1) * K + j < len
 		// (Oak.Extents.scaled_under_bound).
 		if upper, bounded := literalUpper(index); bounded && upper >= 1 {
 			proven = lengthAtLeast((upper-1)*scale + offset + 1)
 		}
-	} else if index, k, isMinus := minusIndex(expr.Index); isMinus {
+	} else if index, k, isMinus := minusIndex(indexExpr); isMinus {
 		// i - K under K <= L <= i and i < U needs U - K <= len
 		// (Oak.Extents.subtraction_under_bounds); under i < len(v) it is
 		// immediate (subtraction_under_length).
@@ -793,7 +820,7 @@ func (tc *TypeChecker) recordIndexProof(expr *ast.IndexExpression, arr *ArrayTyp
 				}
 			}
 		}
-	} else if constant, isConst := constantIndex(expr.Index); isConst && constant >= 0 {
+	} else if constant, isConst := constantIndex(indexExpr); isConst && constant >= 0 {
 		if arr.Length >= 0 && !arr.IsSlice && !arr.IsSpan && constant < arr.Length {
 			proven = true // static extent (Oak.Extents.static_extent)
 		}
@@ -805,7 +832,7 @@ func (tc *TypeChecker) recordIndexProof(expr *ast.IndexExpression, arr *ArrayTyp
 				proven = true // Oak.Extents.constant_under_min_length
 			}
 		}
-	} else if index, offset, isIndex := offsetIndex(expr.Index); isIndex {
+	} else if index, offset, isIndex := offsetIndex(indexExpr); isIndex {
 		// i + j under i < K needs K + j <= len (Oak.Extents.literal_bound_under_length).
 		if upper, bounded := literalUpper(index); bounded && lengthAtLeast(upper+offset) {
 			proven = true
@@ -827,13 +854,7 @@ func (tc *TypeChecker) recordIndexProof(expr *ast.IndexExpression, arr *ArrayTyp
 			}
 		}
 	}
-	if !proven {
-		return
-	}
-	if tc.provenIndices == nil {
-		tc.provenIndices = make(map[string]bool)
-	}
-	tc.provenIndices[positionKey(expr.Token)] = true
+	return proven
 }
 
 // declarationFacts derives the fact a local view/span declaration
@@ -844,6 +865,17 @@ func (tc *TypeChecker) recordIndexProof(expr *ast.IndexExpression, arr *ArrayTyp
 func (tc *TypeChecker) declarationFacts(decl *ast.VariableDeclaration) []extentFact {
 	if decl == nil || decl.Name == nil || decl.Value == nil || !tc.localBinding(decl.Name.Value) {
 		return nil
+	}
+	// A binding declared at a refinement type carries the refinement's
+	// predicate (typechecker/refinements.go). The type is read by name
+	// only: re-parsing an arbitrary annotation here would repeat the
+	// checks its own site already made.
+	if ident, isIdent := decl.Type.(*ast.Identifier); isIdent {
+		if _, isRefinement := tc.refinements[ident.Value]; isRefinement {
+			if facts := tc.refinementFacts(decl.Name.Value, tc.parseTypeExpression(decl.Type)); len(facts) != 0 {
+				return facts
+			}
+		}
 	}
 	// A literal integer initializer is a lower bound on the binding
 	// (docs/spec/50-borrowing.md, lower bound): `i: u32 = 16`.

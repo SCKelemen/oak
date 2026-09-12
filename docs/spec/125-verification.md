@@ -177,11 +177,13 @@ In order of payoff, each reusing a surface that exists:
   transition-model export of the verification experiment already checks
   inductive invariants through certificates; §2a is that check on the
   language's own state.
-- **Refinements.** `IrqId[N]: type = u16 where value < N`
-  (`LANGUAGE_MODEL.md`): the proposition is a `Bool` expression over
-  `value`, checked at construction, discharged statically where the extent
-  facts or a theorem show it, and kept as a runtime check labeled
-  `checked` otherwise. A refined return type is a postcondition.
+- **Refinements, further.** `Name: type = u16 where pred` is in
+  (`20-types.md` §12): the predicate is a `Bool` expression over `value`,
+  checked at construction, carried as extent facts by every binding of the
+  type. Next: generic refinements (`IrqId[N]: type = u16 where value < N`),
+  the static discharge of a construction from the facts in scope or a
+  theorem so the guard disappears, refined return types as postconditions,
+  and the construction in the Lean projection.
 - **Contracts.** Leading `assert`s of a body are its preconditions; a
   caller discharges them statically or keeps the check. No `requires`
   keyword.

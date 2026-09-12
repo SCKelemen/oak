@@ -644,6 +644,13 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 		return
 	}
 
+	// A refinement declaration is a typedef of its base and a guard
+	// (typechecker/refinements.go, docs/spec/20-types.md section 12).
+	if adt.Refinement != nil {
+		cg.types[cName] = true
+		cg.emitRefinement(adt, cName, tc)
+		return
+	}
 	// A record type declaration (one record-literal variant) is a struct,
 	// not a tagged union (docs/spec/40-records.md).
 	if recordLit, isRecord := recordDefinitionShape(adt); isRecord {
@@ -781,6 +788,22 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 		cg.emitADTConstructor(cName, variant)
 	}
 	cg.emitADTEquality(typeName, cName, tc)
+}
+
+// emitRefinement emits a refinement type: the base's typedef, so values
+// carry the base representation everywhere, and the construction guard
+// `oak_refine_Name`, which traps on a value outside the predicate. The
+// predicate is emitted by the ordinary expression emitter over `value`.
+func (cg *CodeGenerator) emitRefinement(adt *ast.ADTType, cName string, tc *typechecker.TypeChecker) {
+	base := cg.parsePayloadType(adt.Variants[0].Payload)
+	cg.write(fmt.Sprintf("typedef %s %s;\n", base, cName))
+	saved := cg.output
+	cg.output = strings.Builder{}
+	cg.emitExpressionFragment(adt.Refinement, tc)
+	predicate := cg.output.String()
+	cg.output = saved
+	cg.write(fmt.Sprintf("static inline %s oak_refine_%s( %s value ) { if ( !( %s ) ) { __builtin_trap(); } return value; }\n\n",
+		cName, cName, base, predicate))
 }
 
 // equalityTerm is the C expression comparing two values of typ held in l
@@ -2795,6 +2818,21 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		// section 2.10): the pointer, NULL-checked at the conversion.
 		if typechecker.ForeignFunctionAtCall(e) && len(e.Arguments) == 1 {
 			cg.emitForeignFunctionAt(e, tc)
+			return
+		}
+		// A refinement's construction: the base value through its guard
+		// (typechecker/refinements.go).
+		if name, isRefinement := tc.RefinedConstruction(e.Token); isRefinement && len(e.Arguments) == 1 {
+			if tc.RefinementDischarged(e.Token) {
+				// The facts in scope proved the predicate: no guard.
+				cg.output.WriteString(fmt.Sprintf("((%s)( ", cg.cTypeName(name)))
+				cg.emitExpressionFragment(e.Arguments[0], tc)
+				cg.output.WriteString(" ))")
+				return
+			}
+			cg.output.WriteString(fmt.Sprintf("oak_refine_%s( ", cg.cTypeName(name)))
+			cg.emitExpressionFragment(e.Arguments[0], tc)
+			cg.output.WriteString(" )")
 			return
 		}
 		// Sealed-boundary coercions are identities: the fresh abstract type is

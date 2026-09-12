@@ -267,3 +267,24 @@ main: (): i32 = 0
 		t.Errorf("IsObligation: %s %v", inv, ok)
 	}
 }
+
+// A parameter of a refinement type ranges over the base values its
+// construction accepts (docs/spec/20-types.md section 12).
+func TestRefinedDomains(t *testing.T) {
+	src := `
+Digit: type = u8 where value < u8(10)
+Even: type = u8 where value % u8(2) == u8(0)
+
+digits_small: theorem (d: Digit) { u32(d) * u32(9) < u32(100) }
+even_half: theorem (e: Even) { (e / u8(2)) * u8(2) == e }
+main: (): i32 = 0
+`
+	results, err := Theorems(check(t, src), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || results[0].Status != Decided || results[0].Detail != "all 10 cases" ||
+		results[1].Status != Decided || results[1].Detail != "all 128 cases" {
+		t.Fatalf("results: %+v", results)
+	}
+}

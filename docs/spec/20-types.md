@@ -781,3 +781,54 @@ Record/struct verification is split deliberately:
 The initial Lean type-lattice model proves its laws over semantic type denotations. Go property/unit tests must exercise the implementation against the same laws.
 
 An implementation is not called refined until we explicitly relate concrete compiler structures/operations to the formal denotation and representation models.
+
+## 12. Refinement types
+
+```oak
+Slot: type = u16 where value < u16(8)
+Even: type = u8 where value % u8(2) == u8(0)
+```
+
+`Name: type = Base where pred` declares a nominal type whose values are the
+values of `Base` — a machine integer type — that satisfy `pred`, a `Bool`
+expression over `value`, the candidate, checked like any expression with
+`value` bound at the base (`OAK-T0602` for a base that is not an integer
+type or a predicate that is not `Bool`). `where` is contextual.
+
+A refined value flows to its base freely: assigning it to a `u16`, passing
+it to a `u16` parameter, and arithmetic on it all drop the refinement, as
+arithmetic drops any nominal distinction. A base value becomes refined only
+through the checked construction `Name(v)`: the value is returned if `pred`
+holds and the program traps otherwise, the same trap as a failed
+`assert`. Nothing else produces a refined value, so a binding of a refined
+type carries `pred` as a fact wherever it is in scope.
+
+That fact is the point (`50-borrowing.md`, extent facts): a parameter or a
+binding of a refined type contributes `pred` with `value` read as the
+binding to the extent facts, so `TABLE[i]` with `i: Slot` and an
+eight-element `TABLE` is proven and emitted unchecked. The bounds check
+moved from every access to the one construction, where it can often be
+folded away (a literal argument) or discharged by a theorem
+(`125-verification.md`).
+
+Representation: the base's. The backend emits `typedef` of the base and one
+guard function per refinement (`oak_refine_Name`); the interpreter binds the
+name to the assertion; the prover enumerates a refined parameter as the
+base values the construction accepts. The Lean extraction does not yet
+state constructions and fails closed on them.
+
+Static discharge: when the predicate is `value < K` or `value <= K` with a
+literal `K` and the facts in scope prove the argument below the bound — a
+loop counter under its guard, a masked value, a literal, a value already
+refined by a tighter type — by the same laws that prove an index
+(`50-borrowing.md`, `Oak.Extents`), the construction is emitted as a plain
+conversion with no guard. Conversely an index that is a construction
+`Name(e)` is proven below `K` whether or not the guard was discharged: the
+guard trapped otherwise. So `TABLE[Slot(i)]` under `i < 8` costs nothing at
+all, and `TABLE[Slot(n)]` for an arbitrary `n` costs the one guard.
+
+Not yet: refinements over records and floats, generic refinements
+(`IrqId[N]: type = u16 where value < N`), refined return types as
+postconditions, and predicates beyond a literal bound in the discharge.
+Each stays a runtime check until then, never a silent one.
+

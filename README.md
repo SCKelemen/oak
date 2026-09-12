@@ -1164,4 +1164,9 @@ every value of its parameters, in the language's own type system and with one
 new word. `oak prove` places each theorem on a ladder — `decided` by
 exhaustive evaluation over finite domains or at the bit level through the
 assembler verifier's blaster, `refuted` with a counterexample, or `open` with a
-Lean projection (`-lean out.lean`) whose automatic proof Lean checks. See [the verification spec](docs/spec/125-verification.md).
+Lean projection (`-lean out.lean`) whose automatic proof Lean checks. A
+theorem over a protocol's projected state is an invariant: its base and step
+obligations are generated. Refinement types (`Slot: type = u16 where value <
+u16(8)`) carry their predicate as a fact, so an index of a refined type is
+proven at every access and checked once, at construction. See [the
+verification spec](docs/spec/125-verification.md).

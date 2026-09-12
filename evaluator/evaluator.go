@@ -1025,6 +1025,21 @@ func makeOptionSome(value object.Object) *object.ADTValue {
 
 // Evaluate ADT type definition
 func evalADTType(adt *ast.ADTType, env *object.Environment) object.Object {
+	// A refinement declaration binds its name to the checked construction:
+	// assert the predicate over the value, then return the value
+	// (typechecker/refinements.go, docs/spec/20-types.md section 12).
+	if adt.Refinement != nil {
+		value := &ast.Identifier{Token: adt.Name.Token, Value: "value"}
+		check := &ast.InvocationExpression{Token: adt.Name.Token,
+			Function:  &ast.Identifier{Token: adt.Name.Token, Value: "assert"},
+			Arguments: []ast.Expression{adt.Refinement}}
+		body := &ast.BlockStatement{Token: adt.Name.Token, Statements: []ast.Statement{
+			&ast.ExpressionStatement{Token: adt.Name.Token, Expression: check},
+			&ast.ExpressionStatement{Token: adt.Name.Token, Expression: value},
+		}}
+		env.Set(adt.Name.Value, &object.Function{Parameters: []*ast.Identifier{value}, Body: body, Env: env})
+		return NULL
+	}
 	adtType := &object.ADTType{
 		Name:     adt.Name.Value,
 		Variants: []*object.ADTVariantDef{},

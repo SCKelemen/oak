@@ -45,6 +45,20 @@ func interpretChecked(t *testing.T, src string) int64 {
 // realization.
 func TestDifferentialSweep(t *testing.T) {
 	programs := map[string]string{
+		"refinement types": `
+Slot: type = u16 where value < u16(8)
+TABLE: [8]u8 = [8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }
+
+pick: (i: Slot): u8 = TABLE[i]
+
+main: (): i32 {
+  n: u16 = 3
+  a: Slot = Slot(n)
+  b: Slot = Slot(n + n)
+  plain: u16 = a
+  i32_bits_u32(u32(pick(a)) + u32(pick(b)) + u32(plain) + u32(pick(Slot(u16(7)))) + u32(20))
+}
+`,
 		"sum-type equality": `
 Color: type = Red | Green | Blue
 Shape: type = Dot | Box: u8

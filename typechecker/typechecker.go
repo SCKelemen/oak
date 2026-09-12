@@ -22,9 +22,18 @@ type Type interface {
 // PrimitiveType represents primitive integer types
 type PrimitiveType struct {
 	Name string // "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "ptr", "uptr"
+	// Refinement names the refinement type this value carries
+	// (typechecker/refinements.go): `Small: type = u16 where value < 256`
+	// gives PrimitiveType{Name: "u16", Refinement: "Small"}. A refined
+	// value flows to its base freely; a base value becomes refined only
+	// through the checked construction `Small(v)`. Empty for plain values.
+	Refinement string
 }
 
 func (t *PrimitiveType) String() string {
+	if t.Refinement != "" {
+		return t.Refinement
+	}
 	return t.Name
 }
 
@@ -43,7 +52,8 @@ func normalizePrimitiveName(name string) string {
 
 func (t *PrimitiveType) Equals(other Type) bool {
 	if otherPrim, ok := other.(*PrimitiveType); ok {
-		return normalizePrimitiveName(t.Name) == normalizePrimitiveName(otherPrim.Name)
+		return normalizePrimitiveName(t.Name) == normalizePrimitiveName(otherPrim.Name) &&
+			t.Refinement == otherPrim.Refinement
 	}
 	return false
 }
@@ -556,6 +566,12 @@ type TypeChecker struct {
 	// arithmeticTypes records the fixed-width result type of each arithmetic
 	// expression (position-keyed), so the backend emits the total helper.
 	arithmeticTypes map[string]string
+	// refinements are the declared refinement types by name, and
+	// refinementChecks the constructions by call position
+	// (typechecker/refinements.go).
+	refinements          map[string]*refinementInfo
+	refinementChecks     map[string]string
+	refinementDischarged map[string]bool
 	// equalityTypes records, per `==`/`!=` operator position, the named
 	// sum type or record the operands have, so the backend emits that
 	// type's equality function (typechecker/equality.go).
@@ -2162,6 +2178,11 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 
 	// Check if this is a primitive type constructor: u32(x), u64(y), etc.
 	if ident, ok := expr.Function.(*ast.Identifier); ok {
+		// A refinement's checked construction: Small(v)
+		// (typechecker/refinements.go).
+		if refinedType := tc.checkRefinementConstruction(ident.Value, expr); refinedType != nil {
+			return refinedType
+		}
 		if constructorType := tc.checkPrimitiveConstructor(ident.Value, expr.Arguments, expr); constructorType != nil {
 			return constructorType
 		}
@@ -4069,6 +4090,12 @@ func (tc *TypeChecker) isAssignable(valueType, varType Type) bool {
 		valuePrim := valueType.(*PrimitiveType)
 		varPrim := varType.(*PrimitiveType)
 
+		// A refined target takes only its own values: a base value gets
+		// there through the checked construction (typechecker/refinements.go).
+		if varPrim.Refinement != "" && valuePrim.Refinement != varPrim.Refinement {
+			return false
+		}
+
 		// Same sign family
 		if (valuePrim.Name[0] == 'i') == (varPrim.Name[0] == 'i') {
 			valueWidth := tc.getBitWidth(valuePrim.Name)
@@ -4339,7 +4366,18 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	// return type.
 	savedLoopDepth := tc.loopDepth
 	tc.loopDepth = 0
+	// Parameters of a refined type carry the refinement's predicate into
+	// the body as extent facts (typechecker/refinements.go); the facts are
+	// read in the body's scope, where the parameters are local bindings.
+	var refinementFacts []extentFact
+	for i, param := range stmt.Parameters {
+		if i < len(paramTypes) {
+			refinementFacts = append(refinementFacts, tc.refinementFacts(param.Name.Value, paramTypes[i])...)
+		}
+	}
+	refinementMark := tc.pushExtentFacts(refinementFacts)
 	bodyType := tc.checkExpression(stmt.Body, returnType)
+	tc.popExtentFacts(refinementMark)
 	tc.loopDepth = savedLoopDepth
 	if bodyType == nil {
 		bodyType = &UnitType{}
@@ -4407,6 +4445,12 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 }
 
 func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
+	// A refinement declaration is a named base type with a predicate
+	// (typechecker/refinements.go), never a sum type.
+	if stmt.Refinement != nil {
+		tc.checkRefinementType(stmt)
+		return
+	}
 	// Check if this is a record type definition: Name: type = { field: Type, ... }
 	// Record type definitions are parsed as ADTType with a single variant that has a record literal
 	if len(stmt.Variants) == 1 {

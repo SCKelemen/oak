@@ -4957,6 +4957,29 @@ func (p *Parser) parseADTTypeFromName(name *ast.Identifier) *ast.ADTType {
 		return nil
 	}
 
+	// Refinement: Name: type = Base where <Bool over value>
+	// (docs/spec/20-types.md section 12). `where` is contextual; the base
+	// is the single variant's type, whichever branch above read it.
+	if len(adt.Variants) == 1 && p.peekToken.Literal == "where" {
+		base := adt.Variants[0]
+		if base.Payload == nil && base.Literal == nil && base.Name != nil {
+			base.Payload = &ast.Identifier{Token: base.Name.Token, Value: base.Name.Value}
+			base.Name = adt.Name
+		}
+		if base.Payload == nil {
+			p.addErrorAtCurrentToken("a refinement names a base type before `where`")
+			return nil
+		}
+		p.nextToken()
+		p.nextToken()
+		adt.Refinement = p.parseExpression(LOWEST)
+		if adt.Refinement == nil {
+			return nil
+		}
+		adt.EndToken = p.currentToken
+		return adt
+	}
+
 	return adt
 }
 

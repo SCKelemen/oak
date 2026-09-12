@@ -909,6 +909,11 @@ type ADTType struct {
 	Name       *Identifier
 	TypeParams []*TypeParameter // Optional type parameters: [T: Ordered]
 	Variants   []*ADTVariant
+	// Refinement is the predicate of `Name: type = Base where <expr>`
+	// (docs/spec/20-types.md section 12): a Bool expression over `value`,
+	// the candidate of the base type. The single variant's Payload is the
+	// base. Nil for every other declaration.
+	Refinement Expression
 	// Exported marks a `pub` declaration (docs/spec/83-modules.md section
 	// 6); visibility is never inferred from spelling. Opaque marks
 	// `pub(opaque)`: the name is exported, the definition is not.

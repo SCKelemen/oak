@@ -122,33 +122,51 @@ type domain struct {
 // the 8- and 16-bit integers, payload-free sum types, and declared records
 // of those (the product of the field domains) are finite; anything else is
 // stated for Lean.
-func domainOf(tc *typechecker.TypeChecker, param *ast.FunctionParameter) (domain, string) {
+func domainOf(tc *typechecker.TypeChecker, env *object.Environment, param *ast.FunctionParameter) (domain, string) {
 	typ := tc.ParseTypeExpression(param.Type)
 	if typ == nil {
 		return domain{}, fmt.Sprintf("parameter %s: %s does not resolve to a type", param.Name.Value, param.Type.String())
 	}
-	values, reason := valuesOf(tc, typ)
+	values, reason := valuesOf(tc, env, typ)
 	if reason != "" {
 		return domain{}, fmt.Sprintf("parameter %s: %s", param.Name.Value, reason)
 	}
 	return domain{name: param.Name.Value, values: values}, ""
 }
 
-func valuesOf(tc *typechecker.TypeChecker, typ typechecker.Type) ([]object.Object, string) {
+func valuesOf(tc *typechecker.TypeChecker, env *object.Environment, typ typechecker.Type) ([]object.Object, string) {
 	switch t := typ.(type) {
 	case *typechecker.BoolType:
 		return []object.Object{evaluator.Bool(false), evaluator.Bool(true)}, ""
 	case *typechecker.PrimitiveType:
+		var base []object.Object
 		switch t.Name {
 		case "u8":
-			return integers(0, 255), ""
+			base = integers(0, 255)
 		case "i8":
-			return integers(-128, 127), ""
+			base = integers(-128, 127)
 		case "u16":
-			return integers(0, 65535), ""
+			base = integers(0, 65535)
 		case "i16":
-			return integers(-32768, 32767), ""
+			base = integers(-32768, 32767)
+		default:
+			return nil, fmt.Sprintf("%s is not a finite scalar, enum, or record type", typ.String())
 		}
+		if t.Refinement == "" {
+			return base, ""
+		}
+		// A refinement's values: the base values its construction accepts.
+		construct, found := env.Get(t.Refinement)
+		if !found {
+			return nil, fmt.Sprintf("refinement %s is not loaded", t.Refinement)
+		}
+		var values []object.Object
+		for _, v := range base {
+			if _, failed := evaluator.Apply(construct, []object.Object{v}).(*object.Error); !failed {
+				values = append(values, v)
+			}
+		}
+		return values, ""
 	case *typechecker.ADTType:
 		variants, ok := tc.ADTVariants(t.Name)
 		if !ok {
@@ -160,7 +178,7 @@ func valuesOf(tc *typechecker.TypeChecker, typ typechecker.Type) ([]object.Objec
 		for _, variant := range variants {
 			if variant.Payload != nil {
 				if _, isUnit := variant.Payload.(*typechecker.UnitType); !isUnit {
-					payloads, reason := valuesOf(tc, variant.Payload)
+					payloads, reason := valuesOf(tc, env, variant.Payload)
 					if reason != "" {
 						return nil, fmt.Sprintf("%s.%s: payload: %s", t.Name, variant.Name, reason)
 					}
@@ -184,7 +202,7 @@ func valuesOf(tc *typechecker.TypeChecker, typ typechecker.Type) ([]object.Objec
 		// The product of the field domains, one record per tuple.
 		values := []object.Object{&object.Record{Fields: map[string]object.Object{}}}
 		for _, field := range order {
-			fieldValues, reason := valuesOf(tc, fields[field])
+			fieldValues, reason := valuesOf(tc, env, fields[field])
 			if reason != "" {
 				return nil, fmt.Sprintf("field %s: %s", field, reason)
 			}
@@ -224,7 +242,7 @@ func decide(env *object.Environment, tc *typechecker.TypeChecker, functions map[
 	var domains []domain
 	total := 1
 	for _, param := range theorem.Parameters {
-		d, reason := domainOf(tc, param)
+		d, reason := domainOf(tc, env, param)
 		if reason != "" {
 			return blastOr(theorem, functions, Result{Name: name, Status: Open, Detail: reason + "; stated for Lean"})
 		}
