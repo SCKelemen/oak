@@ -307,6 +307,12 @@ func (p *Parser) parseStatement() ast.Statement {
 		if p.currentToken.Literal == "operator" && p.peekTokenIs(token.LPAREN) {
 			return p.parseOperatorDeclaration()
 		}
+		// `kernel name: (gid: u32, ...): () = ...` declares a compute kernel
+		// (docs/spec/56-kernels.md); `kernel` is contextual, so `kernel := 1`
+		// and `kernel: u32 = 1` stay ordinary bindings.
+		if p.currentToken.Literal == "kernel" && p.peekTokenIs(token.IDENT) && p.lookaheadSignificant(2).TokenKind == token.COLON {
+			return p.parseKernelDeclaration()
+		}
 		// `export("symbol") pub name: (...)` gives a pub function a C ABI
 		// symbol (docs/spec/92-ffi.md section 2.9); `export` is contextual,
 		// so `export := 1` stays an ordinary binding.
@@ -948,10 +954,46 @@ func (p *Parser) parseFieldAccess(left ast.Expression) ast.Expression {
 
 // parseIndexOrSliceExpression handles both array[index] and array[low:high] syntax
 // This is a unified Pratt hook for '[' that pattern-matches on ':' to choose index vs slice
+// isMessageSendAccess reports whether expr is the library access
+// `c.msg_send` (docs/spec/92-ffi.md section 2.12), whose bracket argument
+// is a boundary function type rather than a value.
+func isMessageSendAccess(expr ast.Expression) bool {
+	access, isAccess := expr.(*ast.IndexExpression)
+	if !isAccess || !access.Dot {
+		return false
+	}
+	base, isIdent := access.Left.(*ast.Identifier)
+	member, memberIsIdent := access.Index.(*ast.Identifier)
+	return isIdent && memberIsIdent && base.Value == "c" && member.Value == "msg_send"
+}
+
 func (p *Parser) parseIndexOrSliceExpression(left ast.Expression) ast.Expression {
 	tok := p.currentToken // '['
 	defer p.operatorPipe()()
 	p.nextToken() // move to first token after '['
+
+	// `c.msg_send[(params) -> ret](receiver, selector, args...)` (docs/spec/
+	// 92-ffi.md section 2.12): the bracket carries a boundary function
+	// type, not a value, so it is read with the type grammar. The callee
+	// is the one place a function type appears in expression position.
+	if isMessageSendAccess(left) && p.currentTokenIs(token.LPAREN) {
+		signature := p.parseTypeExpression()
+		if signature == nil {
+			return nil
+		}
+		if _, isFn := signature.(*ast.FunctionTypeExpression); !isFn {
+			p.addErrorAtCurrentToken("c.msg_send takes a function type in brackets: c.msg_send[(params) -> ret]")
+			return nil
+		}
+		if !p.expectPeek(token.RBRACK) {
+			return nil
+		}
+		if !p.peekTokenIs(token.LPAREN) {
+			p.peekError(token.LPAREN)
+			return nil
+		}
+		return &ast.IndexExpression{Token: tok, Left: left, Index: signature}
+	}
 
 	// Case 1: a[:...] or a[:]
 	if p.currentTokenIs(token.COLON) {
@@ -1657,6 +1699,24 @@ func (p *Parser) parseOperatorDeclaration() ast.Statement {
 		return nil
 	}
 	fn.Operator = symbol
+	return fn
+}
+
+// parseKernelDeclaration parses the `kernel` marker followed by a function
+// declaration (docs/spec/56-kernels.md section 1).
+func (p *Parser) parseKernelDeclaration() ast.Statement {
+	marker := p.currentToken
+	p.nextToken()
+	stmt := p.parseStatement()
+	if stmt == nil {
+		return nil
+	}
+	fn, isFunction := stmt.(*ast.FunctionStatement)
+	if !isFunction {
+		p.addErrorAtToken(&marker, "kernel must be followed by a function declaration")
+		return nil
+	}
+	fn.Kernel = true
 	return fn
 }
 

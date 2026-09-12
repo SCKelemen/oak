@@ -83,6 +83,26 @@ func (cg *CodeGenerator) emitGlobal(decl *ast.VariableDeclaration, tc *typecheck
 		declarator = fmt.Sprintf("__attribute__((section(\"%s\"))) %s", decl.Section, declarator)
 	}
 
+	if constant, isTargetConstant := cg.targetConstants[decl.Name.Value]; isTargetConstant {
+		// A target constant (docs/spec/92-ffi.md section 2.11): the C
+		// identifier the header defines, resolved by the C compiler per
+		// target; a constant expression there, never folded here. The
+		// identifier passed ValidCSymbol at check time and is re-validated
+		// before it reaches the generated source.
+		if !typechecker.ValidCSymbol(constant.Identifier) {
+			cg.write(fmt.Sprintf("OAK_INVALID_TARGET_CONSTANT(%s);\n", name))
+			cg.globalError(decl, "target constant %s names an invalid C identifier", decl.Name.Value)
+			return
+		}
+		// The binding's C name carries a prefix: the Oak name is usually
+		// the C identifier itself (CLOCK_MONOTONIC), and on Darwin that is
+		// a macro over an enumerator, so the bare name as a declarator
+		// would be rewritten by the preprocessor. Reads use the same
+		// prefixed name (targetConstantCName).
+		cg.write(fmt.Sprintf("static const %s %s = %s;\n", cg.parseTypeExpression(decl.Type), targetConstantCName(decl.Name.Value), constant.Identifier))
+		return
+	}
+
 	if decl.Value == nil {
 		// Zero initialization: explicit for aggregates, zero for scalars.
 		if info := cg.classifyContainer(decl.Type); info.kind == containerOwnedArray {
@@ -121,6 +141,12 @@ func (cg *CodeGenerator) emitGlobal(decl *ast.VariableDeclaration, tc *typecheck
 			cg.globalError(decl, "global %s does not fold for later initializers: %s", decl.Name.Value, e.Message)
 		}
 	}
+}
+
+// targetConstantCName is the C identifier of a target constant's static:
+// prefixed, because the Oak name is typically the C macro's own name.
+func targetConstantCName(name string) string {
+	return "oak_const_" + cIdent(name)
 }
 
 // isAggregateType reports whether the annotation names a struct-like type

@@ -19,6 +19,9 @@ const (
 	// mention non-c.* parameter or return types: Oak types never cross the
 	// boundary raw ("ABI honesty").
 	CodeExternSignatureNotC = "OAK-F0101"
+	// CodeExternCustody reports an extern binding that moves a Buffer without
+	// the shape of a custody transition (docs/spec/92-ffi.md section 2.8.5).
+	CodeExternCustody = "OAK-F0110"
 	// CodeExternSymbolInvalid rejects extern symbols that are not C
 	// identifiers. This is the injection-freedom rule: the symbol is
 	// emitted verbatim into generated C source, and the identifier grammar
@@ -286,7 +289,8 @@ func KnownLibraryMember(library, member string) bool {
 		_, isType := cTypeSpellings[member]
 		return isType || member == "extern" || member == "span_of" || member == "span_mut_of" ||
 			member == "borrow" || member == "borrow_mut" || member == "own" || member == "disown" ||
-			member == "cstr" || member == "borrow_string" || member == "argv_of" || member == "out" || member == "null"
+			member == "cstr" || member == "borrow_string" || member == "argv_of" || member == "out" || member == "null" ||
+			member == "const"
 	case "arm64":
 		_, isIntrinsic := arm64Intrinsics[member]
 		return isIntrinsic
@@ -461,6 +465,24 @@ func (tc *TypeChecker) checkCLibraryCall(expr *ast.InvocationExpression, member 
 		return nil
 	}
 	switch member {
+	case "msg_send":
+		// A message send carries its signature in brackets and is a call
+		// (docs/spec/92-ffi.md section 2.12); the parser and the invocation
+		// checker handle that form, so reaching it here means the brackets
+		// were left out.
+		d := tc.addTypeDiagnostic(expr, CodeMessageSend,
+			"c.msg_send takes the selector's signature in brackets: c.msg_send[(params) -> ret](receiver, selector, args...)")
+		d.AddNote("the bracketed signature is the declared ABI of the selector's implementation, as an extern binding's signature is (docs/spec/92-ffi.md section 2.12)")
+		return nil
+	case "const":
+		// A target constant exists only as the initializer of a top-level
+		// binding with a c.* scalar annotation (docs/spec/92-ffi.md
+		// section 2.11); checkVariableDeclaration consumes that form, so
+		// reaching it here means it was written somewhere else.
+		d := tc.addTypeDiagnostic(expr, CodeTargetConstant,
+			"c.const is only the initializer of a top-level binding with a c.* integer annotation, not an expression")
+		d.AddHelp("write NAME: c.Int = c.const(\"CLOCK_MONOTONIC\", \"<time.h>\") at package level and read NAME")
+		return nil
 	case "disown":
 		return tc.checkForeignDisown(expr)
 	case "borrow_string":
@@ -652,6 +674,7 @@ func (tc *TypeChecker) checkExternFunction(stmt *ast.FunctionStatement) {
 	}
 	paramTypes := make([]Type, 0, len(stmt.Parameters))
 	valid := true
+	var bufferParams []*BufferType
 	for _, param := range stmt.Parameters {
 		if param.Variadic {
 			tc.addError(param.Name, "extern binding %s cannot be variadic", stmt.Name.Value)
@@ -659,6 +682,14 @@ func (tc *TypeChecker) checkExternFunction(stmt *ast.FunctionStatement) {
 			continue
 		}
 		paramType := tc.parseTypeExpression(param.Type)
+		if buffer, isBuffer := paramType.(*BufferType); isBuffer {
+			// A custody transition (docs/spec/92-ffi.md section 2.8.5): the
+			// buffer crosses as pointer and count and comes back in its
+			// next custody state.
+			bufferParams = append(bufferParams, buffer)
+			paramTypes = append(paramTypes, paramType)
+			continue
+		}
 		if !tc.boundaryValue(paramType) {
 			d := tc.addTypeDiagnostic(param.Name, CodeExternSignatureNotC,
 				fmt.Sprintf("extern binding %s: parameter %s must have a c.* type or a proven-layout struct", stmt.Name.Value, param.Name.Value))
@@ -672,12 +703,32 @@ func (tc *TypeChecker) checkExternFunction(stmt *ast.FunctionStatement) {
 	if stmt.ReturnType != nil {
 		returnType = tc.parseTypeExpression(stmt.ReturnType)
 		_, isUnit := returnType.(*UnitType)
-		if !isUnit && !tc.boundaryValue(returnType) {
+		if returned, returnsBuffer := returnType.(*BufferType); returnsBuffer {
+			switch {
+			case len(bufferParams) != 1:
+				d := tc.addTypeDiagnostic(stmt.ReturnType, CodeExternCustody, fmt.Sprintf("extern binding %s: a custody transition takes exactly one Buffer parameter and returns the same buffer in its next state", stmt.Name.Value))
+				d.AddNote("the buffer crosses the boundary as pointer and count; the returned Buffer is the argument re-typed, nothing is copied (docs/spec/92-ffi.md section 2.8.5)")
+				valid = false
+			case !bufferParams[0].Element.Equals(returned.Element):
+				tc.addTypeDiagnostic(stmt.ReturnType, CodeExternCustody, fmt.Sprintf("extern binding %s: the returned %s must have the parameter's element type %s", stmt.Name.Value, returned, bufferParams[0].Element))
+				valid = false
+			case bufferParams[0].CustodyState() == returned.CustodyState():
+				tc.addTypeDiagnostic(stmt.ReturnType, CodeExternCustody, fmt.Sprintf("extern binding %s: a custody transition changes the state; %s to %s is not a transition", stmt.Name.Value, bufferParams[0], returned))
+				valid = false
+			}
+		} else if len(bufferParams) != 0 {
+			tc.addTypeDiagnostic(stmt.ReturnType, CodeExternCustody, fmt.Sprintf("extern binding %s: a Buffer parameter is a custody transition and must return the buffer in its next state", stmt.Name.Value))
+			valid = false
+		} else if !isUnit && !tc.boundaryValue(returnType) {
 			d := tc.addTypeDiagnostic(stmt.ReturnType, CodeExternSignatureNotC,
 				fmt.Sprintf("extern binding %s: return type must be a c.* type, a proven-layout struct, or ()", stmt.Name.Value))
 			d.AddNote("Oak scalars never cross the foreign boundary raw; convert explicitly at the call site. A declared struct whose fields are boundary types returns by value with its layout asserted (docs/spec/92-ffi.md section 2.3)")
 			valid = false
 		}
+	}
+	if stmt.ReturnType == nil && len(bufferParams) != 0 {
+		tc.addTypeDiagnostic(stmt.Name, CodeExternCustody, fmt.Sprintf("extern binding %s: a Buffer parameter is a custody transition and must return the buffer in its next state", stmt.Name.Value))
+		valid = false
 	}
 	if !valid {
 		return
@@ -1212,7 +1263,7 @@ func (tc *TypeChecker) checkForeignBorrow(expr *ast.InvocationExpression, member
 	case "own":
 		// An owner of runtime length (section 2.8): the binding borrows
 		// it like an owned array until c.disown hands the memory back.
-		return &BufferType{Element: element}
+		return &BufferType{Element: element, Custody: HostCustody}
 	}
 	return &ArrayType{Length: -1, IsSpan: true, ElementType: element}
 }
@@ -1234,8 +1285,13 @@ func (tc *TypeChecker) checkForeignDisown(expr *ast.InvocationExpression) Type {
 		tc.addError(ident, "undefined variable: %s", ident.Value)
 		return nil
 	}
-	if _, isBuffer := scheme.Type.(*BufferType); !isBuffer {
+	buffer, isBuffer := scheme.Type.(*BufferType)
+	if !isBuffer {
 		tc.addError(ident, "c.disown takes a Buffer[T] binding, got %s", scheme.Type)
+		return nil
+	}
+	if !buffer.InHostCustody() {
+		tc.addError(ident, "buffer %s is in %s custody and cannot be handed back; a transition extern returns it to Host first (docs/spec/92-ffi.md section 2.8.5)", ident.Value, buffer.CustodyState())
 		return nil
 	}
 	return &CType{Name: "Ptr"}

@@ -927,6 +927,17 @@ func (bc *BorrowChecker) checkIndexExpression(index *ast.IndexExpression, env *t
 // checkInvocationExpression checks function calls for borrow operations
 func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpression, env *typechecker.TypeEnvironment, targetVar string) {
 	bc.checkCallGlobalWrites(call, env)
+	// An Objective-C message send (docs/spec/92-ffi.md section 2.12) calls
+	// the runtime under a signature the program asserts for the selector's
+	// implementation: the same kind of contract c.fn_at records, under the
+	// same code, so `admit OAK-B0122` accepts both and nothing else does.
+	if signature, isSend := typechecker.MessageSendCallee(call.Function); isSend {
+		d := bc.reportForeignFunctionAssumption(call,
+			"message send contract assumed: the selector's implementation has the bracketed signature, with the receiver and selector as its two leading pointer parameters",
+			"c.msg_send")
+		d.AddNote("the assumption is the sender's, as for an extern prototype (docs/spec/92-ffi.md section 2.12); every argument passes exactly the declared boundary types, and the receiver and selector are opaque c.Ptr values")
+		_ = signature
+	}
 	// A borrow named as the first argument of a bound derive builtin is a
 	// derivation source, not a direct use; createSubsliceWithRegion is the
 	// single authority for whether the derivation is allowed.
@@ -1076,6 +1087,27 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 					fmt.Sprintf("buffer %q cannot be handed back while borrow %q is live", owner, borrowName))
 				bc.addBorrowContext(d, borrowName, info, fmt.Sprintf("borrow %q still reads the buffer's memory", borrowName))
 				d.AddHelp("let the view or span leave scope before c.disown")
+				return
+			}
+		}
+		bc.consumedOwners[owner] = true
+		return
+	}
+	// A custody transition (docs/spec/92-ffi.md section 2.8.5) moves the
+	// buffer: rejected while any borrow of it is live, and the old binding
+	// is consumed; the result is the same resource under its new name.
+	if owner, isTransition := custodyTransitionOperand(call, env); isTransition {
+		if bc.consumedOwners[owner] {
+			bc.reportBorrow(call, CodeResourceUsedAfterConsume,
+				fmt.Sprintf("buffer %q was already moved or handed back", owner))
+			return
+		}
+		for _, kind := range []borrowKind{BorrowSpan, BorrowView} {
+			if borrowName, info, live := bc.firstActiveBorrow(owner, kind); live {
+				d := bc.reportBorrow(call, CodeBorrowGeneric,
+					fmt.Sprintf("buffer %q cannot change custody while borrow %q is live", owner, borrowName))
+				bc.addBorrowContext(d, borrowName, info, fmt.Sprintf("borrow %q still reads the buffer's memory", borrowName))
+				d.AddHelp("let the view or span leave scope before the transition")
 				return
 			}
 		}
@@ -1709,6 +1741,38 @@ func (bc *BorrowChecker) createSubsliceWithRegion(sourceBorrowName, subsliceName
 // foreignDisownOperand recognizes `c.disown(b)` and names the buffer
 // binding (docs/spec/92-ffi.md section 2.8). A local named `c` would have
 // made this an ordinary call, which the typechecker never accepts here.
+// custodyTransitionOperand recognizes a call to an extern binding that
+// returns a Buffer and names the Buffer binding it moves.
+func custodyTransitionOperand(call *ast.InvocationExpression, env *typechecker.TypeEnvironment) (string, bool) {
+	callee, isIdent := call.Function.(*ast.Identifier)
+	if !isIdent || env == nil {
+		return "", false
+	}
+	scheme, bound := env.Get(callee.Value)
+	if !bound || scheme == nil {
+		return "", false
+	}
+	fn, isFn := scheme.Type.(*typechecker.FunctionType)
+	if !isFn {
+		return "", false
+	}
+	if _, returnsBuffer := fn.ReturnType.(*typechecker.BufferType); !returnsBuffer {
+		return "", false
+	}
+	for i, arg := range call.Arguments {
+		ident, isIdent := arg.(*ast.Identifier)
+		if !isIdent {
+			continue
+		}
+		if i < len(fn.Parameters) {
+			if _, isBuffer := fn.Parameters[i].(*typechecker.BufferType); isBuffer {
+				return ident.Value, true
+			}
+		}
+	}
+	return "", false
+}
+
 func foreignDisownOperand(call *ast.InvocationExpression) (string, bool) {
 	access, isAccess := call.Function.(*ast.IndexExpression)
 	if !isAccess || len(call.Arguments) != 1 {

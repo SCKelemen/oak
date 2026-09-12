@@ -562,6 +562,12 @@ func lowerIndexExpression(expr *ast.IndexExpression, tc *typechecker.TypeChecker
 	if typechecker.ForeignBorrowCallee(expr) {
 		return expr
 	}
+	// The callee of a message send, c.msg_send[(params) -> ret]
+	// (docs/spec/92-ffi.md section 2.12), carries a signature, not an
+	// element index.
+	if _, isSend := typechecker.MessageSendCallee(expr); isSend {
+		return expr
+	}
 	// Create a call to core_index intrinsic
 	coreIndex := &ast.Identifier{
 		Token: expr.Token,

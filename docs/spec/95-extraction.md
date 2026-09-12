@@ -135,6 +135,16 @@ canonically. Intrinsics still without an exact carrier — `trunc`, `min`/`max`
 — the `checked` rows into integers, and the storage formats
 `f16`/`bf16`/`f8` fail closed rather than approximate.
 
+**Fourth: a target constant is uninterpreted.** A top-level binding
+`NAME: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")` (`92-ffi.md` §2.11)
+holds a value the target's C headers define and Oak never learns. The
+extraction renders it as `opaque NAME : Int32` — the `c.*` scalar at the
+width of the §2.4 target model, LP64 (`c.Int` 32 bits, `c.Long` and
+`c.Size` 64) — so a theorem about a function that reads it is a theorem
+for every value the constant could have, which is the only claim the
+program itself makes. The C identifier and the header never appear in the
+Lean text.
+
 ## 4. The subset, and what fails closed
 
 Records and sum types of extractable fields and payloads, generic ADTs per
@@ -151,12 +161,13 @@ them and the integers, and the intrinsics of the table above (`fma`,
 `copysign`, and `round_even` through `Oak.FloatOps`); field
 assignment and element assignment into a record's array field, one level
 deep; array literals; top-level constants, including constant tables read
-through `view`. The extraction closes over the roots'
+through `view` and target constants (`c.const`, as opaque constants of
+their `c.*` scalar type). The extraction closes over the roots'
 callees, so a program that calls the standard library extracts the library
 functions it reaches. Everything else — strings, generic templates
 themselves, recursion, methods, extern functions, closures, the storage
 float formats and the intrinsics named in section 3, the `checked`
-float rows, SIMD, FFI, assignment to a global — is an
+float rows, SIMD, FFI (extern calls, `c.fn_at`, `c.msg_send`), assignment to a global — is an
 error naming the construct. Nothing is approximated.
 
 ## 5. Where it runs
@@ -192,6 +203,22 @@ Formal Verification workflow after the Lean build. It is what oak #186
 needed: three faithfulness gaps (spans rebound through calls, windows never
 written back, zero records with empty array fields) each passed the drift
 test and each fails this one.
+
+- `Oak/Stdlib/HashLaws.lean` and `Oak/Stdlib/Sha256Laws.lean`: the streaming
+  laws a storage engine relies on. `crc32c_update_append` — for every pair of
+  byte strings below the size limit, continuing the CRC-32C of the first
+  through the second is one pass over their concatenation (`crc32c_append`
+  states it for the one-shot entry); the proof is the byte loop's fold and
+  its additivity. `sha256_update_append` — feeding `a` then `b` reaches a
+  state *equivalent* to feeding `a ++ b` (`Equiv`: same hash words, fill
+  count, byte total, and buffered prefix), `final_congr` — `sha256_final`
+  cannot tell equivalent states apart, so `sha256_append` — the one-shot
+  digest of `a ++ b` is the streamed digest. The relation is an equivalence
+  rather than an equality because the whole-block fast path compresses
+  input windows without copying them into the buffer. The compression
+  function is never opened: the proof uses only that it is total and
+  fuel-insensitive past its round count (`compress_fuel`), and that it
+  reads the block through its first sixty-four bytes (`compress_congr`).
 
 **The standard library.** `compiler/lean_stdlib_extract_test.go` extracts
 whole packages — `varint`, `encoding`, `hash`, `random`, `uuid`, `float`
@@ -442,8 +469,9 @@ most; the kernel-decided facts use no axioms.
   groups and four tail lengths); strictness for base64 (`base64_decode`
   accepts a string iff it is a canonical encoding) and for percent-decoding
   (accepted iff every `%` starts two hexadecimal digits) as
-  `hex_decode_ok_iff` does for hexadecimal; the SHA-256 and CRC-32C extractions against
-  reference definitions.
+  `hex_decode_ok_iff` does for hexadecimal; the SHA-256 and CRC-32C
+  extractions against reference definitions (the streaming laws hold; the
+  compression and the table remain opaque to the proofs).
 - The subset: strings and the text library, methods, and recursion;
   instantiations whose arguments are arrays or views; the `checked` float
   rows and `fma` once Lean carries them exactly.

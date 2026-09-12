@@ -39,8 +39,8 @@ func (tc *TypeChecker) parseGenericTypeApplication(expr ast.Expression) (Type, b
 	if name == "Buffer" {
 		// Owned foreign buffers (docs/spec/92-ffi.md section 2.8): the
 		// element type must have one meaning on both sides of the boundary.
-		if len(argExprs) != 1 {
-			tc.addError(expr, "Buffer[...] expects exactly one element type")
+		if len(argExprs) != 1 && len(argExprs) != 2 {
+			tc.addError(expr, "Buffer[T] or Buffer[T, Custody]: an element type and at most one custody state")
 			return nil, true
 		}
 		element := tc.parseTypeExpression(argExprs[0])
@@ -51,7 +51,24 @@ func (tc *TypeChecker) parseGenericTypeApplication(expr ast.Expression) (Type, b
 			tc.addError(argExprs[0], "Buffer[%s]: the element type must be a boundary type — a fixed-width integer, a floating-point or storage format, Bool, a proven-layout struct of those, or a boundary tagged union (docs/spec/92-ffi.md section 2.5.1)", element)
 			return nil, true
 		}
-		return &BufferType{Element: element}, true
+		custody := HostCustody
+		if len(argExprs) == 2 {
+			// The custody state is a marker name, never a type
+			// (docs/spec/92-ffi.md section 2.8.5).
+			marker, isName := argExprs[1].(*ast.Identifier)
+			if !isName || marker.Value == "" {
+				tc.addError(argExprs[1], "Buffer[T, S]: the custody state is a bare name such as Host or Device")
+				return nil, true
+			}
+			_, isValue := tc.env.Get(marker.Value)
+			_, isType := tc.env.GetType(marker.Value)
+			if isValue || isType {
+				tc.addError(argExprs[1], "Buffer[T, %s]: the custody state names a state, not the declared type %s", marker.Value, marker.Value)
+				return nil, true
+			}
+			custody = marker.Value
+		}
+		return &BufferType{Element: element, Custody: custody}, true
 	}
 	if name == "Atomic" {
 		if len(argExprs) != 1 {

@@ -11,6 +11,7 @@ import (
 	"github.com/SCKelemen/oak/borrowchecker"
 	"github.com/SCKelemen/oak/codegen"
 	"github.com/SCKelemen/oak/codegen/lean"
+	"github.com/SCKelemen/oak/codegen/metal"
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/discipline"
 	"github.com/SCKelemen/oak/layout"
@@ -411,6 +412,13 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		if err := comp.gate("effects", effectDiagnostics, tree.Modules); err != nil {
 			return nil, err
 		}
+		// Kernels (compiler/kernels.go): held to the kernel subset in every
+		// build, so the Metal emitter never meets a kernel it cannot compile.
+		kernelDiagnostics := analyzeKernels(tree.Root, tc)
+		model.Diagnostics = append(model.Diagnostics, kernelDiagnostics...)
+		if err := comp.gate("kernels", kernelDiagnostics, tree.Modules); err != nil {
+			return nil, err
+		}
 
 		return model, nil
 	})
@@ -637,6 +645,15 @@ func (comp Compilation) EmitLeanRoots(namespace string, roots []string) Stage[st
 			names[root] = true
 		}
 		return lean.Emit(model.Tree.Root, model.TypeChecker, namespace, names)
+	})
+}
+
+// EmitMetal compiles the program's kernels to Metal Shading Language
+// (docs/spec/56-kernels.md, codegen/metal). A program without kernels
+// yields an empty source.
+func (comp Compilation) EmitMetal() Stage[*metal.Result] {
+	return comp.Check().Then(func(model *SemanticModel) (*metal.Result, error) {
+		return metal.Emit(model.Tree.Root, model.TypeChecker)
 	})
 }
 

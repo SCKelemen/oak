@@ -310,6 +310,33 @@ window_sum: (src: []u8, at: u32): u32 {
 	}
 }
 
+// A target constant (docs/spec/92-ffi.md section 2.11) is a value the
+// target's C headers define, unknown to Oak: it extracts as an opaque
+// constant of its c.* scalar type, so a theorem about code that reads it
+// holds for every value (95-extraction.md section 3).
+func TestExtractionTargetConstant(t *testing.T) {
+	src := `
+CLOCK_MONOTONIC: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")
+BUFFER_BYTES: c.Size = c.const("BUFSIZ", "<stdio.h>")
+clock_id: (): c.Int = CLOCK_MONOTONIC
+`
+	out, err := extract(t, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"opaque CLOCK_MONOTONIC : Int32",
+		"def clock_id",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("extraction lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "BUFSIZ") || strings.Contains(out, "time.h") {
+		t.Fatalf("the C identifier or header leaked into the extraction:\n%s", out)
+	}
+}
+
 // f32 and f64 extract onto Lean's Float32 and Float: literals exactly by bit
 // pattern, the operators and comparisons as themselves, negation as the sign
 // flip, the conversion rows of section 11.3.4 onto toFloat/toFloat32/ofBits/
