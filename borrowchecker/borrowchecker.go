@@ -429,7 +429,7 @@ func (bc *BorrowChecker) parseTypeFromAST(typeExpr ast.Expression, env *typechec
 	// For primitive types
 	if ident, ok := typeExpr.(*ast.Identifier); ok {
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "u128":
 			return &typechecker.PrimitiveType{Name: ident.Value}
 		case "string":
 			return &typechecker.StringType{}

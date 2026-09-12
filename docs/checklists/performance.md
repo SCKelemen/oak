@@ -316,10 +316,11 @@ remains that a fact could elide" is a finding.
       a `[]u8` after its checksum is verified? (TB `message_header.zig`
       `extern struct`, `stdx.no_padding`) — Oak: `struct(packed)`,
       `static_assert(size_of/offset_of)` (`40-records.md` §6a–§6b), C
-      header asserts (`92-ffi.md` §2.6); no `u128`/`u256`
-      (`20-types.md`), no no-padding predicate, record views only for
-      JSON-derived fields (`71-codecs.md` §13a); the fixed-layout binary
-      codec is wanted (dbs note round 3 ask 9) — gap, class (a).
+      header asserts (`92-ffi.md` §2.6); `u128` (`20-types.md` §11, 16
+      bytes at 16) but no `u256`, no no-padding predicate, record views
+      only for JSON-derived fields (`71-codecs.md` §13a); the
+      fixed-layout binary codec is wanted (dbs note round 3 ask 9) —
+      gap, class (a).
 - [ ] **Bounded arrays and busy-bitset pools.** Can a fixed array carry
       its count as a refinement bounded by its capacity, and a pool hand
       out slots by index with acquire returning "none" when full? (TB

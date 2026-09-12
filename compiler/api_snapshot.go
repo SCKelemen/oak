@@ -742,6 +742,7 @@ func naturalTypeRepresentation(name string, expression ast.Expression, resolved 
 		"u16": {Size: 2, Alignment: 2}, "i16": {Size: 2, Alignment: 2},
 		"u32": {Size: 4, Alignment: 4}, "i32": {Size: 4, Alignment: 4}, "rune": {Size: 4, Alignment: 4}, "Bool": {Size: 4, Alignment: 4},
 		"u64": {Size: 8, Alignment: 8}, "i64": {Size: 8, Alignment: 8},
+		"u128": {Size: 16, Alignment: 16},
 	}
 	if options.IntSize == 32 {
 		fixed["int"], fixed["uint"] = fixed["i32"], fixed["u32"]

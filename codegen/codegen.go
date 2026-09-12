@@ -610,6 +610,11 @@ func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 	cg.write("typedef uint16_t u16;\n")
 	cg.write("typedef uint32_t u32;\n")
 	cg.write("typedef uint64_t u64;\n")
+	// u128 is the compiler's 128-bit unsigned integer (docs/spec/20-types.md
+	// section 11): 16 bytes at 16-byte alignment on every LP64 ABI. A C
+	// compiler without one leaves the name undefined, so a program that
+	// uses u128 fails to compile there rather than narrowing.
+	cg.write("#if defined(__SIZEOF_INT128__)\ntypedef unsigned __int128 u128;\n#endif\n")
 	cg.write("\n")
 	cg.write("typedef int8_t   i8;\n")
 	cg.write("typedef int16_t i16;\n")
@@ -1689,7 +1694,7 @@ func (cg *CodeGenerator) localContainerOf(expr ast.Expression) localContainer {
 
 // primitiveCasts maps primitive constructor names to their C cast targets.
 var primitiveCasts = map[string]string{
-	"u8": "u8", "u16": "u16", "u32": "u32", "u64": "u64",
+	"u8": "u8", "u16": "u16", "u32": "u32", "u64": "u64", "u128": "u128",
 	"i8": "i8", "i16": "i16", "i32": "i32", "i64": "i64",
 	"byte": "u8", "rune": "u32",
 	// f64(x: f32) is the one implicit floating-point move, an exact
@@ -2319,7 +2324,7 @@ var runtimeBuiltins = map[string]string{
 // them; the helper reads only v.len bytes and fails closed.
 func (cg *CodeGenerator) emitUtf8Helper(program *ast.Program) {
 	viewType := cg.emitViewType("u8")
-	cg.write("/* core_slice: view construction as a brace initializer (declaration\n   position); field order matches the view/span structs {base, len} */\n#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }\n\n/* bounds-checked owned-array indexing: out-of-range traps, never UB */\nstatic inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }\n#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])\n/* checked index in lvalue position: pool[ oak_lv_idx(i, len) ].field = v */\nstatic inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }\n\n/* checked shifts: a count reaching the operand width traps, never UB\n   (docs/spec/10-syntax.md section 3b); constant counts fold the check away */\n#define OAK_SHIFT_HELPERS(T, W) \\\n  static inline T oak_shl_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v << n); } \\\n  static inline T oak_shr_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v >> n); }\nOAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u) OAK_SHIFT_HELPERS(u64, 64u)\n\n/* total fixed-width arithmetic (docs/spec/20-types.md section 11.1, 90-backend.md\n   section 7): results wrap mod 2^N, computed in unsigned space so no C\n   promotion overflows; signed results come back through a union pun (defined\n   since C99 TC3). Division by zero traps; MIN / -1 wraps. Never UB. */\n#define OAK_ARITH_U(T) \\\n  static inline T oak_add_##T(T a, T b) { return (T)((u64)a + (u64)b); } \\\n  static inline T oak_sub_##T(T a, T b) { return (T)((u64)a - (u64)b); } \\\n  static inline T oak_neg_##T(T a) { return (T)(0u - (u64)a); } \\\n  static inline T oak_mul_##T(T a, T b) { return (T)((u64)a * (u64)b); } \\\n  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a / b); } \\\n  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a % b); }\n#define OAK_ARITH_I(T, U, MIN) \\\n  static inline T oak_pun_##T(U bits) { union { U from; T to; } pun; pun.from = bits; return pun.to; } \\\n  static inline T oak_add_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a + (u64)(U)b)); } \\\n  static inline T oak_sub_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a - (u64)(U)b)); } \\\n  static inline T oak_neg_##T(T a) { return oak_pun_##T((U)(0u - (u64)(U)a)); } \\\n  static inline T oak_mul_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a * (u64)(U)b)); } \\\n  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (a == MIN && b == -1) { return a; } return (T)(a / b); } \\\n  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (b == -1) { return 0; } return (T)(a % b); }\nOAK_ARITH_U(u8) OAK_ARITH_U(u16) OAK_ARITH_U(u32) OAK_ARITH_U(u64)\nOAK_ARITH_I(i8, u8, INT8_MIN) OAK_ARITH_I(i16, u16, INT16_MIN) OAK_ARITH_I(i32, u32, INT32_MIN) OAK_ARITH_I(i64, u64, INT64_MIN)\n#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)\n\n/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */\n")
+	cg.write("/* core_slice: view construction as a brace initializer (declaration\n   position); field order matches the view/span structs {base, len} */\n#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }\n\n/* bounds-checked owned-array indexing: out-of-range traps, never UB */\nstatic inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }\n#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])\n/* checked index in lvalue position: pool[ oak_lv_idx(i, len) ].field = v */\nstatic inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }\n\n/* checked shifts: a count reaching the operand width traps, never UB\n   (docs/spec/10-syntax.md section 3b); constant counts fold the check away */\n#define OAK_SHIFT_HELPERS(T, W) \\\n  static inline T oak_shl_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v << n); } \\\n  static inline T oak_shr_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v >> n); }\nOAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u) OAK_SHIFT_HELPERS(u64, 64u)\n\n/* total fixed-width arithmetic (docs/spec/20-types.md section 11.1, 90-backend.md\n   section 7): results wrap mod 2^N, computed in unsigned space so no C\n   promotion overflows; signed results come back through a union pun (defined\n   since C99 TC3). Division by zero traps; MIN / -1 wraps. Never UB. */\n#define OAK_ARITH_U(T) \\\n  static inline T oak_add_##T(T a, T b) { return (T)((u64)a + (u64)b); } \\\n  static inline T oak_sub_##T(T a, T b) { return (T)((u64)a - (u64)b); } \\\n  static inline T oak_neg_##T(T a) { return (T)(0u - (u64)a); } \\\n  static inline T oak_mul_##T(T a, T b) { return (T)((u64)a * (u64)b); } \\\n  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a / b); } \\\n  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a % b); }\n#define OAK_ARITH_I(T, U, MIN) \\\n  static inline T oak_pun_##T(U bits) { union { U from; T to; } pun; pun.from = bits; return pun.to; } \\\n  static inline T oak_add_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a + (u64)(U)b)); } \\\n  static inline T oak_sub_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a - (u64)(U)b)); } \\\n  static inline T oak_neg_##T(T a) { return oak_pun_##T((U)(0u - (u64)(U)a)); } \\\n  static inline T oak_mul_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a * (u64)(U)b)); } \\\n  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (a == MIN && b == -1) { return a; } return (T)(a / b); } \\\n  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (b == -1) { return 0; } return (T)(a % b); }\nOAK_ARITH_U(u8) OAK_ARITH_U(u16) OAK_ARITH_U(u32) OAK_ARITH_U(u64)\nOAK_ARITH_I(i8, u8, INT8_MIN) OAK_ARITH_I(i16, u16, INT16_MIN) OAK_ARITH_I(i32, u32, INT32_MIN) OAK_ARITH_I(i64, u64, INT64_MIN)\n#if defined(__SIZEOF_INT128__)\n/* u128: unsigned __int128 arithmetic is defined mod 2^128 by C itself; the\n   helpers keep the one shape (division by zero traps, shifts checked) */\nOAK_SHIFT_HELPERS(u128, 128u)\nstatic inline u128 oak_add_u128(u128 a, u128 b) { return a + b; }\nstatic inline u128 oak_sub_u128(u128 a, u128 b) { return a - b; }\nstatic inline u128 oak_neg_u128(u128 a) { return (u128)0 - a; }\nstatic inline u128 oak_mul_u128(u128 a, u128 b) { return a * b; }\nstatic inline u128 oak_div_u128(u128 a, u128 b) { if (b == 0) { __builtin_trap(); } return a / b; }\nstatic inline u128 oak_rem_u128(u128 a, u128 b) { if (b == 0) { __builtin_trap(); } return a % b; }\n#endif\n#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)\n\n/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */\n")
 	if programDefinesFunction(program, "utf8__valid") {
 		cg.write("/* is_valid_utf8: lowered to the standard library's vector validator utf8.valid\n   (stdlib/utf8.oak), which Oak.Utf8Blocks.program_valid proves decides Oak.Utf8Validity.Valid */\n")
 		cg.write(fmt.Sprintf("Bool %s( %s bytes );\n", cg.cFunctionName("utf8__valid"), viewType))
@@ -2549,6 +2554,22 @@ func (cg *CodeGenerator) emitAssertValueHelpers() {
 		cg.write("#else\n    oak_report(\"assertion failed (assert_ne; values need a hosted build)\", file, line);\n#endif\n")
 		cg.write("    __builtin_trap();\n  }\n}\n")
 	}
+	// u128 has no printf conversion: the message spells both values as
+	// two 64-bit hexadecimal halves.
+	cg.write("#if defined(__SIZEOF_INT128__)\n")
+	cg.write("static inline void oak_assert_eq_u128(u128 got, u128 want, const char *file, u32 line) {\n")
+	cg.write("  if (!(got == want)) {\n")
+	cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
+	cg.write("    fprintf(stderr, \"oak: assertion failed at %s:%u: got 0x%016llx%016llx, want 0x%016llx%016llx\\n\", file, (unsigned)line, (unsigned long long)(got >> 64), (unsigned long long)got, (unsigned long long)(want >> 64), (unsigned long long)want);\n")
+	cg.write("#else\n    oak_report(\"assertion failed (assert_eq; values need a hosted build)\", file, line);\n#endif\n")
+	cg.write("    __builtin_trap();\n  }\n}\n")
+	cg.write("static inline void oak_assert_ne_u128(u128 got, u128 want, const char *file, u32 line) {\n")
+	cg.write("  if (got == want) {\n")
+	cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
+	cg.write("    fprintf(stderr, \"oak: assertion failed at %s:%u: got 0x%016llx%016llx, want anything but 0x%016llx%016llx\\n\", file, (unsigned)line, (unsigned long long)(got >> 64), (unsigned long long)got, (unsigned long long)(want >> 64), (unsigned long long)want);\n")
+	cg.write("#else\n    oak_report(\"assertion failed (assert_ne; values need a hosted build)\", file, line);\n#endif\n")
+	cg.write("    __builtin_trap();\n  }\n}\n")
+	cg.write("#endif\n")
 	cg.write("static inline void oak_assert_eq_Bool(Bool got, Bool want, const char *file, u32 line) {\n")
 	cg.write("  if (!(got == want)) {\n")
 	cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
@@ -3568,7 +3589,7 @@ func methodIdentity(fn *ast.FunctionStatement) (string, bool) {
 func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 	if ident, ok := expr.(*ast.Identifier); ok {
 		switch ident.Value {
-		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f16", "bf16", "f8e4m3", "f8e5m2":
+		case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "u128", "f32", "f64", "f16", "bf16", "f8e4m3", "f8e5m2":
 			return ident.Value
 		case "string":
 			return "string"

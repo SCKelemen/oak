@@ -92,7 +92,7 @@ func isConstantExpression(expr ast.Expression, constants map[string]bool) bool {
 			return false
 		}
 		switch ident.Value {
-		case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "byte", "rune":
+		case "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "byte", "rune":
 			return isConstantExpression(e.Arguments[0])
 		}
 		if IsFoldedConversion(e) {

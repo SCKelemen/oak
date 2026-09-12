@@ -329,7 +329,8 @@ func KnownLibraryMember(library, member string) bool {
 // bits — docs/spec/20-types.md).
 var conversionPrimitives = map[string]int{
 	"u8": 8, "u16": 16, "u32": 32, "u64": 64,
-	"i8": 8, "i16": 16, "i32": 32, "i64": 64,
+	"u128": 128, // a source of trunc/saturating/checked only: nothing is wider
+	"i8":   8, "i16": 16, "i32": 32, "i64": 64,
 	// Floating-point rows (docs/spec/20-types.md section 11.3.4); the
 	// backend and interpreter branch on IsFloatName before treating a
 	// width as an integer width.

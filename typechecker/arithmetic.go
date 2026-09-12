@@ -24,7 +24,9 @@ func ArithmeticParts(name string) (prim, op, kind string, ok bool) {
 		return "", "", "", false
 	}
 	prim, op, kind = parts[0], parts[1], parts[2]
-	if _, isPrim := conversionPrimitives[prim]; !isPrim || IsFloatName(prim) || IsStorageFloatName(prim) {
+	if _, isPrim := conversionPrimitives[prim]; !isPrim || IsFloatName(prim) || IsStorageFloatName(prim) || prim == "u128" {
+		// The checked family stops at 64 bits: no u128_checked_add yet
+		// (docs/spec/20-types.md section 11).
 		return "", "", "", false
 	}
 	if !arithmeticOperations[op] || !arithmeticKinds[kind] {

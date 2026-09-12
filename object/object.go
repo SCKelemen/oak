@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/SCKelemen/oak/token"
+	"math/big"
 	"strconv"
 
 	"github.com/SCKelemen/oak/ast"
@@ -18,6 +19,42 @@ func (i *Integer) Inspect() string {
 }
 func (i *Integer) Kind() ObjectKind { return INTEGER }
 func (i *Integer) Type() ObjectType { return INTEGER_OBJ }
+
+// U128 is a value of the 128-bit unsigned integer type (docs/spec/20-types.md
+// section 11): the two 64-bit halves of its bit pattern. It is a distinct
+// object from Integer so that a path not taught the width fails on the
+// type rather than reading a truncated Value.
+type U128 struct {
+	Hi, Lo uint64
+}
+
+func (u *U128) Inspect() string    { return u.Big().String() }
+func (u *U128) Kind() ObjectKind   { return WIDE }
+func (u *U128) Type() ObjectType   { return U128_OBJ }
+func (u *U128) IsZero() bool       { return u.Hi == 0 && u.Lo == 0 }
+func (u *U128) Equal(o *U128) bool { return u.Hi == o.Hi && u.Lo == o.Lo }
+
+// Less is the unsigned ordering of two 128-bit values.
+func (u *U128) Less(o *U128) bool { return u.Hi < o.Hi || (u.Hi == o.Hi && u.Lo < o.Lo) }
+
+// Big is the mathematical value in [0, 2^128).
+func (u *U128) Big() *big.Int {
+	v := new(big.Int).SetUint64(u.Hi)
+	v.Lsh(v, 64)
+	return v.Or(v, new(big.Int).SetUint64(u.Lo))
+}
+
+var u128Mask = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 128), big.NewInt(1))
+
+// U128FromBig folds a mathematical value into the width: the low 128 bits
+// of its two's-complement pattern, which is the wrapping the operators
+// specify.
+func U128FromBig(v *big.Int) *U128 {
+	w := new(big.Int).And(v, u128Mask)
+	lo := new(big.Int).And(w, new(big.Int).SetUint64(^uint64(0))).Uint64()
+	hi := new(big.Int).Rsh(w, 64).Uint64()
+	return &U128{Hi: hi, Lo: lo}
+}
 
 type Boolean struct {
 	Value bool
@@ -387,6 +424,7 @@ type ObjectType string
 
 const (
 	INTEGER_OBJ      = "INTEGER"
+	U128_OBJ         = "U128"
 	FLOAT_OBJ        = "FLOAT"
 	BOOLEAN_OBJ      = "BOOLEAN"
 	STRING_OBJ       = "STRING"
@@ -418,6 +456,7 @@ const (
 	ARRAY
 	VECTOR
 	FLOAT
+	WIDE
 )
 
 var types = [...]string{
@@ -435,6 +474,7 @@ var types = [...]string{
 	ARRAY:        "ARRAY",
 	VECTOR:       "VECTOR",
 	FLOAT:        "FLOAT",
+	WIDE:         "U128",
 }
 
 func (kind ObjectKind) String() string {

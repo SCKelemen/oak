@@ -244,7 +244,29 @@ GADT-style constructors extend the same idea to constructor-specific result refi
 
 ## 11. Machine types
 
-Fixed-width integer types (`u8`..`u64`, `i8`..`i64`) have exact machine-width semantics. Target-width integer/pointer-sized types are distinct semantic types whose widths are supplied by the target.
+Fixed-width integer types (`u8`..`u64`, `u128`, `i8`..`i64`) have exact machine-width semantics. Target-width integer/pointer-sized types are distinct semantic types whose widths are supplied by the target.
+
+`u128` is the one width above the machine word: an unsigned 128-bit
+integer for checksums, identifiers, and the wide halves of a wire header
+(the storage engine's frame header; TigerBeetle's `u128` fields, noted in
+`docs/notes/tigerbeetle-2026-09.md`). It follows every rule of the other
+widths — `+`, `-`, `*` wrap mod `2^128`, `/` and `%` trap on zero, shifts
+by a count reaching 128 trap, ordering is unsigned — and has the same
+constructor and conversion vocabulary (§11.1): `u128(x)` widens from every
+unsigned type and admits every non-negative literal, including those above
+`2^63`; `u64_trunc_u128`, `u64_saturating_u128`, and `u64_checked_u128`
+(and the narrower unsigned targets) come back down. There is no `i128`, no
+`bits` reinterpretation at 128, and the checked arithmetic family (§11.1a)
+stops at 64 bits. In the C lowering `u128` is `unsigned __int128`: 16
+bytes at 16-byte alignment on every LP64 target Oak emits for, ratified by
+the emitted `sizeof`/`_Alignof` assertions (`40-records.md` §6a); a C
+compiler without `__SIZEOF_INT128__` leaves the type undefined, so a
+program using it fails to build there rather than narrowing. The
+interpreter computes every operator exactly and folds into the width; the
+Lean extraction has no 128-bit machine integer and reports a `u128`
+function as outside its subset (`95-extraction.md`). `std` provides
+`u128_pack(high, low)`, `u128_high(x)`, and `u128_low(x)` for the two
+`u64` halves a frame reads and writes.
 
 Mathematical proof integers are never silently substituted for machine integers. Overflow, conversion, division, and shift semantics must be specified for each machine operation.
 
@@ -301,8 +323,9 @@ the instantiation.
 ### 11.1 Explicit integer conversions
 
 Implicit conversion is limited to value-preserving widening within one
-signedness (constructor form: `i32(x: i8)`, `u64(x: u32)`; unsigned also
-widens into a strictly wider signed type). Every other move between machine
+signedness (constructor form: `i32(x: i8)`, `u64(x: u32)`, `u128(x: u64)`;
+unsigned also widens into a strictly wider signed type, of which there is
+none above `u64`). Every other move between machine
 integers is an explicit named conversion, `{target}_{op}_{source}`, and
 every operation is **total** with two's-complement semantics — the C
 lowering uses no implementation-defined conversions (signed results are
