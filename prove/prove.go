@@ -21,6 +21,10 @@ import (
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
+	"reflect"
+	"runtime"
+	"sync"
+	"sync/atomic"
 )
 
 // Status is where a theorem stands on the ladder.
@@ -58,8 +62,11 @@ type Result struct {
 	Problems []asm.Problem
 	// Syntax is the theorem serialized for the lowering written in Oak
 	// (asm.ExportSyntax), when it is in that lowering's subset.
-	Syntax   []uint32
-	fallback func() Result
+	Syntax []uint32
+	// LeafNames are the theorem's parameter leaves in the decider's name
+	// order, which the Oak lowering's counterexamples (leaf and bit) name.
+	LeafNames []string
+	fallback  func() Result
 }
 
 // SolverVerdict is what the Oak solver reports for one theorem: the
@@ -120,9 +127,40 @@ func TheoremsWith(model *compiler.SemanticModel, cases int, deferred bool) ([]Re
 		}
 	}
 	decls := declarationsOf(model.Tree.Root)
-	var results []Result
-	for _, theorem := range theorems {
-		results = append(results, decide(env, model.TypeChecker, functions, decls, theorem, cases, deferred))
+	// Each theorem is prepared in order (its domains through the checker
+	// and the interpreter), then decided — the enumeration or the bit-level
+	// rung — on a worker per CPU, since deciding reads shared state only.
+	// A theorem body that assigns a global keeps the whole file sequential.
+	preps := make([]prepared, len(theorems))
+	for i, theorem := range theorems {
+		preps[i] = prepare(env, model.TypeChecker, functions, decls, theorem, cases, deferred)
+	}
+	results := make([]Result, len(theorems))
+	workers := runtime.GOMAXPROCS(0)
+	if workers > len(theorems) {
+		workers = len(theorems)
+	}
+	if workers < 2 || writesGlobals(theorems, functions) {
+		for i := range preps {
+			results[i] = preps[i].run(model.TypeChecker, decls, functions)
+		}
+	} else {
+		var next atomic.Int64
+		var wg sync.WaitGroup
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					i := int(next.Add(1)) - 1
+					if i >= len(preps) {
+						return
+					}
+					results[i] = preps[i].run(model.TypeChecker, decls, functions)
+				}
+			}()
+		}
+		wg.Wait()
 	}
 	// A protocol's `eventually` entries are decided over its reachable
 	// states (prove/liveness.go), after the theorems.
@@ -355,47 +393,79 @@ func integers(low, high int64) []object.Object {
 }
 
 // decide runs the exhaustive decider on one theorem.
-func decide(env *object.Environment, tc *typechecker.TypeChecker, functions map[string]*ast.FunctionStatement, decls asm.Declarations, theorem *ast.FunctionStatement, cases int, deferred bool) Result {
+// A prepared theorem is decide's first half: what is computed through the
+// checker and the interpreter's loaded program before the case enumeration
+// or the bit-level rung. Preparation runs in declaration order; run, which
+// reads shared state only, runs on a worker (TheoremsWith).
+type prepared struct {
+	theorem  *ast.FunctionStatement
+	name     string
+	deferred bool
+	settled  *Result // decided during preparation
+	open     *Result // the domain was refused: the bit-level rung with this reason
+	fn       object.Object
+	domains  []domain
+	total    int
+	heavy    bool
+}
+
+func prepare(env *object.Environment, tc *typechecker.TypeChecker, functions map[string]*ast.FunctionStatement, decls asm.Declarations, theorem *ast.FunctionStatement, cases int, deferred bool) prepared {
 	name := theorem.Name.Value
-	fn, found := env.Get(name)
-	if !found {
-		return Result{Name: name, Status: Open, Detail: "the interpreter did not load the theorem"}
-	}
 	// A protocol obligation's row is folded into its invariant's before the
 	// deferred verdicts land (exploreInvariants), so it stays with the Go
 	// decider.
 	deferred = deferred && !strings.Contains(name, "__")
-	var domains []domain
-	total := 1
+	p := prepared{theorem: theorem, name: name, deferred: deferred, total: 1}
+	fn, found := env.Get(name)
+	if !found {
+		p.settled = &Result{Name: name, Status: Open, Detail: "the interpreter did not load the theorem"}
+		return p
+	}
+	p.fn = fn
 	for _, param := range theorem.Parameters {
 		// Size before materializing: a payload record of two u8 fields is
 		// 65536 values, and the product of several is refused here rather
 		// than built.
 		if typ := tc.ParseTypeExpression(param.Type); typ != nil {
-			if size, reason := domainSize(tc, env, typ); reason == "" && int64(total)*size > int64(cases) {
-				return bitLevel(deferred, tc, decls, theorem, functions, Result{Name: name, Status: Open,
-					Detail: fmt.Sprintf("the domain exceeds %d cases; stated for Lean", cases)})
+			if size, reason := domainSize(tc, env, typ); reason == "" && int64(p.total)*size > int64(cases) {
+				p.open = &Result{Name: name, Status: Open, Detail: fmt.Sprintf("the domain exceeds %d cases; stated for Lean", cases)}
+				return p
 			}
 		}
 		d, reason := domainOf(tc, env, param)
 		if reason != "" {
-			return bitLevel(deferred, tc, decls, theorem, functions, Result{Name: name, Status: Open, Detail: reason + "; stated for Lean"})
+			p.open = &Result{Name: name, Status: Open, Detail: reason + "; stated for Lean"}
+			return p
 		}
-		domains = append(domains, d)
-		total *= len(d.values)
-		if total > cases {
-			return bitLevel(deferred, tc, decls, theorem, functions, Result{Name: name, Status: Open,
-				Detail: fmt.Sprintf("the domain exceeds %d cases; stated for Lean", cases)})
+		p.domains = append(p.domains, d)
+		p.total *= len(d.values)
+		if p.total > cases {
+			p.open = &Result{Name: name, Status: Open, Detail: fmt.Sprintf("the domain exceeds %d cases; stated for Lean", cases)}
+			return p
 		}
+	}
+	p.heavy = loopHeavy(theorem, functions)
+	return p
+}
+
+// run is decide's second half: the bit-level rung when the domain was
+// refused or the body loops, otherwise the enumeration.
+func (p prepared) run(tc *typechecker.TypeChecker, decls asm.Declarations, functions map[string]*ast.FunctionStatement) Result {
+	if p.settled != nil {
+		return *p.settled
+	}
+	if p.open != nil {
+		return bitLevel(p.deferred, tc, decls, p.theorem, functions, *p.open)
 	}
 	// A body with a counted loop goes to the bit-level decider first: the
 	// unrolled loop is one term there and the interpreter's costly case
 	// (a 64-step product evaluated 65536 times). Enumeration remains the
 	// answer when the bit level does not apply.
-	if loopHeavy(theorem, functions) {
-		r := bitLevel(deferred, tc, decls, theorem, functions, Result{Name: name, Status: Open})
+	if p.heavy {
+		r := bitLevel(p.deferred, tc, decls, p.theorem, functions, Result{Name: p.name, Status: Open})
 		if r.Status == Pending {
 			// Enumeration stands when the solver cannot decide.
+			name, fn, domains, total := p.name, p.fn, p.domains, p.total
 			r.fallback = func() Result { return enumerate(name, fn, domains, total) }
 			return r
 		}
@@ -403,7 +473,122 @@ func decide(env *object.Environment, tc *typechecker.TypeChecker, functions map[
 			return r
 		}
 	}
-	return enumerate(name, fn, domains, total)
+	return enumerate(p.name, p.fn, p.domains, p.total)
+}
+
+// decide settles one theorem: prepare, then run.
+func decide(env *object.Environment, tc *typechecker.TypeChecker, functions map[string]*ast.FunctionStatement, decls asm.Declarations, theorem *ast.FunctionStatement, cases int, deferred bool) Result {
+	return prepare(env, tc, functions, decls, theorem, cases, deferred).run(tc, decls, functions)
+}
+
+// writesGlobals reports whether any theorem, or a function its body names,
+// assigns to a name the function does not declare itself — a write to the
+// shared program state, which forbids deciding theorems in parallel. The
+// callee set is the same over-approximation loopHeavy uses (every function
+// whose name occurs in the text), and any identifier in an indexed
+// assignment's target counts as its base.
+func writesGlobals(theorems []*ast.FunctionStatement, functions map[string]*ast.FunctionStatement) bool {
+	checked := map[string]bool{}
+	var check func(fn *ast.FunctionStatement) bool
+	check = func(fn *ast.FunctionStatement) bool {
+		if fn == nil || fn.Name == nil || fn.Body == nil || checked[fn.Name.Value] {
+			return false
+		}
+		checked[fn.Name.Value] = true
+		locals := map[string]bool{}
+		for _, param := range fn.Parameters {
+			if param != nil && param.Name != nil {
+				locals[param.Name.Value] = true
+			}
+		}
+		if fn.Receiver != nil && fn.Receiver.Name != nil {
+			locals[fn.Receiver.Name.Value] = true
+		}
+		walkAST(fn.Body, func(n ast.Node) {
+			switch d := n.(type) {
+			case *ast.VariableDeclaration:
+				if d.Name != nil {
+					locals[d.Name.Value] = true
+				}
+			case *ast.BindingPattern:
+				if d.Name != nil {
+					locals[d.Name.Value] = true
+				}
+			}
+		})
+		writes := false
+		walkAST(fn.Body, func(n ast.Node) {
+			switch a := n.(type) {
+			case *ast.AssignmentStatement:
+				if a.Name != nil && !locals[a.Name.Value] {
+					writes = true
+				}
+			case *ast.IndexAssignmentStatement:
+				walkAST(a.Target, func(m ast.Node) {
+					if id, isIdent := m.(*ast.Identifier); isIdent && !locals[id.Value] {
+						writes = true
+					}
+				})
+			}
+		})
+		if writes {
+			return true
+		}
+		text := fn.Body.String()
+		for name, callee := range functions {
+			if !checked[name] && strings.Contains(text, name) && check(callee) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, theorem := range theorems {
+		if check(theorem) {
+			return true
+		}
+	}
+	return false
+}
+
+// walkAST visits every node under root in depth-first order, by reflection
+// over the node structs' exported fields (pointers, interfaces and slices
+// of nodes); tokens and trivia are not nodes and are skipped.
+func walkAST(root ast.Node, visit func(ast.Node)) {
+	if root == nil {
+		return
+	}
+	walkValue(reflect.ValueOf(root), visit)
+}
+
+var tokenType = reflect.TypeOf(token.Token{})
+
+func walkValue(v reflect.Value, visit func(ast.Node)) {
+	switch v.Kind() {
+	case reflect.Interface, reflect.Ptr:
+		if v.IsNil() {
+			return
+		}
+		if v.CanInterface() {
+			if n, ok := v.Interface().(ast.Node); ok {
+				visit(n)
+			}
+		}
+		walkValue(v.Elem(), visit)
+	case reflect.Struct:
+		if v.Type() == tokenType {
+			return
+		}
+		for i := 0; i < v.NumField(); i++ {
+			if !v.Type().Field(i).IsExported() {
+				continue
+			}
+			walkValue(v.Field(i), visit)
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			walkValue(v.Index(i), visit)
+		}
+	}
 }
 
 // enumerate runs the theorem on every element of its parameter domains.
@@ -493,11 +678,11 @@ func bitLevel(deferred bool, tc *typechecker.TypeChecker, decls asm.Declarations
 		return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + reason + ")"}
 	}
 	fallback := Result{Name: open.Name, Status: Open, Detail: open.Detail}
-	syntax, _, inSubset := asm.ExportSyntax(stated, callees)
+	syntax, leafNames, _, inSubset := asm.ExportSyntax(stated, callees, decls)
 	if !inSubset {
-		syntax = nil
+		syntax, leafNames = nil, nil
 	}
-	return Result{Name: open.Name, Status: Pending, Problems: problems, Syntax: syntax, fallback: func() Result { return fallback }}
+	return Result{Name: open.Name, Status: Pending, Problems: problems, Syntax: syntax, LeafNames: leafNames, fallback: func() Result { return fallback }}
 }
 
 // ResolvePending settles the pending results from the Oak solver's
@@ -515,9 +700,14 @@ func ResolvePending(results []Result, verdicts map[string]SolverVerdict, goDecid
 		settled := Result{Name: r.Name}
 		switch {
 		case has && v.Lowered && v.Status == 0:
-			settled = Result{Name: r.Name, Status: Decided, Detail: fmt.Sprintf("at the bit level (%d BDD nodes; lowered and decided in Oak)", v.Nodes), Order: "interleaved", Nodes: v.Nodes}
-		case has && v.Lowered && v.Status == 1 && len(r.Problems) > 0:
-			settled = Result{Name: r.Name, Status: Refuted, Detail: "counterexample " + r.Problems[0].Counterexample(v.Vars) + " (lowered and decided in Oak)"}
+			order := []string{"interleaved", "blocks", "control"}[v.Winner%3]
+			label := ""
+			if order != "interleaved" {
+				label = ", " + map[string]string{"blocks": "parameters in blocks", "control": "control bits first"}[order]
+			}
+			settled = Result{Name: r.Name, Status: Decided, Detail: fmt.Sprintf("at the bit level (%d BDD nodes%s; lowered and decided in Oak)", v.Nodes, label), Order: order, Nodes: v.Nodes}
+		case has && v.Lowered && v.Status == 1:
+			settled = Result{Name: r.Name, Status: Refuted, Detail: "counterexample " + leafCounterexample(r.LeafNames, v.Vars) + " (lowered and decided in Oak)"}
 		case has && v.Status == 0 && v.Winner >= 0 && v.Winner < len(r.Problems):
 			order := r.Problems[v.Winner].Order
 			label := ""
@@ -542,6 +732,24 @@ func ResolvePending(results []Result, verdicts map[string]SolverVerdict, goDecid
 		results[i] = settled
 	}
 	return results
+}
+
+// leafCounterexample renders the Oak lowering's witness — the leaf bits set
+// on a path to the failing root, each as leaf * 64 + bit — over the
+// theorem's leaves, every unset bit zero.
+func leafCounterexample(leafNames []string, setBits []uint32) string {
+	values := make([]uint64, len(leafNames))
+	for _, lb := range setBits {
+		leaf, bit := int(lb/64), lb%64
+		if leaf < len(values) {
+			values[leaf] |= uint64(1) << bit
+		}
+	}
+	parts := make([]string, 0, len(leafNames))
+	for i, name := range leafNames {
+		parts = append(parts, fmt.Sprintf("%s=%d", name, values[i]))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // GoDecision runs the Go decider on the named theorem: the cross-check of

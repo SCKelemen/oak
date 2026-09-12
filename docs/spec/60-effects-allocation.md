@@ -322,8 +322,10 @@ direct argument to another such function whose parameter does the same
 compared — and every capture is a parameter or annotated local of scalar
 type (fixed-width and platform integers, `Bool`, `f32`, `f64`), of type
 `string`, a view or span of a scalar, or a plain-data record or sum type
-(non-generic, fields and payloads recursively of these types; no `Buffer`
-field, no packed layout), that the literal does not rebind (a store
+(fields and payloads recursively of these types; no `Buffer` field, no
+packed layout), including a generic instantiation whose arguments are
+themselves capturable (`Option[u32]`, `Result[u32, Overflow]`,
+`Ring[u8, 4]`), that the literal does not rebind (a store
 through a captured span is a write through the borrow and stays allowed).
 A literal bound to a local (`g := fn(...)`) and passed exactly once as a
 call argument, with neither it nor any captured name assigned anywhere in

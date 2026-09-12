@@ -29,7 +29,10 @@ func (ev *termEvaluator) numbered(t *term) bool {
 }
 
 func (ev *termEvaluator) number(t *term) {
-	if t == nil || ev.numbered(t) {
+	// Constants are not numbered: they cost nothing to evaluate, and a
+	// constant term may be shared between theorems (trapPath), which
+	// theorems decided in parallel must not write to.
+	if t == nil || t.kind == termConst || ev.numbered(t) {
 		return
 	}
 	ev.terms = append(ev.terms, t)
@@ -53,7 +56,7 @@ func (ev *termEvaluator) evaluate(t *term, env map[string]uint64) uint64 {
 }
 
 func (ev *termEvaluator) eval(t *term, env map[string]uint64) uint64 {
-	if !ev.numbered(t) {
+	if t.kind == termConst || !ev.numbered(t) {
 		// A term outside the numbered roots: evaluated without the memo.
 		return t.evalUncached(env, ev)
 	}

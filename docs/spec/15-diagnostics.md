@@ -365,6 +365,16 @@ All human-facing source locations should be able to project to:
 A renderer must not estimate a range from byte length when exact source spans are
 available.
 
+The parser owns the position of every syntax error. A token that cannot
+begin a statement — an extra `}` after a function body, a stray `)` — is
+reported at that token by the parser (`unexpected '}': no block is open
+here`), and no statement without an expression reaches a later phase: the
+checker's "nil expression encountered (parser error)" is an internal
+inconsistency (§13), never the first report of a syntax mistake. Found
+when an unbalanced brace in a standard-library module surfaced only as
+that positionless message in the lowering stage
+(`parser/unbalanced_brace_test.go`).
+
 ## 11. Determinism
 
 Given the same source, compiler version, target options, and diagnostic mode,
