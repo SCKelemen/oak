@@ -49,12 +49,21 @@ targets, and a build must work from any developer machine.
 Every build is a cross build; the host is only the default target. A
 **target** is an operating system and an architecture spelled `os/arch`
 as Go spells them: `linux/arm64`, `linux/amd64`, `linux/riscv64`,
-`darwin/arm64`, `darwin/amd64`, and the operating-system-less
-`freestanding/{arm64,amd64,riscv64}`. The set is closed and every member is
-LP64 — 32-bit `int`, 64-bit `long` and pointers — the one C data model the
-backend assumes (`92-ffi.md` §2.4; `Oak.Target.supported_lp64`). The target
-comes from `-target`, else `OAKOS`/`OAKARCH` (each defaulting to the host's
-component, as `GOOS`/`GOARCH` do), else the host.
+`darwin/arm64`, `darwin/amd64`, the operating-system-less
+`freestanding/{arm64,amd64,riscv64}` (a kernel, a hypervisor, a 64-bit
+microcontroller), and the 32-bit microcontroller members
+`freestanding/arm` (Cortex-M, Thumb) and `freestanding/riscv32`. The set is
+closed; the 64-bit members are LP64 and the two 32-bit members ILP32 —
+the two C data models `92-ffi.md` §2.4 admits — and the target's data
+model decides Oak's machine-sized `int`, `uint`, `ptr`, `uptr`
+(`Oak.Target.dataModel_lp64_or_ilp32`, `int_bits_32`, `ptr_bits`). The
+target comes from `-target`, else `OAKOS`/`OAKARCH` (each defaulting to the
+host's component, as `GOOS`/`GOARCH` do), else the host. A **processor**
+(`-cpu`, else `OAKCPU`, else the target's default) is passed to the C
+compiler as `-mcpu`: `cortex_m0`, `cortex_m3`, `cortex_m7`, `cortex_m33`,
+… for Cortex-M (default `cortex_m4`); `generic_rv32`/`generic_rv64` — soft
+float, matching the companion object — for freestanding RISC-V; the
+toolchain baseline for hosted targets (`Oak.Target.defaultCPU`).
 
 The compiler emits the same C translation unit for every target; what the
 target decides is:
@@ -92,6 +101,22 @@ target decides is:
   any distribution); Darwin never does; a freestanding target compiles to
   a relocatable object (`name.o`) the user links with their own startup.
   `framework` manifest lines apply to Darwin targets, not Darwin hosts.
+
+**Freestanding builds.** The object needs no libc: `<math.h>` is included
+only when hosted (the float code needs `signbit`, a compiler builtin
+otherwise; the transcendental functions are Oak code in the standard
+library), asserts trap instead of printing, and target constants
+(`c.const`) are refused. What the object still references is the
+compiler's runtime library — `__aeabi_*`, `__udivdi3`, `memset`, the
+builtins every C compiler emits — which the final link supplies
+(compiler-rt from zig, libgcc from a GNU toolchain) beside the kernel's or
+firmware's own startup and linker script. `compiler/e2e_mcu_test.go` is
+the shape: the Oak object, a vector table or `_start`, a UART, linked and
+run under `qemu-system-arm -M mps2-an385` (Cortex-M3) and
+`qemu-system-riscv32 -M virt`, printing what `oak_main` returned. What a
+freestanding program cannot yet do is allocate or print through Oak's own
+runtime; that is the runtime-in-Oak item, and its consumer is now
+concrete.
 
 `oak run` executes on the host and refuses a foreign target; `oak install
 -target` places the executable under `$OAKBIN/<os>_<arch>/`, as `go install`
@@ -184,6 +209,12 @@ When safety is not proved, safe Oak must retain a defined check/failure path rat
 ## 9. Function values/closures
 
 A plain function value may lower to a function pointer.
+
+A function-typed record field (`Step: type = struct { run: (u32) -> u32
+effects { } }`) is a plain function pointer member, pointer-sized and
+pointer-aligned on the recorded LP64 target model and asserted like every
+other field; a record literal stores the named function's C symbol. No
+closure environment is ever stored (ml F4, the captured step).
 
 A capturing closure requires an explicit environment representation whose storage lifetime has been established by ownership/effect analysis.
 

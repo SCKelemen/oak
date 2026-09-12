@@ -551,7 +551,11 @@ func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 	// point, so every other program stays freestanding.
 	usesFloats := programUsesFloats(program)
 	if usesFloats {
-		cg.write("#include <math.h>\n")
+		// <math.h> is a hosted header; the emitted float code needs only
+		// signbit from it (the transcendental functions are Oak code in the
+		// standard library), so a freestanding build (docs/spec/90-backend.md
+		// §2a) takes the compiler's builtin and stays free of libm.
+		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n#include <math.h>\n#else\n#ifndef signbit\n#define signbit(x) __builtin_signbit(x)\n#endif\n#endif\n")
 		cg.write("#include <float.h>\n")
 		// Every operation rounds to its own type: no excess intermediate
 		// precision (docs/spec/20-types.md section 11.3.3). A target that

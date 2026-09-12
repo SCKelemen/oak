@@ -292,7 +292,11 @@ certifies the decoded target under the live table), and
 (`rup_stream_check_spec`: on every layout the decoder hands over, the
 extraction returns exactly `CertifiedStream.check`) and composes them:
 `rup_text_check_sound` — whenever the extracted `rup_text_check` accepts
-a pair of texts, the model's layout of those texts is unsatisfiable. The
-chain from the extracted program to `check_sound` is closed; what remains
-is the extractor's and the compiler's fidelity to the binary, covered by
-the extraction lane's tests and the differential witnesses.
+a pair of texts, the model's layout of those texts is unsatisfiable — and
+its string-level corollary `rup_text_check_sound_text`, the same claim
+over `String`s with the model's `OakText.layout` in the conclusion
+(through `byteArray_toList_eq_data_toList`, the `ByteArray.toList` data
+lemma core does not state). The chain from the extracted program to
+`check_sound` is closed at both levels; what remains is the extractor's
+and the compiler's fidelity to the binary, covered by the extraction
+lane's tests and the differential witnesses.

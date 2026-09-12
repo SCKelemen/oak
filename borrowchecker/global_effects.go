@@ -21,6 +21,10 @@ func (bc *BorrowChecker) collectGlobalWrites(program *ast.Program, env *typechec
 		case *ast.VariableDeclaration:
 			if array, ok := env.CheckedDeclarationType(node).(*typechecker.ArrayType); ok && !array.IsSlice && !array.IsSpan {
 				bc.globalOwners[node.Name.Value] = true
+				// A top-level owner is visible to every function, above or
+				// below its declaration (ml F24): register it before the
+				// walk, which re-registers it in place.
+				bc.ownerStates[node.Name.Value] = Free
 			}
 		case *ast.FunctionStatement:
 			functions[node.Name.Value] = node

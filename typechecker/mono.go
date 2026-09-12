@@ -467,6 +467,16 @@ func (tc *TypeChecker) instantiateRecordTemplate(template *ast.ADTType, args []T
 		tc.recordInstantiationArgs = make(map[string]RecordInstantiation)
 	}
 	tc.recordInstantiationArgs[mangled] = RecordInstantiation{Template: template.Name.Value, Args: append([]Type(nil), args...)}
+	// An instantiation of a region record carries the template's regions:
+	// its region parameters were erased before the state (or any other)
+	// argument was applied, so Node_Realized borrows exactly as Node[R, S]
+	// declares (docs/spec/112-protocols.md section 5a with 50-borrowing.md
+	// section 8c; ml F7).
+	if info := tc.regions(); info != nil {
+		if rec, isRegionRecord := info.records[template.Name.Value]; isRegionRecord {
+			info.records[mangled] = rec
+		}
+	}
 	return instantiated
 }
 

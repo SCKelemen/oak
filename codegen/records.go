@@ -88,6 +88,13 @@ func (cg *CodeGenerator) naturalFieldRepresentation(name string, typeExpr ast.Ex
 		}
 		return semir.RecordFieldRepresentation{}, false
 	}
+	// A function-typed field is a plain function pointer (docs/spec/90-
+	// backend.md section 9): pointer-sized on the recorded LP64 target
+	// model, the captured step of a record (ml F4); no closure environment
+	// is ever stored.
+	if _, isFn := typeExpr.(*ast.FunctionTypeExpression); isFn {
+		return semir.RecordFieldRepresentation{Name: name, Size: 8, Alignment: 8}, true
+	}
 	// View and span fields are the {base, len} structs the backend emits: a
 	// pointer and a u32 on the recorded LP64 target model, placed by the
 	// natural layout (docs/spec/92-ffi.md section 2.4); the emitted
@@ -249,6 +256,10 @@ func (cg *CodeGenerator) emitRecordTypeDef(typeName string, recordLit *ast.Recor
 		memberAlign := ""
 		if field.Align != 0 {
 			memberAlign = fmt.Sprintf(" __attribute__((aligned(%d)))", field.Align)
+		}
+		if fn, isFn := field.Value.(*ast.FunctionTypeExpression); isFn {
+			cg.write(fmt.Sprintf("  %s%s;\n", cg.cFunctionPointer(fn, cIdent(field.Name)), memberAlign))
+			continue
 		}
 		cg.write(fmt.Sprintf("  %s %s%s;\n", fieldTypes[i], cIdent(field.Name), memberAlign))
 	}
