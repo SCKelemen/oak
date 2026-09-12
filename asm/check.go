@@ -235,6 +235,16 @@ type checker struct {
 	// resultIndirect: the result is written through x8.
 	resultRegs     int
 	resultIndirect bool
+	// The derived-span idiom (subslice): `cmp wS, wL; b.hi <trap>` proves
+	// wS <= wL (leFacts[S] = L); `sub wT, wL, wS` under it makes wT = wL - wS
+	// (diffFacts[T]); `cmp wN, wT; b.hi <trap>` proves wN <= wL - wS
+	// (subFacts[N]); then `add xD, xB, wS, uxtw #s` over the span at xB with
+	// length wL derives the span at xD of length wN: every index i < wN has
+	// wS + i < wL. The facts die with a write to any register involved, at
+	// labels, and at calls.
+	leFacts   map[int]int
+	diffFacts map[int]diffFact
+	subFacts  map[int]subFact
 	// The label fixpoint: assumed guard states entering each label (nil on
 	// the first, optimistic pass), the meet of the states arriving there
 	// during this pass, and the conservative fallback that forgets all.
@@ -293,6 +303,10 @@ type spanParam struct {
 // spanFact is the live knowledge about a bound span base register. hasMin
 // holds after a dominating guard `cmp wL, #N` + `b.lo <fail>`: on the
 // fall-through path len >= N, so offsets below N*elem are in bounds.
+type diffFact struct{ len, start int }
+
+type subFact struct{ start, len int }
+
 type compositeParam struct {
 	reg      int
 	regs     int
@@ -675,6 +689,9 @@ func (c *checker) walk() {
 		c.regions[8] = region{size: c.fn.Composites[typeText(c.fn.Signature.ReturnType)].Size, writable: true}
 	}
 	c.frameAddrs = map[int]int64{}
+	c.leFacts = map[int]int{}
+	c.diffFacts = map[int]diffFact{}
+	c.subFacts = map[int]subFact{}
 	c.labelDisp = map[string]int64{}
 	c.pendingDisp = map[string]int64{}
 	c.labels = map[string]bool{}
@@ -797,6 +814,9 @@ func (c *checker) forgetGuards() {
 	c.pendingCmp = cmpFact{}
 	c.idxFacts = map[int]idxFact{}
 	c.frameAddrs = map[int]int64{}
+	c.leFacts = map[int]int{}
+	c.diffFacts = map[int]diffFact{}
+	c.subFacts = map[int]subFact{}
 }
 
 // instruction checks one instruction and reports whether it ends control.
@@ -878,6 +898,15 @@ func (c *checker) instruction(instr Instruction) bool {
 		// a span (Oak.Assembler.index_access).
 		if guard.valid && (instr.Cond == "hs" || instr.Cond == "cs") {
 			c.idxFacts[guard.left] = idxFact{boundReg: guard.rightReg, bound: guard.imm}
+		}
+		// `cmp wS, wL` then `b.hi trap`: the fall-through path knows
+		// wS <= wL; against a difference register wT = wL - wS this is the
+		// subslice count bound wN <= wL - wS.
+		if guard.valid && guard.rightReg >= 0 && instr.Cond == "hi" {
+			c.leFacts[guard.left] = guard.rightReg
+			if diff, isDiff := c.diffFacts[guard.rightReg]; isDiff {
+				c.subFacts[guard.left] = subFact{start: diff.start, len: diff.len}
+			}
 		}
 		return false
 	case "retaa", "retab":
@@ -1107,6 +1136,7 @@ func (c *checker) instruction(instr Instruction) bool {
 		return false
 	}
 	c.write(instr, dest)
+	c.deriveSpan(instr, dest, regs)
 	if instr.Mnemonic == "mov" && len(regs) == 2 && len(instr.Operands) == 2 {
 		if _, isReg := instr.Operands[1].(Register); isReg {
 			c.aliasSpan(dest, regs[1])
@@ -1287,6 +1317,72 @@ func (c *checker) forgetRegisterFacts(num int) {
 	}
 	delete(c.frameAddrs, num)
 	delete(c.regions, num)
+	delete(c.leFacts, num)
+	for reg, bound := range c.leFacts {
+		if bound == num {
+			delete(c.leFacts, reg)
+		}
+	}
+	delete(c.diffFacts, num)
+	for reg, fact := range c.diffFacts {
+		if fact.len == num || fact.start == num {
+			delete(c.diffFacts, reg)
+		}
+	}
+	delete(c.subFacts, num)
+	for reg, fact := range c.subFacts {
+		if fact.len == num || fact.start == num {
+			delete(c.subFacts, reg)
+		}
+	}
+}
+
+// deriveSpan advances the subslice idiom: `sub wT, wL, wS` under wS <= wL
+// records wT = wL - wS; `add xD, xB, wS, uxtw #s` over a span at xB with
+// length wL, with some wN proven <= wL - wS and s the element size's log2,
+// derives the span at xD whose length registers are those wN.
+func (c *checker) deriveSpan(instr Instruction, dest Register, regs []Register) {
+	switch instr.Mnemonic {
+	case "sub":
+		if dest.Class != ClassW || len(instr.Operands) != 3 {
+			return
+		}
+		l, okL := instr.Operands[1].(Register)
+		s, okS := instr.Operands[2].(Register)
+		if !okL || !okS || l.Class != ClassW || s.Class != ClassW || dest.Num == l.Num || dest.Num == s.Num {
+			return
+		}
+		if bound, isLE := c.leFacts[s.Num]; isLE && bound == l.Num {
+			c.diffFacts[dest.Num] = diffFact{len: l.Num, start: s.Num}
+		}
+	case "add":
+		if dest.Class != ClassX || len(instr.Operands) != 3 {
+			return
+		}
+		base, okB := instr.Operands[1].(Register)
+		ext, okE := instr.Operands[2].(Extended)
+		if !okB || !okE || base.Class != ClassX || ext.Kind != "uxtw" || ext.Reg.Class != ClassW || dest.Num == base.Num {
+			return
+		}
+		fact, isSpan := c.spans[base.Num]
+		if !isSpan || int64(1)<<uint(ext.Amount) != fact.elem {
+			return
+		}
+		lens := map[int]bool{}
+		primary := -1
+		for n, sub := range c.subFacts {
+			if sub.start == ext.Reg.Num && fact.holdsLen(sub.len) {
+				lens[n] = true
+				if primary < 0 || n < primary {
+					primary = n
+				}
+			}
+		}
+		if primary < 0 {
+			return
+		}
+		c.spans[dest.Num] = &spanFact{lenReg: primary, elem: fact.elem, writable: fact.writable, lenRegs: lens}
+	}
 }
 
 // aliasSpan records a register move that copies a span's base or length:

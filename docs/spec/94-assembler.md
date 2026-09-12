@@ -1063,10 +1063,40 @@ backend. Executed (`TestE2ENativeNestedRecords`): the corpus's
 record passed on and copied out, a histogram record with a `[4]u32` field
 walked by a loop index, and a field of a call's result — natively against
 the C backend and the portable realization.
-Next increments: the verifier's frame addresses and record locals (so
-array and record bodies are proven, not trusted), `break` as a second loop
-exit in the recognizer, `subslice`/local span variables, and arrays of
-records.
+**Ninth increment — `subslice` and local spans.** `subslice(v, start, n)`
+lowers to the C helper's exact check and derivation: `cmp wS, wL; b.hi
+trap` (start > len traps), `sub wT, wL, wS`, `cmp wN, wT; b.hi trap`
+(n > len − start traps), `add xD, xB, wS, uxtw #s`, `mov wD', wN` — the
+derived pair {base + start·elem, n}, bounds typed `u32`. A local span or
+view (`field: []u8 = subslice(v, start, n)`, `w: []u8 = v`) holds its pair
+in two callee-saved registers, scoped like any local, so it survives calls
+and is walked, stored through, forwarded, and re-sliced exactly like a
+parameter; a `subslice` in argument position takes scratch registers. The
+checker gained the derived-span idiom as three facts: `cmp wS, wL; b.hi
+<trap>` proves wS ≤ wL for a span's length register, `sub wT, wL, wS` under
+it makes wT = wL − wS, `cmp wN, wT; b.hi <trap>` proves wN ≤ wL − wS, and
+`add xD, xB, wS, uxtw #s` over the span at xB (with s the element size's
+log2) then creates the span fact at xD whose length registers are every
+such wN — so every index below it stays below the original length. The
+facts die with a write to any register involved, at labels, and at calls;
+the original span, its writability, and every other rule are untouched
+(`TestCheckerSubslice`: three accepted shapes, six refusals — a missing
+start or count check, the wrong scale, a rewritten start, a store through
+a derived view, a guard against an unrelated register). Lean lemmas for
+the rules added since the frame-array idiom (frame arrays, record regions,
+the derived span) are pending — Lean is not installed on the development
+host — and are listed as proof debt in `docs/spec/STATUS.md`. Executed
+(`TestE2ENativeSubslice`): a tokenizer-like walk splitting a byte view at
+zero bytes into local views summed by a leaf, a span re-sliced twice and
+written through, an empty subslice at the end, a local view copied from a
+parameter, and a subslice past the end trapping in both realizations.
+Array literals now store element by element (a long literal no longer
+exhausts the scratch registers).
+Next increments: the verifier's frame addresses, record locals, and
+derived spans (so array, record, and subslice bodies are proven, not
+trusted), `break` as a second loop exit in the recognizer, arrays of
+records, and the slicing syntax `v[lo:hi]` once the C backend lowers
+`len` over it.
 
 
 
