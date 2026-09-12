@@ -94,6 +94,9 @@ import Oak.Stdlib.VarintLaws
 import Oak.Stdlib.SortLaws
 import Oak.Stdlib.TensorLaws
 import Oak.Stdlib.PdqsortLaws
+import Oak.Stdlib.PdqsortWindows
+import Oak.Stdlib.PdqsortHelpers
+import Oak.Stdlib.PdqsortSorted
 import Oak.Stdlib.EncodingLaws
 import Oak.Stdlib.Base64Laws
 import Oak.Stdlib.PercentLaws
