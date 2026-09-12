@@ -1463,7 +1463,33 @@ build fails in the sandbox at its manifest step on this host. The
 generation and build steps are in `spec/lean-sail/README.md`; the Go test
 builds the project when the export is present and skips otherwise.
 
-Still to come in this lane: F/D under the LP64D contract,
+**F and D under LP64D (landed).** The floating-point file is a register
+class of its own (`f0`–`f31`, `ft*`, `fs*`, `fa*`); the generated table
+gains riscv-opcodes' `rv_f`, `rv64_f`, `rv_d`, `rv64_d` (127 encodings in
+all), with the `rs3` field of the fused multiply-adds and the `rm` field
+of the arithmetic and conversions — a trailing rounding-mode operand
+(`rne`, `rtz`, `rdn`, `rup`, `rmm`, `dyn`) or, absent, `dyn` as GNU as
+encodes it, and `rne` for the three exact conversions (`fcvt.d.w`,
+`fcvt.d.wu`, `fcvt.d.s`) as GNU as encodes those. The contract is LP64D:
+`f32`/`f64` parameters in `fa0`–`fa7` in declaration order independently
+of the integer file, the result in `fa0` (`Oak.RiscV.lp64dBinding`,
+`lp64dBinding_kinds`, and distinctness decided exhaustively for every
+list of kinds up to the contract's width); `fs0`–`fs11` carry the
+save/restore-from-the-same-slot obligation through `fsd`/`fld` on the sp
+frame; `ft0`–`ft11` and the `fa` registers are clobberable; floating-point
+memory is frame memory only. A unit touching the floating-point file is
+checked and *trusted* — the verifier's terms are integers — and it needs
+an lp64d toolchain: the hosted RISC-V targets carry it (their companion
+object declares lp64d), and the stitcher refuses such a unit for the
+freestanding RISC-V target, whose default processor is soft-float, naming
+the alternative. Every F/D mnemonic agrees with `riscv64-elf-as
+-march=rv64imfd -mabi=lp64d`, and the QEMU and Sail differentials carry an
+`f64` unit (`fmul`, `fadd`, `fsub`, `fdiv`, `fsgnjx`, `fsqrt`, constants
+through `fmv.d.x`) whose expected results are Go's IEEE-754 arithmetic:
+both machines agree on every input, subnormal and overflowing ones
+included; the harnesses enable the FPU (`mstatus.FS`) before calling in.
+
+Still to come in this lane:
 compressed encodings (RVC changes the label arithmetic), the RVWMO
 instantiation of `MemoryOrder.lean`, the sail-riscv bridge (the Sail C
 emulator as a second oracle, the Lean export as the semantics the
