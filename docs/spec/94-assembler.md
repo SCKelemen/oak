@@ -1160,11 +1160,67 @@ by index, a 12-byte record array updated in place through `umaddl` with an
 element copied out and passed on, and a record array field inside a record
 read and written by computed index — natively against the C backend and
 the portable realization.
-Next increments: the verifier's frame addresses, record locals, and
-derived spans (so array, record, ADT, and subslice bodies are proven, not
-trusted), `break` as a second loop exit in the recognizer, spans of
-records, and the slicing syntax `v[lo:hi]` once the C backend lowers `len`
-over it.
+**Twelfth increment — spans and views of records.** `pool: []Node` and
+`[*]Node` as parameters and locals, `view(&arr)`/`span(&arr)` over arrays
+of records, and `subslice` over them (for power-of-two strides up to 16
+bytes, the derived-span idiom's scale). An element `pool[i]` is a
+register-addressed record place produced by the span element idiom: the
+index guarded against the length register (`cmp wI, wL; b.hs trap`), then
+`add xE, xB, wI, uxtw #s` or `movz wK, #stride; umaddl xE, wI, wK, xB` by
+the record's stride; field reads, field stores, whole-element replacement,
+and copies out follow, and a view's elements refuse stores. The checker
+sizes a span of records from the composites table (the compiler adds
+every span parameter's element record) and derives the element region
+from a span base: `add`/`umaddl` over a span fact whose element size
+equals the stride, with the index guarded below the span's length
+register or below a constant the span's proven minimum length covers,
+makes `xE` a one-element region writable iff the span is a `[*]T`
+(`TestCheckerRecordSpans`: three accepted shapes, five refusals — a store
+through a view, no guard, the wrong stride, a guard against an unrelated
+register, a field past the element). The verifier never models a record
+element as a scalar: spans of records leave a body trusted. Executed
+(`TestE2ENativeRecordSpans`): a link pool passed as a view and walked by
+index, a span of 12-byte records renumbered in place with an element
+replaced whole and one copied out, and a subslice of a record view walked
+by a leaf — natively against the C backend and the portable realization.
+**Thirteenth increment — the verifier reaches aggregates.** On the
+assembly side, frame slots tile: a store records its term at its width and
+splits any older slot it partly covers into the untouched aligned pieces,
+and a load reads back one slot, a sub-range of it (the low bytes of a
+64-bit slot for a 32-bit reload, little-endian), or the exact concatenation
+of adjacent pieces, zero- or sign-extending as its mnemonic says — so byte
+and halfword element accesses over word-zeroed storage and word copies over
+field stores resolve where they used to fail on a width mismatch (the
+narrow-reload case in `TestVerifyFrameMemory` is now proven for the low
+half and refuted for the high half). `add xN, sp, #imm` yields a frame
+address term (`sp#A`), constant element and field offsets fold onto it, and
+a load or store whose base resolves to a frame address reads or writes that
+slot; a data-dependent index leaves the body trusted. A span base plus a
+constant byte offset (a `subslice` with a constant start) is the element at
+the shifted index. On the Oak side, locals may be aggregates — records and
+tagged unions as field trees of leaf terms (the ADT's `u32` tag and one
+payload per carrying variant), owned arrays as element lists — built from
+typed literals, variants, array literals, copies, value-less arrays
+(zero-filled, as both backends fill them), field and constant-index element
+stores, and read through access chains; conditional arms merge aggregates
+leaf-wise; a `match` over a tagged union whose tag is decided on the path
+runs exactly its arm and binds the payload; a value-position `match` over a
+scalar that does not fold becomes a chain of selects on equality ending in
+its wildcard arm; unary minus wraps at the width. Aggregates across a
+data-dependent loop, data-dependent indices, and matches over undecided
+tags stay outside the subset (trusted), as do record and union parameters
+and results, which the executor does not yet bind (their chunk terms and
+leaf terms are the next increment's work). The declarations reach the
+verifier through the function (`asm.Function.Records`/`ADTs`, set by the
+compiler for native bodies and hand-written units alike). Proven now among
+the executed suites: `manhattan` (a record local with conditional field
+updates and unary minus), `copy_point` and `swap_in` (copies and
+whole-record assignment), `name_len` (a literal match over a parameter),
+beside the loop kernels proven before.
+Next increments: record and union parameters and results in the verifier
+(chunk terms bound to leaf terms), `break` as a second loop exit in the
+recognizer, and the slicing syntax `v[lo:hi]` once the C backend lowers
+`len` over it.
 
 
 

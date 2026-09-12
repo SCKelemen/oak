@@ -84,6 +84,7 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*d
 			}
 			decl.AsmBacked = true
 			fn.Composites = nativegen.Composites(records, adts)
+			fn.Records, fn.ADTs = records, adts
 			findings := asm.Check(fn, decl, symbols)
 			for _, finding := range findings {
 				report("%s: %s", unitText.Path, finding)

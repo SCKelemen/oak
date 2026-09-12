@@ -786,21 +786,8 @@ func (s *symbolicState) clone() *symbolicState {
 // the term at the slot; loads read back a slot stored with the same width.
 func (x *pathExecutor) frameAccess(instr Instruction, state *symbolicState) (string, bool) {
 	mem := instr.Operands[len(instr.Operands)-1].(Memory)
-	regs := registerOperands(instr.Operands[:len(instr.Operands)-1])
 	if mem.Index != nil {
 		return "indexed frame access", false
-	}
-	if len(regs) == 0 || isAtomic(instr.Mnemonic) || isExclusiveStore(instr.Mnemonic) || isSignExtendingLoad(instr.Mnemonic) || instr.Mnemonic == "ldpsw" {
-		return "a frame access outside the modeled subset (" + instr.Mnemonic + ")", false
-	}
-	for _, reg := range regs {
-		if reg.Class == ClassV {
-			return "a vector-register frame access", false
-		}
-	}
-	size := memorySize(instr.Mnemonic, regs[0].Class)
-	if len(regs) == 2 {
-		size /= 2 // ldp/stp: one slot per register
 	}
 	var addr int64
 	switch mem.Mode {
@@ -813,6 +800,30 @@ func (x *pathExecutor) frameAccess(instr Instruction, state *symbolicState) (str
 	default:
 		addr = -state.disp + mem.Offset
 	}
+	return x.frameAccessAt(instr, state, addr)
+}
+
+// frameAccessAt executes a load or store of the frame at an entry-relative
+// address. Stores tile the frame: a slot records the term stored at its
+// width, and a store over part of an older slot keeps the untouched bytes
+// as aligned pieces. A load reads back one slot, a sub-range of it, or the
+// exact concatenation of adjacent pieces (Oak.AssemblerSemantics.storeSlot
+// / loadSlot_storeSlot, extended byte-wise), zero- or sign-extending into
+// its register as the mnemonic says.
+func (x *pathExecutor) frameAccessAt(instr Instruction, state *symbolicState, addr int64) (string, bool) {
+	regs := registerOperands(instr.Operands[:len(instr.Operands)-1])
+	if len(regs) == 0 || isAtomic(instr.Mnemonic) || isExclusiveStore(instr.Mnemonic) || instr.Mnemonic == "ldpsw" {
+		return "a frame access outside the modeled subset (" + instr.Mnemonic + ")", false
+	}
+	for _, reg := range regs {
+		if reg.Class == ClassV {
+			return "a vector-register frame access", false
+		}
+	}
+	size := memorySize(instr.Mnemonic, regs[0].Class)
+	if len(regs) == 2 {
+		size /= 2 // ldp/stp: one slot per register
+	}
 	if state.frame == nil {
 		state.frame = map[int64]frameSlot{}
 	}
@@ -822,30 +833,170 @@ func (x *pathExecutor) frameAccess(instr Instruction, state *symbolicState) (str
 			if !ok {
 				return "unbound register read", false
 			}
-			state.frame[addr+int64(i)*size] = frameSlot{value: value, width: int(size)}
+			state.storeSlot(addr+int64(i)*size, truncate(value, int(size)*8), size)
 		}
 		return "", true
 	}
 	for i, reg := range regs {
-		slot, stored := state.frame[addr+int64(i)*size]
-		if !stored {
+		value, ok := state.loadSlot(addr+int64(i)*size, size)
+		if !ok {
 			return "a load from a frame slot never stored on this path", false
 		}
-		if slot.width != int(size) {
-			return "a load whose width differs from the slot's store", false
+		if isSignExtendingLoad(instr.Mnemonic) {
+			state.write(reg, extendTerm(value, int(size)*8, widthOf(reg.Class), true))
+		} else {
+			state.write(reg, zeroExtend(value, widthOf(reg.Class)))
 		}
-		if int(size) < widthOf(reg.Class)/8 {
-			return "a narrow frame load", false
-		}
-		state.write(reg, slot.value)
 	}
 	return "", true
+}
+
+// storeSlot records size bytes at addr, splitting any older slot the store
+// partly covers into its untouched aligned pieces (little-endian: the low
+// bytes of a slot's term are the lower addresses).
+func (s *symbolicState) storeSlot(addr int64, value *term, size int64) {
+	for start, slot := range s.frame {
+		end := start + int64(slot.width)
+		if end <= addr || start >= addr+size {
+			continue
+		}
+		delete(s.frame, start)
+		if start < addr {
+			s.storePieces(start, addr-start, slot.value)
+		}
+		if end > addr+size {
+			skip := addr + size - start
+			s.storePieces(addr+size, end-(addr+size), truncate(binaryTerm("shr", slot.value, constTerm(uint64(skip*8), slot.value.width)), int(end-(addr+size))*8))
+		}
+	}
+	s.frame[addr] = frameSlot{value: value, width: int(size)}
+}
+
+// storePieces stores a byte range as maximal naturally aligned power-of-two
+// pieces of a term whose low byte is the range's first byte.
+func (s *symbolicState) storePieces(addr, size int64, value *term) {
+	off := int64(0)
+	for off < size {
+		piece := int64(8)
+		for piece > 1 && ((addr+off)%piece != 0 || off+piece > size) {
+			piece /= 2
+		}
+		part := truncate(binaryTerm("shr", value, constTerm(uint64(off*8), value.width)), int(piece)*8)
+		s.frame[addr+off] = frameSlot{value: part, width: int(piece)}
+		off += piece
+	}
+}
+
+// loadSlot reads size bytes at addr: a stored slot, a sub-range of one, or
+// the concatenation of the pieces tiling the range exactly.
+func (s *symbolicState) loadSlot(addr, size int64) (*term, bool) {
+	if slot, exact := s.frame[addr]; exact && int64(slot.width) == size {
+		return slot.value, true
+	}
+	var result *term
+	cursor := addr
+	for cursor < addr+size {
+		found := false
+		for start, slot := range s.frame {
+			end := start + int64(slot.width)
+			if start <= cursor && cursor < end {
+				take := end - cursor
+				if take > addr+size-cursor {
+					take = addr + size - cursor
+				}
+				piece := truncate(binaryTerm("shr", slot.value, constTerm(uint64((cursor-start)*8), slot.value.width)), int(take)*8)
+				placed := zeroExtend(piece, int(size)*8)
+				if cursor > addr {
+					placed = binaryTerm("shl", placed, constTerm(uint64((cursor-addr)*8), int(size)*8))
+				}
+				if result == nil {
+					result = placed
+				} else {
+					result = binaryTerm("or", result, placed)
+				}
+				cursor += take
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, false
+		}
+	}
+	return result, true
+}
+
+// frameAddressOf reads a term as an entry-relative frame address: the
+// reserved parameter `sp#A` (what `add xN, sp, #imm` yields), or such a
+// term plus constants (an element or field offset that folded).
+func frameAddressOf(t *term) (int64, bool) {
+	switch t.kind {
+	case termParam:
+		if strings.HasPrefix(t.name, "sp#") {
+			addr, err := strconv.ParseInt(strings.TrimPrefix(t.name, "sp#"), 10, 64)
+			return addr, err == nil
+		}
+	case termBinary:
+		if t.op != "add" {
+			return 0, false
+		}
+		if base, ok := frameAddressOf(t.left); ok && t.right.kind == termConst {
+			return base + int64(t.right.value), true
+		}
+		if base, ok := frameAddressOf(t.right); ok && t.left.kind == termConst {
+			return base + int64(t.left.value), true
+		}
+	}
+	return 0, false
+}
+
+// frameAddressTerm names a frame address.
+func frameAddressTerm(addr int64) *term { return paramTerm(fmt.Sprintf("sp#%d", addr), 64) }
+
+// registerFrameAccess executes a load or store whose base register holds a
+// frame address (an array or record element in the frame): the address is
+// the base's plus the offset, or plus a constant index scaled — a symbolic
+// index names no single slot and leaves the body outside the subset.
+func (x *pathExecutor) registerFrameAccess(instr Instruction, state *symbolicState, mem Memory, base int64) (string, bool) {
+	if mem.Mode != MemOffset {
+		return "a frame address moved by pre/post-index", false
+	}
+	addr := base + mem.Offset
+	if mem.Index != nil {
+		index, ok := state.read(*mem.Index)
+		if !ok {
+			return "unbound register read", false
+		}
+		if index.kind != termConst {
+			return "a frame access at a data-dependent index", false
+		}
+		addr += int64(index.value&mask(32)) << uint(mem.Shift)
+	}
+	return x.frameAccessAt(instr, state, addr)
 }
 
 // trapPath marks a path that ends in a trap (brk): it yields no result and
 // is dropped from the fork that reached it. A body that traps on every
 // path has no result to verify.
 var trapPath = &term{kind: termConst, width: 64}
+
+// registerFrameMemory reports a load or store whose base register holds a
+// frame address term, with the address.
+func registerFrameMemory(instr Instruction, state *symbolicState) (Memory, int64, bool) {
+	if len(instr.Operands) == 0 || !(isStoreMnemonic(instr.Mnemonic) || isPlainLoad(instr.Mnemonic) || isSignExtendingLoad(instr.Mnemonic)) {
+		return Memory{}, 0, false
+	}
+	mem, isMem := instr.Operands[len(instr.Operands)-1].(Memory)
+	if !isMem || mem.Base.Class != ClassX {
+		return Memory{}, 0, false
+	}
+	base, bound := state.regs[mem.Base.Num]
+	if !bound {
+		return Memory{}, 0, false
+	}
+	addr, isFrame := frameAddressOf(base)
+	return mem, addr, isFrame
+}
 
 // isFrameMemory reports a memory instruction through sp.
 func isFrameMemory(instr Instruction) bool {
@@ -941,6 +1092,12 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 			}
 			continue
 		}
+		if mem, base, isFrame := registerFrameMemory(instr, state); isFrame {
+			if reason, ok := x.registerFrameAccess(instr, state, mem, base); !ok {
+				return nil, reason, false
+			}
+			continue
+		}
 		if isLoad(instr.Mnemonic) {
 			if reason, ok := x.load(instr, state); !ok {
 				return nil, reason, false
@@ -969,14 +1126,21 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		return "frame memory", false
 	}
 	base, bound := state.regs[mem.Base.Num]
-	if !bound || base.kind != termParam || !strings.HasPrefix(base.name, "&") {
+	if !bound {
 		return "a load through a register that is not a span base", false
 	}
-	param := strings.TrimPrefix(base.name, "&")
+	param, baseOffset, isSpan := spanBaseOf(base)
+	if !isSpan {
+		return "a load through a register that is not a span base", false
+	}
 	elem := x.spans[param]
 	if mem.Mode != MemOffset {
 		return "a span base moved by pre/post-index", false
 	}
+	if elem == 0 || baseOffset%elem != 0 {
+		return "a derived span base not aligned to an element", false
+	}
+	baseIndex := baseOffset / elem
 	// The access size is the element size; a narrower load extends the
 	// element into its register — zero-extending, or sign-extending for
 	// the ldrs* family.
@@ -1001,14 +1165,39 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		if !ok {
 			return "unbound register read", false
 		}
+		if baseIndex != 0 {
+			index = binaryTerm("add", truncate(index, 32), constTerm(uint64(baseIndex), 32))
+		}
 		state.write(dest, extend(x.element(param, index, int(elem)*8)))
 		return "", true
 	}
 	if mem.Offset < 0 || mem.Offset%elem != 0 {
 		return "a load not aligned to an element", false
 	}
-	state.write(dest, extend(x.element(param, constTerm(uint64(mem.Offset/elem), 32), int(elem)*8)))
+	state.write(dest, extend(x.element(param, constTerm(uint64(mem.Offset/elem+baseIndex), 32), int(elem)*8)))
 	return "", true
+}
+
+// spanBaseOf reads a term as a span base: the parameter `&v`, or `&v` plus a
+// constant byte offset (a subslice with a constant start).
+func spanBaseOf(t *term) (param string, offset int64, ok bool) {
+	switch t.kind {
+	case termParam:
+		if strings.HasPrefix(t.name, "&") {
+			return strings.TrimPrefix(t.name, "&"), 0, true
+		}
+	case termBinary:
+		if t.op != "add" {
+			return "", 0, false
+		}
+		if name, base, isSpan := spanBaseOf(t.left); isSpan && t.right.kind == termConst {
+			return name, base + int64(t.right.value), true
+		}
+		if name, base, isSpan := spanBaseOf(t.right); isSpan && t.left.kind == termConst {
+			return name, base + int64(t.left.value), true
+		}
+	}
+	return "", 0, false
 }
 
 // isLoad reports the load mnemonics the executor resolves through a span.
@@ -1226,6 +1415,15 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 				}
 				return "", true
 			}
+			if src, isReg := instr.Operands[1].(Register); isReg && src.Class == ClassSP && instr.Mnemonic == "add" {
+				// add xN, sp, #imm: the frame address of an array or record.
+				imm, isImm := instr.Operands[2].(Immediate)
+				if !isImm {
+					return "a frame address with a register offset", false
+				}
+				state.write(dest, frameAddressTerm(-state.disp+imm.Value))
+				return "", true
+			}
 			left, okL := operandTerm(state, instr.Operands[1], widthOf(dest.Class))
 			right, okR := operandTerm(state, instr.Operands[2], widthOf(dest.Class))
 			if !okL || !okR {
@@ -1350,14 +1548,508 @@ type oakLowering struct {
 	// verifier leaves it off: there the machine wraps where Oak traps.
 	trapsTracked bool
 	traps        []*term
+	// The program's record and tagged-union declarations (asm.Function
+	// Records/ADTs) and the shapes resolved from them.
+	records map[string]*ast.RecordLiteral
+	adts    map[string]*ast.ADTType
+	types   map[string]*oakType
 }
 
 // oakLocal is a typed local of a statement body: its current symbolic
-// value (assignments replace it) at its declared width and signedness.
+// value (assignments replace it) at its declared width and signedness — or,
+// for a record, tagged union, or owned array, the aggregate holding a term
+// per scalar leaf.
 type oakLocal struct {
 	value  *term
 	width  int
 	signed bool
+	agg    *oakValue
+}
+
+// oakType is the shape of a local: a scalar, a declared record, a tagged
+// union (the u32 tag and one payload per carrying variant), or an owned
+// array of a fixed length.
+type oakType struct {
+	kind     oakKind
+	width    int
+	signed   bool
+	name     string
+	fields   []oakField   // record
+	variants []oakVariant // adt
+	elem     *oakType     // array
+	length   int64
+}
+
+type oakKind int
+
+const (
+	oakScalar oakKind = iota
+	oakRecord
+	oakADT
+	oakArray
+)
+
+type oakField struct {
+	name string
+	typ  *oakType
+}
+
+type oakVariant struct {
+	name    string
+	tag     int64
+	payload *oakType // nil for a bare variant
+}
+
+// oakValue is a value of an oakType: a term at a scalar leaf, the fields
+// of a record (an ADT's "tag" leaf and payload fields named by variant), or
+// the elements of an array. Aggregates are trees of leaves, so every
+// operation on them is a copy, a leaf read, or a leaf write.
+type oakValue struct {
+	typ    *oakType
+	scalar *term
+	fields map[string]*oakValue
+	elems  []*oakValue
+}
+
+func (v *oakValue) copy() *oakValue {
+	if v == nil {
+		return nil
+	}
+	out := &oakValue{typ: v.typ, scalar: v.scalar}
+	if v.fields != nil {
+		out.fields = make(map[string]*oakValue, len(v.fields))
+		for name, field := range v.fields {
+			out.fields[name] = field.copy()
+		}
+	}
+	if v.elems != nil {
+		out.elems = make([]*oakValue, len(v.elems))
+		for i, elem := range v.elems {
+			out.elems[i] = elem.copy()
+		}
+	}
+	return out
+}
+
+// leaves visits every scalar leaf of two values of one type in step.
+func leaves(a, b *oakValue, visit func(a, b *oakValue)) {
+	if a.scalar != nil || b.scalar != nil {
+		visit(a, b)
+		return
+	}
+	for name, field := range a.fields {
+		leaves(field, b.fields[name], visit)
+	}
+	for i, elem := range a.elems {
+		leaves(elem, b.elems[i], visit)
+	}
+}
+
+// oakTypeOf resolves a local's declared type expression.
+func (lo *oakLowering) oakTypeOf(expr ast.Expression) (*oakType, bool) {
+	if width, signed, ok := contractBits(expr); ok {
+		return &oakType{kind: oakScalar, width: width, signed: signed}, true
+	}
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		return lo.namedType(e.Value)
+	case *ast.IndexExpression:
+		if e.Dot {
+			return nil, false
+		}
+		length, isLit := e.Index.(*ast.IntegerLiteral)
+		if !isLit || length.Value <= 0 {
+			return nil, false
+		}
+		elem, ok := lo.oakTypeOf(e.Left)
+		if !ok {
+			return nil, false
+		}
+		return &oakType{kind: oakArray, elem: elem, length: length.Value}, true
+	}
+	return nil, false
+}
+
+// namedType resolves a declared record or tagged union (cached; a type
+// containing itself fails).
+func (lo *oakLowering) namedType(name string) (*oakType, bool) {
+	if typ, done := lo.types[name]; done {
+		return typ, typ != nil
+	}
+	if lo.types == nil {
+		lo.types = map[string]*oakType{}
+	}
+	lo.types[name] = nil // placing: a cycle resolves to failure
+	if literal, isRecord := lo.records[name]; isRecord {
+		typ := &oakType{kind: oakRecord, name: name}
+		for _, field := range literal.FieldOrder {
+			fieldType, ok := lo.oakTypeOf(field.Value)
+			if !ok {
+				return nil, false
+			}
+			typ.fields = append(typ.fields, oakField{name: field.Name, typ: fieldType})
+		}
+		lo.types[name] = typ
+		return typ, true
+	}
+	if adt, isADT := lo.adts[name]; isADT {
+		typ := &oakType{kind: oakADT, name: name}
+		for i, variant := range adt.Variants {
+			v := oakVariant{name: variant.Name.Value, tag: int64(i)}
+			if i < len(adt.TagValues) {
+				v.tag = int64(adt.TagValues[i])
+			}
+			if variant.Payload != nil {
+				payload, ok := lo.oakTypeOf(variant.Payload)
+				if !ok {
+					return nil, false
+				}
+				v.payload = payload
+			}
+			typ.variants = append(typ.variants, v)
+		}
+		lo.types[name] = typ
+		return typ, true
+	}
+	return nil, false
+}
+
+func (t *oakType) variant(name string) (oakVariant, bool) {
+	for _, v := range t.variants {
+		if v.name == name {
+			return v, true
+		}
+	}
+	return oakVariant{}, false
+}
+
+func (t *oakType) field(name string) (*oakType, bool) {
+	for _, f := range t.fields {
+		if f.name == name {
+			return f.typ, true
+		}
+	}
+	return nil, false
+}
+
+// zeroValue is the all-zero value of a type (a value-less array local).
+func zeroValue(typ *oakType) *oakValue {
+	switch typ.kind {
+	case oakScalar:
+		return &oakValue{typ: typ, scalar: constTerm(0, typ.width)}
+	case oakRecord:
+		out := &oakValue{typ: typ, fields: map[string]*oakValue{}}
+		for _, f := range typ.fields {
+			out.fields[f.name] = zeroValue(f.typ)
+		}
+		return out
+	case oakADT:
+		out := &oakValue{typ: typ, fields: map[string]*oakValue{"tag": {typ: &oakType{kind: oakScalar, width: 32}, scalar: constTerm(0, 32)}}}
+		for _, v := range typ.variants {
+			if v.payload != nil {
+				out.fields[v.name] = zeroValue(v.payload)
+			}
+		}
+		return out
+	default:
+		out := &oakValue{typ: typ}
+		for i := int64(0); i < typ.length; i++ {
+			out.elems = append(out.elems, zeroValue(typ.elem))
+		}
+		return out
+	}
+}
+
+// aggregateValue lowers an expression of an aggregate type: a typed record
+// literal, a variant, an array literal, or a copy of a place.
+func (lo *oakLowering) aggregateValue(expr ast.Expression, typ *oakType) (*oakValue, string, bool) {
+	switch e := expr.(type) {
+	case *ast.RecordLiteral:
+		if typ.kind != oakRecord {
+			return nil, "a record literal for a non-record", false
+		}
+		if e.TypeName != nil && e.TypeName.Value != typ.name {
+			return nil, fmt.Sprintf("a %s literal where %s is expected", e.TypeName.Value, typ.name), false
+		}
+		out := &oakValue{typ: typ, fields: map[string]*oakValue{}}
+		for _, f := range typ.fields {
+			value, given := e.Fields[f.name]
+			if !given {
+				return nil, fmt.Sprintf("a %s literal without the field %s", typ.name, f.name), false
+			}
+			fieldValue, reason, ok := lo.valueOf(value, f.typ)
+			if !ok {
+				return nil, reason, false
+			}
+			out.fields[f.name] = fieldValue
+		}
+		return out, "", true
+	case *ast.VariantExpression:
+		if typ.kind != oakADT {
+			return nil, "a variant for a non-union", false
+		}
+		if e.TypeName != nil && e.TypeName.Value != typ.name {
+			return nil, fmt.Sprintf("a %s variant where %s is expected", e.TypeName.Value, typ.name), false
+		}
+		variant, known := typ.variant(e.Variant.Value)
+		if !known {
+			return nil, fmt.Sprintf("the variant %s of %s", e.Variant.Value, typ.name), false
+		}
+		out := zeroValue(typ)
+		out.fields["tag"].scalar = constTerm(uint64(variant.tag), 32)
+		if (e.Payload == nil) != (variant.payload == nil) {
+			return nil, fmt.Sprintf("the variant %s.%s with the wrong payload shape", typ.name, e.Variant.Value), false
+		}
+		if e.Payload != nil {
+			payload, reason, ok := lo.valueOf(e.Payload, variant.payload)
+			if !ok {
+				return nil, reason, false
+			}
+			out.fields[variant.name] = payload
+		}
+		return out, "", true
+	case *ast.ArrayLiteral:
+		if typ.kind != oakArray || int64(len(e.Elements)) != typ.length {
+			return nil, "an array literal of the wrong shape", false
+		}
+		out := &oakValue{typ: typ}
+		for _, element := range e.Elements {
+			value, reason, ok := lo.valueOf(element, typ.elem)
+			if !ok {
+				return nil, reason, false
+			}
+			out.elems = append(out.elems, value)
+		}
+		return out, "", true
+	case *ast.Identifier, *ast.IndexExpression:
+		place, reason, ok := lo.placeOf(expr)
+		if !ok {
+			return nil, reason, false
+		}
+		if place.typ != typ {
+			return nil, fmt.Sprintf("%s is not a %s", expr.String(), typ.name), false
+		}
+		return place.copy(), "", true
+	}
+	return nil, fmt.Sprintf("%T as an aggregate value", expr), false
+}
+
+// valueOf lowers an expression at a type: a scalar term or an aggregate.
+func (lo *oakLowering) valueOf(expr ast.Expression, typ *oakType) (*oakValue, string, bool) {
+	if typ.kind == oakScalar {
+		t, reason, ok := lo.lower(expr, typ.width)
+		if !ok {
+			return nil, reason, false
+		}
+		return &oakValue{typ: typ, scalar: t}, "", true
+	}
+	return lo.aggregateValue(expr, typ)
+}
+
+// placeOf resolves an access chain over aggregate locals: a local, `p.f`,
+// `arr[k]` with a constant index.
+func (lo *oakLowering) placeOf(expr ast.Expression) (*oakValue, string, bool) {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		local, isLocal := lo.locals[e.Value]
+		if !isLocal || local.agg == nil {
+			return nil, fmt.Sprintf("%s is not an aggregate local", e.Value), false
+		}
+		return local.agg, "", true
+	case *ast.IndexExpression:
+		base, reason, ok := lo.placeOf(e.Left)
+		if !ok {
+			return nil, reason, false
+		}
+		if e.Dot {
+			name, isName := e.Index.(*ast.Identifier)
+			if !isName || base.fields == nil {
+				return nil, fmt.Sprintf("the field access %s", e.String()), false
+			}
+			field, has := base.fields[name.Value]
+			if !has {
+				return nil, fmt.Sprintf("the field %s of %s", name.Value, base.typ.name), false
+			}
+			return field, "", true
+		}
+		if base.typ.kind != oakArray {
+			return nil, fmt.Sprintf("an index into %s (not an array)", e.Left.String()), false
+		}
+		k, isConst := lo.constantIndexValue(e.Index)
+		if !isConst {
+			return nil, "an array element at a data-dependent index", false
+		}
+		if k < 0 || k >= base.typ.length {
+			return nil, fmt.Sprintf("the index %d past [%d]", k, base.typ.length), false
+		}
+		return base.elems[k], "", true
+	}
+	return nil, fmt.Sprintf("%T as a place", expr), false
+}
+
+// aggregateChain reports an access chain rooted at an aggregate local.
+func (lo *oakLowering) aggregateChain(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		return lo.aggregateLocal(e.Value)
+	case *ast.IndexExpression:
+		return lo.aggregateChain(e.Left)
+	}
+	return false
+}
+
+// aggregateLocal reports a local holding an aggregate.
+func (lo *oakLowering) aggregateLocal(name string) bool {
+	local, isLocal := lo.locals[name]
+	return isLocal && local.agg != nil
+}
+
+// hasAggregates reports an aggregate local in scope (the loop machinery
+// carries scalars only).
+func (lo *oakLowering) hasAggregates() bool {
+	for _, local := range lo.locals {
+		if local.agg != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// declareLocal binds a declaration: a scalar at its width, or an aggregate
+// from its initializer (an array without one is zero-filled, as both
+// backends fill it).
+func (lo *oakLowering) declareLocal(s *ast.VariableDeclaration) (string, bool) {
+	if s.Type == nil {
+		return "a local without a type", false
+	}
+	typ, ok := lo.oakTypeOf(s.Type)
+	if !ok {
+		return fmt.Sprintf("a local of type %s", typeText(s.Type)), false
+	}
+	if typ.kind == oakScalar {
+		if s.Value == nil {
+			return "a local without both a type and an initializer", false
+		}
+		value, reason, ok := lo.lower(s.Value, typ.width)
+		if !ok {
+			return reason, false
+		}
+		lo.locals[s.Name.Value] = &oakLocal{value: value, width: typ.width, signed: typ.signed}
+		return "", true
+	}
+	if s.Value == nil {
+		if typ.kind != oakArray {
+			return fmt.Sprintf("the %s local %s without an initializer", typ.name, s.Name.Value), false
+		}
+		lo.locals[s.Name.Value] = &oakLocal{agg: zeroValue(typ)}
+		return "", true
+	}
+	value, reason, ok := lo.aggregateValue(s.Value, typ)
+	if !ok {
+		return reason, false
+	}
+	lo.locals[s.Name.Value] = &oakLocal{agg: value}
+	return "", true
+}
+
+// assignPlace stores into a place: a scalar leaf at its width, an
+// aggregate by copy.
+func (lo *oakLowering) assignPlace(target *oakValue, value ast.Expression) (string, bool) {
+	if target.typ.kind == oakScalar {
+		t, reason, ok := lo.lower(value, target.typ.width)
+		if !ok {
+			return reason, false
+		}
+		target.scalar = t
+		return "", true
+	}
+	fresh, reason, ok := lo.aggregateValue(value, target.typ)
+	if !ok {
+		return reason, false
+	}
+	target.fields, target.elems = fresh.fields, fresh.elems
+	return "", true
+}
+
+// lowerGeneralMatch decides a match over a tagged union whose tag is a
+// constant (the union was built on this path) or a scalar with literal
+// patterns whose scrutinee folds: exactly one arm runs. arm lowers the
+// chosen arm's body in the caller's position.
+func (lo *oakLowering) lowerGeneralMatch(match *ast.MatchExpression, arm func(body ast.Expression) (string, bool)) (string, bool) {
+	if place, _, isAggregate := lo.placeOf(match.Scrutinee); isAggregate && place.typ.kind == oakADT {
+		tag := place.fields["tag"].scalar
+		if tag.kind != termConst {
+			return "a match over a tagged union whose tag is not decided on this path", false
+		}
+		for _, matchArm := range match.Arms {
+			switch pattern := matchArm.Pattern.(type) {
+			case *ast.VariantPattern:
+				variant, known := place.typ.variant(pattern.Variant.Value)
+				if !known {
+					return fmt.Sprintf("the variant %s in a pattern", pattern.Variant.Value), false
+				}
+				if variant.tag != int64(tag.value) {
+					continue
+				}
+				if binding, isBinding := pattern.Payload.(*ast.BindingPattern); isBinding && binding.Name != nil && binding.Name.Value != "_" {
+					if variant.payload == nil {
+						return "a binding on a bare variant", false
+					}
+					payload := place.fields[variant.name].copy()
+					if payload.typ.kind == oakScalar {
+						lo.locals[binding.Name.Value] = &oakLocal{value: payload.scalar, width: payload.typ.width, signed: payload.typ.signed}
+					} else {
+						lo.locals[binding.Name.Value] = &oakLocal{agg: payload}
+					}
+				}
+				return arm(matchArm.Body)
+			case *ast.WildcardPattern:
+				return arm(matchArm.Body)
+			case *ast.BindingPattern:
+				if pattern.Name != nil && pattern.Name.Value != "_" {
+					lo.locals[pattern.Name.Value] = &oakLocal{agg: place.copy()}
+				}
+				return arm(matchArm.Body)
+			default:
+				return fmt.Sprintf("the pattern %s", matchArm.Pattern.String()), false
+			}
+		}
+		return "a match no arm of which matched the decided tag", false
+	}
+	// A scalar scrutinee with literal patterns: decided when it folds.
+	width, _, isScalar := lo.operandContract(match.Scrutinee)
+	if !isScalar {
+		return "a match scrutinee outside the subset", false
+	}
+	value, reason, ok := lo.lower(match.Scrutinee, width)
+	if !ok {
+		return reason, false
+	}
+	if value.kind != termConst {
+		return "a match over a scalar that is not decided on this path", false
+	}
+	for _, matchArm := range match.Arms {
+		switch pattern := matchArm.Pattern.(type) {
+		case *ast.LiteralPattern:
+			lit, reason, ok := lo.lower(pattern.Value, width)
+			if !ok {
+				return reason, false
+			}
+			if lit.kind == termConst && lit.value == value.value {
+				return arm(matchArm.Body)
+			}
+		case *ast.WildcardPattern:
+			return arm(matchArm.Body)
+		case *ast.BindingPattern:
+			if pattern.Name == nil || pattern.Name.Value == "_" {
+				return arm(matchArm.Body)
+			}
+			return "a binding pattern over a scalar", false
+		default:
+			return fmt.Sprintf("the pattern %s", matchArm.Pattern.String()), false
+		}
+	}
+	return "a match no arm of which matched the decided value", false
 }
 
 // loopBudget bounds the iterations a `while` may unroll.
@@ -1390,28 +2082,17 @@ func (lo *oakLowering) lowerBlock(block *ast.BlockStatement, width int) (*term, 
 			}
 			return lo.lower(s.Expression, width)
 		case *ast.VariableDeclaration:
-			if s.Value == nil || s.Type == nil {
-				return nil, "a local without both a type and an initializer", false
-			}
-			w, signed, ok := scalarType(s.Type)
-			if !ok {
-				return nil, fmt.Sprintf("a local of type %s", typeText(s.Type)), false
-			}
-			value, reason, ok := lo.lower(s.Value, w)
-			if !ok {
+			if reason, ok := lo.declareLocal(s); !ok {
 				return nil, reason, false
 			}
-			lo.locals[s.Name.Value] = &oakLocal{value: value, width: w, signed: signed}
 		case *ast.AssignmentStatement:
-			local, isLocal := lo.locals[s.Name.Value]
-			if !isLocal {
-				return nil, fmt.Sprintf("an assignment to %s (not a local)", s.Name.Value), false
-			}
-			value, reason, ok := lo.lower(s.Value, local.width)
-			if !ok {
+			if reason, ok := lo.assignLocal(s); !ok {
 				return nil, reason, false
 			}
-			local.value = value
+		case *ast.IndexAssignmentStatement:
+			if reason, ok := lo.assignIndexed(s); !ok {
+				return nil, reason, false
+			}
 		case *ast.WhileStatement:
 			if reason, ok := lo.lowerWhile(s); !ok {
 				return nil, reason, false
@@ -1421,6 +2102,34 @@ func (lo *oakLowering) lowerBlock(block *ast.BlockStatement, width int) (*term, 
 		}
 	}
 	return nil, "a block that does not end in an expression", false
+}
+
+// assignLocal executes `x = e`: a scalar local at its width, an aggregate
+// local by copy.
+func (lo *oakLowering) assignLocal(s *ast.AssignmentStatement) (string, bool) {
+	local, isLocal := lo.locals[s.Name.Value]
+	if !isLocal {
+		return fmt.Sprintf("an assignment to %s (not a local)", s.Name.Value), false
+	}
+	if local.agg != nil {
+		return lo.assignPlace(local.agg, s.Value)
+	}
+	value, reason, ok := lo.lower(s.Value, local.width)
+	if !ok {
+		return reason, false
+	}
+	local.value = value
+	return "", true
+}
+
+// assignIndexed executes `p.f = e` / `arr[k] = e` / `pool[k].f = e` over
+// aggregate locals.
+func (lo *oakLowering) assignIndexed(s *ast.IndexAssignmentStatement) (string, bool) {
+	target, reason, ok := lo.placeOf(s.Target)
+	if !ok {
+		return reason, false
+	}
+	return lo.assignPlace(target, s.Value)
 }
 
 // lowerWhile unrolls a counted loop: the condition must fold to a
@@ -1453,33 +2162,22 @@ func (lo *oakLowering) lowerLoopBody(body *ast.BlockStatement) (string, bool) {
 	for _, stmt := range body.Statements {
 		switch s := stmt.(type) {
 		case *ast.AssignmentStatement:
-			local, isLocal := lo.locals[s.Name.Value]
-			if !isLocal {
-				return fmt.Sprintf("an assignment to %s (not a local)", s.Name.Value), false
-			}
-			value, reason, ok := lo.lower(s.Value, local.width)
-			if !ok {
+			if reason, ok := lo.assignLocal(s); !ok {
 				return reason, false
 			}
-			local.value = value
+		case *ast.IndexAssignmentStatement:
+			if reason, ok := lo.assignIndexed(s); !ok {
+				return reason, false
+			}
 		case *ast.WhileStatement:
 			if reason, ok := lo.lowerWhile(s); !ok {
 				return reason, false
 			}
 		case *ast.VariableDeclaration:
 			// A body-local (the inner loop's counter), redeclared each iteration.
-			if s.Value == nil || s.Type == nil {
-				return "a local without both a type and an initializer", false
-			}
-			w, signed, ok := scalarType(s.Type)
-			if !ok {
-				return fmt.Sprintf("a local of type %s", typeText(s.Type)), false
-			}
-			value, reason, ok := lo.lower(s.Value, w)
-			if !ok {
+			if reason, ok := lo.declareLocal(s); !ok {
 				return reason, false
 			}
-			lo.locals[s.Name.Value] = &oakLocal{value: value, width: w, signed: signed}
 		case *ast.ExpressionStatement:
 			match, isMatch := s.Expression.(*ast.MatchExpression)
 			if !isMatch {
@@ -1503,7 +2201,7 @@ func (lo *oakLowering) lowerLoopBody(body *ast.BlockStatement) (string, bool) {
 func (lo *oakLowering) lowerConditionalStatement(match *ast.MatchExpression) (string, bool) {
 	whenTrue, whenFalse, isBool := boolConditional(match)
 	if !isBool {
-		return "a statement-level match that is not a two-armed Bool conditional", false
+		return lo.lowerGeneralMatch(match, lo.lowerArm)
 	}
 	cond, reason, ok := lo.lowerCondition(match.Scrutinee)
 	if !ok {
@@ -1519,9 +2217,21 @@ func (lo *oakLowering) lowerConditionalStatement(match *ast.MatchExpression) (st
 		return reason, false
 	}
 	for name, local := range lo.locals {
-		t, f := afterTrue[name], local.value
-		if t != f {
-			local.value = iteTerm(truncate(cond, 1), t, f)
+		snap, seen := afterTrue[name]
+		if !seen {
+			continue
+		}
+		if local.agg != nil {
+			// Merge leaf-wise: each scalar leaf a select on the condition.
+			leaves(snap.agg, local.agg, func(t, f *oakValue) {
+				if t.scalar != f.scalar {
+					f.scalar = iteTerm(truncate(cond, 1), t.scalar, f.scalar)
+				}
+			})
+			continue
+		}
+		if snap.value != local.value {
+			local.value = iteTerm(truncate(cond, 1), snap.value, local.value)
 		}
 	}
 	return "", true
@@ -1540,17 +2250,28 @@ func (lo *oakLowering) lowerArm(arm ast.Expression) (string, bool) {
 	return lo.lowerLoopBody(block.Block)
 }
 
-func (lo *oakLowering) snapshotLocals() map[string]*term {
-	out := make(map[string]*term, len(lo.locals))
+// localSnapshot is a local's value at a program point: the scalar term, or
+// a deep copy of the aggregate.
+type localSnapshot struct {
+	value *term
+	agg   *oakValue
+}
+
+func (lo *oakLowering) snapshotLocals() map[string]localSnapshot {
+	out := make(map[string]localSnapshot, len(lo.locals))
 	for name, local := range lo.locals {
-		out[name] = local.value
+		out[name] = localSnapshot{value: local.value, agg: local.agg.copy()}
 	}
 	return out
 }
 
-func (lo *oakLowering) restoreLocals(values map[string]*term) {
-	for name, value := range values {
-		lo.locals[name].value = value
+func (lo *oakLowering) restoreLocals(values map[string]localSnapshot) {
+	for name, snap := range values {
+		local := lo.locals[name]
+		local.value = snap.value
+		if snap.agg != nil {
+			local.agg = snap.agg.copy()
+		}
 	}
 }
 
@@ -1714,6 +2435,9 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 	switch e := expr.(type) {
 	case *ast.Identifier:
 		if local, isLocal := lo.locals[e.Value]; isLocal {
+			if local.agg != nil {
+				return nil, fmt.Sprintf("the aggregate %s in scalar position", e.Value), false
+			}
 			return adaptWidth(local.value, width), "", true
 		}
 		if w, isParam := lo.params[e.Value]; isParam {
@@ -1726,14 +2450,23 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 	case *ast.IntegerLiteral:
 		return constTerm(uint64(e.Value), width), "", true
 	case *ast.PrefixExpression:
-		if e.Operator != "^" {
-			return nil, fmt.Sprintf("prefix operator %s", e.Operator), false
+		switch e.Operator {
+		case "^":
+			operand, reason, ok := lo.lower(e.Right, width)
+			if !ok {
+				return nil, reason, false
+			}
+			return binaryTerm("xor", operand, constTerm(mask(width), width)), "", true
+		case "-":
+			// Unary minus wraps at the width (two's complement), as the
+			// backend's `neg` does.
+			operand, reason, ok := lo.lower(e.Right, width)
+			if !ok {
+				return nil, reason, false
+			}
+			return binaryTerm("sub", constTerm(0, width), operand), "", true
 		}
-		operand, reason, ok := lo.lower(e.Right, width)
-		if !ok {
-			return nil, reason, false
-		}
-		return binaryTerm("xor", operand, constTerm(mask(width), width)), "", true
+		return nil, fmt.Sprintf("prefix operator %s", e.Operator), false
 	case *ast.Boolean:
 		// Bool lowers to its C representation: 1 or 0 at the result width.
 		if e.Value {
@@ -1741,12 +2474,34 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		}
 		return constTerm(0, width), "", true
 	case *ast.IndexExpression:
+		if lo.aggregateChain(e) {
+			// A scalar leaf of an aggregate local: a field or a constant-index element.
+			leaf, reason, ok := lo.placeOf(e)
+			if !ok {
+				return nil, reason, false
+			}
+			if leaf.typ.kind != oakScalar {
+				return nil, fmt.Sprintf("the aggregate %s in scalar position", e.String()), false
+			}
+			return adaptWidth(leaf.scalar, width), "", true
+		}
 		element, _, reason, ok := lo.spanElementTerm(e)
 		if !ok {
 			return nil, reason, false
 		}
 		return adaptWidth(element, width), "", true
 	case *ast.InvocationExpression:
+		if ident, isIdent := e.Function.(*ast.Identifier); isIdent && ident.Value == "len" && len(e.Arguments) == 1 && lo.aggregateChain(e.Arguments[0]) {
+			// len of an owned array: its declared length.
+			place, reason, ok := lo.placeOf(e.Arguments[0])
+			if !ok {
+				return nil, reason, false
+			}
+			if place.typ.kind != oakArray {
+				return nil, "len of a non-array aggregate", false
+			}
+			return constTerm(uint64(place.typ.length), width), "", true
+		}
 		if name, isLen := lo.spanLength(e); isLen {
 			if value, isConcrete := lo.concrete[name]; isConcrete {
 				return constTerm(value, width), "", true
@@ -1844,7 +2599,19 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		// and signedness; the arms are lowered at the result width.
 		whenTrue, whenFalse, isBool := boolConditional(e)
 		if !isBool {
-			return nil, "a match that is not a two-armed Bool conditional", false
+			if !lo.aggregateChain(e.Scrutinee) {
+				return lo.scalarMatchValue(e, width)
+			}
+			var result *term
+			reason, ok := lo.lowerGeneralMatch(e, func(body ast.Expression) (string, bool) {
+				t, reason, ok := lo.lower(body, width)
+				result = t
+				return reason, ok
+			})
+			if !ok {
+				return nil, reason, false
+			}
+			return result, "", true
 		}
 		cond, reason, ok := lo.lowerCondition(e.Scrutinee)
 		if !ok {
@@ -1923,6 +2690,12 @@ func (lo *oakLowering) operandContract(expr ast.Expression) (int, bool, bool) {
 			return w, lo.signed[e.Value], true
 		}
 	case *ast.IndexExpression:
+		if lo.aggregateChain(e) {
+			if leaf, _, ok := lo.placeOf(e); ok && leaf.typ.kind == oakScalar {
+				return leaf.typ.width, leaf.typ.signed, true
+			}
+			return 0, false, false
+		}
 		if ident, isIdent := e.Left.(*ast.Identifier); isIdent && !e.Dot {
 			if contract, isSpan := lo.spans[ident.Value]; isSpan {
 				return contract.elemWidth, contract.signed, true
@@ -1937,11 +2710,68 @@ func (lo *oakLowering) operandContract(expr ast.Expression) (int, bool, bool) {
 		if _, isLen := lo.spanLength(e); isLen {
 			return 32, false, true
 		}
+		if ident, isIdent := e.Function.(*ast.Identifier); isIdent && ident.Value == "len" && len(e.Arguments) == 1 && lo.aggregateChain(e.Arguments[0]) {
+			return 32, false, true
+		}
 		if len(e.Arguments) == 1 {
 			return lo.operandContract(e.Arguments[0])
 		}
 	}
 	return 0, false, false
+}
+
+// scalarMatchValue lowers a value-position match over a scalar that does
+// not fold: the arms' literal patterns become a chain of selects on
+// equality, ending in the wildcard arm (required: without one the match
+// is outside the subset).
+func (lo *oakLowering) scalarMatchValue(match *ast.MatchExpression, width int) (*term, string, bool) {
+	w, _, ok := lo.operandContract(match.Scrutinee)
+	if !ok {
+		return nil, "a match scrutinee outside the subset", false
+	}
+	value, reason, ok := lo.lower(match.Scrutinee, w)
+	if !ok {
+		return nil, reason, false
+	}
+	var conds, arms []*term
+	var fallback *term
+	for _, matchArm := range match.Arms {
+		switch pattern := matchArm.Pattern.(type) {
+		case *ast.LiteralPattern:
+			lit, reason, ok := lo.lower(pattern.Value, w)
+			if !ok {
+				return nil, reason, false
+			}
+			body, reason, ok := lo.lower(matchArm.Body, width)
+			if !ok {
+				return nil, reason, false
+			}
+			conds = append(conds, truncate(cmpTerm("eq", value, lit), 1))
+			arms = append(arms, body)
+			continue
+		case *ast.WildcardPattern:
+		case *ast.BindingPattern:
+			if pattern.Name != nil && pattern.Name.Value != "_" {
+				return nil, "a binding pattern over a scalar", false
+			}
+		default:
+			return nil, fmt.Sprintf("the pattern %s", matchArm.Pattern.String()), false
+		}
+		body, reason, ok := lo.lower(matchArm.Body, width)
+		if !ok {
+			return nil, reason, false
+		}
+		fallback = body
+		break
+	}
+	if fallback == nil {
+		return nil, "a scalar match without a wildcard arm", false
+	}
+	result := fallback
+	for i := len(conds) - 1; i >= 0; i-- {
+		result = iteTerm(conds[i], arms[i], result)
+	}
+	return result, "", true
 }
 
 // boolConditional recognizes the two-armed Bool match the front end
@@ -2034,6 +2864,7 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (every path traps) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
 	}
 	lowering := newLowering(sig)
+	lowering.records, lowering.adts = fn.Records, fn.ADTs
 	width, _, _ := contractBits(sig.ReturnType)
 	// A tail-recursive body is the loop it compiles to (docs/spec/85-discipline.md).
 	if loop, isTail := tailRecursionAsLoop(sig, oakBody); isTail {

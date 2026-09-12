@@ -150,6 +150,51 @@ func TestCheckerFrameArrays(t *testing.T) {
 	}
 }
 
+// Spans of records: the element idiom over a span base — the index guarded
+// against the span's length register — yields a one-element region,
+// writable only through a `[*]T` span.
+func TestCheckerRecordSpans(t *testing.T) {
+	composites := map[string]Composite{"Node": {Size: 8}, "Cell": {Size: 12}}
+	check := func(t *testing.T, decl, body string) string {
+		unit, errs := ParseUnit("rspan.oakasm", decl+" = {\n"+body+"\n}\n")
+		if len(errs) != 0 {
+			t.Fatalf("parse errors: %v", errs)
+		}
+		sig, err := parseSignature(decl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unit.Functions[0].Composites = composites
+		return strings.Join(Check(unit.Functions[0], sig, nil), "\n")
+	}
+	accepts := []struct{ name, decl, body string }{
+		{"field read through a view of records", "second: (pool: []Node, i: u32) -> u32", "  bind x0, w1 = pool\n  bind w2 = i\n  clobber x9\n  cmp w2, w1\n  b.hs trap\n  add x9, x0, w2, uxtw #3\n  ldr w0, [x9, #4]\n  ret\ntrap:\n  brk #1"},
+		{"field store through a span of 12-byte records", "poke: (pool: [*]Cell, i: u32) -> u32", "  bind x0, w1 = pool\n  bind w2 = i\n  clobber x9, x10\n  cmp w2, w1\n  b.hs trap\n  movz w10, #12\n  umaddl x9, w2, w10, x0\n  str w2, [x9, #8]\n  ldr w0, [x9]\n  ret\ntrap:\n  brk #1"},
+		{"constant index under a length guard", "first: (pool: []Node) -> u32", "  bind x0, w1 = pool\n  clobber x9, x10\n  cmp w1, #2\n  b.lo trap\n  mov w10, #1\n  cmp w10, #2\n  b.hs trap\n  add x9, x0, w10, uxtw #3\n  ldr w0, [x9]\n  ret\ntrap:\n  brk #1"},
+	}
+	for _, tc := range accepts {
+		t.Run(tc.name, func(t *testing.T) {
+			if findings := check(t, tc.decl, tc.body); findings != "" {
+				t.Fatalf("expected no findings, got:\n%s", findings)
+			}
+		})
+	}
+	rejects := []struct{ name, decl, body, want string }{
+		{"store through a view of records", "poke: (pool: []Node, i: u32) -> u32", "  bind x0, w1 = pool\n  bind w2 = i\n  clobber x9\n  cmp w2, w1\n  b.hs trap\n  add x9, x0, w2, uxtw #3\n  str w2, [x9, #4]\n  mov w0, #0\n  ret\ntrap:\n  brk #1", "read-only copy"},
+		{"unguarded element", "second: (pool: []Node, i: u32) -> u32", "  bind x0, w1 = pool\n  bind w2 = i\n  clobber x9\n  add x9, x0, w2, uxtw #3\n  ldr w0, [x9, #4]\n  ret", "memory operands go through the declared sp frame or a bound span base"},
+		{"wrong stride", "second: (pool: []Node, i: u32) -> u32", "  bind x0, w1 = pool\n  bind w2 = i\n  clobber x9\n  cmp w2, w1\n  b.hs trap\n  add x9, x0, w2, uxtw #4\n  ldr w0, [x9, #4]\n  ret\ntrap:\n  brk #1", "memory operands go through the declared sp frame or a bound span base"},
+		{"guard against another register", "second: (pool: []Node, i: u32, n: u32) -> u32", "  bind x0, w1 = pool\n  bind w2 = i\n  bind w3 = n\n  clobber x9\n  cmp w2, w3\n  b.hs trap\n  add x9, x0, w2, uxtw #3\n  ldr w0, [x9, #4]\n  ret\ntrap:\n  brk #1", "memory operands go through the declared sp frame or a bound span base"},
+		{"field past the element", "second: (pool: []Node, i: u32) -> u32", "  bind x0, w1 = pool\n  bind w2 = i\n  clobber x9\n  cmp w2, w1\n  b.hs trap\n  add x9, x0, w2, uxtw #3\n  ldr w0, [x9, #8]\n  ret\ntrap:\n  brk #1", "outside its 8 bytes"},
+	}
+	for _, tc := range rejects {
+		t.Run(tc.name, func(t *testing.T) {
+			if findings := check(t, tc.decl, tc.body); !strings.Contains(findings, tc.want) {
+				t.Fatalf("expected a finding mentioning %q, got:\n%s", tc.want, findings)
+			}
+		})
+	}
+}
+
 // Arrays of records: an element address derived under a constant index
 // guard is a bounded writable region — `add xE, xB, wI, uxtw #s` for a
 // power-of-two stride, `movz wK, #c; umaddl xE, wI, wK, xB` otherwise — and
