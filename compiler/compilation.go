@@ -333,7 +333,12 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		// Asm units pair with definition-less declarations and pass the
 		// assembler's seam checker before type checking sees the program
 		// (docs/spec/94-assembler.md).
-		asmFunctions, asmDiagnostics := comp.stitchAsmUnits(tree.Root)
+		stitcher := comp
+		if tree.Modules != nil && len(tree.Modules.AsmUnits) > 0 {
+			// Imported library packages contribute their embedded units.
+			stitcher.options.AsmUnits = append(append([]SourceText(nil), comp.options.AsmUnits...), tree.Modules.AsmUnits...)
+		}
+		asmFunctions, asmDiagnostics := stitcher.stitchAsmUnits(tree.Root)
 		if err := comp.gate("asm", asmDiagnostics, tree.Modules); err != nil {
 			return nil, err
 		}

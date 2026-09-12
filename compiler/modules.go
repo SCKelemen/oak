@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -136,6 +137,10 @@ type ModuleInfo struct {
 	// PreludeCore requests the core prelude (std.oak) because a standard
 	// library package was imported; `import(std)` requests the full one.
 	PreludeCore bool
+	// AsmUnits are the asm units of imported standard library packages,
+	// their function names already rewritten to the packages' internal
+	// names, ready for the stitching pass (docs/spec/94-assembler.md).
+	AsmUnits []SourceText
 	// LibraryNames maps the flat names of imported standard library
 	// packages' exports to their internal names, for the library sugar.
 	LibraryNames map[string]string
@@ -305,6 +310,7 @@ type moduleLoader struct {
 	abstract    map[string]string
 	sealedList  []SealedImport
 	preludeCore bool
+	asmUnits    []SourceText
 	parameters  []typechecker.ParameterObligation
 	// session relaxes the unused-import rule for the root package: a REPL
 	// imports first and uses later.
@@ -902,8 +908,34 @@ func (l *moduleLoader) loadStdlibPackage(path, text string) *loadedPackage {
 		return nil
 	}
 	pkg.Files = []*packageFile{file}
-	return l.finishPackage(pkg, nil, nil)
+	finished := l.finishPackage(pkg, nil, nil)
+	if finished != nil {
+		l.attachStdlibAsmUnits(finished, path)
+	}
+	return finished
 }
+
+// attachStdlibAsmUnits queues a library package's embedded asm units for
+// the stitching pass, with every unit function header renamed to the
+// package's internal name for that declaration (docs/spec/83-modules.md
+// section 7 naming), so the pairing rule is the same as for a root
+// package's units beside its sources.
+func (l *moduleLoader) attachStdlibAsmUnits(pkg *loadedPackage, path string) {
+	for _, unit := range stdlib.AsmUnits[path] {
+		text := asmUnitHeader.ReplaceAllStringFunc(unit.Text, func(header string) string {
+			name := strings.TrimRight(header, ":")
+			if internal, renamed := pkg.Renames[name]; renamed {
+				return internal + ":"
+			}
+			return header
+		})
+		l.asmUnits = append(l.asmUnits, SourceText{Path: unit.Path, Text: text})
+	}
+}
+
+// asmUnitHeader matches a unit function's name at the start of a line
+// (`name: (params) -> ret = {`); directives and instructions are indented.
+var asmUnitHeader = regexp.MustCompile(`(?m)^[A-Za-z_][A-Za-z0-9_]*:`)
 
 // finishPackage runs the per-package steps after its files are parsed:
 // instantiation, clause check, declaration and import tables, and the
@@ -2088,7 +2120,7 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 		exports[path] = pkg.Exports
 	}
 	links := l.collectLinks(moduleOf)
-	info := &ModuleInfo{Links: links, Public: public, OpaqueTypes: l.opaque, Exports: exports, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, ModuleAdmits: moduleAdmits, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested, NestedDeclarations: nestedDeclarations, Steady: steady, Imports: imports}
+	info := &ModuleInfo{Links: links, Public: public, OpaqueTypes: l.opaque, Exports: exports, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, AsmUnits: l.asmUnits, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, ModuleAdmits: moduleAdmits, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested, NestedDeclarations: nestedDeclarations, Steady: steady, Imports: imports}
 	return &SyntaxTree{
 		Source:  SourceText{Path: root.Dir},
 		File:    root.Files[0].File,

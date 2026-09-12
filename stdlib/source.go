@@ -51,6 +51,29 @@ var randomSource string
 // uuid: RFC 9562 version 4 and 7 values over the random and encoding
 // packages (stdlib/README.md); a library package and part of the flat prelude.
 //
+// AsmUnit is an AArch64 `.oakasm` translation unit beside a library
+// package (docs/spec/94-assembler.md section 7): the loader attaches it when
+// the package is imported, with its function names rewritten to the
+// package's internal names, so the units pair with the package's
+// declarations exactly as a root package's units do.
+type AsmUnit struct {
+	Path string
+	Text string
+}
+
+// The hash package's AArch64 kernels: CRC-32C through crc32cx and SHA-256
+// through the SHA-2 extension. Each pairs with an Oak declaration that keeps
+// its portable body, so the extraction, the interpreter, and non-AArch64
+// builds see the same definition the unit is checked against.
+//
+//go:embed hash.arm64.oakasm
+var hashAsmSource string
+
+// AsmUnits lists the asm units of each library package by package path.
+var AsmUnits = map[string][]AsmUnit{
+	"hash": {{Path: "<stdlib>/hash.arm64.oakasm", Text: hashAsmSource}},
+}
+
 //go:embed uuid.oak
 var uuidSource string
 

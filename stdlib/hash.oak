@@ -77,14 +77,41 @@ sha256_rounds: (h: [8]u32, w_in: [64]u32): [8]u32 {
 // One compression of a 64-byte block held by value: the partial block of
 // the incremental state. The scaled index `i * 4 + k` under `i < 16` is
 // proven against the 64-byte block.
-sha256_compress: (h: [8]u32, block: [64]u8): [8]u32 {
-  w: [64]u32
-  i: u32 = 0
-  while i < u32(16) {
-    w[i] = (u32(block[i * u32(4)]) << u32(24)) | (u32(block[i * u32(4) + u32(1)]) << u32(16)) | (u32(block[i * u32(4) + u32(2)]) << u32(8)) | u32(block[i * u32(4) + u32(3)])
-    i = i + u32(1)
+sha256_compress: (h: [8]u32, block: [64]u8): [8]u32 = sha256_block(h, view(&block))
+
+// sha256_block: one compression of a 64-byte block seen through a view,
+// routed through `sha256_block_hw` so the AArch64 unit runs where it
+// applies and the portable body everywhere else.
+sha256_block: (h: [8]u32, block: []u8): [8]u32 {
+  state: [8]u32 = h
+  true ? {
+    hs: [*]u32 = span(&state)
+    sha256_block_hw(hs, block, view(&SHA256_K))
   }
-  sha256_rounds(h, w)
+  state
+}
+
+// sha256_block_hw: the chaining value in `h` (eight words) advanced by one
+// 64-byte block, with the round constants passed as a view so the AArch64
+// unit (hash.arm64.oakasm) reads them under a proven guard. A short operand
+// leaves `h` unchanged. This body is the portable definition: the unit is
+// checked against it, the Lean extraction sees it, and it runs off AArch64
+// or under -DOAK_PORTABLE_INTRINSICS.
+sha256_block_hw: (h: [*]u32, block: []u8, k: []u32): () {
+  len(h) >= u32(8) && len(block) >= u32(64) && len(k) >= u32(64) ? {
+    entry: [8]u32
+    i: u32 = 0
+    while i < u32(8) {
+      entry[i] = h[i]
+      i = i + u32(1)
+    }
+    next: [8]u32 = sha256_compress_view(entry, block)
+    j: u32 = 0
+    while j < u32(8) {
+      h[j] = next[j]
+      j = j + u32(1)
+    }
+  }
 }
 
 // One compression of a 64-byte block read in place from the input: the
@@ -126,7 +153,7 @@ pub sha256_update: (state: Sha256State, src: []u8): Sha256State {
   // Whole blocks compress in place while the partial block is empty; the
   // guard is the wrap-free spelling of `i + 64 <= len(src)`.
   while next.filled == u32(0) && len(src) >= u32(64) && i <= len(src) - u32(64) {
-    next.h = sha256_compress_view(next.h, subslice(src, i, u32(64)))
+    next.h = sha256_block(next.h, subslice(src, i, u32(64)))
     i = i + u32(64)
   }
   while i < len(src) {
@@ -231,11 +258,61 @@ CRC32C_TABLE: [256]u32 = [256]u32{
 pub crc32c_update: (crc: u32, src: []u8): u32 {
   state: u32 = crc ^ u32(4294967295)
   i: u32 = 0
+  // Whole 56-byte chunks fold seven words at a time (crc32c_step7, the
+  // AArch64 unit's shape); the guard is the wrap-free spelling of
+  // `i + 56 <= len(src)`.
+  while len(src) >= u32(56) && i <= len(src) - u32(56) {
+    chunk: []u8 = subslice(src, i, u32(56))
+    state = crc32c_chunk(state, chunk)
+    i = i + u32(56)
+  }
   while i < len(src) {
     state = CRC32C_TABLE[(state ^ u32(src[i])) & u32(255)] ^ (state >> u32(8))
     i = i + u32(1)
   }
   state ^ u32(4294967295)
+}
+
+// crc32c_chunk folds one 56-byte chunk as seven little-endian words. The
+// loads sit under the one check `len(chunk) >= 56` and are proven.
+crc32c_chunk: (state: u32, chunk: []u8): u32 {
+  len(chunk) >= u32(56) ? {
+    crc32c_step7(state,
+      crc32c_word_at(chunk, u32(0)), crc32c_word_at(chunk, u32(8)),
+      crc32c_word_at(chunk, u32(16)), crc32c_word_at(chunk, u32(24)),
+      crc32c_word_at(chunk, u32(32)), crc32c_word_at(chunk, u32(40)),
+      crc32c_word_at(chunk, u32(48)))
+  } | { state }
+}
+
+// crc32c_word_at reads the little-endian 64-bit word at a constant offset
+// of a chunk whose length the caller has already established.
+crc32c_word_at: (chunk: []u8, at: u32): u64 {
+  len(chunk) >= at + u32(8) ? {
+    u64(chunk[at]) | (u64(chunk[at + u32(1)]) << u64(8)) | (u64(chunk[at + u32(2)]) << u64(16)) | (u64(chunk[at + u32(3)]) << u64(24)) |
+      (u64(chunk[at + u32(4)]) << u64(32)) | (u64(chunk[at + u32(5)]) << u64(40)) | (u64(chunk[at + u32(6)]) << u64(48)) | (u64(chunk[at + u32(7)]) << u64(56))
+  } | { u64(0) }
+}
+
+// crc32c_step7: the running (uninverted) CRC-32C state advanced by seven
+// little-endian 64-bit words, 56 bytes. On AArch64 this is seven crc32cx
+// instructions (hash.arm64.oakasm); this body is the portable definition
+// the unit is checked against, the one the extraction sees, and the one
+// that runs elsewhere.
+crc32c_step7: (state: u32, a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64): u32 =
+  crc32c_word(crc32c_word(crc32c_word(crc32c_word(crc32c_word(crc32c_word(crc32c_word(state, a), b), c), d), e), f), g)
+
+// crc32c_word folds one little-endian 64-bit word through the table, low
+// byte first, exactly as the byte loop does.
+crc32c_word: (state: u32, word: u64): u32 {
+  next: u32 = state
+  i: u32 = 0
+  while i < u32(8) {
+    unit: u32 = u32(u8_trunc_u64(word >> (u64(8) * u64(i))))
+    next = CRC32C_TABLE[(next ^ unit) & u32(255)] ^ (next >> u32(8))
+    i = i + u32(1)
+  }
+  next
 }
 
 pub crc32c: (src: []u8): u32 = crc32c_update(u32(0), src)
