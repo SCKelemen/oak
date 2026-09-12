@@ -76,6 +76,10 @@ type protocolMachine struct {
 	// records are the program's plain record declarations, for the element
 	// type of an array-of-records data field.
 	records map[string]*ast.RecordLiteral
+	// refinements are the program's refinement types, so a payload or a
+	// record payload's field may be a refinement of a command scalar: the
+	// predicate is the domain every gate reads (section 1).
+	refinements map[string]*ast.ADTType
 }
 
 // quantifierUse is one count/all/any/none form over a data field: the
@@ -100,6 +104,45 @@ var quantifierForms = map[string]bool{"count": true, "all": true, "any": true, "
 // RecordDeclarations collects a program's plain (non-generic) record
 // declarations by name: the element types array-of-records protocol data
 // may use.
+// RefinementDeclarations collects a program's refinement types — `Name:
+// type = Base where <pred>` (docs/spec/20-types.md section 12) — by name,
+// for payloads whose domain is the refinement's (docs/spec/112-protocols.md
+// section 1).
+func RefinementDeclarations(program *ast.Program) map[string]*ast.ADTType {
+	out := map[string]*ast.ADTType{}
+	for _, stmt := range program.Statements {
+		if adt, ok := stmt.(*ast.ADTType); ok && adt.Refinement != nil && adt.Name != nil && len(adt.TypeParams) == 0 {
+			out[adt.Name.Value] = adt
+		}
+	}
+	return out
+}
+
+// ProtocolDeclarations is what a protocol's analysis and projections read
+// from the rest of the program: the plain records (element records, record
+// payloads) and the refinement types (refined payloads and fields).
+type ProtocolDeclarations struct {
+	Records     map[string]*ast.RecordLiteral
+	Refinements map[string]*ast.ADTType
+}
+
+// ProtocolDeclarationsOf collects both from a program.
+func ProtocolDeclarationsOf(program *ast.Program) ProtocolDeclarations {
+	return ProtocolDeclarations{Records: RecordDeclarations(program), Refinements: RefinementDeclarations(program)}
+}
+
+// refinementBase is the base scalar of a refinement declaration, "" when
+// the declaration is not a refinement of a named type.
+func refinementBase(decl *ast.ADTType) string {
+	if decl == nil || decl.Refinement == nil || len(decl.Variants) != 1 || decl.Variants[0].Payload == nil {
+		return ""
+	}
+	if base, ok := decl.Variants[0].Payload.(*ast.Identifier); ok {
+		return base.Value
+	}
+	return ""
+}
+
 func RecordDeclarations(program *ast.Program) map[string]*ast.RecordLiteral {
 	records := map[string]*ast.RecordLiteral{}
 	if program == nil {
@@ -403,10 +446,34 @@ func analyzeProtocol(decl *ast.ProtocolDeclaration, report func(code string, nod
 // declarations, which array-of-records data and two-argument quantifier
 // forms need.
 func analyzeProtocolWith(decl *ast.ProtocolDeclaration, records map[string]*ast.RecordLiteral, report func(code string, node ast.Node, format string, args ...interface{})) (*protocolMachine, bool) {
+	return analyzeProtocolDecls(decl, ProtocolDeclarations{Records: records}, report)
+}
+
+// payloadScalar resolves a payload or payload-field type name to the
+// command scalar that carries it: the name itself, or the base of a
+// refinement of u8 or u16 (a u32 base is too wide for the typed-command
+// generator to scan, and Bool has no refinements).
+func (m *protocolMachine) payloadScalar(name string) (base string, refined bool, ok bool) {
+	if _, scalar := commandScalars[name]; scalar {
+		return name, false, true
+	}
+	if decl, isRefinement := m.refinements[name]; isRefinement {
+		base := refinementBase(decl)
+		if base == "u8" || base == "u16" {
+			return base, true, true
+		}
+	}
+	return "", false, false
+}
+
+func analyzeProtocolDecls(decl *ast.ProtocolDeclaration, decls ProtocolDeclarations, report func(code string, node ast.Node, format string, args ...interface{})) (*protocolMachine, bool) {
 	ok := true
-	m := &protocolMachine{decl: decl, name: decl.Name.Value, records: records}
+	m := &protocolMachine{decl: decl, name: decl.Name.Value, records: decls.Records, refinements: decls.Refinements}
 	if m.records == nil {
 		m.records = map[string]*ast.RecordLiteral{}
+	}
+	if m.refinements == nil {
+		m.refinements = map[string]*ast.ADTType{}
 	}
 	seen := map[string]bool{}
 	addState := func(id *ast.Identifier) {
@@ -507,17 +574,17 @@ func analyzeProtocolWith(decl *ast.ProtocolDeclaration, records map[string]*ast.
 			if !isIdent {
 				report(CodeProtocolShape, t.Param.Name, "transition %s: a payload is one of u8, u16, u32, Bool, or a record of those", t.Name.Value)
 				ok = false
-			} else if _, scalar := commandScalars[typeName.Value]; !scalar {
+			} else if _, _, scalar := m.payloadScalar(typeName.Value); !scalar {
 				if record, isRecord := m.records[typeName.Value]; isRecord {
 					for _, field := range record.FieldOrder {
 						fieldType, fieldIsIdent := field.Value.(*ast.Identifier)
-						if _, fieldScalar := commandScalars[fieldTypeName(fieldType, fieldIsIdent)]; !fieldScalar {
-							report(CodeProtocolShape, t.Param.Type, "transition %s: payload record %s: field %s is %s; a record payload's fields are u8, u16, u32, Bool", t.Name.Value, typeName.Value, field.Name, field.Value.String())
+						if _, _, fieldScalar := m.payloadScalar(fieldTypeName(fieldType, fieldIsIdent)); !fieldScalar {
+							report(CodeProtocolShape, t.Param.Type, "transition %s: payload record %s: field %s is %s; a record payload's fields are u8, u16, u32, Bool, or a refinement of u8 or u16", t.Name.Value, typeName.Value, field.Name, field.Value.String())
 							ok = false
 						}
 					}
 				} else {
-					report(CodeProtocolShape, t.Param.Type, "transition %s: payload type %s is not one of u8, u16, u32, Bool, or a declared record of those", t.Name.Value, typeName.Value)
+					report(CodeProtocolShape, t.Param.Type, "transition %s: payload type %s is not one of u8, u16, u32, Bool, or a declared record of those (a refinement of u8 or u16 is admitted too)", t.Name.Value, typeName.Value)
 					ok = false
 				}
 			}
@@ -632,7 +699,7 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 			continue
 		}
 		found = true
-		machine, ok := analyzeProtocolWith(decl, RecordDeclarations(program), report)
+		machine, ok := analyzeProtocolDecls(decl, ProtocolDeclarationsOf(program), report)
 		if !ok {
 			continue
 		}

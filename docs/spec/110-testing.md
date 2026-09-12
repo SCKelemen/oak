@@ -567,6 +567,17 @@ A command sum type derives its generator, carrier encoding, and decoder
 (`u8`, `u16`, `u32`, `Bool`), or a closed record of at most two carrier
 scalars. The type's own package declares:
 
+A command scalar may be a refinement of `u8` or `u16` (`Slot: type = u8
+where value < u8(4)`, `20-types.md` §12), alone or as a record field: the
+generator draws the base from the tape and scans forward, wrapping, to the
+first value the predicate admits (deterministic; a zero tape lands on the
+smallest admitted value; a refinement that admits nothing traps at the
+construction), the encoder packs the base word, and the decoder refuses a
+word the predicate rejects with `None` before constructing `Slot(v)`. A
+`u32` base is refused, since the scan would be unbounded in practice. This
+is the same domain a protocol's refined payload carries (`112-protocols.md`
+§1).
+
 A protocol declaration's step type (`112-protocols.md`) satisfies this shape, so
 a generated history can be a sequence of protocol steps with the projected
 `name_legal` as the generator's legality predicate and `name_next` as the model.
