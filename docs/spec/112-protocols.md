@@ -89,9 +89,13 @@ sequence of entries separated by newlines or commas:
   `data` in the guard subset: `eventually Yielded`, `eventually Running ->
   Yielded`, `eventually Running -> data.budget == u32(1)`. The module
   states them as `<>` and `~>` (leads to) under the property `Liveness`,
-  which TLC checks against the declared fairness. A state no transition
-  reaches, an unknown step, or data in a protocol that declares none is a
-  shape error (`OAK-M0301`).
+  which TLC checks against the declared fairness, and `oak prove` decides
+  them itself for a finite machine (`125-verification.md` §2b), over the
+  reachable states of the projection. Each side is also projected as a
+  Bool predicate over the state and data (`name_live1_from`,
+  `name_live1_to`, ...). A state no transition reaches, an unknown step,
+  or data in a protocol that declares none is a shape error
+  (`OAK-M0301`).
 
 States are the names `initial` and the transition lines mention, in order of
 first appearance with the initial state first; they are spelled like variants
@@ -449,6 +453,15 @@ The rules:
    via callable of a transition **into** that state (`OAK-B0121`). Only the
    transition may make the claim its target state represents.
 
+A typestate resource may also carry **region parameters**
+(`50-borrowing.md` §8c): `Node[R, S]: type = struct { data: View[f32, R],
+n: u32 }` with `initial Lazy` and `realize: Lazy -> Realized` gives
+`realize[R]: (x: Node[R, Lazy]): Node[R, Realized]`, the same borrows in
+the next state, and an operation that needs its operand in storage takes
+`Node[R, Realized]` — a wrong order is a type error, not a run-time trap
+(ml F7). Region parameters are erased before the state is applied, so
+each state's instantiation borrows exactly as the template declares.
+
 `Oak.Typestate` (`spec/lean/Oak/Typestate.lean`) states the calculus —
 construction at the initial state, transitions along legal lines — and
 proves that the machine state always equals the static index
@@ -469,10 +482,11 @@ obligation.
 ## 6. What is not derived
 
 Environment assumptions beyond fairness on the declared steps (device
-progress, timing) are the TLA+ extension module's, and liveness is the
-model checker's verdict, not the compiler's: `oak prove` decides safety
-invariants (`125-verification.md` §2a) and leaves `eventually` to TLC under
-the declared fairness. Guards and effects beyond the translated subset — loops, calls into
+progress, timing) are the TLA+ extension module's. `oak prove` decides
+safety invariants (`125-verification.md` §2a) and, for a finite machine,
+the `eventually` entries under the declared fairness (§2b) — over the
+projection's reading, the first line whose guard holds; TLC checks the
+same entries over the declaration's every-line reading. Guards and effects beyond the translated subset — loops, calls into
 the program, indices computed from other fields — stay in hand-written
 models. The declaration does
 not generate Lean definitions, state diagrams, or debugger decoding

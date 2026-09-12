@@ -517,6 +517,10 @@ type TypeChecker struct {
 	// callee of every infix expression that resolved through a binding.
 	operatorBindings map[string]string
 	operatorLaws     []OperatorLaw
+	lawLowerings     []LawLowering
+	// reinterpretFactors maps a view_as/span_as call (position-keyed) to
+	// the scalars per record its source holds.
+	reinterpretFactors map[string]Reinterpretation
 	// custodyInitializer is the custody transition call currently checked
 	// as a Buffer declaration's initializer, the one position such a call
 	// may stand in (docs/spec/92-ffi.md section 2.8.5).
@@ -1057,6 +1061,46 @@ func (tc *TypeChecker) recordOperatorLaws(fn *ast.FunctionStatement, typeName st
 // OperatorLaws lists the declared operator laws in declaration order.
 func (tc *TypeChecker) OperatorLaws() []OperatorLaw {
 	return append([]OperatorLaw(nil), tc.operatorLaws...)
+}
+
+// LawLowering records one call site regrouped on a declared operator law:
+// a reduce.tree over an operator declaring associative, lowered to
+// reduce.chain (docs/spec/10-syntax.md section 14a; the ml pilot's F3).
+type LawLowering struct {
+	Token    token.Token
+	Function string // the operator function whose law licensed the lowering
+	From, To string // the library function called and the one lowered to
+}
+
+// LawLowerings lists the call sites lowered on a declared law, in order.
+func (tc *TypeChecker) LawLowerings() []LawLowering {
+	return append([]LawLowering(nil), tc.lawLowerings...)
+}
+
+// lowerAssociativeTree rewrites reduce.tree(xs, zero, f) to
+// reduce.chain(xs, zero, f) when f names an operator definition declaring
+// laws { associative }: by Oak.Reduce.tree_eq_chainFold the two agree under
+// the law, and chain is the left fold from the first element with no stack
+// of partials. A kernel body cannot reach it: operators are declared over
+// records, which are outside the kernel subset, so a kernel's reduction is
+// the tree it names. A false law makes the result differ from the tree
+// named, which is what the chapter says a false law does.
+func (tc *TypeChecker) lowerAssociativeTree(expr *ast.InvocationExpression) {
+	callee, ok := expr.Function.(*ast.Identifier)
+	if !ok || len(expr.Arguments) != 3 {
+		return
+	}
+	path, name, ok := modules.Demangle(callee.Value)
+	if !ok || path != "reduce" || name != "tree" {
+		return
+	}
+	combine, ok := expr.Arguments[2].(*ast.Identifier)
+	if !ok || !tc.HasOperatorLaw(combine.Value, "associative") {
+		return
+	}
+	lowered := modules.Mangle(path, "chain")
+	tc.lawLowerings = append(tc.lawLowerings, LawLowering{Token: expr.Token, Function: combine.Value, From: callee.Value, To: lowered})
+	callee.Value = lowered
 }
 
 // HasOperatorLaw reports whether the function bound as an operator declares
@@ -1848,6 +1892,7 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		if tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType)) == nil {
 			return nil
 		}
+		tc.noteGuardWrap(expr, leftType, rightType)
 		return &BoolType{}
 	default:
 		tc.addError(expr, "unknown infix operator: %s", expr.Operator)
@@ -2175,6 +2220,18 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		return layoutType
 	}
 
+	// view_as[U](v) / span_as[U](s): the scalar view of a view of records
+	// (docs/spec/50-borrowing.md section 8d); the call site is rewritten
+	// to the plain builtin name and the element factor recorded.
+	if idx, ok := expr.Function.(*ast.IndexExpression); ok && !idx.Dot {
+		if callee, isIdent := idx.Left.(*ast.Identifier); isIdent && (callee.Value == "view_as" || callee.Value == "span_as") {
+			return tc.checkReinterpretCast(callee, idx.Index, expr)
+		}
+	}
+	// A reduce.tree whose combine declares laws { associative } lowers to
+	// reduce.chain (docs/spec/10-syntax.md section 14a): the declared law is
+	// the permission to regroup, Oak.Reduce.tree_eq_chainFold the theorem.
+	tc.lowerAssociativeTree(expr)
 	// Generic function calls monomorphize here: the call site is rewritten
 	// to the specialized name and re-typed (typechecker/genericfn.go).
 	if genericType, isGeneric := tc.resolveGenericInvocation(expr); isGeneric {
@@ -2212,10 +2269,10 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		}
 	}
 
-	// Check if this is a builtin reinterpret cast: view_as[U](src) or span_as[U](src)
 	if ident, ok := expr.Function.(*ast.Identifier); ok {
 		if ident.Value == "view_as" || ident.Value == "span_as" {
-			return tc.checkReinterpretCast(ident.Value, expr.Arguments)
+			tc.addError(expr, "%s takes its target type: %s[f32](rows) views a view of records as their scalar storage (docs/spec/50-borrowing.md section 8d)", ident.Value, ident.Value)
+			return nil
 		}
 		// Borrow-creation builtins (docs/spec/50-borrowing.md): view(&owner)
 		// and span(&owner) borrow an owned array; subslice derives from an
@@ -2576,58 +2633,95 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 
 // checkReinterpretCast checks view_as[U](src: []T) and span_as[U](src: [*]T) calls
 // These functions reinterpret views/spans to different element types
-func (tc *TypeChecker) checkReinterpretCast(funcName string, args []ast.Expression) Type {
-	// For now, we'll use a simplified syntax: view_as[U](src) or span_as[U](src)
-	// In the future, we might support explicit generic syntax
-	if len(args) != 1 {
-		// Use first argument if available, otherwise nil
-		var node ast.Node
-		if len(args) > 0 {
-			node = args[0]
-		}
-		tc.addError(node, "%s expects exactly one argument", funcName)
+// reinterpretScalars are the element types a scalar view may have.
+var reinterpretScalars = map[string]bool{
+	"u8": true, "u16": true, "u32": true, "u64": true,
+	"i8": true, "i16": true, "i32": true, "i64": true,
+	"f32": true, "f64": true,
+}
+
+// checkReinterpretCast types view_as[U](v) and span_as[U](s)
+// (docs/spec/50-borrowing.md section 8d): the source is a view (or span)
+// of a declared record whose fields are all U — scalars or fixed arrays of
+// U — so the record's natural layout is contiguous scalars and the result
+// is the same storage as a []U (or [*]U) of len(v) * K elements, K the
+// scalars per record. The call site is rewritten to the plain builtin name
+// (the callee shape the later phases dispatch on) and K is recorded for
+// the backend, position-keyed.
+func (tc *TypeChecker) checkReinterpretCast(callee *ast.Identifier, targetSyntax ast.Expression, expr *ast.InvocationExpression) Type {
+	name := callee.Value
+	if len(expr.Arguments) != 1 {
+		tc.addError(expr, "%s expects exactly one argument", name)
 		return nil
 	}
-
-	srcType := tc.checkExpression(args[0])
+	target := tc.parseTypeExpression(targetSyntax)
+	prim, isPrim := target.(*PrimitiveType)
+	if target == nil || !isPrim || !reinterpretScalars[prim.Name] {
+		tc.addError(targetSyntax, "%s: the target is a fixed-width integer or floating-point type, got %s", name, targetSyntax.String())
+		return nil
+	}
+	srcType := tc.checkExpression(expr.Arguments[0])
 	if srcType == nil {
 		return nil
 	}
-
-	// Check if source is a view or span
-	if arrayType, ok := srcType.(*ArrayType); ok {
-		if funcName == "view_as" && arrayType.IsSlice {
-			// view_as[U]([]T) -> []U
-			// For now, without generics, we'll require type annotation at call site
-			// The actual target type will be inferred from context or explicit annotation
-			// Return a placeholder type that indicates reinterpret is needed
-			// In practice, the target type would come from the generic parameter [U]
-			tc.addError(args[0], "view_as requires generic type parameter (e.g., view_as[u32](src)). Generic syntax not yet implemented. Use type annotation: v: []u32 = view_as(src)")
-			// Return a placeholder - in full implementation, this would be []U where U is from generic param
-			return &ArrayType{
-				ElementType: arrayType.ElementType, // Placeholder - would be U in full implementation
-				Length:      -1,
-				IsSlice:     true,
-				IsSpan:      false,
-			}
-		} else if funcName == "span_as" && arrayType.IsSpan {
-			// span_as[U]([*]T) -> [*]U
-			tc.addError(args[0], "span_as requires generic type parameter (e.g., span_as[u32](src)). Generic syntax not yet implemented. Use type annotation: s: [*]u32 = span_as(src)")
-			// Return a placeholder
-			return &ArrayType{
-				ElementType: arrayType.ElementType, // Placeholder - would be U in full implementation
-				Length:      -1,
-				IsSlice:     false,
-				IsSpan:      true,
-			}
-		} else {
-			tc.addError(args[0], "%s type mismatch: view_as requires []T, span_as requires [*]T, got %s", funcName, srcType)
-			return nil
-		}
-	} else {
-		tc.addError(args[0], "%s requires a view ([]T) or span ([*]T), got %s", funcName, srcType)
+	arr, isArray := srcType.(*ArrayType)
+	switch {
+	case !isArray || (!arr.IsSlice && !arr.IsSpan):
+		tc.addError(expr.Arguments[0], "%s requires a view or span of records, got %s", name, srcType)
+		return nil
+	case name == "view_as" && !arr.IsSlice:
+		tc.addError(expr.Arguments[0], "view_as takes a read-only view []R; span_as takes a span")
+		return nil
+	case name == "span_as" && !arr.IsSpan:
+		tc.addError(expr.Arguments[0], "span_as takes a writable span [*]R; view_as takes a view")
 		return nil
 	}
+	record, isRecord := arr.ElementType.(*RecordType)
+	if !isRecord {
+		tc.addError(expr.Arguments[0], "%s reinterprets a view of records, got a view of %s", name, arr.ElementType)
+		return nil
+	}
+	count := int64(0)
+	for _, field := range record.Order {
+		switch ft := record.Fields[field].(type) {
+		case *PrimitiveType:
+			if ft.Name == prim.Name {
+				count++
+				continue
+			}
+		case *ArrayType:
+			if element, ok := ft.ElementType.(*PrimitiveType); ok && ft.Length > 0 && !ft.IsSlice && !ft.IsSpan && element.Name == prim.Name {
+				count += ft.Length
+				continue
+			}
+		}
+		tc.addError(expr.Arguments[0], "%s[%s]: field %s of %s is %s; a scalar view needs every field to be %s or a fixed array of %s, so the record's layout is contiguous %ss", name, prim.Name, field, record.Name, record.Fields[field], prim.Name, prim.Name, prim.Name)
+		return nil
+	}
+	if count == 0 {
+		tc.addError(expr.Arguments[0], "%s[%s]: %s has no fields", name, prim.Name, record.Name)
+		return nil
+	}
+	if tc.reinterpretFactors == nil {
+		tc.reinterpretFactors = make(map[string]Reinterpretation)
+	}
+	tc.reinterpretFactors[positionKey(expr.Token)] = Reinterpretation{Factor: count, Element: prim.Name}
+	expr.Function = &ast.Identifier{Token: callee.Token, Value: name}
+	return &ArrayType{Length: -1, IsSlice: name == "view_as", IsSpan: name == "span_as", ElementType: prim}
+}
+
+// Reinterpretation is what the backend needs of a view_as/span_as call:
+// the scalars per record and the scalar element type.
+type Reinterpretation struct {
+	Factor  int64
+	Element string
+}
+
+// ReinterpretationAt reports the reinterpretation recorded for the
+// view_as/span_as call at tok when it was checked.
+func (tc *TypeChecker) ReinterpretationAt(tok token.Token) (Reinterpretation, bool) {
+	r, ok := tc.reinterpretFactors[positionKey(tok)]
+	return r, ok
 }
 
 // checkPrimitiveConstructor checks if an invocation is a primitive type constructor
@@ -4777,7 +4871,7 @@ func (tc *TypeChecker) checkWhileStatement(stmt *ast.WhileStatement) {
 	// earlier statement of the body executes again after the assignment
 	// (typechecker/extents.go).
 	conditionFacts := tc.loopConditionFacts(stmt)
-	tc.killFactsAssignedByExcept(stmt, tc.lowerBoundsSurviving(stmt, conditionFacts))
+	tc.killFactsAssignedByExcept(stmt, tc.lowerBoundsSurviving(stmt, conditionFacts), tc.upperBoundsSurviving(stmt, conditionFacts))
 	conditionType := tc.checkExpression(stmt.Condition)
 	if conditionType != nil && !conditionType.Equals(&BoolType{}) {
 		tc.addError(stmt.Condition, "while condition must be bool, got %s", conditionType)
@@ -6088,4 +6182,64 @@ func (tc *TypeChecker) flattenRecordComposition(expr ast.Expression, fields *map
 			tc.addError(nil, "invalid expression in record composition: %T", expr)
 		}
 	}
+}
+
+// noteGuardWrap reports an unsigned `+` or `*` that is computed inside an
+// ordering comparison. `off + len <= cap` is the shape of a bounds guard,
+// and on fixed-width unsigned operands the sum wraps mod 2^N before the
+// comparison sees it, so an attacker-sized `len` passes the guard
+// (CWE-190). The operators' wrapping contract is frozen
+// (docs/spec/20-types.md §11.1), so this is a report, not a rejection: the
+// arithmetic family (`u32_checked_add`, `u32_saturating_add`) or a
+// rearranged guard (`off <= cap - len` once `len <= cap` holds) spells the
+// intent. Subtraction is deliberately not reported: `off <= cap - len` is
+// the recommended shape, and its precondition (`len <= cap`) is a plain
+// guard the reader can see. Both operands literal is arithmetic the checker
+// already folds; signed operands are out of scope (their wrap is a
+// different rule).
+func (tc *TypeChecker) noteGuardWrap(cmp *ast.InfixExpression, leftType, rightType Type) {
+	sides := [...]struct {
+		expr ast.Expression
+		typ  Type
+	}{{cmp.Left, leftType}, {cmp.Right, rightType}}
+	for _, side := range sides {
+		inner, ok := side.expr.(*ast.InfixExpression)
+		if !ok || (inner.Operator != "+" && inner.Operator != "*") {
+			continue
+		}
+		if tc.literalOperand(inner.Left) && tc.literalOperand(inner.Right) {
+			continue
+		}
+		prim, ok := side.typ.(*PrimitiveType)
+		if !ok {
+			continue
+		}
+		fixed := tc.FixedWidthName(prim.Name)
+		if fixed == "" || fixed[0] != 'u' {
+			continue
+		}
+		verb := map[string]string{"+": "add", "*": "mul"}[inner.Operator]
+		d := tc.addTypeInformation(inner, CodeGuardWrap,
+			fmt.Sprintf("unsigned `%s` on %s inside an ordering guard wraps before the comparison", inner.Operator, fixed))
+		d.Advice = append(d.Advice, diagnostic.Advice{Kind: diagnostic.AdviceNote,
+			Message: fmt.Sprintf("spell the intent: `%s_checked_%s` or `%s_saturating_%s` (20-types.md §11.1a), or compare against the remaining room so the guard cannot wrap", fixed, verb, fixed, verb)})
+	}
+}
+
+// literalOperand reports an operand whose value is fixed in the source: a
+// literal, or a fixed-width conversion of one (`u32(1)`), the spelling Oak
+// programs use for typed constants.
+func (tc *TypeChecker) literalOperand(expr ast.Expression) bool {
+	if IsLiteralOnlyExpression(expr) {
+		return true
+	}
+	call, ok := expr.(*ast.InvocationExpression)
+	if !ok || len(call.Arguments) != 1 {
+		return false
+	}
+	ident, ok := call.Function.(*ast.Identifier)
+	if !ok || tc.FixedWidthName(ident.Value) == "" {
+		return false
+	}
+	return IsLiteralOnlyExpression(call.Arguments[0])
 }

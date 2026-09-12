@@ -3,17 +3,52 @@ package compiler
 import "testing"
 
 // The utf8 package (stdlib/utf8.oak): Keiser and Lemire's lookup-table
-// validator over Oak's portable vectors. Every case is checked against the
-// scalar builtin `is_valid_utf8` (the Table 3-7 transliteration the Lean
-// model Oak.Utf8Validity brackets) in the same program, under the NEON
-// lowering and the portable lane loop; the edge cases also carry their
-// expected verdicts, so the two validators cannot agree by being wrong
-// together.
+// validator over Oak's portable vectors, taken sixty-four bytes at a step.
+// Every case is checked against a scalar transliteration of Table 3-7
+// written in Oak in the same program (the shape of Oak.Utf8Exec), under
+// the NEON lowering and the portable lane loop; the edge cases also carry
+// their expected verdicts, so the two validators cannot agree by being
+// wrong together. The builtin `is_valid_utf8` lowers to `utf8.valid` in a
+// module build (docs/spec/70-strings.md section 8), so it is asserted equal
+// as well: that checks the lowering is wired, not the algorithm.
 const utf8Program = `package main
 utf8 := import("utf8")
 r := import("random")
 
-agree: (v: []u8): Bool = utf8.valid(v) == is_valid_utf8(v)
+// A scalar transliteration of Unicode Table 3-7 in Oak, the oracle the
+// vector validator is checked against: byte by byte, each lead's required
+// continuations, nothing else.
+utf8_cont: (b: u8): Bool = b >= u8(128) && b <= u8(191)
+utf8_second3: (b0: u8, b1: u8): Bool =
+  b0 == u8(224) ? (b1 >= u8(160) && b1 <= u8(191))
+  | b0 == u8(237) ? (b1 >= u8(128) && b1 <= u8(159))
+  | utf8_cont(b1)
+utf8_second4: (b0: u8, b1: u8): Bool =
+  b0 == u8(240) ? (b1 >= u8(144) && b1 <= u8(191))
+  | b0 == u8(244) ? (b1 >= u8(128) && b1 <= u8(143))
+  | utf8_cont(b1)
+utf8_scalar: (v: []u8): Bool {
+  n: u32 = len(v)
+  i: u32 = u32(0)
+  ok: Bool = true
+  while ok && i < n {
+    b0: u8 = v[i]
+    b0 <= u8(127) ? { i = i + u32(1) }
+    | b0 >= u8(194) && b0 <= u8(223) ? {
+      i + u32(1) < n && utf8_cont(v[i + u32(1)]) ? { i = i + u32(2) } | { ok = false }
+    }
+    | b0 >= u8(224) && b0 <= u8(239) ? {
+      i + u32(2) < n && utf8_second3(b0, v[i + u32(1)]) && utf8_cont(v[i + u32(2)]) ? { i = i + u32(3) } | { ok = false }
+    }
+    | b0 >= u8(240) && b0 <= u8(244) ? {
+      i + u32(3) < n && utf8_second4(b0, v[i + u32(1)]) && utf8_cont(v[i + u32(2)]) && utf8_cont(v[i + u32(3)]) ? { i = i + u32(4) } | { ok = false }
+    }
+    | { ok = false }
+  }
+  ok
+}
+
+agree: (v: []u8): Bool = utf8.valid(v) == utf8_scalar(v) && is_valid_utf8(v) == utf8.valid(v)
 
 // The first n bytes of v: valid by both validators, or invalid by both.
 prefix_valid: (v: []u8, n: u32): Bool = utf8.valid(subslice(v, u32(0), n)) && agree(subslice(v, u32(0), n))

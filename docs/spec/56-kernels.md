@@ -79,6 +79,15 @@ the kernel. Two rules the emitter cannot judge alone are checked beside it:
   is empty and fully known: an undeclared extern or an unrowed function
   value in reach rejects.
 
+**Statement order is emitted order.** Every statement of a kernel or
+helper body is emitted in place, in source order; an expression's
+operands are emitted left to right; the lines a cooperative reduction
+needs go immediately before the statement that holds its value. A body
+that loads after it multiplies is emitted loading after it multiplies
+(`TestKernelsPreserveStatementOrder`). What the C compiler or the Metal
+compiler reorders afterward is behind the language's memory model and
+changes no result; the author's order is the program's order.
+
 Inside the subset:
 
 | Oak | Metal Shading Language |
@@ -286,6 +295,11 @@ at: t.Tensor2 = t.tensor_transpose(a)               // strides swapped, same sto
   of `tensor_matmul` are the sequential left fold in row-major order, the
   grouping every backend computes; a tree-grouped variant is `reduce.tree`
   (`55-parallelism.md` §4) over the same elements.
+- **A field across positions is a tensor.** The `[q | k | v]` cache row is
+  a record; `k` across positions is `tensor_strided(view_as[f32](rows),
+  positions, D, 3 * D, 1, D)` — the scalar view of the record view
+  (`50-borrowing.md` §8d) under an explicit layout, no copy and no stride
+  arithmetic in an emitter (ml F6).
 - **Kernels take tensors.** `kernel relu[R, S]: (gid: u32, x: Tensor2[R],
   out: MutTensor2[S])` takes the records themselves (§1): the Metal entry
   flattens each into its buffers and rebuilds the struct, `tensor_at(x, i,
@@ -332,9 +346,17 @@ the identity (`transpose_transpose`), that a row reads as the original
 row-major left fold from zero** (`tensor_sum_spec`: the extracted loops
 compute `tensorFold`, given fuel for the rows and the columns — with
 floating-point addition the order is the whole content of the statement,
-and it is the order every backend computes). The specification of
-`tensor_matmul` waits on the extractor: a store through a record's span
-field extracts to `Option Unit`, so the written array is not threaded and
-the function's effect is invisible to Lean; threading record-held spans
-through the extraction is the recorded next step.
+and it is the order every backend computes), and that a store through a
+record's span field reads back (`set_get`): the extractor threads a
+span-holding record parameter like a span, so `tensor_set` and
+`tensor_matmul` return the written record and their effect is visible to
+Lean — and that **`tensor_matmul` is the inner product**
+(`tensor_matmul_spec`): over a contiguous output of the right shape, the
+extracted function returns a record whose entry `(i, j)`, at storage
+index `i * cols + j`, is `inner a b i j` — `a.cols` terms `a[i, k] *
+b[k, j]` added left to right from zero — for every `(i, j)` in shape. The
+proof equates the extracted loops with a store model (`writeRows`)
+structurally, then shows the model keeps every entry it wrote, because a
+row writes indices below the next row's (`writeRow_inside`,
+`writeRows_outside`); the fuel is the three loop bounds.
 

@@ -136,16 +136,19 @@ main: (): i32 {
 	if abnormal || code != 42 {
 		t.Fatalf("exit = (%d, abnormal=%v), want 42", code, abnormal)
 	}
+	// A write to the bound before the loop kills its fact from the write
+	// on (a write after the loop no longer matters: facts are
+	// flow-sensitive, docs/spec/50-borrowing.md).
 	reassigned := `
 sum_all: (x: []f32): f32 {
   n: u32 = len(x)
   acc: f32 = 0.0
   i: u32 = 0
+  n = n + 1
   while i < n {
     acc = acc + x[i]
     i = i + 1
   }
-  n = n + 1
   acc
 }
 main: (): i32 = 0

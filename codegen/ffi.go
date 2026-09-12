@@ -304,7 +304,13 @@ func (cg *CodeGenerator) emitLibraryCall(call *ast.InvocationExpression, tc *typ
 			cg.output.WriteString("OAK_UNSUPPORTED_SIMD_OP")
 			return true
 		}
-		cg.output.WriteString(fmt.Sprintf("oak_simd_%s( ", member))
+		helper := "oak_simd_" + member
+		// A load or store the checker proved in range (typechecker/extents.go,
+		// recordVectorAccessProof) takes the helper without the trap check.
+		if op, _, _ := simdOpSplit(member); (op == "load" || op == "store") && tc != nil && tc.IndexProven(call.Token) {
+			helper += "_proven"
+		}
+		cg.output.WriteString(helper + "( ")
 		for i, arg := range call.Arguments {
 			cg.emitExpressionFragment(arg, tc)
 			if i < len(call.Arguments)-1 {
@@ -483,7 +489,7 @@ func (cg *CodeGenerator) emitArgvHelper(program *ast.Program) {
 	cg.write("/* c.argv_of: a NUL-terminated pointer vector over Oak strings, for one call */\n")
 	cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n#include <stdio.h>\n")
 	cg.write("#define OAK_ARGV_FAIL(msg) do { fprintf(stderr, \"oak: c.argv_of %s at %s:%u\\n\", msg, file, (unsigned)line); __builtin_trap(); } while (0)\n")
-	cg.write("#else\n#define OAK_ARGV_FAIL(msg) do { (void)file; (void)line; __builtin_trap(); } while (0)\n#endif\n")
+	cg.write("#else\n#define OAK_ARGV_FAIL(msg) do { oak_report(\"c.argv_of \" msg, file, line); __builtin_trap(); } while (0)\n#endif\n")
 	cg.write(fmt.Sprintf("static inline void *oak_argv_u8(%s v, void **slots, u64 nslots, const char *file, u32 line) {\n", viewTypeName))
 	cg.write("  u64 count = 0;\n  u64 i;\n")
 	cg.write("  if (v.len != 0u && v.base[v.len - 1u] != 0u) { OAK_ARGV_FAIL(\"strings are not NUL-terminated\"); }\n")

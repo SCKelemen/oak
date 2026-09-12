@@ -81,8 +81,11 @@ jobs:
       with:
         version: 0.15.1
 
-    - name: Cross-build for every Linux target from the runner
-      run: go test -v ./target ./toolchain ./compiler -run '^Test(ParseAndEnv|Spellings|ResolveOrder|Cross)'
+    - name: Install QEMU for the microcontroller targets
+      run: sudo apt-get update && sudo apt-get install -y qemu-system-arm qemu-system-misc
+
+    - name: Cross-build for every Linux target and run the microcontroller targets under QEMU
+      run: go test -v ./target ./toolchain ./compiler -run '^Test(ParseAndEnv|Spellings|ResolveOrder|Cross|E2EMicrocontroller)'
 
   aarch64-memory-refinement:
     name: AArch64 Memory Refinement

@@ -141,6 +141,10 @@ type SyntaxTree struct {
 	// Prelude records which standard library prelude was spliced: "full"
 	// (import(std)), "core" (library packages imported), or "".
 	Prelude string
+	// Protocols keeps the protocol declarations the lowering replaced by
+	// their projections, so a later phase (the prover's liveness check)
+	// can still read the declaration.
+	Protocols []*ast.ProtocolDeclaration
 }
 
 // SemanticModel owns type information for a syntax tree.
@@ -215,6 +219,11 @@ func (comp Compilation) WithNativeAsm() Compilation {
 // (docs/spec/90-backend.md §2a).
 func (comp Compilation) WithTarget(t target.Target) Compilation {
 	comp.options.Target = t
+	// The target's C data model decides the machine-sized Oak types
+	// (int, uint, ptr, uptr): ILP32 on the 32-bit microcontroller
+	// architectures, LP64 everywhere else.
+	intBits, ptrBits := t.DataModel()
+	comp.options.IntSize, comp.options.PtrSize = intBits, ptrBits
 	return comp
 }
 
@@ -440,7 +449,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		if tree.Modules != nil {
 			steady = applySteadyEntries(tree.Root, tree.Modules.Steady)
 		}
-		effectDiagnostics := analyzeEffects(tree.Root, steady)
+		effectDiagnostics := analyzeEffects(tree.Root, steady, tc)
 		model.Diagnostics = append(model.Diagnostics, effectDiagnostics...)
 		if err := comp.gate("effects", effectDiagnostics, tree.Modules); err != nil {
 			return nil, err

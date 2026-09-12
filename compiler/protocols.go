@@ -321,6 +321,48 @@ func (m *protocolMachine) quantifierHelpers(prefix, dataType string) []ast.State
 	return out
 }
 
+// livenessPredicates projects the two sides of every `eventually` entry as
+// Bool functions over the state (and data) — `prefix_liveK_from`,
+// `prefix_liveK_to` (ProtocolLivenessName) — a state name as the test
+// that the state is it, a data expression with the quantifier rewriting a
+// guard gets. `oak prove` evaluates them on the reachable states
+// (docs/spec/125-verification.md section 2b).
+func (m *protocolMachine) livenessPredicates(s *synth, prefix, stateType, dataType string, withData, exported bool, isState func(string) ast.Expression) []ast.Statement {
+	var out []ast.Statement
+	for k, entry := range m.decl.Liveness {
+		for _, side := range []struct {
+			suffix string
+			term   ast.Expression
+		}{{"from", entry.From}, {"to", entry.Target}} {
+			if side.term == nil {
+				continue
+			}
+			var body ast.Expression
+			if state, isName := livenessState(side.term); isName {
+				body = isState(state)
+			} else {
+				holder := &ast.ExpressionStatement{Expression: cloneExpression(side.term)}
+				m.rewriteQuantifiers(holder, prefix, s)
+				body = holder.Expression
+			}
+			params := []*ast.FunctionParameter{s.param("state", s.id(stateType))}
+			if withData {
+				params = append(params, s.param("data", s.id(dataType)))
+			}
+			fn := s.fnExpr(ProtocolLivenessName(m.name, k+1, side.suffix), params, s.id("Bool"), body)
+			fn.Exported = exported
+			out = append(out, fn)
+		}
+	}
+	return out
+}
+
+// ProtocolLivenessName names the projected predicate of one side ("from"
+// or "to") of the k-th (1-based) `eventually` entry of a protocol.
+func ProtocolLivenessName(protocol string, k int, side string) string {
+	return fmt.Sprintf("%s_live%d_%s", snakeCase(protocol), k, side)
+}
+
 // variantName spells a transition name as its step variant: inject -> Inject.
 // Transitions are named like functions; variants are named like types, and a
 // lowercase `.inject` in argument position would read as a field accessor.
@@ -603,6 +645,7 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 		return nil, &DiagnosticError{Phase: "protocol", Diagnostics: diags}
 	}
 	if found {
+		tree.Protocols = append(tree.Protocols, Protocols(tree)...)
 		program.Statements = out
 	}
 	return resources, nil
@@ -950,6 +993,7 @@ func (m *protocolMachine) project() []ast.Statement {
 				out = append(out, run)
 			}
 		}
+		out = append(out, m.livenessPredicates(s, prefix, stateType, dataType, false, exported, isState)...)
 		return out
 	}
 
@@ -1031,7 +1075,8 @@ func (m *protocolMachine) project() []ast.Statement {
 		s.store(s.index(s.id("data"), s.intLit(0)), s.id(local)),
 		s.expr(s.id("result")))
 	next.Exported = exported
-	return append(out, next)
+	out = append(out, next)
+	return append(out, m.livenessPredicates(s, prefix, stateType, dataType, true, exported, isState)...)
 }
 
 // cloneExpression deep-copies an expression so a guard can appear in more
@@ -1131,6 +1176,10 @@ func Protocols(tree *SyntaxTree) []*ast.ProtocolDeclaration {
 		if decl, ok := stmt.(*ast.ProtocolDeclaration); ok {
 			decls = append(decls, decl)
 		}
+	}
+	if len(decls) == 0 {
+		// After lowering the declarations live beside the tree.
+		return tree.Protocols
 	}
 	return decls
 }

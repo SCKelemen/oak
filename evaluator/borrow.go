@@ -29,6 +29,40 @@ func evalBorrowInvocation(name string, args []ast.Expression, env *object.Enviro
 			return newError("%s requires an owned array, got %s", name, owner.Type()), true
 		}
 		return &object.View{Array: array, Start: 0, Len: len(array.Elements), Writable: name == "span"}, true
+	case "view_as":
+		// The scalar view of a view of records (docs/spec/50-borrowing.md
+		// section 8d): the fields of every record in declaration order,
+		// fixed-array fields spliced. The owner cannot be written while the
+		// view lives, so a copy is the same view.
+		if len(args) != 1 {
+			return newError("view_as expects one view of records"), true
+		}
+		source := Eval(args[0], env)
+		if isError(source) {
+			return source, true
+		}
+		view, isView := source.(*object.View)
+		if !isView {
+			return newError("view_as requires a view, got %s", source.Type()), true
+		}
+		flat := &object.Array{}
+		for i := 0; i < view.Len; i++ {
+			record, isRecord := view.Array.Elements[view.Start+i].(*object.Record)
+			if !isRecord {
+				return newError("view_as requires a view of records, got %s", view.Array.Elements[view.Start+i].Type()), true
+			}
+			for _, name := range record.Order {
+				switch field := record.Fields[name].(type) {
+				case *object.Array:
+					flat.Elements = append(flat.Elements, field.Elements...)
+				default:
+					flat.Elements = append(flat.Elements, field)
+				}
+			}
+		}
+		return &object.View{Array: flat, Start: 0, Len: len(flat.Elements), Writable: false}, true
+	case "span_as":
+		return newError("span_as requires the native backend; the interpreter cannot alias a record's storage as scalars"), true
 	case "subslice":
 		if len(args) != 3 {
 			return newError("subslice expects (view, start, len)"), true

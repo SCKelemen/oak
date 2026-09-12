@@ -165,7 +165,11 @@ func zeroAtomicStorage(typeExpr ast.Expression, env *object.Environment) (object
 		if !hasAtomic {
 			return nil, false
 		}
-		return &object.Record{Fields: fields}, true
+		order := make([]string, 0, len(recordDecl.FieldOrder))
+		for _, field := range recordDecl.FieldOrder {
+			order = append(order, field.Name)
+		}
+		return &object.Record{Fields: fields, Order: order}, true
 	}
 	return nil, false
 }

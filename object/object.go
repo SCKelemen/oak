@@ -119,6 +119,10 @@ func (e *Error) Kind() ObjectKind { return ERROR }
 // Record: { field1: value1, field2: value2, ... }
 type Record struct {
 	Fields map[string]Object
+	// Order is the declared field order, when the record was built from a
+	// declaration or a literal that has one: the order a scalar view of
+	// the record reads its fields in (view_as).
+	Order []string
 }
 
 func (r *Record) Type() ObjectType { return RECORD_OBJ }

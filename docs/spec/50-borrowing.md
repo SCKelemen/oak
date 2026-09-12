@@ -372,6 +372,44 @@ checker cannot establish, a region naming more than one parameter, a record
 with more than one region, region functions called across package
 boundaries by qualified name, and any borrow outliving its owner.
 
+## 8d. Scalar views of record views (implemented)
+
+A record whose fields are all one scalar type is, by its natural layout,
+a run of that scalar: `Row: type = struct { q: [2]f32, k: [2]f32, v: [2]f32 }`
+is six `f32` in declaration order, with no padding. `view_as[U](rows)`
+names that fact:
+
+```oak
+cache: [3]Row = [ ... ]
+flat: []f32 = view_as[f32](view(&cache))          // 18 f32, the same storage
+ks: Tensor2 = tensor_strided(flat, 3, 2, 6, 1, 2)   // k across positions, no copy
+```
+
+- **Rule.** The source is a view `[]R` of a declared record `R` whose
+  every field is `U` or a fixed array `[N]U`, `U` a fixed-width integer or
+  floating-point type; the result is `[]U` over the same storage with
+  `len(rows) * K` elements, `K` the scalars per record (fields in
+  declaration order, fixed arrays spliced). Any other field type, a
+  non-record element, a missing target (`view_as(v)`), or a target that is
+  not a scalar is a type error naming the field. `span_as[U](s)` is the
+  writable form over a span; the interpreter has no aliasing storage for
+  it and rejects it, so it is a native-backend form until it does.
+- **Borrowing.** The scalar view is a view of the same owner — of the
+  named view's owner, or of `owner` in `view_as[U](view(&owner))` — with
+  the same rules as `view(&owner)`: the owner cannot be written while it
+  lives, and it ends with its block. Region records take it as any view
+  (`tensor_strided`, `tensor_of`).
+- **Lowering.** `{ (const U *) rows.base, rows.len * K }`: a cast of the
+  base and a multiplication of the length, nothing else; the record's
+  layout assertions (`40-records.md`) are what make the cast exact. The
+  interpreter reads the fields of every record in declaration order into
+  the view; the extraction is `(rows.toList.flatMap (fun r => [r.f1] ++
+  r.f2.toList ++ …)).toArray` (`95-extraction.md`).
+
+This is the ml pilot's F6 — the `[q | k | v]` cache row as a record, `k`
+across positions as a column view of a field — with the stride arithmetic
+in the type rather than in an emitter.
+
 ## 9. Move/consume and resource flow
 
 Owned aggregates (`[N]T` and resolved records) retain explicit value semantics in v1: binding or passing one is an explicit-cost copy, never a hidden allocation and never an ownership transfer.
@@ -808,6 +846,10 @@ A type containing a view/span inherits its borrow lifetime. Wrapping `[]u8` in `
 
 No special string escape rule is needed if semantic wrappers preserve ownership facts.
 
+A top-level owner (`TABLE: [4]u32 = [...]`) is visible to every function
+of its file, above or below its declaration, like a function or a type
+(ml F24).
+
 The bootstrap return check recursively rejects views/spans stored in resolved
 records, fixed arrays, unions, and intersections with `OAK-B0109`. Owning the
 outer container does not give it ownership of storage referenced by an element.
@@ -933,8 +975,10 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   condition, or the declaration `n: u32 = len(v)`, makes `n` an upper bound
   for indices into `v`, so a later `i < n` proves `v[i]`
   (`bound_through_upper`) — the canonical strict loop shape, whose bound
-  must be a binding (`85-discipline.md` §3). A declaration's fact holds for
-  the rest of its block unless the block reassigns `n` or `v`.
+  must be a binding (`85-discipline.md` §3). A declaration's fact holds
+  until the write that changes `n` or `v`: a direct assignment, or the
+  entry of a loop that writes either — unless the loop only lowers `n`
+  (midpoint and decreasing bound, below).
 - **Lower bound and subtraction**: a literal initializer `i: u32 = K`
   establishes `K <= i`; leaving `while i < K` (a bare comparison, no
   `break` in the body) establishes `K <= i` for the rest of the block
@@ -948,6 +992,29 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   (`increment_keeps_lower_bound`, `increment_without_wrap`); any other
   write to `i` kills it before the body — the SHA-256 schedule,
   `w[i - 16]` for `16 <= i < 64`.
+- **Midpoint and decreasing bound**: a guard `a < b` between two bindings
+  is kept as a relation, and a declaration `m: u32 = a + (b - a) / K` (`K`
+  a literal of at least 2) under it establishes `m < b`
+  (`midpoint_under_bound`; the subtraction and the sum cannot wrap because
+  `a < b`), so `m` inherits `b`'s upper bounds: `v[m]` is proven under
+  `b <= len(v)` (`midpoint_under_length`), and `m < B - 1` under `b < B`.
+  A loop whose body declares that midpoint first and whose only writes to
+  `b` are `b = m` keeps `b`'s upper bounds through the loop, because the
+  write only lowers `b` (`decreasing_keeps_upper_bound`,
+  `decreasing_keeps_literal_bound`) — the binary search, `keys[mid]` under
+  `hi = mid`, and the probe of a 512-element page under `b: u32 = 512`. A
+  literal initializer `b: u32 = K` bounds `b` above as well as below
+  (`b < K + 1`).
+- **Quotient bound**: `pages: u32 = len(v) / K` (`K` a literal) makes
+  `pages` at most `len(v) / K`, so a later `i < pages` proves
+  `v[i * K + j]` for every literal `j < K` (`div_bound_scaled`) and
+  `v[i + j]` likewise (`div_bound_under_length`) — the fence key of page
+  `i` in a keyed view of 512-key pages, `keys[mid * 512]`. A declaration
+  that copies a binding, `hi: u32 = pages`, inherits every live bound of
+  the source (they are equal there; a later write to either kills only
+  its own facts), and the midpoint rule carries quotient bounds like the
+  others, so the fence search `hi = pages; while lo < hi { mid = lo +
+  (hi - lo) / 2; keys[mid * 512] ... hi = mid }` reads without a check.
 - **Masked index**: `v[e & M]` with `M` a literal is proven, for any `e`,
   when the length is known to be at least `M + 1`
   (`masked_under_length`) — the byte table `CRC32C_TABLE[x & 255]`.
@@ -958,6 +1025,17 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   path dies when the path itself or any prefix of it (the record) is
   assigned; an element write into a field never changes an owned array's
   length and kills nothing (`kill_is_conservative` applied per path).
+- **Vector access**: `simd.load_E(v, i)` and `simd.store_E(s, i, x)` read
+  or write `L` lanes, `v[i] .. v[i + L - 1]`, and are proven under the same
+  facts widened by the lane count: a constant `c` needs a min-length of
+  `c + L` (`vector_under_min_length`); `i + j` under an offset bound
+  `i + K < len(v)` needs `j + L - 1 <= K` (`vector_under_offset_bound`);
+  `i + j` under a literal bound `i < U` needs a length of at least
+  `U - 1 + j + L` (`vector_under_literal_bound`). The stream idiom is the
+  wrap-free guard `while len(v) >= u32(64) && off <= len(v) - u32(64)`
+  with loads at `off`, `off + u32(16)`, `off + u32(32)`, `off + u32(48)`
+  (`stdlib/utf8.oak`); a proven access is emitted as the `_proven` twin of
+  the load or store helper, which carries no trap check.
 - Conjunctions (`&&`) contribute every fact of both sides.
 
 Facts are refused, not weakened, whenever soundness would need dataflow

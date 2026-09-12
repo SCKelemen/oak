@@ -71,6 +71,25 @@ pub left[T]: (xs: []T, zero: T, f: (T, T) -> T effects { }): T = {
   acc
 }
 
+// chain is the left fold from the first element: f(f(x0, x1), x2) and so
+// on, zero only for the empty view — the grouping tree computes when f is
+// associative (Oak.Reduce.tree_eq_chainFold), with no stack of partials. A call
+// of tree whose f is an operator declaring `laws { associative }`
+// (docs/spec/10-syntax.md section 14a) is lowered to chain: the declared
+// law is the permission, and this is the backend that uses it.
+pub chain[T]: (xs: []T, zero: T, f: (T, T) -> T effects { }): T = {
+  n: u32 = len(xs)
+  n == 0 ? zero | {
+    acc: T = xs[0]
+    i: u32 = 1
+    while i < n {
+      acc = f(acc, xs[i])
+      i = i + 1
+    }
+    acc
+  }
+}
+
 // group_tree is tree over the m elements of xs starting at lo, for a group
 // of at most `group` elements: the cooperative form a kernel launches with
 // `group` threads per position (docs/spec/56-kernels.md section 7). On the
@@ -82,3 +101,60 @@ pub group_tree[T]: (group: u32, xs: []T, lo: u32, m: u32, zero: T, f: (T, T) -> 
   tree(subslice(xs, lo, m), zero, f)
 }
 
+
+// fold is the sequential left fold with a state of its own type: step
+// applied to the running state and each element in order, from init. It is
+// `left` when S is T; with a state it is the loop a merge order is written
+// as once — the online-softmax pass carrying (max, sum) is fold with the
+// merge as its step.
+pub fold[S, T]: (xs: []T, init: S, step: (S, T) -> S effects { }): S = {
+  acc: S = init
+  n: u32 = len(xs)
+  i: u32 = 0
+  while i < n {
+    acc = step(acc, xs[i])
+    i = i + 1
+  }
+  acc
+}
+
+// tree_map is tree over the lifted elements: every element becomes a state
+// by lift, and the states combine by merge in the balanced binary-counter
+// tree (tree_map(xs, zero, lift, merge) is tree(map(lift, xs), zero, merge)
+// without the intermediate array; Oak.Reduce.tree_map). When merge is
+// associative it agrees with fold(xs, lift(x0), step) for step(s, x) =
+// merge(s, lift(x)) on non-empty input (Oak.Reduce.fold_eq_tree_map): the
+// two orders a program may name for one merge, and the theorem that they
+// are one value.
+pub tree_map[T, S]: (xs: []T, zero: S, lift: (T) -> S effects { }, merge: (S, S) -> S effects { }): S = {
+  stack: [64]S = [zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero]
+  levels: [64]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  count: u32 = 0
+  n: u32 = len(xs)
+  i: u32 = 0
+  while i < n {
+    stack[count] = lift(xs[i])
+    levels[count] = 0
+    count = count + 1
+    k: u32 = 0
+    while k < 64 {
+      count >= 2 && levels[count - 1] == levels[count - 2] ? {
+        stack[count - 2] = merge(stack[count - 2], stack[count - 1])
+        levels[count - 2] = levels[count - 2] + 1
+        count = count - 1
+      } | { break }
+      k = k + 1
+    }
+    i = i + 1
+  }
+  count == 0 ? zero | {
+    acc: S = stack[count - 1]
+    rest: u32 = count - 1
+    m: u32 = 0
+    while m < rest {
+      acc = merge(stack[count - 2 - m], acc)
+      m = m + 1
+    }
+    acc
+  }
+}

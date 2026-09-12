@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"github.com/SCKelemen/oak/target"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -212,8 +213,11 @@ func TestAsmStitchingRejections(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "has no Oak declaration") {
 		t.Fatalf("unit function without a declaration must be rejected, got %v", err)
 	}
+	// The unit is arm64: pin the target so the gate reaches the signature
+	// check on every host (a foreign lane is rejected earlier).
 	_, err = New().WithSource("mismatch.oak", "f: (x: u32) -> u32\nmain: (): i32 = 0\n").
-		WithAsmUnit("f.arm64.oakasm", "f: (x: u64) -> u64 = {\n  bind x0 = x\n  ret\n}\n").EmitC().Get()
+		WithAsmUnit("f.arm64.oakasm", "f: (x: u64) -> u64 = {\n  bind x0 = x\n  ret\n}\n").
+		WithTarget(target.Target{OS: target.OSLinux, Arch: target.ArchArm64}).EmitC().Get()
 	if err == nil || !strings.Contains(err.Error(), "signature mismatch") {
 		t.Fatalf("signature mismatch must be rejected, got %v", err)
 	}

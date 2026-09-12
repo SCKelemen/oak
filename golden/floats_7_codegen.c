@@ -1,7 +1,13 @@
 /* Generated C code from Oak */
 #include <stdint.h>
 #include <stddef.h>
+#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
 #include <math.h>
+#else
+#ifndef signbit
+#define signbit(x) __builtin_signbit(x)
+#endif
+#endif
 #include <float.h>
 #if FLT_EVAL_METHOD != 0
 #error "Oak floating point requires FLT_EVAL_METHOD == 0: every operation rounds to its own type"

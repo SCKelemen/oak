@@ -598,8 +598,6 @@ func (em *emitter) emitRecord(adt *ast.ADTType) (string, error) {
 
 // ---- functions ----
 
-// spanParams lists the indices of a function's span parameters — the
-// storage it writes and therefore returns.
 // functionKey is the identity a function is extracted under: its name,
 // or the checker's Type::method identity for a method on a nominal
 // receiver ("" for any other receiver, which stays outside the subset).
@@ -637,14 +635,49 @@ func (em *emitter) defName(fn *ast.FunctionStatement) string {
 	return typeName + "." + ident(fn.Name.Value)
 }
 
-func spanParams(fn *ast.FunctionStatement) []int {
-	var spans []int
-	for i, p := range fn.Parameters {
-		if isSpanType(p.Type) {
-			spans = append(spans, i)
+// threadedParams lists the indices of a function's parameters (receiver
+// first, as functionParams orders them) that carry writable storage — span
+// parameters, and record parameters holding a span field (a `MutTensor2`
+// written through `t.data[i] = v`) — the storage it may write and
+// therefore returns beside its result (docs/spec/95-extraction.md section 2).
+func (em *emitter) threadedParams(fn *ast.FunctionStatement) []int {
+	var threaded []int
+	for i, p := range functionParams(fn) {
+		if em.isThreadedType(p.Type) {
+			threaded = append(threaded, i)
 		}
 	}
-	return spans
+	return threaded
+}
+
+// isThreadedType reports a span type or a record type with a span field.
+func (em *emitter) isThreadedType(typ ast.Expression) bool {
+	if isSpanType(typ) {
+		return true
+	}
+	name, ok := typ.(*ast.Identifier)
+	if !ok {
+		return false
+	}
+	return em.recordHasSpan(name.Value)
+}
+
+// recordHasSpan reports whether a declared record has a span field.
+func (em *emitter) recordHasSpan(recordType string) bool {
+	adt, ok := em.records[recordType]
+	if !ok || len(adt.Variants) == 0 {
+		return false
+	}
+	record, isRecord := adt.Variants[0].Literal.(*ast.RecordLiteral)
+	if !isRecord {
+		return false
+	}
+	for _, f := range record.FieldOrder {
+		if isSpanType(f.Value) {
+			return true
+		}
+	}
+	return false
 }
 
 func isSpanType(expr ast.Expression) bool {
@@ -686,7 +719,7 @@ func (em *emitter) emitFunction(fn *ast.FunctionStatement) (string, error) {
 	}
 	resultTypes := []string{returnType}
 	var spanNames []string
-	for _, i := range spanParams(fn) {
+	for _, i := range em.threadedParams(fn) {
 		typ, _ := em.scope.lookup(fn.Parameters[i].Name.Value)
 		resultTypes = append(resultTypes, typ)
 		spanNames = append(spanNames, ident(fn.Parameters[i].Name.Value))
@@ -1504,7 +1537,7 @@ func (em *emitter) callWrites(call *ast.InvocationExpression) []string {
 		return owners
 	}
 	for i, arg := range call.Arguments {
-		if !isSpanType(fn.Parameters[i].Type) {
+		if !em.isThreadedType(fn.Parameters[i].Type) {
 			continue
 		}
 		owner := addressOf(argOperand(arg))
@@ -2021,6 +2054,37 @@ func (em *emitter) call(call *ast.InvocationExpression, want string) (string, er
 		}
 		em.usesUtf8 = true
 		return "(Oak.Utf8Exec.valid " + base + ")", nil
+	case "view_as":
+		// view_as[U](v) (docs/spec/50-borrowing.md section 8d): the fields
+		// of every record in declaration order, fixed arrays spliced.
+		if len(call.Arguments) != 1 {
+			return "", fmt.Errorf("view_as takes one argument")
+		}
+		base, err := em.expr(call.Arguments[0], "")
+		if err != nil {
+			return "", err
+		}
+		recordType := em.elementTypeOf(call.Arguments[0])
+		adt, isRecord := em.records[recordType]
+		if !isRecord {
+			return "", fmt.Errorf("view_as of %s is outside the extracted subset (a view of a declared record)", recordType)
+		}
+		literal := adt.Variants[0].Literal.(*ast.RecordLiteral)
+		element, isArray := elementOf(em.checkedLeanType(call))
+		if !isArray {
+			return "", fmt.Errorf("view_as has no recorded element type")
+		}
+		parts := []string{fmt.Sprintf("([] : List %s)", element)}
+		for _, f := range literal.FieldOrder {
+			if _, fixed := f.Value.(*ast.IndexExpression); fixed {
+				parts = append(parts, fmt.Sprintf("r.%s.toList", ident(f.Name)))
+			} else {
+				parts = append(parts, fmt.Sprintf("[r.%s]", ident(f.Name)))
+			}
+		}
+		return fmt.Sprintf("((%s.toList.flatMap (fun r => %s)).toArray)", base, strings.Join(parts, " ++ ")), nil
+	case "span_as":
+		return "", fmt.Errorf("span_as is outside the extracted subset (a writable alias of a record's storage)")
 	case "subslice":
 		// subslice(v, start, n) is the window of n elements from start
 		// (docs/spec/50-borrowing.md); Oak traps past the end, the extraction
@@ -2158,7 +2222,7 @@ func (em *emitter) extractedCall(name string, params []*ast.FunctionParameter, a
 			return "", err
 		}
 		args = append(args, term)
-		if isSpanType(params[i].Type) {
+		if em.isThreadedType(params[i].Type) {
 			owner := addressOf(argOperand(arg))
 			if owner == "" {
 				if id, isIdent := arg.(*ast.Identifier); isIdent {
@@ -2166,7 +2230,7 @@ func (em *emitter) extractedCall(name string, params []*ast.FunctionParameter, a
 				}
 			}
 			if owner == "" {
-				return "", fmt.Errorf("span argument %s to %s must name its owner", arg.String(), name)
+				return "", fmt.Errorf("writable argument %s to %s must name its owner (a span, its owner, or a record holding a span)", arg.String(), name)
 			}
 			rebinds = append(rebinds, ident(owner))
 		}

@@ -89,18 +89,22 @@ analysis:
   the function value step"). A call through a value without a row stays
   unknown (`OAK-E0103`) as before.
 - **A value entering a rowed type is checked against the row**
-  (`OAK-E0105`), at the two positions where a value enters: an argument for
-  a parameter of the type, and the initializer of a declaration with the
-  type. The value's reachable effects — declared clauses, rows of the values
+  (`OAK-E0105`), at the three positions where a value enters: an argument
+  for a parameter of the type, the initializer of a declaration with the
+  type, and a **record literal's field** of the type (`Step { run: f }` —
+  the captured step, checked where the record is built; ml F4). The value's reachable effects — declared clauses, rows of the values
   it calls, transitively through its callees after specialization — must
   all lie in the row, and must be known: a value that reaches an undeclared
   extern, a call through an unrowed value, or an expression the analysis
   cannot follow is rejected. A function named in the program, a rowed
   parameter or local (its row must be inside the target row — a narrower row
-  fits a wider one), and a function literal (analyzed like a body) are the
-  admitted forms. Other flows — assignment after declaration, record fields,
-  return values — are not checked and so a rowed value obtained through
-  them is trusted only where its declaration was checked.
+  fits a wider one), a **read of a rowed record field** (`s.run`, whose row
+  was established when the record was built; uniform call syntax never
+  calls a field, so the read is bound to a rowed local and called through
+  it), and a function literal (analyzed like a body) are the admitted
+  forms. Other flows — assignment after declaration, return values — are
+  not checked and so a rowed value obtained through them is trusted only
+  where its declaration was checked.
 - Rows are checked whenever the program contains one, with or without a
   `forbids`; the diagnostic names the function, the slot, the row, the
   offending effect, and the call path that reaches it.

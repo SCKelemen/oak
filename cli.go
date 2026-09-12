@@ -43,7 +43,7 @@ var commands []command
 
 func init() {
 	commands = []command{
-		{"build", "compile a package to an executable (or C with -o x.c / -emit-c)", "oak build [-o out] [-target os/arch] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-profile default|strict] [-lines] [dir|file.oak]", buildPackage},
+		{"build", "compile a package to an executable (or C with -o x.c / -emit-c)", "oak build [-o out] [-target os/arch] [-cpu name] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-profile default|strict] [-lines] [dir|file.oak]", buildPackage},
 		{"run", "compile and run a package", "oak run [-profile default|strict] [dir]", runPackage},
 		{"install", "compile a package and install the executable into $OAKBIN", "oak install [-profile default|strict] [-target os/arch] [dir]", installPackage},
 		{"vet", "check a package without generating code and list what the checker recorded", "oak vet [-profile default|strict] [dir|file.oak]", vetPackage},
@@ -170,12 +170,18 @@ var envVariables = []struct {
 	{"OAKOS", "target operating system (default: the host's)", func() string { return resolvedTarget().OS }},
 	{"OAKARCH", "target architecture (default: the host's)", func() string { return resolvedTarget().Arch }},
 	{"OAK_CC", "C compiler that already targets OAKOS/OAKARCH (default: resolved — cc for the host, else zig cc, clang with OAK_SYSROOT, or a GNU cross compiler)", func() string {
-		if drv, err := toolchain.Resolve(resolvedTarget(), nil, nil); err == nil {
+		if drv, err := toolchain.Resolve(resolvedTarget(), toolchain.Options{}, nil, nil); err == nil {
 			return drv.Command()
 		}
 		return ""
 	}},
 	{"OAK_CFLAGS", "extra C compiler arguments, split on whitespace (with OAK_CC)", func() string { return os.Getenv("OAK_CFLAGS") }},
+	{"OAKCPU", "processor for -mcpu (default: the target's, e.g. cortex_m4 for freestanding/arm)", func() string {
+		if cpu := os.Getenv("OAKCPU"); cpu != "" {
+			return cpu
+		}
+		return resolvedTarget().DefaultCPU()
+	}},
 	{"OAK_SYSROOT", "sysroot for a cross clang targeting a hosted platform", func() string { return os.Getenv("OAK_SYSROOT") }},
 	{"OAKROOT", "the module root of the working directory (derived)", moduleRootOf},
 }
@@ -274,12 +280,20 @@ func vetOne(target, profile string) int {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
-	recorded := 0
+	recorded, reports := 0, 0
 	for _, d := range model.Diagnostics {
 		if d == nil || d.Severity == diagnostic.SeverityError {
 			continue
 		}
-		recorded++
+		// Warnings are recorded assumptions the strict profile rejects;
+		// information-severity reports (the wrapping-guard report,
+		// docs/spec/85-discipline.md section 6a) are listed here and
+		// nowhere else, and no profile rejects them.
+		if d.Severity == diagnostic.SeverityWarning {
+			recorded++
+		} else {
+			reports++
+		}
 		fmt.Println(modules.DemangleText(d.PlainText()))
 	}
 	// Declared operator laws are the author's claims, not the checker's
@@ -308,6 +322,9 @@ func vetOne(target, profile string) int {
 		if theorems := len(typechecker.Theorems(model.Tree.Root)); theorems != 0 {
 			fmt.Printf("theorems: %d declared; `oak prove` discharges them\n", theorems)
 		}
+	}
+	if reports != 0 {
+		fmt.Printf("%d report(s); listed by vet only, no profile rejects them\n", reports)
 	}
 	if recorded == 0 {
 		fmt.Printf("%s: no recorded assumptions\n", target)
@@ -508,7 +525,7 @@ func plural(n int, one, many string) string {
 // compileBinary emits C for the package (and, in native asm mode, the asm
 // units' companion object) and compiles it with the system C compiler into
 // binary (fixed argument list, no shell).
-func compileBinary(comp compiler.Compilation, binary, asmMode string, tgt target.Target) error {
+func compileBinary(comp compiler.Compilation, binary, asmMode string, tgt target.Target, cpu string) error {
 	comp = comp.WithTarget(tgt)
 	code, object, err := emitFor(comp, asmMode, tgt)
 	if err != nil {
@@ -518,7 +535,7 @@ func compileBinary(comp compiler.Compilation, binary, asmMode string, tgt target
 	if err != nil {
 		return err
 	}
-	drv, err := toolchain.Resolve(tgt, nil, nil)
+	drv, err := toolchain.Resolve(tgt, toolchain.Options{CPU: cpu}, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -529,7 +546,7 @@ func compileBinary(comp compiler.Compilation, binary, asmMode string, tgt target
 // ccFlags are the fixed C compiler flags for executables: -ffp-contract=off
 // keeps floating-point semantics exactly as written (docs/spec/90-backend.md
 // section 7a); -lm links the C99 math library the float intrinsics lower to.
-var ccFlags = []string{"-std=c99", "-O1", "-ffp-contract=off"}
+var ccFlags = []string{"-std=c99", "-O1", "-ffp-contract=off", "-Wno-parentheses-equality"}
 
 // compileC turns emitted C (and an optional asm companion object) into the
 // executable at binary — or, for a freestanding target, the relocatable
@@ -673,10 +690,11 @@ func executableName(dir string) (string, error) {
 // installPackage builds the package's executable into $OAKBIN (default
 // $HOME/.oak/bin), named after the package (executableName).
 func installPackage(args []string) int {
-	dir, profile, targetFlag := ".", "", ""
-	fs := newFlagSet("install", "oak install [-profile default|strict] [-target os/arch] [dir]")
+	dir, profile, targetFlag, cpu := ".", "", "", ""
+	fs := newFlagSet("install", "oak install [-profile default|strict] [-target os/arch] [-cpu name] [dir]")
 	fs.StringVar(&profile, "profile", "", "discipline profile: default or strict")
 	fs.StringVar(&targetFlag, "target", "", "platform os/arch (default: OAKOS/OAKARCH, else the host; docs/spec/90-backend.md section 2a)")
+	fs.StringVar(&cpu, "cpu", "", "processor for the C compiler's -mcpu (default: OAKCPU, else the target's default)")
 	rest, code, stop := parseFlags(fs, args)
 	if stop {
 		return code
@@ -714,7 +732,7 @@ func installPackage(args []string) int {
 	}
 	output := filepath.Join(bin, name)
 	comp := compiler.New().WithPackageDir(dir).WithProfile(profile).WithDiagnosticSink(reportAsmVerdict)
-	if err := compileBinary(comp, output, defaultAsmMode(tgt), tgt); err != nil {
+	if err := compileBinary(comp, output, defaultAsmMode(tgt), tgt, cpu); err != nil {
 		fmt.Fprintf(os.Stderr, "oak install: %v\n", err)
 		return 1
 	}

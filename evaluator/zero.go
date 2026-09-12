@@ -23,7 +23,7 @@ func copyValue(obj object.Object) object.Object {
 		for name, value := range v.Fields {
 			fields[name] = copyValue(value)
 		}
-		return &object.Record{Fields: fields}
+		return &object.Record{Fields: fields, Order: v.Order}
 	case *object.Array:
 		elements := make([]object.Object, len(v.Elements))
 		for i, element := range v.Elements {
@@ -77,6 +77,7 @@ func zeroValue(typeExpr ast.Expression, env *object.Environment) (object.Object,
 		if decl, ok := env.GetRecordDecl(t.Value); ok {
 			record := &object.Record{Fields: map[string]object.Object{}}
 			for _, field := range decl.FieldOrder {
+				record.Order = append(record.Order, field.Name)
 				value, known := zeroValue(field.Value, env)
 				if !known {
 					return nil, false

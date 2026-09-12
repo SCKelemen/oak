@@ -47,7 +47,7 @@ proofs written against them transfer.
 | `op ? \| 0 => a \| 1 => b \| _ => c` (integer constants) | `if op == 0 then a else if op == 1 then b else c`, in value and statement position; the last arm is the else |
 | `while c { body }` | `def f.loopN (reads...) : Nat → Option (writes...)` with `0 => none`, recursing on the fuel |
 | a function that calls itself | `def f (params) : Nat → Option R` with `\| 0 => none \| fuel + 1 => do ...`, the recursive call passing the fuel that remains; mutual recursion stays outside the subset |
-| `g(args)` | `let (r, spans...) ← g args fuel`, hoisted before the statement; the span owners are rebound — and such a rebinding inside a loop body or a conditional arm is a write of that loop or arm, so the owner is in the tuple the helper returns (oak #186) |
+| `g(args)` | `let (r, spans...) ← g args fuel`, hoisted before the statement; the span owners are rebound — and such a rebinding inside a loop body or a conditional arm is a write of that loop or arm, so the owner is in the tuple the helper returns (oak #186). A **record parameter holding a span field** (`MutTensor2`, written through `t.data[i] = v`) is threaded the same way: the callee returns the record with its array updated and the caller rebinds the record variable, so a store inside `tensor_set` reaches `tensor_matmul`'s caller |
 | `s: [*]T = items[a:b]`, `s: [*]T = span(&buf)` (a writable window) | `let s := items.extract a b` plus `let s_lo : Nat := a`; after every statement that rebinds `s` (a store, a call), the window is written back — `let items := (items.extract 0 s_lo) ++ s ++ (items.extract (s_lo + s.size) items.size)`, or `let buf := s` for a whole span — transitively through nested windows, and the owner joins the enclosing write sets, because in Oak the window aliases the owner's storage |
 | `assert(c)` | `let () ← if c then pure () else none` |
 | `name: theorem (params) { e }` | the `def` of the function it is, then `theorem name_holds (params) (fuel : Nat) : name params fuel = some true` with the automatic script of `125-verification.md` §5; the module imports `Std.Tactic.BVDecide` when it states one |
@@ -376,15 +376,18 @@ lengths plus 9101, if the extracted `rup_text_check` returns `true` then
 the model's layout of those texts exists and its initial database is
 unsatisfiable — `CertifiedStream.check_sound` transported to the
 compiler's extraction of the whole Oak program. Same axioms:
-`propext`, `Classical.choice`, `Quot.sound`.
+`propext`, `Classical.choice`, `Quot.sound`. `rup_text_check_sound_text`
+is the string-level corollary: the same claim over the two texts as
+`String`s, with the certificate model's own `OakText.layout` in the
+conclusion — the theorem is over byte arrays and the model over
+`ByteArray.toList`, and the module states the data lemma core Lean does
+not (`byteArray_toList_eq_data_toList`) to bridge them. Same axioms.
 
 What this buys: the scanner, decoder, kernel, and stream corpus
 comparisons are all regression checks now. What remains between the
 compiled binary and the theorem is the extractor's fidelity to the
 compiled program and the compiler itself, which the extraction lane's
-own tests and the differential witnesses cover, and the string-level
-corollary (the theorem is over byte arrays; `ByteArray.toList` lacks its
-data lemma).
+own tests and the differential witnesses cover.
 
 The standard-library laws live next to the extractions, one file per
 package, and are theorems about the extracted programs — so about the Oak
@@ -636,8 +639,7 @@ most; the kernel-decided facts use no axioms.
   or views; the `checked` float rows; `json` and the other `string`-holding
   libraries as committed extractions with faithfulness coverage, now that
   the type is in.
-The string-level corollary of `rup_text_check_sound` once
-`ByteArray.toList` has its data lemma; then the constructs
+The constructs
 the verification programs need next (matches over records, the `checked`
 rows), each added with its own fail-closed test. Integer-constant matches and the integer
 conversion rows were added for the ml subset (op dispatch on constants,

@@ -17,6 +17,12 @@ the grouping every backend produces, not about an idealized one.
   the first element — the law that makes `laws { associative }`
   (`10-syntax.md` section 14a) the permission to regroup. Without it, the
   grouping named is the grouping computed.
+* `chainFold`, `tree_eq_chainFold`: the left fold from the first element
+  (`reduce.chain`), and the theorem that licenses lowering a `tree` over
+  an operator declaring `laws { associative }` to it.
+* `fold`, `tree_map`, `fold_eq_tree_map`: the stateful orders — the
+  sequential fold with a state and the tree over lifted elements — and
+  the theorem that an associative merge makes them one value.
 * `tree_append_pow2`, `coop_eq_tree`, `coop_full`: the cooperative
   threadgroup scheme of `reduce.group_tree` (`56-kernels.md` section 7) —
   pairwise-adjacent combination with doubling stride, partner present —
@@ -189,6 +195,67 @@ theorem tree_assoc (f : α → α → α) (hf : Assoc f) (z x : α) (xs : List �
   unfold tree
   rw [finish_eq_denote f hf, denote_foldl_push f hf]
   simp [denote, chain, extend]
+
+/-! ## The grouping an associative law licenses
+
+`reduce.chain` is the left fold from the first element, `zero` only for
+the empty list: what `tree` computes under associativity (`tree_assoc`),
+without the stack of partials. A call of `tree` whose combine declares
+`laws { associative }` (docs/spec/10-syntax.md section 14a) is lowered to
+`chain`; `tree_eq_chainFold` is the theorem the lowering rests on, and the
+law is its hypothesis — a false law makes the two differ, which is what
+the chapter says a false law does. -/
+
+/-- The left fold from the first element (`reduce.chain`; `chain` above is
+the proof-internal chain of partials). -/
+def chainFold (f : α → α → α) (z : α) : List α → α
+  | [] => z
+  | x :: xs => xs.foldl f x
+
+theorem chainFold_nil (f : α → α → α) (z : α) : chainFold f z [] = z := rfl
+
+theorem chainFold_cons (f : α → α → α) (z x : α) (xs : List α) : chainFold f z (x :: xs) = xs.foldl f x := rfl
+
+/-- Under associativity the tree is the chain fold, on every input. -/
+theorem tree_eq_chainFold (f : α → α → α) (hf : Assoc f) (z : α) (xs : List α) :
+    tree f z xs = chainFold f z xs := by
+  cases xs with
+  | nil => exact tree_nil f z
+  | cons x xs => rw [tree_assoc f hf, chainFold_cons]
+
+/-! ## Stateful orders: an order is a function
+
+`reduce.fold xs init step` is the sequential order with a state of its own
+type, and `reduce.tree_map xs zero lift merge` the binary-counter order
+over the lifted elements (docs/spec/55-parallelism.md section 4). Each is
+a function a program names; `fold_eq_tree_map` is the theorem that for an
+associative merge the two are one value — the online-softmax merge of a
+fused attention written once as the step of a fold and once as the merge
+of a tree is the same number both ways. -/
+
+/-- The sequential left fold with a state. -/
+def fold {β : Type} (step : α → β → α) (init : α) (xs : List β) : α := xs.foldl step init
+
+/-- The binary-counter tree over the lifted elements. -/
+def tree_map {β : Type} (lift : β → α) (merge : α → α → α) (z : α) (xs : List β) : α :=
+  tree merge z (xs.map lift)
+
+theorem fold_eq_left (f : α → α → α) (z : α) (xs : List α) : fold f z xs = left f z xs := rfl
+
+theorem tree_map_nil {β : Type} (lift : β → α) (merge : α → α → α) (z : α) :
+    tree_map lift merge z [] = z := by
+  simp [tree_map, tree_nil]
+
+theorem tree_map_id (f : α → α → α) (z : α) (xs : List α) : tree_map id f z xs = tree f z xs := by
+  simp [tree_map]
+
+/-- For an associative merge the fold whose step merges the lifted element
+equals the tree over the lifted elements, on non-empty input. -/
+theorem fold_eq_tree_map {β : Type} (lift : β → α) (merge : α → α → α) (hm : Assoc merge)
+    (z : α) (x : β) (xs : List β) :
+    fold (fun s y => merge s (lift y)) (lift x) xs = tree_map lift merge z (x :: xs) := by
+  unfold fold tree_map
+  rw [List.map_cons, tree_assoc merge hm, List.foldl_map]
 
 /-! ## The cooperative scheme computes the same tree
 

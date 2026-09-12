@@ -137,7 +137,70 @@ theorem loop_exit_lower_bound (i K : Nat) (h : ¬ i < K) : K ≤ i := Nat.le_of_
     through a loop whose only write to `i` is the trailing increment). -/
 theorem increment_keeps_lower_bound (i c K0 : Nat) (h : K0 ≤ i) : K0 ≤ i + c := by omega
 
+/-- A vector access covers `L` lanes from its index. Under a min-length
+    fact `K ≤ len`, a constant index `c` with `c + L ≤ K` keeps every lane
+    `c + k`, `k < L`, in range (`recordVectorAccessProof`, constant index). -/
+theorem vector_under_min_length (c L k K len : Nat) (hfact : K ≤ len) (hc : c + L ≤ K)
+    (hk : k < L) : c + k < len := by omega
+
+/-- Under an offset bound `i + K < len`, the lanes `i + j + k`, `k < L`, are
+    in range whenever `j + L - 1 ≤ K` — the sixty-four-byte step of
+    `utf8.valid`, four loads at `off`, `off + 16`, `off + 32`, `off + 48`
+    under `off <= len(bytes) - 64` (`recordVectorAccessProof`, offset index). -/
+theorem vector_under_offset_bound (i K j L k len : Nat) (hbound : i + K < len)
+    (hL : 1 ≤ L) (hj : j + L - 1 ≤ K) (hk : k < L) : i + j + k < len := by omega
+
+/-- Under a literal bound `i < U` and a length of at least `U - 1 + j + L`,
+    the lanes `i + j + k`, `k < L`, are in range
+    (`recordVectorAccessProof`, literal bound). -/
+theorem vector_under_literal_bound (i U j L k len : Nat) (hi : i < U)
+    (hlen : U - 1 + j + L ≤ len) (hk : k < L) : i + j + k < len := by omega
+
 theorem increment_without_wrap (i c U w : Nat) (hi : i < U) (hU : U + c ≤ 2 ^ w) :
     i + c < 2 ^ w := by omega
+
+/-- **Midpoint**: under `a < b`, `a + (b - a) / k` is below `b` for every
+    `k ≥ 2` — and the subtraction and the sum are the natural ones, since
+    `a < b` keeps both inside the word (`declarationFacts`, the midpoint
+    rule of a binary search; `k = 2` is `lo + (hi - lo) / 2`). -/
+theorem midpoint_under_bound (a b k : Nat) (hab : a < b) (hk : 2 ≤ k) :
+    a + (b - a) / k < b := by
+  have h : (b - a) / k < b - a := Nat.div_lt_self (by omega) (by omega)
+  omega
+
+/-- **Through the midpoint to a length**: with `b ≤ len` besides,
+    `a + (b - a) / k < len` — the composition the declaration's fact
+    records directly (`factIndexBound` through `b`). -/
+theorem midpoint_under_length (a b k len : Nat) (hab : a < b) (hk : 2 ≤ k) (hlen : b ≤ len) :
+    a + (b - a) / k < len :=
+  Nat.lt_of_lt_of_le (midpoint_under_bound a b k hab hk) hlen
+
+/-- **A decreasing write keeps an upper bound**: from `m < x` and `x ≤ n`,
+    the new value `m` is still at most `n`; and below a literal `B`
+    likewise (`checkWhileStatement`, upperBoundsSurviving: a loop whose
+    only writes to `x` are `x = m` with `m` the midpoint under `a < x`). -/
+theorem decreasing_keeps_upper_bound (m x n : Nat) (hm : m < x) (hx : x ≤ n) : m ≤ n := by omega
+
+theorem decreasing_keeps_literal_bound (m x B : Nat) (hm : m < x) (hx : x < B) : m < B := by omega
+
+/-- **Quotient bound, scaled**: under `i < n / K` (the page count of a
+    view of `n` keys, `K` keys per page), `i * K + j < n` for every
+    `j < K` — the fence key of page `i` and every key of the page
+    (`declarationFacts`, `pages = len(v) / K`; `indexUnder`, factDivIndex). -/
+theorem div_bound_scaled (i j n K : Nat) (hi : i < n / K) (hj : j < K) :
+    i * K + j < n := by
+  have hK : 0 < K := by omega
+  have h : (i + 1) * K ≤ n := (Nat.le_div_iff_mul_le hK).mp hi
+  rw [Nat.succ_mul] at h
+  omega
+
+/-- **Quotient bound, plain**: the same premise puts `i + j` below `n`
+    as well, since `i ≤ i * K`. -/
+theorem div_bound_under_length (i j n K : Nat) (hi : i < n / K) (hj : j < K) :
+    i + j < n := by
+  have h := div_bound_scaled i j n K hi hj
+  have hK : 0 < K := by omega
+  have : i ≤ i * K := Nat.le_mul_of_pos_right i hK
+  omega
 
 end Oak.Extents

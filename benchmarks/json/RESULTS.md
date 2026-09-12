@@ -1,5 +1,42 @@
 # JSON decoder optimization measurements
 
+## Fourth optimization pass: the reader's shape
+
+Measured candidate: `35ae143e48e9edfb3da61be9a9f8fc828c1584a4` (branch `sam/json-decoder`, rebased on `223df157`).
+Baseline: `223df15790c9314af06140f7f30c830f0dbecb53`.
+Machine-readable data: [reader-shape-baseline-2026-09-12.json](reader-shape-baseline-2026-09-12.json),
+[reader-shape-candidate-2026-09-12.json](reader-shape-candidate-2026-09-12.json).
+Run locally (GitHub Actions quota exhausted): `python3 benchmarks/json/run.py --samples 9`,
+Apple M4 Max, clang `-O3 -DNDEBUG`, simdjson at the checkout's revision, the machine
+otherwise idle; each sample decodes 102,400 documents (9,096,600 bytes) per backend.
+
+| Run | Oak ns/document | simdjson ns/document | Oak / simdjson time (medians) | Paired-ratio median |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline | 75.50 | 63.03 | 1.198× | 1.219× |
+| Candidate | 64.48 | 64.60 | 0.998× | 1.003× |
+
+Paired ratios, baseline: 1.504, 1.094, 1.337, 1.219, 1.224, 1.227, 1.207, 1.177, 1.211.
+Candidate: 1.057, 0.835, 1.107, 0.947, 1.001, 1.003, 1.003, 0.998, 1.009. The first
+sample of each run carries warm-up; the simdjson control moved 2.5% between runs.
+Affinity, frequency and thermal state remain uncontrolled; a hand-written decoder for
+this schema with the same acceptance rules measures 47 ns per document on the same
+harness, so the derived reader is at simdjson and not yet at the ceiling.
+
+What changed (`docs/spec/71-codecs.md` §20): integer and Boolean fields decode in
+place through the compact scanner instead of the per-type reader's `Result` round
+trip; the opening brace and bracket are one byte after whitespace; array elements
+scan from the lookahead position; the scanner takes every word of digits, counting
+the run at a word's front with no branch and no count-trailing-zeros instruction
+(`Oak.JsonDigits` bit-blasts the mask soundness, the run count, the eight-digit value
+and the seven partial-word values); an escaped key is decoded once and compared as
+bytes; `json_skip_space` and `json_scan_integer` no longer assert on the hot path;
+`json_space` decides the common case with one comparison; the backend forces the
+scanner, its word arithmetic, whitespace skipping, the boundary test and the
+decoded-key comparison inline. Public error categories, the per-type reader API and
+the acceptance rules are unchanged; the preflight of invalid inputs and the checksum
+are the harness's own.
+
+
 ## Third optimization pass: M1 proximity target
 
 Measured candidate: `c5debc11f324838c286c96c0c237f48c16824f3d`.

@@ -357,9 +357,17 @@ overflow-loud posture for hot paths that would rather stop than branch:
 `u64_trapping_add(lsn, 1)` never yields a wrapped log sequence number, and
 the trap names the call site. There is no `wrapping` spelling: the operator
 is it. A discipline profile that rejects the plain operators on integers
-unless a wrapping intent is spelled is direction, not implemented — every
-loop counter is a `+`, so the rejection needs an opt-in narrower than
-`strict` (85-discipline.md) before it is useful.
+unless a wrapping intent is spelled remains direction — every loop counter
+is a `+`, so the rejection needs an opt-in narrower than `strict`
+(85-discipline.md) before it is useful. What is implemented is the narrow
+report that catches the shape where accidental wrap is a security bug: an
+unsigned `+` or `*` computed *inside an ordering comparison* (`off + len <=
+cap`, `n * size < limit`) is reported as `OAK-T0701` at information
+severity — listed by `oak vet`, rejected by no profile (85-discipline.md
+§6a). The report names the carrier and the spelling that states the intent
+(`u32_checked_add`, `u32_saturating_add`); subtraction is not reported,
+because `off <= cap - len` is the recommended shape and its precondition
+(`len <= cap`) is a guard the reader can see.
 
 The interpreter computes the exact result in arbitrary precision and
 compares it with the range (a trapping overflow is its error, as a failed

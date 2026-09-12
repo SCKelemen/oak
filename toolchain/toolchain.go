@@ -40,6 +40,13 @@ func (d Driver) Command() string {
 // table in tests.
 type Lookup func(name string) (string, error)
 
+// Options are the build's attributes beyond the target.
+type Options struct {
+	// CPU names the processor (`-cpu`, OAKCPU): passed as -mcpu=<name>;
+	// "" takes the target's default (target.DefaultCPU).
+	CPU string
+}
+
 // Resolve chooses the driver for t. The order, first match wins:
 //
 //  1. OAK_CC — an explicit compiler executable, taken as already targeting
@@ -54,19 +61,30 @@ type Lookup func(name string) (string, error)
 //  5. A GNU cross compiler by the target's prefixes (`riscv64-linux-gnu-gcc`,
 //     `riscv64-elf-gcc`).
 //
-// Freestanding targets always add -ffreestanding -nostdlib and compile to
-// a relocatable object.
-func Resolve(t target.Target, look Lookup, getenv func(string) string) (Driver, error) {
+// Freestanding targets always add -ffreestanding -nostdlib, drop unwind
+// tables (no runtime to read them), and compile to a relocatable object.
+// A processor (opts.CPU, else the target's default) is passed as -mcpu.
+func Resolve(t target.Target, opts Options, look Lookup, getenv func(string) string) (Driver, error) {
 	if look == nil {
 		look = exec.LookPath
 	}
 	if getenv == nil {
 		getenv = os.Getenv
 	}
+	cpu := opts.CPU
+	if cpu == "" {
+		cpu = getenv("OAKCPU")
+	}
+	if cpu == "" {
+		cpu = t.DefaultCPU()
+	}
 	finish := func(d Driver) (Driver, error) {
+		if flag := cpuFlag(d.Kind, t, cpu); flag != "" && d.Kind != "explicit" {
+			d.Args = append(d.Args, flag)
+		}
 		if t.Freestanding() {
 			d.Object = true
-			d.Args = append(d.Args, "-ffreestanding", "-nostdlib", "-DOAK_FREESTANDING")
+			d.Args = append(d.Args, "-ffreestanding", "-nostdlib", "-fno-unwind-tables", "-fno-asynchronous-unwind-tables", "-DOAK_FREESTANDING")
 		} else if t.StaticLink() && !t.IsHost() {
 			d.Static = true
 		}
@@ -108,6 +126,24 @@ func Resolve(t target.Target, look Lookup, getenv func(string) string) (Driver, 
 		return Driver{}, fmt.Errorf("no C compiler (cc, zig, clang) on PATH; use -emit-c to write C instead, or set OAK_CC")
 	}
 	return Driver{}, fmt.Errorf("no C compiler on this host can target %s: install zig (one compiler for every target), a clang with OAK_SYSROOT pointing at a %s sysroot, or a GNU cross compiler (%s); or set OAK_CC to one that already targets it", t, t, strings.Join(prefixedNames(t), ", "))
+}
+
+// cpuFlag spells the processor for the driver: -mcpu=<name> for zig and
+// clang (LLVM processor names, `cortex_m4`, `generic_rv64`); GNU gcc spells
+// Arm processors with a hyphen (`cortex-m4`) and RISC-V ones as -march
+// strings, which the LLVM names are not — so a GNU driver takes the Arm
+// spelling and leaves RISC-V to its own defaults ("": no flag).
+func cpuFlag(kind string, t target.Target, cpu string) string {
+	if cpu == "" {
+		return ""
+	}
+	if kind == "gnu" {
+		if t.Arch == target.ArchArm {
+			return "-mcpu=" + strings.ReplaceAll(cpu, "_", "-")
+		}
+		return ""
+	}
+	return "-mcpu=" + cpu
 }
 
 func prefixedNames(t target.Target) []string {

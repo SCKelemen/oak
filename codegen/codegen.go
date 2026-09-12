@@ -22,6 +22,12 @@ type CodeGenerator struct {
 	// equalityTypes caches the aggregates whose equality functions the
 	// program needs (typechecker.EqualityTypes); nil until first asked.
 	equalityTypes map[string]bool
+	// atomicCarriers records every Atomic[T] carrier the program declares
+	// storage for, so the lock-free admission block asserts exactly those
+	// (docs/spec/65-machine-memory.md §6); atomicsIncluded says whether
+	// <stdatomic.h> was emitted, which the block's macros need.
+	atomicCarriers  map[string]bool
+	atomicsIncluded bool
 	// constantContext is set while emitting C integer constant expressions
 	// (file-scope initializers, static_assert), where arithmetic must stay
 	// a plain operator rather than a helper call.
@@ -263,7 +269,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.emitStringEquality(tc)
 	cg.emitComparisonADT()
 	cg.emitAssertHelper()
-	cg.emitUtf8Helper()
+	cg.emitUtf8Helper(program)
 	cg.emitIntrinsicHelpers(program)
 	cg.emitArgvHelper(program)
 	cg.emitSimdSupport(program)
@@ -324,6 +330,7 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 	cg.emitExportWrappers(program)
 
 	cg.emitEntryPoint()
+	cg.emitAtomicAdmission()
 
 	output := cg.output.String()
 	if cg.liftedLiterals.Len() != 0 {
@@ -547,11 +554,16 @@ func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 	cg.emitForeignHeaders()
 	cg.write("#include <stdint.h>\n")
 	cg.write("#include <stddef.h>\n")
+	cg.emitHostBoundary()
 	// <math.h> and the float helpers only when the program uses floating
 	// point, so every other program stays freestanding.
 	usesFloats := programUsesFloats(program)
 	if usesFloats {
-		cg.write("#include <math.h>\n")
+		// <math.h> is a hosted header; the emitted float code needs only
+		// signbit from it (the transcendental functions are Oak code in the
+		// standard library), so a freestanding build (docs/spec/90-backend.md
+		// §2a) takes the compiler's builtin and stays free of libm.
+		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n#include <math.h>\n#else\n#ifndef signbit\n#define signbit(x) __builtin_signbit(x)\n#endif\n#endif\n")
 		cg.write("#include <float.h>\n")
 		// Every operation rounds to its own type: no excess intermediate
 		// precision (docs/spec/20-types.md section 11.3.3). A target that
@@ -1374,6 +1386,13 @@ func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *type
 	}
 }
 
+// isLocalName reports whether name is a local (parameter or binding) of the
+// function being emitted, which shadows a root function of the same name.
+func (cg *CodeGenerator) isLocalName(name string) bool {
+	_, isLocal := cg.localTypes[name]
+	return isLocal
+}
+
 // Match payloads are scoped locals too. Preserve their declared container
 // shape so record array fields keep bounds-checked indexing in each arm.
 func (cg *CodeGenerator) bindMatchContainer(name string, typ ast.Expression) func() {
@@ -1412,8 +1431,17 @@ func (cg *CodeGenerator) preEmitContainerTypes(program *ast.Program) {
 				cg.emitSpanType(info.element)
 			case containerOwnedArray:
 				// Resolving the spelling places the wrapper typedef (and
-				// the typedefs of nested element arrays) at file scope.
+				// the typedefs of nested element arrays) at file scope; an
+				// inline view(&owner) or span(&owner) of the array — the
+				// source of a view_as — needs the element's view and span
+				// structs at file scope too.
 				cg.parseTypeExpression(t)
+				if strings.HasPrefix(info.element, "oak_") {
+					// Record elements only: a scalar's structs are placed
+					// where the program first names the view or span.
+					cg.emitViewType(info.element)
+					cg.emitSpanType(info.element)
+				}
 			}
 		}
 	}
@@ -1918,6 +1946,31 @@ func (cg *CodeGenerator) computeInlineHelpers(program *ast.Program) {
 			cg.inlineHelpers[name] = true
 		}
 	}
+	// The derived JSON readers' hot helpers (compiler/codec_decode.go) are
+	// forced inline wherever they are compiled in: the integer scanner and
+	// its word arithmetic, whitespace skipping, the value boundary test,
+	// and the decoded-key comparison sit inside every derived record
+	// reader's loop, and a call there costs more than their bodies
+	// (docs/spec/71-codecs.md section 19). They are exported and some
+	// contain loops, so the shape rule above would not pick them.
+	for _, name := range codecHotHelpers {
+		fn := functions[name]
+		if fn == nil || fn.Body == nil || fn.Receiver != nil || fn.ExternSymbol != "" || fn.AsmBacked ||
+			fn.NativeBacked || len(fn.TypeParams) > 0 {
+			continue
+		}
+		if _, isMember := cg.trampolineMember[name]; isMember {
+			continue
+		}
+		cg.inlineHelpers[name] = true
+	}
+}
+
+// codecHotHelpers are the standard library functions the derived JSON
+// record readers call on their hot path (stdlib/json.oak).
+var codecHotHelpers = []string{
+	"json_scan_integer", "json_non_digit_mask", "json_digit_run", "json_word_value",
+	"json_skip_space", "json_value_boundary", "json_key_decoded_equal",
 }
 
 // linkage returns the storage-class prefix for a function's prototype and
@@ -2189,6 +2242,20 @@ func (cg *CodeGenerator) emitFieldAccessorHelpers() {
 	cg.write("\n")
 }
 
+// programDefinesFunction reports whether the merged program declares a
+// function under the given (package-internal) name.
+func programDefinesFunction(program *ast.Program, name string) bool {
+	if program == nil {
+		return false
+	}
+	for _, stmt := range program.Statements {
+		if fn, isFn := stmt.(*ast.FunctionStatement); isFn && fn.Name != nil && fn.Name.Value == name {
+			return true
+		}
+	}
+	return false
+}
+
 // runtimeBuiltins maps Oak builtins to the C runtime helpers emitted with
 // every compilation unit.
 var runtimeBuiltins = map[string]string{
@@ -2196,14 +2263,26 @@ var runtimeBuiltins = map[string]string{
 	"is_valid_utf8": "oak_is_valid_utf8", // 70-strings: Oak.Utf8Validity brackets
 }
 
-// emitUtf8Helper emits the zero-allocation UTF-8 validator: a C
-// transliteration of the well-formed sequences proven in Oak.Utf8Validity
-// (the third projection of one fact, after the Lean model and the Go
-// ingestion validator). Bounds checks use u64 arithmetic so no view length
-// can wrap them; the helper reads only v.len bytes and fails closed.
-func (cg *CodeGenerator) emitUtf8Helper() {
+// emitUtf8Helper emits the zero-allocation UTF-8 validator behind
+// is_valid_utf8 and str_from_utf8. In a module build the loader has pulled
+// in the standard library's utf8 package whenever the program reaches
+// either (compiler/modules.go reachesUtf8Builtin), and the helper is a call
+// to the compiled utf8.valid — the vector program Oak.Utf8Blocks.program_valid
+// proves decides Oak.Utf8Validity.Valid (docs/spec/70-strings.md section 8,
+// 93-simd.md section 1.5). A bare source build has no packages, so it keeps
+// the C transliteration of the well-formed sequences of Oak.Utf8Validity (the
+// third projection of one fact, after the Lean model and the Go ingestion
+// validator). Bounds checks use u64 arithmetic so no view length can wrap
+// them; the helper reads only v.len bytes and fails closed.
+func (cg *CodeGenerator) emitUtf8Helper(program *ast.Program) {
 	viewType := cg.emitViewType("u8")
 	cg.write("/* core_slice: view construction as a brace initializer (declaration\n   position); field order matches the view/span structs {base, len} */\n#define core_slice(arr, lo, hi) { (arr) + (lo), (u32)((hi) - (lo)) }\n\n/* bounds-checked owned-array indexing: out-of-range traps, never UB */\nstatic inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }\n#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])\n/* checked index in lvalue position: pool[ oak_lv_idx(i, len) ].field = v */\nstatic inline u64 oak_lv_idx(u64 i, u64 len) { if (i >= len) { __builtin_trap(); } return i; }\n\n/* checked shifts: a count reaching the operand width traps, never UB\n   (docs/spec/10-syntax.md section 3b); constant counts fold the check away */\n#define OAK_SHIFT_HELPERS(T, W) \\\n  static inline T oak_shl_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v << n); } \\\n  static inline T oak_shr_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v >> n); }\nOAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u) OAK_SHIFT_HELPERS(u64, 64u)\n\n/* total fixed-width arithmetic (docs/spec/20-types.md section 11.1, 90-backend.md\n   section 7): results wrap mod 2^N, computed in unsigned space so no C\n   promotion overflows; signed results come back through a union pun (defined\n   since C99 TC3). Division by zero traps; MIN / -1 wraps. Never UB. */\n#define OAK_ARITH_U(T) \\\n  static inline T oak_add_##T(T a, T b) { return (T)((u64)a + (u64)b); } \\\n  static inline T oak_sub_##T(T a, T b) { return (T)((u64)a - (u64)b); } \\\n  static inline T oak_neg_##T(T a) { return (T)(0u - (u64)a); } \\\n  static inline T oak_mul_##T(T a, T b) { return (T)((u64)a * (u64)b); } \\\n  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a / b); } \\\n  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } return (T)(a % b); }\n#define OAK_ARITH_I(T, U, MIN) \\\n  static inline T oak_pun_##T(U bits) { union { U from; T to; } pun; pun.from = bits; return pun.to; } \\\n  static inline T oak_add_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a + (u64)(U)b)); } \\\n  static inline T oak_sub_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a - (u64)(U)b)); } \\\n  static inline T oak_neg_##T(T a) { return oak_pun_##T((U)(0u - (u64)(U)a)); } \\\n  static inline T oak_mul_##T(T a, T b) { return oak_pun_##T((U)((u64)(U)a * (u64)(U)b)); } \\\n  static inline T oak_div_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (a == MIN && b == -1) { return a; } return (T)(a / b); } \\\n  static inline T oak_rem_##T(T a, T b) { if (b == 0) { __builtin_trap(); } if (b == -1) { return 0; } return (T)(a % b); }\nOAK_ARITH_U(u8) OAK_ARITH_U(u16) OAK_ARITH_U(u32) OAK_ARITH_U(u64)\nOAK_ARITH_I(i8, u8, INT8_MIN) OAK_ARITH_I(i16, u16, INT16_MIN) OAK_ARITH_I(i32, u32, INT32_MIN) OAK_ARITH_I(i64, u64, INT64_MIN)\n#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)\n\n/* is_valid_utf8: Unicode Table 3-7, transliterated from Oak.Utf8Validity */\n")
+	if programDefinesFunction(program, "utf8__valid") {
+		cg.write("/* is_valid_utf8: lowered to the standard library's vector validator utf8.valid\n   (stdlib/utf8.oak), which Oak.Utf8Blocks.program_valid proves decides Oak.Utf8Validity.Valid */\n")
+		cg.write(fmt.Sprintf("Bool %s( %s bytes );\n", cg.cFunctionName("utf8__valid"), viewType))
+		cg.write(fmt.Sprintf("static inline Bool oak_is_valid_utf8(%s v) { return %s( v ); }\n\n", viewType, cg.cFunctionName("utf8__valid")))
+		return
+	}
 	cg.write(fmt.Sprintf("static Bool oak_is_valid_utf8(%s v) {\n", viewType))
 	cg.write("  u64 i = 0;\n")
 	cg.write("  u64 n = (u64)v.len;\n")
@@ -2277,8 +2356,8 @@ func (cg *CodeGenerator) emitAssertHelper() {
 	cg.write("}\n")
 	cg.write("#else\n")
 	cg.write("static inline void oak_assert(Bool cond, const char *file, u32 line) {\n")
-	cg.write("  (void)file; (void)line;\n")
 	cg.write("  if (!cond) {\n")
+	cg.write("    oak_report(\"assertion failed\", file, line);\n")
 	cg.write("    __builtin_trap();\n")
 	cg.write("  }\n")
 	cg.write("}\n")
@@ -2300,8 +2379,7 @@ func (cg *CodeGenerator) emitAssertHelper() {
 		cg.write("}\n")
 		cg.write("#else\n")
 		cg.write("static inline void *oak_fn_at(void *p, const char *file, u32 line) {\n")
-		cg.write("  (void)file; (void)line;\n")
-		cg.write("  if (p == 0) { __builtin_trap(); }\n")
+		cg.write("  if (p == 0) { oak_report(\"c.fn_at of a NULL pointer\", file, line); __builtin_trap(); }\n")
 		cg.write("  return p;\n")
 		cg.write("}\n")
 	}
@@ -2320,6 +2398,33 @@ func (cg *CodeGenerator) emitAssertHelper() {
 		cg.write("extern void objc_msgSend(void);\n\n")
 	}
 	cg.emitAssertValueHelpers()
+}
+
+// emitHostBoundary emits the freestanding host boundary (docs/spec/90-backend.md
+// §2a): one weak hook, oak_host_write, that a kernel or firmware may
+// define; a diagnostic that a hosted build prints to stderr reaches the
+// hook as one bounded line (fd 2) and then traps as before. Without the
+// hook the diagnostic path is the bare trap. The text is assembled from
+// compile-time literals and the Oak source position — no format strings,
+// no libc — so the block is exactly what the object can promise: the
+// hook is the only foreign symbol it introduces.
+func (cg *CodeGenerator) emitHostBoundary() {
+	cg.write("#if !__STDC_HOSTED__ || defined(OAK_FREESTANDING)\n")
+	cg.write("/* freestanding host boundary (docs/spec/90-backend.md section 2a): a weak\n   hook the kernel or firmware may define; diagnostics reach it, then trap */\n")
+	cg.write("extern int64_t oak_host_write(int64_t fd, const uint8_t *buf, size_t len) __attribute__((weak));\n")
+	cg.write("static void oak_report(const char *what, const char *file, uint32_t line) {\n")
+	cg.write("  if (&oak_host_write == 0) { return; }\n")
+	cg.write("  uint8_t buf[192]; size_t n = 0;\n")
+	cg.write("  const char *parts[4] = { \"oak: \", what, \" at \", file };\n")
+	cg.write("  for (int p = 0; p < 4; p++) { for (const char *c = parts[p]; *c != 0 && n < sizeof buf - 16; c++) { buf[n++] = (uint8_t)*c; } }\n")
+	cg.write("  buf[n++] = ':';\n")
+	cg.write("  uint8_t digits[10]; int d = 0;\n")
+	cg.write("  do { digits[d++] = (uint8_t)('0' + line % 10u); line /= 10u; } while (line != 0u);\n")
+	cg.write("  while (d > 0) { buf[n++] = digits[--d]; }\n")
+	cg.write("  buf[n++] = '\\n';\n")
+	cg.write("  (void)oak_host_write(2, buf, n);\n")
+	cg.write("}\n")
+	cg.write("#endif\n")
 }
 
 // assertValueFormats spells each comparable operand type for the failure
@@ -2350,26 +2455,26 @@ func (cg *CodeGenerator) emitAssertValueHelpers() {
 		cg.write("  if (!(got == want)) {\n")
 		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
 		cg.write(fmt.Sprintf("    fprintf(stderr, \"oak: assertion failed at %%s:%%u: got %s, want %s\\n\", file, (unsigned)line, %sgot, %swant);\n", f.format, f.format, f.cast, f.cast))
-		cg.write("#else\n    (void)file; (void)line;\n#endif\n")
+		cg.write("#else\n    oak_report(\"assertion failed (assert_eq; values need a hosted build)\", file, line);\n#endif\n")
 		cg.write("    __builtin_trap();\n  }\n}\n")
 		cg.write(fmt.Sprintf("static inline void oak_assert_ne_%s(%s got, %s want, const char *file, u32 line) {\n", f.name, f.ctype, f.ctype))
 		cg.write("  if (got == want) {\n")
 		cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
 		cg.write(fmt.Sprintf("    fprintf(stderr, \"oak: assertion failed at %%s:%%u: got %s, want anything but %s\\n\", file, (unsigned)line, %sgot, %swant);\n", f.format, f.format, f.cast, f.cast))
-		cg.write("#else\n    (void)file; (void)line;\n#endif\n")
+		cg.write("#else\n    oak_report(\"assertion failed (assert_ne; values need a hosted build)\", file, line);\n#endif\n")
 		cg.write("    __builtin_trap();\n  }\n}\n")
 	}
 	cg.write("static inline void oak_assert_eq_Bool(Bool got, Bool want, const char *file, u32 line) {\n")
 	cg.write("  if (!(got == want)) {\n")
 	cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
 	cg.write("    fprintf(stderr, \"oak: assertion failed at %s:%u: got %s, want %s\\n\", file, (unsigned)line, got ? \"true\" : \"false\", want ? \"true\" : \"false\");\n")
-	cg.write("#else\n    (void)file; (void)line;\n#endif\n")
+	cg.write("#else\n    oak_report(got ? \"assertion failed: got true, want false\" : \"assertion failed: got false, want true\", file, line);\n#endif\n")
 	cg.write("    __builtin_trap();\n  }\n}\n")
 	cg.write("static inline void oak_assert_ne_Bool(Bool got, Bool want, const char *file, u32 line) {\n")
 	cg.write("  if (got == want) {\n")
 	cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
 	cg.write("    fprintf(stderr, \"oak: assertion failed at %s:%u: got %s, want anything but %s\\n\", file, (unsigned)line, got ? \"true\" : \"false\", want ? \"true\" : \"false\");\n")
-	cg.write("#else\n    (void)file; (void)line;\n#endif\n")
+	cg.write("#else\n    oak_report(got ? \"assertion failed: got true, want anything but true\" : \"assertion failed: got false, want anything but false\", file, line);\n#endif\n")
 	cg.write("    __builtin_trap();\n  }\n}\n\n")
 }
 
@@ -2942,6 +3047,29 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 				cg.emitBorrowConstruction(ident.Value, e, tc)
 				return
 			}
+			if (ident.Value == "view_as" || ident.Value == "span_as") && len(e.Arguments) == 1 {
+				// view_as[U](v) / span_as[U](s) (docs/spec/50-borrowing.md
+				// section 8d): the same storage as a view of U with the
+				// record's scalar count times as many elements; the
+				// checker proved the record's layout contiguous U.
+				reinterpretation, known := tc.ReinterpretationAt(e.Token)
+				if !known {
+					cg.output.WriteString("OAK_UNSUPPORTED_REINTERPRET")
+					return
+				}
+				factor := reinterpretation.Factor
+				element := cg.parseTypeExpression(&ast.Identifier{Value: reinterpretation.Element})
+				if ident.Value == "view_as" {
+					cg.output.WriteString(fmt.Sprintf("(%s){ (const %s *)( ", cg.emitViewType(element), element))
+				} else {
+					cg.output.WriteString(fmt.Sprintf("(%s){ (%s *)( ", cg.emitSpanType(element), element))
+				}
+				cg.emitExpressionFragment(e.Arguments[0], tc)
+				cg.output.WriteString(" ).base, (u32)(( ")
+				cg.emitExpressionFragment(e.Arguments[0], tc)
+				cg.output.WriteString(fmt.Sprintf(" ).len * %du) }", factor))
+				return
+			}
 			if ident.Value == "subslice" && len(e.Arguments) == 3 {
 				// subslice(v, start, n) derives a view/span of the same kind
 				// (docs/spec/50-borrowing.md); the helper traps past the end.
@@ -3013,10 +3141,12 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.emitForeignFunctionCallee(cg.foreignFnLocals[ident.Value], e.Function, tc)
 		} else if ident, ok := e.Function.(*ast.Identifier); ok && runtimeBuiltins[ident.Value] != "" {
 			cg.output.WriteString(runtimeBuiltins[ident.Value])
-		} else if ident, ok := e.Function.(*ast.Identifier); ok && cg.programFunctions[ident.Value] != nil {
+		} else if ident, ok := e.Function.(*ast.Identifier); ok && cg.programFunctions[ident.Value] != nil && !cg.isLocalName(ident.Value) {
 			// Calls to program functions use the mangled C name; calls to
 			// extern bindings use the validated foreign symbol raw
-			// (docs/spec/92-ffi.md section 2.3).
+			// (docs/spec/92-ffi.md section 2.3). A local of the same name — a
+			// function-typed parameter `step` in a package whose caller also
+			// declares a root function `step` — is a call through the local.
 			if target := cg.programFunctions[ident.Value]; target.ExternSymbol != "" {
 				if typechecker.ValidCSymbol(target.ExternSymbol) {
 					cg.output.WriteString(cg.externCallee(target.ExternSymbol))
@@ -3357,6 +3487,7 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 	// The parser represents array types as IndexExpression
 	if indexExpr, ok := expr.(*ast.IndexExpression); ok {
 		if cType, atomic := atomicTypeC(indexExpr); atomic {
+			cg.noteAtomicCarrier(indexExpr)
 			return cType
 		}
 		// Phantom-encoded strings share one representation: every Str[E]
@@ -3445,7 +3576,7 @@ func (cg *CodeGenerator) emitViewType(elementType string) string {
 		cg.write("    fprintf(stderr, \"oak: c.cstr view is not NUL-terminated at %s:%u\\n\", file, (unsigned)line);\n")
 		cg.write("    __builtin_trap();\n  }\n  return (const char *)v.base;\n}\n#else\n")
 		cg.write(fmt.Sprintf("static inline const char *oak_cstr_u8(%s v, const char *file, u32 line) {\n", viewTypeName))
-		cg.write("  (void)file; (void)line;\n  if (v.len == 0u || v.base[v.len - 1u] != 0u) { __builtin_trap(); }\n  return (const char *)v.base;\n}\n#endif\n\n")
+		cg.write("  if (v.len == 0u || v.base[v.len - 1u] != 0u) { oak_report(\"c.cstr view is not NUL-terminated\", file, line); __builtin_trap(); }\n  return (const char *)v.base;\n}\n#endif\n\n")
 		// c.borrow_string(p) (section 2.7.1): the terminator's offset,
 		// counted without libc so freestanding builds stay free of it; a
 		// NULL pointer is the empty string, and a length past u32 traps.
@@ -3914,6 +4045,7 @@ func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, 
 
 	if stmt.Type != nil {
 		if cType, atomic := atomicTypeC(stmt.Type); atomic {
+			cg.noteAtomicCarrier(stmt.Type)
 			if stmt.Value != nil {
 				cg.write("  OAK_ATOMIC_INITIALIZER_MUST_BE_ZERO_INIT;\n")
 				return
