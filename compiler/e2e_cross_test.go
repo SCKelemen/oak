@@ -214,3 +214,41 @@ func TestCrossObjectFlags(t *testing.T) {
 		t.Fatalf("freestanding riscv64 object e_flags %#x, want soft-float", object[48])
 	}
 }
+
+// A cross-built Linux program runs from the tooling through a user-mode
+// emulator (`oak run -target`, docs/spec/90-backend.md §2a): the binary
+// zig linked for linux/riscv64 executes under qemu-riscv64 and its exit
+// code is the program's. Skips without a cross compiler or an emulator
+// (macOS has no user-mode QEMU; the CI job installs qemu-user-static).
+func TestCrossRunUnderEmulator(t *testing.T) {
+	for _, tgt := range []target.Target{
+		{OS: target.OSLinux, Arch: target.ArchRiscv64},
+		{OS: target.OSLinux, Arch: target.ArchArm64},
+		{OS: target.OSLinux, Arch: target.ArchAmd64},
+	} {
+		t.Run(tgt.String(), func(t *testing.T) {
+			if tgt.IsHost() {
+				t.Skip("the host target runs directly")
+			}
+			emulator, err := toolchain.ResolveEmulator(tgt, nil, nil)
+			if err != nil {
+				t.Skipf("no emulator: %v", err)
+			}
+			// pick(40, 2) == 2 and pick(3, 9) == 3 are asserted; the program
+			// returns 0 on success, and a failed assertion traps.
+			bin := crossLink(t, tgt, crossComp(tgt))
+			argv := append(append([]string{}, emulator.Args...), bin)
+			cmd := exec.Command(emulator.Path, argv...)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s under %s: %v\n%s", tgt, emulator.Command(), err, out)
+			}
+			// A program whose assertion fails must fail under the emulator too.
+			wrong := New().WithSource("pick.oak", strings.Replace(crossPickOak, "== u64(3))", "== u64(4))", 1)).WithAsmUnit("pick.rv64.oakasm", crossPickRV64).WithAsmUnit("pick.arm64.oakasm", crossPickArm64).WithTarget(tgt)
+			bad := crossLink(t, tgt, wrong)
+			if err := exec.Command(emulator.Path, append(append([]string{}, emulator.Args...), bad)...).Run(); err == nil {
+				t.Fatal("a failed assertion exited 0 under the emulator")
+			}
+		})
+	}
+}

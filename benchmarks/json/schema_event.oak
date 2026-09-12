@@ -1,0 +1,14 @@
+import(std)
+// The large-document workload: two borrowed string fields, a sixty-four
+// element array and a short signed array, about 1.5 KB per document. The
+// decoded record borrows the input, so no plain wrapper can return it
+// (docs/spec/50-borrowing.md section 8c); the bridge calls the derived
+// region-indexed decoder __oak_json_decode_Event directly, and this main
+// exists only to request the derivation.
+Event[R]: type = struct { id: u64, kind: View[u8, R], message: View[u8, R], latencies: [64]u32, deltas: [8]i32 }
+main: (): i32 {
+  sample: [2]u8 = [u8(123), u8(125)]
+  input: []u8 = view(&sample)
+  r: Result[Event, JsonDecodeError] = decode[Event, Json](input)
+  r ? | .Ok(_) => 0 | .Err(_) => 1
+}

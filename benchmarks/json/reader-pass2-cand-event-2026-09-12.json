@@ -1,0 +1,202 @@
+{
+  "metadata": {
+    "schema": "oak-json-benchmark-v1",
+    "workload_name": "event",
+    "workload": "required id:u64 kind:View[u8] message:View[u8] latencies:[64]u32 deltas:[8]i32; strings as raw tokens, arrays materialized",
+    "corpus": "deterministic-event-v1; ~1.5 KB documents; two key orders; messages with occasional escapes; integer boundaries",
+    "mode": "resident corpus, reused parser, steady state",
+    "machine": "arm64",
+    "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+    "cpu": "Apple M4 Max",
+    "logical_cpu_count": 16,
+    "oak": {
+      "sha": "b12e4951671bada38b8a2bdd633ff56e434a6284",
+      "tracked_changes": false
+    },
+    "simdjson": {
+      "sha": "f9c973a359ea7de2a4ae02ffec95bae85f68a6d7",
+      "tracked_changes": false
+    },
+    "cc": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin25.3.0\nThread model: posix\nInstalledDir: /Library/Developer/CommandLineTools/usr/bin",
+    "cxx": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin25.3.0\nThread model: posix\nInstalledDir: /Library/Developer/CommandLineTools/usr/bin",
+    "go": "go version go1.27.1 darwin/arm64",
+    "flags": [
+      "-O3",
+      "-DNDEBUG"
+    ],
+    "documents_per_round": 1024,
+    "rounds": 100,
+    "samples": 7,
+    "allocation_counts": null,
+    "core_affinity": "not controlled",
+    "cache_flush": false,
+    "generated_c_sha256": "b69cac6e9758273c78d59894aae23b8edf101cf4622b499f9fb330c4e433e0cf",
+    "simdjson_implementation": "arm64",
+    "corpus_bytes": 910316,
+    "max_document_capacity": 1081,
+    "commands": [
+      [
+        "go",
+        "run",
+        ".",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-json-bench-4ze5qbrk/schema.oak"
+      ],
+      [
+        "cc",
+        "-std=c99",
+        "-O3",
+        "-DNDEBUG",
+        "-I/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-json-bench-4ze5qbrk",
+        "-c",
+        "/private/tmp/claude-501/-Users-sam-Desktop-fwd-cloudsec-mojo-oak/151ef38d-5848-4937-a3d3-da0e01b8f578/scratchpad/oak-json/benchmarks/json/bridge_event.c",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-json-bench-4ze5qbrk/oak.o"
+      ],
+      [
+        "c++",
+        "-std=c++17",
+        "-O3",
+        "-DNDEBUG",
+        "-pthread",
+        "-DOAK_JSON_WORKLOAD_HEADER=\"workload_event.h\"",
+        "-I/private/tmp/claude-501/-Users-sam-Desktop-fwd-cloudsec-mojo-oak/151ef38d-5848-4937-a3d3-da0e01b8f578/scratchpad/oak-json/benchmarks/json",
+        "-I/private/tmp/claude-501/-Users-sam-Desktop-fwd-cloudsec-mojo-oak/151ef38d-5848-4937-a3d3-da0e01b8f578/scratchpad/simdjson/singleheader",
+        "/private/tmp/claude-501/-Users-sam-Desktop-fwd-cloudsec-mojo-oak/151ef38d-5848-4937-a3d3-da0e01b8f578/scratchpad/oak-json/benchmarks/json/runner.cpp",
+        "/private/tmp/claude-501/-Users-sam-Desktop-fwd-cloudsec-mojo-oak/151ef38d-5848-4937-a3d3-da0e01b8f578/scratchpad/simdjson/singleheader/simdjson.cpp",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-json-bench-4ze5qbrk/oak.o",
+        "-o",
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-json-bench-4ze5qbrk/benchmark"
+      ],
+      [
+        "/var/folders/h4/7zdg3m7s02j_ym20ys_0h0b00000gn/T/oak-json-bench-4ze5qbrk/benchmark",
+        "1024",
+        "100",
+        "7"
+      ]
+    ]
+  },
+  "summary": {
+    "oak": {
+      "median_ns_per_document": 632.765703125,
+      "median_bytes_per_second": 1404912536.124585
+    },
+    "simdjson_ondemand": {
+      "median_ns_per_document": 451.290283203125,
+      "median_bytes_per_second": 1969863969.6832812
+    }
+  },
+  "samples": [
+    {
+      "backend": "oak",
+      "sample": 0,
+      "ns": 65231959,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "simdjson_ondemand",
+      "sample": 0,
+      "ns": 46121334,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "simdjson_ondemand",
+      "sample": 1,
+      "ns": 45827959,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "oak",
+      "sample": 1,
+      "ns": 64783208,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "oak",
+      "sample": 2,
+      "ns": 64635333,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "simdjson_ondemand",
+      "sample": 2,
+      "ns": 46212125,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "simdjson_ondemand",
+      "sample": 3,
+      "ns": 46071458,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "oak",
+      "sample": 3,
+      "ns": 64795208,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "oak",
+      "sample": 4,
+      "ns": 64339125,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "simdjson_ondemand",
+      "sample": 4,
+      "ns": 46296917,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "simdjson_ondemand",
+      "sample": 5,
+      "ns": 47247583,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "oak",
+      "sample": 5,
+      "ns": 65190667,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "oak",
+      "sample": 6,
+      "ns": 64908084,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    },
+    {
+      "backend": "simdjson_ondemand",
+      "sample": 6,
+      "ns": 47217500,
+      "documents": 102400,
+      "bytes": 91031600,
+      "checksum": 16699900314212144648
+    }
+  ]
+}

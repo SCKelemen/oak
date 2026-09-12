@@ -140,9 +140,21 @@ clock through `timehost`, and a deliberately failed assertion's message
 arrives over the UART before the trap. Oak has no hidden heap (§3), so
 there is no allocation hook to define.
 
-`oak run` executes on the host and refuses a foreign target; `oak install
--target` places the executable under `$OAKBIN/<os>_<arch>/`, as `go install`
-does. The build cache keys on the target, the driver's path and identity,
+`oak run -target os/arch` builds as `oak build` does and then executes the
+program: directly for the host target; for a foreign Linux target through
+a user-mode emulator — `OAK_EMULATOR` (its arguments from
+`OAK_EMULATOR_ARGS`), else QEMU's `qemu-<arch>` or `qemu-<arch>-static`
+on PATH — as one argument vector, the emulator, the static binary, the
+program's arguments; the program's exit code is `oak run`'s. Without an
+emulator the run is refused before anything is built, naming what to
+install; a foreign Darwin target has no user-mode emulator, and a
+freestanding build is an object for the user's own harness
+(`Oak.Target.runWith_host`, `runWith_foreign`, `runWith_freestanding_none`,
+`runWith_explicit`). `compiler/e2e_cross_test.go` runs the linux/riscv64,
+arm64, and amd64 cross builds under `qemu-user-static` in CI, asserting
+both the passing exit and that a failed assertion still fails under the
+emulator. `oak install -target` places the executable under
+`$OAKBIN/<os>_<arch>/`, as `go install` does. The build cache keys on the target, the driver's path and identity,
 and the exact flag list (`115-tooling.md` §3.1), so one C built for two
 targets never shares an entry. `oak test -target os/arch` builds a package's tests through the same
 toolchain and reports each test `built`, not run; a freestanding target is

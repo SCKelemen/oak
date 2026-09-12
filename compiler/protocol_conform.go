@@ -58,20 +58,28 @@ type tlaAction struct {
 
 // tlaNormalForm is what both modules reduce to.
 type tlaNormalForm struct {
-	Constants []string
-	Variables []string
-	States    []string
-	Init      []string // canonical terms, sorted
-	Actions   map[string]*tlaAction
-	Next      []string // canonical disjuncts, sorted
-	TypeOK    []string // canonical terms, sorted
-	Domains   []string // canonical `Name == [f: D, ...]` record-set definitions (record payload domains), sorted
+	Constants  []string
+	Variables  []string
+	States     []string
+	Init       []string // canonical terms, sorted
+	Actions    map[string]*tlaAction
+	Next       []string // canonical disjuncts, sorted
+	TypeOK     []string // canonical terms, sorted
+	Domains    []string // canonical `Name == [f: D, ...]` record-set definitions (record payload domains), sorted
+	Invariants []string // canonical `Invariant_<name> == body` definitions, sorted
 }
 
 // ProtocolConformance renders the projection of decl and compares it with
 // the hand-written module text.
 func ProtocolConformance(decl *ast.ProtocolDeclaration, moduleText string, records map[string]*ast.RecordLiteral) (TLAConformance, error) {
-	projected, err := ProtocolTLAWithRecords(decl, "projection", records)
+	return ProtocolConformanceWith(decl, moduleText, records, nil)
+}
+
+// ProtocolConformanceWith is ProtocolConformance with the program's
+// invariant theorems in the projection: a hand-written module must state
+// the same `Invariant_<name>` definitions.
+func ProtocolConformanceWith(decl *ast.ProtocolDeclaration, moduleText string, records map[string]*ast.RecordLiteral, theorems []*ast.FunctionStatement) (TLAConformance, error) {
+	projected, err := ProtocolTLAFull(decl, "projection", records, theorems)
 	if err != nil {
 		return TLAConformance{}, err
 	}
@@ -155,6 +163,13 @@ func parseTLAModule(text string) (*tlaNormalForm, []string) {
 		case "Next":
 			form.Next = canonicalTerms(splitTopLevel(body, "\\/"))
 		default:
+			if strings.HasPrefix(d.name, "Invariant_") && len(d.params) == 0 {
+				// An invariant theorem stated in the module (112-protocols.md
+				// section 4): a definition compared by its canonical text.
+				form.Invariants = append(form.Invariants, d.name+" == "+canonical(strings.TrimSpace(body)))
+				sort.Strings(form.Invariants)
+				continue
+			}
 			trimmedBody := strings.TrimSpace(body)
 			if len(d.params) == 0 && strings.HasPrefix(trimmedBody, "[") && strings.HasSuffix(trimmedBody, "]") && strings.Contains(trimmedBody, ":") && !strings.Contains(trimmedBody, "'") {
 				// A record payload's domain, `Cmd == [slot: CmdSlot, ...]`
@@ -464,6 +479,7 @@ func compareTLA(left, right *tlaNormalForm) []TLADifference {
 	diffs = append(diffs, compareTermSets("typeok", left.TypeOK, right.TypeOK)...)
 	diffs = append(diffs, compareTermSets("next", left.Next, right.Next)...)
 	diffs = append(diffs, compareTermSets("domain", left.Domains, right.Domains)...)
+	diffs = append(diffs, compareTermSets("invariant", left.Invariants, right.Invariants)...)
 	for _, name := range sortedNames(left.Actions) {
 		other, present := right.Actions[name]
 		if !present {

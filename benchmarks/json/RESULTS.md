@@ -1,5 +1,43 @@
 # JSON decoder optimization measurements
 
+## Fifth optimization pass: profile-guided reader, two workloads
+
+Measured candidate: branch `sam/json-decoder` at `b12e4951` (rebased on `2ae63198`).
+Baseline: `2ae63198` (`specification`, which includes the fourth pass below).
+Machine-readable data: `reader-pass2-{base,cand}-{record,event}-2026-09-12.json`.
+Run locally with `python3 benchmarks/json/run.py --samples 7 [--workload event]` on
+Apple M4 Max while other work held the load average near sixty; the harness
+interleaves both decoders in every sample, so the paired ratios are the figures to
+read and the absolute times are upper bounds. Each sample decodes 102,400 documents.
+
+| Workload | Run | Oak ns/document | simdjson ns/document | Paired-ratio median | Paired ratios |
+| --- | --- | ---: | ---: | ---: | --- |
+| record (~90 B) | Baseline | 63.5 | 64.3 | 0.987× | 0.98 0.98 0.99 0.99 0.98 1.00 1.01 |
+| record (~90 B) | Candidate | 60.6 | 65.1 | 0.925× | 0.92 0.92 0.92 0.93 0.93 0.94 0.93 |
+| event (~880 B) | Baseline | 780.0 | 455.5 | 1.718× | 1.72 1.72 1.67 1.73 1.69 1.72 1.72 |
+| event (~880 B) | Candidate | 632.8 | 451.3 | 1.399× | 1.41 1.41 1.40 1.41 1.39 1.38 1.37 |
+
+The event workload is new in this pass (`--workload event`, `schema_event.oak`,
+`workload_event.h`): `id: u64`, two borrowed string fields (a short kind and a
+message of a few hundred bytes with an occasional escape), `latencies: [64]u32`,
+`deltas: [8]i32`; both decoders hand the strings out as raw tokens and materialize
+the arrays; the preflight of invalid documents and the checksum are the harness's.
+On it the derived decoder is a fifth faster than before and still at 1.4 times
+simdjson's time: the profile (`docs/spec/71-codecs.md` §20) puts the remainder in the
+per-number dependency chain of the array — seventy-two numbers a document — and the
+reader's per-element bookkeeping.
+
+What changed: the byte after a run of digits is taken from the register (no reload
+behind the run count's dependency chain, no byte loop for it), the run count is
+`simd.ctz` of the non-digit mask, a tail of four to seven bytes goes through a
+four-byte word, the boundary test is one table load, eight-byte key spellings compare
+as one word, every key and Boolean byte read and every packed load is proven under the
+wrap-free remaining guard (`_proven` pack twins), separators are one byte read under
+a guard, and `json_string_run` locates escape bytes with `movemask` and `ctz` and
+takes its tail through a block ending at the input's end. Acceptance rules, error
+categories and the located-fault offsets are unchanged.
+
+
 ## Fourth optimization pass: the reader's shape
 
 Measured candidate: `35ae143e48e9edfb3da61be9a9f8fc828c1584a4` (branch `sam/json-decoder`, rebased on `223df157`).

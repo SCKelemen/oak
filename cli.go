@@ -44,7 +44,7 @@ var commands []command
 func init() {
 	commands = []command{
 		{"build", "compile a package to an executable (or C with -o x.c / -emit-c)", "oak build [-o out] [-target os/arch] [-cpu name] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-profile default|strict] [-lines] [dir|file.oak]", buildPackage},
-		{"run", "compile and run a package", "oak run [-profile default|strict] [dir]", runPackage},
+		{"run", "compile and run a package (a foreign Linux target through an emulator)", "oak run [-profile default|strict] [-target os/arch] [dir]", runPackage},
 		{"install", "compile a package and install the executable into $OAKBIN", "oak install [-profile default|strict] [-target os/arch] [dir]", installPackage},
 		{"vet", "check a package without generating code and list what the checker recorded", "oak vet [-profile default|strict] [dir|file.oak]", vetPackage},
 		{"test", "run the tests of a package", "oak test [flags] [dir]", nil},
@@ -183,6 +183,12 @@ var envVariables = []struct {
 		return resolvedTarget().DefaultCPU()
 	}},
 	{"OAK_SYSROOT", "sysroot for a cross clang targeting a hosted platform", func() string { return os.Getenv("OAK_SYSROOT") }},
+	{"OAK_EMULATOR", "user-mode emulator oak run uses for a foreign Linux target (default: qemu-<arch>); OAK_EMULATOR_ARGS adds arguments", func() string {
+		if e, err := toolchain.ResolveEmulator(resolvedTarget(), nil, nil); err == nil && e != nil {
+			return e.Command()
+		}
+		return ""
+	}},
 	{"OAKROOT", "the module root of the working directory (derived)", moduleRootOf},
 }
 

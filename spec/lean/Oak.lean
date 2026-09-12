@@ -78,6 +78,7 @@ import Oak.CausalFrontierRefinement
 import Oak.Modules
 import Oak.ModulesRefinement
 import Oak.ArithmeticRefinement
+import Oak.ViewRefinement
 import Oak.Semver
 import Oak.Loops
 import Oak.Regions
