@@ -120,7 +120,19 @@ Beyond the hooks the object references only the compiler's runtime
 library — `__aeabi_*`, `__udivdi3`, `memset`, the builtins every C
 compiler emits — which the final link supplies (compiler-rt from zig,
 libgcc from a GNU toolchain) beside the host's own startup and linker
-script. `compiler/e2e_mcu_test.go` is the shape: the Oak object, a vector
+script. Atomics never join that list:
+the object ends with a per-carrier assertion that the target's C11 atomics
+are always lock-free (`65-machine-memory.md` §6), so a `-cpu cortex_m0`
+build of a program with a `u32` fetch-add fails in the C compiler rather
+than pulling a locked `__atomic_fetch_add_4` from libatomic;
+`-DOAK_ATOMIC_ACCEPT_LOCKED` in `OAK_CFLAGS` accepts the fallback
+knowingly. `compiler/e2e_mcu_test.go` is
+the shape: the Oak object, a vector table or `_start`, a UART, linked and
+run under `qemu-system-arm -M mps2-an385` (Cortex-M3) and
+`qemu-system-riscv32 -M virt`, printing what `oak_main` returned. What a
+freestanding program cannot yet do is allocate or print through Oak's own
+runtime; that is the runtime-in-Oak item, and its consumer is now
+concrete. `compiler/e2e_mcu_test.go` is the shape: the Oak object, a vector
 table or `_start`, a UART behind `oak_host_write`, a counter behind the
 two clocks, linked and run under `qemu-system-arm -M mps2-an385`
 (Cortex-M3) and `qemu-system-riscv32 -M virt`; the program reads the host

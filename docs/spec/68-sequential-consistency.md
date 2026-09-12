@@ -227,7 +227,7 @@ The Semantic IR tests cover:
 | implementation-to-Lean refinement | not yet proved |
 | compiler/C weak-memory refinement | next major layer |
 | AArch64 assembly/litmus validation | next major layer |
-| target lock-free admission | not yet implemented |
+| target lock-free admission | C backend: per-carrier static assertion (65-machine-memory.md §6) |
 
 ## 12. Language-level memory model closure
 

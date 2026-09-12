@@ -280,12 +280,20 @@ func vetOne(target, profile string) int {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
-	recorded := 0
+	recorded, reports := 0, 0
 	for _, d := range model.Diagnostics {
 		if d == nil || d.Severity == diagnostic.SeverityError {
 			continue
 		}
-		recorded++
+		// Warnings are recorded assumptions the strict profile rejects;
+		// information-severity reports (the wrapping-guard report,
+		// docs/spec/85-discipline.md section 6a) are listed here and
+		// nowhere else, and no profile rejects them.
+		if d.Severity == diagnostic.SeverityWarning {
+			recorded++
+		} else {
+			reports++
+		}
 		fmt.Println(modules.DemangleText(d.PlainText()))
 	}
 	// Declared operator laws are the author's claims, not the checker's
@@ -314,6 +322,9 @@ func vetOne(target, profile string) int {
 		if theorems := len(typechecker.Theorems(model.Tree.Root)); theorems != 0 {
 			fmt.Printf("theorems: %d declared; `oak prove` discharges them\n", theorems)
 		}
+	}
+	if reports != 0 {
+		fmt.Printf("%d report(s); listed by vet only, no profile rejects them\n", reports)
 	}
 	if recorded == 0 {
 		fmt.Printf("%s: no recorded assumptions\n", target)

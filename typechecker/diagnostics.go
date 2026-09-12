@@ -23,6 +23,12 @@ const (
 	// two values of one fixed-width integer, float, or Bool type
 	// (docs/spec/85-discipline.md section 5).
 	CodeAssertOperands = "OAK-T0601"
+
+	// CodeGuardWrap reports unsigned `+`, `-` or `*` computed inside an
+	// ordering comparison (`off + len <= cap`): the sum wraps before the
+	// guard sees it (docs/spec/20-types.md §11.1a). Information severity —
+	// listed by `oak vet`, never a rejection.
+	CodeGuardWrap = "OAK-T0701"
 )
 
 func (tc *TypeChecker) addTypeDiagnostic(node ast.Node, code, title string) *diagnostic.Diagnostic {
@@ -33,6 +39,15 @@ func (tc *TypeChecker) addTypeDiagnostic(node ast.Node, code, title string) *dia
 		d = diagnostic.NewDiagnosticWithCode(lsp.Range{}, "typechecker", code, title)
 	}
 	tc.diagnostics.AddDiagnostic(d)
+	return d
+}
+
+// addTypeInformation records a finding that neither profile rejects: it is
+// listed by `oak vet` beside the recorded assumptions and stays out of the
+// build gate (docs/spec/85-discipline.md §6a).
+func (tc *TypeChecker) addTypeInformation(node ast.Node, code, title string) *diagnostic.Diagnostic {
+	d := tc.addTypeWarning(node, code, title)
+	d.Severity = diagnostic.SeverityInformation
 	return d
 }
 
