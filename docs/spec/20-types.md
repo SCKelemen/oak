@@ -864,6 +864,17 @@ Slot(x & u16(7))` must construct (returning the bare `u16` is refused), and
 a caller may index through the call directly — `TABLE[low(x)]` is proven,
 because any expression of a refined type is below the bound.
 
+A binding declared without an initializer (`state: Sha256State`) is
+zero-initialized, so it is admitted only when zero satisfies every
+refinement its type holds, field by field (`OAK-T0602` otherwise: `the
+zero value of Rec.p is outside the refinement Pos; initialize it`) —
+nothing else produces a refined value. A record field of a refinement
+type has its base's representation, and a store through a refined index
+is proven like a read — the shape of a hash state whose fill field is a
+`value < 64` refinement: every byte stored into the block is proven, and
+the construction that advances the fill is discharged by the arm it sits
+in (`fill < 63 ? { fill = Fill(fill + 1) } | { compress; fill = Fill(0) }`).
+
 `oak vet` reports the count of constructions discharged statically and
 guarded at run time, so the checks a program still pays are never hidden.
 

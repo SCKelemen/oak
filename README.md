@@ -1186,5 +1186,6 @@ to the TLA+ module for TLC. Refinement types (`Slot: type = u16 where value <
 u16(8)`, generic as `IrqId[N: u32]: type = u16 where value < N`) carry their
 predicate as a fact, so an index of a refined type is proven at every access
 and checked once, at construction — or not at all when the facts in scope
-discharge it. `examples/verification_quantum.oak` exercises all of it; see
+discharge it. `examples/verification_quantum.oak` exercises all of it, and `spec/oak/`
+restates the checker's own laws as Oak theorems the prover discharges; see
 [the verification spec](docs/spec/125-verification.md).

@@ -74,6 +74,11 @@ func zeroValue(typeExpr ast.Expression, env *object.Environment) (object.Object,
 		case "Bool":
 			return FALSE, true
 		}
+		// A refined type's zero is its base's zero (the checker admits the
+		// declaration only when the predicate holds at zero).
+		if base, ok := env.GetRefinementBase(t.Value); ok {
+			return zeroValue(base, env)
+		}
 		if decl, ok := env.GetRecordDecl(t.Value); ok {
 			record := &object.Record{Fields: map[string]object.Object{}}
 			for _, field := range decl.FieldOrder {

@@ -76,11 +76,11 @@ func lowerDerivedCodecs(program *ast.Program) error {
 				values = []ast.Expression{producer.Arguments[0], values[0]}
 			}
 		}
-		if name != "encode" && name != "encoded_size" && name != "decode" {
+		if name != "encode" && name != "encoded_size" && name != "decode" && name != "decode_located" {
 			return expr, nil
 		}
 		arity := 2
-		if name == "encoded_size" || name == "decode" {
+		if name == "encoded_size" || name == "decode" || name == "decode_located" {
 			arity = 1
 		}
 		if len(args) != 2 || len(values) != arity {
@@ -91,15 +91,21 @@ func lowerDerivedCodecs(program *ast.Program) error {
 		if !typeOK || !formatOK || format.Value != "Json" {
 			return nil, fmt.Errorf("codec: requires a concrete named type and the Json format")
 		}
-		if name == "decode" {
+		operation := name
+		if name == "decode" || name == "decode_located" {
 			if err := d.deriveDecoder(typ.Value); err != nil {
 				return nil, err
+			}
+			// decode_located[T, Json](input) is the positioned root
+			// (docs/spec/71-codecs.md section 13): Result[T, JsonFault].
+			if name == "decode_located" {
+				operation = "locate"
 			}
 		} else if err := d.derive(typ.Value); err != nil {
 			return nil, err
 		}
 		lowered := *call
-		lowered.Function = &ast.Identifier{Token: call.Token, Value: codecName(name, typ.Value)}
+		lowered.Function = &ast.Identifier{Token: call.Token, Value: codecName(operation, typ.Value)}
 		lowered.Arguments = values
 		return &lowered, nil
 	}); err != nil {
@@ -107,7 +113,7 @@ func lowerDerivedCodecs(program *ast.Program) error {
 	}
 	// Reserved producers cannot escape as values or be shadowed by binders.
 	if err := transformSyntax(reflect.ValueOf(program), func(expr ast.Expression) (ast.Expression, error) {
-		if id, ok := expr.(*ast.Identifier); ok && (id.Value == "from" || id.Value == "encode" || id.Value == "encoded_size" || id.Value == "decode") {
+		if id, ok := expr.(*ast.Identifier); ok && (id.Value == "from" || id.Value == "encode" || id.Value == "encoded_size" || id.Value == "decode" || id.Value == "decode_located") {
 			return nil, fmt.Errorf("codec: %s is reserved for an immediately consumed, explicitly typed codec call", id.Value)
 		}
 		return expr, nil

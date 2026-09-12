@@ -363,9 +363,11 @@ errors, not serialization fallbacks or runtime reflection.
 // input: []u8
 direct: Result[Sample, JsonDecodeError] = decode[Sample, Json](input)
 fluent: Result[Sample, JsonDecodeError] = from[Json](input).to[Sample]()
+located: Result[Sample, JsonFault] = decode_located[Sample, Json](input)
 ```
 
-The two spellings lower to identical C. Decoding returns a concrete value inside
+The first two spellings lower to identical C; the third is the same read
+with the failure's byte offset kept ("Positions", below). Decoding returns a concrete value inside
 `Result`; no boxed value, generic document tree, token array, or allocator
 is required. For this fixed-size subset the destination is the returned
 value, so there is no separate output-storage argument. Input is borrowed
@@ -437,8 +439,25 @@ Errors do not contain a partly constructed output record. The decoder does
 not mutate caller storage. Returning `Result[T, JsonDecodeError]` still uses
 Oak's existing value ABI; no claim is made that all aggregate copies vanish.
 
-Each helper returns `JsonDecoded[T]` (a concrete value and next byte offset).
-Nesting follows the finite schema: no runtime-depth stack allocation or
+**Positions.** `decode_located[T, Json](input): Result[T, JsonFault]`
+reports every failure with the byte offset it was detected at:
+`JsonFault { error: JsonDecodeError, at: u32 }`. The offset is the start of
+the offending token after whitespace — a value that is malformed, of the
+wrong type, or out of range; the opening quote of an unknown or duplicate
+key; the byte where a separator or colon was expected; the byte past the
+value where trailing content begins; the first byte after the object when
+a field is missing; the element or closing bracket that makes a fixed
+array's length wrong — and, for `InvalidEncoding`, the first ill-formed
+UTF-8 byte (`strings.utf8_first_error`, `70-strings.md` §4a). Nested
+readers pass their fault up unchanged, so a failure deep in a record
+names its own byte. `decode[T, Json]` is `decode_located` with the offset
+dropped; the two report the same error code on every input. The position
+costs nothing on the success path: the derived readers keep the scanner's
+one-call hot path (§18, §19) and compute `json_skip_space` for the offset
+only when an error is being built. `compiler/e2e_json_located_test.go`
+pins sixteen offsets, one per error class and site, under the sanitizers.
+
+Each helper returns `JsonDecoded[T]` (a concrete value and next byte offset). Nesting follows the finite schema: no runtime-depth stack allocation or
 unbounded recursive JSON-tree traversal is introduced. Read helpers use
 ordinary bounds checks, and out-of-range explicit helper offsets trap.
 The root wrapper is the whole-document validation boundary; offset helpers

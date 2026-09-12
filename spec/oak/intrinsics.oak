@@ -1,0 +1,35 @@
+// The instruction-function laws (docs/spec/92-ffi.md section 3;
+// spec/lean/Oak/Intrinsics.lean) stated over the instruction functions
+// themselves and decided at the bit level: the decider lowers
+// `arm64.rev32`, `rbit`, `clz`, and `cnt` to the verifier's own instruction
+// terms, the semantics the assembler lane is checked against.
+
+// reverse_involutive: rev and rbit are involutions.
+rev32_involutive: theorem (x: u32) { arm64.rev32(arm64.rev32(x)) == x }
+rev64_involutive: theorem (x: u64) { arm64.rev64(arm64.rev64(x)) == x }
+rbit32_involutive: theorem (x: u32) { arm64.rbit32(arm64.rbit32(x)) == x }
+rbit64_involutive: theorem (x: u64) { arm64.rbit64(arm64.rbit64(x)) == x }
+
+// clz_le_width, clz_zero, clz_leading_one, clz_lt_of_mem_true.
+clz32_le_width: theorem (x: u32) { arm64.clz32(x) <= u32(32) }
+clz32_zero: theorem () { arm64.clz32(u32(0)) == u32(32) }
+clz64_zero: theorem () { arm64.clz64(u64(0)) == u64(64) }
+clz32_leading_one: theorem (x: u32) { !(x >= u32(2147483648)) || arm64.clz32(x) == u32(0) }
+clz32_lt_of_set: theorem (x: u32) { x == u32(0) || arm64.clz32(x) < u32(32) }
+
+// ctz through rbit: clz(rbit(x)) counts the trailing zeros.
+ctz32_zero: theorem () { arm64.clz32(arm64.rbit32(u32(0))) == u32(32) }
+ctz32_odd: theorem (x: u32) { !(x & u32(1) == u32(1)) || arm64.clz32(arm64.rbit32(x)) == u32(0) }
+
+// popcount_le_width, popcount_zero, popcount_ones, popcount_not.
+popcount32_le_width: theorem (x: u32) { arm64.cnt32(x) <= u32(32) }
+popcount64_le_width: theorem (x: u64) { arm64.cnt64(x) <= u64(64) }
+popcount32_zero: theorem () { arm64.cnt32(u32(0)) == u32(0) }
+popcount32_ones: theorem () { arm64.cnt32(u32(4294967295)) == u32(32) }
+popcount32_not: theorem (x: u32) { arm64.cnt32(^x) + arm64.cnt32(x) == u32(32) }
+popcount64_not: theorem (x: u64) { arm64.cnt64(^x) + arm64.cnt64(x) == u64(64) }
+
+// popcount_eq_zero_iff: the count is zero exactly on the zero word.
+popcount32_eq_zero_iff: theorem (x: u32) { (arm64.cnt32(x) == u32(0)) == (x == u32(0)) }
+
+main: (): i32 = 0

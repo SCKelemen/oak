@@ -216,7 +216,82 @@ What the projection does not say: the extractor's and the compiler's
 fidelity to the binary, which the extraction lane's tests and the
 differential witnesses cover, and are stated as the assumption they are.
 
-## 6. Direction
+## 6. Self-hosted laws
+
+The laws the checker rests on are stated in Lean (`spec/lean/Oak`) over
+the naturals, and in Oak — `spec/oak/*.oak` — over the fixed-width
+integers the checker actually reasons about, each as a theorem `oak prove`
+discharges. The Oak statement makes the wrap-free premise explicit where
+the Lean one has none to make (`i + k >= i` before `i + k < len`), so it is
+the law the facts rely on, not an idealization of it. `TestSelfHostedLaws`
+proves every file: the decided ones on every run of the test suite, the
+`*_lean.oak` files through Lean where the Formal Verification workflow has
+the toolchain.
+
+| Lean law (`Oak.Extents`) | Oak theorem (`spec/oak/extents.oak`) | Rung |
+| --- | --- | --- |
+| `static_extent`, `constant_under_min_length`, `bound_transfers`, `bound_through_upper` | same names, over `u32` | decided, bit level |
+| `offset_under_bound`, `guard_without_wrap`, `inclusive_guard_without_wrap` | same names, the sums wrap-free | decided, bit level |
+| `subslice_extent`, `subslice_check_iff` | same names | decided, bit level |
+| `literal_bound_under_length`, `subtraction_under_bounds`, `subtraction_under_length` | same names | decided, bit level |
+| `scaled_under_bound` | `scaled_under_bound_4`; `scaled_under_bound_512` (`extents_lean.oak`) | decided; proved (the page scale exceeds the BDD budget) |
+| `masked_under_length`, `loop_exit_lower_bound`, `increment_keeps_lower_bound`, `increment_without_wrap` | same names | decided, bit level |
+| `decreasing_keeps_upper_bound`, `decreasing_keeps_literal_bound` | same names | decided, bit level |
+| `vector_under_min_length`, `vector_under_offset_bound`, `vector_under_literal_bound` | same names | decided, bit level |
+| `midpoint_under_bound`, `midpoint_under_length`, `div_bound_scaled`, `div_bound_under_length` | same names at scale 2 and 512 (`extents_lean.oak`) | proved by Lean (the decider has no division) |
+| `facts_monotone`, `kill_is_conservative`, `bool_binding_*`, `loop_invariant` | — | about the fact stack, not arithmetic; Lean only |
+
+| Lean law (`Oak.Intrinsics`) | Oak theorem (`spec/oak/intrinsics.oak`) | Rung |
+| --- | --- | --- |
+| `reverse_involutive` | `rev32/rev64/rbit32/rbit64_involutive` | decided, bit level |
+| `clz_le_width`, `clz_zero`, `clz_leading_one`, `clz_lt_of_mem_true` | `clz32_le_width`, `clz32_zero`, `clz64_zero`, `clz32_leading_one`, `clz32_lt_of_set` | decided |
+| `ctz_zero`, `ctz_lt_of_mem_true` | `ctz32_zero`, `ctz32_odd` (through `rbit`) | decided |
+| `popcount_le_width`, `popcount_zero`, `popcount_ones`, `popcount_not`, `popcount_eq_zero_iff` | `popcount32/64_*` | decided, bit level |
+
+| Witness (`spec/oak/witnesses.oak`) | Statement | Rung |
+| --- | --- | --- |
+| the SWAR population count | `swar_popcount32(x) == arm64.cnt32(x)`, and at 64 bits | decided, bit level |
+| the byte shuffle, the swap network | `shuffle_rev32(x) == arm64.rev32(x)`, `network_rbit32(x) == arm64.rbit32(x)` | decided, bit level |
+| leading zeros as thresholds | `threshold_clz32(x) == arm64.clz32(x)` | decided, bit level |
+| Unicode Table 3-7, one and two bytes | `is_valid_utf8` over `[b0, b1]` equals the table's predicate | decided, all 65536 cases |
+| Table 3-7, the special three- and four-byte rows | `E0`, `E1`, `ED`; `F0`, `F4` with a fixed last byte, over every continuation pair | decided, all 65536 cases each |
+
+| Discharge law (`Oak.Discharge`, `spec/oak/discharge.oak`) | Statement | Rung |
+| --- | --- | --- |
+| `shift_multiple`, `mask_multiple`, `product_multiple` | a shift by log2 K, a mask with a multiple of K, a product with a multiple of K is a multiple of K, wrapping included | decided, bit level; `bv_decide` in Lean |
+| `sum_of_multiples`, `difference_of_multiples`, `or_of_multiples`, `xor_of_multiples` | combinations of multiples are multiples | decided; `bv_decide` |
+| `narrowing_keeps_multiple`, `widening_keeps_multiple` | a conversion keeps the low bits | decided; `bv_decide` |
+| `offset_below_bound`, `lower_bound_from_guard` | the bound rules | decided |
+| `product_multiple_needs_power_of_two` | `∃ x : BitVec 8, (x * 3) % 3 ≠ 0` — why the rule admits powers of two only | Lean only (a counterexample, not a law) |
+
+| Protocol against intrinsic (`spec/oak/protocols.oak`) | Statement | Rung |
+| --- | --- | --- |
+| `machine_agrees_two_bytes` | the `Utf8` machine, stepped through `utf8_legal`/`utf8_next`, accepts `[b0, b1]` exactly when `is_valid_utf8` does | decided, all 65536 cases |
+| `machine_agrees_three_bytes_e0/ed/e1` | the same under the three-byte leads with special ranges | decided, all 65536 cases each |
+
+| Library law (`Oak.Stdlib.*Laws`) | Oak theorem (`spec/oak/stdlib_*/`) | Rung |
+| --- | --- | --- |
+| `VarintLaws` | `roundtrip_u16` (encode then decode is the identity, in `varint_size` bytes), `size_u16`, `zigzag_roundtrip_i16`, `zigzag_small` | decided, all 65536 cases each |
+| `EncodingLaws`, `Base64Laws` | `hex_roundtrip` (both alphabets), `base64_roundtrip_two` (padded), `base64_url_roundtrip_one` | decided, exhaustively |
+| `SortLaws`, `PdqsortLaws` | `pair_sorted_and_permuted`, `pair_search_finds` | decided, all 65536 pairs |
+
+The library laws are stated over the library itself — the packages
+import `varint`, `encoding`, and `sort` — where the Lean laws are stated
+over the extraction; the two meet in the faithfulness harness
+(`95-extraction.md` §6). The witnesses are the three-witness rule (`92-ffi.md` §3.1) as proof
+rather than test: the portable lowering, transcribed as an Oak function,
+is stated equal to the instruction function and the decider settles it
+for every input; the validity intrinsic is stated against the table it
+implements and decided exhaustively. The instruction functions decide because the bit-level decider lowers
+`arm64.rev32`, `rbit`, `clz`, and `cnt` to the verifier's own instruction
+terms — the semantics the assembler lane is checked against — with `cnt`
+as a population-count term (an adder tree over the operand's bits), and
+divides by an unsigned constant power of two as a shift or a mask. What
+is not yet restated: the laws of `Oak.Protocol` (about the lowering, not
+a value), `Oak.Floats` (the decider has no floats), and the laws over
+lists and layouts, which have no fixed-width statement.
+
+## 7. Direction
 
 In order of payoff, each reusing a surface that exists:
 

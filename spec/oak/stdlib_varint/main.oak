@@ -1,0 +1,21 @@
+// The varint laws (spec/lean/Oak/Stdlib/VarintLaws.lean) as Oak theorems
+// over the library itself, decided exhaustively: every u16 encodes and
+// decodes to itself in exactly varint_size bytes, and zigzag is a bijection
+// on the i16 range.
+package main
+import("varint")
+
+roundtrip_u16: theorem (x: u16) {
+  buf: [10]u8
+  written: Result[u32, varint.VarintError] = varint.varint_encode(span(&buf), u32(0), u64(x))
+  decoded: Result[varint.VarintValue, varint.VarintError] = varint.varint_decode(view(&buf), u32(0))
+  varint.varint_ok(decoded) && varint.varint_value(decoded).value == u64(x) && varint.varint_value(decoded).next == varint.varint_size(u64(x))
+}
+
+size_u16: theorem (x: u16) { varint.varint_size(u64(x)) == (x < u16(128) ? u32(1) | x < u16(16384) ? u32(2) | u32(3)) }
+
+zigzag_roundtrip_i16: theorem (v: i16) { varint.zigzag_decode(varint.zigzag_encode(i64(v))) == i64(v) }
+
+zigzag_small: theorem (v: i16) { !(v >= i16(-64) && v < i16(64)) || varint.zigzag_encode(i64(v)) < u64(128) }
+
+main: (): i32 = 0

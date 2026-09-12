@@ -182,12 +182,67 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 		return "a call", false
 	}
 	if width, isLoad := rv64Loads[name]; isLoad {
+		if ops[1].(Memory).Base.Class != ClassSP {
+			return x.spanLoadRV64(reg(0), ops[1].(Memory), width, name, state)
+		}
 		return x.frameAccessRV64(reg(0), ops[1].(Memory), width, name, false, state)
 	}
 	if width, isStore := rv64Stores[name]; isStore {
+		if ops[1].(Memory).Base.Class != ClassSP {
+			return "a store through a span (the verifier decides results, not memory effects)", false
+		}
 		return x.frameAccessRV64(reg(0), ops[1].(Memory), width, name, true, state)
 	}
 	return "instruction " + instr.Mnemonic, false
+}
+
+// spanLoadRV64 resolves a load through a span base to the element it
+// reads: the address is `&v + K` (a constant offset, K a multiple of the
+// element size) or `&v + (idx << s)` with 2^s the element size — the
+// checker's guarded-index idiom (docs/spec/94-assembler.md §9). The load
+// width is the element width; lw/lh/lb sign-extend, lwu/lhu/lbu zero-extend.
+func (x *pathExecutor) spanLoadRV64(dest Register, mem Memory, width int, name string, state *symbolicState) (string, bool) {
+	address, bound := state.regs[mem.Base.Num]
+	if !bound {
+		return "a load through a register that is not a span base", false
+	}
+	var span string
+	var index *term
+	if param, offset, isBase := spanBaseOf(address); isBase {
+		elem := x.spans[param]
+		offset += mem.Offset
+		if elem == 0 || offset%elem != 0 || offset < 0 {
+			return "a span offset not aligned to an element", false
+		}
+		span, index = param, constTerm(uint64(offset/elem), 32)
+	} else if address.kind == termBinary && address.op == "add" {
+		// &v + (idx << s), either order.
+		base, scaled := address.left, address.right
+		if _, _, isBase := spanBaseOf(base); !isBase {
+			base, scaled = address.right, address.left
+		}
+		param, offset, isBase := spanBaseOf(base)
+		if !isBase || offset != 0 || mem.Offset != 0 {
+			return "a load through an address that is not a span element", false
+		}
+		if scaled.kind != termBinary || scaled.op != "shl" || scaled.right.kind != termConst || int64(1)<<scaled.right.value != x.spans[param] {
+			return "an element address whose scale is not the element size", false
+		}
+		span, index = param, scaled.left
+	} else {
+		return "a load through a register that is not a span base", false
+	}
+	if int64(width) != x.spans[span] {
+		return fmt.Sprintf("a %d-byte load over %d-byte elements", width, x.spans[span]), false
+	}
+	element := x.element(span, index, width*8)
+	value := zeroExtend(element, 64)
+	switch name {
+	case "lw", "lh", "lb":
+		value = extendTerm(value, width*8, 64, true)
+	}
+	state.write(dest, value)
+	return "", true
 }
 
 // frameAccessRV64 executes a load or store through the sp frame: the

@@ -1,0 +1,66 @@
+// A protocol declaration against the intrinsic it models
+// (docs/spec/112-protocols.md; spec/lean/Oak/Protocol.lean): the UTF-8
+// validator as a machine, stepped through its own projections
+// (`utf8_legal`, `utf8_next`), agrees with `is_valid_utf8` and with
+// Unicode Table 3-7 — decided exhaustively over every two-byte input and
+// over every continuation pair under the leads with special ranges. The
+// machine is the one benchmarks/state-machines/utf8_protocol.oak times.
+
+Utf8: protocol = {
+  initial Accept
+  byte(b: u8): Accept -> Accept when b < u8(128)
+  byte(b: u8): Accept -> Two when b >= u8(194) && b <= u8(223)
+  byte(b: u8): Accept -> ThreeE0 when b == u8(224)
+  byte(b: u8): Accept -> Three when (b >= u8(225) && b <= u8(236)) || b == u8(238) || b == u8(239)
+  byte(b: u8): Accept -> ThreeED when b == u8(237)
+  byte(b: u8): Accept -> FourF0 when b == u8(240)
+  byte(b: u8): Accept -> Four when b >= u8(241) && b <= u8(243)
+  byte(b: u8): Accept -> FourF4 when b == u8(244)
+  byte(b: u8): Two -> Accept when b >= u8(128) && b <= u8(191)
+  byte(b: u8): ThreeE0 -> Two when b >= u8(160) && b <= u8(191)
+  byte(b: u8): Three -> Two when b >= u8(128) && b <= u8(191)
+  byte(b: u8): ThreeED -> Two when b >= u8(128) && b <= u8(159)
+  byte(b: u8): FourF0 -> Three when b >= u8(144) && b <= u8(191)
+  byte(b: u8): Four -> Three when b >= u8(128) && b <= u8(191)
+  byte(b: u8): FourF4 -> Three when b >= u8(128) && b <= u8(143)
+}
+
+// The machine's verdict on a byte sequence, through its projections and
+// without the trap `utf8_run` takes on an illegal byte: every step was
+// legal and the run ends in Accept.
+machine_two: (b0: u8, b1: u8): Bool {
+  s0: Utf8State = utf8_initial()
+  utf8_legal(s0, Utf8Step.Byte(b0)) ? {
+    s1: Utf8State = utf8_next(s0, Utf8Step.Byte(b0))
+    utf8_legal(s1, Utf8Step.Byte(b1)) && utf8_next(s1, Utf8Step.Byte(b1)) == Utf8State.Accept
+  } | { false }
+}
+
+intrinsic_two: (b0: u8, b1: u8): Bool {
+  bytes: [2]u8 = [2]u8{ b0, b1 }
+  is_valid_utf8(view(&bytes))
+}
+
+machine_agrees_two_bytes: theorem (b0: u8, b1: u8) { machine_two(b0, b1) == intrinsic_two(b0, b1) }
+
+machine_three: (b0: u8, b1: u8, b2: u8): Bool {
+  s0: Utf8State = utf8_initial()
+  utf8_legal(s0, Utf8Step.Byte(b0)) ? {
+    s1: Utf8State = utf8_next(s0, Utf8Step.Byte(b0))
+    utf8_legal(s1, Utf8Step.Byte(b1)) ? {
+      s2: Utf8State = utf8_next(s1, Utf8Step.Byte(b1))
+      utf8_legal(s2, Utf8Step.Byte(b2)) && utf8_next(s2, Utf8Step.Byte(b2)) == Utf8State.Accept
+    } | { false }
+  } | { false }
+}
+
+intrinsic_three: (b0: u8, b1: u8, b2: u8): Bool {
+  bytes: [3]u8 = [3]u8{ b0, b1, b2 }
+  is_valid_utf8(view(&bytes))
+}
+
+machine_agrees_three_bytes_e0: theorem (b1: u8, b2: u8) { machine_three(u8(224), b1, b2) == intrinsic_three(u8(224), b1, b2) }
+machine_agrees_three_bytes_ed: theorem (b1: u8, b2: u8) { machine_three(u8(237), b1, b2) == intrinsic_three(u8(237), b1, b2) }
+machine_agrees_three_bytes_e1: theorem (b1: u8, b2: u8) { machine_three(u8(225), b1, b2) == intrinsic_three(u8(225), b1, b2) }
+
+main: (): i32 = 0

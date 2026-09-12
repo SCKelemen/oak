@@ -106,7 +106,7 @@ main: (): i32 = even_or_odd(u8(3)) ? 0 | 1
 // A protocol is a model: its projections are ordinary functions, so an
 // inductive invariant is two theorems over the projected types, and the
 // exhaustive decider checks them on the finite state space — here finding
-// the wraparound of an 8-bit counter (docs/spec/125-verification.md §6).
+// the wraparound of an 8-bit counter (docs/spec/125-verification.md §2a).
 func TestProtocolInvariant(t *testing.T) {
 	src := `
 Turnstile: protocol = {
@@ -201,7 +201,7 @@ main: (): i32 = 0
 // An invariant candidate — a theorem over a protocol's projected state and
 // data — gets its base and step obligations generated; a machine without
 // data, with a payload-carrying step, enumerates the payload
-// (docs/spec/125-verification.md §6).
+// (docs/spec/125-verification.md §2a).
 func TestGeneratedObligations(t *testing.T) {
 	src := `
 Turnstile: protocol = {

@@ -182,4 +182,48 @@ theorem addw_widen (x y : BitVec 32) :
     addw (widen 32 false x) (widen 32 false y) = widen 32 false (x + y) := by
   simp only [addw, widen, sextW]; bv_decide
 
+/-! ## The index guard (span element memory, `94-assembler.md` §9)
+
+The LP64 pair leaves a span's `u32` length in the low half of its register
+with padding above; the checker admits a bound only from the *normalized*
+copy `(len << 32) >> 32`. On the fall-through of `bgeu idx, lenN, exit`
+the branch did not hold, so `idx <u lenN`; since `lenN < 2^32`, the index
+is below the length and fits 32 bits, and `idx << s` for `2^s` the element
+size addresses element `idx` without wrapping — what `deriveRegion`
+relies on. -/
+
+/-- The normalized length as the checker's instruction pair computes it:
+    `slli 32` then `srli 32`, the low 32 bits zero-extended. -/
+def normalize (len : X) : X := (len <<< 32) >>> 32
+
+theorem normalize_lt (len : X) : (normalize len).toNat < 2 ^ 32 := by
+  have h := (len <<< 32).isLt
+  simp only [normalize, BitVec.toNat_ushiftRight, Nat.shiftRight_eq_div_pow]
+  omega
+
+/-- The fall-through of `bgeu idx, lenN, exit` proves the index below the
+    normalized length. -/
+theorem index_guard (idx len : X) (h : Br.holds .bgeu idx (normalize len) = false) :
+    idx.toNat < (normalize len).toNat := by
+  simp only [Br.holds, Bool.not_eq_false'] at h
+  exact BitVec.ult_iff_toNat_lt.mp h
+
+/-- A guarded index fits 32 bits. -/
+theorem index_guard_lt32 (idx len : X) (h : Br.holds .bgeu idx (normalize len) = false) :
+    idx.toNat < 2 ^ 32 :=
+  Nat.lt_trans (index_guard idx len h) (normalize_lt len)
+
+/-- The scaled index does not wrap: for `s ≤ 31`, `idx << s` is exactly
+    `idx · 2^s` as a number, so `base + (idx << s)` is the address of
+    element `idx` of `2^s`-byte elements. -/
+theorem scaled_index_exact (idx len : X) (s : Nat) (hs : s ≤ 31)
+    (h : Br.holds .bgeu idx (normalize len) = false) :
+    (idx <<< s).toNat = idx.toNat * 2 ^ s := by
+  have hidx := index_guard_lt32 idx len h
+  rw [BitVec.toNat_shiftLeft, Nat.shiftLeft_eq]
+  apply Nat.mod_eq_of_lt
+  calc idx.toNat * 2 ^ s < 2 ^ 32 * 2 ^ s := Nat.mul_lt_mul_of_pos_right hidx (Nat.two_pow_pos s)
+    _ = 2 ^ (32 + s) := by rw [Nat.pow_add]
+    _ ≤ 2 ^ 64 := Nat.pow_le_pow_right (by decide) (by omega)
+
 end Oak.RiscV

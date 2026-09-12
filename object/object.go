@@ -234,6 +234,7 @@ type Environment struct {
 	// (name/order/type expressions) for zero-value construction of
 	// storage-identity records in the interpreter.
 	recordDecls     map[string]*ast.RecordLiteral
+	refinementBases map[string]ast.Expression
 	recordTemplates map[string]recordTemplate
 	outer           *Environment
 	// arithmeticWidths, when set, reports the checker's recorded fixed-width
@@ -329,6 +330,25 @@ func (e *Environment) GetADTType(name string) (*ADTType, bool) {
 
 func (e *Environment) SetADTType(name string, adt *ADTType) {
 	e.adtTypes[name] = adt
+}
+
+// SetRefinementBase retains a refinement declaration's base type, so a
+// zero value of the refined type is the base's zero (evaluator/zero.go).
+func (e *Environment) SetRefinementBase(name string, base ast.Expression) {
+	if e.refinementBases == nil {
+		e.refinementBases = make(map[string]ast.Expression)
+	}
+	e.refinementBases[name] = base
+}
+
+// GetRefinementBase resolves a refinement's base type through the scope
+// chain.
+func (e *Environment) GetRefinementBase(name string) (ast.Expression, bool) {
+	base, ok := e.refinementBases[name]
+	if !ok && e.outer != nil {
+		return e.outer.GetRefinementBase(name)
+	}
+	return base, ok
 }
 
 // SetRecordDecl retains a record declaration's field structure.

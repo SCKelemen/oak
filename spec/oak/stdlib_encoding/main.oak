@@ -1,0 +1,35 @@
+// The encoding laws (spec/lean/Oak/Stdlib/EncodingLaws.lean,
+// Base64Laws.lean) as Oak theorems over the library itself, decided
+// exhaustively: hex and base64 round trips on every one- and two-byte
+// input, both alphabets, with padding.
+package main
+import("encoding")
+
+hex_roundtrip: theorem (b: u8, upper: Bool) {
+  src: [1]u8 = [1]u8{ b }
+  text: [2]u8
+  encoded: Result[u32, encoding.EncodingError] = encoding.hex_encode(span(&text), view(&src), upper)
+  back: [1]u8
+  decoded: Result[u32, encoding.EncodingError] = encoding.hex_decode(span(&back), view(&text))
+  encoding.encoding_ok(encoded) && encoding.encoding_value(encoded) == u32(2) && encoding.encoding_ok(decoded) && encoding.encoding_value(decoded) == u32(1) && back[0] == b
+}
+
+base64_roundtrip_two: theorem (b0: u8, b1: u8) {
+  src: [2]u8 = [2]u8{ b0, b1 }
+  text: [4]u8
+  encoded: Result[u32, encoding.EncodingError] = encoding.base64_encode(span(&text), view(&src), false, true)
+  back: [2]u8
+  decoded: Result[u32, encoding.EncodingError] = encoding.base64_decode(span(&back), view(&text), false)
+  encoding.encoding_ok(encoded) && encoding.encoding_value(encoded) == u32(4) && text[3] == u8(61) && encoding.encoding_ok(decoded) && encoding.encoding_value(decoded) == u32(2) && back[0] == b0 && back[1] == b1
+}
+
+base64_url_roundtrip_one: theorem (b: u8) {
+  src: [1]u8 = [1]u8{ b }
+  text: [4]u8
+  encoded: Result[u32, encoding.EncodingError] = encoding.base64_encode(span(&text), view(&src), true, true)
+  back: [1]u8
+  decoded: Result[u32, encoding.EncodingError] = encoding.base64_decode(span(&back), view(&text), true)
+  encoding.encoding_ok(encoded) && encoding.encoding_ok(decoded) && encoding.encoding_value(decoded) == u32(1) && back[0] == b
+}
+
+main: (): i32 = 0

@@ -704,10 +704,12 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       hot scanner's ABI is untouched? Is the position a typed payload,
       never a count field whose meaning flips on error? (weePickle
       `TransformException`, simdjson `current_location()`, simdutf
-      `result.count`) — Oak: text is done — `strings.utf8_check` returns `TextFault { error,
+      `result.count`) — Oak: done for text — `strings.utf8_check` returns `TextFault { error,
       at }` and `utf8.locate`/`utf8_first_error` the offset (`70-strings.md`
-      §4a); JSON is open — `JsonDecodeError` carries no position and
-      `JsonIntegerScan` (`71-codecs.md` §18) is the ABI to protect.
+      §4a) — and for JSON — `decode_located[T, Json]: Result[T, JsonFault]`
+      (`71-codecs.md` §13 "Positions"), the offset attached where the
+      error is built while the `JsonIntegerScan` hot path (§18) keeps one
+      call; a structural path is not carried.
 - [ ] **Error reporting costs no more than parsing.** Is building the
       error value linear in depth and bounded in size — no quadratic path
       rendering, no echoing an unbounded token into the message?

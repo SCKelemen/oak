@@ -96,7 +96,7 @@ type Compilation struct {
 	diagnosticSink func(*diagnostic.Diagnostic)
 	// syntaxRewrites run on the parsed tree before checking, in order: how
 	// a driver adds declarations the program did not write, such as the
-	// prover's protocol obligations (docs/spec/125-verification.md §6).
+	// prover's protocol obligations (docs/spec/125-verification.md §2a).
 	syntaxRewrites []func(*SyntaxTree) error
 }
 
