@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/SCKelemen/oak/buildcache"
 	"github.com/SCKelemen/oak/compiler"
+	"github.com/SCKelemen/oak/toolchain"
 	"io"
 	"os"
 	"os/exec"
@@ -148,6 +149,25 @@ int main(int argc, char **argv) {
 	// -ffp-contract=off keeps floating-point semantics exactly as written
 	// (docs/spec/90-backend.md section 7a).
 	flags := []string{"-std=c11", "-O1", "-g", "-ffp-contract=off"}
+	versionArgs := []string{"--version"}
+	if pkg.Target.OS != "" && !pkg.Target.IsHost() {
+		// A foreign target compiles through the toolchain `oak build -target`
+		// resolves — zig cc, a cross clang, a GNU cross compiler — with the
+		// driver's target arguments before the compilation's own; -cc is the
+		// host's compiler and does not apply.
+		drv, err := toolchain.Resolve(pkg.Target, toolchain.Options{CPU: cfg.CPU}, nil, nil)
+		if err != nil {
+			return nil, fmt.Errorf("oak test -target %s: %w", pkg.Target, err)
+		}
+		cc = drv.Path
+		flags = append(append([]string{}, drv.Args...), flags...)
+		// `zig cc --version`, not `zig --version`: the identity query goes
+		// through the driver's own arguments.
+		versionArgs = append(append([]string{}, drv.Args...), "--version")
+		if drv.Static {
+			flags = append(flags, "-static")
+		}
+	}
 	if cfg.Sanitize {
 		flags = append(flags, "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer")
 	}
@@ -167,7 +187,8 @@ int main(int argc, char **argv) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.BuildTimeout)
 	defer cancel()
-	version := exec.CommandContext(ctx, cc, "--version")
+	version := exec.CommandContext(ctx, cc, versionArgs...)
+	version.Dir = dir // any stray output a driver writes lands in the build directory
 	var versionOutput limitedBuffer
 	version.Stdout, version.Stderr = &versionOutput, &versionOutput
 	if err := version.Run(); err != nil {
@@ -192,6 +213,7 @@ int main(int argc, char **argv) {
 	if !cached {
 		var output limitedBuffer
 		cmd := exec.CommandContext(ctx, cc, args...)
+		cmd.Dir = dir
 		cmd.Stdout, cmd.Stderr = &output, &output
 		if err := cmd.Run(); err != nil {
 			return nil, fmt.Errorf("C compilation: %w\n%s", err, output.text())
