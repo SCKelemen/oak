@@ -429,7 +429,7 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
 }
 
 /* static globals: constant-initialized, zero otherwise */
-static i32 x = 5;
-static i32 y = 10;
-static i32 z = 15;
+static const i32 x = 5;
+static const i32 y = 10;
+static const i32 z = 15;
 
