@@ -35,6 +35,10 @@ var fixedFieldRepresentations = map[string]semir.RecordFieldRepresentation{
 	"u16": {Size: 2, Alignment: 2}, "i16": {Size: 2, Alignment: 2},
 	"u32": {Size: 4, Alignment: 4}, "i32": {Size: 4, Alignment: 4},
 	"u64": {Size: 8, Alignment: 8}, "i64": {Size: 8, Alignment: 8},
+	// unsigned __int128 on every LP64 ABI Oak targets: 16 bytes, 16-aligned
+	// (docs/spec/20-types.md section 11); the emitted sizeof/_Alignof
+	// assertions ratify it.
+	"u128": {Size: 16, Alignment: 16},
 	"byte": {Size: 1, Alignment: 1}, "rune": {Size: 4, Alignment: 4},
 	// Bool lowers to a C enum, int-sized on the recorded ILP32/LP64 target
 	// model (docs/spec/92-ffi.md section 2.4); the emitted sizeof/offsetof

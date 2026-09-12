@@ -39,6 +39,15 @@ func evalConversionCall(name string, args []ast.Expression, env *object.Environm
 	if isError(operandObject) {
 		return operandObject, true
 	}
+	if wide, isWide := operandObject.(*object.U128); isWide || source == "u128" {
+		if !isWide {
+			wide, isWide = asU128(operandObject)
+		}
+		if !isWide || source != "u128" {
+			return newError("%s requires a %s operand, got %s", name, source, operandObject.Type()), true
+		}
+		return evalU128Narrowing(name, target, op, wide), true
+	}
 	operand, isInt := operandObject.(*object.Integer)
 	if !isInt {
 		return newError("%s requires an integer operand, got %s", name, operandObject.Type()), true
@@ -107,12 +116,20 @@ func evalCheckedConversion(name, target string, args []ast.Expression, env *obje
 	if isError(operandObject) {
 		return operandObject
 	}
+	targetBits := uint(typechecker.PrimitiveBits(target))
+	if wide, isWide := operandObject.(*object.U128); isWide {
+		// u64_checked_u128 and narrower: Ok carries the low bits.
+		if u128InRange(wide, targetBits) {
+			return &object.ADTValue{TypeName: "Result", Variant: resultADT.Variants[0].Name, Value: &object.Integer{Value: int64(wide.Lo)}}
+		}
+		overflow := &object.ADTValue{TypeName: "Overflow", Variant: overflowADT.Variants[0].Name}
+		return &object.ADTValue{TypeName: "Result", Variant: resultADT.Variants[1].Name, Value: overflow}
+	}
 	operand, isInt := operandObject.(*object.Integer)
 	if !isInt {
 		return newError("%s requires an integer operand, got %s", name, operandObject.Type())
 	}
 
-	targetBits := uint(typechecker.PrimitiveBits(target))
 	inRange := false
 	if target[0] == 'i' {
 		max := int64(1)<<(targetBits-1) - 1

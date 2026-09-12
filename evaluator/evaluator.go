@@ -542,7 +542,7 @@ func getBuiltin(name string) (*object.Builtin, bool) {
 func evalPrimitiveConstructor(typeName string, args []ast.Expression, env *object.Environment) object.Object {
 	// Check if it's a primitive type name (including aliases and platform types)
 	primitiveTypes := map[string]bool{
-		"u8": true, "u16": true, "u32": true, "u64": true,
+		"u8": true, "u16": true, "u32": true, "u64": true, "u128": true,
 		"i8": true, "i16": true, "i32": true, "i64": true,
 		"int": true, "uint": true, "ptr": true, "uptr": true, // platform types
 		"byte": true,              // alias of u8
@@ -566,12 +566,22 @@ func evalPrimitiveConstructor(typeName string, args []ast.Expression, env *objec
 	if typechecker.IsFloatName(typeName) {
 		return evalFloatConstructor(typeName, arg)
 	}
+	if typeName == "u128" {
+		// Widening from an unsigned type or a literal: the checker admits
+		// only those, so the stored bits are the low half.
+		if wide, ok := asU128(arg); ok {
+			return wide
+		}
+		return newError("primitive constructor u128 requires an unsigned integer argument, got %s", arg.Type())
+	}
 
 	// Get the integer value
 	var value int64
 	switch v := arg.(type) {
 	case *object.Integer:
 		value = v.Value
+	case *object.U128:
+		return newError("primitive constructor %s cannot widen a u128; narrow explicitly with %s_trunc_u128, %s_saturating_u128, or %s_checked_u128", typeName, typeName, typeName, typeName)
 	default:
 		return newError("primitive constructor %s requires an integer argument, got %s", typeName, arg.Type())
 	}
@@ -592,6 +602,9 @@ func evalPrefixExpression(operator string, right object.Object) object.Object {
 		// Bitwise complement (Go-style unary ^), unsigned semantics.
 		if integer, isInt := right.(*object.Integer); isInt {
 			return &object.Integer{Value: int64(^uint64(integer.Value))}
+		}
+		if wide, isWide := right.(*object.U128); isWide {
+			return &object.U128{Hi: ^wide.Hi, Lo: ^wide.Lo}
 		}
 		return newError("unknown operator: ^%s", right.Type())
 	default:
@@ -702,6 +715,10 @@ func evalMinusPrefixOperatorExpression(right object.Object) object.Object {
 		// section 11.3.5).
 		return &object.Float{Value: -f.Value, Bits: f.Bits}
 	}
+	if wide, isWide := right.(*object.U128); isWide {
+		// Total negation mod 2^128 (docs/spec/20-types.md section 11.1).
+		return evalU128Infix("-", &object.U128{}, wide)
+	}
 	if right.Type() != object.INTEGER_OBJ {
 		return newError("unknown operator: -%s", right.Type())
 	}
@@ -711,6 +728,17 @@ func evalMinusPrefixOperatorExpression(right object.Object) object.Object {
 }
 
 func evalInfixExpression(operator string, left, right object.Object) object.Object {
+	// A u128 operand: the other side is a u128 too, or the literal the
+	// checker typed as one (evaluator/u128.go).
+	if wide, isWide := left.(*object.U128); isWide {
+		if other, ok := asU128(right); ok {
+			return evalU128Infix(operator, wide, other)
+		}
+	} else if wide, isWide := right.(*object.U128); isWide {
+		if other, ok := asU128(left); ok {
+			return evalU128Infix(operator, other, wide)
+		}
+	}
 	switch {
 	case left.Type() == object.INTEGER_OBJ && right.Type() == object.INTEGER_OBJ:
 		return evalIntegerInfixExpression(operator, left, right)
@@ -818,6 +846,9 @@ func valuesEqual(left, right object.Object) bool {
 	case *object.Integer:
 		r, ok := right.(*object.Integer)
 		return ok && l.Value == r.Value
+	case *object.U128:
+		r, ok := right.(*object.U128)
+		return ok && l.Equal(r)
 	case *object.String:
 		r, ok := right.(*object.String)
 		return ok && l.Value == r.Value
@@ -1437,7 +1468,7 @@ func evalRecordLiteral(rl *ast.RecordLiteral, env *object.Environment) object.Ob
 		if ident, ok := fieldExpr.(*ast.Identifier); ok {
 			primitiveTypes := map[string]bool{
 				"i8": true, "i16": true, "i32": true, "i64": true,
-				"u8": true, "u16": true, "u32": true, "u64": true,
+				"u8": true, "u16": true, "u32": true, "u64": true, "u128": true,
 				"string": true, "Bool": true, "byte": true, "()": true,
 			}
 			if primitiveTypes[ident.Value] {
