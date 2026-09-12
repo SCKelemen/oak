@@ -310,6 +310,7 @@ Acceptance spans the whole executable stack:
 | C refinement of the total arithmetic macros | proved: `Oak.ArithmeticRefinement` transliterates `OAK_ARITH_U`/`OAK_ARITH_I` and proves each body equal to the fixed-width operator; `codegen/arithmetic_refinement_test.go` pins the emitted text |
 | order tables and builtin catalogue | correspondence: `Oak.MemoryOrderRefinement` decides the `legal`/`casLegal` tables and the 29-builtin catalogue, `semir/memory_refinement_test.go` pins the same against the Go decision procedures |
 | strong compare-exchange helper | refinement: `Oak.CompareExchangeRefinement` proves the `__oak_cas_*` body meets §3's value contract over C11's primitive; `codegen/compare_exchange_refinement_test.go` pins the text |
+| checked, saturating, trapping arithmetic and checked shifts | refinement: `Oak.CheckedArithmeticRefinement` proves the helper decisions against 20-types §11.1a over the overflow builtins' contract; `codegen/checked_arithmetic_refinement_test.go` pins the text |
 | C/ISA refinement of atomics and ordering | not yet proved |
 | AArch64 weak-memory litmus suite | next major layer |
 | target lock-free admission (C backend) | implemented + cross-compile-tested (§6) |
