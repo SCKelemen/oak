@@ -372,6 +372,44 @@ checker cannot establish, a region naming more than one parameter, a record
 with more than one region, region functions called across package
 boundaries by qualified name, and any borrow outliving its owner.
 
+## 8d. Scalar views of record views (implemented)
+
+A record whose fields are all one scalar type is, by its natural layout,
+a run of that scalar: `Row: type = struct { q: [2]f32, k: [2]f32, v: [2]f32 }`
+is six `f32` in declaration order, with no padding. `view_as[U](rows)`
+names that fact:
+
+```oak
+cache: [3]Row = [ ... ]
+flat: []f32 = view_as[f32](view(&cache))          // 18 f32, the same storage
+ks: Tensor2 = tensor_strided(flat, 3, 2, 6, 1, 2)   // k across positions, no copy
+```
+
+- **Rule.** The source is a view `[]R` of a declared record `R` whose
+  every field is `U` or a fixed array `[N]U`, `U` a fixed-width integer or
+  floating-point type; the result is `[]U` over the same storage with
+  `len(rows) * K` elements, `K` the scalars per record (fields in
+  declaration order, fixed arrays spliced). Any other field type, a
+  non-record element, a missing target (`view_as(v)`), or a target that is
+  not a scalar is a type error naming the field. `span_as[U](s)` is the
+  writable form over a span; the interpreter has no aliasing storage for
+  it and rejects it, so it is a native-backend form until it does.
+- **Borrowing.** The scalar view is a view of the same owner — of the
+  named view's owner, or of `owner` in `view_as[U](view(&owner))` — with
+  the same rules as `view(&owner)`: the owner cannot be written while it
+  lives, and it ends with its block. Region records take it as any view
+  (`tensor_strided`, `tensor_of`).
+- **Lowering.** `{ (const U *) rows.base, rows.len * K }`: a cast of the
+  base and a multiplication of the length, nothing else; the record's
+  layout assertions (`40-records.md`) are what make the cast exact. The
+  interpreter reads the fields of every record in declaration order into
+  the view; the extraction is `(rows.toList.flatMap (fun r => [r.f1] ++
+  r.f2.toList ++ …)).toArray` (`95-extraction.md`).
+
+This is the ml pilot's F6 — the `[q | k | v]` cache row as a record, `k`
+across positions as a column view of a field — with the stride arithmetic
+in the type rather than in an emitter.
+
 ## 9. Move/consume and resource flow
 
 Owned aggregates (`[N]T` and resolved records) retain explicit value semantics in v1: binding or passing one is an explicit-cost copy, never a hidden allocation and never an ownership transfer.

@@ -169,18 +169,19 @@ package main
 
 fn sum(buf: [8]u8) -> u32 {
   v: []u8 = buf[0:8]
-  n: u32 = len(v) / 2
+  n: u32 = u32(buf[1])
   total: u32 = 0
   i: u32 = 0
   while i < n {
     total = total + u32(v[i])
     i = i + 1
   }
-  total + u32(buf[0]) + len(buf)
+  total + u32(buf[0]) + len(buf) + len(v)
 }
 `)
-	// The bound n is not a binding of len(v) (that shape is proven,
-	// Oak.Extents.bound_through_upper), so v[i] stays checked.
+	// The bound n is data, not a binding of len(v) or a quotient of it
+	// (those shapes are proven, Oak.Extents.bound_through_upper and the
+	// quotient bound), so v[i] stays checked.
 	for _, wanted := range []string{
 		"oak_view_index_u8( v, (u64)( i ) )",
 		"if (i >= (u64)v.len) { __builtin_trap(); }",

@@ -51,6 +51,20 @@ pub tensor_mut_of[R]: (data: Span[f32, R], rows: u32, cols: u32): MutTensor2[R] 
   MutTensor2 { data: data, rows: rows, cols: cols, row_stride: cols, col_stride: u32(1), offset: u32(0) }
 }
 
+// tensor_strided views data with an explicit layout: element (i, j) is
+// data[offset + i * row_stride + j * col_stride]. This is how a field of a
+// record laid out across positions becomes a tensor without a copy — the
+// [q | k | v] cache row's k across positions is
+// tensor_strided(view_as[f32](rows), positions, D, 3 * D, 1, D)
+// (docs/spec/50-borrowing.md section 8d). The last element must fit the
+// view; an empty shape fits trivially.
+pub tensor_strided[R]: (data: View[f32, R], rows: u32, cols: u32, row_stride: u32, col_stride: u32, offset: u32): Tensor2[R] = {
+  rows > u32(0) && cols > u32(0) ? {
+    assert(offset + (rows - u32(1)) * row_stride + (cols - u32(1)) * col_stride < len(data))
+  }
+  Tensor2 { data: data, rows: rows, cols: cols, row_stride: row_stride, col_stride: col_stride, offset: offset }
+}
+
 // tensor_index is the storage index of element (i, j); the shape check
 // traps on an out-of-shape pair, the view's bounds check guards the rest.
 pub tensor_index: (rows: u32, cols: u32, row_stride: u32, col_stride: u32, offset: u32, i: u32, j: u32): u32 = {

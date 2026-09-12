@@ -36,6 +36,14 @@ def tensor_mut_of (data : Array Float32) (rows : UInt32) (cols : UInt32) (fuel :
   let () ← (if (decide ((rows * cols) <= (data.size.toUInt32))) then pure () else none)
   pure (({ data := data, rows := rows, cols := cols, row_stride := cols, col_stride := (1 : UInt32), offset := (0 : UInt32) } : MutTensor2), data)
 
+def tensor_strided (data : Array Float32) (rows : UInt32) (cols : UInt32) (row_stride : UInt32) (col_stride : UInt32) (offset : UInt32) (fuel : Nat) : Option (Tensor2) := do
+  let () ← (if ((decide (rows > (0 : UInt32))) && (decide (cols > (0 : UInt32)))) then (do
+      let () ← (if (decide (((offset + ((rows - (1 : UInt32)) * row_stride)) + ((cols - (1 : UInt32)) * col_stride)) < (data.size.toUInt32))) then pure () else none)
+      pure ())
+    else (do
+      pure ()))
+  pure ({ data := data, rows := rows, cols := cols, row_stride := row_stride, col_stride := col_stride, offset := offset } : Tensor2)
+
 def tensor_index (rows : UInt32) (cols : UInt32) (row_stride : UInt32) (col_stride : UInt32) (offset : UInt32) (i : UInt32) (j : UInt32) (fuel : Nat) : Option (UInt32) := do
   let () ← (if ((decide (i < rows)) && (decide (j < cols))) then pure () else none)
   pure ((offset + (i * row_stride)) + (j * col_stride))

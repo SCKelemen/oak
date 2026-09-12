@@ -517,6 +517,9 @@ type TypeChecker struct {
 	// callee of every infix expression that resolved through a binding.
 	operatorBindings map[string]string
 	operatorLaws     []OperatorLaw
+	// reinterpretFactors maps a view_as/span_as call (position-keyed) to
+	// the scalars per record its source holds.
+	reinterpretFactors map[string]Reinterpretation
 	// custodyInitializer is the custody transition call currently checked
 	// as a Buffer declaration's initializer, the one position such a call
 	// may stand in (docs/spec/92-ffi.md section 2.8.5).
@@ -2175,6 +2178,14 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		return layoutType
 	}
 
+	// view_as[U](v) / span_as[U](s): the scalar view of a view of records
+	// (docs/spec/50-borrowing.md section 8d); the call site is rewritten
+	// to the plain builtin name and the element factor recorded.
+	if idx, ok := expr.Function.(*ast.IndexExpression); ok && !idx.Dot {
+		if callee, isIdent := idx.Left.(*ast.Identifier); isIdent && (callee.Value == "view_as" || callee.Value == "span_as") {
+			return tc.checkReinterpretCast(callee, idx.Index, expr)
+		}
+	}
 	// Generic function calls monomorphize here: the call site is rewritten
 	// to the specialized name and re-typed (typechecker/genericfn.go).
 	if genericType, isGeneric := tc.resolveGenericInvocation(expr); isGeneric {
@@ -2212,10 +2223,10 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		}
 	}
 
-	// Check if this is a builtin reinterpret cast: view_as[U](src) or span_as[U](src)
 	if ident, ok := expr.Function.(*ast.Identifier); ok {
 		if ident.Value == "view_as" || ident.Value == "span_as" {
-			return tc.checkReinterpretCast(ident.Value, expr.Arguments)
+			tc.addError(expr, "%s takes its target type: %s[f32](rows) views a view of records as their scalar storage (docs/spec/50-borrowing.md section 8d)", ident.Value, ident.Value)
+			return nil
 		}
 		// Borrow-creation builtins (docs/spec/50-borrowing.md): view(&owner)
 		// and span(&owner) borrow an owned array; subslice derives from an
@@ -2576,58 +2587,95 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 
 // checkReinterpretCast checks view_as[U](src: []T) and span_as[U](src: [*]T) calls
 // These functions reinterpret views/spans to different element types
-func (tc *TypeChecker) checkReinterpretCast(funcName string, args []ast.Expression) Type {
-	// For now, we'll use a simplified syntax: view_as[U](src) or span_as[U](src)
-	// In the future, we might support explicit generic syntax
-	if len(args) != 1 {
-		// Use first argument if available, otherwise nil
-		var node ast.Node
-		if len(args) > 0 {
-			node = args[0]
-		}
-		tc.addError(node, "%s expects exactly one argument", funcName)
+// reinterpretScalars are the element types a scalar view may have.
+var reinterpretScalars = map[string]bool{
+	"u8": true, "u16": true, "u32": true, "u64": true,
+	"i8": true, "i16": true, "i32": true, "i64": true,
+	"f32": true, "f64": true,
+}
+
+// checkReinterpretCast types view_as[U](v) and span_as[U](s)
+// (docs/spec/50-borrowing.md section 8d): the source is a view (or span)
+// of a declared record whose fields are all U — scalars or fixed arrays of
+// U — so the record's natural layout is contiguous scalars and the result
+// is the same storage as a []U (or [*]U) of len(v) * K elements, K the
+// scalars per record. The call site is rewritten to the plain builtin name
+// (the callee shape the later phases dispatch on) and K is recorded for
+// the backend, position-keyed.
+func (tc *TypeChecker) checkReinterpretCast(callee *ast.Identifier, targetSyntax ast.Expression, expr *ast.InvocationExpression) Type {
+	name := callee.Value
+	if len(expr.Arguments) != 1 {
+		tc.addError(expr, "%s expects exactly one argument", name)
 		return nil
 	}
-
-	srcType := tc.checkExpression(args[0])
+	target := tc.parseTypeExpression(targetSyntax)
+	prim, isPrim := target.(*PrimitiveType)
+	if target == nil || !isPrim || !reinterpretScalars[prim.Name] {
+		tc.addError(targetSyntax, "%s: the target is a fixed-width integer or floating-point type, got %s", name, targetSyntax.String())
+		return nil
+	}
+	srcType := tc.checkExpression(expr.Arguments[0])
 	if srcType == nil {
 		return nil
 	}
-
-	// Check if source is a view or span
-	if arrayType, ok := srcType.(*ArrayType); ok {
-		if funcName == "view_as" && arrayType.IsSlice {
-			// view_as[U]([]T) -> []U
-			// For now, without generics, we'll require type annotation at call site
-			// The actual target type will be inferred from context or explicit annotation
-			// Return a placeholder type that indicates reinterpret is needed
-			// In practice, the target type would come from the generic parameter [U]
-			tc.addError(args[0], "view_as requires generic type parameter (e.g., view_as[u32](src)). Generic syntax not yet implemented. Use type annotation: v: []u32 = view_as(src)")
-			// Return a placeholder - in full implementation, this would be []U where U is from generic param
-			return &ArrayType{
-				ElementType: arrayType.ElementType, // Placeholder - would be U in full implementation
-				Length:      -1,
-				IsSlice:     true,
-				IsSpan:      false,
-			}
-		} else if funcName == "span_as" && arrayType.IsSpan {
-			// span_as[U]([*]T) -> [*]U
-			tc.addError(args[0], "span_as requires generic type parameter (e.g., span_as[u32](src)). Generic syntax not yet implemented. Use type annotation: s: [*]u32 = span_as(src)")
-			// Return a placeholder
-			return &ArrayType{
-				ElementType: arrayType.ElementType, // Placeholder - would be U in full implementation
-				Length:      -1,
-				IsSlice:     false,
-				IsSpan:      true,
-			}
-		} else {
-			tc.addError(args[0], "%s type mismatch: view_as requires []T, span_as requires [*]T, got %s", funcName, srcType)
-			return nil
-		}
-	} else {
-		tc.addError(args[0], "%s requires a view ([]T) or span ([*]T), got %s", funcName, srcType)
+	arr, isArray := srcType.(*ArrayType)
+	switch {
+	case !isArray || (!arr.IsSlice && !arr.IsSpan):
+		tc.addError(expr.Arguments[0], "%s requires a view or span of records, got %s", name, srcType)
+		return nil
+	case name == "view_as" && !arr.IsSlice:
+		tc.addError(expr.Arguments[0], "view_as takes a read-only view []R; span_as takes a span")
+		return nil
+	case name == "span_as" && !arr.IsSpan:
+		tc.addError(expr.Arguments[0], "span_as takes a writable span [*]R; view_as takes a view")
 		return nil
 	}
+	record, isRecord := arr.ElementType.(*RecordType)
+	if !isRecord {
+		tc.addError(expr.Arguments[0], "%s reinterprets a view of records, got a view of %s", name, arr.ElementType)
+		return nil
+	}
+	count := int64(0)
+	for _, field := range record.Order {
+		switch ft := record.Fields[field].(type) {
+		case *PrimitiveType:
+			if ft.Name == prim.Name {
+				count++
+				continue
+			}
+		case *ArrayType:
+			if element, ok := ft.ElementType.(*PrimitiveType); ok && ft.Length > 0 && !ft.IsSlice && !ft.IsSpan && element.Name == prim.Name {
+				count += ft.Length
+				continue
+			}
+		}
+		tc.addError(expr.Arguments[0], "%s[%s]: field %s of %s is %s; a scalar view needs every field to be %s or a fixed array of %s, so the record's layout is contiguous %ss", name, prim.Name, field, record.Name, record.Fields[field], prim.Name, prim.Name, prim.Name)
+		return nil
+	}
+	if count == 0 {
+		tc.addError(expr.Arguments[0], "%s[%s]: %s has no fields", name, prim.Name, record.Name)
+		return nil
+	}
+	if tc.reinterpretFactors == nil {
+		tc.reinterpretFactors = make(map[string]Reinterpretation)
+	}
+	tc.reinterpretFactors[positionKey(expr.Token)] = Reinterpretation{Factor: count, Element: prim.Name}
+	expr.Function = &ast.Identifier{Token: callee.Token, Value: name}
+	return &ArrayType{Length: -1, IsSlice: name == "view_as", IsSpan: name == "span_as", ElementType: prim}
+}
+
+// Reinterpretation is what the backend needs of a view_as/span_as call:
+// the scalars per record and the scalar element type.
+type Reinterpretation struct {
+	Factor  int64
+	Element string
+}
+
+// ReinterpretationAt reports the reinterpretation recorded for the
+// view_as/span_as call at tok when it was checked.
+func (tc *TypeChecker) ReinterpretationAt(tok token.Token) (Reinterpretation, bool) {
+	r, ok := tc.reinterpretFactors[positionKey(tok)]
+	return r, ok
 }
 
 // checkPrimitiveConstructor checks if an invocation is a primitive type constructor

@@ -1378,6 +1378,13 @@ func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *type
 	}
 }
 
+// isLocalName reports whether name is a local (parameter or binding) of the
+// function being emitted, which shadows a root function of the same name.
+func (cg *CodeGenerator) isLocalName(name string) bool {
+	_, isLocal := cg.localTypes[name]
+	return isLocal
+}
+
 // Match payloads are scoped locals too. Preserve their declared container
 // shape so record array fields keep bounds-checked indexing in each arm.
 func (cg *CodeGenerator) bindMatchContainer(name string, typ ast.Expression) func() {
@@ -1416,8 +1423,17 @@ func (cg *CodeGenerator) preEmitContainerTypes(program *ast.Program) {
 				cg.emitSpanType(info.element)
 			case containerOwnedArray:
 				// Resolving the spelling places the wrapper typedef (and
-				// the typedefs of nested element arrays) at file scope.
+				// the typedefs of nested element arrays) at file scope; an
+				// inline view(&owner) or span(&owner) of the array — the
+				// source of a view_as — needs the element's view and span
+				// structs at file scope too.
 				cg.parseTypeExpression(t)
+				if strings.HasPrefix(info.element, "oak_") {
+					// Record elements only: a scalar's structs are placed
+					// where the program first names the view or span.
+					cg.emitViewType(info.element)
+					cg.emitSpanType(info.element)
+				}
 			}
 		}
 	}
@@ -2972,6 +2988,29 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 				cg.emitBorrowConstruction(ident.Value, e, tc)
 				return
 			}
+			if (ident.Value == "view_as" || ident.Value == "span_as") && len(e.Arguments) == 1 {
+				// view_as[U](v) / span_as[U](s) (docs/spec/50-borrowing.md
+				// section 8d): the same storage as a view of U with the
+				// record's scalar count times as many elements; the
+				// checker proved the record's layout contiguous U.
+				reinterpretation, known := tc.ReinterpretationAt(e.Token)
+				if !known {
+					cg.output.WriteString("OAK_UNSUPPORTED_REINTERPRET")
+					return
+				}
+				factor := reinterpretation.Factor
+				element := cg.parseTypeExpression(&ast.Identifier{Value: reinterpretation.Element})
+				if ident.Value == "view_as" {
+					cg.output.WriteString(fmt.Sprintf("(%s){ (const %s *)( ", cg.emitViewType(element), element))
+				} else {
+					cg.output.WriteString(fmt.Sprintf("(%s){ (%s *)( ", cg.emitSpanType(element), element))
+				}
+				cg.emitExpressionFragment(e.Arguments[0], tc)
+				cg.output.WriteString(" ).base, (u32)(( ")
+				cg.emitExpressionFragment(e.Arguments[0], tc)
+				cg.output.WriteString(fmt.Sprintf(" ).len * %du) }", factor))
+				return
+			}
 			if ident.Value == "subslice" && len(e.Arguments) == 3 {
 				// subslice(v, start, n) derives a view/span of the same kind
 				// (docs/spec/50-borrowing.md); the helper traps past the end.
@@ -3043,10 +3082,12 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.emitForeignFunctionCallee(cg.foreignFnLocals[ident.Value], e.Function, tc)
 		} else if ident, ok := e.Function.(*ast.Identifier); ok && runtimeBuiltins[ident.Value] != "" {
 			cg.output.WriteString(runtimeBuiltins[ident.Value])
-		} else if ident, ok := e.Function.(*ast.Identifier); ok && cg.programFunctions[ident.Value] != nil {
+		} else if ident, ok := e.Function.(*ast.Identifier); ok && cg.programFunctions[ident.Value] != nil && !cg.isLocalName(ident.Value) {
 			// Calls to program functions use the mangled C name; calls to
 			// extern bindings use the validated foreign symbol raw
-			// (docs/spec/92-ffi.md section 2.3).
+			// (docs/spec/92-ffi.md section 2.3). A local of the same name — a
+			// function-typed parameter `step` in a package whose caller also
+			// declares a root function `step` — is a call through the local.
 			if target := cg.programFunctions[ident.Value]; target.ExternSymbol != "" {
 				if typechecker.ValidCSymbol(target.ExternSymbol) {
 					cg.output.WriteString(cg.externCallee(target.ExternSymbol))
