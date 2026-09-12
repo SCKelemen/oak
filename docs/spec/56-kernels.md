@@ -332,9 +332,10 @@ the identity (`transpose_transpose`), that a row reads as the original
 row-major left fold from zero** (`tensor_sum_spec`: the extracted loops
 compute `tensorFold`, given fuel for the rows and the columns — with
 floating-point addition the order is the whole content of the statement,
-and it is the order every backend computes). The specification of
-`tensor_matmul` waits on the extractor: a store through a record's span
-field extracts to `Option Unit`, so the written array is not threaded and
-the function's effect is invisible to Lean; threading record-held spans
-through the extraction is the recorded next step.
+and it is the order every backend computes), and that a store through a
+record's span field reads back (`set_get`): the extractor threads a
+span-holding record parameter like a span, so `tensor_set` and
+`tensor_matmul` return the written record and their effect is visible to
+Lean. The specification of `tensor_matmul` against the inner-product
+definition over a contiguous output is the recorded next step.
 

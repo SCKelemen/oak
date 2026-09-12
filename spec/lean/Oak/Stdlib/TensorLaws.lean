@@ -147,4 +147,27 @@ theorem tensor_sum_spec (t : Tensor2) (fuel : Nat) (hf : t.rows.toNat + t.cols.t
   simp only [bind, Option.bind, pure]
   rw [sum_loop1_spec t fuel _ 0 t.rows.toNat (by simp) hf]
 
+/-! ## Stores are threaded
+
+A store through a record's span field returns the record with its array
+updated (docs/spec/95-extraction.md section 2, threaded parameters), so
+`tensor_set` is visible to Lean: reading back the element just written
+gives the value. -/
+
+/-- **Read after write.** Writing `(i, j)` and reading it back gives the
+value, when the pair is in shape and its storage index is inside the array
+(the extraction drops an out-of-range store, as section 3 states). A read
+through a span-holding record is threaded too and returns the record
+unchanged. -/
+theorem set_get (t : MutTensor2) (i j : UInt32) (v : Float32) (fuel : Nat)
+    (hi : i < t.rows) (hj : j < t.cols)
+    (hidx : ((t.offset + i * t.row_stride) + j * t.col_stride).toNat < t.data.size) :
+    ∃ t', tensor_set t i j v fuel = some ((), t') ∧ tensor_get t' i j fuel = some (v, t') := by
+  refine ⟨{ t with data := t.data.setIfInBounds ((t.offset + i * t.row_stride) + j * t.col_stride).toNat v }, ?_, ?_⟩
+  · simp [tensor_set, tensor_index, hi, hj]
+  · simp only [tensor_get, tensor_index, hi, hj, decide_true, Bool.and_self, ite_true, bind, Option.bind, pure]
+    congr 1
+    rw [Array.getD_eq_getD_getElem?, Array.getElem?_setIfInBounds_self, if_pos hidx]
+    rfl
+
 end Oak.Stdlib.Tensor

@@ -85,11 +85,11 @@ list, in the order the pilot would meet them:
 7. **Specifications of `tensor_matmul` and `tensor_sum`** against a
    mathematical definition over the extraction (`TensorLaws.lean`).
    `tensor_sum_spec` landed after #236 (the row-major left fold from
-   zero). `tensor_matmul` is blocked by an extraction gap found on the
-   way: a store through a record's span field (`tensor_set` on
-   `MutTensor2`) extracts to `Option Unit` — the written array is not
-   threaded, so the effect is invisible to Lean. Threading record-held
-   spans through the extraction is the prerequisite.
+   zero). The extraction gap found on the way — a store through a
+   record's span field extracted to `Option Unit` — is closed after #237:
+   span-holding record parameters are threaded like spans, and `set_get`
+   proves read after write. The matmul specification against the
+   inner-product definition over a contiguous output is what remains.
 8. **GPU execution from the tools**: `oak test` running a kernel through
    a Metal device when the toolchain is present.
 
