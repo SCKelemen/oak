@@ -1,5 +1,42 @@
 # JSON decoder optimization measurements
 
+## Eighth optimization pass: a structural index for fixed integer arrays
+
+Measured candidate: `sam/json-array-index` (this commit's tree). Baseline: `fbc9b1f8`
+(the seventh pass). Data: `arrayindex-{base,cand}-{record,event}-2026-09-12.json` and
+the `-repeat` files; five paired samples each, load average between 55 and 135, so
+only the paired ratios carry information.
+
+| Workload | Run | Oak ns/document | simdjson ns/document | Paired-ratio median | Paired ratios |
+| --- | --- | ---: | ---: | ---: | --- |
+| record | Baseline | 83.7 | 95.5 | 0.908× | 0.91 0.84 0.93 0.90 0.96 |
+| record | Candidate | 81.7 | 100.8 | 0.810× | 0.81 0.82 0.80 0.81 0.85 |
+| record | Baseline (repeat) | 77.4 | 81.0 | 0.953× | 0.93 0.96 0.96 0.95 0.93 |
+| record | Candidate (repeat) | 74.4 | 90.8 | 0.823× | 0.87 0.82 0.82 0.81 0.82 |
+| event | Baseline | 846.9 | 700.5 | 1.231× | 1.33 1.22 1.23 1.19 1.24 |
+| event | Candidate | 471.5 | 519.1 | 0.909× | 0.91 0.91 0.89 0.93 0.91 |
+| event | Candidate (repeat) | 565.3 | 624.9 | 0.904× | 0.90 0.90 0.90 0.90 0.97 |
+
+The profile of the seventh pass put every hot line of the event reader on one
+dependency chain: each number's word load waited on the previous number's run count.
+The derived reader of a fixed array of integers now takes one vector pass over the
+array's span (`json_array_index`: comma and closing-bracket lanes by `movemask`,
+positions by `ctz`, an overlapping last block), then parses every element from its
+own extent with `json_digits_at` (one word for up to eight digits, two for up to
+sixteen, the words loaded from the input's last bytes near its end) — no run count,
+no dependency between elements. The index is only an accelerator: any element it
+cannot cover (a sign on an unsigned type, a leading zero, a byte that is not a
+digit, more than sixteen digits, a value past the width, a count other than the
+declared length) hands the whole array back to the sequential loop and its exact
+error codes and offsets. A quarter off the event workload's time and an eighth off
+the record workload's (`docs/spec/71-codecs.md` §21).
+
+A first version of this pass, measured at 1.42× on the event workload, indexed the
+array and then still ran the sequential scanner from each start and checked the
+separator with a whitespace skip: the index paid for itself only once each element
+parsed from its own bytes.
+
+
 ## Seventh optimization pass: string tokens validated where they are scanned
 
 Measured candidate: `sam/json-decoder-4` at `3cab7543`. Baseline: `218b9cc7` (the
