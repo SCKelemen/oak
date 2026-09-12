@@ -84,8 +84,8 @@ oracle agreeing bit for bit. Add rows; do not remove them.
 
 | Domain | Golden implementation(s) | Defining techniques (expressiveness questions in §2) | Oak status |
 | --- | --- | --- | --- |
-| JSON parsing | simdjson (Langdale & Lemire 2019), simdjson On-Demand | two-stage parse (structural index then tape); byte classification by nibble shuffle; prefix-XOR quote masks; `ctz` bitmask-to-index iteration; padded input; Eisel–Lemire float parsing; SWAR integer parse; runtime CPU dispatch; no backtracking | typed decoding measured against simdjson (`71-codecs.md` §16–§19, `benchmarks/json`); On-Demand not modeled; runtime dispatch absent |
-| UTF-8 validation / transcoding | simdutf (Keiser & Lemire), Zig/Rust std validators | three-byte lookup classification with shuffles; range tables; overlapping loads; ASCII fast path by OR-reduce; SWAR fallback; incomplete-tail handling | measured against Go, Rust, Zig, simdutf, simdjson (`benchmarks/state-machines`); fused validation lane in codecs |
+| JSON parsing | simdjson (Langdale & Lemire 2019), simdjson On-Demand | two-stage parse (structural index then tape); byte classification by nibble shuffle; prefix-XOR quote masks and odd/even backslash runs; `ctz` bitmask-to-index with over-write into slack; two-block software pipelining; sentinel-terminated index; padded input with unspecified content; UTF-8 lookup4 fused into stage 1; SWAR eight-digit parse; Eisel–Lemire floats; word-compare atoms; forward-only On-Demand iterator with recoverable vs fatal errors; grow-only parser buffers from a closed form; runtime CPU dispatch; no backtracking | 1.13× simdjson on M1, 1.40× on EPYC for one typed schema (`BENCHMARKS.md`); `71-codecs.md` §16–§19; structural index, On-Demand, float fast path, table lookup, movemask, `ctz`, `mul_hi` absent; runtime dispatch absent; pass recorded in `docs/notes/codec-text-extraction-2026-09.md` |
+| UTF-8 validation / transcoding | simdutf (Keiser & Lemire 2020, 2021, 2022), Zig/Rust std validators | three nibble-table lookups over each adjacent byte pair plus a saturating third/fourth-continuation check; cross-vector byte shift for the previous block; incomplete-tail compare; ASCII fast path by OR/max reduce; reject fast in lanes, locate the error with the scalar oracle; tail copied into an inert-filled stack block (no over-read); mask-indexed generated shuffle tables for transcoding with pattern fast paths; non-validating lane-count sizers with narrow accumulators; `_valid` API level over validated input; `trim_partial_utf8` for stream cuts; runtime dispatch | Oak shift-DFA 1.97 GB/s vs simdutf 13.4 GB/s (`benchmarks/state-machines`); the whole validator gap is three missing `simd` ops (16-lane table lookup, lane shift by immediate, cross-vector byte shift); transcoder is scalar and three-pass (`stdlib/strings.oak`); no error position; `string` as the `_valid` level exists but no stdlib function consumes it |
 | Multi-pattern matching / regex | Hyperscan (Teddy, FDR, shift-or, Rose), RE2, `memchr` crate | SIMD literal prefilters (Teddy: shuffle-based multi-literal); shift-or / bit-parallel NFA; DFA with byte-class compression; no backtracking, linear time; state in registers; streaming with saved state | recorded as a stdlib workstream, not started (`ml-language-requests` "The regex question") |
 | Hashing | BLAKE3, xxh3, wyhash, hardware CRC-32C, SipHash for keyed | wide state in registers; tree hashing for parallelism; hardware CRC/AES instructions; unaligned reads; seeded keys against collision DoS | SHA-256, BLAKE3, CRC-32C within ten percent of Rust (`stdlib/hash.oak`, `benchmarks/kernels`); hardware CRC and seeding: check |
 | Sorting | pdqsort (Peters), ips4o, vqsort (Google, Highway), radix sort | pattern-defeating pivots; branchless partition (Edelkamp–Weiß block partition); insertion sort tail; SIMD sorting networks; radix for keys with known width | pdqsort with laws (`sam/stdlib-pdqsort`, `sam/pdqsort-laws`); branchless partition and vqsort: check |
@@ -169,6 +169,26 @@ remains that a fact could elide" is a finding.
       aligned loads, TB) — Oak: `(align: N)` on fields
       (`40-records.md`); alignment on views/spans: check.
 
+- [ ] **Sentinel-terminated index arrays.** When a consumer walks an index
+      produced by an earlier pass, is the index over-allocated by a
+      constant and terminated with sentinels (`len, len, 0`) so the
+      consumer needs no end check, and is the slack a stated formula
+      (`roundup64(cap) + 9`)? (simdjson stage 1 → stage 2) — Oak: not
+      stated; `71-codecs.md` §11 keeps structural indexes as future work.
+- [ ] **Over-write into slack instead of a counted loop.** Can a compaction
+      write a fixed group of outputs past the true count into declared
+      slack, with the group's bound proven once per block rather than per
+      store? (simdjson `write_indexes_stepped`) — Oak: the extent fact
+      `i + K < len(v)` (`50-borrowing.md`) is the shape; spelling per
+      block: check.
+- [ ] **Constant-offset block loads discharge together.** Under
+      `while at + 64 <= len(src)`, do the four loads at `at`, `at + 16`,
+      `at + 32`, `at + 48` all elide their checks, and does the `len(v) -
+      i >= K` spelling of a bound count as the offset fact `i + (K-1) <
+      len(v)`? (simdutf 64-byte blocks, simdjson `is_made_of_eight_digits_fast`)
+      — Oak: `50-borrowing.md` extent facts cover literal and scaled
+      bounds; the `len - i >= K` form and `+16k` offsets: check emitted C.
+
 ### 2b. Bits and lanes
 
 - [ ] **Bit intrinsics as total functions.** `ctz`, `clz`, `popcnt`,
@@ -190,26 +210,53 @@ remains that a fact could elide" is a finding.
       lacking it (NEON) stated? Is lane compaction (`vcompress`,
       `pext`-based) expressible? (simdjson, Highway) — Oak: not stated;
       `93-simd.md` names neither movemask nor compress.
-- [ ] **Prefix operations on masks.** Prefix-XOR (carryless multiply by
-      all-ones) for quote-state tracking, prefix-sum for compaction
-      indices — expressible, and lowered to `pmull`/`pclmul` where
-      available? (simdjson) — Oak: not stated.
+- [ ] **Prefix operations on masks.** Prefix-XOR for quote-state tracking,
+      prefix-sum for compaction indices — expressible, and lowered to
+      `pclmul` where it pays? simdjson's arm64 path uses six scalar
+      `x ^= x << k` steps, not `pmull`, so the scalar form is the one to
+      have first. (simdjson) — Oak: expressible in safe Oak with
+      constant-folded checked shifts; no `pclmul` lowering.
 - [ ] **Horizontal reductions with fixed grouping.** Is `reduce_add`'s
       pairwise tree the definition, and does the lowering produce
-      `vaddv`/`haddps` sequences whose grouping matches? (F2) — Oak:
-      `93-simd.md` §1.2a, `55-parallelism.md` §4.
+      `vaddv`/`haddps` sequences whose grouping matches? Is there a
+      portable integer horizontal add, or only the arm64 `uaddlv`?
+      (F2, simdutf narrow accumulators) — Oak: `93-simd.md` §1.2a,
+      `55-parallelism.md` §4; integer form only in the arm64 library.
 - [ ] **Branchless select and blend.** Can `cond ? a : b` over scalars
       and lanes lower to `csel`/`bsl` without a branch, with the compiler
       free to choose? Can the author *require* branchless (constant-time)?
       (crypto, Edelkamp–Weiß) — Oak: not stated for the requirement.
 - [ ] **Widening and narrowing lanes.** `u8x16 → u16x8` pairs, saturating
-      narrow, zip/unzip — portable and total? (simdutf transcoding) —
-      Oak: `93-simd.md` §1.2; check the set.
+      narrow, zip/unzip, integer lane extract — portable and total?
+      (simdutf transcoding, `vst2q` zip-with-zero) — Oak: `codegen/simd.go`
+      lowers `add and eq max min or sub xor` only; `extract`/`insert`
+      exist for float lanes only — gap.
 - [ ] **Runtime feature dispatch.** Can one function have per-ISA-level
       bodies (NEON, SVE2, RVV, AVX2, AVX-512) selected once at startup,
       with the dispatch itself deterministic and all bodies tested against
       one oracle? (simdjson, memchr, Highway) — Oak: **absent** (dbs
       ask 6/7 recorded); design in `93-simd.md` §4 is the shape.
+
+- [ ] **Lane shifts by immediate.** Is `shr`/`shl` by a constant on `u8`
+      and `u16` lanes a portable `simd` operation, so a nibble (`x >> 4`)
+      can index a 16-entry table? (simdutf `prev1.shr<4>()`, simdjson
+      `(byte + 3) >> 4`) — Oak: `93-simd.md` §1.2 has no shift;
+      `codegen/simd.go` lowers none — gap.
+- [ ] **Cross-vector byte shift.** Can "the last N bytes of the previous
+      chunk followed by the first 16−N of this one" (`ext`/`palignr`) be
+      formed in one operation rather than through a stack round trip?
+      Every windowed classifier needs it. (simdutf `prev<N>`, simdjson
+      lookup4) — Oak: not stated in `93-simd.md`; emulable via a `[32]u8`
+      store and reload — gap.
+- [ ] **Unsigned lane comparisons beyond equality.** Are `gt`/`ge` masks
+      portable, or is `eq(max(a, b), a)` the stated two-op emulation with
+      its cost recorded? (simdutf `gt_bits`, `is_incomplete`) — Oak:
+      `93-simd.md` §1.2 has `eq`, `min`, `max`; comparison masks reserved
+      for a later revision.
+- [ ] **Lookup with default.** Is a table lookup whose out-of-range lanes
+      take a second vector's value (`vqtbx1q`) available, or stated as
+      lookup plus select? (simdjson whitespace classification) — Oak: not
+      stated; depends on the table-lookup item.
 
 ### 2c. Control flow shapes
 
@@ -317,6 +364,14 @@ remains that a fact could elide" is a finding.
       the caller's stack? (Rust, Swift non-escaping) — Oak:
       `05-ergonomics-and-cost.md` Function values and closures,
       `55-parallelism.md` §7.
+
+- [ ] **Worst-case scratch from a closed form.** Is every parser scratch
+      buffer (index, tape, string buffer, depth arrays) sized by a formula
+      over input length and depth, allocated once, and never touched again
+      on the steady-state path? (simdjson `document::allocate`: tape
+      `cap + 3`, strings `5·(cap/3) + PADDING`) — Oak: `71-codecs.md` §16
+      names reusable bounded work buffers as an investigation item; no
+      formula stated.
 
 ### 2f. Machine-level access
 
@@ -467,6 +522,41 @@ remains that a fact could elide" is a finding.
       against the portable definition on every target (differential, or
       Sail for the ISA)? — Oak: `93-simd.md` §5, `spec/sail`.
 
+- [ ] **Software-pipeline the block loop.** Does the block loop emit the
+      previous block's results while the current block's masks are
+      computing, so the serial mask-to-index tail overlaps the next loads?
+      (simdjson `step<128>`, "PERF NOTES") — Oak: not stated; `93-simd.md`
+      §3 shows one block per iteration.
+- [ ] **Copy-the-tail tail policy.** When the block kernel must not
+      over-read and predication is unavailable, is the remainder copied
+      into a stack block pre-filled with a semantically inert byte
+      (simdutf: 0x20, so a dangling lead reads as too short) and run
+      through the *same* block code, so tail and body cannot diverge?
+      (simdutf `buf_block_reader::get_remainder`, simdjson last block) —
+      Oak: `93-simd.md` §4.1 names predication, overlap, and scalar tail
+      only; `stdlib/json.oak` and `stdlib/strings.oak` use scalar tails.
+- [ ] **Reject fast, locate slow.** Does the vector validator accumulate
+      errors in lanes and decide once per block, with the error position
+      and class produced by the scalar oracle re-run from the last
+      known-good block (rewinding at most three continuation bytes), and
+      is the "detected one block late" case tested? (simdutf
+      `rewind_and_validate_with_errors`, `puzzler2`) — Oak:
+      `stdlib/strings.oak` returns at the first bad step and `TextError`
+      carries no position — not stated.
+- [ ] **Structure mask indexes a generated shuffle table.** For
+      transcoding, is the per-block continuation bitmask the index into a
+      generated (shuffle, consumed) table over ≤12-bit patterns, with the
+      most frequent patterns branch-tested first, and does the writer stay
+      memory-safe when the mask came from invalid bytes? (simdutf
+      `utf8bigindex[4096][2]`, `shufutf8[209][16]`, issue #514) — Oak:
+      `stdlib/strings.oak` transcodes one scalar at a time — not started.
+- [ ] **Speculative writer, validated after.** May the transcoder write a
+      block's output before the block's validity is known, provided the
+      write is bounds-safe on garbage and the output is pre-sized so
+      failure leaves the contract intact? (simdutf `validating_transcoder`)
+      — Oak: `71-codecs.md` §7 unchanged-on-failure requires pre-sizing;
+      a fact relating remaining input to remaining output: not stated.
+
 ## 7. Parallelism and concurrency
 
 - [ ] **Work and span stated.** Does every parallel operation document
@@ -589,6 +679,13 @@ remains that a fact could elide" is a finding.
       benchmark harness build with LTO and PGO where the C toolchain
       supports them, and is the gain recorded? — Oak: not stated.
 
+- [ ] **Consumer chains monomorphize to one loop.** Can a
+      redact→convert→sum pipeline over one parse be written as composed
+      sink types and lower to a single pass with no sink object, as a
+      visitor chain does with virtual calls? (weePickle/uPickle "Chaining
+      Visitors") — Oak: `71-codecs.md` §3 `stream[F, S]`, §11 fusion is
+      design work; needs a method-set constraint for `S`.
+
 ## 10. Parsing and text
 
 - [ ] **Two stages, one pass each.** Structural indexing first, then
@@ -598,9 +695,11 @@ remains that a fact could elide" is a finding.
       fields it reads, skipping the rest by structural index? (simdjson
       On-Demand, Cap'n Proto) — Oak: not modeled; direction.
 - [ ] **Number parsing state of the art.** Eisel–Lemire for floats, SWAR
-      for eight digits at a time, with correctness against the exact
-      decimal? (fast_float, simdjson) — Oak: `71-codecs.md` §18 compact
-      integer scans; floats: check.
+      for eight digits at a time, Clinger's fast path, with correctness
+      against the exact decimal? (fast_float, simdjson) — Oak:
+      `71-codecs.md` §18–§19 have the SWAR integer scan; `stdlib/float.oak`
+      is the exact slow path only, derived codecs do not decode floats,
+      and there is no `mul_hi` 64×64→128 — the fast path is absent.
 - [ ] **DFA with byte-class compression for matching.** Small
       transition tables, one load per byte, no branches? (Hyperscan, RE2)
       — Oak: UTF-8 state machines in `stdlib/strings.oak`; regex not
@@ -614,6 +713,35 @@ remains that a fact could elide" is a finding.
 - [ ] **Grapheme, normalization, case tables generated, not hand-written.**
       (Unicode) — Oak: `sam/stdlib-grapheme`, `sam/stdlib-normalize`,
       `sam/unicode-generator-pub`.
+
+- [ ] **Match keys on raw bytes, fall back on escapes.** Are object keys
+      compared against the expected spelling byte for byte (quotes
+      included, length checked), with Unicode-scalar comparison reached
+      only when the raw bytes contain a backslash or non-ASCII? (simdjson
+      `find_field_raw`) — Oak: `71-codecs.md` §18, `stdlib/json.oak`
+      `json_key_equal`.
+- [ ] **Key dispatch by length then prefix.** Does derived field matching
+      switch on key length and compare shared prefixes once (a radix
+      tree), with the length fact discharging the compare's bounds, rather
+      than a linear list of full compares? (weePickle
+      `getKeyIndexUsingRadix`, 20–60%) — Oak: `71-codecs.md` §13, §18
+      linear dispatch; §16 lists schema-specialized matching as open.
+- [ ] **Parse to the requested type, never through a type switch.** Does
+      the consumer name the type first so the scalar parser is the one for
+      that type, with "wrong type" a recoverable result rather than a fatal
+      error? (simdjson On-Demand use-specific parsing) — Oak:
+      `71-codecs.md` §13 `TypeMismatch`, §17.
+- [ ] **Skip is as cheap as parse.** Is skipping an unwanted subtree a
+      structural scan with no value materialization and a declared depth
+      bound? (simdjson `skip_child`, weePickle `NoOpVisitor`) — Oak: no
+      skip primitive in `stdlib/json.oak` — not stated.
+- [ ] **Sizing is a non-validating count.** Once validity is established,
+      are output-size functions O(n) lane counts (non-continuation bytes,
+      bytes ≥ 0xF0, `min(x & 0xFF80, 1)` for UTF-16) with narrow
+      accumulators flushed before overflow, rather than a second decode?
+      (simdutf `*_length_from_*_bytemask`) — Oak: `stdlib/strings.oak`
+      `utf8_to_utf16_size` decodes every scalar and `utf8_to_utf16`
+      decodes again — three passes.
 
 ## 11. Numerics
 
@@ -632,6 +760,11 @@ remains that a fact could elide" is a finding.
       debate, TB) — Oak: `20-types.md` §11.1a; measure.
 - [ ] **Mixed-width avoided in hot loops.** (MS) — Oak: rejected by the
       type system (no implicit promotion).
+- [ ] **Wide multiply is a total operation.** Is a 64×64→128 multiply
+      (high and low halves) available as a builtin, since Eisel–Lemire
+      float parsing, fast modular reduction, and wide hashes all need it?
+      (simdjson `full_multiplication`, Lemire fastmod, wyhash) — Oak: no
+      `mul_hi_u64` or `u128` in `stdlib` or `20-types.md` — gap.
 
 ## 12. Measurement discipline
 
@@ -648,9 +781,12 @@ remains that a fact could elide" is a finding.
       misses, cache misses per run, so the cause of a gap is measured.
       (simdjson's `event_counter`, `perf stat`) — Oak: §2f counters not
       stated.
-- [ ] **Regression gate.** Does CI fail (or flag) a benchmark that regresses
-      past a threshold against the checked-in baseline? — Oak: not
-      stated.
+- [ ] **Regression gate.** Does CI fail a benchmark that regresses against
+      the checked-in baseline, with a rule that tolerates noise — simdjson's
+      `perfdiff` runs seven interleaved samples and fails only when the
+      new maximum is below the reference minimum? — Oak:
+      `benchmarks/json/compare.py` does paired runs but is explicitly not
+      a gate.
 - [ ] **Adversarial inputs benchmarked too.** Worst-case inputs (deep
       nesting, all-escapes, hash collisions) measured alongside typical
       ones, so bounded work per byte is a number. (Hyperscan, langsec) —
@@ -665,3 +801,16 @@ remains that a fact could elide" is a finding.
 - [ ] **The gap has a cause.** Each remaining ratio against the golden
       implementation in §1 is attributed to a specific §2 item or accepted
       with a stated reason. An unattributed gap is an open finding.
+
+- [ ] **Setup outside the timed region, stated.** Does the harness exclude
+      allocation, first touch, and padding copies from the timed region
+      and say so, with a second number that includes them? (simdjson
+      `doc/performance.md`) — Oak: `benchmarks/json/README.md` keeps setup
+      outside timing; allocation counts unknown.
+- [ ] **Per-script corpora and a noise margin.** Are text benchmarks run
+      per writing system (ASCII, Latin-1, Arabic, CJK, emoji), since the
+      byte mix decides the path taken, and does the harness print best of
+      N with `mean/best − 1` as a noise figure and warn above a threshold?
+      (simdutf `unicode_lipsum`, `benchmark_base.cpp`) — Oak:
+      `benchmarks/state-machines` uses one random mix, best of five.
+
