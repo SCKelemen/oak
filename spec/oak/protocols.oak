@@ -63,4 +63,26 @@ machine_agrees_three_bytes_e0: theorem (b1: u8, b2: u8) { machine_three(u8(224),
 machine_agrees_three_bytes_ed: theorem (b1: u8, b2: u8) { machine_three(u8(237), b1, b2) == intrinsic_three(u8(237), b1, b2) }
 machine_agrees_three_bytes_e1: theorem (b1: u8, b2: u8) { machine_three(u8(225), b1, b2) == intrinsic_three(u8(225), b1, b2) }
 
+// The lowering laws (docs/spec/112-protocols.md section 2a;
+// spec/lean/Oak/Protocol.lean): the backend lowers this machine to a
+// shift DFA, and the projection keeps the branch tree beside it as
+// `utf8_legal_tree` and `utf8_next_tree`. In the interpreter both are the
+// tree; in the compiled program `utf8_legal` and `utf8_next` are the
+// table, so the compiled witness is the law — the two realizations of one
+// declaration agree on every state and byte, and `utf8_run` (the table
+// with its sink, checked once at the end) is the step function iterated.
+lowering_legal: theorem (s: Utf8State, b: u8) { utf8_legal_tree(s, Utf8Step.Byte(b)) == utf8_legal(s, Utf8Step.Byte(b)) }
+lowering_next: theorem (s: Utf8State, b: u8) { !utf8_legal(s, Utf8Step.Byte(b)) || utf8_next_tree(s, Utf8Step.Byte(b)) == utf8_next(s, Utf8Step.Byte(b)) }
+
+run_is_iterated_next: theorem (b0: u8, b1: u8) {
+  s0: Utf8State = utf8_initial()
+  utf8_legal(s0, Utf8Step.Byte(b0)) ? {
+    s1: Utf8State = utf8_next(s0, Utf8Step.Byte(b0))
+    utf8_legal(s1, Utf8Step.Byte(b1)) ? {
+      bytes: [2]u8 = [2]u8{ b0, b1 }
+      utf8_run(s0, view(&bytes)) == utf8_next(s1, Utf8Step.Byte(b1))
+    } | { true }
+  } | { true }
+}
+
 main: (): i32 = 0

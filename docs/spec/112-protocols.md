@@ -191,6 +191,13 @@ Under the shift form the state type's tags are the field offsets `6 * i`
 and nothing else observes. The sentinel is the sink, one past the last
 state; `next` traps on it exactly where the branch tree asserted.
 
+The branch-tree realization stays beside the lowered one as
+`name_legal_tree` and `name_next_tree` (the same projected bodies, never
+lowered), so a program holds both realizations of the declaration and
+`spec/oak/protocols.oak` states that they agree on every state and byte —
+decided in the interpreter and witnessed in the compiled program, where
+`name_next` is the table (`125-verification.md` §6).
+
 A byte-driven machine also projects **`name_run`**:
 
 ```oak

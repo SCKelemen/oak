@@ -26,7 +26,8 @@ func TestSelfHostedLaws(t *testing.T) {
 	for _, file := range files {
 		file := file
 		t.Run(filepath.Base(file), func(t *testing.T) {
-			args := []string{file}
+			// The decided files are also witnessed in the compiled program.
+			args := []string{"-witness", file}
 			if strings.HasSuffix(file, "_lean.oak") {
 				lean := leanBinary(t)
 				args = []string{"-lean", filepath.Join(t.TempDir(), "laws.lean"), "-check", "-lean-binary", lean, file}
