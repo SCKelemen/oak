@@ -251,6 +251,79 @@ func boolReader(s *synth) []ast.Statement {
 	}
 }
 
+// scalarDecode decodes an integer or Boolean field in place inside a record
+// reader: the scanner's status and the width check set `status`, a success
+// stores the value, advances `at`, and runs `done`. Inlining the per-type
+// reader saves its Result round trip — the aggregate return and the error
+// code mapped to a variant and back — on the decoder's hot path
+// (docs/spec/71-codecs.md section 19). Nil for any other type.
+func scalarDecode(s *synth, typ string, from ast.Expression, store func(ast.Expression) ast.Statement, done ...ast.Statement) []ast.Statement {
+	setStatus := func(code int64) ast.Statement { return s.assign("status", s.u32(code)) }
+	success := func(value ast.Expression, next ast.Expression, leading ...ast.Statement) ast.Expression {
+		statements := append(leading, store(value), s.assign("at", next))
+		return s.block(append(statements, done...)...)
+	}
+	switch codecPrimitive(typ) {
+	case "u64", "i64":
+		bits, _ := strconv.Atoi(typ[1:])
+		magnitude := func() ast.Expression { return s.field(s.id("raw"), "magnitude") }
+		next := func() ast.Expression { return s.field(s.id("raw"), "next") }
+		negative := func() ast.Expression { return s.eq(s.field(s.id("raw"), "status"), s.u32(1)) }
+		var checked ast.Expression
+		if codecPrimitive(typ) == "u64" {
+			maximum := ^uint64(0)
+			if bits < 64 {
+				maximum = (uint64(1) << bits) - 1
+			}
+			conversion := magnitude()
+			if bits < 64 {
+				conversion = s.call(typ+"_trunc_u64", magnitude())
+			}
+			checked = s.cond(negative(), s.block(setStatus(3)),
+				s.cond(s.gt(magnitude(), s.u64(maximum)), s.block(setStatus(4)),
+					success(conversion, next())))
+		} else {
+			negativeMax := uint64(1) << (bits - 1)
+			conversion := ast.Expression(s.id("number"))
+			if bits < 64 {
+				conversion = s.call(typ+"_trunc_i64", s.id("number"))
+			}
+			sign := s.expr(s.cond(s.and(negative(), s.gt(magnitude(), s.u64(0))),
+				s.block(s.assign("number", s.sub(s.sub(s.i64(0), s.call("i64_bits_u64", s.sub(magnitude(), s.u64(1)))), s.i64(1)))),
+				s.block(s.assign("number", s.call("i64_bits_u64", magnitude())))))
+			checked = s.block(
+				s.decl("limit", s.id("u64"), s.cond(negative(), s.u64(negativeMax), s.u64(negativeMax-1))),
+				s.expr(s.cond(s.gt(magnitude(), s.id("limit")), s.block(setStatus(4)),
+					success(conversion, next(), s.decl("number", s.id("i64"), s.i64(0)), sign))))
+		}
+		return []ast.Statement{
+			s.decl("raw", s.id("JsonIntegerScan"), s.call("json_scan_integer", s.id("src"), from)),
+			// A scanner status above one is json_decode_error_code + 1.
+			s.expr(s.cond(s.gt(s.field(s.id("raw"), "status"), s.u32(1)),
+				s.block(s.assign("status", s.sub(s.field(s.id("raw"), "status"), s.u32(1)))),
+				checked)),
+		}
+	case "bool":
+		at := func() ast.Expression { return s.id("value_at") }
+		kind := func() ast.Expression { return s.field(s.id("part"), "kind") }
+		return []ast.Statement{
+			s.decl("value_at", s.id("u32"), s.call("json_skip_space", s.id("src"), from)),
+			s.decl("part", s.id("JsonToken"), nil),
+			s.expr(s.cond(
+				s.and(srcRemaining(s, at, 4), s.eq(srcWord(s, at, 0), s.u32(1702195828)), s.call("json_value_boundary", s.id("src"), s.add(at(), s.u32(4)))),
+				s.block(s.assign("part", tokenAt(s, 8, at, 4))),
+				s.cond(
+					s.and(srcRemaining(s, at, 5), s.eq(srcWord(s, at, 0), s.u32(1936482662)), s.eq(s.index(s.id("src"), s.add(at(), s.u32(4))), s.u8(101)), s.call("json_value_boundary", s.id("src"), s.add(at(), s.u32(5)))),
+					s.block(s.assign("part", tokenAt(s, 9, at, 5))),
+					s.block(s.assign("part", s.call("json_token", s.id("src"), at())))))),
+			s.expr(s.cond(s.le(kind(), s.u32(1)), s.block(setStatus(2)),
+				s.cond(s.and(s.ne(kind(), s.u32(8)), s.ne(kind(), s.u32(9))), s.block(setStatus(3)),
+					success(s.eq(kind(), s.u32(8)), s.field(s.id("part"), "end"))))),
+		}
+	}
+	return nil
+}
+
 // keyClassifier maps an object key token to its 1-based field index, 0 for
 // an unknown key. Key storage stays out of the record reader's live state.
 func keyClassifier(k *synth, name string, fields []codecField) *ast.FunctionStatement {
@@ -263,11 +336,24 @@ func keyClassifier(k *synth, name string, fields []codecField) *ast.FunctionStat
 		}
 		body = append(body, k.decl(fmt.Sprintf("key%d", i), k.view(k.id("u8")), k.call("view", k.addressOf(data))))
 	}
-	var result ast.Expression = k.u32(0)
+	// The tokenizer path is reached for escaped, non-ASCII, and unknown
+	// keys. A key that decodes into sixty-four bytes is decoded once and
+	// compared byte for byte against each spelling; one that does not fit
+	// keeps the per-field Unicode comparison.
+	var semantic ast.Expression = k.u32(0)
+	var decoded ast.Expression = k.u32(0)
 	for i := len(fields) - 1; i >= 0; i-- {
-		result = k.cond(k.call("json_key_equal", k.id("src"), k.id("key"), k.id(fmt.Sprintf("key%d", i))), k.u32(int64(i+1)), result)
+		semantic = k.cond(k.call("json_key_equal", k.id("src"), k.id("key"), k.id(fmt.Sprintf("key%d", i))), k.u32(int64(i+1)), semantic)
+		decoded = k.cond(k.call("json_key_decoded_equal", k.id("decoded"), k.id(fmt.Sprintf("key%d", i))), k.u32(int64(i+1)), decoded)
 	}
-	body = append(body, k.expr(result))
+	body = append(body,
+		k.decl("storage", k.array(64, k.id("u8")), nil),
+		k.decl("decoded_len", k.id("u32"), k.call("json_key_decode", k.id("src"), k.id("key"), k.call("span", k.addressOf("storage")))),
+		k.decl("storage_view", k.view(k.id("u8")), k.call("view", k.addressOf("storage"))),
+		k.expr(k.cond(k.eq(k.id("decoded_len"), k.u32(4294967295)), k.block(k.expr(semantic)),
+			k.block(
+				k.decl("decoded", k.view(k.id("u8")), k.call("subslice", k.id("storage_view"), k.u32(0), k.id("decoded_len"))),
+				k.expr(decoded)))))
 	return k.fn(name, []*ast.FunctionParameter{k.param("src", k.view(k.id("u8"))), k.param("key", k.id("JsonToken"))}, k.id("u32"), body...)
 }
 
@@ -425,6 +511,12 @@ func recordReader(s *synth, typ, keyName string, fields []codecField, decodedNam
 							s.assign("at", s.field(s.id("decoded"), "next")),
 							s.assign(seen, s.boolean(true))))))))))
 		case field.length == 0:
+			if inline := scalarDecode(s, field.typ, colonEnd(), func(value ast.Expression) ast.Statement {
+				return storeField(field.name, value)
+			}, s.assign(seen, s.boolean(true))); inline != nil {
+				decode = s.block(inline...)
+				break
+			}
 			decode = s.block(
 				s.decl(part, decodedResult(s, field.typ), readCall(field, colonEnd())),
 				s.expr(s.match(s.id(part), failArm(), s.arm("Ok", "decoded", s.block(
@@ -444,25 +536,41 @@ func recordReader(s *synth, typ, keyName string, fields []codecField, decodedNam
 							s.block(setStatus(2)))))),
 					s.cond(s.eq(sepKind(), s.u32(12)), s.block(setStatus(8)),
 						s.cond(s.eq(sepKind(), s.u32(5)), s.block(s.assign("at", sepEnd())), s.block(setStatus(2)))))))
+			// Each element decodes in place when it is a scalar; the per-type
+			// reader otherwise.
+			// A scalar element scans from the lookahead position, which the
+			// closing-bracket test has already moved past the whitespace.
+			var elementDecode ast.Expression
+			if inline := scalarDecode(s, field.typ, s.id("lookahead"), func(value ast.Expression) ast.Statement {
+				return s.store(s.index(fieldOf(field.name), s.id("index")), value)
+			}, s.assign("index", s.add(s.id("index"), s.u32(1)))); inline != nil {
+				elementDecode = s.block(inline...)
+			} else {
+				elementDecode = s.block(
+					s.decl("part", decodedResult(s, field.typ), readCall(field, at())),
+					s.expr(s.match(s.id("part"), failArm(), s.arm("Ok", "decoded", s.block(
+						s.store(s.index(fieldOf(field.name), s.id("index")), s.field(s.id("decoded"), "value")),
+						s.assign("at", s.field(s.id("decoded"), "next")),
+						s.assign("index", s.add(s.id("index"), s.u32(1))))))))
+			}
+			// The opening bracket is one byte after whitespace; anything else
+			// is classified by the tokenizer only to pick the error.
 			decode = s.block(
-				s.decl("array_start", s.id("JsonToken"), s.call("json_token", s.id("src"), colonEnd())),
-				s.expr(s.cond(s.le(s.field(s.id("array_start"), "kind"), s.u32(1)), s.block(setStatus(2)),
-					s.cond(s.ne(s.field(s.id("array_start"), "kind"), s.u32(11)), s.block(setStatus(3)),
-						s.block(
-							s.assign("at", s.field(s.id("array_start"), "end")),
-							s.decl("index", s.id("u32"), s.intLit(0)),
-							s.loop(s.and(s.lt(s.id("index"), s.u32(field.length)), s.eq(status(), s.u32(0))),
-								s.decl("lookahead", s.id("u32"), s.call("json_skip_space", s.id("src"), at())),
-								s.expr(s.cond(s.and(s.lt(s.id("lookahead"), srcLen()), s.eq(s.index(s.id("src"), s.id("lookahead")), s.u8(93))),
-									s.block(s.assign("status", s.cond(s.eq(s.id("index"), s.u32(0)), s.u32(8), s.u32(2)))),
-									s.block(
-										s.decl("part", decodedResult(s, field.typ), readCall(field, at())),
-										s.expr(s.match(s.id("part"), failArm(), s.arm("Ok", "decoded", s.block(
-											s.store(s.index(fieldOf(field.name), s.id("index")), s.field(s.id("decoded"), "value")),
-											s.assign("at", s.field(s.id("decoded"), "next")),
-											s.assign("index", s.add(s.id("index"), s.u32(1)))))))))),
-								s.expr(s.cond(s.eq(status(), s.u32(0)), s.block(afterElement...), nil))),
-							s.assign(seen, s.eq(status(), s.u32(0))))))))
+				s.decl("array_at", s.id("u32"), s.call("json_skip_space", s.id("src"), colonEnd())),
+				s.expr(s.cond(s.not(s.and(s.lt(s.id("array_at"), srcLen()), s.eq(s.index(s.id("src"), s.id("array_at")), s.u8(91)))),
+					s.block(
+						s.decl("array_start", s.id("JsonToken"), s.call("json_token", s.id("src"), s.id("array_at"))),
+						s.expr(s.cond(s.le(s.field(s.id("array_start"), "kind"), s.u32(1)), s.block(setStatus(2)), s.block(setStatus(3))))),
+					s.block(
+						s.assign("at", s.add(s.id("array_at"), s.u32(1))),
+						s.decl("index", s.id("u32"), s.intLit(0)),
+						s.loop(s.and(s.lt(s.id("index"), s.u32(field.length)), s.eq(status(), s.u32(0))),
+							s.decl("lookahead", s.id("u32"), s.call("json_skip_space", s.id("src"), at())),
+							s.expr(s.cond(s.and(s.lt(s.id("lookahead"), srcLen()), s.eq(s.index(s.id("src"), s.id("lookahead")), s.u8(93))),
+								s.block(s.assign("status", s.cond(s.eq(s.id("index"), s.u32(0)), s.u32(8), s.u32(2)))),
+								elementDecode)),
+							s.expr(s.cond(s.eq(status(), s.u32(0)), s.block(afterElement...), nil))),
+						s.assign(seen, s.eq(status(), s.u32(0)))))))
 		}
 		dispatch = s.cond(s.eq(s.id("field_index"), s.u32(int64(i+1))),
 			s.block(s.expr(s.cond(s.id(seen), s.block(setStatus(6)), decode))),
@@ -512,10 +620,14 @@ func recordReader(s *synth, typ, keyName string, fields []codecField, decodedNam
 		s.block(s.expr(s.variant("Err", s.call("json_decode_error", status())))),
 		s.cond(s.not(s.and(required...)), errBlock(s, "MissingField"), completed))))
 
+	// The opening brace is one byte after whitespace; anything else is
+	// classified by the tokenizer only to pick the error.
 	return []ast.Statement{
-		s.decl("opening", s.id("JsonToken"), s.call("json_token", s.id("src"), s.id("offset"))),
-		s.expr(s.cond(s.le(s.field(s.id("opening"), "kind"), s.u32(1)), errBlock(s, "InvalidSyntax"),
-			s.cond(s.ne(s.field(s.id("opening"), "kind"), s.u32(2)), errBlock(s, "TypeMismatch"),
-				s.block(inner...)))),
+		s.decl("open_at", s.id("u32"), s.call("json_skip_space", s.id("src"), s.id("offset"))),
+		s.expr(s.cond(s.and(s.lt(s.id("open_at"), srcLen()), s.eq(s.index(s.id("src"), s.id("open_at")), s.u8(123))),
+			s.block(append([]ast.Statement{s.decl("opening", s.id("JsonToken"), tokenAt(s, 2, func() ast.Expression { return s.id("open_at") }, 1))}, inner...)...),
+			s.block(
+				s.decl("opening", s.id("JsonToken"), s.call("json_token", s.id("src"), s.id("open_at"))),
+				s.expr(s.cond(s.le(s.field(s.id("opening"), "kind"), s.u32(1)), errBlock(s, "InvalidSyntax"), errBlock(s, "TypeMismatch")))))),
 	}
 }

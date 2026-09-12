@@ -1938,6 +1938,31 @@ func (cg *CodeGenerator) computeInlineHelpers(program *ast.Program) {
 			cg.inlineHelpers[name] = true
 		}
 	}
+	// The derived JSON readers' hot helpers (compiler/codec_decode.go) are
+	// forced inline wherever they are compiled in: the integer scanner and
+	// its word arithmetic, whitespace skipping, the value boundary test,
+	// and the decoded-key comparison sit inside every derived record
+	// reader's loop, and a call there costs more than their bodies
+	// (docs/spec/71-codecs.md section 19). They are exported and some
+	// contain loops, so the shape rule above would not pick them.
+	for _, name := range codecHotHelpers {
+		fn := functions[name]
+		if fn == nil || fn.Body == nil || fn.Receiver != nil || fn.ExternSymbol != "" || fn.AsmBacked ||
+			fn.NativeBacked || len(fn.TypeParams) > 0 {
+			continue
+		}
+		if _, isMember := cg.trampolineMember[name]; isMember {
+			continue
+		}
+		cg.inlineHelpers[name] = true
+	}
+}
+
+// codecHotHelpers are the standard library functions the derived JSON
+// record readers call on their hot path (stdlib/json.oak).
+var codecHotHelpers = []string{
+	"json_scan_integer", "json_non_digit_mask", "json_digit_run", "json_word_value",
+	"json_skip_space", "json_value_boundary", "json_key_decoded_equal",
 }
 
 // linkage returns the storage-class prefix for a function's prototype and

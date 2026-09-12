@@ -680,3 +680,67 @@ against a scalar oracle, and verify traps at short and extreme offsets.
 Escaped-key, nullable, numeric-boundary and truncation tests remain in place.
 These are executable checks and an algorithmic argument, not a machine-checked
 proof of the complete compiler transformation or parser.
+
+## 20. Inline scalar decoding, decode-once keys, proven digit arithmetic
+
+Measured against a hand-written decoder for the benchmark schema — the
+ceiling a schema-specialized decoder can reach, 47 ns per document where
+simdjson On-Demand takes 68 and the derived decoder took 78 on the same
+machine — the derived reader's cost was in its shape, not its arithmetic:
+a `Result[JsonDecoded[T], JsonDecodeError]` round trip per scalar field
+(an aggregate return through memory for `u64`, the error code mapped to a
+variant and back), a full tokenizer call for every opening brace and
+bracket, a byte-at-a-time tail after each word of digits, three Unicode
+comparisons for every escaped key, and an out-of-line scanner.
+
+The record reader now decodes integer and Boolean fields in place: the
+compact `JsonIntegerScan` status and the width check set the reader's
+status, a success stores the value and advances. Array elements scan from
+the lookahead position the closing-bracket test already moved past the
+whitespace. The opening brace and bracket are one byte after whitespace;
+only a mismatch calls the tokenizer, to pick between InvalidSyntax and
+TypeMismatch as before. The per-type readers `__oak_json_read_T` and
+decoders remain the public per-type API and are unchanged.
+
+The integer scanner takes every word: eight digits when the word is all
+digits and within the nineteen that never overflow (as before), and
+otherwise the run of digits at the word's front, counted with no branch
+and no count-trailing-zeros instruction — the lowest set bit of the
+non-digit mask, isolated and turned into `256^k`, times the constant whose
+byte `j` holds `7 - j`, leaves `k` in the top byte — and combined by the
+same three multiply-and-add steps after being moved to the high bytes
+over ASCII zeros. The byte loop takes only the twentieth digit on and the
+last seven bytes of the input. `Oak.JsonDigits` decides each of these
+facts by bit-blasting the 64-bit word: the non-digit mask leaves a lane
+clear only for a digit, whatever the neighbouring lanes carry into it
+(`non_digit_mask_sound`); the run count is the index of the lowest marked
+lane (`digit_run`); an all-digit word reads as its eight digits
+(`word_value`); and the partial word of a run of `k` reads as those `k`
+digits, for every `k` from one to seven (`partial_value_k`).
+
+An escaped or non-ASCII key reaches the classifier as before, which now
+decodes it once into sixty-four bytes of stack (`json_key_decode`) and
+compares bytes against each field's spelling (`json_key_decoded_equal`) —
+the verdict of the Unicode comparison, since code points compare equal
+exactly when their canonical UTF-8 does — and keeps the per-field Unicode
+comparison for a key that does not fit. `json_skip_space` is total (an
+offset at or past the end is returned unchanged) and `json_scan_integer`
+leaves its offset check to the slow reader, so neither asserts on the hot
+path; `json_space` decides the common case with one comparison.
+
+The C backend forces the scanner, its word arithmetic, whitespace
+skipping, the value boundary test and the decoded-key comparison inline
+wherever they are compiled in (`codegen/codegen.go`, `codecHotHelpers`):
+they are exported and some contain loops, so the leaf-helper shape rule
+would not pick them, and a call inside every derived reader's loop costs
+more than their bodies.
+
+On the local harness (`benchmarks/json/run.py`, Apple arm64, taken while
+other work loaded the machine, interleaved A/B with the simdjson control
+in every run) the derived decoder went from 1.17 times simdjson's time to
+1.03; recorded runs are in `benchmarks/json/RESULTS.md`. The remaining gap
+to the hand-written decoder is structural — about twenty-nine whitespace
+skips per document against fourteen, and the bookkeeping of a generic
+field loop — and is the next target; the per-line execution counts of the
+emitted reader (`llvm-cov` over the harness) are the lead.
+
