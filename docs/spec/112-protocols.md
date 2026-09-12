@@ -277,8 +277,29 @@ prints the report as data.
 
 What the reader does not understand it reports as **unsupported** by line
 — a disjunct without the state conjuncts, a quantifier outside a guard, a
-definition it cannot place — and never judges: for such modules TLC
-refinement against the projection remains the check. Helper operators
+definition it cannot place — and never judges: for such modules **TLC
+refinement is the check, and the tool runs it**. When the report has an
+unsupported form (or on `-tlc`, for any module), the projection is written
+as a module of its own, `<Name>Projection`, and a refinement module
+`<Module>Refinement` extends the hand-written module, instantiates the
+projection under the state mapping — `INSTANCE <Name>Projection WITH state
+<- state, count <- n` (`-map state=st,...` renames; unmapped variables
+keep their names and must be declared by the module) — and states
+`RefinementSpec == Projection!Spec`; its configuration is `SPECIFICATION
+Spec`, `PROPERTY RefinementSpec`, the module's own constant values from
+`-against-cfg module.cfg`, and the projection's payload domains at their
+defaults unless the module declares the same constant. TLC then decides
+whether **every behavior of the hand-written module is a behavior of the
+projection**: "No error has been found" is agreement (exit 0); a violated
+action property is a behavior the projection does not admit, reported with
+TLC's counterexample (exit 1); and without a Java runtime and
+`tla2tools.jar` (`OAK_JAVA`, `OAK_TLA2TOOLS_JAR`, or
+`~/.cache/tla2tools/tla2tools.jar`) the four files wait in the directory
+the report names (`-out dir` to choose it), exit 2. A set-and-function
+module — `Parked == {k \in 0..1 : parked[k]}`, `Halt == ... Parked = 0..1
+...` — is thereby checked against the same projection the normal form
+reads, and a module that halts one parked slot early is caught at the
+`Halt` step (`compiler/protocol_refine_test.go`). Helper operators
 inlined in the hand-written module compare as their expanded guard text
 only when the projection spells the same text; a module that names a
 quorum predicate of its own is therefore reported as a guard difference,
