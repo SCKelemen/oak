@@ -242,6 +242,26 @@ When the compiler proves an index/range safe, a backend may eliminate the corres
 
 When safety is not proved, safe Oak must retain a defined check/failure path rather than compile to out-of-bounds undefined behavior.
 
+A record element read through a span or view (`s[i].field`) selects the
+element in place behind the checked index; the C backend never returns a
+record element by value from a helper, so a large state record behind a
+span is read at the cost of the field, not the record
+(`50-borrowing.md` §8e).
+
+## 8a. Constant globals
+
+A top-level scalar binding (a fixed-width integer, float, or `Bool`) with a
+constant initializer that no statement assigns, index-assigns, borrows
+(`span(&g)`, `view(&g)`), or addresses anywhere in the program is emitted
+as a C constant, `static const u64 page_size = 16384;`, never as a mutable
+static: the C compiler then folds it, so `pa / page_size` is a shift and
+`pa % page_size` a mask, where a mutable static would be a hardware
+division (the OS pilot's R2). A global some statement writes stays a
+mutable `static`; owned arrays and records keep their storage. Shifts in a
+global initializer are the plain operator at the checked width, so
+`(u32(0xFFFF) << 16) | u32(0xFFFF)` is a C integer constant expression
+(R5); the checker has already bounded the shift count.
+
 ## 9. Function values/closures
 
 A plain function value may lower to a function pointer.

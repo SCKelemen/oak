@@ -9,7 +9,9 @@ package codegen
 
 import (
 	"fmt"
+	"github.com/SCKelemen/oak/token"
 	"math"
+	"reflect"
 	"strconv"
 
 	"github.com/SCKelemen/oak/ast"
@@ -22,6 +24,7 @@ import (
 // Atomic cells are emitted by emitAtomicGlobals and skipped here.
 func (cg *CodeGenerator) emitGlobals(program *ast.Program, tc *typechecker.TypeChecker) {
 	cg.globalTypes = make(map[string]localContainer)
+	cg.mutatedGlobals = mutatedGlobals(program)
 	cg.foldEnv = object.NewEnvironment()
 	cg.foldEnv.SetArithmeticWidths(tc.ArithmeticType)
 	cg.constantGlobals = make(map[string]bool)
@@ -68,7 +71,15 @@ func (cg *CodeGenerator) emitGlobal(decl *ast.VariableDeclaration, tc *typecheck
 			}
 		}
 		if declarator == "" {
-			declarator = fmt.Sprintf("static %s %s", cg.parseTypeExpression(decl.Type), name)
+			storage := "static"
+			if cg.isConstantGlobal(decl) {
+				// A global no statement writes, borrows, or addresses is a
+				// C constant (docs/spec/90-backend.md section 8a): the C
+				// compiler folds it — `x / page_size` becomes a shift where
+				// a mutable static would divide (the OS pilot's R2).
+				storage = "static const"
+			}
+			declarator = fmt.Sprintf("%s %s %s", storage, cg.parseTypeExpression(decl.Type), name)
 		}
 	} else {
 		// Inferred globals need an annotation for static storage.
@@ -296,4 +307,94 @@ func cFloatConstant(name string, value float64) string {
 		return fmt.Sprintf("((%s)-__builtin_inf%s())", name, suffix)
 	}
 	return fmt.Sprintf("((%s)%s%s)", name, strconv.FormatFloat(value, 'x', -1, bits), suffix)
+}
+
+// isConstantGlobal reports whether a typed scalar global with a constant
+// initializer is never written, borrowed, or addressed anywhere in the
+// program, so it may be emitted as a C constant.
+func (cg *CodeGenerator) isConstantGlobal(decl *ast.VariableDeclaration) bool {
+	if decl == nil || decl.Name == nil || decl.Value == nil || decl.Type == nil || cg.mutatedGlobals[decl.Name.Value] {
+		return false
+	}
+	typeName, isIdent := decl.Type.(*ast.Identifier)
+	if !isIdent || !scalarGlobalTypes[typeName.Value] {
+		return false
+	}
+	if _, isTargetConstant := cg.targetConstants[decl.Name.Value]; isTargetConstant {
+		return false
+	}
+	return typechecker.IsConstantInitializerIn(decl.Value, cg.constantGlobals)
+}
+
+// scalarGlobalTypes are the global types emitted as C constants when never
+// written: the fixed-width integers, floats, and Bool.
+var scalarGlobalTypes = map[string]bool{
+	"u8": true, "u16": true, "u32": true, "u64": true, "i8": true, "i16": true, "i32": true, "i64": true,
+	"f32": true, "f64": true, "Bool": true, "byte": true,
+}
+
+// mutatedGlobals names every top-level binding some statement assigns,
+// index-assigns, or takes the address of (`&g`, the operand of span, view,
+// and address_of): the globals that must stay mutable statics.
+func mutatedGlobals(program *ast.Program) map[string]bool {
+	mutated := map[string]bool{}
+	var walk func(v reflect.Value)
+	walk = func(v reflect.Value) {
+		switch v.Kind() {
+		case reflect.Interface, reflect.Pointer:
+			if v.IsNil() {
+				return
+			}
+			switch node := v.Interface().(type) {
+			case *ast.AssignmentStatement:
+				if node.Name != nil {
+					mutated[node.Name.Value] = true
+				}
+			case *ast.IndexAssignmentStatement:
+				if root, ok := pathRootIdentifier(node.Target); ok {
+					mutated[root] = true
+				}
+			case *ast.PrefixExpression:
+				if node.Operator == "&" {
+					if root, ok := pathRootIdentifier(node.Right); ok {
+						mutated[root] = true
+					}
+				}
+			}
+			walk(v.Elem())
+		case reflect.Struct:
+			if v.Type() == reflect.TypeOf(token.Token{}) {
+				return
+			}
+			for i := 0; i < v.NumField(); i++ {
+				if v.Type().Field(i).IsExported() {
+					walk(v.Field(i))
+				}
+			}
+		case reflect.Slice, reflect.Array:
+			for i := 0; i < v.Len(); i++ {
+				walk(v.Index(i))
+			}
+		case reflect.Map:
+			for _, key := range v.MapKeys() {
+				walk(v.MapIndex(key))
+			}
+		}
+	}
+	walk(reflect.ValueOf(program))
+	return mutated
+}
+
+// pathRootIdentifier names the binding a field or element path starts at.
+func pathRootIdentifier(expr ast.Expression) (string, bool) {
+	for {
+		switch e := expr.(type) {
+		case *ast.Identifier:
+			return e.Value, true
+		case *ast.IndexExpression:
+			expr = e.Left
+		default:
+			return "", false
+		}
+	}
 }
