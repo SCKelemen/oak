@@ -203,6 +203,32 @@ func encodeRV64Instruction(instr Instruction, pc int64, labels map[string]int64)
 		}
 		fields["rs2"], fields["rs1"] = regNum(0), int64(rv64Number(mem.Base))
 		fields["imm12hi"], fields["imm12lo"] = mem.Offset>>5&0x7f, mem.Offset&0x1f
+	case rv64VectorShapes[instr.Mnemonic] != "":
+		// Unmasked (vm = 1), one field (nf = 0); vtype from the explicit
+		// options; registers by position and file — a vector register in
+		// the first position is vd, then vs2, then vs1; an integer register
+		// is rd or rs1 (RVV 1.0 §5).
+		fields["vm"], fields["nf"] = 1, 0
+		switch {
+		case instr.Mnemonic == "vsetvli":
+			fields["rd"], fields["rs1"], fields["zimm11"] = regNum(0), regNum(1), rv64VType(ops[2:])
+		case instr.Mnemonic == "vsetivli":
+			fields["rd"], fields["zimm5"], fields["zimm10"] = regNum(0), ops[1].(Immediate).Value, rv64VType(ops[2:])
+		case rv64VectorLoads[instr.Mnemonic] != 0:
+			fields["vd"], fields["rs1"] = regNum(0), int64(rv64Number(ops[1].(Memory).Base))
+		case rv64VectorStores[instr.Mnemonic] != 0:
+			fields["vs3"], fields["rs1"] = regNum(0), int64(rv64Number(ops[1].(Memory).Base))
+		default:
+			names := [][2]string{{"vd", "rd"}, {"vs2", "rs1"}, {"vs1", "rs1"}}
+			for i := 0; i < len(ops) && i < 3; i++ {
+				r := ops[i].(Register)
+				if r.Class == ClassRV64V {
+					fields[names[i][0]] = int64(r.Num)
+				} else {
+					fields[names[i][1]] = int64(rv64Number(r))
+				}
+			}
+		}
 	case len(ops) == 3:
 		fields["rd"], fields["rs1"] = regNum(0), regNum(1)
 		switch third := ops[2].(type) {

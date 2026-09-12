@@ -52,6 +52,10 @@ type Function struct {
 	// register file (the F and D extensions): its contract is LP64D, so
 	// the target must link against an lp64d toolchain (set by the checker).
 	FloatFile bool
+	// VectorFile marks an rv64 unit that uses the vector extension (vsetvli
+	// and the vector registers): the target's processor must have V, and
+	// inline realizations name it (`.option arch, +v`); set by the checker.
+	VectorFile bool
 	// Fallback marks that the Oak declaration also carries an Oak body: the
 	// backend emits it for non-AArch64 targets (and under
 	// OAK_PORTABLE_INTRINSICS), so the asm and the Oak body are two
@@ -356,6 +360,7 @@ const (
 	ClassZT                    // arm64.ZT — the ZT0 lookup table register
 	ClassRV64X                 // rv64.X — a RISC-V 64-bit general register x0–x31 (x2 parses as ClassSP)
 	ClassRV64F                 // rv64.F — a RISC-V floating-point register f0–f31 (the F and D extensions)
+	ClassRV64V                 // rv64.V — a RISC-V vector register v0–v31 (the V extension)
 )
 
 func (c RegClass) String() string {
@@ -382,6 +387,8 @@ func (c RegClass) String() string {
 		return "rv64.X"
 	case ClassRV64F:
 		return "rv64.F"
+	case ClassRV64V:
+		return "rv64.V"
 	}
 	return "?"
 }

@@ -97,7 +97,9 @@ func TestRV64ParseLane(t *testing.T) {
 		t.Fatalf("call parsed as %+v", call)
 	}
 	// Rejections at parse time.
-	for _, bad := range []string{"  vadd.vv v0, v1, v2", "  add a0, a0", "  ld a0, [sp]", "  addi a0, a0, a1", "  x32 a0"} {
+	// (vector spellings outside the landed subset, an offset on a vector
+	// memory operand, and a vtype spelled short all fail at parse.)
+	for _, bad := range []string{"  vfadd.vv v0, v1, v2", "  vle32.v v1, 4(a0)", "  vsetvli t0, a1, e32, m1", "  add a0, a0", "  ld a0, [sp]", "  addi a0, a0, a1", "  x32 a0"} {
 		if _, errs := rv64Unit(t, rv64AddDecl, "  bind a0 = left\n  bind a1 = right\n"+bad+"\n  ret"); len(errs) == 0 {
 			t.Errorf("%q parsed", strings.TrimSpace(bad))
 		}
