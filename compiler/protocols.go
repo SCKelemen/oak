@@ -499,13 +499,27 @@ func analyzeProtocolWith(decl *ast.ProtocolDeclaration, records map[string]*ast.
 		addState(t.From)
 		addState(t.To)
 		if t.Param != nil {
+			// A payload is one command scalar, or a declared record whose
+			// fields are command scalars (docs/spec/112-protocols.md
+			// section 1): the shape typed test commands carry, quantified
+			// as a record set in the model-checker module.
 			typeName, isIdent := t.Param.Type.(*ast.Identifier)
 			if !isIdent {
-				report(CodeProtocolShape, t.Param.Name, "transition %s: a payload is one of u8, u16, u32, Bool", t.Name.Value)
+				report(CodeProtocolShape, t.Param.Name, "transition %s: a payload is one of u8, u16, u32, Bool, or a record of those", t.Name.Value)
 				ok = false
 			} else if _, scalar := commandScalars[typeName.Value]; !scalar {
-				report(CodeProtocolShape, t.Param.Type, "transition %s: payload type %s is not one of u8, u16, u32, Bool", t.Name.Value, typeName.Value)
-				ok = false
+				if record, isRecord := m.records[typeName.Value]; isRecord {
+					for _, field := range record.FieldOrder {
+						fieldType, fieldIsIdent := field.Value.(*ast.Identifier)
+						if _, fieldScalar := commandScalars[fieldTypeName(fieldType, fieldIsIdent)]; !fieldScalar {
+							report(CodeProtocolShape, t.Param.Type, "transition %s: payload record %s: field %s is %s; a record payload's fields are u8, u16, u32, Bool", t.Name.Value, typeName.Value, field.Name, field.Value.String())
+							ok = false
+						}
+					}
+				} else {
+					report(CodeProtocolShape, t.Param.Type, "transition %s: payload type %s is not one of u8, u16, u32, Bool, or a declared record of those", t.Name.Value, typeName.Value)
+					ok = false
+				}
 			}
 		}
 		if t.Callable != nil && len(decl.Resources) == 0 {
@@ -556,6 +570,14 @@ func analyzeProtocolWith(decl *ast.ProtocolDeclaration, records map[string]*ast.
 		}
 	}
 	return m, ok
+}
+
+// fieldTypeName is the spelling of a field's type when it is a plain name.
+func fieldTypeName(ident *ast.Identifier, isIdent bool) string {
+	if !isIdent || ident == nil {
+		return ""
+	}
+	return ident.Value
 }
 
 func sameOptionalParam(a, b *ast.FunctionParameter) bool {

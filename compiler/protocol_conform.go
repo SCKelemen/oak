@@ -65,6 +65,7 @@ type tlaNormalForm struct {
 	Actions   map[string]*tlaAction
 	Next      []string // canonical disjuncts, sorted
 	TypeOK    []string // canonical terms, sorted
+	Domains   []string // canonical `Name == [f: D, ...]` record-set definitions (record payload domains), sorted
 }
 
 // ProtocolConformance renders the projection of decl and compares it with
@@ -154,6 +155,14 @@ func parseTLAModule(text string) (*tlaNormalForm, []string) {
 		case "Next":
 			form.Next = canonicalTerms(splitTopLevel(body, "\\/"))
 		default:
+			trimmedBody := strings.TrimSpace(body)
+			if len(d.params) == 0 && strings.HasPrefix(trimmedBody, "[") && strings.HasSuffix(trimmedBody, "]") && strings.Contains(trimmedBody, ":") && !strings.Contains(trimmedBody, "'") {
+				// A record payload's domain, `Cmd == [slot: CmdSlot, ...]`
+				// (112-protocols.md section 4): a definition, not an action.
+				form.Domains = append(form.Domains, d.name+" == "+canonical(trimmedBody))
+				sort.Strings(form.Domains)
+				continue
+			}
 			action := &tlaAction{Params: d.params}
 			for _, disjunct := range splitTopLevel(body, "\\/") {
 				line, problem := parseTLALine(disjunct)
@@ -454,6 +463,7 @@ func compareTLA(left, right *tlaNormalForm) []TLADifference {
 	diffs = append(diffs, compareTermSets("init", left.Init, right.Init)...)
 	diffs = append(diffs, compareTermSets("typeok", left.TypeOK, right.TypeOK)...)
 	diffs = append(diffs, compareTermSets("next", left.Next, right.Next)...)
+	diffs = append(diffs, compareTermSets("domain", left.Domains, right.Domains)...)
 	for _, name := range sortedNames(left.Actions) {
 		other, present := right.Actions[name]
 		if !present {

@@ -72,8 +72,16 @@ sequence of entries separated by newlines or commas:
   (`OAK-M0301`): a form over a field `data` does not declare, over a
   non-array field, a one-argument form over non-`Bool` elements, a
   two-argument form whose element is not a declared record or whose named
-  field is not `Bool`. Multi-field payloads per step remain one scalar
-  (the typed-command derive admits one); a record payload is a follow-up. An index is checked at
+  field is not `Bool`. A **record payload** carries several fields per
+  step: `write(cmd: Cmd)` with `Cmd: type = struct { slot: u8, value: u8 }`
+  a declared record whose fields are command scalars, read as `cmd.slot`
+  in guards and effects; the model-checker module quantifies it over the
+  record set `Cmd == [slot: CmdSlot, value: CmdValue]`, one constant per
+  field for the configuration to assign (`CmdSlot = {0, 1, 2, 3}`), and
+  reads the fields as `cmd.slot`; the typed-command derive generates and encodes it
+  field by field, and `oak prove` enumerates it with the step when its
+  fields are 8- or 16-bit. A field outside the command scalars is a shape
+  error naming it. An index is checked at
   run time like any Oak index, so a guard that indexes by the payload
   bounds it first (`u32(who) < u32(2) && data.parked[u32(who)]`); the
   model-checker module gets the same conjunct and a payload domain that
@@ -102,14 +110,15 @@ first appearance with the initial state first; they are spelled like variants
 (initial capital), because they become variants. Transition names are spelled
 like functions; several lines may share a name (one step from several
 states), and all lines of one name carry the same payload or none. A payload
-is one fixed-width scalar or `Bool` — the shape typed test commands carry —
-named so the model-checker module can quantify over it. Several lines may
+is one fixed-width scalar or `Bool`, or a declared record of those — the
+shapes typed test commands carry — named so the model-checker module can
+quantify over it. Several lines may
 share both name and source state when every such line carries a guard: in
 Oak the first line whose guard holds is taken, in declaration order; the
 model checker explores every line whose guard holds.
 
 Shape errors (`OAK-M0301`): no `initial`, no transitions, a lowercase state,
-a payload that is not a scalar, a payload that changes between lines of one
+a payload that is not a scalar or a record of scalars, a payload that changes between lines of one
 step, a `(name, from)` pair declared twice without guards, `data` without
 `init` or `init` without `data`, an `init` that misses or invents a field, a
 guard or effect that names `data` when none is declared, a data field named `state`, `step` or `data` (the projection's own names), a `via` without a
