@@ -8,7 +8,13 @@ import Oak.Stdlib.HashExtracted
 `stdlib/hash.oak`. The laws here are the ones a storage engine relies on when
 it checksums a record in pieces: continuing a CRC-32C across two pieces gives
 the checksum of their concatenation, for every pair of byte strings below the
-size limit. The proof follows the extraction's byte loop.
+size limit.
+
+`crc32c_update` folds whole 56-byte chunks seven little-endian words at a
+time (`crc32c_chunk`, `crc32c_step7`, `crc32c_word`; on AArch64 the same seven
+words go through `crc32cx`) and the tail byte by byte through the table. The
+proof shows that the word path is the byte fold over the chunk's bytes, so the
+whole update is one fold over the input, whichever path each byte took.
 -/
 
 namespace Oak.Stdlib.Hash
@@ -63,17 +69,209 @@ theorem toUInt32_toNat_of_lt (n : Nat) (h : n < 2 ^ 32) : (n.toUInt32).toNat = n
   show (UInt32.ofNat n).toNat = n
   rw [UInt32.toNat_ofNat']; exact Nat.mod_eq_of_lt h
 
-/-! ## The byte loop -/
+/-- A window of `src` reads the bytes it covers. -/
+theorem window_getD (src : Array UInt8) (i n k : Nat) (hk : k < n) (hi : i + n ≤ src.size) :
+    (src.extract i (i + n)).getD k 0 = src.getD (i + k) 0 := by
+  rw [Array.getD_eq_getD_getElem?, Array.getD_eq_getD_getElem?, Array.getElem?_extract]
+  rw [if_pos (by omega)]
 
-theorem crc_loop (src : Array UInt8) (hsrc : src.size < 2 ^ 32) (fuel : Nat) :
-    ∀ (state : UInt32) (i : UInt32), i.toNat ≤ src.size → src.size - i.toNat < fuel →
-      crc32c_update.loop1 src state i fuel = some (crcRange src state i.toNat (src.size - i.toNat), src.size.toUInt32) := by
+/-! ## Little-endian words -/
+
+/-- The little-endian word `crc32c_word_at` assembles from eight bytes. -/
+def le64 (b0 b1 b2 b3 b4 b5 b6 b7 : UInt8) : UInt64 :=
+  (((((((b0.toUInt64 ||| (b1.toUInt64 <<< (8 : UInt64))) ||| (b2.toUInt64 <<< (16 : UInt64))) |||
+    (b3.toUInt64 <<< (24 : UInt64))) ||| (b4.toUInt64 <<< (32 : UInt64))) ||| (b5.toUInt64 <<< (40 : UInt64))) |||
+    (b6.toUInt64 <<< (48 : UInt64))) ||| (b7.toUInt64 <<< (56 : UInt64)))
+
+/-- The byte the word loop takes at step `k`, low byte first. -/
+def wordByte (word : UInt64) (k : UInt32) : UInt8 := (word >>> ((8 : UInt64) * k.toUInt64)).toUInt8
+
+theorem le64_byte0 (b0 b1 b2 b3 b4 b5 b6 b7 : UInt8) : wordByte (le64 b0 b1 b2 b3 b4 b5 b6 b7) 0 = b0 := by
+  unfold wordByte le64; bv_decide
+theorem le64_byte1 (b0 b1 b2 b3 b4 b5 b6 b7 : UInt8) : wordByte (le64 b0 b1 b2 b3 b4 b5 b6 b7) 1 = b1 := by
+  unfold wordByte le64; bv_decide
+theorem le64_byte2 (b0 b1 b2 b3 b4 b5 b6 b7 : UInt8) : wordByte (le64 b0 b1 b2 b3 b4 b5 b6 b7) 2 = b2 := by
+  unfold wordByte le64; bv_decide
+theorem le64_byte3 (b0 b1 b2 b3 b4 b5 b6 b7 : UInt8) : wordByte (le64 b0 b1 b2 b3 b4 b5 b6 b7) 3 = b3 := by
+  unfold wordByte le64; bv_decide
+theorem le64_byte4 (b0 b1 b2 b3 b4 b5 b6 b7 : UInt8) : wordByte (le64 b0 b1 b2 b3 b4 b5 b6 b7) 4 = b4 := by
+  unfold wordByte le64; bv_decide
+theorem le64_byte5 (b0 b1 b2 b3 b4 b5 b6 b7 : UInt8) : wordByte (le64 b0 b1 b2 b3 b4 b5 b6 b7) 5 = b5 := by
+  unfold wordByte le64; bv_decide
+theorem le64_byte6 (b0 b1 b2 b3 b4 b5 b6 b7 : UInt8) : wordByte (le64 b0 b1 b2 b3 b4 b5 b6 b7) 6 = b6 := by
+  unfold wordByte le64; bv_decide
+theorem le64_byte7 (b0 b1 b2 b3 b4 b5 b6 b7 : UInt8) : wordByte (le64 b0 b1 b2 b3 b4 b5 b6 b7) 7 = b7 := by
+  unfold wordByte le64; bv_decide
+
+/-- The table step over a word's bytes from byte `k`, `n` of them. -/
+def wordFold (word : UInt64) (state : UInt32) (k : UInt32) : Nat → UInt32
+  | 0 => state
+  | n + 1 => wordFold word (crcStep state (wordByte word k)) (k + 1) n
+
+/-- The word loop is the fold over the remaining bytes of the word. -/
+theorem word_loop (word : UInt64) : ∀ (fuel : Nat) (next : UInt32) (i : UInt32), i.toNat ≤ 8 → 8 - i.toNat < fuel →
+    crc32c_word.loop1 word next i fuel = some (wordFold word next i (8 - i.toNat), 8) := by
+  intro fuel
+  induction fuel with
+  | zero => intro next i _ hf; omega
+  | succ fuel ih =>
+    intro next i hi hf
+    unfold crc32c_word.loop1
+    by_cases hlt : i.toNat < 8
+    · have hd : decide (i < (8 : UInt32)) = true := by
+        rw [decide_eq_true_iff, UInt32.lt_iff_toNat_lt]; simpa using hlt
+      simp only [hd, ↓reduceIte]
+      have hi1 : (i + 1).toNat = i.toNat + 1 := by
+        rw [UInt32.toNat_add, show (1 : UInt32).toNat = 1 by decide]; exact Nat.mod_eq_of_lt (by omega)
+      rw [ih _ (i + 1) (by omega) (by omega), hi1]
+      rw [show 8 - i.toNat = (8 - (i.toNat + 1)) + 1 by omega]
+      rfl
+    · have hd : decide (i < (8 : UInt32)) = false := by
+        rw [decide_eq_false_iff_not, UInt32.lt_iff_toNat_lt]; simpa using hlt
+      simp only [hd, Bool.false_eq_true, ↓reduceIte, Option.pure_def]
+      have h8 : 8 - i.toNat = 0 := by omega
+      rw [h8]
+      have hi' : i = 8 := by apply UInt32.toNat.inj; simp; omega
+      rw [hi']
+      rfl
+
+/-- `crc32c_word` folds the eight bytes of its word, low byte first. -/
+theorem crc32c_word_spec (state : UInt32) (word : UInt64) (fuel : Nat) (hf : 8 < fuel) :
+    crc32c_word state word fuel = some (wordFold word state 0 8) := by
+  unfold crc32c_word
+  dsimp only
+  rw [word_loop word fuel state 0 (by simp) (by simpa using hf)]
+  rfl
+
+/-- The eight steps of a word, spelled out. -/
+theorem wordFold_le64 (b0 b1 b2 b3 b4 b5 b6 b7 : UInt8) (state : UInt32) :
+    wordFold (le64 b0 b1 b2 b3 b4 b5 b6 b7) state 0 8 =
+      crcStep (crcStep (crcStep (crcStep (crcStep (crcStep (crcStep (crcStep state b0) b1) b2) b3) b4) b5) b6) b7 := by
+  simp [wordFold, le64_byte0, le64_byte1, le64_byte2, le64_byte3, le64_byte4, le64_byte5, le64_byte6, le64_byte7]
+
+/-- `crc32c_word_at` reads the little-endian word at `at_` of a 56-byte chunk. -/
+theorem word_at_spec (chunk : Array UInt8) (at_ : UInt32) (fuel : Nat) (hsz : chunk.size = 56)
+    (hat : at_.toNat + 8 ≤ 56) :
+    crc32c_word_at chunk at_ fuel = some (le64 (chunk.getD at_.toNat 0) (chunk.getD (at_.toNat + 1) 0)
+      (chunk.getD (at_.toNat + 2) 0) (chunk.getD (at_.toNat + 3) 0) (chunk.getD (at_.toNat + 4) 0)
+      (chunk.getD (at_.toNat + 5) 0) (chunk.getD (at_.toNat + 6) 0) (chunk.getD (at_.toNat + 7) 0)) := by
+  unfold crc32c_word_at
+  have hk : ∀ c : UInt32, c.toNat ≤ 8 → (at_ + c).toNat = at_.toNat + c.toNat := by
+    intro c hc; rw [UInt32.toNat_add]; exact Nat.mod_eq_of_lt (by omega)
+  have hd : decide (chunk.size.toUInt32 ≥ at_ + (8 : UInt32)) = true := by
+    apply decide_eq_true
+    show at_ + (8 : UInt32) ≤ chunk.size.toUInt32
+    rw [UInt32.le_iff_toNat_le, hsz, hk 8 (by decide)]
+    simpa using hat
+  simp only [hd, ↓reduceIte, Option.pure_def]
+  rw [hk 1 (by decide), hk 2 (by decide), hk 3 (by decide), hk 4 (by decide), hk 5 (by decide), hk 6 (by decide),
+    hk 7 (by decide)]
+  rfl
+
+/-- A whole chunk through the word path is the byte fold over its 56 bytes. -/
+theorem chunk_spec (state : UInt32) (chunk : Array UInt8) (fuel : Nat) (hsz : chunk.size = 56) (hf : 8 < fuel) :
+    crc32c_chunk state chunk fuel = some (crcRange chunk state 0 56) := by
+  unfold crc32c_chunk
+  have hd : decide (chunk.size.toUInt32 ≥ (56 : UInt32)) = true := by rw [hsz]; decide
+  simp only [hd, ↓reduceIte]
+  rw [word_at_spec chunk 0 fuel hsz (by decide), word_at_spec chunk 8 fuel hsz (by decide),
+    word_at_spec chunk 16 fuel hsz (by decide), word_at_spec chunk 24 fuel hsz (by decide),
+    word_at_spec chunk 32 fuel hsz (by decide), word_at_spec chunk 40 fuel hsz (by decide),
+    word_at_spec chunk 48 fuel hsz (by decide)]
+  simp only [bind, Option.bind]
+  unfold crc32c_step7
+  rw [crc32c_word_spec _ _ fuel hf]
+  simp only [Option.bind_eq_bind, Option.bind_some]
+  rw [crc32c_word_spec _ _ fuel hf]
+  simp only [Option.bind_some]
+  rw [crc32c_word_spec _ _ fuel hf]
+  simp only [Option.bind_some]
+  rw [crc32c_word_spec _ _ fuel hf]
+  simp only [Option.bind_some]
+  rw [crc32c_word_spec _ _ fuel hf]
+  simp only [Option.bind_some]
+  rw [crc32c_word_spec _ _ fuel hf]
+  simp only [Option.bind_some]
+  rw [crc32c_word_spec _ _ fuel hf]
+  simp only [Option.some.injEq]
+  rw [show (0 : UInt32).toNat = 0 by decide, show (8 : UInt32).toNat = 8 by decide,
+    show (16 : UInt32).toNat = 16 by decide, show (24 : UInt32).toNat = 24 by decide,
+    show (32 : UInt32).toNat = 32 by decide, show (40 : UInt32).toNat = 40 by decide,
+    show (48 : UInt32).toNat = 48 by decide]
+  simp [wordFold_le64, crcRange_succ, crcRange_zero]
+
+/-! ## The chunk loop and the byte loop -/
+
+/-- The chunk loop folds whole 56-byte chunks and stops where the tail begins. -/
+theorem crc_loop1 (src : Array UInt8) (hsrc : src.size < 2 ^ 32) :
+    ∀ (fuel : Nat) (state : UInt32) (i : UInt32), i.toNat ≤ src.size → src.size - i.toNat < fuel →
+      ∃ i' : UInt32, i.toNat ≤ i'.toNat ∧ i'.toNat ≤ src.size ∧
+        crc32c_update.loop1 src state i fuel = some (crcRange src state i.toNat (i'.toNat - i.toNat), i') := by
+  intro fuel
   induction fuel with
   | zero => intro state i _ hf; omega
   | succ fuel ih =>
     intro state i hi hf
     have hsz : (src.size.toUInt32).toNat = src.size := toUInt32_toNat_of_lt _ hsrc
     unfold crc32c_update.loop1
+    by_cases hcond : 56 ≤ src.size ∧ i.toNat + 56 ≤ src.size
+    · obtain ⟨h56, hi56⟩ := hcond
+      have hc : (decide (src.size.toUInt32 ≥ (56 : UInt32)) && decide (i ≤ src.size.toUInt32 - (56 : UInt32))) = true := by
+        have h2 : decide (src.size.toUInt32 ≥ (56 : UInt32)) = true := by
+          apply decide_eq_true; show (56 : UInt32) ≤ _
+          rw [UInt32.le_iff_toNat_le, hsz]; simpa using h56
+        have h3 : decide (i ≤ src.size.toUInt32 - (56 : UInt32)) = true := by
+          apply decide_eq_true
+          rw [UInt32.le_iff_toNat_le, UInt32.toNat_sub_of_le, hsz]
+          · simp; omega
+          · rw [UInt32.le_iff_toNat_le, hsz]; simpa using h56
+        rw [h2, h3]; rfl
+      simp only [hc, ↓reduceIte]
+      have hext : (src.extract i.toNat (i.toNat + (56 : UInt32).toNat)).size = 56 := by
+        rw [Array.size_extract]; simp; omega
+      rw [chunk_spec _ _ fuel hext (by omega)]
+      simp only [bind, Option.bind]
+      have hi56' : (i + 56).toNat = i.toNat + 56 := by
+        rw [UInt32.toNat_add, show (56 : UInt32).toNat = 56 by decide]; exact Nat.mod_eq_of_lt (by omega)
+      obtain ⟨i', hle, hle', hloop⟩ := ih _ (i + 56) (by omega) (by omega)
+      refine ⟨i', by omega, hle', ?_⟩
+      rw [hloop, hi56']
+      have hwin : crcRange (src.extract i.toNat (i.toNat + (56 : UInt32).toNat)) state 0 56 =
+          crcRange src state i.toNat 56 := by
+        apply crcRange_congr
+        intro k hk
+        rw [Nat.zero_add, show (56 : UInt32).toNat = 56 by decide, window_getD src i.toNat 56 k hk hi56]
+      rw [hwin, crcRange_add, show 56 + (i'.toNat - (i.toNat + 56)) = i'.toNat - i.toNat by omega]
+    · have hc : (decide (src.size.toUInt32 ≥ (56 : UInt32)) && decide (i ≤ src.size.toUInt32 - (56 : UInt32))) = false := by
+        by_cases h56 : 56 ≤ src.size
+        · have h2 : decide (src.size.toUInt32 ≥ (56 : UInt32)) = true := by
+            apply decide_eq_true; show (56 : UInt32) ≤ _
+            rw [UInt32.le_iff_toNat_le, hsz]; simpa using h56
+          have h3 : decide (i ≤ src.size.toUInt32 - (56 : UInt32)) = false := by
+            apply decide_eq_false; intro h
+            apply hcond; refine ⟨h56, ?_⟩
+            rw [UInt32.le_iff_toNat_le, UInt32.toNat_sub_of_le, hsz] at h
+            · simp at h; omega
+            · rw [UInt32.le_iff_toNat_le, hsz]; simpa using h56
+          rw [h2, h3]; rfl
+        · have h2 : decide (src.size.toUInt32 ≥ (56 : UInt32)) = false := by
+            apply decide_eq_false; show ¬ (56 : UInt32) ≤ _
+            rw [UInt32.le_iff_toNat_le, hsz]; simpa using h56
+          rw [h2]; rfl
+      simp only [hc, Bool.false_eq_true, ↓reduceIte, Option.pure_def]
+      refine ⟨i, Nat.le_refl _, hi, ?_⟩
+      rw [Nat.sub_self, crcRange_zero]
+
+/-- The byte loop folds the tail. -/
+theorem crc_loop2 (src : Array UInt8) (hsrc : src.size < 2 ^ 32) (fuel : Nat) :
+    ∀ (state : UInt32) (i : UInt32), i.toNat ≤ src.size → src.size - i.toNat < fuel →
+      crc32c_update.loop2 src state i fuel = some (crcRange src state i.toNat (src.size - i.toNat), src.size.toUInt32) := by
+  induction fuel with
+  | zero => intro state i _ hf; omega
+  | succ fuel ih =>
+    intro state i hi hf
+    have hsz : (src.size.toUInt32).toNat = src.size := toUInt32_toNat_of_lt _ hsrc
+    unfold crc32c_update.loop2
     by_cases hlt : i.toNat < src.size
     · have hd : decide (i < src.size.toUInt32) = true := by
         rw [decide_eq_true_iff, UInt32.lt_iff_toNat_lt, hsz]; exact hlt
@@ -97,9 +295,15 @@ theorem crc32c_update_spec (crc : UInt32) (src : Array UInt8) (fuel : Nat) (hsrc
     (hf : src.size < fuel) :
     crc32c_update crc src fuel = some (crcRange src (crc ^^^ 4294967295) 0 src.size ^^^ 4294967295) := by
   unfold crc32c_update
+  dsimp only
+  obtain ⟨i', -, hle', hloop1⟩ := crc_loop1 src hsrc fuel (crc ^^^ 4294967295) 0 (by simp) (by simpa using hf)
+  rw [hloop1]
   simp only [bind, Option.bind]
-  rw [crc_loop src hsrc fuel _ 0 (by simp) (by simpa using hf)]
-  simp
+  rw [crc_loop2 src hsrc fuel _ i' hle' (by omega)]
+  simp only [Option.pure_def, Option.some.injEq, UInt32.toNat_zero, Nat.sub_zero]
+  have := crcRange_add src (crc ^^^ 4294967295) 0 i'.toNat (src.size - i'.toNat)
+  rw [Nat.zero_add, Nat.add_sub_cancel' hle'] at this
+  rw [this]
 
 /-! ## Concatenation -/
 
