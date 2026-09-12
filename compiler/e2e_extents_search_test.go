@@ -38,10 +38,21 @@ probe: (keys: []u64, target: u64): u32 {
   a
 }
 
+fence: (keys: []u64, target: u64): u32 {
+  pages: u32 = len(keys) / u32(4)
+  lo: u32 = 0
+  hi: u32 = pages
+  while lo < hi {
+    mid: u32 = lo + (hi - lo) / u32(2)
+    keys[mid * u32(4)] + keys[mid * u32(4) + u32(3)] <= target ? { lo = mid + u32(1) } | { hi = mid }
+  }
+  lo
+}
+
 main: (): i32 {
   keys: [8]u64 = [8]u64{ 2, 3, 5, 7, 11, 13, 17, 19 }
   v: []u64 = view(&keys)
-  i32_bits_u32(search(v, u64(11)) * u32(10) + probe(v, u64(12)))
+  i32_bits_u32(search(v, u64(11)) * u32(10) + probe(v, u64(12)) + fence(v, u64(30)) * u32(100))
 }
 `
 	output, err := New().WithSource("bsearch.oak", src).EmitC().Get()
@@ -49,12 +60,14 @@ main: (): i32 {
 		t.Fatalf("compilation failed: %v", err)
 	}
 	if got := strings.Count(output, "oak_view_index_u64( "); got != 0 {
-		t.Fatalf("both probes should be proven, found %d checked reads:\n%s", got, output)
+		t.Fatalf("every probe should be proven, found %d checked reads:\n%s", got, output)
 	}
-	// search finds 11 at index 4 (found = 5); probe counts 5 keys <= 12.
+	// search finds 11 at index 4 (found = 5); probe counts 5 keys <= 12;
+	// fence: page 0 sums 2 + 7 = 9 <= 30 and page 1 sums 11 + 19 = 30 <= 30,
+	// so lo ends at 2.
 	code, abnormal := buildAndRun(t, "bsearch", src)
-	if abnormal || code != 55 {
-		t.Fatalf("exit = (%d, abnormal=%v), want 55", code, abnormal)
+	if abnormal || code != 255 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 255", code, abnormal)
 	}
 
 	// A write that does not lower the bound, a midpoint that is not the
@@ -64,6 +77,8 @@ main: (): i32 {
 		{"raise", "f: (keys: []u64): u64 {\n  lo: u32 = 0\n  hi: u32 = len(keys)\n  acc: u64 = 0\n  while lo < hi {\n    mid: u32 = lo + (hi - lo) / u32(2)\n    acc = acc + keys[mid]\n    hi = mid + u32(1)\n    lo = lo + u32(1)\n  }\n  acc\n}\nmain: (): i32 = 0\n"},
 		{"late", "f: (keys: []u64): u64 {\n  lo: u32 = 0\n  hi: u32 = len(keys)\n  acc: u64 = 0\n  while lo < hi {\n    hi = hi + u32(0)\n    mid: u32 = lo + (hi - lo) / u32(2)\n    acc = acc + keys[mid]\n    hi = mid\n  }\n  acc\n}\nmain: (): i32 = 0\n"},
 		{"unrelated", "f: (keys: []u64, n: u32): u64 {\n  lo: u32 = 0\n  hi: u32 = n\n  acc: u64 = 0\n  while lo < hi {\n    mid: u32 = lo + (hi - lo) / u32(2)\n    acc = acc + keys[mid]\n    hi = mid\n  }\n  acc\n}\nmain: (): i32 = 0\n"},
+		{"past the page", "f: (keys: []u64): u64 {\n  pages: u32 = len(keys) / u32(4)\n  lo: u32 = 0\n  hi: u32 = pages\n  acc: u64 = 0\n  while lo < hi {\n    mid: u32 = lo + (hi - lo) / u32(2)\n    acc = acc + keys[mid * u32(4) + u32(4)]\n    hi = mid\n  }\n  acc\n}\nmain: (): i32 = 0\n"},
+		{"other scale", "f: (keys: []u64): u64 {\n  pages: u32 = len(keys) / u32(4)\n  lo: u32 = 0\n  hi: u32 = pages\n  acc: u64 = 0\n  while lo < hi {\n    mid: u32 = lo + (hi - lo) / u32(2)\n    acc = acc + keys[mid * u32(8)]\n    hi = mid\n  }\n  acc\n}\nmain: (): i32 = 0\n"},
 	} {
 		output, err := New().WithSource(bad.name+".oak", bad.src).EmitC().Get()
 		if err != nil {

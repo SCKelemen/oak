@@ -117,16 +117,19 @@ absolute numbers against the earlier table.)
 What the checker proved: every access in `tiled` (`a[i + 7]` under
 `i <= len(a) - 8` by `subtraction_under_length`, the eight constant
 accumulator indices), `bitmap`, and `dispatch` is unchecked; the constant
-shift counts fold their checks away. `page_probe` keeps one checked view
-read: `keys[mid * 512]`, whose `mid` is below `pages = len(keys) / 512`
-— a bound derived by division, which the scaled-index law does not read
-yet. Its second read, `page[m]` under `b` decreasing from 512, and
-`search`'s `keys[mid]` under `hi = mid` are proven by the midpoint and
+shift counts fold their checks away. `page_probe` and `search` are now
+unchecked throughout: `search`'s `keys[mid]` under `hi = mid` and the
+in-page `page[m]` under `b` decreasing from 512 by the midpoint and
 decreasing-bound laws (`50-borrowing.md`, `Oak.Extents.midpoint_under_bound`,
-`decreasing_keeps_upper_bound`): the guard `lo < hi` is kept as a
+`decreasing_keeps_upper_bound`: the guard `lo < hi` is kept as a
 relation, the midpoint inherits `hi`'s upper bound, and the loop's only
-write to `hi` lowers it. Neither cost measurably before; a binary search is
-latency-bound on the comparison chain.
+write to `hi` lowers it), and the fence key `keys[mid * 512]` by the
+quotient bound (`div_bound_scaled`: `mid < pages` with `pages = len(keys)
+/ 512`). Neither check cost measurably before; a binary search is
+latency-bound on the comparison chain. Re-measured after the proofs
+(`m-series-2026-09-12-search.json`, same machine, same day): `search` Oak
+6,785,600 against Rust 7,526,742 and Go 11,228,958 (0.90×); `page_probe`
+Oak 7,408,800 against Rust 8,890,467 and Go 12,257,867 (0.83×).
 
 What the numbers say: `bitmap` is now the population-count instruction
 in all three languages — Oak through `arm64.cnt64` (`docs/spec/92-ffi.md`

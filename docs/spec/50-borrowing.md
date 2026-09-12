@@ -963,6 +963,16 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   `hi = mid`, and the probe of a 512-element page under `b: u32 = 512`. A
   literal initializer `b: u32 = K` bounds `b` above as well as below
   (`b < K + 1`).
+- **Quotient bound**: `pages: u32 = len(v) / K` (`K` a literal) makes
+  `pages` at most `len(v) / K`, so a later `i < pages` proves
+  `v[i * K + j]` for every literal `j < K` (`div_bound_scaled`) and
+  `v[i + j]` likewise (`div_bound_under_length`) — the fence key of page
+  `i` in a keyed view of 512-key pages, `keys[mid * 512]`. A declaration
+  that copies a binding, `hi: u32 = pages`, inherits every live bound of
+  the source (they are equal there; a later write to either kills only
+  its own facts), and the midpoint rule carries quotient bounds like the
+  others, so the fence search `hi = pages; while lo < hi { mid = lo +
+  (hi - lo) / 2; keys[mid * 512] ... hi = mid }` reads without a check.
 - **Masked index**: `v[e & M]` with `M` a literal is proven, for any `e`,
   when the length is known to be at least `M + 1`
   (`masked_under_length`) — the byte table `CRC32C_TABLE[x & 255]`.

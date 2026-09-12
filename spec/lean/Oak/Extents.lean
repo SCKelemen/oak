@@ -164,4 +164,24 @@ theorem decreasing_keeps_upper_bound (m x n : Nat) (hm : m < x) (hx : x ≤ n) :
 
 theorem decreasing_keeps_literal_bound (m x B : Nat) (hm : m < x) (hx : x < B) : m < B := by omega
 
+/-- **Quotient bound, scaled**: under `i < n / K` (the page count of a
+    view of `n` keys, `K` keys per page), `i * K + j < n` for every
+    `j < K` — the fence key of page `i` and every key of the page
+    (`declarationFacts`, `pages = len(v) / K`; `indexUnder`, factDivIndex). -/
+theorem div_bound_scaled (i j n K : Nat) (hi : i < n / K) (hj : j < K) :
+    i * K + j < n := by
+  have hK : 0 < K := by omega
+  have h : (i + 1) * K ≤ n := (Nat.le_div_iff_mul_le hK).mp hi
+  rw [Nat.succ_mul] at h
+  omega
+
+/-- **Quotient bound, plain**: the same premise puts `i + j` below `n`
+    as well, since `i ≤ i * K`. -/
+theorem div_bound_under_length (i j n K : Nat) (hi : i < n / K) (hj : j < K) :
+    i + j < n := by
+  have h := div_bound_scaled i j n K hi hj
+  have hK : 0 < K := by omega
+  have : i ≤ i * K := Nat.le_mul_of_pos_right i hK
+  omega
+
 end Oak.Extents

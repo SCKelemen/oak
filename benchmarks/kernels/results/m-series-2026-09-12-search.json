@@ -1,0 +1,121 @@
+{
+  "schema": "oak-kernels-benchmark-v1",
+  "machine": "arm64",
+  "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+  "cpu": "Apple M4 Max",
+  "oak": "88c90fea4fd85c46404d07c2c16465634159ec0c",
+  "cc": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+  "go": "go version go1.27.1 darwin/arm64",
+  "rustc": "rustc 1.93.0 (254b59607 2026-01-19) (Homebrew)",
+  "c_flags": [
+    "-O3",
+    "-DNDEBUG"
+  ],
+  "rust_flags": [
+    "-O"
+  ],
+  "go_flags": [],
+  "size": 1048576,
+  "rounds": 5,
+  "samples": 7,
+  "core_affinity": "not controlled",
+  "cache_flush": false,
+  "results": [
+    {
+      "impl": "oak",
+      "kernel": "search",
+      "size": 1048576,
+      "checksum": "d9540000",
+      "ns_per_op_median": 6785600.0,
+      "samples": [
+        6456000.0,
+        6652600.0,
+        6774800.0,
+        6785600.0,
+        6830800.0,
+        7089800.0,
+        7592000.0
+      ]
+    },
+    {
+      "impl": "go",
+      "kernel": "search",
+      "size": 1048576,
+      "checksum": "d9540000",
+      "ns_per_op_median": 11228958.4,
+      "samples": [
+        10882991.6,
+        11104633.4,
+        11147658.4,
+        11228958.4,
+        11261500.0,
+        11280483.4,
+        11313441.6
+      ]
+    },
+    {
+      "impl": "rust",
+      "kernel": "search",
+      "size": 1048576,
+      "checksum": "d9540000",
+      "ns_per_op_median": 7526741.6,
+      "samples": [
+        6871566.8,
+        7258733.4,
+        7454975.0,
+        7526741.6,
+        7664166.6,
+        7706050.0,
+        8160975.0
+      ]
+    },
+    {
+      "impl": "oak",
+      "kernel": "page_probe",
+      "size": 1048576,
+      "checksum": "d9540000",
+      "ns_per_op_median": 7408800.0,
+      "samples": [
+        6902400.0,
+        6997000.0,
+        7067000.0,
+        7408800.0,
+        7434000.0,
+        7677400.0,
+        8074200.0
+      ]
+    },
+    {
+      "impl": "go",
+      "kernel": "page_probe",
+      "size": 1048576,
+      "checksum": "d9540000",
+      "ns_per_op_median": 12257866.6,
+      "samples": [
+        12046966.6,
+        12133966.6,
+        12228566.6,
+        12257866.6,
+        12340958.4,
+        12488533.2,
+        12631625.0
+      ]
+    },
+    {
+      "impl": "rust",
+      "kernel": "page_probe",
+      "size": 1048576,
+      "checksum": "d9540000",
+      "ns_per_op_median": 8890466.8,
+      "samples": [
+        8199450.0,
+        8536750.0,
+        8561966.6,
+        8890466.8,
+        9077425.0,
+        9241675.0,
+        9695258.4
+      ]
+    }
+  ]
+}

@@ -43,6 +43,8 @@ const (
 	factIndexLit                         // other < bound, a literal bound on a local binding
 	factLowerLit                         // bound <= other, a literal lower bound on a local binding
 	factBelow                            // other < via, a guard between two local bindings
+	factDivUpper                         // other <= len(container) / bound, a quotient binding
+	factDivIndex                         // other < len(container) / bound
 )
 
 type extentFact struct {
@@ -310,10 +312,17 @@ func (tc *TypeChecker) resolveIndexPairs(facts []extentFact, pairs []indexPair) 
 	for _, pair := range pairs {
 		for _, source := range [][]extentFact{tc.extentFacts, facts} {
 			for _, fact := range source {
-				if fact.dead || fact.kind != factUpperBound || fact.other != pair.bound {
+				if fact.dead || fact.other != pair.bound {
 					continue
 				}
-				facts = append(facts, extentFact{kind: factIndexBound, container: fact.container, other: pair.index, via: pair.bound, viaBinding: fact.viaBinding, indexDirect: true})
+				switch fact.kind {
+				case factUpperBound:
+					facts = append(facts, extentFact{kind: factIndexBound, container: fact.container, other: pair.index, via: pair.bound, viaBinding: fact.viaBinding, indexDirect: true})
+				case factDivUpper:
+					// i < n with n <= len(v) / K: i < len(v) / K
+					// (Oak.Extents.div_bound_scaled reads it at the index).
+					facts = append(facts, extentFact{kind: factDivIndex, container: fact.container, other: pair.index, bound: fact.bound, via: pair.bound, viaBinding: fact.viaBinding, indexDirect: true})
+				}
 			}
 		}
 	}
@@ -826,6 +835,12 @@ func (tc *TypeChecker) indexUnder(indexExpr ast.Expression, name string, arr *Ar
 		if upper, bounded := literalUpper(index); bounded && upper >= 1 {
 			proven = lengthAtLeast((upper-1)*scale + offset + 1)
 		}
+		// i * K + j under i < len(c) / K with j < K (Oak.Extents.div_bound_scaled).
+		for _, fact := range tc.extentFacts {
+			if !fact.dead && fact.kind == factDivIndex && fact.other == index && fact.container == name && fact.bound == scale && offset < scale {
+				proven = true
+			}
+		}
 	} else if index, k, isMinus := minusIndex(indexExpr); isMinus {
 		// i - K under K <= L <= i and i < U needs U - K <= len
 		// (Oak.Extents.subtraction_under_bounds); under i < len(v) it is
@@ -856,6 +871,12 @@ func (tc *TypeChecker) indexUnder(indexExpr ast.Expression, name string, arr *Ar
 		// i + j under i < K needs K + j <= len (Oak.Extents.literal_bound_under_length).
 		if upper, bounded := literalUpper(index); bounded && lengthAtLeast(upper+offset) {
 			proven = true
+		}
+		// i + j under i < len(c) / K with j < K (Oak.Extents.div_bound_under_length).
+		for _, fact := range tc.extentFacts {
+			if !fact.dead && fact.kind == factDivIndex && fact.other == index && fact.container == name && offset < fact.bound {
+				proven = true
+			}
 		}
 		for _, fact := range tc.extentFacts {
 			// i + K < len(c) bounds v[i + j] for every j <= K
@@ -921,6 +942,13 @@ func (tc *TypeChecker) declarationFacts(decl *ast.VariableDeclaration) []extentF
 			switch fact.kind {
 			case factUpperBound:
 				facts = append(facts, extentFact{kind: factIndexBound, container: fact.container, other: m, via: high, viaBinding: fact.viaBinding, indexDirect: true})
+			case factIndexBound:
+				// m < high < len(c) (an offset bound on high needs no
+				// weakening: m + K < high + K).
+				facts = append(facts, extentFact{kind: factIndexBound, container: fact.container, other: m, offset: fact.offset, via: high, viaBinding: fact.viaBinding, indexDirect: true})
+			case factDivUpper, factDivIndex:
+				// m < high <= len(c) / K, or m < high < len(c) / K.
+				facts = append(facts, extentFact{kind: factDivIndex, container: fact.container, other: m, bound: fact.bound, via: high, viaBinding: fact.viaBinding, indexDirect: true})
 			case factIndexLit:
 				if fact.bound >= 2 {
 					facts = append(facts, extentFact{kind: factIndexLit, other: m, bound: fact.bound - 1})
@@ -935,6 +963,34 @@ func (tc *TypeChecker) declarationFacts(decl *ast.VariableDeclaration) []extentF
 	// shape (85-discipline.md section 3), where the bound must be a binding.
 	if container, isLen := lenOf(decl.Value); isLen && tc.localBinding(container) {
 		return []extentFact{{kind: factUpperBound, container: container, other: decl.Name.Value}}
+	}
+	// `pages: u32 = len(v) / K` with a literal K >= 1: pages <= len(v) / K,
+	// so a later `i < pages` proves `v[i * K + j]` for every j < K
+	// (Oak.Extents.div_bound_scaled) — the page count of a keyed view.
+	if quotient, isDiv := decl.Value.(*ast.InfixExpression); isDiv && quotient.Operator == "/" {
+		if container, isLen := lenOf(quotient.Left); isLen && tc.localBinding(container) {
+			if k, isConst := constantIndex(quotient.Right); isConst && k >= 1 {
+				return []extentFact{{kind: factDivUpper, container: container, other: decl.Name.Value, bound: k}}
+			}
+		}
+	}
+	// `hi: u32 = pages` copies a binding: the new binding inherits every
+	// live bound of the old one (they are equal at this point; a later
+	// write to either kills only its own facts).
+	if source, isIdent := decl.Value.(*ast.Identifier); isIdent && tc.localBinding(source.Value) {
+		var inherited []extentFact
+		for _, fact := range tc.extentFacts {
+			if fact.dead || fact.other != source.Value {
+				continue
+			}
+			switch fact.kind {
+			case factUpperBound, factIndexLit, factLowerLit, factDivUpper, factDivIndex, factIndexBound:
+				copied := fact
+				copied.other = decl.Name.Value
+				inherited = append(inherited, copied)
+			}
+		}
+		return inherited
 	}
 	var length int64
 	switch value := decl.Value.(type) {
@@ -1219,8 +1275,11 @@ func (tc *TypeChecker) killFactsAssignedByExcept(node ast.Node, keepLower, keepU
 		if fact.kind == factLowerLit && keepLower[fact.other] {
 			continue
 		}
-		if (fact.kind == factUpperBound || fact.kind == factIndexLit) && keepUpper[fact.other] {
-			continue
+		switch fact.kind {
+		case factUpperBound, factIndexLit, factDivUpper, factDivIndex, factIndexBound:
+			if keepUpper[fact.other] {
+				continue
+			}
 		}
 		if fact.dependsOn(names) {
 			fact.dead = true
