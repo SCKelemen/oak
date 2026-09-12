@@ -71,9 +71,58 @@ benchmarks under `benchmarks/` where code runs.
 | 3 | Quorum predicates in protocol guards: counting or quantification over an array field, multi-field payloads, array-of-records data | **Done for quantifiers and record arrays** (`112-protocols.md` §1/§4, `Oak.ProtocolQuorum`, `compiler/e2e_protocol_quorum_test.go`): `count/all/any/none` over `[N]Bool` and over a Bool field of `[N]Record`, element-field reads and stores, record sets in `TypeOK`. **Open:** multi-field payloads per step — the typed-command derive admits one scalar payload; a record payload needs the derive to generate and encode records. Original plan: Guard forms `count(data.acked) >= N`, `all(data.acked)`, `any(...)` with a bounded fold in Oak and `Cardinality`/`\A`/`\E` in the TLA+ export; payload records; `[N]Record` data. Extends `112-protocols.md` §1 and §4 together so the two gates keep agreeing. |
 | 4 | Interval time source: earliest/latest with an attested bound, layered over timesim's faults | **Done** (`time_source_attest`, `time_interval`, `time_interval_before`; timesim faults `TIME_FAULT_BOUND_BREAK` and `TIME_FAULT_UNATTEST` with `timesim_interval_honest`; `Oak.TimeInterval`; `compiler/e2e_time_interval_test.go`). The clock-ordered class refuses on `Err(Unattested)` and a scenario can make the bound fail. Original plan: `110-testing.md` "Simulated time" gains an interval clock and a bound-attestation fault; the clock-ordered class refuses on an unattestable bound. |
 | 5 | Conformance of a hand-written TLA+ module (`Custody.tla`) against a projection | **Done** (`112-protocols.md` §4a, `oak protocol -conform Custody -against Custody.tla custody.oak`, `Oak.ProtocolConformance`, `compiler/protocol_conform_test.go`). Modules outside the normal form are reported unsupported; TLC refinement stays their check. Original plan: Design chosen: compare in the projection's normal form — one action per step, one disjunct per line — after parsing the hand-written module's actions; a checker verdict, not a reviewer's. TLC refinement stays the fallback for modules that use forms the normal form lacks. |
-| 6 | rv64 as a first-class target (AArch64 and RISC-V are dbs's only targets) | **In progress; first increment done** — the assembler's RV64 lane (`94-assembler.md` §9): `name.rv64.oakasm` units under the LP64 psABI contract, RV64IM generated from riscv-opcodes, seam checker with the comparison-branch rule and the `ra`/`s*` frame obligation, verifier terms with the W-form and total-division semantics (`Oak.RiscV`), `EM_RISCV` objects linking with `riscv64-elf-gcc`, encoder agreement with GNU as, and a QEMU differential against the verifier. Next: span element memory, the C backend's `-target rv64` cross build and its e2e under QEMU, RVWMO in `MemoryOrder.lean`, the sail-riscv bridge, then F/D and RVV. |
+| 6 | rv64 as a first-class target (AArch64 and RISC-V are dbs's only targets) | **In progress; first increment done** — the assembler's RV64 lane (`94-assembler.md` §9): `name.rv64.oakasm` units under the LP64 psABI contract, RV64IM generated from riscv-opcodes, seam checker with the comparison-branch rule and the `ra`/`s*` frame obligation, verifier terms with the W-form and total-division semantics (`Oak.RiscV`), `EM_RISCV` objects linking with `riscv64-elf-gcc`, encoder agreement with GNU as, and a QEMU differential against the verifier. **Second increment done**: `oak build -target linux/riscv64` (and every other `os/arch`) from any host — `90-backend.md` §2a: the target picks the lane, the companion object declares lp64d, and `zig cc` links a static musl binary with the assembled rv64 unit inside (`compiler/e2e_cross_test.go`, `Oak.Target`). Next: span element memory in the rv64 checker, running cross builds under QEMU from the tooling, RVWMO in `MemoryOrder.lean`, the sail-riscv bridge (emulator build in progress under `external/`), then F/D and RVV. |
 | 7 | Vector dispatch across AArch64 feature levels and RVV behind one deterministic interface | Wanted. Follows 6; the scalable-vector design in `93-simd.md` is the shape. |
 | 8 | SPSC and MPSC rings as memory-model consumers | Wanted. Follows the C and ISA refinement `MemoryOrder.lean` lists as next; rings then reuse the `io` ring shape. |
 | 9 | Derived binary codec for fixed-layout records with per-field endianness | Wanted. A non-JSON derive in `71-codecs.md`; the header stops being hand-written over `bytes_read_*_be`. |
 | 10 | Document `-max-bytes` in the Table section | **Done** (this round): `110-testing.md` "Table targets" names the flag, the default, and the per-row refusal. |
+
+## Fourth round (2026-09-12, evening) — the engine question reopened
+
+The engine's own summary, verified by running each item at `a99146a`
+rather than reading the commit: seven of ten landed, every one with a
+Lean model. Typestate-indexed handles (evict before publish is a type
+error; caveat: a `Bool` data fact cannot refine the index, so `published`
+must be a state, not data), `io/sim` and `io/native` behind one surface
+selected in `oak.mod` (the engine's WAL-over-`iosim` contract passes),
+quorum predicates exported as `Cardinality` and quantifiers, the interval
+time source (an exact fit to `ClockOrder.tla`), the conformance checker
+(normal form cannot read `Custody.tla`'s sets and functions; TLC stays the
+path for hand-written specs), rv64 as an assembler lane only, and hash
+through the AArch64 crypto instructions at 0.97 and 1.26 times Go with the
+portable body as oracle. Beyond the list: `oak prove` decides theorems
+over state and data exhaustively (the custody `Durable` invariant over 168
+step cases, the evict mutant refuted with a counterexample state), the
+opt-in native AArch64 backend with bit-level verification, and the closed
+extraction chain for one real program.
+
+**Decision recorded by the engine.** The three gates are met in letter,
+so the question is open, not closed: Oak is a candidate for the storage
+core, Zig keeps VSR until protocols carry per-replica logs and record
+payloads; ADR-0001 is not flipped. Design log 0057 names three criteria
+for an ADR-0002 proposing the split: the port passes the conformance rows
+and all six `SimDisk` faults over `iosim`; the native build links on its
+default path; a frame scan over 64 MiB lands within 1.2× the Zig reference
+on AArch64.
+
+| # | Ask | Disposition |
+| --- | --- | --- |
+| 1 | IO ops the recovery rule needs: exclusive create producing `exists`, truncate, readdir, rename, stat; `iosim` over `SimSched` and `SimProcess` as the spec says | **Open.** The port's op set is open/close/pread/pwrite/fsync/fdatasync/fsyncdir (`120-io.md`, STATUS row); no directory or metadata operations exist. Directory operations extend the closed error set and the durability ledger (`fsyncdir` already covers a directory's entries); they are the next `120-io.md` increment. |
+| 2 | Record payloads per protocol step, and per-replica log data, so `Replication.tla`'s log-agreement invariant is declarable | **Open**, carried from the third round: `112-protocols.md` §1 admits one scalar payload per step; the record payload needs the typed-command derive to generate and encode records, and per-replica logs are array-of-records data with a per-index invariant. |
+| 3 | A TLC-refinement fallback in `-conform` for set-and-function-style modules | **Open.** `112-protocols.md` §4a reports such modules unsupported and leaves TLC as their check; the fallback is: emit the projection, generate the refinement module (`Spec => Projection!Spec` under the state mapping), and run TLC when it is on the path. |
+| 4 | `oak prove` over larger domains: `u32` fields and small arrays via the bit-blaster, and a Lean path for array data | **Open**, listed as direction in `125-verification.md` §6. Today the exhaustive decider covers `Bool`, `u8`/`i8`, `u16`/`i16`, payload-free sums, and records of those; the bit-level decider covers fixed-width scalars of any width but no views, arrays, or data-dependent loops. |
+| 5 | rv64 for Oak bodies: tested C cross-compile first, RVWMO instantiation, `ionative` on riscv64 Linux | **Open.** As the engine states: the assembler lane (`94-assembler.md` §9) is landed, the instruction-function library and a body target are not; `MemoryOrder.lean` has the RVWMO shape to instantiate. |
+| 6 | Fix the `build -native` duplicate-symbol link on the default asm path; retire the stale "IO ports: design" STATUS row | **Done, both.** Reproduced on `examples/asm` with and without `-native`: `buildOne` emitted the inline-assembly C (the `-emit-c` form) and then linked it beside the native companion object, so every asm unit's symbol was defined twice; the executable is now compiled from the native emitter's C (`main.go`), and `TestBuildAsmUnitsLinkOnceInEveryMode` builds and runs the example under every asm mode. The `run` command was never affected (it already used `compileBinary`). The stale row is deleted; the landed row stands. |
+| 7 | Still wanted: rings as memory-model consumers, a derived binary codec, runtime CPU-feature dispatch | **Unchanged.** Related this round: the `simd` catalog gained the mask vocabulary (`movemask_E`, `ctz`, `popcount`; `93-simd.md` §1.2), so a structural-index scan in the simdjson shape is now expressible; selection remains per target. |
+
+### Revisit criteria (fourth round)
+
+- ADR-0002's three criteria are the acceptance test for this repository:
+  all six `SimDisk` faults over `iosim` against the conformance rows (needs
+  ask 1), the default-path native build (done), and the 64 MiB frame scan
+  within 1.2× Zig (needs the borrowed frame views and the block loop
+  check-free — `docs/notes/codec-text-extraction-2026-09.md` finding 9).
+- A `Bool` data fact refining a typestate index (the engine's caveat on
+  ask 1 of the third round) is a proposition-axis question: whether a
+  refinement on protocol data can select the state marker.
 

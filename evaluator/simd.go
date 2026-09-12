@@ -9,6 +9,7 @@ package evaluator
 import (
 	"encoding/binary"
 	"math"
+	"math/bits"
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
@@ -78,6 +79,9 @@ func evalSimdOp(member string, args []ast.Expression, env *object.Environment) o
 		return newError("the simd library has no operation simd.%s", member)
 	}
 	opName, suffix := member[:splitAt], member[splitAt+1:]
+	if (opName == "ctz" || opName == "popcount") && (suffix == "u32" || suffix == "u64") {
+		return evalSimdMaskScalar(member, opName, suffix, args, env)
+	}
 	layout, known := simdLayouts[suffix]
 	if !known {
 		return newError("the simd library has no operation simd.%s", member)
@@ -249,6 +253,21 @@ func evalSimdOp(member string, args []ast.Expression, env *object.Environment) o
 		}
 		return result
 
+	case "movemask":
+		// One bit per lane: bit i is the top bit of lane i (Oak.Simd.movemask).
+		vec, isVec := evaluated[0].(*object.Vector)
+		if len(evaluated) != 1 || !isVec || vec.VectorKind != layout.VectorKind {
+			return newError("simd.%s requires a simd.%s value", member, layout.VectorKind)
+		}
+		top := uint(layout.ElemBytes*8 - 1)
+		mask := int64(0)
+		for i := 0; i < layout.Lanes; i++ {
+			if (layout.getLane(vec, i)>>top)&1 == 1 {
+				mask |= int64(1) << uint(i)
+			}
+		}
+		return &object.Integer{Value: mask}
+
 	case "any", "all":
 		vec, isVec := evaluated[0].(*object.Vector)
 		if len(evaluated) != 1 || !isVec || vec.VectorKind != layout.VectorKind {
@@ -268,6 +287,36 @@ func evalSimdOp(member string, args []ast.Expression, env *object.Environment) o
 		return nativeBool(allNonzero)
 	}
 	return newError("the simd library has no operation simd.%s", member)
+}
+
+// evalSimdMaskScalar implements the scalar mask operations of the catalog
+// (docs/spec/93-simd.md §1.2): trailing zeros with ctz(0) = width, and
+// population count, over u32 and u64 masks. Both are total
+// (Oak.Intrinsics.ctz_zero, popcount_le_width).
+func evalSimdMaskScalar(member, opName, suffix string, args []ast.Expression, env *object.Environment) object.Object {
+	if len(args) != 1 {
+		return newError("simd.%s takes exactly one argument", member)
+	}
+	operandObject := Eval(args[0], env)
+	if isError(operandObject) {
+		return operandObject
+	}
+	operand, ok := operandObject.(*object.Integer)
+	if !ok {
+		return newError("simd.%s requires a %s operand, got %s", member, suffix, operandObject.Type())
+	}
+	if suffix == "u32" {
+		x := uint32(operand.Value)
+		if opName == "ctz" {
+			return &object.Integer{Value: int64(bits.TrailingZeros32(x))}
+		}
+		return &object.Integer{Value: int64(bits.OnesCount32(x))}
+	}
+	x := uint64(operand.Value)
+	if opName == "ctz" {
+		return &object.Integer{Value: int64(bits.TrailingZeros64(x))}
+	}
+	return &object.Integer{Value: int64(bits.OnesCount64(x))}
 }
 
 func nativeBool(value bool) object.Object {

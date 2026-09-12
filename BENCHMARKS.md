@@ -59,21 +59,22 @@ to four, all four under a record invariant the extent facts cannot state.
 
 Four more kernels shaped like the sibling projects' hot loops, with Go
 and Rust twins of identical arithmetic (`benchmarks/kernels/RESULTS.md`,
-`m-series-2026-09-11-shapes.json`):
+`m-series-2026-09-11-shapes.json`, updated by `m-series-2026-09-12-popcount.json`):
 
 | Kernel | Shape | Oak | Rust | Go | Oak / Rust |
 | --- | --- | ---: | ---: | ---: | ---: |
-| page_probe | B-tree leaf probe (dbs) | 6,764,400 | 7,410,333 | 11,069,600 | 0.91× |
-| bitmap | allocator bitmap scan (os) | 137,400 | 134,458 (hardware popcount) | 342,358 (hardware) | 1.02× |
-| dispatch | bytecode dispatch (os) | 6,911,200 | 9,570,758 | 7,465,467 | 0.72× |
-| tiled | tiled f32 reduction (ml) | 159,200 | 175,750 | 390,567 | 0.91× |
+| page_probe | B-tree leaf probe (dbs) | 7,913,200 | 7,735,183 | 11,041,675 | 1.02× |
+| bitmap | allocator bitmap scan (os) | 150,600 (hardware popcount) | 139,758 (hardware popcount) | 346,675 (hardware) | 1.08× |
+| dispatch | bytecode dispatch (os) | 6,902,600 | 7,070,558 | 6,953,242 | 0.98× |
+| tiled | tiled f32 reduction (ml) | 131,400 | 156,750 | 329,317 | 0.84× |
 
 Every access in `tiled`, `bitmap`, and `dispatch` is proven and emitted
 unchecked; `page_probe` keeps two checked reads under a binary search's
 decreasing bound, which the extent facts do not yet track. `bitmap` is
-Oak's portable SWAR popcount against the hardware instruction in Rust
-and Go; it ties because clang vectorizes the loop, and it marks a missing
-intrinsic.
+the population-count instruction in all three languages now that
+`arm64.cnt64` exists (`docs/spec/92-ffi.md` §3.2); the numbers are from
+`m-series-2026-09-12-popcount.json`, a later run of the same machine on
+which every row moved together.
 
 ## Typed JSON decoding against simdjson
 

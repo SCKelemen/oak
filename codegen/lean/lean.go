@@ -60,8 +60,14 @@ func Emit(program *ast.Program, tc *typechecker.TypeChecker, namespace string, n
 	var declared []string
 	for _, stmt := range program.Statements {
 		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.Name != nil {
-			candidates[fn.Name.Value] = fn
-			declared = append(declared, fn.Name.Value)
+			// A method is a candidate under the checker's Type::method
+			// identity, so no function can shadow it.
+			key := functionKey(fn)
+			if key == "" {
+				continue
+			}
+			candidates[key] = fn
+			declared = append(declared, key)
 		}
 	}
 	// The roots are the named declarations (all of them when names is
@@ -82,8 +88,8 @@ func Emit(program *ast.Program, tc *typechecker.TypeChecker, namespace string, n
 			continue
 		}
 		fn := candidates[name]
-		if fn.Receiver != nil || len(fn.TypeParams) != 0 || fn.ExternSymbol != "" || fn.Body == nil {
-			return "", fmt.Errorf("lean: %s: methods, generics, and extern functions are outside the extracted subset", name)
+		if len(fn.TypeParams) != 0 || fn.ExternSymbol != "" || fn.Body == nil {
+			return "", fmt.Errorf("lean: %s: generics and extern functions are outside the extracted subset", name)
 		}
 		em.functions[name] = fn
 		functionOrder = append(functionOrder, name)
@@ -384,6 +390,14 @@ func (em *emitter) callees(fn *ast.FunctionStatement) []string {
 	var names []string
 	walkExpressions(fn.Body, func(e ast.Expression) {
 		if call, ok := e.(*ast.InvocationExpression); ok {
+			if call.ResolvedMethod != "" {
+				// A method call, under the identity the checker resolved.
+				if !seen[call.ResolvedMethod] {
+					seen[call.ResolvedMethod] = true
+					names = append(names, call.ResolvedMethod)
+				}
+				return
+			}
 			if ident, ok := call.Function.(*ast.Identifier); ok && !seen[ident.Value] {
 				seen[ident.Value] = true
 				names = append(names, ident.Value)
@@ -420,6 +434,12 @@ func (em *emitter) leanType(expr ast.Expression) (string, error) {
 		if lean, ok := primitiveLean[t.Value]; ok {
 			return lean, nil
 		}
+		if t.Value == "string" {
+			// A string is its UTF-8 bytes (docs/spec/70-strings.md
+			// section 2); validity is a fact about the value, stated where
+			// a string is made from bytes (str_from_utf8).
+			return "Array UInt8", nil
+		}
 		// A refinement type is its base's representation
 		// (docs/spec/20-types.md section 12); the predicate is stated at
 		// each construction and as a hypothesis of each theorem.
@@ -442,6 +462,12 @@ func (em *emitter) leanType(expr ast.Expression) (string, error) {
 		if t.Dot {
 			return "", fmt.Errorf("lean: qualified type %s is outside the extracted subset", t.String())
 		}
+		if encoding, isStr := strEncoding(t); isStr {
+			if encoding == "Utf8" {
+				return "Array UInt8", nil
+			}
+			return "", fmt.Errorf("lean: type %s is outside the extracted subset (UTF-8 strings only)", t.String())
+		}
 		// A generic ADT applied to its arguments is the recorded
 		// instantiation under its mangled name.
 		if mangled, isApplication := em.applicationName(t); isApplication {
@@ -461,8 +487,22 @@ func (em *emitter) leanType(expr ast.Expression) (string, error) {
 }
 
 // leanTypeOf renders a checked type.
+// strEncoding reads the phantom-encoded string type Str[E].
+func strEncoding(t *ast.IndexExpression) (string, bool) {
+	head, isIdent := t.Left.(*ast.Identifier)
+	encoding, isEncoding := t.Index.(*ast.Identifier)
+	if !isIdent || !isEncoding || head.Value != "Str" {
+		return "", false
+	}
+	return encoding.Value, true
+}
+
 func (em *emitter) leanTypeOf(typ typechecker.Type) (string, error) {
 	switch t := typ.(type) {
+	case *typechecker.StringType:
+		if t.Encoding == "" || t.Encoding == "Utf8" {
+			return "Array UInt8", nil
+		}
 	case *typechecker.PrimitiveType:
 		if lean, ok := primitiveLean[t.Name]; ok {
 			return lean, nil
@@ -558,14 +598,51 @@ func (em *emitter) emitRecord(adt *ast.ADTType) (string, error) {
 
 // ---- functions ----
 
-// threadedParams lists the indices of a function's parameters that carry
-// writable storage — span parameters, and record parameters holding a span
-// field (a `MutTensor2` written through `t.data[i] = v`) — the storage it
-// may write and therefore returns beside its result
-// (docs/spec/95-extraction.md section 2).
+// functionKey is the identity a function is extracted under: its name,
+// or the checker's Type::method identity for a method on a nominal
+// receiver ("" for any other receiver, which stays outside the subset).
+func functionKey(fn *ast.FunctionStatement) string {
+	if fn.Receiver == nil {
+		return fn.Name.Value
+	}
+	receiver, isIdent := fn.Receiver.Type.(*ast.Identifier)
+	if !isIdent || receiver.Value == "" {
+		return ""
+	}
+	return receiver.Value + "::" + fn.Name.Value
+}
+
+// functionParams lists a function's parameters with a method's receiver
+// first, the order the C backend and the calls use.
+func functionParams(fn *ast.FunctionStatement) []*ast.FunctionParameter {
+	if fn.Receiver == nil {
+		return fn.Parameters
+	}
+	return append([]*ast.FunctionParameter{fn.Receiver}, fn.Parameters...)
+}
+
+// defName is the Lean name of an extracted function: the identifier, or
+// `Type.method` under the receiver type's Lean name for a method.
+func (em *emitter) defName(fn *ast.FunctionStatement) string {
+	if fn.Receiver == nil {
+		return ident(fn.Name.Value)
+	}
+	receiver := fn.Receiver.Type.(*ast.Identifier).Value
+	typeName, ok := em.adtLeanName(receiver)
+	if !ok {
+		typeName = ident(receiver)
+	}
+	return typeName + "." + ident(fn.Name.Value)
+}
+
+// threadedParams lists the indices of a function's parameters (receiver
+// first, as functionParams orders them) that carry writable storage — span
+// parameters, and record parameters holding a span field (a `MutTensor2`
+// written through `t.data[i] = v`) — the storage it may write and
+// therefore returns beside its result (docs/spec/95-extraction.md section 2).
 func (em *emitter) threadedParams(fn *ast.FunctionStatement) []int {
 	var threaded []int
-	for i, p := range fn.Parameters {
+	for i, p := range functionParams(fn) {
 		if em.isThreadedType(p.Type) {
 			threaded = append(threaded, i)
 		}
@@ -613,14 +690,16 @@ func isSpanType(expr ast.Expression) bool {
 }
 
 func (em *emitter) emitFunction(fn *ast.FunctionStatement) (string, error) {
-	em.fnName = fn.Name.Value
+	em.fnName = em.defName(fn)
 	em.scope = newScope(nil)
 	em.helpers = nil
 	em.loops = 0
 	em.temps = 0
 
+	// A method's receiver is its first parameter (docs/spec/90-backend.md),
+	// and the definition lives under the receiver type's name.
 	var params []string
-	for _, p := range fn.Parameters {
+	for _, p := range functionParams(fn) {
 		if p.Variadic {
 			return "", fmt.Errorf("lean: %s: variadic parameters are outside the extracted subset", fn.Name.Value)
 		}
@@ -650,7 +729,7 @@ func (em *emitter) emitFunction(fn *ast.FunctionStatement) (string, error) {
 	em.scope = body
 	var lines []string
 	em.indent = "  "
-	if em.recursive[fn.Name.Value] {
+	if em.recursive[functionKey(fn)] {
 		em.indent = "    "
 	}
 	statements, result, err := em.functionBody(fn, returnType)
@@ -679,15 +758,15 @@ func (em *emitter) emitFunction(fn *ast.FunctionStatement) (string, error) {
 		out.WriteString(helper)
 		out.WriteString("\n")
 	}
-	if em.recursive[fn.Name.Value] {
+	if em.recursive[functionKey(fn)] {
 		// A self-recursive function is a definition by recursion on the
 		// fuel: no fuel, no result; otherwise the body, whose recursive
 		// calls pass the fuel that remains.
-		fmt.Fprintf(&out, "def %s %s : Nat → Option %s\n", ident(fn.Name.Value), strings.Join(params, " "), tupleType(resultTypes))
+		fmt.Fprintf(&out, "def %s %s : Nat → Option %s\n", em.defName(fn), strings.Join(params, " "), tupleType(resultTypes))
 		out.WriteString("  | 0 => none\n")
 		out.WriteString("  | fuel + 1 => do\n")
 	} else {
-		fmt.Fprintf(&out, "def %s %s (fuel : Nat) : Option %s := do\n", ident(fn.Name.Value), strings.Join(params, " "), tupleType(resultTypes))
+		fmt.Fprintf(&out, "def %s %s (fuel : Nat) : Option %s := do\n", em.defName(fn), strings.Join(params, " "), tupleType(resultTypes))
 	}
 	out.WriteString(strings.Join(lines, "\n"))
 	out.WriteString("\n")
@@ -753,13 +832,15 @@ func (em *emitter) theoremStatement(fn *ast.FunctionStatement, params []string) 
 				continue
 			}
 			seen[callee] = true
-			unfolds = append(unfolds, ident(callee))
+			unfolds = append(unfolds, em.defName(target))
 			queue = append(queue, target)
 		}
 	}
 	fmt.Fprintf(&out, "  unfold %s\n", strings.Join(unfolds, " "))
 	out.WriteString("  simp only [pure, bind, Option.bind_some, Option.bind_none, oak_bind_ite, Option.ite_none_right_eq_some, Option.some.injEq, decide_eq_true_eq] at *\n")
-	out.WriteString("  first | rfl | decide | omega | bv_decide\n")
+	// A statement over a sum type or under a guard splits on its matches
+	// and conditionals first, then each case goes to the same deciders.
+	out.WriteString("  first | rfl | decide | omega | bv_decide | ((repeat' split) <;> (try simp_all) <;> first | rfl | decide | omega | bv_decide)\n")
 	return out.String()
 }
 
@@ -1582,6 +1663,14 @@ func (em *emitter) expr(expr ast.Expression, want string) (string, error) {
 
 func (em *emitter) exprValue(expr ast.Expression, want string) (string, error) {
 	switch e := expr.(type) {
+	case *ast.StringLiteral:
+		// The literal's UTF-8 bytes, which the source decoder validated
+		// (docs/spec/70-strings.md section 8).
+		bytes := make([]string, len(e.Value))
+		for i := 0; i < len(e.Value); i++ {
+			bytes[i] = fmt.Sprintf("%d", e.Value[i])
+		}
+		return fmt.Sprintf("(#[%s] : Array UInt8)", strings.Join(bytes, ", ")), nil
 	case *ast.IntegerLiteral:
 		typ := want
 		if checked := em.checkedLeanType(e); checked != "" {
@@ -1900,11 +1989,49 @@ func (em *emitter) indexTerm(index ast.Expression) (string, error) {
 
 // call renders a builtin or a user function call; user calls are hoisted.
 func (em *emitter) call(call *ast.InvocationExpression, want string) (string, error) {
+	if call.ResolvedMethod != "" {
+		// recv.method(args): the method's definition applied to the
+		// receiver first (docs/spec/90-backend.md).
+		access, isDot := call.Function.(*ast.IndexExpression)
+		fn, known := em.functions[call.ResolvedMethod]
+		if !isDot || !access.Dot || !known {
+			return "", fmt.Errorf("method call %s is outside the extracted subset", call.Function.String())
+		}
+		return em.extractedCall(em.defName(fn), functionParams(fn), append([]ast.Expression{access.Left}, call.Arguments...))
+	}
 	callee, ok := call.Function.(*ast.Identifier)
 	if !ok {
 		return "", fmt.Errorf("call through %s is outside the extracted subset", call.Function.String())
 	}
 	switch callee.Value {
+	case "str_bytes":
+		// The bytes of a string are the string's carrier
+		// (docs/spec/70-strings.md): no copy, no conversion.
+		if len(call.Arguments) != 1 {
+			return "", fmt.Errorf("str_bytes takes one argument")
+		}
+		return em.expr(call.Arguments[0], "Array UInt8")
+	case "str_from_utf8":
+		// A string from a view is the view's bytes when they are valid
+		// UTF-8; the C helper traps otherwise, so the extraction yields no
+		// result, like a failed refinement construction.
+		if len(call.Arguments) != 1 {
+			return "", fmt.Errorf("str_from_utf8 takes one argument")
+		}
+		value, err := em.expr(call.Arguments[0], "Array UInt8")
+		if err != nil {
+			return "", err
+		}
+		if em.hoisted == nil {
+			return "", fmt.Errorf("str_from_utf8 in a position that cannot bind its result")
+		}
+		em.temps++
+		result := fmt.Sprintf("r%d", em.temps)
+		*em.hoisted = append(*em.hoisted, fmt.Sprintf("%slet %s : Array UInt8 := %s", em.indent, result, value))
+		em.scope.declare(result, "Array UInt8")
+		em.usesUtf8 = true
+		*em.hoisted = append(*em.hoisted, fmt.Sprintf("%slet () ← (if Oak.Utf8Exec.valid %s then pure () else none)", em.indent, result))
+		return result, nil
 	case "len":
 		if len(call.Arguments) != 1 {
 			return "", fmt.Errorf("len takes one argument")
@@ -2042,13 +2169,20 @@ func (em *emitter) call(call *ast.InvocationExpression, want string) (string, er
 	if !known {
 		return "", fmt.Errorf("call to %s is outside the extracted subset", callee.Value)
 	}
-	if len(call.Arguments) != len(fn.Parameters) {
-		return "", fmt.Errorf("call to %s passes %d arguments for %d parameters", callee.Value, len(call.Arguments), len(fn.Parameters))
+	return em.extractedCall(ident(callee.Value), fn.Parameters, call.Arguments)
+}
+
+// extractedCall applies an extracted definition to its arguments, bound
+// through a hoisted `let r ← name args fuel`; a span argument rebinds its
+// owner to the returned value.
+func (em *emitter) extractedCall(name string, params []*ast.FunctionParameter, arguments []ast.Expression) (string, error) {
+	if len(arguments) != len(params) {
+		return "", fmt.Errorf("call to %s passes %d arguments for %d parameters", name, len(arguments), len(params))
 	}
 	var args []string
 	var rebinds []string
-	for i, arg := range call.Arguments {
-		paramType, err := em.leanType(fn.Parameters[i].Type)
+	for i, arg := range arguments {
+		paramType, err := em.leanType(params[i].Type)
 		if err != nil {
 			return "", err
 		}
@@ -2057,7 +2191,7 @@ func (em *emitter) call(call *ast.InvocationExpression, want string) (string, er
 			return "", err
 		}
 		args = append(args, term)
-		if em.isThreadedType(fn.Parameters[i].Type) {
+		if em.isThreadedType(params[i].Type) {
 			owner := addressOf(argOperand(arg))
 			if owner == "" {
 				if id, isIdent := arg.(*ast.Identifier); isIdent {
@@ -2065,7 +2199,7 @@ func (em *emitter) call(call *ast.InvocationExpression, want string) (string, er
 				}
 			}
 			if owner == "" {
-				return "", fmt.Errorf("writable argument %s to %s must name its owner (a span, its owner, or a record holding a span)", arg.String(), callee.Value)
+				return "", fmt.Errorf("writable argument %s to %s must name its owner (a span, its owner, or a record holding a span)", arg.String(), name)
 			}
 			rebinds = append(rebinds, ident(owner))
 		}
@@ -2073,9 +2207,9 @@ func (em *emitter) call(call *ast.InvocationExpression, want string) (string, er
 	em.temps++
 	result := fmt.Sprintf("r%d", em.temps)
 	if em.hoisted == nil {
-		return "", fmt.Errorf("call to %s in a position that cannot bind its result", callee.Value)
+		return "", fmt.Errorf("call to %s in a position that cannot bind its result", name)
 	}
-	*em.hoisted = append(*em.hoisted, fmt.Sprintf("%slet %s ← %s %s fuel", em.indent, tuple(append([]string{result}, rebinds...)), ident(callee.Value), strings.Join(args, " ")))
+	*em.hoisted = append(*em.hoisted, fmt.Sprintf("%slet %s ← %s %s fuel", em.indent, tuple(append([]string{result}, rebinds...)), name, strings.Join(args, " ")))
 	return result, nil
 }
 

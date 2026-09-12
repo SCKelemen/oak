@@ -3,8 +3,8 @@ namespace Oak.Intrinsics
 /-! # Abstract assembly intrinsics
 
 Model for `docs/spec/92-ffi.md` §3: the v1 AArch64 instruction functions
-`rev` (byte reverse), `rbit` (bit reverse), and `clz` (count leading
-zeros). The model works over the value's digits — bytes for `rev`, bits
+`rev` (byte reverse), `rbit` (bit reverse), `clz` (count leading
+zeros), and `cnt` (population count). The model works over the value's digits — bytes for `rev`, bits
 for `rbit` — as lists of fixed width, which is exactly the register-lane
 view the instructions are specified over in the ARM ARM. Laws proven:
 
@@ -12,7 +12,10 @@ view the instructions are specified over in the ARM ARM. Laws proven:
 - `clz` is total, bounded by the width, hits the width exactly on the
   zero word, and is zero exactly when the leading bit is set — the ARM
   `CLZ` semantics, including the `CLZ(0) = width` case that C's
-  `__builtin_clz` leaves undefined (the backend's guard supplies it).
+  `__builtin_clz` leaves undefined (the backend's guard supplies it);
+- `popcount` is total, bounded by the width, zero exactly on the zero
+  word, the width on the all-ones word, and complementary under bitwise
+  not — the law an allocator's free-bit count over `cnt(~word)` rests on.
 -/
 
 /-- Register-lane view: a word is its list of digits (bits or bytes),
@@ -88,5 +91,95 @@ theorem clz_lt_of_mem_true (bits : List Bool) (h : true ∈ bits) :
       have := ih hrest
       show clz rest + 1 < rest.length + 1
       exact Nat.succ_lt_succ this
+
+/-! ## Mask scalars (docs/spec/93-simd.md §1.2)
+
+`ctz` counts trailing zeros — the leading zeros of the reversed word, so
+every `clz` law transfers. Total: `ctz` of the zero word is the width, as
+`RBIT` then `CLZ` gives. `popcount` below is shared with `arm64.cnt32` /
+`arm64.cnt64` (`92-ffi.md` §3.2); `simd.popcount_u32/u64` is its portable
+spelling. -/
+
+/-- Trailing zeros of a word written most-significant bit first. -/
+def ctz (bits : List Bool) : Nat := clz bits.reverse
+
+theorem ctz_le_width (bits : List Bool) : ctz bits ≤ bits.length := by
+  unfold ctz
+  have h := clz_le_width bits.reverse
+  simpa [List.length_reverse] using h
+
+/-- **The zero word saturates**: `ctz 0 = width`. -/
+theorem ctz_zero (width : Nat) : ctz (List.replicate width false) = width := by
+  unfold ctz
+  rw [List.reverse_replicate]
+  exact clz_zero width
+
+/-- A set bit somewhere keeps `ctz` strictly below the width, so the
+mask-iteration loop `m &= m - 1` makes progress. -/
+theorem ctz_lt_of_mem_true (bits : List Bool) (h : true ∈ bits) : ctz bits < bits.length := by
+  unfold ctz
+  have h' : true ∈ bits.reverse := List.mem_reverse.mpr h
+  have := clz_lt_of_mem_true bits.reverse h'
+  simpa [List.length_reverse] using this
+
+/-- `CNT` (summed over the lanes by `ADDV`): the number of `true` bits.
+    Total by construction. -/
+def popcount : List Bool → Nat
+  | [] => 0
+  | true :: rest => popcount rest + 1
+  | false :: rest => popcount rest
+
+/-- **Bounded by the width**: `popcount x ≤ width`, so the result fits the
+    operand's own type. -/
+theorem popcount_le_width (bits : List Bool) : popcount bits ≤ bits.length := by
+  induction bits with
+  | nil => simp [popcount]
+  | cons b rest ih =>
+    cases b with
+    | true =>
+      show popcount rest + 1 ≤ rest.length + 1
+      exact Nat.succ_le_succ ih
+    | false =>
+      show popcount rest ≤ rest.length + 1
+      exact Nat.le_succ_of_le ih
+
+/-- **The zero word counts zero.** -/
+theorem popcount_zero (width : Nat) :
+    popcount (List.replicate width false) = 0 := by
+  induction width with
+  | zero => simp [popcount]
+  | succ n ih => simp [List.replicate, popcount, ih]
+
+/-- **The all-ones word counts the width.** -/
+theorem popcount_ones (width : Nat) :
+    popcount (List.replicate width true) = width := by
+  induction width with
+  | zero => simp [popcount]
+  | succ n ih => simp [List.replicate, popcount, ih]
+
+/-- **Complement**: the set bits of `~w` and of `w` partition the width —
+    a free-bit count is `cnt(~word)`, and it equals `width - cnt(word)`. -/
+theorem popcount_not (bits : List Bool) :
+    popcount (bits.map not) + popcount bits = bits.length := by
+  induction bits with
+  | nil => simp [popcount]
+  | cons b rest ih =>
+    cases b with
+    | true =>
+      show popcount (rest.map not) + (popcount rest + 1) = rest.length + 1
+      omega
+    | false =>
+      show popcount (rest.map not) + 1 + popcount rest = rest.length + 1
+      omega
+
+/-- **Zero iff no bit is set** — the mask loop's termination test,
+`popcount m = 0 ↔ m = 0`. -/
+theorem popcount_eq_zero_iff (bits : List Bool) : popcount bits = 0 ↔ true ∉ bits := by
+  induction bits with
+  | nil => simp [popcount]
+  | cons b rest ih =>
+    cases b with
+    | true => simp [popcount]
+    | false => simp [popcount, ih]
 
 end Oak.Intrinsics

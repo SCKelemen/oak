@@ -15,6 +15,10 @@ r := import("random")
 
 agree: (v: []u8): Bool = utf8.valid(v) == is_valid_utf8(v)
 
+// The first n bytes of v: valid by both validators, or invalid by both.
+prefix_valid: (v: []u8, n: u32): Bool = utf8.valid(subslice(v, u32(0), n)) && agree(subslice(v, u32(0), n))
+prefix_invalid: (v: []u8, n: u32): Bool = !utf8.valid(subslice(v, u32(0), n)) && agree(subslice(v, u32(0), n))
+
 main: (): i32 {
   ok: Bool = true
   // ASCII, two, three, four bytes; a sequence across a 16-byte boundary.
@@ -77,15 +81,56 @@ main: (): i32 {
   cont_at_17: [17]u8 = [u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(97), u8(128)]
   ok = ok && !utf8.valid(view(&cont_at_17)) && agree(view(&cont_at_17))
 
+  // Around the sixty-four-byte step: lengths on both sides of it, a
+  // four-byte sequence straddling byte 64, a lead left open at byte 63
+  // before an all-ASCII step, a stray continuation at byte 64, and a
+  // three-byte sequence across byte 128.
+  text200: [200]u8
+  fill: u32 = u32(0)
+  while fill < u32(200) {
+    text200[fill] = u8(97)
+    fill = fill + u32(1)
+  }
+  ok = ok && prefix_valid(view(&text200), u32(63))
+  ok = ok && prefix_valid(view(&text200), u32(64))
+  ok = ok && prefix_valid(view(&text200), u32(65))
+  ok = ok && prefix_valid(view(&text200), u32(200))
+  text200[62] = u8(240)
+  text200[63] = u8(159)
+  text200[64] = u8(146)
+  text200[65] = u8(150)
+  ok = ok && prefix_valid(view(&text200), u32(200))
+  ok = ok && prefix_invalid(view(&text200), u32(64))
+  ok = ok && prefix_invalid(view(&text200), u32(65))
+  ok = ok && prefix_valid(view(&text200), u32(66))
+  text200[62] = u8(97)
+  text200[64] = u8(97)
+  text200[65] = u8(97)
+  text200[63] = u8(226)
+  ok = ok && prefix_invalid(view(&text200), u32(200))
+  ok = ok && prefix_invalid(view(&text200), u32(128))
+  ok = ok && prefix_invalid(view(&text200), u32(64))
+  text200[63] = u8(97)
+  text200[64] = u8(128)
+  ok = ok && prefix_invalid(view(&text200), u32(200))
+  text200[64] = u8(97)
+  text200[127] = u8(226)
+  text200[128] = u8(130)
+  text200[129] = u8(172)
+  ok = ok && prefix_valid(view(&text200), u32(200))
+  ok = ok && prefix_invalid(view(&text200), u32(129))
+  ok = ok && prefix_valid(view(&text200), u32(130))
+
   // Fuzz: random code points encoded, then randomly corrupted, in lengths
-  // that cross several block boundaries; the two validators must agree.
+  // that cross several sixteen- and sixty-four-byte boundaries; the two
+  // validators must agree.
   states: [1]r.Xoshiro
   state: [*]r.Xoshiro = span(&states)
   state[0] = r.random_seed(u64(20260912))
-  buf: [80]u8
+  buf: [200]u8
   round: u32 = u32(0)
   while round < u32(3000) {
-    length: u32 = u32_trunc_u64(r.random_below(state, u64(81)))
+    length: u32 = u32_trunc_u64(r.random_below(state, u64(201)))
     i: u32 = u32(0)
     while i < length {
       kind: u64 = r.random_below(state, u64(10))

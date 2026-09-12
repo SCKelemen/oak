@@ -105,8 +105,12 @@ func EmitC(fn *Function, cSymbol string, symbolFor func(string) string) string {
 // archCondition is the preprocessor test selecting the unit's lane: the
 // C toolchain's target must be the lane's architecture, else the Oak
 // fallback body (or #error) applies.
-func archCondition(fn *Function) string {
-	if fn.Arch == ArchRV64 {
+func archCondition(fn *Function) string { return ArchCondition(fn.Arch) }
+
+// ArchCondition is the preprocessor test for a lane's architecture: the
+// asm unit applies under it, the Oak fallback body under its negation.
+func ArchCondition(arch string) string {
+	if arch == ArchRV64 {
 		return "defined(__riscv) && (__riscv_xlen == 64)"
 	}
 	return "defined(__aarch64__)"

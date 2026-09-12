@@ -105,10 +105,14 @@ eight accumulators, eight elements per step, a scalar tail).
 
 | Kernel | Oak | Rust | Go | Go generic | Oak / Rust |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| page_probe | 6,764,400 | 7,410,333 | 11,069,600 | | 0.91× |
-| bitmap | 137,400 | 134,458 (hardware) | 342,358 (hardware) | 636,733 | 1.02× |
-| dispatch | 6,911,200 | 9,570,758 | 7,465,467 | | 0.72× |
-| tiled | 159,200 | 175,750 | 390,567 | | 0.91× |
+| page_probe | 7,913,200 | 7,735,183 | 11,041,675 | | 1.02× |
+| bitmap | 150,600 (hardware) | 139,758 (hardware) | 346,675 (hardware) | 644,525 | 1.08× |
+| dispatch | 6,902,600 | 7,070,558 | 6,953,242 | | 0.98× |
+| tiled | 131,400 | 156,750 | 329,317 | | 0.84× |
+
+(`m-series-2026-09-12-popcount.json`, the same machine on a later day:
+every row moved with it, so the ratios are the comparison, not the
+absolute numbers against the earlier table.)
 
 What the checker proved: every access in `tiled` (`a[i + 7]` under
 `i <= len(a) - 8` by `subtraction_under_length`, the eight constant
@@ -120,12 +124,16 @@ ever decreases from 512 — a monotone upper bound the facts do not yet
 track. Neither costs measurably; a binary search is latency-bound on the
 comparison chain.
 
-What the numbers say: `bitmap` is Oak's SWAR popcount against the
-hardware instruction in Rust and Go, and it ties Rust because clang
-vectorizes the SWAR loop over NEON; the Go standard-library row is the
-scalar instruction per word, and the plain Go loop is what Oak would have
-been without the vectorizer. Oak has no popcount intrinsic yet, so an os
-bitmap written in Oak today gets this form. `dispatch` favors Oak's
+What the numbers say: `bitmap` is now the population-count instruction
+in all three languages — Oak through `arm64.cnt64` (`docs/spec/92-ffi.md`
+§3.2), Rust through `count_ones`, Go through `bits.OnesCount64` — and Oak
+sits within eight percent of Rust, both loops widened across NEON lanes
+by their compilers; the plain Go loop is the SWAR form Oak used before the
+instruction landed, and it was as fast as the instruction only because
+clang vectorized it too. One lesson is recorded in the lowering: an
+inline-assembly form of `cnt` that pinned a vector register serialized
+the scan at 317,000 ns, twice the SWAR loop, so the instruction form goes
+through the compiler's own `ctpop`. `dispatch` favors Oak's
 integer `match`, emitted as a chain of equality tests that clang lowers
 as it would a `switch`, over rustc's lowering of the same match. `page_probe` and `tiled`
 are the same generated C shape as `search` and `dot`, ahead of both twins

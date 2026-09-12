@@ -94,21 +94,14 @@ pub bench_page_probe: (keys: []u64, probes: []u64): u32 {
   hits
 }
 
-// Population count without an intrinsic: the SWAR form every portable
-// bitmap uses.
-popcount64: (x: u64): u64 {
-  a: u64 = x - ((x >> u64(1)) & u64(0x5555555555555555))
-  b: u64 = (a & u64(0x3333333333333333)) + ((a >> u64(2)) & u64(0x3333333333333333))
-  c: u64 = (b + (b >> u64(4))) & u64(0x0f0f0f0f0f0f0f0f)
-  (c * u64(0x0101010101010101)) >> u64(56)
-}
-
-// Free-bit count over a u64 bitmap: the os allocator scan shape.
+// Free-bit count over a u64 bitmap: the os allocator scan shape, through
+// the population-count instruction function (docs/spec/92-ffi.md section
+// 3.2; Oak.Intrinsics.popcount_not is the law free = 64 - set).
 pub bench_bitmap: (words: []u64): u64 {
   free: u64 = 0
   i: u32 = 0
   while i < len(words) {
-    free = free + popcount64(^words[i])
+    free = free + arm64.cnt64(^words[i])
     i = i + u32(1)
   }
   free

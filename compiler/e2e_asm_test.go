@@ -342,7 +342,7 @@ add_asm: (left, right: u32) -> u32 = {
 	if err != nil {
 		t.Fatalf("compilation failed: %v", err)
 	}
-	if !strings.Contains(output, "#if !defined(__aarch64__) || defined(OAK_PORTABLE_INTRINSICS)") || strings.Contains(output, "#error") {
+	if !strings.Contains(output, "#if !(defined(__aarch64__)) || defined(OAK_PORTABLE_INTRINSICS)") || strings.Contains(output, "#error") {
 		t.Fatalf("fallback body not emitted under the complementary condition:\n%s", output)
 	}
 	for _, flags := range [][]string{nil, {"-DOAK_PORTABLE_INTRINSICS"}} {
