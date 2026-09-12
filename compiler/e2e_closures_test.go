@@ -260,3 +260,35 @@ func TestE2ECapturingClosureShapesCompiled(t *testing.T) {
 		t.Fatalf("unsupported construct reached the backend:\n%s", output)
 	}
 }
+
+// Two capturing literals in one call: both lifted, the callee's clone drops
+// both parameters and takes the union of the captures; a forward that passes
+// both on is cloned for the pair.
+const closurePairProgram = `package main
+
+combine: (f: (u32) -> u32, g: (u32) -> u32, x: u32): u32 = f(x) + g(x)
+via: (f: (u32) -> u32, g: (u32) -> u32, x: u32): u32 = combine(f, g, x) + combine(g, f, x)
+
+main: (): i32 {
+  a: u32 = u32(3)
+  b: u32 = u32(4)
+  direct: u32 = combine(fn(x: u32): u32 = x * a, fn(x: u32): u32 = x + b, u32(2))
+  assert(direct == u32(12))
+  both: u32 = via(fn(x: u32): u32 = x * a, fn(x: u32): u32 = x + b, u32(2))
+  assert(both == u32(24))
+  i32_bits_u32(direct + both + u32(6))
+}
+`
+
+func TestE2ECapturingClosurePairInterpreted(t *testing.T) {
+	if got := interpretModule(t, closureModule(t, closurePairProgram)); got != 42 {
+		t.Fatalf("main() returned %d, want 42", got)
+	}
+}
+
+func TestE2ECapturingClosurePairCompiled(t *testing.T) {
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(closureModule(t, closurePairProgram)))
+	if abnormal || code != 42 {
+		t.Fatalf("exit = (%d, abnormal=%v), want 42", code, abnormal)
+	}
+}
