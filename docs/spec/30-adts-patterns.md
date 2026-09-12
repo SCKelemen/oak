@@ -31,7 +31,7 @@ C backend emits one specialized tagged union per instantiation
 declared payload types. `Oak.Monomorphization` (Lean) proves substitution
 preserves the variant count and every tag in order — so the tag-guarded
 dispatch laws of `Oak.ADTSemantics` transfer to every instantiation — and
-that payloads are substituted exactly. Templates themselves are never
+that payloads are substituted exactly; both models are restated in Oak and decided by `oak prove` (`spec/oak/adts.oak`, `spec/oak/mono.oak`; `125-verification.md` §6.3). Templates themselves are never
 emitted; instantiations whose arguments cannot be named (views, functions,
 anonymous shapes) fail closed. The C shape of every emitted union — a
 fixed-width `u32` tag holding the declaration index, then the payload union,

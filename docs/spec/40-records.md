@@ -47,7 +47,7 @@ The compiler may never reconstruct source order from an unordered map.
 
 ## 3. Record shapes can describe compile-time interfaces
 
-A semantic record can be used as a structural field requirement in a constraint position once shape constraints are implemented:
+A semantic record can be used as a structural field requirement in a constraint position once shape constraints are implemented (the satisfaction laws of `Oak.RecordShape` are restated in Oak over field bitsets and decided by `oak prove`: `spec/oak/shapes.oak`, `125-verification.md` §6.3):
 
 ```oak
 XY: type = {

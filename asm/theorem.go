@@ -3,6 +3,7 @@ package asm
 import (
 	"fmt"
 	"sort"
+	"sync/atomic"
 
 	"github.com/SCKelemen/oak/ast"
 )
@@ -149,14 +150,73 @@ func decideTheorem(sig *ast.FunctionStatement, functions map[string]*ast.Functio
 			return Decision{Kind: DecisionRefuted, Message: "counterexample " + describeEnv(names, env)}
 		}
 	}
-	decision, exceeded := decideBlasted(newBlaster(names, widths), traps, t, names)
-	if exceeded && paramGroups(names) > 1 {
-		decision, exceeded = decideBlasted(newGroupedBlaster(names, widths), traps, t, names)
+	// The variable orders run together over the same terms, and the first
+	// to decide within the node budget stops the others: a proof does not
+	// depend on the order, and a theorem that is small under some order is
+	// decided in that order's time rather than after the others' failures.
+	control := controlParams(append([]*term{t}, traps...))
+	blasters := []*blaster{newBlaster(names, widths)}
+	if paramGroups(names) > 1 {
+		blasters = append(blasters, newGroupedBlaster(names, widths))
 	}
-	if exceeded {
-		return Decision{Kind: DecisionUndecided, Message: "the bit-level decision exceeded its node budget"}
+	if len(control) > 0 && len(control) < len(names) {
+		blasters = append(blasters, newControlFirstBlaster(names, widths, control))
 	}
-	return decision
+	var stop atomic.Bool
+	type attempt struct {
+		decision Decision
+		exceeded bool
+	}
+	results := make(chan attempt, len(blasters))
+	for _, bl := range blasters {
+		bl.bdd.stop = &stop
+		go func(bl *blaster) {
+			decision, exceeded := decideBlasted(bl, traps, t, names)
+			results <- attempt{decision, exceeded}
+		}(bl)
+	}
+	for range blasters {
+		if a := <-results; !a.exceeded {
+			stop.Store(true)
+			return a.decision
+		}
+	}
+	return Decision{Kind: DecisionUndecided, Message: "the bit-level decision exceeded its node budget"}
+}
+
+// controlParams names the parameters the terms read as control: those
+// under the condition of a conditional (a selector compared to a constant,
+// a guard) or the count of a shift. The rest are data, which flow into
+// results and comparisons of results without choosing a branch.
+func controlParams(terms []*term) map[string]bool {
+	control := map[string]bool{}
+	visited := map[*term]bool{}
+	var walk func(t *term)
+	walk = func(t *term) {
+		if t == nil || visited[t] {
+			return
+		}
+		visited[t] = true
+		switch t.kind {
+		case termIte:
+			collectParams(t.cond, control)
+			walk(t.left)
+			walk(t.right)
+			return
+		case termBinary:
+			switch t.op {
+			case "shl", "shr", "lsr", "asr", "sar", "ror":
+				collectParams(t.right, control)
+			}
+		}
+		walk(t.cond)
+		walk(t.left)
+		walk(t.right)
+	}
+	for _, t := range terms {
+		walk(t)
+	}
+	return control
 }
 
 // decideBlasted settles the theorem with one blaster: every recorded trap
@@ -181,7 +241,7 @@ func decideBlasted(bl *blaster, traps []*term, t *term, names []string) (Decisio
 	if bits[0] == bddTrue {
 		order := ""
 		if bl.grouped {
-			order = ", parameters in blocks"
+			order = ", " + bl.label
 		}
 		return Decision{Kind: DecisionProven, Message: fmt.Sprintf("at the bit level (%d BDD nodes%s)", len(bl.bdd.nodes), order)}, false
 	}

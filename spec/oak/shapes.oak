@@ -1,0 +1,75 @@
+// Record shapes, in Oak (docs/spec/40-records.md; spec/lean/Oak/RecordShape.lean).
+// A semantic field is a member name and a semantic type; runtime offsets
+// and representation are absent. A candidate satisfies a required shape
+// when every required field is present in the candidate, extra fields
+// allowed. Eight field identities; a shape is the bitset of the fields it
+// has; a shape written as a list is a list of up to four field identities,
+// so that the order laws are about order. Every law is decided.
+
+member: (set: u8, i: u8): Bool = ((set >> (i & u8(7))) & u8(1)) == u8(1)
+single: (i: u8): u8 = u8(1) << (i & u8(7))
+subset: (small: u8, large: u8): Bool = (small & ^large) == u8(0)
+
+// Satisfies: every required field is a candidate field.
+satisfies: (candidate: u8, required: u8): Bool = subset(required, candidate)
+
+// reflexive: every shape satisfies itself.
+reflexive: theorem (shape: u8) { satisfies(shape, shape) }
+
+// empty_required: an empty requirement is satisfied by every candidate.
+empty_required: theorem (candidate: u8) { satisfies(candidate, u8(0)) }
+
+// candidate_extension: an extra candidate field cannot break satisfaction.
+candidate_extension: theorem (candidate: u8, required: u8, extra: u8) { !satisfies(candidate, required) || satisfies(candidate | single(extra), required) }
+
+// transitive: what A provides for B and B for C, A provides for C.
+transitive: theorem (a: u8, b: u8, c: u8) { !(satisfies(a, b) && satisfies(b, c)) || satisfies(a, c) }
+
+// missing_required_rejected: one missing required field rejects.
+missing_required_rejected: theorem (candidate: u8, required: u8, field: u8) { !(member(required, field) && !member(candidate, field)) || !satisfies(candidate, required) }
+
+// A shape written as a list of fields (the source order of a record
+// literal or a requirement), and the set it denotes.
+FieldList: type = struct { field: [4]u8, count: u8 }
+
+shape_of: (list: FieldList): u8 {
+  set: u8 = 0
+  i: u8 = 0
+  while i < u8(4) {
+    set = i < list.count ? { set | single(list.field[u32(i)]) } | { set }
+    i = i + u8(1)
+  }
+  set
+}
+
+reverse_list: (list: FieldList): FieldList {
+  n: u8 = list.count & u8(7)
+  n = n > u8(4) ? { u8(4) } | { n }
+  out: FieldList = FieldList { field: [4]u8{ 0, 0, 0, 0 }, count: n }
+  i: u8 = 0
+  while i < u8(4) {
+    out.field[u32(i)] = i < n ? { list.field[u32(n - u8(1) - i)] } | { u8(0) }
+    i = i + u8(1)
+  }
+  out
+}
+
+// required_reverse_iff, candidate_reverse_iff: field order has no semantic
+// effect, for the requirement and for the candidate.
+required_reverse_iff: theorem (candidate: u8, required: FieldList) { required.count > u8(4) || satisfies(candidate, shape_of(reverse_list(required))) == satisfies(candidate, shape_of(required)) }
+candidate_reverse_iff: theorem (candidate: FieldList, required: u8) { candidate.count > u8(4) || satisfies(shape_of(reverse_list(candidate)), required) == satisfies(shape_of(candidate), required) }
+
+// A semantic record: its shape and, on an independent axis, its runtime
+// representation, which no satisfaction fact reads.
+SemanticRecord: type = struct { fields: u8, representation: u8 }
+
+record_satisfies: (candidate: SemanticRecord, required: SemanticRecord): Bool = satisfies(candidate.fields, required.fields)
+
+with_representation: (r: SemanticRecord, representation: u8): SemanticRecord = SemanticRecord { fields: r.fields, representation: representation }
+
+// representation_irrelevant, required_representation_irrelevant: rebinding
+// either side's representation changes nothing.
+representation_irrelevant: theorem (candidate: SemanticRecord, required: SemanticRecord, representation: u8) { record_satisfies(with_representation(candidate, representation), required) == record_satisfies(candidate, required) }
+required_representation_irrelevant: theorem (candidate: SemanticRecord, required: SemanticRecord, representation: u8) { record_satisfies(candidate, with_representation(required, representation)) == record_satisfies(candidate, required) }
+
+main: (): i32 = 0
