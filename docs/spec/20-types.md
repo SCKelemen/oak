@@ -401,6 +401,10 @@ severity — listed by `oak vet`, rejected by no profile (85-discipline.md
 because `off <= cap - len` is the recommended shape and its precondition
 (`len <= cap`) is a guard the reader can see.
 
+`spec/lean/Oak/ConversionRefinement.lean` does the same for the conversion
+helpers of §11.1 — `trunc`, `saturating`, `checked` and `bits`
+for every admitted pair, pinned by `codegen/conversion_refinement_test.go`
+and `compiler/e2e_conversion_refinement_test.go`.
 `spec/lean/Oak/CheckedArithmeticRefinement.lean` transliterates the C helper
 bodies over the builtins' contract and proves them to this section — in
 particular that each saturating side test picks the bound the exact result
