@@ -93,6 +93,7 @@ import Oak.Stdlib.SortU32Extracted
 import Oak.Stdlib.VarintLaws
 import Oak.Stdlib.SortLaws
 import Oak.Stdlib.TensorLaws
+import Oak.Stdlib.PdqsortLaws
 import Oak.Stdlib.EncodingLaws
 import Oak.Stdlib.Base64Laws
 import Oak.Stdlib.PercentLaws
