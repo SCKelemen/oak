@@ -1085,6 +1085,9 @@ func evalADTType(adt *ast.ADTType, env *object.Environment) object.Object {
 			&ast.ExpressionStatement{Token: adt.Name.Token, Expression: value},
 		}}
 		env.Set(adt.Name.Value, &object.Function{Parameters: []*ast.Identifier{value}, Body: body, Env: env})
+		if len(adt.Variants) == 1 && adt.Variants[0].Payload != nil {
+			env.SetRefinementBase(adt.Name.Value, adt.Variants[0].Payload)
+		}
 		return NULL
 	}
 	adtType := &object.ADTType{

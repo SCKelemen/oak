@@ -295,3 +295,43 @@ func (tc *TypeChecker) RefinementPredicateOver(name, binding string) (ast.Expres
 	predicate := substituteIdentifier(info.predicate, "value", binding)
 	return predicate, predicate != nil
 }
+
+// zeroOutsideRefinement reports a refined component of typ whose predicate
+// zero does not satisfy — the field path from the binding and the
+// refinement's name — for a binding declared without an initializer.
+func (tc *TypeChecker) zeroOutsideRefinement(typ Type, path string, visiting map[string]bool) (string, string, bool) {
+	switch t := typ.(type) {
+	case *PrimitiveType:
+		if t.Refinement == "" {
+			return "", "", false
+		}
+		info, ok := tc.refinements[t.Refinement]
+		if !ok {
+			return "", "", false
+		}
+		if holds, decided := foldPredicate(info.predicate, 0, info.base.Name); decided && holds {
+			return "", "", false
+		}
+		return path, t.Refinement, true
+	case *ArrayType:
+		if t.IsSlice || t.IsSpan {
+			return "", "", false
+		}
+		return tc.zeroOutsideRefinement(t.ElementType, path+"[]", visiting)
+	case *RecordType:
+		if t.Name == "" || visiting[t.Name] {
+			return "", "", false
+		}
+		visiting[t.Name] = true
+		order, fields, ok := tc.RecordFields(t.Name)
+		if !ok {
+			return "", "", false
+		}
+		for _, field := range order {
+			if p, name, outside := tc.zeroOutsideRefinement(fields[field], path+"."+field, visiting); outside {
+				return p, name, true
+			}
+		}
+	}
+	return "", "", false
+}

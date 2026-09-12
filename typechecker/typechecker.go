@@ -3414,6 +3414,11 @@ func (tc *TypeChecker) checkIndexAssignmentStatement(stmt *ast.IndexAssignmentSt
 		return
 	}
 	indexType := tc.checkExpression(stmt.Target.Index, &PrimitiveType{Name: "u32"})
+	if arr, isArray := seqType.(*ArrayType); isArray && !stmt.Target.Dot && indexType != nil {
+		// A store through a refined index is proven like a read
+		// (typechecker/refinements.go).
+		tc.recordRefinedIndexProof(stmt.Target, arr, indexType)
+	}
 	if indexType != nil {
 		if prim, isPrim := indexType.(*PrimitiveType); !isPrim || !tc.isNumericType(prim) {
 			tc.addError(stmt.Target.Index, "index must be an integer, got %s", indexType)
@@ -4094,6 +4099,16 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 		if varType == nil {
 			tc.addError(stmt.Type, "variable %s: invalid type annotation", stmt.Name.Value)
 			return
+		}
+		if stmt.Value == nil {
+			// A zero-initialized binding whose type holds a refinement is
+			// admitted only when zero satisfies the predicate: nothing else
+			// may produce a refined value (typechecker/refinements.go).
+			if path, refinement, outside := tc.zeroOutsideRefinement(varType, "", map[string]bool{}); outside {
+				tc.addTypeDiagnostic(stmt.Name, CodeRefinementShape,
+					fmt.Sprintf("variable %s: the zero value of %s%s is outside the refinement %s; initialize it", stmt.Name.Value, varType.String(), path, refinement))
+				return
+			}
 		}
 		savedDeclared := tc.initializerDeclaredType
 		tc.initializerDeclaredType = varType
