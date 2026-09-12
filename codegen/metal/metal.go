@@ -48,6 +48,10 @@ type Kernel struct {
 	Name   string
 	Params []Param
 	Fault  int
+	// Threadgroup is the threads per position of a group kernel — one that
+	// calls reduce.group_tree — and 0 for an ordinary kernel whose
+	// positions are single threads (docs/spec/56-kernels.md section 7).
+	Threadgroup int64
 	// Independence is the shape the checker discharged for the kernel's
 	// span accesses (docs/spec/56-kernels.md section 6): "element" (every
 	// access at the grid position) or "tile T" (accesses at gid * T + k,
@@ -128,8 +132,8 @@ func (k Kernel) descriptorLine() string {
 	var parts []string
 	for _, p := range k.Params {
 		switch p.Kind {
-		case "grid":
-			parts = append(parts, p.Name+" grid")
+		case "grid", "group":
+			parts = append(parts, p.Name+" "+p.Kind)
 		default:
 			idx := make([]string, len(p.Buffers))
 			for i, b := range p.Buffers {
@@ -140,6 +144,9 @@ func (k Kernel) descriptorLine() string {
 	}
 	parts = append(parts, fmt.Sprintf("fault buffer %d", k.Fault))
 	parts = append(parts, "independence "+k.Independence)
+	if k.Threadgroup > 0 {
+		parts = append(parts, fmt.Sprintf("threadgroup %d", k.Threadgroup))
+	}
 	return k.Name + ": " + strings.Join(parts, "; ")
 }
 
@@ -210,6 +217,13 @@ type emitter struct {
 	// currentRet is the result type of the function being emitted, for the
 	// zero an assertion failure returns.
 	currentRet oakType
+	// groupSize is the threadgroup size of the group kernel being emitted
+	// (0 otherwise); scratch counts its cooperative reductions; hoist is
+	// where a statement's expression may place the lines it needs first.
+	groupSize int64
+	scratch   int
+	hoist     *[]string
+	inKernel  bool
 	// per-function state
 	current string
 	locals  map[string]oakType
@@ -473,6 +487,16 @@ func (em *emitter) kernel(fn *ast.FunctionStatement) (*Kernel, string, error) {
 	var args []string
 	next := 0
 	var prologue []string
+	groupSize, scratchTypes, err := em.groupShape(fn)
+	if err != nil {
+		return nil, "", err
+	}
+	em.groupSize, em.scratch, em.inKernel = groupSize, 0, true
+	defer func() { em.groupSize, em.inKernel = 0, false }()
+	desc.Threadgroup = groupSize
+	for i, t := range scratchTypes {
+		prologue = append(prologue, fmt.Sprintf("  threadgroup %s oak_scratch%d[%d];", scalarMSL[t], i+1, groupSize))
+	}
 	for i, p := range fn.Parameters {
 		if p == nil || p.Name == nil || p.Variadic {
 			return nil, "", em.fail("parameters are named and not variadic")
@@ -520,6 +544,13 @@ func (em *emitter) kernel(fn *ast.FunctionStatement) (*Kernel, string, error) {
 				return nil, "", em.fail("the first parameter %s is the grid position and must be a u32, got %s", p.Name.Value, t)
 			}
 			em.locals[p.Name.Value] = t
+			if groupSize > 0 {
+				// A group kernel's position is its threadgroup; the
+				// threads of the group are the cooperative reduction's.
+				desc.Params = append(desc.Params, Param{Name: p.Name.Value, Kind: "group", Element: "u32"})
+				args = append(args, fmt.Sprintf("uint %s [[threadgroup_position_in_grid]]", name), "uint oak_lid [[thread_position_in_threadgroup]]")
+				continue
+			}
 			desc.Params = append(desc.Params, Param{Name: p.Name.Value, Kind: "grid", Element: "u32"})
 			args = append(args, fmt.Sprintf("uint %s [[thread_position_in_grid]]", name))
 			continue
@@ -728,6 +759,11 @@ func (em *emitter) statement(stmt ast.Statement, lines *[]string, ret oakType, t
 	emit := func(format string, args ...interface{}) {
 		*lines = append(*lines, em.indent+fmt.Sprintf(format, args...))
 	}
+	// A cooperative reduction in a statement's expression places its
+	// lines before the statement.
+	savedHoist := em.hoist
+	em.hoist = lines
+	defer func() { em.hoist = savedHoist }()
 	switch s := stmt.(type) {
 	case *ast.VariableDeclaration:
 		if s.Name == nil {
@@ -818,6 +854,12 @@ func (em *emitter) statement(stmt ast.Statement, lines *[]string, ret oakType, t
 		value, err := em.expr(s.Value, oakType{kind: "scalar", element: t.element})
 		if err != nil {
 			return err
+		}
+		if em.groupSize > 0 && em.inKernel && t.kind == "span" {
+			// Every thread of the group computes the same value; one
+			// writes it.
+			emit("if (oak_lid == 0u) { %s = %s; }", em.elementRef(ref, t, index, s.Target.Token), value)
+			return nil
 		}
 		emit("%s = %s;", em.elementRef(ref, t, index, s.Target.Token), value)
 		return nil
@@ -1529,6 +1571,9 @@ func (em *emitter) call(call *ast.InvocationExpression, want oakType) (string, e
 		// site of this helper instance to a named function.
 		name = bound
 	}
+	if isGroupTree(name) {
+		return em.groupTree(call)
+	}
 	target, known := em.functions[name]
 	if !known {
 		return "", em.fail("call to %s is outside the kernel subset (not a function of the program)", name)
@@ -1586,6 +1631,116 @@ func (em *emitter) call(call *ast.InvocationExpression, want oakType) (string, e
 		return "", err
 	}
 	return fmt.Sprintf("%s(%s)", instance, strings.Join(rendered, ", ")), nil
+}
+
+// ---- cooperative reductions ----
+
+// groupTreePrefix is the mangled name of the standard library's
+// reduce.group_tree instances (`reduce__group_utree_<T>`).
+const groupTreePrefix = "reduce__group_utree_"
+
+func isGroupTree(name string) bool { return strings.HasPrefix(name, groupTreePrefix) }
+
+// groupShape scans a kernel body for reduce.group_tree calls: their group
+// argument is one integer literal, a power of two up to 1024, shared by
+// every call; the element type of each call is recorded for its scratch.
+func (em *emitter) groupShape(fn *ast.FunctionStatement) (int64, []string, error) {
+	var size int64
+	var types []string
+	var failure error
+	walk(fn.Body, func(n ast.Node) {
+		call, ok := n.(*ast.InvocationExpression)
+		if !ok || failure != nil {
+			return
+		}
+		callee, ok := call.Function.(*ast.Identifier)
+		if !ok || !isGroupTree(callee.Value) {
+			return
+		}
+		if len(call.Arguments) != 6 {
+			failure = em.fail("reduce.group_tree takes (group, xs, lo, m, zero, f)")
+			return
+		}
+		literal, isLiteral := call.Arguments[0].(*ast.IntegerLiteral)
+		if !isLiteral || literal.Value < 1 || literal.Value > 1024 || literal.Value&(literal.Value-1) != 0 {
+			failure = em.fail("reduce.group_tree: the group is an integer literal, a power of two up to 1024 (the threadgroup size), got %s", call.Arguments[0].String())
+			return
+		}
+		if size != 0 && size != literal.Value {
+			failure = em.fail("reduce.group_tree: one kernel has one group size, got %d and %d", size, literal.Value)
+			return
+		}
+		size = literal.Value
+		element := strings.TrimPrefix(callee.Value, groupTreePrefix)
+		if scalarMSL[element] == "" {
+			failure = em.fail("reduce.group_tree over %s is outside the kernel subset", element)
+			return
+		}
+		types = append(types, element)
+	})
+	return size, types, failure
+}
+
+// groupTree emits the cooperative reduction of a reduce.group_tree call
+// (docs/spec/56-kernels.md section 7): the group's threads load the
+// window into threadgroup scratch and combine pairwise-adjacent, partner
+// present, doubling the stride — the binary-counter tree of reduce.tree
+// (Oak.Reduce.coop_eq_tree) — and every thread reads the result. The call
+// is a value; its lines go before the statement that holds it.
+func (em *emitter) groupTree(call *ast.InvocationExpression) (string, error) {
+	if em.groupSize == 0 || !em.inKernel || em.hoist == nil {
+		return "", em.fail("reduce.group_tree is called from a kernel body, as a statement's value")
+	}
+	callee := call.Function.(*ast.Identifier)
+	element := strings.TrimPrefix(callee.Value, groupTreePrefix)
+	scalar := oakType{kind: "scalar", element: element}
+	u32 := oakType{kind: "scalar", element: "u32"}
+	xsRef, xsType, ok := em.bufferRef(call.Arguments[1])
+	if !ok || !xsType.isBuffer() || xsType.element != element {
+		return "", em.fail("reduce.group_tree: the second argument is a buffer of %s", element)
+	}
+	lo, err := em.expr(call.Arguments[2], u32)
+	if err != nil {
+		return "", err
+	}
+	m, err := em.expr(call.Arguments[3], u32)
+	if err != nil {
+		return "", err
+	}
+	zero, err := em.expr(call.Arguments[4], scalar)
+	if err != nil {
+		return "", err
+	}
+	fnName, isIdent := call.Arguments[5].(*ast.Identifier)
+	if !isIdent || em.functions[fnName.Value] == nil || em.functions[fnName.Value].Kernel {
+		return "", em.fail("reduce.group_tree: the combine names a function of the program")
+	}
+	combine, err := em.requireHelper(em.functions[fnName.Value], map[string]string{})
+	if err != nil {
+		return "", err
+	}
+	em.scratch++
+	n := em.scratch
+	msl := scalarMSL[element]
+	ind := em.indent
+	add := func(format string, args ...interface{}) {
+		*em.hoist = append(*em.hoist, ind+fmt.Sprintf(format, args...))
+	}
+	add("%s oak_gt%d = %s;", msl, n, zero)
+	add("{")
+	add("  uint oak_lo%d = %s;", n, lo)
+	add("  uint oak_m%d = %s;", n, m)
+	add("  if ((ulong)oak_lo%d + (ulong)oak_m%d > (ulong)%s) { oak_raise(oak_fault, 4u); oak_m%d = 0u; }", n, n, em.lengthRef(xsRef, xsType), n)
+	add("  if (oak_m%d > %du) { oak_raise(oak_fault, 5u); oak_m%d = 0u; }", n, em.groupSize, n)
+	add("  oak_scratch%d[oak_lid] = (oak_lid < oak_m%d) ? %s[oak_lo%d + oak_lid] : oak_gt%d;", n, n, xsRef, n, n)
+	add("  threadgroup_barrier(mem_flags::mem_threadgroup);")
+	add("  for (uint oak_s = 1u; oak_s < %du; oak_s <<= 1u) {", em.groupSize)
+	add("    if ((oak_lid %% (2u * oak_s)) == 0u && oak_lid + oak_s < oak_m%d) { oak_scratch%d[oak_lid] = %s(oak_scratch%d[oak_lid], oak_scratch%d[oak_lid + oak_s], oak_fault); }", n, n, combine, n, n)
+	add("    threadgroup_barrier(mem_flags::mem_threadgroup);")
+	add("  }")
+	add("  if (oak_m%d > 0u) { oak_gt%d = oak_scratch%d[0]; }", n, n, n)
+	add("}")
+	return fmt.Sprintf("oak_gt%d", n), nil
 }
 
 // ---- reach ----

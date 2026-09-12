@@ -77,6 +77,7 @@ Reductions whose grouping is a language fact (`docs/spec/55-parallelism.md`
 | --- | --- |
 | `tree[T](xs: []T, zero: T, f: (T, T) -> T)` | The balanced binary-counter tree: four elements give `f(f(x0, x1), f(x2, x3))`, the `simd.reduce_add` grouping; an empty view yields `zero`, which takes no other part. Identical on every backend, no associativity assumed. O(n) work, one 64-entry stack. |
 | `left[T](xs: []T, zero: T, f: (T, T) -> T)` | The sequential left fold `f(f(zero, x0), x1) ...`. |
+| `group_tree[T](group: u32, xs: []T, lo: u32, m: u32, zero: T, f)` | `tree` over the `m` elements at `lo` (`m <= group` asserted); in a kernel body with a literal power-of-two `group` it is the cooperative threadgroup reduction (`56-kernels.md` §7), the same grouping computed by `group` threads together. |
 
 When `f` is an operator declaring `laws { associative }` the two agree on
 non-empty input (`Oak.Reduce.tree_assoc`). `f` carries the empty effect

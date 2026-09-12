@@ -70,3 +70,15 @@ pub left[T]: (xs: []T, zero: T, f: (T, T) -> T effects { }): T = {
   }
   acc
 }
+
+// group_tree is tree over the m elements of xs starting at lo, for a group
+// of at most `group` elements: the cooperative form a kernel launches with
+// `group` threads per position (docs/spec/56-kernels.md section 7). On the
+// host it is exactly tree over the window; on the GPU the group's threads
+// compute the same binary-counter grouping together (Oak.Reduce.coop_eq_tree).
+// m must not exceed group, and the window must fit xs.
+pub group_tree[T]: (group: u32, xs: []T, lo: u32, m: u32, zero: T, f: (T, T) -> T effects { }): T = {
+  assert(m <= group)
+  tree(subslice(xs, lo, m), zero, f)
+}
+

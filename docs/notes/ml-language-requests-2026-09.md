@@ -60,9 +60,11 @@ list, in the order the pilot would meet them:
    applies. Still open: the shapes `tensor_index` produces (row-major
    `i * cols + j` from two counters), which need the analysis to compose
    two bounds.
-3. **Cross-thread reductions with `reduce.tree`'s grouping** inside kernels
-   (`56-kernels.md` §7), which needs threadgroup memory and a barrier in
-   the subset. *Per-thread* `reduce.tree` over a window landed after #229:
+3. ~~**Cross-thread reductions with `reduce.tree`'s grouping**~~ — landed
+   after #233 as `reduce.group_tree`: a kernel calling it is a group kernel
+   whose threadgroup computes the window's binary-counter tree
+   pairwise-adjacent with doubling stride behind barriers
+   (`Oak.Reduce.coop_eq_tree`). *Per-thread* `reduce.tree` over a window landed after #229:
    buffer windows, fixed-size thread-private arrays, helpers specialized
    to the named functions bound to their function-valued parameters, and
    result-position conditionals joined the subset, and `reduce`'s combine

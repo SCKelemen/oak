@@ -17,6 +17,10 @@ the grouping every backend produces, not about an idealized one.
   the first element — the law that makes `laws { associative }`
   (`10-syntax.md` section 14a) the permission to regroup. Without it, the
   grouping named is the grouping computed.
+* `tree_append_pow2`, `coop_eq_tree`, `coop_full`: the cooperative
+  threadgroup scheme of `reduce.group_tree` (`56-kernels.md` section 7) —
+  pairwise-adjacent combination with doubling stride, partner present —
+  computes this same tree for every window length.
 -/
 
 namespace Oak.Reduce
@@ -185,5 +189,255 @@ theorem tree_assoc (f : α → α → α) (hf : Assoc f) (z x : α) (xs : List �
   unfold tree
   rw [finish_eq_denote f hf, denote_foldl_push f hf]
   simp [denote, chain, extend]
+
+/-! ## The cooperative scheme computes the same tree
+
+`reduce.group_tree` in a kernel (docs/spec/56-kernels.md section 7) is
+computed by a threadgroup: the window's `m` elements sit at positions
+`0 .. m-1`; at stride `S = 1, 2, 4, …` every position `i` that is a
+multiple of `2S` with a partner `i + S < m` combines with it. The
+invariant of that loop — after the strides below `S`, position `i`
+(a multiple of `S`) holds the tree of the block of at most `S` elements
+starting at `i` — is `coop` below, taken as the definition of the scheme
+on blocks; `coop_eq_tree` proves the invariant against the binary-counter
+`tree`, and `coop_full` that the value at position 0 after the last stride
+is `tree` of the whole window. The essential fact is `tree_append_pow2`:
+splitting a list after a power-of-two prefix at least as long as the rest
+splits the tree. -/
+
+theorem collapse_ne (f : α → α → α) (top next : Partial α) (rest : List (Partial α))
+    (h : top.level ≠ next.level) : collapse f (top :: next :: rest) = top :: next :: rest := by
+  rw [collapse, if_neg h]
+
+theorem collapse_eq (f : α → α → α) (top next : Partial α) (rest : List (Partial α))
+    (h : top.level = next.level) :
+    collapse f (top :: next :: rest) = collapse f ({ value := f next.value top.value, level := next.level + 1 } :: rest) := by
+  rw [collapse, if_pos h]
+
+theorem collapse_single (f : α → α → α) (p : Partial α) : collapse f [p] = [p] := by
+  unfold collapse; rfl
+
+/-- No collapse when the new top sits below every level of the stack. -/
+theorem collapse_below (f : α → α → α) (p : Partial α) (S : List (Partial α))
+    (h : ∀ q ∈ S, p.level < q.level) : collapse f (p :: S) = p :: S := by
+  cases S with
+  | nil => exact collapse_single f p
+  | cons q rest => exact collapse_ne f p q rest (Nat.ne_of_lt (h q (by simp)))
+
+theorem collapse_ne_nil (f : α → α → α) (s : List (Partial α)) (h : s ≠ []) : collapse f s ≠ [] := by
+  induction s using collapse.induct f with
+  | case1 top next rest heq ih => rw [collapse, if_pos heq]; exact ih (List.cons_ne_nil _ _)
+  | case2 top next rest hne => rw [collapse, if_neg hne]; exact List.cons_ne_nil _ _
+  | case3 s hs =>
+    unfold collapse
+    split
+    · exact absurd rfl (hs _ _ _)
+    · exact h
+
+theorem push_ne_nil (f : α → α → α) (S : List (Partial α)) (x : α) : push f S x ≠ [] :=
+  collapse_ne_nil f _ (List.cons_ne_nil _ _)
+
+theorem foldl_push_ne_nil (f : α → α → α) (xs : List α) (S : List (Partial α)) (hne : xs ≠ [] ∨ S ≠ []) :
+    xs.foldl (push f) S ≠ [] := by
+  induction xs generalizing S with
+  | nil => simpa using hne
+  | cons x xs ih =>
+    simp only [List.foldl_cons]
+    exact ih (push f S x) (Or.inr (push_ne_nil f S x))
+
+/-- `finish` of a nonempty stack is some value. -/
+theorem finish_some (f : α → α → α) (s : List (Partial α)) (h : s ≠ []) : ∃ v, finish f s = some v := by
+  induction s using finish.induct f with
+  | case1 => exact absurd rfl h
+  | case2 p => exact ⟨p.value, by simp [finish]⟩
+  | case3 top next rest ih => rw [finish]; exact ih (List.cons_ne_nil _ _)
+
+/-- The bottom of the stack is the left operand of everything above it. -/
+theorem finish_append_last (f : α → α → α) (q : Partial α) :
+    ∀ (P : List (Partial α)) (v : α), finish f P = some v → finish f (P ++ [q]) = some (f q.value v) := by
+  intro P
+  induction P using finish.induct f with
+  | case1 => intro v h; simp [finish] at h
+  | case2 p =>
+    intro v h
+    simp [finish] at h
+    subst h
+    simp [finish]
+  | case3 top next rest ih =>
+    intro v h
+    rw [finish] at h
+    simp only [List.cons_append]
+    rw [finish]
+    exact ih v h
+
+/-- `tree` of a nonempty list is the value `finish` computes. -/
+theorem tree_eq_of_finish (f : α → α → α) (z : α) (xs : List α) (v : α)
+    (h : finish f (xs.foldl (push f) []) = some v) : tree f z xs = v := by
+  unfold tree; rw [h]
+
+theorem tree_nonempty (f : α → α → α) (z : α) (xs : List α) (h : xs ≠ []) :
+    finish f (xs.foldl (push f) []) = some (tree f z xs) := by
+  obtain ⟨v, hv⟩ := finish_some f _ (foldl_push_ne_nil f xs [] (Or.inl h))
+  rw [hv, tree_eq_of_finish f z xs v hv]
+
+theorem two_pow_succ_split (k : Nat) : 2 ^ (k + 1) = 2 ^ k + 2 ^ k := by
+  rw [Nat.pow_succ, Nat.mul_two]
+
+/-- A list of length 2^(k+1) is two halves of length 2^k. -/
+theorem split_halves (a : List α) (k : Nat) (ha : a.length = 2 ^ (k + 1)) :
+    ∃ a1 a2 : List α, a = a1 ++ a2 ∧ a1.length = 2 ^ k ∧ a2.length = 2 ^ k := by
+  refine ⟨a.take (2 ^ k), a.drop (2 ^ k), (List.take_append_drop _ _).symm, ?_, ?_⟩
+  · rw [List.length_take, ha, two_pow_succ_split]; omega
+  · rw [List.length_drop, ha, two_pow_succ_split]; omega
+
+/-- Pushing a power-of-two list onto a stack whose levels all reach its
+exponent yields its tree at that level, collapsed into the stack. -/
+theorem foldl_push_pow2 (f : α → α → α) (z : α) :
+    ∀ (k : Nat) (a : List α) (S : List (Partial α)), a.length = 2 ^ k → (∀ p ∈ S, k ≤ p.level) →
+      a.foldl (push f) S = collapse f ({ value := tree f z a, level := k } :: S) := by
+  intro k
+  induction k with
+  | zero =>
+    intro a S ha _
+    cases a with
+    | nil => simp at ha
+    | cons x rest =>
+      cases rest with
+      | nil => simp [push, tree_singleton]
+      | cons y rest' => simp at ha
+  | succ k ih =>
+    intro a S ha hS
+    obtain ⟨a1, a2, rfl, h1, h2⟩ := split_halves a k ha
+    have step : ∀ T : List (Partial α), (∀ p ∈ T, k + 1 ≤ p.level) →
+        (a1 ++ a2).foldl (push f) T = collapse f ({ value := f (tree f z a1) (tree f z a2), level := k + 1 } :: T) := by
+      intro T hT
+      rw [List.foldl_append, ih a1 T h1 (fun p hp => Nat.le_of_succ_le (hT p hp))]
+      rw [collapse_below f { value := tree f z a1, level := k } T (fun q hq => hT q hq)]
+      rw [ih a2 _ h2 (by
+        intro p hp
+        simp only [List.mem_cons] at hp
+        rcases hp with rfl | hp
+        · exact Nat.le_refl _
+        · exact Nat.le_of_succ_le (hT p hp))]
+      exact collapse_eq f { value := tree f z a2, level := k } { value := tree f z a1, level := k } T rfl
+    have hvalue : tree f z (a1 ++ a2) = f (tree f z a1) (tree f z a2) := by
+      apply tree_eq_of_finish
+      rw [step [] (by simp), collapse_single]
+      simp [finish]
+    rw [step S hS, hvalue]
+
+/-- A list shorter than 2^k pushed onto a stack whose levels all reach k
+never touches the stack, and its own partials stay below k. -/
+theorem foldl_push_short (f : α → α → α) (z : α) :
+    ∀ (k : Nat) (b : List α) (S : List (Partial α)), b.length < 2 ^ k → (∀ p ∈ S, k ≤ p.level) →
+      b.foldl (push f) S = b.foldl (push f) [] ++ S ∧ ∀ p ∈ b.foldl (push f) [], p.level < k := by
+  intro k
+  induction k with
+  | zero =>
+    intro b S hb _
+    have : b = [] := List.eq_nil_of_length_eq_zero (by simpa using hb)
+    subst this
+    simp
+  | succ k ih =>
+    intro b S hb hS
+    by_cases hshort : b.length < 2 ^ k
+    · obtain ⟨heq, hlev⟩ := ih b S hshort (fun p hp => Nat.le_of_succ_le (hS p hp))
+      exact ⟨heq, fun p hp => Nat.lt_succ_of_lt (hlev p hp)⟩
+    · -- 2^k ≤ |b| < 2^(k+1): a full power-of-two prefix and a short rest.
+      have hge : 2 ^ k ≤ b.length := Nat.le_of_not_lt hshort
+      obtain ⟨c, d, rfl, hcl, hdl⟩ : ∃ c d : List α, b = c ++ d ∧ c.length = 2 ^ k ∧ d.length < 2 ^ k := by
+        refine ⟨b.take (2 ^ k), b.drop (2 ^ k), (List.take_append_drop _ _).symm, ?_, ?_⟩
+        · rw [List.length_take]; omega
+        · rw [List.length_drop]; rw [two_pow_succ_split] at hb; omega
+      have run : ∀ T : List (Partial α), (∀ p ∈ T, k + 1 ≤ p.level) →
+          (c ++ d).foldl (push f) T = d.foldl (push f) [] ++ ({ value := tree f z c, level := k } : Partial α) :: T := by
+        intro T hT
+        rw [List.foldl_append, foldl_push_pow2 f z k c T hcl (fun p hp => Nat.le_of_succ_le (hT p hp))]
+        rw [collapse_below f { value := tree f z c, level := k } T (fun q hq => hT q hq)]
+        obtain ⟨heq, _⟩ := ih d ({ value := tree f z c, level := k } :: T) hdl (by
+          intro p hp
+          simp only [List.mem_cons] at hp
+          rcases hp with rfl | hp
+          · exact Nat.le_refl _
+          · exact Nat.le_of_succ_le (hT p hp))
+        exact heq
+      obtain ⟨_, hdlev⟩ := ih d [] hdl (by simp)
+      refine ⟨?_, ?_⟩
+      · rw [run S hS, run [] (by simp)]
+        simp
+      · rw [run [] (by simp)]
+        intro p hp
+        simp only [List.mem_append, List.mem_cons, List.mem_nil_iff, or_false] at hp
+        rcases hp with hp | rfl
+        · exact Nat.lt_succ_of_lt (hdlev p hp)
+        · exact Nat.lt_succ_self k
+
+/-- **The split.** A power-of-two prefix at least as long as the nonempty
+rest splits the tree. -/
+theorem tree_append_pow2 (f : α → α → α) (z : α) (k : Nat) (a b : List α)
+    (ha : a.length = 2 ^ k) (hb0 : b ≠ []) (hb : b.length ≤ 2 ^ k) :
+    tree f z (a ++ b) = f (tree f z a) (tree f z b) := by
+  apply tree_eq_of_finish
+  rw [List.foldl_append, foldl_push_pow2 f z k a [] ha (by simp), collapse_single]
+  by_cases hfull : b.length = 2 ^ k
+  · rw [foldl_push_pow2 f z k b _ hfull (by simp),
+      collapse_eq f { value := tree f z b, level := k } { value := tree f z a, level := k } [] rfl,
+      collapse_single]
+    simp [finish]
+  · have hlt : b.length < 2 ^ k := Nat.lt_of_le_of_ne hb hfull
+    obtain ⟨heq, _⟩ := foldl_push_short f z k b [{ value := tree f z a, level := k }] hlt (by simp)
+    rw [heq]
+    exact finish_append_last f _ _ _ (tree_nonempty f z b hb0)
+
+/-- The block of at most `S` elements at position `i`. -/
+def block (xs : List α) (i S : Nat) : List α := (xs.drop i).take S
+
+/-- The cooperative scheme on blocks: after the strides below `2^k`,
+position `i` holds the tree of its block; the next stride combines with
+the partner block when it is present. -/
+def coop (f : α → α → α) (z : α) (xs : List α) : Nat → Nat → α
+  | 0, i => tree f z (block xs i 1)
+  | k + 1, i => if i + 2 ^ k < xs.length then f (coop f z xs k i) (coop f z xs k (i + 2 ^ k)) else coop f z xs k i
+
+theorem block_split (xs : List α) (i k : Nat) :
+    block xs i (2 ^ (k + 1)) = block xs i (2 ^ k) ++ block xs (i + 2 ^ k) (2 ^ k) := by
+  unfold block
+  rw [two_pow_succ_split, List.take_add, List.drop_drop]
+
+theorem block_length (xs : List α) (i S : Nat) : (block xs i S).length = min S (xs.length - i) := by
+  unfold block; rw [List.length_take, List.length_drop]
+
+/-- **The invariant.** -/
+theorem coop_eq_tree (f : α → α → α) (z : α) (xs : List α) :
+    ∀ (k i : Nat), coop f z xs k i = tree f z (block xs i (2 ^ k)) := by
+  intro k
+  induction k with
+  | zero => intro i; rfl
+  | succ k ih =>
+    intro i
+    have hpos : 0 < 2 ^ k := Nat.two_pow_pos k
+    simp only [coop]
+    split
+    · rename_i hpartner
+      rw [ih, ih, block_split]
+      apply (tree_append_pow2 f z k _ _ _ _ _).symm
+      · rw [block_length]; omega
+      · apply List.ne_nil_of_length_pos
+        rw [block_length]; omega
+      · rw [block_length]; exact Nat.min_le_left _ _
+    · rename_i hno
+      rw [ih, block_split]
+      have hempty : block xs (i + 2 ^ k) (2 ^ k) = [] := by
+        unfold block
+        rw [List.drop_eq_nil_of_le (Nat.le_of_not_lt hno), List.take_nil]
+      rw [hempty, List.append_nil]
+
+/-- **The whole window.** After the last stride, position 0 holds `tree` of
+the window when the group covers it. -/
+theorem coop_full (f : α → α → α) (z : α) (xs : List α) (k : Nat) (h : xs.length ≤ 2 ^ k) :
+    coop f z xs k 0 = tree f z xs := by
+  rw [coop_eq_tree]
+  unfold block
+  rw [List.drop_zero, List.take_of_length_le h]
 
 end Oak.Reduce

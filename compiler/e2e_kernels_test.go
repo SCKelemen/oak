@@ -491,3 +491,110 @@ main: (): i32 = 0`, CodeKernelSubset},
 		}
 	}
 }
+
+// A cooperative reduction (docs/spec/56-kernels.md section 7):
+// reduce.group_tree in a kernel makes it a group kernel — a threadgroup per
+// position — whose threads load the window into threadgroup scratch and
+// combine pairwise-adjacent with doubling stride, the binary-counter
+// grouping reduce.tree computes on the host (Oak.Reduce.coop_eq_tree).
+const kernelGroupProgram = `package main
+
+r := import("reduce")
+
+add: (a: f32, b: f32): f32 = a + b
+
+kernel group_sums: (gid: u32, x: []f32, partials: [*]f32): () = {
+  n: u32 = len(x)
+  lo: u32 = gid * 4
+  gid < len(partials) && lo <= n ? {
+    m: u32 = lo + 4 <= n ? 4 | n - lo
+    zero: f32 = 0.0
+    partials[gid] = r.group_tree(4, x, lo, m, zero, add)
+  }
+}
+
+main: (): i32 = {
+  xs: [10]f32 = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+  ps: [3]f32 = [0.0, 0.0, 0.0]
+  g: u32 = 0
+  while g < 3 {
+    group_sums(g, view(&xs), span(&ps))
+    g = g + 1
+  }
+  zero: f32 = 0.0
+  total: f32 = r.tree(view(&ps), zero, add)
+  ps[0] == 10.0 && ps[1] == 26.0 && ps[2] == 19.0 && total == 55.0 ? 42 | 1
+}
+`
+
+func TestE2EKernelsGroupTree(t *testing.T) {
+	root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": kernelGroupProgram})
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+	result, err := New().WithPackageDir(root).EmitMetal().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := result.Source
+	for _, want := range []string{
+		"// oak-kernel group_sums: gid group; x view f32 buffer 0,1; partials span f32 buffer 2,3; fault buffer 4; independence element; threadgroup 4",
+		"kernel void group_sums(uint gid [[threadgroup_position_in_grid]], uint oak_lid [[thread_position_in_threadgroup]], device const float* x [[buffer(0)]]",
+		"  threadgroup float oak_scratch1[4];",
+		"if ((ulong)oak_lo1 + (ulong)oak_m1 > (ulong)x_len) { oak_raise(oak_fault, 4u); oak_m1 = 0u; }",
+		"if (oak_m1 > 4u) { oak_raise(oak_fault, 5u); oak_m1 = 0u; }",
+		"oak_scratch1[oak_lid] = (oak_lid < oak_m1) ? x[oak_lo1 + oak_lid] : oak_gt1;",
+		"threadgroup_barrier(mem_flags::mem_threadgroup);",
+		"for (uint oak_s = 1u; oak_s < 4u; oak_s <<= 1u) {",
+		"if ((oak_lid % (2u * oak_s)) == 0u && oak_lid + oak_s < oak_m1) { oak_scratch1[oak_lid] = add(oak_scratch1[oak_lid], oak_scratch1[oak_lid + oak_s], oak_fault); }",
+		"if (oak_m1 > 0u) { oak_gt1 = oak_scratch1[0]; }",
+		"if (oak_lid == 0u) { partials[gid] = oak_gt1; }",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("missing %q in:\n%s", want, src)
+		}
+	}
+	if result.Kernels[0].Threadgroup != 4 || result.Kernels[0].Params[0].Kind != "group" {
+		t.Fatalf("descriptor = %+v", result.Kernels[0])
+	}
+}
+
+// The group is a literal power of two shared by the kernel's calls, and
+// the call belongs in a kernel body.
+func TestKernelsGroupTreeRejections(t *testing.T) {
+	prelude := "r := import(\"reduce\")\n\nadd: (a: f32, b: f32): f32 = a + b\n\n"
+	cases := map[string]string{
+		"variable group": prelude + `kernel k: (gid: u32, x: []f32, p: [*]f32, g: u32): () = {
+  zero: f32 = 0.0
+  gid < len(p) ? { p[gid] = r.group_tree(g, x, 0, 1, zero, add) }
+}
+main: (): i32 = 0`,
+		"not a power of two": prelude + `kernel k: (gid: u32, x: []f32, p: [*]f32): () = {
+  zero: f32 = 0.0
+  gid < len(p) ? { p[gid] = r.group_tree(6, x, 0, 1, zero, add) }
+}
+main: (): i32 = 0`,
+		"two sizes": prelude + `kernel k: (gid: u32, x: []f32, p: [*]f32): () = {
+  zero: f32 = 0.0
+  gid < len(p) ? { p[gid] = r.group_tree(4, x, 0, 1, zero, add) + r.group_tree(8, x, 0, 1, zero, add) }
+}
+main: (): i32 = 0`,
+		"in a helper": prelude + `part: (x: []f32): f32 = {
+  zero: f32 = 0.0
+  r.group_tree(4, x, 0, 1, zero, add)
+}
+kernel k: (gid: u32, x: []f32, p: [*]f32): () = { gid < len(p) ? { p[gid] = part(x) } }
+main: (): i32 = 0`,
+	}
+	for name, src := range cases {
+		root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": "package main\n\n" + src + "\n"})
+		_, err := New().WithPackageDir(root).EmitC().Get()
+		if err == nil {
+			t.Fatalf("%s: compiled; want %s", name, CodeKernelSubset)
+		}
+		if !strings.Contains(err.Error(), CodeKernelSubset) {
+			t.Fatalf("%s: want %s, got %v", name, CodeKernelSubset, err)
+		}
+	}
+}
