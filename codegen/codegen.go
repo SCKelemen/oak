@@ -19,6 +19,10 @@ import (
 
 // CodeGenerator generates C code from Oak AST
 type CodeGenerator struct {
+	// refinementName resolves an application of a generic refinement to
+	// literals (IrqId[4]) in a re-substituted template field to its
+	// specialization's name (typechecker.RefinementApplicationName).
+	refinementName func(ast.Expression) (string, bool)
 	// equalityTypes caches the aggregates whose equality functions the
 	// program needs (typechecker.EqualityTypes); nil until first asked.
 	equalityTypes map[string]bool
@@ -185,6 +189,9 @@ func (cg *CodeGenerator) SetSourceText(text string) {
 
 // Generate generates C code from an Oak program
 func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChecker) (string, error) {
+	if tc != nil {
+		cg.refinementName = tc.RefinementApplicationName
+	}
 	cg.output.Reset()
 	cg.sliceHelpers = make(map[string]string)
 	cg.types = make(map[string]bool)

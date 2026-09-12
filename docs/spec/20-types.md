@@ -890,7 +890,12 @@ integer literals within the parameter's kind (`IrqId[300]` with `N: u8` is
 an error, `OAK-T0602`); an application with the wrong count of arguments
 or a parameter that is a type rather than a constant is refused the same
 way. An application whose argument is the const parameter of an enclosing
-template (`IrqId[N]` inside `Table[N: u32]`) is not yet specialized.
+template — a record template's field `slot: IrqId[N]`, a generic
+function's `make[N: u32]: (v: u16): IrqId[N] = IrqId[N](v)` — is
+specialized when the enclosing template is instantiated, so `Table[8]`
+holds an `IrqId_8` and `make[8]` constructs one; `[4]IrqId[N]` is an
+array of the application. A record field of a refinement type has its
+base's representation in the backend.
 
 Not yet: refinements over records and floats, and the discharge of a
 construction from a declared theorem rather than the facts in scope. Each
