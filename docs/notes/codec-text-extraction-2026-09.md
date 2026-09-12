@@ -139,7 +139,7 @@ reference minimum) to turn `benchmarks/json/compare.py` into a gate.
 (the lookup4 validator in safe Oak, tables proved in `Oak.Utf8Lookup`);
 `movemask_E`, `ctz_u32/u64`, and `popcount_u32/u64` landed the same
 evening as the mask vocabulary of `93-simd.md` §1.2. Finding 6 (the
-`ctz` loop as a bounded shape) stays an `OAK-D0103` obligation. Finding 9 landed in 0712953 (the `len - K` spelling, vector facts, the validator's proven loads) and finding 12's text half the same evening: `strings.utf8_check`/`utf8_first_error_at` and `utf8.locate` (`70-strings.md` §4a); the JSON half is open. The sixty-four-byte step followed the same evening: 12.3 GB/s beside simdutf's 12.9 and simdjson's 12.9 on the same run, within five percent of the golden implementations, in safe Oak.
+`ctz` loop as a bounded shape) stays an `OAK-D0103` obligation. Finding 9 landed in 0712953 (the `len - K` spelling, vector facts, the validator's proven loads) and finding 12 the same evening: `strings.utf8_check`/`utf8_first_error_at` and `utf8.locate` (`70-strings.md` §4a) for text, `decode_located[T, Json]: Result[T, JsonFault]` (`71-codecs.md` §13 "Positions") for JSON — the offset attached where the error is built, the scanner's register-return ABI untouched, `json_skip_space` for the position only on error paths. The sixty-four-byte step followed the same evening: 12.3 GB/s beside simdutf's 12.9 and simdjson's 12.9 on the same run, within five percent of the golden implementations, in safe Oak.
 
 
 Order by evidence: findings 1–5 are one `93-simd.md` revision (table

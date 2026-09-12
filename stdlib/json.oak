@@ -335,6 +335,13 @@ pub json_bool_encode_at: (dst: [*]u8, offset: u32, value: Bool): Result[u32, Jso
 
 // Decoder results contain only concrete values and byte offsets, never boxes.
 pub JsonDecodeError: type = InvalidEncoding | InvalidSyntax | TypeMismatch | NumericOverflow | MissingField | DuplicateField | UnknownField | LengthMismatch
+// A decode error with the byte offset it was detected at: the start of the
+// offending token, the key of an unknown or duplicate field, the position
+// where a separator or colon was expected, the byte where UTF-8 failed
+// (docs/spec/71-codecs.md section 13, "Positions"). decode_located[T, Json]
+// returns it; decode[T, Json] drops the offset.
+pub JsonFault: type = struct { error: JsonDecodeError, at: u32 }
+pub json_utf8_first_error: (src: []u8): u32 = strings.utf8_first_error(src)
 pub JsonDecoded[T]: type = struct { value: T, next: u32 }
 pub JsonToken: type = struct { kind: u32, start: u32, end: u32 }
 pub JsonInteger: type = struct { magnitude: u64, negative: Bool, next: u32 }
