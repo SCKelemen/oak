@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
@@ -47,6 +48,11 @@ type Kernel struct {
 	Name   string
 	Params []Param
 	Fault  int
+	// Independence is the shape the checker discharged for the kernel's
+	// span accesses (docs/spec/56-kernels.md section 6): "element" (every
+	// access at the grid position) or "tile T" (accesses at gid * T + k,
+	// k < T; the host keeps grid * T within the u32 index).
+	Independence string
 	// Reach lists the kernel and every helper function its body reaches,
 	// the set the compiler holds to the kernel rules (loops, effects).
 	Reach []string
@@ -62,6 +68,7 @@ type Result struct {
 // an empty source and no descriptors.
 func Emit(program *ast.Program, tc *typechecker.TypeChecker) (*Result, error) {
 	em := &emitter{
+		tc:        tc,
 		env:       tc.Env(),
 		functions: map[string]*ast.FunctionStatement{},
 		helpers:   map[string]bool{},
@@ -146,6 +153,7 @@ func (k Kernel) descriptorLine() string {
 		}
 	}
 	parts = append(parts, fmt.Sprintf("fault buffer %d", k.Fault))
+	parts = append(parts, "independence "+k.Independence)
 	return k.Name + ": " + strings.Join(parts, "; ")
 }
 
@@ -194,6 +202,7 @@ static inline float oak_fmax(float a, float b) { return (isnan(a) || isnan(b)) ?
 `
 
 type emitter struct {
+	tc        *typechecker.TypeChecker
 	env       *typechecker.TypeEnvironment
 	functions map[string]*ast.FunctionStatement
 	helpers   map[string]bool
@@ -394,6 +403,12 @@ func (em *emitter) kernel(fn *ast.FunctionStatement) (*Kernel, string, error) {
 	}
 	out.WriteString(body)
 	out.WriteString("}\n")
+	// Independence is judged once the body is known to be in the subset.
+	shape, err := em.independence(fn)
+	if err != nil {
+		return nil, "", err
+	}
+	desc.Independence = shape
 	return desc, out.String(), nil
 }
 
@@ -571,7 +586,7 @@ func (em *emitter) statement(stmt ast.Statement, lines *[]string, ret oakType, t
 		if err != nil {
 			return err
 		}
-		emit("%s[oak_check(%s, %s_len, oak_fault)] = %s;", ident(base.Value), index, ident(base.Value), value)
+		emit("%s = %s;", em.element(base.Value, index, s.Target.Token), value)
 		return nil
 	case *ast.WhileStatement:
 		cond, err := em.expr(s.Condition, oakType{kind: "scalar", element: "Bool"})
@@ -795,7 +810,7 @@ func (em *emitter) expr(expr ast.Expression, want oakType) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("%s[oak_check(%s, %s_len, oak_fault)]", ident(base.Value), index, ident(base.Value)), nil
+		return em.element(base.Value, index, e.Token), nil
 	case *ast.InvocationExpression:
 		return em.call(e, want)
 	case *ast.MatchExpression:
@@ -825,6 +840,17 @@ func (em *emitter) expr(expr ast.Expression, want oakType) (string, error) {
 		return "", em.fail("block %s in value position is outside the kernel subset", e.String())
 	}
 	return "", em.fail("expression %s is outside the kernel subset", expr.String())
+}
+
+// element renders buffer[index]: through the fault-raising check unless the
+// checker proved the access in range (typechecker/extents.go, Oak.Extents)
+// — a guard such as `gid < len(y)` or a canonical loop bound over a binding
+// of `len(x)` discharges it, and the access is then the raw load or store.
+func (em *emitter) element(buffer, index string, at token.Token) string {
+	if em.tc != nil && em.tc.IndexProven(at) {
+		return fmt.Sprintf("%s[%s]", ident(buffer), index)
+	}
+	return fmt.Sprintf("%s[oak_check(%s, %s_len, oak_fault)]", ident(buffer), index, ident(buffer))
 }
 
 func (em *emitter) operandType(e ast.Expression, fallback oakType) oakType {

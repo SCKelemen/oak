@@ -71,14 +71,16 @@ func TestKernelsEmitMetal(t *testing.T) {
 		t.Fatalf("reach = %v", relu.Reach)
 	}
 	for _, want := range []string{
-		"// oak-kernel relu: gid grid; x view f32 buffer 0,1; y span f32 buffer 2,3; fault buffer 4",
-		"// oak-kernel axpy: gid grid; a scalar f32 buffer 0; x view f32 buffer 1,2; y span f32 buffer 3,4; tile scalar u32 buffer 5; fault buffer 6",
+		"// oak-kernel relu: gid grid; x view f32 buffer 0,1; y span f32 buffer 2,3; fault buffer 4; independence element",
+		"// oak-kernel axpy: gid grid; a scalar f32 buffer 0; x view f32 buffer 1,2; y span f32 buffer 3,4; tile scalar u32 buffer 5; fault buffer 6; independence tile tile",
 		"#pragma METAL fp math_mode(safe)",
 		"kernel void relu(uint gid [[thread_position_in_grid]], device const float* x [[buffer(0)]], constant uint& x_len [[buffer(1)]], device float* y [[buffer(2)]], constant uint& y_len [[buffer(3)]], device atomic_uint* oak_fault [[buffer(4)]]) {",
 		"static inline float clamp_relu(float x, device atomic_uint* oak_fault) {\n  return ((x < 0.0f) ? 0.0f : x);\n}",
-		"y[oak_check(gid, y_len, oak_fault)] = clamp_relu(x[oak_check(gid, x_len, oak_fault)], oak_fault);",
+		// The guard `gid < len(y)` discharges the store; x's length is
+		// unknown, so the load stays checked.
+		"y[gid] = clamp_relu(x[oak_check(gid, x_len, oak_fault)], oak_fault);",
 		"constant float& a [[buffer(0)]]",
-		"y[oak_check(i, y_len, oak_fault)] = ((a * x[oak_check(i, x_len, oak_fault)]) + y[oak_check(i, y_len, oak_fault)]);",
+		"y[i] = ((a * x[oak_check(i, x_len, oak_fault)]) + y[i]);",
 		"while (k < tile) {",
 		"k = (k + 1u);",
 	} {
@@ -189,5 +191,110 @@ func TestKernelsSyntaxAndExtraction(t *testing.T) {
 	// `kernel` stays an ordinary identifier elsewhere.
 	if _, err := New().WithSource("ident.oak", "main: (): i32 = {\n  kernel: i32 = 42\n  kernel\n}\n").EmitC().Get(); err != nil {
 		t.Fatalf("kernel as a binding name: %v", err)
+	}
+}
+
+// Bounds checks the checker discharges (typechecker/extents.go) are elided
+// in the emitted Metal: a same-length guard transfers the bound to the
+// second buffer, and a canonical loop bound over a binding of len(x)
+// proves every access in its body.
+func TestKernelsElideProvenChecks(t *testing.T) {
+	src := `
+kernel saxpy: (gid: u32, a: f32, x: []f32, y: [*]f32): () = {
+  len(x) == len(y) && gid < len(y) ? { y[gid] = a * x[gid] + y[gid] }
+}
+
+kernel prefix: (gid: u32, x: []f32, out: [*]f32): () = {
+  n: u32 = len(x)
+  acc: f32 = 0.0
+  i: u32 = 0
+  while i < n {
+    acc = acc + x[i]
+    i = i + 1
+  }
+  gid < len(out) ? { out[gid] = acc }
+}
+main: (): i32 = 0
+`
+	result, err := New().WithSource("elide.oak", src).EmitMetal().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"y[gid] = ((a * x[gid]) + y[gid]);",
+		"acc = (acc + x[i]);",
+		"out[gid] = acc;",
+	} {
+		if !strings.Contains(result.Source, want) {
+			t.Fatalf("missing %q in:\n%s", want, result.Source)
+		}
+	}
+	if strings.Contains(result.Source, "oak_check(") && strings.Count(result.Source, "oak_check(") > 1 {
+		// The prelude defines oak_check once; no call site should remain.
+		t.Fatalf("a check survived a proof:\n%s", result.Source)
+	}
+}
+
+// Thread independence (docs/spec/56-kernels.md section 6, OAK-K0104): a
+// span access at anything but the grid position or a tile index is
+// rejected, as is a span handed to a helper or a reassigned grid position;
+// the tile shape through a literal width is admitted.
+func TestKernelsIndependence(t *testing.T) {
+	cases := map[string]string{
+		"neighbour": `kernel k: (gid: u32, y: [*]f32): () = { gid + 1 < len(y) ? { y[gid + 1] = 1.0 } }
+main: (): i32 = 0`,
+		"span to helper": `store: (s: [*]f32, i: u32): () = { i < len(s) ? { s[i] = 1.0 } }
+kernel k: (gid: u32, y: [*]f32): () = { store(y, gid) }
+main: (): i32 = 0`,
+		"gid reassigned": `kernel k: (gid: u32, y: [*]f32): () = {
+  gid = gid / 2
+  gid < len(y) ? { y[gid] = 1.0 }
+}
+main: (): i32 = 0`,
+		"counter not last": `kernel kern: (gid: u32, y: [*]f32, tile: u32): () = {
+  k: u32 = 0
+  while k < tile {
+    k = k + 1
+    i: u32 = gid * tile + k
+    i < len(y) ? { y[i] = 1.0 }
+  }
+}
+main: (): i32 = 0`,
+		"read across tiles": `kernel kern: (gid: u32, y: [*]f32, tile: u32): () = {
+  k: u32 = 0
+  while k < tile {
+    i: u32 = gid * tile + k
+    i + 1 < len(y) ? { y[i] = y[i + 1] }
+    k = k + 1
+  }
+}
+main: (): i32 = 0`,
+	}
+	for name, src := range cases {
+		_, err := New().WithSource("indep.oak", src).EmitC().Get()
+		if err == nil {
+			t.Fatalf("%s: compiled; want %s", name, CodeKernelIndependence)
+		}
+		if !strings.Contains(err.Error(), CodeKernelIndependence) {
+			t.Fatalf("%s: want %s, got %v", name, CodeKernelIndependence, err)
+		}
+	}
+	admitted := `
+kernel quad: (gid: u32, x: []f32, y: [*]f32): () = {
+  k: u32 = 0
+  while k < 4 {
+    i: u32 = 4 * gid + k
+    i < len(y) ? { y[i] = x[gid] * y[i] }
+    k = k + 1
+  }
+}
+main: (): i32 = 0
+`
+	result, err := New().WithSource("quad.oak", admitted).EmitMetal().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Kernels[0].Independence != "tile 4" || !strings.Contains(result.Source, "independence tile 4") {
+		t.Fatalf("descriptor = %+v", result.Kernels[0])
 	}
 }

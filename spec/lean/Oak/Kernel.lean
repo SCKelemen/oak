@@ -92,4 +92,39 @@ theorem run_perm (l₁ l₂ : List (Thread Addr Val))
     intro t ht u hu hne
     exact hind t (h₁.mem_iff.mpr ht) u (h₁.mem_iff.mpr hu) hne
 
+/-! ## The two shapes the checker discharges
+
+`56-kernels.md` section 6: the checker admits a kernel whose every span
+access is at the grid position (one element per thread) or at
+`gid * T + k` under a loop `while k < T` (a tile per thread), and rejects
+every other. These are the footprints; their pairwise disjointness for
+distinct positions is what `Independent` asks of the spans, so `run_perm`
+applies. The tile fact is over `Nat`: the launch obligation recorded in
+the descriptor is that `grid * T` fits the `u32` index, so the kernel's
+wrapping arithmetic computes these numbers. -/
+
+/-- The element shape: position `g` touches address `g`. -/
+def elementFootprint (g a : Nat) : Prop := a = g
+
+/-- The tile shape: position `g` touches `g * T + k` for `k < T`. -/
+def tileFootprint (T g a : Nat) : Prop := ∃ k, k < T ∧ a = g * T + k
+
+theorem element_disjoint {g h a : Nat} (hne : g ≠ h) :
+    ¬ (elementFootprint g a ∧ elementFootprint h a) := by
+  intro ⟨hg, hh⟩
+  exact hne (hg.symm.trans hh)
+
+/-- `g * T + k` with `k < T` determines `g`: it is the quotient by `T`. -/
+theorem tile_index_div {T g k : Nat} (hk : k < T) : (g * T + k) / T = g := by
+  have hT : 0 < T := Nat.lt_of_le_of_lt (Nat.zero_le k) hk
+  rw [Nat.mul_comm, Nat.mul_add_div hT, Nat.div_eq_of_lt hk, Nat.add_zero]
+
+theorem tile_disjoint {T g h a : Nat} (hne : g ≠ h) :
+    ¬ (tileFootprint T g a ∧ tileFootprint T h a) := by
+  intro ⟨⟨k, hk, hga⟩, ⟨k', hk', hha⟩⟩
+  apply hne
+  have h1 := tile_index_div (g := g) hk
+  have h2 := tile_index_div (g := h) hk'
+  rw [← h1, ← hga, hha, h2]
+
 end Oak.Kernel

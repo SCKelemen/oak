@@ -47,14 +47,19 @@ step for proofs of match semantics. It is recorded here, not started.
 Each landed round recorded its next increment in its spec section; the
 list, in the order the pilot would meet them:
 
-1. **Check elision in kernels** (`56-kernels.md` §3): every buffer access
-   in an emitted kernel is a compare today; the checker's discharged
-   bounds (`while i < n` with `n = len(x)`) should elide them, which is the
-   performance fight this design asks the author to win with a proof.
-2. **Thread independence as a checker rule** (`56-kernels.md` §6): the
-   one-element-per-thread and tile-per-thread shapes over `tensor_index`,
-   failing closed on unknown independence as `55-parallelism.md` §2
-   requires; `Oak.Kernel.run_perm` is the theorem the rule discharges.
+1. ~~**Check elision in kernels**~~ — landed after #224: the Metal emitter
+   emits a raw load or store wherever the checker's extent facts prove the
+   index, and a binding of `len(v)` now yields an upper bound for indices
+   into `v` (`bound_through_upper`), so the canonical strict loop shape
+   `n: u32 = len(x); while i < n` is discharged in both the C backend and
+   the kernels.
+2. ~~**Thread independence as a checker rule**~~ — landed after #224
+   (`56-kernels.md` §6, `OAK-K0104`): every span access must be at `gid`
+   or at `gid * T + k` under `while k < T`; `Oak.Kernel.element_disjoint`
+   and `tile_disjoint` prove the footprints disjoint, so `run_perm`
+   applies. Still open: the shapes `tensor_index` produces (row-major
+   `i * cols + j` from two counters), which need the analysis to compose
+   two bounds.
 3. **Cross-thread reductions with `reduce.tree`'s grouping** inside kernels
    (`56-kernels.md` §7), which needs threadgroup memory and a barrier in
    the subset.

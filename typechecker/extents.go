@@ -850,6 +850,13 @@ func (tc *TypeChecker) declarationFacts(decl *ast.VariableDeclaration) []extentF
 	if k, isConst := constantIndex(decl.Value); isConst && k >= 0 {
 		return []extentFact{{kind: factLowerLit, other: decl.Name.Value, bound: k}}
 	}
+	// `n: u32 = len(v)` binds an upper bound for indices into v: n = len(v)
+	// gives n <= len(v), so a later `i < n` proves `i < len(v)`
+	// (Oak.Extents.bound_through_upper). This is the canonical strict loop
+	// shape (85-discipline.md section 3), where the bound must be a binding.
+	if container, isLen := lenOf(decl.Value); isLen && tc.localBinding(container) {
+		return []extentFact{{kind: factUpperBound, container: container, other: decl.Name.Value}}
+	}
 	var length int64
 	switch value := decl.Value.(type) {
 	case *ast.InvocationExpression:

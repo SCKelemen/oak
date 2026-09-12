@@ -121,11 +121,17 @@ Oak trap is unreachable; a host that reads them anyway has left the
 language. The C realization traps at the same conditions, on the thread
 that meets them.
 
-Every buffer access is checked in this increment. Eliding a check the
-checker has discharged — a `while i < n` bound with `n = len(x)` proves
-`x[i]` in range — is the recorded next step; the emitted form makes the
-cost visible, one compare per access, which is the fight for performance
-this design asks the author to win with a proof rather than a flag.
+A buffer access the checker has **discharged** (`50-borrowing.md` §8,
+`typechecker/extents.go`, laws in `Oak.Extents`) is emitted as the raw
+load or store; every other access goes through the check. The forms a
+kernel meets: a guard `gid < len(y) ? { y[gid] = ... }` proves the store
+for the arm; `len(x) == len(y)` in the same guard transfers the bound to
+`x[gid]`; the canonical strict loop `n: u32 = len(x)` … `while i < n {
+x[i] }` proves every access in the body (the binding of `len(x)` is an
+upper bound for indices into `x`, `bound_through_upper`). The emitted form
+keeps the cost visible — a compare per access the author has not
+discharged — which is the fight for performance this design asks the
+author to win with a proof rather than a flag.
 
 ## 4. Floating point
 
@@ -172,13 +178,28 @@ footprint) and proves `commute` (independent threads commute) and
 `run_perm`: running independent threads in any order gives the same
 memory, so the sequential C loop and the GPU launch compute one result.
 
-The independence obligation is the kernel author's in this increment: the
-checker does not yet prove that `y[gid]` and `y[gid']` are disjoint for
-`gid ≠ gid'`. The two shapes the pilot uses — one element per thread, and a
-tile of `tile` elements per thread starting at `gid * tile` — satisfy it
-by construction; a checker rule that recognizes them is the recorded next
-step, with unknown independence failing closed as section 2 of the
-parallelism chapter requires.
+**The checker discharges independence** for the two shapes a kernel
+author writes, and rejects every other span access (`OAK-K0104`, naming the
+access), as section 2 of the parallelism chapter requires of unknown
+independence:
+
+- **one element per thread**: every span access is at the grid position,
+  `y[gid]`;
+- **a tile per thread**: every span access is at `gid * T + k` — spelled
+  directly, through a local `base: u32 = gid * T`, or through a local
+  `i: u32 = base + k` — where `k` is the counter of an enclosing
+  `while k < T` whose body changes `k` only as its last statement, and `T`
+  is a scalar parameter or a literal; none of `gid`, `base`, `i`, or `T`
+  is reassigned.
+
+Views are read-only and impose nothing; a span handed to a helper takes
+its accesses out of the kernel's sight and is rejected (index the span in
+the kernel body). `Oak.Kernel.element_disjoint` and `tile_disjoint` prove
+the two footprints pairwise disjoint for distinct positions, which is
+`Independent` for the spans, so `run_perm` applies. The tile fact is over
+the natural numbers: the descriptor records the shape (`independence:
+tile T`) and the host's obligation is that `grid * T` fits the `u32`
+index, which any buffer the tiles cover already guarantees.
 
 ## 7. What this increment does not do
 

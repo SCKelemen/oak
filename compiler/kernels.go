@@ -10,6 +10,7 @@ package compiler
 // effects (OAK-K0103).
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -32,6 +33,9 @@ const (
 	// CodeKernelEffect reports a kernel that reaches an effect, or code whose
 	// effects the compiler cannot know.
 	CodeKernelEffect = "OAK-K0103"
+	// CodeKernelIndependence reports a span access the checker cannot prove
+	// disjoint across grid positions (docs/spec/56-kernels.md section 6).
+	CodeKernelIndependence = "OAK-K0104"
 )
 
 // analyzeKernels checks every kernel in the specialized program.
@@ -110,7 +114,12 @@ func analyzeKernels(program *ast.Program, tc *typechecker.TypeChecker) []*diagno
 				node = fn.Name
 			}
 		}
-		report(CodeKernelSubset, node, "%v", err)
+		var independence *metal.IndependenceError
+		if errors.As(err, &independence) {
+			report(CodeKernelIndependence, node, "kernel: %v; a launch runs positions in any order, so every span access must be at the grid position or at gid * T + k under `while k < T` (docs/spec/56-kernels.md section 6)", err)
+		} else {
+			report(CodeKernelSubset, node, "%v", err)
+		}
 	}
 	return diags
 }
