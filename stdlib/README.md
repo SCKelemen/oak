@@ -81,6 +81,28 @@ Reductions whose grouping is a language fact (`docs/spec/55-parallelism.md`
 When `f` is an operator declaring `laws { associative }` the two agree on
 non-empty input (`Oak.Reduce.tree_assoc`).
 
+## Tensors (`import("tensor")`)
+
+Rank-2 tensors as records over borrowed views (`docs/spec/56-kernels.md`
+§8; the ml pilot's request F6): a shape, strides, and an offset into
+row-major storage. Transposition and row selection are new records over
+the same view, never copies; results leave through `MutTensor2` over a
+caller-owned span, so nothing allocates.
+
+| Function | Semantics |
+| --- | --- |
+| `tensor_of[R](data: View[f32, R], rows, cols)` / `tensor_mut_of[R](data: Span[f32, R], rows, cols)` | Contiguous row-major matrices over a view or span; the shape must fit (`assert`). |
+| `tensor_at(t, i, j)`, `tensor_get(t, i, j)`, `tensor_set(t, i, j, v)` | Element access through `tensor_index`, which traps on an out-of-shape pair; the view's bounds check guards the rest. |
+| `tensor_transpose(t)`, `tensor_row(t, i)` | The transposed view (strides swapped) and row `i` as a `1 x cols` tensor, both over the same storage. |
+| `tensor_sum(t)` | Every element in row-major order, left to right, from 0. |
+| `tensor_matmul(a, b, out)` | `out[i, j]` is the inner product of row `i` of `a` and column `j` of `b`, accumulated left to right from 0; shapes `m x k`, `k x n`, `m x n` asserted. |
+| `tensor_relu(x, out)`, `tensor_add(a, b, out)`, `tensor_scale(x, s, out)`, `tensor_fill(t, v)` | Elementwise into `out`, shapes asserted. |
+
+A kernel (`56-kernels.md`) computes the same element function per grid
+position over `t.data` and the shape scalars, since kernels take no
+records. `Oak.Stdlib.TensorLaws` proves the transposition laws over the
+extraction.
+
 ## Bytes
 
 | Function | Result and work |

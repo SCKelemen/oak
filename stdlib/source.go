@@ -67,6 +67,9 @@ var pathSource string
 //go:embed reduce.oak
 var reduceSource string
 
+//go:embed tensor.oak
+var tensorSource string
+
 // grapheme: UAX #29 extended grapheme cluster segmentation over UTF-8 views
 // (stdlib/README.md); a library package and part of the flat prelude.
 //
@@ -237,6 +240,7 @@ var Packages = map[string]string{
 	"uuid":            uuidSource,
 	"path":            pathSource,
 	"reduce":          reduceSource,
+	"tensor":          tensorSource,
 	"grapheme":        graphemeSource,
 	"normalize":       normalizeSource,
 	"float":           floatSource,
