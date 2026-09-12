@@ -771,12 +771,13 @@ separators after values and elements are one byte read under its guard,
 no token record; the whitespace after the opening brace is skipped once.
 
 On the local harness (`benchmarks/json/run.py --samples 9`, Apple arm64,
-the machine otherwise idle, the simdjson control in every run) the derived
-decoder went from 1.20 times simdjson's time to 1.00 — 75.5 ns per
-document against 63.0 before, 64.5 against 64.6 after; recorded runs are
-in `benchmarks/json/RESULTS.md`. The remaining gap
-to the hand-written decoder is structural — about twenty-nine whitespace
-skips per document against fourteen, and the bookkeeping of a generic
-field loop — and is the next target; the per-line execution counts of the
-emitted reader (`llvm-cov` over the harness) are the lead.
+the machine otherwise idle, the simdjson control in every run) the fourth
+pass took the derived decoder from 1.20 times simdjson's time to 1.00 —
+75.5 ns per document against 63.0 before, 64.5 against 64.6 after; the
+profile-guided pass then took it to 0.93 on the record workload and, on
+the new event workload of about 880 bytes with two borrowed strings and a
+sixty-four element array, from 1.72 to 1.40 (seven paired samples each,
+under load; `benchmarks/json/RESULTS.md`). The remaining gap on the large
+document is the per-number dependency chain of the array and the reader's
+per-element bookkeeping, and is the next target.
 

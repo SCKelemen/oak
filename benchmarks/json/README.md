@@ -8,6 +8,15 @@ and array lengths, and reject trailing content. Acceptance and exact decoded
 values are checked before timing; each timed sample verifies a consumed
 checksum. This is a narrow typed workload, not a general JSON speed ranking.
 
+Two workloads: the default `record` above, and `--workload event`, an
+event of about 880 bytes with `id: u64`, two borrowed string fields
+(`kind`, `message`, handed out as raw tokens by both decoders), a
+sixty-four element `latencies: [64]u32` and `deltas: [8]i32`, in two key
+orders with whitespace in half the documents. Each workload is a header
+(`workload_record.h`, `workload_event.h`) supplying the simdjson reader
+with Oak's acceptance rules, the fixture corpus, the invalid inputs both
+must reject, and a C bridge over the derived decoder.
+
 Requirements: Python 3, Go (the version in go.mod), C99 and C++17 compilers,
 and a local simdjson checkout. CI pins simdjson to the revision in
 `.github/workflows/json-benchmark.yml`; the harness records the actual SHA.
