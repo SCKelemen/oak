@@ -258,3 +258,18 @@ func (tc *TypeChecker) recordRefinedIndexProof(expr *ast.IndexExpression, arr *A
 	}
 	tc.provenIndices[positionKey(expr.Token)] = true
 }
+
+// RefinementConstructions counts the constructions the program makes: the
+// ones whose guard stays (a runtime check) and the ones the facts in scope
+// discharged.
+func (tc *TypeChecker) RefinementConstructions() (guarded, discharged int) {
+	for key := range tc.refinementChecks {
+		if tc.refinementDischarged[key] {
+			discharged++
+		} else {
+			guarded++
+		}
+	}
+	return guarded, discharged
+}
+

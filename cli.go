@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SCKelemen/oak/typechecker"
 	"io"
 	"os"
 	"os/exec"
@@ -266,6 +267,15 @@ func vetOne(target, profile string) int {
 	if model.TypeChecker != nil {
 		for _, law := range model.TypeChecker.OperatorLaws() {
 			fmt.Printf("law: operator(%s) %s on %s declares %s — declared, not checked; the REPL's :lean states it\n", law.Symbol, modules.DemangleText(law.Function), modules.DemangleText(law.Type), law.Law)
+		}
+		// Refinement constructions are proof status made explicit
+		// (docs/spec/20-types.md section 12): a guard that stayed is a
+		// runtime check, a discharged one cost nothing.
+		if guarded, discharged := model.TypeChecker.RefinementConstructions(); guarded+discharged != 0 {
+			fmt.Printf("refinements: %d construction(s) discharged statically, %d guarded at run time\n", discharged, guarded)
+		}
+		if theorems := len(typechecker.Theorems(model.Tree.Root)); theorems != 0 {
+			fmt.Printf("theorems: %d declared; `oak prove` discharges them\n", theorems)
 		}
 	}
 	if recorded == 0 {

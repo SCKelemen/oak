@@ -835,6 +835,9 @@ Slot(x & u16(7))` must construct (returning the bare `u16` is refused), and
 a caller may index through the call directly — `TABLE[low(x)]` is proven,
 because any expression of a refined type is below the bound.
 
+`oak vet` reports the count of constructions discharged statically and
+guarded at run time, so the checks a program still pays are never hidden.
+
 Not yet: refinements over records and floats, generic refinements
 (`IrqId[N]: type = u16 where value < N`), and predicates beyond a literal
 bound in the discharge. Each stays a runtime check until then, never a
