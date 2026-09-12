@@ -34,7 +34,11 @@ written or moved only once the borrow ends. This is how a program names
 aligned storage — `store: IoSectorRegion[N]` is a `struct(align: 4096)`
 around `[N]u8`, and `span(&store.bytes)` is the sector-aligned region the
 I/O port registers (`120-io.md` §3). The borrow is of the whole record;
-two fields of one record cannot be spanned at once.
+two fields of one record cannot be spanned at once. Returned by value,
+such a record is owned data like any other: a region-indexed function
+returning it (a derived decoder's `Event[R]` with view fields beside an
+owned array, §8c) carries only what its borrow fields carry, and the
+record itself is not a borrow of a local owner.
 
 ## 3. Borrow states
 
