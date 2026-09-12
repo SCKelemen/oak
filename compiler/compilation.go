@@ -586,6 +586,7 @@ func (comp Compilation) EmitC() Stage[string] {
 		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
 		generator.SetAsmFunctions(lowered.Model.AsmFunctions)
 		generator.SetNativeAsm(comp.options.NativeAsm)
+		generator.SetStrictAdmission(comp.options.Profile == "strict")
 		generator.SetSourceFile(lowered.Model.Tree.Source.Path)
 		generator.SetLineDirectives(comp.options.LineDirectives)
 		if lowered.Model.Tree.Modules != nil {
@@ -629,6 +630,7 @@ func (comp Compilation) EmitNative(format asm.ObjectFormat) Stage[NativeOutput] 
 		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
 		generator.SetAsmFunctions(lowered.Model.AsmFunctions)
 		generator.SetNativeAsm(true)
+		generator.SetStrictAdmission(comp.options.Profile == "strict")
 		generator.SetSourceFile(lowered.Model.Tree.Source.Path)
 		generator.SetLineDirectives(comp.options.LineDirectives)
 		if lowered.Model.Tree.Modules != nil {

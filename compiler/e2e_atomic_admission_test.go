@@ -144,3 +144,24 @@ func TestE2EAtomicAdmissionRejectsLockedTarget(t *testing.T) {
 		t.Fatalf("cortex-m0plus build with OAK_ATOMIC_ACCEPT_LOCKED failed:\n%s", out)
 	}
 }
+
+// The strict profile's zero-warning posture extends to the C build: the
+// admission block has no OAK_ATOMIC_ACCEPT_LOCKED opt-out
+// (docs/spec/85-discipline.md §7), so a locked fallback is refused outright.
+func TestE2EAtomicAdmissionStrictHasNoOptOut(t *testing.T) {
+	strict, err := New().WithProfile("strict").WithSource("admission.oak", admissionProgram).EmitC().Get()
+	if err != nil {
+		t.Fatalf("strict compilation failed: %v", err)
+	}
+	if strings.Contains(strict, "OAK_ATOMIC_ACCEPT_LOCKED") {
+		t.Fatalf("strict build kept the opt-out:\n%s", strict)
+	}
+	if !strings.Contains(strict, "typedef char oak_atomic_lock_free_u32[") {
+		t.Fatalf("strict build lost the assertion:\n%s", strict)
+	}
+	if ok, out := crossCompile(t, "thumbv6m-none-eabi", "cortex-m0plus", strict, "-DOAK_ATOMIC_ACCEPT_LOCKED"); ok {
+		t.Fatal("strict cortex-m0plus build accepted the locked fallback despite the define")
+	} else if !strings.Contains(out, "oak_atomic_lock_free_u32") {
+		t.Fatalf("strict cortex-m0plus build failed for another reason:\n%s", out)
+	}
+}
