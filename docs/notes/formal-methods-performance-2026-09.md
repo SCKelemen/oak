@@ -1,6 +1,6 @@
 # Note: the most performant formal-methods implementation — what the codecs, os, ml, simdjson and Futhark teach the prover
 
-**Status: proposed, baselines taken, benchmarks landed.** 2026-09-12, `specification` branch.
+**Status: in progress — benchmarks landed, the first enumeration increment landed.** 2026-09-12, `specification` branch.
 Source: a read of Oak's own verification engines (`prove/`, `asm/`,
 `repl/leancheck.go`, `testrunner/`, `experiments/verification-poc`), of
 `github.com/SCKelemen/os` and `github.com/SCKelemen/ml` for techniques those
@@ -196,6 +196,39 @@ three. With the baselines in hand the order of execution is 1, 7, 9, 2,
     after the BDD engine above stops being the bottleneck. Not before —
     the measured cost today is in tables and allocation, not in the
     decision procedure.
+
+## 4a. First increment landed: the interpreter's scopes (item 5, first step)
+
+The allocation profile of `BenchmarkTheoremsProtocols` (33 GB allocated in
+19 s) put the cost in the interpreter's scopes, not in the deciders:
+`object.NewEnclosedEnvironment` copied every declared ADT type into a
+fresh map for every block, call and match arm; every scope allocated a
+map for its bindings; `getBuiltin` rebuilt the table of builtin closures
+on every identifier that was not in scope; a per-call map literal in the
+primitive constructor; and each arithmetic operation asked the checker
+for its width through a `fmt.Sprintf` key. The structures now: a scope is
+one allocation holding four inline bindings and spills to a map only
+past them (`object.Environment`, `inlineBindings`); ADT types are looked
+up through the chain and never copied; blocks that declare nothing and
+match arms that bind nothing evaluate in the enclosing scope; the builtin
+table is built once; the checker's per-token tables are keyed by a struct
+(`typechecker.tokenKey`) instead of a formatted string — a change the
+checker itself pays for on every program. Semantics are unchanged: the
+evaluator, checker, prover, REPL, backend and serializer suites pass
+without modification.
+
+| Benchmark | Before | After |
+| --- | ---: | ---: |
+| `BenchmarkTheoremsProtocols` | 19.98 s | 5.65 s |
+| `BenchmarkTheoremsEffects` | 2.54 s | 1.04 s |
+| `BenchmarkTheoremsPatterns` | 0.84 s | 0.22 s |
+| `BenchmarkTheoremsLattice` | 3.78 s | 3.59 s (BDD-bound; item 2) |
+
+What remains of item 5 is the structural step — slot frames resolved
+once per function instead of name lookup per identifier, and the theorem
+body compiled to a closure tree — which the remaining profile (match-arm
+scopes at two thirds of the allocation, `Environment.Get` walking the
+chain per identifier) now points at directly.
 
 ## 5. What carries over from the codec track, unchanged
 
