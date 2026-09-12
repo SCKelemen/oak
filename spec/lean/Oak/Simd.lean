@@ -382,3 +382,89 @@ theorem chunk_count_depends_on_extent :
   refine ⟨rfl, rfl, by decide⟩
 
 end Oak.Simd
+
+/-! ## Predicated operations (docs/spec/93-simd.md §4.1, dbs ask 7 fourth increment)
+
+A mask is a two-valued lane vector; a lane "holds" when it is nonzero. The
+predicated operations make preservation visible: `select` merges two vectors
+under a mask, a masked store writes the holding lanes and keeps the span's
+other values, a masked load reads the holding lanes and gives zero elsewhere,
+and `count_nonzero` counts the holding lanes. Each is lane-wise, so every
+chunking of aligned inputs computes the whole (`chunked_zipWith_eq`,
+`chunked_count_nonzero_eq`); the preservation facts are per lane. -/
+
+namespace Oak.Simd
+
+/-- `select m x y`: lane `i` is `x[i]` where the mask holds, else `y[i]`. -/
+def select (m x y : List Nat) : List Nat :=
+  List.zipWith (fun (p : Nat × Nat) yi => if p.1 ≠ 0 then p.2 else yi) (m.zip x) y
+
+/-- A masked store into `old`: the holding lanes take `v`, the others keep
+    `old`. It is `select m v old`. -/
+def storeMasked (m v old : List Nat) : List Nat := select m v old
+
+/-- A masked load: the holding lanes read `xs`, the others are zero. -/
+def loadMasked (m xs : List Nat) : List Nat :=
+  List.zipWith (fun mi xi => if mi ≠ 0 then xi else 0) m xs
+
+/-- The number of holding lanes. -/
+def countNonzero (m : List Nat) : Nat := (m.filter (fun mi => mi != 0)).length
+
+theorem select_length (m x y : List Nat) (hm : m.length = x.length) (hx : x.length = y.length) :
+    (select m x y).length = y.length := by
+  simp [select, List.length_zipWith, List.length_zip, hm, hx]
+
+/-- A lane the mask does not hold keeps `old`: the preservation a masked
+    store makes visible. -/
+theorem storeMasked_preserves (m v old : List Nat) (i : Nat)
+    (hm : i < m.length) (hv : i < v.length) (ho : i < old.length) (h : m[i] = 0) :
+    (storeMasked m v old)[i]'(by simp [storeMasked, select, List.length_zipWith, List.length_zip]; omega) = old[i] := by
+  simp [storeMasked, select, List.getElem_zipWith, List.getElem_zip, h]
+
+/-- A lane the mask holds takes the stored value. -/
+theorem storeMasked_writes (m v old : List Nat) (i : Nat)
+    (hm : i < m.length) (hv : i < v.length) (ho : i < old.length) (h : m[i] ≠ 0) :
+    (storeMasked m v old)[i]'(by simp [storeMasked, select, List.length_zipWith, List.length_zip]; omega) = v[i] := by
+  simp [storeMasked, select, List.getElem_zipWith, List.getElem_zip, h]
+
+/-- A masked load is a select against zeros: the lanes the mask does not
+    hold are never read. -/
+theorem loadMasked_lane (m xs : List Nat) (i : Nat) (hm : i < m.length) (hx : i < xs.length) :
+    (loadMasked m xs)[i]'(by simp [loadMasked, List.length_zipWith]; omega) = (if m[i] ≠ 0 then xs[i] else 0) := by
+  simp [loadMasked, List.getElem_zipWith]
+
+/-- Chunks that pair up lane for lane. -/
+def Aligned : List (List Nat) → List (List Nat) → Prop
+  | [], [] => True
+  | c :: cs, d :: ds => c.length = d.length ∧ Aligned cs ds
+  | _, _ => False
+
+/-- A lane-wise binary operation applied chunk by chunk over aligned
+    chunkings is the operation on the wholes: `select`, the comparisons,
+    and the masked load and store are all such operations. -/
+theorem chunked_zipWith_eq (f : Nat → Nat → Nat) :
+    ∀ (cs ds : List (List Nat)), Aligned cs ds →
+      (List.zipWith (List.zipWith f) cs ds).flatten = List.zipWith f cs.flatten ds.flatten
+  | [], [], _ => rfl
+  | c :: cs, d :: ds, h => by
+    obtain ⟨hlen, hrest⟩ := h
+    rw [List.zipWith_cons_cons, List.flatten_cons, List.flatten_cons, List.flatten_cons,
+      List.zipWith_append hlen, chunked_zipWith_eq f cs ds hrest]
+
+/-- The holding-lane counts of the chunks sum to the count of the whole:
+    `count_nonzero` folds with addition across chunks. -/
+theorem chunked_count_nonzero_eq (chunks : List (List Nat)) (xs : List Nat)
+    (h : IsChunking chunks xs) : (chunks.map countNonzero).sum = countNonzero xs := by
+  unfold IsChunking at h
+  subst h
+  induction chunks with
+  | nil => rfl
+  | cons c rest ih =>
+    rw [List.map_cons, List.sum_cons, List.flatten_cons, ih]
+    simp only [countNonzero, List.filter_append, List.length_append]
+
+/-- No more lanes hold than there are lanes. -/
+theorem countNonzero_le_length (m : List Nat) : countNonzero m ≤ m.length :=
+  List.length_filter_le _ _
+
+end Oak.Simd

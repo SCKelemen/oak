@@ -678,6 +678,17 @@ func laneBits(elem string) int {
 // the portable lane loop; the choice is the preprocessor's, at build time.
 const rvvGuard = "#if defined(__riscv) && defined(__riscv_vector) && !defined(OAK_SCALAR_SIMD) && !defined(OAK_PORTABLE_INTRINSICS)"
 
+// scalableCompareOps are the comparisons of the scalable API that yield a
+// two-valued mask (docs/spec/93-simd.md section 4.1): the portable lane
+// expression, the RVV mask-producing compare, and the SVE predicate compare.
+// Lanes are unsigned, so lt/gt are the unsigned orders.
+var scalableCompareOps = map[string]struct{ lane, rvv, sve string }{
+	"eq": {"(%[1]s)(x == y ? (%[1]s)~(%[1]s)0 : (%[1]s)0)", "vmseq", "svcmpeq"},
+	"ne": {"(%[1]s)(x != y ? (%[1]s)~(%[1]s)0 : (%[1]s)0)", "vmsne", "svcmpne"},
+	"lt": {"(%[1]s)(x < y ? (%[1]s)~(%[1]s)0 : (%[1]s)0)", "vmsltu", "svcmplt"},
+	"gt": {"(%[1]s)(x > y ? (%[1]s)~(%[1]s)0 : (%[1]s)0)", "vmsgtu", "svcmpgt"},
+}
+
 // sveGuard selects the SVE realization of the scalable API: an AArch64
 // target whose processor has SVE (`-cpu generic+sve`, `neoverse_v2`, …),
 // unless the portable lowering is forced.
@@ -934,6 +945,33 @@ func scalableHelperSource(member string) string {
 			b.WriteString(rvv(fmt.Sprintf("  return __riscv_vcpop_m_b%s(__riscv_vmseq_vx_%s_b%s(v, 0, a), a) == 0 ? oak_Bool_True : oak_Bool_False;\n", bits, sfx, bits), fmt.Sprintf("  { svbool_t pg = %s; return svptest_any(pg, svcmpeq_n_%s(pg, v, 0)) ? oak_Bool_False : oak_Bool_True; }\n", pg, elem)))
 			b.WriteString("  for (u32 i = 0; i < a; i++) { if (v.lanes[i] == 0) { return oak_Bool_False; } }\n  return oak_Bool_True;\n#endif\n}\n")
 		}
+	case "load_masked":
+		// Predicated load (docs/spec/93-simd.md section 4.1): lanes under a
+		// zero mask lane are not read and come back zero; the whole extent
+		// still lies within the view, so no realization can fault.
+		fmt.Fprintf(&b, "static inline %s oak_simd_%s( oak_view_%s v, u32 off, %s m, oak_active a ) {\n", vec, member, elem, vec)
+		b.WriteString("  if ((u64)off + (u64)a > (u64)v.len) { __builtin_trap(); }\n")
+		b.WriteString(rvv(fmt.Sprintf("  return __riscv_vle%s_v_%s_mu(__riscv_vmsne_vx_%s_b%s(m, 0, a), __riscv_vmv_v_x_%s(0, a), v.base + off, a);\n", bits, sfx, sfx, bits, sfx),
+			fmt.Sprintf("  { svbool_t pg = %s; return svld1_%s(svcmpne_n_%s(pg, m, 0), v.base + off); }\n", pg, elem, elem)))
+		fmt.Fprintf(&b, "  %s r;\n  for (u32 i = 0; i < a; i++) { r.lanes[i] = m.lanes[i] != 0 ? v.base[off + i] : (%s)0; }\n  return r;\n#endif\n}\n", vec, elem)
+	case "store_masked":
+		// Predicated store: only lanes under a nonzero mask lane are
+		// written; the span keeps its other values.
+		fmt.Fprintf(&b, "static inline void oak_simd_%s( oak_span_%s s, u32 off, %s m, %s val, oak_active a ) {\n", member, elem, vec, vec)
+		b.WriteString("  if ((u64)off + (u64)a > (u64)s.len) { __builtin_trap(); }\n")
+		b.WriteString(rvv(fmt.Sprintf("  __riscv_vse%s_v_%s_m(__riscv_vmsne_vx_%s_b%s(m, 0, a), s.base + off, val, a);\n", bits, sfx, sfx, bits),
+			fmt.Sprintf("  { svbool_t pg = %s; svst1_%s(svcmpne_n_%s(pg, m, 0), s.base + off, val); }\n", pg, elem, elem)))
+		b.WriteString("  for (u32 i = 0; i < a; i++) { if (m.lanes[i] != 0) { s.base[off + i] = val.lanes[i]; } }\n#endif\n}\n")
+	case "select":
+		fmt.Fprintf(&b, "static inline %s oak_simd_%s( %s m, %s x, %s y, oak_active a ) {\n", vec, member, vec, vec, vec)
+		b.WriteString(rvv(fmt.Sprintf("  return __riscv_vmerge_vvm_%s(y, x, __riscv_vmsne_vx_%s_b%s(m, 0, a), a);\n", sfx, sfx, bits),
+			fmt.Sprintf("  { svbool_t pg = %s; return svsel_%s(svcmpne_n_%s(pg, m, 0), x, y); }\n", pg, elem, elem)))
+		fmt.Fprintf(&b, "  %s r;\n  for (u32 i = 0; i < a; i++) { r.lanes[i] = m.lanes[i] != 0 ? x.lanes[i] : y.lanes[i]; }\n  return r;\n#endif\n}\n", vec)
+	case "count_nonzero":
+		fmt.Fprintf(&b, "static inline u32 oak_simd_%s( %s m, oak_active a ) {\n", member, vec)
+		b.WriteString(rvv(fmt.Sprintf("  return (u32)__riscv_vcpop_m_b%s(__riscv_vmsne_vx_%s_b%s(m, 0, a), a);\n", bits, sfx, bits),
+			fmt.Sprintf("  { svbool_t pg = %s; return (u32)svcntp_b%s(pg, svcmpne_n_%s(pg, m, 0)); }\n", pg, bits, elem)))
+		b.WriteString("  u32 n = 0;\n  for (u32 i = 0; i < a; i++) { n += m.lanes[i] != 0 ? 1u : 0u; }\n  return n;\n#endif\n}\n")
 	case "reduce_add":
 		// The wrapping sum is associative and commutative, so a tree
 		// reduction is the lane-order sum exactly.
@@ -942,13 +980,18 @@ func scalableHelperSource(member string) string {
 		fmt.Fprintf(&b, "  %s sum = 0;\n  for (u32 i = 0; i < a; i++) { sum = (%s)(sum + v.lanes[i]); }\n  return sum;\n#endif\n}\n", elem, elem)
 	default:
 		laneExpr, isBinary := simdBinaryOps[op]
+		if compare, isCompare := scalableCompareOps[op]; isCompare {
+			laneExpr, isBinary = compare.lane, true
+		}
 		if !isBinary {
 			return "OAK_UNSUPPORTED_SIMD_OP\n"
 		}
 		rvvName := map[string]string{"add": "vadd_vv", "sub": "vsub_vv", "subs": "vssubu_vv", "and": "vand_vv", "or": "vor_vv", "xor": "vxor_vv", "min": "vminu_vv", "max": "vmaxu_vv"}[op]
 		fmt.Fprintf(&b, "static inline %s oak_simd_%s( %s a_, %s b_, oak_active a ) {\n", vec, member, vec, vec)
-		if op == "eq" {
-			b.WriteString(rvv(fmt.Sprintf("  return __riscv_vmerge_vxm_%s(__riscv_vmv_v_x_%s(0, a), (%s)~(%s)0, __riscv_vmseq_vv_%s_b%s(a_, b_, a), a);\n", sfx, sfx, elem, elem, sfx, bits), fmt.Sprintf("  { svbool_t pg = %s; return svdup_n_%s_z(svcmpeq_%s(pg, a_, b_), (%s)~(%s)0); }\n", pg, elem, elem, elem, elem)))
+		if compare, isCompare := scalableCompareOps[op]; isCompare {
+			// A comparison yields the two-valued mask: all-ones lanes where
+			// it holds, zero lanes elsewhere.
+			b.WriteString(rvv(fmt.Sprintf("  return __riscv_vmerge_vxm_%s(__riscv_vmv_v_x_%s(0, a), (%s)~(%s)0, __riscv_%s_vv_%s_b%s(a_, b_, a), a);\n", sfx, sfx, elem, elem, compare.rvv, sfx, bits), fmt.Sprintf("  { svbool_t pg = %s; return svdup_n_%s_z(%s_%s(pg, a_, b_), (%s)~(%s)0); }\n", pg, elem, compare.sve, elem, elem, elem)))
 		} else {
 			sveName := map[string]string{"add": "svadd", "sub": "svsub", "subs": "svqsub", "and": "svand", "or": "svorr", "xor": "sveor", "min": "svmin", "max": "svmax"}[op]
 			sveText := fmt.Sprintf("  return %s_%s_z(%s, a_, b_);\n", sveName, elem, pg)
