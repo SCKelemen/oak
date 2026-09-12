@@ -394,6 +394,9 @@ device and checks them against what the C realization computed in the
 host tests: elementwise `relu`, tiled `axpy`, the per-thread `reduce.tree`
 over a window, the threadgroup `reduce.group_tree`, and the
 record-parameter `matmul_t` — the same bits — and an out-of-range read
-raises fault 1. What remains for the tools is a launch sequence under `oak
-test`: choosing the inputs, the trace schema for the launches, and the
-replay (`110-testing.md`); the runner is the primitive it will use.
+raises fault 1. Under `oak test`, a **`Launch` target** does the same for
+a program's own kernels (`110-testing.md`, "Launch targets"):
+`test_launch(kernel, grid, args...)` runs the kernel on the host and
+records the launch, and the runner replays every record on the device and
+compares the spans and the fault word, reporting the first differing
+element.

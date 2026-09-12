@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/SCKelemen/oak/buildcache"
+	"github.com/SCKelemen/oak/codegen/metal"
 	"github.com/SCKelemen/oak/compiler"
 	"github.com/SCKelemen/oak/toolchain"
 	"io"
@@ -49,6 +50,10 @@ type nativeProgram struct {
 	bin, dir, build string
 	maxBytes        int
 	timeout         time.Duration
+	// metal is the program's kernels as Metal source and launch descriptors
+	// (docs/spec/56-kernels.md section 5), nil when it declares none; the
+	// runner replays recorded launches on the device with it.
+	metal *metal.Result
 }
 type outcome struct {
 	status, signature, output string
@@ -56,6 +61,9 @@ type outcome struct {
 	trace                     []TraceEvent
 	traceTruncated            bool
 	commands                  []Command
+	// launches are the kernel launches the case recorded through
+	// test_launch (docs/spec/110-testing.md, "Launch targets").
+	launches []launchRecord
 	// got and want are the values a test_check_eq_*/test_check_ne_* failure
 	// reported, spelled in the operand type; wantNot marks the "not equal"
 	// form. Empty for every other outcome.
@@ -99,6 +107,10 @@ func buildNative(pkg Package, cfg Config) (*nativeProgram, error) {
 		return nil, err
 	}
 	compilation := packageCompilation(pkg, adapter)
+	var kernels *metal.Result
+	if emitted, err := compilation.EmitMetal().Get(); err == nil && emitted != nil && len(emitted.Kernels) > 0 {
+		kernels = emitted
+	}
 	generated, err := compilation.EmitC().Get()
 	if err != nil {
 		return nil, err
@@ -122,6 +134,7 @@ func buildNative(pkg Package, cfg Config) (*nativeProgram, error) {
 	fmt.Fprintf(&source, `
 int main(int argc, char **argv) {
  if (argc != 3) return 120;
+ oak_test_report_path = argv[2];
  oak_test_report = fopen(argv[2], "w");
  if (!oak_test_report) return 121;
  unsigned char *data = calloc(%d + 1u, 1u);
@@ -132,7 +145,7 @@ int main(int argc, char **argv) {
 `, cfg.MaxBytes, cfg.MaxBytes, cfg.MaxBytes)
 	for i, test := range pkg.Registry {
 		fmt.Fprintf(&source, "case %d: oak_test_generating = %d; %s(", i, map[bool]int{true: 1, false: 0}[test.Kind == "generator"], pkg.symbol(test.Name))
-		if test.Kind != "unit" {
+		if test.Kind != "unit" && test.Kind != "launch" {
 			source.WriteString("(oak_view_u8){data, (u32)size}")
 		}
 		source.WriteString("); break;\n")
@@ -223,7 +236,7 @@ int main(int argc, char **argv) {
 		}
 	}
 	keep = true
-	return &nativeProgram{bin: filepath.Join(dir, "test"), dir: dir, build: hex.EncodeToString(hash[:]), maxBytes: cfg.MaxBytes, timeout: cfg.Timeout}, nil
+	return &nativeProgram{bin: filepath.Join(dir, "test"), dir: dir, build: hex.EncodeToString(hash[:]), maxBytes: cfg.MaxBytes, timeout: cfg.Timeout, metal: kernels}, nil
 }
 
 // linkArguments spells the manifests' native inputs as C compiler arguments
@@ -258,7 +271,40 @@ const nativePreamble = `
 #include <stdlib.h>
 #include <stdint.h>
 static FILE *oak_test_report;
+static const char *oak_test_report_path;
 static unsigned oak_test_generating, oak_test_emitted_count;
+/* Recorded kernel launches (docs/spec/110-testing.md, "Launch targets"):
+   a binary sidecar beside the report, one record per test_launch — the
+   kernel and grid, each argument's bytes before the run, each span's
+   bytes after — which the runner replays on the device. */
+static FILE *oak_test_launches;
+static void oak_test_launch_file(void) {
+ if (oak_test_launches || !oak_test_report_path) return;
+ char path[4096];
+ snprintf(path, sizeof path, "%s.launches", oak_test_report_path);
+ oak_test_launches = fopen(path, "wb");
+}
+void oak_test_host_launch_begin(const char *kernel, uint32_t grid) {
+ oak_test_launch_file();
+ if (oak_test_launches) fprintf(oak_test_launches, "launch %s %u\n", kernel, (unsigned)grid);
+}
+static void oak_test_launch_bytes(const void *base, uint32_t bytes) {
+ if (bytes) fwrite(base, 1, bytes, oak_test_launches);
+ fputc('\n', oak_test_launches);
+}
+void oak_test_host_launch_arg(const char *name, const char *kind, const char *element, const void *base, uint32_t bytes) {
+ if (!oak_test_launches) return;
+ fprintf(oak_test_launches, "arg %s %s %s %u\n", name, kind, element, (unsigned)bytes);
+ oak_test_launch_bytes(base, bytes);
+}
+void oak_test_host_launch_out(const char *name, const void *base, uint32_t bytes) {
+ if (!oak_test_launches) return;
+ fprintf(oak_test_launches, "out %s %u\n", name, (unsigned)bytes);
+ oak_test_launch_bytes(base, bytes);
+}
+void oak_test_host_launch_end(void) {
+ if (oak_test_launches) { fputs("end\n", oak_test_launches); fflush(oak_test_launches); }
+}
 uint32_t oak_test_host_command_limit(void) { return OAK_COMMAND_LIMIT; }
 void oak_test_host_command(uint32_t kind, uint32_t target, uint32_t value) {
  if (!oak_test_report) exit(125);
@@ -316,6 +362,7 @@ func (p *nativeProgram) run(index int, input []byte) (result outcome) {
 	reportPath := reportFile.Name()
 	_ = reportFile.Close()
 	defer os.Remove(reportPath)
+	defer os.Remove(reportPath + ".launches")
 	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, p.bin, strconv.Itoa(index), reportPath)
@@ -342,6 +389,13 @@ func (p *nativeProgram) run(index int, input []byte) (result outcome) {
 	if len(report) > outputLimit {
 		result.signature = "harness:report-limit"
 		return result
+	}
+	if launches, launchErr := readLaunches(reportPath + ".launches"); launchErr != nil {
+		result.signature = "harness:bad-launch-record"
+		result.output += launchErr.Error()
+		return result
+	} else {
+		result.launches = launches
 	}
 	terminal := ""
 	for _, line := range strings.Split(strings.TrimSpace(string(report)), "\n") {

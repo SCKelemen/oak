@@ -518,6 +518,9 @@ type TypeChecker struct {
 	operatorBindings map[string]string
 	operatorLaws     []OperatorLaw
 	lawLowerings     []LawLowering
+	// kernels names the program's kernel declarations (docs/spec/56-kernels.md);
+	// test_launch (110-testing.md, "Launch targets") takes one.
+	kernels map[string]bool
 	// bufferRecordInitializer is the record literal a declaration of a
 	// record holding a Buffer field is being initialized from: the one
 	// position such a literal may stand in (docs/spec/92-ffi.md section
@@ -867,6 +870,12 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 	// The global scope is the closure of top-level declarations; template
 	// instantiations check against it, never a caller's local scope.
 	tc.globalEnv = tc.env
+	tc.kernels = map[string]bool{}
+	for _, stmt := range program.Statements {
+		if fn, isFn := stmt.(*ast.FunctionStatement); isFn && fn.Kernel && fn.Name != nil {
+			tc.kernels[fn.Name.Value] = true
+		}
+	}
 	tc.recordGlobalOwners(program)
 	tc.checkExportSymbols(program)
 	// Pre-declare top-level non-generic function signatures so functions can
@@ -1102,6 +1111,54 @@ func (tc *TypeChecker) recordOperatorLaws(fn *ast.FunctionStatement, typeName st
 // OperatorLaws lists the declared operator laws in declaration order.
 func (tc *TypeChecker) OperatorLaws() []OperatorLaw {
 	return append([]OperatorLaw(nil), tc.operatorLaws...)
+}
+
+// IsKernel reports whether name is one of the program's kernel declarations
+// (docs/spec/56-kernels.md); the backend asks, since lowering rebuilds the
+// function nodes.
+func (tc *TypeChecker) IsKernel(name string) bool { return tc.kernels[name] }
+
+// checkTestLaunch types test_launch(kernel, grid, args...): kernel names a
+// kernel declaration, grid is u32, and the arguments match the kernel's
+// parameters after the position (docs/spec/110-testing.md, "Launch targets").
+func (tc *TypeChecker) checkTestLaunch(expr *ast.InvocationExpression) Type {
+	if len(expr.Arguments) < 2 {
+		tc.addError(expr, "test_launch takes a kernel, a grid size, and the kernel's arguments after the position: test_launch(relu, 8, view(&x), span(&y))")
+		return &UnitType{}
+	}
+	kernel, isIdent := expr.Arguments[0].(*ast.Identifier)
+	if !isIdent || !tc.kernels[kernel.Value] {
+		tc.addError(expr.Arguments[0], "test_launch takes a kernel declaration by name, got %s", expr.Arguments[0].String())
+		return &UnitType{}
+	}
+	scheme, bound := tc.env.Get(kernel.Value)
+	fn, isFn := (Type)(nil), false
+	if bound && scheme != nil {
+		fn, isFn = scheme.Type.(*FunctionType)
+	}
+	fnType, _ := fn.(*FunctionType)
+	if !isFn || fnType == nil || len(fnType.Parameters) == 0 {
+		tc.addError(expr.Arguments[0], "kernel %s has no callable type", kernel.Value)
+		return &UnitType{}
+	}
+	if gridType := tc.checkExpression(expr.Arguments[1], &PrimitiveType{Name: "u32"}); gridType != nil {
+		if prim, isPrim := gridType.(*PrimitiveType); !isPrim || prim.Name != "u32" {
+			tc.addError(expr.Arguments[1], "test_launch: the grid is a u32, got %s", gridType)
+		}
+	}
+	params := fnType.Parameters[1:]
+	args := expr.Arguments[2:]
+	if len(args) != len(params) {
+		tc.addError(expr, "test_launch: kernel %s takes %d arguments after the position, got %d", kernel.Value, len(params), len(args))
+		return &UnitType{}
+	}
+	for i, arg := range args {
+		argType := tc.checkExpression(arg, params[i])
+		if argType != nil && !tc.isAssignable(argType, params[i]) {
+			tc.addError(arg, "test_launch: kernel %s argument %d is %s, got %s", kernel.Value, i+1, params[i], argType)
+		}
+	}
+	return &UnitType{}
 }
 
 // LawLowering records one call site regrouped on a declared operator law:
@@ -2361,6 +2418,13 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 				tc.addError(expr.Arguments[0], "is_valid_utf8 requires a []u8 view, got %s", argType)
 			}
 			return &BoolType{}
+		}
+		// test_launch(kernel, grid, args...) (docs/spec/110-testing.md,
+		// "Launch targets"): the kernel runs over grid positions on the
+		// host, and the launch — its inputs and the spans after — is
+		// recorded for the runner to replay on the device.
+		if ident.Value == "test_launch" {
+			return tc.checkTestLaunch(expr)
 		}
 		// assert (docs/spec/85-discipline.md section 5): a Bool condition,
 		// compiled in and never elided by build mode.

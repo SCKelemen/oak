@@ -56,6 +56,9 @@ type CodeGenerator struct {
 	sourceIndex     *lsp.PositionIndex
 	output          strings.Builder
 	bareCondition   bool // the next infix emitted is a statement condition (emitCondition)
+	// launchCounter numbers the recorded test launches of a program, so
+	// their temporaries never collide (codegen/launch.go).
+	launchCounter int
 	// mutatedGlobals names the top-level bindings some statement writes,
 	// borrows, or addresses; the others may be C constants (globals.go).
 	mutatedGlobals   map[string]bool
@@ -601,6 +604,11 @@ func (cg *CodeGenerator) emitHeader(program *ast.Program) {
 	cg.write("\n")
 
 	// Emit primitive type aliases
+	cg.write("/* the test host's launch recorder (docs/spec/110-testing.md, \"Launch targets\"): defined by the oak test harness */\n")
+	cg.write("extern void oak_test_host_launch_begin(const char *kernel, uint32_t grid);\n")
+	cg.write("extern void oak_test_host_launch_arg(const char *name, const char *kind, const char *element, const void *base, uint32_t bytes);\n")
+	cg.write("extern void oak_test_host_launch_out(const char *name, const void *base, uint32_t bytes);\n")
+	cg.write("extern void oak_test_host_launch_end(void);\n")
 	cg.write("typedef uint8_t  u8;\n")
 	if programReturnsNever(program) {
 		// The uninhabited bottom carrier, emitted once and only when some
@@ -3996,6 +4004,14 @@ func (cg *CodeGenerator) emitStatement(stmt ast.Statement, tc *typechecker.TypeC
 		// while, so C's break leaves exactly the Oak loop.
 		cg.write("  break;\n")
 	case *ast.ExpressionStatement:
+		if call, isCall := s.Expression.(*ast.InvocationExpression); isCall {
+			if callee, isIdent := call.Function.(*ast.Identifier); isIdent && callee.Value == "test_launch" {
+				// A recorded kernel launch (docs/spec/110-testing.md,
+				// "Launch targets"): never a result, always a statement.
+				cg.emitTestLaunch(call, tc)
+				break
+			}
+		}
 		if isLastInFunction && !s.Discard {
 			// Last statement in function - emit as return. A trailing
 			// discard (`_ = expr`) is a statement, never the result.

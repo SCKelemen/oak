@@ -33,6 +33,11 @@ static void oak_report(const char *what, const char *file, uint32_t line) {
 #pragma STDC FP_CONTRACT OFF
 #endif
 
+/* the test host's launch recorder (docs/spec/110-testing.md, "Launch targets"): defined by the oak test harness */
+extern void oak_test_host_launch_begin(const char *kernel, uint32_t grid);
+extern void oak_test_host_launch_arg(const char *name, const char *kind, const char *element, const void *base, uint32_t bytes);
+extern void oak_test_host_launch_out(const char *name, const void *base, uint32_t bytes);
+extern void oak_test_host_launch_end(void);
 typedef uint8_t  u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
