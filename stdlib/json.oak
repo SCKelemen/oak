@@ -574,14 +574,17 @@ pub json_key_equal_unicode: (src: []u8, key: JsonToken, expected: []u8): Bool {
  }
  valid && other == len(expected)
 }
-// Compact internal scan ABI: status 0/1 means positive/negative; status > 1
-// carries json_decode_error_code + 1. Sixteen bytes fit the AArch64 register
-// return convention. The public reader retains Result and JsonInteger.
+// Compact internal scan ABI: the low byte of status is 0/1 for
+// positive/negative, or json_decode_error_code + 1; on success bit 9 is set
+// with the byte that ended the number in bits 10..17 when the scanner saw
+// it in a word. Sixteen bytes fit the AArch64 register return convention.
+// The public reader retains Result and JsonInteger.
 pub JsonIntegerScan: type = struct { magnitude: u64, next: u32, status: u32 }
 pub json_read_integer: (src: []u8, offset: u32): Result[JsonInteger, JsonDecodeError] {
  scan: JsonIntegerScan = json_scan_integer(src, offset)
- scan.status > u32(1) ? { .Err(json_decode_error(scan.status - u32(1))) } | {
-  .Ok(JsonInteger { magnitude: scan.magnitude, negative: scan.status == u32(1), next: scan.next })
+ code: u32 = scan.status & u32(255)
+ code > u32(1) ? { .Err(json_decode_error(code - u32(1))) } | {
+  .Ok(JsonInteger { magnitude: scan.magnitude, negative: code == u32(1), next: scan.next })
  }
 }
 pub json_scan_integer_slow: (src: []u8, offset: u32): JsonIntegerScan {
@@ -720,7 +723,12 @@ pub json_scan_integer: (src: []u8, offset: u32): JsonIntegerScan {
    // suffixes, even when the integral prefix exceeded u64.
    json_scan_integer_slow(src, offset)
   } | overflow ? { JsonIntegerScan { magnitude: u64(0), next: at, status: u32(5) } } | {
-   JsonIntegerScan { magnitude: magnitude, next: at, status: negative ? u32(1) | u32(0) }
+   // Bit 9 set with the terminating byte in bits 10..17 when the words
+   // saw it: the reader takes a comma or a closing bracket or brace from
+   // here without another skip and load (docs/spec/71-codecs.md section 20).
+   sign_bit: u32 = negative ? u32(1) | u32(0)
+   term_bits: u32 = ended ? { u32(512) | (next_byte << u32(10)) } | { u32(0) }
+   JsonIntegerScan { magnitude: magnitude, next: at, status: sign_bit | term_bits }
   }
  }
 }
