@@ -92,7 +92,9 @@ sequential left fold. The first option is `laws { associative }` on an
 operator definition (`10-syntax.md` §14a): `Oak.Reduce.tree_assoc` proves
 that under associativity the tree equals the left fold from the first
 element, which is what licenses a backend to choose any grouping for such
-an operation; without the law it computes the tree named.
+an operation, and the type checker uses it: `reduce.tree` over an operator
+declaring the law is lowered to `reduce.chain`, that left fold
+(`tree_eq_chainFold`). Without the law it computes the tree named.
 
 **An order is a function.** When a program needs a second order beside
 the one it computes with — the fused attention's online-softmax merge,

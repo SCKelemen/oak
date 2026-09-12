@@ -77,12 +77,14 @@ Reductions whose grouping is a language fact (`docs/spec/55-parallelism.md`
 | --- | --- |
 | `tree[T](xs: []T, zero: T, f: (T, T) -> T)` | The balanced binary-counter tree: four elements give `f(f(x0, x1), f(x2, x3))`, the `simd.reduce_add` grouping; an empty view yields `zero`, which takes no other part. Identical on every backend, no associativity assumed. O(n) work, one 64-entry stack. |
 | `left[T](xs: []T, zero: T, f: (T, T) -> T)` | The sequential left fold `f(f(zero, x0), x1) ...`. |
+| `chain[T](xs: []T, zero: T, f: (T, T) -> T)` | The left fold from the first element, `zero` only for the empty view; what `tree` computes under associativity (`Oak.Reduce.tree_eq_chainFold`) with no stack of partials. A call of `tree` whose `f` is an operator declaring `laws { associative }` is lowered to `chain` (`10-syntax.md` §14a). |
 | `fold[S, T](xs: []T, init: S, step: (S, T) -> S)` | The sequential left fold with a state of its own type: `left` when `S` is `T`; the online-softmax pass carrying `(max, sum)` is `fold` with the merge as its step. |
 | `tree_map[T, S](xs: []T, zero: S, lift: (T) -> S, merge: (S, S) -> S)` | `tree` over the lifted elements without the intermediate array; for an associative `merge` it equals `fold(xs, lift(x0), step)` with `step(s, x) = merge(s, lift(x))` on non-empty input (`Oak.Reduce.fold_eq_tree_map`) — the two orders a program may name for one merge, and the theorem that they are one value (`55-parallelism.md` §4, "an order is a function"). |
 | `group_tree[T](group: u32, xs: []T, lo: u32, m: u32, zero: T, f)` | `tree` over the `m` elements at `lo` (`m <= group` asserted); in a kernel body with a literal power-of-two `group` it is the cooperative threadgroup reduction (`56-kernels.md` §7), the same grouping computed by `group` threads together. |
 
 When `f` is an operator declaring `laws { associative }` the two agree on
-non-empty input (`Oak.Reduce.tree_assoc`). `f`, `step`, `lift`, and
+non-empty input (`Oak.Reduce.tree_assoc`), and `tree` is lowered to
+`chain`. `f`, `step`, `lift`, and
 `merge` carry the empty effect row (`(T, T) -> T effects { }`, `60-effects-allocation.md` §2a): a
 combine performs no effects, which is what lets a kernel body call
 `reduce.tree` (`56-kernels.md` §7) and what a regrouping backend relies on.
@@ -108,7 +110,9 @@ caller-owned span, so nothing allocates.
 A kernel (`56-kernels.md`) computes the same element function per grid
 position over `t.data` and the shape scalars, since kernels take no
 records. `Oak.Stdlib.TensorLaws` proves the transposition laws over the
-extraction.
+extraction, that `tensor_sum` is the row-major left fold from zero
+(`tensor_sum_spec`), and that `tensor_matmul` into a contiguous output
+writes the inner product at every `(i, j)` in shape (`tensor_matmul_spec`).
 
 ## UTF-8 validation (`import("utf8")`)
 
