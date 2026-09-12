@@ -598,3 +598,68 @@ main: (): i32 = 0`,
 		}
 	}
 }
+
+// A matmul kernel over tensor records (docs/spec/56-kernels.md section 8):
+// one output element per position, read through tensor_at, stored flat
+// under a guard that the output is contiguous, so the store is the element
+// shape the independence rule admits (Oak.Stdlib.Tensor.flat_index).
+const kernelMatmulProgram = `package main
+
+t := import("tensor")
+
+kernel matmul_t[A, B, C]: (gid: u32, a: t.Tensor2[A], b: t.Tensor2[B], out: t.MutTensor2[C]): () = {
+  contiguous: Bool = out.row_stride == out.cols && out.col_stride == 1 && out.offset == 0
+  contiguous && gid < out.rows * out.cols && gid < len(out.data) && a.cols == b.rows && out.rows == a.rows && out.cols == b.cols ? {
+    i: u32 = gid / out.cols
+    j: u32 = gid % out.cols
+    acc: f32 = 0.0
+    k: u32 = 0
+    n: u32 = a.cols
+    while k < n {
+      acc = acc + t.tensor_at(a, i, k) * t.tensor_at(b, k, j)
+      k = k + 1
+    }
+    out.data[gid] = acc
+  }
+}
+
+main: (): i32 = {
+  xs: [6]f32 = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+  ys: [4]f32 = [0.0, 0.0, 0.0, 0.0]
+  a: t.Tensor2 = t.tensor_of(view(&xs), 2, 3)
+  bt: t.Tensor2 = t.tensor_transpose(a)
+  {
+    o: t.MutTensor2 = t.tensor_mut_of(span(&ys), 2, 2)
+    g: u32 = 0
+    while g < 4 {
+      matmul_t(g, a, bt, o)
+      g = g + 1
+    }
+  }
+  ys[0] == 14.0 && ys[1] == 32.0 && ys[2] == 32.0 && ys[3] == 77.0 ? 42 | 1
+}
+`
+
+func TestE2EKernelsTensorMatmul(t *testing.T) {
+	root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": kernelMatmulProgram})
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+	result, err := New().WithPackageDir(root).EmitMetal().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Kernels[0].Independence != "element" {
+		t.Fatalf("independence = %q", result.Kernels[0].Independence)
+	}
+	for _, want := range []string{
+		"out.data span f32 buffer 14,15;",
+		"acc = (acc + (tensor__tensor_uat(a, i, k, oak_fault) * tensor__tensor_uat(b, k, j, oak_fault)));",
+		"out.data[gid] = acc;",
+	} {
+		if !strings.Contains(result.Source, want) {
+			t.Fatalf("missing %q in:\n%s", want, result.Source)
+		}
+	}
+}

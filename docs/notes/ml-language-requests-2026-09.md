@@ -72,8 +72,11 @@ list, in the order the pilot would meet them:
 4. ~~**Records as kernel parameters**~~ — landed after #232: a kernel
    takes `Tensor2[R]`/`MutTensor2[S]`; the Metal entry flattens the fields
    into buffers and rebuilds the struct, helpers take and return records
-   by value, `assert` is fault 5. Still open: `tensor_set` through a
-   record's span inside a kernel (the row-major independence shape).
+   by value, `assert` is fault 5. `tensor_set` through a record's span
+   inside a kernel stays rejected; the idiom is the flat store
+   `out.data[gid]` under a contiguity guard, with
+   `Oak.Stdlib.Tensor.flat_index` proving it writes the element
+   `tensor_set` would (`56-kernels.md` §8, the matmul kernel).
 5. **A `Buffer` inside a record, and custody states carrying a device
    identity** (`92-ffi.md` §2.8.6).
 6. **A backend consuming declared laws**: nothing regroups on
