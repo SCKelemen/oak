@@ -463,7 +463,7 @@ the compiler compiles, up to the extractor and the compiler being correct:
   whatever the decoder accepts, re-encoding the decoded bytes in lower case
   writes the source back with its letters lowered (`lowerHex`), so the
   decoder accepts exactly the encodings, up to case. Base32 has the RFC 4648
-  §10 vectors decided; its universal round trip remains.
+  §10 vectors decided here; its universal round trip is `Base32Laws.lean`.
 - `Oak/Stdlib/Base64Laws.lean`: `base64_round_trip` — for every source below
   `2^31 - 8` bytes, either alphabet (standard or URL), padded or not, a
   destination that holds exactly the encoding (`encSize`), and a decode
@@ -489,6 +489,77 @@ the compiler compiles, up to the extractor and the compiler being correct:
   validation scan stays valid on the blocks (every `%` has three bytes and
   two digits below sixteen); `percent_decode_loop` reads each block back,
   the two digits through `upper_digits_join'` (decided over the 256 bytes).
+- `Oak/Stdlib/Base32Laws.lean`: `base32_round_trip` — for every source of at
+  most `2684354555` bytes (the library's size limit), either alphabet
+  (standard or base32hex), padded or not, a destination that holds exactly
+  the encoding (`encSize32`), and a decode destination that holds the
+  source, `base32_encode` reports the encoded length and `base32_decode` of
+  its output reports the source length and writes the source back.
+  `b32_encode_spec` characterizes the encoder position by position through
+  the five-to-eight group loop (`enc_loop2_unroll` folds the byte loop into
+  the 40-bit word, `enc_loop3_spec` the symbol loop into `encSlot`) and its
+  four tail lengths (`partial32`); `unpadded_length_spec32` shows the
+  padding strip counts exactly the pads written and the misplaced-pad scan
+  runs clean; `valid_loop32` shows every symbol's value is below 32;
+  `decoded_size_spec32` closes the size with the canonical check on the
+  last symbol's unused bits (`tail1_unused` … `tail4_unused`); `dec_word`
+  shows the decoder's word loop reassembles the encoder's word
+  (`reassemble8`, the fields past a partial group being zero), and
+  `dec_loop1_spec` writes the bytes back (`bytes_of_w40`). The word
+  identities are `bv_decide` facts on `UInt64`; the tables are read in the
+  kernel.
+- `Oak/Stdlib/Base64StrictLaws.lean`: `base64_decode_ok_iff` — for every text
+  below `2^31 - 8` bytes, `base64_decode` succeeds iff the text is an
+  encoding (`Encoded b src url pad` for some source `b` the destination
+  holds and some padding choice). `base64_decode_strict` builds the witness:
+  the bytes the decoder wrote (`dst'.extract 0 n`) are a source whose
+  encoding — padded iff the text carries padding — is the text; the
+  converse is `base64_decode_encoded`, the decode half of the round trip,
+  split out of `base64_round_trip`. The rejection half follows the decoder
+  on arbitrary input: `unpadded_length_gen` (the padding strip counts
+  trailing `=`, at most two, and refuses inconsistent padding), `Bit6` (the
+  scan's accumulated `|||` carries bit 6 once a byte outside the alphabet is
+  seen, its table value being exactly 64, so `all_symbols_of_scan` recovers
+  `AllSymbols` from a scan below 64), `decoded_size_gen` (the length and
+  canonical checks), `b64_decode_of_size` (the group loop and the tails on
+  any accepted text), and `encoded_of_decoded` (the decoded bytes
+  reassemble into the decoder's words, whose six-bit fields are the symbol
+  values — `sixbit_of_word`, `sixbit_of_tail2`, `sixbit_of_tail3` — and
+  `symbol_symValue` inverts the value table on the alphabet).
+- `Oak/Stdlib/PercentStrictLaws.lean`: `percent_decode_ok_iff` — for every
+  text below `2^32 - 3` bytes, `percent_decode` succeeds iff the reference
+  decoder `pdec` accepts it (every `%` starts two hexadecimal digits, read
+  through `hvU`), reporting exactly its length; `percent_decode_strict`
+  gives the three outcomes — `InvalidCharacter` when `pdec` refuses,
+  `DestinationTooSmall` when the destination is short, and otherwise the
+  decoded bytes written in order (`spelledByte` for a `%XX` block,
+  `plainByte` for anything else, `+` as a space when asked) with the rest
+  of the destination untouched. `percent_decoded_size_ok_iff` is the size
+  pass alone; `pdec_size_loop` and `pdec_decode_loop` relate the extracted
+  loops to `pdec` by strong induction on the remaining input.
+- `Oak/Stdlib/Base32StrictLaws.lean`: `base32_decode_ok_iff` — for every text
+  below `2^32 - 8` bytes, `base32_decode` succeeds iff the text with its
+  letters uppercased (`src.map upper32`) is an encoding of a source the
+  destination holds: the decoder folds case (its value tables read `a`–`z`
+  as `A`–`Z`), so strictness holds up to case, as `hex_decode_ok_iff` does
+  for hexadecimal. `base32_decode_strict` builds the witness: the bytes the
+  decoder wrote are a source whose encoding — padded iff the text carries
+  padding — is the uppercased text (`Encoded32`); the converse goes through
+  `Encoded32V`, the encoding as the decoder reads it (symbol values and pad
+  positions only), which `base32_decode_encoded` in `Base32Laws.lean` now
+  takes and which an encoding up to case satisfies (`Encoded32V_of_upper`,
+  by `val32_upper`). The rejection half follows the decoder on arbitrary
+  input: `unpadded_length_gen32` (the strip counts up to six trailing `=`,
+  the misplaced-pad scan refuses a `=` in the body, the padding must
+  complete a group), `valid_loop_gen32` (the scan reports clean only when
+  every value is below 32), `decoded_size_gen32` (the length check refuses
+  one, three, or six symbols past a group; the canonical check reads the
+  last symbol's unused bits), `b32_decode_of_size` (the group loop on any
+  accepted text writes the bytes of `decWord32`), and `encoded_of_decoded32`
+  (the decoded bytes reassemble into words whose five-bit fields are the
+  symbol values — `fld_reW8` for a full group, `fld_reW2` … `fld_reW7` for
+  the four tail lengths under their canonical bits — and `symbol_val32`
+  inverts the value table onto the uppercased byte).
 - `Oak/Stdlib/UuidLaws.lean`: for every one-cell generator state and every
   sixteen-byte destination, `uuid_v4_spec` — `uuid_v4` succeeds and the
   value reports version 4 (`uuid_version`) and the RFC variant
@@ -514,11 +585,7 @@ most; the kernel-decided facts use no axioms.
 
 ## 7. Next
 
-- The universal base32 round trip (the base64 proof's shape, with five-to-eight
-  groups and four tail lengths); strictness for base64 (`base64_decode`
-  accepts a string iff it is a canonical encoding) and for percent-decoding
-  (accepted iff every `%` starts two hexadecimal digits) as
-  `hex_decode_ok_iff` does for hexadecimal; the SHA-256 and CRC-32C
+- The SHA-256 and CRC-32C
   extractions against reference definitions (the streaming laws hold; the
   compression and the table remain opaque to the proofs).
 - The subset: strings and the text library, methods, and recursion;
