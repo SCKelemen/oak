@@ -135,9 +135,14 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       hypervisor note ask 9.
 - [ ] **Errors are values.** Does fallible code return `Result[T, E]` with
       a closed error type, rather than throwing, returning a status code
-      the caller may ignore, or returning an in-band sentinel? (Rust, Go,
-      Zig error unions, Swift `throws` as sugar over results) — Oak:
-      `20-types.md` §11.1a, `resource-contracts-and-results.md`.
+      the caller may ignore, or returning an in-band sentinel? Where a
+      register-return ABI justifies a status word internally, is the
+      sentinel confined to private helpers and the justification written?
+      (Rust, Go, Zig error unions; simdutf `convert_*` returning 0 and
+      `result.count` meaning position or written are the anti-pattern) —
+      Oak: `20-types.md` §11.1a, `resource-contracts-and-results.md`;
+      `stdlib/json.oak` `json_result_value` and `JsonIntegerScan.status`
+      are internal sentinels justified in `71-codecs.md` §18.
 - [ ] **Newtypes for identities and units.** Are ids, offsets, byte
       counts, element counts, durations, and monetary amounts distinct
       types so that an offset cannot be passed as a length? Are units in
@@ -193,6 +198,28 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       and a handle (index into an owner), with no implicit conversion from
       owned to borrowed that outlives the owner? (Rust, Zig slices, Odin)
       — Oak: `50-borrowing.md`, `60-effects-allocation.md` §8.
+
+- [ ] **Wire identities are declared, not derived from source names.** Does
+      a discriminator value or field key ever default to a type or field
+      name, so a rename changes the wire format? Is discriminator-name
+      consistency across a hierarchy checked at compile time? (weePickle
+      FQCN default tag, runtime `findTagName`) — Oak: `40-records.md`
+      tags, `30-adts-patterns.md`; ADT wire tags are not derived yet — not
+      stated.
+- [ ] **Defaults consumed by a codec are pure constants.** If a
+      construction default can be omitted on write or filled on read, is it
+      required to be a compile-time constant so omission is deterministic?
+      (weePickle re-evaluates defaults per write for `currentTimeMillis`)
+      — Oak: `40-records.md` construction defaults; purity requirement not
+      stated.
+- [ ] **Callback-scoped borrows are regions, not comments.** When a parser
+      hands a consumer a view into a reusable buffer, is "valid until the
+      buffer refills" a borrow the checker enforces, with refill a mutable
+      borrow that conflicts with any live view? (weePickle
+      `TextBufferCharSequence` "VERY MUTABLE BUFFER"; simdjson
+      `string_view` lifetimes) — Oak: `50-borrowing.md` §8c and
+      `71-codecs.md` §13a for whole inputs; streaming refill is design
+      work (`71-codecs.md` §16).
 
 ## 4. Memory, ownership, and aliasing
 
@@ -495,8 +522,9 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       failure? (ml, TB) — Oak: `71-codecs.md` §4 wrapper-absence checks.
 - [ ] **Known-answer vectors.** Are standard test vectors (RFC, NIST,
       Unicode conformance, JSON test suite) run, with the vector file in
-      tree and its provenance noted? (NIST CAVP, simdjson's JSONTestSuite)
-      — Oak: `stdlib/hash.oak` KATs, `sam/tla-conformance`.
+      tree and its provenance noted? (NIST CAVP, simdjson's JSONTestSuite `minefield`)
+      — Oak: `stdlib/hash.oak` KATs; no in-tree JSONTestSuite vectors for
+      `stdlib/json.oak` — gap.
 - [ ] **Interpreter and every backend agree.** Is each language feature
       differentially tested across the interpreter, the C backend, and any
       other backend at every boundary value? (csmith, TB) — Oak: e2e
@@ -538,9 +566,67 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       UI tests, Elm) — Oak: `15-diagnostics.md` §11–§12.
 - [ ] **Race detector and sanitizers in CI.** Are the Go race detector,
       ASan/UBSan on the emitted C, and Miri-equivalent interpretation run
-      on the standard library and compiler tests? (Go, LLVM) — Oak: `-race` in `ci.yml`; ASan and UBSan on emitted
-      C in `stdlib-benchmark.yml` only — extend to the compiler e2e
-      suites.
+      on the standard library and compiler tests? (Go, LLVM; simdutf's compiler × flags × libc matrix with
+      `-fsigned-char`/`-funsigned-char`) — Oak: `-race` in `ci.yml`;
+      ASan/UBSan on emitted C only in `stdlib-benchmark.yml`,
+      `json-benchmark.yml`, and one libFuzzer smoke job — extend to the
+      compiler e2e suites and add a compiler × flags matrix.
+
+- [ ] **Every body is an oracle for every other.** With more than one
+      lowering or ISA body, are tests and fuzzers run once per available
+      body on the same machine with outputs compared bit for bit, is the
+      portable body always compiled in, and does one fuzz target feed the
+      same input to every body and the interpreter? (simdjson
+      `fuzz_implementations`, simdutf per-implementation `TEST`,
+      `SIMDUTF_ALWAYS_INCLUDE_FALLBACK`) — Oak: `93-simd.md` §1.4 runs
+      NEON, `-DOAK_PORTABLE_INTRINSICS`, and the interpreter; §5 states the
+      obligation; no differential fuzz target — gap.
+- [ ] **The test asserts which kernel ran.** When a flag or environment
+      variable forces a lowering, does a test verify the forced path is the
+      active one, and does a nonexistent selection fail loudly? (simdjson
+      `checkimplementation`, `SIMDJSON_FORCE_IMPLEMENTATION=doesnotexist`
+      as a must-fail test) — Oak: `OAK_PORTABLE_INTRINSICS` exists; the
+      assertion of the active path: check.
+- [ ] **Generators produce each error class at every position.** For a
+      validator, does a generator emit one specifically ill-formed input
+      per error class (header bits, too short, too long, overlong 2/3/4,
+      too large, surrogate) at every offset across a block edge, asserting
+      the exact class and offset? Is detection lag — an error in block N
+      reported while scanning block N+1 — its own test class? (simdutf
+      `validate_utf8_with_errors_tests`, `puzzler2`) — Oak:
+      `compiler/e2e_stdlib_utf8_diff_test.go` injects nine damage kinds at
+      one random offset over 16 sizes × 9 alignments — partial.
+- [ ] **Mutation brute force against the reference.** From valid text of
+      each width mix, replace one byte with a random value and, separately,
+      set one random bit, a thousand times per input, requiring the fast
+      and reference validators to agree on every mutant. (simdutf
+      `brute_force_tests`; how issue #514 surfaced) — Oak: not stated.
+- [ ] **Generate with a witness.** Does the valid-input generator return the
+      ground truth the routine must compute (code-point count, expected
+      transcoded bytes), so count and length functions are checked
+      against the generator rather than a second implementation? (simdutf
+      `generate_counted`, `transcode_test_base`) — Oak: `110-testing.md`
+      generators; witnesses per module: check.
+- [ ] **Emulated targets with hostile tail policies.** Are scalable-vector
+      bodies run under emulation with inactive lanes forced to all ones and
+      `vl` shorter than requested, at several vector lengths, so code that
+      observes dead lanes fails? (simdutf qemu `rvv_ta_all_1s`,
+      `rvv_ma_all_1s`, `rvv_vl_half_avl`, VLEN 128/256/1024) — Oak:
+      `93-simd.md` §5 states the obligation; the mechanism is not stated.
+- [ ] **Canaries around fuzzed outputs.** Does the fuzz harness allocate
+      each output separately and check canary bytes past the declared
+      length, so a within-page over-write is a failure rather than luck?
+      Is the fuzz corpus stored and every crash committed as a test named
+      by its hash? (simdutf `use_canary_in_output`; simdjson `fuzz/`) —
+      Oak: `110-testing.md` Fuzzing; canaries and stored corpus not
+      stated.
+- [ ] **Oracle independence.** Is at least one reference witness written by
+      someone else (simdutf's Fuchsia-derived validator), not a
+      transliteration of the same model the fast path came from? — Oak:
+      `is_valid_utf8` in the C backend is a transliteration of the Lean
+      brackets; the Go `unicode/utf8` witness is independent; simdutf is
+      built in `benchmarks/state-machines/cross` but only timed, not
+      compared on invalid inputs.
 
 ## 9. Parsing, input validation, and boundaries
 
@@ -603,6 +689,102 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       (Rust FFI, Swift C interop) — Oak: `92-ffi.md` §2.6, §2.10;
       `feat(verify): records and unions at the boundary`.
 
+- [ ] **Padding content is unspecified.** Where a padding contract exists,
+      does the parser depend only on padding being readable, never on its
+      value — copying a scalar that may end at `len` into a filled scratch
+      rather than trusting a NUL or a space? Are the padded and unpadded
+      paths both first-class, selected once per document, with one oracle?
+      (simdjson `visit_root_number`, `parse_unpadded`, `INSUFFICIENT_PADDING`)
+      — Oak: `71-codecs.md` §16 requires a readable-capacity contract;
+      content rule and twin paths not stated.
+- [ ] **Errors carry the byte, the path, and the token.** Does every decode
+      error carry the input offset where it was detected and the
+      structural path (RFC 6901 pointer or field chain), attached once by
+      the root driver rather than threaded through every helper, so the
+      hot scanner's ABI is untouched? Is the position a typed payload,
+      never a count field whose meaning flips on error? (weePickle
+      `TransformException`, simdjson `current_location()`, simdutf
+      `result.count`) — Oak: `stdlib/json.oak` `JsonDecodeError` and
+      `stdlib/strings.oak` `TextError` carry no position; `JsonIntegerScan`
+      (`71-codecs.md` §18) is the ABI to protect — gap.
+- [ ] **Error reporting costs no more than parsing.** Is building the
+      error value linear in depth and bounded in size — no quadratic path
+      rendering, no echoing an unbounded token into the message?
+      (weePickle `toJsonPointer` after an O(depth²) OOM on `"["·100000`,
+      `ToBigInt` digit cap) — Oak: not stated.
+- [ ] **Recoverable and fatal errors are distinct classes.** Can a caller
+      retry a value as another type after a type error while a structural
+      error poisons the iterator so nothing further can be read, and is
+      "which errors are fatal" a stated predicate? (simdjson `is_fatal`,
+      `abandon()`, `INCORRECT_TYPE` never stored) — Oak: `71-codecs.md`
+      §13 fails fast; the class split is not stated.
+- [ ] **Batch boundaries never split a scalar or a UTF-8 sequence.** For a
+      streamed sequence of documents, is the cut placed at a value/value
+      boundary with balanced brackets, are trailing partial UTF-8 bytes
+      trimmed before validation, and is the truncated tail reported to the
+      caller? Is the trim a total primitive with its "otherwise valid"
+      precondition typed? (simdjson `find_next_document_index`,
+      `truncated_bytes()`; simdutf `trim_partial_utf8`) — Oak:
+      `stdlib/strings.oak` `utf8_decode_previous` is the building block;
+      `71-codecs.md` §16 requires streaming APIs to state incomplete-input
+      behavior — open.
+- [ ] **Late discriminators buffer visibly and keep their position.** When
+      an ADT tag is not the first key, is the fallback a caller-sized
+      scratch with an explicit overflow error, does the replayed decode
+      still report the original offset and path, and can the type require
+      tag-first so the streaming path is the only path? (weePickle
+      `taggedObjectContext`, `BufferedValue`, `JsonPointerVisitor`) — Oak:
+      `71-codecs.md` §7 states the buffering contract; ADT variants are
+      not derived; position on replay not stated.
+- [ ] **Container counts are schema facts or buffers, never guesses.** For
+      a format whose container header needs the element or field count, is
+      it taken from the schema (arity minus statically omitted fields) or a
+      declared count pass, and is a schemaless producer that cannot supply
+      it rejected at the type rather than at run time? (weePickle
+      `CaseW.length`, `MsgPackRenderer.require(length != -1)`) — Oak:
+      `71-codecs.md` §4a size pass, §7; `stream[F, S]` in §3 not stated.
+- [ ] **Unknown-field policy is declared per schema.** Is skip-unknown
+      versus reject-unknown an explicit per-type choice, is the skip
+      bounded by a declared depth and size, and is the API-evolution
+      consequence (adding a producer field breaks strict consumers)
+      written next to the choice? (weePickle `NoOpVisitor` skip; OpenAPI
+      additive evolution) — Oak: `71-codecs.md` §13 rejects
+      (`UnknownField`); the policy axis is not stated.
+- [ ] **Duplicate-key semantics are one rule.** First wins, last wins, or
+      error — stated once and identical across every derivation path and
+      backend? (weePickle's Scala 2 first-wins vs Scala 3 last-wins drift)
+      — Oak: `71-codecs.md` §13 `DuplicateField` — yes for JSON.
+- [ ] **Schemaless number transit is lexical.** When transcoding between
+      formats without a target type, is a number carried as its digits with
+      decimal and exponent positions, rather than parsed to a double and
+      reprinted? (weePickle `visitFloat64StringParts`; its MsgPack renderer's
+      lossy `toDouble`) — Oak: `71-codecs.md` §3 `stream[F, S]` not stated.
+- [ ] **Cross-format lowering of non-native values is a declared table.**
+      Binary, timestamps, extension types, 64-bit integers into a format
+      lacking them — is each mapping and its loss written down, or does a
+      default silently pick strings and arrays? (weePickle `JsVisitor`
+      defaults; 2^53) — Oak: not stated.
+- [ ] **Lossy conversion is a separate total API.** Is U+FFFD replacement
+      offered as a distinct always-succeeding function with a matching
+      length function, never as a flag on the strict path? (simdutf
+      `_with_replacement`, `to_well_formed_utf16`; simdjson
+      `allow_replacement`) — Oak: `stdlib/STRINGS.md` transcoders are
+      strict only — not stated.
+- [ ] **Base64 last-chunk policy is a named parameter.** Are `loose`,
+      `strict`, `stop_before_partial`, `only_full_chunks` stated, with the
+      decoder returning both consumed and produced counts so a stream can
+      resume? (simdutf `last_chunk_handling_options`, TC39 ArrayBuffer
+      base64) — Oak: `stdlib/encoding.oak` is strict only; `70-strings.md`
+      §12 says so — one policy, not stated as a choice.
+- [ ] **The validated level is consumed, not just produced.** Does the
+      standard library have functions whose signature takes the validated
+      type (`string`, `Bytes[ValidUtf8]`) and therefore skips
+      re-validation, or does every text function take `[]u8` and re-run
+      the validator? (simdutf `convert_valid_*`) — Oak: `70-strings.md`
+      §13 defines `string`; every `text_*` in `stdlib/strings.oak` takes
+      `[]u8` and re-runs `is_valid_utf8`; the restrictions on `string`
+      values (no rebinding, no aggregates) are the blocker — gap.
+
 ## 10. Errors, failure, and diagnostics
 
 - [ ] **Crash on invariant violation, return on expected failure.** Does
@@ -633,6 +815,14 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
 - [ ] **No silent truncation or coercion in error paths.** Does an error
       message print values exactly (full width, correct signedness, float
       round-trip digits)? (TB) — Oak: `85-discipline.md` §5.
+
+- [ ] **Use-once materialization is a type rule, not a debug check.** Is
+      "unescape this token once" or "iterate this container once" enforced
+      by consume or typestate rather than by a development-mode assertion?
+      (simdjson `OUT_OF_ORDER_ITERATION` only under
+      `SIMDJSON_DEVELOPMENT_CHECKS`) — Oak: `50-borrowing.md` §9 consume,
+      `112-protocols.md` §5a typestate; a JSON iterator using them: not
+      stated.
 
 ## 11. Compiler and toolchain correctness
 
@@ -689,6 +879,24 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       is the trusted computing base written down and minimized? (Thompson
       "Reflections on Trusting Trust", CompCert TCB) — Oak: not stated;
       candidate for `125-verification.md`.
+
+- [ ] **Public signatures are written, not inferred.** Does every `pub`
+      export carry an explicit type, so an inferred narrower type cannot
+      become frozen API by accident? (weePickle `ToDuration:
+      MapStringTo[Duration]` bin-compat comment) — Oak:
+      `82-package-semver.md` snapshots canonical types; the explicitness
+      requirement is not stated.
+- [ ] **Major versions coexist.** Can two major versions of a module be
+      linked into one program (version in the module path or namespace),
+      so a v2 does not wait on every transitive dependency? (weePickle
+      `v1` packages, Go `/v2`) — Oak: `82-package-semver.md`,
+      `83-modules.md` — not stated.
+- [ ] **Wire schema changes are classified too.** Does the SemVer
+      classifier see a change to a derived codec's wire shape (renamed
+      key, new required field, changed discriminator) as an API change,
+      not only a change to the Oak signature? (weePickle: "any API change
+      that requires your consumers to update is breaking") — Oak:
+      `82-package-semver.md` classifies exports only — not stated.
 
 ## 12. Process
 
