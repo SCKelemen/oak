@@ -2026,6 +2026,95 @@ leaf_blocks: (lw: Lower, w: [*]u32, sx: []u32, leaves: u32, control: Bool): () {
   }
 }
 
+// reachable_terms flags every term the roots reach (the trap obligations
+// in the traps region and the claim): the argv region as the bitmap, the
+// snapshot region as the stack. False when the stack cannot hold the walk,
+// in which case nothing is compacted.
+reachable_terms: (lw: Lower, w: [*]u32, b: [*]u32, nterms: u32, ntraps: u32, claim: u32): Bool {
+  i: u32 = 0
+  while i < MAX_ARGV {
+    w[lw.argv_at + i] = u32(0)
+    i = i + u32(1)
+  }
+  stack_cap: u32 = MAX_SNAPS * MAX_SYMBOLS * u32(3)
+  sp: u32 = 0
+  ok: Bool = true
+  r: u32 = 0
+  while r <= ntraps && ok {
+    root: u32 = r < ntraps ? { w[lw.traps_at + r] } | { claim }
+    sp < stack_cap ? {
+      w[lw.snap_at + sp] = root
+      sp = sp + u32(1)
+    } | { ok = false }
+    r = r + u32(1)
+  }
+  while sp > u32(0) && ok {
+    sp = sp - u32(1)
+    t: u32 = w[lw.snap_at + sp]
+    word: u32 = lw.argv_at + t / u32(32)
+    bitmask: u32 = u32(1) << (t % u32(32))
+    (t == NONE || (w[word] & bitmask) != u32(0)) ? { } | {
+      w[word] = w[word] | bitmask
+      kind: u32 = tkind(lw, w, b, t)
+      (kind == KIND_PARAM || kind == KIND_CONST) ? { } | {
+        sp + u32(3) <= stack_cap ? {
+          w[lw.snap_at + sp] = tword(lw, w, b, t, u32(3))
+          w[lw.snap_at + sp + u32(1)] = kind == KIND_SELECT ? { NONE } | { tword(lw, w, b, t, u32(4)) }
+          w[lw.snap_at + sp + u32(2)] = kind == KIND_ITE ? { tword(lw, w, b, t, u32(5)) } | { NONE }
+          sp = sp + u32(3)
+        } | { ok = false }
+      }
+    }
+  }
+  ok
+}
+
+// compact_terms keeps only the reachable terms, renumbered in their
+// creation order (a dependency order still), operands and roots remapped
+// (the leaf store, free once the terms are built, holds the map); the
+// number of terms kept. The Go serializer emits only what the roots
+// reach, and the blaster's work — and the node budget — should be the
+// same here.
+compact_terms: (lw: Lower, w: [*]u32, b: [*]u32, nterms: u32, ntraps: u32, claim: u32): u32 {
+  reachable_terms(lw, w, b, nterms, ntraps, claim) ? {
+    kept: u32 = 0
+    t: u32 = 0
+    while t < nterms {
+      live: Bool = (w[lw.argv_at + t / u32(32)] & (u32(1) << (t % u32(32)))) != u32(0)
+      live ? {
+        w[lw.leaves_at + t] = kept
+        src: u32 = term_at(lw, w, t)
+        dst: u32 = term_at(lw, w, kept)
+        kind: u32 = b[src]
+        b[dst] = kind
+        b[dst + u32(1)] = b[src + u32(1)]
+        b[dst + u32(2)] = b[src + u32(2)]
+        remap: Bool = kind == KIND_BINARY || kind == KIND_CMP || kind == KIND_ITE || kind == KIND_SELECT
+        a: u32 = b[src + u32(3)]
+        bb: u32 = b[src + u32(4)]
+        c: u32 = b[src + u32(5)]
+        b[dst + u32(3)] = (remap && a != NONE) ? { w[lw.leaves_at + a] } | { a }
+        b[dst + u32(4)] = (remap && bb != NONE && kind != KIND_SELECT) ? { w[lw.leaves_at + bb] } | { bb }
+        b[dst + u32(5)] = (kind == KIND_ITE && c != NONE) ? { w[lw.leaves_at + c] } | { c }
+        b[dst + u32(6)] = b[src + u32(6)]
+        b[dst + u32(7)] = b[src + u32(7)]
+        kept = kept + u32(1)
+      } | { }
+      t = t + u32(1)
+    }
+    r: u32 = 0
+    while r < ntraps {
+      w[lw.traps_at + r] = w[lw.leaves_at + w[lw.traps_at + r]]
+      r = r + u32(1)
+    }
+    set_state(lw, w, LS_RET, w[lw.leaves_at + claim])
+    kept
+  } | {
+    set_state(lw, w, LS_RET, claim)
+    nterms
+  }
+}
+
 // lower_theorem lowers the syntax table into the problem buffer under the
 // variable order asked for: the leaves' variables, the claim at one bit
 // after the trap obligations as the roots, and the select slots'
@@ -2088,9 +2177,10 @@ lower_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, budget: u32, order: 
   failed(lw, w) ? { u32(0) } | {
     body_claim: u32 = t_truncate(lw, w, b, state(lw, w, LS_RET), u32(1))
     assumed: Bool = is_const(lw, w, b, assume) && tvalue(lw, w, b, assume) == u64(1)
-    claim: u32 = assumed ? { body_claim } | { t_binary(lw, w, b, BOP_OR, t_binary(lw, w, b, BOP_XOR, assume, t_const(lw, w, b, u32(1), u32(1))), body_claim) }
-    nterms: u32 = state(lw, w, LS_TERMS)
+    full_claim: u32 = assumed ? { body_claim } | { t_binary(lw, w, b, BOP_OR, t_binary(lw, w, b, BOP_XOR, assume, t_const(lw, w, b, u32(1), u32(1))), body_claim) }
     ntraps: u32 = state(lw, w, LS_TRAPS)
+    nterms: u32 = compact_terms(lw, w, b, state(lw, w, LS_TERMS), ntraps, full_claim)
+    claim: u32 = state(lw, w, LS_RET)
     // The order: does it apply, and the leaves' block placement.
     ncontrol: u32 = order == ORDER_CONTROL ? { control_leaves(lw, w, b, nterms, leaves) } | { u32(0) }
     applies: Bool = order == ORDER_INTERLEAVED ? { true } | {

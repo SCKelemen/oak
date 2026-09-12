@@ -479,13 +479,13 @@ In order of payoff, each reusing a surface that exists:
   lowering does, records and arrays as blocks of leaf terms, floats as
   bit patterns with the fresh symbol a NaN `min` or `max` yields, sum
   types with first-match dispatch and the tag hypothesis, under the
-  three variable orders; 163 of the corpus's 165 bit-level laws are
-  lowered and decided in Oak today, every one but two lattice laws whose
-  blocked-order diagrams the Oak lowering does not yet fit, those by the
-  Go lowering and the Oak solver), so on the bit-level path the Go that
-  remains is the parser, the type checker, the witness pass, and the
-  serialization; next those two laws, then the parser and checker
-  themselves; then
+  three variable orders, the built terms compacted to what the roots
+  reach before solving; every one of the corpus's 165 bit-level laws is
+  lowered and decided in Oak today, node for node the Go decider's
+  counts wherever the orders coincide), so on the bit-level path the Go
+  that remains is the parser, the type checker, the witness pass, and
+  the serialization of the syntax table; next the witness pass and the
+  serialization, then the parser and checker themselves; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
   producers of certificates, so speed and trust are separated; then an
