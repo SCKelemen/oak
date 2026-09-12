@@ -63,4 +63,88 @@ theorem flat_index (rows cols gid : UInt32) (fuel : Nat)
   have hmod : gid.toNat % cols.toNat < 2 ^ 32 := Nat.lt_of_le_of_lt (Nat.mod_le _ _) hlt
   omega
 
+/-! ## `tensor_sum` is the row-major left fold
+
+The specification is the counted recursion of the elements in row-major
+order — `rowFold` adds the `n` elements of row `i` from column `j`,
+`tensorFold` the rows — and `tensor_sum_spec` shows the extracted loops
+compute it, given fuel for the rows and the columns. Floating-point
+addition is not associative, so the order is the whole content of the
+statement: what the library computes, the host and the kernels compute. -/
+
+/-- Element `(i, j)` as the extraction reads it: the storage index in
+`u32` arithmetic, zero past the end (docs/spec/95-extraction.md, the
+out-of-range modeling choice). -/
+def elem (t : Tensor2) (i j : UInt32) : Float32 :=
+  t.data.getD ((t.offset + i * t.row_stride) + j * t.col_stride).toNat (Float32.ofBits 0)
+
+theorem tensor_at_some (t : Tensor2) (i j : UInt32) (fuel : Nat) (hi : i < t.rows) (hj : j < t.cols) :
+    tensor_at t i j fuel = some (elem t i j) := by
+  simp [tensor_at, tensor_index, hi, hj, elem]
+
+/-- `n` elements of row `i` from column `j`, added left to right onto `acc`. -/
+def rowFold (t : Tensor2) (i : UInt32) : Float32 → Nat → UInt32 → Float32
+  | acc, 0, _ => acc
+  | acc, n + 1, j => rowFold t i (acc + elem t i j) n (j + 1)
+
+/-- `n` rows from row `i`, each folded whole, left to right onto `acc`. -/
+def tensorFold (t : Tensor2) : Float32 → Nat → UInt32 → Float32
+  | acc, 0, _ => acc
+  | acc, n + 1, i => tensorFold t (rowFold t i acc t.cols.toNat 0) n (i + 1)
+
+theorem uint32_succ_toNat (j : UInt32) (h : j.toNat + 1 < 2 ^ 32) : (j + 1).toNat = j.toNat + 1 := by
+  rw [UInt32.toNat_add, UInt32.toNat_ofNat]
+  exact Nat.mod_eq_of_lt (by simpa using h)
+
+/-- The inner loop folds the `n` remaining columns and stops at the last. -/
+theorem sum_loop2_spec (t : Tensor2) (i : UInt32) (hi : i < t.rows) (fuel : Nat) :
+    ∀ (acc : Float32) (j : UInt32) (n : Nat), j.toNat + n = t.cols.toNat → n < fuel →
+      tensor_sum.loop2 t acc i j fuel = some (rowFold t i acc n j, t.cols) := by
+  induction fuel with
+  | zero => intro acc j n _ hf; omega
+  | succ fuel ih =>
+    intro acc j n hn hf
+    unfold tensor_sum.loop2
+    cases n with
+    | zero =>
+      have heq : j = t.cols := UInt32.toNat_inj.mp (by omega)
+      subst heq
+      simp [rowFold]
+    | succ m =>
+      have hlt : j < t.cols := UInt32.lt_iff_toNat_lt.mpr (by omega)
+      simp only [hlt, decide_true, ite_true, tensor_at_some t i j fuel hi hlt, bind, Option.bind, pure]
+      have hsucc : (j + 1).toNat = j.toNat + 1 := uint32_succ_toNat j (by have := t.cols.toNat_lt; omega)
+      rw [ih (acc + elem t i j) (j + 1) m (by omega) (by omega)]
+      rfl
+
+/-- The outer loop folds the `n` remaining rows and stops at the last. -/
+theorem sum_loop1_spec (t : Tensor2) (fuel : Nat) :
+    ∀ (acc : Float32) (i : UInt32) (n : Nat), i.toNat + n = t.rows.toNat → n + t.cols.toNat < fuel →
+      tensor_sum.loop1 t acc i fuel = some (tensorFold t acc n i, t.rows) := by
+  induction fuel with
+  | zero => intro acc i n _ hf; omega
+  | succ fuel ih =>
+    intro acc i n hn hf
+    unfold tensor_sum.loop1
+    cases n with
+    | zero =>
+      have heq : i = t.rows := UInt32.toNat_inj.mp (by omega)
+      subst heq
+      simp [tensorFold]
+    | succ m =>
+      have hlt : i < t.rows := UInt32.lt_iff_toNat_lt.mpr (by omega)
+      simp only [hlt, decide_true, ite_true, bind, Option.bind, pure]
+      rw [sum_loop2_spec t i hlt fuel acc 0 t.cols.toNat (by simp) (by omega)]
+      simp only
+      have hsucc : (i + 1).toNat = i.toNat + 1 := uint32_succ_toNat i (by have := t.rows.toNat_lt; omega)
+      rw [ih _ (i + 1) m (by omega) (by omega)]
+      rfl
+
+/-- **`tensor_sum` is the row-major left fold from zero.** -/
+theorem tensor_sum_spec (t : Tensor2) (fuel : Nat) (hf : t.rows.toNat + t.cols.toNat < fuel) :
+    tensor_sum t fuel = some (tensorFold t (Float32.ofBits 0) t.rows.toNat 0) := by
+  unfold tensor_sum
+  simp only [bind, Option.bind, pure]
+  rw [sum_loop1_spec t fuel _ 0 t.rows.toNat (by simp) hf]
+
 end Oak.Stdlib.Tensor
