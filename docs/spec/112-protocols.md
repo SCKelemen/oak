@@ -589,9 +589,18 @@ not generate Lean definitions, state diagrams, or debugger decoding
 
 ## 7. Direction
 
-- Typestate-indexed handle types; a source spelling for callable contracts
-  on function-typed parameters and for fresh-return facts.
-- Conformance of modules outside the normal form (helper operators,
-  quantifiers outside guards): a semantic comparison through TLC
-  refinement driven by the checker, rather than the textual normal form of
-  §4a.
+- A source spelling for callable contracts on function-typed parameters
+  and for fresh-return facts (`50-borrowing.md` §9 names the modes;
+  `via` binds them to a protocol's transitions).
+- Invariant theorems outside the invariant subset (§4): a call, an `if`, a
+  store in the body leave the theorem to `oak prove` alone; a wider
+  translation, or a declarative quantifier form in the guard subset, would
+  let TLC check them too.
+- Payloads and data beyond the current shapes: a record payload with array
+  fields, nested records more than one level deep, and a domain the
+  configuration chooses per step rather than the default four values.
+
+Landed since this list was first written: typestate-indexed handles (§5a),
+conformance of modules outside the normal form through TLC refinement
+(§4a), record payloads and per-replica log data (§1), and invariant
+theorems in the model (§4).

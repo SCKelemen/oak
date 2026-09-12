@@ -1,5 +1,12 @@
 # A Tour of Oak
 
+> **Status:** an introduction. The normative rules are the chapters in
+> [`docs/spec/`](docs/spec/) and the implemented subset is
+> [`docs/spec/STATUS.md`](docs/spec/STATUS.md); where the tour and a
+> chapter disagree, the chapter wins. Features the tour does not reach —
+> effects and typestate, protocols, kernels, foreign buffers, theorems —
+> are listed in the README's key features with their chapters.
+
 Oak is a systems programming language with strong type safety, memory safety through borrow checking, and expressive type system features. This tour provides an overview of the language's major features.
 
 ## Table of Contents

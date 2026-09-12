@@ -48,6 +48,11 @@ Oak is designed with these principles:
 - **Intrusive Data Structures**: Zero-allocation linked lists and queues
 - **Generics**: Parametric polymorphism with interface constraints
 - **Interfaces**: Go-style implicit interface satisfaction
+- **Effects and typestate**: effect clauses and rows on function types, typestate-indexed handles, resource contracts (`60-effects-allocation.md`, `112-protocols.md` §5a, `50-borrowing.md` §9)
+- **Protocols**: state machines declared once and projected into Oak, TLA+ for TLC, and `oak prove` obligations (`112-protocols.md`)
+- **Kernels**: compute kernels compiled to Metal and to C, with launch descriptors, tensors over views, and reductions whose grouping is a language fact (`56-kernels.md`, `55-parallelism.md` §4)
+- **Foreign buffers**: `Buffer[T]` owning runtime memory, custody states, Buffer fields in records (`92-ffi.md` §2.8)
+- **Theorems**: `name: theorem (params) { Bool }` decided by `oak prove`, or handed to Lean (`125-verification.md`)
 
 ---
 
@@ -1174,6 +1179,22 @@ CI shards the same suite by test name (`.github/workflows/ci.yml`); the
 `packages` shard is everything but `./compiler`, and the `e2e-*` shards
 split `./compiler` by `-run` pattern.
 
+## Kernels
+
+`kernel name: (gid: u32, ...): () = { ... }` declares a compute kernel: an
+Oak function in the kernel subset that the C backend compiles as an ordinary
+function and `oak build -metal out.metal` compiles to Metal Shading Language
+with a launch descriptor the host binds. Kernels take views, spans, scalars,
+and records (`Tensor2[R]` and `MutTensor2[S]` from `import("tensor")`), a
+trapping condition raises the fault word instead of stopping a thread, and
+the checker discharges the independence of the threads' stores. Reductions
+name their grouping — `reduce.tree`, `reduce.left`, `reduce.group_tree` for
+a threadgroup, `order tree | left | any { }` to declare it once for a block
+— and Lean relates the orders. The emitted kernels run on this machine's GPU
+without the Xcode toolchain (`-metal-check`, and `Launch` targets under
+`oak test`, which run a kernel on the host and replay it on the device);
+see [the kernels chapter](docs/spec/56-kernels.md).
+
 ## Theorems
 
 `name: theorem (params) { Bool }` states that a `Bool` expression holds for
@@ -1183,10 +1204,13 @@ exhaustive evaluation over finite domains or at the bit level through the
 assembler verifier's blaster, `refuted` with a counterexample, or `open` with a
 Lean projection (`-lean out.lean`) whose automatic proof Lean checks. A
 theorem over a protocol's projected state is an invariant: its base and step
-obligations are generated, and a candidate the inductive check cannot
-enumerate is decided over the reachable states. A protocol's `fair step` and
+obligations are generated, a candidate the inductive check cannot
+enumerate is decided over the reachable states, and one in the invariant
+subset is also stated in the protocol's TLA+ module as an `INVARIANT`, so
+TLC checks the same statement. A protocol's `fair step` and
 `eventually from -> target` entries are decided the same way and projected
-to the TLA+ module for TLC. Refinement types (`Slot: type = u16 where value <
+to the TLA+ module for TLC; `oak protocol -conform` holds a hand-written
+module to the projection, through the normal form or TLC refinement. Refinement types (`Slot: type = u16 where value <
 u16(8)`, generic as `IrqId[N: u32]: type = u16 where value < N`) carry their
 predicate as a fact, so an index of a refined type is proven at every access
 and checked once, at construction — or not at all when the facts in scope

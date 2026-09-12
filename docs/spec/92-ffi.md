@@ -617,8 +617,9 @@ with the diagnostic it gives an extern call (§4).
 
 A borrow ends with its block. An owner that holds a foreign allocation
 until the program hands it back is `Buffer[T]`, §2.8. The custody
-typestate that lets a device own the memory for a while
-(`Buffer[DeviceOwned]`, `50-borrowing.md` §11) is the increment after it.
+typestate that lets a device own the memory for a while is `Buffer[T, S]`
+(§2.8.5), and a record that holds a buffer carries its custody (§2.8.6);
+`50-borrowing.md` §11 is the design those sections realized.
 
 #### 2.7.6 Diagnostics
 
