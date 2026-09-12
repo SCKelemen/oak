@@ -11,7 +11,7 @@ import (
 	"github.com/SCKelemen/oak/scanner"
 )
 
-// Protocol invariants (docs/spec/125-verification.md §6). A theorem whose
+// Protocol invariants (docs/spec/125-verification.md §2a). A theorem whose
 // parameters are exactly a protocol's projected state and data — `(s:
 // NameState, d: NameData)`, or `(s: NameState)` for a machine without data
 // — is an invariant candidate. The prover writes the two obligations the
