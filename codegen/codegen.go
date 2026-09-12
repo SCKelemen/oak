@@ -1994,7 +1994,7 @@ func (cg *CodeGenerator) computeInlineHelpers(program *ast.Program) {
 // codecHotHelpers are the standard library functions the derived JSON
 // record readers call on their hot path (stdlib/json.oak).
 var codecHotHelpers = []string{
-	"json_scan_integer", "json_non_digit_mask", "json_digit_run", "json_word_value",
+	"json_scan_integer", "json_non_digit_mask", "json_word_value", "json_non_digit_mask32", "json_word_value32",
 	"json_skip_space", "json_value_boundary", "json_key_decoded_equal",
 }
 

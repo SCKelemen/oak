@@ -42,6 +42,8 @@ def cpu_model():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--simdjson", required=True, type=Path, help="local simdjson git checkout")
+    parser.add_argument("--workload", choices=("record", "event"), default="record",
+                        help="record: the ~90-byte typed record; event: the ~1.5 KB event with borrowed strings and a 64-element array")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--documents", type=int, default=1024)
     parser.add_argument("--rounds", type=int, default=100)
@@ -58,10 +60,19 @@ def main():
         if not (simdjson / "singleheader" / name).is_file():
             parser.error("simdjson checkout must contain singleheader/" + name)
     flags = ["-O1", "-g", "-fsanitize=address,undefined"] if args.sanitize else ["-O3", "-DNDEBUG"]
+    workload = {
+        "record": {"schema": "schema.oak", "bridge": "bridge.c", "header": "workload_record.h",
+                   "workload": "required id:u64 active:Bool samples:[4]i32; full typed decoding",
+                   "corpus": "deterministic-v1; alternating key order; escaped keys; integer boundaries"},
+        "event": {"schema": "schema_event.oak", "bridge": "bridge_event.c", "header": "workload_event.h",
+                  "workload": "required id:u64 kind:View[u8] message:View[u8] latencies:[64]u32 deltas:[8]i32; strings as raw tokens, arrays materialized",
+                  "corpus": "deterministic-event-v1; ~1.5 KB documents; two key orders; messages with occasional escapes; integer boundaries"},
+    }[args.workload]
     metadata = {
         "schema": "oak-json-benchmark-v1",
-        "workload": "required id:u64 active:Bool samples:[4]i32; full typed decoding",
-        "corpus": "deterministic-v1; alternating key order; escaped keys; integer boundaries",
+        "workload_name": args.workload,
+        "workload": workload["workload"],
+        "corpus": workload["corpus"],
         "mode": "sanitizer correctness" if args.sanitize else "resident corpus, reused parser, steady state",
         "machine": platform.machine(), "platform": platform.platform(),
         "cpu": cpu_model(), "logical_cpu_count": os.cpu_count(),
@@ -75,16 +86,16 @@ def main():
     commands = []
     with tempfile.TemporaryDirectory(prefix="oak-json-bench-") as tmp:
         build = Path(tmp)
-        shutil.copyfile(HERE / "schema.oak", build / "schema.oak")
+        shutil.copyfile(HERE / workload["schema"], build / "schema.oak")
         commands.append(["go", "run", ".", str(build / "schema.oak")])
         subprocess.run(commands[-1], cwd=ROOT, check=True)
         metadata["generated_c_sha256"] = hashlib.sha256((build / "schema.c").read_bytes()).hexdigest()
-        commands.append([args.cc, "-std=c99", *flags, "-I" + str(build), "-c", str(HERE / "bridge.c"), "-o", str(build / "oak.o")])
+        commands.append([args.cc, "-std=c99", *flags, "-I" + str(build), "-c", str(HERE / workload["bridge"]), "-o", str(build / "oak.o")])
         subprocess.run(commands[-1], check=True)
         if args.inspect:
             args.inspect.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(build / "schema.c", args.inspect / "schema.c")
-            commands.append([args.cc, "-std=c99", *flags, "-I" + str(build), "-S", str(HERE / "bridge.c"), "-o", str(args.inspect / "oak.s")])
+            commands.append([args.cc, "-std=c99", *flags, "-I" + str(build), "-S", str(HERE / workload["bridge"]), "-o", str(args.inspect / "oak.s")])
             subprocess.run(commands[-1], check=True)
             assembly = (args.inspect / "oak.s").read_text()
             # Print the derived reader and its callees for remote inspection.
@@ -95,7 +106,7 @@ def main():
                 if start >= 0:
                     end = assembly.find(".cfi_endproc", start)
                     print(assembly[start:end + len(".cfi_endproc")])
-        commands.append([args.cxx, "-std=c++17", *flags, "-pthread", "-I" + str(simdjson / "singleheader"), str(HERE / "runner.cpp"), str(simdjson / "singleheader/simdjson.cpp"), str(build / "oak.o"), "-o", str(build / "benchmark")])
+        commands.append([args.cxx, "-std=c++17", *flags, "-pthread", "-DOAK_JSON_WORKLOAD_HEADER=\"" + workload["header"] + "\"", "-I" + str(HERE), "-I" + str(simdjson / "singleheader"), str(HERE / "runner.cpp"), str(simdjson / "singleheader/simdjson.cpp"), str(build / "oak.o"), "-o", str(build / "benchmark")])
         subprocess.run(commands[-1], check=True)
         commands.append([str(build / "benchmark"), str(args.documents), str(args.rounds), str(args.samples)])
         lines = capture(commands[-1]).splitlines()
