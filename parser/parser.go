@@ -954,10 +954,46 @@ func (p *Parser) parseFieldAccess(left ast.Expression) ast.Expression {
 
 // parseIndexOrSliceExpression handles both array[index] and array[low:high] syntax
 // This is a unified Pratt hook for '[' that pattern-matches on ':' to choose index vs slice
+// isMessageSendAccess reports whether expr is the library access
+// `c.msg_send` (docs/spec/92-ffi.md section 2.12), whose bracket argument
+// is a boundary function type rather than a value.
+func isMessageSendAccess(expr ast.Expression) bool {
+	access, isAccess := expr.(*ast.IndexExpression)
+	if !isAccess || !access.Dot {
+		return false
+	}
+	base, isIdent := access.Left.(*ast.Identifier)
+	member, memberIsIdent := access.Index.(*ast.Identifier)
+	return isIdent && memberIsIdent && base.Value == "c" && member.Value == "msg_send"
+}
+
 func (p *Parser) parseIndexOrSliceExpression(left ast.Expression) ast.Expression {
 	tok := p.currentToken // '['
 	defer p.operatorPipe()()
 	p.nextToken() // move to first token after '['
+
+	// `c.msg_send[(params) -> ret](receiver, selector, args...)` (docs/spec/
+	// 92-ffi.md section 2.12): the bracket carries a boundary function
+	// type, not a value, so it is read with the type grammar. The callee
+	// is the one place a function type appears in expression position.
+	if isMessageSendAccess(left) && p.currentTokenIs(token.LPAREN) {
+		signature := p.parseTypeExpression()
+		if signature == nil {
+			return nil
+		}
+		if _, isFn := signature.(*ast.FunctionTypeExpression); !isFn {
+			p.addErrorAtCurrentToken("c.msg_send takes a function type in brackets: c.msg_send[(params) -> ret]")
+			return nil
+		}
+		if !p.expectPeek(token.RBRACK) {
+			return nil
+		}
+		if !p.peekTokenIs(token.LPAREN) {
+			p.peekError(token.LPAREN)
+			return nil
+		}
+		return &ast.IndexExpression{Token: tok, Left: left, Index: signature}
+	}
 
 	// Case 1: a[:...] or a[:]
 	if p.currentTokenIs(token.COLON) {
