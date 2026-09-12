@@ -1378,6 +1378,13 @@ func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *type
 	}
 }
 
+// isLocalName reports whether name is a local (parameter or binding) of the
+// function being emitted, which shadows a root function of the same name.
+func (cg *CodeGenerator) isLocalName(name string) bool {
+	_, isLocal := cg.localTypes[name]
+	return isLocal
+}
+
 // Match payloads are scoped locals too. Preserve their declared container
 // shape so record array fields keep bounds-checked indexing in each arm.
 func (cg *CodeGenerator) bindMatchContainer(name string, typ ast.Expression) func() {
@@ -1421,8 +1428,12 @@ func (cg *CodeGenerator) preEmitContainerTypes(program *ast.Program) {
 				// source of a view_as — needs the element's view and span
 				// structs at file scope too.
 				cg.parseTypeExpression(t)
-				cg.emitViewType(info.element)
-				cg.emitSpanType(info.element)
+				if strings.HasPrefix(info.element, "oak_") {
+					// Record elements only: a scalar's structs are placed
+					// where the program first names the view or span.
+					cg.emitViewType(info.element)
+					cg.emitSpanType(info.element)
+				}
 			}
 		}
 	}
@@ -3045,10 +3056,12 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			cg.emitForeignFunctionCallee(cg.foreignFnLocals[ident.Value], e.Function, tc)
 		} else if ident, ok := e.Function.(*ast.Identifier); ok && runtimeBuiltins[ident.Value] != "" {
 			cg.output.WriteString(runtimeBuiltins[ident.Value])
-		} else if ident, ok := e.Function.(*ast.Identifier); ok && cg.programFunctions[ident.Value] != nil {
+		} else if ident, ok := e.Function.(*ast.Identifier); ok && cg.programFunctions[ident.Value] != nil && !cg.isLocalName(ident.Value) {
 			// Calls to program functions use the mangled C name; calls to
 			// extern bindings use the validated foreign symbol raw
-			// (docs/spec/92-ffi.md section 2.3).
+			// (docs/spec/92-ffi.md section 2.3). A local of the same name — a
+			// function-typed parameter `step` in a package whose caller also
+			// declares a root function `step` — is a call through the local.
 			if target := cg.programFunctions[ident.Value]; target.ExternSymbol != "" {
 				if typechecker.ValidCSymbol(target.ExternSymbol) {
 					cg.output.WriteString(cg.externCallee(target.ExternSymbol))

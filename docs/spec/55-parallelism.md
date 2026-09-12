@@ -94,6 +94,23 @@ that under associativity the tree equals the left fold from the first
 element, which is what licenses a backend to choose any grouping for such
 an operation; without the law it computes the tree named.
 
+**An order is a function.** When a program needs a second order beside
+the one it computes with — the fused attention's online-softmax merge,
+carrying `(max, sum)` across a window, beside the lane rule — the order
+is written as an Oak function and named as one: `reduce.fold(xs, init,
+step)` is the sequential order with a state of its own type, and
+`reduce.tree_map(xs, zero, lift, merge)` the binary-counter order over
+the lifted elements. Each function's extraction is its declaration, and
+a theorem relates the two: `Oak.Reduce.fold_eq_tree_map` proves that for
+an associative merge `fold(xs, lift(x0), step)` with `step(s, x) =
+merge(s, lift(x))` equals `tree_map(xs, zero, lift, merge)` on non-empty
+input, as `tree_assoc` relates `tree` to `left` and `coop_eq_tree` the
+cooperative scheme to `tree`. Reorder permission is therefore not a
+separate annotation: it is `laws { associative }` on the merge, and the
+theorem that names which two orders it makes equal. The canonical order
+is the one the program calls; the grouping named is the grouping
+computed.
+
 The identity element, if required by the operation, is likewise a semantic law and not merely an optimization hint.
 
 ## 5. Work and span

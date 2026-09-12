@@ -17,6 +17,9 @@ the grouping every backend produces, not about an idealized one.
   the first element — the law that makes `laws { associative }`
   (`10-syntax.md` section 14a) the permission to regroup. Without it, the
   grouping named is the grouping computed.
+* `fold`, `tree_map`, `fold_eq_tree_map`: the stateful orders — the
+  sequential fold with a state and the tree over lifted elements — and
+  the theorem that an associative merge makes them one value.
 * `tree_append_pow2`, `coop_eq_tree`, `coop_full`: the cooperative
   threadgroup scheme of `reduce.group_tree` (`56-kernels.md` section 7) —
   pairwise-adjacent combination with doubling stride, partner present —
@@ -189,6 +192,40 @@ theorem tree_assoc (f : α → α → α) (hf : Assoc f) (z x : α) (xs : List �
   unfold tree
   rw [finish_eq_denote f hf, denote_foldl_push f hf]
   simp [denote, chain, extend]
+
+/-! ## Stateful orders: an order is a function
+
+`reduce.fold xs init step` is the sequential order with a state of its own
+type, and `reduce.tree_map xs zero lift merge` the binary-counter order
+over the lifted elements (docs/spec/55-parallelism.md section 4). Each is
+a function a program names; `fold_eq_tree_map` is the theorem that for an
+associative merge the two are one value — the online-softmax merge of a
+fused attention written once as the step of a fold and once as the merge
+of a tree is the same number both ways. -/
+
+/-- The sequential left fold with a state. -/
+def fold {β : Type} (step : α → β → α) (init : α) (xs : List β) : α := xs.foldl step init
+
+/-- The binary-counter tree over the lifted elements. -/
+def tree_map {β : Type} (lift : β → α) (merge : α → α → α) (z : α) (xs : List β) : α :=
+  tree merge z (xs.map lift)
+
+theorem fold_eq_left (f : α → α → α) (z : α) (xs : List α) : fold f z xs = left f z xs := rfl
+
+theorem tree_map_nil {β : Type} (lift : β → α) (merge : α → α → α) (z : α) :
+    tree_map lift merge z [] = z := by
+  simp [tree_map, tree_nil]
+
+theorem tree_map_id (f : α → α → α) (z : α) (xs : List α) : tree_map id f z xs = tree f z xs := by
+  simp [tree_map]
+
+/-- For an associative merge the fold whose step merges the lifted element
+equals the tree over the lifted elements, on non-empty input. -/
+theorem fold_eq_tree_map {β : Type} (lift : β → α) (merge : α → α → α) (hm : Assoc merge)
+    (z : α) (x : β) (xs : List β) :
+    fold (fun s y => merge s (lift y)) (lift x) xs = tree_map lift merge z (x :: xs) := by
+  unfold fold tree_map
+  rw [List.map_cons, tree_assoc merge hm, List.foldl_map]
 
 /-! ## The cooperative scheme computes the same tree
 

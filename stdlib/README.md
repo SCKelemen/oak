@@ -77,11 +77,13 @@ Reductions whose grouping is a language fact (`docs/spec/55-parallelism.md`
 | --- | --- |
 | `tree[T](xs: []T, zero: T, f: (T, T) -> T)` | The balanced binary-counter tree: four elements give `f(f(x0, x1), f(x2, x3))`, the `simd.reduce_add` grouping; an empty view yields `zero`, which takes no other part. Identical on every backend, no associativity assumed. O(n) work, one 64-entry stack. |
 | `left[T](xs: []T, zero: T, f: (T, T) -> T)` | The sequential left fold `f(f(zero, x0), x1) ...`. |
+| `fold[S, T](xs: []T, init: S, step: (S, T) -> S)` | The sequential left fold with a state of its own type: `left` when `S` is `T`; the online-softmax pass carrying `(max, sum)` is `fold` with the merge as its step. |
+| `tree_map[T, S](xs: []T, zero: S, lift: (T) -> S, merge: (S, S) -> S)` | `tree` over the lifted elements without the intermediate array; for an associative `merge` it equals `fold(xs, lift(x0), step)` with `step(s, x) = merge(s, lift(x))` on non-empty input (`Oak.Reduce.fold_eq_tree_map`) — the two orders a program may name for one merge, and the theorem that they are one value (`55-parallelism.md` §4, "an order is a function"). |
 | `group_tree[T](group: u32, xs: []T, lo: u32, m: u32, zero: T, f)` | `tree` over the `m` elements at `lo` (`m <= group` asserted); in a kernel body with a literal power-of-two `group` it is the cooperative threadgroup reduction (`56-kernels.md` §7), the same grouping computed by `group` threads together. |
 
 When `f` is an operator declaring `laws { associative }` the two agree on
-non-empty input (`Oak.Reduce.tree_assoc`). `f` carries the empty effect
-row (`(T, T) -> T effects { }`, `60-effects-allocation.md` §2a): a
+non-empty input (`Oak.Reduce.tree_assoc`). `f`, `step`, `lift`, and
+`merge` carry the empty effect row (`(T, T) -> T effects { }`, `60-effects-allocation.md` §2a): a
 combine performs no effects, which is what lets a kernel body call
 `reduce.tree` (`56-kernels.md` §7) and what a regrouping backend relies on.
 
@@ -254,6 +256,43 @@ mode. A Linux amd64 CI regression compares a constant single-byte fluent chain's
 `-O3` assembly with a direct constant return. Dynamic lengths still need bounds
 checks, copying still performs work, and an unoptimized build may retain calls.
 Native Apple Silicon optimizer validation remains separate work.
+
+## Text for emitters
+
+A code emitter — a Metal source, a diagnostic, a table for another tool —
+is text into a caller-owned buffer, and the pieces are already here: the
+`TextBuilder` of `strings` (`STRINGS.md`) for text, runes, and integers,
+`float_format` for a float's shortest round-trip spelling into a small
+scratch, appended as text. No allocation, no format string; the builder's
+failure is sticky and `finish_text` reports it once.
+
+```oak
+import(std)
+
+emit_binding: (dst: [*]u8, name: []u8, value: f64, index: u32): Result[u32, TextError] = {
+  digits: [32]u8                       // FLOAT_TEXT_SIZE holds any shortest spelling
+  n: u32 = 0
+  true ? {
+    scratch: [*]u8 = span(&digits)     // the span ends with this block,
+    n = float_written(float_format(scratch, value))
+  }
+  text: []u8 = view(&digits)           // so the view of the digits can begin
+  b: TextBuilder = text_builder()
+  b = append_text(b, dst, name)
+  b = append_text(b, dst, text_literal(" = "))
+  b = append_text(b, dst, text[u32(0):n])
+  b = append_text(b, dst, text_literal(" // #"))
+  b = append_u64(b, dst, u64(index))
+  b = append_rune(b, dst, u32(10))
+  finish_text(b)                       // "y = 1.5e-05 // #7\n"
+}
+```
+
+`float_format_fixed` and `float_format_exp` are the fixed and exponent
+forms with a digit count, `append_i64` and `append_u64_radix` the signed
+and radix integers (`compiler/e2e_emitter_text_test.go` runs this
+example). The one thing an emitter for a C-family target adds is a
+suffix — `f` after an `f32` literal — which is an `append_rune`.
 
 ## Bounded array lists
 
