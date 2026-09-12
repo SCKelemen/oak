@@ -114,3 +114,51 @@ func TestVolatileLoweringDoesNotInventFence(t *testing.T) {
 		t.Fatal("raw volatile lowering must not invent synchronization")
 	}
 }
+
+// Lock-free admission consults the C11 macro for each carrier's width, and
+// only where the C type actually has that width (docs/spec/65 §6).
+func TestLockFreeConditionPerWidth(t *testing.T) {
+	cases := map[string]string{
+		"u8":  "ATOMIC_CHAR_LOCK_FREE == 2",
+		"i16": "ATOMIC_SHORT_LOCK_FREE == 2",
+		"u32": "(sizeof(int) != 4 || ATOMIC_INT_LOCK_FREE == 2) && (sizeof(long) != 4 || ATOMIC_LONG_LOCK_FREE == 2)",
+		"i64": "(sizeof(long) != 8 || ATOMIC_LONG_LOCK_FREE == 2) && (sizeof(long long) != 8 || ATOMIC_LLONG_LOCK_FREE == 2)",
+	}
+	for carrier, want := range cases {
+		got, err := lockFreeConditionC(carrier)
+		if err != nil {
+			t.Fatalf("lockFreeConditionC(%q): %v", carrier, err)
+		}
+		if got != want {
+			t.Fatalf("lockFreeConditionC(%q) = %q, want %q", carrier, got, want)
+		}
+	}
+	if _, err := lockFreeConditionC("f32"); err == nil {
+		t.Fatal("non-integer carrier unexpectedly admitted")
+	}
+}
+
+func TestAtomicAdmissionEmitsOnlyRecordedCarriers(t *testing.T) {
+	cg := &CodeGenerator{}
+	cg.emitAtomicAdmission()
+	if cg.output.Len() != 0 {
+		t.Fatalf("admission emitted without atomics:\n%s", cg.output.String())
+	}
+	cg.atomicsIncluded = true
+	cg.atomicCarriers = map[string]bool{"i8": true, "u64": true}
+	cg.emitAtomicAdmission()
+	out := cg.output.String()
+	for _, want := range []string{
+		"#if !defined(OAK_ATOMIC_ACCEPT_LOCKED)",
+		"typedef char oak_atomic_lock_free_i8[ (ATOMIC_CHAR_LOCK_FREE == 2) ? 1 : -1 ];",
+		"typedef char oak_atomic_lock_free_u64[",
+		"#endif",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("admission block lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "oak_atomic_lock_free_u32") {
+		t.Fatalf("unrecorded carrier asserted:\n%s", out)
+	}
+}

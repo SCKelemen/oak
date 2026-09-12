@@ -144,8 +144,11 @@ atomic_exchange_seq_cst(cell, value) -> T
 ```
 
 Fetch-add returns the pre-add value and exists for all five orders. Fences exist
-for acquire, release, acq-rel, and seq-cst. Atomic exchange remains a backend
-building block but is not yet a normative source builtin.
+for acquire, release, acq-rel, and seq-cst. Atomic exchange is a normative
+source builtin: it is legal at every RMW order (the `rmw` row of
+`Oak.MemoryOrder.legal`), carries the `Memory.AtomicRMW` effect, lowers to
+`atomic_exchange_explicit`, and is exercised end to end by the zero-copy
+receive path (`compiler/e2e_zero_copy_test.go`, `compiler/e2e_atomic_fields_test.go`).
 
 ## 5. Effects and shared semantic authority
 
@@ -184,9 +187,22 @@ The machine-memory performance contract is structural:
 9. generated hot paths are checked for accidental heap calls or order switches.
 
 This removes Oak runtime overhead around the primitive. It does not claim every
-backend/target implements every carrier lock-free. Freestanding and hard-RT
-target profiles must establish required atomic operations are lock-free (or
-otherwise have an accepted bounded implementation) before admission.
+backend/target implements every carrier lock-free, so the C backend makes the
+target say so: for every atomic carrier the program declares storage for
+(a named cell, a record field, an array element) the generated C ends with a
+C99 static assertion that C11 atomics of that width are *always* lock-free
+on the compiling target (`ATOMIC_{CHAR,SHORT,INT,LONG,LLONG}_LOCK_FREE == 2`,
+consulted by width, so ILP32 and LP64 both read the macro that matches). A
+target whose atomics fall back to a locked libatomic implementation — a
+Cortex-M0+ compiling a `u32` fetch-add, for instance — fails the C build
+instead of linking a hidden lock. A build that has audited the fallback and
+accepts it defines `OAK_ATOMIC_ACCEPT_LOCKED`; that define is the "accepted
+bounded implementation" and is visible in the build line, not in the
+program. Carriers the program never declares are not asserted, so a
+`u32`-only program still builds on a core without 64-bit exclusives.
+(`codegen/memory.go` `emitAtomicAdmission`; `compiler/e2e_atomic_admission_test.go`
+cross-compiles the same C for Cortex-M4, where it builds, and Cortex-M0+,
+where the `u32` assertion fails and the define lifts it.)
 
 CAS retry count is not intrinsically bounded under contention. Realtime code
 must account for that explicitly; lock-free does not mean hard-realtime.
@@ -292,12 +308,12 @@ Acceptance spans the whole executable stack:
 | language-level memory relation set | explicit through seq-cst |
 | C/ISA formal refinement | not yet proved |
 | AArch64 weak-memory litmus suite | next major layer |
-| target-specific lock-free admission | not yet implemented |
+| target lock-free admission (C backend) | implemented + cross-compile-tested (§6) |
 
 The next work is no longer to invent additional language-level memory-order
 semantics. It is to **refine and test the projection**: generated C, emitted
-AArch64 instructions, weak-memory litmus outcomes, and target lock-free
-admission. Higher-level SPSC/MPSC proofs should consume that demonstrated
+AArch64 instructions, and weak-memory litmus outcomes (target lock-free
+admission is in place, §6). Higher-level SPSC/MPSC proofs should consume that demonstrated
 compiler-to-machine contract rather than re-specifying atomics locally.
 
 ## Placement of statics
