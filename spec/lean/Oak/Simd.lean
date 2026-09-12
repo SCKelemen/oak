@@ -312,3 +312,73 @@ theorem movemask_eq_zero_iff (laneBits : Nat) (v : Vec) :
       rw [hx, ih.mpr hrest]
 
 end Oak.Simd
+
+/-! ## The scalable API: extent independence (docs/spec/93-simd.md §4)
+
+A strip-mined loop processes a sequence in chunks whose sizes the backend
+chooses (the active extents). The program's result must not depend on
+that choice. For a lane-wise map, the concatenation of the mapped chunks
+is the map of the concatenation; for the wrapping sum, and for `any` and
+`all` folded with or/and across chunks, likewise. Chunkings are any list
+of chunks that flattens to the sequence — every extent choice is one. What
+is *not* extent-independent: counting chunks, or observing per-chunk
+`any`/`all` without folding them (the interpreter's stressed extent shows
+the difference, `compiler/e2e_scalable_test.go`). -/
+
+namespace Oak.Simd
+
+/-- A chunking of `xs`: chunks that flatten back to `xs`. -/
+def IsChunking (chunks : List (List Nat)) (xs : List Nat) : Prop := chunks.flatten = xs
+
+/-- A lane-wise operation applied chunk by chunk is the operation on the
+    whole sequence, whatever the chunk sizes. -/
+theorem chunked_map_eq (f : Nat → Nat) (chunks : List (List Nat)) (xs : List Nat)
+    (h : IsChunking chunks xs) : (chunks.map (List.map f)).flatten = xs.map f := by
+  unfold IsChunking at h
+  subst h
+  induction chunks with
+  | nil => rfl
+  | cons c rest ih =>
+    rw [List.map_cons, List.flatten_cons, List.flatten_cons, List.map_append, ih]
+
+/-- The wrapping sum (reduce_add) of the chunk sums is the sum of the whole:
+    the sum modulo `2^bits` is associative and commutative. -/
+theorem chunked_sum_eq (bits : Nat) (chunks : List (List Nat)) (xs : List Nat)
+    (h : IsChunking chunks xs) :
+    (chunks.map (fun c => c.sum % 2 ^ bits)).sum % 2 ^ bits = xs.sum % 2 ^ bits := by
+  unfold IsChunking at h
+  subst h
+  induction chunks with
+  | nil => rfl
+  | cons c rest ih =>
+    rw [List.map_cons, List.sum_cons, List.flatten_cons, List.sum_append, Nat.add_mod, ih, Nat.mod_mod, ← Nat.add_mod]
+
+/-- `any` folded with or across chunks is `any` of the whole. -/
+theorem chunked_any_eq (chunks : List (List Nat)) (xs : List Nat) (h : IsChunking chunks xs) :
+    chunks.any anyLane = anyLane xs := by
+  unfold IsChunking at h
+  subst h
+  induction chunks with
+  | nil => rfl
+  | cons c rest ih =>
+    rw [List.any_cons, List.flatten_cons, ih]
+    simp only [anyLane, List.any_append]
+
+/-- `all` folded with and across chunks is `all` of the whole. -/
+theorem chunked_all_eq (chunks : List (List Nat)) (xs : List Nat) (h : IsChunking chunks xs) :
+    chunks.all allLanes = allLanes xs := by
+  unfold IsChunking at h
+  subst h
+  induction chunks with
+  | nil => rfl
+  | cons c rest ih =>
+    rw [List.all_cons, List.flatten_cons, ih]
+    simp only [allLanes, List.all_append]
+
+/-- Counting chunks is not extent-independent: two chunkings of the same
+    sequence with different chunk counts. -/
+theorem chunk_count_depends_on_extent :
+    IsChunking [[1, 2]] [1, 2] ∧ IsChunking [[1], [2]] [1, 2] ∧ ([[1, 2]] : List (List Nat)).length ≠ [[1], [2]].length := by
+  refine ⟨rfl, rfl, by decide⟩
+
+end Oak.Simd

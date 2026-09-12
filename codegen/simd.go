@@ -9,6 +9,7 @@ package codegen
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -90,7 +91,7 @@ var simdScalarOps = map[string]bool{
 // simdKnownMember reports whether member is any simd catalog operation the
 // backend can lower: a shaped operation or a scalar mask operation.
 func simdKnownMember(member string) bool {
-	if simdScalarOps[member] {
+	if simdScalarOps[member] || scalableMember(member) {
 		return true
 	}
 	_, _, ok := simdOpSplit(member)
@@ -149,6 +150,14 @@ func simdQualifiedTypeSpelling(name string) (string, bool) {
 		if shape.TypeName == member {
 			return shape.Suffix, true
 		}
+	}
+	switch member {
+	case "Active":
+		return "oak_active", true
+	case "ScalableU8":
+		return "oak_scalable_u8", true
+	case "ScalableU32":
+		return "oak_scalable_u32", true
 	}
 	return "OAK_UNSUPPORTED_SIMD_TYPE", true
 }
@@ -231,10 +240,30 @@ func (cg *CodeGenerator) emitSimdSupport(program *ast.Program) {
 			shape.Suffix, shape.ElemName, shape.Lanes, shape.Suffix))
 	}
 	cg.write("\n")
+	if programUsesScalable(ops) || cg.programMentionsScalableLocals(program) {
+		cg.writeRaw(scalableTypedefs)
+	}
 
 	for _, member := range ops {
 		if simdScalarOps[member] {
 			cg.writeRaw(simdScalarHelperSource(member))
+			cg.write("\n")
+			continue
+		}
+		if scalableMember(member) {
+			// Loads and stores go through the view and span structs; their
+			// typedefs must precede the helper.
+			elem := "u8"
+			if strings.HasSuffix(member, "_u32") {
+				elem = "u32"
+			}
+			if strings.HasPrefix(member, "load_") {
+				cg.emitViewType(elem)
+			}
+			if strings.HasPrefix(member, "store_") {
+				cg.emitSpanType(elem)
+			}
+			cg.writeRaw(scalableHelperSource(member))
 			cg.write("\n")
 			continue
 		}
@@ -741,4 +770,164 @@ func rvvBody(op, elem string, lanes int, float bool) (string, bool) {
 		return "", false
 	}
 	return store("r.lanes", fmt.Sprintf("__riscv_%s_%s(%s, %s, %s)", name, sfx, load("a.lanes"), load("b.lanes"), vl)), true
+}
+
+// ---- The scalable API (docs/spec/93-simd.md section 4) ----
+//
+// An active extent is chosen by the realization, never above the remaining
+// count nor its capacity; every operation touches the active lanes only.
+// Portable (and NEON) realization: one 16-byte vector as a struct and a
+// u32 extent; RVV: the sizeless LMUL=1 vector types as block-local C
+// values (the checker's locality rule, OAK-S0401, is what makes them
+// sound) and a size_t extent from vsetvl.
+
+func scalableMember(member string) bool {
+	return member == "count" || strings.HasPrefix(member, "active_") || strings.Contains(member, "_active_")
+}
+
+func programUsesScalable(ops []string) bool {
+	for _, member := range ops {
+		if scalableMember(member) {
+			return true
+		}
+	}
+	return false
+}
+
+// programMentionsScalableLocals reports a local of a scalable type, which
+// needs the typedefs even without operations.
+func (cg *CodeGenerator) programMentionsScalableLocals(program *ast.Program) bool {
+	found := false
+	var visit func(value reflect.Value)
+	visit = func(value reflect.Value) {
+		if found || !value.IsValid() {
+			return
+		}
+		switch value.Kind() {
+		case reflect.Ptr, reflect.Interface:
+			if value.IsNil() {
+				return
+			}
+			if decl, ok := value.Interface().(*ast.VariableDeclaration); ok && decl.Type != nil {
+				text := decl.Type.String()
+				if strings.Contains(text, "simd.Active") || strings.Contains(text, "simd.Scalable") {
+					found = true
+					return
+				}
+			}
+			if value.Kind() == reflect.Ptr {
+				visit(value.Elem())
+			} else {
+				visit(reflect.ValueOf(value.Interface()))
+			}
+		case reflect.Struct:
+			for i := 0; i < value.NumField(); i++ {
+				if value.Type().Field(i).IsExported() {
+					visit(value.Field(i))
+				}
+			}
+		case reflect.Slice:
+			for i := 0; i < value.Len(); i++ {
+				visit(value.Index(i))
+			}
+		}
+	}
+	visit(reflect.ValueOf(program))
+	return found
+}
+
+const scalableTypedefs = `/* scalable vectors (docs/spec/93-simd.md section 4): block-local values whose
+   lanes outside the active extent are not Oak values */
+` + rvvGuard + `
+typedef size_t oak_active;
+typedef vuint8m1_t oak_scalable_u8;
+typedef vuint32m1_t oak_scalable_u32;
+#define OAK_SCALABLE_CAP_U8(remaining) __riscv_vsetvl_e8m1((size_t)(remaining))
+#define OAK_SCALABLE_CAP_U32(remaining) __riscv_vsetvl_e32m1((size_t)(remaining))
+#else
+typedef u32 oak_active;
+typedef struct oak_scalable_u8 { u8 lanes[16]; } oak_scalable_u8;
+typedef struct oak_scalable_u32 { u32 lanes[4]; } oak_scalable_u32;
+#define OAK_SCALABLE_CAP_U8(remaining) ((remaining) < 16u ? (remaining) : 16u)
+#define OAK_SCALABLE_CAP_U32(remaining) ((remaining) < 4u ? (remaining) : 4u)
+#endif
+
+`
+
+// scalableHelperSource emits one scalable operation's helper: the portable
+// lane loop over the extent, and the RVV intrinsic under the guard.
+func scalableHelperSource(member string) string {
+	var b strings.Builder
+	if member == "count" {
+		b.WriteString("static inline u32 oak_simd_count( oak_active a ) { return (u32)a; }\n")
+		return b.String()
+	}
+	elem, cap := "u8", "OAK_SCALABLE_CAP_U8"
+	if strings.HasSuffix(member, "_u32") {
+		elem, cap = "u32", "OAK_SCALABLE_CAP_U32"
+	}
+	vec := "oak_scalable_" + elem
+	bits := elem[1:]
+	sfx := elem + "m1"
+	if strings.HasPrefix(member, "active_") {
+		fmt.Fprintf(&b, "static inline oak_active oak_simd_%s( u32 remaining ) { return (oak_active)%s(remaining); }\n", member, cap)
+		return b.String()
+	}
+	op := member[:strings.Index(member, "_active_")]
+	rvv := func(text string) string { return rvvGuard + "\n" + text + "#else\n" }
+	load := func(ptr string) string { return fmt.Sprintf("__riscv_vle%s_v_%s(%s, a)", bits, sfx, ptr) }
+	switch op {
+	case "splat":
+		fmt.Fprintf(&b, "static inline %s oak_simd_%s( %s x, oak_active a ) {\n", vec, member, elem)
+		b.WriteString(rvv(fmt.Sprintf("  return __riscv_vmv_v_x_%s(x, a);\n", sfx)))
+		fmt.Fprintf(&b, "  %s r;\n  for (u32 i = 0; i < a; i++) { r.lanes[i] = x; }\n  return r;\n#endif\n}\n", vec)
+	case "load":
+		fmt.Fprintf(&b, "static inline %s oak_simd_%s( oak_view_%s v, u32 off, oak_active a ) {\n", vec, member, elem)
+		b.WriteString("  if ((u64)off + (u64)a > (u64)v.len) { __builtin_trap(); }\n")
+		b.WriteString(rvv(fmt.Sprintf("  return %s;\n", load("v.base + off"))))
+		fmt.Fprintf(&b, "  %s r;\n  for (u32 i = 0; i < a; i++) { r.lanes[i] = v.base[off + i]; }\n  return r;\n#endif\n}\n", vec)
+	case "store":
+		fmt.Fprintf(&b, "static inline void oak_simd_%s( oak_span_%s s, u32 off, %s val, oak_active a ) {\n", member, elem, vec)
+		b.WriteString("  if ((u64)off + (u64)a > (u64)s.len) { __builtin_trap(); }\n")
+		b.WriteString(rvv(fmt.Sprintf("  __riscv_vse%s_v_%s(s.base + off, val, a);\n", bits, sfx)))
+		b.WriteString("  for (u32 i = 0; i < a; i++) { s.base[off + i] = val.lanes[i]; }\n#endif\n}\n")
+	case "shr":
+		fmt.Fprintf(&b, "static inline %s oak_simd_%s( %s v, u32 n, oak_active a ) {\n", vec, member, vec)
+		fmt.Fprintf(&b, "  if (n >= %su) { __builtin_trap(); }\n", bits)
+		b.WriteString(rvv(fmt.Sprintf("  return __riscv_vsrl_vx_%s(v, (size_t)n, a);\n", sfx)))
+		fmt.Fprintf(&b, "  %s r;\n  for (u32 i = 0; i < a; i++) { r.lanes[i] = (%s)(v.lanes[i] >> n); }\n  return r;\n#endif\n}\n", vec, elem)
+	case "any", "all":
+		fmt.Fprintf(&b, "static inline Bool oak_simd_%s( %s v, oak_active a ) {\n", member, vec)
+		if op == "any" {
+			b.WriteString(rvv(fmt.Sprintf("  return __riscv_vcpop_m_b%s(__riscv_vmsne_vx_%s_b%s(v, 0, a), a) != 0 ? oak_Bool_True : oak_Bool_False;\n", bits, sfx, bits)))
+			b.WriteString("  for (u32 i = 0; i < a; i++) { if (v.lanes[i] != 0) { return oak_Bool_True; } }\n  return oak_Bool_False;\n#endif\n}\n")
+		} else {
+			b.WriteString(rvv(fmt.Sprintf("  return __riscv_vcpop_m_b%s(__riscv_vmseq_vx_%s_b%s(v, 0, a), a) == 0 ? oak_Bool_True : oak_Bool_False;\n", bits, sfx, bits)))
+			b.WriteString("  for (u32 i = 0; i < a; i++) { if (v.lanes[i] == 0) { return oak_Bool_False; } }\n  return oak_Bool_True;\n#endif\n}\n")
+		}
+	case "reduce_add":
+		// The wrapping sum is associative and commutative, so a tree
+		// reduction is the lane-order sum exactly.
+		fmt.Fprintf(&b, "static inline %s oak_simd_%s( %s v, oak_active a ) {\n", elem, member, vec)
+		b.WriteString(rvv(fmt.Sprintf("  return __riscv_vmv_x_s_%s_%s(__riscv_vredsum_vs_%s_%s(v, __riscv_vmv_v_x_%s(0, 1), a));\n", sfx, elem+"", sfx, sfx, sfx)))
+		fmt.Fprintf(&b, "  %s sum = 0;\n  for (u32 i = 0; i < a; i++) { sum = (%s)(sum + v.lanes[i]); }\n  return sum;\n#endif\n}\n", elem, elem)
+	default:
+		laneExpr, isBinary := simdBinaryOps[op]
+		if !isBinary {
+			return "OAK_UNSUPPORTED_SIMD_OP\n"
+		}
+		rvvName := map[string]string{"add": "vadd_vv", "sub": "vsub_vv", "subs": "vssubu_vv", "and": "vand_vv", "or": "vor_vv", "xor": "vxor_vv", "min": "vminu_vv", "max": "vmaxu_vv"}[op]
+		fmt.Fprintf(&b, "static inline %s oak_simd_%s( %s a_, %s b_, oak_active a ) {\n", vec, member, vec, vec)
+		if op == "eq" {
+			b.WriteString(rvv(fmt.Sprintf("  return __riscv_vmerge_vxm_%s(__riscv_vmv_v_x_%s(0, a), (%s)~(%s)0, __riscv_vmseq_vv_%s_b%s(a_, b_, a), a);\n", sfx, sfx, elem, elem, sfx, bits)))
+		} else {
+			b.WriteString(rvv(fmt.Sprintf("  return __riscv_%s_%s(a_, b_, a);\n", rvvName, sfx)))
+		}
+		laneCode := laneExpr
+		if strings.Contains(laneCode, "%") {
+			laneCode = fmt.Sprintf(laneExpr, elem)
+		}
+		fmt.Fprintf(&b, "  %s r;\n  for (u32 i = 0; i < a; i++) {\n    %s x = a_.lanes[i]; %s y = b_.lanes[i];\n    r.lanes[i] = %s;\n  }\n  return r;\n#endif\n}\n", vec, elem, elem, laneCode)
+	}
+	return b.String()
 }
