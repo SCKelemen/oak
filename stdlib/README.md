@@ -125,6 +125,11 @@ accept exactly the valid streams of `Oak.Utf8Validity`
 to it in every module build. Measured at 13.1 GB/s beside simdutf's 13.3
 (`benchmarks/state-machines/cross/`).
 
+`utf8.locate(bytes: []u8): u32` is its positioned form: the offset of the
+first ill-formed byte, or `len(bytes)` when well-formed — reject fast per
+step, then the scalar decoder from a sequence boundary (`70-strings.md`
+§4a). It agrees with `strings.utf8_first_error` on every input.
+
 | Function | Semantics |
 | --- | --- |
 | `valid` | true iff `bytes` is well-formed UTF-8: no overlong forms, no surrogates, nothing above U+10FFFF, no truncated sequence, no stray continuation |

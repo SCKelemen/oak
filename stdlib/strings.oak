@@ -192,6 +192,58 @@ pub utf32_encode: (dst: [*]u32, offset: u32, value: u32): Result[u32, TextError]
   }
 }
 
+// A text error with the offset it was detected at: the payload the
+// validators report (docs/spec/70-strings.md, "Error positions").
+pub TextFault: type = struct { error: TextError, at: u32 }
+
+// utf8_first_error_at: the offset of the first ill-formed byte at or after
+// `start` — the lead of a sequence that is truncated, overlong, a
+// surrogate, too large, or a stray continuation — or len(src) when the
+// bytes from `start` on are well-formed (a `start` past the end included).
+// Total; one bounds-checked scalar decode per sequence. `utf8.locate` is
+// its vector twin and must agree with it byte for byte.
+pub utf8_first_error_at: (src: []u8, start: u32): u32 {
+  at: u32 = start
+  found: u32 = len(src)
+  stop: Bool = at >= len(src)
+  while !stop {
+    decoded: Result[TextScalar, TextError] = utf8_decode(src, at)
+    text_decode_ok(decoded) ? {
+      item: TextScalar = text_decoded(decoded)
+      at = item.next
+      stop = at >= len(src)
+    } | {
+      found = at
+      stop = true
+    }
+  }
+  found
+}
+
+pub utf8_first_error: (src: []u8): u32 = utf8_first_error_at(src, u32(0))
+
+// utf8_check: the scalar count of well-formed UTF-8, or the fault with the
+// offset of the first ill-formed byte.
+pub utf8_check: (src: []u8): Result[u32, TextFault] {
+  at: u32 = u32(0)
+  count: u32 = u32(0)
+  fault: u32 = len(src)
+  stop: Bool = at >= len(src)
+  while !stop {
+    decoded: Result[TextScalar, TextError] = utf8_decode(src, at)
+    text_decode_ok(decoded) ? {
+      item: TextScalar = text_decoded(decoded)
+      at = item.next
+      count = count + u32(1)
+      stop = at >= len(src)
+    } | {
+      fault = at
+      stop = true
+    }
+  }
+  fault < len(src) ? { .Err(TextFault { error: .InvalidEncoding, at: fault }) } | { .Ok(count) }
+}
+
 pub utf8_count: (src: []u8): Result[u32, TextError] {
   at: u32 = 0
   count: u32 = 0
