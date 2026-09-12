@@ -1851,6 +1851,7 @@ func (tc *TypeChecker) checkInfixExpression(expr *ast.InfixExpression, expectedT
 		if tc.recordArithmetic(expr, tc.promoteNumericTypes(expr, leftType, rightType)) == nil {
 			return nil
 		}
+		tc.noteGuardWrap(expr, leftType, rightType)
 		return &BoolType{}
 	default:
 		tc.addError(expr, "unknown infix operator: %s", expr.Operator)
@@ -6136,4 +6137,64 @@ func (tc *TypeChecker) flattenRecordComposition(expr ast.Expression, fields *map
 			tc.addError(nil, "invalid expression in record composition: %T", expr)
 		}
 	}
+}
+
+// noteGuardWrap reports an unsigned `+` or `*` that is computed inside an
+// ordering comparison. `off + len <= cap` is the shape of a bounds guard,
+// and on fixed-width unsigned operands the sum wraps mod 2^N before the
+// comparison sees it, so an attacker-sized `len` passes the guard
+// (CWE-190). The operators' wrapping contract is frozen
+// (docs/spec/20-types.md §11.1), so this is a report, not a rejection: the
+// arithmetic family (`u32_checked_add`, `u32_saturating_add`) or a
+// rearranged guard (`off <= cap - len` once `len <= cap` holds) spells the
+// intent. Subtraction is deliberately not reported: `off <= cap - len` is
+// the recommended shape, and its precondition (`len <= cap`) is a plain
+// guard the reader can see. Both operands literal is arithmetic the checker
+// already folds; signed operands are out of scope (their wrap is a
+// different rule).
+func (tc *TypeChecker) noteGuardWrap(cmp *ast.InfixExpression, leftType, rightType Type) {
+	sides := [...]struct {
+		expr ast.Expression
+		typ  Type
+	}{{cmp.Left, leftType}, {cmp.Right, rightType}}
+	for _, side := range sides {
+		inner, ok := side.expr.(*ast.InfixExpression)
+		if !ok || (inner.Operator != "+" && inner.Operator != "*") {
+			continue
+		}
+		if tc.literalOperand(inner.Left) && tc.literalOperand(inner.Right) {
+			continue
+		}
+		prim, ok := side.typ.(*PrimitiveType)
+		if !ok {
+			continue
+		}
+		fixed := tc.FixedWidthName(prim.Name)
+		if fixed == "" || fixed[0] != 'u' {
+			continue
+		}
+		verb := map[string]string{"+": "add", "*": "mul"}[inner.Operator]
+		d := tc.addTypeInformation(inner, CodeGuardWrap,
+			fmt.Sprintf("unsigned `%s` on %s inside an ordering guard wraps before the comparison", inner.Operator, fixed))
+		d.Advice = append(d.Advice, diagnostic.Advice{Kind: diagnostic.AdviceNote,
+			Message: fmt.Sprintf("spell the intent: `%s_checked_%s` or `%s_saturating_%s` (20-types.md §11.1a), or compare against the remaining room so the guard cannot wrap", fixed, verb, fixed, verb)})
+	}
+}
+
+// literalOperand reports an operand whose value is fixed in the source: a
+// literal, or a fixed-width conversion of one (`u32(1)`), the spelling Oak
+// programs use for typed constants.
+func (tc *TypeChecker) literalOperand(expr ast.Expression) bool {
+	if IsLiteralOnlyExpression(expr) {
+		return true
+	}
+	call, ok := expr.(*ast.InvocationExpression)
+	if !ok || len(call.Arguments) != 1 {
+		return false
+	}
+	ident, ok := call.Function.(*ast.Identifier)
+	if !ok || tc.FixedWidthName(ident.Value) == "" {
+		return false
+	}
+	return IsLiteralOnlyExpression(call.Arguments[0])
 }
