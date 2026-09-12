@@ -814,8 +814,11 @@ folded away (a literal argument) or discharged by a theorem
 Representation: the base's. The backend emits `typedef` of the base and one
 guard function per refinement (`oak_refine_Name`); the interpreter binds the
 name to the assertion; the prover enumerates a refined parameter as the
-base values the construction accepts. The Lean extraction does not yet
-state constructions and fails closed on them.
+base values the construction accepts. The Lean extraction types a
+refinement as its base, states a construction as the value guarded by its
+predicate (`none`, the trap, otherwise), and gives a theorem over a
+refined parameter the predicate as a hypothesis (`125-verification.md`
+§5).
 
 Static discharge: when the predicate is `value < K` or `value <= K` with a
 literal `K` and the facts in scope prove the argument below the bound — a

@@ -144,6 +144,16 @@ func Emit(program *ast.Program, tc *typechecker.TypeChecker, namespace string, n
 	// compression function is one definition with hundreds of binds.
 	out.WriteString("set_option maxHeartbeats 4000000\n")
 	fmt.Fprintf(&out, "namespace %s\n\n", namespace)
+	for _, name := range ordered {
+		if em.functions[name].Theorem {
+			// The lemma the theorem scripts use to push a bind through a
+			// construction's guard (docs/spec/125-verification.md §5).
+			out.WriteString("theorem oak_bind_ite {α β : Type} (c : Prop) [Decidable c] (a : α) (f : α → Option β) :\n")
+			out.WriteString("    (if c then some a else none).bind f = if c then f a else none := by\n")
+			out.WriteString("  split <;> rfl\n\n")
+			break
+		}
+	}
 	for _, name := range em.orderedTypes(typeRoots) {
 		adt := em.adts[name]
 		var text string
@@ -227,6 +237,9 @@ func (em *emitter) emitGlobals() (string, error) {
 type emitter struct {
 	tc  *typechecker.TypeChecker
 	env *typechecker.TypeEnvironment
+	// valueBinding is the Lean name `value` reads as while a refinement's
+	// predicate is rendered (predicateTerm); empty otherwise.
+	valueBinding string
 	// adts holds every ADT declaration of the program plus every recorded
 	// generic instantiation, specialized; templates are never emitted.
 	adts      map[string]*ast.ADTType
@@ -394,6 +407,14 @@ func (em *emitter) leanType(expr ast.Expression) (string, error) {
 	case *ast.Identifier:
 		if lean, ok := primitiveLean[t.Value]; ok {
 			return lean, nil
+		}
+		// A refinement type is its base's representation
+		// (docs/spec/20-types.md section 12); the predicate is stated at
+		// each construction and as a hypothesis of each theorem.
+		if base, _, isRefinement := em.tc.Refinement(t.Value); isRefinement {
+			if lean, ok := primitiveLean[base]; ok {
+				return lean, nil
+			}
 		}
 		if lean, ok := em.adtLeanName(t.Value); ok {
 			return lean, nil
@@ -619,6 +640,15 @@ func (em *emitter) emitFunction(fn *ast.FunctionStatement) (string, error) {
 	return out.String(), nil
 }
 
+// predicateTerm renders a refinement's predicate with `value` read as the
+// given Lean binding, in the current scope.
+func (em *emitter) predicateTerm(predicate ast.Expression, binding string) (string, error) {
+	saved := em.valueBinding
+	em.valueBinding = binding
+	defer func() { em.valueBinding = saved }()
+	return em.expr(predicate, "Bool")
+}
+
 // theoremStatement states a theorem's universal claim over its extracted
 // definition (docs/spec/125-verification.md section 5): for every
 // argument and every fuel, the definition returns `some true`. The proof
@@ -630,14 +660,48 @@ func (em *emitter) emitFunction(fn *ast.FunctionStatement) (string, error) {
 func (em *emitter) theoremStatement(fn *ast.FunctionStatement, params []string) string {
 	var out strings.Builder
 	name := ident(fn.Name.Value)
+	// A parameter of a refinement type carries its predicate as a
+	// hypothesis: the theorem is about the values the construction admits
+	// (docs/spec/20-types.md section 12).
+	var hypotheses []string
+	for _, p := range fn.Parameters {
+		typeName, isIdent := p.Type.(*ast.Identifier)
+		if !isIdent {
+			continue
+		}
+		if _, predicate, isRefinement := em.tc.Refinement(typeName.Value); isRefinement {
+			if cond, err := em.predicateTerm(predicate, ident(p.Name.Value)); err == nil {
+				hypotheses = append(hypotheses, fmt.Sprintf("(h_%s : %s = true)", ident(p.Name.Value), cond))
+			}
+		}
+	}
 	out.WriteString("set_option linter.unusedSimpArgs false in\n")
-	fmt.Fprintf(&out, "theorem %s_holds %s (fuel : Nat) : %s", name, strings.Join(params, " "), name)
+	fmt.Fprintf(&out, "theorem %s_holds %s %s(fuel : Nat) : %s", name, strings.Join(params, " "),
+		strings.Join(append(hypotheses, ""), " "), name)
 	for _, p := range fn.Parameters {
 		out.WriteString(" " + ident(p.Name.Value))
 	}
 	out.WriteString(" fuel = some true := by\n")
-	fmt.Fprintf(&out, "  unfold %s\n", name)
-	out.WriteString("  simp only [pure, bind, Option.bind, Option.some.injEq, decide_eq_true_eq]\n")
+	// The theorem and every extracted function it reaches are unfolded, so
+	// the deciders see one term.
+	unfolds := []string{name}
+	seen := map[string]bool{fn.Name.Value: true}
+	queue := []*ast.FunctionStatement{fn}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for _, callee := range em.callees(current) {
+			target, known := em.functions[callee]
+			if !known || seen[callee] {
+				continue
+			}
+			seen[callee] = true
+			unfolds = append(unfolds, ident(callee))
+			queue = append(queue, target)
+		}
+	}
+	fmt.Fprintf(&out, "  unfold %s\n", strings.Join(unfolds, " "))
+	out.WriteString("  simp only [pure, bind, Option.bind_some, Option.bind_none, oak_bind_ite, Option.ite_none_right_eq_some, Option.some.injEq, decide_eq_true_eq] at *\n")
 	out.WriteString("  first | rfl | decide | omega | bv_decide\n")
 	return out.String()
 }
@@ -1482,6 +1546,10 @@ func (em *emitter) exprValue(expr ast.Expression, want string) (string, error) {
 		}
 		return "false", nil
 	case *ast.Identifier:
+		if e.Value == "value" && em.valueBinding != "" {
+			// A refinement's predicate, read at the value it guards.
+			return em.valueBinding, nil
+		}
 		if _, ok := em.scope.lookup(e.Value); !ok {
 			if _, isGlobal := em.globals[e.Value]; isGlobal {
 				em.usedGlobals[e.Value] = true
@@ -1886,6 +1954,32 @@ func (em *emitter) call(call *ast.InvocationExpression, want string) (string, er
 	}
 	if _, shadowed := em.functions[callee.Value]; !shadowed && typechecker.FloatIntrinsicName(callee.Value) {
 		return em.floatIntrinsic(callee.Value, call, want)
+	}
+	// A refinement's construction Name(v): the value when the predicate
+	// holds, no result (the trap) otherwise, bound like a call
+	// (docs/spec/20-types.md section 12).
+	if base, predicate, isRefinement := em.tc.Refinement(callee.Value); isRefinement && len(call.Arguments) == 1 {
+		baseLean, ok := primitiveLean[base]
+		if !ok {
+			return "", fmt.Errorf("refinement %s over %s is outside the extracted subset", callee.Value, base)
+		}
+		value, err := em.expr(call.Arguments[0], baseLean)
+		if err != nil {
+			return "", err
+		}
+		if em.hoisted == nil {
+			return "", fmt.Errorf("construction of %s in a position that cannot bind its result", callee.Value)
+		}
+		em.temps++
+		result := fmt.Sprintf("r%d", em.temps)
+		*em.hoisted = append(*em.hoisted, fmt.Sprintf("%slet %s : %s := %s", em.indent, result, baseLean, value))
+		em.scope.declare(result, baseLean)
+		cond, err := em.predicateTerm(predicate, result)
+		if err != nil {
+			return "", err
+		}
+		*em.hoisted = append(*em.hoisted, fmt.Sprintf("%slet () ← (if %s then pure () else none)", em.indent, cond))
+		return result, nil
 	}
 	fn, known := em.functions[callee.Value]
 	if !known {
