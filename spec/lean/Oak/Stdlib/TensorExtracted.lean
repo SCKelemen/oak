@@ -44,14 +44,14 @@ def tensor_at (t : Tensor2) (i : UInt32) (j : UInt32) (fuel : Nat) : Option (Flo
   let r1 ← tensor_index t.rows t.cols t.row_stride t.col_stride t.offset i j fuel
   pure (t.data.getD r1.toNat (Float32.ofBits 0))
 
-def tensor_get (t : MutTensor2) (i : UInt32) (j : UInt32) (fuel : Nat) : Option (Float32) := do
+def tensor_get (t : MutTensor2) (i : UInt32) (j : UInt32) (fuel : Nat) : Option (Float32 × MutTensor2) := do
   let r1 ← tensor_index t.rows t.cols t.row_stride t.col_stride t.offset i j fuel
-  pure (t.data.getD r1.toNat (Float32.ofBits 0))
+  pure ((t.data.getD r1.toNat (Float32.ofBits 0)), t)
 
-def tensor_set (t : MutTensor2) (i : UInt32) (j : UInt32) (v : Float32) (fuel : Nat) : Option (Unit) := do
+def tensor_set (t : MutTensor2) (i : UInt32) (j : UInt32) (v : Float32) (fuel : Nat) : Option (Unit × MutTensor2) := do
   let r1 ← tensor_index t.rows t.cols t.row_stride t.col_stride t.offset i j fuel
   let t := { t with data := t.data.setIfInBounds r1.toNat v }
-  pure ()
+  pure ((), t)
 
 def tensor_transpose (t : Tensor2) (fuel : Nat) : Option (Tensor2) := do
   pure ({ data := t.data, rows := t.cols, cols := t.rows, row_stride := t.col_stride, col_stride := t.row_stride, offset := t.offset } : Tensor2)
@@ -60,29 +60,29 @@ def tensor_row (t : Tensor2) (i : UInt32) (fuel : Nat) : Option (Tensor2) := do
   let () ← (if (decide (i < t.rows)) then pure () else none)
   pure ({ data := t.data, rows := (1 : UInt32), cols := t.cols, row_stride := t.row_stride, col_stride := t.col_stride, offset := (t.offset + (i * t.row_stride)) } : Tensor2)
 
-def tensor_fill.loop2 (t : MutTensor2) (v : Float32) (i : UInt32) (j : UInt32) : Nat → Option (UInt32)
+def tensor_fill.loop2 (t : MutTensor2) (v : Float32) (i : UInt32) (j : UInt32) : Nat → Option (MutTensor2 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if (decide (j < t.cols)) then do
-      let r1 ← tensor_set t i j v fuel
+      let (r1, t) ← tensor_set t i j v fuel
       let j := (j + (1 : UInt32))
       tensor_fill.loop2 t v i j fuel
-    else pure j
+    else pure (t, j)
 
-def tensor_fill.loop1 (t : MutTensor2) (v : Float32) (i : UInt32) : Nat → Option (UInt32)
+def tensor_fill.loop1 (t : MutTensor2) (v : Float32) (i : UInt32) : Nat → Option (MutTensor2 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if (decide (i < t.rows)) then do
       let j : UInt32 := (0 : UInt32)
-      let j ← tensor_fill.loop2 t v i j fuel
+      let (t, j) ← tensor_fill.loop2 t v i j fuel
       let i := (i + (1 : UInt32))
       tensor_fill.loop1 t v i fuel
-    else pure i
+    else pure (t, i)
 
-def tensor_fill (t : MutTensor2) (v : Float32) (fuel : Nat) : Option (Unit) := do
+def tensor_fill (t : MutTensor2) (v : Float32) (fuel : Nat) : Option (Unit × MutTensor2) := do
   let i : UInt32 := (0 : UInt32)
-  let i ← tensor_fill.loop1 t v i fuel
-  pure ()
+  let (t, i) ← tensor_fill.loop1 t v i fuel
+  pure ((), t)
 
 def tensor_sum.loop2 (t : Tensor2) (acc : Float32) (i : UInt32) (j : UInt32) : Nat → Option (Float32 × UInt32)
   | 0 => none
@@ -121,112 +121,112 @@ def tensor_matmul.loop3 (a : Tensor2) (b : Tensor2) (i : UInt32) (j : UInt32) (a
       tensor_matmul.loop3 a b i j acc k fuel
     else pure (acc, k)
 
-def tensor_matmul.loop2 (a : Tensor2) (b : Tensor2) (out : MutTensor2) (i : UInt32) (j : UInt32) : Nat → Option (UInt32)
+def tensor_matmul.loop2 (a : Tensor2) (b : Tensor2) (out : MutTensor2) (i : UInt32) (j : UInt32) : Nat → Option (MutTensor2 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if (decide (j < b.cols)) then do
       let acc : Float32 := (Float32.ofBits (0x00000000 : UInt32) /- 0.0 -/)
       let k : UInt32 := (0 : UInt32)
       let (acc, k) ← tensor_matmul.loop3 a b i j acc k fuel
-      let r3 ← tensor_set out i j acc fuel
+      let (r3, out) ← tensor_set out i j acc fuel
       let j := (j + (1 : UInt32))
       tensor_matmul.loop2 a b out i j fuel
-    else pure j
+    else pure (out, j)
 
-def tensor_matmul.loop1 (a : Tensor2) (b : Tensor2) (out : MutTensor2) (i : UInt32) : Nat → Option (UInt32)
+def tensor_matmul.loop1 (a : Tensor2) (b : Tensor2) (out : MutTensor2) (i : UInt32) : Nat → Option (MutTensor2 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if (decide (i < a.rows)) then do
       let j : UInt32 := (0 : UInt32)
-      let j ← tensor_matmul.loop2 a b out i j fuel
+      let (out, j) ← tensor_matmul.loop2 a b out i j fuel
       let i := (i + (1 : UInt32))
       tensor_matmul.loop1 a b out i fuel
-    else pure i
+    else pure (out, i)
 
-def tensor_matmul (a : Tensor2) (b : Tensor2) (out : MutTensor2) (fuel : Nat) : Option (Unit) := do
+def tensor_matmul (a : Tensor2) (b : Tensor2) (out : MutTensor2) (fuel : Nat) : Option (Unit × MutTensor2) := do
   let () ← (if (((a.cols == b.rows) && (out.rows == a.rows)) && (out.cols == b.cols)) then pure () else none)
   let i : UInt32 := (0 : UInt32)
-  let i ← tensor_matmul.loop1 a b out i fuel
-  pure ()
+  let (out, i) ← tensor_matmul.loop1 a b out i fuel
+  pure ((), out)
 
-def tensor_relu.loop2 (x : Tensor2) (out : MutTensor2) (i : UInt32) (j : UInt32) : Nat → Option (UInt32)
+def tensor_relu.loop2 (x : Tensor2) (out : MutTensor2) (i : UInt32) (j : UInt32) : Nat → Option (MutTensor2 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if (decide (j < x.cols)) then do
       let r1 ← tensor_at x i j fuel
       let v : Float32 := r1
-      let r2 ← tensor_set out i j (if (decide (v < (Float32.ofBits (0x00000000 : UInt32) /- 0.0 -/))) then (Float32.ofBits (0x00000000 : UInt32) /- 0.0 -/) else v) fuel
+      let (r2, out) ← tensor_set out i j (if (decide (v < (Float32.ofBits (0x00000000 : UInt32) /- 0.0 -/))) then (Float32.ofBits (0x00000000 : UInt32) /- 0.0 -/) else v) fuel
       let j := (j + (1 : UInt32))
       tensor_relu.loop2 x out i j fuel
-    else pure j
+    else pure (out, j)
 
-def tensor_relu.loop1 (x : Tensor2) (out : MutTensor2) (i : UInt32) : Nat → Option (UInt32)
+def tensor_relu.loop1 (x : Tensor2) (out : MutTensor2) (i : UInt32) : Nat → Option (MutTensor2 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if (decide (i < x.rows)) then do
       let j : UInt32 := (0 : UInt32)
-      let j ← tensor_relu.loop2 x out i j fuel
+      let (out, j) ← tensor_relu.loop2 x out i j fuel
       let i := (i + (1 : UInt32))
       tensor_relu.loop1 x out i fuel
-    else pure i
+    else pure (out, i)
 
-def tensor_relu (x : Tensor2) (out : MutTensor2) (fuel : Nat) : Option (Unit) := do
+def tensor_relu (x : Tensor2) (out : MutTensor2) (fuel : Nat) : Option (Unit × MutTensor2) := do
   let () ← (if ((out.rows == x.rows) && (out.cols == x.cols)) then pure () else none)
   let i : UInt32 := (0 : UInt32)
-  let i ← tensor_relu.loop1 x out i fuel
-  pure ()
+  let (out, i) ← tensor_relu.loop1 x out i fuel
+  pure ((), out)
 
-def tensor_add.loop2 (a : Tensor2) (b : Tensor2) (out : MutTensor2) (i : UInt32) (j : UInt32) : Nat → Option (UInt32)
+def tensor_add.loop2 (a : Tensor2) (b : Tensor2) (out : MutTensor2) (i : UInt32) (j : UInt32) : Nat → Option (MutTensor2 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if (decide (j < a.cols)) then do
       let r1 ← tensor_at a i j fuel
       let r2 ← tensor_at b i j fuel
-      let r3 ← tensor_set out i j (r1 + r2) fuel
+      let (r3, out) ← tensor_set out i j (r1 + r2) fuel
       let j := (j + (1 : UInt32))
       tensor_add.loop2 a b out i j fuel
-    else pure j
+    else pure (out, j)
 
-def tensor_add.loop1 (a : Tensor2) (b : Tensor2) (out : MutTensor2) (i : UInt32) : Nat → Option (UInt32)
+def tensor_add.loop1 (a : Tensor2) (b : Tensor2) (out : MutTensor2) (i : UInt32) : Nat → Option (MutTensor2 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if (decide (i < a.rows)) then do
       let j : UInt32 := (0 : UInt32)
-      let j ← tensor_add.loop2 a b out i j fuel
+      let (out, j) ← tensor_add.loop2 a b out i j fuel
       let i := (i + (1 : UInt32))
       tensor_add.loop1 a b out i fuel
-    else pure i
+    else pure (out, i)
 
-def tensor_add (a : Tensor2) (b : Tensor2) (out : MutTensor2) (fuel : Nat) : Option (Unit) := do
+def tensor_add (a : Tensor2) (b : Tensor2) (out : MutTensor2) (fuel : Nat) : Option (Unit × MutTensor2) := do
   let () ← (if ((((a.rows == b.rows) && (a.cols == b.cols)) && (out.rows == a.rows)) && (out.cols == a.cols)) then pure () else none)
   let i : UInt32 := (0 : UInt32)
-  let i ← tensor_add.loop1 a b out i fuel
-  pure ()
+  let (out, i) ← tensor_add.loop1 a b out i fuel
+  pure ((), out)
 
-def tensor_scale.loop2 (x : Tensor2) (s : Float32) (out : MutTensor2) (i : UInt32) (j : UInt32) : Nat → Option (UInt32)
+def tensor_scale.loop2 (x : Tensor2) (s : Float32) (out : MutTensor2) (i : UInt32) (j : UInt32) : Nat → Option (MutTensor2 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if (decide (j < x.cols)) then do
       let r1 ← tensor_at x i j fuel
-      let r2 ← tensor_set out i j (s * r1) fuel
+      let (r2, out) ← tensor_set out i j (s * r1) fuel
       let j := (j + (1 : UInt32))
       tensor_scale.loop2 x s out i j fuel
-    else pure j
+    else pure (out, j)
 
-def tensor_scale.loop1 (x : Tensor2) (s : Float32) (out : MutTensor2) (i : UInt32) : Nat → Option (UInt32)
+def tensor_scale.loop1 (x : Tensor2) (s : Float32) (out : MutTensor2) (i : UInt32) : Nat → Option (MutTensor2 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if (decide (i < x.rows)) then do
       let j : UInt32 := (0 : UInt32)
-      let j ← tensor_scale.loop2 x s out i j fuel
+      let (out, j) ← tensor_scale.loop2 x s out i j fuel
       let i := (i + (1 : UInt32))
       tensor_scale.loop1 x s out i fuel
-    else pure i
+    else pure (out, i)
 
-def tensor_scale (x : Tensor2) (s : Float32) (out : MutTensor2) (fuel : Nat) : Option (Unit) := do
+def tensor_scale (x : Tensor2) (s : Float32) (out : MutTensor2) (fuel : Nat) : Option (Unit × MutTensor2) := do
   let () ← (if ((out.rows == x.rows) && (out.cols == x.cols)) then pure () else none)
   let i : UInt32 := (0 : UInt32)
-  let i ← tensor_scale.loop1 x s out i fuel
-  pure ()
+  let (out, i) ← tensor_scale.loop1 x s out i fuel
+  pure ((), out)
 
 end Oak.Stdlib.Tensor
