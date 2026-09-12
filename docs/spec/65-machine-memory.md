@@ -308,6 +308,7 @@ Acceptance spans the whole executable stack:
 | global seq-cst order/read visibility | specified + implemented + Lean-modeled in chapter 68 |
 | language-level memory relation set | explicit through seq-cst |
 | C refinement of the total arithmetic macros | proved: `Oak.ArithmeticRefinement` transliterates `OAK_ARITH_U`/`OAK_ARITH_I` and proves each body equal to the fixed-width operator; `codegen/arithmetic_refinement_test.go` pins the emitted text |
+| order tables and builtin catalogue | correspondence: `Oak.MemoryOrderRefinement` decides the `legal`/`casLegal` tables and the 29-builtin catalogue, `semir/memory_refinement_test.go` pins the same against the Go decision procedures |
 | C/ISA refinement of atomics and ordering | not yet proved |
 | AArch64 weak-memory litmus suite | next major layer |
 | target lock-free admission (C backend) | implemented + cross-compile-tested (§6) |
