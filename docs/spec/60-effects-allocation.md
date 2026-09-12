@@ -319,7 +319,9 @@ locals is accepted when it is passed directly to a top-level, non-generic
 Oak function whose corresponding parameter is only ever called — never
 stored, returned, compared, or passed on — and every capture is a
 parameter or annotated local of scalar type (fixed-width and platform
-integers, `Bool`, `f32`, `f64`) that the literal does not assign. The
+integers, `Bool`, `f32`, `f64`), of type `string`, or a view or span of a
+scalar, that the literal does not rebind (a store through a captured span
+is a write through the borrow and stays allowed). The
 compiler lifts the literal to a top-level function with the captures as
 trailing parameters, clones the callee for that call site with the
 function parameter removed and the captures appended, replaces each call
@@ -330,8 +332,12 @@ the call (the non-escaping stack capture `Oak.ClosureCapture` proves
 safe), no closure object, no allocation, no pointer into the frame, and the
 effect analysis sees a direct call. Anything outside the shape — a literal
 bound to a local first, a callee that forwards its parameter, a capture
-that is a view, a record, a string, or an unannotated local — still
-reaches `OAK-T0401`, whose notes name the shape.
+that is a record, an ADT, a `Buffer`, or an unannotated local — still
+reaches `OAK-T0401`, whose notes name the shape. A captured view or span
+travels as the borrowed parameter it already is, so the borrow checker's
+call-local exclusivity judges the specialized call exactly as a
+hand-written one: a second span of the same owner at that call is its
+ordinary rejection.
 `compiler/e2e_closures_test.go` runs the accepted shape in both
 realizations and the rejections.
 

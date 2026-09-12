@@ -363,8 +363,8 @@ Rules:
   local is rejected (`OAK-T0401`, `60-effects-allocation.md` §11) unless
   the capture has justified storage. One shape does today: a literal
   passed directly to a top-level, non-generic function that only calls its
-  function parameter, capturing scalar parameters or annotated locals it
-  does not assign, is specialized away — the callee is cloned for the call
+  function parameter, capturing scalar, string, view or span parameters or
+  annotated locals it does not rebind, is specialized away — the callee is cloned for the call
   site and the captured values travel as arguments (`60-effects-allocation.md`
   §11, `compiler/closures.go`). A typed literal lowers
   to a plain top-level C function (`90-backend.md` §9); the expression is
