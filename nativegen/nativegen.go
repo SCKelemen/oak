@@ -721,14 +721,7 @@ func (g *generator) recordElement(arr *arrayLocal, index ast.Expression) (place,
 	if arr.inReg {
 		return place{}, unsupported("a computed index into an array of records inside a computed element")
 	}
-	idxType, err := g.typeOf(index, nil)
-	if err != nil {
-		return place{}, err
-	}
-	if idxType.wide() || idxType.signed || idxType.isBool || idxType.isFloat {
-		return place{}, unsupported("an element index of type %s (the array idiom walks by a u32 index)", idxType.name)
-	}
-	r, err := g.expr(index, &idxType)
+	r, err := g.indexValue(index)
 	if err != nil {
 		return place{}, err
 	}
@@ -934,17 +927,19 @@ func (g *generator) copyBytes(dst, src loc, size int64) error {
 // slotLoc is a frame-slot location.
 func slotLoc(offset int64) loc { return loc{offset: offset} }
 
-// recordTypeName reads a type expression naming a declared record.
+// recordTypeName reads a type expression naming a declared record or
+// tagged union: a name, or an instantiation (Option[u32]) by its mangled
+// name, which the compiler specialized into a monomorphic declaration.
 func (g *generator) recordTypeName(expr ast.Expression) (string, bool) {
-	ident, isIdent := expr.(*ast.Identifier)
-	if !isIdent {
+	name, ok := asm.TypeApplicationName(expr)
+	if !ok {
 		return "", false
 	}
-	if _, isRecord := g.recordDecls[ident.Value]; isRecord {
-		return ident.Value, true
+	if _, isRecord := g.recordDecls[name]; isRecord {
+		return name, true
 	}
-	_, isADT := g.adtDecls[ident.Value]
-	return ident.Value, isADT
+	_, isADT := g.adtDecls[name]
+	return name, isADT
 }
 
 // Unsupported reports why a function is left to the C backend.
@@ -1278,8 +1273,33 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 	}
 	// Every placeable record and union of the program, for the checker's
 	// composite binding rules and the verifier's leaf model (nested types
-	// included).
+	// included) — also under each signature type's own spelling, which is
+	// what the checker and verifier look up (an instantiation is spelled
+	// Option[u32] in the signature and Option_u32 in the table).
 	out.Composites = Composites(records, adts)
+	spell := func(expr ast.Expression) {
+		if expr == nil {
+			return
+		}
+		if name, isRecord := g.recordTypeName(expr); isRecord {
+			if comp, placed := out.Composites[name]; placed {
+				out.Composites[expr.String()] = comp
+			}
+		}
+		if index, isIndex := expr.(*ast.IndexExpression); isIndex && !index.Dot {
+			if marker, isMarker := index.Index.(*ast.Identifier); isMarker && (marker.Value == "" || marker.Value == "*") {
+				if name, isRecord := g.recordTypeName(index.Left); isRecord {
+					if comp, placed := out.Composites[name]; placed {
+						out.Composites[index.Left.String()] = comp
+					}
+				}
+			}
+		}
+	}
+	for _, p := range fn.Parameters {
+		spell(p.Type)
+	}
+	spell(fn.ReturnType)
 	return out, nil
 }
 
@@ -4209,20 +4229,42 @@ func (g *generator) spanOperand(expr ast.Expression) (span, error) {
 // access, so an index at or past the length traps and the fall-through
 // path carries the fact that wI < len.
 func (g *generator) guardedIndex(sp span, index ast.Expression) (int, error) {
-	idxType, err := g.typeOf(index, nil)
-	if err != nil {
-		return 0, err
-	}
-	if idxType.wide() || idxType.signed || idxType.isBool {
-		return 0, unsupported("an element index of type %s (the span idiom walks by a u32 index)", idxType.name)
-	}
-	r, err := g.expr(index, &idxType)
+	r, err := g.indexValue(index)
 	if err != nil {
 		return 0, err
 	}
 	g.usedTrap = true
 	g.emit("cmp", wr(r), wr(sp.lenReg))
 	g.branch("hs", g.trap)
+	return r, nil
+}
+
+// indexValue evaluates an element index into a 32-bit register: a u32 as
+// is; a u64 after checking its high word is zero (an index of 2^32 or more
+// is past every span and array, so it traps), leaving the low word for the
+// checker's 32-bit index idiom.
+func (g *generator) indexValue(index ast.Expression) (int, error) {
+	idxType, err := g.typeOf(index, nil)
+	if err != nil {
+		return 0, err
+	}
+	if idxType.signed || idxType.isBool || idxType.isFloat {
+		return 0, unsupported("an element index of type %s (indices are unsigned)", idxType.name)
+	}
+	r, err := g.expr(index, &idxType)
+	if err != nil {
+		return 0, err
+	}
+	if idxType.wide() {
+		high, err := g.alloc(scalars["u64"])
+		if err != nil {
+			return 0, err
+		}
+		g.emit("lsr", xr(high), xr(r), imm(32))
+		g.usedTrap = true
+		g.emit("cbnz", xr(high), asm.Symbol{Name: g.trap})
+		g.release(high)
+	}
 	return r, nil
 }
 
@@ -4254,14 +4296,7 @@ func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression) (address
 	if k, isConst := constantValue(index); isConst && k >= 0 && k < arr.length {
 		return g.memOf(arr.loc().plus(k * size)), -1, -1, nil
 	}
-	idxType, err := g.typeOf(index, nil)
-	if err != nil {
-		return asm.Memory{}, 0, 0, err
-	}
-	if idxType.wide() || idxType.signed || idxType.isBool || idxType.isFloat {
-		return asm.Memory{}, 0, 0, unsupported("an element index of type %s (the array idiom walks by a u32 index)", idxType.name)
-	}
-	r, err := g.expr(index, &idxType)
+	r, err := g.indexValue(index)
 	if err != nil {
 		return asm.Memory{}, 0, 0, err
 	}

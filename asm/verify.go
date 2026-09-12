@@ -869,11 +869,10 @@ func compositeLeaves(comps map[string]Composite, typeName, prefix string, base i
 		}
 		switch {
 		case field.Scalar != "":
-			if field.Scalar == "Bool" {
-				return nil, "a Bool field at the boundary", false
-			}
+			// A Bool field is the 4-byte C enum holding 0 or 1: a 1-bit leaf
+			// whose zero-extension is the field's whole word.
 			width, signed, ok := contractBits(&ast.Identifier{Value: field.Scalar})
-			if !ok || int64(width) != field.Size*8 {
+			if !ok || (int64(width) != field.Size*8 && field.Scalar != "Bool") {
 				return nil, fmt.Sprintf("a field of type %s at the boundary", field.Scalar), false
 			}
 			out = append(out, compositeLeaf{name: prefix + "." + field.Name, offset: at, width: width, signed: signed, guards: fieldGuards})
@@ -895,11 +894,8 @@ func compositeLeaves(comps map[string]Composite, typeName, prefix string, base i
 					out = append(out, nested...)
 					continue
 				}
-				if field.Elem == "Bool" {
-					return nil, "a Bool field at the boundary", false
-				}
 				width, signed, ok := contractBits(&ast.Identifier{Value: field.Elem})
-				if !ok || int64(width) != stride*8 {
+				if !ok || (int64(width) != stride*8 && field.Elem != "Bool") {
 					return nil, fmt.Sprintf("an array of %s at the boundary", field.Elem), false
 				}
 				out = append(out, compositeLeaf{name: elemName, offset: at + k*stride, width: width, signed: signed, guards: fieldGuards})
@@ -1899,15 +1895,16 @@ func (lo *oakLowering) oakTypeOf(expr ast.Expression) (*oakType, bool) {
 		if e.Dot {
 			return nil, false
 		}
-		length, isLit := e.Index.(*ast.IntegerLiteral)
-		if !isLit || length.Value <= 0 {
-			return nil, false
+		if length, isLit := e.Index.(*ast.IntegerLiteral); isLit && length.Value > 0 {
+			if elem, ok := lo.oakTypeOf(e.Left); ok {
+				return &oakType{kind: oakArray, elem: elem, length: length.Value}, true
+			}
 		}
-		elem, ok := lo.oakTypeOf(e.Left)
-		if !ok {
-			return nil, false
+		// An instantiation (Option[u32]): the specialized declaration under
+		// its mangled name.
+		if name, ok := TypeApplicationName(expr); ok {
+			return lo.namedType(name)
 		}
-		return &oakType{kind: oakArray, elem: elem, length: length.Value}, true
 	}
 	return nil, false
 }
@@ -2187,9 +2184,6 @@ func (lo *oakLowering) placeOf(expr ast.Expression) (*oakValue, string, bool) {
 func (lo *oakLowering) paramAggregate(typ *oakType, prefix string) (*oakValue, bool) {
 	switch typ.kind {
 	case oakScalar:
-		if typ.width == 1 {
-			return nil, false // a Bool leaf: outside the boundary model
-		}
 		lo.params[prefix] = typ.width
 		lo.signed[prefix] = typ.signed
 		if value, isConcrete := lo.concrete[prefix]; isConcrete {
@@ -3380,8 +3374,8 @@ func resultComposite(fn *Function, sig *ast.FunctionStatement) ([]compositeLeaf,
 // packed from its leaves (width 64).
 func (lo *oakLowering) resultTerm(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) (*term, int, string, bool) {
 	if leaves, isComposite := resultComposite(fn, sig); isComposite {
-		typ, ok := lo.namedType(typeText(sig.ReturnType))
-		if !ok {
+		typ, ok := lo.oakTypeOf(sig.ReturnType)
+		if !ok || typ.kind == oakScalar {
 			return nil, 0, "a result whose type has no model", false
 		}
 		value, reason, ok := lo.aggregateValue(oakBody, typ)

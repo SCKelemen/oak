@@ -28,10 +28,15 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*d
 	symbols := map[string]bool{}
 	records := map[string]*ast.RecordLiteral{}
 	adts := map[string]*ast.ADTType{}
+	templates := map[string]*ast.ADTType{}
 	for _, stmt := range root.Statements {
 		// A record type declaration (one record-literal variant): the
 		// checker binds records at the boundary by their placed size.
-		if adt, isADT := stmt.(*ast.ADTType); isADT && adt.Name != nil && len(adt.TypeParams) == 0 {
+		if adt, isADT := stmt.(*ast.ADTType); isADT && adt.Name != nil {
+			if len(adt.TypeParams) > 0 {
+				templates[adt.Name.Value] = adt
+				continue
+			}
 			if literal, isRecord := recordShape(adt); isRecord {
 				records[adt.Name.Value] = literal
 			} else {

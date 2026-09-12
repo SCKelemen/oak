@@ -73,6 +73,59 @@ type Composite struct {
 	Variants map[string]int64
 }
 
+// TypeApplicationName maps a type application expression (F[A][B]…, as the
+// parser spells Option[u32] or Result[u32, Overflow]) to the mangled name
+// of its instantiation (Option_u32, Result_u32_Overflow — the typechecker's
+// Instantiation.MangledName), which is how the compiler names the
+// specialized declaration. Arguments are type names or integer constants;
+// a plain identifier is its own name.
+func TypeApplicationName(expr ast.Expression) (string, bool) {
+	switch t := expr.(type) {
+	case *ast.Identifier:
+		return t.Value, t.Value != ""
+	case *ast.IndexExpression:
+		if t.Dot || t.Index == nil {
+			return "", false
+		}
+		if marker, isIdent := t.Index.(*ast.Identifier); isIdent && (marker.Value == "" || marker.Value == "*") {
+			return "", false // a span or view, not an application
+		}
+		base, ok := TypeApplicationName(t.Left)
+		if !ok {
+			return "", false
+		}
+		atom, ok := typeArgumentAtom(t.Index)
+		if !ok {
+			return "", false
+		}
+		return base + "_" + atom, true
+	}
+	return "", false
+}
+
+func typeArgumentAtom(expr ast.Expression) (string, bool) {
+	switch t := expr.(type) {
+	case *ast.IntegerLiteral:
+		return fmt.Sprintf("%d", t.Value), true
+	case *ast.Identifier:
+		if t.Value == "" || t.Value == "*" {
+			return "", false
+		}
+		return t.Value, true
+	case *ast.IndexExpression:
+		base, isIdent := t.Left.(*ast.Identifier)
+		if !isIdent {
+			return "", false
+		}
+		inner, ok := typeArgumentAtom(t.Index)
+		if !ok {
+			return "", false
+		}
+		return base.Value + "_" + inner, true
+	}
+	return "", false
+}
+
 // CompositeField is one placed member: a scalar (Scalar names its type), a
 // nested composite (Type names it), or an owned array (Elem or ElemType
 // the element, Length the count).

@@ -1248,9 +1248,38 @@ chunks), `classify` (a union built by nested conditionals and returned),
 `tally` (a statement-position match over a union parameter); `area2` and
 `score` agree on every witness (their products exceed the BDD budget).
 Witness runs assign leaves like scalars.
+**Fifteenth increment — generic instantiations.** A survey of the
+examples under `-native` showed the dominant reason bodies stayed with the
+C backend was generic instantiations (`Option[u32]`, `Result[u32, …]` — some
+two hundred functions), so the compiler now specializes every instantiation
+the type checker recorded (`ADTInstantiations`) into a monomorphic
+declaration under its mangled name (`Option_u32`, `Result_u32_Bool`), the
+template's variants with the type parameters substituted by the one
+substitution authority (`typechecker.SubstituteTypeAST`), record templates
+included (`Ring[u8, 4]`), and hands them to the native backend and the
+verifier beside the declared types. A type application in a signature or a
+local's type resolves to that name (`asm.TypeApplicationName`, the
+typechecker's mangling: the base name and the argument atoms joined by
+underscores), `.Some(v)` resolves through the checker's variant resolution,
+and everything else — construction, matches, parameters, results, spans of
+them — follows the tagged-union and record paths unchanged; the composites
+table is keyed both by mangled name and by each signature type's own
+spelling, which is what the checker and verifier look up. The verifier's
+boundary model now takes Bool fields as 1-bit leaves whose zero-extension
+is the field's whole word (the C enum holds 0 or 1), so `Result[u32, Bool]`
+crosses. Element indices of type `u64` are admitted: the high word is
+checked (`lsr x9, xI, #32; cbnz x9, trap` — an index of 2^32 or more is
+past every span and array) and the low word walks the checker's 32-bit
+index idiom. Hand-written `.oakasm` units see declared types only (they are
+checked before type checking records instantiations). Executed
+(`TestE2ENativeGenerics`): `Option[u32]` returned from a search over a byte
+view and unwrapped, `Result[u32, Bool]` from a checked add and matched, a
+wide index, and a wide index past 2^32 trapping in both realizations;
+`unwrap_or`, `checked_add`, `value_of`, and `at_wide` proven.
 Next increments: two-chunk and `x8`-area record results in the verifier,
-`break` as a second loop exit in the recognizer, and the slicing syntax
-`v[lo:hi]` once the C backend lowers `len` over it.
+`break` as a second loop exit in the recognizer, `view` over record fields
+and the other survey items, and the slicing syntax `v[lo:hi]` once the C
+backend lowers `len` over it.
 
 
 
