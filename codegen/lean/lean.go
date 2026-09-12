@@ -130,6 +130,9 @@ func Emit(program *ast.Program, tc *typechecker.TypeChecker, namespace string, n
 	if em.usesFloatOps {
 		out.WriteString("import Oak.FloatOps\n\n")
 	}
+	if em.usesUtf8 {
+		out.WriteString("import Oak.Utf8Exec\n\n")
+	}
 	out.WriteString("set_option autoImplicit false\n")
 	// Straight-line translation rebinds and returns variables the source
 	// never reads again; that is the source's shape, not a defect.
@@ -242,6 +245,9 @@ type emitter struct {
 	// usesFloatOps records a call to fma, copysign, or round_even, whose
 	// bit-exact carriers live in Oak.FloatOps rather than in Lean's core.
 	usesFloatOps bool
+	// usesUtf8 records a call to is_valid_utf8, decided over the carrier by
+	// Oak.Utf8Exec.valid (docs/spec/95-extraction.md section 3).
+	usesUtf8 bool
 
 	// Per-function state.
 	fnName  string
@@ -778,6 +784,36 @@ func (em *emitter) statementInner(stmt ast.Statement, lines *[]string) error {
 		return nil
 	case *ast.IndexAssignmentStatement:
 		if s.Target.Dot {
+			if elementAccess, isElement := s.Target.Left.(*ast.IndexExpression); isElement && !elementAccess.Dot {
+				// arr[i].field = v: the element record is read, its field
+				// replaced, and the record stored back at the same index
+				// (docs/spec/95-extraction.md section 2); out-of-range
+				// stores are dropped like every other element store.
+				array, isIdent := elementAccess.Left.(*ast.Identifier)
+				field, isName := s.Target.Index.(*ast.Identifier)
+				if !isIdent || !isName {
+					return fmt.Errorf("field assignment %s is outside the extracted subset (one level of fields)", s.Target.String())
+				}
+				arrayType, known := em.scope.lookup(array.Value)
+				element, isArray := elementOf(arrayType)
+				if !known || !isArray {
+					return fmt.Errorf("field assignment into non-array %s", array.Value)
+				}
+				fieldType, err := em.recordFieldType(element, field.Value)
+				if err != nil {
+					return err
+				}
+				index, err := em.indexTerm(elementAccess.Index)
+				if err != nil {
+					return err
+				}
+				term, err := em.expr(s.Value, fieldType)
+				if err != nil {
+					return err
+				}
+				emit("let %s := %s.setIfInBounds %s { (%s.getD %s %s) with %s := %s }", ident(array.Value), ident(array.Value), index, ident(array.Value), index, zeroOf(element), ident(field.Value), term)
+				return nil
+			}
 			base, ok := s.Target.Left.(*ast.Identifier)
 			field, isField := s.Target.Index.(*ast.Identifier)
 			if !ok || !isField {
@@ -1753,6 +1789,19 @@ func (em *emitter) call(call *ast.InvocationExpression, want string) (string, er
 			return "", err
 		}
 		return "(" + base + ".size.toUInt32)", nil
+	case "is_valid_utf8":
+		// The compiler's UTF-8 validity intrinsic (docs/spec/70-strings.md)
+		// decides Table 3-7 over a view; the extraction runs the same
+		// decision procedure over the carrier (Oak.Utf8Exec.valid).
+		if len(call.Arguments) != 1 {
+			return "", fmt.Errorf("is_valid_utf8 takes one argument")
+		}
+		base, err := em.expr(call.Arguments[0], "")
+		if err != nil {
+			return "", err
+		}
+		em.usesUtf8 = true
+		return "(Oak.Utf8Exec.valid " + base + ")", nil
 	case "subslice":
 		// subslice(v, start, n) is the window of n elements from start
 		// (docs/spec/50-borrowing.md); Oak traps past the end, the extraction
