@@ -1621,6 +1621,23 @@ a call, an argument read before its call, a loop-carried variable, an
 index assignment whose value calls, and a variable dead before the calls
 that follow — natively against the C backend and the portable
 realization.
+**Twenty-fourth increment — the scratch registers the expressions never
+reach.** The generator reserved x9–x15 for expression temporaries whatever
+the body needed, and the four caller-saved homes left `apply` with most
+of its variables in slots. A body is now lowered twice when its first
+pass had to give a scalar variable a caller-saved home or a slot: the
+first pass measures the most integer temporaries any expression held at
+once (an overflow into x16, x17 or a callee-saved register counts as all
+of them), and the second withholds the scratch registers above that peak
+from the temporary pool, from x15 down, and hands them to the variables
+as caller-saved homes — saved around calls like the others, already among
+the clobbers. A second pass the lowering refuses (a variable in a
+register needs no temporary a slot did, so it should not) keeps the
+first's code. `apply`'s loop went from 226 frame accesses to 132. The
+machine was saturated by other sessions' test suites while this landed
+(a load average of thirty), so the timed runs say nothing yet; the
+structural count is the measurement, and the timings follow when the
+machine is quiet.
 Next increments: the fallback reasons above in the order of their counts,
 so the prover lowers whole; then the verifier past `bl` and unit results —
 calls by inlining or by the callee's proven contract, and effects through

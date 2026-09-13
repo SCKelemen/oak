@@ -1120,6 +1120,8 @@ type generator struct {
 	// a call and restored after it (callerSpill), one store and one load per
 	// call instead of one memory access per read or write from a frame slot.
 	callerHomes []int
+	peakScratch int  // the most integer scratch registers live at once
+	pressure    bool // a scalar variable took a caller-saved home or a slot
 	// lv: the liveness pre-pass (liveness.go) deciding which homes a call
 	// saves and which variables cross a call; nil on the rv64 lane.
 	lv   *callLiveness
@@ -1256,6 +1258,10 @@ func ElidedGuards(fn *asm.Function) int { return elidedGuards[fn] }
 
 var elidedGuards = map[*asm.Function]int{}
 
+// pressured marks a lowering in which some scalar variable had to take a
+// caller-saved home or a frame slot: the second pass is worth its cost.
+var pressured = map[*asm.Function]bool{}
+
 func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
@@ -1275,10 +1281,37 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	return compileArm64Body(fn, functions, records, adts, constants, globals, tc, elide)
 }
 
-// compileArm64Body lowers one function body as given.
+// compileArm64Body lowers one function body as given — twice: the first
+// pass measures the most scratch registers any expression of the body
+// holds at once, the second hands the scratch registers that pass never
+// reached (from x15 down) to the variables as caller-saved homes, so a
+// body whose expressions need three temporaries keeps four more variables
+// in registers instead of frame slots. A second pass the lowering refuses
+// (it should not: a variable in a register needs no temporary a slot did)
+// leaves the first pass's code.
 func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool) (*asm.Function, error) {
+	first, peak, err := compileArm64Pass(fn, functions, records, adts, constants, globals, tc, elide, 0)
+	if err != nil {
+		return nil, err
+	}
+	spare := scratchHigh - scratchLow + 1 - peak
+	if spare <= 0 || !pressured[first] {
+		return first, nil // nothing to gain: every variable already has a register
+	}
+	second, _, err := compileArm64Pass(fn, functions, records, adts, constants, globals, tc, elide, spare)
+	if err != nil {
+		return first, nil
+	}
+	return second, nil
+}
+
+// compileArm64Pass is one lowering of a body; spare is how many scratch
+// registers, from x15 down, serve as variable homes instead of
+// temporaries. It reports the peak number of integer scratch registers
+// live at once.
+func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool, spare int) (*asm.Function, int, error) {
 	if len(fn.Parameters) > 8 {
-		return nil, unsupported("more than eight parameters")
+		return nil, 0, unsupported("more than eight parameters")
 	}
 	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, usedGlobals: map[string]asm.Global{}, line: fn.Token.Line, elide: elide}
 	// A span pair parked in callee-saved registers survives a call, and a
@@ -1299,6 +1332,14 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	for r := scratchHigh; r >= scratchLow; r-- {
 		g.free = append(g.free, r)
 	}
+	// The spare scratch registers (the first pass never held that many
+	// temporaries at once) become variable homes: caller-saved, so saved
+	// around calls like the other homes.
+	var scratchHomes []int
+	for i := 0; i < spare && len(g.free) > 1; i++ {
+		scratchHomes = append(scratchHomes, g.free[0])
+		g.free = g.free[1:]
+	}
 	for r := vecScratchHigh; r >= vecScratchLow; r-- {
 		g.freeF = append(g.freeF, vecBase+r)
 	}
@@ -1310,7 +1351,7 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	nextReg := 0
 	for _, p := range fn.Parameters {
 		if p.Variadic {
-			return nil, unsupported("variadic parameter %s", p.Name.Value)
+			return nil, 0, unsupported("variadic parameter %s", p.Name.Value)
 		}
 		if s, ok := scalarOf(p.Type); ok {
 			if !s.isFloat && !s.isVec {
@@ -1322,10 +1363,10 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 		if name, isRecord := g.recordTypeName(p.Type); isRecord {
 			layout, err := g.layoutOf(name)
 			if err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			if layout.isHFA() {
-				return nil, unsupported("parameter %s: %s is a homogeneous floating-point aggregate", p.Name.Value, name)
+				return nil, 0, unsupported("parameter %s: %s is a homogeneous floating-point aggregate", p.Name.Value, name)
 			}
 			regs, indirect := 1, layout.size > 16
 			if !indirect {
@@ -1353,7 +1394,7 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			if parkSpans {
 				// Two callee-saved registers, from the pool variables use.
 				if g.usedCallee+2 > calleeHigh-calleeLow+1 {
-					return nil, unsupported("the span parameters and locals exhaust the callee-saved registers")
+					return nil, 0, unsupported("the span parameters and locals exhaust the callee-saved registers")
 				}
 				sp.baseReg, sp.lenReg = calleeLow+g.usedCallee, calleeLow+g.usedCallee+1
 				g.usedCallee += 2
@@ -1361,10 +1402,10 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			g.spans[p.Name.Value] = sp
 			continue
 		}
-		return nil, unsupported("parameter %s of type %s", p.Name.Value, p.Type.String())
+		return nil, 0, unsupported("parameter %s of type %s", p.Name.Value, p.Type.String())
 	}
 	if nextReg > 8 {
-		return nil, unsupported("the parameters exhaust the eight argument registers")
+		return nil, 0, unsupported("the parameters exhaust the eight argument registers")
 	}
 	if !g.hasCalls {
 		// x0 (and x1) are left out: the result's registers, written at the
@@ -1384,6 +1425,11 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			g.callerHomes = append(g.callerHomes, r)
 		}
 	}
+	if !g.hasCalls {
+		g.leafHomes = append(g.leafHomes, scratchHomes...)
+	} else {
+		g.callerHomes = append(g.callerHomes, scratchHomes...)
+	}
 	if fn.ReturnType != nil && fn.ReturnType.String() == "never" {
 		// The function leaves by an exception return, never by ret.
 		g.never = true
@@ -1393,10 +1439,10 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			if name, isRecord := g.recordTypeName(fn.ReturnType); isRecord {
 				layout, err := g.layoutOf(name)
 				if err != nil {
-					return nil, err
+					return nil, 0, err
 				}
 				if layout.isHFA() {
-					return nil, unsupported("result of type %s (a homogeneous floating-point aggregate)", name)
+					return nil, 0, unsupported("result of type %s (a homogeneous floating-point aggregate)", name)
 				}
 				g.resultRecord = layout
 				g.resultIndirect = layout.size > 16
@@ -1404,7 +1450,7 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 				if g.resultIndirect && g.hasCalls {
 					// A call clobbers x8: park the result area's address.
 					if g.usedCallee+1 > calleeHigh-calleeLow+1 {
-						return nil, unsupported("the parameters and locals exhaust the callee-saved registers")
+						return nil, 0, unsupported("the parameters and locals exhaust the callee-saved registers")
 					}
 					g.resultAreaReg = calleeLow + g.usedCallee
 					g.usedCallee++
@@ -1412,7 +1458,7 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			} else {
 				s, ok := scalarOf(fn.ReturnType)
 				if !ok {
-					return nil, unsupported("result of type %s", fn.ReturnType.String())
+					return nil, 0, unsupported("result of type %s", fn.ReturnType.String())
 				}
 				g.result = &s
 			}
@@ -1439,13 +1485,13 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	g.head = g.newLabel("head")
 	body, err := g.lowerBody(fn.Body)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	// The frame: [x29, x30] when the body calls, then the slots, rounded to
 	// 16 bytes; sp moves once at entry and once before ret.
 	frame := g.frameSize()
 	if frame > 4080 {
-		return nil, unsupported("a frame of %d bytes", frame)
+		return nil, 0, unsupported("a frame of %d bytes", frame)
 	}
 	out := &asm.Function{Name: NativeSymbol(fn), Signature: fn, Line: fn.Token.Line, Fallback: true, Records: records, ADTs: adts, System: g.system}
 	if len(g.usedGlobals) > 0 {
@@ -1600,6 +1646,7 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	// Option[u32] in the signature and Option_u32 in the table).
 	out.Composites = Composites(records, adts)
 	out.Constants = constants
+	pressured[out] = g.pressure
 	spell := func(expr ast.Expression) {
 		if expr == nil {
 			return
@@ -1626,7 +1673,7 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	if g.elided > 0 {
 		elidedGuards[out] = g.elided
 	}
-	return out, nil
+	return out, g.peakScratch, nil
 }
 
 // copyIn copies a record from the memory a register addresses into a
@@ -2651,12 +2698,28 @@ func (g *generator) alloc(typ scalar) (int, error) {
 			return 0, unsupported("an expression deeper than the scratch registers")
 		}
 		g.live = append(g.live, r)
+		g.peakScratch = scratchHigh - scratchLow + 1 // every scratch register held, and more
 		return r, nil
 	}
 	r := (*pool)[len(*pool)-1]
 	*pool = (*pool)[:len(*pool)-1]
 	g.live = append(g.live, r)
+	g.notePeak()
 	return r, nil
+}
+
+// notePeak records the most integer scratch registers live at once (the
+// first pass's measurement for the second's homes).
+func (g *generator) notePeak() {
+	n := 0
+	for _, r := range g.live {
+		if r < vecBase {
+			n++
+		}
+	}
+	if n > g.peakScratch {
+		g.peakScratch = n
+	}
 }
 
 // overflowScratch widens the integer scratch pool when x9–x15 are all live
@@ -3329,9 +3392,12 @@ func (g *generator) declare(name string, s scalar) int64 {
 			r = g.callerHomes[0]
 			g.callerHomes = g.callerHomes[1:]
 			g.homesUsed[r] = true
+			g.pressure = true
 		case len(g.freeSlots8) > 0:
+			g.pressure = true
 			offset, g.freeSlots8 = g.freeSlots8[len(g.freeSlots8)-1], g.freeSlots8[:len(g.freeSlots8)-1]
 		default:
+			g.pressure = true
 			offset = 8 * g.nslots
 			g.nslots++
 		}
@@ -5391,7 +5457,9 @@ func (g *generator) callerHomesLive(call *ast.InvocationExpression) []int {
 }
 
 // isCallerHome reports a register of the caller-saved home pool.
-func isCallerHome(r int) bool { return r == 16 || r == 17 || (r >= 2 && r <= 7) }
+func isCallerHome(r int) bool {
+	return r == 16 || r == 17 || (r >= 2 && r <= 7) || (r >= scratchLow && r <= scratchHigh)
+}
 
 // spillSlot is a register's spill slot, allotted on first use.
 func (g *generator) spillSlot(r int) int64 {
