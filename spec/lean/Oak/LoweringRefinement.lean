@@ -196,7 +196,8 @@ b` declares the record local `r: R = R{ f₁: e₁, … }` whose scalar fields
 `fs` are given in the type's order, for the block `b` — a record is its
 field leaves `r.f`, so a field read is the variable `r.f` and a field
 write its rebinding, for a local as for a record parameter
-(`paramAggregate`). -/
+(`paramAggregate`); a tagged union is the record of its `tag` leaf and its
+payload leaves, a variant match the constant match on the tag. -/
 inductive Expr (P : Params) (S : Spans) : Locals → Ty → Type
   | var {Γ : Locals} (t : Ty) (x : String) (h : resolve P Γ x = some t) : Expr P S Γ t
   | lit {Γ : Locals} (t : Ty) (v : BitVec t.width) : Expr P S Γ t
@@ -2565,5 +2566,25 @@ example : lowered? ((.recDecl "p" [("x", .u32), ("y", .u32)] (.cons (.var .u32 "
 /-- `(p: P) -> u32 = p.x + p.y` — a record parameter is its field leaves as parameters. -/
 example : lowered? ((.arith .add (.var .u32 "p.x" (by decide)) (.var .u32 "p.y" (by decide)) : X (ps [("p.x", .u32), ("p.y", .u32)]) sp0 .u32))
     = some "(p.x add p.y)" := by decide
+
+/-! Sum types need no constructor of their own: a tagged union is its `tag`
+leaf (32 bits, the variant's index) and one payload leaf per carrying
+variant, `u.tag` and `u.V` (`zeroValue`, `paramAggregate`); a variant is a
+record declaration with the tag constant and the payload; a variant match
+is the constant match on the tag (`matchArms`: `cmpTerm("eq", tag, index)`)
+whose arm binds the payload leaf under the pattern's name (`lo.locals[x] =
+payload.scalar`, the alias `letIn x u.V` is). -/
+
+/-- `U: type = A | B: u32`; `(v: u32) -> u32 = { u: U = B(v); u ? | B(x) => x + 1 | A => 0 }` -/
+example : lowered? ((.recDecl "u" [("tag", .u32), ("B", .u32)] (.cons (.lit .u32 1) (.cons (.var .u32 "v" (by decide)) .nil))
+    (.matchInt (.var .u32 "u.tag" (by decide))
+      (.case 1 (.letIn "x" (.var .u32 "u.B" (by decide)) (.arith .add (.var .u32 "x" (by decide)) (.lit .u32 1)))
+        (.fallback (.lit .u32 0)))) : X (ps [("v", .u32)]) sp0 .u32))
+    = some "(v add 1)" := by decide
+/-- `(u: U) -> u32 = u ? | B(x) => x + 1 | A => 0` — a union parameter is its tag and payload leaves. -/
+example : lowered? ((.matchInt (.var .u32 "u.tag" (by decide))
+      (.case 1 (.letIn "x" (.var .u32 "u.B" (by decide)) (.arith .add (.var .u32 "x" (by decide)) (.lit .u32 1)))
+        (.fallback (.lit .u32 0))) : X (ps [("u.tag", .u32), ("u.B", .u32)]) sp0 .u32))
+    = some "((u.tag eq 1) ? (u.B add 1) : 0)" := by decide
 
 end Oak.LoweringRefinement
