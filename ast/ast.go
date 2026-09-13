@@ -357,6 +357,11 @@ type IndexExpression struct {
 	// never confused with element indexing (a[i]) downstream: lowering
 	// rewrites only bracket indexing to bounds-checked core_index.
 	Dot bool
+	// Align is the alignment fact a span or view type declares
+	// (`[* align 4096]u8`, `[align 64]f32`; docs/spec/50-borrowing.md
+	// section 2a): the base address is a multiple of Align. Zero when the
+	// type states none. Set only when Index is the span or view marker.
+	Align uint32
 }
 
 func (ie *IndexExpression) expressionNode()      {}
@@ -369,6 +374,9 @@ func (ie *IndexExpression) String() string {
 		// Record field access
 		out.WriteRune('.')
 		out.WriteString(ident.Value)
+		if ie.Align != 0 {
+			out.WriteString(fmt.Sprintf(" align %d", ie.Align))
+		}
 	} else {
 		// Array indexing
 		out.WriteRune('[')
@@ -1727,4 +1735,50 @@ func (pd *ProtocolDeclaration) String() string {
 	}
 	out.WriteString(" }")
 	return out.String()
+}
+
+// ExpressionToken is the token that positions an expression — the one the
+// checker's position-keyed recordings (typechecker.positionKey) and the
+// backend's rewrites agree on. Nodes without a positioning token report
+// false.
+func ExpressionToken(expr Expression) (token.Token, bool) {
+	switch e := expr.(type) {
+	case *Identifier:
+		return e.Token, true
+	case *IntegerLiteral:
+		return e.Token, true
+	case *FloatLiteral:
+		return e.Token, true
+	case *StringLiteral:
+		return e.Token, true
+	case *Boolean:
+		return e.Token, true
+	case *PrefixExpression:
+		return e.Token, true
+	case *InfixExpression:
+		return e.Token, true
+	case *IndexExpression:
+		return e.Token, true
+	case *SliceExpression:
+		return e.Token, true
+	case *InvocationExpression:
+		return e.Token, true
+	case *ArrayLiteral:
+		return e.Token, true
+	case *RecordLiteral:
+		return e.Token, true
+	case *BlockExpression:
+		return e.Token, true
+	case *MatchExpression:
+		return e.Token, true
+	case *VariantExpression:
+		return e.Token, true
+	case *FunctionLiteral:
+		return e.Token, true
+	case *TryExpression:
+		return e.Token, true
+	case *FieldAccessorExpression:
+		return e.Token, true
+	}
+	return token.Token{}, false
 }

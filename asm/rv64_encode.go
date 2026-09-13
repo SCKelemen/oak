@@ -209,6 +209,11 @@ func encodeRV64Instruction(instr Instruction, pc int64, labels map[string]int64)
 		// the first position is vd, then vs2, then vs1; an integer register
 		// is rd or rs1 (RVV 1.0 §5).
 		fields["vm"], fields["nf"] = 1, 0
+		if rv64Masked(instr) {
+			// `v0.t`: the masked form (vm = 0); the operand is not a field.
+			fields["vm"] = 0
+			ops = ops[:len(ops)-1]
+		}
 		switch {
 		case instr.Mnemonic == "vsetvli":
 			fields["rd"], fields["rs1"], fields["zimm11"] = regNum(0), regNum(1), rv64VType(ops[2:])

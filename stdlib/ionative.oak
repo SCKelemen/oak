@@ -114,6 +114,19 @@ pub io_attach: (data: []u8, faults: u32): () {
   }
 }
 
+// io_open_region_aligned registers a region whose alignment is a fact of
+// its type (docs/spec/50-borrowing.md section 2a): the checker proved the
+// base is a multiple of the sector, so the host is not asked.
+pub io_open_region_aligned: (ring: [*]IoRing, region: [* align 4096]u8, files: u32): () {
+  assert(len(ring) == u32(1))
+  ring[0].files = files > ionative_slots() ? { ionative_slots() } | { files }
+  ring[0].region_len = len(region)
+  ring[0].sector = io_sector_bytes()
+  ring[0].submitted = u32(0)
+  ring[0].completed = u32(0)
+  ring[0].pending = u32(0)
+}
+
 pub io_open_region: (ring: [*]IoRing, region: [*]u8, files: u32): () {
   assert(len(ring) == u32(1))
   ring[0].files = files > ionative_slots() ? { ionative_slots() } | { files }

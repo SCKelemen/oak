@@ -251,6 +251,18 @@ done:
 			}
 			return uint64(total)
 		}, body: rv64VStripBody})
+	// The masked strip loop at LMUL=2: the sum of the elements that differ
+	// from k, expected from Go.
+	oracles = append(oracles, rv64Oracle{decl: rv64VMaskedDecl, cType: "unsigned int", width: 32, span: "v", inputs: [][2]uint64{{0, 7}, {1, 0}, {3, 5}, {4, 1}, {5, 9}, {8, 1}, {13, 0xffffffff}, {16, 2}},
+		spanExpect: func(elems []uint64, k uint64) uint64 {
+			total := uint32(0)
+			for _, e := range elems {
+				if uint32(e) != uint32(k) {
+					total += uint32(e)
+				}
+			}
+			return uint64(total)
+		}, body: rv64VMaskedBody})
 	var functions []*Function
 	var harness strings.Builder
 	harness.WriteString("typedef struct { const unsigned int *base; unsigned int len; } view_u32;\n")

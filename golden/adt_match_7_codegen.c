@@ -556,7 +556,9 @@ OAK_INLINE i32 oak_area2( oak_Shape s ) {
 i32 oak_main(  ) {
     oak_Shape c   = oak_Shape_Circle(5)  ;
     oak_Shape q   = oak_Shape_Square(4)  ;
-    return oak_add_i32( oak_area2( c ), oak_area2( q ) )  ;
+    i32 oak__seq_0 = oak_area2( c );
+    i32 oak__seq_1 = oak_area2( q );
+    return oak_add_i32( oak__seq_0, oak__seq_1 )  ;
 }
 
 int main(void) {

@@ -281,6 +281,15 @@ iosim_record: (kind: u64, tag: u64, value: u64): () {
 // io_open_region registers the caller's byte region and the file table
 // size with a ring. Buffers are (base, len) windows into the region the
 // caller passes to every call.
+// io_open_region_aligned registers a region whose alignment is a fact of
+// its type (docs/spec/50-borrowing.md section 2a): `span(&store.bytes)` of
+// an IoSectorRegion carries `[* align 4096]u8`, so the sector is known at
+// compile time and nothing is probed. The simulated region serves the
+// sector either way.
+pub io_open_region_aligned: (ring: [*]IoRing, region: [* align 4096]u8, files: u32): () {
+  io_open_region(ring, region, files)
+}
+
 pub io_open_region: (ring: [*]IoRing, region: [*]u8, files: u32): () {
   assert(len(ring) == u32(1))
   ring[0].files = files > iosim_slots() ? { iosim_slots() } | { files }

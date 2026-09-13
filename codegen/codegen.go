@@ -74,6 +74,13 @@ type CodeGenerator struct {
 	fieldAccessors map[string]*ast.FieldAccessorExpression
 	// scrutineeCounter names hoisted match-scrutinee temporaries.
 	scrutineeCounter int
+	// seqCounter names the left-to-right sequencing temporaries
+	// (codegen/sequence.go); seqTypeofFallbacks counts those whose type had
+	// no C spelling; noSequence disables the pass inside a parenthesized
+	// block expression, where no statement position exists.
+	seqCounter         int
+	seqTypeofFallbacks int
+	noSequence         bool
 	// globalTypes classifies top-level bindings (static globals) the same
 	// way localTypes classifies function locals.
 	globalTypes map[string]localContainer
@@ -1347,6 +1354,11 @@ func (cg *CodeGenerator) emitMatchArmReturn(body ast.Expression, tc *typechecker
 // emitMatchReturn with bodies in statement position. Produced by the
 // lowering hoist for value matches and by statement-position ADT matches.
 func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *typechecker.TypeChecker) {
+	if scrutinee := cg.sequence(match.Scrutinee, tc); scrutinee != match.Scrutinee {
+		sequenced := *match
+		sequenced.Scrutinee = scrutinee
+		match = &sequenced
+	}
 	emitBody := func(body ast.Expression) {
 		if block, ok := body.(*ast.BlockExpression); ok && block.Block != nil {
 			cg.emitBlockStatement(block.Block, tc, false)
@@ -2809,6 +2821,17 @@ func (cg *CodeGenerator) emitFunctionBody(body ast.Expression, tc *typechecker.T
 
 // emitExpression emits C code for an expression (as a return statement)
 func (cg *CodeGenerator) emitExpression(expr ast.Expression, tc *typechecker.TypeChecker) {
+	// Left-to-right sequencing (codegen/sequence.go): a match keeps its
+	// arms in return position, so only its scrutinee is sequenced here.
+	if match, isMatch := expr.(*ast.MatchExpression); isMatch {
+		if scrutinee := cg.sequence(match.Scrutinee, tc); scrutinee != match.Scrutinee {
+			sequenced := *match
+			sequenced.Scrutinee = scrutinee
+			expr = &sequenced
+		}
+	} else {
+		expr = cg.sequence(expr, tc)
+	}
 	// In a loop-lowered function, the tail self-call in return position is
 	// the loop's next iteration, not a call.
 	if cg.tailLoopFunction != nil {
@@ -2890,6 +2913,7 @@ func (cg *CodeGenerator) emitStatementExpression(expr ast.Expression, tc *typech
 		cg.emitMatchStatement(match, tc)
 		return
 	}
+	expr = cg.sequence(expr, tc)
 	cg.emitExpressionFragment(expr, tc)
 	cg.write(";\n")
 }
@@ -4096,6 +4120,10 @@ func (cg *CodeGenerator) emitBlockStatement(block *ast.BlockStatement, tc *typec
 
 // emitBlockExpression emits a block as an expression (last statement is the value)
 func (cg *CodeGenerator) emitBlockExpression(block *ast.BlockStatement, tc *typechecker.TypeChecker) {
+	// Inside the parentheses there is no statement position to hoist to.
+	outerNoSequence := cg.noSequence
+	cg.noSequence = true
+	defer func() { cg.noSequence = outerNoSequence }()
 	// For block expressions, we need to handle statements and return the last expression
 	// This is simplified - in full implementation, we'd need proper scoping
 	cg.output.WriteString("( ")
@@ -4242,6 +4270,24 @@ func (cg *CodeGenerator) emitLvaluePath(expr ast.Expression, tc *typechecker.Typ
 // the trapping helper, owned arrays through the static-length store guard;
 // unknown targets fail closed.
 func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement, tc *typechecker.TypeChecker) {
+	// The element index and the stored value are one unsequenced group in C.
+	if stmt.Target != nil && !stmt.Target.Dot {
+		members := cg.sequenceGroup([]ast.Expression{stmt.Target.Index, stmt.Value}, tc)
+		if members[0] != stmt.Target.Index || members[1] != stmt.Value {
+			sequenced := *stmt
+			target := *stmt.Target
+			target.Index = members[0]
+			sequenced.Target = &target
+			sequenced.Value = members[1]
+			stmt = &sequenced
+		}
+	} else if stmt.Value != nil {
+		if value := cg.sequence(stmt.Value, tc); value != stmt.Value {
+			sequenced := *stmt
+			sequenced.Value = value
+			stmt = &sequenced
+		}
+	}
 	// Record field assignment: p.x = value, pool[i].next = value —
 	// the target's path emits in lvalue position with checked indices
 	// (docs/spec/40-records.md, docs/spec/50-borrowing.md).
@@ -4304,12 +4350,23 @@ func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement,
 
 // emitVariableDeclaration emits a variable declaration
 func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, tc *typechecker.TypeChecker) {
-	varName := stmt.Name.Value
-	if stmt.Type != nil {
-		if cg.localTypes == nil {
-			cg.localTypes = make(map[string]localContainer)
+	if stmt.Value != nil {
+		if value := cg.sequence(stmt.Value, tc); value != stmt.Value {
+			sequenced := *stmt
+			sequenced.Value = value
+			stmt = &sequenced
 		}
+	}
+	varName := stmt.Name.Value
+	if cg.localTypes == nil {
+		cg.localTypes = make(map[string]localContainer)
+	}
+	if stmt.Type != nil {
 		cg.localTypes[varName] = cg.classifyContainer(stmt.Type)
+	} else if _, known := cg.localTypes[varName]; !known {
+		// An inferred binding is a local too: the sequencing pass
+		// (codegen/sequence.go) tells locals from globals by this table.
+		cg.localTypes[varName] = localContainer{kind: containerUnknown}
 	}
 
 	if stmt.Type != nil {
@@ -4425,15 +4482,31 @@ func zeroInitializerFor(cType string) string {
 
 // emitAssignmentStatement emits an assignment statement
 func (cg *CodeGenerator) emitAssignmentStatement(stmt *ast.AssignmentStatement, tc *typechecker.TypeChecker) {
+	value := cg.sequence(stmt.Value, tc)
 	cg.write("  ")
 	cg.emitExpressionFragment(stmt.Name, tc)
 	cg.write(" = ")
-	cg.emitExpressionFragment(stmt.Value, tc)
+	cg.emitExpressionFragment(value, tc)
 	cg.write(";\n")
 }
 
 // emitWhileStatement emits a while loop
 func (cg *CodeGenerator) emitWhileStatement(stmt *ast.WhileStatement, tc *typechecker.TypeChecker) {
+	if cg.needsSequencing(stmt.Condition, tc) {
+		// The condition's operands are sequenced on every iteration: the
+		// temporaries live inside the loop, ahead of the exit test
+		// (codegen/sequence.go).
+		cg.write("  for ( ;; ) {\n")
+		cg.indentLevel++
+		condition := cg.sequence(stmt.Condition, tc)
+		cg.write("  if ( !( ")
+		cg.emitExpressionFragment(condition, tc)
+		cg.output.WriteString(" ) ) { break; }\n")
+		cg.emitBlockStatement(stmt.Body, tc, false)
+		cg.indentLevel--
+		cg.write("  }\n")
+		return
+	}
 	cg.write("  while ( ")
 	cg.emitCondition(stmt.Condition, tc)
 	cg.write(" ) {\n")
@@ -4449,8 +4522,9 @@ func (cg *CodeGenerator) emitWhileStatement(stmt *ast.WhileStatement, tc *typech
 // emitIfStatement emits the statement-position conditional as C if/else
 // (docs/spec/10-syntax.md).
 func (cg *CodeGenerator) emitIfStatement(stmt *ast.IfStatement, tc *typechecker.TypeChecker) {
+	condition := cg.sequence(stmt.Condition, tc)
 	cg.write("  if ( ")
-	cg.emitCondition(stmt.Condition, tc)
+	cg.emitCondition(condition, tc)
 	cg.write(" ) {\n")
 	cg.indentLevel++
 	if stmt.Consequence != nil {

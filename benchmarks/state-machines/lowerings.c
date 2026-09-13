@@ -1,10 +1,11 @@
 // State-machine lowering benchmark: which code shape steps a machine fastest
 // on today's hardware when the step stream is input-driven (unpredictable)?
 //
-// Three workloads:
+// Four workloads:
 //   A. one small control machine (VirtualIrq: 3 states, 4 steps), 64M steps
 //   B. one byte-driven DFA (UTF-8 validity, 9 states, 256 symbols), 64MB
 //   C. a table of 1M machines, each stepped once per round, 32 rounds
+//   D. one data-carrying machine with guarded lines, 64M steps
 //
 // Variants per workload:
 //   branch : the branch tree clang produces from Oak's generated C today
@@ -261,10 +262,107 @@ static void bench_c(u32 m, u32 rounds) {
     free(soa); free(aos); free(steps);
 }
 
+
+/* ------------------------------------------------------------------ */
+/* D. Quota: a data-carrying machine with guarded lines.
+   States Idle=0 Running=1 Yielded=2; steps Start=0 Tick=1 Resume=2 Signal=3;
+   data { u32 budget; u8 mode; }. Lines in declaration order:
+     0 start:  Idle    -> Running when mode < 2      then budget = 4
+     1 start:  Idle    -> Idle    when mode >= 2     then mode = mode - 1
+     2 tick:   Running -> Running when budget > 1    then budget = budget - 1
+     3 tick:   Running -> Yielded when budget <= 1   then budget = 0
+     4 resume: Yielded -> Running when mode == 0     then budget = 4
+     5 resume: Yielded -> Idle    when mode != 0     then mode = (mode + 1) & 3
+     6 signal: Idle    -> Idle                       then mode = (mode + 1) & 3
+     7 signal: Running -> Running                    then mode = (mode + 1) & 3
+     8 signal: Yielded -> Yielded                    then mode = (mode + 1) & 3
+   Two shapes: the branch tree Oak's projection emits for a data machine
+   (name_legal evaluates the guards, name_next re-evaluates them over a copy
+   of the record and writes it back), and a candidate-line table: T[state][step]
+   is the first candidate line, a switch on line ids evaluates each guard once
+   in declaration order — consecutive cases fall through to the next candidate
+   — applies the effect in place, and traps at the group's end. */
+enum { D_IDLE, D_RUNNING, D_YIELDED, NSTATES_D = 3 };
+enum { D_START, D_TICK, D_RESUME, D_SIGNAL, NSTEPS_D = 4 };
+typedef struct { u32 budget; u8 mode; } DData;
+
+static inline int d_legal(u32 state, const DData *d, u32 step) {
+    if (step == D_START) return state == D_IDLE && ((d->mode < 2) || (d->mode >= 2));
+    if (step == D_TICK) return state == D_RUNNING && ((d->budget > 1) || (d->budget <= 1));
+    if (step == D_RESUME) return state == D_YIELDED && ((d->mode == 0) || (d->mode != 0));
+    if (step == D_SIGNAL) return state == D_IDLE || state == D_RUNNING || state == D_YIELDED;
+    __builtin_trap();
+}
+__attribute__((noinline)) static u32 d_next_branch(u32 state, DData *data, u32 step) {
+    if (!d_legal(state, data, step)) __builtin_trap();
+    DData record = *data; u32 result = state; int done = 0;
+    if (step == D_START) {
+        int from = state == D_IDLE;
+        if (!done && from && record.mode < 2) { record.budget = 4; result = D_RUNNING; done = 1; }
+        if (!done && from && record.mode >= 2) { record.mode = (u8)(record.mode - 1); result = D_IDLE; done = 1; }
+    } else if (step == D_TICK) {
+        int from = state == D_RUNNING;
+        if (!done && from && record.budget > 1) { record.budget = record.budget - 1; result = D_RUNNING; done = 1; }
+        if (!done && from && record.budget <= 1) { record.budget = 0; result = D_YIELDED; done = 1; }
+    } else if (step == D_RESUME) {
+        int from = state == D_YIELDED;
+        if (!done && from && record.mode == 0) { record.budget = 4; result = D_RUNNING; done = 1; }
+        if (!done && from && record.mode != 0) { record.mode = (u8)((record.mode + 1) & 3); result = D_IDLE; done = 1; }
+    } else if (step == D_SIGNAL) {
+        int from0 = state == D_IDLE, from1 = state == D_RUNNING, from2 = state == D_YIELDED;
+        if (!done && from0) { record.mode = (u8)((record.mode + 1) & 3); result = D_IDLE; done = 1; }
+        if (!done && from1) { record.mode = (u8)((record.mode + 1) & 3); result = D_RUNNING; done = 1; }
+        if (!done && from2) { record.mode = (u8)((record.mode + 1) & 3); result = D_YIELDED; done = 1; }
+    } else __builtin_trap();
+    *data = record;
+    return result;
+}
+// candidate-line table: first line id per (state, step), 0xFF illegal
+static const u8 D_FIRST[NSTATES_D][NSTEPS_D] = {
+    /* Idle    */ { 0,    ILLEGAL, ILLEGAL, 6 },
+    /* Running */ { ILLEGAL, 2,    ILLEGAL, 7 },
+    /* Yielded */ { ILLEGAL, ILLEGAL, 4,    8 },
+};
+__attribute__((noinline)) static u32 d_next_table(u32 state, DData *d, u32 step) {
+    switch (D_FIRST[state][step]) {
+    case 0: if (d->mode < 2) { d->budget = 4; return D_RUNNING; } /* fall through */
+    case 1: if (d->mode >= 2) { d->mode = (u8)(d->mode - 1); return D_IDLE; } __builtin_trap();
+    case 2: if (d->budget > 1) { d->budget = d->budget - 1; return D_RUNNING; } /* fall through */
+    case 3: if (d->budget <= 1) { d->budget = 0; return D_YIELDED; } __builtin_trap();
+    case 4: if (d->mode == 0) { d->budget = 4; return D_RUNNING; } /* fall through */
+    case 5: if (d->mode != 0) { d->mode = (u8)((d->mode + 1) & 3); return D_IDLE; } __builtin_trap();
+    case 6: d->mode = (u8)((d->mode + 1) & 3); return D_IDLE;
+    case 7: d->mode = (u8)((d->mode + 1) & 3); return D_RUNNING;
+    case 8: d->mode = (u8)((d->mode + 1) & 3); return D_YIELDED;
+    default: __builtin_trap();
+    }
+}
+static void bench_d(u32 n) {
+    u8 *steps = malloc(n);
+    // a random walk over legal steps: every state has its own step and signal
+    static const u8 own_step[NSTATES_D] = { D_START, D_TICK, D_RESUME };
+    u32 s = D_IDLE; DData d = { 4, 0 };
+    for (u32 i = 0; i < n; i++) { u8 st = (rng() & 1) ? own_step[s] : D_SIGNAL; steps[i] = st; s = d_next_branch(s, &d, st); }
+    double tb = 1e30, tt = 1e30; u32 rb = 0, rt = 0; DData db, dt;
+    for (int r = 0; r < REPS; r++) {
+        double t0 = now_ns(); u32 st = D_IDLE; DData dd = { 4, 0 };
+        for (u32 i = 0; i < n; i++) st = d_next_branch(st, &dd, steps[i]);
+        tb = best(tb, now_ns() - t0); rb = st; db = dd;
+        t0 = now_ns(); st = D_IDLE; dd.budget = 4; dd.mode = 0;
+        for (u32 i = 0; i < n; i++) st = d_next_table(st, &dd, steps[i]);
+        tt = best(tt, now_ns() - t0); rt = st; dt = dd;
+    }
+    if (rb != rt || db.budget != dt.budget || db.mode != dt.mode) { printf("D: MISMATCH\n"); exit(1); }
+    printf("D  data-carrying machine (9 guarded lines), %u input-driven steps\n", n);
+    printf("   branch  %6.2f ns/step\n   table   %6.2f ns/step\n", tb / n, tt / n);
+    free(steps);
+}
+
 int main(void) {
     bench_a(64u << 20);
     bench_b(64u << 20);
     bench_c(1u << 20, 32);
     bench_c(16u << 20, 4);
+    bench_d(64u << 20);
     return 0;
 }

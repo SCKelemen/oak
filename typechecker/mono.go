@@ -253,6 +253,14 @@ func positionKey(tok token.Token) tokenKey {
 	return tokenKey{context: tok.SemanticContext, line: tok.Line, column: tok.Column, literal: tok.Literal}
 }
 
+// ExpressionTypeAt returns the type the checker recorded for the expression
+// positioned at tok (ast.ExpressionToken), whatever node now carries that
+// position.
+func (tc *TypeChecker) ExpressionTypeAt(tok token.Token) (Type, bool) {
+	typ, ok := tc.expressionTypes[positionKey(tok)]
+	return typ, ok
+}
+
 // recordShiftWidth notes the operand width of one shift expression, so the
 // backend emits the right checked helper without re-deriving types.
 func (tc *TypeChecker) recordShiftWidth(expr *ast.InfixExpression, width int) {
@@ -474,6 +482,13 @@ func (tc *TypeChecker) instantiateRecordTemplate(template *ast.ADTType, args []T
 		tc.recordInstantiationCache = make(map[string]*RecordType)
 	}
 	tc.recordInstantiationCache[mangled] = instantiated
+	// The instantiation's layout facts are the template's: the declared
+	// struct(align: N) and per-field align carry to every instantiation
+	// (docs/spec/40-records.md section 6a), which borrowAlignment reads.
+	if tc.recordDecls == nil {
+		tc.recordDecls = map[string]*ast.RecordLiteral{}
+	}
+	tc.recordDecls[mangled] = recordLit
 	if tc.recordInstantiationArgs == nil {
 		tc.recordInstantiationArgs = make(map[string]RecordInstantiation)
 	}

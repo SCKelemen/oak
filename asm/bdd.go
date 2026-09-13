@@ -10,6 +10,15 @@ import "sync/atomic"
 // budget keeps blow-up fail-closed: when exceeded, the caller keeps the
 // labeled witness-checked verdict instead of claiming proof.
 
+// Edges carry a complement bit: edge = 2*node + c, and the function of the
+// complemented edge is the negation of the node's. One terminal node
+// (index 0) stands for false, so zero-initialized lanes read as false as
+// they always did, and true is the terminal's complement, edge 1.
+// Negation is then a bit flip, and a function and its negation share
+// every node. The canonical form keeps a node's high edge positive (mk
+// normalizes), so two equal functions are still one edge — the equality
+// test the decider relies on. The Oak solver (prove/solver/bdd.oak) is the
+// same engine in Oak and must stay node-for-node its twin.
 const (
 	bddFalse = 0
 	bddTrue  = 1
@@ -168,19 +177,31 @@ const (
 
 func newBDD(budget int) *bdd {
 	b := &bdd{unique: newUniqueTable(1 << 16), memo: newOpTable(1 << 16), budget: budget}
-	b.nodes = []bddNode{{variable: bddTerminalVar}, {variable: bddTerminalVar}}
+	b.nodes = []bddNode{{variable: bddTerminalVar}}
 	return b
 }
 
-func (b *bdd) variableOf(n int) int { return b.nodes[n].variable }
+// variableOf is the variable of an edge's node; a terminal edge's is the
+// terminal marker, which orders after every real variable.
+func (b *bdd) variableOf(e int) int { return b.nodes[e>>1].variable }
 
-// mk returns the canonical node for (variable, low, high).
+// low and high are an edge's cofactors: the node's, complemented when the
+// edge is (Oak.BddComplement.cofactor_complement).
+func (b *bdd) low(e int) int  { return b.nodes[e>>1].low ^ (e & 1) }
+func (b *bdd) high(e int) int { return b.nodes[e>>1].high ^ (e & 1) }
+
+// mk returns the canonical edge for (variable, low, high). A complemented
+// high edge is normalized by complementing both cofactors and the result
+// (Oak.BddComplement.mk_complement), so every node's high edge is
+// positive and equal functions are one edge.
 func (b *bdd) mk(variable, low, high int) int {
 	if low == high {
 		return low
 	}
+	flip := high & 1
+	low, high = low^flip, high^flip
 	if n, ok := b.unique.lookup(int32(variable), int32(low), int32(high)); ok {
-		return int(n)
+		return int(n)<<1 ^ flip
 	}
 	if len(b.nodes) >= b.budget || (b.stop != nil && b.stop.Load()) {
 		b.exceeded = true
@@ -189,19 +210,21 @@ func (b *bdd) mk(variable, low, high int) int {
 	b.nodes = append(b.nodes, bddNode{variable: variable, low: low, high: high})
 	n := len(b.nodes) - 1
 	b.unique.insert(int32(variable), int32(low), int32(high), int32(n))
-	return n
+	return n<<1 ^ flip
 }
 
-// variable returns the node for a single input variable.
+// variable returns the edge for a single input variable.
 func (b *bdd) variable(v int) int { return b.mk(v, bddFalse, bddTrue) }
 
-func (b *bdd) not(a int) int { return b.apply(opXor, a, bddTrue) }
+// not is the complement bit: no node, no lookup.
+func (b *bdd) not(a int) int { return a ^ 1 }
 
 func (b *bdd) apply(op, x, y int) int {
 	if b.exceeded {
 		return bddFalse
 	}
-	// Terminal cases.
+	// Terminal cases, an operand equal to the other's complement included
+	// (Oak.BddComplement: and_self_not, or_self_not, xor_self_not, xor_true).
 	switch op {
 	case opAnd:
 		if x == bddFalse || y == bddFalse {
@@ -216,6 +239,9 @@ func (b *bdd) apply(op, x, y int) int {
 		if x == y {
 			return x
 		}
+		if x == y^1 {
+			return bddFalse
+		}
 	case opOr:
 		if x == bddTrue || y == bddTrue {
 			return bddTrue
@@ -229,6 +255,9 @@ func (b *bdd) apply(op, x, y int) int {
 		if x == y {
 			return x
 		}
+		if x == y^1 {
+			return bddTrue
+		}
 	case opXor:
 		if x == bddFalse {
 			return y
@@ -236,11 +265,17 @@ func (b *bdd) apply(op, x, y int) int {
 		if y == bddFalse {
 			return x
 		}
+		if x == bddTrue {
+			return y ^ 1
+		}
+		if y == bddTrue {
+			return x ^ 1
+		}
 		if x == y {
 			return bddFalse
 		}
-		if x == bddTrue && y == bddTrue {
-			return bddFalse
+		if x == y^1 {
+			return bddTrue
 		}
 	}
 	if x > y && (op == opAnd || op == opOr || op == opXor) {
@@ -256,11 +291,11 @@ func (b *bdd) apply(op, x, y int) int {
 	}
 	xl, xh := x, x
 	if vx == v {
-		xl, xh = b.nodes[x].low, b.nodes[x].high
+		xl, xh = b.low(x), b.high(x)
 	}
 	yl, yh := y, y
 	if vy == v {
-		yl, yh = b.nodes[y].low, b.nodes[y].high
+		yl, yh = b.low(y), b.high(y)
 	}
 	r := b.mk(v, b.apply(op, xl, yl), b.apply(op, xh, yh))
 	b.memo.insert(int32(op), int32(x), int32(y), int32(r))
@@ -274,16 +309,16 @@ func (b *bdd) ite(c, t, e int) int {
 
 // satisfyingPath assigns variables along one path from n to the true
 // terminal (every non-false node of a reduced BDD has such a path).
-func (b *bdd) satisfyingPath(n int) map[int]bool {
+func (b *bdd) satisfyingPath(e int) map[int]bool {
 	assignment := map[int]bool{}
-	for n != bddTrue && n != bddFalse {
-		node := b.nodes[n]
-		if node.high != bddFalse {
-			assignment[node.variable] = true
-			n = node.high
+	for e>>1 != 0 {
+		variable := b.variableOf(e)
+		if high := b.high(e); high != bddFalse {
+			assignment[variable] = true
+			e = high
 		} else {
-			assignment[node.variable] = false
-			n = node.low
+			assignment[variable] = false
+			e = b.low(e)
 		}
 	}
 	return assignment

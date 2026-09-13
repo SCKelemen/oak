@@ -134,3 +134,106 @@ theorem boolByte_le_one (b : Bool) : boolByte b ≤ 1 := by cases b <;> simp [bo
 theorem bool_round_trip (b : Bool) : (boolByte b ≠ 0) = b := by cases b <;> simp [boolByte]
 
 end Oak.BinaryCodec
+
+/-! ## Presence fields and byte runs
+
+An `Option[T]` field is one presence byte followed by `T`'s bytes — zeros
+when absent — so the layout keeps its size; a `View[u8, R]` field with a
+byte count is the run itself. An `Item` is one of the three shapes with its
+value; a record is the concatenation of its items' bytes, and decoding the
+encoding returns every item's value (`decodeItems_encodeItems`). -/
+
+namespace Oak.BinaryCodec
+
+inductive Item where
+  | int (width : Nat) (big : Bool) (value : Nat)
+  | opt (width : Nat) (big : Bool) (value : Option Nat)
+  | run (count : Nat) (bytes : List Nat) (h : bytes.length = count)
+
+inductive Value where
+  | int (v : Nat)
+  | opt (v : Option Nat)
+  | run (bytes : List Nat)
+  deriving DecidableEq
+
+def intBytes (w : Nat) (big : Bool) (v : Nat) : List Nat := if big then toBE w v else toLE w v
+def intRead (w : Nat) (big : Bool) (bytes : List Nat) : Nat := if big then fromBE bytes else fromLE bytes
+
+theorem intBytes_length (w : Nat) (big : Bool) (v : Nat) : (intBytes w big v).length = w := by
+  unfold intBytes; split <;> simp [toBE_length, toLE_length]
+
+theorem intRead_intBytes (w : Nat) (big : Bool) (v : Nat) : intRead w big (intBytes w big v) = v % 256 ^ w := by
+  unfold intRead intBytes; split <;> simp [fromBE_toBE, fromLE_toLE]
+
+def Item.size : Item → Nat
+  | .int w _ _ => w
+  | .opt w _ _ => w + 1
+  | .run n _ _ => n
+
+def Item.bytes : Item → List Nat
+  | .int w big v => intBytes w big v
+  | .opt w big none => 0 :: List.replicate w 0
+  | .opt w big (some v) => 1 :: intBytes w big v
+  | .run _ bs _ => bs
+
+/-- The value an item's bytes denote, reduced to the width. -/
+def Item.reduced : Item → Value
+  | .int w _ v => .int (v % 256 ^ w)
+  | .opt w _ none => .opt none
+  | .opt w _ (some v) => .opt (some (v % 256 ^ w))
+  | .run _ bs _ => .run bs
+
+/-- Reading an item's shape from bytes: the presence byte decides the
+    option, the run is the bytes themselves. -/
+def Item.read : Item → List Nat → Value
+  | .int w big _, bytes => .int (intRead w big bytes)
+  | .opt w big _, bytes => .opt (if bytes.headD 0 = 0 then none else some (intRead w big bytes.tail))
+  | .run _ _ _, bytes => .run bytes
+
+theorem Item.bytes_length (it : Item) : it.bytes.length = it.size := by
+  cases it with
+  | int w big v => simp [Item.bytes, Item.size, intBytes_length]
+  | opt w big v =>
+    cases v with
+    | none => simp [Item.bytes, Item.size, List.length_replicate]
+    | some v => simp [Item.bytes, Item.size, intBytes_length]
+  | run n bs h => simp [Item.bytes, Item.size, h]
+
+theorem Item.read_bytes (it : Item) : it.read it.bytes = it.reduced := by
+  cases it with
+  | int w big v => simp [Item.read, Item.bytes, Item.reduced, intRead_intBytes]
+  | opt w big v =>
+    cases v with
+    | none => simp [Item.read, Item.bytes, Item.reduced]
+    | some v => simp [Item.read, Item.bytes, Item.reduced, intRead_intBytes]
+  | run n bs h => simp [Item.read, Item.bytes, Item.reduced]
+
+def encodeItems (items : List Item) : List Nat := (items.map Item.bytes).flatten
+
+def decodeItems : List Item → List Nat → List Value
+  | [], _ => []
+  | it :: rest, bytes => it.read (bytes.take it.size) :: decodeItems rest (bytes.drop it.size)
+
+theorem encodeItems_length (items : List Item) : (encodeItems items).length = (items.map Item.size).sum := by
+  induction items with
+  | nil => rfl
+  | cons it rest ih =>
+    simp only [encodeItems, List.map_cons, List.flatten_cons, List.length_append, List.sum_cons] at ih ⊢
+    rw [Item.bytes_length, ih]
+
+/-- Decoding the encoding of a layout returns every item's value: integers
+    at their width, presence and payload of every option, every byte run. -/
+theorem decodeItems_encodeItems (items : List Item) :
+    decodeItems items (encodeItems items) = items.map Item.reduced := by
+  induction items with
+  | nil => rfl
+  | cons it rest ih =>
+    simp only [encodeItems, decodeItems, List.map_cons, List.flatten_cons]
+    rw [take_of_length _ _ _ (Item.bytes_length it), drop_of_length _ _ _ (Item.bytes_length it), Item.read_bytes]
+    exact congrArg _ ih
+
+/-- An absent option's payload bytes are zeros: nothing of the value leaks
+    into the layout. -/
+theorem opt_none_payload (w : Nat) (big : Bool) : (Item.opt w big none).bytes = 0 :: List.replicate w 0 := rfl
+
+end Oak.BinaryCodec

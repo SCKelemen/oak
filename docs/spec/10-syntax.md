@@ -429,6 +429,35 @@ Rules:
 Motivation recorded in `docs/notes/roadmap-authority-resources.md` (asks,
 tier 2): resource fixtures needed literals whose parameters are handles.
 
+## 3d. Evaluation order
+
+Within one expression, evaluation is left to right: the operands of an
+operator, the arguments of a call (after its receiver, for a method call),
+the elements of an array literal, the fields of a record literal in the
+order written, the operands of an index (`a[i]`: `a`, then `i`) and the
+bounds of a slice. An operand is evaluated completely — every call and
+every effect inside it — before the operand to its right begins. The
+only exceptions are the conditional constructs: `&&` and `||` evaluate
+their right operand only when the left one has not decided the result,
+and a conditional evaluates only the arm it selects, after its condition.
+
+This is the order the interpreter follows, the order the Lean extraction's
+`let` chains spell, and the order Zig fixes for the programs the
+differential tests compare against. It is a rule about observable
+behavior: an implementation may evaluate an effect-free operand whenever
+it likes, because nothing can tell, but two operands that could each
+observe the other's effects — a call and a call, a call and a read of
+state the call may write — happen in source order.
+
+C leaves every one of these orders unspecified, and compilers differ (gcc
+on x86-64 evaluates a call's arguments right to left), so the C backend
+realizes the rule itself: it evaluates such operands into temporaries at
+statement position, in source order, and the statement reads the
+temporaries (`90-backend.md` "Evaluation order"). A program whose result
+depends on the order therefore has one meaning on every target, and
+`compiler/e2e_evaluation_order_test.go` holds the interpreter and the
+compiled C to it.
+
 ## 4. Blocks and layout
 
 Statement/expression blocks may be delimited by indentation or explicit braces. Both normalize to the same structural token stream and AST.

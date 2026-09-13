@@ -153,6 +153,7 @@ func (sub Substitution) Apply(typ Type) Type {
 			IsSlice:     t.IsSlice,
 			IsSpan:      t.IsSpan,
 			ElementType: sub.Apply(t.ElementType),
+			Align:       t.Align,
 		}
 	case *GenericType:
 		// Apply substitution to type arguments
@@ -420,6 +421,8 @@ func (u *Unifier) unifyArray(arr1, arr2 *ArrayType) Substitution {
 		return nil
 	}
 
+	// Unification is structural: the alignment fact's direction is
+	// assignability's business (ArrayType.alignedInto), never inference's.
 	return u.Unify(arr1.ElementType, arr2.ElementType)
 }
 

@@ -943,9 +943,27 @@ records and arrays inline. Endianness is per field through the `bin` tag
 — the bare string or `{ endian: "le" | "be" }` — and little-endian
 otherwise; the tag applies to integer fields of two bytes or more (a
 record's fields carry their own, a byte has none). Signed integers travel
-as their two's-complement bits. `Option` fields, strings, and borrowed
-fields have no fixed layout and are refused with the reason; so is a
-recursive record.
+as their two's-complement bits. Two more shapes keep the layout fixed:
+
+- **Presence fields.** `count: Option[u32]` is one presence byte — `1`
+  present, `0` absent — followed by the payload's bytes, zeros when absent
+  (`Oak.BinaryCodec.opt_none_payload`: nothing of a value leaks). Decoding
+  rejects a presence byte above one (`InvalidPresence`) and validates the
+  payload only when present. An array of `Option` has no derived layout;
+  wrap the element in a record.
+- **Byte runs into the input.** A record with a region parameter may
+  declare `payload(bin: { bytes: 16 }): View[u8, R]`: exactly that many
+  bytes, decoded **zero-copy** as a subslice of the input — the derived
+  functions carry the region, so `decode[Frame, Binary]` takes
+  `View[u8, R]` and returns `Result[Frame[R], BinaryDecodeError]`, and the
+  borrow checker ties the decoded record to its input as for the JSON
+  views of §13a. Encoding copies the view's bytes and refuses a view of any
+  other length (`LengthMismatch`, checked before the destination, bytes
+  unchanged). One region per record; a nested record with view fields is
+  not derived.
+
+Strings and recursive records have no fixed layout and are refused with
+the reason.
 
 The size is a compile-time constant, so encoding checks its destination
 **once**, as the literal comparison `len(output) >= SIZE`, and then stores
@@ -972,7 +990,8 @@ a value gives the value modulo `256^w`, exactly within the width
 (`fromLE_toLE`, `fromBE_toBE`, and the `_of_lt` forms); big-endian is
 little-endian reversed; a record's bytes are its fields' in order, its size
 their widths' sum, and decoding the encoding returns every field
-(`decodeFields_encodeFields`, `_exact`); a valid Bool byte decodes to the
-Bool that wrote it. The endian byte helpers of the prelude
+(`decodeFields_encodeFields`, `_exact`); with presence fields and byte
+runs as items, `decodeItems_encodeItems` says the same of the whole
+layout; a valid Bool byte decodes to the Bool that wrote it. The endian byte helpers of the prelude
 (`bytes_read_u32_be` and kin) remain for hand-written formats; a header
 that is a record no longer needs them.

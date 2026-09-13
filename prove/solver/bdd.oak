@@ -22,6 +22,12 @@ package main
 
 NONE: u32 = 4294967295
 TERMINAL_VAR: u32 = 4294967295
+// Edges carry a complement bit: edge = 2 * node + c, the complemented edge
+// the negation of the node's function. One terminal node (index 0) is
+// false, so a zero word reads as false as it always did, and true is its
+// complement, edge 1; negation is a bit flip. mk keeps every node's high
+// edge positive, so equal functions are one edge. The Go decider
+// (asm/bdd.go) is this engine's twin node for node.
 BDD_FALSE: u32 = 0
 BDD_TRUE: u32 = 1
 
@@ -139,7 +145,7 @@ layout_for: (cap: u32, terms: u32): Layout {
   }
 }
 
-// solver_init clears the tables and places the two terminals.
+// solver_init clears the tables and places the terminal.
 solver_init: (l: Layout, mem: [*]u32): () {
   i: u32 = 0
   while i <= l.umask {
@@ -157,12 +163,9 @@ solver_init: (l: Layout, mem: [*]u32): () {
     i = i + u32(1)
   }
   mem[l.var_at] = TERMINAL_VAR
-  mem[l.var_at + u32(1)] = TERMINAL_VAR
   mem[l.low_at] = u32(0)
-  mem[l.low_at + u32(1)] = u32(1)
   mem[l.high_at] = u32(0)
-  mem[l.high_at + u32(1)] = u32(1)
-  mem[l.state_at + STATE_COUNT] = u32(2)
+  mem[l.state_at + STATE_COUNT] = u32(1)
   mem[l.state_at + STATE_EXCEEDED] = u32(0)
   mem[l.state_at + STATE_SELECTS] = u32(0)
 }
@@ -183,8 +186,13 @@ hash3: (a: u32, b: u32, c: u32): u32 {
 // from the unique table, or a new one within the budget. Past the budget
 // the exceeded flag is set and the false node stands in, as in the Go
 // decider, whose verdict is then withheld.
-mk: (l: Layout, mem: [*]u32, v: u32, low: u32, high: u32): u32 {
-  low == high ? { low } | {
+mk: (l: Layout, mem: [*]u32, v: u32, low0: u32, high0: u32): u32 {
+  low0 == high0 ? { low0 } | {
+    // A complemented high edge: complement both cofactors and the result
+    // (Oak.BddComplement.mk_complement), so the stored high edge is positive.
+    flip: u32 = high0 & u32(1)
+    low: u32 = low0 ^ flip
+    high: u32 = high0 ^ flip
     h: u32 = hash3(v, low, high) & l.umask
     found: u32 = NONE
     while found == NONE {
@@ -193,19 +201,19 @@ mk: (l: Layout, mem: [*]u32, v: u32, low: u32, high: u32): u32 {
         count: u32 = mem[l.state_at + STATE_COUNT]
         count >= l.cap ? {
           mem[l.state_at + STATE_EXCEEDED] = u32(1)
-          found = BDD_FALSE
+          found = BDD_FALSE ^ flip
         } | {
           mem[l.var_at + count] = v
           mem[l.low_at + count] = low
           mem[l.high_at + count] = high
           mem[l.unique_at + h] = count + u32(1)
           mem[l.state_at + STATE_COUNT] = count + u32(1)
-          found = count
+          found = (count << u32(1)) ^ flip
         }
       } | {
         n: u32 = e - u32(1)
         (mem[l.var_at + n] == v && mem[l.low_at + n] == low && mem[l.high_at + n] == high) ? {
-          found = n
+          found = (n << u32(1)) ^ flip
         } | {
           h = (h + u32(1)) & l.umask
         }
@@ -221,15 +229,15 @@ variable_node: (l: Layout, mem: [*]u32, v: u32): u32 = mk(l, mem, v, BDD_FALSE, 
 terminal_case: (op: u32, x: u32, y: u32): u32 {
   op == OP_AND ? {
     (x == BDD_FALSE || y == BDD_FALSE) ? { BDD_FALSE } | {
-      x == BDD_TRUE ? { y } | { y == BDD_TRUE ? { x } | { x == y ? { x } | { NONE } } }
+      x == BDD_TRUE ? { y } | { y == BDD_TRUE ? { x } | { x == y ? { x } | { x == (y ^ u32(1)) ? { BDD_FALSE } | { NONE } } } }
     }
   } | {
     op == OP_OR ? {
       (x == BDD_TRUE || y == BDD_TRUE) ? { BDD_TRUE } | {
-        x == BDD_FALSE ? { y } | { y == BDD_FALSE ? { x } | { x == y ? { x } | { NONE } } }
+        x == BDD_FALSE ? { y } | { y == BDD_FALSE ? { x } | { x == y ? { x } | { x == (y ^ u32(1)) ? { BDD_TRUE } | { NONE } } } }
       }
     } | {
-      x == BDD_FALSE ? { y } | { y == BDD_FALSE ? { x } | { x == y ? { BDD_FALSE } | { NONE } } }
+      x == BDD_FALSE ? { y } | { y == BDD_FALSE ? { x } | { x == BDD_TRUE ? { y ^ u32(1) } | { y == BDD_TRUE ? { x ^ u32(1) } | { x == y ? { BDD_FALSE } | { x == (y ^ u32(1)) ? { BDD_TRUE } | { NONE } } } } } }
     }
   }
 }
@@ -296,13 +304,19 @@ apply: (l: Layout, mem: [*]u32, op: u32, x0: u32, y0: u32): u32 {
             result = cached
             deliver(l, mem, sp, cached)
           } | {
-            vx: u32 = mem[l.var_at + cx]
-            vy: u32 = mem[l.var_at + cy]
+            // Cofactors of an edge are the node's, complemented when the
+            // edge is (Oak.BddComplement.cofactor_complement).
+            nx: u32 = cx >> u32(1)
+            ny: u32 = cy >> u32(1)
+            px: u32 = cx & u32(1)
+            py: u32 = cy & u32(1)
+            vx: u32 = mem[l.var_at + nx]
+            vy: u32 = mem[l.var_at + ny]
             v: u32 = vy < vx ? { vy } | { vx }
-            xl: u32 = vx == v ? { mem[l.low_at + cx] } | { cx }
-            xh: u32 = vx == v ? { mem[l.high_at + cx] } | { cx }
-            yl: u32 = vy == v ? { mem[l.low_at + cy] } | { cy }
-            yh: u32 = vy == v ? { mem[l.high_at + cy] } | { cy }
+            xl: u32 = vx == v ? { mem[l.low_at + nx] ^ px } | { cx }
+            xh: u32 = vx == v ? { mem[l.high_at + nx] ^ px } | { cx }
+            yl: u32 = vy == v ? { mem[l.low_at + ny] ^ py } | { cy }
+            yh: u32 = vy == v ? { mem[l.high_at + ny] ^ py } | { cy }
             mem[f + u32(1)] = cx
             mem[f + u32(2)] = cy
             mem[f + u32(3)] = u32(1)
@@ -339,7 +353,8 @@ apply: (l: Layout, mem: [*]u32, op: u32, x0: u32, y0: u32): u32 {
   result
 }
 
-bdd_not: (l: Layout, mem: [*]u32, a: u32): u32 = apply(l, mem, OP_XOR, a, BDD_TRUE)
+// Negation is the complement bit: no node and no lookup.
+bdd_not: (l: Layout, mem: [*]u32, a: u32): u32 = a ^ u32(1)
 
 // ite is (c and t) or (not c and e), as the Go decider spells it.
 bdd_ite: (l: Layout, mem: [*]u32, c: u32, t: u32, e: u32): u32 {
@@ -887,14 +902,16 @@ witness_vars: (l: Layout, mem: [*]u32, p: []u32, out: [*]u32): u32 {
   }
   count: u32 = 0
   n: u32 = failing == NONE ? { BDD_FALSE } | { failing }
-  while n > BDD_TRUE && count < len(out) {
-    high: u32 = mem[l.high_at + n]
+  while (n >> u32(1)) != u32(0) && count < len(out) {
+    idx: u32 = n >> u32(1)
+    parity: u32 = n & u32(1)
+    high: u32 = mem[l.high_at + idx] ^ parity
     high != BDD_FALSE ? {
-      out[count] = mem[l.var_at + n]
+      out[count] = mem[l.var_at + idx]
       count = count + u32(1)
       n = high
     } | {
-      n = mem[l.low_at + n]
+      n = mem[l.low_at + idx] ^ parity
     }
   }
   count

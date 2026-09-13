@@ -155,6 +155,7 @@ func codecName(operation, typ string) string { return "__oak_json_" + operation 
 
 type codecDeriver struct {
 	binaryGenerated map[string]bool
+	binaryRegions   map[string]bool // records whose layout carries a region (view fields)
 	decodeGenerated map[string]bool
 	decodeActive    map[string]bool
 	records         map[string]*ast.ADTType
