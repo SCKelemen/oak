@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -482,13 +483,29 @@ func TestE2EIoPortSimulated(t *testing.T) {
 }
 
 func TestE2EIoPortNative(t *testing.T) {
-	shim, err := filepath.Abs(filepath.Join("..", "stdlib", "native", "oak_io_host.c"))
+	// The realization's C shim is a link input the compiler declares for
+	// any program that loads ionative (stdlib.NativeShims; the dbs pilot's
+	// round-five finding 6): `oak build` and `oak test` write and link it,
+	// and so does this test, from the declaration rather than a path.
+	module := ioPortModule(t, "ionative")
+	inputs, err := New().WithPackageDir(module).LinkInputs()
 	if err != nil {
 		t.Fatal(err)
 	}
+	shim := ""
+	for _, input := range inputs {
+		if input.Kind == "source" && input.Path == "oak_io_host.c" {
+			shim = filepath.Join(t.TempDir(), input.Path)
+			if err := os.WriteFile(shim, []byte(input.Source), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if shim == "" {
+		t.Fatalf("ionative declares no shim link input: %+v", inputs)
+	}
 	// The consumer names files in its working directory and lists it, so
 	// it runs in a directory of its own.
-	module := ioPortModule(t, "ionative")
 	t.Chdir(t.TempDir())
 	_, code, abnormal := buildAndRunFrom(t, "ioport", New().WithPackageDir(module), shim)
 	if abnormal || code != 42 {

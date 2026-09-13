@@ -266,10 +266,13 @@ type LinkInput struct {
 	// Module is the path of the module whose manifest declares the input.
 	Module string
 	// Kind is "object" for a `link` line (Path is the absolute path of the
-	// archive or object) or "framework" for a `framework` line (Path is the
-	// framework name).
+	// archive or object), "framework" for a `framework` line (Path is the
+	// framework name), or "source" for the C shim a standard library
+	// realization links (Path is the file name to write Source under).
 	Kind string
 	Path string
+	// Source is the C text of a "source" input (stdlib.NativeShims).
+	Source string
 }
 
 // SealedImport is one sealed import's contract: the dependency package and
@@ -296,6 +299,10 @@ type moduleRoot struct {
 }
 
 type moduleLoader struct {
+	// realizations maps a library import path replaced by a standard
+	// library realization (`replace io => ionative`) to that realization,
+	// so the realization's shim links (collectLinks).
+	realizations map[string]string
 	// nested are the packages declared by nested-module blocks.
 	nested      []string
 	comp        Compilation
@@ -1021,6 +1028,10 @@ func (l *moduleLoader) finishPackage(pkg *loadedPackage, arguments []ast.Express
 			// in for the port path (docs/spec/120-io.md section 1), loaded
 			// under the requested path so its names qualify as `io.`.
 			l.loadStdlibPackage(binding.Path, aliasStdlibSource(stdlib.Packages[target], target, binding.Path))
+			if l.realizations == nil {
+				l.realizations = map[string]string{}
+			}
+			l.realizations[binding.Path] = target
 			continue
 		}
 		if librarySource, isLibrary := stdlib.Packages[binding.Path]; isLibrary {
@@ -2519,6 +2530,28 @@ func (l *moduleLoader) collectLinks(moduleOf map[string]string) []LinkInput {
 		for _, name := range root.Manifest.Frameworks {
 			links = append(links, LinkInput{Module: root.Manifest.Path, Kind: "framework", Path: name})
 		}
+	}
+	// A standard library realization's shim follows the manifests' inputs:
+	// linked whenever the package is part of the program, once.
+	var shimmed []string
+	seenShim := map[string]bool{}
+	for path, pkg := range l.packages {
+		if pkg.Dir != "<stdlib>" {
+			continue
+		}
+		realization := path
+		if target, replaced := l.realizations[path]; replaced {
+			realization = target
+		}
+		if _, hasShim := stdlib.NativeShims[realization]; hasShim && !seenShim[realization] {
+			seenShim[realization] = true
+			shimmed = append(shimmed, realization)
+		}
+	}
+	sort.Strings(shimmed)
+	for _, path := range shimmed {
+		shim := stdlib.NativeShims[path]
+		links = append(links, LinkInput{Module: "stdlib", Kind: "source", Path: shim.File, Source: shim.Source})
 	}
 	return links
 }
