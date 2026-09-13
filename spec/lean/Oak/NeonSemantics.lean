@@ -1,4 +1,5 @@
 import Oak.Simd
+import Oak.Intrinsics
 
 /-! # The NEON lane functions and the portable operations they realize
 
@@ -72,6 +73,10 @@ def umaxv (lanes : List Nat) : Nat := lanes.foldl max 0
 
 /-- `addv bD, vN.8b`: the wrapping sum over the lanes at the lane width. -/
 def addv (bits : Nat) (lanes : List Nat) : Nat := lanes.foldl (fun acc x => (acc + x) % 2 ^ bits) 0
+
+/-- `cnt vD.T, vN.T`: the population count of the lane's bits
+(`Oak.Intrinsics.popcount`, the verifier's `cnt` term). -/
+def cnt (bits x : Nat) : Nat := Oak.Intrinsics.popcount ((List.range bits).map (Nat.testBit x))
 
 /-- `sshr vD.16b, vN.16b, #7` on a byte: all ones when the top bit is set,
 zero otherwise (the arithmetic shift of an 8-bit lane by seven). -/

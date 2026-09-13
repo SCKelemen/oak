@@ -805,10 +805,17 @@ leaves the others (`aget_aset_same`, `aget_aset_other`), so `dup`, `add`,
 `sub`, `cmeq` (register and zero forms), `umin`, `umax`, `uqsub`, `tbl`,
 and `umaxv` compute the verifier's lane functions over the lanes of their
 operands (`dup_lanes`, `add_lanes`, `cmeq_lanes`, `tbl_lanes`,
-`umaxv_lane`, …). Left for the next increments: `ext` as `Oak.Neon.ext`,
-the shifts, `cnt`, Arm's recursive `Reduce` (whose termination Sail's
-Lean backend cannot discharge), `simd.store` (a write the straight-line
-model does not follow), and float vectors
+`umaxv_lane`, …); `ext #(8p)` reads lane for lane as `Oak.Neon.ext p`
+(`ext_lanes`), `ushr #n` is the lane shift (`ushr_lanes`, through the
+support library's iterated halving), `sshr #7` on a byte is the sign fill
+of `movemask` (`sshr7_lane`, decided over the 256 bytes), and Arm's
+recursive `Reduce` — stated by hand as `reduceAdd`, since Sail's Lean
+backend cannot discharge its termination — sums eight bytes as `addv`'s
+fold (`reduceAdd_eight_bytes`), and `cnt` is the population count of each
+lane — Arm's `BitCount` loop as `Oak.Intrinsics.popcount` (`cnt_lanes`).
+Every vector instruction the backend emits is bridged to Arm's text. Left
+for the next increments: `simd.store` (a write the straight-line model
+does not follow) and float vectors
 (`docs/notes/proof-chain-audit-2026-09.md`).
 
 ## 9. Native encoding, and the architectures to come
@@ -1714,10 +1721,86 @@ view whose pair lands on the stack and is walked in a loop, a small
 record's chunk and a large record's reference on the stack, and a native
 caller reaching a C-compiled callee with two stack arguments — natively
 against the C backend and the portable realization.
-Next increments: the fallback reasons that remain — `c.Ptr` parameters
-and locals (29), record locals without an initializer (17), the deepest
-expressions (16), callee-saved exhaustion by spans (14) — then the
-verifier past `bl` and unit results —
+**Twenty-seventh increment — value-less record locals.** A record local
+declared without an initializer (`out: Bits`, then filled field by field
+— the shape of every bit-vector helper in the BDD engine's blaster) was
+left to the C backend so that no semantics would be invented natively.
+None need be: 90-backend.md §6 has the C emitter initialize such storage
+with `{0}` and the interpreter give it its zero value, so the native
+lowering zero-fills the local's slots whole, as it does an owned array's.
+Seventeen functions follow (fallbacks 90 to 75, 879 of 954 lowered);
+`TestE2ENativeZeroRecord` reads a field of each width before any write
+and after. **What the 75 that remain are.** Twenty-nine take or hold a
+`c.Ptr` and three call foreign code: the prover's I/O shell — `read_file`
+over `c_open`/`c_read`, the buffers `c.own`ed and `c.disown`ed inside
+`unsafe`, the environment and spawn helpers of the witness — whose native
+lowering would be a foreign-call and custody subset (extern symbols the
+checker admits as call targets, `Buffer[T]` as a span with a custody
+state, `c.cstr` and `c.span_of` as the address arithmetic they are) and
+whose verification value is nil, since bodies that call foreign code are
+trusted by construction. Fourteen exhaust the callee-saved registers with
+spans (five or more span parameters and locals, each a parked pair, in
+the exploration and LRAT functions): the checker's span facts live on
+registers and die at a call, so a span cannot spill around calls the way
+a variable does without a checker rule for reloading a fact from a known
+slot. Sixteen are the deepest expressions (the `*_layout` functions'
+record literals, `px_lex`): more temporaries live at once than x9–x15
+and the overflow registers hold. The compute paths — the decider, the
+lowering, the exploration, the projections — are native; what stays in C
+is the shell around them.
+**Twenty-eighth increment — memory effects through spans.** The largest
+reason a lowered body stayed trusted was no longer a construct but a
+shape: a function with no result — 246 of the prover's 879, the setters,
+the emitters into the word arena, the arena pushes — was refused before
+execution ("no integer result"), and a function that stored through a
+span on the way to its result stopped at the store ("instruction str").
+A store through a span parameter is now an effect the verdict compares,
+as it compares a result and a package cell (asm/effects.go). Both sides
+keep a write log per span parameter: the asm executor appends an entry
+for every `str`/`strb`/`strh` whose base is a span's (`[xB, wI, uxtw #s]`,
+an element offset, or the element address the atomics build) — the
+32-bit index term and the stored register's value at the element width —
+and a fork's two logs rejoin as a shared prefix plus each side's own
+stores under the branch condition and its negation; the Oak lowering
+appends `v[e] = x` under its path condition, the same statement-level
+conditional and match arms the cells already lower under. A read on
+either side consults its log newest-first before the entry memory — the
+newest store at an equal index under a holding guard, else the entry
+select or element parameter — so a read after a write sees the write
+whether the machine forwards the value from the register or reloads it.
+The final memories are compared at a fresh symbolic index per span
+(`v[?]`, 32 bits, declared as a fresh unknown): the asm memory and the
+Oak memory at that index are two terms at the element width, decided
+exactly as a result is — witnesses, the linear form, the diagrams under
+the reads' functional consistency — and equal at every index is equal
+memories. The bounds stay the checker's: a store the verifier sees is
+already under a dominating length guard, so its only question is which
+element takes which value. Outside the subset, with the reason: a store
+inside a data-dependent loop body (the loop summary has no memory), into
+a by-reference record argument, of a register pair or a vector register,
+and either side's memory written around a data-dependent loop. On the
+prover: 58 unit functions are now proven in the span memory they write
+(`set_lst`, `le_fail`, `cache_put`, `bind_scalar`, `ab_push`, the
+`ap_*` emitters that write inline) and 11 more in their result and their
+memory; proven functions 197 to 265 of 879, no disagreement, the rows
+identical. The remaining unit functions are trusted for two reasons: 106
+call a unit callee with a span in its signature (`ap_lits`, `write_lit`,
+`sb_str`: the call summary threads a callee's cells since #384 but not
+yet its span writes, and a span parameter keeps the call opaque) and 48
+store inside a data-dependent loop. Pinned: `asm/effects_test.go` (a unit writer
+proven, the wrong value and the wrong element refuted, a conditional
+store proven and its unconditional lowering refuted, a result with a
+forwarded write, a swap proven and its reordered lowering refuted at
+`i == j`, a store the body does not make refuted) and
+`compiler/e2e_native_span_effects_test.go` (the same shapes through the
+backend, `fill`'s loop store trusted with the reason, the C backend the
+oracle for the values).
+Next increments: the callee's effects through the call summary — a unit
+callee's log appended to the caller's under the argument substitution,
+which is where the 106 remaining unit functions wait — and stores in
+data-dependent loops as a summarized memory; guard elision from the
+checker's facts; the foreign-call subset only if the shell itself is to
+be verified —
 calls by inlining or by the callee's proven contract, and effects through
 spans as the result — so that "trusted" shrinks toward the foreign
 boundary; then two-chunk and `x8`-area record results in the verifier,
@@ -1967,8 +2050,37 @@ group of LMUL registers aligned to LMUL (RVV 1.0 §3.4.2,
 `group_within_file`): every register of the group is read or written, so
 a group must be wholly clobbered before it is written and an unaligned
 group is a finding; mask destinations and mask sources (the comparisons'
-`vd`, `vcpop.m`'s source, `v0`) stay single registers; fractional LMUL is
-refused. **Widening (third increment).** `vwaddu`/`vwadd`/`vwsubu`/`vwsub`/
+`vd`, `vcpop.m`'s source, `v0`) stay single registers. **Fractional LMUL
+(fourth increment)**: `mf2`, `mf4`, and `mf8` are admitted — the checker
+keeps LMUL in eighths, a fractional group is one register
+(`Oak.RiscV.groupOf`), the ratio `SEW / LMUL` must stay within `ELEN = 64`
+(`e64` needs `m1`, `e32` at least `mf2`, `e16` at least `mf4`, `e8` any;
+otherwise the configuration would be reserved, `fractional_within_elen`),
+widening from a fractional LMUL doubles the eighths and stays in one
+register until `m1` (`wide_group_fractional`), and an extension's source
+group below `mf8` is refused; the differentials carry the `[]u32` sum
+loaded at `e32/mf2`, widened to `e64/m1`, and reduced there. **Vector
+floating point (fifth increment, 2026-09-14).** The table gains
+`vle64.v`/`vse64.v` and the floating-point forms `vfadd.vv`, `vfsub.vv`,
+`vfmul.vv`, `vfmacc.vv` (spelled `vd, vs1, vs2`; the accumulator `vd` is
+read and written), `vfmv.v.f`/`vfmv.f.s` (an `f` operand class: the F
+register the scalar crosses through), `vfcvt.f.xu.v`, and the *ordered*
+reduction `vfredosum.vs` — float addition is not associative, so the
+unordered `vfredusum.vs`, whose grouping is implementation-defined, is
+outside the table; the ordered form folds a strip left to right from the
+scalar it is handed, and a strip-mining loop that hands each strip the
+previous result computes the sequential fold over the whole span
+whatever `vl` each `vsetvli` chose (`Oak.RiscV.ordered_strips_fold`). The
+checker requires `e32` or `e64` under a floating-point form
+(`floatSewOK`: Zve32f/Zve64d; `e16` would be Zvfh), reads and writes the
+F operands under the F lane's rules (bound, clobbered, or written), and
+treats element-0 operands as single registers whatever the LMUL — a
+reduction's scalar input and result and `vmv.x.s`/`vfmv.f.s`'s source
+(RVV 1.0 §14, §16) — so a read of a group's upper register after a
+reduction is a finding. The differentials carry `q = x·k + (x − k)²` per
+element (`vfcvt`, `vfsub`, `vfmul`, `vfmacc` with one rounding) folded in
+order into an f32 sum; QEMU and Sail agree with Go's float32 arithmetic and
+an exactly rounded fma. **Widening (third increment).** `vwaddu`/`vwadd`/`vwsubu`/`vwsub`/
 `vwmulu`/`vwmul .vv` write `2*SEW` elements into a `2*LMUL` group,
 `vzext.vf2`/`vsext.vf2` read a half-width source group, `vnsrl.wi` reads a
 `2*LMUL` source, and `vle16.v`/`vse16.v` move 16-bit elements: each
@@ -1990,7 +2102,7 @@ across a call, width against SEW, an AVL that is not the remaining count,
 the index rewritten between the address and the count, an unclobbered
 vector register, a store into a view, an immediate past the minimum, an
 unaligned group, a mask register never written, a group not wholly
-clobbered, fractional LMUL — and the differentials carry the masked
+clobbered, `e64` at `mf2` — and the differentials carry the masked
 strip loop at LMUL=2 (the sum of the elements that differ from `k`,
 under `mu` so the accumulator's masked-off lanes stay zero).
 
@@ -2367,10 +2479,12 @@ as the cell's new value along the path (merged at a fork like a result,
 a cell written on one side meeting its entry value on the other); the
 verdict compares the result and then every cell either side writes, and a
 unit function that only writes state is proven in its cells alone. A
-`Bool` cell is one bit, zero-extended into its word. A body that calls
-another function while it addresses state stays trusted — threading the
-cells through a call summary is the next increment — as does state
-written around a data-dependent loop. The C emitter gives
+`Bool` cell is one bit, zero-extended into its word. The cells thread through
+calls: a callee's summary starts from the cells as the caller's path
+holds them and its writes return to the path, a unit callee is
+summarized for its writes alone, and on the Oak side the inlined callee
+shares the caller's cell locals; only state written around a
+data-dependent loop stays trusted. The C emitter gives
 an addressed global external linkage under the assembler label
 `oak_0g_G` (a digit after the prefix, which no function's mangled name
 can produce), the symbol the companion object's `adrp`/`add` relocations
@@ -2591,8 +2705,8 @@ and executable writers' tests.
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
-transliteration is checked against) and fractional-LMUL forms. The term
-language and the BDD blaster carry over unchanged.
+transliteration is checked against). The term language and the BDD
+blaster carry over unchanged.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed

@@ -276,6 +276,27 @@ func (tc *TypeChecker) bindTypeParams(paramType ast.Expression, argType Type, pa
 		if rec, isRec := argType.(*RecordType); isRec {
 			name, argExprs, ok := lenientFlattenApplication(t)
 			inst, known := tc.adtInstantiations[rec.Name]
+			if ok && known {
+				// A region record's region parameters were erased before
+				// its instantiation was named (regions.go), so Mat[R, N, K]
+				// against Mat_2_3 recovers N and K from the positions that
+				// remain (docs/spec/56-kernels.md section 8b).
+				if info := tc.regions(); info != nil {
+					if regionRec, isRegionRecord := info.records[name]; isRegionRecord && len(argExprs) == len(inst.Args)+len(regionRec.Positions) {
+						erased := map[int]bool{}
+						for _, position := range regionRec.Positions {
+							erased[position] = true
+						}
+						kept := make([]ast.Expression, 0, len(inst.Args))
+						for i, argExpr := range argExprs {
+							if !erased[i] {
+								kept = append(kept, argExpr)
+							}
+						}
+						argExprs = kept
+					}
+				}
+			}
 			if !ok || !known || inst.ADT != name || len(inst.Args) != len(argExprs) {
 				return true
 			}
@@ -638,6 +659,12 @@ func substituteExpr(expr ast.Expression, bindings map[string]ast.Expression) (as
 		clone := *e
 		return &clone, true
 	case *ast.IntegerLiteral:
+		clone := *e
+		return &clone, true
+	case *ast.FloatLiteral:
+		// A float literal in a generic body (`acc: f32 = 0.0`) is a leaf
+		// like any other; without this case every such template failed
+		// closed with the instantiation message.
 		clone := *e
 		return &clone, true
 	case *ast.StringLiteral:

@@ -428,6 +428,87 @@ def vlmax (vlen sew lmul : Nat) : Nat := lmul * vlen / sew
 theorem vlmax_m1_e32_128 : vlmax 128 32 1 = 4 := by decide
 theorem vlmax_m2_e32_128 : vlmax 128 32 2 = 8 := by decide
 
+/-! ### Fractional LMUL (`94-assembler.md` §9, RVV 1.0 §3.4.2)
+
+The checker keeps LMUL in eighths: `mf8 = 1`, `mf4 = 2`, `mf2 = 4`,
+`m1 = 8`, …, `m8 = 64`. A fractional LMUL fills part of one register, so
+its operand group is one register and every alignment fact holds trivially
+(`groupOf`); the element width it may hold is bounded by ELEN — the
+configuration is reserved when `SEW / LMUL > ELEN` — and widening from a
+fractional LMUL doubles the eighths without leaving the single register
+until `m1`. -/
+
+/-- The register count of an operand group at `lmul8 / 8`. -/
+def groupOf (lmul8 : Nat) : Nat := if lmul8 < 8 then 1 else lmul8 / 8
+
+theorem groupOf_fractional (lmul8 : Nat) (h : lmul8 < 8) : groupOf lmul8 = 1 := by
+  simp [groupOf, h]
+
+theorem groupOf_integral : ∀ lmul8 ∈ [8, 16, 32, 64], groupOf lmul8 = lmul8 / 8 := by decide
+
+/-- VLMAX in eighths: `lmul8 * vlen / (8 * sew)`. -/
+def vlmax8 (vlen sew lmul8 : Nat) : Nat := lmul8 * vlen / (8 * sew)
+
+theorem vlmax8_mf2_e32_128 : vlmax8 128 32 4 = 2 := by decide
+theorem vlmax8_agrees (vlen sew lmul : Nat) : vlmax8 vlen sew (lmul * 8) = vlmax vlen sew lmul := by
+  unfold vlmax8 vlmax
+  rw [show lmul * 8 * vlen = 8 * (lmul * vlen) by ac_rfl]
+  exact Nat.mul_div_mul_left _ _ (by decide)
+
+/-- The configurations the checker admits: `SEW / LMUL ≤ ELEN`, that is
+`sew * 8 ≤ elen * lmul8` over eighths. -/
+def withinElen (sew elen lmul8 : Nat) : Prop := sew * 8 ≤ elen * lmul8
+
+theorem fractional_within_elen : withinElen 32 64 4 ∧ withinElen 16 64 2 ∧ withinElen 8 64 1 ∧ ¬ withinElen 64 64 4 := by
+  unfold withinElen
+  decide
+
+/-- Widening from a fractional LMUL stays in one register until `m1`: the
+wide group of `mf2` is `m1`, one register. -/
+theorem wide_group_fractional : ∀ lmul8 ∈ [1, 2, 4], groupOf (2 * lmul8) = 1 := by decide
+
+/-! ### The vector floating-point forms (fifth increment)
+
+Floating-point addition is not associative, so a reduction's result depends
+on the order it adds in. `vfredosum.vs` (RVV 1.0 §14.3) is the *ordered*
+form: it folds the strip's elements left to right into the scalar it was
+handed. A strip-mining loop hands each strip the previous strip's result,
+and the whole is one left fold over the span in element order — the
+sequential sum the differential expects from Go. The unordered
+`vfredusum.vs`, whose grouping is implementation-defined, is not in the
+table. -/
+
+/-- One strip: the ordered reduction of `xs` from the running scalar `acc`. -/
+def orderedStrip (f : α → β → α) (acc : α) (xs : List β) : α := xs.foldl f acc
+
+/-- The strips in order: each starts from the previous one's result. -/
+def orderedStrips (f : α → β → α) (acc : α) (strips : List (List β)) : α :=
+  strips.foldl (orderedStrip f) acc
+
+/-- Two consecutive strips fold as one strip over their concatenation. -/
+theorem ordered_strip_append (f : α → β → α) (acc : α) (xs ys : List β) :
+    orderedStrip f (orderedStrip f acc xs) ys = orderedStrip f acc (xs ++ ys) := by
+  simp [orderedStrip, List.foldl_append]
+
+/-- The strip-mined ordered reduction is the sequential fold over the
+whole span in element order, whatever the strip boundaries (the `vl`
+each `vsetvli` chose). -/
+theorem ordered_strips_fold (f : α → β → α) (acc : α) (strips : List (List β)) :
+    orderedStrips f acc strips = orderedStrip f acc strips.flatten := by
+  induction strips generalizing acc with
+  | nil => rfl
+  | cons xs rest ih =>
+    simp only [orderedStrips, List.foldl_cons, List.flatten_cons]
+    rw [← ordered_strip_append]
+    exact ih (orderedStrip f acc xs)
+
+/-- The element widths the floating-point forms admit: `e32` (Zve32f) and
+`e64` (Zve64d); `e8` has no float format and `e16` would need Zvfh. -/
+def floatSewOK (sew : Nat) : Prop := sew = 32 ∨ sew = 64
+
+theorem float_sew_admitted : floatSewOK 32 ∧ floatSewOK 64 ∧ ¬ floatSewOK 16 ∧ ¬ floatSewOK 8 := by
+  unfold floatSewOK; omega
+
 /-- A masked element is one of the vl elements: whatever the mask, the
     strip-mining bound covers it. -/
 theorem masked_access_in_bounds (len idx vlmax vl i : Nat) (hguard : idx < len)

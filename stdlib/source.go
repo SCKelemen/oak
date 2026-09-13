@@ -102,6 +102,12 @@ var reduceSource string
 //go:embed tensor.oak
 var tensorSource string
 
+// shape: matrices whose dimensions are const parameters, so shape
+// agreement is a type equation (docs/spec/56-kernels.md section 8b).
+//
+//go:embed shape.oak
+var shapeSource string
+
 // grapheme: UAX #29 extended grapheme cluster segmentation over UTF-8 views
 // (stdlib/README.md); a library package and part of the flat prelude.
 //
@@ -332,6 +338,7 @@ var Packages = map[string]string{
 	"path":            pathSource,
 	"reduce":          reduceSource,
 	"tensor":          tensorSource,
+	"shape":           shapeSource,
 	"grapheme":        graphemeSource,
 	"normalize":       normalizeSource,
 	"float":           floatSource,
