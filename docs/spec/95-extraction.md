@@ -200,6 +200,12 @@ float formats and the intrinsics named in section 3, the `checked`
 float rows, SIMD, FFI (extern calls, `c.fn_at`, `c.msg_send`), assignment to a global — is an
 error naming the construct. Nothing is approximated.
 
+A function named as a `dispatch` realization (`93-simd.md` §6) is not
+part of the meaning — the dispatched function's body is — so a body-less
+realization (an `.oakasm` unit's declaration, such as the hash package's
+`crc32c_step7_asm`) is skipped by the extraction rather than refused as
+an extern; the extraction of `crc32c_step7` is its Oak body.
+
 ## 5. Where it runs
 
 `experiments/verification-poc/proof/OakTextExtracted.lean` is generated and

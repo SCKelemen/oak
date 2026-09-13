@@ -193,7 +193,16 @@ func TestLeanStdlibExtract(t *testing.T) {
 	for _, pkg := range leanStdlibPackages {
 		t.Run(pkg.name, func(t *testing.T) {
 			source, roots := leanStdlibProgram(t, pkg.name, pkg.deps, pkg.driver, pkg.source)
-			extracted, err := New().WithSource("stdlib_"+pkg.name+".oak", source).EmitLeanRoots(pkg.namespace, roots).Get()
+			comp := New().WithSource("stdlib_"+pkg.name+".oak", source)
+			// A package's asm units ride along as the loader attaches them
+			// (stdlib.AsmUnits): their body-less declarations are dispatch
+			// realizations whose bodies the units provide.
+			for _, p := range append([]string{pkg.name}, pkg.deps...) {
+				for _, unit := range stdlib.AsmUnits[p] {
+					comp = comp.WithAsmUnit(unit.Path, unit.Text)
+				}
+			}
+			extracted, err := comp.EmitLeanRoots(pkg.namespace, roots).Get()
 			if err != nil {
 				t.Fatalf("extraction failed: %v", err)
 			}
