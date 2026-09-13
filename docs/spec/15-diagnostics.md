@@ -60,6 +60,13 @@ Codes use the `OAK-<category><number>` family. Initial category prefixes are:
 specific stable code has not yet been assigned. User-facing production errors
 should migrate toward specific nonzero codes.
 
+Two lowering-shape conditions carry the `M` prefix for stability although
+they are not module conditions: `OAK-M0301` (protocol declaration shape,
+`112-protocols.md` §1) and `OAK-M0401` (the propagation form, `10-syntax.md`
+§2d). A lowering that refuses a form reports it once, at the form, with a
+position; every node a lowering can report on has a range in the position
+projection (`diagnostic.NodeToRange`).
+
 Severity is not encoded into the code. A code identifies the semantic condition,
 not how one particular compiler mode chooses to display it.
 

@@ -259,6 +259,18 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       self-checksum reserved for the root, so a misdirected write of
       well-formed data is detected? (TB `BlockReference`, `data_file.md`)
       — Oak: not stated.
+- [ ] **Facts flow through every join and every arrow.** For a type-level
+      fact with a direction (alignment, refinement, extent), is every
+      position that compares types — declaration, argument, return,
+      function-type parameters (contravariant), match and ternary joins,
+      template substitution — either the fact's rule or a stated erasure?
+      One missing rule at four sites forged the alignment fact.
+      (alignment pass 2026-09) — Oak: `50-borrowing.md` §2a "in every
+      position that compares types".
+- [ ] **The neutral element of a fact has one spelling.** If "no fact"
+      and "fact 1" are both representable, does the spec say which is
+      canonical and does the checker normalize declared and derived forms
+      alike? (alignment pass: `align 1`) — Oak: `50-borrowing.md` §2a.
 
 ## 4. Memory, ownership, and aliasing
 
@@ -358,6 +370,19 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       number) so a misdirected read of a valid-looking empty slot is
       detected? (TB `journal.zig` reserved headers, `SuperBlockHeader.copy`)
       — Oak: not stated; the dbs frame scan needs it.
+- [ ] **A layout-derived fact reads the whole layout clause.** When a
+      property is derived from a record's layout, does the derivation read
+      every clause that can cancel another — `packed` cancels the element
+      alignment `align` would otherwise grant — rather than the one clause
+      it was written for? (alignment pass: `struct(packed)` fields carried
+      the element's fact) — Oak: `50-borrowing.md` §2a, `40-records.md` §6a.
+- [ ] **Scoped facts are keyed by declaration, not by name.** When a
+      checker records a property of a local (owner state, borrow state,
+      declared type), is the record keyed by the declaration node, so a
+      top-level name equal to a library local cannot answer for it? (the
+      borrow checker registered owners by bare name; a user function `run`
+      hid a library local `run`) — Oak: `borrowchecker` owner registration
+      from `CheckedDeclarationType`.
 
 ## 5. Control-flow and coding discipline
 
@@ -829,6 +854,18 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       brackets; the Go `unicode/utf8` witness is independent; simdutf is
       built in `benchmarks/state-machines/cross` but only timed, not
       compared on invalid inputs.
+- [ ] **Admitted positions are tested inside every function form.** For a
+      form the spec admits in "a function", is it exercised in a top-level
+      function, a function literal, a method, a `pub` function, and an
+      expression body, in both realizations — since a host construct's own
+      gap can hide the form's? (try pass: literals and methods untested)
+      — Oak: `compiler/e2e_feature_pass_test.go`.
+- [ ] **A fact that elides a run-time check has a debug witness.** Where
+      a checker proposition replaces a probe (an aligned span skipping the
+      host's alignment check), can a debug build assert the property at the
+      consumer, so a forged fact fails loudly once instead of silently
+      always? (alignment pass) — Oak: `open`; `50-borrowing.md` §2a says
+      neither realization checks the base.
 
 ## 9. Parsing, input validation, and boundaries
 
@@ -1056,6 +1093,20 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       "Protocol-Aware Recovery") — Oak: expressible as a `theorem` over
       `Bool` parameters decided exhaustively (`125-verification.md` §3);
       not stated as practice.
+- [ ] **Every reportable node has a range.** Is every syntax kind a
+      lowering or checker can report on covered by the position projection,
+      and does each lowering code have a test asserting `line:col`, not a
+      message substring? (try pass: `OAK-M0401` had no position) — Oak:
+      `15-diagnostics.md` §2, `diagnostic.NodeToRange`.
+- [ ] **One refusal, one diagnostic.** When a lowering refuses a node and
+      leaves it in the tree, is the leftover sweep told to skip it, so one
+      mistake is not reported under two messages? (try pass) — Oak:
+      `compiler/try.go` `refused`.
+- [ ] **A borrow message names the operand.** Does a refusal of a borrow
+      form name the argument it refused and where, so a library-internal
+      failure is traceable to its line? (the `span()` message named neither
+      and hid a scoping bug for a session) — Oak: `borrowchecker`
+      `checkSpanCall`.
 
 ## 11. Compiler and toolchain correctness
 
@@ -1148,6 +1199,23 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       error have a sentence that motivates it, so a pass can diff the two?
       (protocol pass: the `via` guard and reachability were rules without
       errors) — Oak: `112-protocols.md` §1 shape errors.
+- [ ] **A structural equality that omits a fact is a hazard.** When a
+      type carries a field its `Equals` ignores by design, is every caller
+      of `Equals`, `Join`, and `Unify` listed as a place the fact can be
+      forged, each with the fact's rule or a stated erasure? (alignment
+      pass F2–F5) — Oak: `typechecker` `alignmentAssignable`,
+      `weakestAlignment`.
+- [ ] **A declared fact on a template signature survives substitution or
+      is rejected.** Does type substitution copy every side fact of the
+      type syntax it rebuilds, so an annotation on a template parameter
+      cannot silently mean nothing at instantiation? (alignment pass:
+      three substitution sites dropped `Align`) — Oak: `typechecker/mono.go`,
+      `genericfn.go`, `codegen/mono.go`.
+- [ ] **Block facts travel with the slice.** When a lowering re-partitions
+      a block, does every side fact on the block — deferred statements,
+      extent facts, region marks — move with the statements it governs, or
+      is the combination refused? (try pass: `DeferredFrom` was lost) —
+      Oak: `compiler/try.go` `lowerBlock`.
 
 ## 12. Process
 

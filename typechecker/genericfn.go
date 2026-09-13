@@ -672,7 +672,7 @@ func substituteExpr(expr ast.Expression, bindings map[string]ast.Expression) (as
 		if !okL || !okI {
 			return nil, false
 		}
-		return &ast.IndexExpression{Token: e.Token, Left: left, Index: index, Dot: e.Dot}, true
+		return &ast.IndexExpression{Token: e.Token, Left: left, Index: index, Dot: e.Dot, Align: e.Align}, true
 	case *ast.InvocationExpression:
 		// A bound type parameter in callee position becomes its concrete
 		// spelling: T(x) instantiates to u32(x), and inner[T](y) to
