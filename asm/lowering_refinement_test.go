@@ -57,6 +57,9 @@ var loweringRenders = []struct {
 	{"f: (v: []u32, i: u32) -> u32", "v[i + 1] * v[0]", "(v[(i add 1)] mul v[0])"},
 	{"f: (b: []u8, i: u32) -> u32", "u32(b[i])", "((b[i] and 255) and 255)"},
 	{"f: (v: []u32, i: u32) -> Bool", "i < len(v)", "(i lo len(v))"},
+	// Folding (`Term.binary`, `iteT`): constant operands fold, `x + 0` is `x`.
+	{"f: (a: u32) -> u32", "a + 2 * 3", "(a add 6)"},
+	{"f: (a: u32) -> u32", "a + 0", "a"},
 }
 
 // Locals and calls (LoweringRefinement.lean, `letIn` and `call`): a local

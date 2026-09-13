@@ -160,7 +160,10 @@ through `adaptWidth(local.value, width)`, a statement conditional as
 local an arm assigned, a span element as `selectTerm` over the index at
 width 32 — a constant index the element parameter `v[k]`, the same cell
 under the same name — a call bound through `enterCall`'s fresh scope and
-inlined, over `Term.eval`, the executor).
+inlined, over `Term.eval`, the executor — with the constructors folding
+as the Go's `binaryTerm`, `cmpTerm`, `iteTerm` and `selectTerm` fold:
+constant operands, `x + 0`, a constant condition, a constant index, each
+proved to evaluate as the node it folds).
 `lowerT_eval` proves the lowered term evaluates to the embedding's value
 for every expression, every parameter assignment, and every agreeing scope
 (`Agree`: each local's term has the local's width and evaluates to its
@@ -169,13 +172,14 @@ through the flag lemmas of `Oak.AssemblerSemantics`, the signed ones
 bit-blasted at 8, 16, 32 and 64 bits. Parameters and locals live in
 separate value environments because the verifier's terms name parameters
 only: a local shadowing a parameter changes what the source means by the
-name, never what a term means. `asm/lowering_refinement_test.go` pins the Go lowering to `lowerT`:
+name, never what a term means. Two eval-preserving liberties of the Go
+stay outside the model and are named in it: a comparison in an `ite`
+condition keeps the operands' width where `lowerT` re-widths it to 1, and
+the statement-conditional merge skips the select when both arms left the
+same term object. `asm/lowering_refinement_test.go` pins the Go lowering to `lowerT`:
 the rendered terms of a table of Oak expressions must be the renders
 stated as examples in the Lean file, so either side changing must visit
-the other. Two eval-preserving liberties the Go takes are left out of the
-model and named in it: the constructors fold constants and drop `x + 0`,
-and a comparison in an `ite` condition keeps the operands' width where
-`lowerT` re-widths it to 1.
+the other.
 
 With it, on arm64, a theorem about an Oak function's extraction composes
 with the verifier's verdict and `Oak.ArmASL` into one statement about the
@@ -221,9 +225,9 @@ for a workload):
    `getD` over a memory named as the verifier names it, `v[k]`). Next:
    integer-constant matches in statement position (`lowerMatchStatement`),
    owned-array elements and span writes, and counted loops (`lowerWhile`
-   unrolls a loop whose condition folds to a constant, so the model needs
-   the constructors' constant folding first, then a fuel-indexed loop
-   against the extraction's recursion) — so `lowerT_eval` covers the
+   unrolls a loop whose condition folds to a constant; the constructors'
+   folding is modeled, so what remains is the fuel-indexed loop against
+   the extraction's recursion) — so `lowerT_eval` covers the
    bodies `oak build -native` actually verifies rather than their
    arithmetic alone. This is the step that turns "source theorem implies
    machine behavior" from a statement about expressions into one about
