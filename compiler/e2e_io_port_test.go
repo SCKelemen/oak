@@ -26,7 +26,9 @@ import("io")
 
 // "oak_io_t.bin" followed by NUL at 0, "." followed by NUL at 96 and at
 // 160, "oak_io_a.bin" NUL at 128 and "oak_io_b.bin" NUL at 141 (so the
-// rename window is [128, 154) split at 13), "oak_io_d.bin" NUL at 176.
+// rename window is [128, 154) split at 13), "oak_io_d.bin" NUL at 176,
+// and the directory scenario's paths: "d" NUL at 192, "d/x" NUL at 200,
+// "e/x" NUL at 208, "d/y" NUL at 216.
 io_path: (region: [*]u8): () {
   bytes: [13]u8 = [u8(111), u8(97), u8(107), u8(95), u8(105), u8(111), u8(95), u8(116), u8(46), u8(98), u8(105), u8(110), u8(0)]
   i: u32 = u32(0)
@@ -40,6 +42,20 @@ io_path: (region: [*]u8): () {
   region[135] = u8(97)
   region[148] = u8(98)
   region[183] = u8(100)
+  region[192] = u8(100)
+  region[193] = u8(0)
+  region[200] = u8(100)
+  region[201] = u8(47)
+  region[202] = u8(120)
+  region[203] = u8(0)
+  region[208] = u8(101)
+  region[209] = u8(47)
+  region[210] = u8(120)
+  region[211] = u8(0)
+  region[216] = u8(100)
+  region[217] = u8(47)
+  region[218] = u8(121)
+  region[219] = u8(0)
   region[96] = u8(46)
   region[97] = u8(0)
   region[160] = u8(46)
@@ -269,6 +285,68 @@ main: (): i32 {
   assert(completions[find_tag(completions, u32(2), u64(35))].error == u32(0))
   assert(completions[find_tag(completions, u32(2), u64(36))].error == u32(0))
   assert(ring[0].pending == u32(0))
+
+  // Directories (docs/spec/120-io.md section 3): mkdir "d" (tag 37);
+  // create "d/x" under it (38); create "e/x" under a missing directory is
+  // NotFound (39); mkdir "d" again is Exists (40).
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_mkdir(), u32(0), u64(0), u32(192), u32(2), u64(37), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(1)) == u32(1))
+  assert(completions[0].error == u32(0))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_create(), u32(0), u64(0), u32(200), u32(4), u64(38), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_create(), u32(1), u64(0), u32(208), u32(4), u64(39), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_mkdir(), u32(0), u64(0), u32(192), u32(2), u64(40), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(3)) == u32(3))
+  assert(completions[find_tag(completions, u32(3), u64(38))].error == u32(0))
+  assert(completions[find_tag(completions, u32(3), u64(39))].error == io.io_err_not_found())
+  assert(completions[find_tag(completions, u32(3), u64(40))].error == io.io_err_exists())
+  // readdir "d" lists "x" by base name and nothing else (tag 41, window
+  // [1024, 1088) split at 2 with "d" NUL copied to 1024); readdir "."
+  // lists "d" and not "x" (tag 42, window [1088, 1152) with "." NUL at
+  // 1088).
+  region[1024] = u8(100)
+  region[1025] = u8(0)
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_readdir(), u32(0), u64(2), u32(1024), u32(64), u64(41), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(1)) == u32(1))
+  assert(completions[0].error == u32(0) && completions[0].result == u32(2))
+  assert(region[1026] == u8(120) && region[1027] == u8(0))
+  region[1088] = u8(46)
+  region[1089] = u8(0)
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_readdir(), u32(0), u64(2), u32(1088), u32(64), u64(42), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(1)) == u32(1))
+  assert(completions[0].error == u32(0))
+  top_listed: u32 = completions[0].result
+  assert(lists_name(region, u32(1090), top_listed, u32(192), u32(2)))
+  assert(!lists_name(region, u32(1090), top_listed, u32(202), u32(2)))
+  // fsyncdir "d" (tag 43); rename "d/x" to "d/y" within the directory
+  // (tag 44, window [200, 220) split at 4 — the two paths are adjacent
+  // at 200 and 216 only if the bytes between are the old name's tail;
+  // use a fresh window at 1152); unlink the directory is Invalid (45).
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_fsyncdir(), u32(0), u64(0), u32(192), u32(2), u64(43), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(1)) == u32(1))
+  assert(completions[0].error == u32(0))
+  k = u32(0)
+  while k < u32(4) {
+    region[u32(1152) + k] = region[u32(200) + k]
+    region[u32(1156) + k] = region[u32(216) + k]
+    k = k + u32(1)
+  }
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_close(), u32(0), u64(0), u32(0), u32(0), u64(46), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(1)) == u32(1))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_rename(), u32(0), u64(4), u32(1152), u32(8), u64(44), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_unlink(), u32(0), u64(0), u32(192), u32(2), u64(45), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(2)) == u32(2))
+  assert(completions[find_tag(completions, u32(2), u64(44))].error == u32(0))
+  assert(completions[find_tag(completions, u32(2), u64(45))].error != u32(0))
+  // "d/y" exists now, "d/x" does not (tags 47, 48); unlink "d/y" (49).
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_create(), u32(0), u64(0), u32(216), u32(4), u64(47), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_unlink(), u32(1), u64(0), u32(200), u32(4), u64(48), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(2)) == u32(2))
+  assert(completions[find_tag(completions, u32(2), u64(47))].error == io.io_err_exists())
+  assert(completions[find_tag(completions, u32(2), u64(48))].error == io.io_err_not_found())
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_unlink(), u32(0), u64(0), u32(216), u32(4), u64(49), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(1)) == u32(1))
+  assert(completions[0].error == u32(0))
+  assert(ring[0].pending == u32(0))
   42
 }
 `
@@ -327,5 +405,76 @@ func TestE2EIoPortNativeRejectedInSimulation(t *testing.T) {
 	_, err := New().WithPackageDir(ioPortModule(t, "ionative")).WithSimulation(nil).Check().Get()
 	if err == nil {
 		t.Fatal("the native realization must be rejected under the simulation profile")
+	}
+}
+
+// Directory durability is scoped (docs/spec/120-io.md section 3): a crash
+// forgets a child created since the last fsyncdir on *its* directory, and
+// syncing one directory does not make another's children durable.
+const ioDirCrashProgram = `package main
+import(std)
+import("io")
+
+set_path: (region: [*]u8, at: u32, a: u8, b: u8, c: u8): () {
+  region[at] = a
+  region[at + u32(1)] = b
+  region[at + u32(2)] = c
+  region[at + u32(3)] = u8(0)
+}
+
+main: (): i32 {
+  ring_store: [1]io.IoRing
+  req_store: [8]io.IoRequest
+  cq_store: [8]io.IoCompletion
+  region_store: [256]u8
+  tape: [4]u8
+  ring: [*]io.IoRing = span(&ring_store)
+  requests: [*]io.IoRequest = span(&req_store)
+  completions: [*]io.IoCompletion = span(&cq_store)
+  region: [*]u8 = span(&region_store)
+  io.io_attach(view(&tape), u32(0))
+  io.io_open_region(ring, region, u32(4))
+  // "d" at 0, "e" at 8, "d/x" at 16, "e/y" at 24, "." at 32
+  region[0] = u8(100)
+  region[1] = u8(0)
+  region[8] = u8(101)
+  region[9] = u8(0)
+  set_path(region, u32(16), u8(100), u8(47), u8(120))
+  set_path(region, u32(24), u8(101), u8(47), u8(121))
+  region[32] = u8(46)
+  region[33] = u8(0)
+  // mkdir d, mkdir e, fsyncdir "." so both directories are durable
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_mkdir(), u32(0), u64(0), u32(0), u32(2), u64(1), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_mkdir(), u32(0), u64(0), u32(8), u32(2), u64(2), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_fsyncdir(), u32(0), u64(0), u32(32), u32(2), u64(3), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(3)) == u32(3))
+  // create d/x and e/y, close both, fsyncdir d only
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_create(), u32(0), u64(0), u32(16), u32(4), u64(4), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_create(), u32(1), u64(0), u32(24), u32(4), u64(5), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(2)) == u32(2))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_close(), u32(0), u64(0), u32(0), u32(0), u64(6), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_close(), u32(1), u64(0), u32(0), u32(0), u64(7), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_fsyncdir(), u32(0), u64(0), u32(0), u32(2), u64(8), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(3)) == u32(3))
+  assert(io.iosim_exists_now(subslice(region, u32(16), u32(4))) && io.iosim_exists_now(subslice(region, u32(24), u32(4))))
+  assert(io.iosim_exists_durably(subslice(region, u32(16), u32(4))))
+  assert(!io.iosim_exists_durably(subslice(region, u32(24), u32(4))))
+  io.iosim_crash()
+  io.iosim_restart()
+  // d/x survived; e/y is forgotten; both directories survived.
+  x_ok: Bool = io.iosim_exists_now(subslice(region, u32(16), u32(4)))
+  y_gone: Bool = !io.iosim_exists_now(subslice(region, u32(24), u32(4)))
+  dirs_ok: Bool = io.iosim_exists_now(subslice(region, u32(0), u32(2))) && io.iosim_exists_now(subslice(region, u32(8), u32(2)))
+  x_ok && y_gone && dirs_ok ? 42 | 1
+}
+`
+
+func TestE2EIoPortDirectoryCrash(t *testing.T) {
+	module := writeModule(t, map[string]string{
+		"oak.mod":  "module example.com/io_dir_crash\noak 0.1.0\nreplace io => iosim\n",
+		"main.oak": ioDirCrashProgram,
+	})
+	if got := interpretModule(t, module); got != 42 {
+		t.Fatalf("main() returned %d, want 42", got)
 	}
 }

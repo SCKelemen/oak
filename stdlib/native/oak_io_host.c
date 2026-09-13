@@ -79,6 +79,14 @@ int64_t oak_io_host_open_direct(const uint8_t *path, size_t len) {
 #endif
 }
 
+// mkdir (op 15): the directory, created with the usual mode; the parent
+// must exist (ENOENT -> NotFound) and the name must not (EEXIST -> Exists).
+int64_t oak_io_host_mkdir(const uint8_t *path, size_t len) {
+    if (path == 0 || len == 0 || path[len - 1] != 0) return -OAK_IO_ERR_INVALID;
+    if (mkdir((const char *)path, 0755) != 0) return oak_io_fail(errno);
+    return 0;
+}
+
 // Whether the region's address is a multiple of align: 1 or 0. No byte of
 // the region is read; len is the window's length, unused here.
 int64_t oak_io_host_aligned(const uint8_t *buf, size_t len, size_t align) {

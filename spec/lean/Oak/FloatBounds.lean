@@ -26,6 +26,9 @@ significant bits after every operation):
   what `order any` lowers a declared-associative reduction to — is the
   grouping of depth `n − 1` over `n` leaves, so its error is within
   `((1 + u)^(n−1) − 1) · Σ|xᵢ|` of the exact sum.
+* `tree_depth_log`, `tree_error_log`: `reduce.tree` is a grouping of depth
+  at most `bitlen n` (`⌊log₂ n⌋ + 1`), so its error is within
+  `((1 + u)^(⌊log₂ n⌋ + 1) − 1) · Σ|xᵢ|`.
 
 Two groupings of the same leaves therefore differ by at most the sum of
 their bounds: that is the whole content of "bounded" in the chapter, and
@@ -585,5 +588,269 @@ theorem tree_is_grouping (p : Nat) (z : Int) (xs : List Int) (h : xs ≠ []) :
     rw [hg]
   · rw [hgex, hex]; simp [exactSum]
   · rw [hgmass, hmass]; simp [massSum]
+
+/-! ## The tree's depth is logarithmic
+
+`reduce.tree` is a binary counter: a partial at level `k` is a grouping of
+depth at most `k` over exactly `2^k` leaves, the stack's levels strictly
+increase from the head down, and `finish` merges the leftovers so that the
+result is at most one deeper than the bottom's level. Every level is below
+`bitlen n` because `2^level ≤ n < 2^(bitlen n)`, so the tree's depth is at
+most `bitlen n` — `⌊log₂ n⌋ + 1` — against the chain's `n − 1`. -/
+
+namespace Grouping
+/-- The number of leaves. -/
+def leaves : Grouping → Nat
+  | leaf _ => 1
+  | node l r => leaves l + leaves r
+end Grouping
+
+def leavesSum (gs : List Grouping) : Nat := (gs.map Grouping.leaves).sum
+
+open Oak.Reduce in
+/-- The binary counter's invariant beside `StackOf`: a partial at level `k`
+holds a grouping of depth at most `k` over exactly `2^k` leaves. -/
+def Levels : List (Partial Int) → List Grouping → Prop
+  | [], [] => True
+  | q :: s, g :: gs => Grouping.depth g ≤ q.level ∧ Grouping.leaves g = 2 ^ q.level ∧ Levels s gs
+  | _, _ => False
+
+open Oak.Reduce in
+/-- Levels strictly increase from the head down. -/
+def Ascending : List (Partial Int) → Prop
+  | top :: next :: rest => top.level < next.level ∧ Ascending (next :: rest)
+  | _ => True
+
+open Oak.Reduce in
+/-- A stack about to collapse: the head is at most its neighbour's level and
+the rest ascends — the state after a push or a merge. -/
+def Counter : List (Partial Int) → Prop
+  | top :: next :: rest => top.level ≤ next.level ∧ Ascending (next :: rest)
+  | _ => True
+
+open Oak.Reduce in
+/-- Every level is below `L`. -/
+def AllBelow (L : Nat) : List (Partial Int) → Prop
+  | [] => True
+  | q :: s => q.level < L ∧ AllBelow L s
+
+open Oak.Reduce in
+/-- `collapse` keeps the counter invariant and leaves the stack ascending;
+the leaves, the exact sum and the mass are conserved. -/
+theorem collapse_counter (p : Nat) : ∀ (s : List (Partial Int)) (gs : List Grouping),
+    StackOf p s gs → Levels s gs → Counter s →
+    ∃ gs', StackOf p (collapse (fadd p) s) gs' ∧ Levels (collapse (fadd p) s) gs' ∧
+      Ascending (collapse (fadd p) s) ∧
+      exactSum gs' = exactSum gs ∧ massSum gs' = massSum gs ∧ leavesSum gs' = leavesSum gs := by
+  intro s
+  induction s using collapse.induct (fadd p) with
+  | case1 top next rest heq ih =>
+    intro gs hs hl hc
+    match gs, hs, hl with
+    | gt :: gn :: grest, ⟨htop, hnext, hrest⟩, ⟨hdt, hlt, hdn, hln, hlrest⟩ =>
+      rw [collapse, if_pos heq]
+      have hmerged : StackOf p ({ value := fadd p next.value top.value, level := next.level + 1 } :: rest) (Grouping.node gn gt :: grest) := by
+        refine ⟨?_, hrest⟩
+        simp only [Grouping.rounded, fadd]
+        rw [htop, hnext]
+      have hlevels : Levels ({ value := fadd p next.value top.value, level := next.level + 1 } :: rest) (Grouping.node gn gt :: grest) := by
+        refine ⟨?_, ?_, hlrest⟩
+        · simp only [Grouping.depth]; omega
+        · simp only [Grouping.leaves]; rw [hlt, hln, heq, Nat.pow_succ]; omega
+      have hcounter : Counter ({ value := fadd p next.value top.value, level := next.level + 1 } :: rest) := by
+        obtain ⟨_, hasc⟩ := hc
+        cases rest with
+        | nil => trivial
+        | cons r rest' =>
+          obtain ⟨hlt', hasc'⟩ := hasc
+          exact ⟨Nat.succ_le_of_lt hlt', hasc'⟩
+      obtain ⟨gs', hgs', hl', hasc', hex, hmass, hleaves⟩ := ih _ hmerged hlevels hcounter
+      refine ⟨gs', hgs', hl', hasc', ?_, ?_, ?_⟩
+      · rw [hex]; simp [exactSum, Grouping.exact]; omega
+      · rw [hmass]; simp [massSum, Grouping.mass]; omega
+      · rw [hleaves]; simp [leavesSum, Grouping.leaves]; omega
+  | case2 top next rest hne =>
+    intro gs hs hl hc
+    rw [collapse, if_neg hne]
+    obtain ⟨hle, hasc⟩ := hc
+    exact ⟨gs, hs, hl, ⟨Nat.lt_of_le_of_ne hle hne, hasc⟩, rfl, rfl, rfl⟩
+  | case3 s hs =>
+    intro gs hgs hl _
+    have hasc : Ascending s := by
+      cases s with
+      | nil => trivial
+      | cons q rest =>
+        cases rest with
+        | nil => trivial
+        | cons q2 rest2 => exact (hs q q2 rest2 rfl).elim
+    have : collapse (fadd p) s = s := by
+      cases s with
+      | nil => rw [collapse]; exact hs
+      | cons q rest =>
+        cases rest with
+        | nil => exact collapse_single _ q
+        | cons q2 rest2 => exact (hs q q2 rest2 rfl).elim
+    rw [this]
+    exact ⟨gs, hgs, hl, hasc, rfl, rfl, rfl⟩
+
+open Oak.Reduce in
+theorem push_counter (p : Nat) (s : List (Partial Int)) (gs : List Grouping) (x : Int)
+    (hs : StackOf p s gs) (hl : Levels s gs) (hasc : Ascending s) :
+    ∃ gs', StackOf p (push (fadd p) s x) gs' ∧ Levels (push (fadd p) s x) gs' ∧
+      Ascending (push (fadd p) s x) ∧
+      exactSum gs' = x + exactSum gs ∧ massSum gs' = x.natAbs + massSum gs ∧
+      leavesSum gs' = 1 + leavesSum gs := by
+  have hleaf : StackOf p ({ value := x, level := 0 } :: s) (Grouping.leaf x :: gs) := ⟨rfl, hs⟩
+  have hlleaf : Levels ({ value := x, level := 0 } :: s) (Grouping.leaf x :: gs) := ⟨Nat.le_refl _, rfl, hl⟩
+  have hc : Counter ({ value := x, level := 0 } :: s) := by
+    cases s with
+    | nil => trivial
+    | cons q rest => exact ⟨Nat.zero_le _, hasc⟩
+  obtain ⟨gs', hgs', hl', hasc', hex, hmass, hleaves⟩ := collapse_counter p _ _ hleaf hlleaf hc
+  refine ⟨gs', hgs', hl', hasc', ?_, ?_, ?_⟩
+  · rw [hex]; simp [exactSum, Grouping.exact]
+  · rw [hmass]; simp [massSum, Grouping.mass]
+  · rw [hleaves]; simp [leavesSum, Grouping.leaves]
+
+open Oak.Reduce in
+theorem fold_counter (p : Nat) : ∀ (xs : List Int) (s : List (Partial Int)) (gs : List Grouping),
+    StackOf p s gs → Levels s gs → Ascending s →
+    ∃ gs', StackOf p (xs.foldl (push (fadd p)) s) gs' ∧ Levels (xs.foldl (push (fadd p)) s) gs' ∧
+      Ascending (xs.foldl (push (fadd p)) s) ∧
+      exactSum gs' = xs.sum + exactSum gs ∧ massSum gs' = (xs.map Int.natAbs).sum + massSum gs ∧
+      leavesSum gs' = xs.length + leavesSum gs := by
+  intro xs
+  induction xs with
+  | nil => intro s gs hs hl hasc; exact ⟨gs, hs, hl, hasc, by simp, by simp, by simp⟩
+  | cons x xs ih =>
+    intro s gs hs hl hasc
+    obtain ⟨gs1, h1, hl1, hasc1, hex1, hmass1, hleaves1⟩ := push_counter p s gs x hs hl hasc
+    obtain ⟨gs2, h2, hl2, hasc2, hex2, hmass2, hleaves2⟩ := ih _ _ h1 hl1 hasc1
+    refine ⟨gs2, by simpa [List.foldl] using h2, by simpa [List.foldl] using hl2, by simpa [List.foldl] using hasc2, ?_, ?_, ?_⟩
+    · rw [hex2, hex1]; simp [List.sum_cons]; omega
+    · rw [hmass2, hmass1]; simp [List.map, List.sum_cons]; omega
+    · rw [hleaves2, hleaves1]; simp [List.length]; omega
+
+open Oak.Reduce in
+/-- `2^level` leaves each, `n` leaves in all: every level is below `bitlen n`. -/
+theorem levels_below (L n : Nat) (hn : n < 2 ^ L) : ∀ (s : List (Partial Int)) (gs : List Grouping),
+    Levels s gs → leavesSum gs ≤ n → AllBelow L s
+  | [], [], _, _ => trivial
+  | q :: s, g :: gs, ⟨_, hleaves, hrest⟩, hsum => by
+    have hsplit : leavesSum (g :: gs) = Grouping.leaves g + leavesSum gs := by
+      simp [leavesSum, List.map, List.sum_cons]
+    rw [hsplit] at hsum
+    refine ⟨?_, levels_below L n hn s gs hrest (by omega)⟩
+    apply Nat.lt_of_not_le
+    intro hL
+    have hpow : 2 ^ L ≤ 2 ^ q.level := Nat.pow_le_pow_right (by decide) hL
+    omega
+  | [], _ :: _, h, _ => h.elim
+  | _ :: _, [], h, _ => h.elim
+
+open Oak.Reduce in
+/-- The leftover merges: the head may be one deeper than its level, the rest
+within theirs. -/
+def Finishing : List (Partial Int) → List Grouping → Prop
+  | [], [] => True
+  | q :: s, g :: gs => Grouping.depth g ≤ q.level + 1 ∧ Levels s gs
+  | _, _ => False
+
+theorem levels_finishing : ∀ (s : List (Oak.Reduce.Partial Int)) (gs : List Grouping),
+    Levels s gs → Finishing s gs
+  | [], [], _ => trivial
+  | _ :: s, _ :: gs, ⟨hd, _, hl⟩ => ⟨Nat.le_succ_of_le hd, hl⟩
+  | [], _ :: _, h => h.elim
+  | _ :: _, [], h => h.elim
+
+open Oak.Reduce in
+/-- Ascent depends on the head's level only. -/
+theorem ascending_relevel (q q' : Partial Int) (rest : List (Partial Int)) (h : q.level = q'.level)
+    (ha : Ascending (q :: rest)) : Ascending (q' :: rest) := by
+  cases rest with
+  | nil => trivial
+  | cons r rest' =>
+    obtain ⟨hlt, hrest⟩ := ha
+    refine ⟨?_, hrest⟩
+    rw [← h]; exact hlt
+
+open Oak.Reduce in
+/-- `finish` over an ascending stack whose levels are below `L` yields a
+grouping of depth at most `L`: each merge is at most one deeper than the
+surviving level, and the bottom's level survives to the end. -/
+theorem finish_depth (p L : Nat) : ∀ (s : List (Partial Int)) (gs : List Grouping), s ≠ [] →
+    StackOf p s gs → Finishing s gs → Ascending s → AllBelow L s →
+    ∃ g, finish (fadd p) s = some (Grouping.rounded p g) ∧ Grouping.exact g = exactSum gs ∧
+      Grouping.mass g = massSum gs ∧ Grouping.depth g ≤ L := by
+  intro s
+  induction s using finish.induct (fadd p) with
+  | case1 => intro gs h; exact absurd rfl h
+  | case2 q =>
+    intro gs _ hs hf _ hb
+    match gs, hs, hf, hb with
+    | [g], ⟨hq, _⟩, ⟨hd, _⟩, ⟨hqL, _⟩ =>
+      refine ⟨g, ?_, ?_, ?_, ?_⟩
+      · simp [finish, hq]
+      · simp [exactSum]
+      · simp [massSum]
+      · omega
+  | case3 top next rest ih =>
+    intro gs _ hs hf hasc hb
+    match gs, hs, hf, hasc, hb with
+    | gt :: gn :: grest, ⟨htop, hnext, hrest⟩, ⟨hdt, hdn, _, hlrest⟩, ⟨hlt, hasc'⟩, ⟨_, hnL, hbrest⟩ =>
+      have hmerged : StackOf p ({ value := fadd p next.value top.value, level := next.level } :: rest) (Grouping.node gn gt :: grest) := by
+        refine ⟨?_, hrest⟩
+        simp only [Grouping.rounded, fadd]
+        rw [htop, hnext]
+      have hfin : Finishing ({ value := fadd p next.value top.value, level := next.level } :: rest) (Grouping.node gn gt :: grest) := by
+        refine ⟨?_, hlrest⟩
+        simp only [Grouping.depth]; omega
+      obtain ⟨g, hg, hex, hmass, hdepth⟩ :=
+        ih _ (List.cons_ne_nil _ _) hmerged hfin (ascending_relevel next _ rest rfl hasc') ⟨hnL, hbrest⟩
+      refine ⟨g, ?_, ?_, ?_, hdepth⟩
+      · rw [finish]; exact hg
+      · rw [hex]; simp [exactSum, Grouping.exact]; omega
+      · rw [hmass]; simp [massSum, Grouping.mass]; omega
+
+/-- **`reduce.tree` is a grouping of logarithmic depth.** Over a non-empty
+list the binary-counter tree is the rounded sum of a grouping of exactly
+those leaves whose depth is at most `bitlen n` — `⌊log₂ n⌋ + 1` — where the
+chain's is `n − 1` (`leftComb_depth`). -/
+theorem tree_depth_log (p : Nat) (z : Int) (xs : List Int) (h : xs ≠ []) :
+    ∃ g : Grouping, Oak.Reduce.tree (fadd p) z xs = Grouping.rounded p g ∧
+      Grouping.exact g = xs.sum ∧ Grouping.mass g = (xs.map Int.natAbs).sum ∧
+      Grouping.depth g ≤ bitlen xs.length := by
+  obtain ⟨gs, hgs, hl, hasc, hex, hmass, hleaves⟩ := fold_counter p xs [] [] trivial trivial trivial
+  have hne : xs.foldl (Oak.Reduce.push (fadd p)) [] ≠ [] := by
+    match xs, h with
+    | x :: rest, _ =>
+      simp only [List.foldl]
+      have : ∀ (ys : List Int) (s : List (Oak.Reduce.Partial Int)), s ≠ [] → ys.foldl (Oak.Reduce.push (fadd p)) s ≠ [] := by
+        intro ys
+        induction ys with
+        | nil => intro s hs; simpa using hs
+        | cons y ys ih => intro s hs; simp only [List.foldl]; exact ih _ (Oak.Reduce.collapse_ne_nil _ _ (List.cons_ne_nil _ _))
+      exact this rest _ (Oak.Reduce.collapse_ne_nil _ _ (List.cons_ne_nil _ _))
+  have hbelow : AllBelow (bitlen xs.length) (xs.foldl (Oak.Reduce.push (fadd p)) []) :=
+    levels_below (bitlen xs.length) xs.length (bitlen_upper _) _ _ hl (by rw [hleaves]; simp [leavesSum])
+  obtain ⟨g, hg, hgex, hgmass, hdepth⟩ :=
+    finish_depth p (bitlen xs.length) _ gs hne hgs (levels_finishing _ _ hl) hasc hbelow
+  refine ⟨g, ?_, ?_, ?_, hdepth⟩
+  · simp only [Oak.Reduce.tree]
+    rw [hg]
+  · rw [hgex, hex]; simp [exactSum]
+  · rw [hgmass, hmass]; simp [massSum]
+
+/-- **The tree's error bound at logarithmic depth.** Where `chain_error`
+bounds the chain over `n + 1` leaves at depth `n`, the tree over `n` leaves
+is bounded at depth `bitlen n`:
+`2^(p·bitlen n) · |tree − Σxᵢ| ≤ B p (bitlen n) · Σ|xᵢ|`, that is
+`|tree − Σxᵢ| ≤ ((1 + u)^(⌊log₂ n⌋ + 1) − 1) · Σ|xᵢ|`. -/
+theorem tree_error_log (p : Nat) (z : Int) (xs : List Int) (h : xs ≠ []) :
+    2 ^ (p * bitlen xs.length) * (Oak.Reduce.tree (fadd p) z xs - xs.sum).natAbs
+      ≤ B p (bitlen xs.length) * (xs.map Int.natAbs).sum := by
+  obtain ⟨g, hg, hex, hmass, hdepth⟩ := tree_depth_log p z xs h
+  rw [hg, ← hex, ← hmass]
+  exact lift_bound p g _ hdepth
 
 end Oak.Floats
