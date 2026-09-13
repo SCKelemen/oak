@@ -4162,6 +4162,14 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		switch ident.Value {
 		case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64":
 			target = ident.Value
+			// The integer constructor over a float is the conversion toward
+			// zero (asm/floats_lowering.go); the `_bits_` forms below stay
+			// bit moves.
+			if len(e.Arguments) == 1 {
+				if _, srcFloat := lo.floatWidthOf(e.Arguments[0]); srcFloat {
+					return lo.floatConversion(target, e.Arguments[0], width)
+				}
+			}
 		case "f32", "f64":
 			if len(e.Arguments) == 1 {
 				return lo.floatConversion(ident.Value, e.Arguments[0], width)
@@ -4169,11 +4177,6 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		default:
 			if t, op, _, isConv := typechecker.ConversionParts(ident.Value); isConv && (op == "trunc" || op == "bits") {
 				target = t
-			}
-		}
-		if target != "" && len(e.Arguments) == 1 {
-			if _, srcFloat := lo.floatWidthOf(e.Arguments[0]); srcFloat {
-				return lo.floatConversion(target, e.Arguments[0], width)
 			}
 		}
 		if target != "" {

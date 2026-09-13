@@ -67,6 +67,13 @@ func TestVerifyFloatScalar(t *testing.T) {
 	if v := verifyCase(t, "twice: (x: f64) -> f64", "x * 2.0", "  bind d0 = x\n  clobber v1\n  fmov d1, #2.0\n  fmul d0, d0, d1\n  ret"); v.Kind != VerdictProven {
 		t.Fatalf("x * 2.0 against fmov/fmul must be proven, got %s: %s", v.Kind, v.Message)
 	}
+	// The bits forms are bit moves, not conversions.
+	if v := verifyCase(t, "bits: (x: f32) -> u32", "u32_bits_f32(x)", "  bind s0 = x\n  fmov w0, s0\n  ret"); v.Kind != VerdictProven {
+		t.Fatalf("u32_bits_f32 against fmov must be proven, got %s: %s", v.Kind, v.Message)
+	}
+	if v := verifyCase(t, "from_bits: (n: u64) -> f64", "f64_bits_u64(n)", "  bind x0 = n\n  fmov d0, x0\n  ret"); v.Kind != VerdictProven {
+		t.Fatalf("f64_bits_u64 against fmov must be proven, got %s: %s", v.Kind, v.Message)
+	}
 	if !strings.Contains(fused.Message, "proven") {
 		t.Fatalf("unexpected message %q", fused.Message)
 	}
