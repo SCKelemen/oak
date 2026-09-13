@@ -40,6 +40,8 @@ LE_TYPES: u32 = 1024
 LE_WORK: u32 = 65536
 LE_TCACHE: u32 = 256
 LE_CONSTS: u32 = 64
+LE_ROWS: u32 = 4096
+LE_ROW_WORDS: u32 = 4
 
 // State words.
 LN_FAILED: u32 = 0
@@ -66,6 +68,7 @@ LN_NCLIST: u32 = 20
 LN_RECURSIVE: u32 = 21
 LN_NTORDER: u32 = 22
 LN_HAS_THEOREM: u32 = 23
+LN_NROWS: u32 = 30
 
 // Frame kinds.
 LF_EXPR: u32 = 0
@@ -130,6 +133,7 @@ Lem: type = struct {
   work_at: u32,
   tcache_at: u32,
   consts_at: u32,
+  rows_at: u32,
   state_at: u32,
   total: u32
 }
@@ -158,7 +162,8 @@ lem_layout: (): Lem {
   work_at: u32 = lroots_at + LE_FUNCS
   tcache_at: u32 = work_at + LE_WORK
   consts_at: u32 = tcache_at + LE_TCACHE
-  state_at: u32 = consts_at + LE_CONSTS
+  rows_at: u32 = consts_at + LE_CONSTS
+  state_at: u32 = rows_at + LE_ROWS * LE_ROW_WORDS
   Lem {
     bytes_at: bytes_at,
     strs_at: strs_at,
@@ -183,6 +188,7 @@ lem_layout: (): Lem {
     work_at: work_at,
     tcache_at: tcache_at,
     consts_at: consts_at,
+    rows_at: rows_at,
     state_at: state_at,
     total: state_at + u32(32)
   }
@@ -682,6 +688,26 @@ lfn_word: (le: Lem, ew: [*]u32, fi: u32, k: u32): u32 = ew[le.funcs_at + fi * LE
 set_lfn_word: (le: Lem, ew: [*]u32, fi: u32, k: u32, v: u32): () { ew[le.funcs_at + fi * LE_FUNC_WORDS + k] = v }
 fn_in_set: (le: Lem, ew: [*]u32, fi: u32): Bool = fi < LE_FUNCS && lfn_word(le, ew, fi, u32(0)) != u32(0)
 
+// is_threaded_texpr: a span type `[*]T`, the writable storage a function
+// returns beside its result (docs/spec/95-extraction.md section 2).
+is_threaded_texpr: (rx: []u32, raw: Raw, texpr: u32): Bool = texpr != NONE && rt_kind(rx, raw, texpr) == RAW_TYPE_SPAN
+
+// address_owner: the identifier behind `&x` (or `span(&x)` / `view(&x)`), or NONE.
+address_owner: (rx: []u32, raw: Raw, node: u32): u32 {
+  n: u32 = node
+  (n != NONE && rn_kind(rx, raw, n) == RAW_CALL && rn_c(rx, raw, n) == u32(1) && rn_kind(rx, raw, rn_a(rx, raw, n)) == RAW_IDENT) ? {
+    nm: Name16 = rs_name(rx, raw, rn_a(rx, raw, rn_a(rx, raw, n)))
+    (is_name(nm, u64(0x6E617073), u64(0x0), u32(4)) || is_name(nm, u64(0x77656976), u64(0x0), u32(4))) ? { n = rl_item(rx, raw, rn_b(rx, raw, n), u32(0)) } | { }
+  } | { }
+  (n != NONE && rn_kind(rx, raw, n) == RAW_PREFIX && is_name(rs_name(rx, raw, rn_a(rx, raw, n)), u64(0x26), u64(0x0), u32(1)) && rn_kind(rx, raw, rn_b(rx, raw, n)) == RAW_IDENT) ? { rn_a(rx, raw, rn_b(rx, raw, n)) } | { NONE }
+}
+
+// span_owner_of: the owner of an inline `span(&owner)` argument, or NONE.
+span_owner_of: (rx: []u32, raw: Raw, node: u32): u32 {
+  ok: Bool = node != NONE && rn_kind(rx, raw, node) == RAW_CALL && rn_c(rx, raw, node) == u32(1) && rn_kind(rx, raw, rn_a(rx, raw, node)) == RAW_IDENT && is_name(rs_name(rx, raw, rn_a(rx, raw, rn_a(rx, raw, node))), u64(0x6E617073), u64(0x0), u32(4))
+  ok ? { address_owner(rx, raw, node) } | { NONE }
+}
+
 // --- the raw tree walker --------------------------------------------------------------------
 
 // Walk modes.
@@ -725,7 +751,25 @@ walk: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, root: u32, mode: u32, g: u32): 
         r: u32 = root_ident(rx, raw, a)
         r != NONE ? { set_mark(le, ew, le.markw_at, r, g) } | { }
       } | {
-      kind == RAW_VARDECL ? { set_mark(le, ew, le.markd_at, a, g) } | { } } }
+      kind == RAW_VARDECL ? { set_mark(le, ew, le.markd_at, a, g) } | {
+      kind == RAW_CALL ? {
+        // A call rebinds the owners of its span(&owner) arguments, and of
+        // every argument at an extracted callee's span parameter.
+        callee_fn: u32 = rn_kind(rx, raw, a) == RAW_IDENT ? { raw_find_function(rx, raw, rn_a(rx, raw, a)) } | { NONE }
+        i: u32 = 0
+        while i < c {
+          arg: u32 = rl_item(rx, raw, b, i)
+          owner: u32 = span_owner_of(rx, raw, arg)
+          owner != NONE ? { set_mark(le, ew, le.markw_at, owner, g) } | {
+            (callee_fn != NONE && fn_in_set(le, ew, callee_fn) && i < rf_word(rx, raw, callee_fn, u32(2)) && is_threaded_texpr(rx, raw, rp_word(rx, raw, rf_word(rx, raw, callee_fn, u32(1)) + i, u32(1)))) ? {
+              o2: u32 = address_owner(rx, raw, arg)
+              (o2 == NONE && rn_kind(rx, raw, arg) == RAW_IDENT) ? { o2 = rn_a(rx, raw, arg) } | { }
+              o2 != NONE ? { set_mark(le, ew, le.markw_at, o2, g) } | { }
+            } | { }
+          }
+          i = i + u32(1)
+        }
+      } | { } } } }
     } | {
     mode == WK_REFERENCED ? {
       (kind == RAW_IDENT || kind == RAW_ASSIGN) ? { set_mark(le, ew, le.markm_at, a, g) } | {
@@ -2513,10 +2557,25 @@ step_call_l: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, at: u32): () {
           sb_dec(le, ew, u64(temps))
           r: u32 = sb_end(le, ew)
           callee_name: u32 = ident(le, ew, rx, raw, ew[at + u32(9)])
+          // The owners rebound by the span parameters: `let (r, owner) ← ...`.
+          user_fn: u32 = ew[at + u32(6)]
+          rbase: u32 = lst(le, ew, LN_ACC_SP)
+          acc_push_l(le, ew, r)
+          ai: u32 = 0
+          while ai < nargs && !le_failed(le, ew) {
+            is_threaded_texpr(rx, raw, rp_word(rx, raw, rf_word(rx, raw, user_fn, u32(1)) + ai, u32(1))) ? {
+              argn: u32 = rl_item(rx, raw, args, ai)
+              owner: u32 = address_owner(rx, raw, argn)
+              (owner == NONE && rn_kind(rx, raw, argn) == RAW_IDENT) ? { owner = rn_a(rx, raw, argn) } | { }
+              owner == NONE ? { le_fail(le, ew, u32(988)) } | { acc_push_l(le, ew, ident(le, ew, rx, raw, owner)) }
+            } | { }
+            ai = ai + u32(1)
+          }
+          bound: u32 = tuple_acc(le, ew, rbase)
           sb_begin(le, ew)
           sb_str(le, ew, lst(le, ew, LN_INDENT))
           ap_lits(le, ew, u64(0x2074656C), u64(0x0), u32(4))  // let 
-          sb_str(le, ew, r)
+          sb_str(le, ew, bound)
           ap_lits(le, ew, u64(0x209086E220), u64(0x0), u32(5))  //  ← 
           sb_str(le, ew, callee_name)
           sb_byte(le, ew, u32(32))
@@ -3407,6 +3466,16 @@ emit_function: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, fi: u32): () {
   sep: u32 = lstr(le, ew, u64(0x20), u64(0x0), u32(1))
   params: u32 = join_acc(le, ew, base, sep)
   return_type: u32 = is_theorem ? { lc(le, ew, LC_BOOL) } | { rf_word(rx, raw, fi, u32(3)) == NONE ? { lc(le, ew, LC_UNIT) } | { lean_type(le, ew, rx, raw, rf_word(rx, raw, fi, u32(3))) } }
+  // The span parameters are returned beside the result: the tuple type of
+  // the head, and their names after the result term.
+  tbase: u32 = lst(le, ew, LN_ACC_SP)
+  acc_push_l(le, ew, return_type)
+  i = u32(0)
+  while i < nparams && !le_failed(le, ew) {
+    is_threaded_texpr(rx, raw, rp_word(rx, raw, pstart + i, u32(1))) ? { acc_push_l(le, ew, scope_lookup(le, ew, rx, raw, rp_word(rx, raw, pstart + i, u32(0)))) } | { }
+    i = i + u32(1)
+  }
+  result_types: u32 = tuple_type_acc(le, ew, tbase)
   le_failed(le, ew) ? { } | {
     set_lst(le, ew, LN_INDENT, lc(le, ew, recursive ? { LC_IND4 } | { LC_IND2 }))
     p: u32 = lst(le, ew, LN_LINE_SP)
@@ -3417,14 +3486,13 @@ emit_function: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, fi: u32): () {
     sb_byte(le, ew, u32(32))
     sb_str(le, ew, params)
     recursive ? {
-      ap_lits(le, ew, u64(0xE22074614E203A20), u64(0x6F6974704F209286), u32(16))  //  : Nat → Option (
-      ap_lits(le, ew, u64(0x28206E), u64(0x0), u32(3))
+      ap_lits(le, ew, u64(0xE22074614E203A20), u64(0x6F6974704F209286), u32(16))  //  : Nat → Option 
+      ap_lits(le, ew, u64(0x206E), u64(0x0), u32(2))
     } | {
-      ap_lits(le, ew, u64(0x3A206C6575662820), u64(0x203A202974614E20), u32(16))  //  (fuel : Nat) : Option (
-      ap_lits(le, ew, u64(0x28206E6F6974704F), u64(0x0), u32(8))
+      ap_lits(le, ew, u64(0x3A206C6575662820), u64(0x203A202974614E20), u32(16))  //  (fuel : Nat) : Option 
+      ap_lits(le, ew, u64(0x206E6F6974704F), u64(0x0), u32(7))
     }
-    sb_str(le, ew, return_type)
-    sb_byte(le, ew, u32(41))
+    sb_str(le, ew, result_types)
     recursive ? { } | { ap_lits(le, ew, u64(0x6F64203D3A20), u64(0x0), u32(6)) }
     line_push(le, ew, sb_end(le, ew))
     recursive ? {
@@ -3458,7 +3526,16 @@ emit_function: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, fi: u32): () {
       term = lst(le, ew, LN_RET)
     } | { }
     le_failed(le, ew) ? { } | {
-      line_push(le, ew, pure_line(le, ew, lst(le, ew, LN_INDENT), term, false))
+      // `pure (result, spans...)`.
+      obase: u32 = lst(le, ew, LN_ACC_SP)
+      acc_push_l(le, ew, term)
+      i = u32(0)
+      while i < nparams {
+        is_threaded_texpr(rx, raw, rp_word(rx, raw, pstart + i, u32(1))) ? { acc_push_l(le, ew, ident(le, ew, rx, raw, rp_word(rx, raw, pstart + i, u32(0)))) } | { }
+        i = i + u32(1)
+      }
+      outs_term: u32 = tuple_acc(le, ew, obase)
+      line_push(le, ew, pure_line(le, ew, lst(le, ew, LN_INDENT), outs_term, false))
       is_theorem ? {
         set_lst(le, ew, LN_HAS_THEOREM, u32(1))
         line_push(le, ew, lit_str_setopt(le, ew))
@@ -4020,7 +4097,10 @@ capture_in_oak: (le: Lem, le_raw: c.Ptr, ser: Ser, ser_raw: c.Ptr, out_raw: c.Pt
 set_roots: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, only: u32): () {
   fi: u32 = 0
   while fi < raw.nfuncs && fi < LE_FUNCS {
-    ew[le.lroots_at + fi] = (fn_is_theorem(rx, raw, fi) && (only == NONE || only == fi)) ? { u32(1) } | { u32(0) }
+    // The guard-exclusivity pair theorems are folded into advisory rows and
+    // never named as roots by the Go command.
+    root_ok: Bool = fn_is_theorem(rx, raw, fi) && (only == NONE || only == fi) && !is_exclusivity_name(le, ew, rstr(le, ew, rx, raw, rf_word(rx, raw, fi, u32(0))))
+    ew[le.lroots_at + fi] = root_ok ? { u32(1) } | { u32(0) }
     fi = fi + u32(1)
   }
 }

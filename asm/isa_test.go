@@ -173,7 +173,7 @@ func TestInstructionTableCoverage(t *testing.T) {
 	}
 	control := map[string]string{
 		"b": "b done\ndone:\n  mov x0, #0", "b.": "cmp x0, x1\n  b.lo done\ndone:\n  mov x0, #0", "cbz": "cbz x0, done\ndone:\n  mov x0, #0", "cbnz": "cbnz x0, done\ndone:\n  mov x0, #0",
-		"tbz": "tbz x0, #3, done\ndone:\n  mov x0, #0", "tbnz": "tbnz x0, #3, done\ndone:\n  mov x0, #0", "bl": "bl helper", "blr": "blr x1", "br": "br x1", "ret": "ret", "eret": "eret", "eretaa": "eretaa", "eretab": "eretab", "brk": "brk #1",
+		"tbz": "tbz x0, #3, done\ndone:\n  mov x0, #0", "tbnz": "tbnz x0, #3, done\ndone:\n  mov x0, #0", "bl": "bl helper", "blr": "blr x1", "br": "br x1", "ret": "ret", "eret": "eret", "eretaa": "eretaa", "eretab": "eretab", "brk": "brk #1", "hlt": "hlt #61440",
 	}
 	names := make([]string, 0, len(instructionTable))
 	for name := range instructionTable {
@@ -223,7 +223,7 @@ func TestInstructionTableCoverage(t *testing.T) {
 				decl = "f: (a, b: u64, s: [*]u64) -> never"
 				prologue = "  system\n" + prologue
 				epilogue = ""
-			case "brk":
+			case "brk", "hlt":
 				epilogue = ""
 			case "bl", "blr":
 				body = "  str x30, [sp, #-16]!\n  " + control[name] + "\n  ldr x30, [sp], #16"

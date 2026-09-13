@@ -108,13 +108,14 @@ func reportAsmVerdict(d *diagnostic.Diagnostic) {
 // unit, which the system C compiler turns into an executable named after the
 // package (or `-o out`); `-emit-c`, or an `-o` ending in .c, writes the C.
 func buildPackage(args []string) int {
-	output, header, leanOut, metalOut, profile, targetFlag, cpu := "", "", "", "", "", "", ""
+	output, header, leanOut, metalOut, profile, targetFlag, cpu, opt := "", "", "", "", "", "", "", ""
 	metalCheck := false
 	lines, emitC, nativeBodies := false, false, false
-	asmMode := ""
-	fs := newFlagSet("build", "oak build [-o out] [-target os/arch] [-cpu name] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-profile default|strict] [-asm native|c] [-native] [-lines] [dir|file.oak|pattern]...")
+	asmMode, linkMode := "", "c"
+	fs := newFlagSet("build", "oak build [-o out] [-target os/arch] [-cpu name] [-opt 0..3] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-profile default|strict] [-asm native|c] [-native] [-link c|oak] [-lines] [dir|file.oak|pattern]...")
 	fs.StringVar(&targetFlag, "target", "", "platform os/arch, e.g. linux/riscv64 or freestanding/arm (default: OAKOS/OAKARCH, else the host; docs/spec/90-backend.md section 2a)")
 	fs.StringVar(&cpu, "cpu", "", "processor for the C compiler's -mcpu, e.g. cortex_m0 (default: OAKCPU, else the target's default)")
+	fs.StringVar(&opt, "opt", "", "C compiler optimization level 0..3 (default: OAKOPT, else 1; docs/spec/05-ergonomics-and-cost.md, the mechanical backend)")
 	fs.StringVar(&output, "o", "", "output file: an executable, or C when it ends in .c")
 	fs.BoolVar(&emitC, "emit-c", false, "write C instead of an executable")
 	fs.StringVar(&header, "header", "", "write the C header of the exported surface (docs/spec/92-ffi.md section 2.6)")
@@ -125,12 +126,17 @@ func buildPackage(args []string) int {
 	fs.StringVar(&asmMode, "asm", "", "asm units: native (Oak assembler companion object) or c (inline __asm__; default native where the target has a lane; docs/spec/94-assembler.md section 9)")
 	fs.BoolVar(&lines, "lines", false, "emit #line directives so C diagnostics point at Oak source")
 	fs.BoolVar(&nativeBodies, "native", false, "lower Oak bodies through the native backend where its subset reaches (docs/spec/94-assembler.md section 9)")
+	fs.StringVar(&linkMode, "link", "c", "link: c (the target's C compiler links the emitted C and the companion object) or oak (the Oak assembler alone writes a static ELF executable from natively lowered bodies; implies -native; linux and freestanding targets on the arm64 and rv64 lanes)")
 	rest, code, stop := parseFlags(fs, args)
 	if stop {
 		return code
 	}
 	if !validProfile(profile) {
 		fmt.Fprintf(os.Stderr, "oak build: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)\n", profile)
+		return 2
+	}
+	if err := applyOptLevel(opt); err != nil {
+		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
 		return 2
 	}
 	tgt, err := target.FromEnv(targetFlag, nil)
@@ -145,6 +151,13 @@ func buildPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak build: -asm takes native or c, got %q\n", asmMode)
 		return 2
 	}
+	if linkMode != "c" && linkMode != "oak" {
+		fmt.Fprintf(os.Stderr, "oak build: -link takes c or oak, got %q\n", linkMode)
+		return 2
+	}
+	if linkMode == "oak" {
+		nativeBodies = true
+	}
 	targets, err := expandPackagePatterns(rest)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
@@ -155,7 +168,7 @@ func buildPackage(args []string) int {
 		return 2
 	}
 	for _, dir := range targets {
-		if code := buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, tgt, cpu, lines, emitC, nativeBodies, metalCheck); code != 0 {
+		if code := buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, linkMode, tgt, cpu, lines, emitC, nativeBodies, metalCheck); code != 0 {
 			return code
 		}
 	}
@@ -163,13 +176,13 @@ func buildPackage(args []string) int {
 }
 
 // buildOne builds a single package or file.
-func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode string, tgt target.Target, cpu string, lines, emitC, nativeBodies, metalCheck bool) int {
+func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, linkMode string, tgt target.Target, cpu string, lines, emitC, nativeBodies, metalCheck bool) int {
 	comp, err := compilationFor(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
 		return 1
 	}
-	comp = comp.WithProfile(profile).WithDiagnosticSink(reportAsmVerdict).WithTarget(tgt)
+	comp = comp.WithProfile(profile).WithDiagnosticSink(reportAsmVerdict).WithTarget(tgt).WithCPU(cpu)
 	if lines {
 		comp = comp.WithLineDirectives()
 	}
@@ -264,13 +277,29 @@ func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode string, t
 		fmt.Printf("Built %s -> %s\n", dir, output)
 		return 0
 	}
+	if linkMode == "oak" {
+		// The Oak assembler links the natively lowered program itself
+		// (docs/spec/94-assembler.md §9): no C compiler, no system linker.
+		image, err := comp.EmitExecutable().Get()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
+			return 1
+		}
+		output = strings.TrimSuffix(output, ".o")
+		if err := os.WriteFile(output, image, 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
+			return 1
+		}
+		fmt.Printf("Built %s -> %s (linked by the Oak assembler)\n", dir, output)
+		return 0
+	}
 	// An executable, like `go build`: the emitted C compiled by the target's
 	// C compiler into the named output, through the build cache. Every
 	// build is a cross build; the host is only the default target.
 	// In native mode the C carries prototypes for the units the object
 	// realizes; the inline-__asm__ C emitted above is for -emit-c only.
 	var object []byte
-	code, object, err = emitFor(comp, asmMode, tgt)
+	code, object, err = emitFor(comp, asmMode, tgt, cpu)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
@@ -836,12 +865,13 @@ func runPackage(args []string) int {
 	profile := ""
 	own, programArgs := splitProgramArgs(args)
 	nativeBodies := false
-	targetFlag, cpu := "", ""
+	targetFlag, cpu, opt := "", "", ""
 	asmMode := ""
-	fs := newFlagSet("run", "oak run [-profile default|strict] [-target os/arch] [-cpu name] [-asm native|c] [-native] [dir] [-- program arguments]")
+	fs := newFlagSet("run", "oak run [-profile default|strict] [-target os/arch] [-cpu name] [-opt 0..3] [-asm native|c] [-native] [dir] [-- program arguments]")
 	fs.StringVar(&profile, "profile", "", "discipline profile: default or strict")
 	fs.StringVar(&targetFlag, "target", "", "platform os/arch; a foreign Linux target runs through an emulator (qemu-<arch> or OAK_EMULATOR; docs/spec/90-backend.md section 2a)")
 	fs.StringVar(&cpu, "cpu", "", "processor for the C compiler's -mcpu (default: OAKCPU, else the target's default)")
+	fs.StringVar(&opt, "opt", "", "C compiler optimization level 0..3 (default: OAKOPT, else 1)")
 	fs.StringVar(&asmMode, "asm", asmMode, "asm units: native or c (docs/spec/94-assembler.md section 9)")
 	fs.BoolVar(&nativeBodies, "native", false, "lower Oak bodies through the native backend where its subset reaches (docs/spec/94-assembler.md section 9)")
 	rest, exit, stop := parseFlags(fs, own)
@@ -874,6 +904,10 @@ func runPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak run: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)\n", profile)
 		return 2
 	}
+	if err := applyOptLevel(opt); err != nil {
+		fmt.Fprintf(os.Stderr, "oak run: %v\n", err)
+		return 2
+	}
 	if asmMode != "native" && asmMode != "c" {
 		fmt.Fprintf(os.Stderr, "oak run: -asm takes native or c, got %q\n", asmMode)
 		return 2
@@ -882,7 +916,7 @@ func runPackage(args []string) int {
 	if nativeBodies {
 		comp = comp.WithNativeBodies()
 	}
-	code, object, err := emitFor(comp, asmMode, tgt)
+	code, object, err := emitFor(comp, asmMode, tgt, cpu)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
@@ -941,8 +975,8 @@ func defaultAsmMode(tgt target.Target) string {
 
 // emitFor emits the C and, in native mode, the asm units' companion
 // object in the target's object format.
-func emitFor(comp compiler.Compilation, asmMode string, tgt target.Target) (string, []byte, error) {
-	comp = comp.WithTarget(tgt)
+func emitFor(comp compiler.Compilation, asmMode string, tgt target.Target, cpu string) (string, []byte, error) {
+	comp = comp.WithTarget(tgt).WithCPU(cpu)
 	if asmMode == "native" {
 		native, err := comp.EmitNative(compiler.ObjectFormat(tgt)).Get()
 		if err != nil {

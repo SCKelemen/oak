@@ -161,7 +161,11 @@ func layOut(functions []EncodedFunction) (*textLayout, error) {
 			l.align = align
 		}
 		for int64(len(l.text))%align != 0 {
-			l.text = append(l.text, 0x1f, 0x20, 0x03, 0xd5) // nop padding
+			if arch == ArchRV64 {
+				l.text = append(l.text, 0x13, 0x00, 0x00, 0x00) // nop (addi zero, zero, 0)
+			} else {
+				l.text = append(l.text, 0x1f, 0x20, 0x03, 0xd5) // nop
+			}
 		}
 		start := int64(len(l.text))
 		l.text = append(l.text, fn.Bytes...)

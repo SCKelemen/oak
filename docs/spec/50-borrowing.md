@@ -1089,6 +1089,13 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   `K` and `j` literals, either operand order) are proven when the length
   is known to be at least `(U - 1) * K + j + 1` (`scaled_under_bound`) —
   the word loads of a block, `block[i * 4 + 3]` under `i < 16`.
+- **Two scaled indices**: under `i < U₁` and `j < U₂`, `v[i * K + j * M + c]`
+  in any association — `i * K + j`, `i * K + (j * M + c)`, the shape a
+  loop inside a loop produces over a flat buffer or the binary codec's
+  arrays of records with array fields — is proven when
+  `(U₁ - 1) * K + (U₂ - 1) * M + c < len(v)` (`scaled2_under_bound`;
+  `compiler/e2e_scaled2_test.go`). An index the facts do not bound stays
+  checked.
 - **Upper bound through a binding**: `n <= len(v)` or `n < len(v)` as a
   condition, or the declaration `n: u32 = len(v)`, makes `n` an upper bound
   for indices into `v`, so a later `i < n` proves `v[i]`
@@ -1133,6 +1140,12 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   its own facts), and the midpoint rule carries quotient bounds like the
   others, so the fence search `hi = pages; while lo < hi { mid = lo +
   (hi - lo) / 2; keys[mid * 512] ... hi = mid }` reads without a check.
+- **Literal bound through a binding**: `i < n` under a live `n <= K`
+  (`n < K + 1`) is `i < K` (`bound_through_literal`), so a guard
+  `count <= u32(8)` around loops `while i < count` proves every `segs[i]`
+  of a `[8]Seg` — the fill and the two reads of a segment recovery
+  (`compiler/e2e_recovery_bounds_test.go`). The fact dies when `count`
+  is assigned.
 - **Masked index**: `v[e & M]` with `M` a literal is proven, for any `e`,
   when the length is known to be at least `M + 1`
   (`masked_under_length`) — the byte table `CRC32C_TABLE[x & 255]`. The

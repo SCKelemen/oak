@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/SCKelemen/oak/target"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/SCKelemen/oak/asm"
@@ -60,6 +61,11 @@ type Options struct {
 	// the assembler lane whose units apply, the companion object's format,
 	// and whether the native body backend (AArch64) runs. Default: the host.
 	Target target.Target
+	// CPU is the processor the build is for (`-cpu`, `OAKCPU`): the asm
+	// lane reads its extensions — an rv64 unit that uses the vector file
+	// needs V, and units compress under C (docs/spec/94-assembler.md §9).
+	// Empty means the target's default processor.
+	CPU string
 	// NativeBodies runs the native backend over ordinary Oak functions
 	// (nativegen): every function in its subset is lowered to a checked,
 	// verified asm function and realized like an asm unit; the rest keep
@@ -145,6 +151,11 @@ type SyntaxTree struct {
 	// their projections, so a later phase (the prover's liveness check)
 	// can still read the declaration.
 	Protocols []*ast.ProtocolDeclaration
+	// CodecLayouts are the fixed layouts the binary codec derived for this
+	// program (docs/spec/71-codecs.md section 22): reported as information
+	// (OAK-C0101) so a header's exact bytes are visible without reading
+	// the emitted C.
+	CodecLayouts []CodecLayout
 }
 
 // SemanticModel owns type information for a syntax tree.
@@ -184,6 +195,12 @@ func New() Compilation {
 			Target:      target.Host(),
 		},
 	}
+}
+
+// WithCPU returns a compilation for the named processor (`-cpu`).
+func (comp Compilation) WithCPU(cpu string) Compilation {
+	comp.options.CPU = cpu
+	return comp
 }
 
 // WithSource returns a compilation using path/text as its source.
@@ -351,6 +368,11 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		if err != nil {
 			return nil, err
 		}
+		// Literals declarations (compiler/literals.go) project into the
+		// scanner's tables and functions over the standard library kernel.
+		if err := lowerLiterals(tree); err != nil {
+			return nil, err
+		}
 		// Declared layout claims (compiler/layout_claims.go): a record that
 		// says struct(no_padding) is measured now, so the diagnostic names
 		// the padded field instead of the backend failing closed.
@@ -428,9 +450,10 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		// The native backend lowers the ordinary functions it reaches into
 		// checked, verified asm functions beside the units
 		// (docs/spec/94-assembler.md §9).
-		if comp.options.NativeBodies && comp.options.Target.Arch == target.ArchArm64 {
-			// The native body backend lowers to AArch64 (nativegen): on any
-			// other target every body stays with the C backend.
+		if comp.options.NativeBodies && comp.options.Target.AsmArch() != "" {
+			// The native body backend has an AArch64 and an RV64 lane
+			// (nativegen): on a target without a lane every body stays with
+			// the C backend.
 			nativeFunctions, nativeDiagnostics := comp.lowerNativeBodies(tree.Root, tc)
 			if err := comp.gate("native", nativeDiagnostics, tree.Modules); err != nil {
 				return nil, err
@@ -440,6 +463,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 
 		model := &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc, AsmFunctions: asmFunctions}
 		model.Diagnostics = append(model.Diagnostics, tc.Diagnostics()...)
+		model.Diagnostics = append(model.Diagnostics, codecLayoutDiagnostics(tree.CodecLayouts)...)
 
 		bc := borrowchecker.New()
 		bc.CheckProgram(tree.Root, tc.Env())
@@ -671,6 +695,59 @@ func (comp Compilation) EmitNative(format asm.ObjectFormat) Stage[NativeOutput] 
 			return NativeOutput{}, err
 		}
 		return NativeOutput{C: code, Object: object}, nil
+	})
+}
+
+// EmitExecutable links the program into a static executable with the Oak
+// assembler alone (docs/spec/94-assembler.md §9): every Oak function with
+// a body must have been lowered by the native backend (the stage switches
+// it on), the program must declare main and no globals, and the target
+// must be a Linux or freestanding one with an assembler lane. The result
+// is an ELF64 executable whose only code is the checked, encoded
+// functions and the target's start stub; no C is compiled and nothing
+// external links.
+func (comp Compilation) EmitExecutable() Stage[[]byte] {
+	comp.options.NativeAsm = true
+	comp.options.NativeBodies = true
+	return comp.Lower().Then(func(lowered *LoweredProgram) ([]byte, error) {
+		tgt := comp.options.Target
+		if tgt.AsmArch() == "" || (tgt.OS != target.OSLinux && !tgt.Freestanding()) {
+			return nil, fmt.Errorf("link: no native executable format for %s (linux and freestanding targets on the arm64 and rv64 lanes)", tgt)
+		}
+		var left []string
+		hasMain := false
+		for _, stmt := range lowered.Root.Statements {
+			switch d := stmt.(type) {
+			case *ast.FunctionStatement:
+				if d.Name == nil {
+					continue
+				}
+				if d.Name.Value == "main" && d.Receiver == nil {
+					hasMain = true
+				}
+				if d.Body != nil && !d.NativeBacked && !d.AsmBacked && d.ExternSymbol == "" {
+					left = append(left, d.Name.Value)
+				}
+				if d.ExternSymbol != "" {
+					return nil, fmt.Errorf("link: %s is an extern binding to %s; a natively linked program has no C to provide it", d.Name.Value, d.ExternSymbol)
+				}
+			case *ast.VariableDeclaration:
+				return nil, fmt.Errorf("link: the global %s needs the C backend; a natively linked program has none", d.Name.Value)
+			}
+		}
+		if !hasMain {
+			return nil, fmt.Errorf("link: the program declares no main")
+		}
+		if len(left) != 0 {
+			sort.Strings(left)
+			return nil, fmt.Errorf("link: %s stayed with the C backend (the native backend's diagnostics name why); a natively linked program lowers every body", strings.Join(left, ", "))
+		}
+		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
+		encoded, err := asm.EncodeFunctions(lowered.Model.AsmFunctions, generator.CFunctionName)
+		if err != nil {
+			return nil, fmt.Errorf("asm: %w", err)
+		}
+		return asm.WriteExecutable(encoded, asm.ExecutableOptions{OS: tgt.OS, Arch: tgt.AsmArch(), Entry: generator.CFunctionName("main"), RV64FloatABI: comp.objectOptions().RV64FloatABI})
 	})
 }
 

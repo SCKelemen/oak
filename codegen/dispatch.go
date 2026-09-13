@@ -59,7 +59,9 @@ static u64 oak_cpu_probe(void) {
   return f;
 }
 #elif defined(__aarch64__) && defined(__APPLE__)
-#include <sys/sysctl.h>
+/* declared here rather than through <sys/sysctl.h>, which a strict -std=c11
+   SDK may hide behind _DARWIN_C_SOURCE (the dbs pilot's B9) */
+extern int sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 static u64 oak_cpu_probe(void) {
   int v = 0; size_t n = sizeof v; u64 f = 0;
   if (sysctlbyname("hw.optional.arm.FEAT_SVE", &v, &n, 0, 0) == 0 && v != 0) { f |= OAK_CPU_SVE; }

@@ -198,6 +198,15 @@ func (instr Instruction) String() string {
 	return mnemonic + " " + strings.Join(parts, ", ")
 }
 
+// Spell renders an instruction of the function's lane as `.oakasm` text,
+// labels and symbols by name (diagnostics and tests).
+func (fn *Function) Spell(instr Instruction) string {
+	if fn.Arch == ArchRV64 {
+		return renderRV64Instruction(instr, nil, nil, nil)
+	}
+	return instr.String()
+}
+
 func renderInstruction(fn *Function, instr Instruction, symbolFor func(string) string, numbers map[string]int, defined map[string]bool) string {
 	if fn.Arch == ArchRV64 {
 		return renderRV64Instruction(instr, symbolFor, numbers, defined)

@@ -7,9 +7,14 @@
 // the bound and the body has no counted loop, else the bit level — the
 // witness pass, then the three variable orders raced in one process
 // (bdd.oak solve_race) — and the rows print as the Go command prints
-// them, so the two outputs compare line for line. What the shell does not
-// do stays with the Go command: protocol invariants and liveness, the
-// compiled-program witness, and the Lean projection.
+// them, so the two outputs compare line for line. The invariant
+// obligations and the probes the exploration needs are generated as source
+// text the file is parsed again with (explore.oak), the rows are folded
+// and printed after the exploration, the compiled witness is written,
+// built through the compiler, run, and folded in (witness.oak), and the
+// Lean projection is written when asked (lean.oak); the guard-exclusivity
+// theorems are generated and folded into their advisory rows. Every row
+// the Go command prints, the shell prints; only the compiler stays Go.
 package main
 
 c_open: (path: c.String, flags: c.Int): c.UInt64 = c.extern("open")
@@ -59,73 +64,77 @@ txt_colon: (): () {
   write_lit(u64(0x203A), u64(0x0), u32(2))
 }
 
-txt_bit_level: (): () {
-  write_lit(u64(0x6220656874207461), u64(0x6C6576656C207469), u32(16))
-  write_lit(u64(0x2820), u64(0x0), u32(2))
+ap_bit_level: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x6220656874207461), u64(0x6C6576656C207469), u32(16))
+  ap_lits(le, ew, u64(0x2820), u64(0x0), u32(2))
 }
 
-txt_bdd_nodes: (): () {
-  write_lit(u64(0x646F6E2044444220), u64(0x7365), u32(10))
+ap_bdd_nodes: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x646F6E2044444220), u64(0x7365), u32(10))
 }
 
-txt_blocks: (): () {
-  write_lit(u64(0x656D61726170202C), u64(0x206E692073726574), u32(16))
-  write_lit(u64(0x736B636F6C62), u64(0x0), u32(6))
+ap_blocks: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x656D61726170202C), u64(0x206E692073726574), u32(16))
+  ap_lits(le, ew, u64(0x736B636F6C62), u64(0x0), u32(6))
 }
 
-txt_control: (): () {
-  write_lit(u64(0x6F72746E6F63202C), u64(0x662073746962206C), u32(16))
-  write_lit(u64(0x74737269), u64(0x0), u32(4))
+ap_control: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x6F72746E6F63202C), u64(0x662073746962206C), u32(16))
+  ap_lits(le, ew, u64(0x74737269), u64(0x0), u32(4))
 }
 
 txt_close: (): () {
   write_lit(u64(0x29), u64(0x0), u32(1))
 }
 
-txt_all: (): () {
-  write_lit(u64(0x206C6C61), u64(0x0), u32(4))
+ap_close: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x29), u64(0x0), u32(1))
 }
 
-txt_cases: (): () {
-  write_lit(u64(0x736573616320), u64(0x0), u32(6))
+ap_all: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x206C6C61), u64(0x0), u32(4))
 }
 
-txt_counterexample: (): () {
-  write_lit(u64(0x657265746E756F63), u64(0x20656C706D6178), u32(15))
+ap_cases: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x736573616320), u64(0x0), u32(6))
 }
 
-txt_traps: (): () {
-  write_lit(u64(0x79646F6220656874), u64(0x2820737061727420), u32(16))
-  write_lit(u64(0x2074666968732061), u64(0x746120746E756F63), u32(16))
-  write_lit(u64(0x6469772065687420), u64(0x61662061202C6874), u32(16))
-  write_lit(u64(0x7373612064656C69), u64(0x20726F202C747265), u32(16))
-  write_lit(u64(0x7274736E6F632061), u64(0x6F206E6F69746375), u32(16))
-  write_lit(u64(0x6920656469737475), u64(0x6964657270207374), u32(16))
-  write_lit(u64(0x7461202965746163), u64(0x20), u32(9))
+ap_counterexample_word: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x657265746E756F63), u64(0x20656C706D6178), u32(15))
 }
 
-txt_outside: (): () {
-  write_lit(u64(0x206564697374756F), u64(0x206B614F20656874), u32(16))
-  write_lit(u64(0x676E697265776F6C), u64(0x6573627573207327), u32(16))
-  write_lit(u64(0x6F73616572282074), u64(0x206E), u32(10))
+ap_traps: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x79646F6220656874), u64(0x2820737061727420), u32(16))
+  ap_lits(le, ew, u64(0x2074666968732061), u64(0x746120746E756F63), u32(16))
+  ap_lits(le, ew, u64(0x6469772065687420), u64(0x61662061202C6874), u32(16))
+  ap_lits(le, ew, u64(0x7373612064656C69), u64(0x20726F202C747265), u32(16))
+  ap_lits(le, ew, u64(0x7274736E6F632061), u64(0x6F206E6F69746375), u32(16))
+  ap_lits(le, ew, u64(0x6920656469737475), u64(0x6964657270207374), u32(16))
+  ap_lits(le, ew, u64(0x7461202965746163), u64(0x20), u32(9))
 }
 
-txt_exceeded: (): () {
-  write_lit(u64(0x2D74696220656874), u64(0x6564206C6576656C), u32(16))
-  write_lit(u64(0x65206E6F69736963), u64(0x2064656465656378), u32(16))
-  write_lit(u64(0x65646F6E20737469), u64(0x74656764756220), u32(15))
+ap_outside: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x206564697374756F), u64(0x206B614F20656874), u32(16))
+  ap_lits(le, ew, u64(0x676E697265776F6C), u64(0x6573627573207327), u32(16))
+  ap_lits(le, ew, u64(0x6F73616572282074), u64(0x206E), u32(10))
 }
 
-txt_unsupported: (): () {
-  write_lit(u64(0x2D74696220656874), u64(0x6564206C6576656C), u32(16))
-  write_lit(u64(0x6D206E6F69736963), u64(0x6E75206E61207465), u32(16))
-  write_lit(u64(0x6574726F70707573), u64(0x6D7265742064), u32(14))
+ap_exceeded: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x2D74696220656874), u64(0x6564206C6576656C), u32(16))
+  ap_lits(le, ew, u64(0x65206E6F69736963), u64(0x2064656465656378), u32(16))
+  ap_lits(le, ew, u64(0x65646F6E20737469), u64(0x74656764756220), u32(15))
 }
 
-txt_eval_failed: (): () {
-  write_lit(u64(0x6C61766520656874), u64(0x74206E6F69746175), u32(16))
-  write_lit(u64(0x6F20646570706172), u64(0x6920656D6F73206E), u32(16))
-  write_lit(u64(0x7475706E), u64(0x0), u32(4))
+ap_unsupported: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x2D74696220656874), u64(0x6564206C6576656C), u32(16))
+  ap_lits(le, ew, u64(0x6D206E6F69736963), u64(0x6E75206E61207465), u32(16))
+  ap_lits(le, ew, u64(0x6574726F70707573), u64(0x6D7265742064), u32(14))
+}
+
+ap_eval_failed: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x6C61766520656874), u64(0x74206E6F69746175), u32(16))
+  ap_lits(le, ew, u64(0x6F20646570706172), u64(0x6920656D6F73206E), u32(16))
+  ap_lits(le, ew, u64(0x7475706E), u64(0x0), u32(4))
 }
 
 txt_summary: (): () {
@@ -154,6 +163,10 @@ txt_sep: (): () {
   write_lit(u64(0x202C), u64(0x0), u32(2))
 }
 
+ap_sep: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x202C), u64(0x0), u32(2))
+}
+
 txt_decided_w: (): () {
   write_lit(u64(0x6465646963656420), u64(0x0), u32(8))
 }
@@ -166,16 +179,16 @@ txt_refuted_w: (): () {
   write_lit(u64(0x6465747566657220), u64(0x0), u32(8))
 }
 
-txt_eq: (): () {
-  write_lit(u64(0x3D), u64(0x0), u32(1))
+ap_eq: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x3D), u64(0x0), u32(1))
 }
 
-txt_eq_sp: (): () {
-  write_lit(u64(0x203D20), u64(0x0), u32(3))
+ap_eq_sp: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x203D20), u64(0x0), u32(3))
 }
 
-txt_minus: (): () {
-  write_lit(u64(0x2D), u64(0x0), u32(1))
+ap_minus: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x2D), u64(0x0), u32(1))
 }
 
 txt_lean_failed: (): () {
@@ -190,6 +203,13 @@ txt_not_projected: (): () {
   write_lit(u64(0x687420656D6F7320), u64(0x6120736D65726F65), u32(16))
   write_lit(u64(0x7020746F6E206572), u64(0x64657463656A6F72), u32(16))
   write_lit(u64(0x2074737269662820), u64(0x206E6F73616572), u32(15))
+}
+
+txt_witness_failed: (): () {
+  write_lit(u64(0x766F7270206B616F), u64(0x656E746977203A65), u32(16))
+  write_lit(u64(0x20656874203A7373), u64(0x6420726576697264), u32(16))
+  write_lit(u64(0x6320746F6E206469), u64(0x6F20656C69706D6F), u32(16))
+  write_lit(u64(0x6E75722072), u64(0x0), u32(5))
 }
 
 txt_wrote: (): () {
@@ -246,25 +266,12 @@ ROW_DECIDED: u32 = 0
 ROW_REFUTED: u32 = 1
 ROW_OPEN: u32 = 2
 
-write_name: (rx: []u32, raw: Raw, sid: u32): () {
-  n: u32 = rs_len(rx, raw, sid)
-  k: u32 = 0
-  while k < n {
-    write_byte(u8_trunc_u32(rs_byte(rx, raw, sid, k)))
-    k = k + u32(1)
-  }
-}
 
-row_head: (kind: u32, rx: []u32, raw: Raw, name: u32): () {
-  kind == ROW_DECIDED ? { txt_decided() } | { kind == ROW_REFUTED ? { txt_refuted() } | { txt_open() } }
-  write_name(rx, raw, name)
-  txt_colon()
-}
 
 // write_counterexample prints the leaves the terms mention with their
 // values, signed leaves as such, from the bits and marks list (the
 // driver's report convention), `name=value` or `name = value`.
-write_counterexample: (ser: Ser, sw: [*]u32, bits: []u32, listed: u32, spaced: Bool): () {
+ap_counterexample: (le: Lem, ew: [*]u32, ser: Ser, sw: [*]u32, bits: []u32, listed: u32, spaced: Bool): () {
   nleaves: u32 = serialized_leaf_count(ser, sw)
   first: Bool = true
   li: u32 = 0
@@ -283,28 +290,28 @@ write_counterexample: (ser: Ser, sw: [*]u32, bits: []u32, listed: u32, spaced: B
       k = k + u32(1)
     }
     mentioned ? {
-      first ? { } | { txt_sep() }
+      first ? { } | { ap_sep(le, ew) }
       first = false
       n: u32 = serialized_leaf_len(ser, sw, li)
       i: u32 = 0
       while i < n {
-        write_byte(u8_trunc_u32(serialized_leaf_byte(ser, sw, li, i)))
+        sb_byte(le, ew, serialized_leaf_byte(ser, sw, li, i))
         i = i + u32(1)
       }
-      spaced ? { txt_eq_sp() } | { txt_eq() }
+      spaced ? { ap_eq_sp(le, ew) } | { ap_eq(le, ew) }
       (signed_width > u32(0) && signed_width < u32(64) && (value >> u64(signed_width - u32(1))) != u64(0)) ? {
-        txt_minus()
-        write_u64((u64(1) << u64(signed_width)) - value)
-      } | { write_u64(value) }
+        ap_minus(le, ew)
+        sb_dec(le, ew, (u64(1) << u64(signed_width)) - value)
+      } | { sb_dec(le, ew, value) }
     } | { }
     li = li + u32(1)
   }
 }
 
-write_counterexample_of: (ser: Ser, ser_raw: c.Ptr, bits: []u32, listed: u32, spaced: Bool): () {
+ap_counterexample_of: (le: Lem, ew: [*]u32, ser: Ser, ser_raw: c.Ptr, bits: []u32, listed: u32, spaced: Bool): () {
   unsafe {
     sbuf: Buffer[u32] = c.own[u32](ser_raw, ser.total)
-    write_counterexample(ser, span(&sbuf), bits, listed, spaced)
+    ap_counterexample(le, ew, ser, span(&sbuf), bits, listed, spaced)
     released_s: c.Ptr = c.disown(sbuf)
   }
 }
@@ -360,31 +367,34 @@ race_in_oak: (l: Layout, lw: Lower, t0: c.Ptr, t1: c.Ptr, t2: c.Ptr, b0: c.Ptr, 
 }
 
 // Counts of the rows: decided, refuted, open.
-Counts: type = struct { decided: u32, refuted: u32, open: u32 }
+Counts: type = struct { decided: u32, refuted: u32, open: u32, failing: u32 }
 
 // decide_one decides one theorem (its raw function index) and prints its
 // row: the kind it printed.
-decide_one: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, work_raw: c.Ptr, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, t0: c.Ptr, t1: c.Ptr, t2: c.Ptr, rx: []u32, raw: Raw, fi: u32, cases: u32, budget: u32): u32 {
+decide_one: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, work_raw: c.Ptr, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, t0: c.Ptr, t1: c.Ptr, t2: c.Ptr, rx: []u32, raw: Raw, fi: u32, cases: u32, budget: u32): u32 {
   name: u32 = rf_word(rx, raw, fi, u32(0))
+  rname: u32 = rstr(le, ew, rx, raw, name)
   kind: u32 = ROW_OPEN
   n_syn: u32 = serialize_in_oak(ser, ser_raw, out_raw, rx, fi)
+  // The row's detail is built in the arena; the row is recorded, printed
+  // after the folds (explore.oak).
+  sb_begin(le, ew)
   n_syn >= u32(0x80000000) ? {
-    row_head(ROW_OPEN, rx, raw, name)
-    txt_outside()
-    write_u32(NONE - n_syn)
-    txt_close()
-    write_byte(u8(10))
+    ap_outside(le, ew)
+    sb_dec(le, ew, u64(NONE - n_syn))
+    ap_close(le, ew)
   } | {
     unsafe {
       obuf: Buffer[u32] = c.own[u32](out_raw, ser.out_total)
-      kind = decide_serialized(l, lw, ser, ser_raw, work_raw, b0, b1, b2, t0, t1, t2, rx, raw, name, view(&obuf), n_syn, cases, budget)
+      kind = decide_serialized(le, ew, l, lw, ser, ser_raw, work_raw, b0, b1, b2, t0, t1, t2, rx, raw, name, view(&obuf), n_syn, cases, budget)
       released_o: c.Ptr = c.disown(obuf)
     }
   }
+  row_push(le, ew, kind, rname, sb_end(le, ew))
   kind
 }
 
-decide_serialized: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, work_raw: c.Ptr, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, t0: c.Ptr, t1: c.Ptr, t2: c.Ptr, rx: []u32, raw: Raw, name: u32, whole: []u32, n_syn: u32, cases: u32, budget: u32): u32 {
+decide_serialized: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, work_raw: c.Ptr, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, t0: c.Ptr, t1: c.Ptr, t2: c.Ptr, rx: []u32, raw: Raw, name: u32, whole: []u32, n_syn: u32, cases: u32, budget: u32): u32 {
   sx: []u32 = subslice(whole, u32(0), n_syn)
   witness: [512]u32
   dom: [256]u64
@@ -396,42 +406,34 @@ decide_serialized: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, work_raw: c.
     verdict: u32 = enumerate_in_oak(lw, work_raw, b0, sx, span(&dom), total, span(&witness))
     verdict == u32(5) ? {
       kind = ROW_DECIDED
-      row_head(ROW_DECIDED, rx, raw, name)
-      txt_all()
-      write_u64(total)
-      txt_cases()
+      ap_all(le, ew)
+      sb_dec(le, ew, total)
+      ap_cases(le, ew)
     } | {
       verdict == u32(7) ? {
         kind = ROW_REFUTED
-        row_head(ROW_REFUTED, rx, raw, name)
-        txt_counterexample()
+        ap_counterexample_word(le, ew)
         bits: []u32 = view(&witness)
         marked: u32 = signed_marks(sx, span(&witness), witness[u32(0)] + u32(1))
-        write_counterexample_of(ser, ser_raw, subslice(bits, u32(1), marked - u32(1)), marked - u32(1), true)
+        ap_counterexample_of(le, ew, ser, ser_raw, subslice(bits, u32(1), marked - u32(1)), marked - u32(1), true)
       } | {
-        row_head(ROW_OPEN, rx, raw, name)
-        txt_eval_failed()
+        ap_eval_failed(le, ew)
       }
     }
-    write_byte(u8(10))
   } | {
   n0 == WITNESSED ? {
     verdict: u32 = witness[u32(0)] / u32(65536)
     listed: u32 = witness[u32(0)] % u32(65536)
     kind = ROW_REFUTED
-    row_head(ROW_REFUTED, rx, raw, name)
-    verdict == u32(4) ? { txt_traps() } | { txt_counterexample() }
+    verdict == u32(4) ? { ap_traps(le, ew) } | { ap_counterexample_word(le, ew) }
     bits: []u32 = view(&witness)
     marked: u32 = signed_marks(sx, span(&witness), listed + u32(1))
-    write_counterexample_of(ser, ser_raw, subslice(bits, u32(1), marked - u32(1)), marked - u32(1), false)
-    write_byte(u8(10))
+    ap_counterexample_of(le, ew, ser, ser_raw, subslice(bits, u32(1), marked - u32(1)), marked - u32(1), false)
   } | {
   n0 >= u32(0x80000000) ? {
-    row_head(ROW_OPEN, rx, raw, name)
-    txt_outside()
-    write_u32(NONE - n0)
-    txt_close()
-    write_byte(u8(10))
+    ap_outside(le, ew)
+    sb_dec(le, ew, u64(NONE - n0))
+    ap_close(le, ew)
   } | {
     // The bit level: the other orders when they apply, then the race.
     scratch: [512]u32
@@ -451,28 +453,55 @@ decide_serialized: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, work_raw: c.
     order: u32 = winner == u32(0) ? { u32(0) } | { (winner == u32(1) && has1) ? { u32(1) } | { u32(2) } }
     status == STATUS_PROVEN ? {
       kind = ROW_DECIDED
-      row_head(ROW_DECIDED, rx, raw, name)
-      txt_bit_level()
-      write_u32(out[u32(2)])
-      txt_bdd_nodes()
-      order == u32(1) ? { txt_blocks() } | { order == u32(2) ? { txt_control() } | { } }
-      txt_close()
+      ap_bit_level(le, ew)
+      sb_dec(le, ew, u64(out[u32(2)]))
+      ap_bdd_nodes(le, ew)
+      order == u32(1) ? { ap_blocks(le, ew) } | { order == u32(2) ? { ap_control(le, ew) } | { } }
+      ap_close(le, ew)
     } | {
     status == STATUS_REFUTED ? {
       kind = ROW_REFUTED
-      row_head(ROW_REFUTED, rx, raw, name)
-      txt_counterexample()
+      ap_counterexample_word(le, ew)
       listed: u32 = out[u32(3)]
       marked: u32 = signed_marks(sx, span(&out), u32(4) + listed)
       bits: []u32 = view(&out)
-      write_counterexample_of(ser, ser_raw, subslice(bits, u32(4), marked - u32(4)), marked - u32(4), false)
+      ap_counterexample_of(le, ew, ser, ser_raw, subslice(bits, u32(4), marked - u32(4)), marked - u32(4), false)
     } | {
-      row_head(ROW_OPEN, rx, raw, name)
-      status == STATUS_UNSUPPORTED ? { txt_unsupported() } | { txt_exceeded() }
+      status == STATUS_UNSUPPORTED ? { ap_unsupported(le, ew) } | { ap_exceeded(le, ew) }
     } }
-    write_byte(u8(10))
   } } }
   kind
+}
+
+// trace_env: whether OAK_PROVE_TRACE is set.
+trace_env: (): Bool {
+  p: c.Ptr = c_getenv(c.cstr("OAK_PROVE_TRACE\0"))
+  set: Bool = false
+  unsafe {
+    value: []u8 = c.borrow_string(p)
+    set = len(value) > u32(0)
+  }
+  set
+}
+
+write_bytes: (bytes: []u8, from_at: u32, to_at: u32): () {
+  k: u32 = from_at
+  while k < to_at {
+    write_byte(bytes[k])
+    k = k + u32(1)
+  }
+}
+
+// GEN_MAX bounds the generated source appended to the file (explore.oak).
+GEN_MAX: u32 = 65536
+
+// generate_into appends the obligations and probes the parsed file calls
+// for to its bytes: the new byte count, NONE past the capacity.
+generate_into: (tables: []u32, n_raw: u32, bytes: [*]u8, nbytes: u32): u32 {
+  rx: []u32 = subslice(tables, u32(0), n_raw)
+  raw: Raw = raw_layout(rx)
+  total: u32 = generated_source(bytes, nbytes, rx, raw)
+  (total != NONE && total > nbytes + GEN_MAX) ? { NONE } | { total }
 }
 
 // shell_main runs the ladder over the file's theorems.
@@ -485,6 +514,23 @@ shell_main: (): i32 {
   lean_len: u32 = copy_env(c_getenv(c.cstr("OAK_PROVE_LEAN\0")), span(&lean_buf))
   lean_view: []u8 = view(&lean_buf)
   lean_path: []u8 = subslice(lean_view, u32(0), lean_len + u32(1))
+  // The compiled witness: OAK_PROVE_WITNESS set, the compiler's path, and
+  // where to write the driver's source and binary (witness.oak).
+  wit_buf: [16]u8
+  wit_len: u32 = copy_env(c_getenv(c.cstr("OAK_PROVE_WITNESS\0")), span(&wit_buf))
+  compiler_buf: [1024]u8
+  compiler_len: u32 = copy_env(c_getenv(c.cstr("OAK_PROVE_COMPILER\0")), span(&compiler_buf))
+  compiler_view: []u8 = view(&compiler_buf)
+  compiler: []u8 = subslice(compiler_view, u32(0), compiler_len + u32(1))
+  wsrc_buf: [1024]u8
+  wsrc_len: u32 = copy_env(c_getenv(c.cstr("OAK_PROVE_WITNESS_SOURCE\0")), span(&wsrc_buf))
+  wsrc_view: []u8 = view(&wsrc_buf)
+  wsrc: []u8 = subslice(wsrc_view, u32(0), wsrc_len + u32(1))
+  wbin_buf: [1024]u8
+  wbin_len: u32 = copy_env(c_getenv(c.cstr("OAK_PROVE_WITNESS_BINARY\0")), span(&wbin_buf))
+  wbin_view: []u8 = view(&wbin_buf)
+  wbin: []u8 = subslice(wbin_view, u32(0), wbin_len + u32(1))
+  witness_on: Bool = wit_len > u32(0) && compiler_len > u32(0) && wsrc_len > u32(0) && wbin_len > u32(0)
   cases: u32 = 0
   k: u32 = 0
   while k < cases_len {
@@ -499,19 +545,22 @@ shell_main: (): i32 {
   path: []u8 = subslice(path_view, u32(0), path_len + u32(1))
   nbytes: u32 = path_len == u32(0) ? { NONE } | { read_file(path, chunk_raw, bytes_raw) }
   code: i32 = 0
-  nbytes == NONE ? {
+  (nbytes == NONE || nbytes + u32(2) * GEN_MAX > FILE_MAX) ? {
     txt_no_file()
     write_byte(u8(10))
     code = i32(2)
   } | {
-    nwords: u32 = (nbytes + u32(3)) / u32(4)
+    // Room for the generated obligations and probes (explore.oak), which
+    // the file is parsed again with.
+    nwords: u32 = (nbytes + GEN_MAX + u32(3)) / u32(4)
     words_raw: c.Ptr = malloc(c.Size((nwords + u32(1)) * u32(4)))
     par: Par = par_layout()
     par_raw: c.Ptr = malloc(c.Size(par.total * u32(4)))
-    arena_words: u32 = nbytes * u32(16) + u32(16384)
+    arena_words: u32 = (nbytes + GEN_MAX) * u32(16) + u32(16384)
     arena_raw: c.Ptr = malloc(c.Size(arena_words * u32(4)))
     n_raw: u32 = 0
     reason: u32 = 0
+    source_len: u32 = nbytes
     unsafe {
       file_bytes: Buffer[u8] = c.own[u8](bytes_raw, FILE_MAX)
       file_words: Buffer[u32] = c.own[u32](words_raw, nwords + u32(1))
@@ -520,16 +569,32 @@ shell_main: (): i32 {
       tables: Buffer[u32] = c.own[u32](arena_raw, arena_words)
       n_raw = parse_source(par, span(&pbuf), view(&file_words), nbytes, span(&tables), u32(0), arena_words)
       reason = parse_reason(par, span(&pbuf))
+      n_raw == u32(0) ? { } | {
+        total: u32 = generate_into(view(&tables), n_raw, span(&file_bytes), nbytes)
+        // OAK_PROVE_TRACE=1 prints the generated source.
+        (total != NONE && total > nbytes && trace_env()) ? { write_bytes(view(&file_bytes), nbytes, total) } | { }
+        total == NONE ? {
+          n_raw = u32(0)
+          reason = u32(900)
+        } | {
+          source_len = total
+          total > nbytes ? {
+            words_of_prefix(view(&file_bytes), span(&file_words), total)
+            n_raw = parse_source(par, span(&pbuf), view(&file_words), total, span(&tables), u32(0), arena_words)
+            reason = parse_reason(par, span(&pbuf))
+          } | { }
+        }
+      }
       released_p: c.Ptr = c.disown(pbuf)
       released_w: c.Ptr = c.disown(file_words)
-      released_f: c.Ptr = c.disown(file_bytes)
       n_raw == u32(0) ? {
         txt_parse_failed()
         write_u32(reason)
         txt_close()
         write_byte(u8(10))
         code = i32(2)
-      } | { code = prove_tables(view(&tables), n_raw, cases, budget, lean_path) }
+      } | { code = prove_tables(view(&tables), n_raw, cases, budget, lean_path, view(&file_bytes), source_len, witness_on, compiler, wsrc, wbin) }
+      released_f: c.Ptr = c.disown(file_bytes)
       released_t: c.Ptr = c.disown(tables)
     }
   }
@@ -546,39 +611,41 @@ words_of_prefix: (bytes: []u8, words: [*]u32, n: u32): () {
   }
 }
 
-// prove_tables decides every theorem of the parsed file and prints the
-// summary; with a Lean output path (NUL-terminated, more than the NUL)
-// the projection is written after it (lean.oak).
-prove_tables: (arena: []u32, n_raw: u32, cases: u32, budget: u32, lean_path: []u8): i32 {
-  rx: []u32 = subslice(arena, u32(0), n_raw)
-  raw: Raw = raw_layout(rx)
-  lowered_terms: u32 = 131072
-  l: Layout = layout_for(budget, lowered_terms)
-  lw: Lower = lower_layout(lowered_terms, u32(64))
-  ser: Ser = ser_layout(u32(65536), u32(131072))
-  ser_raw: c.Ptr = malloc(c.Size(ser.total * u32(4)))
-  out_raw: c.Ptr = malloc(c.Size(ser.out_total * u32(4)))
-  work_raw: c.Ptr = malloc(c.Size(lw.total * u32(4)))
-  b0: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
-  b1: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
-  b2: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
-  t0: c.Ptr = malloc(c.Size(l.total * u32(4)))
-  t1: c.Ptr = malloc(c.Size(l.total * u32(4)))
-  t2: c.Ptr = malloc(c.Size(l.total * u32(4)))
-  counts: Counts = Counts { decided: u32(0), refuted: u32(0), open: u32(0) }
+// prove_rows decides every theorem of the parsed file into the row table,
+// folds the invariant obligations, explores the protocols, prints the rows
+// and the summary: the exit status.
+prove_rows: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, work_raw: c.Ptr, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, t0: c.Ptr, t1: c.Ptr, t2: c.Ptr, ex_raw: c.Ptr, rx: []u32, raw: Raw, cases: u32, budget: u32, source: []u8, source_len: u32, witness_on: Bool, compiler: []u8, wsrc: []u8, wbin: []u8): i32 {
+  le_init(le, ew, raw)
+  set_lst(le, ew, LN_NROWS, u32(0))
   theorems: u32 = 0
   fi: u32 = 0
   while fi < raw.nfuncs {
     (rf_word(rx, raw, fi, u32(5)) & u32(2)) != u32(0) ? {
       theorems = theorems + u32(1)
-      kind: u32 = decide_one(l, lw, ser, ser_raw, out_raw, work_raw, b0, b1, b2, t0, t1, t2, rx, raw, fi, cases, budget)
-      counts = kind == ROW_DECIDED ? { Counts { decided: counts.decided + u32(1), refuted: counts.refuted, open: counts.open } } | {
-        kind == ROW_REFUTED ? { Counts { decided: counts.decided, refuted: counts.refuted + u32(1), open: counts.open } } | { Counts { decided: counts.decided, refuted: counts.refuted, open: counts.open + u32(1) } }
-      }
+      kind: u32 = decide_one(le, ew, l, lw, ser, ser_raw, out_raw, work_raw, b0, b1, b2, t0, t1, t2, rx, raw, fi, cases, budget)
     } | { }
     fi = fi + u32(1)
   }
-  theorems == u32(0) ? { txt_no_theorems() } | {
+  nlive: u32 = 0
+  pi: u32 = 0
+  while pi < raw.nprotos {
+    nlive = nlive + rproto_word(rx, raw, pi, u32(12))
+    pi = pi + u32(1)
+  }
+  code: i32 = 0
+  (theorems == u32(0) && nlive == u32(0)) ? { txt_no_theorems() } | {
+    fold_invariants(le, ew)
+    fold_exclusivity(le, ew)
+    explore_all(le, ew, ser, ser_raw, out_raw, lw, work_raw, b0, ex_raw, rx, raw, cases)
+    witness_failed: Bool = false
+    witness_on ? {
+      witness_all(le, ew, rx, raw, cases, source, source_len, compiler, wsrc, wbin) ? { } | {
+        txt_witness_failed()
+        write_byte(u8(10))
+        witness_failed = true
+      }
+    } | { }
+    counts: Counts = print_rows(le, ew)
     // The summary, statuses in name order: decided, open, refuted.
     txt_summary()
     first: Bool = true
@@ -598,18 +665,48 @@ prove_tables: (arena: []u32, n_raw: u32, cases: u32, budget: u32, lean_path: []u
       write_u32(counts.refuted)
       txt_refuted_w()
     } | { }
+    code = witness_failed ? { i32(2) } | { counts.failing > u32(0) ? { i32(1) } | { i32(0) } }
   }
   write_byte(u8(10))
-  lean_failed: Bool = false
+  code
+}
+
+// prove_tables decides every theorem of the parsed file and prints the
+// summary; with a Lean output path (NUL-terminated, more than the NUL)
+// the projection is written after it (lean.oak).
+prove_tables: (arena: []u32, n_raw: u32, cases: u32, budget: u32, lean_path: []u8, source: []u8, source_len: u32, witness_on: Bool, compiler: []u8, wsrc: []u8, wbin: []u8): i32 {
+  rx: []u32 = subslice(arena, u32(0), n_raw)
+  raw: Raw = raw_layout(rx)
+  lowered_terms: u32 = 131072
+  l: Layout = layout_for(budget, lowered_terms)
+  lw: Lower = lower_layout(lowered_terms, u32(64))
+  ser: Ser = ser_layout(u32(65536), u32(131072))
+  ser_raw: c.Ptr = malloc(c.Size(ser.total * u32(4)))
+  out_raw: c.Ptr = malloc(c.Size(ser.out_total * u32(4)))
+  work_raw: c.Ptr = malloc(c.Size(lw.total * u32(4)))
+  b0: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
+  b1: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
+  b2: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
+  t0: c.Ptr = malloc(c.Size(l.total * u32(4)))
+  t1: c.Ptr = malloc(c.Size(l.total * u32(4)))
+  t2: c.Ptr = malloc(c.Size(l.total * u32(4)))
+  le: Lem = lem_layout()
+  le_raw: c.Ptr = malloc(c.Size(le.total * u32(4)))
+  ex: Exp = exp_layout()
+  ex_raw: c.Ptr = malloc(c.Size(ex.total * u32(4)))
+  code: i32 = 0
+  unsafe {
+    rows_buf: Buffer[u32] = c.own[u32](le_raw, le.total)
+    code = prove_rows(le, span(&rows_buf), l, lw, ser, ser_raw, out_raw, work_raw, b0, b1, b2, t0, t1, t2, ex_raw, rx, raw, cases, budget, source, source_len, witness_on, compiler, wsrc, wbin)
+    released_rows: c.Ptr = c.disown(rows_buf)
+  }
   len(lean_path) > u32(1) ? {
-    le: Lem = lem_layout()
-    le_raw: c.Ptr = malloc(c.Size(le.total * u32(4)))
     reason: u32 = project_file(le, le_raw, ser, ser_raw, out_raw, rx, raw, lean_path)
     reason != u32(0) ? {
       txt_lean_failed()
       write_u32(reason)
       txt_close()
-      lean_failed = true
+      code = i32(2)
     } | {
       txt_wrote()
       k: u32 = 0
@@ -619,8 +716,9 @@ prove_tables: (arena: []u32, n_raw: u32, cases: u32, budget: u32, lean_path: []u
       }
     }
     write_byte(u8(10))
-    free(le_raw)
   } | { }
+  free(ex_raw)
+  free(le_raw)
   free(t0)
   free(t1)
   free(t2)
@@ -630,5 +728,5 @@ prove_tables: (arena: []u32, n_raw: u32, cases: u32, budget: u32, lean_path: []u
   free(work_raw)
   free(out_raw)
   free(ser_raw)
-  lean_failed ? { i32(2) } | { counts.refuted > u32(0) ? { i32(1) } | { i32(0) } }
+  code
 }

@@ -37,7 +37,10 @@ type Package struct {
 	// Target is the build target of the test binary (`oak test -target`,
 	// docs/spec/90-backend.md section 2a); the zero value is the host. A
 	// foreign target is built through its cross toolchain and not run.
-	Target   target.Target
+	Target target.Target
+	// CPU is the processor of the test build (`oak test -cpu`): the asm
+	// lane reads its extensions as `oak build -cpu` does.
+	CPU      string
 	Tests    []Test
 	Registry []Test
 	// Schema decodes semantic trace events for people and tools; nil when the

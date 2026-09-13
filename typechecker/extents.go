@@ -296,6 +296,77 @@ func scaledIndex(expr ast.Expression) (name string, scale int64, offset int64, o
 	return "", 0, 0, false
 }
 
+// scaledIndex2 recognizes a sum of two scaled bindings and a literal, in
+// any association and order — `i * K + j * M + c`, `i * K + (j * M + c)`,
+// `i * K + j` (a bare binding is the scale-one term) — the shape a loop
+// inside a loop produces over a flat buffer (a record's array field inside
+// an array of records, the binary codec's nested arrays;
+// docs/spec/50-borrowing.md, scaled index).
+func scaledIndex2(expr ast.Expression) (name1 string, scale1 int64, name2 string, scale2 int64, offset int64, ok bool) {
+	var addends []ast.Expression
+	var flatten func(e ast.Expression)
+	flatten = func(e ast.Expression) {
+		if infix, isInfix := e.(*ast.InfixExpression); isInfix && infix.Operator == "+" {
+			flatten(infix.Left)
+			flatten(infix.Right)
+			return
+		}
+		addends = append(addends, e)
+	}
+	flatten(expr)
+	if len(addends) < 2 {
+		return "", 0, "", 0, 0, false
+	}
+	// term reads one addend as a scaled binding: `i * K`, `K * i`, or `i`.
+	term := func(addend ast.Expression) (string, int64, bool) {
+		if n, isPath := pathOf(addend); isPath {
+			return n, 1, true
+		}
+		infix, isInfix := addend.(*ast.InfixExpression)
+		if !isInfix || infix.Operator != "*" {
+			return "", 0, false
+		}
+		if n, isPath := pathOf(infix.Left); isPath {
+			if c, isConst := constantIndex(infix.Right); isConst && c >= 0 {
+				return n, c, true
+			}
+		}
+		if n, isPath := pathOf(infix.Right); isPath {
+			if c, isConst := constantIndex(infix.Left); isConst && c >= 0 {
+				return n, c, true
+			}
+		}
+		return "", 0, false
+	}
+	products := 0
+	for _, addend := range addends {
+		if k, isConst := constantIndex(addend); isConst {
+			if k < 0 {
+				return "", 0, "", 0, 0, false
+			}
+			offset += k
+			continue
+		}
+		name, k, isTerm := term(addend)
+		if !isTerm {
+			return "", 0, "", 0, 0, false
+		}
+		switch products {
+		case 0:
+			name1, scale1 = name, k
+		case 1:
+			name2, scale2 = name, k
+		default:
+			return "", 0, "", 0, 0, false
+		}
+		products++
+	}
+	if products != 2 || name1 == name2 {
+		return "", 0, "", 0, 0, false
+	}
+	return name1, scale1, name2, scale2, offset, true
+}
+
 // valuePreservingBound strips the conversions under which a value cannot
 // grow: a widening `u64(e)` (identity), an unsigned truncation
 // `u32_trunc_u64(e)` (`e mod 2^w <= e`, Oak.Extents.masked_trunc_under_length)
@@ -372,6 +443,14 @@ func (tc *TypeChecker) resolveIndexPairs(facts []extentFact, pairs []indexPair) 
 					// i < n with n <= len(v) / K: i < len(v) / K
 					// (Oak.Extents.div_bound_scaled reads it at the index).
 					facts = append(facts, extentFact{kind: factDivIndex, container: fact.container, other: pair.index, bound: fact.bound, via: pair.bound, viaBinding: fact.viaBinding, indexDirect: true})
+				case factIndexLit:
+					// i < n with n < B (a guard `count <= 8` around the
+					// loops that fill and read a [8]T): i < B - 1
+					// (Oak.Extents.bound_through_literal) — the dbs pilot's
+					// segment-recovery loops, docs/notes/dbs-feedback-2026-09.md.
+					if fact.bound >= 1 {
+						facts = append(facts, extentFact{kind: factIndexLit, other: pair.index, bound: fact.bound - 1, via: pair.bound, viaBinding: fact.viaBinding, indexDirect: true})
+					}
 				}
 			}
 		}
@@ -896,6 +975,14 @@ func (tc *TypeChecker) indexUnder(indexExpr ast.Expression, name string, arr *Ar
 			if !fact.dead && fact.kind == factDivIndex && fact.other == index && fact.container == name && fact.bound == scale && offset < scale {
 				proven = true
 			}
+		}
+	} else if n1, k1, n2, k2, c, isScaled2 := scaledIndex2(indexExpr); isScaled2 {
+		// i * K + j * M + c under i < U1 and j < U2 needs
+		// (U1 - 1) * K + (U2 - 1) * M + c < len (Oak.Extents.scaled2_under_bound).
+		u1, bounded1 := literalUpper(n1)
+		u2, bounded2 := literalUpper(n2)
+		if bounded1 && bounded2 && u1 >= 1 && u2 >= 1 {
+			proven = lengthAtLeast((u1-1)*k1 + (u2-1)*k2 + c + 1)
 		}
 	} else if index, k, isMinus := minusIndex(indexExpr); isMinus {
 		// i - K under K <= L <= i and i < U needs U - K <= len

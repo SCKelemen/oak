@@ -51,3 +51,26 @@ count_rvv: (xs: []u8) -> u32 = u32(len(xs))
 		}
 	}
 }
+
+// A realization is reached only through its dispatched function (the dbs
+// pilot's B10): a direct call would run feature-specific code on a
+// processor without the feature.
+func TestDispatchRealizationIsNotCallable(t *testing.T) {
+	p := parser.New(scanner.New(`
+count: (xs: []u8) -> u32 dispatch { sve: count_sve } = u32(len(xs))
+count_sve: (xs: []u8) -> u32 = u32(len(xs))
+use: (xs: []u8) -> u32 = count_sve(xs)
+`))
+	program := p.ParseProgram()
+	tc := New(object.NewEnvironment())
+	tc.CheckProgram(program)
+	found := false
+	for _, e := range tc.Errors() {
+		if strings.Contains(e, "is a realization; call the function that dispatches to it") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a direct call to a realization must be refused: %v", tc.Errors())
+	}
+}

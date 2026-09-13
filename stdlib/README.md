@@ -100,7 +100,7 @@ produce: (n: u32): () {
 | `spsc_push[T](cursor, storage, item)` | producer only; `true` appends, `false` leaves a full ring unchanged; the slot write is released by the store of `tail` |
 | `spsc_pop[T](cursor, storage)` | consumer only; `Some(T)` removes the oldest item, `None` leaves an empty ring unchanged; the slot read precedes the release of `head` |
 | `spsc_count(cursor)` | items between the indices as this thread sees them |
-| `mpsc_init(cursor, seqs)` | readies every slot (`seq = slot`) before any thread touches the ring |
+| `mpsc_init(cursor, seqs)` | readies every slot (`seq = slot`) before any thread touches the ring; `seqs` is `[N]SeqCell`, one sequence cell per 64-byte line |
 | `mpsc_push[T](cursor, seqs, storage, item)` | any producer, concurrently; claims a position by compare-exchange on `tail`, publishes with a release of the slot's sequence; `false` when full |
 | `mpsc_pop[T](cursor, seqs, storage)` | the single consumer; `Some(T)` for the oldest published item, `None` otherwise; recycles the slot with a release of `seq = pos + capacity` |
 
@@ -118,7 +118,12 @@ race-free under the release/acquire pairs (`spsc_payload_race_free`,
 `intrusive_payload_race_free`).
 Each SPSC side caches the other's index and refreshes it only when the cache
 says stop, so an uncontended push or pop touches one cache line of the
-cursor; the two indices live on separate 64-byte lines. Witnessed
+cursor; the two indices live on separate 64-byte lines, and each MPSC/MPMC
+sequence cell on its own (`SeqCell`). Costs are measured in
+[`benchmarks/rings/`](../benchmarks/rings/RESULTS.md): about 10 ns per item
+through the SPSC ring, 60 through the intrusive queue with four producers,
+150–220 through the compare-exchange rings at four producers (claim
+contention; under 25 ns with one). Witnessed
 sequentially in both realizations and across pthreads, plain and under
 ThreadSanitizer (`compiler/e2e_rings_test.go`), and under the memory
 refinement layers: the compiled operations carry `ldar`/`stlr` and the
@@ -192,6 +197,32 @@ step, then the scalar decoder from a sequence boundary (`70-strings.md`
 | Function | Semantics |
 | --- | --- |
 | `valid` | true iff `bytes` is well-formed UTF-8: no overlong forms, no surrogates, nothing above U+10FFFF, no truncated sequence, no stray continuation |
+
+## Literal sets (`import("literals")`)
+
+`stdlib/literals.oak` is the Teddy prefilter of Hyperscan written in
+Oak's portable vectors (`docs/spec/113-literals.md`): a set of literals
+in eight buckets, a low-nibble and a high-nibble table of bucket masks
+for each of the first three bytes of every literal, sixty-four bytes a
+step, candidates verified against the literal. `build(patterns, starts,
+total, tables)` fills the 96-byte tables for a set given as the
+concatenated `patterns` with `starts[j] .. starts[j+1]` literal `j`;
+`count`, `find_from`, `which_at`, and `literal_at` take the set the same
+way. The `literals` declaration is the compile-time spelling: its tables
+are precomputed by the compiler and its projected functions call this
+kernel. Sound by `Oak.Teddy`; measured at 0.10 ns/byte on sixteen HTTP
+tokens, the hand-written C ceiling, ahead of Vectorscan (0.18) and RE2
+(1.69) (`benchmarks/scanning/`).
+
+| Function | Semantics |
+| --- | --- |
+| `build` | fills the six nibble tables; every literal at least three bytes |
+| `count` | occurrences of every literal, overlapping and coincident ones each counted |
+| `find_from` | first position at or after `start` where some literal occurs, else `len(bytes)` |
+| `which_at` | index of the first literal occurring at `pos`, else `total` |
+| `literal_at` | whether literal `j` occurs at `pos` |
+| `Carry`, `carry()` | the state of a stream: the last bytes so far (one less than the longest literal, at most 63) |
+| `feed` | the occurrences ending in one more chunk; the carry advances. Feeds over an input's chunks sum to `count` of the whole |
 
 ## Bytes
 

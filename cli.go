@@ -176,6 +176,7 @@ var envVariables = []struct {
 		return ""
 	}},
 	{"OAK_CFLAGS", "extra C compiler arguments, split on whitespace (with OAK_CC)", func() string { return os.Getenv("OAK_CFLAGS") }},
+	{"OAKOPT", "C compiler optimization level for executables when -opt is not given, 0..3 (default 1)", func() string { return fmt.Sprintf("%d", cOptLevel) }},
 	{"OAKCPU", "processor for -mcpu (default: the target's, e.g. cortex_m4 for freestanding/arm)", func() string {
 		if cpu := os.Getenv("OAKCPU"); cpu != "" {
 			return cpu
@@ -536,8 +537,8 @@ func plural(n int, one, many string) string {
 // units' companion object) and compiles it with the system C compiler into
 // binary (fixed argument list, no shell).
 func compileBinary(comp compiler.Compilation, binary, asmMode string, tgt target.Target, cpu string) error {
-	comp = comp.WithTarget(tgt)
-	code, object, err := emitFor(comp, asmMode, tgt)
+	comp = comp.WithTarget(tgt).WithCPU(cpu)
+	code, object, err := emitFor(comp, asmMode, tgt, cpu)
 	if err != nil {
 		return err
 	}
@@ -556,7 +557,49 @@ func compileBinary(comp compiler.Compilation, binary, asmMode string, tgt target
 // ccFlags are the fixed C compiler flags for executables: -ffp-contract=off
 // keeps floating-point semantics exactly as written (docs/spec/90-backend.md
 // section 7a); -lm links the C99 math library the float intrinsics lower to.
-var ccFlags = []string{"-std=c99", "-O1", "-ffp-contract=off", "-Wno-parentheses-equality"}
+// The optimization level is cOptLevel's (`-opt`, OAKOPT; default 1).
+var ccFlags = []string{"-std=c99", "-ffp-contract=off", "-Wno-parentheses-equality"}
+
+// cOptLevel is the C compiler's optimization level for executables, 0..3
+// (docs/spec/05-ergonomics-and-cost.md, "The mechanical backend"): the
+// -O0 versus -O2 delta on a hot loop measures what the C compiler expressed
+// and Oak did not. Set by `-opt`, else OAKOPT, else 1 — the level the
+// build has always used.
+var cOptLevel = defaultOptLevel()
+
+func defaultOptLevel() int {
+	if level, ok := parseOptLevel(os.Getenv("OAKOPT")); ok {
+		return level
+	}
+	return 1
+}
+
+// parseOptLevel reads an optimization level: one of "0", "1", "2", "3".
+func parseOptLevel(text string) (int, bool) {
+	switch text {
+	case "0", "1", "2", "3":
+		return int(text[0] - '0'), true
+	}
+	return 0, false
+}
+
+// applyOptLevel installs the `-opt` flag's value, or reports an invalid one.
+func applyOptLevel(flag string) error {
+	if flag == "" {
+		return nil
+	}
+	level, ok := parseOptLevel(flag)
+	if !ok {
+		return fmt.Errorf("-opt: expected an optimization level 0, 1, 2, or 3, got %q", flag)
+	}
+	cOptLevel = level
+	return nil
+}
+
+// ccArgs is the flag list for one compile: the fixed flags and the level.
+func ccArgs() []string {
+	return append(append([]string{}, ccFlags...), fmt.Sprintf("-O%d", cOptLevel))
+}
 
 // compileC turns emitted C (and an optional asm companion object) into the
 // executable at binary — or, for a freestanding target, the relocatable
@@ -575,7 +618,7 @@ func compileC(tgt target.Target, drv toolchain.Driver, code string, object []byt
 	if err != nil {
 		return false, err
 	}
-	flags := append(append([]string{}, drv.Args...), ccFlags...)
+	flags := append(append([]string{}, drv.Args...), ccArgs()...)
 	if drv.Static {
 		flags = append(flags, "-static")
 	}
@@ -700,14 +743,19 @@ func executableName(dir string) (string, error) {
 // installPackage builds the package's executable into $OAKBIN (default
 // $HOME/.oak/bin), named after the package (executableName).
 func installPackage(args []string) int {
-	dir, profile, targetFlag, cpu := ".", "", "", ""
-	fs := newFlagSet("install", "oak install [-profile default|strict] [-target os/arch] [-cpu name] [dir]")
+	dir, profile, targetFlag, cpu, opt := ".", "", "", "", ""
+	fs := newFlagSet("install", "oak install [-profile default|strict] [-target os/arch] [-cpu name] [-opt 0..3] [dir]")
 	fs.StringVar(&profile, "profile", "", "discipline profile: default or strict")
 	fs.StringVar(&targetFlag, "target", "", "platform os/arch (default: OAKOS/OAKARCH, else the host; docs/spec/90-backend.md section 2a)")
 	fs.StringVar(&cpu, "cpu", "", "processor for the C compiler's -mcpu (default: OAKCPU, else the target's default)")
+	fs.StringVar(&opt, "opt", "", "C compiler optimization level 0..3 (default: OAKOPT, else 1)")
 	rest, code, stop := parseFlags(fs, args)
 	if stop {
 		return code
+	}
+	if err := applyOptLevel(opt); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
 	}
 	if len(rest) > 0 {
 		dir = rest[0]

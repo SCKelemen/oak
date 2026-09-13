@@ -102,9 +102,13 @@ func TestCrossTargetForeignLaneWithoutFallbackFails(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no Oak fallback body") {
 		t.Fatalf("foreign lane without fallback: %v", err)
 	}
-	// The native body backend is AArch64: another target compiles the C.
+	// The native body backend has a lane for RISC-V too (nativegen/rv64.go);
+	// a target without a lane compiles the C.
 	if _, err := New().WithSource("pick.oak", crossPickOak).WithNativeBodies().WithTarget(target.Target{OS: target.OSLinux, Arch: target.ArchRiscv64}).EmitC().Get(); err != nil {
-		t.Fatalf("native bodies on a non-arm64 target: %v", err)
+		t.Fatalf("native bodies on linux/riscv64: %v", err)
+	}
+	if _, err := New().WithSource("pick.oak", crossPickOak).WithNativeBodies().WithTarget(target.Target{OS: target.OSLinux, Arch: target.ArchAmd64}).EmitC().Get(); err != nil {
+		t.Fatalf("native bodies on a target without a lane: %v", err)
 	}
 }
 
@@ -202,8 +206,11 @@ func TestCrossObjectFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if object[48] != 0x4 {
-		t.Fatalf("hosted riscv64 object e_flags %#x, want EF_RISCV_FLOAT_ABI_DOUBLE", object[48])
+	// The hosted target's default processor is rv64gc: lp64d, and the
+	// units compress, so the object flags RVC beside the float ABI
+	// (docs/spec/94-assembler.md section 9).
+	if object[48] != 0x5 {
+		t.Fatalf("hosted riscv64 object e_flags %#x, want EF_RISCV_FLOAT_ABI_DOUBLE | EF_RISCV_RVC", object[48])
 	}
 	bare := crossComp(target.Target{OS: target.OSFreestanding, Arch: target.ArchRiscv64})
 	object, err = bare.EmitAsmObject(asm.ELF).Get()
