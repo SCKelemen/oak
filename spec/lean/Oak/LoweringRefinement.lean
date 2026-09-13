@@ -163,8 +163,11 @@ a `{t}_trunc_{s}`/`{t}_bits_{s}` narrowing; `ite` is `if c then a else b`
 program function with those parameters and body; `condSet c armT armF rest`
 is the statement-level Bool conditional `c ? { armT } | { armF }` whose
 arms assign existing locals, followed by `rest`; `whileLoop c body rest`
-is `while c { body }` followed by `rest`; `elem s v h i` is the element
-read `v[i]` of a span parameter and `len v h` its `len(v)`. -/
+is `while c { body }` followed by `rest`; `matchInt x arms` is the
+integer-constant match `x ? | k₁ => e₁ | … | _ => e` in value position and
+`matchSet x arms rest` the same in statement position, its arms assigning
+locals; `elem s v h i` is the element read `v[i]` of a span parameter and
+`len v h` its `len(v)`. -/
 inductive Expr (P : Params) (S : Spans) : Locals → Ty → Type
   | var {Γ : Locals} (t : Ty) (x : String) (h : resolve P Γ x = some t) : Expr P S Γ t
   | lit {Γ : Locals} (t : Ty) (v : BitVec t.width) : Expr P S Γ t
@@ -182,6 +185,8 @@ inductive Expr (P : Params) (S : Spans) : Locals → Ty → Type
       (body : Expr P S (bindTypes (fun _ => none) params) ret) (args : Args P S Γ params) : Expr P S Γ ret
   | condSet {Γ : Locals} {t : Ty} (c : Expr P S Γ .bool) (armT armF : Stmts P S Γ) (rest : Expr P S Γ t) : Expr P S Γ t
   | whileLoop {Γ : Locals} {t : Ty} (c : Expr P S Γ .bool) (body : Stmts P S Γ) (rest : Expr P S Γ t) : Expr P S Γ t
+  | matchInt {Γ : Locals} {s t : Ty} (x : Expr P S Γ s) (arms : Arms P S Γ s t) : Expr P S Γ t
+  | matchSet {Γ : Locals} {s t : Ty} (x : Expr P S Γ s) (arms : ArmsS P S Γ s) (rest : Expr P S Γ t) : Expr P S Γ t
   | elem {Γ : Locals} (s : Ty) (v : String) (h : S v = some s) (i : Expr P S Γ .u32) : Expr P S Γ s
   | len {Γ : Locals} {s : Ty} (v : String) (h : S v = some s) : Expr P S Γ .u32
 /-- Statements in a conditional arm or a loop body: assignments `x = e` to
@@ -193,6 +198,18 @@ inductive Stmts (P : Params) (S : Spans) : Locals → Type
   | assign {Γ : Locals} (x : String) {s : Ty} (h : Γ x = some s) (e : Expr P S Γ s) (rest : Stmts P S Γ) : Stmts P S Γ
   | cond {Γ : Locals} (c : Expr P S Γ .bool) (armT armF : Stmts P S Γ) (rest : Stmts P S Γ) : Stmts P S Γ
   | loop {Γ : Locals} (c : Expr P S Γ .bool) (body : Stmts P S Γ) (rest : Stmts P S Γ) : Stmts P S Γ
+  | matchS {Γ : Locals} {s : Ty} (x : Expr P S Γ s) (arms : ArmsS P S Γ s) (rest : Stmts P S Γ) : Stmts P S Γ
+/-- The arms of an integer-constant match in value position: literal
+cases in order, then the fallback (the wildcard arm; a match without one
+has its last arm as the fallback, `matchArms` dropping that arm's
+condition). -/
+inductive Arms (P : Params) (S : Spans) : Locals → Ty → Ty → Type
+  | fallback {Γ : Locals} {s t : Ty} (e : Expr P S Γ t) : Arms P S Γ s t
+  | case {Γ : Locals} {s t : Ty} (k : BitVec s.width) (e : Expr P S Γ t) (rest : Arms P S Γ s t) : Arms P S Γ s t
+/-- The arms of an integer-constant match in statement position. -/
+inductive ArmsS (P : Params) (S : Spans) : Locals → Ty → Type
+  | fallback {Γ : Locals} {s : Ty} (st : Stmts P S Γ) : ArmsS P S Γ s
+  | case {Γ : Locals} {s : Ty} (k : BitVec s.width) (st : Stmts P S Γ) (rest : ArmsS P S Γ s) : ArmsS P S Γ s
 /-- A call's arguments, one per callee parameter, in the caller's scope. -/
 inductive Args (P : Params) (S : Spans) : Locals → List (String × Ty) → Type
   | nil {Γ : Locals} : Args P S Γ []
@@ -270,7 +287,8 @@ under its parameters bound to the argument values (`let (r, …) ← g args
 fuel`, the callee's own `def`); a statement-level conditional rebinds the
 variables its arms assign to the taken arm's values (`let (vars) ← if c
 then do A; pure (vars) else do B; pure (vars)`), the untouched ones being
-equal on both sides; a loop is `loopX`; a span element `v[i]` is the
+equal on both sides; a loop is `loopX`; an integer-constant match is the
+if-chain `if x == k₁ then … else …` in value and statement position; a span element `v[i]` is the
 memory cell `v[k]` at the index's value (the extraction's `v.getD i.toNat
 zero`, the span's contents padded with zeros being the memory both readers
 see), `len(v)` the span's length. -/
@@ -293,6 +311,9 @@ def evalX {P : Params} {S : Spans} : {Γ : Locals} → {t : Ty} → Expr P S Γ 
     (evalX c ρ l F).bind fun cv => (if cv = 1 then runVals armT ρ l F else runVals armF ρ l F).bind fun l' => evalX rest ρ l' F
   | _, _, .whileLoop c body rest, ρ, l, F =>
     (loopX (fun l₀ => evalX c ρ l₀ F) (fun l₀ => runVals body ρ l₀ F) F l).bind fun l' => evalX rest ρ l' F
+  | _, _, .matchInt x arms, ρ, l, F => (evalX x ρ l F).bind fun vx => armsX vx arms ρ l F
+  | _, _, .matchSet x arms rest, ρ, l, F =>
+    (evalX x ρ l F).bind fun vx => (armsVals vx arms ρ l F).bind fun l' => evalX rest ρ l' F
   | _, s, .elem _ v _ i, ρ, l, F => (evalX i ρ l F).bind fun k => some (BitVec.ofNat s.width (ρ (elemName v k.toNat)))
   | _, _, .len v _, ρ, _, _ => some (BitVec.ofNat 32 (ρ (lenName v)))
 /-- Statements in order: `let x := e`, the conditional's rebinding, a loop. -/
@@ -303,6 +324,16 @@ def runVals {P : Params} {S : Spans} : {Γ : Locals} → Stmts P S Γ → Env �
     (evalX c ρ l F).bind fun cv => (if cv = 1 then runVals armT ρ l F else runVals armF ρ l F).bind fun l' => runVals rest ρ l' F
   | _, .loop c body rest, ρ, l, F =>
     (loopX (fun l₀ => evalX c ρ l₀ F) (fun l₀ => runVals body ρ l₀ F) F l).bind fun l' => runVals rest ρ l' F
+  | _, .matchS x arms rest, ρ, l, F =>
+    (evalX x ρ l F).bind fun vx => (armsVals vx arms ρ l F).bind fun l' => runVals rest ρ l' F
+/-- A value-position match: `if x == k₁ then e₁ else if … else e`. -/
+def armsX {P : Params} {S : Spans} : {Γ : Locals} → {s t : Ty} → BitVec s.width → Arms P S Γ s t → Env → Vals → Nat → Option (BitVec t.width)
+  | _, _, _, _, .fallback e, ρ, l, F => evalX e ρ l F
+  | _, _, _, vx, .case k e rest, ρ, l, F => if vx = k then evalX e ρ l F else armsX vx rest ρ l F
+/-- A statement-position match: the taken arm's statements. -/
+def armsVals {P : Params} {S : Spans} : {Γ : Locals} → {s : Ty} → BitVec s.width → ArmsS P S Γ s → Env → Vals → Nat → Option Vals
+  | _, _, _, .fallback st, ρ, l, F => runVals st ρ l F
+  | _, _, vx, .case k st rest, ρ, l, F => if vx = k then runVals st ρ l F else armsVals vx rest ρ l F
 /-- The callee's values: each argument evaluated in the caller's scope and
 bound to its parameter, in order. -/
 def bindVals {P : Params} {S : Spans} : {Γ : Locals} → {ps : List (String × Ty)} → Args P S Γ ps → Env → Vals → Vals → Nat → Option Vals
@@ -336,6 +367,7 @@ inductive Term
   | cmp (code : Cond) (w : Nat) (l r : Term)
   | ite (w : Nat) (c l r : Term)
   | select (span : String) (w : Nat) (idx : Term)
+  deriving DecidableEq
 
 def Term.width : Term → Nat
   | .param _ w => w
@@ -477,13 +509,6 @@ def Scope := String → Option Term
 def Scope.set (σ : Scope) (x : String) (t : Term) : Scope :=
   fun y => if y = x then some t else σ y
 
-/-- The locals an arm assigns, in order. -/
-def Stmts.names {P : Params} {S : Spans} : {Γ : Locals} → Stmts P S Γ → List String
-  | _, .nil => []
-  | _, .assign x _ _ rest => x :: rest.names
-  | _, .cond _ armT armF rest => armT.names ++ armF.names ++ rest.names
-  | _, .loop _ body rest => body.names ++ rest.names
-
 /-- `loopBudget`: the iterations `lowerWhile` unrolls before giving up. -/
 def loopBudget : Nat := 4096
 
@@ -499,18 +524,25 @@ def unroll (cond : Scope → Option Term) (body : Scope → Option Scope) : Nat 
       | .const v w => if v % 2 ^ w = 0 then some σ else (body σ).bind (unroll cond body n)
       | _ => none
 
-/-- `lowerConditionalStatement`'s merge: a local either arm assigned takes
-`iteTerm(cond, afterTrue, afterFalse)`; every other local keeps its
-term. The Go skips the select when both arms left the same term object,
-which the model does not track; the select of equal arms is the same
-value. -/
-def mergeScope (c : Term) (names : List String) (σT σF σ : Scope) : Scope :=
+/-- `mergeValues`' select: `iteTerm(cond, whenTrue, whenFalse)` unless both
+arms left the same term. The Go compares term objects (a local no arm
+assigned is the same object on both sides); the model compares terms,
+which differs only when two arms build equal terms separately, where the
+select of equal arms is the same value. -/
+def Term.selectArm (c a b : Term) : Term := if a = b then b else Term.iteT c a b
+
+/-- `lowerConditionalStatement`'s and `lowerMatchStatement`'s merge: every
+local takes the select of the arms' terms, the same term when the arms
+agree. -/
+def mergeScope (c : Term) (σT σF : Scope) : Scope :=
   fun y =>
-    if y ∈ names then
-      match σT y, σF y with
-      | some a, some b => some (.iteT c a b)
-      | _, _ => σ y
-    else σ y
+    match σT y, σF y with
+    | some a, some b => some (Term.selectArm c a b)
+    | _, _ => σF y
+
+/-- `matchArms`' condition for a literal case: `truncate(cmpTerm("eq",
+scrutinee, literal), 1)`. -/
+def caseCond (sx : Term) (w : Nat) (k : Nat) : Term := truncate (Term.cmpT .eq w sx (.const k w)) 1
 
 mutual
 /-- `oakLowering.lower` at the expression's own width, each case as the Go
@@ -531,7 +563,10 @@ the lowered arguments as a fresh `lo.locals` and lowers the body
 on the locals before it and, for every local an arm assigned, selects
 between the arms' terms by the condition (`lowerConditionalStatement`:
 `iteTerm(truncate(cond, 1), afterTrue, afterFalse)`); a loop unrolls while
-its lowered condition folds to a non-zero constant (`lowerWhile`); a span
+its lowered condition folds to a non-zero constant (`lowerWhile`); an
+integer-constant match compares the scrutinee with each literal
+(`matchArms`) and selects arm by arm into the fallback (`selectMatch`,
+`lowerMatchStatement`); a span
 element is `selectTerm(span, index at width 32, elemWidth)`
 (`spanElementTerm`; a constant index is the element parameter `v[k]`, the
 same cell under the same name), `len(v)` the length parameter. -/
@@ -562,9 +597,12 @@ def lowerT {P : Params} {S : Spans} : Scope → {Γ : Locals} → {t : Ty} → E
   | σ, _, _, .call _ _ body args => (bindTerms σ args (fun _ => none)).bind fun σ' => lowerT σ' body
   | σ, _, _, .condSet c armT armF rest =>
     (lowerT σ c).bind fun tc => (runTerms σ armT).bind fun σT => (runTerms σ armF).bind fun σF =>
-      lowerT (mergeScope tc (armT.names ++ armF.names) σT σF σ) rest
+      lowerT (mergeScope tc σT σF) rest
   | σ, _, _, .whileLoop c body rest =>
     (unroll (fun σ₀ => lowerT σ₀ c) (fun σ₀ => runTerms σ₀ body) (loopBudget + 1) σ).bind fun σ' => lowerT σ' rest
+  | σ, _, _, .matchInt x arms => (lowerT σ x).bind fun sx => armsT σ sx arms
+  | σ, _, _, .matchSet x arms rest =>
+    (lowerT σ x).bind fun sx => (armsST σ sx arms).bind fun σ' => lowerT σ' rest
   | σ, _, s, .elem _ v _ i => (lowerT σ i).bind fun ti => some (.selectT v s.width ti)
   | _, _, _, .len v _ => some (.param (lenName v) 32)
 /-- Statements as `lowerLoopBody` executes them: `assignLocal` replaces the
@@ -575,9 +613,24 @@ def runTerms {P : Params} {S : Spans} : Scope → {Γ : Locals} → Stmts P S Γ
   | σ, _, .assign x _ e rest => (lowerT σ e).bind fun te => runTerms (σ.set x te) rest
   | σ, _, .cond c armT armF rest =>
     (lowerT σ c).bind fun tc => (runTerms σ armT).bind fun σT => (runTerms σ armF).bind fun σF =>
-      runTerms (mergeScope tc (armT.names ++ armF.names) σT σF σ) rest
+      runTerms (mergeScope tc σT σF) rest
   | σ, _, .loop c body rest =>
     (unroll (fun σ₀ => lowerT σ₀ c) (fun σ₀ => runTerms σ₀ body) (loopBudget + 1) σ).bind fun σ' => runTerms σ' rest
+  | σ, _, .matchS x arms rest =>
+    (lowerT σ x).bind fun sx => (armsST σ sx arms).bind fun σ' => runTerms σ' rest
+/-- `selectMatch`: each arm's value merged into the fallback, the first
+case outermost (`mergeValues` from the last case down). -/
+def armsT {P : Params} {S : Spans} (σ : Scope) (sx : Term) : {Γ : Locals} → {s t : Ty} → Arms P S Γ s t → Option Term
+  | _, _, _, .fallback e => lowerT σ e
+  | _, s, _, .case k e rest =>
+    (lowerT σ e).bind fun te => (armsT σ sx rest).bind fun tr => some (Term.selectArm (caseCond sx s.width k.toNat) te tr)
+/-- `lowerMatchStatement`: every arm runs on the locals before the match,
+and the locals after it are the arms' outcomes selected by the arms'
+conditions, the fallback standing for every remaining value. -/
+def armsST {P : Params} {S : Spans} (σ : Scope) (sx : Term) : {Γ : Locals} → {s : Ty} → ArmsS P S Γ s → Option Scope
+  | _, _, .fallback st => runTerms σ st
+  | _, s, .case k st rest =>
+    (runTerms σ st).bind fun σk => (armsST σ sx rest).bind fun σr => some (mergeScope (caseCond sx s.width k.toNat) σk σr)
 /-- `enterCall`'s `bound`: each argument lowered in the caller's scope at
 the parameter's width and bound to the parameter, in order. -/
 def bindTerms {P : Params} {S : Spans} (σ : Scope) : {Γ : Locals} → {ps : List (String × Ty)} → Args P S Γ ps → Scope → Option Scope
@@ -632,10 +685,17 @@ theorem Term.selectT_width (span : String) (w : Nat) (idx : Term) : (Term.select
   unfold Term.selectT
   split <;> rfl
 
+theorem Term.selectArm_width {c a b : Term} (hw : b.width = a.width) : (Term.selectArm c a b).width = a.width := by
+  unfold Term.selectArm
+  split
+  · rename_i h; rw [h]
+  · exact Term.iteT_width hw
+
 @[simp] theorem extendTerm_width (t : Term) (src w : Nat) (signed : Bool) :
     (extendTerm t src w signed).width = w := by
   unfold extendTerm; split <;> exact Term.binary_width _ _ _ _
 
+mutual
 theorem lowerT_width {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P S Γ t) :
     ∀ (σ : Scope) (T : Term), lowerT σ e = some T → T.width = t.width := by
   intro σ T h
@@ -697,12 +757,31 @@ theorem lowerT_width {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P
     simp only [lowerT, Option.bind_eq_some_iff] at h
     obtain ⟨σ', -, hr⟩ := h
     exact lowerT_width rest _ _ hr
+  | .matchInt x arms =>
+    simp only [lowerT, Option.bind_eq_some_iff] at h
+    obtain ⟨sx, -, ha⟩ := h
+    exact armsT_width arms σ sx T ha
+  | .matchSet x arms rest =>
+    simp only [lowerT, Option.bind_eq_some_iff] at h
+    obtain ⟨sx, -, σ', -, hr⟩ := h
+    exact lowerT_width rest _ _ hr
   | .elem _ _ _ i =>
     simp only [lowerT, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨ti, -, rfl⟩ := h
     exact Term.selectT_width _ _ _
   | .len _ _ => simp only [lowerT, Option.some.injEq] at h; subst h; rfl
 termination_by structural e
+theorem armsT_width {P : Params} {S : Spans} {Γ : Locals} {s t : Ty} (arms : Arms P S Γ s t) :
+    ∀ (σ : Scope) (sx T : Term), armsT σ sx arms = some T → T.width = t.width := by
+  intro σ sx T h
+  match arms with
+  | .fallback e => exact lowerT_width e σ T h
+  | .case k e rest =>
+    simp only [armsT, Option.bind_eq_some_iff, Option.some.injEq] at h
+    obtain ⟨te, he, tr, hr, rfl⟩ := h
+    rw [Term.selectArm_width (by rw [armsT_width rest σ sx tr hr, lowerT_width e σ te he]), lowerT_width e σ te he]
+termination_by structural arms
+end
 
 theorem truncate_self (t : Term) (w : Nat) (h : t.width = w) : truncate t w = t := by
   simp [truncate, h]
@@ -892,6 +971,34 @@ theorem Term.selectT_eval (span : String) (w : Nat) (idx : Term) (ρ : Env) :
     · simp [Term.eval, Nat.mod_mod]
   · rfl
 
+theorem Term.selectArm_topPositive {c a b : Term} (ha : a.topPositive) (hb : b.topPositive) : (Term.selectArm c a b).topPositive := by
+  unfold Term.selectArm
+  split
+  · exact hb
+  · exact Term.iteT_topPositive ha hb
+
+theorem Term.selectArm_eval {c a b : Term} (ρ : Env) (ha : a.topPositive) (hb : b.topPositive) (hw : b.width = a.width) :
+    (Term.selectArm c a b).eval ρ = (Term.ite a.width c a b).eval ρ := by
+  unfold Term.selectArm
+  split
+  · rename_i h
+    subst h
+    rw [Term.eval.eq_5]
+    split <;> exact (Nat.mod_eq_of_lt (Term.eval_lt a ρ ha)).symm
+  · exact Term.iteT_eval ρ ha hb hw
+
+/-- A case's condition is 1 exactly when the scrutinee equals the literal. -/
+theorem caseCond_eval (sx : Term) (w : Nat) (k vx : BitVec w) (ρ : Env) (hw : sx.width = w) (hpos : 0 < w)
+    (hx : sx.eval ρ = vx.toNat) : (caseCond sx w k.toNat).eval ρ = if vx = k then 1 else 0 := by
+  unfold caseCond
+  rw [truncate_cmpT_eval _ _ ρ hw hpos]
+  simp only [Term.eval]
+  rw [hw, hx]
+  simp only [BitVec.toNat_mod_cancel, BitVec.ofNat_toNat, BitVec.setWidth_eq]
+  have : condHolds .eq vx k = decide (vx = k) := Bool.eq_iff_iff.mpr ((eq_holds_iff vx k).trans (by simp))
+  rw [this]
+  by_cases h : vx = k <;> simp [h]
+
 /-- `zeroExtend` under the mask of the term's own width (the shape
 `extendTerm` builds) is the value modulo `2^w₀`, whatever the shape. -/
 theorem zeroExtend_masked_eval (t : Term) (w₀ w : Nat) (ρ : Env) (h₀ : t.width = w₀) (hle : w₀ ≤ w) :
@@ -1071,16 +1178,13 @@ theorem Scope.wf_set {σ : Scope} (hσ : σ.wf) {x : String} {t : Term} (ht : t.
 theorem Scope.wf_empty : Scope.wf (fun _ => none) := by
   intro y term h; cases h
 
-theorem mergeScope_wf {c : Term} {names : List String} {σT σF σ : Scope} (hσ : σ.wf) (hT : σT.wf) (hF : σF.wf) :
-    (mergeScope c names σT σF σ).wf := by
+theorem mergeScope_wf {c : Term} {σT σF : Scope} (hT : σT.wf) (hF : σF.wf) : (mergeScope c σT σF).wf := by
   intro y term h
   unfold mergeScope at h
   split at h
-  · split at h
-    · rename_i a b ha hb
-      cases h; exact Term.iteT_topPositive (hT y a ha) (hF y b hb)
-    · exact hσ y term h
-  · exact hσ y term h
+  · rename_i a b ha hb
+    cases h; exact Term.selectArm_topPositive (hT y a ha) (hF y b hb)
+  · exact hF y term h
 
 /-- Unrolling keeps scopes well formed when each iteration does. -/
 theorem unroll_wf {cond : Scope → Option Term} {body : Scope → Option Scope}
@@ -1163,11 +1267,19 @@ theorem lowerT_topPositive {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : 
   | .condSet c armT armF rest =>
     simp only [lowerT, Option.bind_eq_some_iff] at h
     obtain ⟨tc, -, σT, hT, σF, hF, hr⟩ := h
-    exact lowerT_topPositive rest _ T (mergeScope_wf hσ (runTerms_wf armT σ σT hσ hT) (runTerms_wf armF σ σF hσ hF)) hr
+    exact lowerT_topPositive rest _ T (mergeScope_wf (runTerms_wf armT σ σT hσ hT) (runTerms_wf armF σ σF hσ hF)) hr
   | .whileLoop c body rest =>
     simp only [lowerT, Option.bind_eq_some_iff] at h
     obtain ⟨σ', hσ', hr⟩ := h
     exact lowerT_topPositive rest _ T (unroll_wf (fun σ₀ σ₁ h₀ h₁ => runTerms_wf body σ₀ σ₁ h₀ h₁) _ σ σ' hσ hσ') hr
+  | .matchInt x arms =>
+    simp only [lowerT, Option.bind_eq_some_iff] at h
+    obtain ⟨sx, -, ha⟩ := h
+    exact armsT_topPositive arms σ sx T hσ ha
+  | .matchSet x arms rest =>
+    simp only [lowerT, Option.bind_eq_some_iff] at h
+    obtain ⟨sx, -, σ', h', hr⟩ := h
+    exact lowerT_topPositive rest _ T (armsST_wf arms σ sx σ' hσ h') hr
   | .elem _ _ _ i =>
     simp only [lowerT, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨ti, -, rfl⟩ := h
@@ -1196,12 +1308,36 @@ theorem runTerms_wf {P : Params} {S : Spans} {Γ : Locals} (st : Stmts P S Γ) :
   | .cond c armT armF rest =>
     simp only [runTerms, Option.bind_eq_some_iff] at h
     obtain ⟨tc, -, σT, hT, σF, hF, hr⟩ := h
-    exact runTerms_wf rest _ σ' (mergeScope_wf hσ (runTerms_wf armT σ σT hσ hT) (runTerms_wf armF σ σF hσ hF)) hr
+    exact runTerms_wf rest _ σ' (mergeScope_wf (runTerms_wf armT σ σT hσ hT) (runTerms_wf armF σ σF hσ hF)) hr
   | .loop c body rest =>
     simp only [runTerms, Option.bind_eq_some_iff] at h
     obtain ⟨σ₁, hσ₁, hr⟩ := h
     exact runTerms_wf rest _ σ' (unroll_wf (fun σ₀ σ₂ h₀ h₂ => runTerms_wf body σ₀ σ₂ h₀ h₂) _ σ σ₁ hσ hσ₁) hr
+  | .matchS x arms rest =>
+    simp only [runTerms, Option.bind_eq_some_iff] at h
+    obtain ⟨sx, -, σ₁, h₁, hr⟩ := h
+    exact runTerms_wf rest _ σ' (armsST_wf arms σ sx σ₁ hσ h₁) hr
 termination_by structural st
+theorem armsT_topPositive {P : Params} {S : Spans} {Γ : Locals} {s t : Ty} (arms : Arms P S Γ s t) :
+    ∀ (σ : Scope) (sx T : Term), σ.wf → armsT σ sx arms = some T → T.topPositive := by
+  intro σ sx T hσ h
+  match arms with
+  | .fallback e => exact lowerT_topPositive e σ T hσ h
+  | .case k e rest =>
+    simp only [armsT, Option.bind_eq_some_iff, Option.some.injEq] at h
+    obtain ⟨te, he, tr, hr, rfl⟩ := h
+    exact Term.selectArm_topPositive (lowerT_topPositive e σ te hσ he) (armsT_topPositive rest σ sx tr hσ hr)
+termination_by structural arms
+theorem armsST_wf {P : Params} {S : Spans} {Γ : Locals} {s : Ty} (arms : ArmsS P S Γ s) :
+    ∀ (σ : Scope) (sx : Term) (σ' : Scope), σ.wf → armsST σ sx arms = some σ' → σ'.wf := by
+  intro σ sx σ' hσ h
+  match arms with
+  | .fallback st => exact runTerms_wf st σ σ' hσ h
+  | .case k st rest =>
+    simp only [armsST, Option.bind_eq_some_iff, Option.some.injEq] at h
+    obtain ⟨σk, hk, σr, hr, rfl⟩ := h
+    exact mergeScope_wf (runTerms_wf st σ σk hσ hk) (armsST_wf rest σ sx σr hσ hr)
+termination_by structural arms
 end
 
 /-- A one-bit value is 1 exactly when it is not 0. -/
@@ -1217,120 +1353,6 @@ theorem Locals.set_same {Γ : Locals} {x : String} {s : Ty} (h : Γ x = some s) 
   split
   · rename_i heq; subst heq; exact h.symm
   · rfl
-
-/-- A name a statement list assigns is a local. -/
-theorem Stmts.names_local {P : Params} {S : Spans} {Γ : Locals} (st : Stmts P S Γ) : ∀ {y : String}, y ∈ st.names → ∃ s, Γ y = some s := by
-  intro y hy
-  match st with
-  | .nil => simp [Stmts.names] at hy
-  | .assign x h e rest =>
-    simp only [Stmts.names, List.mem_cons] at hy
-    rcases hy with rfl | hy
-    · exact ⟨_, h⟩
-    · exact rest.names_local hy
-  | .cond c armT armF rest =>
-    simp only [Stmts.names, List.mem_append] at hy
-    rcases hy with (hy | hy) | hy
-    · exact armT.names_local hy
-    · exact armF.names_local hy
-    · exact rest.names_local hy
-  | .loop c body rest =>
-    simp only [Stmts.names, List.mem_append] at hy
-    rcases hy with hy | hy
-    · exact body.names_local hy
-    · exact rest.names_local hy
-termination_by structural st
-
-theorem unroll_unassigned {cond : Scope → Option Term} {body : Scope → Option Scope} {y : String}
-    (hb : ∀ σ σ', body σ = some σ' → σ' y = σ y) :
-    ∀ n σ σ', unroll cond body n σ = some σ' → σ' y = σ y := by
-  intro n
-  induction n with
-  | zero => intro σ σ' h; simp [unroll] at h
-  | succ n ih =>
-    intro σ σ' h
-    simp only [unroll, Option.bind_eq_some_iff] at h
-    obtain ⟨tc, -, h⟩ := h
-    split at h
-    · split at h
-      · simp only [Option.some.injEq] at h; subst h; rfl
-      · simp only [Option.bind_eq_some_iff] at h
-        obtain ⟨σ₁, h1, h2⟩ := h
-        rw [ih σ₁ σ' h2, hb σ σ₁ h1]
-    · simp at h
-
-theorem loopX_unassigned {cond : Vals → Option (BitVec 1)} {body : Vals → Option Vals} {y : String}
-    (hb : ∀ l l', body l = some l' → l' y = l y) :
-    ∀ n l l', loopX cond body n l = some l' → l' y = l y := by
-  intro n
-  induction n with
-  | zero => intro l l' h; simp [loopX] at h
-  | succ n ih =>
-    intro l l' h
-    simp only [loopX, Option.bind_eq_some_iff] at h
-    obtain ⟨cv, -, h⟩ := h
-    split at h
-    · simp only [Option.bind_eq_some_iff] at h
-      obtain ⟨l₁, h1, h2⟩ := h
-      rw [ih l₁ l' h2, hb l l₁ h1]
-    · simp only [Option.some.injEq] at h; subst h; rfl
-
-/-- A name a statement list does not assign keeps its term. -/
-theorem runTerms_unassigned {P : Params} {S : Spans} {Γ : Locals} (st : Stmts P S Γ) :
-    ∀ (σ σ' : Scope) {y : String}, y ∉ st.names → runTerms σ st = some σ' → σ' y = σ y := by
-  intro σ σ' y hy h
-  match st with
-  | .nil => simp only [runTerms, Option.some.injEq] at h; subst h; rfl
-  | .assign x hx e rest =>
-    simp only [Stmts.names, List.mem_cons, not_or] at hy
-    simp only [runTerms, Option.bind_eq_some_iff] at h
-    obtain ⟨te, -, hr⟩ := h
-    rw [runTerms_unassigned rest _ σ' hy.2 hr]
-    unfold Scope.set
-    rw [if_neg hy.1]
-  | .cond c armT armF rest =>
-    simp only [Stmts.names, List.mem_append, not_or] at hy
-    simp only [runTerms, Option.bind_eq_some_iff] at h
-    obtain ⟨tc, -, σT, -, σF, -, hr⟩ := h
-    rw [runTerms_unassigned rest _ σ' hy.2 hr]
-    unfold mergeScope
-    rw [if_neg (by simp only [List.mem_append, not_or]; exact hy.1)]
-  | .loop c body rest =>
-    simp only [Stmts.names, List.mem_append, not_or] at hy
-    simp only [runTerms, Option.bind_eq_some_iff] at h
-    obtain ⟨σ₁, hσ₁, hr⟩ := h
-    rw [runTerms_unassigned rest _ σ' hy.2 hr]
-    exact unroll_unassigned (fun σ₀ σ₂ h₀ => runTerms_unassigned body σ₀ σ₂ hy.1 h₀) _ σ σ₁ hσ₁
-termination_by structural st
-
-/-- A name a statement list does not assign keeps its value. -/
-theorem runVals_unassigned {P : Params} {S : Spans} {Γ : Locals} (st : Stmts P S Γ) :
-    ∀ (ρ : Env) (l l' : Vals) (F : Nat) {y : String}, y ∉ st.names → runVals st ρ l F = some l' → l' y = l y := by
-  intro ρ l l' F y hy h
-  match st with
-  | .nil => simp only [runVals, Option.some.injEq] at h; subst h; rfl
-  | .assign x hx e rest =>
-    simp only [Stmts.names, List.mem_cons, not_or] at hy
-    simp only [runVals, Option.bind_eq_some_iff] at h
-    obtain ⟨ve, -, hr⟩ := h
-    rw [runVals_unassigned rest ρ _ l' F hy.2 hr]
-    unfold Vals.set
-    rw [if_neg hy.1]
-  | .cond c armT armF rest =>
-    simp only [Stmts.names, List.mem_append, not_or] at hy
-    simp only [runVals, Option.bind_eq_some_iff] at h
-    obtain ⟨cv, -, l₁, h₁, hr⟩ := h
-    rw [runVals_unassigned rest ρ _ l' F hy.2 hr]
-    split at h₁
-    · exact runVals_unassigned armT ρ l l₁ F hy.1.1 h₁
-    · exact runVals_unassigned armF ρ l l₁ F hy.1.2 h₁
-  | .loop c body rest =>
-    simp only [Stmts.names, List.mem_append, not_or] at hy
-    simp only [runVals, Option.bind_eq_some_iff] at h
-    obtain ⟨l₁, hl₁, hr⟩ := h
-    rw [runVals_unassigned rest ρ _ l' F hy.2 hr]
-    exact loopX_unassigned (fun l₀ l₂ h₀ => runVals_unassigned body ρ l₀ l₂ F hy.1 h₀) _ l l₁ hl₁
-termination_by structural st
 
 /-- A scope's two readings agree: a name that is not a local has no term;
 a local's term has the local's width, is well formed, and evaluates to the
@@ -1410,39 +1432,26 @@ theorem unroll_agree {Γ : Locals} {ρ : Env} {condT : Scope → Option Term} {b
 
 mutual
 /-- The merge of two arms agrees with the selected arm's values. -/
-theorem merge_agree {Γ : Locals} {σ σT σF : Scope} {ρ : Env} {l lT lF : Vals} (c : Term) (cv : BitVec 1) (hc : c.eval ρ = cv.toNat)
-    (names : List String) (hA : Agree Γ σ ρ l) (hT : Agree Γ σT ρ lT) (hF : Agree Γ σF ρ lF)
-    (hloc : ∀ y, y ∈ names → ∃ s, Γ y = some s)
-    (hout : ∀ y, y ∉ names → σT y = σ y ∧ lT y = l y ∧ σF y = σ y ∧ lF y = l y) :
-    Agree Γ (mergeScope c names σT σF σ) ρ (if cv = 1 then lT else lF) := by
+theorem merge_agree {Γ : Locals} {σT σF : Scope} {ρ : Env} {lT lF : Vals} (c : Term) (cv : BitVec 1) (hc : c.eval ρ = cv.toNat)
+    (hT : Agree Γ σT ρ lT) (hF : Agree Γ σF ρ lF) :
+    Agree Γ (mergeScope c σT σF) ρ (if cv = 1 then lT else lF) := by
   constructor
   · intro y hy
-    have hn : y ∉ names := fun hin => by obtain ⟨s, hs⟩ := hloc y hin; rw [hs] at hy; cases hy
     unfold mergeScope
-    rw [if_neg hn]
-    exact hA.1 y hy
+    rw [hT.1 y hy, hF.1 y hy]
   · intro y t hy
+    obtain ⟨a, haσ, haw, hap, hav⟩ := hT.2 y t hy
+    obtain ⟨b, hbσ, hbw, hbp, hbv⟩ := hF.2 y t hy
     unfold mergeScope
-    by_cases hin : y ∈ names
-    · obtain ⟨a, haσ, haw, hap, hav⟩ := hT.2 y t hy
-      obtain ⟨b, hbσ, hbw, hbp, hbv⟩ := hF.2 y t hy
-      rw [if_pos hin, haσ, hbσ]
-      have hba : b.width = a.width := hbw.trans haw.symm
-      refine ⟨Term.iteT c a b, rfl, by rw [Term.iteT_width hba, haw], Term.iteT_topPositive hap hbp, ?_⟩
-      have key : (c.eval ρ ≠ 0) ↔ (cv = 1) := by rw [hc]; exact BitVec1_ne_zero_iff cv
-      rw [Term.iteT_eval ρ hap hbp hba]
-      simp only [Term.eval]
-      by_cases h1 : cv = 1
-      · rw [if_pos (key.mpr h1), if_pos h1, hav, ← hav, Nat.mod_eq_of_lt (Term.eval_lt a ρ hap)]
-      · rw [if_neg (fun hne => h1 (key.mp hne)), if_neg h1, hbv, ← hbv, haw.trans hbw.symm,
-          Nat.mod_eq_of_lt (Term.eval_lt b ρ hbp)]
-    · rw [if_neg hin]
-      obtain ⟨hσT, hlT, hσF, hlF⟩ := hout y hin
-      obtain ⟨term, hσ, hw, hp, hv⟩ := hA.2 y t hy
-      refine ⟨term, hσ, hw, hp, ?_⟩
-      split
-      · rw [hlT]; exact hv
-      · rw [hlF]; exact hv
+    rw [haσ, hbσ]
+    have hba : b.width = a.width := hbw.trans haw.symm
+    refine ⟨Term.selectArm c a b, rfl, by rw [Term.selectArm_width hba, haw], Term.selectArm_topPositive hap hbp, ?_⟩
+    have key : (c.eval ρ ≠ 0) ↔ (cv = 1) := by rw [hc]; exact BitVec1_ne_zero_iff cv
+    rw [Term.selectArm_eval ρ hap hbp hba, Term.eval.eq_5]
+    by_cases h1 : cv = 1
+    · rw [if_pos (key.mpr h1), if_pos h1, hav, ← hav, Nat.mod_eq_of_lt (Term.eval_lt a ρ hap)]
+    · rw [if_neg (fun hne => h1 (key.mp hne)), if_neg h1, hbv, ← hbv, haw.trans hbw.symm,
+        Nat.mod_eq_of_lt (Term.eval_lt b ρ hbp)]
 
 /-- The verifier's lowering and the extraction's reading agree on every
 expression of the shared subset, in every agreeing scope and under any
@@ -1631,17 +1640,7 @@ theorem lowerT_eval {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P 
     obtain ⟨cv, hcv, ihc⟩ := lowerT_eval c σ ρ l F tc hF hA hc
     obtain ⟨lT, hlT, hAT⟩ := runTerms_agree armT σ ρ l F hF hA σT hT
     obtain ⟨lF, hlF, hAF⟩ := runTerms_agree armF σ ρ l F hF hA σF hFm
-    have hM : Agree Γ (mergeScope tc (armT.names ++ armF.names) σT σF σ) ρ (if cv = 1 then lT else lF) := by
-      refine merge_agree tc cv ihc _ hA hAT hAF ?_ ?_
-      · intro y hy
-        rcases List.mem_append.mp hy with h | h
-        · exact armT.names_local h
-        · exact armF.names_local h
-      · intro y hy
-        have hyT : y ∉ armT.names := fun h => hy (List.mem_append.mpr (Or.inl h))
-        have hyF : y ∉ armF.names := fun h => hy (List.mem_append.mpr (Or.inr h))
-        exact ⟨runTerms_unassigned armT σ σT hyT hT, runVals_unassigned armT ρ l lT F hyT hlT,
-          runTerms_unassigned armF σ σF hyF hFm, runVals_unassigned armF ρ l lF F hyF hlF⟩
+    have hM : Agree Γ (mergeScope tc σT σF) ρ (if cv = 1 then lT else lF) := merge_agree tc cv ihc hAT hAF
     obtain ⟨vr, hvr, ihr⟩ := lowerT_eval rest _ ρ _ F T hF hM hr
     refine ⟨vr, ?_, ihr⟩
     simp only [evalX, hcv, Option.bind_some]
@@ -1658,6 +1657,19 @@ theorem lowerT_eval {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P 
     obtain ⟨l', hl', hA'⟩ := unroll_agree hc hb (loopBudget + 1) F σ l σ' (by omega) hA hσ'
     obtain ⟨vr, hvr, ihr⟩ := lowerT_eval rest _ ρ _ F T hF hA' hr
     exact ⟨vr, by simp only [evalX, hl', Option.bind_some, hvr], ihr⟩
+  | .matchInt x arms =>
+    simp only [lowerT, Option.bind_eq_some_iff] at h
+    obtain ⟨sx, hx, ha⟩ := h
+    obtain ⟨vx, hvx, ihx⟩ := lowerT_eval x σ ρ l F sx hF hA hx
+    obtain ⟨v, hv, ihv⟩ := armsT_eval arms σ sx ρ l F T hF hA vx (lowerT_width x σ sx hx) ihx ha
+    exact ⟨v, by simp only [evalX, hvx, Option.bind_some, hv], ihv⟩
+  | .matchSet x arms rest =>
+    simp only [lowerT, Option.bind_eq_some_iff] at h
+    obtain ⟨sx, hx, σ', h', hr⟩ := h
+    obtain ⟨vx, hvx, ihx⟩ := lowerT_eval x σ ρ l F sx hF hA hx
+    obtain ⟨l', hl', hA'⟩ := armsST_agree arms σ sx ρ l F hF hA vx (lowerT_width x σ sx hx) ihx σ' h'
+    obtain ⟨vr, hvr, ihr⟩ := lowerT_eval rest _ ρ _ F T hF hA' hr
+    exact ⟨vr, by simp only [evalX, hvx, Option.bind_some, hl', hvr], ihr⟩
   | .elem s v hv i =>
     simp only [lowerT, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨ti, hi, rfl⟩ := h
@@ -1696,17 +1708,7 @@ theorem runTerms_agree {P : Params} {S : Spans} {Γ : Locals} (st : Stmts P S Γ
     obtain ⟨cv, hcv, ihc⟩ := lowerT_eval c σ ρ l F tc hF hA hc
     obtain ⟨lT, hlT, hAT⟩ := runTerms_agree armT σ ρ l F hF hA σT hT
     obtain ⟨lF, hlF, hAF⟩ := runTerms_agree armF σ ρ l F hF hA σF hFm
-    have hM : Agree Γ (mergeScope tc (armT.names ++ armF.names) σT σF σ) ρ (if cv = 1 then lT else lF) := by
-      refine merge_agree tc cv ihc _ hA hAT hAF ?_ ?_
-      · intro y hy
-        rcases List.mem_append.mp hy with h | h
-        · exact armT.names_local h
-        · exact armF.names_local h
-      · intro y hy
-        have hyT : y ∉ armT.names := fun h => hy (List.mem_append.mpr (Or.inl h))
-        have hyF : y ∉ armF.names := fun h => hy (List.mem_append.mpr (Or.inr h))
-        exact ⟨runTerms_unassigned armT σ σT hyT hT, runVals_unassigned armT ρ l lT F hyT hlT,
-          runTerms_unassigned armF σ σF hyF hFm, runVals_unassigned armF ρ l lF F hyF hlF⟩
+    have hM : Agree Γ (mergeScope tc σT σF) ρ (if cv = 1 then lT else lF) := merge_agree tc cv ihc hAT hAF
     obtain ⟨l', hl', hA'⟩ := runTerms_agree rest _ ρ _ F hF hM σ' hr
     refine ⟨l', ?_, hA'⟩
     simp only [runVals, hcv, Option.bind_some]
@@ -1723,7 +1725,73 @@ theorem runTerms_agree {P : Params} {S : Spans} {Γ : Locals} (st : Stmts P S Γ
     obtain ⟨l₁, hl₁, hA₁⟩ := unroll_agree hc hb (loopBudget + 1) F σ l σ₁ (by omega) hA hσ₁
     obtain ⟨l', hl', hA'⟩ := runTerms_agree rest _ ρ _ F hF hA₁ σ' hr
     exact ⟨l', by simp only [runVals, hl₁, Option.bind_some, hl'], hA'⟩
+  | .matchS x arms rest =>
+    simp only [runTerms, Option.bind_eq_some_iff] at h
+    obtain ⟨sx, hx, σ₁, h₁, hr⟩ := h
+    obtain ⟨vx, hvx, ihx⟩ := lowerT_eval x σ ρ l F sx hF hA hx
+    obtain ⟨l₁, hl₁, hA₁⟩ := armsST_agree arms σ sx ρ l F hF hA vx (lowerT_width x σ sx hx) ihx σ₁ h₁
+    obtain ⟨l', hl', hA'⟩ := runTerms_agree rest _ ρ _ F hF hA₁ σ' hr
+    exact ⟨l', by simp only [runVals, hvx, Option.bind_some, hl₁, hl'], hA'⟩
 termination_by structural st
+/-- A value-position match's arms agree with the if-chain. -/
+theorem armsT_eval {P : Params} {S : Spans} {Γ : Locals} {s t : Ty} (arms : Arms P S Γ s t) :
+    ∀ (σ : Scope) (sx : Term) (ρ : Env) (l : Vals) (F : Nat) (T : Term), loopBudget < F → Agree Γ σ ρ l →
+      ∀ vx : BitVec s.width, sx.width = s.width → sx.eval ρ = vx.toNat → armsT σ sx arms = some T →
+        ∃ v, armsX vx arms ρ l F = some v ∧ T.eval ρ = v.toNat := by
+  intro σ sx ρ l F T hF hA vx hw hx h
+  match arms with
+  | .fallback e =>
+    obtain ⟨v, hv, ihv⟩ := lowerT_eval e σ ρ l F T hF hA h
+    exact ⟨v, by simp only [armsX, hv], ihv⟩
+  | .case k e rest =>
+    simp only [armsT, Option.bind_eq_some_iff, Option.some.injEq] at h
+    obtain ⟨te, he, tr, hr, rfl⟩ := h
+    obtain ⟨ve, hve, ihe⟩ := lowerT_eval e σ ρ l F te hF hA he
+    obtain ⟨vr, hvr, ihr⟩ := armsT_eval rest σ sx ρ l F tr hF hA vx hw hx hr
+    have hte := lowerT_topPositive e σ te (Agree.wf hA) he
+    have htr := armsT_topPositive rest σ sx tr (Agree.wf hA) hr
+    have hwe := lowerT_width e σ te he
+    have hwr := armsT_width rest σ sx tr hr
+    have hcond := caseCond_eval sx s.width k vx ρ hw s.width_pos hx
+    refine ⟨if vx = k then ve else vr, ?_, ?_⟩
+    · simp only [armsX]
+      by_cases h1 : vx = k
+      · rw [if_pos h1, if_pos h1, hve]
+      · rw [if_neg h1, if_neg h1, hvr]
+    · rw [Term.selectArm_eval ρ hte htr (by rw [hwr, hwe]), Term.eval.eq_5, hwe]
+      by_cases h1 : vx = k
+      · have h' : (caseCond sx s.width k.toNat).eval ρ ≠ 0 := by rw [hcond, if_pos h1]; decide
+        rw [if_pos h', if_pos h1, ihe, BitVec.toNat_mod_cancel]
+      · have h' : ¬ (caseCond sx s.width k.toNat).eval ρ ≠ 0 := by rw [hcond, if_neg h1]; decide
+        rw [if_neg h', if_neg h1, ihr, BitVec.toNat_mod_cancel]
+termination_by structural arms
+/-- A statement-position match's arms agree with the taken arm. -/
+theorem armsST_agree {P : Params} {S : Spans} {Γ : Locals} {s : Ty} (arms : ArmsS P S Γ s) :
+    ∀ (σ : Scope) (sx : Term) (ρ : Env) (l : Vals) (F : Nat), loopBudget < F → Agree Γ σ ρ l →
+      ∀ vx : BitVec s.width, sx.width = s.width → sx.eval ρ = vx.toNat → ∀ σ', armsST σ sx arms = some σ' →
+        ∃ l', armsVals vx arms ρ l F = some l' ∧ Agree Γ σ' ρ l' := by
+  intro σ sx ρ l F hF hA vx hw hx σ' h
+  match arms with
+  | .fallback st =>
+    obtain ⟨l', hl', hA'⟩ := runTerms_agree st σ ρ l F hF hA σ' h
+    exact ⟨l', by simp only [armsVals, hl'], hA'⟩
+  | .case k st rest =>
+    simp only [armsST, Option.bind_eq_some_iff, Option.some.injEq] at h
+    obtain ⟨σk, hk, σr, hr, rfl⟩ := h
+    obtain ⟨lk, hlk, hAk⟩ := runTerms_agree st σ ρ l F hF hA σk hk
+    obtain ⟨lr, hlr, hAr⟩ := armsST_agree rest σ sx ρ l F hF hA vx hw hx σr hr
+    have hcond := caseCond_eval sx s.width k vx ρ hw s.width_pos hx
+    have hM := merge_agree (caseCond sx s.width k.toNat) (if vx = k then 1 else 0)
+      (by rw [hcond]; by_cases h1 : vx = k <;> simp [h1]) hAk hAr
+    refine ⟨if vx = k then lk else lr, ?_, ?_⟩
+    · simp only [armsVals]
+      by_cases h1 : vx = k
+      · rw [if_pos h1, if_pos h1, hlk]
+      · rw [if_neg h1, if_neg h1, hlr]
+    · by_cases h1 : vx = k
+      · simpa [h1] using hM
+      · simpa [h1] using hM
+termination_by structural arms
 /-- Binding a call's arguments keeps the callee's scope agreeing: each
 parameter's term has the parameter's width and evaluates to the argument's
 value. -/
@@ -1954,5 +2022,22 @@ example : lowered? ((.letIn "i" (.lit .u32 0)
     (.whileLoop (.cmp .lt (.var .u32 "i" (by decide)) (.var .u32 "n" (by decide)))
       (.assign "i" (by decide) (.arith .add (.var .u32 "i" (by decide)) (.lit .u32 1)) .nil)
       (.var .u32 "i" (by decide))) : X (ps [("n", .u32)]) sp0 .u32)) = none := by decide
+
+/-! Integer-constant matches: an if-chain of equality selects, the first
+case outermost, the wildcard arm the fallback. -/
+
+/-- `(op, a, b: u32) -> u32 = op ? | 0 => a | 1 => b | _ => a + b` -/
+example : lowered? ((.matchInt (.var .u32 "op" (by decide))
+    (.case 0 (.var .u32 "a" (by decide)) (.case 1 (.var .u32 "b" (by decide))
+      (.fallback (.arith .add (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)))))) : X (ps [("op", .u32), ("a", .u32), ("b", .u32)]) sp0 .u32))
+    = some "((op eq 0) ? a : ((op eq 1) ? b : (a add b)))" := by decide
+/-- `(op, a: u32) -> u32 = { r: u32 = a; op ? | 0 => { r = a + 1 } | 1 => { r = a * 2 } | _ => { }; r }` -/
+example : lowered? ((.letIn "r" (.var .u32 "a" (by decide))
+    (.matchSet (.var .u32 "op" (by decide))
+      (.case 0 (.assign "r" (by decide) (.arith .add (.var .u32 "a" (by decide)) (.lit .u32 1)) .nil)
+        (.case 1 (.assign "r" (by decide) (.arith .mul (.var .u32 "a" (by decide)) (.lit .u32 2)) .nil)
+          (.fallback .nil)))
+      (.var .u32 "r" (by decide))) : X (ps [("op", .u32), ("a", .u32)]) sp0 .u32))
+    = some "((op eq 0) ? (a add 1) : ((op eq 1) ? (a mul 2) : a))" := by decide
 
 end Oak.LoweringRefinement

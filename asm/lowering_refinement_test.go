@@ -84,6 +84,10 @@ var loweringProgramRenders = []struct {
 	// iteration, so the loop lowers to its unrolled body.
 	{"f: (n: u32) -> u32 = {\n  s: u32 = 0\n  i: u32 = 0\n  while i < 3 {\n    s = s + n\n    i = i + 1\n  }\n  s\n}\n", "((n add n) add n)"},
 	{"f: (n: u32) -> u32 = {\n  s: u32 = 0\n  i: u32 = 0\n  while i < 4 {\n    i % 2 == 0 ? { s = s + n } | { }\n    i = i + 1\n  }\n  s\n}\n", "(n add n)"},
+	// Integer-constant matches (`matchInt`, `matchSet`): an if-chain of
+	// equality selects, the first case outermost, the wildcard the fallback.
+	{"f: (op, a, b: u32) -> u32 = op ? | 0 => a | 1 => b | _ => a + b\n", "((op eq 0) ? a : ((op eq 1) ? b : (a add b)))"},
+	{"f: (op, a: u32) -> u32 = {\n  r: u32 = a\n  op ? | 0 => { r = a + 1 } | 1 => { r = a * 2 } | _ => { }\n  r\n}\n", "((op eq 0) ? (a add 1) : ((op eq 1) ? (a mul 2) : a))"},
 }
 
 func TestLoweringProgramsMatchLeanTransliteration(t *testing.T) {
