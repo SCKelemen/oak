@@ -2026,6 +2026,37 @@ compares canonical (sign-extended) values while the guard fact needs the
 zero-extended index, so its guards stay until the index representation
 changes; the C backend elides through `IndexProven` as before.
 
+**The whole standard library through the checker (2026-09-13).** Running
+the native backend over every function a stdlib-bearing program carries
+(`examples/stdlib_builder.oak`, some six hundred bodies) found the seam
+checker refusing 68 lowerings on the AArch64 lane and 165 on the RV64 lane,
+and the verifier refuting three — each a fail-closed rejection of the
+whole build, none a wrong binary. The causes, now closed: (1) the verifier
+read a Bool field at the start of a copied 8-byte word as zero — a 1-bit
+leaf rounded to zero bytes fell out of the window — and refuted the
+library's correct `!parsed.scheme.present` (`recordBytes`); (2) both lanes
+wrote the result register inside each arm of a result conditional, and
+the checker, which is linear, then forgot the parameters' span and record
+facts for the arms after it — arms now meet in one scratch register (a
+frame temporary for a record result) and `x0`/`a0` is written once at the
+join (`resultInto`, `resultRecordInto`); (3) a scratch register allocated
+for a value not yet computed was spilled around a call, a read the
+checker knows is uninitialized — only defined registers spill
+(`markDefined`; every emission path goes through it); (4) the RV64
+checker dropped a by-reference record parameter's region at its first
+guard-forgetting point because the register is written again by a later
+arm — a parameter region now holds until that register is actually
+written on the path; (5) the AArch64 checker refused the write of `x1`
+for a two-chunk record result while requiring it at `ret` — the second
+chunk is a result register. After: the RV64 lane admits every lowering
+(the build succeeds), the AArch64 lane refuses two (`text_fold_next`,
+`utf8_to_utf16_bytes`: a span base copied into another register across a
+label, the checker's remaining flow-insensitivity), and the verdicts over
+the lowered bodies are 92 proven, 5 witnessed, 304 trusted on AArch64 and
+38, 3, 295 on RV64, with `bl` the dominant trusted reason (the verifier
+does not summarize calls). Pinned: `compiler/e2e_native_bool_field_test.go`;
+the tally is `docs/notes/verification-chain-2026-09.md`.
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against) and fractional-LMUL forms. The term

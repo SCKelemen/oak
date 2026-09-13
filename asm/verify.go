@@ -1454,7 +1454,10 @@ func (x *pathExecutor) leafInput(name string, width int) *term {
 func (x *pathExecutor) recordBytes(leaves []compositeLeaf, offset, size int64) (*term, bool) {
 	var value *term
 	for _, leaf := range leaves {
-		end := leaf.offset + int64(leaf.width)/8
+		// A leaf narrower than a byte (a Bool) still occupies its byte:
+		// rounding its width down to zero bytes would drop a Bool at the
+		// start of the window and read the field as zero.
+		end := leaf.offset + (int64(leaf.width)+7)/8
 		if end <= offset || leaf.offset >= offset+size {
 			continue
 		}

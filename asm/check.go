@@ -1353,7 +1353,10 @@ func (c *checker) write(instr Instruction, reg Register) {
 	if reg.ZeroRegister() {
 		return
 	}
-	isResult := c.hasResult && c.resultClass != ClassV && reg.Num == 0
+	// The result register — x0, and x1 too for a record result of two
+	// chunks (docs/spec/94-assembler.md §7, composites) — is writable
+	// without a clobber declaration.
+	isResult := c.hasResult && c.resultClass != ClassV && (reg.Num == 0 || (c.resultRegs == 2 && reg.Num == 1))
 	if !c.bound[reg.Num] && !c.clobbered[reg.Num] && !isResult {
 		c.errorf(instr.Line, "write to undeclared register %s: bind it, or declare it with `clobber %s`", reg.Text, reg.Text)
 		return
