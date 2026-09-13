@@ -157,3 +157,39 @@ func ParseSolverOutput(text string, inline bool) (SATOutcome, error) {
 	}
 	return outcome, nil
 }
+
+// ModelSatisfies checks a solver's model against a DIMACS formula clause
+// by clause: every clause must hold under the model, unassigned variables
+// read as false. It is the confirmation the rung requires before a model
+// counts as a counterexample.
+func ModelSatisfies(formula string, model []int) (bool, error) {
+	_, clauses, err := ParseDIMACS(formula)
+	if err != nil {
+		return false, err
+	}
+	value := map[int]bool{}
+	for _, lit := range model {
+		if lit > 0 {
+			value[lit] = true
+		} else if lit < 0 {
+			value[-lit] = false
+		}
+	}
+	for _, clause := range clauses {
+		satisfied := false
+		for _, lit := range clause {
+			v := value[lit]
+			if lit < 0 {
+				v = !value[-lit]
+			}
+			if v {
+				satisfied = true
+				break
+			}
+		}
+		if !satisfied {
+			return false, nil
+		}
+	}
+	return true, nil
+}
