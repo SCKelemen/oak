@@ -335,6 +335,8 @@ should a lock-free queue be accepted as relying on Oak's memory model end to
 end.
 
 The RISC-V refinement layer is `69-riscv-memory-refinement.md`: the same
-evidence stack over RVWMO, with Oak's RCsc acquire realized by the seq_cst
+evidence stack over RVWMO — now with RVWMO's fence and load-value rules
+instantiated in `Oak.RVWMO`, where message passing under the mapping and
+the store-buffering exclusion are theorems — with Oak's RCsc acquire realized by the seq_cst
 load sequence and `.aqrl` annotations because the ISA's C11 acquire mapping
 is RCpc.

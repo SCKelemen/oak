@@ -94,6 +94,14 @@ helpers). The locality rule of the scalable API (OAK-S0401) is what makes
 this sound: sizeless values never cross a function boundary or land in a
 record, so a realization's types are its own business.
 
+**6a. The claim is checked where it matters.** Under `oak test` the
+package is compiled with `OAK_CHECK_DISPATCH`: a dispatched function of
+pure shape (integer or Bool result, no span parameter) runs the selected
+realization *and* its body and compares; a disagreement is the
+correctness failure `dispatch:<function>:<feature>`. This is the check
+that reaches asm units and the actual hardware; the interpreter's below
+is the second, for realizations with Oak bodies.
+
 **7. How the interpreter mirrors it.** The interpreter has one portable
 semantics and no processor. It carries a feature set (`evaluator.Features`,
 default empty), set by a test or the REPL; with `sve` in the set, a call

@@ -71,7 +71,9 @@ it: a function's `dispatch { sve: f_sve }` clause selects a realization
 once, before `main`, by a probe of the processor (`93-simd.md` §6).
 Freestanding RISC-V objects are compiled with the medium-any code model
 so they link at the user's address (RAM at `0x80000000` on the `virt`
-machines).
+machines). The asm lane reads the same processor: an rv64 unit that uses the
+vector extension needs a `-cpu` with V, and units compress under C
+(`94-assembler.md` §9).
 
 The compiler emits the same C translation unit for every target; what the
 target decides is:
@@ -487,6 +489,22 @@ against the tree's 4.10 — the guards over the record are data-dependent
 branches in either shape and the table adds an indirect jump — so the
 compiler-known lowering applies to machines whose guards are decided at
 compile time.
+
+A mixed-symbol machine (`112-protocols.md` §2a: payload-less steps beside
+steps whose guards read a `u8` or `u16` payload) computes its symbol
+before the lookup from three more file-scope tables: `bases[tag]`, the
+step's first symbol; `classes[]`, one flat byte table holding every
+step's payload classes (one entry for a step without a classed payload);
+and `offsets[tag]`, the step's region in it. The payload is read from
+every classed member of the step's union and the tag selects one
+(`payload = step.tag == 1u ? (u32)step.payload.Byte : payload;` per
+classed step, a `csel`, never a branch), then
+`sym = bases[tag] + classes[offsets[tag] + payload]`. The step type's
+constructors zero the value before storing the tag and payload
+(`ADTType.ZeroInit`) so every such read finds defined bytes. Measured on
+a nine-symbol machine, the emitted form steps in 1.0 ns against the
+branch tree's 3.7–4.0 and 2.8 for a `switch` on the tag choosing a
+per-step class table (`benchmarks/state-machines/` workload E).
 
 ## 15. Evaluation order
 

@@ -57,6 +57,9 @@ type Function struct {
 	// (docs/spec/94-assembler.md §9); the checker and the verifier see the
 	// same base instructions either way.
 	Compressed bool
+	// CompressedSet marks that the unit spelled option rvc or norvc itself;
+	// otherwise the compiler decides from the processor.
+	CompressedSet bool
 	// FloatFile marks an rv64 unit that reads or writes the floating-point
 	// register file (the F and D extensions): its contract is LP64D, so
 	// the target must link against an lp64d toolchain (set by the checker).
@@ -562,6 +565,7 @@ func ParseUnit(path, text string) (*Unit, []error) {
 				continue
 			}
 			current.Compressed = fields[1] == "rvc"
+			current.CompressedSet = true
 		case "align":
 			if len(fields) != 2 {
 				fail(lineNo, "align takes one byte count")

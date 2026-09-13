@@ -60,6 +60,11 @@ type Options struct {
 	// the assembler lane whose units apply, the companion object's format,
 	// and whether the native body backend (AArch64) runs. Default: the host.
 	Target target.Target
+	// CPU is the processor the build is for (`-cpu`, `OAKCPU`): the asm
+	// lane reads its extensions — an rv64 unit that uses the vector file
+	// needs V, and units compress under C (docs/spec/94-assembler.md §9).
+	// Empty means the target's default processor.
+	CPU string
 	// NativeBodies runs the native backend over ordinary Oak functions
 	// (nativegen): every function in its subset is lowered to a checked,
 	// verified asm function and realized like an asm unit; the rest keep
@@ -189,6 +194,12 @@ func New() Compilation {
 			Target:      target.Host(),
 		},
 	}
+}
+
+// WithCPU returns a compilation for the named processor (`-cpu`).
+func (comp Compilation) WithCPU(cpu string) Compilation {
+	comp.options.CPU = cpu
+	return comp
 }
 
 // WithSource returns a compilation using path/text as its source.

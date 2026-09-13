@@ -78,3 +78,27 @@ func TestSpellings(t *testing.T) {
 		t.Errorf("default cpus: %q %q", bare.DefaultCPU(), rv.DefaultCPU())
 	}
 }
+
+// CPUFeatures reads the RISC-V extensions of zig-style names and ISA
+// strings, with the conservative defaults (docs/spec/94-assembler.md §9).
+func TestCPUFeatures(t *testing.T) {
+	bare := Target{OS: OSFreestanding, Arch: ArchRiscv64}
+	linux := Target{OS: OSLinux, Arch: ArchRiscv64}
+	for _, c := range []struct {
+		tgt  Target
+		cpu  string
+		c, v bool
+	}{
+		{bare, "", false, false}, {bare, "generic_rv64+m", false, false}, {bare, "generic_rv64+m+c", true, false},
+		{bare, "generic_rv64+m+a+c+v", true, true}, {bare, "rv64gc", true, false}, {bare, "rv64gcv", true, true},
+		{bare, "rv64imv", false, true}, {bare, "sifive_u74", false, false}, {linux, "", true, false},
+	} {
+		features := c.tgt.CPUFeatures(c.cpu)
+		if features["c"] != c.c || features["v"] != c.v {
+			t.Errorf("%s %q: c=%v v=%v", c.tgt, c.cpu, features["c"], features["v"])
+		}
+	}
+	if features := (Target{OS: OSLinux, Arch: ArchArm64}).CPUFeatures("neoverse_v2"); len(features) != 0 {
+		t.Errorf("arm64 reports RISC-V features: %v", features)
+	}
+}
