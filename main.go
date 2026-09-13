@@ -169,7 +169,7 @@ func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode string, t
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
 		return 1
 	}
-	comp = comp.WithProfile(profile).WithDiagnosticSink(reportAsmVerdict).WithTarget(tgt)
+	comp = comp.WithProfile(profile).WithDiagnosticSink(reportAsmVerdict).WithTarget(tgt).WithCPU(cpu)
 	if lines {
 		comp = comp.WithLineDirectives()
 	}
@@ -270,7 +270,7 @@ func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode string, t
 	// In native mode the C carries prototypes for the units the object
 	// realizes; the inline-__asm__ C emitted above is for -emit-c only.
 	var object []byte
-	code, object, err = emitFor(comp, asmMode, tgt)
+	code, object, err = emitFor(comp, asmMode, tgt, cpu)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
@@ -882,7 +882,7 @@ func runPackage(args []string) int {
 	if nativeBodies {
 		comp = comp.WithNativeBodies()
 	}
-	code, object, err := emitFor(comp, asmMode, tgt)
+	code, object, err := emitFor(comp, asmMode, tgt, cpu)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
@@ -941,8 +941,8 @@ func defaultAsmMode(tgt target.Target) string {
 
 // emitFor emits the C and, in native mode, the asm units' companion
 // object in the target's object format.
-func emitFor(comp compiler.Compilation, asmMode string, tgt target.Target) (string, []byte, error) {
-	comp = comp.WithTarget(tgt)
+func emitFor(comp compiler.Compilation, asmMode string, tgt target.Target, cpu string) (string, []byte, error) {
+	comp = comp.WithTarget(tgt).WithCPU(cpu)
 	if asmMode == "native" {
 		native, err := comp.EmitNative(compiler.ObjectFormat(tgt)).Get()
 		if err != nil {

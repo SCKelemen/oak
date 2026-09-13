@@ -62,6 +62,52 @@ func (t Target) DataModel() (intBits, ptrBits int) {
 // `generic_rv32+m`; without M the C runtime's software multiply is called
 // for every product) and the Cortex-M4 for Arm (the most common STM32 core; `-cpu cortex_m0`,
 // `cortex_m3`, `cortex_m7`, `cortex_m33` name the others).
+// CPUFeatures reads the RISC-V extensions a processor name carries, for
+// the asm lane's choices (docs/spec/94-assembler.md §9): `+c`/`+v`
+// features of a zig-style name (`generic_rv64+m+a+c+v`), or the letters of
+// an ISA string (`rv64gcv`, `g` standing for imafd). A named processor
+// without features (`sifive_u74`) carries none, so a unit that needs an
+// extension fails closed. An empty name is the target's default: the
+// freestanding default (`generic_rv64+m`) has neither C nor V; a hosted
+// RISC-V target assumes its toolchain's `rv64gc`.
+func (t Target) CPUFeatures(cpu string) map[string]bool {
+	features := map[string]bool{}
+	if t.Arch != ArchRiscv64 && t.Arch != ArchRiscv32 {
+		return features
+	}
+	name := strings.ToLower(strings.TrimSpace(cpu))
+	if name == "" {
+		if t.Freestanding() {
+			name = t.DefaultCPU()
+		} else {
+			name = "rv64gc"
+		}
+	}
+	base, extra, _ := strings.Cut(name, "+")
+	if strings.HasPrefix(base, "rv64") || strings.HasPrefix(base, "rv32") {
+		for _, letter := range base[4:] {
+			if letter < 'a' || letter > 'z' {
+				break
+			}
+			if letter == 'g' {
+				for _, l := range "imafd" {
+					features[string(l)] = true
+				}
+				continue
+			}
+			features[string(letter)] = true
+		}
+	}
+	if extra != "" {
+		for _, feature := range strings.Split(extra, "+") {
+			if feature != "" {
+				features[feature] = true
+			}
+		}
+	}
+	return features
+}
+
 func (t Target) DefaultCPU() string {
 	if !t.Freestanding() {
 		return ""
