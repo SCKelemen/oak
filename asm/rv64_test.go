@@ -297,8 +297,11 @@ func rv64GNUText(fn *Function) string {
 func requireRV64Tools(t *testing.T, tools ...string) {
 	t.Helper()
 	for _, tool := range tools {
+		if strings.HasPrefix(tool, "riscv64-elf-") {
+			tool = rv64Tool(strings.TrimPrefix(tool, "riscv64-elf-"))
+		}
 		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s not present", tool)
+			requireOracle(t, tool+" not present")
 		}
 	}
 }
@@ -320,10 +323,10 @@ func gnuAssembleWith(t *testing.T, text, march, mabi string) []byte {
 	if err := os.WriteFile(src, []byte(text), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("riscv64-elf-as", "-march="+march, "-mabi="+mabi, "-o", obj, src).CombinedOutput(); err != nil {
+	if out, err := exec.Command(rv64Tool("as"), "-march="+march, "-mabi="+mabi, "-o", obj, src).CombinedOutput(); err != nil {
 		t.Fatalf("riscv64-elf-as: %v\n%s\n%s", err, out, text)
 	}
-	if out, err := exec.Command("riscv64-elf-objcopy", "-O", "binary", "-j", ".text", obj, bin).CombinedOutput(); err != nil {
+	if out, err := exec.Command(rv64Tool("objcopy"), "-O", "binary", "-j", ".text", obj, bin).CombinedOutput(); err != nil {
 		t.Fatalf("objcopy: %v\n%s", err, out)
 	}
 	data, err := os.ReadFile(bin)
@@ -489,10 +492,10 @@ func TestRV64ObjectELF(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "helper.c"), []byte("unsigned long helper(unsigned long x) { return x + x; }\nvoid _start(void) {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("riscv64-elf-gcc", "-march=rv64im", "-mabi=lp64", "-nostdlib", "-o", filepath.Join(dir, "out.elf"), filepath.Join(dir, "helper.c"), filepath.Join(dir, "unit.o")).CombinedOutput(); err != nil {
+	if out, err := exec.Command(rv64Tool("gcc"), "-march=rv64im", "-mabi=lp64", "-nostdlib", "-o", filepath.Join(dir, "out.elf"), filepath.Join(dir, "helper.c"), filepath.Join(dir, "unit.o")).CombinedOutput(); err != nil {
 		t.Fatalf("link: %v\n%s", err, out)
 	}
-	out, err := exec.Command("riscv64-elf-objdump", "-d", filepath.Join(dir, "out.elf")).CombinedOutput()
+	out, err := exec.Command(rv64Tool("objdump"), "-d", filepath.Join(dir, "out.elf")).CombinedOutput()
 	if err != nil {
 		t.Fatalf("objdump: %v\n%s", err, out)
 	}

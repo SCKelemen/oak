@@ -43,7 +43,7 @@ var rv64Sail = rv64Machine{
 func TestRV64SailDifferential(t *testing.T) {
 	requireRV64Tools(t, "riscv64-elf-gcc")
 	if _, err := os.Stat(sailRiscvSim); err != nil {
-		t.Skip("sail_riscv_sim not built under external/sail-riscv")
+		requireOracle(t, "sail_riscv_sim not built under external/sail-riscv")
 	}
 	runRV64Differential(t, rv64Sail)
 }

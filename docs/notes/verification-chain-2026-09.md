@@ -99,8 +99,15 @@ or the verifier, not in the program:
    the Sail decoder audit (the `sail-arm` model), and the ISA XML audit
    (Arm's license forbids redistribution). Every one skips silently when
    its input is absent, so the links are checked only on a developer's
-   machine that has them. A `formal-sail` job fetching lean-sail and
-   `sail-riscv` closes the first three.
+   machine that has them. **Closed (2026-09-13):** `.github/workflows/formal-sail.yml`
+   fetches every input pinned — the Sail 0.20.2 binary release and the
+   sail-riscv 0.14 emulator by checksum, Arm's decode tree by commit,
+   lean-sail by `setup.sh`'s revision — builds the Arm bridge with lake,
+   and runs the oracle tests with `OAK_REQUIRE_ORACLES=1`, under which an
+   absent oracle fails the test instead of skipping it
+   (`asm/oracles_test.go`). The RISC-V GNU tools resolve under their
+   Debian spelling as well as Homebrew's. Still outside CI: the ISA XML
+   audit (Arm's license) and the RV64 bridge against the export (item 2).
 2. **The RV64 bridge proves against a restatement.** `Oak.SailRiscVBridge`
    restates the library and prelude definitions verbatim because the Sail
    0.20.2 export does not compile. Building Sail from git (as sail-riscv's

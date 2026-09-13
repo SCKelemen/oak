@@ -407,7 +407,7 @@ done:
 	harnessPath := write("harness.c", harness.String())
 	linkPath := write("link.ld", machine.linkScript)
 	image := filepath.Join(dir, "harness.elf")
-	if out, err := exec.Command("riscv64-elf-gcc", "-march=rv64imafdc", "-mabi=lp64d", "-mcmodel=medany", "-nostdlib", "-nostartfiles", "-ffreestanding", "-O1", "-T", linkPath, "-o", image, harnessPath, unitPath).CombinedOutput(); err != nil {
+	if out, err := exec.Command(rv64Tool("gcc"), "-march=rv64imafdc", "-mabi=lp64d", "-mcmodel=medany", "-nostdlib", "-nostartfiles", "-ffreestanding", "-O1", "-T", linkPath, "-o", image, harnessPath, unitPath).CombinedOutput(); err != nil {
 		t.Fatalf("link: %v\n%s", err, out)
 	}
 	output := machine.run(t, image)

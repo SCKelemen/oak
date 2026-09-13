@@ -22,7 +22,7 @@ func TestSailLeanGenerationCurrent(t *testing.T) {
 		home, _ := os.UserHomeDir()
 		sail = filepath.Join(home, ".opam", "default", "bin", "sail")
 		if _, err := os.Stat(sail); err != nil {
-			t.Skip("sail not installed")
+			requireOracle(t, "sail not installed")
 		}
 	}
 	root, err := filepath.Abs(filepath.Join("..", "spec", "sail"))
@@ -34,7 +34,7 @@ func TestSailLeanGenerationCurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(lib); err != nil {
-		t.Skip("lean-sail support library not checked out (spec/sail/setup.sh)")
+		requireOracle(t, "lean-sail support library not checked out (spec/sail/setup.sh)")
 	}
 	out := t.TempDir()
 	cmd := exec.Command(sail, filepath.Join(root, "arm_primitives.sail"), "--lean", "--lean-single-file",
