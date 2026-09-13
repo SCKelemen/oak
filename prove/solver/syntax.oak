@@ -83,6 +83,7 @@ ST_LEAVES: u32 = 16
 ST_TSP: u32 = 17
 ST_TRET: u32 = 18
 ST_NLNAMES: u32 = 19
+ST_CAPTURE: u32 = 20
 
 // Frame kinds.
 X_EXPR: u32 = 0
@@ -132,6 +133,7 @@ Ser: type = struct {
   nodes_at: u32,
   lists_at: u32,
   state_at: u32,
+  capture_at: u32,
   total: u32,
   cap_nodes: u32,
   cap_lists: u32,
@@ -159,6 +161,7 @@ ser_layout: (cap_nodes: u32, cap_lists: u32): Ser {
   nodes_at: u32 = tstack_at + SR_TSTACK * SR_TS_WORDS
   lists_at: u32 = nodes_at + cap_nodes * SYN_NODE_WORDS
   state_at: u32 = lists_at + cap_lists
+  capture_at: u32 = state_at + u32(32)
   Ser {
     funcs_at: funcs_at,
     fnames_at: fnames_at,
@@ -180,7 +183,8 @@ ser_layout: (cap_nodes: u32, cap_lists: u32): Ser {
     nodes_at: nodes_at,
     lists_at: lists_at,
     state_at: state_at,
-    total: state_at + u32(32),
+    capture_at: capture_at,
+    total: capture_at + cap_nodes,
     cap_nodes: cap_nodes,
     cap_lists: cap_lists,
     out_total: SYN_HEADER + SR_FUNCS * SYN_FUNC_WORDS + SR_PARAMS * SYN_PARAM_WORDS + SR_TYPES * SYN_TYPE_WORDS + SR_TLEAVES * u32(2) + SR_FIELDS * u32(2) + SR_VARIANTS * u32(3) + SR_LEAFIDX + cap_nodes * SYN_NODE_WORDS + cap_lists
@@ -946,9 +950,17 @@ sr_push_typed: (s: Ser, w: [*]u32, node: u32, f: u32, expected: u32): () {
   w[at + u32(7)] = expected
 }
 
-// sr_deliver pops the frame with the node as its result.
+// sr_deliver pops the frame with the node as its result. Under type
+// capture (serialize_captured) the delivered node's type is recorded
+// against the frame's raw node, for the Lean projection (lean.oak).
 sr_deliver: (s: Ser, w: [*]u32, id: u32): () {
   set_sst(s, w, ST_RET, id)
+  sst(s, w, ST_CAPTURE) != u32(0) ? {
+    at: u32 = sfr_at(s, w, sst(s, w, ST_SP) - u32(1))
+    kind: u32 = w[at]
+    node: u32 = w[at + u32(1)]
+    ((kind == X_EXPR || kind == X_MATCH || kind == X_BLOCK) && node != NONE && node < s.cap_nodes && id != NONE && id < sst(s, w, ST_NNODES)) ? { w[s.capture_at + node] = sn_type(s, w, id) } | { }
+  } | { }
   sr_pop(s, w)
 }
 
@@ -2108,6 +2120,34 @@ serialize_theorem: (s: Ser, w: [*]u32, rx: []u32, out: [*]u32, theorem_fn: u32):
 }
 
 serialize_reason: (s: Ser, w: [*]u32): u32 = sst(s, w, ST_FAILED)
+
+// serialize_captured is serialize_theorem with type capture: the type of
+// every raw node delivered during the run is recorded in the capture
+// table (NONE for the rest), for the Lean projection.
+serialize_captured: (s: Ser, w: [*]u32, rx: []u32, out: [*]u32, theorem_fn: u32): u32 {
+  k: u32 = 0
+  while k < u32(32) {
+    set_sst(s, w, k, u32(0))
+    k = k + u32(1)
+  }
+  nnodes: u32 = rx[u32(3)]
+  n: u32 = 0
+  while n < nnodes && n < s.cap_nodes {
+    w[s.capture_at + n] = NONE
+    n = n + u32(1)
+  }
+  set_sst(s, w, ST_CAPTURE, u32(1))
+  raw: Raw = raw_layout(rx)
+  sr_push(s, w, X_FUNC, theorem_fn, u32(1))
+  sr_run(s, w, rx, raw)
+  m: u32 = 0
+  sr_failed(s, w) ? { } | { m = sr_write_table(s, w, out) }
+  m
+}
+
+// sr_type_key_a: the first key word of an interned type (a record or sum
+// type's raw name).
+sr_type_key_a: (s: Ser, w: [*]u32, t: u32): u32 = w[s.tkeys_at + t * u32(4) + u32(1)]
 
 // Leaf names of the serialized theorem (sorted): count, and the k-th
 // name's pool offset and length, for the driver's counterexample report.

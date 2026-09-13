@@ -139,6 +139,7 @@ PS_ARM_DEPTH: u32 = 18
 PS_BRACE_OFF: u32 = 19
 PS_SRC_LEN: u32 = 20
 PS_BLOCK_DEPTH: u32 = 21
+PS_NDECLS: u32 = 22
 
 // Frame kinds.
 P_EXPR: u32 = 0
@@ -659,7 +660,10 @@ px_add_record: (p: Par, w: [*]u32, name: u32, start: u32, count: u32): () {
     w[at] = name
     w[at + u32(1)] = start
     w[at + u32(2)] = count
-    w[at + u32(3)] = u32(0)
+    // The declaration ordinal among the file's types (the Lean projection
+    // emits types in declaration order).
+    w[at + u32(3)] = pst(p, w, PS_NDECLS)
+    set_pst(p, w, PS_NDECLS, pst(p, w, PS_NDECLS) + u32(1))
     set_pst(p, w, PS_NRECORDS, n + u32(1))
   }
 }
@@ -683,7 +687,8 @@ px_add_adt: (p: Par, w: [*]u32, name: u32, start: u32, count: u32): () {
     w[at] = name
     w[at + u32(1)] = start
     w[at + u32(2)] = count
-    w[at + u32(3)] = u32(0)
+    w[at + u32(3)] = pst(p, w, PS_NDECLS)
+    set_pst(p, w, PS_NDECLS, pst(p, w, PS_NDECLS) + u32(1))
     set_pst(p, w, PS_NADTS, n + u32(1))
   }
 }

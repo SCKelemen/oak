@@ -46,7 +46,7 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 	if *solver == "self" {
 		// The prover written in Oak (prove/solver/shell.oak): the file to
 		// the rows, with the Go ladder as the cross-check when asked.
-		return selfProve(target, *cases, *cross == "go", stdout, stderr)
+		return selfProve(target, *cases, *cross == "go", *leanOut, stdout, stderr)
 	}
 	// Invariant candidates get their base and step obligations generated
 	// before checking (prove/protocols.go), and declared operator laws
@@ -171,19 +171,11 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 		for _, r := range results {
 			roots = append(roots, r.Name)
 		}
-		text, err := comp.EmitLeanRoots("Oak.Theorems", roots).Get()
-		if err != nil {
-			roots = roots[:0]
-			for i, r := range results {
-				if _, probe := comp.EmitLeanRoots("Oak.Theorems", []string{r.Name}).Get(); probe != nil {
-					if r.Status == prove.Open {
-						results[i].Detail += " (not projected: " + probe.Error() + ")"
-					}
-					continue
-				}
-				roots = append(roots, r.Name)
+		text, dropped, err := leanProjection(comp, roots)
+		for i, r := range results {
+			if probe, notProjected := dropped[r.Name]; notProjected && r.Status == prove.Open {
+				results[i].Detail += " (not projected: " + probe.Error() + ")"
 			}
-			text, err = comp.EmitLeanRoots("Oak.Theorems", roots).Get()
 		}
 		if err != nil {
 			fmt.Fprintf(stderr, "oak prove: lean: %v\n", err)
@@ -244,6 +236,28 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 	return exit
 }
 
+// leanProjection extracts the named theorems' Lean projection: one
+// extraction over every theorem is the common case; only when it fails is
+// each theorem tried alone, and the projection carries the ones the
+// extractor states, the rest mapped to the extractor's reason.
+func leanProjection(comp compiler.Compilation, roots []string) (string, map[string]error, error) {
+	text, err := comp.EmitLeanRoots("Oak.Theorems", roots).Get()
+	if err == nil {
+		return text, nil, nil
+	}
+	dropped := map[string]error{}
+	var kept []string
+	for _, name := range roots {
+		if _, probe := comp.EmitLeanRoots("Oak.Theorems", []string{name}).Get(); probe != nil {
+			dropped[name] = probe
+			continue
+		}
+		kept = append(kept, name)
+	}
+	text, err = comp.EmitLeanRoots("Oak.Theorems", kept).Get()
+	return text, dropped, err
+}
+
 // lawSources reads the Oak sources the prover streams to the parser
 // written in Oak: the file itself, or every `.oak` file of the package
 // directory, in name order.
@@ -278,9 +292,11 @@ func lawSources(target string) [][]byte {
 
 // selfProve runs the prover written in Oak on one law file: the solver
 // program in its shell mode (OAK_SOLVER_MODE=prove) reads the file, decides
-// every theorem, and prints the rows. With crossCheck the Go ladder decides
-// the same file and every row's status must agree.
-func selfProve(target string, cases int, crossCheck bool, stdout, stderr io.Writer) int {
+// every theorem, and prints the rows; with leanOut it also writes the Lean
+// projection (lean.oak). With crossCheck the Go ladder decides the same
+// file and every row's status must agree, and the Go extractor's
+// projection must match the written one byte for byte.
+func selfProve(target string, cases int, crossCheck bool, leanOut string, stdout, stderr io.Writer) int {
 	info, err := os.Stat(target)
 	if err != nil || info.IsDir() {
 		fmt.Fprintf(stderr, "oak prove: -solver self takes one law file, got %s\n", target)
@@ -298,6 +314,14 @@ func selfProve(target string, cases int, crossCheck bool, stdout, stderr io.Writ
 	}
 	run := exec.Command(binary)
 	run.Env = append(os.Environ(), "OAK_SOLVER_MODE=prove", "OAK_PROVE_FILE="+absolute, fmt.Sprintf("OAK_PROVE_CASES=%d", cases))
+	if leanOut != "" {
+		leanAbsolute, err := filepath.Abs(leanOut)
+		if err != nil {
+			fmt.Fprintf(stderr, "oak prove: %v\n", err)
+			return 2
+		}
+		run.Env = append(run.Env, "OAK_PROVE_LEAN="+leanAbsolute)
+	}
 	var out strings.Builder
 	run.Stdout = &out
 	run.Stderr = stderr
@@ -356,5 +380,48 @@ func selfProve(target string, cases int, crossCheck bool, stdout, stderr io.Writ
 		code = 1
 	}
 	fmt.Fprintf(stdout, "oak prove: the Go ladder agrees on %d of %d rows\n", agreed, compared)
+	if leanOut != "" {
+		// The projection written in Oak against the Go extractor's.
+		var roots []string
+		for _, r := range results {
+			roots = append(roots, r.Name)
+		}
+		want, _, err := leanProjection(compiler.New().WithSyntaxRewrite(prove.Obligations).WithSource(target, string(source)), roots)
+		if err != nil {
+			fmt.Fprintf(stderr, "oak prove: lean: %v\n", err)
+			return 2
+		}
+		got, err := os.ReadFile(leanOut)
+		if err != nil {
+			fmt.Fprintf(stderr, "oak prove: %v\n", err)
+			return 2
+		}
+		if string(got) == want {
+			fmt.Fprintf(stdout, "oak prove: the Lean projection agrees with the Go extractor (%d bytes)\n", len(got))
+		} else {
+			fmt.Fprint(stdout, leanDifference(string(got), want))
+			code = 1
+		}
+	}
 	return code
+}
+
+// leanDifference describes the first line where the projection written in
+// Oak departs from the Go extractor's.
+func leanDifference(got, want string) string {
+	gotLines := strings.Split(got, "\n")
+	wantLines := strings.Split(want, "\n")
+	for i := 0; i < len(gotLines) || i < len(wantLines); i++ {
+		g, w := "<end>", "<end>"
+		if i < len(gotLines) {
+			g = gotLines[i]
+		}
+		if i < len(wantLines) {
+			w = wantLines[i]
+		}
+		if g != w {
+			return fmt.Sprintf("oak prove: the Lean projection differs from the Go extractor at line %d:\n  oak: %s\n  go:  %s\n", i+1, g, w)
+		}
+	}
+	return "oak prove: the Lean projection differs from the Go extractor\n"
 }

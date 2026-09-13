@@ -178,6 +178,25 @@ txt_minus: (): () {
   write_lit(u64(0x2D), u64(0x0), u32(1))
 }
 
+txt_lean_failed: (): () {
+  write_lit(u64(0x766F7270206B616F), u64(0x3A6E61656C203A65), u32(16))
+  write_lit(u64(0x6564697374756F20), u64(0x7478652065687420), u32(16))
+  write_lit(u64(0x7320646574636172), u64(0x7228207465736275), u32(16))
+  write_lit(u64(0x206E6F736165), u64(0x0), u32(6))
+}
+
+txt_not_projected: (): () {
+  write_lit(u64(0x766F7270206B616F), u64(0x3A6E61656C203A65), u32(16))
+  write_lit(u64(0x687420656D6F7320), u64(0x6120736D65726F65), u32(16))
+  write_lit(u64(0x7020746F6E206572), u64(0x64657463656A6F72), u32(16))
+  write_lit(u64(0x2074737269662820), u64(0x206E6F73616572), u32(15))
+}
+
+txt_wrote: (): () {
+  write_lit(u64(0x766F7270206B616F), u64(0x65746F7277203A65), u32(16))
+  write_lit(u64(0x20), u64(0x0), u32(1))
+}
+
 // copy_env copies an environment value into out: its length, 0 when unset
 // or too long.
 copy_env: (p: c.Ptr, out: [*]u8): u32 {
@@ -462,6 +481,10 @@ shell_main: (): i32 {
   cases_buf: [16]u8
   path_len: u32 = copy_env(c_getenv(c.cstr("OAK_PROVE_FILE\0")), span(&path_buf))
   cases_len: u32 = copy_env(c_getenv(c.cstr("OAK_PROVE_CASES\0")), span(&cases_buf))
+  lean_buf: [1024]u8
+  lean_len: u32 = copy_env(c_getenv(c.cstr("OAK_PROVE_LEAN\0")), span(&lean_buf))
+  lean_view: []u8 = view(&lean_buf)
+  lean_path: []u8 = subslice(lean_view, u32(0), lean_len + u32(1))
   cases: u32 = 0
   k: u32 = 0
   while k < cases_len {
@@ -506,7 +529,7 @@ shell_main: (): i32 {
         txt_close()
         write_byte(u8(10))
         code = i32(2)
-      } | { code = prove_tables(view(&tables), n_raw, cases, budget) }
+      } | { code = prove_tables(view(&tables), n_raw, cases, budget, lean_path) }
       released_t: c.Ptr = c.disown(tables)
     }
   }
@@ -523,8 +546,10 @@ words_of_prefix: (bytes: []u8, words: [*]u32, n: u32): () {
   }
 }
 
-// prove_tables decides every theorem of the parsed file and prints the summary.
-prove_tables: (arena: []u32, n_raw: u32, cases: u32, budget: u32): i32 {
+// prove_tables decides every theorem of the parsed file and prints the
+// summary; with a Lean output path (NUL-terminated, more than the NUL)
+// the projection is written after it (lean.oak).
+prove_tables: (arena: []u32, n_raw: u32, cases: u32, budget: u32, lean_path: []u8): i32 {
   rx: []u32 = subslice(arena, u32(0), n_raw)
   raw: Raw = raw_layout(rx)
   lowered_terms: u32 = 131072
@@ -575,6 +600,27 @@ prove_tables: (arena: []u32, n_raw: u32, cases: u32, budget: u32): i32 {
     } | { }
   }
   write_byte(u8(10))
+  lean_failed: Bool = false
+  len(lean_path) > u32(1) ? {
+    le: Lem = lem_layout()
+    le_raw: c.Ptr = malloc(c.Size(le.total * u32(4)))
+    reason: u32 = project_file(le, le_raw, ser, ser_raw, out_raw, rx, raw, lean_path)
+    reason != u32(0) ? {
+      txt_lean_failed()
+      write_u32(reason)
+      txt_close()
+      lean_failed = true
+    } | {
+      txt_wrote()
+      k: u32 = 0
+      while k + u32(1) < len(lean_path) {
+        write_byte(lean_path[k])
+        k = k + u32(1)
+      }
+    }
+    write_byte(u8(10))
+    free(le_raw)
+  } | { }
   free(t0)
   free(t1)
   free(t2)
@@ -584,5 +630,5 @@ prove_tables: (arena: []u32, n_raw: u32, cases: u32, budget: u32): i32 {
   free(work_raw)
   free(out_raw)
   free(ser_raw)
-  counts.refuted > u32(0) ? { i32(1) } | { i32(0) }
+  lean_failed ? { i32(2) } | { counts.refuted > u32(0) ? { i32(1) } | { i32(0) } }
 }
