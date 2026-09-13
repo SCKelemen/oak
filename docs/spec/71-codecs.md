@@ -985,6 +985,14 @@ bodies contain no checked access and exactly one length test — the exact
 bytes of a mixed-endian header, a `u128` in both orders, and the round
 trip in both realizations).
 
+**The layout report.** Every derived layout is reported as information
+(`OAK-C0101`, listed by `oak vet` and never rejecting): one line per
+record with its size and each field's offset, size, shape, and
+endianness — `derived Binary layout Header: 36 bytes — magic@0:4 u32 be,
+version@4:2 u16 le, flags@6:4 [4]u8, …`. The report is computed from the
+same field walk the encoder and decoder are built from, so it cannot
+drift from the bytes (`compiler/e2e_binary_codec_test.go`).
+
 `Oak.BinaryCodec` states the byte laws: reading the `w` bytes written for
 a value gives the value modulo `256^w`, exactly within the width
 (`fromLE_toLE`, `fromBE_toBE`, and the `_of_lt` forms); big-endian is

@@ -150,6 +150,11 @@ type SyntaxTree struct {
 	// their projections, so a later phase (the prover's liveness check)
 	// can still read the declaration.
 	Protocols []*ast.ProtocolDeclaration
+	// CodecLayouts are the fixed layouts the binary codec derived for this
+	// program (docs/spec/71-codecs.md section 22): reported as information
+	// (OAK-C0101) so a header's exact bytes are visible without reading
+	// the emitted C.
+	CodecLayouts []CodecLayout
 }
 
 // SemanticModel owns type information for a syntax tree.
@@ -456,6 +461,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 
 		model := &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc, AsmFunctions: asmFunctions}
 		model.Diagnostics = append(model.Diagnostics, tc.Diagnostics()...)
+		model.Diagnostics = append(model.Diagnostics, codecLayoutDiagnostics(tree.CodecLayouts)...)
 
 		bc := borrowchecker.New()
 		bc.CheckProgram(tree.Root, tc.Env())

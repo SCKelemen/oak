@@ -3,6 +3,8 @@ package compiler
 import (
 	"strings"
 	"testing"
+
+	"github.com/SCKelemen/oak/diagnostic"
 )
 
 // The derived binary codec (docs/spec/71-codecs.md section 22, dbs ask 9):
@@ -381,6 +383,46 @@ func TestE2EBinaryCodecPresenceAndViews(t *testing.T) {
 		_, err := New().WithSource(name+".oak", c[0]).Check().Get()
 		if err == nil || !strings.Contains(err.Error(), c[1]) {
 			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// The layout report (docs/spec/71-codecs.md section 22): every derived
+// layout is information OAK-C0101 naming its size and each field's offset,
+// size, shape, and endianness — computed from the codec's own field walk —
+// and never rejects a build.
+func TestBinaryCodecLayoutReport(t *testing.T) {
+	report := func(program string) []string {
+		model, err := New().WithSource("layout.oak", program).Check().Get()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var lines []string
+		for _, d := range model.Diagnostics {
+			if d != nil && d.Code == "OAK-C0101" {
+				if d.Severity != diagnostic.SeverityInformation {
+					t.Fatalf("layout report is not information: %v", d.Severity)
+				}
+				lines = append(lines, d.PlainText())
+			}
+		}
+		return lines
+	}
+	header := strings.Join(report(binaryCodecProgram), "\n")
+	for _, want := range []string{
+		"derived Binary layout Header: 36 bytes",
+		"magic@0:4 u32 be", "version@4:2 u16 le", "flags@6:4 [4]u8", "count@10:8 u64 be", "ok@18:1 Bool",
+		"inner@19:4 Inner", "delta@23:4 i32 le", "small@27:1 i8", "lanes@28:8 [2]Inner",
+		"derived Binary layout Inner: 4 bytes", "a@0:2 u16 le, b@2:2 u16 be",
+	} {
+		if !strings.Contains(header, want) {
+			t.Errorf("layout report lacks %q:\n%s", want, header)
+		}
+	}
+	frame := strings.Join(report(binaryFrameProgram), "\n")
+	for _, want := range []string{"derived Binary layout Frame: 14 bytes", "kind@0:2 u16 le", "count@2:5 Option[u32] be", "seen@7:2 Option[Bool]", "payload@9:4 View[u8] bytes 4", "tail@13:1 u8"} {
+		if !strings.Contains(frame, want) {
+			t.Errorf("frame layout report lacks %q:\n%s", want, frame)
 		}
 	}
 }
