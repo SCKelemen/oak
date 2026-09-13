@@ -2209,7 +2209,9 @@ func (g *generator) resultRecordInto(expr ast.Expression, outs []int) error {
 			g.pushScope()
 			defer g.popScope()
 			stmts := e.Block.Statements
-			if err := g.lowerStatements(stmts[:len(stmts)-1], false, ""); err != nil {
+			// The trailing expression still reads the block's locals: its
+			// uses count before any register is released (nativegen/liveness.go).
+			if err := g.lowerStatementsBefore(stmts[:len(stmts)-1], stmts[len(stmts)-1]); err != nil {
 				return err
 			}
 			if es, ok := stmts[len(stmts)-1].(*ast.ExpressionStatement); ok && !es.Discard {
@@ -5961,7 +5963,9 @@ func (g *generator) resultInto(expr ast.Expression, out int) error {
 			g.pushScope()
 			defer g.popScope()
 			stmts := e.Block.Statements
-			if err := g.lowerStatements(stmts[:len(stmts)-1], false, ""); err != nil {
+			// The trailing expression still reads the block's locals: its
+			// uses count before any register is released (nativegen/liveness.go).
+			if err := g.lowerStatementsBefore(stmts[:len(stmts)-1], stmts[len(stmts)-1]); err != nil {
 				return err
 			}
 			if es, ok := stmts[len(stmts)-1].(*ast.ExpressionStatement); ok && !es.Discard {
