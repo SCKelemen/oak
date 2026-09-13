@@ -145,16 +145,17 @@ locals and rebindings (`x: T = e`, `x = e`), statement-level conditionals
 whose arms assign locals (`c ? { x = e } | { y = f }`), integer-constant
 matches in value and statement position (`x ? | 0 => a | 1 => b | _ => c`),
 counted loops (`while c { body }`), span element reads and lengths (`v[i]`,
-`len(v)`), owned arrays of scalars (`a: [n]T`, `a[i]`, `a[i] = e`), and
-calls to program functions — and two readings of it: `evalX`, the extraction's
+`len(v)`), owned arrays of scalars (`a: [n]T`, `a[i]`, `a[i] = e`),
+records of scalars (`r: R = R{…}`, `r.f`, `r.f = e`, record parameters),
+and calls to program functions — and two readings of it: `evalX`, the extraction's
 (`UIntN`/`IntN` arithmetic as `BitVec` arithmetic, shift counts modulo the
 width, `decide` of the signed or unsigned order, `toIntN`/`toUIntN` as
 extension by the source's signedness or truncation, a local as its
 `let`-bound value, a statement conditional as the taken arm's values for
 the variables it assigns, a constant match as the if-chain `if x == k₁
 then … else …`, a loop as the fuel-indexed recursion that returns `none`
-when the fuel runs out, an owned array as its `Array` of elements and an
-index out of range as a trap — Oak's semantics, where the extraction's
+when the fuel runs out, an owned array as its `Array` of elements, a
+record as its `structure` fields, and an index out of range as a trap — Oak's semantics, where the extraction's
 own `getD`/`setIfInBounds` reads zero and drops the write, a modeling
 choice `95-extraction.md` §3 already marks as its own, a span element as the memory cell
 at the index — the span's contents padded with zeros, `v.getD i.toNat
@@ -169,7 +170,9 @@ conditions and `selectMatch`'s / `lowerMatchStatement`'s selects arm by
 arm into the fallback, an owned array as its element leaves `x[k]`
 (`oakValue.elems`, each under the name the verifier gives an element),
 read through `elementUnderIndex`'s element-by-element select and written
-through `assignUnderIndex`'s select at every element, a loop as
+through `assignUnderIndex`'s select at every element, a record as its
+field leaves `r.f` (`paramAggregate`'s naming, a record literal binding
+each field in the type's order), a loop as
 `lowerWhile`'s unrolling while the
 folded condition is a non-zero constant and `none` when it is not constant
 or the budget runs out — `none` throughout is the Go's "outside the
@@ -205,10 +208,11 @@ the other.
 With it, on arm64, a theorem about an Oak function's extraction composes
 with the verifier's verdict and `Oak.ArmASL` into one statement about the
 machine for a body inside the shared subset: source theorem, `lowerT_eval`,
-the verifier's equality, the ASL bridge. Outside the subset — records and
-sum types, arrays of records, span writes, array literals, the
-data-dependent loops `loopEvent` summarizes — the verifier's lowering is
-still the Go's alone, related to the extraction by tests.
+the verifier's equality, the ASL bridge. Outside the subset — sum types,
+arrays of records and records of arrays, span writes, array literals,
+record-valued calls, the data-dependent loops `loopEvent` summarizes —
+the verifier's lowering is still the Go's alone, related to the
+extraction by tests.
 
 For the C route (every function the native lane does not cover, and every
 function on amd64 and the microcontrollers), the source-level proofs reach
@@ -241,18 +245,21 @@ for a workload):
    rebindings, inlined calls to program functions, statement-level Bool
    conditionals whose arms assign locals, integer-constant matches in
    value and statement position, span element reads and lengths, the
-   constructors' constant folding, counted loops, and owned arrays of
-   scalars (`letIn`, `call`, `condSet`, `matchInt`, `matchSet`, `elem`,
-   `len`, `whileLoop`, `arrDecl`, `arrGet`, `arrSetE`, the `Agree` scope
-   invariant;
+   constructors' constant folding, counted loops, owned arrays of scalars,
+   and records of scalars (`letIn`, `call`, `condSet`, `matchInt`,
+   `matchSet`, `elem`, `len`, `whileLoop`, `arrDecl`, `arrGet`, `arrSetE`,
+   `recDecl`, the `Agree` scope invariant;
    `lowerConditionalStatement`'s select against the extraction's `let
    (vars) ← if c then … else …`; `selectTerm` against `getD` over a memory
    named as the verifier names it, `v[k]`; `lowerWhile`'s unrolling against
    the fuel-indexed recursion, the lowering `Option`-valued as the Go's
    `ok` is; an array local as its element leaves `x[k]`, in-range reads
    and writes against the extraction's `Array`, a trap where the index is
-   out of range). Next: records and sum types, arrays of records, span
-   writes, array literals — so `lowerT_eval` covers the
+   out of range; a record as its field leaves `r.f`, bound by the same
+   named binder a call uses). Next: sum types (the tag leaf and the
+   payload leaves, variant patterns as tag equalities, bindings as leaf
+   aliases), nested aggregates, span writes, array literals — so
+   `lowerT_eval` covers the
    bodies `oak build -native` actually verifies rather than their
    arithmetic alone. This is the step that turns "source theorem implies
    machine behavior" from a statement about expressions into one about

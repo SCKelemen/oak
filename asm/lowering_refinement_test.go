@@ -93,6 +93,11 @@ var loweringProgramRenders = []struct {
 	// element, literal indices fold to the one element.
 	{"f: (i, v: u32) -> u32 = {\n  a: [3]u32\n  a[0] = v\n  a[1] = v + 1\n  a[2] = v * 2\n  a[i]\n}\n", "((i eq 0) ? v : ((i eq 1) ? (v add 1) : (v mul 2)))"},
 	{"f: (i, v: u32) -> u32 = {\n  a: [2]u32\n  a[i] = v\n  a[1]\n}\n", "((i eq 1) ? v : 0)"},
+	// Records (`recDecl`): a record is its field leaves `r.f`, a field read
+	// the variable, a field write its rebinding; a record parameter is its
+	// field leaves as parameters (`paramAggregate`).
+	{"P: type = struct {\n  x: u32\n  y: u32\n}\n\nf: (a, b: u32) -> u32 = {\n  p: P = P { x: a, y: b }\n  p.x = p.x + 1\n  p.x * p.y\n}\n", "((a add 1) mul b)"},
+	{"P: type = struct {\n  x: u32\n  y: u32\n}\n\nf: (p: P) -> u32 = p.x + p.y\n", "(p.x add p.y)"},
 }
 
 func TestLoweringProgramsMatchLeanTransliteration(t *testing.T) {
@@ -117,6 +122,17 @@ func TestLoweringProgramsMatchLeanTransliteration(t *testing.T) {
 		for _, fn := range fns[:len(fns)-1] {
 			lo.functions[fn.Name.Value] = fn
 		}
+		// Record declarations (`P: type = struct { ... }`), as prepareLowering
+		// takes them from the unit's declarations.
+		lo.records = map[string]*ast.RecordLiteral{}
+		for _, stmt := range program.Statements {
+			if adt, isADT := stmt.(*ast.ADTType); isADT && adt.Name != nil && len(adt.TypeParams) == 0 && len(adt.Variants) == 1 {
+				if literal, isRecord := adt.Variants[0].Literal.(*ast.RecordLiteral); isRecord {
+					lo.records[adt.Name.Value] = literal
+				}
+			}
+		}
+		lo.bindAggregateParams(spec)
 		width, _, ok := contractBits(spec.ReturnType)
 		if !ok {
 			t.Fatalf("%s: no contract width", c.program)
