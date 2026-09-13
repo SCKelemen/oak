@@ -233,7 +233,7 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 	exit := 0
 	for _, r := range results {
 		fmt.Fprintf(stdout, "%-9s %s: %s\n", r.Status, r.Name, r.Detail)
-		if r.Status != prove.Decided && r.Status != prove.Proved {
+		if !r.Advisory && r.Status != prove.Decided && r.Status != prove.Proved {
 			exit = 1
 		}
 	}

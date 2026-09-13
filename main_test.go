@@ -659,7 +659,8 @@ func TestProveVerificationExample(t *testing.T) {
 		"decided   budget_bounded: invariant: base all 1 cases, step at the bit level",
 		"decided   quantum_live1: eventually Yielded: holds on all 3 reachable states under fair tick, fair resume",
 		"decided   quantum_live2: eventually Running -> Yielded",
-		"oak prove: 8 decided",
+		"decided   Quantum: guards of tick from Running: pairwise exclusive",
+		"oak prove: 9 decided",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)

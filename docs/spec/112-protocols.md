@@ -134,7 +134,14 @@ through the predicate (`110-testing.md`, "Typed commands"). A `u32` base
 is refused: the generator scans the base range for an admitted value. Several lines may
 share both name and source state when every such line carries a guard: in
 Oak the first line whose guard holds is taken, in declaration order; the
-model checker explores every line whose guard holds.
+model checker explores every line whose guard holds. `oak prove` decides
+whether the two readings coincide: for every such group it states one
+theorem per pair of lines — the guards never hold together, over the data
+record and the payload — and reports one advisory row per group,
+`Name: guards of t from S`, decided when the guards are pairwise exclusive
+and refuted with the data and payload at which two lines can both fire.
+The row informs and never fails the run: overlapping guards are a
+legitimate declaration whose model-checker reading is the wider one.
 
 Shape errors (`OAK-M0301`): no `initial`, no transitions, a lowercase state,
 a payload that is not a scalar or a record of scalars, a payload that changes between lines of one
