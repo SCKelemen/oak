@@ -706,6 +706,25 @@ The rules:
    resource is left in, a sum over those states when several are possible,
    never a flag (`compiler/e2e_typestate_fallible_test.go`).
 
+6. A handle may carry **fact indices** beyond its state: a `fact F = A | B`
+   clause names a further type parameter of the resource template and the
+   closed set of markers it ranges over, projected to marker types like
+   the states. `Segment[S, F]: type = struct { ... }` with `fact F = Open |
+   Sealed` makes `Segment[Published, Sealed]` a type: a sealed segment is
+   a fact the types see, never a flag the guards test. The template's
+   first parameter is the state and each further one a declared fact, in
+   order; a template with any other parameter count (region parameters,
+   ordinary generics) is not typestate-indexed, as before. A via callable
+   may move a fact (`seal: (s: Segment[Published, Open]): Segment[Published,
+   Sealed]`) or leave it polymorphic (`publish[F]: (s: Segment[Fresh, F]):
+   Segment[Published, F]`); the state position still names a concrete
+   state, and a fact position names a marker of its set or a type variable
+   (`OAK-M0301` otherwise). Construction (rule 4) is keyed on the state;
+   a transition into a state may construct it with any fact. The
+   protocol's machine, module and monitor read no fact: facts are
+   type-level, and the model-checker module is unchanged
+   (`compiler/e2e_typestate_facts_test.go`).
+
 A typestate resource may also carry **region parameters**
 (`50-borrowing.md` §8c): `Node[R, S]: type = struct { data: View[f32, R],
 n: u32 }` with `initial Lazy` and `realize: Lazy -> Realized` gives
@@ -758,6 +777,19 @@ the first of those to land.
 - Payloads and data beyond the current shapes: a record payload with array
   fields, nested records more than one level deep, and a domain the
   configuration chooses per step rather than the default four values.
+- A symbolic-prover reading (`docs/notes/provers-2026-09.md`). States,
+  lines, payloads, and data map onto Tamarin's multiset rewriting one rule
+  per line — the every-line reading TLC also takes — and a sanity export
+  (`exists-trace` for each state, the invariant theorems as `all-traces`
+  lemmas) would be a third reading to compare with TLC and `oak prove`. A
+  security reading needs what the declaration has no spelling for: message
+  terms with an equational theory, fresh names, channels, an adversary,
+  roles over unbounded sessions, and properties over the trace rather than
+  over `(state, data)`; the constitution's rule that one declaration
+  drives every view argues for adding them to the declaration, not to a
+  side file. Fixed-width arithmetic, division, and index bounds — decided
+  exactly here — have no exact counterpart there, so any export is an
+  abstraction whose direction must be stated.
 
 Landed since this list was first written: mixed-symbol lowering (§2a:
 steps with classed `u8`/`u16` payloads beside steps without), the static

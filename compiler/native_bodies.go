@@ -3,15 +3,16 @@ package compiler
 import (
 	"fmt"
 	"os"
-	"reflect"
 	"strconv"
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/codegen"
 	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/evaluator"
 	"github.com/SCKelemen/oak/lsp"
 	"github.com/SCKelemen/oak/nativegen"
+	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/target"
 	"github.com/SCKelemen/oak/typechecker"
 )
@@ -54,20 +55,26 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		symbols[fn.Name.Value] = true
 		if fn.ExternSymbol == "" && fn.Receiver == nil && len(fn.TypeParams) == 0 {
 			functions[fn.Name.Value] = fn
+			if nativegen.VectorContract(fn) {
+				// The native entry of a function under the vector contract
+				// (nativegen.VectorContractSuffix): a call target too.
+				symbols[nativegen.NativeSymbol(fn)] = true
+			}
 		}
 	}
 	specializeInstantiations(tc, templates, records, adts)
-	constants := nativeConstants(root)
+	constants := constantGlobals(root, tc)
 	var lowered []*asm.Function
 	for _, stmt := range root.Statements {
 		fn, ok := stmt.(*ast.FunctionStatement)
 		if !ok || fn.Name == nil || fn.Body == nil || fn.AsmBacked || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 {
 			continue
 		}
-		// The native backend sees a read of a constant top-level scalar as
-		// the typed literal it is (the OS pilot's N1: `page_size`,
-		// `entries`); the C emitter keeps the original body.
-		source := substituteConstants(fn, constants)
+		// A read of a constant top-level scalar (the OS pilot's N1:
+		// `page_size`, `entries`) reaches the backend and the verifier as
+		// its folded value (constants); the C emitter keeps the body and
+		// its `static const`.
+		source := fn
 		lane := nativegen.Lane{Arch: comp.options.Target.AsmArch(), SoftFloat: comp.options.Target.Freestanding() && comp.options.Target.Arch == target.ArchRiscv64}
 		// Check elision (docs/spec/94-assembler.md §9): an element access the
 		// typechecker proved in range is lowered without its guard first;
@@ -75,7 +82,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// path, the body is lowered again with every guard. The checker
 		// decides safety; the elision is only what it already knows.
 		lane.ElideProven = lane.Arch == asm.ArchArm64
-		asmFn, err := nativegen.CompileFor(lane, source, functions, records, adts, tc)
+		asmFn, err := nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
 		if err != nil {
 			if _, outside := err.(nativegen.Unsupported); outside {
 				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (%v)", fn.Name.Value, err)))
@@ -88,7 +95,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		if len(findings) != 0 && lane.ElideProven && nativegen.ElidedGuards(asmFn) > 0 {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its element guards (the checker did not admit the elided form: %s)", fn.Name.Value, findings[0])))
 			lane.ElideProven = false
-			asmFn, err = nativegen.CompileFor(lane, source, functions, records, adts, tc)
+			asmFn, err = nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
 			if err != nil {
 				diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
 				continue
@@ -117,6 +124,32 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		fn.NativeBacked = true
 		fn.AsmArch = asmFn.Arch // the C emitter guards the Oak body by the lane's negation
 		lowered = append(lowered, asmFn)
+	}
+	// A native function calls a vector-contract callee at its native entry,
+	// so the callee must be native too; a caller whose callee stayed on the
+	// C backend is demoted, and demotion cascades to a fixpoint.
+	for changed := true; changed; {
+		changed = false
+		kept := lowered[:0]
+		for _, asmFn := range lowered {
+			fn := asmFn.Signature
+			demoted := false
+			for _, callee := range nativegen.VectorCallees(fn, functions) {
+				if target := functions[callee]; target != nil && !target.NativeBacked {
+					diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (it passes vectors to %s, which the C backend realizes)", fn.Name.Value, callee)))
+					demoted = true
+					break
+				}
+			}
+			if demoted {
+				fn.NativeBacked = false
+				fn.AsmArch = ""
+				changed = true
+				continue
+			}
+			kept = append(kept, asmFn)
+		}
+		lowered = kept
 	}
 	return lowered, diagnostics
 }
@@ -188,64 +221,68 @@ func argumentExpressionOf(atom string) ast.Expression {
 	return &ast.Identifier{Value: atom}
 }
 
-// nativeConstants is the set of constant integer top-level bindings the
-// native lowering folds (codegen.ConstantScalarGlobals, integers only: a
-// Bool or float constant has no conversion spelling to fold through).
-func nativeConstants(root *ast.Program) map[string]*ast.VariableDeclaration {
-	constants := map[string]*ast.VariableDeclaration{}
-	for name, decl := range codegen.ConstantScalarGlobals(root) {
-		if typeName, isIdent := decl.Type.(*ast.Identifier); isIdent && nativeConstantTypes[typeName.Value] {
-			constants[name] = decl
+// constantScalarTypes are the declared types of the globals the native
+// backend folds: the C backend's scalar constant set less the floats (a
+// float constant is not yet materialized natively).
+var constantScalarTypes = map[string]bool{
+	"u8": true, "u16": true, "u32": true, "u64": true, "i8": true, "i16": true, "i32": true, "i64": true,
+	"Bool": true, "byte": true,
+}
+
+// constantGlobals folds the program's constant globals to their values
+// under the C backend's own rule (docs/spec/90-backend.md §8a,
+// codegen.ConstantScalarGlobals: a typed scalar top-level binding with a
+// constant initializer that no statement assigns, index-assigns, borrows,
+// or addresses, outside any placed section; a target constant's `c.const`
+// is no constant initializer, since only the C compiler knows its value
+// per target). The initializers fold through the
+// interpreter in declaration order — the semantics the C backend's own
+// file-scope fold uses, so both realizations agree on every value — and
+// every constant-initialized global, mutated or not, is bound for the
+// initializers after it, as the C backend binds them. A global whose
+// initializer does not fold is left out, and a function reading it stays
+// with the C backend.
+func constantGlobals(root *ast.Program, tc *typechecker.TypeChecker) map[string]asm.Constant {
+	out := map[string]asm.Constant{}
+	if root == nil || tc == nil {
+		return out
+	}
+	eligible := codegen.ConstantScalarGlobals(root)
+	env := object.NewEnvironment()
+	env.SetArithmeticWidths(tc.ArithmeticType)
+	folded := map[string]bool{}
+	for _, stmt := range root.Statements {
+		decl, isDecl := stmt.(*ast.VariableDeclaration)
+		if !isDecl || decl.Name == nil || decl.Type == nil || decl.Value == nil {
+			continue
 		}
-	}
-	return constants
-}
-
-var nativeConstantTypes = map[string]bool{
-	"u8": true, "u16": true, "u32": true, "u64": true, "i8": true, "i16": true, "i32": true, "i64": true, "byte": true,
-}
-
-// substituteConstants returns fn with every read of a constant top-level
-// integer binding replaced by its initializer under the binding's type,
-// `T(init)`, on a copy of the declaration (docs/spec/94-assembler.md
-// section 9): the generator and the verifier both see the literal, and
-// the emitted C keeps the original body and its `static const`. A function
-// that reads none is returned as is. Oak forbids shadowing a global, so a
-// name that is a constant is the constant wherever it appears as a value
-// (member names after `.` are not visited).
-func substituteConstants(fn *ast.FunctionStatement, constants map[string]*ast.VariableDeclaration) *ast.FunctionStatement {
-	if len(constants) == 0 {
-		return fn
-	}
-	reads := false
-	_ = transformSyntax(reflect.ValueOf(fn.Body), func(expr ast.Expression) (ast.Expression, error) {
-		if id, isIdent := expr.(*ast.Identifier); isIdent {
-			if _, isConst := constants[id.Value]; isConst {
-				reads = true
+		if !typechecker.IsConstantInitializerIn(decl.Value, folded) {
+			continue
+		}
+		if result := evaluator.Eval(decl, env); result == nil {
+			continue
+		} else if _, isErr := result.(*object.Error); isErr {
+			continue
+		}
+		folded[decl.Name.Value] = true
+		typeName, isIdent := decl.Type.(*ast.Identifier)
+		if _, isEligible := eligible[decl.Name.Value]; !isEligible || !isIdent || !constantScalarTypes[typeName.Value] {
+			continue
+		}
+		value, bound := env.Get(decl.Name.Value)
+		if !bound {
+			continue
+		}
+		switch v := value.(type) {
+		case *object.Integer:
+			out[decl.Name.Value] = asm.Constant{Type: typeName.Value, Value: uint64(v.Value)}
+		case *object.Boolean:
+			bit := uint64(0)
+			if v.Value {
+				bit = 1
 			}
+			out[decl.Name.Value] = asm.Constant{Type: typeName.Value, Value: bit}
 		}
-		return expr, nil
-	})
-	if !reads {
-		return fn
 	}
-	clone := cloneSyntax(reflect.ValueOf(fn)).Interface().(*ast.FunctionStatement)
-	_ = transformSyntax(reflect.ValueOf(clone), func(expr ast.Expression) (ast.Expression, error) {
-		id, isIdent := expr.(*ast.Identifier)
-		if !isIdent {
-			return expr, nil
-		}
-		decl, isConst := constants[id.Value]
-		if !isConst {
-			return expr, nil
-		}
-		typeName := decl.Type.(*ast.Identifier).Value
-		init := cloneSyntax(reflect.ValueOf(decl.Value)).Interface().(ast.Expression)
-		return &ast.InvocationExpression{
-			Token:     id.Token,
-			Function:  &ast.Identifier{Token: id.Token, Value: typeName},
-			Arguments: []ast.Expression{init},
-		}, nil
-	})
-	return clone
+	return out
 }

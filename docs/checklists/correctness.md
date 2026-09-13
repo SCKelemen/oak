@@ -140,6 +140,93 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       walk from the initial state, so a state only mentioned is refused
       rather than explored by no reading and proved about vacuously?
       (TLA+ state graph) — Oak: `112-protocols.md` §1 shape errors.
+- [ ] **Adversary model explicit.** For a protocol claimed secure, is the
+      adversary written down as part of the model — what it observes, what
+      it may inject, which parties or keys it may compromise and when — and
+      is every security claim stated relative to that adversary rather than
+      to "the network"? A model with no adversary proves only that honest
+      parties agree with themselves. (Tamarin `K`/`In`/`Out` facts and
+      `Reveal`; ProVerif's Dolev–Yao clauses) — Oak: `not stated`;
+      `112-protocols.md` §6 leaves the environment to the TLA+ extension
+      module; `docs/notes/provers-2026-09.md`.
+- [ ] **Equational theory declared and in a decidable class.** Where a
+      model uses cryptographic or algebraic operators, are their equations
+      declared once (`dec(enc(x, k), k) = x`, Diffie–Hellman, XOR), and is
+      the theory in the class the checker terminates on — subterm-convergent
+      or finite-variant — with anything outside (associativity, groups)
+      named as an abstraction? (Tamarin `equations:`; ProVerif `equation`
+      and its non-termination on associativity) — Oak: `not stated`; guards
+      are fixed-width machine arithmetic only (`112-protocols.md` §1).
+- [ ] **Freshness stated, not assumed.** Is every value that must be
+      unguessable and single-use (nonce, session key, identifier) produced
+      by a freshness construct the model checks for uniqueness, so a reused
+      value surfaces as a replay rather than passing unseen? (Tamarin
+      `Fr(~n)`; ProVerif `new`) — Oak: `not stated`; `init` sets constants
+      and payloads are enumerated domains.
+- [ ] **Secrecy and authentication as correspondences.** Is
+      "authenticated" stated at a named rung of Lowe's hierarchy —
+      aliveness, weak agreement, non-injective agreement, injective
+      agreement — as a correspondence between a `Commit` event and an
+      earlier `Running` event on the agreed data, and secrecy as "never
+      known to the adversary unless a named compromise happened first"?
+      (Tamarin lemma templates; ProVerif `event ==> event`, `inj-event`) —
+      Oak: `not stated`; theorems are predicates over `(state, data)`
+      (`125-verification.md` §2), not over traces.
+- [ ] **Trace properties, not only state predicates.** Can a property that
+      needs the order of events ("every accept was preceded by a matching
+      send") be stated over the run, and is the artifact that sees the run
+      — the monitor, the model checker — the one that checks it? (Tamarin
+      action facts and timepoints `@#i`, `#i < #j`) — Oak: the monitor of
+      `112-protocols.md` §2c sees the trace; `open` — no source form
+      states a trace property for it.
+- [ ] **The bound of the claim is stated.** Does every model-checked
+      result say whether it holds for an unbounded number of sessions and
+      parties or for the finite instance explored (two replicas, payload
+      domain `0..3`), and is "checked at N = 2" never rounded up to
+      "verified"? (Tamarin and ProVerif unbounded; TLC and `-cases`
+      bounded) — Oak: `125-verification.md` §3 ladder statuses;
+      `112-protocols.md` §4 configuration domains.
+- [ ] **Executability before security.** Does the model carry a sanity
+      lemma that an honest run reaches its final step (an `exists-trace`),
+      so an over-restricted model does not prove every property vacuously?
+      (Tamarin `exists-trace`; ProVerif `query event(Finished)` expected
+      false) — Oak: `112-protocols.md` §1 shape errors cover unreached
+      *states*; `open` for "the whole protocol can complete".
+- [ ] **Helper lemmas are part of the proof, and checked.** When a prover
+      needs guidance — a sources or typing lemma, a reuse lemma, an oracle,
+      a selection-function hint — is each stored beside the model, itself
+      proved or marked an axiom, and replayed in CI so a change to the
+      model invalidates the guidance visibly? (Tamarin `[sources]`,
+      `[reuse]`, oracles; ProVerif `lemma`, `axiom`, `nounif`) — Oak:
+      `125-verification.md` §5 hand-written Lean modules import the
+      regenerated projection; `not stated` for proof-search hints.
+- [ ] **"Cannot be proved" is triaged, never filed as failure.** When a
+      symbolic tool returns a derivation without an executable trace, is it
+      classified — a real attack (the trace replays), a false attack of the
+      abstraction (repetition ignored, a temporary secret, diff-equivalence
+      too strong), or non-termination — and does only the first count as a
+      refutation? (ProVerif's three verdicts; Tamarin partial
+      deconstructions) — Oak: `125-verification.md` §3 keeps `refuted` and
+      `open` distinct; extend the rule to imported verdicts.
+- [ ] **Privacy stated as equivalence.** Is a privacy property
+      (unlinkability, anonymity, strong secrecy, vote privacy) stated as an
+      observational equivalence between two systems rather than as a
+      reachability query, and is a failed diff-equivalence recorded as
+      "not proved", never as "broken"? (Tamarin `diff()`; ProVerif
+      `choice[]`, `noninterf`) — Oak: `not stated`.
+- [ ] **Compromise scenarios enumerated.** Are the key compromises the
+      property tolerates listed — a peer's long-term key, a session key,
+      before or after the run (forward secrecy, key-compromise
+      impersonation) — as explicit reveal steps in the model and as the
+      disjuncts of the lemma? (Tamarin `Reveal(B) @ r & r < i`; ProVerif
+      `phase 1; out(c, sk)`) — Oak: `not stated`.
+- [ ] **A stateful protocol's state is a first-class model object.** For a
+      protocol with a global counter, table, or lock, does the chosen tool
+      model mutable state exactly — a linear fact consumed and re-produced
+      — rather than through an abstraction that forgets how many times a
+      step ran? (Tamarin linear facts; ProVerif's Horn abstraction "ignores
+      the number of repetitions") — Oak: the `data` record *is* the state
+      (`112-protocols.md` §1); the rule bears on any export.
 
 ## 3. Make illegal states unrepresentable
 
