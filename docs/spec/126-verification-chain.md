@@ -194,15 +194,56 @@ Next:
    built from git so the theorems are checked against the export itself
    rather than verbatim copies; extend the decided subset to loads and
    stores through the frame and to the AMOs the memory refinement already
-   pins.
+   pins. Attempted 2026-09-13; the blocker is now exact. The opam release
+   0.20.2 exports do not compile (§2.5 of `94-assembler.md`), and a
+   `libsail` pinned from git fails to build against a release install
+   because git's `libsail` runs `sail_maker embed` at build time and
+   `sail_maker` is a separate opam package there — pinning only `libsail`,
+   `sail` and `sail_lean_backend` leaves the release `sail_maker` 0.20.2
+   on the path, which has no `embed`, so the rule prints its usage and
+   fails. The recipe is therefore: pin every package of the Sail
+   repository from one checkout (`opam pin add -n .` in it, `sail_maker`
+   included, then `opam install sail_maker libsail sail
+   sail_lean_backend`), then `cmake -S external/sail-riscv -B
+   external/sail-riscv/build && cmake --build external/sail-riscv/build
+   --target generated_lean_rv64d`, `lake build` in
+   `build/model/Lean_RV64D`, and `lake build` in `spec/lean-sail`;
+   `asm/rv64_sail_bridge_test.go` then runs the bridge. The export's
+   `lake build` is large (gigabytes of `.olean`); the attempt stopped
+   when the host had about one gigabyte of disk left.
 4. **An amd64 lane and an x86 semantics**: the native backend's third lane,
    with instruction semantics bridged to a machine-readable x86-64
-   specification. The candidates are the Sail x86 model (REMS; partial),
-   the ACL2 `x86isa` model (Intel-validated and comprehensive, but in
-   ACL2, so the bridge would be a verbatim restatement checked by a test,
-   as the RISC-V bridge is today), and Intel XED as the decode/encode
-   audit oracle in the role `llvm-mc` and Arm's XML play for arm64. Until
-   then amd64 is a C-only target and its chain ends at the compiler.
+   specification. Scoped 2026-09-13, in the order that pays first:
+   1. `Oak.X86`, the semantics of the integer subset the verifier would
+      decide (`mov`, `add`, `sub`, `imul`, `and`, `or`, `xor`, `shl`,
+      `shr`, `sar`, `neg`, `not`, `lea`, `movzx`, `movsx`, `cmp`, `test`,
+      `setcc`, `cmovcc`, the conditional branches) as total `BitVec`
+      operations with the CF/ZF/SF/OF flags, in the shape of `Oak.RiscV`,
+      **bridged to ACL2's `x86isa`** (`acl2/books/projects/x86isa`, the
+      Intel-validated model) by verbatim restatement of its instruction
+      semantic functions, a Go test keeping the copies honest against the
+      fetched sources — the RISC-V bridge's shape, since x86isa is in ACL2
+      and has no Lean export. The REMS Sail x86 model is a Sail-1-era
+      fragment with no published repository under `rems-project` today
+      and no path to the Lean backend; it is not a candidate.
+   2. The verifier's amd64 lane (`asm/x86_64_verify.go`): SysV AMD64 psABI
+      binding (`rdi, rsi, rdx, rcx, r8, r9`; `rax` the result; a narrow
+      argument's upper bits unspecified), a closed instruction table,
+      `.amd64.oakasm` units, the checker's frame and clobber rules for the
+      x86 calling convention. Its first user is `codegen/translation_validation_test.go`
+      extended with clang `--target=x86_64-linux-gnu`: the trusted-core
+      helpers checked on amd64 before any encoder exists, which is what
+      the chain on amd64 lacks most.
+   3. The encoder — ModRM/SIB/REX/prefixes generated from a table and
+      **checked against Intel XED** (`intelxed/xed`, the decode/encode
+      oracle in the role `llvm-mc` and Arm's XML play for arm64; note
+      `/usr/bin/xed` on macOS is Xcode's editor launcher, not XED) and
+      `llvm-mc`, and the ELF/Mach-O amd64 object writer.
+   4. `nativegen`'s amd64 lane over the same IR, `Oak.Target.lane = amd64`,
+      verified per function by the lane of step 2, silicon differential on
+      an amd64 host in CI.
+   Until step 2 lands amd64 is a C-only target and its chain ends at the
+   compiler.
 5. **The microcontrollers**: wait on Arm's M-profile ASL
    (`docs/notes/oak-cortex-m-deferred`); rv32 can follow rv64's lane once
    the psABI differences are stated.
