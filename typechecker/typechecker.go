@@ -908,12 +908,16 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 			tc.predeclareFunctionSignature(fn)
 			if fn.Operator != "" && fn.Name != nil {
 				tc.registerOperator(fn)
-			} else if len(fn.Laws) > 0 {
-				names := make([]string, 0, len(fn.Laws))
-				for _, law := range fn.Laws {
-					names = append(names, law.String())
+			} else if len(fn.Laws) > 0 && fn.Name != nil {
+				// A plain binary function declares laws as an operator
+				// does (docs/spec/10-syntax.md section 14a): the claim on
+				// the reducing function, `plus: (a: f32, b: f32): f32 laws
+				// { associative }`, is what `order bounded` reads.
+				operand := ""
+				if len(fn.Parameters) == 2 && fn.Parameters[0] != nil && fn.Parameters[0].Type != nil {
+					operand = fn.Parameters[0].Type.String()
 				}
-				tc.addError(fn, "laws { %s }: only an operator definition declares laws (docs/spec/10-syntax.md section 14a)", strings.Join(names, ", "))
+				tc.recordOperatorLaws(fn, operand)
 			}
 			if len(fn.TypeParams) > 0 && fn.Receiver == nil && !typeParamsConstrained(fn.TypeParams) {
 				if tc.functionTemplates == nil {
@@ -1053,10 +1057,12 @@ func (tc *TypeChecker) registerOperator(fn *ast.FunctionStatement) {
 	tc.recordOperatorLaws(fn, typeName)
 }
 
-// OperatorLaw is one algebraic property an operator definition declares
-// (docs/spec/10-syntax.md section 14a): the permission a backend has to
-// regroup (associative) or reorder (commutative) applications of the
-// operator, on the author's authority.
+// OperatorLaw is one algebraic property a binary function declares
+// (docs/spec/10-syntax.md section 14a) — an operator definition, or a plain
+// function of two parameters of one type, for which Symbol is empty and
+// Type the operand type: the permission a backend has to regroup
+// (associative) or reorder (commutative) applications of the function, on
+// the author's authority.
 type OperatorLaw struct {
 	Type     string
 	Symbol   string
@@ -1072,12 +1078,16 @@ type OperatorLaw struct {
 var operatorLawNames = map[string]bool{"associative": false, "commutative": false, "identity": true, "idempotent": false}
 
 // recordOperatorLaws validates a `laws { ... }` clause against the
-// operator's signature — every law needs two parameters of one type;
+// function's signature — every law needs two parameters of one type;
 // associative, identity and idempotent need the result to be that type
 // too; identity's element is checked at that type — and records it.
 func (tc *TypeChecker) recordOperatorLaws(fn *ast.FunctionStatement, typeName string) {
 	if len(fn.Laws) == 0 {
 		return
+	}
+	who := fn.Name.Value
+	if fn.Operator != "" {
+		who = fmt.Sprintf("operator(%s) %s", fn.Operator, fn.Name.Value)
 	}
 	sameParams := len(fn.Parameters) == 2 && fn.Parameters[0] != nil && fn.Parameters[1] != nil &&
 		fn.Parameters[0].Type != nil && fn.Parameters[1].Type != nil &&
@@ -1088,28 +1098,28 @@ func (tc *TypeChecker) recordOperatorLaws(fn *ast.FunctionStatement, typeName st
 		law := clause.Name
 		takesElement, known := operatorLawNames[law]
 		if !known {
-			tc.addError(fn, "operator(%s) %s: unknown law %q (associative, commutative, identity(e), idempotent)", fn.Operator, fn.Name.Value, law)
+			tc.addError(fn, "%s: unknown law %q (associative, commutative, identity(e), idempotent)", who, law)
 			continue
 		}
 		if seen[law] {
-			tc.addError(fn, "operator(%s) %s: law %s declared twice", fn.Operator, fn.Name.Value, law)
+			tc.addError(fn, "%s: law %s declared twice", who, law)
 			continue
 		}
 		seen[law] = true
 		if takesElement != (clause.Argument != nil) {
 			if takesElement {
-				tc.addError(fn, "operator(%s) %s: identity names its element, identity(e)", fn.Operator, fn.Name.Value)
+				tc.addError(fn, "%s: identity names its element, identity(e)", who)
 			} else {
-				tc.addError(fn, "operator(%s) %s: %s takes no argument", fn.Operator, fn.Name.Value, law)
+				tc.addError(fn, "%s: %s takes no argument", who, law)
 			}
 			continue
 		}
 		if !sameParams {
-			tc.addError(fn, "operator(%s) %s: %s needs two parameters of one type", fn.Operator, fn.Name.Value, law)
+			tc.addError(fn, "%s: %s needs two parameters of one type", who, law)
 			continue
 		}
 		if law != "commutative" && !returnsOperand {
-			tc.addError(fn, "operator(%s) %s: %s needs the result type to be the operand type", fn.Operator, fn.Name.Value, law)
+			tc.addError(fn, "%s: %s needs the result type to be the operand type", who, law)
 			continue
 		}
 		if clause.Argument != nil {
@@ -1120,7 +1130,7 @@ func (tc *TypeChecker) recordOperatorLaws(fn *ast.FunctionStatement, typeName st
 			}
 			if got := tc.checkExpression(clause.Argument, operand); got == nil || !tc.areCompatibleTypes(got, operand) {
 				if got != nil {
-					tc.addError(fn, "operator(%s) %s: the identity element is %s, not the operand type %s", fn.Operator, fn.Name.Value, got.String(), operand.String())
+					tc.addError(fn, "%s: the identity element is %s, not the operand type %s", who, got.String(), operand.String())
 				}
 				continue
 			}
@@ -1201,76 +1211,68 @@ func (tc *TypeChecker) currentOrder() string {
 	return tc.orderScopes[len(tc.orderScopes)-1]
 }
 
-// LawLowering records one call site regrouped on a declared operator law:
-// a reduce.tree over an operator declaring associative, lowered to
-// reduce.chain (docs/spec/10-syntax.md section 14a; the ml pilot's F3).
+// LawLowering records one reduce.reduce call site resolved to a named
+// order (docs/spec/55-parallelism.md section 4): the block's `tree` or
+// `left`, or under `order bounded` the regrouping to reduce.chain that the
+// combine's declared law licenses (docs/spec/10-syntax.md section 14a; the
+// ml pilot's F3 and RFC 0004).
 type LawLowering struct {
 	Token    token.Token
 	Function string // the operator function whose law licensed the lowering
 	From, To string // the library function called and the one lowered to
 }
 
-// LawLowerings lists the call sites lowered on a declared law, in order.
+// LawLowerings lists the resolved reduce.reduce call sites, in order.
 func (tc *TypeChecker) LawLowerings() []LawLowering {
 	return append([]LawLowering(nil), tc.lawLowerings...)
 }
 
-// lowerAssociativeTree rewrites reduce.tree(xs, zero, f) to
-// reduce.chain(xs, zero, f) when f names an operator definition declaring
-// laws { associative }: by Oak.Reduce.tree_eq_chainFold the two agree under
-// the law, and chain is the left fold from the first element with no stack
-// of partials. A kernel body cannot reach it: operators are declared over
-// records, which are outside the kernel subset, so a kernel's reduction is
-// the tree it names. A false law makes the result differ from the tree
-// named, which is what the chapter says a false law does.
+// lowerAssociativeTree resolves reduce.reduce(xs, zero, f) to the order the
+// enclosing block declares (docs/spec/55-parallelism.md section 4,
+// "Declaring the order once"): `tree` outside every block and inside `order
+// tree` — the exact order is the default — `left` inside `order left`, and
+// inside `order bounded` reduce.chain, the left fold from the first element
+// with no stack of partials, which by Oak.Reduce.tree_eq_chainFold is the
+// tree's value when f is associative. `bounded` is therefore refused unless
+// f declares laws { associative } (docs/spec/10-syntax.md section 14a): the
+// claim is the permission, and a false claim is what makes the regrouped
+// value differ from the tree named. An explicit reduce.tree or reduce.left
+// keeps its name everywhere: the grouping named is the grouping computed.
+// The rewrite happens in the checker, so the C backend, the interpreter,
+// and the extraction all see a named order (Oak.Reduce.resolve).
 func (tc *TypeChecker) lowerAssociativeTree(expr *ast.InvocationExpression) {
 	callee, ok := expr.Function.(*ast.Identifier)
 	if !ok || len(expr.Arguments) != 3 {
 		return
 	}
 	path, name, ok := modules.Demangle(callee.Value)
-	if !ok || path != "reduce" {
+	if !ok || path != "reduce" || name != "reduce" {
 		return
 	}
 	combine, combineIsIdent := expr.Arguments[2].(*ast.Identifier)
-	associative := combineIsIdent && tc.HasOperatorLaw(combine.Value, "associative")
-	switch name {
-	case "reduce":
-		// The scope-ordered reduction (docs/spec/55-parallelism.md section
-		// 4, "Declaring the order once"): the enclosing order block names
-		// the grouping; outside one it is the exact tree. `any` is the
-		// permission to regroup, and it is refused without the claim.
-		target := "tree"
-		switch tc.currentOrder() {
-		case "left":
-			target = "left"
-		case "any":
-			if !associative {
-				spelled := expr.Arguments[2].String()
-				tc.addError(expr.Arguments[2], "reduce in an `order any` block regroups only an operator declaring laws { associative }; %s declares none — name the order (`order tree`, `order left`) or declare the law (docs/spec/55-parallelism.md section 4)", spelled)
-				return
-			}
-			target = "chain"
-		}
-		lowered := modules.Mangle(path, target)
-		function := ""
-		if combineIsIdent {
-			function = combine.Value
-		}
-		tc.lawLowerings = append(tc.lawLowerings, LawLowering{Token: expr.Token, Function: function, From: callee.Value, To: lowered})
-		callee.Value = lowered
-	case "tree":
-		if !associative {
+	target := "tree"
+	switch tc.currentOrder() {
+	case "left":
+		target = "left"
+	case "bounded":
+		if !combineIsIdent || !tc.HasOperatorLaw(combine.Value, "associative") {
+			tc.addError(expr.Arguments[2], "reduce in an `order bounded` block regroups only a combine declaring laws { associative }; %s declares none — name the order (`order tree`, `order left`) or declare the law (docs/spec/55-parallelism.md section 4)", expr.Arguments[2].String())
 			return
 		}
-		lowered := modules.Mangle(path, "chain")
-		tc.lawLowerings = append(tc.lawLowerings, LawLowering{Token: expr.Token, Function: combine.Value, From: callee.Value, To: lowered})
-		callee.Value = lowered
+		target = "chain"
 	}
+	lowered := modules.Mangle(path, target)
+	function := ""
+	if combineIsIdent {
+		function = combine.Value
+	}
+	tc.lawLowerings = append(tc.lawLowerings, LawLowering{Token: expr.Token, Function: function, From: callee.Value, To: lowered})
+	callee.Value = lowered
 }
 
-// HasOperatorLaw reports whether the function bound as an operator declares
-// the law — the fact a backend consults before regrouping.
+// HasOperatorLaw reports whether the named function — an operator
+// definition or a plain binary function — declares the law: the fact a
+// backend consults before regrouping.
 func (tc *TypeChecker) HasOperatorLaw(function, law string) bool {
 	for _, l := range tc.operatorLaws {
 		if l.Function == function && l.Law == law {
@@ -2533,9 +2535,10 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			return tc.checkReinterpretCast(callee, idx.Index, expr)
 		}
 	}
-	// A reduce.tree whose combine declares laws { associative } lowers to
-	// reduce.chain (docs/spec/10-syntax.md section 14a): the declared law is
-	// the permission to regroup, Oak.Reduce.tree_eq_chainFold the theorem.
+	// A reduce.reduce resolves to the order its block declares
+	// (docs/spec/55-parallelism.md section 4); under `order bounded` the
+	// combine's declared law is the permission to regroup,
+	// Oak.Reduce.tree_eq_chainFold the theorem.
 	tc.lowerAssociativeTree(expr)
 	// Generic function calls monomorphize here: the call site is rewritten
 	// to the specialized name and re-typed (typechecker/genericfn.go).
