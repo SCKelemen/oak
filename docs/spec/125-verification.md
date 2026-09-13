@@ -519,12 +519,18 @@ In order of payoff, each reusing a surface that exists:
   corpus's 50, the Go interpreter confirming each; views of local arrays
   alias the array's leaves, `len` is their constant length, and the
   `is_valid_utf8` builtin is the UTF-8 acceptance automaton unrolled over
-  the bytes, so the UTF-8 witness laws decide in Oak), so the Go that
-  remains on the prover's path is the ladder's shell — streaming the
-  sources, reading the verdicts — and the interpreter for the 7 protocol
-  machine laws, which call the functions the compiler generates from a
-  protocol declaration; next that protocol lowering in Oak, so those
-  decide in Oak too and `oak prove` is an Oak program end to end; then
+  the bytes, so the UTF-8 witness laws decide in Oak; and the protocol
+  lowering runs in Oak — `prove/solver/protocol.oak` reads a data-less
+  `Name: protocol = { ... }` declaration and synthesizes the state and
+  step types and the projected functions the way `compiler/protocols.go`
+  does, `assert` a trap obligation, aggregates compared structurally, a
+  bare `.Variant` typed by its context — so every one of the corpus's 214
+  decided laws decides in Oak: 165 at the bit level, 49 exhaustively, the
+  Go decider or interpreter confirming each), so the Go that remains on
+  the prover's path is the ladder's shell alone — reading the files,
+  streaming them, printing the rows — and the Lean projection of the
+  unbounded laws; next the shell itself as an Oak program, then the
+  projection; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
   producers of certificates, so speed and trust are separated; then an

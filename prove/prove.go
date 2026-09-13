@@ -675,11 +675,15 @@ func bitLevel(deferred bool, tc *typechecker.TypeChecker, decls asm.Declarations
 	// The source goes to the parser, serializer, and lowering written in
 	// Oak, which run the witness pass themselves; the Go decider's witness
 	// pass runs (ResolvePending) only for a theorem the Oak side declines.
+	// A theorem the Go lowering refuses still goes: the Oak lowering may
+	// take it, and what stands when it declines is the open result with
+	// the Go lowering's reason.
 	problems, reason, ok := asm.ExportProblems(stated, callees, guards, decls, asm.NodeBudget)
-	if !ok {
-		return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + reason + ")"}
-	}
 	fallback := Result{Name: open.Name, Status: Open, Detail: open.Detail}
+	if !ok {
+		problems = nil
+		fallback.Detail = open.Detail + " (bit-level: " + reason + ")"
+	}
 	return Result{Name: open.Name, Status: Pending, Problems: problems, fallback: func() Result { return fallback }}
 }
 

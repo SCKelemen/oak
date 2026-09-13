@@ -938,6 +938,14 @@ sr_push: (s: Ser, w: [*]u32, kind: u32, node: u32, f: u32): () {
 
 sr_pop: (s: Ser, w: [*]u32): () { set_sst(s, w, ST_SP, sst(s, w, ST_SP) - u32(1)) }
 
+// sr_push_typed pushes an expression frame with the type its context
+// expects (word 7): a bare variant takes it as its sum type.
+sr_push_typed: (s: Ser, w: [*]u32, node: u32, f: u32, expected: u32): () {
+  sr_push(s, w, X_EXPR, node, f)
+  at: u32 = sfr_at(s, w, sst(s, w, ST_SP) - u32(1))
+  w[at + u32(7)] = expected
+}
+
 // sr_deliver pops the frame with the node as its result.
 sr_deliver: (s: Ser, w: [*]u32, id: u32): () {
   set_sst(s, w, ST_RET, id)
@@ -952,6 +960,14 @@ sr_push_block: (s: Ser, w: [*]u32, block: u32, f: u32, value: Bool): () {
   w[at + u32(4)] = sst(s, w, ST_ACC_SP)
   w[at + u32(5)] = value ? { u32(1) } | { u32(0) }
   w[at + u32(7)] = NONE
+  w[at + u32(11)] = NONE
+}
+
+// sr_push_block_typed is sr_push_block with the block's expected value type.
+sr_push_block_typed: (s: Ser, w: [*]u32, block: u32, f: u32, expected: u32): () {
+  sr_push_block(s, w, block, f, true)
+  at: u32 = sfr_at(s, w, sst(s, w, ST_SP) - u32(1))
+  w[at + u32(11)] = expected
 }
 
 // sr_push_block_of pushes the block of a raw block expression in
@@ -960,12 +976,13 @@ sr_push_block_of: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, body: u32, f: u32, co
   (body == NONE || rn_kind(rx, raw, body) != RAW_BLOCKEXPR) ? { sr_fail(s, w, code) } | { sr_push_block(s, w, rn_a(rx, raw, body), f, false) }
 }
 
-sr_push_match: (s: Ser, w: [*]u32, node: u32, f: u32, value: Bool): () {
+sr_push_match: (s: Ser, w: [*]u32, node: u32, f: u32, value: Bool, expected: u32): () {
   sr_push(s, w, X_MATCH, node, f)
   at: u32 = sfr_at(s, w, sst(s, w, ST_SP) - u32(1))
   w[at + u32(4)] = sst(s, w, ST_ACC_SP)
   w[at + u32(5)] = value ? { u32(1) } | { u32(0) }
   w[at + u32(7)] = NONE
+  w[at + u32(15)] = expected
 }
 
 // Cond3 is a Bool conditional's arms (boolConditional in asm/verify.go).
@@ -1247,7 +1264,8 @@ step_call_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, node: u32, f: u32
     i < nargs ? {
       w[at + u32(8)] = i + u32(1)
       w[at + u32(2)] = is_float_call ? { CP_FLOAT_NEXT } | { CP_ARGS_NEXT }
-      sr_push(s, w, X_EXPR, rl_item(rx, raw, args, i), f)
+      expected: u32 = is_float_call ? { NONE } | { w[s.params_at + (sf_word(s, w, w[at + u32(7)], u32(0)) + i) * SYN_PARAM_WORDS] }
+      sr_push_typed(s, w, rl_item(rx, raw, args, i), f, expected)
     } | {
       base: u32 = w[at + u32(4)]
       is_float_call ? {
@@ -1346,8 +1364,8 @@ step_literal_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, node: u32, f: 
           rl_item(rx, raw, pairs, j * u32(2)) == fname ? { value = rl_item(rx, raw, pairs, j * u32(2) + u32(1)) } | { }
           j = j + u32(1)
         }
-        value == NONE ? { sr_fail(s, w, u32(123)) } | { sr_push(s, w, X_EXPR, value, f) }
-      } | { sr_push(s, w, X_EXPR, rl_item(rx, raw, rn_b(rx, raw, node), i), f) }
+        value == NONE ? { sr_fail(s, w, u32(123)) } | { sr_push_typed(s, w, value, f, w[s.fields_at + fe * u32(4)]) }
+      } | { sr_push_typed(s, w, rl_item(rx, raw, rn_b(rx, raw, node), i), f, ty_elem(s, w, t)) }
     } | {
       list: u32 = acc_list(s, w, w[at + u32(4)])
       sr_deliver(s, w, sr_emit(s, w, kind == RAW_RECORDLIT ? { SYN_RECORDLIT } | { SYN_ARRAYLIT }, t, list, count, u32(0), u32(0), u32(0), t))
@@ -1414,13 +1432,17 @@ step_expr_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
   } | {
   kind == RAW_BLOCKEXPR ? {
     block: u32 = rn_a(rx, raw, node)
+    expected: u32 = w[at + u32(7)]
     sr_pop(s, w)
-    sr_push_block(s, w, block, f, true)
+    sr_push_block_typed(s, w, block, f, expected)
   } | {
   kind == RAW_VARIANT ? {
     phase == u32(0) ? {
-      rn_a(rx, raw, node) == NONE ? { sr_fail(s, w, u32(124)) } | {
-        t: u32 = sr_type_of_name(s, w, rx, raw, rn_a(rx, raw, node))
+      // A bare `.V` takes the sum type its context expects.
+      expected: u32 = w[at + u32(7)]
+      bare_ok: Bool = rn_a(rx, raw, node) == NONE && expected != NONE && ty_kind(s, w, expected) == TY_SUM
+      (rn_a(rx, raw, node) == NONE && !bare_ok) ? { sr_fail(s, w, u32(124)) } | {
+        t: u32 = bare_ok ? { expected } | { sr_type_of_name(s, w, rx, raw, rn_a(rx, raw, node)) }
         sr_failed(s, w) ? { } | {
           ty_kind(s, w, t) != TY_SUM ? { sr_fail(s, w, u32(125)) } | {
             vi: u32 = sr_variant_index(s, w, t, rn_b(rx, raw, node))
@@ -1435,7 +1457,7 @@ step_expr_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
                   w[at + u32(5)] = t
                   w[at + u32(6)] = vi
                   w[at + u32(2)] = u32(1)
-                  sr_push(s, w, X_EXPR, payload, f)
+                  sr_push_typed(s, w, payload, f, w[s.variants_at + ve * u32(4) + u32(1)])
                 }
               }
             }
@@ -1452,23 +1474,24 @@ step_expr_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
       c3: Cond3 = sr_bool_conditional(rx, raw, node)
       c3.ok ? {
         w[at + u32(6)] = c3.when_true
-        w[at + u32(7)] = c3.when_false
+        w[at + u32(9)] = c3.when_false
         w[at + u32(2)] = u32(1)
         sr_push(s, w, X_EXPR, rn_a(rx, raw, node), f)
       } | {
+        expected: u32 = w[at + u32(7)]
         sr_pop(s, w)
-        sr_push_match(s, w, node, f, true)
+        sr_push_match(s, w, node, f, true, expected)
       }
     } | {
       phase == u32(1) ? {
         w[at + u32(5)] = ret
         w[at + u32(2)] = u32(2)
-        sr_push(s, w, X_EXPR, w[at + u32(6)], f)
+        sr_push_typed(s, w, w[at + u32(6)], f, w[at + u32(7)])
       } | {
         phase == u32(2) ? {
           w[at + u32(8)] = ret
           w[at + u32(2)] = u32(3)
-          sr_push(s, w, X_EXPR, w[at + u32(7)], f)
+          sr_push_typed(s, w, w[at + u32(9)], f, w[at + u32(7)])
         } | {
           then_id: u32 = w[at + u32(8)]
           typ: u32 = sn_type(s, w, then_id)
@@ -1525,6 +1548,7 @@ BS_PLACE1: u32 = 5
 BS_PLACE2: u32 = 6
 BS_WHILE1: u32 = 7
 BS_WHILE2: u32 = 8
+BS_ASSERT: u32 = 9
 
 step_block_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
   block: u32 = w[at + u32(1)]
@@ -1546,7 +1570,8 @@ step_block_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
     sub == BS_VARDECL ? { acc_push(s, w, sr_emit(s, w, SYN_VARDECL, w[at + u32(9)], w[at + u32(10)], u32(0), ret, u32(0), u32(0), NONE)) } | {
     sub == BS_ASSIGN ? { acc_push(s, w, sr_emit(s, w, SYN_ASSIGN, w[at + u32(9)], ret, u32(0), u32(0), u32(0), u32(0), NONE)) } | {
     sub == BS_PLACE2 ? { acc_push(s, w, sr_emit(s, w, SYN_ASSIGNPLACE, w[at + u32(9)], ret, u32(0), u32(0), u32(0), u32(0), NONE)) } | {
-    sub == BS_WHILE2 ? { acc_push(s, w, sr_emit(s, w, SYN_WHILE, w[at + u32(9)], ret, u32(0), u32(0), u32(0), u32(0), NONE)) } | { } } } } } }
+    sub == BS_WHILE2 ? { acc_push(s, w, sr_emit(s, w, SYN_WHILE, w[at + u32(9)], ret, u32(0), u32(0), u32(0), u32(0), NONE)) } | {
+    sub == BS_ASSERT ? { acc_push(s, w, sr_emit(s, w, SYN_ASSERT, ret, u32(0), u32(0), u32(0), u32(0), u32(0), NONE)) } | { } } } } } } }
     w[at + u32(8)] = BS_NONE
     (sub == BS_PLACE1 || sub == BS_WHILE1) ? {
       // The place or condition is in; the value or body follows.
@@ -1569,6 +1594,12 @@ step_block_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
           sk == RAW_EXPRSTMT ? {
             e: u32 = rn_a(rx, raw, stmt)
             is_match: Bool = e != NONE && rn_kind(rx, raw, e) == RAW_MATCH
+            // assert(c): a trap obligation, not a value.
+            is_assert: Bool = e != NONE && rn_kind(rx, raw, e) == RAW_CALL && rn_c(rx, raw, e) == u32(1) && rn_kind(rx, raw, rn_a(rx, raw, e)) == RAW_IDENT && is_name(rs_name(rx, raw, rn_a(rx, raw, rn_a(rx, raw, e))), u64(0x747265737361), u64(0), u32(6)) && raw_find_function(rx, raw, rn_a(rx, raw, rn_a(rx, raw, e))) == NONE
+            is_assert ? {
+              w[at + u32(8)] = BS_ASSERT
+              sr_push_typed(s, w, rl_item(rx, raw, rn_b(rx, raw, e), u32(0)), f, sr_bool_type(s, w))
+            } | {
             (is_match && (!last || !value)) ? {
               w[at + u32(8)] = BS_APPEND
               c3: Cond3 = sr_bool_conditional(rx, raw, e)
@@ -1577,13 +1608,13 @@ step_block_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
                 cat: u32 = sfr_at(s, w, sst(s, w, ST_SP) - u32(1))
                 w[cat + u32(5)] = c3.when_true
                 w[cat + u32(6)] = c3.when_false
-              } | { sr_push_match(s, w, e, f, false) }
+              } | { sr_push_match(s, w, e, f, false, NONE) }
             } | {
               (!last || !value) ? { sr_fail(s, w, u32(132)) } | {
                 w[at + u32(8)] = BS_EXPR
-                sr_push(s, w, X_EXPR, e, f)
+                sr_push_typed(s, w, e, f, w[at + u32(11)])
               }
-            }
+            } }
           } | {
           sk == RAW_VARDECL ? {
             texpr: u32 = rn_b(rx, raw, stmt)
@@ -1605,7 +1636,7 @@ step_block_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
                   w[at + u32(10)] = t
                   w[at + u32(9)] = name
                   w[at + u32(8)] = BS_VARDECL
-                  sr_push(s, w, X_EXPR, init, f)
+                  sr_push_typed(s, w, init, f, t)
                 }
               }
             }
@@ -1615,7 +1646,7 @@ step_block_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
             sym == NONE ? { sr_fail(s, w, u32(135)) } | {
               w[at + u32(9)] = sym
               w[at + u32(8)] = BS_ASSIGN
-              sr_push(s, w, X_EXPR, rn_b(rx, raw, stmt), f)
+              sr_push_typed(s, w, rn_b(rx, raw, stmt), f, sr_symbol_type(s, w, f, sym))
             }
           } | {
           sk == RAW_INDEXASSIGN ? {
@@ -1663,7 +1694,7 @@ MS_BODY: u32 = 3
 match_push_body: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, body: u32): () {
   f: u32 = w[at + u32(3)]
   w[at + u32(8)] = MS_BODY
-  w[at + u32(5)] != u32(0) ? { sr_push(s, w, X_EXPR, body, f) } | { sr_push_block_of(s, w, rx, raw, body, f, u32(140)) }
+  w[at + u32(5)] != u32(0) ? { sr_push_typed(s, w, body, f, w[at + u32(15)]) } | { sr_push_block_of(s, w, rx, raw, body, f, u32(140)) }
 }
 
 step_match_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
@@ -1915,7 +1946,7 @@ step_func_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
             } | { }
             w[at + u32(2)] = u32(1)
             w[at + u32(4)] = f
-            sr_push(s, w, X_EXPR, rf_word(rx, raw, rawf, u32(4)), f)
+            sr_push_typed(s, w, rf_word(rx, raw, rawf, u32(4)), f, ret)
           }
         }
       }
