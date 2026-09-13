@@ -40,6 +40,11 @@ func TestE2EDerivedJsonReaderDecodesScalarsInline(t *testing.T) {
 		"oak_json_scan_integer( src, at )",         // the array elements, from the element start
 		"( src ).base[ open_at ] == ((u8)( 123 ))", // the opening brace by byte
 		"( src ).base[ array_at ] == ((u8)( 91 ))", // the opening bracket by byte
+		// A key the spellings miss is decoded in one pass when it is plain
+		// ASCII (escapes to ASCII included); only other shapes reach the
+		// tokenizer (section 20).
+		"oak_json_key_ascii( src, at, (oak_span_u8){ keybuf.v, 64 } )",
+		"oak___oak_json_keydecoded_Bench( oak_view_subslice_u8( keyview",
 		// The fixed integer array: one structural pass over the span, then
 		// every element parsed from its own extent (section 21).
 		"oak_json_array_index( src, at, (oak_span_u32){ marks.v, 4 } )",
@@ -66,6 +71,21 @@ func TestE2EDerivedJsonReaderDecodesScalarsInline(t *testing.T) {
 	for _, unwanted := range []string{"oak_view_index_u8("} {
 		if strings.Contains(reader, unwanted) {
 			t.Fatalf("record reader still carries a range-checked read %q:\n%s", unwanted, reader)
+		}
+	}
+	// The key classifier spells its field names as views of string
+	// literals — static storage, no stores per call — and the key decoder
+	// stores under its own guard.
+	classifier := output[strings.Index(output, "oak___oak_json_key_Bench( oak_view_u8 src, oak_JsonToken key ) {"):]
+	classifier = classifier[:strings.Index(classifier, "\n}\n")]
+	if strings.Count(classifier, "oak_str_bytes(") != 3 || strings.Contains(classifier, "_data.v[") {
+		t.Fatalf("key classifier does not spell its keys as string literals:\n%s", classifier)
+	}
+	decoder := output[strings.Index(output, "oak_json_key_decode( oak_view_u8 src, oak_JsonToken key, oak_span_u8 dst ) {"):]
+	decoder = decoder[:strings.Index(decoder, "\n}\n")]
+	for _, unwanted := range []string{"oak_span_store_u8(", "oak_view_index_u8("} {
+		if strings.Contains(decoder, unwanted) {
+			t.Fatalf("key decoder still carries a range check %q:\n%s", unwanted, decoder)
 		}
 	}
 	for _, want := range []string{

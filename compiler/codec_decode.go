@@ -43,7 +43,8 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 	readName, decodeName, locateName := codecName("read", typ), codecName("decode", typ), codecName("locate", typ)
 	s := newSynth("codec:" + readName)
 	var body []ast.Statement
-	var keyFn *ast.FunctionStatement
+	var keyFn, keyDecodedFn *ast.FunctionStatement
+	keyDecodedName := ""
 	// A record with View[u8, R] fields decodes as views of its input: the
 	// reader and the decoder carry the region (docs/spec/50-borrowing.md
 	// section 8c), and the reader's result is a per-type record declared
@@ -75,7 +76,12 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 		if d.names[keyName] {
 			return fmt.Errorf("codec: generated name %s conflicts with a declaration", keyName)
 		}
-		keyFn = keyClassifier(newSynth("codec:"+keyName), keyName, fields)
+		keyDecodedName = codecName("keydecoded", typ)
+		if d.names[keyDecodedName] {
+			return fmt.Errorf("codec: generated name %s conflicts with a declaration", keyDecodedName)
+		}
+		keyDecodedFn = keyDecodedClassifier(newSynth("codec:"+keyDecodedName), keyDecodedName, fields)
+		keyFn = keyClassifier(newSynth("codec:"+keyName), keyName, keyDecodedName, fields)
 		decodedName := ""
 		if region != "" {
 			decodedName = codecName("decoded", typ)
@@ -85,7 +91,7 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 			decodedDecl = s.recordType(decodedName, []string{region},
 				s.set("value", s.app(typ, s.id(region))), s.set("next", s.id("u32")))
 		}
-		body = recordReader(s, typ, keyName, fields, decodedName)
+		body = recordReader(s, typ, keyName, keyDecodedName, fields, decodedName)
 	}
 	srcType := func(b *synth) ast.Expression {
 		if region != "" {
@@ -160,6 +166,9 @@ func (d *codecDeriver) deriveDecoder(typ string) error {
 			dec.arm("Ok", "value", dec.block(dec.expr(dec.variant("Ok", dec.id("value"))))))))
 	if decodedDecl != nil {
 		d.output = append(d.output, decodedDecl)
+	}
+	if keyDecodedFn != nil {
+		d.output = append(d.output, keyDecodedFn)
 	}
 	if keyFn != nil {
 		d.output = append(d.output, keyFn)
@@ -497,9 +506,45 @@ func srcLenExpr(s *synth) ast.Expression { return s.call("len", s.id("src")) }
 
 // keyClassifier maps an object key token to its 1-based field index, 0 for
 // an unknown key. Key storage stays out of the record reader's live state.
-func keyClassifier(k *synth, name string, fields []codecField) *ast.FunctionStatement {
+// plainSpelling reports whether a wire name is printable ASCII without a
+// quote or backslash, so it can be spelled as a string literal.
+func plainSpelling(wire string) bool {
+	if wire == "" {
+		return false
+	}
+	for i := 0; i < len(wire); i++ {
+		b := wire[i]
+		if b < 32 || b > 126 || b == '"' || b == '\\' {
+			return false
+		}
+	}
+	return true
+}
+
+// keyDecodedClassifier maps a decoded key (its bytes, escapes resolved)
+// to its 1-based field index, 0 for none: the byte comparison both the
+// fused ASCII key path and the general classifier end in.
+func keyDecodedClassifier(k *synth, name string, fields []codecField) *ast.FunctionStatement {
+	body := keySpellings(k, fields)
+	var decoded ast.Expression = k.u32(0)
+	for i := len(fields) - 1; i >= 0; i-- {
+		decoded = k.cond(k.call("json_key_decoded_equal", k.id("decoded"), k.id(fmt.Sprintf("key%d", i))), k.u32(int64(i+1)), decoded)
+	}
+	body = append(body, k.expr(decoded))
+	return k.fn(name, []*ast.FunctionParameter{k.param("decoded", k.view(k.id("u8")))}, k.id("u32"), body...)
+}
+
+// keySpellings declares key0..keyN, one view per field's wire name.
+func keySpellings(k *synth, fields []codecField) []ast.Statement {
 	body := []ast.Statement{}
 	for i, field := range fields {
+		// A spelling of plain printable ASCII is a view of a string literal
+		// — static storage in the emitted C, no stores per call. Any other
+		// spelling is built byte by byte, which admits every byte.
+		if plainSpelling(field.wire) {
+			body = append(body, k.decl(fmt.Sprintf("key%d", i), k.view(k.id("u8")), k.call("str_bytes", k.str(field.wire))))
+			continue
+		}
 		data := fmt.Sprintf("key%d_data", i)
 		body = append(body, k.decl(data, k.array(int64(len(field.wire)), k.id("u8")), nil))
 		for j, b := range []byte(field.wire) {
@@ -507,31 +552,32 @@ func keyClassifier(k *synth, name string, fields []codecField) *ast.FunctionStat
 		}
 		body = append(body, k.decl(fmt.Sprintf("key%d", i), k.view(k.id("u8")), k.call("view", k.addressOf(data))))
 	}
+	return body
+}
+
+func keyClassifier(k *synth, name, decodedName string, fields []codecField) *ast.FunctionStatement {
+	body := keySpellings(k, fields)
 	// The tokenizer path is reached for escaped, non-ASCII, and unknown
 	// keys. A key that decodes into sixty-four bytes is decoded once and
 	// compared byte for byte against each spelling; one that does not fit
 	// keeps the per-field Unicode comparison.
 	var semantic ast.Expression = k.u32(0)
-	var decoded ast.Expression = k.u32(0)
 	for i := len(fields) - 1; i >= 0; i-- {
 		semantic = k.cond(k.call("json_key_equal", k.id("src"), k.id("key"), k.id(fmt.Sprintf("key%d", i))), k.u32(int64(i+1)), semantic)
-		decoded = k.cond(k.call("json_key_decoded_equal", k.id("decoded"), k.id(fmt.Sprintf("key%d", i))), k.u32(int64(i+1)), decoded)
 	}
 	body = append(body,
 		k.decl("storage", k.array(64, k.id("u8")), nil),
 		k.decl("decoded_len", k.id("u32"), k.call("json_key_decode", k.id("src"), k.id("key"), k.call("span", k.addressOf("storage")))),
 		k.decl("storage_view", k.view(k.id("u8")), k.call("view", k.addressOf("storage"))),
 		k.expr(k.cond(k.eq(k.id("decoded_len"), k.u32(4294967295)), k.block(k.expr(semantic)),
-			k.block(
-				k.decl("decoded", k.view(k.id("u8")), k.call("subslice", k.id("storage_view"), k.u32(0), k.id("decoded_len"))),
-				k.expr(decoded)))))
+			k.block(k.expr(k.call(decodedName, k.call("subslice", k.id("storage_view"), k.u32(0), k.id("decoded_len"))))))))
 	return k.fn(name, []*ast.FunctionParameter{k.param("src", k.view(k.id("u8"))), k.param("key", k.id("JsonToken"))}, k.id("u32"), body...)
 }
 
 // recordReader reads an object: braces, keys classified by the fast path
 // or the classifier, each field decoded once, separators checked, and
 // every field required.
-func recordReader(s *synth, typ, keyName string, fields []codecField, decodedName string) []ast.Statement {
+func recordReader(s *synth, typ, keyName, keyDecodedName string, fields []codecField, decodedName string) []ast.Statement {
 	at := func() ast.Expression { return s.id("at") }
 	status := func() ast.Expression { return s.id("status") }
 	srcLen := func() ast.Expression { return s.call("len", s.id("src")) }
@@ -607,9 +653,21 @@ func recordReader(s *synth, typ, keyName string, fields []codecField, decodedNam
 
 	// Key detection: match bounded literal spellings directly; escaped and
 	// unusual keys retain the full tokenizer and Unicode comparison path.
-	var detect ast.Expression = s.cond(s.boolean(true), s.block(
+	// A key the spellings do not match is first decoded in one pass when
+	// it is plain ASCII with escapes to ASCII (json_key_ascii); any other
+	// shape takes the tokenizer and the general classifier, so the
+	// verdicts and fault positions are those of the tokenizer path.
+	tokenizerPath := s.block(
 		s.assign("key", s.call("json_token", s.id("src"), at())),
-		s.assign("field_index", s.call(keyName, s.id("src"), s.id("key")))), nil)
+		s.assign("field_index", s.call(keyName, s.id("src"), s.id("key"))))
+	var detect ast.Expression = s.cond(s.boolean(true), s.block(
+		s.decl("keybuf", s.array(64, s.id("u8")), nil),
+		s.decl("keyscan", s.id("JsonKeyScan"), s.call("json_key_ascii", s.id("src"), at(), s.call("span", s.addressOf("keybuf")))),
+		s.expr(s.cond(s.field(s.id("keyscan"), "ok"), s.block(
+			s.assign("key", s.record("JsonToken", s.set("kind", s.u32(6)), s.set("start", at()), s.set("end", s.field(s.id("keyscan"), "end")))),
+			s.decl("keyview", s.view(s.id("u8")), s.call("view", s.addressOf("keybuf"))),
+			s.assign("field_index", s.call(keyDecodedName, s.call("subslice", s.id("keyview"), s.u32(0), s.field(s.id("keyscan"), "length"))))),
+			tokenizerPath))), nil)
 	for i := len(fields) - 1; i >= 0; i-- {
 		literal := []byte("\"" + fields[i].wire + "\"")
 		plain := len(literal) <= 34
