@@ -175,6 +175,7 @@ caller-owned span, so nothing allocates.
 | Function | Semantics |
 | --- | --- |
 | `tensor_of[R](data: View[f32, R], rows, cols)` / `tensor_mut_of[R](data: Span[f32, R], rows, cols)` | Contiguous row-major matrices over a view or span; the shape must fit (`assert`). |
+| `RowMajor2[R]`, `ColMajor2[R]`, `row_major_of`, `col_major_of`, `row_major_at`, `col_major_at`, `row_major_transpose`, `col_major_transpose`, `row_major_tensor`, `col_major_tensor`, `matvec_rows` | Layout in the type (`56-kernels.md` §8a): matrices whose strides are their type's — `(i, j)` at `i * cols + j` (row major, `j` contiguous) or `i + j * rows` (column major). Transposition retypes the same storage; `matvec_rows(w: RowMajor2, x, out)` takes only the k-contiguous layout; either converts to the strided `Tensor2`. |
 | `tensor_strided[R](data, rows, cols, row_stride, col_stride, offset)` | An explicit layout over a view: element `(i, j)` is `data[offset + i * row_stride + j * col_stride]`; the last element must fit. With `view_as[f32](rows)` (`50-borrowing.md` §8d) a record field across positions is a tensor with no copy: `k` of a `[q \| k \| v]` row is `tensor_strided(view_as[f32](rows), positions, D, 3 * D, 1, D)`. |
 | `tensor_at(t, i, j)`, `tensor_get(t, i, j)`, `tensor_set(t, i, j, v)` | Element access through `tensor_index`, which traps on an out-of-shape pair; the view's bounds check guards the rest. |
 | `tensor_transpose(t)`, `tensor_row(t, i)` | The transposed view (strides swapped) and row `i` as a `1 x cols` tensor, both over the same storage. |
