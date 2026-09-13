@@ -1387,6 +1387,36 @@ forgets at the first call — the element now goes through the array's own
 idiom. The prover binary cache (`oaksolver.go`) is keyed on the compiler
 executable as well as the sources, since a compiler change yields a
 different binary from the same files (a stale one was measured once).
+**Eighteenth increment — by-reference record parameters read in place.**
+The next profile put the BDD engine's own functions at the top — `apply`,
+`cache_get`, `mk` — every one taking the 60-byte `Layout` by reference and
+copying it into its frame at entry (eight loads and eight stores) for the
+one or two fields it reads, and every call passing it on copying it again
+into a fresh temp. A by-reference parameter the body never assigns,
+never writes a path under, never borrows or addresses, and that carries
+no array field, is now read where it lies: its address parks in a
+callee-saved register in the prologue (`mov x19, x0`; the checker's
+read-only region follows the `mov`), its fields load through
+`[x19, #off]`, and a callee taking the same type by reference receives
+the address itself (a callee that writes its parameter copies it at entry
+as before, so the memory nothing writes stays the caller's for the whole
+call; the referenced storage is always a caller's temp or local, never an
+array element, since a register-addressed element is copied into a temp
+before its address is taken). Measured on the binaries: `lattice.oak`
+3.06 s to 2.77 s, `extents.oak` 10.6 s to 9.2 s, `floats.oak` 6.4 s to
+5.8 s, `mono.oak` 14.8 s to 13.5 s, `effects.oak` 2.5 s to 2.1 s; the
+frames shrink, and twelve more functions fit the limits (fallbacks 220
+to 208, 746 of 954 lowered). Executed (`TestE2ENativeRecordInPlace`): a
+leaf over the parameter's fields (proven), a caller passing it on twice,
+a writer working on its own copy while the caller's record is unchanged,
+and a field read after a call that passed the record on — natively
+against the C backend and the portable realization. The native prover
+now runs at 1.6–1.9 times the C build (`lattice.oak` 2.8 s against
+1.5 s, `mono.oak` 13.5 s against 8.3 s, `extents.oak` 9.2 s against
+5.4 s); what remains is the operand-stack lowering itself — a variable
+moved into a scratch register before every operation and back after,
+constants materialized instead of used as immediates, every element
+access guarded — which the next increments take in that order.
 Next increments: the fallback reasons above in the order of their counts,
 so the prover lowers whole; then the verifier past `bl` and unit results —
 calls by inlining or by the callee's proven contract, and effects through
