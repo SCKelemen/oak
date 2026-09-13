@@ -55,8 +55,9 @@ func TestOakSolverSelfCheck(t *testing.T) {
 }
 
 // TestOakShellAgrees runs the prover written in Oak (-solver self: the
-// file to the rows, no Go on the path) on every law file and requires the
-// Go ladder to agree on every row's status.
+// file to the rows and the Lean projection, no Go on the path) on every law
+// file and requires the Go ladder to agree on every row's status and the
+// Go extractor to agree with the projection byte for byte.
 func TestOakShellAgrees(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("spec", "oak", "*.oak"))
 	if err != nil || len(files) == 0 {
@@ -65,12 +66,33 @@ func TestOakShellAgrees(t *testing.T) {
 	for _, file := range files {
 		file := file
 		if strings.HasSuffix(file, "_lean.oak") {
-			continue
+			continue // open theorems awaiting Lean: TestOakLeanAgrees projects them
 		}
 		t.Run(filepath.Base(file), func(t *testing.T) {
-			code, out := runCLI(t, func(args []string) int { return proveCommand(args, os.Stdout, os.Stderr) }, []string{"-solver", "self", "-cross", "go", file})
-			if code != 0 || strings.Contains(out, "disagrees") || !strings.Contains(out, "the Go ladder agrees on") || strings.Contains(out, "agrees on 0 of") {
-				t.Fatalf("exit %d:\n%s", code, out)
+			out := filepath.Join(t.TempDir(), "out.lean")
+			code, text := runCLI(t, func(args []string) int { return proveCommand(args, os.Stdout, os.Stderr) }, []string{"-solver", "self", "-cross", "go", "-lean", out, file})
+			if code != 0 || strings.Contains(text, "disagrees") || !strings.Contains(text, "the Go ladder agrees on") || strings.Contains(text, "agrees on 0 of") || !strings.Contains(text, "the Lean projection agrees with the Go extractor") {
+				t.Fatalf("exit %d:\n%s", code, text)
+			}
+		})
+	}
+}
+
+// TestOakLeanAgrees projects the law files whose theorems are left to Lean
+// (the ones the ladder reports open) with the prover written in Oak and
+// requires the Go extractor to agree byte for byte; the rows may be open.
+func TestOakLeanAgrees(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("spec", "oak", "*_lean.oak"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("spec/oak: %v (%d files)", err, len(files))
+	}
+	for _, file := range files {
+		file := file
+		t.Run(filepath.Base(file), func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "out.lean")
+			code, text := runCLI(t, func(args []string) int { return proveCommand(args, os.Stdout, os.Stderr) }, []string{"-solver", "self", "-cross", "go", "-lean", out, file})
+			if code > 1 || strings.Contains(text, "disagrees") || strings.Contains(text, "differs") || !strings.Contains(text, "the Lean projection agrees with the Go extractor") {
+				t.Fatalf("exit %d:\n%s", code, text)
 			}
 		})
 	}

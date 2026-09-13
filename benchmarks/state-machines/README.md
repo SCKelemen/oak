@@ -52,6 +52,7 @@ absolute figures are upper bounds.
 | 1M machines × 32 rounds, one step each | 4.56 ns/step | 0.30 (u8 tags), 0.32 (u32 tags) | — |
 | 16M machines × 4 rounds | 4.22 ns/step | 0.31 (u8), 0.33 (u32) | — |
 | One data-carrying machine, 9 guarded lines, 64M input-driven steps (2026-09-13) | 4.10 ns/step | 4.55 (candidate-line table: `T[state][step]` to the first line, a switch that falls through the group's guards) | — |
+| One mixed-symbol machine (start, byte(u8) with four guard classes, word(u16) with three, stop; 9 symbols), 16M input-driven steps (2026-09-13) | 3.7–4.0 ns/step | — | 2.7–2.9 (class table per step, a switch on the tag); 1.0 (one flat class table, the tag selects the payload member: the emitted form) |
 
 Oak-emitted `utf8_run` (`run_utf8.c`): **0.52 ns/byte**, the hand-written
 shift DFA's speed, from the declaration in `utf8_protocol.oak`.
@@ -66,6 +67,27 @@ What the numbers say:
   stays the lowering for machines with `data`; the table lowering keeps to
   machines whose guards are decided at compile time (§2a of
   `112-protocols.md`).
+
+- A mixed-symbol machine gains from the table when the payload's class
+  is looked up without a branch (workload E). Symbols are the step's base
+  plus the class of its payload value, where a class is a set of values
+  every guard of the step decides alike; with one class table per step
+  behind a `switch` on the tag the step costs 2.8 ns, the switch being
+  the data-dependent branch the table was meant to remove. One flat class
+  table indexed by `offsets[tag] + payload`, with the payload read from
+  every classed member and the tag selecting one (`csel`, no branch),
+  steps in 1.0 ns — four times the branch tree's speed — and is what the
+  compiler emits (`90-backend.md` §14).
+
+- The data projection's span check costs nothing to remove (measured
+  2026-09-13 on the spec's `Quantum` machine, 200M steps, `next` kept out
+  of line). The `data[0]` bounds check compiles to one `cbz` on the span
+  length already in a register; the C compiler merges the three checks of
+  one call into it, the function has 42 instructions with or without it,
+  and the run without it was no faster (3.9–5.5 ns/step against 4.6–7.8
+  under load, the same code moved by one instruction). When the span
+  comes from a fixed-size array in the caller, inlining removes the check
+  outright. Nothing to elide.
 
 - For input-driven steps the branch tree loses everywhere: the predictor
   cannot learn a random walk, and every step pays a misprediction.

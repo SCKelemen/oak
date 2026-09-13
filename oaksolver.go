@@ -61,6 +61,13 @@ var oakProtocolSource string
 //go:embed prove/solver/shell.oak
 var oakShellSource string
 
+// oakLeanSource is the Lean projection written in Oak
+// (prove/solver/lean.oak): the theorems and what they reach, rendered to
+// the text codegen/lean writes.
+//
+//go:embed prove/solver/lean.oak
+var oakLeanSource string
+
 // oakDriverHelpersSource holds the driver's shared helpers
 // (prove/solver/driver.oak): externs, reports, stream reading, and the
 // buffer-owning entry points around the Oak lowering.
@@ -345,7 +352,7 @@ solve_stream: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, d
 // directory under the temporary directory named by the sources' hash,
 // and returns the binary's path; a later run finds it built.
 func oakSolverBinary() (string, error) {
-	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSyntaxSource + "\x00" + oakTreeSource + "\x00" + oakProtocolSource + "\x00" + oakShellSource + "\x00" + oakDriverHelpersSource + "\x00" + oakSolverDriverSource))
+	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSyntaxSource + "\x00" + oakTreeSource + "\x00" + oakProtocolSource + "\x00" + oakShellSource + "\x00" + oakLeanSource + "\x00" + oakDriverHelpersSource + "\x00" + oakSolverDriverSource))
 	dir := filepath.Join(os.TempDir(), "oak-solver-"+hex.EncodeToString(sum[:6]))
 	binary := filepath.Join(dir, "solver")
 	if info, err := os.Stat(binary); err == nil && info.Mode().IsRegular() {
@@ -354,7 +361,7 @@ func oakSolverBinary() (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	for name, text := range map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "syntax.oak": oakSyntaxSource, "tree.oak": oakTreeSource, "protocol.oak": oakProtocolSource, "shell.oak": oakShellSource, "driver.oak": oakDriverHelpersSource, "main.oak": oakSolverDriverSource} {
+	for name, text := range map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "syntax.oak": oakSyntaxSource, "tree.oak": oakTreeSource, "protocol.oak": oakProtocolSource, "shell.oak": oakShellSource, "lean.oak": oakLeanSource, "driver.oak": oakDriverHelpersSource, "main.oak": oakSolverDriverSource} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
 			return "", err
 		}

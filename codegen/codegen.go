@@ -871,7 +871,7 @@ func (cg *CodeGenerator) emitADTType(adt *ast.ADTType, tc *typechecker.TypeCheck
 
 	// Emit constructors
 	for _, variant := range adt.Variants {
-		cg.emitADTConstructor(cName, variant)
+		cg.emitADTConstructor(cName, variant, adt.ZeroInit)
 	}
 	cg.emitADTEquality(typeName, cName, tc)
 }
@@ -997,7 +997,7 @@ func (cg *CodeGenerator) emitRecordEquality(typeName, cName string, tc *typechec
 }
 
 // emitADTConstructor emits a constructor function for an ADT variant
-func (cg *CodeGenerator) emitADTConstructor(typeName string, variant *ast.ADTVariant) {
+func (cg *CodeGenerator) emitADTConstructor(typeName string, variant *ast.ADTVariant, zeroInit bool) {
 	variantName := variant.Name.Value
 	funcName := fmt.Sprintf("%s_%s", typeName, variantName)
 
@@ -1020,7 +1020,14 @@ func (cg *CodeGenerator) emitADTConstructor(typeName string, variant *ast.ADTVar
 	cg.write(" ) {\n")
 	cg.indentLevel++
 
-	cg.write(fmt.Sprintf("  %s res;\n", typeName))
+	if zeroInit {
+		// Every byte of the value is initialized (ADTType.ZeroInit): a
+		// lowered protocol step reads payload members the tag does not
+		// select and must find defined bytes there.
+		cg.write(fmt.Sprintf("  %s res = {0};\n", typeName))
+	} else {
+		cg.write(fmt.Sprintf("  %s res;\n", typeName))
+	}
 	cg.write(fmt.Sprintf("  res.tag = %s_tag_%s;\n", typeName, variantName))
 	if variant.Payload != nil {
 		cg.write(fmt.Sprintf("  res.payload.%s = value;\n", variantName))
@@ -4909,6 +4916,56 @@ func (cg *CodeGenerator) emitProtocolLoweringBody(fn *ast.FunctionStatement) {
 			}
 			table.WriteString("  };\n")
 		}
+		// Mixed symbols: one flat class table over every step's payload
+		// domain (one entry for a step without a classed payload), the
+		// step's offset into it, and the step's first symbol.
+		if l.Bases != nil {
+			total := 0
+			offsets := make([]int, len(l.Bases))
+			for i, classes := range l.Classes {
+				offsets[i] = total
+				if classes == nil {
+					total++
+				} else {
+					total += len(classes)
+				}
+			}
+			table.WriteString(fmt.Sprintf("  /* payload classes of protocol %s: classes[offsets[tag] + payload] is the class, symbol = bases[tag] + class */\n", l.Protocol))
+			table.WriteString(fmt.Sprintf("  static const u8 %s[%d] = {", classTableName(tableName), total))
+			n := 0
+			for _, classes := range l.Classes {
+				if classes == nil {
+					classes = []int{0}
+				}
+				for _, class := range classes {
+					if n > 0 {
+						table.WriteString(",")
+					}
+					if n%32 == 0 {
+						table.WriteString("\n    ")
+					}
+					table.WriteString(fmt.Sprintf("%d", class))
+					n++
+				}
+			}
+			table.WriteString("\n  };\n")
+			table.WriteString(fmt.Sprintf("  static const u32 %s_offsets[%d] = {", classTableName(tableName), len(offsets)))
+			for i, off := range offsets {
+				if i > 0 {
+					table.WriteString(",")
+				}
+				table.WriteString(fmt.Sprintf(" %d", off))
+			}
+			table.WriteString(" };\n")
+			table.WriteString(fmt.Sprintf("  static const u32 %s_bases[%d] = {", classTableName(tableName), len(l.Bases)))
+			for i, base := range l.Bases {
+				if i > 0 {
+					table.WriteString(",")
+				}
+				table.WriteString(fmt.Sprintf(" %d", base))
+			}
+			table.WriteString(" };\n")
+		}
 		// File scope, spliced after the prototypes with the lifted literals:
 		// the three step functions and any caller share one table.
 		cg.liftedLiterals.WriteString(table.String())
@@ -4916,6 +4973,25 @@ func (cg *CodeGenerator) emitProtocolLoweringBody(fn *ast.FunctionStatement) {
 	symbol := "step.tag"
 	if l.ByteSymbol {
 		symbol = fmt.Sprintf("step.payload.%s", l.StepName)
+	}
+	if l.Bases != nil {
+		// The symbol is the step's base plus its payload's class. Every
+		// classed payload member is read and the tag selects among them
+		// (a select, not a branch: measured 1.0 ns/step against 2.8 for a
+		// switch on the tag, benchmarks/state-machines/ workload E); the
+		// step type is zero-initialized so each read finds defined bytes.
+		// A step without a classed payload selects 0, the one entry of
+		// its region of the class table.
+		symbol = "sym"
+		cg.write("  u32 payload = 0u;\n")
+		for i, classes := range l.Classes {
+			if classes == nil {
+				continue
+			}
+			cg.write(fmt.Sprintf("  payload = step.tag == %du ? (u32)step.payload.%s : payload;\n", i, l.ClassVariant[i]))
+		}
+		classes := classTableName(tableName)
+		cg.write(fmt.Sprintf("  u32 sym = %s_bases[ step.tag ] + (u32)%s[ %s_offsets[ step.tag ] + payload ];\n", classes, classes, classes))
 	}
 	lookup := func(state, sym string) string {
 		if l.Shift {
@@ -4945,6 +5021,12 @@ func (cg *CodeGenerator) emitProtocolLoweringBody(fn *ast.FunctionStatement) {
 	default:
 		cg.write("  OAK_UNSUPPORTED_PROTOCOL_LOWERING;\n")
 	}
+}
+
+// classTableName names the payload class table beside the protocol's
+// transition table; its offsets and bases tables take a suffix.
+func classTableName(tableName string) string {
+	return strings.TrimSuffix(tableName, "_transitions") + "_classes"
 }
 
 // snakeIdent spells a protocol name the way its projected functions are

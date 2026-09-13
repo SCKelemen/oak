@@ -221,6 +221,24 @@ table indexed by the input byte. A guard outside the evaluator's vocabulary
 (the payload, literals, width conversions, `+ - * / %`, comparisons,
 `&& || !`) leaves the branch-tree projection in place.
 
+**Mixed symbols.** A machine whose steps mix payload-less steps with
+steps whose guards read a `u8` or `u16` payload lowers too. Each step
+owns a range of symbols: one for a step whose payload no guard reads,
+and one per *class* of payload values for a step whose guards read it,
+where two values are in the same class exactly when every guard of the
+step decides them alike — computed by evaluating the step's guards over
+the whole payload domain at compile time (256 or 65,536 values) — so the
+first line that fires from any state is the same for both
+(`Oak.Protocol.Classes.lowering_correct`), and one representative per
+class fills the table row. The symbol at run time is the step's base
+plus the class of its payload, read from one flat class table; a step
+with more than 255 classes, a payload wider than `u16`, a signed payload,
+or an unevaluable guard keeps the branch tree. A machine with exactly
+one byte-driven step keeps the direct 256-symbol form above, which needs
+no class lookup. Measured on a four-step machine with nine symbols
+(`benchmarks/state-machines/` workload E), the lowered step runs at a
+quarter of the branch tree's time.
+
 Two forms, chosen by the machine's size and never by the program's use:
 
 | Form | When | `next` | `legal` |
@@ -677,8 +695,10 @@ the first of those to land.
   fields, nested records more than one level deep, and a domain the
   configuration chooses per step rather than the default four values.
 
-Landed since this list was first written: the static projection of the
-machine into a handle's type (§2b), typestate-indexed handles (§5a),
+Landed since this list was first written: mixed-symbol lowering (§2a:
+steps with classed `u8`/`u16` payloads beside steps without), the static
+projection of the machine into a handle's type (§2b), typestate-indexed
+handles (§5a),
 conformance of modules outside the normal form through TLC refinement
 (§4a), record payloads and per-replica log data (§1), and invariant
 theorems in the model (§4).

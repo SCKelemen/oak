@@ -52,6 +52,11 @@ type Function struct {
 	Frame    int64 // declared stack frame in bytes, 0 when none
 	System   bool  // capability for mrs/msr/eret
 	Align    int64 // function entry alignment, 0 for the default
+	// Compressed marks an rv64 unit under `option rvc`: the encoder emits
+	// the 16-bit compressed form of every instruction that has one
+	// (docs/spec/94-assembler.md §9); the checker and the verifier see the
+	// same base instructions either way.
+	Compressed bool
 	// FloatFile marks an rv64 unit that reads or writes the floating-point
 	// register file (the F and D extensions): its contract is LP64D, so
 	// the target must link against an lp64d toolchain (set by the checker).
@@ -545,6 +550,18 @@ func ParseUnit(path, text string) (*Unit, []error) {
 			current.Frame = bytes
 		case "system":
 			current.System = true
+		case "option":
+			// `option rvc` / `option norvc`: the RV64 lane's compressed
+			// encodings, per function.
+			if len(fields) != 2 || (fields[1] != "rvc" && fields[1] != "norvc") {
+				fail(lineNo, "option takes rvc or norvc")
+				continue
+			}
+			if current.Arch != ArchRV64 {
+				fail(lineNo, "option rvc applies to rv64 units")
+				continue
+			}
+			current.Compressed = fields[1] == "rvc"
 		case "align":
 			if len(fields) != 2 {
 				fail(lineNo, "align takes one byte count")

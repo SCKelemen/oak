@@ -263,6 +263,9 @@ done:
 			}
 			return uint64(total)
 		}, body: rv64VMaskedBody})
+	// The strip-mined sum compressed: the same unit under option rvc, the
+	// same expected values, so the machine executes the 16-bit forms.
+	oracles = append(oracles, rv64Oracle{decl: rv64RVCSumDecl, cType: "unsigned int", width: 32, span: "v", inputs: [][2]uint64{{0, 7}, {1, 0}, {3, 5}, {8, 1}, {13, 0xffffffff}}, body: rv64RVCSumBody})
 	var functions []*Function
 	var harness strings.Builder
 	harness.WriteString("typedef struct { const unsigned int *base; unsigned int len; } view_u32;\n")

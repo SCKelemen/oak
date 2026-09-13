@@ -5,6 +5,11 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/layout"
+	"github.com/SCKelemen/oak/parser"
+	"github.com/SCKelemen/oak/scanner"
 )
 
 // Protocol lowering (docs/spec/112-protocols.md section 2a, 90-backend.md
@@ -198,5 +203,102 @@ main: (): u32 {
 	_, abnormal = buildAndRun(t, "utf8_run_invalid", invalid)
 	if !abnormal {
 		t.Fatalf("an illegal byte in the batch must trap")
+	}
+}
+
+// A mixed-symbol machine: steps without payloads beside a byte-driven step
+// and a u16-driven step. Three states and the sink fit the shift form; the
+// symbols are start (1), the byte's four guard classes (digit, letter,
+// space, other), the word's three (small, large multiple of seven, other
+// large), and stop (1): nine in all.
+const mixedMachine = `
+Mixed: protocol = {
+  initial Idle
+  start: Idle -> Reading
+  byte(b: u8): Reading -> Reading when b >= u8(48) && b <= u8(57)
+  byte(b: u8): Reading -> Word when b >= u8(97) && b <= u8(122)
+  byte(b: u8): Word -> Word when b >= u8(97) && b <= u8(122)
+  byte(b: u8): Word -> Reading when b == u8(32)
+  word(n: u16): Word -> Idle when n < u16(1000)
+  word(n: u16): Word -> Word when n >= u16(1000) && n % u16(7) == u16(0)
+  stop: Reading -> Idle
+  stop: Word -> Idle
+}
+`
+
+func TestProtocolLoweringMixedSymbols(t *testing.T) {
+	p := parser.New(layout.New(scanner.New(mixedMachine)))
+	program := p.ParseProgram()
+	if errs := p.Errors(); len(errs) > 0 {
+		t.Fatalf("parse: %v", errs)
+	}
+	var decl *ast.ProtocolDeclaration
+	for _, st := range program.Statements {
+		if d, ok := st.(*ast.ProtocolDeclaration); ok {
+			decl = d
+		}
+	}
+	m, ok := analyzeProtocolDecls(decl, ProtocolDeclarationsOf(program), func(code string, node ast.Node, format string, args ...interface{}) {
+		t.Fatalf("%s: %s", code, fmt.Sprintf(format, args...))
+	})
+	if !ok {
+		t.Fatal("analysis failed")
+	}
+	l := m.lowering()
+	if l == nil {
+		t.Fatal("mixed machine did not lower")
+	}
+	if l.Symbols != 9 || !l.Shift || l.ByteSymbol {
+		t.Fatalf("symbols %d shift %v byte %v, want 9 shift-form symbols", l.Symbols, l.Shift, l.ByteSymbol)
+	}
+	if want := []int{0, 1, 5, 8}; fmt.Sprint(l.Bases) != fmt.Sprint(want) {
+		t.Fatalf("bases %v, want %v", l.Bases, want)
+	}
+	if l.Classes[0] != nil || l.Classes[3] != nil || len(l.Classes[1]) != 256 || len(l.Classes[2]) != 65536 {
+		t.Fatalf("class tables: %d %d %d %d", len(l.Classes[0]), len(l.Classes[1]), len(l.Classes[2]), len(l.Classes[3]))
+	}
+	// Digits share a class, letters another, the space its own, and every
+	// other byte the fourth; 999 and 1000 differ, and among the large
+	// words 1001 and 1008 (multiples of seven) differ from 1000 and 1002.
+	b := l.Classes[1]
+	if b['0'] != b['9'] || b['a'] != b['z'] || b['0'] == b['a'] || b[' '] == b['a'] || b[' '] == b[0] || b[0] != b[200] {
+		t.Fatalf("byte classes: %v", b[:128])
+	}
+	w := l.Classes[2]
+	if w[0] != w[999] || w[999] == w[1000] || w[1000] != w[1002] || w[1001] != w[1008] || w[1000] == w[1001] {
+		t.Fatalf("word classes: %d %d %d %d %d %d", w[0], w[999], w[1000], w[1001], w[1002], w[1008])
+	}
+	if len(l.Table) != 4*9 {
+		t.Fatalf("table has %d entries, want 36", len(l.Table))
+	}
+}
+
+// foldMixedProgram folds legal/next of the mixed machine from one state
+// over every payload-less step, every byte, and every u16 word value.
+func foldMixedProgram(state string) string {
+	var b strings.Builder
+	b.WriteString(mixedMachine)
+	b.WriteString("code: (s: MixedState): u32 = s ? | .Idle => u32(1) | .Reading => u32(2) | .Word => u32(3)\n")
+	b.WriteString("fold: (acc: u32, source: MixedState, step: MixedStep): u32 {\n")
+	b.WriteString("  c: u32 = mixed_legal(source, step) ? code(mixed_next(source, step)) | u32(0)\n")
+	b.WriteString("  (acc * u32(31) + c) % u32(251)\n}\n")
+	b.WriteString("main: (): u32 {\n  acc: u32 = 7\n")
+	b.WriteString(fmt.Sprintf("  source: MixedState = .%s\n", state))
+	b.WriteString("  acc = fold(acc, source, .Start)\n  acc = fold(acc, source, .Stop)\n")
+	b.WriteString("  i: u32 = 0\n  while i < u32(256) {\n    acc = fold(acc, source, .Byte(u8_trunc_u32(i)))\n    i = i + u32(1)\n  }\n")
+	b.WriteString("  i = 0\n  while i < u32(65536) {\n    acc = fold(acc, source, .Word(u16_trunc_u32(i)))\n    i = i + u32(1)\n  }\n")
+	b.WriteString("  acc\n}\n")
+	return b.String()
+}
+
+func TestProtocolLoweringMatchesInterpreterMixedMachine(t *testing.T) {
+	skipInShort(t)
+	for _, state := range []string{"Idle", "Reading", "Word"} {
+		src := foldMixedProgram(state)
+		want := interpretChecked(t, src)
+		exit, abnormal := buildAndRun(t, "fold_mixed_"+state, src)
+		if abnormal || int64(exit) != want {
+			t.Fatalf("Mixed from %s: interpreter %d, compiled exit %d abnormal %v", state, want, exit, abnormal)
+		}
 	}
 }

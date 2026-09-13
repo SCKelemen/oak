@@ -1541,12 +1541,31 @@ clobbered, fractional LMUL — and the differentials carry the masked
 strip loop at LMUL=2 (the sum of the elements that differ from `k`,
 under `mu` so the accumulator's masked-off lanes stay zero).
 
+**RVC (landed).** Under `option rvc` a function is encoded with the C
+extension's 16-bit forms wherever one exists and the operands fit — the
+compressed register set `x8`–`x15` where a form names three bits, the
+6-bit signed immediates (`Oak.RiscV.imm6_round_trip`), the scaled and
+bounded offsets of `c.lw`/`c.ld`/`c.sw`/`c.sd` and their `sp` forms
+(`scaled_offset_exact`, `lwsp_offsets`, `ldsp_offsets`), `c.addi16sp` and
+`c.addi4spn` for the frame, `c.mv`, `c.add`, the `x8`–`x15` arithmetic,
+`c.j`, `c.jr`, `c.jalr`, `c.beqz`/`c.bnez`, `c.ebreak`, `c.nop`; a 32-bit
+`li`'s `lui` and `addiw` halves compress on their own; `call` never does.
+The choice is GNU as's — compress whenever a form exists and fits — so the
+bytes agree with `riscv64-elf-as -march=rv64imc` on every spelling
+(`TestRV64RVCEncoderAgreesWithGNUAs`, which also holds a branch beyond the
+compressed range). Branches and jumps take their size from the layout: the
+function starts as four-byte instructions and shrinks each branch whose
+offset fits until nothing changes, so label arithmetic converges with the
+sizes. The checker and the verifier see the base instructions and are
+unchanged; the object carries `EF_RISCV_RVC`; the QEMU and Sail
+differentials run the strip-mined sum compressed.
+
 Still to come in this lane:
-compressed encodings (RVC changes the label arithmetic), the RVWMO
-instantiation of `MemoryOrder.lean`, the sail-riscv bridge's export side
-(the Lean export as the semantics the transliteration is checked against),
-the vector unit stitched through the compiler for a `-cpu` with V, and
-widening and fractional-LMUL forms. The term
+the RVWMO instantiation of `MemoryOrder.lean`, the sail-riscv bridge's
+export side (the Lean export as the semantics the transliteration is
+checked against), the vector unit stitched through the compiler for a
+`-cpu` with V, widening and fractional-LMUL forms, and `option rvc` chosen
+from `-cpu ...+c`. The term
 language and the BDD blaster carry over unchanged.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's

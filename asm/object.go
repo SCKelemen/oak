@@ -34,7 +34,11 @@ type EncodedFunction struct {
 	Bytes  []byte
 	Relocs []Relocation // Symbol fields already carry C symbol names
 	Align  int64        // entry alignment in bytes (0 = 4)
-	Arch   string       // the lane; every function of an object shares it
+	// Compressed marks an rv64 function encoded under option rvc: the ELF
+	// header flags EF_RISCV_RVC so the linker and loader expect 16-bit
+	// instructions.
+	Compressed bool
+	Arch       string // the lane; every function of an object shares it
 }
 
 // EncodeFunctions encodes checked functions for an object; symbolFor maps
@@ -50,7 +54,7 @@ func EncodeFunctions(functions []*Function, symbolFor func(string) string) ([]En
 		for i := range relocs {
 			relocs[i].Symbol = symbolFor(relocs[i].Symbol)
 		}
-		out = append(out, EncodedFunction{Symbol: symbolFor(fn.Name), Bytes: code, Relocs: relocs, Align: fn.Align, Arch: fn.Arch})
+		out = append(out, EncodedFunction{Symbol: symbolFor(fn.Name), Bytes: code, Relocs: relocs, Align: fn.Align, Arch: fn.Arch, Compressed: fn.Compressed})
 	}
 	return out, nil
 }
@@ -84,6 +88,11 @@ func WriteObjectWith(format ObjectFormat, functions []EncodedFunction, options O
 		layout.elfFlags = 0x0004 // EF_RISCV_FLOAT_ABI_DOUBLE
 	default:
 		return nil, fmt.Errorf("object: RISC-V float ABI %q (soft or double)", options.RV64FloatABI)
+	}
+	for _, fn := range functions {
+		if fn.Compressed && fn.Arch == ArchRV64 {
+			layout.elfFlags |= 0x0001 // EF_RISCV_RVC
+		}
 	}
 	switch format {
 	case MachO:

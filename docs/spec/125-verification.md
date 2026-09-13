@@ -259,10 +259,19 @@ three variable orders raced in one process — and prints the rows in the
 command's format; no Go is on the path from the file to the rows, and
 with `-cross go` the Go ladder decides the same file and every row's
 status must agree (`the Go ladder agrees on N of N rows`;
-`TestOakShellAgrees` requires it over the corpus). What the shell leaves
-to the Go command: protocol invariants and liveness, the compiled-program
-witness, and the Lean projection. The protocol obligations of §2a
-stay with the Go decider, whose rows are folded into their invariant's.
+`TestOakShellAgrees` requires it over the corpus). With `-lean out.lean`
+the shell writes the Lean projection too (`prove/solver/lean.oak`: the
+theorems, the functions they reach, and the record and sum types those
+mention, rendered to the text of §5 from the raw parse tree, the
+expression types the Go extractor reads from the checker taken from the
+serializer's run over each function), and with `-cross go` the Go
+extractor's projection must match it byte for byte (`the Lean projection
+agrees with the Go extractor`; `TestOakShellAgrees` and
+`TestOakLeanAgrees` require it over the corpus, the Lean files
+included). What the shell leaves to the Go command: protocol invariants
+and liveness, and the compiled-program witness. The protocol obligations
+of §2a stay with the Go decider, whose rows are folded into their
+invariant's.
 `TestOakSolverAgrees` runs the default over the whole law corpus.
 
 `-witness` evaluates every decided theorem in the compiled program as
@@ -548,10 +557,14 @@ In order of payoff, each reusing a surface that exists:
   Go decider or interpreter confirming each; and the shell itself is an
   Oak program — `-solver self` reads the file, decides, and prints the
   rows with no Go on the path, every status the Go ladder's over the
-  corpus), so what remains with Go on the prover's side is the Lean
-  projection of the unbounded laws, the protocol invariant and liveness
-  exploration, and the compiled-program witness; next the Lean
-  projection in Oak; then
+  corpus; and the Lean projection is an Oak program too —
+  `prove/solver/lean.oak` renders the theorems, the functions they
+  reach, and the types those mention to the extractor's text from the
+  raw parse tree, the expression types read back from the serializer's
+  run, byte for byte `codegen/lean`'s on every file of the corpus), so
+  what remains with Go on the prover's side is the protocol invariant
+  and liveness exploration and the compiled-program witness; next those
+  two in Oak; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
   producers of certificates, so speed and trust are separated; then an
