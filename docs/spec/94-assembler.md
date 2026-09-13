@@ -1513,8 +1513,18 @@ element address `&v[idx]` when the AVL register holds `len - idx` —
 `sub avl, len, idx` under the guard `idx < len`, a *remaining-count fact*
 — over the same index at the same write generation the address was formed
 from: `idx + vl ≤ idx + (len - idx) = len` (`strip_access_in_bounds`), and
-the loop advances (`strip_progress`). Element width and SEW agree, LMUL is
-1, and a store needs a writable span. A vector unit is checked and
+the loop advances (`strip_progress`). Element width and SEW agree, and a
+store needs a writable span. **Masks and groups (second increment).** A
+maskable form takes a trailing `v0.t` (`vm = 0`): the checker reads `v0`,
+and the bound is unchanged, since the masked-off elements are a subset of
+the vl the unmasked access already covers (`masked_access_in_bounds`).
+`vsetvli` with `m2`, `m4`, or `m8` makes every vector register operand a
+group of LMUL registers aligned to LMUL (RVV 1.0 §3.4.2,
+`group_within_file`): every register of the group is read or written, so
+a group must be wholly clobbered before it is written and an unaligned
+group is a finding; mask destinations and mask sources (the comparisons'
+`vd`, `vcpop.m`'s source, `v0`) stay single registers; fractional LMUL is
+refused. A vector unit is checked and
 *trusted* — the vector state is outside the term language, as the
 floating-point file is — and its inline realization scopes
 `.option arch, +v` to the unit so any host assembler accepts it. Every
@@ -1525,14 +1535,18 @@ vector unit enabled (`mstatus.VS`) beside the FPU; and `TestRV64VectorChecker`
 holds the rejections — no configuration, configuration lost at a label or
 across a call, width against SEW, an AVL that is not the remaining count,
 the index rewritten between the address and the count, an unclobbered
-vector register, a store into a view, an immediate past the minimum.
+vector register, a store into a view, an immediate past the minimum, an
+unaligned group, a mask register never written, a group not wholly
+clobbered, fractional LMUL — and the differentials carry the masked
+strip loop at LMUL=2 (the sum of the elements that differ from `k`,
+under `mu` so the accumulator's masked-off lanes stay zero).
 
 Still to come in this lane:
 compressed encodings (RVC changes the label arithmetic), the RVWMO
 instantiation of `MemoryOrder.lean`, the sail-riscv bridge's export side
 (the Lean export as the semantics the transliteration is checked against),
-masked vector forms (`vm = 0`) and LMUL above one as checker state, and
-the vector unit stitched through the compiler for a `-cpu` with V. The term
+the vector unit stitched through the compiler for a `-cpu` with V, and
+widening and fractional-LMUL forms. The term
 language and the BDD blaster carry over unchanged.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's

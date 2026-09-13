@@ -392,3 +392,47 @@ theorem vtype_lt (vsew vlmul : Nat) (ta ma : Bool) (hs : vsew < 8) (hl : vlmul <
   split <;> split <;> omega
 
 end Oak.RiscV
+
+/-! ## Register groups and masks (`94-assembler.md` §9, RVV 1.0 §3.4.2, §5.3)
+
+Under LMUL > 1 every vector register operand names a group of LMUL
+registers starting at a multiple of LMUL; a group so aligned lies within
+the file. A masked operation touches a subset of the vl elements, so the
+bound the unmasked access carries covers it. -/
+
+namespace Oak.RiscV
+
+/-- An aligned register group of `lmul` registers starting at `n < 32` ends
+    within the 32-register file. -/
+theorem group_within_file (lmul n : Nat) (hdiv : lmul ∣ 32) (hpos : 0 < lmul) (hn : n < 32)
+    (ha : lmul ∣ n) : n + lmul ≤ 32 := by
+  obtain ⟨q, hq⟩ := ha
+  obtain ⟨p, hp⟩ := hdiv
+  subst hq
+  have hqp : q < p := by
+    rcases Nat.lt_or_ge q p with h | h
+    · exact h
+    · exfalso
+      have : lmul * p ≤ lmul * q := Nat.mul_le_mul_left lmul h
+      omega
+  have : lmul * (q + 1) ≤ lmul * p := Nat.mul_le_mul_left lmul hqp
+  rw [Nat.mul_succ] at this
+  omega
+
+/-- The legal LMULs divide the file. -/
+theorem lmul_divides_file : ∀ lmul ∈ [1, 2, 4, 8], lmul ∣ 32 := by decide
+
+/-- VLMAX at LMUL: `lmul * vlen / sew` elements. -/
+def vlmax (vlen sew lmul : Nat) : Nat := lmul * vlen / sew
+
+theorem vlmax_m1_e32_128 : vlmax 128 32 1 = 4 := by decide
+theorem vlmax_m2_e32_128 : vlmax 128 32 2 = 8 := by decide
+
+/-- A masked element is one of the vl elements: whatever the mask, the
+    strip-mining bound covers it. -/
+theorem masked_access_in_bounds (len idx vlmax vl i : Nat) (hguard : idx < len)
+    (hv : vsetvlOK (len - idx) vlmax vl) (hi : i < vl) (_mask : Bool) : idx + i < len := by
+  have := strip_access_in_bounds len idx vlmax vl hguard hv
+  omega
+
+end Oak.RiscV

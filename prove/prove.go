@@ -48,6 +48,11 @@ const (
 type Result struct {
 	Name   string
 	Status Status
+	// Advisory rows report a finding about the program rather than a claim
+	// it makes — guard exclusivity, where a refutation says the two
+	// readings of a protocol differ, not that the program is wrong — and
+	// do not decide `oak prove`'s exit status.
+	Advisory bool
 	// Detail says how the status was reached: the number of cases decided,
 	// the counterexample, or why the deciders do not apply.
 	Detail string
@@ -163,8 +168,61 @@ func TheoremsWith(model *compiler.SemanticModel, cases int, deferred bool) ([]Re
 	// A protocol's `eventually` entries are decided over its reachable
 	// states (prove/liveness.go), after the theorems.
 	results = summarizeInvariants(results)
+	results = summarizeExclusivity(results)
 	results = exploreInvariants(results, model, env, cases)
 	return append(results, protocolLiveness(model, env, cases)...), nil
+}
+
+// summarizeExclusivity folds the guard-exclusivity theorems of one
+// (step, state) group into one row named `<prefix> guards <step> from
+// <state>`: decided when every pair is disjoint — the first-line and the
+// every-line reading coincide — and refuted with the first overlapping
+// pair's counterexample otherwise. An open pair leaves the row open.
+func summarizeExclusivity(results []Result) []Result {
+	type group struct {
+		row     Result
+		pairs   int
+		settled bool
+	}
+	groups := map[string]*group{}
+	var order []string
+	var kept []Result
+	for _, r := range results {
+		marker := strings.Index(r.Name, compiler.ExclusivityMarker)
+		if marker < 0 {
+			kept = append(kept, r)
+			continue
+		}
+		fields := strings.Split(r.Name[marker+len(compiler.ExclusivityMarker):], "__")
+		if len(fields) != 5 {
+			kept = append(kept, r)
+			continue
+		}
+		protocol, step, from, first, second := fields[0], fields[1], fields[2], fields[3], fields[4]
+		key := fmt.Sprintf("%s: guards of %s from %s", protocol, step, from)
+		g, seen := groups[key]
+		if !seen {
+			g = &group{row: Result{Name: key, Status: Decided, Advisory: true}}
+			groups[key] = g
+			order = append(order, key)
+		}
+		g.pairs++
+		switch {
+		case r.Status == Refuted && !g.settled:
+			g.row = Result{Name: key, Status: Refuted, Advisory: true, Detail: fmt.Sprintf("lines %s and %s can both fire (%s): Oak takes line %s, the model checker explores both — the readings differ there", first, second, r.Detail, first)}
+			g.settled = true
+		case r.Status != Decided && r.Status != Proved && r.Status != Refuted && !g.settled && g.row.Status != Refuted:
+			g.row = Result{Name: key, Status: r.Status, Advisory: true, Detail: fmt.Sprintf("exclusivity of lines %s and %s undecided: %s", first, second, r.Detail)}
+		}
+	}
+	for _, key := range order {
+		g := groups[key]
+		if g.row.Status == Decided && g.row.Detail == "" {
+			g.row.Detail = fmt.Sprintf("pairwise exclusive (%d pairs): the first-line reading and the model checker's every-line reading coincide", g.pairs)
+		}
+		kept = append(kept, g.row)
+	}
+	return kept
 }
 
 // summarizeInvariants folds the generated obligations of an invariant
