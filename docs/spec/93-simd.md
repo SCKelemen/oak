@@ -501,6 +501,13 @@ dispatched. A feature appears at most once. A slot whose feature belongs
 to another architecture is inert on this target: not compiled, not
 consulted.
 
+**A realization is not called directly.** Its code is compiled for its
+feature; the only way to reach it is the dispatched function's selection,
+so a direct call is a compile error (`dispatch: f_sve is a realization;
+call the function that dispatches to it`). A test that wants the
+realization's answer calls the dispatched function on a processor that
+has the feature, where §6.2 compares the two.
+
 **An asm unit as a realization.** The realization may be a
 definition-less declaration whose body an `.oakasm` unit provides
 (`94-assembler.md` §7): then the dispatched function's Oak body is the

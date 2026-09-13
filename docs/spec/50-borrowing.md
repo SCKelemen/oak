@@ -1133,6 +1133,12 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   its own facts), and the midpoint rule carries quotient bounds like the
   others, so the fence search `hi = pages; while lo < hi { mid = lo +
   (hi - lo) / 2; keys[mid * 512] ... hi = mid }` reads without a check.
+- **Literal bound through a binding**: `i < n` under a live `n <= K`
+  (`n < K + 1`) is `i < K` (`bound_through_literal`), so a guard
+  `count <= u32(8)` around loops `while i < count` proves every `segs[i]`
+  of a `[8]Seg` — the fill and the two reads of a segment recovery
+  (`compiler/e2e_recovery_bounds_test.go`). The fact dies when `count`
+  is assigned.
 - **Masked index**: `v[e & M]` with `M` a literal is proven, for any `e`,
   when the length is known to be at least `M + 1`
   (`masked_under_length`) — the byte table `CRC32C_TABLE[x & 255]`. The
