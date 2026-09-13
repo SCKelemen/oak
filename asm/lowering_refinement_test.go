@@ -103,6 +103,13 @@ var loweringProgramRenders = []struct {
 	// match on the tag with the arm's binding an alias of the payload leaf.
 	{"U: type = A | B: u32\n\nf: (v: u32) -> u32 = {\n  u: U = .B(v)\n  u ? | B(x) => x + 1 | A => 0\n}\n", "(v add 1)"},
 	{"U: type = A | B: u32\n\nf: (u: U) -> u32 = u ? | B(x) => x + 1 | A => 0\n", "((u.tag eq 1) ? (u.B add 1) : 0)"},
+	// Nested aggregates and array literals (`arrLit`, leaf naming): a
+	// record's array field `r.h[k]`, an array's record elements `a[k].x`,
+	// each the same leaves under longer names; a literal binds its elements.
+	{"f: (v, i: u32) -> u32 = {\n  a: [3]u32 = [v, 5, v + 1]\n  a[i]\n}\n", "((i eq 0) ? v : ((i eq 1) ? 5 : (v add 1)))"},
+	{"R: type = struct {\n  h: [2]u32\n  n: u32\n}\n\nf: (i, v: u32) -> u32 = {\n  r: R = R { h: [v, v + 1], n: 3 }\n  r.h[i] + r.n\n}\n", "(((i eq 0) ? v : (v add 1)) add 3)"},
+	{"P: type = struct {\n  x: u32\n  y: u32\n}\n\nf: (i, v: u32) -> u32 = {\n  a: [2]P = [P { x: v, y: 1 }, P { x: v + 1, y: 2 }]\n  a[i].x\n}\n", "((i eq 0) ? v : (v add 1))"},
+	{"R: type = struct {\n  h: [2]u32\n  n: u32\n}\n\nf: (r: R, i: u32) -> u32 = r.h[i]\n", "((i eq 0) ? r.h[0] : r.h[1])"},
 }
 
 func TestLoweringProgramsMatchLeanTransliteration(t *testing.T) {
