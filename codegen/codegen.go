@@ -106,12 +106,22 @@ type CodeGenerator struct {
 	// cycles merge into one state-machine engine so the cycle runs in one
 	// frame. trampolineMember maps a member to its group key; tailGroup maps
 	// members to their state tags while an engine body is being emitted.
-	programFunctions  map[string]*ast.FunctionStatement
-	trampolineMember  map[string]string
-	trampolineGroups  map[string][]string
-	trampolineEmitted map[string]bool
-	tailGroup         map[string]string
-	tailGroupParams   []*ast.FunctionParameter
+	programFunctions map[string]*ast.FunctionStatement
+	// Processor-feature dispatch (docs/spec/93-simd.md section 6):
+	// dispatchSlots maps a dispatched function to its clause,
+	// realizationFeature a realization to the feature whose slot names
+	// it, dispatchModes the lowering modes the program's realizations
+	// need beside the baseline, and featureMode the mode of the function
+	// being emitted ("" for the baseline).
+	dispatchSlots      map[string][]*ast.DispatchSlot
+	realizationFeature map[string]semir.CPUFeature
+	dispatchModes      map[string]bool
+	featureMode        string
+	trampolineMember   map[string]string
+	trampolineGroups   map[string][]string
+	trampolineEmitted  map[string]bool
+	tailGroup          map[string]string
+	tailGroupParams    []*ast.FunctionParameter
 	// localTypes maps in-scope names to their container kind while a
 	// function body is being emitted, so element access lowers to the right
 	// bounds-checked form. Unknown containers fail closed.
@@ -269,6 +279,24 @@ func (cg *CodeGenerator) Generate(program *ast.Program, tc *typechecker.TypeChec
 			}
 		}
 	}
+	cg.dispatchSlots = make(map[string][]*ast.DispatchSlot)
+	cg.realizationFeature = make(map[string]semir.CPUFeature)
+	cg.dispatchModes = make(map[string]bool)
+	for _, stmt := range program.Statements {
+		fn, ok := stmt.(*ast.FunctionStatement)
+		if !ok || fn.Name == nil || fn.Receiver != nil || len(fn.Dispatch) == 0 {
+			continue
+		}
+		cg.dispatchSlots[fn.Name.Value] = fn.Dispatch
+		for _, slot := range fn.Dispatch {
+			if feature, known := semir.LookupCPUFeature(slot.Feature); known {
+				cg.realizationFeature[slot.Realization] = feature
+				if feature.Mode != "" {
+					cg.dispatchModes[feature.Mode] = true
+				}
+			}
+		}
+	}
 	cg.trampolineMember = make(map[string]string)
 	cg.trampolineGroups = make(map[string][]string)
 	cg.trampolineEmitted = make(map[string]bool)
@@ -386,6 +414,11 @@ func (cg *CodeGenerator) emitEntryPoint() {
 	}
 	returnType := cg.parseTypeExpression(mainFn.ReturnType)
 	cg.write("int main(void) {" + "\n")
+	if len(cg.dispatchSlots) > 0 {
+		// The processor probe runs once, before anything dispatched can be
+		// called (docs/spec/93-simd.md section 6.1).
+		cg.write("  oak_cpu_init();\n")
+	}
 	if returnType == "void" {
 		cg.write(fmt.Sprintf("  %s();", cg.cFunctionName("main")) + "\n")
 		cg.write("  return 0;" + "\n")
@@ -1015,6 +1048,22 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 
 	funcName := fn.Name.Value
 	cFuncName := cg.cFunctionName(funcName)
+	// A realization named in a dispatch slot (docs/spec/93-simd.md section
+	// 6) exists only on its feature's architecture, where the baseline
+	// guarantees the feature or the program can dispatch to it; it carries
+	// the feature's function attribute and is lowered in the feature's
+	// mode, so its scalable values and helpers are the feature's own
+	// beside the baseline's in one translation unit.
+	attribute := ""
+	if feature, isRealization := cg.realizationFeature[funcName]; isRealization && fn.Receiver == nil {
+		cg.write(fmt.Sprintf("#if (%s) && (defined(%s) || %s)\n", dispatchArchCondition(feature.Arch), feature.BaselineMacro, dispatchMacro(feature)))
+		cg.featureMode = feature.Mode
+		attribute = feature.Attribute + " "
+		defer func() {
+			cg.featureMode = ""
+			cg.write("#endif\n")
+		}()
+	}
 	if fn.Receiver != nil {
 		// A method is emitted under its Type::method identity with the
 		// receiver as its first C parameter; the name is mangled
@@ -1075,7 +1124,7 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 
 	// Emit function signature (C style: space inside parentheses)
 	cg.emitLineDirective(fn.Token)
-	cg.write(fmt.Sprintf("%s%s %s( ", cg.linkage(funcName), returnType, cFuncName))
+	cg.write(fmt.Sprintf("%s%s%s %s( ", attribute, cg.linkage(funcName), returnType, cFuncName))
 
 	// If method, add receiver as first parameter
 	if fn.Receiver != nil {
@@ -1106,6 +1155,14 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 
 	cg.write(" ) {\n")
 	cg.indentLevel++
+
+	// A dispatched function selects its realization first (docs/spec/
+	// 93-simd.md section 6.1): outright where the baseline guarantees the
+	// feature (the static rule), else by one branch on the probed word;
+	// then it falls into its own body, the meaning.
+	if slots, dispatched := cg.dispatchSlots[funcName]; dispatched && fn.Receiver == nil {
+		cg.emitDispatchPrologue(fn, slots, returnType)
+	}
 
 	cg.foreignFnLocals = nil
 	cg.localTypes = cg.buildLocalTypes(fn)
@@ -2082,7 +2139,12 @@ func (cg *CodeGenerator) emitFunctionPrototypes(program *ast.Program) {
 			continue
 		}
 		returnType := cg.parseTypeExpression(fn.ReturnType)
-		cg.write(fmt.Sprintf("%s%s %s( ", cg.linkage(fn.Name.Value), returnType, cName))
+		attribute := ""
+		if feature, isRealization := cg.realizationFeature[fn.Name.Value]; isRealization && fn.Receiver == nil {
+			cg.write(fmt.Sprintf("#if (%s) && (defined(%s) || %s)\n", dispatchArchCondition(feature.Arch), feature.BaselineMacro, dispatchMacro(feature)))
+			attribute = feature.Attribute + " "
+		}
+		cg.write(fmt.Sprintf("%s%s%s %s( ", attribute, cg.linkage(fn.Name.Value), returnType, cName))
 		if fn.Receiver != nil {
 			cg.write(cg.cParameter(fn.Receiver.Type, fn.Receiver.Name.Value))
 			if len(fn.Parameters) > 0 {
@@ -2103,6 +2165,9 @@ func (cg *CodeGenerator) emitFunctionPrototypes(program *ast.Program) {
 			}
 		}
 		cg.write(" );\n")
+		if attribute != "" {
+			cg.write("#endif\n")
+		}
 		// An explicit C ABI export is a second entry point with the
 		// declared symbol (docs/spec/92-ffi.md section 2.9).
 		if fn.ExportSymbol != "" {
@@ -3636,6 +3701,11 @@ func (cg *CodeGenerator) parseTypeExpression(expr ast.Expression) string {
 			// simd vector types lower to their struct typedefs
 			// (docs/spec/93-simd.md section 1.4).
 			if spelling, isSimd := simdQualifiedTypeSpelling(ident.Value); isSimd {
+				if cg.featureMode != "" && strings.HasPrefix(spelling, "oak_scalable_") {
+					// A realization's scalable values are the mode's
+					// (docs/spec/93-simd.md section 6).
+					spelling += modeSuffix(cg.featureMode)
+				}
 				return spelling
 			}
 			// Assume it's a type name

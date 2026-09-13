@@ -474,6 +474,115 @@ explicit completed element count. Its contract must state:
 Architecture-specific fault-first instructions may be exposed earlier through
 a target library if their machine contract is explicit.
 
+## 6. Realizations and the processor probe
+
+**Status: landed (first increment) — `sve`, `sve2`, `rvv`; design in
+`docs/notes/cpu-dispatch-design-2026-09.md`.**
+
+A binary built at a target's baseline runs on processors with more. A
+function declares the realizations it has for them:
+
+```oak
+count_sevens: (xs: []u8) -> u32 dispatch { sve: count_sevens_sve } = {
+  ...the portable body, over the fixed vectors or a scalar loop...
+}
+
+count_sevens_sve: (xs: []u8) -> u32 = {
+  ...the same computation over the scalable API of §4...
+}
+```
+
+**The clause.** `dispatch { feature: function, ... }` follows the effect
+and laws clauses, at most once. Each slot names a feature of the closed
+catalog — `sve`, `sve2` (AArch64), `rvv` (RISC-V V) — and a top-level
+function of the **identical signature** (parameter types and return type),
+which is not itself dispatched. A feature appears at most once. A slot
+whose feature belongs to another architecture is inert on this target:
+not compiled, not consulted.
+
+**The body is the meaning.** The interpreter runs it, the Lean extraction
+and `oak prove` see it. A slot is the author's claim that its realization
+is observationally equal to the body — a claim of the same standing as
+`laws { associative }` (`10-syntax.md` §14a): checked differentially (the
+interpreter's feature set, §6.2), never assumed by the verifier
+(`Oak.Dispatch.dispatch_sound`: if every realization denotes the body's
+function, so does the dispatched function; that equality is all that is
+left to check). The effects reachable from a dispatched function are the
+union over the body and every realization (`60-effects-allocation.md`):
+a realization cannot hide an allocation behind a feature the checker did
+not run on.
+
+### 6.1 Selection
+
+Selection happens **once, before `main`**, into one word. The C backend
+emits `oak_cpu_features` and `oak_cpu_init()`; the emitted `main` calls
+the probe first. The probe by target:
+
+| Target | Probe |
+| --- | --- |
+| `linux/arm64` | `getauxval(AT_HWCAP)` bit 22 (`HWCAP_SVE`); `AT_HWCAP2` bit 1 (`HWCAP2_SVE2`) |
+| `darwin/arm64` | `sysctlbyname("hw.optional.arm.FEAT_SVE")`; absent reads as 0 |
+| `freestanding/arm64` | `MRS ID_AA64PFR0_EL1` bits [35:32] (SVE), `ID_AA64ZFR0_EL1` bits [3:0] ≥ 1 (SVE2); EL1 or higher |
+| `linux/riscv64` | `riscv_hwprobe` (syscall 258), key `IMA_EXT_0`, bit 2 (`V`) |
+| `freestanding/riscv64` | none (`misa` is M-mode only): `rvv` is available only when the build guarantees it |
+
+A library without an Oak `main` gets `oak_cpu_init` as a constructor on
+hosted targets and as an exported function the C host calls on
+freestanding ones; an uninitialized word reads as "no features" and
+selects the body.
+
+**The static rule.** When the build baseline guarantees a feature
+(`-cpu generic+sve` defines `__ARM_FEATURE_SVE`; `+v` defines
+`__riscv_vector`), the dispatched function *is* that realization: no
+probe bit is consulted, no branch emitted. Runtime dispatch is only ever
+the difference between the baseline and the processor.
+
+**The call.** No function pointers. The dispatched function's C body
+opens with one branch per applicable slot, in clause order, on the
+feature word — `if (oak_cpu_features & OAK_CPU_SVE) return
+count_sevens_sve(xs);` — and falls into its own body. The word is a
+loaded constant after the probe; the C compiler hoists the branch out of
+a loop that calls the function. The selection is deterministic
+(`Oak.Dispatch.select_deterministic`): the same available features, the
+same realization, on every call and every run.
+
+**One translation unit, two lowerings.** A realization named in an `sve`
+slot is emitted with `__attribute__((target("sve")))` and in SVE mode:
+its scalable-API locals are the sizeless `svuint8_t` family and its
+helpers the `__sve`-suffixed copies, which the backend emits beside the
+baseline helpers when the program has such a slot (under
+`__has_include(<arm_sve.h>)`, so a toolchain without SVE support builds
+the program with the slot inert, `OAK_DISPATCH_SVE` 0). The mode is
+decided by the slot, not by inspecting the body. RVV slots work the same
+way (`target("arch=+v")`, `__rvv`). The locality rule (OAK-S0401) is what
+makes this sound: no scalable value crosses a function boundary or lands
+in a record, so a realization's types are its own.
+
+### 6.2 The interpreter's feature set
+
+The interpreter has one portable semantics and no processor. It carries a
+feature set (`evaluator.Features`, empty by default), set by a test or
+the REPL; with `sve` in the set, a call to a dispatched function runs the
+`sve` realization's Oak body in place of the function's own. Because the
+scalable API is extent-independent (§4), the realization has a meaning in
+the interpreter, and the two runs — with and without the feature — are
+the differential check of the slot's claim. `compiler/e2e_dispatch_test.go`
+runs a dispatched program with the empty set, with `sve`, in native C on
+the host (whose probe selects the body where SVE is absent), and under
+`qemu-system-aarch64 -cpu max,sve-max-vq=…` (whose probe selects the SVE
+realization), and requires one answer; `codegen/aarch64_dispatch_test.go`
+pins the C shape: the probe, the branch on the word, the attribute and
+the `whilelo`/`ptrue` predicates inside the realization alone.
+
+### 6.3 What is proved
+
+`Oak.Dispatch`: `select` is a function of the available features and the
+clause; `select_none` (no available feature: the body), `select_mem` (the
+body or a listed realization, nothing else), `select_deterministic`,
+`select_static` (a guaranteed feature in the first slot always selects it),
+and `dispatch_sound`. What the theorems do not say — that a realization
+equals the body — is what §6.2 checks.
+
 ## 5. Cross-target verification obligations
 
 Adding a scalable backend does not weaken the three-witness rule. Verification

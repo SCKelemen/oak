@@ -4745,6 +4745,43 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 		}
 	}
 
+	// Processor-feature realizations (docs/spec/93-simd.md section 6):
+	// `dispatch { sve: f_sve, rvv: f_rvv }`, contextual like the other
+	// clauses, at most once; each slot a feature name and a function name.
+	if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "dispatch" {
+		p.nextToken()
+		if stmt.Dispatch != nil {
+			p.addErrorAtCurrentToken("a function declares one dispatch clause")
+			return nil
+		}
+		if !p.expectPeek(token.LBRACE) {
+			return nil
+		}
+		stmt.Dispatch = []*ast.DispatchSlot{}
+		for !p.peekTokenIs(token.RBRACE) {
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			slot := &ast.DispatchSlot{Token: p.currentToken, Feature: p.currentToken.Literal}
+			if !p.expectPeek(token.COLON) || !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			slot.Realization = p.currentToken.Literal
+			stmt.Dispatch = append(stmt.Dispatch, slot)
+			if p.peekTokenIs(token.COMMA) {
+				p.nextToken()
+			} else if !p.peekTokenIs(token.RBRACE) {
+				p.peekError(token.RBRACE)
+				return nil
+			}
+		}
+		p.nextToken() // '}'
+		if len(stmt.Dispatch) == 0 {
+			p.addErrorAtCurrentToken("a dispatch clause names at least one realization (feature: function)")
+			return nil
+		}
+	}
+
 	// Body: '= expr', '= { block }', or a brace block.
 	if p.peekTokenIs(token.ASSIGN) {
 		p.nextToken()

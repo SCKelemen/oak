@@ -89,6 +89,10 @@ type Function struct {
 	// Variadic marks a Go-style trailing parameter: calls bundle the
 	// trailing arguments into an Array bound to the last parameter name.
 	Variadic bool
+	// Dispatch carries the declaration's processor-feature realizations
+	// (docs/spec/93-simd.md section 6); the interpreter selects one when
+	// its feature set names the slot's feature, else runs Body.
+	Dispatch []*ast.DispatchSlot
 }
 
 func (f *Function) Kind() ObjectKind { return FUNCTION }
