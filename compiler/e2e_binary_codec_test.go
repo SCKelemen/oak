@@ -191,7 +191,7 @@ func TestBinaryCodecLowering(t *testing.T) {
 // The shapes the layout refuses, each with its reason.
 func TestBinaryCodecRejects(t *testing.T) {
 	for name, c := range map[string][2]string{
-		"string field": {"import(std)\nR: type = struct { a: string }\nmain: (): i32 {\n r: R\n d: [8]u8\n _ = encode[R, Binary](r, span(&d))\n 0\n}\n", "unsupported field"},
+		"string field":     {"import(std)\nR: type = struct { a: string }\nmain: (): i32 {\n r: R\n d: [8]u8\n _ = encode[R, Binary](r, span(&d))\n 0\n}\n", "unsupported field"},
 		"endian on record": {"import(std)\nbin: tag = { endian: string }\nI: type = struct { a: u16 }\nR: type = struct { i(bin: \"be\"): I }\nmain: (): i32 {\n r: R\n d: [8]u8\n _ = encode[R, Binary](r, span(&d))\n 0\n}\n", "endianness applies to integer fields"},
 		"endian on a byte": {"import(std)\nbin: tag = { endian: string }\nR: type = struct { a(bin: \"be\"): u8 }\nmain: (): i32 {\n r: R\n d: [8]u8\n _ = encode[R, Binary](r, span(&d))\n 0\n}\n", "no endianness"},
 		"bad endian":       {"import(std)\nbin: tag = { endian: string }\nR: type = struct { a(bin: \"middle\"): u32 }\nmain: (): i32 {\n r: R\n d: [8]u8\n _ = encode[R, Binary](r, span(&d))\n 0\n}\n", "\"le\" or \"be\""},
