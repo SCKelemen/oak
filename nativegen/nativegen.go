@@ -202,6 +202,46 @@ func (g *generator) memOf(l loc) asm.Memory {
 	return g.slotMem(l.offset)
 }
 
+// reachable is memOf for a size-byte access whose offset from a register
+// base may exceed the load/store immediate (4095 scaled units): a field
+// past a large array inside a span element (the OS pilot's N2). The base
+// is rebased through a fresh register by addOffset and the small remainder
+// stays in the operand; temp is that register (or -1), released by the
+// caller after the access. The checker narrows the element region through
+// the adds (asm/check.go, deriveElement).
+func (g *generator) reachable(l loc, size int64) (asm.Memory, int, error) {
+	if !l.inReg || size <= 0 || (l.offset >= 0 && l.offset%size == 0 && l.offset/size <= 4095) {
+		return g.memOf(l), -1, nil
+	}
+	temp, err := g.alloc(scalars["u64"])
+	if err != nil {
+		return asm.Memory{}, -1, err
+	}
+	high := l.offset &^ 0xfff
+	if err := g.addOffset(temp, l.reg, high); err != nil {
+		return asm.Memory{}, -1, err
+	}
+	return asm.Memory{Base: xr(temp), Offset: l.offset - high}, temp, nil
+}
+
+// addOffset emits `add xD, xS, #off` for any offset below 2^24: the low
+// twelve bits as one add, the rest as `#imm, lsl #12`.
+func (g *generator) addOffset(dst, src int, off int64) error {
+	if off < 0 || off >= 1<<24 {
+		return unsupported("an offset of %d bytes inside an element", off)
+	}
+	high, low := off>>12, off&0xfff
+	current := src
+	if high != 0 {
+		g.emit("add", xr(dst), xr(current), asm.Immediate{Value: high, Shift: 12})
+		current = dst
+	}
+	if low != 0 || current == src {
+		g.emit("add", xr(dst), xr(current), imm(low))
+	}
+	return nil
+}
+
 // alignmentOf is the alignment the checker sees for a location: the frame
 // offset's, or the offset from the register (element addresses are
 // multiples of the element's alignment).
@@ -771,14 +811,17 @@ func (g *generator) recordElement(arr *arrayLocal, index ast.Expression) (place,
 	if stride > 0 && stride&(stride-1) == 0 && stride <= 16 {
 		g.emit("add", xr(element), xr(base), asm.Extended{Reg: wr(r), Kind: "uxtw", Amount: int64(log2Bytes(int(stride)))})
 	} else {
-		if stride >= 1<<16 {
+		if stride >= 1<<32 {
 			return place{}, unsupported("a record stride of %d bytes", stride)
 		}
+		// The stride as a 32-bit constant — movz, and movk for the high
+		// halfword of a large record (the OS pilot's N2: a 409 600-byte
+		// regime) — then one umaddl.
 		strideReg, err := g.alloc(scalars["u32"])
 		if err != nil {
 			return place{}, err
 		}
-		g.emit("movz", wr(strideReg), imm(stride))
+		g.constant(strideReg, uint64(stride), scalars["u32"])
 		g.emit("umaddl", xr(element), wr(r), wr(strideReg), xr(base))
 		g.release(strideReg)
 	}
@@ -855,14 +898,14 @@ func (g *generator) spanRecordElement(sp span, index ast.Expression) (place, err
 	if stride > 0 && stride&(stride-1) == 0 && stride <= 16 {
 		g.emit("add", xr(element), xr(sp.baseReg), asm.Extended{Reg: wr(r), Kind: "uxtw", Amount: int64(log2Bytes(int(stride)))})
 	} else {
-		if stride >= 1<<16 {
+		if stride >= 1<<32 {
 			return place{}, unsupported("a record stride of %d bytes", stride)
 		}
 		strideReg, err := g.alloc(scalars["u32"])
 		if err != nil {
 			return place{}, err
 		}
-		g.emit("movz", wr(strideReg), imm(stride))
+		g.constant(strideReg, uint64(stride), scalars["u32"])
 		g.emit("umaddl", xr(element), wr(r), wr(strideReg), xr(sp.baseReg))
 		g.release(strideReg)
 	}
@@ -1603,7 +1646,9 @@ func (g *generator) buildVariant(layout *recordLayout, e *ast.VariantExpression)
 	g.release(tag)
 	switch {
 	case payloadReg >= 0:
-		g.fieldStore(&scalarPlace{offset: rec.offset + field.offset, typ: field.typ}, payloadReg)
+		if err := g.fieldStore(&scalarPlace{offset: rec.offset + field.offset, typ: field.typ}, payloadReg); err != nil {
+			return nil, err
+		}
 		g.release(payloadReg)
 	case payloadSrc != nil:
 		if err := g.copyBytes(slotLoc(rec.offset+field.offset), payloadSrc.loc(), field.size); err != nil {
@@ -1853,7 +1898,9 @@ func (g *generator) fillRecord(layout *recordLayout, literal *ast.RecordLiteral,
 		at := rec.offset + field.offset
 		switch {
 		case field.kind == fieldScalar:
-			g.fieldStore(&scalarPlace{offset: at, typ: field.typ}, values[i].reg)
+			if err := g.fieldStore(&scalarPlace{offset: at, typ: field.typ}, values[i].reg); err != nil {
+				return nil, err
+			}
 			g.release(values[i].reg)
 		case values[i].src != nil:
 			if err := g.copyBytes(slotLoc(at), values[i].src.loc(), field.size); err != nil {
@@ -2590,20 +2637,37 @@ func (g *generator) fieldLoad(sc *scalarPlace) (int, error) {
 		return 0, err
 	}
 	load := loadOf(sc.typ)
+	size := int64(sc.typ.bits / 8)
 	if sc.typ.isBool {
-		load = "ldr"
+		load, size = "ldr", 4
 	}
-	g.emit(load, reg(r, sc.typ), g.memOf(sc.loc()))
+	mem, temp, err := g.reachable(sc.loc(), size)
+	if err != nil {
+		return 0, err
+	}
+	g.emit(load, reg(r, sc.typ), mem)
+	if temp >= 0 {
+		g.release(temp)
+	}
 	return r, nil
 }
 
 // fieldStore writes a normalized value of the field's type.
-func (g *generator) fieldStore(sc *scalarPlace, r int) {
+func (g *generator) fieldStore(sc *scalarPlace, r int) error {
 	store := storeOf(sc.typ)
+	size := int64(sc.typ.bits / 8)
 	if sc.typ.isBool {
-		store = "str"
+		store, size = "str", 4
 	}
-	g.emit(store, reg(r, sc.typ), g.memOf(sc.loc()))
+	mem, temp, err := g.reachable(sc.loc(), size)
+	if err != nil {
+		return err
+	}
+	g.emit(store, reg(r, sc.typ), mem)
+	if temp >= 0 {
+		g.release(temp)
+	}
+	return nil
 }
 
 // fieldOperand resolves `p.f` (through any nesting) to a scalar field.
@@ -4705,7 +4769,9 @@ func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression) (address
 	if arr.inReg {
 		// An array field inside a computed element: its address is the
 		// element's plus the field offset (the checker narrows the region).
-		g.emit("add", xr(base), xr(arr.reg), imm(arr.offset))
+		if err := g.addOffset(base, arr.reg, arr.offset); err != nil {
+			return asm.Memory{}, 0, 0, err
+		}
 	} else {
 		g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
 	}
@@ -4752,7 +4818,9 @@ func (g *generator) storeToPlace(target place, s *ast.IndexAssignmentStatement) 
 		if err != nil {
 			return err
 		}
-		g.fieldStore(target.sc, value)
+		if err := g.fieldStore(target.sc, value); err != nil {
+			return err
+		}
 		g.release(value)
 		g.releaseTemps(target.sc.temps)
 		return nil
