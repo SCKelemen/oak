@@ -158,11 +158,17 @@ def ArrIn (Γ : Locals) (x : String) (e : Ty) (n : Nat) : Prop := ∀ k, k < n �
 instance (Γ : Locals) (x : String) (e : Ty) (n : Nat) : Decidable (ArrIn Γ x e n) :=
   inferInstanceAs (Decidable (∀ k, k < n → Γ (elemName x k) = some e))
 
-/-- The callee's scope: its parameters bound in order (a later duplicate
-wins, as `bound[param] = …` does). -/
-def bindTypes (Γ : Locals) : List (String × Ty) → Locals
+/-- Names bound in order under a naming (`id` for a callee's parameters, the
+field-leaf naming for a record's fields; a later duplicate wins, as
+`bound[param] = …` does). -/
+def bindTypes (nm : String → String) (Γ : Locals) : List (String × Ty) → Locals
   | [] => Γ
-  | (x, s) :: ps => bindTypes (Γ.set x s) ps
+  | (x, s) :: ps => bindTypes nm (Γ.set (nm x) s) ps
+
+/-- The verifier's name for field `f` of record `r` (`paramAggregate`'s
+`prefix + "." + name`): a record is its scalar field leaves, each a local
+under that name, as an owned array is its element leaves. -/
+def fieldName (r f : String) : String := r ++ "." ++ f
 
 mutual
 /-- The shared subset. A literal carries its checked value at the type's
@@ -185,7 +191,12 @@ locals; `elem s v h i` is the element read `v[i]` of a span parameter and
 say) for the block `b`, `arrGet e n x hn h i` reads `x[i]` and
 `arrSetE x h i v rest` writes `x[i] = v` — an owned array is its elements
 under the names the verifier gives leaves, `x[k]`, so both readers see the
-same cells, and both trap outside the range (`none`). -/
+same cells, and both trap outside the range (`none`); `recDecl r fs fields
+b` declares the record local `r: R = R{ f₁: e₁, … }` whose scalar fields
+`fs` are given in the type's order, for the block `b` — a record is its
+field leaves `r.f`, so a field read is the variable `r.f` and a field
+write its rebinding, for a local as for a record parameter
+(`paramAggregate`). -/
 inductive Expr (P : Params) (S : Spans) : Locals → Ty → Type
   | var {Γ : Locals} (t : Ty) (x : String) (h : resolve P Γ x = some t) : Expr P S Γ t
   | lit {Γ : Locals} (t : Ty) (v : BitVec t.width) : Expr P S Γ t
@@ -200,7 +211,9 @@ inductive Expr (P : Params) (S : Spans) : Locals → Ty → Type
   | ite {Γ : Locals} {t : Ty} (c : Expr P S Γ .bool) (a b : Expr P S Γ t) : Expr P S Γ t
   | letIn {Γ : Locals} {s t : Ty} (x : String) (v : Expr P S Γ s) (b : Expr P S (Γ.set x s) t) : Expr P S Γ t
   | call {Γ : Locals} (params : List (String × Ty)) (ret : Ty)
-      (body : Expr P S (bindTypes (fun _ => none) params) ret) (args : Args P S Γ params) : Expr P S Γ ret
+      (body : Expr P S (bindTypes id (fun _ => none) params) ret) (args : Args P S Γ params) : Expr P S Γ ret
+  | recDecl {Γ : Locals} {t : Ty} (r : String) (fs : List (String × Ty)) (fields : Args P S Γ fs)
+      (b : Expr P S (bindTypes (fieldName r) Γ fs) t) : Expr P S Γ t
   | condSet {Γ : Locals} {t : Ty} (c : Expr P S Γ .bool) (armT armF : Stmts P S Γ) (rest : Expr P S Γ t) : Expr P S Γ t
   | whileLoop {Γ : Locals} {t : Ty} (c : Expr P S Γ .bool) (body : Stmts P S Γ) (rest : Expr P S Γ t) : Expr P S Γ t
   | matchInt {Γ : Locals} {s t : Ty} (x : Expr P S Γ s) (arms : Arms P S Γ s t) : Expr P S Γ t
@@ -344,7 +357,8 @@ def evalX {P : Params} {S : Spans} : {Γ : Locals} → {t : Ty} → Expr P S Γ 
     (evalX lhs ρ l F).bind fun x => (evalX rhs ρ l F).bind fun y => some (BitVec.ofBool (cmpX s.signed op x y))
   | _, _, .ite c a b, ρ, l, F => (evalX c ρ l F).bind fun cv => if cv = 1 then evalX a ρ l F else evalX b ρ l F
   | _, _, .letIn x v b, ρ, l, F => (evalX v ρ l F).bind fun x' => evalX b ρ (l.set x x'.toNat) F
-  | _, _, .call _ _ body args, ρ, l, F => (bindVals args ρ l (fun _ => 0) F).bind fun l' => evalX body ρ l' F
+  | _, _, .call _ _ body args, ρ, l, F => (bindVals id args ρ l (fun _ => 0) F).bind fun l' => evalX body ρ l' F
+  | _, _, .recDecl r _ fields b, ρ, l, F => (bindVals (fieldName r) fields ρ l l F).bind fun l' => evalX b ρ l' F
   | _, _, .condSet c armT armF rest, ρ, l, F =>
     (evalX c ρ l F).bind fun cv => (if cv = 1 then runVals armT ρ l F else runVals armF ρ l F).bind fun l' => evalX rest ρ l' F
   | _, _, .whileLoop c body rest, ρ, l, F =>
@@ -381,11 +395,11 @@ def armsX {P : Params} {S : Spans} : {Γ : Locals} → {s t : Ty} → BitVec s.w
 def armsVals {P : Params} {S : Spans} : {Γ : Locals} → {s : Ty} → BitVec s.width → ArmsS P S Γ s → Env → Vals → Nat → Option Vals
   | _, _, _, .fallback st, ρ, l, F => runVals st ρ l F
   | _, _, vx, .case k st rest, ρ, l, F => if vx = k then runVals st ρ l F else armsVals vx rest ρ l F
-/-- The callee's values: each argument evaluated in the caller's scope and
-bound to its parameter, in order. -/
-def bindVals {P : Params} {S : Spans} : {Γ : Locals} → {ps : List (String × Ty)} → Args P S Γ ps → Env → Vals → Vals → Nat → Option Vals
+/-- The callee's values (a record literal's field values): each argument
+evaluated in the caller's scope and bound under its name, in order. -/
+def bindVals {P : Params} {S : Spans} (nm : String → String) : {Γ : Locals} → {ps : List (String × Ty)} → Args P S Γ ps → Env → Vals → Vals → Nat → Option Vals
   | _, _, .nil, _, _, acc, _ => some acc
-  | _, _, .cons (x := x) a rest, ρ, l, acc, F => (evalX a ρ l F).bind fun x' => bindVals rest ρ l (acc.set x x'.toNat) F
+  | _, _, .cons (x := x) a rest, ρ, l, acc, F => (evalX a ρ l F).bind fun x' => bindVals nm rest ρ l (acc.set (nm x) x'.toNat) F
 end
 
 /-- The 1/0 image of `Bool` is a homomorphism for `&&`, `||`, `!`: reading
@@ -631,7 +645,10 @@ width 1; a Bool conditional `iteTerm`; a local's declaration or rebinding
 lowers the value at the local's width into `lo.locals` and goes on
 (`declareLocal`, `assignLocal`); a call binds the callee's parameters to
 the lowered arguments as a fresh `lo.locals` and lowers the body
-(`enterCall`, `inlineCall`); a statement-level conditional runs each arm
+(`enterCall`, `inlineCall`); a record local is declared as its field
+leaves from the literal (`declareLocal`, `aggregateValue`), read and
+written as the scalar locals they are (`readPlace`, `assignPlace`); a
+statement-level conditional runs each arm
 on the locals before it and, for every local an arm assigned, selects
 between the arms' terms by the condition (`lowerConditionalStatement`:
 `iteTerm(truncate(cond, 1), afterTrue, afterFalse)`); a loop unrolls while
@@ -669,7 +686,8 @@ def lowerT {P : Params} {S : Spans} : Scope → {Γ : Locals} → {t : Ty} → E
   | σ, _, _, .ite c a b =>
     (lowerT σ c).bind fun tc => (lowerT σ a).bind fun ta => (lowerT σ b).bind fun tb => some (.iteT tc ta tb)
   | σ, _, _, .letIn x v b => (lowerT σ v).bind fun tv => lowerT (σ.set x tv) b
-  | σ, _, _, .call _ _ body args => (bindTerms σ args (fun _ => none)).bind fun σ' => lowerT σ' body
+  | σ, _, _, .call _ _ body args => (bindTerms id σ args (fun _ => none)).bind fun σ' => lowerT σ' body
+  | σ, _, _, .recDecl r _ fields b => (bindTerms (fieldName r) σ fields σ).bind fun σ' => lowerT σ' b
   | σ, _, _, .condSet c armT armF rest =>
     (lowerT σ c).bind fun tc => (runTerms σ armT).bind fun σT => (runTerms σ armF).bind fun σF =>
       lowerT (mergeScope tc σT σF) rest
@@ -712,11 +730,12 @@ def armsST {P : Params} {S : Spans} (σ : Scope) (sx : Term) : {Γ : Locals} →
   | _, _, .fallback st => runTerms σ st
   | _, s, .case k st rest =>
     (runTerms σ st).bind fun σk => (armsST σ sx rest).bind fun σr => some (mergeScope (caseCond sx s.width k.toNat) σk σr)
-/-- `enterCall`'s `bound`: each argument lowered in the caller's scope at
-the parameter's width and bound to the parameter, in order. -/
-def bindTerms {P : Params} {S : Spans} (σ : Scope) : {Γ : Locals} → {ps : List (String × Ty)} → Args P S Γ ps → Scope → Option Scope
+/-- `enterCall`'s `bound`, and `aggregateValue`'s record literal: each
+argument lowered in the caller's scope at its width and bound under its
+name, in order (a record's fields in the type's order, each leaf `r.f`). -/
+def bindTerms {P : Params} {S : Spans} (nm : String → String) (σ : Scope) : {Γ : Locals} → {ps : List (String × Ty)} → Args P S Γ ps → Scope → Option Scope
   | _, _, .nil, acc => some acc
-  | _, _, .cons (x := x) a rest, acc => (lowerT σ a).bind fun ta => bindTerms σ rest (acc.set x ta)
+  | _, _, .cons (x := x) a rest, acc => (lowerT σ a).bind fun ta => bindTerms nm σ rest (acc.set (nm x) ta)
 end
 
 /-! ## Widths -/
@@ -830,6 +849,10 @@ theorem lowerT_width {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P
     simp only [lowerT, Option.bind_eq_some_iff] at h
     obtain ⟨σ', -, hb⟩ := h
     exact lowerT_width body _ _ hb
+  | .recDecl r fs fields b =>
+    simp only [lowerT, Option.bind_eq_some_iff] at h
+    obtain ⟨σ', -, hb⟩ := h
+    exact lowerT_width b _ _ hb
   | .condSet c armT armF rest =>
     simp only [lowerT, Option.bind_eq_some_iff] at h
     obtain ⟨tc, -, σT, -, σF, -, hr⟩ := h
@@ -1378,7 +1401,11 @@ theorem lowerT_topPositive {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : 
   | .call params ret body args =>
     simp only [lowerT, Option.bind_eq_some_iff] at h
     obtain ⟨σ', hσ', hb⟩ := h
-    exact lowerT_topPositive body _ T (bindTerms_wf args σ _ σ' hσ Scope.wf_empty hσ') hb
+    exact lowerT_topPositive body _ T (bindTerms_wf args id σ _ σ' hσ Scope.wf_empty hσ') hb
+  | .recDecl r fs fields b =>
+    simp only [lowerT, Option.bind_eq_some_iff] at h
+    obtain ⟨σ', hσ', hb⟩ := h
+    exact lowerT_topPositive b _ T (bindTerms_wf fields (fieldName r) σ _ σ' hσ hσ hσ') hb
   | .condSet c armT armF rest =>
     simp only [lowerT, Option.bind_eq_some_iff] at h
     obtain ⟨tc, -, σT, hT, σF, hF, hr⟩ := h
@@ -1411,14 +1438,14 @@ theorem lowerT_topPositive {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : 
     exact lowerT_topPositive rest _ T (writeArr_wf hσ (lowerT_topPositive v σ tv hσ hv) x _) hr
 termination_by structural e
 theorem bindTerms_wf {P : Params} {S : Spans} {Γ : Locals} {ps : List (String × Ty)} (args : Args P S Γ ps) :
-    ∀ (σ acc σ' : Scope), σ.wf → acc.wf → bindTerms σ args acc = some σ' → σ'.wf := by
-  intro σ acc σ' hσ hacc h
+    ∀ (nm : String → String) (σ acc σ' : Scope), σ.wf → acc.wf → bindTerms nm σ args acc = some σ' → σ'.wf := by
+  intro nm σ acc σ' hσ hacc h
   match args with
   | .nil => simp only [bindTerms, Option.some.injEq] at h; subst h; exact hacc
   | .cons a rest =>
     simp only [bindTerms, Option.bind_eq_some_iff] at h
     obtain ⟨ta, ha, hr⟩ := h
-    exact bindTerms_wf rest σ _ σ' hσ (Scope.wf_set hacc (lowerT_topPositive a σ ta hσ ha)) hr
+    exact bindTerms_wf rest nm σ _ σ' hσ (Scope.wf_set hacc (lowerT_topPositive a σ ta hσ ha)) hr
 termination_by structural args
 theorem runTerms_wf {P : Params} {S : Spans} {Γ : Locals} (st : Stmts P S Γ) :
     ∀ (σ σ' : Scope), σ.wf → runTerms σ st = some σ' → σ'.wf := by
@@ -1812,15 +1839,15 @@ termination_by structural arms
 end
 
 theorem bindTerms_typed {P : Params} {S : Spans} {Γ : Locals} {ps : List (String × Ty)} (args : Args P S Γ ps) :
-    ∀ (σ : Scope), σ.wf → ∀ (Γ0 : Locals) (acc σ' : Scope), Typed Γ0 acc → bindTerms σ args acc = some σ' →
-      Typed (bindTypes Γ0 ps) σ' := by
-  intro σ hσ Γ0 acc σ' h0 h
+    ∀ (nm : String → String) (σ : Scope), σ.wf → ∀ (Γ0 : Locals) (acc σ' : Scope), Typed Γ0 acc →
+      bindTerms nm σ args acc = some σ' → Typed (bindTypes nm Γ0 ps) σ' := by
+  intro nm σ hσ Γ0 acc σ' h0 h
   match args with
   | .nil => simp only [bindTerms, Option.some.injEq] at h; subst h; exact h0
   | .cons (x := x) a rest =>
     simp only [bindTerms, Option.bind_eq_some_iff] at h
     obtain ⟨ta, ha, hr⟩ := h
-    exact bindTerms_typed rest σ hσ _ _ σ' (h0.set x (lowerT_width a σ ta ha) (lowerT_topPositive a σ ta hσ ha)) hr
+    exact bindTerms_typed rest nm σ hσ _ _ σ' (h0.set (nm x) (lowerT_width a σ ta ha) (lowerT_topPositive a σ ta hσ ha)) hr
 termination_by structural args
 
 /-! ### The theorem -/
@@ -2032,7 +2059,14 @@ theorem lowerT_eval {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P 
     obtain ⟨σ', hσ', hb⟩ := h
     simp only [evalX, Option.bind_eq_some_iff] at hv
     obtain ⟨l', hl', hvb⟩ := hv
-    exact lowerT_eval body _ ρ _ F T v (bindArgs_agree args σ ρ l F hA _ _ (fun _ => 0) (Agree.empty ρ _) σ' l' hσ' hl') hb hvb
+    exact lowerT_eval body _ ρ _ F T v (bindArgs_agree args id σ ρ l F hA _ _ (fun _ => 0) (Agree.empty ρ _) σ' l' hσ' hl') hb hvb
+  | .recDecl r fs fields b =>
+    intro v hv
+    simp only [lowerT, Option.bind_eq_some_iff] at h
+    obtain ⟨σ', hσ', hb⟩ := h
+    simp only [evalX, Option.bind_eq_some_iff] at hv
+    obtain ⟨l', hl', hvb⟩ := hv
+    exact lowerT_eval b _ ρ _ F T v (bindArgs_agree fields (fieldName r) σ ρ l F hA _ _ l hA σ' l' hσ' hl') hb hvb
   | .condSet c armT armF rest =>
     intro v hv
     simp only [lowerT, Option.bind_eq_some_iff] at h
@@ -2257,10 +2291,10 @@ termination_by structural arms
 parameter's term has the parameter's width and evaluates to the argument's
 value. -/
 theorem bindArgs_agree {P : Params} {S : Spans} {Γ : Locals} {ps : List (String × Ty)} (args : Args P S Γ ps) :
-    ∀ (σ : Scope) (ρ : Env) (l : Vals) (F : Nat), Agree Γ σ ρ l →
+    ∀ (nm : String → String) (σ : Scope) (ρ : Env) (l : Vals) (F : Nat), Agree Γ σ ρ l →
       ∀ (Γ0 : Locals) (acc : Scope) (l0 : Vals), Agree Γ0 acc ρ l0 → ∀ (σ' : Scope) (l' : Vals),
-        bindTerms σ args acc = some σ' → bindVals args ρ l l0 F = some l' → Agree (bindTypes Γ0 ps) σ' ρ l' := by
-  intro σ ρ l F hA Γ0 acc l0 h0 σ' l' h hv
+        bindTerms nm σ args acc = some σ' → bindVals nm args ρ l l0 F = some l' → Agree (bindTypes nm Γ0 ps) σ' ρ l' := by
+  intro nm σ ρ l F hA Γ0 acc l0 h0 σ' l' h hv
   match args with
   | .nil =>
     simp only [bindTerms, Option.some.injEq] at h
@@ -2273,8 +2307,8 @@ theorem bindArgs_agree {P : Params} {S : Spans} {Γ : Locals} {ps : List (String
     simp only [bindVals, Option.bind_eq_some_iff] at hv
     obtain ⟨va, hva, hvr⟩ := hv
     have iha := lowerT_eval a σ ρ l F ta va hA ha hva
-    exact bindArgs_agree rest σ ρ l F hA _ _ _
-      (Agree.set h0 x (lowerT_width a σ ta ha) (lowerT_topPositive a σ ta (Agree.wf hA) ha) iha) σ' l' hr hvr
+    exact bindArgs_agree rest nm σ ρ l F hA _ _ _
+      (Agree.set h0 (nm x) (lowerT_width a σ ta ha) (lowerT_topPositive a σ ta (Agree.wf hA) ha) iha) σ' l' hr hvr
 termination_by structural args
 end
 
@@ -2519,5 +2553,17 @@ example : lowered? ((.arrDecl "a" .u32 2 (by decide)
     (.arrSetE (n := 2) "a" (by decide) (by decide) (.var .u32 "i" (by decide)) (.var .u32 "v" (by decide))
     (.arrGet .u32 2 "a" (by decide) (by decide) (.lit .u32 1))) : X (ps [("i", .u32), ("v", .u32)]) sp0 .u32))
     = some "((i eq 1) ? v : 0)" := by decide
+
+/-! Records: a record is its field leaves `r.f`, a field read the variable,
+a field write its rebinding. -/
+
+/-- `P: type = struct { x: u32, y: u32 }`; `(a, b: u32) -> u32 = { p: P = P{ x: a, y: b }; p.x = p.x + 1; p.x * p.y }` -/
+example : lowered? ((.recDecl "p" [("x", .u32), ("y", .u32)] (.cons (.var .u32 "a" (by decide)) (.cons (.var .u32 "b" (by decide)) .nil))
+    (.letIn "p.x" (.arith .add (.var .u32 "p.x" (by decide)) (.lit .u32 1))
+      (.arith .mul (.var .u32 "p.x" (by decide)) (.var .u32 "p.y" (by decide)))) : X (ps [("a", .u32), ("b", .u32)]) sp0 .u32))
+    = some "((a add 1) mul b)" := by decide
+/-- `(p: P) -> u32 = p.x + p.y` — a record parameter is its field leaves as parameters. -/
+example : lowered? ((.arith .add (.var .u32 "p.x" (by decide)) (.var .u32 "p.y" (by decide)) : X (ps [("p.x", .u32), ("p.y", .u32)]) sp0 .u32))
+    = some "(p.x add p.y)" := by decide
 
 end Oak.LoweringRefinement
