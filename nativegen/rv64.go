@@ -437,6 +437,11 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	for _, callee := range g.functions {
 		if callee != nil {
 			spell(callee.ReturnType) // the verifier's aggregate call summaries
+			for _, p := range callee.Parameters {
+				if p != nil {
+					spell(p.Type)
+				}
+			}
 		}
 	}
 	out.TwoChunkResults = g.twoChunk

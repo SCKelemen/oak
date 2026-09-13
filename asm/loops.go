@@ -961,6 +961,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// Witnesses: concrete inputs decide every loop.
 	checked := 0
 	for _, env := range loopWitnessInputs(fn, sig) {
+		if !lowering.inDomain(env) {
+			continue // a union tag outside its variants: not a well-typed input
+		}
 		asmValue, _, reasonA, okA := executeBodyChunk(fn, sig, env, 0, exec.resultChunk)
 		concrete := prepareLowering(fn, sig, env)
 		concrete.resultChunk = exec.resultChunk

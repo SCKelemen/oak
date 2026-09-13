@@ -3016,6 +3016,33 @@ exactly that, and none after. Pinned:
 `compiler/e2e_native_verdict_aggregates_test.go` (`head_sum` over
 `first_two`).
 
+**Aggregate arguments in call summaries; well-typed union tags
+(2026-09-14).** A callee's record or union parameter of up to two chunks
+is bound in the summary from its argument registers (`unpackAggregate`,
+the inverse of `packAggregateChunk`: each leaf the slice of the chunk at
+its offset and width), so `text_decode_ok(result)` and its kind are
+taken at their Oak bodies; a parameter past 16 bytes, passed by
+reference, is still refused. The layout table a body carries spells the
+parameter types of the program's functions as well as their results.
+Landing this exposed a latent gap in the decision itself: on the asm side
+a union parameter's chunks are assembled with each payload leaf under its
+tag (`compositeLeaf.guarded`, since the variants overlap in memory),
+while the Oak side binds every payload leaf free; on a tag outside the
+variants — an input no well-typed program produces — the asm traps where
+the Oak match falls through its last arm, and once a summarized callee
+read the payload the two sides disagreed there (`encoding_failure` and
+seven more, all the `X_failure` shape). The decision is now over
+well-typed inputs: `recordTagDomains` notes every union tag parameter's
+variant values, `decideEqual` compares both sides under the condition
+that each tag is one of them (`domainCondition`; outside it both sides
+are the same zero), and the witness runs skip assignments outside it
+(`inDomain`). The lowering's terms are unchanged, so
+`Oak.LoweringRefinement`'s transliteration still holds; the assumption is
+the decision's, and it is the typing rule of the source. Proven bodies:
+149 on AArch64, 132 on RV64, no mismatch. Pinned:
+`compiler/e2e_native_verdict_aggregates_test.go` (`check_ok` passing a
+sum type to `is_ok`).
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built

@@ -44,13 +44,20 @@ unwrap_or: (v: u32, d: u32) -> u32 = classify(v) ? | .Ok(x) => x | .Err(code) =>
 
 tag_of: (t: Tagged) -> u32 = t.kind == u8(0) ? t.value | u32(t.kind)
 
+is_ok: (p: Parsed) -> Bool = p ? | .Ok(x) => x > u32(0) | .Err(c) => false
+
+check_ok: (v: u32) -> u32 {
+  r: Parsed = classify(v)
+  is_ok(r) ? u32(1) | u32(0)
+}
+
 first_two: (v: []u8) -> u32 = u32(v[0]) + u32(v[1])
 
 head_sum: (v: []u8) -> u32 = first_two(v) + len(v)
 
 main: (): i32 {
   bytes: [4]u8 = [4]u8{1, 2, 3, 4}
-  i32_bits_u32(u32_trunc_u64(pair_sum(u64(7), u64(3))) + unwrap_or(u32(4), u32(9)) + unwrap_or(u32(200), u32(9)) + tag_of(Tagged { value: u32(5), kind: u8(0) }) + head_sum(view(&bytes)) - u32(14) - u32(8) - u32(10) - u32(5) - u32(7))
+  i32_bits_u32(u32_trunc_u64(pair_sum(u64(7), u64(3))) + unwrap_or(u32(4), u32(9)) + unwrap_or(u32(200), u32(9)) + tag_of(Tagged { value: u32(5), kind: u8(0) }) + head_sum(view(&bytes)) + check_ok(u32(3)) + check_ok(u32(300)) - u32(14) - u32(8) - u32(10) - u32(5) - u32(7) - u32(1))
 }
 `
 
@@ -71,7 +78,7 @@ func TestE2ENativeAggregateVerdictsProven(t *testing.T) {
 			t.Fatalf("%s: native build: %v", tname, err)
 		}
 		joined := strings.Join(native, "\n")
-		for _, fn := range []string{"swap", "make_pair", "pair_sum", "classify", "unwrap_or", "tag_of", "first_two", "head_sum"} {
+		for _, fn := range []string{"swap", "make_pair", "pair_sum", "classify", "unwrap_or", "tag_of", "first_two", "head_sum", "is_ok", "check_ok"} {
 			verdict := ""
 			for _, m := range native {
 				if strings.Contains(m, "asm unit "+fn+":") {

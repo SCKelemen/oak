@@ -1952,6 +1952,11 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	for _, callee := range g.functions {
 		if callee != nil {
 			spell(callee.ReturnType)
+			for _, p := range callee.Parameters {
+				if p != nil {
+					spell(p.Type)
+				}
+			}
 		}
 	}
 	if g.elided > 0 {
