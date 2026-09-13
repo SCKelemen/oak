@@ -3,6 +3,7 @@ package evaluator
 import (
 	"fmt"
 	"github.com/SCKelemen/oak/token"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1590,7 +1591,11 @@ func evalRecordLiteral(rl *ast.RecordLiteral, env *object.Environment) object.Ob
 	// For type-qualified literals, we just evaluate the fields normally
 	// The TypeName is only used by the typechecker, not the evaluator
 
-	for fieldName, fieldExpr := range rl.Fields {
+	// Fields evaluate in source order (docs/spec/10-syntax.md §3d) — never
+	// in the map's, which the left-to-right conformance test caught varying
+	// between runs.
+	for _, field := range recordFieldsInOrder(rl) {
+		fieldName, fieldExpr := field.Name, field.Value
 		// Check if this looks like a type definition context
 		// In type definitions, field expressions are type annotations (identifiers like u8, i32)
 		// In value contexts, field expressions are values
@@ -1863,4 +1868,23 @@ func selectRealization(fn *object.Function) (object.Object, bool) {
 		}
 	}
 	return nil, false
+}
+
+// recordFieldsInOrder lists a record literal's fields as written; a literal
+// built without FieldOrder falls back to its map, sorted by name so the
+// order is at least deterministic.
+func recordFieldsInOrder(rl *ast.RecordLiteral) []ast.RecordField {
+	if len(rl.FieldOrder) > 0 {
+		return rl.FieldOrder
+	}
+	names := make([]string, 0, len(rl.Fields))
+	for name := range rl.Fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	fields := make([]ast.RecordField, 0, len(names))
+	for _, name := range names {
+		fields = append(fields, ast.RecordField{Name: name, Value: rl.Fields[name]})
+	}
+	return fields
 }
