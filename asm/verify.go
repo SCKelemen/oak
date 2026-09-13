@@ -4125,7 +4125,11 @@ func negateCondition(expr ast.Expression) (ast.Expression, bool) {
 
 // newLowering builds the Oak-side contract from the signature.
 func newLowering(sig *ast.FunctionStatement) *oakLowering {
-	lowering := &oakLowering{params: map[string]int{}, signed: map[string]bool{}, spans: map[string]spanContract{}, fresh: map[string]int{}, floats: map[string]int{}}
+	// locals is created here so every path that declares one — a statement
+	// body, or a block or match in result position (resultTerm through
+	// aggregateValue) — writes into a map; the dbs pilot's `-native` panic
+	// was a nil map on the result path (docs/notes/dbs-feedback-2026-09.md).
+	lowering := &oakLowering{params: map[string]int{}, signed: map[string]bool{}, spans: map[string]spanContract{}, fresh: map[string]int{}, floats: map[string]int{}, locals: map[string]*oakLocal{}}
 	for _, param := range sig.Parameters {
 		if elem, _, isSpan := spanShape(param.Type); isSpan {
 			elemType := typeText(param.Type.(*ast.IndexExpression).Left)

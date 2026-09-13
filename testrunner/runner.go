@@ -235,6 +235,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	for i := range packages {
 		packages[i].Profile = cfg.Profile
 		packages[i].Target = cfg.target
+		packages[i].CPU = cfg.CPU
 		var selected []Test
 		for _, test := range packages[i].Tests {
 			if !run.MatchString(test.Name) || cfg.Fuzz != "" && (test.Kind != "fuzz" || !fuzz.MatchString(test.Name)) || cfg.Sim != "" && (test.Kind != "simulation" || !sim.MatchString(test.Name)) {
@@ -762,7 +763,9 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 // result names it beside the signature.
 func FailureClass(signature string) string {
 	switch {
-	case strings.HasPrefix(signature, "invariant:"):
+	case strings.HasPrefix(signature, "invariant:"), strings.HasPrefix(signature, "dispatch:"):
+		// A dispatch realization disagreeing with its body is something
+		// false observed too (docs/spec/93-simd.md section 6.2).
 		return "correctness"
 	case strings.HasPrefix(signature, "liveness:"), signature == "timeout":
 		return "liveness"

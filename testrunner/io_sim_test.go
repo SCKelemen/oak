@@ -137,7 +137,10 @@ SimLogRecovery: (data: []u8): () {
   swarm_store: [1]TestChoices
   swarm: u32 = test_swarm_mask(span(&swarm_store), data, u32(3))
   faults: u32 = (swarm & u32(1)) | ((swarm & u32(2)) << u32(1)) | ((swarm & u32(4)) << u32(1))
-  iosim.io_attach(data, faults)
+  // The device reads the tape after the swarm draw, so the enabled kinds
+  // and the first fault roll are not the same bytes.
+  drawn: u32 = swarm_store[0].offset
+  iosim.io_attach(subslice(data, drawn, len(data) - drawn), faults)
   iosim.io_open_region(ring, region, u32(2))
   test_check(log_open(ring, requests, completions, region), u32(1))
   published: Bool = segment_publish(ring, requests, completions, region)

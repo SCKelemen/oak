@@ -104,6 +104,25 @@ annotations `.aq`, `.rl`, `.aqrl`; and LR/SC pairs. Lean proves:
 These proofs are local, as the AArch64 ones are. `Oak.SequentialConsistency`
 remains the separate global-order layer.
 
+**RVWMO instantiated (`spec/lean/Oak/RVWMO.lean`).** The rules of the
+RISC-V weak memory model the mapping leans on are stated as an axiomatic
+structure over memory events — a global memory order that is irreflexive
+and transitive, PPO rule 4 (a FENCE orders every operation its predecessor
+set covers before every operation its successor set covers, and PPO is
+within the global order), and the load-value axiom's two consequences (a
+load that reads another hart's store is globally after it; a load that
+reads the initial value is globally before every store to its location).
+Under them the two litmus results the OS profile relies on are theorems:
+`message_passing` — payload write, `fence rw,w`, flag store on one hart;
+`fence rw,rw`, flag load reading that store, `fence r,rw`, payload read on
+another — puts the payload write globally before the payload read; and
+`store_buffering` — two harts each storing, `fence rw,rw`, and loading the
+other's location — cannot both read the initial values. The fences named
+are the ones `Oak.RiscVMemory.oakStore`/`oakLoad` emit
+(`release_store_fence`, `acquire_load_fences`); the C11 acquire load's
+missing leading fence is exactly what the store-buffering argument needs,
+the RCpc gap §2 records.
+
 ## 5. CI gate
 
 The `RISC-V Memory Refinement` job requires a clang with the riscv64
