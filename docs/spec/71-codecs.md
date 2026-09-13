@@ -883,3 +883,62 @@ decoder below simdjson On-Demand on both workloads. A first version that
 indexed the array and then ran the sequential scanner from each recorded
 start, verifying each separator with a whitespace skip, measured 1.42×:
 the index pays only when each element parses from its own bytes.
+
+## 22. Derived binary codec (implemented subset)
+
+With `import(std)`:
+
+```oak
+bin: tag = { endian: string }
+Inner: type = struct { a: u16, b(bin: "be"): u16 }
+Header: type = struct {
+  magic(bin: "be"): u32
+  version: u16
+  flags: [4]u8
+  count(bin: { endian: "be" }): u64
+  ok: Bool
+  inner: Inner
+  lanes: [2]Inner
+}
+
+encoded_size[Header, Binary](value)        // Result[u32, BinaryError]: the constant
+encode[Header, Binary](value, output)      // Result[u32, BinaryError]
+decode[Header, Binary](input)              // Result[Header, BinaryDecodeError]
+from[Header](value).to[Binary](output)
+from[Binary](input).to[Header]()
+```
+
+`Binary` is a compile-time format marker beside `Json`. A closed record of
+fixed-width integers, `Bool`, nested records, and fixed arrays `[N]T` is a
+**fixed layout**: fields packed in declaration order with no padding, each
+integer at its width in its own endianness, `Bool` one byte (`1`/`0`),
+records and arrays inline. Endianness is per field through the `bin` tag
+— the bare string or `{ endian: "le" | "be" }` — and little-endian
+otherwise; the tag applies to integer fields of two bytes or more (a
+record's fields carry their own, a byte has none). Signed integers travel
+as their two's-complement bits. `Option` fields, strings, and borrowed
+fields have no fixed layout and are refused with the reason; so is a
+recursive record.
+
+The size is a compile-time constant, so encoding checks its destination
+**once** (`bytes_range_fits`) and then stores every byte through the
+unchecked writer — a shift, a truncation, a checked Oak store; no helper
+call — and a short destination is refused with the bytes unchanged.
+Decoding checks its input once (`InputTooShort` below the layout's size;
+longer input is read at its front, the header-of-a-page case), validates
+every `Bool` byte (`InvalidBool` above one), and constructs the value with
+the unchecked reader. There is no positioned form: a fixed layout fails as
+a whole, and `decode_located` names the JSON operation. The fluent
+spellings lower to the same C as the direct calls
+(`compiler/e2e_binary_codec_test.go` holds the witness, the exact bytes of
+a mixed-endian header, and the round trip in both realizations).
+
+`Oak.BinaryCodec` states the byte laws: reading the `w` bytes written for
+a value gives the value modulo `256^w`, exactly within the width
+(`fromLE_toLE`, `fromBE_toBE`, and the `_of_lt` forms); big-endian is
+little-endian reversed; a record's bytes are its fields' in order, its size
+their widths' sum, and decoding the encoding returns every field
+(`decodeFields_encodeFields`, `_exact`); a valid Bool byte decodes to the
+Bool that wrote it. The endian byte helpers of the prelude
+(`bytes_read_u32_be` and kin) remain for hand-written formats; a header
+that is a record no longer needs them.

@@ -60,7 +60,7 @@ func lowerDerivedCodecs(program *ast.Program) error {
 				return nil, fmt.Errorf("codec: expected from[T](value).to[Json](output)")
 			}
 			producerType, named := producerTypes[0].(*ast.Identifier)
-			if named && producerType.Value == "Json" {
+			if named && (producerType.Value == "Json" || producerType.Value == "Binary") {
 				if len(values) != 0 {
 					return nil, fmt.Errorf("codec: expected from[Json](input).to[T]()")
 				}
@@ -88,10 +88,24 @@ func lowerDerivedCodecs(program *ast.Program) error {
 		}
 		typ, typeOK := args[0].(*ast.Identifier)
 		format, formatOK := args[1].(*ast.Identifier)
-		if !typeOK || !formatOK || format.Value != "Json" {
-			return nil, fmt.Errorf("codec: requires a concrete named type and the Json format")
+		if !typeOK || !formatOK || (format.Value != "Json" && format.Value != "Binary") {
+			return nil, fmt.Errorf("codec: requires a concrete named type and the Json or Binary format")
 		}
 		operation := name
+		if format.Value == "Binary" {
+			// The fixed-layout codec (docs/spec/71-codecs.md section 22):
+			// one generator builds both directions.
+			if name == "decode_located" {
+				return nil, fmt.Errorf("codec: decode_located is a JSON operation; a Binary decode fails as a whole (InputTooShort, InvalidBool)")
+			}
+			if err := d.deriveBinary(typ.Value); err != nil {
+				return nil, err
+			}
+			lowered := *call
+			lowered.Function = &ast.Identifier{Token: call.Token, Value: binaryCodecName(operation, typ.Value)}
+			lowered.Arguments = values
+			return &lowered, nil
+		}
 		if name == "decode" || name == "decode_located" {
 			if err := d.deriveDecoder(typ.Value); err != nil {
 				return nil, err
@@ -140,6 +154,7 @@ func codecApplication(expr ast.Expression) (string, []ast.Expression, bool) {
 func codecName(operation, typ string) string { return "__oak_json_" + operation + "_" + typ }
 
 type codecDeriver struct {
+	binaryGenerated map[string]bool
 	decodeGenerated map[string]bool
 	decodeActive    map[string]bool
 	records         map[string]*ast.ADTType
