@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"fmt"
+	"github.com/SCKelemen/oak/semir"
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
@@ -26,6 +27,11 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*d
 
 	declarations := map[string]*ast.FunctionStatement{}
 	fallbacks := map[string]*ast.FunctionStatement{}
+	// realizations maps a function named in a dispatch slot to the slot's
+	// feature: a realization exists only on the feature's architecture
+	// (docs/spec/93-simd.md section 6), so a unit of another lane than the
+	// target's is not missing a body there — the slot is inert.
+	realizations := map[string]semir.CPUFeature{}
 	symbols := map[string]bool{}
 	records := map[string]*ast.RecordLiteral{}
 	adts := map[string]*ast.ADTType{}
@@ -53,6 +59,11 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*d
 			continue
 		}
 		symbols[fn.Name.Value] = true
+		for _, slot := range fn.Dispatch {
+			if feature, known := semir.LookupCPUFeature(slot.Feature); known {
+				realizations[slot.Realization] = feature
+			}
+		}
 		if fn.Body == nil {
 			declarations[fn.Name.Value] = fn
 		} else {
@@ -98,6 +109,16 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*d
 			if lane := comp.options.Target.AsmArch(); fn.Arch != lane {
 				if fn.Fallback {
 					diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "asm", fmt.Sprintf("asm unit %s is %s; target %s compiles its Oak body", fn.Name, fn.Arch, comp.options.Target)))
+					continue
+				}
+				if feature, isRealization := realizations[fn.Name]; isRealization && feature.Arch != string(comp.options.Target.Arch) {
+					// A dispatch realization for a feature of another
+					// architecture: the slot never selects it on this target and
+					// the backend emits it under the feature's architecture
+					// guard, so the declaration is realized — elsewhere.
+					decl.AsmBacked = true
+					decl.AsmArch = fn.Arch
+					diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "asm", fmt.Sprintf("asm unit %s is %s, the realization of the %s slot; target %s has no such feature and dispatches to its default", fn.Name, fn.Arch, feature.Name, comp.options.Target)))
 					continue
 				}
 				report("%s: asm unit %s is %s, but the target is %s and the declaration has no Oak fallback body", unitText.Path, fn.Name, fn.Arch, comp.options.Target)

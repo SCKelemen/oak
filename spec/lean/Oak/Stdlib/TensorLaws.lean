@@ -459,4 +459,53 @@ theorem tensor_matmul_spec (a b : Tensor2) (out : MutTensor2) (fuel : Nat)
   exact writeRows_inside a b out a.rows.toNat 0 i j hc hcols (by rw [hrows]; simp) (by simp)
     (by simp; rw [← hrows]; exact UInt32.lt_iff_toNat_lt.mp hi) hj
 
+/-! ## Layout in the type (docs/spec/56-kernels.md section 8a)
+
+`RowMajor2` and `ColMajor2` carry their strides in the type: element
+`(i, j)` of a row-major matrix is at `i * cols + j`, of a column-major one
+at `i + j * rows`. The theorems are the facts a library states over the
+type — which axis is contiguous, that transposition is a retyping of the
+same storage, and that the strided `Tensor2` view reads the same element. -/
+
+/-- Along `j`, a row-major matrix is contiguous: the next element's index
+is the index plus one. -/
+theorem row_major_contiguous (rows cols i j : UInt32) (fuel : Nat) (hi : i < rows) (hj : j + 1 < cols)
+    (hj0 : j < cols) :
+    row_major_index rows cols i (j + 1) fuel =
+      (do let r ← row_major_index rows cols i j fuel; pure (r + 1)) := by
+  simp [row_major_index, hi, hj, hj0, bind, Option.bind, pure, UInt32.add_assoc]
+
+/-- Along `i`, a column-major matrix is contiguous. -/
+theorem col_major_contiguous (rows cols i j : UInt32) (fuel : Nat) (hi : i + 1 < rows) (hi0 : i < rows)
+    (hj : j < cols) :
+    col_major_index rows cols (i + 1) j fuel =
+      (do let r ← col_major_index rows cols i j fuel; pure (r + 1)) := by
+  simp [col_major_index, hi, hi0, hj, bind, Option.bind, pure]
+  ac_rfl
+
+/-- **Transposition is a retyping.** Reading the transpose (a column-major
+matrix over the same storage) at `(j, i)` is reading the original at
+`(i, j)`, shape check included. -/
+theorem transpose_retypes (m : RowMajor2) (i j : UInt32) (fuel : Nat) :
+    (do let mt ← row_major_transpose m fuel; col_major_at mt j i fuel) = row_major_at m i j fuel := by
+  simp only [row_major_transpose, col_major_at, row_major_at, col_major_index, row_major_index, bind, Option.bind, pure]
+  by_cases hi : i < m.rows <;> by_cases hj : j < m.cols <;> simp [hi, hj, Nat.add_comm]
+
+/-- Transposing twice is the identity, in either direction. -/
+theorem row_major_transpose_transpose (m : RowMajor2) (fuel : Nat) :
+    (do let a ← row_major_transpose m fuel; col_major_transpose a fuel) = pure m := by
+  simp [row_major_transpose, col_major_transpose]
+
+/-- The strided view of a row-major matrix reads the same element. -/
+theorem row_major_tensor_at (m : RowMajor2) (i j : UInt32) (fuel : Nat) :
+    (do let t ← row_major_tensor m fuel; tensor_at t i j fuel) = row_major_at m i j fuel := by
+  simp only [row_major_tensor, tensor_at, tensor_index, row_major_at, row_major_index, bind, Option.bind, pure]
+  by_cases hi : i < m.rows <;> by_cases hj : j < m.cols <;> simp [hi, hj]
+
+/-- The strided view of a column-major matrix reads the same element. -/
+theorem col_major_tensor_at (m : ColMajor2) (i j : UInt32) (fuel : Nat) :
+    (do let t ← col_major_tensor m fuel; tensor_at t i j fuel) = col_major_at m i j fuel := by
+  simp only [col_major_tensor, tensor_at, tensor_index, col_major_at, col_major_index, bind, Option.bind, pure]
+  by_cases hi : i < m.rows <;> by_cases hj : j < m.cols <;> simp [hi, hj]
+
 end Oak.Stdlib.Tensor

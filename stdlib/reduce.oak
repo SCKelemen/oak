@@ -115,6 +115,75 @@ pub group_tree[T]: (group: u32, xs: []T, lo: u32, m: u32, zero: T, f: (T, T) -> 
 }
 
 
+// lane_of is the lane element i of a reduction lands in, with runs of `run`
+// consecutive elements per lane (docs/spec/55-parallelism.md section 4,
+// "The lane rule as an order"; Oak.Reduce.laneOf).
+pub lane_of: (i: u32, run: u32, count: u32): u32 = (i / run) % count
+
+// lanes is the lane rule as an order: `count` lane-strided partial
+// accumulators — count a power of two, at most 256 — each starting at zero
+// and folding its elements in index order (element i lands in lane
+// lane_of(i, run, count)), then the xor butterfly over the partials: rounds
+// at offsets count / 2, count / 4, ..., 1, every lane taking
+// f(acc[l], acc[l ^ off]) from the values before the round; the result is
+// lane 0's. Unlike tree, zero takes part: it starts every lane, so an empty
+// view yields the butterfly of `count` zeros — zero itself when zero is the
+// identity of f, which is what a canonical sum wants. One lane is
+// left (Oak.Reduce.lanes_one); under laws { associative, commutative,
+// identity(zero) } every lane count and run is left as well
+// (Oak.Reduce.lanes_eq_left), which is what makes the lane rule a legal
+// regrouping and, for floating point, one of the groupings Oak.FloatBounds
+// bounds. Every backend computes this order bit for bit; a kernel's
+// threadgroup computes it as group_lanes.
+pub lanes[T]: (xs: []T, zero: T, f: (T, T) -> T effects { }, count: u32, run: u32): T = {
+  assert(count >= 1 && count <= 256 && (count & (count - 1)) == 0 && run >= 1)
+  acc: [256]T = [zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero]
+  n: u32 = len(xs)
+  i: u32 = 0
+  while i < n {
+    lane: u32 = lane_of(i, run, count)
+    acc[lane] = f(acc[lane], xs[i])
+    i = i + 1
+  }
+  // The butterfly in place, one round per step at offset count >> (step + 1)
+  // — eight steps cover 256 lanes, and a step whose offset is zero does
+  // nothing. The lanes of a round pair up as (l, l ^ off) with l below
+  // off's bit, and each pair reads both values before it writes either, so
+  // every lane is updated from the values before the round
+  // (Oak.Reduce.bfly).
+  step: u32 = 0
+  while step < 8 {
+    off: u32 = count >> (step + 1)
+    off > 0 ? {
+      l: u32 = 0
+      while l < count {
+        (l & off) == 0 ? {
+          a: T = acc[l]
+          b: T = acc[l | off]
+          acc[l] = f(a, b)
+          acc[l | off] = f(b, a)
+        } | {
+        }
+        l = l + 1
+      }
+    } | {
+    }
+    step = step + 1
+  }
+  acc[0]
+}
+
+// group_lanes is lanes over the m elements of xs starting at lo, with the
+// group's size as the lane count: the cooperative form a kernel launches
+// with `group` threads per position (docs/spec/56-kernels.md section 7).
+// On the host it is exactly lanes over the window; on the GPU each thread
+// of the group is one lane, folding its elements in index order, and the
+// threads compute the butterfly together through threadgroup memory. The
+// window must fit xs; m may exceed group.
+pub group_lanes[T]: (group: u32, xs: []T, lo: u32, m: u32, zero: T, f: (T, T) -> T effects { }, run: u32): T = {
+  lanes(subslice(xs, lo, m), zero, f, group, run)
+}
+
 // fold is the sequential left fold with a state of its own type: step
 // applied to the running state and each element in order, from init. It is
 // `left` when S is T; with a state it is the loop a merge order is written

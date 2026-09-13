@@ -117,6 +117,116 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       layer could later discharge? An assumption that is not listed is a
       hidden axiom. (Lean `sorry`, Coq `Admitted`, TB) — Oak:
       `85-discipline.md` §7 `admit`, `oak vet`, `:obligations`, `:lean`.
+- [ ] **Every reading of one declaration is compared pairwise.** When one
+      declaration is read by several generators (an executable projection,
+      a static one, a model, a prover, a monitor), is each pair compared
+      on domain, width, partiality, and choice — which values are
+      admitted, how wide a field is, where one reading traps and the other
+      is merely false, which line wins when several hold — not only "each
+      compiles"? (protocol pass 2026-09) — Oak: `112-protocols.md` §1
+      index bounds, §4 `TypeOK`; `docs/notes/protocols-2026-09.md`.
+- [ ] **A conjunct binds every reading.** When one reading needs a guard
+      the author did not write (an index bound, a precondition), is it
+      conjoined to the declaration's guard once, where every reading takes
+      it, rather than added to the reading that would otherwise trap? And
+      is it ordered so that evaluating it never needs the guard it
+      protects? (protocol pass) — Oak: `112-protocols.md` §1 "bounded by
+      its line".
+- [ ] **The model's default domain covers the literals.** Does the model
+      checker's default finite domain reach every constant the guards
+      compare against and one value beyond, so a boundary is never outside
+      the explored set? (TLC small models) — Oak: `112-protocols.md` §4.
+- [ ] **Reach is computed, not assumed.** Is "reachable" decided by a
+      walk from the initial state, so a state only mentioned is refused
+      rather than explored by no reading and proved about vacuously?
+      (TLA+ state graph) — Oak: `112-protocols.md` §1 shape errors.
+- [ ] **Adversary model explicit.** For a protocol claimed secure, is the
+      adversary written down as part of the model — what it observes, what
+      it may inject, which parties or keys it may compromise and when — and
+      is every security claim stated relative to that adversary rather than
+      to "the network"? A model with no adversary proves only that honest
+      parties agree with themselves. (Tamarin `K`/`In`/`Out` facts and
+      `Reveal`; ProVerif's Dolev–Yao clauses) — Oak: `not stated`;
+      `112-protocols.md` §6 leaves the environment to the TLA+ extension
+      module; `docs/notes/provers-2026-09.md`.
+- [ ] **Equational theory declared and in a decidable class.** Where a
+      model uses cryptographic or algebraic operators, are their equations
+      declared once (`dec(enc(x, k), k) = x`, Diffie–Hellman, XOR), and is
+      the theory in the class the checker terminates on — subterm-convergent
+      or finite-variant — with anything outside (associativity, groups)
+      named as an abstraction? (Tamarin `equations:`; ProVerif `equation`
+      and its non-termination on associativity) — Oak: `not stated`; guards
+      are fixed-width machine arithmetic only (`112-protocols.md` §1).
+- [ ] **Freshness stated, not assumed.** Is every value that must be
+      unguessable and single-use (nonce, session key, identifier) produced
+      by a freshness construct the model checks for uniqueness, so a reused
+      value surfaces as a replay rather than passing unseen? (Tamarin
+      `Fr(~n)`; ProVerif `new`) — Oak: `not stated`; `init` sets constants
+      and payloads are enumerated domains.
+- [ ] **Secrecy and authentication as correspondences.** Is
+      "authenticated" stated at a named rung of Lowe's hierarchy —
+      aliveness, weak agreement, non-injective agreement, injective
+      agreement — as a correspondence between a `Commit` event and an
+      earlier `Running` event on the agreed data, and secrecy as "never
+      known to the adversary unless a named compromise happened first"?
+      (Tamarin lemma templates; ProVerif `event ==> event`, `inj-event`) —
+      Oak: `not stated`; theorems are predicates over `(state, data)`
+      (`125-verification.md` §2), not over traces.
+- [ ] **Trace properties, not only state predicates.** Can a property that
+      needs the order of events ("every accept was preceded by a matching
+      send") be stated over the run, and is the artifact that sees the run
+      — the monitor, the model checker — the one that checks it? (Tamarin
+      action facts and timepoints `@#i`, `#i < #j`) — Oak: the monitor of
+      `112-protocols.md` §2c sees the trace; `open` — no source form
+      states a trace property for it.
+- [ ] **The bound of the claim is stated.** Does every model-checked
+      result say whether it holds for an unbounded number of sessions and
+      parties or for the finite instance explored (two replicas, payload
+      domain `0..3`), and is "checked at N = 2" never rounded up to
+      "verified"? (Tamarin and ProVerif unbounded; TLC and `-cases`
+      bounded) — Oak: `125-verification.md` §3 ladder statuses;
+      `112-protocols.md` §4 configuration domains.
+- [ ] **Executability before security.** Does the model carry a sanity
+      lemma that an honest run reaches its final step (an `exists-trace`),
+      so an over-restricted model does not prove every property vacuously?
+      (Tamarin `exists-trace`; ProVerif `query event(Finished)` expected
+      false) — Oak: `112-protocols.md` §1 shape errors cover unreached
+      *states*; `open` for "the whole protocol can complete".
+- [ ] **Helper lemmas are part of the proof, and checked.** When a prover
+      needs guidance — a sources or typing lemma, a reuse lemma, an oracle,
+      a selection-function hint — is each stored beside the model, itself
+      proved or marked an axiom, and replayed in CI so a change to the
+      model invalidates the guidance visibly? (Tamarin `[sources]`,
+      `[reuse]`, oracles; ProVerif `lemma`, `axiom`, `nounif`) — Oak:
+      `125-verification.md` §5 hand-written Lean modules import the
+      regenerated projection; `not stated` for proof-search hints.
+- [ ] **"Cannot be proved" is triaged, never filed as failure.** When a
+      symbolic tool returns a derivation without an executable trace, is it
+      classified — a real attack (the trace replays), a false attack of the
+      abstraction (repetition ignored, a temporary secret, diff-equivalence
+      too strong), or non-termination — and does only the first count as a
+      refutation? (ProVerif's three verdicts; Tamarin partial
+      deconstructions) — Oak: `125-verification.md` §3 keeps `refuted` and
+      `open` distinct; extend the rule to imported verdicts.
+- [ ] **Privacy stated as equivalence.** Is a privacy property
+      (unlinkability, anonymity, strong secrecy, vote privacy) stated as an
+      observational equivalence between two systems rather than as a
+      reachability query, and is a failed diff-equivalence recorded as
+      "not proved", never as "broken"? (Tamarin `diff()`; ProVerif
+      `choice[]`, `noninterf`) — Oak: `not stated`.
+- [ ] **Compromise scenarios enumerated.** Are the key compromises the
+      property tolerates listed — a peer's long-term key, a session key,
+      before or after the run (forward secrecy, key-compromise
+      impersonation) — as explicit reveal steps in the model and as the
+      disjuncts of the lemma? (Tamarin `Reveal(B) @ r & r < i`; ProVerif
+      `phase 1; out(c, sk)`) — Oak: `not stated`.
+- [ ] **A stateful protocol's state is a first-class model object.** For a
+      protocol with a global counter, table, or lock, does the chosen tool
+      model mutable state exactly — a linear fact consumed and re-produced
+      — rather than through an abstraction that forgets how many times a
+      step ran? (Tamarin linear facts; ProVerif's Horn abstraction "ignores
+      the number of repetitions") — Oak: the `data` record *is* the state
+      (`112-protocols.md` §1); the rule bears on any export.
 
 ## 3. Make illegal states unrepresentable
 
@@ -236,6 +346,18 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       self-checksum reserved for the root, so a misdirected write of
       well-formed data is detected? (TB `BlockReference`, `data_file.md`)
       — Oak: not stated.
+- [ ] **Facts flow through every join and every arrow.** For a type-level
+      fact with a direction (alignment, refinement, extent), is every
+      position that compares types — declaration, argument, return,
+      function-type parameters (contravariant), match and ternary joins,
+      template substitution — either the fact's rule or a stated erasure?
+      One missing rule at four sites forged the alignment fact.
+      (alignment pass 2026-09) — Oak: `50-borrowing.md` §2a "in every
+      position that compares types".
+- [ ] **The neutral element of a fact has one spelling.** If "no fact"
+      and "fact 1" are both representable, does the spec say which is
+      canonical and does the checker normalize declared and derived forms
+      alike? (alignment pass: `align 1`) — Oak: `50-borrowing.md` §2a.
 
 ## 4. Memory, ownership, and aliasing
 
@@ -335,6 +457,19 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       number) so a misdirected read of a valid-looking empty slot is
       detected? (TB `journal.zig` reserved headers, `SuperBlockHeader.copy`)
       — Oak: not stated; the dbs frame scan needs it.
+- [ ] **A layout-derived fact reads the whole layout clause.** When a
+      property is derived from a record's layout, does the derivation read
+      every clause that can cancel another — `packed` cancels the element
+      alignment `align` would otherwise grant — rather than the one clause
+      it was written for? (alignment pass: `struct(packed)` fields carried
+      the element's fact) — Oak: `50-borrowing.md` §2a, `40-records.md` §6a.
+- [ ] **Scoped facts are keyed by declaration, not by name.** When a
+      checker records a property of a local (owner state, borrow state,
+      declared type), is the record keyed by the declaration node, so a
+      top-level name equal to a library local cannot answer for it? (the
+      borrow checker registered owners by bare name; a user function `run`
+      hid a library local `run`) — Oak: `borrowchecker` owner registration
+      from `CheckedDeclarationType`.
 
 ## 5. Control-flow and coding discipline
 
@@ -806,6 +941,18 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       brackets; the Go `unicode/utf8` witness is independent; simdutf is
       built in `benchmarks/state-machines/cross` but only timed, not
       compared on invalid inputs.
+- [ ] **Admitted positions are tested inside every function form.** For a
+      form the spec admits in "a function", is it exercised in a top-level
+      function, a function literal, a method, a `pub` function, and an
+      expression body, in both realizations — since a host construct's own
+      gap can hide the form's? (try pass: literals and methods untested)
+      — Oak: `compiler/e2e_feature_pass_test.go`.
+- [ ] **A fact that elides a run-time check has a debug witness.** Where
+      a checker proposition replaces a probe (an aligned span skipping the
+      host's alignment check), can a debug build assert the property at the
+      consumer, so a forged fact fails loudly once instead of silently
+      always? (alignment pass) — Oak: `open`; `50-borrowing.md` §2a says
+      neither realization checks the base.
 
 ## 9. Parsing, input validation, and boundaries
 
@@ -1033,6 +1180,20 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       "Protocol-Aware Recovery") — Oak: expressible as a `theorem` over
       `Bool` parameters decided exhaustively (`125-verification.md` §3);
       not stated as practice.
+- [ ] **Every reportable node has a range.** Is every syntax kind a
+      lowering or checker can report on covered by the position projection,
+      and does each lowering code have a test asserting `line:col`, not a
+      message substring? (try pass: `OAK-M0401` had no position) — Oak:
+      `15-diagnostics.md` §2, `diagnostic.NodeToRange`.
+- [ ] **One refusal, one diagnostic.** When a lowering refuses a node and
+      leaves it in the tree, is the leftover sweep told to skip it, so one
+      mistake is not reported under two messages? (try pass) — Oak:
+      `compiler/try.go` `refused`.
+- [ ] **A borrow message names the operand.** Does a refusal of a borrow
+      form name the argument it refused and where, so a library-internal
+      failure is traceable to its line? (the `span()` message named neither
+      and hid a scoping bug for a session) — Oak: `borrowchecker`
+      `checkSpanCall`.
 
 ## 11. Compiler and toolchain correctness
 
@@ -1107,6 +1268,41 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       not only a change to the Oak signature? (weePickle: "any API change
       that requires your consumers to update is breaking") — Oak:
       `82-package-semver.md` classifies exports only — not stated.
+- [ ] **Generated code is hygienic.** Do generated binders carry a
+      spelling no user name can take (a reserved prefix), and are the
+      user's names the generator binds by position listed and refused,
+      so a user's `done` never captures the generator's `done`? (Scheme
+      hygiene, Rust macro spans) — Oak: `112-protocols.md` §2 `oak_`
+      prefix and reserved payload names.
+- [ ] **Collisions are found before the checker.** When a generator emits
+      declarations from user names, does it collect every emitted name
+      across every instance of the generator and report a duplicate
+      against the declaration that caused it, rather than letting the
+      type checker report a redeclaration of code the user never wrote?
+      (protocol pass) — Oak: `112-protocols.md` §1 "two projections that
+      spell one name".
+- [ ] **The error list indexes the sections.** Does every rule a chapter
+      states in prose appear in its shape-error list, and every listed
+      error have a sentence that motivates it, so a pass can diff the two?
+      (protocol pass: the `via` guard and reachability were rules without
+      errors) — Oak: `112-protocols.md` §1 shape errors.
+- [ ] **A structural equality that omits a fact is a hazard.** When a
+      type carries a field its `Equals` ignores by design, is every caller
+      of `Equals`, `Join`, and `Unify` listed as a place the fact can be
+      forged, each with the fact's rule or a stated erasure? (alignment
+      pass F2–F5) — Oak: `typechecker` `alignmentAssignable`,
+      `weakestAlignment`.
+- [ ] **A declared fact on a template signature survives substitution or
+      is rejected.** Does type substitution copy every side fact of the
+      type syntax it rebuilds, so an annotation on a template parameter
+      cannot silently mean nothing at instantiation? (alignment pass:
+      three substitution sites dropped `Align`) — Oak: `typechecker/mono.go`,
+      `genericfn.go`, `codegen/mono.go`.
+- [ ] **Block facts travel with the slice.** When a lowering re-partitions
+      a block, does every side fact on the block — deferred statements,
+      extent facts, region marks — move with the statements it governs, or
+      is the combination refused? (try pass: `DeferredFrom` was lost) —
+      Oak: `compiler/try.go` `lowerBlock`.
 
 ## 12. Process
 

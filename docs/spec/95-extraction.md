@@ -23,7 +23,11 @@ checkable.
 ## 2. The translation
 
 The output is the shallow embedding the hand-written models use, so the
-proofs written against them transfer.
+proofs written against them transfer. Extraction reads the program after
+its source-level lowerings — protocol projections, derives, the
+propagation form `try` (`10-syntax.md` §2d), library sugar — so a sugar
+form never needs a translation of its own: `EncodingExtracted.lean` shows
+the match `try` lowers to, under the generated `oak_try_err_N` binder.
 
 | Oak | Lean |
 | --- | --- |
@@ -149,6 +153,17 @@ for every value the constant could have, which is the only claim the
 program itself makes. The C identifier and the header never appear in the
 Lean text.
 
+**Fifth: a measured constant is opaque within its range.** A top-level
+binding `TILE: u32 (measured: 16, 1024) = 128` (`60-effects-allocation.md`
+§10b) holds the value the load supplied, which the program admits only
+inside the declared range. The extraction renders it as `opaque TILE :
+UInt32` followed by `variable (TILE_range : (16 : UInt32) ≤ TILE ∧ TILE ≤
+(1024 : UInt32))`, so a theorem about code that reads it quantifies over
+every value the load may admit and may take the range as its hypothesis —
+the set of values a run can have (`Oak.Measured.load_in_range`). The
+pinned value appears only in the docstring: it is one value of the range,
+not the constant's meaning.
+
 **Fifth: UTF-8 validity is decided the same way twice.** The compiler's
 `is_valid_utf8` intrinsic (`70-strings.md`) decides Unicode Table 3-7 over a
 view; the extraction renders it as `Oak.Utf8Exec.valid`
@@ -185,8 +200,9 @@ them and the integers, and the intrinsics of the table above (`fma`,
 assignment and element assignment into a record's array field, one level
 deep, and field assignment through an element of a span (`arr[i].field`);
 array literals; top-level constants, including constant tables read
-through `view` and target constants (`c.const`, as opaque constants of
-their `c.*` scalar type); `is_valid_utf8` through `Oak.Utf8Exec`; the
+through `view`, target constants (`c.const`, as opaque constants of
+their `c.*` scalar type), and measured constants (opaque within their
+range, section 3); `is_valid_utf8` through `Oak.Utf8Exec`; the
 `string` type, its literals, `str_bytes`, and `str_from_utf8` (section 3);
 methods on ADT receivers, extracted under the receiver type's name with
 the receiver as the first parameter (`def Handle.peek (h : Handle) ...`)

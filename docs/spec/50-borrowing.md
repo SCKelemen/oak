@@ -57,16 +57,35 @@ the checker owns it end to end:
   `(align: N)`. So `store: IoSectorRegion[N]` gives `span(&store.bytes)`
   the type `[* align 4096]u8`, and `Line { head: u32, cells(align: 64):
   [16]u8 }` gives `span(&line.cells)` the type `[* align 64]u8`. A second
-  field without its own alignment carries only the element's.
+  field without its own alignment carries only the element's. A
+  `struct(packed)` record gives its fields no element fact — they sit back
+  to back, so a `[4]u64` after a `u8` is at offset one — and only the
+  record's own declared alignment, at offset zero, survives.
 - **Weakened freely, strengthened never.** A span with a fact stands where
   a weaker or absent fact is required — `region: [*]u8 = aligned` and
   every existing `[*]u8` parameter accept it — and the plain `[*]u8` is
   rejected where `[* align 4096]u8` is required, with both types named:
   `expected [* align 4096]u8, got [*]u8`. A declaration may not claim more
-  than the borrow gives.
+  than the borrow gives, in every position that compares types: a
+  declaration, a call argument, a **return** (`claim: (x: [*]u8): [* align
+  4096]u8 = x` is refused — the declared fact is a claim the body must
+  meet), a **function value** (`needs_sector`, requiring `[* align
+  4096]u8`, does not stand where `([*]u8) -> u32` is expected: parameters
+  are contravariant, results covariant), and a **join** (a `?` or match
+  whose arms carry different facts has the weakest, so `flag ? { aligned }
+  | { plain }` is a plain span whatever the arm order). `align 1` is the
+  plain type: declared or derived, it says nothing and prints as `[*]u8`.
 - **Through `subslice`.** The fact survives a start that is a literal
   multiple of the alignment (`subslice(region, u32(4096), n)`, the second
-  sector) and is dropped for any other start.
+  sector) and is dropped for any other start. The rule is on the element
+  index, so for elements wider than a byte it is conservative: a start of
+  512 `u64` elements is 4096 bytes but drops the fact.
+- **Through templates.** A declared fact on a template signature survives
+  instantiation: `g[T]: (x: [* align 4096]T)` sees `[* align 4096]u8` at
+  `g[u8]`, and a plain span is refused at the call. A generic body is
+  checked at instantiation, as every generic body is, so a body that
+  forwards `[*]T` into an aligned parameter is refused when first
+  instantiated.
 
 This is the proposition-axis form of the sector rule the I/O port checks
 at run time (`120-io.md` §3): `io_open_region_aligned(ring, region: [*
@@ -75,9 +94,18 @@ proved, so the native realization asks the host nothing, and a program
 that hands it an unaligned byte array does not compile
 (`compiler/e2e_span_alignment_test.go`; TigerBeetle's `*align(4096)`
 pointer types, `docs/notes/tigerbeetle-2026-09.md` finding 2). The fact
-does not yet cross a function boundary as a *result* (a function
-returning an aligned span states it in its return type and the checker
-takes the declaration), and generic code sees `[*]T` without facts.
+is not represented: an uninitialized `[* align N]u8` is the zero span
+(length zero, vacuously aligned), the C signature of an exported function
+carries the plain span (`92-ffi.md` §2.5), and neither realization checks
+the base at run time — the checker is the whole proof
+(`docs/notes/language-features-2026-09.md`).
+
+**Lean** (`Oak.AlignmentFact`): a fact is divisibility of the base;
+weakening is transitivity (`weaken`), `align 1` holds of every base
+(`trivial`), a start that is a multiple keeps the fact (`subslice`, and the
+element-index rule `subslice_index`), a value from either arm carries the
+weaker fact (`join`), and a packed record's offset one carries no fact
+(`packed_offset_one`).
 
 ## 3. Borrow states
 
@@ -1196,3 +1224,24 @@ unproven access still trapping. This is roadmap milestone 8's first
 increment (`docs/notes/roadmap-authority-resources.md`) and the seed of
 milestone 9's bounds-check elimination; the assembler's span guards
 (`94-assembler.md` §7) are the same doctrine in hand-written code.
+
+**Minimum through a conditional.** A binding initialized to the smaller of
+two operands spelled as the Bool conditional — `limit: u32 = n < len(v) ? n
+| len(v)`, either order, `<` or `<=` — is at most each operand, so it
+inherits the upper bounds of both: `limit <= len(v)` from a length
+operand, `limit < K + 1` from a literal, and a binding operand's own live
+bounds. A loop `while i < limit` then proves `v[i]` (the OS pilot's resync
+loop over a fixed table with a caller-supplied count; Zig's `for` over a
+bounded slice, spelled in Oak). Pinned with the guarded, folded,
+saturated, and doubly read shapes in `compiler/e2e_bounded_loops_test.go`:
+none carries `oak_index`.
+
+**Proof through a helper.** Facts do not cross a call: `byte_at(buf, i)`
+inside a guarded loop is checked inside `byte_at`, whose parameter is
+unconstrained. The code-emitting stages therefore inline every private
+leaf helper of at most twelve lines at the source level before checking
+(`90-backend.md` section 9, "Inlining as a source transformation"): the
+helper's `buf[i]` becomes the caller's `buf[i]`, under the caller's
+guard, and is proven like any other access there. The helper's own
+definition keeps its check; the inlined copies carry none. Pinned in
+`compiler/e2e_inline_proof_test.go`.
