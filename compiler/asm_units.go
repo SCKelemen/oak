@@ -111,6 +111,21 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, []*d
 			for _, finding := range findings {
 				report("%s: %s", unitText.Path, finding)
 			}
+			if len(findings) == 0 && fn.Arch == asm.ArchRV64 {
+				// The processor's extensions decide the lane's encodings
+				// (docs/spec/94-assembler.md §9): a vector unit needs V;
+				// under C the native encoding compresses, as the C
+				// toolchain's assembler would for the same -mcpu, unless the
+				// unit spelled option rvc or norvc itself.
+				features := comp.options.Target.CPUFeatures(comp.options.CPU)
+				if fn.VectorFile && !features["v"] {
+					report("%s: asm unit %s uses the vector extension, which the processor lacks: build with -cpu ...+v (or an ISA string with v) — docs/spec/94-assembler.md section 9", unitText.Path, fn.Name)
+					continue
+				}
+				if !fn.CompressedSet {
+					fn.Compressed = features["c"]
+				}
+			}
 			if len(findings) == 0 && fn.FloatFile && comp.options.Target.Freestanding() && comp.options.Target.Arch == target.ArchRiscv64 {
 				// The F/D contract is LP64D; the freestanding RISC-V target
 				// compiles soft-float (generic_rv64) and its object declares
