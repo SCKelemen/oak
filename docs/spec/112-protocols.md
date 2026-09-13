@@ -173,6 +173,32 @@ one-element `NameData` array it spans), asks `name_legal` before acting, and
 moves with `name_next`; an illegal step is a bug in the caller and traps like
 any failed assertion.
 
+### 2c. The conformance monitor
+
+The declaration also projects its machine as something an implementation
+runs beside itself — TigerBeetle's state checker, derived rather than
+written (`docs/notes/tigerbeetle-2026-09.md` finding 7):
+
+| Projection | Shape |
+| --- | --- |
+| `NameMonitor` | `struct { state: NameState, violations: u32 }` |
+| `name_monitor` | `(): NameMonitor`, the initial state and no violations |
+| `name_observe` | `(m: [*]NameMonitor, [data: [*]NameData,] step: NameStep): Bool`: when `name_legal` admits the step from the monitor's state (and data), moves with `name_next` and returns true; otherwise counts a violation, leaves the state where the last legal step put it, and returns false |
+| `name_conforms` | `(m: [*]NameMonitor): Bool`, no violation observed |
+
+An implementation or a scenario feeds the monitor every transition it
+takes — the same `NameStep` values the typed-command derive generates and
+the scenario replays — and asserts `name_conforms` at the end, or
+`test_check(name_observe(...), id)` at each step. A violation is a
+correctness failure by construction: the declaration did not admit what
+the implementation did. Because the monitor keeps the last legal state,
+one violation does not hide the ones after it. A step the guard refuses
+(`write` with a slot out of range) is a violation like a step from the
+wrong state (`write` after `seal`); both are what `name_legal` says
+(`compiler/e2e_protocol_monitor_test.go`). Cross-replica convergence — the
+same monitor's state agreeing across replicas — is the scenario's
+comparison of monitors, not a projection.
+
 ### 2a. Lowering: the declaration dictates the code
 
 A machine without a `data` record is lowered by the C backend from a
@@ -626,9 +652,10 @@ the `eventually` entries under the declared fairness (§2b) — over the
 projection's reading, the first line whose guard holds; TLC checks the
 same entries over the declaration's every-line reading. Guards and effects beyond the translated subset — loops, calls into
 the program, indices computed from other fields — stay in hand-written
-models. The declaration does
-not generate Lean definitions, state diagrams, or debugger decoding
-(constitution: the same fact should eventually drive them).
+models. The declaration does not generate Lean definitions, state
+diagrams, or debugger decoding (constitution: the same fact should
+eventually drive them); the run-time monitor it does generate (§2c) is
+the first of those to land.
 
 ## 7. Direction
 
