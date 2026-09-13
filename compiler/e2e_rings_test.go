@@ -125,6 +125,65 @@ main: (): i32 {
     round = round + 1
   }
   assert(taken == u32(300))
+  // tickets on the MPSC ring: claims are consecutive, a publish waits for
+  // a free slot, the consumer is the same
+  tstate: [1]rings.MpscCursor
+  tseqs: [4]rings.SeqCell
+  tdata: [4]u32
+  tcursor: [*]rings.MpscCursor = span(&tstate)
+  tseqv: [*]rings.SeqCell = span(&tseqs)
+  tstorage: [*]u32 = span(&tdata)
+  rings.mpsc_init(tcursor, tseqv)
+  round = u32(0)
+  while round < u32(30) {
+    p0: u32 = rings.mpsc_claim(tcursor)
+    p1: u32 = rings.mpsc_claim(tcursor)
+    assert(p1 == p0 + u32(1) && p0 == round * u32(2))
+    assert(rings.mpsc_publish[u32](tseqv, tstorage, p1, p1 * u32(3)))
+    // p0 unpublished: the consumer waits at it
+    assert(option_or[u32](rings.mpsc_pop[u32](tcursor, tseqv, tstorage), u32(7)) == u32(7))
+    assert(rings.mpsc_publish[u32](tseqv, tstorage, p0, p0 * u32(3)))
+    assert(option_or[u32](rings.mpsc_pop[u32](tcursor, tseqv, tstorage), u32(7)) == p0 * u32(3))
+    assert(option_or[u32](rings.mpsc_pop[u32](tcursor, tseqv, tstorage), u32(7)) == p1 * u32(3))
+    round = round + 1
+  }
+  // a fifth ticket's publish waits until a slot is recycled
+  q: [4]u32
+  q[0] = rings.mpsc_claim(tcursor)
+  q[1] = rings.mpsc_claim(tcursor)
+  q[2] = rings.mpsc_claim(tcursor)
+  q[3] = rings.mpsc_claim(tcursor)
+  extra: u32 = rings.mpsc_claim(tcursor)
+  assert(rings.mpsc_publish[u32](tseqv, tstorage, q[0], u32(1)) && rings.mpsc_publish[u32](tseqv, tstorage, q[1], u32(2)))
+  assert(rings.mpsc_publish[u32](tseqv, tstorage, q[2], u32(3)) && rings.mpsc_publish[u32](tseqv, tstorage, q[3], u32(4)))
+  assert(!rings.mpsc_publish[u32](tseqv, tstorage, extra, u32(5)))
+  assert(option_or[u32](rings.mpsc_pop[u32](tcursor, tseqv, tstorage), u32(0)) == u32(1))
+  assert(rings.mpsc_publish[u32](tseqv, tstorage, extra, u32(5)))
+  kk: u32 = 2
+  while kk <= u32(5) {
+    assert(option_or[u32](rings.mpsc_pop[u32](tcursor, tseqv, tstorage), u32(0)) == kk)
+    kk = kk + 1
+  }
+  // tickets on the MPMC ring, both sides
+  ustate: [1]rings.MpmcCursor
+  useqs: [4]rings.SeqCell
+  udata: [4]u32
+  ucursor: [*]rings.MpmcCursor = span(&ustate)
+  useqv: [*]rings.SeqCell = span(&useqs)
+  ustorage: [*]u32 = span(&udata)
+  rings.mpmc_init(ucursor, useqv)
+  round = u32(0)
+  while round < u32(30) {
+    c0: u32 = rings.mpmc_claim_pop(ucursor)
+    // nothing published yet: the take waits
+    none: Bool = rings.mpmc_take[u32](useqv, ustorage, c0) ? | .None => true | .Some(v) => false
+    assert(none)
+    w0: u32 = rings.mpmc_claim_push(ucursor)
+    assert(w0 == c0)
+    assert(rings.mpmc_publish[u32](useqv, ustorage, w0, w0 + u32(11)))
+    assert(option_or[u32](rings.mpmc_take[u32](useqv, ustorage, c0), u32(0)) == w0 + u32(11))
+    round = round + 1
+  }
   i32_bits_u32(acc % u32(200))
 }
 `
@@ -257,6 +316,55 @@ pub intrusive_setup: (cursor: [*]rings.IntrusiveCursor, nodes: [*]rings.Intrusiv
   rings.intrusive_init(cursor, nodes)
 }
 
+// The ticket producers: one claim each, then publish until the slot frees.
+pub mpsc_ticket_produce: (cursor: [*]rings.MpscCursor, seqs: [*]rings.SeqCell, storage: [*]u32, id: u32, n: u32): u32 {
+  k: u32 = 1
+  spins: u32 = 0
+  while k <= n {
+    pos: u32 = rings.mpsc_claim(cursor)
+    while !rings.mpsc_publish[u32](seqs, storage, pos, (id << u32(24)) | k) {
+      spins = spins + 1
+    }
+    k = k + 1
+  }
+  spins
+}
+
+pub mpmc_ticket_produce: (cursor: [*]rings.MpmcCursor, seqs: [*]rings.SeqCell, storage: [*]u32, id: u32, n: u32): u32 {
+  k: u32 = 1
+  spins: u32 = 0
+  while k <= n {
+    pos: u32 = rings.mpmc_claim_push(cursor)
+    while !rings.mpmc_publish[u32](seqs, storage, pos, (id << u32(24)) | k) {
+      spins = spins + 1
+    }
+    k = k + 1
+  }
+  spins
+}
+
+// A ticket consumer takes total items in claim order.
+pub mpmc_ticket_consume: (cursor: [*]rings.MpmcCursor, seqs: [*]rings.SeqCell, storage: [*]u32, total: u32): u64 {
+  last: [16]u32
+  taken: u32 = 0
+  sum: u64 = 0
+  while taken < total {
+    pos: u32 = rings.mpmc_claim_pop(cursor)
+    v: u32 = 0
+    while v == u32(0) {
+      v = option_or[u32](rings.mpmc_take[u32](seqs, storage, pos), u32(0))
+    }
+    id: u32 = v >> u32(24)
+    k: u32 = v & u32(16777215)
+    assert(id < u32(16))
+    assert(k > last[id])
+    last[id] = k
+    sum = sum + u64(k)
+    taken = taken + 1
+  }
+  sum
+}
+
 // Producer id owns nodes first..first+n-1 and writes each payload before
 // pushing the node (the link's release publishes it).
 pub intrusive_produce: (cursor: [*]rings.IntrusiveCursor, nodes: [*]rings.IntrusiveNode, values: [*]u32, first: u32, n: u32): () {
@@ -321,6 +429,9 @@ static u32 intr_values[1 + P * M];
 #define INTR_QUEUE (oak_span_oak_rings_IntrusiveCursor){ intr_state, 1 }, (oak_span_oak_rings_IntrusiveNode){ intr_nodes, 1 + P * M }
 #define INTR INTR_QUEUE, (oak_span_u32){ intr_values, 1 + P * M }
 static void *intrusive_prod(void *a) { oak_intrusive_produce(INTR, (u32)(long)a * M + 1, M); return NULL; }
+static void *mpsc_ticket_prod(void *a) { oak_mpsc_ticket_produce(MPSC, (u32)(long)a, N); return NULL; }
+static void *mpmc_ticket_prod(void *a) { oak_mpmc_ticket_produce(MPMC, (u32)(long)a, N); return NULL; }
+static void *mpmc_ticket_cons(void *a) { *(u64 *)a = oak_mpmc_ticket_consume(MPMC, N); return NULL; }
 static void *intrusive_cons(void *a) { *(u64 *)a = oak_intrusive_consume(INTR, P * M); return NULL; }
 int main(void) {
   pthread_t p, c, ps[P];
@@ -345,6 +456,22 @@ int main(void) {
   sum = 0;
   for (int i = 0; i < P; i++) { pthread_join(cs[i], NULL); sum += sums[i]; }
   if (sum != (u64)P * ((u64)N * (N + 1) / 2)) { printf("mpmc sum %llu\\n", (unsigned long long)sum); return 3; }
+  // tickets: the same rings re-initialized, the same checksums
+  oak_mpsc_setup((oak_span_oak_rings_MpscCursor){ mpsc_state, 1 }, (oak_span_oak_rings_SeqCell){ mpsc_seqs, 64 });
+  sum = 0;
+  if (pthread_create(&c, NULL, mpsc_cons, &sum) != 0) return 28;
+  for (long i = 0; i < P; i++) if (pthread_create(&ps[i], NULL, mpsc_ticket_prod, (void *)(i + 1)) != 0) return 29;
+  for (int i = 0; i < P; i++) pthread_join(ps[i], NULL);
+  pthread_join(c, NULL);
+  if (sum != (u64)P * ((u64)N * (N + 1) / 2)) { printf("mpsc ticket sum %llu\\n", (unsigned long long)sum); return 5; }
+  oak_mpmc_setup((oak_span_oak_rings_MpmcCursor){ mpmc_state, 1 }, (oak_span_oak_rings_SeqCell){ mpmc_seqs, 64 });
+  for (long i = 0; i < P; i++) sums[i] = 0;
+  for (long i = 0; i < P; i++) if (pthread_create(&cs[i], NULL, mpmc_ticket_cons, &sums[i]) != 0) return 30;
+  for (long i = 0; i < P; i++) if (pthread_create(&ps[i], NULL, mpmc_ticket_prod, (void *)(i + 1)) != 0) return 31;
+  for (int i = 0; i < P; i++) pthread_join(ps[i], NULL);
+  sum = 0;
+  for (int i = 0; i < P; i++) { pthread_join(cs[i], NULL); sum += sums[i]; }
+  if (sum != (u64)P * ((u64)N * (N + 1) / 2)) { printf("mpmc ticket sum %llu\\n", (unsigned long long)sum); return 6; }
   oak_intrusive_setup(INTR_QUEUE);
   sum = 0;
   if (pthread_create(&c, NULL, intrusive_cons, &sum) != 0) return 26;
