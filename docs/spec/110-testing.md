@@ -93,6 +93,11 @@ Tests may use the host permissions available to them. Sanitizers are opt-in via
   are those of the minimized input. Floats keep `test_check_ulps_*` and
   `test_check_bits_*`; the language's `assert_eq`/`assert_ne`
   (`85-discipline.md` §5) trap with the same message outside the runner.
+- `test_liveness(condition, id)`: fail as a **liveness** failure with
+  signature `liveness:<id>`: the scenario stopped injecting faults and
+  required convergence within its budget, and it did not arrive. Nothing
+  false was observed, so it is not a correctness failure; see "Failure
+  classes" below.
 - `test_assume(condition)`: reject an input. Rejections do not count as passing
   cases; exceeding `-max-discards` fails. A unit test cannot discard.
 - `testing_classify(id)`: mark a class reached in this execution. Each accepted
@@ -105,6 +110,20 @@ Tests may use the host permissions available to them. Sanitizers are opt-in via
 
 Ordinary `assert` remains always enabled. A generic trap has an exit/signal
 signature; `test_check` provides stronger failure identity for minimization.
+
+**Failure classes.** Every failure carries a class beside its signature
+(the JSON result's `class`; the terminal line reads `correctness:
+invariant:7`), so triage and corpus routing differ by what went wrong
+(TigerBeetle's crash, liveness, and correctness exit codes,
+`docs/notes/tigerbeetle-2026-09.md`): **correctness** — an invariant was
+violated (`invariant:<id>`): something false was observed; **liveness** —
+a liveness check failed or the case timed out (`liveness:<id>`,
+`timeout`): something true never arrived; **crash** — a trap, an abnormal
+exit, or a signal (`exit:…`): the program died before saying either;
+**harness** — the runner's own trouble (`harness:…`). The class is derived
+from the signature (`testrunner.FailureClass`), so replay, shrinking, and
+artifacts are unchanged; the process exit code stays 1 for any failure and
+2 for harness and configuration errors.
 Source-specific assertion diffs, subtests, cleanup callbacks, expected-trap
 annotations, and compile-fail registration are not yet part of this API.
 

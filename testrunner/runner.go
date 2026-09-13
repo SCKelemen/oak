@@ -75,6 +75,11 @@ type Result struct {
 	Discards int    `json:"discards"`
 	Seed     uint64 `json:"seed"`
 	Failure  string `json:"failure,omitempty"`
+	// Class names what kind of failure this is (110-testing.md, "Failure
+	// classes"): "correctness" for a violated invariant, "liveness" for a
+	// failed liveness check or a timeout, "crash" for a trap or signal,
+	// "harness" for the runner's own trouble. Absent when the test passed.
+	Class string `json:"class,omitempty"`
 	// Got and Want are the two values a test_check_eq_*/test_check_ne_*
 	// failure reported, spelled in the operand's type (110-testing.md,
 	// "Isolation, outcomes, and reporting"); WantNot marks the "not equal"
@@ -302,7 +307,11 @@ func Main(args []string, stdout, stderr io.Writer) int {
 			}
 			fmt.Fprintf(stdout, "%s %s/%s (%d cases, %d discarded, seed %d%s)\n", strings.ToUpper(result.Status), result.Package, result.Name, result.Cases, result.Discards, result.Seed, launches)
 			if result.Failure != "" {
-				fmt.Fprintln(stdout, "  "+result.Failure)
+				if result.Class != "" {
+					fmt.Fprintln(stdout, "  "+result.Class+": "+result.Failure)
+				} else {
+					fmt.Fprintln(stdout, "  "+result.Failure)
+				}
 			}
 			if result.Artifact != "" {
 				adapterFlag := ""
@@ -451,6 +460,7 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		if out.status == "fail" && out.signature == replay.Signature {
 			result.Status = "fail"
 			result.Failure = "reproduced " + out.signature
+			result.Class = FailureClass(out.signature)
 			if replay.TraceVersion == traceVersion && !sameTrace(out, outcome{trace: replay.Trace, traceTruncated: replay.TraceTruncated}) {
 				result.Status = "error"
 				result.Divergence = divergence(replay.Trace, out.trace)
@@ -533,6 +543,7 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		}
 		result.Status = "fail"
 		result.Failure = out.signature
+		result.Class = FailureClass(out.signature)
 		result.Output = out.output
 		best := input
 		// Timeouts and infrastructure failures are not stable shrink predicates.
@@ -739,4 +750,26 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 		}
 	}
 	return result
+}
+
+// FailureClass names the class of a failure signature (110-testing.md,
+// "Failure classes"; TigerBeetle's crash/liveness/correctness exit codes):
+// a violated invariant is a correctness failure — something false was
+// observed; a failed liveness check or a timeout is a liveness failure —
+// something true never arrived; a trap, an abnormal exit, or a signal is a
+// crash — the program died before saying either; the runner's own trouble
+// is the harness class. Triage and corpus routing differ by class, so the
+// result names it beside the signature.
+func FailureClass(signature string) string {
+	switch {
+	case strings.HasPrefix(signature, "invariant:"):
+		return "correctness"
+	case strings.HasPrefix(signature, "liveness:"), signature == "timeout":
+		return "liveness"
+	case strings.HasPrefix(signature, "exit:"):
+		return "crash"
+	case strings.HasPrefix(signature, "harness:"):
+		return "harness"
+	}
+	return ""
 }

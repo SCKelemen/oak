@@ -614,7 +614,9 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       or correctness (distinct exit codes or signatures), so triage and
       corpus routing differ? (TB `Failure{crash=127, liveness=128,
       correctness=129}`) — Oak: `110-testing.md` signatures
-      `invariant:<id>` vs signal; classes: not stated.
+      `invariant:<id>` vs signal, and every failure carries its class —
+      correctness, liveness (`test_liveness`, timeout), crash, harness —
+      in the result (`110-testing.md` "Failure classes").
 - [ ] **The fault atlas matches the redundancy claim.** Is fault placement
       constrained so the design's redundancy can recover (at least one
       good copy across replicas; a single-disk log corrupted only by

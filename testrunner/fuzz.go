@@ -48,6 +48,10 @@ void oak_test_host_fail_values(uint32_t id, uint64_t got, uint64_t want, uint32_
  else fprintf(stderr, "Oak invariant %u failed: got %llu, want %s%llu\n", (unsigned)id, (unsigned long long)got, (kind & 1u) ? "anything but " : "", (unsigned long long)want);
  abort();
 }
+void oak_test_host_liveness(uint32_t id) {
+ fprintf(stderr, "Oak liveness check %u failed\n", (unsigned)id);
+ abort();
+}
 void oak_test_host_discard(void) { longjmp(oak_fuzz_discard, 1); }
 void oak_test_host_classify(uint32_t id) { (void)id; }
 void oak_test_host_trace(uint32_t id, uint64_t a, uint64_t b) { (void)id; (void)a; (void)b; }
