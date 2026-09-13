@@ -1120,7 +1120,10 @@ type generator struct {
 	// a call and restored after it (callerSpill), one store and one load per
 	// call instead of one memory access per read or write from a frame slot.
 	callerHomes []int
-	live        []int // allocated scratch registers, allocation order
+	// lv: the liveness pre-pass (liveness.go) deciding which homes a call
+	// saves and which variables cross a call; nil on the rv64 lane.
+	lv   *callLiveness
+	live []int // allocated scratch registers, allocation order
 	// defined marks the live scratch registers an emitted instruction has
 	// written: a call spills exactly those (a register allocated for an
 	// enclosing expression's result and not yet written holds nothing, and
@@ -1286,6 +1289,9 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	g.hasCalls = mentionsCall(fn.Body)
 	g.argHomes = map[string]int{}
 	g.homesUsed = map[int]bool{}
+	if g.hasCalls {
+		g.lv = analyzeLiveness(fn)
+	}
 	parkSpans := g.hasCalls || returnsValue(fn)
 	if hasVariables(fn) || parkSpans {
 		g.saveArea = 8 * (calleeHigh - calleeLow + 1)
@@ -3307,6 +3313,11 @@ func (g *generator) declare(name string, s scalar) int64 {
 		r = g.leafHomes[0]
 		g.leafHomes = g.leafHomes[1:]
 		g.homesUsed[r] = true
+	} else if g.lv != nil && len(g.callerHomes) > 0 && !g.lv.crossing(name) {
+		// Never live across a call: a caller-saved home costs nothing.
+		r = g.callerHomes[0]
+		g.callerHomes = g.callerHomes[1:]
+		g.homesUsed[r] = true
 	} else {
 		switch {
 		case len(g.freeCallee) > 0:
@@ -5188,7 +5199,7 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 	}
 	// Variables in caller-saved homes: saved before the argument registers
 	// are written (a home may be one of them) and restored after the call.
-	homes := g.callerHomesLive()
+	homes := g.callerHomesLive(e)
 	for _, r := range homes {
 		g.emit("str", xr(r), g.slotMem(g.spillSlot(r)))
 	}
@@ -5358,14 +5369,22 @@ func (g *generator) forwardedSlot(name string) (int, bool) {
 // callerHomesLive lists the caller-saved homes of the variables in scope,
 // in register order: the registers a call would clobber that hold a value
 // the body may still read.
-func (g *generator) callerHomesLive() []int {
+func (g *generator) callerHomesLive(call *ast.InvocationExpression) []int {
+	at, known := -1, false
+	if g.lv != nil {
+		at, known = g.lv.calls[call]
+	}
 	seen := map[int]bool{}
 	var out []int
-	for _, r := range g.regs {
-		if isCallerHome(r) && !seen[r] {
-			seen[r] = true
-			out = append(out, r)
+	for name, r := range g.regs {
+		if !isCallerHome(r) || seen[r] {
+			continue
 		}
+		if known && !g.lv.liveAfter(name, at) {
+			continue // dead after this call: nothing to keep
+		}
+		seen[r] = true
+		out = append(out, r)
 	}
 	sort.Ints(out)
 	return out

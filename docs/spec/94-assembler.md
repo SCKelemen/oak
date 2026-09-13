@@ -1581,6 +1581,36 @@ call's argument holding a call. What remains in `apply` is the variables
 that outnumber even the caller-saved homes, and the spills of homes dead
 at the call — both the liveness step: live ranges over the statement
 tree, a home spilled at a call only when its variable is read after it.
+**Twenty-third increment — liveness for the homes.** A pre-pass
+(`nativegen/homes.go`) numbers the body in the order the lowering emits it
+and records, per variable, its declaration and its last read, and per
+`while` loop the positions its body spans. A read counts at its own
+position — a call's argument is copied to a scratch register before the
+call — except an operand the lowering reads in place: a variable named
+directly under a binary operation, a comparison, or an element index is
+read by the instruction that runs after the operation's other operands,
+calls included, so it counts at that expression's end; a call counts after
+its arguments; an index assignment's value counts before its index, as
+`elementStore` evaluates them. A variable declared outside a loop and read
+anywhere inside it is live across every call in the loop. From that: a
+call saves a caller-saved home only when its variable is read afterward,
+and a declaration whose variable never crosses a call takes a caller-saved
+home before a callee-saved register (the crossing ones keep the
+callee-saved ones, which cost nothing at a call). Two versions of the
+numbering were wrong on the way and the seam checker refused both as a
+read after `bl` — a read numbered at the same position as the call it
+followed, and an index assignment numbered target-first while the
+lowering evaluates the value first — which is the checker doing what the
+chapter promised for the compiler's own output. This pass complements
+the last-use release within a statement list (`liveness.go`); the two
+are conservative in the same direction. `apply`'s loop: 234 frame
+accesses to 226; 196 functions proven, rows unchanged; the timed runs
+fell within the noise of a machine shared with other sessions' test
+suites, so the structural count is the measurement here. Executed (`TestE2ENativeCallLiveness`): an in-place operand after
+a call, an argument read before its call, a loop-carried variable, an
+index assignment whose value calls, and a variable dead before the calls
+that follow — natively against the C backend and the portable
+realization.
 Next increments: the fallback reasons above in the order of their counts,
 so the prover lowers whole; then the verifier past `bl` and unit results —
 calls by inlining or by the callee's proven contract, and effects through
