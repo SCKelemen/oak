@@ -1422,7 +1422,9 @@ func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 	if exp.Operator == "+" {
 		if left, isLiteral := exp.Left.(*ast.StringLiteral); isLiteral {
 			if right, isLiteral := exp.Right.(*ast.StringLiteral); isLiteral {
-				return &ast.StringLiteral{BaseNode: left.BaseNode, Token: left.Token, Value: left.Value + right.Value}
+				joined := left.Token
+				joined.Literal = left.Token.Literal + right.Token.Literal
+				return &ast.StringLiteral{BaseNode: left.BaseNode, Token: joined, Value: left.Value + right.Value}
 			}
 		}
 	}
