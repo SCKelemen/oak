@@ -2272,6 +2272,239 @@ witness_bits: (lw: Lower, w: [*]u32, leaves: u32, out: [*]u32): () {
   out[u32(0)] = count
 }
 
+// --- the exhaustive rung ---------------------------------------------------
+
+// The Go ladder's exhaustive decider (prove/prove.go enumerate): when the
+// parameters' domains multiply to at most the cases bound and the body has
+// no counted loop, every assignment is evaluated — parameters in
+// declaration order, values ascending (a signed scalar from its least),
+// the last parameter varying fastest — and the first falsifying one is the
+// counterexample.
+
+DOMAIN_INFINITE: u64 = 0xFFFFFFFFFFFFFFFF
+MAX_DOMAIN_TYPES: u32 = 256
+
+DOMAIN_UNKNOWN: u64 = 0xFFFFFFFFFFFFFFFE
+
+// compute_domains fills dom[t] with the number of values of every type
+// (DOMAIN_INFINITE when it is not enumerated: a scalar wider than 16
+// bits, a float, an array): scalars at once, records and sum types once
+// their members are known, passes until nothing changes (a type that
+// never settles is not enumerated).
+compute_domains: (sx: []u32, dom: [*]u64): () {
+  ntypes: u32 = syn_types(sx)
+  t: u32 = 0
+  while t < ntypes {
+    dom[t] = DOMAIN_UNKNOWN
+    t = t + u32(1)
+  }
+  progress: Bool = true
+  pass: u32 = 0
+  while progress && pass <= ntypes {
+    progress = false
+    pass = pass + u32(1)
+    t = u32(0)
+    while t < ntypes {
+      dom[t] == DOMAIN_UNKNOWN ? {
+        out: u64 = DOMAIN_UNKNOWN
+        kind: u32 = type_kind(sx, t)
+        kind == TY_SCALAR ? {
+          width: u32 = scalar_width(sx, t)
+          out = ((width == u32(1) || width == u32(8) || width == u32(16)) && !is_float_type(sx, t)) ? { u64(1) << u64(width) } | { DOMAIN_INFINITE }
+        } | {
+        kind == TY_RECORD ? {
+          total: u64 = 1
+          k: u32 = 0
+          n: u32 = type_field_count(sx, t)
+          while k < n && total != DOMAIN_INFINITE && total != DOMAIN_UNKNOWN {
+            d: u64 = dom[field_type(sx, t, k)]
+            d == DOMAIN_UNKNOWN ? { total = DOMAIN_UNKNOWN } | {
+              (d == DOMAIN_INFINITE || total > u64(1099511627776)) ? { total = DOMAIN_INFINITE } | { total = total * d }
+            }
+            k = k + u32(1)
+          }
+          out = total
+        } | {
+        kind == TY_SUM ? {
+          total: u64 = 0
+          k: u32 = 0
+          n: u32 = type_field_count(sx, t)
+          while k < n && total != DOMAIN_INFINITE && total != DOMAIN_UNKNOWN {
+            payload: u32 = variant_payload(sx, t, k)
+            payload == NONE ? { total = total + u64(1) } | {
+              d: u64 = dom[payload]
+              d == DOMAIN_UNKNOWN ? { total = DOMAIN_UNKNOWN } | {
+                (d == DOMAIN_INFINITE || total > u64(1099511627776)) ? { total = DOMAIN_INFINITE } | { total = total + d }
+              }
+            }
+            k = k + u32(1)
+          }
+          out = total
+        } | { out = DOMAIN_INFINITE } } }
+        out == DOMAIN_UNKNOWN ? { } | {
+          dom[t] = out
+          progress = true
+        }
+      } | { }
+      t = t + u32(1)
+    }
+  }
+  t = u32(0)
+  while t < ntypes {
+    dom[t] == DOMAIN_UNKNOWN ? { dom[t] = DOMAIN_INFINITE } | { }
+    t = t + u32(1)
+  }
+}
+
+// theorem_domain: the product of the theorem's parameter domains, capped:
+// DOMAIN_INFINITE when a parameter is not enumerated or the product
+// passes the bound.
+theorem_domain: (sx: []u32, bound: u64, dom: [*]u64): u64 {
+  f: u32 = syn_theorem(sx)
+  total: u64 = 1
+  syn_types(sx) > MAX_DOMAIN_TYPES ? { total = DOMAIN_INFINITE } | { compute_domains(sx, dom) }
+  i: u32 = 0
+  n: u32 = fn_param_count(sx, f)
+  while i < n && total != DOMAIN_INFINITE {
+    d: u64 = dom[param_type(sx, fn_param_start(sx, f) + i)]
+    (d == DOMAIN_INFINITE || d == u64(0) || d > bound || total > bound / d) ? { total = DOMAIN_INFINITE } | { total = total * d }
+    i = i + u32(1)
+  }
+  total
+}
+
+// has_loop: whether the theorem or a function it reaches has a counted loop
+// (the syntax table holds exactly those functions).
+has_loop: (sx: []u32): Bool {
+  found: Bool = false
+  n: u32 = syn_nodes(sx)
+  i: u32 = 0
+  while i < n && !found {
+    found = node_kind(sx, i) == SYN_WHILE
+    i = i + u32(1)
+  }
+  found
+}
+
+// set_param_value writes the k-th value of a parameter's type into its
+// leaves (the snapshot region, two words per leaf, the leaf indices table
+// mapping the type's leaves from idx_at): a scalar's k-th value ascending
+// (signed from the least), a record's tuple with the last field fastest,
+// a sum type's variants in order with their payload values (the other
+// variants' payload leaves zero). An explicit stack walks the nesting.
+set_param_value: (lw: Lower, w: [*]u32, sx: []u32, dom: [*]u64, t0: u32, idx0: u32, k0: u64): () {
+  stack: [256]u32
+  sp: u32 = 1
+  stack[u32(0)] = t0
+  stack[u32(1)] = idx0
+  stack[u32(2)] = u32_trunc_u64(k0)
+  stack[u32(3)] = u32_trunc_u64(k0 >> u64(32))
+  while sp > u32(0) {
+    sp = sp - u32(1)
+    t: u32 = stack[sp * u32(4)]
+    idx_at: u32 = stack[sp * u32(4) + u32(1)]
+    k: u64 = (u64(stack[sp * u32(4) + u32(3)]) << u64(32)) | u64(stack[sp * u32(4) + u32(2)])
+    kind: u32 = type_kind(sx, t)
+    kind == TY_SCALAR ? {
+      width: u32 = scalar_width(sx, t)
+      value: u64 = scalar_signed(sx, t) ? { (k + (u64(1) << u64(width - u32(1)))) & mask64(width) } | { k }
+      li: u32 = leaf_index_at(sx, idx_at)
+      w[lw.snap_at + li * u32(2)] = u32_trunc_u64(value)
+      w[lw.snap_at + li * u32(2) + u32(1)] = u32_trunc_u64(value >> u64(32))
+    } | {
+    kind == TY_RECORD ? {
+      // The last field varies fastest: divide from the last field back.
+      n: u32 = type_field_count(sx, t)
+      rest: u64 = k
+      j: u32 = n
+      while j > u32(0) && sp + u32(1) < u32(64) {
+        j = j - u32(1)
+        ft: u32 = field_type(sx, t, j)
+        d: u64 = dom[ft]
+        part: u64 = rest % d
+        rest = rest / d
+        stack[sp * u32(4)] = ft
+        stack[sp * u32(4) + u32(1)] = idx_at + field_offset(sx, t, j)
+        stack[sp * u32(4) + u32(2)] = u32_trunc_u64(part)
+        stack[sp * u32(4) + u32(3)] = u32_trunc_u64(part >> u64(32))
+        sp = sp + u32(1)
+      }
+    } | {
+    kind == TY_SUM ? {
+      nleaves: u32 = type_leaves(sx, t)
+      j: u32 = 0
+      while j < nleaves {
+        li: u32 = leaf_index_at(sx, idx_at + j)
+        w[lw.snap_at + li * u32(2)] = u32(0)
+        w[lw.snap_at + li * u32(2) + u32(1)] = u32(0)
+        j = j + u32(1)
+      }
+      n: u32 = type_field_count(sx, t)
+      rest: u64 = k
+      v: u32 = 0
+      placed: Bool = false
+      while v < n && !placed {
+        payload: u32 = variant_payload(sx, t, v)
+        size: u64 = payload == NONE ? { u64(1) } | { dom[payload] }
+        rest < size ? {
+          tag: u32 = leaf_index_at(sx, idx_at)
+          w[lw.snap_at + tag * u32(2)] = variant_tag(sx, t, v)
+          (payload != NONE && sp + u32(1) < u32(64)) ? {
+            stack[sp * u32(4)] = payload
+            stack[sp * u32(4) + u32(1)] = idx_at + variant_offset(sx, t, v)
+            stack[sp * u32(4) + u32(2)] = u32_trunc_u64(rest)
+            stack[sp * u32(4) + u32(3)] = u32_trunc_u64(rest >> u64(32))
+            sp = sp + u32(1)
+          } | { }
+          placed = true
+        } | { rest = rest - size }
+        v = v + u32(1)
+      }
+    } | { } } }
+  }
+}
+
+// enumerate_theorem evaluates the built terms on every assignment of the
+// parameters: 5 when the claim holds on all (count in *out_count), 7 with
+// the falsifying assignment left in the snapshot region, 6 when an
+// assignment fires a trap obligation or the terms are outside the
+// evaluator (the Go interpreter then decides).
+enumerate_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, dom: [*]u64, nterms: u32, ntraps: u32, claim: u32, leaves: u32, total: u64): u32 {
+  f: u32 = syn_theorem(sx)
+  nparams: u32 = fn_param_count(sx, f)
+  pstart: u32 = fn_param_start(sx, f)
+  verdict: u32 = 0
+  k: u64 = 0
+  while k < total && verdict == u32(0) {
+    // The odometer: the last parameter fastest.
+    li: u32 = 0
+    while li < leaves {
+      w[lw.snap_at + li * u32(2)] = u32(0)
+      w[lw.snap_at + li * u32(2) + u32(1)] = u32(0)
+      li = li + u32(1)
+    }
+    rest: u64 = k
+    i: u32 = nparams
+    while i > u32(0) {
+      i = i - u32(1)
+      t: u32 = param_type(sx, pstart + i)
+      d: u64 = dom[t]
+      set_param_value(lw, w, sx, dom, t, param_leaf_start(sx, pstart + i), rest % d)
+      rest = rest / d
+    }
+    eval_terms(lw, w, b, nterms) ? {
+      r: u32 = 0
+      while r < ntraps && verdict == u32(0) {
+        verdict = (term_value(lw, w, w[lw.traps_at + r]) & u64(1)) != u64(0) ? { u32(6) } | { u32(0) }
+        r = r + u32(1)
+      }
+      verdict = (verdict == u32(0) && (term_value(lw, w, claim) & u64(1)) != u64(1)) ? { u32(7) } | { verdict }
+    } | { verdict = u32(6) }
+    k = k + u64(1)
+  }
+  verdict == u32(0) ? { u32(5) } | { verdict }
+}
+
 // lower_theorem lowers the syntax table into the problem buffer under the
 // variable order asked for: the leaves' variables, the claim at one bit
 // after the trap obligations as the roots, and the select slots'

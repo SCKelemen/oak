@@ -162,7 +162,13 @@ that a body with a counted loop, in the theorem or in a function it names,
 goes to the bit level first, where the unrolled loop is one term, and falls
 back to enumeration when the bit level does not apply (a 64-step product
 evaluated 65536 times is the interpreter's costly case; the bit level
-settles it in milliseconds). Direction
+settles it in milliseconds). With the Oak solver (§3 below) the exhaustive
+rung runs in the solver too: the theorem is lowered to terms, the domain
+sized from the parameters' types, and every assignment evaluated in the
+interpreter's order (parameters in declaration order, values ascending,
+the last parameter fastest), the row reading `all N cases; enumerated in
+Oak` with the Go interpreter's enumeration as the cross-check; a theorem
+outside the lowering's subset keeps the interpreter. Direction
 (§6): the extent facts (`50-borrowing.md`) decide a linear fragment inside
 the checker and are the next `decided` rung.
 
@@ -501,13 +507,18 @@ In order of payoff, each reusing a surface that exists:
   terms; every one of the corpus's 165 bit-level laws is lowered and
   decided in Oak today, node for node the Go decider's counts wherever
   the orders coincide, and every refutation names the counterexample the
-  Go decider names; and the syntax table itself is built in Oak from the
+  Go decider names; the syntax table itself is built in Oak from the
   law file's bytes — lexer, parser, and serializer — word for word the Go
-  front end's over the corpus), so on the bit-level path the Go that
-  remains is the ladder itself: choosing which theorems are pending
-  (the exhaustive rung), streaming the sources, and reading the verdicts;
-  next the exhaustive rung and the ladder in Oak, so `oak prove` is an
-  Oak program end to end; then
+  front end's over the corpus; and the exhaustive rung runs in Oak over
+  the same terms — the domain sized from the types, the assignments in the
+  interpreter's order — for every theorem in the subset, 37 of the
+  corpus's 50, the Go interpreter confirming each), so the Go that
+  remains on the prover's path is the ladder's shell — streaming the
+  sources, reading the verdicts — and the interpreter for the 13 laws
+  outside the lowering's subset (the UTF-8 laws through views and the
+  `is_valid_utf8` builtin, the protocol machine laws); next an
+  interpreter in Oak over the raw tree, so those decide in Oak too and
+  `oak prove` is an Oak program end to end; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
   producers of certificates, so speed and trust are separated; then an

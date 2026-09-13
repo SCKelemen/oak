@@ -455,6 +455,13 @@ func (p prepared) run(tc *typechecker.TypeChecker, decls asm.Declarations, funct
 	if p.open != nil {
 		return bitLevel(p.deferred, tc, decls, p.theorem, functions, *p.open)
 	}
+	// Deferred to the Oak solver: it runs the exhaustive rung itself when
+	// the theorem is in its subset, and the Go interpreter's enumeration
+	// stands when it declines.
+	if p.deferred && !p.heavy {
+		name, fn, domains, total := p.name, p.fn, p.domains, p.total
+		return Result{Name: name, Status: Pending, fallback: func() Result { return enumerate(name, fn, domains, total) }}
+	}
 	// A body with a counted loop goes to the bit-level decider first: the
 	// unrolled loop is one term there and the interpreter's costly case
 	// (a 64-step product evaluated 65536 times). Enumeration remains the
@@ -710,6 +717,17 @@ func ResolvePending(results []Result, verdicts map[string]SolverVerdict, goDecid
 			settled = Result{Name: r.Name, Status: Refuted, Detail: "counterexample " + leafCounterexample(v.LeafNames, v.Vars) + " (lowered and decided in Oak)"}
 		case has && v.Lowered && v.Status == 4:
 			settled = Result{Name: r.Name, Status: Refuted, Detail: "the body traps (a shift count at the width, a failed assert, or a construction outside its predicate) at " + leafCounterexample(v.LeafNames, v.Vars) + " (lowered and decided in Oak)"}
+		case has && v.Lowered && v.Status == 5:
+			settled = Result{Name: r.Name, Status: Decided, Detail: fmt.Sprintf("all %d cases; enumerated in Oak", v.Nodes)}
+		case has && v.Lowered && v.Status == 7:
+			settled = Result{Name: r.Name, Status: Refuted, Detail: "counterexample " + strings.ReplaceAll(leafCounterexample(v.LeafNames, v.Vars), "=", " = ") + " (enumerated in Oak)"}
+		case has && v.Status == 6:
+			// The evaluation trapped: the Go interpreter names the failure.
+			settled = r.fallback()
+		case has && (v.Status == 2 || v.Status == 3) && len(r.Problems) == 0:
+			// The Oak side declined a theorem of the exhaustive rung: the
+			// Go interpreter's enumeration.
+			settled = r.fallback()
 		case has && v.Status == 0 && v.Winner >= 0 && v.Winner < len(r.Problems):
 			order := r.Problems[v.Winner].Order
 			label := ""
@@ -742,7 +760,13 @@ func ResolvePending(results []Result, verdicts map[string]SolverVerdict, goDecid
 func leafCounterexample(leafNames []string, setBits []uint32) string {
 	values := make([]uint64, len(leafNames))
 	var mentioned map[int]bool
+	signedWidth := map[int]uint32{}
 	for _, lb := range setBits {
+		if lb&leafMentioned == 0 && lb&leafSigned != 0 {
+			// A signed leaf prints as the interpreter would, from its width.
+			signedWidth[int((lb&^leafSigned)/64)] = (lb &^ leafSigned) % 64
+			continue
+		}
 		if lb&leafMentioned != 0 {
 			// The Oak solver names the leaves the theorem reads: the
 			// counterexample lists those, as the Go decider lists the
@@ -763,12 +787,16 @@ func leafCounterexample(leafNames []string, setBits []uint32) string {
 		if mentioned != nil && !mentioned[i] {
 			continue
 		}
+		if width, signed := signedWidth[i]; signed && width > 0 && width < 64 && values[i]>>(width-1) != 0 {
+			parts = append(parts, fmt.Sprintf("%s=-%d", name, (uint64(1)<<width)-values[i]))
+			continue
+		}
 		parts = append(parts, fmt.Sprintf("%s=%d", name, values[i]))
 	}
 	// Leaves past the parameters are the fresh symbols a NaN min or max
 	// yields, which no law may pin down.
 	for _, lb := range setBits {
-		if lb&leafMentioned != 0 {
+		if lb&leafMentioned != 0 || lb&leafSigned != 0 {
 			continue
 		}
 		if leaf := int(lb / 64); leaf >= len(leafNames) {
@@ -780,8 +808,12 @@ func leafCounterexample(leafNames []string, setBits []uint32) string {
 }
 
 // leafMentioned marks, in the Oak solver's variable list, a leaf the
-// theorem's terms read rather than a set bit.
-const leafMentioned = uint32(1) << 31
+// theorem's terms read rather than a set bit; leafSigned marks a signed
+// leaf with its width (leaf * 64 + width).
+const (
+	leafMentioned = uint32(1) << 31
+	leafSigned    = uint32(1) << 30
+)
 
 // GoDecision runs the Go decider on the named theorem: the cross-check of
 // the Oak solver, under one order when given (the node counts must match)
@@ -819,6 +851,42 @@ func GoWitness(model *compiler.SemanticModel, name string) (Result, bool) {
 		return Result{}, false
 	}
 	return Result{Name: name, Status: Refuted, Detail: decision.Message}, true
+}
+
+// GoEnumeration runs the Go interpreter's exhaustive rung on the named
+// theorem: the cross-check of the enumeration in Oak.
+func GoEnumeration(model *compiler.SemanticModel, name string, cases int) (Result, bool) {
+	if model == nil || model.Tree == nil || model.Tree.Root == nil || model.TypeChecker == nil {
+		return Result{}, false
+	}
+	if cases <= 0 {
+		cases = DefaultCases
+	}
+	env := object.NewEnvironment()
+	env.SetArithmeticWidths(model.TypeChecker.ArithmeticType)
+	if evaluated := evaluator.Eval(model.Tree.Root, env); evaluated != nil {
+		if _, isErr := evaluated.(*object.Error); isErr {
+			return Result{}, false
+		}
+	}
+	functions := map[string]*ast.FunctionStatement{}
+	var theorem *ast.FunctionStatement
+	for _, stmt := range model.Tree.Root.Statements {
+		if fn, isFn := stmt.(*ast.FunctionStatement); isFn && fn.Name != nil {
+			functions[fn.Name.Value] = fn
+			if fn.Theorem && fn.Name.Value == name {
+				theorem = fn
+			}
+		}
+	}
+	if theorem == nil {
+		return Result{}, false
+	}
+	p := prepare(env, model.TypeChecker, functions, declarationsOf(model.Tree.Root), theorem, cases, false)
+	if p.settled != nil || p.open != nil {
+		return Result{}, false
+	}
+	return enumerate(p.name, p.fn, p.domains, p.total), true
 }
 
 // GoSyntax serializes the named theorem with the Go serializer

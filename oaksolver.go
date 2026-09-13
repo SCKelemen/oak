@@ -311,6 +311,29 @@ mentioned_marks: (p: []u32, out: [*]u32, start: u32): u32 {
   count
 }
 
+// mentioned_marks_s is mentioned_marks over the built problem's span.
+mentioned_marks_s: (p: [*]u32, out: [*]u32, start: u32): u32 {
+  nterms: u32 = p[u32(0)]
+  leaves: u32 = p[u32(1)]
+  count: u32 = start
+  li: u32 = 0
+  while li < leaves && count < len(out) {
+    t: u32 = 0
+    read: Bool = false
+    while t < nterms && !read {
+      at: u32 = HEADER_WORDS + leaves * LEAF_WORDS + t * TERM_WORDS
+      read = p[at] == KIND_PARAM && p[at + u32(3)] == li
+      t = t + u32(1)
+    }
+    read ? {
+      out[count] = MENTIONED + li
+      count = count + u32(1)
+    } | { }
+    li = li + u32(1)
+  }
+  count
+}
+
 solve_prefix: (l: Layout, mem: [*]u32, whole: []u32, n: u32, index: u32, ser: Ser, ser_raw: c.Ptr): () {
   p: []u32 = subslice(whole, u32(0), n)
   dump_problem(p, index)
@@ -351,7 +374,7 @@ solve_variant: (l: Layout, table_raw: c.Ptr, p: []u32, index: u32): () {
 // count comes back as WITNESSED.
 WITNESSED: u32 = 4294967293
 
-lower_in_oak: (lw: Lower, work_raw: c.Ptr, built_raw: c.Ptr, sx: []u32, budget: u32, order: u32, witness: [*]u32): u32 {
+lower_in_oak: (lw: Lower, work_raw: c.Ptr, built_raw: c.Ptr, sx: []u32, budget: u32, order: u32, witness: [*]u32, run_witness: Bool): u32 {
   n: u32 = 0
   witness[u32(0)] = u32(0)
   unsafe {
@@ -359,7 +382,7 @@ lower_in_oak: (lw: Lower, work_raw: c.Ptr, built_raw: c.Ptr, sx: []u32, budget: 
     bbuf: Buffer[u32] = c.own[u32](built_raw, lw.built_total)
     n = lower_theorem(lw, span(&wbuf), span(&bbuf), sx, budget, order)
     n = n == u32(0) ? { NONE - lower_reason(lw, span(&wbuf)) } | { n }
-    n < u32(0x80000000) ? {
+    (n < u32(0x80000000) && run_witness) ? {
       verdict: u32 = witness_check(lw, span(&wbuf), span(&bbuf), witness)
       verdict == u32(0) ? { } | {
         whole: []u32 = view(&bbuf)
@@ -426,14 +449,102 @@ serialize_in_oak: (ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, rx: []u32, theorem_
   n
 }
 
+// enumerate_in_oak runs the exhaustive rung on the lowered theorem: the
+// verdict (5 decided, 7 refuted with the assignment's set leaf bits in
+// witness, 6 the Go interpreter's), the case count in count[0].
+enumerate_in_oak: (lw: Lower, work_raw: c.Ptr, built_raw: c.Ptr, sx: []u32, dom: [*]u64, total: u64, witness: [*]u32): u32 {
+  verdict: u32 = 0
+  unsafe {
+    wbuf: Buffer[u32] = c.own[u32](work_raw, lw.total)
+    bbuf: Buffer[u32] = c.own[u32](built_raw, lw.built_total)
+    verdict = enumerate_lowered(lw, span(&wbuf), span(&bbuf), sx, dom, total, witness)
+    released_w: c.Ptr = c.disown(wbuf)
+    released_b: c.Ptr = c.disown(bbuf)
+  }
+  verdict
+}
+
+enumerate_lowered: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, dom: [*]u64, total: u64, witness: [*]u32): u32 {
+  nterms: u32 = b[u32(0)]
+  leaves: u32 = b[u32(1)]
+  roots: u32 = b[u32(2)]
+  root_base: u32 = HEADER_WORDS + leaves * LEAF_WORDS + nterms * TERM_WORDS
+  ntraps: u32 = roots - u32(1)
+  claim: u32 = b[root_base + ntraps]
+  r: u32 = 0
+  while r < ntraps {
+    w[lw.traps_at + r] = b[root_base + r]
+    r = r + u32(1)
+  }
+  verdict: u32 = enumerate_theorem(lw, w, b, sx, dom, nterms, ntraps, claim, leaves, total)
+  verdict == u32(7) ? {
+    witness_bits(lw, w, leaves, witness)
+    listed: u32 = witness[u32(0)]
+    marked: u32 = mentioned_marks_s(b, witness, listed + u32(1))
+    marked = signed_marks(sx, witness, marked)
+    witness[u32(0)] = marked - u32(1)
+  } | { }
+  verdict
+}
+
+// SIGNED marks, in a refutation's variable list, a signed leaf with its
+// width (SIGNED + leaf * 64 + width): the counterexample prints it as
+// the interpreter would, from its least value.
+SIGNED: u32 = 1073741824
+
+// signed_marks appends the SIGNED marks of the theorem's signed leaves.
+signed_marks: (sx: []u32, out: [*]u32, start: u32): u32 {
+  count: u32 = start
+  f: u32 = syn_theorem(sx)
+  nparams: u32 = fn_param_count(sx, f)
+  i: u32 = 0
+  while i < nparams {
+    pi: u32 = fn_param_start(sx, f) + i
+    t: u32 = param_type(sx, pi)
+    nleaves: u32 = type_leaves(sx, t)
+    k: u32 = 0
+    while k < nleaves && count < len(out) {
+      (type_leaf_signed(sx, t, k)) ? {
+        out[count] = SIGNED + leaf_index_at(sx, param_leaf_start(sx, pi) + k) * u32(64) + type_leaf_width(sx, t, k)
+        count = count + u32(1)
+      } | { }
+      k = k + u32(1)
+    }
+    i = i + u32(1)
+  }
+  count
+}
+
 // lower_and_solve lowers the serialized syntax table (n_syn words of
-// whole) under the slot's order and solves, reporting a witnessed
-// refutation, the diagram's verdict, or the reason the lowering declined.
-lower_and_solve: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, table_raw: c.Ptr, work_raw: c.Ptr, built_raw: c.Ptr, whole: []u32, n_syn: u32, budget: u32, slot: u32, index: u32): () {
+// whole) under the slot's order and decides: the exhaustive rung when
+// the domain fits the cases bound and the body has no loop (slot 0 alone;
+// the other orders stand aside), else a witnessed refutation, the
+// diagram's verdict, or the reason the lowering declined.
+lower_and_solve: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, table_raw: c.Ptr, work_raw: c.Ptr, built_raw: c.Ptr, whole: []u32, n_syn: u32, budget: u32, slot: u32, index: u32, cases: u32): () {
   sx: []u32 = subslice(whole, u32(0), n_syn)
   dump_syntax(sx, index)
   witness: [512]u32
-  n: u32 = lower_in_oak(lw, work_raw, built_raw, sx, budget, slot, span(&witness))
+  none: [1]u32
+  dom: [256]u64
+  total: u64 = theorem_domain(sx, u64(cases), span(&dom))
+  exhaustive: Bool = total != DOMAIN_INFINITE && !has_loop(sx)
+  exhaustive ? {
+    slot != u32(0) ? { report(index, STATUS_EXCEEDED, REASON_ORDER, u32(1), view(&none), u32(0)) } | {
+      n: u32 = lower_in_oak(lw, work_raw, built_raw, sx, budget, slot, span(&witness), false)
+      n < u32(0x80000000) ? {
+        verdict: u32 = enumerate_in_oak(lw, work_raw, built_raw, sx, span(&dom), total, span(&witness))
+        verdict == u32(7) ? {
+          listed: u32 = witness[u32(0)]
+          bits: []u32 = view(&witness)
+          report_lowered(index, u32(7), u32(0), u32(1), subslice(bits, u32(1), listed), listed, ser, ser_raw)
+        } | { report(index, verdict, u32_trunc_u64(total), u32(1), view(&none), u32(0)) }
+      } | {
+        reason: u32 = NONE - n
+        report(index, STATUS_UNSUPPORTED, reason, u32(1), view(&none), u32(0))
+      }
+    }
+  } | {
+  n: u32 = lower_in_oak(lw, work_raw, built_raw, sx, budget, slot, span(&witness), true)
   n == WITNESSED ? {
     // A witness input refuted the theorem (or fired a trap): reported
     // with the input's set leaf bits, no diagram built.
@@ -443,17 +554,16 @@ lower_and_solve: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, table_raw: c.P
     report_lowered(index, verdict, u32(0), u32(1), subslice(bits, u32(1), listed), listed, ser, ser_raw)
   } | {
     n < u32(0x80000000) ? { solve_lowered(l, lw, table_raw, built_raw, n, index, ser, ser_raw) } | {
-      none: [1]u32
       reason: u32 = NONE - n
       report(index, reason == REASON_ORDER ? { STATUS_EXCEEDED } | { STATUS_UNSUPPORTED }, reason, u32(1), view(&none), u32(0))
     }
-  }
+  } }
 }
 
-lower_serialized: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, table_raw: c.Ptr, work_raw: c.Ptr, built_raw: c.Ptr, out_raw: c.Ptr, n_syn: u32, budget: u32, slot: u32, index: u32): () {
+lower_serialized: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, table_raw: c.Ptr, work_raw: c.Ptr, built_raw: c.Ptr, out_raw: c.Ptr, n_syn: u32, budget: u32, slot: u32, index: u32, cases: u32): () {
   unsafe {
     obuf: Buffer[u32] = c.own[u32](out_raw, ser.out_total)
-    lower_and_solve(l, lw, ser, ser_raw, table_raw, work_raw, built_raw, view(&obuf), n_syn, budget, slot, index)
+    lower_and_solve(l, lw, ser, ser_raw, table_raw, work_raw, built_raw, view(&obuf), n_syn, budget, slot, index, cases)
     released_o: c.Ptr = c.disown(obuf)
   }
 }
@@ -464,9 +574,9 @@ lower_serialized: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, table_raw: c.
 // offset, word count (0 when the file did not parse), and parse reason.
 // Returns the stream offset where the theorems begin.
 parse_files: (par: Par, par_raw: c.Ptr, data: []u32, arena: [*]u32): u32 {
-  nfiles: u32 = data[u32(0)]
+  nfiles: u32 = data[u32(1)]
   arena[u32(0)] = nfiles
-  off: u32 = 1
+  off: u32 = 2
   at: u32 = u32(1) + nfiles * u32(3)
   f: u32 = 0
   unsafe {
@@ -492,9 +602,9 @@ parse_files: (par: Par, par_raw: c.Ptr, data: []u32, arena: [*]u32): u32 {
 
 // files_arena_words: the arena the files section needs.
 files_arena_words: (data: []u32): u32 {
-  nfiles: u32 = data[u32(0)]
+  nfiles: u32 = data[u32(1)]
   total: u32 = u32(1) + nfiles * u32(3)
-  off: u32 = 1
+  off: u32 = 2
   f: u32 = 0
   while f < nfiles {
     nbytes: u32 = data[off]
@@ -601,6 +711,7 @@ main: (): i32 {
 // solves Go-lowered variant k - 3; without files, slot k solves variant k.
 solve_stream: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, data: []u32, arena: []u32, theorems_at: u32, table_raw: c.Ptr, work_raw: c.Ptr, built_raw: c.Ptr, count: u32, slot: u32, budget: u32): () {
   off: u32 = theorems_at
+  cases: u32 = data[u32(0)]
   nfiles: u32 = arena[u32(0)]
   i: u32 = 0
   while i < count {
@@ -625,7 +736,7 @@ solve_stream: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, d
       none: [1]u32
       find_theorem(arena, subslice(data, name_start, name_words), name_bytes, span(&where)) ? {
         n_syn: u32 = serialize_in_oak(ser, ser_raw, out_raw, subslice(arena, where[u32(0)], where[u32(1)]), where[u32(2)])
-        n_syn < u32(0x80000000) ? { lower_serialized(l, lw, ser, ser_raw, table_raw, work_raw, built_raw, out_raw, n_syn, budget, slot, i) } | {
+        n_syn < u32(0x80000000) ? { lower_serialized(l, lw, ser, ser_raw, table_raw, work_raw, built_raw, out_raw, n_syn, budget, slot, i, cases) } | {
           report(i, STATUS_UNSUPPORTED, NONE - n_syn, u32(1), view(&none), u32(0))
         }
       } | {
@@ -680,7 +791,7 @@ func oakSolverBinary() (string, error) {
 }
 
 // encodeProblems writes the problems file the driver reads.
-func encodeProblems(theorems []oakTheorem, sources [][]byte, budget int) []byte {
+func encodeProblems(theorems []oakTheorem, sources [][]byte, cases, budget int) []byte {
 	packed := func(b []byte) []uint32 {
 		out := make([]uint32, (len(b)+3)/4)
 		for i, c := range b {
@@ -688,7 +799,7 @@ func encodeProblems(theorems []oakTheorem, sources [][]byte, budget int) []byte 
 		}
 		return out
 	}
-	maxTerms, total := 1, 1
+	maxTerms, total := 1, 2
 	for _, src := range sources {
 		total += 1 + (len(src)+3)/4
 	}
@@ -703,8 +814,9 @@ func encodeProblems(theorems []oakTheorem, sources [][]byte, budget int) []byte 
 	}
 	words := make([]uint32, 0, 4+total)
 	words = append(words, uint32(len(theorems)), uint32(maxTerms), uint32(budget), uint32(total))
-	// The files first: the count, then per file its byte count and bytes.
-	words = append(words, uint32(len(sources)))
+	// The cases bound of the exhaustive rung, then the files: the count,
+	// then per file its byte count and bytes.
+	words = append(words, uint32(cases), uint32(len(sources)))
 	for _, src := range sources {
 		words = append(words, uint32(len(src)))
 		words = append(words, packed(src)...)
@@ -758,7 +870,7 @@ func (th oakTheorem) slots(withSources bool) int {
 	return len(th.Problems)
 }
 
-func runOakSolver(theorems []oakTheorem, sources [][]byte, budget int) ([]prove.SolverVerdict, error) {
+func runOakSolver(theorems []oakTheorem, sources [][]byte, cases, budget int) ([]prove.SolverVerdict, error) {
 	withSources := len(sources) > 0
 	if len(theorems) == 0 {
 		return nil, nil
@@ -767,7 +879,7 @@ func runOakSolver(theorems []oakTheorem, sources [][]byte, budget int) ([]prove.
 	if err != nil {
 		return nil, err
 	}
-	encoded := encodeProblems(theorems, sources, budget)
+	encoded := encodeProblems(theorems, sources, cases, budget)
 	if os.Getenv("OAK_SOLVER_KEEP") != "" {
 		kept := filepath.Join(os.TempDir(), fmt.Sprintf("oak-problems-%d.bin", os.Getpid()))
 		_ = os.WriteFile(kept, encoded, 0o644)
@@ -863,7 +975,10 @@ func runOakSolver(theorems []oakTheorem, sources [][]byte, budget int) ([]prove.
 				oakPending[index] = oakOrders
 			}
 		}
-		decided := v.Status == 0 || v.Status == 1 || v.Status == 4 // 4: a witness input trapped
+		// 4: a witness input trapped; 5 and 7: the exhaustive rung decided or
+		// refuted; 6: the exhaustive rung's evaluation failed (the Go
+		// interpreter's to explain, a decided verdict for the race).
+		decided := v.Status == 0 || v.Status == 1 || v.Status == 4 || v.Status == 5 || v.Status == 6 || v.Status == 7
 		switch {
 		case decided && (!hasSyntax || isOak || oakLoweringDone[index]):
 			// The Oak lowering's verdict is preferred when it applies: a

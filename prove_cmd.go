@@ -86,7 +86,7 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 		}
 		// The source files go to the parser written in Oak, which finds
 		// each pending theorem by name.
-		verdicts, err := runOakSolver(theorems, lawSources(target), asm.NodeBudget)
+		verdicts, err := runOakSolver(theorems, lawSources(target), *cases, asm.NodeBudget)
 		if err != nil {
 			fmt.Fprintf(stderr, "oak prove: %v\n", err)
 			return 2
@@ -98,10 +98,24 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 		results = prove.ResolvePending(results, byName, func(name string) (prove.Result, bool) { return prove.GoDecision(model, name, "") }, func(name string) (prove.Result, bool) { return prove.GoWitness(model, name) })
 		if *cross == "go" {
 			for i, r := range results {
-				if _, oak := byName[r.Name]; !oak || !(strings.Contains(r.Detail, "the Oak solver") || strings.Contains(r.Detail, "decided in Oak")) || (r.Status != prove.Decided && r.Status != prove.Refuted) {
+				if _, oak := byName[r.Name]; !oak || !(strings.Contains(r.Detail, "the Oak solver") || strings.Contains(r.Detail, "decided in Oak") || strings.Contains(r.Detail, "enumerated in Oak")) || (r.Status != prove.Decided && r.Status != prove.Refuted) {
 					continue
 				}
 				loweredInOak := strings.Contains(r.Detail, "lowered and decided in Oak")
+				if strings.Contains(r.Detail, "enumerated in Oak") {
+					// The exhaustive rung ran in Oak: the Go interpreter's
+					// enumeration must agree.
+					fromGo, ok := prove.GoEnumeration(model, r.Name, *cases)
+					switch {
+					case !ok:
+					case r.Status == fromGo.Status:
+						results[i].Detail += "; the Go interpreter agrees"
+					default:
+						results[i].Status = prove.Open
+						results[i].Detail = fmt.Sprintf("the Go interpreter disagrees with the Oak enumeration: Go %s (%s), Oak %s (%s)", fromGo.Status, fromGo.Detail, r.Status, r.Detail)
+					}
+					continue
+				}
 				replayOrder := r.Order
 				if loweredInOak {
 					replayOrder = "" // the Oak lowering's orders are its own; any order of the Go decider's may confirm the verdict
