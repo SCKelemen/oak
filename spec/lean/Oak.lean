@@ -143,3 +143,4 @@ import Oak.RiscVMemory
 import Oak.SailRiscVBridge
 import Oak.Target
 import Oak.Freestanding
+import Oak.Rings

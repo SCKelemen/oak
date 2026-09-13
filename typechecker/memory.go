@@ -94,6 +94,29 @@ func atomicCellPath(expr ast.Expression) bool {
 	}
 }
 
+// atomicStorageBorrow admits the one way atomic storage crosses a call
+// (docs/spec/65-machine-memory.md section 1, the rings of ask 8): a
+// writable span whose elements are cells or records holding cells. The
+// span borrows caller-owned storage — identity, never a copy — and atomic
+// operations name cells through it by storage path (`cursor[0].tail`,
+// `seqs[i]`); an element itself still cannot be copied out or passed by
+// value. Views are read-only and cannot carry a cell that is written.
+func atomicStorageBorrow(typ Type) bool {
+	span, isArray := typ.(*ArrayType)
+	if !isArray || span == nil || !span.IsSpan {
+		return false
+	}
+	switch elem := span.ElementType.(type) {
+	case *AtomicType:
+		return true
+	case *RecordType:
+		return elem != nil
+	case *GenericType:
+		return elem != nil
+	}
+	return false
+}
+
 // atomicFieldShapeLegal admits the storage shapes a record field may take
 // when it involves atomics: a direct cell, or an owned array of cells.
 // A record containing either becomes storage identity itself (no copies).
