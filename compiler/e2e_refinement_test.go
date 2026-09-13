@@ -254,8 +254,9 @@ main: (): i32 {
 		t.Fatalf("compilation failed: %v", err)
 	}
 	// Each count includes the guard's definition: only raw's construction
-	// keeps a guard — once in raw's own body and once in the copy the
-	// source-level inliner (compiler/inline.go) splices into main.
+	// keeps a guard — in raw's own body and in its copy inlined into main
+	// (compiler/inline.go); frame's and aligned's constructions are
+	// discharged by shape in both places.
 	for name, want := range map[string]int{"Page": 3, "Slot": 1, "Even": 1} {
 		if got := strings.Count(output, "oak_refine_oak_"+name+"( "); got != want {
 			t.Fatalf("%s: expected %d guard occurrences, found %d:\n%s", name, want, got, output)

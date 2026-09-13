@@ -64,7 +64,7 @@ func (em *emitter) independence(fn *ast.FunctionStatement) (string, error) {
 			}
 		}
 	}
-	in := &independenceWalk{gid: gid, spans: spans, scalars: scalars, spanRecords: spanRecords, tileBases: map[string]string{}, tileIndices: map[string]string{}, functions: em.functions, body: fn.Body, shape: "element"}
+	in := &independenceWalk{em: em, gid: gid, spans: spans, scalars: scalars, spanRecords: spanRecords, tileBases: map[string]string{}, tileIndices: map[string]string{}, functions: em.functions, body: fn.Body, shape: "element", fusing: em.fusing}
 	if len(spans) == 0 {
 		return in.shape, nil
 	}
@@ -84,6 +84,10 @@ func (em *emitter) independence(fn *ast.FunctionStatement) (string, error) {
 }
 
 type independenceWalk struct {
+	em *emitter
+	// fusing names the kernels on the current fusion path, so a kernel
+	// calling itself through fusion fails closed rather than recurring.
+	fusing      map[string]bool
 	gid         string
 	spans       map[string]bool
 	scalars     map[string]bool
@@ -179,6 +183,36 @@ func (in *independenceWalk) expr(e ast.Expression, loops []loopBound) error {
 		return in.expr(v.Index, loops)
 	case *ast.InvocationExpression:
 		if callee, ok := v.Function.(*ast.Identifier); ok {
+			if target := in.functions[callee.Value]; target != nil && target.Kernel {
+				// Fusion (docs/spec/56-kernels.md section 2b): the callee
+				// runs at this position, so its footprint is this
+				// kernel's. Its accesses are judged as its own kernel's
+				// are — at its position, or gid * T + k — and the two
+				// kernels' shapes must agree, or one of them touches no
+				// span in the tile shape.
+				if len(v.Arguments) == 0 {
+					return in.fail(v, "kernel %s takes its position first", callee.Value)
+				}
+				if pos, isIdent := v.Arguments[0].(*ast.Identifier); !isIdent || pos.Value != in.gid {
+					return in.fail(v, "kernel %s is fused at this kernel's position; pass %s as its first argument", callee.Value, in.gid)
+				}
+				for _, a := range v.Arguments[1:] {
+					if err := in.expr(a, loops); err != nil {
+						return err
+					}
+				}
+				shape, err := in.em.fusedIndependence(target, in.fusing)
+				if err != nil {
+					return err
+				}
+				if shape != "element" {
+					if in.shape != "element" && in.shape != shape {
+						return in.fail(v, "kernel %s is a %s kernel and %s a %s kernel; a fused kernel has one shape", in.gid, in.shape, callee.Value, shape)
+					}
+					in.shape = shape
+				}
+				return nil
+			}
 			if target := in.functions[callee.Value]; target != nil {
 				for _, a := range v.Arguments {
 					if id, isIdent := a.(*ast.Identifier); isIdent && (in.spans[id.Value] || in.spanRecords[id.Value]) {
@@ -410,4 +444,20 @@ func counterOnlyLast(body *ast.BlockStatement, counter string) bool {
 		}
 	})
 	return count == 1
+}
+
+// fusedIndependence judges a kernel called from another kernel at its
+// position: its own independence check, guarded against a cycle.
+func (em *emitter) fusedIndependence(fn *ast.FunctionStatement, path map[string]bool) (string, error) {
+	if path[fn.Name.Value] {
+		return "", &IndependenceError{Msg: fmt.Sprintf("kernel %s is fused into itself", fn.Name.Value)}
+	}
+	saved := em.fusing
+	em.fusing = map[string]bool{}
+	for k := range path {
+		em.fusing[k] = true
+	}
+	em.fusing[fn.Name.Value] = true
+	defer func() { em.fusing = saved }()
+	return em.independence(fn)
 }

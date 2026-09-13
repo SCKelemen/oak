@@ -443,7 +443,16 @@ pass runs in rounds: a helper that called only helpers is a leaf once
 those are spliced into it, and the next round inlines it in turn — so an
 accessor chain (`tkind` over `tword` over `term_at` over `state`, the
 prover's shape) flattens to the element read it denotes. The rounds stop
-when a pass inlines nothing new.
+when a pass inlines nothing new. Three shapes are never candidates because
+a later analysis judges them at the call: a helper declaring `effects` or
+`forbids` (a node of the path a forbids report names), a helper with a
+function-typed parameter (the argument's effect row is checked against the
+parameter's at the call, `60-effects-allocation.md` section 2a), and a
+protocol's via callable (the resource analysis admits a state's
+construction only inside its transition, `112-protocols.md` section 5a).
+The reserved names keep arguments and locals apart — `__inl<N>_arg<i>` for
+a copied argument, `__inl<N>_l_<name>` for a renamed local — so a helper's
+local named `a1` never meets the temporary of its second argument.
 
 ## 10. Owned arrays as values
 

@@ -41,7 +41,7 @@ func EncodeFunction(fn *Function) ([]byte, []Relocation, error) {
 		case Label:
 			labels[it.Name] = offset
 		case Instruction:
-			offset += 4
+			offset += arm64Bytes(it)
 		case Align:
 			offset = alignUp(offset, it.Bytes)
 		}
@@ -52,6 +52,31 @@ func EncodeFunction(fn *Function) ([]byte, []Relocation, error) {
 	for _, item := range fn.Items {
 		switch it := item.(type) {
 		case Instruction:
+			if it.Mnemonic == "adrl" {
+				// adrp xR, sym; add xR, xR, #:lo12:sym — one relocation of
+				// kind adrl21 over both words (object.go, executable.go).
+				reg, isReg := it.Operands[0].(Register)
+				sym, isSym := it.Operands[1].(Symbol)
+				if !isReg || !isSym || len(it.Operands) != 2 {
+					return nil, nil, fmt.Errorf("%s:%d: adrl takes a register and a symbol", fn.Name, it.Line)
+				}
+				if _, local := labels[sym.Name]; local {
+					return nil, nil, fmt.Errorf("%s:%d: adrl %s names a label; adrl addresses program data", fn.Name, it.Line, sym.Name)
+				}
+				page, _, err := EncodeInstruction(Instruction{Mnemonic: "adrp", Operands: []Operand{reg, sym}, Line: it.Line}, offset, labels)
+				if err != nil {
+					return nil, nil, fmt.Errorf("%s:%d: %w", fn.Name, it.Line, err)
+				}
+				low, _, err := EncodeInstruction(Instruction{Mnemonic: "add", Operands: []Operand{reg, reg, Immediate{Value: 0}}, Line: it.Line}, offset+4, labels)
+				if err != nil {
+					return nil, nil, fmt.Errorf("%s:%d: %w", fn.Name, it.Line, err)
+				}
+				relocs = append(relocs, Relocation{Offset: int(offset), Kind: "adrl21", Symbol: sym.Name})
+				out = append(out, byte(page), byte(page>>8), byte(page>>16), byte(page>>24))
+				out = append(out, byte(low), byte(low>>8), byte(low>>16), byte(low>>24))
+				offset += 8
+				continue
+			}
 			word, reloc, err := EncodeInstruction(it, offset, labels)
 			if err != nil {
 				return nil, nil, fmt.Errorf("%s:%d: %w", fn.Name, it.Line, err)
@@ -70,6 +95,15 @@ func EncodeFunction(fn *Function) ([]byte, []Relocation, error) {
 		}
 	}
 	return out, relocs, nil
+}
+
+// arm64Bytes is the size of an instruction in the text: 4, or 8 for the
+// adrl pseudo (adrp then add).
+func arm64Bytes(instr Instruction) int64 {
+	if instr.Mnemonic == "adrl" {
+		return 8
+	}
+	return 4
 }
 
 func alignUp(n, to int64) int64 {

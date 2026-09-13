@@ -39,6 +39,9 @@ type ExecutableOptions struct {
 	// StackTop is the freestanding stub's initial sp, a multiple of
 	// 65536; 0 takes Base + 1 MiB.
 	StackTop uint64
+	// Data are the program's constant data symbols, placed read-only after
+	// the text in the one loaded segment (ObjectOptions.Data).
+	Data []DataSymbol
 	// RV64FloatABI is the e_flags float ABI, as ObjectOptions spells it.
 	RV64FloatABI string
 }
@@ -173,6 +176,9 @@ func WriteExecutable(functions []EncodedFunction, o ExecutableOptions) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
+	if err := layout.addData(o.Data); err != nil {
+		return nil, err
+	}
 	if len(layout.undefined) != 0 {
 		return nil, fmt.Errorf("executable: undefined symbols %v (every function the program reaches must be lowered natively)", layout.undefined)
 	}
@@ -195,6 +201,20 @@ func WriteExecutable(functions []EncodedFunction, o ExecutableOptions) ([]byte, 
 	symbolAddr := map[string]uint64{}
 	for _, d := range layout.defined {
 		symbolAddr[d.name] = textAddr + uint64(d.offset)
+	}
+	// The data follows the text in the segment, at its alignment (16 at
+	// least, so the file offset and the address stay congruent).
+	dataAlign := int64(16)
+	if layout.dataAlign > dataAlign {
+		dataAlign = layout.dataAlign
+	}
+	dataOff := textOff + int64(len(layout.text))
+	for dataOff%dataAlign != 0 {
+		dataOff++
+	}
+	dataAddr := textAddr + uint64(dataOff-textOff)
+	for _, d := range layout.dataSyms {
+		symbolAddr[d.name] = dataAddr + uint64(d.offset)
 	}
 	if err := resolveRelocations(layout, textAddr, symbolAddr); err != nil {
 		return nil, err
@@ -220,7 +240,12 @@ func WriteExecutable(functions []EncodedFunction, o ExecutableOptions) ([]byte, 
 		strtab = append(strtab, d.name...)
 		strtab = append(strtab, 0)
 	}
-	shstrtab := []byte("\x00.text\x00.symtab\x00.strtab\x00.shstrtab\x00")
+	for _, d := range layout.dataSyms {
+		symbols = append(symbols, sym{name: uint32(len(strtab)), info: 0x11 /* GLOBAL OBJECT */, shndx: 2, value: dataAddr + uint64(d.offset), size: uint64(d.size)})
+		strtab = append(strtab, d.name...)
+		strtab = append(strtab, 0)
+	}
+	shstrtab := []byte("\x00.text\x00.rodata\x00.symtab\x00.strtab\x00.shstrtab\x00")
 	nameOff := func(name string) uint32 {
 		if name == "" {
 			return 0
@@ -238,12 +263,12 @@ func WriteExecutable(functions []EncodedFunction, o ExecutableOptions) ([]byte, 
 		}
 		return n
 	}
-	textEnd := textOff + int64(len(layout.text))
-	symOff := align(textEnd, 8)
+	dataEnd := dataOff + int64(len(layout.data))
+	symOff := align(dataEnd, 8)
 	strOff := symOff + 24*int64(len(symbols))
 	shstrOff := strOff + int64(len(strtab))
 	shOff := align(shstrOff+int64(len(shstrtab)), 8)
-	total := shOff + 64*5
+	total := shOff + 64*6
 	if total > 1<<31 {
 		return nil, fmt.Errorf("executable: %d bytes exceed the writer's reach", total)
 	}
@@ -282,19 +307,22 @@ func WriteExecutable(functions []EncodedFunction, o ExecutableOptions) ([]byte, 
 	put16(56) // phentsize
 	put16(1)  // phnum
 	put16(64) // shentsize
-	put16(5)  // shnum
-	put16(4)  // shstrndx
-	// The one PT_LOAD: the text, read and execute, at the load address.
-	put32(1)                        // PT_LOAD
-	put32(5)                        // PF_R | PF_X
-	put64(uint64(textOff))          // offset
-	put64(base)                     // vaddr
-	put64(base)                     // paddr
-	put64(uint64(len(layout.text))) // filesz
-	put64(uint64(len(layout.text))) // memsz
-	put64(page)                     // align
+	put16(6)  // shnum
+	put16(5)  // shstrndx
+	// The one PT_LOAD: the text and the data after it, read and execute,
+	// at the load address.
+	put32(1)                         // PT_LOAD
+	put32(5)                         // PF_R | PF_X
+	put64(uint64(textOff))           // offset
+	put64(base)                      // vaddr
+	put64(base)                      // paddr
+	put64(uint64(dataEnd - textOff)) // filesz
+	put64(uint64(dataEnd - textOff)) // memsz
+	put64(page)                      // align
 	pad(textOff)
 	out = append(out, layout.text...)
+	pad(dataOff)
+	out = append(out, layout.data...)
 	pad(symOff)
 	for _, s := range symbols {
 		put32(s.name)
@@ -321,7 +349,8 @@ func WriteExecutable(functions []EncodedFunction, o ExecutableOptions) ([]byte, 
 	}
 	section("", 0, 0, 0, 0, 0, 0, 0, 0, 0)
 	section(".text", 1, 6 /* ALLOC|EXECINSTR */, textAddr, uint64(textOff), uint64(len(layout.text)), 0, 0, uint64(layout.align), 0)
-	section(".symtab", 2, 0, 0, uint64(symOff), uint64(24*len(symbols)), 3, 1, 8, 24)
+	section(".rodata", 1, 2 /* ALLOC */, dataAddr, uint64(dataOff), uint64(len(layout.data)), 0, 0, uint64(dataAlign), 0)
+	section(".symtab", 2, 0, 0, uint64(symOff), uint64(24*len(symbols)), 4, 1, 8, 24)
 	section(".strtab", 3, 0, 0, uint64(strOff), uint64(len(strtab)), 0, 0, 1, 0)
 	section(".shstrtab", 3, 0, 0, uint64(shstrOff), uint64(len(shstrtab)), 0, 0, 1, 0)
 	if int64(len(out)) != total {
@@ -360,6 +389,37 @@ func resolveRelocations(l *textLayout, textAddr uint64, symbolAddr map[string]ui
 			word := le.Uint32(l.text[r.offset:])
 			word = word&^(0x7ffff<<5) | (uint32(delta>>2)&0x7ffff)<<5
 			le.PutUint32(l.text[r.offset:], word)
+		case "adrl21":
+			// adrp xR, page(sym) - page(place); add xR, xR, #lo12(sym).
+			if r.offset+8 > int64(len(l.text)) {
+				return fmt.Errorf("executable: an adrl at %d cut short", r.offset)
+			}
+			pageDelta := (int64(target) >> 12) - (int64(place) >> 12)
+			if pageDelta < -(1<<20) || pageDelta >= 1<<20 {
+				return fmt.Errorf("executable: adrl to %s at %#x is %d pages away, beyond adrp's reach", r.symbol, place, pageDelta)
+			}
+			adrp := le.Uint32(l.text[r.offset:])
+			adrp = adrp&^(0x3<<29|0x7ffff<<5) | uint32(pageDelta&0x3)<<29 | uint32((pageDelta>>2)&0x7ffff)<<5
+			add := le.Uint32(l.text[r.offset+4:])
+			add = add&^(0xfff<<10) | uint32(target&0xfff)<<10
+			le.PutUint32(l.text[r.offset:], adrp)
+			le.PutUint32(l.text[r.offset+4:], add)
+		case "riscv_pcrel":
+			// auipc rd, hi20 then addi rd, rd, lo12: the same split as a call's.
+			if r.offset+8 > int64(len(l.text)) {
+				return fmt.Errorf("executable: an la at %d cut short", r.offset)
+			}
+			if delta < -(1<<31) || delta >= 1<<31 {
+				return fmt.Errorf("executable: la of %s at %#x is %d bytes away, beyond auipc's reach", r.symbol, place, delta)
+			}
+			hi := (delta + 0x800) >> 12
+			lo := delta - hi<<12
+			auipc := le.Uint32(l.text[r.offset:])
+			addi := le.Uint32(l.text[r.offset+4:])
+			auipc = auipc&0xfff | uint32(hi&0xfffff)<<12
+			addi = addi&0x000fffff | uint32(lo&0xfff)<<20
+			le.PutUint32(l.text[r.offset:], auipc)
+			le.PutUint32(l.text[r.offset+4:], addi)
 		case "riscv_call_plt":
 			// auipc ra, hi20 then jalr ra, lo12(ra): hi rounds so lo is a
 			// signed 12-bit remainder.
