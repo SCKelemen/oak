@@ -93,6 +93,7 @@ import Oak.CompareExchangeRefinement
 import Oak.CheckedArithmeticRefinement
 import Oak.ConversionRefinement
 import Oak.LiteralFitRefinement
+import Oak.LoweringRefinement
 import Oak.Semver
 import Oak.Loops
 import Oak.Regions
