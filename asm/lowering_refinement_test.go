@@ -50,6 +50,13 @@ var loweringRenders = []struct {
 	{"f: (a, b: u32) -> Bool", "!(a < b)", "((a lo b) xor 1)"},
 	{"f: (a, b: u32) -> u32", "a < b ? a | b", "((a lo b) ? a : b)"},
 	{"f: (a, b: i64) -> i64", "a < b ? b - a | a - b", "((a lt b) ? (b sub a) : (a sub b))"},
+	// Span elements (`elem`, `len`): a symbolic index is a select, a constant
+	// index the element parameter under the same name; a select is masked to
+	// its own width by zeroExtend, so a widening masks twice.
+	{"f: (v: []u32, i: u32) -> u32", "v[i]", "v[i]"},
+	{"f: (v: []u32, i: u32) -> u32", "v[i + 1] * v[0]", "(v[(i add 1)] mul v[0])"},
+	{"f: (b: []u8, i: u32) -> u32", "u32(b[i])", "((b[i] and 255) and 255)"},
+	{"f: (v: []u32, i: u32) -> Bool", "i < len(v)", "(i lo len(v))"},
 }
 
 // Locals and calls (LoweringRefinement.lean, `letIn` and `call`): a local
