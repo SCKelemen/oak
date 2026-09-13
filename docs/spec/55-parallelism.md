@@ -88,13 +88,15 @@ the leftovers combine right to left — so four elements give
 `f(f(x0, x1), f(x2, x3))`, exactly `simd.reduce_add`, and any count gives one
 fixed tree that C, the interpreter, and `Oak.Reduce` (Lean) compute
 identically (`tree_four`, `tree_eight`). `reduce.left(xs, zero, f)` is the
-sequential left fold. The first option is `laws { associative }` on an
-operator definition (`10-syntax.md` §14a): `Oak.Reduce.tree_assoc` proves
-that under associativity the tree equals the left fold from the first
-element, which is what licenses a backend to choose any grouping for such
-an operation, and the type checker uses it: `reduce.tree` over an operator
-declaring the law is lowered to `reduce.chain`, that left fold
-(`tree_eq_chainFold`). Without the law it computes the tree named.
+sequential left fold. The first option is `laws { associative }` on the
+reducing function — an operator definition or a plain binary function
+(`10-syntax.md` §14a): `Oak.Reduce.tree_assoc` proves that under
+associativity the tree equals the left fold from the first element, which
+is what licenses a backend to choose any grouping for such an operation,
+and the type checker uses it where a block asks for it (`order bounded`,
+below): there `reduce.reduce` over a function declaring the law is lowered
+to `reduce.chain`, that left fold (`tree_eq_chainFold`). Without the law,
+and outside such a block, it computes the tree named.
 
 **An order is a function.** When a program needs a second order beside
 the one it computes with — the fused attention's online-softmax merge,
@@ -117,32 +119,40 @@ computed.
 reduction inside it, so a routine says it once rather than at each call:
 
 ```oak
+plus: (a: f32, b: f32): f32 laws { associative, commutative, identity(0.0) } = a + b
+
 order left {                       // every reduce.reduce here is the left fold
   s: f32 = r.reduce(view(&xs), zero, plus)
 }
-order any {                        // permission to regroup — needs the claim
-  t: Sum = r.reduce(view(&sums), Sum { v: 0 }, add)   // add declares associative
+order bounded {                    // permission to regroup — needs the claim
+  t: f32 = r.reduce(view(&xs), zero, plus)   // plus declares associative
 }
 ```
 
 `reduce.reduce(xs, zero, f)` is the reduction whose order the enclosing
 `order` block names: `tree` (the binary-counter tree), `left` (the
-sequential fold), or `any` — the permission to regroup, which lowers the
-call to `reduce.chain` and is **refused** unless `f` is an operator
-declaring `laws { associative }` (`10-syntax.md` §14a): without the claim
-the checker reports the call and names the two spellings that state the
-intent. Outside every order block `reduce.reduce` is `tree`: **the exact
-order is the default**, and nothing regroups unless a block says `any`
-and the operator carries the claim. The innermost block wins; an explicit
-`reduce.tree` or `reduce.left` keeps its name inside any block. The
-checker rewrites each call to the order it resolved to, so the C backend,
-the interpreter, and the extraction see a named order (the semantic model
-lists the rewrites, `LawLowerings`), and the theorems above relate the
-orders — `tree_eq_chainFold` is what `any` rests on. The precise reading
-for floating point: under `order any`, a reduction over an `f32` add
-declared associative computes *some* grouping's value — a **bounded**
-quantity — while `order tree`, `order left`, and the default compute the
-exact named grouping bit for bit. The bound is a theorem
+sequential fold), or `bounded` — the permission to regroup, which lowers
+the call to `reduce.chain` and is **refused** unless `f` declares
+`laws { associative }` (`10-syntax.md` §14a; an operator definition or a
+plain binary function such as `plus` above): without the claim the
+checker reports the call and names the two spellings that state the
+intent. There is no unchecked order — a result nobody can check is not a
+result the language returns (the ml pilot's RFC 0004, "declared order").
+Outside every order block `reduce.reduce` is `tree`: **the exact order is
+the default**, and nothing regroups unless a block says `bounded` and the
+function carries the claim. The innermost block wins; an explicit
+`reduce.tree` or `reduce.left` keeps its name inside any block and outside
+every one. The checker rewrites each call to the order it resolved to, so
+the C backend, the interpreter, and the extraction see a named order (the
+semantic model lists the rewrites, `LawLowerings`; `Oak.Reduce.resolve` is
+the rule, with `resolve_default_exact`, `resolve_bounded_needs_claim`, and
+`resolve_regroups_only_bounded`), and the theorems above relate the orders
+— `tree_eq_chainFold` is what `bounded` rests on (`bounded_sound`). The
+precise reading for floating point: under `order bounded`, a reduction
+over an `f32` add declared associative computes *some* grouping's value —
+a **bounded** quantity, which is the block's name — while `order tree`,
+`order left`, and the default compute the exact named grouping bit for
+bit. The bound is a theorem
 (`Oak.FloatBounds`, over the rounding model of `Oak.Floats`: a value is an
 integer rounded to `p` significant bits after every addition, `u = 2^-p`
 the unit roundoff):
@@ -156,8 +166,8 @@ the unit roundoff):
   `B p d + 2^(p·d) = (2^p + 1)^d` (`bound_closed`), so the reading needs
   no first-order approximation.
 - `chain_error`: `reduce.chain` — the left fold from the first element,
-  what `any` lowers the reduction to — is the grouping of depth `n − 1`
-  over `n` values, so what Oak computes under `order any` is within
+  what `bounded` lowers the reduction to — is the grouping of depth `n − 1`
+  over `n` values, so what Oak computes under `order bounded` is within
   `((1 + u)^(n−1) − 1) · Σ|xᵢ|` of the exact sum.
 - `groupings_differ`: two groupings of the same values differ by at most
   the sum of their bounds — the distance between any two orders a

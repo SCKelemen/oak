@@ -86,7 +86,7 @@ func TestTLAConformanceReportsDifferences(t *testing.T) {
 				var out []string
 				dropped := false
 				for _, l := range lines {
-					if !dropped && strings.HasPrefix(strings.TrimSpace(l), "state = \"Running\" /\\ ((who < 2) /\\ ~(parked[who]))") {
+					if !dropped && strings.HasPrefix(strings.TrimSpace(l), "state = \"Running\" /\\ ((who < 2) /\\ ((who < 2) /\\ ~(parked[who])))") {
 						dropped = true
 						continue
 					}

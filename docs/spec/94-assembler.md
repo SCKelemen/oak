@@ -289,6 +289,17 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   (`arm64.write_vbar_el2(address_of(vectors))`). Ordinary Oak functions
   have no exposed address.
 
+**Vector accesses (2026-09-13).** A `q` load or store over a byte span at
+element index `wI` touches sixteen elements; the checker admits it under
+the *slack* guard the native backend emits: `cmp wL, #16; b.lo trap`
+establishes `len ≥ 16`, `sub wT, wL, #16` records `wT = len − 16` for
+the span whose length register is `wL` (`slackFacts`), and `cmp wI, wT;
+b.hi trap` leaves the fall-through path knowing `wI + 16 ≤ len`
+(`idxFacts` with `slack`), which admits an access of `16 / elem` elements
+at `wI` with `uxtw #log2(elem)` (`Oak.Assembler.index_access_lanes`,
+`slack_guard`). The facts die as index facts do: a write to `wI`, `wT`,
+or `wL` forgets them.
+
 - **The operand-stack shorthand** (§2) is implemented as desugaring
   (`asm/stack.go`): `push <param>` writes the parameter's contract binding
   for the author, `push #imm` pushes an immediate, an operand-less
@@ -1884,6 +1895,67 @@ verifier as the typed literal `T(init)` on a copy of the body, so
 `page_size` and `entries` cost nothing and leave nothing to the C backend;
 the emitted C keeps the constant (`compiler/native_bodies.go`).
 
+**Atomics.** The builtins of `65-machine-memory.md` lower on the AArch64
+lane when the cell is reached through a writable span (§7a there): the
+element address as a region, `ldar`/`stlr` and their narrow forms,
+`dmb`, and the `ldxr`/`ldaxr` … `stxr`/`stlxr` loop for the
+read-modify-writes. The checker admits the exclusive store through the
+element region; the verifier reads the acquire and exclusive loads as the
+element and models an atomic load as the cell's read, so straight-line
+atomic reads verify while writers and retry loops are trusted against
+the C oracle. The rv64 lane leaves atomics to the C backend.
+
+**Instruction functions on the native lane (landed).** The machine
+library's calls lower to the instructions they name, through the
+assembler's own parser (`asm.ParseInstructionLine`), so the spelling the
+checker and the encoder see is the units': `arm64.read_X()` is `mrs` and
+`arm64.write_X(v)` is `msr` over the same catalog the C backend's helpers
+come from (`semir/sysreg.go`, the name lowercased into the encoder's
+table), `dmb`/`dsb` with their scope and `isb` for the barriers, the
+event-control instructions (`msr daifset, #2`, `wfi`, `wfe`, `sev`),
+`rev`/`rbit`/`clz` for the scalar functions (which the verifier proves as
+the instruction terms it already knows), and a control transfer `eret_x0(v)`
+as `mov x0, v` then `eret`, the end of a `never` function (which has no
+epilogue and no `ret`). A body using a system instruction carries the
+checker's `system` capability, so the checker's access-direction table
+judges every register access as it judges a unit's; an instruction
+function is an instruction, not a call, so it neither saves `x30` nor
+parks a span. Executed (`compiler/e2e_native_instructions_test.go`):
+`cntvct_el0`/`cntfrq_el0` reads, barriers, and the scalar functions on an
+arm64 host; the hypervisor adapter's EL2 register program (the DAIF
+mask, the `hcr`/`vttbr`/`vtcr`/`sp_el1`/`elr`/`spsr` writes, `isb`, and
+an `eret_x0` entry) lowers, is admitted, and encodes for
+`freestanding/arm64` — the bodies that kept the pilot's modules in C.
+
+**Freestanding modules realized natively (landed).** `oak build -target
+freestanding/arm64 -native -asm native` produces the one relocatable
+object the build promises: the C compiles to its object and the driver's
+partial link (`-r`) joins it with the Oak companion object, so the pilot
+links one file as before while some bodies stay with C. `-link oak` on a
+freestanding target writes the Oak object alone (`EmitNativeObject`: every
+body native, no globals, no extern bindings, `main` not required — a
+module exports its `pub` functions); `-link oak-image` writes the
+standalone image with the start stub; on Linux `-link oak` is the static
+executable. Checked (`compiler/e2e_native_object_test.go`): the native
+object of the integer corpus for both lanes with every function a symbol,
+the refusal by name, and the partially linked mixed module.
+
+**Check elision under the checker's own facts (landed, AArch64 lane).**
+An element access the typechecker proved in range (`IndexProven`, the
+extent facts of `50-borrowing.md`) is lowered without its guard, reading
+the index from the loop variable's own callee-saved register — the
+register the loop's exit test compared — so the fact that test left on
+the path is what admits the access; the seam checker then admits or
+refuses the body, and on refusal the compiler lowers it again with every
+guard (`compiler/native_bodies.go`; the diagnostic names the finding).
+The optimizer never decides safety: the elision is only what the checker
+already knows, and its refusal is the fallback. The span sum now has one
+compare, the loop's exit test, before its load (`ldr w10, [x0, w20, uxtw
+#2]`), and the verifier still proves it. On the RV64 lane the exit test
+compares canonical (sign-extended) values while the guard fact needs the
+zero-extended index, so its guards stay until the index representation
+changes; the C backend elides through `IndexProven` as before.
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against) and fractional-LMUL forms. The term
@@ -1937,3 +2009,21 @@ checker's binding and clobber facts, already computed. Acceptance: the
 spec's `add_asm` and a shift/mask extractor verify; a deliberately wrong
 body (`sub` for `add`) is rejected with the differing term printed; a body
 with memory or a call reports "not verified: trusted per §5".
+
+### 9.x Vectors on the native lane (2026-09-13)
+
+The native backend lowers the fixed vectors (`93-simd.md` §1.4 "The native
+backend"): values in the vector register file, one NEON instruction per
+operation, loads and stores under the slack guard of §7. A function whose
+signature carries a vector follows the vector register contract this
+chapter's `contractClass` already assigns to `simd.*` (v0–v7), which the C
+backend's lane-array struct does not (AAPCS64 passes a sixteen-byte
+struct of bytes in two general registers). So such a function's native
+entry is encoded under its name suffixed `_neon_abi`, native callers
+reach it there, and the C emitter defines the Oak name as a converting
+shim over the entry (`vld1q`/`vst1q` around the call) that the C compiler
+inlines. A natively lowered function that passes vectors to a callee the
+C backend realizes is itself left to the C backend, to a fixpoint
+(`compiler/native_bodies.go`), so no call crosses the two contracts
+unconverted. The suffix is reserved the way `__` is: no Oak identifier
+ends in it.

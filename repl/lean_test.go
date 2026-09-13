@@ -229,3 +229,26 @@ func TestLeanStatesIdentityAndIdempotent(t *testing.T) {
 		}
 	}
 }
+
+// A plain binary function's laws (docs/spec/10-syntax.md section 14a; the
+// ml pilot's RFC 0004) are stated the same way, over the extracted
+// function, with the docstring naming the function rather than an operator.
+func TestLeanStatesLawsOnPlainFunctions(t *testing.T) {
+	session := NewSession(t.TempDir())
+	if _, err := session.Submit("join: (a: u32, b: u32): u32 laws { associative, commutative } = a | b"); err != nil {
+		t.Fatal(err)
+	}
+	text, err := session.LeanObligations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"`join` on `u32` declares `associative`",
+		"theorem law_join_associative (a b c : Defs.u32) (fuel : Nat) :\n    (Defs.join a b fuel >>= fun ab => Defs.join ab c fuel) = (Defs.join b c fuel >>= fun bc => Defs.join a bc fuel) := by\n  sorry",
+		"theorem law_join_commutative (a b : Defs.u32) (fuel : Nat) :\n    Defs.join a b fuel = Defs.join b a fuel := by\n  sorry",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in:\n%s", want, text)
+		}
+	}
+}

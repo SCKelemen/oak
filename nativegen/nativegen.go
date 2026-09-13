@@ -36,6 +36,7 @@ import (
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/semir"
+	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
@@ -46,6 +47,11 @@ type scalar struct {
 	signed  bool
 	isBool  bool
 	isFloat bool // f32/f64: held in the s/d view of a vector register
+	// isVec marks the fixed 128-bit vectors (nativegen/simd.go): held whole
+	// in a vector register, lanes of laneBits each.
+	isVec    bool
+	lanes    int
+	laneBits int
 }
 
 var scalars = map[string]scalar{
@@ -60,6 +66,9 @@ func scalarOf(expr ast.Expression) (scalar, bool) {
 	if expr == nil {
 		return scalar{}, false
 	}
+	if v, isVec := vecTypeOf(expr); isVec {
+		return v, true
+	}
 	s, ok := scalars[expr.String()]
 	return s, ok
 }
@@ -73,6 +82,10 @@ func (s scalar) wide() bool { return s.bits == 64 }
 type span struct {
 	elem     scalar
 	writable bool
+	// atomic marks a span of cells (`[*]Atomic[T]`, docs/spec/65-machine-memory.md
+	// section 1): its elements are reached only by the atomic builtins
+	// (nativegen/atomics.go), never by a plain load or store.
+	atomic bool
 	// elemLayout: the element type when the span holds records (elem unused).
 	elemLayout *recordLayout
 	baseReg    int // x register holding the base
@@ -133,6 +146,9 @@ func spanOf(expr ast.Expression) (span, bool) {
 	marker, isIdent := index.Index.(*ast.Identifier)
 	if !isIdent || (marker.Value != "*" && marker.Value != "") {
 		return span{}, false
+	}
+	if carrier, isCell := atomicCarrier(index.Left); isCell {
+		return span{elem: carrier, writable: marker.Value == "*", atomic: true}, true
 	}
 	elem, ok := scalarOf(index.Left)
 	if !ok || elem.isBool {
@@ -292,6 +308,8 @@ const (
 )
 
 type recordField struct {
+	// atomic marks an Atomic[T] cell placed as its carrier T.
+	atomic bool
 	kind   fieldKind
 	typ    scalar // the scalar, or the array's element type
 	offset int64
@@ -468,6 +486,12 @@ func (g *generator) layoutOf(name string) (*recordLayout, error) {
 		var rep semir.RecordFieldRepresentation
 		var placed recordField
 		switch {
+		case func() bool { _, ok := atomicCarrier(field.Value); return ok }():
+			// An atomic cell is placed as its carrier (docs/spec/65-machine-memory.md
+			// section 1); only the atomic builtins reach it.
+			typ, _ := atomicCarrier(field.Value)
+			rep = fieldRepresentations[typ.name]
+			placed = recordField{kind: fieldScalar, typ: typ, atomic: true}
 		case func() bool { _, ok := scalarOf(field.Value); return ok }():
 			typ, _ := scalarOf(field.Value)
 			fixed, placeable := fieldRepresentations[field.Value.String()]
@@ -960,6 +984,9 @@ func unsupported(format string, args ...interface{}) Unsupported {
 
 // generator holds one function's lowering.
 type generator struct {
+	// rvLane marks the rv64 lane's embedding: the AArch64-only lowerings
+	// (the atomics) leave the function to the C backend there.
+	rvLane    bool
 	fn        *ast.FunctionStatement
 	tc        *typechecker.TypeChecker
 	functions map[string]*ast.FunctionStatement
@@ -1016,6 +1043,19 @@ type generator struct {
 	// followed — instructions there are unreachable and are not emitted (the
 	// checker refuses them).
 	terminated bool
+	// system: the body uses an instruction function that needs the
+	// checker's system capability (mrs/msr, eret, the DAIF writes);
+	// never: the function's result type is never (it leaves by eret).
+	system bool
+	never  bool
+	// elide: an element access the typechecker proved in range
+	// (IndexProven) is lowered without its guard, leaving the checker to
+	// admit it from the facts already on the path (the loop's own exit
+	// test) or to refuse — on refusal the compiler lowers again with
+	// guards (compiler/native_bodies.go). Safety stays the checker's.
+	elide bool
+	// elided counts the guards left out under elide (reported).
+	elided int
 }
 
 type slotBinding struct {
@@ -1032,7 +1072,7 @@ const calleeLow, calleeHigh = 19, 28
 
 // The vector file: v16–v23 scratch (caller-saved), v8–v15 for float
 // variables (callee-saved: their d views are saved and restored).
-const vecScratchLow, vecScratchHigh = 16, 23
+const vecScratchLow, vecScratchHigh = 16, 31
 const vecCalleeLow, vecCalleeHigh = 8, 15
 
 // Lane names the assembler lane a body is lowered on and the target facts
@@ -1045,6 +1085,10 @@ type Lane struct {
 	// floating point stays with the C backend there, as an F/D unit is
 	// refused (docs/spec/94-assembler.md §9).
 	SoftFloat bool
+	// ElideProven lowers element accesses the typechecker proved in range
+	// without their guards on the AArch64 lane; the checker admits or
+	// refuses the body, and the compiler falls back to guards on refusal.
+	ElideProven bool
 }
 
 // CompileFor lowers one Oak function on a lane (docs/spec/94-assembler.md
@@ -1053,6 +1097,9 @@ type Lane struct {
 func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	switch lane.Arch {
 	case "", asm.ArchArm64:
+		if lane.ElideProven {
+			return compileArm64(fn, functions, records, adts, tc, true)
+		}
 		return Compile(fn, functions, records, adts, tc)
 	case asm.ArchRV64:
 		return compileRV64(fn, functions, records, adts, tc, lane.SoftFloat)
@@ -1065,13 +1112,23 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 // record type by name (their field lists); tc is the checker that typed
 // the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, tc *typechecker.TypeChecker) (*asm.Function, error) {
+	return compileArm64(fn, functions, records, adts, tc, false)
+}
+
+// ElidedGuards reports how many element guards a lowering left out under
+// Lane.ElideProven (for the compiler's diagnostics).
+func ElidedGuards(fn *asm.Function) int { return elidedGuards[fn] }
+
+var elidedGuards = map[*asm.Function]int{}
+
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, tc *typechecker.TypeChecker, elide bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	if len(fn.Parameters) > 8 {
 		return nil, unsupported("more than eight parameters")
 	}
-	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, line: fn.Token.Line}
+	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, line: fn.Token.Line, elide: elide}
 	parkSpans := mentionsCall(fn.Body)
 	if hasVariables(fn) || parkSpans {
 		g.saveArea = 8 * (calleeHigh - calleeLow + 1)
@@ -1133,7 +1190,11 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 		return nil, unsupported("the parameters exhaust the eight argument registers")
 	}
 	g.hasCalls = mentionsCall(fn.Body)
-	if fn.ReturnType != nil {
+	if fn.ReturnType != nil && fn.ReturnType.String() == "never" {
+		// The function leaves by an exception return, never by ret.
+		g.never = true
+	}
+	if fn.ReturnType != nil && !g.never {
 		if fn.ReturnType.String() != "()" {
 			if name, isRecord := g.recordTypeName(fn.ReturnType); isRecord {
 				layout, err := g.layoutOf(name)
@@ -1184,7 +1245,7 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 	if frame > 4080 {
 		return nil, unsupported("a frame of %d bytes", frame)
 	}
-	out := &asm.Function{Name: fn.Name.Value, Signature: fn, Line: fn.Token.Line, Fallback: true, Records: records, ADTs: adts}
+	out := &asm.Function{Name: NativeSymbol(fn), Signature: fn, Line: fn.Token.Line, Fallback: true, Records: records, ADTs: adts, System: g.system}
 	g.line = fn.Token.Line
 	var prologue []asm.Item
 	if frame > 0 {
@@ -1249,7 +1310,7 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 			continue
 		}
 		s, _ := scalarOf(p.Type)
-		if s.isFloat {
+		if s.isFloat || s.isVec {
 			i := vecIndex
 			vecIndex++
 			out.Bindings = append(out.Bindings, asm.Binding{Register: vr(i, s), Param: p.Name.Value, Line: fn.Token.Line})
@@ -1333,6 +1394,9 @@ func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatem
 		spell(p.Type)
 	}
 	spell(fn.ReturnType)
+	if g.elided > 0 {
+		elidedGuards[out] = g.elided
+	}
 	return out, nil
 }
 
@@ -1962,7 +2026,13 @@ func hasVariables(fn *ast.FunctionStatement) bool {
 func (g *generator) storeVar(name string, r int) asm.Instruction {
 	typ := g.types[name]
 	if v, inReg := g.regs[name]; inReg && v >= 0 {
+		if typ.isVec {
+			return g.ins("orr", vreg(v-vecBase, "16b"), vreg(r-vecBase, "16b"), vreg(r-vecBase, "16b"))
+		}
 		return g.ins(moveOf(typ), reg(v, typ), reg(r, typ))
+	}
+	if typ.isVec {
+		return g.ins("str", qreg(r-vecBase), g.slotMem(g.slots[name]))
 	}
 	return g.ins("str", reg(r, typ), g.slotMem(g.slots[name]))
 }
@@ -1971,7 +2041,13 @@ func (g *generator) storeVar(name string, r int) asm.Instruction {
 func (g *generator) loadVar(name string, r int) asm.Instruction {
 	typ := g.types[name]
 	if v, inReg := g.regs[name]; inReg && v >= 0 {
+		if typ.isVec {
+			return g.ins("orr", vreg(r-vecBase, "16b"), vreg(v-vecBase, "16b"), vreg(v-vecBase, "16b"))
+		}
 		return g.ins(moveOf(typ), reg(r, typ), reg(v, typ))
+	}
+	if typ.isVec {
+		return g.ins("ldr", qreg(r-vecBase), g.slotMem(g.slots[name]))
 	}
 	return g.ins("ldr", reg(r, typ), g.slotMem(g.slots[name]))
 }
@@ -2039,6 +2115,9 @@ func (g *generator) newLabel(hint string) string {
 
 // reg spells scratch register r at the type's width.
 func reg(r int, s scalar) asm.Register {
+	if s.isVec {
+		return vreg(r-vecBase, s.arr())
+	}
 	if s.isFloat {
 		return vr(r-vecBase, s)
 	}
@@ -2054,6 +2133,9 @@ const vecBase = 100
 
 // vr spells vector register n in the type's scalar view.
 func vr(n int, s scalar) asm.Register {
+	if s.isVec {
+		return wholeV(n)
+	}
 	view := "s"
 	if s.wide() {
 		view = "d"
@@ -2070,7 +2152,7 @@ func dr(n int) asm.Register {
 
 func (g *generator) alloc(typ scalar) (int, error) {
 	pool := &g.free
-	if typ.isFloat {
+	if typ.isFloat || typ.isVec {
 		pool = &g.freeF
 		g.usedFloat = true
 	}
@@ -2546,7 +2628,22 @@ func loadOf(s scalar) string {
 func (g *generator) declare(name string, s scalar) int64 {
 	offset := int64(-1)
 	r := -1
-	if s.isFloat {
+	if s.isVec {
+		// A vector local: a callee-saved vector register when the function
+		// makes no call (a callee may clobber their upper halves), else a
+		// sixteen-byte, sixteen-aligned frame slot.
+		g.usedFloat = true
+		if !g.hasCalls && g.usedCalleeV < vecCalleeHigh-vecCalleeLow+1 {
+			r = vecBase + vecCalleeLow + g.usedCalleeV
+			g.usedCalleeV++
+		} else {
+			if g.nslots%2 != 0 {
+				g.nslots++
+			}
+			offset = 8 * g.nslots
+			g.nslots += 2
+		}
+	} else if s.isFloat {
 		g.usedFloat = true
 		if g.usedCalleeV < vecCalleeHigh-vecCalleeLow+1 {
 			r = vecBase + vecCalleeLow + g.usedCalleeV
@@ -2664,6 +2761,12 @@ func (g *generator) typeOf(expr ast.Expression, hint *scalar) (scalar, error) {
 		}
 		return sp.elem, nil
 	case *ast.InvocationExpression:
+		if member, isSimd := simdCallee(e.Function); isSimd {
+			return g.simdResultType(member, e.Arguments)
+		}
+		if member, isLibrary := libraryMember(e); isLibrary {
+			return instructionFunctionType(member)
+		}
 		ident, isIdent := e.Function.(*ast.Identifier)
 		if !isIdent {
 			return scalar{}, unsupported("a call through a value")
@@ -2676,6 +2779,12 @@ func (g *generator) typeOf(expr ast.Expression, hint *scalar) (scalar, error) {
 				return scalar{}, err
 			}
 			return scalars["u32"], nil
+		}
+		if spec, isAtomic := semir.LookupAtomicBuiltin(ident.Value); isAtomic {
+			if !spec.ReturnsValue() {
+				return scalar{}, unsupported("the atomic %s in value position", ident.Value)
+			}
+			return g.atomicCellType(e.Arguments[0])
 		}
 		if s, isConv := scalars[ident.Value]; isConv && len(e.Arguments) == 1 && ident.Value != "byte" {
 			return s, nil
@@ -2765,6 +2874,18 @@ func (g *generator) lowerBody(body ast.Expression) ([]asm.Item, error) {
 			return nil, err
 		}
 	}
+	if g.never {
+		// The body ended in an exception return: nothing falls through to
+		// a ret (the checker refuses one from a never function).
+		if !g.terminated {
+			return nil, unsupported("a never function whose body does not end in an exception return")
+		}
+		if g.usedTrap {
+			g.label(trapLabel)
+			g.emit("brk", imm(1))
+		}
+		return g.items, nil
+	}
 	g.label(retLabel)
 	g.epilogue()
 	if g.usedTrap {
@@ -2803,6 +2924,10 @@ func (g *generator) epilogue() {
 
 // moveResult places a value in the result register.
 func (g *generator) moveResult(r int, s scalar) {
+	if s.isVec {
+		g.vmove(0, r-vecBase)
+		return
+	}
 	if s.isFloat {
 		g.emit("fmov", reg(vecBase, s), reg(r, s))
 		return
@@ -2970,6 +3095,19 @@ func (g *generator) effect(expr ast.Expression) error {
 	if !isCall {
 		return unsupported("an expression statement that is not a call")
 	}
+	if member, isSimd := simdCallee(call.Function); isSimd {
+		r, err := g.simdOp(member, call.Arguments)
+		if err != nil {
+			return err
+		}
+		if r >= 0 {
+			g.release(r)
+		}
+		return nil
+	}
+	if member, isLibrary := libraryMember(call); isLibrary {
+		return g.instructionEffect(member, call)
+	}
 	ident, isIdent := call.Function.(*ast.Identifier)
 	if !isIdent {
 		return unsupported("a call through a value")
@@ -2983,6 +3121,17 @@ func (g *generator) effect(expr ast.Expression) error {
 		g.usedTrap = true
 		g.emit("cbz", wr(r), asm.Symbol{Name: g.trap})
 		g.release(r)
+		return nil
+	}
+	if spec, isAtomic := semir.LookupAtomicBuiltin(ident.Value); isAtomic {
+		// A store, a fence, or a read-modify-write whose result is dropped.
+		r, err := g.atomic(call, spec, true)
+		if err != nil {
+			return err
+		}
+		if r >= 0 {
+			g.release(r)
+		}
 		return nil
 	}
 	r, err := g.call(call)
@@ -3219,7 +3368,23 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 	case *ast.IndexExpression:
 		return g.element(e)
 	case *ast.InvocationExpression:
-		ident := e.Function.(*ast.Identifier)
+		if member, isSimd := simdCallee(e.Function); isSimd {
+			r, err := g.simdOp(member, e.Arguments)
+			if err != nil {
+				return 0, err
+			}
+			if r < 0 {
+				return 0, unsupported("simd.%s in value position", member)
+			}
+			return r, nil
+		}
+		if member, isLibrary := libraryMember(e); isLibrary {
+			return g.instructionValue(member, e, typ)
+		}
+		ident, isIdent := e.Function.(*ast.Identifier)
+		if !isIdent {
+			return 0, unsupported("a call through a value")
+		}
 		if ident.Value == "len" && len(e.Arguments) == 1 {
 			r, err := g.alloc(scalars["u32"])
 			if err != nil {
@@ -3247,6 +3412,9 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 			if _, shadowed := g.functions[ident.Value]; !shadowed {
 				return g.intrinsic(e, typ)
 			}
+		}
+		if spec, isAtomic := semir.LookupAtomicBuiltin(ident.Value); isAtomic {
+			return g.atomic(e, spec, false)
 		}
 		return g.call(e)
 	case *ast.MatchExpression:
@@ -3611,8 +3779,10 @@ func isConversion(name string) bool {
 // parameter, result, or span element, a float literal, or a float name in
 // a local's type or a conversion.
 func mentionsFloat(fn *ast.FunctionStatement) bool {
+	// The vector file serves floats and the fixed vectors alike: a function
+	// mentioning either reserves the d8–d15 save area.
 	isFloatType := func(expr ast.Expression) bool {
-		if s, ok := scalarOf(expr); ok && s.isFloat {
+		if s, ok := scalarOf(expr); ok && (s.isFloat || s.isVec) {
 			return true
 		}
 		if sp, ok := spanOf(expr); ok && sp.elem.isFloat {
@@ -3638,6 +3808,9 @@ func mentionsFloat(fn *ast.FunctionStatement) bool {
 				found = true
 			}
 		case *ast.InvocationExpression:
+			if _, isSimd := simdCallee(e.Function); isSimd {
+				found = true
+			}
 			if ident, ok := e.Function.(*ast.Identifier); ok && (strings.Contains(ident.Value, "f32") || strings.Contains(ident.Value, "f64") || typechecker.FloatIntrinsicName(ident.Value)) {
 				found = true
 			}
@@ -4012,7 +4185,10 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 	for _, arg := range args {
 		for j, r := range arg.regs {
 			typ := arg.types[j]
-			if typ.isFloat {
+			if typ.isVec {
+				g.vmove(vector, r-vecBase)
+				vector++
+			} else if typ.isFloat {
 				g.emit("fmov", reg(vecBase+vector, typ), reg(r, typ))
 				vector++
 			} else {
@@ -4036,13 +4212,29 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 	var spilled []int
 	for _, r := range g.live {
 		if _, ok := g.spill[r]; !ok {
-			g.spill[r] = 8 * g.nslots
-			g.nslots++
+			if r >= vecBase {
+				// The vector file spills whole (a q register, sixteen
+				// aligned bytes): a scratch may hold a vector or a float.
+				if g.nslots%2 != 0 {
+					g.nslots++
+				}
+				g.spill[r] = 8 * g.nslots
+				g.nslots += 2
+			} else {
+				g.spill[r] = 8 * g.nslots
+				g.nslots++
+			}
 		}
 		g.emit("str", spillReg(r), g.slotMem(g.spill[r]))
 		spilled = append(spilled, r)
 	}
-	g.emit("bl", asm.Symbol{Name: ident.Value})
+	target := ident.Value
+	if callee, declared := g.functions[ident.Value]; declared {
+		// A callee under the vector contract is reached at its native
+		// entry; the compiler lowers it natively or drops this caller.
+		target = NativeSymbol(callee)
+	}
+	g.emit("bl", asm.Symbol{Name: target})
 	for _, r := range spilled {
 		g.emit("ldr", spillReg(r), g.slotMem(g.spill[r]))
 	}
@@ -4061,7 +4253,9 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 	if err != nil {
 		return 0, err
 	}
-	if resultType.isFloat {
+	if resultType.isVec {
+		g.vmove(out-vecBase, 0)
+	} else if resultType.isFloat {
 		g.emit("fmov", reg(out, *resultType), reg(vecBase, *resultType))
 	} else {
 		g.emit("mov", reg(out, *resultType), reg(0, *resultType))
@@ -4101,7 +4295,7 @@ func (g *generator) arrayArgument(arg ast.Expression, target span) (*arrayLocal,
 // spillReg is the whole-register view a scratch register spills as.
 func spillReg(r int) asm.Register {
 	if r >= vecBase {
-		return dr(r - vecBase)
+		return qreg(r - vecBase)
 	}
 	return xr(r)
 }
@@ -4148,6 +4342,12 @@ func mentionsCall(body ast.Node) bool {
 	found := false
 	walk(body, func(n ast.Node) {
 		if call, ok := n.(*ast.InvocationExpression); ok {
+			if _, isLibrary := libraryMember(call); isLibrary {
+				return // an instruction function is an instruction, not a call
+			}
+			if _, isSimd := simdCallee(call.Function); isSimd {
+				return // a vector operation is an instruction too
+			}
 			if ident, ok := call.Function.(*ast.Identifier); ok {
 				if isConversion(ident.Value) || ident.Value == "assert" || ident.Value == "len" || ident.Value == "view" || ident.Value == "span" || ident.Value == "subslice" || typechecker.FloatIntrinsicName(ident.Value) {
 					return
@@ -4270,6 +4470,35 @@ func (g *generator) spanOperand(expr ast.Expression) (span, error) {
 // access, so an index at or past the length traps and the fall-through
 // path carries the fact that wI < len.
 func (g *generator) guardedIndex(sp span, index ast.Expression) (int, error) {
+	return g.guardedIndexAt(sp, index, nil)
+}
+
+// guardedIndexAt is guardedIndex for the access at tok: when the checker
+// proved the index in range (IndexProven) and the lowering elides, the
+// guard is left out and the index is read from the variable's own
+// callee-saved register where it has one — the register the loop's exit
+// test compared, so the checker's fact from that test admits the access
+// without a second compare.
+func (g *generator) guardedIndexAt(sp span, index ast.Expression, tok *token.Token) (int, error) {
+	if g.elide && tok != nil && g.tc != nil && g.tc.IndexProven(*tok) {
+		idxType, err := g.typeOf(index, nil)
+		if err == nil && !idxType.signed && !idxType.isBool && !idxType.isFloat && !idxType.wide() {
+			if ident, isIdent := index.(*ast.Identifier); isIdent {
+				if v, inReg := g.regs[ident.Value]; inReg && v >= 0 {
+					// The variable's register is the index; the load's
+					// destination is a fresh scratch (the caller allocates).
+					g.elided++
+					return -v - 2, nil // encoded: a fixed register, not a scratch
+				}
+			}
+			r, err := g.indexValue(index)
+			if err != nil {
+				return 0, err
+			}
+			g.elided++
+			return r, nil
+		}
+	}
 	r, err := g.indexValue(index)
 	if err != nil {
 		return 0, err
@@ -4285,6 +4514,16 @@ func (g *generator) guardedIndex(sp span, index ast.Expression) (int, error) {
 // is past every span and array, so it traps), leaving the low word for the
 // checker's 32-bit index idiom.
 func (g *generator) indexValue(index ast.Expression) (int, error) {
+	if k, isConst := constantValue(index); isConst && k >= 0 && k < 1<<32 {
+		// A bare literal index (`cursor[0]`) is the unsigned constant it
+		// spells, whatever type inference would default it to.
+		r, err := g.alloc(scalars["u32"])
+		if err != nil {
+			return 0, err
+		}
+		g.constant(r, uint64(k), scalars["u32"])
+		return r, nil
+	}
 	idxType, err := g.typeOf(index, nil)
 	if err != nil {
 		return 0, err
@@ -4440,9 +4679,26 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	r, err := g.guardedIndex(sp, e.Index)
+	r, err := g.guardedIndexAt(sp, e.Index, &e.Token)
 	if err != nil {
 		return 0, err
+	}
+	if r < -1 {
+		// The index is a variable's own register (an elided guard): the
+		// element lands in a fresh scratch register.
+		fixed := -r - 2
+		index := wr(fixed)
+		address := asm.Memory{Base: xr(sp.baseReg), Index: &index, Shift: log2Bytes(sp.elem.bits / 8), Extend: "uxtw"}
+		out, err := g.alloc(sp.elem)
+		if err != nil {
+			return 0, err
+		}
+		if sp.elem.isFloat {
+			g.emit("ldr", reg(out, sp.elem), address)
+			return out, nil
+		}
+		g.emit(loadOf(sp.elem), reg(out, sp.elem), address)
+		return out, nil
 	}
 	index := wr(r)
 	address := asm.Memory{Base: xr(sp.baseReg), Index: &index, Shift: log2Bytes(sp.elem.bits / 8), Extend: "uxtw"}
@@ -4519,9 +4775,13 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 	if err != nil {
 		return err
 	}
-	r, err := g.guardedIndex(sp, s.Target.Index)
+	r, err := g.guardedIndexAt(sp, s.Target.Index, &s.Target.Token)
 	if err != nil {
 		return err
+	}
+	fixed := r < -1
+	if fixed {
+		r = -r - 2
 	}
 	index := wr(r)
 	address := asm.Memory{Base: xr(sp.baseReg), Index: &index, Shift: log2Bytes(sp.elem.bits / 8), Extend: "uxtw"}
@@ -4533,7 +4793,9 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 		store = "strb"
 	}
 	g.emit(store, reg(value, sp.elem), address)
-	g.release(r)
+	if !fixed {
+		g.release(r)
+	}
 	g.release(value)
 	return nil
 }
@@ -4674,4 +4936,195 @@ func Describe(fn *asm.Function) string {
 	}
 	b.WriteString("}\n")
 	return b.String()
+}
+
+// ---- instruction functions --------------------------------------------------
+
+// libraryMember reads `arm64.member(...)`: a call to an instruction function
+// of the compiler-known machine library (docs/spec/92-ffi.md §3,
+// 95–98-aarch64-*.md). The native backend lowers it to the instruction it
+// names, through the assembler's own parser, so the spelling the checker
+// and encoder see is the units' — and the seam checker's system capability
+// judges every register access as it judges a unit's.
+func libraryMember(call *ast.InvocationExpression) (string, bool) {
+	access, isAccess := call.Function.(*ast.IndexExpression)
+	if !isAccess || !access.Dot {
+		return "", false
+	}
+	base, isIdent := access.Left.(*ast.Identifier)
+	if !isIdent || base.Value != "arm64" {
+		return "", false
+	}
+	member, isIdent := access.Index.(*ast.Identifier)
+	if !isIdent {
+		return "", false
+	}
+	return member.Value, true
+}
+
+// scalarInstructions are the one-instruction integer functions of the
+// library: the mnemonic and the operand width.
+var scalarInstructions = map[string]struct {
+	mnemonic string
+	typ      string
+}{
+	"rev32": {"rev", "u32"}, "rev64": {"rev", "u64"},
+	"rbit32": {"rbit", "u32"}, "rbit64": {"rbit", "u64"},
+	"clz32": {"clz", "u32"}, "clz64": {"clz", "u64"},
+}
+
+// instructionFunctionType is the result type of an instruction function in
+// value position: a system-register read is a u64, a scalar instruction its
+// width; the unit-valued ones (writes, barriers, event control) and the
+// never-valued control transfers have no value.
+func instructionFunctionType(member string) (scalar, error) {
+	if spec, found, write := semir.LookupArm64SysRegMember(member); found && !write {
+		_ = spec
+		return scalars["u64"], nil
+	}
+	if op, isScalar := scalarInstructions[member]; isScalar {
+		return scalars[op.typ], nil
+	}
+	return scalar{}, unsupported("the instruction function arm64.%s in value position", member)
+}
+
+// instructionValue lowers an instruction function with a value: `mrs` for a
+// system-register read (under the system capability), or the scalar
+// instruction over its one operand.
+func (g *generator) instructionValue(member string, e *ast.InvocationExpression, typ scalar) (int, error) {
+	if spec, found, write := semir.LookupArm64SysRegMember(member); found && !write {
+		if len(e.Arguments) != 0 {
+			return 0, unsupported("arm64.%s takes no argument", member)
+		}
+		g.system = true
+		r, err := g.alloc(scalars["u64"])
+		if err != nil {
+			return 0, err
+		}
+		g.emit("mrs", xr(r), asm.SysReg{Name: strings.ToLower(spec.Asm)})
+		return r, nil
+	}
+	if op, isScalar := scalarInstructions[member]; isScalar {
+		if len(e.Arguments) != 1 {
+			return 0, unsupported("arm64.%s takes one argument", member)
+		}
+		operand := scalars[op.typ]
+		r, err := g.expr(e.Arguments[0], &operand)
+		if err != nil {
+			return 0, err
+		}
+		g.emit(op.mnemonic, reg(r, operand), reg(r, operand))
+		return r, nil
+	}
+	return 0, unsupported("the instruction function arm64.%s", member)
+}
+
+// instructionEffect lowers an instruction function in statement position:
+// `msr` for a system-register write, the barrier or event-control
+// instruction the catalog names, or an exception return with its carried
+// registers (`eret_x0(v)`: `mov x0, v` then `eret`, which ends the body of a
+// never function).
+func (g *generator) instructionEffect(member string, call *ast.InvocationExpression) error {
+	emitText := func(text string) error {
+		instr, err := asm.ParseInstructionLine(asm.ArchArm64, text, g.line)
+		if err != nil {
+			return unsupported("arm64.%s: %v", member, err)
+		}
+		if g.terminated {
+			return nil
+		}
+		g.items = append(g.items, instr)
+		return nil
+	}
+	if spec, found, write := semir.LookupArm64SysRegMember(member); found {
+		if !write {
+			return unsupported("arm64.%s (a system-register read) as a statement", member)
+		}
+		if len(call.Arguments) != 1 {
+			return unsupported("arm64.%s takes one argument", member)
+		}
+		u64 := scalars["u64"]
+		r, err := g.expr(call.Arguments[0], &u64)
+		if err != nil {
+			return err
+		}
+		g.system = true
+		g.emit("msr", asm.SysReg{Name: strings.ToLower(spec.Asm)}, xr(r))
+		g.release(r)
+		return nil
+	}
+	if spec, isBarrier := semir.LookupArm64Barrier(member); isBarrier {
+		if len(call.Arguments) != 0 {
+			return unsupported("arm64.%s takes no argument", member)
+		}
+		switch spec.Operation {
+		case semir.BarrierISB:
+			return emitText("isb")
+		case semir.BarrierDMB:
+			return emitText("dmb " + barrierScope(spec.Scope))
+		case semir.BarrierDSB:
+			return emitText("dsb " + barrierScope(spec.Scope))
+		}
+		return unsupported("the barrier arm64.%s", member)
+	}
+	if spec, isEvent := semir.LookupArm64EventControl(member); isEvent {
+		if len(call.Arguments) != 0 {
+			return unsupported("arm64.%s takes no argument", member)
+		}
+		if strings.HasPrefix(spec.Instruction, "msr") {
+			g.system = true
+		}
+		return emitText(spec.Instruction)
+	}
+	if spec, isTransfer := semir.LookupArm64ControlTransfer(member); isTransfer {
+		if !g.never {
+			return unsupported("arm64.%s outside a never function", member)
+		}
+		if len(call.Arguments) != len(spec.Carries) {
+			return unsupported("arm64.%s takes %d arguments", member, len(spec.Carries))
+		}
+		// The carried values evaluate into scratch registers first, then
+		// move to their registers (a later argument may read an earlier
+		// one's register otherwise).
+		var values []int
+		u64 := scalars["u64"]
+		for _, arg := range call.Arguments {
+			r, err := g.expr(arg, &u64)
+			if err != nil {
+				return err
+			}
+			values = append(values, r)
+		}
+		for i, r := range values {
+			var num int
+			if _, err := fmt.Sscanf(spec.Carries[i], "x%d", &num); err != nil {
+				return unsupported("arm64.%s carries %s", member, spec.Carries[i])
+			}
+			g.emit("mov", xr(num), xr(r))
+			g.release(r)
+		}
+		g.system = true
+		if err := emitText(spec.Instruction); err != nil {
+			return err
+		}
+		g.terminated = true
+		return nil
+	}
+	if _, isScalar := scalarInstructions[member]; isScalar {
+		return unsupported("arm64.%s (a value) as a statement", member)
+	}
+	return unsupported("the instruction function arm64.%s", member)
+}
+
+// barrierScope spells a barrier's scope option as the ARM ARM does.
+func barrierScope(scope semir.BarrierScope) string {
+	switch scope {
+	case semir.BarrierScopeISHLD:
+		return "ishld"
+	case semir.BarrierScopeISH:
+		return "ish"
+	case semir.BarrierScopeSY:
+		return "sy"
+	}
+	return "sy"
 }

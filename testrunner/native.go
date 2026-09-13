@@ -52,6 +52,12 @@ type nativeProgram struct {
 	bin, dir, build string
 	maxBytes        int
 	timeout         time.Duration
+	// emulator runs a foreign target's binary: the emulator's argv prefix
+	// (`oak run -target`'s user-mode QEMU or OAK_EMULATOR), empty on the
+	// host. Under `qemu-aarch64 -cpu max` the probe finds every feature the
+	// emulated processor has, so a realization is selected — and its claim
+	// checked — from a test on any host (docs/spec/93-simd.md section 6.2).
+	emulator []string
 	// resident runs cases through resident harness workers (nativeServe);
 	// idle holds the workers not running a case, workers every one alive.
 	resident bool
@@ -505,7 +511,8 @@ func (p *nativeProgram) run(index int, input []byte) (result outcome) {
 	} else {
 		ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, p.bin, strconv.Itoa(index), reportPath)
+		argv := append(append([]string{}, p.emulator...), p.bin, strconv.Itoa(index), reportPath)
+		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 		cmd.Stdin = bytes.NewReader(input)
 		var output limitedBuffer
 		cmd.Stdout, cmd.Stderr = &output, &output

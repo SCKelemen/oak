@@ -70,7 +70,8 @@ func lawOperandDecidable(typ ast.Expression, records map[string]*ast.RecordLiter
 	return true
 }
 
-// lawSource is the theorem text for one operator definition's laws.
+// lawSource is the theorem text for one function's laws — an operator
+// definition or a plain binary function (docs/spec/10-syntax.md section 14a).
 func lawSource(fn *ast.FunctionStatement) string {
 	name := fn.Name.Value
 	typ := fn.Parameters[0].Type.String()
@@ -103,7 +104,7 @@ func LawObligations(tree *compiler.SyntaxTree) error {
 	var source strings.Builder
 	for _, stmt := range tree.Root.Statements {
 		fn, isFn := stmt.(*ast.FunctionStatement)
-		if !isFn || fn.Name == nil || fn.Operator == "" || len(fn.Laws) == 0 || len(fn.Parameters) != 2 || fn.Parameters[0] == nil {
+		if !isFn || fn.Name == nil || len(fn.Laws) == 0 || len(fn.Parameters) != 2 || fn.Parameters[0] == nil {
 			continue
 		}
 		if !lawOperandDecidable(fn.Parameters[0].Type, records) {

@@ -54,6 +54,11 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		symbols[fn.Name.Value] = true
 		if fn.ExternSymbol == "" && fn.Receiver == nil && len(fn.TypeParams) == 0 {
 			functions[fn.Name.Value] = fn
+			if nativegen.VectorContract(fn) {
+				// The native entry of a function under the vector contract
+				// (nativegen.VectorContractSuffix): a call target too.
+				symbols[nativegen.NativeSymbol(fn)] = true
+			}
 		}
 	}
 	specializeInstantiations(tc, templates, records, adts)
@@ -69,6 +74,12 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// `entries`); the C emitter keeps the original body.
 		source := substituteConstants(fn, constants)
 		lane := nativegen.Lane{Arch: comp.options.Target.AsmArch(), SoftFloat: comp.options.Target.Freestanding() && comp.options.Target.Arch == target.ArchRiscv64}
+		// Check elision (docs/spec/94-assembler.md §9): an element access the
+		// typechecker proved in range is lowered without its guard first;
+		// if the seam checker cannot admit the body from the facts on the
+		// path, the body is lowered again with every guard. The checker
+		// decides safety; the elision is only what it already knows.
+		lane.ElideProven = lane.Arch == asm.ArchArm64
 		asmFn, err := nativegen.CompileFor(lane, source, functions, records, adts, tc)
 		if err != nil {
 			if _, outside := err.(nativegen.Unsupported); outside {
@@ -78,12 +89,25 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
 			continue
 		}
+		findings := asm.Check(asmFn, source, symbols)
+		if len(findings) != 0 && lane.ElideProven && nativegen.ElidedGuards(asmFn) > 0 {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its element guards (the checker did not admit the elided form: %s)", fn.Name.Value, findings[0])))
+			lane.ElideProven = false
+			asmFn, err = nativegen.CompileFor(lane, source, functions, records, adts, tc)
+			if err != nil {
+				diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
+				continue
+			}
+			findings = asm.Check(asmFn, source, symbols)
+		} else if elided := nativegen.ElidedGuards(asmFn); elided > 0 && len(findings) == 0 {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d element guard(s) elided under the checker's own facts", fn.Name.Value, elided)))
+		}
 		if os.Getenv("OAK_NATIVE_DUMP") != "" {
 			// A debugging aid: the lowered assembly of every function, as the
 			// checker sees it.
 			fmt.Fprint(os.Stderr, nativegen.Describe(asmFn))
 		}
-		if findings := asm.Check(asmFn, source, symbols); len(findings) != 0 {
+		if len(findings) != 0 {
 			for _, finding := range findings {
 				diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: the checker refuses the lowering of %s: %s", fn.Name.Value, finding)))
 			}
@@ -98,6 +122,32 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		fn.NativeBacked = true
 		fn.AsmArch = asmFn.Arch // the C emitter guards the Oak body by the lane's negation
 		lowered = append(lowered, asmFn)
+	}
+	// A native function calls a vector-contract callee at its native entry,
+	// so the callee must be native too; a caller whose callee stayed on the
+	// C backend is demoted, and demotion cascades to a fixpoint.
+	for changed := true; changed; {
+		changed = false
+		kept := lowered[:0]
+		for _, asmFn := range lowered {
+			fn := asmFn.Signature
+			demoted := false
+			for _, callee := range nativegen.VectorCallees(fn, functions) {
+				if target := functions[callee]; target != nil && !target.NativeBacked {
+					diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (it passes vectors to %s, which the C backend realizes)", fn.Name.Value, callee)))
+					demoted = true
+					break
+				}
+			}
+			if demoted {
+				fn.NativeBacked = false
+				fn.AsmArch = ""
+				changed = true
+				continue
+			}
+			kept = append(kept, asmFn)
+		}
+		lowered = kept
 	}
 	return lowered, diagnostics
 }

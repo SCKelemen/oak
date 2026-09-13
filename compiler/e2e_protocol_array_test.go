@@ -61,18 +61,20 @@ func TestProtocolArrayTLAModule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The line's own bound `who < 2` (docs/spec/112-protocols.md section 1)
+	// precedes the guard that also spells it.
 	for _, want := range []string{
 		"CONSTANTS Who",
 		"VARIABLES state, parked, woken, last",
 		"/\\ parked = [k \\in 0..1 |-> FALSE]",
 		"/\\ woken = [k \\in 0..1 |-> 0]",
 		"/\\ last = 9",
-		"Park(who) ==\n    state = \"Running\" /\\ ((who < 2) /\\ ~(parked[who])) /\\ state' = \"Running\" /\\ parked' = [parked EXCEPT ![who] = TRUE] /\\ UNCHANGED <<woken, last>>",
+		"Park(who) ==\n    state = \"Running\" /\\ ((who < 2) /\\ ((who < 2) /\\ ~(parked[who]))) /\\ state' = \"Running\" /\\ parked' = [parked EXCEPT ![who] = TRUE] /\\ UNCHANGED <<woken, last>>",
 		"woken' = [woken EXCEPT ![who] = (woken[who] + 1)]",
 		"last' = who",
 		"Halt ==\n    state = \"Running\" /\\ (parked[0] /\\ parked[1]) /\\ state' = \"Halted\" /\\ UNCHANGED <<parked, woken, last>>",
 		"/\\ parked \\in [0..1 -> BOOLEAN]",
-		"/\\ woken \\in [0..1 -> Nat]",
+		"/\\ woken \\in [0..1 -> 0..4294967295]",
 	} {
 		if !strings.Contains(module, want) {
 			t.Errorf("module lacks %q:\n%s", want, module)
