@@ -46,12 +46,10 @@ func TestRV64SailBridgeDefinitionsMatch(t *testing.T) {
 }
 
 func TestRV64SailBridgeBuilds(t *testing.T) {
-	// The bridge imports the export's Prelude (the module holding the
-	// comparison operators its theorems name), so that module's object
-	// marks the export as built far enough; the whole library does not
-	// compile yet (its Vmem module trips the Lean backend,
-	// rems-project/sail#1729 — spec/lean-sail/README.md).
-	export := filepath.Join("..", "external", "sail-riscv", "build", "model", "Lean_RV64D", ".lake", "build", "lib", "lean", "LeanRV64D", "Prelude.olean")
+	// The export's top-level module object marks a complete build (after
+	// spec/lean-sail/patch-export.py; a partial one, a build in progress,
+	// would make the bridge's lake rebuild the dependency in place.
+	export := filepath.Join("..", "external", "sail-riscv", "build", "model", "Lean_RV64D", ".lake", "build", "lib", "lean", "LeanRV64D.olean")
 	if _, err := os.Stat(export); err != nil {
 		t.Skip("the Sail RISC-V Lean export is not built under external/sail-riscv (see spec/lean-sail/README.md)")
 	}

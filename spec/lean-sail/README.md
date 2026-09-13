@@ -27,7 +27,7 @@ git clone --depth 1 --branch 0.14 https://github.com/riscv/sail-riscv external/s
 cmake -S external/sail-riscv -B external/sail-riscv/build
 cmake --build external/sail-riscv/build --target generated_lean_rv64d   # ~30 min
 python3 spec/lean-sail/patch-export.py                                   # see Status
-cd external/sail-riscv/build/model/Lean_RV64D && lake update && lake build LeanRV64D.Prelude
+cd external/sail-riscv/build/model/Lean_RV64D && lake update && lake build   # ~6 min
 cd ../../../../spec/lean-sail && lake update && lake build
 ```
 
@@ -38,34 +38,44 @@ recompiles the export's modules against the wrong library and fails in
 
 ## Status (2026-09-13)
 
-**The bridge builds against the import.** With Sail from git (`sail2`
-dba5f007, 2026-09-11) and sail-riscv 0.14, `spec/lean-sail` compiles and
-its fifteen theorems are checked against the export's own definitions:
-the prelude's comparison operators (`zopz0zI_s`, …), `sign_extend`,
-`zero_extend`, `bool_to_bit`, and the library's shift helpers. The export
-has moved since the restatement was written: prelude functions live in
-`LeanRV64D.Functions`, `shift_bits_left`/`shift_bits_right` in the
-lean-sail library (`Sail/Common.lean`), and the library is split into
-modules; `asm/rv64_sail_bridge_test.go` reads them all.
+**The bridge builds against the import, execution bodies included.** With
+Sail from git (`sail2` dba5f007, 2026-09-11) and sail-riscv 0.14, the
+whole export compiles after `patch-export.py`, and `spec/lean-sail` proves:
 
-**What still does not compile is the whole library.** The Lean backend
-leaves type-level functions untranslated (rems-project/sail#1729, open):
-`Defs.lean` applies `is_sv32_mode(k_v)` in Sail syntax inside the
-virtual-memory type synonyms and never defines the predicates —
-`patch-export.py` repairs those seven sites (nothing about instruction
-semantics) — and `Vmem.lean` then fails on four sites of its own (the
-`satp_mode` / `hgatp_mode` type synonyms shadowed by functions of the same
-name, and a page-table-walk recursion whose termination measure the
-backend states wrong). sail-riscv's own `compile-lean` workflow fails on
-master for the same reason. So the bridge imports `LeanRV64D.Prelude`,
-whose closure (Defs, the specialization, the library) builds cleanly and
-holds everything the theorems name, rather than `LeanRV64D`; the
-`execute_RTYPE` / `execute_RTYPEW` / `execute_BTYPE` bodies in
-`InstsEnd.lean` are read by inspection as before. When upstream fixes
-#1729, drop the patch, restore `import LeanRV64D`, and point
-`TestRV64SailBridgeBuilds` back at `LeanRV64D.olean`.
+- `OakSailBridge/RiscV.lean` — the data semantics: for each RTYPEW, RTYPE
+  comparison and BTYPE operator, the Sail expression equals Oak's function
+  of the register values (fifteen theorems against the export's own
+  `sign_extend`, `zero_extend`, `bool_to_bit`, comparison operators and
+  the library's shift helpers).
+- `OakSailBridge/Execute.lean` — the bodies: `execute_RTYPEW`,
+  `execute_RTYPE` and `execute_BTYPE` (`LeanRV64D/InstsEnd.lean`) each
+  rewrite, through the monad laws (`SailM` is an `EStateM`) and the data
+  theorems, to "read the two sources, write Oak's function of them" or
+  "branch on Oak's `Br.holds`". Nothing about these instructions is read
+  by inspection any more; what the theorems take as given is the register
+  file (`rX_bits`/`wX_bits`) and `jump_to`.
+
+`patch-export.py` is a pinned workaround for the Lean backend
+(rems-project/sail#1729, open; sail-riscv's own `compile-lean` workflow
+fails on master for the same reason). It repairs seven virtual-memory type
+sites in `Defs.lean` (type-level predicates left in Sail syntax and never
+defined) and, in `Vmem.lean`, three `SailM satp_mode`/`hgatp_mode`
+ascriptions where a function shadows the type synonym and the termination
+of the two-stage translation: Sail's measure is the constant 1000, so Lean
+saw no decrease from the VS-stage walk into the G-stage translation; the
+patch gives the eight mutually recursive functions a lexicographic measure
+(stage rank, a rank along the call chain, the walk level) and a
+`decreasing_by`. It touches no instruction semantics. Drop it when upstream
+fixes #1729.
+
+The export has moved since the restatement was written: prelude functions
+live in `LeanRV64D.Functions`, `shift_bits_left`/`shift_bits_right` in the
+lean-sail library (`Sail/Common.lean`), and the library is split into
+modules; `asm/rv64_sail_bridge_test.go` reads them all. This project's
+manifest must resolve `Sail` to the export's pin (lean-sail `v5`, see the
+recipe), or lake recompiles the export against the wrong library.
 
 `spec/lean/Oak/SailRiscVBridge.lean` keeps the verbatim restatement so
-Oak's own project proves the same theorems without the export;
+Oak's own project proves the data theorems without the export;
 `TestRV64SailBridgeStubsMatchSail` fails if it drifts from the fetched
 sources.
