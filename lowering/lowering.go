@@ -2,6 +2,7 @@ package lowering
 
 import (
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/hostform"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
@@ -127,13 +128,17 @@ func lowerStatement(stmt ast.Statement, tc *typechecker.TypeChecker) ast.Stateme
 func lowerVariableDeclaration(vd *ast.VariableDeclaration, tc *typechecker.TypeChecker) *ast.VariableDeclaration {
 	if vd.Value != nil {
 		return &ast.VariableDeclaration{
-			BaseNode: vd.BaseNode,
-			Token:    vd.Token,
-			Name:     vd.Name,
-			Type:     vd.Type,
-			Value:    lowerExpression(vd.Value, tc),
-			Section:  vd.Section,
-			Measured: vd.Measured,
+			BaseNode:    vd.BaseNode,
+			Token:       vd.Token,
+			Name:        vd.Name,
+			Type:        vd.Type,
+			Value:       lowerExpression(vd.Value, tc),
+			Section:     vd.Section,
+			Measured:    vd.Measured,
+			Threadgroup: vd.Threadgroup,
+			// Set by the native backend before the lowering runs: the C
+			// emitter reads it off the lowered declaration.
+			NativeAddressed: vd.NativeAddressed,
 		}
 	}
 	return vd
@@ -150,6 +155,15 @@ func lowerFunctionStatement(fn *ast.FunctionStatement, tc *typechecker.TypeCheck
 	// Extern bindings have no Oak body to lower (docs/spec/92-ffi.md).
 	if fn.ExternSymbol != "" {
 		return fn
+	}
+	// A kernel with lanes, threadgroup memory, or barriers runs on the host
+	// in its host form (docs/spec/56-kernels.md section 2a): the body
+	// once per lane per position, phase by phase. The kernel analysis has
+	// already reported a body the form cannot take.
+	if fn.Kernel {
+		if host, err := hostform.Rewrite(fn); err == nil && host != nil {
+			fn = host
+		}
 	}
 	if fn.Body != nil {
 		// Body is an Expression - just lower it recursively. A block body's
@@ -332,7 +346,7 @@ func hoistBoolMatchValue(stmt ast.Statement, tc *typechecker.TypeChecker) ([]ast
 		name = s.Name
 		match = candidate
 		lead = &ast.VariableDeclaration{
-			BaseNode: s.BaseNode, Token: s.Token, Name: s.Name, Type: s.Type, Section: s.Section, Measured: s.Measured,
+			BaseNode: s.BaseNode, Token: s.Token, Name: s.Name, Type: s.Type, Section: s.Section, Measured: s.Measured, Threadgroup: s.Threadgroup,
 		}
 	case *ast.AssignmentStatement:
 		candidate, isMatch := s.Value.(*ast.MatchExpression)

@@ -297,8 +297,18 @@ the span whose length register is `wL` (`slackFacts`), and `cmp wI, wT;
 b.hi trap` leaves the fall-through path knowing `wI + 16 ≤ len`
 (`idxFacts` with `slack`), which admits an access of `16 / elem` elements
 at `wI` with `uxtw #log2(elem)` (`Oak.Assembler.index_access_lanes`,
-`slack_guard`). The facts die as index facts do: a write to `wI`, `wT`,
-or `wL` forgets them.
+`slack_guard`). The constant may sit in a register a `movz` just filled
+(`constFacts`), as the generator spells converted literals; a slack fact
+follows a copy (`mov wJ, wI`) and an added constant (`add wJ, wI, #k`
+leaves `wJ + (K - k) <= len`), so the loads at `off + 16`, `off + 32`,
+`off + 48` of a sixty-four-byte step are admitted by the loop condition's
+own compares — the native backend emits no guard where its loop condition
+`len(v) >= u32(N) && i <= len(v) - u32(N)` already proves the access
+(`nativegen` loop facts, dead once `i` is assigned). The facts die as
+index facts do: a write to `wI`, `wT`, or `wL` forgets them. A span's
+proven minimum length is a fact about the span, not about a register: it
+survives the overwrite of a copy of the length and lapses only when no
+register holds the length.
 
 - **The operand-stack shorthand** (§2) is implemented as desugaring
   (`asm/stack.go`): `push <param>` writes the parameter's contract binding
@@ -315,7 +325,7 @@ or `wL` forgets them.
 Pending: the semantic
 verification of straight-line bodies against `Oak.Intrinsics`.
 
-## 8. Semantic verification of asm bodies (six increments implemented)
+## 8. Semantic verification of asm bodies (seven increments implemented)
 
 **Implemented** (`asm/verify.go`, `Oak.AssemblerSemantics`): for a function
 with both an asm unit and an Oak fallback body, the asm gate runs the
@@ -722,6 +732,68 @@ mechanically: Arm's ASL → Sail (Arm's tooling) → Lean (Sail's backend) ≡
 `Oak.ArmASL` ≡ `Oak.AssemblerSemantics` (proved) ≡ the Go executor
 (checked on the silicon). The bridge is a separate Lake package so the
 main specification builds without the Sail toolchain.
+
+**Vectors (seventh increment, 2026-09-13; `asm/verify_vector.go`,
+`asm/verify_simd.go`).** The verifier follows the vector file. A NEON
+register is a 128-bit value held as lanes of one width, each lane a term
+of the scalar language, repacked through its two 64-bit halves when read
+at another width; the instructions the native backend emits
+(`nativegen/simd.go`) are lane functions over those terms — `and`/`orr`/
+`eor`/`bic` bitwise, `add`/`sub`/`umin`/`umax`/`uqsub`/`uqadd`/`cmeq`/
+`cmhi`/`cmhs` per lane at the arrangement's width (`cmeq #0` included),
+`ushr`/`sshr`/`shl #n`, `dup` from a general register or a lane, `movi`,
+`tbl` with one table register as a sixteen-way select per lane (an index
+at or beyond sixteen selects zero), `ext #n` as the bytes of the
+concatenation from position n, `umaxv`/`uminv`/`addv` into a scalar view
+(the rest of the register zeroed), `cnt`, `umov`/`smov` of a lane into a
+general register, and `fmov` between the files. A `q` store or load of the
+frame is two 8-byte slots (the low half at the lower address), a `d` or
+`s` view its low bits; `stp`/`ldp` of `d` views save and restore the
+callee-saved low halves, which enter as opaque symbols. A `ldr q` through
+a span base under the slack guard (§7) reads sixteen element terms from
+the index. A `simd.<Name>` parameter is its lanes `p[k]`, bound whole to
+its `v` register; a vector result is read from `v0` one 64-bit half at a
+time and each half decided as a scalar equality (the verdict names both
+halves). On the Oak side a `simd.<Name>` type is an owned array of lanes
+and each `simd.<op>_<shape>` call is the lane function `Oak.Simd` gives
+it — `splat`, `load` (the span elements from the index, or an owned
+array's elements at a literal offset), `add`/`sub`/`and`/`or`/`xor`/`min`/
+`max`/`eq`/`subs`, `shr` and `prev` by a literal, `tbl`, `movemask`,
+`any`/`all`, `ctz`/`popcount` — built with the same constructors the
+machine side applies to the instructions, so the equality the decider
+settles is between the instruction sequence and the operation sequence.
+Two variable orders join the bit-level decision for this: each leaf's
+bits in a block of its own (a lane-wise computation resolves a lane's
+contribution as its bits are read; the mask sum of `shuffle` is 5,045
+nodes there where the interleaved order exceeds the budget) and control
+bits first (a table lookup at a symbolic index is a selection); the orders
+run together and the first to decide stops the others, as the theorem
+decider does. The asm unit now carries the program's functions, so a call
+the native lowering expanded into its caller (§9.y) is inlined on the Oak
+side as well. Verdicts on the SIMD corpus (`compiler/e2e_native_simd_test.go`):
+`lanes_mask`, `logic`, `shuffle`, `words`, `bits`, `doubled_mask` proven,
+`double_it_neon_abi` proven on both halves; on the UTF-8 kernel
+(`benchmarks/native/utf8_valid.oak`): `special_cases` and `check_block`
+proven on both halves of their vector results, `check_blocks` evidence
+(the two-block composition exceeds the node budget), the loop kernel
+`valid_with` trusted (a data-dependent loop with forks in its body, as
+its scalar counterparts are). The lane functions are stated in Lean as
+`Oak.NeonSemantics` (`spec/lean/Oak/NeonSemantics.lean`) and each is
+proved to be the `Oak.Simd` operation the lowering uses it for:
+`uqsub_eq_subSat`, `cmeq_eq_eqMask`, `add_eq_addWrap`, `ushr_eq_shr`,
+`tbl_eq_tbl`, `ext_eq_prev` (`ext #(16-n)` is `prev n`),
+`umaxv_ne_zero_iff` (`any`), `umaxv_cmeq_zero_iff` (`all`), and
+`movemaskBytes_eq_movemask` (the `sshr #7`/`and`/`addv`/`orr` sequence is
+`movemask 8`). The silicon differential (`asm/silicon_test.go`) runs the
+vector instructions too — 160 bodies over `v0 = {a, a}`, `v1 = {b, a}`
+built by `dup` and `ext`, each half of the result read back with `umov` —
+and it found the first modeling bug before it shipped: a lane narrowed
+from a wider register must be masked explicitly (`narrowLane`), where the
+scalar `truncate` takes a parameter to be bounded by its declared width.
+Left for the next increments: `simd.store` (a write the straight-line
+model does not follow), float vectors, and grounding the lane functions
+in Arm's Sail text as the scalar primitives are
+(`docs/notes/proof-chain-audit-2026-09.md`).
 
 ## 9. Native encoding, and the architectures to come
 
@@ -1470,6 +1542,75 @@ arm staging the result while another reads a parameter, a float result
 beside integer homes, and a leaf with more locals than free argument
 registers — natively against the C backend and the portable realization,
 the scalar leaves proven.
+**Twenty-first increment — the limit of one home per variable.** With
+the registers of ended scopes returning to their pools (the recycling
+above), 194 functions prove, the rows are unchanged, and the prover's
+time is unchanged within noise — because the function every profile puts
+first, `apply`, gains nothing from it: its six parameters, its two
+accumulators, and the three locals its loop body declares at the top all
+live across the body's calls, so after the ten callee-saved registers the
+rest go to frame slots, and the loop reads and writes the frame 296 times
+per iteration's worth of code. That is the boundary of a lowering that
+gives every variable one home for the whole function. What the C compiler
+does here is liveness: a variable not live across a call may sit in a
+caller-saved register (x9–x15 beside the temporaries, the free argument
+registers) and only what is live across a `bl` needs a callee-saved
+register or a slot around that call. The next increment is that
+allocator — per-variable live ranges over the statement tree, homes
+chosen by whether a range crosses a call, the seam checker unchanged
+(every register it admits today) and the verifier unchanged (registers by
+value) — measured on `apply` first.
+**Twenty-second increment — caller-saved homes around calls, and the
+store forwarded.** The first step of that allocator, without liveness:
+once the ten callee-saved registers are taken, a variable of a function
+that calls lives in a caller-saved home — x16, x17, then the argument
+registers no parameter occupies (x2–x7) — saved to its spill slot before
+each call's argument registers are written and restored after the `bl`,
+so a variable costs one store and one load per call instead of one memory
+access per read or write. Alongside, a read that directly follows the
+store of a slot variable (`t: u32 = f(x); t != NONE`) takes the value
+from the register that stored it, since nothing has written that
+register since; the register is then a defined value for the call spill,
+which a first version had missed and the checker caught as a read after
+`bl`. `apply`'s loop went from 316 frame accesses to 234. Measured on the
+binaries, interleaved: `mono.oak` 11.8 s to 11.4 s, `floats.oak` 5.0 s to
+4.7 s, `extents.oak` 8.0 s to 7.5 s, `effects.oak` 1.66 s to 1.59 s;
+196 functions proven. Executed (`TestE2ENativeCallerHomes`): a body with
+more variables than callee-saved registers, all read after calls, one
+call's argument holding a call. What remains in `apply` is the variables
+that outnumber even the caller-saved homes, and the spills of homes dead
+at the call — both the liveness step: live ranges over the statement
+tree, a home spilled at a call only when its variable is read after it.
+**Twenty-third increment — liveness for the homes.** A pre-pass
+(`nativegen/homes.go`) numbers the body in the order the lowering emits it
+and records, per variable, its declaration and its last read, and per
+`while` loop the positions its body spans. A read counts at its own
+position — a call's argument is copied to a scratch register before the
+call — except an operand the lowering reads in place: a variable named
+directly under a binary operation, a comparison, or an element index is
+read by the instruction that runs after the operation's other operands,
+calls included, so it counts at that expression's end; a call counts after
+its arguments; an index assignment's value counts before its index, as
+`elementStore` evaluates them. A variable declared outside a loop and read
+anywhere inside it is live across every call in the loop. From that: a
+call saves a caller-saved home only when its variable is read afterward,
+and a declaration whose variable never crosses a call takes a caller-saved
+home before a callee-saved register (the crossing ones keep the
+callee-saved ones, which cost nothing at a call). Two versions of the
+numbering were wrong on the way and the seam checker refused both as a
+read after `bl` — a read numbered at the same position as the call it
+followed, and an index assignment numbered target-first while the
+lowering evaluates the value first — which is the checker doing what the
+chapter promised for the compiler's own output. This pass complements
+the last-use release within a statement list (`liveness.go`); the two
+are conservative in the same direction. `apply`'s loop: 234 frame
+accesses to 226; 196 functions proven, rows unchanged; the timed runs
+fell within the noise of a machine shared with other sessions' test
+suites, so the structural count is the measurement here. Executed (`TestE2ENativeCallLiveness`): an in-place operand after
+a call, an argument read before its call, a loop-carried variable, an
+index assignment whose value calls, and a variable dead before the calls
+that follow — natively against the C backend and the portable
+realization.
 Next increments: the fallback reasons above in the order of their counts,
 so the prover lowers whole; then the verifier past `bl` and unit results —
 calls by inlining or by the callee's proven contract, and effects through
@@ -2106,6 +2247,27 @@ a comparison, or in nested `?` arms costs one element address per read
 and no scratch register between reads (the OS pilot's N4). Through a
 view the field is readable and a store into it is refused.
 
+**Package globals.** A mutable top-level scalar (`st: u32 = u32(0)`,
+assigned by some function) is addressed storage on the AArch64 lane: the
+body names its cell as `adrp xA, G` then `add xA, xA, :lo12:G` and
+reads or writes it with one `ldr`/`str` at the scalar's width (a `Bool`
+is the C backend's 4-byte cell). The checker follows the pair — `adrp`
+records the page of a global the function declares in `Function.Globals`
+and refuses any other symbol, the `add :lo12:` over that page records the
+address, both facts die with a write to the register and at a call — and
+admits exactly `[xA]` at the width: an offset, an index, a pair, or a
+narrower or wider access is refused. The verifier reads the cell as the
+parameter `global:G`, the value it holds on entry, so a function that only
+reads globals is proven against its Oak body; a function that writes one
+is trusted against the C oracle, as span writers are. The C emitter gives
+an addressed global external linkage under the assembler label
+`oak_0g_G` (a digit after the prefix, which no function's mangled name
+can produce), the symbol the companion object's `adrp`/`add` relocations
+(PAGE21/PAGEOFF12 on Mach-O, ADR_PREL_PG_HI21/ADD_ABS_LO12_NC on ELF)
+name; the inline-asm mode spells the pair through `OAK_ASM_PAGE` and
+`OAK_ASM_PAGEOFF`. Constant globals keep folding (above); the rv64 lane
+leaves globals to the C backend (the OS pilot's N3).
+
 **Atomics.** The builtins of `65-machine-memory.md` lower on the AArch64
 lane when the cell is reached through a writable span (§7a there): the
 element address as a region, `ldar`/`stlr` and their narrow forms,
@@ -2261,8 +2423,10 @@ export: with Sail built from git the export generates (nine minutes) but
 its `Defs.lean` does not yet compile under lean-sail v5 at sail-riscv 0.14
 (`PTW_Output`, unbound type-level variables), the same class of failure
 the earlier attempt recorded; the theorems are stated and their tactic
-script written, awaiting an export that compiles (sail-riscv's own Lean CI
-builds master with Sail from git).
+script written, awaiting an export that compiles (the export from
+sail-riscv master fails at the same place: the generated `Defs.lean`
+declares a structure over a type not yet in scope, a Sail Lean-backend
+matter).
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
@@ -2335,3 +2499,43 @@ C backend realizes is itself left to the C backend, to a fixpoint
 (`compiler/native_bodies.go`), so no call crosses the two contracts
 unconverted. The suffix is reserved the way `__` is: no Oak identifier
 ends in it.
+
+### 9.y Vector helpers expanded, locals released at their last use (2026-09-13)
+
+A SIMD kernel in Oak is a tree of small functions whose signatures carry
+vectors — the UTF-8 validator's `check_blocks` → `check_block` →
+`special_cases` — which the C compiler flattens into one loop with every
+vector in a register. Through native calls the same tree spills its
+arguments at every call and crosses the vector register contract, and
+measured that way it ran five times slower than the C backend. Two
+changes close most of that gap, and both are meaning-preserving
+rewrites the verifier still checks against the original body:
+
+- **Expansion (`nativegen/inline.go`).** Before lowering, every call to a
+  function whose signature carries a fixed vector is replaced by a block
+  binding the parameters to the arguments in order — an identifier
+  argument the callee never assigns substitutes directly — and running the
+  callee's body with its bound names renamed apart; a call in statement
+  position splices the block. A call is exactly that binding, so the
+  expansion changes nothing the verifier compares. Recursion, receivers,
+  type parameters, variadic parameters, extern or asm bodies, and matches
+  that bind payloads are left as calls, and an expansion the lowering
+  refuses falls back to the body as written. The source-level inliner
+  (`compiler/inline.go`, `90-backend.md` §9) covers scalar leaf helpers for
+  both backends; this expansion covers the vector helpers its rule
+  excludes, on the native lane only.
+- **Liveness (`nativegen/liveness.go`).** A variable is dead after the
+  statement of its list that mentions it last (a mention inside a nested
+  loop or arm belongs to the enclosing statement, so a loop-carried
+  variable lives to the loop's end, and a block's result keeps its locals
+  alive), and its register or slot returns to the pool for the
+  declarations that follow; closed scopes return theirs. A function without
+  calls keeps vector locals in the caller-saved vector registers too,
+  leaving four to expression temporaries.
+
+Measured (`benchmarks/native/`): the flattened validator has no call and
+runs at 0.28 ns/byte where the call tree ran at 0.85 and the C backend at
+0.17, in one run on a loaded machine; twenty vector spills remain of a
+kernel that declares some forty vector locals over its expansions. What
+would take the rest: an allocator with liveness across the whole body
+instead of declaration order within it.

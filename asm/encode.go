@@ -24,7 +24,7 @@ import (
 // Relocation records a reference to a symbol outside the function.
 type Relocation struct {
 	Offset int    // byte offset of the instruction in the function
-	Kind   string // call26 (bl), jump26 (b), condbr19 (b.cond/cbz/ldr literal), tbz14, adr21, adrp21; riscv_call_plt (call, rv64)
+	Kind   string // call26 (bl), jump26 (b), condbr19 (b.cond/cbz/ldr literal), tbz14, adr21, adrp21, lo12 (add :lo12:); riscv_call_plt (call, rv64)
 	Symbol string
 }
 
@@ -104,6 +104,20 @@ func encodeInstruction(instr Instruction, pc int64, labels map[string]int64) (ui
 				word, reloc, err := encodeMovImmediate(reg, imm.Value)
 				return word, reloc, nil, err
 			}
+		}
+	}
+	// `add xD, xN, :lo12:sym`: ADD (immediate), 64-bit, with imm12 left
+	// zero for the linker to fill from the symbol's address (the low 12
+	// bits, completing an adrp page address).
+	if instr.Mnemonic == "add" && len(operands) == 3 {
+		if sym, isSym := operands[2].(Symbol); isSym && sym.Lo12 {
+			rd, okD := operands[0].(Register)
+			rn, okN := operands[1].(Register)
+			if !okD || !okN || rd.Class != ClassX || rn.Class != ClassX {
+				return 0, nil, nil, fmt.Errorf("add :lo12:%s takes two x registers", sym.Name)
+			}
+			word := uint32(0x91000000) | uint32(rn.Num)<<5 | uint32(rd.Num)
+			return word, &Relocation{Kind: "lo12", Symbol: sym.Name}, nil, nil
 		}
 	}
 	var lastErr error

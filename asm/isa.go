@@ -211,6 +211,13 @@ func init() {
 		spec.forms = append(spec.forms, form{opX, opW})
 		instructionTable[name] = spec
 	}
+	// `add xD, xN, :lo12:sym` completes an adrp page address with the
+	// symbol's low 12 bits (a global's address, docs/spec/94-assembler.md §9).
+	{
+		spec := instructionTable["add"]
+		spec.forms = append(spec.forms, form{opX, opX, opSym})
+		instructionTable["add"] = spec
+	}
 	add("rev64", instructionSpec{forms: []form{{opX, opX}}}) // alias of rev on 64 bits (the vector form joins later)
 	// Prefetch operations may be spelled by number; MSR may write a PSTATE
 	// field from an immediate.

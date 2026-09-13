@@ -210,7 +210,7 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 			// size in between; wider lanes wait for the scaled-index idiom.
 			return 0, unsupported("simd.%s (a vector load over %s lanes needs a scaled index)", member, shape.laneName())
 		}
-		idx, err := g.vecGuardedIndex(sp, args[1], shape)
+		idx, err := g.vecGuardedIndex(sp, args[0], args[1], shape)
 		if err != nil {
 			return 0, err
 		}
@@ -248,7 +248,7 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		idx, err := g.vecGuardedIndex(sp, args[1], shape)
+		idx, err := g.vecGuardedIndex(sp, args[0], args[1], shape)
 		if err != nil {
 			return 0, err
 		}
@@ -381,13 +381,125 @@ func (g *generator) vecArrayOperand(operand, index ast.Expression, shape scalar,
 // laneName is the lane's scalar type name.
 func (s scalar) laneName() string { return "u" + strconv.Itoa(s.laneBits) }
 
+// loopFact: an enclosing `while len(span) >= u32(N) && index <= len(span)
+// - u32(N)` proves index + N <= len(span) in its body until index is
+// assigned (slack 0 afterwards).
+type loopFact struct {
+	span, index string
+	slack       int64
+}
+
+// loopFactsOf reads the facts a while condition proves: for each pair of
+// conjuncts `len(v) >= u32(N)` and `i <= len(v) - u32(N)` over one view
+// and one index variable, the fact (v, i, N).
+func loopFactsOf(cond ast.Expression) []loopFact {
+	var conjuncts []ast.Expression
+	var flatten func(e ast.Expression)
+	flatten = func(e ast.Expression) {
+		if infix, ok := e.(*ast.InfixExpression); ok && infix.Operator == "&&" {
+			flatten(infix.Left)
+			flatten(infix.Right)
+			return
+		}
+		conjuncts = append(conjuncts, e)
+	}
+	flatten(cond)
+	lenOf := func(e ast.Expression) (string, bool) {
+		call, ok := e.(*ast.InvocationExpression)
+		if !ok || len(call.Arguments) != 1 {
+			return "", false
+		}
+		fn, isIdent := call.Function.(*ast.Identifier)
+		arg, argIdent := call.Arguments[0].(*ast.Identifier)
+		if !isIdent || fn.Value != "len" || !argIdent {
+			return "", false
+		}
+		return arg.Value, true
+	}
+	mins := map[string]int64{} // view -> N from len(v) >= N
+	for _, c := range conjuncts {
+		infix, ok := c.(*ast.InfixExpression)
+		if !ok {
+			continue
+		}
+		if infix.Operator == ">=" {
+			if v, isLen := lenOf(infix.Left); isLen {
+				if n, isConst := constantValue(infix.Right); isConst && n > 0 {
+					mins[v] = n
+				}
+			}
+		}
+	}
+	var out []loopFact
+	for _, c := range conjuncts {
+		infix, ok := c.(*ast.InfixExpression)
+		if !ok || infix.Operator != "<=" {
+			continue
+		}
+		index, isIdent := infix.Left.(*ast.Identifier)
+		diff, isDiff := infix.Right.(*ast.InfixExpression)
+		if !isIdent || !isDiff || diff.Operator != "-" {
+			continue
+		}
+		v, isLen := lenOf(diff.Left)
+		n, isConst := constantValue(diff.Right)
+		if !isLen || !isConst || mins[v] != n {
+			continue
+		}
+		out = append(out, loopFact{span: v, index: index.Value, slack: n})
+	}
+	return out
+}
+
+// killLoopFacts forgets what the loop conditions proved about an index
+// variable once it is assigned.
+func (g *generator) killLoopFacts(name string) {
+	for i := range g.loopFacts {
+		if g.loopFacts[i].index == name {
+			g.loopFacts[i].slack = 0
+		}
+	}
+}
+
+// provenLanes is how many elements past the index expression the loop
+// conditions prove inside the span: the fact's slack for the index
+// variable itself, less a literal offset added to it; zero when nothing
+// is proven.
+func (g *generator) provenLanes(spanName string, index ast.Expression) int64 {
+	name, offset := "", int64(0)
+	switch e := index.(type) {
+	case *ast.Identifier:
+		name = e.Value
+	case *ast.InfixExpression:
+		ident, isIdent := e.Left.(*ast.Identifier)
+		k, isConst := constantValue(e.Right)
+		if e.Operator != "+" || !isIdent || !isConst || k < 0 {
+			return 0
+		}
+		name, offset = ident.Value, k
+	default:
+		return 0
+	}
+	for _, fact := range g.loopFacts {
+		if fact.span == spanName && fact.index == name && fact.slack > offset {
+			return fact.slack - offset
+		}
+	}
+	return 0
+}
+
 // vecGuardedIndex evaluates the element index of a vector access and emits
 // the check that the L lanes lie within the length: `len >= L` and
-// `index <= len - L`, each a compare and a branch to the trap.
-func (g *generator) vecGuardedIndex(sp span, index ast.Expression, shape scalar) (int, error) {
+// `index <= len - L`, each a compare and a branch to the trap — unless an
+// enclosing loop condition already proves it (provenLanes), in which case
+// the checker reads the proof off the condition's own compares.
+func (g *generator) vecGuardedIndex(sp span, operand, index ast.Expression, shape scalar) (int, error) {
 	r, err := g.indexValue(index)
 	if err != nil {
 		return 0, err
+	}
+	if ident, isIdent := operand.(*ast.Identifier); isIdent && g.provenLanes(ident.Value, index) >= int64(shape.lanes) {
+		return r, nil
 	}
 	limit, err := g.alloc(scalars["u32"])
 	if err != nil {

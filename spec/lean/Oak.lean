@@ -49,6 +49,7 @@ import Oak.Variadic
 import Oak.Intrinsics
 import Oak.CInterop
 import Oak.Simd
+import Oak.NeonSemantics
 import Oak.Monomorphization
 import Oak.Handles
 import Oak.Slab

@@ -127,4 +127,55 @@ theorem tile_disjoint {T g h a : Nat} (hne : g ≠ h) :
   have h2 := tile_index_div (g := h) hk'
   rw [← h1, ← hga, hha, h2]
 
+/-! ## Lanes and phases (docs/spec/56-kernels.md section 2a)
+
+A group kernel with `lane(G)` runs its body once per lane per position; a
+lane's stores at `gid * G + lane` are the tile footprint with `T = G`, so
+positions stay independent (`lane_disjoint`). `barrier()` splits the body
+into phases: on the device every lane of a group finishes a phase before
+any lane starts the next; on the host the phases run in order and each
+phase runs its lanes one after another. `phases_perm` is why the two agree:
+when the lanes of each phase are pairwise independent — they write their
+own slots of the outputs and of the threadgroup array, and read what the
+previous phase left — running a phase's lanes in any order gives the same
+memory, and the phases compose in sequence. -/
+
+/-- The lane footprint: position `g` with `G` lanes touches `g * G + l`
+for `l < G`, the tile shape at `T = G`. -/
+def laneFootprint (G g a : Nat) : Prop := tileFootprint G g a
+
+theorem lane_disjoint {G g h a : Nat} (hne : g ≠ h) :
+    ¬ (laneFootprint G g a ∧ laneFootprint G h a) :=
+  tile_disjoint hne
+
+/-- A barrier-separated kernel: its phases, each the lanes' threads. -/
+def runPhases : List (List (Thread Addr Val)) → Mem Addr Val → Mem Addr Val
+  | [], m => m
+  | p :: ps, m => runPhases ps (run p m)
+
+/-- Phase by phase, running each phase's lanes in the device's order or the
+host's gives one memory, when every phase's lanes are pairwise
+independent. -/
+theorem phases_perm (ps qs : List (List (Thread Addr Val)))
+    (hlen : ps.length = qs.length)
+    (hperm : ∀ i (hi : i < ps.length) (hj : i < qs.length), List.Perm ps[i] qs[i])
+    (hind : ∀ i (hi : i < ps.length), ∀ t ∈ ps[i], ∀ u ∈ ps[i], t ≠ u → Independent t u)
+    (m : Mem Addr Val) : runPhases ps m = runPhases qs m := by
+  induction ps generalizing qs m with
+  | nil =>
+    cases qs with
+    | nil => rfl
+    | cons _ _ => simp at hlen
+  | cons p ps ih =>
+    cases qs with
+    | nil => simp at hlen
+    | cons q qs =>
+      simp only [runPhases]
+      have hpq : List.Perm p q := hperm 0 (by simp) (by simp)
+      have hp : ∀ t ∈ p, ∀ u ∈ p, t ≠ u → Independent t u := hind 0 (by simp)
+      rw [run_perm p q hp hpq m]
+      exact ih qs (by simpa using hlen)
+        (fun i hi hj => hperm (i + 1) (by simpa using hi) (by simpa using hj))
+        (fun i hi => hind (i + 1) (by simpa using hi)) (run q m)
+
 end Oak.Kernel

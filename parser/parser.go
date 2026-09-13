@@ -5334,6 +5334,10 @@ func (p *Parser) parseVarDeclFromNameAndTypeStart(name *ast.Identifier) *ast.Var
 				return nil
 			}
 			stmt.Section = p.currentToken.Literal
+		case "threadgroup":
+			// Threadgroup memory in a kernel (docs/spec/56-kernels.md
+			// section 2a): the clause has no argument.
+			stmt.Threadgroup = true
 		case "measured":
 			if !p.expectPeek(token.COLON) {
 				return nil
@@ -5348,7 +5352,7 @@ func (p *Parser) parseVarDeclFromNameAndTypeStart(name *ast.Identifier) *ast.Var
 			}
 			stmt.Measured = &ast.MeasuredClause{Lo: lo, Hi: hi}
 		default:
-			p.addErrorAtCurrentToken("the clause after a declaration's type is (section: \"name\") or (measured: lo, hi)")
+			p.addErrorAtCurrentToken("the clause after a declaration's type is (section: \"name\"), (measured: lo, hi), or (threadgroup)")
 			return nil
 		}
 		if !p.expectPeek(token.RPAREN) {

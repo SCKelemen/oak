@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -146,7 +147,52 @@ func TestE2ENativeSimd(t *testing.T) {
 	if !strings.Contains(joined, "c_side left to the C backend") {
 		t.Errorf("c_side must stay on the C backend (the shim's caller); diagnostics:\n%s", joined)
 	}
+	// The verifier follows the vector file (asm/verify_vector.go): every
+	// straight-line vector body is proven against its Oak body, the
+	// vector-contract callee on both halves of v0, and doubled_mask
+	// through the expanded callee (nativegen/inline.go) inlined on the Oak
+	// side too. combine_store has no result and across_call makes a call:
+	// trusted, as their scalar counterparts are.
+	for _, fn := range []string{"lanes_mask", "logic", "shuffle", "words", "bits", "double_it_neon_abi", "doubled_mask"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven") {
+			t.Errorf("%s must be proven equal to its Oak body; diagnostics:\n%s", fn, joined)
+		}
+	}
+	if !strings.Contains(joined, "asm unit double_it_neon_abi: proven equal to its Oak body at the bit level (128-bit vector result, both halves)") {
+		t.Errorf("double_it_neon_abi must be proven on both halves of the vector result; diagnostics:\n%s", joined)
+	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_simd_c", New().WithSource("native_simd.oak", nativeSimdProgram)); abnormal || code != 42 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)
+	}
+}
+
+// The UTF-8 kernel of benchmarks/native (the simdutf lookup algorithm):
+// the straight-line vector helpers are proven, the two-block composition
+// is evidence (the bit-level decision exceeds its budget), the loop kernel
+// is trusted — the verdicts docs/notes/proof-chain-audit-2026-09.md
+// records for the vector link.
+func TestE2ENativeSimdKernelVerdicts(t *testing.T) {
+	requireArm64Host(t)
+	src, err := os.ReadFile("../benchmarks/native/utf8_valid.oak")
+	if err != nil {
+		t.Skip(err)
+	}
+	var infos []string
+	comp := New().WithSource("utf8_valid.oak", string(src)).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
+		if d.Source == "native" {
+			infos = append(infos, d.Message)
+		}
+	})
+	if _, err := comp.EmitNative(HostObjectFormat()).Get(); err != nil {
+		t.Fatalf("compilation failed: %v", err)
+	}
+	joined := strings.Join(infos, "\n")
+	for _, fn := range []string{"special_cases_neon_abi", "check_block_neon_abi"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven equal to its Oak body at the bit level (128-bit vector result, both halves)") {
+			t.Errorf("%s must be proven on both halves of the vector result; diagnostics:\n%s", fn, joined)
+		}
+	}
+	if !strings.Contains(joined, "asm unit check_blocks_neon_abi: agrees with its Oak body on every witness input") && !strings.Contains(joined, "asm unit check_blocks_neon_abi: proven") {
+		t.Errorf("check_blocks_neon_abi must be evidence or proof; diagnostics:\n%s", joined)
 	}
 }

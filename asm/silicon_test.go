@@ -69,6 +69,78 @@ func siliconCases() []siliconCase {
 			x("tst/"+code, "tst x0, x1\n  cset x0, "+code),
 		)
 	}
+	return append(cases, siliconVectorCases()...)
+}
+
+// siliconVectorCases: the vector-file instructions the verifier models
+// (asm/verify_vector.go), each over v0 = {a, a} and v1 = {b, a} — built
+// from the scalar inputs by dup and ext — with the result read back from
+// one 64-bit half of v0 (or a general register for the lane moves).
+func siliconVectorCases() []siliconCase {
+	setup := "dup v0.2d, x0\n  dup v1.2d, x1\n  ext v1.16b, v1.16b, v0.16b, #8\n  "
+	var cases []siliconCase
+	both := func(name, body string) {
+		cases = append(cases,
+			siliconCase{"vec " + name + " lo", 64, setup + body + "\n  umov x0, v0.d[0]"},
+			siliconCase{"vec " + name + " hi", 64, setup + body + "\n  umov x0, v0.d[1]"})
+	}
+	scalar := func(name string, width int, body string) {
+		cases = append(cases, siliconCase{"vec " + name, width, setup + body})
+	}
+	for _, arr := range []string{"16b", "8h", "4s", "2d"} {
+		for _, op := range []string{"add", "sub", "cmeq", "cmhi", "cmhs", "uqsub", "uqadd"} {
+			both(op+" "+arr, fmt.Sprintf("%s v0.%s, v0.%s, v1.%s", op, arr, arr, arr))
+		}
+		if arr != "2d" {
+			for _, op := range []string{"umin", "umax"} {
+				both(op+" "+arr, fmt.Sprintf("%s v0.%s, v0.%s, v1.%s", op, arr, arr, arr))
+			}
+		}
+		both("cmeq zero "+arr, fmt.Sprintf("cmeq v0.%s, v1.%s, #0", arr, arr))
+	}
+	for _, op := range []string{"and", "orr", "eor", "bic"} {
+		both(op, op+" v0.16b, v0.16b, v1.16b")
+	}
+	both("orr move", "orr v0.16b, v1.16b, v1.16b")
+	both("ushr 16b", "ushr v0.16b, v1.16b, #3")
+	both("sshr 16b", "sshr v0.16b, v1.16b, #7")
+	both("shl 8h", "shl v0.8h, v1.8h, #5")
+	both("ushr 4s", "ushr v0.4s, v1.4s, #9")
+	both("sshr 2d", "sshr v0.2d, v1.2d, #33")
+	both("dup 16b w", "dup v0.16b, w1")
+	both("dup 8h w", "dup v0.8h, w1")
+	both("dup 4s w", "dup v0.4s, w1")
+	both("dup 16b lane", "dup v0.16b, v1.b[3]")
+	both("dup 4s lane", "dup v0.4s, v1.s[2]")
+	both("movi 16b", "movi v0.16b, #85")
+	both("movi 4s", "movi v0.4s, #7")
+	both("tbl", "tbl v0.16b, {v0.16b}, v1.16b")
+	both("tbl nibbles", "ushr v1.16b, v1.16b, #4\n  tbl v0.16b, {v0.16b}, v1.16b")
+	both("ext 3", "ext v0.16b, v0.16b, v1.16b, #3")
+	both("ext 8", "ext v0.16b, v0.16b, v1.16b, #8")
+	both("ext 15", "ext v0.16b, v0.16b, v1.16b, #15")
+	both("umaxv b", "umaxv b0, v1.16b")
+	both("umaxv h", "umaxv h0, v1.8h")
+	both("umaxv s", "umaxv s0, v1.4s")
+	both("uminv b", "uminv b0, v1.16b")
+	both("addv 8b", "addv b0, v1.8b")
+	both("addv 16b", "addv b0, v1.16b")
+	both("addv 8h", "addv h0, v1.8h")
+	both("addv 4s", "addv s0, v1.4s")
+	both("cnt 16b", "cnt v0.16b, v1.16b")
+	both("cnt 8b", "cnt v0.8b, v1.8b")
+	both("fmov d from x", "fmov d0, x1")
+	both("fmov s from w", "fmov s0, w1")
+	scalar("umov b", 32, "umov w0, v1.b[5]")
+	scalar("umov h", 32, "umov w0, v1.h[3]")
+	scalar("umov s", 32, "umov w0, v1.s[1]")
+	scalar("smov b w", 32, "smov w0, v1.b[9]")
+	scalar("smov h w", 32, "smov w0, v1.h[2]")
+	scalar("umov d", 64, "umov x0, v1.d[1]")
+	scalar("smov s x", 64, "smov x0, v1.s[1]")
+	scalar("smov b x", 64, "smov x0, v1.b[0]")
+	scalar("fmov x from d", 64, "fmov x0, d1")
+	scalar("fmov w from s", 32, "fmov w0, s1")
 	return cases
 }
 
@@ -109,7 +181,7 @@ func TestSiliconDifferential(t *testing.T) {
 			decl = "f: (a, b: u32) -> u32"
 			regs = "  bind w0 = a\n  bind w1 = b\n"
 		}
-		unit, errs := ParseUnit("silicon.oakasm", decl+" = {\n"+regs+"  clobber x9, x10\n  "+c.body+"\n  ret\n}\n")
+		unit, errs := ParseUnit("silicon.oakasm", decl+" = {\n"+regs+"  clobber x9, x10, v0, v1, v2, v3\n  "+c.body+"\n  ret\n}\n")
 		if len(errs) != 0 {
 			t.Fatalf("%s: parse: %v", c.name, errs)
 		}
@@ -138,7 +210,7 @@ func TestSiliconDifferential(t *testing.T) {
 		for _, line := range strings.Split(c.body, "\n") {
 			fmt.Fprintf(&source, "    %q\n", strings.TrimSpace(line)+"\n\t")
 		}
-		source.WriteString("    : \"+r\"(r0), \"+r\"(r1), \"+r\"(r9), \"+r\"(r10) : : \"cc\");\n  return r0;\n}\n")
+		source.WriteString("    : \"+r\"(r0), \"+r\"(r1), \"+r\"(r9), \"+r\"(r10) : : \"cc\", \"v0\", \"v1\", \"v2\", \"v3\");\n  return r0;\n}\n")
 	}
 	source.WriteString("int main(void) {\n  static const uint64_t inputs[][2] = {\n")
 	for _, in := range inputs {

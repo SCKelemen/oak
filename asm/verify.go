@@ -27,6 +27,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/semir"
@@ -565,6 +566,9 @@ type symbolicState struct {
 	// of the same width put there; anything else is outside the subset.
 	disp  int64
 	frame map[int64]frameSlot
+	// vregs is the vector file: register number -> 128-bit value as lanes
+	// (asm/verify_vector.go); nil until a vector instruction runs.
+	vregs map[int]vecValue
 }
 
 type frameSlot struct {
@@ -617,6 +621,23 @@ func (s *symbolicState) write(reg Register, value *term) {
 	s.regs[reg.Num] = value
 }
 
+// The proof's names for a global (docs/spec/94-assembler.md §9): its
+// value on entry (`global:NAME`, a parameter at the scalar's width), its
+// address, and its page address (64-bit parameters the loads recognize).
+const globalParamPrefix = "global:"
+
+func globalParam(name string) string    { return globalParamPrefix + name }
+func globalAddrName(name string) string { return "&" + globalParamPrefix + name }
+func globalPageName(name string) string { return "&" + globalParamPrefix + name + "#page" }
+
+// globalAddrOf recognizes a global's address term.
+func globalAddrOf(t *term) (string, bool) {
+	if t == nil || t.kind != termParam || !strings.HasPrefix(t.name, "&"+globalParamPrefix) || strings.HasSuffix(t.name, "#page") {
+		return "", false
+	}
+	return t.name[len("&"+globalParamPrefix):], true
+}
+
 func widthOf(class RegClass) int {
 	if class == ClassW {
 		return 32
@@ -667,12 +688,19 @@ var verifiableOps = map[string]string{"add": "add", "sub": "sub", "adds": "add",
 // term, "", true) or ("", reason, false) when the body is outside the
 // verified subset.
 func executeBody(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64) (*term, *pathExecutor, string, bool) {
+	return executeBodyHalf(fn, sig, concrete, 0)
+}
+
+// executeBodyHalf is executeBody delivering, for a vector result, the
+// given 64-bit half of v0 (asm/verify_vector.go verifyVectorResult).
+func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64, half int) (*term, *pathExecutor, string, bool) {
 	state := &symbolicState{arch: fn.Arch, regs: map[int]*term{}}
 	params := map[string]RegClass{}
 	spans := map[string]int64{} // span/view parameter -> element size in bytes
 	declared := map[string]int{}
 	composites := map[string]compositeArg{}
 	boolParams := map[string]bool{}
+	vectors := map[string]typechecker.SimdShape{} // vector parameter -> shape
 	// input is a parameter's entry term: symbolic, or the witness value in
 	// a concrete run (which is what lets a data-dependent loop unroll).
 	input := func(name string, width int) *term {
@@ -712,6 +740,15 @@ func executeBody(fn *Function, sig *ast.FunctionStatement, concrete map[string]u
 			continue
 		}
 		class, ok := contractClass(param.Type)
+		if shape, isVector := vectorShape(param.Type); isVector && ok && class == ClassV {
+			// A fixed vector: its lanes are the leaves `p[k]`, the register
+			// the whole (asm/verify_vector.go).
+			vectors[param.Name.Value] = shape
+			for k := 0; k < shape.Lanes; k++ {
+				declared[spanElemName(param.Name.Value, int64(k))] = laneWidth(shape)
+			}
+			continue
+		}
 		if !ok || class == ClassV {
 			return nil, nil, "vector or non-integer parameters", false
 		}
@@ -756,6 +793,13 @@ func executeBody(fn *Function, sig *ast.FunctionStatement, concrete map[string]u
 			state.regs[binding.Length.Num] = zeroExtend(input(spanLenName(binding.Param), 32), 64)
 			continue
 		}
+		if shape, isVector := vectors[binding.Param]; isVector {
+			if binding.Register.Class != ClassV {
+				return nil, nil, "a vector parameter bound outside the vector file", false
+			}
+			state.writeVec(binding.Register.Num, vectorParamValue(binding.Param, shape, input))
+			continue
+		}
 		class := params[binding.Param]
 		bits := declared[binding.Param]
 		switch {
@@ -781,7 +825,8 @@ func executeBody(fn *Function, sig *ast.FunctionStatement, concrete map[string]u
 		}
 		resultClass, hasResult = ClassX, true
 	}
-	if !hasResult || resultClass == ClassV {
+	_, vectorResult := vectorShape(sig.ReturnType)
+	if !hasResult || (resultClass == ClassV && !vectorResult) {
 		return nil, nil, "no integer result", false
 	}
 	labels := map[string]int{}
@@ -793,8 +838,9 @@ func executeBody(fn *Function, sig *ast.FunctionStatement, concrete map[string]u
 			return nil, nil, "alignment directives", false
 		}
 	}
-	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass, spans: spans, declared: declared, concrete: concrete != nil, env: concrete, records: composites, arch: fn.Arch, fn: fn}
+	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass, spans: spans, declared: declared, concrete: concrete != nil, env: concrete, records: composites, arch: fn.Arch, globals: fn.Globals, fn: fn}
 	exec.resultReg = Register{Class: resultClass, Num: 0}
+	exec.resultHalf = half
 	if fn.Arch == ArchRV64 {
 		exec.resultReg = rv64ResultRegister
 	}
@@ -834,9 +880,11 @@ type pathExecutor struct {
 	arch        string   // the lane
 	resultReg   Register // the register ret delivers: w0/x0, or a0 on rv64
 	resultClass RegClass
-	spans       map[string]int64 // span parameter -> element size in bytes
-	declared    map[string]int   // parameter -> declared width
-	concrete    bool             // a witness run: every input is a constant
+	resultHalf  int               // a vector result: the 64-bit half of v0 delivered (asm/verify_vector.go)
+	spans       map[string]int64  // span parameter -> element size in bytes
+	declared    map[string]int    // parameter -> declared width
+	globals     map[string]Global // the globals the body addresses (fn.Globals)
+	concrete    bool              // a witness run: every input is a constant
 	loopExits   map[int]loopShape
 	loops       []*loopEvent // data-dependent loops met, in creation order
 	loopStack   []int        // indices of the loops whose bodies are being executed
@@ -998,7 +1046,14 @@ func (s *symbolicState) clone() *symbolicState {
 	for addr, slot := range s.frame {
 		frame[addr] = slot
 	}
-	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame}
+	var vregs map[int]vecValue
+	if s.vregs != nil {
+		vregs = make(map[int]vecValue, len(s.vregs))
+		for reg, value := range s.vregs {
+			vregs[reg] = value
+		}
+	}
+	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs}
 }
 
 // frameAccess executes a load or store through the sp frame: the address
@@ -1035,6 +1090,9 @@ func (x *pathExecutor) frameAccessAt(instr Instruction, state *symbolicState, ad
 	regs := registerOperands(instr.Operands[:len(instr.Operands)-1])
 	if len(regs) == 0 || isAtomic(instr.Mnemonic) || isExclusiveStore(instr.Mnemonic) || instr.Mnemonic == "ldpsw" {
 		return "a frame access outside the modeled subset (" + instr.Mnemonic + ")", false
+	}
+	if regs[0].Class == ClassV {
+		return x.vectorFrameAccessAt(instr, state, addr, regs)
 	}
 	for _, reg := range regs {
 		if reg.Class == ClassV {
@@ -1245,6 +1303,13 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 		}
 		switch instr.Mnemonic {
 		case "ret":
+			if x.resultClass == ClassV {
+				value, ok := state.readVec(0)
+				if !ok {
+					return nil, "result register never written", false
+				}
+				return value.halves()[x.resultHalf], "", true
+			}
 			result, ok := state.read(x.resultReg)
 			if !ok {
 				return nil, "result register never written", false
@@ -1335,7 +1400,19 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 			continue
 		}
 		if isLoad(instr.Mnemonic) {
+			if dest, isReg := instr.Operands[0].(Register); isReg && dest.Class == ClassV {
+				if reason, ok := x.loadVector(instr, state); !ok {
+					return nil, reason, false
+				}
+				continue
+			}
 			if reason, ok := x.load(instr, state); !ok {
+				return nil, reason, false
+			}
+			continue
+		}
+		if hasVectorOperand(instr) {
+			if reason, ok := x.stepVector(instr, state); !ok {
 				return nil, reason, false
 			}
 			continue
@@ -1364,6 +1441,32 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 	base, bound := state.regs[mem.Base.Num]
 	if !bound {
 		return "a load through a register that is not a span base", false
+	}
+	if name, isGlobal := globalAddrOf(base); isGlobal {
+		// The global's cell: its value on entry, a parameter of the proof
+		// (a store to it leaves the body trusted, so the value never
+		// changes along a verified path).
+		global, known := x.globals[name]
+		if !known {
+			return "a load through the address of an undeclared global", false
+		}
+		if global.Type == "Bool" {
+			return "a Bool global (its cell holds a byte the proof cannot bound)", false
+		}
+		if mem.Index != nil || mem.Mode != MemOffset || mem.Offset != 0 {
+			return "a load through a global's address away from its cell", false
+		}
+		size := memorySize(instr.Mnemonic, dest.Class)
+		if int(size)*8 != global.Bits {
+			return fmt.Sprintf("a %d-byte load of the %d-bit global %s", size, global.Bits, name), false
+		}
+		value := paramTerm(globalParam(name), global.Bits)
+		if isSignExtendingLoad(instr.Mnemonic) {
+			state.write(dest, extendTerm(value, global.Bits, widthOf(dest.Class), true))
+		} else {
+			state.write(dest, zeroExtend(value, widthOf(dest.Class)))
+		}
+		return "", true
 	}
 	param, baseOffset, isSpan := spanBaseOf(base)
 	if !isSpan {
@@ -1562,6 +1665,18 @@ func (x *pathExecutor) element(span string, index *term, width int) *term {
 
 // step executes one data-processing instruction on the state.
 func step(instr Instruction, state *symbolicState) (string, bool) {
+	if instr.Mnemonic == "add" && len(instr.Operands) == 3 {
+		if sym, isSym := instr.Operands[2].(Symbol); isSym && sym.Lo12 {
+			// `add xA, xN, :lo12:G` over G's page: xA is G's address.
+			dest := instr.Operands[0].(Register)
+			base, ok := operandTerm(state, instr.Operands[1], 64)
+			if !ok || base.kind != termParam || base.name != globalPageName(sym.Name) {
+				return "add :lo12: over a register that does not hold the symbol's page", false
+			}
+			state.write(dest, paramTerm(globalAddrName(sym.Name), 64))
+			return "", true
+		}
+	}
 	for _, reg := range registerOperands(instr.Operands) {
 		if reg.Class == ClassV {
 			return "a floating-point or vector instruction (" + instr.Mnemonic + ")", false
@@ -1743,6 +1858,15 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 			}
 			prior := flagsCondition(code, state.flags)
 			state.flags = &flagsFact{left: l, right: r, width: width, cond: prior, elseNZCV: instr.Operands[2].(Immediate).Value}
+		case "adrp":
+			// A global's page address: a distinguished parameter the
+			// completing `add :lo12:` recognizes.
+			dest := instr.Operands[0].(Register)
+			sym, isSym := instr.Operands[1].(Symbol)
+			if !isSym {
+				return "adrp without a symbol", false
+			}
+			state.write(dest, paramTerm(globalPageName(sym.Name), 64))
 		case "neg", "mvn":
 			dest := instr.Operands[0].(Register)
 			width := widthOf(dest.Class)
@@ -1903,6 +2027,11 @@ type oakLowering struct {
 	loops     []*loopEvent         // data-dependent loops met, in creation order
 	loopStack []int                // indices of the loops whose bodies are being lowered
 	fresh     map[string]int       // loop-carried fresh symbols -> width
+	// globals are the mutable top-level scalars the body addresses
+	// (Function.Globals): a read of one is the parameter `global:NAME` of
+	// the proof, the value the cell holds on entry; a write leaves the body
+	// trusted (docs/spec/94-assembler.md §9).
+	globals map[string]Global
 	// functions are the program's functions a body may call; a call to one
 	// in the subset is inlined (inlineCall). Nil outside the theorem decider.
 	functions map[string]*ast.FunctionStatement
@@ -2030,6 +2159,11 @@ func leaves(a, b *oakValue, visit func(a, b *oakValue)) {
 
 // oakTypeOf resolves a local's declared type expression.
 func (lo *oakLowering) oakTypeOf(expr ast.Expression) (*oakType, bool) {
+	if shape, isVector := vectorShape(expr); isVector {
+		// A fixed vector: its lane array (asm/verify_simd.go), one shared
+		// type per shape so a callee's declared result is the caller's.
+		return lo.vectorType(shape), true
+	}
 	if width, signed, ok := contractBits(expr); ok {
 		return &oakType{kind: oakScalar, width: width, signed: signed}, true
 	}
@@ -2215,6 +2349,10 @@ func (lo *oakLowering) aggregateValue(expr ast.Expression, typ *oakType) (*oakVa
 		}
 		return place.copy(), "", true
 	case *ast.InvocationExpression:
+		// A vector operation is the aggregate of its lanes (asm/verify_simd.go).
+		if member, isSimd := simdMember(e.Function); isSimd {
+			return lo.simdVectorValue(member, e.Arguments, typ)
+		}
 		// A call to a program function returning a record or sum type is
 		// inlined as an aggregate value.
 		if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
@@ -3571,6 +3709,9 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		if value, _, ok := lo.constantValue(e.Value, width); ok {
 			return constTerm(value, width), "", true
 		}
+		if global, isGlobal := lo.globals[e.Value]; isGlobal && global.Type != "Bool" {
+			return adaptWidth(paramTerm(globalParam(e.Value), global.Bits), width), "", true
+		}
 		return nil, fmt.Sprintf("identifier %s (not a parameter)", e.Value), false
 	case *ast.IntegerLiteral:
 		return constTerm(uint64(e.Value), width), "", true
@@ -3636,6 +3777,10 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		// The scalar instruction functions (docs/spec/92-ffi.md section 3.2)
 		// are the verifier's own unary instruction terms — the ISA lowering
 		// and the Oak lowering share their semantics (Oak.Intrinsics).
+		if member, isSimd := simdMember(e.Function); isSimd {
+			// The scalar-valued vector operations (asm/verify_simd.go).
+			return lo.simdScalar(member, e, width)
+		}
 		if member, memberWidth, isInstruction := instructionFunction(e); isInstruction {
 			operand, reason, ok := lo.lower(e.Arguments[0], memberWidth)
 			if !ok {
@@ -3985,6 +4130,14 @@ func (lo *oakLowering) operandContract(expr ast.Expression) (int, bool, bool) {
 		if _, isLen := lo.spanLength(e); isLen {
 			return 32, false, true
 		}
+		if member, isSimd := simdMember(e.Function); isSimd {
+			// Bool for any/all, u32 for movemask, the mask helpers' width; a
+			// vector-valued operation has no scalar contract.
+			if w, isScalar := simdScalarWidth(member); isScalar {
+				return w, false, true
+			}
+			return 0, false, false
+		}
 		if ident, isIdent := e.Function.(*ast.Identifier); isIdent && ident.Value == "len" && len(e.Arguments) == 1 && lo.aggregateChain(e.Arguments[0]) {
 			return 32, false, true
 		}
@@ -4108,6 +4261,9 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 
 // Verify checks one asm function against its Oak fallback body.
 func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Verdict {
+	if shape, isVector := vectorShape(sig.ReturnType); isVector && fn.Arch != ArchRV64 {
+		return verifyVectorResult(fn, sig, oakBody, shape)
+	}
 	asmTerm, exec, reason, ok := executeBody(fn, sig, nil)
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
@@ -4269,6 +4425,7 @@ func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	lowering := newLowering(sig)
 	lowering.records, lowering.adts = fn.Records, fn.ADTs
 	lowering.constants = fn.Constants
+	lowering.globals = fn.Globals
 	lowering.functions = fn.Callees // the Oak body's calls inline (inlineCall)
 	lowering.concrete = concrete
 	lowering.bindAggregateParams(sig)
@@ -4531,13 +4688,71 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 
 	// Beyond the linear form: bit-blast both sides. Equal canonical nodes
 	// for every bit is a proof at the bit level; a differing bit gives a
-	// concrete counterexample; exceeding the node budget keeps the labeled
-	// evidence verdict.
-	bl := newBlaster(names, params)
+	// concrete counterexample; exceeding the node budget under every
+	// variable order keeps the labeled evidence verdict. The orders run
+	// together over the same terms and the first to decide stops the
+	// others (decideLowered's pattern): a proof does not depend on the
+	// order, and a body that is small under some order is decided in that
+	// order's time.
+	blasters := equalityBlasters(names, params, asmTerm, oakTerm)
+	var stop atomic.Bool
+	type attempt struct {
+		verdict  Verdict
+		exceeded bool
+	}
+	results := make(chan attempt, len(blasters))
+	for _, bl := range blasters {
+		bl.bdd.stop = &stop
+		go func(bl *blaster) {
+			verdict, exceeded := blastEqual(bl, fn, names, asmTerm, oakTerm, width, note)
+			results <- attempt{verdict, exceeded}
+		}(bl)
+	}
+	for range blasters {
+		if a := <-results; !a.exceeded {
+			stop.Store(true)
+			return a.verdict
+		}
+	}
+	return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exceeded its node budget)", fn.Name)}
+}
+
+// equalityBlasters builds the variable orders for an equality: interleaved
+// always; per-parameter blocks when there is more than one root parameter;
+// each leaf's bits in a block of its own when the parameters are aggregate
+// leaves or span elements (a lane-wise computation resolves each lane's
+// contribution as its bits are read); control bits first when a proper
+// subset of the parameters decides comparisons (a table lookup at a
+// symbolic index is a selection, linear once the index is read).
+func equalityBlasters(names []string, widths map[string]int, asmTerm, oakTerm *term) []*blaster {
+	blasters := []*blaster{newBlaster(names, widths)}
+	if paramGroups(names) > 1 {
+		blasters = append(blasters, newGroupedBlaster(names, widths))
+	}
+	leaves := 0
+	for _, name := range names {
+		if rootParam(name) != name {
+			leaves++
+		}
+	}
+	if leaves > 1 {
+		blasters = append(blasters, newBlockedBlaster(names, widths, func(name string) string { return name }, nil, "each leaf's bits in a block"))
+	}
+	control := controlParams([]*term{asmTerm, oakTerm})
+	if len(control) > 0 && len(control) < len(names) {
+		blasters = append(blasters, newControlFirstBlaster(names, widths, control))
+	}
+	return blasters
+}
+
+// blastEqual decides the equality under one variable order: proof, a
+// counterexample, or the budget exceeded (also when another order finished
+// first and stopped this one).
+func blastEqual(bl *blaster, fn *Function, names []string, asmTerm, oakTerm *term, width int, note string) (Verdict, bool) {
 	asmBits := bl.blast(asmTerm)
 	oakBits := bl.blast(oakTerm)
 	if asmBits == nil || oakBits == nil || bl.bdd.exceeded {
-		return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exceeded its node budget)", fn.Name)}
+		return Verdict{}, true
 	}
 	// Element reads at different index terms are independent values in the
 	// diagrams (sound for a proof); a differing bit is a counterexample
@@ -4552,20 +4767,24 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 		if !consBuilt {
 			cons, consBuilt = bl.consistency(), true
 			if bl.bdd.exceeded {
-				return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exceeded its node budget)", fn.Name)}
+				return Verdict{}, true // the budget: another order may still decide
 			}
 		}
 		differs := bl.apply(opAnd, cons, bl.apply(opXor, asmBits[i], oakBits[i]))
 		if bl.bdd.exceeded {
-			return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exceeded its node budget)", fn.Name)}
+			return Verdict{}, true // the budget: another order may still decide
 		}
 		if differs == bddFalse {
 			continue // equal under every memory, though not node for node
 		}
 		env := bl.counterexampleOf(differs)
-		return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (bit %d differs): asm yields %d, Oak yields %d (asm term %s; Oak term %s)", fn.Name, describeEnv(names, env), i, asmTerm.eval(env), oakTerm.eval(env), asmTerm, oakTerm)}
+		return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (bit %d differs): asm yields %d, Oak yields %d (asm term %s; Oak term %s)", fn.Name, describeEnv(names, env), i, asmTerm.eval(env), oakTerm.eval(env), asmTerm, oakTerm)}, false
 	}
-	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level (%d-bit result, %d BDD nodes)%s", fn.Name, width, len(bl.bdd.nodes), note)}
+	order := ""
+	if bl.grouped {
+		order = ", " + bl.label
+	}
+	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level (%d-bit result, %d BDD nodes%s)%s", fn.Name, width, len(bl.bdd.nodes), order, note)}, false
 }
 
 // collectParams gathers every parameter name a term mentions. Widths come
@@ -4599,6 +4818,11 @@ func collectParamsVisited(t *term, into map[string]bool, visited map[*term]bool)
 func (lo *oakLowering) declaredWidth(name string) int {
 	if w, isScalar := lo.params[name]; isScalar {
 		return w
+	}
+	if strings.HasPrefix(name, globalParamPrefix) {
+		if global, isGlobal := lo.globals[name[len(globalParamPrefix):]]; isGlobal {
+			return global.Bits
+		}
 	}
 	if w, isFresh := lo.fresh[name]; isFresh {
 		return w

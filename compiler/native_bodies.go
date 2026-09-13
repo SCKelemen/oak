@@ -64,6 +64,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 	}
 	specializeInstantiations(tc, templates, records, adts)
 	constants := constantGlobals(root, tc)
+	globals, globalDecls := addressableGlobals(root, tc, constants)
 	var lowered []*asm.Function
 	for _, stmt := range root.Statements {
 		fn, ok := stmt.(*ast.FunctionStatement)
@@ -82,6 +83,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// path, the body is lowered again with every guard. The checker
 		// decides safety; the elision is only what it already knows.
 		lane.ElideProven = lane.Arch == asm.ArchArm64
+		lane.Globals = globals
 		asmFn, err := nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
 		if err != nil {
 			if _, outside := err.(nativegen.Unsupported); outside {
@@ -126,6 +128,11 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", "native backend: "+verdict.Message))
 		fn.NativeBacked = true
 		fn.AsmArch = asmFn.Arch // the C emitter guards the Oak body by the lane's negation
+		for name := range asmFn.Globals {
+			// The C emitter gives the global external linkage under the
+			// label the native code names (codegen/globals.go).
+			globalDecls[name].NativeAddressed = true
+		}
 		lowered = append(lowered, asmFn)
 	}
 	// A native function calls a vector-contract callee at its native entry,
@@ -245,6 +252,46 @@ var constantScalarTypes = map[string]bool{
 // initializers after it, as the C backend binds them. A global whose
 // initializer does not fold is left out, and a function reading it stays
 // with the C backend.
+// addressableGlobals lists the mutable top-level scalars a native body
+// may address (docs/spec/94-assembler.md §9, the OS pilot's N3): a typed
+// scalar binding some statement writes (the constant ones are folded
+// instead), neither measured nor a target constant.
+func addressableGlobals(root *ast.Program, tc *typechecker.TypeChecker, constants map[string]asm.Constant) (map[string]asm.Global, map[string]*ast.VariableDeclaration) {
+	globals := map[string]asm.Global{}
+	decls := map[string]*ast.VariableDeclaration{}
+	if root == nil {
+		return globals, decls
+	}
+	mutated := codegen.MutatedGlobals(root)
+	targetConstants := map[string]bool{}
+	if tc != nil {
+		for _, constant := range tc.TargetConstants() {
+			targetConstants[constant.Name] = true
+		}
+	}
+	for _, stmt := range root.Statements {
+		decl, isDecl := stmt.(*ast.VariableDeclaration)
+		if !isDecl || decl.Name == nil || decl.Type == nil || decl.Measured != nil {
+			continue
+		}
+		name := decl.Name.Value
+		if _, isConst := constants[name]; isConst || !mutated[name] || targetConstants[name] {
+			continue
+		}
+		typeName, isIdent := decl.Type.(*ast.Identifier)
+		if !isIdent {
+			continue
+		}
+		global, ok := nativegen.GlobalStorage(typeName.Value)
+		if !ok {
+			continue
+		}
+		globals[name] = global
+		decls[name] = decl
+	}
+	return globals, decls
+}
+
 func constantGlobals(root *ast.Program, tc *typechecker.TypeChecker) map[string]asm.Constant {
 	out := map[string]asm.Constant{}
 	if root == nil || tc == nil {

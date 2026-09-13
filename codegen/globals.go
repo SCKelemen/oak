@@ -29,11 +29,24 @@ func (cg *CodeGenerator) emitGlobals(program *ast.Program, tc *typechecker.TypeC
 	cg.foldEnv = object.NewEnvironment()
 	cg.foldEnv.SetArithmeticWidths(tc.ArithmeticType)
 	cg.constantGlobals = make(map[string]bool)
+	if cg.nativeGlobals == nil {
+		cg.nativeGlobals = make(map[string]bool)
+	}
 	emitted := false
+	labelMacro := false
 	for _, stmt := range program.Statements {
 		decl, isDecl := stmt.(*ast.VariableDeclaration)
 		if !isDecl || decl.Name == nil {
 			continue
+		}
+		if decl.NativeAddressed {
+			cg.nativeGlobals[decl.Name.Value] = true
+			if !labelMacro {
+				// The assembler-label macro, before the FFI prelude defines
+				// it again (identically) further down.
+				cg.write("#ifndef OAK_ASM_SYMBOL\n#define OAK_STRINGIFY_(x) #x\n#define OAK_STRINGIFY(x) OAK_STRINGIFY_(x)\n#define OAK_ASM_SYMBOL(name) OAK_STRINGIFY(__USER_LABEL_PREFIX__) name\n#endif\n")
+				labelMacro = true
+			}
 		}
 		if decl.Type != nil {
 			cg.globalTypes[decl.Name.Value] = cg.classifyContainer(decl.Type)
@@ -133,6 +146,13 @@ func (cg *CodeGenerator) emitGlobal(decl *ast.VariableDeclaration, tc *typecheck
 				declarator = fmt.Sprintf("static %s %s", cg.cTypeName(mangled), name)
 			}
 		}
+		if declarator == "" && decl.NativeAddressed {
+			// A natively lowered body addresses this global through its
+			// symbol (docs/spec/94-assembler.md §9): external linkage under
+			// the assembler label the companion object names — a spelling
+			// no function's mangled name can take (cg.globalSymbol).
+			declarator = fmt.Sprintf("%s %s __asm__(OAK_ASM_SYMBOL(\"%s\"))", cg.parseTypeExpression(decl.Type), name, cg.globalSymbol(decl.Name.Value))
+		}
 		if declarator == "" {
 			storage := "static"
 			if cg.isConstantGlobal(decl) {
@@ -219,6 +239,39 @@ func (cg *CodeGenerator) emitGlobal(decl *ast.VariableDeclaration, tc *typecheck
 			cg.globalError(decl, "global %s does not fold for later initializers: %s", decl.Name.Value, e.Message)
 		}
 	}
+}
+
+// globalSymbol is the assembler label of a natively addressed global: the
+// function prefix, then a digit no Oak identifier can begin with, so it
+// collides with no function's or method's mangled name.
+func (cg *CodeGenerator) globalSymbol(name string) string {
+	if cg.packageName != "" && cg.packageName != "main" {
+		return fmt.Sprintf("oak_%s_0g_%s", cg.packageName, cIdent(name))
+	}
+	return "oak_0g_" + cIdent(name)
+}
+
+// SetNativeGlobals names the globals the native bodies address
+// (asm.AddressedGlobals), for AsmSymbol before or without Generate — the
+// companion object is encoded by a generator of its own.
+func (cg *CodeGenerator) SetNativeGlobals(names map[string]bool) {
+	if cg.nativeGlobals == nil {
+		cg.nativeGlobals = make(map[string]bool)
+	}
+	for name := range names {
+		cg.nativeGlobals[name] = true
+	}
+}
+
+// AsmSymbol maps the name an asm unit or native body references — a
+// function it calls, or a global it addresses — to the symbol the C side
+// defines (docs/spec/94-assembler.md §9): the globals come from
+// SetNativeGlobals or from Generate's pass over the declarations.
+func (cg *CodeGenerator) AsmSymbol(name string) string {
+	if cg.nativeGlobals[name] {
+		return cg.globalSymbol(name)
+	}
+	return cg.cFunctionName(name)
 }
 
 // targetConstantCName is the C identifier of a target constant's static:
