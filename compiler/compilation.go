@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"errors"
 	"fmt"
 	"github.com/SCKelemen/oak/target"
 	"reflect"
@@ -81,6 +82,12 @@ type Options struct {
 	// accesses. Set by the code-emitting stages; the semantic model, the
 	// Lean emitters, and the prover see the program as written.
 	InlineHelpers bool
+	// VerifiedProfile holds the build to the verified native profile
+	// (docs/spec/94-assembler.md §9, "The verified profile"): every body
+	// the program reaches is lowered natively and its verdict is proven;
+	// a witnessed or trusted body, or one left to the C backend, refuses
+	// the build, naming the reason. Implies NativeBodies.
+	VerifiedProfile bool
 }
 
 // Compilation is the public, Roslyn-style compiler value. With* methods return
@@ -188,6 +195,12 @@ type SemanticModel struct {
 	// their data symbols (docs/spec/94-assembler.md §9); the companion
 	// object and the executable carry them in their read-only data.
 	NativeData []asm.DataSymbol
+	// NativeVerdicts are the verifier's verdicts for the natively lowered
+	// bodies, by Oak name; NativeFallbacks names each body the native
+	// backend left to the C backend with the reason. The verified profile
+	// reads both (verifiedProfile).
+	NativeVerdicts  map[string]asm.Verdict
+	NativeFallbacks map[string]string
 }
 
 // LoweredProgram is the executable-oriented AST plus its semantic model.
@@ -264,6 +277,14 @@ func (comp Compilation) Target() target.Target { return comp.options.Target }
 // WithNativeBodies lowers ordinary Oak functions through the native backend
 // (nativegen) where its subset reaches, realizing them like asm units.
 func (comp Compilation) WithNativeBodies() Compilation {
+	comp.options.NativeBodies = true
+	return comp
+}
+
+// WithVerifiedProfile returns a compilation held to the verified native
+// profile (Options.VerifiedProfile): only proven bodies link.
+func (comp Compilation) WithVerifiedProfile() Compilation {
+	comp.options.VerifiedProfile = true
 	comp.options.NativeBodies = true
 	return comp
 }
@@ -440,7 +461,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 			stitcher.options.AsmUnits = append(append([]SourceText(nil), comp.options.AsmUnits...), tree.Modules.AsmUnits...)
 		}
 		asmFunctions, asmDiagnostics := stitcher.stitchAsmUnits(tree.Root)
-		var nativeData []asm.DataSymbol
+		var native nativeLowering
 		if err := comp.gate("asm", asmDiagnostics, tree.Modules); err != nil {
 			return nil, err
 		}
@@ -483,15 +504,14 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 			// The native body backend has an AArch64 and an RV64 lane
 			// (nativegen): on a target without a lane every body stays with
 			// the C backend.
-			nativeFunctions, data, nativeDiagnostics := comp.lowerNativeBodies(tree.Root, tc)
-			if err := comp.gate("native", nativeDiagnostics, tree.Modules); err != nil {
+			native = comp.lowerNativeBodies(tree.Root, tc)
+			if err := comp.gate("native", native.Diagnostics, tree.Modules); err != nil {
 				return nil, err
 			}
-			asmFunctions = append(asmFunctions, nativeFunctions...)
-			nativeData = data
+			asmFunctions = append(asmFunctions, native.Functions...)
 		}
 
-		model := &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc, AsmFunctions: asmFunctions, NativeData: nativeData}
+		model := &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc, AsmFunctions: asmFunctions, NativeData: native.Data, NativeVerdicts: native.Verdicts, NativeFallbacks: native.Fallbacks}
 		model.Diagnostics = append(model.Diagnostics, tc.Diagnostics()...)
 		model.Diagnostics = append(model.Diagnostics, codecLayoutDiagnostics(tree.CodecLayouts)...)
 
@@ -748,6 +768,9 @@ func (comp Compilation) EmitExecutable() Stage[[]byte] {
 		if tgt.AsmArch() == "" || (tgt.OS != target.OSLinux && !tgt.Freestanding()) {
 			return nil, fmt.Errorf("link: no native executable format for %s (linux and freestanding targets on the arm64 and rv64 lanes)", tgt)
 		}
+		if err := comp.verifiedProfile(lowered); err != nil {
+			return nil, err
+		}
 		if err := comp.allNative(lowered, true); err != nil {
 			return nil, err
 		}
@@ -773,6 +796,9 @@ func (comp Compilation) EmitNativeObject(format asm.ObjectFormat) Stage[[]byte] 
 	comp.options.NativeAsm = true
 	comp.options.NativeBodies = true
 	return comp.Lower().Then(func(lowered *LoweredProgram) ([]byte, error) {
+		if err := comp.verifiedProfile(lowered); err != nil {
+			return nil, err
+		}
 		if err := comp.allNative(lowered, false); err != nil {
 			return nil, err
 		}
@@ -784,6 +810,78 @@ func (comp Compilation) EmitNativeObject(format asm.ObjectFormat) Stage[[]byte] 
 		}
 		return asm.WriteObjectWith(format, encoded, comp.objectOptions(nativeData(lowered.Model.NativeData, generator.CFunctionName)))
 	})
+}
+
+// verifiedProfile holds a lowered program to the verified native profile
+// when the compilation asks for it (Options.VerifiedProfile,
+// docs/spec/94-assembler.md §9, "The verified profile"): every body the
+// native backend lowered must carry a proven verdict, and no body may
+// have stayed with the C backend. The refusal is the burn-down list —
+// every reason with the bodies it holds back — so the distance to the
+// profile is what the message says.
+func (comp Compilation) verifiedProfile(lowered *LoweredProgram) error {
+	if !comp.options.VerifiedProfile {
+		return nil
+	}
+	held := map[string][]string{}
+	total := 0
+	for name, verdict := range lowered.Model.NativeVerdicts {
+		if verdict.Kind == asm.VerdictProven {
+			continue
+		}
+		held[verdictReason(verdict)] = append(held[verdictReason(verdict)], name)
+		total++
+	}
+	for name, reason := range lowered.Model.NativeFallbacks {
+		key := "left to the C backend: " + reason
+		held[key] = append(held[key], name)
+		total++
+	}
+	if total == 0 {
+		return nil
+	}
+	reasons := make([]string, 0, len(held))
+	for reason := range held {
+		reasons = append(reasons, reason)
+	}
+	sort.Slice(reasons, func(i, j int) bool {
+		if len(held[reasons[i]]) != len(held[reasons[j]]) {
+			return len(held[reasons[i]]) > len(held[reasons[j]])
+		}
+		return reasons[i] < reasons[j]
+	})
+	var out strings.Builder
+	fmt.Fprintf(&out, "verified profile: %d bodies are not proven (docs/spec/94-assembler.md §9):", total)
+	for _, reason := range reasons {
+		names := held[reason]
+		sort.Strings(names)
+		fmt.Fprintf(&out, "\n  %s (%d): %s", reason, len(names), strings.Join(names, ", "))
+	}
+	return errors.New(out.String())
+}
+
+// verdictReason is the reason a verdict short of proof gives: the text
+// inside "not verified (…)" of a trusted verdict, after "evidence, not
+// proof: " of a witnessed one, and the kind's name when neither is found.
+func verdictReason(verdict asm.Verdict) string {
+	message := verdict.Message
+	switch verdict.Kind {
+	case asm.VerdictTrusted:
+		if i := strings.Index(message, "not verified ("); i >= 0 {
+			rest := message[i+len("not verified ("):]
+			if j := strings.LastIndex(rest, ") — trusted"); j >= 0 {
+				return "trusted: " + rest[:j]
+			}
+		}
+		return "trusted"
+	case asm.VerdictWitnessed:
+		if i := strings.Index(message, "evidence, not proof: "); i >= 0 {
+			rest := strings.TrimSuffix(message[i+len("evidence, not proof: "):], ")")
+			return "witnessed: " + rest
+		}
+		return "witnessed"
+	}
+	return verdict.Kind.String()
 }
 
 // allNative checks that a lowered program can be realized by the Oak
