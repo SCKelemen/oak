@@ -178,6 +178,9 @@ func lowerFunctionStatement(fn *ast.FunctionStatement, tc *typechecker.TypeCheck
 			Exported:     fn.Exported,
 			Opaque:       fn.Opaque,
 			Kernel:       fn.Kernel,
+			// The dispatch clause is the backend's to lower (docs/spec/
+			// 93-simd.md section 6): the probe, the branch, the mode.
+			Dispatch: fn.Dispatch,
 			// The C ABI symbol of an explicit export travels with the
 			// definition to the backend (docs/spec/92-ffi.md section 2.9).
 			ExportSymbol: fn.ExportSymbol,

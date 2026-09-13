@@ -65,7 +65,10 @@ compiler as `-mcpu`: `cortex_m0`, `cortex_m3`, `cortex_m7`, `cortex_m33`,
 float with the integer multiply, matching the companion object — for
 freestanding RISC-V; the toolchain baseline for hosted targets
 (`Oak.Target.defaultCPU`). A feature suffix extends a processor
-(`generic_rv64+m+v` for the vector extension, `93-simd.md` §1.4).
+(`generic_rv64+m+v` for the vector extension, `93-simd.md` §1.4). What
+the processor does not guarantee a program may still use where it finds
+it: a function's `dispatch { sve: f_sve }` clause selects a realization
+once, before `main`, by a probe of the processor (`93-simd.md` §6).
 Freestanding RISC-V objects are compiled with the medium-any code model
 so they link at the user's address (RAM at `0x80000000` on the `virt`
 machines).

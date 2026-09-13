@@ -879,3 +879,15 @@ turns `tree` over `[2^24, 1, 1, 1]` from `2^24 + 2` into the chain's
 `2^24` (`compiler/e2e_laws_consumer_test.go`); nothing else in the
 language depends on it.
 
+### 14b. Processor-feature realizations
+
+```oak
+count: (xs: []u8) -> u32 dispatch { sve: count_sve, rvv: count_rvv } = ...
+```
+
+`dispatch { feature: function, ... }` follows the effect and laws clauses,
+at most once. Each slot names a feature of the closed catalog (`sve`,
+`sve2`, `rvv`) and a top-level function of the identical signature. The
+body is the meaning; the slots are realizations the program selects once
+at startup when the processor has the feature (`93-simd.md` §6).
+
