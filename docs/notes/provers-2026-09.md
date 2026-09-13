@@ -155,7 +155,10 @@ written in Oak landed the same day as the rung's default,
 `prove/solver/sat.oak`, then clause-database reduction with deletion lines,
 two watched literals, learned-clause minimization, Luby restarts,
 activity-based reduction, and bounded variable elimination at load; the
-encoder's proof remains. On the corpus the solver agrees with the ladder
+encoder's laws are stated in `Oak.Tseitin` and its code checked against
+them by truth table, while the code itself stays cross-checked rather
+than proved — the next step there is the clause engine written in Oak
+beside the Go one, as the diagram engine already is. On the corpus the solver agrees with the ladder
 on every bit-level row of `machines`, `shapes`, `lattice`, and `effects`,
 and on twenty-two of `extents`' twenty-four, the whole corpus in about a
 minute. Elimination was the decisive step, as the ParaFROST and CaDiCaL
