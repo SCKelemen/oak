@@ -1153,12 +1153,12 @@ func (g *rvGenerator) expr(expr ast.Expression, hint *scalar) (int, error) {
 	case *ast.InvocationExpression:
 		ident := e.Function.(*ast.Identifier) // typeOf admitted the call
 		if ident.Value == "len" && len(e.Arguments) == 1 {
-			if arr := g.arrayOperand(e.Arguments[0]); arr != nil {
+			if _, _, length, isArray := g.staticArrayOf(e.Arguments[0]); isArray {
 				r, err := g.alloc(scalars["u32"])
 				if err != nil {
 					return 0, err
 				}
-				if err := g.constant(r, uint64(arr.length), scalars["u32"]); err != nil {
+				if err := g.constant(r, uint64(length), scalars["u32"]); err != nil {
 					return 0, err
 				}
 				return r, nil
@@ -1886,7 +1886,11 @@ func (g *rvGenerator) element(e *ast.IndexExpression) (int, error) {
 		}
 		return g.fieldLoad(p.sc)
 	}
-	if arr := g.arrayOperand(e.Left); arr != nil {
+	arr, err := g.arrayOperand(e.Left)
+	if err != nil {
+		return 0, err
+	}
+	if arr != nil {
 		address, tmp, err := g.arrayAddress(arr, e.Index)
 		if err != nil {
 			return 0, err
@@ -1935,7 +1939,14 @@ func (g *rvGenerator) elementStore(s *ast.IndexAssignmentStatement) error {
 		}
 		return g.storeToPlace(target, s)
 	}
-	if arr := g.arrayOperand(s.Target.Left); arr != nil {
+	arr, err := g.arrayOperand(s.Target.Left)
+	if err != nil {
+		return err
+	}
+	if arr != nil {
+		if arr.readOnly {
+			return unsupported("a store into %s through a view", s.Target.Left.String())
+		}
 		value, err := g.exprAs(s.Value, arr.elem)
 		if err != nil {
 			return err
@@ -2079,7 +2090,10 @@ func (g *rvGenerator) arraySpanArgument(callee string, arg ast.Expression, targe
 	if !isBorrow || borrow.Operator != "&" {
 		return 0, 0, unsupported("a call to %s: %s of %s (only &buf over an owned array)", callee, fn.Value, call.Arguments[0].String())
 	}
-	arr := g.arrayOperand(borrow.Right)
+	arr, err := g.arrayOperand(borrow.Right)
+	if err != nil {
+		return 0, 0, err
+	}
 	if arr == nil {
 		return 0, 0, unsupported("a call to %s: %s of %s (only an owned array)", callee, fn.Value, borrow.Right.String())
 	}
