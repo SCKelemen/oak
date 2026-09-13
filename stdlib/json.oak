@@ -592,7 +592,13 @@ pub json_key_decode: (src: []u8, key: JsonToken, dst: [*]u8): u32 {
   unit == u8(92) ? {
    item: strings.TextScalar = json_escape(src, at)
    valid = item.next <= limit
-   valid ? {
+   valid && item.value < u32(128) && out < len(dst) ? {
+    // An escape of an ASCII scalar is one byte; the general encoder is
+    // for the rest.
+    dst[out] = u8_trunc_u32(item.value)
+    out = out + u32(1)
+    at = item.next
+   } | valid ? {
     written: Result[u32, strings.TextError] = strings.utf8_encode(dst, out, item.value)
     valid = strings.text_result_ok(written)
     valid ? {
@@ -600,16 +606,53 @@ pub json_key_decode: (src: []u8, key: JsonToken, dst: [*]u8): u32 {
      at = item.next
     }
    }
-  } | {
-   valid = out < len(dst)
-   valid ? {
-    dst[out] = unit
-    out = out + u32(1)
-    at = at + u32(1)
-   }
-  }
+  } | out < len(dst) ? {
+   // The store sits under its own guard, so it is proven.
+   dst[out] = unit
+   out = out + u32(1)
+   at = at + u32(1)
+  } | { valid = false }
  }
  valid ? out | u32(4294967295)
+}
+// A quote-led key of printable ASCII, with escapes to ASCII scalars,
+// decoded into dst in one pass: end is the offset after the closing quote
+// and length the decoded byte count. ok is false for every other shape —
+// a byte above ASCII or below space, DEL, an escape to a non-ASCII scalar
+// or an invalid one, no closing quote, a key longer than dst — and the
+// caller takes the general tokenizer and classifier, so no verdict
+// changes; this only spares the common key its second scan and decode
+// (docs/spec/71-codecs.md section 20). Every read is under the length
+// guard or inside json_escape, every store under out < len(dst).
+pub JsonKeyScan: type = struct { end: u32, length: u32, ok: Bool }
+pub json_key_ascii: (src: []u8, at: u32, dst: [*]u8): JsonKeyScan {
+ miss: JsonKeyScan = JsonKeyScan { end: at, length: u32(0), ok: false }
+ !(at < len(src) && src[at] == u8(34)) ? { miss } | {
+  i: u32 = at + u32(1)
+  out: u32 = 0
+  scanning: Bool = true
+  closed: Bool = false
+  while scanning && i < len(src) {
+   unit: u8 = src[i]
+   unit == u8(34) ? {
+    scanning = false
+    closed = true
+    i = i + u32(1)
+   } | unit == u8(92) ? {
+    item: strings.TextScalar = json_escape(src, i)
+    item.next <= len(src) && item.next > i && item.value < u32(128) && out < len(dst) ? {
+     dst[out] = u8_trunc_u32(item.value)
+     out = out + u32(1)
+     i = item.next
+    } | { scanning = false }
+   } | unit >= u8(32) && unit < u8(127) && out < len(dst) ? {
+    dst[out] = unit
+    out = out + u32(1)
+    i = i + u32(1)
+   } | { scanning = false }
+  }
+  closed ? { JsonKeyScan { end: i, length: out, ok: true } } | { miss }
+ }
 }
 // Byte equality of a decoded key against a literal spelling.
 pub json_key_decoded_equal: (decoded: []u8, expected: []u8): Bool {

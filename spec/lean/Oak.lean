@@ -59,6 +59,7 @@ import Oak.RecordLayout
 import Oak.RecordLayoutRefinement
 import Oak.LayoutSpec
 import Oak.Propagation
+import Oak.ChoiceTape
 import Oak.FieldTags
 import Oak.Assembler
 import Oak.AssemblerSemantics
@@ -85,6 +86,7 @@ import Oak.MemoryOrderRefinement
 import Oak.CompareExchangeRefinement
 import Oak.CheckedArithmeticRefinement
 import Oak.ConversionRefinement
+import Oak.LiteralFitRefinement
 import Oak.Semver
 import Oak.Loops
 import Oak.Regions

@@ -1,5 +1,35 @@
 # JSON decoder optimization measurements
 
+## Tenth optimization pass: the escaped key in one pass
+
+Measured candidate: `sam/json-keys` (this commit's tree). Baseline: `c30eaf98`. Data:
+`fusedkey-{base,cand}-{record,event}-2026-09-13.json` and the `-repeat` files; five
+paired samples each, load average 9 to 12 (an earlier run under two compiling suites
+was discarded as unreadable).
+
+| Workload | Run | Oak ns/document | simdjson ns/document | Paired-ratio median | Paired ratios |
+| --- | --- | ---: | ---: | ---: | --- |
+| record | Baseline | 58.3 | 67.9 | 0.801× | 0.85 0.76 0.86 0.80 0.76 |
+| record | Candidate | 70.9 | 83.5 | 0.671× | 0.64 0.61 0.85 0.67 0.76 |
+| record | Baseline (repeat) | 64.1 | 71.0 | 0.823× | 1.16 0.73 0.90 0.79 0.82 |
+| record | Candidate (repeat) | 48.5 | 64.6 | 0.761× | 0.69 0.76 0.74 0.76 0.76 |
+| event | Baseline | 400.3 | 442.6 | 0.899× | 0.90 0.91 0.90 0.90 0.90 |
+| event | Candidate | 390.7 | 441.0 | 0.892× | 1.44 0.89 0.88 0.88 0.89 |
+| event | Baseline (repeat) | 394.9 | 447.3 | 0.892× | 1.17 0.89 0.91 0.87 0.88 |
+| event | Candidate (repeat) | 394.7 | 443.5 | 0.885× | 1.07 0.88 0.89 0.90 0.88 |
+
+One document in four spells a key with a `\u` escape, and that document took the
+general tokenizer and then a second decode of the same key — about thirty
+nanoseconds, eight amortized, the whole residue against the hand-written ceiling.
+Static key spellings and a proven store in the key decoder measured neutral on their
+own; the fused decoder `json_key_ascii` (one byte-loop pass from the opening quote,
+escapes through the same `json_escape`, "not this shape" for anything outside plain
+ASCII, whereupon the tokenizer path runs as before) and a compare-only classifier
+take the record workload from 0.80–0.82× to 0.76× on the tighter repeat — 48.5 ns
+against the hand-written ceiling's 47 — and leave the event workload, whose keys are
+plain, unchanged (`docs/spec/71-codecs.md` §20).
+
+
 ## Ninth optimization pass: every read under a guard the checker sees
 
 Measured candidate: `sam/json-ceiling` (this commit's tree). Baseline: `f94f8266`.

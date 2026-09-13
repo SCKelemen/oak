@@ -593,14 +593,16 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       kinds are enabled — from the seed, with some kinds disabled entirely
       per run, so no fixed mask hides an interaction? (TB `vopr.zig`
       `options_swarm`, `fuzz.random_enum_weights`; Regehr's swarm
-      testing) — Oak: `sim_storage.oak` takes a caller-fixed fault mask
-      and rate; not stated.
+      testing) — Oak: `test_swarm_mask` (`110-testing.md` "Choice tapes")
+      draws the enabled kinds from the tape; the WAL scenario uses it;
+      the fault *rate* is still `sim_storage.oak`'s fixed one in eight.
 - [ ] **Heavy-tailed simulated latency and bursty ids.** Are simulated
       delays minimum plus exponential(mean), and ids drawn bimodally
       (hot/cold) or Zipfian so caches overflow and collide? (TB
       `fuzz.random_int_exponential`, `random_id`, `stdx/zipfian.zig`) —
-      Oak: `sim_schedule_delayed` and `test_range` are uniform; no
-      exponential or Zipfian generator — gap.
+      Oak: `test_geometric`/`test_delay` (`110-testing.md` "Choice
+      tapes") give the floor-plus-heavy-tail shape; no Zipfian or
+      hot/cold id generator yet.
 - [ ] **Liveness is checked after the faults stop, against a named core.**
       After the safety phase, does the scenario pick a fault-free, fully
       connected quorum, make every other failure permanent, and require

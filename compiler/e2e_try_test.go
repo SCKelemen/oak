@@ -180,6 +180,13 @@ f: (n: u32): Result[u32, Other] {
 }
 main: (): i32 = 0
 `, "Fault"},
+		"annotation differs from the payload": {prelude + `
+f: (n: u32): Result[u32, Fault] {
+  a: u64 = try step(n)
+  .Ok(u32(1))
+}
+main: (): i32 = 0
+`, "try binds a: u64, but the payload is u32"},
 		"option in a result function": {prelude + `
 maybe: (n: u32): Option[u32] = n > u32(0) ? .Some(n) | .None
 f: (n: u32): Result[u32, Fault] {

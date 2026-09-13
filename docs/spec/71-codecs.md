@@ -875,6 +875,33 @@ the byte loop applies, and reads the byte after it as the terminator, so
 a full `u64` costs no byte-loop step and no separate load; the value
 arithmetic is unchanged and the earlier theorems apply as before.
 
+What the count profile left was the escaped key: one document in four
+spells a key with a `\u` escape, and that document took the general
+tokenizer, then a decode of the key into a stack buffer and a byte
+comparison against each field — about thirty nanoseconds, eight
+amortized over the corpus, the whole residue against the hand-written
+ceiling. The classifier built every field's spelling as a local byte
+array with a store per byte on each call; a spelling of plain printable
+ASCII is now a view of a string literal, static storage in the emitted C
+(`str_bytes`), and only a spelling with other bytes is built byte by byte.
+The key decoder stores each byte under its own `out < len(dst)` guard, so
+the store is proven, and an escape whose scalar is ASCII — `\u0061`, the
+common case — is one byte stored directly, the general UTF-8 encoder kept
+for the rest. Those two changes measured neutral: the cost was the two
+passes themselves. So a key the spellings miss is now decoded in one pass
+when it is plain ASCII with escapes to ASCII scalars (`json_key_ascii`):
+a byte loop from the opening quote copies printable bytes and resolves
+escapes through the same `json_escape`, reports the offset after the
+closing quote and the decoded length, and answers "not this shape" for a
+byte above ASCII or below space, DEL, an escape to a non-ASCII or invalid
+scalar, a missing quote or a key past sixty-four bytes — whereupon the
+reader takes the tokenizer and the general classifier exactly as before,
+so every verdict and fault position is the tokenizer's. The decoded bytes
+go to a compare-only classifier (`__oak_json_keydecoded_T`) that the
+general classifier also ends in. The inline test pins the classifier's
+literal spellings, the fused path in the reader, and the decoders'
+range-check-free bodies.
+
 Measured on the local harness with the simdjson control in every run
 (`benchmarks/json/RESULTS.md`, eighth pass, load average 55 to 135): the
 event workload from 1.23 times simdjson's time to 0.91 in two repeats,
