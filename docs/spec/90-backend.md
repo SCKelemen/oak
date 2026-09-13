@@ -479,5 +479,12 @@ against the interpreter by differential tests over every state and symbol
 (`compiler/e2e_protocol_lowering_test.go`). Measured: the emitted UTF-8
 validator runs at 0.5 ns per byte, the hand-written shift DFA's speed, six
 times the branch tree the same declaration produced before
-(`benchmarks/state-machines/README.md`).
+(`benchmarks/state-machines/README.md`). A machine with a `data` record
+keeps the branch tree deliberately: measured on the same harness, a
+candidate-line table (the first candidate line per `(state, step)`, the
+group's guards tried in order) steps a nine-line guarded machine in 4.55 ns
+against the tree's 4.10 — the guards over the record are data-dependent
+branches in either shape and the table adds an indirect jump — so the
+compiler-known lowering applies to machines whose guards are decided at
+compile time.
 

@@ -51,11 +51,21 @@ absolute figures are upper bounds.
 | UTF-8 DFA, 9 states, 64 MB valid text | 2.42 ns/byte | 1.66 (full 256-column table), 2.29 (class then table) | 0.51 |
 | 1M machines × 32 rounds, one step each | 4.56 ns/step | 0.30 (u8 tags), 0.32 (u32 tags) | — |
 | 16M machines × 4 rounds | 4.22 ns/step | 0.31 (u8), 0.33 (u32) | — |
+| One data-carrying machine, 9 guarded lines, 64M input-driven steps (2026-09-13) | 4.10 ns/step | 4.55 (candidate-line table: `T[state][step]` to the first line, a switch that falls through the group's guards) | — |
 
 Oak-emitted `utf8_run` (`run_utf8.c`): **0.52 ns/byte**, the hand-written
 shift DFA's speed, from the declaration in `utf8_protocol.oak`.
 
 What the numbers say:
+
+- A data-carrying machine does not gain from a table (workload D). Its
+  cost is not the dispatch on `(state, step)` but the guards over the
+  record, which are data-dependent branches either way; the candidate-line
+  table replaces one predictable tree with an indirect jump plus the same
+  guards and lands a tenth slower, stable across repeats. The branch tree
+  stays the lowering for machines with `data`; the table lowering keeps to
+  machines whose guards are decided at compile time (§2a of
+  `112-protocols.md`).
 
 - For input-driven steps the branch tree loses everywhere: the predictor
   cannot learn a random walk, and every step pays a misprediction.
