@@ -2367,10 +2367,12 @@ as the cell's new value along the path (merged at a fork like a result,
 a cell written on one side meeting its entry value on the other); the
 verdict compares the result and then every cell either side writes, and a
 unit function that only writes state is proven in its cells alone. A
-`Bool` cell is one bit, zero-extended into its word. A body that calls
-another function while it addresses state stays trusted — threading the
-cells through a call summary is the next increment — as does state
-written around a data-dependent loop. The C emitter gives
+`Bool` cell is one bit, zero-extended into its word. The cells thread through
+calls: a callee's summary starts from the cells as the caller's path
+holds them and its writes return to the path, a unit callee is
+summarized for its writes alone, and on the Oak side the inlined callee
+shares the caller's cell locals; only state written around a
+data-dependent loop stays trusted. The C emitter gives
 an addressed global external linkage under the assembler label
 `oak_0g_G` (a digit after the prefix, which no function's mangled name
 can produce), the symbol the companion object's `adrp`/`add` relocations

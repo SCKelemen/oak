@@ -1446,11 +1446,6 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, map[string]*ter
 			// the equivalence and drops from the fork it came from.
 			return trapPath, nil, "", true
 		case "bl":
-			if len(x.globals) > 0 {
-				// The callee may read or write the same cells; threading
-				// them through a summary is the next increment.
-				return nil, nil, "a call in a body that addresses package state", false
-			}
 			if reason, ok := x.summarizeCall(instr, state); !ok {
 				return nil, nil, reason, false
 			}
@@ -2558,9 +2553,46 @@ func (lo *oakLowering) runStatement(stmt ast.Statement) (string, bool) {
 		if reason, isAssert, ok := lo.lowerAssert(s.Expression); isAssert {
 			return reason, ok
 		}
+		if handled, reason, ok := lo.lowerUnitCall(s.Expression); handled {
+			return reason, ok
+		}
 		return "an expression statement before the end of a block", false
 	}
 	return fmt.Sprintf("%T", stmt), false
+}
+
+// unitFunction reports a function with no result: no return type, or the
+// unit type `()` spelled out.
+func unitFunction(fn *ast.FunctionStatement) bool {
+	return fn.ReturnType == nil || typeText(fn.ReturnType) == "()"
+}
+
+// lowerUnitCall inlines a call in statement position to a function with no
+// result: its statements run in the caller's scope of cells (enterCall),
+// so the package state it writes is the caller's. Reports whether the
+// expression was such a call.
+func (lo *oakLowering) lowerUnitCall(expr ast.Expression) (handled bool, reason string, ok bool) {
+	call, isCall := expr.(*ast.InvocationExpression)
+	if !isCall {
+		return false, "", false
+	}
+	ident, isIdent := call.Function.(*ast.Identifier)
+	if !isIdent || call.ResolvedMethod != "" {
+		return false, "", false
+	}
+	callee := lo.functions[ident.Value]
+	if callee == nil || !unitFunction(callee) || callee.Body == nil {
+		return false, "", false
+	}
+	restore, reason, ok := lo.enterCall(callee, call)
+	if !ok {
+		return true, reason, false
+	}
+	defer restore()
+	if reason, ok := lo.lowerUnitBody(callee.Body); !ok {
+		return true, fmt.Sprintf("a call to %s whose body contains %s", ident.Value, reason), false
+	}
+	return true, "", true
 }
 
 // addTrap records a trap condition under the current path condition.
@@ -3172,6 +3204,12 @@ func (lo *oakLowering) lowerBlock(block *ast.BlockStatement, width int) (*term, 
 					}
 					continue
 				}
+				if handled, reason, ok := lo.lowerUnitCall(s.Expression); handled {
+					if !ok {
+						return nil, reason, false
+					}
+					continue
+				}
 				return nil, "an expression statement before the end of a block", false
 			}
 			return lo.lower(s.Expression, width)
@@ -3287,6 +3325,12 @@ func (lo *oakLowering) lowerLoopBody(body *ast.BlockStatement) (string, bool) {
 		case *ast.ExpressionStatement:
 			match, isMatch := s.Expression.(*ast.MatchExpression)
 			if !isMatch {
+				if handled, reason, ok := lo.lowerUnitCall(s.Expression); handled {
+					if !ok {
+						return reason, false
+					}
+					continue
+				}
 				return "an expression statement in a loop body", false
 			}
 			if reason, ok := lo.lowerConditionalStatement(match); !ok {
@@ -3685,9 +3729,6 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	if lo.inlining[name] {
 		return nil, fmt.Sprintf("a recursive call to %s", name), false
 	}
-	if len(lo.cells) > 0 {
-		return nil, fmt.Sprintf("a call to %s in a body that addresses package state", name), false
-	}
 	bound := map[string]*oakLocal{}
 	calleeFloats := map[string]int{}
 	// A span or view parameter borrows a caller's array: the callee works
@@ -3735,6 +3776,14 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 			return nil, reason, false
 		}
 		bound[param.Name.Value] = &oakLocal{agg: value}
+	}
+	// The caller's package-global cells are the callee's too — the same
+	// locals, so the callee's assignments are the caller's final values —
+	// unless a parameter of the callee shadows the name.
+	for cellName, cell := range lo.cells {
+		if _, shadowed := bound[cellName]; !shadowed {
+			bound[cellName] = cell
+		}
 	}
 	saved := lo.locals
 	savedFloats := lo.floats
@@ -4575,12 +4624,21 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		return opaque, false
 	}
 	name := callee.Name.Value
-	if callee.ReturnType == nil {
+	// A unit callee (no result) is summarized for the package state it
+	// writes: a body that neither returns nor touches state has nothing to
+	// summarize.
+	unit := unitFunction(callee)
+	if unit && len(x.globals) == 0 {
 		return fmt.Sprintf("a call to %s, which returns nothing", name), false
 	}
-	resultWidth, resultSigned, ok := contractBits(callee.ReturnType)
-	if class, isClass := contractClass(callee.ReturnType); !ok || !isClass || class == ClassV {
-		return fmt.Sprintf("a call to %s returning %s", name, typeText(callee.ReturnType)), false
+	var resultWidth int
+	var resultSigned bool
+	if !unit {
+		w, signed, ok := contractBits(callee.ReturnType)
+		if class, isClass := contractClass(callee.ReturnType); !ok || !isClass || class == ClassV {
+			return fmt.Sprintf("a call to %s returning %s", name, typeText(callee.ReturnType)), false
+		}
+		resultWidth, resultSigned = w, signed
 	}
 	if len(callee.Parameters) > 8 {
 		return fmt.Sprintf("a call to %s with %d parameters", name, len(callee.Parameters)), false
@@ -4589,6 +4647,18 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	lo.records, lo.adts, lo.constants = x.fn.Records, x.fn.ADTs, x.fn.Constants
 	lo.functions = x.fn.Callees
 	lo.inlining = map[string]bool{name: true}
+	// The callee sees the cells as this path holds them — a store on the
+	// path, else the entry value — and its writes come back into the path
+	// (docs/spec/94-assembler.md §9).
+	lo.globals = x.globals
+	lo.declareCells()
+	seeds := map[string]*term{}
+	for cellName, cell := range lo.cells {
+		if written, has := state.globals[cellName]; has {
+			cell.value = written
+		}
+		seeds[cellName] = cell.value
+	}
 	argBase := 0
 	if x.arch == ArchRV64 {
 		argBase = 10 // a0
@@ -4611,12 +4681,50 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	if loop, isTail := tailRecursionAsLoop(callee, body); isTail {
 		body = loop
 	}
-	result, reason, ok := lo.lower(body, resultWidth)
-	if !ok {
-		return fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
+	var result *term
+	if unit {
+		if reason, ok := lo.lowerUnitBody(body); !ok {
+			return fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
+		}
+	} else {
+		var reason string
+		var ok bool
+		result, reason, ok = lo.lower(body, resultWidth)
+		if !ok {
+			return fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
+		}
 	}
 	if len(lo.loops) > 0 {
 		return fmt.Sprintf("a call to %s whose body has a data-dependent loop", name), false
+	}
+	for cellName, cell := range lo.cells {
+		if cell.value != seeds[cellName] {
+			if state.globals == nil {
+				state.globals = map[string]*term{}
+			}
+			state.globals[cellName] = cell.value
+		}
+	}
+	if unit {
+		// x0–x17 (a0–a7, t0–t6 on rv64) are dead after the call; no result.
+		if x.arch == ArchRV64 {
+			for _, r := range []int{1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31} {
+				delete(state.regs, r)
+			}
+		} else {
+			for r := 0; r <= 17; r++ {
+				delete(state.regs, r)
+			}
+			delete(state.regs, 30)
+			state.flags = nil
+		}
+		for _, seen := range x.summarized {
+			if seen == name {
+				return "", true
+			}
+		}
+		x.summarized = append(x.summarized, name)
+		return "", true
 	}
 	value := zeroExtend(result, resultWidth)
 	value = zeroExtend(value, 64)
@@ -4739,6 +4847,12 @@ func (lo *oakLowering) lowerUnitBody(body ast.Expression) (string, bool) {
 				continue
 			}
 			if reason, isAssert, ok := lo.lowerAssert(s.Expression); isAssert {
+				if !ok {
+					return reason, false
+				}
+				continue
+			}
+			if handled, reason, ok := lo.lowerUnitCall(s.Expression); handled {
 				if !ok {
 					return reason, false
 				}
