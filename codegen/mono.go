@@ -384,5 +384,5 @@ func (cg *CodeGenerator) normalizeTypeExpression(expr ast.Expression) ast.Expres
 	if left == index.Left && inner == index.Index {
 		return expr
 	}
-	return &ast.IndexExpression{Token: index.Token, Left: left, Index: inner, Dot: index.Dot}
+	return &ast.IndexExpression{Token: index.Token, Left: left, Index: inner, Dot: index.Dot, Align: index.Align}
 }

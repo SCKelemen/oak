@@ -16,6 +16,9 @@ type residentWorker struct {
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
 	once   sync.Once
+	// reused marks a worker taken from the idle pool: one that served a
+	// case before and may have died in between.
+	reused bool
 }
 
 // kill ends the worker and any fork it has running: the workers run in
@@ -38,6 +41,7 @@ func (p *nativeProgram) acquireWorker() (*residentWorker, error) {
 		w := p.idle[n-1]
 		p.idle = p.idle[:n-1]
 		p.mu.Unlock()
+		w.reused = true
 		return w, nil
 	}
 	p.mu.Unlock()
@@ -96,9 +100,23 @@ func (p *nativeProgram) close() {
 // the worker's process group, so the reply fails and the case is a
 // timeout, exactly as a killed per-case process is.
 func (p *nativeProgram) runResident(index int, input []byte, reportPath string) (status exitStatus, output string, timedOut bool) {
+	status, output, timedOut, retry := p.runResidentOnce(index, input, reportPath)
+	if retry {
+		// The pooled worker failed the exchange before the case ran (its
+		// pipes were gone: the process died between cases, or a kill
+		// reached it). A fresh worker runs the case once more; a second
+		// failure is the case's outcome.
+		status, output, timedOut, _ = p.runResidentOnce(index, input, reportPath)
+	}
+	return status, output, timedOut
+}
+
+// runResidentOnce is one exchange with one worker; retry asks for the case
+// to be run again on a fresh worker.
+func (p *nativeProgram) runResidentOnce(index int, input []byte, reportPath string) (status exitStatus, output string, timedOut bool, retry bool) {
 	w, err := p.acquireWorker()
 	if err != nil {
-		return exitStatus{err: err}, "", false
+		return exitStatus{err: err}, "", false, false
 	}
 	record := make([]byte, 12, 12+len(reportPath)+len(input))
 	binary.LittleEndian.PutUint32(record[0:], uint32(index))
@@ -121,11 +139,13 @@ func (p *nativeProgram) runResident(index int, input []byte, reportPath string) 
 	if !watchdog.Stop() {
 		// The watchdog fired: the worker and its fork are gone.
 		p.discardWorker(w)
-		return exitStatus{err: err}, string(out), true
+		return exitStatus{err: err}, string(out), true, false
 	}
 	if err != nil {
 		p.discardWorker(w)
-		return exitStatus{err: err}, string(out), false
+		// An exchange that produced no reply on a reused worker is the
+		// worker's failure, not the case's.
+		return exitStatus{err: err}, string(out), false, w.reused && len(out) == 0
 	}
 	p.releaseWorker(w)
 	flags := binary.LittleEndian.Uint32(reply[12:])
@@ -135,7 +155,7 @@ func (p *nativeProgram) runResident(index int, input []byte, reportPath string) 
 	}
 	value := int(binary.LittleEndian.Uint32(reply[4:]))
 	if binary.LittleEndian.Uint32(reply[0:]) == 1 {
-		return exitStatus{ran: true, signal: signalNumber(value), core: flags&2 != 0}, output, false
+		return exitStatus{ran: true, signal: signalNumber(value), core: flags&2 != 0}, output, false, false
 	}
-	return exitStatus{ran: true, exited: true, code: value}, output, false
+	return exitStatus{ran: true, exited: true, code: value}, output, false, false
 }

@@ -59,15 +59,15 @@ func ProtocolGuardExclusivity(tree *SyntaxTree) []ast.Statement {
 						name := fmt.Sprintf("%s%s%s__%s__%s__%d__%d", prefix, ExclusivityMarker, machine.name, step.name, from, i, j)
 						var params []*ast.FunctionParameter
 						if decl.Data != nil {
-							params = append(params, s.param("d", s.id(machine.name+"Data")))
+							params = append(params, s.param("oak_d", s.id(machine.name+"Data")))
 						}
 						if step.payload != nil {
 							params = append(params, s.param(step.payload.Name.Value, cloneExpression(step.payload.Type)))
 						}
 						guard := func(line *ast.ProtocolTransition) ast.Expression {
-							stmt := &ast.ExpressionStatement{Expression: cloneExpression(line.Guard)}
+							stmt := &ast.ExpressionStatement{Expression: machine.lineGuard(s, line)}
 							machine.rewriteQuantifiers(stmt, prefix, s)
-							return renameIdentifier(stmt.Expression, "data", "d").(ast.Expression)
+							return renameIdentifier(stmt.Expression, "data", "oak_d").(ast.Expression)
 						}
 						body := s.not(s.and(guard(lines[i]), guard(lines[j])))
 						fn := s.fnExpr(name, params, s.id("Bool"), body)

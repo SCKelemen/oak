@@ -365,7 +365,17 @@ solve_stream: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, d
 // and returns the binary's path; a later run finds it built.
 func oakSolverBinary() (string, error) {
 	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSyntaxSource + "\x00" + oakTreeSource + "\x00" + oakProtocolSource + "\x00" + oakShellSource + "\x00" + oakLeanSource + "\x00" + oakExploreSource + "\x00" + oakWitnessSource + "\x00" + oakDriverHelpersSource + "\x00" + oakSolverDriverSource))
-	dir := filepath.Join(os.TempDir(), "oak-solver-"+hex.EncodeToString(sum[:6]))
+	// OAK_SOLVER_NATIVE=1 builds the prover through the native backend
+	// (docs/spec/94-assembler.md §9): every function the backend reaches is
+	// checked, verified against its Oak body, and encoded by the Oak
+	// assembler; the rest compile as C. A separate cache, since the binary
+	// differs.
+	native := os.Getenv("OAK_SOLVER_NATIVE") != ""
+	suffix := ""
+	if native {
+		suffix = "-native"
+	}
+	dir := filepath.Join(os.TempDir(), "oak-solver-"+hex.EncodeToString(sum[:6])+suffix)
 	binary := filepath.Join(dir, "solver")
 	if info, err := os.Stat(binary); err == nil && info.Mode().IsRegular() {
 		return binary, nil
@@ -380,7 +390,11 @@ func oakSolverBinary() (string, error) {
 	}
 	host := oaktarget.Host()
 	staging := fmt.Sprintf("%s.%d", binary, os.Getpid())
-	if err := compileBinary(compiler.New().WithPackageDir(dir), staging, defaultAsmMode(host), host, ""); err != nil {
+	comp := compiler.New().WithPackageDir(dir)
+	if native {
+		comp = comp.WithNativeBodies()
+	}
+	if err := compileBinary(comp, staging, defaultAsmMode(host), host, ""); err != nil {
 		return "", fmt.Errorf("oak solver: %v", err)
 	}
 	if err := os.Rename(staging, binary); err != nil {

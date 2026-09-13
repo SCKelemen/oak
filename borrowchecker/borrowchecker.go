@@ -617,11 +617,18 @@ func (bc *BorrowChecker) checkVariableDeclaration(vd *ast.VariableDeclaration, e
 		}
 	}
 
-	// After type checking, check if this variable is an owned array, view, or span
-	// Use type information from the environment to classify the variable
-	typeScheme, ok := env.Get(varName)
-	if ok && typeScheme != nil {
-		typ := typeScheme.Type
+	// After type checking, classify the variable from the type recorded for
+	// this declaration. The flat name lookup is the fallback only: a
+	// top-level declaration of the same name elsewhere in the program (a
+	// user function `run` beside a library local `run`) would answer for
+	// the local and hide the owned array behind it.
+	typ := declared
+	if typ == nil {
+		if typeScheme, ok := env.Get(varName); ok && typeScheme != nil {
+			typ = typeScheme.Type
+		}
+	}
+	if typ != nil {
 		if arrayType, ok := typ.(*typechecker.ArrayType); ok {
 			if !arrayType.IsSlice && !arrayType.IsSpan && arrayType.Length >= 0 {
 				// This is an owned array [N]T - initialize its borrow state
@@ -1331,7 +1338,7 @@ func (bc *BorrowChecker) checkViewCall(call *ast.InvocationExpression, env *type
 	// Note: extractOwnerName only handles direct &owner or *owner patterns
 	ownerName := bc.extractOwnerName(call.Arguments[0])
 	if ownerName == "" {
-		bc.addError("view() argument must be &owner of an owned array, or &record.field naming an owned-array field")
+		bc.reportBorrow(call, CodeBorrowGeneric, fmt.Sprintf("view() argument %s must be &owner of an owned array, or &record.field naming an owned-array field", call.Arguments[0].String()))
 		return
 	}
 
@@ -1361,7 +1368,7 @@ func (bc *BorrowChecker) checkSpanCall(call *ast.InvocationExpression, env *type
 	// Note: extractOwnerName only handles direct &owner or *owner patterns
 	ownerName := bc.extractOwnerName(call.Arguments[0])
 	if ownerName == "" {
-		bc.addError("span() argument must be &owner of an owned array, or &record.field naming an owned-array field")
+		bc.reportBorrow(call, CodeBorrowGeneric, fmt.Sprintf("span() argument %s must be &owner of an owned array, or &record.field naming an owned-array field", call.Arguments[0].String()))
 		return
 	}
 

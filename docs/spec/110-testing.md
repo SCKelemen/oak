@@ -696,3 +696,17 @@ every intermediate candidate that removed the enabling command was rejected by
 the target's preconditions rather than accepted as a spurious shorter failure.
 A Go fuzz target checks that command minimization preserves alignment, never
 introduces a command kind, never grows, and never loses a reported failure.
+
+## Foreign targets under an emulator
+
+`oak test -target os/arch` builds the test harness for the target through
+the toolchain `oak build -target` resolves and, when the tooling has a
+user-mode emulator for it (`qemu-<arch>`, or `OAK_EMULATOR` with
+`OAK_EMULATOR_ARGS`; `90-backend.md` §2a), runs every case under it; the
+results are the program's. Without an emulator the build is the verdict
+(`built`, not run), as before. The emulated processor is the one the
+dispatch probe sees: under `OAK_EMULATOR_ARGS="-cpu max"` an AArch64
+binary finds SVE and SVE2, so a dispatched function's realization is
+selected — and its claim checked (`93-simd.md` §6.2) — from a test on a
+host that lacks the feature. `testrunner/emulator_test.go` runs a
+`linux/riscv64` package under `qemu-riscv64` where one is installed.

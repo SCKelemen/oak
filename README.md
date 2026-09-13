@@ -1188,9 +1188,10 @@ with a launch descriptor the host binds. Kernels take views, spans, scalars,
 and records (`Tensor2[R]` and `MutTensor2[S]` from `import("tensor")`), a
 trapping condition raises the fault word instead of stopping a thread, and
 the checker discharges the independence of the threads' stores. Reductions
-name their grouping — `reduce.tree`, `reduce.left`, `reduce.group_tree` for
-a threadgroup, `order tree | left | bounded { }` to declare it once for a block
-— and Lean relates the orders. The emitted kernels run on this machine's GPU
+name their grouping — `reduce.tree`, `reduce.left`, `reduce.lanes` (the
+lane rule: strided partials and a butterfly), `reduce.group_tree` and
+`reduce.group_lanes` for a threadgroup, `order tree | left | bounded { }` to
+declare it once for a block — and Lean relates the orders. The emitted kernels run on this machine's GPU
 without the Xcode toolchain (`-metal-check`, and `Launch` targets under
 `oak test`, which run a kernel on the host and replay it on the device);
 see [the kernels chapter](docs/spec/56-kernels.md).

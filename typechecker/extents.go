@@ -1115,6 +1115,42 @@ func (tc *TypeChecker) declarationFacts(decl *ast.VariableDeclaration) []extentF
 	if container, isLen := lenOf(decl.Value); isLen && tc.localBinding(container) {
 		return []extentFact{{kind: factUpperBound, container: container, other: decl.Name.Value}}
 	}
+	// `limit: u32 = n < len(v) ? n | len(v)` (a minimum spelled as the
+	// conditional, either order, `<` or `<=`) is at most each operand: it
+	// inherits the upper bounds of both — `limit <= len(v)` from a length
+	// operand, `limit < K + 1` from a literal, and a binding operand's own
+	// live bounds — so a loop `while i < limit` proves `v[i]`
+	// (docs/spec/50-borrowing.md, minimum through a conditional; Zig's
+	// bounded slice loop spelled in Oak).
+	if x, y, isMin := conditionalMin(decl.Value); isMin {
+		var facts []extentFact
+		for _, operand := range []ast.Expression{x, y} {
+			if container, isLen := lenOf(operand); isLen && tc.localBinding(container) {
+				facts = append(facts, extentFact{kind: factUpperBound, container: container, other: decl.Name.Value})
+				continue
+			}
+			if k, isConst := constantIndex(operand); isConst && k >= 0 {
+				facts = append(facts, extentFact{kind: factIndexLit, other: decl.Name.Value, bound: k + 1})
+				continue
+			}
+			if name, isPath := pathOf(operand); isPath && tc.localBinding(name) {
+				for _, fact := range tc.extentFacts {
+					if fact.dead || fact.other != name {
+						continue
+					}
+					switch fact.kind {
+					case factUpperBound:
+						facts = append(facts, extentFact{kind: factUpperBound, container: fact.container, other: decl.Name.Value, viaBinding: fact.viaBinding})
+					case factIndexLit:
+						facts = append(facts, extentFact{kind: factIndexLit, other: decl.Name.Value, bound: fact.bound})
+					}
+				}
+			}
+		}
+		if len(facts) > 0 {
+			return facts
+		}
+	}
 	// `pages: u32 = len(v) / K` with a literal K >= 1: pages <= len(v) / K,
 	// so a later `i < pages` proves `v[i * K + j]` for every j < K
 	// (Oak.Extents.div_bound_scaled) — the page count of a keyed view.
@@ -1571,4 +1607,57 @@ func (tc *TypeChecker) recordVectorAccessProof(call *ast.InvocationExpression, m
 		tc.provenIndices = make(map[tokenKey]bool)
 	}
 	tc.provenIndices[positionKey(call.Token)] = true
+}
+
+// conditionalMin reads a minimum spelled as a Bool conditional: `a < b ? a
+// | b`, `a <= b ? a | b`, `a > b ? b | a`, `a >= b ? b | a` (the taken arm
+// is the smaller operand). It returns the two operands.
+func conditionalMin(expr ast.Expression) (x, y ast.Expression, ok bool) {
+	match, isMatch := expr.(*ast.MatchExpression)
+	if !isMatch || match.Scrutinee == nil || len(match.Arms) != 2 {
+		return nil, nil, false
+	}
+	var whenTrue, whenFalse ast.Expression
+	for i, arm := range match.Arms {
+		switch pattern := arm.Pattern.(type) {
+		case *ast.LiteralPattern:
+			lit, isBool := pattern.Value.(*ast.Boolean)
+			if !isBool {
+				return nil, nil, false
+			}
+			if lit.Value {
+				whenTrue = arm.Body
+			} else {
+				whenFalse = arm.Body
+			}
+		case *ast.WildcardPattern:
+			if i != 1 {
+				return nil, nil, false
+			}
+			if whenTrue == nil {
+				whenTrue = arm.Body
+			} else {
+				whenFalse = arm.Body
+			}
+		default:
+			return nil, nil, false
+		}
+	}
+	cond, isInfix := match.Scrutinee.(*ast.InfixExpression)
+	if !isInfix || whenTrue == nil || whenFalse == nil {
+		return nil, nil, false
+	}
+	same := func(a, b ast.Expression) bool { return a != nil && b != nil && a.String() == b.String() }
+	switch cond.Operator {
+	case "<", "<=":
+		// the left operand when it is the smaller
+		if same(whenTrue, cond.Left) && same(whenFalse, cond.Right) {
+			return cond.Left, cond.Right, true
+		}
+	case ">", ">=":
+		if same(whenTrue, cond.Right) && same(whenFalse, cond.Left) {
+			return cond.Left, cond.Right, true
+		}
+	}
+	return nil, nil, false
 }
