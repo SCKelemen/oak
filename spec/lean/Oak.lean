@@ -144,6 +144,7 @@ import Oak.Stdlib.NormalizeTables
 import Oak.Stdlib.Normalize17
 import Oak.Typestate
 import Oak.IoPort
+import Oak.ObjectStore
 import Oak.ProtocolQuorum
 import Oak.TimeInterval
 import Oak.ProtocolConformance

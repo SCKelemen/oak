@@ -1,0 +1,194 @@
+table_high1: [16]u8 = [
+  u8(2), u8(2), u8(2), u8(2), u8(2), u8(2), u8(2), u8(2),
+  u8(128), u8(128), u8(128), u8(128),
+  u8(33), u8(1), u8(21), u8(73)]
+
+// Indexed by the low nibble of the previous byte.
+table_low1: [16]u8 = [
+  u8(231), u8(163), u8(131), u8(131), u8(139), u8(203), u8(203), u8(203),
+  u8(203), u8(203), u8(203), u8(203), u8(203), u8(219), u8(203), u8(203)]
+
+// Indexed by the high nibble of the current byte.
+table_high2: [16]u8 = [
+  u8(1), u8(1), u8(1), u8(1), u8(1), u8(1), u8(1), u8(1),
+  u8(230), u8(174), u8(186), u8(186),
+  u8(1), u8(1), u8(1), u8(1)]
+
+// A block is incomplete when its last byte starts a two-byte sequence, its
+// second-to-last a three-byte one, or its third-to-last a four-byte one:
+// saturating subtraction of these maxima is nonzero exactly there.
+incomplete_max: [16]u8 = [
+  u8(255), u8(255), u8(255), u8(255), u8(255), u8(255), u8(255), u8(255),
+  u8(255), u8(255), u8(255), u8(255), u8(255), u8(239), u8(223), u8(191)]
+
+// The pairwise classification of every byte against its predecessor.
+special_cases: (high1: simd.U8x16, low1: simd.U8x16, high2: simd.U8x16, input: simd.U8x16, prev1: simd.U8x16): simd.U8x16 {
+  byte_1_high: simd.U8x16 = simd.tbl_u8x16(high1, simd.shr_u8x16(prev1, u32(4)))
+  byte_1_low: simd.U8x16 = simd.tbl_u8x16(low1, simd.and_u8x16(prev1, simd.splat_u8x16(u8(15))))
+  byte_2_high: simd.U8x16 = simd.tbl_u8x16(high2, simd.shr_u8x16(input, u32(4)))
+  simd.and_u8x16(simd.and_u8x16(byte_1_high, byte_1_low), byte_2_high)
+}
+
+// The error lanes of one block given the block before it. Two
+// continuations in a row are legal exactly under a third or fourth lead
+// byte; the TWO_CONTS bit cancels against that permission.
+check_block: (high1: simd.U8x16, low1: simd.U8x16, high2: simd.U8x16, prev_input: simd.U8x16, input: simd.U8x16): simd.U8x16 {
+  prev1: simd.U8x16 = simd.prev_u8x16(prev_input, input, u32(1))
+  prev2: simd.U8x16 = simd.prev_u8x16(prev_input, input, u32(2))
+  prev3: simd.U8x16 = simd.prev_u8x16(prev_input, input, u32(3))
+  sc: simd.U8x16 = special_cases(high1, low1, high2, input, prev1)
+  // Subtracting 0x60 leaves the high bit set exactly for bytes at or above
+  // 0xE0, and 0x70 exactly for bytes at or above 0xF0
+  // (Oak.Utf8Lookup.permission): the TWO_CONTS bit of the lanes a third or
+  // fourth continuation is permitted in, with no comparison.
+  third: simd.U8x16 = simd.subs_u8x16(prev2, simd.splat_u8x16(u8(96)))
+  fourth: simd.U8x16 = simd.subs_u8x16(prev3, simd.splat_u8x16(u8(112)))
+  must23: simd.U8x16 = simd.and_u8x16(simd.or_u8x16(third, fourth), simd.splat_u8x16(u8(128)))
+  simd.xor_u8x16(must23, sc)
+}
+
+// The error lanes of four consecutive blocks, each checked against the
+// block before it; the first against the block that ended the previous
+// step. Chaining the blocks this way is the composition proved in
+// Oak.Utf8Stream: the lane function sees the same four-byte window
+// whether the stream is cut every sixteen or every sixty-four bytes.
+check_blocks: (high1: simd.U8x16, low1: simd.U8x16, high2: simd.U8x16, prev_input: simd.U8x16, a: simd.U8x16, b: simd.U8x16, c: simd.U8x16, d: simd.U8x16): simd.U8x16 {
+  ea: simd.U8x16 = check_block(high1, low1, high2, prev_input, a)
+  eb: simd.U8x16 = check_block(high1, low1, high2, a, b)
+  ec: simd.U8x16 = check_block(high1, low1, high2, b, c)
+  ed: simd.U8x16 = check_block(high1, low1, high2, c, d)
+  simd.or_u8x16(simd.or_u8x16(ea, eb), simd.or_u8x16(ec, ed))
+}
+
+// valid reports whether bytes is well-formed UTF-8 (Unicode Table 3-7).
+//
+// The stream is consumed sixty-four bytes at a step: one reduction decides
+// whether the step is pure ASCII, and only a step with a high bit set pays
+// for the classification. An ASCII step completes nothing, so a sequence
+// left open by the step before it is an error and the step leaves none
+// open (Oak.Utf8Stream.ascii_step). The remainder is consumed sixteen
+// bytes at a time, then a zero-padded final block: zero bytes are ASCII,
+// so a sequence cut short by the end of the input is caught as a lead byte
+// without its continuation. Every load sits under the guard that proves it
+// in range (the wrap-free spelling of docs/spec/50-borrowing.md), so the
+// emitted code carries no bounds check.
+valid: (bytes: []u8): Bool {
+  high1: simd.U8x16 = simd.load_u8x16(view(&table_high1), u32(0))
+  low1: simd.U8x16 = simd.load_u8x16(view(&table_low1), u32(0))
+  high2: simd.U8x16 = simd.load_u8x16(view(&table_high2), u32(0))
+  maxima: simd.U8x16 = simd.load_u8x16(view(&incomplete_max), u32(0))
+  high_bit: simd.U8x16 = simd.splat_u8x16(u8(128))
+  zero: simd.U8x16 = simd.splat_u8x16(u8(0))
+  error: simd.U8x16 = zero
+  prev_input: simd.U8x16 = zero
+  prev_incomplete: simd.U8x16 = zero
+  n: u32 = len(bytes)
+  off: u32 = u32(0)
+  while len(bytes) >= u32(64) && off <= len(bytes) - u32(64) {
+    a: simd.U8x16 = simd.load_u8x16(bytes, off)
+    b: simd.U8x16 = simd.load_u8x16(bytes, off + u32(16))
+    c: simd.U8x16 = simd.load_u8x16(bytes, off + u32(32))
+    d: simd.U8x16 = simd.load_u8x16(bytes, off + u32(48))
+    step_bits: simd.U8x16 = simd.or_u8x16(simd.or_u8x16(a, b), simd.or_u8x16(c, d))
+    simd.any_u8x16(simd.and_u8x16(step_bits, high_bit)) ? {
+      error = simd.or_u8x16(error, check_blocks(high1, low1, high2, prev_input, a, b, c, d))
+      prev_incomplete = simd.subs_u8x16(d, maxima)
+    } | {
+      error = simd.or_u8x16(error, prev_incomplete)
+      prev_incomplete = zero
+    }
+    prev_input = d
+    off = off + u32(64)
+  }
+  while len(bytes) >= u32(16) && off <= len(bytes) - u32(16) {
+    input: simd.U8x16 = simd.load_u8x16(bytes, off)
+    simd.any_u8x16(simd.and_u8x16(input, high_bit)) ? {
+      error = simd.or_u8x16(error, check_block(high1, low1, high2, prev_input, input))
+      prev_incomplete = simd.subs_u8x16(input, maxima)
+    } | {
+      error = simd.or_u8x16(error, prev_incomplete)
+      prev_incomplete = zero
+    }
+    prev_input = input
+    off = off + u32(16)
+  }
+  tail: [16]u8 = [
+    u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0),
+    u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0)]
+  i: u32 = u32(0)
+  while off + i < n {
+    tail[i] = bytes[off + i]
+    i = i + u32(1)
+  }
+  last: simd.U8x16 = simd.load_u8x16(view(&tail), u32(0))
+  simd.any_u8x16(simd.and_u8x16(last, high_bit)) ? {
+    error = simd.or_u8x16(error, check_block(high1, low1, high2, prev_input, last))
+    prev_incomplete = simd.subs_u8x16(last, maxima)
+  } | {
+    error = simd.or_u8x16(error, prev_incomplete)
+    prev_incomplete = zero
+  }
+  !simd.any_u8x16(simd.or_u8x16(error, prev_incomplete))
+}
+
+
+valid_with: (bytes: []u8, tables: []u8): Bool {
+  high1: simd.U8x16 = simd.load_u8x16(tables, u32(0))
+  low1: simd.U8x16 = simd.load_u8x16(tables, u32(16))
+  high2: simd.U8x16 = simd.load_u8x16(tables, u32(32))
+  maxima: simd.U8x16 = simd.load_u8x16(tables, u32(48))
+  high_bit: simd.U8x16 = simd.splat_u8x16(u8(128))
+  zero: simd.U8x16 = simd.splat_u8x16(u8(0))
+  error: simd.U8x16 = zero
+  prev_input: simd.U8x16 = zero
+  prev_incomplete: simd.U8x16 = zero
+  n: u32 = len(bytes)
+  off: u32 = u32(0)
+  while len(bytes) >= u32(64) && off <= len(bytes) - u32(64) {
+    a: simd.U8x16 = simd.load_u8x16(bytes, off)
+    b: simd.U8x16 = simd.load_u8x16(bytes, off + u32(16))
+    c: simd.U8x16 = simd.load_u8x16(bytes, off + u32(32))
+    d: simd.U8x16 = simd.load_u8x16(bytes, off + u32(48))
+    step_bits: simd.U8x16 = simd.or_u8x16(simd.or_u8x16(a, b), simd.or_u8x16(c, d))
+    simd.any_u8x16(simd.and_u8x16(step_bits, high_bit)) ? {
+      error = simd.or_u8x16(error, check_blocks(high1, low1, high2, prev_input, a, b, c, d))
+      prev_incomplete = simd.subs_u8x16(d, maxima)
+    } | {
+      error = simd.or_u8x16(error, prev_incomplete)
+      prev_incomplete = zero
+    }
+    prev_input = d
+    off = off + u32(64)
+  }
+  while len(bytes) >= u32(16) && off <= len(bytes) - u32(16) {
+    input: simd.U8x16 = simd.load_u8x16(bytes, off)
+    simd.any_u8x16(simd.and_u8x16(input, high_bit)) ? {
+      error = simd.or_u8x16(error, check_block(high1, low1, high2, prev_input, input))
+      prev_incomplete = simd.subs_u8x16(input, maxima)
+    } | {
+      error = simd.or_u8x16(error, prev_incomplete)
+      prev_incomplete = zero
+    }
+    prev_input = input
+    off = off + u32(16)
+  }
+  tail: [16]u8 = [
+    u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0),
+    u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0)]
+  i: u32 = u32(0)
+  while off + i < n {
+    tail[i] = bytes[off + i]
+    i = i + u32(1)
+  }
+  last: simd.U8x16 = simd.load_u8x16(view(&tail), u32(0))
+  simd.any_u8x16(simd.and_u8x16(last, high_bit)) ? {
+    error = simd.or_u8x16(error, check_block(high1, low1, high2, prev_input, last))
+    prev_incomplete = simd.subs_u8x16(last, maxima)
+  } | {
+    error = simd.or_u8x16(error, prev_incomplete)
+    prev_incomplete = zero
+  }
+  !simd.any_u8x16(simd.or_u8x16(error, prev_incomplete))
+}
+
+main: (): u32 = u32(0)

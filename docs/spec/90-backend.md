@@ -98,7 +98,11 @@ target decides is:
   `-link oak` a program whose every body is lowered natively is linked by
   the Oak assembler into a static ELF executable (Linux and freestanding
   targets on both lanes) with no C compiler and no system linker
-  (`94-assembler.md` §9).
+  (`94-assembler.md` §9). The C compiler's `-O` level (`oak build -O`,
+  default 1) is a property of the mechanical layer — register allocation,
+  scheduling, selection — never of the program's meaning: no level passes
+  fast-math or contraction, and the `-O0` to `-O2` delta on a hot loop
+  measures what the C compiler expressed that Oak has not.
 - **the C compiler** (`toolchain.Resolve`), in a fixed order, first match
   wins: `OAK_CC` (an executable taken as already targeting the platform,
   `OAK_CFLAGS` added); `cc` for the host target; `zig cc --target=…` —
@@ -400,6 +404,33 @@ keep external linkage; recursive and looping functions are never marked, so
 the C compiler is never asked to inline what it cannot. The judgment is the
 discipline analyzer's call-graph and loop walk (`InlineHelperShape`), so the
 backend and the recursion policy share one authority.
+
+**Inlining as a source transformation.** The same rule is applied once
+more, earlier: before the type checker runs, the code-emitting stages
+(`EmitC`, `EmitNative`, `EmitExecutable`, `EmitNativeObject`) splice each
+inlinable helper into its callers at the source level
+(`compiler/inline.go`), so the extent facts in force at the call site prove
+the helper's element accesses (`50-borrowing.md`, "Proof through a
+helper") and neither backend emits a check for them. The transformation is
+statement-level and visible in the emitted C: the helper's statements go
+before the statement holding the call, its declared names are renamed into
+the reserved `__inl<N>_` namespace (Oak forbids shadowing), a plain
+identifier argument substitutes for a parameter the helper never assigns
+(so the caller's facts about it apply unchanged), a scalar argument of any
+other shape is copied into a typed temporary, and the helper's tail
+expression takes the call's place — directly when the call is a
+statement's whole value, through a typed result temporary when it is an
+operand. The pass refuses rather than reorders: nothing moves across a
+short-circuit operator, a match arm in value position, a loop condition,
+or a function literal; a call is not hoisted above a user-function call
+this pass does not inline; a helper that writes through a span parameter
+is inlined only where nothing else in the statement is evaluated; a helper
+whose locals or copied arguments are not scalars, or whose tail holds a
+block, stays a call where the C form would need a block in an expression.
+A call the pass leaves is still a call to a forced-inline helper, so the
+generated code is never slower than before — only sometimes still
+checked. The semantic model, the language server, the Lean emitters, and
+the prover see the program as written.
 
 ## 10. Owned arrays as values
 

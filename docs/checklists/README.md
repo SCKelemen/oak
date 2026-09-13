@@ -2,7 +2,8 @@
 
 Two documents collect, once, the techniques Oak keeps re-deriving from its
 reference material — Go, Rust, Zig, Odin, Elm, the ML family, Swift,
-Futhark, Mojo, Scala; Idris, Coq, Lean, TLA+, Apalache, Z3; mlx, tinygrad,
+Futhark, Mojo, Scala; Idris, Coq, Lean, TLA+, Apalache, Z3, Tamarin,
+ProVerif, ParaFROST, the LRAT checkers; mlx, tinygrad,
 data-oriented design, mechanical sympathy, TigerBeetle and TigerStyle,
 MISRA C, NASA's Power of Ten, simdjson, simdutf, Hyperscan — so that a
 review pass walks a list instead of re-reading the sources.

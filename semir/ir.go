@@ -248,13 +248,17 @@ func Apply(op Operator, args ...Expr) Expr {
 // projection, generated DST actions, and debugger state diagrams should all use
 // the same transition vocabulary.
 type Protocol struct {
-	Name        string
-	States      []State
-	Initial     string
-	Transitions []Transition
-	Invariants  []Proposition
-	Assumptions []TemporalProperty
-	Guarantees  []TemporalProperty
+	Name    string
+	States  []State
+	Initial string
+	// TypestateArity is the type-parameter count of a typestate-indexed
+	// resource of this protocol (the state plus one per fact clause); 0 when
+	// the protocol's resources are not typestate-indexed.
+	TypestateArity int
+	Transitions    []Transition
+	Invariants     []Proposition
+	Assumptions    []TemporalProperty
+	Guarantees     []TemporalProperty
 }
 
 type State struct {

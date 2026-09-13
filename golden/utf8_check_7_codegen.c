@@ -471,6 +471,26 @@ static Bool oak_is_valid_utf8(oak_view_u8 v) {
 
 typedef struct oak_arr_u8_16 { u8 v[ 16 ]; } oak_arr_u8_16;
 
+typedef struct oak_span_u8 {
+    u8* base;
+    u32 len;
+} oak_span_u8;
+
+static inline u8 oak_span_index_u8(oak_span_u8 v, u64 i) {
+  if (i >= (u64)v.len) { __builtin_trap(); }
+  return v.base[i];
+}
+
+static inline void oak_span_store_u8(oak_span_u8 v, u64 i, u8 value) {
+  if (i >= (u64)v.len) { __builtin_trap(); }
+  v.base[i] = value;
+}
+
+static inline oak_span_u8 oak_span_subslice_u8(oak_span_u8 v, u64 start, u64 n) {
+  if (start > (u64)v.len || n > (u64)v.len - start) { __builtin_trap(); }
+  return (oak_span_u8){ v.base + start, (u32)n };
+}
+
 static inline u64 oak_arr_slice_low(u64 low, u64 high, u64 len) {
   if (low > high || high > len) { __builtin_trap(); }
   return low;

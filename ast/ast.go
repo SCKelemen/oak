@@ -1602,7 +1602,19 @@ type ProtocolDeclaration struct {
 	// Oak reads neither.
 	Fairness []*ProtocolFairness
 	Liveness []*ProtocolLiveness
+	// Facts are the `fact F = A | B` clauses: the further phantom indices of
+	// a typestate-indexed resource beyond its state, each drawn from a
+	// closed set of markers (docs/spec/112-protocols.md section 5a).
+	Facts    []*ProtocolFact
 	Exported bool
+}
+
+// ProtocolFact is one `fact F = A | B` clause: the index name and its
+// markers, projected to marker types like the states.
+type ProtocolFact struct {
+	Token   token.Token
+	Name    *Identifier
+	Markers []*Identifier
 }
 
 // LiteralsDeclaration is `Name: literals = { "GET ", "POST " }`

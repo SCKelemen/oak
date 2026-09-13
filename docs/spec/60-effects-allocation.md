@@ -122,6 +122,47 @@ run with concrete functions installed in the slots may do;
 effect is in the bound, and `forbids_sound` that a `forbids` on a function
 whose bound excludes the effect holds for every admitted run.
 
+### 2b. Steps as values
+
+The ml pilot's F4 / 5.19, "a step is a value that replays without the
+host": the two effects a device runtime has are **`Device.Launch`** (a
+kernel is enqueued) and **`Device.Readback`** (the host reads a result and
+so waits for the device), declared on the runtime's externs like any
+other class (§2), and a **step** is a record whose function field carries
+the row `{ Device.Launch }`:
+
+```oak
+launch: (kernel: c.UInt32): () effects { Device.Launch } = c.extern("ml_launch")
+readback: (slot: c.UInt32): c.UInt32 effects { Device.Readback } = c.extern("ml_readback")
+
+Step: type = struct { run: (u32) -> () effects { Device.Launch } }
+
+decode_token: (t: u32): () = { launch(c.UInt32(t)) ... }   // launches only
+replay: (s: Step, n: u32): () forbids { Device.Readback } = {
+  run: (u32) -> () effects { Device.Launch } = s.run
+  i: u32 = 0
+  while i < n { run(i)  i = i + 1 }
+}
+s: Step = Step { run: decode_token }                          // checked here
+```
+
+Nothing new is needed for this: `Step { run: decode_token }` is a value
+entering a rowed field, so the body's reachable effects are checked
+against the row where the step is built (§2a, `OAK-E0105`) — a body that
+calls `readback`, directly or through any callee, is refused there by the
+reader's name, and the row is what a later `replay` sees, so its `forbids
+{ Device.Readback }` holds through the value without knowing the body.
+"No host in the loop" is therefore a property the checker gives the
+program, not a discipline a capture API asks of its callers: a step can be
+stored in an array, handed to a scheduler, and replayed, and every run is
+launches only. `Oak.EffectRows.forbids_sound` is the theorem: under the
+row check every effect a run performs is in the static bound. The
+persistent form the pilot may build — a step whose body is one launch of a
+device-side program — is a `Step` whose `run` calls one `launch`; the
+chapter adds no form for it. `compiler/e2e_steps_test.go` pins the idiom:
+a launching step is admitted, a reading step is refused by name, a stored
+step replays under the forbid.
+
 ## 3. No hidden allocation
 
 Ordinary language constructs do not allocate unless their semantics explicitly carry an allocation effect.

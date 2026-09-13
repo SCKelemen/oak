@@ -71,6 +71,12 @@ type Options struct {
 	// verified asm function and realized like an asm unit; the rest keep
 	// the C backend (docs/spec/94-assembler.md §9).
 	NativeBodies bool
+	// InlineHelpers runs the source-level inlining of private leaf helpers
+	// before type checking (compiler/inline.go, docs/spec/90-backend.md
+	// section 9), so the caller's extent facts prove the helper's element
+	// accesses. Set by the code-emitting stages; the semantic model, the
+	// Lean emitters, and the prover see the program as written.
+	InlineHelpers bool
 }
 
 // Compilation is the public, Roslyn-style compiler value. With* methods return
@@ -421,6 +427,12 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		if err := comp.gate("asm", asmDiagnostics, tree.Modules); err != nil {
 			return nil, err
 		}
+		// Small private helpers are inlined at the source level for the
+		// code-emitting stages (compiler/inline.go), after the units are
+		// stitched so a declaration a unit realizes keeps its calls.
+		if comp.options.InlineHelpers {
+			inlineHelpers(tree.Root)
+		}
 		env := object.NewEnvironment()
 		tc := typechecker.NewWithPlatformSizes(env, comp.options.IntSize, comp.options.PtrSize)
 		if tree.Modules != nil {
@@ -617,6 +629,7 @@ func (comp Compilation) Lower() Stage[*LoweredProgram] {
 
 // EmitC runs the current C backend through the same fluent compilation value.
 func (comp Compilation) EmitC() Stage[string] {
+	comp.options.InlineHelpers = true
 	return comp.Lower().Then(func(lowered *LoweredProgram) (string, error) {
 		for _, stmt := range lowered.Root.Statements {
 			if fn, ok := stmt.(*ast.FunctionStatement); ok && len(fn.TypeParams) != 0 {
@@ -660,6 +673,7 @@ type NativeOutput struct {
 // EmitNative emits the C with asm units as prototypes and the companion
 // object holding their machine code, in one pass over the program.
 func (comp Compilation) EmitNative(format asm.ObjectFormat) Stage[NativeOutput] {
+	comp.options.InlineHelpers = true
 	comp.options.NativeAsm = true
 	return comp.Lower().Then(func(lowered *LoweredProgram) (NativeOutput, error) {
 		for _, stmt := range lowered.Root.Statements {
@@ -707,6 +721,7 @@ func (comp Compilation) EmitNative(format asm.ObjectFormat) Stage[NativeOutput] 
 // functions and the target's start stub; no C is compiled and nothing
 // external links.
 func (comp Compilation) EmitExecutable() Stage[[]byte] {
+	comp.options.InlineHelpers = true
 	comp.options.NativeAsm = true
 	comp.options.NativeBodies = true
 	return comp.Lower().Then(func(lowered *LoweredProgram) ([]byte, error) {
@@ -714,33 +729,8 @@ func (comp Compilation) EmitExecutable() Stage[[]byte] {
 		if tgt.AsmArch() == "" || (tgt.OS != target.OSLinux && !tgt.Freestanding()) {
 			return nil, fmt.Errorf("link: no native executable format for %s (linux and freestanding targets on the arm64 and rv64 lanes)", tgt)
 		}
-		var left []string
-		hasMain := false
-		for _, stmt := range lowered.Root.Statements {
-			switch d := stmt.(type) {
-			case *ast.FunctionStatement:
-				if d.Name == nil {
-					continue
-				}
-				if d.Name.Value == "main" && d.Receiver == nil {
-					hasMain = true
-				}
-				if d.Body != nil && !d.NativeBacked && !d.AsmBacked && d.ExternSymbol == "" {
-					left = append(left, d.Name.Value)
-				}
-				if d.ExternSymbol != "" {
-					return nil, fmt.Errorf("link: %s is an extern binding to %s; a natively linked program has no C to provide it", d.Name.Value, d.ExternSymbol)
-				}
-			case *ast.VariableDeclaration:
-				return nil, fmt.Errorf("link: the global %s needs the C backend; a natively linked program has none", d.Name.Value)
-			}
-		}
-		if !hasMain {
-			return nil, fmt.Errorf("link: the program declares no main")
-		}
-		if len(left) != 0 {
-			sort.Strings(left)
-			return nil, fmt.Errorf("link: %s stayed with the C backend (the native backend's diagnostics name why); a natively linked program lowers every body", strings.Join(left, ", "))
+		if err := comp.allNative(lowered, true); err != nil {
+			return nil, err
 		}
 		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
 		encoded, err := asm.EncodeFunctions(lowered.Model.AsmFunctions, generator.CFunctionName)
@@ -749,6 +739,65 @@ func (comp Compilation) EmitExecutable() Stage[[]byte] {
 		}
 		return asm.WriteExecutable(encoded, asm.ExecutableOptions{OS: tgt.OS, Arch: tgt.AsmArch(), Entry: generator.CFunctionName("main"), RV64FloatABI: comp.objectOptions().RV64FloatABI})
 	})
+}
+
+// EmitNativeObject writes the program as one relocatable object holding
+// nothing but natively lowered bodies (docs/spec/94-assembler.md §9): the
+// form a freestanding module takes when its every body is in the native
+// subset, so the pilot's linker sees Oak's encoded functions under their
+// C symbols and no C is compiled. The same refusals as EmitExecutable
+// apply (a body left to C, a global, an extern binding), except that main
+// is not required: a module exports its `pub` functions.
+func (comp Compilation) EmitNativeObject(format asm.ObjectFormat) Stage[[]byte] {
+	comp.options.InlineHelpers = true
+	comp.options.NativeAsm = true
+	comp.options.NativeBodies = true
+	return comp.Lower().Then(func(lowered *LoweredProgram) ([]byte, error) {
+		if err := comp.allNative(lowered, false); err != nil {
+			return nil, err
+		}
+		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
+		encoded, err := asm.EncodeFunctions(lowered.Model.AsmFunctions, generator.CFunctionName)
+		if err != nil {
+			return nil, fmt.Errorf("asm: %w", err)
+		}
+		return asm.WriteObjectWith(format, encoded, comp.objectOptions())
+	})
+}
+
+// allNative checks that a lowered program can be realized by the Oak
+// assembler alone: every function with a body lowered natively (or an asm
+// unit), no globals, no extern bindings, and — when required — a main.
+func (comp Compilation) allNative(lowered *LoweredProgram, requireMain bool) error {
+	var left []string
+	hasMain := false
+	for _, stmt := range lowered.Root.Statements {
+		switch d := stmt.(type) {
+		case *ast.FunctionStatement:
+			if d.Name == nil {
+				continue
+			}
+			if d.Name.Value == "main" && d.Receiver == nil {
+				hasMain = true
+			}
+			if d.Body != nil && !d.NativeBacked && !d.AsmBacked && d.ExternSymbol == "" {
+				left = append(left, d.Name.Value)
+			}
+			if d.ExternSymbol != "" {
+				return fmt.Errorf("link: %s is an extern binding to %s; a natively linked program has no C to provide it", d.Name.Value, d.ExternSymbol)
+			}
+		case *ast.VariableDeclaration:
+			return fmt.Errorf("link: the global %s needs the C backend; a natively linked program has none", d.Name.Value)
+		}
+	}
+	if requireMain && !hasMain {
+		return fmt.Errorf("link: the program declares no main")
+	}
+	if len(left) != 0 {
+		sort.Strings(left)
+		return fmt.Errorf("link: %s stayed with the C backend (the native backend's diagnostics name why); a natively linked program lowers every body", strings.Join(left, ", "))
+	}
+	return nil
 }
 
 // objectOptions are the target facts the companion object records: a

@@ -174,6 +174,45 @@ with equivalent instruction sequences (64-bit lane `min`/`max` via
 compare-and-select; `all` over 64-bit lanes via per-lane extraction) — the
 portable semantics are the specification, the instruction selection is not.
 
+**The native backend (landed 2026-09-13; `94-assembler.md` §9,
+`nativegen/simd.go`).** On the AArch64 lane the native backend lowers the
+integer vectors without the C compiler: `simd.U8x16`, `U16x8`, `U32x4`,
+and `U64x2` are 128-bit values of the vector register file — scratch in
+v16–v31, locals in v8–v15 when the function makes no call and in
+sixteen-byte frame slots otherwise (AAPCS64 preserves only the low halves
+of v8–v15 across a call), parameters and results in v0–v7 — and each
+operation is its NEON instruction: `splat` → `dup`, `load`/`store` →
+`ldr`/`str q` under a length guard, `and`/`or`/`xor` → `and`/`orr`/`eor`,
+`add`/`sub`/`min`/`max`/`eq`/`subs` → `add`/`sub`/`umin`/`umax`/`cmeq`/
+`uqsub`, `shr` by a literal → `ushr #n`, `any` → `umaxv` and a compare,
+`all` → `cmeq #0` then `any`, `tbl` → `tbl`, `prev` by a literal → `ext
+#(16-n)`, `movemask` over bytes → `sshr #7`, an `and` with the lane bits,
+`addv` per half, `ctz` → `rbit`/`clz`, `popcount` → `cnt`/`addv`. A
+vector load or store indexes a byte span by element index under the
+checker's slack guard (`len >= 16` and `off <= len - 16`, `94-assembler.md`
+§7, `Oak.Assembler.index_access_lanes`); a literal index into an owned
+array local is a frame slot. What the native lowering leaves to the C
+backend, reported as such: float vectors, vectors inside records or
+arrays, loads and stores over lanes wider than a byte (a `q` load
+indexes by bytes or by sixteens, never by a lane size between), a shift
+or `prev` count that is not a literal, `movemask` over wider lanes.
+
+A function whose signature carries a vector follows the vector register
+contract at its native entry, named with the suffix `_neon_abi`; the C
+emitter defines the Oak name as a converting shim over it (the lane-array
+struct in, NEON values through, the struct back), so C callers and
+natively lowered callers agree, and a native function that passes vectors
+to a callee the C backend realizes is itself left to the C backend.
+
+Measured (`benchmarks/native/`): the UTF-8 validator with its tables
+passed in as a view runs at 0.40 ns/byte through the native backend
+against 0.08 through the C backend on the same 64 MB input, both correct.
+The lowering is the same instructions; the gap is what the native backend
+does not do yet — inline the per-block calls (the C compiler flattens the
+kernel into one loop with every vector in a register), keep vector locals
+in registers across calls, and elide the length guard the loop condition
+already proves.
+
 On a scalable-vector target such as RISC-V V or AArch64 SVE, fixed vectors
 remain fixed semantic values. The backend may use a scalable register to
 implement them, but physical VLEN is never observable through `U8x16` or any

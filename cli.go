@@ -9,7 +9,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"github.com/SCKelemen/oak/target"
 	"github.com/SCKelemen/oak/toolchain"
@@ -661,7 +660,28 @@ func compileC(tgt target.Target, drv toolchain.Driver, code string, object []byt
 			return false, err
 		}
 		if drv.Object {
-			return false, errors.New("a freestanding build with asm units: link the companion object yourself (oak build -asm c inlines the units instead)")
+			// A freestanding module with a companion object: the C compiles
+			// to its own object, and the driver's partial link (`-r`) joins
+			// the two into the one relocatable object the build promises,
+			// so the pilot links one file as before
+			// (docs/spec/94-assembler.md §9).
+			cObject := filepath.Join(work, "program_c.o")
+			compileArgs := append(append([]string{}, flags...), "-o", cObject, cPath)
+			compile := exec.Command(drv.Path, compileArgs...)
+			compile.Stdout, compile.Stderr = os.Stdout, os.Stderr
+			if err := compile.Run(); err != nil {
+				return false, fmt.Errorf("C compilation for %s failed (%s): %v", tgt, drv.Command(), err)
+			}
+			mergeArgs := append(append([]string{}, drv.Args...), "-nostdlib", "-r", "-o", binary, cObject, objPath)
+			merge := exec.Command(drv.Path, mergeArgs...)
+			merge.Stdout, merge.Stderr = os.Stdout, os.Stderr
+			if err := merge.Run(); err != nil {
+				return false, fmt.Errorf("partial link for %s failed (%s -r): %v", tgt, drv.Command(), err)
+			}
+			if key != "" {
+				_ = buildcache.Store(key, binary)
+			}
+			return false, nil
 		}
 		ccArgs = append(ccArgs, objPath)
 	}
