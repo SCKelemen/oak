@@ -54,6 +54,20 @@ func TestE2EDerivedJsonReaderDecodesScalarsInline(t *testing.T) {
 			t.Fatalf("record reader still calls the per-type reader %q:\n%s", unwanted, reader)
 		}
 	}
+	// The scanner's word loop loads through proven packs: its guard is the
+	// wrap-free form the checker recognizes, and no range check remains.
+	scanner := output[strings.Index(output, "oak_json_scan_integer( oak_view_u8 src, u32 offset ) {"):]
+	scanner = scanner[:strings.Index(scanner, "\n}\n")]
+	for _, unwanted := range []string{"oak_byte_pack_le_u64( src", "oak_byte_pack_le_u32( src", "oak_view_index_u8("} {
+		if strings.Contains(scanner, unwanted) {
+			t.Fatalf("scanner still carries a range check %q:\n%s", unwanted, scanner)
+		}
+	}
+	for _, unwanted := range []string{"oak_view_index_u8("} {
+		if strings.Contains(reader, unwanted) {
+			t.Fatalf("record reader still carries a range-checked read %q:\n%s", unwanted, reader)
+		}
+	}
 	for _, want := range []string{
 		// Key and Boolean spellings load through packs the checker proved
 		// in range under the wrap-free remaining guard: no check.

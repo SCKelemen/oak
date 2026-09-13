@@ -168,18 +168,15 @@ pub json_copy_run: (dst: [*]u8, output: u32, src: []u8, start: u32, end: u32): (
 pub json_hex_digit: (n: u8): u8 = n < u8(10) ? n + u8(48) | n - u8(10) + u8(97)
 pub json_hex_value: (n: u8): u32 = n >= u8(48) && n <= u8(57) ? u32(n - u8(48)) | n >= u8(65) && n <= u8(70) ? u32(n - u8(65)) + u32(10) | n >= u8(97) && n <= u8(102) ? u32(n - u8(97)) + u32(10) | u32(16)
 pub json_hex4: (src: []u8, at: u32): u32 {
- value: u32 = 0
- valid: Bool = at <= len(src) && u32(4) <= len(src) - at
- valid ? {
-  i: u32 = 0
-  while i < u32(4) {
-   digit: u32 = json_hex_value(src[at + i])
-   valid = valid && digit < u32(16)
-   value = value * u32(16) + digit
-   i = i + u32(1)
-  }
- }
- valid ? value | u32(4294967295)
+ // The four reads sit under the wrap-free remaining guard with literal
+ // offsets, so each is proven.
+ len(src) >= u32(4) && at <= len(src) - u32(4) ? {
+  d0: u32 = json_hex_value(src[at + u32(0)])
+  d1: u32 = json_hex_value(src[at + u32(1)])
+  d2: u32 = json_hex_value(src[at + u32(2)])
+  d3: u32 = json_hex_value(src[at + u32(3)])
+  d0 < u32(16) && d1 < u32(16) && d2 < u32(16) && d3 < u32(16) ? { ((d0 * u32(16) + d1) * u32(16) + d2) * u32(16) + d3 } | { u32(4294967295) }
+ } | { u32(4294967295) }
 }
 // The measuring pass validates and sizes in one sweep: the scan's ASCII
 // lane decides whether the full UTF-8 validator runs at all, and encoding
@@ -265,7 +262,7 @@ pub json_string_encode: (dst: [*]u8, src: []u8): Result[u32, JsonError] = json_s
 pub json_escape: (src: []u8, at: u32): strings.TextScalar {
  value: u32 = 4294967295
  next: u32 = 4294967295
- at < len(src) && len(src) - at >= u32(2) ? {
+ len(src) >= u32(2) && at <= len(src) - u32(2) ? {
   kind: u8 = src[at + u32(1)]
   value = kind == u8(34) || kind == u8(92) || kind == u8(47) ? u32(kind) | kind == u8(98) ? u32(8) | kind == u8(102) ? u32(12) | kind == u8(110) ? u32(10) | kind == u8(114) ? u32(13) | kind == u8(116) ? u32(9) | u32(4294967295)
   value != u32(4294967295) ? { next = at + u32(2) }
@@ -588,7 +585,9 @@ pub json_key_decode: (src: []u8, key: JsonToken, dst: [*]u8): u32 {
  at: u32 = key.start + u32(1)
  out: u32 = 0
  limit: u32 = valid ? key.end - u32(1) | u32(0)
- while valid && at < limit {
+ // at < len(src) follows from at < limit < key.end <= len(src); it is
+ // stated so the read is proven.
+ while valid && at < limit && at < len(src) {
   unit: u8 = src[at]
   unit == u8(92) ? {
    item: strings.TextScalar = json_escape(src, at)
@@ -747,8 +746,9 @@ pub json_scan_integer: (src: []u8, offset: u32): JsonIntegerScan {
  at: u32 = start
  negative: Bool = at < len(src) && src[at] == u8(45)
  negative ? { at = at + u32(1) }
- // Spelled so the first digit's read is under its guard and proven.
- !(at < len(src) && json_digit(src[at])) ? { json_scan_integer_slow(src, offset) } | {
+ // The whole scan sits under the first digit's guard, so its read — and
+ // the leading-zero test on the same byte — are proven.
+ at < len(src) && json_digit(src[at]) ? {
   leading_zero: Bool = src[at] == u8(48)
   magnitude: u64 = u64(0)
   count: u32 = u32(0)
@@ -764,7 +764,8 @@ pub json_scan_integer: (src: []u8, offset: u32): JsonIntegerScan {
   // again behind the run count's dependency chain.
   ended: Bool = false
   next_byte: u32 = u32(0)
-  while words && len(src) - at >= u32(8) {
+  overflow: Bool = false
+  while words && len(src) >= u32(8) && at <= len(src) - u32(8) {
    word: u64 = ((u64(src[at + u32(0)]) << u64(0)) | (u64(src[at + u32(1)]) << u64(8)) | (u64(src[at + u32(2)]) << u64(16)) | (u64(src[at + u32(3)]) << u64(24)) | (u64(src[at + u32(4)]) << u64(32)) | (u64(src[at + u32(5)]) << u64(40)) | (u64(src[at + u32(6)]) << u64(48)) | (u64(src[at + u32(7)]) << u64(56)))
    mask: u64 = json_non_digit_mask(word)
    mask == u64(0) && count + u32(8) <= u32(19) ? {
@@ -789,12 +790,26 @@ pub json_scan_integer: (src: []u8, offset: u32): JsonIntegerScan {
     mask != u64(0) && take == run ? {
      ended = true
      next_byte = u32_trunc_u64((word >> (u64(8) * u64(run))) & u64(255))
+    } | take < run && take < u32(8) ? {
+     // The twentieth digit is in the register too (the count capped the
+     // take): it is the one that can overflow, so it is taken with the
+     // check, and when the byte after it is the non-digit that ends the
+     // run, that byte is the terminator — no byte loop and no load.
+     digit: u64 = ((word >> (u64(8) * u64(take))) & u64(255)) - u64(48)
+     overflow = magnitude > u64(1844674407370955161) || (magnitude == u64(1844674407370955161) && digit > u64(5))
+     !overflow ? { magnitude = magnitude * u64(10) + digit }
+     at = at + u32(1)
+     count = count + u32(1)
+     mask != u64(0) && take + u32(1) == run ? {
+      ended = true
+      next_byte = u32_trunc_u64((word >> (u64(8) * u64(run))) & u64(255))
+     }
     }
    }
   }
   // A tail of four to seven bytes, when the word loop ran out of bytes
   // rather than digits: one four-byte word the same way.
-  words && len(src) - at >= u32(4) && count < u32(19) ? {
+  words && len(src) >= u32(4) && at <= len(src) - u32(4) && count < u32(19) ? {
    word4: u32 = (u32(src[at + u32(0)]) << u32(0)) | (u32(src[at + u32(1)]) << u32(8)) | (u32(src[at + u32(2)]) << u32(16)) | (u32(src[at + u32(3)]) << u32(24))
    mask4: u32 = json_non_digit_mask32(word4)
    run4: u32 = simd.ctz_u32(mask4) >> u32(3)
@@ -814,9 +829,9 @@ pub json_scan_integer: (src: []u8, offset: u32): JsonIntegerScan {
     next_byte = (word4 >> (u32(8) * run4)) & u32(255)
    }
   }
-  // The byte loop takes what the words could not: the twentieth digit on,
-  // or a run that reaches the last three bytes of the input.
-  overflow: Bool = false
+  // The byte loop takes what the words could not: a twenty-first digit
+  // on (an overflow), or a run that reaches the last three bytes of the
+  // input.
   while !ended && at < len(src) && json_digit(src[at]) {
    digit: u64 = u64(src[at] - u8(48))
    // floor(UINT64_MAX / 10), remainder 5: no per-digit division.
@@ -841,7 +856,7 @@ pub json_scan_integer: (src: []u8, offset: u32): JsonIntegerScan {
    term_bits: u32 = ended ? { u32(512) | (next_byte << u32(10)) } | { u32(0) }
    JsonIntegerScan { magnitude: magnitude, next: at, status: sign_bit | term_bits }
   }
- }
+ } | { json_scan_integer_slow(src, offset) }
 }
 pub json_read_integer_slow: (src: []u8, offset: u32): Result[JsonInteger, JsonDecodeError] {
  item: JsonToken = json_token(src, offset)

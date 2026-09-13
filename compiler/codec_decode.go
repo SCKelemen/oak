@@ -416,7 +416,10 @@ func arrayIndexPath(s *synth, field codecField, fieldOf func(string) ast.Express
 		return s.assign("term", s.u32(0))
 	}
 	length := field.length
-	last := func() ast.Expression { return s.index(s.id("marks"), s.u32(length-1)) }
+	// The last mark is read into a local once: the checker proves a load
+	// at a local it has just compared against the length, not one through
+	// an array element.
+	last := func() ast.Expression { return s.id("last") }
 	magnitude := func() ast.Expression { return s.field(s.id("raw"), "magnitude") }
 	store := func(value ast.Expression) ast.Statement {
 		return s.store(s.index(fieldOf(field.name), s.id("fi")), value)
@@ -465,10 +468,13 @@ func arrayIndexPath(s *synth, field codecField, fieldOf func(string) ast.Express
 		s.decl("sep", s.id("u32"), s.index(s.id("marks"), s.id("fi"))),
 		s.expr(s.cond(s.and(s.lt(s.id("start"), srcLenExpr(s)), s.call("json_space", s.index(s.id("src"), s.id("start")))),
 			s.block(s.assign("start", s.call("json_skip_space", s.id("src"), s.id("start")))), nil)),
-		s.decl("negative", s.id("Bool"), s.and(s.lt(s.id("start"), s.id("sep")), s.eq(s.index(s.id("src"), s.id("start")), s.u8(45)))),
+		// The loads are guarded by the input's length, not the separator,
+		// so the checker proves them; a start at the separator reads a
+		// comma or bracket, never a sign, and then fails below as before.
+		s.decl("negative", s.id("Bool"), s.and(s.lt(s.id("start"), srcLenExpr(s)), s.eq(s.index(s.id("src"), s.id("start")), s.u8(45)))),
 		s.decl("digits_at", s.id("u32"), s.cond(s.id("negative"), s.add(s.id("start"), s.u32(1)), s.id("start"))),
 		s.expr(s.cond(s.or(s.ge(s.id("digits_at"), s.id("sep")),
-			s.and(s.gt(s.sub(s.id("sep"), s.id("digits_at")), s.u32(1)), s.eq(s.index(s.id("src"), s.id("digits_at")), s.u8(48)))),
+			s.and(s.and(s.gt(s.sub(s.id("sep"), s.id("digits_at")), s.u32(1)), s.lt(s.id("digits_at"), srcLenExpr(s))), s.eq(s.index(s.id("src"), s.id("digits_at")), s.u8(48)))),
 			fail,
 			s.block(
 				s.decl("raw", s.id("JsonIntegerScan"), s.call("json_digits_at", s.id("src"), s.id("digits_at"), s.sub(s.id("sep"), s.id("digits_at")))),
@@ -476,6 +482,7 @@ func arrayIndexPath(s *synth, field codecField, fieldOf func(string) ast.Express
 	return s.block(
 		s.decl("marks", s.array(length, s.id("u32")), nil),
 		s.decl("found", s.id("u32"), s.call("json_array_index", s.id("src"), s.id("at"), s.call("span", s.addressOf("marks")))),
+		s.decl("last", s.id("u32"), s.index(s.id("marks"), s.u32(length-1))),
 		s.decl("fast", s.id("Bool"), s.and(s.eq(s.id("found"), s.u32(length)), s.lt(last(), srcLenExpr(s)), s.eq(s.index(s.id("src"), last()), s.u8(93)))),
 		s.expr(s.cond(s.id("fast"), s.block(
 			s.decl("start", s.id("u32"), s.id("at")),
@@ -822,7 +829,9 @@ func recordReader(s *synth, typ, keyName string, fields []codecField, decodedNam
 		s.expr(s.cond(s.ne(s.field(s.id("key"), "kind"), s.u32(6)), setStatus(2, keyStart()), s.block(
 			s.decl("colon_at", s.id("u32"), s.call("json_skip_space", s.id("src"), s.field(s.id("key"), "end"))),
 			s.decl("colon", s.id("JsonToken"), s.record("JsonToken", s.set("kind", s.u32(4)), s.set("start", s.id("colon_at")), s.set("end", s.id("colon_at")))),
-			s.expr(s.cond(s.or(s.ge(s.id("colon_at"), srcLen()), s.ne(s.index(s.id("src"), s.id("colon_at")), s.u8(58))), setStatus(2, s.id("colon_at")), s.block(
+			// Spelled as the negation of the positive guard, so the colon
+			// byte's read is proven under it.
+			s.expr(s.cond(s.not(s.and(s.lt(s.id("colon_at"), srcLen()), s.eq(s.index(s.id("src"), s.id("colon_at")), s.u8(58)))), setStatus(2, s.id("colon_at")), s.block(
 				s.store(s.field(s.id("colon"), "end"), s.add(s.id("colon_at"), s.u32(1))),
 				s.expr(dispatch))))))),
 		s.expr(s.cond(s.eq(status(), s.u32(0)), s.block(afterValue...), nil))))
