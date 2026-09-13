@@ -2985,4 +2985,25 @@ example : lowered? ((.recDecl "p" [("x", .u32), ("y", .u32)] (.cons (.var .u32 "
       (.arith .mul (.var .u32 "q.x" (by decide)) (.var .u32 "q.y" (by decide)))) : X (ps [("a", .u32), ("b", .u32)]) sp0 .u32))
     = some "((a add 1) mul b)" := by decide
 
+/-! A local declared inside a loop body or an arm (`lowerLoopBody`,
+`lowerArm`: `declareLocal` each time through) binds the initializer's term,
+exactly as an assignment to a local declared before does, so the model
+pre-declares it — the terms every later read sees are the same. -/
+
+/-- `(n: u32) -> u32 = { s: u32 = 0; i: u32 = 0; while i < 2 { d: u32 = n * 2; s = s + d; i = i + 1 }; s }` -/
+example : lowered? ((.letIn "s" (.lit .u32 0) (.letIn "i" (.lit .u32 0) (.letIn "d" (.lit .u32 0)
+    (.whileLoop (.cmp .lt (.var .u32 "i" (by decide)) (.lit .u32 2))
+      (.assign "d" (by decide) (.arith .mul (.var .u32 "n" (by decide)) (.lit .u32 2))
+        (.assign "s" (by decide) (.arith .add (.var .u32 "s" (by decide)) (.var .u32 "d" (by decide)))
+          (.assign "i" (by decide) (.arith .add (.var .u32 "i" (by decide)) (.lit .u32 1)) .nil)))
+      (.var .u32 "s" (by decide))))) : X (ps [("n", .u32)]) sp0 .u32))
+    = some "((n mul 2) add (n mul 2))" := by decide
+/-- `(a, b: u32) -> u32 = { r: u32 = a; a < b ? { t: u32 = b - a; r = t } | { }; r }` -/
+example : lowered? ((.letIn "r" (.var .u32 "a" (by decide)) (.letIn "t" (.lit .u32 0)
+    (.condSet (.cmp .lt (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)))
+      (.assign "t" (by decide) (.arith .sub (.var .u32 "b" (by decide)) (.var .u32 "a" (by decide)))
+        (.assign "r" (by decide) (.var .u32 "t" (by decide)) .nil)) .nil
+      (.var .u32 "r" (by decide)))) : X (ps [("a", .u32), ("b", .u32)]) sp0 .u32))
+    = some "((a lo b) ? (b sub a) : a)" := by decide
+
 end Oak.LoweringRefinement
