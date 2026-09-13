@@ -404,3 +404,42 @@ func pathRootIdentifier(expr ast.Expression) (string, bool) {
 		}
 	}
 }
+
+// ConstantScalarGlobals names the program's top-level scalar bindings that
+// are constants — never assigned, index-assigned, or addressed; not placed
+// in a section; a fixed-width integer, float, or Bool; with a constant
+// initializer (typechecker.IsConstantInitializerIn) — the bindings the C
+// backend emits as `static const` (docs/spec/90-backend.md section 8a) and
+// the native backend folds into immediates (docs/spec/94-assembler.md
+// section 9, the OS pilot's N1).
+func ConstantScalarGlobals(program *ast.Program) map[string]*ast.VariableDeclaration {
+	mutated := mutatedGlobals(program)
+	candidates := map[string]*ast.VariableDeclaration{}
+	for _, stmt := range program.Statements {
+		decl, isDecl := stmt.(*ast.VariableDeclaration)
+		if !isDecl || decl.Name == nil || decl.Value == nil || decl.Type == nil || decl.Section != "" || mutated[decl.Name.Value] {
+			continue
+		}
+		if typeName, isIdent := decl.Type.(*ast.Identifier); !isIdent || !scalarGlobalTypes[typeName.Value] {
+			continue
+		}
+		candidates[decl.Name.Value] = decl
+	}
+	// An initializer may name other constants; settle the set to a fixpoint.
+	for {
+		names := map[string]bool{}
+		for name := range candidates {
+			names[name] = true
+		}
+		dropped := false
+		for name, decl := range candidates {
+			if !typechecker.IsConstantInitializerIn(decl.Value, names) {
+				delete(candidates, name)
+				dropped = true
+			}
+		}
+		if !dropped {
+			return candidates
+		}
+	}
+}

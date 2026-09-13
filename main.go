@@ -144,6 +144,7 @@ func buildPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
 		return 2
 	}
+	asmGiven := asmMode != ""
 	if asmMode == "" {
 		asmMode = defaultAsmMode(tgt)
 	}
@@ -168,7 +169,7 @@ func buildPackage(args []string) int {
 		return 2
 	}
 	for _, dir := range targets {
-		if code := buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, linkMode, tgt, cpu, lines, emitC, nativeBodies, metalCheck); code != 0 {
+		if code := buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, linkMode, tgt, cpu, lines, emitC, nativeBodies, metalCheck, asmGiven); code != 0 {
 			return code
 		}
 	}
@@ -176,7 +177,7 @@ func buildPackage(args []string) int {
 }
 
 // buildOne builds a single package or file.
-func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, linkMode string, tgt target.Target, cpu string, lines, emitC, nativeBodies, metalCheck bool) int {
+func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, linkMode string, tgt target.Target, cpu string, lines, emitC, nativeBodies, metalCheck, asmGiven bool) int {
 	comp, err := compilationFor(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
@@ -277,6 +278,19 @@ func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, linkMode
 		fmt.Printf("Built %s -> %s\n", dir, output)
 		return 0
 	}
+	// Object output (docs/spec/115-tooling.md): `-o name.o` on a hosted
+	// target compiles the emitted C to one relocatable object instead of
+	// linking an executable — the OS pilot's N5, a host-linked native
+	// differential harness that links the object against its own driver.
+	// Asm units are inlined (-asm c) so one object results.
+	objectOutput := strings.HasSuffix(output, ".o") && !tgt.Freestanding() && linkMode == "c"
+	if objectOutput {
+		if asmGiven && asmMode == "native" {
+			fmt.Fprintln(os.Stderr, "oak build: object output (-o name.o) inlines the asm units; -asm native would need a second object")
+			return 2
+		}
+		asmMode = "c"
+	}
 	if linkMode == "oak" {
 		// The Oak assembler links the natively lowered program itself
 		// (docs/spec/94-assembler.md §9): no C compiler, no system linker.
@@ -313,6 +327,9 @@ func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, linkMode
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
 		return 1
+	}
+	if objectOutput {
+		drv.Object = true
 	}
 	cached, err := compileC(tgt, drv, code, object, inputs, output)
 	if err != nil {

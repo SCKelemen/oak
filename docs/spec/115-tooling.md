@@ -82,6 +82,15 @@ names or the module cache.
 
 ### 3.1 The build cache
 
+**Object output.** `oak build -o name.o` on a hosted target compiles the
+emitted C to one relocatable object instead of linking an executable —
+the C compiler's `-c`, no link inputs, no `-lm` — with asm units inlined
+(`-asm c`; `-asm native` is refused, since it would need a second
+object). A host harness links the object against its own driver: the
+native backend's differential test on the host, the OS pilot's N5
+(`docs/notes/os-language-requests-2026-09.md`). Freestanding targets
+already produce an object; `-o name.c` still emits the C.
+
 `oak build`, `oak run`, `oak install`, and `oak test` keep the executables
 they compile under `$OAKCACHE/build/`, keyed by a SHA-256 over everything
 that determines the binary: the target (`os/arch`), the emitted C (which

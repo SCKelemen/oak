@@ -1864,6 +1864,13 @@ self-hosting: the runtime the C shell still provides for the rest of the
 language (strings, the assertion message, the host boundary) as Oak or
 asm units, and the compiler itself in Oak.
 
+**Constant top-level bindings.** A body's read of a constant integer
+top-level binding (never assigned or addressed, a constant initializer;
+`90-backend.md` §8a's `static const`) reaches the native generator and the
+verifier as the typed literal `T(init)` on a copy of the body, so
+`page_size` and `entries` cost nothing and leave nothing to the C backend;
+the emitted C keeps the constant (`compiler/native_bodies.go`).
+
 Still to come in this lane:
 the RVWMO instantiation of `MemoryOrder.lean`, the sail-riscv bridge's
 export side (the Lean export as the semantics the transliteration is

@@ -29,6 +29,19 @@ with the highest impact, one residual, one direction.
 | R10 | Inline emission / native backend | **Direction**, unchanged. | Open; sequenced after the perf measurement of the walk. |
 | R6, reopened | The four EL1 accessors, with the pilot's proof that the library lacked them | **Confirmed**; see the corrected R6 row above. | **Landed**: four catalog entries, and the x0 handoff the EL0 entry also wants: `arm64.eret_x0(arg) -> never` is ERET with its argument in `x0` at the instruction (`100-aarch64-control-transfer.md`, register handoff). The same entry is also legal today as an `.oakasm` unit (`system`, `bind`, `msr`, `mov x0, x3`, `isb`, `eret`); both forms are tested. The EL0 entry can fold into the adapter. |
 
+## The native backend for the page-table ports (2026-09-13)
+
+The pilot built the ports through the native backend (`oak build -native`)
+and listed what blocks them; the C-backend differential stays the oracle.
+
+| # | Gap | Disposition |
+| --- | --- | --- |
+| N1 | Reads of top-level constants (`page_size`, `entries`) left the function to the C backend | **Fixed**: a read of a constant integer top-level binding is folded to its typed literal before the native generator and verifier see the body (`compiler/native_bodies.go`, `codegen.ConstantScalarGlobals`); the emitted C keeps the `static const`. `compiler/e2e_native_constants_test.go`. |
+| N2 | Large record strides (`Regime` = 409 600 bytes) | Open: the stride must be materialized as a multi-instruction immediate before the multiply; a native-backend increment. |
+| N3 | Package-global scratch (`st`, `walk_null`) | Open: the native subset has no addressed globals; a program-relative address (`adrp`/`add`) and the verifier's model of global storage are the increment. |
+| N4 | Indexing an owned-array field of a span element (`s[dom].pool[k]`) | Open: an address chain through a span element into a record's array field; the same increment as N3's addressing, with the extents facts carried through. |
+| N5 | `oak build` had no object output — executables or `-emit-c` only — so a host-linked native differential test was not a flag flip | **Fixed**: `oak build -o name.o` on a hosted target compiles the emitted C to one relocatable object, asm units inlined (`115-tooling.md`, object output); a harness links it against its own driver. Until N2–N4 land, the freestanding on-path build under QEMU remains the validation route for stage2 and addr_space. |
+
 ## What the round did not do
 
 - It did not measure the stage2 walk. R2's effect is the C compiler's
