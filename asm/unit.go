@@ -83,6 +83,13 @@ type Function struct {
 	// aggregate locals of the Oak body (docs/spec/94-assembler.md §8).
 	Records map[string]*ast.RecordLiteral
 	ADTs    map[string]*ast.ADTType
+	// StackArgs is the size of the incoming stack-argument area a function
+	// may read above its entry sp (asm.LayoutArguments), and PackedStackArgs
+	// the convention it was laid out under (Apple's packing, or the
+	// standard 8-byte slots). The checker recomputes both from the
+	// signature and holds the body to its reading.
+	StackArgs       int64
+	PackedStackArgs bool
 	// Constants: the program's constant globals (docs/spec/90-backend.md
 	// §8a — a typed scalar binding with a constant initializer that no
 	// statement writes, borrows, or addresses) folded to their values — set
@@ -228,6 +235,12 @@ type Binding struct {
 	Length   *Register
 	Param    string
 	Line     int
+	// OnStack binds a parameter beyond the register contract: it arrives in
+	// the caller's outgoing area at Stack bytes above the entry sp (its
+	// second word, a span's length, at Stack+8). Set by the compiler for
+	// native bodies; a unit spells no such binding.
+	OnStack bool
+	Stack   int64
 }
 
 // Operand kinds.

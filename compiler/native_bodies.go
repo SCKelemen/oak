@@ -78,7 +78,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// its folded value (constants); the C emitter keeps the body and
 		// its `static const`.
 		source := fn
-		lane := nativegen.Lane{Arch: comp.options.Target.AsmArch(), SoftFloat: comp.options.Target.Freestanding() && comp.options.Target.Arch == target.ArchRiscv64, Tables: tables}
+		lane := nativegen.Lane{Arch: comp.options.Target.AsmArch(), SoftFloat: comp.options.Target.Freestanding() && comp.options.Target.Arch == target.ArchRiscv64, Tables: tables, PackedStackArgs: comp.options.Target.OS == target.OSDarwin}
 		// Check elision (docs/spec/94-assembler.md §9): an element access the
 		// typechecker proved in range is lowered without its guard first;
 		// if the seam checker cannot admit the body from the facts on the
