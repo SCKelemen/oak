@@ -83,9 +83,20 @@ and conversion helpers — the text `Oak.ArithmeticRefinement` and
 `Oak.ConversionRefinement` prove — are compiled by clang for arm64 and by
 GCC for rv64, and each function runs through the assembler verifier (§2.5)
 as a unit whose Oak body is the helper's operator, so for these helpers
-the compiler's output is checked, not trusted (add, sub, neg and the
-conversions proven, multiplication witnessed, division and remainder
-outside the lowering's subset because the divisor is a variable); and
+the compiler's output is checked, not trusted (add, sub, neg, the
+conversions and the checked shifts at the constant counts 1, 3 and
+width − 1 proven — the count below the width, the helper's trap check
+folds away and the verifier admits the constant shift — multiplication
+witnessed, division and remainder outside the lowering's subset because
+the divisor is a variable; the guarded element read `oak_index` over a
+`[]T` parameter is proven against `v[i]` on arm64, where clang's
+`cmp w2, w1; b.hs; ldr [x0, w2, uxtw #s]` is the checker's guarded
+element shape, and reported outside the checker's admitted shapes on
+rv64, where GCC compares the psABI's sign-extended `u32` pair raw,
+zero-extends and scales the index in one `slli 32; srli 32−s`, and adds
+into the base register — a shape the checker does not yet admit; the
+pinned prelude text of these helpers is what `generateC` emits,
+`TestGuardMacrosMatchValidatedText`); and
 every differential test executes the object. The
 driver selection itself is **proved** (`Oak.Target`: lane and object
 format as functions of the target, LP64 or ILP32, `OAK_CC` precedence,
@@ -144,7 +155,8 @@ conversions, comparisons, `&&`/`||`/`!`, Bool conditionals, block-scoped
 locals and rebindings (`x: T = e`, `x = e`), statement-level conditionals
 whose arms assign locals (`c ? { x = e } | { y = f }`), integer-constant
 matches in value and statement position (`x ? | 0 => a | 1 => b | _ => c`),
-counted loops (`while c { body }`), span element reads and lengths (`v[i]`,
+counted loops (`while c { body }`) and data-dependent ones, span element
+reads and lengths (`v[i]`,
 `len(v)`), owned arrays (`a: [n]T`, `a[i]`, `a[i] = e`, array literals),
 records (`r: R = R{…}`, `r.f`, `r.f = e`, record parameters), the nesting
 of the two (`r.h[i]`, `a[i].x`), calls that borrow the caller's arrays
@@ -158,7 +170,9 @@ extension by the source's signedness or truncation, a local as its
 `let`-bound value, a statement conditional as the taken arm's values for
 the variables it assigns, a constant match as the if-chain `if x == k₁
 then … else …`, a loop as the fuel-indexed recursion that returns `none`
-when the fuel runs out, an owned array as its `Array` of elements, a
+when the fuel runs out — a data-dependent loop the same recursion, read
+under assignments whose fresh symbols denote the exit values — an owned
+array as its `Array` of elements, a
 record as its `structure` fields, a union as its `inductive` and a variant
 match as the `match`, and an index out of range as a trap — Oak's semantics, where the extraction's
 own `getD`/`setIfInBounds` reads zero and drops the write, a modeling
@@ -185,7 +199,10 @@ leaves with a variant match the constant match on the tag (`matchArms`'
 leaf), a borrowing call as `enterCall`'s copy of the owner's leaves into
 the callee's span leaves and their write-back on return with the results
 — a scalar, or the leaves of the record `inlineCallValue` builds — bound
-in the caller, a loop as `lowerWhile`'s unrolling while the
+in the caller, a counted loop as `lowerWhile`'s unrolling, a data-dependent
+loop as `loopEvent`'s summary — the carried locals as the fresh symbols
+`loop<index>.<var>`, the condition and body over them the event's
+one-iteration semantics `verifyLoops` matches against the asm side's — while the
 folded condition is a non-zero constant and `none` when it is not constant
 or the budget runs out — `none` throughout is the Go's "outside the
 subset" — a span element as `selectTerm` over the index at width 32 — a
@@ -223,9 +240,13 @@ machine for a body inside the shared subset: source theorem, `lowerT_eval`,
 the verifier's equality, the ASL bridge. A local declared inside a loop
 body or an arm is covered by pre-declaring it: its declaration binds the
 initializer's term as an assignment does, so every later read sees the
-same terms. Outside the subset — the data-dependent loops `loopEvent`
-summarizes, floats, and the vector operations — the verifier's lowering
-is still the Go's alone, related to the extraction by tests.
+same terms. A data-dependent loop is covered up to the meaning of its
+fresh symbols: the theorem holds for every parameter assignment that
+reads them as the exit values, which is what the symbols stand for, and
+the event's condition and body are instances of the same theorem over any
+iteration's values. Outside the subset — floats and the vector operations
+— the verifier's lowering is still the Go's alone, related to the
+extraction by tests.
 
 For the C route (every function the native lane does not cover, and every
 function on amd64 and the microcontrollers), the source-level proofs reach
@@ -278,19 +299,30 @@ for a workload):
    out of range; a record as its field leaves `r.f`, bound by the same
    named binder a call uses; a local declared inside a loop body or an
    arm is a pre-declared local, its declaration the first assignment).
-   What the native bodies use is covered; what remains is at the edges:
-   the data-dependent loops `loopEvent` summarizes, floats and vectors —
-   so `lowerT_eval` covers the
+   What the native bodies use is covered, data-dependent loops included
+   (`whileEvent`: the carried locals as fresh symbols after the loop, the
+   theorem under assignments where the symbols denote the exit values);
+   what remains is at the edges: floats and vectors — so `lowerT_eval`
+   covers the
    bodies `oak build -native` actually verifies rather than their
    arithmetic alone. This is the step that turns "source theorem implies
    machine behavior" from a statement about expressions into one about
    functions on arm64.
-4. **Widen translation validation** (§2.4) on arm64: the checked shift
-   helpers under a constant-count specialization (the verifier admits a
-   constant count; the helper's trap check folds away), `oak_index` and
-   `oak_store`'s bounds checks against the guarded element reads and
-   writes the lowering models, and the compare-exchange helper once the
-   verifier's memory model reaches the atomics
+4. **Widen translation validation** (§2.4) on arm64: landed for the
+   checked shift helpers under constant-count specializations (1, 3,
+   width − 1 at every unsigned width; the verifier admits a constant
+   count, the helper's trap check folds away) and for `oak_index` against
+   the guarded element read `v[i]` — proven on arm64; on rv64 GCC's shape
+   (`bgeu i, len` on the raw sign-extended pair, `slli 32; srli 32−s`
+   zero-extending and scaling in one step, the address formed in the base
+   register) is outside the rv64 checker's admitted shapes and is reported
+   so, the exact gap to close when the rv64 lane is next (a
+   sign-extended-pair guard lemma beside `Oak.RiscV.index_guard`, the
+   fused zero-extend-and-scale, and an element address that replaces the
+   base). Still open: `oak_store`'s bounds check against the guarded
+   element write (the verifier decides a returned value; a store helper's
+   effect needs the unit's memory postcondition), and the compare-exchange
+   helper once the verifier's memory model reaches the atomics
    (`compare_exchange_refinement_test.go` pins its text today).
 5. **Finish the RISC-V bridge** (rv64 is dbs's second target): build `spec/lean-sail` against a Sail
    built from git so the theorems are checked against the export itself

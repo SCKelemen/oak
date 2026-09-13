@@ -92,9 +92,11 @@ var rv64FloatShapes = map[string]string{
 // landed subset is configuration (vsetvli/vsetivli with an explicit
 // vtype), unit-stride loads and stores of 8- and 32-bit elements, the
 // lane-wise integer operations, the mask producers and consumers, and the
-// sum reduction. rv64VectorShapes gives each mnemonic's operand classes:
-// v a vector register, x an integer register, m a memory operand `(base)`,
-// i an immediate, o the four vtype options (e*, m*, ta|tu, ma|mu).
+// sum reduction, the widening forms, and the floating-point forms.
+// rv64VectorShapes gives each mnemonic's operand classes: v a vector
+// register, x an integer register, f a floating-point register, m a memory
+// operand `(base)`, i an immediate, o the four vtype options (e*, m*,
+// ta|tu, ma|mu).
 var rv64VectorShapes = map[string]string{
 	"vsetvli": "xxoooo", "vsetivli": "xioooo",
 	"vle8.v": "vm", "vle16.v": "vm", "vle32.v": "vm", "vse8.v": "vm", "vse16.v": "vm", "vse32.v": "vm",
@@ -105,6 +107,23 @@ var rv64VectorShapes = map[string]string{
 	// sources, and the narrowing shift (a 2*LMUL source).
 	"vwaddu.vv": "vvv", "vwadd.vv": "vvv", "vwsubu.vv": "vvv", "vwsub.vv": "vvv", "vwmulu.vv": "vvv", "vwmul.vv": "vvv",
 	"vzext.vf2": "vv", "vsext.vf2": "vv", "vnsrl.wi": "vvi",
+	// Floating-point forms (RVV 1.0 §13, §14.3): lane-wise arithmetic over
+	// e32/e64 elements, the multiply-add `vfmacc.vv vd, vs1, vs2` (vd is
+	// read and written), the moves between an F register and element 0,
+	// the unsigned-integer conversion, and the ordered sum reduction —
+	// float addition is not associative, so only the form whose result is
+	// the sequential sum is admitted (Oak.RiscV.ordered_strips_fold).
+	"vle64.v": "vm", "vse64.v": "vm",
+	"vfadd.vv": "vvv", "vfsub.vv": "vvv", "vfmul.vv": "vvv", "vfmacc.vv": "vvv",
+	"vfmv.v.f": "vf", "vfmv.f.s": "fv", "vfcvt.f.xu.v": "vv", "vfredosum.vs": "vvv",
+}
+
+// rv64VectorFloat are the vector forms that operate on floating-point
+// elements: they need e32 or e64 (Zve32f/Zve64d; e16 is Zvfh, not
+// admitted) and the F/D unit.
+var rv64VectorFloat = map[string]bool{
+	"vfadd.vv": true, "vfsub.vv": true, "vfmul.vv": true, "vfmacc.vv": true,
+	"vfmv.v.f": true, "vfmv.f.s": true, "vfcvt.f.xu.v": true, "vfredosum.vs": true,
 }
 
 // rv64VectorEMUL is the register-group factor of a vector operand relative
@@ -141,6 +160,8 @@ var rv64Maskable = map[string]bool{
 	"vle16.v": true, "vse16.v": true,
 	"vwaddu.vv": true, "vwadd.vv": true, "vwsubu.vv": true, "vwsub.vv": true, "vwmulu.vv": true, "vwmul.vv": true,
 	"vzext.vf2": true, "vsext.vf2": true, "vnsrl.wi": true,
+	"vle64.v": true, "vse64.v": true,
+	"vfadd.vv": true, "vfsub.vv": true, "vfmul.vv": true, "vfmacc.vv": true, "vfcvt.f.xu.v": true, "vfredosum.vs": true,
 }
 
 // rv64Masked reports a vector instruction spelled with the `v0.t` mask.
@@ -154,8 +175,8 @@ func rv64Masked(instr Instruction) bool {
 
 // rv64VectorLoads and rv64VectorStores map the unit-stride memory
 // instructions to their element width in bytes (the EEW).
-var rv64VectorLoads = map[string]int64{"vle8.v": 1, "vle16.v": 2, "vle32.v": 4}
-var rv64VectorStores = map[string]int64{"vse8.v": 1, "vse16.v": 2, "vse32.v": 4}
+var rv64VectorLoads = map[string]int64{"vle8.v": 1, "vle16.v": 2, "vle32.v": 4, "vle64.v": 8}
+var rv64VectorStores = map[string]int64{"vse8.v": 1, "vse16.v": 2, "vse32.v": 4, "vse64.v": 8}
 
 // rv64VTypeSEW, rv64VTypeLMUL, and rv64VTypePolicy are the vtype fields
 // (RVV 1.0 §3.4): vsew in bits 5:3 as the element width, vlmul in bits
@@ -500,6 +521,10 @@ func rv64CheckVectorShape(instr Instruction, shape string) error {
 		case 'x':
 			if reg, isReg := ops[i].(Register); !isReg || (reg.Class != ClassRV64X && reg.Class != ClassSP) {
 				return fmt.Errorf("%s: operand %d must be an integer register", instr.Mnemonic, i+1)
+			}
+		case 'f':
+			if reg, isReg := ops[i].(Register); !isReg || reg.Class != ClassRV64F {
+				return fmt.Errorf("%s: operand %d must be a floating-point register", instr.Mnemonic, i+1)
 			}
 		case 'i':
 			if imm, isImm := ops[i].(Immediate); !isImm || imm.Value < 0 || imm.Value > 31 {

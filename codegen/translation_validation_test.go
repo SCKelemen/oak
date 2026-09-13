@@ -53,6 +53,11 @@ type validatedHelper struct {
 	spec    string // Oak body: the helper's specification
 	cSource string // C wrapper calling the prelude helper
 	bar     verdictBar
+	// outside names the lanes whose compiler emits a shape the verifier's
+	// checker does not admit, with the reason; the helper is reported
+	// outside the decided subset there (a mismatch still fails) and held to
+	// bar on the other lanes.
+	outside map[string]string
 }
 
 func translationValidationHelpers() []validatedHelper {
@@ -83,6 +88,45 @@ func translationValidationHelpers() []validatedHelper {
 			bar:     proofRequired,
 		})
 	}
+	// The checked shifts under a constant count: the count is below the
+	// width, so the trap check folds away and the verifier's Oak side admits
+	// the constant shift (a variable count it refuses: Oak traps where the
+	// machine wraps).
+	for _, ty := range []string{"u8", "u16", "u32", "u64"} {
+		width := typechecker.PrimitiveBits(ty)
+		for _, count := range []int{1, 3, width - 1} {
+			for _, op := range []struct{ name, oak string }{{"shl", "<<"}, {"shr", ">>"}} {
+				name := fmt.Sprintf("tv_%s%d_%s", op.name, count, ty)
+				helpers = append(helpers, validatedHelper{
+					name:    name,
+					decl:    fmt.Sprintf("%s: (v: %s) -> %s", name, ty, ty),
+					spec:    fmt.Sprintf("v %s %d", op.oak, count),
+					cSource: fmt.Sprintf("%s %s(%s v) { return oak_%s_%s(v, %d); }\n", ty, name, ty, op.name, ty, count),
+					bar:     proofRequired,
+				})
+			}
+		}
+	}
+	// The guarded element read (`oak_index`): the bounds check is a trap
+	// path, the read itself a span load the verifier decides against the
+	// Oak element read.
+	for _, ty := range []string{"u8", "u16", "u32", "u64"} {
+		name := "tv_index_" + ty
+		helpers = append(helpers, validatedHelper{
+			name:    name,
+			decl:    fmt.Sprintf("%s: (v: []%s, i: u32) -> %s", name, ty, ty),
+			spec:    "v[i]",
+			cSource: fmt.Sprintf("%s %s(const %s *base, u32 len, u32 i) { return oak_index(base, len, i); }\n", ty, name, ty),
+			bar:     proofRequired,
+			// GCC compares the psABI's sign-extended `u32` pair raw
+			// (`bgeu i, len`), zero-extends and scales the index in one
+			// `slli 32; srli 32-s`, and adds into the base register; the
+			// rv64 checker admits a bound only from the normalized length
+			// copy (`docs/spec/94-assembler.md`, span element memory) and an
+			// element address in a register other than the base.
+			outside: map[string]string{"rv64": "GCC's guarded index shape is outside the checker's admitted address shapes"},
+		})
+	}
 	for _, conv := range []string{"u8_trunc_u32", "u16_trunc_u64", "u32_trunc_u64", "i8_trunc_i32", "i16_trunc_i64", "i32_trunc_i64", "i32_bits_u32", "u32_bits_i32", "u64_bits_i64", "i64_bits_u64", "u8_trunc_i32", "i8_trunc_u64"} {
 		target, _, source, ok := typechecker.ConversionParts(conv)
 		if !ok {
@@ -100,6 +144,27 @@ func translationValidationHelpers() []validatedHelper {
 	return helpers
 }
 
+// guardMacroLines are the prelude's guarded element read and checked
+// shift helpers, pinned to the emitted text like arithmeticMacroLines:
+// these are the lines the validated units are compiled from.
+var guardMacroLines = []string{
+	`static inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }`,
+	`#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])`,
+	`#define OAK_SHIFT_HELPERS(T, W) \`,
+	`  static inline T oak_shl_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v << n); } \`,
+	`  static inline T oak_shr_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v >> n); }`,
+	`OAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u) OAK_SHIFT_HELPERS(u64, 64u)`,
+}
+
+func TestGuardMacrosMatchValidatedText(t *testing.T) {
+	output := generateC(t, "package main\n\nmain: (): i32 {\n  a: u32 = u32(3)\n  i32_bits_u32(a << 2)\n}\n")
+	for _, line := range guardMacroLines {
+		if !strings.Contains(output, line+"\n") {
+			t.Fatalf("emitted prelude lacks the pinned line\n%s\n— update guardMacroLines (codegen/translation_validation_test.go); output:\n%s", line, output)
+		}
+	}
+}
+
 // translationValidationC is a freestanding C translation unit: the prelude
 // helpers as the backend emits them, and one exported wrapper per helper.
 func translationValidationC(helpers []validatedHelper) string {
@@ -108,6 +173,7 @@ func translationValidationC(helpers []validatedHelper) string {
 	b.WriteString("typedef __INT8_TYPE__ i8; typedef __INT16_TYPE__ i16; typedef __INT32_TYPE__ i32; typedef __INT64_TYPE__ i64;\n")
 	b.WriteString("#define INT8_MIN (-128)\n#define INT16_MIN (-32768)\n#define INT32_MIN (-2147483647-1)\n#define INT64_MIN (-9223372036854775807LL-1)\n")
 	b.WriteString(strings.Join(arithmeticMacroLines, "\n") + "\n")
+	b.WriteString(strings.Join(guardMacroLines, "\n") + "\n")
 	seen := map[string]bool{}
 	for _, h := range helpers {
 		if strings.HasPrefix(h.name, "tv_") && strings.Contains(h.name, "_trunc_") || strings.Contains(h.name, "_bits_") {
@@ -192,6 +258,22 @@ func unitFor(arch string, h validatedHelper, sig *ast.FunctionStatement, body []
 	bound := map[string]bool{}
 	index := 0
 	for _, param := range sig.Parameters {
+		if isSpanType(param.Type) {
+			// A span or view is its base and length: two argument registers
+			// (AAPCS64: x0, w1; LP64: a0, a1).
+			if arch == asm.ArchRV64 {
+				fmt.Fprintf(&b, "  bind a%d, a%d = %s\n", index, index+1, param.Name.Value)
+				bound[fmt.Sprintf("a%d", index)] = true
+				bound[fmt.Sprintf("a%d", index+1)] = true
+			} else {
+				fmt.Fprintf(&b, "  bind x%d, w%d = %s\n", index, index+1, param.Name.Value)
+				for _, r := range []string{fmt.Sprintf("x%d", index), fmt.Sprintf("w%d", index), fmt.Sprintf("x%d", index+1), fmt.Sprintf("w%d", index+1)} {
+					bound[r] = true
+				}
+			}
+			index += 2
+			continue
+		}
 		bits := typechecker.PrimitiveBits(paramTypeName(param.Type))
 		var reg string
 		if arch == asm.ArchRV64 {
@@ -242,6 +324,16 @@ func unitFor(arch string, h validatedHelper, sig *ast.FunctionStatement, body []
 	return b.String()
 }
 
+// isSpanType recognizes `[]T` and `[*]T` parameter types.
+func isSpanType(expr ast.Expression) bool {
+	index, ok := expr.(*ast.IndexExpression)
+	if !ok || index.Dot {
+		return false
+	}
+	marker, isMarker := index.Index.(*ast.Identifier)
+	return isMarker && (marker.Value == "" || marker.Value == "*")
+}
+
 func paramTypeName(expr ast.Expression) string {
 	if ident, ok := expr.(*ast.Identifier); ok {
 		return ident.Value
@@ -278,6 +370,10 @@ func validateTranslation(t *testing.T, arch string, compile func(cPath, sPath st
 		}
 		sig := parseOakSpec(t, h.decl)
 		spec := parseOakSpec(t, h.decl+" = "+h.spec)
+		if reason, isOutside := h.outside[arch]; isOutside {
+			t.Logf("%s %s: %s", arch, h.name, reason)
+			h.bar = mismatchForbidden
+		}
 		unitText := unitFor(arch, h, sig, body)
 		unit, errs := asm.ParseUnit("helpers."+arch+".oakasm", unitText)
 		if len(errs) != 0 {

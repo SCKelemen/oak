@@ -638,15 +638,21 @@ func (x *pathExecutor) vectorFrameAccessAt(instr Instruction, state *symbolicSta
 				state.storeSlot(offset, narrowLane(halves[0], int(size)*8), size)
 			}
 		} else {
+			slot := func(at, width int64) (*term, bool) {
+				if value, ok := state.loadSlot(at, width); ok {
+					return value, true
+				}
+				return state.opaqueSlot(at, width)
+			}
 			if size == 16 {
-				low, okL := state.loadSlot(offset, 8)
-				high, okH := state.loadSlot(offset+8, 8)
+				low, okL := slot(offset, 8)
+				high, okH := slot(offset+8, 8)
 				if !okL || !okH {
 					return "a load from a frame slot never stored on this path", false
 				}
 				state.writeVec(reg.Num, vecOfLanes([]*term{low, high}, 64))
 			} else {
-				value, ok := state.loadSlot(offset, size)
+				value, ok := slot(offset, size)
 				if !ok {
 					return "a load from a frame slot never stored on this path", false
 				}
@@ -713,7 +719,7 @@ func (x *pathExecutor) loadVector(instr Instruction, state *symbolicState) (stri
 		if k > 0 {
 			at = binaryTerm("add", index, constTerm(uint64(k), 32))
 		}
-		lanes[k] = x.element(param, at, bits)
+		lanes[k] = x.elementIn(state, param, at, bits)
 	}
 	state.writeLanes(dest, lanes, bits)
 	return "", true
