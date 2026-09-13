@@ -76,6 +76,17 @@ backslash spells it `\\`.
 Motivation recorded in `docs/notes/ml-feedback-2026-09.md` (finding F1): a
 code emitter cannot write a newline into its output without it.
 
+**Joining literals.** Two string literals joined by `+` are one literal:
+the parser folds `"float " + "acc"` into `"float acc"` before anything
+else sees it, so a long literal may be split across lines and a spelling
+assembled from pieces — an emitter's `"(" + name_literal + ")"` — costs
+nothing at run time and needs no bound variable. A chain folds pairwise,
+left to right; `oak fmt` prints the folded literal. Only literals fold:
+a `string` value has no `+`, since joining two runtime strings needs
+storage, and the strict subset says where every byte lives — the
+`strings` builder over a caller-owned span is that form (`stdlib/README.md`,
+"Text for emitters").
+
 ## 2b. Discard statements
 
 `_ = expr` evaluates `expr` and drops its non-unit result on purpose
