@@ -3408,8 +3408,7 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 				return err
 			}
 			g.declare(s.Name.Value, typ)
-			g.put(g.storeVar(s.Name.Value, r))
-			g.release(r)
+			g.assignVar(s.Name.Value, r)
 		case *ast.AssignmentStatement:
 			if dst, isRecord := g.records[s.Name.Value]; isRecord {
 				// `q = p` / `q = f(p)` / `q = .Some(x)`: a whole-record copy.
@@ -3434,8 +3433,7 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 			if err != nil {
 				return err
 			}
-			g.put(g.storeVar(s.Name.Value, r))
-			g.release(r)
+			g.assignVar(s.Name.Value, r)
 		case *ast.IndexAssignmentStatement:
 			if err := g.elementStore(s); err != nil {
 				return err
@@ -4032,15 +4030,15 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		l, err := g.expr(e.Left, &operand)
-		if err != nil {
-			return 0, err
-		}
-		r, err := g.expr(e.Right, &operand)
-		if err != nil {
-			return 0, err
-		}
 		if operand.isFloat {
+			l, err := g.expr(e.Left, &operand)
+			if err != nil {
+				return 0, err
+			}
+			r, err := g.expr(e.Right, &operand)
+			if err != nil {
+				return 0, err
+			}
 			// IEEE comparison: unordered operands compare false except for !=.
 			g.emit("fcmp", reg(l, operand), reg(r, operand))
 			g.release(l)
@@ -4052,14 +4050,36 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 			g.emit("cset", wr(out), asm.Condition{Code: floatConditionCodes[e.Operator]})
 			return out, nil
 		}
-		g.emit("cmp", reg(l, operand), reg(r, operand))
-		g.release(r)
+		// The operands where they are: a variable in its own register, a
+		// constant as the immediate `cmp` takes; the result in the left
+		// operand's scratch, or a fresh one when the left is a variable.
+		l, lfixed, err := g.operand(e.Left, operand)
+		if err != nil {
+			return 0, err
+		}
+		right, r, rfixed, err := g.sourceOperand(e.Right, operand, "cmp")
+		if err != nil {
+			return 0, err
+		}
+		g.emit("cmp", reg(l, operand), right)
+		if r >= 0 && !rfixed {
+			g.release(r)
+		}
+		out := l
+		if lfixed {
+			if out, err = g.alloc(scalars["Bool"]); err != nil {
+				return 0, err
+			}
+		}
 		code := conditionCodes[e.Operator][0]
 		if operand.signed {
 			code = conditionCodes[e.Operator][1]
 		}
-		g.emit("cset", wr(l), asm.Condition{Code: code})
-		return l, nil
+		g.emit("cset", wr(out), asm.Condition{Code: code})
+		return out, nil
+	}
+	if mnemonic, direct := directArithmetic[e.Operator]; direct && !typ.isFloat && !typ.isVec {
+		return g.directInfix(e, typ, mnemonic)
 	}
 	l, err := g.expr(e.Left, &typ)
 	if err != nil {
@@ -4156,6 +4176,159 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 	g.release(r)
 	g.normalize(l, typ)
 	return l, nil
+}
+
+// directArithmetic names the operations whose operands are read where they
+// lie (directInfix): a variable in its callee-saved register, a constant
+// as an immediate where the instruction's field admits it.
+var directArithmetic = map[string]string{"+": "add", "-": "sub", "*": "mul", "&": "and", "|": "orr", "^": "eor"}
+
+// commutative marks the operations whose constant operand may move to the
+// right, where the immediate field is.
+var commutative = map[string]bool{"add": true, "mul": true, "and": true, "orr": true, "eor": true}
+
+// directInfix lowers `a op b` with the operands in place: `add w9, w19,
+// w20` for two variables, `add w9, w19, #1` for a constant right operand,
+// instead of moving each into a scratch register first. The result lands
+// in the left operand's scratch when it has one, otherwise in a fresh one
+// (so the scratch pressure never exceeds the moving form's). The semantics
+// are the moving form's: the checker reads the variable registers as any
+// source, and the verifier's terms are the same.
+func (g *generator) directInfix(e *ast.InfixExpression, typ scalar, mnemonic string) (int, error) {
+	left, right := e.Left, e.Right
+	if _, leftConst := g.constantOperand(left, typ); leftConst && commutative[mnemonic] {
+		if _, rightConst := g.constantOperand(right, typ); !rightConst {
+			left, right = right, left
+		}
+	}
+	l, lfixed, err := g.operand(left, typ)
+	if err != nil {
+		return 0, err
+	}
+	src, r, rfixed, err := g.sourceOperand(right, typ, mnemonic)
+	if err != nil {
+		return 0, err
+	}
+	out := l
+	if lfixed {
+		if out, err = g.alloc(typ); err != nil {
+			return 0, err
+		}
+	}
+	g.emit(mnemonic, reg(out, typ), reg(l, typ), src)
+	if r >= 0 && !rfixed {
+		g.release(r)
+	}
+	g.normalize(out, typ)
+	return out, nil
+}
+
+// operand evaluates an expression as a source operand: a variable of the
+// type in its callee-saved register is read there (fixed: the caller never
+// releases it); anything else evaluates into a fresh scratch register.
+func (g *generator) operand(expr ast.Expression, typ scalar) (int, bool, error) {
+	if ident, isIdent := expr.(*ast.Identifier); isIdent && !typ.isFloat && !typ.isVec {
+		if v, inReg := g.regs[ident.Value]; inReg && v >= 0 {
+			if t, ok := g.types[ident.Value]; ok && t == typ {
+				return v, true, nil
+			}
+		}
+	}
+	r, err := g.expr(expr, &typ)
+	return r, false, err
+}
+
+// sourceOperand is the right operand of an instruction: an immediate when
+// the expression is a constant the instruction's field admits (a 12-bit
+// unsigned for add/sub/cmp, a bitmask immediate for and/orr/eor), else a
+// register from operand (r < 0 when an immediate was spelled).
+func (g *generator) sourceOperand(expr ast.Expression, typ scalar, mnemonic string) (asm.Operand, int, bool, error) {
+	if v, isConst := g.constantOperand(expr, typ); isConst {
+		switch mnemonic {
+		case "add", "sub", "cmp":
+			if v < 4096 {
+				return imm(int64(v)), -1, false, nil
+			}
+		case "and", "orr", "eor":
+			width := 32
+			if typ.wide() {
+				width = 64
+			}
+			if asm.LogicalImmediate(v&mask64(width), width) {
+				return imm(int64(v & mask64(width))), -1, false, nil
+			}
+		}
+	}
+	r, fixed, err := g.operand(expr, typ)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	return reg(r, typ), r, fixed, nil
+}
+
+// constantOperand reads a constant expression's value at a type: a
+// literal, a widening constructor over one, or a constant global.
+func (g *generator) constantOperand(expr ast.Expression, typ scalar) (uint64, bool) {
+	if v, ok := constantValue(expr); ok && v >= 0 {
+		return uint64(v), true
+	}
+	if ident, isIdent := expr.(*ast.Identifier); isIdent {
+		if c, isConst := g.constantOf(ident.Value); isConst && !typ.isFloat {
+			return c.Value & mask64(scalars[c.Type].bits), true
+		}
+	}
+	return 0, false
+}
+
+func mask64(bits int) uint64 {
+	if bits >= 64 {
+		return ^uint64(0)
+	}
+	return uint64(1)<<uint(bits) - 1
+}
+
+// assignVar stores a computed value into a variable and releases the
+// scratch: when the value's producing instruction is the last one emitted
+// and the variable lives in a register, the instruction is retargeted to
+// write the variable directly (`add w19, w19, #1` instead of `add w9, w19,
+// #1; mov w19, w9`); otherwise the move or store as before.
+func (g *generator) assignVar(name string, r int) {
+	if v, inReg := g.regs[name]; inReg && v >= 0 && r < vecBase && g.retargetLast(r, v) {
+		g.release(r)
+		return
+	}
+	g.put(g.storeVar(name, r))
+	g.release(r)
+}
+
+// retargetable names the instructions whose destination may be renamed
+// without changing their meaning: they read their sources only (movk reads
+// its destination, the exclusives write a status).
+var retargetable = map[string]bool{"add": true, "sub": true, "mul": true, "and": true, "orr": true, "eor": true, "lsl": true, "lsr": true, "asr": true, "udiv": true, "sdiv": true, "msub": true, "madd": true, "mov": true, "movz": true, "mvn": true, "neg": true, "cset": true, "csel": true, "sxtb": true, "sxth": true, "uxtb": true, "uxth": true, "ldr": true, "ldrb": true, "ldrh": true, "ldrsb": true, "ldrsh": true, "ldrsw": true, "clz": true, "rbit": true, "rev": true, "rev16": true, "rev32": true}
+
+// retargetLast rewrites the last emitted instruction's destination from
+// scratch register r to register v, when that instruction is the one that
+// wrote r and may be renamed.
+func (g *generator) retargetLast(r, v int) bool {
+	n := len(g.items)
+	if n == 0 {
+		return false
+	}
+	ins, isIns := g.items[n-1].(asm.Instruction)
+	if !isIns || !retargetable[ins.Mnemonic] || len(ins.Operands) == 0 {
+		return false
+	}
+	dst, isReg := ins.Operands[0].(asm.Register)
+	if !isReg || dst.Num != r || (dst.Class != asm.ClassW && dst.Class != asm.ClassX) {
+		return false
+	}
+	renamed := dst
+	renamed.Num = v
+	renamed.Text = dst.Text[:1] + strconv.Itoa(v)
+	operands := append([]asm.Operand{renamed}, ins.Operands[1:]...)
+	ins.Operands = operands
+	g.items[n-1] = ins
+	return true
 }
 
 // operandType is the common type of a comparison's operands.

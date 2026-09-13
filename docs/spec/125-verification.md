@@ -620,8 +620,8 @@ In order of payoff, each reusing a surface that exists:
   reach the measure that remains; and the first performance step is
   measured there too: the source-level inliner reaching the prover's
   accessor chains and by-reference records read in place brought the
-  native binary from 2–5 times the C build's time to 1.6–1.9 times,
-  `94-assembler.md` §9 seventeenth and eighteenth increments), so what remains is the self-hosted
+  native binary from 2–5 times the C build's time to 1.5–1.7 times,
+  `94-assembler.md` §9 seventeenth to nineteenth increments), so what remains is the self-hosted
   compiler, and the backend lowering and verifying the prover whole; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted

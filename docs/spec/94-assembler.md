@@ -1421,6 +1421,30 @@ now runs at 1.6–1.9 times the C build (`lattice.oak` 2.8 s against
 moved into a scratch register before every operation and back after,
 constants materialized instead of used as immediates, every element
 access guarded — which the next increments take in that order.
+**Nineteenth increment — operands where they lie.** The operand-stack
+lowering moved every variable into a scratch register before an
+operation and the result back after (`mov w9, w19; mov w10, w20; add w9,
+w9, w10; mov w19, w9` for `a = a + b`), and materialized every constant
+with `movz` before using it. Three rules take that out, each within the
+same checker and verifier obligations: a binary operation or comparison
+reads a variable that lives in a callee-saved register directly (`add
+w9, w19, w20`), the result landing in the left operand's scratch when it
+has one and a fresh one when the left is a variable, so the scratch
+pressure never exceeds the moving form's; a constant right operand —
+a literal, a widening of one, or a folded constant global — is the
+instruction's immediate where its field admits it (a 12-bit unsigned for
+`add`/`sub`/`cmp`, a bitmask immediate, asked of the encoder's own
+`LogicalImmediate`, for `and`/`orr`/`eor`; a constant left operand of a
+commutative operation moves right); and a value assigned or declared into
+a register variable is written there by the instruction that produced it
+(`add w19, w19, #1`), the trailing move dropped, when that instruction is
+the last one emitted and reads only its sources (`movk` and the
+exclusives stay). Measured on the binaries: `lattice.oak` 2.86 s to
+2.49 s, `mono.oak` 13.0 s to 12.0 s, `effects.oak` 1.98 s to 1.74 s,
+`floats.oak` 5.5 s to 5.2 s, `extents.oak` 8.7 s to 8.4 s — the native
+prover at 1.5–1.7 times the C build; the remaining gap is the guard on
+every element access and the frame traffic of functions past ten
+variables, the next increments.
 Next increments: the fallback reasons above in the order of their counts,
 so the prover lowers whole; then the verifier past `bl` and unit results —
 calls by inlining or by the callee's proven contract, and effects through
