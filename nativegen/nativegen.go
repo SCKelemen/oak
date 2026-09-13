@@ -1107,12 +1107,16 @@ type generator struct {
 	// (asm.Function.Constants): an identifier naming one, not shadowed by
 	// a local, materializes as an immediate at its declared type.
 	constants map[string]asm.Constant
-	labels    int
-	loops     []string // break targets
-	hasCalls  bool
-	line      int
-	trap      string // the trap block's label (division by zero, shift overflow, assert)
-	usedTrap  bool
+	// globals are the program's addressable top-level scalars (Lane.Globals);
+	// usedGlobals the ones this body addressed (asm.Function.Globals).
+	globals     map[string]asm.Global
+	usedGlobals map[string]asm.Global
+	labels      int
+	loops       []string // break targets
+	hasCalls    bool
+	line        int
+	trap        string // the trap block's label (division by zero, shift overflow, assert)
+	usedTrap    bool
 	// terminated: an unconditional jump was emitted and no label has
 	// followed — instructions there are unreachable and are not emitted (the
 	// checker refuses them).
@@ -1163,6 +1167,29 @@ type Lane struct {
 	// without their guards on the AArch64 lane; the checker admits or
 	// refuses the body, and the compiler falls back to guards on refusal.
 	ElideProven bool
+	// Globals are the program's mutable top-level scalars a body may
+	// address (docs/spec/94-assembler.md §9, the OS pilot's N3), by Oak
+	// name with their storage width; the generator records the ones a body
+	// uses in asm.Function.Globals. Nil leaves every global unsupported.
+	Globals map[string]asm.Global
+}
+
+// GlobalStorage is the addressed storage of a top-level scalar of the
+// named type: its C storage width (a Bool is the C backend's 4-byte
+// `Bool`), or false for a type the native subset does not address.
+func GlobalStorage(typeName string) (asm.Global, bool) {
+	typ, ok := scalars[typeName]
+	if !ok || typ.isVec {
+		return asm.Global{}, false
+	}
+	return asm.Global{Type: typ.name, Bits: globalStorageBits(typ)}, true
+}
+
+func globalStorageBits(typ scalar) int {
+	if typ.isBool {
+		return 32
+	}
+	return typ.bits
 }
 
 // CompileFor lowers one Oak function on a lane (docs/spec/94-assembler.md
@@ -1171,10 +1198,7 @@ type Lane struct {
 func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	switch lane.Arch {
 	case "", asm.ArchArm64:
-		if lane.ElideProven {
-			return compileArm64(fn, functions, records, adts, constants, tc, true)
-		}
-		return Compile(fn, functions, records, adts, constants, tc)
+		return compileArm64(fn, functions, records, adts, constants, lane.Globals, tc, lane.ElideProven)
 	case asm.ArchRV64:
 		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat)
 	}
@@ -1187,7 +1211,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 // constant globals (docs/spec/90-backend.md §8a); tc is the checker that
 // typed the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
-	return compileArm64(fn, functions, records, adts, constants, tc, false)
+	return compileArm64(fn, functions, records, adts, constants, nil, tc, false)
 }
 
 // ElidedGuards reports how many element guards a lowering left out under
@@ -1196,14 +1220,14 @@ func ElidedGuards(fn *asm.Function) int { return elidedGuards[fn] }
 
 var elidedGuards = map[*asm.Function]int{}
 
-func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, elide bool) (*asm.Function, error) {
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	if len(fn.Parameters) > 8 {
 		return nil, unsupported("more than eight parameters")
 	}
-	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, line: fn.Token.Line, elide: elide}
+	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, usedGlobals: map[string]asm.Global{}, line: fn.Token.Line, elide: elide}
 	// A span pair parked in callee-saved registers survives a call, and a
 	// result: the result leaves in x0 (and x1), where a span parameter's
 	// pair is bound, and the checker's span facts flow in text order — a
@@ -1341,6 +1365,9 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 		return nil, unsupported("a frame of %d bytes", frame)
 	}
 	out := &asm.Function{Name: NativeSymbol(fn), Signature: fn, Line: fn.Token.Line, Fallback: true, Records: records, ADTs: adts, System: g.system}
+	if len(g.usedGlobals) > 0 {
+		out.Globals = g.usedGlobals
+	}
 	g.line = fn.Token.Line
 	var prologue []asm.Item
 	if frame > 0 {
@@ -2328,6 +2355,93 @@ func returnsValue(fn *ast.FunctionStatement) bool {
 	return fn.ReturnType != nil && fn.ReturnType.String() != "()"
 }
 
+// globalOf resolves a name to an addressable global (Lane.Globals) when no
+// local of any kind shadows it, with the scalar type its reads and writes
+// take.
+func (g *generator) globalOf(name string) (asm.Global, scalar, bool) {
+	global, isGlobal := g.globals[name]
+	if !isGlobal || g.shadowed(name) {
+		return asm.Global{}, scalar{}, false
+	}
+	typ, ok := scalars[global.Type]
+	if !ok {
+		return asm.Global{}, scalar{}, false
+	}
+	return global, typ, true
+}
+
+// globalAddress materializes a global's address in a fresh 64-bit
+// scratch register — `adrp xA, G` then `add xA, xA, :lo12:G`, the pair the
+// checker follows and the linker resolves — and records the global as
+// one the body addresses.
+func (g *generator) globalAddress(name string, global asm.Global) (int, error) {
+	if g.rvLane {
+		return 0, unsupported("the global %s on the rv64 lane", name)
+	}
+	addr, err := g.alloc(scalars["u64"])
+	if err != nil {
+		return 0, err
+	}
+	g.emit("adrp", xr(addr), asm.Symbol{Name: name})
+	g.emit("add", xr(addr), xr(addr), asm.Symbol{Name: name, Lo12: true})
+	g.usedGlobals[name] = global
+	return addr, nil
+}
+
+// globalLoad reads a global's cell into r at its storage width.
+func (g *generator) globalLoad(name string, global asm.Global, typ scalar, r int) error {
+	addr, err := g.globalAddress(name, global)
+	if err != nil {
+		return err
+	}
+	g.emit(globalAccessOf("ldr", global), reg(r, typ), asm.Memory{Base: xr(addr)})
+	g.release(addr)
+	return nil
+}
+
+// globalStore writes r into a global's cell at its storage width.
+func (g *generator) globalStore(name string, global asm.Global, typ scalar, r int) error {
+	addr, err := g.globalAddress(name, global)
+	if err != nil {
+		return err
+	}
+	g.emit(globalAccessOf("str", global), reg(r, typ), asm.Memory{Base: xr(addr)})
+	g.release(addr)
+	return nil
+}
+
+// globalAccessOf is the load or store of a global's storage width: a Bool
+// is the C backend's 4-byte cell, read and written whole.
+func globalAccessOf(base string, global asm.Global) string {
+	switch global.Bits {
+	case 8:
+		return base + "b"
+	case 16:
+		return base + "h"
+	}
+	return base
+}
+
+// shadowed reports a local of any kind under the name.
+func (g *generator) shadowed(name string) bool {
+	if _, isVar := g.types[name]; isVar {
+		return true
+	}
+	if _, isSpan := g.spans[name]; isSpan {
+		return true
+	}
+	if _, isArray := g.arrays[name]; isArray {
+		return true
+	}
+	if _, isRecord := g.records[name]; isRecord {
+		return true
+	}
+	if _, isRecordParam := g.recordParams[name]; isRecordParam {
+		return true
+	}
+	return false
+}
+
 // constantOf resolves a name to a constant global when no local of any
 // kind shadows it.
 func (g *generator) constantOf(name string) (asm.Constant, bool) {
@@ -3110,6 +3224,9 @@ func (g *generator) typeOf(expr ast.Expression, hint *scalar) (scalar, error) {
 		if c, isConst := g.constantOf(e.Value); isConst {
 			return scalars[c.Type], nil
 		}
+		if _, typ, isGlobal := g.globalOf(e.Value); isGlobal {
+			return typ, nil
+		}
 		return scalar{}, unsupported("identifier %s", e.Value)
 	case *ast.InfixExpression:
 		switch e.Operator {
@@ -3428,7 +3545,20 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 			}
 			typ, ok := g.types[s.Name.Value]
 			if !ok {
-				return unsupported("an assignment to %s", s.Name.Value)
+				global, globalType, isGlobal := g.globalOf(s.Name.Value)
+				if !isGlobal {
+					return unsupported("an assignment to %s", s.Name.Value)
+				}
+				// `G = e`: the global's cell written through its address.
+				r, err := g.expr(s.Value, &globalType)
+				if err != nil {
+					return err
+				}
+				if err := g.globalStore(s.Name.Value, global, globalType, r); err != nil {
+					return err
+				}
+				g.release(r)
+				continue
 			}
 			r, err := g.expr(s.Value, &typ)
 			if err != nil {
@@ -3784,6 +3914,15 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 		}
 		if c, isConst := g.constantOf(e.Value); isConst {
 			g.constant(r, c.Value, typ)
+			return r, nil
+		}
+		if global, globalType, isGlobal := g.globalOf(e.Value); isGlobal {
+			if globalType != typ {
+				return 0, unsupported("the global %s (%s) read as %s", e.Value, globalType.name, typ.name)
+			}
+			if err := g.globalLoad(e.Value, global, typ, r); err != nil {
+				return 0, err
+			}
 			return r, nil
 		}
 		g.put(g.loadVar(e.Value, r))

@@ -2057,6 +2057,27 @@ a comparison, or in nested `?` arms costs one element address per read
 and no scratch register between reads (the OS pilot's N4). Through a
 view the field is readable and a store into it is refused.
 
+**Package globals.** A mutable top-level scalar (`st: u32 = u32(0)`,
+assigned by some function) is addressed storage on the AArch64 lane: the
+body names its cell as `adrp xA, G` then `add xA, xA, :lo12:G` and
+reads or writes it with one `ldr`/`str` at the scalar's width (a `Bool`
+is the C backend's 4-byte cell). The checker follows the pair — `adrp`
+records the page of a global the function declares in `Function.Globals`
+and refuses any other symbol, the `add :lo12:` over that page records the
+address, both facts die with a write to the register and at a call — and
+admits exactly `[xA]` at the width: an offset, an index, a pair, or a
+narrower or wider access is refused. The verifier reads the cell as the
+parameter `global:G`, the value it holds on entry, so a function that only
+reads globals is proven against its Oak body; a function that writes one
+is trusted against the C oracle, as span writers are. The C emitter gives
+an addressed global external linkage under the assembler label
+`oak_0g_G` (a digit after the prefix, which no function's mangled name
+can produce), the symbol the companion object's `adrp`/`add` relocations
+(PAGE21/PAGEOFF12 on Mach-O, ADR_PREL_PG_HI21/ADD_ABS_LO12_NC on ELF)
+name; the inline-asm mode spells the pair through `OAK_ASM_PAGE` and
+`OAK_ASM_PAGEOFF`. Constant globals keep folding (above); the rv64 lane
+leaves globals to the C backend (the OS pilot's N3).
+
 **Atomics.** The builtins of `65-machine-memory.md` lower on the AArch64
 lane when the cell is reached through a writable span (§7a there): the
 element address as a region, `ldar`/`stlr` and their narrow forms,

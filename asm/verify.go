@@ -617,6 +617,23 @@ func (s *symbolicState) write(reg Register, value *term) {
 	s.regs[reg.Num] = value
 }
 
+// The proof's names for a global (docs/spec/94-assembler.md §9): its
+// value on entry (`global:NAME`, a parameter at the scalar's width), its
+// address, and its page address (64-bit parameters the loads recognize).
+const globalParamPrefix = "global:"
+
+func globalParam(name string) string    { return globalParamPrefix + name }
+func globalAddrName(name string) string { return "&" + globalParamPrefix + name }
+func globalPageName(name string) string { return "&" + globalParamPrefix + name + "#page" }
+
+// globalAddrOf recognizes a global's address term.
+func globalAddrOf(t *term) (string, bool) {
+	if t == nil || t.kind != termParam || !strings.HasPrefix(t.name, "&"+globalParamPrefix) || strings.HasSuffix(t.name, "#page") {
+		return "", false
+	}
+	return t.name[len("&"+globalParamPrefix):], true
+}
+
 func widthOf(class RegClass) int {
 	if class == ClassW {
 		return 32
@@ -793,7 +810,7 @@ func executeBody(fn *Function, sig *ast.FunctionStatement, concrete map[string]u
 			return nil, nil, "alignment directives", false
 		}
 	}
-	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass, spans: spans, declared: declared, concrete: concrete != nil, env: concrete, records: composites, arch: fn.Arch}
+	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass, spans: spans, declared: declared, concrete: concrete != nil, env: concrete, records: composites, arch: fn.Arch, globals: fn.Globals}
 	exec.resultReg = Register{Class: resultClass, Num: 0}
 	if fn.Arch == ArchRV64 {
 		exec.resultReg = rv64ResultRegister
@@ -834,9 +851,10 @@ type pathExecutor struct {
 	arch        string   // the lane
 	resultReg   Register // the register ret delivers: w0/x0, or a0 on rv64
 	resultClass RegClass
-	spans       map[string]int64 // span parameter -> element size in bytes
-	declared    map[string]int   // parameter -> declared width
-	concrete    bool             // a witness run: every input is a constant
+	spans       map[string]int64  // span parameter -> element size in bytes
+	declared    map[string]int    // parameter -> declared width
+	globals     map[string]Global // the globals the body addresses (fn.Globals)
+	concrete    bool              // a witness run: every input is a constant
 	loopExits   map[int]loopShape
 	loops       []*loopEvent // data-dependent loops met, in creation order
 	loopStack   []int        // indices of the loops whose bodies are being executed
@@ -1351,6 +1369,32 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 	if !bound {
 		return "a load through a register that is not a span base", false
 	}
+	if name, isGlobal := globalAddrOf(base); isGlobal {
+		// The global's cell: its value on entry, a parameter of the proof
+		// (a store to it leaves the body trusted, so the value never
+		// changes along a verified path).
+		global, known := x.globals[name]
+		if !known {
+			return "a load through the address of an undeclared global", false
+		}
+		if global.Type == "Bool" {
+			return "a Bool global (its cell holds a byte the proof cannot bound)", false
+		}
+		if mem.Index != nil || mem.Mode != MemOffset || mem.Offset != 0 {
+			return "a load through a global's address away from its cell", false
+		}
+		size := memorySize(instr.Mnemonic, dest.Class)
+		if int(size)*8 != global.Bits {
+			return fmt.Sprintf("a %d-byte load of the %d-bit global %s", size, global.Bits, name), false
+		}
+		value := paramTerm(globalParam(name), global.Bits)
+		if isSignExtendingLoad(instr.Mnemonic) {
+			state.write(dest, extendTerm(value, global.Bits, widthOf(dest.Class), true))
+		} else {
+			state.write(dest, zeroExtend(value, widthOf(dest.Class)))
+		}
+		return "", true
+	}
 	param, baseOffset, isSpan := spanBaseOf(base)
 	if !isSpan {
 		// A span element's address in the base (an atomic cell reached by
@@ -1548,6 +1592,18 @@ func (x *pathExecutor) element(span string, index *term, width int) *term {
 
 // step executes one data-processing instruction on the state.
 func step(instr Instruction, state *symbolicState) (string, bool) {
+	if instr.Mnemonic == "add" && len(instr.Operands) == 3 {
+		if sym, isSym := instr.Operands[2].(Symbol); isSym && sym.Lo12 {
+			// `add xA, xN, :lo12:G` over G's page: xA is G's address.
+			dest := instr.Operands[0].(Register)
+			base, ok := operandTerm(state, instr.Operands[1], 64)
+			if !ok || base.kind != termParam || base.name != globalPageName(sym.Name) {
+				return "add :lo12: over a register that does not hold the symbol's page", false
+			}
+			state.write(dest, paramTerm(globalAddrName(sym.Name), 64))
+			return "", true
+		}
+	}
 	for _, reg := range registerOperands(instr.Operands) {
 		if reg.Class == ClassV {
 			return "a floating-point or vector instruction (" + instr.Mnemonic + ")", false
@@ -1729,6 +1785,15 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 			}
 			prior := flagsCondition(code, state.flags)
 			state.flags = &flagsFact{left: l, right: r, width: width, cond: prior, elseNZCV: instr.Operands[2].(Immediate).Value}
+		case "adrp":
+			// A global's page address: a distinguished parameter the
+			// completing `add :lo12:` recognizes.
+			dest := instr.Operands[0].(Register)
+			sym, isSym := instr.Operands[1].(Symbol)
+			if !isSym {
+				return "adrp without a symbol", false
+			}
+			state.write(dest, paramTerm(globalPageName(sym.Name), 64))
 		case "neg", "mvn":
 			dest := instr.Operands[0].(Register)
 			width := widthOf(dest.Class)
@@ -1889,6 +1954,11 @@ type oakLowering struct {
 	loops     []*loopEvent         // data-dependent loops met, in creation order
 	loopStack []int                // indices of the loops whose bodies are being lowered
 	fresh     map[string]int       // loop-carried fresh symbols -> width
+	// globals are the mutable top-level scalars the body addresses
+	// (Function.Globals): a read of one is the parameter `global:NAME` of
+	// the proof, the value the cell holds on entry; a write leaves the body
+	// trusted (docs/spec/94-assembler.md §9).
+	globals map[string]Global
 	// functions are the program's functions a body may call; a call to one
 	// in the subset is inlined (inlineCall). Nil outside the theorem decider.
 	functions map[string]*ast.FunctionStatement
@@ -3557,6 +3627,9 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		if value, _, ok := lo.constantValue(e.Value, width); ok {
 			return constTerm(value, width), "", true
 		}
+		if global, isGlobal := lo.globals[e.Value]; isGlobal && global.Type != "Bool" {
+			return adaptWidth(paramTerm(globalParam(e.Value), global.Bits), width), "", true
+		}
 		return nil, fmt.Sprintf("identifier %s (not a parameter)", e.Value), false
 	case *ast.IntegerLiteral:
 		return constTerm(uint64(e.Value), width), "", true
@@ -4124,6 +4197,7 @@ func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	lowering := newLowering(sig)
 	lowering.records, lowering.adts = fn.Records, fn.ADTs
 	lowering.constants = fn.Constants
+	lowering.globals = fn.Globals
 	lowering.concrete = concrete
 	lowering.bindAggregateParams(sig)
 	return lowering
@@ -4453,6 +4527,11 @@ func collectParamsVisited(t *term, into map[string]bool, visited map[*term]bool)
 func (lo *oakLowering) declaredWidth(name string) int {
 	if w, isScalar := lo.params[name]; isScalar {
 		return w
+	}
+	if strings.HasPrefix(name, globalParamPrefix) {
+		if global, isGlobal := lo.globals[name[len(globalParamPrefix):]]; isGlobal {
+			return global.Bits
+		}
 	}
 	if w, isFresh := lo.fresh[name]; isFresh {
 		return w

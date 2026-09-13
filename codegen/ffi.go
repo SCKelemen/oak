@@ -766,6 +766,9 @@ func (cg *CodeGenerator) emitForeignHeaders() {
 	}
 	cg.write("#define OAK_STRINGIFY_(x) #x\n#define OAK_STRINGIFY(x) OAK_STRINGIFY_(x)\n")
 	cg.write("#define OAK_ASM_SYMBOL(name) OAK_STRINGIFY(__USER_LABEL_PREFIX__) name\n")
+	// A global's page address and its low 12 bits, as the platform's
+	// assembler spells them (adrp/add, docs/spec/94-assembler.md §9).
+	cg.write("#if defined(__APPLE__)\n#define OAK_ASM_PAGE(name) OAK_ASM_SYMBOL(name) \"@PAGE\"\n#define OAK_ASM_PAGEOFF(name) OAK_ASM_SYMBOL(name) \"@PAGEOFF\"\n#else\n#define OAK_ASM_PAGE(name) OAK_ASM_SYMBOL(name)\n#define OAK_ASM_PAGEOFF(name) \":lo12:\" OAK_ASM_SYMBOL(name)\n#endif\n")
 }
 
 // bufferElementSyntax recognizes the type syntax Buffer[T] or Buffer[T, S]

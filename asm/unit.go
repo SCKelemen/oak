@@ -89,6 +89,11 @@ type Function struct {
 	// by the compiler for native bodies, so the verifier reads an identifier
 	// naming one as the constant the native backend materialized.
 	Constants map[string]Constant
+	// Globals: the mutable top-level scalars this body addresses, by Oak
+	// name — set by the native backend; the checker refuses an adrp naming
+	// anything else, and the verifier reads a load through one as the
+	// global's value.
+	Globals map[string]Global
 	// TwoChunkResults names the callees whose result is a record of 9 to
 	// 16 bytes — two chunks, in a0 and a1 under the LP64 psABI — set by the
 	// native backend from the program's signatures, so the RV64 checker
@@ -352,7 +357,22 @@ const (
 )
 
 // Symbol names a label inside the function or an Oak-visible function.
-type Symbol struct{ Name string }
+// Symbol names a label or an external symbol. Lo12 marks the low 12 bits
+// of the symbol's address (`:lo12:sym`), the operand of the `add` that
+// completes an `adrp` page address (docs/spec/94-assembler.md §9).
+type Symbol struct {
+	Name string
+	Lo12 bool
+}
+
+// Global is a top-level scalar binding a native body addresses through
+// its symbol (docs/spec/94-assembler.md §9, the OS pilot's N3): the
+// checker admits exactly one access shape to it — `[xA]` at the scalar's
+// width through a register holding its adrp/add address.
+type Global struct {
+	Type string // the Oak scalar type name
+	Bits int    // the scalar's width
+}
 
 // SysReg names a system register operand of mrs/msr.
 type SysReg struct{ Name string }
@@ -849,6 +869,9 @@ func parseOperand(text string, position int, spec instructionSpec) (Operand, err
 		return SysReg{Name: lower}, nil
 	}
 	if spec.branch != branchNone || formsTakeSymbol(spec, position) {
+		if strings.HasPrefix(lower, ":lo12:") {
+			return Symbol{Name: text[len(":lo12:"):], Lo12: true}, nil
+		}
 		return Symbol{Name: text}, nil
 	}
 	if spec.barrier || formsTakeOption(spec, position) {
