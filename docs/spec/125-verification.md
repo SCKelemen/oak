@@ -218,8 +218,12 @@ sum types and scalars with variant, literal, wildcard, and binding
 patterns, in value and statement position; variant construction; counted
 loops; field and element reads and stores, an element at a
 data-dependent index included; record and array literals; calls to
-program functions — a parameter of a sum type decided under the
-hypothesis that every tag names a variant); the lowering
+program functions; views of local arrays (`view(&a)`, an alias of the
+array's leaves, passed to `[]T` parameters and read by element, `len`
+their constant length; a store through a view is outside), and the
+`is_valid_utf8` builtin as the UTF-8 acceptance automaton over the
+view's bytes — a parameter of a sum type decided under the hypothesis
+that every tag names a variant); the lowering
 (`prove/solver/lower.oak`) builds the terms itself under each
 of the three variable orders, runs the witness pass on them (the boundary
 values of the parameters the terms mention, the first two crossed, then
@@ -511,14 +515,16 @@ In order of payoff, each reusing a surface that exists:
   law file's bytes — lexer, parser, and serializer — word for word the Go
   front end's over the corpus; and the exhaustive rung runs in Oak over
   the same terms — the domain sized from the types, the assignments in the
-  interpreter's order — for every theorem in the subset, 37 of the
-  corpus's 50, the Go interpreter confirming each), so the Go that
+  interpreter's order — for every theorem in the subset, 43 of the
+  corpus's 50, the Go interpreter confirming each; views of local arrays
+  alias the array's leaves, `len` is their constant length, and the
+  `is_valid_utf8` builtin is the UTF-8 acceptance automaton unrolled over
+  the bytes, so the UTF-8 witness laws decide in Oak), so the Go that
   remains on the prover's path is the ladder's shell — streaming the
-  sources, reading the verdicts — and the interpreter for the 13 laws
-  outside the lowering's subset (the UTF-8 laws through views and the
-  `is_valid_utf8` builtin, the protocol machine laws); next an
-  interpreter in Oak over the raw tree, so those decide in Oak too and
-  `oak prove` is an Oak program end to end; then
+  sources, reading the verdicts — and the interpreter for the 7 protocol
+  machine laws, which call the functions the compiler generates from a
+  protocol declaration; next that protocol lowering in Oak, so those
+  decide in Oak too and `oak prove` is an Oak program end to end; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
   producers of certificates, so speed and trust are separated; then an

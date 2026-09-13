@@ -61,6 +61,9 @@ SYN_FLOATCALL: u32 = 20
 SYN_VARIANTLIT: u32 = 21
 SYN_MATCH: u32 = 22
 SYN_MATCHSTMT: u32 = 23
+SYN_VIEW: u32 = 24
+SYN_LEN: u32 = 25
+SYN_BUILTIN: u32 = 26
 
 // An arm in the lists: pattern kind, variant index or literal node,
 // binding symbol, body node.
@@ -86,6 +89,7 @@ TY_SCALAR: u32 = 0
 TY_RECORD: u32 = 1
 TY_ARRAY: u32 = 2
 TY_SUM: u32 = 3
+TY_VIEW: u32 = 4
 
 // Infix operator codes (asm/syntax.go).
 IOP_ADD: u32 = 0
@@ -268,6 +272,7 @@ field_type: (sx: []u32, t: u32, k: u32): u32 = sx[syn_fields_at(sx) + (type_fiel
 field_offset: (sx: []u32, t: u32, k: u32): u32 = sx[syn_fields_at(sx) + (type_field_start(sx, t) + k) * u32(2) + u32(1)]
 is_scalar_type: (sx: []u32, t: u32): Bool = t != NONE && type_kind(sx, t) == TY_SCALAR
 is_sum_type: (sx: []u32, t: u32): Bool = t != NONE && type_kind(sx, t) == TY_SUM
+is_view_type: (sx: []u32, t: u32): Bool = t != NONE && type_kind(sx, t) == TY_VIEW
 // A sum type's field words index the variants table: tag value, payload
 // type (NONE for none), payload leaf offset.
 variant_word: (sx: []u32, t: u32, i: u32, k: u32): u32 = sx[syn_variants_at(sx) + (type_field_start(sx, t) + i) * u32(3) + k]
@@ -823,6 +828,8 @@ contract_of: (lw: Lower, w: [*]u32, sx: []u32, node: u32): Contract {
     kind == SYN_CONV ? { out = Contract { width: node_a(sx, n), signed: node_b(sx, n) != u32(0), ok: true } } | {
     ((kind == SYN_CALL || kind == SYN_FLOATCALL) && is_scalar_type(sx, typ)) ? { out = Contract { width: scalar_width(sx, typ), signed: scalar_signed(sx, typ), ok: true } } | {
     kind == SYN_INSTR ? { out = Contract { width: node_b(sx, n), signed: false, ok: true } } | {
+    kind == SYN_LEN ? { out = Contract { width: u32(32), signed: false, ok: true } } | {
+    kind == SYN_BUILTIN ? { out = Contract { width: u32(1), signed: false, ok: true } } | {
     ((kind == SYN_FIELD || kind == SYN_INDEX || kind == SYN_MATCH) && is_scalar_type(sx, typ)) ? { out = Contract { width: scalar_width(sx, typ), signed: scalar_signed(sx, typ), ok: true } } | {
     kind == SYN_INFIX ? {
       sp + u32(2) <= u32(64) ? {
@@ -830,7 +837,7 @@ contract_of: (lw: Lower, w: [*]u32, sx: []u32, node: u32): Contract {
         stack[sp + u32(1)] = node_b(sx, n)
         sp = sp + u32(2)
       } | { }
-    } | { } } } } } }
+    } | { } } } } } } } }
   }
   out
 }
@@ -953,13 +960,15 @@ resolve_place: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, node: u32): Place {
     kind == SYN_INDEX ? {
       base_type: u32 = node_type(sx, node_a(sx, n))
       k: u32 = constant_index(lw, w, b, sx, node_b(sx, n))
-      (k == NONE || k >= type_length(sx, base_type)) ? { ok = false } | {
+      // A store through a view is outside the subset (the alias would
+      // not see a copy-on-write store).
+      (k == NONE || is_view_type(sx, base_type) || k >= type_length(sx, base_type)) ? { ok = false } | {
         offset = offset + k * type_leaves(sx, type_elem(sx, base_type))
         n = node_a(sx, n)
       }
     } | { ok = false } } }
   }
-  ok ? { Place { sym: node_a(sx, n), offset: offset, typ: node_type(sx, node), ok: sym_value(lw, w, node_a(sx, n)) == AGG } } | { Place { sym: NONE, offset: u32(0), typ: NONE, ok: false } }
+  ok ? { Place { sym: node_a(sx, n), offset: offset, typ: node_type(sx, node), ok: sym_value(lw, w, node_a(sx, n)) == AGG && !is_view_type(sx, sym_type(lw, w, node_a(sx, n))) } } | { Place { sym: NONE, offset: u32(0), typ: NONE, ok: false } }
 }
 
 // enter_call binds the collected arguments as the callee's parameters in
@@ -975,7 +984,9 @@ enter_call: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32): () 
   while i < nargs {
     p: u32 = fn_param_start(sx, callee) + i
     ptype: u32 = param_type(sx, p)
-    is_scalar_type(sx, ptype) ? { bind_scalar(lw, w, i, w[lw.argv_at + base + i], ptype) } | { bind_aggregate(lw, w, i, ptype, w[lw.argv_at + base + i]) }
+    // A view parameter takes the argument's concrete view type (its length).
+    bound: u32 = is_view_type(sx, ptype) ? { w[lw.argv_at + base + i * u32(2) + u32(1)] } | { ptype }
+    is_scalar_type(sx, ptype) ? { bind_scalar(lw, w, i, w[lw.argv_at + base + i * u32(2)], ptype) } | { bind_aggregate(lw, w, i, bound, w[lw.argv_at + base + i * u32(2)]) }
     i = i + u32(1)
   }
   w[f + u32(3)] = nargs + u32(1)
@@ -992,9 +1003,9 @@ step_call: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, width
   nargs: u32 = node_c(sx, node)
   argv_sp: u32 = state(lw, w, LS_ARGV_SP)
   phase == u32(0) ? {
-    (argv_sp + nargs > MAX_ARGV || state(lw, w, LS_DEPTH) + u32(1) >= MAX_DEPTH) ? { fail_at(lw, w, u32(7)) } | {
+    (argv_sp + nargs * u32(2) > MAX_ARGV || state(lw, w, LS_DEPTH) + u32(1) >= MAX_DEPTH) ? { fail_at(lw, w, u32(7)) } | {
       w[f + u32(4)] = argv_sp
-      set_state(lw, w, LS_ARGV_SP, argv_sp + nargs)
+      set_state(lw, w, LS_ARGV_SP, argv_sp + nargs * u32(2))
       w[f + u32(3)] = u32(1)
       nargs == u32(0) ? { enter_call(lw, w, b, sx, f, node) } | {
         push_value(lw, w, sx, list_item(sx, args, u32(0)), param_type(sx, fn_param_start(sx, callee)))
@@ -1004,7 +1015,10 @@ step_call: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, width
   phase <= nargs ? {
     ret: u32 = state(lw, w, LS_RET)
     ptype: u32 = param_type(sx, fn_param_start(sx, callee) + phase - u32(1))
-    w[lw.argv_at + w[f + u32(4)] + phase - u32(1)] = is_scalar_type(sx, ptype) ? { ret } | { copy_block(lw, w, state(lw, w, LS_RET_BLOCK), type_leaves(sx, ptype)) }
+    slot: u32 = lw.argv_at + w[f + u32(4)] + (phase - u32(1)) * u32(2)
+    // An aggregate argument by copy, a view by alias with its concrete type.
+    w[slot] = is_scalar_type(sx, ptype) ? { ret } | { is_view_type(sx, ptype) ? { state(lw, w, LS_RET_BLOCK) } | { copy_block(lw, w, state(lw, w, LS_RET_BLOCK), type_leaves(sx, ptype)) } }
+    w[slot + u32(1)] = is_scalar_type(sx, ptype) ? { ptype } | { state(lw, w, LS_RET_TYPE) }
     phase == nargs ? { enter_call(lw, w, b, sx, f, node) } | {
       w[f + u32(3)] = phase + u32(1)
       push_value(lw, w, sx, list_item(sx, args, phase), param_type(sx, fn_param_start(sx, callee) + phase))
@@ -1093,23 +1107,93 @@ step_access: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, wid
       pop_frame_l(lw, w)
     } | {
       w[f + u32(4)] = block
+      w[f + u32(5)] = state(lw, w, LS_RET_TYPE)
       w[f + u32(3)] = u32(2)
       push_frame_l(lw, w, F_EXPR, node_b(sx, node), u32(32))
     }
   } | {
     block: u32 = w[f + u32(4)]
-    elem_leaves: u32 = type_leaves(sx, type_elem(sx, base_type))
-    is_const(lw, w, b, ret) ? {
-      k: u32 = u32_trunc_u64(tvalue(lw, w, b, ret))
-      k >= type_length(sx, base_type) ? { fail_at(lw, w, u32(10)) } | {
-        set_state(lw, w, LS_RET, t_adapt(lw, w, b, leaf_at(lw, w, block, k * elem_leaves), width))
+    // The base's concrete type: a view's length is the aliased array's.
+    seq_type: u32 = is_view_type(sx, base_type) ? { w[f + u32(5)] } | { base_type }
+    elem_leaves: u32 = type_leaves(sx, type_elem(sx, seq_type))
+    type_length(sx, seq_type) == NONE ? { fail_at(lw, w, u32(31)) } | {
+      is_const(lw, w, b, ret) ? {
+        k: u32 = u32_trunc_u64(tvalue(lw, w, b, ret))
+        k >= type_length(sx, seq_type) ? { fail_at(lw, w, u32(10)) } | {
+          set_state(lw, w, LS_RET, t_adapt(lw, w, b, leaf_at(lw, w, block, k * elem_leaves), width))
+        }
+      } | {
+        merged: u32 = element_under_index(lw, w, b, sx, block, seq_type, ret)
+        merged == NONE ? { } | { set_state(lw, w, LS_RET, t_adapt(lw, w, b, leaf_at(lw, w, merged, u32(0)), width)) }
       }
-    } | {
-      merged: u32 = element_under_index(lw, w, b, sx, block, base_type, ret)
-      merged == NONE ? { } | { set_state(lw, w, LS_RET, t_adapt(lw, w, b, leaf_at(lw, w, merged, u32(0)), width)) }
     }
     pop_frame_l(lw, w)
   } }
+}
+
+// utf8_valid builds the 1-bit term stating that the n byte leaves of a
+// block are one well-formed UTF-8 sequence run (the interpreter's
+// is_valid_utf8 over a view): the acceptance automaton unrolled, need
+// (continuation bytes still due), lo and hi (the next continuation's
+// range: E0 A0-BF, ED 80-9F, F0 90-BF, F4 80-8F, else 80-BF), ok.
+utf8_valid: (lw: Lower, w: [*]u32, b: [*]u32, block: u32, n: u32): u32 {
+  need: u32 = t_const(lw, w, b, u32(0), u32(8))
+  lo: u32 = t_const(lw, w, b, u32(128), u32(8))
+  hi: u32 = t_const(lw, w, b, u32(191), u32(8))
+  ok: u32 = t_const(lw, w, b, u32(1), u32(1))
+  zero8: u32 = t_const(lw, w, b, u32(0), u32(8))
+  one8: u32 = t_const(lw, w, b, u32(1), u32(8))
+  two8: u32 = t_const(lw, w, b, u32(2), u32(8))
+  three8: u32 = t_const(lw, w, b, u32(3), u32(8))
+  i: u32 = 0
+  while i < n {
+    bv: u32 = t_adapt(lw, w, b, leaf_at(lw, w, block, i), u32(8))
+    lead: u32 = t_cmp(lw, w, b, CC_EQ, need, zero8)
+    ascii: u32 = t_cmp(lw, w, b, CC_LO, bv, t_const(lw, w, b, u32(128), u32(8)))
+    two: u32 = t_andbit(lw, w, b, t_cmp(lw, w, b, CC_HS, bv, t_const(lw, w, b, u32(194), u32(8))), t_cmp(lw, w, b, CC_LS, bv, t_const(lw, w, b, u32(223), u32(8))))
+    e0: u32 = t_cmp(lw, w, b, CC_EQ, bv, t_const(lw, w, b, u32(224), u32(8)))
+    ed: u32 = t_cmp(lw, w, b, CC_EQ, bv, t_const(lw, w, b, u32(237), u32(8)))
+    three_lo: u32 = t_andbit(lw, w, b, t_cmp(lw, w, b, CC_HS, bv, t_const(lw, w, b, u32(225), u32(8))), t_cmp(lw, w, b, CC_LS, bv, t_const(lw, w, b, u32(236), u32(8))))
+    three_hi: u32 = t_andbit(lw, w, b, t_cmp(lw, w, b, CC_HS, bv, t_const(lw, w, b, u32(238), u32(8))), t_cmp(lw, w, b, CC_LS, bv, t_const(lw, w, b, u32(239), u32(8))))
+    f0: u32 = t_cmp(lw, w, b, CC_EQ, bv, t_const(lw, w, b, u32(240), u32(8)))
+    f4: u32 = t_cmp(lw, w, b, CC_EQ, bv, t_const(lw, w, b, u32(244), u32(8)))
+    four: u32 = t_andbit(lw, w, b, t_cmp(lw, w, b, CC_HS, bv, t_const(lw, w, b, u32(241), u32(8))), t_cmp(lw, w, b, CC_LS, bv, t_const(lw, w, b, u32(243), u32(8))))
+    any3: u32 = t_orbit(lw, w, b, t_orbit(lw, w, b, e0, ed), t_orbit(lw, w, b, three_lo, three_hi))
+    any4: u32 = t_orbit(lw, w, b, t_orbit(lw, w, b, f0, f4), four)
+    lead_ok: u32 = t_orbit(lw, w, b, t_orbit(lw, w, b, ascii, two), t_orbit(lw, w, b, any3, any4))
+    cont_ok: u32 = t_andbit(lw, w, b, t_cmp(lw, w, b, CC_HS, bv, lo), t_cmp(lw, w, b, CC_LS, bv, hi))
+    lead_need: u32 = t_ite(lw, w, b, two, one8, t_ite(lw, w, b, any3, two8, t_ite(lw, w, b, any4, three8, zero8)))
+    cont_need: u32 = t_binary(lw, w, b, BOP_SUB, need, one8)
+    lead_lo: u32 = t_ite(lw, w, b, e0, t_const(lw, w, b, u32(160), u32(8)), t_ite(lw, w, b, f0, t_const(lw, w, b, u32(144), u32(8)), t_const(lw, w, b, u32(128), u32(8))))
+    lead_hi: u32 = t_ite(lw, w, b, ed, t_const(lw, w, b, u32(159), u32(8)), t_ite(lw, w, b, f4, t_const(lw, w, b, u32(143), u32(8)), t_const(lw, w, b, u32(191), u32(8))))
+    ok = t_andbit(lw, w, b, ok, t_ite(lw, w, b, lead, lead_ok, cont_ok))
+    need = t_ite(lw, w, b, lead, lead_need, cont_need)
+    lo = t_ite(lw, w, b, lead, lead_lo, t_const(lw, w, b, u32(128), u32(8)))
+    hi = t_ite(lw, w, b, lead, lead_hi, t_const(lw, w, b, u32(191), u32(8)))
+    i = i + u32(1)
+  }
+  t_andbit(lw, w, b, ok, t_cmp(lw, w, b, CC_EQ, need, zero8))
+}
+
+// step_view_ops advances `len` and the byte builtin in scalar position:
+// the operand as an aggregate (a view's concrete type in the return
+// registers), then the constant length, or the automaton over the bytes.
+step_view_ops: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, width: u32, phase: u32): () {
+  kind: u32 = node_kind(sx, node)
+  operand_node: u32 = kind == SYN_LEN ? { node_a(sx, node) } | { node_b(sx, node) }
+  phase == u32(0) ? {
+    w[f + u32(3)] = u32(1)
+    push_frame_l(lw, w, F_AGG, operand_node, node_type(sx, operand_node))
+  } | {
+    seq_type: u32 = state(lw, w, LS_RET_TYPE)
+    length: u32 = type_length(sx, seq_type)
+    length == NONE ? { fail_at(lw, w, u32(31)) } | {
+      kind == SYN_LEN ? { set_state(lw, w, LS_RET, t_adapt(lw, w, b, t_const(lw, w, b, length, u32(32)), width)) } | {
+        set_state(lw, w, LS_RET, t_adapt(lw, w, b, utf8_valid(lw, w, b, state(lw, w, LS_RET_BLOCK), length), width))
+      }
+    }
+    pop_frame_l(lw, w)
+  }
 }
 
 // step_expr advances an expression frame (F_EXPR: node at width).
@@ -1119,6 +1203,7 @@ step_expr: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
   phase: u32 = w[f + u32(3)]
   kind: u32 = node_kind(sx, node)
   ret: u32 = state(lw, w, LS_RET)
+  (kind == SYN_LEN || kind == SYN_BUILTIN) ? { step_view_ops(lw, w, b, sx, f, node, width, phase) } | {
   kind == SYN_INTLIT ? {
     set_state(lw, w, LS_RET, t_const64(lw, w, b, (u64(node_vhi(sx, node)) << u64(32)) | u64(node_vlo(sx, node)), width))
     pop_frame_l(lw, w)
@@ -1221,7 +1306,7 @@ step_expr: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
     pop_frame_l(lw, w)
     push_frame_l(lw, w, F_MATCH, node, width)
     w[frame_at(lw, w, state(lw, w, LS_SP) - u32(1)) + u32(6)] = u32(0)
-  } | { fail_at(lw, w, u32(12)) } } } } } } } } } } } } } }
+  } | { fail_at(lw, w, u32(12)) } } } } } } } } } } } } } } }
 }
 
 // step_float_call advances a float intrinsic: the arguments at the float
@@ -1290,6 +1375,12 @@ step_agg: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
   typ: u32 = w[f + u32(2)]
   phase: u32 = w[f + u32(3)]
   kind: u32 = node_kind(sx, node)
+  kind == SYN_VIEW ? {
+    // An alias of the array symbol's block, typed as the view.
+    sym: u32 = node_a(sx, node)
+    sym_value(lw, w, sym) != AGG ? { fail_at(lw, w, u32(13)) } | { set_ret_agg(lw, w, node_type(sx, node), sym_block(lw, w, sym)) }
+    pop_frame_l(lw, w)
+  } | {
   kind == SYN_SYM ? {
     sym: u32 = node_a(sx, node)
     sym_value(lw, w, sym) != AGG ? { fail_at(lw, w, u32(13)) } | { set_ret_agg(lw, w, sym_type(lw, w, sym), sym_block(lw, w, sym)) }
@@ -1316,17 +1407,21 @@ step_agg: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
     } | {
     phase == u32(1) ? {
       w[f + u32(4)] = state(lw, w, LS_RET_BLOCK)
+      w[f + u32(5)] = state(lw, w, LS_RET_TYPE)
       w[f + u32(3)] = u32(2)
       push_frame_l(lw, w, F_EXPR, node_b(sx, node), u32(32))
     } | {
       idx: u32 = state(lw, w, LS_RET)
       block: u32 = w[f + u32(4)]
-      elem_leaves: u32 = type_leaves(sx, type_elem(sx, base_type))
-      is_const(lw, w, b, idx) ? {
-        k: u32 = u32_trunc_u64(tvalue(lw, w, b, idx))
-        k >= type_length(sx, base_type) ? { fail_at(lw, w, u32(14)) } | { set_ret_agg(lw, w, typ, block + k * elem_leaves) }
-      } | {
-        set_ret_agg(lw, w, typ, element_under_index(lw, w, b, sx, block, base_type, idx))
+      seq_type: u32 = is_view_type(sx, base_type) ? { w[f + u32(5)] } | { base_type }
+      elem_leaves: u32 = type_leaves(sx, type_elem(sx, seq_type))
+      type_length(sx, seq_type) == NONE ? { fail_at(lw, w, u32(31)) } | {
+        is_const(lw, w, b, idx) ? {
+          k: u32 = u32_trunc_u64(tvalue(lw, w, b, idx))
+          k >= type_length(sx, seq_type) ? { fail_at(lw, w, u32(14)) } | { set_ret_agg(lw, w, typ, block + k * elem_leaves) }
+        } | {
+          set_ret_agg(lw, w, typ, element_under_index(lw, w, b, sx, block, seq_type, idx))
+        }
       }
       pop_frame_l(lw, w)
     } }
@@ -1388,7 +1483,7 @@ step_agg: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
     pop_frame_l(lw, w)
     push_frame_l(lw, w, F_MATCH, node, typ)
     w[frame_at(lw, w, state(lw, w, LS_SP) - u32(1)) + u32(6)] = u32(1)
-  } | { fail_at(lw, w, u32(15)) } } } } } } } } }
+  } | { fail_at(lw, w, u32(15)) } } } } } } } } } }
 }
 
 // step_cond advances a condition frame (F_COND: a 1-bit term).
@@ -1489,14 +1584,18 @@ step_stmts: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
   ret: u32 = state(lw, w, LS_RET)
   phase == u32(1) ? {
     typ: u32 = w[f + u32(8)]
-    is_scalar_type(sx, typ) ? { bind_scalar(lw, w, w[f + u32(7)], ret, typ) } | { bind_aggregate(lw, w, w[f + u32(7)], typ, copy_block(lw, w, state(lw, w, LS_RET_BLOCK), type_leaves(sx, typ))) }
+    is_scalar_type(sx, typ) ? { bind_scalar(lw, w, w[f + u32(7)], ret, typ) } | {
+      is_view_type(sx, typ) ? { bind_aggregate(lw, w, w[f + u32(7)], state(lw, w, LS_RET_TYPE), state(lw, w, LS_RET_BLOCK)) } | { bind_aggregate(lw, w, w[f + u32(7)], typ, copy_block(lw, w, state(lw, w, LS_RET_BLOCK), type_leaves(sx, typ))) }
+    }
     w[f + u32(3)] = u32(0)
     w[f + u32(4)] = index + u32(1)
   } | {
   phase == u32(2) ? {
     sym: u32 = w[f + u32(7)]
     typ: u32 = sym_type(lw, w, sym)
-    is_scalar_type(sx, typ) ? { bind_scalar(lw, w, sym, ret, typ) } | { bind_aggregate(lw, w, sym, typ, copy_block(lw, w, state(lw, w, LS_RET_BLOCK), type_leaves(sx, typ))) }
+    is_scalar_type(sx, typ) ? { bind_scalar(lw, w, sym, ret, typ) } | {
+      is_view_type(sx, typ) ? { bind_aggregate(lw, w, sym, state(lw, w, LS_RET_TYPE), state(lw, w, LS_RET_BLOCK)) } | { bind_aggregate(lw, w, sym, typ, copy_block(lw, w, state(lw, w, LS_RET_BLOCK), type_leaves(sx, typ))) }
+    }
     w[f + u32(3)] = u32(0)
     w[f + u32(4)] = index + u32(1)
   } | {
@@ -1527,7 +1626,7 @@ step_stmts: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
       w[f + u32(7)] = node_a(sx, stmt)
       w[f + u32(8)] = typ
       init == NONE ? {
-        is_scalar_type(sx, typ) ? { fail_at(lw, w, u32(19)) } | { bind_aggregate(lw, w, node_a(sx, stmt), typ, zero_block(lw, w, b, sx, typ)) }
+        (is_scalar_type(sx, typ) || is_view_type(sx, typ)) ? { fail_at(lw, w, u32(19)) } | { bind_aggregate(lw, w, node_a(sx, stmt), typ, zero_block(lw, w, b, sx, typ)) }
         w[f + u32(4)] = index + u32(1)
       } | {
         w[f + u32(3)] = u32(1)

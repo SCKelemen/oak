@@ -40,6 +40,7 @@ RAW_OTHER: u32 = 23
 
 RAW_TYPE_NAME: u32 = 0
 RAW_TYPE_ARRAY: u32 = 1
+RAW_TYPE_SLICE: u32 = 3
 
 RAW_HEADER: u32 = 16
 RAW_FLAG_UNUSABLE: u32 = 1
@@ -102,6 +103,7 @@ TK_SCALAR: u32 = 0
 TK_RECORD: u32 = 1
 TK_ARRAY: u32 = 2
 TK_SUM: u32 = 3
+TK_VIEW: u32 = 4
 
 // Instruction function codes (asm/syntax.go synInstrOps).
 INSTR_REV: u32 = 10
@@ -431,7 +433,7 @@ sr_alloc_type: (s: Ser, w: [*]u32, kind: u32, a: u32, b: u32, in_progress: Bool)
       set_ty_word(s, w, n, k, u32(0))
       k = k + u32(1)
     }
-    set_ty_word(s, w, n, u32(0), kind == TK_SCALAR ? { TY_SCALAR } | { kind == TK_RECORD ? { TY_RECORD } | { kind == TK_ARRAY ? { TY_ARRAY } | { TY_SUM } } })
+    set_ty_word(s, w, n, u32(0), kind == TK_SCALAR ? { TY_SCALAR } | { kind == TK_RECORD ? { TY_RECORD } | { kind == TK_ARRAY ? { TY_ARRAY } | { kind == TK_VIEW ? { TY_VIEW } | { TY_SUM } } } })
     set_sst(s, w, ST_NTYPES, n + u32(1))
   }
   n
@@ -736,11 +738,26 @@ ts_sum: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
   } | { }
 }
 
-// ts_array interns a fixed array once its element type is resolved.
+// sr_view_type interns a view of elements (length NONE when not known).
+sr_view_type: (s: Ser, w: [*]u32, elem: u32, length: u32): u32 {
+  found: u32 = sr_find_type(s, w, TK_VIEW, elem, length)
+  found == NONE ? {
+    t: u32 = sr_alloc_type(s, w, TK_VIEW, elem, length, false)
+    sr_failed(s, w) ? { } | {
+      set_ty_word(s, w, t, u32(4), elem)
+      set_ty_word(s, w, t, u32(5), length)
+    }
+    found = t
+  } | { }
+  found
+}
+
+// ts_array interns a fixed array once its element type is resolved (a
+// view when the length is NONE).
 ts_array: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
   elem: u32 = sst(s, w, ST_TRET)
   length: u32 = w[at + u32(1)]
-  found: u32 = sr_find_type(s, w, TK_ARRAY, elem, length)
+  found: u32 = length == NONE ? { sr_view_type(s, w, elem, NONE) } | { sr_find_type(s, w, TK_ARRAY, elem, length) }
   found == NONE ? {
     t: u32 = sr_alloc_type(s, w, TK_ARRAY, elem, length, false)
     sr_failed(s, w) ? { } | {
@@ -775,9 +792,9 @@ sr_resolve_type: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, mode: u32, value: u32)
         w[at] = TS_NAME
         w[at + u32(1)] = rt_a(rx, raw, texpr)
       } | {
-        tk == RAW_TYPE_ARRAY ? {
+        (tk == RAW_TYPE_ARRAY || tk == RAW_TYPE_SLICE) ? {
           w[at] = TS_ARRAY
-          w[at + u32(1)] = rt_b(rx, raw, texpr)
+          w[at + u32(1)] = tk == RAW_TYPE_SLICE ? { NONE } | { rt_b(rx, raw, texpr) }
           ts_push(s, w, TS_EXPR, rt_a(rx, raw, texpr), u32(0), u32(0), u32(0))
         } | { sr_fail(s, w, u32(105)) }
       }
@@ -1131,6 +1148,8 @@ CP_INSTR: u32 = 10
 CP_FLOAT_FIRST: u32 = 20
 CP_FLOAT_NEXT: u32 = 21
 CP_CONV: u32 = 30
+CP_LEN: u32 = 40
+CP_UTF8: u32 = 41
 
 step_call_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, node: u32, f: u32, phase: u32): () {
   fnode: u32 = rn_a(rx, raw, node)
@@ -1160,6 +1179,32 @@ step_call_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, node: u32, f: u32
         } | {
           nm: Name16 = rs_name(rx, raw, name)
           fcode: u32 = float_intrinsic_code(nm)
+          is_name(nm, u64(0x77656976), u64(0), u32(4)) ? {
+            // view(&local): an alias of an array symbol's leaves.
+            arg: u32 = nargs == u32(1) ? { rl_item(rx, raw, args, u32(0)) } | { NONE }
+            ok: Bool = arg != NONE && rn_kind(rx, raw, arg) == RAW_PREFIX && is_name(rs_name(rx, raw, rn_a(rx, raw, arg)), u64(0x26), u64(0), u32(1)) && rn_kind(rx, raw, rn_b(rx, raw, arg)) == RAW_IDENT
+            !ok ? { sr_fail(s, w, u32(190)) } | {
+              sym: u32 = sr_find_symbol(s, w, f, rn_a(rx, raw, rn_b(rx, raw, arg)))
+              (sym == NONE || ty_kind(s, w, sr_symbol_type(s, w, f, sym)) != TY_ARRAY) ? { sr_fail(s, w, u32(191)) } | {
+                at_t: u32 = sr_symbol_type(s, w, f, sym)
+                vt: u32 = sr_view_type(s, w, ty_elem(s, w, at_t), ty_length(s, w, at_t))
+                sr_deliver(s, w, sr_emit(s, w, SYN_VIEW, sym, u32(0), u32(0), u32(0), u32(0), u32(0), vt))
+              }
+            }
+          } | {
+          is_name(nm, u64(0x6E656C), u64(0), u32(3)) ? {
+            nargs != u32(1) ? { sr_fail(s, w, u32(192)) } | {
+              w[at + u32(2)] = CP_LEN
+              sr_push(s, w, X_EXPR, rl_item(rx, raw, args, u32(0)), f)
+            }
+          } | {
+          is_name(nm, u64(0x64696C61765F7369), u64(0x386674755F), u32(13)) ? {
+            // is_valid_utf8(view): the UTF-8 acceptance automaton.
+            nargs != u32(1) ? { sr_fail(s, w, u32(194)) } | {
+              w[at + u32(2)] = CP_UTF8
+              sr_push(s, w, X_EXPR, rl_item(rx, raw, args, u32(0)), f)
+            }
+          } | {
           fcode != NONE ? {
             w[at + u32(5)] = fcode
             w[at + u32(4)] = sst(s, w, ST_ACC_SP)
@@ -1178,7 +1223,7 @@ step_call_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, node: u32, f: u32
                 }
               }
             }
-          }
+          } } } }
         }
       }
     }
@@ -1233,6 +1278,25 @@ step_call_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, node: u32, f: u32
     typ: u32 = sr_scalar_type(s, w, width, u32(0), u32(0))
     sr_deliver(s, w, sr_emit(s, w, SYN_INSTR, w[at + u32(5)], width, op, u32(0), u32(0), u32(0), typ))
   } | {
+  phase == CP_LEN ? {
+    op: u32 = sst(s, w, ST_RET)
+    t: u32 = sn_type(s, w, op)
+    // A view parameter's length is known when it is bound (the lowering
+    // checks); an array's or a view local's statically.
+    ((t == NONE) || (ty_kind(s, w, t) != TY_ARRAY && ty_kind(s, w, t) != TY_VIEW)) ? { sr_fail(s, w, u32(195)) } | {
+      typ: u32 = sr_scalar_type(s, w, u32(32), u32(0), u32(0))
+      sr_deliver(s, w, sr_emit(s, w, SYN_LEN, op, u32(0), u32(0), u32(0), u32(0), u32(0), typ))
+    }
+  } | {
+  phase == CP_UTF8 ? {
+    op: u32 = sst(s, w, ST_RET)
+    t: u32 = sn_type(s, w, op)
+    bytes_ok: Bool = t != NONE && ty_kind(s, w, t) == TY_VIEW && ty_kind(s, w, ty_elem(s, w, t)) == TY_SCALAR && ty_word(s, w, ty_elem(s, w, t), u32(7)) == u32(8) && ty_word(s, w, ty_elem(s, w, t), u32(8)) == u32(0) && !ty_float(s, w, ty_elem(s, w, t))
+    !bytes_ok ? { sr_fail(s, w, u32(196)) } | {
+      typ: u32 = sr_bool_type(s, w)
+      sr_deliver(s, w, sr_emit(s, w, SYN_BUILTIN, u32(0), op, u32(0), u32(0), u32(0), u32(0), typ))
+    }
+  } | {
   phase == CP_CONV ? {
     op: u32 = sst(s, w, ST_RET)
     width: u32 = w[at + u32(5)]
@@ -1240,7 +1304,7 @@ step_call_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, node: u32, f: u32
     typ: u32 = sr_scalar_type(s, w, width, signed, u32(0))
     w[at + u32(7)] != u32(0) ? { typ = sr_scalar_type(s, w, width, u32(0), u32(1)) } | { }
     sr_deliver(s, w, sr_emit(s, w, SYN_CONV, width, signed, op, u32(0), u32(0), u32(0), typ))
-  } | { sr_fail(s, w, u32(118)) } } } } }
+  } | { sr_fail(s, w, u32(118)) } } } } } } }
 }
 
 // step_literal_x serializes a record or array literal: the type first,
@@ -1432,7 +1496,7 @@ step_expr_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
               }
             }
           } | {
-            ty_kind(s, w, bt) != TY_ARRAY ? { sr_fail(s, w, u32(131)) } | {
+            (ty_kind(s, w, bt) != TY_ARRAY && ty_kind(s, w, bt) != TY_VIEW) ? { sr_fail(s, w, u32(131)) } | {
               w[at + u32(5)] = ret
               w[at + u32(6)] = bt
               w[at + u32(2)] = u32(2)
