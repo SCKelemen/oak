@@ -1445,6 +1445,31 @@ exclusives stay). Measured on the binaries: `lattice.oak` 2.86 s to
 prover at 1.5–1.7 times the C build; the remaining gap is the guard on
 every element access and the frame traffic of functions past ten
 variables, the next increments.
+**Twentieth increment — leaves live in the argument registers.** The
+dumps of the hot leaves (`cache_get`, `mk`) showed their prologues and
+epilogues outweighing their bodies: every scalar parameter moved into a
+callee-saved register at entry, up to five register pairs saved and
+restored around a five-line body, and locals past the tenth in frame
+slots. A function that makes no call now keeps each scalar parameter in
+the argument register it arrived in, places its locals in the argument
+registers no parameter occupies (x2–x7; x0 and x1 stay the result's, written
+at the end) before taking a callee-saved one, moves nothing in the
+prologue, and lists those registers as clobbers — the checker's obligation
+for a written argument register, the result register excepted when the
+result is an integer. Spans and by-reference records keep their parking.
+Alongside: a constant-count shift reads its operand in place, a bounds
+guard whose index is a register variable compares that register and
+indexes by it (one move less per element access), and the short-circuit
+operators retarget the operand's producing instruction into the result
+instead of moving it. `cache_get` went from sixteen prologue and epilogue
+instructions to six. Measured on the binaries, interleaved runs:
+`lattice.oak` 2.45 s to 2.3 s, `mono.oak` 13.0 s to 12.0 s, the rest
+within the noise of a busy machine. Executed (`TestE2ENativeLeaves`):
+parameters assigned in place, a loop counter in an argument register, an
+arm staging the result while another reads a parameter, a float result
+beside integer homes, and a leaf with more locals than free argument
+registers — natively against the C backend and the portable realization,
+the scalar leaves proven.
 Next increments: the fallback reasons above in the order of their counts,
 so the prover lowers whole; then the verifier past `bl` and unit results —
 calls by inlining or by the callee's proven contract, and effects through

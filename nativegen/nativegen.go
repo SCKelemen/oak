@@ -1097,7 +1097,15 @@ type generator struct {
 	spill       map[int]int64 // scratch register → its spill slot offset
 	free        []int         // free scratch registers
 	ipScratch   int           // x16/x17 taken as overflow scratch (overflowScratch)
-	live        []int         // allocated scratch registers, allocation order
+	// In a leaf (no call) the argument registers are homes: a scalar
+	// parameter stays where it arrived, and the argument registers no
+	// parameter occupies hold locals before any callee-saved register is
+	// taken (leafHomes, in order; argHomes names each parameter's). Nothing
+	// need be saved for them, and the prologue moves nothing.
+	leafHomes []int
+	argHomes  map[string]int
+	homesUsed map[int]bool // every argument register handed out as a home
+	live      []int        // allocated scratch registers, allocation order
 	// defined marks the live scratch registers an emitted instruction has
 	// written: a call spills exactly those (a register allocated for an
 	// enclosing expression's result and not yet written holds nothing, and
@@ -1209,7 +1217,10 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	// pair is bound, and the checker's span facts flow in text order — a
 	// result placed in one arm would end the span before a later arm
 	// walks it.
-	parkSpans := mentionsCall(fn.Body) || returnsValue(fn)
+	g.hasCalls = mentionsCall(fn.Body)
+	g.argHomes = map[string]int{}
+	g.homesUsed = map[int]bool{}
+	parkSpans := g.hasCalls || returnsValue(fn)
 	if hasVariables(fn) || parkSpans {
 		g.saveArea = 8 * (calleeHigh - calleeLow + 1)
 	}
@@ -1229,8 +1240,11 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 		if p.Variadic {
 			return nil, unsupported("variadic parameter %s", p.Name.Value)
 		}
-		if _, ok := scalarOf(p.Type); ok {
-			nextReg++
+		if s, ok := scalarOf(p.Type); ok {
+			if !s.isFloat && !s.isVec {
+				g.argHomes[p.Name.Value] = nextReg
+				nextReg++
+			}
 			continue
 		}
 		if name, isRecord := g.recordTypeName(p.Type); isRecord {
@@ -1280,7 +1294,16 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	if nextReg > 8 {
 		return nil, unsupported("the parameters exhaust the eight argument registers")
 	}
-	g.hasCalls = mentionsCall(fn.Body)
+	if !g.hasCalls {
+		// x0 (and x1) are left out: the result's registers, written at the
+		// end, whatever the result's type.
+		for r := nextReg; r < 8; r++ {
+			if r <= 1 {
+				continue
+			}
+			g.leafHomes = append(g.leafHomes, r)
+		}
+	}
 	if fn.ReturnType != nil && fn.ReturnType.String() == "never" {
 		// The function leaves by an exception return, never by ret.
 		g.never = true
@@ -1319,7 +1342,11 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	g.pushScope()
 	for _, p := range fn.Parameters {
 		if s, ok := scalarOf(p.Type); ok {
-			g.declare(p.Name.Value, s)
+			if home, isHome := g.argHomes[p.Name.Value]; isHome && !g.hasCalls {
+				g.declareAt(p.Name.Value, s, home)
+			} else {
+				g.declare(p.Name.Value, s)
+			}
 		}
 		if rp, isRecord := g.recordParams[p.Name.Value]; isRecord {
 			if rp.inPlace {
@@ -1424,7 +1451,9 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 		}
 		out.Bindings = append(out.Bindings, asm.Binding{Register: bound, Param: p.Name.Value, Line: fn.Token.Line})
 		prologue = append(prologue, g.normalizeInto(i, s)...)
-		prologue = append(prologue, g.storeVar(p.Name.Value, i))
+		if v, inReg := g.regs[p.Name.Value]; !inReg || v != i {
+			prologue = append(prologue, g.storeVar(p.Name.Value, i))
+		}
 	}
 	// The loop header a tail self-call re-enters: after the parameters are
 	// in their slots.
@@ -1463,6 +1492,15 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 			}
 		}
 		out.Clobbers = append(out.Clobbers, xr(29), xr(30)) // saved by the prologue's stp, restored by ldp
+	} else {
+		// A leaf writes the argument registers that are homes (a parameter
+		// assigned, a local placed there).
+		integerResult := g.result != nil && !g.result.isFloat && !g.result.isVec
+		for r := 0; r <= 7; r++ {
+			if g.homesUsed[r] && !(integerResult && r == 0) {
+				out.Clobbers = append(out.Clobbers, xr(r))
+			}
+		}
 	}
 	if g.usedX8 {
 		out.Clobbers = append(out.Clobbers, xr(8))
@@ -3065,6 +3103,10 @@ func (g *generator) declare(name string, s scalar) int64 {
 			offset = 8 * g.nslots
 			g.nslots++
 		}
+	} else if !g.hasCalls && len(g.leafHomes) > 0 {
+		r = g.leafHomes[0]
+		g.leafHomes = g.leafHomes[1:]
+		g.homesUsed[r] = true
 	} else if g.usedCallee < calleeHigh-calleeLow+1 {
 		r = calleeLow + g.usedCallee
 		g.usedCallee++
@@ -3075,6 +3117,14 @@ func (g *generator) declare(name string, s scalar) int64 {
 	g.slots[name], g.types[name], g.regs[name] = offset, s, r
 	g.scopes[len(g.scopes)-1][name] = slotBinding{offset: offset, typ: s, reg: r}
 	return offset
+}
+
+// declareAt binds a scalar variable to a given register: a leaf's
+// parameter in the argument register it arrived in.
+func (g *generator) declareAt(name string, s scalar, r int) {
+	g.homesUsed[r] = true
+	g.slots[name], g.types[name], g.regs[name] = -1, s, r
+	g.scopes[len(g.scopes)-1][name] = slotBinding{offset: -1, typ: s, reg: r}
 }
 
 // slotMem is the frame address of a slot: past the [x29, x30] pair and the
@@ -4011,7 +4061,9 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		g.emit("mov", wr(out), wr(l))
+		if !g.retargetLast(l, out) {
+			g.emit("mov", wr(out), wr(l))
+		}
 		g.release(l)
 		if e.Operator == "&&" {
 			g.emit("cbz", wr(out), asm.Symbol{Name: end})
@@ -4022,7 +4074,9 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		g.emit("mov", wr(out), wr(rr))
+		if !g.retargetLast(rr, out) {
+			g.emit("mov", wr(out), wr(rr))
+		}
 		g.release(rr)
 		g.label(end)
 		return out, nil
@@ -4081,6 +4135,28 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 	}
 	if mnemonic, direct := directArithmetic[e.Operator]; direct && !typ.isFloat && !typ.isVec {
 		return g.directInfix(e, typ, mnemonic)
+	}
+	if (e.Operator == "<<" || e.Operator == ">>") && !typ.signed && !typ.isFloat && !typ.isVec {
+		if count, isConst := constantValue(e.Right); isConst && count >= 0 && count < int64(typ.bits) {
+			// A constant-count shift reads its operand where it lies.
+			l, lfixed, err := g.operand(e.Left, typ)
+			if err != nil {
+				return 0, err
+			}
+			out := l
+			if lfixed {
+				if out, err = g.alloc(typ); err != nil {
+					return 0, err
+				}
+			}
+			op := "lsl"
+			if e.Operator == ">>" {
+				op = "lsr"
+			}
+			g.emit(op, reg(out, typ), reg(l, typ), imm(count))
+			g.normalize(out, typ)
+			return out, nil
+		}
 	}
 	l, err := g.expr(e.Left, &typ)
 	if err != nil {
@@ -5121,6 +5197,24 @@ func (g *generator) guardedIndexAt(sp span, index ast.Expression, tok *token.Tok
 			}
 			g.elided++
 			return r, nil
+		}
+	}
+	if ident, isIdent := index.(*ast.Identifier); isIdent && tok != nil {
+		// An index that is a register variable of unsigned 32-bit type:
+		// the guard compares the variable's own register and the access
+		// indexes by it — no copy (the checker keys its fact on the
+		// compared register, whichever it is).
+		if v, inReg := g.regs[ident.Value]; inReg && v >= 0 && v < vecBase {
+			if t, ok := g.types[ident.Value]; ok && !t.signed && !t.isBool && !t.isFloat && !t.isVec && !t.wide() {
+				g.usedTrap = true
+				if sp.frameLen > 0 && sp.frameLen <= maxCmpImmediate {
+					g.emit("cmp", wr(v), imm(sp.frameLen))
+				} else {
+					g.emit("cmp", wr(v), wr(sp.lenReg))
+				}
+				g.branch("hs", g.trap)
+				return -v - 2, nil
+			}
 		}
 	}
 	r, err := g.indexValue(index)
