@@ -1056,6 +1056,9 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 		if arch == "" {
 			arch = asm.ArchArm64 // the lane is recorded by the stitcher and the native backend; AArch64 is the default lane
 		}
+		if fn.NativeBacked && vectorContract(fn) {
+			cg.emitVectorShim(fn, arch)
+		}
 		cg.write(fmt.Sprintf("#if !(%s) || defined(OAK_PORTABLE_INTRINSICS)\n", asm.ArchCondition(arch)))
 		defer cg.write("#endif\n")
 	}
@@ -2199,6 +2202,9 @@ func (cg *CodeGenerator) emitFunctionPrototypes(program *ast.Program) {
 		cg.write(" );\n")
 		if attribute != "" {
 			cg.write("#endif\n")
+		}
+		if fn.NativeBacked && vectorContract(fn) {
+			cg.emitVectorEntryPrototype(fn)
 		}
 		// An explicit C ABI export is a second entry point with the
 		// declared symbol (docs/spec/92-ffi.md section 2.9).
@@ -5044,4 +5050,111 @@ func snakeIdent(name string) string {
 		out.WriteRune(r)
 	}
 	return out.String()
+}
+
+// vectorContract reports a function whose parameters or result include a
+// fixed vector type (nativegen.VectorContract's spelling: the type reads
+// `simd.U8x16` and the like).
+func vectorContract(fn *ast.FunctionStatement) bool {
+	if fn == nil {
+		return false
+	}
+	for _, p := range fn.Parameters {
+		if _, ok := neonTypeOf(p.Type); ok {
+			return true
+		}
+	}
+	if fn.ReturnType != nil {
+		if _, ok := neonTypeOf(fn.ReturnType); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// neonTypeOf maps a fixed vector type to its NEON spelling and lane element.
+func neonTypeOf(typeExpr ast.Expression) (neon neonVector, ok bool) {
+	if typeExpr == nil {
+		return neonVector{}, false
+	}
+	switch typeExpr.String() {
+	case "simd.U8x16":
+		return neonVector{ctype: "uint8x16_t", suffix: "u8", oak: "u8x16"}, true
+	case "simd.U16x8":
+		return neonVector{ctype: "uint16x8_t", suffix: "u16", oak: "u16x8"}, true
+	case "simd.U32x4":
+		return neonVector{ctype: "uint32x4_t", suffix: "u32", oak: "u32x4"}, true
+	case "simd.U64x2":
+		return neonVector{ctype: "uint64x2_t", suffix: "u64", oak: "u64x2"}, true
+	}
+	return neonVector{}, false
+}
+
+type neonVector struct {
+	ctype  string // uint8x16_t
+	suffix string // the intrinsic suffix: u8
+	oak    string // the lane-array struct: u8x16
+}
+
+// nativeEntryName is the C symbol of a vector-contract function's native
+// entry (nativegen.NativeSymbol under the emitter's mangling).
+func (cg *CodeGenerator) nativeEntryName(fn *ast.FunctionStatement) string {
+	return cg.cFunctionName(fn.Name.Value + "_neon_abi")
+}
+
+// emitVectorEntryPrototype declares the native entry of a function under
+// the vector contract: its vectors are NEON values (v0–v7 under AAPCS64),
+// everything else as the Oak prototype spells it. Only where the native
+// lowering applies.
+func (cg *CodeGenerator) emitVectorEntryPrototype(fn *ast.FunctionStatement) {
+	arch := fn.AsmArch
+	if arch == "" {
+		arch = asm.ArchArm64
+	}
+	cg.write(fmt.Sprintf("#if (%s) && !defined(OAK_PORTABLE_INTRINSICS)\n", asm.ArchCondition(arch)))
+	ret := cg.parseTypeExpression(fn.ReturnType)
+	if neon, ok := neonTypeOf(fn.ReturnType); ok {
+		ret = neon.ctype
+	}
+	var params []string
+	for _, p := range fn.Parameters {
+		if neon, ok := neonTypeOf(p.Type); ok {
+			params = append(params, fmt.Sprintf("%s %s", neon.ctype, cIdent(p.Name.Value)))
+		} else {
+			params = append(params, cg.cParameter(p.Type, p.Name.Value))
+		}
+	}
+	if len(params) == 0 {
+		params = []string{"void"}
+	}
+	cg.write(fmt.Sprintf("%s %s( %s );\n#endif\n", ret, cg.nativeEntryName(fn), strings.Join(params, ", ")))
+}
+
+// emitVectorShim defines the Oak name of a natively lowered vector-contract
+// function as a converting call to its native entry: lane-array structs in,
+// NEON values through, the struct back out (docs/spec/93-simd.md section
+// 1.4). The C compiler inlines it at every call.
+func (cg *CodeGenerator) emitVectorShim(fn *ast.FunctionStatement, arch string) {
+	cg.write(fmt.Sprintf("#if (%s) && !defined(OAK_PORTABLE_INTRINSICS)\n", asm.ArchCondition(arch)))
+	ret := cg.parseTypeExpression(fn.ReturnType)
+	cg.write(fmt.Sprintf("%s %s( %s ) {\n", ret, cg.cFunctionName(fn.Name.Value), cg.cParameterList(fn)))
+	var args []string
+	for _, p := range fn.Parameters {
+		if neon, ok := neonTypeOf(p.Type); ok {
+			args = append(args, fmt.Sprintf("vld1q_%s( %s.lanes )", neon.suffix, cIdent(p.Name.Value)))
+		} else {
+			args = append(args, cIdent(p.Name.Value))
+		}
+	}
+	call := fmt.Sprintf("%s( %s )", cg.nativeEntryName(fn), strings.Join(args, ", "))
+	switch {
+	case fn.ReturnType == nil || fn.ReturnType.String() == "()":
+		cg.write(fmt.Sprintf("  %s;\n}\n#endif\n", call))
+	default:
+		if neon, ok := neonTypeOf(fn.ReturnType); ok {
+			cg.write(fmt.Sprintf("  %s out;\n  vst1q_%s( out.lanes, %s );\n  return out;\n}\n#endif\n", neon.oak, neon.suffix, call))
+		} else {
+			cg.write(fmt.Sprintf("  return %s;\n}\n#endif\n", call))
+		}
+	}
 }

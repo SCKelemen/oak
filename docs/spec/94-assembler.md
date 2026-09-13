@@ -289,6 +289,17 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   (`arm64.write_vbar_el2(address_of(vectors))`). Ordinary Oak functions
   have no exposed address.
 
+**Vector accesses (2026-09-13).** A `q` load or store over a byte span at
+element index `wI` touches sixteen elements; the checker admits it under
+the *slack* guard the native backend emits: `cmp wL, #16; b.lo trap`
+establishes `len ≥ 16`, `sub wT, wL, #16` records `wT = len − 16` for
+the span whose length register is `wL` (`slackFacts`), and `cmp wI, wT;
+b.hi trap` leaves the fall-through path knowing `wI + 16 ≤ len`
+(`idxFacts` with `slack`), which admits an access of `16 / elem` elements
+at `wI` with `uxtw #log2(elem)` (`Oak.Assembler.index_access_lanes`,
+`slack_guard`). The facts die as index facts do: a write to `wI`, `wT`,
+or `wL` forgets them.
+
 - **The operand-stack shorthand** (§2) is implemented as desugaring
   (`asm/stack.go`): `push <param>` writes the parameter's contract binding
   for the author, `push #imm` pushes an immediate, an operand-less
@@ -1998,3 +2009,21 @@ checker's binding and clobber facts, already computed. Acceptance: the
 spec's `add_asm` and a shift/mask extractor verify; a deliberately wrong
 body (`sub` for `add`) is rejected with the differing term printed; a body
 with memory or a call reports "not verified: trusted per §5".
+
+### 9.x Vectors on the native lane (2026-09-13)
+
+The native backend lowers the fixed vectors (`93-simd.md` §1.4 "The native
+backend"): values in the vector register file, one NEON instruction per
+operation, loads and stores under the slack guard of §7. A function whose
+signature carries a vector follows the vector register contract this
+chapter's `contractClass` already assigns to `simd.*` (v0–v7), which the C
+backend's lane-array struct does not (AAPCS64 passes a sixteen-byte
+struct of bytes in two general registers). So such a function's native
+entry is encoded under its name suffixed `_neon_abi`, native callers
+reach it there, and the C emitter defines the Oak name as a converting
+shim over the entry (`vld1q`/`vst1q` around the call) that the C compiler
+inlines. A natively lowered function that passes vectors to a callee the
+C backend realizes is itself left to the C backend, to a fixpoint
+(`compiler/native_bodies.go`), so no call crosses the two contracts
+unconverted. The suffix is reserved the way `__` is: no Oak identifier
+ends in it.

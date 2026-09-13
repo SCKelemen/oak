@@ -54,6 +54,11 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		symbols[fn.Name.Value] = true
 		if fn.ExternSymbol == "" && fn.Receiver == nil && len(fn.TypeParams) == 0 {
 			functions[fn.Name.Value] = fn
+			if nativegen.VectorContract(fn) {
+				// The native entry of a function under the vector contract
+				// (nativegen.VectorContractSuffix): a call target too.
+				symbols[nativegen.NativeSymbol(fn)] = true
+			}
 		}
 	}
 	specializeInstantiations(tc, templates, records, adts)
@@ -117,6 +122,32 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		fn.NativeBacked = true
 		fn.AsmArch = asmFn.Arch // the C emitter guards the Oak body by the lane's negation
 		lowered = append(lowered, asmFn)
+	}
+	// A native function calls a vector-contract callee at its native entry,
+	// so the callee must be native too; a caller whose callee stayed on the
+	// C backend is demoted, and demotion cascades to a fixpoint.
+	for changed := true; changed; {
+		changed = false
+		kept := lowered[:0]
+		for _, asmFn := range lowered {
+			fn := asmFn.Signature
+			demoted := false
+			for _, callee := range nativegen.VectorCallees(fn, functions) {
+				if target := functions[callee]; target != nil && !target.NativeBacked {
+					diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (it passes vectors to %s, which the C backend realizes)", fn.Name.Value, callee)))
+					demoted = true
+					break
+				}
+			}
+			if demoted {
+				fn.NativeBacked = false
+				fn.AsmArch = ""
+				changed = true
+				continue
+			}
+			kept = append(kept, asmFn)
+		}
+		lowered = kept
 	}
 	return lowered, diagnostics
 }

@@ -47,6 +47,11 @@ type scalar struct {
 	signed  bool
 	isBool  bool
 	isFloat bool // f32/f64: held in the s/d view of a vector register
+	// isVec marks the fixed 128-bit vectors (nativegen/simd.go): held whole
+	// in a vector register, lanes of laneBits each.
+	isVec    bool
+	lanes    int
+	laneBits int
 }
 
 var scalars = map[string]scalar{
@@ -60,6 +65,9 @@ var scalars = map[string]scalar{
 func scalarOf(expr ast.Expression) (scalar, bool) {
 	if expr == nil {
 		return scalar{}, false
+	}
+	if v, isVec := vecTypeOf(expr); isVec {
+		return v, true
 	}
 	s, ok := scalars[expr.String()]
 	return s, ok
@@ -1064,7 +1072,7 @@ const calleeLow, calleeHigh = 19, 28
 
 // The vector file: v16–v23 scratch (caller-saved), v8–v15 for float
 // variables (callee-saved: their d views are saved and restored).
-const vecScratchLow, vecScratchHigh = 16, 23
+const vecScratchLow, vecScratchHigh = 16, 31
 const vecCalleeLow, vecCalleeHigh = 8, 15
 
 // Lane names the assembler lane a body is lowered on and the target facts
@@ -1237,7 +1245,7 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	if frame > 4080 {
 		return nil, unsupported("a frame of %d bytes", frame)
 	}
-	out := &asm.Function{Name: fn.Name.Value, Signature: fn, Line: fn.Token.Line, Fallback: true, Records: records, ADTs: adts, System: g.system}
+	out := &asm.Function{Name: NativeSymbol(fn), Signature: fn, Line: fn.Token.Line, Fallback: true, Records: records, ADTs: adts, System: g.system}
 	g.line = fn.Token.Line
 	var prologue []asm.Item
 	if frame > 0 {
@@ -1302,7 +1310,7 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 			continue
 		}
 		s, _ := scalarOf(p.Type)
-		if s.isFloat {
+		if s.isFloat || s.isVec {
 			i := vecIndex
 			vecIndex++
 			out.Bindings = append(out.Bindings, asm.Binding{Register: vr(i, s), Param: p.Name.Value, Line: fn.Token.Line})
@@ -2018,7 +2026,13 @@ func hasVariables(fn *ast.FunctionStatement) bool {
 func (g *generator) storeVar(name string, r int) asm.Instruction {
 	typ := g.types[name]
 	if v, inReg := g.regs[name]; inReg && v >= 0 {
+		if typ.isVec {
+			return g.ins("orr", vreg(v-vecBase, "16b"), vreg(r-vecBase, "16b"), vreg(r-vecBase, "16b"))
+		}
 		return g.ins(moveOf(typ), reg(v, typ), reg(r, typ))
+	}
+	if typ.isVec {
+		return g.ins("str", qreg(r-vecBase), g.slotMem(g.slots[name]))
 	}
 	return g.ins("str", reg(r, typ), g.slotMem(g.slots[name]))
 }
@@ -2027,7 +2041,13 @@ func (g *generator) storeVar(name string, r int) asm.Instruction {
 func (g *generator) loadVar(name string, r int) asm.Instruction {
 	typ := g.types[name]
 	if v, inReg := g.regs[name]; inReg && v >= 0 {
+		if typ.isVec {
+			return g.ins("orr", vreg(r-vecBase, "16b"), vreg(v-vecBase, "16b"), vreg(v-vecBase, "16b"))
+		}
 		return g.ins(moveOf(typ), reg(r, typ), reg(v, typ))
+	}
+	if typ.isVec {
+		return g.ins("ldr", qreg(r-vecBase), g.slotMem(g.slots[name]))
 	}
 	return g.ins("ldr", reg(r, typ), g.slotMem(g.slots[name]))
 }
@@ -2095,6 +2115,9 @@ func (g *generator) newLabel(hint string) string {
 
 // reg spells scratch register r at the type's width.
 func reg(r int, s scalar) asm.Register {
+	if s.isVec {
+		return vreg(r-vecBase, s.arr())
+	}
 	if s.isFloat {
 		return vr(r-vecBase, s)
 	}
@@ -2110,6 +2133,9 @@ const vecBase = 100
 
 // vr spells vector register n in the type's scalar view.
 func vr(n int, s scalar) asm.Register {
+	if s.isVec {
+		return wholeV(n)
+	}
 	view := "s"
 	if s.wide() {
 		view = "d"
@@ -2126,7 +2152,7 @@ func dr(n int) asm.Register {
 
 func (g *generator) alloc(typ scalar) (int, error) {
 	pool := &g.free
-	if typ.isFloat {
+	if typ.isFloat || typ.isVec {
 		pool = &g.freeF
 		g.usedFloat = true
 	}
@@ -2602,7 +2628,22 @@ func loadOf(s scalar) string {
 func (g *generator) declare(name string, s scalar) int64 {
 	offset := int64(-1)
 	r := -1
-	if s.isFloat {
+	if s.isVec {
+		// A vector local: a callee-saved vector register when the function
+		// makes no call (a callee may clobber their upper halves), else a
+		// sixteen-byte, sixteen-aligned frame slot.
+		g.usedFloat = true
+		if !g.hasCalls && g.usedCalleeV < vecCalleeHigh-vecCalleeLow+1 {
+			r = vecBase + vecCalleeLow + g.usedCalleeV
+			g.usedCalleeV++
+		} else {
+			if g.nslots%2 != 0 {
+				g.nslots++
+			}
+			offset = 8 * g.nslots
+			g.nslots += 2
+		}
+	} else if s.isFloat {
 		g.usedFloat = true
 		if g.usedCalleeV < vecCalleeHigh-vecCalleeLow+1 {
 			r = vecBase + vecCalleeLow + g.usedCalleeV
@@ -2720,6 +2761,9 @@ func (g *generator) typeOf(expr ast.Expression, hint *scalar) (scalar, error) {
 		}
 		return sp.elem, nil
 	case *ast.InvocationExpression:
+		if member, isSimd := simdCallee(e.Function); isSimd {
+			return g.simdResultType(member, e.Arguments)
+		}
 		if member, isLibrary := libraryMember(e); isLibrary {
 			return instructionFunctionType(member)
 		}
@@ -2880,6 +2924,10 @@ func (g *generator) epilogue() {
 
 // moveResult places a value in the result register.
 func (g *generator) moveResult(r int, s scalar) {
+	if s.isVec {
+		g.vmove(0, r-vecBase)
+		return
+	}
 	if s.isFloat {
 		g.emit("fmov", reg(vecBase, s), reg(r, s))
 		return
@@ -3046,6 +3094,16 @@ func (g *generator) effect(expr ast.Expression) error {
 	call, isCall := expr.(*ast.InvocationExpression)
 	if !isCall {
 		return unsupported("an expression statement that is not a call")
+	}
+	if member, isSimd := simdCallee(call.Function); isSimd {
+		r, err := g.simdOp(member, call.Arguments)
+		if err != nil {
+			return err
+		}
+		if r >= 0 {
+			g.release(r)
+		}
+		return nil
 	}
 	if member, isLibrary := libraryMember(call); isLibrary {
 		return g.instructionEffect(member, call)
@@ -3310,10 +3368,23 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 	case *ast.IndexExpression:
 		return g.element(e)
 	case *ast.InvocationExpression:
+		if member, isSimd := simdCallee(e.Function); isSimd {
+			r, err := g.simdOp(member, e.Arguments)
+			if err != nil {
+				return 0, err
+			}
+			if r < 0 {
+				return 0, unsupported("simd.%s in value position", member)
+			}
+			return r, nil
+		}
 		if member, isLibrary := libraryMember(e); isLibrary {
 			return g.instructionValue(member, e, typ)
 		}
-		ident := e.Function.(*ast.Identifier)
+		ident, isIdent := e.Function.(*ast.Identifier)
+		if !isIdent {
+			return 0, unsupported("a call through a value")
+		}
 		if ident.Value == "len" && len(e.Arguments) == 1 {
 			r, err := g.alloc(scalars["u32"])
 			if err != nil {
@@ -3708,8 +3779,10 @@ func isConversion(name string) bool {
 // parameter, result, or span element, a float literal, or a float name in
 // a local's type or a conversion.
 func mentionsFloat(fn *ast.FunctionStatement) bool {
+	// The vector file serves floats and the fixed vectors alike: a function
+	// mentioning either reserves the d8–d15 save area.
 	isFloatType := func(expr ast.Expression) bool {
-		if s, ok := scalarOf(expr); ok && s.isFloat {
+		if s, ok := scalarOf(expr); ok && (s.isFloat || s.isVec) {
 			return true
 		}
 		if sp, ok := spanOf(expr); ok && sp.elem.isFloat {
@@ -3735,6 +3808,9 @@ func mentionsFloat(fn *ast.FunctionStatement) bool {
 				found = true
 			}
 		case *ast.InvocationExpression:
+			if _, isSimd := simdCallee(e.Function); isSimd {
+				found = true
+			}
 			if ident, ok := e.Function.(*ast.Identifier); ok && (strings.Contains(ident.Value, "f32") || strings.Contains(ident.Value, "f64") || typechecker.FloatIntrinsicName(ident.Value)) {
 				found = true
 			}
@@ -4109,7 +4185,10 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 	for _, arg := range args {
 		for j, r := range arg.regs {
 			typ := arg.types[j]
-			if typ.isFloat {
+			if typ.isVec {
+				g.vmove(vector, r-vecBase)
+				vector++
+			} else if typ.isFloat {
 				g.emit("fmov", reg(vecBase+vector, typ), reg(r, typ))
 				vector++
 			} else {
@@ -4133,13 +4212,29 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 	var spilled []int
 	for _, r := range g.live {
 		if _, ok := g.spill[r]; !ok {
-			g.spill[r] = 8 * g.nslots
-			g.nslots++
+			if r >= vecBase {
+				// The vector file spills whole (a q register, sixteen
+				// aligned bytes): a scratch may hold a vector or a float.
+				if g.nslots%2 != 0 {
+					g.nslots++
+				}
+				g.spill[r] = 8 * g.nslots
+				g.nslots += 2
+			} else {
+				g.spill[r] = 8 * g.nslots
+				g.nslots++
+			}
 		}
 		g.emit("str", spillReg(r), g.slotMem(g.spill[r]))
 		spilled = append(spilled, r)
 	}
-	g.emit("bl", asm.Symbol{Name: ident.Value})
+	target := ident.Value
+	if callee, declared := g.functions[ident.Value]; declared {
+		// A callee under the vector contract is reached at its native
+		// entry; the compiler lowers it natively or drops this caller.
+		target = NativeSymbol(callee)
+	}
+	g.emit("bl", asm.Symbol{Name: target})
 	for _, r := range spilled {
 		g.emit("ldr", spillReg(r), g.slotMem(g.spill[r]))
 	}
@@ -4158,7 +4253,9 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 	if err != nil {
 		return 0, err
 	}
-	if resultType.isFloat {
+	if resultType.isVec {
+		g.vmove(out-vecBase, 0)
+	} else if resultType.isFloat {
 		g.emit("fmov", reg(out, *resultType), reg(vecBase, *resultType))
 	} else {
 		g.emit("mov", reg(out, *resultType), reg(0, *resultType))
@@ -4198,7 +4295,7 @@ func (g *generator) arrayArgument(arg ast.Expression, target span) (*arrayLocal,
 // spillReg is the whole-register view a scratch register spills as.
 func spillReg(r int) asm.Register {
 	if r >= vecBase {
-		return dr(r - vecBase)
+		return qreg(r - vecBase)
 	}
 	return xr(r)
 }
@@ -4247,6 +4344,9 @@ func mentionsCall(body ast.Node) bool {
 		if call, ok := n.(*ast.InvocationExpression); ok {
 			if _, isLibrary := libraryMember(call); isLibrary {
 				return // an instruction function is an instruction, not a call
+			}
+			if _, isSimd := simdCallee(call.Function); isSimd {
+				return // a vector operation is an instruction too
 			}
 			if ident, ok := call.Function.(*ast.Identifier); ok {
 				if isConversion(ident.Value) || ident.Value == "assert" || ident.Value == "len" || ident.Value == "view" || ident.Value == "span" || ident.Value == "subslice" || typechecker.FloatIntrinsicName(ident.Value) {
