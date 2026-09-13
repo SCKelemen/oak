@@ -56,6 +56,12 @@ y: Option[i32] = .None
 
 The shorthand is accepted only when the expected ADT is uniquely determined.
 
+Storage declared without an initializer holds a sum type's **first variant**
+with a zero payload — tag zero, what the backend's zero-initialized storage
+reads and what the interpreter constructs — so a `[1]NameMonitor` or a
+`[N]NameState` array starts in the declaration's first state before the
+program writes it (`compiler/e2e_protocol_monitor_test.go`).
+
 ## 3. Payload defaults
 
 A constructor may define a default payload:

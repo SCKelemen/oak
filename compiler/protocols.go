@@ -1107,7 +1107,7 @@ func (m *protocolMachine) project() []ast.Statement {
 			}
 		}
 		out = append(out, m.livenessPredicates(s, prefix, stateType, dataType, false, exported, isState)...)
-		return out
+		return append(out, m.monitorProjection(s, prefix, stateType, stepType, dataType, false, exported)...)
 	}
 
 	// NameData and its initial value.
@@ -1189,7 +1189,49 @@ func (m *protocolMachine) project() []ast.Statement {
 		s.expr(s.id("result")))
 	next.Exported = exported
 	out = append(out, next)
-	return append(out, m.livenessPredicates(s, prefix, stateType, dataType, true, exported, isState)...)
+	out = append(out, m.livenessPredicates(s, prefix, stateType, dataType, true, exported, isState)...)
+	return append(out, m.monitorProjection(s, prefix, stateType, stepType, dataType, true, exported)...)
+}
+
+// monitorProjection is the declaration's machine run beside an
+// implementation (docs/spec/112-protocols.md section 2c; TigerBeetle's
+// state checker): `NameMonitor` holds the machine's state and a violation
+// count, `name_monitor()` is the initial one, `name_observe(m, [data,]
+// step)` advances it with `name_next` when `name_legal` admits the step
+// and otherwise counts a violation and stays put, and `name_conforms(m)`
+// says no violation was observed. Built from the same declaration that
+// drives the projection, the model-checker module, the prover, and the
+// typed-command derive.
+func (m *protocolMachine) monitorProjection(s *synth, prefix, stateType, stepType, dataType string, withData, exported bool) []ast.Statement {
+	monitorType := m.name + "Monitor"
+	record := s.recordType(monitorType, nil, s.set("state", s.id(stateType)), s.set("violations", s.id("u32")))
+	record.Exported = exported
+	initial := s.fnExpr(prefix+"_monitor", nil, s.id(monitorType),
+		s.record(monitorType, s.set("state", s.call(prefix+"_initial")), s.set("violations", s.u32(0))))
+	initial.Exported = exported
+
+	monitorState := func() *ast.IndexExpression { return s.field(s.index(s.id("m"), s.u32(0)), "state") }
+	violations := func() *ast.IndexExpression { return s.field(s.index(s.id("m"), s.u32(0)), "violations") }
+	params := []*ast.FunctionParameter{s.param("m", s.span(s.id(monitorType)))}
+	legalArgs := []ast.Expression{monitorState()}
+	nextArgs := []ast.Expression{monitorState()}
+	if withData {
+		params = append(params, s.param("data", s.span(s.id(dataType))))
+		legalArgs = append(legalArgs, s.index(s.id("data"), s.u32(0)))
+		nextArgs = append(nextArgs, s.id("data"))
+	}
+	params = append(params, s.param("step", s.id(stepType)))
+	legalArgs = append(legalArgs, s.id("step"))
+	nextArgs = append(nextArgs, s.id("step"))
+	observe := s.fnExpr(prefix+"_observe", params, s.id("Bool"),
+		s.cond(s.call(prefix+"_legal", legalArgs...),
+			s.block(s.store(monitorState(), s.call(prefix+"_next", nextArgs...)), s.expr(s.boolean(true))),
+			s.block(s.store(violations(), s.add(violations(), s.u32(1))), s.expr(s.boolean(false)))))
+	observe.Exported = exported
+	conforms := s.fnExpr(prefix+"_conforms", []*ast.FunctionParameter{s.param("m", s.span(s.id(monitorType)))}, s.id("Bool"),
+		s.eq(violations(), s.u32(0)))
+	conforms.Exported = exported
+	return []ast.Statement{record, initial, observe, conforms}
 }
 
 // cloneExpression deep-copies an expression so a guard can appear in more

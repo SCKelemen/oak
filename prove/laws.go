@@ -130,5 +130,10 @@ func Obligations(tree *compiler.SyntaxTree) error {
 	if err := ProtocolObligations(tree); err != nil {
 		return err
 	}
+	// Guard exclusivity: one theorem per pair of guarded lines of a step
+	// from one state (compiler.ProtocolGuardExclusivity), so a protocol
+	// learns whether its first-line reading and the model checker's
+	// every-line reading coincide.
+	tree.Root.Statements = append(tree.Root.Statements, compiler.ProtocolGuardExclusivity(tree)...)
 	return LawObligations(tree)
 }

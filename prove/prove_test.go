@@ -400,6 +400,9 @@ main: (): i32 = 0
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The guard-exclusivity row of `tick` is advisory and reported beside
+	// the liveness entries.
+	results = withoutAdvisory(results)
 	if len(results) != 4 {
 		t.Fatalf("results: %+v", results)
 	}
@@ -412,6 +415,7 @@ main: (): i32 = 0
 	if err != nil {
 		t.Fatal(err)
 	}
+	results = withoutAdvisory(results)
 	for _, r := range results {
 		if r.Status != Refuted || !strings.Contains(r.Detail, "counterexample with no fairness declared") {
 			t.Errorf("unfair: %+v", r)
@@ -430,6 +434,7 @@ main: (): i32 = 0
 	if err != nil {
 		t.Fatal(err)
 	}
+	results = withoutAdvisory(results)
 	if len(results) != 1 || results[0].Status != Decided {
 		t.Fatalf("strong: %+v", results)
 	}
@@ -437,6 +442,7 @@ main: (): i32 = 0
 	if err != nil {
 		t.Fatal(err)
 	}
+	results = withoutAdvisory(results)
 	if len(results) != 1 || results[0].Status != Refuted || !strings.Contains(results[0].Detail, "staying within {A; B}") {
 		t.Fatalf("weak: %+v", results)
 	}
@@ -505,4 +511,15 @@ main: (): i32 = 0
 	if r := got["abs_nonnegative"]; r.Status != Decided {
 		t.Errorf("abs_nonnegative: %+v", r)
 	}
+}
+
+// withoutAdvisory drops the advisory rows (guard exclusivity) from a result list.
+func withoutAdvisory(results []Result) []Result {
+	var out []Result
+	for _, r := range results {
+		if !r.Advisory {
+			out = append(out, r)
+		}
+	}
+	return out
 }
