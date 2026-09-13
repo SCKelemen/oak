@@ -11,11 +11,14 @@ and the Lean extraction embeds the same body as Lean's fixed-width integers
 by tests, but no theorem related them. This module states both over one
 typed expression language for the subset they share and proves them equal.
 
-* `Expr t` is an Oak scalar expression of type `t` — parameters, checked
+* `Expr P Γ t` is an Oak scalar expression of type `t` over the function's
+  parameters `P` and the locals in scope `Γ` — variables, checked
   literals, the wrapping arithmetic, the unsigned bitwise operators and
   shifts, unsigned division and remainder by a constant power of two,
-  negation and complement, the conversions, comparisons, `&&`/`||`/`!`
-  and Bool conditionals. `Bool` is the width-1 type both readers use.
+  negation and complement, the conversions, comparisons, `&&`/`||`/`!`,
+  Bool conditionals, block-scoped locals and rebindings (`x: T = e`,
+  `x = e`, then the rest of the block), and calls to program functions,
+  which both readers inline. `Bool` is the width-1 type both readers use.
 * `evalX` is the extraction's reading: `UIntN`/`IntN` arithmetic is
   `BitVec` arithmetic at the width, a shift's count is taken modulo the
   width (Lean's `UInt32.shiftLeft` masks it), a comparison is `decide` of
@@ -29,8 +32,17 @@ typed expression language for the subset they share and proves them equal.
   `ite` picks an arm. `truncate`, `zeroExtend`, `adaptWidth` and
   `extendTerm` are the Go helpers as the Go spells them, shape cases
   included; `lowerT` is `oakLowering.lower` at the expression's own width.
-* `lowerT_eval`: `(lowerT e).eval ρ = (evalX e ρ).toNat` for every
-  expression and every parameter assignment.
+* `lowerT_eval`: `(lowerT σ e).eval ρ = (evalX e ρ λ).toNat` for every
+  expression, every parameter assignment `ρ`, and every scope — a term
+  environment `σ` (the verifier's `locals`: each local's lowered term)
+  and a value environment `λ` (the extraction's `let`-bound values) that
+  agree (`Agree`). A local is lowered once and substituted (`declareLocal`,
+  `assignLocal`, an identifier through `adaptWidth(local.value, width)`);
+  a call binds the callee's parameters to the lowered arguments as a fresh
+  scope and lowers the body (`enterCall`, `inlineCall`). Parameters and
+  locals are read from separate environments because the verifier's terms
+  name parameters and only parameters: a local that shadows a parameter
+  changes what the source means by the name, never what a term means.
 
 Two things the Go does that the model leaves out, both eval-preserving:
 the term constructors fold constant subterms and drop `x + 0`, and a
@@ -93,30 +105,71 @@ inductive BitOp
   | and | or | xor | shl | shr
   deriving DecidableEq, Repr
 
+/-- The function's parameters: name to type (`contractBits` per
+parameter). -/
+def Params := String → Option Ty
+
+/-- The locals in scope: name to type. Empty at a function's entry; a
+callee's scope is its parameters, bound as locals (`enterCall`). -/
+def Locals := String → Option Ty
+
+def Locals.set (Γ : Locals) (x : String) (t : Ty) : Locals :=
+  fun y => if y = x then some t else Γ y
+
+/-- Name resolution: a local first, then a parameter (`lower`'s identifier
+case: `lo.locals`, then `lo.params`). -/
+def resolve (P : Params) (Γ : Locals) (x : String) : Option Ty :=
+  match Γ x with
+  | some t => some t
+  | none => P x
+
+/-- The callee's scope: its parameters bound in order (a later duplicate
+wins, as `bound[param] = …` does). -/
+def bindTypes (Γ : Locals) : List (String × Ty) → Locals
+  | [] => Γ
+  | (x, s) :: ps => bindTypes (Γ.set x s) ps
+
+mutual
 /-- The shared subset. A literal carries its checked value at the type's
 width (`Oak.LiteralFitRefinement`); `divPow2`/`modPow2` are `/` and `%` by
 the unsigned constant `2^k`, the only division the verifier admits
 (`k < width` because the constant is checked at the type); `not` is `^x`
 on an integer and `!b` on `Bool`; `conv` is a `u8(x)`…`i64(x)` widening or
 a `{t}_trunc_{s}`/`{t}_bits_{s}` narrowing; `ite` is `if c then a else b`
-(a Bool `match`). -/
-inductive Expr : Ty → Type
-  | param (t : Ty) (name : String) : Expr t
-  | lit (t : Ty) (v : BitVec t.width) : Expr t
-  | arith (op : ArithOp) {t : Ty} (a b : Expr t) : Expr t
-  | bit (op : BitOp) {t : Ty} (a b : Expr t) (h : t.signed = false) : Expr t
-  | divPow2 {t : Ty} (a : Expr t) (k : Nat) (hk : k < t.width) (hu : t.signed = false) : Expr t
-  | modPow2 {t : Ty} (a : Expr t) (k : Nat) (hk : k < t.width) (hu : t.signed = false) : Expr t
-  | neg {t : Ty} (a : Expr t) : Expr t
-  | not {t : Ty} (a : Expr t) : Expr t
-  | conv {s : Ty} (t : Ty) (a : Expr s) : Expr t
-  | cmp {s : Ty} (op : CmpOp) (l r : Expr s) : Expr .bool
-  | ite {t : Ty} (c : Expr .bool) (a b : Expr t) : Expr t
+(a Bool `match`); `letIn x v b` is the block `x: s = v` (or the rebinding
+`x = v`) followed by `b`; `call params ret body args` is a call to a
+program function with those parameters and body. -/
+inductive Expr (P : Params) : Locals → Ty → Type
+  | var {Γ : Locals} (t : Ty) (x : String) (h : resolve P Γ x = some t) : Expr P Γ t
+  | lit {Γ : Locals} (t : Ty) (v : BitVec t.width) : Expr P Γ t
+  | arith {Γ : Locals} (op : ArithOp) {t : Ty} (a b : Expr P Γ t) : Expr P Γ t
+  | bit {Γ : Locals} (op : BitOp) {t : Ty} (a b : Expr P Γ t) (h : t.signed = false) : Expr P Γ t
+  | divPow2 {Γ : Locals} {t : Ty} (a : Expr P Γ t) (k : Nat) (hk : k < t.width) (hu : t.signed = false) : Expr P Γ t
+  | modPow2 {Γ : Locals} {t : Ty} (a : Expr P Γ t) (k : Nat) (hk : k < t.width) (hu : t.signed = false) : Expr P Γ t
+  | neg {Γ : Locals} {t : Ty} (a : Expr P Γ t) : Expr P Γ t
+  | not {Γ : Locals} {t : Ty} (a : Expr P Γ t) : Expr P Γ t
+  | conv {Γ : Locals} {s : Ty} (t : Ty) (a : Expr P Γ s) : Expr P Γ t
+  | cmp {Γ : Locals} {s : Ty} (op : CmpOp) (l r : Expr P Γ s) : Expr P Γ .bool
+  | ite {Γ : Locals} {t : Ty} (c : Expr P Γ .bool) (a b : Expr P Γ t) : Expr P Γ t
+  | letIn {Γ : Locals} {s t : Ty} (x : String) (v : Expr P Γ s) (b : Expr P (Γ.set x s) t) : Expr P Γ t
+  | call {Γ : Locals} (params : List (String × Ty)) (ret : Ty)
+      (body : Expr P (bindTypes (fun _ => none) params) ret) (args : Args P Γ params) : Expr P Γ ret
+/-- A call's arguments, one per callee parameter, in the caller's scope. -/
+inductive Args (P : Params) : Locals → List (String × Ty) → Type
+  | nil {Γ : Locals} : Args P Γ []
+  | cons {Γ : Locals} {x : String} {s : Ty} {ps : List (String × Ty)} (a : Expr P Γ s) (rest : Args P Γ ps) : Args P Γ ((x, s) :: ps)
+end
 
 /-- A parameter assignment: the value each parameter arrives with. Both
-readers take it at the parameter's width (`ofNat`, `& mask`), so no
-bound on it is assumed. -/
+readers take it at the parameter's width (`ofNat`, `& mask`), so no bound
+on it is assumed. -/
 def Env := String → Nat
+
+/-- The extraction's `let`-bound values: each local's value. -/
+def Vals := String → Nat
+
+def Vals.set (l : Vals) (x : String) (v : Nat) : Vals :=
+  fun y => if y = x then v else l y
 
 /-! ## The extraction's reading -/
 
@@ -155,18 +208,37 @@ def convX (s t : Ty) (v : BitVec s.width) : BitVec t.width :=
     (if s.signed then v.signExtend t.width else v.setWidth t.width)
   else v.setWidth t.width
 
-def evalX : {t : Ty} → Expr t → Env → BitVec t.width
-  | t, .param _ name, ρ => BitVec.ofNat t.width (ρ name)
-  | _, .lit _ v, _ => v
-  | _, .arith op a b, ρ => arithX op (evalX a ρ) (evalX b ρ)
-  | _, .bit op a b _, ρ => bitX op (evalX a ρ) (evalX b ρ)
-  | t, .divPow2 a k _ _, ρ => evalX a ρ / BitVec.ofNat t.width (2 ^ k)
-  | t, .modPow2 a k _ _, ρ => evalX a ρ % BitVec.ofNat t.width (2 ^ k)
-  | _, .neg a, ρ => 0 - evalX a ρ
-  | _, .not a, ρ => ~~~ evalX a ρ
-  | t, .conv (s := s) _ a, ρ => convX s t (evalX a ρ)
-  | _, .cmp (s := s) op l r, ρ => BitVec.ofBool (cmpX s.signed op (evalX l ρ) (evalX r ρ))
-  | _, .ite c a b, ρ => if evalX c ρ = 1 then evalX a ρ else evalX b ρ
+/-- The value of a variable: a local's `let`-bound value, else the
+parameter, at the variable's width. -/
+def varX (Γ : Locals) (ρ : Env) (l : Vals) (x : String) : Nat :=
+  match Γ x with
+  | some _ => l x
+  | none => ρ x
+
+mutual
+/-- The extraction's reading: `let x := v` binds the value for the rest of
+the block; a call is the callee's body under its parameters bound to the
+argument values (`let (r, …) ← g args`, the callee's own `def`). -/
+def evalX {P : Params} : {Γ : Locals} → {t : Ty} → Expr P Γ t → Env → Vals → BitVec t.width
+  | Γ, t, .var _ x _, ρ, l => BitVec.ofNat t.width (varX Γ ρ l x)
+  | _, _, .lit _ v, _, _ => v
+  | _, _, .arith op a b, ρ, l => arithX op (evalX a ρ l) (evalX b ρ l)
+  | _, _, .bit op a b _, ρ, l => bitX op (evalX a ρ l) (evalX b ρ l)
+  | _, t, .divPow2 a k _ _, ρ, l => evalX a ρ l / BitVec.ofNat t.width (2 ^ k)
+  | _, t, .modPow2 a k _ _, ρ, l => evalX a ρ l % BitVec.ofNat t.width (2 ^ k)
+  | _, _, .neg a, ρ, l => 0 - evalX a ρ l
+  | _, _, .not a, ρ, l => ~~~ evalX a ρ l
+  | _, t, .conv (s := s) _ a, ρ, l => convX s t (evalX a ρ l)
+  | _, _, .cmp (s := s) op lhs rhs, ρ, l => BitVec.ofBool (cmpX s.signed op (evalX lhs ρ l) (evalX rhs ρ l))
+  | _, _, .ite c a b, ρ, l => if evalX c ρ l = 1 then evalX a ρ l else evalX b ρ l
+  | _, _, .letIn x v b, ρ, l => evalX b ρ (l.set x (evalX v ρ l).toNat)
+  | _, _, .call _ _ body args, ρ, l => evalX body ρ (bindVals args ρ l (fun _ => 0))
+/-- The callee's values: each argument evaluated in the caller's scope and
+bound to its parameter, in order. -/
+def bindVals {P : Params} : {Γ : Locals} → {ps : List (String × Ty)} → Args P Γ ps → Env → Vals → Vals → Vals
+  | _, _, .nil, _, _, acc => acc
+  | _, _, .cons (x := x) a rest, ρ, l, acc => bindVals rest ρ l (acc.set x (evalX a ρ l).toNat)
+end
 
 /-- The 1/0 image of `Bool` is a homomorphism for `&&`, `||`, `!`: reading
 the extraction's `Bool` as `BitVec 1` loses nothing. -/
@@ -286,33 +358,57 @@ def arithTOp : ArithOp → TOp
 def bitTOp : BitOp → TOp
   | .and => .and | .or => .or | .xor => .xor | .shl => .shl | .shr => .shr
 
+/-- The verifier's term environment, `lo.locals`: each local's lowered
+term (`oakLocal.value`); `none` for a name that is not a local. -/
+def Scope := String → Option Term
+
+def Scope.set (σ : Scope) (x : String) (t : Term) : Scope :=
+  fun y => if y = x then some t else σ y
+
+mutual
 /-- `oakLowering.lower` at the expression's own width, each case as the Go
-spells it: a parameter is `truncate(paramTerm(name, w), width)`, the
-identity at its own width; a literal `constTerm(value, width)`; an infix
-`binaryTerm(op, left, right)`; `/` and `%` by `2^k` a shift by `k` and a
-mask by `2^k - 1`; `-x` is `0 - x`; `^x` and `!b` are `xor` with the mask;
-a conversion the operand at its own width through `extendTerm` or
-`truncate`, then `truncate` to the context (the identity here); a
-comparison in value position `zeroExtend(truncate(cmpTerm(code, l, r),
-width), width)` at the Bool width 1; a Bool conditional `iteTerm`. -/
-def lowerT : {t : Ty} → Expr t → Term
-  | t, .param _ name => .param name t.width
-  | t, .lit _ v => .const v.toNat t.width
-  | t, .arith op a b => .bin (arithTOp op) t.width (lowerT a) (lowerT b)
-  | t, .bit op a b _ => .bin (bitTOp op) t.width (lowerT a) (lowerT b)
-  | t, .divPow2 a k _ _ => .bin .shr t.width (lowerT a) (.const k t.width)
-  | t, .modPow2 a k _ _ => .bin .and t.width (lowerT a) (.const (2 ^ k - 1) t.width)
-  | t, .neg a => .bin .sub t.width (.const 0 t.width) (lowerT a)
-  | t, .not a => .bin .xor t.width (lowerT a) (.const (mask t.width) t.width)
-  | t, .conv (s := s) _ a =>
-    let operand := lowerT a
+spells it: an identifier is its local's term through `adaptWidth` or, for a
+parameter, `truncate(paramTerm(name, w), width)`, the identity at its own
+width; a literal `constTerm(value, width)`; an infix `binaryTerm(op, left,
+right)`; `/` and `%` by `2^k` a shift by `k` and a mask by `2^k - 1`; `-x`
+is `0 - x`; `^x` and `!b` are `xor` with the mask; a conversion the operand
+at its own width through `extendTerm` or `truncate`, then `truncate` to the
+context (the identity here); a comparison in value position
+`zeroExtend(truncate(cmpTerm(code, l, r), width), width)` at the Bool
+width 1; a Bool conditional `iteTerm`; a local's declaration or rebinding
+lowers the value at the local's width into `lo.locals` and goes on
+(`declareLocal`, `assignLocal`); a call binds the callee's parameters to
+the lowered arguments as a fresh `lo.locals` and lowers the body
+(`enterCall`, `inlineCall`). -/
+def lowerT {P : Params} : Scope → {Γ : Locals} → {t : Ty} → Expr P Γ t → Term
+  | σ, _, t, .var _ x _ =>
+    match σ x with
+    | some term => adaptWidth term t.width
+    | none => .param x t.width
+  | _, _, t, .lit _ v => .const v.toNat t.width
+  | σ, _, t, .arith op a b => .bin (arithTOp op) t.width (lowerT σ a) (lowerT σ b)
+  | σ, _, t, .bit op a b _ => .bin (bitTOp op) t.width (lowerT σ a) (lowerT σ b)
+  | σ, _, t, .divPow2 a k _ _ => .bin .shr t.width (lowerT σ a) (.const k t.width)
+  | σ, _, t, .modPow2 a k _ _ => .bin .and t.width (lowerT σ a) (.const (2 ^ k - 1) t.width)
+  | σ, _, t, .neg a => .bin .sub t.width (.const 0 t.width) (lowerT σ a)
+  | σ, _, t, .not a => .bin .xor t.width (lowerT σ a) (.const (mask t.width) t.width)
+  | σ, _, t, .conv (s := s) _ a =>
+    let operand := lowerT σ a
     let converted :=
       if s.width < t.width then extendTerm operand s.width t.width s.signed
       else truncate operand t.width
     truncate converted t.width
-  | _, .cmp (s := s) op l r =>
-    zeroExtend (truncate (.cmp (codeOf s.signed op) s.width (lowerT l) (lowerT r)) 1) 1
-  | t, .ite c a b => .ite t.width (lowerT c) (lowerT a) (lowerT b)
+  | σ, _, _, .cmp (s := s) op l r =>
+    zeroExtend (truncate (.cmp (codeOf s.signed op) s.width (lowerT σ l) (lowerT σ r)) 1) 1
+  | σ, _, t, .ite c a b => .ite t.width (lowerT σ c) (lowerT σ a) (lowerT σ b)
+  | σ, _, _, .letIn x v b => lowerT (σ.set x (lowerT σ v)) b
+  | σ, _, _, .call _ _ body args => lowerT (bindTerms σ args (fun _ => none)) body
+/-- `enterCall`'s `bound`: each argument lowered in the caller's scope at
+the parameter's width and bound to the parameter, in order. -/
+def bindTerms {P : Params} (σ : Scope) : {Γ : Locals} → {ps : List (String × Ty)} → Args P Γ ps → Scope → Scope
+  | _, _, .nil, acc => acc
+  | _, _, .cons (x := x) a rest, acc => bindTerms σ rest (acc.set x (lowerT σ a))
+end
 
 /-! ## Widths -/
 
@@ -335,8 +431,25 @@ def lowerT : {t : Ty} → Expr t → Term
     (extendTerm t src w signed).width = w := by
   unfold extendTerm; split <;> rfl
 
-@[simp] theorem lowerT_width {t : Ty} (e : Expr t) : (lowerT e).width = t.width := by
-  cases e <;> first | rfl | (simp only [lowerT, truncate_width, zeroExtend_width]; try rfl)
+theorem lowerT_width {P : Params} {Γ : Locals} {t : Ty} (e : Expr P Γ t) : ∀ σ : Scope, (lowerT σ e).width = t.width := by
+  intro σ
+  match e with
+  | .var t x h =>
+    simp only [lowerT]
+    split <;> simp
+  | .conv t a => simp only [lowerT, truncate_width]
+  | .cmp op l r => simp only [lowerT, zeroExtend_width]; rfl
+  | .letIn x v b => exact lowerT_width b _
+  | .call params ret body args => exact lowerT_width body _
+  | .lit _ _ => rfl
+  | .arith _ _ _ => rfl
+  | .bit _ _ _ _ => rfl
+  | .divPow2 _ _ _ _ => rfl
+  | .modPow2 _ _ _ _ => rfl
+  | .neg _ => rfl
+  | .not _ => rfl
+  | .ite _ _ _ => rfl
+termination_by structural e
 
 theorem truncate_self (t : Term) (w : Nat) (h : t.width = w) : truncate t w = t := by
   simp [truncate, h]
@@ -571,17 +684,60 @@ theorem zeroExtend_topPositive (t : Term) (w : Nat) (hw : 0 < w) (hp : t.topPosi
 theorem extendTerm_topPositive (t : Term) (src w : Nat) (signed : Bool) : (extendTerm t src w signed).topPositive := by
   unfold extendTerm; split <;> trivial
 
-theorem lowerT_topPositive {t : Ty} (e : Expr t) : (lowerT e).topPositive := by
-  induction e with
-  | cmp op l r _ _ =>
+theorem adaptWidth_topPositive (t : Term) (w : Nat) (hw : 0 < w) (hp : t.topPositive) : (adaptWidth t w).topPositive := by
+  unfold adaptWidth
+  split
+  · exact zeroExtend_topPositive t w hw hp
+  · exact truncate_topPositive t w hw hp
+
+/-- Every term a scope holds is well formed. -/
+def Scope.wf (σ : Scope) : Prop := ∀ x term, σ x = some term → term.topPositive
+
+theorem Scope.wf_set {σ : Scope} (hσ : σ.wf) {x : String} {t : Term} (ht : t.topPositive) : (σ.set x t).wf := by
+  intro y term h
+  unfold Scope.set at h
+  split at h
+  · cases h; exact ht
+  · exact hσ y term h
+
+theorem Scope.wf_empty : Scope.wf (fun _ => none) := by
+  intro y term h; cases h
+
+mutual
+theorem lowerT_topPositive {P : Params} {Γ : Locals} {t : Ty} (e : Expr P Γ t) : ∀ σ : Scope, σ.wf → (lowerT σ e).topPositive := by
+  intro σ hσ
+  match e with
+  | .var t x h =>
+    simp only [lowerT]
+    split
+    · rename_i term hterm; exact adaptWidth_topPositive term _ t.width_pos (hσ x term hterm)
+    · trivial
+  | .cmp op l r =>
     exact zeroExtend_topPositive _ _ (by decide) (truncate_topPositive _ _ (by decide) (Ty.width_pos _))
-  | conv t a ih =>
+  | .conv t a =>
     simp only [lowerT]
     apply truncate_topPositive _ _ t.width_pos
     split
     · exact extendTerm_topPositive _ _ _ _
-    · exact truncate_topPositive _ _ t.width_pos ih
-  | _ => simp [lowerT, Term.topPositive]
+    · exact truncate_topPositive _ _ t.width_pos (lowerT_topPositive a σ hσ)
+  | .letIn x v b => exact lowerT_topPositive b _ (Scope.wf_set hσ (lowerT_topPositive v σ hσ))
+  | .call params ret body args => exact lowerT_topPositive body _ (bindTerms_wf args σ hσ _ Scope.wf_empty)
+  | .lit _ _ => trivial
+  | .arith _ _ _ => trivial
+  | .bit _ _ _ _ => trivial
+  | .divPow2 _ _ _ _ => trivial
+  | .modPow2 _ _ _ _ => trivial
+  | .neg _ => trivial
+  | .not _ => trivial
+  | .ite _ _ _ => trivial
+termination_by structural e
+theorem bindTerms_wf {P : Params} {Γ : Locals} {ps : List (String × Ty)} (args : Args P Γ ps) : ∀ σ : Scope, σ.wf → ∀ acc : Scope, acc.wf → (bindTerms σ args acc).wf := by
+  intro σ hσ acc hacc
+  match args with
+  | .nil => exact hacc
+  | .cons a rest => exact bindTerms_wf rest σ hσ _ (Scope.wf_set hacc (lowerT_topPositive a σ hσ))
+termination_by structural args
+end
 
 /-- A one-bit value is 1 exactly when it is not 0. -/
 theorem BitVec1_ne_zero_iff (c : BitVec 1) : c.toNat ≠ 0 ↔ c = 1 := by
@@ -590,48 +746,107 @@ theorem BitVec1_ne_zero_iff (c : BitVec 1) : c.toNat ≠ 0 ↔ c = 1 := by
 theorem const_eval_of_lt (v w : Nat) (ρ : Env) (h : v < 2 ^ w) : (Term.const v w).eval ρ % 2 ^ w = v := by
   simp only [Term.eval, Nat.mod_mod]; exact Nat.mod_eq_of_lt h
 
+/-- A scope's two readings agree: a name that is not a local has no term;
+a local's term has the local's width, is well formed, and evaluates to the
+local's `let`-bound value. -/
+def Agree (Γ : Locals) (σ : Scope) (ρ : Env) (l : Vals) : Prop :=
+  (∀ x, Γ x = none → σ x = none) ∧
+  (∀ x t, Γ x = some t → ∃ term, σ x = some term ∧ term.width = t.width ∧ term.topPositive ∧ term.eval ρ = l x)
+
+theorem Agree.wf {Γ : Locals} {σ : Scope} {ρ : Env} {l : Vals} (h : Agree Γ σ ρ l) : σ.wf := by
+  intro x term hx
+  cases hΓ : Γ x with
+  | none => rw [h.1 x hΓ] at hx; cases hx
+  | some t =>
+    obtain ⟨term', hσ, _, hp, _⟩ := h.2 x t hΓ
+    rw [hσ] at hx; cases hx; exact hp
+
+theorem Agree.empty (ρ : Env) (l : Vals) : Agree (fun _ => none) (fun _ => none) ρ l :=
+  ⟨fun _ _ => rfl, fun _ _ h => by cases h⟩
+
+theorem Agree.set {Γ : Locals} {σ : Scope} {ρ : Env} {l : Vals} (h : Agree Γ σ ρ l) (x : String) {s : Ty} {term : Term} {v : Nat}
+    (hw : term.width = s.width) (hp : term.topPositive) (hv : term.eval ρ = v) :
+    Agree (Γ.set x s) (σ.set x term) ρ (l.set x v) := by
+  constructor
+  · intro y hy
+    unfold Locals.set at hy; unfold Scope.set
+    split at hy
+    · cases hy
+    · rename_i hne; rw [if_neg hne]; exact h.1 y hy
+  · intro y t hy
+    unfold Locals.set at hy; unfold Scope.set; unfold Vals.set
+    split at hy
+    · rename_i heq; cases hy; subst heq
+      exact ⟨term, by rw [if_pos rfl], hw, hp, by rw [if_pos rfl]; exact hv⟩
+    · rename_i hne
+      obtain ⟨term', hσ, hw', hp', hv'⟩ := h.2 y t hy
+      exact ⟨term', by rw [if_neg hne]; exact hσ, hw', hp', by rw [if_neg hne]; exact hv'⟩
+
+mutual
 /-- The verifier's lowering and the extraction's reading agree on every
-expression of the shared subset: the seam of `126-verification-chain.md`
-§4, closed. -/
-theorem lowerT_eval {t : Ty} (e : Expr t) (ρ : Env) : (lowerT e).eval ρ = (evalX e ρ).toNat := by
-  induction e with
-  | param t name =>
+expression of the shared subset, in every agreeing scope: the seam of
+`126-verification-chain.md` §4, closed for expressions, locals and calls. -/
+theorem lowerT_eval {P : Params} {Γ : Locals} {t : Ty} (e : Expr P Γ t) :
+    ∀ (σ : Scope) (ρ : Env) (l : Vals), Agree Γ σ ρ l → (lowerT σ e).eval ρ = (evalX e ρ l).toNat := by
+  intro σ ρ l hA
+  match e with
+  | .var t x h =>
+    simp only [lowerT, evalX, varX]
+    cases hΓ : Γ x with
+    | none =>
+      rw [hA.1 x hΓ]
+      simp [Term.eval]
+    | some t' =>
+      have ht : t' = t := by simp [resolve, hΓ] at h; exact h
+      subst ht
+      obtain ⟨term, hσ, hw, hp, hv⟩ := hA.2 x t' hΓ
+      rw [hσ]
+      simp only [adaptWidth, hw, Nat.lt_irrefl, if_false, truncate_self term _ hw, hv, BitVec.toNat_ofNat]
+      rw [← hv, Nat.mod_eq_of_lt (hw ▸ Term.eval_lt term ρ hp)]
+  | .lit t v =>
     simp [lowerT, evalX, Term.eval]
-  | lit t v =>
-    simp [lowerT, evalX, Term.eval]
-  | @arith op t a b iha ihb =>
+  | .arith (t := t) op a b =>
+    have iha := lowerT_eval a σ ρ l hA
+    have ihb := lowerT_eval b σ ρ l hA
     cases op <;> simp [lowerT, evalX, arithX, arithTOp, Term.eval, Term.evalBin, iha, ihb, Nat.add_comm]
-  | @bit op t a b h iha ihb =>
-    have hw := (evalX a ρ).isLt
+  | .bit (t := t) op a b h =>
+    have iha := lowerT_eval a σ ρ l hA
+    have ihb := lowerT_eval b σ ρ l hA
+    have hw := (evalX a ρ l).isLt
     cases op <;> simp only [lowerT, evalX, bitX, bitTOp, Term.eval, Term.evalBin, iha, ihb, BitVec.toNat_mod_cancel]
-    · rw [BitVec.toNat_and]; exact Nat.mod_eq_of_lt (Nat.and_lt_two_pow _ (evalX b ρ).isLt)
-    · rw [BitVec.toNat_or]; exact Nat.mod_eq_of_lt (Nat.or_lt_two_pow hw (evalX b ρ).isLt)
-    · rw [BitVec.toNat_xor]; exact Nat.mod_eq_of_lt (Nat.xor_lt_two_pow hw (evalX b ρ).isLt)
+    · rw [BitVec.toNat_and]; exact Nat.mod_eq_of_lt (Nat.and_lt_two_pow _ (evalX b ρ l).isLt)
+    · rw [BitVec.toNat_or]; exact Nat.mod_eq_of_lt (Nat.or_lt_two_pow hw (evalX b ρ l).isLt)
+    · rw [BitVec.toNat_xor]; exact Nat.mod_eq_of_lt (Nat.xor_lt_two_pow hw (evalX b ρ l).isLt)
     · rw [BitVec.toNat_shiftLeft]
     · rw [BitVec.toNat_ushiftRight]
       exact Nat.mod_eq_of_lt (Nat.lt_of_le_of_lt (Nat.shiftRight_le _ _) hw)
-  | @divPow2 t a k hk hu iha =>
-    have hw := (evalX a ρ).isLt
+  | .divPow2 (t := t) a k hk hu =>
+    have iha := lowerT_eval a σ ρ l hA
+    have hw := (evalX a ρ l).isLt
     have hk2 : 2 ^ k < 2 ^ t.width := Nat.pow_lt_pow_right (by decide) hk
     have hkw : k < 2 ^ t.width := Nat.lt_of_lt_of_le hk (Nat.le_of_lt Nat.lt_two_pow_self)
     simp only [lowerT, evalX, Term.eval, Term.evalBin, iha, BitVec.toNat_mod_cancel, BitVec.toNat_udiv,
       BitVec.toNat_ofNat, Nat.mod_mod, Nat.mod_eq_of_lt hkw, Nat.mod_eq_of_lt hk, Nat.mod_eq_of_lt hk2,
       Nat.shiftRight_eq_div_pow]
     exact Nat.mod_eq_of_lt (Nat.lt_of_le_of_lt (Nat.div_le_self _ _) hw)
-  | @modPow2 t a k hk hu iha =>
+  | .modPow2 (t := t) a k hk hu =>
+    have iha := lowerT_eval a σ ρ l hA
     have hk2 : 2 ^ k < 2 ^ t.width := Nat.pow_lt_pow_right (by decide) hk
     have hm : 2 ^ k - 1 < 2 ^ t.width := by omega
     simp only [lowerT, evalX, Term.eval, Term.evalBin, iha, BitVec.toNat_mod_cancel, BitVec.toNat_umod,
       BitVec.toNat_ofNat, Nat.mod_mod, Nat.mod_eq_of_lt hm, Nat.mod_eq_of_lt hk2,
       Nat.and_two_pow_sub_one_eq_mod]
     exact Nat.mod_eq_of_lt (Nat.lt_trans (Nat.mod_lt _ (Nat.two_pow_pos k)) hk2)
-  | @neg t a iha =>
+  | .neg (t := t) a =>
+    have iha := lowerT_eval a σ ρ l hA
     simp [lowerT, evalX, Term.eval, Term.evalBin, iha]
-  | @not t a iha =>
-    have hx : (evalX a ρ).toNat ^^^ mask t.width = (~~~ evalX a ρ).toNat := by
+  | .not (t := t) a =>
+    have iha := lowerT_eval a σ ρ l hA
+    have hx : (evalX a ρ l).toNat ^^^ mask t.width = (~~~ evalX a ρ l).toNat := by
       rw [← BitVec.xor_allOnes, BitVec.toNat_xor, BitVec.toNat_allOnes]; rfl
     simp only [lowerT, evalX, Term.eval, Term.evalBin, iha, BitVec.toNat_mod_cancel, mask_mod, hx]
-  | @conv s t a iha =>
+  | .conv (s := s) t a =>
+    have iha := lowerT_eval a σ ρ l hA
     have hs := s.width_pos
     simp only [lowerT, evalX, convX]
     rw [truncate_self _ _ (by split <;> simp)]
@@ -639,10 +854,10 @@ theorem lowerT_eval {t : Ty} (e : Expr t) (ρ : Env) : (lowerT e).eval ρ = (eva
     · simp only [hlt, if_true]
       unfold extendTerm
       simp only [adaptWidth, lowerT_width, hlt, if_true]
-      have hlow := zeroExtend_masked_eval (lowerT a) s.width t.width ρ (lowerT_width a) (Nat.le_of_lt hlt)
+      have hlow := zeroExtend_masked_eval (lowerT σ a) s.width t.width ρ (lowerT_width a σ) (Nat.le_of_lt hlt)
       rw [iha, BitVec.toNat_mod_cancel] at hlow
-      have hxw : (evalX a ρ).toNat < 2 ^ t.width :=
-        Nat.lt_of_lt_of_le (evalX a ρ).isLt (Nat.pow_le_pow_right (by decide) (Nat.le_of_lt hlt))
+      have hxw : (evalX a ρ l).toNat < 2 ^ t.width :=
+        Nat.lt_of_lt_of_le (evalX a ρ l).isLt (Nat.pow_le_pow_right (by decide) (Nat.le_of_lt hlt))
       by_cases hsig : s.signed = true
       · simp only [hsig, Bool.not_true, Bool.false_eq_true, if_false, if_true]
         have hsh : (t.width - s.width) % 2 ^ t.width % t.width = t.width - s.width := by
@@ -652,27 +867,50 @@ theorem lowerT_eval {t : Ty} (e : Expr t) (ρ : Env) : (lowerT e).eval ρ = (eva
           rw [Nat.mod_mod, hsh]
         rw [Term.eval.eq_3, Term.eval.eq_3, hlow]
         simp only [Term.eval, Term.evalBin, hsh, hsh', Nat.mod_mod]
-        rw [← BitVec.toNat_setWidth t.width (evalX a ρ), ← BitVec.toNat_shiftLeft, BitVec.ofNat_toNat,
+        rw [← BitVec.toNat_setWidth t.width (evalX a ρ l), ← BitVec.toNat_shiftLeft, BitVec.ofNat_toNat,
           BitVec.setWidth_eq, sshiftRight_shiftLeft_setWidth _ _ hs (Nat.le_of_lt hlt), BitVec.toNat_mod_cancel]
       · have hsig' : s.signed = false := by simpa using hsig
         simp only [hsig', Bool.not_false, Bool.false_eq_true, if_false, if_true, BitVec.toNat_setWidth, hlow,
           Nat.mod_eq_of_lt hxw]
     · simp only [hlt, if_false]
-      rw [truncate_eval _ _ _ t.width_pos (by rw [lowerT_width]; omega) (lowerT_topPositive a), iha,
+      rw [truncate_eval _ _ _ t.width_pos (by rw [lowerT_width]; omega) (lowerT_topPositive a σ (Agree.wf hA)), iha,
         BitVec.toNat_setWidth]
-  | @cmp s op l r ihl ihr =>
+  | .cmp (s := s) op lhs rhs =>
+    have ihl := lowerT_eval lhs σ ρ l hA
+    have ihr := lowerT_eval rhs σ ρ l hA
     simp only [lowerT]
     rw [zeroExtend_self _ _ (truncate_width _ _), truncate_cmp_eval]
     simp only [Term.eval, ihl, ihr]
-    rw [lowerT_width l]
+    rw [lowerT_width lhs σ]
     simp only [BitVec.ofNat_toNat, BitVec.setWidth_eq, codeOf_holds, evalX]
-    cases cmpX s.signed op (evalX l ρ) (evalX r ρ) <;> simp
-  | @ite t c a b ihc iha ihb =>
+    cases cmpX s.signed op (evalX lhs ρ l) (evalX rhs ρ l) <;> simp
+  | .ite (t := t) c a b =>
+    have ihc := lowerT_eval c σ ρ l hA
+    have iha := lowerT_eval a σ ρ l hA
+    have ihb := lowerT_eval b σ ρ l hA
     simp only [lowerT, evalX, Term.eval, ihc, iha, ihb, BitVec.toNat_mod_cancel]
-    have key : ((evalX c ρ).toNat ≠ 0) ↔ (evalX c ρ = 1) := BitVec1_ne_zero_iff (evalX c ρ)
-    by_cases h : evalX c ρ = 1
+    have key : ((evalX c ρ l).toNat ≠ 0) ↔ (evalX c ρ l = 1) := BitVec1_ne_zero_iff (evalX c ρ l)
+    by_cases h : evalX c ρ l = 1
     · rw [if_pos (key.mpr h), if_pos h]
     · rw [if_neg (fun hne => h (key.mp hne)), if_neg h]
+  | .letIn (s := s) (t := t) x v b =>
+    exact lowerT_eval b _ ρ _ (Agree.set hA x (lowerT_width v σ) (lowerT_topPositive v σ (Agree.wf hA)) (lowerT_eval v σ ρ l hA))
+  | .call params ret body args =>
+    exact lowerT_eval body _ ρ _ (bindArgs_agree args σ ρ l hA _ _ _ (Agree.empty ρ _))
+termination_by structural e
+/-- Binding a call's arguments keeps the callee's scope agreeing: each
+parameter's term has the parameter's width and evaluates to the argument's
+value. -/
+theorem bindArgs_agree {P : Params} {Γ : Locals} {ps : List (String × Ty)} (args : Args P Γ ps) :
+    ∀ (σ : Scope) (ρ : Env) (l : Vals), Agree Γ σ ρ l → ∀ (Γ0 : Locals) (acc : Scope) (l0 : Vals), Agree Γ0 acc ρ l0 →
+      Agree (bindTypes Γ0 ps) (bindTerms σ args acc) ρ (bindVals args ρ l l0) := by
+  intro σ ρ l hA Γ0 acc l0 h0
+  match args with
+  | .nil => exact h0
+  | .cons (x := x) a rest =>
+    exact bindArgs_agree rest σ ρ l hA _ _ _ (h0.set x (lowerT_width a σ) (lowerT_topPositive a σ (Agree.wf hA)) (lowerT_eval a σ ρ l hA))
+termination_by structural args
+end
 
 end Oak.LoweringRefinement
 
@@ -705,63 +943,98 @@ def Term.render : Term → String
   | .cmp code _ l r => "(" ++ l.render ++ " " ++ condRender code ++ " " ++ r.render ++ ")"
   | .ite _ c l r => "(" ++ c.render ++ " ? " ++ l.render ++ " : " ++ r.render ++ ")"
 
+/-- Parameters from a list; the empty local scope and term scope. -/
+def ps (l : List (String × Ty)) : Params := fun x => (l.find? (fun p => p.1 = x)).map (·.2)
+abbrev Γ0 : Locals := fun _ => none
+abbrev σ0 : Scope := fun _ => none
+/-- An expression over parameters `P` at a function's entry. -/
+abbrev X (P : Params) (t : Ty) := Expr P Γ0 t
+
 /-- `(a, b: u32) -> u32 = a + b` -/
-example : (lowerT (.arith .add (.param .u32 "a") (.param .u32 "b"))).render = "(a add b)" := by decide
+example : (lowerT σ0 (.arith .add (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)) : X (ps [("a", .u32), ("b", .u32)]) .u32)).render = "(a add b)" := by decide
 /-- `(a, b: u32) -> u32 = a - b` -/
-example : (lowerT (.arith .sub (.param .u32 "a") (.param .u32 "b"))).render = "(a sub b)" := by decide
+example : (lowerT σ0 (.arith .sub (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)) : X (ps [("a", .u32), ("b", .u32)]) .u32)).render = "(a sub b)" := by decide
 /-- `(a: u32) -> u32 = a * 3` -/
-example : (lowerT (.arith .mul (.param .u32 "a") (.lit .u32 3))).render = "(a mul 3)" := by decide
+example : (lowerT σ0 (.arith .mul (.var .u32 "a" (by decide)) (.lit .u32 3) : X (ps [("a", .u32)]) .u32)).render = "(a mul 3)" := by decide
 /-- `(a: u32) -> u32 = a / 8` -/
-example : (lowerT (.divPow2 (.param .u32 "a") 3 (by decide) rfl)).render = "(a shr 3)" := by decide
+example : (lowerT σ0 (.divPow2 (.var .u32 "a" (by decide)) 3 (by decide) rfl : X (ps [("a", .u32)]) .u32)).render = "(a shr 3)" := by decide
 /-- `(a: u32) -> u32 = a % 8` -/
-example : (lowerT (.modPow2 (.param .u32 "a") 3 (by decide) rfl)).render = "(a and 7)" := by decide
+example : (lowerT σ0 (.modPow2 (.var .u32 "a" (by decide)) 3 (by decide) rfl : X (ps [("a", .u32)]) .u32)).render = "(a and 7)" := by decide
 /-- `(a: u32) -> u32 = -a` -/
-example : (lowerT (.neg (.param .u32 "a"))).render = "(0 sub a)" := by decide
+example : (lowerT σ0 (.neg (.var .u32 "a" (by decide)) : X (ps [("a", .u32)]) .u32)).render = "(0 sub a)" := by decide
 /-- `(a: u32) -> u32 = ^a` -/
-example : (lowerT (.not (.param .u32 "a"))).render = "(a xor 4294967295)" := by decide
+example : (lowerT σ0 (.not (.var .u32 "a" (by decide)) : X (ps [("a", .u32)]) .u32)).render = "(a xor 4294967295)" := by decide
 /-- `(a, b: u32) -> u32 = (a << 3) | (b >> 5)` -/
-example : (lowerT (.bit .or (.bit .shl (.param .u32 "a") (.lit .u32 3) rfl) (.bit .shr (.param .u32 "b") (.lit .u32 5) rfl) rfl)).render
+example : (lowerT σ0 (.bit .or (.bit .shl (.var .u32 "a" (by decide)) (.lit .u32 3) rfl) (.bit .shr (.var .u32 "b" (by decide)) (.lit .u32 5) rfl) rfl : X (ps [("a", .u32), ("b", .u32)]) .u32)).render
     = "((a shl 3) or (b shr 5))" := by decide
 /-- `(a, b: u32) -> u32 = (a & b) ^ b` -/
-example : (lowerT (.bit .xor (.bit .and (.param .u32 "a") (.param .u32 "b") rfl) (.param .u32 "b") rfl)).render
+example : (lowerT σ0 (.bit .xor (.bit .and (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)) rfl) (.var .u32 "b" (by decide)) rfl : X (ps [("a", .u32), ("b", .u32)]) .u32)).render
     = "((a and b) xor b)" := by decide
 /-- `(a: u8) -> u32 = u32(a)` -/
-example : (lowerT (.conv .u32 (.param .u8 "a"))).render = "(a and 255)" := by decide
+example : (lowerT σ0 (.conv .u32 (.var .u8 "a" (by decide)) : X (ps [("a", .u8)]) .u32)).render = "(a and 255)" := by decide
 /-- `(a: i8) -> i32 = i32(a)` -/
-example : (lowerT (.conv .i32 (.param .i8 "a"))).render = "(((a and 255) shl 24) sar 24)" := by decide
+example : (lowerT σ0 (.conv .i32 (.var .i8 "a" (by decide)) : X (ps [("a", .i8)]) .i32)).render = "(((a and 255) shl 24) sar 24)" := by decide
 /-- `(a: i32) -> i64 = i64(a) + 1` -/
-example : (lowerT (.arith .add (.conv .i64 (.param .i32 "a")) (.lit .i64 1))).render
+example : (lowerT σ0 (.arith .add (.conv .i64 (.var .i32 "a" (by decide))) (.lit .i64 1) : X (ps [("a", .i32)]) .i64)).render
     = "((((a and 4294967295) shl 32) sar 32) add 1)" := by decide
 /-- `(a: u32) -> u8 = u8_trunc_u32(a)` — a re-widthed parameter prints as itself. -/
-example : (lowerT (.conv .u8 (.param .u32 "a"))).render = "a" := by decide
+example : (lowerT σ0 (.conv .u8 (.var .u32 "a" (by decide)) : X (ps [("a", .u32)]) .u8)).render = "a" := by decide
 /-- `(a, b: u16) -> u32 = u32(a) * u32(b)` -/
-example : (lowerT (.arith .mul (.conv .u32 (.param .u16 "a")) (.conv .u32 (.param .u16 "b")))).render
+example : (lowerT σ0 (.arith .mul (.conv .u32 (.var .u16 "a" (by decide))) (.conv .u32 (.var .u16 "b" (by decide))) : X (ps [("a", .u16), ("b", .u16)]) .u32)).render
     = "((a and 65535) mul (b and 65535))" := by decide
 /-- `(a, b: u32) -> Bool = a < b` and the other five unsigned comparisons -/
-example : (lowerT (.cmp .lt (.param .u32 "a") (.param .u32 "b"))).render = "(a lo b)" := by decide
-example : (lowerT (.cmp .le (.param .u32 "a") (.param .u32 "b"))).render = "(a ls b)" := by decide
-example : (lowerT (.cmp .gt (.param .u32 "a") (.param .u32 "b"))).render = "(a hi b)" := by decide
-example : (lowerT (.cmp .ge (.param .u32 "a") (.param .u32 "b"))).render = "(a hs b)" := by decide
-example : (lowerT (.cmp .eq (.param .u32 "a") (.param .u32 "b"))).render = "(a eq b)" := by decide
-example : (lowerT (.cmp .ne (.param .u32 "a") (.param .u32 "b"))).render = "(a ne b)" := by decide
+example : (lowerT σ0 (.cmp .lt (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)) : X (ps [("a", .u32), ("b", .u32)]) .bool)).render = "(a lo b)" := by decide
+example : (lowerT σ0 (.cmp .le (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)) : X (ps [("a", .u32), ("b", .u32)]) .bool)).render = "(a ls b)" := by decide
+example : (lowerT σ0 (.cmp .gt (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)) : X (ps [("a", .u32), ("b", .u32)]) .bool)).render = "(a hi b)" := by decide
+example : (lowerT σ0 (.cmp .ge (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)) : X (ps [("a", .u32), ("b", .u32)]) .bool)).render = "(a hs b)" := by decide
+example : (lowerT σ0 (.cmp .eq (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)) : X (ps [("a", .u32), ("b", .u32)]) .bool)).render = "(a eq b)" := by decide
+example : (lowerT σ0 (.cmp .ne (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)) : X (ps [("a", .u32), ("b", .u32)]) .bool)).render = "(a ne b)" := by decide
 /-- `(a, b: i32) -> Bool = a < b` and the other three signed orders -/
-example : (lowerT (.cmp .lt (.param .i32 "a") (.param .i32 "b"))).render = "(a lt b)" := by decide
-example : (lowerT (.cmp .le (.param .i32 "a") (.param .i32 "b"))).render = "(a le b)" := by decide
-example : (lowerT (.cmp .gt (.param .i32 "a") (.param .i32 "b"))).render = "(a gt b)" := by decide
-example : (lowerT (.cmp .ge (.param .i32 "a") (.param .i32 "b"))).render = "(a ge b)" := by decide
+example : (lowerT σ0 (.cmp .lt (.var .i32 "a" (by decide)) (.var .i32 "b" (by decide)) : X (ps [("a", .i32), ("b", .i32)]) .bool)).render = "(a lt b)" := by decide
+example : (lowerT σ0 (.cmp .le (.var .i32 "a" (by decide)) (.var .i32 "b" (by decide)) : X (ps [("a", .i32), ("b", .i32)]) .bool)).render = "(a le b)" := by decide
+example : (lowerT σ0 (.cmp .gt (.var .i32 "a" (by decide)) (.var .i32 "b" (by decide)) : X (ps [("a", .i32), ("b", .i32)]) .bool)).render = "(a gt b)" := by decide
+example : (lowerT σ0 (.cmp .ge (.var .i32 "a" (by decide)) (.var .i32 "b" (by decide)) : X (ps [("a", .i32), ("b", .i32)]) .bool)).render = "(a ge b)" := by decide
 /-- `(a, b, c: u32) -> Bool = a < b && b < c` -/
-example : (lowerT (.bit .and (.cmp .lt (.param .u32 "a") (.param .u32 "b")) (.cmp .lt (.param .u32 "b") (.param .u32 "c")) rfl)).render
+example : (lowerT σ0 (.bit .and (.cmp .lt (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide))) (.cmp .lt (.var .u32 "b" (by decide)) (.var .u32 "c" (by decide))) rfl : X (ps [("a", .u32), ("b", .u32), ("c", .u32)]) .bool)).render
     = "((a lo b) and (b lo c))" := by decide
 /-- `(a, b: u32) -> Bool = a < b || a == b` -/
-example : (lowerT (.bit .or (.cmp .lt (.param .u32 "a") (.param .u32 "b")) (.cmp .eq (.param .u32 "a") (.param .u32 "b")) rfl)).render
+example : (lowerT σ0 (.bit .or (.cmp .lt (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide))) (.cmp .eq (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide))) rfl : X (ps [("a", .u32), ("b", .u32)]) .bool)).render
     = "((a lo b) or (a eq b))" := by decide
 /-- `(a, b: u32) -> Bool = !(a < b)` -/
-example : (lowerT (.not (.cmp .lt (.param .u32 "a") (.param .u32 "b")))).render = "((a lo b) xor 1)" := by decide
+example : (lowerT σ0 (.not (.cmp .lt (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide))) : X (ps [("a", .u32), ("b", .u32)]) .bool)).render = "((a lo b) xor 1)" := by decide
 /-- `(a, b: u32) -> u32 = a < b ? a | b` -/
-example : (lowerT (.ite (.cmp .lt (.param .u32 "a") (.param .u32 "b")) (.param .u32 "a") (.param .u32 "b"))).render
+example : (lowerT σ0 (.ite (.cmp .lt (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide))) (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)) : X (ps [("a", .u32), ("b", .u32)]) .u32)).render
     = "((a lo b) ? a : b)" := by decide
 /-- `(a, b: i64) -> i64 = a < b ? b - a | a - b` -/
-example : (lowerT (.ite (.cmp .lt (.param .i64 "a") (.param .i64 "b")) (.arith .sub (.param .i64 "b") (.param .i64 "a")) (.arith .sub (.param .i64 "a") (.param .i64 "b")))).render
+example : (lowerT σ0 (.ite (.cmp .lt (.var .i64 "a" (by decide)) (.var .i64 "b" (by decide))) (.arith .sub (.var .i64 "b" (by decide)) (.var .i64 "a" (by decide))) (.arith .sub (.var .i64 "a" (by decide)) (.var .i64 "b" (by decide))) : X (ps [("a", .i64), ("b", .i64)]) .i64)).render
     = "((a lt b) ? (b sub a) : (a sub b))" := by decide
+
+/-! Locals and calls: a local is substituted, a call is inlined, so the
+renders are the terms the source would have without them. -/
+
+/-- `(a, b: u32) -> u32 = { y: u32 = a + b; y * y }` -/
+example : (lowerT σ0 (.letIn "y" (.arith .add (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)))
+    (.arith .mul (.var .u32 "y" (by decide)) (.var .u32 "y" (by decide))) : X (ps [("a", .u32), ("b", .u32)]) .u32)).render
+    = "((a add b) mul (a add b))" := by decide
+/-- `(a: u32) -> u32 = { y: u32 = a; y = y + 1; y * 2 }` — a rebinding replaces the term. -/
+example : (lowerT σ0 (.letIn "y" (.var .u32 "a" (by decide))
+    (.letIn "y" (.arith .add (.var .u32 "y" (by decide)) (.lit .u32 1))
+      (.arith .mul (.var .u32 "y" (by decide)) (.lit .u32 2))) : X (ps [("a", .u32)]) .u32)).render
+    = "((a add 1) mul 2)" := by decide
+/-- `(a: u32) -> u32 = { y: u8 = u8_trunc_u32(a); u32(y) }` — a narrow local read at its own width. -/
+example : (lowerT σ0 (.letIn "y" (.conv .u8 (.var .u32 "a" (by decide)))
+    (.conv .u32 (.var .u8 "y" (by decide))) : X (ps [("a", .u32)]) .u32)).render
+    = "(a and 255)" := by decide
+/-- `g: (x: u32) -> u32 = x * x`; `f: (a: u32) -> u32 = g(a + 1)` -/
+example : (lowerT σ0 (.call [("x", .u32)] .u32
+    (.arith .mul (.var .u32 "x" (by decide)) (.var .u32 "x" (by decide)))
+    (.cons (.arith .add (.var .u32 "a" (by decide)) (.lit .u32 1)) .nil) : X (ps [("a", .u32)]) .u32)).render
+    = "((a add 1) mul (a add 1))" := by decide
+/-- `h: (x, y: u32) -> u32 = { d: u32 = x - y; d & 255 }`; `f: (a, b: u32) -> u32 = h(b, a)` -/
+example : (lowerT σ0 (.call [("x", .u32), ("y", .u32)] .u32
+    (.letIn "d" (.arith .sub (.var .u32 "x" (by decide)) (.var .u32 "y" (by decide)))
+      (.bit .and (.var .u32 "d" (by decide)) (.lit .u32 255) rfl))
+    (.cons (.var .u32 "b" (by decide)) (.cons (.var .u32 "a" (by decide)) .nil)) : X (ps [("a", .u32), ("b", .u32)]) .u32)).render
+    = "((b sub a) and 255)" := by decide
 
 end Oak.LoweringRefinement
