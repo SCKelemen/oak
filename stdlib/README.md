@@ -1445,6 +1445,27 @@ a `Buffer[T]` or a fixed array, so the borrow checker decides what may be
 live at once. Executed over a libc allocation in
 `compiler/e2e_buffers_test.go`.
 
+## `objsim`: the object-store port (`import("objstore")`)
+
+`docs/spec/121-object-store.md`: keyed objects written whole, each with a
+generation the store draws from one monotone counter, and the conditional
+mutations a storage engine coordinates with — `obj_put(store, region, key,
+value, if_generation)` and `obj_delete(store, region, key, if_generation)`
+apply exactly when `if_generation` is `obj_any()`, `obj_absent()` for a
+missing key, or the key's current generation; a refusal is
+`PreconditionFailed` with the current generation, so the loser of a
+compare-and-set resynchronizes from the completion. `obj_get`, `obj_stat`
+and `obj_list` read; keys and values are windows into the caller's region.
+`objsim` is the simulated realization: up to 16 objects, 64-byte keys,
+256-byte values, and two tape-driven faults — `obj_fault_unavailable`
+(the request never happened) and `obj_fault_lost_ack` (it happened and the
+answer was lost), counted by `objsim_unavailable` and `objsim_lost_acks`.
+`Oak.ObjectStore` proves the precondition contract (`putIf_admits`,
+`putIf_exclusive`, `gen_monotone`, `delete_then_put_above`,
+`refusal_reports_current`); `compiler/e2e_objstore_test.go` runs the
+semantics and a seeded fault sweep. A native realization over the io port
+(`objfs`) is increment two.
+
 ## `iosim` and `ionative`: the IO port (`import("io")`)
 
 `docs/spec/120-io.md` fixes one completion-ring port two packages realize

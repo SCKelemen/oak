@@ -1287,7 +1287,70 @@ checked before type checking records instantiations). Executed
 view and unwrapped, `Result[u32, Bool]` from a checked add and matched, a
 wide index, and a wide index past 2^32 trapping in both realizations;
 `unwrap_or`, `checked_add`, `value_of`, and `at_wide` proven.
-Next increments: two-chunk and `x8`-area record results in the verifier,
+**Sixteenth increment — constant globals, and the prover through the
+backend.** The prover written in Oak (`prove/solver`, 125-verification.md
+§7) is the first whole program held to this chapter's discipline: built
+with `-native` (`OAK_SOLVER_NATIVE=1` for the binary `oak prove -solver
+self` runs), every function the backend reaches is checked, verified
+against its Oak body, and encoded by the Oak assembler, and the C build of
+the same source is the oracle — the two binaries print identical rows over
+the whole law corpus. The survey that started it: of the prover's 913
+functions 595 stayed with the C backend, 409 of them because a constant
+global (`T_PIPE: u32 = 17`) was not in the subset, and the build failed on
+four functions the seam checker refused — real backend bugs the checker
+found, exactly as §9 promised: a call spilled every live scratch register,
+including ones allocated for an enclosing expression's result and not yet
+written (`f(b) || (b >= 97 && …)`: a read of an uninitialized register),
+and a function whose one arm placed its result in `x0` — the base of a span
+parameter — before its other arm walked the span (the checker's span facts
+flow in text order, so the write ended the span). Now: a typed scalar
+top-level binding under the C backend's constant rule (90-backend.md §8a:
+a constant initializer, never assigned, index-assigned, borrowed, or
+addressed, outside any placed section, not a `c.const`) is folded by the
+compiler through the interpreter in declaration order — the semantics the
+C backend's own file-scope fold uses, so both realizations agree on every
+value — and handed to the backend and the verifier alike
+(`asm.Function.Constants`): the backend materializes the identifier as an
+immediate at its declared type, the verifier reads it as that constant
+(sign-extended to the context when the type is signed), so `scale: (x: u32)
+-> u32 = x * STEP + LIMIT` is proven in linear normal form and `narrow: (b:
+u8) -> u8 = b + SMALL` at its 8-bit contract; a written global stays a
+mutable static and its readers stay with the C backend. A call spills
+exactly the live scratch registers an instruction has written; a span
+parameter is parked in callee-saved registers when the function returns a
+value as well as when it calls; a unit function may end in a conditional or
+match in statement position; and the zero fill of an owned array uses two
+`str` where the offset leaves `stp`'s scaled 7-bit field (the encoder had
+refused `off: 512 is outside -512..504` rather than truncate — the object
+level catching what the checker's model does not). Both lanes take the
+changes. After it, of the 954 functions of the prover and the library it
+imports, 712 lower natively — 123 proven equal to their Oak bodies, 589
+trusted with the reason (339 call, 195 have no integer result, 22 return a
+record beyond one chunk) — and 242 stay with the C backend, for reasons the
+next increments name: arguments beyond the eight registers (144 functions,
+callers and callees), frames beyond 4080 bytes and expressions deeper than
+the scratch registers (100 together), `c.Ptr` parameters and locals (44),
+signed element indices (34), and record locals without an initializer
+(34). Executed (`TestE2ENativeConstants`): the constants, a mutable
+global's writer and readers left to C, and the three shapes the checker had
+refused — natively against the C backend and the portable realization; and
+the prover itself (`TestOakShellAgreesNative`), built natively, agrees
+with the Go ladder on every law file exactly as its C build does. Measured,
+as the performance note requires of anything that lands: the natively
+built prover is slower than the C build — `lattice.oak` 9.2 s against
+2.7 s, `mono.oak` 19.5 s against 9.0 s, `protocols.oak` 24.0 s against
+3.3 s, the small files within a factor of two — which is the backend as it
+stands (every value through a frame slot or a callee-saved home, every
+element access guarded, no register allocation across expressions) beside
+the C compiler at `-O1`. That gap is the work the types and the proofs are
+for: the checker's dominating guards and the verifier's loop invariants
+(`i ≤ len(v)`) already state when an access needs no guard, and a proof of
+equality against the Oak body is what licenses removing one.
+Next increments: the fallback reasons above in the order of their counts,
+so the prover lowers whole; then the verifier past `bl` and unit results —
+calls by inlining or by the callee's proven contract, and effects through
+spans as the result — so that "trusted" shrinks toward the foreign
+boundary; then two-chunk and `x8`-area record results in the verifier,
 `break` as a second loop exit in the recognizer, `view` over record fields
 and the other survey items, and the slicing syntax `v[lo:hi]` once the C
 backend lowers `len` over it.
@@ -1894,6 +1957,13 @@ top-level binding (never assigned or addressed, a constant initializer;
 verifier as the typed literal `T(init)` on a copy of the body, so
 `page_size` and `entries` cost nothing and leave nothing to the C backend;
 the emitted C keeps the constant (`compiler/native_bodies.go`).
+
+**Large elements.** A span or array element wider than 65 536 bytes is
+addressed with its stride built as `movz` then `movk` before the `umaddl`,
+and a field past 4 095 bytes into it through `add xF, xE, #hi, lsl #12`
+and a small remainder in the operand; the checker keeps the stride's
+constant fact through the `movk` and narrows the element region through
+the shifted add (the OS pilot's N2, a 409 600-byte regime).
 
 **Atomics.** The builtins of `65-machine-memory.md` lower on the AArch64
 lane when the cell is reached through a writable span (§7a there): the

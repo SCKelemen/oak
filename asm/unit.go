@@ -83,6 +83,12 @@ type Function struct {
 	// aggregate locals of the Oak body (docs/spec/94-assembler.md §8).
 	Records map[string]*ast.RecordLiteral
 	ADTs    map[string]*ast.ADTType
+	// Constants: the program's constant globals (docs/spec/90-backend.md
+	// §8a — a typed scalar binding with a constant initializer that no
+	// statement writes, borrows, or addresses) folded to their values — set
+	// by the compiler for native bodies, so the verifier reads an identifier
+	// naming one as the constant the native backend materialized.
+	Constants map[string]Constant
 	// TwoChunkResults names the callees whose result is a record of 9 to
 	// 16 bytes — two chunks, in a0 and a1 under the LP64 psABI — set by the
 	// native backend from the program's signatures, so the RV64 checker
@@ -212,6 +218,13 @@ type Binding struct {
 type Operand interface{ operandKind() string }
 
 // Register is a parsed register operand.
+// Constant is a folded constant global: its declared scalar type name
+// (u8…i64, byte, Bool) and its value as the bit pattern at that width.
+type Constant struct {
+	Type  string
+	Value uint64
+}
+
 type Register struct {
 	Text  string // as written: "x0", "w5", "sp", "lr", "v3", "d1", "v0.4s", "v2.s[1]", "z0.s", "p0/m", "pn8", "za0.s", "zt0"
 	Class RegClass

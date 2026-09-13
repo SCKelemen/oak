@@ -23,7 +23,11 @@ checkable.
 ## 2. The translation
 
 The output is the shallow embedding the hand-written models use, so the
-proofs written against them transfer.
+proofs written against them transfer. Extraction reads the program after
+its source-level lowerings — protocol projections, derives, the
+propagation form `try` (`10-syntax.md` §2d), library sugar — so a sugar
+form never needs a translation of its own: `EncodingExtracted.lean` shows
+the match `try` lowers to, under the generated `oak_try_err_N` binder.
 
 | Oak | Lean |
 | --- | --- |

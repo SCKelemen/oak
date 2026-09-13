@@ -122,14 +122,25 @@ re-raise well typed: an `Option` operand in a `Result` function is a type
 error at the generated arm, and so is an operand whose error type differs
 from the function's. The form is legal only where the block's value is
 the function's result: the body, and a block that is the tail expression
-of such a block (the arms of a tail `?`). Anywhere else the re-raise would
+of such a block (the arms of a tail `?`; a bare nested `{ … }` is a
+statement whose value is `()`, not a tail expression). Anywhere else the re-raise would
 not leave the function — a `while` body, a non-tail block, an operand
 (`f(try g(x))`) — and it is a diagnostic at the `try` (`OAK-M0401`), as
 are a bare `try e` statement (bind it or discard it on purpose) and a
-`try` as a block's last statement (nothing follows to use the value). The
-annotation `T` must be the payload's type: the synthesized binding carries
+`try` as a block's last statement (nothing follows to use the value), and
+a `try` in a block with `defer` (nesting the rest of the block into the
+`Ok` arm would run the deferred statements on the `Ok` path alone). The
+diagnostic carries the try's position and is reported once. The
+annotation is optional — `x := try e` binds the payload's type — and when
+written, `T` must be the payload's type: the synthesized binding carries
 it, and the checker reports `try binds a: u64, but the payload is u32` at
-the name. There is no `try` for a function
+the name. A function literal with a declared `Result` or `Option` return
+type is a function of its own: a `try` in its body propagates from the
+literal (`compiler/e2e_feature_pass_test.go`). The return type is read as
+spelled — `Result[…]` or `Option[…]` — not through a nominal alias. The
+generated binders are `oak_try_err_N` and `oak_try_ok_N`, numbered per
+declaration; a program that spells the same name is not captured, since
+the arm reads only the binder it declares. There is no `try` for a function
 returning anything else, and no non-local exit: the constitution's rule
 that a result is the only way out stands (`85-discipline.md` §3a).
 

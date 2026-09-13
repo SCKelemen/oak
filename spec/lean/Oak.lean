@@ -3,6 +3,7 @@ import Oak.Effects
 import Oak.EffectRows
 import Oak.Kernel
 import Oak.BufferCustody
+import Oak.AlignmentFact
 import Oak.MemoryOrder
 import Oak.HappensBefore
 import Oak.SequentialConsistency
@@ -144,6 +145,7 @@ import Oak.Stdlib.NormalizeTables
 import Oak.Stdlib.Normalize17
 import Oak.Typestate
 import Oak.IoPort
+import Oak.ObjectStore
 import Oak.ProtocolQuorum
 import Oak.TimeInterval
 import Oak.ProtocolConformance

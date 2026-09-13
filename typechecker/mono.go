@@ -70,7 +70,7 @@ func SubstituteTypeAST(expr ast.Expression, bindings map[string]ast.Expression) 
 		if !okLeft || !okIndex {
 			return nil, false
 		}
-		return &ast.IndexExpression{Token: t.Token, Left: left, Index: index, Dot: t.Dot}, true
+		return &ast.IndexExpression{Token: t.Token, Left: left, Index: index, Dot: t.Dot, Align: t.Align}, true
 	case *ast.FunctionTypeExpression:
 		out := &ast.FunctionTypeExpression{Token: t.Token, Effects: t.Effects, EffectsDeclared: t.EffectsDeclared}
 		for _, parameter := range t.Parameters {

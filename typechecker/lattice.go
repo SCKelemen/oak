@@ -137,6 +137,29 @@ func IsSubtype(t1, t2 Type) bool {
 // - join(T, never) = T
 // - join(A, B) = A | B for union types
 // - join(T1, T2) where T1 != T2 and neither is any/never/union = any (incomparable)
+// weakestAlignment is the join of structurally equal view or span types
+// under the alignment fact's order (docs/spec/50-borrowing.md section 2a):
+// a value from any arm must satisfy the fact, so the joined type carries
+// the weakest one — none when any arm has none — never the first arm's.
+func weakestAlignment(types []Type) Type {
+	first, isArray := types[0].(*ArrayType)
+	if !isArray || !(first.IsSlice || first.IsSpan) {
+		return types[0]
+	}
+	align := first.Align
+	for _, t := range types[1:] {
+		if other, isOther := t.(*ArrayType); isOther && other.Align < align {
+			align = other.Align
+		}
+	}
+	if align == first.Align {
+		return first
+	}
+	joined := *first
+	joined.Align = align
+	return &joined
+}
+
 func Join(types ...Type) Type {
 	if len(types) == 0 {
 		return &NeverType{} // Empty join is bottom
@@ -177,7 +200,7 @@ func Join(types ...Type) Type {
 	}
 
 	if allEqual {
-		return firstType
+		return weakestAlignment(nonNeverTypes)
 	}
 
 	// For two types, create a union type A | B
