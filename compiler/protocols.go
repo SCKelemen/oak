@@ -89,14 +89,32 @@ type quantifierUse struct {
 	field  string
 	sub    string
 	length int64
+	// A predicate form — count(data.peers, p, p.acked && p.view == data.view)
+	// — binds each element to binder and folds pred over it; element is
+	// the element type's spelling, ordinal numbers the distinct predicates
+	// of one machine (helperName), and key is the predicate's text.
+	binder  string
+	pred    ast.Expression
+	element string
+	ordinal int
+	key     string
 }
 
 func (q quantifierUse) helperName(prefix string) string {
 	name := prefix + "_" + q.form + "_" + q.field
+	if q.pred != nil {
+		return fmt.Sprintf("%s_p%d", name, q.ordinal)
+	}
 	if q.sub != "" {
 		name += "_" + q.sub
 	}
 	return name
+}
+
+// predicateKey identifies one predicate form textually, so every use of
+// the same predicate over the same field shares one helper.
+func predicateKey(form, field, binder string, pred ast.Expression) string {
+	return form + "|" + field + "|" + binder + "|" + pred.String()
 }
 
 var quantifierForms = map[string]bool{"count": true, "all": true, "any": true, "none": true}
@@ -218,30 +236,50 @@ func rewriteValue(v reflect.Value, f func(ast.Expression) ast.Expression) {
 // quantifierCall recognizes count/all/any/none over `data.field` or
 // `data.field, sub`; the shape is validated by analyzeProtocol.
 func quantifierCall(e ast.Expression) (form, field, sub string, ok bool) {
+	form, field, sub, _, _, ok = quantifierCallFull(e)
+	return form, field, sub, ok
+}
+
+// quantifierCallFull reads every quantifier spelling: `form(data.f)`,
+// `form(data.f, sub)`, and the predicate form `form(data.f, x, pred)` —
+// binder x, predicate pred over x and data (112-protocols.md section 1).
+func quantifierCallFull(e ast.Expression) (form, field, sub, binder string, pred ast.Expression, ok bool) {
 	call, isCall := e.(*ast.InvocationExpression)
 	if !isCall || call == nil {
-		return "", "", "", false
+		return "", "", "", "", nil, false
 	}
 	fn, isIdent := call.Function.(*ast.Identifier)
-	if !isIdent || fn == nil || !quantifierForms[fn.Value] || len(call.Arguments) == 0 || len(call.Arguments) > 2 {
-		return "", "", "", false
+	if !isIdent || fn == nil || !quantifierForms[fn.Value] || len(call.Arguments) == 0 || len(call.Arguments) > 3 {
+		return "", "", "", "", nil, false
+	}
+	if len(call.Arguments) == 3 {
+		target, isIndex := call.Arguments[0].(*ast.IndexExpression)
+		binderIdent, isBinder := call.Arguments[1].(*ast.Identifier)
+		if !isIndex || !isBinder || binderIdent == nil {
+			return fn.Value, "", "", "", nil, true
+		}
+		name, isField := dataField(target)
+		if !isField {
+			return fn.Value, "", "", "", nil, true
+		}
+		return fn.Value, name, "", binderIdent.Value, call.Arguments[2], true
 	}
 	target, isIndex := call.Arguments[0].(*ast.IndexExpression)
 	if !isIndex {
-		return fn.Value, "", "", true
+		return fn.Value, "", "", "", nil, true
 	}
 	name, isField := dataField(target)
 	if !isField {
-		return fn.Value, "", "", true
+		return fn.Value, "", "", "", nil, true
 	}
 	if len(call.Arguments) == 2 {
 		subIdent, isSub := call.Arguments[1].(*ast.Identifier)
 		if !isSub || subIdent == nil {
-			return fn.Value, name, "", true
+			return fn.Value, name, "", "", nil, true
 		}
-		return fn.Value, name, subIdent.Value, true
+		return fn.Value, name, subIdent.Value, "", nil, true
 	}
-	return fn.Value, name, "", true
+	return fn.Value, name, "", "", nil, true
 }
 
 // checkQuantifiers validates the quantifier forms in a guard or effect
@@ -269,9 +307,9 @@ func (m *protocolMachine) checkQuantifiers(node ast.Node, where string, report f
 		if !isIdent || fn == nil || !quantifierForms[fn.Value] {
 			return nil
 		}
-		form, field, sub, _ := quantifierCall(e)
+		form, field, sub, binder, pred, _ := quantifierCallFull(e)
 		if field == "" {
-			report(CodeProtocolShape, e, "%s: %s takes data.field (an [N]Bool field) or data.field, sub (an [N]R field and a Bool field of R)", where, form)
+			report(CodeProtocolShape, e, "%s: %s takes data.field (an [N]Bool field), data.field, sub (an [N]R field and a Bool field of R), or data.field, x, predicate (x bound to each element)", where, form)
 			ok = false
 			return nil
 		}
@@ -285,6 +323,27 @@ func (m *protocolMachine) checkQuantifiers(node ast.Node, where string, report f
 		if !isArray {
 			report(CodeProtocolShape, e, "%s: %s over data.%s, which is not a fixed array", where, form, field)
 			ok = false
+			return nil
+		}
+		if pred != nil {
+			// The predicate form: the binder is a fresh name, and the
+			// predicate reads only the element and data (no payload, no
+			// nested quantifier), so the helper's one parameter suffices.
+			if binder == "data" || binder == "state" || binder == "step" || fieldTypes[binder] != nil {
+				report(CodeProtocolShape, e, "%s: %s over data.%s binds %s, which is not a fresh name", where, form, field, binder)
+				ok = false
+				return nil
+			}
+			if reason := predicateShape(pred, binder); reason != "" {
+				report(CodeProtocolShape, e, "%s: %s over data.%s: the predicate %s", where, form, field, reason)
+				ok = false
+				return nil
+			}
+			key := predicateKey(form, field, binder, pred)
+			if !seen[key] {
+				seen[key] = true
+				m.quantifiers = append(m.quantifiers, quantifierUse{form: form, field: field, length: length, binder: binder, pred: pred, element: element, ordinal: m.predicateOrdinal(), key: key})
+			}
 			return nil
 		}
 		if sub == "" {
@@ -322,8 +381,17 @@ func (m *protocolMachine) checkQuantifiers(node ast.Node, where string, report f
 // block with calls to the projected helpers, which take the data record.
 func (m *protocolMachine) rewriteQuantifiers(node ast.Node, prefix string, s *synth) {
 	rewriteExpressions(node, func(e ast.Expression) ast.Expression {
-		form, field, sub, isQuantifier := quantifierCall(e)
+		form, field, sub, binder, pred, isQuantifier := quantifierCallFull(e)
 		if !isQuantifier || field == "" {
+			return nil
+		}
+		if pred != nil {
+			key := predicateKey(form, field, binder, pred)
+			for _, q := range m.quantifiers {
+				if q.key == key {
+					return s.call(q.helperName(prefix), s.id("data"))
+				}
+			}
 			return nil
 		}
 		use := quantifierUse{form: form, field: field, sub: sub}
@@ -340,16 +408,23 @@ func (m *protocolMachine) quantifierHelpers(prefix, dataType string) []ast.State
 		if q.sub != "" {
 			element += "." + q.sub
 		}
+		bind := ""
+		if q.pred != nil {
+			// The element is bound by name and the predicate, spliced in
+			// after parsing, reads it: `x: Peer = data.peers[i]`.
+			bind = fmt.Sprintf("    %s: %s = data.%s[i]\n", q.binder, q.element, q.field)
+			element = "__oak_predicate"
+		}
 		var src string
 		switch q.form {
 		case "count":
-			src = fmt.Sprintf("%s: (data: %s): u32 {\n  n: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < u32(%d) {\n    %s ? { n = n + u32(1) } | { }\n    i = i + u32(1)\n  }\n  n\n}\n", q.helperName(prefix), dataType, q.length, element)
+			src = fmt.Sprintf("%s: (data: %s): u32 {\n  n: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < u32(%d) {\n%s    %s ? { n = n + u32(1) } | { }\n    i = i + u32(1)\n  }\n  n\n}\n", q.helperName(prefix), dataType, q.length, bind, element)
 		case "all":
-			src = fmt.Sprintf("%s: (data: %s): Bool {\n  ok: Bool = true\n  i: u32 = u32(0)\n  while i < u32(%d) {\n    ok = ok && %s\n    i = i + u32(1)\n  }\n  ok\n}\n", q.helperName(prefix), dataType, q.length, element)
+			src = fmt.Sprintf("%s: (data: %s): Bool {\n  ok: Bool = true\n  i: u32 = u32(0)\n  while i < u32(%d) {\n%s    ok = ok && %s\n    i = i + u32(1)\n  }\n  ok\n}\n", q.helperName(prefix), dataType, q.length, bind, element)
 		case "any":
-			src = fmt.Sprintf("%s: (data: %s): Bool {\n  found: Bool = false\n  i: u32 = u32(0)\n  while i < u32(%d) {\n    found = found || %s\n    i = i + u32(1)\n  }\n  found\n}\n", q.helperName(prefix), dataType, q.length, element)
+			src = fmt.Sprintf("%s: (data: %s): Bool {\n  found: Bool = false\n  i: u32 = u32(0)\n  while i < u32(%d) {\n%s    found = found || %s\n    i = i + u32(1)\n  }\n  found\n}\n", q.helperName(prefix), dataType, q.length, bind, element)
 		case "none":
-			src = fmt.Sprintf("%s: (data: %s): Bool {\n  ok: Bool = true\n  i: u32 = u32(0)\n  while i < u32(%d) {\n    ok = ok && !%s\n    i = i + u32(1)\n  }\n  ok\n}\n", q.helperName(prefix), dataType, q.length, element)
+			src = fmt.Sprintf("%s: (data: %s): Bool {\n  ok: Bool = true\n  i: u32 = u32(0)\n  while i < u32(%d) {\n%s    ok = ok && !%s\n    i = i + u32(1)\n  }\n  ok\n}\n", q.helperName(prefix), dataType, q.length, bind, element)
 		}
 		if m.decl.Exported {
 			src = "pub " + src
@@ -359,9 +434,79 @@ func (m *protocolMachine) quantifierHelpers(prefix, dataType string) []ast.State
 		if len(p.Errors()) != 0 || program == nil || len(program.Statements) != 1 {
 			continue
 		}
+		if q.pred != nil {
+			pred := q.pred
+			rewriteExpressions(program.Statements[0], func(e ast.Expression) ast.Expression {
+				if ident, isIdent := e.(*ast.Identifier); isIdent && ident.Value == "__oak_predicate" {
+					return cloneExpression(pred)
+				}
+				return nil
+			})
+		}
 		out = append(out, program.Statements[0])
 	}
 	return out
+}
+
+// predicateOrdinal numbers the next predicate form of the machine.
+func (m *protocolMachine) predicateOrdinal() int {
+	n := 0
+	for _, q := range m.quantifiers {
+		if q.pred != nil {
+			n++
+		}
+	}
+	return n + 1
+}
+
+// predicateShape checks a predicate form's body: it reads the bound
+// element and data, applies operators and width conversions, and nothing
+// else — no payload, no step, no nested quantifier — so it is one fold
+// over the array in both gates. It returns the reason it does not fit.
+func predicateShape(pred ast.Expression, binder string) string {
+	reason := ""
+	var walk func(e ast.Expression, callee bool)
+	walk = func(e ast.Expression, callee bool) {
+		if reason != "" || e == nil {
+			return
+		}
+		switch n := e.(type) {
+		case *ast.Identifier:
+			if callee {
+				if !conversionNames[n.Value] {
+					reason = fmt.Sprintf("calls %s; only width conversions apply inside it", n.Value)
+				}
+				return
+			}
+			if n.Value != binder && n.Value != "data" {
+				reason = fmt.Sprintf("reads %s; it may read only %s and data", n.Value, binder)
+			}
+		case *ast.InvocationExpression:
+			if _, _, _, isQuantifier := quantifierCall(n); isQuantifier {
+				reason = "nests a quantifier form"
+				return
+			}
+			walk(n.Function, true)
+			for _, arg := range n.Arguments {
+				walk(arg, false)
+			}
+		case *ast.IndexExpression:
+			walk(n.Left, false)
+			if !n.Dot {
+				walk(n.Index, false)
+			}
+		case *ast.InfixExpression:
+			walk(n.Left, false)
+			walk(n.Right, false)
+		case *ast.PrefixExpression:
+			walk(n.Right, false)
+		case *ast.IntegerLiteral, *ast.Boolean, *ast.VariantExpression:
+		default:
+			reason = fmt.Sprintf("contains %T, which the predicate form does not admit", e)
+		}
+	}
+	walk(pred, false)
+	return reason
 }
 
 // livenessPredicates projects the two sides of every `eventually` entry as
@@ -1389,6 +1534,32 @@ func typestateIndex(typ ast.Expression) (template, state string, ok bool) {
 	return left.Value, right.Value, true
 }
 
+// typestateResult reads a fallible transition's result type,
+// `Result[Handle[To], Handle[From]]` (docs/spec/112-protocols.md section
+// 5a): the template, the Ok arm's state and the Err arm's state.
+func typestateResult(typ ast.Expression) (template, okState, errState string, ok bool) {
+	// The parser spells `Result[A, B]` as `(Result[A])[B]`: the outer index
+	// is the Err arm, the inner one the Ok arm.
+	outer, isIndex := typ.(*ast.IndexExpression)
+	if !isIndex || outer == nil || outer.Dot {
+		return "", "", "", false
+	}
+	inner, innerIsIndex := outer.Left.(*ast.IndexExpression)
+	if !innerIsIndex || inner == nil || inner.Dot {
+		return "", "", "", false
+	}
+	result, isIdent := inner.Left.(*ast.Identifier)
+	if !isIdent || result == nil || result.Value != "Result" {
+		return "", "", "", false
+	}
+	okTemplate, okState, okIndexed := typestateIndex(inner.Index)
+	errTemplate, errState, errIndexed := typestateIndex(outer.Index)
+	if !okIndexed || !errIndexed || okTemplate != errTemplate {
+		return "", "", "", false
+	}
+	return okTemplate, okState, errState, true
+}
+
 // checkTypestateSignature holds a via callable to its line: every parameter
 // of a typestate-indexed resource type must name the line's source state,
 // a return of that type must name its target state, a bare template or a
@@ -1432,6 +1603,19 @@ func (m *protocolMachine) checkTypestateSignature(t *ast.ProtocolTransition, fn 
 	if fn.Receiver != nil {
 		check(fn.Receiver.Type, t.From.Value, "takes receiver")
 	}
+	if template, okState, errState, fallible := typestateResult(fn.ReturnType); fallible && m.typestate[template] {
+		// A fallible transition: success hands back the handle in the
+		// target state, failure the same handle in the source state.
+		if typeVars[okState] || typeVars[errState] {
+			report(CodeProtocolShape, fn.ReturnType, "transition %s: via %s returns Result[%s[%s], %s[%s]] with a type variable; a transition names the concrete states", t.Name.Value, fn.Name.Value, template, okState, template, errState)
+			return false
+		}
+		if okState != t.To.Value || errState != t.From.Value {
+			report(CodeProtocolShape, fn.ReturnType, "transition %s: %s -> %s via %s returns Result[%s[%s], %s[%s]], but a fallible transition returns Result[%s[%s], %s[%s]]: the handle in the target state on success, in the source state on failure", t.Name.Value, t.From.Value, t.To.Value, fn.Name.Value, template, okState, template, errState, template, t.To.Value, template, t.From.Value)
+			return false
+		}
+		return ok
+	}
 	check(fn.ReturnType, t.To.Value, "returns")
 	return ok
 }
@@ -1441,6 +1625,10 @@ func (m *protocolMachine) checkTypestateSignature(t *ast.ProtocolTransition, fn 
 // that type in the target state. -1 when the callable is not that shape.
 func (m *protocolMachine) typestateAliasIndex(t *ast.ProtocolTransition, fn *ast.FunctionStatement) int {
 	returned, _, indexedReturn := typestateIndex(fn.ReturnType)
+	if !indexedReturn {
+		// A fallible transition returns the handle inside a Result.
+		returned, _, _, indexedReturn = typestateResult(fn.ReturnType)
+	}
 	if !indexedReturn || !m.typestate[returned] {
 		return -1
 	}

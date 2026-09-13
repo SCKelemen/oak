@@ -107,6 +107,10 @@ var rvVectorSubset = map[string]bool{
 	"vadd.vv": true, "vsub.vv": true, "vand.vv": true, "vor.vv": true, "vxor.vv": true, "vminu.vv": true, "vmaxu.vv": true,
 	"vmv.v.x": true, "vmv.x.s": true, "vredsum.vs": true,
 	"vmseq.vv": true, "vmsne.vx": true, "vmerge.vvm": true, "vcpop.m": true,
+	// 16-bit elements, and the widening and narrowing forms.
+	"vle16.v": true, "vse16.v": true,
+	"vwaddu.vv": true, "vwadd.vv": true, "vwsubu.vv": true, "vwsub.vv": true, "vwmulu.vv": true, "vwmul.vv": true,
+	"vzext.vf2": true, "vsext.vf2": true, "vnsrl.wi": true,
 }
 
 // rvCompressedSubset is the RVC subset: the 16-bit forms of the lane's

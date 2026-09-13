@@ -126,7 +126,9 @@ main: (): i32 {
 		"twice":                    "operator(+) add: (a: Vec, b: Vec): Vec laws { associative, associative } = a",
 		"mismatch":                 "operator(*) scale: (v: Vec, k: f32): Vec laws { commutative } = v",
 		"nonoperand":               "operator(==) same: (a: Vec, b: Vec): Bool laws { associative } = true",
-		"plain":                    "join: (a: Vec, b: Vec): Vec laws { associative } = a",
+		"plain mismatch":           "join: (a: Vec, k: f32): Vec laws { associative } = a",
+		"plain nonoperand":         "same: (a: Vec, b: Vec): Bool laws { associative } = true",
+		"plain element type":       "plus: (a: f32, b: f32): f32 laws { identity(u32(0)) } = a + b",
 	} {
 		root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": "package main\n\nVec: type = struct { x: f32, y: f32 }\n" + bad + "\n\nmain: (): i32 = 0\n"})
 		if _, err := New().WithPackageDir(root).SemanticModel().Get(); err == nil {
@@ -167,5 +169,48 @@ main: (): i32 = {
 		if abnormal || code != 42 {
 			t.Fatalf("%s: exit=(%d,%v)", name, code, abnormal)
 		}
+	}
+}
+
+// Laws on a plain binary function (docs/spec/10-syntax.md section 14a; the
+// ml pilot's RFC 0004): the claim on the reducing function over a builtin
+// type, which no operator definition can carry. Recorded with an empty
+// symbol and the operand type, printed back, listed by HasOperatorLaw, and
+// its identity element checked at the operand type.
+func TestE2ELawsOnPlainFunctions(t *testing.T) {
+	src := `package main
+
+plus: (a: f32, b: f32): f32 laws { associative, commutative, identity(0.0) } = a + b
+join: (a: u32, b: u32): u32 laws { associative, identity(u32(0)) } = a | b
+
+main: (): i32 = {
+  s: f32 = plus(plus(1.0, 2.0), 3.0)
+  j: u32 = join(u32(4), u32(1))
+  i32(s == 6.0 && j == u32(5) ? 42 | 1)
+}
+`
+	root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": src})
+	if code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root)); abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+	model, err := New().WithPackageDir(root).SemanticModel().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	laws := model.TypeChecker.OperatorLaws()
+	if len(laws) != 5 || laws[0].Function != "plus" || laws[0].Symbol != "" || laws[0].Type != "f32" || laws[0].Law != "associative" ||
+		laws[2].Law != "identity" || laws[2].Argument == nil || laws[2].Argument.String() != "0.0" ||
+		laws[3].Function != "join" || laws[3].Type != "u32" || laws[4].Argument.String() != "u32(0)" {
+		t.Fatalf("laws = %+v", laws)
+	}
+	if !model.TypeChecker.HasOperatorLaw("plus", "commutative") || model.TypeChecker.HasOperatorLaw("join", "commutative") {
+		t.Fatal("HasOperatorLaw must answer for the declared function only")
+	}
+	tree, err := New().WithPackageDir(root).Parse().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if printed := tree.Root.String(); !strings.Contains(printed, "laws { associative, commutative, identity(0.0) }") {
+		t.Fatalf("laws must print back: %s", printed)
 	}
 }

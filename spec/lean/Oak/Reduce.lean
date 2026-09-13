@@ -18,8 +18,14 @@ the grouping every backend produces, not about an idealized one.
   (`10-syntax.md` section 14a) the permission to regroup. Without it, the
   grouping named is the grouping computed.
 * `chainFold`, `tree_eq_chainFold`: the left fold from the first element
-  (`reduce.chain`), and the theorem that licenses lowering a `tree` over
-  an operator declaring `laws { associative }` to it.
+  (`reduce.chain`), and the theorem that licenses lowering a
+  `reduce.reduce` under `order bounded` over a function declaring
+  `laws { associative }` to it.
+* `resolve`, `resolve_default_exact`, `resolve_bounded_needs_claim`,
+  `resolve_regroups_only_bounded`, `bounded_sound`: the checker's rule for
+  "declaring the order once" (`55-parallelism.md` section 4) — the exact
+  tree by default, a named order by name, and the regrouping only under
+  `bounded` with the claim, where it is the tree's value.
 * `fold`, `tree_map`, `fold_eq_tree_map`: the stateful orders — the
   sequential fold with a state and the tree over lifted elements — and
   the theorem that an associative merge makes them one value.
@@ -202,9 +208,10 @@ theorem tree_assoc (f : α → α → α) (hf : Assoc f) (z x : α) (xs : List �
 the empty list: what `tree` computes under associativity (`tree_assoc`),
 without the stack of partials. A call of `tree` whose combine declares
 `laws { associative }` (docs/spec/10-syntax.md section 14a) is lowered to
-`chain`; `tree_eq_chainFold` is the theorem the lowering rests on, and the
-law is its hypothesis — a false law makes the two differ, which is what
-the chapter says a false law does. -/
+`chain` where a block asks (`order bounded`, below); `tree_eq_chainFold` is
+the theorem the lowering rests on, and the law is its hypothesis — a false
+law makes the two differ, which is what the chapter says a false law
+does. -/
 
 /-- The left fold from the first element (`reduce.chain`; `chain` above is
 the proof-internal chain of partials). -/
@@ -506,5 +513,75 @@ theorem coop_full (f : α → α → α) (z : α) (xs : List α) (k : Nat) (h : 
   rw [coop_eq_tree]
   unfold block
   rw [List.drop_zero, List.take_of_length_le h]
+
+/-! ## Declaring the order once
+
+`typechecker.lowerAssociativeTree` is the transliteration of `resolve`
+(docs/spec/55-parallelism.md section 4): a `reduce.reduce` call takes the
+order of its innermost `order` block — `tree` or `left` by name — and under
+`order bounded` the regrouping to `chain`, which is admitted only when the
+combine declares `laws { associative }`. Outside every block the call is
+the exact tree. There is no unchecked order. -/
+
+/-- The orders a block may declare. -/
+inductive Order where
+  | tree
+  | left
+  | bounded
+  deriving DecidableEq, Repr
+
+/-- The named groupings a call resolves to. -/
+inductive Named where
+  | tree
+  | left
+  | chain
+  deriving DecidableEq, Repr
+
+/-- The checker's rule: the enclosing block's order (none outside every
+block) and whether the combine carries the associativity claim give the
+grouping computed, or a refusal. -/
+def resolve : Option Order → Bool → Option Named
+  | none, _ => some .tree
+  | some .tree, _ => some .tree
+  | some .left, _ => some .left
+  | some .bounded, true => some .chain
+  | some .bounded, false => none
+
+/-- The exact order is the default: outside every block, the tree, whatever
+the combine claims. -/
+theorem resolve_default_exact (claim : Bool) : resolve none claim = some .tree := rfl
+
+/-- `bounded` without the claim is refused. -/
+theorem resolve_bounded_needs_claim : resolve (some .bounded) false = none := rfl
+
+/-- `bounded` with the claim is the chain. -/
+theorem resolve_bounded_claim : resolve (some .bounded) true = some .chain := rfl
+
+/-- Nothing regroups unless a block says `bounded` and the claim is there:
+the chain is reached from no other order and under no missing claim. -/
+theorem resolve_regroups_only_bounded (o : Option Order) (claim : Bool)
+    (h : resolve o claim = some .chain) : o = some .bounded ∧ claim = true := by
+  cases o with
+  | none => simp [resolve] at h
+  | some o => cases o <;> cases claim <;> simp [resolve] at h ⊢
+
+/-- A named order keeps its name: `tree` and `left` resolve to themselves
+whatever the combine claims. -/
+theorem resolve_named (claim : Bool) :
+    resolve (some .tree) claim = some .tree ∧ resolve (some .left) claim = some .left :=
+  ⟨rfl, rfl⟩
+
+/-- What a resolved name computes. -/
+def compute (f : α → α → α) (z : α) (xs : List α) : Named → α
+  | .tree => tree f z xs
+  | .left => left f z xs
+  | .chain => chainFold f z xs
+
+/-- Soundness of the regrouping: when the claim holds, the chain `bounded`
+computes is the exact tree's value on every input, so a true law costs no
+bits — and a false law is the only way the two differ. -/
+theorem bounded_sound (f : α → α → α) (hf : Assoc f) (z : α) (xs : List α) :
+    compute f z xs .chain = compute f z xs .tree :=
+  (tree_eq_chainFold f hf z xs).symm
 
 end Oak.Reduce
