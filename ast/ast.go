@@ -680,6 +680,10 @@ type VariableDeclaration struct {
 	// whose value is supplied at load time within the stated range and
 	// pinned to its initializer otherwise; nil for an ordinary binding.
 	Measured *MeasuredClause
+	// Threadgroup marks a kernel-local fixed array declared as threadgroup
+	// memory, `tile: [64]f32 (threadgroup)` (docs/spec/56-kernels.md
+	// section 2a): one array per position, shared by the group's lanes.
+	Threadgroup bool
 }
 
 // MeasuredClause is the range of a measured constant, inclusive at both
@@ -702,6 +706,9 @@ func (vd *VariableDeclaration) String() string {
 	}
 	if vd.Measured != nil {
 		out.WriteString(fmt.Sprintf(" (measured: %d, %d)", vd.Measured.Lo, vd.Measured.Hi))
+	}
+	if vd.Threadgroup {
+		out.WriteString(" (threadgroup)")
 	}
 	if vd.Value != nil {
 		out.WriteString(" = ")

@@ -102,6 +102,10 @@ Inside the subset:
 | `assert(cond)` | `if (!cond) { oak_raise(oak_fault, 5u); return zero; }` — a failed assertion is a trap (section 3), and the thread leaves the function with a zero result |
 | `r.group_tree(G, xs, lo, m, zero, f)` in a kernel body | the **cooperative reduction** of section 7: the kernel becomes a group kernel with `G` threads per position; `G` is an integer literal, a power of two up to 1024, one per kernel |
 | the grid position | `uint gid [[thread_position_in_grid]]` |
+| `lane(G)` | `oak_lid`, the thread's place in its group of `G` (section 2a); the kernel becomes a group kernel with `G` threads per position |
+| `tile: [N]T (threadgroup)` | `threadgroup T tile[N];` at kernel scope, zeroed by the lanes, one array per group (section 2a) |
+| `barrier()` | `threadgroup_barrier(mem_flags::mem_threadgroup);` at the body's top level (section 2a) |
+| `simd_shuffle_xor(v, off)` | `simd_shuffle_xor(v, off)`: lane `lane ^ off`'s value of the scalar local `v`, `off` a literal power of two below 32, in a top-level statement (section 2a) |
 | locals `x: T = e`, `x := e`, assignment | the same, scalars only |
 | `x[i]`, `y[i] = v` | `x[oak_check(i, x_len, oak_fault)]` — the index is checked against the length and a miss raises the fault word (section 3) |
 | `len(x)` | `x_len` |
@@ -128,6 +132,80 @@ conversion rows, integer-constant matches, block arms in value position
 other than a result, calls through function values that are not bound to
 a named function, globals and constants, generics (call an
 instantiation), methods, recursion.
+
+### 2a. Lanes, threadgroup memory, and barriers
+
+**Status: implemented, 2026-09-14.** The ml pilot's F1, increments (a) and
+(b): the two things its string emitters still express that the subset
+did not — the thread's place in its group, and the staging tile the exact
+matmul keeps in threadgroup memory.
+
+```oak
+kernel reverse_blocks: (gid: u32, x: []f32, out: [*]f32): () = {
+  tile: [4]f32 (threadgroup)                 // one array per group of four lanes
+  i: u32 = gid * 4 + lane(4)                 // this lane's element: the tile shape at T = 4
+  v: f32 = 0.0
+  i < len(x) ? { tile[lane(4)] = x[i]  v = x[i] * 10.0 }
+  barrier()                                  // every lane's stores are visible past here
+  i < len(out) ? { out[i] = tile[3 - lane(4)] + v }
+}
+```
+
+- **`lane(G)`** is the thread's index in its group, `0 .. G-1`; `G` is an
+  integer literal, a power of two up to 1024, one per kernel (a
+  cooperative reduction's group must agree with it). A kernel that calls
+  it is a **group kernel**: its position is a threadgroup of `G` threads,
+  and every lane runs the body. A span store whose index depends on
+  `lane()` — directly or through a local — is **each lane's own slot** and
+  is emitted for every lane; a store that does not is the group's one
+  value and stays with lane 0, as before.
+- **Independence** (section 6): `gid * G + lane(G)` is the tile shape with
+  `T = G` — `lane(G)` is a counter bounded by `G` — so positions stay
+  disjoint (`Oak.Kernel.lane_disjoint`); the descriptor records `tile G`.
+- **Threadgroup memory**: `name: [N]T (threadgroup)` at the body's top
+  level, with no initializer, is one array per group shared by its lanes;
+  the lanes zero it before the body runs. It is indexed like a fixed array
+  (checked against `N`) and stored by any lane.
+- **`barrier()`** is a statement at the body's top level — not inside a
+  loop, a conditional, or an expression — and every lane reaches it: the
+  lanes' stores before it are visible to every lane after it.
+- **The host form.** The C backend and the interpreter run a kernel with
+  lanes through one rewrite (`hostform.Rewrite`): the body's top-level
+  statements split at each `barrier()` into **phases**; each phase runs
+  for lanes `0 .. G-1` in order as a canonical loop over `oak_lane`, with
+  `lane(G)` the counter; a threadgroup array is one array per position
+  declared before the phases; a local declared in one phase and read in a
+  later one is **private to its lane** — it becomes a `[G]T` array indexed
+  by the lane, so it needs a type annotation and cannot itself be a fixed
+  array. `Oak.Kernel.phases_perm` is the theorem that this order computes
+  what the device computes: when each phase's lanes are pairwise
+  independent — they store their own slots and read what the previous
+  phase left — running a phase's lanes in any order gives one memory, and
+  the phases compose in sequence.
+- **Rules** (`OAK-K0101`): `lane()`, `barrier()`, and threadgroup memory
+  belong to a kernel body, never a helper; a kernel with a barrier or a
+  threadgroup array declares its group through `lane(G)`; a threadgroup
+  array's initializer may not mention `lane()`; a local living across a
+  barrier is annotated and scalar.
+
+- **`simd_shuffle_xor(v, off)`** (increment (c)) is the value of the
+  top-level scalar local `v` in lane `lane ^ off`, `off` an integer
+  literal, a power of two below 32 and below the group, used in a
+  statement at the body's top level (every lane has reached it). Metal
+  emits the simdgroup shuffle; since `off < 32` the partner is always in
+  the thread's own simdgroup. The host form ends a phase before the
+  statement, reads each shuffle's partner slot into a per-lane temp in a
+  phase of its own — so a statement that also writes its source
+  (`v = v + simd_shuffle_xor(v, 4)`) never reads a partner early — and
+  runs the statement in the next phase. Spelled at descending offsets,
+  `v = v + simd_shuffle_xor(v, off)` for `off = G/2 … 1` is the lane-rule
+  butterfly: `Oak.Reduce.shuffle_butterfly_lane0` proves lane 0 ends with
+  `bfly`, the value `reduce.lanes` and `group_lanes` compute, so a
+  hand-spelled reduction and the library's agree bit for bit. `simd_sum`
+  is deliberately not an intrinsic: the hardware's order is unspecified,
+  and this spelling is the specified one.
+
+What this does not yet do: fusion as a pass (increment (d)).
 
 ## 3. Traps and the fault word
 
@@ -213,7 +291,8 @@ independence:
 - **a tile per thread**: every span access is at `gid * T + k` — spelled
   directly, through a local `base: u32 = gid * T`, or through a local
   `i: u32 = base + k` — where `k` is the counter of an enclosing
-  `while k < T` whose body changes `k` only as its last statement, and `T`
+  `while k < T` whose body changes `k` only as its last statement, or
+  `lane(T)` in a group kernel of `T` lanes (section 2a), and `T`
   is a scalar parameter or a literal; none of `gid`, `base`, `i`, or `T`
   is reassigned.
 
@@ -238,8 +317,8 @@ index, which any buffer the tiles cover already guarantees.
   same kernels run on this machine's GPU in the tests and compile on it
   under `-metal-check` — through the framework's run-time compiler, so
   the Xcode toolchain is not needed.
-- SIMD-group operations, atomics beyond the fault word, and threadgroup
-  memory other than the cooperative reduction's scratch. Reductions are
+- SIMD-group operations and atomics beyond the fault word. Threadgroup
+  memory, lanes, and barriers are in (section 2a). Reductions are
   in, two ways. **Within a thread**: `reduce.tree` over a window of the
   input, its combine bound to a named function, runs per thread with the
   binary-counter grouping the host computes. **Across a threadgroup**:

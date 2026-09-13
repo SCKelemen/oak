@@ -23,11 +23,21 @@ import (
 )
 
 func certificateRung(model *compiler.SemanticModel, results []prove.Result, run bool, cnfDir string, stdout io.Writer) []prove.Result {
-	solver := ""
+	// The solver: the one written in Oak (prove/solver/sat.oak) unless
+	// OAK_SAT_SOLVER names an external one; a named solver that is not
+	// found skips the rung by name.
+	var solve func(asm.CNF) (prove.SATOutcome, error)
 	if run {
-		solver = prove.FindSolver()
-		if solver == "" {
-			fmt.Fprintln(stdout, "oak prove: the certificate rung was skipped: no SAT solver (name one in OAK_SAT_SOLVER, or put cadical on PATH)")
+		external, found := prove.FindSolver()
+		switch {
+		case !found:
+			fmt.Fprintf(stdout, "oak prove: the certificate rung was skipped: OAK_SAT_SOLVER names %q, which is not on PATH\n", os.Getenv("OAK_SAT_SOLVER"))
+		case external != "":
+			solve = func(cnf asm.CNF) (prove.SATOutcome, error) {
+				return prove.RunSolver(external, cnf, prove.SolverTimeout)
+			}
+		default:
+			solve = runOakSAT
 		}
 	}
 	if cnfDir != "" {
@@ -56,14 +66,14 @@ func certificateRung(model *compiler.SemanticModel, results []prove.Result, run 
 				fmt.Fprintf(stdout, "oak prove: -cnf %s: %v\n", r.Name, err)
 			}
 		}
-		if solver == "" {
+		if solve == nil {
 			continue
 		}
 		if cnf.Settled != nil {
 			results[i] = agreeSettled(r, cnf.Settled)
 			continue
 		}
-		outcome, err := prove.RunSolver(solver, cnf, prove.SolverTimeout)
+		outcome, err := solve(cnf)
 		if err != nil {
 			results[i].Detail += "; the certificate rung gave no verdict (" + err.Error() + ")"
 			continue

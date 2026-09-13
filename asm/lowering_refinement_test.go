@@ -50,6 +50,16 @@ var loweringRenders = []struct {
 	{"f: (a, b: u32) -> Bool", "!(a < b)", "((a lo b) xor 1)"},
 	{"f: (a, b: u32) -> u32", "a < b ? a | b", "((a lo b) ? a : b)"},
 	{"f: (a, b: i64) -> i64", "a < b ? b - a | a - b", "((a lt b) ? (b sub a) : (a sub b))"},
+	// Span elements (`elem`, `len`): a symbolic index is a select, a constant
+	// index the element parameter under the same name; a select is masked to
+	// its own width by zeroExtend, so a widening masks twice.
+	{"f: (v: []u32, i: u32) -> u32", "v[i]", "v[i]"},
+	{"f: (v: []u32, i: u32) -> u32", "v[i + 1] * v[0]", "(v[(i add 1)] mul v[0])"},
+	{"f: (b: []u8, i: u32) -> u32", "u32(b[i])", "((b[i] and 255) and 255)"},
+	{"f: (v: []u32, i: u32) -> Bool", "i < len(v)", "(i lo len(v))"},
+	// Folding (`Term.binary`, `iteT`): constant operands fold, `x + 0` is `x`.
+	{"f: (a: u32) -> u32", "a + 2 * 3", "(a add 6)"},
+	{"f: (a: u32) -> u32", "a + 0", "a"},
 }
 
 // Locals and calls (LoweringRefinement.lean, `letIn` and `call`): a local
@@ -66,6 +76,14 @@ var loweringProgramRenders = []struct {
 	{"f: (a: u32) -> u32 = {\n  y: u8 = u8_trunc_u32(a)\n  u32(y)\n}\n", "(a and 255)"},
 	{"g: (x: u32) -> u32 = x * x\n\nf: (a: u32) -> u32 = g(a + 1)\n", "((a add 1) mul (a add 1))"},
 	{"h: (x, y: u32) -> u32 = {\n  d: u32 = x - y\n  d & 255\n}\n\nf: (a, b: u32) -> u32 = h(b, a)\n", "((b sub a) and 255)"},
+	// Statement-level conditionals (`condSet`): a local an arm assigns becomes
+	// a select between the arms' terms; an untouched local keeps its term.
+	{"f: (a, b: u32) -> u32 = {\n  m: u32 = a\n  a < b ? { m = b } | { }\n  m * 2\n}\n", "(((a lo b) ? b : a) mul 2)"},
+	{"f: (a, b: u32) -> u32 = {\n  x: u32 = a\n  y: u32 = b\n  a < b ? { x = b\n  y = a } | { x = x + 1 }\n  x - y\n}\n", "(((a lo b) ? b : (a add 1)) sub ((a lo b) ? a : b))"},
+	// Counted loops (`whileLoop`): the condition folds to a constant each
+	// iteration, so the loop lowers to its unrolled body.
+	{"f: (n: u32) -> u32 = {\n  s: u32 = 0\n  i: u32 = 0\n  while i < 3 {\n    s = s + n\n    i = i + 1\n  }\n  s\n}\n", "((n add n) add n)"},
+	{"f: (n: u32) -> u32 = {\n  s: u32 = 0\n  i: u32 = 0\n  while i < 4 {\n    i % 2 == 0 ? { s = s + n } | { }\n    i = i + 1\n  }\n  s\n}\n", "(n add n)"},
 }
 
 func TestLoweringProgramsMatchLeanTransliteration(t *testing.T) {

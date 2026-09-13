@@ -312,6 +312,15 @@ func (in *independenceWalk) tileIndex(e ast.Expression, loops []loopBound) (stri
 		if !isBase {
 			continue
 		}
+		// lane(G) is a counter bounded by G (docs/spec/56-kernels.md
+		// section 2a): position g's lanes touch g * G + l for l < G.
+		if call, isCall := pair[1].(*ast.InvocationExpression); isCall && len(call.Arguments) == 1 {
+			if id, isIdent := call.Function.(*ast.Identifier); isIdent && id.Value == "lane" {
+				if g, isLit := call.Arguments[0].(*ast.IntegerLiteral); isLit && fmt.Sprint(g.Value) == t {
+					return t, true
+				}
+			}
+		}
 		k, isIdent := pair[1].(*ast.Identifier)
 		if !isIdent {
 			continue

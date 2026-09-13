@@ -49,6 +49,7 @@ import Oak.Variadic
 import Oak.Intrinsics
 import Oak.CInterop
 import Oak.Simd
+import Oak.NeonSemantics
 import Oak.Monomorphization
 import Oak.Handles
 import Oak.Slab
@@ -71,6 +72,7 @@ import Oak.Assembler
 import Oak.AssemblerSemantics
 import Oak.ArmASL
 import Oak.Extents
+import Oak.ExtentsRefinement
 import Oak.Dispatch
 import Oak.Discharge
 import Oak.FloatBits

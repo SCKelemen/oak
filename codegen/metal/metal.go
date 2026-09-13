@@ -221,9 +221,14 @@ type emitter struct {
 	// (0 otherwise); scratch counts its cooperative reductions; hoist is
 	// where a statement's expression may place the lines it needs first.
 	groupSize int64
-	scratch   int
-	hoist     *[]string
-	inKernel  bool
+	// arena collects the threadgroup arrays a kernel body declares, hoisted
+	// to kernel scope; laneLocals names the locals whose value depends on
+	// lane(), so a store indexed by one is each lane's own.
+	arena      []string
+	laneLocals map[string]bool
+	scratch    int
+	hoist      *[]string
+	inKernel   bool
 	// per-function state
 	current string
 	locals  map[string]oakType
@@ -492,6 +497,7 @@ func (em *emitter) kernel(fn *ast.FunctionStatement) (*Kernel, string, error) {
 		return nil, "", err
 	}
 	em.groupSize, em.scratch, em.inKernel = groupSize, 0, true
+	em.arena, em.laneLocals = nil, map[string]bool{}
 	defer func() { em.groupSize, em.inKernel = 0, false }()
 	desc.Threadgroup = groupSize
 	for i, t := range scratchTypes {
@@ -581,7 +587,7 @@ func (em *emitter) kernel(fn *ast.FunctionStatement) (*Kernel, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	for _, line := range prologue {
+	for _, line := range append(prologue, em.arena...) {
 		out.WriteString(line + "\n")
 	}
 	out.WriteString(body)
@@ -808,6 +814,22 @@ func (em *emitter) statement(stmt ast.Statement, lines *[]string, ret oakType, t
 			em.locals[s.Name.Value] = t
 			return nil
 		case "array":
+			if s.Threadgroup {
+				// Threadgroup memory (docs/spec/56-kernels.md section 2a):
+				// one array per group at kernel scope, zero-filled by
+				// the lanes when uninitialized.
+				if em.groupSize == 0 || !em.inKernel {
+					return em.fail("threadgroup memory %s is a kernel body's; a helper has no group", s.Name.Value)
+				}
+				if s.Value != nil {
+					return em.fail("threadgroup memory %s is declared without an initializer; the lanes fill it", s.Name.Value)
+				}
+				em.arena = append(em.arena, fmt.Sprintf("  threadgroup %s %s[%d];", scalarMSL[t.element], ident(s.Name.Value), t.length))
+				emit("for (uint oak_z = oak_lid; oak_z < %du; oak_z += %du) { %s[oak_z] = (%s)0; }", t.length, em.groupSize, ident(s.Name.Value), scalarMSL[t.element])
+				emit("threadgroup_barrier(mem_flags::mem_threadgroup);")
+				em.locals[s.Name.Value] = t
+				return nil
+			}
 			if err := em.arrayLocal(s, t, emit); err != nil {
 				return err
 			}
@@ -825,6 +847,9 @@ func (em *emitter) statement(stmt ast.Statement, lines *[]string, ret oakType, t
 				return err
 			}
 			emit("%s %s = %s;", scalarMSL[t.element], ident(s.Name.Value), term)
+			if em.inKernel && em.laneIndexed(s.Value) {
+				em.laneLocals[s.Name.Value] = true
+			}
 		}
 		em.locals[s.Name.Value] = t
 		return nil
@@ -855,9 +880,10 @@ func (em *emitter) statement(stmt ast.Statement, lines *[]string, ret oakType, t
 		if err != nil {
 			return err
 		}
-		if em.groupSize > 0 && em.inKernel && t.kind == "span" {
+		if em.groupSize > 0 && em.inKernel && t.kind == "span" && !em.laneIndexed(s.Target.Index) {
 			// Every thread of the group computes the same value; one
-			// writes it.
+			// writes it. An index that depends on lane() is each lane's
+			// own slot (docs/spec/56-kernels.md section 2a).
 			emit("if (oak_lid == 0u) { %s = %s; }", em.elementRef(ref, t, index, s.Target.Token), value)
 			return nil
 		}
@@ -885,6 +911,16 @@ func (em *emitter) statement(stmt ast.Statement, lines *[]string, ret oakType, t
 	case *ast.BlockStatement:
 		return em.block(s.Statements, lines, ret)
 	case *ast.ExpressionStatement:
+		if call, isCall := s.Expression.(*ast.InvocationExpression); isCall {
+			if id, isIdent := call.Function.(*ast.Identifier); isIdent && id.Value == "barrier" {
+				// The group's barrier (docs/spec/56-kernels.md section 2a).
+				if em.groupSize == 0 || !em.inKernel {
+					return em.fail("barrier() is a kernel body's; a helper has no group")
+				}
+				emit("threadgroup_barrier(mem_flags::mem_threadgroup);")
+				return nil
+			}
+		}
 		if match, ok := s.Expression.(*ast.MatchExpression); ok && !tail {
 			return em.conditionalStatement(match, lines)
 		}
@@ -1563,6 +1599,35 @@ func (em *emitter) call(call *ast.InvocationExpression, want oakType) (string, e
 			rendered = append(rendered, term)
 		}
 		return fmt.Sprintf("%s(%s)", floatIntrinsics[name], strings.Join(rendered, ", ")), nil
+	case name == "lane":
+		// The thread's place in its group (docs/spec/56-kernels.md
+		// section 2a); groupShape fixed the size from the literal.
+		if em.groupSize == 0 || !em.inKernel {
+			return "", em.fail("lane() is a kernel body's; a helper runs for one lane and has no group")
+		}
+		return "oak_lid", nil
+	case name == "simd_shuffle_xor":
+		// The simdgroup shuffle (docs/spec/56-kernels.md section 2a): the
+		// value of x in lane `lane ^ off`; the offset stays below 32, so
+		// the partner is in this thread's simdgroup whatever the group.
+		if em.groupSize == 0 || !em.inKernel {
+			return "", em.fail("simd_shuffle_xor is a kernel body's; a helper runs for one lane")
+		}
+		if len(args) != 2 {
+			return "", em.fail("simd_shuffle_xor takes (x, off)")
+		}
+		source := em.operandType(args[0], want)
+		inner, err := em.expr(args[0], source)
+		if err != nil {
+			return "", err
+		}
+		off, isLiteral := args[1].(*ast.IntegerLiteral)
+		if !isLiteral || off.Value < 1 || off.Value >= 32 || off.Value >= em.groupSize {
+			return "", em.fail("simd_shuffle_xor: the offset is a literal below 32 and below the group size %d", em.groupSize)
+		}
+		return fmt.Sprintf("simd_shuffle_xor(%s, %du)", inner, off.Value), nil
+	case name == "barrier":
+		return "", em.fail("barrier() is a statement of the kernel body's top level")
 	case name == "total_order" || name == "assert" || name == "subslice" || name == "view" || name == "span":
 		return "", em.fail("%s is outside the kernel subset", name)
 	}
@@ -1676,6 +1741,21 @@ func (em *emitter) groupShape(fn *ast.FunctionStatement) (int64, []string, error
 		}
 		callee, ok := call.Function.(*ast.Identifier)
 		if !ok {
+			return
+		}
+		if callee.Value == "lane" && len(call.Arguments) == 1 {
+			// lane(G) (docs/spec/56-kernels.md section 2a) names the group
+			// as a cooperative reduction's first argument does.
+			literal, isLiteral := call.Arguments[0].(*ast.IntegerLiteral)
+			if !isLiteral || literal.Value < 1 || literal.Value > 1024 || literal.Value&(literal.Value-1) != 0 {
+				failure = em.fail("lane: the group size is an integer literal, a power of two up to 1024, got %s", call.Arguments[0].String())
+				return
+			}
+			if size != 0 && size != literal.Value {
+				failure = em.fail("one kernel has one group size, got %d and lane(%d)", size, literal.Value)
+				return
+			}
+			size = literal.Value
 			return
 		}
 		spelled, arity, element, isGroup := groupCall(callee.Value)
@@ -1992,4 +2072,23 @@ func ident(name string) string {
 		return name + "_"
 	}
 	return strings.ReplaceAll(name, ".", "__")
+}
+
+// laneIndexed reports whether an index expression depends on lane(): it
+// mentions lane() or a local whose value did.
+func (em *emitter) laneIndexed(e ast.Expression) bool {
+	found := false
+	walk(e, func(n ast.Node) {
+		switch v := n.(type) {
+		case *ast.InvocationExpression:
+			if id, ok := v.Function.(*ast.Identifier); ok && id.Value == "lane" {
+				found = true
+			}
+		case *ast.Identifier:
+			if em.laneLocals[v.Value] {
+				found = true
+			}
+		}
+	})
+	return found
 }

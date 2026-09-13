@@ -204,14 +204,27 @@ struct in, NEON values through, the struct back), so C callers and
 natively lowered callers agree, and a native function that passes vectors
 to a callee the C backend realizes is itself left to the C backend.
 
+The verifier follows the lowering (`94-assembler.md` §8, the seventh
+increment): each NEON instruction above is the lane function `Oak.Simd`
+gives the operation it realizes, so a straight-line vector body is
+proven equal to its Oak body at the bit level — the SIMD corpus and the
+UTF-8 kernel's `special_cases` and `check_block` are, on both halves of
+their vector results — and a vector body with a data-dependent loop is
+trusted, as a scalar one is. `Oak.NeonSemantics` states each lane
+function in Lean and proves it is the `Oak.Simd` operation above (`uqsub`
+is `subSat`, `cmeq` is `eqMask`, `ext #(16-n)` is `prev n`, the
+`movemask` sequence is `movemask 8`, `umaxv` decides `any` and `all`).
+
 Measured (`benchmarks/native/`): the UTF-8 validator with its tables
-passed in as a view runs at 0.40 ns/byte through the native backend
-against 0.08 through the C backend on the same 64 MB input, both correct.
-The lowering is the same instructions; the gap is what the native backend
-does not do yet — inline the per-block calls (the C compiler flattens the
-kernel into one loop with every vector in a register), keep vector locals
-in registers across calls, and elide the length guard the loop condition
-already proves.
+passed in as a view first ran at 0.40 ns/byte through the native backend
+against 0.08 through the C backend on the same 64 MB input, both
+correct — the same instructions, with the kernel's call tree and the
+spills around it as the cost. Eliding the length guards the loop condition
+proves changed nothing measurable (the predictor had absorbed them).
+Expanding the vector helpers into their caller before lowering and
+releasing every local's register at its last use (`94-assembler.md` §9)
+took the native kernel to 0.28 ns/byte against the C backend's 0.17 in
+one run on a loaded machine, with no call left in it.
 
 On a scalable-vector target such as RISC-V V or AArch64 SVE, fixed vectors
 remain fixed semantic values. The backend may use a scalable register to

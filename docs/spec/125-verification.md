@@ -195,10 +195,17 @@ message; an error outside every statement leaves them all open with it.
 `-cases` bounds the exhaustive decider.
 
 `-solver sat` runs the Go ladder and then the **certificate rung** over
-every bit-level obligation: the clauses go to the SAT solver named by
-`OAK_SAT_SOLVER`, else `cadical` on `PATH`, invoked directly (`--lrat
---no-binary`, an explicit argument list, a temporary directory, a
-timeout); with no solver the rung is skipped and the summary says so. A
+every bit-level obligation: the clauses go to the **SAT solver written in
+Oak** (`prove/solver/sat.oak`, inside the compiled solver binary) — a
+conflict-driven clause-learning solver in the strict profile over one
+caller-owned word arena, propagation by occurrence lists, first-UIP
+learning with VSIDS activity and phase saving, geometric restarts, every
+learned clause written as an LRAT line as it is learned with the
+propagation order as its hints, bounded by a conflict budget and the
+store's capacity — or, when `OAK_SAT_SOLVER` names one, to an external
+solver invoked directly (`--lrat --no-binary`, an explicit argument list,
+a temporary directory, a timeout); a named solver that is not found skips
+the rung and the summary says so. Either way the solver is untrusted. A
 row the ladder decided or refuted is cross-checked — `the certificate rung
 agrees` — and a disagreement makes the row `open` naming both readings, as
 the Oak-solver cross-check does. A row the ladder left open at its node
@@ -211,8 +218,12 @@ row is read through its generated base and step obligations, since the
 predicate alone is not a theorem over every state. `-cnf dir` writes every bit-level
 obligation's clauses as DIMACS (`name.cnf`) for any solver or checker to
 read; the clause engine agrees with the diagram engine input for input over
-the corpus (`prove/lrat_test.go`), and the two checkers accept and refuse the
-same certificates (`lrat_twin_test.go`).
+the corpus (`prove/lrat_test.go`), the two checkers accept and refuse the
+same certificates (`lrat_twin_test.go`), and the solver written in Oak
+agrees with brute force over random 3-SAT and refutes the pigeonhole
+formulas with certificates both checkers accept (`sat_oak_test.go`). No
+Go is on the path from clauses to certificate: the solver, the second
+checker, and the shell are Oak programs; the Go checker is the twin.
 
 `oak build` checks theorems like any declaration and does not run the
 ladder; a theorem is never a build error for being open.
@@ -620,8 +631,8 @@ In order of payoff, each reusing a surface that exists:
   reach the measure that remains; and the first performance step is
   measured there too: the source-level inliner reaching the prover's
   accessor chains and by-reference records read in place brought the
-  native binary from 2–5 times the C build's time to 1.6–1.9 times,
-  `94-assembler.md` §9 seventeenth and eighteenth increments), so what remains is the self-hosted
+  native binary from 2–5 times the C build's time to 1.5–1.7 times,
+  `94-assembler.md` §9 seventeenth to nineteenth increments), so what remains is the self-hosted
   compiler, and the backend lowering and verifying the prover whole; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
@@ -662,9 +673,11 @@ In order of payoff, each reusing a surface that exists:
   shift's, and the extent facts for linear bounds, inside the compiler,
   each with its Lean law.
 - **A certificate rung.** Landed as `-solver sat` (§3, §4): the clause
-  engine, the two LRAT checkers, `Oak.RupCheck`. Next: the solver written
-  in Oak (a CDCL over the same clause store, emitting LRAT), and the
-  clause encoder proved rather than cross-checked. The BDD's failure mode
+  engine, the two LRAT checkers, `Oak.RupCheck`, and the solver written in
+  Oak (`prove/solver/sat.oak`) as the rung's default. Next: the clause
+  encoder proved rather than cross-checked; clause-database reduction with
+  deletion lines; two-watched-literal propagation when a corpus obligation
+  asks for it. The BDD's failure mode
   is the node budget on multipliers and wide aggregates, which CDCL
   solvers treat routinely. The rung is the one Lean's `bv_decide` already
   runs:

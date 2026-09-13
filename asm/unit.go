@@ -100,6 +100,12 @@ type Function struct {
 	// lets the body read a1 after a call to one of them (it sees no callee
 	// signature otherwise; a1 is dead after every other call).
 	TwoChunkResults map[string]bool
+	// Callees are the program's functions a `bl`/`call` may target, for the
+	// verifier's call summaries (docs/spec/94-assembler.md §8): a callee
+	// with a scalar signature is taken at its Oak body, so the caller's
+	// verdict is relative to it. Set by the native backend; nil leaves
+	// every call opaque (trusted).
+	Callees map[string]*ast.FunctionStatement
 }
 
 // Composite is a record or tagged-union type's shape at the boundary: its

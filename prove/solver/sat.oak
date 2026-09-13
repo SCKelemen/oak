@@ -1,0 +1,511 @@
+// The SAT solver written in Oak, emitting LRAT (docs/spec/125-verification.md
+// §3 "By certificate", §4 `-solver sat`; docs/notes/provers-2026-09.md). A
+// conflict-driven clause-learning solver in the strict profile — no
+// recursion, every loop bounded by a count checked against the storage it
+// indexes, one caller-owned word arena laid out by offsets (as bdd.oak) —
+// over the clause table lrat.oak reads. Propagation walks occurrence lists
+// (the clauses are Tseitin's, two or three literals, so a scan is the cheap
+// step); learning is first-UIP with VSIDS activity and phase saving;
+// restarts are geometric. Every learned clause is written as an LRAT line
+// as it is learned — its literals, then the ids of the clauses whose unit
+// propagation derives it: the level-zero antecedent chain, the resolved
+// reasons in trail order, the conflict clause last — so the certificate is
+// complete when the empty clause is written. The solver is untrusted: the
+// rung checks the certificate (prove/lrat.go, lrat.oak) and confirms a
+// model (asm.CNF.Evaluate) before a row changes.
+//
+// Literals are 2 * variable + polarity (polarity 1 positive), variables
+// from zero; an assignment is 0 unassigned, 1 false, 2 true. Clause ids
+// for the certificate are 1-based: the initial clauses in order, then each
+// learned clause the next id.
+
+SAT_NONE: u32 = 4294967295
+
+SAT_RUNNING: u32 = 0
+SAT_SATISFIABLE: u32 = 1
+SAT_UNSATISFIABLE: u32 = 2
+SAT_EXCEEDED: u32 = 3
+SAT_MALFORMED: u32 = 4
+
+SatLayout: type = struct {
+  vars: u32,
+  clause_cap: u32,
+  store_cap: u32,
+  assign_at: u32,
+  level_at: u32,
+  reason_at: u32,
+  seen_at: u32,
+  phase_at: u32,
+  activity_at: u32,
+  trail_at: u32,
+  lim_at: u32,
+  starts_at: u32,
+  lengths_at: u32,
+  ids_at: u32,
+  store_at: u32,
+  occ_head_at: u32,
+  occ_next_at: u32,
+  occ_clause_at: u32,
+  learnt_at: u32,
+  resolved_at: u32,
+  hints_at: u32,
+  hints_cap: u32,
+  state_at: u32,
+  total: u32
+}
+
+// The state words.
+ST_CLAUSES: u32 = 0
+ST_STORE_USED: u32 = 1
+ST_OCC_USED: u32 = 2
+ST_TRAIL_LEN: u32 = 3
+ST_QHEAD: u32 = 4
+ST_LEVEL: u32 = 5
+ST_CONFLICTS: u32 = 6
+ST_NEXT_ID: u32 = 7
+ST_STATUS: u32 = 8
+ST_ACTIVITY_INC: u32 = 9
+ST_RESTART_LIMIT: u32 = 10
+ST_SINCE_RESTART: u32 = 11
+ST_LEARNT_LEN: u32 = 12
+ST_HINTS_LEN: u32 = 13
+ST_BUDGET: u32 = 14
+ST_RESOLVED_LEN: u32 = 15
+ST_LEARNED: u32 = 16
+ST_WORDS: u32 = 24
+
+// sat_layout sizes the arena for a variable count, a clause capacity
+// (initial plus learned), and a literal store capacity; occurrence nodes
+// are one per stored literal.
+sat_layout: (vars: u32, clause_cap: u32, store_cap: u32): SatLayout {
+  v: u32 = vars + u32(1)
+  assign_at: u32 = 0
+  level_at: u32 = assign_at + v
+  reason_at: u32 = level_at + v
+  seen_at: u32 = reason_at + v
+  phase_at: u32 = seen_at + v
+  activity_at: u32 = phase_at + v
+  trail_at: u32 = activity_at + v
+  lim_at: u32 = trail_at + v
+  starts_at: u32 = lim_at + v + u32(1)
+  lengths_at: u32 = starts_at + clause_cap
+  ids_at: u32 = lengths_at + clause_cap
+  store_at: u32 = ids_at + clause_cap
+  occ_head_at: u32 = store_at + store_cap
+  occ_next_at: u32 = occ_head_at + u32(2) * v
+  occ_clause_at: u32 = occ_next_at + store_cap
+  learnt_at: u32 = occ_clause_at + store_cap
+  resolved_at: u32 = learnt_at + v + u32(1)
+  hints_at: u32 = resolved_at + v + u32(1)
+  hints_cap: u32 = u32(2) * v + u32(4)
+  state_at: u32 = hints_at + hints_cap
+  SatLayout {
+    vars: vars, clause_cap: clause_cap, store_cap: store_cap,
+    assign_at: assign_at, level_at: level_at, reason_at: reason_at, seen_at: seen_at,
+    phase_at: phase_at, activity_at: activity_at, trail_at: trail_at, lim_at: lim_at,
+    starts_at: starts_at, lengths_at: lengths_at, ids_at: ids_at, store_at: store_at,
+    occ_head_at: occ_head_at, occ_next_at: occ_next_at, occ_clause_at: occ_clause_at,
+    learnt_at: learnt_at, resolved_at: resolved_at, hints_at: hints_at, hints_cap: hints_cap,
+    state_at: state_at, total: state_at + ST_WORDS
+  }
+}
+
+sat_lit_true: (lit: u32): u32 = lit % u32(2) == u32(1) ? u32(2) | u32(1)
+
+sat_state: (l: SatLayout, mem: [*]u32, k: u32): u32 = mem[l.state_at + k]
+sat_set: (l: SatLayout, mem: [*]u32, k: u32, v: u32): () { mem[l.state_at + k] = v }
+
+// sat_enqueue assigns a literal true at the current level with its reason
+// (a clause index, or SAT_NONE for a decision).
+sat_enqueue: (l: SatLayout, mem: [*]u32, lit: u32, reason: u32): () {
+  v: u32 = lit / u32(2)
+  mem[l.assign_at + v] = sat_lit_true(lit)
+  mem[l.level_at + v] = sat_state(l, mem, ST_LEVEL)
+  mem[l.reason_at + v] = reason
+  n: u32 = sat_state(l, mem, ST_TRAIL_LEN)
+  mem[l.trail_at + n] = lit
+  sat_set(l, mem, ST_TRAIL_LEN, n + u32(1))
+}
+
+// sat_add_learnt stores the clause in the learnt buffer (n literals) as
+// clause number `clauses` with certificate id `id`, and threads it into the
+// occurrence lists. Returns the clause index, or SAT_NONE at capacity.
+sat_add_learnt: (l: SatLayout, mem: [*]u32, n: u32, id: u32): u32 {
+  c: u32 = sat_state(l, mem, ST_CLAUSES)
+  used: u32 = sat_state(l, mem, ST_STORE_USED)
+  occ: u32 = sat_state(l, mem, ST_OCC_USED)
+  fits: Bool = c < l.clause_cap && used + n <= l.store_cap && occ + n <= l.store_cap
+  result: u32 = SAT_NONE
+  fits ? {
+    mem[l.starts_at + c] = used
+    mem[l.lengths_at + c] = n
+    mem[l.ids_at + c] = id
+    j: u32 = 0
+    while j < n {
+      lit: u32 = mem[l.learnt_at + j]
+      mem[l.store_at + used + j] = lit
+      node: u32 = occ + j
+      mem[l.occ_clause_at + node] = c
+      mem[l.occ_next_at + node] = mem[l.occ_head_at + lit]
+      mem[l.occ_head_at + lit] = node
+      j = j + u32(1)
+    }
+    sat_set(l, mem, ST_STORE_USED, used + n)
+    sat_set(l, mem, ST_OCC_USED, occ + n)
+    sat_set(l, mem, ST_CLAUSES, c + u32(1))
+    result = c
+  } | { sat_set(l, mem, ST_STATUS, SAT_EXCEEDED) }
+  result
+}
+
+// sat_init clears the arena and loads the formula from the word table
+// (lrat.oak's protocol: header, then `n, lit...` per clause). Units are
+// enqueued at level zero; an empty clause settles the run at once.
+sat_init: (l: SatLayout, mem: [*]u32, words: []u32, budget: u32): Bool {
+  i: u32 = 0
+  while i < l.total {
+    mem[i] = u32(0)
+    i = i + u32(1)
+  }
+  v: u32 = l.vars + u32(1)
+  i = u32(0)
+  while i < u32(2) * v {
+    mem[l.occ_head_at + i] = SAT_NONE
+    i = i + u32(1)
+  }
+  i = u32(0)
+  while i < v {
+    mem[l.reason_at + i] = SAT_NONE
+    i = i + u32(1)
+  }
+  sat_set(l, mem, ST_ACTIVITY_INC, u32(1024))
+  sat_set(l, mem, ST_RESTART_LIMIT, u32(100))
+  sat_set(l, mem, ST_BUDGET, budget)
+  ok: Bool = len(words) >= LRAT_HEADER_WORDS && words[u32(0)] == LRAT_MAGIC && words[u32(1)] == l.vars
+  clause_count: u32 = ok ? { words[u32(2)] } | { u32(0) }
+  literal_words: u32 = ok ? { words[u32(3)] } | { u32(0) }
+  ok = ok && LRAT_HEADER_WORDS + literal_words <= len(words)
+  at: u32 = LRAT_HEADER_WORDS
+  end: u32 = LRAT_HEADER_WORDS + literal_words
+  c: u32 = 0
+  while c < clause_count && ok {
+    n: u32 = at < end ? { words[at] } | { u32(0) }
+    ok = at < end && at + u32(1) + n <= end && n <= l.vars + u32(1)
+    ok ? {
+      j: u32 = 0
+      while j < n && ok {
+        lit: u32 = words[at + u32(1) + j]
+        ok = lit / u32(2) < l.vars
+        mem[l.learnt_at + j] = lit
+        j = j + u32(1)
+      }
+      ok ? {
+        added: u32 = sat_add_learnt(l, mem, n, c + u32(1))
+        ok = added != SAT_NONE
+        n == u32(0) ? { sat_set(l, mem, ST_STATUS, SAT_UNSATISFIABLE) } | { }
+        n == u32(1) && ok ? {
+          lit: u32 = mem[l.learnt_at]
+          a: u32 = mem[l.assign_at + lit / u32(2)]
+          a == u32(0) ? { sat_enqueue(l, mem, lit, added) } | { }
+        } | { }
+      } | { }
+      at = at + u32(1) + n
+    } | { }
+    c = c + u32(1)
+  }
+  ok ? { sat_set(l, mem, ST_NEXT_ID, clause_count + u32(1)) } | { sat_set(l, mem, ST_STATUS, SAT_MALFORMED) }
+  ok
+}
+
+// sat_propagate runs unit propagation from the queue head: for every
+// literal newly true, the clauses holding its negation are scanned, a
+// clause with one unassigned literal enqueues it, a clause with none is
+// the conflict. Returns the conflicting clause index or SAT_NONE.
+sat_propagate: (l: SatLayout, mem: [*]u32): u32 {
+  conflict: u32 = SAT_NONE
+  qhead: u32 = sat_state(l, mem, ST_QHEAD)
+  while qhead < sat_state(l, mem, ST_TRAIL_LEN) && conflict == SAT_NONE {
+    p: u32 = mem[l.trail_at + qhead]
+    qhead = qhead + u32(1)
+    node: u32 = mem[l.occ_head_at + (p ^ u32(1))]
+    while node != SAT_NONE && conflict == SAT_NONE {
+      c: u32 = mem[l.occ_clause_at + node]
+      node = mem[l.occ_next_at + node]
+      start: u32 = mem[l.starts_at + c]
+      n: u32 = mem[l.lengths_at + c]
+      satisfied: Bool = false
+      unassigned: u32 = 0
+      unit: u32 = 0
+      j: u32 = 0
+      while j < n && !satisfied {
+        lit: u32 = mem[l.store_at + start + j]
+        a: u32 = mem[l.assign_at + lit / u32(2)]
+        a == u32(0) ? {
+          unassigned = unassigned + u32(1)
+          unit = lit
+        } | { satisfied = a == sat_lit_true(lit) }
+        j = j + u32(1)
+      }
+      satisfied ? { } | {
+        unassigned == u32(0) ? { conflict = c } | {
+          unassigned == u32(1) ? { sat_enqueue(l, mem, unit, c) } | { }
+        }
+      }
+    }
+  }
+  sat_set(l, mem, ST_QHEAD, qhead)
+  conflict
+}
+
+// sat_bump raises a variable's activity, rescaling all when it grows large.
+sat_bump: (l: SatLayout, mem: [*]u32, v: u32): () {
+  inc: u32 = sat_state(l, mem, ST_ACTIVITY_INC)
+  a: u32 = mem[l.activity_at + v] + inc
+  mem[l.activity_at + v] = a
+  a > u32(1073741824) ? {
+    i: u32 = 0
+    while i < l.vars {
+      mem[l.activity_at + i] = mem[l.activity_at + i] >> u32(16)
+      i = i + u32(1)
+    }
+    scaled: u32 = inc >> u32(16)
+    sat_set(l, mem, ST_ACTIVITY_INC, scaled == u32(0) ? { u32(1) } | { scaled })
+  } | { }
+}
+
+// sat_mark_clause marks the variables of a clause for analysis: a variable
+// at the conflict level counts toward the path, one at a lower level joins
+// the learned clause, one at level zero is remembered for the antecedent
+// chain. The literal `skip` (the clause's implied literal) is passed over.
+sat_mark_clause: (l: SatLayout, mem: [*]u32, c: u32, skip: u32, current: u32, path: u32): u32 {
+  start: u32 = mem[l.starts_at + c]
+  n: u32 = mem[l.lengths_at + c]
+  count: u32 = path
+  j: u32 = 0
+  while j < n {
+    q: u32 = mem[l.store_at + start + j]
+    v: u32 = q / u32(2)
+    q != skip && mem[l.seen_at + v] == u32(0) ? {
+      lv: u32 = mem[l.level_at + v]
+      lv > u32(0) ? {
+        mem[l.seen_at + v] = u32(1)
+        sat_bump(l, mem, v)
+        lv >= current ? { count = count + u32(1) } | {
+          k: u32 = sat_state(l, mem, ST_LEARNT_LEN)
+          mem[l.learnt_at + k] = q
+          sat_set(l, mem, ST_LEARNT_LEN, k + u32(1))
+        }
+      } | { mem[l.seen_at + v] = u32(2) }
+    } | { }
+    j = j + u32(1)
+  }
+  count
+}
+
+// sat_analyze learns the first-UIP clause from a conflict into the learnt
+// buffer (its asserting literal first), collects the certificate hints, and
+// returns the level to back-jump to. At level zero the learned clause is
+// empty and the hints derive it.
+sat_analyze: (l: SatLayout, mem: [*]u32, conflict: u32): u32 {
+  current: u32 = sat_state(l, mem, ST_LEVEL)
+  sat_set(l, mem, ST_LEARNT_LEN, current == u32(0) ? { u32(0) } | { u32(1) })
+  sat_set(l, mem, ST_RESOLVED_LEN, u32(0))
+  path: u32 = sat_mark_clause(l, mem, conflict, SAT_NONE, current, u32(0))
+  index: u32 = sat_state(l, mem, ST_TRAIL_LEN)
+  done: Bool = current == u32(0)
+  while !done && index > u32(0) {
+    // The next resolved literal: the latest trail entry still marked.
+    index = index - u32(1)
+    p: u32 = mem[l.trail_at + index]
+    v: u32 = p / u32(2)
+    mem[l.seen_at + v] == u32(1) && mem[l.level_at + v] >= current ? {
+      mem[l.seen_at + v] = u32(0)
+      path = path - u32(1)
+      path == u32(0) ? {
+        mem[l.learnt_at] = p ^ u32(1)
+        done = true
+      } | {
+        reason: u32 = mem[l.reason_at + v]
+        r: u32 = sat_state(l, mem, ST_RESOLVED_LEN)
+        mem[l.resolved_at + r] = reason
+        sat_set(l, mem, ST_RESOLVED_LEN, r + u32(1))
+        path = sat_mark_clause(l, mem, reason, p, current, path)
+      }
+    } | { }
+  }
+  // The level-zero antecedent chain: close the marked level-zero
+  // variables over their reasons, walking the level-zero trail backward,
+  // then emit their reasons forward, in trail order.
+  lim0: u32 = current == u32(0) ? { sat_state(l, mem, ST_TRAIL_LEN) } | { mem[l.lim_at] }
+  i: u32 = lim0
+  while i > u32(0) {
+    i = i - u32(1)
+    v: u32 = mem[l.trail_at + i] / u32(2)
+    mem[l.seen_at + v] == u32(2) ? {
+      reason: u32 = mem[l.reason_at + v]
+      reason != SAT_NONE ? {
+        start: u32 = mem[l.starts_at + reason]
+        n: u32 = mem[l.lengths_at + reason]
+        j: u32 = 0
+        while j < n {
+          w: u32 = mem[l.store_at + start + j] / u32(2)
+          mem[l.seen_at + w] == u32(0) ? { mem[l.seen_at + w] = u32(2) } | { }
+          j = j + u32(1)
+        }
+      } | { }
+    } | { }
+  }
+  hints: u32 = 0
+  i = u32(0)
+  while i < lim0 {
+    v: u32 = mem[l.trail_at + i] / u32(2)
+    mem[l.seen_at + v] == u32(2) ? {
+      reason: u32 = mem[l.reason_at + v]
+      reason != SAT_NONE && hints < l.hints_cap ? {
+        mem[l.hints_at + hints] = mem[l.ids_at + reason]
+        hints = hints + u32(1)
+      } | { }
+      mem[l.seen_at + v] = u32(0)
+    } | { }
+    i = i + u32(1)
+  }
+  // The resolved reasons in trail order (they were collected latest
+  // first), then the conflict clause.
+  r: u32 = sat_state(l, mem, ST_RESOLVED_LEN)
+  while r > u32(0) && hints < l.hints_cap {
+    r = r - u32(1)
+    mem[l.hints_at + hints] = mem[l.ids_at + mem[l.resolved_at + r]]
+    hints = hints + u32(1)
+  }
+  hints < l.hints_cap ? {
+    mem[l.hints_at + hints] = mem[l.ids_at + conflict]
+    hints = hints + u32(1)
+  } | { sat_set(l, mem, ST_STATUS, SAT_EXCEEDED) }
+  sat_set(l, mem, ST_HINTS_LEN, hints)
+  // The back-jump level: the highest level among the learned clause's
+  // other literals; their marks are cleared here.
+  back: u32 = 0
+  k: u32 = 1
+  n: u32 = sat_state(l, mem, ST_LEARNT_LEN)
+  while k < n {
+    v: u32 = mem[l.learnt_at + k] / u32(2)
+    mem[l.seen_at + v] = u32(0)
+    lv: u32 = mem[l.level_at + v]
+    lv > back ? { back = lv } | { }
+    k = k + u32(1)
+  }
+  back
+}
+
+// sat_write_lit writes a literal as a DIMACS integer.
+sat_write_lit: (lit: u32): () {
+  lit % u32(2) == u32(0) ? { write_byte(u8(45)) } | { }
+  write_u32(lit / u32(2) + u32(1))
+}
+
+// sat_emit writes the learned clause and its hints as one LRAT line.
+sat_emit: (l: SatLayout, mem: [*]u32, id: u32): () {
+  write_u32(id)
+  n: u32 = sat_state(l, mem, ST_LEARNT_LEN)
+  j: u32 = 0
+  while j < n {
+    write_byte(u8(32))
+    sat_write_lit(mem[l.learnt_at + j])
+    j = j + u32(1)
+  }
+  write_byte(u8(32))
+  write_byte(u8(48))
+  h: u32 = sat_state(l, mem, ST_HINTS_LEN)
+  j = u32(0)
+  while j < h {
+    write_byte(u8(32))
+    write_u32(mem[l.hints_at + j])
+    j = j + u32(1)
+  }
+  write_byte(u8(32))
+  write_byte(u8(48))
+  write_byte(u8(10))
+}
+
+// sat_backtrack unassigns everything above the level, saving phases.
+sat_backtrack: (l: SatLayout, mem: [*]u32, to: u32): () {
+  sat_state(l, mem, ST_LEVEL) > to ? {
+    target: u32 = mem[l.lim_at + to]
+    n: u32 = sat_state(l, mem, ST_TRAIL_LEN)
+    while n > target {
+      n = n - u32(1)
+      lit: u32 = mem[l.trail_at + n]
+      v: u32 = lit / u32(2)
+      mem[l.phase_at + v] = lit % u32(2)
+      mem[l.assign_at + v] = u32(0)
+      mem[l.reason_at + v] = SAT_NONE
+    }
+    sat_set(l, mem, ST_TRAIL_LEN, n)
+    sat_set(l, mem, ST_QHEAD, n)
+    sat_set(l, mem, ST_LEVEL, to)
+  } | { }
+}
+
+// sat_decide opens a new level on the most active unassigned variable in
+// its saved phase; false when every variable is assigned.
+sat_decide: (l: SatLayout, mem: [*]u32): Bool {
+  best: u32 = SAT_NONE
+  best_activity: u32 = 0
+  v: u32 = 0
+  while v < l.vars {
+    mem[l.assign_at + v] == u32(0) && (best == SAT_NONE || mem[l.activity_at + v] > best_activity) ? {
+      best = v
+      best_activity = mem[l.activity_at + v]
+    } | { }
+    v = v + u32(1)
+  }
+  best != SAT_NONE ? {
+    level: u32 = sat_state(l, mem, ST_LEVEL)
+    mem[l.lim_at + level] = sat_state(l, mem, ST_TRAIL_LEN)
+    sat_set(l, mem, ST_LEVEL, level + u32(1))
+    sat_enqueue(l, mem, u32(2) * best + mem[l.phase_at + best], SAT_NONE)
+  } | { }
+  best != SAT_NONE
+}
+
+// sat_solve runs the search to a verdict: satisfiable (the assignment is
+// in the arena), unsatisfiable (the certificate has been written), or
+// exceeded (the conflict budget or a capacity).
+sat_solve: (l: SatLayout, mem: [*]u32): u32 {
+  while sat_state(l, mem, ST_STATUS) == SAT_RUNNING {
+    conflict: u32 = sat_propagate(l, mem)
+    conflict != SAT_NONE ? {
+      conflicts: u32 = sat_state(l, mem, ST_CONFLICTS) + u32(1)
+      sat_set(l, mem, ST_CONFLICTS, conflicts)
+      conflicts > sat_state(l, mem, ST_BUDGET) ? { sat_set(l, mem, ST_STATUS, SAT_EXCEEDED) } | {
+        back: u32 = sat_analyze(l, mem, conflict)
+        sat_state(l, mem, ST_STATUS) == SAT_RUNNING ? {
+          id: u32 = sat_state(l, mem, ST_NEXT_ID)
+          sat_set(l, mem, ST_NEXT_ID, id + u32(1))
+          sat_emit(l, mem, id)
+          n: u32 = sat_state(l, mem, ST_LEARNT_LEN)
+          n == u32(0) ? { sat_set(l, mem, ST_STATUS, SAT_UNSATISFIABLE) } | {
+            c: u32 = sat_add_learnt(l, mem, n, id)
+            c != SAT_NONE ? {
+              sat_set(l, mem, ST_LEARNED, sat_state(l, mem, ST_LEARNED) + u32(1))
+              sat_backtrack(l, mem, back)
+              sat_enqueue(l, mem, mem[l.learnt_at], c)
+              inc: u32 = sat_state(l, mem, ST_ACTIVITY_INC)
+              sat_set(l, mem, ST_ACTIVITY_INC, inc + inc / u32(20) + u32(1))
+              since: u32 = sat_state(l, mem, ST_SINCE_RESTART) + u32(1)
+              since >= sat_state(l, mem, ST_RESTART_LIMIT) ? {
+                sat_backtrack(l, mem, u32(0))
+                sat_set(l, mem, ST_SINCE_RESTART, u32(0))
+                limit: u32 = sat_state(l, mem, ST_RESTART_LIMIT)
+                sat_set(l, mem, ST_RESTART_LIMIT, limit + limit / u32(2))
+              } | { sat_set(l, mem, ST_SINCE_RESTART, since) }
+            } | { }
+          }
+        } | { }
+      }
+    } | {
+      sat_decide(l, mem) ? { } | { sat_set(l, mem, ST_STATUS, SAT_SATISFIABLE) }
+    }
+  }
+  sat_state(l, mem, ST_STATUS)
+}
