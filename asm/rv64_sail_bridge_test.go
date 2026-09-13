@@ -15,33 +15,37 @@ import (
 // When the export is generated and built (external/sail-riscv, not
 // vendored), the bridge project itself is built too.
 func TestRV64SailBridgeDefinitionsMatch(t *testing.T) {
-	bridge, err := os.ReadFile(filepath.Join("..", "spec", "lean-sail", "OakSailBridge", "RiscV.lean"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	spec, err := os.ReadFile(filepath.Join("..", "spec", "lean", "Oak", "RiscV.lean"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(bridge)
-	start, end := strings.Index(text, "-- OAK-DEF-BEGIN"), strings.Index(text, "-- OAK-DEF-END")
-	if start < 0 || end < start {
-		t.Fatal("the bridge lacks its OAK-DEF block")
-	}
-	block := text[start:end]
-	var checked int
-	for _, line := range strings.Split(block, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "/--") || strings.HasPrefix(trimmed, "deriving") {
-			continue
+	// RiscV.lean restates the semantics, Encoding.lean the encoder's table
+	// and placement; both blocks must be the specification's lines.
+	for _, name := range []string{"RiscV.lean", "Encoding.lean"} {
+		bridge, err := os.ReadFile(filepath.Join("..", "spec", "lean-sail", "OakSailBridge", name))
+		if err != nil {
+			t.Fatal(err)
 		}
-		if !strings.Contains(string(spec), line) {
-			t.Errorf("bridge definition line drifted from spec/lean/Oak/RiscV.lean:\n%s", line)
+		text := string(bridge)
+		start, end := strings.Index(text, "-- OAK-DEF-BEGIN"), strings.Index(text, "-- OAK-DEF-END")
+		if start < 0 || end < start {
+			t.Fatalf("%s lacks its OAK-DEF block", name)
 		}
-		checked++
-	}
-	if checked < 20 {
-		t.Fatalf("only %d definition lines checked; the OAK-DEF block looks truncated", checked)
+		block := text[start:end]
+		var checked int
+		for _, line := range strings.Split(block, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "/--") || strings.HasPrefix(trimmed, "deriving") {
+				continue
+			}
+			if !strings.Contains(string(spec), line) {
+				t.Errorf("%s: bridge definition line drifted from spec/lean/Oak/RiscV.lean:\n%s", name, line)
+			}
+			checked++
+		}
+		if checked < 20 {
+			t.Fatalf("%s: only %d definition lines checked; the OAK-DEF block looks truncated", name, checked)
+		}
 	}
 }
 
