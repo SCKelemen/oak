@@ -153,6 +153,7 @@ func (sub Substitution) Apply(typ Type) Type {
 			IsSlice:     t.IsSlice,
 			IsSpan:      t.IsSpan,
 			ElementType: sub.Apply(t.ElementType),
+			Align:       t.Align,
 		}
 	case *GenericType:
 		// Apply substitution to type arguments
@@ -417,6 +418,13 @@ func (u *Unifier) unifyArray(arr1, arr2 *ArrayType) Substitution {
 
 	if !arr1.IsSlice && !arr1.IsSpan && arr1.Length != arr2.Length {
 		u.errors = append(u.errors, fmt.Sprintf("array length mismatch: %d vs %d", arr1.Length, arr2.Length))
+		return nil
+	}
+
+	// Alignment facts unify only when equal; weakening a fact is
+	// assignability's business (ArrayType.alignedInto), never inference's.
+	if arr1.Align != arr2.Align {
+		u.errors = append(u.errors, fmt.Sprintf("alignment fact mismatch: %d vs %d", arr1.Align, arr2.Align))
 		return nil
 	}
 

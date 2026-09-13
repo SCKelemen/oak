@@ -474,6 +474,13 @@ func (tc *TypeChecker) instantiateRecordTemplate(template *ast.ADTType, args []T
 		tc.recordInstantiationCache = make(map[string]*RecordType)
 	}
 	tc.recordInstantiationCache[mangled] = instantiated
+	// The instantiation's layout facts are the template's: the declared
+	// struct(align: N) and per-field align carry to every instantiation
+	// (docs/spec/40-records.md section 6a), which borrowAlignment reads.
+	if tc.recordDecls == nil {
+		tc.recordDecls = map[string]*ast.RecordLiteral{}
+	}
+	tc.recordDecls[mangled] = recordLit
 	if tc.recordInstantiationArgs == nil {
 		tc.recordInstantiationArgs = make(map[string]RecordInstantiation)
 	}

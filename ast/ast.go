@@ -357,6 +357,11 @@ type IndexExpression struct {
 	// never confused with element indexing (a[i]) downstream: lowering
 	// rewrites only bracket indexing to bounds-checked core_index.
 	Dot bool
+	// Align is the alignment fact a span or view type declares
+	// (`[* align 4096]u8`, `[align 64]f32`; docs/spec/50-borrowing.md
+	// section 2a): the base address is a multiple of Align. Zero when the
+	// type states none. Set only when Index is the span or view marker.
+	Align uint32
 }
 
 func (ie *IndexExpression) expressionNode()      {}
@@ -369,6 +374,9 @@ func (ie *IndexExpression) String() string {
 		// Record field access
 		out.WriteRune('.')
 		out.WriteString(ident.Value)
+		if ie.Align != 0 {
+			out.WriteString(fmt.Sprintf(" align %d", ie.Align))
+		}
 	} else {
 		// Array indexing
 		out.WriteRune('[')

@@ -40,6 +40,45 @@ returning it (a derived decoder's `Event[R]` with view fields beside an
 owned array, §8c) carries only what its borrow fields carry, and the
 record itself is not a borrow of a local owner.
 
+## 2a. Alignment facts on views and spans
+
+A view or span type may carry an **alignment fact**: `[* align 4096]u8` is
+a span whose base address is a multiple of 4096, `[align 64]f32` a view
+whose base is a multiple of 64 (a nonzero power-of-two `u32`). The fact is
+a property of the type, not of the representation — the `{base, len}`
+struct, the interpreter's window, and the Lean `Array` are unchanged — and
+the checker owns it end to end:
+
+- **Derived at the borrow.** `span(&owner)` and `view(&owner)` carry the
+  element's natural alignment on the recorded target model (`u8` 1, `u64`
+  8, `u128` 16, a record its declared alignment), raised to the owning
+  record's declared `struct(align: N)` when the borrowed array is the
+  record's first field (offset zero), or to the field's own declared
+  `(align: N)`. So `store: IoSectorRegion[N]` gives `span(&store.bytes)`
+  the type `[* align 4096]u8`, and `Line { head: u32, cells(align: 64):
+  [16]u8 }` gives `span(&line.cells)` the type `[* align 64]u8`. A second
+  field without its own alignment carries only the element's.
+- **Weakened freely, strengthened never.** A span with a fact stands where
+  a weaker or absent fact is required — `region: [*]u8 = aligned` and
+  every existing `[*]u8` parameter accept it — and the plain `[*]u8` is
+  rejected where `[* align 4096]u8` is required, with both types named:
+  `expected [* align 4096]u8, got [*]u8`. A declaration may not claim more
+  than the borrow gives.
+- **Through `subslice`.** The fact survives a start that is a literal
+  multiple of the alignment (`subslice(region, u32(4096), n)`, the second
+  sector) and is dropped for any other start.
+
+This is the proposition-axis form of the sector rule the I/O port checks
+at run time (`120-io.md` §3): `io_open_region_aligned(ring, region: [*
+align 4096]u8, files)` registers a region whose alignment the checker
+proved, so the native realization asks the host nothing, and a program
+that hands it an unaligned byte array does not compile
+(`compiler/e2e_span_alignment_test.go`; TigerBeetle's `*align(4096)`
+pointer types, `docs/notes/tigerbeetle-2026-09.md` finding 2). The fact
+does not yet cross a function boundary as a *result* (a function
+returning an aligned span states it in its return type and the checker
+takes the declaration), and generic code sees `[*]T` without facts.
+
 ## 3. Borrow states
 
 For one owner, the core abstract states are:

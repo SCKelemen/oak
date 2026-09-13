@@ -624,8 +624,9 @@ remains that a fact could elide" is a finding.
       size capped by the OS limit constant? (TB `io/linux.zig`,
       databases) — Oak: `120-io.md` §3 `open_direct`, `io_sector_bytes`,
       the sector rule decided before any call, `IoSectorRegion` aligned
-      storage; alignment is checked at registration, not carried as a
-      static fact on the span — gap narrowed; tri-state is the program's
+      storage, and the alignment carried as a fact of the span type
+      (`50-borrowing.md` §2a, `[* align 4096]u8`) so
+      `io_open_region_aligned` probes nothing; tri-state is the program's
       policy.
 - [ ] **Zero-copy from device to consumer.** Does data cross layers as
       views into the receive buffer, never re-copied for convenience?
