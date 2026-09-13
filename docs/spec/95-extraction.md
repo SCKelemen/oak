@@ -23,7 +23,11 @@ checkable.
 ## 2. The translation
 
 The output is the shallow embedding the hand-written models use, so the
-proofs written against them transfer.
+proofs written against them transfer. Extraction reads the program after
+its source-level lowerings — protocol projections, derives, the
+propagation form `try` (`10-syntax.md` §2d), library sugar — so a sugar
+form never needs a translation of its own: `EncodingExtracted.lean` shows
+the match `try` lowers to, under the generated `oak_try_err_N` binder.
 
 | Oak | Lean |
 | --- | --- |
@@ -139,6 +143,22 @@ canonically. Intrinsics still without an exact carrier — `trunc`, `min`/`max`
 — the `checked` rows into integers, and the storage formats
 `f16`/`bf16`/`f8` fail closed rather than approximate.
 
+**Sixth: package state is threaded.** A top-level binding some function
+assigns — a counter, a flat arena's next index, a table written by
+`set_at` — is **package state**, and a function that reads or writes it,
+directly or through any callee, takes it as a parameter and, when it
+writes it, returns the new value in its result tuple after the threaded
+spans: `def bump (counter : UInt32) (fuel : Nat) : Option (Unit ×
+UInt32)`, and a caller `let (r1, counter) ← bump counter fuel` rebinds
+it. The initializer is rendered as `NAME_init`, the value the state starts
+at; a zero-initialized state starts at `0`, `false`, or an array of zeros.
+This is the same shape a writable span already has (section 2), so loops
+that touch state thread it as they thread any variable, and a theorem
+about a stateful function quantifies over the state it is given — the
+ml pilot's F25: the packages whose state lives in flat arenas extract, and
+the oracle's `view` package reaches Lean without being rewritten as pure
+functions over parameters. A read-only global stays a constant.
+
 **Fourth: a target constant is uninterpreted.** A top-level binding
 `NAME: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")` (`92-ffi.md` §2.11)
 holds a value the target's C headers define and Oak never learns. The
@@ -148,6 +168,17 @@ width of the §2.4 target model, LP64 (`c.Int` 32 bits, `c.Long` and
 for every value the constant could have, which is the only claim the
 program itself makes. The C identifier and the header never appear in the
 Lean text.
+
+**Fifth: a measured constant is opaque within its range.** A top-level
+binding `TILE: u32 (measured: 16, 1024) = 128` (`60-effects-allocation.md`
+§10b) holds the value the load supplied, which the program admits only
+inside the declared range. The extraction renders it as `opaque TILE :
+UInt32` followed by `variable (TILE_range : (16 : UInt32) ≤ TILE ∧ TILE ≤
+(1024 : UInt32))`, so a theorem about code that reads it quantifies over
+every value the load may admit and may take the range as its hypothesis —
+the set of values a run can have (`Oak.Measured.load_in_range`). The
+pinned value appears only in the docstring: it is one value of the range,
+not the constant's meaning.
 
 **Fifth: UTF-8 validity is decided the same way twice.** The compiler's
 `is_valid_utf8` intrinsic (`70-strings.md`) decides Unicode Table 3-7 over a
@@ -185,8 +216,9 @@ them and the integers, and the intrinsics of the table above (`fma`,
 assignment and element assignment into a record's array field, one level
 deep, and field assignment through an element of a span (`arr[i].field`);
 array literals; top-level constants, including constant tables read
-through `view` and target constants (`c.const`, as opaque constants of
-their `c.*` scalar type); `is_valid_utf8` through `Oak.Utf8Exec`; the
+through `view`, target constants (`c.const`, as opaque constants of
+their `c.*` scalar type), and measured constants (opaque within their
+range, section 3); `is_valid_utf8` through `Oak.Utf8Exec`; the
 `string` type, its literals, `str_bytes`, and `str_from_utf8` (section 3);
 methods on ADT receivers, extracted under the receiver type's name with
 the receiver as the first parameter (`def Handle.peek (h : Handle) ...`)
@@ -197,8 +229,10 @@ functions it reaches. Everything else — strings in encodings other than
 UTF-8, generic templates
 themselves, mutual recursion, extern functions, closures, the storage
 float formats and the intrinsics named in section 3, the `checked`
-float rows, SIMD, FFI (extern calls, `c.fn_at`, `c.msg_send`), assignment to a global — is an
-error naming the construct. Nothing is approximated.
+float rows, SIMD, FFI (extern calls, `c.fn_at`, `c.msg_send`) — is an
+error naming the construct. Nothing is approximated. Assignment to a
+global is inside the subset: the global is package state, threaded
+through the functions that touch it (section 3).
 
 A function named as a `dispatch` realization (`93-simd.md` §6) is not
 part of the meaning — the dispatched function's body is — so a body-less

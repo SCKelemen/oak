@@ -129,6 +129,22 @@ func TestE2EKernelsOnDevice(t *testing.T) {
 	}
 	expectF32s(t, "group_sums", readF32s(t, res.Spans["partials"]), 10, 26, 19)
 
+	// A threadgroup lane reduction: the threads are the lanes, the butterfly
+	// runs over scratch, and the value is the host's reduce.lanes
+	// (Oak.Reduce.lanes): 2^24 + 2 where the tree would give 2^24 + 4.
+	lanesK := emitKernels(t, kernelGroupLanesProgram)
+	laneSums := kernelNamed(t, lanesK, "lane_sums")
+	if laneSums.Threadgroup != 4 {
+		t.Fatalf("lane_sums threadgroup = %d", laneSums.Threadgroup)
+	}
+	res, err = gpu.Run(ctx, lanesK.Source, laneSums, 2, map[string]gpu.Arg{
+		"x": f32s(16777216, 1, 1, 1, 1, 6, 7, 8, 9, 10), "partials": f32s(0, 0), "window": u32arg(5),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectF32s(t, "lane_sums", readF32s(t, res.Spans["partials"]), 16777218, 40)
+
 	// Record parameters flattened into buffers: a 2x3 by its transpose.
 	matmul := emitKernels(t, kernelMatmulProgram)
 	res, err = gpu.Run(ctx, matmul.Source, kernelNamed(t, matmul, "matmul_t"), 4, map[string]gpu.Arg{

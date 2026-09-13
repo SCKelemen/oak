@@ -3,7 +3,9 @@ package evaluator
 import (
 	"fmt"
 	"github.com/SCKelemen/oak/token"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1478,6 +1480,16 @@ func evalVariableDeclaration(vd *ast.VariableDeclaration, env *object.Environmen
 		if isError(val) {
 			return val
 		}
+		if vd.Measured != nil {
+			// A measured constant (docs/spec/60-effects-allocation.md
+			// section 10b) takes the environment's value when one is set,
+			// as the compiled program's hosted hook does, and stops on a
+			// value outside its range.
+			val = measuredValue(vd, val)
+			if isError(val) {
+				return val
+			}
+		}
 		val = copyValue(val) // records and owned arrays are values
 		env.Set(vd.Name.Value, val)
 		return val
@@ -1885,4 +1897,33 @@ func selectRealization(fn *object.Function) (object.Object, bool) {
 		}
 	}
 	return nil, false
+}
+
+// measuredValue is the value a measured constant runs with in the
+// interpreter: OAK_MEASURED_<NAME> when set (a decimal integer inside the
+// declared range), the pinned initializer otherwise. The name is the Oak
+// name without its package prefix, as the compiled program asks for it.
+func measuredValue(vd *ast.VariableDeclaration, pinned object.Object) object.Object {
+	name := vd.Name.Value
+	if i := strings.LastIndex(name, "__"); i >= 0 {
+		name = name[i+2:]
+	}
+	text := os.Getenv("OAK_MEASURED_" + name)
+	if text == "" {
+		return pinned
+	}
+	value, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		return newError("measured constant %s: %s is not an integer", name, text)
+	}
+	if value < vd.Measured.Lo || value > vd.Measured.Hi {
+		return newError("measured constant %s: %d is outside %d..%d", name, value, vd.Measured.Lo, vd.Measured.Hi)
+	}
+	integer, isInteger := pinned.(*object.Integer)
+	if !isInteger {
+		return newError("measured constant %s is not an integer", name)
+	}
+	supplied := *integer
+	supplied.Value = value
+	return &supplied
 }

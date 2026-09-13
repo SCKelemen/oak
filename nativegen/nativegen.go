@@ -202,6 +202,46 @@ func (g *generator) memOf(l loc) asm.Memory {
 	return g.slotMem(l.offset)
 }
 
+// reachable is memOf for a size-byte access whose offset from a register
+// base may exceed the load/store immediate (4095 scaled units): a field
+// past a large array inside a span element (the OS pilot's N2). The base
+// is rebased through a fresh register by addOffset and the small remainder
+// stays in the operand; temp is that register (or -1), released by the
+// caller after the access. The checker narrows the element region through
+// the adds (asm/check.go, deriveElement).
+func (g *generator) reachable(l loc, size int64) (asm.Memory, int, error) {
+	if !l.inReg || size <= 0 || (l.offset >= 0 && l.offset%size == 0 && l.offset/size <= 4095) {
+		return g.memOf(l), -1, nil
+	}
+	temp, err := g.alloc(scalars["u64"])
+	if err != nil {
+		return asm.Memory{}, -1, err
+	}
+	high := l.offset &^ 0xfff
+	if err := g.addOffset(temp, l.reg, high); err != nil {
+		return asm.Memory{}, -1, err
+	}
+	return asm.Memory{Base: xr(temp), Offset: l.offset - high}, temp, nil
+}
+
+// addOffset emits `add xD, xS, #off` for any offset below 2^24: the low
+// twelve bits as one add, the rest as `#imm, lsl #12`.
+func (g *generator) addOffset(dst, src int, off int64) error {
+	if off < 0 || off >= 1<<24 {
+		return unsupported("an offset of %d bytes inside an element", off)
+	}
+	high, low := off>>12, off&0xfff
+	current := src
+	if high != 0 {
+		g.emit("add", xr(dst), xr(current), asm.Immediate{Value: high, Shift: 12})
+		current = dst
+	}
+	if low != 0 || current == src {
+		g.emit("add", xr(dst), xr(current), imm(low))
+	}
+	return nil
+}
+
 // alignmentOf is the alignment the checker sees for a location: the frame
 // offset's, or the offset from the register (element addresses are
 // multiples of the element's alignment).
@@ -771,14 +811,17 @@ func (g *generator) recordElement(arr *arrayLocal, index ast.Expression) (place,
 	if stride > 0 && stride&(stride-1) == 0 && stride <= 16 {
 		g.emit("add", xr(element), xr(base), asm.Extended{Reg: wr(r), Kind: "uxtw", Amount: int64(log2Bytes(int(stride)))})
 	} else {
-		if stride >= 1<<16 {
+		if stride >= 1<<32 {
 			return place{}, unsupported("a record stride of %d bytes", stride)
 		}
+		// The stride as a 32-bit constant — movz, and movk for the high
+		// halfword of a large record (the OS pilot's N2: a 409 600-byte
+		// regime) — then one umaddl.
 		strideReg, err := g.alloc(scalars["u32"])
 		if err != nil {
 			return place{}, err
 		}
-		g.emit("movz", wr(strideReg), imm(stride))
+		g.constant(strideReg, uint64(stride), scalars["u32"])
 		g.emit("umaddl", xr(element), wr(r), wr(strideReg), xr(base))
 		g.release(strideReg)
 	}
@@ -855,14 +898,14 @@ func (g *generator) spanRecordElement(sp span, index ast.Expression) (place, err
 	if stride > 0 && stride&(stride-1) == 0 && stride <= 16 {
 		g.emit("add", xr(element), xr(sp.baseReg), asm.Extended{Reg: wr(r), Kind: "uxtw", Amount: int64(log2Bytes(int(stride)))})
 	} else {
-		if stride >= 1<<16 {
+		if stride >= 1<<32 {
 			return place{}, unsupported("a record stride of %d bytes", stride)
 		}
 		strideReg, err := g.alloc(scalars["u32"])
 		if err != nil {
 			return place{}, err
 		}
-		g.emit("movz", wr(strideReg), imm(stride))
+		g.constant(strideReg, uint64(stride), scalars["u32"])
 		g.emit("umaddl", xr(element), wr(r), wr(strideReg), xr(sp.baseReg))
 		g.release(strideReg)
 	}
@@ -1603,7 +1646,9 @@ func (g *generator) buildVariant(layout *recordLayout, e *ast.VariantExpression)
 	g.release(tag)
 	switch {
 	case payloadReg >= 0:
-		g.fieldStore(&scalarPlace{offset: rec.offset + field.offset, typ: field.typ}, payloadReg)
+		if err := g.fieldStore(&scalarPlace{offset: rec.offset + field.offset, typ: field.typ}, payloadReg); err != nil {
+			return nil, err
+		}
 		g.release(payloadReg)
 	case payloadSrc != nil:
 		if err := g.copyBytes(slotLoc(rec.offset+field.offset), payloadSrc.loc(), field.size); err != nil {
@@ -1769,7 +1814,7 @@ func (g *generator) bindPayload(name string, rec *recordLocal, field recordField
 			return err
 		}
 		g.declare(name, field.typ)
-		g.items = append(g.items, g.storeVar(name, r))
+		g.put(g.storeVar(name, r))
 		g.release(r)
 		return nil
 	case fieldRecord:
@@ -1853,7 +1898,9 @@ func (g *generator) fillRecord(layout *recordLayout, literal *ast.RecordLiteral,
 		at := rec.offset + field.offset
 		switch {
 		case field.kind == fieldScalar:
-			g.fieldStore(&scalarPlace{offset: at, typ: field.typ}, values[i].reg)
+			if err := g.fieldStore(&scalarPlace{offset: at, typ: field.typ}, values[i].reg); err != nil {
+				return nil, err
+			}
 			g.release(values[i].reg)
 		case values[i].src != nil:
 			if err := g.copyBytes(slotLoc(at), values[i].src.loc(), field.size); err != nil {
@@ -1933,6 +1980,28 @@ func (g *generator) callRecord(e *ast.InvocationExpression) (*recordLocal, error
 func (g *generator) resultRecordExpr(expr ast.Expression) error {
 	switch e := expr.(type) {
 	case *ast.MatchExpression:
+		if !g.resultIndirect && g.valueOnly(e) {
+			// The arms meet in one frame temporary and the result chunks
+			// load into x0 (and x1) once, at the join — as a scalar result
+			// does (resultInto): a chunk loaded inside an arm would forget
+			// the parameters' span and record facts in the linear checker.
+			var outs []int
+			for i := 0; i < g.resultRecord.chunks(); i++ {
+				out, err := g.alloc(scalars["u64"])
+				if err != nil {
+					return err
+				}
+				outs = append(outs, out)
+			}
+			if err := g.resultRecordInto(e, outs); err != nil {
+				return err
+			}
+			for i, out := range outs {
+				g.emit("mov", xr(i), xr(out))
+				g.release(out)
+			}
+			return nil
+		}
 		if _, _, isBool := boolConditional(e); !isBool {
 			return g.lowerMatch(e, g.resultRecordExpr)
 		}
@@ -1989,6 +2058,67 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 	for i := 0; i < g.resultRecord.chunks(); i++ {
 		g.emit("ldr", xr(i), g.slotMem(rec.offset+int64(8*i)))
 	}
+	return nil
+}
+
+// resultRecordInto lowers a value-only record result into the scratch
+// registers outs, one per chunk: a conditional's arms each load their
+// record's chunks there and meet at the join (registers merge in the
+// verifier's path model where frame slots do not); a block runs its
+// statements and yields its tail.
+func (g *generator) resultRecordInto(expr ast.Expression, outs []int) error {
+	switch e := expr.(type) {
+	case *ast.MatchExpression:
+		if whenTrue, whenFalse, ok := boolConditional(e); ok {
+			elseLabel, end := g.newLabel("else"), g.newLabel("endif")
+			if err := g.condition(e.Scrutinee, elseLabel); err != nil {
+				return err
+			}
+			if err := g.resultRecordInto(whenTrue, outs); err != nil {
+				return err
+			}
+			g.emit("b", asm.Symbol{Name: end})
+			g.label(elseLabel)
+			if err := g.resultRecordInto(whenFalse, outs); err != nil {
+				return err
+			}
+			g.label(end)
+			return nil
+		}
+		return g.lowerMatch(e, func(body ast.Expression) error { return g.resultRecordInto(body, outs) })
+	case *ast.BlockExpression:
+		if e.Block != nil && len(e.Block.Statements) > 0 {
+			g.pushScope()
+			defer g.popScope()
+			stmts := e.Block.Statements
+			if err := g.lowerStatements(stmts[:len(stmts)-1], false, ""); err != nil {
+				return err
+			}
+			if es, ok := stmts[len(stmts)-1].(*ast.ExpressionStatement); ok && !es.Discard {
+				return g.resultRecordInto(es.Expression, outs)
+			}
+			return unsupported("a block whose last statement is not its record result")
+		}
+	}
+	rec, err := g.recordValueAs(expr, g.resultRecord)
+	if err != nil {
+		return err
+	}
+	if rec.layout != g.resultRecord {
+		return unsupported("a %s result where %s is declared", rec.layout.name, g.resultRecord.name)
+	}
+	if rec.inReg || g.slotMem(rec.offset).Offset%8 != 0 {
+		aligned := g.tempRecord(g.resultRecord)
+		if err := g.copyRecord(aligned, rec); err != nil {
+			return err
+		}
+		g.releaseTemps(rec.temps)
+		rec = aligned
+	}
+	for i, out := range outs {
+		g.emit("ldr", xr(out), g.slotMem(rec.offset+int64(8*i)))
+	}
+	g.releaseTemps(rec.temps)
 	return nil
 }
 
@@ -2259,6 +2389,13 @@ func (g *generator) alloc(typ scalar) (int, error) {
 	*pool = (*pool)[:len(*pool)-1]
 	g.live = append(g.live, r)
 	return r, nil
+}
+
+// put appends one item built elsewhere (ins marks its write for the
+// call spill); the emission paths that build their own instruction go
+// through here or emit.
+func (g *generator) put(item asm.Item) {
+	g.items = append(g.items, item)
 }
 
 func (g *generator) release(r int) {
@@ -2590,20 +2727,37 @@ func (g *generator) fieldLoad(sc *scalarPlace) (int, error) {
 		return 0, err
 	}
 	load := loadOf(sc.typ)
+	size := int64(sc.typ.bits / 8)
 	if sc.typ.isBool {
-		load = "ldr"
+		load, size = "ldr", 4
 	}
-	g.emit(load, reg(r, sc.typ), g.memOf(sc.loc()))
+	mem, temp, err := g.reachable(sc.loc(), size)
+	if err != nil {
+		return 0, err
+	}
+	g.emit(load, reg(r, sc.typ), mem)
+	if temp >= 0 {
+		g.release(temp)
+	}
 	return r, nil
 }
 
 // fieldStore writes a normalized value of the field's type.
-func (g *generator) fieldStore(sc *scalarPlace, r int) {
+func (g *generator) fieldStore(sc *scalarPlace, r int) error {
 	store := storeOf(sc.typ)
+	size := int64(sc.typ.bits / 8)
 	if sc.typ.isBool {
-		store = "str"
+		store, size = "str", 4
 	}
-	g.emit(store, reg(r, sc.typ), g.memOf(sc.loc()))
+	mem, temp, err := g.reachable(sc.loc(), size)
+	if err != nil {
+		return err
+	}
+	g.emit(store, reg(r, sc.typ), mem)
+	if temp >= 0 {
+		g.release(temp)
+	}
+	return nil
 }
 
 // fieldOperand resolves `p.f` (through any nesting) to a scalar field.
@@ -3093,7 +3247,7 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 				return err
 			}
 			g.declare(s.Name.Value, typ)
-			g.items = append(g.items, g.storeVar(s.Name.Value, r))
+			g.put(g.storeVar(s.Name.Value, r))
 			g.release(r)
 		case *ast.AssignmentStatement:
 			if dst, isRecord := g.records[s.Name.Value]; isRecord {
@@ -3119,7 +3273,7 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 			if err != nil {
 				return err
 			}
-			g.items = append(g.items, g.storeVar(s.Name.Value, r))
+			g.put(g.storeVar(s.Name.Value, r))
 			g.release(r)
 		case *ast.IndexAssignmentStatement:
 			if err := g.elementStore(s); err != nil {
@@ -3471,7 +3625,7 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 			g.constant(r, c.Value, typ)
 			return r, nil
 		}
-		g.items = append(g.items, g.loadVar(e.Value, r))
+		g.put(g.loadVar(e.Value, r))
 		return r, nil
 	case *ast.InfixExpression:
 		return g.infix(e, typ)
@@ -3648,7 +3802,7 @@ func (g *generator) constant(r int, v uint64, s scalar) {
 // operation on the whole register.
 func (g *generator) normalize(r int, s scalar) {
 	for _, it := range g.normalizeInto(r, s) {
-		g.items = append(g.items, it)
+		g.put(it)
 	}
 }
 
@@ -4705,7 +4859,9 @@ func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression) (address
 	if arr.inReg {
 		// An array field inside a computed element: its address is the
 		// element's plus the field offset (the checker narrows the region).
-		g.emit("add", xr(base), xr(arr.reg), imm(arr.offset))
+		if err := g.addOffset(base, arr.reg, arr.offset); err != nil {
+			return asm.Memory{}, 0, 0, err
+		}
 	} else {
 		g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
 	}
@@ -4752,7 +4908,9 @@ func (g *generator) storeToPlace(target place, s *ast.IndexAssignmentStatement) 
 		if err != nil {
 			return err
 		}
-		g.fieldStore(target.sc, value)
+		if err := g.fieldStore(target.sc, value); err != nil {
+			return err
+		}
 		g.release(value)
 		g.releaseTemps(target.sc.temps)
 		return nil
@@ -4931,6 +5089,23 @@ func (g *generator) resultExpr(expr ast.Expression) error {
 			return g.tailCall(e)
 		}
 	case *ast.MatchExpression:
+		if g.result != nil && !g.result.isFloat && g.valueOnly(e) {
+			// Every arm yields a value: they meet in one scratch register
+			// and the result register is written once, at the join. The
+			// checker is linear, so a result written inside an arm would
+			// forget the parameters' span and record facts for the arms
+			// after it (docs/spec/94-assembler.md §9).
+			out, err := g.alloc(*g.result)
+			if err != nil {
+				return err
+			}
+			if err := g.resultInto(e, out); err != nil {
+				return err
+			}
+			g.moveResult(out, *g.result)
+			g.release(out)
+			return nil
+		}
 		if _, _, isBool := boolConditional(e); !isBool {
 			return g.lowerMatch(e, g.resultExpr)
 		}
@@ -4990,6 +5165,85 @@ func (g *generator) resultExpr(expr ast.Expression) error {
 	return nil
 }
 
+// valueOnly reports whether a result expression yields its value through
+// plain arms alone: no self tail call (the loop shape the verifier
+// recognizes keeps its own layout) and no call to a never function,
+// anywhere down its conditionals and blocks.
+func (g *generator) valueOnly(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.MatchExpression:
+		for _, arm := range e.Arms {
+			if arm == nil || arm.Body == nil || !g.valueOnly(arm.Body) {
+				return false
+			}
+		}
+		return true
+	case *ast.BlockExpression:
+		if e.Block == nil || len(e.Block.Statements) == 0 {
+			return false
+		}
+		last, ok := e.Block.Statements[len(e.Block.Statements)-1].(*ast.ExpressionStatement)
+		return ok && !last.Discard && g.valueOnly(last.Expression)
+	case *ast.InvocationExpression:
+		if g.isTailCall(e) {
+			return false
+		}
+		if ident, ok := e.Function.(*ast.Identifier); ok {
+			if callee := g.functions[ident.Value]; callee != nil && callee.ReturnType != nil && callee.ReturnType.String() == "never" {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// resultInto lowers a value-only result expression into the register out:
+// a conditional's arms each write out and meet at the join; a block runs
+// its statements and yields its tail.
+func (g *generator) resultInto(expr ast.Expression, out int) error {
+	switch e := expr.(type) {
+	case *ast.MatchExpression:
+		if whenTrue, whenFalse, ok := boolConditional(e); ok {
+			elseLabel, end := g.newLabel("else"), g.newLabel("endif")
+			if err := g.condition(e.Scrutinee, elseLabel); err != nil {
+				return err
+			}
+			if err := g.resultInto(whenTrue, out); err != nil {
+				return err
+			}
+			g.emit("b", asm.Symbol{Name: end})
+			g.label(elseLabel)
+			if err := g.resultInto(whenFalse, out); err != nil {
+				return err
+			}
+			g.label(end)
+			return nil
+		}
+		return g.lowerMatch(e, func(body ast.Expression) error { return g.resultInto(body, out) })
+	case *ast.BlockExpression:
+		if e.Block != nil && len(e.Block.Statements) > 0 {
+			g.pushScope()
+			defer g.popScope()
+			stmts := e.Block.Statements
+			if err := g.lowerStatements(stmts[:len(stmts)-1], false, ""); err != nil {
+				return err
+			}
+			if es, ok := stmts[len(stmts)-1].(*ast.ExpressionStatement); ok && !es.Discard {
+				return g.resultInto(es.Expression, out)
+			}
+		}
+	}
+	r, err := g.expr(expr, g.result)
+	if err != nil {
+		return err
+	}
+	if r != out {
+		g.emit("mov", reg(out, *g.result), reg(r, *g.result))
+		g.release(r)
+	}
+	return nil
+}
+
 // tailCall lowers a self-call in result position as a loop: every argument
 // is evaluated before any parameter slot changes.
 func (g *generator) tailCall(e *ast.InvocationExpression) error {
@@ -5006,7 +5260,7 @@ func (g *generator) tailCall(e *ast.InvocationExpression) error {
 		values = append(values, r)
 	}
 	for i, r := range values {
-		g.items = append(g.items, g.storeVar(g.fn.Parameters[i].Name.Value, r))
+		g.put(g.storeVar(g.fn.Parameters[i].Name.Value, r))
 		g.release(r)
 	}
 	g.emit("b", asm.Symbol{Name: g.head})
@@ -5151,7 +5405,7 @@ func (g *generator) instructionEffect(member string, call *ast.InvocationExpress
 		if g.terminated {
 			return nil
 		}
-		g.items = append(g.items, instr)
+		g.put(instr)
 		return nil
 	}
 	if spec, found, write := semir.LookupArm64SysRegMember(member); found {

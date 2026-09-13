@@ -1454,7 +1454,10 @@ func (x *pathExecutor) leafInput(name string, width int) *term {
 func (x *pathExecutor) recordBytes(leaves []compositeLeaf, offset, size int64) (*term, bool) {
 	var value *term
 	for _, leaf := range leaves {
-		end := leaf.offset + int64(leaf.width)/8
+		// A leaf narrower than a byte (a Bool) still occupies its byte:
+		// rounding its width down to zero bytes would drop a Bool at the
+		// start of the window and read the field as zero.
+		end := leaf.offset + (int64(leaf.width)+7)/8
 		if end <= offset || leaf.offset >= offset+size {
 			continue
 		}
@@ -1552,13 +1555,28 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 	}
 	{
 		switch instr.Mnemonic {
-		case "mov":
+		case "mov", "movz":
 			dest := instr.Operands[0].(Register)
 			value, ok := operandTerm(state, instr.Operands[1], widthOf(dest.Class))
 			if !ok {
 				return "unbound register read", false
 			}
 			state.write(dest, value)
+		case "movk":
+			// Insert a halfword: the destination's other bits are kept.
+			dest := instr.Operands[0].(Register)
+			width := widthOf(dest.Class)
+			imm, isImm := instr.Operands[1].(Immediate)
+			if !isImm {
+				return "movk without an immediate", false
+			}
+			old, ok := state.read(dest)
+			if !ok {
+				return "unbound register read", false
+			}
+			keep := ^(uint64(0xffff) << uint(imm.Shift)) & mask(width)
+			kept := binaryTerm("and", old, constTerm(keep, width))
+			state.write(dest, binaryTerm("or", kept, constTerm(uint64(imm.Value)<<uint(imm.Shift), width)))
 		case "cmp":
 			left := instr.Operands[0].(Register)
 			width := widthOf(left.Class)
