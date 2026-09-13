@@ -42,7 +42,7 @@ var commands []command
 
 func init() {
 	commands = []command{
-		{"build", "compile a package to an executable (or C with -o x.c / -emit-c)", "oak build [-o out] [-target os/arch] [-cpu name] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-profile default|strict] [-lines] [dir|file.oak]", buildPackage},
+		{"build", "compile a package to an executable (or C with -o x.c / -emit-c)", "oak build [-o out] [-target os/arch] [-cpu name] [-emit-c] [-header out.h] [-lean out.lean] [-lean-floats bits] [-metal out.metal] [-profile default|strict] [-lines] [dir|file.oak]", buildPackage},
 		{"run", "compile and run a package (a foreign Linux target through an emulator)", "oak run [-profile default|strict] [-target os/arch] [dir]", runPackage},
 		{"install", "compile a package and install the executable into $OAKBIN", "oak install [-profile default|strict] [-target os/arch] [dir]", installPackage},
 		{"vet", "check a package without generating code and list what the checker recorded", "oak vet [-profile default|strict] [dir|file.oak]", vetPackage},

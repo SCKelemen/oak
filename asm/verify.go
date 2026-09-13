@@ -569,6 +569,10 @@ type symbolicState struct {
 	// vregs is the vector file: register number -> 128-bit value as lanes
 	// (asm/verify_vector.go); nil until a vector instruction runs.
 	vregs map[int]vecValue
+	// globals: the package-global cells this path has written, by Oak
+	// name, at the cell's width (docs/spec/94-assembler.md §9); a cell not
+	// here still holds its entry value, the parameter `global:NAME`.
+	globals map[string]*term
 }
 
 type frameSlot struct {
@@ -826,7 +830,10 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 		resultClass, hasResult = ClassX, true
 	}
 	_, vectorResult := vectorShape(sig.ReturnType)
-	if !hasResult || (resultClass == ClassV && !vectorResult) {
+	if hasResult && resultClass == ClassV && !vectorResult {
+		return nil, nil, "no integer result", false
+	}
+	if !hasResult && len(fn.Globals) == 0 {
 		return nil, nil, "no integer result", false
 	}
 	labels := map[string]int{}
@@ -844,8 +851,10 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	if fn.Arch == ArchRV64 {
 		exec.resultReg = rv64ResultRegister
 	}
+	exec.hasResult = hasResult
 	exec.loopExits = findLoops(fn.Items, labels)
-	result, reason, ok := exec.run(0, state)
+	result, cells, reason, ok := exec.run(0, state)
+	exec.cells = cells
 	return result, exec, reason, ok
 }
 
@@ -884,12 +893,17 @@ type pathExecutor struct {
 	spans       map[string]int64  // span parameter -> element size in bytes
 	declared    map[string]int    // parameter -> declared width
 	globals     map[string]Global // the globals the body addresses (fn.Globals)
-	concrete    bool              // a witness run: every input is a constant
-	loopExits   map[int]loopShape
-	loops       []*loopEvent // data-dependent loops met, in creation order
-	loopStack   []int        // indices of the loops whose bodies are being executed
-	paths       int
-	steps       int
+	// hasResult: the function delivers a scalar result; false for a unit
+	// function that writes package state, whose paths return unitResult.
+	// cells: the written cells after run, merged across every path.
+	hasResult bool
+	cells     map[string]*term
+	concrete  bool // a witness run: every input is a constant
+	loopExits map[int]loopShape
+	loops     []*loopEvent // data-dependent loops met, in creation order
+	loopStack []int        // indices of the loops whose bodies are being executed
+	paths     int
+	steps     int
 	// records: record and union parameters by name (their leaves), env the
 	// concrete inputs of a witness run (nil when symbolic).
 	records map[string]compositeArg
@@ -1053,7 +1067,14 @@ func (s *symbolicState) clone() *symbolicState {
 			vregs[reg] = value
 		}
 	}
-	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs}
+	var globals map[string]*term
+	if len(s.globals) > 0 {
+		globals = make(map[string]*term, len(s.globals))
+		for name, value := range s.globals {
+			globals[name] = value
+		}
+	}
+	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, globals: globals}
 }
 
 // frameAccess executes a load or store through the sp frame: the address
@@ -1259,6 +1280,95 @@ func (x *pathExecutor) registerFrameAccess(instr Instruction, state *symbolicSta
 // path has no result to verify.
 var trapPath = &term{kind: termConst, width: 64}
 
+// cellWidth is the width a global's cell is modeled at: its storage width,
+// except a Bool, whose C cell holds 0 or 1 in a word — one bit, zero-extended
+// on a load and truncated on a store (Oak's typing keeps a Bool 0 or 1).
+func cellWidth(global Global) int {
+	if global.Type == "Bool" {
+		return 1
+	}
+	return global.Bits
+}
+
+// cellEntry is a global's value on entry: the parameter `global:NAME`.
+func cellEntry(name string, global Global) *term {
+	return paramTerm(globalParam(name), cellWidth(global))
+}
+
+// mergeCells joins the written cells of a fork's two paths: a cell written
+// on one side only meets its entry value on the other.
+func (x *pathExecutor) mergeCells(cond *term, taken, fallThrough map[string]*term) map[string]*term {
+	if len(taken) == 0 && len(fallThrough) == 0 {
+		return nil
+	}
+	merged := map[string]*term{}
+	for name := range taken {
+		merged[name] = nil
+	}
+	for name := range fallThrough {
+		merged[name] = nil
+	}
+	for name := range merged {
+		t, f := taken[name], fallThrough[name]
+		if t == nil {
+			t = cellEntry(name, x.globals[name])
+		}
+		if f == nil {
+			f = cellEntry(name, x.globals[name])
+		}
+		merged[name] = iteTerm(cond, t, f)
+	}
+	return merged
+}
+
+// globalStore executes a store through a global's address: the cell takes
+// the stored register's value at the cell's width. Reports whether the
+// instruction was such a store.
+func (x *pathExecutor) globalStore(instr Instruction, state *symbolicState) (handled bool, reason string, ok bool) {
+	if !isStoreMnemonic(instr.Mnemonic) || len(instr.Operands) != 2 {
+		return false, "", false
+	}
+	mem, isMem := instr.Operands[1].(Memory)
+	if !isMem || mem.Base.Class != ClassX {
+		return false, "", false
+	}
+	base, bound := state.regs[mem.Base.Num]
+	if !bound {
+		return false, "", false
+	}
+	name, isGlobal := globalAddrOf(base)
+	if !isGlobal {
+		return false, "", false
+	}
+	global, known := x.globals[name]
+	if !known {
+		return true, "a store through the address of an undeclared global", false
+	}
+	src, isReg := instr.Operands[0].(Register)
+	if !isReg || src.Class == ClassV {
+		return true, "a vector-register store to a global", false
+	}
+	if mem.Index != nil || mem.Mode != MemOffset || mem.Offset != 0 {
+		return true, "a store through a global's address away from its cell", false
+	}
+	if size := memorySize(instr.Mnemonic, src.Class); int(size)*8 != global.Bits {
+		return true, fmt.Sprintf("a %d-byte store to the %d-bit global %s", size, global.Bits, name), false
+	}
+	value, okValue := state.read(src)
+	if !okValue {
+		return true, "unbound register read", false
+	}
+	if state.globals == nil {
+		state.globals = map[string]*term{}
+	}
+	state.globals[name] = truncate(value, cellWidth(global))
+	return true, "", true
+}
+
+// unitResult is the result of a path through a function with no result:
+// only the package state it writes is compared.
+var unitResult = &term{kind: termConst, width: 64}
+
 // registerFrameMemory reports a load or store whose base register holds a
 // frame address term, with the address.
 func registerFrameMemory(instr Instruction, state *symbolicState) (Memory, int64, bool) {
@@ -1287,10 +1397,12 @@ func isFrameMemory(instr Instruction) bool {
 }
 
 // run executes from item index pc to a ret on every path.
-func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
+// run executes from item index pc to a ret on every path: the result term
+// and the package-global cells written, merged across the paths.
+func (x *pathExecutor) run(pc int, state *symbolicState) (*term, map[string]*term, string, bool) {
 	x.paths++
 	if x.paths > pathBudget {
-		return nil, "more paths than the verifier's budget (a loop whose trip count depends on the inputs, or too many forks)", false
+		return nil, nil, "more paths than the verifier's budget (a loop whose trip count depends on the inputs, or too many forks)", false
 	}
 	for ; pc < len(x.items); pc++ {
 		instr, isInstr := x.items[pc].(Instruction)
@@ -1299,52 +1411,60 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 		}
 		x.steps++
 		if x.steps > stepBudget {
-			return nil, "more instructions than the verifier's unrolling budget (a loop whose trip count depends on the inputs)", false
+			return nil, nil, "more instructions than the verifier's unrolling budget (a loop whose trip count depends on the inputs)", false
 		}
 		switch instr.Mnemonic {
 		case "ret":
+			if !x.hasResult {
+				return unitResult, state.globals, "", true
+			}
 			if x.resultClass == ClassV {
 				value, ok := state.readVec(0)
 				if !ok {
-					return nil, "result register never written", false
+					return nil, nil, "result register never written", false
 				}
-				return value.halves()[x.resultHalf], "", true
+				return value.halves()[x.resultHalf], state.globals, "", true
 			}
 			result, ok := state.read(x.resultReg)
 			if !ok {
-				return nil, "result register never written", false
+				return nil, nil, "result register never written", false
 			}
 			if x.arch == ArchRV64 {
 				// a0 holds the widened result; the contract width reads it.
 				result = truncate(result, widthOf(x.resultClass))
 			}
-			return result, "", true
+			return result, state.globals, "", true
 		case "brk", "ebreak":
 			// A trap: this path delivers no result. The Oak body traps on
 			// the same inputs (a failed bounds check, division by zero, an
 			// overflowing shift, a failed assert), so the path is outside
 			// the equivalence and drops from the fork it came from.
-			return trapPath, "", true
+			return trapPath, nil, "", true
 		case "bl":
+			if len(x.globals) > 0 {
+				// The callee may read or write the same cells; threading
+				// them through a summary is the next increment.
+				return nil, nil, "a call in a body that addresses package state", false
+			}
 			if reason, ok := x.summarizeCall(instr, state); !ok {
-				return nil, reason, false
+				return nil, nil, reason, false
 			}
 			continue
 		case "b", "j":
 			target, ok := x.labels[instr.Operands[0].(Symbol).Name]
 			if !ok {
-				return nil, "a branch to an unknown label", false
+				return nil, nil, "a branch to an unknown label", false
 			}
 			pc = target - 1 // backward: a loop, bounded by the budgets
 			continue
 		case "b.", "cbz", "cbnz", "tbz", "tbnz", "beq", "bne", "blt", "bge", "bltu", "bgeu", "beqz", "bnez", "bgez", "bltz", "blez", "bgtz":
 			cond, reason, ok := branchCondition(instr, state)
 			if !ok {
-				return nil, reason, false
+				return nil, nil, reason, false
 			}
 			target, ok := x.labels[instr.Operands[len(instr.Operands)-1].(Symbol).Name]
 			if !ok {
-				return nil, "a branch to an unknown label", false
+				return nil, nil, "a branch to an unknown label", false
 			}
 			if cond.kind == termConst {
 				// Decided: one continuation. A counted loop's backward
@@ -1361,67 +1481,74 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 			// condition: a data-dependent loop, summarized as a loop event
 			// and continued past its exit on fresh loop-carried symbols.
 			if shape, isLoopExit := x.loopExits[pc]; isLoopExit {
-				return x.loopEvent(shape, instr, state)
+				result, reason, ok := x.loopEvent(shape, instr, state)
+				return result, state.globals, reason, ok
 			}
 			// Any other undecided branch forks; backward or forward alike —
 			// an unrecognized loop unfolds until the budgets stop it.
-			taken, reason, ok := x.run(target, state.clone())
+			taken, takenCells, reason, ok := x.run(target, state.clone())
 			if !ok {
-				return nil, reason, false
+				return nil, nil, reason, false
 			}
-			fallThrough, reason, ok := x.run(pc+1, state)
+			fallThrough, fallCells, reason, ok := x.run(pc+1, state)
 			if !ok {
-				return nil, reason, false
+				return nil, nil, reason, false
 			}
 			switch {
 			case taken == trapPath:
-				return fallThrough, "", true
+				return fallThrough, fallCells, "", true
 			case fallThrough == trapPath:
-				return taken, "", true
+				return taken, takenCells, "", true
 			}
-			return iteTerm(cond, taken, fallThrough), "", true
+			return iteTerm(cond, taken, fallThrough), x.mergeCells(cond, takenCells, fallCells), "", true
 		}
 		if x.arch == ArchRV64 {
 			if reason, ok := x.stepRV64(instr, state); !ok {
-				return nil, reason, false
+				return nil, nil, reason, false
 			}
 			continue
 		}
 		if isFrameMemory(instr) {
 			if reason, ok := x.frameAccess(instr, state); !ok {
-				return nil, reason, false
+				return nil, nil, reason, false
 			}
 			continue
 		}
 		if mem, base, isFrame := registerFrameMemory(instr, state); isFrame {
 			if reason, ok := x.registerFrameAccess(instr, state, mem, base); !ok {
-				return nil, reason, false
+				return nil, nil, reason, false
 			}
 			continue
 		}
 		if isLoad(instr.Mnemonic) {
 			if dest, isReg := instr.Operands[0].(Register); isReg && dest.Class == ClassV {
 				if reason, ok := x.loadVector(instr, state); !ok {
-					return nil, reason, false
+					return nil, nil, reason, false
 				}
 				continue
 			}
 			if reason, ok := x.load(instr, state); !ok {
-				return nil, reason, false
+				return nil, nil, reason, false
+			}
+			continue
+		}
+		if handled, reason, ok := x.globalStore(instr, state); handled {
+			if !ok {
+				return nil, nil, reason, false
 			}
 			continue
 		}
 		if hasVectorOperand(instr) {
 			if reason, ok := x.stepVector(instr, state); !ok {
-				return nil, reason, false
+				return nil, nil, reason, false
 			}
 			continue
 		}
 		if reason, ok := step(instr, state); !ok {
-			return nil, reason, false
+			return nil, nil, reason, false
 		}
 	}
-	return nil, "no ret reached", false
+	return nil, nil, "no ret reached", false
 }
 
 // load executes `ldr rD, [xB, #off]` through a span base: the seam checker
@@ -1450,9 +1577,6 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		if !known {
 			return "a load through the address of an undeclared global", false
 		}
-		if global.Type == "Bool" {
-			return "a Bool global (its cell holds a byte the proof cannot bound)", false
-		}
 		if mem.Index != nil || mem.Mode != MemOffset || mem.Offset != 0 {
 			return "a load through a global's address away from its cell", false
 		}
@@ -1460,8 +1584,13 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		if int(size)*8 != global.Bits {
 			return fmt.Sprintf("a %d-byte load of the %d-bit global %s", size, global.Bits, name), false
 		}
-		value := paramTerm(globalParam(name), global.Bits)
-		if isSignExtendingLoad(instr.Mnemonic) {
+		// The cell's current value on this path: what a store on the path
+		// put there, else the entry parameter.
+		value, written := state.globals[name]
+		if !written {
+			value = cellEntry(name, global)
+		}
+		if isSignExtendingLoad(instr.Mnemonic) && cellWidth(global) == global.Bits {
 			state.write(dest, extendTerm(value, global.Bits, widthOf(dest.Class), true))
 		} else {
 			state.write(dest, zeroExtend(value, widthOf(dest.Class)))
@@ -2032,6 +2161,11 @@ type oakLowering struct {
 	// the proof, the value the cell holds on entry; a write leaves the body
 	// trusted (docs/spec/94-assembler.md §9).
 	globals map[string]Global
+	// cells: the globals as statement-body locals — declared by
+	// prepareLowering at their entry values, so assignments, reads, and the
+	// conditional merging of locals model the cells; their final values
+	// are the Oak side's written state.
+	cells map[string]*oakLocal
 	// functions are the program's functions a body may call; a call to one
 	// in the subset is inlined (inlineCall). Nil outside the theorem decider.
 	functions map[string]*ast.FunctionStatement
@@ -3168,6 +3302,12 @@ func (lo *oakLowering) lowerLoopBody(body *ast.BlockStatement) (string, bool) {
 func (lo *oakLowering) lowerConditionalStatement(match *ast.MatchExpression) (string, bool) {
 	whenTrue, whenFalse, isBool := boolConditional(match)
 	if !isBool {
+		// `cond ? { ... }` with no false arm: the false path is empty.
+		if single, _, ok := statementConditional(match); ok {
+			whenTrue, whenFalse, isBool = single, nil, true
+		}
+	}
+	if !isBool {
 		return lo.lowerMatchStatement(match)
 	}
 	cond, reason, ok := lo.lowerCondition(match.Scrutinee)
@@ -3252,9 +3392,47 @@ func (lo *oakLowering) lowerMatchStatement(match *ast.MatchExpression) (string, 
 	return "", true
 }
 
+// statementConditional recognizes a Bool conditional with a true arm and an
+// optional false arm (`cond ? a` leaves it nil), the statement forms the
+// parser's sugar produces; boolConditional needs both arms.
+func statementConditional(match *ast.MatchExpression) (whenTrue, whenFalse ast.Expression, ok bool) {
+	if match.Scrutinee == nil || len(match.Arms) == 0 || len(match.Arms) > 2 {
+		return nil, nil, false
+	}
+	for i, arm := range match.Arms {
+		switch pattern := arm.Pattern.(type) {
+		case *ast.LiteralPattern:
+			lit, isBool := pattern.Value.(*ast.Boolean)
+			if !isBool {
+				return nil, nil, false
+			}
+			if lit.Value {
+				whenTrue = arm.Body
+			} else {
+				whenFalse = arm.Body
+			}
+		case *ast.WildcardPattern:
+			if i != 1 {
+				return nil, nil, false
+			}
+			whenFalse = arm.Body
+		default:
+			return nil, nil, false
+		}
+	}
+	return whenTrue, whenFalse, whenTrue != nil
+}
+
 // lowerArm executes a conditional arm as statements: a block of
-// assignments (possibly empty), or nothing.
+// assignments (possibly empty), nothing, or a chained conditional
+// (`c1 ? { … } | c2 ? { … } | { … }`).
 func (lo *oakLowering) lowerArm(arm ast.Expression) (string, bool) {
+	if arm == nil {
+		return "", true
+	}
+	if chained, isMatch := arm.(*ast.MatchExpression); isMatch {
+		return lo.lowerConditionalStatement(chained)
+	}
 	block, isBlock := arm.(*ast.BlockExpression)
 	if !isBlock {
 		return "a conditional arm in statement position that is not a block", false
@@ -3502,6 +3680,9 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	if lo.inlining[name] {
 		return nil, fmt.Sprintf("a recursive call to %s", name), false
 	}
+	if len(lo.cells) > 0 {
+		return nil, fmt.Sprintf("a call to %s in a body that addresses package state", name), false
+	}
 	bound := map[string]*oakLocal{}
 	calleeFloats := map[string]int{}
 	// A span or view parameter borrows a caller's array: the callee works
@@ -3709,8 +3890,8 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		if value, _, ok := lo.constantValue(e.Value, width); ok {
 			return constTerm(value, width), "", true
 		}
-		if global, isGlobal := lo.globals[e.Value]; isGlobal && global.Type != "Bool" {
-			return adaptWidth(paramTerm(globalParam(e.Value), global.Bits), width), "", true
+		if global, isGlobal := lo.globals[e.Value]; isGlobal {
+			return adaptWidth(cellEntry(e.Value, global), width), "", true
 		}
 		return nil, fmt.Sprintf("identifier %s (not a parameter)", e.Value), false
 	case *ast.IntegerLiteral:
@@ -4279,19 +4460,83 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 	if loop, isTail := tailRecursionAsLoop(sig, oakBody); isTail {
 		oakBody = loop
 	}
+	if !exec.hasResult {
+		// A unit function that writes package state: the cells are the
+		// whole comparison.
+		if reason, ok := lowering.lowerUnitBody(oakBody); !ok {
+			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
+		}
+		if len(exec.loops) > 0 || len(lowering.loops) > 0 {
+			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (package state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
+		}
+		return decideCells(fn, lowering, exec, nil)
+	}
 	oakTerm, width, reason, ok := lowering.resultTerm(fn, sig, oakBody)
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
 	asmTerm = maskResult(fn, sig, asmTerm)
 	if len(exec.loops) > 0 || len(lowering.loops) > 0 {
+		if len(exec.cells) > 0 || len(lowering.writtenCells()) > 0 {
+			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (package state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
+		}
 		return verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
 	}
 	note := ""
 	if len(exec.summarized) > 0 {
 		note = " (callees taken at their Oak bodies: " + strings.Join(exec.summarized, ", ") + ")"
 	}
-	return decideEqual(fn, lowering, asmTerm, oakTerm, width, note)
+	verdict := decideEqual(fn, lowering, asmTerm, oakTerm, width, note)
+	if verdict.Kind != VerdictProven || (len(exec.cells) == 0 && len(lowering.writtenCells()) == 0) {
+		return verdict
+	}
+	return decideCells(fn, lowering, exec, &verdict)
+}
+
+// decideCells decides, for every package-global cell either side writes,
+// that the two sides leave the same value in it (a side that never writes
+// a cell leaves its entry value); result is the result's proven verdict
+// when the function has one. The proof's message names the cells.
+func decideCells(fn *Function, lowering *oakLowering, exec *pathExecutor, result *Verdict) Verdict {
+	oakCells := lowering.writtenCells()
+	names := map[string]bool{}
+	for name := range exec.cells {
+		names[name] = true
+	}
+	for name := range oakCells {
+		names[name] = true
+	}
+	if len(names) == 0 {
+		if result != nil {
+			return *result
+		}
+		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (no integer result) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
+	}
+	sorted := make([]string, 0, len(names))
+	for name := range names {
+		sorted = append(sorted, name)
+	}
+	sort.Strings(sorted)
+	for _, name := range sorted {
+		global := exec.globals[name]
+		asmCell, oakCell := exec.cells[name], oakCells[name]
+		if asmCell == nil {
+			asmCell = cellEntry(name, global)
+		}
+		if oakCell == nil {
+			oakCell = cellEntry(name, global)
+		}
+		verdict := decideEqual(fn, lowering, asmCell, oakCell, cellWidth(global), "")
+		if verdict.Kind != VerdictProven {
+			verdict.Message = strings.Replace(verdict.Message, "asm unit "+fn.Name, fmt.Sprintf("asm unit %s (the package global %s)", fn.Name, name), 1)
+			return verdict
+		}
+	}
+	cells := "the package state it writes (" + strings.Join(sorted, ", ") + ")"
+	if result != nil {
+		return Verdict{Kind: VerdictProven, Message: result.Message + " and " + cells}
+	}
+	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body in %s", fn.Name, cells)}
 }
 
 // summarizeCall takes a call to a program function at the callee's Oak
@@ -4429,7 +4674,93 @@ func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	lowering.functions = fn.Callees // the Oak body's calls inline (inlineCall)
 	lowering.concrete = concrete
 	lowering.bindAggregateParams(sig)
+	lowering.declareCells()
 	return lowering
+}
+
+// declareCells gives every global the body addresses a local at its entry
+// value (a parameter of the same name shadows it, as in the body).
+func (lo *oakLowering) declareCells() {
+	if len(lo.globals) == 0 {
+		return
+	}
+	if lo.locals == nil {
+		lo.locals = map[string]*oakLocal{}
+	}
+	lo.cells = map[string]*oakLocal{}
+	for name, global := range lo.globals {
+		if _, isParam := lo.params[name]; isParam {
+			continue
+		}
+		if _, isSpan := lo.spans[name]; isSpan {
+			continue
+		}
+		cell := &oakLocal{value: cellEntry(name, global), width: cellWidth(global)}
+		lo.locals[name] = cell
+		lo.cells[name] = cell
+	}
+}
+
+// writtenCells are the cells whose final value is not their entry value:
+// the package state the body writes.
+func (lo *oakLowering) writtenCells() map[string]*term {
+	out := map[string]*term{}
+	for name, cell := range lo.cells {
+		entry := cellEntry(name, lo.globals[name])
+		if cell.value != nil && !(cell.value.kind == termParam && cell.value.name == entry.name) {
+			out[name] = cell.value
+		}
+	}
+	return out
+}
+
+// lowerUnitBody lowers the statements of a body with no result: the
+// package state it writes is what the verdict compares.
+func (lo *oakLowering) lowerUnitBody(body ast.Expression) (string, bool) {
+	block, isBlock := body.(*ast.BlockExpression)
+	if !isBlock || block.Block == nil {
+		return "a unit body that is not a block", false
+	}
+	if lo.locals == nil {
+		lo.locals = map[string]*oakLocal{}
+	}
+	for _, stmt := range block.Block.Statements {
+		switch s := stmt.(type) {
+		case *ast.ExpressionStatement:
+			if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
+				if reason, ok := lo.lowerConditionalStatement(match); !ok {
+					return reason, false
+				}
+				continue
+			}
+			if reason, isAssert, ok := lo.lowerAssert(s.Expression); isAssert {
+				if !ok {
+					return reason, false
+				}
+				continue
+			}
+			return "an expression statement for its effect", false
+		case *ast.VariableDeclaration:
+			if reason, ok := lo.declareLocal(s); !ok {
+				return reason, false
+			}
+		case *ast.AssignmentStatement:
+			if reason, ok := lo.assignLocal(s); !ok {
+				return reason, false
+			}
+		case *ast.IndexAssignmentStatement:
+			if reason, ok := lo.assignIndexed(s); !ok {
+				return reason, false
+			}
+		case *ast.WhileStatement:
+			if reason, ok := lo.lowerWhile(s); !ok {
+				return reason, false
+			}
+		default:
+			return fmt.Sprintf("%T", stmt), false
+		}
+	}
+	return "", true
 }
 
 // resultComposite is the function's record or union result when the
@@ -4821,7 +5152,7 @@ func (lo *oakLowering) declaredWidth(name string) int {
 	}
 	if strings.HasPrefix(name, globalParamPrefix) {
 		if global, isGlobal := lo.globals[name[len(globalParamPrefix):]]; isGlobal {
-			return global.Bits
+			return cellWidth(global)
 		}
 	}
 	if w, isFresh := lo.fresh[name]; isFresh {

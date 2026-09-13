@@ -132,6 +132,19 @@ func TestOakSATFixtures(t *testing.T) {
 	if !outcome.Satisfiable || !satisfies([][]int{{1, 2}, {-1, 3}, {-2, -3}, {2, 3}}, outcome.Model) {
 		t.Fatalf("chain: want a satisfying model, got %+v", outcome)
 	}
+	// Two contradicting units: found at load, refuted with a certificate.
+	units := cnfOf(2, [][]int{{1}, {-1, 2}, {-2}})
+	outcome, err = runOakSAT(units)
+	if err != nil || !outcome.Unsatisfiable {
+		t.Fatalf("contradicting units: want unsatisfiable, got %+v %v", outcome, err)
+	}
+	checkBoth(t, "contradicting units", units, outcome.Certificate)
+	direct := cnfOf(1, [][]int{{1}, {-1}})
+	outcome, err = runOakSAT(direct)
+	if err != nil || !outcome.Unsatisfiable {
+		t.Fatalf("direct contradiction: want unsatisfiable, got %+v %v", outcome, err)
+	}
+	checkBoth(t, "direct contradiction", direct, outcome.Certificate)
 	// An empty clause in the formula.
 	empty := cnfOf(1, [][]int{{}})
 	outcome, err = runOakSAT(empty)
@@ -139,8 +152,9 @@ func TestOakSATFixtures(t *testing.T) {
 		t.Fatalf("empty clause: want unsatisfiable, got %+v %v", outcome, err)
 	}
 	checkBoth(t, "empty clause", empty, outcome.Certificate)
-	// Pigeonhole 4 into 3 and 6 into 5.
-	for _, n := range []int{3, 5} {
+	// Pigeonhole 4 into 3 and 7 into 6; the second learns past the
+	// reduction limit and its certificate carries a deletion line.
+	for _, n := range []int{3, 6} {
 		variables, clauses := pigeonhole(n)
 		cnf := cnfOf(variables, clauses)
 		outcome, err := runOakSAT(cnf)
@@ -151,6 +165,9 @@ func TestOakSATFixtures(t *testing.T) {
 			t.Fatalf("pigeonhole %d: want unsatisfiable, got %+v", n, outcome)
 		}
 		checkBoth(t, fmt.Sprintf("pigeonhole %d", n), cnf, outcome.Certificate)
+		if n == 6 && !strings.Contains(outcome.Certificate, " d ") {
+			t.Fatalf("pigeonhole %d: the run learned enough to reduce, but the certificate has no deletion line", n)
+		}
 	}
 }
 

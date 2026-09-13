@@ -155,6 +155,10 @@ func init() {
 	// PC-relative addresses (adr within ±1 MiB; adrp to the 4 KiB page).
 	add("adr", instructionSpec{forms: []form{{opX, opSym}}})
 	add("adrp", instructionSpec{forms: []form{{opX, opSym}}})
+	// adrl xR, sym: the address of a program data symbol — adrp to its
+	// page, then add of its page offset — under one relocation pair
+	// (docs/spec/94-assembler.md §9, constant tables).
+	add("adrl", instructionSpec{forms: []form{{opX, opSym}}})
 	// Bit-field aliases: clear, extract-and-insert-low, signed insert-zero.
 	add("bfc", instructionSpec{forms: []form{{opX, opImm, opImm}, {opW, opImm, opImm}}})
 	add("bfxil", instructionSpec{forms: []form{{opX, opX, opImm, opImm}, {opW, opW, opImm, opImm}}})
