@@ -97,10 +97,36 @@ var rv64FloatShapes = map[string]string{
 // i an immediate, o the four vtype options (e*, m*, ta|tu, ma|mu).
 var rv64VectorShapes = map[string]string{
 	"vsetvli": "xxoooo", "vsetivli": "xioooo",
-	"vle8.v": "vm", "vle32.v": "vm", "vse8.v": "vm", "vse32.v": "vm",
+	"vle8.v": "vm", "vle16.v": "vm", "vle32.v": "vm", "vse8.v": "vm", "vse16.v": "vm", "vse32.v": "vm",
 	"vadd.vv": "vvv", "vsub.vv": "vvv", "vand.vv": "vvv", "vor.vv": "vvv", "vxor.vv": "vvv", "vminu.vv": "vvv", "vmaxu.vv": "vvv",
 	"vmv.v.x": "vx", "vmv.x.s": "xv", "vredsum.vs": "vvv",
 	"vmseq.vv": "vvv", "vmsne.vx": "vvx", "vmerge.vvm": "vvvv", "vcpop.m": "xv",
+	// Widening (2*SEW results in a 2*LMUL group), extension from half-width
+	// sources, and the narrowing shift (a 2*LMUL source).
+	"vwaddu.vv": "vvv", "vwadd.vv": "vvv", "vwsubu.vv": "vvv", "vwsub.vv": "vvv", "vwmulu.vv": "vvv", "vwmul.vv": "vvv",
+	"vzext.vf2": "vv", "vsext.vf2": "vv", "vnsrl.wi": "vvi",
+}
+
+// rv64VectorEMUL is the register-group factor of a vector operand relative
+// to LMUL (RVV 1.0 §11.2, §11.3): 2 for a widening destination or a
+// narrowing source, 1 otherwise. The half-width source of vzext/vsext has
+// EMUL LMUL/2, reported as 0 (one register, or LMUL/2 of them).
+func rv64VectorEMUL(name string, position int) int64 {
+	switch name {
+	case "vwaddu.vv", "vwadd.vv", "vwsubu.vv", "vwsub.vv", "vwmulu.vv", "vwmul.vv":
+		if position == 0 {
+			return 2
+		}
+	case "vnsrl.wi":
+		if position == 1 {
+			return 2
+		}
+	case "vzext.vf2", "vsext.vf2":
+		if position == 1 {
+			return 0
+		}
+	}
+	return 1
 }
 
 // rv64Maskable are the vector instructions that take a trailing `v0.t`
@@ -112,6 +138,9 @@ var rv64Maskable = map[string]bool{
 	"vle8.v": true, "vle32.v": true, "vse8.v": true, "vse32.v": true,
 	"vadd.vv": true, "vsub.vv": true, "vand.vv": true, "vor.vv": true, "vxor.vv": true, "vminu.vv": true, "vmaxu.vv": true,
 	"vredsum.vs": true, "vmseq.vv": true, "vmsne.vx": true, "vcpop.m": true,
+	"vle16.v": true, "vse16.v": true,
+	"vwaddu.vv": true, "vwadd.vv": true, "vwsubu.vv": true, "vwsub.vv": true, "vwmulu.vv": true, "vwmul.vv": true,
+	"vzext.vf2": true, "vsext.vf2": true, "vnsrl.wi": true,
 }
 
 // rv64Masked reports a vector instruction spelled with the `v0.t` mask.
@@ -125,8 +154,8 @@ func rv64Masked(instr Instruction) bool {
 
 // rv64VectorLoads and rv64VectorStores map the unit-stride memory
 // instructions to their element width in bytes (the EEW).
-var rv64VectorLoads = map[string]int64{"vle8.v": 1, "vle32.v": 4}
-var rv64VectorStores = map[string]int64{"vse8.v": 1, "vse32.v": 4}
+var rv64VectorLoads = map[string]int64{"vle8.v": 1, "vle16.v": 2, "vle32.v": 4}
+var rv64VectorStores = map[string]int64{"vse8.v": 1, "vse16.v": 2, "vse32.v": 4}
 
 // rv64VTypeSEW, rv64VTypeLMUL, and rv64VTypePolicy are the vtype fields
 // (RVV 1.0 §3.4): vsew in bits 5:3 as the element width, vlmul in bits
@@ -470,7 +499,7 @@ func rv64CheckVectorShape(instr Instruction, shape string) error {
 			}
 		case 'i':
 			if imm, isImm := ops[i].(Immediate); !isImm || imm.Value < 0 || imm.Value > 31 {
-				return fmt.Errorf("%s: operand %d must be an immediate vector length 0..31", instr.Mnemonic, i+1)
+				return fmt.Errorf("%s: operand %d must be an immediate in 0..31", instr.Mnemonic, i+1)
 			}
 		case 'm':
 			if mem, isMem := ops[i].(Memory); !isMem || mem.Offset != 0 {

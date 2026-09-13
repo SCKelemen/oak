@@ -484,7 +484,7 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 	var rows []tableRow
 	var err error
 	if test.Kind == "table" {
-		rows, err = loadRows(pkg, test, cfg.MaxBytes)
+		rows, err = loadRows(pkg, test, tableRowLimit(pkg, test, cfg.MaxBytes))
 	} else {
 		corpus, err = loadCorpus(pkg, test, cfg.MaxBytes)
 	}

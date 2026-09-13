@@ -165,7 +165,7 @@ ionative_completion: (tag: u64, raw: i64): IoCompletion {
 // simulated realization (docs/spec/120-io.md section 2, "Paths"), so a
 // program tested there names files the same way here; checked again in
 // the shim before the bytes reach the operating system.
-ionative_path_bytes: (): u32 = u32(32)
+ionative_path_bytes: (): u32 = u32(64)
 ionative_path_ok: (ring: [*]IoRing, region: [*]u8, base: u32, n: u32): Bool {
   base <= ring[0].region_len && n <= ring[0].region_len - base && n > u32(0) && n <= ionative_path_bytes() && region[base + n - u32(1)] == u8(0) ? {
     clean: Bool = true

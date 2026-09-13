@@ -105,9 +105,20 @@ produce: (n: u32): () {
 | `mpsc_pop[T](cursor, seqs, storage)` | the single consumer; `Some(T)` for the oldest published item, `None` otherwise; recycles the slot with a release of `seq = pos + capacity` |
 
 | `mpmc_init(cursor, seqs)` / `mpmc_push[T]` / `mpmc_pop[T]` | the Vyukov bounded queue whole: producers claim on `tail`, consumers on `head`, both by compare-exchange; `false`/`None` when full/empty |
+| `mpsc_claim(cursor)` / `mpsc_publish[T](seqs, storage, pos, item)` | the ticket producer: one fetch-add claim that never fails, then a publish that is `false` until the consumer recycles the slot (retry or yield); the consumer is `mpsc_pop` |
+| `mpmc_claim_push` / `mpmc_publish[T]`, `mpmc_claim_pop` / `mpmc_take[T]` | the ticket MPMC: producers and consumers each claim a position by fetch-add and then publish or take it once the sequence cell allows; `mpmc_take` is `None` until published |
 | `intrusive_init(cursor, nodes)` | node 0 becomes the stub; links are index + 1, 0 none |
 | `intrusive_push(cursor, nodes, id)` | wait-free for any producer: one exchange on `head`, one release store of the previous node's link; the caller wrote the node's payload before |
 | `intrusive_pop(cursor, nodes)` | the single consumer: `Item(id)` hands the oldest node back, `Empty`, or `Busy` when the next place is claimed but not yet linked |
+
+**Two claim styles, the application's choice.** `mpsc_push`/`mpmc_push`
+claim by compare-exchange and refuse a full ring at once, at the cost of
+retried claims under producer contention; the ticket forms claim by
+fetch-add — never a retry, never a refusal — but the position handed out
+must be published or taken eventually (a claimed, unpublished position
+stalls the consumers behind it), so the application decides how to wait.
+Use one style per ring. Both share the sequence-cell handoff and the same
+consumers. The cost table below records both.
 
 FIFO per producer (`Oak.Rings.pop_returns_pushed`), no push into a full
 ring (`count_le_cap`), distinct claims on every counter (`claims_distinct`,

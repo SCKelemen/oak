@@ -127,3 +127,40 @@ func TestObjectLayoutErrors(t *testing.T) {
 		t.Errorf("ELF carries R_AARCH64_CONDBR19: %v", err)
 	}
 }
+
+// TestObjectLayoutPadsRVCHalfWords: an RV64 function under RVC may end on
+// a half word, and the next entry still lands on its boundary — the gap
+// is filled with the lane's no-ops, closed by one c.nop, rather than
+// looping on a word-sized pad that never reaches it.
+func TestObjectLayoutPadsRVCHalfWords(t *testing.T) {
+	first := []byte{0x01, 0x00, 0x01, 0x00, 0x82, 0x80} // c.nop; c.nop; c.ret
+	second := []byte{0x67, 0x80, 0x00, 0x00}            // ret
+	layout, err := layOut([]EncodedFunction{
+		{Symbol: "f", Bytes: first, Arch: ArchRV64, Compressed: true},
+		{Symbol: "g", Bytes: second, Arch: ArchRV64, Align: 8},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := layout.defined[1].offset; got != 8 {
+		t.Fatalf("g at %d, want 8", got)
+	}
+	want := append(append(append([]byte{}, first...), 0x01, 0x00), second...)
+	if !bytes.Equal(layout.text, want) {
+		t.Fatalf("text % x, want % x", layout.text, want)
+	}
+	layout, err = layOut([]EncodedFunction{
+		{Symbol: "f", Bytes: first, Arch: ArchRV64, Compressed: true},
+		{Symbol: "g", Bytes: second, Arch: ArchRV64, Align: 16},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = append(append(append([]byte{}, first...), 0x13, 0x00, 0x00, 0x00, 0x13, 0x00, 0x00, 0x00, 0x01, 0x00), second...)
+	if !bytes.Equal(layout.text, want) {
+		t.Fatalf("text % x, want % x", layout.text, want)
+	}
+	if _, err := layOut([]EncodedFunction{{Symbol: "f", Bytes: []byte{0, 0}, Arch: ArchArm64}, {Symbol: "g", Bytes: second, Arch: ArchArm64}}); err == nil {
+		t.Error("an AArch64 entry after a half word must be refused, not padded forever")
+	}
+}
