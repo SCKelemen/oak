@@ -295,7 +295,16 @@ The Semantic IR test suite includes:
 - release-fence -> acquire-fence publication;
 - rejection when fence witnesses appear on the wrong side of a fence;
 - zero-allocation release-sequence membership regression;
-- all chapter-66 HB/race tests under the stronger event validation rules.
+- all chapter-66 HB/race tests under the stronger event validation rules;
+- the ring protocols of `stdlib/rings.oak` as executions
+  (`semir/ring_litmus_test.go`): the SPSC handoff and reuse directions, the
+  MPSC claim chain with the slot's sequence cell, and the intrusive queue's
+  exchange and link — each with happens-before from the payload write to
+  the payload read and no data race, and the negatives that keep the check
+  honest: relaxed publication races, and a payload written after its
+  release store is not published. These are the executable side of
+  `Oak.Rings.spsc_payload_race_free`, `spsc_reuse_race_free`,
+  `mpsc_payload_race_free`, and `intrusive_payload_race_free`.
 
 ## 10. Verification status
 
