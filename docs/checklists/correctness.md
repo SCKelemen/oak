@@ -117,6 +117,29 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       layer could later discharge? An assumption that is not listed is a
       hidden axiom. (Lean `sorry`, Coq `Admitted`, TB) — Oak:
       `85-discipline.md` §7 `admit`, `oak vet`, `:obligations`, `:lean`.
+- [ ] **Every reading of one declaration is compared pairwise.** When one
+      declaration is read by several generators (an executable projection,
+      a static one, a model, a prover, a monitor), is each pair compared
+      on domain, width, partiality, and choice — which values are
+      admitted, how wide a field is, where one reading traps and the other
+      is merely false, which line wins when several hold — not only "each
+      compiles"? (protocol pass 2026-09) — Oak: `112-protocols.md` §1
+      index bounds, §4 `TypeOK`; `docs/notes/protocols-2026-09.md`.
+- [ ] **A conjunct binds every reading.** When one reading needs a guard
+      the author did not write (an index bound, a precondition), is it
+      conjoined to the declaration's guard once, where every reading takes
+      it, rather than added to the reading that would otherwise trap? And
+      is it ordered so that evaluating it never needs the guard it
+      protects? (protocol pass) — Oak: `112-protocols.md` §1 "bounded by
+      its line".
+- [ ] **The model's default domain covers the literals.** Does the model
+      checker's default finite domain reach every constant the guards
+      compare against and one value beyond, so a boundary is never outside
+      the explored set? (TLC small models) — Oak: `112-protocols.md` §4.
+- [ ] **Reach is computed, not assumed.** Is "reachable" decided by a
+      walk from the initial state, so a state only mentioned is refused
+      rather than explored by no reading and proved about vacuously?
+      (TLA+ state graph) — Oak: `112-protocols.md` §1 shape errors.
 
 ## 3. Make illegal states unrepresentable
 
@@ -1107,6 +1130,24 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       not only a change to the Oak signature? (weePickle: "any API change
       that requires your consumers to update is breaking") — Oak:
       `82-package-semver.md` classifies exports only — not stated.
+- [ ] **Generated code is hygienic.** Do generated binders carry a
+      spelling no user name can take (a reserved prefix), and are the
+      user's names the generator binds by position listed and refused,
+      so a user's `done` never captures the generator's `done`? (Scheme
+      hygiene, Rust macro spans) — Oak: `112-protocols.md` §2 `oak_`
+      prefix and reserved payload names.
+- [ ] **Collisions are found before the checker.** When a generator emits
+      declarations from user names, does it collect every emitted name
+      across every instance of the generator and report a duplicate
+      against the declaration that caused it, rather than letting the
+      type checker report a redeclaration of code the user never wrote?
+      (protocol pass) — Oak: `112-protocols.md` §1 "two projections that
+      spell one name".
+- [ ] **The error list indexes the sections.** Does every rule a chapter
+      states in prose appear in its shape-error list, and every listed
+      error have a sentence that motivates it, so a pass can diff the two?
+      (protocol pass: the `via` guard and reachability were rules without
+      errors) — Oak: `112-protocols.md` §1 shape errors.
 
 ## 12. Process
 
