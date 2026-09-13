@@ -372,6 +372,14 @@ func (tc *TypeChecker) resolveIndexPairs(facts []extentFact, pairs []indexPair) 
 					// i < n with n <= len(v) / K: i < len(v) / K
 					// (Oak.Extents.div_bound_scaled reads it at the index).
 					facts = append(facts, extentFact{kind: factDivIndex, container: fact.container, other: pair.index, bound: fact.bound, via: pair.bound, viaBinding: fact.viaBinding, indexDirect: true})
+				case factIndexLit:
+					// i < n with n < B (a guard `count <= 8` around the
+					// loops that fill and read a [8]T): i < B - 1
+					// (Oak.Extents.bound_through_literal) — the dbs pilot's
+					// segment-recovery loops, docs/notes/dbs-feedback-2026-09.md.
+					if fact.bound >= 1 {
+						facts = append(facts, extentFact{kind: factIndexLit, other: pair.index, bound: fact.bound - 1, via: pair.bound, viaBinding: fact.viaBinding, indexDirect: true})
+					}
 				}
 			}
 		}

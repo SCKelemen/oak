@@ -133,3 +133,19 @@ on AArch64.
   expressiveness gaps they expose (`u128`, a no-padding predicate, an
   alignment fact on `IoBuffer` windows) are in
   `docs/notes/tigerbeetle-2026-09.md`.
+
+## Pilot pack, 2026-09-13 (Oak at fe47aa4)
+
+The pilot sent the three things the agent had asked for, and four new
+findings from wiring a `dispatch` consumer.
+
+| # | Item | Disposition |
+| --- | --- | --- |
+| 1 | The `-native` panic, full goroutine trace: `asm/verify.go:2743 (*oakLowering).declareLocal` — "assignment to entry in nil map" — reached from `Verify` → `resultTerm` → `aggregateValue` → `runStatement` on `main: (): u8 { x: u32 = u32(7); x == u32(7) ? { u8(0) } \| { u8(1) } }` | **Fixed.** The lowering's `locals` map was created only on the statement-body paths; a block or match in *result position* declares its locals through `aggregateValue` and found no map. `newLowering` creates it (`asm/verify.go`); `compiler/e2e_native_result_block_test.go` lowers, builds and runs the shape natively. The trace was exactly what was needed: the shape does not appear in the native suite's programs. |
+| 2 | The seven remaining bounds checks, all on one `[8]` array in `log_recover` (`oak/log/segments.oak`): a guarded fill and two loops, each `while i < count` under `count <= 8` | **Fixed** (`50-borrowing.md`, literal bound through a binding): `i < count` composes with the live `count <= 8` to `i < 8` (`Oak.Extents.bound_through_literal`), which the static extent discharges; `compiler/e2e_recovery_bounds_test.go` is the shape — fill, filtered read, plain read — with no check left on the array. |
+| 3 | A `dispatch` consumer, `oak/bench-sweep`: the frame magic's first byte over the 64 MiB segment, a portable body and an SVE realization; the SVE realization has not executed anywhere yet (M4 Max: SME, no SVE, no QEMU) | Noted. The agent's QEMU witness (`compiler/e2e_dispatch_test.go`) runs the SVE path at three vector lengths; the cross-build recipe stands for a Neoverse host. |
+| B8 | A dispatch clause resolved only in the root package | **Fixed before the pack arrived** (#317): the module loader renames a slot's realization to the package's internal name like every other reference; a dispatched function in a library package builds and runs (probed here; `fe47aa4`, the pack's pin, predates #317). |
+| B9 | On Darwin the processor probe failed under the emitted C99 preamble; workaround `-D_DARWIN_C_SOURCE` | **Hardened**: the Darwin probe declares `sysctlbyname` itself instead of including `<sys/sysctl.h>`, which a strict `-std=c11` SDK may hide behind `_DARWIN_C_SOURCE`. |
+| B10 | Calling a realization by name compiled to an unguarded call and died with SIGILL on a host without SVE | **Fixed**: a direct call to a realization is a compile error naming the dispatched function to call (`93-simd.md` §6). |
+| C14 | No way to select the realization from `oak test`, so the spec's differential check could not run outside the compiler's own tests | **Answered by #322** (checked claims, `93-simd.md` §6.2): `oak test` compiles with `OAK_CHECK_DISPATCH`, and on a processor with the feature a pure dispatched function runs the realization and its body and reports a disagreement as `dispatch:<function>:<feature>`; no selection flag is needed, and on a processor without the feature there is nothing to run. |
+| B6 | Withdrawn by the pilot: "shim not linked" was `OAK_CFLAGS` ignored without `OAK_CC`. | Recorded. |

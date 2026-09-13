@@ -71,6 +71,11 @@ theorem kill_is_conservative (i i' len : Nat) (hfact : i < len) (hsame : i' = i)
 theorem bound_through_upper (i n len : Nat) (hi : i < n) (hn : n ≤ len) : i < len :=
   Nat.lt_of_lt_of_le hi hn
 
+/-- The same through a literal bound on the binding: from `i < n` and
+    `n < B`, `i < B - 1` (`resolveIndexPairs`, factIndexLit) — a guard
+    `count <= 8` (`count < 9`) puts every `i < count` below 8. -/
+theorem bound_through_literal (i n B : Nat) (hi : i < n) (hn : n < B) : i < B - 1 := by omega
+
 /-- A Bool binding stands for the condition assigned to it: if `valid` is
     `true` and `valid` was assigned `c`, then `c` held when it was assigned
     (`boolBindingFacts`); strengthening `valid = valid && c'` keeps `c` and
