@@ -80,6 +80,10 @@ var loweringProgramRenders = []struct {
 	// a select between the arms' terms; an untouched local keeps its term.
 	{"f: (a, b: u32) -> u32 = {\n  m: u32 = a\n  a < b ? { m = b } | { }\n  m * 2\n}\n", "(((a lo b) ? b : a) mul 2)"},
 	{"f: (a, b: u32) -> u32 = {\n  x: u32 = a\n  y: u32 = b\n  a < b ? { x = b\n  y = a } | { x = x + 1 }\n  x - y\n}\n", "(((a lo b) ? b : (a add 1)) sub ((a lo b) ? a : b))"},
+	// Counted loops (`whileLoop`): the condition folds to a constant each
+	// iteration, so the loop lowers to its unrolled body.
+	{"f: (n: u32) -> u32 = {\n  s: u32 = 0\n  i: u32 = 0\n  while i < 3 {\n    s = s + n\n    i = i + 1\n  }\n  s\n}\n", "((n add n) add n)"},
+	{"f: (n: u32) -> u32 = {\n  s: u32 = 0\n  i: u32 = 0\n  while i < 4 {\n    i % 2 == 0 ? { s = s + n } | { }\n    i = i + 1\n  }\n  s\n}\n", "(n add n)"},
 }
 
 func TestLoweringProgramsMatchLeanTransliteration(t *testing.T) {
