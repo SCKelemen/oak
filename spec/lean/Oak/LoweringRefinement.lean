@@ -145,18 +145,23 @@ def resolve (P : Params) (Γ : Locals) (x : String) : Option Ty :=
   | some t => some t
   | none => P x
 
-/-- An owned array local `x: [n]e` is its `n` element leaves `x[0]`…`x[n-1]`
-in scope (the verifier's `oakValue.elems`, each leaf named as `spanElemName`
+/-- An owned array is its `n` element leaves in scope, named by `nm` — `x[k]`
+for the array local `x` (`elemName x`), `r.h[k]` for the array field `h`
+of the record `r`, `a[k].x` for the field `x` of the record elements of
+`a` (the verifier's `oakValue` tree, each leaf named as `paramAggregate`
 names it; the extraction's `Array` holds the same values indexed). -/
-def bindLeaves (Γ : Locals) (x : String) (e : Ty) : Nat → Locals
+def bindLeaves (Γ : Locals) (nm : Nat → String) (e : Ty) : Nat → Locals
   | 0 => Γ
-  | k + 1 => (bindLeaves Γ x e k).set (elemName x k) e
+  | k + 1 => (bindLeaves Γ nm e k).set (nm k) e
 
-/-- The leaves of `x: [n]e` are in scope. -/
-def ArrIn (Γ : Locals) (x : String) (e : Ty) (n : Nat) : Prop := ∀ k, k < n → Γ (elemName x k) = some e
+/-- The `n` leaves `nm 0`…`nm (n-1)` of element type `e` are in scope. -/
+def ArrIn (Γ : Locals) (nm : Nat → String) (e : Ty) (n : Nat) : Prop := ∀ k, k < n → Γ (nm k) = some e
 
-instance (Γ : Locals) (x : String) (e : Ty) (n : Nat) : Decidable (ArrIn Γ x e n) :=
-  inferInstanceAs (Decidable (∀ k, k < n → Γ (elemName x k) = some e))
+instance (Γ : Locals) (nm : Nat → String) (e : Ty) (n : Nat) : Decidable (ArrIn Γ nm e n) :=
+  inferInstanceAs (Decidable (∀ k, k < n → Γ (nm k) = some e))
+
+/-- An array literal's elements as named fields: `nm k` for each `k < n`. -/
+def arrayFields (nm : Nat → String) (e : Ty) (n : Nat) : List (String × Ty) := (List.range n).map fun k => (nm k, e)
 
 /-- Names bound in order under a naming (`id` for a callee's parameters, the
 field-leaf naming for a record's fields; a later duplicate wins, as
@@ -186,17 +191,21 @@ is `while c { body }` followed by `rest`; `matchInt x arms` is the
 integer-constant match `x ? | k₁ => e₁ | … | _ => e` in value position and
 `matchSet x arms rest` the same in statement position, its arms assigning
 locals; `elem s v h i` is the element read `v[i]` of a span parameter and
-`len v h` its `len(v)`; `arrDecl x e n hn b` declares the owned array
-`x: [n]e` (zero-initialized, as `zeroValue` and `Array.replicate` both
-say) for the block `b`, `arrGet e n x hn h i` reads `x[i]` and
-`arrSetE x h i v rest` writes `x[i] = v` — an owned array is its elements
-under the names the verifier gives leaves, `x[k]`, so both readers see the
-same cells, and both trap outside the range (`none`); `recDecl r fs fields
+`len v h` its `len(v)`; `arrDecl nm e n hn b` declares an owned array of
+`n` elements (zero-initialized, as `zeroValue` and `Array.replicate` both
+say) for the block `b`, `arrLit nm e n hn items b` one from a literal,
+`arrGet e n nm hn h i` reads its element `i` and `arrSetE nm h hn i v
+rest` writes it — an owned array is its element leaves under the names
+the verifier gives them (`nm`: `x[k]` for a local, `r.h[k]` for a record's
+array field, `a[k].x` for a field of an array's record elements, so a
+nested aggregate is the same leaves under longer names), both readers see
+the same cells, and both trap outside the range (`none`); `recDecl r fs fields
 b` declares the record local `r: R = R{ f₁: e₁, … }` whose scalar fields
 `fs` are given in the type's order, for the block `b` — a record is its
 field leaves `r.f`, so a field read is the variable `r.f` and a field
 write its rebinding, for a local as for a record parameter
-(`paramAggregate`). -/
+(`paramAggregate`); a tagged union is the record of its `tag` leaf and its
+payload leaves, a variant match the constant match on the tag. -/
 inductive Expr (P : Params) (S : Spans) : Locals → Ty → Type
   | var {Γ : Locals} (t : Ty) (x : String) (h : resolve P Γ x = some t) : Expr P S Γ t
   | lit {Γ : Locals} (t : Ty) (v : BitVec t.width) : Expr P S Γ t
@@ -220,9 +229,11 @@ inductive Expr (P : Params) (S : Spans) : Locals → Ty → Type
   | matchSet {Γ : Locals} {s t : Ty} (x : Expr P S Γ s) (arms : ArmsS P S Γ s) (rest : Expr P S Γ t) : Expr P S Γ t
   | elem {Γ : Locals} (s : Ty) (v : String) (h : S v = some s) (i : Expr P S Γ .u32) : Expr P S Γ s
   | len {Γ : Locals} {s : Ty} (v : String) (h : S v = some s) : Expr P S Γ .u32
-  | arrDecl {Γ : Locals} {t : Ty} (x : String) (e : Ty) (n : Nat) (hn : 0 < n) (b : Expr P S (bindLeaves Γ x e n) t) : Expr P S Γ t
-  | arrGet {Γ : Locals} (e : Ty) (n : Nat) (x : String) (hn : 0 < n ∧ n < 2 ^ 32) (h : ArrIn Γ x e n) (i : Expr P S Γ .u32) : Expr P S Γ e
-  | arrSetE {Γ : Locals} {t e : Ty} {n : Nat} (x : String) (h : ArrIn Γ x e n) (hn : n < 2 ^ 32) (i : Expr P S Γ .u32) (v : Expr P S Γ e) (rest : Expr P S Γ t) : Expr P S Γ t
+  | arrDecl {Γ : Locals} {t : Ty} (nm : Nat → String) (e : Ty) (n : Nat) (hn : 0 < n) (b : Expr P S (bindLeaves Γ nm e n) t) : Expr P S Γ t
+  | arrLit {Γ : Locals} {t : Ty} (nm : Nat → String) (e : Ty) (n : Nat) (hn : 0 < n) (items : Args P S Γ (arrayFields nm e n))
+      (b : Expr P S (bindLeaves Γ nm e n) t) : Expr P S Γ t
+  | arrGet {Γ : Locals} (e : Ty) (n : Nat) (nm : Nat → String) (hn : 0 < n ∧ n < 2 ^ 32) (h : ArrIn Γ nm e n) (i : Expr P S Γ .u32) : Expr P S Γ e
+  | arrSetE {Γ : Locals} {t e : Ty} {n : Nat} (nm : Nat → String) (h : ArrIn Γ nm e n) (hn : n < 2 ^ 32) (i : Expr P S Γ .u32) (v : Expr P S Γ e) (rest : Expr P S Γ t) : Expr P S Γ t
 /-- Statements in a conditional arm or a loop body: assignments `x = e` to
 locals already in scope, statement-level conditionals, and nested loops,
 in order (a declaration inside an arm or a body is scoped to it and is not
@@ -233,7 +244,7 @@ inductive Stmts (P : Params) (S : Spans) : Locals → Type
   | cond {Γ : Locals} (c : Expr P S Γ .bool) (armT armF : Stmts P S Γ) (rest : Stmts P S Γ) : Stmts P S Γ
   | loop {Γ : Locals} (c : Expr P S Γ .bool) (body : Stmts P S Γ) (rest : Stmts P S Γ) : Stmts P S Γ
   | matchS {Γ : Locals} {s : Ty} (x : Expr P S Γ s) (arms : ArmsS P S Γ s) (rest : Stmts P S Γ) : Stmts P S Γ
-  | arrSet {Γ : Locals} {e : Ty} {n : Nat} (x : String) (h : ArrIn Γ x e n) (hn : n < 2 ^ 32) (i : Expr P S Γ .u32) (v : Expr P S Γ e) (rest : Stmts P S Γ) : Stmts P S Γ
+  | arrSet {Γ : Locals} {e : Ty} {n : Nat} (nm : Nat → String) (h : ArrIn Γ nm e n) (hn : n < 2 ^ 32) (i : Expr P S Γ .u32) (v : Expr P S Γ e) (rest : Stmts P S Γ) : Stmts P S Γ
 /-- The arms of an integer-constant match in value position: literal
 cases in order, then the fallback (the wildcard arm; a match without one
 has its last arm as the fallback, `matchArms` dropping that arm's
@@ -307,16 +318,16 @@ def varX (Γ : Locals) (ρ : Env) (l : Vals) (x : String) : Nat :=
   | none => ρ x
 
 /-- A declared array's zero elements (`Array.replicate n 0`). -/
-def zeroLeaves (l : Vals) (x : String) : Nat → Vals
+def zeroLeaves (l : Vals) (nm : Nat → String) : Nat → Vals
   | 0 => l
-  | k + 1 => (zeroLeaves l x k).set (elemName x k) 0
+  | k + 1 => (zeroLeaves l nm k).set (nm k) 0
 
 /-- `setIfInBounds` on the leaves: element `k` takes the value when `k` is
 the index, its own value otherwise (leaf by leaf, as the verifier writes,
 so the two readers are compared cell by cell). -/
-def writeLeaves (l : Vals) (x : String) (i v : Nat) : Nat → Vals
+def writeLeaves (l : Vals) (nm : Nat → String) (i v : Nat) : Nat → Vals
   | 0 => l
-  | k + 1 => (writeLeaves l x i v k).set (elemName x k) (if i = k then v else l (elemName x k))
+  | k + 1 => (writeLeaves l nm i v k).set (nm k) (if i = k then v else l (nm k))
 
 /-- The extraction's `while` (`95-extraction.md` §2): a fuel-indexed helper
 that returns `none` when the fuel runs out, otherwise tests the condition
@@ -368,12 +379,13 @@ def evalX {P : Params} {S : Spans} : {Γ : Locals} → {t : Ty} → Expr P S Γ 
     (evalX x ρ l F).bind fun vx => (armsVals vx arms ρ l F).bind fun l' => evalX rest ρ l' F
   | _, s, .elem _ v _ i, ρ, l, F => (evalX i ρ l F).bind fun k => some (BitVec.ofNat s.width (ρ (elemName v k.toNat)))
   | _, _, .len v _, ρ, _, _ => some (BitVec.ofNat 32 (ρ (lenName v)))
-  | _, _, .arrDecl x e n _ b, ρ, l, F => evalX b ρ (zeroLeaves l x n) F
-  | _, e, .arrGet _ n x _ _ i, ρ, l, F =>
-    (evalX i ρ l F).bind fun k => if k.toNat < n then some (BitVec.ofNat e.width (l (elemName x k.toNat))) else none
-  | _, _, .arrSetE (n := n) x _ _ i v rest, ρ, l, F =>
+  | _, _, .arrDecl nm e n _ b, ρ, l, F => evalX b ρ (zeroLeaves l nm n) F
+  | _, _, .arrLit nm e n _ items b, ρ, l, F => (bindVals id items ρ l l F).bind fun l' => evalX b ρ l' F
+  | _, e, .arrGet _ n nm _ _ i, ρ, l, F =>
+    (evalX i ρ l F).bind fun k => if k.toNat < n then some (BitVec.ofNat e.width (l (nm k.toNat))) else none
+  | _, _, .arrSetE (n := n) nm _ _ i v rest, ρ, l, F =>
     (evalX i ρ l F).bind fun k => (evalX v ρ l F).bind fun vv =>
-      if k.toNat < n then evalX rest ρ (writeLeaves l x k.toNat vv.toNat n) F else none
+      if k.toNat < n then evalX rest ρ (writeLeaves l nm k.toNat vv.toNat n) F else none
 /-- Statements in order: `let x := e`, the conditional's rebinding, a loop. -/
 def runVals {P : Params} {S : Spans} : {Γ : Locals} → Stmts P S Γ → Env → Vals → Nat → Option Vals
   | _, .nil, _, l, _ => some l
@@ -384,9 +396,9 @@ def runVals {P : Params} {S : Spans} : {Γ : Locals} → Stmts P S Γ → Env �
     (loopX (fun l₀ => evalX c ρ l₀ F) (fun l₀ => runVals body ρ l₀ F) F l).bind fun l' => runVals rest ρ l' F
   | _, .matchS x arms rest, ρ, l, F =>
     (evalX x ρ l F).bind fun vx => (armsVals vx arms ρ l F).bind fun l' => runVals rest ρ l' F
-  | _, .arrSet (n := n) x _ _ i v rest, ρ, l, F =>
+  | _, .arrSet (n := n) nm _ _ i v rest, ρ, l, F =>
     (evalX i ρ l F).bind fun k => (evalX v ρ l F).bind fun vv =>
-      if k.toNat < n then runVals rest ρ (writeLeaves l x k.toNat vv.toNat n) F else none
+      if k.toNat < n then runVals rest ρ (writeLeaves l nm k.toNat vv.toNat n) F else none
 /-- A value-position match: `if x == k₁ then e₁ else if … else e`. -/
 def armsX {P : Params} {S : Spans} : {Γ : Locals} → {s t : Ty} → BitVec s.width → Arms P S Γ s t → Env → Vals → Nat → Option (BitVec t.width)
   | _, _, _, _, .fallback e, ρ, l, F => evalX e ρ l F
@@ -607,28 +619,28 @@ def caseCond (sx : Term) (w : Nat) (k : Nat) : Term := truncate (Term.cmpT .eq w
 
 /-- A declared array's zero elements (`zeroValue`: `constTerm(0, width)`
 per leaf). -/
-def zeroTerms (σ : Scope) (x : String) (w : Nat) : Nat → Scope
+def zeroTerms (σ : Scope) (nm : Nat → String) (w : Nat) : Nat → Scope
   | 0 => σ
-  | k + 1 => (zeroTerms σ x w k).set (elemName x k) (.const 0 w)
+  | k + 1 => (zeroTerms σ nm w k).set (nm k) (.const 0 w)
 
 /-- A leaf's term (`elems[k].scalar`); a default the invariant rules out. -/
-def leaf (σ : Scope) (x : String) (k : Nat) : Term := (σ (elemName x k)).getD (.const 0 0)
+def leaf (σ : Scope) (nm : Nat → String) (k : Nat) : Term := (σ (nm k)).getD (.const 0 0)
 
 /-- `elementUnderIndex`: the last element, then from the second-to-last
 down `mergeValues(cmpTerm("eq", index, k), elems[k], out)`, so the first
 element's select is outermost. `readArr σ ti x k rem` is the read from
 element `k` with `rem` elements after it. -/
-def readArr (σ : Scope) (ti : Term) (x : String) : Nat → Nat → Term
-  | k, 0 => leaf σ x k
-  | k, rem + 1 => Term.selectArm (caseCond ti 32 k) (leaf σ x k) (readArr σ ti x (k + 1) rem)
+def readArr (σ : Scope) (ti : Term) (nm : Nat → String) : Nat → Nat → Term
+  | k, 0 => leaf σ nm k
+  | k, rem + 1 => Term.selectArm (caseCond ti 32 k) (leaf σ nm k) (readArr σ ti nm (k + 1) rem)
 
 /-- `assignUnderIndex`: the value lowered once, every element `k` taking it
 under `index == k` (`iteTerm(truncate(cond, 1), value, elems[k])`); a
 literal index folds the conditions and leaves exactly one element
 replaced, as `placeOf` does directly. -/
-def writeArr (σ : Scope) (ti tv : Term) (x : String) : Nat → Scope
+def writeArr (σ : Scope) (ti tv : Term) (nm : Nat → String) : Nat → Scope
   | 0 => σ
-  | k + 1 => (writeArr σ ti tv x k).set (elemName x k) (Term.iteT (caseCond ti 32 k) tv (leaf σ x k))
+  | k + 1 => (writeArr σ ti tv nm k).set (nm k) (Term.iteT (caseCond ti 32 k) tv (leaf σ nm k))
 
 mutual
 /-- `oakLowering.lower` at the expression's own width, each case as the Go
@@ -656,9 +668,10 @@ its lowered condition folds to a non-zero constant (`lowerWhile`); an
 integer-constant match compares the scrutinee with each literal
 (`matchArms`) and selects arm by arm into the fallback (`selectMatch`,
 `lowerMatchStatement`); an owned array is declared as its zero leaves
-(`zeroValue`), read through `elementUnderIndex` and written through
-`assignUnderIndex`, the index at width 32 — the verifier's `elems`, each
-leaf under the name the seam gives it; a span
+(`zeroValue`) or its literal's elements (`aggregateValue`'s `ArrayLiteral`,
+each element at the element type), read through `elementUnderIndex` and
+written through `assignUnderIndex`, the index at width 32 — the verifier's
+`elems`, each leaf under the name the seam gives it; a span
 element is `selectTerm(span, index at width 32, elemWidth)`
 (`spanElementTerm`; a constant index is the element parameter `v[k]`, the
 same cell under the same name), `len(v)` the length parameter. -/
@@ -698,10 +711,11 @@ def lowerT {P : Params} {S : Spans} : Scope → {Γ : Locals} → {t : Ty} → E
     (lowerT σ x).bind fun sx => (armsST σ sx arms).bind fun σ' => lowerT σ' rest
   | σ, _, s, .elem _ v _ i => (lowerT σ i).bind fun ti => some (.selectT v s.width ti)
   | _, _, _, .len v _ => some (.param (lenName v) 32)
-  | σ, _, _, .arrDecl x e n _ b => lowerT (zeroTerms σ x e.width n) b
-  | σ, _, e, .arrGet _ n x _ _ i => (lowerT σ i).bind fun ti => some (adaptWidth (readArr σ ti x 0 (n - 1)) e.width)
-  | σ, _, _, .arrSetE (n := n) x _ _ i v rest =>
-    (lowerT σ i).bind fun ti => (lowerT σ v).bind fun tv => lowerT (writeArr σ ti tv x n) rest
+  | σ, _, _, .arrDecl nm e n _ b => lowerT (zeroTerms σ nm e.width n) b
+  | σ, _, _, .arrLit nm e n _ items b => (bindTerms id σ items σ).bind fun σ' => lowerT σ' b
+  | σ, _, e, .arrGet _ n nm _ _ i => (lowerT σ i).bind fun ti => some (adaptWidth (readArr σ ti nm 0 (n - 1)) e.width)
+  | σ, _, _, .arrSetE (n := n) nm _ _ i v rest =>
+    (lowerT σ i).bind fun ti => (lowerT σ v).bind fun tv => lowerT (writeArr σ ti tv nm n) rest
 /-- Statements as `lowerLoopBody` executes them: `assignLocal` replaces the
 local's term with the value lowered at its width, a conditional merges its
 arms (`lowerConditionalStatement`), a loop unrolls (`lowerWhile`). -/
@@ -715,8 +729,8 @@ def runTerms {P : Params} {S : Spans} : Scope → {Γ : Locals} → Stmts P S Γ
     (unroll (fun σ₀ => lowerT σ₀ c) (fun σ₀ => runTerms σ₀ body) (loopBudget + 1) σ).bind fun σ' => runTerms σ' rest
   | σ, _, .matchS x arms rest =>
     (lowerT σ x).bind fun sx => (armsST σ sx arms).bind fun σ' => runTerms σ' rest
-  | σ, _, .arrSet (n := n) x _ _ i v rest =>
-    (lowerT σ i).bind fun ti => (lowerT σ v).bind fun tv => runTerms (writeArr σ ti tv x n) rest
+  | σ, _, .arrSet (n := n) nm _ _ i v rest =>
+    (lowerT σ i).bind fun ti => (lowerT σ v).bind fun tv => runTerms (writeArr σ ti tv nm n) rest
 /-- `selectMatch`: each arm's value merged into the fallback, the first
 case outermost (`mergeValues` from the last case down). -/
 def armsT {P : Params} {S : Spans} (σ : Scope) (sx : Term) : {Γ : Locals} → {s t : Ty} → Arms P S Γ s t → Option Term
@@ -874,12 +888,16 @@ theorem lowerT_width {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P
     obtain ⟨ti, -, rfl⟩ := h
     exact Term.selectT_width _ _ _
   | .len _ _ => simp only [lowerT, Option.some.injEq] at h; subst h; rfl
-  | .arrDecl x e n hn b => exact lowerT_width b _ _ h
-  | .arrGet e n x hn hin i =>
+  | .arrDecl nm e n hn b => exact lowerT_width b _ _ h
+  | .arrLit nm e n hn items b =>
+    simp only [lowerT, Option.bind_eq_some_iff] at h
+    obtain ⟨σ', -, hb⟩ := h
+    exact lowerT_width b _ _ hb
+  | .arrGet e n nm hn hin i =>
     simp only [lowerT, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨ti, -, rfl⟩ := h
     exact adaptWidth_width _ _
-  | .arrSetE x hin hn32 i v rest =>
+  | .arrSetE nm hin hn32 i v rest =>
     simp only [lowerT, Option.bind_eq_some_iff] at h
     obtain ⟨ti, -, tv, -, hr⟩ := h
     exact lowerT_width rest _ _ hr
@@ -1318,30 +1336,30 @@ theorem unroll_wf {cond : Scope → Option Term} {body : Scope → Option Scope}
         exact ih σ₁ σ' (hb σ σ₁ hσ h1) h2
     · simp at h
 
-theorem leaf_topPositive {σ : Scope} (hσ : σ.wf) (x : String) (k : Nat) : (leaf σ x k).topPositive := by
+theorem leaf_topPositive {σ : Scope} (hσ : σ.wf) (nm : Nat → String) (k : Nat) : (leaf σ nm k).topPositive := by
   unfold leaf
-  cases h : σ (elemName x k) with
+  cases h : σ (nm k) with
   | none => trivial
   | some term => exact hσ _ term h
 
-theorem readArr_topPositive {σ : Scope} (hσ : σ.wf) (ti : Term) (x : String) :
-    ∀ k rem, (readArr σ ti x k rem).topPositive := by
+theorem readArr_topPositive {σ : Scope} (hσ : σ.wf) (ti : Term) (nm : Nat → String) :
+    ∀ k rem, (readArr σ ti nm k rem).topPositive := by
   intro k rem
   induction rem generalizing k with
-  | zero => exact leaf_topPositive hσ x k
-  | succ rem ih => exact Term.selectArm_topPositive (leaf_topPositive hσ x k) (ih (k + 1))
+  | zero => exact leaf_topPositive hσ nm k
+  | succ rem ih => exact Term.selectArm_topPositive (leaf_topPositive hσ nm k) (ih (k + 1))
 
-theorem zeroTerms_wf {σ : Scope} (hσ : σ.wf) (x : String) (w : Nat) : ∀ n, (zeroTerms σ x w n).wf := by
+theorem zeroTerms_wf {σ : Scope} (hσ : σ.wf) (nm : Nat → String) (w : Nat) : ∀ n, (zeroTerms σ nm w n).wf := by
   intro n
   induction n with
   | zero => exact hσ
   | succ n ih => exact Scope.wf_set ih trivial
 
-theorem writeArr_wf {σ : Scope} (hσ : σ.wf) {ti tv : Term} (htv : tv.topPositive) (x : String) : ∀ n, (writeArr σ ti tv x n).wf := by
+theorem writeArr_wf {σ : Scope} (hσ : σ.wf) {ti tv : Term} (htv : tv.topPositive) (nm : Nat → String) : ∀ n, (writeArr σ ti tv nm n).wf := by
   intro n
   induction n with
   | zero => exact hσ
-  | succ n ih => exact Scope.wf_set ih (Term.iteT_topPositive htv (leaf_topPositive hσ x n))
+  | succ n ih => exact Scope.wf_set ih (Term.iteT_topPositive htv (leaf_topPositive hσ nm n))
 
 mutual
 theorem lowerT_topPositive {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P S Γ t) :
@@ -1427,15 +1445,19 @@ theorem lowerT_topPositive {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : 
     obtain ⟨ti, -, rfl⟩ := h
     exact Term.selectT_topPositive _ _ _
   | .len _ _ => simp only [lowerT, Option.some.injEq] at h; subst h; trivial
-  | .arrDecl x e n hn b => exact lowerT_topPositive b _ T (zeroTerms_wf hσ x e.width n) h
-  | .arrGet e n x hn hin i =>
+  | .arrDecl nm e n hn b => exact lowerT_topPositive b _ T (zeroTerms_wf hσ nm e.width n) h
+  | .arrLit nm e n hn items b =>
+    simp only [lowerT, Option.bind_eq_some_iff] at h
+    obtain ⟨σ', hσ', hb⟩ := h
+    exact lowerT_topPositive b _ T (bindTerms_wf items id σ _ σ' hσ hσ hσ') hb
+  | .arrGet e n nm hn hin i =>
     simp only [lowerT, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨ti, -, rfl⟩ := h
-    exact adaptWidth_topPositive _ _ e.width_pos (readArr_topPositive hσ ti x 0 (n - 1))
-  | .arrSetE x hin hn32 i v rest =>
+    exact adaptWidth_topPositive _ _ e.width_pos (readArr_topPositive hσ ti nm 0 (n - 1))
+  | .arrSetE nm hin hn32 i v rest =>
     simp only [lowerT, Option.bind_eq_some_iff] at h
     obtain ⟨ti, -, tv, hv, hr⟩ := h
-    exact lowerT_topPositive rest _ T (writeArr_wf hσ (lowerT_topPositive v σ tv hσ hv) x _) hr
+    exact lowerT_topPositive rest _ T (writeArr_wf hσ (lowerT_topPositive v σ tv hσ hv) nm _) hr
 termination_by structural e
 theorem bindTerms_wf {P : Params} {S : Spans} {Γ : Locals} {ps : List (String × Ty)} (args : Args P S Γ ps) :
     ∀ (nm : String → String) (σ acc σ' : Scope), σ.wf → acc.wf → bindTerms nm σ args acc = some σ' → σ'.wf := by
@@ -1468,10 +1490,10 @@ theorem runTerms_wf {P : Params} {S : Spans} {Γ : Locals} (st : Stmts P S Γ) :
     simp only [runTerms, Option.bind_eq_some_iff] at h
     obtain ⟨sx, -, σ₁, h₁, hr⟩ := h
     exact runTerms_wf rest _ σ' (armsST_wf arms σ sx σ₁ hσ h₁) hr
-  | .arrSet x hin hn32 i v rest =>
+  | .arrSet nm hin hn32 i v rest =>
     simp only [runTerms, Option.bind_eq_some_iff] at h
     obtain ⟨ti, -, tv, hv, hr⟩ := h
-    exact runTerms_wf rest _ σ' (writeArr_wf hσ (lowerT_topPositive v σ tv hσ hv) x _) hr
+    exact runTerms_wf rest _ σ' (writeArr_wf hσ (lowerT_topPositive v σ tv hσ hv) nm _) hr
 termination_by structural st
 theorem armsT_topPositive {P : Params} {S : Spans} {Γ : Locals} {s t : Ty} (arms : Arms P S Γ s t) :
     ∀ (σ : Scope) (sx T : Term), σ.wf → armsT σ sx arms = some T → T.topPositive := by
@@ -1612,12 +1634,21 @@ theorem merge_agree_right {Γ : Locals} {σT σF : Scope} {ρ : Env} {lF : Vals}
 
 /-! ### Arrays -/
 
-theorem arrIn_bindLeaves (Γ : Locals) (x : String) (e : Ty) (n : Nat) : ArrIn (bindLeaves Γ x e n) x e n := by
+theorem bindTypes_append (nm : String → String) (Γ : Locals) (ps qs : List (String × Ty)) :
+    bindTypes nm Γ (ps ++ qs) = bindTypes nm (bindTypes nm Γ ps) qs := by
+  induction ps generalizing Γ with
+  | nil => rfl
+  | cons p ps ih =>
+    obtain ⟨x, s⟩ := p
+    simp only [List.cons_append, bindTypes]
+    exact ih _
+
+theorem arrIn_bindLeaves (Γ : Locals) (nm : Nat → String) (e : Ty) (n : Nat) : ArrIn (bindLeaves Γ nm e n) nm e n := by
   intro k hk
   induction n with
   | zero => exact absurd hk (Nat.not_lt_zero k)
   | succ n ih =>
-    show Locals.set (bindLeaves Γ x e n) (elemName x n) e (elemName x k) = some e
+    show Locals.set (bindLeaves Γ nm e n) (nm n) e (nm k) = some e
     unfold Locals.set
     split
     · rfl
@@ -1625,19 +1656,31 @@ theorem arrIn_bindLeaves (Γ : Locals) (x : String) (e : Ty) (n : Nat) : ArrIn (
       have hkn : k ≠ n := fun h => hne (by rw [h])
       exact ih (by omega)
 
-theorem zeroTerms_agree {Γ : Locals} {σ : Scope} {ρ : Env} {l : Vals} (h : Agree Γ σ ρ l) (x : String) (e : Ty) :
-    ∀ n, Agree (bindLeaves Γ x e n) (zeroTerms σ x e.width n) ρ (zeroLeaves l x n) := by
+/-- An array literal binds the same leaves the declaration does. -/
+theorem bindTypes_arrayFields (Γ : Locals) (nm : Nat → String) (e : Ty) : ∀ n, bindTypes id Γ (arrayFields nm e n) = bindLeaves Γ nm e n := by
+  intro n
+  induction n generalizing Γ with
+  | zero => rfl
+  | succ n ih =>
+    unfold arrayFields
+    rw [List.range_succ, List.map_append, bindTypes_append]
+    show bindTypes id (bindTypes id Γ (arrayFields nm e n)) [(nm n, e)] = bindLeaves Γ nm e (n + 1)
+    rw [ih Γ]
+    rfl
+
+theorem zeroTerms_agree {Γ : Locals} {σ : Scope} {ρ : Env} {l : Vals} (h : Agree Γ σ ρ l) (nm : Nat → String) (e : Ty) :
+    ∀ n, Agree (bindLeaves Γ nm e n) (zeroTerms σ nm e.width n) ρ (zeroLeaves l nm n) := by
   intro n
   induction n with
   | zero => exact h
-  | succ n ih => exact ih.set (elemName x n) rfl trivial (by simp [Term.eval])
+  | succ n ih => exact ih.set (nm n) rfl trivial (by simp [Term.eval])
 
 /-- A leaf of an array in scope: its term and its width. -/
-theorem leaf_spec {Γ : Locals} {σ : Scope} {ρ : Env} {l : Vals} (h : Agree Γ σ ρ l) {x : String} {e : Ty} {n : Nat}
-    (hin : ArrIn Γ x e n) {k : Nat} (hk : k < n) :
-    (leaf σ x k).width = e.width ∧ (leaf σ x k).topPositive ∧ (leaf σ x k).eval ρ = l (elemName x k) := by
+theorem leaf_spec {Γ : Locals} {σ : Scope} {ρ : Env} {l : Vals} (h : Agree Γ σ ρ l) {nm : Nat → String} {e : Ty} {n : Nat}
+    (hin : ArrIn Γ nm e n) {k : Nat} (hk : k < n) :
+    (leaf σ nm k).width = e.width ∧ (leaf σ nm k).topPositive ∧ (leaf σ nm k).eval ρ = l (nm k) := by
   obtain ⟨term, hσ, hw, hp⟩ := h.1.2 _ e (hin k hk)
-  have hl : leaf σ x k = term := by unfold leaf; rw [hσ]; rfl
+  have hl : leaf σ nm k = term := by unfold leaf; rw [hσ]; rfl
   rw [hl]
   exact ⟨hw, hp, h.2 _ e term (hin k hk) hσ⟩
 
@@ -1650,8 +1693,8 @@ theorem caseCond_eval_nat (sx : Term) (ρ : Env) (k : Nat) (vi : BitVec 32) (hw 
   · rw [if_pos (BitVec.eq_of_toNat_eq (by rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt hk]; exact h)), if_pos h]
   · rw [if_neg (fun heq => h (by rw [heq, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hk])), if_neg h]
 
-theorem readArr_width {Γ : Locals} {σ : Scope} {ρ : Env} {l : Vals} (h : Agree Γ σ ρ l) {x : String} {e : Ty} {n : Nat}
-    (hin : ArrIn Γ x e n) (ti : Term) : ∀ k rem, k + rem < n → (readArr σ ti x k rem).width = e.width := by
+theorem readArr_width {Γ : Locals} {σ : Scope} {ρ : Env} {l : Vals} (h : Agree Γ σ ρ l) {nm : Nat → String} {e : Ty} {n : Nat}
+    (hin : ArrIn Γ nm e n) (ti : Term) : ∀ k rem, k + rem < n → (readArr σ ti nm k rem).width = e.width := by
   intro k rem
   induction rem generalizing k with
   | zero => intro hk; exact (leaf_spec h hin (by omega)).1
@@ -1661,9 +1704,9 @@ theorem readArr_width {Γ : Locals} {σ : Scope} {ρ : Env} {l : Vals} (h : Agre
     rw [Term.selectArm_width (by rw [ih (k + 1) (by omega), (leaf_spec h hin (by omega : k < n)).1]), (leaf_spec h hin (by omega : k < n)).1]
 
 /-- Reading at a symbolic index in range is the element there. -/
-theorem readArr_eval {Γ : Locals} {σ : Scope} {ρ : Env} {l : Vals} (h : Agree Γ σ ρ l) {x : String} {e : Ty} {n : Nat}
-    (hin : ArrIn Γ x e n) (hn32 : n < 2 ^ 32) (ti : Term) (vi : BitVec 32) (hw : ti.width = 32) (hti : ti.eval ρ = vi.toNat) :
-    ∀ k rem, k + rem < n → k ≤ vi.toNat → vi.toNat ≤ k + rem → (readArr σ ti x k rem).eval ρ = l (elemName x vi.toNat) := by
+theorem readArr_eval {Γ : Locals} {σ : Scope} {ρ : Env} {l : Vals} (h : Agree Γ σ ρ l) {nm : Nat → String} {e : Ty} {n : Nat}
+    (hin : ArrIn Γ nm e n) (hn32 : n < 2 ^ 32) (ti : Term) (vi : BitVec 32) (hw : ti.width = 32) (hti : ti.eval ρ = vi.toNat) :
+    ∀ k rem, k + rem < n → k ≤ vi.toNat → vi.toNat ≤ k + rem → (readArr σ ti nm k rem).eval ρ = l (nm vi.toNat) := by
   intro k rem
   induction rem generalizing k with
   | zero =>
@@ -1676,21 +1719,21 @@ theorem readArr_eval {Γ : Locals} {σ : Scope} {ρ : Env} {l : Vals} (h : Agree
     have hkn : k < n := by omega
     obtain ⟨hlw, hlp, hlv⟩ := leaf_spec h hin hkn
     have hrw := readArr_width h hin ti (k + 1) rem (by omega)
-    have hrp := readArr_topPositive (Agree.wf h) ti x (k + 1) rem
+    have hrp := readArr_topPositive (Agree.wf h) ti nm (k + 1) rem
     simp only [readArr]
     rw [Term.selectArm_eval ρ hlp hrp (hrw.trans hlw.symm), Term.eval.eq_5,
       caseCond_eval_nat ti ρ k vi hw hti (by omega)]
     by_cases hvk : vi.toNat = k
     · rw [if_pos hvk, if_pos (by decide), Nat.mod_eq_of_lt (Term.eval_lt _ ρ hlp), hlv, hvk]
-    · rw [if_neg hvk, if_neg (by decide), show (leaf σ x k).width = (readArr σ ti x (k + 1) rem).width from hlw.trans hrw.symm,
+    · rw [if_neg hvk, if_neg (by decide), show (leaf σ nm k).width = (readArr σ ti nm (k + 1) rem).width from hlw.trans hrw.symm,
         Nat.mod_eq_of_lt (Term.eval_lt _ ρ hrp)]
       exact ih (k + 1) (by omega) (by omega) (by omega)
 
 /-- Writing at a symbolic index in range agrees leaf by leaf. -/
-theorem writeArr_agree {Γ : Locals} {σ : Scope} {ρ : Env} {l : Vals} (h : Agree Γ σ ρ l) {x : String} {e : Ty} {n : Nat}
-    (hin : ArrIn Γ x e n) {ti tv : Term} (vi : BitVec 32) (hw : ti.width = 32) (hti : ti.eval ρ = vi.toNat)
+theorem writeArr_agree {Γ : Locals} {σ : Scope} {ρ : Env} {l : Vals} (h : Agree Γ σ ρ l) {nm : Nat → String} {e : Ty} {n : Nat}
+    (hin : ArrIn Γ nm e n) {ti tv : Term} (vi : BitVec 32) (hw : ti.width = 32) (hti : ti.eval ρ = vi.toNat)
     (htw : tv.width = e.width) (htp : tv.topPositive) (vv : BitVec e.width) (htv : tv.eval ρ = vv.toNat) (hn : n < 2 ^ 32) :
-    ∀ m, m ≤ n → Agree Γ (writeArr σ ti tv x m) ρ (writeLeaves l x vi.toNat vv.toNat m) := by
+    ∀ m, m ≤ n → Agree Γ (writeArr σ ti tv nm m) ρ (writeLeaves l nm vi.toNat vv.toNat m) := by
   intro m
   induction m with
   | zero => intro _; exact h
@@ -1698,39 +1741,39 @@ theorem writeArr_agree {Γ : Locals} {σ : Scope} {ρ : Env} {l : Vals} (h : Agr
     intro hm
     obtain ⟨hlw, hlp, hlv⟩ := leaf_spec h hin (by omega : m < n)
     have hA := ih (by omega)
-    have hΓ : Γ.set (elemName x m) e = Γ := Locals.set_same (hin m (by omega))
-    have := hA.set (elemName x m) (s := e) (term := Term.iteT (caseCond ti 32 m) tv (leaf σ x m))
-      (v := if vi.toNat = m then vv.toNat else l (elemName x m))
+    have hΓ : Γ.set (nm m) e = Γ := Locals.set_same (hin m (by omega))
+    have := hA.set (nm m) (s := e) (term := Term.iteT (caseCond ti 32 m) tv (leaf σ nm m))
+      (v := if vi.toNat = m then vv.toNat else l (nm m))
       (by rw [Term.iteT_width (hlw.trans htw.symm), htw]) (Term.iteT_topPositive htp hlp) ?_
     · rw [hΓ] at this
       exact this
     · rw [Term.iteT_eval ρ htp hlp (hlw.trans htw.symm), Term.eval.eq_5, caseCond_eval_nat ti ρ m vi hw hti (by omega)]
       by_cases hvm : vi.toNat = m
       · rw [if_pos hvm, if_pos (by decide), Nat.mod_eq_of_lt (Term.eval_lt _ ρ htp), htv, if_pos hvm]
-      · rw [if_neg hvm, if_neg (by decide), show tv.width = (leaf σ x m).width from htw.trans hlw.symm,
+      · rw [if_neg hvm, if_neg (by decide), show tv.width = (leaf σ nm m).width from htw.trans hlw.symm,
           Nat.mod_eq_of_lt (Term.eval_lt _ ρ hlp), hlv, if_neg hvm]
 
-theorem writeArr_typed {Γ : Locals} {σ : Scope} (h : Typed Γ σ) {x : String} {e : Ty} {n : Nat} (hin : ArrIn Γ x e n)
-    {ti tv : Term} (htw : tv.width = e.width) (htp : tv.topPositive) : ∀ m, m ≤ n → Typed Γ (writeArr σ ti tv x m) := by
+theorem writeArr_typed {Γ : Locals} {σ : Scope} (h : Typed Γ σ) {nm : Nat → String} {e : Ty} {n : Nat} (hin : ArrIn Γ nm e n)
+    {ti tv : Term} (htw : tv.width = e.width) (htp : tv.topPositive) : ∀ m, m ≤ n → Typed Γ (writeArr σ ti tv nm m) := by
   intro m
   induction m with
   | zero => intro _; exact h
   | succ m ih =>
     intro hm
     obtain ⟨term, hσ, hlw, hlp⟩ := h.2 _ e (hin m (by omega))
-    have hl : leaf σ x m = term := by unfold leaf; rw [hσ]; rfl
-    have hΓ : Γ.set (elemName x m) e = Γ := Locals.set_same (hin m (by omega))
-    have := (ih (by omega)).set (elemName x m) (s := e) (term := Term.iteT (caseCond ti 32 m) tv (leaf σ x m))
+    have hl : leaf σ nm m = term := by unfold leaf; rw [hσ]; rfl
+    have hΓ : Γ.set (nm m) e = Γ := Locals.set_same (hin m (by omega))
+    have := (ih (by omega)).set (nm m) (s := e) (term := Term.iteT (caseCond ti 32 m) tv (leaf σ nm m))
       (by rw [hl, Term.iteT_width (hlw.trans htw.symm), htw]) (by rw [hl]; exact Term.iteT_topPositive htp hlp)
     rw [hΓ] at this
     exact this
 
-theorem zeroTerms_typed {Γ : Locals} {σ : Scope} (h : Typed Γ σ) (x : String) (e : Ty) :
-    ∀ n, Typed (bindLeaves Γ x e n) (zeroTerms σ x e.width n) := by
+theorem zeroTerms_typed {Γ : Locals} {σ : Scope} (h : Typed Γ σ) (nm : Nat → String) (e : Ty) :
+    ∀ n, Typed (bindLeaves Γ nm e n) (zeroTerms σ nm e.width n) := by
   intro n
   induction n with
   | zero => exact h
-  | succ n ih => exact ih.set (elemName x n) rfl trivial
+  | succ n ih => exact ih.set (nm n) rfl trivial
 
 /-! ### Loops -/
 
@@ -1821,7 +1864,7 @@ theorem runTerms_typed {P : Params} {S : Spans} {Γ : Locals} (st : Stmts P S Γ
     simp only [runTerms, Option.bind_eq_some_iff] at h
     obtain ⟨sx, -, σ₁, h₁, hr⟩ := h
     exact runTerms_typed rest _ σ' (armsST_typed arms σ sx σ₁ hσ h₁) hr
-  | .arrSet x hin hn32 i v rest =>
+  | .arrSet nm hin hn32 i v rest =>
     simp only [runTerms, Option.bind_eq_some_iff] at h
     obtain ⟨ti, -, tv, hv, hr⟩ := h
     exact runTerms_typed rest _ σ' (writeArr_typed hσ hin (lowerT_width v σ tv hv) (lowerT_topPositive v σ tv hσ.wf hv) _ (Nat.le_refl _)) hr
@@ -2133,10 +2176,19 @@ theorem lowerT_eval {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P 
     subst h
     cases hv
     exact (BitVec.toNat_ofNat _ _).symm
-  | .arrDecl x e n hn b =>
+  | .arrDecl nm e n hn b =>
     intro v hv
-    exact lowerT_eval b _ ρ _ F T v (zeroTerms_agree hA x e n) h hv
-  | .arrGet e n x hn hin i =>
+    exact lowerT_eval b _ ρ _ F T v (zeroTerms_agree hA nm e n) h hv
+  | .arrLit nm e n hn items b =>
+    intro v hv
+    simp only [lowerT, Option.bind_eq_some_iff] at h
+    obtain ⟨σ', hσ', hb⟩ := h
+    simp only [evalX, Option.bind_eq_some_iff] at hv
+    obtain ⟨l', hl', hvb⟩ := hv
+    have hA' := bindArgs_agree items id σ ρ l F hA _ _ l hA σ' l' hσ' hl'
+    rw [bindTypes_arrayFields] at hA'
+    exact lowerT_eval b _ ρ _ F T v hA' hb hvb
+  | .arrGet e n nm hn hin i =>
     intro v hv
     obtain ⟨hn0, hn32⟩ := hn
     simp only [lowerT, Option.bind_eq_some_iff, Option.some.injEq] at h
@@ -2156,7 +2208,7 @@ theorem lowerT_eval {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P 
         Nat.mod_eq_of_lt (hA.value_lt (hin vi.toNat hlt))]
       rfl
     · rw [if_neg hlt] at hv; cases hv
-  | .arrSetE (e := e) (n := n) x hin hn32 i w rest =>
+  | .arrSetE (e := e) (n := n) nm hin hn32 i w rest =>
     intro v hv
     simp only [lowerT, Option.bind_eq_some_iff] at h
     obtain ⟨ti, hi, tv, htv, hr⟩ := h
@@ -2227,7 +2279,7 @@ theorem runTerms_agree {P : Params} {S : Spans} {Γ : Locals} (st : Stmts P S Γ
     obtain ⟨vx, hvx, l₁, hl₁, hvr⟩ := hv
     have ihx := lowerT_eval x σ ρ l F sx vx hA hx hvx
     exact runTerms_agree rest _ ρ _ F σ' l' (armsST_agree arms σ sx ρ l F vx σ₁ l₁ hA (lowerT_width x σ sx hx) ihx h₁ hl₁) hr hvr
-  | .arrSet (e := e) (n := n) x hin hn32 i w rest =>
+  | .arrSet (e := e) (n := n) nm hin hn32 i w rest =>
     simp only [runTerms, Option.bind_eq_some_iff] at h
     obtain ⟨ti, hi, tv, htv, hr⟩ := h
     simp only [runVals, Option.bind_eq_some_iff] at hv
@@ -2542,16 +2594,16 @@ symbolic index selects element by element, a write selects at every
 element, and literal indices fold both to the one element. -/
 
 /-- `(i, v: u32) -> u32 = { a: [3]u32; a[0] = v; a[1] = v + 1; a[2] = v * 2; a[i] }` -/
-example : lowered? ((.arrDecl "a" .u32 3 (by decide)
-    (.arrSetE (n := 3) "a" (by decide) (by decide) (.lit .u32 0) (.var .u32 "v" (by decide))
-    (.arrSetE (n := 3) "a" (by decide) (by decide) (.lit .u32 1) (.arith .add (.var .u32 "v" (by decide)) (.lit .u32 1))
-    (.arrSetE (n := 3) "a" (by decide) (by decide) (.lit .u32 2) (.arith .mul (.var .u32 "v" (by decide)) (.lit .u32 2))
-    (.arrGet .u32 3 "a" (by decide) (by decide) (.var .u32 "i" (by decide)))))) : X (ps [("i", .u32), ("v", .u32)]) sp0 .u32))
+example : lowered? ((.arrDecl (elemName "a") .u32 3 (by decide)
+    (.arrSetE (n := 3) (elemName "a") (by decide) (by decide) (.lit .u32 0) (.var .u32 "v" (by decide))
+    (.arrSetE (n := 3) (elemName "a") (by decide) (by decide) (.lit .u32 1) (.arith .add (.var .u32 "v" (by decide)) (.lit .u32 1))
+    (.arrSetE (n := 3) (elemName "a") (by decide) (by decide) (.lit .u32 2) (.arith .mul (.var .u32 "v" (by decide)) (.lit .u32 2))
+    (.arrGet .u32 3 (elemName "a") (by decide) (by decide) (.var .u32 "i" (by decide)))))) : X (ps [("i", .u32), ("v", .u32)]) sp0 .u32))
     = some "((i eq 0) ? v : ((i eq 1) ? (v add 1) : (v mul 2)))" := by decide
 /-- `(i, v: u32) -> u32 = { a: [2]u32; a[i] = v; a[1] }` — a write at a symbolic index selects at every element. -/
-example : lowered? ((.arrDecl "a" .u32 2 (by decide)
-    (.arrSetE (n := 2) "a" (by decide) (by decide) (.var .u32 "i" (by decide)) (.var .u32 "v" (by decide))
-    (.arrGet .u32 2 "a" (by decide) (by decide) (.lit .u32 1))) : X (ps [("i", .u32), ("v", .u32)]) sp0 .u32))
+example : lowered? ((.arrDecl (elemName "a") .u32 2 (by decide)
+    (.arrSetE (n := 2) (elemName "a") (by decide) (by decide) (.var .u32 "i" (by decide)) (.var .u32 "v" (by decide))
+    (.arrGet .u32 2 (elemName "a") (by decide) (by decide) (.lit .u32 1))) : X (ps [("i", .u32), ("v", .u32)]) sp0 .u32))
     = some "((i eq 1) ? v : 0)" := by decide
 
 /-! Records: a record is its field leaves `r.f`, a field read the variable,
@@ -2565,5 +2617,60 @@ example : lowered? ((.recDecl "p" [("x", .u32), ("y", .u32)] (.cons (.var .u32 "
 /-- `(p: P) -> u32 = p.x + p.y` — a record parameter is its field leaves as parameters. -/
 example : lowered? ((.arith .add (.var .u32 "p.x" (by decide)) (.var .u32 "p.y" (by decide)) : X (ps [("p.x", .u32), ("p.y", .u32)]) sp0 .u32))
     = some "(p.x add p.y)" := by decide
+
+/-! Sum types need no constructor of their own: a tagged union is its `tag`
+leaf (32 bits, the variant's index) and one payload leaf per carrying
+variant, `u.tag` and `u.V` (`zeroValue`, `paramAggregate`); a variant is a
+record declaration with the tag constant and the payload; a variant match
+is the constant match on the tag (`matchArms`: `cmpTerm("eq", tag, index)`)
+whose arm binds the payload leaf under the pattern's name (`lo.locals[x] =
+payload.scalar`, the alias `letIn x u.V` is). -/
+
+/-- `U: type = A | B: u32`; `(v: u32) -> u32 = { u: U = B(v); u ? | B(x) => x + 1 | A => 0 }` -/
+example : lowered? ((.recDecl "u" [("tag", .u32), ("B", .u32)] (.cons (.lit .u32 1) (.cons (.var .u32 "v" (by decide)) .nil))
+    (.matchInt (.var .u32 "u.tag" (by decide))
+      (.case 1 (.letIn "x" (.var .u32 "u.B" (by decide)) (.arith .add (.var .u32 "x" (by decide)) (.lit .u32 1)))
+        (.fallback (.lit .u32 0)))) : X (ps [("v", .u32)]) sp0 .u32))
+    = some "(v add 1)" := by decide
+/-- `(u: U) -> u32 = u ? | B(x) => x + 1 | A => 0` — a union parameter is its tag and payload leaves. -/
+example : lowered? ((.matchInt (.var .u32 "u.tag" (by decide))
+      (.case 1 (.letIn "x" (.var .u32 "u.B" (by decide)) (.arith .add (.var .u32 "x" (by decide)) (.lit .u32 1)))
+        (.fallback (.lit .u32 0))) : X (ps [("u.tag", .u32), ("u.B", .u32)]) sp0 .u32))
+    = some "((u.tag eq 1) ? (u.B add 1) : 0)" := by decide
+
+/-! Nested aggregates and array literals: a record's array field is the
+leaves `r.h[k]`, an array's record elements the leaves `a[k].x`; a literal
+binds its elements in order. -/
+
+/-- `(v, i: u32) -> u32 = { a: [3]u32 = [v, 5, v + 1]; a[i] }` -/
+example : lowered? ((.arrLit (elemName "a") .u32 3 (by decide)
+    (.cons (.var .u32 "v" (by decide)) (.cons (.lit .u32 5) (.cons (.arith .add (.var .u32 "v" (by decide)) (.lit .u32 1)) .nil)))
+    (.arrGet .u32 3 (elemName "a") (by decide) (by decide) (.var .u32 "i" (by decide))) : X (ps [("v", .u32), ("i", .u32)]) sp0 .u32))
+    = some "((i eq 0) ? v : ((i eq 1) ? 5 : (v add 1)))" := by decide
+/-- `R: type = struct { h: [2]u32, n: u32 }`; `(i, v: u32) -> u32 = { r: R = R { h: [v, v + 1], n: 3 }; r.h[i] + r.n }` -/
+example : lowered? ((.arrLit (elemName "r.h") .u32 2 (by decide)
+    (.cons (.var .u32 "v" (by decide)) (.cons (.arith .add (.var .u32 "v" (by decide)) (.lit .u32 1)) .nil))
+    (.recDecl "r" [("n", .u32)] (.cons (.lit .u32 3) .nil)
+      (.arith .add (.arrGet .u32 2 (elemName "r.h") (by decide) (by decide) (.var .u32 "i" (by decide))) (.var .u32 "r.n" (by decide))))
+    : X (ps [("i", .u32), ("v", .u32)]) sp0 .u32))
+    = some "(((i eq 0) ? v : (v add 1)) add 3)" := by decide
+/-- `P: type = struct { x: u32, y: u32 }`; `(i, v: u32) -> u32 = { a: [2]P = [P { x: v, y: 1 }, P { x: v + 1, y: 2 }]; a[i].x }` -/
+example : lowered? ((.arrLit (fun k => fieldName (elemName "a" k) "x") .u32 2 (by decide)
+    (.cons (.var .u32 "v" (by decide)) (.cons (.arith .add (.var .u32 "v" (by decide)) (.lit .u32 1)) .nil))
+    (.arrLit (fun k => fieldName (elemName "a" k) "y") .u32 2 (by decide)
+      (.cons (.lit .u32 1) (.cons (.lit .u32 2) .nil))
+      (.arrGet .u32 2 (fun k => fieldName (elemName "a" k) "x") (by decide) (by decide) (.var .u32 "i" (by decide))))
+    : X (ps [("i", .u32), ("v", .u32)]) sp0 .u32))
+    = some "((i eq 0) ? v : (v add 1))" := by decide
+/-- Locals from a list. -/
+def ls (l : List (String × Ty)) : Locals := fun x => (l.find? (fun p => p.1 = x)).map (·.2)
+/-- An aggregate parameter is an aggregate local whose leaves are parameter
+terms (`bindAggregateParams`): the scope binds each leaf to `paramTerm`. -/
+def paramLeaves (l : List (String × Ty)) : Scope := fun x => (l.find? (fun p => p.1 = x)).map fun p => Term.param p.1 p.2.width
+/-- `(r: R, i: u32) -> u32 = r.h[i]` — a record parameter's array field is its leaves `r.h[k]`, parameter terms. -/
+example : ((lowerT (paramLeaves [("r.h[0]", .u32), ("r.h[1]", .u32), ("r.n", .u32)])
+    (.arrGet .u32 2 (elemName "r.h") (by decide) (by decide) (.var .u32 "i" (by decide))
+      : Expr (ps [("i", .u32)]) sp0 (ls [("r.h[0]", .u32), ("r.h[1]", .u32), ("r.n", .u32)]) .u32)).map Term.render)
+    = some "((i eq 0) ? r.h[0] : r.h[1])" := by decide
 
 end Oak.LoweringRefinement

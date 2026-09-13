@@ -198,6 +198,9 @@ type rvRegion struct {
 	// frame marks an element of an owned array in the frame (writable,
 	// no span: rawLen and idxReg name nothing).
 	frame bool
+	// table marks the whole of a constant data symbol (`la`): read-only,
+	// its guarded elements derived like a frame array's.
+	table bool
 	// param marks the caller's copy of a by-reference record parameter
 	// (or the result area) arriving in a contract register: the address
 	// holds until the body writes that register, however many times a
@@ -881,6 +884,22 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 	case "auipc":
 		c.write(reg(0), line)
 		return false
+	case "la":
+		// The address of a constant data symbol: a read-only region of its
+		// size, written once so it survives labels (stable).
+		sym, isSym := ops[1].(Symbol)
+		if !isSym {
+			c.errorf(line, "la takes a data symbol")
+			return false
+		}
+		size, known := c.fn.Tables[sym.Name]
+		if !known {
+			c.errorf(line, "la %s: not a constant data symbol of the program", sym.Name)
+			return false
+		}
+		c.write(reg(0), line)
+		c.regions[reg(0).Num] = rvRegion{size: size, rawLen: -1, idxReg: -2, table: true}
+		return false
 	case "li":
 		imm := ops[1].(Immediate).Value
 		if imm < -(1<<31) || imm >= 1<<31 {
@@ -1352,7 +1371,11 @@ func (pre rvSnapshot) deriveFrameRegion(c *rvChecker, dest, left, right Register
 		base, offset = right, left
 		addr, isFrame = pre.frameAddrs[base.Num]
 	}
-	if !isFrame || dest.Num == base.Num {
+	if !isFrame {
+		pre.deriveTableRegion(c, dest, left, right)
+		return
+	}
+	if dest.Num == base.Num {
 		return
 	}
 	guard, guarded := pre.idx[offset.Num]
@@ -1368,6 +1391,34 @@ func (pre rvSnapshot) deriveFrameRegion(c *rvChecker, dest, left, right Register
 		return
 	}
 	c.regions[dest.Num] = rvRegion{size: size, writable: true, rawLen: -1, idxReg: -2, frame: true}
+}
+
+// deriveTableRegion records `add rD, table, t` as one element of a
+// constant data symbol (`la`): t is an index guarded below a constant K,
+// scaled by 2^s, with every one of the K elements inside the table.
+func (pre rvSnapshot) deriveTableRegion(c *rvChecker, dest, left, right Register) {
+	base, offset := left, right
+	table, isTable := pre.regions[base.Num]
+	if !isTable || !table.table {
+		base, offset = right, left
+		table, isTable = pre.regions[base.Num]
+	}
+	if !isTable || !table.table || dest.Num == base.Num {
+		return
+	}
+	guard, guarded := pre.idx[offset.Num]
+	shift := 0
+	if scale, isScaled := pre.scaled[offset.Num]; isScaled {
+		guard, guarded, shift = scale.guard, true, scale.shift
+	}
+	if !guarded || guard.lenReg >= 0 || guard.bound <= 0 {
+		return
+	}
+	size := int64(1) << uint(shift)
+	if guard.bound*size > table.size {
+		return
+	}
+	c.regions[dest.Num] = rvRegion{size: size, rawLen: -1, idxReg: -2}
 }
 
 // deriveRemaining records `sub rD, len, idx` as the remaining count when

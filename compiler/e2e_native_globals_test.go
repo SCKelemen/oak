@@ -12,8 +12,9 @@ import (
 // storage: `adrp`/`add :lo12:` name its cell, the checker admits one
 // access at its width, the C emitter gives it external linkage under the
 // label the companion object references. Readers are proven against the
-// Oak body (the cell's entry value is a parameter of the proof); writers
-// are trusted with the C backend as oracle. The functions lower natively
+// Oak body (the cell's entry value is a parameter of the proof), and
+// writers are proven cell by cell: the value each side leaves in a cell
+// must agree, a cell one side never writes keeping its entry value. The functions lower natively
 // and agree with the C backend.
 const nativeGlobalsProgram = `
 st: u32 = u32(0)
@@ -73,6 +74,14 @@ func TestE2ENativeGlobals(t *testing.T) {
 	}
 	if !strings.Contains(joined, "asm unit sum_state: proven") {
 		t.Errorf("a pure reader of globals must be proven against its Oak body; diagnostics:\n%s", joined)
+	}
+	// Writers are proven in the cells they write, not trusted: the unit
+	// writer in every cell, the writer with a result in both.
+	if !strings.Contains(joined, "asm unit set_state: proven equal to its Oak body in the package state it writes (level, st, trans_pa, walk_null)") {
+		t.Errorf("set_state must be proven in the cells it writes; diagnostics:\n%s", joined)
+	}
+	if !strings.Contains(joined, "asm unit bump: proven") || !strings.Contains(joined, "package state it writes (st)") {
+		t.Errorf("bump must be proven in its result and the cell it writes; diagnostics:\n%s", joined)
 	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_globals_c", New().WithSource("globals.oak", nativeGlobalsProgram)); abnormal || code != 1129%256 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want %d", code, abnormal, 1129%256)

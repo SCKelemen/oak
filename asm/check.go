@@ -1136,6 +1136,25 @@ func (c *checker) instruction(instr Instruction) bool {
 		return false
 	case "dmb", "dsb", "isb", "nop":
 		return false
+	case "adrl":
+		// The address of a constant data symbol of the program: a read-only
+		// region of its size (docs/spec/94-assembler.md §9, constant
+		// tables); element reads inside it take the guarded-index idiom of
+		// a record's array (regionAccess).
+		dest := instr.Operands[0].(Register)
+		sym, isSym := instr.Operands[1].(Symbol)
+		if !isSym {
+			c.errorf(instr.Line, "adrl takes a data symbol")
+			return false
+		}
+		size, known := c.fn.Tables[sym.Name]
+		if !known {
+			c.errorf(instr.Line, "adrl %s: not a constant data symbol of the program", sym.Name)
+			return false
+		}
+		c.write(instr, dest)
+		c.regions[dest.Num] = region{size: size}
+		return false
 	}
 
 	if spec.memory {
@@ -1677,7 +1696,9 @@ func (c *checker) deriveElement(instr Instruction, dest Register) {
 // of the K elements lies inside the declared frame; over a span at xB
 // whose elements are size bytes when wI is guarded below the span's
 // length (or below a constant its proven minimum length covers) — the
-// element of a span of records, writable iff the span is.
+// element of a span of records, writable iff the span is; over a bounded
+// region at xB (a constant table, docs/spec/94-assembler.md §9) when wI
+// is guarded below a constant K with K·size inside the region.
 func (c *checker) elementRegion(dest, base Register, index int, size int64) {
 	bound, guarded := c.idxFacts[index]
 	if !guarded {
@@ -1695,6 +1716,12 @@ func (c *checker) elementRegion(dest, base Register, index int, size int64) {
 		if inBounds {
 			c.regions[dest.Num] = region{size: size, writable: fact.writable}
 		}
+		return
+	}
+	// Over a bounded region (a constant table's address, adrl): the K
+	// elements of size bytes must lie inside it.
+	if extent, isRegion := c.regions[base.Num]; isRegion && bound.boundReg < 0 && bound.bound > 0 && bound.bound*size <= extent.size {
+		c.regions[dest.Num] = region{size: size, writable: extent.writable}
 	}
 }
 

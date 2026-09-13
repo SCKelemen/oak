@@ -53,6 +53,15 @@ func AddressedGlobals(functions []*Function) map[string]bool {
 	return names
 }
 
+// DataSymbol is one constant data object of the program — a constant
+// table the native backend reads through `adrl`/`la` — placed in the
+// object's read-only data under its symbol (docs/spec/94-assembler.md §9).
+type DataSymbol struct {
+	Name  string
+	Bytes []byte
+	Align int64 // 0 = 1
+}
+
 // EncodeFunctions encodes checked functions for an object; symbolFor maps
 // an Oak function name to its C symbol (the emitter's mangling), for the
 // functions themselves and for the symbols their calls reference.
@@ -86,12 +95,19 @@ type ObjectOptions struct {
 	// arguments in this increment, so the declaration only has to agree
 	// with what the object links against — a linker refuses to mix them.
 	RV64FloatABI string
+	// Data are the program's constant data symbols, placed in a read-only
+	// data section after the text; relocations of kind adrl21 (AArch64)
+	// and riscv_pcrel (RV64) reach them.
+	Data []DataSymbol
 }
 
 // WriteObjectWith is WriteObject with the target facts.
 func WriteObjectWith(format ObjectFormat, functions []EncodedFunction, options ObjectOptions) ([]byte, error) {
 	layout, err := layOut(functions)
 	if err != nil {
+		return nil, err
+	}
+	if err := layout.addData(options.Data); err != nil {
 		return nil, err
 	}
 	switch options.RV64FloatABI {
@@ -127,7 +143,60 @@ type textLayout struct {
 	defined   []definedSymbol
 	relocs    []placedReloc
 	undefined []string // referenced symbols not defined here, sorted
+	// The read-only data section: the program's constant tables, each at
+	// its offset within data (addData).
+	data      []byte
+	dataAlign int64
+	dataSyms  []definedSymbol
 }
+
+// addData lays the constant data symbols out after the text, in order,
+// each at its alignment, and takes their names off the undefined list.
+func (l *textLayout) addData(data []DataSymbol) error {
+	l.dataAlign = 1
+	names := map[string]bool{}
+	for _, d := range l.defined {
+		names[d.name] = true
+	}
+	for _, d := range data {
+		if d.Name == "" {
+			return fmt.Errorf("object: a data symbol without a name")
+		}
+		if names[d.Name] {
+			return fmt.Errorf("object: symbol %s defined twice", d.Name)
+		}
+		names[d.Name] = true
+		align := d.Align
+		if align <= 0 {
+			align = 1
+		}
+		if align&(align-1) != 0 {
+			return fmt.Errorf("object: %s: alignment %d is not a power of two", d.Name, align)
+		}
+		if align > l.dataAlign {
+			l.dataAlign = align
+		}
+		for int64(len(l.data))%align != 0 {
+			l.data = append(l.data, 0)
+		}
+		l.dataSyms = append(l.dataSyms, definedSymbol{name: d.Name, offset: int64(len(l.data)), size: int64(len(d.Bytes))})
+		l.data = append(l.data, d.Bytes...)
+	}
+	var undefined []string
+	for _, name := range l.undefined {
+		if !names[name] {
+			undefined = append(undefined, name)
+		}
+	}
+	l.undefined = undefined
+	if int64(len(l.data)) > 1<<30 {
+		return fmt.Errorf("object: data section of %d bytes exceeds the format's reach", len(l.data))
+	}
+	return nil
+}
+
+// rv64Reloc reports a relocation kind of the RV64 lane.
+func rv64Reloc(kind string) bool { return kind == "riscv_call_plt" || kind == "riscv_pcrel" }
 
 type definedSymbol struct {
 	name   string
@@ -242,12 +311,18 @@ func log2Align(n int64) uint32 {
 // ---- Mach-O ---------------------------------------------------------------------
 
 func writeMachO(l *textLayout) ([]byte, error) {
+	nsects := 1
+	if len(l.data) > 0 {
+		nsects = 2 // __text, then __const for the data symbols
+	}
 	const (
 		headerSize    = 32
-		segmentSize   = 72 + 80 // LC_SEGMENT_64 with one section_64
 		buildVersion  = 24
 		symtabCmdSize = 24
 	)
+	segmentSize := 72 + 80*nsects // LC_SEGMENT_64 with its section_64s
+	// The data follows the text in the segment, at its alignment.
+	dataAddr := alignUp(int64(len(l.text)), max(l.dataAlign, 1))
 	// Symbols: the defined functions, then the undefined references; every
 	// name carries the Mach-O user-label prefix.
 	type nlist struct {
@@ -261,6 +336,10 @@ func writeMachO(l *textLayout) ([]byte, error) {
 	for _, d := range l.defined {
 		index[d.name] = uint32(len(symbols))
 		symbols = append(symbols, nlist{name: "_" + d.name, typ: 0x0f /* N_SECT|N_EXT */, sect: 1, value: uint64(d.offset)})
+	}
+	for _, d := range l.dataSyms {
+		index[d.name] = uint32(len(symbols))
+		symbols = append(symbols, nlist{name: "_" + d.name, typ: 0x0f /* N_SECT|N_EXT */, sect: 2, value: uint64(dataAddr + d.offset)})
 	}
 	for _, u := range l.undefined {
 		index[u] = uint32(len(symbols))
@@ -298,6 +377,16 @@ func writeMachO(l *textLayout) ([]byte, error) {
 			}
 		case "lo12":
 			typ, pcrel = 4, 0 // ARM64_RELOC_PAGEOFF12: the low 12 bits of the symbol's address into the add's imm12
+		case "adrl21":
+			// adrp then add: ARM64_RELOC_PAGE21 on the first word,
+			// ARM64_RELOC_PAGEOFF12 (not pc-relative) on the second.
+			if r.offset+8 > int64(len(l.text)) || r.offset+4 >= 1<<31 {
+				return nil, fmt.Errorf("object: adrl at %d cut short", r.offset)
+			}
+			symbol := index[r.symbol]
+			relocs = append(relocs, relocEntry{address: uint32(r.offset), info: symbol | 1<<24 | 2<<25 | 1<<27 | 3<<28})
+			relocs = append(relocs, relocEntry{address: uint32(r.offset + 4), info: symbol | 0<<24 | 2<<25 | 1<<27 | 4<<28})
+			continue
 		default:
 			return nil, fmt.Errorf("object: %s to external symbol %s has no Mach-O relocation (conditional branches and bit tests reach only labels within the function)", r.kind, r.symbol)
 		}
@@ -318,6 +407,12 @@ func writeMachO(l *textLayout) ([]byte, error) {
 		textOff++
 	}
 	text := append([]byte{}, l.text...)
+	if nsects == 2 {
+		for int64(len(text)) < dataAddr {
+			text = append(text, 0)
+		}
+		text = append(text, l.data...)
+	}
 	for len(text)%8 != 0 {
 		text = append(text, 0)
 	}
@@ -348,12 +443,12 @@ func writeMachO(l *textLayout) ([]byte, error) {
 	put32(uint32(segmentSize))
 	putName("")
 	put64(0)                   // vmaddr
-	put64(uint64(len(l.text))) // vmsize
+	put64(uint64(len(text)))   // vmsize
 	put64(uint64(textOff))     // fileoff
-	put64(uint64(len(l.text))) // filesize
+	put64(uint64(len(text)))   // filesize
 	put32(7)                   // maxprot rwx
 	put32(7)                   // initprot
-	put32(1)                   // nsects
+	put32(uint32(nsects))      // nsects
 	put32(0)                   // flags
 	putName("__text")          // section_64
 	putName("__TEXT")          //
@@ -367,6 +462,20 @@ func writeMachO(l *textLayout) ([]byte, error) {
 	put32(0)                   // reserved1
 	put32(0)                   // reserved2
 	put32(0)                   // reserved3
+	if nsects == 2 {
+		putName("__const")                        // section_64: the constant tables
+		putName("__TEXT")                         //
+		put64(uint64(dataAddr))                   // addr
+		put64(uint64(len(l.data)))                // size
+		put32(uint32(textOff) + uint32(dataAddr)) // offset
+		put32(log2Align(max(l.dataAlign, 1)))     // align (log2)
+		put32(0)                                  // reloff: relocations are on __text
+		put32(0)                                  // nreloc
+		put32(0)                                  // S_REGULAR
+		put32(0)                                  // reserved1
+		put32(0)                                  // reserved2
+		put32(0)                                  // reserved3
+	}
 	// LC_BUILD_VERSION: macOS 11.0, no tools.
 	put32(0x32)
 	put32(uint32(buildVersion))
@@ -415,12 +524,26 @@ func writeELF(l *textLayout) ([]byte, error) {
 		value uint64
 		size  uint64
 	}
-	symbols := []elfSym{{}, {info: 0x03 /* STT_SECTION, local */, shndx: 1}}
+	// Sections: 1 .text, 2 .rodata, 3 .rela.text, 4 .symtab, 5 .strtab,
+	// 6 .shstrtab. Local symbols first: the two section symbols and one
+	// label per `la` (its auipc), which R_RISCV_PCREL_LO12_I must name.
+	symbols := []elfSym{{}, {info: 0x03 /* STT_SECTION, local */, shndx: 1}, {info: 0x03, shndx: 2}}
 	index := map[string]uint32{}
+	pcrelLabel := map[int64]uint32{}
+	for _, r := range l.relocs {
+		if r.kind == "riscv_pcrel" {
+			pcrelLabel[r.offset] = uint32(len(symbols))
+			symbols = append(symbols, elfSym{name: fmt.Sprintf(".Lpcrel_hi%d", r.offset), info: 0x00 /* LOCAL NOTYPE */, shndx: 1, value: uint64(r.offset)})
+		}
+	}
 	firstGlobal := uint32(len(symbols))
 	for _, d := range l.defined {
 		index[d.name] = uint32(len(symbols))
 		symbols = append(symbols, elfSym{name: d.name, info: 0x12 /* GLOBAL FUNC */, shndx: 1, value: uint64(d.offset), size: uint64(d.size)})
+	}
+	for _, d := range l.dataSyms {
+		index[d.name] = uint32(len(symbols))
+		symbols = append(symbols, elfSym{name: d.name, info: 0x11 /* GLOBAL OBJECT */, shndx: 2, value: uint64(d.offset), size: uint64(d.size)})
 	}
 	for _, u := range l.undefined {
 		index[u] = uint32(len(symbols))
@@ -461,15 +584,34 @@ func writeELF(l *textLayout) ([]byte, error) {
 			typ = 277 // R_AARCH64_ADD_ABS_LO12_NC
 		case "riscv_call_plt":
 			typ = 19 // R_RISCV_CALL_PLT: the auipc/jalr pair of `call`
+		case "adrl21":
+			// adrp then add: R_AARCH64_ADR_PREL_PG_HI21 on the first word,
+			// R_AARCH64_ADD_ABS_LO12_NC on the second.
+			if l.arch == ArchRV64 {
+				return nil, fmt.Errorf("object: relocation kind %q in an %s object", r.kind, l.arch)
+			}
+			relas = append(relas, rela{offset: uint64(r.offset), info: uint64(index[r.symbol])<<32 | 275})
+			relas = append(relas, rela{offset: uint64(r.offset + 4), info: uint64(index[r.symbol])<<32 | 277})
+			continue
+		case "riscv_pcrel":
+			// auipc then addi: R_RISCV_PCREL_HI20 on the auipc against the
+			// symbol, R_RISCV_PCREL_LO12_I on the addi against the label
+			// of the auipc, as the psABI spells the pair.
+			if l.arch != ArchRV64 {
+				return nil, fmt.Errorf("object: relocation kind %q in an %s object", r.kind, l.arch)
+			}
+			relas = append(relas, rela{offset: uint64(r.offset), info: uint64(index[r.symbol])<<32 | 23})
+			relas = append(relas, rela{offset: uint64(r.offset + 4), info: uint64(pcrelLabel[r.offset])<<32 | 24})
+			continue
 		default:
 			return nil, fmt.Errorf("object: relocation kind %q", r.kind)
 		}
-		if (l.arch == ArchRV64) != (r.kind == "riscv_call_plt") {
+		if (l.arch == ArchRV64) != rv64Reloc(r.kind) {
 			return nil, fmt.Errorf("object: relocation kind %q in an %s object", r.kind, l.arch)
 		}
 		relas = append(relas, rela{offset: uint64(r.offset), info: uint64(index[r.symbol])<<32 | typ})
 	}
-	shstrtab := []byte("\x00.text\x00.rela.text\x00.symtab\x00.strtab\x00.shstrtab\x00")
+	shstrtab := []byte("\x00.text\x00.rodata\x00.rela.text\x00.symtab\x00.strtab\x00.shstrtab\x00")
 	nameOff := func(name string) uint32 {
 		return uint32(strings.Index(string(shstrtab), "\x00"+name+"\x00") + 1)
 	}
@@ -482,12 +624,13 @@ func writeELF(l *textLayout) ([]byte, error) {
 		return n
 	}
 	textOff := align(off, int(l.align))
-	relaOff := align(textOff+len(l.text), 8)
+	dataOff := align(textOff+len(l.text), int(max(l.dataAlign, 8)))
+	relaOff := align(dataOff+len(l.data), 8)
 	symOff := align(relaOff+24*len(relas), 8)
 	strOff := symOff + 24*len(symbols)
 	shstrOff := strOff + len(strtab)
 	shOff := align(shstrOff+len(shstrtab), 8)
-	total := shOff + 64*6
+	total := shOff + 64*7
 	out := make([]byte, 0, total)
 	put16 := func(v uint16) { out = le.AppendUint16(out, v) }
 	put32 := func(v uint32) { out = le.AppendUint32(out, v) }
@@ -509,8 +652,8 @@ func writeELF(l *textLayout) ([]byte, error) {
 	put16(0)          // phentsize
 	put16(0)          // phnum
 	put16(64)         // shentsize
-	put16(6)          // shnum
-	put16(5)          // shstrndx
+	put16(7)          // shnum
+	put16(6)          // shstrndx
 	pad := func(to int) {
 		for len(out) < to {
 			out = append(out, 0)
@@ -518,6 +661,8 @@ func writeELF(l *textLayout) ([]byte, error) {
 	}
 	pad(textOff)
 	out = append(out, l.text...)
+	pad(dataOff)
+	out = append(out, l.data...)
 	pad(relaOff)
 	for _, r := range relas {
 		put64(r.offset)
@@ -549,8 +694,9 @@ func writeELF(l *textLayout) ([]byte, error) {
 	}
 	section(0, 0, 0, 0, 0, 0, 0, 0, 0)
 	section(nameOff(".text"), 1, 0x6, uint64(textOff), uint64(len(l.text)), 0, 0, uint64(l.align), 0)
-	section(nameOff(".rela.text"), 4, 0x40, uint64(relaOff), uint64(24*len(relas)), 3, 1, 8, 24)
-	section(nameOff(".symtab"), 2, 0, uint64(symOff), uint64(24*len(symbols)), 4, uint64(firstGlobal), 8, 24)
+	section(nameOff(".rodata"), 1, 0x2, uint64(dataOff), uint64(len(l.data)), 0, 0, uint64(max(l.dataAlign, 1)), 0)
+	section(nameOff(".rela.text"), 4, 0x40, uint64(relaOff), uint64(24*len(relas)), 4, 1, 8, 24)
+	section(nameOff(".symtab"), 2, 0, uint64(symOff), uint64(24*len(symbols)), 5, uint64(firstGlobal), 8, 24)
 	section(nameOff(".strtab"), 3, 0, uint64(strOff), uint64(len(strtab)), 0, 0, 1, 0)
 	section(nameOff(".shstrtab"), 3, 0, uint64(shstrOff), uint64(len(shstrtab)), 0, 0, 1, 0)
 	if len(out) != total {
