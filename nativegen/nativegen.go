@@ -1,11 +1,13 @@
-// Package nativegen is the native AArch64 backend for Oak bodies
+// Package nativegen is the native backend for Oak bodies
 // (docs/spec/94-assembler.md §9): it lowers a type-checked Oak function to
 // an asm.Function — the same checked, verifiable, encodable object an
 // `.oakasm` unit yields — so the compiler's own output is held to the seam
 // checker's disciplines, proved against the Oak body by the verifier where
 // the verifier reaches, and encoded by the Oak assembler into the companion
 // object. The C backend stays the portable realization and the differential
-// oracle.
+// oracle. This file is the AArch64 lane (CompileFor with asm.ArchArm64, or
+// Compile); rv64.go is the RV64 lane, the fixed-width integer subset under
+// the LP64 psABI.
 //
 // First increment — the fixed-width integer subset: parameters, locals,
 // and results of u8/u16/u32/u64/i8/i16/i32/i64/Bool (or a unit result);
@@ -80,6 +82,11 @@ type span struct {
 	// (baseReg/lenReg) by the prologue — the checker follows the copies —
 	// so the callee's clobber of x0–x17 never touches it.
 	argBase, argLen int
+	// norm: on the rv64 lane, the register holding the length zero-extended
+	// (`slli n, aL, 32; srli n, n, 32`, the checker's normalization idiom):
+	// the LP64 pair leaves padding above the u32 length, so every bounds
+	// guard compares against this copy (nativegen/rv64.go).
+	norm int
 }
 
 // spanTypeOf reads a span or view type of scalar or record elements.
@@ -1028,9 +1035,35 @@ const calleeLow, calleeHigh = 19, 28
 const vecScratchLow, vecScratchHigh = 16, 23
 const vecCalleeLow, vecCalleeHigh = 8, 15
 
-// Compile lowers one Oak function. functions maps every program function by
-// name (callees' signatures), records every declared record type by name
-// (their field lists); tc is the checker that typed the program.
+// Lane names the assembler lane a body is lowered on and the target facts
+// the lowering depends on beyond the architecture.
+type Lane struct {
+	// Arch is asm.ArchArm64 (the default) or asm.ArchRV64.
+	Arch string
+	// SoftFloat marks a RISC-V target without the F/D calling convention
+	// (freestanding/riscv64 compiles soft-float, lp64): a body touching
+	// floating point stays with the C backend there, as an F/D unit is
+	// refused (docs/spec/94-assembler.md §9).
+	SoftFloat bool
+}
+
+// CompileFor lowers one Oak function on a lane (docs/spec/94-assembler.md
+// §9). A lane without a native backend leaves the function to the C
+// backend with the reason.
+func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, tc *typechecker.TypeChecker) (*asm.Function, error) {
+	switch lane.Arch {
+	case "", asm.ArchArm64:
+		return Compile(fn, functions, records, adts, tc)
+	case asm.ArchRV64:
+		return compileRV64(fn, functions, records, adts, tc, lane.SoftFloat)
+	}
+	return nil, unsupported("no native backend for the %s lane", lane.Arch)
+}
+
+// Compile lowers one Oak function on the AArch64 lane. functions maps every
+// program function by name (callees' signatures), records every declared
+// record type by name (their field lists); tc is the checker that typed
+// the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
@@ -2591,6 +2624,14 @@ func (g *generator) typeOf(expr ast.Expression, hint *scalar) (scalar, error) {
 	case *ast.PrefixExpression:
 		if e.Operator == "!" {
 			return scalars["Bool"], nil
+		}
+		if lit, isLiteral := e.Right.(*ast.IntegerLiteral); isLiteral && e.Operator == "-" && hint != nil && !hint.isFloat {
+			// A negated literal is one constant typed by its context, as the
+			// checker's own literal rule reads it (typechecker.checkPrefixExpression);
+			// the negation's recorded width is the operand literal's default
+			// type, which a literal beyond `int` does not fit.
+			_ = lit
+			return *hint, nil
 		}
 		if name, known := g.tc.ArithmeticType(e.Token); known {
 			if s, ok := scalars[name]; ok {
@@ -4628,7 +4669,7 @@ func Describe(fn *asm.Function) string {
 		case asm.Label:
 			fmt.Fprintf(&b, "%s:\n", it.Name)
 		case asm.Instruction:
-			fmt.Fprintf(&b, "  %s\n", it.String())
+			fmt.Fprintf(&b, "  %s\n", fn.Spell(it))
 		}
 	}
 	b.WriteString("}\n")

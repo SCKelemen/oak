@@ -46,7 +46,7 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 	if *solver == "self" {
 		// The prover written in Oak (prove/solver/shell.oak): the file to
 		// the rows, with the Go ladder as the cross-check when asked.
-		return selfProve(target, *cases, *cross == "go", *leanOut, stdout, stderr)
+		return selfProve(target, *cases, *cross == "go", *leanOut, *witness, stdout, stderr)
 	}
 	// Invariant candidates get their base and step obligations generated
 	// before checking (prove/protocols.go), and declared operator laws
@@ -296,7 +296,7 @@ func lawSources(target string) [][]byte {
 // projection (lean.oak). With crossCheck the Go ladder decides the same
 // file and every row's status must agree, and the Go extractor's
 // projection must match the written one byte for byte.
-func selfProve(target string, cases int, crossCheck bool, leanOut string, stdout, stderr io.Writer) int {
+func selfProve(target string, cases int, crossCheck bool, leanOut string, witness bool, stdout, stderr io.Writer) int {
 	info, err := os.Stat(target)
 	if err != nil || info.IsDir() {
 		fmt.Fprintf(stderr, "oak prove: -solver self takes one law file, got %s\n", target)
@@ -321,6 +321,23 @@ func selfProve(target string, cases int, crossCheck bool, leanOut string, stdout
 			return 2
 		}
 		run.Env = append(run.Env, "OAK_PROVE_LEAN="+leanAbsolute)
+	}
+	if witness {
+		// The shell writes the witness driver, has this compiler build it,
+		// and runs the binary (prove/solver/witness.oak).
+		compilerPath, err := os.Executable()
+		if err != nil {
+			fmt.Fprintf(stderr, "oak prove: %v\n", err)
+			return 2
+		}
+		dir, err := os.MkdirTemp("", "oak-witness-")
+		if err != nil {
+			fmt.Fprintf(stderr, "oak prove: %v\n", err)
+			return 2
+		}
+		defer os.RemoveAll(dir)
+		run.Env = append(run.Env, "OAK_PROVE_WITNESS=1", "OAK_PROVE_COMPILER="+compilerPath,
+			"OAK_PROVE_WITNESS_SOURCE="+filepath.Join(dir, "witness.oak"), "OAK_PROVE_WITNESS_BINARY="+filepath.Join(dir, "witness"))
 	}
 	var out strings.Builder
 	run.Stdout = &out
@@ -362,15 +379,27 @@ func selfProve(target string, cases int, crossCheck bool, leanOut string, stdout
 	}
 	agreed, compared := 0, 0
 	for _, line := range strings.Split(rows, "\n") {
+		// A row is `status    name: detail`; an advisory row's name carries
+		// a colon of its own (`Quantum: guards of tick from Running`), so
+		// the name is the longest prefix before a `: ` the Go ladder knows.
 		fields := strings.Fields(line)
-		if len(fields) < 2 || !strings.HasSuffix(fields[1], ":") || fields[0] == "oak" {
+		if len(fields) < 2 || fields[0] == "oak" || len(line) < 10 {
 			continue
 		}
-		name := strings.TrimSuffix(fields[1], ":")
-		status, known := goStatus[name]
-		if !known {
+		rest := line[10:]
+		name := ""
+		for cut := 0; cut < len(rest); cut++ {
+			if !strings.HasPrefix(rest[cut:], ": ") {
+				continue
+			}
+			if _, known := goStatus[rest[:cut]]; known {
+				name = rest[:cut]
+			}
+		}
+		if name == "" {
 			continue
 		}
+		status := goStatus[name]
 		compared++
 		if string(status) == fields[0] {
 			agreed++

@@ -27,7 +27,7 @@ scannable:
 - at least one literal;
 - every literal at least three bytes — the prefilter classifies the
   first three bytes of each literal, and a shorter literal has no third
-  byte to classify;
+  byte to classify — and at most sixty-four, the carry a stream keeps;
 - no duplicate — a duplicate would count every occurrence twice.
 
 Each violation is `OAK-M0304`, as is a projected name the program
@@ -45,6 +45,8 @@ declaration has it:
 | `name_count: (bytes: []u8): u32` | the number of occurrences of every literal in `bytes`, overlapping occurrences and occurrences of several literals at one position each counted |
 | `name_find: (bytes: []u8, start: u32): u32` | the first position at or after `start` where some literal occurs, or `len(bytes)` when none does |
 | `name_which: (bytes: []u8, pos: u32): u32` | the index (declaration order) of the first literal occurring at `pos`, or the number of literals when none does |
+| `NameMatch: type = struct { at: u32, which: u32 }`, `name_match: (bytes: []u8, start: u32): NameMatch` | the first occurrence at or after `start` as one record: its position and the literal's index, `len(bytes)` and the number of literals when none |
+| `name_carry: (): LiteralsCarry`, `name_feed: (c: [*]LiteralsCarry, bytes: []u8): u32` | streaming: `name_carry()` is the empty state; `name_feed` counts the occurrences ending in one more chunk — those starting in the carried bytes and completed by the chunk, and those inside it — and advances the carry to the last bytes so far (one less than the longest literal, at most sixty-three). The feeds over the chunks of an input sum to `name_count` of the whole |
 | `name_literal_bytes: [N]u8`, `name_literal_starts: [K+1]u32` | the literals concatenated, and literal `j` as `bytes[starts[j] .. starts[j+1]]` |
 | `name_literal_tables: [96]u8` | the six nibble tables of the prefilter, computed at compile time |
 
@@ -102,10 +104,22 @@ predicate holds (`bit_loEntry`, `bit_hiEntry`), the AND of masks has bit
 `b` set exactly when each operand has (`bit_and`), and so the kernel's
 test `(cand & bucket_bit(j)) != 0` on the stored masks is exactly
 `Oak.Teddy.cand` (`bit_candMask`), with soundness restated on the masks
-(`sound_mask`). Not yet modeled: the sixty-four-byte stepping and the
-tail; the differential tests (`compiler/e2e_literals_test.go`, compiled
-and interpreted against a scalar reference) and the harness's six-way
-count agreement cover them.
+(`sound_mask`). `spec/lean/Oak/TeddyCount.lean` models the stepping: a
+block's verified count is the occurrence count at each of its sixteen
+positions (`block_eq_total`, from `exact`), a step is four blocks, and
+`k` steps plus the tail over `[64 k, n)` are the occurrences over `[0, n)`
+for any `k` with `64 k ≤ n` (`kernel_eq_total`) — the guard's choice
+included. `spec/lean/Oak/TeddyStream.lean` states the streaming
+contract: a feed counts the occurrences *ending* in its chunk, the feeds
+of two adjacent chunks count what one feed of their union counts
+(`countEndsIn_split`), a chunk holding the whole input counts exactly the
+occurrences (`endsIn_whole`), and an occurrence ending in a chunk starts
+within `longest - 1` bytes before it (`start_in_carry`), which is why a
+carry of that many bytes joined with the chunk holds it whole. Not
+modeled: that `feed`'s loop over the carried positions computes
+`countEndsIn`; the differential tests (`compiler/e2e_literals_test.go`,
+compiled and interpreted against a scalar reference, chunked feeds
+against the whole count) cover it.
 
 Measured on sixteen HTTP tokens over 64 MB (`benchmarks/scanning/`):
 the projected `http_count` runs at 0.10 ns/byte, the hand-written NEON
@@ -115,12 +129,6 @@ same count.
 
 ## 5. Direction
 
-- A `find` that also reports which literal matched, as one call — today
-  `name_which(bytes, name_find(bytes, start))`.
-- Streaming: a set scanned across buffer boundaries with the last two
-  bytes carried, the way `utf8.valid` carries its incomplete mask.
 - Larger sets: more than eight buckets when the set is large enough that
   bucket sharing dominates verification, and a rarest-byte choice of the
   three classified bytes instead of the first three.
-- The stepping and the tail in Lean, over the block model of
-  `Oak.Utf8Blocks`.

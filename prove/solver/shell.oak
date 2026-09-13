@@ -10,9 +10,11 @@
 // them, so the two outputs compare line for line. The invariant
 // obligations and the probes the exploration needs are generated as source
 // text the file is parsed again with (explore.oak), the rows are folded
-// and printed after the exploration, and the Lean projection is written
-// when asked (lean.oak). What the shell does not do stays with the Go
-// command: the compiled-program witness and the guard-exclusivity rows.
+// and printed after the exploration, the compiled witness is written,
+// built through the compiler, run, and folded in (witness.oak), and the
+// Lean projection is written when asked (lean.oak); the guard-exclusivity
+// theorems are generated and folded into their advisory rows. Every row
+// the Go command prints, the shell prints; only the compiler stays Go.
 package main
 
 c_open: (path: c.String, flags: c.Int): c.UInt64 = c.extern("open")
@@ -203,6 +205,13 @@ txt_not_projected: (): () {
   write_lit(u64(0x2074737269662820), u64(0x206E6F73616572), u32(15))
 }
 
+txt_witness_failed: (): () {
+  write_lit(u64(0x766F7270206B616F), u64(0x656E746977203A65), u32(16))
+  write_lit(u64(0x20656874203A7373), u64(0x6420726576697264), u32(16))
+  write_lit(u64(0x6320746F6E206469), u64(0x6F20656C69706D6F), u32(16))
+  write_lit(u64(0x6E75722072), u64(0x0), u32(5))
+}
+
 txt_wrote: (): () {
   write_lit(u64(0x766F7270206B616F), u64(0x65746F7277203A65), u32(16))
   write_lit(u64(0x20), u64(0x0), u32(1))
@@ -358,7 +367,7 @@ race_in_oak: (l: Layout, lw: Lower, t0: c.Ptr, t1: c.Ptr, t2: c.Ptr, b0: c.Ptr, 
 }
 
 // Counts of the rows: decided, refuted, open.
-Counts: type = struct { decided: u32, refuted: u32, open: u32 }
+Counts: type = struct { decided: u32, refuted: u32, open: u32, failing: u32 }
 
 // decide_one decides one theorem (its raw function index) and prints its
 // row: the kind it printed.
@@ -505,6 +514,23 @@ shell_main: (): i32 {
   lean_len: u32 = copy_env(c_getenv(c.cstr("OAK_PROVE_LEAN\0")), span(&lean_buf))
   lean_view: []u8 = view(&lean_buf)
   lean_path: []u8 = subslice(lean_view, u32(0), lean_len + u32(1))
+  // The compiled witness: OAK_PROVE_WITNESS set, the compiler's path, and
+  // where to write the driver's source and binary (witness.oak).
+  wit_buf: [16]u8
+  wit_len: u32 = copy_env(c_getenv(c.cstr("OAK_PROVE_WITNESS\0")), span(&wit_buf))
+  compiler_buf: [1024]u8
+  compiler_len: u32 = copy_env(c_getenv(c.cstr("OAK_PROVE_COMPILER\0")), span(&compiler_buf))
+  compiler_view: []u8 = view(&compiler_buf)
+  compiler: []u8 = subslice(compiler_view, u32(0), compiler_len + u32(1))
+  wsrc_buf: [1024]u8
+  wsrc_len: u32 = copy_env(c_getenv(c.cstr("OAK_PROVE_WITNESS_SOURCE\0")), span(&wsrc_buf))
+  wsrc_view: []u8 = view(&wsrc_buf)
+  wsrc: []u8 = subslice(wsrc_view, u32(0), wsrc_len + u32(1))
+  wbin_buf: [1024]u8
+  wbin_len: u32 = copy_env(c_getenv(c.cstr("OAK_PROVE_WITNESS_BINARY\0")), span(&wbin_buf))
+  wbin_view: []u8 = view(&wbin_buf)
+  wbin: []u8 = subslice(wbin_view, u32(0), wbin_len + u32(1))
+  witness_on: Bool = wit_len > u32(0) && compiler_len > u32(0) && wsrc_len > u32(0) && wbin_len > u32(0)
   cases: u32 = 0
   k: u32 = 0
   while k < cases_len {
@@ -519,7 +545,7 @@ shell_main: (): i32 {
   path: []u8 = subslice(path_view, u32(0), path_len + u32(1))
   nbytes: u32 = path_len == u32(0) ? { NONE } | { read_file(path, chunk_raw, bytes_raw) }
   code: i32 = 0
-  (nbytes == NONE || nbytes + GEN_MAX > FILE_MAX) ? {
+  (nbytes == NONE || nbytes + u32(2) * GEN_MAX > FILE_MAX) ? {
     txt_no_file()
     write_byte(u8(10))
     code = i32(2)
@@ -534,6 +560,7 @@ shell_main: (): i32 {
     arena_raw: c.Ptr = malloc(c.Size(arena_words * u32(4)))
     n_raw: u32 = 0
     reason: u32 = 0
+    source_len: u32 = nbytes
     unsafe {
       file_bytes: Buffer[u8] = c.own[u8](bytes_raw, FILE_MAX)
       file_words: Buffer[u32] = c.own[u32](words_raw, nwords + u32(1))
@@ -550,6 +577,7 @@ shell_main: (): i32 {
           n_raw = u32(0)
           reason = u32(900)
         } | {
+          source_len = total
           total > nbytes ? {
             words_of_prefix(view(&file_bytes), span(&file_words), total)
             n_raw = parse_source(par, span(&pbuf), view(&file_words), total, span(&tables), u32(0), arena_words)
@@ -559,14 +587,14 @@ shell_main: (): i32 {
       }
       released_p: c.Ptr = c.disown(pbuf)
       released_w: c.Ptr = c.disown(file_words)
-      released_f: c.Ptr = c.disown(file_bytes)
       n_raw == u32(0) ? {
         txt_parse_failed()
         write_u32(reason)
         txt_close()
         write_byte(u8(10))
         code = i32(2)
-      } | { code = prove_tables(view(&tables), n_raw, cases, budget, lean_path) }
+      } | { code = prove_tables(view(&tables), n_raw, cases, budget, lean_path, view(&file_bytes), source_len, witness_on, compiler, wsrc, wbin) }
+      released_f: c.Ptr = c.disown(file_bytes)
       released_t: c.Ptr = c.disown(tables)
     }
   }
@@ -586,7 +614,7 @@ words_of_prefix: (bytes: []u8, words: [*]u32, n: u32): () {
 // prove_rows decides every theorem of the parsed file into the row table,
 // folds the invariant obligations, explores the protocols, prints the rows
 // and the summary: the exit status.
-prove_rows: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, work_raw: c.Ptr, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, t0: c.Ptr, t1: c.Ptr, t2: c.Ptr, ex_raw: c.Ptr, rx: []u32, raw: Raw, cases: u32, budget: u32): i32 {
+prove_rows: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, work_raw: c.Ptr, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, t0: c.Ptr, t1: c.Ptr, t2: c.Ptr, ex_raw: c.Ptr, rx: []u32, raw: Raw, cases: u32, budget: u32, source: []u8, source_len: u32, witness_on: Bool, compiler: []u8, wsrc: []u8, wbin: []u8): i32 {
   le_init(le, ew, raw)
   set_lst(le, ew, LN_NROWS, u32(0))
   theorems: u32 = 0
@@ -607,7 +635,16 @@ prove_rows: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr
   code: i32 = 0
   (theorems == u32(0) && nlive == u32(0)) ? { txt_no_theorems() } | {
     fold_invariants(le, ew)
+    fold_exclusivity(le, ew)
     explore_all(le, ew, ser, ser_raw, out_raw, lw, work_raw, b0, ex_raw, rx, raw, cases)
+    witness_failed: Bool = false
+    witness_on ? {
+      witness_all(le, ew, rx, raw, cases, source, source_len, compiler, wsrc, wbin) ? { } | {
+        txt_witness_failed()
+        write_byte(u8(10))
+        witness_failed = true
+      }
+    } | { }
     counts: Counts = print_rows(le, ew)
     // The summary, statuses in name order: decided, open, refuted.
     txt_summary()
@@ -628,7 +665,7 @@ prove_rows: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr
       write_u32(counts.refuted)
       txt_refuted_w()
     } | { }
-    code = counts.refuted > u32(0) ? { i32(1) } | { i32(0) }
+    code = witness_failed ? { i32(2) } | { counts.failing > u32(0) ? { i32(1) } | { i32(0) } }
   }
   write_byte(u8(10))
   code
@@ -637,7 +674,7 @@ prove_rows: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr
 // prove_tables decides every theorem of the parsed file and prints the
 // summary; with a Lean output path (NUL-terminated, more than the NUL)
 // the projection is written after it (lean.oak).
-prove_tables: (arena: []u32, n_raw: u32, cases: u32, budget: u32, lean_path: []u8): i32 {
+prove_tables: (arena: []u32, n_raw: u32, cases: u32, budget: u32, lean_path: []u8, source: []u8, source_len: u32, witness_on: Bool, compiler: []u8, wsrc: []u8, wbin: []u8): i32 {
   rx: []u32 = subslice(arena, u32(0), n_raw)
   raw: Raw = raw_layout(rx)
   lowered_terms: u32 = 131072
@@ -660,7 +697,7 @@ prove_tables: (arena: []u32, n_raw: u32, cases: u32, budget: u32, lean_path: []u
   code: i32 = 0
   unsafe {
     rows_buf: Buffer[u32] = c.own[u32](le_raw, le.total)
-    code = prove_rows(le, span(&rows_buf), l, lw, ser, ser_raw, out_raw, work_raw, b0, b1, b2, t0, t1, t2, ex_raw, rx, raw, cases, budget)
+    code = prove_rows(le, span(&rows_buf), l, lw, ser, ser_raw, out_raw, work_raw, b0, b1, b2, t0, t1, t2, ex_raw, rx, raw, cases, budget, source, source_len, witness_on, compiler, wsrc, wbin)
     released_rows: c.Ptr = c.disown(rows_buf)
   }
   len(lean_path) > u32(1) ? {

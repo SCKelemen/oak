@@ -4097,7 +4097,10 @@ capture_in_oak: (le: Lem, le_raw: c.Ptr, ser: Ser, ser_raw: c.Ptr, out_raw: c.Pt
 set_roots: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, only: u32): () {
   fi: u32 = 0
   while fi < raw.nfuncs && fi < LE_FUNCS {
-    ew[le.lroots_at + fi] = (fn_is_theorem(rx, raw, fi) && (only == NONE || only == fi)) ? { u32(1) } | { u32(0) }
+    // The guard-exclusivity pair theorems are folded into advisory rows and
+    // never named as roots by the Go command.
+    root_ok: Bool = fn_is_theorem(rx, raw, fi) && (only == NONE || only == fi) && !is_exclusivity_name(le, ew, rstr(le, ew, rx, raw, rf_word(rx, raw, fi, u32(0))))
+    ew[le.lroots_at + fi] = root_ok ? { u32(1) } | { u32(0) }
     fi = fi + u32(1)
   }
 }

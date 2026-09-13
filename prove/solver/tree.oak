@@ -117,7 +117,7 @@ PX_FRAME_WORDS: u32 = 16
 PX_TOKEN_WORDS: u32 = 4
 PX_PEXTRA: u32 = 4096
 PX_PROTOS: u32 = 64
-PROTO_WORDS: u32 = 16
+PROTO_WORDS: u32 = 20
 
 // State words.
 PS_FAILED: u32 = 0
@@ -649,6 +649,19 @@ px_add_func: (p: Par, w: [*]u32, name: u32, pstart: u32, nparams: u32, ret: u32,
     w[at + u32(6)] = u32(0)
     w[at + u32(7)] = u32(0)
     set_pst(p, w, PS_NFUNCS, n + u32(1))
+  }
+}
+
+// px_set_span records the source byte span of the function just added
+// (words 6 and 7: the first byte, one past the last), from its statement's
+// first byte to the current token's end; the witness driver (witness.oak)
+// leaves `main` out by it.
+px_set_span: (p: Par, w: [*]u32, start: u32): () {
+  n: u32 = pst(p, w, PS_NFUNCS)
+  n == u32(0) ? { } | {
+    at: u32 = p.funcs_at + (n - u32(1)) * u32(8)
+    w[at + u32(6)] = start
+    w[at + u32(7)] = tok_start(p, w, cur(p, w)) + tok_len(p, w, cur(p, w))
   }
 }
 
@@ -1562,6 +1575,7 @@ func_body: (p: Par, w: [*]u32, src: []u32, at: u32): () {
         // Definition-less: a declaration an asm unit defines.
         w[at + u32(3)] != u32(0) ? { px_fail(p, w, u32(355)) } | {
           px_add_func(p, w, w[at + u32(2)], w[at + u32(4)], w[at + u32(5)], w[at + u32(6)], NONE, RAW_FLAG_UNUSABLE)
+          px_set_span(p, w, w[at + u32(9)])
           px_deliver(p, w, NONE)
         }
       }
@@ -1615,6 +1629,7 @@ step_func_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
     (is_theorem && w[at + u32(6)] != NONE) ? { px_fail(p, w, u32(357)) } | {
       // Flag bit 2 marks a theorem for the shell's ladder.
       px_add_func(p, w, w[at + u32(2)], w[at + u32(4)], w[at + u32(5)], w[at + u32(6)], ret, is_theorem ? { u32(2) } | { u32(0) })
+      px_set_span(p, w, w[at + u32(9)])
       px_deliver(p, w, NONE)
     }
   } } } }
@@ -1805,6 +1820,8 @@ step_stmt_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
     k == T_IDENT ? {
       name: u32 = px_intern_token(p, w, src, cur(p, w))
       w[at + u32(3)] = name
+      // The statement's first byte: a function's span in the source.
+      w[at + u32(7)] = tok_start(p, w, cur(p, w))
       contextual: Bool = (cur_is_word(p, w, src, u64(0x6E65706F), u64(0), u32(4)) && pk == T_IMPORT) ||
         (cur_is_word(p, w, src, u64(0x726F74617265706F), u64(0), u32(8)) && pk == T_LPAREN) ||
         (cur_is_word(p, w, src, u64(0x6C656E72656B), u64(0), u32(6)) && pk == T_IDENT && (tok_ahead(p, w, u32(2)) == T_COLON || tok_ahead(p, w, u32(2)) == T_LBRACK)) ||
@@ -1828,6 +1845,7 @@ step_stmt_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
             px_advance(p, w)
             w[at + u32(1)] = SP_DEFINED
             px_push(p, w, P_FUNC, name, u32(1))
+            w[pfr_at(p, pst(p, w, PS_SP) - u32(1)) + u32(9)] = w[at + u32(7)]
           }
         } | {
         cur_kind(p, w) == T_TYPE ? {
@@ -1840,6 +1858,7 @@ step_stmt_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
           pst(p, w, PS_BLOCK_DEPTH) > u32(0) ? { px_fail(p, w, u32(384)) } | {
             w[at + u32(1)] = SP_DEFINED
             px_push(p, w, P_FUNC, name, u32(0))
+            w[pfr_at(p, pst(p, w, PS_SP) - u32(1)) + u32(9)] = w[at + u32(7)]
           }
         } | {
         (cur_is_word(p, w, src, u64(0x6C6F636F746F7270), u64(0), u32(8)) && peek_kind(p, w) == T_ASSIGN) ? {
@@ -1874,6 +1893,7 @@ step_stmt_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
           px_advance(p, w)
           w[at + u32(1)] = SP_DEFINED
           px_push(p, w, P_FUNC, name, u32(0))
+          w[pfr_at(p, pst(p, w, PS_SP) - u32(1)) + u32(9)] = w[at + u32(7)]
         }
       } | {
         w[at + u32(1)] = SP_EXPR

@@ -1586,6 +1586,297 @@ makes for the inline realization under that `-mcpu`, so the two
 realizations of a unit carry the same instruction sizes
 (`compiler/e2e_rv64_cpu_test.go`).
 
+**The native backend's RV64 lane (first increment landed; `nativegen/rv64.go`).**
+The compiler's own output joins the units on this lane: `oak build -native
+-target linux/riscv64` (or `freestanding/riscv64`) lowers a type-checked Oak
+function of the fixed-width integer subset to an asm function of the rv64
+lane — the object an `.rv64.oakasm` unit yields — so the seam checker
+above holds it to the LP64 contract, the callee-saved obligation, the
+frame, and the comparison-branch rule (a finding is a backend bug and
+rejects the compilation), the verifier proves it equal to its Oak body
+where the term language reaches (a mismatch rejects), the encoder and the
+ELF writer realize it in the companion object, and the Oak body stays as
+the portable realization under `!(defined(__riscv) && (__riscv_xlen ==
+64))`. The subset is the AArch64 lane's first increment: parameters,
+locals, and results of the fixed-width integers and `Bool`; literals;
+wrapping `+ - * & | ^`; `/` and `%` with a zero divisor trapping through
+`ebreak` and `MIN / -1`, `MIN % -1` as the ISA's total division gives them
+(the C helpers' values); shifts whose count at or beyond the width traps;
+comparisons; short-circuit `&&`/`||`; `!`, `-`, `^`; the widening
+constructors and `trunc`/`bits`; the Bool conditional; typed locals and
+assignment; `while`/`break`; `assert`; calls with scalar signatures through
+`call`; a tail self-call as a loop. Every value is a 64-bit register in the
+psABI's canonical form, which is what the W-form instructions produce: a
+32-bit value sign-extended from bit 31 whatever its signedness (so
+`addw`/`mulw`/`divuw`/`sllw`/… keep the form, `and`/`or`/`xor` of two
+canonical values are canonical, and `sltu` orders two canonical u32 values
+as the unsigned values order — sign extension is monotone on each half of
+the range and keeps the halves apart), a narrow unsigned value
+zero-extended, a signed one sign-extended; a `u32` widened to 64 bits is
+the one conversion that moves bits (`slli 32; srli 32`), a 64-bit value
+narrowed to 32 is `sext.w`. Expressions evaluate into `t0`–`t6` as an
+operand stack spilled to frame slots around `call`; variables live in
+`s1`–`s11` in declaration order, saved in the prologue and restored before
+`ret`, with frame slots past eleven; parameters bind at `a0`–`a7` (a narrow
+one arrives canonical: the psABI widens by the type's sign to 32 bits and
+sign-extends, which is what the verifier's binding models) and the result
+leaves in `a0`; `ra` is saved at the frame's base when the body calls; a
+comparison in a condition branches on its two registers directly. A
+constant beyond `li`'s 32 bits is its two halves — `li hi; slli 32; li lo;
+add` — with the high half adjusted for the low half's sign. Landed with it:
+the checker takes a label's displacement from the branches that reach it
+when no path falls through (the trap block after `ret`), and refuses a
+label reachable only by a later branch, as the AArch64 checker does; the
+encoder writes the zero-operand words (`ebreak`, checked against GNU as);
+and both lanes type a negated literal by its context, as the checker's
+literal rule does — the verifier caught the lane reading `i64(-5000000000)`
+at the negation's recorded 32-bit width, a mismatch that rejected the
+build before any test ran. Executed (`compiler/e2e_native_rv64_test.go`): the AArch64 lane's
+twelve-function corpus and a second corpus of what the canonical form makes
+delicate — a 64-bit constant with bit 31 of its low half set, 16-bit
+arithmetic and negation, variable shift counts, unsigned 32-bit and 64-bit
+division and remainder, `>`/`<=` at the 32-bit sign boundary in both
+signednesses, `||`, thirteen variables (frame slots), calls nested in
+arguments, the u32 → u64 widening of a value with bit 31 set, truncations,
+`^`, a negative 64-bit constant — lowered entirely by the backend, thirteen
+of the second corpus's functions **proven** at the bit level against their
+Oak bodies (`mix`, `byte_sum`, `clamp8`, `between`, `widen`, `narrow` of
+the first; the u16 product agrees on every witness, the rest are trusted
+for their calls, variable shift counts, and divisions), and run to their
+expected exits under `qemu-system-riscv64`
+(`-M virt`, the Oak companion object linked beside the C shell by zig into
+a bare-metal image whose harness prints `oak_main`'s result over the UART
+and lands an `ebreak` in a machine-mode handler), with the C backend alone
+as the oracle and a failing assertion trapping; the hosted build runs under
+user-mode QEMU where one is installed (the CI cross-targets job), and the
+same second corpus runs through the AArch64 lane on an arm64 host. Loops
+and callers are trusted on this lane as on the other (the verifier's
+budget, `call`); the later increments of the AArch64 lane — spans and
+views, owned arrays, records, unions, floating point — are the lane's next
+steps, in that order.
+
+**RV64 lane, second to fourth increments — spans, owned arrays, floating
+point (landed).** *Spans and views* bind as the LP64 pair; the prologue
+normalizes each length once into an argument register past the parameters
+(`slli n, aL, 32; srli n, n, 32`, written exactly once so the checker
+carries the fact across labels), and every element access is the checker's
+guarded idiom right before the memory instruction: the index zero-extended
+(a canonical u32 is sign-extended; the guard compares 64-bit values), `bgeu
+idx, n, trap`, `slli` by the element's log, `add` to the bound base, then
+`lw`/`lh`/`lhu`/`lb`/`lbu`/`ld` (or `sw`/`sh`/`sb`/`sd` through a writable
+span) at offset 0 — so an index at or past the length traps as `oak_index`
+does and the checker's own rule admits the access. `len(v)` is `sext.w` of
+the normalized length. A span kernel is a leaf on this lane for now: a
+call clobbers the bound pair and the checker keys the span's facts on it
+(the AArch64 lane's parking of pairs in callee-saved registers is the
+next port). *Owned arrays* occupy whole frame slots, zero-filled through
+the zero register or stored element by element from a literal; a literal
+index addresses its slot through `sp`; any other index goes through the
+array's frame address under a constant guard — `addi b, sp, off; li k, N;
+bgeu idx, k, trap; slli idx, idx, s; add idx, b, idx` — and `view(&buf)` /
+`span(&buf)` hand a callee the {frame address, N} pair. The checker gained
+the matching facts: `addi rD, sp, imm` records an entry-relative frame
+address, and `add rE, rD, t` over a frame address with `t` a guarded,
+scaled index below a constant K makes `rE` a writable element region when
+every one of the K elements lies inside the declared frame and the base is
+aligned to the element (`TestRV64SpanMemoryChecker`: the accepted array,
+and the rejections past the frame, without a guard, at the wrong scale);
+floating-point loads and stores through a region are admitted like integer
+ones. *Floating point* under LP64D: `fa0`–`fa7` carry f32/f64 parameters
+and `fa0` the result by their own count, expression temporaries live in
+`ft0`–`ft11`, variables in `fs0`–`fs11` saved with `fsd` and restored with
+`fld` under the checker's obligation; literals travel as their IEEE bit
+pattern through the integer file and `fmv.d.x`/`fmv.w.x` (an f32 NaN-boxed);
+`+ - * /` and negation are `fadd`/`fsub`/`fmul`/`fdiv`/`fsgnjn` (nothing is
+contracted); comparisons are the quiet `feq`/`flt`/`fle` into an integer
+register, `!=` the complement of `feq` and `>`/`>=` with the operands
+swapped, so an unordered pair is unequal and neither below nor above, as
+C reads them; the precisions convert through `fcvt.d.s`/`fcvt.s.d`,
+integers to floats through `fcvt.d.w`/`wu`/`l`/`lu`, `bits` through `fmv`;
+`iN_saturating_fM` is `fcvt` with `rtz` (which saturates at the register)
+multiplied by the `feq x, x` bit, since the ISA sends NaN to the largest
+positive value and the helper to 0, then clamped to a narrow target with
+compare-and-branch selects; `iN_trunc_fM` traps on NaN (`feq x, x`) or
+outside the target's open interval (`flt`/`fle` against the bounds) before
+converting; `sqrt`, `abs`, `min_num`, `max_num`, and `fma` are `fsqrt`,
+`fsgnjx`, `fmin`, `fmax`, `fmadd` (the ISA's fmin/fmax are IEEE minNum/
+maxNum: the NaN-propagating `min`/`max` and the rounding intrinsics have
+no single instruction and stay with C). A call's floating-point result is
+readable in `fa0` as its integer result is in `a0` (the checker sees no
+callee signature). The freestanding target compiles soft-float, so a
+body touching floating point stays with the C backend there, with the
+reason. Executed under QEMU against the C backend: the AArch64 lane's
+span corpus (an index at the length traps), its array corpus without the
+float function (an index at the array's length traps), and its whole float
+corpus — fourteen functions including `main`, lowered for
+`linux/riscv64` and run on the bare machine under lp64d with the FPU
+enabled by the start code, the out-of-range `trunc` trapping. The
+guarded element load is proven; the loops are trusted on this lane
+(the verifier's loop coupling recognizes the AArch64 shapes — porting
+the recognizer is open), floats are trusted as on AArch64.
+
+**RV64 lane, fifth and sixth increments — record locals, tagged unions
+(landed).** A declared record type is placed by `semir.RecordLayoutWithSpec`
+exactly as the C backend asserts it (the shared placement of the AArch64
+lane); a local occupies whole 8-byte frame slots, a literal's fields
+evaluate before the name is bound and store at their offsets and widths
+(a Bool field as the 4-byte enum through `sw`/`lw`), `p.f` loads at the
+field's width and extension (`lw`/`lh`/`lhu`/`lb`/`lbu`/`ld`, `fld`/`flw`),
+whole-record copies move the exact bytes in the widest units both offsets
+are aligned to (the checker requires every `imm(sp)` access naturally
+aligned), nested records and scalar array fields are places in the same
+frame. A tagged union is the synthetic record of `semir.TaggedUnionLayout`
+— the u32 tag at 0, payloads at the union's offset — built with every byte
+zero first, the tag stored, the payload at its field; a `match` loads the
+tag once and compares per arm (`li k, tag; bne tag, k, next`), binds a
+scalar payload into a variable and a record payload into a fresh copy, and
+falls off every unmatched arm into the trap block (the checker proved
+exhaustiveness); a scalar scrutinee matches literal patterns the same way;
+a record-valued match (a Bool conditional over variants) lands every arm in
+one temp. Records and unions do not cross calls on this lane yet — the
+psABI's composite rules and the checker's composite binding are the next
+increment — so a record parameter, result, or argument leaves the function
+to the C backend. Executed under QEMU against the C backend: the AArch64
+lane's record corpus (lp64d, for its f64 field) and a union corpus over
+locals — variants with scalar and record payloads, value and statement
+matches with payload bindings and a wildcard, a record-valued conditional,
+a literal-pattern match, reassignment — the latter also through the
+AArch64 lane on an arm64 host.
+
+**RV64 lane, seventh increment — spans in functions that call (landed).**
+A span or view parameter arrives in its argument pair, which a `call`
+clobbers; the lowering of a function that calls parks the base, the raw
+length, and the normalized length in three callee-saved registers in the
+prologue (`mv sB, aB; mv sL, aL; slli sN, sL, 32; srli sN, sN, 32`, saved
+and restored with the variables) and walks the span from there, and a span
+parameter passed on to a callee moves its parked pair into consecutive
+argument registers. The checker follows the copies with facts that
+separate a span's *identity* from a register's *liveness*: `mv rD, aB`
+over a bound base makes `rD` a base of the same span, `mv rD, aL` over a
+raw length (or a copy of one) a raw length the normalization pair may
+read, and a normalized or half-normalized copy names its span by the
+bound raw length register — a name, not a live dependency, since a
+span's length never changes — so it survives the call that clobbers
+`a0`–`a7` and stays across labels when its own register is written once
+(a restore `ld sK, imm(sp)` is not a definition the body reads and does
+not count; it forgets the register's facts instead). What does not
+survive: the facts of every caller-saved register at a call (a pair
+parked there is gone — reading the callee's result in `a0` as a base is
+refused), and a clobbered raw register normalizes nothing further
+(`rawDead`), so `slli t, a1, 32` after a call proves no length.
+`TestRV64SpanMemoryChecker`: the parked pair walked after a call is
+accepted; the bound base after a call and a clobbered raw length
+normalized are refused. Executed under QEMU against the C backend: the
+AArch64 lane's span-call corpus — a view forwarded twice with `len` read
+after the calls, a store loop calling a helper for every element, two
+views parked in six callee-saved registers with a leaf called before and
+inside the loop.
+
+**RV64 lane, eighth increment — records and unions across the call
+boundary (landed).** The LP64 psABI's integer calling convention, as the
+C compiler applies it: a record or union of up to 16 bytes travels as
+`ceil(size/8)` consecutive argument registers, each an 8-byte chunk of its
+memory image (`Point {x: i32, y: i32}` is one, `Pair {lo, hi: u64}` two),
+a larger one by reference to a copy the caller owns; a result of up to 16
+bytes comes back in `a0` (and `a1`), a larger one is written into the area
+whose address the caller passes as a *hidden first argument* in `a0`, the
+declared parameters following in `a1`… (where AAPCS64 spends `x8`). The
+lowering stores a parameter's chunks into its record local in the
+prologue (or copies the referenced record in, whole words then a 4/2/1
+tail), loads a record argument's chunks from its local (or copies it into
+a fresh temp and passes `addi aN, sp, off`), places a record result by
+loading its chunks into `a0`/`a1` or copying into the area through its
+address parked in a callee-saved register (a call clobbers `a0`), and
+stores a callee's chunks into the temp that receives them. Records with
+floating-point fields stay with the C backend (the hardware floating-point
+convention passes them in `fa` registers; the AArch64 lane refuses HFAs the
+same way). The checker's contract gained the composite rules: a record
+parameter binds `aN` (or `aN, aN+1` for two chunks; a by-reference one
+`aN` alone, which becomes a readable region of the record's size), a
+two-chunk result may write `a1` and must before `ret`, the hidden result
+pointer binds `a0` as a writable region and shifts the parameters, a
+region in a register written once survives labels and calls (the parked
+area), `mv` copies a region, and `a1` is readable after a call exactly
+when the backend recorded the callee as returning two chunks
+(`asm.Function.TwoChunkResults`, from the program's signatures — the
+checker sees no callee signature; after any other call `a1` stays dead).
+`TestRV64CheckerComposites`: one and two chunks in and out, a by-reference
+read, the result area written, a two-chunk callee's `a1` read; refused: a
+two-chunk record bound alone and the converse, a second chunk not
+written, a store through the reference, accesses past the reference and
+past the result area, `a1` after an unknown callee. Executed under QEMU
+against the C backend: the AArch64 lane's record-ABI corpus (one- and
+two-chunk records in and out, a 24-byte record in by reference and out
+through the hidden pointer, a record argument that is a call's result, a
+record result chosen by a condition) and its union corpus (unions as
+parameters and results, matched by the caller on the call itself), every
+function lowered natively.
+
+**RV64 lane, ninth increment — the loop recognizer (landed).** The
+verifier's loop recognizer (§8) admits this lane's shapes: an exit test
+whose branch is preceded by one data-processing instruction setting up a
+comparison operand (`sext.w t0, len` or `li t0, k` — the ISA compares in
+the branch, so the native backend spells the exit that way), `ebreak` as
+the trap block a guard inside the body branches to, a byte element
+addressed by the unscaled index, and the setup register dropped from the
+loop-carried set (it holds no value the loop carries). The coupling
+already knew the lane's widenings (a 64-bit register carrying a 32-bit Oak
+variable zero- or sign-extended). With that, the native backend's RV64
+loops are proven as the AArch64 ones are: `sum`, `byte_total`, and
+`count_down` couple inductively (`acc↔s1, i↔s2` under `i ≤ len(v)`), the
+guarded element load `at` is proven, and `fact` agrees on every witness
+(its 64-bit product's continue-condition proof exceeds the budget on both
+lanes). Loops with `break` (an unconditional jump out of the body) and
+bodies addressing owned arrays through a frame address stay trusted on
+both lanes. `OAK_VERIFY_TRACE=1` prints each failed coupling attempt with
+the two sides' terms.
+
+**Executables linked by the Oak assembler (landed; `asm/executable.go`,
+`oak build -link oak`).** A program whose every body the native backend
+lowered links into a final ELF64 executable here, with no system linker
+and no C toolchain: `Compilation.EmitExecutable` refuses — naming the
+functions — unless every Oak function with a body was lowered natively
+(and the program declares `main`, no globals, and no extern bindings: a
+natively linked program has no C to provide them), then encodes the
+functions and lays them out after a `_start` stub at the target's load
+address (0x10000 on Linux; the start of RAM on the freestanding boards,
+0x80000000 for RISC-V's virt machine, 0x40000000 for AArch64's), resolves
+the calls between them — what the object writer would have handed a
+linker as relocations — by patching the words with range checks
+(`call26`/`jump26`/`condbr19` immediates on AArch64, the `auipc`/`jalr`
+pair of `call` on RV64 with the high part rounded so the low part is a
+signed 12-bit remainder), and writes one read-and-execute segment holding
+the text at the load address itself (so the stub is the first word there:
+the RISC-V virt board's reset vector jumps to the start of RAM, not to
+the ELF entry) with `.symtab`, `.strtab`, and `.shstrtab` for tools. Every
+offset and count is computed from the bytes and checked; a relocation
+kind the writer does not resolve, an undefined symbol, or a branch out of
+range is an error, never a silently wrong word. The `_start` stub is
+`.oakasm` text assembled by this package's own parser and encoder — the
+program's whole runtime: on Linux it calls the entry and leaves through
+the `exit` system call with its result (`svc #0` / `ecall`); on the
+freestanding boards it sets the stack pointer, calls the entry, and
+reports the result to the machine so an emulator exits with the program's
+code — the sifive_test finisher on RISC-V's virt (PASS, or FAIL carrying
+the code), semihosting `SYS_EXIT` with `ADP_Stopped_ApplicationExit` and
+the code on AArch64's (`hlt #0xf000`, now in the v1 table as a trap). A
+failed guard traps (`brk`/`ebreak`) with no handler: the machine stops
+there. Checked (`asm/executable_test.go`): the ELF parses, the entry is
+the load address, every function is a symbol, and the stub's decoded call
+lands on `oak_main`. Executed (`compiler/e2e_native_exec_test.go`): the
+integer, span-call, array, record-ABI, union, and second integer corpora
+linked for `freestanding/riscv64` and `freestanding/arm64` run under
+`qemu-system-riscv64 -M virt` and `qemu-system-aarch64 -M virt
+-semihosting-config` and exit with the programs' results, natively on both
+lanes; the Linux executables run under user-mode QEMU where it is
+installed (the CI cross-targets job); a program with a body outside the
+subset is refused by name. This is the first Oak program to reach a
+binary with no code but Oak's own: the lowering, the checking, the
+encoding, and the linking are the compiler's. What remains for
+self-hosting: the runtime the C shell still provides for the rest of the
+language (strings, the assertion message, the host boundary) as Oak or
+asm units, and the compiler itself in Oak.
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against) and fractional-LMUL forms. The term

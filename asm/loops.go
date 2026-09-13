@@ -24,6 +24,7 @@ package asm
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -55,10 +56,17 @@ func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 			continue
 		}
 		// The exit test: `cmp` then `b.cond`, or a compare-and-branch
-		// (cbz/cbnz/tbz/tbnz) on its own.
+		// (cbz/cbnz/tbz/tbnz) on its own; on the RV64 lane, whose branches
+		// compare two registers, one data-processing instruction may set
+		// up a comparison operand first (`sext.w t0, len` or `li t0, k`,
+		// as the native backend's loops spell it).
 		cmpIndex, exitIndex := -1, header+1
-		if first, isInstr := items[header+1].(Instruction); isInstr && first.Mnemonic == "cmp" {
-			cmpIndex, exitIndex = header+1, header+2
+		if first, isInstr := items[header+1].(Instruction); isInstr {
+			if first.Mnemonic == "cmp" || (isRV64Setup(first) && !isConditionalBranch(first.Mnemonic)) {
+				if next, isNext := items[header+2].(Instruction); isNext && isConditionalBranch(next.Mnemonic) {
+					cmpIndex, exitIndex = header+1, header+2
+				}
+			}
 		}
 		if exitIndex >= back {
 			continue
@@ -106,15 +114,39 @@ func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 	return loops
 }
 
-// isTrapBlock reports a label whose first instruction is `brk`: the trap
-// a bounds guard, a zero divisor, or a failed assert branches to.
+// isTrapBlock reports a label whose first instruction is `brk` (or
+// `ebreak` on the RV64 lane): the trap a bounds guard, a zero divisor, or a
+// failed assert branches to.
 func isTrapBlock(items []Item, index int) bool {
 	for i := index; i < len(items); i++ {
 		if instr, isInstr := items[i].(Instruction); isInstr {
-			return instr.Mnemonic == "brk"
+			return instr.Mnemonic == "brk" || instr.Mnemonic == "ebreak"
 		}
 	}
 	return false
+}
+
+// isRV64Setup reports an RV64 data-processing instruction that may precede
+// a loop's exit branch as its comparison-operand setup: a register
+// destination, no memory, no control transfer.
+func isRV64Setup(instr Instruction) bool {
+	base := rv64Base(instr)
+	if len(base.Operands) < 2 || rv64Branches[base.Mnemonic] || base.Mnemonic == "jal" || base.Mnemonic == "jalr" || base.Mnemonic == "call" || base.Mnemonic == "auipc" {
+		return false
+	}
+	if _, isReg := base.Operands[0].(Register); !isReg {
+		return false
+	}
+	for _, operand := range base.Operands {
+		if _, isMem := operand.(Memory); isMem {
+			return false
+		}
+	}
+	_, isALU := rv64ALU[base.Mnemonic]
+	_, isALUImm := rv64ALUImm[base.Mnemonic]
+	_, isALUW := rv64ALUW[base.Mnemonic]
+	_, isALUImmW := rv64ALUImmW[base.Mnemonic]
+	return isALU || isALUImm || isALUW || isALUImmW || base.Mnemonic == "lui" || instr.Mnemonic == "li" || base.Mnemonic == "slt" || base.Mnemonic == "sltu"
 }
 
 func isConditionalBranch(mnemonic string) bool {
@@ -167,6 +199,15 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// header value is already zero-extended from 32 bits, else 64-bit.
 	written := map[int]bool{}
 	allW := map[int]bool{}
+	// The exit test's operand setup (RV64: `sext.w t0, len` before the
+	// branch) writes a register that holds no loop-carried value: the
+	// state at the branch has it, so it is dropped here rather than paired.
+	setupDest := -1
+	if shape.cmp >= 0 && x.arch == ArchRV64 {
+		if dest, isReg := x.items[shape.cmp].(Instruction).Operands[0].(Register); isReg {
+			setupDest = dest.Num
+		}
+	}
 	for i := shape.bodyStart; i < shape.bodyEnd; i++ {
 		instr, isInstr := x.items[i].(Instruction)
 		if !isInstr || instr.Mnemonic == "cmp" || instr.Mnemonic == "tst" || isConditionalBranch(instr.Mnemonic) || isUnconditionalJump(instr.Mnemonic) || isStoreMnemonic(instr.Mnemonic) || rv64Stores[instr.Mnemonic] != 0 || len(instr.Operands) == 0 {
@@ -204,6 +245,9 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		}
 		fresh := paramTerm(ev.freshName(name), width)
 		value, bound := state.regs[reg]
+		if reg == setupDest {
+			bound = false
+		}
 		if !bound {
 			// Written in the body but holding nothing at the header: a
 			// scratch register. It takes a fresh value for the iteration and
@@ -230,7 +274,15 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// The continue condition: the exit test on the fresh state, negated.
 	condState := freshState.clone()
 	if shape.cmp >= 0 {
-		if reason, ok := step(x.items[shape.cmp].(Instruction), condState); !ok {
+		setup := x.items[shape.cmp].(Instruction)
+		var reason string
+		var ok bool
+		if x.arch == ArchRV64 {
+			reason, ok = x.stepRV64(setup, condState)
+		} else {
+			reason, ok = step(setup, condState)
+		}
+		if !ok {
 			return nil, reason, false
 		}
 	}
@@ -785,6 +837,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		return out
 	}
+	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
 	var search func(i int) bool
 	search = func(i int) bool {
 		if i == len(slots) {
@@ -792,6 +845,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				oakEv, asmEv := oakLoops[k], asmLoops[k]
 				if equal, decided := impliesEqual(bodyPremise(k, sigma, false), substitute(oakEv.cond, sigma), substitute(asmEv.cond, sigma), widthOfName); !decided || !equal {
 					failure = fmt.Sprintf("loop %d's continue conditions were not proven equal", k+1)
+					if trace {
+						fmt.Fprintf(os.Stderr, "verify %s: %s (decided=%v)\n  oak: %s\n  asm: %s\n  premise: %s\n", fn.Name, failure, decided, substitute(oakEv.cond, sigma), substitute(asmEv.cond, sigma), bodyPremise(k, sigma, false))
+					}
 					return false
 				}
 				premise := bodyPremise(k, sigma, true)
@@ -807,6 +863,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 					}
 					if equal, decided := impliesEqual(premise, next, substitute(asmEv.next[c.reg], sigma), widthOfName); !decided || !equal {
 						failure = fmt.Sprintf("one iteration of loop %d was not proven to preserve %s", k+1, c.show)
+						if trace {
+							fmt.Fprintf(os.Stderr, "verify %s: %s (decided=%v)\n  oak next: %s\n  asm next: %s\n", fn.Name, failure, decided, next, substitute(asmEv.next[c.reg], sigma))
+						}
 						return false
 					}
 				}

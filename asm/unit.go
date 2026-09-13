@@ -83,6 +83,12 @@ type Function struct {
 	// aggregate locals of the Oak body (docs/spec/94-assembler.md §8).
 	Records map[string]*ast.RecordLiteral
 	ADTs    map[string]*ast.ADTType
+	// TwoChunkResults names the callees whose result is a record of 9 to
+	// 16 bytes — two chunks, in a0 and a1 under the LP64 psABI — set by the
+	// native backend from the program's signatures, so the RV64 checker
+	// lets the body read a1 after a call to one of them (it sees no callee
+	// signature otherwise; a1 is dead after every other call).
+	TwoChunkResults map[string]bool
 }
 
 // Composite is a record or tagged-union type's shape at the boundary: its

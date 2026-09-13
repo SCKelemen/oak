@@ -137,6 +137,17 @@ loop:
   mv a0, a1
 small:
   ret`},
+		"trap block after ret": {"guard: (x, y: u64) -> u64", `
+  bind a0 = x
+  bind a1 = y
+  frame 16
+  addi sp, sp, -16
+  beqz a1, trap
+  divu a0, a0, a1
+  addi sp, sp, 16
+  ret
+trap:
+  ebreak`},
 		"call with ra saved": {"twice: (x: u64) -> u64", `
   bind a0 = x
   frame 16
@@ -177,6 +188,7 @@ func TestRV64CheckerRejects(t *testing.T) {
 		"sp by non-multiple":      {"f: (x: u64) -> u64", "  bind a0 = x\n  frame 32\n  addi sp, sp, -8\n  addi sp, sp, 8\n  ret", "multiple of 16"},
 		"unreachable":             {"f: (x: u64) -> u64", "  bind a0 = x\n  ret\n  mv a0, a0", "unreachable"},
 		"disp disagreement":       {"f: (x: u64) -> u64", "  bind a0 = x\n  frame 16\n  beqz a0, out\n  addi sp, sp, -16\nout:\n  ret", "disagrees"},
+		"label after ret unknown": {"f: (x: u64) -> u64", "  bind a0 = x\n  ret\nlater:\n  ret", "no known stack displacement"},
 		"read unwritten":          {"f: (x: u64) -> u64", "  bind a0 = x\n  clobber t0\n  add a0, a0, t0\n  ret", "neither bound nor written"},
 		"caller-saved after call": {"f: (x, y: u64) -> u64", "  bind a0 = x\n  bind a1 = y\n  frame 16\n  addi sp, sp, -16\n  sd ra, 8(sp)\n  call helper\n  add a0, a0, a1\n  ld ra, 8(sp)\n  addi sp, sp, 16\n  ret", "neither bound nor written"},
 		"never returns":           {"f: (x: u64) -> never", "  bind a0 = x\n  ret", "never-returning"},
@@ -411,11 +423,14 @@ loop:
   bltz a0, done
   blez a0, done
   bgtz a0, done
+  beqz a1, trap
   j done
 done:
   ld ra, 24(sp)
   addi sp, sp, 32
-  ret`
+  ret
+trap:
+  ebreak`
 	fn, errs := rv64Unit(t, "enc: (x, y: u64) -> u64", body)
 	if len(errs) != 0 {
 		t.Fatal(errs)
@@ -556,6 +571,54 @@ func TestRV64SpanMemoryChecker(t *testing.T) {
   ret
 empty:
   ebreak`},
+		"owned array in the frame": {"pick_rv: (i: u32) -> u32", `
+  bind a0 = i
+  clobber t0, t1, t2
+  frame 32
+  addi sp, sp, -32
+  sd zero, 0(sp)
+  sd zero, 8(sp)
+  li t0, 7
+  sw t0, 4(sp)
+  addi t1, sp, 0
+  slli t0, a0, 32
+  srli t0, t0, 32
+  li t2, 4
+  bgeu t0, t2, trap
+  slli t0, t0, 2
+  add t0, t1, t0
+  lw a0, 0(t0)
+  addi sp, sp, 32
+  ret
+trap:
+  ebreak`},
+		"span parked across a call": {"walk_rv: (v: []u32) -> u32", `
+  bind a0, a1 = v
+  clobber t0, t1, t2
+  frame 48
+  addi sp, sp, -48
+  sd ra, 0(sp)
+  sd s1, 16(sp)
+  sd s2, 24(sp)
+  sd s3, 32(sp)
+  mv s1, a0
+  mv s2, a1
+  slli s3, s2, 32
+  srli s3, s3, 32
+  call helper
+  li t0, 0
+  bgeu t0, s3, empty
+  slli t0, t0, 2
+  add t0, s1, t0
+  lw a0, 0(t0)
+  ld s1, 16(sp)
+  ld s2, 24(sp)
+  ld s3, 32(sp)
+  ld ra, 0(sp)
+  addi sp, sp, 48
+  ret
+empty:
+  ebreak`},
 		"constant bound within the minimum": {"third_rv: (v: []u64) -> u64", `
   bind a0, a1 = v
   clobber t0, t1, t2
@@ -578,15 +641,20 @@ empty:
 		}
 	}
 	rejections := map[string][3]string{
-		"no guard":                    {rv64FirstDecl, "  bind a0, a1 = v\n  lw a0, 0(a0)\n  ret", "without a length guard"},
-		"raw length as bound":         {rv64SumDecl, strings.Replace(rv64SumBody, "  bgeu t0, t1, done", "  bgeu t0, a1, done", 1), "only the sp frame, a bound span base under a length guard, or a guarded element address"},
-		"wrong scale":                 {rv64SumDecl, strings.Replace(rv64SumBody, "  slli t2, t0, 2", "  slli t2, t0, 3", 1), "guarded element address"},
-		"width mismatch":              {rv64SumDecl, strings.Replace(rv64SumBody, "  lw t2, 0(t2)", "  ld t2, 0(t2)", 1), "outside its 4-byte element"},
-		"offset past element":         {rv64SumDecl, strings.Replace(rv64SumBody, "  lw t2, 0(t2)", "  lw t2, 4(t2)", 1), "outside its 4-byte element"},
-		"store to a view":             {rv64FirstDecl, strings.Replace(rv64FirstBody, "  lw a0, 0(a0)", "  sw t0, 0(a0)\n  li a0, 0", 1), "read-only view"},
-		"guard lost at label":         {rv64FirstDecl, strings.Replace(rv64FirstBody, "  lw a0, 0(a0)", "again:\n  lw a0, 0(a0)", 1), "without a length guard"},
-		"past the minimum":            {rv64FirstDecl, strings.Replace(rv64FirstBody, "  lw a0, 0(a0)", "  lw a0, 4(a0)", 1), "reaches past the 1 elements"},
-		"guard on the wrong register": {rv64SumDecl, strings.Replace(rv64SumBody, "  slli t2, t0, 2", "  slli t2, t3, 2", 1), "guarded element address"},
+		"no guard":                        {rv64FirstDecl, "  bind a0, a1 = v\n  lw a0, 0(a0)\n  ret", "without a length guard"},
+		"raw length as bound":             {rv64SumDecl, strings.Replace(rv64SumBody, "  bgeu t0, t1, done", "  bgeu t0, a1, done", 1), "only the sp frame, a bound span base under a length guard, or a guarded element address"},
+		"wrong scale":                     {rv64SumDecl, strings.Replace(rv64SumBody, "  slli t2, t0, 2", "  slli t2, t0, 3", 1), "guarded element address"},
+		"width mismatch":                  {rv64SumDecl, strings.Replace(rv64SumBody, "  lw t2, 0(t2)", "  ld t2, 0(t2)", 1), "outside its 4-byte element"},
+		"offset past element":             {rv64SumDecl, strings.Replace(rv64SumBody, "  lw t2, 0(t2)", "  lw t2, 4(t2)", 1), "outside its 4-byte element"},
+		"store to a view":                 {rv64FirstDecl, strings.Replace(rv64FirstBody, "  lw a0, 0(a0)", "  sw t0, 0(a0)\n  li a0, 0", 1), "read-only view"},
+		"guard lost at label":             {rv64FirstDecl, strings.Replace(rv64FirstBody, "  lw a0, 0(a0)", "again:\n  lw a0, 0(a0)", 1), "without a length guard"},
+		"past the minimum":                {rv64FirstDecl, strings.Replace(rv64FirstBody, "  lw a0, 0(a0)", "  lw a0, 4(a0)", 1), "reaches past the 1 elements"},
+		"guard on the wrong register":     {rv64SumDecl, strings.Replace(rv64SumBody, "  slli t2, t0, 2", "  slli t2, t3, 2", 1), "guarded element address"},
+		"bound base after a call":         {"walk_rv: (v: []u32) -> u32", "  bind a0, a1 = v\n  clobber t0, t1\n  frame 48\n  addi sp, sp, -48\n  sd ra, 0(sp)\n  sd s2, 24(sp)\n  sd s3, 32(sp)\n  mv s2, a1\n  slli s3, s2, 32\n  srli s3, s3, 32\n  call helper\n  li t0, 0\n  bgeu t0, s3, empty\n  slli t0, t0, 2\n  add t0, a0, t0\n  lw a0, 0(t0)\n  ld s2, 24(sp)\n  ld s3, 32(sp)\n  ld ra, 0(sp)\n  addi sp, sp, 48\n  ret\nempty:\n  ebreak", "only the sp frame, a bound span base under a length guard, or a guarded element address"},
+		"clobbered raw length normalized": {"walk_rv: (v: []u32) -> u32", "  bind a0, a1 = v\n  clobber t0, t1\n  frame 32\n  addi sp, sp, -32\n  sd ra, 0(sp)\n  sd s1, 16(sp)\n  mv s1, a0\n  call helper\n  slli t1, a1, 32\n  srli t1, t1, 32\n  li t0, 0\n  bgeu t0, t1, empty\n  slli t0, t0, 2\n  add t0, s1, t0\n  lw a0, 0(t0)\n  ld s1, 16(sp)\n  ld ra, 0(sp)\n  addi sp, sp, 32\n  ret\nempty:\n  ebreak", "neither bound nor written"},
+		"frame array past the frame":      {"pick_rv: (i: u32) -> u32", "  bind a0 = i\n  clobber t0, t1, t2\n  frame 16\n  addi sp, sp, -16\n  addi t1, sp, 0\n  li t2, 5\n  bgeu a0, t2, trap\n  slli t0, a0, 2\n  add t0, t1, t0\n  lw a0, 0(t0)\n  addi sp, sp, 16\n  ret\ntrap:\n  ebreak", "guarded element address"},
+		"frame array without a guard":     {"pick_rv: (i: u32) -> u32", "  bind a0 = i\n  clobber t0, t1\n  frame 16\n  addi sp, sp, -16\n  addi t1, sp, 0\n  slli t0, a0, 2\n  add t0, t1, t0\n  lw a0, 0(t0)\n  addi sp, sp, 16\n  ret", "guarded element address"},
+		"frame array wrong scale":         {"pick_rv: (i: u32) -> u32", "  bind a0 = i\n  clobber t0, t1, t2\n  frame 16\n  addi sp, sp, -16\n  addi t1, sp, 0\n  li t2, 4\n  bgeu a0, t2, trap\n  slli t0, a0, 3\n  add t0, t1, t0\n  lw a0, 0(t0)\n  addi sp, sp, 16\n  ret\ntrap:\n  ebreak", "guarded element address"},
 	}
 	for name, c := range rejections {
 		findings := rv64Check(t, c[0], c[1])
@@ -805,5 +873,96 @@ func TestRV64FloatEncoderAgreesWithGNUAs(t *testing.T) {
 			offset += 4
 		}
 		t.Fatalf("encodings differ at byte %d: ours %x, GNU as %x", offset, ours[offset:min(offset+4, len(ours))], theirs[offset:min(offset+4, len(theirs))])
+	}
+}
+
+// Composites under the LP64 psABI (docs/spec/94-assembler.md §9): a record
+// of up to 16 bytes binds one chunk per 8 bytes, a larger one its
+// address (a readable region of its size); a result of up to 16 bytes
+// leaves in a0 and a1, a larger one is written through the area whose
+// address arrives as the hidden first argument in a0.
+func TestRV64CheckerComposites(t *testing.T) {
+	composites := map[string]Composite{
+		"Point": {Size: 8, Fields: []CompositeField{{Name: "x", Offset: 0, Size: 4, Scalar: "i32"}, {Name: "y", Offset: 4, Size: 4, Scalar: "i32"}}},
+		"Pair":  {Size: 16, Fields: []CompositeField{{Name: "lo", Offset: 0, Size: 8, Scalar: "u64"}, {Name: "hi", Offset: 8, Size: 8, Scalar: "u64"}}},
+		"Wide":  {Size: 24, Fields: []CompositeField{{Name: "a", Offset: 0, Size: 8, Scalar: "u64"}, {Name: "b", Offset: 8, Size: 8, Scalar: "u64"}, {Name: "c", Offset: 16, Size: 4, Scalar: "u32"}}},
+	}
+	check := func(decl, body string, twoChunk map[string]bool) []string {
+		fn, errs := rv64Unit(t, decl, body)
+		if len(errs) != 0 {
+			t.Fatalf("parse: %v", errs)
+		}
+		fn.Composites = composites
+		fn.TwoChunkResults = twoChunk
+		sig, err := parseSignature(decl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return Check(fn, sig, map[string]bool{"helper": true, "pair_of": true})
+	}
+	accepted := map[string][2]string{
+		"one chunk in and out": {"shift_rv: (p: Point) -> Point", `
+  bind a0 = p
+  clobber t0
+  frame 16
+  addi sp, sp, -16
+  sd a0, 0(sp)
+  lw t0, 0(sp)
+  addiw t0, t0, 1
+  sw t0, 0(sp)
+  ld a0, 0(sp)
+  addi sp, sp, 16
+  ret`},
+		"two chunks swapped": {"swap_rv: (p: Pair) -> Pair", `
+  bind a0, a1 = p
+  clobber t0
+  mv t0, a0
+  mv a0, a1
+  mv a1, t0
+  ret`},
+		"by reference read": {"wide_c_rv: (w: Wide) -> u32", `
+  bind a0 = w
+  lw a0, 16(a0)
+  ret`},
+		"result area written": {"make_rv: (k: u64) -> Wide", `
+  bind a1 = k
+  sd a1, 0(a0)
+  sd a1, 8(a0)
+  sw a1, 16(a0)
+  ret`},
+		"two-chunk callee result read": {"hi_rv: (k: u64) -> u64", `
+  bind a0 = k
+  frame 16
+  addi sp, sp, -16
+  sd ra, 8(sp)
+  call pair_of
+  mv a0, a1
+  ld ra, 8(sp)
+  addi sp, sp, 16
+  ret`},
+	}
+	for name, c := range accepted {
+		if findings := check(c[0], c[1], map[string]bool{"pair_of": true}); len(findings) != 0 {
+			t.Errorf("%s: %v", name, findings)
+		}
+	}
+	rejected := map[string][3]string{
+		"two chunks bound alone":      {"swap_rv: (p: Pair) -> Pair", "  bind a0 = p\n  ret", "arrives as two chunks"},
+		"one chunk bound as two":      {"shift_rv: (p: Point) -> Point", "  bind a0, a1 = p\n  ret", "arrives in a0 alone"},
+		"second chunk not written":    {"pair_rv: (k: u64) -> Pair", "  bind a0 = k\n  ret", "second chunk a1"},
+		"store through the reference": {"wide_c_rv: (w: Wide) -> u32", "  bind a0 = w\n  sw a0, 16(a0)\n  lw a0, 16(a0)\n  ret", "read-only"},
+		"past the reference":          {"wide_c_rv: (w: Wide) -> u32", "  bind a0 = w\n  lw a0, 24(a0)\n  ret", "outside its 24-byte element"},
+		"past the result area":        {"make_rv: (k: u64) -> Wide", "  bind a1 = k\n  sd a1, 24(a0)\n  ret", "outside its 24-byte element"},
+		"a1 after an unknown callee":  {"hi_rv: (k: u64) -> u64", "  bind a0 = k\n  frame 16\n  addi sp, sp, -16\n  sd ra, 8(sp)\n  call helper\n  mv a0, a1\n  ld ra, 8(sp)\n  addi sp, sp, 16\n  ret", "neither bound nor written"},
+	}
+	for name, c := range rejected {
+		findings := check(c[0], c[1], map[string]bool{"pair_of": true})
+		if len(findings) == 0 {
+			t.Errorf("%s: accepted", name)
+			continue
+		}
+		if !strings.Contains(strings.Join(findings, "\n"), c[2]) {
+			t.Errorf("%s: findings %v lack %q", name, findings, c[2])
+		}
 	}
 }

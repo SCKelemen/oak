@@ -129,6 +129,9 @@ func init() {
 	}
 	add("hint", instructionSpec{forms: []form{{opImm}}})
 	add("brk", instructionSpec{forms: []form{{opImm}}, branch: branchReturn})
+	// hlt: the halting breakpoint, and the A64 semihosting call (`hlt
+	// #0xf000`) the executable writer's start stub leaves the machine by.
+	add("hlt", instructionSpec{forms: []form{{opImm}}, branch: branchReturn})
 	for _, name := range []string{"svc", "hvc", "smc"} {
 		add(name, instructionSpec{forms: []form{{opImm}}, system: true, clobbersCallerSaved: true})
 	}

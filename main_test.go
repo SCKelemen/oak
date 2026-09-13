@@ -667,3 +667,15 @@ func TestProveVerificationExample(t *testing.T) {
 		}
 	}
 }
+
+// TestMain lets the test binary stand in as the compiler: the prover
+// written in Oak spawns the executable that runs it for the compiled
+// witness (`oak build -o binary driver.oak`, prove/solver/witness.oak),
+// which under `go test` is this binary.
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == "build" {
+		main()
+		return
+	}
+	os.Exit(m.Run())
+}
