@@ -1542,6 +1542,24 @@ arm staging the result while another reads a parameter, a float result
 beside integer homes, and a leaf with more locals than free argument
 registers — natively against the C backend and the portable realization,
 the scalar leaves proven.
+**Twenty-first increment — the limit of one home per variable.** With
+the registers of ended scopes returning to their pools (the recycling
+above), 194 functions prove, the rows are unchanged, and the prover's
+time is unchanged within noise — because the function every profile puts
+first, `apply`, gains nothing from it: its six parameters, its two
+accumulators, and the three locals its loop body declares at the top all
+live across the body's calls, so after the ten callee-saved registers the
+rest go to frame slots, and the loop reads and writes the frame 296 times
+per iteration's worth of code. That is the boundary of a lowering that
+gives every variable one home for the whole function. What the C compiler
+does here is liveness: a variable not live across a call may sit in a
+caller-saved register (x9–x15 beside the temporaries, the free argument
+registers) and only what is live across a `bl` needs a callee-saved
+register or a slot around that call. The next increment is that
+allocator — per-variable live ranges over the statement tree, homes
+chosen by whether a range crosses a call, the seam checker unchanged
+(every register it admits today) and the verifier unchanged (registers by
+value) — measured on `apply` first.
 Next increments: the fallback reasons above in the order of their counts,
 so the prover lowers whole; then the verifier past `bl` and unit results —
 calls by inlining or by the callee's proven contract, and effects through
