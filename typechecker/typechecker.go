@@ -6790,10 +6790,9 @@ func (tc *TypeChecker) checkDispatchClauses(program *ast.Program) {
 				tc.addError(fn.Name, "dispatch: %s is itself dispatched; realizations are ordinary functions", slot.Realization)
 				continue
 			}
-			if realization.Body == nil {
-				tc.addError(fn.Name, "dispatch: %s has no body", slot.Realization)
-				continue
-			}
+			// A definition-less realization is legal: its body is an
+			// .oakasm unit's (docs/spec/93-simd.md section 6, asm units
+			// as realizations); the asm gate requires the unit.
 			if want, got := signature(fn), signature(realization); want != got {
 				tc.addError(fn.Name, "dispatch: %s has signature %s, but %s is %s; a realization has the identical signature", slot.Realization, got, fn.Name.Value, want)
 			}

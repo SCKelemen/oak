@@ -2039,6 +2039,9 @@ func (cg *CodeGenerator) emitAsmUnits() {
 	}
 	if cg.nativeAsm {
 		for _, fn := range cg.asmFunctions {
+			if _, isRealization := cg.realizationFeature[fn.Name]; isRealization {
+				fn.Inert = true
+			}
 			cg.write(asm.EmitCExtern(fn, cg.cFunctionName(fn.Name)))
 		}
 		return
@@ -2046,6 +2049,9 @@ func (cg *CodeGenerator) emitAsmUnits() {
 	cg.write(asm.CPrelude)
 	cg.write("\n")
 	for _, fn := range cg.asmFunctions {
+		if _, isRealization := cg.realizationFeature[fn.Name]; isRealization {
+			fn.Inert = true
+		}
 		cg.write(asm.EmitC(fn, cg.cFunctionName(fn.Name), cg.cFunctionName))
 	}
 }

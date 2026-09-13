@@ -476,7 +476,7 @@ a target library if their machine contract is explicit.
 
 ## 6. Realizations and the processor probe
 
-**Status: landed (first increment) — `sve`, `sve2`, `rvv`; design in
+**Status: landed — `sve`, `sve2`, `rvv`, `crc`, `sha2`; design in
 `docs/notes/cpu-dispatch-design-2026-09.md`.**
 
 A binary built at a target's baseline runs on processors with more. A
@@ -494,11 +494,28 @@ count_sevens_sve: (xs: []u8) -> u32 = {
 
 **The clause.** `dispatch { feature: function, ... }` follows the effect
 and laws clauses, at most once. Each slot names a feature of the closed
-catalog — `sve`, `sve2` (AArch64), `rvv` (RISC-V V) — and a top-level
-function of the **identical signature** (parameter types and return type),
-which is not itself dispatched. A feature appears at most once. A slot
-whose feature belongs to another architecture is inert on this target:
-not compiled, not consulted.
+catalog — `sve`, `sve2`, `crc` (FEAT_CRC32), `sha2` (FEAT_SHA256) on
+AArch64; `rvv` (RISC-V V) — and a top-level function of the **identical
+signature** (parameter types and return type), which is not itself
+dispatched. A feature appears at most once. A slot whose feature belongs
+to another architecture is inert on this target: not compiled, not
+consulted.
+
+**An asm unit as a realization.** The realization may be a
+definition-less declaration whose body an `.oakasm` unit provides
+(`94-assembler.md` §7): then the dispatched function's Oak body is the
+portable definition — the meaning, what the extraction sees — and the unit
+runs only where the processor has the feature. Off the unit's
+architecture the declaration is inert (nothing is emitted, not the
+`#error` a lone body-less declaration gets), and the interpreter, which
+has no processor, runs the body. This is how the hash package's AArch64
+kernels are wired (`stdlib/hash.oak`, `hash.arm64.oakasm`):
+`crc32c_step7` dispatches to `crc32c_step7_asm` on `crc` and
+`sha256_block_hw` to `sha256_block_asm` on `sha2`, so an ARMv8.0 core
+without the extension computes the same checksum from the Oak body
+instead of faulting on `crc32cx`
+(`compiler/e2e_hash_dispatch_test.go`; the hardware and portable paths
+still agree with Go's digests, `compiler/e2e_stdlib_crc_sha_hw_test.go`).
 
 **The body is the meaning.** The interpreter runs it, the Lean extraction
 and `oak prove` see it. A slot is the author's claim that its realization
@@ -520,9 +537,9 @@ the probe first. The probe by target:
 
 | Target | Probe |
 | --- | --- |
-| `linux/arm64` | `getauxval(AT_HWCAP)` bit 22 (`HWCAP_SVE`); `AT_HWCAP2` bit 1 (`HWCAP2_SVE2`) |
-| `darwin/arm64` | `sysctlbyname("hw.optional.arm.FEAT_SVE")`; absent reads as 0 |
-| `freestanding/arm64` | `MRS ID_AA64PFR0_EL1` bits [35:32] (SVE), `ID_AA64ZFR0_EL1` bits [3:0] ≥ 1 (SVE2); EL1 or higher |
+| `linux/arm64` | `getauxval(AT_HWCAP)` bits 22 (`HWCAP_SVE`), 7 (`HWCAP_CRC32`), 6 (`HWCAP_SHA2`); `AT_HWCAP2` bit 1 (`HWCAP2_SVE2`) |
+| `darwin/arm64` | `sysctlbyname` of `hw.optional.arm.FEAT_SVE`, `FEAT_SVE2`, `hw.optional.armv8_crc32`, `hw.optional.arm.FEAT_SHA256`; absent reads as 0 |
+| `freestanding/arm64` | `MRS ID_AA64PFR0_EL1` bits [35:32] (SVE), `ID_AA64ZFR0_EL1` bits [3:0] ≥ 1 (SVE2), `ID_AA64ISAR0_EL1` bits [19:16] (CRC32) and [15:12] (SHA2); EL1 or higher |
 | `linux/riscv64` | `riscv_hwprobe` (syscall 258), key `IMA_EXT_0`, bit 2 (`V`) |
 | `freestanding/riscv64` | none (`misa` is M-mode only): `rvv` is available only when the build guarantees it |
 
@@ -532,10 +549,12 @@ freestanding ones; an uninitialized word reads as "no features" and
 selects the body.
 
 **The static rule.** When the build baseline guarantees a feature
-(`-cpu generic+sve` defines `__ARM_FEATURE_SVE`; `+v` defines
-`__riscv_vector`), the dispatched function *is* that realization: no
-probe bit is consulted, no branch emitted. Runtime dispatch is only ever
-the difference between the baseline and the processor.
+(`-cpu generic+sve` defines `__ARM_FEATURE_SVE`, `+crc` `__ARM_FEATURE_CRC32`,
+`+sha2` `__ARM_FEATURE_SHA2`; `+v` defines `__riscv_vector`), the
+dispatched function *is* that realization: no probe bit is consulted, no
+branch emitted. Runtime dispatch is only ever the difference between the
+baseline and the processor. Under `-DOAK_PORTABLE_INTRINSICS` nothing
+dispatches: the realizations are not compiled and every body runs.
 
 **The call.** No function pointers. The dispatched function's C body
 opens with one branch per applicable slot, in clause order, on the
