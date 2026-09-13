@@ -2460,6 +2460,56 @@ sail-riscv master fails at the same place: the generated `Defs.lean`
 declares a structure over a type not yet in scope, a Sail Lean-backend
 matter).
 
+**Statement conditionals and `i32` indices (2026-09-13).** Three statement
+shapes the standard library uses stayed with the C backend on both lanes:
+a conditional with no false arm in statement position (`c ? { … }`), a
+chained conditional (`a ? { … } | b ? { … } | { … }`) as a statement, and
+on RV64 an `i32` element index. The lanes lower the first two as the
+branch structure they are (`statementConditional`, `lowerArm`: an absent
+arm falls through, a chained arm is the next test), and the verifier's
+lowering takes the same shapes (`asm/verify.go`, `statementConditional`).
+An `i32` index is kept in its canonical sign-extended form and guarded as
+an unsigned quantity: a negative index is a huge unsigned value the guard
+traps, exactly as the C backend's cast does. The RV64 prologue rule for
+functions that park span parameters in callee-saved registers without
+frame variables is fixed en route (the saves need a frame). Pinned by
+`compiler/e2e_native_statement_shapes_test.go`.
+
+**Constant tables (2026-09-13).** A top-level array of fixed-width
+integers with a literal initializer that no statement writes — no
+assignment, no element assignment, no mutable borrow — is a constant
+table (`nativegen.GlobalArrayOf`, `compiler.nativeGlobalArrays`). Its
+bytes are a data symbol of the object (`asm.DataSymbol`, `data_<name>`
+under the backend's C symbol prefix) placed in a read-only data section
+after the text: `.rodata` in ELF, `__TEXT,__const` in Mach-O, and in the
+executable the tail of the one loadable segment. A body takes the table's
+address with one pseudo-instruction per lane — `adrl xR, sym` (`adrp` +
+`add`, relocation kind `adrl21`: `R_AARCH64_ADR_PREL_PG_HI21` and
+`ADD_ABS_LO12_NC`, or the Mach-O `PAGE21`/`PAGEOFF12` pair) and `la rd,
+sym` (`auipc` + `addi`, kind `riscv_pcrel`: `R_RISCV_PCREL_HI20` and
+`PCREL_LO12_I` against a local label) — and reads elements through it as
+it reads a record's array: a literal index inside the table is a plain
+offset, any other goes under the constant guard `cmp wI, #N; b.hs trap`
+(a bound past the compare immediate is materialized in a register first,
+which the checker reads as the same constant guard) or `li; bgeu`. The
+checkers know the address as a read-only region of the table's size
+(`asm.Function.Globals`): an element region derives from it as from a
+frame array (`elementRegion`, `deriveTableRegion`), a store through it
+is refused, a symbol the program does not declare is refused. A view of
+a table (`view(&T)`) is a span whose base is the table's address and
+whose length is its element count; `span(&T)` is refused, the table
+being read-only. The verifier does not yet model a table read: a body
+with `adrl`/`la` is trusted with that reason. A constant scalar global is
+folded into every body that reads it, so a natively linked program admits
+both kinds of global (`allNative`). On the stdlib-bearing program the
+tables lowered every body that indexed a global on both lanes with no
+checker refusal, and `oak build -link oak` moved from refusing the first
+global to naming the bodies still with the C backend (36 on AArch64, 120
+on RV64). Pinned: `compiler/e2e_native_tables_test.go` (both lanes
+native; the C build agrees; the freestanding executables carry the bytes
+and run under QEMU), `asm/isa_test.go` (the `adrl` sample), the object
+and executable writers' tests.
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against) and fractional-LMUL forms. The term

@@ -745,6 +745,16 @@ func (g *generator) placeOf(expr ast.Expression) (place, error) {
 		if arr, isArray := g.arrays[e.Value]; isArray {
 			return place{arr: arr}, nil
 		}
+		if gl, isTable := g.tables[e.Value]; isTable {
+			// A constant table: its address in a scratch register (adrl),
+			// a read-only array at offset 0 from it.
+			r, err := g.alloc(scalars["u64"])
+			if err != nil {
+				return place{}, err
+			}
+			g.emit("adrl", xr(r), asm.Symbol{Name: gl.Symbol})
+			return place{arr: &arrayLocal{elem: scalars[gl.Elem], length: gl.Length, inReg: true, reg: r, temps: []int{r}, readOnly: true}}, nil
+		}
 	case *ast.IndexExpression:
 		if !e.Dot {
 			// An element of an array or span of records: `pool[i]`.
@@ -827,9 +837,9 @@ func (g *generator) recordElement(arr *arrayLocal, index ast.Expression) (place,
 		return place{}, err
 	}
 	g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
-	g.usedTrap = true
-	g.emit("cmp", wr(r), imm(arr.length))
-	g.branch("hs", g.trap)
+	if err := g.constantGuard(r, arr.length); err != nil {
+		return place{}, err
+	}
 	if stride > 0 && stride&(stride-1) == 0 && stride <= 16 {
 		g.emit("add", xr(element), xr(base), asm.Extended{Reg: wr(r), Kind: "uxtw", Amount: int64(log2Bytes(int(stride)))})
 	} else {
@@ -1131,6 +1141,9 @@ type generator struct {
 	// enclosing expression's result and not yet written holds nothing, and
 	// the checker refuses a spill that reads it).
 	defined map[int]bool
+	// tables are the program's constant tables (Lane.Tables), read
+	// through their data symbols' addresses.
+	tables map[string]GlobalArray
 	// constants are the program's folded constant globals
 	// (asm.Function.Constants): an identifier naming one, not shadowed by
 	// a local, materializes as an immediate at its declared type.
@@ -1210,6 +1223,9 @@ type Lane struct {
 	// name with their storage width; the generator records the ones a body
 	// uses in asm.Function.Globals. Nil leaves every global unsupported.
 	Globals map[string]asm.Global
+	// Tables are the program's constant tables by Oak name (GlobalArrayOf):
+	// a body reads one through its data symbol's address.
+	Tables map[string]GlobalArray
 }
 
 // GlobalStorage is the addressed storage of a top-level scalar of the
@@ -1230,15 +1246,96 @@ func globalStorageBits(typ scalar) int {
 	return typ.bits
 }
 
+// GlobalArray is a constant top-level array the program reads — a table:
+// its data symbol in the object (asm.DataSymbol), its element type by
+// name, and its length. A body addresses it with `adrl` (AArch64) or `la`
+// (RV64) and reads guarded elements through the address, read-only
+// (docs/spec/94-assembler.md §9, constant tables).
+type GlobalArray struct {
+	Symbol string
+	Elem   string
+	Length int64
+}
+
+// ElemSize is the width of one element in bytes (the table's alignment).
+func (gl GlobalArray) ElemSize() int64 {
+	if elem, ok := scalars[gl.Elem]; ok {
+		return int64(elem.bits / 8)
+	}
+	return 1
+}
+
+// GlobalArrayOf reads a top-level declaration as a constant table: an
+// owned array `[N]T` of fixed-width integers with a literal initializer
+// (every element a literal or a conversion of one; none for all zeros),
+// returning the table and its little-endian bytes. The symbol is
+// `data_<name>` before the backend's C symbol prefix (the object names it
+// as it names the functions). Anything else — a
+// float element, a computed element, a partial literal — is not one, and
+// stays with the C backend. Whether the program writes the array is the
+// caller's question (the compiler refuses a mutated table).
+func GlobalArrayOf(decl *ast.VariableDeclaration) (GlobalArray, []byte, bool) {
+	if decl == nil || decl.Name == nil || decl.Type == nil {
+		return GlobalArray{}, nil, false
+	}
+	elem, length, isArray := arrayOf(decl.Type)
+	if !isArray || elem.isFloat || elem.isVec || elem.bits < 8 || elem.bits > 64 {
+		return GlobalArray{}, nil, false
+	}
+	width := int64(elem.bits / 8)
+	bytes := make([]byte, length*width)
+	if decl.Value != nil {
+		literal, isLiteral := decl.Value.(*ast.ArrayLiteral)
+		if !isLiteral {
+			return GlobalArray{}, nil, false
+		}
+		if len(literal.Elements) != 0 && int64(len(literal.Elements)) != length {
+			return GlobalArray{}, nil, false
+		}
+		for i, element := range literal.Elements {
+			operand, negative := element, false
+			if prefix, isPrefix := element.(*ast.PrefixExpression); isPrefix && prefix.Operator == "-" {
+				operand, negative = prefix.Right, true
+			}
+			value, isConst := constantValue(operand)
+			if !isConst {
+				return GlobalArray{}, nil, false
+			}
+			if negative {
+				if !elem.signed {
+					return GlobalArray{}, nil, false
+				}
+				value = -value
+			}
+			bits := uint64(value)
+			for b := int64(0); b < width; b++ {
+				bytes[int64(i)*width+b] = byte(bits >> (8 * uint(b)))
+			}
+		}
+	}
+	return GlobalArray{Symbol: "data_" + decl.Name.Value, Elem: elem.name, Length: length}, bytes, true
+}
+
+// tableSizes is the checker's table of the data symbols a body may address.
+func tableSizes(tables map[string]GlobalArray) map[string]int64 {
+	out := map[string]int64{}
+	for _, gl := range tables {
+		if elem, ok := scalars[gl.Elem]; ok {
+			out[gl.Symbol] = gl.Length * int64(elem.bits/8)
+		}
+	}
+	return out
+}
+
 // CompileFor lowers one Oak function on a lane (docs/spec/94-assembler.md
 // §9). A lane without a native backend leaves the function to the C
 // backend with the reason.
 func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	switch lane.Arch {
 	case "", asm.ArchArm64:
-		return compileArm64(fn, functions, records, adts, constants, lane.Globals, tc, lane.ElideProven)
+		return compileArm64(fn, functions, records, adts, constants, lane.Globals, tc, lane.ElideProven, lane.Tables)
 	case asm.ArchRV64:
-		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat)
+		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables)
 	}
 	return nil, unsupported("no native backend for the %s lane", lane.Arch)
 }
@@ -1249,7 +1346,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 // constant globals (docs/spec/90-backend.md §8a); tc is the checker that
 // typed the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
-	return compileArm64(fn, functions, records, adts, constants, nil, tc, false)
+	return compileArm64(fn, functions, records, adts, constants, nil, tc, false, nil)
 }
 
 // ElidedGuards reports how many element guards a lowering left out under
@@ -1262,7 +1359,7 @@ var elidedGuards = map[*asm.Function]int{}
 // caller-saved home or a frame slot: the second pass is worth its cost.
 var pressured = map[*asm.Function]bool{}
 
-func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool) (*asm.Function, error) {
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool, tables map[string]GlobalArray) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
@@ -1272,13 +1369,13 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	if body := inlineBody(fn, functions); body != fn.Body {
 		expanded := *fn
 		expanded.Body = body
-		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, tc, elide); err == nil {
+		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, tc, elide, tables); err == nil {
 			return out, nil
 		} else if _, outside := err.(Unsupported); !outside {
 			return nil, err
 		}
 	}
-	return compileArm64Body(fn, functions, records, adts, constants, globals, tc, elide)
+	return compileArm64Body(fn, functions, records, adts, constants, globals, tc, elide, tables)
 }
 
 // compileArm64Body lowers one function body as given — twice: the first
@@ -1289,8 +1386,8 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 // in registers instead of frame slots. A second pass the lowering refuses
 // (it should not: a variable in a register needs no temporary a slot did)
 // leaves the first pass's code.
-func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool) (*asm.Function, error) {
-	first, peak, err := compileArm64Pass(fn, functions, records, adts, constants, globals, tc, elide, 0)
+func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool, tables map[string]GlobalArray) (*asm.Function, error) {
+	first, peak, err := compileArm64Pass(fn, functions, records, adts, constants, globals, tc, elide, tables, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1298,7 +1395,7 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	if spare <= 0 || !pressured[first] {
 		return first, nil // nothing to gain: every variable already has a register
 	}
-	second, _, err := compileArm64Pass(fn, functions, records, adts, constants, globals, tc, elide, spare)
+	second, _, err := compileArm64Pass(fn, functions, records, adts, constants, globals, tc, elide, tables, spare)
 	if err != nil {
 		return first, nil
 	}
@@ -1309,11 +1406,11 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 // registers, from x15 down, serve as variable homes instead of
 // temporaries. It reports the peak number of integer scratch registers
 // live at once.
-func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool, spare int) (*asm.Function, int, error) {
+func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool, tables map[string]GlobalArray, spare int) (*asm.Function, int, error) {
 	if len(fn.Parameters) > 8 {
 		return nil, 0, unsupported("more than eight parameters")
 	}
-	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, usedGlobals: map[string]asm.Global{}, line: fn.Token.Line, elide: elide}
+	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, elide: elide}
 	// A span pair parked in callee-saved registers survives a call, and a
 	// result: the result leaves in x0 (and x1), where a span parameter's
 	// pair is bound, and the checker's span facts flow in text order — a
@@ -1493,7 +1590,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	if frame > 4080 {
 		return nil, 0, unsupported("a frame of %d bytes", frame)
 	}
-	out := &asm.Function{Name: NativeSymbol(fn), Signature: fn, Line: fn.Token.Line, Fallback: true, Records: records, ADTs: adts, System: g.system}
+	out := &asm.Function{Name: NativeSymbol(fn), Signature: fn, Line: fn.Token.Line, Fallback: true, Records: records, ADTs: adts, System: g.system, Tables: tableSizes(g.tables)}
 	if len(g.usedGlobals) > 0 {
 		out.Globals = g.usedGlobals
 	}
@@ -3071,11 +3168,27 @@ func (g *generator) spanValue(expr ast.Expression, target *span, baseReg, lenReg
 		if target != nil && (arr.elem != target.elem || arr.elemLayout != target.elemLayout) {
 			return span{}, false, unsupported("%s over %s where the span type's elements are expected", fn.Value, borrow.Right.String())
 		}
-		if arr.inReg {
+		if arr.inReg && !arr.readOnly {
 			return span{}, false, unsupported("%s of an array inside a computed element", fn.Value)
 		}
 		out.elem, out.elemLayout, out.writable, out.array, out.frameLen = arr.elem, arr.elemLayout, shape.writable, arr, arr.length
-		g.emit("add", xr(baseReg), sp(), imm(g.slotMem(arr.offset).Offset))
+		if arr.inReg {
+			// A constant table's address (the checker copies the region).
+			if shape.writable {
+				return span{}, false, unsupported("span of the constant table %s (read-only)", borrow.Right.String())
+			}
+			if err := g.addOffset(baseReg, arr.reg, arr.offset); err != nil {
+				return span{}, false, err
+			}
+			g.releaseTemps(arr.temps)
+			// The view's elements are addressed from its own base register
+			// (the table's temporary is released here and may be reused).
+			rebased := *arr
+			rebased.reg, rebased.offset, rebased.temps = baseReg, 0, nil
+			out.array = &rebased
+		} else {
+			g.emit("add", xr(baseReg), sp(), imm(g.slotMem(arr.offset).Offset))
+		}
 		g.constant(lenReg, uint64(arr.length), scalars["u32"])
 		return out, false, nil
 	case fn.Value == "subslice" && len(call.Arguments) == 3:
@@ -3573,7 +3686,7 @@ func (g *generator) typeOf(expr ast.Expression, hint *scalar) (scalar, error) {
 				return scalars[name], nil
 			}
 		}
-		if callee, ok := g.functions[ident.Value]; ok {
+		if callee, ok := g.functions[g.calleeName(ident)]; ok {
 			if callee.ReturnType == nil || callee.ReturnType.String() == "()" {
 				return scalar{}, unsupported("a call to %s (no result) in value position", ident.Value)
 			}
@@ -3999,7 +4112,7 @@ func (g *generator) lowerIf(s *ast.IfStatement) error {
 
 // lowerConditionalStatement: `c ? { ... } | { ... }` in statement position.
 func (g *generator) lowerConditionalStatement(match *ast.MatchExpression) error {
-	whenTrue, whenFalse, ok := boolConditional(match)
+	whenTrue, whenFalse, ok := statementConditional(match)
 	if !ok {
 		return g.lowerMatch(match, g.lowerArm)
 	}
@@ -4009,6 +4122,11 @@ func (g *generator) lowerConditionalStatement(match *ast.MatchExpression) error 
 	}
 	if err := g.lowerArm(whenTrue); err != nil {
 		return err
+	}
+	if whenFalse == nil {
+		// `cond ? { ... }`: nothing on the other path.
+		g.label(elseLabel)
+		return nil
 	}
 	g.emit("b", asm.Symbol{Name: end})
 	g.label(elseLabel)
@@ -4020,6 +4138,13 @@ func (g *generator) lowerConditionalStatement(match *ast.MatchExpression) error 
 }
 
 func (g *generator) lowerArm(arm ast.Expression) error {
+	if arm == nil {
+		return nil
+	}
+	if chained, isMatch := arm.(*ast.MatchExpression); isMatch {
+		// `c1 ? { … } | c2 ? { … } | { … }`: the else arm is a conditional.
+		return g.lowerConditionalStatement(chained)
+	}
 	block, isBlock := arm.(*ast.BlockExpression)
 	if !isBlock {
 		// An arm that is a call or assert in statement position.
@@ -5145,7 +5270,7 @@ func (g *generator) call(e *ast.InvocationExpression) (int, error) {
 // the callee through x8).
 func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLocal) (int, error) {
 	ident := e.Function.(*ast.Identifier)
-	callee, ok := g.functions[ident.Value]
+	callee, ok := g.functions[g.calleeName(ident)]
 	if !ok {
 		return 0, unsupported("a call to %s", ident.Value)
 	}
@@ -5322,8 +5447,8 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 		g.emit("str", spillReg(r), g.slotMem(g.spill[r]))
 		spilled = append(spilled, r)
 	}
-	target := ident.Value
-	if callee, declared := g.functions[ident.Value]; declared {
+	target := g.calleeName(ident)
+	if callee, declared := g.functions[target]; declared {
 		// A callee under the vector contract is reached at its native
 		// entry; the compiler lowers it natively or drops this caller.
 		target = NativeSymbol(callee)
@@ -5512,6 +5637,50 @@ func boolConditional(match *ast.MatchExpression) (whenTrue, whenFalse ast.Expres
 		}
 	}
 	return whenTrue, whenFalse, whenTrue != nil && whenFalse != nil
+}
+
+// statementConditional recognizes `cond ? a` and `cond ? a | b` in
+// statement position: the true arm, and the false arm or nil when the
+// conditional has none (the parser's sugar leaves the false arm empty).
+func statementConditional(match *ast.MatchExpression) (whenTrue, whenFalse ast.Expression, ok bool) {
+	if match.Scrutinee == nil || len(match.Arms) == 0 || len(match.Arms) > 2 {
+		return nil, nil, false
+	}
+	for i, arm := range match.Arms {
+		switch pattern := arm.Pattern.(type) {
+		case *ast.LiteralPattern:
+			lit, isBool := pattern.Value.(*ast.Boolean)
+			if !isBool {
+				return nil, nil, false
+			}
+			if lit.Value {
+				whenTrue = arm.Body
+			} else {
+				whenFalse = arm.Body
+			}
+		case *ast.WildcardPattern:
+			if i != 1 {
+				return nil, nil, false
+			}
+			whenFalse = arm.Body
+		default:
+			return nil, nil, false
+		}
+	}
+	return whenTrue, whenFalse, whenTrue != nil
+}
+
+// calleeName resolves the function a call names: `is_valid_utf8` is the
+// standard library's validator `utf8.valid` when a module build carries it
+// (docs/spec/70-strings.md section 8; the C backend makes the same call),
+// otherwise the name as spelled.
+func (g *generator) calleeName(ident *ast.Identifier) string {
+	if ident.Value == "is_valid_utf8" {
+		if _, has := g.functions["utf8__valid"]; has {
+			return "utf8__valid"
+		}
+	}
+	return ident.Value
 }
 
 // mentionsCall reports a body with a call to a program function or assert
@@ -5733,9 +5902,12 @@ func (g *generator) indexValue(index ast.Expression) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if idxType.signed || idxType.isBool || idxType.isFloat {
-		return 0, unsupported("an element index of type %s (indices are unsigned)", idxType.name)
+	if idxType.isBool || idxType.isFloat || (idxType.signed && idxType.bits != 32) {
+		return 0, unsupported("an element index of type %s (indices are unsigned or i32)", idxType.name)
 	}
+	// An i32 index guards as its 32-bit pattern: a negative one is a huge
+	// unsigned value `cmp wI, wLen; b.hs` traps, as the C backend's
+	// `(u64)(i)` does, and a non-negative one is its own zero-extension.
 	r, err := g.expr(index, &idxType)
 	if err != nil {
 		return 0, err
@@ -5780,6 +5952,9 @@ func (g *generator) staticArrayOf(expr ast.Expression) (elem scalar, elemLayout 
 	case *ast.Identifier:
 		if arr, isArray := g.arrays[e.Value]; isArray {
 			return arr.elem, arr.elemLayout, arr.length, true
+		}
+		if gl, isTable := g.tables[e.Value]; isTable {
+			return scalars[gl.Elem], nil, gl.Length, true
 		}
 	case *ast.IndexExpression:
 		if !e.Dot {
@@ -5826,11 +6001,33 @@ func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression) (address
 	} else {
 		g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
 	}
-	g.usedTrap = true
-	g.emit("cmp", wr(r), imm(arr.length))
-	g.branch("hs", g.trap)
+	if err := g.constantGuard(r, arr.length); err != nil {
+		return asm.Memory{}, 0, 0, err
+	}
 	idx := wr(r)
 	return asm.Memory{Base: xr(base), Index: &idx, Shift: log2Bytes(int(size)), Extend: "uxtw"}, r, base, nil
+}
+
+// constantGuard emits the constant index guard `cmp wI, #N; b.hs trap`
+// over an array of N elements; a length past the compare immediate is
+// materialized in a scratch register first (`movz wK, #N; cmp wI, wK`),
+// which the checker reads as the same constant guard (asm/check.go, a
+// compare against a register holding a known constant).
+func (g *generator) constantGuard(r int, length int64) error {
+	g.usedTrap = true
+	if length <= maxCmpImmediate {
+		g.emit("cmp", wr(r), imm(length))
+	} else {
+		k, err := g.alloc(scalars["u32"])
+		if err != nil {
+			return err
+		}
+		g.constant(k, uint64(length), scalars["u32"])
+		g.emit("cmp", wr(r), wr(k))
+		g.release(k)
+	}
+	g.branch("hs", g.trap)
+	return nil
 }
 
 // arrayElement lowers a load from an owned array local.

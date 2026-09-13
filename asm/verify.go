@@ -3168,6 +3168,12 @@ func (lo *oakLowering) lowerLoopBody(body *ast.BlockStatement) (string, bool) {
 func (lo *oakLowering) lowerConditionalStatement(match *ast.MatchExpression) (string, bool) {
 	whenTrue, whenFalse, isBool := boolConditional(match)
 	if !isBool {
+		// `cond ? { ... }` with no false arm: the false path is empty.
+		if single, _, ok := statementConditional(match); ok {
+			whenTrue, whenFalse, isBool = single, nil, true
+		}
+	}
+	if !isBool {
 		return lo.lowerMatchStatement(match)
 	}
 	cond, reason, ok := lo.lowerCondition(match.Scrutinee)
@@ -3252,9 +3258,47 @@ func (lo *oakLowering) lowerMatchStatement(match *ast.MatchExpression) (string, 
 	return "", true
 }
 
+// statementConditional recognizes a Bool conditional with a true arm and an
+// optional false arm (`cond ? a` leaves it nil), the statement forms the
+// parser's sugar produces; boolConditional needs both arms.
+func statementConditional(match *ast.MatchExpression) (whenTrue, whenFalse ast.Expression, ok bool) {
+	if match.Scrutinee == nil || len(match.Arms) == 0 || len(match.Arms) > 2 {
+		return nil, nil, false
+	}
+	for i, arm := range match.Arms {
+		switch pattern := arm.Pattern.(type) {
+		case *ast.LiteralPattern:
+			lit, isBool := pattern.Value.(*ast.Boolean)
+			if !isBool {
+				return nil, nil, false
+			}
+			if lit.Value {
+				whenTrue = arm.Body
+			} else {
+				whenFalse = arm.Body
+			}
+		case *ast.WildcardPattern:
+			if i != 1 {
+				return nil, nil, false
+			}
+			whenFalse = arm.Body
+		default:
+			return nil, nil, false
+		}
+	}
+	return whenTrue, whenFalse, whenTrue != nil
+}
+
 // lowerArm executes a conditional arm as statements: a block of
-// assignments (possibly empty), or nothing.
+// assignments (possibly empty), nothing, or a chained conditional
+// (`c1 ? { … } | c2 ? { … } | { … }`).
 func (lo *oakLowering) lowerArm(arm ast.Expression) (string, bool) {
+	if arm == nil {
+		return "", true
+	}
+	if chained, isMatch := arm.(*ast.MatchExpression); isMatch {
+		return lo.lowerConditionalStatement(chained)
+	}
 	block, isBlock := arm.(*ast.BlockExpression)
 	if !isBlock {
 		return "a conditional arm in statement position that is not a block", false
