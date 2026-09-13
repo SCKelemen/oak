@@ -670,6 +670,17 @@ type VariableDeclaration struct {
 	// (docs/spec/65-machine-memory.md). Fixed addresses stay with the
 	// linker script; only the section is language surface.
 	Section string
+	// Measured marks a measured constant (docs/spec/60-effects-allocation.md
+	// section 10b): `TILE: u32 (measured: 16, 1024) = 128` is a constant
+	// whose value is supplied at load time within the stated range and
+	// pinned to its initializer otherwise; nil for an ordinary binding.
+	Measured *MeasuredClause
+}
+
+// MeasuredClause is the range of a measured constant, inclusive at both
+// ends, as the declaration spells it.
+type MeasuredClause struct {
+	Lo, Hi int64
 }
 
 func (vd *VariableDeclaration) statementNode()       {}
@@ -680,6 +691,12 @@ func (vd *VariableDeclaration) String() string {
 	if vd.Type != nil {
 		out.WriteString(": ")
 		out.WriteString(vd.Type.String())
+	}
+	if vd.Section != "" {
+		out.WriteString(fmt.Sprintf(" (section: %q)", vd.Section))
+	}
+	if vd.Measured != nil {
+		out.WriteString(fmt.Sprintf(" (measured: %d, %d)", vd.Measured.Lo, vd.Measured.Hi))
 	}
 	if vd.Value != nil {
 		out.WriteString(" = ")
@@ -1585,7 +1602,19 @@ type ProtocolDeclaration struct {
 	// Oak reads neither.
 	Fairness []*ProtocolFairness
 	Liveness []*ProtocolLiveness
+	// Facts are the `fact F = A | B` clauses: the further phantom indices of
+	// a typestate-indexed resource beyond its state, each drawn from a
+	// closed set of markers (docs/spec/112-protocols.md section 5a).
+	Facts    []*ProtocolFact
 	Exported bool
+}
+
+// ProtocolFact is one `fact F = A | B` clause: the index name and its
+// markers, projected to marker types like the states.
+type ProtocolFact struct {
+	Token   token.Token
+	Name    *Identifier
+	Markers []*Identifier
 }
 
 // LiteralsDeclaration is `Name: literals = { "GET ", "POST " }`

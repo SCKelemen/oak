@@ -109,6 +109,7 @@ func (c *checker) applyGuards(gs *guardState) {
 		fact.minLen = minLen
 	}
 	c.idxFacts = map[int]idxFact{}
+	c.slackFacts = map[int]slackFact{}
 	for reg, fact := range gs.idx {
 		c.idxFacts[reg] = fact
 	}
@@ -217,7 +218,8 @@ type checker struct {
 	// idxFacts: index register -> the bound a dominating guard proved it
 	// below (`cmp wI, wL` / `cmp wI, #K` then `b.hs <exit>`); they die with
 	// any write to the index or bound register, any label, and any call.
-	idxFacts map[int]idxFact
+	idxFacts   map[int]idxFact
+	slackFacts map[int]slackFact
 	// frameAddrs: register -> the frame address it holds, relative to the
 	// entry sp (`add xN, sp, #imm`): the base of an owned array in the
 	// frame. Memory through it is checked against the declared frame like
@@ -381,6 +383,16 @@ type cmpFact struct {
 type idxFact struct {
 	boundReg int
 	bound    int64
+	// slack: the fact is wI + bound <= len (len in boundReg) instead of
+	// wI < len — the vector idiom `sub wT, wL, #K; cmp wI, wT; b.hi trap`
+	// under len >= K, admitting an access of K elements at wI.
+	slack bool
+}
+
+// slackFact: wT = wL - K for a span's length register wL, under len >= K.
+type slackFact struct {
+	len int
+	k   int64
 }
 
 // spanShape recognizes span ([*]T) and view ([]T) parameter types of
@@ -394,7 +406,16 @@ func spanShape(expr ast.Expression) (elem int64, writable bool, ok bool) {
 	if !isMarker || (marker.Value != "*" && marker.Value != "") {
 		return 0, false, false
 	}
-	switch typeText(indexExpr.Left) {
+	element := indexExpr.Left
+	// A span of atomic cells, `[*]Atomic[T]` (docs/spec/65-machine-memory.md
+	// section 1), has the carrier's element size; the atomics address its
+	// elements (atomicAccess), never a plain load or store.
+	if cell, isCell := element.(*ast.IndexExpression); isCell && !cell.Dot {
+		if head, isIdent := cell.Left.(*ast.Identifier); isIdent && head.Value == "Atomic" {
+			element = cell.Index
+		}
+	}
+	switch typeText(element) {
 	case "u8", "i8", "byte":
 		elem = 1
 	case "u16", "i16":
@@ -505,6 +526,7 @@ func (c *checker) bindContract() {
 	c.bound = map[int]bool{}
 	c.spans = map[int]*spanFact{}
 	c.idxFacts = map[int]idxFact{}
+	c.slackFacts = map[int]slackFact{}
 	c.spanParams = map[string]spanParam{}
 	c.compositeParams = map[string]compositeParam{}
 	c.regions = map[int]region{}
@@ -843,6 +865,7 @@ func (c *checker) forgetGuards() {
 	}
 	c.pendingCmp = cmpFact{}
 	c.idxFacts = map[int]idxFact{}
+	c.slackFacts = map[int]slackFact{}
 	c.frameAddrs = map[int]int64{}
 	c.leFacts = map[int]int{}
 	c.diffFacts = map[int]diffFact{}
@@ -929,6 +952,14 @@ func (c *checker) instruction(instr Instruction) bool {
 		// a span (Oak.Assembler.index_access).
 		if guard.valid && (instr.Cond == "hs" || instr.Cond == "cs") {
 			c.idxFacts[guard.left] = idxFact{boundReg: guard.rightReg, bound: guard.imm}
+		}
+		// `sub wT, wL, #K` then `cmp wI, wT` then `b.hi trap`: the
+		// fall-through path knows wI + K <= len — the guard of a K-element
+		// vector access at wI (Oak.Assembler.index_access, K lanes).
+		if guard.valid && guard.rightReg >= 0 && instr.Cond == "hi" {
+			if slack, isSlack := c.slackFacts[guard.rightReg]; isSlack {
+				c.idxFacts[guard.left] = idxFact{boundReg: slack.len, bound: slack.k, slack: true}
+			}
 		}
 		// `cmp wS, wL` then `b.hi trap`: the fall-through path knows
 		// wS <= wL; against a difference register wT = wL - wS this is the
@@ -1166,9 +1197,18 @@ func (c *checker) instruction(instr Instruction) bool {
 		}
 		return false
 	}
+	// A movk inserts a halfword into a constant the register already holds:
+	// the fact survives the write with the halfword replaced (a record
+	// stride of 65 536 bytes or more is spelled movz then movk).
+	priorConst, hadConst := c.constFacts[dest.Num]
 	c.write(instr, dest)
 	c.deriveSpan(instr, dest, regs)
 	c.deriveElement(instr, dest)
+	if instr.Mnemonic == "movk" && hadConst && dest.Class == ClassW && len(instr.Operands) == 2 {
+		if imm, isImm := instr.Operands[1].(Immediate); isImm && imm.Value >= 0 && imm.Value <= 0xffff && imm.Shift%16 == 0 && imm.Shift < 32 {
+			c.constFacts[dest.Num] = (priorConst &^ (0xffff << uint(imm.Shift))) | (imm.Value << uint(imm.Shift))
+		}
+	}
 	if instr.Mnemonic == "mov" && len(regs) == 2 && len(instr.Operands) == 2 {
 		if _, isReg := instr.Operands[1].(Register); isReg {
 			c.aliasSpan(dest, regs[1])
@@ -1347,6 +1387,12 @@ func (c *checker) forgetRegisterFacts(num int) {
 			delete(c.idxFacts, index)
 		}
 	}
+	delete(c.slackFacts, num)
+	for reg, fact := range c.slackFacts {
+		if fact.len == num {
+			delete(c.slackFacts, reg)
+		}
+	}
 	delete(c.frameAddrs, num)
 	delete(c.regions, num)
 	delete(c.leFacts, num)
@@ -1381,6 +1427,17 @@ func (c *checker) deriveSpan(instr Instruction, dest Register, regs []Register) 
 			return
 		}
 		l, okL := instr.Operands[1].(Register)
+		if k, isImm := instr.Operands[2].(Immediate); okL && isImm && l.Class == ClassW && dest.Num != l.Num && k.Value > 0 && k.Shift == 0 {
+			// wT = wL - K for a span length wL: the slack register of a
+			// K-element access.
+			for _, fact := range c.spans {
+				if fact.holdsLen(l.Num) {
+					c.slackFacts[dest.Num] = slackFact{len: l.Num, k: k.Value}
+					break
+				}
+			}
+			return
+		}
 		s, okS := instr.Operands[2].(Register)
 		if !okL || !okS || l.Class != ClassW || s.Class != ClassW || dest.Num == l.Num || dest.Num == s.Num {
 			return
@@ -1432,8 +1489,8 @@ func (c *checker) deriveElement(instr Instruction, dest Register) {
 		if dest.Class != ClassW || len(instr.Operands) != 2 {
 			return
 		}
-		if imm, isImm := instr.Operands[1].(Immediate); isImm && imm.Shift == 0 && imm.Value >= 0 {
-			c.constFacts[dest.Num] = imm.Value
+		if imm, isImm := instr.Operands[1].(Immediate); isImm && imm.Value >= 0 && imm.Shift >= 0 && imm.Shift < 32 && imm.Shift%16 == 0 {
+			c.constFacts[dest.Num] = imm.Value << uint(imm.Shift)
 		}
 	case "add":
 		if dest.Class != ClassX || len(instr.Operands) != 3 {
@@ -1450,8 +1507,12 @@ func (c *checker) deriveElement(instr Instruction, dest Register) {
 			}
 			c.elementRegion(dest, base, tail.Reg.Num, int64(1)<<uint(tail.Amount))
 		case Immediate:
-			if extent, isRegion := c.regions[base.Num]; isRegion && tail.Shift == 0 && tail.Value >= 0 && tail.Value <= extent.size {
-				c.regions[dest.Num] = region{size: extent.size - tail.Value, writable: extent.writable}
+			// `add xD, xB, #imm` or `#imm, lsl #12` (a field past 4095
+			// bytes into a large element) narrows the region by the value.
+			if extent, isRegion := c.regions[base.Num]; isRegion && (tail.Shift == 0 || tail.Shift == 12) && tail.Value >= 0 {
+				if value := tail.Value << uint(tail.Shift); value <= extent.size {
+					c.regions[dest.Num] = region{size: extent.size - value, writable: extent.writable}
+				}
 			}
 		}
 	case "umaddl":
@@ -1799,11 +1860,12 @@ func (c *checker) atomicAccess(instr Instruction, matched form, mem Memory, regs
 		return
 	}
 	fact, isSpan := c.spans[mem.Base.Num]
-	if !isSpan {
-		c.errorf(instr.Line, "%s through %s, which is not a bound span base", instr.Mnemonic, mem.Base.Text)
+	extent, isRegion := c.regions[mem.Base.Num]
+	if !isSpan && !isRegion {
+		c.errorf(instr.Line, "%s through %s, which is not a bound span base or an element of one", instr.Mnemonic, mem.Base.Text)
 		return
 	}
-	if !fact.writable {
+	if (isSpan && !fact.writable) || (isRegion && !extent.writable) {
 		c.errorf(instr.Line, "%s through %s: the parameter is a read-only view ([]T); atomics need a span ([*]T)", instr.Mnemonic, mem.Base.Text)
 		return
 	}
@@ -1824,8 +1886,17 @@ func (c *checker) atomicAccess(instr Instruction, matched form, mem Memory, regs
 		c.read(instr, reg)
 	}
 	// The access is one element (or pair) at the base, sized by the value
-	// registers (no offset form for atomics).
-	c.spanAccess(instr, matched, mem, fact, reads, true)
+	// registers (no offset form for atomics). An element region — a span
+	// element's address, or a cell inside it (`add xE, xB, wI, uxtw #s`,
+	// then `add xC, xE, #off`) — is the native backend's spelling of a
+	// cell reached by storage path (docs/spec/65-machine-memory.md
+	// section 1); its bytes were proven inside the span when the region
+	// was derived.
+	if isRegion {
+		c.regionAccess(instr, matched, mem, extent, reads, true)
+	} else {
+		c.spanAccess(instr, matched, mem, fact, reads, true)
+	}
 	for _, reg := range writes {
 		c.write(instr, reg)
 	}
@@ -1936,11 +2007,34 @@ func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFac
 		c.errorf(instr.Line, "%s: a span is walked by a 32-bit element index, `[base, wI, uxtw #s]`; %s is not one", instr.Mnemonic, index.Text)
 		return
 	}
+	bound, guarded := c.idxFacts[index.Num]
+	if guarded && bound.slack && size > fact.elem && size%fact.elem == 0 && int64(1)<<uint(mem.Shift) == fact.elem {
+		// A vector access of size/elem elements at wI under wI + K <= len,
+		// K >= that many elements and len >= K (so the slack subtraction did
+		// not wrap): the whole access lies inside the span.
+		lanes := size / fact.elem
+		switch {
+		case bound.boundReg < 0 || !fact.holdsLen(bound.boundReg):
+			c.errorf(instr.Line, "%s: %s is guarded against w%d, which is not this span's length register (w%d)", instr.Mnemonic, index.Text, bound.boundReg, fact.lenReg)
+			return
+		case bound.bound < lanes:
+			c.errorf(instr.Line, "%s: the guard leaves %d elements after %s but the access reads %d", instr.Mnemonic, bound.bound, index.Text, lanes)
+			return
+		case !fact.hasMin || fact.minLen < bound.bound:
+			c.errorf(instr.Line, "%s: the slack guard needs len >= %d proven first (`cmp w%d, #%d; b.lo <trap>`)", instr.Mnemonic, bound.bound, fact.lenReg, bound.bound)
+			return
+		}
+		if !isStore {
+			for _, reg := range regs {
+				c.write(instr, reg)
+			}
+		}
+		return
+	}
 	if size != fact.elem || int64(1)<<uint(mem.Shift) != size {
 		c.errorf(instr.Line, "%s: indexed access must move by whole elements: a %d-byte access over %d-byte elements needs `uxtw #%d` and a matching register width", instr.Mnemonic, size, fact.elem, log2(fact.elem))
 		return
 	}
-	bound, guarded := c.idxFacts[index.Num]
 	switch {
 	case !guarded:
 		c.errorf(instr.Line, "%s indexed by %s without a dominating index guard: `cmp %s, w%d` then `b.hs <exit>` proves the index below the span's length for the fall-through path", instr.Mnemonic, index.Text, index.Text, fact.lenReg)

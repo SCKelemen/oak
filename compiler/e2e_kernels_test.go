@@ -560,6 +560,88 @@ func TestE2EKernelsGroupTree(t *testing.T) {
 	}
 }
 
+// The cooperative lane reduction (docs/spec/56-kernels.md section 7):
+// reduce.group_lanes makes the kernel a group kernel whose threads are the
+// lanes — each folds its elements of the window in index order, then the
+// butterfly runs over threadgroup scratch — the order reduce.lanes computes
+// on the host (Oak.Reduce.lanes).
+const kernelGroupLanesProgram = `package main
+
+r := import("reduce")
+
+add: (a: f32, b: f32): f32 = a + b
+
+kernel lane_sums: (gid: u32, x: []f32, partials: [*]f32, window: u32): () = {
+  n: u32 = len(x)
+  lo: u32 = gid * window
+  gid < len(partials) && lo <= n ? {
+    m: u32 = lo + window <= n ? window | n - lo
+    zero: f32 = 0.0
+    partials[gid] = r.group_lanes(4, x, lo, m, zero, add, 1)
+  }
+}
+
+main: (): i32 = {
+  // 2^24 + 1 rounds to 2^24: lane 0 of the first window folds 2^24 then 1
+  // and stays 2^24; lanes 1..3 hold 1; the butterfly gives 2^24 + 2, where
+  // the tree would give 2^24 + 4.
+  xs: [10]f32 = [16777216.0, 1.0, 1.0, 1.0, 1.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+  ps: [2]f32 = [0.0, 0.0]
+  g: u32 = 0
+  while g < 2 {
+    lane_sums(g, view(&xs), span(&ps), 5)
+    g = g + 1
+  }
+  ps[0] == 16777218.0 && ps[1] == 40.0 ? 42 | 1
+}
+`
+
+func TestE2EKernelsGroupLanes(t *testing.T) {
+	root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": kernelGroupLanesProgram})
+	code, abnormal := buildPackageAndRun(t, New().WithPackageDir(root))
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+	result, err := New().WithPackageDir(root).EmitMetal().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := result.Source
+	for _, want := range []string{
+		"threadgroup 4",
+		"kernel void lane_sums(uint gid [[threadgroup_position_in_grid]], uint oak_lid [[thread_position_in_threadgroup]], device const float* x [[buffer(0)]]",
+		"  threadgroup float oak_scratch1[4];",
+		"if ((ulong)oak_lo1 + (ulong)oak_m1 > (ulong)x_len) { oak_raise(oak_fault, 4u); oak_m1 = 0u; }",
+		"if (oak_run1 == 0u) { oak_raise(oak_fault, 6u); oak_run1 = 1u; }",
+		"for (uint oak_b = oak_lid * oak_run1; oak_b < oak_m1; oak_b += 4u * oak_run1) {",
+		"for (uint oak_r = 0u; oak_r < oak_run1 && oak_b + oak_r < oak_m1; oak_r++) { oak_gl1 = add(oak_gl1, x[oak_lo1 + oak_b + oak_r], oak_fault); }",
+		"oak_scratch1[oak_lid] = oak_gl1;",
+		"for (uint oak_off = 2u; oak_off >= 1u; oak_off >>= 1u) {",
+		"float oak_pair1 = add(oak_scratch1[oak_lid], oak_scratch1[oak_lid ^ oak_off], oak_fault);",
+		"oak_scratch1[oak_lid] = oak_pair1;",
+		"oak_gl1 = oak_scratch1[0];",
+		"if (oak_lid == 0u) { partials[gid] = oak_gl1; }",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("missing %q in:\n%s", want, src)
+		}
+	}
+	if result.Kernels[0].Threadgroup != 4 || result.Kernels[0].Params[0].Kind != "group" {
+		t.Fatalf("descriptor = %+v", result.Kernels[0])
+	}
+	// The group rules hold for group_lanes as for group_tree.
+	for name, c := range map[string][2]string{
+		"not a power of two": {"r.group_lanes(4, x, lo, m, zero, add, 1)", "r.group_lanes(6, x, lo, m, zero, add, 1)"},
+		"two sizes":          {"r.group_lanes(4, x, lo, m, zero, add, 1)", "r.group_lanes(4, x, lo, m, zero, add, 1) + r.group_tree(8, x, lo, 1, zero, add)"},
+	} {
+		bad := strings.Replace(kernelGroupLanesProgram, c[0], c[1], 1)
+		root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": bad})
+		if _, err := New().WithPackageDir(root).EmitMetal().Get(); err == nil {
+			t.Fatalf("%s: must be refused", name)
+		}
+	}
+}
+
 // The group is a literal power of two shared by the kernel's calls, and
 // the call belongs in a kernel body.
 func TestKernelsGroupTreeRejections(t *testing.T) {

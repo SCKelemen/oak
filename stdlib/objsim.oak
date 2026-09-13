@@ -1,0 +1,324 @@
+// The simulated realization of the object-store port
+// (docs/spec/121-object-store.md): a bounded table of keyed objects, each
+// with a generation the store hands out from one monotone counter, and the
+// two conditional mutations a storage engine coordinates with —
+// put-if-generation and delete-if-generation. Faults come from the tape
+// through a mask: a request the store never saw (Unavailable, nothing
+// applied) and the hazard every object store has, an acknowledgement lost
+// after the mutation applied (Unavailable reported, the object changed).
+// The ledger counts both so a scenario can tell what the store did.
+//
+// The port surface — obj_attach, obj_open_store, obj_put, obj_get,
+// obj_delete, obj_stat, obj_list, the window and completion records, the
+// precondition and error codes — is what a native realization over the io
+// port (increment two of the specification) spells identically, so a
+// program written against `import("objstore")` selects a realization with
+// `replace objstore => objsim` and changes no text.
+//
+// Storage is package-owned and bounded: up to 16 objects, keys of at most
+// 64 bytes including their NUL, values of at most 256 bytes.
+package objsim
+
+import(testing)
+
+pub ObjWindow: type = struct { base: u32, len: u32 }
+pub ObjCompletion: type = struct { generation: u64, result: u32, error: u32 }
+pub ObjStore: type = struct { region_len: u32, objects: u32 }
+
+// Preconditions carried in if_generation: obj_any matches whatever the
+// generation is, obj_absent requires the key to be absent, any other value
+// requires exactly that generation.
+pub obj_any: (): u64 = u64(18446744073709551615)
+pub obj_absent: (): u64 = u64(0)
+
+// Errors in ObjCompletion.error (0 is success).
+pub obj_err_not_found: (): u32 = u32(1)
+pub obj_err_precondition: (): u32 = u32(2)
+pub obj_err_no_space: (): u32 = u32(3)
+pub obj_err_invalid: (): u32 = u32(4)
+pub obj_err_too_large: (): u32 = u32(5)
+pub obj_err_unavailable: (): u32 = u32(6)
+
+// Fault kinds in the mask given to obj_attach.
+pub obj_fault_unavailable: (): u32 = u32(1)
+pub obj_fault_lost_ack: (): u32 = u32(2)
+
+objsim_entries: (): u32 = u32(16)
+objsim_key_bytes: (): u32 = u32(64)
+objsim_value_bytes: (): u32 = u32(256)
+
+pub obj_window: (base: u32, len: u32): ObjWindow = ObjWindow { base: base, len: len }
+
+objsim_exists: [16]Bool
+objsim_generation: [16]u64
+objsim_size: [16]u32
+objsim_keys: [1024]u8
+objsim_values: [4096]u8
+objsim_next: u64
+objsim_tape: [256]u8
+objsim_choices: [1]TestChoices
+objsim_faults: u32
+objsim_unavailable_count: u32
+objsim_lost_ack_count: u32
+
+// obj_attach resets the store and installs the run's tape and fault mask.
+pub obj_attach: (data: []u8, faults: u32): () {
+  n: u32 = len(data)
+  n > u32(256) ? { n = u32(256) }
+  i: u32 = u32(0)
+  while i < u32(256) {
+    objsim_tape[i] = i < n ? { data[i] } | { u8(0) }
+    i = i + u32(1)
+  }
+  objsim_choices[0].offset = u32(0)
+  objsim_faults = faults
+  objsim_next = u64(1)
+  objsim_unavailable_count = u32(0)
+  objsim_lost_ack_count = u32(0)
+  e: u32 = u32(0)
+  while e < objsim_entries() {
+    objsim_exists[e] = false
+    objsim_generation[e] = u64(0)
+    objsim_size[e] = u32(0)
+    e = e + u32(1)
+  }
+}
+
+pub obj_open_store: (store: [*]ObjStore, region: [*]u8): () {
+  assert(len(store) == u32(1))
+  store[0] = ObjStore { region_len: len(region), objects: objsim_entries() }
+}
+
+// The ledger: requests the store answered Unavailable without applying,
+// and mutations it applied whose acknowledgement it lost.
+pub objsim_unavailable: (): u32 = objsim_unavailable_count
+pub objsim_lost_acks: (): u32 = objsim_lost_ack_count
+
+// One roll in eight injects a fault, chosen uniformly among the enabled
+// kinds that apply; an exhausted tape injects nothing.
+objsim_pick_fault: (applicable: u32): u32 {
+  enabled: u32 = objsim_faults & applicable
+  roll: u32 = test_range(span(&objsim_choices), view(&objsim_tape), u32(0), u32(7))
+  count: u32 = u32(0)
+  (enabled & u32(1)) != u32(0) ? { count = count + u32(1) }
+  (enabled & u32(2)) != u32(0) ? { count = count + u32(1) }
+  chosen: u32 = u32(0)
+  roll == u32(7) && count > u32(0) ? {
+    pick: u32 = test_range(span(&objsim_choices), view(&objsim_tape), u32(0), count - u32(1))
+    (enabled & u32(1)) != u32(0) && pick == u32(0) ? { chosen = u32(1) } | {
+      chosen = u32(2)
+    }
+  }
+  chosen
+}
+
+objsim_window_ok: (store: [*]ObjStore, w: ObjWindow, most: u32): Bool =
+  w.base <= store[0].region_len && w.len <= store[0].region_len - w.base && w.len <= most
+
+// A key is one to 64 bytes whose last byte is NUL.
+objsim_key_ok: (store: [*]ObjStore, region: [*]u8, key: ObjWindow): Bool =
+  objsim_window_ok(store, key, objsim_key_bytes()) && key.len > u32(0) && region[key.base + key.len - u32(1)] == u8(0)
+
+objsim_same_key: (region: [*]u8, key: ObjWindow, e: u32): Bool {
+  same: Bool = true
+  i: u32 = u32(0)
+  while same && i < key.len {
+    same = region[key.base + i] == objsim_keys[e * objsim_key_bytes() + i]
+    i = i + u32(1)
+  }
+  same && (key.len == objsim_key_bytes() || objsim_keys[e * objsim_key_bytes() + key.len] == u8(0))
+}
+
+// The slot holding a key, or objsim_entries() when it is absent.
+objsim_find: (region: [*]u8, key: ObjWindow): u32 {
+  found: u32 = objsim_entries()
+  e: u32 = u32(0)
+  while e < objsim_entries() {
+    found == objsim_entries() && objsim_exists[e] && objsim_same_key(region, key, e) ? { found = e }
+    e = e + u32(1)
+  }
+  found
+}
+
+objsim_free_slot: (): u32 {
+  found: u32 = objsim_entries()
+  e: u32 = u32(0)
+  while e < objsim_entries() {
+    found == objsim_entries() && !objsim_exists[e] ? { found = e }
+    e = e + u32(1)
+  }
+  found
+}
+
+objsim_fail: (error: u32, generation: u64): ObjCompletion = ObjCompletion { generation: generation, result: u32(0), error: error }
+objsim_done: (generation: u64, result: u32): ObjCompletion = ObjCompletion { generation: generation, result: result, error: u32(0) }
+
+// The precondition holds when it is obj_any, or names the key's current
+// generation (obj_absent when the key is absent).
+objsim_admits: (current: u64, if_generation: u64): Bool =
+  if_generation == obj_any() || if_generation == current
+
+objsim_current: (slot: u32): u64 = slot < objsim_entries() ? { objsim_generation[slot] } | { u64(0) }
+
+// obj_put stores a value under a key when the precondition holds: the
+// key's generation becomes the store's next one, strictly above every
+// generation the store ever handed out. PreconditionFailed carries the
+// current generation so the caller can resynchronize.
+pub obj_put: (store: [*]ObjStore, region: [*]u8, key: ObjWindow, value: ObjWindow, if_generation: u64): ObjCompletion {
+  !objsim_key_ok(store, region, key) || !objsim_window_ok(store, value, objsim_value_bytes()) ? { objsim_fail(obj_err_invalid(), u64(0)) } | {
+    fault: u32 = objsim_pick_fault(u32(3))
+    fault == u32(1) ? {
+      objsim_unavailable_count = objsim_unavailable_count + u32(1)
+      objsim_fail(obj_err_unavailable(), u64(0))
+    } | {
+      slot: u32 = objsim_find(region, key)
+      current: u64 = objsim_current(slot)
+      !objsim_admits(current, if_generation) ? { objsim_fail(obj_err_precondition(), current) } | {
+        target: u32 = slot < objsim_entries() ? { slot } | { objsim_free_slot() }
+        target >= objsim_entries() ? { objsim_fail(obj_err_no_space(), current) } | {
+          i: u32 = u32(0)
+          while i < objsim_key_bytes() {
+            objsim_keys[target * objsim_key_bytes() + i] = i < key.len ? { region[key.base + i] } | { u8(0) }
+            i = i + u32(1)
+          }
+          i = u32(0)
+          while i < value.len {
+            objsim_values[target * objsim_value_bytes() + i] = region[value.base + i]
+            i = i + u32(1)
+          }
+          objsim_exists[target] = true
+          objsim_size[target] = value.len
+          objsim_generation[target] = objsim_next
+          objsim_next = objsim_next + u64(1)
+          fault == u32(2) ? {
+            objsim_lost_ack_count = objsim_lost_ack_count + u32(1)
+            objsim_fail(obj_err_unavailable(), u64(0))
+          } | { objsim_done(objsim_generation[target], value.len) }
+        }
+      }
+    }
+  }
+}
+
+// obj_delete removes a key when the precondition holds; a later put of the
+// same key receives a generation above the deleted one.
+pub obj_delete: (store: [*]ObjStore, region: [*]u8, key: ObjWindow, if_generation: u64): ObjCompletion {
+  !objsim_key_ok(store, region, key) ? { objsim_fail(obj_err_invalid(), u64(0)) } | {
+    fault: u32 = objsim_pick_fault(u32(3))
+    fault == u32(1) ? {
+      objsim_unavailable_count = objsim_unavailable_count + u32(1)
+      objsim_fail(obj_err_unavailable(), u64(0))
+    } | {
+      slot: u32 = objsim_find(region, key)
+      current: u64 = objsim_current(slot)
+      !objsim_admits(current, if_generation) ? { objsim_fail(obj_err_precondition(), current) } | {
+        slot >= objsim_entries() ? { objsim_fail(obj_err_not_found(), u64(0)) } | {
+          objsim_exists[slot] = false
+          objsim_size[slot] = u32(0)
+          objsim_generation[slot] = u64(0)
+          fault == u32(2) ? {
+            objsim_lost_ack_count = objsim_lost_ack_count + u32(1)
+            objsim_fail(obj_err_unavailable(), u64(0))
+          } | { objsim_done(current, u32(0)) }
+        }
+      }
+    }
+  }
+}
+
+// obj_get copies the object's bytes into the window and reports its size
+// and generation; a window smaller than the object is TooLarge with the
+// generation, nothing copied.
+pub obj_get: (store: [*]ObjStore, region: [*]u8, key: ObjWindow, out: ObjWindow): ObjCompletion {
+  !objsim_key_ok(store, region, key) || !objsim_window_ok(store, out, store[0].region_len) ? { objsim_fail(obj_err_invalid(), u64(0)) } | {
+    fault: u32 = objsim_pick_fault(u32(1))
+    fault == u32(1) ? {
+      objsim_unavailable_count = objsim_unavailable_count + u32(1)
+      objsim_fail(obj_err_unavailable(), u64(0))
+    } | {
+      slot: u32 = objsim_find(region, key)
+      slot >= objsim_entries() ? { objsim_fail(obj_err_not_found(), u64(0)) } | {
+        objsim_size[slot] > out.len ? { objsim_fail(obj_err_too_large(), objsim_generation[slot]) } | {
+          i: u32 = u32(0)
+          while i < objsim_size[slot] {
+            region[out.base + i] = objsim_values[slot * objsim_value_bytes() + i]
+            i = i + u32(1)
+          }
+          objsim_done(objsim_generation[slot], objsim_size[slot])
+        }
+      }
+    }
+  }
+}
+
+// obj_stat reports a key's generation and size without copying.
+pub obj_stat: (store: [*]ObjStore, region: [*]u8, key: ObjWindow): ObjCompletion {
+  !objsim_key_ok(store, region, key) ? { objsim_fail(obj_err_invalid(), u64(0)) } | {
+    fault: u32 = objsim_pick_fault(u32(1))
+    fault == u32(1) ? {
+      objsim_unavailable_count = objsim_unavailable_count + u32(1)
+      objsim_fail(obj_err_unavailable(), u64(0))
+    } | {
+      slot: u32 = objsim_find(region, key)
+      slot >= objsim_entries() ? { objsim_fail(obj_err_not_found(), u64(0)) } | { objsim_done(objsim_generation[slot], objsim_size[slot]) }
+    }
+  }
+}
+
+objsim_has_prefix: (region: [*]u8, prefix: ObjWindow, e: u32): Bool {
+  same: Bool = true
+  i: u32 = u32(0)
+  while same && i < prefix.len {
+    same = region[prefix.base + i] == objsim_keys[e * objsim_key_bytes() + i]
+    i = i + u32(1)
+  }
+  same
+}
+
+// obj_list writes the keys with the given prefix (NUL included) into the
+// window in slot order, each with its NUL; result is the bytes written.
+// A window too small for them all is TooLarge with nothing written.
+pub obj_list: (store: [*]ObjStore, region: [*]u8, prefix: ObjWindow, out: ObjWindow): ObjCompletion {
+  !objsim_window_ok(store, prefix, objsim_key_bytes()) || !objsim_window_ok(store, out, store[0].region_len) ? { objsim_fail(obj_err_invalid(), u64(0)) } | {
+    fault: u32 = objsim_pick_fault(u32(1))
+    fault == u32(1) ? {
+      objsim_unavailable_count = objsim_unavailable_count + u32(1)
+      objsim_fail(obj_err_unavailable(), u64(0))
+    } | {
+      needed: u32 = u32(0)
+      e: u32 = u32(0)
+      while e < objsim_entries() {
+        objsim_exists[e] && objsim_has_prefix(region, prefix, e) ? { needed = needed + objsim_key_len(e) }
+        e = e + u32(1)
+      }
+      needed > out.len ? { objsim_fail(obj_err_too_large(), u64(0)) } | {
+        at: u32 = u32(0)
+        e = u32(0)
+        while e < objsim_entries() {
+          objsim_exists[e] && objsim_has_prefix(region, prefix, e) ? {
+            n: u32 = objsim_key_len(e)
+            i: u32 = u32(0)
+            while i < n {
+              region[out.base + at + i] = objsim_keys[e * objsim_key_bytes() + i]
+              i = i + u32(1)
+            }
+            at = at + n
+          }
+          e = e + u32(1)
+        }
+        objsim_done(u64(0), at)
+      }
+    }
+  }
+}
+
+// The stored key's length, NUL included.
+objsim_key_len: (e: u32): u32 {
+  n: u32 = u32(0)
+  finished: Bool = false
+  while !finished && n < objsim_key_bytes() {
+    objsim_keys[e * objsim_key_bytes() + n] == u8(0) ? { finished = true }
+    n = n + u32(1)
+  }
+  n
+}

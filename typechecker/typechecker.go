@@ -624,6 +624,9 @@ type TypeChecker struct {
 	// compile-time constants, in declaration order, so later constant
 	// initializers may read them (typechecker/globals.go).
 	constantGlobals map[string]bool
+	// measured lists the measured constants (docs/spec/60-effects-allocation.md
+	// section 10b) in declaration order.
+	measured []MeasuredConstant
 	// predeclaredGlobals names package-level bindings registered before any
 	// body is checked, so functions may mention globals declared later in
 	// the file; the defining declaration consumes its entry.
@@ -959,6 +962,7 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 		// Top-level bindings are static storage: constant initializers only
 		// (typechecker/globals.go).
 		if decl, isDecl := stmt.(*ast.VariableDeclaration); isDecl {
+			tc.checkMeasured(decl)
 			tc.checkGlobalInitializer(decl)
 		}
 		tc.checkStatement(stmt)
@@ -4684,6 +4688,14 @@ func (tc *TypeChecker) checkAssignmentStatement(stmt *ast.AssignmentStatement) {
 		d := tc.addTypeDiagnostic(stmt, CodeTargetConstant,
 			fmt.Sprintf("target constant %s is not assignable", stmt.Name.Value))
 		d.AddNote("a c.const binding holds the value the target's header defines; bind a mutable copy if you need one")
+		return
+	}
+	if tc.IsMeasured(stmt.Name.Value) {
+		// A measured constant is the load's value, fixed for the run
+		// (docs/spec/60-effects-allocation.md section 10b).
+		d := tc.addTypeDiagnostic(stmt, CodeMeasuredConstant,
+			fmt.Sprintf("measured constant %s is not assignable", stmt.Name.Value))
+		d.AddNote("a measured constant takes its value once, at load, within its declared range; bind a mutable copy if you need one")
 		return
 	}
 

@@ -516,6 +516,10 @@ parameter), which the whole-instance equality implies.
 
 ## 7. Direction
 
+`126-verification-chain.md` maps what each hop from source to object is
+worth per target — proved, refined, audited, differential, or trusted —
+and where a source-level theorem stops reaching the machine today.
+
 In order of payoff, each reusing a surface that exists:
 
 - **The verifier in Oak.** The aim is a compiler whose semantics, solver,
@@ -586,8 +590,15 @@ In order of payoff, each reusing a surface that exists:
   writes the driver, spawns the compiler and the binary, and folds the
   exit status — and the guard-exclusivity theorems are generated and
   folded into their advisory rows in Oak as well, so the compiler itself
-  is the only Go left on the prover's path), so what remains is the
-  self-hosted compiler; then
+  is the only Go left on the prover's path; and the prover is the first
+  whole program compiled through the verified native backend
+  (`94-assembler.md` §9, sixteenth increment; `OAK_SOLVER_NATIVE=1`):
+  712 of its 954 functions lowered to machine code the seam checker
+  admits and the Oak assembler encodes, 123 of them proven equal to
+  their Oak bodies, the C build the oracle with identical rows over the
+  corpus — verification carried to the object, with the verifier's
+  reach the measure that remains), so what remains is the self-hosted
+  compiler, and the backend lowering and verifying the prover whole; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
   producers of certificates, so speed and trust are separated; then an
@@ -626,6 +637,22 @@ In order of payoff, each reusing a surface that exists:
   already models them, division with its zero-divisor obligation like the
   shift's, and the extent facts for linear bounds, inside the compiler,
   each with its Lean law.
+- **A certificate rung.** The BDD's failure mode is the node budget on
+  multipliers and wide aggregates, which CDCL solvers treat routinely.
+  The rung the ladder lacks is the one Lean's `bv_decide` already runs:
+  the bit-blaster emits clauses, an untrusted solver emits an LRAT
+  certificate (never DRAT: checking a DRAT proof costs about what solving
+  did, while native LRAT checks faster than it solves), and a small
+  checker proved once in Lean validates it — solving and trust as separate
+  artifacts, the `-cross` rule kept so a race never hides a disagreement.
+  The trusted base then narrows to the clause encoder, which today is
+  cross-checked against the Go blaster node for node and not proved: the
+  finding to close first. GPU solving is not this shape — ParaFROST's
+  device-side inprocessing pays above megabytes of clauses, and an
+  obligation here is kilobytes — but the many small independent
+  evaluations (the witness pass, exhaustive enumeration, reachable-state
+  exploration) are a kernel of `56-kernels.md`, to be measured before
+  built (`docs/notes/provers-2026-09.md`).
 - **Temporal properties.** Safety through the invariants above (§2a);
   liveness with declared fairness decided over the reachable states (§2b)
   and stated for TLC through the TLA+ module (`112-protocols.md` §4).

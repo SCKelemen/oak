@@ -52,10 +52,12 @@ main: (): i32 = 0
 	if strings.Contains(module, "CONSTANTS CK") || strings.Contains(module, "\nC == [") {
 		t.Fatalf("a payload domain was keyed by the parameter name:\n%s", module)
 	}
+	// Every scalar domain runs one past the largest literal the guards
+	// mention (4, in `u32(c.k) < u32(4)`; docs/spec/112-protocols.md §4).
 	cfg := ProtocolTLCConfigWith(decl, records)
 	for _, want := range []string{
-		"    C_RequestK = {0, 1, 2, 3}\n", "    C_RequestV = {0, 1, 2, 3}\n", "    C_ReplyOk = {TRUE, FALSE}\n",
-		"    N_u8 = {0, 1, 2, 3}\n", "    N_u32 = {0, 1, 2, 3}\n",
+		"    C_RequestK = {0, 1, 2, 3, 4, 5}\n", "    C_RequestV = {0, 1, 2, 3, 4, 5}\n", "    C_ReplyOk = {TRUE, FALSE}\n",
+		"    N_u8 = {0, 1, 2, 3, 4, 5}\n", "    N_u32 = {0, 1, 2, 3, 4, 5}\n",
 	} {
 		if !strings.Contains(cfg, want) {
 			t.Fatalf("configuration lacks %q:\n%s", want, cfg)

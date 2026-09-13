@@ -82,7 +82,7 @@ func (m *protocolMachine) staticProjection() ([]ast.Statement, typechecker.Resou
 	facts.Transitions = append(facts.Transitions, typechecker.ResourceTransitionDeclaration{
 		Name: "handle@" + m.initial, Callable: prefix + "_handle", From: marker(m.initial), To: marker(m.initial), ReturnsFresh: true,
 	})
-	const local = "record"
+	const local = "oak_record"
 	for _, step := range m.steps {
 		// The lines of a step are grouped by source state: one function per
 		// group, trying the group's lines in declaration order as name_next
@@ -115,7 +115,7 @@ func (m *protocolMachine) staticProjection() ([]ast.Statement, typechecker.Resou
 			catchAll := false
 			for _, line := range lines {
 				applicable = append(applicable, line)
-				if line.Guard == nil {
+				if m.lineGuard(s, line) == nil {
 					catchAll = true
 					break
 				}
@@ -177,11 +177,12 @@ func (m *protocolMachine) staticProjection() ([]ast.Statement, typechecker.Resou
 				for i := len(applicable) - 1; i >= 0; i-- {
 					line := applicable[i]
 					arm := s.block(append(moved(line), s.expr(s.variant("To"+line.To.Value, next())))...)
-					if line.Guard == nil {
+					effective := m.lineGuard(s, line)
+					if effective == nil {
 						result = arm
 						continue
 					}
-					guard := &ast.ExpressionStatement{Expression: cloneExpression(line.Guard)}
+					guard := &ast.ExpressionStatement{Expression: effective}
 					m.rewriteQuantifiers(guard, prefix, s)
 					condition := renameIdentifier(guard.Expression, "data", local).(ast.Expression)
 					var otherwise ast.Expression = result

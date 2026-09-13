@@ -126,7 +126,7 @@ func buildPackage(args []string) int {
 	fs.StringVar(&asmMode, "asm", "", "asm units: native (Oak assembler companion object) or c (inline __asm__; default native where the target has a lane; docs/spec/94-assembler.md section 9)")
 	fs.BoolVar(&lines, "lines", false, "emit #line directives so C diagnostics point at Oak source")
 	fs.BoolVar(&nativeBodies, "native", false, "lower Oak bodies through the native backend where its subset reaches (docs/spec/94-assembler.md section 9)")
-	fs.StringVar(&linkMode, "link", "c", "link: c (the target's C compiler links the emitted C and the companion object) or oak (the Oak assembler alone writes a static ELF executable from natively lowered bodies; implies -native; linux and freestanding targets on the arm64 and rv64 lanes)")
+	fs.StringVar(&linkMode, "link", "c", "link: c (the target's C compiler links the emitted C and the companion object), oak (the Oak assembler alone realizes the natively lowered bodies: a static ELF executable on Linux, a relocatable object on a freestanding target; implies -native), or oak-image (a standalone freestanding image with Oak's start stub, for an emulator or a bare board)")
 	rest, code, stop := parseFlags(fs, args)
 	if stop {
 		return code
@@ -152,11 +152,11 @@ func buildPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak build: -asm takes native or c, got %q\n", asmMode)
 		return 2
 	}
-	if linkMode != "c" && linkMode != "oak" {
-		fmt.Fprintf(os.Stderr, "oak build: -link takes c or oak, got %q\n", linkMode)
+	if linkMode != "c" && linkMode != "oak" && linkMode != "oak-image" {
+		fmt.Fprintf(os.Stderr, "oak build: -link takes c, oak, or oak-image, got %q\n", linkMode)
 		return 2
 	}
-	if linkMode == "oak" {
+	if linkMode != "c" {
 		nativeBodies = true
 	}
 	targets, err := expandPackagePatterns(rest)
@@ -291,7 +291,23 @@ func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, linkMode
 		}
 		asmMode = "c"
 	}
-	if linkMode == "oak" {
+	if linkMode == "oak" && tgt.Freestanding() {
+		// A freestanding module realized by the Oak assembler alone: one
+		// relocatable object of natively lowered bodies, no C compiled
+		// (docs/spec/94-assembler.md §9).
+		object, err := comp.EmitNativeObject(compiler.ObjectFormat(tgt)).Get()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
+			return 1
+		}
+		if err := os.WriteFile(output, object, 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
+			return 1
+		}
+		fmt.Printf("Built %s -> %s (an object of the Oak assembler's code alone)\n", dir, output)
+		return 0
+	}
+	if linkMode == "oak" || linkMode == "oak-image" {
 		// The Oak assembler links the natively lowered program itself
 		// (docs/spec/94-assembler.md §9): no C compiler, no system linker.
 		image, err := comp.EmitExecutable().Get()
@@ -300,6 +316,9 @@ func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, linkMode
 			return 1
 		}
 		output = strings.TrimSuffix(output, ".o")
+		if linkMode == "oak-image" && !strings.HasSuffix(output, ".elf") {
+			output += ".elf"
+		}
 		if err := os.WriteFile(output, image, 0o755); err != nil {
 			fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
 			return 1
