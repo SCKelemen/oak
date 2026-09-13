@@ -1,0 +1,103 @@
+package main
+
+import("rings")
+
+// The rings benchmark's Oak side (benchmarks/rings/README.md): the same
+// producer and consumer loops the correctness harness runs
+// (compiler/e2e_rings_test.go), over storage the C driver owns and hands in
+// as spans. Each loop spins on a full or empty ring and counts its spins.
+
+pub spsc_produce: (cursor: [*]rings.SpscCursor, storage: [*]u32, n: u32): u32 {
+  i: u32 = 0
+  spins: u32 = 0
+  while i < n {
+    rings.spsc_push[u32](cursor, storage, i + u32(1)) ? { i = i + 1 } | { spins = spins + 1 }
+  }
+  spins
+}
+
+pub spsc_consume: (cursor: [*]rings.SpscCursor, storage: [*]u32, n: u32): u64 {
+  taken: u32 = 0
+  sum: u64 = 0
+  while taken < n {
+    v: u32 = option_or[u32](rings.spsc_pop[u32](cursor, storage), u32(0))
+    v == u32(0) ? { sum = sum } | { sum = sum + u64(v)
+      taken = taken + 1 }
+  }
+  sum
+}
+
+pub mpsc_setup: (cursor: [*]rings.MpscCursor, seqs: [*]rings.SeqCell): () {
+  rings.mpsc_init(cursor, seqs)
+}
+
+pub mpsc_produce: (cursor: [*]rings.MpscCursor, seqs: [*]rings.SeqCell, storage: [*]u32, n: u32): u32 {
+  i: u32 = 0
+  spins: u32 = 0
+  while i < n {
+    rings.mpsc_push[u32](cursor, seqs, storage, i + u32(1)) ? { i = i + 1 } | { spins = spins + 1 }
+  }
+  spins
+}
+
+pub mpsc_consume: (cursor: [*]rings.MpscCursor, seqs: [*]rings.SeqCell, storage: [*]u32, n: u32): u64 {
+  taken: u32 = 0
+  sum: u64 = 0
+  while taken < n {
+    v: u32 = option_or[u32](rings.mpsc_pop[u32](cursor, seqs, storage), u32(0))
+    v == u32(0) ? { sum = sum } | { sum = sum + u64(v)
+      taken = taken + 1 }
+  }
+  sum
+}
+
+pub mpmc_setup: (cursor: [*]rings.MpmcCursor, seqs: [*]rings.SeqCell): () {
+  rings.mpmc_init(cursor, seqs)
+}
+
+pub mpmc_produce: (cursor: [*]rings.MpmcCursor, seqs: [*]rings.SeqCell, storage: [*]u32, n: u32): u32 {
+  i: u32 = 0
+  spins: u32 = 0
+  while i < n {
+    rings.mpmc_push[u32](cursor, seqs, storage, i + u32(1)) ? { i = i + 1 } | { spins = spins + 1 }
+  }
+  spins
+}
+
+pub mpmc_consume: (cursor: [*]rings.MpmcCursor, seqs: [*]rings.SeqCell, storage: [*]u32, n: u32): u64 {
+  taken: u32 = 0
+  sum: u64 = 0
+  while taken < n {
+    v: u32 = option_or[u32](rings.mpmc_pop[u32](cursor, seqs, storage), u32(0))
+    v == u32(0) ? { sum = sum } | { sum = sum + u64(v)
+      taken = taken + 1 }
+  }
+  sum
+}
+
+pub intrusive_setup: (cursor: [*]rings.IntrusiveCursor, nodes: [*]rings.IntrusiveNode): () {
+  rings.intrusive_init(cursor, nodes)
+}
+
+// Producer nodes first..first+n-1, each pushed once.
+pub intrusive_produce: (cursor: [*]rings.IntrusiveCursor, nodes: [*]rings.IntrusiveNode, first: u32, n: u32): () {
+  k: u32 = 0
+  while k < n {
+    rings.intrusive_push(cursor, nodes, first + k)
+    k = k + 1
+  }
+}
+
+pub intrusive_consume: (cursor: [*]rings.IntrusiveCursor, nodes: [*]rings.IntrusiveNode, n: u32): u64 {
+  taken: u32 = 0
+  sum: u64 = 0
+  while taken < n {
+    got: u32 = rings.intrusive_pop(cursor, nodes) ?
+      | .Item(id) => id
+      | .Empty => u32(0)
+      | .Busy => u32(0)
+    got == u32(0) ? { sum = sum } | { sum = sum + u64(got)
+      taken = taken + 1 }
+  }
+  sum
+}

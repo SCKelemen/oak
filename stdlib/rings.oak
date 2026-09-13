@@ -98,6 +98,15 @@ pub spsc_count: (cursor: [*]SpscCursor): u32 {
   atomic_load_acquire(cursor[0].tail) - atomic_load_acquire(cursor[0].head)
 }
 
+// SeqCell is one slot's sequence cell on its own 64-byte line: neighboring
+// slots are claimed and published by different threads, so packed cells
+// would make every publication a store into a line another core is
+// writing (false sharing). The MPSC and MPMC rings take `[N]SeqCell`.
+pub SeqCell: type = struct {
+  seq: Atomic[u32]
+  pad: [60]u8
+}
+
 pub MpscCursor: type = struct {
   // Producers claim positions here.
   tail: Atomic[u32]
@@ -109,7 +118,7 @@ pub MpscCursor: type = struct {
 
 // mpsc_check states the shape: one cursor, one sequence cell per slot, a
 // power-of-two capacity within the wrapping window.
-pub mpsc_check: (cursor: [*]MpscCursor, seqs: [*]Atomic[u32], capacity: u32): () {
+pub mpsc_check: (cursor: [*]MpscCursor, seqs: [*]SeqCell, capacity: u32): () {
   assert(len(cursor) == u32(1))
   assert(len(seqs) == capacity)
   assert(capacity > u32(0))
@@ -119,12 +128,12 @@ pub mpsc_check: (cursor: [*]MpscCursor, seqs: [*]Atomic[u32], capacity: u32): ()
 
 // mpsc_init readies every slot for its first round (seq = slot) and zeroes
 // the indices. Call it once, before any thread touches the ring.
-pub mpsc_init: (cursor: [*]MpscCursor, seqs: [*]Atomic[u32]): () {
+pub mpsc_init: (cursor: [*]MpscCursor, seqs: [*]SeqCell): () {
   capacity: u32 = len(seqs)
   mpsc_check(cursor, seqs, capacity)
   i: u32 = 0
   while i < capacity {
-    atomic_store_relaxed(seqs[i], i)
+    atomic_store_relaxed(seqs[i].seq, i)
     i = i + 1
   }
   atomic_store_relaxed(cursor[0].tail, u32(0))
@@ -134,7 +143,7 @@ pub mpsc_init: (cursor: [*]MpscCursor, seqs: [*]Atomic[u32]): () {
 // mpsc_push claims a position and publishes the item; false when the ring
 // is full (nothing changes). Any number of producers call it concurrently;
 // a producer that loses a claim retries at the position it observed.
-pub mpsc_push[T]: (cursor: [*]MpscCursor, seqs: [*]Atomic[u32], storage: [*]T, item: T): Bool {
+pub mpsc_push[T]: (cursor: [*]MpscCursor, seqs: [*]SeqCell, storage: [*]T, item: T): Bool {
   capacity: u32 = len(storage)
   mpsc_check(cursor, seqs, capacity)
   mask: u32 = capacity - u32(1)
@@ -142,7 +151,7 @@ pub mpsc_push[T]: (cursor: [*]MpscCursor, seqs: [*]Atomic[u32], storage: [*]T, i
   claimed: Bool = false
   full: Bool = false
   while !claimed && !full {
-    seq: u32 = atomic_load_acquire(seqs[pos & mask])
+    seq: u32 = atomic_load_acquire(seqs[pos & mask].seq)
     dif: i32 = i32_bits_u32(seq - pos)
     dif == 0 ? {
       prior: u32 = atomic_compare_exchange_relaxed_relaxed(cursor[0].tail, pos, pos + u32(1))
@@ -161,7 +170,7 @@ pub mpsc_push[T]: (cursor: [*]MpscCursor, seqs: [*]Atomic[u32], storage: [*]T, i
   }
   claimed ? {
     storage[pos & mask] = item
-    atomic_store_release(seqs[pos & mask], pos + u32(1))
+    atomic_store_release(seqs[pos & mask].seq, pos + u32(1))
     true
   } | {
     false
@@ -171,16 +180,16 @@ pub mpsc_push[T]: (cursor: [*]MpscCursor, seqs: [*]Atomic[u32], storage: [*]T, i
 // mpsc_pop removes the oldest published item; None when none is published
 // (a claimed but unpublished slot at the head also reads as None). Only the
 // consumer calls it.
-pub mpsc_pop[T]: (cursor: [*]MpscCursor, seqs: [*]Atomic[u32], storage: [*]T): Option[T] {
+pub mpsc_pop[T]: (cursor: [*]MpscCursor, seqs: [*]SeqCell, storage: [*]T): Option[T] {
   capacity: u32 = len(storage)
   mpsc_check(cursor, seqs, capacity)
   mask: u32 = capacity - u32(1)
   pos: u32 = cursor[0].head
-  seq: u32 = atomic_load_acquire(seqs[pos & mask])
+  seq: u32 = atomic_load_acquire(seqs[pos & mask].seq)
   seq == pos + u32(1) ? {
     item: T = storage[pos & mask]
     // Recycle the slot for the round `capacity` positions on.
-    atomic_store_release(seqs[pos & mask], pos + capacity)
+    atomic_store_release(seqs[pos & mask].seq, pos + capacity)
     cursor[0].head = pos + u32(1)
     .Some(item)
   } | {
@@ -206,7 +215,7 @@ pub MpmcCursor: type = struct {
   consumer_pad: [60]u8
 }
 
-pub mpmc_check: (cursor: [*]MpmcCursor, seqs: [*]Atomic[u32], capacity: u32): () {
+pub mpmc_check: (cursor: [*]MpmcCursor, seqs: [*]SeqCell, capacity: u32): () {
   assert(len(cursor) == u32(1))
   assert(len(seqs) == capacity)
   assert(capacity > u32(0))
@@ -216,12 +225,12 @@ pub mpmc_check: (cursor: [*]MpmcCursor, seqs: [*]Atomic[u32], capacity: u32): ()
 
 // mpmc_init readies every slot for its first round and zeroes both
 // counters. Call it once, before any thread touches the ring.
-pub mpmc_init: (cursor: [*]MpmcCursor, seqs: [*]Atomic[u32]): () {
+pub mpmc_init: (cursor: [*]MpmcCursor, seqs: [*]SeqCell): () {
   capacity: u32 = len(seqs)
   mpmc_check(cursor, seqs, capacity)
   i: u32 = 0
   while i < capacity {
-    atomic_store_relaxed(seqs[i], i)
+    atomic_store_relaxed(seqs[i].seq, i)
     i = i + 1
   }
   atomic_store_relaxed(cursor[0].tail, u32(0))
@@ -230,7 +239,7 @@ pub mpmc_init: (cursor: [*]MpmcCursor, seqs: [*]Atomic[u32]): () {
 
 // mpmc_push claims a position and publishes the item; false when the ring
 // is full (nothing changes).
-pub mpmc_push[T]: (cursor: [*]MpmcCursor, seqs: [*]Atomic[u32], storage: [*]T, item: T): Bool {
+pub mpmc_push[T]: (cursor: [*]MpmcCursor, seqs: [*]SeqCell, storage: [*]T, item: T): Bool {
   capacity: u32 = len(storage)
   mpmc_check(cursor, seqs, capacity)
   mask: u32 = capacity - u32(1)
@@ -238,7 +247,7 @@ pub mpmc_push[T]: (cursor: [*]MpmcCursor, seqs: [*]Atomic[u32], storage: [*]T, i
   claimed: Bool = false
   full: Bool = false
   while !claimed && !full {
-    seq: u32 = atomic_load_acquire(seqs[pos & mask])
+    seq: u32 = atomic_load_acquire(seqs[pos & mask].seq)
     dif: i32 = i32_bits_u32(seq - pos)
     dif == 0 ? {
       prior: u32 = atomic_compare_exchange_relaxed_relaxed(cursor[0].tail, pos, pos + u32(1))
@@ -257,7 +266,7 @@ pub mpmc_push[T]: (cursor: [*]MpmcCursor, seqs: [*]Atomic[u32], storage: [*]T, i
   }
   claimed ? {
     storage[pos & mask] = item
-    atomic_store_release(seqs[pos & mask], pos + u32(1))
+    atomic_store_release(seqs[pos & mask].seq, pos + u32(1))
     true
   } | {
     false
@@ -267,7 +276,7 @@ pub mpmc_push[T]: (cursor: [*]MpmcCursor, seqs: [*]Atomic[u32], storage: [*]T, i
 // mpmc_pop claims the oldest published position and takes its item; None
 // when the ring is empty (a claimed but unpublished slot at the head also
 // reads as None).
-pub mpmc_pop[T]: (cursor: [*]MpmcCursor, seqs: [*]Atomic[u32], storage: [*]T): Option[T] {
+pub mpmc_pop[T]: (cursor: [*]MpmcCursor, seqs: [*]SeqCell, storage: [*]T): Option[T] {
   capacity: u32 = len(storage)
   mpmc_check(cursor, seqs, capacity)
   mask: u32 = capacity - u32(1)
@@ -275,7 +284,7 @@ pub mpmc_pop[T]: (cursor: [*]MpmcCursor, seqs: [*]Atomic[u32], storage: [*]T): O
   claimed: Bool = false
   empty: Bool = false
   while !claimed && !empty {
-    seq: u32 = atomic_load_acquire(seqs[pos & mask])
+    seq: u32 = atomic_load_acquire(seqs[pos & mask].seq)
     dif: i32 = i32_bits_u32(seq - (pos + u32(1)))
     dif == 0 ? {
       prior: u32 = atomic_compare_exchange_relaxed_relaxed(cursor[0].head, pos, pos + u32(1))
@@ -294,7 +303,7 @@ pub mpmc_pop[T]: (cursor: [*]MpmcCursor, seqs: [*]Atomic[u32], storage: [*]T): O
   }
   claimed ? {
     item: T = storage[pos & mask]
-    atomic_store_release(seqs[pos & mask], pos + capacity)
+    atomic_store_release(seqs[pos & mask].seq, pos + capacity)
     .Some(item)
   } | {
     .None
