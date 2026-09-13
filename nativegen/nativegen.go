@@ -1232,17 +1232,17 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	if body := inlineBody(fn, functions); body != fn.Body {
 		expanded := *fn
 		expanded.Body = body
-		if out, err := compileArm64Body(&expanded, functions, records, adts, tc, elide); err == nil {
+		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, tc, elide); err == nil {
 			return out, nil
 		} else if _, outside := err.(Unsupported); !outside {
 			return nil, err
 		}
 	}
-	return compileArm64Body(fn, functions, records, adts, tc, elide)
+	return compileArm64Body(fn, functions, records, adts, constants, tc, elide)
 }
 
 // compileArm64Body lowers one function body as given.
-func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, tc *typechecker.TypeChecker, elide bool) (*asm.Function, error) {
+func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, elide bool) (*asm.Function, error) {
 	if len(fn.Parameters) > 8 {
 		return nil, unsupported("more than eight parameters")
 	}
