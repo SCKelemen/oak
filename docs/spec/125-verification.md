@@ -508,7 +508,15 @@ In order of payoff, each reusing a surface that exists:
   apply over an explicit frame stack, and the blaster operation for
   operation the Go one — done as the twin; `oak prove -solver oak` runs it
   beside the Go decider on every bit-level law and requires the same
-  verdict with the same node count, which it reaches on the whole corpus),
+  verdict with the same node count, which it reaches on the whole corpus;
+  both engines carry **complement edges** — an edge is `2·node + c`, the
+  complemented edge the negation of the node's function, one terminal for
+  `false` — so negation is a bit flip, a function and its negation share
+  every node, and `mk` keeps every high edge positive so equal functions
+  stay one edge (`Oak.BddComplement` states the laws); the largest
+  diagrams of the corpus shrank from 950,634 to 489,317 nodes
+  (`effects.oak`) and 1,482,423 to 1,340,606 (`lattice.oak`), the
+  cross-check still node for node),
   now the decider `oak prove` runs by default, the Go one replaying the
   winning order as the check on every verdict); then the term lowering
   in Oak (`prove/solver/lower.oak`: the theorem and its callees as a

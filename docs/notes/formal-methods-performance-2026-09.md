@@ -1,6 +1,6 @@
 # Note: the most performant formal-methods implementation — what the codecs, os, ml, simdjson and Futhark teach the prover
 
-**Status: in progress — benchmarks, the first enumeration increment, resident runner workers, the BDD tables, the id-indexed witness evaluator, cached slots with pooled scopes, parallel theorems and one Lean extraction landed.** 2026-09-12, `specification` branch.
+**Status: in progress — benchmarks, the first enumeration increment, resident runner workers, the BDD tables, the id-indexed witness evaluator, cached slots with pooled scopes, parallel theorems, one Lean extraction and complement edges landed.** 2026-09-12, `specification` branch.
 Source: a read of Oak's own verification engines (`prove/`, `asm/`,
 `repl/leancheck.go`, `testrunner/`, `experiments/verification-poc`), of
 `github.com/SCKelemen/os` and `github.com/SCKelemen/ml` for techniques those
@@ -365,6 +365,31 @@ that fails, so the common case is one compilation instead of N+1.
 Against the baselines of section 1: protocols 19.98 s to 0.87 s, lattice
 3.78 s to 0.60 s, patterns 0.84 s to 0.06 s, effects 2.54 s to 0.71 s.
 The race detector is clean over the prover under the parallel path.
+
+## 4g. Seventh increment landed: complement edges in both engines (item 2, second step)
+
+Both diagram engines — `asm/bdd.go` and its twin `prove/solver/bdd.oak` —
+now carry complement edges: an edge is `2·node + c`, the complemented edge
+the negation of the node's function, one terminal node for `false` (so a
+zero lane keeps meaning false, which the first attempt with a `true`
+terminal broke in every zero-initialized accumulator of both blasters),
+`true` its complement. Negation is a bit flip, a function and its negation
+share every node, and `mk` normalizes a complemented high edge by
+complementing both cofactors and the result, so every stored high edge is
+positive and equal functions are one edge — the equality test the deciders
+rest on. `apply` gains the terminal cases for an operand equal to the
+other's complement; witness paths take complement-aware cofactors. The
+laws the engines rely on are stated over `Bool` in `Oak.BddComplement`
+(the `mk` normalization, complemented cofactors, the terminal identities),
+and `asm/bdd_complement_test.go` checks the representation invariant on
+built diagrams. Because both engines changed identically, `oak prove
+-solver oak -cross go` still agrees node for node over the whole corpus.
+
+| Benchmark | Before | After |
+| --- | ---: | ---: |
+| `BenchmarkTheoremsEffects` (largest diagram) | 0.76–1.00 s (950,634 nodes) | 0.67–0.68 s (489,317 nodes) |
+| `BenchmarkTheoremsLattice` (largest diagram) | 0.96 s (1,482,423 nodes) | 0.54–0.64 s (1,340,606 nodes) |
+| `BenchmarkBDDAdd64` | 0.9–1.1 ms | 0.61 ms |
 
 ## 5. What carries over from the codec track, unchanged
 
