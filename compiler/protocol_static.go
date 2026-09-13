@@ -161,8 +161,11 @@ func (m *protocolMachine) staticProjection() ([]ast.Statement, typechecker.Resou
 				}
 				outcomeName += "Outcome"
 				outcome := &ast.ADTType{Token: s.tok(0, "type"), EndToken: s.tok(0, ""), Name: s.id(outcomeName), Exported: exported}
+				// Variants are spelled To<State>: a bare state name would
+				// collide with NameState's variants, which the interpreter and
+				// the checker resolve by variant name.
 				for _, target := range targets {
-					outcome.Variants = append(outcome.Variants, &ast.ADTVariant{Token: s.tok(0, target), Name: s.id(target), Payload: handleAt(target)})
+					outcome.Variants = append(outcome.Variants, &ast.ADTVariant{Token: s.tok(0, "To"+target), Name: s.id("To" + target), Payload: handleAt(target)})
 				}
 				if !catchAll {
 					outcome.Variants = append(outcome.Variants, &ast.ADTVariant{Token: s.tok(0, "Refused"), Name: s.id("Refused"), Payload: handleAt(from)})
@@ -173,7 +176,7 @@ func (m *protocolMachine) staticProjection() ([]ast.Statement, typechecker.Resou
 				var result ast.Expression = s.variant("Refused", s.id("handle"))
 				for i := len(applicable) - 1; i >= 0; i-- {
 					line := applicable[i]
-					arm := s.block(append(moved(line), s.expr(s.variant(line.To.Value, next())))...)
+					arm := s.block(append(moved(line), s.expr(s.variant("To"+line.To.Value, next())))...)
 					if line.Guard == nil {
 						result = arm
 						continue
