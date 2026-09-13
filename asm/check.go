@@ -394,7 +394,16 @@ func spanShape(expr ast.Expression) (elem int64, writable bool, ok bool) {
 	if !isMarker || (marker.Value != "*" && marker.Value != "") {
 		return 0, false, false
 	}
-	switch typeText(indexExpr.Left) {
+	element := indexExpr.Left
+	// A span of atomic cells, `[*]Atomic[T]` (docs/spec/65-machine-memory.md
+	// section 1), has the carrier's element size; the atomics address its
+	// elements (atomicAccess), never a plain load or store.
+	if cell, isCell := element.(*ast.IndexExpression); isCell && !cell.Dot {
+		if head, isIdent := cell.Left.(*ast.Identifier); isIdent && head.Value == "Atomic" {
+			element = cell.Index
+		}
+	}
+	switch typeText(element) {
 	case "u8", "i8", "byte":
 		elem = 1
 	case "u16", "i16":
@@ -1812,11 +1821,12 @@ func (c *checker) atomicAccess(instr Instruction, matched form, mem Memory, regs
 		return
 	}
 	fact, isSpan := c.spans[mem.Base.Num]
-	if !isSpan {
-		c.errorf(instr.Line, "%s through %s, which is not a bound span base", instr.Mnemonic, mem.Base.Text)
+	extent, isRegion := c.regions[mem.Base.Num]
+	if !isSpan && !isRegion {
+		c.errorf(instr.Line, "%s through %s, which is not a bound span base or an element of one", instr.Mnemonic, mem.Base.Text)
 		return
 	}
-	if !fact.writable {
+	if (isSpan && !fact.writable) || (isRegion && !extent.writable) {
 		c.errorf(instr.Line, "%s through %s: the parameter is a read-only view ([]T); atomics need a span ([*]T)", instr.Mnemonic, mem.Base.Text)
 		return
 	}
@@ -1837,8 +1847,17 @@ func (c *checker) atomicAccess(instr Instruction, matched form, mem Memory, regs
 		c.read(instr, reg)
 	}
 	// The access is one element (or pair) at the base, sized by the value
-	// registers (no offset form for atomics).
-	c.spanAccess(instr, matched, mem, fact, reads, true)
+	// registers (no offset form for atomics). An element region — a span
+	// element's address, or a cell inside it (`add xE, xB, wI, uxtw #s`,
+	// then `add xC, xE, #off`) — is the native backend's spelling of a
+	// cell reached by storage path (docs/spec/65-machine-memory.md
+	// section 1); its bytes were proven inside the span when the region
+	// was derived.
+	if isRegion {
+		c.regionAccess(instr, matched, mem, extent, reads, true)
+	} else {
+		c.spanAccess(instr, matched, mem, fact, reads, true)
+	}
 	for _, reg := range writes {
 		c.write(instr, reg)
 	}

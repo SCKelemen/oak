@@ -68,8 +68,8 @@ main: (): i32 {
 		"replicas = [k \\in 0..1 |-> [log |-> [k1 \\in 0..2 |-> 0], len |-> 0]]",
 		"leader' = [leader EXCEPT !.log[leader.len] = e.value, !.len = (leader.len + 1)]",
 		"replicas' = [replicas EXCEPT ![who].log[replicas[who].len] = leader.log[replicas[who].len], ![who].len = (replicas[who].len + 1)]",
-		"leader \\in [log: [0..2 -> Nat], len: Nat]",
-		"replicas \\in [0..1 -> [log: [0..2 -> Nat], len: Nat]]",
+		"leader \\in [log: [0..2 -> 0..255], len: 0..255]",
+		"replicas \\in [0..1 -> [log: [0..2 -> 0..255], len: 0..255]]",
 	} {
 		if !strings.Contains(module, want) {
 			t.Fatalf("module lacks %q:\n%s", want, module)

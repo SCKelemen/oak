@@ -148,6 +148,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 		return nil, unsupported("more than eight parameters")
 	}
 	g := &rvGenerator{generator: generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, line: fn.Token.Line}, softFloat: softFloat, twoChunk: map[string]bool{}}
+	g.rvLane = true
 	usesFloat := mentionsFloat(fn) || g.recordsMentionFloat(fn)
 	if usesFloat && softFloat {
 		return nil, unsupported("floating point on a soft-float target (freestanding/riscv64 carries no F/D calling convention; build for linux/riscv64)")
