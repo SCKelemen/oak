@@ -457,7 +457,7 @@ type BlockStatement struct {
 	Statements []Statement
 	// Order is the reduction order the block declares once for the
 	// `reduce.reduce` calls inside it (docs/spec/55-parallelism.md section
-	// 4): "tree", "left", or "any" for `order tree { ... }`; "" for an
+	// 4): "tree", "left", or "bounded" for `order tree { ... }`; "" for an
 	// ordinary block.
 	Order string
 	// DeferredFrom, when positive, is the index of the first statement the
