@@ -129,7 +129,7 @@ func buildNative(pkg Package, cfg Config) (*nativeProgram, error) {
 	if err != nil {
 		return nil, err
 	}
-	linkArgs, linkIdentity, err := linkArguments(inputs)
+	linkArgs, linkIdentity, err := linkArguments(inputs, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -269,11 +269,21 @@ int main(int argc, char **argv) {
 // and returns an identity covering each object's bytes and each framework's
 // name for the build fingerprint (docs/spec/83-modules.md section 4.6). A
 // `framework` line links only on macOS and is skipped elsewhere.
-func linkArguments(inputs []compiler.LinkInput) ([]string, string, error) {
+func linkArguments(inputs []compiler.LinkInput, dir string) ([]string, string, error) {
 	var args []string
 	var identity strings.Builder
 	for _, input := range inputs {
 		switch input.Kind {
+		case "source":
+			// A library realization's C shim (stdlib.NativeShims), written
+			// beside the harness and compiled with it.
+			path := filepath.Join(dir, filepath.Base(input.Path))
+			if err := os.WriteFile(path, []byte(input.Source), 0o600); err != nil {
+				return nil, "", fmt.Errorf("link %s: %w", input.Path, err)
+			}
+			sum := sha256.Sum256([]byte(input.Source))
+			fmt.Fprintf(&identity, "source %s %x\n", input.Path, sum)
+			args = append(args, path)
 		case "object":
 			data, err := os.ReadFile(input.Path)
 			if err != nil {

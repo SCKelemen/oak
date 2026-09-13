@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/SCKelemen/oak/ast"
 )
@@ -173,9 +174,10 @@ func ProtocolTLADeclared(decl *ast.ProtocolDeclaration, origin string, decls Pro
 	var constants []string
 	var domains []string
 	seen := map[string]bool{}
+	namer := newPayloadDomainNamer(stepPayloads(m.steps))
 	for _, step := range m.steps {
 		if step.payload != nil {
-			domain := domainName(step.payload.Name.Value)
+			domain := namer.domain(step.payload)
 			if seen[domain] {
 				continue
 			}
@@ -255,7 +257,7 @@ func ProtocolTLADeclared(decl *ast.ProtocolDeclaration, origin string, decls Pro
 		if step.payload != nil {
 			payload = step.payload.Name.Value
 			head = fmt.Sprintf("%s(%s)", variantName(step.name), payload)
-			nextTerms = append(nextTerms, fmt.Sprintf("(\\E %s \\in %s : %s)", payload, domainName(payload), head))
+			nextTerms = append(nextTerms, fmt.Sprintf("(\\E %s \\in %s : %s)", payload, namer.domain(step.payload), head))
 		} else {
 			nextTerms = append(nextTerms, variantName(step.name))
 		}
@@ -356,7 +358,7 @@ func ProtocolTLADeclared(decl *ast.ProtocolDeclaration, origin string, decls Pro
 		for _, step := range m.steps {
 			if step.name == f.Step.Value && step.payload != nil {
 				payload := step.payload.Name.Value
-				action = fmt.Sprintf("\\E %s \\in %s : %s(%s)", payload, domainName(payload), action, payload)
+				action = fmt.Sprintf("\\E %s \\in %s : %s(%s)", payload, namer.domain(step.payload), action, payload)
 			}
 		}
 		form := "WF"
@@ -494,11 +496,12 @@ func ProtocolTLCConfigDeclared(decl *ast.ProtocolDeclaration, decls ProtocolDecl
 	}
 	seen := map[string]bool{}
 	var constants []string
+	namer := newPayloadDomainNamer(transitionPayloads(decl))
 	for _, t := range decl.Transitions {
 		if t.Param == nil {
 			continue
 		}
-		domain := domainName(t.Param.Name.Value)
+		domain := namer.domain(t.Param)
 		if seen[domain] {
 			continue
 		}
@@ -521,6 +524,89 @@ func ProtocolTLCConfigDeclared(decl *ast.ProtocolDeclaration, decls ProtocolDecl
 		b.WriteString("CONSTANTS\n" + strings.Join(constants, "\n") + "\n")
 	}
 	return b.String()
+}
+
+// payloadDomainNamer names each step payload's domain. The domain is
+// keyed by the parameter name, as the module always spelled it (`cmd` ->
+// `Cmd`), unless one name carries payloads of different types across
+// steps — four steps with record payloads of different types all named `c`
+// used to collide into one `C` (the dbs pilot's round-five finding 2) —
+// when the type is appended: `C_Request`, `C_Reply`, `N_u8`, `N_u32`. The
+// type alone is not the key because a record payload is naturally named
+// after its step (`prepare(p: Prepare)`), and `Prepare` is the action.
+// Every site that spells a domain — CONSTANTS, the record-set definitions,
+// the Next quantifiers, liveness, the TLC configuration — goes through one
+// namer so they agree.
+type payloadDomainNamer struct {
+	conflicted map[string]bool
+}
+
+func newPayloadDomainNamer(params []*ast.FunctionParameter) *payloadDomainNamer {
+	namer := &payloadDomainNamer{conflicted: map[string]bool{}}
+	types := map[string]map[string]bool{}
+	for _, param := range params {
+		if param == nil || param.Name == nil {
+			continue
+		}
+		name := param.Name.Value
+		if types[name] == nil {
+			types[name] = map[string]bool{}
+		}
+		types[name][typeSpelling(param.Type)] = true
+	}
+	for name, spellings := range types {
+		if len(spellings) > 1 {
+			namer.conflicted[name] = true
+		}
+	}
+	return namer
+}
+
+// domain is the constant (or defined set) naming the payload's domain.
+func (n *payloadDomainNamer) domain(param *ast.FunctionParameter) string {
+	if param == nil || param.Name == nil {
+		return domainName("")
+	}
+	if n.conflicted[param.Name.Value] {
+		return domainName(param.Name.Value) + "_" + typeSpelling(param.Type)
+	}
+	return domainName(param.Name.Value)
+}
+
+// typeSpelling is a payload type's text as an identifier fragment.
+func typeSpelling(typ ast.Expression) string {
+	if typ == nil {
+		return "Payload"
+	}
+	var b strings.Builder
+	for _, r := range typ.String() {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// stepPayloads lists the payload parameters of a machine's steps.
+func stepPayloads(steps []*protocolStep) []*ast.FunctionParameter {
+	var params []*ast.FunctionParameter
+	for _, step := range steps {
+		if step.payload != nil {
+			params = append(params, step.payload)
+		}
+	}
+	return params
+}
+
+// transitionPayloads lists the payload parameters of a declaration's transitions.
+func transitionPayloads(decl *ast.ProtocolDeclaration) []*ast.FunctionParameter {
+	var params []*ast.FunctionParameter
+	for _, t := range decl.Transitions {
+		if t.Param != nil {
+			params = append(params, t.Param)
+		}
+	}
+	return params
 }
 
 // domainName is the constant naming a payload's domain: compare -> Compare.
