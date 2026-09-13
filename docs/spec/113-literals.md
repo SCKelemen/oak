@@ -109,10 +109,17 @@ block's verified count is the occurrence count at each of its sixteen
 positions (`block_eq_total`, from `exact`), a step is four blocks, and
 `k` steps plus the tail over `[64 k, n)` are the occurrences over `[0, n)`
 for any `k` with `64 k ≤ n` (`kernel_eq_total`) — the guard's choice
-included. Not yet modeled: streaming; the differential tests
-(`compiler/e2e_literals_test.go`, compiled and interpreted against a
-scalar reference, chunked feeds against the whole count) and the
-harness's six-way count agreement cover it.
+included. `spec/lean/Oak/TeddyStream.lean` states the streaming
+contract: a feed counts the occurrences *ending* in its chunk, the feeds
+of two adjacent chunks count what one feed of their union counts
+(`countEndsIn_split`), a chunk holding the whole input counts exactly the
+occurrences (`endsIn_whole`), and an occurrence ending in a chunk starts
+within `longest - 1` bytes before it (`start_in_carry`), which is why a
+carry of that many bytes joined with the chunk holds it whole. Not
+modeled: that `feed`'s loop over the carried positions computes
+`countEndsIn`; the differential tests (`compiler/e2e_literals_test.go`,
+compiled and interpreted against a scalar reference, chunked feeds
+against the whole count) cover it.
 
 Measured on sixteen HTTP tokens over 64 MB (`benchmarks/scanning/`):
 the projected `http_count` runs at 0.10 ns/byte, the hand-written NEON
@@ -125,5 +132,3 @@ same count.
 - Larger sets: more than eight buckets when the set is large enough that
   bucket sharing dominates verification, and a rarest-byte choice of the
   three classified bytes instead of the first three.
-- Streaming in Lean: the feeds over a partition of the input sum to the
-  count of the whole.

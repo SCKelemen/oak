@@ -74,9 +74,10 @@ this to the bytes: the stored entries are OR-folds of bucket bits whose
 bit `b` is the predicate, the AND of masks is bitwise, so the kernel's
 `(cand & bucket_bit(j)) != 0` is exactly `cand` (`bit_candMask`), and
 `Oak/TeddyCount.lean` that the sixty-four-byte steps plus the tail count
-the occurrences over every position (`kernel_eq_total`). Not yet
-modeled: streaming; the differential checks and the six-way count
-agreement above cover it.
+the occurrences over every position (`kernel_eq_total`);
+`Oak/TeddyStream.lean` that adjacent feeds count what their union counts
+and that a carry of `longest - 1` bytes suffices. The differential
+checks and the six-way count agreement above cover the rest.
 
 ## Landed
 
