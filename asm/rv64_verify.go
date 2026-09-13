@@ -139,6 +139,9 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 			state.disp -= ops[2].(Immediate).Value
 			return "", true
 		}
+		if reg(1).Class == ClassSP {
+			return "a frame address in a register (an owned array addressed by index)", false
+		}
 		l, ok := read(1)
 		if !ok {
 			return "unbound register read", false
@@ -242,10 +245,15 @@ func (x *pathExecutor) spanLoadRV64(dest Register, mem Memory, width int, name s
 		if !isBase || offset != 0 || mem.Offset != 0 {
 			return "a load through an address that is not a span element", false
 		}
-		if scaled.kind != termBinary || scaled.op != "shl" || scaled.right.kind != termConst || int64(1)<<scaled.right.value != x.spans[param] {
+		switch {
+		case x.spans[param] == 1:
+			// Byte elements: the index is the offset, unscaled.
+			span, index = param, scaled
+		case scaled.kind == termBinary && scaled.op == "shl" && scaled.right.kind == termConst && int64(1)<<scaled.right.value == x.spans[param]:
+			span, index = param, scaled.left
+		default:
 			return "an element address whose scale is not the element size", false
 		}
-		span, index = param, scaled.left
 	} else {
 		return "a load through a register that is not a span base", false
 	}

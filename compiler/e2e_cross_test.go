@@ -102,9 +102,13 @@ func TestCrossTargetForeignLaneWithoutFallbackFails(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no Oak fallback body") {
 		t.Fatalf("foreign lane without fallback: %v", err)
 	}
-	// The native body backend is AArch64: another target compiles the C.
+	// The native body backend has a lane for RISC-V too (nativegen/rv64.go);
+	// a target without a lane compiles the C.
 	if _, err := New().WithSource("pick.oak", crossPickOak).WithNativeBodies().WithTarget(target.Target{OS: target.OSLinux, Arch: target.ArchRiscv64}).EmitC().Get(); err != nil {
-		t.Fatalf("native bodies on a non-arm64 target: %v", err)
+		t.Fatalf("native bodies on linux/riscv64: %v", err)
+	}
+	if _, err := New().WithSource("pick.oak", crossPickOak).WithNativeBodies().WithTarget(target.Target{OS: target.OSLinux, Arch: target.ArchAmd64}).EmitC().Get(); err != nil {
+		t.Fatalf("native bodies on a target without a lane: %v", err)
 	}
 }
 

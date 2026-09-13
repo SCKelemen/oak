@@ -1006,7 +1006,7 @@ func (c *checker) instruction(instr Instruction) bool {
 		c.read(instr, instr.Operands[0].(Register))
 		c.indirectCall(instr)
 		return false
-	case "brk":
+	case "brk", "hlt":
 		// A trap: control never continues.
 		c.unreachable = true
 		return true
