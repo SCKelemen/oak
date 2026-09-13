@@ -2924,6 +2924,69 @@ native; the C build agrees; the freestanding executables carry the bytes
 and run under QEMU), `asm/isa_test.go` (the `adrl` sample), the object
 and executable writers' tests.
 
+**The verified profile (2026-09-14).** `oak build -verified` holds a
+program to the verified native profile: every body the program reaches is
+lowered by the native backend and carries a proven verdict — none
+witnessed, none trusted, none left to the C backend — and the Oak
+assembler links it alone (`-link oak` is implied). The theorem such a
+build stands for is the chain of this section: each body's Oak semantics
+(the extraction, `Oak.LoweringRefinement`) equals the emitted assembly's
+(`Oak.AssemblerSemantics`, `Oak.ArmASL`, the Sail bridges) under the
+checker's memory discipline; what the chain does not yet cover is stated
+where it is trusted (the checker facts and the writers in STATUS, the
+RV64 export in the audit note). A program the profile refuses gets the
+burn-down list: every reason with the bodies it holds back, largest
+first, so the distance to the profile is a number that moves
+(`Compilation.verifiedProfile`, `SemanticModel.NativeVerdicts`,
+`NativeFallbacks`). On the stdlib-bearing program the first list holds
+380 bodies on AArch64 and 453 on RV64; the largest reasons are record
+results beyond one register chunk, vector or floating-point parameters,
+the path budget, table reads (`adrl`/`la`), unit callees, and calls
+returning a `Result` — the order in which the verifier grows next.
+Pinned: `compiler/e2e_verified_profile_test.go` (a proven program links
+on both lanes; a variable shift count is refused with its reason; a body
+left to C is refused with its reason).
+
+**Record results of two chunks, aggregate call summaries, unknown frame
+bytes (2026-09-14).** The first burn-down of the verified profile. A
+record or union result of 9 to 16 bytes comes back in two register chunks
+(x0 and x1; a0 and a1) and is verified chunk by chunk: `Verify` runs the
+paths once per chunk, each run delivering that chunk's register against
+the same chunk packed from the Oak body's aggregate value
+(`packAggregateChunk`, the padding masked by `leafMask`), and the verdict
+is proof only when both chunks are proven (`(both result chunks)`). A
+result past 16 bytes, returned through the area x8 addresses, is still
+trusted, now with that reason. A call to a program function returning a
+record or a sum type of up to two chunks is summarized like a scalar call:
+the callee's body is lowered to its aggregate value over the argument
+terms, packed into its chunks, and bound to x0 and x1 (a0 and a1), with
+the padding bits fresh unknowns (`callN#padK`) as the ABI leaves them —
+so a caller matching on a `Result` a callee returns is proven relative to
+the callee's Oak body. A load of frame bytes no store on the path reached
+— the padding of a record chunk stored at a narrower width, the payload
+of a union variant not constructed — no longer refuses the body: the
+bytes are fresh unknowns (`frame#<addr>`) that later loads of the same
+byte see again, so a result that never reads them is unaffected and a
+result that depends on them is refuted (the body computes from
+uninitialized memory), never matched by accident; a witness run still
+refuses such a load, since a chosen value could coincide. The RV64
+frame model takes the AArch64 lane's byte-granular slots (`storeSlot`,
+`loadSlot`): a record chunk stored with `sd` is read back field by field
+with `lw` or `lbu`, which had been trusted as "a load whose width differs
+from the slot's store". And the RV64 lane binds record and union
+parameters as the AArch64 lane does (`bindRV64Params`): up to 16 bytes as
+one or two register chunks assembled from the leaves, beyond that by
+reference to the caller's copy, a load through which reads the leaf at
+its offset — they had been trusted as "vector or non-integer parameters".
+On the stdlib-bearing program the proven bodies rose from 115 to 127 on
+AArch64 and from 42 to 113 on RV64, with no mismatch and no change in the
+C build. Pinned:
+`compiler/e2e_native_verdict_aggregates_test.go` (two-chunk results
+proven chunk by chunk, a `Result`-returning callee taken at its body, a
+one-chunk record parameter's padding, both lanes), `asm/frame_test.go`
+(an unstored slot's bytes refute a result that reads them and leave one
+that does not).
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built
