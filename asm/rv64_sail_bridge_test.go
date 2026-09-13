@@ -80,10 +80,20 @@ func TestRV64SailBridgeStubsMatchSail(t *testing.T) {
 		t.Fatal(err)
 	}
 	export := filepath.Join("..", "external", "sail-riscv", "build", "model", "Lean_RV64D")
-	library, libErr := os.ReadFile(filepath.Join(export, ".lake", "packages", "Sail", "Sail", "Sail.lean"))
+	// The support library's definitions moved between its modules across
+	// releases (Sail.lean in v4, Common.lean in v5): every module counts.
+	libraryFiles, _ := filepath.Glob(filepath.Join(export, ".lake", "packages", "Sail", "Sail", "*.lean"))
+	var library []byte
+	for _, path := range libraryFiles {
+		text, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		library = append(append(library, text...), '\n')
+	}
 	prelude, preErr := os.ReadFile(filepath.Join(export, "LeanRV64D", "Prelude.lean"))
 	defs, defErr := os.ReadFile(filepath.Join(export, "LeanRV64D", "Defs.lean"))
-	if libErr != nil || preErr != nil || defErr != nil {
+	if len(libraryFiles) == 0 || preErr != nil || defErr != nil {
 		t.Skip("the Sail Lean library and export are not fetched under external/sail-riscv")
 	}
 	normalize := func(text string) string {
