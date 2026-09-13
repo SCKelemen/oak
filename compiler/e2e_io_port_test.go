@@ -105,9 +105,13 @@ main: (): i32 {
   ring: [*]io.IoRing = span(&ring_store)
   requests: [*]io.IoRequest = span(&req_store)
   completions: [*]io.IoCompletion = span(&cq_store)
-  region: [*]u8 = span(&region_store.bytes)
+  // The span of an IoSectorRegion's bytes carries its alignment as a
+  // fact of its type (50-borrowing.md section 2a): the aligned
+  // registration needs no probe, and the same span still flows to every
+  // [*]u8 parameter.
+  region: [* align 4096]u8 = span(&region_store.bytes)
   io.io_attach(view(&tape), u32(0))
-  io.io_open_region(ring, region, u32(2))
+  io.io_open_region_aligned(ring, region, u32(2))
   io_path(region)
   i: u32 = u32(0)
   while i < u32(8) {

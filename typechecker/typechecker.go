@@ -551,9 +551,13 @@ type TypeChecker struct {
 	diagnostics             *diagnostic.DiagnosticCollector
 	env                     *TypeEnvironment
 	adtTypes                map[string]*object.ADTType // ADT type definitions
-	deferResults            int                        // temporaries binding deferred blocks' values (10-syntax section 4b)
-	intSize                 int                        // Platform size for int/uint (default: 64)
-	ptrSize                 int                        // Platform size for ptr/uptr (default: 64)
+	// recordDecls keeps each declared record's literal, for the layout
+	// facts the checker reads without computing a layout: a declared
+	// struct(align: N) and per-field align (borrowAlignment).
+	recordDecls  map[string]*ast.RecordLiteral
+	deferResults int // temporaries binding deferred blocks' values (10-syntax section 4b)
+	intSize      int // Platform size for int/uint (default: 64)
+	ptrSize      int // Platform size for ptr/uptr (default: 64)
 	// checkedExterns marks extern bindings already validated, so the
 	// predeclare pass and the statement pass never double-report.
 	checkedExterns map[*ast.FunctionStatement]bool
@@ -2203,7 +2207,98 @@ func (tc *TypeChecker) checkBorrowBuiltin(name string, expr *ast.InvocationExpre
 		IsSlice:     name == "view",
 		IsSpan:      name == "span",
 		ElementType: arrType.ElementType,
+		Align:       tc.borrowAlignment(prefix.Right, arrType),
 	}
+}
+
+// alignmentFact normalizes a derived alignment: 1 says nothing, so it is
+// recorded as no fact (0) and prints as the plain type.
+func alignmentFact(align uint32) uint32 {
+	if align <= 1 {
+		return 0
+	}
+	return align
+}
+
+// borrowAlignment is the alignment fact of a borrow of an owned array
+// (docs/spec/50-borrowing.md section 2a): the element's natural alignment,
+// raised to the owning record's declared alignment when the array is the
+// record's first field (offset zero), or to the field's own declared
+// alignment. Nothing else is known statically.
+func (tc *TypeChecker) borrowAlignment(owner ast.Expression, array *ArrayType) uint32 {
+	align := tc.naturalAlignment(array.ElementType)
+	access, isAccess := owner.(*ast.IndexExpression)
+	if !isAccess || !access.Dot {
+		return alignmentFact(align)
+	}
+	base, isIdent := access.Left.(*ast.Identifier)
+	field, fieldIsIdent := access.Index.(*ast.Identifier)
+	if !isIdent || !fieldIsIdent {
+		return alignmentFact(align)
+	}
+	scheme, known := tc.env.Get(base.Value)
+	if !known || scheme == nil {
+		return alignmentFact(align)
+	}
+	record, isRecord := scheme.Type.(*RecordType)
+	if !isRecord || record.Name == "" {
+		return alignmentFact(align)
+	}
+	shape, declared := tc.recordDeclaration(record.Name)
+	if !declared {
+		return alignmentFact(align)
+	}
+	for i, f := range shape.FieldOrder {
+		if f.Name != field.Value {
+			continue
+		}
+		if f.Align > align {
+			align = f.Align
+		}
+		if i == 0 && shape.Layout != nil && shape.Layout.Align > align {
+			align = shape.Layout.Align
+		}
+	}
+	return alignmentFact(align)
+}
+
+// recordDeclaration is the declared literal of a record or of the template
+// an instantiation came from.
+func (tc *TypeChecker) recordDeclaration(name string) (*ast.RecordLiteral, bool) {
+	shape, declared := tc.recordDecls[name]
+	return shape, declared
+}
+
+// naturalAlignment is the alignment of one element on the recorded LP64
+// target model (docs/spec/92-ffi.md section 2.4): fixed-width scalars at
+// their width, Bool as an int, u128 at 16; a record at its declared
+// alignment, else 1 (its natural alignment is the C compiler's, unknown
+// here); anything else 1.
+func (tc *TypeChecker) naturalAlignment(typ Type) uint32 {
+	switch t := typ.(type) {
+	case *PrimitiveType:
+		switch normalizePrimitiveName(t.Name) {
+		case "u8", "i8":
+			return 1
+		case "u16", "i16", "f16", "bf16":
+			return 2
+		case "u32", "i32", "f32":
+			return 4
+		case "u64", "i64", "f64":
+			return 8
+		case "u128":
+			return 16
+		}
+		return 1
+	case *BoolType:
+		return 4
+	case *RecordType:
+		if shape, declared := tc.recordDeclaration(t.Name); declared && shape.Layout != nil && shape.Layout.Align != 0 {
+			return shape.Layout.Align
+		}
+		return 1
+	}
+	return 1
 }
 
 // checkSubsliceBuiltin types subslice(v, start, len): the derived borrow has
@@ -2231,7 +2326,37 @@ func (tc *TypeChecker) checkSubsliceBuiltin(expr *ast.InvocationExpression) Type
 			tc.addError(bound, "subslice bounds must be integers, got %s", boundType)
 		}
 	}
+	if arrType.Align != 0 {
+		// The fact survives a start that is a literal multiple of the
+		// alignment (`subslice(region, u32(4096), n)`); any other start
+		// yields a window with no fact.
+		derived := *arrType
+		derived.Align = 0
+		if start, isLiteral := literalOffset(expr.Arguments[1]); isLiteral && start%uint64(arrType.Align) == 0 {
+			derived.Align = arrType.Align
+		}
+		return &derived
+	}
 	return srcType
+}
+
+// literalOffset reads a non-negative literal offset, bare or through a
+// fixed-width constructor (`4096`, `u32(4096)`).
+func literalOffset(expr ast.Expression) (uint64, bool) {
+	switch e := expr.(type) {
+	case *ast.IntegerLiteral:
+		if e.Value < 0 {
+			return 0, false
+		}
+		return uint64(e.Value), true
+	case *ast.InvocationExpression:
+		if len(e.Arguments) == 1 {
+			if ident, isIdent := e.Function.(*ast.Identifier); isIdent && conversionPrimitives[ident.Value] != 0 {
+				return literalOffset(e.Arguments[0])
+			}
+		}
+	}
+	return 0, false
 }
 
 func (tc *TypeChecker) checkFieldAccessorInvocation(field string, expr *ast.InvocationExpression) Type {
@@ -2740,6 +2865,13 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			if !compatible {
 				validCall = false
 				tc.addError(expr.Arguments[i], "argument %d conflicts with an earlier type specialization", i+1)
+				continue
+			}
+			// Unification is structural; a span's alignment fact must still
+			// be at least the parameter's (50-borrowing.md section 2a).
+			if !tc.alignmentAssignable(argType, expectedType) {
+				validCall = false
+				tc.addError(expr.Arguments[i], "argument %d: expected %s, got %s", i+1, expectedType, argType)
 				continue
 			}
 			bindings = merged
@@ -4383,6 +4515,10 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 					if !tc.isAssignable(valueType, varType) {
 						tc.addError(stmt, "variable %s: expected type %s, got %s", stmt.Name.Value, varType, valueType)
 					}
+				} else if !tc.alignmentAssignable(valueType, varType) {
+					// Unification is structural; the alignment fact's
+					// direction is checked apart (50-borrowing.md section 2a).
+					tc.addError(stmt, "variable %s: expected type %s, got %s", stmt.Name.Value, varType, valueType)
 				} else {
 					// Apply substitution to get the unified type. Commit equations
 					// for a blocked initializer only after the complete declaration succeeds.
@@ -4438,6 +4574,16 @@ func (tc *TypeChecker) isAssignable(valueType, varType Type) bool {
 				}
 			}
 			return true
+		}
+	}
+
+	// A view or span stands where its shape is required with a weaker or
+	// absent alignment fact, never a stronger one (docs/spec/50-borrowing.md
+	// section 2a): the fact's direction is decided here, before equality,
+	// which is structural.
+	if value, isArray := valueType.(*ArrayType); isArray && (value.IsSlice || value.IsSpan) {
+		if target, targetIsArray := varType.(*ArrayType); targetIsArray && (target.IsSlice || target.IsSpan) {
+			return value.alignedInto(target)
 		}
 	}
 
@@ -4969,6 +5115,10 @@ func (tc *TypeChecker) checkADTType(stmt *ast.ADTType) {
 
 // checkRecordTypeDefinition type checks a record type definition
 func (tc *TypeChecker) checkRecordTypeDefinition(typeName string, recordLit *ast.RecordLiteral) {
+	if tc.recordDecls == nil {
+		tc.recordDecls = map[string]*ast.RecordLiteral{}
+	}
+	tc.recordDecls[typeName] = recordLit
 	// A packed container places fields densely; a raised member alignment
 	// contradicts that placement. Rejected here, fail-closed in the backend.
 	if recordLit.Layout != nil && recordLit.Layout.Packed {
@@ -5561,13 +5711,24 @@ type ArrayType struct {
 	Length      int64 // >= 0 for fixed arrays, -1 for slices/spans
 	IsSlice     bool  // true for []T, false for [N]T or [*]T
 	IsSpan      bool  // true for [*]T, false otherwise
+	// Align is the alignment fact of a view or span (docs/spec/50-borrowing.md
+	// section 2a): its base address is a multiple of Align, known from the
+	// owner it was borrowed from or declared on the type. Zero when none is
+	// known. A representation-free fact: the C struct is the same.
+	Align uint32
 }
 
 func (t *ArrayType) String() string {
 	if t.IsSpan {
+		if t.Align != 0 {
+			return fmt.Sprintf("[* align %d]%s", t.Align, t.ElementType.String())
+		}
 		return fmt.Sprintf("[*]%s", t.ElementType.String())
 	}
 	if t.IsSlice {
+		if t.Align != 0 {
+			return fmt.Sprintf("[align %d]%s", t.Align, t.ElementType.String())
+		}
 		return fmt.Sprintf("[]%s", t.ElementType.String())
 	}
 	return fmt.Sprintf("[%d]%s", t.Length, t.ElementType.String())
@@ -5578,11 +5739,36 @@ func (t *ArrayType) Equals(other Type) bool {
 		if t.IsSpan != otherArray.IsSpan {
 			return false
 		}
+		// Equality is structural: the alignment fact is not part of the
+		// shape, and its direction is assignability's rule (alignedInto).
 		return t.ElementType.Equals(otherArray.ElementType) &&
 			t.Length == otherArray.Length &&
 			t.IsSlice == otherArray.IsSlice
 	}
 	return false
+}
+
+// alignmentAssignable is the alignment half of assignability alone: false
+// only when both types are views or spans and the value's fact is weaker
+// than the required one.
+func (tc *TypeChecker) alignmentAssignable(valueType, varType Type) bool {
+	value, isArray := valueType.(*ArrayType)
+	target, targetIsArray := varType.(*ArrayType)
+	if !isArray || !targetIsArray || !(value.IsSlice || value.IsSpan) || !(target.IsSlice || target.IsSpan) {
+		return true
+	}
+	return target.Align == 0 || value.Align >= target.Align
+}
+
+// alignedInto reports whether a view or span with this alignment fact may
+// stand where `target` is required: the same kind and element, and a fact
+// at least as strong (alignments are powers of two, so at least as large
+// means a multiple). A target without a fact takes any.
+func (t *ArrayType) alignedInto(target *ArrayType) bool {
+	if t.IsSpan != target.IsSpan || t.IsSlice != target.IsSlice || t.Length != target.Length || !t.ElementType.Equals(target.ElementType) {
+		return false
+	}
+	return target.Align == 0 || t.Align >= target.Align
 }
 
 // GenericType represents a generic type application: Option[T], Result[T, E], etc.
@@ -5772,6 +5958,7 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 					IsSlice:     false,
 					IsSpan:      true,
 					ElementType: elementType,
+					Align:       indexExpr.Align,
 				}
 			} else if ident.Value == "" {
 				// Slice type: []T (empty identifier means slice)
@@ -5780,6 +5967,7 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 					IsSlice:     true,
 					IsSpan:      false,
 					ElementType: elementType,
+					Align:       indexExpr.Align,
 				}
 			}
 		} else if indexExpr.Left == nil {
@@ -5957,6 +6145,7 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 					IsSlice:     false,
 					IsSpan:      true,
 					ElementType: elementType,
+					Align:       indexExpr.Align,
 				}
 			} else if ident.Value == "" {
 				// Slice type: []T
@@ -5965,6 +6154,7 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 					IsSlice:     true,
 					IsSpan:      false,
 					ElementType: elementType,
+					Align:       indexExpr.Align,
 				}
 			}
 		} else if indexExpr.Left == nil {

@@ -3161,6 +3161,27 @@ func (p *Parser) parseFieldTagValue() ast.Expression {
 	}
 }
 
+// parseAlignmentFact parses an optional `align N` inside a span or view
+// type's brackets, leaving the cursor on the token after it (the `]`). N
+// is a nonzero power-of-two u32 literal; 0 means no fact was written.
+func (p *Parser) parseAlignmentFact() (uint32, bool) {
+	if !(p.currentTokenIs(token.IDENT) && p.currentToken.Literal == "align") {
+		return 0, true
+	}
+	if !p.peekTokenIs(token.INT) {
+		p.addErrorAtPeekToken("expected an integer alignment after 'align' in a span or view type")
+		return 0, false
+	}
+	p.nextToken()
+	value, err := strconv.ParseUint(p.currentToken.Literal, 10, 32)
+	if err != nil || value == 0 || value&(value-1) != 0 {
+		p.addErrorAtCurrentToken("a span or view alignment must be a nonzero power-of-two u32")
+		return 0, false
+	}
+	p.nextToken()
+	return uint32(value), true
+}
+
 // parseRecordLayoutSpec parses the parenthesized layout clause after
 // `struct`: comma-separated entries, each the word `packed`, the word
 // `no_padding`, or `align: <integer literal>`. Anything else is a parse
@@ -3269,10 +3290,15 @@ func (p *Parser) parseArrayType() ast.Expression {
 	// Skip opening bracket (currentToken is [)
 	p.nextToken()
 
-	// Check for span type: [*]Type
+	// Check for span type: [*]Type, or [* align N]Type with an alignment
+	// fact (docs/spec/50-borrowing.md section 2a).
 	if p.currentTokenIs(token.MUL) {
 		// This is a span type: [*]Type
-		p.nextToken() // consume * - this advances to ]
+		p.nextToken() // consume * - this advances to ] or `align`
+		align, ok := p.parseAlignmentFact()
+		if !ok {
+			return nil
+		}
 		// Check for closing bracket
 		if !p.currentTokenIs(token.RBRACK) {
 			p.peekError(token.RBRACK)
@@ -3292,6 +3318,31 @@ func (p *Parser) parseArrayType() ast.Expression {
 			Token: p.currentToken,
 			Left:  elementType,
 			Index: &ast.Identifier{Token: p.currentToken, Value: "*"},
+			Align: align,
+		}
+	}
+
+	// A view with an alignment fact: [align N]Type. (A symbolic length
+	// `[N]T` is an identifier followed by `]`, never by an integer.)
+	if p.currentTokenIs(token.IDENT) && p.currentToken.Literal == "align" && p.peekTokenIs(token.INT) {
+		align, ok := p.parseAlignmentFact()
+		if !ok {
+			return nil
+		}
+		if !p.currentTokenIs(token.RBRACK) {
+			p.peekError(token.RBRACK)
+			return nil
+		}
+		p.nextToken()
+		elementType := p.parseTypeExpression()
+		if elementType == nil {
+			return nil
+		}
+		return &ast.IndexExpression{
+			Token: p.currentToken,
+			Left:  elementType,
+			Index: &ast.Identifier{Token: p.currentToken, Value: ""},
+			Align: align,
 		}
 	}
 
