@@ -198,7 +198,15 @@ message; an error outside every statement leaves them all open with it.
 every bit-level obligation: the clauses go to the **SAT solver written in
 Oak** (`prove/solver/sat.oak`, inside the compiled solver binary) — a
 conflict-driven clause-learning solver in the strict profile over one
-caller-owned word arena, two watched literals per clause (the watch nodes
+caller-owned word arena: at load, repeated literals dropped and
+tautologies skipped, then bounded variable elimination (a variable with
+at most ten occurrences on each side whose non-tautological resolvents
+are no more than the clauses they replace and at most twenty-four
+literals is resolved away; each resolvent is an LRAT addition with its
+two parents as hints, the parents are deleted, and they go on an
+elimination stack from which a model is extended back to the original
+formula) — the Tseitin gate variables are what this removes; two watched
+literals per clause (the watch nodes
 fixed at `2c` and `2c+1`, so a watch moves without allocation), first-UIP
 learning with VSIDS activity and phase saving, the learned clause
 minimized (a literal whose reason's other literals are in the clause,
@@ -632,7 +640,7 @@ In order of payoff, each reusing a surface that exists:
   is the only Go left on the prover's path; and the prover is the first
   whole program compiled through the verified native backend
   (`94-assembler.md` §9, sixteenth increment; `OAK_SOLVER_NATIVE=1`):
-  864 of its 954 functions lowered to machine code the seam checker
+  879 of its 954 functions lowered to machine code the seam checker
   admits and the Oak assembler encodes, 197 of them proven equal to
   their Oak bodies, the C build the oracle with identical rows over the
   corpus — verification carried to the object, with the verifier's
@@ -683,12 +691,12 @@ In order of payoff, each reusing a surface that exists:
 - **A certificate rung.** Landed as `-solver sat` (§3, §4): the clause
   engine, the two LRAT checkers, `Oak.RupCheck`, and the solver written in
   Oak (`prove/solver/sat.oak`) as the rung's default, with clause-database
-  reduction, two-watched-literal propagation, minimization, and Luby
-  restarts. Next: bounded variable elimination at load (the corpus rows
-  the solver gives up on are the ones CaDiCaL settles by eliminating the
-  gate variables); the clause encoder proved rather than cross-checked;
-  the solver's own laws (a learned clause is implied by its hints) stated
-  over the arena. The BDD's failure mode
+  reduction, two-watched-literal propagation, minimization, Luby
+  restarts, and bounded variable elimination at load. Next: the clause
+  encoder proved rather than cross-checked; the solver's own laws (a
+  learned clause is implied by its hints; a resolvent by its parents)
+  stated over the arena; subsumption and failed-literal probing when a
+  corpus row asks for them. The BDD's failure mode
   is the node budget on multipliers and wide aggregates, which CDCL
   solvers treat routinely. The rung is the one Lean's `bv_decide` already
   runs:

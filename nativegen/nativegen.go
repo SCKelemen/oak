@@ -3362,7 +3362,25 @@ func (g *generator) lowerRecordDeclaration(s *ast.VariableDeclaration, typeName 
 		return err
 	}
 	if s.Value == nil {
-		return unsupported("the record local %s without an initializer", s.Name.Value)
+		// Value-less storage is zero (docs/spec/90-backend.md §6: the C
+		// emitter's `{0}`, the interpreter's zero value): the slots are
+		// zero-filled whole, as an owned array's are.
+		rec := g.declareRecord(s.Name.Value, layout)
+		zero, err := g.alloc(scalars["u64"])
+		if err != nil {
+			return err
+		}
+		g.emit("mov", xr(zero), imm(0))
+		words := (layout.size + 7) / 8
+		for w := int64(0); w < words; w += 2 {
+			if w+1 < words {
+				g.zeroPair(zero, g.slotMem(rec.offset+8*w))
+			} else {
+				g.emit("str", xr(zero), g.slotMem(rec.offset+8*w))
+			}
+		}
+		g.release(zero)
+		return nil
 	}
 	if literal, isLiteral := s.Value.(*ast.RecordLiteral); isLiteral {
 		if literal.TypeName != nil && literal.TypeName.Value != typeName {

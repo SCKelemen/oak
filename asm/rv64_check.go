@@ -129,15 +129,38 @@ type rvRemFact struct {
 }
 
 // rvVectorConfig is the vector configuration in effect: the element width
-// SEW in bytes (LMUL is 1 in this increment), and the AVL — an immediate
-// (vsetivli) or what is known of the register (vsetvli). vl ≤ AVL always
-// (RVV 1.0 §6.3, Oak.RiscV.vsetvlOK).
+// SEW in bytes, LMUL in eighths (mf8 = 1 … m1 = 8 … m8 = 64), and the AVL —
+// an immediate (vsetivli) or what is known of the register (vsetvli). vl ≤
+// AVL always (RVV 1.0 §6.3, Oak.RiscV.vsetvlOK).
 type rvVectorConfig struct {
 	sew    int64
-	lmul   int64 // 1, 2, 4, or 8: every vector register operand is a group of lmul registers
+	lmul8  int64 // LMUL * 8: a fractional LMUL's group is one register (Oak.RiscV.groupOf)
 	avlImm int64 // -1 when the AVL is a register
 	rem    *rvRemFact
 	line   int
+}
+
+// rv64LMULEighths maps a vtype LMUL spelling to LMUL * 8.
+var rv64LMULEighths = map[string]int64{"mf8": 1, "mf4": 2, "mf2": 4, "m1": 8, "m2": 16, "m4": 32, "m8": 64}
+
+// rv64LMULName spells LMUL * 8 as a vtype option, for messages.
+func rv64LMULName(lmul8 int64) string {
+	for name, v := range rv64LMULEighths {
+		if v == lmul8 {
+			return name
+		}
+	}
+	return fmt.Sprintf("%d/8", lmul8)
+}
+
+// rv64GroupOf is the register count of an operand group at LMUL * 8
+// (RVV 1.0 §3.4.2): LMUL registers at or above m1, one register below
+// (Oak.RiscV.groupOf).
+func rv64GroupOf(lmul8 int64) int64 {
+	if lmul8 < 8 {
+		return 1
+	}
+	return lmul8 / 8
 }
 
 // rv64GroupSingle names the operands that are one register whatever the
@@ -148,6 +171,13 @@ func rv64GroupSingle(name string, position int) bool {
 	switch name {
 	case "vmseq.vv", "vmsne.vx":
 		return position == 0
+	case "vredsum.vs", "vfredosum.vs":
+		// A reduction's scalar input and result live in element 0 of a
+		// single register, not a group (RVV 1.0 §14).
+		return position == 0 || position == 2
+	case "vmv.x.s", "vfmv.f.s":
+		// Element 0 of the source, whatever the LMUL (RVV 1.0 §16.1, §16.2).
+		return position == 1
 	case "vcpop.m":
 		return position == 1
 	case "vmerge.vvm":
@@ -1455,17 +1485,20 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 	}
 	switch name {
 	case "vsetvli", "vsetivli":
-		cfg := &rvVectorConfig{sew: rv64VTypeSEW[ops[2].(Option).Name], lmul: 1, avlImm: -1, line: line}
-		switch lmul := ops[3].(Option).Name; lmul {
-		case "m1":
-		case "m2":
-			cfg.lmul = 2
-		case "m4":
-			cfg.lmul = 4
-		case "m8":
-			cfg.lmul = 8
-		default:
-			c.errorf(line, "%s: fractional LMUL (%s) is not admitted; the groups the checker tracks are m1, m2, m4, m8", name, lmul)
+		cfg := &rvVectorConfig{sew: rv64VTypeSEW[ops[2].(Option).Name], lmul8: 8, avlImm: -1, line: line}
+		lmulName := ops[3].(Option).Name
+		lmul8, known := rv64LMULEighths[lmulName]
+		if !known {
+			c.errorf(line, "%s: LMUL %s is not one of mf8, mf4, mf2, m1, m2, m4, m8", name, lmulName)
+			lmul8 = 8
+		}
+		cfg.lmul8 = lmul8
+		// A fractional LMUL narrows the elements a register holds: the
+		// ratio SEW/LMUL stays within ELEN = 64 (RVV 1.0 §3.4.2, vill
+		// otherwise; Oak.RiscV.fractional_within_elen), so e64 needs at
+		// least m1, e32 at least mf2, e16 at least mf4.
+		if cfg.sew*8*8 > 64*lmul8 {
+			c.errorf(line, "%s: e%d at %s puts SEW/LMUL past ELEN=64 (the configuration would be reserved); e%d needs LMUL at least %s", name, cfg.sew*8, lmulName, cfg.sew*8, rv64LMULName(cfg.sew*8*8/64))
 		}
 		if name == "vsetvli" {
 			avl := reg(1)
@@ -1504,24 +1537,21 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 	// rule, applied fail-closed), and the wide group stays within the file
 	// and its element width within 64 bits (Oak.RiscV.wide_group_within_file).
 	groupSize := func(position int) int64 {
-		count := c.vcfg.lmul
 		if rv64GroupSingle(name, position) {
 			return 1
 		}
+		emul8 := c.vcfg.lmul8
 		switch rv64VectorEMUL(name, position) {
 		case 2:
-			count *= 2
+			emul8 *= 2
 		case 0:
-			count /= 2
-			if count == 0 {
-				count = 1
-			}
+			emul8 /= 2
 		}
-		return count
+		return rv64GroupOf(emul8)
 	}
 	if rv64VectorEMUL(name, 0) == 2 || rv64VectorEMUL(name, 1) == 2 {
-		if c.vcfg.lmul*2 > 8 {
-			c.errorf(line, "%s: the wide group would be LMUL=%d, past the file's eight registers", name, c.vcfg.lmul*2)
+		if c.vcfg.lmul8*2 > 64 {
+			c.errorf(line, "%s: the wide group would be LMUL=%s, past the file's eight registers", name, rv64LMULName(c.vcfg.lmul8*2))
 			return false
 		}
 		if rv64VectorEMUL(name, 0) == 2 && c.vcfg.sew*2 > 8 {
@@ -1531,6 +1561,17 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 	}
 	if (name == "vzext.vf2" || name == "vsext.vf2") && c.vcfg.sew < 2 {
 		c.errorf(line, "%s: the source elements would be narrower than 8 bits (SEW is e8)", name)
+		return false
+	}
+	if (name == "vzext.vf2" || name == "vsext.vf2") && c.vcfg.lmul8 < 2 {
+		c.errorf(line, "%s: the source group would be LMUL=%s/2, below mf8", name, rv64LMULName(c.vcfg.lmul8))
+		return false
+	}
+	// The floating-point forms need single- or double-precision elements
+	// (RVV 1.0 §13: Zve32f gives e32, Zve64d e64; e8 has no float format
+	// and e16 needs Zvfh, which the lane does not assume).
+	if rv64VectorFloat[name] && c.vcfg.sew < 4 {
+		c.errorf(line, "%s: the floating-point forms need e32 or e64 elements (SEW is e%d)", name, c.vcfg.sew*8)
 		return false
 	}
 	group := func(position int, write bool) {
@@ -1548,7 +1589,7 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 		}
 		count := groupSize(position)
 		if int64(r.Num)%count != 0 {
-			c.errorf(line, "%s: %s is not aligned to the register group of LMUL=%d (Oak.RiscV.group_within_file)", name, r.Text, count)
+			c.errorf(line, "%s: %s is not aligned to the register group of LMUL=%s (Oak.RiscV.group_within_file)", name, r.Text, rv64LMULName(count*8))
 			return
 		}
 		for k := int64(0); k < count; k++ {
@@ -1590,6 +1631,9 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 	}
 	for i := 1; i < len(shape); i++ {
 		group(i, false)
+	}
+	if name == "vfmacc.vv" {
+		group(0, false) // the accumulator: vd = vs1 * vs2 + vd
 	}
 	group(0, true)
 	return false

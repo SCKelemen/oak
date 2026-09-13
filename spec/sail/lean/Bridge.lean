@@ -245,8 +245,13 @@ over the lane indices (`forIn_laneRange_fold`), a written lane reads its
 write (`aget_foldl_aset`), and so the register-level theorems follow:
 `dup`, `add`, `sub`, `cmeq` (register and zero forms), `umin`, `umax`,
 `uqsub`, `tbl`, and `umaxv` each compute the verifier's lane function over
-the lanes of their operands. `ext`, the shifts, `cnt`, and Arm's recursive
-`Reduce` (`addv`) remain (`docs/notes/proof-chain-audit-2026-09.md`). -/
+the lanes of their operands; `ext` is the byte-lane `ext`, `ushr` the lane
+shift, `sshr #7` on bytes the sign fill of `movemask`, and Arm's recursive
+`Reduce` (stated by hand, since Sail's backend cannot discharge its
+termination) sums eight bytes as the wrapping fold of `addv`, and `cnt` is
+the population count of each lane (Arm's `BitCount` as
+`Oak.Intrinsics.popcount`). Every vector instruction the native backend
+emits is bridged (`docs/notes/proof-chain-audit-2026-09.md`). -/
 
 namespace Oak.SailBridge
 
@@ -966,6 +971,225 @@ theorem umaxv_lane (datasize elements esize : Nat) (h : elements * esize = datas
     rw [List.mem_map] at hx
     obtain ⟨j, _, rfl⟩ := hx
     exact (aget_Elem a j esize).isLt
+
+
+/-! ### `ext`, the shifts, and `Reduce` -/
+
+
+/-! ### `ext`: the slice of `hi ++ lo` at a byte position -/
+
+/-- A slice of a slice is the slice at the summed offset (within the outer slice). -/
+theorem extractLsb'_extractLsb' {w : Nat} (x : BitVec w) (s₁ l₁ s₂ l₂ : Nat) (h : s₂ + l₂ ≤ l₁) :
+    (x.extractLsb' s₁ l₁).extractLsb' s₂ l₂ = x.extractLsb' (s₁ + s₂) l₂ := by
+  apply BitVec.eq_of_getLsbD_eq
+  intro i
+  simp only [BitVec.getLsbD_extractLsb']
+  by_cases hi : i < l₂
+  · have : s₂ + i < l₁ := by omega
+    simp [hi, this, Nat.add_assoc]
+  · simp [hi]
+
+/-- Lane `j` of the decomposition is the element accessor's value. -/
+theorem lanesOf_getElem {N : Nat} (v : BitVec N) (size j : Nat) (hj : j < (lanesOf v size).length) :
+    (lanesOf v size)[j] = (aget_Elem v j size).toNat := by
+  simp [lanesOf, aget_Elem_toNat]
+
+theorem natMul_toNat (k m : Nat) : ((fun x y : Int => x * y) (k : Int) (m : Int)).toNat = k * m := by
+  show ((k : Int) * (m : Int)).toNat = k * m
+  rw [← Int.natCast_mul, Int.toNat_natCast]
+
+theorem ext_lanes (hi lo : BitVec 128) (p : Nat) (hp : p ≤ 16) :
+    lanesOf (vector_transfer_vector_extract 128 hi lo ((8 * p : Nat) : Int)) 8
+      = Oak.Neon.ext p (lanesOf lo 8) (lanesOf hi 8) := by
+  have hlen_lo : (lanesOf lo 8).length = 16 := by simp [lanesOf]
+  have hlen_hi : (lanesOf hi 8).length = 16 := by simp [lanesOf]
+  unfold vector_transfer_vector_extract Oak.Neon.ext
+  simp only [Int.toNat_natCast, Sail.BitVec.slice]
+  have hcat : BitVec.setWidth (2 * 128) (hi ++ lo) = hi ++ lo := BitVec.setWidth_eq (hi ++ lo)
+  rw [hcat, lanesOf_eq_map (v := BitVec.extractLsb' (8 * p) 128 (hi ++ lo))]
+  apply List.ext_getElem
+  · simp [List.length_take, List.length_drop, hlen_lo, hlen_hi]; omega
+  · intro k hk _
+    have hk16 : k < 16 := by simpa using hk
+    rw [List.getElem_map, List.getElem_range, List.getElem_take, List.getElem_drop]
+    rw [aget_Elem, Sail.BitVec.slice, natMul_toNat, extractLsb'_extractLsb' _ _ _ _ _ (by omega)]
+    by_cases hlt : p + k < 16
+    · rw [List.getElem_append_left (by rw [hlen_lo]; omega), lanesOf_getElem, aget_Elem, Sail.BitVec.slice,
+        natMul_toNat, BitVec.extractLsb'_append_eq_of_add_le (by omega),
+        show 8 * p + k * 8 = (p + k) * 8 by omega]
+    · rw [List.getElem_append_right (by rw [hlen_lo]; omega), lanesOf_getElem, hlen_lo, aget_Elem,
+        Sail.BitVec.slice, natMul_toNat, BitVec.extractLsb'_append_eq_of_le (by omega),
+        show 8 * p + k * 8 - 128 = (p + k - 16) * 8 by omega]
+
+/-! ### The shifts: the support library's iterated halving is the shift -/
+
+theorem iterate_div_two (n : Nat) (a : Nat) :
+    Sail.Nat.iterate (fun x : Int => x / 2) n (a : Int) = ((a >>> n : Nat) : Int) := by
+  induction n generalizing a with
+  | zero => simp [Sail.Nat.iterate]
+  | succ n ih =>
+    rw [Sail.Nat.iterate]
+    have : ((a : Int) / 2) = ((a / 2 : Nat) : Int) := by omega
+    rw [this, ih, Nat.shiftRight_succ_inside]
+
+theorem shiftr_natCast (a n : Nat) : Sail.Int.shiftr (a : Int) (n : Int) = ((a >>> n : Nat) : Int) := by
+  show Sail.Nat.iterate (fun x : Int => x / 2) n (a : Int) = _
+  exact iterate_div_two n a
+
+
+/-- The `ushr` lane: the shifted lane value (`Oak.Neon.ushr`). -/
+theorem ushr_lane {N : Nat} (size j sh : Nat) (x : BitVec size) :
+    (aget_Elem (Zeros N) j size + __GetSlice_int size (_shr_int_general (UInt x + 0) (sh : Int)) 0).toNat
+      = Oak.Neon.ushr sh x.toNat := by
+  rw [aget_Zeros, BitVec.zero_add, _shr_int_general, UInt_eq, Int.add_zero]
+  have hge : ((sh : Int) ≥b 0) = true := decide_eq_true (Int.ofNat_nonneg sh)
+  rw [if_pos hge, shiftr_natCast, getSlice_toNat size _ (by have := x.isLt; have := Nat.shiftRight_le x.toNat sh; omega)]
+  rfl
+
+/-- **`ushr #sh`**: lane-wise logical shift right (`Oak.Neon.ushr`, `Oak.Simd.shr`). -/
+theorem ushr_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a : BitVec datasize) (sh : Nat) :
+    lanesOf (vector_shift_right false datasize elements esize a (Zeros datasize) false (sh : Int) true) esize
+      = (lanesOf a esize).map (Oak.Neon.ushr sh) := by
+  unfold vector_shift_right
+  simp only [Id.run, bind, pure, Bool.false_eq_true, ↓reduceIte, asl_Int]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl,
+    forIn_laneRange_fold]
+  show lanesOf ((List.foldl (fun (s : Int × BitVec datasize) (j : Int) =>
+      (_shr_int_general (UInt (aget_Elem a j.toNat esize) + 0) (sh : Int),
+        aset_Elem s.2 j.toNat esize
+          (aget_Elem (Zeros datasize) j.toNat esize
+            + __GetSlice_int esize (_shr_int_general (UInt (aget_Elem a j.toNat esize) + 0) (sh : Int)) 0)))
+      (0, Zeros datasize) (List.map (fun (x : Nat) => (x : Int)) (List.range elements))).2) esize = _
+  rw [result_of_lane_loop2 esize _ (fun j => _shr_int_general (UInt (aget_Elem a j esize) + 0) (sh : Int))
+    (fun j => aget_Elem (Zeros datasize) j esize
+      + __GetSlice_int esize (_shr_int_general (UInt (aget_Elem a j esize) + 0) (sh : Int)) 0)]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  rw [lanes_of_fold_write esize elements h hs, lanesOf_eq_map, lanes_div datasize elements esize h hs, List.map_map]
+  apply List.map_congr_left
+  intro j _
+  exact ushr_lane esize j sh _
+
+
+/-! ### `sshr #7` on bytes: the sign fill of `movemask` -/
+
+/-- The arithmetic shift of a byte by seven is its sign fill (`Oak.Neon.sshr7`):
+all ones when the top bit is set, zero otherwise. Decided over the 256 bytes. -/
+theorem sshr7_lane (x : BitVec 8) :
+    (__GetSlice_int 8 (_shr_int_general (SInt x + 0) 7) 0).toNat = Oak.Neon.sshr7 x.toNat := by
+  revert x
+  decide
+
+/-! ### `Reduce` for `addv`: Arm's recursive tree, transliterated by hand -/
+
+/-- Arm's `Reduce(ReduceOp_ADD, input, esize)`: the sum of the two halves,
+recursively, down to one element (`aarch64_vector.sail`). Sail's Lean
+backend cannot discharge this recursion's termination, so it is stated
+here by hand. -/
+def reduceAdd (N : Nat) (input : BitVec N) (esize : Nat) : BitVec esize :=
+  if h : N = esize then input.cast h
+  else if hN : esize < N ∧ 0 < esize then
+    reduceAdd (N / 2) (input.extractLsb' (N / 2) (N / 2)) esize
+      + reduceAdd (N / 2) (input.extractLsb' 0 (N / 2)) esize
+  else 0
+termination_by N
+decreasing_by all_goals omega
+
+theorem reduceAdd_step (N : Nat) (input : BitVec N) (esize : Nat) (h1 : N ≠ esize) (h2 : esize < N ∧ 0 < esize) :
+    reduceAdd N input esize
+      = reduceAdd (N / 2) (input.extractLsb' (N / 2) (N / 2)) esize
+        + reduceAdd (N / 2) (input.extractLsb' 0 (N / 2)) esize := by
+  rw [reduceAdd, dif_neg h1, dif_pos h2]
+
+theorem reduceAdd_base (N : Nat) (input : BitVec N) (esize : Nat) (h : N = esize) :
+    reduceAdd N input esize = input.cast h := by
+  rw [reduceAdd, dif_pos h]
+
+/-- **`addv`** over eight bytes: the tree sum is the wrapping fold (`Oak.Neon.addv`). -/
+theorem reduceAdd_eight_bytes (v : BitVec 64) :
+    (reduceAdd 64 v 8).toNat = Oak.Neon.addv 8 (lanesOf v 8) := by
+  have hr : List.range 8 = [0, 1, 2, 3, 4, 5, 6, 7] := rfl
+  rw [reduceAdd_step 64 _ 8 (by decide) (by decide)]
+  simp only [Nat.reduceDiv]
+  simp only [reduceAdd_step 32 _ 8 (by decide) (by decide), Nat.reduceDiv]
+  simp only [reduceAdd_step 16 _ 8 (by decide) (by decide), Nat.reduceDiv]
+  simp only [reduceAdd_base 8 _ 8 rfl]
+  simp only [extractLsb'_extractLsb', Nat.reduceAdd, Nat.reduceLeDiff]
+  simp only [BitVec.toNat_add, BitVec.toNat_cast, BitVec.extractLsb'_toNat, Nat.reducePow, Nat.reduceAdd,
+    Nat.shiftRight_zero, Oak.Neon.addv, lanesOf, hr, List.map_cons, List.map_nil, List.foldl_cons,
+    List.foldl_nil, Nat.reduceMul, Nat.zero_add]
+  omega
+
+
+
+
+/-! ### `cnt`: Arm's `BitCount` is the population count -/
+
+theorem popcount_append (l₁ l₂ : List Bool) :
+    Oak.Intrinsics.popcount (l₁ ++ l₂) = Oak.Intrinsics.popcount l₁ + Oak.Intrinsics.popcount l₂ := by
+  induction l₁ with
+  | nil => simp [Oak.Intrinsics.popcount]
+  | cons b rest ih => cases b <;> simp [Oak.Intrinsics.popcount, ih] <;> omega
+
+/-- The bit test of Arm's loop is the bit. -/
+theorem bitTest_eq {n : Nat} (x : BitVec n) (i : Nat) :
+    ((Sail.BitVec.join1 [Sail.BitVec.access x i] == 1#1) : Bool) = x.getLsbD i := by
+  rw [join1_single, access_eq]
+  cases x.getLsbD i <;> rfl
+
+/-- Counting the set bits as a fold over the bit indices. -/
+theorem foldl_count (c : Nat → Bool) (n : Nat) :
+    (List.range n).foldl (fun (r : Int) (i : Nat) => if c i = true then r + 1 else r) 0
+      = ((Oak.Intrinsics.popcount ((List.range n).map c) : Nat) : Int) := by
+  induction n with
+  | zero => rfl
+  | succ n ih =>
+    rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil, List.map_append, popcount_append, ih]
+    cases hc : c n <;> simp [hc, Oak.Intrinsics.popcount]
+
+/-- **`BitCount`** is the population count of the bits. -/
+theorem BitCount_eq {n : Nat} (x : BitVec n) :
+    BitCount x = ((Oak.Intrinsics.popcount ((List.range n).map (fun i => x.getLsbD i)) : Nat) : Int) := by
+  unfold BitCount
+  simp only [Id.run, bind, pure, Sail.BitVec.length]
+  rw [show ({ stop := (n : Int) - 1 } : IntRange) = laneRange n from rfl, forIn_laneRange_fold]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  rw [foldl_count (fun i => (Sail.BitVec.join1 [Sail.BitVec.access x i] == 1#1))]
+  congr 2
+  apply List.map_congr_left
+  intro i _
+  exact bitTest_eq x i
+
+/-- The `cnt` lane: the population count of the lane (`Oak.Neon.cnt`). -/
+theorem cnt_lane (size : Nat) (x : BitVec size) :
+    (__GetSlice_int size (BitCount x) 0).toNat = Oak.Neon.cnt size x.toNat := by
+  rw [BitCount_eq, getSlice_toNat]
+  · rfl
+  · have h1 := Oak.Intrinsics.popcount_le_width ((List.range size).map (fun i => x.getLsbD i))
+    have h2 : size < 2 ^ size := Nat.lt_two_pow_self
+    simp only [List.length_map, List.length_range] at h1
+    omega
+
+/-- **`cnt`**: lane-wise population count. -/
+theorem cnt_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a : BitVec datasize) :
+    lanesOf (vector_arithmetic_unary_cnt datasize elements esize a) esize
+      = (lanesOf a esize).map (Oak.Neon.cnt esize) := by
+  unfold vector_arithmetic_unary_cnt
+  simp only [Id.run, bind, pure]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl,
+    forIn_laneRange_fold]
+  show lanesOf ((List.foldl (fun (s : Int × BitVec datasize) (j : Int) =>
+      (BitCount (aget_Elem a j.toNat esize),
+        aset_Elem s.2 j.toNat esize (__GetSlice_int esize (BitCount (aget_Elem a j.toNat esize)) 0)))
+      (0, Zeros datasize) (List.map (fun (x : Nat) => (x : Int)) (List.range elements))).2) esize = _
+  rw [result_of_lane_loop2 esize _ (fun j => BitCount (aget_Elem a j esize))
+    (fun j => __GetSlice_int esize (BitCount (aget_Elem a j esize)) 0)]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  rw [lanes_of_fold_write esize elements h hs, lanesOf_eq_map, lanes_div datasize elements esize h hs, List.map_map]
+  apply List.map_congr_left
+  intro j _
+  exact cnt_lane esize _
 
 
 end Lanes

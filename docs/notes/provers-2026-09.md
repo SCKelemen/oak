@@ -153,16 +153,17 @@ literature; cuda-cic does not check proof terms.
 `prove/lrat.go`, `prove/solver/lrat.oak`, `Oak.RupCheck`; the solver
 written in Oak landed the same day as the rung's default,
 `prove/solver/sat.oak`, then clause-database reduction with deletion lines,
-two watched literals, learned-clause minimization, Luby restarts, and
-activity-based reduction; the encoder's proof remains. On the corpus the
-solver agrees with the ladder on every bit-level row of `machines`,
-`shapes`, `lattice`, and `effects`, and on twenty-one of `extents`'
-twenty-four. The three it gives up on are arithmetic obligations where
-every learned clause spans every decision level; CaDiCaL closes the
-smallest with a proof that is mostly unit clauses, which it reaches by
-eliminating the Tseitin gate variables before search — bounded variable
-elimination, ParaFROST's central technique, is the next step for the Oak
-solver, ahead of any GPU question. First run with CaDiCaL 3.0.1:
+two watched literals, learned-clause minimization, Luby restarts,
+activity-based reduction, and bounded variable elimination at load; the
+encoder's proof remains. On the corpus the solver agrees with the ladder
+on every bit-level row of `machines`, `shapes`, `lattice`, and `effects`,
+and on twenty-two of `extents`' twenty-four, the whole corpus in about a
+minute. Elimination was the decisive step, as the ParaFROST and CaDiCaL
+reading predicted: the arithmetic obligations whose learned clauses
+spanned every decision level become unit-heavy once the Tseitin gate
+variables are resolved away. The two rows still open are the widest
+(178k and 244k BDD nodes); subsumption and failed-literal probing are the
+next techniques, still ahead of any GPU question. First run with CaDiCaL 3.0.1:
 `spec/oak/machines.oak`'s `bounded__step` — 14,987 BDD nodes under the
 blocked order — closes with a 204-step certificate checked in Go and in
 Oak; `spec/oak/shapes.oak`'s nine rows all agree):

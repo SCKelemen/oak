@@ -85,7 +85,8 @@ lrat_rup: (words: []u32, target_at: u32, target_n: u32, hints_at: u32, hints_n: 
         lit: u32 = store[start + j]
         a: u8 = assign[lit / u32(2)]
         a == lrat_true_value(lit) ? { status = LRAT_SATISFIED } | {
-          a == LRAT_UNASSIGNED ? {
+          // A clause is a set: a repeated literal counts once.
+          a == LRAT_UNASSIGNED && (remaining == u32(0) || unit != lit) ? {
             remaining = remaining + u32(1)
             unit = lit
           } | { }
