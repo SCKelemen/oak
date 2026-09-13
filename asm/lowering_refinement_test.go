@@ -115,6 +115,12 @@ var loweringProgramRenders = []struct {
 	// leaves in the caller.
 	{"g: (s: [*]u32, v: u32) -> u32 = {\n  s[1] = v\n  s[0] + s[1]\n}\n\nf: (v: u32) -> u32 = {\n  a: [2]u32\n  a[0] = v\n  r: u32 = g(span(&a), v + 1)\n  r + a[1]\n}\n", "((v add (v add 1)) add (v add 1))"},
 	{"P: type = struct {\n  x: u32\n  y: u32\n}\n\nshift: (p: P, dx: u32) -> P = P { x: p.x + dx, y: p.y }\n\nf: (a, b: u32) -> u32 = {\n  p: P = P { x: a, y: b }\n  q: P = shift(p, 1)\n  q.x * q.y\n}\n", "((a add 1) mul b)"},
+	// A local declared inside a loop body (redeclared each iteration) or an
+	// arm: its declaration binds the initializer's term, exactly as an
+	// assignment to a pre-declared local does, so the model's pre-declared
+	// local gives the same terms.
+	{"f: (n: u32) -> u32 = {\n  s: u32 = 0\n  i: u32 = 0\n  while i < 2 {\n    d: u32 = n * 2\n    s = s + d\n    i = i + 1\n  }\n  s\n}\n", "((n mul 2) add (n mul 2))"},
+	{"f: (a, b: u32) -> u32 = {\n  r: u32 = a\n  a < b ? {\n    t: u32 = b - a\n    r = t\n  } | { }\n  r\n}\n", "((a lo b) ? (b sub a) : a)"},
 }
 
 func TestLoweringProgramsMatchLeanTransliteration(t *testing.T) {

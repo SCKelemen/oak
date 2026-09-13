@@ -220,11 +220,12 @@ the other.
 With it, on arm64, a theorem about an Oak function's extraction composes
 with the verifier's verdict and `Oak.ArmASL` into one statement about the
 machine for a body inside the shared subset: source theorem, `lowerT_eval`,
-the verifier's equality, the ASL bridge. Outside the subset — the
-data-dependent loops `loopEvent` summarizes, a callee's local declared
-inside a loop body or an arm, floats, and the vector operations — the
-verifier's lowering is still the Go's alone, related to the extraction by
-tests.
+the verifier's equality, the ASL bridge. A local declared inside a loop
+body or an arm is covered by pre-declaring it: its declaration binds the
+initializer's term as an assignment does, so every later read sees the
+same terms. Outside the subset — the data-dependent loops `loopEvent`
+summarizes, floats, and the vector operations — the verifier's lowering
+is still the Go's alone, related to the extraction by tests.
 
 For the C route (every function the native lane does not cover, and every
 function on amd64 and the microcontrollers), the source-level proofs reach
@@ -275,11 +276,11 @@ for a workload):
    `ok` is; an array local as its element leaves `x[k]`, in-range reads
    and writes against the extraction's `Array`, a trap where the index is
    out of range; a record as its field leaves `r.f`, bound by the same
-   named binder a call uses). What the native bodies use is covered; what
-   remains is at the edges: a callee's local declared inside a loop body
-   or an arm (the model pre-declares a callee's locals), the
-   data-dependent loops `loopEvent` summarizes, floats and vectors — so
-   `lowerT_eval` covers the
+   named binder a call uses; a local declared inside a loop body or an
+   arm is a pre-declared local, its declaration the first assignment).
+   What the native bodies use is covered; what remains is at the edges:
+   the data-dependent loops `loopEvent` summarizes, floats and vectors —
+   so `lowerT_eval` covers the
    bodies `oak build -native` actually verifies rather than their
    arithmetic alone. This is the step that turns "source theorem implies
    machine behavior" from a statement about expressions into one about
