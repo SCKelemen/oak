@@ -1552,12 +1552,11 @@ func (cg *CodeGenerator) preEmitContainerTypes(program *ast.Program) {
 				// source of a view_as — needs the element's view and span
 				// structs at file scope too.
 				cg.parseTypeExpression(t)
-				if strings.HasPrefix(info.element, "oak_") {
-					// Record elements only: a scalar's structs are placed
-					// where the program first names the view or span.
-					cg.emitViewType(info.element)
-					cg.emitSpanType(info.element)
-				}
+				// Scalar elements included: a first `view(&owner)` nested in
+				// an expression used to place the struct's typedef inside
+				// that expression, which is not C.
+				cg.emitViewType(info.element)
+				cg.emitSpanType(info.element)
 			}
 		}
 	}
