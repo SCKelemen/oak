@@ -228,19 +228,24 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 		state.write(reg(0), constTerm(uint64(ops[1].(Immediate).Value<<12), 64))
 		return "", true
 	case "la":
-		// A constant table's address: the base of the span its Oak name
-		// denotes (executeBodyChunk).
+		// A constant table's address is the base of the span its Oak name
+		// denotes (executeBodyChunk); a package global's address is the
+		// distinguished parameter the loads and stores below recognize
+		// (docs/spec/94-assembler.md §9).
 		sym, isSym := ops[1].(Symbol)
 		if !isSym {
 			return "la without a symbol", false
 		}
-		if x.fn == nil {
-			return "la of a symbol that is not a constant table", false
+		if x.fn != nil {
+			if _, known := x.fn.Tables[sym.Name]; known {
+				state.write(reg(0), paramTerm(spanBaseName(TableName(sym.Name)), 64))
+				return "", true
+			}
 		}
-		if _, known := x.fn.Tables[sym.Name]; !known {
-			return "la of a symbol that is not a constant table", false
+		if _, isGlobal := x.globals[sym.Name]; !isGlobal {
+			return "la of a symbol that is neither a constant table nor a package global", false
 		}
-		state.write(reg(0), paramTerm(spanBaseName(TableName(sym.Name)), 64))
+		state.write(reg(0), paramTerm(globalAddrName(sym.Name), 64))
 		return "", true
 	case "auipc":
 		return "a pc-relative address (auipc)", false
@@ -248,19 +253,6 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 		return x.summarizeCall(instr, state)
 	case "jal", "jalr":
 		return "a call", false
-	}
-	if name == "la" {
-		// A package global's address: the distinguished parameter the loads
-		// and stores below recognize (docs/spec/94-assembler.md §9).
-		sym, isSym := ops[1].(Symbol)
-		if !isSym {
-			return "la without a symbol", false
-		}
-		if _, isGlobal := x.globals[sym.Name]; !isGlobal {
-			return "the address of a constant table (la)", false
-		}
-		state.write(reg(0), paramTerm(globalAddrName(sym.Name), 64))
-		return "", true
 	}
 	if width, isLoad := rv64Loads[name]; isLoad {
 		mem := ops[1].(Memory)
