@@ -195,3 +195,95 @@ theorem claim_trace_final (pos : Nat) (claims : List Nat) (final : Nat)
     omega
 
 end Oak.Rings
+
+/-! ## The intrusive MPSC and the MPMC ring
+
+The intrusive queue's producers exchange `head`: each receives the link the
+previous producer left and links its own node behind that one. A trace of
+exchanges therefore threads the pushed nodes into one chain, in exchange
+order (`exchange_chain`): the node a producer linked after is exactly the
+node the previous exchange installed. Distinct nodes make a duplicate-free
+chain (`chain_nodup`). The payload handoff is the same release/acquire
+instance as the rings' (`intrusive_payload_race_free`), and the MPMC ring's
+two claim counters are two `ClaimTrace`s. -/
+
+namespace Oak.Rings
+
+/-- A trace of exchanges on `head`: starting from the link `cur`, each push
+    of node `n` receives `cur` and installs `n`; the list records the pairs
+    (previous, pushed) in order, and `final` is the last link installed. -/
+inductive ExchangeTrace : Nat → List (Nat × Nat) → Nat → Prop
+  | nil (cur : Nat) : ExchangeTrace cur [] cur
+  | push {cur final : Nat} {n : Nat} {rest : List (Nat × Nat)}
+      (h : ExchangeTrace n rest final) : ExchangeTrace cur ((cur, n) :: rest) final
+
+/-- Consecutive pushes chain: the previous link a push receives is the node
+    the push before it installed. -/
+theorem exchange_chain (cur final : Nat) (trace : List (Nat × Nat))
+    (h : ExchangeTrace cur trace final) :
+    ∀ (i : Nat) (hi : i + 1 < trace.length),
+      (trace[i + 1]'hi).1 = (trace[i]'(Nat.lt_of_succ_lt hi)).2 := by
+  induction h with
+  | nil cur => intro i hi; simp at hi
+  | @push cur final n rest h ih =>
+    intro i hi
+    cases i with
+    | zero =>
+      cases rest with
+      | nil => simp at hi
+      | cons p rest' =>
+        cases h with
+        | push _ => rfl
+    | succ j =>
+      exact ih j (by simpa using hi)
+
+/-- The pushed nodes of a trace, in order. -/
+def pushedNodes (trace : List (Nat × Nat)) : List Nat := trace.map Prod.snd
+
+/-- Distinct nodes make a duplicate-free chain: the chain is the pushed list. -/
+theorem chain_nodup (trace : List (Nat × Nat)) (h : (pushedNodes trace).Nodup) :
+    (trace.map Prod.snd).Nodup := h
+
+/-- The trace's final link is the last node pushed (or the start, when none). -/
+theorem exchange_final (cur final : Nat) (trace : List (Nat × Nat))
+    (h : ExchangeTrace cur trace final) :
+    final = (pushedNodes trace).getLastD cur := by
+  induction h with
+  | nil cur => rfl
+  | @push cur final n rest h ih =>
+    cases rest with
+    | nil => cases h; rfl
+    | cons p rest' =>
+      simp only [pushedNodes, List.map_cons, List.getLastD_cons] at ih ⊢
+      exact ih
+
+section IntrusivePublication
+
+open Oak.HappensBefore
+
+variable {Event : Type} {sb sw : Event → Event → Prop} {thread : Event → Nat}
+  {conflict : Event → Event → Prop} {atomic : Event → Bool}
+
+/-- The intrusive push: the caller's payload write is sequenced before the
+    release store of the previous node's link; the consumer's acquire load
+    of that link synchronizes with it and is sequenced before the payload
+    read. -/
+theorem intrusive_payload_race_free
+    {payloadWrite linkRelease linkAcquire payloadRead : Event}
+    (hWriteBeforeRelease : sb payloadWrite linkRelease)
+    (hSync : sw linkRelease linkAcquire)
+    (hAcquireBeforeRead : sb linkAcquire payloadRead) :
+    HappensBefore sb sw payloadWrite payloadRead ∧
+      ¬ DataRace (HappensBefore sb sw) thread conflict atomic payloadWrite payloadRead :=
+  ⟨release_acquire_publication hWriteBeforeRelease hSync hAcquireBeforeRead,
+    publication_excludes_data_race hWriteBeforeRelease hSync hAcquireBeforeRead⟩
+
+end IntrusivePublication
+
+/-- MPMC: the consumers' claims on `head` are a trace of their own, so two
+    consumers never take the same position. -/
+theorem mpmc_consumer_claims_distinct (pos : Nat) (claims : List Nat) (final : Nat)
+    (h : ClaimTrace pos claims final) : claims.Nodup :=
+  claims_distinct pos claims final h
+
+end Oak.Rings

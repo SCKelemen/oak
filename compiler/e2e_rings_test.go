@@ -71,6 +71,60 @@ main: (): i32 {
     assert(option_or[u32](rings.mpsc_pop[u32](mcursor, mseqv, mstorage), u32(5)) == u32(5))
     round = round + 1
   }
+  qstate: [1]rings.MpmcCursor
+  qseqs: [8]Atomic[u32]
+  qdata: [8]u32
+  qcursor: [*]rings.MpmcCursor = span(&qstate)
+  qseqv: [*]Atomic[u32] = span(&qseqs)
+  qstorage: [*]u32 = span(&qdata)
+  rings.mpmc_init(qcursor, qseqv)
+  round = u32(0)
+  while round < u32(50) {
+    k: u32 = 0
+    while k < u32(8) {
+      assert(rings.mpmc_push[u32](qcursor, qseqv, qstorage, round * u32(8) + k))
+      k = k + 1
+    }
+    assert(!rings.mpmc_push[u32](qcursor, qseqv, qstorage, u32(99)))
+    k = u32(0)
+    while k < u32(8) {
+      assert(option_or[u32](rings.mpmc_pop[u32](qcursor, qseqv, qstorage), u32(4000000000)) == round * u32(8) + k)
+      k = k + 1
+    }
+    assert(option_or[u32](rings.mpmc_pop[u32](qcursor, qseqv, qstorage), u32(5)) == u32(5))
+    round = round + 1
+  }
+  istate: [1]rings.IntrusiveCursor
+  inodes: [5]rings.IntrusiveNode
+  icursor: [*]rings.IntrusiveCursor = span(&istate)
+  inodev: [*]rings.IntrusiveNode = span(&inodes)
+  rings.intrusive_init(icursor, inodev)
+  taken: u32 = 0
+  round = u32(0)
+  while round < u32(30) {
+    // nodes 1..4 go in, come back in order, and are pushed again
+    rings.intrusive_push(icursor, inodev, u32(1))
+    rings.intrusive_push(icursor, inodev, u32(2))
+    rings.intrusive_push(icursor, inodev, u32(3))
+    rings.intrusive_push(icursor, inodev, u32(4))
+    j: u32 = 1
+    while j <= u32(4) {
+      got: u32 = rings.intrusive_pop(icursor, inodev) ?
+        | .Item(id) => id
+        | .Empty => u32(100)
+        | .Busy => u32(200)
+      assert(got == j)
+      taken = taken + got
+      j = j + 1
+    }
+    sawEmpty: Bool = rings.intrusive_pop(icursor, inodev) ?
+      | .Empty => true
+      | .Item(id) => false
+      | .Busy => false
+    assert(sawEmpty)
+    round = round + 1
+  }
+  assert(taken == u32(300))
   i32_bits_u32(acc % u32(200))
 }
 `
@@ -161,6 +215,81 @@ pub mpsc_consume: (cursor: [*]rings.MpscCursor, seqs: [*]Atomic[u32], storage: [
   }
   sum
 }
+
+pub mpmc_setup: (cursor: [*]rings.MpmcCursor, seqs: [*]Atomic[u32]): () {
+  rings.mpmc_init(cursor, seqs)
+}
+
+pub mpmc_produce: (cursor: [*]rings.MpmcCursor, seqs: [*]Atomic[u32], storage: [*]u32, id: u32, n: u32): u32 {
+  k: u32 = 1
+  spins: u32 = 0
+  while k <= n {
+    rings.mpmc_push[u32](cursor, seqs, storage, (id << u32(24)) | k) ? { k = k + 1 } | { spins = spins + 1 }
+  }
+  spins
+}
+
+// A consumer takes total items whatever their producers; each producer's
+// items still reach the consumers in that producer's order, so a consumer
+// sees its share of every producer's sequence strictly increasing.
+pub mpmc_consume: (cursor: [*]rings.MpmcCursor, seqs: [*]Atomic[u32], storage: [*]u32, total: u32): u64 {
+  last: [16]u32
+  taken: u32 = 0
+  sum: u64 = 0
+  while taken < total {
+    v: u32 = option_or[u32](rings.mpmc_pop[u32](cursor, seqs, storage), u32(0))
+    v == u32(0) ? {
+      sum = sum
+    } | {
+      id: u32 = v >> u32(24)
+      k: u32 = v & u32(16777215)
+      assert(id < u32(16))
+      assert(k > last[id])
+      last[id] = k
+      sum = sum + u64(k)
+      taken = taken + 1
+    }
+  }
+  sum
+}
+
+pub intrusive_setup: (cursor: [*]rings.IntrusiveCursor, nodes: [*]rings.IntrusiveNode): () {
+  rings.intrusive_init(cursor, nodes)
+}
+
+// Producer id owns nodes first..first+n-1 and writes each payload before
+// pushing the node (the link's release publishes it).
+pub intrusive_produce: (cursor: [*]rings.IntrusiveCursor, nodes: [*]rings.IntrusiveNode, values: [*]u32, first: u32, n: u32): () {
+  k: u32 = 0
+  while k < n {
+    values[first + k] = (first + k) * u32(2654435761)
+    rings.intrusive_push(cursor, nodes, first + k)
+    k = k + 1
+  }
+}
+
+// The consumer takes total nodes: each payload matches its node, and no
+// node is taken twice (the consumer clears the payload as it goes).
+pub intrusive_consume: (cursor: [*]rings.IntrusiveCursor, nodes: [*]rings.IntrusiveNode, values: [*]u32, total: u32): u64 {
+  taken: u32 = 0
+  sum: u64 = 0
+  busy: u64 = 0
+  while taken < total {
+    got: u32 = rings.intrusive_pop(cursor, nodes) ?
+      | .Item(id) => id
+      | .Empty => u32(0)
+      | .Busy => u32(0)
+    got == u32(0) ? {
+      busy = busy + 1
+    } | {
+      assert(values[got] == got * u32(2654435761))
+      values[got] = u32(0)
+      sum = sum + u64(got)
+      taken = taken + 1
+    }
+  }
+  sum
+}
 `
 
 const ringsHarness = `
@@ -179,6 +308,20 @@ static void *spsc_prod(void *a) { (void)a; oak_spsc_produce(SPSC, N); return NUL
 static void *spsc_cons(void *a) { *(u64 *)a = oak_spsc_consume(SPSC, N); return NULL; }
 static void *mpsc_prod(void *a) { oak_mpsc_produce(MPSC, (u32)(long)a, N); return NULL; }
 static void *mpsc_cons(void *a) { *(u64 *)a = oak_mpsc_consume(MPSC, N * P); return NULL; }
+#define M 100000u
+static oak_rings__MpmcCursor mpmc_state[1];
+static __typeof__(*((oak_span_Atomic_u32 *)0)->base) mpmc_seqs[64];
+static u32 mpmc_data[64];
+#define MPMC (oak_span_oak_rings_MpmcCursor){ mpmc_state, 1 }, (oak_span_Atomic_u32){ mpmc_seqs, 64 }, (oak_span_u32){ mpmc_data, 64 }
+static void *mpmc_prod(void *a) { oak_mpmc_produce(MPMC, (u32)(long)a, N); return NULL; }
+static void *mpmc_cons(void *a) { *(u64 *)a = oak_mpmc_consume(MPMC, N); return NULL; }
+static oak_rings__IntrusiveCursor intr_state[1];
+static oak_rings__IntrusiveNode intr_nodes[1 + P * M];
+static u32 intr_values[1 + P * M];
+#define INTR_QUEUE (oak_span_oak_rings_IntrusiveCursor){ intr_state, 1 }, (oak_span_oak_rings_IntrusiveNode){ intr_nodes, 1 + P * M }
+#define INTR INTR_QUEUE, (oak_span_u32){ intr_values, 1 + P * M }
+static void *intrusive_prod(void *a) { oak_intrusive_produce(INTR, (u32)(long)a * M + 1, M); return NULL; }
+static void *intrusive_cons(void *a) { *(u64 *)a = oak_intrusive_consume(INTR, P * M); return NULL; }
 int main(void) {
   pthread_t p, c, ps[P];
   u64 sum = 0;
@@ -193,6 +336,22 @@ int main(void) {
   for (int i = 0; i < P; i++) pthread_join(ps[i], NULL);
   pthread_join(c, NULL);
   if (sum != (u64)P * ((u64)N * (N + 1) / 2)) { printf("mpsc sum %llu\\n", (unsigned long long)sum); return 2; }
+  oak_mpmc_setup((oak_span_oak_rings_MpmcCursor){ mpmc_state, 1 }, (oak_span_Atomic_u32){ mpmc_seqs, 64 });
+  u64 sums[P] = {0};
+  pthread_t cs[P];
+  for (long i = 0; i < P; i++) if (pthread_create(&cs[i], NULL, mpmc_cons, &sums[i]) != 0) return 24;
+  for (long i = 0; i < P; i++) if (pthread_create(&ps[i], NULL, mpmc_prod, (void *)(i + 1)) != 0) return 25;
+  for (int i = 0; i < P; i++) pthread_join(ps[i], NULL);
+  sum = 0;
+  for (int i = 0; i < P; i++) { pthread_join(cs[i], NULL); sum += sums[i]; }
+  if (sum != (u64)P * ((u64)N * (N + 1) / 2)) { printf("mpmc sum %llu\\n", (unsigned long long)sum); return 3; }
+  oak_intrusive_setup(INTR_QUEUE);
+  sum = 0;
+  if (pthread_create(&c, NULL, intrusive_cons, &sum) != 0) return 26;
+  for (long i = 0; i < P; i++) if (pthread_create(&ps[i], NULL, intrusive_prod, (void *)i) != 0) return 27;
+  for (int i = 0; i < P; i++) pthread_join(ps[i], NULL);
+  pthread_join(c, NULL);
+  if (sum != (u64)(P * M) * ((u64)(P * M) + 1) / 2) { printf("intrusive sum %llu\\n", (unsigned long long)sum); return 4; }
   printf("rings ok\\n");
   return 0;
 }
