@@ -77,4 +77,20 @@ func TestE2ENativeGlobals(t *testing.T) {
 	if _, code, abnormal := buildAndRunFrom(t, "native_globals_c", New().WithSource("globals.oak", nativeGlobalsProgram)); abnormal || code != 1129%256 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want %d", code, abnormal, 1129%256)
 	}
+	// Inline-asm mode (`oak build -native -o`, the OS pilot's object path):
+	// the native bodies go into the C as top-level assembly blocks, whose
+	// adrp/add operands spell the global through the platform's page
+	// macros — once malformed C ("expected ')'") that blocked five ports.
+	var inlineInfos []string
+	inlineComp := New().WithSource("globals.oak", nativeGlobalsProgram).WithNativeBodies().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
+		if d.Source == "native" {
+			inlineInfos = append(inlineInfos, d.Message)
+		}
+	})
+	if _, code, abnormal := buildAndRunFrom(t, "native_globals_inline", inlineComp); abnormal || code != 1129%256 {
+		t.Fatalf("inline-asm mode: exit = (%d, abnormal=%v), want %d\n%s", code, abnormal, 1129%256, strings.Join(inlineInfos, "\n"))
+	}
+	if !strings.Contains(strings.Join(inlineInfos, "\n"), "asm unit set_state:") {
+		t.Errorf("set_state must lower natively in inline-asm mode too; diagnostics:\n%s", strings.Join(inlineInfos, "\n"))
+	}
 }

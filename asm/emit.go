@@ -14,6 +14,15 @@ const CPrelude = `/* asm units (docs/spec/94-assembler.md): top-level assembly b
 #define OAK_ASM_STR_(x) #x
 #define OAK_ASM_STR(x) OAK_ASM_STR_(x)
 #define OAK_ASM_SYMBOL(name) OAK_ASM_STR(__USER_LABEL_PREFIX__) #name
+/* a global's page address and its low 12 bits, as the platform's assembler
+   spells them (adrp/add, docs/spec/94-assembler.md section 9) */
+#if defined(__APPLE__)
+#define OAK_ASM_PAGE(name) OAK_ASM_SYMBOL(name) "@PAGE"
+#define OAK_ASM_PAGEOFF(name) OAK_ASM_SYMBOL(name) "@PAGEOFF"
+#else
+#define OAK_ASM_PAGE(name) OAK_ASM_SYMBOL(name)
+#define OAK_ASM_PAGEOFF(name) ":lo12:" OAK_ASM_SYMBOL(name)
+#endif
 `
 
 // EmitCExtern is EmitC's counterpart when the unit is encoded by the Oak
