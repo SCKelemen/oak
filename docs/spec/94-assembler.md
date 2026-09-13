@@ -2912,8 +2912,8 @@ frame array (`elementRegion`, `deriveTableRegion`), a store through it
 is refused, a symbol the program does not declare is refused. A view of
 a table (`view(&T)`) is a span whose base is the table's address and
 whose length is its element count; `span(&T)` is refused, the table
-being read-only. The verifier does not yet model a table read: a body
-with `adrl`/`la` is trusted with that reason. A constant scalar global is
+being read-only. The verifier reads a table as the span its Oak name
+denotes (below, "Table reads"). A constant scalar global is
 folded into every body that reads it, so a natively linked program admits
 both kinds of global (`allNative`). On the stdlib-bearing program the
 tables lowered every body that indexed a global on both lanes with no
@@ -2986,6 +2986,23 @@ proven chunk by chunk, a `Result`-returning callee taken at its body, a
 one-chunk record parameter's padding, both lanes), `asm/frame_test.go`
 (an unstored slot's bytes refute a result that reads them and leave one
 that does not).
+
+**Table reads (2026-09-14).** The verifier reads a constant table as a
+span named by the table's Oak identifier: `adrl xR, sym` and `la rd, sym`
+bind the register to the base `&T` (`asm.Function.Tables` carries the
+element width and signedness beside the size, `asm.TableName` the Oak
+name), a load through it is the element term `T[k]` — the same select
+term the Oak side gives `T[k]`, with functional consistency between
+reads — and `len(T)` on the Oak side is the constant element count. The
+bytes themselves are not consulted: both sides read the same memory, so
+the equivalence is over the same uninterpreted elements, and a witness
+run draws them from the fixed element function as it does for a span.
+The trusted reason `instruction adrl`/`la` is gone from the tally: the
+proven bodies rose to 137 on AArch64 and 120 on RV64. With it, the
+layout table a body carries (`Composites`) also spells the result types
+of the program's functions, so a summarized call returning a record or
+sum type finds its layout. Pinned: `compiler/e2e_native_tables_test.go`
+(the table-reading bodies proven on both lanes).
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
