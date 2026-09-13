@@ -14,8 +14,8 @@ the function uses. Every link below is one of **proved** (a Lean theorem),
 | Link | AArch64, scalar | AArch64, vectors | RISC-V 64, scalar | Both lanes, C backend |
 | --- | --- | --- | --- | --- |
 | Oak program ⟶ its specification (the source proofs: `Oak.Utf8Blocks.program_valid`, `Oak.Protocol`, `Oak.Teddy`, `Oak.Simd` lane laws) | proved, about the Oak text extracted to Lean (`codegen/lean`) | proved, the same way | proved, the same way | proved, the same way |
-| Oak body ⟶ emitted instructions (`asm.Verify`) | **proved** for linear straight-line bodies (normal forms), **evidence** for bounded loops and span element loads over witnesses, **trusted** past the unrolling budget | **trusted**: a vector parameter, local, load, or instruction ends verification ("vector or non-integer parameters", "a vector-register load", "a floating-point or vector instruction") | proved / evidence as AArch64, the RV64 lane of the same verifier | **trusted**: the C compiler's output is never compared with the Oak body; the differential tests (C, interpreter, portable, NEON, RVV) are the check |
-| Instruction semantics ⟶ the vendor's specification | **proved**: `Oak.AssemblerSemantics` ≡ `Oak.ArmASL` ≡ Sail-generated Lean for `AddWithCarry`, `ConditionHolds`, the conditional selects and compares, `HighestSetBit`/`CountLeadingZeroBits` (`spec/sail/lean/Bridge.lean`); **evidence** on silicon for 181 register-level bodies × 60 inputs | **absent**: no NEON semantics in the verifier, none in `Oak.ArmASL`, none in `spec/sail/arm_primitives.sail`, no vector body in the silicon differential | **proved**: `Oak.RiscV` ≡ the Sail RISC-V model's Lean export (bridge, two halves); **evidence**: the Sail emulator and QEMU agree on the differential units | not applicable |
+| Oak body ⟶ emitted instructions (`asm.Verify`) | **proved** for linear straight-line bodies (normal forms), **evidence** for bounded loops and span element loads over witnesses, **trusted** past the unrolling budget | **proved** for straight-line vector bodies (2026-09-13, the seventh increment: `asm/verify_vector.go`, `asm/verify_simd.go` — the SIMD corpus, the UTF-8 kernel's `special_cases` and `check_block` on both halves of their vector results), **evidence** for `check_blocks` (the node budget), **trusted** for the loop kernels and `simd.store` | proved / evidence as AArch64, the RV64 lane of the same verifier | **trusted**: the C compiler's output is never compared with the Oak body; the differential tests (C, interpreter, portable, NEON, RVV) are the check |
+| Instruction semantics ⟶ the vendor's specification | **proved**: `Oak.AssemblerSemantics` ≡ `Oak.ArmASL` ≡ Sail-generated Lean for `AddWithCarry`, `ConditionHolds`, the conditional selects and compares, `HighestSetBit`/`CountLeadingZeroBits` (`spec/sail/lean/Bridge.lean`); **evidence** on silicon for 181 register-level bodies × 60 inputs | **proved against `Oak.Simd`, not yet against Arm**: the NEON lane functions the verifier applies (`asm/verify_vector.go`) are stated in Lean as `Oak.NeonSemantics` and each is proved to be the `Oak.Simd` operation the lowering uses it for (`uqsub_eq_subSat`, `cmeq_eq_eqMask`, `tbl_eq_tbl`, `ext_eq_prev`, `umaxv_ne_zero_iff`, `umaxv_cmeq_zero_iff`, `movemaskBytes_eq_movemask`); **evidence** on silicon for 160 vector bodies × 60 inputs (`asm/silicon_test.go`, the lane functions against the host core); no Sail vector primitives in `spec/sail/` yet | **proved**: `Oak.RiscV` ≡ the Sail RISC-V model's Lean export (bridge, two halves); **evidence**: the Sail emulator and QEMU agree on the differential units | not applicable |
 | Instruction text ⟶ machine word (the encoder) | **audited**: the table is generated from Arm's ISA XML and checked against Arm's Sail decode tree and templates | audited the same way (the NEON encodings are in the table and the audit) | audited against the Sail RISC-V decoder (`rv64_*` tests), RVC forms included | the system assembler, trusted |
 
 ## What this means for the golden cases
@@ -24,13 +24,20 @@ the function uses. Every link below is one of **proved** (a Lean theorem),
   **proved as Oak programs** (`Oak.Utf8Blocks`, `Oak.Teddy` and its masks,
   the protocol laws) and **run through the C backend**, where the last two
   links are trusted. Their speed results are C-backend results.
-- Through the native backend (landed today for the vectors) the same
-  functions lower to NEON, but the verifier marks every one of them
-  trusted the moment it meets a vector, so the chain has the same open
-  link as the C path, one layer lower: nothing yet states that the
-  emitted `tbl`, `ext`, `cmeq`, `uqsub`, `umaxv`, `sshr`, `addv` mean what
-  `Oak.Simd`'s `tbl`, `prev`, `eqMask`, `subSat`, `anyLane`, `shr`,
-  `movemask` mean.
+- Through the native backend the same functions lower to NEON, and
+  since the seventh verifier increment (2026-09-13) the straight-line
+  vector helpers are **proved** against their Oak bodies at the bit level
+  — `special_cases` and `check_block` of the UTF-8 kernel on both halves
+  of their vector results, the SIMD corpus entire — with `check_blocks`
+  evidence and the loop kernel trusted. What remains open one layer lower
+  is the meaning of the instructions themselves: the verifier states that
+  `tbl`, `ext`, `cmeq`, `uqsub`, `umaxv`, `sshr`, `addv` are `Oak.Simd`'s
+  `tbl`, `prev`, `eqMask`, `subSat`, `anyLane`, `shr`, `movemask` as Go
+  lane functions, and `Oak.NeonSemantics` proves the same statements in
+  Lean over the same definitions, and the silicon differential checks the
+  lane functions against the host core (160 vector bodies × 60 inputs);
+  what is missing is Arm's own text for them — the Sail vector primitives
+  are not yet in `spec/sail/`.
 - Scalar Oak functions without spans beyond the subset — the state
   machines' `next`/`legal` tables, arithmetic helpers, the protocol
   projections without data — are the only functions today whose proof
@@ -38,25 +45,32 @@ the function uses. Every link below is one of **proved** (a Lean theorem),
 
 ## What closes the vector link, in order
 
-1. **Vector semantics in the verifier.** A vector register as sixteen lane
-   terms; the NEON lane-wise instructions the native backend emits (`and`,
-   `orr`, `eor`, `add`, `sub`, `umin`, `umax`, `cmeq`, `uqsub`, `ushr`,
-   `sshr`, `dup`, `tbl`, `ext`, `umaxv`, `addv`, `umov`, `cnt`) as lane
-   functions; `simd.*` calls in the Oak body lowered through `Oak.Simd`'s
-   definitions to the same terms. Result: proof or evidence verdicts for
-   the straight-line vector helpers (`check_block`, `special_cases`,
-   `classify`), evidence for the kernels with loops.
-2. **The NEON meaning proved in Lean.** `Oak.NeonSemantics` stating each
-   instruction's lane function and theorems that it is the `Oak.Simd`
-   operation the lowering uses it for (`tbl` is `Simd.tbl` with the
-   out-of-range rule, `ext #(16-n)` is `Simd.prev n`, `uqsub` is
-   `Simd.subSat`, `cmeq` is `Simd.eqMask`, the `sshr`/`and`/`addv`
-   sequence is `Simd.movemask`).
+1. **Vector semantics in the verifier — done (2026-09-13).** A vector
+   register as lanes of terms (`asm/verify_vector.go`); the NEON lane-wise
+   instructions the native backend emits (`and`, `orr`, `eor`, `add`,
+   `sub`, `umin`, `umax`, `cmeq`, `uqsub`, `ushr`, `sshr`, `dup`, `tbl`,
+   `ext`, `umaxv`, `addv`, `umov`, `cnt`, `fmov`, the `q`/`d` frame
+   accesses and the span `ldr q`) as lane functions; `simd.*` calls in the
+   Oak body lowered through `Oak.Simd`'s definitions to the same terms
+   (`asm/verify_simd.go`); a vector result decided half by half. Result:
+   `special_cases` and `check_block` proven on both halves, `check_blocks`
+   evidence, the loop kernel trusted (`docs/spec/94-assembler.md` §8, the
+   seventh increment).
+2. **The NEON meaning proved in Lean — done (2026-09-13).**
+   `Oak.NeonSemantics` (`spec/lean/Oak/NeonSemantics.lean`) states each
+   instruction's lane function as the verifier applies it and proves it is
+   the `Oak.Simd` operation the lowering uses it for: `tbl` is `Simd.tbl`
+   with the out-of-range rule, `ext #(16-n)` is `Simd.prev n`, `uqsub` is
+   `Simd.subSat`, `cmeq` is `Simd.eqMask`, `add` is `addWrap`, `ushr` is
+   `shr`, `umaxv` decides `anyLane` and (after `cmeq #0`) `allLanes`, and
+   the `sshr #7`/`and`/`addv`/`orr` sequence is `Simd.movemask 8`.
 3. **Grounding against Arm.** The Sail text of the vector primitives
    (`Elem[]`, `UnsignedSatQ`, `BitCount`, the `ext` and `tbl` index
    functions) added to `spec/sail/arm_primitives.sail`, Lean generated,
-   and `Oak.NeonSemantics` proved equal to it, as `Oak.ArmASL` is today;
-   vector bodies added to the silicon differential.
+   and `Oak.NeonSemantics` proved equal to it, as `Oak.ArmASL` is today.
+   The silicon half is done (2026-09-13): the differential runs 160
+   vector bodies against the host core, and caught the lane-narrowing
+   bug on its first run.
 4. **RISC-V vectors.** Not lowered natively; the C backend's RVV path is
    trusted. A native RVV lowering would enter at step 1 with the Sail
    RISC-V vector model as its ground.

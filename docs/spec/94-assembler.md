@@ -325,7 +325,7 @@ register holds the length.
 Pending: the semantic
 verification of straight-line bodies against `Oak.Intrinsics`.
 
-## 8. Semantic verification of asm bodies (six increments implemented)
+## 8. Semantic verification of asm bodies (seven increments implemented)
 
 **Implemented** (`asm/verify.go`, `Oak.AssemblerSemantics`): for a function
 with both an asm unit and an Oak fallback body, the asm gate runs the
@@ -732,6 +732,68 @@ mechanically: Arm's ASL → Sail (Arm's tooling) → Lean (Sail's backend) ≡
 `Oak.ArmASL` ≡ `Oak.AssemblerSemantics` (proved) ≡ the Go executor
 (checked on the silicon). The bridge is a separate Lake package so the
 main specification builds without the Sail toolchain.
+
+**Vectors (seventh increment, 2026-09-13; `asm/verify_vector.go`,
+`asm/verify_simd.go`).** The verifier follows the vector file. A NEON
+register is a 128-bit value held as lanes of one width, each lane a term
+of the scalar language, repacked through its two 64-bit halves when read
+at another width; the instructions the native backend emits
+(`nativegen/simd.go`) are lane functions over those terms — `and`/`orr`/
+`eor`/`bic` bitwise, `add`/`sub`/`umin`/`umax`/`uqsub`/`uqadd`/`cmeq`/
+`cmhi`/`cmhs` per lane at the arrangement's width (`cmeq #0` included),
+`ushr`/`sshr`/`shl #n`, `dup` from a general register or a lane, `movi`,
+`tbl` with one table register as a sixteen-way select per lane (an index
+at or beyond sixteen selects zero), `ext #n` as the bytes of the
+concatenation from position n, `umaxv`/`uminv`/`addv` into a scalar view
+(the rest of the register zeroed), `cnt`, `umov`/`smov` of a lane into a
+general register, and `fmov` between the files. A `q` store or load of the
+frame is two 8-byte slots (the low half at the lower address), a `d` or
+`s` view its low bits; `stp`/`ldp` of `d` views save and restore the
+callee-saved low halves, which enter as opaque symbols. A `ldr q` through
+a span base under the slack guard (§7) reads sixteen element terms from
+the index. A `simd.<Name>` parameter is its lanes `p[k]`, bound whole to
+its `v` register; a vector result is read from `v0` one 64-bit half at a
+time and each half decided as a scalar equality (the verdict names both
+halves). On the Oak side a `simd.<Name>` type is an owned array of lanes
+and each `simd.<op>_<shape>` call is the lane function `Oak.Simd` gives
+it — `splat`, `load` (the span elements from the index, or an owned
+array's elements at a literal offset), `add`/`sub`/`and`/`or`/`xor`/`min`/
+`max`/`eq`/`subs`, `shr` and `prev` by a literal, `tbl`, `movemask`,
+`any`/`all`, `ctz`/`popcount` — built with the same constructors the
+machine side applies to the instructions, so the equality the decider
+settles is between the instruction sequence and the operation sequence.
+Two variable orders join the bit-level decision for this: each leaf's
+bits in a block of its own (a lane-wise computation resolves a lane's
+contribution as its bits are read; the mask sum of `shuffle` is 5,045
+nodes there where the interleaved order exceeds the budget) and control
+bits first (a table lookup at a symbolic index is a selection); the orders
+run together and the first to decide stops the others, as the theorem
+decider does. The asm unit now carries the program's functions, so a call
+the native lowering expanded into its caller (§9.y) is inlined on the Oak
+side as well. Verdicts on the SIMD corpus (`compiler/e2e_native_simd_test.go`):
+`lanes_mask`, `logic`, `shuffle`, `words`, `bits`, `doubled_mask` proven,
+`double_it_neon_abi` proven on both halves; on the UTF-8 kernel
+(`benchmarks/native/utf8_valid.oak`): `special_cases` and `check_block`
+proven on both halves of their vector results, `check_blocks` evidence
+(the two-block composition exceeds the node budget), the loop kernel
+`valid_with` trusted (a data-dependent loop with forks in its body, as
+its scalar counterparts are). The lane functions are stated in Lean as
+`Oak.NeonSemantics` (`spec/lean/Oak/NeonSemantics.lean`) and each is
+proved to be the `Oak.Simd` operation the lowering uses it for:
+`uqsub_eq_subSat`, `cmeq_eq_eqMask`, `add_eq_addWrap`, `ushr_eq_shr`,
+`tbl_eq_tbl`, `ext_eq_prev` (`ext #(16-n)` is `prev n`),
+`umaxv_ne_zero_iff` (`any`), `umaxv_cmeq_zero_iff` (`all`), and
+`movemaskBytes_eq_movemask` (the `sshr #7`/`and`/`addv`/`orr` sequence is
+`movemask 8`). The silicon differential (`asm/silicon_test.go`) runs the
+vector instructions too — 160 bodies over `v0 = {a, a}`, `v1 = {b, a}`
+built by `dup` and `ext`, each half of the result read back with `umov` —
+and it found the first modeling bug before it shipped: a lane narrowed
+from a wider register must be masked explicitly (`narrowLane`), where the
+scalar `truncate` takes a parameter to be bounded by its declared width.
+Left for the next increments: `simd.store` (a write the straight-line
+model does not follow), float vectors, and grounding the lane functions
+in Arm's Sail text as the scalar primitives are
+(`docs/notes/proof-chain-audit-2026-09.md`).
 
 ## 9. Native encoding, and the architectures to come
 

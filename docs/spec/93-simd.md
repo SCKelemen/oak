@@ -204,6 +204,17 @@ struct in, NEON values through, the struct back), so C callers and
 natively lowered callers agree, and a native function that passes vectors
 to a callee the C backend realizes is itself left to the C backend.
 
+The verifier follows the lowering (`94-assembler.md` §8, the seventh
+increment): each NEON instruction above is the lane function `Oak.Simd`
+gives the operation it realizes, so a straight-line vector body is
+proven equal to its Oak body at the bit level — the SIMD corpus and the
+UTF-8 kernel's `special_cases` and `check_block` are, on both halves of
+their vector results — and a vector body with a data-dependent loop is
+trusted, as a scalar one is. `Oak.NeonSemantics` states each lane
+function in Lean and proves it is the `Oak.Simd` operation above (`uqsub`
+is `subSat`, `cmeq` is `eqMask`, `ext #(16-n)` is `prev n`, the
+`movemask` sequence is `movemask 8`, `umaxv` decides `any` and `all`).
+
 Measured (`benchmarks/native/`): the UTF-8 validator with its tables
 passed in as a view first ran at 0.40 ns/byte through the native backend
 against 0.08 through the C backend on the same 64 MB input, both
