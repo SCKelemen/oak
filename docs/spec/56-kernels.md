@@ -258,7 +258,17 @@ index, which any buffer the tiles cover already guarantees.
   `reduce.tree` over the partials on the host — is "tree of group trees",
   a language fact. Every Oak value in a group kernel depends only on the
   position and the parameters, so the barriers are reached uniformly by
-  construction.
+  construction. **The lane rule** is the other cooperative form:
+  `r.group_lanes(G, x, lo, m, zero, add, run)` makes the group's `G`
+  threads the lanes — thread `l` folds the window's elements `i` with
+  `(i / run) % G == l` in index order from `zero` (`m` may exceed `G`) —
+  and then runs the xor butterfly over threadgroup scratch, every thread
+  reading its partner `lid ^ off` before any writes, so each round sees
+  the values before it; every thread reads lane 0's value. On the host
+  `group_lanes` is `reduce.lanes` over the window (`55-parallelism.md` §4,
+  "The lane rule as an order"), the order a GPU library's canonical sum
+  is written in, and `Oak.Reduce.lanes` is the model for both. A zero
+  `run` raises fault 6 and folds nothing.
 - Fixed arrays as kernel parameters (a fixed array is thread-private; a
   buffer is a view or span).
 
