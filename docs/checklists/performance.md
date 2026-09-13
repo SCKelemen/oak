@@ -627,7 +627,13 @@ remains that a fact could elide" is a finding.
       storage, and the alignment carried as a fact of the span type
       (`50-borrowing.md` §2a, `[* align 4096]u8`) so
       `io_open_region_aligned` probes nothing; tri-state is the program's
-      policy.
+      policy; `pread` size cap by the OS limit: not stated.
+- [ ] **The durability barrier is named per host.** Does the native
+      realization say what makes a write durable on each host it runs on
+      — Linux `fsync`/`fdatasync`, Darwin `F_FULLFSYNC` (plain `fsync`
+      does not ask the drive to flush), Windows `FlushFileBuffers` — and
+      which hosts are development-only for durability? (TB, io-port pass
+      F10) — Oak: `120-io.md` §5, `oak_io_host_fsync`.
 - [ ] **Zero-copy from device to consumer.** Does data cross layers as
       views into the receive buffer, never re-copied for convenience?
       (dbs, DPDK) — Oak: `71-codecs.md` §13a.
