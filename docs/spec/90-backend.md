@@ -481,3 +481,44 @@ validator runs at 0.5 ns per byte, the hand-written shift DFA's speed, six
 times the branch tree the same declaration produced before
 (`benchmarks/state-machines/README.md`).
 
+## 15. Evaluation order
+
+`10-syntax.md` §3d fixes left-to-right evaluation within an expression;
+C fixes nothing of the kind, and the operands of `oak_add_u32( a, b )`
+and the arguments of every call are evaluated in whatever order the C
+compiler prefers. The backend closes the gap at every statement position
+(`codegen/sequence.go`):
+
+- **Groups.** The operands of an operator, the receiver and arguments of a
+  call, the elements of an array literal, the fields of a record literal,
+  the operands of an index and the bounds of a slice form one
+  *unsequenced group*: siblings C may reorder.
+- **Sensitivity.** A member is *effectful* when it contains a call the C
+  compiler may move — a program function, a method, an extern, an atomic
+  or runtime builtin, or any callee the backend does not know — and
+  *sensitive* when it is effectful, or reads a global, or reads a
+  variable an effectful sibling may write through a span, an address
+  argument or a method receiver. Casts, conversions, checked arithmetic,
+  float intrinsics, `len`, borrow constructions, layout queries and plain
+  reads no sibling can write are pure and stay inline.
+- **Sequencing.** When a group has two or more sensitive members, each is
+  evaluated into a temporary `T oak__seq_N = member;` before the
+  statement, in source order — a member's own inner temporaries first —
+  and the statement reads the temporaries. `T` is the type the checker
+  recorded for the member (`TypeChecker.ExpressionTypeAt`, keyed by
+  position so lowering's rewrites keep it); a member with no C spelling
+  falls back to `__typeof__`, which the golden corpus keeps at zero.
+- **Conditional contexts.** Nothing is hoisted out of a match arm or the
+  right operand of `&&`/`||`. When one of them needs sequencing, the
+  construct is emitted in statement form — `T t;` then `if ( c ) { ...
+  t = a; } else { ... t = b; }`, with each arm sequencing its own
+  operands — and the statement reads `t`. A `while` condition that needs
+  sequencing becomes `for ( ;; ) { temporaries; if ( !( cond ) ) {
+  break; } body }`, so its operands are re-evaluated every iteration in
+  order.
+
+The lowering is proportional to the risk: a program with at most one
+effectful operand per group emits exactly the C it did before. The
+differential test `compiler/e2e_evaluation_order_test.go` holds the
+interpreter and the compiled C to the specified value for every
+construct above and for the expression that exposed the gap.

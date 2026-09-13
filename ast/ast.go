@@ -1728,3 +1728,49 @@ func (pd *ProtocolDeclaration) String() string {
 	out.WriteString(" }")
 	return out.String()
 }
+
+// ExpressionToken is the token that positions an expression — the one the
+// checker's position-keyed recordings (typechecker.positionKey) and the
+// backend's rewrites agree on. Nodes without a positioning token report
+// false.
+func ExpressionToken(expr Expression) (token.Token, bool) {
+	switch e := expr.(type) {
+	case *Identifier:
+		return e.Token, true
+	case *IntegerLiteral:
+		return e.Token, true
+	case *FloatLiteral:
+		return e.Token, true
+	case *StringLiteral:
+		return e.Token, true
+	case *Boolean:
+		return e.Token, true
+	case *PrefixExpression:
+		return e.Token, true
+	case *InfixExpression:
+		return e.Token, true
+	case *IndexExpression:
+		return e.Token, true
+	case *SliceExpression:
+		return e.Token, true
+	case *InvocationExpression:
+		return e.Token, true
+	case *ArrayLiteral:
+		return e.Token, true
+	case *RecordLiteral:
+		return e.Token, true
+	case *BlockExpression:
+		return e.Token, true
+	case *MatchExpression:
+		return e.Token, true
+	case *VariantExpression:
+		return e.Token, true
+	case *FunctionLiteral:
+		return e.Token, true
+	case *TryExpression:
+		return e.Token, true
+	case *FieldAccessorExpression:
+		return e.Token, true
+	}
+	return token.Token{}, false
+}
