@@ -116,7 +116,7 @@ func analyzeKernels(program *ast.Program, tc *typechecker.TypeChecker) []*diagno
 		walkNodes(fn.Body, func(n ast.Node) {
 			switch v := n.(type) {
 			case *ast.InvocationExpression:
-				if id, ok := v.Function.(*ast.Identifier); ok && (id.Value == "lane" || id.Value == "barrier") {
+				if id, ok := v.Function.(*ast.Identifier); ok && (id.Value == "lane" || id.Value == "barrier" || id.Value == "simd_shuffle_xor") {
 					report(CodeKernelSubset, v, "%s() belongs to a kernel body; %s is a helper, which runs for one lane at a time and has no group", id.Value, name)
 				}
 			case *ast.VariableDeclaration:

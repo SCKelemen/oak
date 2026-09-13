@@ -33,7 +33,7 @@ func Uses(fn *ast.FunctionStatement) bool {
 	walkNodes(fn.Body, func(n ast.Node) {
 		switch v := n.(type) {
 		case *ast.InvocationExpression:
-			if id, ok := v.Function.(*ast.Identifier); ok && (id.Value == "lane" || id.Value == "barrier") {
+			if id, ok := v.Function.(*ast.Identifier); ok && (id.Value == "lane" || id.Value == "barrier" || id.Value == "simd_shuffle_xor") {
 				used = true
 			}
 		case *ast.VariableDeclaration:
@@ -98,10 +98,18 @@ func Check(fn *ast.FunctionStatement) error {
 		return fmt.Errorf("a kernel with lanes has a block body")
 	}
 	top := map[ast.Node]bool{}
+	topShuffle := map[ast.Node]bool{} // shuffle calls whose statement is top-level
+	topLocals := map[string]*ast.VariableDeclaration{}
 	for _, s := range block.Block.Statements {
 		top[s] = true
 		if es, isExpr := s.(*ast.ExpressionStatement); isExpr {
 			top[es.Expression] = true
+		}
+		if decl, isDecl := s.(*ast.VariableDeclaration); isDecl && decl.Name != nil {
+			topLocals[decl.Name.Value] = decl
+		}
+		for _, call := range shufflesIn(s) {
+			topShuffle[call] = true
 		}
 	}
 	walkNodes(fn.Body, func(n ast.Node) {
@@ -112,6 +120,20 @@ func Check(fn *ast.FunctionStatement) error {
 		case *ast.InvocationExpression:
 			if id, ok := v.Function.(*ast.Identifier); ok && id.Value == "barrier" && !top[v] {
 				err = fmt.Errorf("barrier() is a statement at the kernel body's top level, not inside a loop, a conditional, or an expression")
+			}
+			if id, ok := v.Function.(*ast.Identifier); ok && id.Value == "simd_shuffle_xor" {
+				// A shuffle reads another lane at a point every lane has
+				// reached: its statement is at the top level, its source a
+				// top-level scalar local declared before it.
+				if !topShuffle[v] {
+					err = fmt.Errorf("simd_shuffle_xor is used in a statement at the kernel body's top level, not inside a loop or a conditional")
+				} else if src, isIdent := v.Arguments[0].(*ast.Identifier); !isIdent || topLocals[src.Value] == nil {
+					err = fmt.Errorf("simd_shuffle_xor shuffles a scalar local declared at the kernel body's top level, got %s", v.Arguments[0].String())
+				} else if _, isArray := topLocals[src.Value].Type.(*ast.IndexExpression); isArray || topLocals[src.Value].Type == nil {
+					err = fmt.Errorf("simd_shuffle_xor's source %s needs a scalar type annotation (it is private to each lane)", src.Value)
+				} else if off, isLit := v.Arguments[1].(*ast.IntegerLiteral); !isLit || off.Value >= size {
+					err = fmt.Errorf("simd_shuffle_xor's offset is a literal below the group size %d", size)
+				}
 			}
 		case *ast.VariableDeclaration:
 			if v.Threadgroup {
@@ -164,8 +186,16 @@ func Rewrite(fn *ast.FunctionStatement) (*ast.FunctionStatement, error) {
 		out = append(out, &ast.VariableDeclaration{Token: tok, Name: &ast.Identifier{Token: tok, Value: privateName(name)},
 			Type: &ast.IndexExpression{Token: tok, Left: decl.Type, Index: lit(size)}})
 	}
+	for _, sh := range p.shuffles {
+		decl := p.private[sh.source]
+		out = append(out, &ast.VariableDeclaration{Token: tok, Name: &ast.Identifier{Token: tok, Value: sh.temp},
+			Type: &ast.IndexExpression{Token: tok, Left: decl.Type, Index: lit(size)}})
+	}
 	out = append(out, &ast.VariableDeclaration{Token: tok, Name: laneID(), Type: u32(), Value: lit(0)})
-	rw := &rewriter{size: size, private: p.private, tok: tok}
+	rw := &rewriter{size: size, private: p.private, tok: tok, temps: map[*ast.InvocationExpression]string{}}
+	for _, sh := range p.shuffles {
+		rw.temps[sh.call] = sh.temp
+	}
 	for i, phase := range p.phases {
 		if i > 0 {
 			out = append(out, &ast.AssignmentStatement{Token: tok, Name: laneID(), Value: lit(0)})
@@ -192,6 +222,61 @@ type hostPlan struct {
 	arenas       []*ast.VariableDeclaration
 	private      map[string]*ast.VariableDeclaration
 	privateOrder []string
+	shuffles     []shuffle
+}
+
+// shuffle is one simd_shuffle_xor call: its source local and the per-lane
+// temp that holds the partner's value across the phase boundary.
+type shuffle struct {
+	call   *ast.InvocationExpression
+	source string
+	temp   string
+}
+
+// shufflesIn lists the simd_shuffle_xor calls a statement makes directly
+// — in its own expressions, not inside a loop body, a conditional's arm,
+// or a nested block, where a shuffle is refused (Check).
+func shufflesIn(s ast.Statement) []*ast.InvocationExpression {
+	var out []*ast.InvocationExpression
+	var expr func(e ast.Expression)
+	expr = func(e ast.Expression) {
+		switch v := e.(type) {
+		case nil:
+		case *ast.InvocationExpression:
+			if id, ok := v.Function.(*ast.Identifier); ok && id.Value == "simd_shuffle_xor" && len(v.Arguments) == 2 {
+				out = append(out, v)
+			}
+			for _, a := range v.Arguments {
+				expr(a)
+			}
+		case *ast.InfixExpression:
+			expr(v.Left)
+			expr(v.Right)
+		case *ast.PrefixExpression:
+			expr(v.Right)
+		case *ast.IndexExpression:
+			expr(v.Left)
+			if !v.Dot {
+				expr(v.Index)
+			}
+		case *ast.ArrayLiteral:
+			for _, el := range v.Elements {
+				expr(el)
+			}
+		}
+	}
+	switch v := s.(type) {
+	case *ast.VariableDeclaration:
+		expr(v.Value)
+	case *ast.AssignmentStatement:
+		expr(v.Value)
+	case *ast.IndexAssignmentStatement:
+		expr(v.Target)
+		expr(v.Value)
+	case *ast.ExpressionStatement:
+		expr(v.Expression)
+	}
+	return out
 }
 
 func plan(fn *ast.FunctionStatement, size int64) (*hostPlan, error) {
@@ -209,6 +294,28 @@ func plan(fn *ast.FunctionStatement, size int64) (*hostPlan, error) {
 					continue
 				}
 			}
+		}
+		if shuffles := shufflesIn(s); len(shuffles) > 0 {
+			// The statement reads other lanes: every lane has finished
+			// the statements before it (a phase ends), the partners' slots
+			// are read into per-lane temps in a phase of their own (so a
+			// lane that also writes its source in this statement cannot
+			// be read early), and the statement runs in the next phase.
+			p.phases = append(p.phases, phase)
+			var reads []ast.Statement
+			for _, call := range shuffles {
+				src := call.Arguments[0].(*ast.Identifier)
+				p.shuffles = append(p.shuffles, shuffle{call: call, source: src.Value, temp: fmt.Sprintf("oak_sh%d", len(p.shuffles)+1)})
+				// The read is spelled as the shuffle call in statement
+				// position; the rewriter turns it into temp[lane] = source[lane ^ off].
+				reads = append(reads, &ast.ExpressionStatement{Token: call.Token, Expression: call})
+				if _, done := p.private[src.Value]; !done {
+					p.private[src.Value] = decls[src.Value]
+					p.privateOrder = append(p.privateOrder, src.Value)
+				}
+			}
+			p.phases = append(p.phases, reads)
+			phase = nil
 		}
 		if decl, ok := s.(*ast.VariableDeclaration); ok && decl.Threadgroup {
 			p.arenas = append(p.arenas, decl)
@@ -265,6 +372,7 @@ type rewriter struct {
 	size    int64
 	private map[string]*ast.VariableDeclaration
 	tok     token.Token
+	temps   map[*ast.InvocationExpression]string
 }
 
 func (rw *rewriter) laneRef() ast.Expression {
@@ -310,6 +418,18 @@ func (rw *rewriter) stmt(s ast.Statement) []ast.Statement {
 		w.Body = rw.block(v.Body)
 		return []ast.Statement{&w}
 	case *ast.ExpressionStatement:
+		if call, isCall := v.Expression.(*ast.InvocationExpression); isCall {
+			if temp, isShuffle := rw.temps[call]; isShuffle {
+				// The pre-phase read: temp[lane] = source[lane ^ off], the
+				// partner's value before the shuffling statement runs in
+				// any lane.
+				src := call.Arguments[0].(*ast.Identifier).Value
+				partner := &ast.InfixExpression{Token: rw.tok, Operator: "^", Left: rw.laneRef(), Right: call.Arguments[1]}
+				return []ast.Statement{&ast.IndexAssignmentStatement{Token: rw.tok,
+					Target: &ast.IndexExpression{Token: rw.tok, Left: &ast.Identifier{Token: rw.tok, Value: temp}, Index: rw.laneRef()},
+					Value:  &ast.IndexExpression{Token: rw.tok, Left: &ast.Identifier{Token: rw.tok, Value: privateName(src)}, Index: partner}}}
+			}
+		}
 		e := *v
 		e.Expression = rw.expr(v.Expression)
 		return []ast.Statement{&e}
@@ -343,6 +463,9 @@ func (rw *rewriter) expr(e ast.Expression) ast.Expression {
 	case *ast.InvocationExpression:
 		if id, ok := v.Function.(*ast.Identifier); ok && id.Value == "lane" {
 			return rw.laneRef()
+		}
+		if temp, isShuffle := rw.temps[v]; isShuffle {
+			return &ast.IndexExpression{Token: rw.tok, Left: &ast.Identifier{Token: rw.tok, Value: temp}, Index: rw.laneRef()}
 		}
 		c := *v
 		c.Arguments = make([]ast.Expression, len(v.Arguments))
