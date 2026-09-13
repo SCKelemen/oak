@@ -171,6 +171,13 @@ func rv64GroupSingle(name string, position int) bool {
 	switch name {
 	case "vmseq.vv", "vmsne.vx":
 		return position == 0
+	case "vredsum.vs", "vfredosum.vs":
+		// A reduction's scalar input and result live in element 0 of a
+		// single register, not a group (RVV 1.0 §14).
+		return position == 0 || position == 2
+	case "vmv.x.s", "vfmv.f.s":
+		// Element 0 of the source, whatever the LMUL (RVV 1.0 §16.1, §16.2).
+		return position == 1
 	case "vcpop.m":
 		return position == 1
 	case "vmerge.vvm":
@@ -1560,6 +1567,13 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 		c.errorf(line, "%s: the source group would be LMUL=%s/2, below mf8", name, rv64LMULName(c.vcfg.lmul8))
 		return false
 	}
+	// The floating-point forms need single- or double-precision elements
+	// (RVV 1.0 §13: Zve32f gives e32, Zve64d e64; e8 has no float format
+	// and e16 needs Zvfh, which the lane does not assume).
+	if rv64VectorFloat[name] && c.vcfg.sew < 4 {
+		c.errorf(line, "%s: the floating-point forms need e32 or e64 elements (SEW is e%d)", name, c.vcfg.sew*8)
+		return false
+	}
 	group := func(position int, write bool) {
 		r, isReg := ops[position].(Register)
 		if !isReg {
@@ -1617,6 +1631,9 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 	}
 	for i := 1; i < len(shape); i++ {
 		group(i, false)
+	}
+	if name == "vfmacc.vv" {
+		group(0, false) // the accumulator: vd = vs1 * vs2 + vd
 	}
 	group(0, true)
 	return false

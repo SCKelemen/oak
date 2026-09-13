@@ -467,6 +467,48 @@ theorem fractional_within_elen : withinElen 32 64 4 ∧ withinElen 16 64 2 ∧ w
 wide group of `mf2` is `m1`, one register. -/
 theorem wide_group_fractional : ∀ lmul8 ∈ [1, 2, 4], groupOf (2 * lmul8) = 1 := by decide
 
+/-! ### The vector floating-point forms (fifth increment)
+
+Floating-point addition is not associative, so a reduction's result depends
+on the order it adds in. `vfredosum.vs` (RVV 1.0 §14.3) is the *ordered*
+form: it folds the strip's elements left to right into the scalar it was
+handed. A strip-mining loop hands each strip the previous strip's result,
+and the whole is one left fold over the span in element order — the
+sequential sum the differential expects from Go. The unordered
+`vfredusum.vs`, whose grouping is implementation-defined, is not in the
+table. -/
+
+/-- One strip: the ordered reduction of `xs` from the running scalar `acc`. -/
+def orderedStrip (f : α → β → α) (acc : α) (xs : List β) : α := xs.foldl f acc
+
+/-- The strips in order: each starts from the previous one's result. -/
+def orderedStrips (f : α → β → α) (acc : α) (strips : List (List β)) : α :=
+  strips.foldl (orderedStrip f) acc
+
+/-- Two consecutive strips fold as one strip over their concatenation. -/
+theorem ordered_strip_append (f : α → β → α) (acc : α) (xs ys : List β) :
+    orderedStrip f (orderedStrip f acc xs) ys = orderedStrip f acc (xs ++ ys) := by
+  simp [orderedStrip, List.foldl_append]
+
+/-- The strip-mined ordered reduction is the sequential fold over the
+whole span in element order, whatever the strip boundaries (the `vl`
+each `vsetvli` chose). -/
+theorem ordered_strips_fold (f : α → β → α) (acc : α) (strips : List (List β)) :
+    orderedStrips f acc strips = orderedStrip f acc strips.flatten := by
+  induction strips generalizing acc with
+  | nil => rfl
+  | cons xs rest ih =>
+    simp only [orderedStrips, List.foldl_cons, List.flatten_cons]
+    rw [← ordered_strip_append]
+    exact ih (orderedStrip f acc xs)
+
+/-- The element widths the floating-point forms admit: `e32` (Zve32f) and
+`e64` (Zve64d); `e8` has no float format and `e16` would need Zvfh. -/
+def floatSewOK (sew : Nat) : Prop := sew = 32 ∨ sew = 64
+
+theorem float_sew_admitted : floatSewOK 32 ∧ floatSewOK 64 ∧ ¬ floatSewOK 16 ∧ ¬ floatSewOK 8 := by
+  unfold floatSewOK; omega
+
 /-- A masked element is one of the vl elements: whatever the mask, the
     strip-mining bound covers it. -/
 theorem masked_access_in_bounds (len idx vlmax vl i : Nat) (hguard : idx < len)
