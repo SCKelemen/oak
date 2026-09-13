@@ -39,6 +39,7 @@ pub io_op_rename: (): u32 = u32(11)
 pub io_op_stat: (): u32 = u32(12)
 pub io_op_unlink: (): u32 = u32(13)
 pub io_op_open_direct: (): u32 = u32(14)
+pub io_op_mkdir: (): u32 = u32(15)
 
 // Direct I/O (docs/spec/120-io.md sections 2, 3, 5): a file opened with
 // open_direct bypasses the host's cache, and its reads and writes must be
@@ -95,6 +96,7 @@ pub ionative_last_errno: (): c.Int64 effects { } = c.extern("oak_io_host_last_er
 // multiple of the sector — the host reads no byte of it.
 ionative_host_open_direct: (path: c.Ptr, len: c.Size): c.Int64 effects { Os.Syscall } = c.extern("oak_io_host_open_direct")
 ionative_host_aligned: (buf: c.Ptr, len: c.Size, align: c.Size): c.Int64 effects { } = c.extern("oak_io_host_aligned")
+ionative_host_mkdir: (path: c.Ptr, len: c.Size): c.Int64 effects { Os.Syscall } = c.extern("oak_io_host_mkdir")
 
 ionative_slots: (): u32 = u32(16)
 ionative_fds: [16]i64
@@ -153,7 +155,7 @@ ionative_execute: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoComple
   tag: u64 = request.tag
   in_region: Bool = base <= ring[0].region_len && n <= ring[0].region_len - base
   opens: Bool = op == io_op_open() || op == io_op_create() || op == io_op_open_direct()
-  opens || op == io_op_fsyncdir() || op == io_op_unlink() ? {
+  opens || op == io_op_fsyncdir() || op == io_op_unlink() || op == io_op_mkdir() ? {
     // The path is the window's bytes and must end in NUL inside the window.
     !ionative_path_ok(ring, region, base, n) ? { IoCompletion { tag: tag, result: u32(0), error: io_err_invalid() } } | {
     opens && (slot >= ring[0].files || ionative_open[slot]) ? {
@@ -169,7 +171,8 @@ ionative_execute: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoComple
         op == io_op_open_direct() ? { i64(ionative_host_open_direct(c.span_mut_of(path))) } | {
         op == io_op_create() ? { i64(ionative_host_create(c.span_mut_of(path))) } | {
         op == io_op_unlink() ? { i64(ionative_host_unlink(c.span_mut_of(path))) } | {
-        i64(ionative_host_fsyncdir(c.span_mut_of(path))) } } } }
+        op == io_op_mkdir() ? { i64(ionative_host_mkdir(c.span_mut_of(path))) } | {
+        i64(ionative_host_fsyncdir(c.span_mut_of(path))) } } } } }
       opens && raw >= i64(0) ? {
         ionative_fds[slot] = raw
         ionative_open[slot] = true

@@ -273,4 +273,50 @@ theorem directAdmits_refuses_misaligned_offset (sector off len base : Nat)
   | true =>
       exact absurd ((directAdmits_iff sector off len base).mp hd).2.1 h
 
+/-! ## Directories: entries have parents, and durability is scoped
+
+`mkdir` (op 15, docs/spec/120-io.md §3) creates a directory; a file's
+name has a parent; `fsyncdir p` makes durable exactly the entries whose
+parent is `p`. The simulated realization's `iosim_child_of` and its
+fsyncdir loop are the transliteration. -/
+
+/-- One directory entry: its parent and its name; a directory is an entry
+    like any other, and `isDir` is fixed for its lifetime. -/
+structure Entry where
+  parent : Nat
+  name : Nat
+  isDir : Bool
+  deriving DecidableEq, Repr
+
+/-- The tree: what the process sees, and what a crash reverts to. -/
+structure Tree where
+  visible : List Entry
+  durable : List Entry
+
+/-- `fsyncdir p`: the durable entries under `p` become the visible ones
+    under `p`; every other durable entry is untouched. -/
+def syncdirScoped (t : Tree) (p : Nat) : Tree :=
+  { t with durable := t.durable.filter (fun e => e.parent ≠ p) ++ t.visible.filter (fun e => e.parent = p) }
+
+def crashTree (t : Tree) : Tree := { t with visible := t.durable }
+
+/-- Syncing one directory leaves another directory's durable entries
+    exactly as they were. -/
+theorem syncdir_scoped_elsewhere (t : Tree) (p q : Nat) (hpq : q ≠ p) (e : Entry)
+    (he : e.parent = q) : e ∈ (syncdirScoped t p).durable ↔ e ∈ t.durable := by
+  simp [syncdirScoped, List.mem_append, List.mem_filter, he, hpq]
+
+/-- Syncing a directory makes its visible children durable. -/
+theorem syncdir_scoped_children (t : Tree) (p : Nat) (e : Entry) (he : e.parent = p)
+    (hv : e ∈ t.visible) : e ∈ (syncdirScoped t p).durable := by
+  simp [syncdirScoped, List.mem_append, List.mem_filter, he, hv]
+
+/-- A crash forgets a child created under `q` when only `p ≠ q` was synced. -/
+theorem crash_forgets_unsynced_child (t : Tree) (p q : Nat) (hpq : q ≠ p) (e : Entry)
+    (he : e.parent = q) (hd : e ∉ t.durable) :
+    e ∉ (crashTree (syncdirScoped t p)).visible := by
+  simp only [crashTree]
+  intro h
+  exact hd ((syncdir_scoped_elsewhere t p q hpq e he).mp h)
+
 end Oak.IoPort
