@@ -1828,9 +1828,57 @@ forwarded write, a swap proven and its reordered lowering refuted at
 `compiler/e2e_native_span_effects_test.go` (the same shapes through the
 backend, `fill`'s loop store trusted with the reason, the C backend the
 oracle for the values).
-Next increments: the callee's effects through the call summary — a unit
-callee's log appended to the caller's under the argument substitution,
-which is where the 106 remaining unit functions wait — and stores in
+**Twenty-ninth increment — a callee's effects through the call summary,
+and shifts below the width.** Three things kept the arena emitters
+(`ap_close` calling `ap_lits` calling `ab_push`) trusted after the
+twenty-eighth. First, the call summary took only scalar arguments. It now
+takes a span argument that is one of the caller's span parameters passed
+whole — the `{base, len}` pair holding `&v` and `len(v)` — as an alias:
+the callee's parameter is spelled in the caller's name wherever the
+lowering names a span (its elements, its length, its write log,
+`oakLowering.spanAlias`), so the callee's reads see the caller's stores so
+far and its stores land in the caller's log; a by-reference record
+argument (beyond 16 bytes) that is one of the caller's record parameters
+binds the callee's parameter to the caller's leaves by name; the argument
+registers follow the shared layout (a span two, a record one, a scalar
+one). The Oak side inlines the same calls with the same alias
+(`enterCall`), so both sides' logs agree in their spelling. Second, a
+unit callee's loop whose count is a constant argument (`ap_lits(le, ew,
+lo, hi, u32(1))`) unrolls inside the summary, since the summary lowers the
+callee's body under the argument substitution. Third, `ab_push` shifts by
+`(at % 4) * 8` — a data-dependent count, which the verifier refused
+because Oak traps at the width where the machine wraps. A syntactic range
+bound (asm/range.go: constants, masks, products and sums by constants,
+shifts, the wider arm of a conditional) shows such a count never reaches
+the width, where the two agree; a count whose bound reaches the width
+stays outside the subset. The bound is memoized over the term DAG — its
+first form recomputed shared subterms and turned a two-minute build into
+ten. And a write log's read no longer builds an index equality for every
+write it meets: two indices in linear normal form over the same unknowns
+(`le.state_at + 9` against `le.state_at + 16`) are equal or unequal by
+their constants alone, so the arena's `base + k` addressing folds before
+the diagrams see it. On the prover: proven 265 to 281 of 879; 35 bodies
+that were trusted are now evidence (agreeing on every witness, the
+bit-level decision over the node budget — the byte extractors and the
+longer emitters, whose write-after-write chains through symbolic word
+indices outgrow the diagrams); no disagreement, the rows identical. Found
+on the way: `oak build` compiled the program twice — once through the C
+emitter up front, once through `emitFor` in the chosen asm mode — so
+every native build ran the backend and the verifier twice; the first
+compile now happens only for `-emit-c`, halving the native build. What
+keeps the rest trusted: 18 callers pass more than eight argument words
+(`px_node`), which the summary does not yet read from the outgoing area;
+17 call the byte writer that reaches foreign code; 17 call `sb_str`,
+whose loop count is data (an aggregate across a data-dependent loop);
+and the deeper syntax walkers whose callees have data-dependent loops.
+Pinned: `asm/effects_test.go` (`TestVerifyCalleeEffects`: a unit caller
+proven in its span through the summary, a read after the summarized
+store, a callee storing another value refuted; `TestVerifyBoundedShift`)
+and `compiler/e2e_native_callee_effects_test.go` (the arena shape: a
+record and a span passed through two levels of unit callees, the constant
+count unrolled, the bounded shift proven, a data count trusted).
+Next increments: stack arguments in the call summary (the outgoing area's
+slots are frame slots the executor already holds); stores in
 data-dependent loops as a summarized memory; guard elision from the
 checker's facts; the foreign-call subset only if the shell itself is to
 be verified —

@@ -647,10 +647,11 @@ In order of payoff, each reusing a surface that exists:
   whole program compiled through the verified native backend
   (`94-assembler.md` §9, sixteenth increment; `OAK_SOLVER_NATIVE=1`):
   879 of its 954 functions lowered to machine code the seam checker
-  admits and the Oak assembler encodes, 265 of them proven equal to
+  admits and the Oak assembler encodes, 281 of them proven equal to
   their Oak bodies — their results, the package cells they write, and,
   since the twenty-eighth increment, the span memories they store
-  through, compared at a fresh index — the C build the oracle with
+  through, compared at a fresh index, a callee's stores reaching its
+  caller through the call summary since the twenty-ninth — the C build the oracle with
   identical rows over the corpus — verification carried to the object,
   with the verifier's reach the measure that remains; and the first performance step is
   measured there too: the source-level inliner reaching the prover's

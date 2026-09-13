@@ -2226,6 +2226,10 @@ type oakLowering struct {
 	// parameter, in program order, each under its path condition
 	// (asm/effects.go); reads consult them before the entry memory.
 	writes map[string][]*spanWrite
+	// spanAlias maps an inlined callee's span parameter to the caller's
+	// span it was passed (asm/effects.go): the callee's reads and writes
+	// are spelled in the caller's names, so they share its memory.
+	spanAlias map[string]string
 	// functions are the program's functions a body may call; a call to one
 	// in the subset is inlined (inlineCall). Nil outside the theorem decider.
 	functions map[string]*ast.FunctionStatement
@@ -3609,7 +3613,16 @@ func (lo *oakLowering) spanElement(expr ast.Expression) (name string, contract s
 	if !isConst || k < 0 {
 		return "", spanContract{}, false
 	}
-	return spanElemName(ident.Value, k), contract, true
+	return spanElemName(lo.spanRoot(ident.Value), k), contract, true
+}
+
+// spanRoot is the caller's span an inlined callee's span parameter
+// stands for, or the name itself.
+func (lo *oakLowering) spanRoot(name string) string {
+	if root, aliased := lo.spanAlias[name]; aliased {
+		return root
+	}
+	return name
 }
 
 // spanElementTerm lowers v[e] over a span parameter with any index
@@ -3617,7 +3630,7 @@ func (lo *oakLowering) spanElement(expr ast.Expression) (name string, contract s
 // select (the loop-carried counter of a data-dependent loop).
 func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanContract, string, bool) {
 	if name, contract, isConst := lo.spanElement(index); isConst {
-		span := index.Left.(*ast.Identifier).Value
+		span := lo.spanRoot(index.Left.(*ast.Identifier).Value)
 		_, k, _ := elementParam(name)
 		entry := paramTerm(name, contract.elemWidth)
 		if lo.concrete != nil {
@@ -3637,21 +3650,22 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 	if !ok {
 		return nil, spanContract{}, reason, false
 	}
+	span := lo.spanRoot(ident.Value)
 	if lo.concrete != nil && idx.kind == termConst {
-		if length, known := lo.concrete[spanLenName(ident.Value)]; known && idx.value >= length {
+		if length, known := lo.concrete[spanLenName(span)]; known && idx.value >= length {
 			// Oak traps on this input; the witness has no value to compare.
 			return nil, spanContract{}, fmt.Sprintf("an index past len(%s) on this input", ident.Value), false
 		}
-		return memoryAt(lo.writes[ident.Value], idx, constTerm(elementValue(ident.Value, idx.value, contract.elemWidth), contract.elemWidth)), contract, "", true
+		return memoryAt(lo.writes[span], idx, constTerm(elementValue(span, idx.value, contract.elemWidth), contract.elemWidth)), contract, "", true
 	}
-	entry := selectTerm(ident.Value, idx, contract.elemWidth)
+	entry := selectTerm(span, idx, contract.elemWidth)
 	if !lo.trapsTracked {
 		// The asm verifier's side: reads split over a conditional in the
 		// index, as the machine's branches read (selectSplit). The theorem
 		// decider keeps the read whole, as its Oak twin builds it.
-		entry = selectSplit(ident.Value, idx, contract.elemWidth, 0)
+		entry = selectSplit(span, idx, contract.elemWidth, 0)
 	}
-	return memoryAt(lo.writes[ident.Value], idx, entry), contract, "", true
+	return memoryAt(lo.writes[span], idx, entry), contract, "", true
 }
 
 // selectSplit builds a span read at an index holding a conditional by
@@ -3797,6 +3811,8 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	}
 	bound := map[string]*oakLocal{}
 	calleeFloats := map[string]int{}
+	calleeSpans := map[string]spanContract{}
+	calleeAlias := map[string]string{}
 	// A span or view parameter borrows a caller's array: the callee works
 	// on a copy and, since the conditional lowering re-points locals at
 	// copies, the final contents are written back leaf by leaf on return.
@@ -3813,6 +3829,18 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 		if isBorrowType(param.Type) {
 			owner := addressOfOperand(arg)
 			local, isLocal := lo.locals[owner]
+			if contract, isSpanParam := lo.spans[owner]; !isLocal && isSpanParam {
+				// A span parameter passed on: the callee's parameter is an
+				// alias of the caller's span, sharing its memory
+				// (asm/effects.go).
+				elem, _, _ := spanShape(param.Type)
+				if int(elem)*8 != contract.elemWidth {
+					return nil, fmt.Sprintf("a call to %s: the span argument %s has %d-bit elements where %d-bit ones are expected", name, owner, contract.elemWidth, elem*8), false
+				}
+				calleeSpans[param.Name.Value] = contract
+				calleeAlias[param.Name.Value] = lo.spanRoot(owner)
+				continue
+			}
 			if !isLocal || local.agg == nil || local.agg.typ.kind != oakArray {
 				return nil, fmt.Sprintf("a call to %s: the span argument %s is not a borrow of an aggregate local", name, arg.String()), false
 			}
@@ -3853,14 +3881,19 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	}
 	saved := lo.locals
 	savedFloats := lo.floats
+	savedSpans, savedAlias := lo.spans, lo.spanAlias
 	lo.locals = bound
 	lo.floats = calleeFloats
+	// The callee sees only its own span parameters, each spelled in the
+	// caller's names through the alias.
+	lo.spans, lo.spanAlias = calleeSpans, calleeAlias
 	if lo.inlining == nil {
 		lo.inlining = map[string]bool{}
 	}
 	lo.inlining[name] = true
 	return func() {
 		lo.floats = savedFloats
+		lo.spans, lo.spanAlias = savedSpans, savedAlias
 		for _, b := range borrows {
 			if final, has := lo.locals[b.param]; has && final.agg != nil {
 				leaves(final.agg, b.owner, func(from, to *oakValue) { to.scalar = from.scalar })
@@ -3987,7 +4020,7 @@ func (lo *oakLowering) spanLength(expr ast.Expression) (string, bool) {
 	if _, isSpan := lo.spans[arg.Value]; !isSpan {
 		return "", false
 	}
-	return spanLenName(arg.Value), true
+	return spanLenName(lo.spanRoot(arg.Value)), true
 }
 
 // lower turns a pure expression over the parameters into a term of the
@@ -4233,7 +4266,9 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			// Oak traps at the width; the machine wraps the count. Under
 			// the theorem decider the trap is a recorded obligation and
 			// the shift below the width is the machine's.
-			if !lo.trapsTracked {
+			if !lo.trapsTracked && maxValue(right) >= uint64(width) {
+				// A count whose range stays below the width never traps,
+				// so Oak's shift is the machine's (asm/range.go).
 				return nil, "a non-constant shift count", false
 			}
 			lo.addTrap(cmpTerm("hs", right, constTerm(uint64(width), width)))
@@ -4690,13 +4725,9 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		return opaque, false
 	}
 	name := callee.Name.Value
-	// A unit callee (no result) is summarized for the package state it
-	// writes: a body that neither returns nor touches state has nothing to
-	// summarize.
+	// A unit callee (no result) is summarized for the package state and
+	// the span memory it writes.
 	unit := unitFunction(callee)
-	if unit && len(x.globals) == 0 {
-		return fmt.Sprintf("a call to %s, which returns nothing", name), false
-	}
 	var resultWidth int
 	var resultSigned bool
 	if !unit {
@@ -4729,15 +4760,81 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	if x.arch == ArchRV64 {
 		argBase = 10 // a0
 	}
-	for i, param := range callee.Parameters {
+	lo.concrete = x.env // a witness run: the callee's leaves are the caller's constants
+	lo.writes = cloneWrites(state.writes)
+	next := argBase // the next argument register, by the shared layout (asm/abi.go)
+	for _, param := range callee.Parameters {
 		if param.Variadic {
 			return fmt.Sprintf("a call to %s: parameter %s is variadic", name, param.Name.Value), false
+		}
+		if comp, isComposite := x.fn.Composites[typeText(param.Type)]; isComposite {
+			// A record argument: by reference beyond 16 bytes, the register
+			// holding the caller's own record parameter's address — the
+			// callee's leaves are then the caller's leaves by name.
+			if comp.Size <= 16 || comp.HFA {
+				return fmt.Sprintf("a call to %s: parameter %s is a record passed by value", name, param.Name.Value), false
+			}
+			if next >= argBase+8 {
+				return fmt.Sprintf("a call to %s with arguments beyond the registers", name), false
+			}
+			base, has := state.regs[next]
+			next++
+			if !has {
+				return "unbound register read", false
+			}
+			owner, offset, isBase := spanBaseOf(base)
+			if _, isRecord := x.records[owner]; !isBase || offset != 0 || !isRecord {
+				return fmt.Sprintf("a call to %s: the record argument %s is not a record parameter of the caller", name, param.Name.Value), false
+			}
+			typ, ok := lo.oakTypeOf(param.Type)
+			if !ok || typ.kind == oakScalar {
+				return fmt.Sprintf("a call to %s: parameter %s has a type without a model", name, param.Name.Value), false
+			}
+			agg, ok := lo.paramAggregate(typ, owner)
+			if !ok {
+				return fmt.Sprintf("a call to %s: parameter %s has a type without a model", name, param.Name.Value), false
+			}
+			lo.locals[param.Name.Value] = &oakLocal{agg: agg}
+			continue
+		}
+		if elem, _, isSpan := spanShape(param.Type); isSpan {
+			// A span argument: the {base, len} pair of one of the caller's
+			// span parameters, whole — the callee's parameter is an alias
+			// of the caller's span and shares its memory (asm/effects.go).
+			if next+2 > argBase+8 {
+				return fmt.Sprintf("a call to %s with arguments beyond the registers", name), false
+			}
+			base, hasBase := state.regs[next]
+			length, hasLen := state.regs[next+1]
+			next += 2
+			whole := hasBase && hasLen
+			var owner string
+			if whole {
+				var offset int64
+				owner, offset, whole = spanBaseOf(base)
+				_, isRecord := x.records[owner]
+				whole = whole && !isRecord && offset == 0 && x.spans[owner] == elem && isParamNamed(length, spanLenName(owner))
+			}
+			if !whole {
+				return fmt.Sprintf("a call to %s: the span argument %s is not a span parameter of the caller passed whole", name, param.Name.Value), false
+			}
+			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
+			lo.spans[param.Name.Value] = spanContract{elemWidth: int(elem) * 8, signed: strings.HasPrefix(elemType, "i")}
+			if lo.spanAlias == nil {
+				lo.spanAlias = map[string]string{}
+			}
+			lo.spanAlias[param.Name.Value] = owner
+			continue
 		}
 		w, signed, isScalar := contractBits(param.Type)
 		if class, isClass := contractClass(param.Type); !isScalar || !isClass || class == ClassV {
 			return fmt.Sprintf("a call to %s: parameter %s is not a fixed-width integer", name, param.Name.Value), false
 		}
-		value, has := state.regs[argBase+i]
+		if next >= argBase+8 {
+			return fmt.Sprintf("a call to %s with arguments beyond the registers", name), false
+		}
+		value, has := state.regs[next]
+		next++
 		if !has {
 			return "unbound register read", false
 		}
@@ -4763,6 +4860,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	if len(lo.loops) > 0 {
 		return fmt.Sprintf("a call to %s whose body has a data-dependent loop", name), false
 	}
+	state.writes = lo.writes // the callee's stores through the caller's spans
 	for cellName, cell := range lo.cells {
 		if cell.value != seeds[cellName] {
 			if state.globals == nil {
