@@ -603,6 +603,9 @@ type symbolicState struct {
 	// own): register number -> the IEEE bit pattern at its width
 	// (asm/rv64_verify_float.go); nil until a float instruction runs.
 	fregs map[int]*term
+	// rvcfg is the RV64 lane's fixed vector configuration (K lanes of S
+	// bits, asm/rv64_verify_vector.go); nil until a vsetivli sets one.
+	rvcfg *rvVectorConfigVerify
 	// globals: the package-global cells this path has written, by Oak
 	// name, at the cell's width (docs/spec/94-assembler.md §9); a cell not
 	// here still holds its entry value, the parameter `global:NAME`.
@@ -1003,6 +1006,9 @@ type pathExecutor struct {
 	summarized []string
 	freshSyms  map[string]int
 	callSites  int
+	// freshCount numbers the unspecified lane values of the RV64 vector
+	// model (asm/rv64_verify_vector.go freshLane).
+	freshCount int
 }
 
 // compositeArg is a record or union parameter: its scalar leaves and size
@@ -3628,6 +3634,7 @@ func scalarType(expr ast.Expression) (width int, signed bool, ok bool) {
 type spanContract struct {
 	elemWidth int
 	signed    bool
+	float     bool // f32/f64 elements: an element read is a float of elemWidth
 }
 
 // spanElement recognizes v[k] over a span parameter with a constant index
@@ -5194,7 +5201,7 @@ func newLowering(sig *ast.FunctionStatement) *oakLowering {
 	for _, param := range sig.Parameters {
 		if elem, _, isSpan := spanShape(param.Type); isSpan {
 			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
-			lowering.spans[param.Name.Value] = spanContract{elemWidth: int(elem) * 8, signed: strings.HasPrefix(elemType, "i")}
+			lowering.spans[param.Name.Value] = spanContract{elemWidth: int(elem) * 8, signed: strings.HasPrefix(elemType, "i"), float: elemType == "f32" || elemType == "f64"}
 			continue
 		}
 		bits, signed, _ := contractBits(param.Type)
