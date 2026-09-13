@@ -2376,8 +2376,12 @@ an addressed global external linkage under the assembler label
 can produce), the symbol the companion object's `adrp`/`add` relocations
 (PAGE21/PAGEOFF12 on Mach-O, ADR_PREL_PG_HI21/ADD_ABS_LO12_NC on ELF)
 name; the inline-asm mode spells the pair through `OAK_ASM_PAGE` and
-`OAK_ASM_PAGEOFF`. Constant globals keep folding (above); the rv64 lane
-leaves globals to the C backend (the OS pilot's N3).
+`OAK_ASM_PAGEOFF`. Constant globals keep folding (above). The rv64 lane
+spells the address as `la rd, G` (auipc then addi, relocated as
+`R_RISCV_PCREL_HI20` and `PCREL_LO12_I`) and reads or writes the cell with
+one `lw`/`sw` (or the width's load and store); its checker admits the
+whole cell at offset 0 alone, and its verifier reads and writes the same
+cells (the OS pilot's N3).
 
 **Atomics.** The builtins of `65-machine-memory.md` lower on the AArch64
 lane when the cell is reached through a writable span (§7a there): the

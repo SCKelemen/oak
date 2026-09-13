@@ -203,19 +203,89 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 	case "jal", "jalr":
 		return "a call", false
 	}
-	if width, isLoad := rv64Loads[name]; isLoad {
-		if ops[1].(Memory).Base.Class != ClassSP {
-			return x.spanLoadRV64(reg(0), ops[1].(Memory), width, name, state)
+	if name == "la" {
+		// A package global's address: the distinguished parameter the loads
+		// and stores below recognize (docs/spec/94-assembler.md §9).
+		sym, isSym := ops[1].(Symbol)
+		if !isSym {
+			return "la without a symbol", false
 		}
-		return x.frameAccessRV64(reg(0), ops[1].(Memory), width, name, false, state)
+		if _, isGlobal := x.globals[sym.Name]; !isGlobal {
+			return "the address of a constant table (la)", false
+		}
+		state.write(reg(0), paramTerm(globalAddrName(sym.Name), 64))
+		return "", true
+	}
+	if width, isLoad := rv64Loads[name]; isLoad {
+		mem := ops[1].(Memory)
+		if mem.Base.Class != ClassSP {
+			if base, bound := state.regs[mem.Base.Num]; bound {
+				if global, isGlobal := globalAddrOf(base); isGlobal {
+					return x.globalLoadRV64(reg(0), mem, width, name, global, state)
+				}
+			}
+			return x.spanLoadRV64(reg(0), mem, width, name, state)
+		}
+		return x.frameAccessRV64(reg(0), mem, width, name, false, state)
 	}
 	if width, isStore := rv64Stores[name]; isStore {
-		if ops[1].(Memory).Base.Class != ClassSP {
+		mem := ops[1].(Memory)
+		if mem.Base.Class != ClassSP {
+			if base, bound := state.regs[mem.Base.Num]; bound {
+				if global, isGlobal := globalAddrOf(base); isGlobal {
+					return x.globalStoreRV64(reg(0), mem, width, global, state)
+				}
+			}
 			return "a store through a span (the verifier decides results, not memory effects)", false
 		}
-		return x.frameAccessRV64(reg(0), ops[1].(Memory), width, name, true, state)
+		return x.frameAccessRV64(reg(0), mem, width, name, true, state)
 	}
 	return "instruction " + instr.Mnemonic, false
+}
+
+// globalLoadRV64 reads a package global's cell: the value a store on this
+// path put there, else the entry parameter `global:NAME`; lw/lh/lb
+// sign-extend the cell into the register, lwu/lhu/lbu and ld leave it as
+// the cell's width zero-extended (a Bool cell is one bit in its word).
+func (x *pathExecutor) globalLoadRV64(dest Register, mem Memory, width int, name string, global string, state *symbolicState) (string, bool) {
+	spec, known := x.globals[global]
+	if !known {
+		return "a load through the address of an undeclared global", false
+	}
+	if mem.Offset != 0 || width*8 != spec.Bits {
+		return fmt.Sprintf("a %d-byte load at offset %d of the %d-bit global %s", width, mem.Offset, spec.Bits, global), false
+	}
+	value, written := state.globals[global]
+	if !written {
+		value = cellEntry(global, spec)
+	}
+	signExtending := name == "lw" || name == "lh" || name == "lb"
+	if signExtending && cellWidth(spec) == spec.Bits {
+		state.write(dest, extendTerm(value, spec.Bits, 64, true))
+	} else {
+		state.write(dest, zeroExtend(value, 64))
+	}
+	return "", true
+}
+
+// globalStoreRV64 writes a package global's cell at its width.
+func (x *pathExecutor) globalStoreRV64(src Register, mem Memory, width int, global string, state *symbolicState) (string, bool) {
+	spec, known := x.globals[global]
+	if !known {
+		return "a store through the address of an undeclared global", false
+	}
+	if mem.Offset != 0 || width*8 != spec.Bits {
+		return fmt.Sprintf("a %d-byte store at offset %d to the %d-bit global %s", width, mem.Offset, spec.Bits, global), false
+	}
+	value, ok := state.read(src)
+	if !ok {
+		return "unbound register read", false
+	}
+	if state.globals == nil {
+		state.globals = map[string]*term{}
+	}
+	state.globals[global] = truncate(value, cellWidth(spec))
+	return "", true
 }
 
 // spanLoadRV64 resolves a load through a span base to the element it
