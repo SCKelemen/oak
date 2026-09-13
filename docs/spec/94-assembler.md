@@ -1884,6 +1884,13 @@ verifier as the typed literal `T(init)` on a copy of the body, so
 `page_size` and `entries` cost nothing and leave nothing to the C backend;
 the emitted C keeps the constant (`compiler/native_bodies.go`).
 
+**Scratch overflow.** Expressions evaluate in x9–x15; when all seven are
+live the generator takes x16 and x17 in a function that makes no call,
+then the next unclaimed callee-saved registers (counted with the locals,
+saved by the prologue, restored by the epilogue, declared as clobbers), so
+a deep expression lowers rather than falling back (the OS pilot's N6).
+Spilling to the frame is the step after this pool.
+
 **Atomics.** The builtins of `65-machine-memory.md` lower on the AArch64
 lane when the cell is reached through a writable span (§7a there): the
 element address as a region, `ldar`/`stlr` and their narrow forms,
