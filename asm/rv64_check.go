@@ -228,6 +228,9 @@ type rvRegion struct {
 	// frame marks an element of an owned array in the frame (writable,
 	// no span: rawLen and idxReg name nothing).
 	frame bool
+	// global marks a package global's cell (`la` of a Function.Globals
+	// name): writable, and accessed whole — at offset 0, at its width.
+	global bool
 	// table marks the whole of a constant data symbol (`la`): read-only,
 	// its guarded elements derived like a frame array's.
 	table bool
@@ -922,9 +925,15 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 			c.errorf(line, "la takes a data symbol")
 			return false
 		}
+		if global, isGlobal := c.fn.Globals[sym.Name]; isGlobal {
+			// A package global's cell (docs/spec/94-assembler.md §9).
+			c.write(reg(0), line)
+			c.regions[reg(0).Num] = rvRegion{size: int64(global.Bits / 8), writable: true, rawLen: -1, idxReg: -2, global: true}
+			return false
+		}
 		size, known := c.fn.Tables[sym.Name]
 		if !known {
-			c.errorf(line, "la %s: not a constant data symbol of the program", sym.Name)
+			c.errorf(line, "la %s: not a constant data symbol or global of the program", sym.Name)
 			return false
 		}
 		c.write(reg(0), line)
@@ -1708,6 +1717,10 @@ func (c *rvChecker) spanAccess(mem Memory, width int64, store bool, line int) {
 		return
 	}
 	if region, isRegion := c.regions[base.Num]; isRegion {
+		if region.global && (mem.Offset != 0 || width != region.size) {
+			c.errorf(line, "%d-byte access at offset %d through %s: a global is one cell of %d bytes at its address", width, mem.Offset, base.Text, region.size)
+			return
+		}
 		if mem.Offset < 0 || mem.Offset+width > region.size {
 			c.errorf(line, "access at %d..%d through %s is outside its %d-byte element", mem.Offset, mem.Offset+width, base.Text, region.size)
 			return
