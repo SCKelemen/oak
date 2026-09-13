@@ -147,14 +147,14 @@ type rvGenerator struct {
 
 // compileRV64 lowers one Oak function on the rv64 lane; see Compile for
 // the arguments.
-func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool, tables map[string]GlobalArray, vector bool) (*asm.Function, error) {
+func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool, tables map[string]GlobalArray, globals map[string]asm.Global, vector bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	if len(fn.Parameters) > 8 {
 		return nil, unsupported("more than eight parameters")
 	}
-	g := &rvGenerator{generator: generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, tables: tables, line: fn.Token.Line}, softFloat: softFloat, twoChunk: map[string]bool{}}
+	g := &rvGenerator{generator: generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line}, softFloat: softFloat, twoChunk: map[string]bool{}}
 	g.rvLane = true
 	g.vector = vector
 	usesFloat := rvMentionsFloat(fn) || g.recordsMentionFloat(fn)
@@ -326,6 +326,9 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 		return nil, unsupported("a frame of %d bytes", frame)
 	}
 	out := &asm.Function{Name: fn.Name.Value, Signature: fn, Line: fn.Token.Line, Arch: asm.ArchRV64, Fallback: true, Records: records, ADTs: adts, Tables: tableSizes(g.tables)}
+	if len(g.usedGlobals) > 0 {
+		out.Globals = g.usedGlobals
+	}
 	g.line = fn.Token.Line
 	var prologue []asm.Item
 	if frame > 0 {
@@ -844,7 +847,20 @@ func (g *rvGenerator) lowerStatements(stmts []ast.Statement, functionBody bool) 
 			}
 			typ, ok := g.types[s.Name.Value]
 			if !ok {
-				return unsupported("an assignment to %s", s.Name.Value)
+				global, globalType, isGlobal := g.globalOf(s.Name.Value)
+				if !isGlobal {
+					return unsupported("an assignment to %s", s.Name.Value)
+				}
+				// `G = e`: the global's cell written through its address.
+				r, err := g.exprAs(s.Value, globalType)
+				if err != nil {
+					return err
+				}
+				if err := g.rvGlobalStore(s.Name.Value, global, r); err != nil {
+					return err
+				}
+				g.release(r)
+				continue
 			}
 			r, err := g.exprAs(s.Value, typ)
 			if err != nil {
@@ -1216,6 +1232,15 @@ func (g *rvGenerator) expr(expr ast.Expression, hint *scalar) (int, error) {
 		}
 		if c, isConst := g.constantOf(e.Value); isConst {
 			if err := g.constant(r, c.Value, typ); err != nil {
+				return 0, err
+			}
+			return r, nil
+		}
+		if global, globalType, isGlobal := g.globalOf(e.Value); isGlobal {
+			if globalType != typ {
+				return 0, unsupported("the global %s (%s) read as %s", e.Value, globalType.name, typ.name)
+			}
+			if err := g.rvGlobalLoad(e.Value, global, r); err != nil {
 				return 0, err
 			}
 			return r, nil
@@ -2021,6 +2046,51 @@ func rvLoadOf(s scalar) string {
 	default:
 		return "lbu"
 	}
+}
+
+// rvGlobalAddress materializes a global's address with `la` (auipc then
+// addi, the pc-relative pair the linker fills) in a fresh scratch register
+// and records the global as one the body addresses
+// (docs/spec/94-assembler.md §9).
+func (g *rvGenerator) rvGlobalAddress(name string, global asm.Global) (int, error) {
+	addr, err := g.alloc(scalars["u64"])
+	if err != nil {
+		return 0, err
+	}
+	g.emit("la", rvReg(addr), asm.Symbol{Name: name})
+	g.usedGlobals[name] = global
+	return addr, nil
+}
+
+// rvGlobalLoad reads a global's cell into r at its storage width: a Bool
+// is the C backend's 4-byte cell.
+func (g *rvGenerator) rvGlobalLoad(name string, global asm.Global, r int) error {
+	addr, err := g.rvGlobalAddress(name, global)
+	if err != nil {
+		return err
+	}
+	load := rvLoadOf(scalars[global.Type])
+	if global.Type == "Bool" {
+		load = "lw"
+	}
+	g.emit(load, rvReg(r), asm.Memory{Base: rvReg(addr)})
+	g.release(addr)
+	return nil
+}
+
+// rvGlobalStore writes r into a global's cell at its storage width.
+func (g *rvGenerator) rvGlobalStore(name string, global asm.Global, r int) error {
+	addr, err := g.rvGlobalAddress(name, global)
+	if err != nil {
+		return err
+	}
+	store := rvStoreOf(scalars[global.Type])
+	if global.Type == "Bool" {
+		store = "sw"
+	}
+	g.emit(store, rvReg(r), asm.Memory{Base: rvReg(addr)})
+	g.release(addr)
+	return nil
 }
 
 // rvStoreOf is the whole-element store of a type.

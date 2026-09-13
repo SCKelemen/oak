@@ -188,14 +188,34 @@ operation is its NEON instruction: `splat` → `dup`, `load`/`store` →
 `all` → `cmeq #0` then `any`, `tbl` → `tbl`, `prev` by a literal → `ext
 #(16-n)`, `movemask` over bytes → `sshr #7`, an `and` with the lane bits,
 `addv` per half, `ctz` → `rbit`/`clz`, `popcount` → `cnt`/`addv`. A
-vector load or store indexes a byte span by element index under the
-checker's slack guard (`len >= 16` and `off <= len - 16`, `94-assembler.md`
-§7, `Oak.Assembler.index_access_lanes`); a literal index into an owned
-array local is a frame slot. What the native lowering leaves to the C
-backend, reported as such: float vectors, vectors inside records or
-arrays, loads and stores over lanes wider than a byte (a `q` load
-indexes by bytes or by sixteens, never by a lane size between), a shift
-or `prev` count that is not a literal, `movemask` over wider lanes.
+vector load or store indexes a span by element index under the checker's
+slack guard (`len >= L` and `off <= len - L` for `L` lanes,
+`94-assembler.md` §7, `Oak.Assembler.index_access_lanes`): a byte span
+directly, `[base, wI, uxtw]`; a span of wider elements through the
+element address `add xE, xB, wI, uxtw #s`, which the checker records as
+the region of the guard's `L` elements, then `[xE]` (a `q` load indexes
+by bytes or by sixteens, never by a lane size between). A literal index
+into an owned array local is a frame slot. **The floating-point vectors
+(2026-09-14).** `simd.F32x4` and `F64x2` lower the same way: `splat` →
+`dup` from lane 0 of the scalar's register, `add`/`sub`/`mul`/`div` →
+`fadd`/`fsub`/`fmul`/`fdiv`, `fma` → `fmla` into the addend's register
+(one rounding), `min`/`max` → `fmin`/`fmax` (NEON's are the 754-2019
+minimum/maximum of §1.2a: a NaN operand yields NaN, `-0.0` orders below
+`+0.0`), `sqrt`/`neg`/`abs` → `fsqrt`/`fneg`/`fabs`, `extract`/`insert`
+at a literal lane → `mov` from or to `v.s[i]`/`v.d[i]`, and `reduce_add`
+→ `faddp` over the four lanes then the scalar `faddp` of the low pair —
+exactly `(l0 + l1) + (l2 + l3)` (`Oak.Simd.neon_reduce4`), one scalar
+`faddp` for two lanes (`neon_reduce2`). A function whose signature carries
+a float vector takes the vector register contract like the integer ones;
+its C shim converts through `vld1q_f32`/`vst1q_f32`. The native program
+agrees bit for bit with the C backend and the portable loops
+(`compiler/e2e_native_float_simd_test.go`). What the native lowering
+leaves to the C backend, reported as such: vectors inside records or
+arrays, a shift or `prev` count that is not a literal, a lane index that
+is not a literal (the C backend's run-time check), `movemask` over wider
+lanes. The verifier trusts a body with a floating-point instruction (its
+terms are integers), so the float vector functions carry the checker's
+guarantees and the differential against the C backend, not a proof.
 
 A function whose signature carries a vector follows the vector register
 contract at its native entry, named with the suffix `_neon_abi`; the C

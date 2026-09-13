@@ -569,6 +569,9 @@ type symbolicState struct {
 	// vregs is the vector file: register number -> 128-bit value as lanes
 	// (asm/verify_vector.go); nil until a vector instruction runs.
 	vregs map[int]vecValue
+	// unknownFrom, when set, is the lowest frame address a store at a
+	// data-dependent index reached: slots from there up hold opaque values.
+	unknownFrom *int64
 	// globals: the package-global cells this path has written, by Oak
 	// name, at the cell's width (docs/spec/94-assembler.md §9); a cell not
 	// here still holds its entry value, the parameter `global:NAME`.
@@ -1084,7 +1087,7 @@ func (s *symbolicState) clone() *symbolicState {
 			globals[name] = value
 		}
 	}
-	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, globals: globals, writes: cloneWrites(s.writes)}
+	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, globals: globals, writes: cloneWrites(s.writes), unknownFrom: s.unknownFrom}
 }
 
 // frameAccess executes a load or store through the sp frame: the address
@@ -1149,6 +1152,9 @@ func (x *pathExecutor) frameAccessAt(instr Instruction, state *symbolicState, ad
 	}
 	for i, reg := range regs {
 		value, ok := state.loadSlot(addr+int64(i)*size, size)
+		if !ok {
+			value, ok = state.opaqueSlot(addr+int64(i)*size, size)
+		}
 		if !ok {
 			return "a load from a frame slot never stored on this path", false
 		}
@@ -1278,11 +1284,43 @@ func (x *pathExecutor) registerFrameAccess(instr Instruction, state *symbolicSta
 			return "unbound register read", false
 		}
 		if index.kind != termConst {
-			return "a frame access at a data-dependent index", false
+			// A store at a data-dependent index into a frame array (a loop
+			// filling a tail buffer): no single slot is named, so every slot
+			// from the array's base up is forgotten and reads there become
+			// opaque symbols (an evidence verdict at most). A load at such an
+			// index stays outside the subset.
+			if !isStoreMnemonic(instr.Mnemonic) {
+				return "a frame load at a data-dependent index", false
+			}
+			state.forgetFrameFrom(addr)
+			return "", true
 		}
 		addr += int64(index.value&mask(32)) << uint(mem.Shift)
 	}
 	return x.frameAccessAt(instr, state, addr)
+}
+
+// opaqueSlot is the value of a slot in the forgotten region: a fresh
+// symbol per address and width, the same on every read.
+func (s *symbolicState) opaqueSlot(addr, size int64) (*term, bool) {
+	if s.unknownFrom == nil || addr < *s.unknownFrom {
+		return nil, false
+	}
+	return paramTerm(fmt.Sprintf("frame#%d", addr), int(size)*8), true
+}
+
+// forgetFrameFrom drops every frame slot at or above addr and marks the
+// region unknown: a later load there reads an opaque symbol `frame#addr`.
+func (s *symbolicState) forgetFrameFrom(addr int64) {
+	for start := range s.frame {
+		if start >= addr {
+			delete(s.frame, start)
+		}
+	}
+	if s.unknownFrom == nil || *s.unknownFrom > addr {
+		at := addr
+		s.unknownFrom = &at
+	}
 }
 
 // trapPath marks a path that ends in a trap (brk): it yields no result and
@@ -1353,6 +1391,9 @@ func (x *pathExecutor) globalStore(instr Instruction, state *symbolicState) (han
 	global, known := x.globals[name]
 	if !known {
 		return true, "a store through the address of an undeclared global", false
+	}
+	if global.Aggregate {
+		return true, "a store into a top-level record or array (not modeled)", false
 	}
 	src, isReg := instr.Operands[0].(Register)
 	if !isReg || src.Class == ClassV {
@@ -1588,6 +1629,9 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		global, known := x.globals[name]
 		if !known {
 			return "a load through the address of an undeclared global", false
+		}
+		if global.Aggregate {
+			return "a load from a top-level record or array (not modeled)", false
 		}
 		if mem.Index != nil || mem.Mode != MemOffset || mem.Offset != 0 {
 			return "a load through a global's address away from its cell", false

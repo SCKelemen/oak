@@ -776,8 +776,8 @@ side as well. Verdicts on the SIMD corpus (`compiler/e2e_native_simd_test.go`):
 (`benchmarks/native/utf8_valid.oak`): `special_cases` and `check_block`
 proven on both halves of their vector results, `check_blocks` evidence
 (the two-block composition exceeds the node budget), the loop kernel
-`valid_with` trusted (a data-dependent loop with forks in its body, as
-its scalar counterparts are). The lane functions are stated in Lean as
+`valid_with` **evidence** since the loop increment below (76 concrete
+inputs; the coupling proof pairs scalars only). The lane functions are stated in Lean as
 `Oak.NeonSemantics` (`spec/lean/Oak/NeonSemantics.lean`) and each is
 proved to be the `Oak.Simd` operation the lowering uses it for:
 `uqsub_eq_subSat`, `cmeq_eq_eqMask`, `add_eq_addWrap`, `ushr_eq_shr`,
@@ -813,10 +813,43 @@ recursive `Reduce` — stated by hand as `reduceAdd`, since Sail's Lean
 backend cannot discharge its termination — sums eight bytes as `addv`'s
 fold (`reduceAdd_eight_bytes`), and `cnt` is the population count of each
 lane — Arm's `BitCount` loop as `Oak.Intrinsics.popcount` (`cnt_lanes`).
-Every vector instruction the backend emits is bridged to Arm's text. Left
-for the next increments: `simd.store` (a write the straight-line model
-does not follow) and float vectors
-(`docs/notes/proof-chain-audit-2026-09.md`).
+Every vector instruction the backend emits is bridged to Arm's text.
+
+**Loops over the vector file (the loop increment, 2026-09-14).** The
+loop kernel `valid_with` is three data-dependent loops in one body — a
+sixty-four-byte step, a sixteen-byte step, and a byte copy into a
+sixteen-byte frame array — and the sixth increment's loop machinery
+refused it four ways in turn, each now admitted. The **recognized loop
+shape** allows setup instructions between the header label and the first
+exit test (the `sub wT, wL, #K` the conjunction `len(v) >= K && i <= len(v)
+- K` lowers to) and several exit tests to one exit label: the continue
+condition is that none is taken (`TestVerifyConjunctiveExitLoop`; the
+wrong stride is still refuted on a concrete input). **Loop-carried state**
+is now the vector file and the frame as well as the scalar registers: a
+vector register written in the body gets fresh 64-bit symbols per half
+(`loopK.vN.lo`, `.hi`), a frame slot written in the body a fresh symbol
+per eight-byte slot (`loopK.s<addr>`), both with header values and
+one-iteration values like the scalars (a narrow slot written in a loop
+body stays outside the subset). The **body executor** runs frame spills
+and reloads, frame-array element accesses through an address register,
+vector `ldr q` loads and every vector instruction. A **frame store at a
+data-dependent index** (`strb w9, [x11, w10, uxtw]`, the tail copy) names
+no single slot: the store forgets every slot from the array's base up and
+marks the region unknown, so a later load there — the `ldr q` of the tail
+— reads an opaque symbol `frame#addr` (a load at a data-dependent index
+stays outside the subset). On the Oak side the loop-carried locals may be
+**aggregates** (the `simd.U8x16` locals, the `[16]u8` tail): they are
+carried leaf by leaf with a fresh symbol per lane, and an index assignment
+`tail[i] = ...` marks its root as assigned. The witness inputs gained the
+span lengths 63, 64, 65, 80, 81: under the small ones alone every input of
+a body that reads sixty-four bytes of tables before its loops traps at the
+table loads and no witness decides anything. Result: `valid_with` agrees
+with its Oak body on 76 concrete inputs and is **evidence** — the coupling
+proof pairs a scalar Oak variable with a register, and the kernel's loop
+variables are lanes, so its loops are witnessed, not proven. Left for the
+next increments: coupling for vector lanes (a lane variable against a
+register half), `simd.store` (a write the straight-line model does not
+follow) and float vectors (`docs/notes/proof-chain-audit-2026-09.md`).
 
 ## 9. Native encoding, and the architectures to come
 
@@ -2520,8 +2553,22 @@ an addressed global external linkage under the assembler label
 can produce), the symbol the companion object's `adrp`/`add` relocations
 (PAGE21/PAGEOFF12 on Mach-O, ADR_PREL_PG_HI21/ADD_ABS_LO12_NC on ELF)
 name; the inline-asm mode spells the pair through `OAK_ASM_PAGE` and
-`OAK_ASM_PAGEOFF`. Constant globals keep folding (above); the rv64 lane
-leaves globals to the C backend (the OS pilot's N3).
+`OAK_ASM_PAGEOFF`. A top-level record, or an array some statement writes
+(an unwritten array is a constant table, above), is an aggregate global
+(the OS pilot's N9): the same `adrp`/`add` pair names it and the body
+holds it as a record or array place at that address — a field at its
+offset, an element of an array field under the constant guard, an
+element of an array of records through the scaled add or `umaddl` from
+the field's base — while the checker reads the `add :lo12:` of an
+aggregate as a writable region of the aggregate's size, bounds every
+field offset inside it, and derives element regions under the guard as
+it does for a frame array. The verifier leaves a body that reads or
+writes an aggregate global trusted. Constant globals keep folding (above). The rv64 lane
+spells the address as `la rd, G` (auipc then addi, relocated as
+`R_RISCV_PCREL_HI20` and `PCREL_LO12_I`) and reads or writes the cell with
+one `lw`/`sw` (or the width's load and store); its checker admits the
+whole cell at offset 0 alone, and its verifier reads and writes the same
+cells (the OS pilot's N3).
 
 **Atomics.** The builtins of `65-machine-memory.md` lower on the AArch64
 lane when the cell is reached through a writable span (§7a there): the
@@ -2791,7 +2838,13 @@ with memory or a call reports "not verified: trusted per §5".
 
 The native backend lowers the fixed vectors (`93-simd.md` §1.4 "The native
 backend"): values in the vector register file, one NEON instruction per
-operation, loads and stores under the slack guard of §7. A function whose
+operation, loads and stores under the slack guard of §7 — over lanes wider
+than a byte through the element address `add xE, xB, wI, uxtw #s`, which
+the checker records under the slack guard `wI + K ≤ len` (and `len ≥ K`)
+as a region of `K` elements (`elementRegion`, `index_access_lanes`), so
+the sixteen-byte `ldr`/`str q` through `xE` is a region access proven
+inside the span; the floating-point vectors landed 2026-09-14 (§1.4 of
+`93-simd.md`). A function whose
 signature carries a vector follows the vector register contract this
 chapter's `contractClass` already assigns to `simd.*` (v0–v7), which the C
 backend's lane-array struct does not (AAPCS64 passes a sixteen-byte
