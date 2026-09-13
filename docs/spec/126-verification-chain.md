@@ -83,9 +83,20 @@ and conversion helpers — the text `Oak.ArithmeticRefinement` and
 `Oak.ConversionRefinement` prove — are compiled by clang for arm64 and by
 GCC for rv64, and each function runs through the assembler verifier (§2.5)
 as a unit whose Oak body is the helper's operator, so for these helpers
-the compiler's output is checked, not trusted (add, sub, neg and the
-conversions proven, multiplication witnessed, division and remainder
-outside the lowering's subset because the divisor is a variable); and
+the compiler's output is checked, not trusted (add, sub, neg, the
+conversions and the checked shifts at the constant counts 1, 3 and
+width − 1 proven — the count below the width, the helper's trap check
+folds away and the verifier admits the constant shift — multiplication
+witnessed, division and remainder outside the lowering's subset because
+the divisor is a variable; the guarded element read `oak_index` over a
+`[]T` parameter is proven against `v[i]` on arm64, where clang's
+`cmp w2, w1; b.hs; ldr [x0, w2, uxtw #s]` is the checker's guarded
+element shape, and reported outside the checker's admitted shapes on
+rv64, where GCC compares the psABI's sign-extended `u32` pair raw,
+zero-extends and scales the index in one `slli 32; srli 32−s`, and adds
+into the base register — a shape the checker does not yet admit; the
+pinned prelude text of these helpers is what `generateC` emits,
+`TestGuardMacrosMatchValidatedText`); and
 every differential test executes the object. The
 driver selection itself is **proved** (`Oak.Target`: lane and object
 format as functions of the target, LP64 or ILP32, `OAK_CC` precedence,
@@ -297,12 +308,21 @@ for a workload):
    arithmetic alone. This is the step that turns "source theorem implies
    machine behavior" from a statement about expressions into one about
    functions on arm64.
-4. **Widen translation validation** (§2.4) on arm64: the checked shift
-   helpers under a constant-count specialization (the verifier admits a
-   constant count; the helper's trap check folds away), `oak_index` and
-   `oak_store`'s bounds checks against the guarded element reads and
-   writes the lowering models, and the compare-exchange helper once the
-   verifier's memory model reaches the atomics
+4. **Widen translation validation** (§2.4) on arm64: landed for the
+   checked shift helpers under constant-count specializations (1, 3,
+   width − 1 at every unsigned width; the verifier admits a constant
+   count, the helper's trap check folds away) and for `oak_index` against
+   the guarded element read `v[i]` — proven on arm64; on rv64 GCC's shape
+   (`bgeu i, len` on the raw sign-extended pair, `slli 32; srli 32−s`
+   zero-extending and scaling in one step, the address formed in the base
+   register) is outside the rv64 checker's admitted shapes and is reported
+   so, the exact gap to close when the rv64 lane is next (a
+   sign-extended-pair guard lemma beside `Oak.RiscV.index_guard`, the
+   fused zero-extend-and-scale, and an element address that replaces the
+   base). Still open: `oak_store`'s bounds check against the guarded
+   element write (the verifier decides a returned value; a store helper's
+   effect needs the unit's memory postcondition), and the compare-exchange
+   helper once the verifier's memory model reaches the atomics
    (`compare_exchange_refinement_test.go` pins its text today).
 5. **Finish the RISC-V bridge** (rv64 is dbs's second target): build `spec/lean-sail` against a Sail
    built from git so the theorems are checked against the export itself

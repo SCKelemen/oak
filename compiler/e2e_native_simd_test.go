@@ -171,9 +171,10 @@ func TestE2ENativeSimd(t *testing.T) {
 
 // The UTF-8 kernel of benchmarks/native (the simdutf lookup algorithm):
 // the straight-line vector helpers are proven, the two-block composition
-// is evidence (the bit-level decision exceeds its budget), the loop kernel
-// is trusted — the verdicts docs/notes/proof-chain-audit-2026-09.md
-// records for the vector link.
+// is evidence (the bit-level decision exceeds its budget), and the loop
+// kernel is evidence too (its three data-dependent loops summarized, the
+// witnesses agree, the coupling proof pairs scalars only) — the verdicts
+// docs/notes/proof-chain-audit-2026-09.md records for the vector link.
 func TestE2ENativeSimdKernelVerdicts(t *testing.T) {
 	requireArm64Host(t)
 	src, err := os.ReadFile("../benchmarks/native/utf8_valid.oak")
@@ -197,5 +198,8 @@ func TestE2ENativeSimdKernelVerdicts(t *testing.T) {
 	}
 	if !strings.Contains(joined, "asm unit check_blocks_neon_abi: agrees with its Oak body on every witness input") && !strings.Contains(joined, "asm unit check_blocks_neon_abi: proven") {
 		t.Errorf("check_blocks_neon_abi must be evidence or proof; diagnostics:\n%s", joined)
+	}
+	if !strings.Contains(joined, "asm unit valid_with: agrees with its Oak body on") || !strings.Contains(joined, "concrete inputs (evidence, not proof:") {
+		t.Errorf("valid_with must be witnessed evidence, never trusted; diagnostics:\n%s", joined)
 	}
 }

@@ -1350,7 +1350,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 	case "", asm.ArchArm64:
 		return compileArm64(fn, functions, records, adts, constants, lane.Globals, tc, lane.ElideProven, lane.Tables, lane.PackedStackArgs)
 	case asm.ArchRV64:
-		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables)
+		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals)
 	}
 	return nil, unsupported("no native backend for the %s lane", lane.Arch)
 }
