@@ -103,6 +103,26 @@ var rv64VectorShapes = map[string]string{
 	"vmseq.vv": "vvv", "vmsne.vx": "vvx", "vmerge.vvm": "vvvv", "vcpop.m": "xv",
 }
 
+// rv64Maskable are the vector instructions that take a trailing `v0.t`
+// mask operand (vm = 0): the masked-off elements are not written (loads,
+// lane-wise operations, comparisons) or not accessed (stores), and not
+// counted (vcpop.m). Configuration, the moves, and vmerge.vvm (whose mask
+// is its fourth operand) take none.
+var rv64Maskable = map[string]bool{
+	"vle8.v": true, "vle32.v": true, "vse8.v": true, "vse32.v": true,
+	"vadd.vv": true, "vsub.vv": true, "vand.vv": true, "vor.vv": true, "vxor.vv": true, "vminu.vv": true, "vmaxu.vv": true,
+	"vredsum.vs": true, "vmseq.vv": true, "vmsne.vx": true, "vcpop.m": true,
+}
+
+// rv64Masked reports a vector instruction spelled with the `v0.t` mask.
+func rv64Masked(instr Instruction) bool {
+	if len(instr.Operands) == 0 {
+		return false
+	}
+	opt, isOpt := instr.Operands[len(instr.Operands)-1].(Option)
+	return isOpt && opt.Name == "v0.t"
+}
+
 // rv64VectorLoads and rv64VectorStores map the unit-stride memory
 // instructions to their element width in bytes (the EEW).
 var rv64VectorLoads = map[string]int64{"vle8.v": 1, "vle32.v": 4}
@@ -272,6 +292,9 @@ func parseRV64Operand(text, mnemonic string) (Operand, error) {
 	if _, isMode := rv64RoundingModes[strings.ToLower(text)]; isMode && rv64FloatShapes[mnemonic] != "" {
 		return Option{Name: strings.ToLower(text)}, nil
 	}
+	if rv64Maskable[mnemonic] && strings.ToLower(text) == "v0.t" {
+		return Option{Name: "v0.t"}, nil
+	}
 	if mnemonic == "vsetvli" || mnemonic == "vsetivli" {
 		lower := strings.ToLower(text)
 		if _, isSEW := rv64VTypeSEW[lower]; isSEW || rv64VTypeLMUL[lower] != 0 || lower == "m1" || rv64VTypePolicy[lower] {
@@ -426,8 +449,14 @@ func rv64CheckFloatShape(instr Instruction, shape string) error {
 // tracks is the one the author wrote, not an assembler default.
 func rv64CheckVectorShape(instr Instruction, shape string) error {
 	ops := instr.Operands
+	if rv64Masked(instr) {
+		if !rv64Maskable[instr.Mnemonic] {
+			return fmt.Errorf("%s takes no mask operand", instr.Mnemonic)
+		}
+		ops = ops[:len(ops)-1]
+	}
 	if len(ops) != len(shape) {
-		return fmt.Errorf("%s takes %d operands, got %d", instr.Mnemonic, len(shape), len(ops))
+		return fmt.Errorf("%s takes %d operands (and an optional v0.t mask), got %d", instr.Mnemonic, len(shape), len(instr.Operands))
 	}
 	for i, kind := range shape {
 		switch kind {

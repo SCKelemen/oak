@@ -36,6 +36,38 @@ done:
   mv a0, t5
   ret`
 
+// The masked strip loop at LMUL=2 (docs/spec/94-assembler.md §9): the sum
+// of the elements that differ from k. Groups are even registers (v2, v4,
+// v6, v8 with their partners), v0 the mask; `mu` keeps the masked-off
+// lanes of the accumulator at zero so the reduction sums only the matches.
+const rv64VMaskedDecl = "vmasked: (v: []u32, k: u32) -> u32"
+const rv64VMaskedBody = `
+  bind a0, a1 = v
+  bind a2 = k
+  clobber t0, t1, t2, t3, t4, t5, v0, v2, v3, v4, v5, v6, v7, v8, v9
+  slli t1, a1, 32
+  srli t1, t1, 32
+  li t0, 0
+  li t5, 0
+loop:
+  bgeu t0, t1, done
+  sub t2, t1, t0
+  vsetvli t3, t2, e32, m2, ta, mu
+  slli t4, t0, 2
+  add t4, a0, t4
+  vle32.v v2, (t4)
+  vmsne.vx v0, v2, a2
+  vmv.v.x v4, zero
+  vadd.vv v4, v4, v2, v0.t
+  vmv.v.x v8, t5
+  vredsum.vs v6, v4, v8
+  vmv.x.s t5, v6
+  add t0, t0, t3
+  j loop
+done:
+  mv a0, t5
+  ret`
+
 func TestRV64VectorChecker(t *testing.T) {
 	accept := map[string][2]string{
 		"strip-mined sum": {rv64VStripDecl, rv64VStripBody},
@@ -63,6 +95,7 @@ func TestRV64VectorChecker(t *testing.T) {
   ret
 empty:
   ebreak`},
+		"masked sum at LMUL=2": {rv64VMaskedDecl, rv64VMaskedBody},
 		"masks and select": {"vmask: (v: []u32, k: u32) -> u32", `
   bind a0, a1 = v
   bind a2 = k
@@ -84,6 +117,10 @@ empty:
 		}
 	}
 	rejections := map[string][3]string{
+		"unaligned group at LMUL=2":   {rv64VMaskedDecl, strings.Replace(rv64VMaskedBody, "  vle32.v v2, (t4)\n", "  vle32.v v3, (t4)\n", 1), "not aligned to the register group"},
+		"mask register unwritten":     {rv64VMaskedDecl, strings.Replace(rv64VMaskedBody, "  vmsne.vx v0, v2, a2\n", "", 1), "neither bound nor written"},
+		"group not wholly clobbered":  {rv64VMaskedDecl, strings.Replace(rv64VMaskedBody, ", v9", "", 1), "not a declared clobber"},
+		"fractional LMUL":             {rv64VMaskedDecl, strings.Replace(rv64VMaskedBody, "e32, m2, ta, mu", "e32, mf2, ta, mu", 1), "fractional LMUL"},
 		"no configuration":            {rv64VStripDecl, strings.Replace(rv64VStripBody, "  vsetvli t3, t2, e32, m1, ta, ma\n", "  li t3, 4\n", 1), "without a vector configuration"},
 		"configuration lost at label": {rv64VStripDecl, strings.Replace(rv64VStripBody, "  vle32.v v1, (t4)\n", "again:\n  vle32.v v1, (t4)\n", 1), "without a vector configuration"},
 		"width against SEW":           {rv64VStripDecl, strings.Replace(rv64VStripBody, "e32, m1, ta, ma", "e8, m1, ta, ma", 1), "e8 configuration"},
@@ -92,7 +129,7 @@ empty:
 		"unclobbered vector register": {rv64VStripDecl, strings.Replace(rv64VStripBody, ", v1, v2, v3", ", v1, v2", 1), "not a declared clobber"},
 		"unwritten vector source":     {rv64VStripDecl, strings.Replace(rv64VStripBody, "  vmv.v.x v2, t5\n", "", 1), "neither bound nor written"},
 		"store to a view":             {rv64VStripDecl, strings.Replace(rv64VStripBody, "  vle32.v v1, (t4)\n", "  vle32.v v1, (t4)\n  vse32.v v1, (t4)\n", 1), "read-only view"},
-		"LMUL above one":              {rv64VStripDecl, strings.Replace(rv64VStripBody, "e32, m1, ta, ma", "e32, m2, ta, ma", 1), "only LMUL=1"},
+		"LMUL above one":              {rv64VStripDecl, strings.Replace(rv64VStripBody, "e32, m1, ta, ma", "e32, m2, ta, ma", 1), "not aligned to the register group"},
 		"immediate past the minimum": {"vhead: (s: [*]u8) -> u32", `
   bind a0, a1 = s
   clobber t0, t1, v1
@@ -132,9 +169,12 @@ empty:
 			t.Errorf("%s: findings %v lack %q", name, findings, c[2])
 		}
 	}
-	// The vtype is spelled in full.
+	// The vtype is spelled in full, and only maskable forms take v0.t.
 	if _, errs := rv64Unit(t, rv64VStripDecl, strings.Replace(rv64VStripBody, "e32, m1, ta, ma", "e32, m1", 1)); len(errs) == 0 {
 		t.Error("a vsetvli without its tail and mask policies parsed")
+	}
+	if _, errs := rv64Unit(t, rv64VMaskedDecl, strings.Replace(rv64VMaskedBody, "  vmv.v.x v4, zero\n", "  vmv.v.x v4, zero, v0.t\n", 1)); len(errs) == 0 {
+		t.Error("a mask on vmv.v.x parsed")
 	}
 	fn, errs := rv64Unit(t, rv64VStripDecl, rv64VStripBody)
 	if len(errs) != 0 {
@@ -187,6 +227,19 @@ func TestRV64VectorEncoderAgreesWithGNUAs(t *testing.T) {
   vsetvli t0, t1, e8, m1, ta, ma
   vle8.v v1, (a0)
   vse8.v v1, (a0)
+  vsetvli t0, t1, e32, m2, ta, mu
+  vle32.v v2, (a0), v0.t
+  vse32.v v2, (a0), v0.t
+  vadd.vv v4, v2, v2, v0.t
+  vminu.vv v6, v4, v2, v0.t
+  vredsum.vs v8, v4, v6, v0.t
+  vmseq.vv v0, v2, v4, v0.t
+  vmsne.vx v0, v2, a2, v0.t
+  vcpop.m t0, v0, v0.t
+  vsetvli t0, t1, e32, m4, ta, ma
+  vle32.v v4, (a0)
+  vsetvli t0, t1, e32, m8, tu, mu
+  vle32.v v8, (a0)
   mv a0, t2
   ret`
 	fn, errs := rv64Unit(t, "venc: (v: [*]u32, k: u32) -> u32", body)

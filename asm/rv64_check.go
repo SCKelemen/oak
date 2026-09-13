@@ -101,9 +101,26 @@ type rvRemFact struct {
 // (RVV 1.0 §6.3, Oak.RiscV.vsetvlOK).
 type rvVectorConfig struct {
 	sew    int64
+	lmul   int64 // 1, 2, 4, or 8: every vector register operand is a group of lmul registers
 	avlImm int64 // -1 when the AVL is a register
 	rem    *rvRemFact
 	line   int
+}
+
+// rv64GroupSingle names the operands that are one register whatever the
+// LMUL: mask destinations (the comparisons), mask sources (vcpop.m, the
+// v0 of vmerge.vvm and of a `v0.t` operand). RVV 1.0 §3.4.2: every other
+// vector register operand is a group of LMUL registers aligned to LMUL.
+func rv64GroupSingle(name string, position int) bool {
+	switch name {
+	case "vmseq.vv", "vmsne.vx":
+		return position == 0
+	case "vcpop.m":
+		return position == 1
+	case "vmerge.vvm":
+		return position == 3
+	}
+	return false
 }
 
 // rvSpan is the live knowledge about a bound span base: the LP64 pair
@@ -1132,11 +1149,23 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 	ops := base.Operands
 	name := base.Mnemonic
 	reg := func(i int) Register { return ops[i].(Register) }
+	masked := rv64Masked(base)
+	if masked {
+		ops = ops[:len(ops)-1]
+	}
 	switch name {
 	case "vsetvli", "vsetivli":
-		cfg := &rvVectorConfig{sew: rv64VTypeSEW[ops[2].(Option).Name], avlImm: -1, line: line}
-		if lmul := ops[3].(Option).Name; lmul != "m1" {
-			c.errorf(line, "%s: only LMUL=1 (m1) is admitted in this increment, not %s", name, lmul)
+		cfg := &rvVectorConfig{sew: rv64VTypeSEW[ops[2].(Option).Name], lmul: 1, avlImm: -1, line: line}
+		switch lmul := ops[3].(Option).Name; lmul {
+		case "m1":
+		case "m2":
+			cfg.lmul = 2
+		case "m4":
+			cfg.lmul = 4
+		case "m8":
+			cfg.lmul = 8
+		default:
+			c.errorf(line, "%s: fractional LMUL (%s) is not admitted; the groups the checker tracks are m1, m2, m4, m8", name, lmul)
 		}
 		if name == "vsetvli" {
 			avl := reg(1)
@@ -1161,20 +1190,55 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 		c.errorf(line, "%s without a vector configuration in effect: vsetvli (or vsetivli) precedes every vector instruction on its straight-line path — labels and calls forget the configuration", name)
 		return false
 	}
+	if masked {
+		// The mask is v0, read as one register; the masked-off elements
+		// are a subset of the vl elements every bound below already covers
+		// (Oak.RiscV.masked_access_in_bounds).
+		c.read(Register{Text: "v0", Class: ClassRV64V, Num: 0, Lane: -1}, line)
+	}
+	// Vector register operands are groups of LMUL registers (RVV 1.0
+	// §3.4.2): aligned to LMUL, every register of the group read or written.
+	group := func(position int, write bool) {
+		r := reg(position)
+		if r.Class != ClassRV64V {
+			if write {
+				c.write(r, line)
+			} else {
+				c.read(r, line)
+			}
+			return
+		}
+		count := c.vcfg.lmul
+		if rv64GroupSingle(name, position) {
+			count = 1
+		}
+		if int64(r.Num)%count != 0 {
+			c.errorf(line, "%s: %s is not aligned to the register group of LMUL=%d (Oak.RiscV.group_within_file)", name, r.Text, count)
+			return
+		}
+		for k := int64(0); k < count; k++ {
+			member := Register{Text: fmt.Sprintf("v%d", int64(r.Num)+k), Class: ClassRV64V, Num: int(int64(r.Num) + k), Lane: -1}
+			if write {
+				c.write(member, line)
+			} else {
+				c.read(member, line)
+			}
+		}
+	}
 	if width, isLoad := rv64VectorLoads[name]; isLoad {
 		c.vectorAccess(ops[1].(Memory), width, false, line)
-		c.write(reg(0), line)
+		group(0, true)
 		return false
 	}
 	if width, isStore := rv64VectorStores[name]; isStore {
-		c.read(reg(0), line)
+		group(0, false)
 		c.vectorAccess(ops[1].(Memory), width, true, line)
 		return false
 	}
 	for i := 1; i < len(shape); i++ {
-		c.read(reg(i), line)
+		group(i, false)
 	}
-	c.write(reg(0), line)
+	group(0, true)
 	return false
 }
 
