@@ -125,6 +125,56 @@ pub test_range: (choices: [*]TestChoices, data: []u8, low: u32, high: u32): u32 
   width == u32(4294967295) ? { value } | { low + value % (width + u32(1)) }
 }
 
+// Heavy-tailed counts from the tape (docs/spec/110-testing.md "Choice
+// tapes"; the integer-only form of TigerBeetle's exponential delays and
+// hot/cold ids, docs/notes/tigerbeetle-2026-09.md finding 8): the number of
+// consecutive set bits, least significant first, before the first clear
+// bit, capped at `max` — P(k) = 2^-(k+1) below the cap, mean one. An
+// exhausted tape reads as clear bits, so a shrinking tape shortens every
+// delay drawn from it (Oak.ChoiceTape.leadingOnes).
+pub test_geometric: (choices: [*]TestChoices, data: []u8, max: u32): u32 {
+  count: u32 = u32(0)
+  finished: Bool = false
+  rounds: u32 = u32(0)
+  limit: u32 = (max + u32(7)) / u32(8)
+  while rounds < limit && !finished {
+    b: u8 = test_byte(choices, data)
+    bit: u32 = u32(0)
+    while bit < u32(8) && !finished && count < max {
+      ((b >> u8_trunc_u32(bit)) & u8(1)) == u8(1) ? { count = count + u32(1) } | { finished = true }
+      bit = bit + u32(1)
+    }
+    rounds = rounds + u32(1)
+  }
+  count
+}
+
+// A simulated delay with a floor and a heavy tail: minimum plus `unit` per
+// geometric count, at most `max_units` units. The bound is asserted so the
+// sum cannot wrap.
+pub test_delay: (choices: [*]TestChoices, data: []u8, minimum: u32, unit: u32, max_units: u32): u32 {
+  assert(u64(unit) * u64(max_units) + u64(minimum) <= u64(4294967295))
+  minimum + unit * test_geometric(choices, data, max_units)
+}
+
+// Swarm testing (Regehr; TigerBeetle's random_enum_weights): the enabled
+// subset of `kinds` fault kinds, drawn from the tape. Each of the low
+// `kinds` bits is kept with probability one half; when every bit falls,
+// one kind chosen by the tape is kept, so a run never disables everything
+// by accident — an exhausted tape keeps kind 0 alone, the shrink-friendly
+// floor (Oak.ChoiceTape.swarmMask_lt, swarmMask_pos).
+pub test_swarm_mask: (choices: [*]TestChoices, data: []u8, kinds: u32): u32 {
+  assert(kinds <= u32(32))
+  mask: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < kinds {
+    test_bool(choices, data) ? { mask = mask | (u32(1) << i) }
+    i = i + u32(1)
+  }
+  mask == u32(0) && kinds > u32(0) ? { mask = u32(1) << test_range(choices, data, u32(0), kinds - u32(1)) }
+  mask
+}
+
 // Bounded discrete-event simulator. The caller owns event storage and the
 // model/production state. Each successful next removes one enabled event.
 pub SimClock: type = struct { now: u64 }

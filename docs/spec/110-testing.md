@@ -125,7 +125,22 @@ efficient generator. Automatic ADT/refinement derivation is future work.
 
 `test_range` is inclusive and handles the entire `u32` domain without overflow.
 Its modulo mapping is deliberately biased; no uniform or cryptographic sampling
-claim is made. The runner includes empty, zero-filled, 0xff-filled and ascending
+claim is made. Two shapes beside the uniform ones, both integer-only over the
+same tape: `test_geometric(choices, data, max)` counts the consecutive set
+bits at the head of the tape, least significant first, capped at `max` —
+P(k) = 2^-(k+1), mean one, a heavy tail beside `test_range`'s flat one — and
+`test_delay(choices, data, minimum, unit, max_units)` is a floor plus `unit`
+per count, the "minimum plus heavy tail" a simulated device or network
+delay wants (TigerBeetle's exponential latencies, `docs/notes/tigerbeetle-2026-09.md`
+finding 8). `test_swarm_mask(choices, data, kinds)` draws the enabled subset
+of `kinds` fault kinds — each kept with probability one half, one kind kept
+when all fell — so a simulation's configuration comes from the seed rather
+than a fixed mask (swarm testing, finding 9): the WAL scenario in
+`testrunner/io_sim_test.go` draws its torn, dropped, and lost-fsync subset
+this way, and a failing tape shrinks toward fewer kinds as well as fewer
+faults. An exhausted tape draws a zero count and the first kind alone, so
+shrinking is monotone (`Oak.ChoiceTape.leadingOnes_exhausted`,
+`swarmMask_pos`, `swarmMask_lt`). The runner includes empty, zero-filled, 0xff-filled and ascending
 byte seeds, then variable-length generated tapes. Root seed, target name, and
 attempt independently derive a fixed SplitMix64 stream. There is no dependence
 on Go's random implementation or earlier tests consuming random numbers.
