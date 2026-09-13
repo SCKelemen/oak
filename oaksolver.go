@@ -94,6 +94,13 @@ var oakDriverHelpersSource string
 //go:embed prove/solver/lrat.oak
 var oakLRATSource string
 
+// The SAT solver written in Oak (prove/solver/sat.oak): conflict-driven
+// clause learning emitting LRAT, reached through OAK_SOLVER_MODE=sat with
+// the encoded formula on stdin; the default solver of the certificate rung.
+//
+//go:embed prove/solver/sat.oak
+var oakSATSource string
+
 // oakSolverDriverSource is the driver around the solver: it reads its
 // order slot from OAK_SOLVER_VARIANT and the problems from its standard
 // input (a header of count, largest term count, budget, and word total,
@@ -257,7 +264,7 @@ lrat_mode: (): Bool {
 }
 
 main: (): i32 {
-  shell_mode() ? { shell_main() } | { lrat_mode() ? { lrat_main() } | { stream_main() } }
+  shell_mode() ? { shell_main() } | { lrat_mode() ? { lrat_main() } | { sat_mode() ? { sat_main() } | { stream_main() } } }
 }
 
 // lrat_fill copies n words from src into dst.
@@ -281,6 +288,124 @@ lrat_words_at: (bytes: []u8, words: [*]u32, at: u32, count: u32): () {
 // lrat_main reads the encoded formula and certificate (lrat.oak's word
 // protocol) from standard input, checks it over caller-owned storage sized
 // from the header, and writes one line: lrat status additions deletions.
+// sat_mode: OAK_SOLVER_MODE=sat selects the SAT solver (sat.oak).
+sat_mode: (): Bool {
+  p: c.Ptr = c_getenv(c.cstr("OAK_SOLVER_MODE\0"))
+  is_sat: Bool = false
+  unsafe {
+    value: []u8 = c.borrow_string(p)
+    is_sat = len(value) == u32(3) && value[u32(0)] == u8(115) && value[u32(1)] == u8(97)
+  }
+  is_sat
+}
+
+// sat_main reads the encoded formula (lrat.oak's word protocol with no
+// steps; header word 5 the clause capacity, 6 the literal store capacity,
+// 7 the conflict budget), solves it, and writes the certificate lines as
+// they are learned, then the verdict line and, when satisfiable, the model.
+sat_main: (): i32 {
+  chunk_raw: c.Ptr = malloc(c.Size(CHUNK))
+  header_bytes_raw: c.Ptr = malloc(c.Size(LRAT_HEADER_WORDS * u32(4)))
+  header_words_raw: c.Ptr = malloc(c.Size(LRAT_HEADER_WORDS * u32(4)))
+  header_ok: Bool = false
+  h: [8]u32
+  unsafe {
+    header_bytes: Buffer[u8] = c.own[u8](header_bytes_raw, LRAT_HEADER_WORDS * u32(4))
+    header_ok = read_fully(chunk_raw, span(&header_bytes), LRAT_HEADER_WORDS * u32(4))
+    header_words: Buffer[u32] = c.own[u32](header_words_raw, LRAT_HEADER_WORDS)
+    words_of(view(&header_bytes), span(&header_words), LRAT_HEADER_WORDS)
+    lrat_fill(span(&h), view(&header_words), LRAT_HEADER_WORDS)
+    free(c.disown(header_words))
+    free(c.disown(header_bytes))
+  }
+  header_ok = header_ok && h[u32(0)] == LRAT_MAGIC
+  variables: u32 = header_ok ? { h[u32(1)] } | { u32(0) }
+  body_words: u32 = header_ok ? { h[u32(3)] } | { u32(0) }
+  clause_cap: u32 = header_ok ? { h[u32(5)] + u32(1) } | { u32(1) }
+  store_cap: u32 = header_ok ? { h[u32(6)] + u32(1) } | { u32(1) }
+  budget: u32 = header_ok ? { h[u32(7)] } | { u32(0) }
+  total: u32 = LRAT_HEADER_WORDS + body_words
+  l: SatLayout = sat_layout(variables, clause_cap, store_cap)
+  bytes_raw: c.Ptr = malloc(c.Size(body_words * u32(4) + u32(4)))
+  words_raw: c.Ptr = malloc(c.Size(total * u32(4)))
+  arena_raw: c.Ptr = malloc(c.Size(l.total * u32(4)))
+  status: u32 = SAT_MALFORMED
+  unsafe {
+    body: Buffer[u8] = c.own[u8](bytes_raw, body_words * u32(4) + u32(4))
+    body_ok: Bool = body_words == u32(0) || read_fully(chunk_raw, span(&body), body_words * u32(4))
+    words: Buffer[u32] = c.own[u32](words_raw, total)
+    lrat_fill(span(&words), view(&h), LRAT_HEADER_WORDS)
+    lrat_words_at(view(&body), span(&words), LRAT_HEADER_WORDS, body_words)
+    arena: Buffer[u32] = c.own[u32](arena_raw, l.total)
+    header_ok && body_ok && sat_init(l, span(&arena), view(&words), budget) ? {
+      status = sat_solve(l, span(&arena))
+    } | { }
+    write_byte(u8(115))
+    write_byte(u8(32))
+    status == SAT_SATISFIABLE ? {
+      write_byte(u8(83))
+      write_byte(u8(65))
+      write_byte(u8(84))
+      write_byte(u8(73))
+      write_byte(u8(83))
+      write_byte(u8(70))
+      write_byte(u8(73))
+      write_byte(u8(65))
+      write_byte(u8(66))
+      write_byte(u8(76))
+      write_byte(u8(69))
+      write_byte(u8(10))
+      write_byte(u8(118))
+      v: u32 = 0
+      while v < variables {
+        write_byte(u8(32))
+        arena_view: []u32 = view(&arena)
+        arena_view[l.assign_at + v] == u32(2) ? { } | { write_byte(u8(45)) }
+        write_u32(v + u32(1))
+        v = v + u32(1)
+      }
+      write_byte(u8(32))
+      write_byte(u8(48))
+      write_byte(u8(10))
+    } | {
+      status == SAT_UNSATISFIABLE ? {
+        write_byte(u8(85))
+        write_byte(u8(78))
+        write_byte(u8(83))
+        write_byte(u8(65))
+        write_byte(u8(84))
+        write_byte(u8(73))
+        write_byte(u8(83))
+        write_byte(u8(70))
+        write_byte(u8(73))
+        write_byte(u8(65))
+        write_byte(u8(66))
+        write_byte(u8(76))
+        write_byte(u8(69))
+        write_byte(u8(10))
+      } | {
+        write_byte(u8(85))
+        write_byte(u8(78))
+        write_byte(u8(75))
+        write_byte(u8(78))
+        write_byte(u8(79))
+        write_byte(u8(87))
+        write_byte(u8(78))
+        write_byte(u8(32))
+        write_u32(status)
+        write_byte(u8(32))
+        write_u32(sat_state(l, span(&arena), ST_CONFLICTS))
+        write_byte(u8(10))
+      }
+    }
+    free(c.disown(arena))
+    free(c.disown(words))
+    free(c.disown(body))
+  }
+  free(chunk_raw)
+  0
+}
+
 lrat_main: (): i32 {
   chunk_raw: c.Ptr = malloc(c.Size(CHUNK))
   header_bytes_raw: c.Ptr = malloc(c.Size(LRAT_HEADER_WORDS * u32(4)))
@@ -488,7 +613,7 @@ func oakSolverBinary() (string, error) {
 			compilerIdentity = fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
 		}
 	}
-	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSyntaxSource + "\x00" + oakTreeSource + "\x00" + oakProtocolSource + "\x00" + oakShellSource + "\x00" + oakLeanSource + "\x00" + oakExploreSource + "\x00" + oakWitnessSource + "\x00" + oakDriverHelpersSource + "\x00" + oakLRATSource + "\x00" + oakSolverDriverSource + "\x00" + compilerIdentity))
+	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSyntaxSource + "\x00" + oakTreeSource + "\x00" + oakProtocolSource + "\x00" + oakShellSource + "\x00" + oakLeanSource + "\x00" + oakExploreSource + "\x00" + oakWitnessSource + "\x00" + oakDriverHelpersSource + "\x00" + oakLRATSource + "\x00" + oakLRATSource + "\x00" + oakSATSource + "\x00" + oakSolverDriverSource + "\x00" + compilerIdentity))
 	// OAK_SOLVER_NATIVE=1 builds the prover through the native backend
 	// (docs/spec/94-assembler.md §9): every function the backend reaches is
 	// checked, verified against its Oak body, and encoded by the Oak
@@ -507,7 +632,7 @@ func oakSolverBinary() (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	for name, text := range map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "syntax.oak": oakSyntaxSource, "tree.oak": oakTreeSource, "protocol.oak": oakProtocolSource, "shell.oak": oakShellSource, "lean.oak": oakLeanSource, "explore.oak": oakExploreSource, "witness.oak": oakWitnessSource, "driver.oak": oakDriverHelpersSource, "lrat.oak": oakLRATSource, "main.oak": oakSolverDriverSource} {
+	for name, text := range map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "syntax.oak": oakSyntaxSource, "tree.oak": oakTreeSource, "protocol.oak": oakProtocolSource, "shell.oak": oakShellSource, "lean.oak": oakLeanSource, "explore.oak": oakExploreSource, "witness.oak": oakWitnessSource, "driver.oak": oakDriverHelpersSource, "lrat.oak": oakLRATSource, "sat.oak": oakSATSource, "main.oak": oakSolverDriverSource} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
 			return "", err
 		}
@@ -839,4 +964,42 @@ func runOakLRAT(formula, certificate string) (OakLRATVerdict, error) {
 		return OakLRATVerdict{}, fmt.Errorf("oak lrat checker: unreadable verdict %q", strings.TrimSpace(string(out)))
 	}
 	return verdict, nil
+}
+
+// OakSATBudget bounds the conflicts one run of the solver written in Oak
+// may spend before reporting exhaustion.
+const OakSATBudget = 2000000
+
+// runOakSAT solves the obligation with the SAT solver written in Oak
+// (prove/solver/sat.oak) inside the compiled solver binary: the clauses go
+// in as words, the certificate lines, verdict, and model come back as text
+// parsed like an external solver's (prove.ParseSolverOutput).
+func runOakSAT(cnf asm.CNF) (prove.SATOutcome, error) {
+	words, err := prove.EncodeLRATWords(cnf.Text, "")
+	if err != nil {
+		return prove.SATOutcome{}, err
+	}
+	// Capacities: learned clauses up to eight times the formula plus a
+	// floor, their literals up to sixty-four times the store.
+	literals := words[6]
+	words[5] = 8*words[2] + 65536
+	words[6] = 64*literals + 1<<20
+	words[7] = OakSATBudget
+	solver, err := oakSolverBinary()
+	if err != nil {
+		return prove.SATOutcome{}, err
+	}
+	encoded := make([]byte, 4*len(words))
+	for i, w := range words {
+		binary.LittleEndian.PutUint32(encoded[4*i:], w)
+	}
+	run := exec.Command(solver)
+	run.Env = append(os.Environ(), "OAK_SOLVER_MODE=sat")
+	run.Stdin = bytes.NewReader(encoded)
+	run.Stderr = os.Stderr
+	out, err := run.Output()
+	if err != nil {
+		return prove.SATOutcome{}, fmt.Errorf("oak sat solver: %v", err)
+	}
+	return prove.ParseSolverOutput(string(out), true)
 }

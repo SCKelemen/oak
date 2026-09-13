@@ -882,8 +882,9 @@ proof-search guidance; `docs/notes/provers-2026-09.md`.
       separately proved checker validates, so speed and trust are separate
       artifacts? (Lean `bv_decide`: CaDiCaL to LRAT to a checker proved in
       Lean; `cake_lpr`; ACL2 `lrat-check`) — Oak: `125-verification.md` §3
-      "By certificate": LRAT, checked in Go and in Oak, `Oak.RupCheck`;
-      the checkers are cross-checked, not proved — `open` for that half.
+      "By certificate": LRAT from the solver written in Oak or an external
+      one, checked in Go and in Oak, `Oak.RupCheck`; the checkers are
+      cross-checked, not proved — `open` for that half.
 - [ ] **Checking is cheaper than solving, measured.** Is certificate
       checking time measured against solving time per obligation and kept
       below it? DRAT checking costs about what solving cost; native LRAT
