@@ -81,12 +81,15 @@ doubled_mask: (b: []u8) -> u32 {
   simd.movemask_u8x16(simd.eq_u8x16(d, simd.splat_u8x16(u8(14))))
 }
 
-// A vector across the C boundary: five views exhaust the argument
-// registers, so this caller stays on the C backend and reaches double_it
-// through the converting shim under its Oak name.
-c_side: (a: []u8, b: []u8, c: []u8, d: []u8, e: []u8) -> u32 {
+// A vector across the C boundary: a foreign pointer local keeps this
+// caller on the C backend (five views no longer do, since arguments
+// beyond the registers cross the stack), so it reaches double_it through
+// the converting shim under its Oak name.
+c_side: (a: []u8, b: []u8, cc: []u8, d: []u8, e: []u8) -> u32 {
+  nothing: c.Ptr = c.null()
+  _ = nothing
   v: simd.U8x16 = double_it(simd.load_u8x16(a, u32(0)))
-  simd.movemask_u8x16(simd.eq_u8x16(v, simd.splat_u8x16(u8(14)))) + len(b) + len(c) + len(d) + len(e) - u32(128)
+  simd.movemask_u8x16(simd.eq_u8x16(v, simd.splat_u8x16(u8(14)))) + len(b) + len(cc) + len(d) + len(e) - u32(128)
 }
 
 // The scalar helpers: 3 + 8 + 64 + 64.

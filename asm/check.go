@@ -251,6 +251,14 @@ type checker struct {
 	// arrive: up to 16 bytes as ceil(size/8) consecutive x registers, larger
 	// as one x register addressing the caller's copy.
 	compositeParams map[string]compositeParam
+	// stackParams: the parameters beyond the register contract, by the
+	// entry-relative offset of their first word (asm.LayoutArguments);
+	// stackArgs the area's size. A load from the area binds what it reads.
+	stackParams map[int64]stackParam
+	stackArgs   int64
+	// stackSpanFacts: the span facts created from a stack span's base word,
+	// so the length word's load joins them.
+	stackSpanFacts map[string][]*spanFact
 	// regions: register -> a memory extent it addresses: a record argument
 	// beyond 16 bytes (read-only, the caller's copy) or the indirect result
 	// area in x8 (writable). Memory through it is admitted as [xN, #off]
@@ -349,6 +357,16 @@ type compositeParam struct {
 	regs     int
 	size     int64
 	indirect bool
+}
+
+// stackParam is a parameter placed in the caller's outgoing area.
+type stackParam struct {
+	name     string
+	bytes    int64 // the argument's size there (a span 16, a reference 8)
+	span     *spanParam
+	comp     *compositeParam
+	scalar   bool
+	scalarSz int64
 }
 
 type region struct {
@@ -566,7 +584,19 @@ func (c *checker) bindContract() {
 	c.globalPages = map[int]string{}
 	c.globalAddrs = map[int]string{}
 	c.resultRegs = 1
-	nextGeneral, nextVector := 0, 0
+	c.stackParams = map[int64]stackParam{}
+	c.stackSpanFacts = map[string][]*spanFact{}
+	// The integer-class parameters in order, laid out by the shared rule
+	// (asm/abi.go): registers while they fit, then the stack.
+	type intParam struct {
+		param    *ast.FunctionParameter
+		class    ArgClass
+		span     *spanParam
+		comp     *compositeParam
+		scalarSz int64
+	}
+	var ints []intParam
+	nextVector := 0
 	for _, param := range c.fn.Signature.Parameters {
 		if comp, isComposite := c.fn.Composites[typeText(param.Type)]; isComposite {
 			// AAPCS64 composites: up to 16 bytes in consecutive x registers
@@ -580,25 +610,13 @@ func (c *checker) bindContract() {
 			if !indirect {
 				regs = int((comp.Size + 7) / 8)
 			}
-			if nextGeneral+regs > 8 {
-				c.errorf(c.fn.Line, "record parameter %s needs %d registers; the integer register contract is exhausted", param.Name.Value, regs)
-				continue
-			}
 			c.paramClass[param.Name.Value] = ClassX
-			c.paramRegister[param.Name.Value] = nextGeneral
-			c.compositeParams[param.Name.Value] = compositeParam{reg: nextGeneral, regs: regs, size: comp.Size, indirect: indirect}
-			nextGeneral += regs
+			ints = append(ints, intParam{param: param, class: ArgClass{Words: regs, Bytes: int64(regs) * 8, Align: 8}, comp: &compositeParam{regs: regs, size: comp.Size, indirect: indirect}})
 			continue
 		}
 		if elem, writable, isSpan := c.spanShapeOf(param.Type); isSpan {
-			if nextGeneral > 6 {
-				c.errorf(c.fn.Line, "span parameter %s needs two registers; the integer register contract is exhausted", param.Name.Value)
-				continue
-			}
 			c.paramClass[param.Name.Value] = ClassX
-			c.paramRegister[param.Name.Value] = nextGeneral
-			c.spanParams[param.Name.Value] = spanParam{baseReg: nextGeneral, lenReg: nextGeneral + 1, elem: elem, writable: writable}
-			nextGeneral += 2
+			ints = append(ints, intParam{param: param, class: ArgClass{Words: 2, Bytes: 16, Align: 8}, span: &spanParam{elem: elem, writable: writable}})
 			continue
 		}
 		class, ok := contractClass(param.Type)
@@ -615,13 +633,51 @@ func (c *checker) bindContract() {
 			}
 			c.paramRegister[param.Name.Value] = nextVector
 			nextVector++
-		} else {
-			if nextGeneral > 7 {
-				c.errorf(c.fn.Line, "more than eight integer parameters exceed the register contract")
-				continue
+			continue
+		}
+		size := int64(8)
+		if bits, _, known := contractBits(param.Type); known && bits <= 32 {
+			size = 4 // a narrow scalar's stack slot under the packing convention: the C int it widens to
+			if typeText(param.Type) != "Bool" {
+				size = int64(bits+7) / 8
 			}
-			c.paramRegister[param.Name.Value] = nextGeneral
-			nextGeneral++
+		}
+		ints = append(ints, intParam{param: param, class: ArgClass{Words: 1, Bytes: size, Align: size}, scalarSz: size})
+	}
+	classes := make([]ArgClass, len(ints))
+	for i, ip := range ints {
+		classes[i] = ip.class
+	}
+	places, stackBytes := LayoutArguments(classes, c.fn.PackedStackArgs)
+	c.stackArgs = stackBytes
+	for i, ip := range ints {
+		name := ip.param.Name.Value
+		place := places[i]
+		if place.OnStack {
+			c.paramRegister[name] = -1
+			sp := stackParam{name: name, bytes: ip.class.Bytes, scalarSz: ip.scalarSz}
+			if !c.fn.PackedStackArgs {
+				sp.bytes = int64(ip.class.Words) * 8
+			}
+			switch {
+			case ip.span != nil:
+				sp.span = ip.span
+			case ip.comp != nil:
+				sp.comp = ip.comp
+			default:
+				sp.scalar = true
+			}
+			c.stackParams[place.Offset] = sp
+			continue
+		}
+		c.paramRegister[name] = place.Reg
+		switch {
+		case ip.span != nil:
+			ip.span.baseReg, ip.span.lenReg = place.Reg, place.Reg+1
+			c.spanParams[name] = *ip.span
+		case ip.comp != nil:
+			ip.comp.reg = place.Reg
+			c.compositeParams[name] = *ip.comp
 		}
 	}
 
@@ -668,6 +724,15 @@ func (c *checker) bindContract() {
 		}
 		seen[binding.Param] = true
 		want := c.paramRegister[binding.Param]
+		if want < 0 || binding.OnStack {
+			// A parameter beyond the register contract: the binding names
+			// the entry-relative offset the layout assigned it.
+			sp, at := c.stackParams[binding.Stack]
+			if !binding.OnStack || !at || sp.name != binding.Param {
+				c.errorf(binding.Line, "bind: parameter %s arrives on the stack at entry sp + %d (the register contract is exhausted)", binding.Param, c.stackOffsetOf(binding.Param))
+			}
+			continue
+		}
 		if span, isSpan := c.spanParams[binding.Param]; isSpan {
 			if binding.Length == nil {
 				c.errorf(binding.Line, "bind: span parameter %s binds a pair: bind x%d, w%d = %s (base pointer, 32-bit length)", binding.Param, span.baseReg, span.lenReg, binding.Param)
@@ -727,6 +792,73 @@ func (c *checker) bindContract() {
 			c.errorf(c.fn.Line, "parameter %s is never bound: bindings are written, not inferred (bind %s%d = %s)", param.Name.Value, classPrefix(c.paramClass[param.Name.Value]), c.paramRegister[param.Name.Value], param.Name.Value)
 		}
 	}
+}
+
+// stackOffsetOf is the entry-relative offset of a stack parameter (-1 when
+// the parameter is not one), for messages.
+func (c *checker) stackOffsetOf(name string) int64 {
+	for off, sp := range c.stackParams {
+		if sp.name == name {
+			return off
+		}
+	}
+	return -1
+}
+
+// incomingRead admits a load from the incoming stack-argument area — an
+// entry-relative address at or above the entry sp, inside the area the
+// layout assigned — and binds what it reads: a stack span's base word
+// makes the destination a span base (its length register joins when the
+// length word is loaded), a by-reference record's word a read-only
+// region; a scalar's or a chunk's word is a value. Reports whether the
+// access was one.
+func (c *checker) incomingRead(instr Instruction, mem Memory, regs []Register, size int64, isStore bool) bool {
+	if !c.dispKnown || mem.Index != nil || mem.Mode != MemOffset || len(regs) != 1 {
+		return false
+	}
+	addr := -c.disp + mem.Offset
+	if addr < 0 {
+		return false
+	}
+	if isStore {
+		c.errorf(instr.Line, "%s writes the caller's argument area at entry sp + %d", instr.Mnemonic, addr)
+		return true
+	}
+	if addr+size > c.stackArgs {
+		c.errorf(instr.Line, "%s reads entry sp + %d, past the %d-byte incoming argument area", instr.Mnemonic, addr, c.stackArgs)
+		return true
+	}
+	dest := regs[0]
+	if dest.Class != ClassW && dest.Class != ClassX {
+		c.errorf(instr.Line, "%s: an incoming argument loads into a general register", instr.Mnemonic)
+		return true
+	}
+	for off, sp := range c.stackParams {
+		if addr < off || addr+size > off+sp.bytes {
+			continue
+		}
+		c.write(instr, dest)
+		switch {
+		case sp.span != nil && addr == off && size == 8:
+			fact := &spanFact{lenReg: -1, elem: sp.span.elem, writable: sp.span.writable, lenRegs: map[int]bool{}}
+			c.spans[dest.Num] = fact
+			c.stackSpanFacts[sp.name] = append(c.stackSpanFacts[sp.name], fact)
+		case sp.span != nil && addr == off+8 && size == 4:
+			for _, fact := range c.stackSpanFacts[sp.name] {
+				fact.lenRegs[dest.Num] = true
+				if fact.lenReg < 0 {
+					fact.lenReg = dest.Num
+				}
+			}
+		case sp.span != nil:
+			c.errorf(instr.Line, "%s reads the span parameter %s at an offset that is neither its base nor its length", instr.Mnemonic, sp.name)
+		case sp.comp != nil && sp.comp.indirect && addr == off && size == 8:
+			c.regions[dest.Num] = region{size: sp.comp.size}
+		}
+		return true
+	}
+	c.errorf(instr.Line, "%s reads entry sp + %d, which no stack parameter covers", instr.Mnemonic, addr)
+	return true
 }
 
 func classPrefix(class RegClass) string {
@@ -1835,6 +1967,9 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 		slotBase = -c.disp
 		c.moveSP(instr, -mem.Offset)
 	default:
+		if c.incomingRead(instr, mem, regs, size, isStore) {
+			return
+		}
 		c.checkAccess(instr, mem.Offset, size)
 		slotBase = -c.disp + mem.Offset
 	}
