@@ -4125,7 +4125,7 @@ func negateCondition(expr ast.Expression) (ast.Expression, bool) {
 
 // newLowering builds the Oak-side contract from the signature.
 func newLowering(sig *ast.FunctionStatement) *oakLowering {
-	lowering := &oakLowering{params: map[string]int{}, signed: map[string]bool{}, spans: map[string]spanContract{}, fresh: map[string]int{}, floats: map[string]int{}}
+	lowering := &oakLowering{params: map[string]int{}, signed: map[string]bool{}, spans: map[string]spanContract{}, fresh: map[string]int{}, floats: map[string]int{}, locals: map[string]*oakLocal{}}
 	for _, param := range sig.Parameters {
 		if elem, _, isSpan := spanShape(param.Type); isSpan {
 			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
