@@ -175,6 +175,34 @@ def bindTypes (nm : String → String) (Γ : Locals) : List (String × Ty) → L
 under that name, as an owned array is its element leaves. -/
 def fieldName (r f : String) : String := r ++ "." ++ f
 
+/-- A borrowed span: the callee's span parameter `s` (`[]e`, `[*]e`) of `n`
+elements, and the caller's leaves it borrows (`span(&a)`: `elemName "a"`;
+a span passed on: the caller's own span leaves). `enterCall` binds the
+callee's `s` to a copy of the owner's array and, for a writable span,
+writes the callee's final leaves back on return. -/
+structure Borrow where
+  s : String
+  e : Ty
+  n : Nat
+  nm : Nat → String
+
+/-- The borrows' callee-side leaves `s[k]` in scope. -/
+def bindBorrows (Γ : Locals) : List Borrow → Locals
+  | [] => Γ
+  | b :: bs => bindBorrows (bindLeaves Γ (elemName b.s) b.e b.n) bs
+
+/-- The callee's scope at entry: its parameters bound to the arguments,
+its body's locals (zero until assigned: a declaration's initializer is the
+first assignment), its span parameters' leaves. -/
+def calleeScope (params locals : List (String × Ty)) (bs : List Borrow) : Locals :=
+  bindBorrows (bindTypes id (bindTypes id (fun _ => none) params) locals) bs
+
+/-- Every borrow's caller-side leaves are in scope with the borrow's type. -/
+def borrowsIn (Γ : Locals) (bs : List Borrow) : Bool := bs.all fun b => decide (ArrIn Γ b.nm b.e b.n)
+
+/-- The callee-side view of the borrows: the leaves `s[k]`. -/
+def calleeSide (bs : List Borrow) : List Borrow := bs.map fun b => { b with nm := elemName b.s }
+
 mutual
 /-- The shared subset. A literal carries its checked value at the type's
 width (`Oak.LiteralFitRefinement`); `divPow2`/`modPow2` are `/` and `%` by
@@ -205,7 +233,13 @@ b` declares the record local `r: R = R{ f₁: e₁, … }` whose scalar fields
 field leaves `r.f`, so a field read is the variable `r.f` and a field
 write its rebinding, for a local as for a record parameter
 (`paramAggregate`); a tagged union is the record of its `tag` leaf and its
-payload leaves, a variant match the constant match on the tag. -/
+payload leaves, a variant match the constant match on the tag; `callX
+params locals bs hb hc stmts results args rest` is a call whose callee
+borrows the caller's arrays through span parameters (`enterCall`) and
+whose results — a scalar, or the leaves of a record the callee builds
+(`inlineCallValue`) — are bound in the caller under `rs` for `rest`, the
+borrowed leaves written back first; `Stmts.callS` is the same in statement
+position, its results assigned to existing locals. -/
 inductive Expr (P : Params) (S : Spans) : Locals → Ty → Type
   | var {Γ : Locals} (t : Ty) (x : String) (h : resolve P Γ x = some t) : Expr P S Γ t
   | lit {Γ : Locals} (t : Ty) (v : BitVec t.width) : Expr P S Γ t
@@ -223,6 +257,11 @@ inductive Expr (P : Params) (S : Spans) : Locals → Ty → Type
       (body : Expr P S (bindTypes id (fun _ => none) params) ret) (args : Args P S Γ params) : Expr P S Γ ret
   | recDecl {Γ : Locals} {t : Ty} (r : String) (fs : List (String × Ty)) (fields : Args P S Γ fs)
       (b : Expr P S (bindTypes (fieldName r) Γ fs) t) : Expr P S Γ t
+  | callX {Γ : Locals} {t : Ty} (params locals : List (String × Ty)) (bs : List Borrow)
+      (hb : borrowsIn Γ bs = true) (hc : borrowsIn (calleeScope params locals bs) (calleeSide bs) = true)
+      {rs : List (String × Ty)}
+      (stmts : Stmts P S (calleeScope params locals bs)) (results : Args P S (calleeScope params locals bs) rs)
+      (args : Args P S Γ params) (rest : Expr P S (bindTypes id Γ rs) t) : Expr P S Γ t
   | condSet {Γ : Locals} {t : Ty} (c : Expr P S Γ .bool) (armT armF : Stmts P S Γ) (rest : Expr P S Γ t) : Expr P S Γ t
   | whileLoop {Γ : Locals} {t : Ty} (c : Expr P S Γ .bool) (body : Stmts P S Γ) (rest : Expr P S Γ t) : Expr P S Γ t
   | matchInt {Γ : Locals} {s t : Ty} (x : Expr P S Γ s) (arms : Arms P S Γ s t) : Expr P S Γ t
@@ -245,6 +284,11 @@ inductive Stmts (P : Params) (S : Spans) : Locals → Type
   | loop {Γ : Locals} (c : Expr P S Γ .bool) (body : Stmts P S Γ) (rest : Stmts P S Γ) : Stmts P S Γ
   | matchS {Γ : Locals} {s : Ty} (x : Expr P S Γ s) (arms : ArmsS P S Γ s) (rest : Stmts P S Γ) : Stmts P S Γ
   | arrSet {Γ : Locals} {e : Ty} {n : Nat} (nm : Nat → String) (h : ArrIn Γ nm e n) (hn : n < 2 ^ 32) (i : Expr P S Γ .u32) (v : Expr P S Γ e) (rest : Stmts P S Γ) : Stmts P S Γ
+  | callS {Γ : Locals} (params locals : List (String × Ty)) (bs : List Borrow)
+      (hb : borrowsIn Γ bs = true) (hc : borrowsIn (calleeScope params locals bs) (calleeSide bs) = true)
+      {rs : List (String × Ty)} (hrs : bindTypes id Γ rs = Γ)
+      (stmts : Stmts P S (calleeScope params locals bs)) (results : Args P S (calleeScope params locals bs) rs)
+      (args : Args P S Γ params) (rest : Stmts P S Γ) : Stmts P S Γ
 /-- The arms of an integer-constant match in value position: literal
 cases in order, then the fallback (the wildcard arm; a match without one
 has its last arm as the fallback, `matchArms` dropping that arm's
@@ -317,6 +361,27 @@ def varX (Γ : Locals) (ρ : Env) (l : Vals) (x : String) : Nat :=
   | some _ => l x
   | none => ρ x
 
+/-- A callee's locals before their first assignment. -/
+def zeroVals (l : Vals) : List (String × Ty) → Vals
+  | [] => l
+  | (x, _) :: rest => zeroVals (l.set x 0) rest
+
+/-- Element values copied leaf by leaf from one naming to another. -/
+def copyVals (src : Vals) (nmS : Nat → String) (dst : Vals) (nmD : Nat → String) : Nat → Vals
+  | 0 => dst
+  | k + 1 => (copyVals src nmS dst nmD k).set (nmD k) (src (nmS k))
+
+/-- The borrowed arrays' values into the callee (`s[k] := a[k]`). -/
+def copyInVals (l lc : Vals) : List Borrow → Vals
+  | [] => lc
+  | b :: bs => copyInVals l (copyVals l b.nm lc (elemName b.s) b.n) bs
+
+/-- The callee's final span leaves back to the caller (`a[k] := s[k]`, the
+extraction's rebinding of the span owners a call returns). -/
+def copyOutVals (lf l : Vals) : List Borrow → Vals
+  | [] => l
+  | b :: bs => copyOutVals lf (copyVals lf (elemName b.s) l b.nm b.n) bs
+
 /-- A declared array's zero elements (`Array.replicate n 0`). -/
 def zeroLeaves (l : Vals) (nm : Nat → String) : Nat → Vals
   | 0 => l
@@ -370,6 +435,10 @@ def evalX {P : Params} {S : Spans} : {Γ : Locals} → {t : Ty} → Expr P S Γ 
   | _, _, .letIn x v b, ρ, l, F => (evalX v ρ l F).bind fun x' => evalX b ρ (l.set x x'.toNat) F
   | _, _, .call _ _ body args, ρ, l, F => (bindVals id args ρ l (fun _ => 0) F).bind fun l' => evalX body ρ l' F
   | _, _, .recDecl r _ fields b, ρ, l, F => (bindVals (fieldName r) fields ρ l l F).bind fun l' => evalX b ρ l' F
+  | _, _, .callX params locals bs _ _ stmts results args rest, ρ, l, F =>
+    (bindVals id args ρ l (fun _ => 0) F).bind fun lp =>
+    (runVals stmts ρ (copyInVals l (zeroVals lp locals) bs) F).bind fun lf =>
+    (bindVals id results ρ lf (copyOutVals lf l bs) F).bind fun l' => evalX rest ρ l' F
   | _, _, .condSet c armT armF rest, ρ, l, F =>
     (evalX c ρ l F).bind fun cv => (if cv = 1 then runVals armT ρ l F else runVals armF ρ l F).bind fun l' => evalX rest ρ l' F
   | _, _, .whileLoop c body rest, ρ, l, F =>
@@ -399,6 +468,10 @@ def runVals {P : Params} {S : Spans} : {Γ : Locals} → Stmts P S Γ → Env �
   | _, .arrSet (n := n) nm _ _ i v rest, ρ, l, F =>
     (evalX i ρ l F).bind fun k => (evalX v ρ l F).bind fun vv =>
       if k.toNat < n then runVals rest ρ (writeLeaves l nm k.toNat vv.toNat n) F else none
+  | _, .callS params locals bs _ _ _ stmts results args rest, ρ, l, F =>
+    (bindVals id args ρ l (fun _ => 0) F).bind fun lp =>
+    (runVals stmts ρ (copyInVals l (zeroVals lp locals) bs) F).bind fun lf =>
+    (bindVals id results ρ lf (copyOutVals lf l bs) F).bind fun l' => runVals rest ρ l' F
 /-- A value-position match: `if x == k₁ then e₁ else if … else e`. -/
 def armsX {P : Params} {S : Spans} : {Γ : Locals} → {s t : Ty} → BitVec s.width → Arms P S Γ s t → Env → Vals → Nat → Option (BitVec t.width)
   | _, _, _, _, .fallback e, ρ, l, F => evalX e ρ l F
@@ -626,6 +699,28 @@ def zeroTerms (σ : Scope) (nm : Nat → String) (w : Nat) : Nat → Scope
 /-- A leaf's term (`elems[k].scalar`); a default the invariant rules out. -/
 def leaf (σ : Scope) (nm : Nat → String) (k : Nat) : Term := (σ (nm k)).getD (.const 0 0)
 
+/-- A callee's locals before their first assignment (`declareLocal` binds
+the initializer's term; the zero here is never read). -/
+def zeroLocals (σ : Scope) : List (String × Ty) → Scope
+  | [] => σ
+  | (x, s) :: rest => zeroLocals (σ.set x (.const 0 s.width)) rest
+
+/-- Element terms copied leaf by leaf (`local.agg.copy()`, `leaves(...)`). -/
+def copyLeaves (src : Scope) (nmS : Nat → String) (dst : Scope) (nmD : Nat → String) : Nat → Scope
+  | 0 => dst
+  | k + 1 => (copyLeaves src nmS dst nmD k).set (nmD k) (leaf src nmS k)
+
+/-- `enterCall`: each borrowed array copied into the callee's span leaves. -/
+def copyIn (σ σc : Scope) : List Borrow → Scope
+  | [] => σc
+  | b :: bs => copyIn σ (copyLeaves σ b.nm σc (elemName b.s) b.n) bs
+
+/-- `enterCall`'s restore: the callee's final span leaves written back to
+the owners (every leaf, as `leaves(final.agg, b.owner, …)` copies them). -/
+def copyOut (σf σ : Scope) : List Borrow → Scope
+  | [] => σ
+  | b :: bs => copyOut σf (copyLeaves σf (elemName b.s) σ b.nm b.n) bs
+
 /-- `elementUnderIndex`: the last element, then from the second-to-last
 down `mergeValues(cmpTerm("eq", index, k), elems[k], out)`, so the first
 element's select is outermost. `readArr σ ti x k rem` is the read from
@@ -657,7 +752,11 @@ width 1; a Bool conditional `iteTerm`; a local's declaration or rebinding
 lowers the value at the local's width into `lo.locals` and goes on
 (`declareLocal`, `assignLocal`); a call binds the callee's parameters to
 the lowered arguments as a fresh `lo.locals` and lowers the body
-(`enterCall`, `inlineCall`); a record local is declared as its field
+(`enterCall`, `inlineCall`); a call that borrows arrays through span
+parameters copies the owners' leaves into the callee's span leaves, runs
+the callee's statements, writes the span leaves back and binds the results
+— the scalar result, or the leaves of the record `inlineCallValue` builds
+— in the caller (`enterCall`'s `bound`, `borrows` and restore); a record local is declared as its field
 leaves from the literal (`declareLocal`, `aggregateValue`), read and
 written as the scalar locals they are (`readPlace`, `assignPlace`); a
 statement-level conditional runs each arm
@@ -701,6 +800,10 @@ def lowerT {P : Params} {S : Spans} : Scope → {Γ : Locals} → {t : Ty} → E
   | σ, _, _, .letIn x v b => (lowerT σ v).bind fun tv => lowerT (σ.set x tv) b
   | σ, _, _, .call _ _ body args => (bindTerms id σ args (fun _ => none)).bind fun σ' => lowerT σ' body
   | σ, _, _, .recDecl r _ fields b => (bindTerms (fieldName r) σ fields σ).bind fun σ' => lowerT σ' b
+  | σ, _, _, .callX params locals bs _ _ stmts results args rest =>
+    (bindTerms id σ args (fun _ => none)).bind fun σp =>
+    (runTerms (copyIn σ (zeroLocals σp locals) bs) stmts).bind fun σf =>
+    (bindTerms id σf results (copyOut σf σ bs)).bind fun σ' => lowerT σ' rest
   | σ, _, _, .condSet c armT armF rest =>
     (lowerT σ c).bind fun tc => (runTerms σ armT).bind fun σT => (runTerms σ armF).bind fun σF =>
       lowerT (mergeScope tc σT σF) rest
@@ -731,6 +834,10 @@ def runTerms {P : Params} {S : Spans} : Scope → {Γ : Locals} → Stmts P S Γ
     (lowerT σ x).bind fun sx => (armsST σ sx arms).bind fun σ' => runTerms σ' rest
   | σ, _, .arrSet (n := n) nm _ _ i v rest =>
     (lowerT σ i).bind fun ti => (lowerT σ v).bind fun tv => runTerms (writeArr σ ti tv nm n) rest
+  | σ, _, .callS params locals bs _ _ _ stmts results args rest =>
+    (bindTerms id σ args (fun _ => none)).bind fun σp =>
+    (runTerms (copyIn σ (zeroLocals σp locals) bs) stmts).bind fun σf =>
+    (bindTerms id σf results (copyOut σf σ bs)).bind fun σ' => runTerms σ' rest
 /-- `selectMatch`: each arm's value merged into the fallback, the first
 case outermost (`mergeValues` from the last case down). -/
 def armsT {P : Params} {S : Spans} (σ : Scope) (sx : Term) : {Γ : Locals} → {s t : Ty} → Arms P S Γ s t → Option Term
@@ -867,6 +974,10 @@ theorem lowerT_width {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P
     simp only [lowerT, Option.bind_eq_some_iff] at h
     obtain ⟨σ', -, hb⟩ := h
     exact lowerT_width b _ _ hb
+  | .callX params locals bs hb hc stmts results args rest =>
+    simp only [lowerT, Option.bind_eq_some_iff] at h
+    obtain ⟨σp, -, σf, -, σ', -, hr⟩ := h
+    exact lowerT_width rest _ _ hr
   | .condSet c armT armF rest =>
     simp only [lowerT, Option.bind_eq_some_iff] at h
     obtain ⟨tc, -, σT, -, σF, -, hr⟩ := h
@@ -1361,6 +1472,31 @@ theorem writeArr_wf {σ : Scope} (hσ : σ.wf) {ti tv : Term} (htv : tv.topPosit
   | zero => exact hσ
   | succ n ih => exact Scope.wf_set ih (Term.iteT_topPositive htv (leaf_topPositive hσ nm n))
 
+theorem zeroLocals_wf {σ : Scope} (hσ : σ.wf) : ∀ ls : List (String × Ty), (zeroLocals σ ls).wf := by
+  intro ls
+  induction ls generalizing σ with
+  | nil => exact hσ
+  | cons p rest ih => obtain ⟨x, t⟩ := p; exact ih (Scope.wf_set hσ trivial)
+
+theorem copyLeaves_wf {src dst : Scope} (hs : src.wf) (hd : dst.wf) (nmS nmD : Nat → String) :
+    ∀ n, (copyLeaves src nmS dst nmD n).wf := by
+  intro n
+  induction n with
+  | zero => exact hd
+  | succ n ih => exact Scope.wf_set ih (leaf_topPositive hs nmS n)
+
+theorem copyIn_wf {σ : Scope} (hσ : σ.wf) : ∀ (bs : List Borrow) (σc : Scope), σc.wf → (copyIn σ σc bs).wf := by
+  intro bs
+  induction bs with
+  | nil => intro σc hc; exact hc
+  | cons b bs ih => intro σc hc; exact ih _ (copyLeaves_wf hσ hc _ _ _)
+
+theorem copyOut_wf {σf : Scope} (hf : σf.wf) : ∀ (bs : List Borrow) (σ : Scope), σ.wf → (copyOut σf σ bs).wf := by
+  intro bs
+  induction bs with
+  | nil => intro σ hσ; exact hσ
+  | cons b bs ih => intro σ hσ; exact ih _ (copyLeaves_wf hf hσ _ _ _)
+
 mutual
 theorem lowerT_topPositive {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P S Γ t) :
     ∀ (σ : Scope) (T : Term), σ.wf → lowerT σ e = some T → T.topPositive := by
@@ -1424,6 +1560,12 @@ theorem lowerT_topPositive {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : 
     simp only [lowerT, Option.bind_eq_some_iff] at h
     obtain ⟨σ', hσ', hb⟩ := h
     exact lowerT_topPositive b _ T (bindTerms_wf fields (fieldName r) σ _ σ' hσ hσ hσ') hb
+  | .callX params locals bs hb hc stmts results args rest =>
+    simp only [lowerT, Option.bind_eq_some_iff] at h
+    obtain ⟨σp, hp, σf, hf, σ', hres, hr⟩ := h
+    have hwp := bindTerms_wf args id σ _ σp hσ Scope.wf_empty hp
+    have hwf := runTerms_wf stmts _ σf (copyIn_wf hσ bs _ (zeroLocals_wf hwp locals)) hf
+    exact lowerT_topPositive rest _ T (bindTerms_wf results id σf _ σ' hwf (copyOut_wf hwf bs σ hσ) hres) hr
   | .condSet c armT armF rest =>
     simp only [lowerT, Option.bind_eq_some_iff] at h
     obtain ⟨tc, -, σT, hT, σF, hF, hr⟩ := h
@@ -1494,6 +1636,12 @@ theorem runTerms_wf {P : Params} {S : Spans} {Γ : Locals} (st : Stmts P S Γ) :
     simp only [runTerms, Option.bind_eq_some_iff] at h
     obtain ⟨ti, -, tv, hv, hr⟩ := h
     exact runTerms_wf rest _ σ' (writeArr_wf hσ (lowerT_topPositive v σ tv hσ hv) nm _) hr
+  | .callS params locals bs hb hc hrs stmts results args rest =>
+    simp only [runTerms, Option.bind_eq_some_iff] at h
+    obtain ⟨σp, hp, σf, hf, σ₁, hres, hr⟩ := h
+    have hwp := bindTerms_wf args id σ _ σp hσ Scope.wf_empty hp
+    have hwf := runTerms_wf stmts _ σf (copyIn_wf hσ bs _ (zeroLocals_wf hwp locals)) hf
+    exact runTerms_wf rest _ σ' (bindTerms_wf results id σf _ σ₁ hwf (copyOut_wf hwf bs σ hσ) hres) hr
 termination_by structural st
 theorem armsT_topPositive {P : Params} {S : Spans} {Γ : Locals} {s t : Ty} (arms : Arms P S Γ s t) :
     ∀ (σ : Scope) (sx T : Term), σ.wf → armsT σ sx arms = some T → T.topPositive := by
@@ -1775,6 +1923,111 @@ theorem zeroTerms_typed {Γ : Locals} {σ : Scope} (h : Typed Γ σ) (nm : Nat �
   | zero => exact h
   | succ n ih => exact ih.set (nm n) rfl trivial
 
+/-! ### Calls: the callee's scope and the write-back -/
+
+theorem bindLeaves_same {Γ : Locals} {nm : Nat → String} {e : Ty} : ∀ n, ArrIn Γ nm e n → bindLeaves Γ nm e n = Γ := by
+  intro n hin
+  induction n with
+  | zero => rfl
+  | succ n ih =>
+    show (bindLeaves Γ nm e n).set (nm n) e = Γ
+    rw [ih (fun k hk => hin k (by omega)), Locals.set_same (hin n (by omega))]
+
+theorem borrowsIn_cons {Γ : Locals} {b : Borrow} {bs : List Borrow} (h : borrowsIn Γ (b :: bs) = true) :
+    ArrIn Γ b.nm b.e b.n ∧ borrowsIn Γ bs = true := by
+  simpa only [borrowsIn, List.all_cons, Bool.and_eq_true, decide_eq_true_eq] using h
+
+theorem leaf_typed {Γ : Locals} {σ : Scope} (h : Typed Γ σ) {nm : Nat → String} {e : Ty} {n : Nat}
+    (hin : ArrIn Γ nm e n) {k : Nat} (hk : k < n) : (leaf σ nm k).width = e.width ∧ (leaf σ nm k).topPositive := by
+  obtain ⟨term, hσ, hw, hp⟩ := h.2 _ e (hin k hk)
+  have hl : leaf σ nm k = term := by unfold leaf; rw [hσ]; rfl
+  rw [hl]
+  exact ⟨hw, hp⟩
+
+theorem zeroLocals_typed {Γ : Locals} {σ : Scope} (h : Typed Γ σ) : ∀ ls, Typed (bindTypes id Γ ls) (zeroLocals σ ls) := by
+  intro ls
+  induction ls generalizing Γ σ with
+  | nil => exact h
+  | cons p rest ih => obtain ⟨x, t⟩ := p; exact ih (h.set x rfl trivial)
+
+theorem zeroLocals_agree {Γ : Locals} {σ : Scope} {ρ : Env} {l : Vals} (h : Agree Γ σ ρ l) :
+    ∀ ls, Agree (bindTypes id Γ ls) (zeroLocals σ ls) ρ (zeroVals l ls) := by
+  intro ls
+  induction ls generalizing Γ σ l with
+  | nil => exact h
+  | cons p rest ih => obtain ⟨x, t⟩ := p; exact ih (h.set x rfl trivial (by simp [Term.eval]))
+
+theorem copyLeaves_typed {Γs Γd : Locals} {σs σd : Scope} (hs : Typed Γs σs) {nmS : Nat → String} {e : Ty} {n : Nat}
+    (hin : ArrIn Γs nmS e n) (hd : Typed Γd σd) (nmD : Nat → String) :
+    ∀ m, m ≤ n → Typed (bindLeaves Γd nmD e m) (copyLeaves σs nmS σd nmD m) := by
+  intro m
+  induction m with
+  | zero => intro _; exact hd
+  | succ m ih =>
+    intro hm
+    obtain ⟨hw, hp⟩ := leaf_typed hs hin (by omega : m < n)
+    exact (ih (by omega)).set (nmD m) hw hp
+
+theorem copyLeaves_agree {Γs Γd : Locals} {σs σd : Scope} {ρ : Env} {ls ld : Vals} (hs : Agree Γs σs ρ ls)
+    {nmS : Nat → String} {e : Ty} {n : Nat} (hin : ArrIn Γs nmS e n) (hd : Agree Γd σd ρ ld) (nmD : Nat → String) :
+    ∀ m, m ≤ n → Agree (bindLeaves Γd nmD e m) (copyLeaves σs nmS σd nmD m) ρ (copyVals ls nmS ld nmD m) := by
+  intro m
+  induction m with
+  | zero => intro _; exact hd
+  | succ m ih =>
+    intro hm
+    obtain ⟨hw, hp, hv⟩ := leaf_spec hs hin (by omega : m < n)
+    exact (ih (by omega)).set (nmD m) hw hp hv
+
+theorem copyIn_typed {Γ : Locals} {σ : Scope} (h : Typed Γ σ) :
+    ∀ (bs : List Borrow), borrowsIn Γ bs = true → ∀ {Γc : Locals} {σc : Scope}, Typed Γc σc → Typed (bindBorrows Γc bs) (copyIn σ σc bs) := by
+  intro bs
+  induction bs with
+  | nil => intro _ Γc σc hc; exact hc
+  | cons b bs ih =>
+    intro hb Γc σc hc
+    obtain ⟨hin, hrest⟩ := borrowsIn_cons hb
+    exact ih hrest (copyLeaves_typed h hin hc _ b.n (Nat.le_refl _))
+
+theorem copyIn_agree {Γ : Locals} {σ : Scope} {ρ : Env} {l : Vals} (h : Agree Γ σ ρ l) :
+    ∀ (bs : List Borrow), borrowsIn Γ bs = true → ∀ {Γc : Locals} {σc : Scope} {lc : Vals}, Agree Γc σc ρ lc →
+      Agree (bindBorrows Γc bs) (copyIn σ σc bs) ρ (copyInVals l lc bs) := by
+  intro bs
+  induction bs with
+  | nil => intro _ Γc σc lc hc; exact hc
+  | cons b bs ih =>
+    intro hb Γc σc lc hc
+    obtain ⟨hin, hrest⟩ := borrowsIn_cons hb
+    exact ih hrest (copyLeaves_agree h hin hc _ b.n (Nat.le_refl _))
+
+theorem copyOut_typed {Γf : Locals} {σf : Scope} (hf : Typed Γf σf) :
+    ∀ (bs : List Borrow), borrowsIn Γf (calleeSide bs) = true → ∀ {Γ : Locals} {σ : Scope}, Typed Γ σ → borrowsIn Γ bs = true →
+      Typed Γ (copyOut σf σ bs) := by
+  intro bs
+  induction bs with
+  | nil => intro _ Γ σ hσ _; exact hσ
+  | cons b bs ih =>
+    intro hc Γ σ hσ hb
+    obtain ⟨hcin, hcrest⟩ := borrowsIn_cons (by simpa only [calleeSide, List.map_cons] using hc)
+    obtain ⟨hin, hrest⟩ := borrowsIn_cons hb
+    have := copyLeaves_typed hf hcin hσ b.nm b.n (Nat.le_refl _)
+    rw [bindLeaves_same b.n hin] at this
+    exact ih hcrest this hrest
+
+theorem copyOut_agree {Γf : Locals} {σf : Scope} {ρ : Env} {lf : Vals} (hf : Agree Γf σf ρ lf) :
+    ∀ (bs : List Borrow), borrowsIn Γf (calleeSide bs) = true → ∀ {Γ : Locals} {σ : Scope} {l : Vals}, Agree Γ σ ρ l →
+      borrowsIn Γ bs = true → Agree Γ (copyOut σf σ bs) ρ (copyOutVals lf l bs) := by
+  intro bs
+  induction bs with
+  | nil => intro _ Γ σ l hσ _; exact hσ
+  | cons b bs ih =>
+    intro hc Γ σ l hσ hb
+    obtain ⟨hcin, hcrest⟩ := borrowsIn_cons (by simpa only [calleeSide, List.map_cons] using hc)
+    obtain ⟨hin, hrest⟩ := borrowsIn_cons hb
+    have := copyLeaves_agree hf hcin hσ b.nm b.n (Nat.le_refl _)
+    rw [bindLeaves_same b.n hin] at this
+    exact ih hcrest this hrest
+
 /-! ### Loops -/
 
 theorem unroll_typed {Γ : Locals} {cond : Scope → Option Term} {body : Scope → Option Scope}
@@ -1838,6 +2091,18 @@ theorem unroll_agree {Γ : Locals} {ρ : Env} {condT : Scope → Option Term} {b
         exact ih F' σ₁ l₁ σ' l' (hb σ l σ₁ l₁ hA hσ₁ hl₁) hrest hXrest
     · simp at h
 
+theorem bindTerms_typed {P : Params} {S : Spans} {Γ : Locals} {ps : List (String × Ty)} (args : Args P S Γ ps) :
+    ∀ (nm : String → String) (σ : Scope), σ.wf → ∀ (Γ0 : Locals) (acc σ' : Scope), Typed Γ0 acc →
+      bindTerms nm σ args acc = some σ' → Typed (bindTypes nm Γ0 ps) σ' := by
+  intro nm σ hσ Γ0 acc σ' h0 h
+  match args with
+  | .nil => simp only [bindTerms, Option.some.injEq] at h; subst h; exact h0
+  | .cons (x := x) a rest =>
+    simp only [bindTerms, Option.bind_eq_some_iff] at h
+    obtain ⟨ta, ha, hr⟩ := h
+    exact bindTerms_typed rest nm σ hσ _ _ σ' (h0.set (nm x) (lowerT_width a σ ta ha) (lowerT_topPositive a σ ta hσ ha)) hr
+termination_by structural args
+
 /-! ### Statements keep scopes typed -/
 
 mutual
@@ -1868,6 +2133,14 @@ theorem runTerms_typed {P : Params} {S : Spans} {Γ : Locals} (st : Stmts P S Γ
     simp only [runTerms, Option.bind_eq_some_iff] at h
     obtain ⟨ti, -, tv, hv, hr⟩ := h
     exact runTerms_typed rest _ σ' (writeArr_typed hσ hin (lowerT_width v σ tv hv) (lowerT_topPositive v σ tv hσ.wf hv) _ (Nat.le_refl _)) hr
+  | .callS params locals bs hb hc hrs stmts results args rest =>
+    simp only [runTerms, Option.bind_eq_some_iff] at h
+    obtain ⟨σp, hp, σf, hf, σ₁, hres, hr⟩ := h
+    have htp := bindTerms_typed args id σ hσ.wf _ _ σp Typed.empty hp
+    have htf := runTerms_typed stmts _ σf (copyIn_typed hσ bs hb (zeroLocals_typed htp locals)) hf
+    have ht₁ := bindTerms_typed results id σf htf.wf _ _ σ₁ (copyOut_typed htf bs hc hσ hb) hres
+    rw [hrs] at ht₁
+    exact runTerms_typed rest _ σ' ht₁ hr
 termination_by structural st
 theorem armsST_typed {P : Params} {S : Spans} {Γ : Locals} {s : Ty} (arms : ArmsS P S Γ s) :
     ∀ (σ : Scope) (sx : Term) (σ' : Scope), Typed Γ σ → armsST σ sx arms = some σ' → Typed Γ σ' := by
@@ -1881,17 +2154,6 @@ theorem armsST_typed {P : Params} {S : Spans} {Γ : Locals} {s : Ty} (arms : Arm
 termination_by structural arms
 end
 
-theorem bindTerms_typed {P : Params} {S : Spans} {Γ : Locals} {ps : List (String × Ty)} (args : Args P S Γ ps) :
-    ∀ (nm : String → String) (σ : Scope), σ.wf → ∀ (Γ0 : Locals) (acc σ' : Scope), Typed Γ0 acc →
-      bindTerms nm σ args acc = some σ' → Typed (bindTypes nm Γ0 ps) σ' := by
-  intro nm σ hσ Γ0 acc σ' h0 h
-  match args with
-  | .nil => simp only [bindTerms, Option.some.injEq] at h; subst h; exact h0
-  | .cons (x := x) a rest =>
-    simp only [bindTerms, Option.bind_eq_some_iff] at h
-    obtain ⟨ta, ha, hr⟩ := h
-    exact bindTerms_typed rest nm σ hσ _ _ σ' (h0.set (nm x) (lowerT_width a σ ta ha) (lowerT_topPositive a σ ta hσ ha)) hr
-termination_by structural args
 
 /-! ### The theorem -/
 
@@ -2110,6 +2372,18 @@ theorem lowerT_eval {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P 
     simp only [evalX, Option.bind_eq_some_iff] at hv
     obtain ⟨l', hl', hvb⟩ := hv
     exact lowerT_eval b _ ρ _ F T v (bindArgs_agree fields (fieldName r) σ ρ l F hA _ _ l hA σ' l' hσ' hl') hb hvb
+  | .callX params locals bs hb hc stmts results args rest =>
+    intro v hv
+    simp only [lowerT, Option.bind_eq_some_iff] at h
+    obtain ⟨σp, hp, σf, hf, σ', hres, hr⟩ := h
+    simp only [evalX, Option.bind_eq_some_iff] at hv
+    obtain ⟨lp, hlp, lf, hlf, l', hlres, hvr⟩ := hv
+    have hAp := bindArgs_agree args id σ ρ l F hA _ _ (fun _ => 0) (Agree.empty ρ _) σp lp hp hlp
+    have hAc := copyIn_agree hA bs hb (zeroLocals_agree hAp locals)
+    have hAf := runTerms_agree stmts _ ρ _ F σf lf hAc hf hlf
+    have hAo := copyOut_agree hAf bs hc hA hb
+    have hA' := bindArgs_agree results id _ ρ _ F hAf _ _ _ hAo σ' l' hres hlres
+    exact lowerT_eval rest _ ρ _ F T v hA' hr hvr
   | .condSet c armT armF rest =>
     intro v hv
     simp only [lowerT, Option.bind_eq_some_iff] at h
@@ -2291,6 +2565,18 @@ theorem runTerms_agree {P : Params} {S : Spans} {Γ : Locals} (st : Stmts P S Γ
       exact runTerms_agree rest _ ρ _ F σ' l'
         (writeArr_agree hA hin vi (lowerT_width i σ ti hi) ihi (lowerT_width w σ tv htv) (lowerT_topPositive w σ tv (Agree.wf hA) htv) vv ihv hn32 n (Nat.le_refl n)) hr hv
     · cases hv
+  | .callS params locals bs hb hc hrs stmts results args rest =>
+    simp only [runTerms, Option.bind_eq_some_iff] at h
+    obtain ⟨σp, hp, σf, hf, σ₁, hres, hr⟩ := h
+    simp only [runVals, Option.bind_eq_some_iff] at hv
+    obtain ⟨lp, hlp, lf, hlf, l₁, hlres, hvr⟩ := hv
+    have hAp := bindArgs_agree args id σ ρ l F hA _ _ (fun _ => 0) (Agree.empty ρ _) σp lp hp hlp
+    have hAc := copyIn_agree hA bs hb (zeroLocals_agree hAp locals)
+    have hAf := runTerms_agree stmts _ ρ _ F σf lf hAc hf hlf
+    have hAo := copyOut_agree hAf bs hc hA hb
+    have hA₁ := bindArgs_agree results id _ ρ _ F hAf _ _ _ hAo σ₁ l₁ hres hlres
+    rw [hrs] at hA₁
+    exact runTerms_agree rest _ ρ _ F σ' l' hA₁ hr hvr
 termination_by structural st
 /-- A value-position match's arms agree with the if-chain. -/
 theorem armsT_eval {P : Params} {S : Spans} {Γ : Locals} {s t : Ty} (arms : Arms P S Γ s t) :
@@ -2672,5 +2958,31 @@ example : ((lowerT (paramLeaves [("r.h[0]", .u32), ("r.h[1]", .u32), ("r.n", .u3
     (.arrGet .u32 2 (elemName "r.h") (by decide) (by decide) (.var .u32 "i" (by decide))
       : Expr (ps [("i", .u32)]) sp0 (ls [("r.h[0]", .u32), ("r.h[1]", .u32), ("r.n", .u32)]) .u32)).map Term.render)
     = some "((i eq 0) ? r.h[0] : r.h[1])" := by decide
+
+/-! Calls that borrow and calls that return records: the callee's span
+leaves are copies of the owner's, written back on return; a record result
+is bound leaf by leaf. -/
+
+/-- `g: (s: [*]u32, v: u32) -> u32 = { s[1] = v; s[0] + s[1] }`;
+`f: (v: u32) -> u32 = { a: [2]u32; a[0] = v; r: u32 = g(span(&a), v + 1); r + a[1] }` -/
+example : lowered? ((.arrDecl (elemName "a") .u32 2 (by decide)
+    (.arrSetE (n := 2) (elemName "a") (by decide) (by decide) (.lit .u32 0) (.var .u32 "v" (by decide))
+    (.callX [("v", .u32)] [] [⟨"s", .u32, 2, elemName "a"⟩] (by decide) (by decide) (rs := [("r", .u32)])
+      (.arrSet (n := 2) (elemName "s") (by decide) (by decide) (.lit .u32 1) (.var .u32 "v" (by decide)) .nil)
+      (.cons (.arith .add (.arrGet .u32 2 (elemName "s") (by decide) (by decide) (.lit .u32 0))
+        (.arrGet .u32 2 (elemName "s") (by decide) (by decide) (.lit .u32 1))) .nil)
+      (.cons (.arith .add (.var .u32 "v" (by decide)) (.lit .u32 1)) .nil)
+      (.arith .add (.var .u32 "r" (by decide)) (.arrGet .u32 2 (elemName "a") (by decide) (by decide) (.lit .u32 1)))))
+    : X (ps [("v", .u32)]) sp0 .u32))
+    = some "((v add (v add 1)) add (v add 1))" := by decide
+/-- `shift: (p: P, dx: u32) -> P = P { x: p.x + dx, y: p.y }`;
+`f: (a, b: u32) -> u32 = { p: P = P { x: a, y: b }; q: P = shift(p, 1); q.x * q.y }` -/
+example : lowered? ((.recDecl "p" [("x", .u32), ("y", .u32)] (.cons (.var .u32 "a" (by decide)) (.cons (.var .u32 "b" (by decide)) .nil))
+    (.callX [("p.x", .u32), ("p.y", .u32), ("dx", .u32)] [] [] (by decide) (by decide) (rs := [("q.x", .u32), ("q.y", .u32)])
+      .nil
+      (.cons (.arith .add (.var .u32 "p.x" (by decide)) (.var .u32 "dx" (by decide))) (.cons (.var .u32 "p.y" (by decide)) .nil))
+      (.cons (.var .u32 "p.x" (by decide)) (.cons (.var .u32 "p.y" (by decide)) (.cons (.lit .u32 1) .nil)))
+      (.arith .mul (.var .u32 "q.x" (by decide)) (.var .u32 "q.y" (by decide)))) : X (ps [("a", .u32), ("b", .u32)]) sp0 .u32))
+    = some "((a add 1) mul b)" := by decide
 
 end Oak.LoweringRefinement
