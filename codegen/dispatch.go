@@ -104,6 +104,12 @@ static u64 oak_cpu_probe(void) { return 0; }
 #endif
 /* exported: a C host without an Oak main calls it once before any dispatched call */
 void oak_cpu_init(void) { oak_cpu_features = oak_cpu_probe(); }
+#ifdef OAK_CHECK_DISPATCH
+/* under oak test a checkable realization's result is compared with the meaning's
+   (docs/spec/93-simd.md section 6.2); the harness records dispatch:<function>:<feature> */
+extern void oak_test_host_dispatch_divergence(const char *function, const char *feature);
+#define oak_dispatch_divergence(f, x) oak_test_host_dispatch_divergence((f), (x))
+#endif
 #if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)
 __attribute__((constructor)) static void oak_cpu_init_constructor(void) { oak_cpu_init(); }
 #endif
@@ -172,31 +178,88 @@ func (cg *CodeGenerator) dispatchModeTypedefs(mode string) string {
 	return b.String()
 }
 
-// emitDispatchPrologue opens a dispatched function's body: per slot, in
-// clause order, the realization outright where the baseline guarantees
-// the feature, else under one branch on the probed word.
-func (cg *CodeGenerator) emitDispatchPrologue(fn *ast.FunctionStatement, slots []*ast.DispatchSlot, returnType string) {
-	args := make([]string, 0, len(fn.Parameters))
+// dispatchParameterList spells a function's C parameter list and argument
+// list as the function emitter does.
+func (cg *CodeGenerator) dispatchParameterList(fn *ast.FunctionStatement) (params string, args string, spans bool) {
+	parts, names := []string{}, []string{}
 	for _, param := range fn.Parameters {
-		args = append(args, cIdent(param.Name.Value))
+		if param.Variadic {
+			parts = append(parts, cg.emitViewType(cg.parseTypeExpression(param.Type))+" "+cIdent(param.Name.Value))
+		} else {
+			parts = append(parts, cg.cParameter(param.Type, param.Name.Value))
+		}
+		if strings.HasPrefix(cg.parseTypeExpression(param.Type), "oak_span_") {
+			spans = true
+		}
+		names = append(names, cIdent(param.Name.Value))
 	}
+	params = strings.Join(parts, ", ")
+	if params == "" {
+		params = "void"
+	}
+	return params, strings.Join(names, ", "), spans
+}
+
+// dispatchCheckable reports whether a dispatched function's claim is
+// checked under oak test (docs/spec/93-simd.md section 6.2): a pure shape
+// — a fixed-width integer or Bool result and no span parameter — so the
+// realization and the meaning can both run on the same arguments and be
+// compared.
+func dispatchCheckable(returnType string, spans bool) bool {
+	if spans {
+		return false
+	}
+	switch returnType {
+	case "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "Bool", "int", "uint":
+		return true
+	}
+	return false
+}
+
+// emitDispatchWrapper emits the public function of a dispatched
+// declaration after its meaning (docs/spec/93-simd.md section 6.1): per
+// slot, in clause order, the realization outright where the baseline
+// guarantees the feature (the static rule), else under one branch on the
+// probed word; then the meaning. Under oak test (OAK_CHECK_DISPATCH) a
+// checkable function runs both and reports a disagreement as the
+// correctness failure `dispatch:<function>:<feature>` (section 6.2).
+func (cg *CodeGenerator) emitDispatchWrapper(fn *ast.FunctionStatement, slots []*ast.DispatchSlot, publicName, meaningName string) {
+	returnType := "void"
+	if fn.ReturnType != nil {
+		returnType = cg.parseTypeExpression(fn.ReturnType)
+	}
+	params, args, spans := cg.dispatchParameterList(fn)
+	checkable := dispatchCheckable(returnType, spans)
+	cg.write(fmt.Sprintf("%s%s %s( %s ) {\n", cg.linkage(fn.Name.Value), returnType, publicName, params))
+	meaning := fmt.Sprintf("%s( %s )", meaningName, args)
 	for _, slot := range slots {
 		feature, known := semir.LookupCPUFeature(slot.Feature)
 		if !known {
 			continue
 		}
-		call := fmt.Sprintf("%s( %s )", cg.cFunctionName(slot.Realization), strings.Join(args, ", "))
-		transfer := "return " + call + ";"
+		call := fmt.Sprintf("%s( %s )", cg.cFunctionName(slot.Realization), args)
+		var transfer string
 		if returnType == "void" {
-			transfer = call + "; return;"
+			transfer = fmt.Sprintf("%s; return;", call)
+		} else if checkable {
+			transfer = fmt.Sprintf("\n#ifdef OAK_CHECK_DISPATCH\n    { %s oak_claimed = %s; %s oak_meant = %s; if (!( oak_claimed == oak_meant )) { oak_dispatch_divergence( %q, %q ); } return oak_claimed; }\n#else\n    return %s;\n#endif\n  ",
+				returnType, call, returnType, meaning, fn.Name.Value, feature.Name, call)
+		} else {
+			transfer = fmt.Sprintf("return %s;", call)
 		}
 		arch := dispatchArchCondition(feature.Arch)
 		// Under the portable lowering (-DOAK_PORTABLE_INTRINSICS) nothing
-		// dispatches: the realizations are not compiled, the body runs.
+		// dispatches: the realizations are not compiled, the meaning runs.
 		cg.write(fmt.Sprintf("#if (%s) && defined(%s) && !defined(OAK_PORTABLE_INTRINSICS) && !defined(OAK_SCALAR_SIMD)\n", arch, feature.BaselineMacro))
-		cg.write(fmt.Sprintf("  %s /* the baseline guarantees %s */\n", transfer, feature.Name))
+		cg.write(fmt.Sprintf("  { %s } /* the baseline guarantees %s */\n", transfer, feature.Name))
 		cg.write(fmt.Sprintf("#elif (%s) && %s\n", arch, dispatchMacro(feature)))
 		cg.write(fmt.Sprintf("  if (oak_cpu_features & %s) { %s }\n", feature.Macro(), transfer))
 		cg.write("#endif\n")
 	}
+	if returnType == "void" {
+		cg.write(fmt.Sprintf("  %s;\n", meaning))
+	} else {
+		cg.write(fmt.Sprintf("  return %s;\n", meaning))
+	}
+	cg.write("}\n\n")
 }

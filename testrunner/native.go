@@ -180,7 +180,9 @@ int main(int argc, char **argv) {
 	}
 	// -ffp-contract=off keeps floating-point semantics exactly as written
 	// (docs/spec/90-backend.md section 7a).
-	flags := []string{"-std=c11", "-O1", "-g", "-ffp-contract=off"}
+	// OAK_CHECK_DISPATCH: a dispatched function compares its realization
+	// with its meaning (docs/spec/93-simd.md section 6.2).
+	flags := []string{"-std=c11", "-O1", "-g", "-ffp-contract=off", "-DOAK_CHECK_DISPATCH=1"}
 	versionArgs := []string{"--version"}
 	if pkg.Target.OS != "" && !pkg.Target.IsHost() {
 		// A foreign target compiles through the toolchain `oak build -target`
@@ -370,6 +372,10 @@ void oak_test_host_discard(void) {
 }
 void oak_test_host_classify(uint32_t id) {
  if (oak_test_report) { fprintf(oak_test_report, "class %u\n", (unsigned)id); fflush(oak_test_report); }
+}
+void oak_test_host_dispatch_divergence(const char *function, const char *feature) {
+ if (oak_test_report) { fprintf(oak_test_report, "dispatch %s %s\n", function, feature); fflush(oak_test_report); }
+ exit(101);
 }
 `
 
@@ -584,6 +590,15 @@ func (p *nativeProgram) run(index int, input []byte) (result outcome) {
 				terminal = "fail"
 				result.signature = "liveness:" + fields[1]
 			}
+		} else if len(fields) == 3 && fields[0] == "dispatch" {
+			// A realization disagreed with its meaning (docs/spec/93-simd.md
+			// section 6.2): the signature names the function and feature.
+			if !identifierLike(fields[1]) || !identifierLike(fields[2]) {
+				result.signature = "harness:bad-report"
+				return result
+			}
+			terminal = "fail"
+			result.signature = "dispatch:" + fields[1] + ":" + fields[2]
 		} else if len(fields) == 1 && (fields[0] == "pass" || fields[0] == "discard") {
 			terminal = fields[0]
 		} else {
@@ -659,4 +674,18 @@ func statusOf(err error) exitStatus {
 		return exitStatus{ran: true, signal: ws.Signal(), core: ws.CoreDump()}
 	}
 	return exitStatus{ran: true, exited: true, code: ws.ExitStatus()}
+}
+
+// identifierLike accepts the names a dispatch report line carries: letters,
+// digits, and underscores, as an Oak or internal function name spells them.
+func identifierLike(name string) bool {
+	if name == "" || len(name) > 256 {
+		return false
+	}
+	for _, r := range name {
+		if !(r == '_' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+			return false
+		}
+	}
+	return true
 }
