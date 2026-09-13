@@ -624,6 +624,11 @@ type TypeChecker struct {
 	// body is checked, so functions may mention globals declared later in
 	// the file; the defining declaration consumes its entry.
 	predeclaredGlobals map[string]bool
+	// expressionTypes records the checked type of every expression by
+	// position (the shift-width pattern), so a backend working on lowered
+	// or rewritten nodes — whose pointers the pointer-keyed cache no longer
+	// knows — can still spell a subexpression's type (codegen/sequence.go).
+	expressionTypes map[tokenKey]Type
 	// shiftWidths records the operand width of each shift expression
 	// (position-keyed), consumed by the backend's checked-shift emission.
 	shiftWidths map[tokenKey]int
@@ -1681,6 +1686,14 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 	defer func() {
 		if info := tc.env.borrowMetadata(); info != nil && expr != nil && result != nil {
 			info.expressions[expr] = result
+		}
+		if expr != nil && result != nil {
+			if tok, positioned := ast.ExpressionToken(expr); positioned {
+				if tc.expressionTypes == nil {
+					tc.expressionTypes = make(map[tokenKey]Type)
+				}
+				tc.expressionTypes[positionKey(tok)] = result
+			}
 		}
 	}()
 	var expected Type

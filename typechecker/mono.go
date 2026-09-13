@@ -253,6 +253,14 @@ func positionKey(tok token.Token) tokenKey {
 	return tokenKey{context: tok.SemanticContext, line: tok.Line, column: tok.Column, literal: tok.Literal}
 }
 
+// ExpressionTypeAt returns the type the checker recorded for the expression
+// positioned at tok (ast.ExpressionToken), whatever node now carries that
+// position.
+func (tc *TypeChecker) ExpressionTypeAt(tok token.Token) (Type, bool) {
+	typ, ok := tc.expressionTypes[positionKey(tok)]
+	return typ, ok
+}
+
 // recordShiftWidth notes the operand width of one shift expression, so the
 // backend emits the right checked helper without re-deriving types.
 func (tc *TypeChecker) recordShiftWidth(expr *ast.InfixExpression, width int) {
