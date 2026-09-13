@@ -167,10 +167,14 @@ subtraction, and multiplication through `Oak.FloatOps.add32`, `sub32`, and
 `mul32` — each one `fma` with an exact operand, so one rounding of the
 exact result over the bit pattern, executable and defined — and a theorem
 about the extracted code reaches the rounding. `Oak.FloatOps.roundShift_eq_roundNat`
-is the bridge to the evaluation discipline's integer model: the rounding
-`encode` performs on a significand is `Oak.Floats.roundNat`, so the
-bounds of `Oak.FloatBounds` speak about these functions (the ml pilot's
-E4, RFC 0004's `bounded`). Division and the comparisons stay Lean's.
+and `roundTo_value` are the bridge to the evaluation discipline's integer
+model: the rounding `encode` performs on a significand is
+`Oak.Floats.roundNat`, and in the normal range the value it packs —
+significand times its exponent's power — *is* `roundNat prec n`, so the
+bounds of `Oak.FloatBounds` are bounds on these functions wherever the
+exact result rounds to a normal number (the ml pilot's E4, RFC 0004's
+`bounded`). Subnormal and overflowing results follow IEEE 754-2019 in the
+code and are outside the integer model, as `Oak.Floats` says of itself. Division and the comparisons stay Lean's.
 `compiler/lean_float_bits_test.go` holds the three functions to the host's
 binary32 on edge and random operands; the default mode is unchanged, so an
 extraction that never states a rounding fact keeps Lean's operators.

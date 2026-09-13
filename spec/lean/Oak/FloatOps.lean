@@ -94,17 +94,23 @@ def roundShift (n s : Nat) : Nat :=
   let half := 2 ^ (s - 1)
   if r > half || (r = half && q % 2 = 1) then q + 1 else q
 
+/-- The rounded significand and exponent of `n · 2^e` (`n ≠ 0`), before
+packing: the significand is brought to `prec` bits (or to the subnormal
+quantum) to nearest, ties to even, and a carry out of the top bit
+renormalizes. -/
+def roundTo (f : Fmt) (n : Nat) (e : Int) : Nat × Int :=
+  let len : Nat := Nat.log2 n + 1
+  let eu : Int := max (e + len - f.prec) f.emin
+  let q0 : Nat :=
+    if e ≥ eu then n <<< (e - eu).toNat else roundShift n (eu - e).toNat
+  if q0 = 2 ^ f.prec then (q0 / 2, eu + 1) else (q0, eu)
+
 /-- Round `±n · 2^e` (`n ≠ 0`) once to the format, to nearest, ties to
 even; overflow yields the infinity of that sign, small values the
 subnormal encoding. -/
 def encode (f : Fmt) (neg : Bool) (n : Nat) (e : Int) : Nat :=
   if n = 0 then f.signOnly neg else
-  let len : Nat := Nat.log2 n + 1
-  let eu : Int := max (e + len - f.prec) f.emin
-  let q0 : Nat :=
-    if e ≥ eu then n <<< (e - eu).toNat else roundShift n (eu - e).toNat
-  let (q, eu) : Nat × Int :=
-    if q0 = 2 ^ f.prec then (q0 / 2, eu + 1) else (q0, eu)
+  let (q, eu) : Nat × Int := f.roundTo n e
   if q < 2 ^ f.fracBits then f.signOnly neg + q
   else
     let expF : Int := eu + f.fracBits + f.bias
@@ -210,6 +216,50 @@ theorem roundShift_eq_roundNat (p n : Nat) (hn : 2 ^ p ≤ n) :
       simp [heq, h0]
   · have h1 : ¬ (r < h) := by omega
     simp [hgt, h1]
+
+/-- `Nat.log2 n + 1` is the bit length `Oak.Floats` counts. -/
+theorem log2_succ_eq_bitlen (n : Nat) (h : 0 < n) : Nat.log2 n + 1 = Oak.Floats.bitlen n := by
+  have hne : n ≠ 0 := Nat.pos_iff_ne_zero.mp h
+  have hup := Oak.Floats.bitlen_upper n
+  have hlo := Oak.Floats.bitlen_lower hne
+  have h1 : Nat.log2 n < Oak.Floats.bitlen n := (Nat.log2_lt hne).mpr hup
+  have h2 : Oak.Floats.bitlen n - 1 ≤ Nat.log2 n := (Nat.le_log2 hne).mpr hlo
+  omega
+
+/-- **The bridge, at the value.** For a significand at or above `2^prec`
+whose rounding stays in the normal range, the value `roundTo` returns —
+the significand times its exponent's power — is `Oak.Floats.roundNat prec n`:
+what `encode` packs into the bit pattern is the evaluation discipline's
+rounded integer, so a bound proved in `Oak.FloatBounds` over `roundNat`
+is a bound on `add32`, `sub32`, and `mul32` wherever their exact result
+has a normal rounding. -/
+theorem roundTo_value (f : Fmt) (n : Nat) (hprec : 0 < f.prec) (hn : 2 ^ f.prec ≤ n)
+    (hnorm : f.emin ≤ ((Oak.Floats.bitlen n : Nat) : Int) - f.prec) :
+    (f.roundTo n 0).1 * 2 ^ (f.roundTo n 0).2.toNat = Oak.Floats.roundNat f.prec n := by
+  have hpos : 0 < n := Nat.lt_of_lt_of_le (Nat.two_pow_pos _) hn
+  have hlen := log2_succ_eq_bitlen n hpos
+  have hgt : f.prec < Oak.Floats.bitlen n := bitlen_gt f.prec n hn
+  unfold Fmt.roundTo
+  simp only [hlen]
+  have heu : max ((0 : Int) + (Oak.Floats.bitlen n : Nat) - f.prec) f.emin = ((Oak.Floats.bitlen n : Nat) : Int) - f.prec := by
+    omega
+  rw [heu]
+  have hnot : ¬ ((0 : Int) ≥ ((Oak.Floats.bitlen n : Nat) : Int) - f.prec) := by omega
+  simp only [hnot, if_false]
+  have hs : (((Oak.Floats.bitlen n : Nat) : Int) - f.prec - 0).toNat = Oak.Floats.bitlen n - f.prec := by omega
+  rw [hs]
+  have hkey := roundShift_eq_roundNat f.prec n hn
+  by_cases hq : Fmt.roundShift n (Oak.Floats.bitlen n - f.prec) = 2 ^ f.prec
+  · simp only [hq, if_true]
+    rw [← hkey, hq]
+    have hs1 : (((Oak.Floats.bitlen n : Nat) : Int) - f.prec + 1).toNat = Oak.Floats.bitlen n - f.prec + 1 := by omega
+    rw [hs1, Nat.pow_succ]
+    obtain ⟨t, ht⟩ : ∃ t, f.prec = t + 1 := ⟨f.prec - 1, by omega⟩
+    rw [ht, Nat.pow_succ, Nat.mul_div_cancel _ (by decide)]
+    ac_rfl
+  · simp only [hq, if_false]
+    have hs2 : (((Oak.Floats.bitlen n : Nat) : Int) - f.prec).toNat = Oak.Floats.bitlen n - f.prec := by omega
+    rw [hs2, hkey]
 
 /-- Round to nearest, ties to even (C `rint`). -/
 def roundEven32 (x : Float32) : Float32 :=
