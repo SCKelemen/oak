@@ -1894,6 +1894,57 @@ element and models an atomic load as the cell's read, so straight-line
 atomic reads verify while writers and retry loops are trusted against
 the C oracle. The rv64 lane leaves atomics to the C backend.
 
+**Instruction functions on the native lane (landed).** The machine
+library's calls lower to the instructions they name, through the
+assembler's own parser (`asm.ParseInstructionLine`), so the spelling the
+checker and the encoder see is the units': `arm64.read_X()` is `mrs` and
+`arm64.write_X(v)` is `msr` over the same catalog the C backend's helpers
+come from (`semir/sysreg.go`, the name lowercased into the encoder's
+table), `dmb`/`dsb` with their scope and `isb` for the barriers, the
+event-control instructions (`msr daifset, #2`, `wfi`, `wfe`, `sev`),
+`rev`/`rbit`/`clz` for the scalar functions (which the verifier proves as
+the instruction terms it already knows), and a control transfer `eret_x0(v)`
+as `mov x0, v` then `eret`, the end of a `never` function (which has no
+epilogue and no `ret`). A body using a system instruction carries the
+checker's `system` capability, so the checker's access-direction table
+judges every register access as it judges a unit's; an instruction
+function is an instruction, not a call, so it neither saves `x30` nor
+parks a span. Executed (`compiler/e2e_native_instructions_test.go`):
+`cntvct_el0`/`cntfrq_el0` reads, barriers, and the scalar functions on an
+arm64 host; the hypervisor adapter's EL2 register program (the DAIF
+mask, the `hcr`/`vttbr`/`vtcr`/`sp_el1`/`elr`/`spsr` writes, `isb`, and
+an `eret_x0` entry) lowers, is admitted, and encodes for
+`freestanding/arm64` — the bodies that kept the pilot's modules in C.
+
+**Freestanding modules realized natively (landed).** `oak build -target
+freestanding/arm64 -native -asm native` produces the one relocatable
+object the build promises: the C compiles to its object and the driver's
+partial link (`-r`) joins it with the Oak companion object, so the pilot
+links one file as before while some bodies stay with C. `-link oak` on a
+freestanding target writes the Oak object alone (`EmitNativeObject`: every
+body native, no globals, no extern bindings, `main` not required — a
+module exports its `pub` functions); `-link oak-image` writes the
+standalone image with the start stub; on Linux `-link oak` is the static
+executable. Checked (`compiler/e2e_native_object_test.go`): the native
+object of the integer corpus for both lanes with every function a symbol,
+the refusal by name, and the partially linked mixed module.
+
+**Check elision under the checker's own facts (landed, AArch64 lane).**
+An element access the typechecker proved in range (`IndexProven`, the
+extent facts of `50-borrowing.md`) is lowered without its guard, reading
+the index from the loop variable's own callee-saved register — the
+register the loop's exit test compared — so the fact that test left on
+the path is what admits the access; the seam checker then admits or
+refuses the body, and on refusal the compiler lowers it again with every
+guard (`compiler/native_bodies.go`; the diagnostic names the finding).
+The optimizer never decides safety: the elision is only what the checker
+already knows, and its refusal is the fallback. The span sum now has one
+compare, the loop's exit test, before its load (`ldr w10, [x0, w20, uxtw
+#2]`), and the verifier still proves it. On the RV64 lane the exit test
+compares canonical (sign-extended) values while the guard fact needs the
+zero-extended index, so its guards stay until the index representation
+changes; the C backend elides through `IndexProven` as before.
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against) and fractional-LMUL forms. The term

@@ -69,6 +69,12 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// `entries`); the C emitter keeps the original body.
 		source := substituteConstants(fn, constants)
 		lane := nativegen.Lane{Arch: comp.options.Target.AsmArch(), SoftFloat: comp.options.Target.Freestanding() && comp.options.Target.Arch == target.ArchRiscv64}
+		// Check elision (docs/spec/94-assembler.md §9): an element access the
+		// typechecker proved in range is lowered without its guard first;
+		// if the seam checker cannot admit the body from the facts on the
+		// path, the body is lowered again with every guard. The checker
+		// decides safety; the elision is only what it already knows.
+		lane.ElideProven = lane.Arch == asm.ArchArm64
 		asmFn, err := nativegen.CompileFor(lane, source, functions, records, adts, tc)
 		if err != nil {
 			if _, outside := err.(nativegen.Unsupported); outside {
@@ -78,12 +84,25 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
 			continue
 		}
+		findings := asm.Check(asmFn, source, symbols)
+		if len(findings) != 0 && lane.ElideProven && nativegen.ElidedGuards(asmFn) > 0 {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its element guards (the checker did not admit the elided form: %s)", fn.Name.Value, findings[0])))
+			lane.ElideProven = false
+			asmFn, err = nativegen.CompileFor(lane, source, functions, records, adts, tc)
+			if err != nil {
+				diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
+				continue
+			}
+			findings = asm.Check(asmFn, source, symbols)
+		} else if elided := nativegen.ElidedGuards(asmFn); elided > 0 && len(findings) == 0 {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d element guard(s) elided under the checker's own facts", fn.Name.Value, elided)))
+		}
 		if os.Getenv("OAK_NATIVE_DUMP") != "" {
 			// A debugging aid: the lowered assembly of every function, as the
 			// checker sees it.
 			fmt.Fprint(os.Stderr, nativegen.Describe(asmFn))
 		}
-		if findings := asm.Check(asmFn, source, symbols); len(findings) != 0 {
+		if len(findings) != 0 {
 			for _, finding := range findings {
 				diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: the checker refuses the lowering of %s: %s", fn.Name.Value, finding)))
 			}
