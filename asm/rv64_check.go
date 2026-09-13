@@ -1439,10 +1439,48 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 		// (Oak.RiscV.masked_access_in_bounds).
 		c.read(Register{Text: "v0", Class: ClassRV64V, Num: 0, Lane: -1}, line)
 	}
-	// Vector register operands are groups of LMUL registers (RVV 1.0
-	// §3.4.2): aligned to LMUL, every register of the group read or written.
+	// Vector register operands are groups of EMUL registers (RVV 1.0
+	// §3.4.2, §11.2): LMUL, twice LMUL for a widening destination or a
+	// narrowing source, half for an extension's source; aligned to their
+	// size, every register of the group read or written. A widening or
+	// narrowing destination must not overlap a source (the ISA's overlap
+	// rule, applied fail-closed), and the wide group stays within the file
+	// and its element width within 64 bits (Oak.RiscV.wide_group_within_file).
+	groupSize := func(position int) int64 {
+		count := c.vcfg.lmul
+		if rv64GroupSingle(name, position) {
+			return 1
+		}
+		switch rv64VectorEMUL(name, position) {
+		case 2:
+			count *= 2
+		case 0:
+			count /= 2
+			if count == 0 {
+				count = 1
+			}
+		}
+		return count
+	}
+	if rv64VectorEMUL(name, 0) == 2 || rv64VectorEMUL(name, 1) == 2 {
+		if c.vcfg.lmul*2 > 8 {
+			c.errorf(line, "%s: the wide group would be LMUL=%d, past the file's eight registers", name, c.vcfg.lmul*2)
+			return false
+		}
+		if rv64VectorEMUL(name, 0) == 2 && c.vcfg.sew*2 > 8 {
+			c.errorf(line, "%s: widening past 64-bit elements (SEW is e%d)", name, c.vcfg.sew*8)
+			return false
+		}
+	}
+	if (name == "vzext.vf2" || name == "vsext.vf2") && c.vcfg.sew < 2 {
+		c.errorf(line, "%s: the source elements would be narrower than 8 bits (SEW is e8)", name)
+		return false
+	}
 	group := func(position int, write bool) {
-		r := reg(position)
+		r, isReg := ops[position].(Register)
+		if !isReg {
+			return // an immediate (vnsrl.wi's shift)
+		}
 		if r.Class != ClassRV64V {
 			if write {
 				c.write(r, line)
@@ -1451,10 +1489,7 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 			}
 			return
 		}
-		count := c.vcfg.lmul
-		if rv64GroupSingle(name, position) {
-			count = 1
-		}
+		count := groupSize(position)
 		if int64(r.Num)%count != 0 {
 			c.errorf(line, "%s: %s is not aligned to the register group of LMUL=%d (Oak.RiscV.group_within_file)", name, r.Text, count)
 			return
@@ -1465,6 +1500,24 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 				c.write(member, line)
 			} else {
 				c.read(member, line)
+			}
+		}
+	}
+	if rv64VectorEMUL(name, 0) == 2 || rv64VectorEMUL(name, 1) == 2 || rv64VectorEMUL(name, 1) == 0 {
+		// Destination and source groups of different sizes must not overlap.
+		d := reg(0)
+		if d.Class == ClassRV64V {
+			dLo, dHi := int64(d.Num), int64(d.Num)+groupSize(0)-1
+			for i := 1; i < len(shape); i++ {
+				src, isReg := ops[i].(Register)
+				if !isReg || src.Class != ClassRV64V {
+					continue
+				}
+				sLo, sHi := int64(src.Num), int64(src.Num)+groupSize(i)-1
+				if dLo <= sHi && sLo <= dHi {
+					c.errorf(line, "%s: the destination group %s overlaps the source group %s; widening and narrowing groups must be disjoint", name, d.Text, src.Text)
+					return false
+				}
 			}
 		}
 	}

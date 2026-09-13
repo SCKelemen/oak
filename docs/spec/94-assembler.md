@@ -1524,7 +1524,16 @@ group of LMUL registers aligned to LMUL (RVV 1.0 §3.4.2,
 a group must be wholly clobbered before it is written and an unaligned
 group is a finding; mask destinations and mask sources (the comparisons'
 `vd`, `vcpop.m`'s source, `v0`) stay single registers; fractional LMUL is
-refused. A vector unit is checked and
+refused. **Widening (third increment).** `vwaddu`/`vwadd`/`vwsubu`/`vwsub`/
+`vwmulu`/`vwmul .vv` write `2*SEW` elements into a `2*LMUL` group,
+`vzext.vf2`/`vsext.vf2` read a half-width source group, `vnsrl.wi` reads a
+`2*LMUL` source, and `vle16.v`/`vse16.v` move 16-bit elements: each
+operand's group is its EMUL's size, aligned and wholly clobbered; a
+destination group that overlaps a source group is refused (the ISA's
+overlap rule, fail-closed), as is widening past 64-bit elements or a wide
+group past the file (`wide_group_within_file`, `widening_within_64`). The
+differentials carry the u32 elements multiplied into u64 products and
+reduced at e64/m2. A vector unit is checked and
 *trusted* — the vector state is outside the term language, as the
 floating-point file is — and its inline realization scopes
 `.option arch, +v` to the unit so any host assembler accepts it. Every
@@ -1558,7 +1567,11 @@ function starts as four-byte instructions and shrinks each branch whose
 offset fits until nothing changes, so label arithmetic converges with the
 sizes. The checker and the verifier see the base instructions and are
 unchanged; the object carries `EF_RISCV_RVC`; the QEMU and Sail
-differentials run the strip-mined sum compressed.
+differentials run the strip-mined sum compressed. A compressed function
+holding an odd number of 16-bit instructions ends on a half word, so the
+object writer pads to the next entry in `nop` words closed by one `c.nop`
+(`Oak.Assembler.gap_reaches`, `pad_halfwords_reaches`) — a word-sized pad
+alone would never reach the boundary (`pad_words_misses`).
 
 **The processor decides (landed).** The compiler reads the RISC-V
 extensions of `-cpu` (`target.CPUFeatures`: `+c`/`+v` on a zig-style name
@@ -1872,9 +1885,8 @@ verifier as the typed literal `T(init)` on a copy of the body, so
 the emitted C keeps the constant (`compiler/native_bodies.go`).
 
 Still to come in this lane:
-the RVWMO instantiation of `MemoryOrder.lean`, the sail-riscv bridge's
-export side (the Lean export as the semantics the transliteration is
-checked against), and widening and fractional-LMUL forms. The term
+the sail-riscv bridge's export side (the Lean export as the semantics the
+transliteration is checked against) and fractional-LMUL forms. The term
 language and the BDD blaster carry over unchanged.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
