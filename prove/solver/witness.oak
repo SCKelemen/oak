@@ -1,0 +1,523 @@
+// The compiled-program witness, in Oak (docs/spec/125-verification.md
+// section 4; prove/witness.go is the Go twin). Every decided theorem whose
+// parameters the driver enumerates — u8, u16, i8, i16, Bool, and the
+// payload-free sum types the source declares or a protocol's state type,
+// their product within -cases — is called on every element of its domains
+// by a generated `main` that replaces the file's own; the driver exits
+// with the 1-based index of the first theorem that fails, zero when all
+// hold. The shell writes the driver's source (the file without `main`,
+// the generated obligations and probes, the driver), has the compiler
+// build it and runs the binary through posix_spawn, and folds the exit
+// status into the rows: `witnessed in the compiled program`, or the
+// failing theorem refuted. A theorem the interpreter enumerated but the
+// driver cannot is named in `witness left to the interpreter`.
+package main
+
+posix_spawn: (pid: c.Ptr, path: c.String, actions: c.Ptr, attr: c.Ptr, argv: c.Ptr, envp: c.Ptr): c.Int = c.extern("posix_spawn")
+waitpid: (pid: c.Int, status: c.Ptr, options: c.Int): c.Int = c.extern("waitpid")
+spawn_actions_init: (actions: c.Ptr): c.Int = c.extern("posix_spawn_file_actions_init")
+spawn_actions_addopen: (actions: c.Ptr, fd: c.Int, path: c.String, flags: c.Int, mode: c.Int): c.Int = c.extern("posix_spawn_file_actions_addopen")
+spawn_actions_destroy: (actions: c.Ptr): c.Int = c.extern("posix_spawn_file_actions_destroy")
+
+// Row flags (row word 3): 0 not planned; covered: 1 + the 1-based index;
+// skipped: WIT_SKIP | (reason kind << 24) | the parameter index.
+WIT_SKIP: u32 = 2147483648
+WIT_SKIP_PARAM: u32 = 1
+WIT_SKIP_DOMAIN: u32 = 2
+
+row_flags: (le: Lem, ew: [*]u32, i: u32): u32 = ew[le.rows_at + i * LE_ROW_WORDS + u32(3)]
+set_row_flags: (le: Lem, ew: [*]u32, i: u32, v: u32): () { ew[le.rows_at + i * LE_ROW_WORDS + u32(3)] = v }
+
+// enum_count: the number of values of a parameter type the driver
+// enumerates, or 0: a scalar of eight or sixteen bits, Bool, a
+// payload-free declared sum type, a protocol's state type (never its step
+// type, which the Go rewrite does not see declared).
+enum_count: (rx: []u32, raw: Raw, texpr: u32): u32 {
+  out: u32 = 0
+  (texpr != NONE && rt_kind(rx, raw, texpr) == RAW_TYPE_NAME) ? {
+    name: u32 = rt_a(rx, raw, texpr)
+    nm: Name16 = rs_name(rx, raw, name)
+    (is_name(nm, u64(0x3875), u64(0x0), u32(2)) || is_name(nm, u64(0x3869), u64(0x0), u32(2))) ? { out = u32(256) } | {
+    (is_name(nm, u64(0x363175), u64(0x0), u32(3)) || is_name(nm, u64(0x363169), u64(0x0), u32(3))) ? { out = u32(65536) } | {
+    is_name(nm, u64(0x6C6F6F42), u64(0x0), u32(4)) ? { out = u32(2) } | {
+      adt: u32 = raw_find_adt(rx, raw, name)
+      adt == NONE ? { } | {
+        // A protocol's step type is projected, not declared.
+        projected_step: Bool = false
+        state_type: Bool = false
+        pi: u32 = 0
+        while pi < raw.nprotos {
+          rproto_word(rx, raw, pi, u32(3)) == name ? { projected_step = true } | { }
+          rproto_word(rx, raw, pi, u32(2)) == name ? { state_type = true } | { }
+          pi = pi + u32(1)
+        }
+        projected_step ? { } | {
+          vstart: u32 = radt_word(rx, raw, adt, u32(1))
+          n: u32 = radt_word(rx, raw, adt, u32(2))
+          plain: Bool = n > u32(0)
+          v: u32 = 0
+          while v < n && plain {
+            plain = rvar_word(rx, raw, vstart + v, u32(2)) == NONE
+            v = v + u32(1)
+          }
+          (plain || state_type) ? { out = n } | { }
+        }
+      }
+    } } }
+  } | { }
+  out
+}
+
+// witness_plan marks the decided theorems' rows: covered with the driver's
+// index, or skipped with the reason (a theorem the interpreter enumerated
+// is named; a bit-level one is passed over quietly, as the Go rewrite
+// does). Returns the covered count.
+witness_plan: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, cases: u32): u32 {
+  covered: u32 = 0
+  fi: u32 = 0
+  while fi < raw.nfuncs {
+    fn_is_theorem(rx, raw, fi) ? {
+      ri: u32 = row_named(le, ew, rstr(le, ew, rx, raw, rf_word(rx, raw, fi, u32(0))))
+      (ri != NONE && row_kind(le, ew, ri) == ROW_DECIDED) ? {
+        pstart: u32 = rf_word(rx, raw, fi, u32(1))
+        nparams: u32 = rf_word(rx, raw, fi, u32(2))
+        total: u64 = 1
+        flags: u32 = 0
+        i: u32 = 0
+        while i < nparams && flags == u32(0) {
+          count: u32 = enum_count(rx, raw, rp_word(rx, raw, pstart + i, u32(1)))
+          (count == u32(0) || rp_word(rx, raw, pstart + i, u32(2)) != u32(0)) ? { flags = WIT_SKIP | (WIT_SKIP_PARAM << u32(24)) | i } | {
+            total = total * u64(count)
+            total > u64(cases) ? { flags = WIT_SKIP | (WIT_SKIP_DOMAIN << u32(24)) } | { }
+          }
+          i = i + u32(1)
+        }
+        flags == u32(0) ? {
+          covered = covered + u32(1)
+          flags = u32(1) + covered
+        } | {
+          // Only an exhaustively decided row reports its skip.
+          str_starts(le, ew, row_detail(le, ew, ri), u64(0x206C6C61), u64(0x0), u32(4)) ? { } | { flags = u32(0) }
+        }
+        set_row_flags(le, ew, ri, flags)
+      } | { }
+    } | { }
+    fi = fi + u32(1)
+  }
+  covered
+}
+
+// tb_spaces appends 2 * depth spaces.
+tb_spaces: (out: [*]u8, at: u32, depth: u32): u32 {
+  m: u32 = at
+  k: u32 = 0
+  while k < depth * u32(2) && m != NONE {
+    m = tb_lit(out, m, u64(32), u64(0), u32(1))
+    k = k + u32(1)
+  }
+  m
+}
+
+// driver_text writes the driver's `main` (prove/witness.go theoremDriver
+// for every covered theorem, in row order, with its indentation): the new
+// length, or NONE.
+driver_text: (le: Lem, ew: [*]u32, out: [*]u8, at0: u32, rx: []u32, raw: Raw): u32 {
+  at: u32 = at0
+  at = tb_lit(out, at, u64(0x2928203A6E69616D), u64(0xA7B20323369203A), u32(16))
+  at = tb_lit(out, at, u64(0x73656E7469772020), u64(0x6E696C6961665F73), u32(16))
+  at = tb_lit(out, at, u64(0x3D20323375203A67), u64(0xA3020), u32(11))
+  fi: u32 = 0
+  while fi < raw.nfuncs && at != NONE {
+    fn_is_theorem(rx, raw, fi) ? {
+      ri: u32 = row_named(le, ew, rstr(le, ew, rx, raw, rf_word(rx, raw, fi, u32(0))))
+      flags: u32 = ri == NONE ? { u32(0) } | { row_flags(le, ew, ri) }
+      (flags != u32(0) && (flags & WIT_SKIP) == u32(0)) ? {
+        index: u32 = flags - u32(1)
+        pstart: u32 = rf_word(rx, raw, fi, u32(1))
+        nparams: u32 = rf_word(rx, raw, fi, u32(2))
+        d: u32 = 1
+        at = tb_spaces(out, at, d)
+        at = tb_lit(out, at, u64(0xA7B), u64(0x0), u32(2))
+        d = u32(2)
+        i: u32 = 0
+        while i < nparams && at != NONE {
+          texpr: u32 = rp_word(rx, raw, pstart + i, u32(1))
+          tname: u32 = rt_a(rx, raw, texpr)
+          nm: Name16 = rs_name(rx, raw, tname)
+          pname: u32 = rp_word(rx, raw, pstart + i, u32(0))
+          count: u32 = enum_count(rx, raw, texpr)
+          at = tb_spaces(out, at, d)
+          at = tb_lit(out, at, u64(0x5F7373656E746977), u64(0x6B), u32(9))
+          at = tb_dec(out, at, i)
+          at = tb_lit(out, at, u64(0x203D20323375203A), u64(0xA30), u32(10))
+          at = tb_spaces(out, at, d)
+          at = tb_lit(out, at, u64(0x697720656C696877), u64(0x6B5F7373656E74), u32(15))
+          at = tb_dec(out, at, i)
+          at = tb_lit(out, at, u64(0x28323375203C20), u64(0x0), u32(7))
+          at = tb_dec(out, at, count)
+          at = tb_lit(out, at, u64(0xA7B2029), u64(0x0), u32(4))
+          d = d + u32(1)
+          at = tb_spaces(out, at, d)
+          at = tb_rs(out, at, rx, raw, pname)
+          at = tb_lit(out, at, u64(0x203A), u64(0x0), u32(2))
+          at = tb_rs(out, at, rx, raw, tname)
+          at = tb_lit(out, at, u64(0x203D20), u64(0x0), u32(3))
+          is_name(nm, u64(0x3875), u64(0x0), u32(2)) ? {
+            at = tb_lit(out, at, u64(0x636E7572745F3875), u64(0x746977283233755F), u32(16))
+            at = tb_lit(out, at, u64(0x6B5F7373656E), u64(0x0), u32(6))
+            at = tb_dec(out, at, i)
+            at = tb_lit(out, at, u64(0x29), u64(0x0), u32(1))
+          } | {
+          is_name(nm, u64(0x363175), u64(0x0), u32(3)) ? {
+            at = tb_lit(out, at, u64(0x6E7572745F363175), u64(0x6977283233755F63), u32(16))
+            at = tb_lit(out, at, u64(0x6B5F7373656E74), u64(0x0), u32(7))
+            at = tb_dec(out, at, i)
+            at = tb_lit(out, at, u64(0x29), u64(0x0), u32(1))
+          } | {
+          is_name(nm, u64(0x3869), u64(0x0), u32(2)) ? {
+            at = tb_lit(out, at, u64(0x5F737469625F3869), u64(0x72745F3875283875), u32(16))
+            at = tb_lit(out, at, u64(0x283233755F636E75), u64(0x5F7373656E746977), u32(16))
+            at = tb_lit(out, at, u64(0x6B), u64(0x0), u32(1))
+            at = tb_dec(out, at, i)
+            at = tb_lit(out, at, u64(0x2929), u64(0x0), u32(2))
+          } | {
+          is_name(nm, u64(0x363169), u64(0x0), u32(3)) ? {
+            at = tb_lit(out, at, u64(0x737469625F363169), u64(0x363175283631755F), u32(16))
+            at = tb_lit(out, at, u64(0x755F636E7572745F), u64(0x656E746977283233), u32(16))
+            at = tb_lit(out, at, u64(0x6B5F7373), u64(0x0), u32(4))
+            at = tb_dec(out, at, i)
+            at = tb_lit(out, at, u64(0x2929), u64(0x0), u32(2))
+          } | {
+          is_name(nm, u64(0x6C6F6F42), u64(0x0), u32(4)) ? {
+            at = tb_lit(out, at, u64(0x5F7373656E746977), u64(0x6B), u32(9))
+            at = tb_dec(out, at, i)
+            at = tb_lit(out, at, u64(0x28323375203D3D20), u64(0x2931), u32(10))
+          } | {
+            adt: u32 = raw_find_adt(rx, raw, tname)
+            vstart: u32 = radt_word(rx, raw, adt, u32(1))
+            n: u32 = radt_word(rx, raw, adt, u32(2))
+            v: u32 = 0
+            while v < n && at != NONE {
+              v + u32(1) < n ? {
+                at = tb_lit(out, at, u64(0x5F7373656E746977), u64(0x6B), u32(9))
+                at = tb_dec(out, at, i)
+                at = tb_lit(out, at, u64(0x28323375203D3D20), u64(0x0), u32(8))
+                at = tb_dec(out, at, v)
+                at = tb_lit(out, at, u64(0x203F2029), u64(0x0), u32(4))
+                at = tb_rs(out, at, rx, raw, tname)
+                at = tb_lit(out, at, u64(0x2E), u64(0x0), u32(1))
+                at = tb_rs(out, at, rx, raw, rvar_word(rx, raw, vstart + v, u32(0)))
+                at = tb_lit(out, at, u64(0x207C20), u64(0x0), u32(3))
+              } | {
+                at = tb_rs(out, at, rx, raw, tname)
+                at = tb_lit(out, at, u64(0x2E), u64(0x0), u32(1))
+                at = tb_rs(out, at, rx, raw, rvar_word(rx, raw, vstart + v, u32(0)))
+              }
+              v = v + u32(1)
+            }
+          } } } } }
+          at = tb_lit(out, at, u64(0xA), u64(0x0), u32(1))
+          i = i + u32(1)
+        }
+        at = tb_spaces(out, at, d)
+        at = tb_rs(out, at, rx, raw, rf_word(rx, raw, fi, u32(0)))
+        at = tb_lit(out, at, u64(0x28), u64(0x0), u32(1))
+        i = u32(0)
+        while i < nparams && at != NONE {
+          i > u32(0) ? { at = tb_lit(out, at, u64(0x202C), u64(0x0), u32(2)) } | { }
+          at = tb_rs(out, at, rx, raw, rp_word(rx, raw, pstart + i, u32(0)))
+          i = i + u32(1)
+        }
+        at = tb_lit(out, at, u64(0x207D207B203F2029), u64(0x6E746977207B207C), u32(16))
+        at = tb_lit(out, at, u64(0x6C6961665F737365), u64(0x6977203D20676E69), u32(16))
+        at = tb_lit(out, at, u64(0x61665F7373656E74), u64(0x3D3D20676E696C69), u32(16))
+        at = tb_lit(out, at, u64(0x2029302832337520), u64(0x28323375203F), u32(14))
+        at = tb_dec(out, at, index)
+        at = tb_lit(out, at, u64(0x6E746977207C2029), u64(0x6C6961665F737365), u32(16))
+        at = tb_lit(out, at, u64(0xA7D20676E69), u64(0x0), u32(6))
+        i = nparams
+        while i > u32(0) && at != NONE {
+          i = i - u32(1)
+          at = tb_spaces(out, at, d)
+          at = tb_lit(out, at, u64(0x5F7373656E746977), u64(0x6B), u32(9))
+          at = tb_dec(out, at, i)
+          at = tb_lit(out, at, u64(0x656E746977203D20), u64(0x6B5F7373), u32(12))
+          at = tb_dec(out, at, i)
+          at = tb_lit(out, at, u64(0x3128323375202B20), u64(0xA29), u32(10))
+          d = d - u32(1)
+          at = tb_spaces(out, at, d)
+          at = tb_lit(out, at, u64(0xA7D), u64(0x0), u32(2))
+        }
+        d = d - u32(1)
+        at = tb_spaces(out, at, d)
+        at = tb_lit(out, at, u64(0xA7D), u64(0x0), u32(2))
+      } | { }
+    } | { }
+    fi = fi + u32(1)
+  }
+  at = tb_lit(out, at, u64(0x69625F3233692020), u64(0x77283233755F7374), u32(16))
+  at = tb_lit(out, at, u64(0x665F7373656E7469), u64(0xA29676E696C6961), u32(16))
+  at = tb_lit(out, at, u64(0xA7D), u64(0x0), u32(2))
+  at
+}
+
+// write_driver writes the driver's source: the file without `main`, then
+// the driver text (drv, n bytes). False when the file cannot be written.
+write_driver: (path: []u8, source: []u8, total: u32, main_start: u32, main_end: u32, drv: []u8, n: u32): Bool {
+  fd_word: u32 = u32_trunc_u64(u64(c_creat(c.cstr(path), c.Int(420))))
+  fd: c.Int = c.Int(i32_bits_u32(fd_word))
+  ok: Bool = fd_word != NONE
+  ok ? {
+    head: []u8 = subslice(source, u32(0), main_start)
+    ok = u64(c_write(fd, c.span_of(head))) == u64(main_start)
+    tail: []u8 = subslice(source, main_end, total - main_end)
+    ok = ok && u64(c_write(fd, c.span_of(tail))) == u64(total - main_end)
+    body: []u8 = subslice(drv, u32(0), n)
+    ok = ok && u64(c_write(fd, c.span_of(body))) == u64(n)
+    closed: c.Int = c_close(fd)
+  } | { }
+  ok
+}
+
+// env_entry appends `NAME=value\0` for a set variable: the new length.
+env_entry: (out: [*]u8, at: u32, lo: u64, hi: u64, n: u32, value_of: c.Ptr): u32 {
+  m: u32 = at
+  buf: [4096]u8
+  vlen: u32 = copy_env(value_of, span(&buf))
+  vlen == u32(0) ? { } | {
+    m = tb_lit(out, m, lo, hi, n)
+    m = m == NONE ? { NONE } | { tb_lit(out, m, u64(61), u64(0), u32(1)) }
+    k: u32 = 0
+    while k < vlen && m != NONE {
+      m < len(out) ? {
+        out[m] = buf[k]
+        m = m + u32(1)
+      } | { m = NONE }
+      k = k + u32(1)
+    }
+    m = m == NONE ? { NONE } | { tb_lit(out, m, u64(0), u64(0), u32(1)) }
+  }
+  m
+}
+
+// spawn_wait runs a program (argv the NUL-separated arguments, argc of
+// them, the first the path) with its standard output silenced, and waits:
+// the exit status, NONE when it could not be started.
+spawn_wait: (argv: []u8, path: []u8, env: []u8, actions_raw: c.Ptr): u32 {
+  slot_storage: [16]c.Ptr
+  slots: [*]c.Ptr = span(&slot_storage)
+  env_storage: [16]c.Ptr
+  env_slots: [*]c.Ptr = span(&env_storage)
+  pid: c.Int = c.Int(i32(0))
+  inited: c.Int = spawn_actions_init(actions_raw)
+  // The child's output is silenced: the compiler announces its build and
+  // the C compiler may warn; a failed build is reported by its status.
+  opened: c.Int = spawn_actions_addopen(actions_raw, c.Int(i32(1)), c.cstr("/dev/null\0"), c.Int(i32(1)), c.Int(i32(0)))
+  opened2: c.Int = spawn_actions_addopen(actions_raw, c.Int(i32(2)), c.cstr("/dev/null\0"), c.Int(i32(1)), c.Int(i32(0)))
+  r: c.Int = posix_spawn(c.out(pid), c.cstr(path), actions_raw, c.null(), c.argv_of(argv, slots), c.argv_of(env, env_slots))
+  destroyed: c.Int = spawn_actions_destroy(actions_raw)
+  out: u32 = NONE
+  u32_bits_i32(i32(r)) == u32(0) ? {
+    status: c.Int = c.Int(i32(0))
+    waited: c.Int = waitpid(pid, c.out(status), c.Int(i32(0)))
+    out = (u32_bits_i32(i32(status)) >> u32(8)) & u32(255)
+  } | { }
+  out
+}
+
+// witness_run builds and runs the driver: its exit status, NONE when the
+// driver did not compile or could not be run.
+witness_run: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, source: []u8, total: u32, compiler: []u8, src_path: []u8, bin_path: []u8, drv_raw: c.Ptr, actions_raw: c.Ptr): u32 {
+  // main's span.
+  main_start: u32 = 0
+  main_end: u32 = 0
+  mname: [4]u32 = [4]u32{ u32(0x6E69616D), u32(0), u32(0), u32(0) }
+  mview: []u32 = view(&mname)
+  mfi: u32 = raw_find_function_named(rx, mview, u32(4))
+  (mfi != NONE && rf_word(rx, raw, mfi, u32(7)) > rf_word(rx, raw, mfi, u32(6))) ? {
+    main_start = rf_word(rx, raw, mfi, u32(6))
+    main_end = rf_word(rx, raw, mfi, u32(7))
+  } | { }
+  status: u32 = NONE
+  unsafe {
+    drv_buf: Buffer[u8] = c.own[u8](drv_raw, GEN_MAX)
+    n: u32 = driver_text(le, ew, span(&drv_buf), u32(0), rx, raw)
+    written: Bool = n != NONE && main_end <= total && write_driver(src_path, source, total, main_start, main_end, view(&drv_buf), n)
+    released_drv: c.Ptr = c.disown(drv_buf)
+    written ? {
+      // The environment: PATH, HOME, TMPDIR when set.
+      envb: [8192]u8
+      e: u32 = env_entry(span(&envb), u32(0), u64(0x48544150), u64(0x0), u32(4), c_getenv(c.cstr("PATH\0")))
+      e = e == NONE ? { NONE } | { env_entry(span(&envb), e, u64(0x454D4F48), u64(0x0), u32(4), c_getenv(c.cstr("HOME\0"))) }
+      e = e == NONE ? { NONE } | { env_entry(span(&envb), e, u64(0x524944504D54), u64(0x0), u32(6), c_getenv(c.cstr("TMPDIR\0"))) }
+      // oak build -o BIN SRC
+      argb: [4096]u8
+      a: u32 = tb_lit(span(&argb), u32(0), u64(0x6C697562006B616F), u64(0x6F2D0064), u32(13))
+      k: u32 = 0
+      while k < len(bin_path) && a != NONE {
+        a = tb_lit(span(&argb), a, u64(bin_path[k]), u64(0), u32(1))
+        k = k + u32(1)
+      }
+      k = u32(0)
+      while k < len(src_path) && a != NONE {
+        a = tb_lit(span(&argb), a, u64(src_path[k]), u64(0), u32(1))
+        k = k + u32(1)
+      }
+      (a == NONE || e == NONE) ? { } | {
+        envv: []u8 = view(&envb)
+        env: []u8 = subslice(envv, u32(0), e)
+        argv_all: []u8 = view(&argb)
+        argv: []u8 = subslice(argv_all, u32(0), a)
+        built: u32 = spawn_wait(argv, compiler, env, actions_raw)
+        built == u32(0) ? {
+          status = spawn_wait(bin_path, bin_path, env, actions_raw)
+        } | { }
+      }
+    } | { }
+  }
+  status
+}
+
+// witness_fold folds the run into the rows (prove/witness.go ApplyWitness):
+// the failing theorem refuted, the covered rows annotated.
+witness_fold: (le: Lem, ew: [*]u32, exit: u32): () {
+  n: u32 = lst(le, ew, LN_NROWS)
+  i: u32 = 0
+  while i < n {
+    flags: u32 = row_flags(le, ew, i)
+    (flags != u32(0) && (flags & WIT_SKIP) == u32(0)) ? {
+      index: u32 = flags - u32(1)
+      prior: u32 = row_detail(le, ew, i)
+      index == exit ? {
+        sb_begin(le, ew)
+        ap_lits(le, ew, u64(0x706D6F6320656874), u64(0x6F72702064656C69), u32(16))  // the compiled program disagrees with the interpreter (
+        ap_lits(le, ew, u64(0x736964206D617267), u64(0x7720736565726761), u32(16))
+        ap_lits(le, ew, u64(0x2065687420687469), u64(0x6572707265746E69), u32(16))
+        ap_lits(le, ew, u64(0x2820726574), u64(0x0), u32(5))
+        sb_str(le, ew, prior)
+        sb_byte(le, ew, u32(41))
+        set_row(le, ew, i, ROW_REFUTED, sb_end(le, ew))
+      } | {
+        sb_begin(le, ew)
+        sb_str(le, ew, prior)
+        ap_lits(le, ew, u64(0x73656E746977203B), u64(0x74206E6920646573), u32(16))  // ; witnessed in the compiled program
+        ap_lits(le, ew, u64(0x69706D6F63206568), u64(0x676F72702064656C), u32(16))
+        ap_lits(le, ew, u64(0x6D6172), u64(0x0), u32(3))
+        set_row(le, ew, i, row_kind(le, ew, i), sb_end(le, ew))
+      }
+    } | { }
+    i = i + u32(1)
+  }
+}
+
+// witness_skips prints `oak prove: witness left to the interpreter: ...`
+// (names in order, each with its reason) when any row was skipped.
+witness_skips: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, cases: u32): () {
+  n: u32 = lst(le, ew, LN_NROWS)
+  base: u32 = lst(le, ew, LN_ACC_SP)
+  i: u32 = 0
+  while i < n {
+    flags: u32 = row_flags(le, ew, i)
+    (flags & WIT_SKIP) != u32(0) ? { acc_push_l(le, ew, i) } | { }
+    i = i + u32(1)
+  }
+  count: u32 = lst(le, ew, LN_ACC_SP) - base
+  count == u32(0) ? { set_lst(le, ew, LN_ACC_SP, base) } | {
+    // Sorted by name (the Go command sorts the map's keys).
+    a: u32 = base + u32(1)
+    while a < base + count {
+      bq: u32 = a
+      while bq > base && str_less(le, ew, row_name(le, ew, ew[le.acc_at + bq]), row_name(le, ew, ew[le.acc_at + bq - u32(1)])) {
+        tmp: u32 = ew[le.acc_at + bq]
+        ew[le.acc_at + bq] = ew[le.acc_at + bq - u32(1)]
+        ew[le.acc_at + bq - u32(1)] = tmp
+        bq = bq - u32(1)
+      }
+      a = a + u32(1)
+    }
+    // Each entry: "name (reason)".
+    k: u32 = 0
+    while k < count {
+      ri: u32 = ew[le.acc_at + base + k]
+      flags: u32 = row_flags(le, ew, ri)
+      reason: u32 = NONE
+      ((flags >> u32(24)) & u32(127)) == WIT_SKIP_DOMAIN ? {
+        sb_begin(le, ew)
+        ap_lits(le, ew, u64(0x616D6F6420656874), u64(0x6565637865206E69), u32(16))  // the domain exceeds 
+        ap_lits(le, ew, u64(0x207364), u64(0x0), u32(3))
+        sb_dec(le, ew, u64(cases))
+        ap_lits(le, ew, u64(0x736573616320), u64(0x0), u32(6))  //  cases
+        reason = sb_end(le, ew)
+      } | {
+        pidx: u32 = flags & u32(16777215)
+        fi: u32 = raw_find_function_named_str(le, ew, rx, raw, row_name(le, ew, ri))
+        pname: u32 = lc(le, ew, LC_UNDERSCORE)
+        tname: u32 = lc(le, ew, LC_UNDERSCORE)
+        fi == NONE ? { } | {
+          pstart: u32 = rf_word(rx, raw, fi, u32(1))
+          pname = rstr(le, ew, rx, raw, rp_word(rx, raw, pstart + pidx, u32(0)))
+          texpr: u32 = rp_word(rx, raw, pstart + pidx, u32(1))
+          rt_kind(rx, raw, texpr) == RAW_TYPE_NAME ? { tname = rstr(le, ew, rx, raw, rt_a(rx, raw, texpr)) } | { }
+        }
+        sb_begin(le, ew)
+        ap_lits(le, ew, u64(0x6574656D61726170), u64(0x2072), u32(10))  // parameter 
+        sb_str(le, ew, pname)
+        ap_lits(le, ew, u64(0x203A), u64(0x0), u32(2))  // : 
+        sb_str(le, ew, tname)
+        ap_lits(le, ew, u64(0x20746F6E20736920), u64(0x626172656D756E65), u32(16))  //  is not enumerable by the driver
+        ap_lits(le, ew, u64(0x687420796220656C), u64(0x7265766972642065), u32(16))
+        reason = sb_end(le, ew)
+      }
+      sb_begin(le, ew)
+      sb_str(le, ew, row_name(le, ew, ri))
+      ap_lits(le, ew, u64(0x2820), u64(0x0), u32(2))  //  (
+      sb_str(le, ew, reason)
+      sb_byte(le, ew, u32(41))
+      ew[le.acc_at + base + k] = sb_end(le, ew)
+      k = k + u32(1)
+    }
+    sep: u32 = lstr(le, ew, u64(0x202C), u64(0x0), u32(2))
+    joined: u32 = join_acc(le, ew, base, sep)
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x766F7270206B616F), u64(0x656E746977203A65), u32(16))  // oak prove: witness left to the interpreter: 
+    ap_lits(le, ew, u64(0x207466656C207373), u64(0x6920656874206F74), u32(16))
+    ap_lits(le, ew, u64(0x746572707265746E), u64(0x203A7265), u32(12))
+    sb_str(le, ew, joined)
+    write_str(le, ew, sb_end(le, ew))
+    write_byte(u8(10))
+  }
+}
+
+// raw_find_function_named_str: a raw function by an arena string name.
+raw_find_function_named_str: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, s: u32): u32 {
+  packed: [64]u32
+  k: u32 = 0
+  while k < u32(64) {
+    packed[k] = u32(0)
+    k = k + u32(1)
+  }
+  n: u32 = s_len(le, ew, s)
+  k = u32(0)
+  while k < n && k < u32(256) {
+    packed[k / u32(4)] = packed[k / u32(4)] | (s_byte(le, ew, s, k) << ((k % u32(4)) * u32(8)))
+    k = k + u32(1)
+  }
+  pv: []u32 = view(&packed)
+  raw_find_function_named(rx, pv, n)
+}
+
+// witness_all plans, runs, and folds the witness; the skips line goes out
+// before the rows. Returns false when the driver did not compile.
+witness_all: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, cases: u32, source: []u8, total: u32, compiler: []u8, src_path: []u8, bin_path: []u8): Bool {
+  covered: u32 = witness_plan(le, ew, rx, raw, cases)
+  drv_raw: c.Ptr = malloc(c.Size(GEN_MAX))
+  actions_raw: c.Ptr = malloc(c.Size(u32(256)))
+  exit: u32 = witness_run(le, ew, rx, raw, source, total, compiler, src_path, bin_path, drv_raw, actions_raw)
+  free(actions_raw)
+  free(drv_raw)
+  exit == NONE ? { } | {
+    witness_fold(le, ew, exit)
+    witness_skips(le, ew, rx, raw, cases)
+  }
+  exit != NONE
+}

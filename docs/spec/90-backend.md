@@ -92,8 +92,13 @@ target decides is:
 - **the companion object**: Mach-O for Darwin, ELF elsewhere; an ELF for a
   hosted RISC-V target declares the lp64d float ABI its libc uses, a
   freestanding one lp64 (`Oak.Target.rv64FloatABI`). No object is written
-  when no unit applies. Native body lowering (the AArch64 backend of
-  `nativegen`) runs only for arm64 targets.
+  when no unit applies. Native body lowering (`nativegen`, `-native`) runs
+  on the targets with a lane — AArch64 and RV64 — and lowers each body on
+  the target's lane; a target without one compiles every body as C. With
+  `-link oak` a program whose every body is lowered natively is linked by
+  the Oak assembler into a static ELF executable (Linux and freestanding
+  targets on both lanes) with no C compiler and no system linker
+  (`94-assembler.md` §9).
 - **the C compiler** (`toolchain.Resolve`), in a fixed order, first match
   wins: `OAK_CC` (an executable taken as already targeting the platform,
   `OAK_CFLAGS` added); `cc` for the host target; `zig cc --target=…` —

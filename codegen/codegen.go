@@ -1054,7 +1054,7 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 		// architecture than the unit's lane, or the portable lowering.
 		arch := fn.AsmArch
 		if arch == "" {
-			arch = asm.ArchArm64 // native bodies are AArch64
+			arch = asm.ArchArm64 // the lane is recorded by the stitcher and the native backend; AArch64 is the default lane
 		}
 		cg.write(fmt.Sprintf("#if !(%s) || defined(OAK_PORTABLE_INTRINSICS)\n", asm.ArchCondition(arch)))
 		defer cg.write("#endif\n")

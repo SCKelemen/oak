@@ -293,6 +293,8 @@ func encodeRV64Instruction(instr Instruction, pc int64, labels map[string]int64)
 		case Immediate:
 			fields["imm12"], fields["shamtd"], fields["shamtw"] = third.Value, third.Value, third.Value
 		}
+	case len(ops) == 0:
+		// ebreak, ecall, fence: the fixed bits are the whole word.
 	default:
 		return 0, fmt.Errorf("operand shape of %s", instr.Mnemonic)
 	}

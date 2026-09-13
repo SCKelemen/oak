@@ -1089,6 +1089,13 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   `K` and `j` literals, either operand order) are proven when the length
   is known to be at least `(U - 1) * K + j + 1` (`scaled_under_bound`) —
   the word loads of a block, `block[i * 4 + 3]` under `i < 16`.
+- **Two scaled indices**: under `i < U₁` and `j < U₂`, `v[i * K + j * M + c]`
+  in any association — `i * K + j`, `i * K + (j * M + c)`, the shape a
+  loop inside a loop produces over a flat buffer or the binary codec's
+  arrays of records with array fields — is proven when
+  `(U₁ - 1) * K + (U₂ - 1) * M + c < len(v)` (`scaled2_under_bound`;
+  `compiler/e2e_scaled2_test.go`). An index the facts do not bound stays
+  checked.
 - **Upper bound through a binding**: `n <= len(v)` or `n < len(v)` as a
   condition, or the declaration `n: u32 = len(v)`, makes `n` an upper bound
   for indices into `v`, so a later `i < n` proves `v[i]`
