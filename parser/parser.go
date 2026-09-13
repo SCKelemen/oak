@@ -2885,6 +2885,30 @@ func (p *Parser) parseProtocolDeclarationFromName(name *ast.Identifier) *ast.Pro
 				decl.Init = record
 			}
 			p.nextToken()
+		case "fact":
+			// `fact F = A | B`: a further phantom index of a typestate-indexed
+			// resource and the closed set of markers it ranges over
+			// (docs/spec/112-protocols.md section 5a).
+			fact := &ast.ProtocolFact{Token: p.currentToken}
+			if !p.expectPeek(token.IDENT) {
+				return nil
+			}
+			fact.Name = &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
+			if !p.expectPeek(token.ASSIGN) {
+				return nil
+			}
+			for {
+				if !p.expectPeek(token.IDENT) {
+					return nil
+				}
+				fact.Markers = append(fact.Markers, &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal})
+				if !p.peekTokenIs(token.PIPE) {
+					break
+				}
+				p.nextToken() // |
+			}
+			decl.Facts = append(decl.Facts, fact)
+			p.nextToken()
 		case "resource", "initial":
 			keyword := p.currentToken.Literal
 			if !p.expectPeek(token.IDENT) {

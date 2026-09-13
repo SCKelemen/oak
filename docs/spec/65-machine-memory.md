@@ -239,6 +239,36 @@ no Oak runtime type/order dispatch and no heap allocation.
 This is an executable backend refinement, not yet a formal proof that every C
 compiler and ISA implementation satisfies Oak's complete memory model.
 
+## 7a. Native AArch64 refinement
+
+The native backend (`94-assembler.md` §9) lowers the atomics directly
+when a cell is reached by storage path through a writable span — an
+element of `[*]Atomic[T]`, or an atomic field of a `[*]Record` element
+(§1's borrowed cells). The cell's address is computed into a register the
+seam checker knows as an element region (`add xE, xB, wI, uxtw #s` under
+the length guard, then `add xC, xE, #off` for a field), and the operation
+is one instruction on that base, or the exclusive loop:
+
+| Builtin | AArch64 |
+| --- | --- |
+| `atomic_load_relaxed` / `_acquire` / `_seq_cst` | `ldr` / `ldar` / `ldar` (`b`/`h` for one- and two-byte carriers) |
+| `atomic_store_relaxed` / `_release` / `_seq_cst` | `str` / `stlr` / `stlr` |
+| `atomic_fence_acquire` / `_release` / `_acq_rel` / `_seq_cst` | `dmb ishld` / `dmb ish` / `dmb ish` / `dmb ish` |
+| `atomic_fetch_add_*`, `atomic_exchange_*` | `ldxr`\|`ldaxr` (acquire when the order acquires) … `stxr`\|`stlxr` (release when it releases), `cbnz` on the status |
+| `atomic_compare_exchange_<s>_<f>` | the same loop around `cmp`/`b.ne`; the load takes the acquire form when either order acquires, the store the release form when the success order releases |
+
+Every order maps to a form at least as strong as it asks (the CAS load is
+the one place a weaker failure order shares the success order's form).
+The checker admits an exclusive store or LSE atomic through an element
+region as it does through a span base (`asm/check.go`, `atomicAccess`);
+the verifier reads `ldar`/`ldxr`/`ldaxr` as the element's value through
+the element address and models an atomic load on the Oak side as the
+read of the cell, so a straight-line function of atomic loads verifies;
+functions that store or retry are trusted, with the C backend as the
+oracle (`compiler/e2e_native_atomics_test.go`: every builtin kind, native
+against C and the interpreter). Local cells and the rv64 lane stay with
+the C backend.
+
 ## 8. Reference evaluator
 
 The Go evaluator keeps one persistent `sync/atomic.Int64` cell per Oak atomic
@@ -329,7 +359,7 @@ Acceptance spans the whole executable stack:
 | strong compare-exchange helper | refinement: `Oak.CompareExchangeRefinement` proves the `__oak_cas_*` body meets §3's value contract over C11's primitive; `codegen/compare_exchange_refinement_test.go` pins the text |
 | checked, saturating, trapping arithmetic and checked shifts | refinement: `Oak.CheckedArithmeticRefinement` proves the helper decisions against 20-types §11.1a over the overflow builtins' contract; `codegen/checked_arithmetic_refinement_test.go` pins the text |
 | explicit integer conversions | refinement: `Oak.ConversionRefinement` proves the `oak_conv_*` bodies to 20-types §11.1 for every admitted pair; pinned by `codegen/conversion_refinement_test.go` and `compiler/e2e_conversion_refinement_test.go` |
-| C/ISA refinement of atomics and ordering | not yet proved |
+| C/ISA refinement of atomics and ordering | not yet proved; the native AArch64 lowering (§7a) is checked at the seam and differentially tested against the C backend |
 | AArch64 weak-memory litmus suite | next major layer |
 | target lock-free admission (C backend) | implemented + cross-compile-tested (§6) |
 

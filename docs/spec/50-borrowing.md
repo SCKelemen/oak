@@ -1196,3 +1196,24 @@ unproven access still trapping. This is roadmap milestone 8's first
 increment (`docs/notes/roadmap-authority-resources.md`) and the seed of
 milestone 9's bounds-check elimination; the assembler's span guards
 (`94-assembler.md` §7) are the same doctrine in hand-written code.
+
+**Minimum through a conditional.** A binding initialized to the smaller of
+two operands spelled as the Bool conditional — `limit: u32 = n < len(v) ? n
+| len(v)`, either order, `<` or `<=` — is at most each operand, so it
+inherits the upper bounds of both: `limit <= len(v)` from a length
+operand, `limit < K + 1` from a literal, and a binding operand's own live
+bounds. A loop `while i < limit` then proves `v[i]` (the OS pilot's resync
+loop over a fixed table with a caller-supplied count; Zig's `for` over a
+bounded slice, spelled in Oak). Pinned with the guarded, folded,
+saturated, and doubly read shapes in `compiler/e2e_bounded_loops_test.go`:
+none carries `oak_index`.
+
+**Proof through a helper.** Facts do not cross a call: `byte_at(buf, i)`
+inside a guarded loop is checked inside `byte_at`, whose parameter is
+unconstrained. The code-emitting stages therefore inline every private
+leaf helper of at most twelve lines at the source level before checking
+(`90-backend.md` section 9, "Inlining as a source transformation"): the
+helper's `buf[i]` becomes the caller's `buf[i]`, under the caller's
+guard, and is proven like any other access there. The helper's own
+definition keeps its check; the inlined copies carry none. Pinned in
+`compiler/e2e_inline_proof_test.go`.

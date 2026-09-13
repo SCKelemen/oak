@@ -859,3 +859,84 @@ remains that a fact could elide" is a finding.
       (simdutf `unicode_lipsum`, `benchmark_base.cpp`) — Oak:
       `benchmarks/state-machines` uses one random mix, best of five.
 
+## 13. Proof search and certificate checking
+
+Decision procedures are programs too; the fast ones are untrusted and the
+trusted one is small. Sources: ParaFROST (Osama, Wijs, Biere; GPU
+inprocessing), CaDiCaL/Kissat, LRAT and its verified checkers (ACL2
+`lrat-check`, `cake_lpr`), Lean's `bv_decide`, Tamarin and ProVerif's
+proof-search guidance; `docs/notes/provers-2026-09.md`.
+
+- [ ] **Decision procedure matched to the obligation.** For each bit-level
+      obligation, is the engine chosen by shape — a canonical BDD when two
+      circuits must be shown equal or a counterexample read off, SAT when
+      the obligation has many variables, multipliers, or one satisfying
+      assignment is enough — and is "node budget exceeded" a hand-off to
+      the next engine rather than a downgrade to evidence? (ParaFROST and
+      CaDiCaL versus ROBDD practice) — Oak: `asm/blast.go` node budget,
+      three orders raced (`125-verification.md` §3, §4); `open` — no SAT
+      rung.
+- [ ] **Solver untrusted, certificate checked.** Does every fast decider
+      emit a certificate — LRAT, not DRAT, for clausal steps — that a small,
+      separately proved checker validates, so speed and trust are separate
+      artifacts? (Lean `bv_decide`: CaDiCaL to LRAT to a checker proved in
+      Lean; `cake_lpr`; ACL2 `lrat-check`) — Oak: `125-verification.md` §7
+      names the direction; `open`.
+- [ ] **Checking is cheaper than solving, measured.** Is certificate
+      checking time measured against solving time per obligation and kept
+      below it? DRAT checking costs about what solving cost; native LRAT
+      from the solver makes checking faster than solving. (Heule's
+      `drat-trim`; Pollitt, Fleury, Biere, SAT 2023) — Oak: `not stated`.
+- [ ] **Certificate size is a budget.** Is the trade between proof size
+      and checking cost recorded — omitting deletion lines saves memory and
+      makes the checker propagate more — and is the checker's memory bounded
+      by the live clause set rather than by the certificate, streamed?
+      (ParaFROST omits deleted lemmas for device memory; LRAT streaming
+      checkers) — Oak: `not stated`.
+- [ ] **Simplify before search, and account for it.** Does the solver
+      simplify the formula (variable elimination, subsumption, redundancy
+      elimination) and report simplification time as a share of the total,
+      so inprocessing that grows the formula is visible? (ParaFROST
+      BVE/SUB/ERE) — Oak: terms compacted to what the roots reach
+      (`125-verification.md` §4); no clausal form yet; `not stated`.
+- [ ] **Offload only what is big enough.** Before moving a solver stage to
+      a GPU, is the input measured against the size at which the device
+      pays (ParaFROST selected formulas over five megabytes; the
+      host–device copy sits on the critical path), and is batching many
+      small independent obligations into one launch considered first?
+      (ParaFROST; cuda-cic's end-to-end path dominated by host preparation)
+      — Oak: obligations are kilobytes and the corpus is a few hundred
+      laws; the parallel axis is the witness pass and exhaustive
+      enumeration, a kernel of `56-kernels.md`, not a solver port;
+      `not stated`.
+- [ ] **Device data layout for clauses.** If clauses live on a device, are
+      they compact fixed-size records collected by a parallel garbage
+      collector that improves coalescing, with memory-aware elimination so
+      growth cannot exhaust device memory? (ParaFROST) — Oak: the BDD node
+      table is structure-of-arrays already (`prove/solver/bdd.oak`);
+      `not stated` for a clause store.
+- [ ] **Parallel simplification is reproducible.** Does a parallel
+      simplifier give the same formula on every run — no outcome depending
+      on atomic-instruction order — so a verdict replays and a cross-check
+      compares node or clause counts exactly? (ParaFROST's three-phase
+      elimination) — Oak: the Go decider replays the winning order node for
+      node (`125-verification.md` §4) — yes for BDDs; carry the rule to any
+      SAT rung.
+- [ ] **Proof-search guidance is a versioned artifact.** Are heuristics,
+      oracles, tactics, variable orders, and selection weights stored with
+      the theorem, so a proof that closes under one ordering is reproducible
+      and its dependence visible? (Tamarin oracles and tactics; ProVerif
+      `select`/`nounif`) — Oak: the winning order is printed per row, not
+      stored; `open`.
+- [ ] **Trusted base of the checker stated.** For a certificate checker, is
+      its trusted base written down — the checker's own proof, the compiler
+      it runs through (Lean's `ofReduceBool` adds the Lean compiler to the
+      trusted base), the encoder from terms to clauses (a verified
+      bit-blaster or not)? (Lean `bv_decide`; Lean4Lean; `cake_lpr` verified
+      to machine code) — Oak: `94-assembler.md` §8 ripple-carry laws in
+      Lean; the blaster in Oak is cross-checked against Go, not proved;
+      `open`.
+- [ ] **Race, then agree.** When several strategies race, does the row
+      record which won, and does a second engine replay it to the same
+      verdict, so a race never hides a disagreement? (Oak's own practice)
+      — Oak: `125-verification.md` §4 `-cross go`; keep it for a SAT rung.

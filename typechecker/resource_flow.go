@@ -63,6 +63,11 @@ type ResourceModel struct {
 	// Initials maps a resource type to its protocol's initial state, the one
 	// state a typestate-indexed handle may be constructed in anywhere.
 	Initials map[string]string
+	// Typestate maps a typestate-indexed resource template to its arity:
+	// the state plus one type parameter per declared fact. A governed
+	// template absent here is not typestate-indexed (its parameters are
+	// regions or ordinary type parameters).
+	Typestate map[string]int
 }
 
 // ResourceObligation is a protocol's terminal-state obligation: an owned
@@ -80,6 +85,14 @@ func NewResourceModel() ResourceModel {
 		Obligations:   make(map[string]ResourceObligation),
 		Initials:      make(map[string]string),
 	}
+}
+
+// MarkTypestate records the arity of a typestate-indexed resource template.
+func (m *ResourceModel) MarkTypestate(typeName string, arity int) {
+	if m.Typestate == nil {
+		m.Typestate = make(map[string]int)
+	}
+	m.Typestate[typeName] = arity
 }
 
 // MarkInitial records a resource type's initial protocol state.
@@ -152,6 +165,9 @@ func (tc *TypeChecker) CheckResourceFlow(program *ast.Program, model ResourceMod
 		}
 		if initial, has := model.Initials[base]; has {
 			normalized.Initials[name] = initial
+		}
+		if arity, has := model.Typestate[base]; has {
+			normalized.MarkTypestate(name, arity)
 		}
 	}
 	names := make([]string, 0, len(model.Operations))
@@ -904,11 +920,21 @@ func (a *typedResourceAnalysis) typestateOf(typ Type) (template, state string, o
 		return "", "", false
 	}
 	inst, known := a.tc.RecordInstantiationOf(record.Name)
-	if !known || len(inst.Args) != 1 || !a.model.ResourceTypes[inst.Template] {
+	// The first argument is the state; further arguments are the facts a
+	// protocol declares (`fact F = A | B`, 112-protocols.md section 5a), which
+	// the projection has already held to their marker sets.
+	if !known || !a.model.ResourceTypes[inst.Template] {
 		return "", "", false
 	}
+	// The projection records the arity of a template it indexes (the state
+	// plus the facts). Without a record the template is one whose regions
+	// the checker has erased: one remaining parameter, the state.
+	arity, recorded := a.model.Typestate[inst.Template]
+	if !recorded {
+		arity = 1
+	}
 	tmpl := a.tc.recordTemplates[inst.Template]
-	if tmpl == nil || len(tmpl.TypeParams) != 1 {
+	if tmpl == nil || len(inst.Args) != arity || len(tmpl.TypeParams) != arity {
 		return "", "", false
 	}
 	atom, isAtom := typeAtom(inst.Args[0])
@@ -1701,9 +1727,22 @@ func (m ResourceModel) isResourceType(expr ast.Expression) bool {
 	case *ast.Identifier:
 		return m.ResourceTypes[t.Value]
 	case *ast.IndexExpression:
-		// Generic nominal applications retain the nominal base in Left.
-		if ident, ok := t.Left.(*ast.Identifier); ok {
-			return m.ResourceTypes[ident.Value]
+		// Generic nominal applications retain the nominal base in Left; with
+		// several arguments the parser nests them, `(Segment[S])[F]`, so the
+		// base is at the bottom of the chain.
+		base := t.Left
+		for {
+			switch left := base.(type) {
+			case *ast.Identifier:
+				return m.ResourceTypes[left.Value]
+			case *ast.IndexExpression:
+				if left.Dot {
+					return m.ResourceTypes[expr.String()]
+				}
+				base = left.Left
+			default:
+				return m.ResourceTypes[expr.String()]
+			}
 		}
 	}
 	return m.ResourceTypes[expr.String()]

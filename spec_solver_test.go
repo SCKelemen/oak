@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -59,6 +60,24 @@ func TestOakSolverSelfCheck(t *testing.T) {
 // file and requires the Go ladder to agree on every row's status and the
 // Go extractor to agree with the projection byte for byte.
 func TestOakShellAgrees(t *testing.T) {
+	shellAgrees(t)
+}
+
+// TestOakShellAgreesNative runs the same check with the prover built
+// through the verified native backend (docs/spec/94-assembler.md §9,
+// sixteenth increment; OAK_SOLVER_NATIVE=1): every function the backend
+// reaches is checked, verified against its Oak body, and encoded by the
+// Oak assembler, and the rows must be the C build's — the C realization is
+// the oracle for the machine code.
+func TestOakShellAgreesNative(t *testing.T) {
+	if runtime.GOARCH != "arm64" {
+		t.Skip("the native backend's host lane is AArch64")
+	}
+	t.Setenv("OAK_SOLVER_NATIVE", "1")
+	shellAgrees(t)
+}
+
+func shellAgrees(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("spec", "oak", "*.oak"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("spec/oak: %v (%d files)", err, len(files))

@@ -29,6 +29,7 @@ import (
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/semir"
 )
 
 // Verdict is the outcome of verifying one asm function against its Oak body.
@@ -1352,7 +1353,26 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 	}
 	param, baseOffset, isSpan := spanBaseOf(base)
 	if !isSpan {
-		return "a load through a register that is not a span base", false
+		// A span element's address in the base (an atomic cell reached by
+		// storage path): the element is the index term's.
+		name, offset, index, shift, isElement := elementBaseOf(base)
+		if !isElement || mem.Index != nil || mem.Mode != MemOffset {
+			return "a load through a register that is not a span base", false
+		}
+		elem, known := x.spans[name]
+		if !known || elem == 0 || int64(1)<<uint(shift) != elem || offset%elem != 0 || mem.Offset%elem != 0 {
+			return "a load through an element address not aligned to an element", false
+		}
+		size := memorySize(instr.Mnemonic, dest.Class)
+		if size != elem {
+			return fmt.Sprintf("a %d-byte load over %d-byte elements", size, elem), false
+		}
+		at := truncate(index, 32)
+		if extra := offset/elem + mem.Offset/elem; extra != 0 {
+			at = binaryTerm("add", at, constTerm(uint64(extra), 32))
+		}
+		state.write(dest, zeroExtend(x.element(name, at, int(elem)*8), widthOf(dest.Class)))
+		return "", true
 	}
 	if record, isRecord := x.records[param]; isRecord {
 		// The caller's copy of a record argument: a load at a leaf's exact
@@ -1480,8 +1500,39 @@ func spanBaseOf(t *term) (param string, offset int64, ok bool) {
 	return "", 0, false
 }
 
-// isLoad reports the load mnemonics the executor resolves through a span.
-func isLoad(mnemonic string) bool { return isPlainLoad(mnemonic) }
+// isLoad reports the load mnemonics the executor resolves through a span:
+// the plain loads, and the acquire and exclusive loads of the atomics,
+// whose value is the element's (their ordering is the checker's concern,
+// not the term's; docs/spec/65-machine-memory.md section 7).
+func isLoad(mnemonic string) bool {
+	switch mnemonic {
+	case "ldar", "ldarb", "ldarh", "ldxr", "ldxrb", "ldxrh", "ldaxr", "ldaxrb", "ldaxrh":
+		return true
+	}
+	return isPlainLoad(mnemonic)
+}
+
+// elementBaseOf reads a register holding a span element's address —
+// `add xE, xB, wI, uxtw #s` steps to add(base, shl(zext(wI), s)) — as the
+// span, the constant part of the base offset, the element index term, and
+// the shift; the native backend addresses an atomic cell this way.
+func elementBaseOf(t *term) (param string, baseOffset int64, index *term, shift int, ok bool) {
+	if t.kind != termBinary || t.op != "add" {
+		return "", 0, nil, 0, false
+	}
+	for _, sides := range [][2]*term{{t.left, t.right}, {t.right, t.left}} {
+		name, base, isSpan := spanBaseOf(sides[0])
+		if !isSpan {
+			continue
+		}
+		scaled := sides[1]
+		if scaled.kind == termBinary && scaled.op == "shl" && scaled.right.kind == termConst {
+			return name, base, scaled.left, int(scaled.right.value), true
+		}
+		return name, base, scaled, 0, true
+	}
+	return "", 0, nil, 0, false
+}
 
 // element is the span element at an index term; in a concrete run the
 // witness memory's value.
@@ -1848,7 +1899,10 @@ type oakLowering struct {
 	// Records/ADTs) and the shapes resolved from them.
 	records map[string]*ast.RecordLiteral
 	adts    map[string]*ast.ADTType
-	types   map[string]*oakType
+	// constants are the program's folded constant globals
+	// (asm.Function.Constants): an identifier naming one is that value.
+	constants map[string]Constant
+	types     map[string]*oakType
 }
 
 // oakLocal is a typed local of a statement body: its current symbolic
@@ -3138,6 +3192,13 @@ func (lo *oakLowering) constantIndexValue(expr ast.Expression) (int64, bool) {
 		if local, isLocal := lo.locals[e.Value]; isLocal && local.value.kind == termConst {
 			return int64(local.value.value), true
 		}
+		if _, isLocal := lo.locals[e.Value]; !isLocal {
+			if _, isParam := lo.params[e.Value]; !isParam {
+				if value, w, ok := lo.constantValue(e.Value, 64); ok && w <= 64 {
+					return int64(value), true
+				}
+			}
+		}
 	case *ast.InvocationExpression:
 		if ident, isIdent := e.Function.(*ast.Identifier); isIdent && len(e.Arguments) == 1 {
 			switch ident.Value {
@@ -3429,6 +3490,9 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			}
 			return truncate(paramTerm(e.Value, w), width), "", true
 		}
+		if value, _, ok := lo.constantValue(e.Value, width); ok {
+			return constTerm(value, width), "", true
+		}
 		return nil, fmt.Sprintf("identifier %s (not a parameter)", e.Value), false
 	case *ast.IntegerLiteral:
 		return constTerm(uint64(e.Value), width), "", true
@@ -3521,6 +3585,18 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 				return constTerm(value, width), "", true
 			}
 			return zeroExtend(truncate(paramTerm(name, 32), width), width), "", true
+		}
+		// An atomic load is the read of the cell its storage path names
+		// (docs/spec/65-machine-memory.md section 7a): the order is the
+		// checker's concern, the value the element's. The other atomics
+		// write, which this straight-line model does not follow.
+		if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
+			if spec, isAtomic := semir.LookupAtomicBuiltin(ident.Value); isAtomic {
+				if spec.Kind == semir.AtomicBuiltinLoad && len(e.Arguments) == 1 {
+					return lo.lower(e.Arguments[0], width)
+				}
+				return nil, "the atomic " + ident.Value + " (a write the straight-line model does not follow)", false
+			}
 		}
 		// A call to a program function in the subset is inlined
 		// (docs/spec/125-verification.md §3).
@@ -3773,6 +3849,26 @@ func (lo *oakLowering) lowerCondition(expr ast.Expression) (*term, string, bool)
 	return cmpTerm(code, left, right), "", true
 }
 
+// constantValue reads a constant global's value at width: the bit pattern
+// at its declared width, sign-extended when the type is signed and width is
+// wider, masked when narrower — the value the native backend materialized
+// (nativegen's constant). Reports the declared width beside the value.
+func (lo *oakLowering) constantValue(name string, width int) (uint64, int, bool) {
+	c, isConst := lo.constants[name]
+	if !isConst {
+		return 0, 0, false
+	}
+	cw, signed, ok := contractBits(&ast.Identifier{Value: c.Type})
+	if !ok {
+		return 0, 0, false
+	}
+	value := c.Value & mask(cw)
+	if signed && width > cw && (value>>uint(cw-1))&1 == 1 {
+		value |= ^mask(cw)
+	}
+	return value & mask(width), cw, true
+}
+
 // operandContract finds the width and signedness of a comparison from the
 // parameters it mentions (Oak's type checker has already made both sides
 // one type; the verifier only needs to read it off a parameter).
@@ -3784,6 +3880,11 @@ func (lo *oakLowering) operandContract(expr ast.Expression) (int, bool, bool) {
 		}
 		if w, isParam := lo.params[e.Value]; isParam {
 			return w, lo.signed[e.Value], true
+		}
+		if c, isConst := lo.constants[e.Value]; isConst {
+			if w, signed, ok := contractBits(&ast.Identifier{Value: c.Type}); ok {
+				return w, signed, true
+			}
 		}
 	case *ast.IndexExpression:
 		if lo.aggregateChain(e) {
@@ -3958,6 +4059,7 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64) *oakLowering {
 	lowering := newLowering(sig)
 	lowering.records, lowering.adts = fn.Records, fn.ADTs
+	lowering.constants = fn.Constants
 	lowering.concrete = concrete
 	lowering.bindAggregateParams(sig)
 	return lowering
