@@ -221,6 +221,8 @@ tokens, the hand-written C ceiling, ahead of Vectorscan (0.18) and RE2
 | `find_from` | first position at or after `start` where some literal occurs, else `len(bytes)` |
 | `which_at` | index of the first literal occurring at `pos`, else `total` |
 | `literal_at` | whether literal `j` occurs at `pos` |
+| `Carry`, `carry()` | the state of a stream: the last bytes so far (one less than the longest literal, at most 63) |
+| `feed` | the occurrences ending in one more chunk; the carry advances. Feeds over an input's chunks sum to `count` of the whole |
 
 ## Bytes
 

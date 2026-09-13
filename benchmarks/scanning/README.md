@@ -72,10 +72,11 @@ its bucket is a candidate finds exactly its occurrences, so the count the
 kernel reports is the number of occurrences. `Oak/TeddyMasks.lean` takes
 this to the bytes: the stored entries are OR-folds of bucket bits whose
 bit `b` is the predicate, the AND of masks is bitwise, so the kernel's
-`(cand & bucket_bit(j)) != 0` is exactly `cand` (`bit_candMask`). Not
-yet modeled: the sixty-four-byte stepping and the scalar tail; the
-differential check in `literals.oak`'s `main` and the six-way count
-agreement above cover them.
+`(cand & bucket_bit(j)) != 0` is exactly `cand` (`bit_candMask`), and
+`Oak/TeddyCount.lean` that the sixty-four-byte steps plus the tail count
+the occurrences over every position (`kernel_eq_total`). Not yet
+modeled: streaming; the differential checks and the six-way count
+agreement above cover it.
 
 ## Landed
 
