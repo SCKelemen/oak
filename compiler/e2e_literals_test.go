@@ -107,6 +107,7 @@ func TestLiteralsDeclarationRejections(t *testing.T) {
 		{"short", "Short: literals = { \"GET \", \"ok\" }\nmain: (): u32 = u32(0)\n", "OAK-M0304"},
 		{"duplicate", "Dup: literals = { \"GET \", \"GET \" }\nmain: (): u32 = u32(0)\n", "OAK-M0304"},
 		{"collision", "Http: literals = { \"GET \" }\nhttp_count: (bytes: []u8): u32 = u32(0)\nmain: (): u32 = u32(0)\n", "OAK-M0304"},
+		{"type-collision", "Http: literals = { \"GET \" }\nHttpMatch: type = struct { z: u8 }\nmain: (): u32 = u32(0)\n", "OAK-M0304"},
 		{"not-a-string", "Bad: literals = { 42 }\nmain: (): u32 = u32(0)\n", "string literals"},
 	} {
 		_, err := New().WithSource(tc.name+".oak", tc.src).Check().Get()
@@ -160,7 +161,9 @@ main: (): u32 {
   first: u32 = words_find(bytes, u32(0))
   second: u32 = words_find(bytes, first + u32(1))
   which: u32 = words_which(bytes, u32(190))
-  runtime == u32(3) && declared == u32(3) && first == u32(10) && second == u32(100) && which == u32(2) ? u32(42) | u32(1)
+  m: WordsMatch = words_match(bytes, u32(50))
+  none: WordsMatch = words_match(bytes, u32(195))
+  runtime == u32(3) && declared == u32(3) && first == u32(10) && second == u32(100) && which == u32(2) && m.at == u32(100) && m.which == u32(0) && none.at == u32(200) && none.which == u32(3) ? u32(42) | u32(1)
 }
 `
 

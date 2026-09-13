@@ -132,7 +132,7 @@ func projectLiterals(decl *ast.LiteralsDeclaration, declared map[string]bool, re
 		return nil, false
 	}
 	prefix := snakeCase(name)
-	for _, generated := range []string{prefix + "_literal_bytes", prefix + "_literal_starts", prefix + "_literal_tables", prefix + "_count", prefix + "_find", prefix + "_which"} {
+	for _, generated := range []string{prefix + "_literal_bytes", prefix + "_literal_starts", prefix + "_literal_tables", prefix + "_count", prefix + "_find", prefix + "_which", prefix + "_match", name + "Match"} {
 		if declared[generated] {
 			report(CodeLiteralsShape, decl.Name, "literals %s projects %s, which the program already declares", name, generated)
 			ok = false
@@ -180,6 +180,11 @@ func projectLiterals(decl *ast.LiteralsDeclaration, declared map[string]bool, re
 	write("%s%s_count: (bytes: []u8): u32 = %scount(bytes, %s, view(&%s_literal_tables))\n", pub, prefix, literalsKernelPrefix, set, prefix)
 	write("%s%s_find: (bytes: []u8, start: u32): u32 = %sfind_from(bytes, start, %s, view(&%s_literal_tables))\n", pub, prefix, literalsKernelPrefix, set, prefix)
 	write("%s%s_which: (bytes: []u8, pos: u32): u32 = %swhich_at(bytes, pos, %s)\n", pub, prefix, literalsKernelPrefix, set)
+	// name_match: the first occurrence at or after start as one record —
+	// its position (len(bytes) when none) and the literal's index (the
+	// number of literals when none).
+	write("%s%sMatch: type = struct {\n  at: u32\n  which: u32\n}\n", pub, name)
+	write("%s%s_match: (bytes: []u8, start: u32): %sMatch {\n  at: u32 = %s_find(bytes, start)\n  %sMatch { at: at, which: at < len(bytes) ? %s_which(bytes, at) | u32(%d) }\n}\n", pub, prefix, name, prefix, name, prefix, len(lits))
 	statements, err := parseGeneratedOak(src.String(), helperContext(decl.Name.Token.SemanticContext, name+"Literals"))
 	if err != nil {
 		report(CodeLiteralsShape, decl.Name, "literals %s: %v", name, err)

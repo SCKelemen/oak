@@ -45,6 +45,7 @@ declaration has it:
 | `name_count: (bytes: []u8): u32` | the number of occurrences of every literal in `bytes`, overlapping occurrences and occurrences of several literals at one position each counted |
 | `name_find: (bytes: []u8, start: u32): u32` | the first position at or after `start` where some literal occurs, or `len(bytes)` when none does |
 | `name_which: (bytes: []u8, pos: u32): u32` | the index (declaration order) of the first literal occurring at `pos`, or the number of literals when none does |
+| `NameMatch: type = struct { at: u32, which: u32 }`, `name_match: (bytes: []u8, start: u32): NameMatch` | the first occurrence at or after `start` as one record: its position and the literal's index, `len(bytes)` and the number of literals when none |
 | `name_literal_bytes: [N]u8`, `name_literal_starts: [K+1]u32` | the literals concatenated, and literal `j` as `bytes[starts[j] .. starts[j+1]]` |
 | `name_literal_tables: [96]u8` | the six nibble tables of the prefilter, computed at compile time |
 
@@ -115,8 +116,6 @@ same count.
 
 ## 5. Direction
 
-- A `find` that also reports which literal matched, as one call — today
-  `name_which(bytes, name_find(bytes, start))`.
 - Streaming: a set scanned across buffer boundaries with the last two
   bytes carried, the way `utf8.valid` carries its incomplete mask.
 - Larger sets: more than eight buckets when the set is large enough that
