@@ -1501,13 +1501,28 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 	}
 	{
 		switch instr.Mnemonic {
-		case "mov":
+		case "mov", "movz":
 			dest := instr.Operands[0].(Register)
 			value, ok := operandTerm(state, instr.Operands[1], widthOf(dest.Class))
 			if !ok {
 				return "unbound register read", false
 			}
 			state.write(dest, value)
+		case "movk":
+			// Insert a halfword: the destination's other bits are kept.
+			dest := instr.Operands[0].(Register)
+			width := widthOf(dest.Class)
+			imm, isImm := instr.Operands[1].(Immediate)
+			if !isImm {
+				return "movk without an immediate", false
+			}
+			old, ok := state.read(dest)
+			if !ok {
+				return "unbound register read", false
+			}
+			keep := ^(uint64(0xffff) << uint(imm.Shift)) & mask(width)
+			kept := binaryTerm("and", old, constTerm(keep, width))
+			state.write(dest, binaryTerm("or", kept, constTerm(uint64(imm.Value)<<uint(imm.Shift), width)))
 		case "cmp":
 			left := instr.Operands[0].(Register)
 			width := widthOf(left.Class)
