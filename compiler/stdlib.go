@@ -119,9 +119,11 @@ func lowerLibrarySugar(tree *SyntaxTree) error {
 		// undefined names for the checker to report.
 		return nil
 	}
-	if err := lowerDerivedCodecs(tree.Root); err != nil {
+	layouts, err := lowerDerivedCodecs(tree.Root)
+	if err != nil {
 		return err
 	}
+	tree.CodecLayouts = layouts
 	if err := lowerTextLiterals(tree.Root); err != nil {
 		return err
 	}
