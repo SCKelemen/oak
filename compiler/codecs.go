@@ -13,7 +13,7 @@ import (
 // This closed first codec projection generates ordinary Oak before semantic
 // checking. It does not introduce runtime reflection or erased visitor values.
 // All generated field accesses and borrows pass through the ordinary gates.
-func lowerDerivedCodecs(program *ast.Program) error {
+func lowerDerivedCodecs(program *ast.Program) ([]CodecLayout, error) {
 	d := codecDeriver{records: map[string]*ast.ADTType{}, schemas: map[string]*ast.TagDeclaration{}, names: map[string]bool{}, generated: map[string]bool{}, active: map[string]bool{}}
 	for _, stmt := range program.Statements {
 		if name := declarationName(stmt); name != "" {
@@ -123,7 +123,7 @@ func lowerDerivedCodecs(program *ast.Program) error {
 		lowered.Arguments = values
 		return &lowered, nil
 	}); err != nil {
-		return err
+		return nil, err
 	}
 	// Reserved producers cannot escape as values or be shadowed by binders.
 	if err := transformSyntax(reflect.ValueOf(program), func(expr ast.Expression) (ast.Expression, error) {
@@ -132,10 +132,10 @@ func lowerDerivedCodecs(program *ast.Program) error {
 		}
 		return expr, nil
 	}); err != nil {
-		return err
+		return nil, err
 	}
 	program.Statements = append(program.Statements, d.output...)
-	return nil
+	return d.layouts, nil
 }
 
 func codecApplication(expr ast.Expression) (string, []ast.Expression, bool) {
@@ -154,6 +154,8 @@ func codecApplication(expr ast.Expression) (string, []ast.Expression, bool) {
 func codecName(operation, typ string) string { return "__oak_json_" + operation + "_" + typ }
 
 type codecDeriver struct {
+	layouts         []CodecLayout
+	layoutReported  map[string]bool
 	binaryGenerated map[string]bool
 	binaryRegions   map[string]bool // records whose layout carries a region (view fields)
 	decodeGenerated map[string]bool

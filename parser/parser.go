@@ -1853,8 +1853,10 @@ func (p *Parser) parsePubDeclaration() ast.Statement {
 		decl.Exported, decl.Opaque = true, opaque
 	case *ast.ProtocolDeclaration:
 		decl.Exported = true
+	case *ast.LiteralsDeclaration:
+		decl.Exported = true
 	default:
-		p.addErrorAtToken(&pubToken, "pub applies only to package-level declarations (functions, values, types, interfaces, tag schemas, protocols)")
+		p.addErrorAtToken(&pubToken, "pub applies only to package-level declarations (functions, values, types, interfaces, tag schemas, protocols, literals)")
 		return nil
 	}
 	if opaque && !isType {
@@ -2733,6 +2735,45 @@ func (p *Parser) parseTagDeclarationFromName(name *ast.Identifier) *ast.TagDecla
 	}
 	decl.Schema = recordLit
 	decl.EndToken = recordLit.EndToken
+	return decl
+}
+
+// parseLiteralsDeclarationFromName parses the body of `Name: literals = {
+// "a", "b" }`: string literals separated by commas or newlines. The cursor
+// is on `literals`. Structure only: the compiler checks the set (at least
+// one literal, every literal at least three bytes, no duplicates).
+func (p *Parser) parseLiteralsDeclarationFromName(name *ast.Identifier) *ast.LiteralsDeclaration {
+	decl := &ast.LiteralsDeclaration{Token: name.Token, Name: name}
+	p.nextToken() // consume `literals`; currentToken is '='
+	if !p.currentTokenIs(token.ASSIGN) {
+		p.peekError(token.ASSIGN)
+		return nil
+	}
+	p.nextToken() // to '{'
+	if !p.currentTokenIs(token.LBRACE) {
+		p.peekError(token.LBRACE)
+		return nil
+	}
+	p.nextToken() // first literal, or '}'
+	for {
+		for p.currentTokenIs(token.COMMA) || p.currentTokenIs(token.SEMI) {
+			p.nextToken()
+		}
+		if p.currentTokenIs(token.RBRACE) {
+			decl.EndToken = p.currentToken
+			break
+		}
+		if p.currentTokenIs(token.EOF) {
+			p.addErrorAtCurrentToken("literals declaration is missing its closing brace")
+			return nil
+		}
+		if !p.currentTokenIs(token.STRING) {
+			p.addErrorAtCurrentToken("literals entries are string literals")
+			return nil
+		}
+		decl.Literals = append(decl.Literals, &ast.StringLiteral{Token: p.currentToken, Value: p.currentToken.Literal})
+		p.nextToken()
+	}
 	return decl
 }
 
@@ -4940,6 +4981,14 @@ func (p *Parser) parseIdentLedStatement() ast.Statement {
 	// `protocol` is contextual too.
 	if p.currentTokenIs(token.IDENT) && p.currentToken.Literal == "protocol" && p.peekTokenIs(token.ASSIGN) {
 		if decl := p.parseProtocolDeclarationFromName(name); decl != nil {
+			return decl
+		}
+		return nil
+	}
+	// Literals declaration: Name: literals = { "a", "b" } (docs/spec/113-literals.md).
+	// `literals` is contextual too.
+	if p.currentTokenIs(token.IDENT) && p.currentToken.Literal == "literals" && p.peekTokenIs(token.ASSIGN) {
+		if decl := p.parseLiteralsDeclarationFromName(name); decl != nil {
 			return decl
 		}
 		return nil

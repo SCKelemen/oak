@@ -46,6 +46,8 @@ func TestAArch64DispatchShape(t *testing.T) {
 	generated := generateSourceC(t, aarch64DispatchSource)
 	for _, want := range []string{
 		"#define OAK_CPU_SVE (1ull << 0)",
+		// The Darwin probe declares sysctlbyname itself (the dbs pilot's B9).
+		"extern int sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);",
 		"void oak_cpu_init(void) { oak_cpu_features = oak_cpu_probe(); }",
 		"if (oak_cpu_features & OAK_CPU_SVE) {",
 		"return oak_count_sevens_sve( input );",

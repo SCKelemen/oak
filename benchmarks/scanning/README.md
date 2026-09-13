@@ -22,7 +22,7 @@ the absolute figures are upper bounds.
 
 | Scanner | ns/byte | GB/s |
 | --- | --- | --- |
-| **Oak `count_literals` (`literals.oak`, Oak source, emitted C)** | **0.11** | **9.46** |
+| **Oak `http_count`, projected from `Http: literals = { ... }` (`literals.oak`)** | **0.10** | **10.10** |
 | Hand-written Teddy, 3-byte prefilter, 64-byte steps (C, NEON) | 0.11 | 9.45 |
 | Vectorscan `hs_scan`, literal database, block mode | 0.18 | 5.60 |
 | Teddy, 2-byte prefilter, 16-byte steps (C, NEON) | 0.32 | 3.13 |
@@ -46,6 +46,10 @@ All six report 16,451 matches (16,447 planted, four accidental).
 - Three bytes of prefilter beat two by three times on random text: the
   candidate rate falls from about 16/95² to 16/95³ per position, and the
   verification, a scalar loop, stops mattering.
+- The `literals` declaration reaches the ceiling: the compiler computes
+  the nibble tables from the declared set and projects `http_count` over
+  the standard library kernel (`docs/spec/113-literals.md`), and the
+  emitted C runs at the hand-written Teddy's speed.
 - Oak reaches the ceiling from its portable vector vocabulary
   (`docs/spec/93-simd.md`: `load_u8x16` under the wrap-free guard,
   `tbl_u8x16`, `and`, `shr`, `or`, `any`, `store_u8x16` to a sixteen-byte
@@ -65,14 +69,18 @@ and proves the prefilter **sound** (`Oak.Teddy.sound`): a literal that
 occurs at a position has its bucket's bit set in the candidate mask
 there. Hence **exact** (`Oak.Teddy.exact`): verifying a literal only where
 its bucket is a candidate finds exactly its occurrences, so the count the
-kernel reports is the number of occurrences. Not yet modeled: the byte
-level of the masks (the AND of `u8` masks has bit `b` set exactly when
-each operand has), the sixty-four-byte stepping, and the scalar tail;
-the differential check in `literals.oak`'s `main` and the six-way count
+kernel reports is the number of occurrences. `Oak/TeddyMasks.lean` takes
+this to the bytes: the stored entries are OR-folds of bucket bits whose
+bit `b` is the predicate, the AND of masks is bitwise, so the kernel's
+`(cand & bucket_bit(j)) != 0` is exactly `cand` (`bit_candMask`). Not
+yet modeled: the sixty-four-byte stepping and the scalar tail; the
+differential check in `literals.oak`'s `main` and the six-way count
 agreement above cover them.
 
-## Next
+## Landed
 
-A stdlib module with this kernel behind a `find`/`count` API, and a
-`literals` declaration the compiler projects the tables and the kernel
-from, the way a `protocol` projects its machine.
+The kernel is `stdlib/literals.oak` (`import("literals")`) and the
+declaration `Name: literals = { ... }` projects `name_count`,
+`name_find`, and `name_which` over it with the tables computed at compile
+time (`docs/spec/113-literals.md`). `literals.oak` here is that
+declaration over the sixteen tokens, with a scalar self-check in `main`.
