@@ -277,6 +277,10 @@ func encodeRV64Instruction(instr Instruction, pc int64, labels map[string]int64)
 		default:
 			names := [][2]string{{"vd", "rd"}, {"vs2", "rs1"}, {"vs1", "rs1"}}
 			for i := 0; i < len(ops) && i < 3; i++ {
+				if imm, isImm := ops[i].(Immediate); isImm {
+					fields["zimm5"] = imm.Value // vnsrl.wi's shift
+					continue
+				}
 				r := ops[i].(Register)
 				if r.Class == ClassRV64V {
 					fields[names[i][0]] = int64(r.Num)

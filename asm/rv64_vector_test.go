@@ -68,6 +68,40 @@ done:
   mv a0, t5
   ret`
 
+// Widening (docs/spec/94-assembler.md §9): the u32 elements are multiplied
+// by three into u64 products — a 2*LMUL destination group — and reduced at
+// the wide width after a reconfiguration to e64/m2; the low 32 bits of the
+// sum are returned.
+const rv64VWideDecl = "vwide: (v: []u32, k: u32) -> u32"
+const rv64VWideBody = `
+  bind a0, a1 = v
+  bind a2 = k
+  clobber t0, t1, t2, t3, t4, t5, t6, v2, v4, v5, v6, v8, v9, v10, v11
+  slli t1, a1, 32
+  srli t1, t1, 32
+  li t0, 0
+  li t5, 0
+  li t6, 3
+loop:
+  bgeu t0, t1, done
+  sub t2, t1, t0
+  vsetvli t3, t2, e32, m1, ta, ma
+  slli t4, t0, 2
+  add t4, a0, t4
+  vle32.v v2, (t4)
+  vmv.v.x v6, t6
+  vwmulu.vv v4, v2, v6
+  vsetvli t3, t2, e64, m2, ta, ma
+  vmv.v.x v10, t5
+  vredsum.vs v8, v4, v10
+  vmv.x.s t5, v8
+  vsetvli t3, t2, e32, m1, ta, ma
+  add t0, t0, t3
+  j loop
+done:
+  mv a0, t5
+  ret`
+
 func TestRV64VectorChecker(t *testing.T) {
 	accept := map[string][2]string{
 		"strip-mined sum": {rv64VStripDecl, rv64VStripBody},
@@ -96,6 +130,22 @@ func TestRV64VectorChecker(t *testing.T) {
 empty:
   ebreak`},
 		"masked sum at LMUL=2": {rv64VMaskedDecl, rv64VMaskedBody},
+		"widening products":    {rv64VWideDecl, rv64VWideBody},
+		"extension and narrowing": {"vext: (v: []u32, k: u32) -> u32", `
+  bind a0, a1 = v
+  bind a2 = k
+  clobber t0, t1, v2, v4, v5, v6
+  slli t1, a1, 32
+  srli t1, t1, 32
+  vsetvli t0, t1, e32, m1, ta, ma
+  vle32.v v2, (a0)
+  vwaddu.vv v4, v2, v2
+  vnsrl.wi v6, v4, 1
+  vsetvli t0, t1, e64, m2, ta, ma
+  vzext.vf2 v4, v2
+  vsext.vf2 v4, v2
+  vmv.x.s a0, v4
+  ret`},
 		"masks and select": {"vmask: (v: []u32, k: u32) -> u32", `
   bind a0, a1 = v
   bind a2 = k
@@ -117,19 +167,23 @@ empty:
 		}
 	}
 	rejections := map[string][3]string{
-		"unaligned group at LMUL=2":   {rv64VMaskedDecl, strings.Replace(rv64VMaskedBody, "  vle32.v v2, (t4)\n", "  vle32.v v3, (t4)\n", 1), "not aligned to the register group"},
-		"mask register unwritten":     {rv64VMaskedDecl, strings.Replace(rv64VMaskedBody, "  vmsne.vx v0, v2, a2\n", "", 1), "neither bound nor written"},
-		"group not wholly clobbered":  {rv64VMaskedDecl, strings.Replace(rv64VMaskedBody, ", v9", "", 1), "not a declared clobber"},
-		"fractional LMUL":             {rv64VMaskedDecl, strings.Replace(rv64VMaskedBody, "e32, m2, ta, mu", "e32, mf2, ta, mu", 1), "fractional LMUL"},
-		"no configuration":            {rv64VStripDecl, strings.Replace(rv64VStripBody, "  vsetvli t3, t2, e32, m1, ta, ma\n", "  li t3, 4\n", 1), "without a vector configuration"},
-		"configuration lost at label": {rv64VStripDecl, strings.Replace(rv64VStripBody, "  vle32.v v1, (t4)\n", "again:\n  vle32.v v1, (t4)\n", 1), "without a vector configuration"},
-		"width against SEW":           {rv64VStripDecl, strings.Replace(rv64VStripBody, "e32, m1, ta, ma", "e8, m1, ta, ma", 1), "e8 configuration"},
-		"AVL not the remaining":       {rv64VStripDecl, strings.Replace(rv64VStripBody, "  sub t2, t1, t0\n", "  mv t2, t1\n", 1), "same guarded index"},
-		"index rewritten between":     {rv64VStripDecl, strings.Replace(rv64VStripBody, "  sub t2, t1, t0\n  vsetvli t3, t2, e32, m1, ta, ma\n  slli t4, t0, 2\n  add t4, a0, t4\n", "  slli t4, t0, 2\n  add t4, a0, t4\n  addi t0, t0, 1\n  bgeu t0, t1, done\n  sub t2, t1, t0\n  vsetvli t3, t2, e32, m1, ta, ma\n", 1), "neither rewritten in between"},
-		"unclobbered vector register": {rv64VStripDecl, strings.Replace(rv64VStripBody, ", v1, v2, v3", ", v1, v2", 1), "not a declared clobber"},
-		"unwritten vector source":     {rv64VStripDecl, strings.Replace(rv64VStripBody, "  vmv.v.x v2, t5\n", "", 1), "neither bound nor written"},
-		"store to a view":             {rv64VStripDecl, strings.Replace(rv64VStripBody, "  vle32.v v1, (t4)\n", "  vle32.v v1, (t4)\n  vse32.v v1, (t4)\n", 1), "read-only view"},
-		"LMUL above one":              {rv64VStripDecl, strings.Replace(rv64VStripBody, "e32, m1, ta, ma", "e32, m2, ta, ma", 1), "not aligned to the register group"},
+		"widening destination overlaps its source": {rv64VWideDecl, strings.Replace(rv64VWideBody, "  vwmulu.vv v4, v2, v6\n", "  vwmulu.vv v2, v2, v6\n", 1), "overlaps the source group"},
+		"widening past 64-bit elements":            {rv64VWideDecl, strings.Replace(rv64VWideBody, "  vle32.v v2, (t4)\n  vmv.v.x v6, t6\n  vwmulu.vv v4, v2, v6\n", "  vle32.v v2, (t4)\n  vsetvli t3, t2, e64, m1, ta, ma\n  vmv.v.x v6, t6\n  vwmulu.vv v4, v2, v6\n", 1), "widening past 64-bit"},
+		"wide group past the file":                 {rv64VWideDecl, strings.Replace(rv64VWideBody, "vsetvli t3, t2, e32, m1, ta, ma\n  slli t4", "vsetvli t3, t2, e32, m8, ta, ma\n  slli t4", 1), "past the file"},
+		"unaligned wide group":                     {rv64VWideDecl, strings.Replace(rv64VWideBody, "  vwmulu.vv v4, v2, v6\n", "  vwmulu.vv v9, v2, v6\n", 1), "not aligned to the register group of LMUL=2"},
+		"unaligned group at LMUL=2":                {rv64VMaskedDecl, strings.Replace(rv64VMaskedBody, "  vle32.v v2, (t4)\n", "  vle32.v v3, (t4)\n", 1), "not aligned to the register group"},
+		"mask register unwritten":                  {rv64VMaskedDecl, strings.Replace(rv64VMaskedBody, "  vmsne.vx v0, v2, a2\n", "", 1), "neither bound nor written"},
+		"group not wholly clobbered":               {rv64VMaskedDecl, strings.Replace(rv64VMaskedBody, ", v9", "", 1), "not a declared clobber"},
+		"fractional LMUL":                          {rv64VMaskedDecl, strings.Replace(rv64VMaskedBody, "e32, m2, ta, mu", "e32, mf2, ta, mu", 1), "fractional LMUL"},
+		"no configuration":                         {rv64VStripDecl, strings.Replace(rv64VStripBody, "  vsetvli t3, t2, e32, m1, ta, ma\n", "  li t3, 4\n", 1), "without a vector configuration"},
+		"configuration lost at label":              {rv64VStripDecl, strings.Replace(rv64VStripBody, "  vle32.v v1, (t4)\n", "again:\n  vle32.v v1, (t4)\n", 1), "without a vector configuration"},
+		"width against SEW":                        {rv64VStripDecl, strings.Replace(rv64VStripBody, "e32, m1, ta, ma", "e8, m1, ta, ma", 1), "e8 configuration"},
+		"AVL not the remaining":                    {rv64VStripDecl, strings.Replace(rv64VStripBody, "  sub t2, t1, t0\n", "  mv t2, t1\n", 1), "same guarded index"},
+		"index rewritten between":                  {rv64VStripDecl, strings.Replace(rv64VStripBody, "  sub t2, t1, t0\n  vsetvli t3, t2, e32, m1, ta, ma\n  slli t4, t0, 2\n  add t4, a0, t4\n", "  slli t4, t0, 2\n  add t4, a0, t4\n  addi t0, t0, 1\n  bgeu t0, t1, done\n  sub t2, t1, t0\n  vsetvli t3, t2, e32, m1, ta, ma\n", 1), "neither rewritten in between"},
+		"unclobbered vector register":              {rv64VStripDecl, strings.Replace(rv64VStripBody, ", v1, v2, v3", ", v1, v2", 1), "not a declared clobber"},
+		"unwritten vector source":                  {rv64VStripDecl, strings.Replace(rv64VStripBody, "  vmv.v.x v2, t5\n", "", 1), "neither bound nor written"},
+		"store to a view":                          {rv64VStripDecl, strings.Replace(rv64VStripBody, "  vle32.v v1, (t4)\n", "  vle32.v v1, (t4)\n  vse32.v v1, (t4)\n", 1), "read-only view"},
+		"LMUL above one":                           {rv64VStripDecl, strings.Replace(rv64VStripBody, "e32, m1, ta, ma", "e32, m2, ta, ma", 1), "not aligned to the register group"},
 		"immediate past the minimum": {"vhead: (s: [*]u8) -> u32", `
   bind a0, a1 = s
   clobber t0, t1, v1
@@ -227,6 +281,20 @@ func TestRV64VectorEncoderAgreesWithGNUAs(t *testing.T) {
   vsetvli t0, t1, e8, m1, ta, ma
   vle8.v v1, (a0)
   vse8.v v1, (a0)
+  vsetvli t0, t1, e16, m1, ta, ma
+  vle16.v v1, (a0)
+  vse16.v v1, (a0)
+  vsetvli t0, t1, e32, m1, ta, ma
+  vwaddu.vv v4, v2, v3
+  vwadd.vv v4, v2, v3
+  vwsubu.vv v4, v2, v3, v0.t
+  vwsub.vv v4, v2, v3
+  vwmulu.vv v4, v2, v3
+  vwmul.vv v4, v2, v3, v0.t
+  vzext.vf2 v4, v2
+  vsext.vf2 v4, v2, v0.t
+  vnsrl.wi v2, v4, 3
+  vnsrl.wi v2, v4, 31, v0.t
   vsetvli t0, t1, e32, m2, ta, mu
   vle32.v v2, (a0), v0.t
   vse32.v v2, (a0), v0.t
