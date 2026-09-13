@@ -216,6 +216,17 @@ func (em *emitter) emitGlobals() (string, error) {
 			if err != nil {
 				return "", fmt.Errorf("lean: %w", err)
 			}
+			if decl.Measured != nil {
+				// A measured constant (docs/spec/60-effects-allocation.md
+				// section 10b) is opaque within its range: theorems about
+				// code reading it quantify over every value the load may
+				// supply, and the range is the hypothesis `NAME_range`
+				// they may take (95-extraction.md section 3).
+				rendered[name] = fmt.Sprintf("/-- `%s` is measured within `%d..%d`, pinned to `%s` when the load supplies nothing. -/\nopaque %s : %s\n\nvariable (%s_range : (%d : %s) ≤ %s ∧ %s ≤ (%d : %s))\n\n",
+					ident(name), decl.Measured.Lo, decl.Measured.Hi, decl.Value.String(), ident(name), typ, ident(name), decl.Measured.Lo, typ, ident(name), ident(name), decl.Measured.Hi, typ)
+				progressed = true
+				continue
+			}
 			if _, isTargetConstant := typechecker.TargetConstantCall(decl.Value); isTargetConstant {
 				// A target constant (docs/spec/92-ffi.md section 2.11) is a
 				// value the target's C headers define; the extraction knows

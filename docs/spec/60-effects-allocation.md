@@ -344,6 +344,56 @@ hidden global constructor, and the failure is Oak's diagnostic, never the
 C compiler's (ml finding F19). Runtime initialization is written at the top
 of `main`.
 
+### 10b. Measured constants
+
+```oak
+TILE_GROUPS: u32 (measured: 16, 1024) = 128
+```
+
+A **measured constant** is a top-level integer binding whose value is the
+machine's, not the program's: the declaration states the inclusive range
+the program is written for and a **pinned** value inside it, and the value
+the program runs with is supplied **at load**, within the range, or is the
+pinned value when nothing is supplied. The clause takes the place of a
+placement clause after the type (`65-machine-memory.md`); the type is a
+fixed-width integer, the range lies inside the type's, and the pinned
+value is an integer literal inside the range (`OAK-T0502` otherwise). The
+constant is never assigned (`OAK-T0502`), and it is **not a compile-time
+constant**: a later initializer may not fold it (`OAK-T0501`), the C
+backend emits it as a mutable static rather than a folded `static const`
+(`90-backend.md` §8a), and the extent facts learn nothing from its pinned
+value.
+
+**The load.** The compiled program declares one weak hook,
+`int64_t oak_measured_value(const char *name, int64_t pinned)`, and an
+initializer that asks it for each constant by its Oak name without the
+package prefix, checks the answer against the declared range, and stops
+the program — the constant's name and the range on stderr where there is
+one, a trap otherwise — when it lies outside: a knob outside its range
+never reaches code proved for the range. Hosted builds define the hook
+over the environment — `OAK_MEASURED_<NAME>`, a decimal integer, absent or
+empty meaning pinned — and run the initializer as a constructor, so an
+executable sees the values before `main` and a dynamically loaded library
+at load; a host that wants its own source (a tuning file, a measurement)
+defines the hook itself, and the check still stands. Freestanding code
+calls `oak_measured_init` from its startup. The interpreter reads the same
+environment variables under the same check. `oak vet` lists every
+measured constant with its type, range, and pinned value beside the
+recorded assumptions.
+
+**The proof.** The extraction renders a measured constant as an opaque
+value of its type with the range as a hypothesis, `NAME_range`
+(`95-extraction.md` §3): a theorem about code that reads it is a theorem
+for every value the load may admit, which is exactly the set of values a
+run can have — `Oak.Measured.load_in_range` proves that whatever the host
+supplies, the constant a run computes with lies in the declared range,
+`load_none` that nothing supplied means pinned, and `load_dichotomy` that
+a run either computes with a value in the range or does not run. A rule
+proved once over the range is therefore proved for every machine it is
+tuned on, and the proof never names the number (the ml pilot's ask 5.21,
+design log 0080: the split targets of a matmul, measured per machine, with
+the cases theorem quantified over them).
+
 ## 11. Closures
 
 A capturing closure has an environment whose storage must be justified by ownership analysis.

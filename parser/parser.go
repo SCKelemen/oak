@@ -5300,23 +5300,43 @@ func (p *Parser) parseVarDeclFromNameAndTypeStart(name *ast.Identifier) *ast.Var
 		return nil
 	}
 
-	// Optional placement clause: name: Type (section: "shared"). The
-	// section name is validated here so nothing but a plain section
-	// spelling can reach generated C.
+	// Optional clause after the type: a placement clause, name: Type
+	// (section: "shared") — the section name is validated here so nothing
+	// but a plain section spelling can reach generated C — or a measured
+	// range, name: Type (measured: lo, hi) (docs/spec/60-effects-allocation.md
+	// section 10b), two integer literals, inclusive.
 	if p.peekTokenIs(token.LPAREN) {
 		p.nextToken() // to (
-		if !p.expectPeek(token.IDENT) || p.currentToken.Literal != "section" {
-			p.addErrorAtCurrentToken("placement clause takes the form (section: \"name\")")
+		if !p.expectPeek(token.IDENT) {
 			return nil
 		}
-		if !p.expectPeek(token.COLON) || !p.expectPeek(token.STRING) {
+		switch p.currentToken.Literal {
+		case "section":
+			if !p.expectPeek(token.COLON) || !p.expectPeek(token.STRING) {
+				return nil
+			}
+			if !validSectionName(p.currentToken.Literal) {
+				p.addErrorAtCurrentToken(fmt.Sprintf("section name %q must match [A-Za-z0-9_.,$]+", p.currentToken.Literal))
+				return nil
+			}
+			stmt.Section = p.currentToken.Literal
+		case "measured":
+			if !p.expectPeek(token.COLON) {
+				return nil
+			}
+			lo, ok := p.parseMeasuredBound()
+			if !ok || !p.expectPeek(token.COMMA) {
+				return nil
+			}
+			hi, ok := p.parseMeasuredBound()
+			if !ok {
+				return nil
+			}
+			stmt.Measured = &ast.MeasuredClause{Lo: lo, Hi: hi}
+		default:
+			p.addErrorAtCurrentToken("the clause after a declaration's type is (section: \"name\") or (measured: lo, hi)")
 			return nil
 		}
-		if !validSectionName(p.currentToken.Literal) {
-			p.addErrorAtCurrentToken(fmt.Sprintf("section name %q must match [A-Za-z0-9_.,$]+", p.currentToken.Literal))
-			return nil
-		}
-		stmt.Section = p.currentToken.Literal
 		if !p.expectPeek(token.RPAREN) {
 			return nil
 		}
@@ -5432,4 +5452,26 @@ func (p *Parser) parseShortVariableDeclaration() *ast.VariableDeclaration {
 	}
 
 	return stmt
+}
+
+// parseMeasuredBound reads one bound of a measured clause: an integer
+// literal, optionally negated. The current token is the token before it.
+func (p *Parser) parseMeasuredBound() (int64, bool) {
+	negative := false
+	if p.peekTokenIs(token.NEG) {
+		p.nextToken()
+		negative = true
+	}
+	if !p.expectPeek(token.INT) {
+		return 0, false
+	}
+	value, err := strconv.ParseInt(p.currentToken.Literal, 0, 64)
+	if err != nil {
+		p.addErrorAtCurrentToken(fmt.Sprintf("measured bound %s is not a 64-bit integer literal", p.currentToken.Literal))
+		return 0, false
+	}
+	if negative {
+		value = -value
+	}
+	return value, true
 }
