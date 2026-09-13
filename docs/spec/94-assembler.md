@@ -2345,3 +2345,43 @@ C backend realizes is itself left to the C backend, to a fixpoint
 (`compiler/native_bodies.go`), so no call crosses the two contracts
 unconverted. The suffix is reserved the way `__` is: no Oak identifier
 ends in it.
+
+### 9.y Vector helpers expanded, locals released at their last use (2026-09-13)
+
+A SIMD kernel in Oak is a tree of small functions whose signatures carry
+vectors — the UTF-8 validator's `check_blocks` → `check_block` →
+`special_cases` — which the C compiler flattens into one loop with every
+vector in a register. Through native calls the same tree spills its
+arguments at every call and crosses the vector register contract, and
+measured that way it ran five times slower than the C backend. Two
+changes close most of that gap, and both are meaning-preserving
+rewrites the verifier still checks against the original body:
+
+- **Expansion (`nativegen/inline.go`).** Before lowering, every call to a
+  function whose signature carries a fixed vector is replaced by a block
+  binding the parameters to the arguments in order — an identifier
+  argument the callee never assigns substitutes directly — and running the
+  callee's body with its bound names renamed apart; a call in statement
+  position splices the block. A call is exactly that binding, so the
+  expansion changes nothing the verifier compares. Recursion, receivers,
+  type parameters, variadic parameters, extern or asm bodies, and matches
+  that bind payloads are left as calls, and an expansion the lowering
+  refuses falls back to the body as written. The source-level inliner
+  (`compiler/inline.go`, `90-backend.md` §9) covers scalar leaf helpers for
+  both backends; this expansion covers the vector helpers its rule
+  excludes, on the native lane only.
+- **Liveness (`nativegen/liveness.go`).** A variable is dead after the
+  statement of its list that mentions it last (a mention inside a nested
+  loop or arm belongs to the enclosing statement, so a loop-carried
+  variable lives to the loop's end, and a block's result keeps its locals
+  alive), and its register or slot returns to the pool for the
+  declarations that follow; closed scopes return theirs. A function without
+  calls keeps vector locals in the caller-saved vector registers too,
+  leaving four to expression temporaries.
+
+Measured (`benchmarks/native/`): the flattened validator has no call and
+runs at 0.28 ns/byte where the call tree ran at 0.85 and the C backend at
+0.17, in one run on a loaded machine; twenty vector spills remain of a
+kernel that declares some forty vector locals over its expansions. What
+would take the rest: an allocator with liveness across the whole body
+instead of declaration order within it.
