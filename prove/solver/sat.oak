@@ -3,9 +3,12 @@
 // conflict-driven clause-learning solver in the strict profile — no
 // recursion, every loop bounded by a count checked against the storage it
 // indexes, one caller-owned word arena laid out by offsets (as bdd.oak) —
-// over the clause table lrat.oak reads. Propagation walks occurrence lists
-// (the clauses are Tseitin's, two or three literals, so a scan is the cheap
-// step); learning is first-UIP with VSIDS activity and phase saving;
+// over the clause table lrat.oak reads. Propagation is two watched
+// literals per clause (its first two, kept non-false while the clause is
+// neither satisfied nor unit; a watch moves by swapping a non-false literal
+// into the watched slot, with the watch nodes fixed at 2c and 2c+1 in
+// per-literal singly linked lists, so no node is ever allocated); learning
+// is first-UIP with VSIDS activity and phase saving;
 // restarts are geometric. Every learned clause is written as an LRAT line
 // as it is learned — its literals, then the ids of the clauses whose unit
 // propagation derives it: the level-zero antecedent chain, the resolved
@@ -45,15 +48,15 @@ SatLayout: type = struct {
   lengths_at: u32,
   ids_at: u32,
   store_at: u32,
-  occ_head_at: u32,
-  occ_next_at: u32,
-  occ_clause_at: u32,
+  watch_head_at: u32,
+  watch_next_at: u32,
   learnt_at: u32,
   resolved_at: u32,
   hints_at: u32,
   hints_cap: u32,
   remap_at: u32,
   lock_at: u32,
+  cact_at: u32,
   state_at: u32,
   total: u32
 }
@@ -61,7 +64,7 @@ SatLayout: type = struct {
 // The state words.
 ST_CLAUSES: u32 = 0
 ST_STORE_USED: u32 = 1
-ST_OCC_USED: u32 = 2
+ST_PENDING: u32 = 2
 ST_TRAIL_LEN: u32 = 3
 ST_QHEAD: u32 = 4
 ST_LEVEL: u32 = 5
@@ -80,6 +83,8 @@ ST_INITIAL: u32 = 17
 ST_REDUCE_LIMIT: u32 = 18
 ST_REDUCTIONS: u32 = 19
 ST_DELETED: u32 = 20
+ST_RESTARTS: u32 = 21
+ST_CLAUSE_INC: u32 = 22
 ST_WORDS: u32 = 24
 
 // sat_layout sizes the arena for a variable count, a clause capacity
@@ -99,24 +104,24 @@ sat_layout: (vars: u32, clause_cap: u32, store_cap: u32): SatLayout {
   lengths_at: u32 = starts_at + clause_cap
   ids_at: u32 = lengths_at + clause_cap
   store_at: u32 = ids_at + clause_cap
-  occ_head_at: u32 = store_at + store_cap
-  occ_next_at: u32 = occ_head_at + u32(2) * v
-  occ_clause_at: u32 = occ_next_at + store_cap
-  learnt_at: u32 = occ_clause_at + store_cap
+  watch_head_at: u32 = store_at + store_cap
+  watch_next_at: u32 = watch_head_at + u32(2) * v
+  learnt_at: u32 = watch_next_at + u32(2) * clause_cap
   resolved_at: u32 = learnt_at + v + u32(1)
   hints_at: u32 = resolved_at + v + u32(1)
   hints_cap: u32 = u32(2) * v + u32(4)
   remap_at: u32 = hints_at + hints_cap
   lock_at: u32 = remap_at + clause_cap
-  state_at: u32 = lock_at + clause_cap
+  cact_at: u32 = lock_at + clause_cap
+  state_at: u32 = cact_at + clause_cap
   SatLayout {
     vars: vars, clause_cap: clause_cap, store_cap: store_cap,
     assign_at: assign_at, level_at: level_at, reason_at: reason_at, seen_at: seen_at,
     phase_at: phase_at, activity_at: activity_at, trail_at: trail_at, lim_at: lim_at,
     starts_at: starts_at, lengths_at: lengths_at, ids_at: ids_at, store_at: store_at,
-    occ_head_at: occ_head_at, occ_next_at: occ_next_at, occ_clause_at: occ_clause_at,
+    watch_head_at: watch_head_at, watch_next_at: watch_next_at,
     learnt_at: learnt_at, resolved_at: resolved_at, hints_at: hints_at, hints_cap: hints_cap,
-    remap_at: remap_at, lock_at: lock_at,
+    remap_at: remap_at, lock_at: lock_at, cact_at: cact_at,
     state_at: state_at, total: state_at + ST_WORDS
   }
 }
@@ -138,32 +143,39 @@ sat_enqueue: (l: SatLayout, mem: [*]u32, lit: u32, reason: u32): () {
   sat_set(l, mem, ST_TRAIL_LEN, n + u32(1))
 }
 
+// sat_watch threads clause c's watch node for slot k (0 or 1) onto the
+// list of the literal in that slot.
+sat_watch: (l: SatLayout, mem: [*]u32, c: u32, k: u32): () {
+  lit: u32 = mem[l.store_at + mem[l.starts_at + c] + k]
+  node: u32 = u32(2) * c + k
+  mem[l.watch_next_at + node] = mem[l.watch_head_at + lit]
+  mem[l.watch_head_at + lit] = node
+}
+
 // sat_add_learnt stores the clause in the learnt buffer (n literals) as
-// clause number `clauses` with certificate id `id`, and threads it into the
-// occurrence lists. Returns the clause index, or SAT_NONE at capacity.
+// clause number `clauses` with certificate id `id`, watching its first two
+// literals. Returns the clause index, or SAT_NONE at capacity.
 sat_add_learnt: (l: SatLayout, mem: [*]u32, n: u32, id: u32): u32 {
   c: u32 = sat_state(l, mem, ST_CLAUSES)
   used: u32 = sat_state(l, mem, ST_STORE_USED)
-  occ: u32 = sat_state(l, mem, ST_OCC_USED)
-  fits: Bool = c < l.clause_cap && used + n <= l.store_cap && occ + n <= l.store_cap
+  fits: Bool = c < l.clause_cap && used + n <= l.store_cap
   result: u32 = SAT_NONE
   fits ? {
     mem[l.starts_at + c] = used
     mem[l.lengths_at + c] = n
     mem[l.ids_at + c] = id
+    mem[l.cact_at + c] = u32(0)
     j: u32 = 0
     while j < n {
-      lit: u32 = mem[l.learnt_at + j]
-      mem[l.store_at + used + j] = lit
-      node: u32 = occ + j
-      mem[l.occ_clause_at + node] = c
-      mem[l.occ_next_at + node] = mem[l.occ_head_at + lit]
-      mem[l.occ_head_at + lit] = node
+      mem[l.store_at + used + j] = mem[l.learnt_at + j]
       j = j + u32(1)
     }
     sat_set(l, mem, ST_STORE_USED, used + n)
-    sat_set(l, mem, ST_OCC_USED, occ + n)
     sat_set(l, mem, ST_CLAUSES, c + u32(1))
+    n >= u32(2) ? {
+      sat_watch(l, mem, c, u32(0))
+      sat_watch(l, mem, c, u32(1))
+    } | { }
     result = c
   } | { sat_set(l, mem, ST_STATUS, SAT_EXCEEDED_STORE) }
   result
@@ -181,15 +193,17 @@ sat_init: (l: SatLayout, mem: [*]u32, words: []u32, budget: u32): Bool {
   v: u32 = l.vars + u32(1)
   i = u32(0)
   while i < u32(2) * v {
-    mem[l.occ_head_at + i] = SAT_NONE
+    mem[l.watch_head_at + i] = SAT_NONE
     i = i + u32(1)
   }
+  sat_set(l, mem, ST_PENDING, SAT_NONE)
   i = u32(0)
   while i < v {
     mem[l.reason_at + i] = SAT_NONE
     i = i + u32(1)
   }
   sat_set(l, mem, ST_ACTIVITY_INC, u32(1024))
+  sat_set(l, mem, ST_CLAUSE_INC, u32(1024))
   sat_set(l, mem, ST_RESTART_LIMIT, u32(100))
   sat_set(l, mem, ST_BUDGET, budget)
   ok: Bool = len(words) >= LRAT_HEADER_WORDS && words[u32(0)] == LRAT_MAGIC && words[u32(1)] == l.vars
@@ -217,7 +231,11 @@ sat_init: (l: SatLayout, mem: [*]u32, words: []u32, budget: u32): Bool {
         n == u32(1) && ok ? {
           lit: u32 = mem[l.learnt_at]
           a: u32 = mem[l.assign_at + lit / u32(2)]
-          a == u32(0) ? { sat_enqueue(l, mem, lit, added) } | { }
+          a == u32(0) ? { sat_enqueue(l, mem, lit, added) } | {
+            // A unit contradicting an earlier unit: the conflict is
+            // analyzed at level zero when the search starts.
+            a == sat_lit_true(lit) ? { } | { sat_set(l, mem, ST_PENDING, added) }
+          }
         } | { }
       } | { }
       at = at + u32(1) + n
@@ -255,23 +273,40 @@ sat_reduce: (l: SatLayout, mem: [*]u32): () {
     reason != SAT_NONE ? { mem[l.lock_at + reason] = u32(1) } | { }
     i = i + u32(1)
   }
-  // Candidates: learned, unlocked, longer than two; the older half go.
+  // Candidates: learned, unlocked, longer than two. Those below the
+  // candidates' mean activity go (about half); when every activity is
+  // equal, the older half.
   candidates: u32 = 0
+  total_activity: u64 = 0
   c = initial
   while c < clauses {
-    mem[l.lock_at + c] == u32(0) && mem[l.lengths_at + c] > u32(2) ? { candidates = candidates + u32(1) } | { }
+    mem[l.lock_at + c] == u32(0) && mem[l.lengths_at + c] > u32(2) ? {
+      candidates = candidates + u32(1)
+      total_activity = total_activity + u64(mem[l.cact_at + c])
+    } | { }
     c = c + u32(1)
   }
-  drop: u32 = candidates / u32(2)
+  mean: u32 = candidates > u32(0) ? { u32_trunc_u64(total_activity / u64(candidates)) } | { u32(0) }
   dropped: u32 = 0
   c = initial
-  while c < clauses && dropped < drop {
-    mem[l.lock_at + c] == u32(0) && mem[l.lengths_at + c] > u32(2) ? {
+  while c < clauses {
+    mem[l.lock_at + c] == u32(0) && mem[l.lengths_at + c] > u32(2) && mem[l.cact_at + c] < mean ? {
       mem[l.lock_at + c] = u32(2)
       dropped = dropped + u32(1)
     } | { }
     c = c + u32(1)
   }
+  dropped == u32(0) ? {
+    drop: u32 = candidates / u32(2)
+    c = initial
+    while c < clauses && dropped < drop {
+      mem[l.lock_at + c] == u32(0) && mem[l.lengths_at + c] > u32(2) ? {
+        mem[l.lock_at + c] = u32(2)
+        dropped = dropped + u32(1)
+      } | { }
+      c = c + u32(1)
+    }
+  } | { }
   dropped > u32(0) ? {
     write_u32(sat_state(l, mem, ST_NEXT_ID) - u32(1))
     write_byte(u8(32))
@@ -303,6 +338,7 @@ sat_reduce: (l: SatLayout, mem: [*]u32): () {
         mem[l.starts_at + kept] = used
         mem[l.lengths_at + kept] = length
         mem[l.ids_at + kept] = mem[l.ids_at + c]
+        mem[l.cact_at + kept] = mem[l.cact_at + c] / u32(2)
         mem[l.remap_at + c] = kept
         used = used + length
         kept = kept + u32(1)
@@ -321,30 +357,21 @@ sat_reduce: (l: SatLayout, mem: [*]u32): () {
       reason != SAT_NONE ? { mem[l.reason_at + v] = mem[l.remap_at + reason] } | { }
       i = i + u32(1)
     }
-    // Occurrence lists from the kept clauses.
+    // Watch lists from the kept clauses.
     total_lits: u32 = u32(2) * (l.vars + u32(1))
     i = u32(0)
     while i < total_lits {
-      mem[l.occ_head_at + i] = SAT_NONE
+      mem[l.watch_head_at + i] = SAT_NONE
       i = i + u32(1)
     }
-    occ: u32 = 0
     c = u32(0)
     while c < kept {
-      start: u32 = mem[l.starts_at + c]
-      length: u32 = mem[l.lengths_at + c]
-      j: u32 = 0
-      while j < length {
-        lit: u32 = mem[l.store_at + start + j]
-        mem[l.occ_clause_at + occ] = c
-        mem[l.occ_next_at + occ] = mem[l.occ_head_at + lit]
-        mem[l.occ_head_at + lit] = occ
-        occ = occ + u32(1)
-        j = j + u32(1)
-      }
+      mem[l.lengths_at + c] >= u32(2) ? {
+        sat_watch(l, mem, c, u32(0))
+        sat_watch(l, mem, c, u32(1))
+      } | { }
       c = c + u32(1)
     }
-    sat_set(l, mem, ST_OCC_USED, occ)
   } | { }
   sat_set(l, mem, ST_REDUCTIONS, sat_state(l, mem, ST_REDUCTIONS) + u32(1))
   limit: u32 = sat_state(l, mem, ST_REDUCE_LIMIT)
@@ -352,39 +379,54 @@ sat_reduce: (l: SatLayout, mem: [*]u32): () {
 }
 
 // sat_propagate runs unit propagation from the queue head: for every
-// literal newly true, the clauses holding its negation are scanned, a
-// clause with one unassigned literal enqueues it, a clause with none is
-// the conflict. Returns the conflicting clause index or SAT_NONE.
+// literal newly true, the clauses watching its negation are visited: when
+// the other watched literal is true the watch stays; else a non-false
+// literal beyond the first two is swapped into the watched slot and the
+// watch moves to it; else the clause is unit on the other watched literal
+// (enqueued) or, that literal false too, the conflict. Returns the
+// conflicting clause index or SAT_NONE.
 sat_propagate: (l: SatLayout, mem: [*]u32): u32 {
   conflict: u32 = SAT_NONE
   qhead: u32 = sat_state(l, mem, ST_QHEAD)
   while qhead < sat_state(l, mem, ST_TRAIL_LEN) && conflict == SAT_NONE {
     p: u32 = mem[l.trail_at + qhead]
     qhead = qhead + u32(1)
-    node: u32 = mem[l.occ_head_at + (p ^ u32(1))]
+    falsified: u32 = p ^ u32(1)
+    prev: u32 = SAT_NONE
+    node: u32 = mem[l.watch_head_at + falsified]
     while node != SAT_NONE && conflict == SAT_NONE {
-      c: u32 = mem[l.occ_clause_at + node]
-      node = mem[l.occ_next_at + node]
+      next: u32 = mem[l.watch_next_at + node]
+      c: u32 = node / u32(2)
+      k: u32 = node % u32(2)
       start: u32 = mem[l.starts_at + c]
       n: u32 = mem[l.lengths_at + c]
-      satisfied: Bool = false
-      unassigned: u32 = 0
-      unit: u32 = 0
-      j: u32 = 0
-      while j < n && !satisfied {
-        lit: u32 = mem[l.store_at + start + j]
-        a: u32 = mem[l.assign_at + lit / u32(2)]
-        a == u32(0) ? {
-          unassigned = unassigned + u32(1)
-          unit = lit
-        } | { satisfied = a == sat_lit_true(lit) }
-        j = j + u32(1)
-      }
-      satisfied ? { } | {
-        unassigned == u32(0) ? { conflict = c } | {
-          unassigned == u32(1) ? { sat_enqueue(l, mem, unit, c) } | { }
+      other: u32 = mem[l.store_at + start + (u32(1) - k)]
+      other_value: u32 = mem[l.assign_at + other / u32(2)]
+      moved: Bool = false
+      other_value == sat_lit_true(other) ? { } | {
+        // Look for a replacement watch among the unwatched literals.
+        j: u32 = 2
+        while j < n && !moved {
+          candidate: u32 = mem[l.store_at + start + j]
+          value: u32 = mem[l.assign_at + candidate / u32(2)]
+          value == u32(0) || value == sat_lit_true(candidate) ? {
+            mem[l.store_at + start + j] = falsified
+            mem[l.store_at + start + k] = candidate
+            // Unlink from the falsified literal's list, push onto the
+            // candidate's.
+            prev == SAT_NONE ? { mem[l.watch_head_at + falsified] = next } | { mem[l.watch_next_at + prev] = next }
+            mem[l.watch_next_at + node] = mem[l.watch_head_at + candidate]
+            mem[l.watch_head_at + candidate] = node
+            moved = true
+          } | { }
+          j = j + u32(1)
+        }
+        moved ? { } | {
+          other_value == u32(0) ? { sat_enqueue(l, mem, other, c) } | { conflict = c }
         }
       }
+      moved ? { } | { prev = node }
+      node = next
     }
   }
   sat_set(l, mem, ST_QHEAD, qhead)
@@ -436,41 +478,109 @@ sat_mark_clause: (l: SatLayout, mem: [*]u32, c: u32, skip: u32, current: u32, pa
   count
 }
 
+// sat_bump_clause raises a clause's activity for the reduction policy.
+sat_bump_clause: (l: SatLayout, mem: [*]u32, c: u32): () {
+  inc: u32 = sat_state(l, mem, ST_CLAUSE_INC)
+  a: u32 = mem[l.cact_at + c] + inc
+  mem[l.cact_at + c] = a
+  a > u32(1073741824) ? {
+    i: u32 = 0
+    n: u32 = sat_state(l, mem, ST_CLAUSES)
+    while i < n {
+      mem[l.cact_at + i] = mem[l.cact_at + i] >> u32(16)
+      i = i + u32(1)
+    }
+    scaled: u32 = inc >> u32(16)
+    sat_set(l, mem, ST_CLAUSE_INC, scaled == u32(0) ? { u32(1) } | { scaled })
+  } | { }
+}
+
 // sat_analyze learns the first-UIP clause from a conflict into the learnt
-// buffer (its asserting literal first), collects the certificate hints, and
-// returns the level to back-jump to. At level zero the learned clause is
-// empty and the hints derive it.
+// buffer (its asserting literal first, the literal of the back-jump level
+// second), minimizes it, collects the certificate hints, and returns the
+// level to back-jump to. At level zero the learned clause is empty and the
+// hints derive it.
+//
+// Marks: seen 1 is a literal of the learned clause, 2 a level-zero variable
+// whose reason the antecedent chain needs, 3 a variable whose reason the
+// hints replay — a resolved variable of the conflict level, or a literal
+// removed by minimization. The hints are those reasons in trail order:
+// every antecedent of a reason is earlier in the trail (a kept literal of
+// the clause, a level-zero literal, or an earlier replayed one), so each
+// reason is unit when the checker reaches it, and the conflict clause
+// closes the chain.
 sat_analyze: (l: SatLayout, mem: [*]u32, conflict: u32): u32 {
   current: u32 = sat_state(l, mem, ST_LEVEL)
   sat_set(l, mem, ST_LEARNT_LEN, current == u32(0) ? { u32(0) } | { u32(1) })
-  sat_set(l, mem, ST_RESOLVED_LEN, u32(0))
+  sat_bump_clause(l, mem, conflict)
   path: u32 = sat_mark_clause(l, mem, conflict, SAT_NONE, current, u32(0))
   index: u32 = sat_state(l, mem, ST_TRAIL_LEN)
   done: Bool = current == u32(0)
   while !done && index > u32(0) {
-    // The next resolved literal: the latest trail entry still marked.
     index = index - u32(1)
     p: u32 = mem[l.trail_at + index]
     v: u32 = p / u32(2)
     mem[l.seen_at + v] == u32(1) && mem[l.level_at + v] >= current ? {
-      mem[l.seen_at + v] = u32(0)
       path = path - u32(1)
       path == u32(0) ? {
+        mem[l.seen_at + v] = u32(0)
         mem[l.learnt_at] = p ^ u32(1)
         done = true
       } | {
         reason: u32 = mem[l.reason_at + v]
-        r: u32 = sat_state(l, mem, ST_RESOLVED_LEN)
-        mem[l.resolved_at + r] = reason
-        sat_set(l, mem, ST_RESOLVED_LEN, r + u32(1))
+        mem[l.seen_at + v] = u32(3)
+        sat_bump_clause(l, mem, reason)
         path = sat_mark_clause(l, mem, reason, p, current, path)
       }
     } | { }
   }
+  // Minimization: a literal whose reason's other literals are all in the
+  // clause, removed by it, or at level zero is implied by the rest and
+  // goes; its reason joins the replay.
+  n: u32 = sat_state(l, mem, ST_LEARNT_LEN)
+  keep: u32 = n > u32(0) ? { u32(1) } | { u32(0) }
+  k: u32 = 1
+  while k < n {
+    q: u32 = mem[l.learnt_at + k]
+    v: u32 = q / u32(2)
+    reason: u32 = mem[l.reason_at + v]
+    removable: Bool = reason != SAT_NONE
+    removable ? {
+      start: u32 = mem[l.starts_at + reason]
+      length: u32 = mem[l.lengths_at + reason]
+      j: u32 = 0
+      while j < length && removable {
+        w: u32 = mem[l.store_at + start + j] / u32(2)
+        w != v ? {
+          mark: u32 = mem[l.seen_at + w]
+          removable = mark == u32(1) || mark == u32(3) || mem[l.level_at + w] == u32(0)
+        } | { }
+        j = j + u32(1)
+      }
+    } | { }
+    removable ? {
+      mem[l.seen_at + v] = u32(3)
+      start: u32 = mem[l.starts_at + reason]
+      length: u32 = mem[l.lengths_at + reason]
+      j: u32 = 0
+      while j < length {
+        w: u32 = mem[l.store_at + start + j] / u32(2)
+        mem[l.level_at + w] == u32(0) && mem[l.seen_at + w] == u32(0) ? { mem[l.seen_at + w] = u32(2) } | { }
+        j = j + u32(1)
+      }
+    } | {
+      mem[l.learnt_at + keep] = q
+      keep = keep + u32(1)
+    }
+    k = k + u32(1)
+  }
+  n = keep
+  sat_set(l, mem, ST_LEARNT_LEN, n)
   // The level-zero antecedent chain: close the marked level-zero
-  // variables over their reasons, walking the level-zero trail backward,
-  // then emit their reasons forward, in trail order.
-  lim0: u32 = current == u32(0) ? { sat_state(l, mem, ST_TRAIL_LEN) } | { mem[l.lim_at] }
+  // variables over their reasons walking the level-zero trail backward,
+  // then emit their reasons forward.
+  trail_len: u32 = sat_state(l, mem, ST_TRAIL_LEN)
+  lim0: u32 = current == u32(0) ? { trail_len } | { mem[l.lim_at] }
   i: u32 = lim0
   while i > u32(0) {
     i = i - u32(1)
@@ -479,9 +589,9 @@ sat_analyze: (l: SatLayout, mem: [*]u32, conflict: u32): u32 {
       reason: u32 = mem[l.reason_at + v]
       reason != SAT_NONE ? {
         start: u32 = mem[l.starts_at + reason]
-        n: u32 = mem[l.lengths_at + reason]
+        length: u32 = mem[l.lengths_at + reason]
         j: u32 = 0
-        while j < n {
+        while j < length {
           w: u32 = mem[l.store_at + start + j] / u32(2)
           mem[l.seen_at + w] == u32(0) ? { mem[l.seen_at + w] = u32(2) } | { }
           j = j + u32(1)
@@ -503,31 +613,45 @@ sat_analyze: (l: SatLayout, mem: [*]u32, conflict: u32): u32 {
     } | { }
     i = i + u32(1)
   }
-  // The resolved reasons in trail order (they were collected latest
-  // first), then the conflict clause.
-  r: u32 = sat_state(l, mem, ST_RESOLVED_LEN)
-  while r > u32(0) && hints < l.hints_cap {
-    r = r - u32(1)
-    mem[l.hints_at + hints] = mem[l.ids_at + mem[l.resolved_at + r]]
-    hints = hints + u32(1)
+  // The replayed reasons in trail order, then the conflict clause.
+  i = lim0
+  while i < trail_len {
+    v: u32 = mem[l.trail_at + i] / u32(2)
+    mem[l.seen_at + v] == u32(3) ? {
+      reason: u32 = mem[l.reason_at + v]
+      reason != SAT_NONE && hints < l.hints_cap ? {
+        mem[l.hints_at + hints] = mem[l.ids_at + reason]
+        hints = hints + u32(1)
+      } | { }
+      mem[l.seen_at + v] = u32(0)
+    } | { }
+    i = i + u32(1)
   }
   hints < l.hints_cap ? {
     mem[l.hints_at + hints] = mem[l.ids_at + conflict]
     hints = hints + u32(1)
   } | { sat_set(l, mem, ST_STATUS, SAT_EXCEEDED_HINTS) }
   sat_set(l, mem, ST_HINTS_LEN, hints)
-  // The back-jump level: the highest level among the learned clause's
-  // other literals; their marks are cleared here.
+  // The back-jump level: the highest level among the kept literals, whose
+  // marks are cleared here; its literal takes the second watched slot.
   back: u32 = 0
-  k: u32 = 1
-  n: u32 = sat_state(l, mem, ST_LEARNT_LEN)
+  at: u32 = 1
+  k = u32(1)
   while k < n {
     v: u32 = mem[l.learnt_at + k] / u32(2)
     mem[l.seen_at + v] = u32(0)
     lv: u32 = mem[l.level_at + v]
-    lv > back ? { back = lv } | { }
+    lv > back ? {
+      back = lv
+      at = k
+    } | { }
     k = k + u32(1)
   }
+  n > u32(2) && at != u32(1) ? {
+    swapped: u32 = mem[l.learnt_at + u32(1)]
+    mem[l.learnt_at + u32(1)] = mem[l.learnt_at + at]
+    mem[l.learnt_at + at] = swapped
+  } | { }
   back
 }
 
@@ -559,6 +683,25 @@ sat_emit: (l: SatLayout, mem: [*]u32, id: u32): () {
   write_byte(u8(32))
   write_byte(u8(48))
   write_byte(u8(10))
+}
+
+// sat_luby is the Luby restart sequence 1 1 2 1 1 2 4 1 1 2 1 1 2 4 8 ...,
+// the reluctant-doubling schedule that is within a logarithmic factor of
+// optimal without knowing the instance; computed iteratively.
+sat_luby: (x: u32): u32 {
+  size: u32 = 1
+  seq: u32 = 0
+  while size < x + u32(1) {
+    seq = seq + u32(1)
+    size = u32(2) * size + u32(1)
+  }
+  rest: u32 = x
+  while size - u32(1) != rest {
+    size = (size - u32(1)) / u32(2)
+    seq = seq - u32(1)
+    rest = rest % size
+  }
+  u32(1) << seq
 }
 
 // sat_backtrack unassigns everything above the level, saving phases.
@@ -607,7 +750,9 @@ sat_decide: (l: SatLayout, mem: [*]u32): Bool {
 // exceeded (the conflict budget or a capacity).
 sat_solve: (l: SatLayout, mem: [*]u32): u32 {
   while sat_state(l, mem, ST_STATUS) == SAT_RUNNING {
-    conflict: u32 = sat_propagate(l, mem)
+    pending: u32 = sat_state(l, mem, ST_PENDING)
+    sat_set(l, mem, ST_PENDING, SAT_NONE)
+    conflict: u32 = pending != SAT_NONE ? { pending } | { sat_propagate(l, mem) }
     conflict != SAT_NONE ? {
       conflicts: u32 = sat_state(l, mem, ST_CONFLICTS) + u32(1)
       sat_set(l, mem, ST_CONFLICTS, conflicts)
@@ -639,15 +784,22 @@ sat_solve: (l: SatLayout, mem: [*]u32): u32 {
               // a reduce-and-retry the trail is at level zero and the
               // clause may not be unit: it is then only added, and
               // propagation finds it when it becomes unit.
-              retried ? { } | { sat_enqueue(l, mem, mem[l.learnt_at], c) }
+              retried ? {
+                // A unit learned clause is unit at level zero too.
+                asserting: u32 = mem[l.learnt_at]
+                n == u32(1) && mem[l.assign_at + asserting / u32(2)] == u32(0) ? { sat_enqueue(l, mem, asserting, c) } | { }
+              } | { sat_enqueue(l, mem, mem[l.learnt_at], c) }
               inc: u32 = sat_state(l, mem, ST_ACTIVITY_INC)
               sat_set(l, mem, ST_ACTIVITY_INC, inc + inc / u32(20) + u32(1))
               since: u32 = sat_state(l, mem, ST_SINCE_RESTART) + u32(1)
               since >= sat_state(l, mem, ST_RESTART_LIMIT) ? {
                 sat_backtrack(l, mem, u32(0))
                 sat_set(l, mem, ST_SINCE_RESTART, u32(0))
-                limit: u32 = sat_state(l, mem, ST_RESTART_LIMIT)
-                sat_set(l, mem, ST_RESTART_LIMIT, limit + limit / u32(2))
+                restarts: u32 = sat_state(l, mem, ST_RESTARTS) + u32(1)
+                sat_set(l, mem, ST_RESTARTS, restarts)
+                sat_set(l, mem, ST_RESTART_LIMIT, u32(100) * sat_luby(restarts))
+                cinc: u32 = sat_state(l, mem, ST_CLAUSE_INC)
+                sat_set(l, mem, ST_CLAUSE_INC, cinc + cinc / u32(20) + u32(1))
                 sat_state(l, mem, ST_LEARNED) >= sat_state(l, mem, ST_REDUCE_LIMIT) || sat_state(l, mem, ST_STORE_USED) >= l.store_cap / u32(4) * u32(3) ? { sat_reduce(l, mem) } | { }
               } | { sat_set(l, mem, ST_SINCE_RESTART, since) }
             } | { }
