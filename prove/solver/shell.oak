@@ -12,8 +12,9 @@
 // text the file is parsed again with (explore.oak), the rows are folded
 // and printed after the exploration, the compiled witness is written,
 // built through the compiler, run, and folded in (witness.oak), and the
-// Lean projection is written when asked (lean.oak). What the shell does
-// not do stays with the Go command: the guard-exclusivity rows.
+// Lean projection is written when asked (lean.oak); the guard-exclusivity
+// theorems are generated and folded into their advisory rows. Every row
+// the Go command prints, the shell prints; only the compiler stays Go.
 package main
 
 c_open: (path: c.String, flags: c.Int): c.UInt64 = c.extern("open")
@@ -366,7 +367,7 @@ race_in_oak: (l: Layout, lw: Lower, t0: c.Ptr, t1: c.Ptr, t2: c.Ptr, b0: c.Ptr, 
 }
 
 // Counts of the rows: decided, refuted, open.
-Counts: type = struct { decided: u32, refuted: u32, open: u32 }
+Counts: type = struct { decided: u32, refuted: u32, open: u32, failing: u32 }
 
 // decide_one decides one theorem (its raw function index) and prints its
 // row: the kind it printed.
@@ -634,6 +635,7 @@ prove_rows: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr
   code: i32 = 0
   (theorems == u32(0) && nlive == u32(0)) ? { txt_no_theorems() } | {
     fold_invariants(le, ew)
+    fold_exclusivity(le, ew)
     explore_all(le, ew, ser, ser_raw, out_raw, lw, work_raw, b0, ex_raw, rx, raw, cases)
     witness_failed: Bool = false
     witness_on ? {
@@ -663,7 +665,7 @@ prove_rows: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr
       write_u32(counts.refuted)
       txt_refuted_w()
     } | { }
-    code = witness_failed ? { i32(2) } | { counts.refuted > u32(0) ? { i32(1) } | { i32(0) } }
+    code = witness_failed ? { i32(2) } | { counts.failing > u32(0) ? { i32(1) } | { i32(0) } }
   }
   write_byte(u8(10))
   code

@@ -108,13 +108,14 @@ func reportAsmVerdict(d *diagnostic.Diagnostic) {
 // unit, which the system C compiler turns into an executable named after the
 // package (or `-o out`); `-emit-c`, or an `-o` ending in .c, writes the C.
 func buildPackage(args []string) int {
-	output, header, leanOut, metalOut, profile, targetFlag, cpu := "", "", "", "", "", "", ""
+	output, header, leanOut, metalOut, profile, targetFlag, cpu, opt := "", "", "", "", "", "", "", ""
 	metalCheck := false
 	lines, emitC, nativeBodies := false, false, false
 	asmMode, linkMode := "", "c"
-	fs := newFlagSet("build", "oak build [-o out] [-target os/arch] [-cpu name] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-profile default|strict] [-asm native|c] [-native] [-link c|oak] [-lines] [dir|file.oak|pattern]...")
+	fs := newFlagSet("build", "oak build [-o out] [-target os/arch] [-cpu name] [-opt 0..3] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-profile default|strict] [-asm native|c] [-native] [-link c|oak] [-lines] [dir|file.oak|pattern]...")
 	fs.StringVar(&targetFlag, "target", "", "platform os/arch, e.g. linux/riscv64 or freestanding/arm (default: OAKOS/OAKARCH, else the host; docs/spec/90-backend.md section 2a)")
 	fs.StringVar(&cpu, "cpu", "", "processor for the C compiler's -mcpu, e.g. cortex_m0 (default: OAKCPU, else the target's default)")
+	fs.StringVar(&opt, "opt", "", "C compiler optimization level 0..3 (default: OAKOPT, else 1; docs/spec/05-ergonomics-and-cost.md, the mechanical backend)")
 	fs.StringVar(&output, "o", "", "output file: an executable, or C when it ends in .c")
 	fs.BoolVar(&emitC, "emit-c", false, "write C instead of an executable")
 	fs.StringVar(&header, "header", "", "write the C header of the exported surface (docs/spec/92-ffi.md section 2.6)")
@@ -134,11 +135,16 @@ func buildPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak build: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)\n", profile)
 		return 2
 	}
+	if err := applyOptLevel(opt); err != nil {
+		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
+		return 2
+	}
 	tgt, err := target.FromEnv(targetFlag, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
 		return 2
 	}
+	asmGiven := asmMode != ""
 	if asmMode == "" {
 		asmMode = defaultAsmMode(tgt)
 	}
@@ -163,7 +169,7 @@ func buildPackage(args []string) int {
 		return 2
 	}
 	for _, dir := range targets {
-		if code := buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, linkMode, tgt, cpu, lines, emitC, nativeBodies, metalCheck); code != 0 {
+		if code := buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, linkMode, tgt, cpu, lines, emitC, nativeBodies, metalCheck, asmGiven); code != 0 {
 			return code
 		}
 	}
@@ -171,7 +177,7 @@ func buildPackage(args []string) int {
 }
 
 // buildOne builds a single package or file.
-func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, linkMode string, tgt target.Target, cpu string, lines, emitC, nativeBodies, metalCheck bool) int {
+func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, linkMode string, tgt target.Target, cpu string, lines, emitC, nativeBodies, metalCheck, asmGiven bool) int {
 	comp, err := compilationFor(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
@@ -272,6 +278,19 @@ func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, linkMode
 		fmt.Printf("Built %s -> %s\n", dir, output)
 		return 0
 	}
+	// Object output (docs/spec/115-tooling.md): `-o name.o` on a hosted
+	// target compiles the emitted C to one relocatable object instead of
+	// linking an executable — the OS pilot's N5, a host-linked native
+	// differential harness that links the object against its own driver.
+	// Asm units are inlined (-asm c) so one object results.
+	objectOutput := strings.HasSuffix(output, ".o") && !tgt.Freestanding() && linkMode == "c"
+	if objectOutput {
+		if asmGiven && asmMode == "native" {
+			fmt.Fprintln(os.Stderr, "oak build: object output (-o name.o) inlines the asm units; -asm native would need a second object")
+			return 2
+		}
+		asmMode = "c"
+	}
 	if linkMode == "oak" {
 		// The Oak assembler links the natively lowered program itself
 		// (docs/spec/94-assembler.md §9): no C compiler, no system linker.
@@ -308,6 +327,9 @@ func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, linkMode
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
 		return 1
+	}
+	if objectOutput {
+		drv.Object = true
 	}
 	cached, err := compileC(tgt, drv, code, object, inputs, output)
 	if err != nil {
@@ -860,12 +882,13 @@ func runPackage(args []string) int {
 	profile := ""
 	own, programArgs := splitProgramArgs(args)
 	nativeBodies := false
-	targetFlag, cpu := "", ""
+	targetFlag, cpu, opt := "", "", ""
 	asmMode := ""
-	fs := newFlagSet("run", "oak run [-profile default|strict] [-target os/arch] [-cpu name] [-asm native|c] [-native] [dir] [-- program arguments]")
+	fs := newFlagSet("run", "oak run [-profile default|strict] [-target os/arch] [-cpu name] [-opt 0..3] [-asm native|c] [-native] [dir] [-- program arguments]")
 	fs.StringVar(&profile, "profile", "", "discipline profile: default or strict")
 	fs.StringVar(&targetFlag, "target", "", "platform os/arch; a foreign Linux target runs through an emulator (qemu-<arch> or OAK_EMULATOR; docs/spec/90-backend.md section 2a)")
 	fs.StringVar(&cpu, "cpu", "", "processor for the C compiler's -mcpu (default: OAKCPU, else the target's default)")
+	fs.StringVar(&opt, "opt", "", "C compiler optimization level 0..3 (default: OAKOPT, else 1)")
 	fs.StringVar(&asmMode, "asm", asmMode, "asm units: native or c (docs/spec/94-assembler.md section 9)")
 	fs.BoolVar(&nativeBodies, "native", false, "lower Oak bodies through the native backend where its subset reaches (docs/spec/94-assembler.md section 9)")
 	rest, exit, stop := parseFlags(fs, own)
@@ -896,6 +919,10 @@ func runPackage(args []string) int {
 	}
 	if !validProfile(profile) {
 		fmt.Fprintf(os.Stderr, "oak run: unknown profile %q (default or strict; docs/spec/85-discipline.md section 1)\n", profile)
+		return 2
+	}
+	if err := applyOptLevel(opt); err != nil {
+		fmt.Fprintf(os.Stderr, "oak run: %v\n", err)
 		return 2
 	}
 	if asmMode != "native" && asmMode != "c" {

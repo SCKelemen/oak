@@ -11,10 +11,12 @@ running other test suites. Raw data:
 
 | Ring | Threads | Oak spin ns/item | Oak yield ns/item | producer spins (spin) | Go channel ns/item | Oak spin / Go |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `spsc` | 1 producer, 1 consumer | 10.1 | 9.8 | 24728 | 22.6 | 0.45× |
-| `mpsc` | 4 producers, 1 consumer | 149.6 | 148.9 | 2407688 | 37.5 | 3.99× |
-| `mpmc` | 4 producers, 4 consumers | 221.9 | 223.2 | 8312818 | 39.2 | 5.66× |
-| `intrusive` | 4 producers, 1 consumer | 61.5 | 59.9 | 0 | — | — |
+| `spsc` | 1 producer, 1 consumer | 8.8 | 9.7 | 5729 | 24.7 | 0.36× |
+| `mpsc` | 4 producers, 1 consumer | 126.3 | 136.0 | 0 | 35.8 | 3.53× |
+| `mpsc_ticket` | 4 producers, 1 consumer | 72.8 | 75.4 | 0 | 35.8 | 2.03× |
+| `mpmc` | 4 producers, 4 consumers | 217.5 | 211.5 | 14036242 | 36.7 | 5.93× |
+| `mpmc_ticket` | 4 producers, 4 consumers | 99.7 | 104.2 | 10878719 | 36.7 | 2.72× |
+| `intrusive` | 4 producers, 1 consumer | 49.0 | 56.1 | 0 | — | — |
 
 "Spin" is the Oak producer loop retrying a refused push at once; "yield" is
 a C loop calling the same push and `sched_yield()` when the ring is full.
@@ -35,17 +37,20 @@ the same threads.
   another core is publishing. Yielding on a full ring changes nothing,
   which confirms the cost is the claim, not the wait. The Go channel's
   mutex serializes producers cheaply at this saturation and parks them.
-- **The intrusive queue's exchange is the cheaper claim**: one `swp`
-  always succeeds, so four producers cost 60 ns per item where the
-  compare-exchange rings cost 150–220.
+- **Tickets are the cheaper claim.** `mpsc_ticket` and `mpmc_ticket` claim
+  by fetch-add — one `ldadd` that always succeeds — and then wait for the
+  slot: they move an item in roughly half the time of the compare-exchange
+  rings at four producers, with or without yielding while a publish waits
+  (the wait is short: the consumer is a few slots behind). The price is the
+  ticket's obligation: a claimed position must be published or taken, so
+  the application decides how to wait. The intrusive queue's
+  exchange is the same idea for a linked queue.
 - Padding the sequence cells onto their own lines (the `SeqCell` change)
   took about twenty nanoseconds off the MPSC ring and nothing off the MPMC
   ring: neighboring cells were not the problem.
 
-## What would move the multi-producer numbers
+## What would move the multi-producer numbers further
 
-Claiming a batch of positions per compare-exchange (one claim per
-several items), the fetch-add claim of the Vyukov queue's "MPSC with
-tickets" variant (an always-succeeding `amoadd`/`ldadd`, as the intrusive
-queue's exchange), and core pinning in the harness. Each is a design
-change to be measured here before it is adopted.
+Claiming a batch of positions per fetch-add (one claim per several items)
+and core pinning in the harness; each to be measured here before it is
+adopted.

@@ -76,6 +76,23 @@ static void *mpmc_prod(void *a) { *(u32 *)a = oak_mpmc_produce(MPMC, ITEMS / P);
 #endif
 static void *mpmc_cons(void *a) { *(u64 *)a = oak_mpmc_consume(MPMC, ITEMS / P); return NULL; }
 
+#ifdef YIELD
+static void *mpsc_ticket_prod(void *a) {
+  u32 spins = 0;
+  for (u32 i = 1; i <= ITEMS / P; i++) { u32 pos = oak_rings__mpsc_uclaim((oak_span_oak_rings_MpscCursor){ mpsc_state, 1 }); while (!oak_rings__mpsc_upublish_u32((oak_span_oak_rings_SeqCell){ mpsc_seqs, 1024 }, (oak_span_u32){ mpsc_data, 1024 }, pos, i)) { spins++; sched_yield(); } }
+  *(u32 *)a = spins; return NULL;
+}
+static void *mpmc_ticket_prod(void *a) {
+  u32 spins = 0;
+  for (u32 i = 1; i <= ITEMS / P; i++) { u32 pos = oak_rings__mpmc_uclaim_upush((oak_span_oak_rings_MpmcCursor){ mpmc_state, 1 }); while (!oak_rings__mpmc_upublish_u32((oak_span_oak_rings_SeqCell){ mpmc_seqs, 1024 }, (oak_span_u32){ mpmc_data, 1024 }, pos, i)) { spins++; sched_yield(); } }
+  *(u32 *)a = spins; return NULL;
+}
+#else
+static void *mpsc_ticket_prod(void *a) { *(u32 *)a = oak_mpsc_ticket_produce(MPSC, ITEMS / P); return NULL; }
+static void *mpmc_ticket_prod(void *a) { *(u32 *)a = oak_mpmc_ticket_produce(MPMC, ITEMS / P); return NULL; }
+#endif
+static void *mpmc_ticket_cons(void *a) { *(u64 *)a = oak_mpmc_ticket_consume(MPMC, ITEMS / P); return NULL; }
+
 static oak_rings__IntrusiveCursor intr_state[1];
 static oak_rings__IntrusiveNode intr_nodes[1 + ITEMS];
 #define INTR (oak_span_oak_rings_IntrusiveCursor){ intr_state, 1 }, (oak_span_oak_rings_IntrusiveNode){ intr_nodes, 1 + ITEMS }
@@ -120,6 +137,25 @@ int main(void) {
   sum = 0; for (int i = 0; i < P; i++) { pthread_join(cs[i], NULL); sum += sums[i]; }
   spins = 0; for (int i = 0; i < P; i++) spins += spinsv[i];
   report("mpmc", "4 producers, 4 consumers", now_ns() - t0, sum, expected_parts(), spins);
+
+  /* Tickets: a fetch-add claim, then publish until the slot frees. */
+  oak_mpsc_setup((oak_span_oak_rings_MpscCursor){ mpsc_state, 1 }, (oak_span_oak_rings_SeqCell){ mpsc_seqs, 1024 });
+  sum = 0; t0 = now_ns();
+  pthread_create(&c, NULL, mpsc_cons, &sum);
+  for (long i = 0; i < P; i++) pthread_create(&ps[i], NULL, mpsc_ticket_prod, &spinsv[i]);
+  for (int i = 0; i < P; i++) pthread_join(ps[i], NULL);
+  pthread_join(c, NULL);
+  spins = 0; for (int i = 0; i < P; i++) spins += spinsv[i];
+  report("mpsc_ticket", "4 producers, 1 consumer", now_ns() - t0, sum, expected_parts(), spins);
+
+  oak_mpmc_setup((oak_span_oak_rings_MpmcCursor){ mpmc_state, 1 }, (oak_span_oak_rings_SeqCell){ mpmc_seqs, 1024 });
+  t0 = now_ns();
+  for (long i = 0; i < P; i++) pthread_create(&cs[i], NULL, mpmc_ticket_cons, &sums[i]);
+  for (long i = 0; i < P; i++) pthread_create(&ps[i], NULL, mpmc_ticket_prod, &spinsv[i]);
+  for (int i = 0; i < P; i++) pthread_join(ps[i], NULL);
+  sum = 0; for (int i = 0; i < P; i++) { pthread_join(cs[i], NULL); sum += sums[i]; }
+  spins = 0; for (int i = 0; i < P; i++) spins += spinsv[i];
+  report("mpmc_ticket", "4 producers, 4 consumers", now_ns() - t0, sum, expected_parts(), spins);
 
   oak_intrusive_setup(INTR);
   sum = 0; t0 = now_ns();

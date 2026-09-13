@@ -3,6 +3,7 @@ package evaluator
 import (
 	"fmt"
 	"github.com/SCKelemen/oak/token"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1591,7 +1592,25 @@ func evalRecordLiteral(rl *ast.RecordLiteral, env *object.Environment) object.Ob
 	// For type-qualified literals, we just evaluate the fields normally
 	// The TypeName is only used by the typechecker, not the evaluator
 
-	for fieldName, fieldExpr := range rl.Fields {
+	// Fields evaluate in source order (docs/spec/10-syntax.md section 3d:
+	// left to right, the order the C backend sequences), never in the Go
+	// map's order: a side-effecting field expression must see the effects
+	// of the fields written before it.
+	names := make([]string, 0, len(rl.Fields))
+	for _, field := range rl.FieldOrder {
+		if _, present := rl.Fields[field.Name]; present {
+			names = append(names, field.Name)
+		}
+	}
+	if len(names) != len(rl.Fields) {
+		names = names[:0]
+		for name := range rl.Fields {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+	}
+	for _, fieldName := range names {
+		fieldExpr := rl.Fields[fieldName]
 		// Check if this looks like a type definition context
 		// In type definitions, field expressions are type annotations (identifiers like u8, i32)
 		// In value contexts, field expressions are values

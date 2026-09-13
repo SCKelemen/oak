@@ -197,4 +197,51 @@ theorem index_access_bytes (elem len i b : Nat) (hguard : i < len)
   have h := index_access elem len i hguard
   omega
 
+/-! ## Entry padding
+
+`asm/object.go` (`textLayout.pad`) fills the gap before an entry with the
+lane's no-ops. AArch64 gaps are whole words. An RV64 function under RVC
+(docs/spec/94-assembler.md, "Compressed encodings") ends on a half word
+when it holds an odd number of two-byte instructions, so its gap is
+filled in words and closed by one two-byte `c.nop`. -/
+
+/-- The bytes needed to reach the next multiple of `align` from `len`. -/
+def gap (len align : Nat) : Nat := (align - len % align) % align
+
+/-- Reaching the boundary: `len + gap` is a multiple of the alignment. -/
+theorem gap_reaches (len align : Nat) (h : 0 < align) :
+    (len + gap len align) % align = 0 := by
+  unfold gap
+  rcases Nat.eq_zero_or_pos (len % align) with hz | hp
+  · rw [hz, Nat.sub_zero, Nat.mod_self, Nat.add_zero]
+    exact hz
+  · have hlt := Nat.mod_lt len h
+    rw [Nat.mod_eq_of_lt (Nat.sub_lt h hp)]
+    have hdiv := Nat.div_add_mod len align
+    have hsum : len + (align - len % align) = align * (len / align + 1) := by
+      rw [Nat.mul_succ]
+      omega
+    rw [hsum, Nat.mul_mod_right]
+
+/-- Filling in halfwords: an even gap is `w` words and at most one
+    halfword, so the RV64 fill (words, then a `c.nop` when two bytes remain)
+    produces exactly the gap. -/
+theorem pad_halfwords_reaches (g : Nat) (h : g % 2 = 0) :
+    4 * (g / 4) + (if g % 4 = 2 then 2 else 0) = g := by
+  split <;> omega
+
+/-- Filling in words alone misses: when the gap is not a multiple of four,
+    no number of four-byte no-ops equals it — the fixed word pad of the
+    earlier layout would never reach the boundary. -/
+theorem pad_words_misses (g : Nat) (h : g % 4 ≠ 0) : ∀ w : Nat, 4 * w ≠ g := by
+  intro w hw
+  apply h
+  omega
+
+/-- A compressed RV64 entry ends on a half word exactly when it holds an
+    odd number of two-byte instructions among its words. -/
+theorem rvc_entry_half_word (words halves : Nat) :
+    (4 * words + 2 * halves) % 4 = 2 ↔ halves % 2 = 1 := by
+  constructor <;> intro h <;> omega
+
 end Oak.Assembler

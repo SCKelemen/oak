@@ -25,6 +25,10 @@ const CodeLiteralsShape = "OAK-M0304"
 // declaration is self-contained and the names cannot meet a user's.
 const literalsKernelPrefix = "literals_teddy_"
 
+// literalsKernelTypePrefix prefixes the kernel's types the same way:
+// `Carry` is `LiteralsCarry` in the program, the state of a stream.
+const literalsKernelTypePrefix = "Literals"
+
 // lowerLiterals replaces every literals declaration with its projection
 // (docs/spec/113-literals.md section 2): the literal bytes, their starts,
 // and the six nibble tables of the Teddy prefilter computed here from the
@@ -86,17 +90,20 @@ func lowerLiterals(tree *SyntaxTree) error {
 	return nil
 }
 
-// literalsTables computes the six nibble tables (stdlib/literals.oak
-// `build`) for the literal set: low and high nibble of bytes 0, 1, 2 of
-// every literal, bucket j % 8. Every literal has at least three bytes.
-func literalsTables(lits []string) [96]byte {
-	var tables [96]byte
+// literalsTables computes the nibble tables (stdlib/literals.oak `build`)
+// for the literal set: per group of sixteen literals, low and high nibble
+// of bytes 0, 1, 2 of each, bucket j % 8; 96 bytes per group. Every
+// literal has at least three bytes.
+func literalsTables(lits []string) []byte {
+	groups := (len(lits) + 15) / 16
+	tables := make([]byte, 96*groups)
 	for j, lit := range lits {
 		bit := byte(1) << uint(j%8)
+		base := 96 * (j / 16)
 		for k := 0; k < 3; k++ {
 			c := lit[k]
-			tables[32*k+int(c&15)] |= bit
-			tables[32*k+16+int(c>>4)] |= bit
+			tables[base+32*k+int(c&15)] |= bit
+			tables[base+32*k+16+int(c>>4)] |= bit
 		}
 	}
 	return tables
@@ -113,12 +120,20 @@ func projectLiterals(decl *ast.LiteralsDeclaration, declared map[string]bool, re
 		report(CodeLiteralsShape, decl.Name, "literals %s declares no literal", name)
 		return nil, false
 	}
+	if len(decl.Literals) > 256 {
+		report(CodeLiteralsShape, decl.Name, "literals %s declares %d literals; the scanner takes at most 256 (sixteen groups of sixteen)", name, len(decl.Literals))
+		return nil, false
+	}
 	ok := true
 	seen := map[string]bool{}
 	var lits []string
 	for _, lit := range decl.Literals {
 		if len(lit.Value) < 3 {
 			report(CodeLiteralsShape, lit, "literals %s: %q is shorter than three bytes, the prefix the scanner classifies", name, lit.Value)
+			ok = false
+		}
+		if len(lit.Value) > 64 {
+			report(CodeLiteralsShape, lit, "literals %s: a literal of %d bytes is longer than the sixty-four a stream carries", name, len(lit.Value))
 			ok = false
 		}
 		if seen[lit.Value] {
@@ -132,7 +147,7 @@ func projectLiterals(decl *ast.LiteralsDeclaration, declared map[string]bool, re
 		return nil, false
 	}
 	prefix := snakeCase(name)
-	for _, generated := range []string{prefix + "_literal_bytes", prefix + "_literal_starts", prefix + "_literal_tables", prefix + "_count", prefix + "_find", prefix + "_which"} {
+	for _, generated := range []string{prefix + "_literal_bytes", prefix + "_literal_starts", prefix + "_literal_tables", prefix + "_count", prefix + "_find", prefix + "_which", prefix + "_match", name + "Match", prefix + "_carry", prefix + "_feed"} {
 		if declared[generated] {
 			report(CodeLiteralsShape, decl.Name, "literals %s projects %s, which the program already declares", name, generated)
 			ok = false
@@ -168,7 +183,7 @@ func projectLiterals(decl *ast.LiteralsDeclaration, declared map[string]bool, re
 		}
 		write("u32(%d)", s)
 	}
-	write("]\n%s_literal_tables: [96]u8 = [", prefix)
+	write("]\n%s_literal_tables: [%d]u8 = [", prefix, len(tables))
 	for i, b := range tables {
 		if i > 0 {
 			write(", ")
@@ -180,6 +195,15 @@ func projectLiterals(decl *ast.LiteralsDeclaration, declared map[string]bool, re
 	write("%s%s_count: (bytes: []u8): u32 = %scount(bytes, %s, view(&%s_literal_tables))\n", pub, prefix, literalsKernelPrefix, set, prefix)
 	write("%s%s_find: (bytes: []u8, start: u32): u32 = %sfind_from(bytes, start, %s, view(&%s_literal_tables))\n", pub, prefix, literalsKernelPrefix, set, prefix)
 	write("%s%s_which: (bytes: []u8, pos: u32): u32 = %swhich_at(bytes, pos, %s)\n", pub, prefix, literalsKernelPrefix, set)
+	// name_match: the first occurrence at or after start as one record —
+	// its position (len(bytes) when none) and the literal's index (the
+	// number of literals when none).
+	write("%s%sMatch: type = struct {\n  at: u32\n  which: u32\n}\n", pub, name)
+	write("%s%s_match: (bytes: []u8, start: u32): %sMatch {\n  at: u32 = %s_find(bytes, start)\n  %sMatch { at: at, which: at < len(bytes) ? %s_which(bytes, at) | u32(%d) }\n}\n", pub, prefix, name, prefix, name, prefix, len(lits))
+	// Streaming: name_carry() is the empty state, name_feed counts the
+	// occurrences ending in one more chunk (stdlib/literals.oak feed).
+	write("%s%s_carry: (): %sCarry = %scarry()\n", pub, prefix, literalsKernelTypePrefix, literalsKernelPrefix)
+	write("%s%s_feed: (c: [*]%sCarry, bytes: []u8): u32 = %sfeed(c, bytes, %s, view(&%s_literal_tables))\n", pub, prefix, literalsKernelTypePrefix, literalsKernelPrefix, set, prefix)
 	statements, err := parseGeneratedOak(src.String(), helperContext(decl.Name.Token.SemanticContext, name+"Literals"))
 	if err != nil {
 		report(CodeLiteralsShape, decl.Name, "literals %s: %v", name, err)
@@ -201,19 +225,28 @@ func literalsKernel(context string) ([]ast.Statement, error) {
 		return nil, fmt.Errorf("compiler: literals kernel: %w", err)
 	}
 	var functions []ast.Statement
-	var names []string
+	renames := map[string]string{}
 	for _, stmt := range statements {
-		fn, isFunction := stmt.(*ast.FunctionStatement)
-		if !isFunction || fn.Name == nil {
-			continue
+		switch d := stmt.(type) {
+		case *ast.FunctionStatement:
+			if d.Name == nil {
+				continue
+			}
+			d.Exported = false
+			renames[d.Name.Value] = literalsKernelPrefix + d.Name.Value
+			functions = append(functions, d)
+		case *ast.ADTType:
+			if d.Name == nil {
+				continue
+			}
+			d.Exported = false
+			renames[d.Name.Value] = literalsKernelTypePrefix + d.Name.Value
+			functions = append(functions, d)
 		}
-		fn.Exported = false
-		names = append(names, fn.Name.Value)
-		functions = append(functions, fn)
 	}
 	for _, stmt := range functions {
-		for _, name := range names {
-			renameIdentifier(stmt, name, literalsKernelPrefix+name)
+		for from, to := range renames {
+			renameIdentifier(stmt, from, to)
 		}
 	}
 	return functions, nil

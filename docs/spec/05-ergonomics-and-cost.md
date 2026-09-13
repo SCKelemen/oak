@@ -182,3 +182,48 @@ par operation   -> explicit scheduling/vectorization opportunity under its contr
 ```
 
 When that correspondence is not obvious, compiler tooling should expose the lowering rather than rely on folklore.
+
+## The mechanical backend
+
+Two layers hide under "the compiler does something to my code", and Oak
+treats them differently.
+
+The first is **what the program means and roughly costs**: allocation,
+dispatch shape, numeric behavior, borrow and resource flow, effect order,
+asymptotics. Oak guarantees this layer in the source (everything above;
+`20-types.md` §11's floating-point rule, `90-backend.md` §7a's
+`-ffp-contract=off`). A backend transform is legal here only when it
+preserves values, machine numeric behavior, borrow/resource flow, and
+effect ordering; fast-math is never passed; and a value- or
+target-varying optimization the source did not write — autovectorization,
+reassociation, "-O2 did something I can't see" — is not something a
+program may depend on. Where such a shape is wanted, Oak expresses it:
+the scalable vector loop of `93-simd.md` §4 with its `dispatch`
+realizations (§6) is written, checked, and portable, instead of hoped for
+from the C compiler's autovectorizer.
+
+The second is **register allocation, instruction scheduling, and
+instruction selection**: turning a predictable machine shape into good
+instructions for one pipeline. This layer changes neither the meaning nor
+the cost in the terms this chapter makes visible; nobody allocates
+registers across a loop or schedules for an in-order pipeline by hand,
+and doing it well differs between AArch64 and RISC-V and between
+microarchitectures. That is what the mechanical backend is for — C
+through the system compiler today, the native backend (`94-assembler.md`
+§9) as it matures — and it is the whole of what Oak asks of it.
+
+**The rule.** A case where C, Rust, or Zig is faster because it expresses
+something Oak cannot is an Oak expressiveness gap, and is filed as one —
+never answered by a backend flag. Three closed on 2026-09-13 this way: a
+guard's bound `count <= 8` carried into the loops that index an `[8]`
+array (`50-borrowing.md`, literal bound through a binding); a `dispatch`
+clause in a library package (`93-simd.md` §6, #317); and the realization
+never having run, answered by `oak test` checking the claim on the
+processor that has the feature (§6.2).
+
+**The measurement.** The difference between `-O0` and `-O2` on a hot loop
+bounds what the C compiler expressed and Oak did not: `oak build -opt 0`
+and `oak build -opt 2` (`115-tooling.md`; the default is `1`) build the
+same C either way, so the delta is the backend's contribution alone. A
+large delta on a loop the program cares about is a gap to file, with the
+loop.
