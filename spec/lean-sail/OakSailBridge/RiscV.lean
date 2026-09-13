@@ -1,7 +1,4 @@
--- The export's Prelude holds the comparison operators the theorems name;
--- the whole library (`import LeanRV64D`) does not compile yet: its Vmem
--- module trips the Lean backend (rems-project/sail#1729), see README.
-import LeanRV64D.Prelude
+import LeanRV64D
 import Std.Tactic.BVDecide
 
 /-!
