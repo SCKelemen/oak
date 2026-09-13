@@ -2652,6 +2652,23 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			}
 			return &BoolType{}
 		}
+		// lane(G) and barrier() (docs/spec/56-kernels.md section 2a): the
+		// thread's place in its group of G, and the group's barrier. Both
+		// are the kernel body's; the kernel analysis places them.
+		if ident.Value == "lane" {
+			if len(expr.Arguments) != 1 {
+				tc.addError(expr, "lane takes the group size, an integer literal: lane(64)")
+			} else if _, isLiteral := expr.Arguments[0].(*ast.IntegerLiteral); !isLiteral {
+				tc.addError(expr.Arguments[0], "lane takes the group size as an integer literal, a power of two up to 1024")
+			}
+			return &PrimitiveType{Name: "u32"}
+		}
+		if ident.Value == "barrier" {
+			if len(expr.Arguments) != 0 {
+				tc.addError(expr, "barrier takes no arguments")
+			}
+			return &UnitType{}
+		}
 		// test_launch(kernel, grid, args...) (docs/spec/110-testing.md,
 		// "Launch targets"): the kernel runs over grid positions on the
 		// host, and the launch — its inputs and the spans after — is

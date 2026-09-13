@@ -533,7 +533,7 @@ func substituteStmt(stmt ast.Statement, bindings map[string]ast.Expression) (ast
 		if !ok {
 			return nil, false
 		}
-		return &ast.VariableDeclaration{Token: s.Token, Name: s.Name, Type: declType, Value: value, Measured: s.Measured, Section: s.Section}, true
+		return &ast.VariableDeclaration{Token: s.Token, Name: s.Name, Type: declType, Value: value, Measured: s.Measured, Threadgroup: s.Threadgroup, Section: s.Section}, true
 	case *ast.AssignmentStatement:
 		value, ok := substituteExpr(s.Value, bindings)
 		if !ok {
