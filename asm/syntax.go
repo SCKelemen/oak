@@ -61,6 +61,7 @@ const (
 	synVariantLit  = 21 // a = type, b = variant index, c = payload node (NONE for none)
 	synMatch       = 22 // a = scrutinee, b = arms list start, c = arm count (value position)
 	synMatchStmt   = 23 // a = scrutinee, b = arms list start, c = arm count (arms are blocks)
+	synAssert      = 27 // a = the condition (a statement): reaching it false is a trap
 	synView        = 24 // a = the array symbol; the node's type is the view (element, length)
 	synLen         = 25 // a = operand (an array or a view of known length); u32
 	synBuiltin     = 26 // a = builtin code (0 is_valid_utf8), b = operand (a view of u8); Bool
@@ -810,6 +811,19 @@ func (w *syntaxWriter) block(f *synFunction, block *ast.BlockStatement, value bo
 		last := i == len(block.Statements)-1
 		switch s := stmt.(type) {
 		case *ast.ExpressionStatement:
+			if call, isCall := s.Expression.(*ast.InvocationExpression); isCall && len(call.Arguments) == 1 {
+				// assert(c): a trap obligation, not a value.
+				if ident, isIdent := call.Function.(*ast.Identifier); isIdent && ident.Value == "assert" {
+					if _, shadowed := w.functions["assert"]; !shadowed {
+						cond, reason, ok := w.expr(f, call.Arguments[0])
+						if !ok {
+							return 0, reason, false
+						}
+						ids = append(ids, w.node(synAssert, cond, 0, 0, 0, 0, 0, -1))
+						continue
+					}
+				}
+			}
 			if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch && (!last || !value) {
 				var id uint32
 				var reason string

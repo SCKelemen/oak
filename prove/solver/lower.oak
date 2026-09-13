@@ -64,6 +64,7 @@ SYN_MATCHSTMT: u32 = 23
 SYN_VIEW: u32 = 24
 SYN_LEN: u32 = 25
 SYN_BUILTIN: u32 = 26
+SYN_ASSERT: u32 = 27
 
 // An arm in the lists: pattern kind, variant index or literal node,
 // binding symbol, body node.
@@ -1486,6 +1487,81 @@ step_agg: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
   } | { fail_at(lw, w, u32(15)) } } } } } } } } } }
 }
 
+// agg_eq builds the 1-bit term of the structural equality of two blocks
+// of a type: leaf by leaf for records and arrays; for a sum type the tags
+// equal and, under each tag, that variant's payload equal (an explicit
+// stack of (type, left offset, right offset, tag guard)). NONE when a
+// view is inside.
+agg_eq: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, typ: u32, blk_l: u32, blk_r: u32): u32 {
+  stack: [256]u32
+  sp: u32 = 1
+  stack[u32(0)] = typ
+  stack[u32(1)] = blk_l
+  stack[u32(2)] = blk_r
+  stack[u32(3)] = NONE
+  acc: u32 = t_const(lw, w, b, u32(1), u32(1))
+  while sp > u32(0) && acc != NONE {
+    sp = sp - u32(1)
+    t: u32 = stack[sp * u32(4)]
+    ol: u32 = stack[sp * u32(4) + u32(1)]
+    orr: u32 = stack[sp * u32(4) + u32(2)]
+    guard: u32 = stack[sp * u32(4) + u32(3)]
+    kind: u32 = type_kind(sx, t)
+    kind == TY_SCALAR ? {
+      eq: u32 = t_cmp(lw, w, b, CC_EQ, leaf_at(lw, w, ol, u32(0)), leaf_at(lw, w, orr, u32(0)))
+      guard == NONE ? { } | { eq = t_orbit(lw, w, b, t_not1(lw, w, b, guard), eq) }
+      acc = t_andbit(lw, w, b, acc, eq)
+    } | {
+    kind == TY_RECORD ? {
+      n: u32 = type_field_count(sx, t)
+      k: u32 = 0
+      while k < n && sp + u32(1) < u32(64) {
+        stack[sp * u32(4)] = field_type(sx, t, k)
+        stack[sp * u32(4) + u32(1)] = ol + field_offset(sx, t, k)
+        stack[sp * u32(4) + u32(2)] = orr + field_offset(sx, t, k)
+        stack[sp * u32(4) + u32(3)] = guard
+        sp = sp + u32(1)
+        k = k + u32(1)
+      }
+    } | {
+    kind == TY_ARRAY ? {
+      elem: u32 = type_elem(sx, t)
+      per: u32 = type_leaves(sx, elem)
+      n: u32 = type_length(sx, t)
+      k: u32 = 0
+      while k < n && sp + u32(1) < u32(64) {
+        stack[sp * u32(4)] = elem
+        stack[sp * u32(4) + u32(1)] = ol + k * per
+        stack[sp * u32(4) + u32(2)] = orr + k * per
+        stack[sp * u32(4) + u32(3)] = guard
+        sp = sp + u32(1)
+        k = k + u32(1)
+      }
+    } | {
+    kind == TY_SUM ? {
+      tag_l: u32 = leaf_at(lw, w, ol, u32(0))
+      eq: u32 = t_cmp(lw, w, b, CC_EQ, tag_l, leaf_at(lw, w, orr, u32(0)))
+      guard == NONE ? { } | { eq = t_orbit(lw, w, b, t_not1(lw, w, b, guard), eq) }
+      acc = t_andbit(lw, w, b, acc, eq)
+      n: u32 = type_field_count(sx, t)
+      v: u32 = 0
+      while v < n && sp + u32(1) < u32(64) {
+        payload: u32 = variant_payload(sx, t, v)
+        payload == NONE ? { } | {
+          under: u32 = t_cmp(lw, w, b, CC_EQ, tag_l, t_const(lw, w, b, variant_tag(sx, t, v), u32(32)))
+          stack[sp * u32(4)] = payload
+          stack[sp * u32(4) + u32(1)] = ol + variant_offset(sx, t, v)
+          stack[sp * u32(4) + u32(2)] = orr + variant_offset(sx, t, v)
+          stack[sp * u32(4) + u32(3)] = guard == NONE ? { under } | { t_andbit(lw, w, b, guard, under) }
+          sp = sp + u32(1)
+        }
+        v = v + u32(1)
+      }
+    } | { acc = NONE } } } }
+  }
+  acc
+}
+
 // step_cond advances a condition frame (F_COND: a 1-bit term).
 step_cond: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
   node: u32 = w[f + u32(1)]
@@ -1538,7 +1614,17 @@ step_cond: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
           w[f + u32(5)] = contract.signed ? { u32(1) } | { u32(0) }
           w[f + u32(3)] = u32(1)
           push_frame_l(lw, w, F_EXPR, left_node, contract.width)
-        } | { fail_at(lw, w, u32(16)) }
+        } | {
+          // Aggregates compare structurally under == and !=.
+          agg_type: u32 = node_type(sx, left_node)
+          agg_type = agg_type == NONE ? { node_type(sx, right_node) } | { agg_type }
+          op: u32 = node_a(sx, node)
+          (agg_type != NONE && !is_scalar_type(sx, agg_type) && !is_view_type(sx, agg_type) && (op == IOP_EQ || op == IOP_NE)) ? {
+            w[f + u32(6)] = agg_type
+            w[f + u32(3)] = u32(10)
+            push_frame_l(lw, w, F_AGG, left_node, agg_type)
+          } | { fail_at(lw, w, u32(16)) }
+        }
       }
     } | {
     phase == u32(1) ? {
@@ -1546,11 +1632,23 @@ step_cond: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
       w[f + u32(3)] = u32(2)
       push_frame_l(lw, w, F_EXPR, right_node, w[f + u32(2)])
     } | {
+    phase == u32(10) ? {
+      w[f + u32(4)] = state(lw, w, LS_RET_BLOCK)
+      w[f + u32(3)] = u32(11)
+      push_frame_l(lw, w, F_AGG, right_node, w[f + u32(6)])
+    } | {
+    phase == u32(11) ? {
+      eq: u32 = agg_eq(lw, w, b, sx, w[f + u32(6)], w[f + u32(4)], state(lw, w, LS_RET_BLOCK))
+      eq == NONE ? { fail_at(lw, w, u32(32)) } | {
+        set_state(lw, w, LS_RET, node_a(sx, node) == IOP_NE ? { t_not1(lw, w, b, eq) } | { eq })
+      }
+      pop_frame_l(lw, w)
+    } | {
       floats ? { set_state(lw, w, LS_RET, float_compare(lw, w, b, node_a(sx, node), w[f + u32(4)], ret, w[f + u32(2)])) } | {
         set_state(lw, w, LS_RET, t_cmp(lw, w, b, cmp_code(node_a(sx, node), w[f + u32(5)] != u32(0)), w[f + u32(4)], ret))
       }
       pop_frame_l(lw, w)
-    } }
+    } } } }
   } | {
     // A Bool value in condition position: lowered at width 1.
     phase == u32(0) ? {
@@ -1600,6 +1698,12 @@ step_stmts: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
     w[f + u32(4)] = index + u32(1)
   } | {
   phase == u32(3) ? { pop_frame_l(lw, w) } | {
+  phase == u32(5) ? {
+    // assert(c): reaching it with c false is a trap.
+    add_trap(lw, w, b, t_not1(lw, w, b, ret))
+    w[f + u32(3)] = u32(0)
+    w[f + u32(4)] = index + u32(1)
+  } | {
   phase == u32(4) ? {
     sym: u32 = w[f + u32(7)]
     offset: u32 = w[f + u32(8)]
@@ -1651,6 +1755,10 @@ step_stmts: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
         push_value(lw, w, sx, node_b(sx, stmt), place.typ)
       } | { fail_at(lw, w, u32(21)) }
     } | {
+    kind == SYN_ASSERT ? {
+      w[f + u32(3)] = u32(5)
+      push_frame_l(lw, w, F_COND, node_a(sx, stmt), u32(1))
+    } | {
     kind == SYN_WHILE ? {
       w[f + u32(4)] = index + u32(1)
       push_frame_l(lw, w, F_WHILE, stmt, u32(0))
@@ -1667,8 +1775,8 @@ step_stmts: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
         w[f + u32(3)] = u32(3)
         agg_result ? { push_frame_l(lw, w, F_AGG, stmt, width_or_type) } | { push_frame_l(lw, w, F_EXPR, stmt, width_or_type) }
       } | { fail_at(lw, w, u32(22)) }
-    } } } } } }
-  } } } } }
+    } } } } } } }
+  } } } } } }
 }
 
 // step_while unrolls a counted loop: the condition must fold to a

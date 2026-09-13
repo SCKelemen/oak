@@ -3,8 +3,6 @@
 // x ^ y == x) through `solve`. `oak run prove/solver` exits 0 when all hold.
 package main
 
-malloc: (n: c.Size): c.Ptr = c.extern("malloc")
-free: (p: c.Ptr): () = c.extern("free")
 
 // xor_problem writes the table of `x op y == y op x` (commute = true) or
 // `x op y == x` over two u8 leaves in the interleaved order (stride 10:

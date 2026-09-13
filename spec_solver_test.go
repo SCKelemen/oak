@@ -53,3 +53,25 @@ func TestOakSolverSelfCheck(t *testing.T) {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 }
+
+// TestOakShellAgrees runs the prover written in Oak (-solver self: the
+// file to the rows, no Go on the path) on every law file and requires the
+// Go ladder to agree on every row's status.
+func TestOakShellAgrees(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("spec", "oak", "*.oak"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("spec/oak: %v (%d files)", err, len(files))
+	}
+	for _, file := range files {
+		file := file
+		if strings.HasSuffix(file, "_lean.oak") {
+			continue
+		}
+		t.Run(filepath.Base(file), func(t *testing.T) {
+			code, out := runCLI(t, func(args []string) int { return proveCommand(args, os.Stdout, os.Stderr) }, []string{"-solver", "self", "-cross", "go", file})
+			if code != 0 || strings.Contains(out, "disagrees") || !strings.Contains(out, "the Go ladder agrees on") || strings.Contains(out, "agrees on 0 of") {
+				t.Fatalf("exit %d:\n%s", code, out)
+			}
+		})
+	}
+}
