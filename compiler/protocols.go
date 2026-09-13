@@ -713,6 +713,16 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 		if len(machine.typestate) > 0 {
 			projected = append(projected, machine.stateMarkers()...)
 		}
+		// The machine in the handle's type (section 2b), for a protocol that
+		// governs no resource: its own handle is the resource.
+		var staticFacts typechecker.ResourceProtocolDeclaration
+		hasStatic := false
+		if len(decl.Resources) == 0 {
+			var staticDecls []ast.Statement
+			staticDecls, staticFacts = machine.staticProjection()
+			projected = append(projected, staticDecls...)
+			hasStatic = true
+		}
 		if decl.Data != nil {
 			projected = append(projected, machine.quantifierHelpers(snakeCase(machine.name), machine.name+"Data")...)
 		}
@@ -726,6 +736,9 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 			continue
 		}
 		out = append(out, projected...)
+		if hasStatic {
+			resources = append(resources, staticFacts)
+		}
 		if facts, has := machine.resourceFacts(functions, report); has {
 			resources = append(resources, facts)
 		}

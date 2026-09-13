@@ -236,6 +236,49 @@ Utf8: protocol = {
 }
 ```
 
+### 2b. The static projection: the machine in the handle's type
+
+Besides the dynamic projection of §2 — a `NameState` value stepped by
+`name_next` behind a run-time legality trap — a protocol **without a
+`resource` clause** projects the same machine statically: the state lives
+in the type of a handle, a transition is a function from the handle at its
+source state to the handle at its target state, and an illegal step is a
+type error rather than a trap. This is the typestate discipline of §5a
+applied to the protocol's own machine, and it reuses §5a's checker.
+
+| Projection | Shape |
+| --- | --- |
+| `Name[S]` | `type = struct { data: NameData }` with `data`, else `struct { at_: u8 }`: the handle, one phantom parameter, one representation for every state (`20-types.md` §9) |
+| `NameS0`, `NameS1`, … | one marker type per state, prefixed with the protocol's name so no declaration of the program is shadowed (`DoorClosed: type = struct { closed_: u8 }`) |
+| `name_handle` | `(): Name[NameInitial]`: the only construction, at the initial state, holding `init`'s data |
+| `name_t` | one per line `t(p: P): From -> To` without a guard: `(handle: Name[NameFrom], p: P): Name[NameTo]`, the line's effects applied to the data; a step with several lines projects `name_t_from_s` per line |
+| `NameTOutcome`, `name_t` | for a guarded line: `NameTOutcome: type = Moved(Name[NameTo]) \| Refused(Name[NameFrom])` (`NameTFromSOutcome` when the step has several lines) and `name_t: (handle: Name[NameFrom], p: P): NameTOutcome` — the guard is decided on the handle's data at run time, `Moved` carries the handle at the target, `Refused` hands the same handle back |
+
+The projection registers these as a resource protocol over `Name`
+(`typechecker.ResourceProtocolDeclaration`, spoken in marker names):
+`name_handle` returns fresh authority, every transition consumes its
+handle and returns it under a new name — directly or inside its outcome
+sum, whose variants the flow analysis tracks as paths. So the §5a rules
+hold for the machine itself: the source-state handle is dead after the
+call (`OAK-B0111` on reuse), a handle at a non-initial state can only come
+from a transition into it (`OAK-B0121` on a literal elsewhere), and a step
+from the wrong state is an ordinary type error. `Oak.Typestate.run_sound`
+and `run_legal` are the calculus this instantiates: the machine state
+always equals the static index, and `name_next`'s trap is unreachable
+from code that moves only through the static transitions.
+
+The two projections agree by construction, both built from the same
+lines: a static transition applied to a handle in `From` yields the data
+`name_next` yields from `From` with the same step, and a guarded transition
+is `Refused` exactly when `name_legal` is false
+(`compiler/e2e_protocol_static_test.go` drives a machine through both).
+Model checking is unchanged — TLC and `oak prove` read the declaration and
+the dynamic projection. Zero tag: a handle without `data` is one byte the
+backend never reads, a handle with `data` is the data record and nothing
+else; the state is not stored. A program that must switch on the state at
+run time keeps the dynamic projection; the two coexist. A protocol with a
+`resource` clause keeps §5a alone: its handle is the resource.
+
 ## 3. Deterministic-simulation actions
 
 `NameStep` satisfies the typed-command shape of `110-testing.md`, so
@@ -600,7 +643,8 @@ not generate Lean definitions, state diagrams, or debugger decoding
   fields, nested records more than one level deep, and a domain the
   configuration chooses per step rather than the default four values.
 
-Landed since this list was first written: typestate-indexed handles (§5a),
+Landed since this list was first written: the static projection of the
+machine into a handle's type (§2b), typestate-indexed handles (§5a),
 conformance of modules outside the normal form through TLC refinement
 (§4a), record payloads and per-replica log data (§1), and invariant
 theorems in the model (§4).
