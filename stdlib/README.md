@@ -216,7 +216,8 @@ tokens, the hand-written C ceiling, ahead of Vectorscan (0.18) and RE2
 
 | Function | Semantics |
 | --- | --- |
-| `build` | fills the six nibble tables; every literal at least three bytes |
+| `groups_of` | one eight-bucket group per sixteen literals: `⌈total / 16⌉` |
+| `build` | fills the six nibble tables of every group (96 bytes per group); every literal at least three bytes |
 | `count` | occurrences of every literal, overlapping and coincident ones each counted |
 | `find_from` | first position at or after `start` where some literal occurs, else `len(bytes)` |
 | `which_at` | index of the first literal occurring at `pos`, else `total` |
