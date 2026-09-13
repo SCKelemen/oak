@@ -3,10 +3,12 @@ package compiler
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"strconv"
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/codegen"
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/lsp"
 	"github.com/SCKelemen/oak/nativegen"
@@ -55,14 +57,19 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		}
 	}
 	specializeInstantiations(tc, templates, records, adts)
+	constants := nativeConstants(root)
 	var lowered []*asm.Function
 	for _, stmt := range root.Statements {
 		fn, ok := stmt.(*ast.FunctionStatement)
 		if !ok || fn.Name == nil || fn.Body == nil || fn.AsmBacked || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 {
 			continue
 		}
+		// The native backend sees a read of a constant top-level scalar as
+		// the typed literal it is (the OS pilot's N1: `page_size`,
+		// `entries`); the C emitter keeps the original body.
+		source := substituteConstants(fn, constants)
 		lane := nativegen.Lane{Arch: comp.options.Target.AsmArch(), SoftFloat: comp.options.Target.Freestanding() && comp.options.Target.Arch == target.ArchRiscv64}
-		asmFn, err := nativegen.CompileFor(lane, fn, functions, records, adts, tc)
+		asmFn, err := nativegen.CompileFor(lane, source, functions, records, adts, tc)
 		if err != nil {
 			if _, outside := err.(nativegen.Unsupported); outside {
 				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (%v)", fn.Name.Value, err)))
@@ -76,13 +83,13 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			// checker sees it.
 			fmt.Fprint(os.Stderr, nativegen.Describe(asmFn))
 		}
-		if findings := asm.Check(asmFn, fn, symbols); len(findings) != 0 {
+		if findings := asm.Check(asmFn, source, symbols); len(findings) != 0 {
 			for _, finding := range findings {
 				diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: the checker refuses the lowering of %s: %s", fn.Name.Value, finding)))
 			}
 			continue
 		}
-		verdict := asm.Verify(asmFn, fn, fn.Body)
+		verdict := asm.Verify(asmFn, source, source.Body)
 		if verdict.Kind == asm.VerdictMismatch {
 			diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", "native backend: "+verdict.Message))
 			continue
@@ -160,4 +167,66 @@ func argumentExpressionOf(atom string) ast.Expression {
 		return &ast.IntegerLiteral{Value: n}
 	}
 	return &ast.Identifier{Value: atom}
+}
+
+// nativeConstants is the set of constant integer top-level bindings the
+// native lowering folds (codegen.ConstantScalarGlobals, integers only: a
+// Bool or float constant has no conversion spelling to fold through).
+func nativeConstants(root *ast.Program) map[string]*ast.VariableDeclaration {
+	constants := map[string]*ast.VariableDeclaration{}
+	for name, decl := range codegen.ConstantScalarGlobals(root) {
+		if typeName, isIdent := decl.Type.(*ast.Identifier); isIdent && nativeConstantTypes[typeName.Value] {
+			constants[name] = decl
+		}
+	}
+	return constants
+}
+
+var nativeConstantTypes = map[string]bool{
+	"u8": true, "u16": true, "u32": true, "u64": true, "i8": true, "i16": true, "i32": true, "i64": true, "byte": true,
+}
+
+// substituteConstants returns fn with every read of a constant top-level
+// integer binding replaced by its initializer under the binding's type,
+// `T(init)`, on a copy of the declaration (docs/spec/94-assembler.md
+// section 9): the generator and the verifier both see the literal, and
+// the emitted C keeps the original body and its `static const`. A function
+// that reads none is returned as is. Oak forbids shadowing a global, so a
+// name that is a constant is the constant wherever it appears as a value
+// (member names after `.` are not visited).
+func substituteConstants(fn *ast.FunctionStatement, constants map[string]*ast.VariableDeclaration) *ast.FunctionStatement {
+	if len(constants) == 0 {
+		return fn
+	}
+	reads := false
+	_ = transformSyntax(reflect.ValueOf(fn.Body), func(expr ast.Expression) (ast.Expression, error) {
+		if id, isIdent := expr.(*ast.Identifier); isIdent {
+			if _, isConst := constants[id.Value]; isConst {
+				reads = true
+			}
+		}
+		return expr, nil
+	})
+	if !reads {
+		return fn
+	}
+	clone := cloneSyntax(reflect.ValueOf(fn)).Interface().(*ast.FunctionStatement)
+	_ = transformSyntax(reflect.ValueOf(clone), func(expr ast.Expression) (ast.Expression, error) {
+		id, isIdent := expr.(*ast.Identifier)
+		if !isIdent {
+			return expr, nil
+		}
+		decl, isConst := constants[id.Value]
+		if !isConst {
+			return expr, nil
+		}
+		typeName := decl.Type.(*ast.Identifier).Value
+		init := cloneSyntax(reflect.ValueOf(decl.Value)).Interface().(ast.Expression)
+		return &ast.InvocationExpression{
+			Token:     id.Token,
+			Function:  &ast.Identifier{Token: id.Token, Value: typeName},
+			Arguments: []ast.Expression{init},
+		}, nil
+	})
+	return clone
 }
