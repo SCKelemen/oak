@@ -102,9 +102,45 @@ done:
   mv a0, t5
   ret`
 
+// The strip-mined sum at a fractional LMUL (docs/spec/94-assembler.md §9,
+// fourth increment): the u32 elements load at e32/mf2 — half a register
+// per strip — and widen to e64/m1 for the reduction, so the widening
+// destination is the one-register group the fraction's double makes
+// (Oak.RiscV.wide_group_fractional).
+const rv64VFracDecl = "vfrac: (v: []u32, k: u32) -> u32"
+const rv64VFracBody = `
+  bind a0, a1 = v
+  bind a2 = k
+  clobber t0, t1, t2, t3, t4, t5, t6, v2, v4, v6, v8, v10
+  slli t1, a1, 32
+  srli t1, t1, 32
+  li t0, 0
+  li t5, 0
+  li t6, 0
+loop:
+  bgeu t0, t1, done
+  sub t2, t1, t0
+  vsetvli t3, t2, e32, mf2, ta, ma
+  slli t4, t0, 2
+  add t4, a0, t4
+  vle32.v v2, (t4)
+  vmv.v.x v6, t6
+  vwaddu.vv v4, v2, v6
+  vsetvli t3, t2, e64, m1, ta, ma
+  vmv.v.x v10, t5
+  vredsum.vs v8, v4, v10
+  vmv.x.s t5, v8
+  vsetvli t3, t2, e32, mf2, ta, ma
+  add t0, t0, t3
+  j loop
+done:
+  mv a0, t5
+  ret`
+
 func TestRV64VectorChecker(t *testing.T) {
 	accept := map[string][2]string{
 		"strip-mined sum": {rv64VStripDecl, rv64VStripBody},
+		"fractional LMUL": {rv64VFracDecl, rv64VFracBody},
 		"whole view as the AVL": {"vfirst: (v: []u32) -> u32", `
   bind a0, a1 = v
   clobber t0, t1, v1
@@ -170,11 +206,12 @@ empty:
 		"widening destination overlaps its source": {rv64VWideDecl, strings.Replace(rv64VWideBody, "  vwmulu.vv v4, v2, v6\n", "  vwmulu.vv v2, v2, v6\n", 1), "overlaps the source group"},
 		"widening past 64-bit elements":            {rv64VWideDecl, strings.Replace(rv64VWideBody, "  vle32.v v2, (t4)\n  vmv.v.x v6, t6\n  vwmulu.vv v4, v2, v6\n", "  vle32.v v2, (t4)\n  vsetvli t3, t2, e64, m1, ta, ma\n  vmv.v.x v6, t6\n  vwmulu.vv v4, v2, v6\n", 1), "widening past 64-bit"},
 		"wide group past the file":                 {rv64VWideDecl, strings.Replace(rv64VWideBody, "vsetvli t3, t2, e32, m1, ta, ma\n  slli t4", "vsetvli t3, t2, e32, m8, ta, ma\n  slli t4", 1), "past the file"},
-		"unaligned wide group":                     {rv64VWideDecl, strings.Replace(rv64VWideBody, "  vwmulu.vv v4, v2, v6\n", "  vwmulu.vv v9, v2, v6\n", 1), "not aligned to the register group of LMUL=2"},
+		"unaligned wide group":                     {rv64VWideDecl, strings.Replace(rv64VWideBody, "  vwmulu.vv v4, v2, v6\n", "  vwmulu.vv v9, v2, v6\n", 1), "not aligned to the register group of LMUL=m2"},
 		"unaligned group at LMUL=2":                {rv64VMaskedDecl, strings.Replace(rv64VMaskedBody, "  vle32.v v2, (t4)\n", "  vle32.v v3, (t4)\n", 1), "not aligned to the register group"},
 		"mask register unwritten":                  {rv64VMaskedDecl, strings.Replace(rv64VMaskedBody, "  vmsne.vx v0, v2, a2\n", "", 1), "neither bound nor written"},
 		"group not wholly clobbered":               {rv64VMaskedDecl, strings.Replace(rv64VMaskedBody, ", v9", "", 1), "not a declared clobber"},
-		"fractional LMUL":                          {rv64VMaskedDecl, strings.Replace(rv64VMaskedBody, "e32, m2, ta, mu", "e32, mf2, ta, mu", 1), "fractional LMUL"},
+		"e64 at a fractional LMUL":                 {rv64VFracDecl, strings.Replace(rv64VFracBody, "e32, mf2, ta, ma", "e64, mf2, ta, ma", 1), "past ELEN=64"},
+		"extension below mf8":                      {rv64VFracDecl, strings.Replace(rv64VFracBody, "  vsetvli t3, t2, e32, mf2, ta, ma\n  slli t4", "  vsetvli t3, t2, e8, mf8, ta, ma\n  vzext.vf2 v6, v2\n  slli t4", 1), "narrower than 8 bits"},
 		"no configuration":                         {rv64VStripDecl, strings.Replace(rv64VStripBody, "  vsetvli t3, t2, e32, m1, ta, ma\n", "  li t3, 4\n", 1), "without a vector configuration"},
 		"configuration lost at label":              {rv64VStripDecl, strings.Replace(rv64VStripBody, "  vle32.v v1, (t4)\n", "again:\n  vle32.v v1, (t4)\n", 1), "without a vector configuration"},
 		"width against SEW":                        {rv64VStripDecl, strings.Replace(rv64VStripBody, "e32, m1, ta, ma", "e8, m1, ta, ma", 1), "e8 configuration"},
@@ -260,6 +297,9 @@ func TestRV64VectorEncoderAgreesWithGNUAs(t *testing.T) {
   vsetvli t0, t1, e32, m1, ta, ma
   vsetvli t2, t1, e8, m1, tu, mu
   vsetvli zero, t1, e64, m2, ta, mu
+  vsetvli t0, t1, e32, mf2, ta, ma
+  vsetvli t2, t1, e16, mf4, tu, mu
+  vsetvli zero, t1, e8, mf8, ta, ma
   vsetivli t0, 4, e16, m1, ta, ma
   vsetvli t0, t1, e32, m1, ta, ma
   vle32.v v1, (a0)

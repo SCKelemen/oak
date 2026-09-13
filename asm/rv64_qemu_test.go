@@ -276,6 +276,16 @@ done:
 			}
 			return total & 0xffffffff
 		}, body: rv64VWideBody})
+	// The fractional-LMUL sum: e32/mf2 strips widened to e64/m1, the low
+	// 32 bits of the u64 total — the wrapping u32 sum.
+	oracles = append(oracles, rv64Oracle{decl: rv64VFracDecl, cType: "unsigned int", width: 32, span: "v", inputs: [][2]uint64{{0, 7}, {1, 0}, {2, 5}, {3, 1}, {5, 9}, {8, 1}, {13, 0xffffffff}, {16, 2}},
+		spanExpect: func(elems []uint64, k uint64) uint64 {
+			total := uint64(0)
+			for _, e := range elems {
+				total += e
+			}
+			return total & 0xffffffff
+		}, body: rv64VFracBody})
 	// OAK_RV64_ORACLE=name narrows the run to one unit while diagnosing.
 	if only := os.Getenv("OAK_RV64_ORACLE"); only != "" {
 		var kept []rv64Oracle
