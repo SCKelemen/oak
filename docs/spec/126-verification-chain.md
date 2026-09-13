@@ -242,6 +242,18 @@ for a workload):
    `asm/rv64_sail_bridge_test.go` then runs the bridge. The export's
    `lake build` is large (gigabytes of `.olean`); the attempt stopped
    when the host had about one gigabyte of disk left.
+   **Done for the decided subset (2026-09-13):** that recipe, from the
+   `sail-dev` opam switch (Sail `sail2` dba5f007), generates the
+   sail-riscv 0.14 export; the Lean backend still leaves seven
+   virtual-memory type sites in Sail syntax (rems-project/sail#1729),
+   which `spec/lean-sail/patch-export.py` repairs, and the export's
+   `Vmem` module fails on four more, so the bridge imports the export's
+   `Prelude` (everything its theorems name) rather than the whole
+   library. `spec/lean-sail` builds and its fifteen theorems hold against
+   the import; `TestRV64SailBridgeBuilds` and
+   `TestRV64SailBridgeStubsMatchSail` run. What remains of this item is
+   upstream's #1729 (then `import LeanRV64D` and the `execute_*` bodies
+   join the import) and the wider decided subset.
 6. **An amd64 lane and an x86 semantics** — **deferred** (2026-09-13: no x86-64 workload exists; amd64 stays a C-only target until one does). The native backend's third lane,
    with instruction semantics bridged to a machine-readable x86-64
    specification. Scoped 2026-09-13, in the order that pays first:

@@ -22,7 +22,7 @@ or can exist for them until a lane does (REMS's `sail-x86` is partial).
 | Types, borrows, extents | the checked tree; `IndexProven` facts | Go decision procedures in `typechecker/` | laws in Lean: `Oak.Extents` (35 theorems), `Oak.Borrowing`, `Oak.Reborrow`; refinements of the admission procedures in `Oak.ReborrowRefinement`, `Oak.ViewRefinement`, `Oak.BorrowStateRefinement` | the differential corpus (compiled C against the interpreter) | the extents decision procedure itself: each rule cites its law, none is refined |
 | Lowering to asm | `asm.Function` per body (`nativegen`) | the seam checker (`asm/check.go`, `asm/rv64_check.go`) and the verifier (`asm/verify.go`), per function | checker laws in `Oak.Assembler` (24), `Oak.RiscV` (54); verifier semantics `Oak.AssemblerSemantics` (64) | the C backend under `OAK_PORTABLE_INTRINSICS`; the differential corpus | bodies the verifier labels trusted (§2), the checker's and verifier's own code as transliterations |
 | Instruction semantics, AArch64 | the term semantics | — | `Oak.AssemblerSemantics` ≡ `Oak.ArmASL` (19) ≡ Sail-generated Lean (`spec/sail/lean/Bridge.lean`, 17 bridge theorems) | the silicon differential: 181 bodies × 60 inputs on an M-series core | the Go executor is a transliteration of the Lean, checked on the silicon, not extracted |
-| Instruction semantics, RV64 | the term semantics | — | `Oak.RiscV` ≡ the Sail RISC-V definitions restated verbatim (`Oak.SailRiscVBridge`, 14; `asm/rv64_sail_bridge_test.go` fails on drift) | QEMU and the Sail C emulator on the same units | the restatement: the export does not compile under Sail 0.20.2, so the theorems are not yet against the import (`spec/lean-sail/README.md`) |
+| Instruction semantics, RV64 | the term semantics | — | `Oak.RiscV` ≡ the Sail RISC-V model's Lean export (`spec/lean-sail`, 15 theorems against the imported prelude operators; `Oak.SailRiscVBridge` keeps the verbatim restatement, 14, and `asm/rv64_sail_bridge_test.go` fails on drift) | QEMU and the Sail C emulator on the same units | the `execute_*` bodies are read by inspection: the export's whole library still does not compile (`Vmem`, rems-project/sail#1729), so the bridge imports `LeanRV64D.Prelude` (`spec/lean-sail/README.md`) |
 | Encoding | machine words | table-driven encoders from Arm's ISA XML and riscv-opcodes | `Oak.Assembler` frame/align laws; `Oak.RiscV` RVC immediates | llvm-mc (2471 fuzzed encodings, 254 SVE/SME spellings), `riscv64-elf-as` on every mnemonic, the Sail decoder audit (`asm/sail_coverage_test.go`), the ISA XML operand audit | the encoder's bytes: tested against two assemblers, not proved against a decoder |
 | Object and executable | ELF/Mach-O relocatable objects, static ELF executables | `asm/object.go`, `asm/executable.go` | — | llvm-objdump/nm on the objects; QEMU runs the executables on both lanes | the writers, by construction ("every offset computed and checked") |
 
@@ -113,6 +113,22 @@ or the verifier, not in the program:
    0.20.2 export does not compile. Building Sail from git (as sail-riscv's
    own CI does) and compiling `spec/lean-sail` turns the restatement into
    an import; the drift test keeps the restatement honest until then.
+   **Closed for the decided subset (2026-09-13):** with every Sail package
+   pinned from one git checkout (`sail_maker` included, the `sail-dev`
+   opam switch) the sail-riscv 0.14 export generates, and after
+   `spec/lean-sail/patch-export.py` repairs the seven virtual-memory type
+   sites the Lean backend leaves in Sail syntax (rems-project/sail#1729),
+   the export's `Prelude` closure builds and `spec/lean-sail` proves its
+   fifteen theorems against the import — `TestRV64SailBridgeBuilds` and
+   `TestRV64SailBridgeStubsMatchSail` run instead of skipping. Still open:
+   the export's `Vmem` module (four backend errors of its own; sail-riscv's
+   `compile-lean` CI fails on master for the same reason), so the whole
+   library and the `execute_*` bodies stay outside the import until
+   upstream fixes #1729. Also closed the same day: rv64 translation
+   validation had skipped silently in `ci.yml` (the RISC-V GNU toolchain
+   was installed only in `formal-sail.yml`); the `packages` shard now
+   installs it, `TestTranslationValidationRV64` accepts the Debian spelling,
+   and `OAK_REQUIRE_RV64_GCC=1` turns the skip into a failure there.
 3. **The encoder is tested, not proved.** Both Sail models carry decoders
    (sail-riscv's `encdec` mappings; Arm's decode tree). The natural
    connection is a round-trip theorem, `decode (encode i) = i`, for every

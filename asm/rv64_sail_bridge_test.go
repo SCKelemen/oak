@@ -46,10 +46,12 @@ func TestRV64SailBridgeDefinitionsMatch(t *testing.T) {
 }
 
 func TestRV64SailBridgeBuilds(t *testing.T) {
-	// The export's top-level module object marks a complete build; a
-	// partial one (a build in progress) would make the bridge's lake
-	// rebuild the dependency in place.
-	export := filepath.Join("..", "external", "sail-riscv", "build", "model", "Lean_RV64D", ".lake", "build", "lib", "lean", "LeanRV64D.olean")
+	// The bridge imports the export's Prelude (the module holding the
+	// comparison operators its theorems name), so that module's object
+	// marks the export as built far enough; the whole library does not
+	// compile yet (its Vmem module trips the Lean backend,
+	// rems-project/sail#1729 — spec/lean-sail/README.md).
+	export := filepath.Join("..", "external", "sail-riscv", "build", "model", "Lean_RV64D", ".lake", "build", "lib", "lean", "LeanRV64D", "Prelude.olean")
 	if _, err := os.Stat(export); err != nil {
 		t.Skip("the Sail RISC-V Lean export is not built under external/sail-riscv (see spec/lean-sail/README.md)")
 	}
@@ -76,10 +78,22 @@ func TestRV64SailBridgeStubsMatchSail(t *testing.T) {
 		t.Fatal(err)
 	}
 	export := filepath.Join("..", "external", "sail-riscv", "build", "model", "Lean_RV64D")
-	library, libErr := os.ReadFile(filepath.Join(export, ".lake", "packages", "Sail", "Sail", "Sail.lean"))
+	// The library is one module per concern since lean-sail v5 (Sail/Common.lean
+	// holds the bit-vector primitives and the shift helpers that the export's
+	// Prelude used to define); read every module.
+	libraryFiles, _ := filepath.Glob(filepath.Join(export, ".lake", "packages", "Sail", "Sail", "*.lean"))
+	var library []byte
+	for _, file := range libraryFiles {
+		text, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		library = append(library, text...)
+		library = append(library, '\n')
+	}
 	prelude, preErr := os.ReadFile(filepath.Join(export, "LeanRV64D", "Prelude.lean"))
 	defs, defErr := os.ReadFile(filepath.Join(export, "LeanRV64D", "Defs.lean"))
-	if libErr != nil || preErr != nil || defErr != nil {
+	if len(libraryFiles) == 0 || preErr != nil || defErr != nil {
 		t.Skip("the Sail Lean library and export are not fetched under external/sail-riscv")
 	}
 	normalize := func(text string) string {

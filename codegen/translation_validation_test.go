@@ -334,9 +334,22 @@ func TestTranslationValidationArm64(t *testing.T) {
 }
 
 func TestTranslationValidationRV64(t *testing.T) {
-	gcc, err := exec.LookPath("riscv64-elf-gcc")
-	if err != nil {
-		t.Skip("riscv64-elf-gcc is required to compile the prelude helpers for rv64")
+	// The RISC-V GNU toolchain under any of its prefixes (Homebrew's
+	// riscv64-elf-, Debian's riscv64-unknown-elf-, riscv64-linux-gnu-);
+	// OAK_REQUIRE_RV64_GCC=1 turns the skip into a failure where CI
+	// installs it (the packages shard), so the rung is never silently absent.
+	var gcc string
+	for _, prefix := range []string{"riscv64-elf-", "riscv64-unknown-elf-", "riscv64-linux-gnu-"} {
+		if path, err := exec.LookPath(prefix + "gcc"); err == nil {
+			gcc = path
+			break
+		}
+	}
+	if gcc == "" {
+		if os.Getenv("OAK_REQUIRE_RV64_GCC") != "" {
+			t.Fatal("a riscv64 GCC (riscv64-elf-gcc / riscv64-unknown-elf-gcc) is required to compile the prelude helpers for rv64 and OAK_REQUIRE_RV64_GCC is set")
+		}
+		t.Skip("a riscv64 GCC (riscv64-elf-gcc / riscv64-unknown-elf-gcc) is required to compile the prelude helpers for rv64")
 	}
 	validateTranslation(t, asm.ArchRV64, func(cPath, sPath string) error {
 		out, err := exec.Command(gcc, "-march=rv64gc", "-mabi=lp64d", "-std=c11", "-O1", "-ffreestanding",
