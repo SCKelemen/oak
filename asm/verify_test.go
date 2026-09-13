@@ -243,7 +243,9 @@ func TestVerifySpanMemory(t *testing.T) {
 	if signedMax.Kind != VerdictProven {
 		t.Fatalf("signed element max must be proven, got %s: %s", signedMax.Kind, signedMax.Message)
 	}
-	// Outside the subset: a byte span read as a word, a store through a span.
+	// Outside the subset: a byte span read as a word. A store through a
+	// span is inside it since the twenty-eighth increment (asm/effects.go):
+	// a lowering that bumps the element the body only reads is refuted.
 	bytes := verifyCase(t, "b0: (v: []u8) -> u32", "len(v) < u32(4) ? u32(0) | u32(v[0])",
 		"  bind x0, w1 = v\n  cmp w1, #4\n  b.lo short\n  ldr w0, [x0]\n  ret\nshort:\n  mov w0, #0\n  ret")
 	if bytes.Kind != VerdictTrusted {
@@ -251,8 +253,8 @@ func TestVerifySpanMemory(t *testing.T) {
 	}
 	store := verifyCase(t, "bump: (v: [*]u32) -> u32", "len(v) < u32(1) ? u32(0) | v[0]",
 		"  bind x0, w1 = v\n  clobber w9\n  cmp w1, #1\n  b.lo short\n  ldr w9, [x0]\n  add w9, w9, #1\n  str w9, [x0]\n  mov w0, w9\n  ret\nshort:\n  mov w0, #0\n  ret")
-	if store.Kind != VerdictTrusted {
-		t.Fatalf("a store through a span must be trusted, got %s: %s", store.Kind, store.Message)
+	if store.Kind != VerdictMismatch {
+		t.Fatalf("a store the body does not make must be a mismatch, got %s: %s", store.Kind, store.Message)
 	}
 }
 

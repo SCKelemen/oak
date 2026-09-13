@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/big"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -276,6 +277,32 @@ done:
 			}
 			return total & 0xffffffff
 		}, body: rv64VWideBody})
+	// The fractional-LMUL sum: e32/mf2 strips widened to e64/m1, the low
+	// 32 bits of the u64 total — the wrapping u32 sum.
+	oracles = append(oracles, rv64Oracle{decl: rv64VFracDecl, cType: "unsigned int", width: 32, span: "v", inputs: [][2]uint64{{0, 7}, {1, 0}, {2, 5}, {3, 1}, {5, 9}, {8, 1}, {13, 0xffffffff}, {16, 2}},
+		spanExpect: func(elems []uint64, k uint64) uint64 {
+			total := uint64(0)
+			for _, e := range elems {
+				total += e
+			}
+			return total & 0xffffffff
+		}, body: rv64VFracBody})
+	// The floating-point strip: q = x*k + (x-k)^2 per element with one
+	// rounding for the multiply-add, folded in order into an f32 sum;
+	// expected from Go's float32 arithmetic (explicit conversions keep
+	// every operation rounded once) and an exactly rounded fma32.
+	oracles = append(oracles, rv64Oracle{decl: rv64VFSumDecl, cType: "unsigned int", width: 32, span: "v", inputs: [][2]uint64{{0, 7}, {1, 0}, {2, 5}, {3, 1}, {5, 9}, {8, 1}, {13, 0xffffffff}, {16, 2}},
+		spanExpect: func(elems []uint64, k uint64) uint64 {
+			kf := float32(uint32(k))
+			total := float32(0)
+			for _, e := range elems {
+				x := float32(uint32(e))
+				d := float32(x - kf)
+				p := float32(d * d)
+				total = float32(total + fma32(x, kf, p))
+			}
+			return uint64(math.Float32bits(total))
+		}, body: rv64VFSumBody})
 	// OAK_RV64_ORACLE=name narrows the run to one unit while diagnosing.
 	if only := os.Getenv("OAK_RV64_ORACLE"); only != "" {
 		var kept []rv64Oracle
@@ -437,6 +464,18 @@ done:
 			index++
 		}
 	}
+}
+
+// fma32 is a*b + c rounded once to f32 (round to nearest even), the
+// semantics of vfmacc.vv under frm = rne: the exact value is formed in a
+// big.Float wide enough to hold it, then rounded to 24 bits.
+func fma32(a, b, c float32) float32 {
+	exact := new(big.Float).SetPrec(256).SetFloat64(float64(a))
+	exact.Mul(exact, new(big.Float).SetPrec(256).SetFloat64(float64(b)))
+	exact.Add(exact, new(big.Float).SetPrec(256).SetFloat64(float64(c)))
+	rounded := exact.SetMode(big.ToNearestEven).SetPrec(24)
+	f, _ := rounded.Float32()
+	return f
 }
 
 // quoteAsmRV64 spells assembly text as a C string literal.

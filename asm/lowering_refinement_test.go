@@ -121,6 +121,10 @@ var loweringProgramRenders = []struct {
 	// local gives the same terms.
 	{"f: (n: u32) -> u32 = {\n  s: u32 = 0\n  i: u32 = 0\n  while i < 2 {\n    d: u32 = n * 2\n    s = s + d\n    i = i + 1\n  }\n  s\n}\n", "((n mul 2) add (n mul 2))"},
 	{"f: (a, b: u32) -> u32 = {\n  r: u32 = a\n  a < b ? {\n    t: u32 = b - a\n    r = t\n  } | { }\n  r\n}\n", "((a lo b) ? (b sub a) : a)"},
+	// Data-dependent loops (`whileEvent`): the carried locals stand as the
+	// fresh symbols `loop<index>.<var>` after the loop (`loopEvent`).
+	{"f: (n: u32) -> u32 = {\n  s: u32 = 0\n  i: u32 = 0\n  while i < n {\n    s = s + i\n    i = i + 1\n  }\n  s + i\n}\n", "(loop1.s add loop1.i)"},
+	{"f: (n: u32) -> u32 = {\n  s: u32 = 0\n  i: u32 = 0\n  while i < n {\n    s = s + i\n    i = i + 1\n  }\n  s * 2\n}\n", "(loop1.s mul 2)"},
 }
 
 func TestLoweringProgramsMatchLeanTransliteration(t *testing.T) {

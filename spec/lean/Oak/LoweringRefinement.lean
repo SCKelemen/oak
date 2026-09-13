@@ -203,6 +203,17 @@ def borrowsIn (Γ : Locals) (bs : List Borrow) : Bool := bs.all fun b => decide 
 /-- The callee-side view of the borrows: the leaves `s[k]`. -/
 def calleeSide (bs : List Borrow) : List Borrow := bs.map fun b => { b with nm := elemName b.s }
 
+/-- The fresh symbol standing for a loop-carried local's value on an
+iteration of data-dependent loop `idx` (`loopEvent.freshName`:
+`loop<index>.<var>`). -/
+def loopName (idx : Nat) (x : String) : String := "loop" ++ toString idx ++ "." ++ x
+
+/-- The loop-carried locals are locals of the stated types. -/
+def CarriedIn (Γ : Locals) (carried : List (String × Ty)) : Prop := ∀ p, p ∈ carried → Γ p.1 = some p.2
+
+instance (Γ : Locals) (carried : List (String × Ty)) : Decidable (CarriedIn Γ carried) :=
+  inferInstanceAs (Decidable (∀ p, p ∈ carried → Γ p.1 = some p.2))
+
 mutual
 /-- The shared subset. A literal carries its checked value at the type's
 width (`Oak.LiteralFitRefinement`); `divPow2`/`modPow2` are `/` and `%` by
@@ -239,7 +250,13 @@ borrows the caller's arrays through span parameters (`enterCall`) and
 whose results — a scalar, or the leaves of a record the callee builds
 (`inlineCallValue`) — are bound in the caller under `rs` for `rest`, the
 borrowed leaves written back first; `Stmts.callS` is the same in statement
-position, its results assigned to existing locals. -/
+position, its results assigned to existing locals; `whileEvent idx c body
+rest` is a data-dependent loop — one whose condition does not fold to a
+constant — summarized as `loopEvent` summarizes it: the carried locals
+(those the body assigns) stand as the fresh symbols `loop<idx>.x` after
+the loop, and the condition and body over those symbols are the event's
+one-iteration semantics; `Stmts.loopEvent` the same in statement
+position. -/
 inductive Expr (P : Params) (S : Spans) : Locals → Ty → Type
   | var {Γ : Locals} (t : Ty) (x : String) (h : resolve P Γ x = some t) : Expr P S Γ t
   | lit {Γ : Locals} (t : Ty) (v : BitVec t.width) : Expr P S Γ t
@@ -257,6 +274,7 @@ inductive Expr (P : Params) (S : Spans) : Locals → Ty → Type
       (body : Expr P S (bindTypes id (fun _ => none) params) ret) (args : Args P S Γ params) : Expr P S Γ ret
   | recDecl {Γ : Locals} {t : Ty} (r : String) (fs : List (String × Ty)) (fields : Args P S Γ fs)
       (b : Expr P S (bindTypes (fieldName r) Γ fs) t) : Expr P S Γ t
+  | whileEvent {Γ : Locals} {t : Ty} (idx : Nat) (c : Expr P S Γ .bool) (body : Stmts P S Γ) (rest : Expr P S Γ t) : Expr P S Γ t
   | callX {Γ : Locals} {t : Ty} (params locals : List (String × Ty)) (bs : List Borrow)
       (hb : borrowsIn Γ bs = true) (hc : borrowsIn (calleeScope params locals bs) (calleeSide bs) = true)
       {rs : List (String × Ty)}
@@ -284,6 +302,7 @@ inductive Stmts (P : Params) (S : Spans) : Locals → Type
   | loop {Γ : Locals} (c : Expr P S Γ .bool) (body : Stmts P S Γ) (rest : Stmts P S Γ) : Stmts P S Γ
   | matchS {Γ : Locals} {s : Ty} (x : Expr P S Γ s) (arms : ArmsS P S Γ s) (rest : Stmts P S Γ) : Stmts P S Γ
   | arrSet {Γ : Locals} {e : Ty} {n : Nat} (nm : Nat → String) (h : ArrIn Γ nm e n) (hn : n < 2 ^ 32) (i : Expr P S Γ .u32) (v : Expr P S Γ e) (rest : Stmts P S Γ) : Stmts P S Γ
+  | loopEvent {Γ : Locals} (idx : Nat) (c : Expr P S Γ .bool) (body : Stmts P S Γ) (rest : Stmts P S Γ) : Stmts P S Γ
   | callS {Γ : Locals} (params locals : List (String × Ty)) (bs : List Borrow)
       (hb : borrowsIn Γ bs = true) (hc : borrowsIn (calleeScope params locals bs) (calleeSide bs) = true)
       {rs : List (String × Ty)} (hrs : bindTypes id Γ rs = Γ)
@@ -305,6 +324,31 @@ inductive Args (P : Params) (S : Spans) : Locals → List (String × Ty) → Typ
   | nil {Γ : Locals} : Args P S Γ []
   | cons {Γ : Locals} {x : String} {s : Ty} {ps : List (String × Ty)} (a : Expr P S Γ s) (rest : Args P S Γ ps) : Args P S Γ ((x, s) :: ps)
 end
+
+mutual
+/-- The names a statement list assigns (`assignedLocals`): locals, array
+leaves written, a call's results and the leaves its borrows write back. -/
+def Stmts.assigned {P : Params} {S : Spans} : {Γ : Locals} → Stmts P S Γ → List String
+  | _, .nil => []
+  | _, .assign x _ _ rest => x :: rest.assigned
+  | _, .cond _ armT armF rest => armT.assigned ++ armF.assigned ++ rest.assigned
+  | _, .loop _ body rest => body.assigned ++ rest.assigned
+  | _, .matchS _ arms rest => arms.assigned ++ rest.assigned
+  | _, .arrSet (n := n) nm _ _ _ _ rest => (List.range n).map nm ++ rest.assigned
+  | _, .loopEvent _ _ body rest => body.assigned ++ rest.assigned
+  | _, .callS (rs := rs) _ _ bs _ _ _ _ _ _ rest =>
+    rs.map Prod.fst ++ (bs.flatMap fun b => (List.range b.n).map b.nm) ++ rest.assigned
+def ArmsS.assigned {P : Params} {S : Spans} : {Γ : Locals} → {s : Ty} → ArmsS P S Γ s → List String
+  | _, _, .fallback st => st.assigned
+  | _, _, .case _ st rest => st.assigned ++ rest.assigned
+end
+
+/-- `loopEvent`'s carried locals: the locals the body assigns, with their
+types (a local declared inside the body is the body's own in the Go; the
+model pre-declares it, so it is carried too — its fresh symbol is read by
+nothing after the loop). -/
+def carriedOf {P : Params} {S : Spans} {Γ : Locals} (body : Stmts P S Γ) : List (String × Ty) :=
+  body.assigned.filterMap fun y => (Γ y).map fun t => (y, t)
 
 /-- A parameter assignment: the value each parameter arrives with. Both
 readers take it at the parameter's width (`ofNat`, `& mask`), so no bound
@@ -361,6 +405,14 @@ def varX (Γ : Locals) (ρ : Env) (l : Vals) (x : String) : Nat :=
   | some _ => l x
   | none => ρ x
 
+/-- The fresh symbols denote the exit values: `ρ (loop<idx>.x)`, read at
+the local's width as the verifier reads a parameter term, is `l' x` for
+every carried local. The model's reading of a summarized loop is defined
+only for assignments that interpret the symbols this way (`none`
+otherwise), so the theorem speaks about exactly those. -/
+def freshDenote (ρ : Env) (idx : Nat) (carried : List (String × Ty)) (l' : Vals) : Bool :=
+  carried.all fun p => ρ (loopName idx p.1) % 2 ^ p.2.width == l' p.1
+
 /-- A callee's locals before their first assignment. -/
 def zeroVals (l : Vals) : List (String × Ty) → Vals
   | [] => l
@@ -407,7 +459,9 @@ mutual
 (`95-extraction.md` §2: `Option`, `none` when the fuel runs out): `let x :=
 v` binds the value for the rest of the block; a call is the callee's body
 under its parameters bound to the argument values (`let (r, …) ← g args
-fuel`, the callee's own `def`); a statement-level conditional rebinds the
+fuel`, the callee's own `def`); a data-dependent loop is `loopX` too,
+under assignments whose fresh symbols denote the exit values
+(`freshDenote`); a statement-level conditional rebinds the
 variables its arms assign to the taken arm's values (`let (vars) ← if c
 then do A; pure (vars) else do B; pure (vars)`), the untouched ones being
 equal on both sides; a loop is `loopX`; an integer-constant match is the
@@ -435,6 +489,9 @@ def evalX {P : Params} {S : Spans} : {Γ : Locals} → {t : Ty} → Expr P S Γ 
   | _, _, .letIn x v b, ρ, l, F => (evalX v ρ l F).bind fun x' => evalX b ρ (l.set x x'.toNat) F
   | _, _, .call _ _ body args, ρ, l, F => (bindVals id args ρ l (fun _ => 0) F).bind fun l' => evalX body ρ l' F
   | _, _, .recDecl r _ fields b, ρ, l, F => (bindVals (fieldName r) fields ρ l l F).bind fun l' => evalX b ρ l' F
+  | _, _, .whileEvent idx c body rest, ρ, l, F =>
+    (loopX (fun l₀ => evalX c ρ l₀ F) (fun l₀ => runVals body ρ l₀ F) F l).bind fun l' =>
+      if freshDenote ρ idx (carriedOf body) l' then evalX rest ρ l' F else none
   | _, _, .callX params locals bs _ _ stmts results args rest, ρ, l, F =>
     (bindVals id args ρ l (fun _ => 0) F).bind fun lp =>
     (runVals stmts ρ (copyInVals l (zeroVals lp locals) bs) F).bind fun lf =>
@@ -468,6 +525,9 @@ def runVals {P : Params} {S : Spans} : {Γ : Locals} → Stmts P S Γ → Env �
   | _, .arrSet (n := n) nm _ _ i v rest, ρ, l, F =>
     (evalX i ρ l F).bind fun k => (evalX v ρ l F).bind fun vv =>
       if k.toNat < n then runVals rest ρ (writeLeaves l nm k.toNat vv.toNat n) F else none
+  | _, .loopEvent idx c body rest, ρ, l, F =>
+    (loopX (fun l₀ => evalX c ρ l₀ F) (fun l₀ => runVals body ρ l₀ F) F l).bind fun l' =>
+      if freshDenote ρ idx (carriedOf body) l' then runVals rest ρ l' F else none
   | _, .callS params locals bs _ _ _ stmts results args rest, ρ, l, F =>
     (bindVals id args ρ l (fun _ => 0) F).bind fun lp =>
     (runVals stmts ρ (copyInVals l (zeroVals lp locals) bs) F).bind fun lf =>
@@ -699,6 +759,13 @@ def zeroTerms (σ : Scope) (nm : Nat → String) (w : Nat) : Nat → Scope
 /-- A leaf's term (`elems[k].scalar`); a default the invariant rules out. -/
 def leaf (σ : Scope) (nm : Nat → String) (k : Nat) : Term := (σ (nm k)).getD (.const 0 0)
 
+/-- `loopEvent`: each carried local stands as its fresh symbol
+(`paramTerm(ev.freshName(name), width)`) — on an iteration and after the
+loop. -/
+def freshScope (σ : Scope) (idx : Nat) : List (String × Ty) → Scope
+  | [] => σ
+  | (x, t) :: rest => freshScope (σ.set x (.param (loopName idx x) t.width)) idx rest
+
 /-- A callee's locals before their first assignment (`declareLocal` binds
 the initializer's term; the zero here is never read). -/
 def zeroLocals (σ : Scope) : List (String × Ty) → Scope
@@ -763,7 +830,11 @@ statement-level conditional runs each arm
 on the locals before it and, for every local an arm assigned, selects
 between the arms' terms by the condition (`lowerConditionalStatement`:
 `iteTerm(truncate(cond, 1), afterTrue, afterFalse)`); a loop unrolls while
-its lowered condition folds to a non-zero constant (`lowerWhile`); an
+its lowered condition folds to a non-zero constant (`lowerWhile`); a
+data-dependent loop is summarized (`loopEvent`): the carried locals take
+fresh symbols, the condition and the body are lowered over them — the
+event's `cond` and `next`, which `verifyLoops` matches against the asm
+side's — and the code after the loop reads the symbols; an
 integer-constant match compares the scrutinee with each literal
 (`matchArms`) and selects arm by arm into the fallback (`selectMatch`,
 `lowerMatchStatement`); an owned array is declared as its zero leaves
@@ -800,6 +871,10 @@ def lowerT {P : Params} {S : Spans} : Scope → {Γ : Locals} → {t : Ty} → E
   | σ, _, _, .letIn x v b => (lowerT σ v).bind fun tv => lowerT (σ.set x tv) b
   | σ, _, _, .call _ _ body args => (bindTerms id σ args (fun _ => none)).bind fun σ' => lowerT σ' body
   | σ, _, _, .recDecl r _ fields b => (bindTerms (fieldName r) σ fields σ).bind fun σ' => lowerT σ' b
+  | σ, _, _, .whileEvent idx c body rest =>
+    (lowerT (freshScope σ idx (carriedOf body)) c).bind fun _ =>
+    (runTerms (freshScope σ idx (carriedOf body)) body).bind fun _ =>
+    lowerT (freshScope σ idx (carriedOf body)) rest
   | σ, _, _, .callX params locals bs _ _ stmts results args rest =>
     (bindTerms id σ args (fun _ => none)).bind fun σp =>
     (runTerms (copyIn σ (zeroLocals σp locals) bs) stmts).bind fun σf =>
@@ -834,6 +909,10 @@ def runTerms {P : Params} {S : Spans} : Scope → {Γ : Locals} → Stmts P S Γ
     (lowerT σ x).bind fun sx => (armsST σ sx arms).bind fun σ' => runTerms σ' rest
   | σ, _, .arrSet (n := n) nm _ _ i v rest =>
     (lowerT σ i).bind fun ti => (lowerT σ v).bind fun tv => runTerms (writeArr σ ti tv nm n) rest
+  | σ, _, .loopEvent idx c body rest =>
+    (lowerT (freshScope σ idx (carriedOf body)) c).bind fun _ =>
+    (runTerms (freshScope σ idx (carriedOf body)) body).bind fun _ =>
+    runTerms (freshScope σ idx (carriedOf body)) rest
   | σ, _, .callS params locals bs _ _ _ stmts results args rest =>
     (bindTerms id σ args (fun _ => none)).bind fun σp =>
     (runTerms (copyIn σ (zeroLocals σp locals) bs) stmts).bind fun σf =>
@@ -977,6 +1056,10 @@ theorem lowerT_width {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P
   | .callX params locals bs hb hc stmts results args rest =>
     simp only [lowerT, Option.bind_eq_some_iff] at h
     obtain ⟨σp, -, σf, -, σ', -, hr⟩ := h
+    exact lowerT_width rest _ _ hr
+  | .whileEvent idx c body rest =>
+    simp only [lowerT, Option.bind_eq_some_iff] at h
+    obtain ⟨tc, -, σb, -, hr⟩ := h
     exact lowerT_width rest _ _ hr
   | .condSet c armT armF rest =>
     simp only [lowerT, Option.bind_eq_some_iff] at h
@@ -1472,6 +1555,12 @@ theorem writeArr_wf {σ : Scope} (hσ : σ.wf) {ti tv : Term} (htv : tv.topPosit
   | zero => exact hσ
   | succ n ih => exact Scope.wf_set ih (Term.iteT_topPositive htv (leaf_topPositive hσ nm n))
 
+theorem freshScope_wf {σ : Scope} (hσ : σ.wf) (idx : Nat) : ∀ carried, (freshScope σ idx carried).wf := by
+  intro carried
+  induction carried generalizing σ with
+  | nil => exact hσ
+  | cons p rest ih => obtain ⟨x, t⟩ := p; exact ih (Scope.wf_set hσ trivial)
+
 theorem zeroLocals_wf {σ : Scope} (hσ : σ.wf) : ∀ ls : List (String × Ty), (zeroLocals σ ls).wf := by
   intro ls
   induction ls generalizing σ with
@@ -1566,6 +1655,10 @@ theorem lowerT_topPositive {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : 
     have hwp := bindTerms_wf args id σ _ σp hσ Scope.wf_empty hp
     have hwf := runTerms_wf stmts _ σf (copyIn_wf hσ bs _ (zeroLocals_wf hwp locals)) hf
     exact lowerT_topPositive rest _ T (bindTerms_wf results id σf _ σ' hwf (copyOut_wf hwf bs σ hσ) hres) hr
+  | .whileEvent idx c body rest =>
+    simp only [lowerT, Option.bind_eq_some_iff] at h
+    obtain ⟨tc, -, σb, -, hr⟩ := h
+    exact lowerT_topPositive rest _ T (freshScope_wf hσ idx _) hr
   | .condSet c armT armF rest =>
     simp only [lowerT, Option.bind_eq_some_iff] at h
     obtain ⟨tc, -, σT, hT, σF, hF, hr⟩ := h
@@ -1642,6 +1735,10 @@ theorem runTerms_wf {P : Params} {S : Spans} {Γ : Locals} (st : Stmts P S Γ) :
     have hwp := bindTerms_wf args id σ _ σp hσ Scope.wf_empty hp
     have hwf := runTerms_wf stmts _ σf (copyIn_wf hσ bs _ (zeroLocals_wf hwp locals)) hf
     exact runTerms_wf rest _ σ' (bindTerms_wf results id σf _ σ₁ hwf (copyOut_wf hwf bs σ hσ) hres) hr
+  | .loopEvent idx c body rest =>
+    simp only [runTerms, Option.bind_eq_some_iff] at h
+    obtain ⟨tc, -, σb, -, hr⟩ := h
+    exact runTerms_wf rest _ σ' (freshScope_wf hσ idx _) hr
 termination_by structural st
 theorem armsT_topPositive {P : Params} {S : Spans} {Γ : Locals} {s t : Ty} (arms : Arms P S Γ s t) :
     ∀ (σ : Scope) (sx T : Term), σ.wf → armsT σ sx arms = some T → T.topPositive := by
@@ -2103,6 +2200,355 @@ theorem bindTerms_typed {P : Params} {S : Spans} {Γ : Locals} {ps : List (Strin
     exact bindTerms_typed rest nm σ hσ _ _ σ' (h0.set (nm x) (lowerT_width a σ ta ha) (lowerT_topPositive a σ ta hσ ha)) hr
 termination_by structural args
 
+/-! ### Data-dependent loops: the fresh symbols -/
+
+theorem freshScope_not_mem (σ : Scope) (idx : Nat) : ∀ (carried : List (String × Ty)) (y : String),
+    (∀ p, p ∈ carried → p.1 ≠ y) → freshScope σ idx carried y = σ y := by
+  intro carried
+  induction carried generalizing σ with
+  | nil => intro y _; rfl
+  | cons p rest ih =>
+    intro y hy
+    obtain ⟨x, t⟩ := p
+    simp only [freshScope]
+    rw [ih _ y (fun q hq => hy q (List.mem_cons_of_mem _ hq))]
+    unfold Scope.set
+    rw [if_neg (Ne.symm (hy (x, t) (List.mem_cons_self)))]
+
+theorem freshScope_mem {Γ : Locals} (σ : Scope) (idx : Nat) : ∀ (carried : List (String × Ty)), CarriedIn Γ carried →
+    ∀ (y : String) (t : Ty), Γ y = some t → (∃ p, p ∈ carried ∧ p.1 = y) →
+      freshScope σ idx carried y = some (.param (loopName idx y) t.width) := by
+  intro carried
+  induction carried generalizing σ with
+  | nil => intro _ y t _ h; obtain ⟨p, hp, -⟩ := h; cases hp
+  | cons p rest ih =>
+    intro hc y t hy hmem
+    obtain ⟨x, s⟩ := p
+    simp only [freshScope]
+    by_cases hin : ∃ q, q ∈ rest ∧ q.1 = y
+    · exact ih _ (fun q hq => hc q (List.mem_cons_of_mem _ hq)) y t hy hin
+    · rw [freshScope_not_mem _ _ rest y (fun q hq hqy => hin ⟨q, hq, hqy⟩)]
+      obtain ⟨q, hq, hqy⟩ := hmem
+      rcases List.mem_cons.mp hq with rfl | hq'
+      · simp only at hqy
+        subst hqy
+        have hs : Γ x = some s := hc (x, s) List.mem_cons_self
+        rw [hs] at hy
+        cases hy
+        unfold Scope.set
+        rw [if_pos rfl]
+      · exact absurd ⟨q, hq', hqy⟩ hin
+
+theorem freshScope_typed {Γ : Locals} {σ : Scope} (h : Typed Γ σ) (idx : Nat) {carried : List (String × Ty)} (hc : CarriedIn Γ carried) :
+    Typed Γ (freshScope σ idx carried) := by
+  constructor
+  · intro y hy
+    rw [freshScope_not_mem σ idx carried y (fun p hp hpy => by rw [← hpy, hc p hp] at hy; cases hy)]
+    exact h.1 y hy
+  · intro y t hy
+    by_cases hin : ∃ p, p ∈ carried ∧ p.1 = y
+    · exact ⟨_, freshScope_mem σ idx carried hc y t hy hin, rfl, trivial⟩
+    · rw [freshScope_not_mem σ idx carried y (fun p hp hpy => hin ⟨p, hp, hpy⟩)]
+      exact h.2 y t hy
+
+theorem freshDenote_sound {ρ : Env} {idx : Nat} {carried : List (String × Ty)} {l' : Vals} (h : freshDenote ρ idx carried l' = true) :
+    ∀ p, p ∈ carried → ρ (loopName idx p.1) % 2 ^ p.2.width = l' p.1 := by
+  intro p hp
+  unfold freshDenote at h
+  rw [List.all_eq_true] at h
+  exact beq_iff_eq.mp (h p hp)
+
+theorem carriedOf_in {P : Params} {S : Spans} {Γ : Locals} (body : Stmts P S Γ) : CarriedIn Γ (carriedOf body) := by
+  intro p hp
+  unfold carriedOf at hp
+  rw [List.mem_filterMap] at hp
+  obtain ⟨y, -, hy⟩ := hp
+  cases hΓ : Γ y with
+  | none => rw [hΓ] at hy; cases hy
+  | some t => rw [hΓ] at hy; simp only [Option.map_some, Option.some.injEq] at hy; subst hy; exact hΓ
+
+/-- A name the body assigns is carried (it is a local, by the statements'
+side conditions). -/
+theorem carriedOf_covers {P : Params} {S : Spans} {Γ : Locals} (body : Stmts P S Γ) {y : String} (hy : y ∈ body.assigned)
+    {t : Ty} (hΓ : Γ y = some t) : (y, t) ∈ carriedOf body := by
+  unfold carriedOf
+  rw [List.mem_filterMap]
+  exact ⟨y, hy, by rw [hΓ]; rfl⟩
+
+theorem bindTypes_not_mem (nm : String → String) (Γ : Locals) : ∀ (ps : List (String × Ty)) (y : String),
+    (∀ p, p ∈ ps → nm p.1 ≠ y) → bindTypes nm Γ ps y = Γ y := by
+  intro ps
+  induction ps generalizing Γ with
+  | nil => intro y _; rfl
+  | cons q rest ih =>
+    intro y hy
+    obtain ⟨x, s⟩ := q
+    simp only [bindTypes]
+    rw [ih _ y (fun p hp => hy p (List.mem_cons_of_mem _ hp))]
+    unfold Locals.set
+    rw [if_neg (Ne.symm (hy (x, s) List.mem_cons_self))]
+
+/-- A name a statement list assigns is a local, by the statements' side
+conditions. -/
+theorem bindTypes_mem_some (nm : String → String) (Γ : Locals) : ∀ (ps : List (String × Ty)) (p : String × Ty), p ∈ ps →
+    ∃ t, bindTypes nm Γ ps (nm p.1) = some t := by
+  intro ps
+  induction ps generalizing Γ with
+  | nil => intro p hp; cases hp
+  | cons q rest ih =>
+    intro p hp
+    obtain ⟨x, s⟩ := q
+    simp only [bindTypes]
+    rcases List.mem_cons.mp hp with rfl | hp'
+    · by_cases hin : ∃ q', q' ∈ rest ∧ nm q'.1 = nm x
+      · obtain ⟨q', hq', hq'y⟩ := hin
+        obtain ⟨t, ht⟩ := ih _ q' hq'
+        exact ⟨t, by rw [← hq'y]; exact ht⟩
+      · refine ⟨s, ?_⟩
+        rw [bindTypes_not_mem nm _ rest (nm x) (fun q' hq' hq'y => hin ⟨q', hq', hq'y⟩)]
+        unfold Locals.set
+        rw [if_pos rfl]
+    · exact ih _ p hp'
+
+mutual
+theorem assigned_local {P : Params} {S : Spans} {Γ : Locals} (st : Stmts P S Γ) : ∀ {y : String}, y ∈ st.assigned → ∃ t, Γ y = some t := by
+  intro y hy
+  match st with
+  | .nil => simp [Stmts.assigned] at hy
+  | .assign x hx e rest =>
+    simp only [Stmts.assigned, List.mem_cons] at hy
+    rcases hy with rfl | hy
+    · exact ⟨_, hx⟩
+    · exact assigned_local rest hy
+  | .cond c armT armF rest =>
+    simp only [Stmts.assigned, List.mem_append] at hy
+    rcases hy with (hy | hy) | hy
+    · exact assigned_local armT hy
+    · exact assigned_local armF hy
+    · exact assigned_local rest hy
+  | .loop c body rest =>
+    simp only [Stmts.assigned, List.mem_append] at hy
+    rcases hy with hy | hy
+    · exact assigned_local body hy
+    · exact assigned_local rest hy
+  | .matchS x arms rest =>
+    simp only [Stmts.assigned, List.mem_append] at hy
+    rcases hy with hy | hy
+    · exact armsAssigned_local arms hy
+    · exact assigned_local rest hy
+  | .arrSet (e := e) (n := n) nm hin hn32 i v rest =>
+    simp only [Stmts.assigned, List.mem_append] at hy
+    rcases hy with hy | hy
+    · obtain ⟨k, hk, rfl⟩ := List.mem_map.mp hy
+      exact ⟨e, hin k (List.mem_range.mp hk)⟩
+    · exact assigned_local rest hy
+  | .loopEvent idx c body rest =>
+    simp only [Stmts.assigned, List.mem_append] at hy
+    rcases hy with hy | hy
+    · exact assigned_local body hy
+    · exact assigned_local rest hy
+  | .callS (rs := rs) params locals bs hb hc hrs stmts results args rest =>
+    simp only [Stmts.assigned, List.mem_append] at hy
+    rcases hy with (hy | hy) | hy
+    · obtain ⟨p, hp, rfl⟩ := List.mem_map.mp hy
+      obtain ⟨t, ht⟩ := bindTypes_mem_some id Γ rs p hp
+      rw [hrs] at ht
+      exact ⟨t, ht⟩
+    · obtain ⟨b, hb', hk⟩ := List.mem_flatMap.mp hy
+      obtain ⟨k, hk', rfl⟩ := List.mem_map.mp hk
+      have hin : ArrIn Γ b.nm b.e b.n := by
+        unfold borrowsIn at hb
+        rw [List.all_eq_true] at hb
+        exact decide_eq_true_eq.mp (hb b hb')
+      exact ⟨b.e, hin k (List.mem_range.mp hk')⟩
+    · exact assigned_local rest hy
+termination_by structural st
+theorem armsAssigned_local {P : Params} {S : Spans} {Γ : Locals} {s : Ty} (arms : ArmsS P S Γ s) : ∀ {y : String}, y ∈ arms.assigned → ∃ t, Γ y = some t := by
+  intro y hy
+  match arms with
+  | .fallback st => exact assigned_local st hy
+  | .case k st rest =>
+    simp only [ArmsS.assigned, List.mem_append] at hy
+    rcases hy with hy | hy
+    · exact assigned_local st hy
+    · exact armsAssigned_local rest hy
+termination_by structural arms
+end
+
+/-- A name outside the carried locals is one the body does not assign. -/
+theorem not_carried_not_assigned {P : Params} {S : Spans} {Γ : Locals} (body : Stmts P S Γ) {y : String}
+    (h : ∀ p, p ∈ carriedOf body → p.1 ≠ y) : y ∉ body.assigned := by
+  intro hy
+  obtain ⟨t, ht⟩ := assigned_local body hy
+  exact h (y, t) (carriedOf_covers body hy ht) rfl
+
+/-- After a summarized loop the scope agrees with the exit values: a
+carried local is its fresh symbol, which denotes its exit value; any other
+local is untouched by the body and keeps its value. -/
+theorem freshScope_agree {Γ : Locals} {σ : Scope} {ρ : Env} {l l' : Vals} (h : Agree Γ σ ρ l) (idx : Nat)
+    {carried : List (String × Ty)} (hc : CarriedIn Γ carried) (hd : ∀ p, p ∈ carried → ρ (loopName idx p.1) % 2 ^ p.2.width = l' p.1)
+    (hout : ∀ y, (∀ p, p ∈ carried → p.1 ≠ y) → l' y = l y) : Agree Γ (freshScope σ idx carried) ρ l' := by
+  refine ⟨freshScope_typed h.1 idx hc, ?_⟩
+  intro y t term hy hσ
+  by_cases hin : ∃ p, p ∈ carried ∧ p.1 = y
+  · rw [freshScope_mem σ idx carried hc y t hy hin] at hσ
+    cases hσ
+    obtain ⟨⟨py, pt⟩, hp, hpy⟩ := hin
+    simp only at hpy
+    subst hpy
+    have hpt : pt = t := by
+      have := hc (py, pt) hp
+      simp only at this
+      rw [this] at hy
+      exact Option.some.inj hy
+    subst hpt
+    simp only [Term.eval]
+    exact hd (py, pt) hp
+  · have hn : ∀ p, p ∈ carried → p.1 ≠ y := fun p hp hpy => hin ⟨p, hp, hpy⟩
+    rw [freshScope_not_mem σ idx carried y hn] at hσ
+    rw [hout y hn]
+    exact h.2 y t term hy hσ
+
+/-! ### Names a statement list leaves alone -/
+
+theorem loopX_unassigned {cond : Vals → Option (BitVec 1)} {body : Vals → Option Vals} {y : String}
+    (hb : ∀ l l', body l = some l' → l' y = l y) :
+    ∀ n l l', loopX cond body n l = some l' → l' y = l y := by
+  intro n
+  induction n with
+  | zero => intro l l' h; simp [loopX] at h
+  | succ n ih =>
+    intro l l' h
+    simp only [loopX, Option.bind_eq_some_iff] at h
+    obtain ⟨cv, -, h⟩ := h
+    split at h
+    · simp only [Option.bind_eq_some_iff] at h
+      obtain ⟨l₁, h1, h2⟩ := h
+      rw [ih l₁ l' h2, hb l l₁ h1]
+    · simp only [Option.some.injEq] at h; subst h; rfl
+
+theorem writeLeaves_unassigned (l : Vals) (nm : Nat → String) (i v : Nat) {y : String} :
+    ∀ n, (∀ k, k < n → nm k ≠ y) → writeLeaves l nm i v n y = l y := by
+  intro n
+  induction n with
+  | zero => intro _; rfl
+  | succ n ih =>
+    intro hn
+    simp only [writeLeaves]
+    unfold Vals.set
+    rw [if_neg (Ne.symm (hn n (Nat.lt_succ_self n)))]
+    exact ih (fun k hk => hn k (Nat.lt_succ_of_lt hk))
+
+theorem copyVals_unassigned (src : Vals) (nmS : Nat → String) (dst : Vals) (nmD : Nat → String) {y : String} :
+    ∀ n, (∀ k, k < n → nmD k ≠ y) → copyVals src nmS dst nmD n y = dst y := by
+  intro n
+  induction n with
+  | zero => intro _; rfl
+  | succ n ih =>
+    intro hn
+    simp only [copyVals]
+    unfold Vals.set
+    rw [if_neg (Ne.symm (hn n (Nat.lt_succ_self n)))]
+    exact ih (fun k hk => hn k (Nat.lt_succ_of_lt hk))
+
+theorem copyOutVals_unassigned (lf : Vals) {y : String} :
+    ∀ (bs : List Borrow) (l : Vals), (∀ b, b ∈ bs → ∀ k, k < b.n → b.nm k ≠ y) → copyOutVals lf l bs y = l y := by
+  intro bs
+  induction bs with
+  | nil => intro l _; rfl
+  | cons b bs ih =>
+    intro l hb
+    simp only [copyOutVals]
+    rw [ih _ (fun b' hb' => hb b' (List.mem_cons_of_mem _ hb')),
+      copyVals_unassigned lf (elemName b.s) l b.nm b.n (hb b List.mem_cons_self)]
+
+theorem bindVals_unassigned {P : Params} {S : Spans} {Γ : Locals} {ps : List (String × Ty)} (args : Args P S Γ ps) (nm : String → String) :
+    ∀ (ρ : Env) (l acc l' : Vals) (F : Nat) {y : String}, (∀ p, p ∈ ps → nm p.1 ≠ y) →
+      bindVals nm args ρ l acc F = some l' → l' y = acc y := by
+  intro ρ l acc l' F y hps h
+  match args with
+  | .nil => simp only [bindVals, Option.some.injEq] at h; subst h; rfl
+  | .cons (x := x) (s := s) a rest =>
+    simp only [bindVals, Option.bind_eq_some_iff] at h
+    obtain ⟨va, -, hr⟩ := h
+    rw [bindVals_unassigned rest nm ρ l _ l' F (fun p hp => hps p (List.mem_cons_of_mem _ hp)) hr]
+    unfold Vals.set
+    rw [if_neg (Ne.symm (hps (x, s) List.mem_cons_self))]
+termination_by structural args
+
+mutual
+/-- A name a statement list does not assign keeps its value. -/
+theorem runVals_unassigned {P : Params} {S : Spans} {Γ : Locals} (st : Stmts P S Γ) :
+    ∀ (ρ : Env) (l l' : Vals) (F : Nat) {y : String}, y ∉ st.assigned → runVals st ρ l F = some l' → l' y = l y := by
+  intro ρ l l' F y hy hv
+  match st with
+  | .nil => simp only [runVals, Option.some.injEq] at hv; subst hv; rfl
+  | .assign x hx e rest =>
+    simp only [Stmts.assigned, List.mem_cons, not_or] at hy
+    simp only [runVals, Option.bind_eq_some_iff] at hv
+    obtain ⟨ve, -, hvr⟩ := hv
+    rw [runVals_unassigned rest ρ _ l' F hy.2 hvr]
+    unfold Vals.set
+    rw [if_neg hy.1]
+  | .cond c armT armF rest =>
+    simp only [Stmts.assigned, List.mem_append, not_or] at hy
+    simp only [runVals, Option.bind_eq_some_iff] at hv
+    obtain ⟨cv, -, l₁, h₁, hvr⟩ := hv
+    rw [runVals_unassigned rest ρ _ l' F hy.2 hvr]
+    split at h₁
+    · exact runVals_unassigned armT ρ l l₁ F hy.1.1 h₁
+    · exact runVals_unassigned armF ρ l l₁ F hy.1.2 h₁
+  | .loop c body rest =>
+    simp only [Stmts.assigned, List.mem_append, not_or] at hy
+    simp only [runVals, Option.bind_eq_some_iff] at hv
+    obtain ⟨l₁, hl₁, hvr⟩ := hv
+    rw [runVals_unassigned rest ρ _ l' F hy.2 hvr]
+    exact loopX_unassigned (fun l₀ l₂ h₀ => runVals_unassigned body ρ l₀ l₂ F hy.1 h₀) _ l l₁ hl₁
+  | .matchS x arms rest =>
+    simp only [Stmts.assigned, List.mem_append, not_or] at hy
+    simp only [runVals, Option.bind_eq_some_iff] at hv
+    obtain ⟨vx, -, l₁, hl₁, hvr⟩ := hv
+    rw [runVals_unassigned rest ρ _ l' F hy.2 hvr]
+    exact armsVals_unassigned arms ρ l l₁ F vx hy.1 hl₁
+  | .arrSet (n := n) nm hin hn32 i v rest =>
+    simp only [Stmts.assigned, List.mem_append, not_or] at hy
+    simp only [runVals, Option.bind_eq_some_iff] at hv
+    obtain ⟨vi, -, vv, -, hv⟩ := hv
+    split at hv
+    · rw [runVals_unassigned rest ρ _ l' F hy.2 hv]
+      exact writeLeaves_unassigned l nm _ _ n (fun k hk hk' => hy.1 (List.mem_map.mpr ⟨k, List.mem_range.mpr hk, hk'⟩))
+    · cases hv
+  | .loopEvent idx c body rest =>
+    simp only [Stmts.assigned, List.mem_append, not_or] at hy
+    simp only [runVals, Option.bind_eq_some_iff] at hv
+    obtain ⟨l₁, hl₁, hv⟩ := hv
+    split at hv
+    · rw [runVals_unassigned rest ρ _ l' F hy.2 hv]
+      exact loopX_unassigned (fun l₀ l₂ h₀ => runVals_unassigned body ρ l₀ l₂ F hy.1 h₀) _ l l₁ hl₁
+    · cases hv
+  | .callS (rs := rs) params locals bs hb hc hrs stmts results args rest =>
+    simp only [Stmts.assigned, List.mem_append, not_or] at hy
+    simp only [runVals, Option.bind_eq_some_iff] at hv
+    obtain ⟨lp, -, lf, -, l₁, hl₁, hvr⟩ := hv
+    rw [runVals_unassigned rest ρ _ l' F hy.2 hvr,
+      bindVals_unassigned results id ρ lf _ l₁ F (fun p hp hpy => hy.1.1 (List.mem_map.mpr ⟨p, hp, hpy⟩)) hl₁]
+    exact copyOutVals_unassigned lf bs l (fun b hb' k hk hk' => hy.1.2 (List.mem_flatMap.mpr ⟨b, hb', List.mem_map.mpr ⟨k, List.mem_range.mpr hk, hk'⟩⟩))
+termination_by structural st
+theorem armsVals_unassigned {P : Params} {S : Spans} {Γ : Locals} {s : Ty} (arms : ArmsS P S Γ s) :
+    ∀ (ρ : Env) (l l' : Vals) (F : Nat) (vx : BitVec s.width) {y : String}, y ∉ arms.assigned →
+      armsVals vx arms ρ l F = some l' → l' y = l y := by
+  intro ρ l l' F vx y hy hv
+  match arms with
+  | .fallback st => exact runVals_unassigned st ρ l l' F hy hv
+  | .case k st rest =>
+    simp only [ArmsS.assigned, List.mem_append, not_or] at hy
+    simp only [armsVals] at hv
+    split at hv
+    · exact runVals_unassigned st ρ l l' F hy.1 hv
+    · exact armsVals_unassigned rest ρ l l' F vx hy.2 hv
+termination_by structural arms
+end
+
 /-! ### Statements keep scopes typed -/
 
 mutual
@@ -2133,6 +2579,10 @@ theorem runTerms_typed {P : Params} {S : Spans} {Γ : Locals} (st : Stmts P S Γ
     simp only [runTerms, Option.bind_eq_some_iff] at h
     obtain ⟨ti, -, tv, hv, hr⟩ := h
     exact runTerms_typed rest _ σ' (writeArr_typed hσ hin (lowerT_width v σ tv hv) (lowerT_topPositive v σ tv hσ.wf hv) _ (Nat.le_refl _)) hr
+  | .loopEvent idx c body rest =>
+    simp only [runTerms, Option.bind_eq_some_iff] at h
+    obtain ⟨tc, -, σb, -, hr⟩ := h
+    exact runTerms_typed rest _ σ' (freshScope_typed hσ idx (carriedOf_in body)) hr
   | .callS params locals bs hb hc hrs stmts results args rest =>
     simp only [runTerms, Option.bind_eq_some_iff] at h
     obtain ⟨σp, hp, σf, hf, σ₁, hres, hr⟩ := h
@@ -2372,6 +2822,18 @@ theorem lowerT_eval {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P 
     simp only [evalX, Option.bind_eq_some_iff] at hv
     obtain ⟨l', hl', hvb⟩ := hv
     exact lowerT_eval b _ ρ _ F T v (bindArgs_agree fields (fieldName r) σ ρ l F hA _ _ l hA σ' l' hσ' hl') hb hvb
+  | .whileEvent idx c body rest =>
+    intro v hv
+    simp only [lowerT, Option.bind_eq_some_iff] at h
+    obtain ⟨tc, -, σb, -, hr⟩ := h
+    simp only [evalX, Option.bind_eq_some_iff] at hv
+    obtain ⟨l', hl', hv⟩ := hv
+    split at hv
+    · rename_i hden
+      have hA' := freshScope_agree hA idx (carriedOf_in body) (freshDenote_sound hden)
+        (fun y hy => loopX_unassigned (fun l₀ l₂ h₀ => runVals_unassigned body ρ l₀ l₂ F (not_carried_not_assigned body hy) h₀) _ l l' hl')
+      exact lowerT_eval rest _ ρ _ F T v hA' hr hv
+    · cases hv
   | .callX params locals bs hb hc stmts results args rest =>
     intro v hv
     simp only [lowerT, Option.bind_eq_some_iff] at h
@@ -2564,6 +3026,17 @@ theorem runTerms_agree {P : Params} {S : Spans} {Γ : Locals} (st : Stmts P S Γ
       have ihv := lowerT_eval w σ ρ l F tv vv hA htv hvv
       exact runTerms_agree rest _ ρ _ F σ' l'
         (writeArr_agree hA hin vi (lowerT_width i σ ti hi) ihi (lowerT_width w σ tv htv) (lowerT_topPositive w σ tv (Agree.wf hA) htv) vv ihv hn32 n (Nat.le_refl n)) hr hv
+    · cases hv
+  | .loopEvent idx c body rest =>
+    simp only [runTerms, Option.bind_eq_some_iff] at h
+    obtain ⟨tc, -, σb, -, hr⟩ := h
+    simp only [runVals, Option.bind_eq_some_iff] at hv
+    obtain ⟨l₁, hl₁, hv⟩ := hv
+    split at hv
+    · rename_i hden
+      have hA₁ := freshScope_agree hA idx (carriedOf_in body) (freshDenote_sound hden)
+        (fun y hy => loopX_unassigned (fun l₀ l₂ h₀ => runVals_unassigned body ρ l₀ l₂ F (not_carried_not_assigned body hy) h₀) _ l l₁ hl₁)
+      exact runTerms_agree rest _ ρ _ F σ' l' hA₁ hr hv
     · cases hv
   | .callS params locals bs hb hc hrs stmts results args rest =>
     simp only [runTerms, Option.bind_eq_some_iff] at h
@@ -3005,5 +3478,23 @@ example : lowered? ((.letIn "r" (.var .u32 "a" (by decide)) (.letIn "t" (.lit .u
         (.assign "r" (by decide) (.var .u32 "t" (by decide)) .nil)) .nil
       (.var .u32 "r" (by decide)))) : X (ps [("a", .u32), ("b", .u32)]) sp0 .u32))
     = some "((a lo b) ? (b sub a) : a)" := by decide
+
+/-! Data-dependent loops: the carried locals stand as the fresh symbols
+`loop<idx>.<var>` after the loop, and the code after it reads them. -/
+
+/-- `(n: u32) -> u32 = { s: u32 = 0; i: u32 = 0; while i < n { s = s + i; i = i + 1 }; s + i }` -/
+example : lowered? ((.letIn "s" (.lit .u32 0) (.letIn "i" (.lit .u32 0)
+    (.whileEvent 1 (.cmp .lt (.var .u32 "i" (by decide)) (.var .u32 "n" (by decide)))
+      (.assign "s" (by decide) (.arith .add (.var .u32 "s" (by decide)) (.var .u32 "i" (by decide)))
+        (.assign "i" (by decide) (.arith .add (.var .u32 "i" (by decide)) (.lit .u32 1)) .nil))
+      (.arith .add (.var .u32 "s" (by decide)) (.var .u32 "i" (by decide))))) : X (ps [("n", .u32)]) sp0 .u32))
+    = some "(loop1.s add loop1.i)" := by decide
+/-- The same loop, only `s` read after it. -/
+example : lowered? ((.letIn "s" (.lit .u32 0) (.letIn "i" (.lit .u32 0)
+    (.whileEvent 1 (.cmp .lt (.var .u32 "i" (by decide)) (.var .u32 "n" (by decide)))
+      (.assign "s" (by decide) (.arith .add (.var .u32 "s" (by decide)) (.var .u32 "i" (by decide)))
+        (.assign "i" (by decide) (.arith .add (.var .u32 "i" (by decide)) (.lit .u32 1)) .nil))
+      (.arith .mul (.var .u32 "s" (by decide)) (.lit .u32 2)))) : X (ps [("n", .u32)]) sp0 .u32))
+    = some "(loop1.s mul 2)" := by decide
 
 end Oak.LoweringRefinement

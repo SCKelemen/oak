@@ -301,7 +301,10 @@ with an integer kind is a value parameter: `sum[N: u32]: (v: [N]u32): u32`
 takes one instantiation per length. The argument is inferred from an owned
 array's static length (`sum(a)` with `a: [3]u32` binds `N := 3`) or from a
 const-parameterized record's instantiation (`size[T, N: u32]: (r: Ring[T,
-N])` recovers both arguments from a `Ring[u8, 8]`), or given explicitly
+N])` recovers both arguments from a `Ring[u8, 8]`; a region record's
+regions, erased before its instantiation was named, are skipped, so
+`mat_at[R, N: u32, K: u32]: (m: Mat[R, N, K], …)` recovers `N` and `K`
+from a `Mat_2_3` — `56-kernels.md` §8b), or given explicitly
 (`sum[3](a)`). Each instantiation is its own monomorphized function, named
 like a record instantiation (`sum_3`); inside the body `N` is an integer
 constant of the declared kind, typed by literal-in-context inference. An

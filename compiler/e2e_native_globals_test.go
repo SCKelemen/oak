@@ -43,6 +43,13 @@ bump: (): u32 {
   st
 }
 
+// A writer that calls a writer and a reader: the cells thread through
+// both calls.
+reset_and_sum: (seed: u32): u64 {
+  set_state(seed, u64(10))
+  sum_state() + u64(bump())
+}
+
 main: (): i32 {
   set_state(u32(7), u64(100))
   a: u64 = read_state()   // 107 + 7 + 7 = 121
@@ -67,7 +74,7 @@ func TestE2ENativeGlobals(t *testing.T) {
 	if abnormal || code != 1129%256 {
 		t.Fatalf("native: exit = (%d, abnormal=%v), want %d\n%s", code, abnormal, 1129%256, joined)
 	}
-	for _, fn := range []string{"set_state", "sum_state", "read_state", "bump"} {
+	for _, fn := range []string{"set_state", "sum_state", "read_state", "bump", "reset_and_sum"} {
 		if !strings.Contains(joined, "asm unit "+fn+":") {
 			t.Errorf("%s must lower natively over package globals; diagnostics:\n%s", fn, joined)
 		}
@@ -82,6 +89,14 @@ func TestE2ENativeGlobals(t *testing.T) {
 	}
 	if !strings.Contains(joined, "asm unit bump: proven") || !strings.Contains(joined, "package state it writes (st)") {
 		t.Errorf("bump must be proven in its result and the cell it writes; diagnostics:\n%s", joined)
+	}
+	// Cells thread through calls: a reader that calls a reader, and a
+	// writer that calls a writer and a reader, are proven too.
+	if !strings.Contains(joined, "asm unit read_state: proven") {
+		t.Errorf("read_state (calls sum_state) must be proven; diagnostics:\n%s", joined)
+	}
+	if !strings.Contains(joined, "asm unit reset_and_sum: proven") || !strings.Contains(joined, "reset_and_sum: proven equal to its Oak body") {
+		t.Errorf("reset_and_sum (calls set_state and sum_state and bump) must be proven; diagnostics:\n%s", joined)
 	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_globals_c", New().WithSource("globals.oak", nativeGlobalsProgram)); abnormal || code != 1129%256 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want %d", code, abnormal, 1129%256)

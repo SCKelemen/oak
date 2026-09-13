@@ -713,7 +713,7 @@ func (x *pathExecutor) loadVector(instr Instruction, state *symbolicState) (stri
 		if k > 0 {
 			at = binaryTerm("add", index, constTerm(uint64(k), 32))
 		}
-		lanes[k] = x.element(param, at, bits)
+		lanes[k] = x.elementIn(state, param, at, bits)
 	}
 	state.writeLanes(dest, lanes, bits)
 	return "", true
