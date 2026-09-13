@@ -2493,7 +2493,7 @@ offset, any other goes under the constant guard `cmp wI, #N; b.hs trap`
 (a bound past the compare immediate is materialized in a register first,
 which the checker reads as the same constant guard) or `li; bgeu`. The
 checkers know the address as a read-only region of the table's size
-(`asm.Function.Globals`): an element region derives from it as from a
+(`asm.Function.Tables`): an element region derives from it as from a
 frame array (`elementRegion`, `deriveTableRegion`), a store through it
 is refused, a symbol the program does not declare is refused. A view of
 a table (`view(&T)`) is a span whose base is the table's address and
