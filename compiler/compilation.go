@@ -48,6 +48,10 @@ type Options struct {
 	// AsmUnits are the `.oakasm` translation units providing bodies for
 	// definition-less declarations (docs/spec/94-assembler.md).
 	AsmUnits []SourceText
+	// LeanFloats selects how the extraction renders f32 arithmetic
+	// (docs/spec/95-extraction.md section 3): "" for Lean's Float32
+	// operators, "bits" for the bit-level Oak.FloatOps operations.
+	LeanFloats string
 	// LineDirectives makes the C backend emit #line directives so C
 	// diagnostics and debuggers attribute generated code to Oak source
 	// (docs/spec/90-backend.md section 10). Off by default: the generated C
@@ -279,6 +283,14 @@ func (comp Compilation) WithPlatformSizes(intSize, ptrSize int) Compilation {
 // ("default" or "strict", docs/spec/85-discipline.md section 1).
 func (comp Compilation) WithProfile(profile string) Compilation {
 	comp.options.Profile = profile
+	return comp
+}
+
+// WithLeanFloats selects the extraction's rendering of f32 arithmetic:
+// "bits" for Oak.FloatOps' bit-level operations (docs/spec/95-extraction.md
+// section 3), "" for Lean's operators.
+func (comp Compilation) WithLeanFloats(mode string) Compilation {
+	comp.options.LeanFloats = mode
 	return comp
 }
 
@@ -853,7 +865,7 @@ func (comp Compilation) EmitLeanRoots(namespace string, roots []string) Stage[st
 		for _, root := range roots {
 			names[root] = true
 		}
-		return lean.Emit(model.Tree.Root, model.TypeChecker, namespace, names)
+		return lean.EmitWith(model.Tree.Root, model.TypeChecker, namespace, names, lean.Options{BitFloats: comp.options.LeanFloats == "bits"})
 	})
 }
 
@@ -889,7 +901,7 @@ func (comp Compilation) EmitLean(namespace string) Stage[string] {
 		} else {
 			names = nil
 		}
-		return lean.Emit(model.Tree.Root, model.TypeChecker, namespace, names)
+		return lean.EmitWith(model.Tree.Root, model.TypeChecker, namespace, names, lean.Options{BitFloats: comp.options.LeanFloats == "bits"})
 	})
 }
 
