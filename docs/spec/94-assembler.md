@@ -2227,9 +2227,15 @@ and refuses any other symbol, the `add :lo12:` over that page records the
 address, both facts die with a write to the register and at a call — and
 admits exactly `[xA]` at the width: an offset, an index, a pair, or a
 narrower or wider access is refused. The verifier reads the cell as the
-parameter `global:G`, the value it holds on entry, so a function that only
-reads globals is proven against its Oak body; a function that writes one
-is trusted against the C oracle, as span writers are. The C emitter gives
+parameter `global:G`, the value it holds on entry, and carries every store
+as the cell's new value along the path (merged at a fork like a result,
+a cell written on one side meeting its entry value on the other); the
+verdict compares the result and then every cell either side writes, and a
+unit function that only writes state is proven in its cells alone. A
+`Bool` cell is one bit, zero-extended into its word. A body that calls
+another function while it addresses state stays trusted — threading the
+cells through a call summary is the next increment — as does state
+written around a data-dependent loop. The C emitter gives
 an addressed global external linkage under the assembler label
 `oak_0g_G` (a digit after the prefix, which no function's mangled name
 can produce), the symbol the companion object's `adrp`/`add` relocations
