@@ -23,6 +23,11 @@ type ResourceProtocolDeclaration struct {
 	// 9, terminal-state obligations). Empty means the value may be dropped
 	// in any state, today's meaning.
 	Terminal []string
+	// TypestateArity is the number of type parameters of a typestate-indexed
+	// resource of this protocol — the state plus one per `fact` clause
+	// (docs/spec/112-protocols.md section 5a); 0 when the protocol's
+	// resources are not typestate-indexed.
+	TypestateArity int
 }
 
 // ResourceParameterMode describes how one callable parameter participates in
@@ -127,11 +132,12 @@ type ResolvedResourceType struct {
 }
 
 type ResolvedResourceProtocol struct {
-	Name        string
-	States      []string
-	Initial     string
-	Terminal    []string
-	Transitions []ResolvedResourceTransition
+	Name           string
+	States         []string
+	Initial        string
+	Terminal       []string
+	TypestateArity int
+	Transitions    []ResolvedResourceTransition
 }
 
 type ResolvedResourceParameter struct {
@@ -279,7 +285,7 @@ func (tc *TypeChecker) ResolveResourceDeclarations(declarations []ResourceProtoc
 			seenTerminal[state] = true
 			terminal = append(terminal, state)
 		}
-		protocol := ResolvedResourceProtocol{Name: declaration.Name, States: states, Initial: declaration.Initial, Terminal: terminal}
+		protocol := ResolvedResourceProtocol{Name: declaration.Name, States: states, Initial: declaration.Initial, Terminal: terminal, TypestateArity: declaration.TypestateArity}
 		transitionNames := make(map[string]bool, len(declaration.Transitions))
 		for _, transition := range declaration.Transitions {
 			if transition.Name == "" {
