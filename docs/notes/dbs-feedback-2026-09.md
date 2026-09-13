@@ -133,3 +133,13 @@ on AArch64.
   expressiveness gaps they expose (`u128`, a no-padding predicate, an
   alignment fact on `IoBuffer` windows) are in
   `docs/notes/tigerbeetle-2026-09.md`.
+
+## Pilot pack, 2026-09-13 (Oak at fe47aa4)
+
+The pilot sent the three things the agent had asked for.
+
+| # | Item | Disposition |
+| --- | --- | --- |
+| 1 | The `-native` panic, full goroutine trace: `asm/verify.go:2743 (*oakLowering).declareLocal` — "assignment to entry in nil map" — reached from `Verify` → `resultTerm` → `aggregateValue` → `runStatement` on `main: (): u8 { x: u32 = u32(7); x == u32(7) ? { u8(0) } \| { u8(1) } }` | **Fixed.** The lowering's `locals` map was created only on the statement-body paths; a block or match in *result position* declares its locals through `aggregateValue` and found no map. `newLowering` creates it (`asm/verify.go`); `compiler/e2e_native_result_block_test.go` lowers, builds and runs the shape natively. The trace was exactly what was needed: the shape does not appear in the native suite's programs. |
+| 2 | The loop that still carries bounds checks | Awaiting the section (the relay stopped inside item 1). |
+| 3 | A realization that uses `dispatch` | Awaiting the section. |
