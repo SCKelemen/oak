@@ -1,0 +1,189 @@
+package rings
+
+// Concurrent rings over storage the caller owns (docs/spec/65-machine-memory.md
+// section 1, 66/67 the memory model, dbs ask 8): the two queue shapes a
+// storage engine runs between its threads, written as consumers of Oak's
+// atomics rather than as primitives of their own. Like the io port's
+// completion rings (120-io.md section 2) and the sequential ring of the
+// prelude, a ring is a cursor record plus an element array, both borrowed
+// as spans — the cursor's cells are named through the span
+// (`cursor[0].tail`), never copied. Capacity is the storage span's length
+// and must be a power of two no larger than 2^31: positions are monotone
+// u32 counters that wrap, the slot is the position masked, and the count is
+// the wrapping difference (Oak.Rings.wrapped_difference, mask_eq_mod).
+//
+// SPSC: one producer owns `tail`, one consumer owns `head`. The producer
+// writes the slot, then publishes `tail` with a release store; the consumer
+// reads `tail` with an acquire load before reading the slot, so the payload
+// write happens-before the payload read (Oak.Rings.spsc_payload_race_free).
+// The consumer reads the slot, then publishes `head` with a release store;
+// the producer reads `head` with an acquire load before reusing the slot, so
+// the read happens-before the overwrite (spsc_reuse_race_free). Each side
+// caches the other's index and refreshes it only when the cached value would
+// stop it, so an uncontended push or pop touches one cache line of the
+// cursor. The two indices and their caches live on separate 64-byte lines.
+//
+// MPSC: the Vyukov bounded queue's producer side — producers claim a
+// position with a compare-exchange on `tail`, and the per-slot sequence cell
+// carries the handshake (a slot is enqueue-ready when seq == pos, dequeue-
+// ready when seq == pos + 1, and recycled at seq = pos + capacity) — with
+// a single consumer that owns `head` outright. Successful claims are the
+// positions 0, 1, 2, … in order, so no two producers share a slot in a
+// window (Oak.Rings.claims_distinct); the release store of the sequence
+// after the payload and the acquire load before it publish the payload
+// (mpsc_payload_race_free).
+
+pub SpscCursor: type = struct {
+  // The producer's line: its own index, and its cache of the consumer's.
+  tail: Atomic[u32]
+  head_seen: u32
+  producer_pad: [56]u8
+  // The consumer's line: its own index, and its cache of the producer's.
+  head: Atomic[u32]
+  tail_seen: u32
+  consumer_pad: [56]u8
+}
+
+// spsc_check states the shape both operations rely on: one cursor, a
+// power-of-two capacity within the wrapping window.
+pub spsc_check: (cursor: [*]SpscCursor, capacity: u32): () {
+  assert(len(cursor) == u32(1))
+  assert(capacity > u32(0))
+  assert((capacity & (capacity - u32(1))) == u32(0))
+  assert(capacity <= u32(2147483648))
+}
+
+// spsc_push appends an item; false when the ring is full (nothing changes).
+// Only the producer calls it.
+pub spsc_push[T]: (cursor: [*]SpscCursor, storage: [*]T, item: T): Bool {
+  capacity: u32 = len(storage)
+  spsc_check(cursor, capacity)
+  tail: u32 = atomic_load_relaxed(cursor[0].tail)
+  // The cached head is enough unless it says full; then the consumer's
+  // release of head is acquired, which also orders its slot reads before
+  // this overwrite.
+  seen: u32 = tail - cursor[0].head_seen == capacity ? atomic_load_acquire(cursor[0].head) | cursor[0].head_seen
+  cursor[0].head_seen = seen
+  tail - seen == capacity ? {
+    false
+  } | {
+    storage[tail & (capacity - u32(1))] = item
+    atomic_store_release(cursor[0].tail, tail + u32(1))
+    true
+  }
+}
+
+// spsc_pop removes the oldest item; None when the ring is empty. Only the
+// consumer calls it.
+pub spsc_pop[T]: (cursor: [*]SpscCursor, storage: [*]T): Option[T] {
+  capacity: u32 = len(storage)
+  spsc_check(cursor, capacity)
+  head: u32 = atomic_load_relaxed(cursor[0].head)
+  seen: u32 = head == cursor[0].tail_seen ? atomic_load_acquire(cursor[0].tail) | cursor[0].tail_seen
+  cursor[0].tail_seen = seen
+  head == seen ? {
+    .None
+  } | {
+    item: T = storage[head & (capacity - u32(1))]
+    atomic_store_release(cursor[0].head, head + u32(1))
+    .Some(item)
+  }
+}
+
+// spsc_count is the number of items between the two indices as this thread
+// observes them: exact for the producer or the consumer, a snapshot for
+// anyone else.
+pub spsc_count: (cursor: [*]SpscCursor): u32 {
+  assert(len(cursor) == u32(1))
+  atomic_load_acquire(cursor[0].tail) - atomic_load_acquire(cursor[0].head)
+}
+
+pub MpscCursor: type = struct {
+  // Producers claim positions here.
+  tail: Atomic[u32]
+  producer_pad: [60]u8
+  // The single consumer's next position: its own, so a plain field.
+  head: u32
+  consumer_pad: [60]u8
+}
+
+// mpsc_check states the shape: one cursor, one sequence cell per slot, a
+// power-of-two capacity within the wrapping window.
+pub mpsc_check: (cursor: [*]MpscCursor, seqs: [*]Atomic[u32], capacity: u32): () {
+  assert(len(cursor) == u32(1))
+  assert(len(seqs) == capacity)
+  assert(capacity > u32(0))
+  assert((capacity & (capacity - u32(1))) == u32(0))
+  assert(capacity <= u32(2147483648))
+}
+
+// mpsc_init readies every slot for its first round (seq = slot) and zeroes
+// the indices. Call it once, before any thread touches the ring.
+pub mpsc_init: (cursor: [*]MpscCursor, seqs: [*]Atomic[u32]): () {
+  capacity: u32 = len(seqs)
+  mpsc_check(cursor, seqs, capacity)
+  i: u32 = 0
+  while i < capacity {
+    atomic_store_relaxed(seqs[i], i)
+    i = i + 1
+  }
+  atomic_store_relaxed(cursor[0].tail, u32(0))
+  cursor[0].head = u32(0)
+}
+
+// mpsc_push claims a position and publishes the item; false when the ring
+// is full (nothing changes). Any number of producers call it concurrently;
+// a producer that loses a claim retries at the position it observed.
+pub mpsc_push[T]: (cursor: [*]MpscCursor, seqs: [*]Atomic[u32], storage: [*]T, item: T): Bool {
+  capacity: u32 = len(storage)
+  mpsc_check(cursor, seqs, capacity)
+  mask: u32 = capacity - u32(1)
+  pos: u32 = atomic_load_relaxed(cursor[0].tail)
+  claimed: Bool = false
+  full: Bool = false
+  while !claimed && !full {
+    seq: u32 = atomic_load_acquire(seqs[pos & mask])
+    dif: i32 = i32_bits_u32(seq - pos)
+    dif == 0 ? {
+      prior: u32 = atomic_compare_exchange_relaxed_relaxed(cursor[0].tail, pos, pos + u32(1))
+      prior == pos ? {
+        claimed = true
+      } | {
+        pos = prior
+      }
+    } | {
+      dif < 0 ? {
+        full = true
+      } | {
+        pos = atomic_load_relaxed(cursor[0].tail)
+      }
+    }
+  }
+  claimed ? {
+    storage[pos & mask] = item
+    atomic_store_release(seqs[pos & mask], pos + u32(1))
+    true
+  } | {
+    false
+  }
+}
+
+// mpsc_pop removes the oldest published item; None when none is published
+// (a claimed but unpublished slot at the head also reads as None). Only the
+// consumer calls it.
+pub mpsc_pop[T]: (cursor: [*]MpscCursor, seqs: [*]Atomic[u32], storage: [*]T): Option[T] {
+  capacity: u32 = len(storage)
+  mpsc_check(cursor, seqs, capacity)
+  mask: u32 = capacity - u32(1)
+  pos: u32 = cursor[0].head
+  seq: u32 = atomic_load_acquire(seqs[pos & mask])
+  seq == pos + u32(1) ? {
+    item: T = storage[pos & mask]
+    // Recycle the slot for the round `capacity` positions on.
+    atomic_store_release(seqs[pos & mask], pos + capacity)
+    cursor[0].head = pos + u32(1)
+    .Some(item)
+  } | {
+    .None
+  }
+}

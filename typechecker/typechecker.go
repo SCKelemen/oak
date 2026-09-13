@@ -4297,10 +4297,12 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 			return
 		}
 
-		if ContainsAtomicStorage(varType) {
+		if ContainsAtomicStorage(varType) && !atomicStorageBorrow(varType) {
 			// Atomic-bearing storage (a cell, a record with cell fields, an
 			// array of cells) is zero-initialized declaration only: it is
-			// storage identity, never a copied value.
+			// storage identity, never a copied value. A span of it is a
+			// borrow (docs/spec/65-machine-memory.md section 1) and binds
+			// like any span.
 			if stmt.Value != nil {
 				tc.addError(stmt, "Atomic[T] storage is zero-initialized at declaration; initialize with atomic_store_* afterward, and never copy it")
 				return
@@ -4370,7 +4372,7 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 					tc.addError(stmt.Value, "field accessor .%s needs an explicit function type or a contextual function argument", accessor.Field)
 					return
 				}
-				if ContainsAtomicStorage(inferredType) {
+				if ContainsAtomicStorage(inferredType) && !atomicStorageBorrow(inferredType) {
 					tc.addError(stmt.Value, "Atomic[T] storage cannot be inferred/copied into a value binding; declare a named Atomic[T] cell")
 					return
 				}
@@ -4642,8 +4644,8 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 			// Default to i32 if type parsing fails
 			paramType = &PrimitiveType{Name: "i32"}
 		}
-		if ContainsAtomicStorage(paramType) {
-			tc.addError(param.Type, "Atomic[T] storage cannot be passed by value in v1; use package/local cells until an AtomicRef borrowing contract exists")
+		if ContainsAtomicStorage(paramType) && !atomicStorageBorrow(paramType) {
+			tc.addError(param.Type, "Atomic[T] storage cannot be passed by value; borrow it as a span of cells or of records holding cells (`[*]Atomic[u32]`, `[*]Cursor`) — docs/spec/65-machine-memory.md section 1")
 			return
 		}
 		if tc.rejectBufferValue(param.Type, paramType, "a parameter") {

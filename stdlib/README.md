@@ -68,6 +68,52 @@ A future owning `Ring[T,N]` wrapper can bind storage and cursor once borrowing o
 aggregate storage is fully supported. The current API exposes both borrows rather
 than accidentally passing a whole fixed-size ring by value.
 
+## Concurrent rings (`import("rings")`)
+
+`rings` holds the two queue shapes a storage engine runs between threads,
+over storage the caller owns and borrows as spans — a cursor record whose
+atomic cells are named through the span, plus an element array. Capacity is
+the storage span's length and must be a power of two no larger than 2^31;
+positions are monotone `u32` counters that wrap, and the slot is the
+position masked (`Oak.Rings.wrapped_difference`, `mask_eq_mod`).
+
+```oak
+package main
+
+import("rings")
+
+state: [1]rings.SpscCursor
+data: [256]u32
+
+produce: (n: u32): () {
+  cursor: [*]rings.SpscCursor = span(&state)
+  storage: [*]u32 = span(&data)
+  i: u32 = 0
+  while i < n {
+    rings.spsc_push[u32](cursor, storage, i) ? { i = i + 1 } | { i = i }
+  }
+}
+```
+
+| Operation | Contract |
+| --- | --- |
+| `spsc_push[T](cursor, storage, item)` | producer only; `true` appends, `false` leaves a full ring unchanged; the slot write is released by the store of `tail` |
+| `spsc_pop[T](cursor, storage)` | consumer only; `Some(T)` removes the oldest item, `None` leaves an empty ring unchanged; the slot read precedes the release of `head` |
+| `spsc_count(cursor)` | items between the indices as this thread sees them |
+| `mpsc_init(cursor, seqs)` | readies every slot (`seq = slot`) before any thread touches the ring |
+| `mpsc_push[T](cursor, seqs, storage, item)` | any producer, concurrently; claims a position by compare-exchange on `tail`, publishes with a release of the slot's sequence; `false` when full |
+| `mpsc_pop[T](cursor, seqs, storage)` | the single consumer; `Some(T)` for the oldest published item, `None` otherwise; recycles the slot with a release of `seq = pos + capacity` |
+
+FIFO per producer (`Oak.Rings.pop_returns_pushed`), no push into a full
+ring (`count_le_cap`), distinct claims (`claims_distinct`), and the payload
+handoffs race-free under the release/acquire pairs
+(`spsc_payload_race_free`, `spsc_reuse_race_free`, `mpsc_payload_race_free`).
+Each SPSC side caches the other's index and refreshes it only when the cache
+says stop, so an uncontended push or pop touches one cache line of the
+cursor; the two indices live on separate 64-byte lines. Witnessed
+sequentially in both realizations and across pthreads, plain and under
+ThreadSanitizer (`compiler/e2e_rings_test.go`).
+
 ## Reductions (`import("reduce")`)
 
 Reductions whose grouping is a language fact (`docs/spec/55-parallelism.md`
