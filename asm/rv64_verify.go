@@ -54,6 +54,11 @@ func bindRV64Params(fn *Function, sig *ast.FunctionStatement, state *symbolicSta
 			continue
 		}
 		bits := declared[binding.Param]
+		if binding.Register.Class == ClassRV64F {
+			// f32/f64 under LP64D: the pattern at its width in fa0–fa7.
+			state.write(binding.Register, input(binding.Param, bits))
+			continue
+		}
 		_, signed, _ := contractBits(sigParamType(sig, binding.Param))
 		value := zeroExtend(input(binding.Param, bits), 64)
 		switch {
@@ -77,8 +82,10 @@ func sigParamType(sig *ast.FunctionStatement, name string) ast.Expression {
 	return nil
 }
 
-// rv64ResultRegister is a0 as the executor's ret reads it.
+// rv64ResultRegister is a0 as the executor's ret reads it; an f32/f64
+// result is fa0 (LP64D).
 var rv64ResultRegister = Register{Text: "a0", Class: ClassRV64X, Num: 10, Lane: -1}
+var rv64FloatResultRegister = Register{Text: "fa0", Class: ClassRV64F, Num: 10, Lane: -1}
 
 // rv64BranchCondition is the comparison a conditional branch tests.
 func rv64BranchCondition(instr Instruction, state *symbolicState) (*term, string, bool) {
@@ -105,7 +112,7 @@ var rv64ALUImmW = map[string]string{"addiw": "add", "slliw": "shl", "srliw": "sh
 func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string, bool) {
 	for _, operand := range instr.Operands {
 		if reg, isReg := operand.(Register); isReg && reg.Class == ClassRV64F {
-			return "a floating-point instruction (" + instr.Mnemonic + ")", false
+			return x.stepRV64Float(instr, state)
 		}
 	}
 	if rv64VectorShapes[instr.Mnemonic] != "" {
