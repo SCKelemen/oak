@@ -414,7 +414,10 @@ the helper's element accesses (`50-borrowing.md`, "Proof through a
 helper") and neither backend emits a check for them. The transformation is
 statement-level and visible in the emitted C: the helper's statements go
 before the statement holding the call, its declared names are renamed into
-the reserved `__inl<N>_` namespace (Oak forbids shadowing), a plain
+the reserved `__inl<N>_` namespace — `__inl<N>_l_<name>` for the helper's
+locals, `__inl<N>_a<i>` for copied arguments, `__inl<N>_r` for the result,
+three spellings that cannot meet (a local named `a1` or `r` once collided
+with the temporaries) — a plain
 identifier argument substitutes for a parameter the helper never assigns
 (so the caller's facts about it apply unchanged), a scalar argument of any
 other shape is copied into a typed temporary, and the helper's tail
@@ -423,7 +426,10 @@ statement's whole value, through a typed result temporary when it is an
 operand. The pass refuses rather than reorders: nothing moves across a
 short-circuit operator, a match arm in value position, a loop condition,
 or a function literal; a call is not hoisted above a user-function call
-this pass does not inline; a helper that writes through a span parameter
+this pass does not inline; a helper that declares `effects` or `forbids`
+or takes a function value is never inlined, so the effect analysis
+(`compiler/effects.go`) keeps the call graph and the value flows it reads;
+a helper that writes through a span parameter
 is inlined only where nothing else in the statement is evaluated; a helper
 whose locals or copied arguments are not scalars, or whose tail holds a
 block, stays a call where the C form would need a block in an expression.
@@ -437,7 +443,11 @@ pass runs in rounds: a helper that called only helpers is a leaf once
 those are spliced into it, and the next round inlines it in turn — so an
 accessor chain (`tkind` over `tword` over `term_at` over `state`, the
 prover's shape) flattens to the element read it denotes. The rounds stop
-when a pass inlines nothing new. Three shapes are never candidates because
+when a pass inlines nothing new. A match arm in a helper's tail whose
+body is a block holding one expression and nothing else (`c ? { a } | {
+b }`, the source's habit) is that expression, so the tail holds no block
+where the C form would need one; `cache_get`, `mask64`, and the one-line
+conditionals inline where that shape had kept them calls. Three shapes are never candidates because
 a later analysis judges them at the call: a helper declaring `effects` or
 `forbids` (a node of the path a forbids report names), a helper with a
 function-typed parameter (the argument's effect row is checked against the
