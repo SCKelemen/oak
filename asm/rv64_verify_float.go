@@ -45,7 +45,9 @@ func (x *pathExecutor) stepRV64Float(instr Instruction, state *symbolicState) (s
 	name := instr.Mnemonic
 	reg := func(i int) Register { return ops[i].(Register) }
 	read := func(i int) (*term, bool) { return state.read(reg(i)) }
-	refuse := func(why string) (string, bool) { return "a floating-point instruction (" + name + ": " + why + ")", false }
+	refuse := func(why string) (string, bool) {
+		return "a floating-point instruction (" + name + ": " + why + ")", false
+	}
 	w, hasWidth := rv64FloatWidth(name)
 	base := name
 	if hasWidth && !strings.HasPrefix(name, "fcvt.") && !strings.HasPrefix(name, "fmv.") {
