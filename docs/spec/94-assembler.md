@@ -1976,6 +1976,16 @@ and a small remainder in the operand; the checker keeps the stride's
 constant fact through the `movk` and narrows the element region through
 the shifted add (the OS pilot's N2, a 409 600-byte regime).
 
+**Array fields of elements, read anywhere.** `pool[i].f[j]` — an owned
+array inside a record element of a span, view, or array — is addressed
+once, when the access is lowered: the element idiom, then the field
+offset through `add`, then the constant guard `cmp wJ, #N; b.hs trap` and
+the scaled load. The generator's type queries resolve the array by its
+declared layout without emitting code, so the same read repeated, inside
+a comparison, or in nested `?` arms costs one element address per read
+and no scratch register between reads (the OS pilot's N4). Through a
+view the field is readable and a store into it is refused.
+
 **Atomics.** The builtins of `65-machine-memory.md` lower on the AArch64
 lane when the cell is reached through a writable span (§7a there): the
 element address as a region, `ldar`/`stlr` and their narrow forms,
