@@ -70,8 +70,8 @@ func TestOakShellAgrees(t *testing.T) {
 		}
 		t.Run(filepath.Base(file), func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "out.lean")
-			code, text := runCLI(t, func(args []string) int { return proveCommand(args, os.Stdout, os.Stderr) }, []string{"-solver", "self", "-cross", "go", "-lean", out, file})
-			if code != 0 || strings.Contains(text, "disagrees") || !strings.Contains(text, "the Go ladder agrees on") || strings.Contains(text, "agrees on 0 of") || !strings.Contains(text, "the Lean projection agrees with the Go extractor") {
+			code, text := runCLI(t, func(args []string) int { return proveCommand(args, os.Stdout, os.Stderr) }, []string{"-solver", "self", "-cross", "go", "-witness", "-lean", out, file})
+			if code != 0 || strings.Contains(text, "disagrees") || !strings.Contains(text, "the Go ladder agrees on") || strings.Contains(text, "agrees on 0 of") || !strings.Contains(text, "the Lean projection agrees with the Go extractor") || !strings.Contains(text, "witnessed in the compiled program") {
 				t.Fatalf("exit %d:\n%s", code, text)
 			}
 		})
