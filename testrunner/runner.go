@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/SCKelemen/oak/target"
+	"github.com/SCKelemen/oak/toolchain"
 )
 
 type Config struct {
@@ -366,15 +367,23 @@ func Main(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 		if !cfg.target.IsHost() {
-			// A foreign target's binary cannot run here: the build is the
-			// verdict (docs/spec/90-backend.md section 2a). Running it under
-			// an emulator from the tooling is not yet.
-			for _, test := range pkg.Tests {
-				emit(Result{Test: test, Package: pkg.Dir, Status: "built", Output: "  built for " + cfg.target.String() + ", not run", Seed: cfg.Seed})
+			// A foreign Linux target runs under the emulator `oak run
+			// -target` would use (qemu-<arch>, or OAK_EMULATOR with
+			// OAK_EMULATOR_ARGS: `-cpu max` gives the emulated processor
+			// every feature, so a dispatched function's realization is
+			// selected and its claim checked from a test on any host,
+			// docs/spec/93-simd.md section 6.2). Without one the build is
+			// the verdict (docs/spec/90-backend.md section 2a).
+			emulator, err := toolchain.ResolveEmulator(cfg.target, nil, nil)
+			if err != nil || emulator == nil {
+				for _, test := range pkg.Tests {
+					emit(Result{Test: test, Package: pkg.Dir, Status: "built", Output: "  built for " + cfg.target.String() + ", not run (" + err.Error() + ")", Seed: cfg.Seed})
+				}
+				native.close()
+				_ = os.RemoveAll(native.dir)
+				continue
 			}
-			native.close()
-			_ = os.RemoveAll(native.dir)
-			continue
+			native.emulator = append([]string{emulator.Path}, emulator.Args...)
 		}
 		for _, test := range pkg.Tests {
 			index := 0
@@ -484,7 +493,7 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 	var rows []tableRow
 	var err error
 	if test.Kind == "table" {
-		rows, err = loadRows(pkg, test, cfg.MaxBytes)
+		rows, err = loadRows(pkg, test, tableRowLimit(pkg, test, cfg.MaxBytes))
 	} else {
 		corpus, err = loadCorpus(pkg, test, cfg.MaxBytes)
 	}

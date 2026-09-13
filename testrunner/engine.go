@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -165,6 +166,43 @@ type tableRow struct {
 // skipped; a row larger than the input limit is an error rather than a
 // silently truncated case, and a target without rows is an error rather
 // than a vacuous pass.
+// tableRowLimit is the byte limit of a table target's rows: the run's
+// -max-bytes, or the target's own limit when testdata/oak/<Test>/max_bytes
+// holds a decimal byte count (docs/spec/110-testing.md, "Table targets";
+// the dbs pilot's round-five item 14). A row is data the author wrote, so
+// a target whose rows are wire frames may say how large they get without
+// widening every generated input of the package.
+func tableRowLimit(pkg Package, test Test, max int) int {
+	data, err := os.ReadFile(filepath.Join(corpusDir(pkg, test), "max_bytes"))
+	if err != nil {
+		return max
+	}
+	limit, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || limit <= 0 || limit > 1<<20 {
+		return max
+	}
+	return limit
+}
+
+// packageInputLimit is the largest input the package's harness must
+// accept: the run's -max-bytes, raised to every table target's own limit.
+func packageInputLimit(pkg Package, max int) int {
+	limit := max
+	for _, test := range pkg.Tests {
+		if test.Kind == "table" {
+			limit = maxInt(limit, tableRowLimit(pkg, test, max))
+		}
+	}
+	return limit
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func loadRows(pkg Package, test Test, max int) ([]tableRow, error) {
 	dir := filepath.Join(corpusDir(pkg, test), "rows")
 	entries, err := os.ReadDir(dir)

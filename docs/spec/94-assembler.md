@@ -1524,7 +1524,16 @@ group of LMUL registers aligned to LMUL (RVV 1.0 §3.4.2,
 a group must be wholly clobbered before it is written and an unaligned
 group is a finding; mask destinations and mask sources (the comparisons'
 `vd`, `vcpop.m`'s source, `v0`) stay single registers; fractional LMUL is
-refused. A vector unit is checked and
+refused. **Widening (third increment).** `vwaddu`/`vwadd`/`vwsubu`/`vwsub`/
+`vwmulu`/`vwmul .vv` write `2*SEW` elements into a `2*LMUL` group,
+`vzext.vf2`/`vsext.vf2` read a half-width source group, `vnsrl.wi` reads a
+`2*LMUL` source, and `vle16.v`/`vse16.v` move 16-bit elements: each
+operand's group is its EMUL's size, aligned and wholly clobbered; a
+destination group that overlaps a source group is refused (the ISA's
+overlap rule, fail-closed), as is widening past 64-bit elements or a wide
+group past the file (`wide_group_within_file`, `widening_within_64`). The
+differentials carry the u32 elements multiplied into u64 products and
+reduced at e64/m2. A vector unit is checked and
 *trusted* — the vector state is outside the term language, as the
 floating-point file is — and its inline realization scopes
 `.option arch, +v` to the unit so any host assembler accepts it. Every
@@ -1558,7 +1567,11 @@ function starts as four-byte instructions and shrinks each branch whose
 offset fits until nothing changes, so label arithmetic converges with the
 sizes. The checker and the verifier see the base instructions and are
 unchanged; the object carries `EF_RISCV_RVC`; the QEMU and Sail
-differentials run the strip-mined sum compressed.
+differentials run the strip-mined sum compressed. A compressed function
+holding an odd number of 16-bit instructions ends on a half word, so the
+object writer pads to the next entry in `nop` words closed by one `c.nop`
+(`Oak.Assembler.gap_reaches`, `pad_halfwords_reaches`) — a word-sized pad
+alone would never reach the boundary (`pad_words_misses`).
 
 **The processor decides (landed).** The compiler reads the RISC-V
 extensions of `-cpu` (`target.CPUFeatures`: `+c`/`+v` on a zig-style name
@@ -1864,10 +1877,77 @@ self-hosting: the runtime the C shell still provides for the rest of the
 language (strings, the assertion message, the host boundary) as Oak or
 asm units, and the compiler itself in Oak.
 
+**Constant top-level bindings.** A body's read of a constant integer
+top-level binding (never assigned or addressed, a constant initializer;
+`90-backend.md` §8a's `static const`) reaches the native generator and the
+verifier as the typed literal `T(init)` on a copy of the body, so
+`page_size` and `entries` cost nothing and leave nothing to the C backend;
+the emitted C keeps the constant (`compiler/native_bodies.go`).
+
+**Atomics.** The builtins of `65-machine-memory.md` lower on the AArch64
+lane when the cell is reached through a writable span (§7a there): the
+element address as a region, `ldar`/`stlr` and their narrow forms,
+`dmb`, and the `ldxr`/`ldaxr` … `stxr`/`stlxr` loop for the
+read-modify-writes. The checker admits the exclusive store through the
+element region; the verifier reads the acquire and exclusive loads as the
+element and models an atomic load as the cell's read, so straight-line
+atomic reads verify while writers and retry loops are trusted against
+the C oracle. The rv64 lane leaves atomics to the C backend.
+
+**Instruction functions on the native lane (landed).** The machine
+library's calls lower to the instructions they name, through the
+assembler's own parser (`asm.ParseInstructionLine`), so the spelling the
+checker and the encoder see is the units': `arm64.read_X()` is `mrs` and
+`arm64.write_X(v)` is `msr` over the same catalog the C backend's helpers
+come from (`semir/sysreg.go`, the name lowercased into the encoder's
+table), `dmb`/`dsb` with their scope and `isb` for the barriers, the
+event-control instructions (`msr daifset, #2`, `wfi`, `wfe`, `sev`),
+`rev`/`rbit`/`clz` for the scalar functions (which the verifier proves as
+the instruction terms it already knows), and a control transfer `eret_x0(v)`
+as `mov x0, v` then `eret`, the end of a `never` function (which has no
+epilogue and no `ret`). A body using a system instruction carries the
+checker's `system` capability, so the checker's access-direction table
+judges every register access as it judges a unit's; an instruction
+function is an instruction, not a call, so it neither saves `x30` nor
+parks a span. Executed (`compiler/e2e_native_instructions_test.go`):
+`cntvct_el0`/`cntfrq_el0` reads, barriers, and the scalar functions on an
+arm64 host; the hypervisor adapter's EL2 register program (the DAIF
+mask, the `hcr`/`vttbr`/`vtcr`/`sp_el1`/`elr`/`spsr` writes, `isb`, and
+an `eret_x0` entry) lowers, is admitted, and encodes for
+`freestanding/arm64` — the bodies that kept the pilot's modules in C.
+
+**Freestanding modules realized natively (landed).** `oak build -target
+freestanding/arm64 -native -asm native` produces the one relocatable
+object the build promises: the C compiles to its object and the driver's
+partial link (`-r`) joins it with the Oak companion object, so the pilot
+links one file as before while some bodies stay with C. `-link oak` on a
+freestanding target writes the Oak object alone (`EmitNativeObject`: every
+body native, no globals, no extern bindings, `main` not required — a
+module exports its `pub` functions); `-link oak-image` writes the
+standalone image with the start stub; on Linux `-link oak` is the static
+executable. Checked (`compiler/e2e_native_object_test.go`): the native
+object of the integer corpus for both lanes with every function a symbol,
+the refusal by name, and the partially linked mixed module.
+
+**Check elision under the checker's own facts (landed, AArch64 lane).**
+An element access the typechecker proved in range (`IndexProven`, the
+extent facts of `50-borrowing.md`) is lowered without its guard, reading
+the index from the loop variable's own callee-saved register — the
+register the loop's exit test compared — so the fact that test left on
+the path is what admits the access; the seam checker then admits or
+refuses the body, and on refusal the compiler lowers it again with every
+guard (`compiler/native_bodies.go`; the diagnostic names the finding).
+The optimizer never decides safety: the elision is only what the checker
+already knows, and its refusal is the fallback. The span sum now has one
+compare, the loop's exit test, before its load (`ldr w10, [x0, w20, uxtw
+#2]`), and the verifier still proves it. On the RV64 lane the exit test
+compares canonical (sign-extended) values while the guard fact needs the
+zero-extended index, so its guards stay until the index representation
+changes; the C backend elides through `IndexProven` as before.
+
 Still to come in this lane:
-the RVWMO instantiation of `MemoryOrder.lean`, the sail-riscv bridge's
-export side (the Lean export as the semantics the transliteration is
-checked against), and widening and fractional-LMUL forms. The term
+the sail-riscv bridge's export side (the Lean export as the semantics the
+transliteration is checked against) and fractional-LMUL forms. The term
 language and the BDD blaster carry over unchanged.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's

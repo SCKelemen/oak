@@ -469,3 +469,24 @@ theorem ldsp_offsets (off : Nat) (h8 : 8 ∣ off) (hlt : off < 512) : 8 * (off /
   scaled_offset_exact 8 off 64 (by decide) h8 hlt
 
 end Oak.RiscV
+
+/-! ## Wide groups (RVV 1.0 §11.2)
+
+A widening destination or a narrowing source is a group of `2 * lmul`
+registers with `2 * sew` elements: it stays within the file when `lmul ≤ 4`
+and within 64-bit elements when `sew ≤ 32`. -/
+
+namespace Oak.RiscV
+
+theorem wide_lmul_divides_file : ∀ lmul ∈ [1, 2, 4], (2 * lmul) ∣ 32 := by decide
+
+/-- An aligned wide group lies within the file. -/
+theorem wide_group_within_file (lmul n : Nat) (hl : lmul ∈ [1, 2, 4]) (hn : n < 32) (ha : (2 * lmul) ∣ n) :
+    n + 2 * lmul ≤ 32 :=
+  group_within_file (2 * lmul) n (wide_lmul_divides_file lmul hl) (by simp at hl; omega) hn ha
+
+/-- Widening doubles the element width: within 64 bits exactly when the
+    configured width is at most 32. -/
+theorem widening_within_64 (sew : Nat) : 2 * sew ≤ 64 ↔ sew ≤ 32 := by omega
+
+end Oak.RiscV

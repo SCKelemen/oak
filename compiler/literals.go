@@ -90,17 +90,20 @@ func lowerLiterals(tree *SyntaxTree) error {
 	return nil
 }
 
-// literalsTables computes the six nibble tables (stdlib/literals.oak
-// `build`) for the literal set: low and high nibble of bytes 0, 1, 2 of
-// every literal, bucket j % 8. Every literal has at least three bytes.
-func literalsTables(lits []string) [96]byte {
-	var tables [96]byte
+// literalsTables computes the nibble tables (stdlib/literals.oak `build`)
+// for the literal set: per group of sixteen literals, low and high nibble
+// of bytes 0, 1, 2 of each, bucket j % 8; 96 bytes per group. Every
+// literal has at least three bytes.
+func literalsTables(lits []string) []byte {
+	groups := (len(lits) + 15) / 16
+	tables := make([]byte, 96*groups)
 	for j, lit := range lits {
 		bit := byte(1) << uint(j%8)
+		base := 96 * (j / 16)
 		for k := 0; k < 3; k++ {
 			c := lit[k]
-			tables[32*k+int(c&15)] |= bit
-			tables[32*k+16+int(c>>4)] |= bit
+			tables[base+32*k+int(c&15)] |= bit
+			tables[base+32*k+16+int(c>>4)] |= bit
 		}
 	}
 	return tables
@@ -115,6 +118,10 @@ func projectLiterals(decl *ast.LiteralsDeclaration, declared map[string]bool, re
 	name := decl.Name.Value
 	if len(decl.Literals) == 0 {
 		report(CodeLiteralsShape, decl.Name, "literals %s declares no literal", name)
+		return nil, false
+	}
+	if len(decl.Literals) > 256 {
+		report(CodeLiteralsShape, decl.Name, "literals %s declares %d literals; the scanner takes at most 256 (sixteen groups of sixteen)", name, len(decl.Literals))
 		return nil, false
 	}
 	ok := true
@@ -176,7 +183,7 @@ func projectLiterals(decl *ast.LiteralsDeclaration, declared map[string]bool, re
 		}
 		write("u32(%d)", s)
 	}
-	write("]\n%s_literal_tables: [96]u8 = [", prefix)
+	write("]\n%s_literal_tables: [%d]u8 = [", prefix, len(tables))
 	for i, b := range tables {
 		if i > 0 {
 			write(", ")

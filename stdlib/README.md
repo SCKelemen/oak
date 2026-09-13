@@ -105,9 +105,20 @@ produce: (n: u32): () {
 | `mpsc_pop[T](cursor, seqs, storage)` | the single consumer; `Some(T)` for the oldest published item, `None` otherwise; recycles the slot with a release of `seq = pos + capacity` |
 
 | `mpmc_init(cursor, seqs)` / `mpmc_push[T]` / `mpmc_pop[T]` | the Vyukov bounded queue whole: producers claim on `tail`, consumers on `head`, both by compare-exchange; `false`/`None` when full/empty |
+| `mpsc_claim(cursor)` / `mpsc_publish[T](seqs, storage, pos, item)` | the ticket producer: one fetch-add claim that never fails, then a publish that is `false` until the consumer recycles the slot (retry or yield); the consumer is `mpsc_pop` |
+| `mpmc_claim_push` / `mpmc_publish[T]`, `mpmc_claim_pop` / `mpmc_take[T]` | the ticket MPMC: producers and consumers each claim a position by fetch-add and then publish or take it once the sequence cell allows; `mpmc_take` is `None` until published |
 | `intrusive_init(cursor, nodes)` | node 0 becomes the stub; links are index + 1, 0 none |
 | `intrusive_push(cursor, nodes, id)` | wait-free for any producer: one exchange on `head`, one release store of the previous node's link; the caller wrote the node's payload before |
 | `intrusive_pop(cursor, nodes)` | the single consumer: `Item(id)` hands the oldest node back, `Empty`, or `Busy` when the next place is claimed but not yet linked |
+
+**Two claim styles, the application's choice.** `mpsc_push`/`mpmc_push`
+claim by compare-exchange and refuse a full ring at once, at the cost of
+retried claims under producer contention; the ticket forms claim by
+fetch-add — never a retry, never a refusal — but the position handed out
+must be published or taken eventually (a claimed, unpublished position
+stalls the consumers behind it), so the application decides how to wait.
+Use one style per ring. Both share the sequence-cell handoff and the same
+consumers. The cost table below records both.
 
 FIFO per producer (`Oak.Rings.pop_returns_pushed`), no push into a full
 ring (`count_le_cap`), distinct claims on every counter (`claims_distinct`,
@@ -140,8 +151,8 @@ Reductions whose grouping is a language fact (`docs/spec/55-parallelism.md`
 | --- | --- |
 | `tree[T](xs: []T, zero: T, f: (T, T) -> T)` | The balanced binary-counter tree: four elements give `f(f(x0, x1), f(x2, x3))`, the `simd.reduce_add` grouping; an empty view yields `zero`, which takes no other part. Identical on every backend, no associativity assumed. O(n) work, one 64-entry stack. |
 | `left[T](xs: []T, zero: T, f: (T, T) -> T)` | The sequential left fold `f(f(zero, x0), x1) ...`. |
-| `reduce[T](xs: []T, zero: T, f: (T, T) -> T)` | The reduction whose order the enclosing `order tree \| left \| any { }` block declares (`55-parallelism.md` §4): `tree` outside every block — the exact order is the default; `any` lowers to `chain` and is refused unless `f` declares `laws { associative }`. |
-| `chain[T](xs: []T, zero: T, f: (T, T) -> T)` | The left fold from the first element, `zero` only for the empty view; what `tree` computes under associativity (`Oak.Reduce.tree_eq_chainFold`) with no stack of partials. A call of `tree` whose `f` is an operator declaring `laws { associative }` is lowered to `chain` (`10-syntax.md` §14a). |
+| `reduce[T](xs: []T, zero: T, f: (T, T) -> T)` | The reduction whose order the enclosing `order tree \| left \| bounded { }` block declares (`55-parallelism.md` §4): `tree` outside every block — the exact order is the default; `bounded` lowers to `chain` and is refused unless `f` declares `laws { associative }` (an operator or a plain binary function); there is no unchecked order. |
+| `chain[T](xs: []T, zero: T, f: (T, T) -> T)` | The left fold from the first element, `zero` only for the empty view; what `tree` computes under associativity (`Oak.Reduce.tree_eq_chainFold`) with no stack of partials; what `reduce` computes inside `order bounded { }` when `f` declares `laws { associative }` (`10-syntax.md` §14a). |
 | `fold[S, T](xs: []T, init: S, step: (S, T) -> S)` | The sequential left fold with a state of its own type: `left` when `S` is `T`; the online-softmax pass carrying `(max, sum)` is `fold` with the merge as its step. |
 | `tree_map[T, S](xs: []T, zero: S, lift: (T) -> S, merge: (S, S) -> S)` | `tree` over the lifted elements without the intermediate array; for an associative `merge` it equals `fold(xs, lift(x0), step)` with `step(s, x) = merge(s, lift(x))` on non-empty input (`Oak.Reduce.fold_eq_tree_map`) — the two orders a program may name for one merge, and the theorem that they are one value (`55-parallelism.md` §4, "an order is a function"). |
 | `group_tree[T](group: u32, xs: []T, lo: u32, m: u32, zero: T, f)` | `tree` over the `m` elements at `lo` (`m <= group` asserted); in a kernel body with a literal power-of-two `group` it is the cooperative threadgroup reduction (`56-kernels.md` §7), the same grouping computed by `group` threads together. |
@@ -216,7 +227,8 @@ tokens, the hand-written C ceiling, ahead of Vectorscan (0.18) and RE2
 
 | Function | Semantics |
 | --- | --- |
-| `build` | fills the six nibble tables; every literal at least three bytes |
+| `groups_of` | one eight-bucket group per sixteen literals: `⌈total / 16⌉` |
+| `build` | fills the six nibble tables of every group (96 bytes per group); every literal at least three bytes |
 | `count` | occurrences of every literal, overlapping and coincident ones each counted |
 | `find_from` | first position at or after `start` where some literal occurs, else `len(bytes)` |
 | `which_at` | index of the first literal occurring at `pos`, else `total` |

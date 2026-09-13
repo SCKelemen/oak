@@ -409,3 +409,88 @@ intrusive_pop_at: (cursor: [*]IntrusiveCursor, nodes: [*]IntrusiveNode, tail: u3
     }
   }
 }
+
+// Ticket claims: the other way to claim a position, offered beside the
+// compare-exchange rings so the application decides. A ticket is one
+// fetch-add on the counter — it always succeeds, so no producer ever
+// retries a claim under contention — but the position it hands out must be
+// honored: the push waits (by retrying `publish`) until the consumer has
+// recycled the slot, and a claimed position that is never published stalls
+// the consumers behind it. Choose tickets when producers must never spin
+// on a claim and the application can wait or yield on a full ring; choose
+// `mpsc_push`/`mpmc_push` when a full ring must be refused at once. Use one
+// claim style per ring; the consumer side is the same in both
+// (`mpsc_pop`, or `mpmc_claim_pop` + `mpmc_take`). The claims of a ring
+// are the consecutive positions 0, 1, 2, … (Oak.Rings.claims_distinct:
+// the fetch-add trace is the same ClaimTrace), and each slot's payload
+// is published by the release of its sequence cell (mpsc_payload_race_free).
+
+// mpsc_claim hands the caller the next position: wait-free, never refused.
+pub mpsc_claim: (cursor: [*]MpscCursor): u32 {
+  assert(len(cursor) == u32(1))
+  atomic_fetch_add_relaxed(cursor[0].tail, u32(1))
+}
+
+// mpsc_publish writes the item at its claimed position once the slot is
+// free (its sequence cell reads pos: the consumer recycled it) and
+// publishes it; false means retry later — the slot is still in use.
+pub mpsc_publish[T]: (seqs: [*]SeqCell, storage: [*]T, pos: u32, item: T): Bool {
+  capacity: u32 = len(storage)
+  assert(len(seqs) == capacity)
+  assert(capacity > u32(0))
+  assert((capacity & (capacity - u32(1))) == u32(0))
+  mask: u32 = capacity - u32(1)
+  atomic_load_acquire(seqs[pos & mask].seq) == pos ? {
+    storage[pos & mask] = item
+    atomic_store_release(seqs[pos & mask].seq, pos + u32(1))
+    true
+  } | {
+    false
+  }
+}
+
+// mpmc_claim_push and mpmc_publish are the ticket producer of the MPMC ring.
+pub mpmc_claim_push: (cursor: [*]MpmcCursor): u32 {
+  assert(len(cursor) == u32(1))
+  atomic_fetch_add_relaxed(cursor[0].tail, u32(1))
+}
+
+pub mpmc_publish[T]: (seqs: [*]SeqCell, storage: [*]T, pos: u32, item: T): Bool {
+  capacity: u32 = len(storage)
+  assert(len(seqs) == capacity)
+  assert(capacity > u32(0))
+  assert((capacity & (capacity - u32(1))) == u32(0))
+  mask: u32 = capacity - u32(1)
+  atomic_load_acquire(seqs[pos & mask].seq) == pos ? {
+    storage[pos & mask] = item
+    atomic_store_release(seqs[pos & mask].seq, pos + u32(1))
+    true
+  } | {
+    false
+  }
+}
+
+// mpmc_claim_pop hands a consumer the next position to take: it will be
+// taken once a producer publishes it.
+pub mpmc_claim_pop: (cursor: [*]MpmcCursor): u32 {
+  assert(len(cursor) == u32(1))
+  atomic_fetch_add_relaxed(cursor[0].head, u32(1))
+}
+
+// mpmc_take takes the item at a claimed position once it is published
+// (its sequence cell reads pos + 1) and recycles the slot for the round
+// `capacity` positions on; None means retry later.
+pub mpmc_take[T]: (seqs: [*]SeqCell, storage: [*]T, pos: u32): Option[T] {
+  capacity: u32 = len(storage)
+  assert(len(seqs) == capacity)
+  assert(capacity > u32(0))
+  assert((capacity & (capacity - u32(1))) == u32(0))
+  mask: u32 = capacity - u32(1)
+  atomic_load_acquire(seqs[pos & mask].seq) == pos + u32(1) ? {
+    item: T = storage[pos & mask]
+    atomic_store_release(seqs[pos & mask].seq, pos + capacity)
+    .Some(item)
+  } | {
+    .None
+  }
+}

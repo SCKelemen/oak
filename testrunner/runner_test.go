@@ -407,3 +407,28 @@ TableEmpty: (row: []u8): () { test_check(len(row) == u32(0), u32(3)) }`,
 		t.Fatalf("missing rows: %d %+v", code, results)
 	}
 }
+
+// A table target may declare its own row limit in
+// testdata/oak/<Test>/max_bytes (docs/spec/110-testing.md, "Table
+// targets"): its rows may exceed the run's -max-bytes, the harness accepts
+// them, and a target without the file keeps the run's limit.
+func TestTableRowLimit(t *testing.T) {
+	big := strings.Repeat("x", 600)
+	files := map[string]string{
+		"a_test.oak": `import(testing)
+TableWide: (row: []u8): () { test_check(len(row) == u32(600), u32(1)) }
+TableNarrow: (row: []u8): () { test_check(len(row) == u32(600), u32(2)) }`,
+		"testdata/oak/TableWide/rows/001.bin":   big,
+		"testdata/oak/TableWide/max_bytes":      "1024\n",
+		"testdata/oak/TableNarrow/rows/001.bin": big,
+	}
+	dir := fixture(t, files)
+	code, results, stderr := runCLI(t, "-run", "TableWide", dir)
+	if code != 0 || len(results) != 1 || results[0].Status != "pass" || results[0].Cases != 1 {
+		t.Fatalf("declared limit: %d %+v %s", code, results, stderr)
+	}
+	code, results, _ = runCLI(t, "-run", "TableNarrow", dir)
+	if code == 0 || len(results) != 1 || results[0].Status != "error" || !strings.Contains(results[0].Failure, "exceeds the input limit") {
+		t.Fatalf("run limit: %d %+v", code, results)
+	}
+}

@@ -31,7 +31,7 @@ names or the module cache.
 
 | Command | Go counterpart | What it does |
 |---|---|---|
-| `oak build [-o out] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-metal-check] [-native] [-link c\|oak] [-target os/arch] [-cpu name] [-opt 0..3] [-profile p] [-lines] [dir\|file.oak]` | `go build` | Compile a package (or one file) to an **executable**, named after the package directory unless `-o` says otherwise. `-emit-c`, or an `-o` ending in `.c`, writes the C instead. `-link oak` links a program whose every body the native backend lowered with the Oak assembler alone — a static ELF, no C compiler, no system linker (`94-assembler.md` §9); the default `-link c` drives the target's C compiler. `-header` and `-lean` write the exported C header and the Lean extraction alongside; `-metal` writes the Metal Shading Language of the package's kernels (`56-kernels.md`), an error when it declares none. |
+| `oak build [-o out] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-metal-check] [-native] [-link c\|oak\|oak-image] [-target os/arch] [-cpu name] [-opt 0..3] [-profile p] [-lines] [dir\|file.oak]` | `go build` | Compile a package (or one file) to an **executable**, named after the package directory unless `-o` says otherwise. `-emit-c`, or an `-o` ending in `.c`, writes the C instead. `-link oak` realizes a program whose every body the native backend lowered with the Oak assembler alone — a static ELF on Linux, a relocatable object on a freestanding target, no C compiler, no system linker (`94-assembler.md` §9); `-link oak-image` writes a standalone freestanding image with Oak's start stub; the default `-link c` drives the target's C compiler, and on a freestanding target with native asm units it partially links (`-r`) the C object and the Oak companion object into the one object the build promises. `-header` and `-lean` write the exported C header and the Lean extraction alongside; `-metal` writes the Metal Shading Language of the package's kernels (`56-kernels.md`), an error when it declares none. |
 | `oak run [-profile p] [dir]` | `go run` | Build into a temporary directory and run with this process's stdio; the program's exit status is propagated. |
 | `oak install [-profile p] [dir]` | `go install` | Build the executable into `$OAKBIN` (default `$HOME/.oak/bin`), named after the package directory. |
 | `oak vet [-profile p] [dir\|file.oak]` | `go vet` | Run every semantic gate without generating code and print what the checker recorded: errors, and the assumptions it could not discharge (the same list as the REPL's `:obligations`). |
@@ -81,6 +81,15 @@ names or the module cache.
 | `OAK_EMULATOR`, `OAK_EMULATOR_ARGS` | The user-mode emulator `oak run -target` executes a foreign Linux program with (default: `qemu-<arch>`, then `qemu-<arch>-static`, on PATH), and its arguments split on whitespace. |
 
 ### 3.1 The build cache
+
+**Object output.** `oak build -o name.o` on a hosted target compiles the
+emitted C to one relocatable object instead of linking an executable —
+the C compiler's `-c`, no link inputs, no `-lm` — with asm units inlined
+(`-asm c`; `-asm native` is refused, since it would need a second
+object). A host harness links the object against its own driver: the
+native backend's differential test on the host, the OS pilot's N5
+(`docs/notes/os-language-requests-2026-09.md`). Freestanding targets
+already produce an object; `-o name.c` still emits the C.
 
 `oak build`, `oak run`, `oak install`, and `oak test` keep the executables
 they compile under `$OAKCACHE/build/`, keyed by a SHA-256 over everything

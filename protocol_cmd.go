@@ -25,7 +25,7 @@ func protocolCommand(args []string, stdout, stderr io.Writer) int {
 	jsonOut := flags.Bool("json", false, "with -conform, print the report as JSON")
 	tlc := flags.Bool("tlc", false, "with -conform, run the TLC refinement check even when the normal form judged")
 	againstCfg := flags.String("against-cfg", "", "with -conform, the hand-written module's TLC configuration (its constant values carry into the refinement check)")
-	mapping := flags.String("map", "", "with -conform, projection-to-module variable renames for the refinement check: state=st,count=n")
+	mapping := flags.String("map", "", "with -conform, the refinement mapping of projection variables to the module's: renames (state=st) or TLA+ expressions (count=Cardinality({k \\in 0..1 : acked[k]})), comma-separated at the top level, `<-` accepted for `=`; @file reads the same pairs, one per line, from a file")
 	outDir := flags.String("out", "", "with -conform, write the refinement modules here (default: a fresh temporary directory)")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -35,17 +35,10 @@ func protocolCommand(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "usage: oak protocol -conform Name -against module.tla [-against-cfg module.cfg] [-map a=b,...] [-tlc] [-out dir] [-json] file.oak")
 			return 2
 		}
-		renames := map[string]string{}
-		for _, pair := range strings.Split(*mapping, ",") {
-			if pair = strings.TrimSpace(pair); pair == "" {
-				continue
-			}
-			eq := strings.Index(pair, "=")
-			if eq <= 0 || eq == len(pair)-1 {
-				fmt.Fprintf(stderr, "oak protocol: -map takes proj=hand pairs, got %q\n", pair)
-				return 2
-			}
-			renames[strings.TrimSpace(pair[:eq])] = strings.TrimSpace(pair[eq+1:])
+		renames, err := parseRefinementMapping(*mapping, os.ReadFile)
+		if err != nil {
+			fmt.Fprintf(stderr, "oak protocol: %v\n", err)
+			return 2
 		}
 		return conformCommand(*conform, *against, flags.Arg(0), conformOptions{json: *jsonOut, tlc: *tlc, againstCfg: *againstCfg, mapping: renames, outDir: *outDir}, stdout, stderr)
 	}
@@ -178,4 +171,88 @@ func conformCommand(name, against, path string, opts conformOptions, stdout, std
 	}
 	fmt.Fprintf(stderr, "oak protocol: %s declares no protocol %s\n", path, name)
 	return 2
+}
+
+// parseRefinementMapping reads the -map flag of `oak protocol -conform`:
+// `proj=hand` or `proj <- hand` pairs separated by top-level commas (a
+// comma inside (), [], {} or << >> belongs to the expression), where `hand`
+// is a variable of the hand-written module or any TLA+ expression over its
+// variables — the refinement mapping of a hand-written MC module,
+// `INSTANCE Projection WITH state <- st, count <- Cardinality({k \in 0..1 :
+// acked[k]})`. `@path` reads the pairs from a file, one per line (or
+// comma-separated), `\*` comments dropped, so a module's mapping lives
+// next to it (the dbs pilot's round-five item 9). The value is spliced into
+// the generated refinement module verbatim for TLC to parse; nothing here
+// evaluates it.
+func parseRefinementMapping(spec string, readFile func(string) ([]byte, error)) (map[string]string, error) {
+	spec = strings.TrimSpace(spec)
+	if strings.HasPrefix(spec, "@") {
+		data, err := readFile(strings.TrimPrefix(spec, "@"))
+		if err != nil {
+			return nil, fmt.Errorf("-map: %v", err)
+		}
+		var lines []string
+		for _, line := range strings.Split(string(data), "\n") {
+			if i := strings.Index(line, "\\*"); i >= 0 {
+				line = line[:i]
+			}
+			if line = strings.TrimSpace(line); line != "" {
+				lines = append(lines, line)
+			}
+		}
+		spec = strings.Join(lines, ",")
+	}
+	mapping := map[string]string{}
+	for _, pair := range splitTopLevel(spec, ',') {
+		if pair = strings.TrimSpace(pair); pair == "" {
+			continue
+		}
+		name, value := "", ""
+		if arrow := strings.Index(pair, "<-"); arrow > 0 {
+			name, value = pair[:arrow], pair[arrow+2:]
+		} else if eq := strings.Index(pair, "="); eq > 0 {
+			name, value = pair[:eq], pair[eq+1:]
+		}
+		name, value = strings.TrimSpace(name), strings.TrimSpace(value)
+		if name == "" || value == "" || strings.ContainsAny(name, " \t()[]{}<>.,") {
+			return nil, fmt.Errorf("-map takes proj=hand or proj <- expression pairs, got %q", pair)
+		}
+		if _, dup := mapping[name]; dup {
+			return nil, fmt.Errorf("-map names %s twice", name)
+		}
+		mapping[name] = value
+	}
+	return mapping, nil
+}
+
+// splitTopLevel splits on sep outside every (), [], {} and << >> pair.
+func splitTopLevel(s string, sep rune) []string {
+	var parts []string
+	depth := 0
+	start := 0
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		switch runes[i] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case '<':
+			if i+1 < len(runes) && runes[i+1] == '<' {
+				depth++
+				i++
+			}
+		case '>':
+			if i+1 < len(runes) && runes[i+1] == '>' {
+				depth--
+				i++
+			}
+		case sep:
+			if depth == 0 {
+				parts = append(parts, string(runes[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	return append(parts, string(runes[start:]))
 }

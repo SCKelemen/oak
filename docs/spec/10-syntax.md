@@ -846,12 +846,19 @@ these bindings and are not part of this section.
 
 ### 14a. Operator laws
 
-An operator definition may declare, on the author's authority, the algebraic
-properties its operation has:
+A binary function — an operator definition, or a plain function of two
+parameters of one type — may declare, on the author's authority, the
+algebraic properties its operation has:
 
 ```oak
 operator(+) add: (a: Vec, b: Vec): Vec laws { associative, commutative } = ...
+plus: (a: f32, b: f32): f32 laws { associative, commutative, identity(0.0) } = a + b
 ```
+
+The second form is the claim on a reducing function over a builtin type,
+which no operator definition can carry (operators are declared over records
+and ADTs): the ml pilot's `add with associative, commutative, neutral(0.0)`
+(RFC 0004) is this line, with `identity` the spelling of the neutral element.
 
 `laws { ... }` follows the effect clauses and names any of `associative`
 (`(a + b) + c = a + (b + c)`), `commutative` (`a + b = b + a`),
@@ -871,22 +878,22 @@ grouping a program names is the grouping computed — floating-point `+`
 declares nothing, so `reduce.tree` over floats yields the same bits on every
 target.
 
-**The first consumer.** A call of `reduce.tree(xs, zero, f)` whose `f`
-names an operator definition declaring `associative` is lowered to
+**The consumer.** A block declares the order once with `order tree { }`,
+`order left { }`, or `order bounded { }` for the `reduce.reduce` calls
+inside it (`55-parallelism.md` §4). Inside `order bounded` a
+`reduce.reduce(xs, zero, f)` whose `f` declares `associative` is lowered to
 `reduce.chain(xs, zero, f)` — the left fold from the first element, `zero`
 only for the empty view, no stack of partials — by
 `Oak.Reduce.tree_eq_chainFold`: under associativity the binary-counter
-tree and the chain are one value on every input. The lowering is a
+tree and the chain are one value on every input. `bounded` is refused when
+`f` declares no law, and there is no unchecked order. The lowering is a
 rewrite of the call site in the type checker, so the C backend, the
 interpreter, and the extraction all compute the chain, and the semantic
-model lists every such site (`LawLowerings`: the operator, the call
-lowered from and to). `reduce.tree` with any other combine — a plain
-function, an operator without the law — is the tree it names, and so is a
-kernel's reduction (`56-kernels.md` §7): operators are declared over
-records, which are outside the kernel subset. A block declares the order
-once with `order tree { }`, `order left { }`, or `order any { }` for the
-`reduce.reduce` calls inside it (`55-parallelism.md` §4); `any` is refused
-without the claim.
+model lists every resolved site (`LawLowerings`: the combine, the call
+lowered from and to). An explicit `reduce.tree` or `reduce.left` is the
+grouping it names wherever it stands, law or no law, and so is a kernel's
+reduction (`56-kernels.md` §7): the grouping named is the grouping
+computed, and the law is consumed only where a block asks.
 
 Laws are declared, not checked by the type checker: like `effects { }` on
 an extern, the declaration is the author's claim. The tooling keeps it
@@ -894,7 +901,8 @@ visible and discharges what it can. `oak vet` lists declared laws with
 their elements. `oak prove` (`125-verification.md` §3) states each law as a
 theorem named `law_<function>_<law>` — `law_merge_associative`,
 `law_merge_identity_left`, `law_merge_identity_right`,
-`law_merge_idempotent` — over the operand type and runs the discharge
+`law_merge_idempotent` — over the operand type, for operators and plain
+functions alike, and runs the discharge
 ladder: when the operand is a record of `u8`, `u16`, `Bool`, or a
 refinement of those small enough for `-cases`, the law is decided
 exhaustively or refuted with the counterexample operands; a larger operand
@@ -904,9 +912,11 @@ shape its law fixes (`identity` binds the element through the fuel monad
 before the application), so the claim can be proved rather than repeated.
 Declaring a false law makes a regrouped result differ
 from the named grouping — floating-point addition declared associative
-turns `tree` over `[2^24, 1, 1, 1]` from `2^24 + 2` into the chain's
-`2^24` (`compiler/e2e_laws_consumer_test.go`); nothing else in the
-language depends on it.
+turns `reduce.reduce` under `order bounded` over `[2^24, 1, 1, 1]` from the
+tree's `2^24 + 2` into the chain's `2^24`
+(`compiler/e2e_laws_consumer_test.go`); the bound on that difference is
+`Oak.FloatBounds` (`55-parallelism.md` §4), and nothing else in the
+language depends on the law.
 
 ### 14b. Processor-feature realizations
 

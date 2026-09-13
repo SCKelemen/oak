@@ -9,7 +9,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"github.com/SCKelemen/oak/target"
 	"github.com/SCKelemen/oak/toolchain"
@@ -312,7 +311,11 @@ func vetOne(target, profile string) int {
 			if law.Argument != nil {
 				declared = fmt.Sprintf("%s(%s)", law.Law, law.Argument.String())
 			}
-			fmt.Printf("law: operator(%s) %s on %s declares %s — declared, not checked; the REPL's :lean states it and oak prove decides it over small domains\n", law.Symbol, modules.DemangleText(law.Function), modules.DemangleText(law.Type), declared)
+			who := modules.DemangleText(law.Function)
+			if law.Symbol != "" {
+				who = fmt.Sprintf("operator(%s) %s", law.Symbol, who)
+			}
+			fmt.Printf("law: %s on %s declares %s — declared, not checked; the REPL's :lean states it and oak prove decides it over small domains\n", who, modules.DemangleText(law.Type), declared)
 		}
 		// Refinement constructions are proof status made explicit
 		// (docs/spec/20-types.md section 12): a guard that stayed is a
@@ -614,7 +617,12 @@ func ccArgs() []string {
 // part of the cache identity, so a rebuilt library invalidates the cached
 // executable. It reports whether the output came from the cache.
 func compileC(tgt target.Target, drv toolchain.Driver, code string, object []byte, inputs []compiler.LinkInput, binary string) (bool, error) {
-	linkArgs, linkIdentity, err := linkArguments(tgt, inputs, os.Stderr)
+	work, err := os.MkdirTemp("", "oak-build-")
+	if err != nil {
+		return false, err
+	}
+	defer os.RemoveAll(work)
+	linkArgs, linkIdentity, err := linkArguments(tgt, inputs, work, os.Stderr)
 	if err != nil {
 		return false, err
 	}
@@ -634,11 +642,6 @@ func compileC(tgt target.Target, drv toolchain.Driver, code string, object []byt
 			}
 		}
 	}
-	work, err := os.MkdirTemp("", "oak-build-")
-	if err != nil {
-		return false, err
-	}
-	defer os.RemoveAll(work)
 	cPath := filepath.Join(work, "program.c")
 	if err := os.WriteFile(cPath, []byte(code), 0o600); err != nil {
 		return false, err
@@ -650,7 +653,28 @@ func compileC(tgt target.Target, drv toolchain.Driver, code string, object []byt
 			return false, err
 		}
 		if drv.Object {
-			return false, errors.New("a freestanding build with asm units: link the companion object yourself (oak build -asm c inlines the units instead)")
+			// A freestanding module with a companion object: the C compiles
+			// to its own object, and the driver's partial link (`-r`) joins
+			// the two into the one relocatable object the build promises,
+			// so the pilot links one file as before
+			// (docs/spec/94-assembler.md §9).
+			cObject := filepath.Join(work, "program_c.o")
+			compileArgs := append(append([]string{}, flags...), "-o", cObject, cPath)
+			compile := exec.Command(drv.Path, compileArgs...)
+			compile.Stdout, compile.Stderr = os.Stdout, os.Stderr
+			if err := compile.Run(); err != nil {
+				return false, fmt.Errorf("C compilation for %s failed (%s): %v", tgt, drv.Command(), err)
+			}
+			mergeArgs := append(append([]string{}, drv.Args...), "-nostdlib", "-r", "-o", binary, cObject, objPath)
+			merge := exec.Command(drv.Path, mergeArgs...)
+			merge.Stdout, merge.Stderr = os.Stdout, os.Stderr
+			if err := merge.Run(); err != nil {
+				return false, fmt.Errorf("partial link for %s failed (%s -r): %v", tgt, drv.Command(), err)
+			}
+			if key != "" {
+				_ = buildcache.Store(key, binary)
+			}
+			return false, nil
 		}
 		ccArgs = append(ccArgs, objPath)
 	}
@@ -672,14 +696,26 @@ func compileC(tgt target.Target, drv toolchain.Driver, code string, object []byt
 
 // linkArguments spells the manifests' native inputs as C compiler arguments
 // (argv, never a shell) and returns an identity string covering each
-// object's bytes and each framework's name, for build-cache keys. On hosts
+// object's bytes, each framework's name, and each shim's text, for
+// build-cache keys; "source" inputs are written into work first. On hosts
 // without frameworks a `framework` line is skipped with one note on notes.
-func linkArguments(tgt target.Target, inputs []compiler.LinkInput, notes io.Writer) ([]string, string, error) {
+func linkArguments(tgt target.Target, inputs []compiler.LinkInput, work string, notes io.Writer) ([]string, string, error) {
 	var args []string
 	var identity strings.Builder
 	noted := false
 	for _, input := range inputs {
 		switch input.Kind {
+		case "source":
+			// A library realization's C shim (stdlib.NativeShims): written
+			// beside the program and compiled with it; its text is part of
+			// the identity.
+			path := filepath.Join(work, filepath.Base(input.Path))
+			if err := os.WriteFile(path, []byte(input.Source), 0o600); err != nil {
+				return nil, "", fmt.Errorf("link %s: %v", input.Path, err)
+			}
+			sum := sha256.Sum256([]byte(input.Source))
+			fmt.Fprintf(&identity, "source %s %x\n", input.Path, sum)
+			args = append(args, path)
 		case "object":
 			data, err := os.ReadFile(input.Path)
 			if err != nil {

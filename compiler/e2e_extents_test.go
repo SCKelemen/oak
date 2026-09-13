@@ -59,9 +59,11 @@ main: (): i32 {
 		t.Fatalf("compilation failed: %v", err)
 	}
 	// Proven: v[i] in the loop, a[i] and b[i] under the same-length fact,
-	// v[3] under the min-length fact, the four constant stores into regs.
-	if got := strings.Count(output, ".base[ "); got != 4 {
-		t.Fatalf("expected 4 proven view accesses, found %d:\n%s", got, output)
+	// v[3] under the min-length fact, and the two copies of third_or_zero
+	// inlined into main (compiler/inline.go), each proven under its own
+	// inlined guard; the four constant stores into regs are separate.
+	if got := strings.Count(output, ".base[ "); got != 6 {
+		t.Fatalf("expected 6 proven view accesses, found %d:\n%s", got, output)
 	}
 	if strings.Contains(output, "oak_view_index_u64( ") {
 		t.Fatalf("a proven view access remained checked:\n%s", output)

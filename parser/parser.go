@@ -195,17 +195,22 @@ func (p *Parser) nextToken() {
 	}
 }
 
-// parseOrderBlock parses `order <tree|left|any> { ... }`: a block statement
-// whose Order the typechecker applies to the reduce.reduce calls inside it
-// (docs/spec/55-parallelism.md section 4, "Declaring the order once").
+// parseOrderBlock parses `order <tree|left|bounded> { ... }`: a block
+// statement whose Order the typechecker applies to the reduce.reduce calls
+// inside it (docs/spec/55-parallelism.md section 4, "Declaring the order
+// once"). `bounded` is the permission to regroup, checked against the
+// combine's declared law; there is no unchecked `any`.
 func (p *Parser) parseOrderBlock() ast.Statement {
 	orderToken := p.currentToken
 	p.nextToken() // the order name
 	name := p.currentToken.Literal
 	switch name {
-	case "tree", "left", "any":
+	case "tree", "left", "bounded":
+	case "any":
+		p.addErrorAtCurrentToken("order block: there is no unchecked order — `order bounded` regroups under a declared law (docs/spec/55-parallelism.md section 4)")
+		return nil
 	default:
-		p.addErrorAtCurrentToken(fmt.Sprintf("order block: the order is tree, left, or any, got %q", name))
+		p.addErrorAtCurrentToken(fmt.Sprintf("order block: the order is tree, left, or bounded, got %q", name))
 		return nil
 	}
 	p.nextToken() // {

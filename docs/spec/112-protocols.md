@@ -82,7 +82,17 @@ sequence of entries separated by newlines or commas:
   (`OAK-M0301`): a form over a field `data` does not declare, over a
   non-array field, a one-argument form over non-`Bool` elements, a
   two-argument form whose element is not a declared record or whose named
-  field is not `Bool`. A **record payload** carries several fields per
+  field is not `Bool`. The **predicate form** binds each element:
+  `count(data.peers, p, p.acked && u32(p.view) == data.view)`,
+  `all(data.peers, p, ...)`, `any`, `none` — the second argument names the
+  element, the third is a `Bool` predicate over it and `data` (width
+  conversions and operators, no payload, no nested form), so a quorum over
+  an indexed path is declared once rather than unrolled by hand. Its helper
+  binds `p: Peer = data.peers[i]` and folds the predicate; the module
+  writes `Cardinality({k \\in 0..N-1 : pred[p := peers[k]]})` and the
+  bounded quantifiers over the same substitution. A binder that is `data`,
+  `state`, `step` or a data field, a predicate that reads anything else,
+  or one that nests a form is `OAK-M0301`. A **record payload** carries several fields per
   step: `write(cmd: Cmd)` with `Cmd: type = struct { slot: u8, value: u8 }`
   a declared record whose fields are command scalars, read as `cmd.slot`
   in guards and effects; the model-checker module quantifies it over the
@@ -481,8 +491,12 @@ unsupported form (or on `-tlc`, for any module), the projection is written
 as a module of its own, `<Name>Projection`, and a refinement module
 `<Module>Refinement` extends the hand-written module, instantiates the
 projection under the state mapping — `INSTANCE <Name>Projection WITH state
-<- state, count <- n` (`-map state=st,...` renames; unmapped variables
-keep their names and must be declared by the module) — and states
+<- state, count <- n` (`-map state=st,...` renames, and a value may be any
+TLA+ expression over the module's variables — `-map 'count=Cardinality({k
+\\in 0..1 : acked[k]})'`, commas inside brackets belonging to the
+expression, `<-` accepted for `=`, `-map @file` reading the pairs from a
+file one per line, the refinement mapping of a hand-written MC module;
+unmapped variables keep their names and must be declared by the module) — and states
 `RefinementSpec == Projection!Spec`; its configuration is `SPECIFICATION
 Spec`, `PROPERTY RefinementSpec`, the module's own constant values from
 `-against-cfg module.cfg`, and the projection's payload domains at their
@@ -673,6 +687,24 @@ The rules:
    written anywhere in the **initial state**, and otherwise only inside a
    via callable of a transition **into** that state (`OAK-B0121`). Only the
    transition may make the claim its target state represents.
+
+5. A transition may **fail and hand the handle back**: its via callable
+   returns `Result[Segment[To], Segment[From]]` — the handle in the target
+   state on success, the same handle in the source state on failure
+   (`try_publish: (s: Segment[Fresh]): Result[Segment[Published],
+   Segment[Fresh]]`). The return type is the whole declaration; there is no
+   `fallible` keyword to disagree with it. The consumed argument's
+   authority flows into whichever arm is matched (`Ok(p)` or `Err(f)`), so
+   the old name is dead on both paths and nothing is duplicated; `try`
+   composes through its ordinary lowering, re-raising the source-state
+   handle. A failed step is a step that did not take: the projection's
+   machine advances only on `Ok`, and the model-checker module needs no
+   new form (the failure is a stutter). Arms in other states, or a
+   type-variable state, are `OAK-M0301`; a later failure that would
+   re-raise a handle in a state the function's failure type does not name
+   is an ordinary type error — the failure type must say which state the
+   resource is left in, a sum over those states when several are possible,
+   never a flag (`compiler/e2e_typestate_fallible_test.go`).
 
 A typestate resource may also carry **region parameters**
 (`50-borrowing.md` §8c): `Node[R, S]: type = struct { data: View[f32, R],

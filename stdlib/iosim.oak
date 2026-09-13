@@ -86,7 +86,10 @@ iosim_block_bytes: (): u32 = u32(64)
 iosim_file_blocks: (): u32 = u32(64)
 iosim_file_bytes: (): u32 = u32(4096)
 iosim_entries: (): u32 = u32(16)
-iosim_name_bytes: (): u32 = u32(32)
+// A name is at most 64 bytes, NUL included: room for a segment named by
+// the reference's twenty-digit identifier plus a directory prefix (dbs
+// round five, item 12).
+iosim_name_bytes: (): u32 = u32(64)
 iosim_slots: (): u32 = u32(16)
 // The ledger holds this many events, three words each (iosim_ledger is
 // [3072]u64 = 3 x 1024); a scenario that records more is a scenario error.
@@ -110,8 +113,8 @@ iosim_faults: u32
 // and 32 bytes of name at e * 32. Existence and name have a volatile copy
 // the process sees and a durable copy a crash reverts to; fsyncdir copies
 // volatile to durable, as fsync does for a file's size.
-iosim_names: [512]u8
-iosim_names_durable: [512]u8
+iosim_names: [1024]u8
+iosim_names_durable: [1024]u8
 iosim_exists: [16]Bool
 iosim_exists_durable: [16]Bool
 // A directory entry (docs/spec/120-io.md section 3, "Directories"): its
@@ -594,6 +597,19 @@ iosim_store_block: (entry: u32, block: u32): () {
   fault != u32(0) ? { iosim_lied[entry] = true }
 }
 
+// The read half of a read-modify-write. A block the device serves with a
+// fault bit set (a flipped or misdirected word it reported as data) is about
+// to be modified and stored back by a clean write, which heals the block's
+// own ledger — so the lie is recorded on the entry first: the bytes written
+// back were never what the program was told (the dbs pilot's round-five
+// finding 3, a laundered read flip). False on a read failure, as
+// iosim_load_block.
+iosim_load_block_for_write: (entry: u32, block: u32): Bool {
+  ok: Bool = iosim_load_block(entry, block)
+  ok && !sim_disk_trusted(span(&iosim_flags), entry * iosim_file_blocks() + block) ? { iosim_lied[entry] = true }
+  ok
+}
+
 // Zero the bytes [from, to) of an entry through the device (read, modify,
 // write per block): the hole a write past the end or a growing truncate
 // leaves, so a reused entry's old bytes are never visible. False on a
@@ -603,7 +619,7 @@ iosim_zero_range: (entry: u32, lo: u32, hi: u32): Bool {
   failed: Bool = false
   while i < hi && !failed {
     b: u32 = i / iosim_block_bytes()
-    failed = !iosim_load_block(entry, b)
+    failed = !iosim_load_block_for_write(entry, b)
     !failed ? {
       while i < hi && i / iosim_block_bytes() == b {
         within: u32 = i % iosim_block_bytes()
@@ -854,7 +870,7 @@ iosim_pread: (region: [*]u8, entry: u32, offset: u32, base: u32, n: u32, tag: u6
     b: u32 = at / iosim_block_bytes()
     b != block ? {
       block = b
-      failed = !iosim_load_block(entry, b)
+      failed = !iosim_load_block_for_write(entry, b)
     }
     !failed ? {
       within: u32 = at % iosim_block_bytes()
@@ -873,7 +889,7 @@ iosim_pwrite: (region: [*]u8, entry: u32, offset: u32, base: u32, n: u32, tag: u
     b: u32 = (offset + i) / iosim_block_bytes()
     // Read-modify-write one block: the device tears, misdirects, or drops
     // the write exactly as its mask allows, and ledgers it.
-    failed = !iosim_load_block(entry, b)
+    failed = !iosim_load_block_for_write(entry, b)
     !failed ? {
       while i < n && (offset + i) / iosim_block_bytes() == b {
         within: u32 = (offset + i) % iosim_block_bytes()

@@ -100,7 +100,7 @@ def main():
             "oak_ns_per_item": statistics.median(ns), "oak_ns_per_item_min": min(ns), "oak_ns_per_item_max": max(ns),
             "producer_spins_median": statistics.median(r["producer_spins"] for r in records),
         }
-        base = ring.split("/")[0]
+        base = ring.split("/")[0].replace("_ticket", "")
         if base in go_samples:
             gns = [r["ns_per_item"] for r in go_samples[base]]
             results[ring]["go_channel_ns_per_item"] = statistics.median(gns)

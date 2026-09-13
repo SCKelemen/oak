@@ -666,6 +666,25 @@ func parseSignature(header string) (*ast.FunctionStatement, error) {
 // splitFields splits an instruction line on whitespace and commas while
 // keeping bracketed memory operands intact: "stp x0, x1, [sp, #-16]!" ->
 // ["stp", "x0", "x1", "[sp, #-16]!"].
+// ParseInstructionLine parses one instruction of a lane from its `.oakasm`
+// spelling (`dmb ish`, `msr daifset, #2`, `li a7, 93`): the native backend
+// lowers the instruction functions of the machine library through the
+// same parser the units go through, so the spellings agree.
+func ParseInstructionLine(arch, text string, line int) (Instruction, error) {
+	fields := splitFields(strings.TrimSpace(text))
+	if len(fields) == 0 {
+		return Instruction{}, fmt.Errorf("an empty instruction")
+	}
+	if arch == ArchRV64 {
+		instrs, err := parseRV64Instruction(fields, line)
+		if err != nil {
+			return Instruction{}, err
+		}
+		return instrs[0], nil
+	}
+	return parseInstruction(fields, line)
+}
+
 func splitFields(line string) []string {
 	var fields []string
 	var current strings.Builder

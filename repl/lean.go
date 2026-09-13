@@ -170,7 +170,19 @@ func writeOperatorLaws(out *strings.Builder, model *compiler.SemanticModel) int 
 		if law.Argument != nil {
 			declared = fmt.Sprintf("%s(%s)", law.Law, law.Argument.String())
 		}
-		fmt.Fprintf(out, "/-- `operator(%s) %s` on `%s` declares `%s`. -/\n", law.Symbol, fn, typ, declared)
+		if law.Symbol != "" {
+			fmt.Fprintf(out, "/-- `operator(%s) %s` on `%s` declares `%s`. -/\n", law.Symbol, fn, typ, declared)
+		} else {
+			fmt.Fprintf(out, "/-- `%s` on `%s` declares `%s`. -/\n", fn, typ, declared)
+		}
+		// The informal statements spell an operator infix and a plain
+		// function applied.
+		app := func(a, b string) string {
+			if law.Symbol != "" {
+				return a + " " + law.Symbol + " " + b
+			}
+			return fn + " " + a + " " + b
+		}
 		// The identity element in Lean: a nullary function `zero()` (or its
 		// bare name) is `Defs.zero fuel`, an Option like every extracted
 		// definition; any other element is stated informally.
@@ -180,13 +192,14 @@ func writeOperatorLaws(out *strings.Builder, model *compiler.SemanticModel) int 
 		}
 		switch {
 		case err != nil && law.Law == "associative":
-			fmt.Fprintf(out, "-- theorem %s : ∀ a b c, (a %s b) %s c = a %s (b %s c)\n\n", name, law.Symbol, law.Symbol, law.Symbol, law.Symbol)
+			fmt.Fprintf(out, "-- theorem %s : ∀ a b c, %s = %s\n\n", name, app("("+app("a", "b")+")", "c"), app("a", "("+app("b", "c")+")"))
 		case err != nil && law.Law == "commutative":
-			fmt.Fprintf(out, "-- theorem %s : ∀ a b, a %s b = b %s a\n\n", name, law.Symbol, law.Symbol)
+			fmt.Fprintf(out, "-- theorem %s : ∀ a b, %s = %s\n\n", name, app("a", "b"), app("b", "a"))
 		case err != nil && law.Law == "idempotent":
-			fmt.Fprintf(out, "-- theorem %s : ∀ a, a %s a = a\n\n", name, law.Symbol)
+			fmt.Fprintf(out, "-- theorem %s : ∀ a, %s = a\n\n", name, app("a", "a"))
 		case err != nil || (law.Law == "identity" && !elementOK):
-			fmt.Fprintf(out, "-- theorem %s_left : ∀ a, %s %s a = a\n-- theorem %s_right : ∀ a, a %s %s = a\n\n", name, declared, law.Symbol, name, law.Symbol, declared)
+			element := law.Argument.String()
+			fmt.Fprintf(out, "-- theorem %s_left : ∀ a, %s = a\n-- theorem %s_right : ∀ a, %s = a\n\n", name, app(element, "a"), name, app("a", element))
 		case law.Law == "associative":
 			fmt.Fprintf(out, "theorem %s (a b c : Defs.%s) (fuel : Nat) :\n    (Defs.%s a b fuel >>= fun ab => Defs.%s ab c fuel) = (Defs.%s b c fuel >>= fun bc => Defs.%s a bc fuel) := by\n  sorry\n\n", name, typ, fn, fn, fn, fn)
 		case law.Law == "commutative":

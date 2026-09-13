@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/SCKelemen/oak/ast"
 )
@@ -41,6 +42,9 @@ type tlaEnv struct {
 	dataRoot  string
 	stateVar  string
 	boundVars map[string]bool
+	// binders maps a predicate form's bound element to the TLA+ term it
+	// stands for (`p` -> `peers[k]`).
+	binders map[string]string
 	// bound counts the enclosing function constructors of an init value,
 	// so a nested array (a record's array field inside an array of
 	// records) binds k, k1, k2 rather than shadowing k.
@@ -58,7 +62,18 @@ func (env *tlaEnv) with(payload string, initial bool) *tlaEnv {
 	if root == nil {
 		root = env
 	}
-	return &tlaEnv{payload: payload, initial: initial, bound: env.bound, dataRoot: env.dataRoot, stateVar: env.stateVar, boundVars: env.boundVars, lengths: env.lengths, records: env.records, root: root}
+	return &tlaEnv{payload: payload, initial: initial, bound: env.bound, dataRoot: env.dataRoot, stateVar: env.stateVar, boundVars: env.boundVars, binders: env.binders, lengths: env.lengths, records: env.records, root: root}
+}
+
+// withBinder is env with one more bound element name.
+func (env *tlaEnv) withBinder(name, term string) *tlaEnv {
+	inner := env.with(env.payload, env.initial)
+	inner.binders = map[string]string{}
+	for k, v := range env.binders {
+		inner.binders[k] = v
+	}
+	inner.binders[name] = term
+	return inner
 }
 
 // deeper is env inside one more function constructor.
@@ -160,9 +175,10 @@ func ProtocolTLADeclared(decl *ast.ProtocolDeclaration, origin string, decls Pro
 	var constants []string
 	var domains []string
 	seen := map[string]bool{}
+	namer := newPayloadDomainNamer(stepPayloads(m.steps))
 	for _, step := range m.steps {
 		if step.payload != nil {
-			domain := domainName(step.payload.Name.Value)
+			domain := namer.domain(step.payload)
 			if seen[domain] {
 				continue
 			}
@@ -245,7 +261,7 @@ func ProtocolTLADeclared(decl *ast.ProtocolDeclaration, origin string, decls Pro
 		if step.payload != nil {
 			payload = step.payload.Name.Value
 			head = fmt.Sprintf("%s(%s)", variantName(step.name), payload)
-			nextTerms = append(nextTerms, fmt.Sprintf("(\\E %s \\in %s : %s)", payload, domainName(payload), head))
+			nextTerms = append(nextTerms, fmt.Sprintf("(\\E %s \\in %s : %s)", payload, namer.domain(step.payload), head))
 		} else {
 			nextTerms = append(nextTerms, variantName(step.name))
 		}
@@ -346,7 +362,7 @@ func ProtocolTLADeclared(decl *ast.ProtocolDeclaration, origin string, decls Pro
 		for _, step := range m.steps {
 			if step.name == f.Step.Value && step.payload != nil {
 				payload := step.payload.Name.Value
-				action = fmt.Sprintf("\\E %s \\in %s : %s(%s)", payload, domainName(payload), action, payload)
+				action = fmt.Sprintf("\\E %s \\in %s : %s(%s)", payload, namer.domain(step.payload), action, payload)
 			}
 		}
 		form := "WF"
@@ -523,11 +539,12 @@ func ProtocolTLCConfigDeclared(decl *ast.ProtocolDeclaration, decls ProtocolDecl
 	seen := map[string]bool{}
 	var constants []string
 	ceiling := literalCeiling(decl)
+	namer := newPayloadDomainNamer(transitionPayloads(decl))
 	for _, t := range decl.Transitions {
 		if t.Param == nil {
 			continue
 		}
-		domain := domainName(t.Param.Name.Value)
+		domain := namer.domain(t.Param)
 		if seen[domain] {
 			continue
 		}
@@ -550,6 +567,89 @@ func ProtocolTLCConfigDeclared(decl *ast.ProtocolDeclaration, decls ProtocolDecl
 		b.WriteString("CONSTANTS\n" + strings.Join(constants, "\n") + "\n")
 	}
 	return b.String()
+}
+
+// payloadDomainNamer names each step payload's domain. The domain is
+// keyed by the parameter name, as the module always spelled it (`cmd` ->
+// `Cmd`), unless one name carries payloads of different types across
+// steps — four steps with record payloads of different types all named `c`
+// used to collide into one `C` (the dbs pilot's round-five finding 2) —
+// when the type is appended: `C_Request`, `C_Reply`, `N_u8`, `N_u32`. The
+// type alone is not the key because a record payload is naturally named
+// after its step (`prepare(p: Prepare)`), and `Prepare` is the action.
+// Every site that spells a domain — CONSTANTS, the record-set definitions,
+// the Next quantifiers, liveness, the TLC configuration — goes through one
+// namer so they agree.
+type payloadDomainNamer struct {
+	conflicted map[string]bool
+}
+
+func newPayloadDomainNamer(params []*ast.FunctionParameter) *payloadDomainNamer {
+	namer := &payloadDomainNamer{conflicted: map[string]bool{}}
+	types := map[string]map[string]bool{}
+	for _, param := range params {
+		if param == nil || param.Name == nil {
+			continue
+		}
+		name := param.Name.Value
+		if types[name] == nil {
+			types[name] = map[string]bool{}
+		}
+		types[name][typeSpelling(param.Type)] = true
+	}
+	for name, spellings := range types {
+		if len(spellings) > 1 {
+			namer.conflicted[name] = true
+		}
+	}
+	return namer
+}
+
+// domain is the constant (or defined set) naming the payload's domain.
+func (n *payloadDomainNamer) domain(param *ast.FunctionParameter) string {
+	if param == nil || param.Name == nil {
+		return domainName("")
+	}
+	if n.conflicted[param.Name.Value] {
+		return domainName(param.Name.Value) + "_" + typeSpelling(param.Type)
+	}
+	return domainName(param.Name.Value)
+}
+
+// typeSpelling is a payload type's text as an identifier fragment.
+func typeSpelling(typ ast.Expression) string {
+	if typ == nil {
+		return "Payload"
+	}
+	var b strings.Builder
+	for _, r := range typ.String() {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// stepPayloads lists the payload parameters of a machine's steps.
+func stepPayloads(steps []*protocolStep) []*ast.FunctionParameter {
+	var params []*ast.FunctionParameter
+	for _, step := range steps {
+		if step.payload != nil {
+			params = append(params, step.payload)
+		}
+	}
+	return params
+}
+
+// transitionPayloads lists the payload parameters of a declaration's transitions.
+func transitionPayloads(decl *ast.ProtocolDeclaration) []*ast.FunctionParameter {
+	var params []*ast.FunctionParameter
+	for _, t := range decl.Transitions {
+		if t.Param != nil {
+			params = append(params, t.Param)
+		}
+	}
+	return params
 }
 
 // domainName is the constant naming a payload's domain: compare -> Compare.
@@ -759,6 +859,9 @@ func tlaExpr(e ast.Expression, env *tlaEnv) (string, error) {
 		}
 		return "FALSE", nil
 	case *ast.Identifier:
+		if term, isBinder := env.binders[n.Value]; isBinder {
+			return term, nil
+		}
 		if n.Value == payload && payload != "" {
 			return n.Value, nil
 		}
@@ -780,6 +883,10 @@ func tlaExpr(e ast.Expression, env *tlaEnv) (string, error) {
 			// A record payload's field reads as the TLA+ record field.
 			return payload + "." + field, nil
 		}
+		if term, ok, err := tlaBinderPath(n, env); ok || err != nil {
+			// A path over a predicate form's bound element: peers[k].view.
+			return term, err
+		}
 		// A data path of any depth — data.f, data.f[i], data.f[i].sub,
 		// data.f.sub[j] — reads as the same path over the variable.
 		field, selector, err := tlaDataPath(n, env)
@@ -792,7 +899,7 @@ func tlaExpr(e ast.Expression, env *tlaEnv) (string, error) {
 		if ok && conversionNames[fn.Value] && len(n.Arguments) == 1 {
 			return tlaExpr(n.Arguments[0], env)
 		}
-		if form, field, sub, isQuantifier := quantifierCall(n); isQuantifier && field != "" {
+		if form, field, sub, binder, pred, isQuantifier := quantifierCallFull(n); isQuantifier && field != "" {
 			// count/all/any/none over an array field: Cardinality of the
 			// true slots, or a bounded quantifier (112-protocols.md section 4).
 			length, known := env.lengths[field]
@@ -802,6 +909,14 @@ func tlaExpr(e ast.Expression, env *tlaEnv) (string, error) {
 			element := fmt.Sprintf("%s[k]", field)
 			if sub != "" {
 				element += "." + sub
+			}
+			if pred != nil {
+				// The predicate form: the predicate over the element at k.
+				translated, err := tlaExpr(pred, env.withBinder(binder, element))
+				if err != nil {
+					return "", err
+				}
+				element = translated
 			}
 			bound := fmt.Sprintf("k \\in 0..%d", length-1)
 			switch form {
@@ -855,4 +970,41 @@ func sortedFieldNames(fields map[string]ast.Expression) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// tlaBinderPath reads a path rooted at a predicate form's bound element —
+// p.acked, p.log[i] — as the same path over the element's term.
+func tlaBinderPath(target *ast.IndexExpression, env *tlaEnv) (string, bool, error) {
+	if target == nil || len(env.binders) == 0 {
+		return "", false, nil
+	}
+	var selectors []string
+	node := target
+	for {
+		if node.Dot {
+			sub, isIdent := node.Index.(*ast.Identifier)
+			if !isIdent {
+				return "", false, nil
+			}
+			selectors = append([]string{"." + sub.Value}, selectors...)
+		} else {
+			index, err := tlaExpr(node.Index, env)
+			if err != nil {
+				return "", true, err
+			}
+			selectors = append([]string{"[" + index + "]"}, selectors...)
+		}
+		switch left := node.Left.(type) {
+		case *ast.Identifier:
+			term, isBinder := env.binders[left.Value]
+			if !isBinder {
+				return "", false, nil
+			}
+			return term + strings.Join(selectors, ""), true, nil
+		case *ast.IndexExpression:
+			node = left
+		default:
+			return "", false, nil
+		}
+	}
 }
