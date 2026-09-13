@@ -167,13 +167,19 @@ the unit roundoff):
   sum of some grouping of exactly those leaves, so `rounded_error` bounds
   it by that grouping's depth and `groupings_differ` bounds its distance
   from the chain.
+- `tree_depth_log`, `tree_error_log`: that grouping's depth is at most
+  `bitlen n` — `⌊log₂ n⌋ + 1` — so `reduce.tree` over `n` values is within
+  `((1 + u)^(⌊log₂ n⌋ + 1) − 1) · Σ|xᵢ|` of the exact sum, against the
+  chain's `((1 + u)^(n−1) − 1) · Σ|xᵢ|`. The proof follows the binary
+  counter: a partial at level `k` is a grouping of depth at most `k` over
+  exactly `2^k` leaves (`Levels`), the levels ascend from the head down
+  (`Ascending`), so every level is below `bitlen n`, and the leftover
+  merges (`finish`) end at most one deeper than the bottom's level.
 
 The claim `laws { associative }` on a floating-point add is therefore a
-permission with a stated cost, not a lie about the format. What the
-theorems do not state is a closed form for the depth of `tree`'s grouping
-(the binary-counter tree is `⌈log₂ n⌉ + O(log n)` deep; the bound holds
-for whatever depth it has), and the bound is over the idealized format
-without overflow or subnormals, as `Oak.Floats` is. `commutative` is recorded with `associative` and
+permission with a stated cost, not a lie about the format. The bound is
+over the idealized format without overflow or subnormals, as `Oak.Floats`
+is. `commutative` is recorded with `associative` and
 consumed by nothing yet; a backend that reorders operands, not just
 groupings, is what would read it.
 
