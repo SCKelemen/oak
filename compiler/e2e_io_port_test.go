@@ -214,13 +214,18 @@ main: (): i32 {
   assert(io.io_wait(ring, requests, completions, region, u32(1)) == u32(1))
   assert(completions[0].error == io.io_err_not_found())
 
-  // readdir of "." (tag 22): the window is "." then the output; B is listed, A is not
-  assert(io.io_submit(ring, requests, io.io_request(io.io_op_readdir(), u32(0), u64(2), u32(160), u32(96), u64(22), false)))
+  // readdir of "." (tag 22): the window is "." then the output; B is listed,
+  // A is not. The window lives at 512 so its output overwrites no path —
+  // it once sat at 160 and wrote over the direct-I/O path at 176, which
+  // the port's interior-NUL rule now catches.
+  region[512] = u8(46)
+  region[513] = u8(0)
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_readdir(), u32(0), u64(2), u32(512), u32(96), u64(22), false)))
   assert(io.io_wait(ring, requests, completions, region, u32(1)) == u32(1))
   assert(completions[0].error == u32(0) && completions[0].result > u32(0))
   listed: u32 = completions[0].result
-  assert(lists_name(region, u32(162), listed, u32(141), u32(13)))
-  assert(!lists_name(region, u32(162), listed, u32(128), u32(13)))
+  assert(lists_name(region, u32(514), listed, u32(141), u32(13)))
+  assert(!lists_name(region, u32(514), listed, u32(128), u32(13)))
 
   // unlink B (tag 23), then create B again succeeds (tag 24), close (tag 25), unlink (tag 26)
   assert(io.io_submit(ring, requests, io.io_request(io.io_op_unlink(), u32(0), u64(0), u32(141), u32(13), u64(23), false)))
@@ -351,6 +356,95 @@ main: (): i32 {
   assert(io.io_wait(ring, requests, completions, region, u32(1)) == u32(1))
   assert(completions[0].error == u32(0))
   assert(ring[0].pending == u32(0))
+
+  // Every error code the contract names, observed once in both
+  // realizations (docs/spec/120-io.md section 2, "Errors"; tags 50-68).
+  // Paths: "f" NUL at 640, "f/x" NUL at 648, "xx" without NUL at 656, a
+  // 33-byte path at 672.
+  region[640] = u8(102)
+  region[641] = u8(0)
+  region[648] = u8(102)
+  region[649] = u8(47)
+  region[650] = u8(120)
+  region[651] = u8(0)
+  region[656] = u8(120)
+  region[657] = u8(120)
+  k = u32(0)
+  while k < u32(32) {
+    region[u32(672) + k] = u8(97)
+    k = k + u32(1)
+  }
+  region[704] = u8(0)
+  // create f (tag 50); then a file used as a directory: create f/x (51),
+  // readdir f (52), fsyncdir f (53) are Invalid.
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_create(), u32(0), u64(0), u32(640), u32(2), u64(50), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(1)) == u32(1))
+  assert(completions[0].error == u32(0))
+  region[1216] = u8(102)
+  region[1217] = u8(0)
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_create(), u32(1), u64(0), u32(648), u32(4), u64(51), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_readdir(), u32(0), u64(2), u32(1216), u32(32), u64(52), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_fsyncdir(), u32(0), u64(0), u32(640), u32(2), u64(53), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(3)) == u32(3))
+  assert(completions[find_tag(completions, u32(3), u64(51))].error == io.io_err_invalid())
+  assert(completions[find_tag(completions, u32(3), u64(52))].error == io.io_err_invalid())
+  assert(completions[find_tag(completions, u32(3), u64(53))].error == io.io_err_invalid())
+  // open on an open slot is Busy (54); a path without its NUL (55) and one
+  // of 33 bytes (56) are Invalid; a rename split of zero is Invalid (57).
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_open(), u32(0), u64(0), u32(0), u32(13), u64(54), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_open(), u32(1), u64(0), u32(656), u32(2), u64(55), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_open(), u32(1), u64(0), u32(672), u32(33), u64(56), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_rename(), u32(0), u64(0), u32(1152), u32(8), u64(57), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(4)) == u32(4))
+  assert(completions[find_tag(completions, u32(4), u64(54))].error == io.io_err_busy())
+  assert(completions[find_tag(completions, u32(4), u64(55))].error == io.io_err_invalid())
+  assert(completions[find_tag(completions, u32(4), u64(56))].error == io.io_err_invalid())
+  assert(completions[find_tag(completions, u32(4), u64(57))].error == io.io_err_invalid())
+  // stat into a four-byte window leaves the window alone (58); a write
+  // past the end leaves a hole (60), fdatasync (59), and a read across the
+  // hole sees zeros then the bytes (61).
+  region[1280] = u8(9)
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_stat(), u32(0), u64(0), u32(1280), u32(4), u64(58), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(1)) == u32(1))
+  assert(completions[0].error == u32(0) && completions[0].result == u32(0) && region[1280] == u8(9))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_pwrite(), u32(0), u64(100), u32(32), u32(8), u64(60), true)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_fdatasync(), u32(0), u64(0), u32(0), u32(0), u64(59), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(2)) == u32(2))
+  assert(completions[find_tag(completions, u32(2), u64(60))].result == u32(8))
+  assert(completions[find_tag(completions, u32(2), u64(59))].error == u32(0))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_pread(), u32(0), u64(0), u32(1344), u32(108), u64(61), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(1)) == u32(1))
+  assert(completions[0].error == u32(0) && completions[0].result == u32(108))
+  assert(region[1344] == u8(0) && region[1443] == u8(0) && region[1444] == u8(1) && region[1451] == u8(8))
+  // A write on a never-opened slot is Closed and cancels the fsync linked
+  // behind it (62, 63); closing that slot is Closed too (64).
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_pwrite(), u32(1), u64(0), u32(32), u32(8), u64(62), true)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_fsync(), u32(1), u64(0), u32(0), u32(0), u64(63), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(2)) == u32(2))
+  assert(completions[find_tag(completions, u32(2), u64(62))].error == io.io_err_closed())
+  assert(completions[find_tag(completions, u32(2), u64(63))].error == io.io_err_canceled())
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_close(), u32(1), u64(0), u32(0), u32(0), u64(64), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(1)) == u32(1))
+  assert(completions[0].error == io.io_err_closed())
+  // readdir "." into a one-byte output window is TooLarge (65); renaming
+  // f onto the directory d is Invalid (66).
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_readdir(), u32(0), u64(2), u32(1088), u32(3), u64(65), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(1)) == u32(1))
+  assert(completions[0].error == io.io_err_too_large())
+  region[1160] = u8(102)
+  region[1161] = u8(0)
+  region[1162] = u8(100)
+  region[1163] = u8(0)
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_rename(), u32(0), u64(2), u32(1160), u32(4), u64(66), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(1)) == u32(1))
+  assert(completions[0].error == io.io_err_invalid())
+  // close f (67), unlink f (68).
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_close(), u32(0), u64(0), u32(0), u32(0), u64(67), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_unlink(), u32(0), u64(0), u32(640), u32(2), u64(68), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(2)) == u32(2))
+  assert(completions[find_tag(completions, u32(2), u64(67))].error == u32(0))
+  assert(completions[find_tag(completions, u32(2), u64(68))].error == u32(0))
+  assert(ring[0].pending == u32(0))
   42
 }
 `
@@ -477,6 +571,115 @@ func TestE2EIoPortDirectoryCrash(t *testing.T) {
 	module := writeModule(t, map[string]string{
 		"oak.mod":  "module example.com/io_dir_crash\noak 0.1.0\nreplace io => iosim\n",
 		"main.oak": ioDirCrashProgram,
+	})
+	if got := interpretModule(t, module); got != 42 {
+		t.Fatalf("main() returned %d, want 42", got)
+	}
+}
+
+// The simulated directory's rules the pass of 2026-09-13 found broken or
+// unstated (docs/notes/io-port-2026-09.md): a reused entry's stale durable
+// name is not membership, so fsyncdir of one directory does not make
+// another's child durable; a cross-directory rename is refused by the
+// parents' bytes, not their lengths; mkdir of the root is Exists; malformed
+// path shapes are Invalid. Simulation-only: the native host allows what
+// the contract leaves outside.
+const ioDirRulesProgram = `package main
+import(std)
+import("io")
+
+put: (region: [*]u8, at: u32, bytes: []u8): () {
+  i: u32 = u32(0)
+  while i < len(bytes) {
+    region[at + i] = bytes[i]
+    i = i + u32(1)
+  }
+}
+
+main: (): i32 {
+  ring_store: [1]io.IoRing
+  req_store: [8]io.IoRequest
+  cq_store: [8]io.IoCompletion
+  region_store: [512]u8
+  tape: [4]u8
+  ring: [*]io.IoRing = span(&ring_store)
+  requests: [*]io.IoRequest = span(&req_store)
+  completions: [*]io.IoCompletion = span(&cq_store)
+  region: [*]u8 = span(&region_store)
+  io.io_attach(view(&tape), u32(0))
+  io.io_open_region(ring, region, u32(2))
+  // "p" 0, "q" 8, "p/a" 16, "q/b" 24, "." 32, "p/c" 40, "p/" 48, "p//x" 56, "./p" 64
+  p: [2]u8 = [u8(112), u8(0)]
+  q: [2]u8 = [u8(113), u8(0)]
+  pa: [4]u8 = [u8(112), u8(47), u8(97), u8(0)]
+  qb: [4]u8 = [u8(113), u8(47), u8(98), u8(0)]
+  dot: [2]u8 = [u8(46), u8(0)]
+  pc: [4]u8 = [u8(112), u8(47), u8(99), u8(0)]
+  pslash: [3]u8 = [u8(112), u8(47), u8(0)]
+  pdouble: [5]u8 = [u8(112), u8(47), u8(47), u8(120), u8(0)]
+  dotp: [4]u8 = [u8(46), u8(47), u8(112), u8(0)]
+  put(region, u32(0), view(&p))
+  put(region, u32(8), view(&q))
+  put(region, u32(16), view(&pa))
+  put(region, u32(24), view(&qb))
+  put(region, u32(32), view(&dot))
+  put(region, u32(40), view(&pc))
+  put(region, u32(48), view(&pslash))
+  put(region, u32(56), view(&pdouble))
+  put(region, u32(64), view(&dotp))
+  // mkdir p, q; fsyncdir "." (tags 1-3)
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_mkdir(), u32(0), u64(0), u32(0), u32(2), u64(1), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_mkdir(), u32(0), u64(0), u32(8), u32(2), u64(2), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_fsyncdir(), u32(0), u64(0), u32(32), u32(2), u64(3), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(3)) == u32(3))
+  // create p/a, close, fsyncdir p; unlink p/a, fsyncdir p (tags 4-8): the entry is free with a stale durable name p/a
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_create(), u32(0), u64(0), u32(16), u32(4), u64(4), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_close(), u32(0), u64(0), u32(0), u32(0), u64(5), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_fsyncdir(), u32(0), u64(0), u32(0), u32(2), u64(6), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(3)) == u32(3))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_unlink(), u32(0), u64(0), u32(16), u32(4), u64(7), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_fsyncdir(), u32(0), u64(0), u32(0), u32(2), u64(8), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(2)) == u32(2))
+  // create q/b (reuses the entry), close, fsyncdir p only (tags 9-11): q/b must not be durable
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_create(), u32(0), u64(0), u32(24), u32(4), u64(9), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_close(), u32(0), u64(0), u32(0), u32(0), u64(10), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_fsyncdir(), u32(0), u64(0), u32(0), u32(2), u64(11), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(3)) == u32(3))
+  assert(completions[find_tag(completions, u32(3), u64(9))].error == u32(0))
+  ok: Bool = io.iosim_exists_now(subslice(region, u32(24), u32(4))) && !io.iosim_exists_durably(subslice(region, u32(24), u32(4)))
+  // rename q/b -> p/c across directories is Invalid (12); mkdir "." is Exists (13); "p/", "p//x", "./p" are Invalid (14-16)
+  put(region, u32(80), view(&qb))
+  put(region, u32(84), view(&pc))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_rename(), u32(0), u64(4), u32(80), u32(8), u64(12), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_mkdir(), u32(0), u64(0), u32(32), u32(2), u64(13), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_mkdir(), u32(0), u64(0), u32(48), u32(3), u64(14), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_create(), u32(0), u64(0), u32(56), u32(5), u64(15), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_create(), u32(0), u64(0), u32(64), u32(4), u64(16), false)))
+  assert(io.io_wait(ring, requests, completions, region, u32(5)) == u32(5))
+  ok = ok && completions[find_tag(completions, u32(5), u64(12))].error == io.io_err_invalid()
+  ok = ok && completions[find_tag(completions, u32(5), u64(13))].error == io.io_err_exists()
+  ok = ok && completions[find_tag(completions, u32(5), u64(14))].error == io.io_err_invalid()
+  ok = ok && completions[find_tag(completions, u32(5), u64(15))].error == io.io_err_invalid()
+  ok = ok && completions[find_tag(completions, u32(5), u64(16))].error == io.io_err_invalid()
+  ok = ok && io.iosim_exists_now(subslice(region, u32(24), u32(4)))
+  ok ? 42 | 1
+}
+
+find_tag: (completions: [*]io.IoCompletion, count: u32, tag: u64): u32 {
+  i: u32 = u32(0)
+  found: u32 = u32(4294967295)
+  while i < count {
+    completions[i].tag == tag ? { found = i } | { }
+    i = i + u32(1)
+  }
+  found
+}
+`
+
+func TestE2EIoPortDirectoryRules(t *testing.T) {
+	module := writeModule(t, map[string]string{
+		"oak.mod":  "module example.com/io_dir_rules\noak 0.1.0\nreplace io => iosim\n",
+		"main.oak": ioDirRulesProgram,
 	})
 	if got := interpretModule(t, module); got != 42 {
 		t.Fatalf("main() returned %d, want 42", got)

@@ -577,7 +577,32 @@ way (`target("arch=+v")`, `__rvv`). The locality rule (OAK-S0401) is what
 makes this sound: no scalable value crosses a function boundary or lands
 in a record, so a realization's types are its own.
 
-### 6.2 The interpreter's feature set
+### 6.2 Checked claims
+
+**Under `oak test`, the claim is checked on the processor.** The test
+runner compiles the package with `OAK_CHECK_DISPATCH`, and a dispatched
+function whose realization the probe selects then runs **both** the
+realization and its own body on the same arguments and compares the
+results; a disagreement ends the case as the correctness failure
+`dispatch:<function>:<feature>` (`110-testing.md`, failure classes). This
+is the claim's real check — the realization's actual code, an `.oakasm`
+unit included, against the meaning, on the hardware that has the feature
+— and it costs ordinary builds nothing: without the flag the wrapper
+transfers to the realization and returns. Checked shapes are the pure
+ones: a fixed-width integer or `Bool` result and no span parameter, so
+running the body after the realization cannot observe the realization's
+effects. A realization that writes through a span (the hash package's
+`sha256_block_asm`) or returns a record is transferred unchecked; its
+differential test stays the author's (`e2e_stdlib_crc_sha_hw_test.go`).
+
+The backend emits the body under a private name (`oak_f__meaning`, `static
+inline`) and the public function as the wrapper: per slot the static rule
+or the branch on the word, then the meaning. `codegen/aarch64_dispatch_test.go`
+pins the shape; `testrunner/dispatch_test.go` runs a deliberately wrong
+`crc` realization through `oak test` on a processor with CRC and requires
+the `dispatch:` failure, and a correct one passes.
+
+### 6.3 The interpreter's feature set
 
 The interpreter has one portable semantics and no processor. It carries a
 feature set (`evaluator.Features`, empty by default), set by a test or
@@ -585,7 +610,8 @@ the REPL; with `sve` in the set, a call to a dispatched function runs the
 `sve` realization's Oak body in place of the function's own. Because the
 scalable API is extent-independent (§4), the realization has a meaning in
 the interpreter, and the two runs — with and without the feature — are
-the differential check of the slot's claim. `compiler/e2e_dispatch_test.go`
+a second differential check of the slot's claim (the first is §6.2's,
+on the hardware). `compiler/e2e_dispatch_test.go`
 runs a dispatched program with the empty set, with `sve`, in native C on
 the host (whose probe selects the body where SVE is absent), and under
 `qemu-system-aarch64 -cpu max,sve-max-vq=…` (whose probe selects the SVE
@@ -593,7 +619,7 @@ realization), and requires one answer; `codegen/aarch64_dispatch_test.go`
 pins the C shape: the probe, the branch on the word, the attribute and
 the `whilelo`/`ptrue` predicates inside the realization alone.
 
-### 6.3 What is proved
+### 6.4 What is proved
 
 `Oak.Dispatch`: `select` is a function of the available features and the
 clause; `select_none` (no available feature: the body), `select_mem` (the

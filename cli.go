@@ -536,8 +536,8 @@ func plural(n int, one, many string) string {
 // units' companion object) and compiles it with the system C compiler into
 // binary (fixed argument list, no shell).
 func compileBinary(comp compiler.Compilation, binary, asmMode string, tgt target.Target, cpu string) error {
-	comp = comp.WithTarget(tgt)
-	code, object, err := emitFor(comp, asmMode, tgt)
+	comp = comp.WithTarget(tgt).WithCPU(cpu)
+	code, object, err := emitFor(comp, asmMode, tgt, cpu)
 	if err != nil {
 		return err
 	}

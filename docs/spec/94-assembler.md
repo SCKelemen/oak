@@ -1560,12 +1560,23 @@ sizes. The checker and the verifier see the base instructions and are
 unchanged; the object carries `EF_RISCV_RVC`; the QEMU and Sail
 differentials run the strip-mined sum compressed.
 
+**The processor decides (landed).** The compiler reads the RISC-V
+extensions of `-cpu` (`target.CPUFeatures`: `+c`/`+v` on a zig-style name
+such as `generic_rv64+m+a+c+v`, or the letters of an ISA string such as
+`rv64gcv`; a named processor without them carries none; the freestanding
+default `generic_rv64+m` has neither; a hosted RISC-V target assumes its
+toolchain's `rv64gc`). A unit that uses the vector file is refused unless
+the processor has V, naming `-cpu ...+v`; and unless a unit spells
+`option rvc` or `norvc` itself, its native encoding compresses exactly
+when the processor has C — the same choice the C toolchain's assembler
+makes for the inline realization under that `-mcpu`, so the two
+realizations of a unit carry the same instruction sizes
+(`compiler/e2e_rv64_cpu_test.go`).
+
 Still to come in this lane:
 the RVWMO instantiation of `MemoryOrder.lean`, the sail-riscv bridge's
 export side (the Lean export as the semantics the transliteration is
-checked against), the vector unit stitched through the compiler for a
-`-cpu` with V, widening and fractional-LMUL forms, and `option rvc` chosen
-from `-cpu ...+c`. The term
+checked against), and widening and fractional-LMUL forms. The term
 language and the BDD blaster carry over unchanged.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
