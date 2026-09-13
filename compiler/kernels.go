@@ -12,6 +12,7 @@ package compiler
 import (
 	"errors"
 	"fmt"
+	"github.com/SCKelemen/oak/hostform"
 	"sort"
 	"strings"
 
@@ -102,6 +103,32 @@ func analyzeKernels(program *ast.Program, tc *typechecker.TypeChecker) []*diagno
 	for _, loop := range discipline.UnboundedLoops(program) {
 		if kernel, reached := reach[loop.Function]; reached {
 			report(CodeKernelLoop, loop.Loop, "kernel %s reaches a loop in %s with no statically evident bound; kernels use the canonical bounded shape (while i < bound with one i = i + k step) in every profile", kernel, loop.Function)
+		}
+	}
+	// Lanes, threadgroup memory, and barriers are the kernel body's
+	// (docs/spec/56-kernels.md section 2a): a helper has no lane, and the
+	// host form's placement rules hold.
+	for _, name := range order {
+		fn := functions[name]
+		if fn.Kernel || fn.Body == nil {
+			continue
+		}
+		walkNodes(fn.Body, func(n ast.Node) {
+			switch v := n.(type) {
+			case *ast.InvocationExpression:
+				if id, ok := v.Function.(*ast.Identifier); ok && (id.Value == "lane" || id.Value == "barrier") {
+					report(CodeKernelSubset, v, "%s() belongs to a kernel body; %s is a helper, which runs for one lane at a time and has no group", id.Value, name)
+				}
+			case *ast.VariableDeclaration:
+				if v.Threadgroup {
+					report(CodeKernelSubset, v, "threadgroup memory belongs to a kernel body; %s is a helper", name)
+				}
+			}
+		})
+	}
+	for _, fn := range kernels {
+		if err := hostform.Check(fn); err != nil {
+			report(CodeKernelSubset, fn.Name, "kernel %s: %v (docs/spec/56-kernels.md section 2a)", fn.Name.Value, err)
 		}
 	}
 	for _, fn := range kernels {

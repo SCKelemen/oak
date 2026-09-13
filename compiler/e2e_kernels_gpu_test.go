@@ -145,6 +145,32 @@ func TestE2EKernelsOnDevice(t *testing.T) {
 	}
 	expectF32s(t, "lane_sums", readF32s(t, res.Spans["partials"]), 16777218, 40)
 
+	// Lanes (docs/spec/56-kernels.md section 2a): each lane stores its own
+	// slot, so a launch of two groups of four writes eight elements; and a
+	// threadgroup array with a barrier between the phases reverses each
+	// block while a private local carries a value across the barrier —
+	// the same numbers the host's phase-by-phase form computed.
+	lanes := emitKernels(t, kernelLanesProgram)
+	scale := kernelNamed(t, lanes, "scale")
+	if scale.Threadgroup != 4 {
+		t.Fatalf("scale threadgroup = %d", scale.Threadgroup)
+	}
+	res, err = gpu.Run(ctx, lanes.Source, scale, 2, map[string]gpu.Arg{
+		"x": f32s(1, 2, 3, 4, 5, 6, 7, 8), "out": f32s(0, 0, 0, 0, 0, 0, 0, 0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectF32s(t, "scale", readF32s(t, res.Spans["out"]), 2, 4, 6, 8, 10, 12, 14, 16)
+	arena := emitKernels(t, kernelArenaProgram)
+	res, err = gpu.Run(ctx, arena.Source, kernelNamed(t, arena, "reverse_blocks"), 2, map[string]gpu.Arg{
+		"x": f32s(1, 2, 3, 4, 5, 6, 7, 8), "out": f32s(0, 0, 0, 0, 0, 0, 0, 0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectF32s(t, "reverse_blocks", readF32s(t, res.Spans["out"]), 14, 23, 32, 41, 58, 67, 76, 85)
+
 	// Record parameters flattened into buffers: a 2x3 by its transpose.
 	matmul := emitKernels(t, kernelMatmulProgram)
 	res, err = gpu.Run(ctx, matmul.Source, kernelNamed(t, matmul, "matmul_t"), 4, map[string]gpu.Arg{

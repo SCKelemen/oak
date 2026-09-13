@@ -2,6 +2,7 @@ package evaluator
 
 import (
 	"fmt"
+	"github.com/SCKelemen/oak/hostform"
 	"github.com/SCKelemen/oak/token"
 	"os"
 	"sort"
@@ -1303,6 +1304,14 @@ func evalADTType(adt *ast.ADTType, env *object.Environment) object.Object {
 
 // Evaluate function statement (top-level function or method)
 func evalFunctionStatement(fn *ast.FunctionStatement, env *object.Environment) object.Object {
+	// A kernel with lanes, threadgroup memory, or barriers runs in its host
+	// form (docs/spec/56-kernels.md section 2a), the same rewrite the C
+	// backend applies, so the interpreter and the C agree lane for lane.
+	if fn.Kernel {
+		if host, err := hostform.Rewrite(fn); err == nil && host != nil {
+			fn = host
+		}
+	}
 	// Convert FunctionParameters to Identifiers
 	params := make([]*ast.Identifier, len(fn.Parameters))
 	for i, param := range fn.Parameters {
