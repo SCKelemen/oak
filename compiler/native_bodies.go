@@ -10,11 +10,13 @@ import (
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/lsp"
 	"github.com/SCKelemen/oak/nativegen"
+	"github.com/SCKelemen/oak/target"
 	"github.com/SCKelemen/oak/typechecker"
 )
 
 // lowerNativeBodies runs the native backend over the program's ordinary
-// functions (docs/spec/94-assembler.md §9). A function the backend lowers
+// functions on the target's assembler lane (docs/spec/94-assembler.md §9,
+// AArch64 or RV64). A function the backend lowers
 // becomes an asm function beside the units: it passes the seam checker (a
 // finding there is a backend bug and rejects the compilation), is verified
 // against its own Oak body (a mismatch rejects; proof, evidence, and trust
@@ -59,7 +61,8 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		if !ok || fn.Name == nil || fn.Body == nil || fn.AsmBacked || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 {
 			continue
 		}
-		asmFn, err := nativegen.Compile(fn, functions, records, adts, tc)
+		lane := nativegen.Lane{Arch: comp.options.Target.AsmArch(), SoftFloat: comp.options.Target.Freestanding() && comp.options.Target.Arch == target.ArchRiscv64}
+		asmFn, err := nativegen.CompileFor(lane, fn, functions, records, adts, tc)
 		if err != nil {
 			if _, outside := err.(nativegen.Unsupported); outside {
 				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (%v)", fn.Name.Value, err)))
@@ -86,6 +89,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		}
 		diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", "native backend: "+verdict.Message))
 		fn.NativeBacked = true
+		fn.AsmArch = asmFn.Arch // the C emitter guards the Oak body by the lane's negation
 		lowered = append(lowered, asmFn)
 	}
 	return lowered, diagnostics

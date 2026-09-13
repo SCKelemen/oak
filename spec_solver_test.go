@@ -70,13 +70,23 @@ func TestOakShellAgrees(t *testing.T) {
 		}
 		t.Run(filepath.Base(file), func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "out.lean")
-			code, text := runCLI(t, func(args []string) int { return proveCommand(args, os.Stdout, os.Stderr) }, []string{"-solver", "self", "-cross", "go", "-lean", out, file})
+			code, text := runCLI(t, func(args []string) int { return proveCommand(args, os.Stdout, os.Stderr) }, []string{"-solver", "self", "-cross", "go", "-witness", "-lean", out, file})
 			if code != 0 || strings.Contains(text, "disagrees") || !strings.Contains(text, "the Go ladder agrees on") || strings.Contains(text, "agrees on 0 of") || !strings.Contains(text, "the Lean projection agrees with the Go extractor") {
 				t.Fatalf("exit %d:\n%s", code, text)
+			}
+			// The compiled witness, driven from the shell, annotates the
+			// rows whose domains the driver enumerates.
+			if witnessedLawFiles[filepath.Base(file)] != strings.Contains(text, "witnessed in the compiled program") {
+				t.Fatalf("witness annotation mismatch:\n%s", text)
 			}
 		})
 	}
 }
+
+// witnessedLawFiles are the law files with a theorem the compiled
+// witness's driver enumerates (the rest have only bit-level rows over
+// wide or aggregate parameters).
+var witnessedLawFiles = map[string]bool{"discharge.oak": true, "effects.oak": true, "floats.oak": true, "intrinsics.oak": true, "lattice.oak": true, "machines.oak": true, "patterns.oak": true, "protocols.oak": true, "shapes.oak": true, "witnesses.oak": true}
 
 // TestOakLeanAgrees projects the law files whose theorems are left to Lean
 // (the ones the ladder reports open) with the prover written in Oak and

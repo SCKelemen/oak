@@ -111,8 +111,8 @@ func buildPackage(args []string) int {
 	output, header, leanOut, metalOut, profile, targetFlag, cpu := "", "", "", "", "", "", ""
 	metalCheck := false
 	lines, emitC, nativeBodies := false, false, false
-	asmMode := ""
-	fs := newFlagSet("build", "oak build [-o out] [-target os/arch] [-cpu name] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-profile default|strict] [-asm native|c] [-native] [-lines] [dir|file.oak|pattern]...")
+	asmMode, linkMode := "", "c"
+	fs := newFlagSet("build", "oak build [-o out] [-target os/arch] [-cpu name] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-profile default|strict] [-asm native|c] [-native] [-link c|oak] [-lines] [dir|file.oak|pattern]...")
 	fs.StringVar(&targetFlag, "target", "", "platform os/arch, e.g. linux/riscv64 or freestanding/arm (default: OAKOS/OAKARCH, else the host; docs/spec/90-backend.md section 2a)")
 	fs.StringVar(&cpu, "cpu", "", "processor for the C compiler's -mcpu, e.g. cortex_m0 (default: OAKCPU, else the target's default)")
 	fs.StringVar(&output, "o", "", "output file: an executable, or C when it ends in .c")
@@ -125,6 +125,7 @@ func buildPackage(args []string) int {
 	fs.StringVar(&asmMode, "asm", "", "asm units: native (Oak assembler companion object) or c (inline __asm__; default native where the target has a lane; docs/spec/94-assembler.md section 9)")
 	fs.BoolVar(&lines, "lines", false, "emit #line directives so C diagnostics point at Oak source")
 	fs.BoolVar(&nativeBodies, "native", false, "lower Oak bodies through the native backend where its subset reaches (docs/spec/94-assembler.md section 9)")
+	fs.StringVar(&linkMode, "link", "c", "link: c (the target's C compiler links the emitted C and the companion object) or oak (the Oak assembler alone writes a static ELF executable from natively lowered bodies; implies -native; linux and freestanding targets on the arm64 and rv64 lanes)")
 	rest, code, stop := parseFlags(fs, args)
 	if stop {
 		return code
@@ -145,6 +146,13 @@ func buildPackage(args []string) int {
 		fmt.Fprintf(os.Stderr, "oak build: -asm takes native or c, got %q\n", asmMode)
 		return 2
 	}
+	if linkMode != "c" && linkMode != "oak" {
+		fmt.Fprintf(os.Stderr, "oak build: -link takes c or oak, got %q\n", linkMode)
+		return 2
+	}
+	if linkMode == "oak" {
+		nativeBodies = true
+	}
 	targets, err := expandPackagePatterns(rest)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
@@ -155,7 +163,7 @@ func buildPackage(args []string) int {
 		return 2
 	}
 	for _, dir := range targets {
-		if code := buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, tgt, cpu, lines, emitC, nativeBodies, metalCheck); code != 0 {
+		if code := buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, linkMode, tgt, cpu, lines, emitC, nativeBodies, metalCheck); code != 0 {
 			return code
 		}
 	}
@@ -163,7 +171,7 @@ func buildPackage(args []string) int {
 }
 
 // buildOne builds a single package or file.
-func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode string, tgt target.Target, cpu string, lines, emitC, nativeBodies, metalCheck bool) int {
+func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode, linkMode string, tgt target.Target, cpu string, lines, emitC, nativeBodies, metalCheck bool) int {
 	comp, err := compilationFor(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
@@ -262,6 +270,22 @@ func buildOne(dir, output, header, leanOut, metalOut, profile, asmMode string, t
 			return 1
 		}
 		fmt.Printf("Built %s -> %s\n", dir, output)
+		return 0
+	}
+	if linkMode == "oak" {
+		// The Oak assembler links the natively lowered program itself
+		// (docs/spec/94-assembler.md §9): no C compiler, no system linker.
+		image, err := comp.EmitExecutable().Get()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
+			return 1
+		}
+		output = strings.TrimSuffix(output, ".o")
+		if err := os.WriteFile(output, image, 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
+			return 1
+		}
+		fmt.Printf("Built %s -> %s (linked by the Oak assembler)\n", dir, output)
 		return 0
 	}
 	// An executable, like `go build`: the emitted C compiled by the target's

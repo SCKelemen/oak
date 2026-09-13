@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/lsp"
 	"github.com/SCKelemen/oak/modules"
 )
 
@@ -25,6 +27,117 @@ import (
 // __oak_bin_decode_T (Oak.BinaryCodec states the byte laws).
 
 func binaryCodecName(operation, typ string) string { return "__oak_bin_" + operation + "_" + typ }
+
+// CodecLayout is one derived fixed layout: the record, its size, and each
+// top-level field's place in it (docs/spec/71-codecs.md section 22).
+type CodecLayout struct {
+	Type   string
+	Size   int64
+	Fields []CodecLayoutField
+}
+
+// CodecLayoutField is one field of a layout: its byte offset and size, the
+// shape (`u32`, `[4]u8`, `Option[u16]`, `Inner`, `View[u8] bytes 4`), and
+// the endianness of its integers ("le", "be", or "" when none applies).
+type CodecLayoutField struct {
+	Name   string
+	Offset int64
+	Size   int64
+	Shape  string
+	Endian string
+}
+
+// codecLayoutDiagnostics reports every derived layout as information, one
+// line per record: `OAK-C0101 derived Binary layout Header: 36 bytes —
+// magic@0:4 u32 be, version@4:2 u16 le, …`.
+func codecLayoutDiagnostics(layouts []CodecLayout) []*diagnostic.Diagnostic {
+	var out []*diagnostic.Diagnostic
+	for _, layout := range layouts {
+		var b strings.Builder
+		fmt.Fprintf(&b, "derived Binary layout %s: %d bytes", layout.Type, layout.Size)
+		for i, field := range layout.Fields {
+			if i == 0 {
+				b.WriteString(" — ")
+			} else {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(&b, "%s@%d:%d %s", field.Name, field.Offset, field.Size, field.Shape)
+			if field.Endian != "" {
+				b.WriteString(" " + field.Endian)
+			}
+		}
+		d := diagnostic.NewInformation(lsp.Range{}, "codec", b.String())
+		d.Code = "OAK-C0101"
+		out = append(out, d)
+	}
+	return out
+}
+
+// reportLayout records a record's layout and, once each, the layouts of
+// the records nested in it (they are inlined in the code, so the report
+// is where their own bytes are named).
+func (d *codecDeriver) reportLayout(typ string, fields []binaryField) error {
+	if d.layoutReported == nil {
+		d.layoutReported = map[string]bool{}
+	}
+	if d.layoutReported[typ] {
+		return nil
+	}
+	d.layoutReported[typ] = true
+	layout, err := d.recordLayout(typ, fields)
+	if err != nil {
+		return err
+	}
+	d.layouts = append(d.layouts, layout)
+	for _, field := range fields {
+		if field.typ == "view" || binaryWidth(field.typ) != 0 {
+			continue
+		}
+		nested, err := d.binaryFields(field.typ)
+		if err != nil {
+			return err
+		}
+		if err := d.reportLayout(field.typ, nested); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// recordLayout describes a record's fields by offset for the report.
+func (d *codecDeriver) recordLayout(typ string, fields []binaryField) (CodecLayout, error) {
+	layout := CodecLayout{Type: typ}
+	off := int64(0)
+	for _, field := range fields {
+		size, err := d.binaryFieldSize(field, map[string]bool{})
+		if err != nil {
+			return layout, err
+		}
+		if field.length > 0 {
+			size *= field.length
+		}
+		shape := field.typ
+		endian := ""
+		if binaryWidth(field.typ) > 1 && field.typ != "Bool" {
+			endian = "le"
+			if field.bigEndian {
+				endian = "be"
+			}
+		}
+		switch {
+		case field.typ == "view":
+			shape = fmt.Sprintf("View[u8] bytes %d", field.viewBytes)
+		case field.optional:
+			shape = "Option[" + field.typ + "]"
+		case field.length > 0:
+			shape = fmt.Sprintf("[%d]%s", field.length, field.typ)
+		}
+		layout.Fields = append(layout.Fields, CodecLayoutField{Name: field.name, Offset: off, Size: size, Shape: shape, Endian: endian})
+		off += size
+	}
+	layout.Size = off
+	return layout, nil
+}
 
 // binaryField is one field of a fixed layout: a scalar or a fixed array of
 // scalars or records, with the endianness its integers use.
@@ -575,6 +688,11 @@ func (d *codecDeriver) deriveBinary(typ string) error {
 					return fmt.Errorf("codec: %s.%s: a nested record with view fields is not derived; borrow at the top level", typ, field.name)
 				}
 			}
+		}
+	}
+	if fields != nil {
+		if err := d.reportLayout(typ, fields); err != nil {
+			return err
 		}
 	}
 	regions := []string{}

@@ -46,7 +46,7 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 	if *solver == "self" {
 		// The prover written in Oak (prove/solver/shell.oak): the file to
 		// the rows, with the Go ladder as the cross-check when asked.
-		return selfProve(target, *cases, *cross == "go", *leanOut, stdout, stderr)
+		return selfProve(target, *cases, *cross == "go", *leanOut, *witness, stdout, stderr)
 	}
 	// Invariant candidates get their base and step obligations generated
 	// before checking (prove/protocols.go), and declared operator laws
@@ -296,7 +296,7 @@ func lawSources(target string) [][]byte {
 // projection (lean.oak). With crossCheck the Go ladder decides the same
 // file and every row's status must agree, and the Go extractor's
 // projection must match the written one byte for byte.
-func selfProve(target string, cases int, crossCheck bool, leanOut string, stdout, stderr io.Writer) int {
+func selfProve(target string, cases int, crossCheck bool, leanOut string, witness bool, stdout, stderr io.Writer) int {
 	info, err := os.Stat(target)
 	if err != nil || info.IsDir() {
 		fmt.Fprintf(stderr, "oak prove: -solver self takes one law file, got %s\n", target)
@@ -321,6 +321,23 @@ func selfProve(target string, cases int, crossCheck bool, leanOut string, stdout
 			return 2
 		}
 		run.Env = append(run.Env, "OAK_PROVE_LEAN="+leanAbsolute)
+	}
+	if witness {
+		// The shell writes the witness driver, has this compiler build it,
+		// and runs the binary (prove/solver/witness.oak).
+		compilerPath, err := os.Executable()
+		if err != nil {
+			fmt.Fprintf(stderr, "oak prove: %v\n", err)
+			return 2
+		}
+		dir, err := os.MkdirTemp("", "oak-witness-")
+		if err != nil {
+			fmt.Fprintf(stderr, "oak prove: %v\n", err)
+			return 2
+		}
+		defer os.RemoveAll(dir)
+		run.Env = append(run.Env, "OAK_PROVE_WITNESS=1", "OAK_PROVE_COMPILER="+compilerPath,
+			"OAK_PROVE_WITNESS_SOURCE="+filepath.Join(dir, "witness.oak"), "OAK_PROVE_WITNESS_BINARY="+filepath.Join(dir, "witness"))
 	}
 	var out strings.Builder
 	run.Stdout = &out

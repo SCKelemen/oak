@@ -1,132 +1,27 @@
 package main
 
-// A multi-literal scanner in Oak's portable vectors: the Teddy prefilter
-// (Hyperscan) over three nibble-table pairs, sixty-four bytes a step,
-// candidates verified against the literal bytes. Prototype for stdlib.
+// The literal set of literals.h as a `literals` declaration
+// (docs/spec/113-literals.md): the compiler computes the Teddy nibble
+// tables from it and projects http_count, http_find, and http_which over
+// the standard library kernel (stdlib/literals.oak). scan_oak.c times
+// http_count on the shared input; main checks the projection against a
+// scalar reference on generated text.
 
-// bit j of a bucket mask: literal j sits in bucket j % 8.
-bucket_bit: (j: u32): u8 {
-  bits: [8]u8 = [u8(1), u8(2), u8(4), u8(8), u8(16), u8(32), u8(64), u8(128)]
-  bits[j % u32(8)]
-}
-
-// build_tables fills six sixteen-entry tables — low and high nibble of the
-// first, second, and third byte of every literal — with bucket masks.
-build_tables: (patterns: []u8, starts: []u32, count: u32, tables: [*]u8): () {
-  assert(len(tables) >= u32(96) && count + u32(1) <= len(starts))
-  i: u32 = u32(0)
-  while i < u32(96) {
-    tables[i] = u8(0)
-    i = i + u32(1)
-  }
-  j: u32 = u32(0)
-  while j < count {
-    s: u32 = starts[j]
-    assert(starts[j + u32(1)] >= s + u32(3) && starts[j + u32(1)] <= len(patterns))
-    bit: u8 = bucket_bit(j)
-    k: u32 = u32(0)
-    while k < u32(3) {
-      c: u8 = patterns[s + k]
-      lo: u32 = u32(32) * k + u32(c & u8(15))
-      hi: u32 = u32(32) * k + u32(16) + u32(c >> u8(4))
-      tables[lo] = tables[lo] | bit
-      tables[hi] = tables[hi] | bit
-      k = k + u32(1)
-    }
-    j = j + u32(1)
-  }
-}
-
-// literal_at: literal j of the set occurs at pos.
-literal_at: (bytes: []u8, pos: u32, patterns: []u8, starts: []u32, j: u32): Bool {
-  s: u32 = starts[j]
-  e: u32 = starts[j + u32(1)]
-  n: u32 = e - s
-  pos + n <= len(bytes) ? {
-    k: u32 = u32(0)
-    same: Bool = true
-    while same && k < n {
-      same = bytes[pos + k] == patterns[s + k]
-      k = k + u32(1)
-    }
-    same
-  } | { false }
-}
-
-// classify: the candidate lanes of one block — bucket masks whose first
-// three bytes match at each position — from the block and its two shifts.
-classify: (lo0: simd.U8x16, hi0: simd.U8x16, lo1: simd.U8x16, hi1: simd.U8x16, lo2: simd.U8x16, hi2: simd.U8x16, nib: simd.U8x16, b0: simd.U8x16, b1: simd.U8x16, b2: simd.U8x16): simd.U8x16 {
-  m0: simd.U8x16 = simd.and_u8x16(simd.tbl_u8x16(lo0, simd.and_u8x16(b0, nib)), simd.tbl_u8x16(hi0, simd.shr_u8x16(b0, u32(4))))
-  m1: simd.U8x16 = simd.and_u8x16(simd.tbl_u8x16(lo1, simd.and_u8x16(b1, nib)), simd.tbl_u8x16(hi1, simd.shr_u8x16(b1, u32(4))))
-  m2: simd.U8x16 = simd.and_u8x16(simd.tbl_u8x16(lo2, simd.and_u8x16(b2, nib)), simd.tbl_u8x16(hi2, simd.shr_u8x16(b2, u32(4))))
-  simd.and_u8x16(simd.and_u8x16(m0, m1), m2)
-}
-
-// verify counts the literals that occur at the candidate lanes of one block.
-verify: (cand: simd.U8x16, bytes: []u8, base: u32, patterns: []u8, starts: []u32, count: u32): u32 {
-  lanes: [16]u8 = [u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0)]
-  simd.store_u8x16(span(&lanes), u32(0), cand)
-  hits: u32 = u32(0)
-  l: u32 = u32(0)
-  while l < u32(16) {
-    m: u8 = lanes[l]
-    m != u8(0) ? {
-      j: u32 = u32(0)
-      while j < count {
-        (m & bucket_bit(j)) != u8(0) && literal_at(bytes, base + l, patterns, starts, j) ? { hits = hits + u32(1) } | { }
-        j = j + u32(1)
-      }
-    } | { }
-    l = l + u32(1)
-  }
-  hits
-}
-
-// count_literals: the number of occurrences of every literal in bytes.
-count_literals: (bytes: []u8, patterns: []u8, starts: []u32, count: u32, tables: []u8): u32 {
-  assert(len(tables) >= u32(96))
-  lo0: simd.U8x16 = simd.load_u8x16(tables, u32(0))
-  hi0: simd.U8x16 = simd.load_u8x16(tables, u32(16))
-  lo1: simd.U8x16 = simd.load_u8x16(tables, u32(32))
-  hi1: simd.U8x16 = simd.load_u8x16(tables, u32(48))
-  lo2: simd.U8x16 = simd.load_u8x16(tables, u32(64))
-  hi2: simd.U8x16 = simd.load_u8x16(tables, u32(80))
-  nib: simd.U8x16 = simd.splat_u8x16(u8(15))
-  found: u32 = u32(0)
-  off: u32 = u32(0)
-  while len(bytes) >= u32(66) && off <= len(bytes) - u32(66) {
-    c0: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, simd.load_u8x16(bytes, off), simd.load_u8x16(bytes, off + u32(1)), simd.load_u8x16(bytes, off + u32(2)))
-    c1: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, simd.load_u8x16(bytes, off + u32(16)), simd.load_u8x16(bytes, off + u32(17)), simd.load_u8x16(bytes, off + u32(18)))
-    c2: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, simd.load_u8x16(bytes, off + u32(32)), simd.load_u8x16(bytes, off + u32(33)), simd.load_u8x16(bytes, off + u32(34)))
-    c3: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, simd.load_u8x16(bytes, off + u32(48)), simd.load_u8x16(bytes, off + u32(49)), simd.load_u8x16(bytes, off + u32(50)))
-    any: simd.U8x16 = simd.or_u8x16(simd.or_u8x16(c0, c1), simd.or_u8x16(c2, c3))
-    simd.any_u8x16(any) ? {
-      simd.any_u8x16(c0) ? { found = found + verify(c0, bytes, off, patterns, starts, count) } | { }
-      simd.any_u8x16(c1) ? { found = found + verify(c1, bytes, off + u32(16), patterns, starts, count) } | { }
-      simd.any_u8x16(c2) ? { found = found + verify(c2, bytes, off + u32(32), patterns, starts, count) } | { }
-      simd.any_u8x16(c3) ? { found = found + verify(c3, bytes, off + u32(48), patterns, starts, count) } | { }
-    } | { }
-    off = off + u32(64)
-  }
-  while off < len(bytes) {
-    j: u32 = u32(0)
-    while j < count {
-      literal_at(bytes, off, patterns, starts, j) ? { found = found + u32(1) } | { }
-      j = j + u32(1)
-    }
-    off = off + u32(1)
-  }
-  found
+Http: literals = {
+  "GET ", "POST ", "PUT ", "DELETE ",
+  "Host: ", "User-Agent", "Content-Length", "Content-Type",
+  "Accept: ", "Cookie: ", "HTTP/1.1", "Connection",
+  "Referer: ", "Location: ", "Set-Cookie", "X-Forwarded",
 }
 
 // scalar_count: the reference — every literal tried at every position.
-scalar_count: (bytes: []u8, patterns: []u8, starts: []u32, count: u32): u32 {
+scalar_count: (bytes: []u8): u32 {
   found: u32 = u32(0)
   pos: u32 = u32(0)
   while pos < len(bytes) {
     j: u32 = u32(0)
-    while j < count {
-      literal_at(bytes, pos, patterns, starts, j) ? { found = found + u32(1) } | { }
+    while j < u32(16) {
+      literals_teddy_literal_at(bytes, pos, view(&http_literal_bytes), view(&http_literal_starts), j) ? { found = found + u32(1) } | { }
       j = j + u32(1)
     }
     pos = pos + u32(1)
@@ -134,14 +29,7 @@ scalar_count: (bytes: []u8, patterns: []u8, starts: []u32, count: u32): u32 {
   found
 }
 
-http_patterns: [136]u8 = [u8(71), u8(69), u8(84), u8(32), u8(80), u8(79), u8(83), u8(84), u8(32), u8(80), u8(85), u8(84), u8(32), u8(68), u8(69), u8(76), u8(69), u8(84), u8(69), u8(32), u8(72), u8(111), u8(115), u8(116), u8(58), u8(32), u8(85), u8(115), u8(101), u8(114), u8(45), u8(65), u8(103), u8(101), u8(110), u8(116), u8(67), u8(111), u8(110), u8(116), u8(101), u8(110), u8(116), u8(45), u8(76), u8(101), u8(110), u8(103), u8(116), u8(104), u8(67), u8(111), u8(110), u8(116), u8(101), u8(110), u8(116), u8(45), u8(84), u8(121), u8(112), u8(101), u8(65), u8(99), u8(99), u8(101), u8(112), u8(116), u8(58), u8(32), u8(67), u8(111), u8(111), u8(107), u8(105), u8(101), u8(58), u8(32), u8(72), u8(84), u8(84), u8(80), u8(47), u8(49), u8(46), u8(49), u8(67), u8(111), u8(110), u8(110), u8(101), u8(99), u8(116), u8(105), u8(111), u8(110), u8(82), u8(101), u8(102), u8(101), u8(114), u8(101), u8(114), u8(58), u8(32), u8(76), u8(111), u8(99), u8(97), u8(116), u8(105), u8(111), u8(110), u8(58), u8(32), u8(83), u8(101), u8(116), u8(45), u8(67), u8(111), u8(111), u8(107), u8(105), u8(101), u8(88), u8(45), u8(70), u8(111), u8(114), u8(119), u8(97), u8(114), u8(100), u8(101), u8(100)]
-http_starts: [17]u32 = [u32(0), u32(4), u32(9), u32(13), u32(20), u32(26), u32(36), u32(50), u32(62), u32(70), u32(78), u32(86), u32(96), u32(105), u32(115), u32(125), u32(136)]
-
 main: (): u32 {
-  patterns: []u8 = view(&http_patterns)
-  starts: []u32 = view(&http_starts)
-  tables: [96]u8 = [u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0)]
-  build_tables(patterns, starts, u32(16), span(&tables))
   text: [65536]u8
   seed: u32 = u32(12345)
   i: u32 = u32(0)
@@ -154,17 +42,17 @@ main: (): u32 {
   while k < u32(60) {
     j: u32 = k % u32(16)
     at: u32 = k * u32(1000) + (k * u32(37)) % u32(900)
-    s: u32 = starts[j]
-    n: u32 = starts[j + u32(1)] - s
+    s: u32 = http_literal_starts[j]
+    n: u32 = http_literal_starts[j + u32(1)] - s
     m: u32 = u32(0)
     while m < n {
-      text[at + m] = patterns[s + m]
+      text[at + m] = http_literal_bytes[s + m]
       m = m + u32(1)
     }
     k = k + u32(1)
   }
   bytes: []u8 = view(&text)
-  got: u32 = count_literals(bytes, patterns, starts, u32(16), view(&tables))
-  want: u32 = scalar_count(bytes, patterns, starts, u32(16))
+  got: u32 = http_count(bytes)
+  want: u32 = scalar_count(bytes)
   got == want && got >= u32(60) ? u32(0) | u32(1) + (got % u32(100))
 }
