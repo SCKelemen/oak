@@ -1033,12 +1033,21 @@ type generator struct {
 	spill       map[int]int64 // scratch register → its spill slot offset
 	free        []int         // free scratch registers
 	live        []int         // allocated scratch registers, allocation order
-	labels      int
-	loops       []string // break targets
-	hasCalls    bool
-	line        int
-	trap        string // the trap block's label (division by zero, shift overflow, assert)
-	usedTrap    bool
+	// defined marks the live scratch registers an emitted instruction has
+	// written: a call spills exactly those (a register allocated for an
+	// enclosing expression's result and not yet written holds nothing, and
+	// the checker refuses a spill that reads it).
+	defined map[int]bool
+	// constants are the program's folded constant globals
+	// (asm.Function.Constants): an identifier naming one, not shadowed by
+	// a local, materializes as an immediate at its declared type.
+	constants map[string]asm.Constant
+	labels    int
+	loops     []string // break targets
+	hasCalls  bool
+	line      int
+	trap      string // the trap block's label (division by zero, shift overflow, assert)
+	usedTrap  bool
 	// terminated: an unconditional jump was emitted and no label has
 	// followed — instructions there are unreachable and are not emitted (the
 	// checker refuses them).
@@ -1094,25 +1103,26 @@ type Lane struct {
 // CompileFor lowers one Oak function on a lane (docs/spec/94-assembler.md
 // §9). A lane without a native backend leaves the function to the C
 // backend with the reason.
-func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, tc *typechecker.TypeChecker) (*asm.Function, error) {
+func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	switch lane.Arch {
 	case "", asm.ArchArm64:
 		if lane.ElideProven {
-			return compileArm64(fn, functions, records, adts, tc, true)
+			return compileArm64(fn, functions, records, adts, constants, tc, true)
 		}
-		return Compile(fn, functions, records, adts, tc)
+		return Compile(fn, functions, records, adts, constants, tc)
 	case asm.ArchRV64:
-		return compileRV64(fn, functions, records, adts, tc, lane.SoftFloat)
+		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat)
 	}
 	return nil, unsupported("no native backend for the %s lane", lane.Arch)
 }
 
 // Compile lowers one Oak function on the AArch64 lane. functions maps every
 // program function by name (callees' signatures), records every declared
-// record type by name (their field lists); tc is the checker that typed
-// the program.
-func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, tc *typechecker.TypeChecker) (*asm.Function, error) {
-	return compileArm64(fn, functions, records, adts, tc, false)
+// record type by name (their field lists), constants the program's folded
+// constant globals (docs/spec/90-backend.md §8a); tc is the checker that
+// typed the program.
+func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
+	return compileArm64(fn, functions, records, adts, constants, tc, false)
 }
 
 // ElidedGuards reports how many element guards a lowering left out under
@@ -1121,15 +1131,20 @@ func ElidedGuards(fn *asm.Function) int { return elidedGuards[fn] }
 
 var elidedGuards = map[*asm.Function]int{}
 
-func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, tc *typechecker.TypeChecker, elide bool) (*asm.Function, error) {
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, elide bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	if len(fn.Parameters) > 8 {
 		return nil, unsupported("more than eight parameters")
 	}
-	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, line: fn.Token.Line, elide: elide}
-	parkSpans := mentionsCall(fn.Body)
+	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, line: fn.Token.Line, elide: elide}
+	// A span pair parked in callee-saved registers survives a call, and a
+	// result: the result leaves in x0 (and x1), where a span parameter's
+	// pair is bound, and the checker's span facts flow in text order — a
+	// result placed in one arm would end the span before a later arm
+	// walks it.
+	parkSpans := mentionsCall(fn.Body) || returnsValue(fn)
 	if hasVariables(fn) || parkSpans {
 		g.saveArea = 8 * (calleeHigh - calleeLow + 1)
 	}
@@ -1371,6 +1386,7 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	// what the checker and verifier look up (an instantiation is spelled
 	// Option[u32] in the signature and Option_u32 in the table).
 	out.Composites = Composites(records, adts)
+	out.Constants = constants
 	spell := func(expr ast.Expression) {
 		if expr == nil {
 			return
@@ -2082,8 +2098,88 @@ func imm(v int64) asm.Immediate { return asm.Immediate{Value: v} }
 
 func mem(offset int64) asm.Memory { return asm.Memory{Base: sp(), Offset: offset} }
 
+// zeroPair stores two zero words at a frame slot: `stp` while the offset is
+// within the pair form's scaled 7-bit immediate (-512..504), two `str`
+// otherwise (the single form reaches 32760) — the encoder refuses an
+// offset outside its field rather than truncating it.
+func (g *generator) zeroPair(zero int, slot asm.Memory) {
+	if slot.Offset >= -512 && slot.Offset <= 504 {
+		g.emit("stp", xr(zero), xr(zero), slot)
+		return
+	}
+	g.emit("str", xr(zero), slot)
+	g.emit("str", xr(zero), asm.Memory{Base: slot.Base, Offset: slot.Offset + 8})
+}
+
 func (g *generator) ins(mnemonic string, operands ...asm.Operand) asm.Instruction {
+	g.noteWrite(mnemonic, operands)
 	return asm.Instruction{Mnemonic: mnemonic, Operands: operands, Line: g.line}
+}
+
+// noteWrite records that an instruction writes a scratch register (its
+// first operand, unless the mnemonic only reads it), for the call spill.
+func (g *generator) noteWrite(mnemonic string, operands []asm.Operand) {
+	if len(operands) == 0 || !writesFirstOperand(mnemonic) {
+		return
+	}
+	reg, isReg := operands[0].(asm.Register)
+	if !isReg {
+		return
+	}
+	switch reg.Class {
+	case asm.ClassV, asm.ClassRV64F:
+		g.defined[vecBase+reg.Num] = true
+	default:
+		g.defined[reg.Num] = true
+	}
+}
+
+// writesFirstOperand reports whether a mnemonic's first operand is its
+// destination: every instruction of either lane except the stores, the
+// comparisons, and the control transfers.
+func writesFirstOperand(mnemonic string) bool {
+	switch mnemonic {
+	case "stxr", "stlxr", "stxrb", "stlxrb", "stxrh", "stlxrh":
+		return true // the store-exclusive status register
+	case "cmp", "cmn", "tst", "fcmp", "fcmpe", "cbz", "cbnz", "tbz", "tbnz", "ret", "brk", "bl", "b",
+		"beq", "bne", "blt", "bge", "bltu", "bgeu", "j", "jal", "jalr", "call", "ebreak",
+		"sd", "sw", "sh", "sb", "fsd", "fsw":
+		return false
+	}
+	return !strings.HasPrefix(mnemonic, "st") && !strings.HasPrefix(mnemonic, "b.")
+}
+
+// returnsValue reports whether a function has a result (anything but unit).
+func returnsValue(fn *ast.FunctionStatement) bool {
+	return fn.ReturnType != nil && fn.ReturnType.String() != "()"
+}
+
+// constantOf resolves a name to a constant global when no local of any
+// kind shadows it.
+func (g *generator) constantOf(name string) (asm.Constant, bool) {
+	c, isConst := g.constants[name]
+	if !isConst {
+		return asm.Constant{}, false
+	}
+	if _, isVar := g.types[name]; isVar {
+		return asm.Constant{}, false
+	}
+	if _, isSpan := g.spans[name]; isSpan {
+		return asm.Constant{}, false
+	}
+	if _, isArray := g.arrays[name]; isArray {
+		return asm.Constant{}, false
+	}
+	if _, isRecord := g.records[name]; isRecord {
+		return asm.Constant{}, false
+	}
+	if _, isRecordParam := g.recordParams[name]; isRecordParam {
+		return asm.Constant{}, false
+	}
+	if _, known := scalars[c.Type]; !known {
+		return asm.Constant{}, false
+	}
+	return c, true
 }
 
 func (g *generator) emit(mnemonic string, operands ...asm.Operand) {
@@ -2166,6 +2262,7 @@ func (g *generator) alloc(typ scalar) (int, error) {
 }
 
 func (g *generator) release(r int) {
+	delete(g.defined, r)
 	for i, live := range g.live {
 		if live == r {
 			g.live = append(g.live[:i], g.live[i+1:]...)
@@ -2254,7 +2351,7 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 		words := (bytes + 7) / 8
 		for w := int64(0); w < words; w += 2 {
 			if w+1 < words {
-				g.emit("stp", xr(zero), xr(zero), g.slotMem(arr.offset+8*w))
+				g.zeroPair(zero, g.slotMem(arr.offset+8*w))
 			} else {
 				g.emit("str", xr(zero), g.slotMem(arr.offset+8*w))
 			}
@@ -2562,7 +2659,7 @@ func (g *generator) lowerRecordArrayDeclaration(s *ast.VariableDeclaration, elem
 		words := (length*elemLayout.size + 7) / 8
 		for w := int64(0); w < words; w += 2 {
 			if w+1 < words {
-				g.emit("stp", xr(zero), xr(zero), g.slotMem(arr.offset+8*w))
+				g.zeroPair(zero, g.slotMem(arr.offset+8*w))
 			} else {
 				g.emit("str", xr(zero), g.slotMem(arr.offset+8*w))
 			}
@@ -2694,6 +2791,9 @@ func (g *generator) typeOf(expr ast.Expression, hint *scalar) (scalar, error) {
 	case *ast.Identifier:
 		if s, ok := g.types[e.Value]; ok {
 			return s, nil
+		}
+		if c, isConst := g.constantOf(e.Value); isConst {
+			return scalars[c.Type], nil
 		}
 		return scalar{}, unsupported("identifier %s", e.Value)
 	case *ast.InfixExpression:
@@ -3054,7 +3154,15 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 					continue
 				}
 				if g.result == nil {
-					// A unit function whose last statement is an expression.
+					// A unit function whose last statement is an expression:
+					// a call, an assert, or a conditional or match in
+					// statement position.
+					if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
+						if err := g.lowerConditionalStatement(match); err != nil {
+							return err
+						}
+						continue
+					}
 					if err := g.effect(s.Expression); err != nil {
 						return err
 					}
@@ -3358,6 +3466,10 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 		r, err := g.alloc(typ)
 		if err != nil {
 			return 0, err
+		}
+		if c, isConst := g.constantOf(e.Value); isConst {
+			g.constant(r, c.Value, typ)
+			return r, nil
 		}
 		g.items = append(g.items, g.loadVar(e.Value, r))
 		return r, nil
@@ -4208,9 +4320,15 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 		g.usedX8 = true
 		g.emit("add", xr(8), sp(), imm(g.slotMem(recordResult.offset).Offset))
 	}
-	// Spill the live scratch registers: the callee owns x9–x15 and v16–v23.
+	// Spill the live scratch registers that hold a value: the callee owns
+	// x9–x15 and v16–v23 (one allocated for an enclosing expression's
+	// result and not yet written holds nothing, and a spill would read it
+	// uninitialized — which the checker refuses).
 	var spilled []int
 	for _, r := range g.live {
+		if !g.defined[r] {
+			continue
+		}
 		if _, ok := g.spill[r]; !ok {
 			if r >= vecBase {
 				// The vector file spills whole (a q register, sixteen

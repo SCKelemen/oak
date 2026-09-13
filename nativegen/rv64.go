@@ -140,14 +140,14 @@ type rvGenerator struct {
 
 // compileRV64 lowers one Oak function on the rv64 lane; see Compile for
 // the arguments.
-func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, tc *typechecker.TypeChecker, softFloat bool) (*asm.Function, error) {
+func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	if len(fn.Parameters) > 8 {
 		return nil, unsupported("more than eight parameters")
 	}
-	g := &rvGenerator{generator: generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, line: fn.Token.Line}, softFloat: softFloat, twoChunk: map[string]bool{}}
+	g := &rvGenerator{generator: generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, line: fn.Token.Line}, softFloat: softFloat, twoChunk: map[string]bool{}}
 	g.rvLane = true
 	usesFloat := mentionsFloat(fn) || g.recordsMentionFloat(fn)
 	if usesFloat && softFloat {
@@ -163,6 +163,10 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 		g.saveAreaV = 8 * int64(len(rvFCallee))
 	}
 	g.hasCalls = mentionsCall(fn.Body)
+	// A parked span pair survives a call, and a result: the result leaves
+	// in a0 (and a1), where a span parameter's pair is bound, and the
+	// checker's span facts flow in text order.
+	parkSpans := g.hasCalls || returnsValue(fn)
 	nextReg, nextFReg := 0, 0
 	if fn.ReturnType != nil && fn.ReturnType.String() != "()" {
 		if name, isRecord := g.recordTypeName(fn.ReturnType); isRecord {
@@ -228,7 +232,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 			sp.argBase, sp.argLen = rvArg0+nextReg, rvArg0+nextReg+1
 			sp.baseReg, sp.lenReg = sp.argBase, sp.argLen
 			nextReg += 2
-			if g.hasCalls {
+			if parkSpans {
 				// A call clobbers a0–a7, where the bound pair lives: park
 				// the base, the raw length, and the normalized length in
 				// three callee-saved registers (the checker follows the
@@ -380,6 +384,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	// composite binding rules — also under each signature type's own
 	// spelling, which is what the checker looks up.
 	out.Composites = Composites(records, adts)
+	out.Constants = constants
 	spell := func(expr ast.Expression) {
 		if expr == nil {
 			return
@@ -418,6 +423,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 // ---- items ------------------------------------------------------------
 
 func (g *rvGenerator) ins(mnemonic string, operands ...asm.Operand) asm.Instruction {
+	g.noteWrite(mnemonic, operands)
 	return asm.Instruction{Mnemonic: mnemonic, Operands: operands, Line: g.line}
 }
 
@@ -825,7 +831,15 @@ func (g *rvGenerator) lowerStatements(stmts []ast.Statement, functionBody bool) 
 					continue
 				}
 				if g.result == nil {
-					// A unit function whose last statement is an expression.
+					// A unit function whose last statement is an expression:
+					// a call, an assert, or a conditional or match in
+					// statement position.
+					if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
+						if err := g.lowerConditionalStatement(match); err != nil {
+							return err
+						}
+						continue
+					}
 					if err := g.effect(s.Expression); err != nil {
 						return err
 					}
@@ -1121,6 +1135,12 @@ func (g *rvGenerator) expr(expr ast.Expression, hint *scalar) (int, error) {
 		r, err := g.alloc(typ)
 		if err != nil {
 			return 0, err
+		}
+		if c, isConst := g.constantOf(e.Value); isConst {
+			if err := g.constant(r, c.Value, typ); err != nil {
+				return 0, err
+			}
+			return r, nil
 		}
 		g.put(g.loadVar(e.Value, r))
 		return r, nil
@@ -1639,6 +1659,9 @@ func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *record
 	}
 	var spilled []int
 	for _, r := range g.live {
+		if !g.defined[r] {
+			continue // allocated for an enclosing result, not yet written
+		}
 		if _, ok := g.spill[r]; !ok {
 			g.spill[r] = 8 * g.nslots
 			g.nslots++

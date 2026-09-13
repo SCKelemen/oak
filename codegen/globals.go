@@ -339,6 +339,12 @@ var scalarGlobalTypes = map[string]bool{
 	"f32": true, "f64": true, "Bool": true, "byte": true,
 }
 
+// MutatedGlobals is the set the constant-global rule excludes
+// (docs/spec/90-backend.md §8a), for the native backend's own folding.
+func MutatedGlobals(program *ast.Program) map[string]bool {
+	return mutatedGlobals(program)
+}
+
 // mutatedGlobals names every top-level binding some statement assigns,
 // index-assigns, or takes the address of (`&g`, the operand of span, view,
 // and address_of): the globals that must stay mutable statics.
