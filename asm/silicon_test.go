@@ -141,6 +141,54 @@ func siliconVectorCases() []siliconCase {
 	scalar("smov b x", 64, "smov x0, v1.b[0]")
 	scalar("fmov x from d", 64, "fmov x0, d1")
 	scalar("fmov w from s", 32, "fmov w0, s1")
+	// Floating point (asm/verify_float.go): the operation terms evaluate as
+	// Go's IEEE arithmetic on a witness, so the hardware must agree bit for
+	// bit — NaN payloads, signed zeros, and denormals included — on the
+	// scalar views and the float arrangements.
+	for _, arr := range []string{"4s", "2d"} {
+		for _, op := range []string{"fadd", "fsub", "fmul", "fdiv", "fmin", "fmax", "fminnm", "fmaxnm", "faddp"} {
+			both(op+" "+arr, fmt.Sprintf("%s v0.%s, v0.%s, v1.%s", op, arr, arr, arr))
+		}
+		both("fmla "+arr, fmt.Sprintf("fmla v0.%s, v1.%s, v1.%s", arr, arr, arr))
+		both("fmls "+arr, fmt.Sprintf("fmls v0.%s, v1.%s, v1.%s", arr, arr, arr))
+		for _, op := range []string{"fsqrt", "fneg", "fabs", "scvtf", "ucvtf", "fcvtzs", "fcvtzu"} {
+			both(op+" "+arr, fmt.Sprintf("%s v0.%s, v1.%s", op, arr, arr))
+		}
+	}
+	for _, view := range []string{"d", "s"} {
+		v0, v1 := view+"0", view+"1"
+		for _, op := range []string{"fadd", "fsub", "fmul", "fdiv", "fmin", "fmax", "fminnm", "fmaxnm"} {
+			both(op+" "+view, fmt.Sprintf("%s %s, %s, %s", op, v0, v0, v1))
+		}
+		for _, op := range []string{"fmadd", "fmsub", "fnmadd", "fnmsub"} {
+			both(op+" "+view, fmt.Sprintf("%s %s, %s, %s, %s", op, v0, v0, v1, v1))
+		}
+		for _, op := range []string{"fsqrt", "fneg", "fabs"} {
+			both(op+" "+view, fmt.Sprintf("%s %s, %s", op, v0, v1))
+		}
+		for _, code := range []string{"eq", "ne", "mi", "ls", "gt", "ge", "hi", "lt", "le", "hs", "pl", "vs", "vc"} {
+			both("fcmp/fcsel "+code+" "+view, fmt.Sprintf("fcmp %s, %s\n  fcsel %s, %s, %s, %s", v0, v1, v0, v0, v1, code))
+		}
+		both("fcmp zero/fcsel "+view, fmt.Sprintf("fcmp %s, #0.0\n  fcsel %s, %s, %s, mi", v1, v0, v0, v1))
+	}
+	both("fcvt d from s", "fcvt d0, s1")
+	both("fcvt s from d", "fcvt s0, d1")
+	both("scvtf d from x", "scvtf d0, x1")
+	both("ucvtf d from x", "ucvtf d0, x1")
+	both("scvtf s from w", "scvtf s0, w1")
+	both("ucvtf s from w", "ucvtf s0, w1")
+	both("scvtf d from w", "scvtf d0, w1")
+	both("faddp d pair", "faddp d0, v1.2d")
+	both("faddp s pair", "faddp s0, v1.2s")
+	both("fmov d imm", "fmov d0, #2.5")
+	both("fmov s imm", "fmov s0, #-1.0")
+	both("mov s lane", "mov s0, v1.s[2]")
+	both("mov lane insert", "mov v0.s[1], v1.s[3]")
+	both("mov lane from w", "mov v0.s[2], w1")
+	scalar("fcvtzs x from d", 64, "fcvtzs x0, d1")
+	scalar("fcvtzu x from d", 64, "fcvtzu x0, d1")
+	scalar("fcvtzs w from s", 32, "fcvtzs w0, s1")
+	scalar("fcvtzu w from d", 32, "fcvtzu w0, d1")
 	return cases
 }
 

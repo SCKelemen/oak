@@ -875,8 +875,19 @@ sources, `dup`/`mov` of a lane, `mov vD.s[i], …` as one lane replaced).
 The sign operations, `min`/`max` (754-2019 minimum/maximum, `fmin`/`fmax`),
 the comparisons, and the classifiers stay bit operations as before. The
 witness evaluator computes each operation as IEEE arithmetic (Go's
-float32/float64, an exactly rounded 32-bit fma), so a disagreement on a
-witness is a definite mismatch under the real semantics; the bit-level
+float32/float64, an exactly rounded 32-bit fma with subnormals at their
+own grid, and NaN operands under Arm's `FPProcessNaNs`: a signaling NaN
+wins over a quiet one, earlier operands over later, the addend of a fused
+multiply-add first, the result quieted — written out rather than left to
+Go's `+`, whose operand order the compiler may swap), so a disagreement
+on a witness is a definite mismatch under the real semantics; the silicon
+differential (`asm/silicon_test.go`) now runs the float instructions too
+— the scalar and lane arithmetic, the fused forms, `fmin`/`fmax`/
+`fminnm`/`fmaxnm`, `faddp`, the conversions, `fcmp`/`fcsel` under every
+condition code — over the same NaN-, denormal-, and boundary-laden
+inputs as the integer ones, and the model agrees with the core bit for
+bit (it found two modeling errors before they shipped: the NaN operand
+order and the subnormal rounding of the 32-bit fma); the bit-level
 decision abstracts each application as a fresh block shared by every
 application of the same operation to the same operand bits, under
 Ackermann's functional consistency (`asm/blast.go`, the select

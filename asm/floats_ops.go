@@ -82,7 +82,14 @@ func floatOpSpan(op string, width int) string { return fmt.Sprintf("float:%s:%d"
 
 // floatEval computes the IEEE operation on bit patterns at the operands'
 // widths (a float operand's width is its format; a conversion's integer
-// operand its integer width, which fixes the sign extension).
+// operand its integer width, which fixes the sign extension). NaN operands
+// follow Arm's FPProcessNaNs (Arm ARM J1.3, shared by the C backend's
+// arithmetic on AArch64): a signaling NaN operand wins over a quiet one,
+// earlier operands over later, the result quieted; a fused multiply-add
+// orders the addend before the multiplicands. The evaluation is written
+// out rather than left to Go's `+`, whose operand order the compiler may
+// swap (the payload a NaN result carries is exactly what the silicon
+// differential checks).
 func floatEval(op string, width int, args []uint64, widths []int) uint64 {
 	f := func(v uint64, w int) float64 {
 		if w == 32 {
@@ -97,12 +104,15 @@ func floatEval(op string, width int, args []uint64, widths []int) uint64 {
 		return math.Float64bits(x)
 	}
 	switch op {
-	case "fadd", "fsub", "fmul", "fdiv", "fminnm", "fmaxnm", "fnan":
+	case "fadd", "fsub", "fmul", "fdiv", "fnan":
+		if nan, isNaN := armNaN(width, args[0], args[1]); isNaN {
+			return nan
+		}
 		if width == 32 {
 			a, b := math.Float32frombits(uint32(args[0])), math.Float32frombits(uint32(args[1]))
 			var r float32
 			switch op {
-			case "fadd":
+			case "fadd", "fnan":
 				r = a + b
 			case "fsub":
 				r = a - b
@@ -110,19 +120,13 @@ func floatEval(op string, width int, args []uint64, widths []int) uint64 {
 				r = a * b
 			case "fdiv":
 				r = a / b
-			case "fminnm":
-				r = float32(minNum(float64(a), float64(b)))
-			case "fmaxnm":
-				r = float32(maxNum(float64(a), float64(b)))
-			case "fnan":
-				r = a + b
 			}
-			return uint64(math.Float32bits(r))
+			return canonicalNaN(uint64(math.Float32bits(r)), 32)
 		}
 		a, b := math.Float64frombits(args[0]), math.Float64frombits(args[1])
 		var r float64
 		switch op {
-		case "fadd":
+		case "fadd", "fnan":
 			r = a + b
 		case "fsub":
 			r = a - b
@@ -130,23 +134,45 @@ func floatEval(op string, width int, args []uint64, widths []int) uint64 {
 			r = a * b
 		case "fdiv":
 			r = a / b
-		case "fminnm":
-			r = minNum(a, b)
-		case "fmaxnm":
-			r = maxNum(a, b)
-		case "fnan":
-			r = a + b
 		}
-		return math.Float64bits(r)
+		return canonicalNaN(math.Float64bits(r), 64)
+	case "fminnm", "fmaxnm":
+		// IEEE 754-2008 minNum/maxNum (Arm FPMinNum/FPMaxNum, RISC-V
+		// fmin/fmax): a quiet NaN beside a number yields the number; a
+		// signaling NaN, or two NaNs, follow FPProcessNaNs; -0.0 orders
+		// below +0.0.
+		aNaN, bNaN := isNaNBits(args[0], width), isNaNBits(args[1], width)
+		switch {
+		case aNaN && !bNaN && !isSNaNBits(args[0], width):
+			return args[1]
+		case bNaN && !aNaN && !isSNaNBits(args[1], width):
+			return args[0]
+		}
+		if nan, isNaN := armNaN(width, args[0], args[1]); isNaN {
+			return nan
+		}
+		a, b := f(args[0], width), f(args[1], width)
+		less := a < b || (a == b && math.Signbit(a) && !math.Signbit(b))
+		if (op == "fminnm") == less {
+			return args[0]
+		}
+		return args[1]
 	case "fsqrt":
+		if nan, isNaN := armNaN(width, args[0]); isNaN {
+			return nan
+		}
 		// Rounding the double-precision root to single is the correctly
 		// rounded single root (the double has more than 2p+2 bits).
-		return bits(math.Sqrt(f(args[0], width)))
+		return canonicalNaN(bits(math.Sqrt(f(args[0], width))), width)
 	case "fma":
-		if width == 32 {
-			return uint64(math.Float32bits(fma32(math.Float32frombits(uint32(args[0])), math.Float32frombits(uint32(args[1])), math.Float32frombits(uint32(args[2])))))
+		// The addend is examined first (FPProcessNaNs3 on addend, op1, op2).
+		if nan, isNaN := armNaN(width, args[2], args[0], args[1]); isNaN {
+			return nan
 		}
-		return math.Float64bits(math.FMA(math.Float64frombits(args[0]), math.Float64frombits(args[1]), math.Float64frombits(args[2])))
+		if width == 32 {
+			return canonicalNaN(uint64(math.Float32bits(fma32(math.Float32frombits(uint32(args[0])), math.Float32frombits(uint32(args[1])), math.Float32frombits(uint32(args[2]))))), 32)
+		}
+		return canonicalNaN(math.Float64bits(math.FMA(math.Float64frombits(args[0]), math.Float64frombits(args[1]), math.Float64frombits(args[2]))), 64)
 	case "fcvt":
 		return bits(f(args[0], widths[0]))
 	case "scvtf":
@@ -161,47 +187,62 @@ func floatEval(op string, width int, args []uint64, widths []int) uint64 {
 	return 0
 }
 
-// minNum and maxNum are IEEE 754-2008 minNum/maxNum (fminnm/fmaxnm, RISC-V
-// fmin/fmax): a quiet NaN operand is suppressed, -0.0 orders below +0.0.
-func minNum(a, b float64) float64 {
-	switch {
-	case math.IsNaN(a):
-		return b
-	case math.IsNaN(b):
-		return a
-	case a == 0 && b == 0:
-		if math.Signbit(a) {
-			return a
-		}
-		return b
-	case a < b:
-		return a
-	}
-	return b
+// isNaNBits and isSNaNBits classify a w-bit pattern; quietBits sets the
+// quiet bit (the top mantissa bit).
+func isNaNBits(v uint64, w int) bool {
+	_, _, exponent, mantissa := floatMasks(w)
+	return v&exponent == exponent && v&mantissa != 0
 }
 
-func maxNum(a, b float64) float64 {
-	switch {
-	case math.IsNaN(a):
-		return b
-	case math.IsNaN(b):
-		return a
-	case a == 0 && b == 0:
-		if math.Signbit(a) {
-			return b
-		}
-		return a
-	case a > b:
-		return a
+func isSNaNBits(v uint64, w int) bool {
+	if !isNaNBits(v, w) {
+		return false
 	}
-	return b
+	_, _, _, mantissa := floatMasks(w)
+	quiet := (mantissa + 1) >> 1
+	return v&quiet == 0
+}
+
+func quietBits(v uint64, w int) uint64 {
+	_, _, _, mantissa := floatMasks(w)
+	return v | (mantissa+1)>>1
+}
+
+// armNaN is FPProcessNaNs over the operands in priority order: the first
+// signaling NaN, else the first quiet NaN, quieted; false when no operand
+// is a NaN.
+func armNaN(w int, ops ...uint64) (uint64, bool) {
+	for _, v := range ops {
+		if isSNaNBits(v, w) {
+			return quietBits(v, w), true
+		}
+	}
+	for _, v := range ops {
+		if isNaNBits(v, w) {
+			return v, true
+		}
+	}
+	return 0, false
+}
+
+// canonicalNaN is the default NaN an invalid operation over numbers
+// produces (Arm's FPDefaultNaN: positive, quiet, zero payload); a number
+// passes through.
+func canonicalNaN(v uint64, w int) uint64 {
+	if !isNaNBits(v, w) {
+		return v
+	}
+	_, _, exponent, mantissa := floatMasks(w)
+	return exponent | (mantissa+1)>>1
 }
 
 // fma32 is a*b + c rounded once to f32 (round to nearest even): the exact
-// value is formed in a big.Float wide enough to hold it, then rounded to
-// 24 bits. NaN and infinite operands follow the double fma's result.
+// value is formed in a big.Float wide enough to hold it and rounded to the
+// nearest single — subnormals at their coarser grid included (a fixed
+// 24-bit precision would not). The callers have handled NaN operands;
+// infinite ones follow the double fma.
 func fma32(a, b, c float32) float32 {
-	if math.IsNaN(float64(a)) || math.IsNaN(float64(b)) || math.IsNaN(float64(c)) || math.IsInf(float64(a), 0) || math.IsInf(float64(b), 0) || math.IsInf(float64(c), 0) {
+	if math.IsInf(float64(a), 0) || math.IsInf(float64(b), 0) || math.IsInf(float64(c), 0) {
 		return float32(math.FMA(float64(a), float64(b), float64(c)))
 	}
 	exact := new(big.Float).SetPrec(256).SetFloat64(float64(a))
@@ -212,8 +253,7 @@ func fma32(a, b, c float32) float32 {
 		// signs give +0 under round to nearest; equal signs keep it).
 		return float32(math.FMA(float64(a), float64(b), float64(c)))
 	}
-	rounded := exact.SetMode(big.ToNearestEven).SetPrec(24)
-	f, _ := rounded.Float32()
+	f, _ := exact.SetMode(big.ToNearestEven).Float32()
 	return f
 }
 
