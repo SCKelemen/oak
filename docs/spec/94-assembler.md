@@ -805,9 +805,14 @@ leaves the others (`aget_aset_same`, `aget_aset_other`), so `dup`, `add`,
 `sub`, `cmeq` (register and zero forms), `umin`, `umax`, `uqsub`, `tbl`,
 and `umaxv` compute the verifier's lane functions over the lanes of their
 operands (`dup_lanes`, `add_lanes`, `cmeq_lanes`, `tbl_lanes`,
-`umaxv_lane`, …). Left for the next increments: `ext` as `Oak.Neon.ext`,
-the shifts, `cnt`, Arm's recursive `Reduce` (whose termination Sail's
-Lean backend cannot discharge), `simd.store` (a write the straight-line
+`umaxv_lane`, …); `ext #(8p)` reads lane for lane as `Oak.Neon.ext p`
+(`ext_lanes`), `ushr #n` is the lane shift (`ushr_lanes`, through the
+support library's iterated halving), `sshr #7` on a byte is the sign fill
+of `movemask` (`sshr7_lane`, decided over the 256 bytes), and Arm's
+recursive `Reduce` — stated by hand as `reduceAdd`, since Sail's Lean
+backend cannot discharge its termination — sums eight bytes as `addv`'s
+fold (`reduceAdd_eight_bytes`). Left for the next increments: `cnt` (a
+popcount lane on the Oak side), `simd.store` (a write the straight-line
 model does not follow), and float vectors
 (`docs/notes/proof-chain-audit-2026-09.md`).
 
