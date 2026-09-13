@@ -143,6 +143,18 @@ subtyping rule. The elaborated program contains only precisely typed
 constants, so later phases (lowering, the C backend, and the machine-integer
 refinement obligations in §13) never see an untyped literal.
 
+The ranges are those of `20-types.md` §11: the fixed widths exactly, and the
+machine-sized `int`, `uint`, `ptr`, `uptr` at the widths the target's data
+model supplies (`90-backend.md` §2a) — on an ILP32 target `x: uint =
+5000000000` does not fit. A literal above `2^63 - 1` (parsed as its bit
+pattern, `IntegerLiteral.Wide`) fits `u64`, `u128`, and `uint`/`uptr` when
+they are 64 bits; a signed literal range-checks its negated value, so the
+one representable value no literal spells is `-2^63`, whose magnitude is
+wide. The checker's decision is transliterated and proved equal to range
+membership in `Oak.LiteralFitRefinement` (`fits_iff_represents`,
+`min_int64_lost`), and `typechecker/literal_fit_refinement_test.go` pins the
+Go to that table at every boundary.
+
 ## 4. Explicit module and library boundaries
 
 Externally visible declarations require explicit contracts.

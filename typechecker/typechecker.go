@@ -2991,29 +2991,63 @@ func (tc *TypeChecker) checkPrimitiveConstructor(typeName string, args []ast.Exp
 }
 
 // literalFits checks whether an integer literal node fits the given primitive
-// type; a wide literal (above 2^63 - 1) fits only the 64-bit unsigned types.
+// type; a wide literal (above 2^63 - 1, `IntegerLiteral.Wide`) fits only the
+// unsigned types of 64 bits or more — `uint`/`uptr` when the configured data
+// model makes them 64 bits. Transliterated in
+// spec/lean/Oak/LiteralFitRefinement.lean (`literalFits`), which proves the
+// decision equal to membership in the type's range
+// (docs/spec/25-type-inference.md §3a); typechecker/literal_fit_refinement_test.go
+// pins this text to that table.
 func (tc *TypeChecker) literalFits(lit *ast.IntegerLiteral, typeName string) bool {
 	if lit.Wide {
-		switch typeName {
+		switch tc.machineSizedName(typeName) {
 		case "u64", "u128":
 			return true
-		case "uint", "uptr":
-			return tc.intSize == 64
 		}
 		return false
 	}
 	return tc.literalFitsInType(lit.Value, typeName)
 }
 
-// literalFitsInType checks if an integer literal value fits in the given primitive type
-func (tc *TypeChecker) literalFitsInType(value int64, typeName string) bool {
-	// Normalize aliases
-	if typeName == "byte" {
-		typeName = "u8"
-	} else if typeName == "rune" {
-		typeName = "u32"
-	}
+// machineSizedName resolves the aliases (`byte`, `rune`) and the machine-sized
+// types (`int`, `uint`, `ptr`, `uptr`) to the fixed-width type of the
+// configured data model — docs/spec/20-types.md §11: their widths are
+// supplied by the target (`target.Target.DataModel`, 90-backend.md §2a). Every
+// other name is returned as is. (`resolve` in Oak.LiteralFitRefinement.)
+func (tc *TypeChecker) machineSizedName(typeName string) string {
 	switch typeName {
+	case "byte":
+		return "u8"
+	case "rune":
+		return "u32"
+	case "int":
+		if tc.intSize == 32 {
+			return "i32"
+		}
+		return "i64"
+	case "uint":
+		if tc.intSize == 32 {
+			return "u32"
+		}
+		return "u64"
+	case "ptr":
+		if tc.ptrSize == 32 {
+			return "i32"
+		}
+		return "i64"
+	case "uptr":
+		if tc.ptrSize == 32 {
+			return "u32"
+		}
+		return "u64"
+	}
+	return typeName
+}
+
+// literalFitsInType checks if an integer literal value fits in the given
+// primitive type (`literalFitsInType` in Oak.LiteralFitRefinement).
+func (tc *TypeChecker) literalFitsInType(value int64, typeName string) bool {
+	switch tc.machineSizedName(typeName) {
 	case "u8":
 		return value >= 0 && value <= 255
 	case "u16":
@@ -3030,16 +3064,6 @@ func (tc *TypeChecker) literalFitsInType(value int64, typeName string) bool {
 		return value >= -2147483648 && value <= 2147483647
 	case "i64":
 		return true // i64 can hold any int64
-	case "int", "ptr":
-		// Platform-dependent signed types: can hold any int64
-		// On 32-bit: int == i32, ptr == i32
-		// On 64-bit: int == i64, ptr == i64
-		return true
-	case "uint", "uptr":
-		// Platform-dependent unsigned types: can hold any non-negative int64
-		// On 32-bit: uint == u32, uptr == u32
-		// On 64-bit: uint == u64, uptr == u64
-		return value >= 0
 	default:
 		return false
 	}
