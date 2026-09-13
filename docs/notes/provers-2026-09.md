@@ -151,7 +151,10 @@ literature; cuda-cic does not check proof terms.
 **Assessment**, recorded as `125-verification.md` §7 "A certificate rung"
 (items 1 and the checkers of item 2 landed on 2026-09-13: `asm/cnf.go`,
 `prove/lrat.go`, `prove/solver/lrat.oak`, `Oak.RupCheck`; the encoder's
-proof and the solver written in Oak remain):
+proof and the solver written in Oak remain. First run with CaDiCaL 3.0.1:
+`spec/oak/machines.oak`'s `bounded__step` — 14,987 BDD nodes under the
+blocked order — closes with a 204-step certificate checked in Go and in
+Oak; `spec/oak/shapes.oak`'s nine rows all agree):
 
 1. Add a SAT rung with LRAT rather than a bigger BDD budget; keep the BDD
    for canonical equivalence and counterexamples.

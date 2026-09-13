@@ -88,3 +88,31 @@ func TestCertificateRungTrustsOnlyCheckedAnswers(t *testing.T) {
 		t.Fatalf("no certificate was accepted, none may be reported:\n%s", text)
 	}
 }
+
+// With a real solver on the machine the whole path runs: the machines law
+// file's step obligation closes with a certificate both checkers accept,
+// and no row disagrees with the ladder. Skipped where no solver is
+// installed.
+func TestCertificateRungWithSolver(t *testing.T) {
+	if os.Getenv("OAK_SAT_SOLVER") == "" {
+		if _, err := os.Stat("/opt/homebrew/bin/cadical"); err != nil {
+			if _, err := os.Stat("/usr/local/bin/cadical"); err != nil {
+				t.Skip("no cadical on this machine")
+			}
+		}
+	}
+	var out, errOut bytes.Buffer
+	proveCommand([]string{"-solver", "sat", filepath.Join("spec", "oak", "machines.oak")}, &out, &errOut)
+	text := out.String()
+	if strings.Contains(text, "the certificate rung was skipped") {
+		t.Skip("no solver found by the rung")
+	}
+	for _, want := range []string{"bounded__step: at the bit level", "an LRAT certificate of", "checked in Go and in Oak", "oak prove: 15 decided"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("output lacks %q:\n%s%s", want, text, errOut.String())
+		}
+	}
+	if strings.Contains(text, "disagrees") {
+		t.Fatalf("a row disagrees:\n%s", text)
+	}
+}

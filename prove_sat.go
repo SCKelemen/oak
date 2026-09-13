@@ -36,8 +36,15 @@ func certificateRung(model *compiler.SemanticModel, results []prove.Result, run 
 			cnfDir = ""
 		}
 	}
+	// An invariant candidate's own row summarizes its generated base and
+	// step obligations (prove/protocols.go); the predicate alone is not a
+	// theorem over every state, so the rung reads the obligations instead.
+	named := map[string]bool{}
+	for _, r := range results {
+		named[r.Name] = true
+	}
 	for i, r := range results {
-		if r.Advisory {
+		if r.Advisory || named[r.Name+"__base"] || named[r.Name+"__step"] {
 			continue
 		}
 		cnf, reason, err := prove.CNFFor(model, r.Name)

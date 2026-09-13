@@ -206,7 +206,9 @@ budget becomes `decided` when the certificate is accepted by both
 checkers, or `refuted` when the clause engine confirms the solver's model.
 A verdict without an accepted certificate, and a model the clause engine
 does not confirm, change nothing and are reported as such: the solver is
-untrusted, the checkers settle the row. `-cnf dir` writes every bit-level
+untrusted, the checkers settle the row. An invariant candidate's summary
+row is read through its generated base and step obligations, since the
+predicate alone is not a theorem over every state. `-cnf dir` writes every bit-level
 obligation's clauses as DIMACS (`name.cnf`) for any solver or checker to
 read; the clause engine agrees with the diagram engine input for input over
 the corpus (`prove/lrat_test.go`), and the two checkers accept and refuse the
