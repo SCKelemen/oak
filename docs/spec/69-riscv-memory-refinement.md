@@ -115,6 +115,17 @@ stores, `.aqrl` on every acquiring AMO and never `.aq` alone, `lr.aqrl`
 with `sc.rl` on acquiring compare-exchanges. Locally the test finds clang
 on PATH, Homebrew LLVM's, or `zig cc`, and skips without one.
 
+## 5a. Consumers (landed)
+
+`stdlib/rings.oak`'s SPSC, MPSC, MPMC, and intrusive MPSC rings are the
+first lock-free consumers checked under this gate:
+`compiler/e2e_rings_targets_test.go` compiles their operations for
+`riscv64-unknown-none-elf -march=rv64gc` and requires the fence before
+each acquire load and release store, `lr`/`sc` for the compare-exchange
+claims, and `amoswap.w.aqrl` for the intrusive push's exchange; the
+threaded harness cross-builds for `linux/riscv64` and runs under user-mode
+QEMU where present (`67-memory-ordering.md` §11's "rings under RVWMO").
+
 ## 6. What this does not yet prove
 
 - That clang's RVWMO lowering of C11 is itself correct; the Sail RISC-V

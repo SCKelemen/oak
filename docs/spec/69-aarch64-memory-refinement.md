@@ -286,4 +286,16 @@ Once this AArch64 refinement gate is stable, Oak has enough demonstrated
 shared-memory machinery to begin `SpscRing[T, N]` as the first higher-level
 lock-free proof consumer.
 
+**Consumers (landed).** `stdlib/rings.oak` is that consumer: the SPSC,
+MPSC, MPMC, and intrusive MPSC rings over caller-owned storage
+(`65-machine-memory.md` §1). `compiler/e2e_rings_targets_test.go` compiles
+their operations for `aarch64-none-elf -march=armv8-a` and requires the
+families this chapter assigns — `stlr` (or `stlxr`) for every release
+publication, `ldar` (or `ldaxr`) for every acquire observation, the
+exclusive pairs or LSE forms for the claims, an exchange for the intrusive
+push; the pthread harness of `compiler/e2e_rings_test.go` runs the same
+rings on AArch64 hardware plain and under ThreadSanitizer, and the harness
+cross-builds for `linux/arm64`. The happens-before facts they rely on are
+`Oak.Rings`' instances of `Oak.HappensBefore`.
+
 The RISC-V counterpart is `69-riscv-memory-refinement.md`.

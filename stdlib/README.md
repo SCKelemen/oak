@@ -104,15 +104,27 @@ produce: (n: u32): () {
 | `mpsc_push[T](cursor, seqs, storage, item)` | any producer, concurrently; claims a position by compare-exchange on `tail`, publishes with a release of the slot's sequence; `false` when full |
 | `mpsc_pop[T](cursor, seqs, storage)` | the single consumer; `Some(T)` for the oldest published item, `None` otherwise; recycles the slot with a release of `seq = pos + capacity` |
 
+| `mpmc_init(cursor, seqs)` / `mpmc_push[T]` / `mpmc_pop[T]` | the Vyukov bounded queue whole: producers claim on `tail`, consumers on `head`, both by compare-exchange; `false`/`None` when full/empty |
+| `intrusive_init(cursor, nodes)` | node 0 becomes the stub; links are index + 1, 0 none |
+| `intrusive_push(cursor, nodes, id)` | wait-free for any producer: one exchange on `head`, one release store of the previous node's link; the caller wrote the node's payload before |
+| `intrusive_pop(cursor, nodes)` | the single consumer: `Item(id)` hands the oldest node back, `Empty`, or `Busy` when the next place is claimed but not yet linked |
+
 FIFO per producer (`Oak.Rings.pop_returns_pushed`), no push into a full
-ring (`count_le_cap`), distinct claims (`claims_distinct`), and the payload
-handoffs race-free under the release/acquire pairs
-(`spsc_payload_race_free`, `spsc_reuse_race_free`, `mpsc_payload_race_free`).
+ring (`count_le_cap`), distinct claims on every counter (`claims_distinct`,
+`mpmc_consumer_claims_distinct`), the intrusive exchanges threading one
+chain (`exchange_chain`, `exchange_final`), and the payload handoffs
+race-free under the release/acquire pairs (`spsc_payload_race_free`,
+`spsc_reuse_race_free`, `mpsc_payload_race_free`,
+`intrusive_payload_race_free`).
 Each SPSC side caches the other's index and refreshes it only when the cache
 says stop, so an uncontended push or pop touches one cache line of the
 cursor; the two indices live on separate 64-byte lines. Witnessed
 sequentially in both realizations and across pthreads, plain and under
-ThreadSanitizer (`compiler/e2e_rings_test.go`).
+ThreadSanitizer (`compiler/e2e_rings_test.go`), and under the memory
+refinement layers: the compiled operations carry `ldar`/`stlr` and the
+exclusive or LSE forms on AArch64 and the fences and `lr`/`sc`/`amoswap.aqrl`
+forms on RISC-V (`compiler/e2e_rings_targets_test.go`), and the threaded
+harness cross-builds for both Linux targets.
 
 ## Reductions (`import("reduce")`)
 
