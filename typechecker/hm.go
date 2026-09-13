@@ -421,13 +421,8 @@ func (u *Unifier) unifyArray(arr1, arr2 *ArrayType) Substitution {
 		return nil
 	}
 
-	// Alignment facts unify only when equal; weakening a fact is
+	// Unification is structural: the alignment fact's direction is
 	// assignability's business (ArrayType.alignedInto), never inference's.
-	if arr1.Align != arr2.Align {
-		u.errors = append(u.errors, fmt.Sprintf("alignment fact mismatch: %d vs %d", arr1.Align, arr2.Align))
-		return nil
-	}
-
 	return u.Unify(arr1.ElementType, arr2.ElementType)
 }
 

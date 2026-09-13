@@ -2867,6 +2867,13 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 				tc.addError(expr.Arguments[i], "argument %d conflicts with an earlier type specialization", i+1)
 				continue
 			}
+			// Unification is structural; a span's alignment fact must still
+			// be at least the parameter's (50-borrowing.md section 2a).
+			if !tc.alignmentAssignable(argType, expectedType) {
+				validCall = false
+				tc.addError(expr.Arguments[i], "argument %d: expected %s, got %s", i+1, expectedType, argType)
+				continue
+			}
 			bindings = merged
 			continue
 		}
@@ -4508,6 +4515,10 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 					if !tc.isAssignable(valueType, varType) {
 						tc.addError(stmt, "variable %s: expected type %s, got %s", stmt.Name.Value, varType, valueType)
 					}
+				} else if !tc.alignmentAssignable(valueType, varType) {
+					// Unification is structural; the alignment fact's
+					// direction is checked apart (50-borrowing.md section 2a).
+					tc.addError(stmt, "variable %s: expected type %s, got %s", stmt.Name.Value, varType, valueType)
 				} else {
 					// Apply substitution to get the unified type. Commit equations
 					// for a blocked initializer only after the complete declaration succeeds.
@@ -4566,17 +4577,19 @@ func (tc *TypeChecker) isAssignable(valueType, varType Type) bool {
 		}
 	}
 
+	// A view or span stands where its shape is required with a weaker or
+	// absent alignment fact, never a stronger one (docs/spec/50-borrowing.md
+	// section 2a): the fact's direction is decided here, before equality,
+	// which is structural.
+	if value, isArray := valueType.(*ArrayType); isArray && (value.IsSlice || value.IsSpan) {
+		if target, targetIsArray := varType.(*ArrayType); targetIsArray && (target.IsSlice || target.IsSpan) {
+			return value.alignedInto(target)
+		}
+	}
+
 	// Exact match
 	if valueType.Equals(varType) {
 		return true
-	}
-
-	// A view or span with an alignment fact stands where a weaker or absent
-	// fact is required (docs/spec/50-borrowing.md section 2a).
-	if value, isArray := valueType.(*ArrayType); isArray {
-		if target, targetIsArray := varType.(*ArrayType); targetIsArray && (value.IsSlice || value.IsSpan) && value.alignedInto(target) {
-			return true
-		}
 	}
 
 	// Numeric widening conversions
@@ -5726,12 +5739,25 @@ func (t *ArrayType) Equals(other Type) bool {
 		if t.IsSpan != otherArray.IsSpan {
 			return false
 		}
+		// Equality is structural: the alignment fact is not part of the
+		// shape, and its direction is assignability's rule (alignedInto).
 		return t.ElementType.Equals(otherArray.ElementType) &&
 			t.Length == otherArray.Length &&
-			t.IsSlice == otherArray.IsSlice &&
-			t.Align == otherArray.Align
+			t.IsSlice == otherArray.IsSlice
 	}
 	return false
+}
+
+// alignmentAssignable is the alignment half of assignability alone: false
+// only when both types are views or spans and the value's fact is weaker
+// than the required one.
+func (tc *TypeChecker) alignmentAssignable(valueType, varType Type) bool {
+	value, isArray := valueType.(*ArrayType)
+	target, targetIsArray := varType.(*ArrayType)
+	if !isArray || !targetIsArray || !(value.IsSlice || value.IsSpan) || !(target.IsSlice || target.IsSpan) {
+		return true
+	}
+	return target.Align == 0 || value.Align >= target.Align
 }
 
 // alignedInto reports whether a view or span with this alignment fact may
