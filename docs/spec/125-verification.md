@@ -640,7 +640,7 @@ In order of payoff, each reusing a surface that exists:
   is the only Go left on the prover's path; and the prover is the first
   whole program compiled through the verified native backend
   (`94-assembler.md` §9, sixteenth increment; `OAK_SOLVER_NATIVE=1`):
-  864 of its 954 functions lowered to machine code the seam checker
+  879 of its 954 functions lowered to machine code the seam checker
   admits and the Oak assembler encodes, 197 of them proven equal to
   their Oak bodies, the C build the oracle with identical rows over the
   corpus — verification carried to the object, with the verifier's

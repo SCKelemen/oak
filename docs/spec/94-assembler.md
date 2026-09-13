@@ -1721,10 +1721,38 @@ view whose pair lands on the stack and is walked in a loop, a small
 record's chunk and a large record's reference on the stack, and a native
 caller reaching a C-compiled callee with two stack arguments — natively
 against the C backend and the portable realization.
-Next increments: the fallback reasons that remain — `c.Ptr` parameters
-and locals (29), record locals without an initializer (17), the deepest
-expressions (16), callee-saved exhaustion by spans (14) — then the
-verifier past `bl` and unit results —
+**Twenty-seventh increment — value-less record locals.** A record local
+declared without an initializer (`out: Bits`, then filled field by field
+— the shape of every bit-vector helper in the BDD engine's blaster) was
+left to the C backend so that no semantics would be invented natively.
+None need be: 90-backend.md §6 has the C emitter initialize such storage
+with `{0}` and the interpreter give it its zero value, so the native
+lowering zero-fills the local's slots whole, as it does an owned array's.
+Seventeen functions follow (fallbacks 90 to 75, 879 of 954 lowered);
+`TestE2ENativeZeroRecord` reads a field of each width before any write
+and after. **What the 75 that remain are.** Twenty-nine take or hold a
+`c.Ptr` and three call foreign code: the prover's I/O shell — `read_file`
+over `c_open`/`c_read`, the buffers `c.own`ed and `c.disown`ed inside
+`unsafe`, the environment and spawn helpers of the witness — whose native
+lowering would be a foreign-call and custody subset (extern symbols the
+checker admits as call targets, `Buffer[T]` as a span with a custody
+state, `c.cstr` and `c.span_of` as the address arithmetic they are) and
+whose verification value is nil, since bodies that call foreign code are
+trusted by construction. Fourteen exhaust the callee-saved registers with
+spans (five or more span parameters and locals, each a parked pair, in
+the exploration and LRAT functions): the checker's span facts live on
+registers and die at a call, so a span cannot spill around calls the way
+a variable does without a checker rule for reloading a fact from a known
+slot. Sixteen are the deepest expressions (the `*_layout` functions'
+record literals, `px_lex`): more temporaries live at once than x9–x15
+and the overflow registers hold. The compute paths — the decider, the
+lowering, the exploration, the projections — are native; what stays in C
+is the shell around them.
+Next increments: the verifier past `bl` and unit results, where the
+proven count (197 of 879) is now the measure — the lowering seam's
+call modeling landing upstream is that work; then guard elision from the
+checker's facts; the foreign-call subset only if the shell itself is to
+be verified —
 calls by inlining or by the callee's proven contract, and effects through
 spans as the result — so that "trusted" shrinks toward the foreign
 boundary; then two-chunk and `x8`-area record results in the verifier,
