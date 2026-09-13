@@ -30,6 +30,7 @@ package nativegen
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -1113,7 +1114,13 @@ type generator struct {
 	leafHomes []int
 	argHomes  map[string]int
 	homesUsed map[int]bool // every argument register handed out as a home
-	live      []int        // allocated scratch registers, allocation order
+	// callerHomes: in a function that calls, the caller-saved registers a
+	// variable may live in once the callee-saved ones are taken — x16, x17
+	// and the argument registers no parameter occupies — each saved before
+	// a call and restored after it (callerSpill), one store and one load per
+	// call instead of one memory access per read or write from a frame slot.
+	callerHomes []int
+	live        []int // allocated scratch registers, allocation order
 	// defined marks the live scratch registers an emitted instruction has
 	// written: a call spills exactly those (a register allocated for an
 	// enclosing expression's result and not yet written holds nothing, and
@@ -1362,6 +1369,14 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			}
 			g.leafHomes = append(g.leafHomes, r)
 		}
+	} else {
+		g.callerHomes = []int{16, 17}
+		for r := nextReg; r < 8; r++ {
+			if r <= 1 {
+				continue
+			}
+			g.callerHomes = append(g.callerHomes, r)
+		}
 	}
 	if fn.ReturnType != nil && fn.ReturnType.String() == "never" {
 		// The function leaves by an exception return, never by ret.
@@ -1554,6 +1569,11 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			}
 		}
 		out.Clobbers = append(out.Clobbers, xr(29), xr(30)) // saved by the prologue's stp, restored by ldp
+		for _, r := range []int{16, 17} {
+			if g.homesUsed[r] {
+				out.Clobbers = append(out.Clobbers, xr(r))
+			}
+		}
 	} else {
 		// A leaf writes the argument registers that are homes (a parameter
 		// assigned, a local placed there).
@@ -3294,6 +3314,10 @@ func (g *generator) declare(name string, s scalar) int64 {
 		case g.usedCallee < calleeHigh-calleeLow+1:
 			r = calleeLow + g.usedCallee
 			g.usedCallee++
+		case len(g.callerHomes) > 0:
+			r = g.callerHomes[0]
+			g.callerHomes = g.callerHomes[1:]
+			g.homesUsed[r] = true
 		case len(g.freeSlots8) > 0:
 			offset, g.freeSlots8 = g.freeSlots8[len(g.freeSlots8)-1], g.freeSlots8[:len(g.freeSlots8)-1]
 		default:
@@ -4119,6 +4143,15 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 			if err := g.globalLoad(e.Value, global, typ, r); err != nil {
 				return 0, err
 			}
+			return r, nil
+		}
+		if held, ok := g.forwardedSlot(e.Value); ok {
+			// The value just stored to the variable's slot is still in the
+			// register that stored it: read it from there (or it is r).
+			if held != r {
+				g.emit(moveOf(typ), reg(r, typ), reg(held, typ))
+			}
+			g.defined[r] = true // it holds the value: a call in between spills it
 			return r, nil
 		}
 		g.put(g.loadVar(e.Value, r))
@@ -5153,6 +5186,12 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 		}
 		args = append(args, argument{regs: []int{value.baseReg, value.lenReg}, types: []scalar{scalars["u64"], scalars["u32"]}, fixed: named})
 	}
+	// Variables in caller-saved homes: saved before the argument registers
+	// are written (a home may be one of them) and restored after the call.
+	homes := g.callerHomesLive()
+	for _, r := range homes {
+		g.emit("str", xr(r), g.slotMem(g.spillSlot(r)))
+	}
 	general, vector := 0, 0
 	for _, arg := range args {
 		for j, r := range arg.regs {
@@ -5216,6 +5255,9 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 	for _, r := range spilled {
 		g.emit("ldr", spillReg(r), g.slotMem(g.spill[r]))
 	}
+	for _, r := range homes {
+		g.emit("ldr", xr(r), g.slotMem(g.spill[r]))
+	}
 	if recordResult != nil {
 		if recordResult.layout.size <= 16 {
 			for i := 0; i < recordResult.layout.chunks(); i++ {
@@ -5278,6 +5320,67 @@ func (g *generator) arrayArgument(arg ast.Expression, target span) (*arrayLocal,
 		return nil, unsupported("%s over [%d]%s where %s elements are expected", ident.Value, arr.length, arr.elem.name, target.elem.name)
 	}
 	return arr, nil
+}
+
+// forwardedSlot reports the scratch register that the last emitted
+// instruction stored to a slot variable's slot: a read of the variable that
+// follows its store directly (`t: u32 = f(x); t != NONE`) takes the value
+// from the register instead of loading it back. Nothing has written the
+// register since — the store is the last instruction.
+func (g *generator) forwardedSlot(name string) (int, bool) {
+	if v, inReg := g.regs[name]; inReg && v >= 0 {
+		return 0, false
+	}
+	slot, isSlot := g.slots[name]
+	if !isSlot || slot < 0 {
+		return 0, false
+	}
+	n := len(g.items)
+	if n == 0 {
+		return 0, false
+	}
+	ins, isIns := g.items[n-1].(asm.Instruction)
+	if !isIns || ins.Mnemonic != "str" || len(ins.Operands) != 2 {
+		return 0, false
+	}
+	src, isReg := ins.Operands[0].(asm.Register)
+	memory, isMem := ins.Operands[1].(asm.Memory)
+	if !isReg || !isMem || (src.Class != asm.ClassW && src.Class != asm.ClassX) || src.Num < scratchLow || src.Num > scratchHigh {
+		return 0, false
+	}
+	want := g.slotMem(slot)
+	if memory.Base.Class != asm.ClassSP || memory.Offset != want.Offset || memory.Index != nil {
+		return 0, false
+	}
+	return src.Num, true
+}
+
+// callerHomesLive lists the caller-saved homes of the variables in scope,
+// in register order: the registers a call would clobber that hold a value
+// the body may still read.
+func (g *generator) callerHomesLive() []int {
+	seen := map[int]bool{}
+	var out []int
+	for _, r := range g.regs {
+		if isCallerHome(r) && !seen[r] {
+			seen[r] = true
+			out = append(out, r)
+		}
+	}
+	sort.Ints(out)
+	return out
+}
+
+// isCallerHome reports a register of the caller-saved home pool.
+func isCallerHome(r int) bool { return r == 16 || r == 17 || (r >= 2 && r <= 7) }
+
+// spillSlot is a register's spill slot, allotted on first use.
+func (g *generator) spillSlot(r int) int64 {
+	if _, ok := g.spill[r]; !ok {
+		g.spill[r] = 8 * g.nslots
+		g.nslots++
+	}
+	return g.spill[r]
 }
 
 // spillReg is the whole-register view a scratch register spills as.

@@ -1560,6 +1560,27 @@ allocator — per-variable live ranges over the statement tree, homes
 chosen by whether a range crosses a call, the seam checker unchanged
 (every register it admits today) and the verifier unchanged (registers by
 value) — measured on `apply` first.
+**Twenty-second increment — caller-saved homes around calls, and the
+store forwarded.** The first step of that allocator, without liveness:
+once the ten callee-saved registers are taken, a variable of a function
+that calls lives in a caller-saved home — x16, x17, then the argument
+registers no parameter occupies (x2–x7) — saved to its spill slot before
+each call's argument registers are written and restored after the `bl`,
+so a variable costs one store and one load per call instead of one memory
+access per read or write. Alongside, a read that directly follows the
+store of a slot variable (`t: u32 = f(x); t != NONE`) takes the value
+from the register that stored it, since nothing has written that
+register since; the register is then a defined value for the call spill,
+which a first version had missed and the checker caught as a read after
+`bl`. `apply`'s loop went from 316 frame accesses to 234. Measured on the
+binaries, interleaved: `mono.oak` 11.8 s to 11.4 s, `floats.oak` 5.0 s to
+4.7 s, `extents.oak` 8.0 s to 7.5 s, `effects.oak` 1.66 s to 1.59 s;
+196 functions proven. Executed (`TestE2ENativeCallerHomes`): a body with
+more variables than callee-saved registers, all read after calls, one
+call's argument holding a call. What remains in `apply` is the variables
+that outnumber even the caller-saved homes, and the spills of homes dead
+at the call — both the liveness step: live ranges over the statement
+tree, a home spilled at a call only when its variable is read after it.
 Next increments: the fallback reasons above in the order of their counts,
 so the prover lowers whole; then the verifier past `bl` and unit results —
 calls by inlining or by the callee's proven contract, and effects through
