@@ -181,7 +181,10 @@ func (x *pathExecutor) loopEvent(shape loopShape, exit Instruction, state *symbo
 	if !ok {
 		return nil, reason, false
 	}
-	return x.run(shape.exitLabel, post)
+	// The cells written past the exit belong to a body the verdict trusts
+	// (package state around a data-dependent loop): the result suffices.
+	result, _, reason, ok := x.run(shape.exitLabel, post)
+	return result, reason, ok
 }
 
 // summarizeLoop records the loop event and returns the state past the
