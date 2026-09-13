@@ -129,6 +129,10 @@ func TestCheckerFrameArrays(t *testing.T) {
 		// One predecessor: the address and the index guard flow through the label.
 		{"facts flow through a single-predecessor label", prologue + "  add x9, sp, #0\n  cmp w0, #4\n  b.hs trap\nagain:\n  ldr w0, [x9, w0, uxtw #2]\n  add sp, sp, #16\n  ret\ntrap:\n  brk #1", ""},
 		{"fact lost at a call", "  bind w0 = i\n  clobber x9, x29, x30\n  frame 32\n  sub sp, sp, #32\n  stp x29, x30, [sp]\n  add x9, sp, #16\n  bl helper\n  ldr w0, [x9, #0]\n  ldp x29, x30, [sp]\n  add sp, sp, #32\n  ret", "memory operands go through the declared sp frame or a bound span base"},
+		// In a callee-saved register the address survives the call: the
+		// callee preserves x19–x28 (a span over a frame array is parked
+		// there and walked after a call).
+		{"fact kept across a call in a callee-saved register", "  bind w0 = i\n  clobber x19, x29, x30\n  frame 32\n  sub sp, sp, #32\n  stp x29, x30, [sp]\n  str x19, [sp, #16]\n  add x19, sp, #24\n  bl helper\n  ldr w0, [x19, #0]\n  ldr x19, [sp, #16]\n  ldp x29, x30, [sp]\n  add sp, sp, #32\n  ret", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

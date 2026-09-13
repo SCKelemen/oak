@@ -2,16 +2,22 @@ package asm
 
 import (
 	"testing"
+
+	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/layout"
+	"github.com/SCKelemen/oak/parser"
+	"github.com/SCKelemen/oak/scanner"
 )
 
 // The verifier's Oak lowering is transliterated in
 // spec/lean/Oak/LoweringRefinement.lean as `lowerT`, and `lowerT_eval`
 // proves it agrees with the Lean extraction's embedding of the same
-// expression (docs/spec/126-verification-chain.md §4, the seam). That proof
-// is about `lowerT`; this test pins `oakLowering.lower` to it: every
-// expression below is lowered at its own width and its `term.String()`
-// must be the render `lowerT` gives, stated as an `example` in the Lean
-// file. A change to either side has to visit the other.
+// expression in every agreeing scope (docs/spec/126-verification-chain.md
+// §4, the seam). That proof is about `lowerT`; these tests pin
+// `oakLowering.lower` to it: every expression below is lowered at its own
+// width and its `term.String()` must be the render `lowerT` gives, stated
+// as an `example` in the Lean file. A change to either side has to visit
+// the other.
 var loweringRenders = []struct {
 	decl, body, want string
 }{
@@ -44,6 +50,72 @@ var loweringRenders = []struct {
 	{"f: (a, b: u32) -> Bool", "!(a < b)", "((a lo b) xor 1)"},
 	{"f: (a, b: u32) -> u32", "a < b ? a | b", "((a lo b) ? a : b)"},
 	{"f: (a, b: i64) -> i64", "a < b ? b - a | a - b", "((a lt b) ? (b sub a) : (a sub b))"},
+	// Span elements (`elem`, `len`): a symbolic index is a select, a constant
+	// index the element parameter under the same name; a select is masked to
+	// its own width by zeroExtend, so a widening masks twice.
+	{"f: (v: []u32, i: u32) -> u32", "v[i]", "v[i]"},
+	{"f: (v: []u32, i: u32) -> u32", "v[i + 1] * v[0]", "(v[(i add 1)] mul v[0])"},
+	{"f: (b: []u8, i: u32) -> u32", "u32(b[i])", "((b[i] and 255) and 255)"},
+	{"f: (v: []u32, i: u32) -> Bool", "i < len(v)", "(i lo len(v))"},
+	// Folding (`Term.binary`, `iteT`): constant operands fold, `x + 0` is `x`.
+	{"f: (a: u32) -> u32", "a + 2 * 3", "(a add 6)"},
+	{"f: (a: u32) -> u32", "a + 0", "a"},
+}
+
+// Locals and calls (LoweringRefinement.lean, `letIn` and `call`): a local
+// is lowered once and substituted, a rebinding replaces its term, a call
+// binds the callee's parameters to the lowered arguments and inlines the
+// body, so the renders are the terms the source would have without them.
+// Each program's last function is the one lowered; the others are its
+// callees.
+var loweringProgramRenders = []struct {
+	program, want string
+}{
+	{"f: (a, b: u32) -> u32 = {\n  y: u32 = a + b\n  y * y\n}\n", "((a add b) mul (a add b))"},
+	{"f: (a: u32) -> u32 = {\n  y: u32 = a\n  y = y + 1\n  y * 2\n}\n", "((a add 1) mul 2)"},
+	{"f: (a: u32) -> u32 = {\n  y: u8 = u8_trunc_u32(a)\n  u32(y)\n}\n", "(a and 255)"},
+	{"g: (x: u32) -> u32 = x * x\n\nf: (a: u32) -> u32 = g(a + 1)\n", "((a add 1) mul (a add 1))"},
+	{"h: (x, y: u32) -> u32 = {\n  d: u32 = x - y\n  d & 255\n}\n\nf: (a, b: u32) -> u32 = h(b, a)\n", "((b sub a) and 255)"},
+	// Statement-level conditionals (`condSet`): a local an arm assigns becomes
+	// a select between the arms' terms; an untouched local keeps its term.
+	{"f: (a, b: u32) -> u32 = {\n  m: u32 = a\n  a < b ? { m = b } | { }\n  m * 2\n}\n", "(((a lo b) ? b : a) mul 2)"},
+	{"f: (a, b: u32) -> u32 = {\n  x: u32 = a\n  y: u32 = b\n  a < b ? { x = b\n  y = a } | { x = x + 1 }\n  x - y\n}\n", "(((a lo b) ? b : (a add 1)) sub ((a lo b) ? a : b))"},
+}
+
+func TestLoweringProgramsMatchLeanTransliteration(t *testing.T) {
+	for _, c := range loweringProgramRenders {
+		p := parser.New(layout.New(scanner.New(c.program)))
+		program := p.ParseProgram()
+		if errs := p.Errors(); len(errs) != 0 {
+			t.Fatalf("%s: %v", c.program, errs)
+		}
+		var fns []*ast.FunctionStatement
+		for _, stmt := range program.Statements {
+			if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.Name != nil {
+				fns = append(fns, fn)
+			}
+		}
+		if len(fns) == 0 {
+			t.Fatalf("%s: no functions", c.program)
+		}
+		spec := fns[len(fns)-1]
+		lo := newLowering(spec)
+		lo.functions = map[string]*ast.FunctionStatement{}
+		for _, fn := range fns[:len(fns)-1] {
+			lo.functions[fn.Name.Value] = fn
+		}
+		width, _, ok := contractBits(spec.ReturnType)
+		if !ok {
+			t.Fatalf("%s: no contract width", c.program)
+		}
+		term, reason, ok := lo.lower(spec.Body, width)
+		if !ok {
+			t.Fatalf("%s: not lowered (%s)", c.program, reason)
+		}
+		if got := term.String(); got != c.want {
+			t.Errorf("%s\n  lowered: %s\n  lowerT:  %s\n— update spec/lean/Oak/LoweringRefinement.lean or the lowering", c.program, got, c.want)
+		}
+	}
 }
 
 func TestLoweringMatchesLeanTransliteration(t *testing.T) {

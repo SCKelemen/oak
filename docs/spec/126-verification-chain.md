@@ -135,36 +135,59 @@ nothing in Lean stated that the verifier's Oak lowering (Go,
 extraction's embedding agree — both transliterated `20-types.md` §11.1 and
 were held to it by tests.
 
-`Oak.LoweringRefinement` closes it for the scalar subset the two share.
-The module states one typed expression language — parameters, checked
-literals, the wrapping `+ - *`, the unsigned bitwise operators and shifts,
-`/` and `%` by a constant power of two, negation and complement, the
-widening and narrowing conversions, comparisons, `&&`/`||`/`!`, Bool
-conditionals — and two readings of it: `evalX`, the extraction's
+`Oak.LoweringRefinement` closes it for the subset the two share. The
+module states one typed expression language over a function's parameters
+and the locals in scope — variables, checked literals, the wrapping
+`+ - *`, the unsigned bitwise operators and shifts, `/` and `%` by a
+constant power of two, negation and complement, the widening and narrowing
+conversions, comparisons, `&&`/`||`/`!`, Bool conditionals, block-scoped
+locals and rebindings (`x: T = e`, `x = e`), statement-level conditionals
+whose arms assign locals (`c ? { x = e } | { y = f }`), span element reads
+and lengths (`v[i]`, `len(v)`), and calls to program functions — and two
+readings of it: `evalX`, the extraction's
 (`UIntN`/`IntN` arithmetic as `BitVec` arithmetic, shift counts modulo the
 width, `decide` of the signed or unsigned order, `toIntN`/`toUIntN` as
-extension by the source's signedness or truncation), and `lowerT`, the
-verifier's (`oakLowering.lower` case by case, with `truncate`,
-`zeroExtend`, `adaptWidth` and `extendTerm` spelled as the Go spells them,
-shape cases included, over `Term.eval`, the executor). `lowerT_eval`
-proves the lowered term evaluates to the embedding's value for every
-expression and every parameter assignment; the comparison codes are
-related to the extraction's comparisons through the flag lemmas of
-`Oak.AssemblerSemantics`, the signed ones bit-blasted at 8, 16, 32 and 64
-bits. `asm/lowering_refinement_test.go` pins the Go lowering to `lowerT`:
+extension by the source's signedness or truncation, a local as its
+`let`-bound value, a statement conditional as the taken arm's values for
+the variables it assigns, a span element as the memory cell at the index
+— the span's contents padded with zeros, `v.getD i.toNat zero` — a call
+as the callee's body under its parameters), and
+`lowerT`, the verifier's (`oakLowering.lower` case by case, with
+`truncate`, `zeroExtend`, `adaptWidth` and `extendTerm` spelled as the Go
+spells them, shape cases included, a local lowered once and substituted
+through `adaptWidth(local.value, width)`, a statement conditional as
+`lowerConditionalStatement`'s select between the arms' terms for every
+local an arm assigned, a span element as `selectTerm` over the index at
+width 32 — a constant index the element parameter `v[k]`, the same cell
+under the same name — a call bound through `enterCall`'s fresh scope and
+inlined, over `Term.eval`, the executor — with the constructors folding
+as the Go's `binaryTerm`, `cmpTerm`, `iteTerm` and `selectTerm` fold:
+constant operands, `x + 0`, a constant condition, a constant index, each
+proved to evaluate as the node it folds).
+`lowerT_eval` proves the lowered term evaluates to the embedding's value
+for every expression, every parameter assignment, and every agreeing scope
+(`Agree`: each local's term has the local's width and evaluates to its
+value); the comparison codes are related to the extraction's comparisons
+through the flag lemmas of `Oak.AssemblerSemantics`, the signed ones
+bit-blasted at 8, 16, 32 and 64 bits. Parameters and locals live in
+separate value environments because the verifier's terms name parameters
+only: a local shadowing a parameter changes what the source means by the
+name, never what a term means. Two eval-preserving liberties of the Go
+stay outside the model and are named in it: a comparison in an `ite`
+condition keeps the operands' width where `lowerT` re-widths it to 1, and
+the statement-conditional merge skips the select when both arms left the
+same term object. `asm/lowering_refinement_test.go` pins the Go lowering to `lowerT`:
 the rendered terms of a table of Oak expressions must be the renders
 stated as examples in the Lean file, so either side changing must visit
-the other. Two eval-preserving liberties the Go takes are left out of the
-model and named in it: the constructors fold constants and drop `x + 0`,
-and a comparison in an `ite` condition keeps the operands' width where
-`lowerT` re-widths it to 1.
+the other.
 
 With it, on arm64, a theorem about an Oak function's extraction composes
 with the verifier's verdict and `Oak.ArmASL` into one statement about the
 machine for a body inside the shared subset: source theorem, `lowerT_eval`,
 the verifier's equality, the ASL bridge. Outside the subset — loops,
-aggregates, spans, inlined calls — the verifier's lowering is still the
-Go's alone, related to the extraction by tests.
+integer-constant matches in statement position, records and owned arrays,
+span writes — the verifier's lowering is still the Go's alone, related to
+the extraction by tests.
 
 For the C route (every function the native lane does not cover, and every
 function on amd64 and the microcontrollers), the source-level proofs reach
@@ -193,15 +216,22 @@ whose chain is proved end to end is the one to deepen; the others wait
 for a workload):
 
 3. **Widen the seam** (§4) from scalar expressions to what the verifier
-   lowers for real native bodies: block-scoped locals, inlined calls to
-   program functions, span and owned-array element reads under their
-   guards, and counted loops — each with the extraction's reading
-   (`95-extraction.md`: locals as `let`, calls hoisted, elements as
-   `Array` reads, loops as fuel-indexed recursion), so `lowerT_eval`
-   covers the bodies `oak build -native` actually verifies rather than
-   their arithmetic alone. This is the step that turns "source theorem
-   implies machine behavior" from a statement about expressions into one
-   about functions on arm64.
+   lowers for real native bodies. Done 2026-09-13: block-scoped locals and
+   rebindings, inlined calls to program functions, statement-level Bool
+   conditionals whose arms assign locals, and span element reads and
+   lengths (`letIn`, `call`, `condSet`, `elem`, `len`, the `Agree` scope
+   invariant; `lowerConditionalStatement`'s select against the
+   extraction's `let (vars) ← if c then … else …`; `selectTerm` against
+   `getD` over a memory named as the verifier names it, `v[k]`). Next:
+   integer-constant matches in statement position (`lowerMatchStatement`),
+   owned-array elements and span writes, and counted loops (`lowerWhile`
+   unrolls a loop whose condition folds to a constant; the constructors'
+   folding is modeled, so what remains is the fuel-indexed loop against
+   the extraction's recursion) — so `lowerT_eval` covers the
+   bodies `oak build -native` actually verifies rather than their
+   arithmetic alone. This is the step that turns "source theorem implies
+   machine behavior" from a statement about expressions into one about
+   functions on arm64.
 4. **Widen translation validation** (§2.4) on arm64: the checked shift
    helpers under a constant-count specialization (the verifier admits a
    constant count; the helper's trap check folds away), `oak_index` and

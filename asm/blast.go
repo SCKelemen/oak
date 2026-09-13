@@ -13,6 +13,7 @@ package asm
 
 import (
 	"math/bits"
+	"strconv"
 )
 
 type blaster struct {
@@ -216,6 +217,94 @@ func (bl *blaster) selectBits(span string, idx []int, width int) []int {
 	}
 	bl.selects = append(bl.selects, selectAbstraction{span: span, idx: idx, vars: vars})
 	return bl.varsBits(vars, width)
+}
+
+// consistency is the functional-consistency constraint over the element
+// reads met so far (Ackermann's reduction): two reads of one span at equal
+// indices hold equal values, and a read at an index equal to a constant
+// holds that element parameter's value. Independent read values are sound
+// for a proof — terms equal under independent values are equal under every
+// memory — but a differing bit under independent values is a
+// counterexample only where the values could come from one memory, so a
+// difference counts only under this constraint. Quadratic in the reads of
+// a span, each an equality over the 32 index bits; the node budget bounds
+// it like everything else.
+func (bl *blaster) consistency() int {
+	cons := bddTrue
+	if len(bl.selects) == 0 {
+		return cons
+	}
+	equalBits := func(a, b []int) int {
+		eq := bddTrue
+		n := len(a)
+		if len(b) < n {
+			n = len(b)
+		}
+		for i := 0; i < n; i++ {
+			eq = bl.apply(opAnd, eq, bl.not(bl.apply(opXor, a[i], b[i])))
+			if bl.bdd.exceeded {
+				return eq
+			}
+		}
+		// A wider side's extra bits are zero: the values agree only when
+		// those are zero too.
+		for i := n; i < len(a); i++ {
+			eq = bl.apply(opAnd, eq, bl.not(a[i]))
+		}
+		for i := n; i < len(b); i++ {
+			eq = bl.apply(opAnd, eq, bl.not(b[i]))
+		}
+		return eq
+	}
+	constantBits := func(value uint64, width int) []int {
+		out := make([]int, width)
+		for i := range out {
+			out[i] = bddFalse
+			if (value>>uint(i))&1 == 1 {
+				out[i] = bddTrue
+			}
+		}
+		return out
+	}
+	implies := func(premise, conclusion int) {
+		if premise == bddFalse {
+			return
+		}
+		cons = bl.apply(opAnd, cons, bl.apply(opOr, bl.not(premise), conclusion))
+	}
+	for k := range bl.selects {
+		a := bl.selects[k]
+		aVal := bl.varsBits(a.vars, len(a.vars))
+		for l := k + 1; l < len(bl.selects); l++ {
+			b := bl.selects[l]
+			if b.span != a.span {
+				continue
+			}
+			implies(equalBits(a.idx, b.idx), equalBits(aVal, bl.varsBits(b.vars, len(b.vars))))
+			if bl.bdd.exceeded {
+				return cons
+			}
+		}
+		// The constant-index reads of the span are parameters (`v[3]`).
+		for _, name := range bl.params {
+			if rootParam(name) != a.span || len(name) <= len(a.span)+2 || name[len(a.span)] != '[' {
+				continue
+			}
+			k, err := strconv.ParseInt(name[len(a.span)+1:len(name)-1], 10, 64)
+			if err != nil || k < 0 {
+				continue
+			}
+			elem := bl.blast(paramTerm(name, bl.widths[name]))
+			if elem == nil {
+				continue
+			}
+			implies(equalBits(a.idx, constantBits(uint64(k), 32)), equalBits(aVal, elem))
+			if bl.bdd.exceeded {
+				return cons
+			}
+		}
+	}
+	return cons
 }
 
 func (bl *blaster) varsBits(vars []int, width int) []int {
@@ -678,8 +767,13 @@ func (bl *blaster) shiftBarrel(a, count []int, left bool) []int {
 
 // counterexample turns a differing bit into a concrete parameter assignment.
 func (bl *blaster) counterexample(x, y int) map[string]uint64 {
-	diff := bl.apply(opXor, x, y)
-	assignment := bl.bdd.satisfyingPath(diff)
+	return bl.counterexampleOf(bl.apply(opXor, x, y))
+}
+
+// counterexampleOf reads a parameter assignment off one satisfying path of
+// a node.
+func (bl *blaster) counterexampleOf(node int) map[string]uint64 {
+	assignment := bl.bdd.satisfyingPath(node)
 	env := make(map[string]uint64, len(bl.params))
 	for variable, value := range assignment {
 		owner, isParam := bl.owners[variable]

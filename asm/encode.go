@@ -1290,6 +1290,15 @@ func (e *encoder) bitmask(fop *isaOperand, value int64) error {
 }
 
 // encodeBitmask returns N, immr, imms for value at the register width.
+// LogicalImmediate reports whether value is encodable as the bitmask
+// immediate of and/orr/eor at the given register width (32 or 64): a
+// repeating pattern of a rotated run of ones, neither all zeros nor all
+// ones. The native backend asks before spelling a constant operand.
+func LogicalImmediate(value uint64, width int) bool {
+	_, _, _, ok := encodeBitmask(value, width)
+	return ok
+}
+
 func encodeBitmask(value uint64, width int) (n, immr, imms uint32, ok bool) {
 	if width == 32 {
 		if value>>32 != 0 {

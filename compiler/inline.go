@@ -39,6 +39,8 @@ const inlineHelperLines = 12
 
 type inlineCandidate struct {
 	fn *ast.FunctionStatement
+	// body is the helper's body as a block (an expression body wrapped).
+	body *ast.BlockExpression
 	// declared names the body introduces: locals and pattern bindings.
 	declared map[string]bool
 	// free names the body references without declaring (globals, types,
@@ -61,7 +63,12 @@ type inliner struct {
 	counter    int
 }
 
-// inlineHelpers rewrites every call to an inlinable helper in program.
+// inlineHelpers rewrites every call to an inlinable helper in program. The
+// pass runs in rounds: a helper that called only helpers becomes a leaf
+// once those are spliced into it, and the next round inlines it in turn,
+// so an accessor chain (`tkind` over `tword` over `term_at` over `state`)
+// flattens to the element read it denotes. Rounds stop when a pass inlines
+// nothing new; the bound keeps a pathological program from cycling.
 func inlineHelpers(program *ast.Program) {
 	if program == nil {
 		return
@@ -76,39 +83,70 @@ func inlineHelpers(program *ast.Program) {
 			in.functions[fn.Name.Value] = fn
 		}
 	}
-	for name, fn := range in.functions {
-		if duplicates[name] {
-			continue
+	const maxRounds = 8
+	for round := 0; round < maxRounds; round++ {
+		in.candidates = map[string]*inlineCandidate{}
+		for name, fn := range in.functions {
+			if duplicates[name] {
+				continue
+			}
+			if cand := in.candidate(fn); cand != nil {
+				in.candidates[name] = cand
+			}
 		}
-		if cand := in.candidate(fn); cand != nil {
-			in.candidates[name] = cand
+		if len(in.candidates) == 0 {
+			return
+		}
+		before := in.counter
+		for _, stmt := range program.Statements {
+			fn, ok := stmt.(*ast.FunctionStatement)
+			if !ok || fn.Body == nil || fn.ExternSymbol != "" || fn.Name == nil {
+				continue
+			}
+			if _, isLeaf := in.candidates[fn.Name.Value]; isLeaf && fn.Receiver == nil {
+				continue // a leaf calls nothing
+			}
+			if fn.Kernel {
+				// A kernel is analyzed and compiled as written
+				// (docs/spec/56-kernels.md): its independence rule judges the
+				// helper call, not an expansion the Metal emitter never sees.
+				continue
+			}
+			body, wrapped := functionBlock(fn)
+			if body == nil || body.Block == nil {
+				continue
+			}
+			scope := &callerScope{declared: map[string]bool{}}
+			collectDeclaredNames(reflect.ValueOf(fn), scope.declared)
+			in.inlineBlock(body.Block, scope)
+			if wrapped && (len(body.Block.Statements) != 1 || body.Block.Statements[0].(*ast.ExpressionStatement).Expression != fn.Body) {
+				// An expression body (`f: (...) = expr`) that received hoisted
+				// statements becomes the block it now is; one untouched stays as
+				// written.
+				fn.Body = body
+			}
+		}
+		if in.counter == before {
+			return
 		}
 	}
-	if len(in.candidates) == 0 {
-		return
+}
+
+// functionBlock is a function's body as a block: the block itself, or an
+// expression body (`f: (...): T = expr`) wrapped as the one-statement block
+// it denotes (wrapped reports the second case). The prover's accessor
+// helpers are all of the second form, and they are exactly the calls whose
+// prologue, record copy, and guard the native backend paid for at every
+// element read.
+func functionBlock(fn *ast.FunctionStatement) (*ast.BlockExpression, bool) {
+	if fn.Body == nil {
+		return nil, false
 	}
-	for _, stmt := range program.Statements {
-		fn, ok := stmt.(*ast.FunctionStatement)
-		if !ok || fn.Body == nil || fn.ExternSymbol != "" || fn.Name == nil {
-			continue
-		}
-		if _, isLeaf := in.candidates[fn.Name.Value]; isLeaf && fn.Receiver == nil {
-			continue // a leaf calls nothing
-		}
-		if fn.Kernel {
-			// A kernel is analyzed and compiled as written
-			// (docs/spec/56-kernels.md): its independence rule judges the
-			// helper call, not an expansion the Metal emitter never sees.
-			continue
-		}
-		body, ok := fn.Body.(*ast.BlockExpression)
-		if !ok || body.Block == nil {
-			continue
-		}
-		scope := &callerScope{declared: map[string]bool{}}
-		collectDeclaredNames(reflect.ValueOf(fn), scope.declared)
-		in.inlineBlock(body.Block, scope)
+	if block, isBlock := fn.Body.(*ast.BlockExpression); isBlock {
+		return block, false
 	}
+	tok, _ := ast.ExpressionToken(fn.Body)
+	return &ast.BlockExpression{Token: tok, Block: &ast.BlockStatement{Token: tok, Statements: []ast.Statement{&ast.ExpressionStatement{Token: tok, Expression: fn.Body}}}}, true
 }
 
 // candidate applies the forced-inline rule and the pass's own body
@@ -122,8 +160,8 @@ func (in *inliner) candidate(fn *ast.FunctionStatement) *inlineCandidate {
 	if fn.EndToken.Line <= 0 || fn.EndToken.Line-fn.Token.Line > inlineHelperLines {
 		return nil
 	}
-	body, ok := fn.Body.(*ast.BlockExpression)
-	if !ok || body.Block == nil || len(body.Block.Statements) == 0 || body.Block.DeferredFrom > 0 {
+	body, _ := functionBlock(fn)
+	if body == nil || body.Block == nil || len(body.Block.Statements) == 0 || body.Block.DeferredFrom > 0 {
 		return nil
 	}
 	if !discipline.InlineHelperShape(fn, in.functions) {
@@ -152,7 +190,7 @@ func (in *inliner) candidate(fn *ast.FunctionStatement) *inlineCandidate {
 	if !scalarLocals {
 		return nil
 	}
-	cand := &inlineCandidate{fn: fn, declared: map[string]bool{}, free: map[string]bool{}, assigned: map[string]bool{}, writtenParams: map[string]bool{}}
+	cand := &inlineCandidate{fn: fn, body: body, declared: map[string]bool{}, free: map[string]bool{}, assigned: map[string]bool{}, writtenParams: map[string]bool{}}
 	params := map[string]bool{}
 	for _, p := range fn.Parameters {
 		params[p.Name.Value] = true
@@ -544,7 +582,7 @@ func (in *inliner) expand(call *ast.InvocationExpression, cand *inlineCandidate,
 	for name := range cand.declared {
 		rename[name] = prefix + name
 	}
-	body := cloneExpression(cand.fn.Body).(*ast.BlockExpression)
+	body := cloneExpression(cand.body).(*ast.BlockExpression)
 	stampSemanticContext(reflect.ValueOf(body), context)
 	renameBindings(reflect.ValueOf(body), rename)
 	bodyStmts := body.Block.Statements

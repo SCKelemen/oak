@@ -602,7 +602,18 @@ solve_stream: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, d
 // directory under the temporary directory named by the sources' hash,
 // and returns the binary's path; a later run finds it built.
 func oakSolverBinary() (string, error) {
-	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSyntaxSource + "\x00" + oakTreeSource + "\x00" + oakProtocolSource + "\x00" + oakShellSource + "\x00" + oakLeanSource + "\x00" + oakExploreSource + "\x00" + oakWitnessSource + "\x00" + oakDriverHelpersSource + "\x00" + oakLRATSource + "\x00" + oakSATSource + "\x00" + oakSolverDriverSource))
+	// The cache key covers the prover's sources and the compiler that
+	// builds them (the executable's size and modification time): a compiler
+	// change — an inliner rule, a backend lowering — yields a different
+	// binary from the same sources, and a stale one would be measured and
+	// tested in its place.
+	compilerIdentity := ""
+	if exe, err := os.Executable(); err == nil {
+		if info, err := os.Stat(exe); err == nil {
+			compilerIdentity = fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
+		}
+	}
+	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSyntaxSource + "\x00" + oakTreeSource + "\x00" + oakProtocolSource + "\x00" + oakShellSource + "\x00" + oakLeanSource + "\x00" + oakExploreSource + "\x00" + oakWitnessSource + "\x00" + oakDriverHelpersSource + "\x00" + oakLRATSource + "\x00" + oakLRATSource + "\x00" + oakSATSource + "\x00" + oakSolverDriverSource + "\x00" + compilerIdentity))
 	// OAK_SOLVER_NATIVE=1 builds the prover through the native backend
 	// (docs/spec/94-assembler.md §9): every function the backend reaches is
 	// checked, verified against its Oak body, and encoded by the Oak

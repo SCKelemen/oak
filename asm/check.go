@@ -2143,7 +2143,18 @@ func (c *checker) call(instr Instruction) {
 	c.written[1] = true
 	c.writtenV[0] = true
 	c.flagsValid = false
+	// A frame address is a fact about a register's value, not a guard:
+	// the callee preserves x19–x28 under AAPCS64 (every Oak callee's
+	// save and restore of them is checked), so a span bound over a frame
+	// array and parked there is still addressable after the call.
+	kept := map[int]int64{}
+	for num, addr := range c.frameAddrs {
+		if num >= 19 && num <= 28 {
+			kept[num] = addr
+		}
+	}
 	c.forgetGuards()
+	c.frameAddrs = kept
 }
 
 func (c *checker) ret(instr Instruction) bool {

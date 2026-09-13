@@ -3194,9 +3194,55 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 		return nil, spanContract{}, reason, false
 	}
 	if lo.concrete != nil && idx.kind == termConst {
+		if length, known := lo.concrete[spanLenName(ident.Value)]; known && idx.value >= length {
+			// Oak traps on this input; the witness has no value to compare.
+			return nil, spanContract{}, fmt.Sprintf("an index past len(%s) on this input", ident.Value), false
+		}
 		return constTerm(elementValue(ident.Value, idx.value, contract.elemWidth), contract.elemWidth), contract, "", true
 	}
+	if !lo.trapsTracked {
+		// The asm verifier's side: reads split over a conditional in the
+		// index, as the machine's branches read (selectSplit). The theorem
+		// decider keeps the read whole, as its Oak twin builds it.
+		return selectSplit(ident.Value, idx, contract.elemWidth, 0), contract, "", true
+	}
 	return selectTerm(ident.Value, idx, contract.elemWidth), contract, "", true
+}
+
+// selectSplit builds a span read at an index holding a conditional by
+// splitting the read over the conditional: v[x + (c ? a : b)] is
+// c ? v[x + a] : v[x + b]. The native backend lowers a value-position
+// conditional as branches, so the machine reads at each branch's own
+// index; the split gives the Oak side the same reads — the same canonical
+// index bits share one abstraction in the blaster — where one read at a
+// conditional index would stand apart from both and leave the equality to
+// the consistency constraint. Bounded in depth against a chain of
+// conditionals.
+func selectSplit(span string, index *term, width int, depth int) *term {
+	if depth < 3 {
+		if c, a, b, ok := hoistIte(index); ok {
+			return iteTerm(c, selectSplit(span, a, width, depth+1), selectSplit(span, b, width, depth+1))
+		}
+	}
+	return selectTerm(span, index, width)
+}
+
+// hoistIte rewrites a term whose top is a conditional, or a binary
+// operation over a conditional operand, into the conditional over the
+// operation applied to each branch.
+func hoistIte(t *term) (cond, left, right *term, ok bool) {
+	switch t.kind {
+	case termIte:
+		return t.cond, t.left, t.right, true
+	case termBinary:
+		if c, a, b, ok := hoistIte(t.right); ok {
+			return c, binaryTerm(t.op, t.left, a), binaryTerm(t.op, t.left, b), true
+		}
+		if c, a, b, ok := hoistIte(t.left); ok {
+			return c, binaryTerm(t.op, a, t.right), binaryTerm(t.op, b, t.right), true
+		}
+	}
+	return nil, nil, nil, false
 }
 
 // constantIndexValue reads a constant index: a literal, a primitive
@@ -4347,11 +4393,31 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	if asmBits == nil || oakBits == nil || bl.bdd.exceeded {
 		return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exceeded its node budget)", fn.Name)}
 	}
+	// Element reads at different index terms are independent values in the
+	// diagrams (sound for a proof); a differing bit is a counterexample
+	// only under the reads' functional consistency (blaster.consistency),
+	// which one memory can realize. The constraint is built only once a
+	// bit differs: most bodies prove node for node without it.
+	cons, consBuilt := bddTrue, false
 	for i := 0; i < width; i++ {
-		if asmBits[i] != oakBits[i] {
-			env := bl.counterexample(asmBits[i], oakBits[i])
-			return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (bit %d differs): asm yields %d, Oak yields %d (asm term %s; Oak term %s)", fn.Name, describeEnv(names, env), i, asmTerm.eval(env), oakTerm.eval(env), asmTerm, oakTerm)}
+		if asmBits[i] == oakBits[i] {
+			continue
 		}
+		if !consBuilt {
+			cons, consBuilt = bl.consistency(), true
+			if bl.bdd.exceeded {
+				return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exceeded its node budget)", fn.Name)}
+			}
+		}
+		differs := bl.apply(opAnd, cons, bl.apply(opXor, asmBits[i], oakBits[i]))
+		if bl.bdd.exceeded {
+			return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exceeded its node budget)", fn.Name)}
+		}
+		if differs == bddFalse {
+			continue // equal under every memory, though not node for node
+		}
+		env := bl.counterexampleOf(differs)
+		return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (bit %d differs): asm yields %d, Oak yields %d (asm term %s; Oak term %s)", fn.Name, describeEnv(names, env), i, asmTerm.eval(env), oakTerm.eval(env), asmTerm, oakTerm)}
 	}
 	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level (%d-bit result, %d BDD nodes)%s", fn.Name, width, len(bl.bdd.nodes), note)}
 }

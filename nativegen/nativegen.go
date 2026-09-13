@@ -95,11 +95,24 @@ type span struct {
 	// (baseReg/lenReg) by the prologue — the checker follows the copies —
 	// so the callee's clobber of x0–x17 never touches it.
 	argBase, argLen int
+	// frameLen: the constant length of a span bound over an owned frame
+	// array (`span(&buf)` / `view(&buf)`), 0 for any other span. Its base
+	// is a frame address to the checker, whose frame idioms (a frame array
+	// access, the element region of a frame array of records) take a
+	// constant index guard `cmp wI, #N` — the length register would leave
+	// every element of the span unaddressable in the binding function.
+	frameLen int64
 	// norm: on the rv64 lane, the register holding the length zero-extended
 	// (`slli n, aL, 32; srli n, n, 32`, the checker's normalization idiom):
 	// the LP64 pair leaves padding above the u32 length, so every bounds
 	// guard compares against this copy (nativegen/rv64.go).
 	norm int
+	// array: for a local view or span over an owned array of the frame
+	// (`whole: []u32 = view(&buf)`), the array itself. Its elements are
+	// reached through the array's own idiom — the frame address and the
+	// constant guard — since the pair's base register carries a frame
+	// address the checker forgets at the first call, not a span fact.
+	array *arrayLocal
 }
 
 // spanTypeOf reads a span or view type of scalar or record elements.
@@ -391,6 +404,12 @@ type recordParam struct {
 	regs     int
 	indirect bool
 	local    *recordLocal
+	// inPlace: a by-reference parameter the body only reads, kept as the
+	// caller's memory addressed by the callee-saved register park (the
+	// checker's read-only region, copied there by `mov`), never copied into
+	// the frame; a callee taking it by reference receives the same address.
+	inPlace bool
+	park    int
 }
 
 // isHFA reports a homogeneous floating-point aggregate (all fields one
@@ -474,6 +493,9 @@ type recordLocal struct {
 	temps  []int // scratch registers to release once the place is consumed
 	// readOnly: an element of a view ([]T): stores are refused.
 	readOnly bool
+	// paramRef: an in-place by-reference parameter (recordParam.inPlace):
+	// the caller's memory, passed on by its address.
+	paramRef bool
 }
 
 func (r *recordLocal) loc() loc { return loc{inReg: r.inReg, reg: r.reg, offset: r.offset} }
@@ -1223,7 +1245,18 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 			if !indirect {
 				regs = layout.chunks()
 			}
-			g.recordParams[p.Name.Value] = &recordParam{layout: layout, reg: nextReg, regs: regs, indirect: indirect}
+			rp := &recordParam{layout: layout, reg: nextReg, regs: regs, indirect: indirect}
+			if indirect && !recordParamTouched(fn, p.Name.Value) && !layoutHasArray(layout) && g.usedCallee < calleeHigh-calleeLow+1 {
+				// Read in place: the address parked in a callee-saved
+				// register, the fields loaded through it (the checker's
+				// region rule), no copy into the frame. Types drive it: a
+				// parameter the body never writes, borrows, or addresses is
+				// the caller's copy for the whole call.
+				rp.inPlace, rp.park = true, calleeLow+g.usedCallee
+				g.usedCallee++
+				g.saveArea = 8 * (calleeHigh - calleeLow + 1)
+			}
+			g.recordParams[p.Name.Value] = rp
 			nextReg += regs
 			continue
 		}
@@ -1289,7 +1322,11 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 			g.declare(p.Name.Value, s)
 		}
 		if rp, isRecord := g.recordParams[p.Name.Value]; isRecord {
-			rp.local = g.declareRecord(p.Name.Value, rp.layout)
+			if rp.inPlace {
+				rp.local = g.bindParamRef(p.Name.Value, rp)
+			} else {
+				rp.local = g.declareRecord(p.Name.Value, rp.layout)
+			}
 		}
 	}
 	g.head = g.newLabel("head")
@@ -1345,7 +1382,11 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 				binding.Length = &second
 			}
 			out.Bindings = append(out.Bindings, binding)
-			if rp.indirect {
+			if rp.inPlace {
+				// The caller's copy stays where it is: its address parks in
+				// a callee-saved register (the region fact follows the mov).
+				prologue = append(prologue, g.ins("mov", xr(rp.park), xr(rp.reg)))
+			} else if rp.indirect {
 				// The caller's copy, addressed by the register: copy it into
 				// the frame (the body may write its own copy).
 				prologue = append(prologue, g.copyIn(rp.local, rp.reg)...)
@@ -2563,6 +2604,80 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 
 // declareRecord gives an owned record local its frame storage in whole
 // 8-byte slots.
+// bindParamRef binds an in-place record parameter: the caller's memory at
+// the parked address register, read-only.
+func (g *generator) bindParamRef(name string, rp *recordParam) *recordLocal {
+	rec := &recordLocal{inReg: true, reg: rp.park, layout: rp.layout, readOnly: true, paramRef: true}
+	delete(g.slots, name)
+	delete(g.types, name)
+	delete(g.regs, name)
+	g.records[name] = rec
+	g.scopes[len(g.scopes)-1][name] = slotBinding{reg: -1, rec: rec}
+	return rec
+}
+
+// recordParamTouched reports whether a body assigns a record parameter or
+// a path under it, takes its address (`&p`, `&p.f`: view, span,
+// address_of), or calls the function itself (a tail self-call rebinds the
+// parameters) — the uses under which the parameter needs a copy of its own.
+func recordParamTouched(fn *ast.FunctionStatement, name string) bool {
+	touched := false
+	walk(fn.Body, func(n ast.Node) {
+		switch e := n.(type) {
+		case *ast.AssignmentStatement:
+			if e.Name != nil && e.Name.Value == name {
+				touched = true
+			}
+		case *ast.IndexAssignmentStatement:
+			if root, ok := pathRoot(e.Target); ok && root == name {
+				touched = true
+			}
+		case *ast.PrefixExpression:
+			if e.Operator == "&" {
+				if root, ok := pathRoot(e.Right); ok && root == name {
+					touched = true
+				}
+			}
+		case *ast.InvocationExpression:
+			if ident, isIdent := e.Function.(*ast.Identifier); isIdent && fn.Name != nil && ident.Value == fn.Name.Value {
+				touched = true
+			}
+		}
+	})
+	return touched
+}
+
+// pathRoot is the identifier at the root of an access path (`p.f[i].g`).
+func pathRoot(expr ast.Expression) (string, bool) {
+	for {
+		switch e := expr.(type) {
+		case *ast.Identifier:
+			return e.Value, true
+		case *ast.IndexExpression:
+			expr = e.Left
+		default:
+			return "", false
+		}
+	}
+}
+
+// layoutHasArray reports an owned-array field anywhere in a layout: such a
+// field is walked through a frame address, which an in-place parameter
+// has none of.
+func layoutHasArray(l *recordLayout) bool {
+	for _, f := range l.fields {
+		switch f.kind {
+		case fieldArray:
+			return true
+		case fieldRecord:
+			if f.layout != nil && layoutHasArray(f.layout) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (g *generator) declareRecord(name string, layout *recordLayout) *recordLocal {
 	rec := &recordLocal{offset: 8 * g.nslots, layout: layout}
 	g.nslots += (layout.size + 7) / 8
@@ -2596,7 +2711,7 @@ func (g *generator) lowerSpanDeclaration(s *ast.VariableDeclaration, target span
 		g.emit("mov", xr(baseReg), xr(value.baseReg))
 		g.emit("mov", wr(lenReg), wr(value.lenReg))
 	}
-	local := span{elem: target.elem, elemLayout: target.elemLayout, writable: target.writable, baseReg: baseReg, lenReg: lenReg, argBase: -1, argLen: -1}
+	local := span{elem: target.elem, elemLayout: target.elemLayout, writable: target.writable, baseReg: baseReg, lenReg: lenReg, argBase: -1, argLen: -1, array: value.array, frameLen: value.frameLen}
 	delete(g.slots, s.Name.Value)
 	delete(g.types, s.Name.Value)
 	delete(g.regs, s.Name.Value)
@@ -2666,7 +2781,7 @@ func (g *generator) spanValue(expr ast.Expression, target *span, baseReg, lenReg
 		if arr.inReg {
 			return span{}, false, unsupported("%s of an array inside a computed element", fn.Value)
 		}
-		out.elem, out.elemLayout, out.writable = arr.elem, arr.elemLayout, shape.writable
+		out.elem, out.elemLayout, out.writable, out.array, out.frameLen = arr.elem, arr.elemLayout, shape.writable, arr, arr.length
 		g.emit("add", xr(baseReg), sp(), imm(g.slotMem(arr.offset).Offset))
 		g.constant(lenReg, uint64(arr.length), scalars["u32"])
 		return out, false, nil
@@ -3293,8 +3408,7 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 				return err
 			}
 			g.declare(s.Name.Value, typ)
-			g.put(g.storeVar(s.Name.Value, r))
-			g.release(r)
+			g.assignVar(s.Name.Value, r)
 		case *ast.AssignmentStatement:
 			if dst, isRecord := g.records[s.Name.Value]; isRecord {
 				// `q = p` / `q = f(p)` / `q = .Some(x)`: a whole-record copy.
@@ -3319,8 +3433,7 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 			if err != nil {
 				return err
 			}
-			g.put(g.storeVar(s.Name.Value, r))
-			g.release(r)
+			g.assignVar(s.Name.Value, r)
 		case *ast.IndexAssignmentStatement:
 			if err := g.elementStore(s); err != nil {
 				return err
@@ -3917,15 +4030,15 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		l, err := g.expr(e.Left, &operand)
-		if err != nil {
-			return 0, err
-		}
-		r, err := g.expr(e.Right, &operand)
-		if err != nil {
-			return 0, err
-		}
 		if operand.isFloat {
+			l, err := g.expr(e.Left, &operand)
+			if err != nil {
+				return 0, err
+			}
+			r, err := g.expr(e.Right, &operand)
+			if err != nil {
+				return 0, err
+			}
 			// IEEE comparison: unordered operands compare false except for !=.
 			g.emit("fcmp", reg(l, operand), reg(r, operand))
 			g.release(l)
@@ -3937,14 +4050,36 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 			g.emit("cset", wr(out), asm.Condition{Code: floatConditionCodes[e.Operator]})
 			return out, nil
 		}
-		g.emit("cmp", reg(l, operand), reg(r, operand))
-		g.release(r)
+		// The operands where they are: a variable in its own register, a
+		// constant as the immediate `cmp` takes; the result in the left
+		// operand's scratch, or a fresh one when the left is a variable.
+		l, lfixed, err := g.operand(e.Left, operand)
+		if err != nil {
+			return 0, err
+		}
+		right, r, rfixed, err := g.sourceOperand(e.Right, operand, "cmp")
+		if err != nil {
+			return 0, err
+		}
+		g.emit("cmp", reg(l, operand), right)
+		if r >= 0 && !rfixed {
+			g.release(r)
+		}
+		out := l
+		if lfixed {
+			if out, err = g.alloc(scalars["Bool"]); err != nil {
+				return 0, err
+			}
+		}
 		code := conditionCodes[e.Operator][0]
 		if operand.signed {
 			code = conditionCodes[e.Operator][1]
 		}
-		g.emit("cset", wr(l), asm.Condition{Code: code})
-		return l, nil
+		g.emit("cset", wr(out), asm.Condition{Code: code})
+		return out, nil
+	}
+	if mnemonic, direct := directArithmetic[e.Operator]; direct && !typ.isFloat && !typ.isVec {
+		return g.directInfix(e, typ, mnemonic)
 	}
 	l, err := g.expr(e.Left, &typ)
 	if err != nil {
@@ -4041,6 +4176,159 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 	g.release(r)
 	g.normalize(l, typ)
 	return l, nil
+}
+
+// directArithmetic names the operations whose operands are read where they
+// lie (directInfix): a variable in its callee-saved register, a constant
+// as an immediate where the instruction's field admits it.
+var directArithmetic = map[string]string{"+": "add", "-": "sub", "*": "mul", "&": "and", "|": "orr", "^": "eor"}
+
+// commutative marks the operations whose constant operand may move to the
+// right, where the immediate field is.
+var commutative = map[string]bool{"add": true, "mul": true, "and": true, "orr": true, "eor": true}
+
+// directInfix lowers `a op b` with the operands in place: `add w9, w19,
+// w20` for two variables, `add w9, w19, #1` for a constant right operand,
+// instead of moving each into a scratch register first. The result lands
+// in the left operand's scratch when it has one, otherwise in a fresh one
+// (so the scratch pressure never exceeds the moving form's). The semantics
+// are the moving form's: the checker reads the variable registers as any
+// source, and the verifier's terms are the same.
+func (g *generator) directInfix(e *ast.InfixExpression, typ scalar, mnemonic string) (int, error) {
+	left, right := e.Left, e.Right
+	if _, leftConst := g.constantOperand(left, typ); leftConst && commutative[mnemonic] {
+		if _, rightConst := g.constantOperand(right, typ); !rightConst {
+			left, right = right, left
+		}
+	}
+	l, lfixed, err := g.operand(left, typ)
+	if err != nil {
+		return 0, err
+	}
+	src, r, rfixed, err := g.sourceOperand(right, typ, mnemonic)
+	if err != nil {
+		return 0, err
+	}
+	out := l
+	if lfixed {
+		if out, err = g.alloc(typ); err != nil {
+			return 0, err
+		}
+	}
+	g.emit(mnemonic, reg(out, typ), reg(l, typ), src)
+	if r >= 0 && !rfixed {
+		g.release(r)
+	}
+	g.normalize(out, typ)
+	return out, nil
+}
+
+// operand evaluates an expression as a source operand: a variable of the
+// type in its callee-saved register is read there (fixed: the caller never
+// releases it); anything else evaluates into a fresh scratch register.
+func (g *generator) operand(expr ast.Expression, typ scalar) (int, bool, error) {
+	if ident, isIdent := expr.(*ast.Identifier); isIdent && !typ.isFloat && !typ.isVec {
+		if v, inReg := g.regs[ident.Value]; inReg && v >= 0 {
+			if t, ok := g.types[ident.Value]; ok && t == typ {
+				return v, true, nil
+			}
+		}
+	}
+	r, err := g.expr(expr, &typ)
+	return r, false, err
+}
+
+// sourceOperand is the right operand of an instruction: an immediate when
+// the expression is a constant the instruction's field admits (a 12-bit
+// unsigned for add/sub/cmp, a bitmask immediate for and/orr/eor), else a
+// register from operand (r < 0 when an immediate was spelled).
+func (g *generator) sourceOperand(expr ast.Expression, typ scalar, mnemonic string) (asm.Operand, int, bool, error) {
+	if v, isConst := g.constantOperand(expr, typ); isConst {
+		switch mnemonic {
+		case "add", "sub", "cmp":
+			if v < 4096 {
+				return imm(int64(v)), -1, false, nil
+			}
+		case "and", "orr", "eor":
+			width := 32
+			if typ.wide() {
+				width = 64
+			}
+			if asm.LogicalImmediate(v&mask64(width), width) {
+				return imm(int64(v & mask64(width))), -1, false, nil
+			}
+		}
+	}
+	r, fixed, err := g.operand(expr, typ)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	return reg(r, typ), r, fixed, nil
+}
+
+// constantOperand reads a constant expression's value at a type: a
+// literal, a widening constructor over one, or a constant global.
+func (g *generator) constantOperand(expr ast.Expression, typ scalar) (uint64, bool) {
+	if v, ok := constantValue(expr); ok && v >= 0 {
+		return uint64(v), true
+	}
+	if ident, isIdent := expr.(*ast.Identifier); isIdent {
+		if c, isConst := g.constantOf(ident.Value); isConst && !typ.isFloat {
+			return c.Value & mask64(scalars[c.Type].bits), true
+		}
+	}
+	return 0, false
+}
+
+func mask64(bits int) uint64 {
+	if bits >= 64 {
+		return ^uint64(0)
+	}
+	return uint64(1)<<uint(bits) - 1
+}
+
+// assignVar stores a computed value into a variable and releases the
+// scratch: when the value's producing instruction is the last one emitted
+// and the variable lives in a register, the instruction is retargeted to
+// write the variable directly (`add w19, w19, #1` instead of `add w9, w19,
+// #1; mov w19, w9`); otherwise the move or store as before.
+func (g *generator) assignVar(name string, r int) {
+	if v, inReg := g.regs[name]; inReg && v >= 0 && r < vecBase && g.retargetLast(r, v) {
+		g.release(r)
+		return
+	}
+	g.put(g.storeVar(name, r))
+	g.release(r)
+}
+
+// retargetable names the instructions whose destination may be renamed
+// without changing their meaning: they read their sources only (movk reads
+// its destination, the exclusives write a status).
+var retargetable = map[string]bool{"add": true, "sub": true, "mul": true, "and": true, "orr": true, "eor": true, "lsl": true, "lsr": true, "asr": true, "udiv": true, "sdiv": true, "msub": true, "madd": true, "mov": true, "movz": true, "mvn": true, "neg": true, "cset": true, "csel": true, "sxtb": true, "sxth": true, "uxtb": true, "uxth": true, "ldr": true, "ldrb": true, "ldrh": true, "ldrsb": true, "ldrsh": true, "ldrsw": true, "clz": true, "rbit": true, "rev": true, "rev16": true, "rev32": true}
+
+// retargetLast rewrites the last emitted instruction's destination from
+// scratch register r to register v, when that instruction is the one that
+// wrote r and may be renamed.
+func (g *generator) retargetLast(r, v int) bool {
+	n := len(g.items)
+	if n == 0 {
+		return false
+	}
+	ins, isIns := g.items[n-1].(asm.Instruction)
+	if !isIns || !retargetable[ins.Mnemonic] || len(ins.Operands) == 0 {
+		return false
+	}
+	dst, isReg := ins.Operands[0].(asm.Register)
+	if !isReg || dst.Num != r || (dst.Class != asm.ClassW && dst.Class != asm.ClassX) {
+		return false
+	}
+	renamed := dst
+	renamed.Num = v
+	renamed.Text = dst.Text[:1] + strconv.Itoa(v)
+	operands := append([]asm.Operand{renamed}, ins.Operands[1:]...)
+	ins.Operands = operands
+	g.items[n-1] = ins
+	return true
 }
 
 // operandType is the common type of a comparison's operands.
@@ -4441,6 +4729,13 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 			if rec.layout != layout {
 				return 0, unsupported("a call to %s: a %s where %s is expected", ident.Value, rec.layout.name, name)
 			}
+			if layout.size > 16 && rec.paramRef {
+				// An in-place parameter passed on: the same address (the
+				// callee copies it if it writes its own; a read-only one
+				// reads the caller's memory, which nothing writes meanwhile).
+				args = append(args, argument{regs: []int{rec.reg}, types: []scalar{scalars["u64"]}, fixed: true})
+				continue
+			}
 			if layout.size > 16 {
 				// By reference to a copy the callee owns.
 				copied := g.tempRecord(layout)
@@ -4825,10 +5120,19 @@ func (g *generator) guardedIndexAt(sp span, index ast.Expression, tok *token.Tok
 		return 0, err
 	}
 	g.usedTrap = true
-	g.emit("cmp", wr(r), wr(sp.lenReg))
+	if sp.frameLen > 0 && sp.frameLen <= maxCmpImmediate {
+		// A span over a frame array: the frame idiom's constant guard, so
+		// the checker bounds the access inside the declared frame.
+		g.emit("cmp", wr(r), imm(sp.frameLen))
+	} else {
+		g.emit("cmp", wr(r), wr(sp.lenReg))
+	}
 	g.branch("hs", g.trap)
 	return r, nil
 }
+
+// maxCmpImmediate is the largest unshifted `cmp wI, #K` immediate (12 bits).
+const maxCmpImmediate = 4095
 
 // indexValue evaluates an element index into a 32-bit register: a u32 as
 // is; a u64 after checking its high word is zero (an index of 2^32 or more
@@ -5036,6 +5340,10 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if sp.array != nil && sp.elemLayout == nil {
+		// A local view of an owned array: the array's own element idiom.
+		return g.arrayElement(sp.array, e.Index)
+	}
 	r, err := g.guardedIndexAt(sp, e.Index, &e.Token)
 	if err != nil {
 		return 0, err
@@ -5106,6 +5414,13 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 	arr, err := g.arrayOperand(s.Target.Left)
 	if err != nil {
 		return err
+	}
+	if arr == nil {
+		// A local span over an owned array stores through the array's own
+		// idiom (a view refuses below, as any view does).
+		if sp, err := g.spanOperand(s.Target.Left); err == nil && sp.array != nil && sp.elemLayout == nil && sp.writable {
+			arr = sp.array
+		}
 	}
 	if arr != nil {
 		if arr.readOnly {

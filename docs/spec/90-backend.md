@@ -430,7 +430,14 @@ block, stays a call where the C form would need a block in an expression.
 A call the pass leaves is still a call to a forced-inline helper, so the
 generated code is never slower than before — only sometimes still
 checked. The semantic model, the language server, the Lean emitters, and
-the prover see the program as written.
+the prover see the program as written. An expression body (`f: (…): T =
+expr`) is the one-statement block it denotes, as a candidate and as a
+caller (it becomes a block when statements are hoisted into it), and the
+pass runs in rounds: a helper that called only helpers is a leaf once
+those are spliced into it, and the next round inlines it in turn — so an
+accessor chain (`tkind` over `tword` over `term_at` over `state`, the
+prover's shape) flattens to the element read it denotes. The rounds stop
+when a pass inlines nothing new.
 
 ## 10. Owned arrays as values
 

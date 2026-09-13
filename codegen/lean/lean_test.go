@@ -279,9 +279,23 @@ pair: (a: u32): [2]u32 = [2]u32{ a, a + u32(1) }
 	if strings.Index(out, "def SYMBOLS") > strings.Index(out, "def digit") {
 		t.Fatalf("constants must precede the functions that read them:\n%s", out)
 	}
-	_, err = extract(t, "TABLE: [2]u8 = [2]u8{ 1, 2 }\nzap: (): () { s: [*]u8 = span(&TABLE)\n  s[0] = u8(0) }")
-	if err == nil || !strings.Contains(err.Error(), "span of the global") {
-		t.Fatalf("span of a global must fail closed, got %v", err)
+	// A writable span of a global hands it to a writer: the global is
+	// package state (docs/spec/95-extraction.md section 3), a parameter of
+	// the function and, written, a component of its result.
+	out, err = extract(t, "TABLE: [2]u8 = [2]u8{ 1, 2 }\nzap: (): () { s: [*]u8 = span(&TABLE)\n  s[0] = u8(0) }")
+	if err != nil {
+		t.Fatalf("span of a global is package state: %v", err)
+	}
+	for _, want := range []string{
+		"def TABLE_init : Array UInt8 := (#[(1 : UInt8), (2 : UInt8)] : Array UInt8)",
+		"def zap (TABLE : Array UInt8) (fuel : Nat) : Option (Unit × Array UInt8) := do",
+		"let s : Array UInt8 := TABLE",
+		"let TABLE := s",
+		"pure ((), TABLE)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("state through a span lacks %q:\n%s", want, out)
+		}
 	}
 }
 
