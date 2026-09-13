@@ -41,6 +41,9 @@ type tlaEnv struct {
 	dataRoot  string
 	stateVar  string
 	boundVars map[string]bool
+	// binders maps a predicate form's bound element to the TLA+ term it
+	// stands for (`p` -> `peers[k]`).
+	binders map[string]string
 	// bound counts the enclosing function constructors of an init value,
 	// so a nested array (a record's array field inside an array of
 	// records) binds k, k1, k2 rather than shadowing k.
@@ -58,7 +61,18 @@ func (env *tlaEnv) with(payload string, initial bool) *tlaEnv {
 	if root == nil {
 		root = env
 	}
-	return &tlaEnv{payload: payload, initial: initial, bound: env.bound, dataRoot: env.dataRoot, stateVar: env.stateVar, boundVars: env.boundVars, lengths: env.lengths, records: env.records, root: root}
+	return &tlaEnv{payload: payload, initial: initial, bound: env.bound, dataRoot: env.dataRoot, stateVar: env.stateVar, boundVars: env.boundVars, binders: env.binders, lengths: env.lengths, records: env.records, root: root}
+}
+
+// withBinder is env with one more bound element name.
+func (env *tlaEnv) withBinder(name, term string) *tlaEnv {
+	inner := env.with(env.payload, env.initial)
+	inner.binders = map[string]string{}
+	for k, v := range env.binders {
+		inner.binders[k] = v
+	}
+	inner.binders[name] = term
+	return inner
 }
 
 // deeper is env inside one more function constructor.
@@ -797,6 +811,9 @@ func tlaExpr(e ast.Expression, env *tlaEnv) (string, error) {
 		}
 		return "FALSE", nil
 	case *ast.Identifier:
+		if term, isBinder := env.binders[n.Value]; isBinder {
+			return term, nil
+		}
 		if n.Value == payload && payload != "" {
 			return n.Value, nil
 		}
@@ -818,6 +835,10 @@ func tlaExpr(e ast.Expression, env *tlaEnv) (string, error) {
 			// A record payload's field reads as the TLA+ record field.
 			return payload + "." + field, nil
 		}
+		if term, ok, err := tlaBinderPath(n, env); ok || err != nil {
+			// A path over a predicate form's bound element: peers[k].view.
+			return term, err
+		}
 		// A data path of any depth — data.f, data.f[i], data.f[i].sub,
 		// data.f.sub[j] — reads as the same path over the variable.
 		field, selector, err := tlaDataPath(n, env)
@@ -830,7 +851,7 @@ func tlaExpr(e ast.Expression, env *tlaEnv) (string, error) {
 		if ok && conversionNames[fn.Value] && len(n.Arguments) == 1 {
 			return tlaExpr(n.Arguments[0], env)
 		}
-		if form, field, sub, isQuantifier := quantifierCall(n); isQuantifier && field != "" {
+		if form, field, sub, binder, pred, isQuantifier := quantifierCallFull(n); isQuantifier && field != "" {
 			// count/all/any/none over an array field: Cardinality of the
 			// true slots, or a bounded quantifier (112-protocols.md section 4).
 			length, known := env.lengths[field]
@@ -840,6 +861,14 @@ func tlaExpr(e ast.Expression, env *tlaEnv) (string, error) {
 			element := fmt.Sprintf("%s[k]", field)
 			if sub != "" {
 				element += "." + sub
+			}
+			if pred != nil {
+				// The predicate form: the predicate over the element at k.
+				translated, err := tlaExpr(pred, env.withBinder(binder, element))
+				if err != nil {
+					return "", err
+				}
+				element = translated
 			}
 			bound := fmt.Sprintf("k \\in 0..%d", length-1)
 			switch form {
@@ -893,4 +922,41 @@ func sortedFieldNames(fields map[string]ast.Expression) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// tlaBinderPath reads a path rooted at a predicate form's bound element —
+// p.acked, p.log[i] — as the same path over the element's term.
+func tlaBinderPath(target *ast.IndexExpression, env *tlaEnv) (string, bool, error) {
+	if target == nil || len(env.binders) == 0 {
+		return "", false, nil
+	}
+	var selectors []string
+	node := target
+	for {
+		if node.Dot {
+			sub, isIdent := node.Index.(*ast.Identifier)
+			if !isIdent {
+				return "", false, nil
+			}
+			selectors = append([]string{"." + sub.Value}, selectors...)
+		} else {
+			index, err := tlaExpr(node.Index, env)
+			if err != nil {
+				return "", true, err
+			}
+			selectors = append([]string{"[" + index + "]"}, selectors...)
+		}
+		switch left := node.Left.(type) {
+		case *ast.Identifier:
+			term, isBinder := env.binders[left.Value]
+			if !isBinder {
+				return "", false, nil
+			}
+			return term + strings.Join(selectors, ""), true, nil
+		case *ast.IndexExpression:
+			node = left
+		default:
+			return "", false, nil
+		}
+	}
 }

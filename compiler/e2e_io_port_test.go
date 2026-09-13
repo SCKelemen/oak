@@ -361,7 +361,7 @@ main: (): i32 {
   // Every error code the contract names, observed once in both
   // realizations (docs/spec/120-io.md section 2, "Errors"; tags 50-68).
   // Paths: "f" NUL at 640, "f/x" NUL at 648, "xx" without NUL at 656, a
-  // 33-byte path at 672.
+  // 65-byte path at 672 (the limit is 64, NUL included).
   region[640] = u8(102)
   region[641] = u8(0)
   region[648] = u8(102)
@@ -371,11 +371,11 @@ main: (): i32 {
   region[656] = u8(120)
   region[657] = u8(120)
   k = u32(0)
-  while k < u32(32) {
+  while k < u32(64) {
     region[u32(672) + k] = u8(97)
     k = k + u32(1)
   }
-  region[704] = u8(0)
+  region[736] = u8(0)
   // create f (tag 50); then a file used as a directory: create f/x (51),
   // readdir f (52), fsyncdir f (53) are Invalid.
   assert(io.io_submit(ring, requests, io.io_request(io.io_op_create(), u32(0), u64(0), u32(640), u32(2), u64(50), false)))
@@ -391,10 +391,10 @@ main: (): i32 {
   assert(completions[find_tag(completions, u32(3), u64(52))].error == io.io_err_invalid())
   assert(completions[find_tag(completions, u32(3), u64(53))].error == io.io_err_invalid())
   // open on an open slot is Busy (54); a path without its NUL (55) and one
-  // of 33 bytes (56) are Invalid; a rename split of zero is Invalid (57).
+  // of 65 bytes (56) are Invalid; a rename split of zero is Invalid (57).
   assert(io.io_submit(ring, requests, io.io_request(io.io_op_open(), u32(0), u64(0), u32(0), u32(13), u64(54), false)))
   assert(io.io_submit(ring, requests, io.io_request(io.io_op_open(), u32(1), u64(0), u32(656), u32(2), u64(55), false)))
-  assert(io.io_submit(ring, requests, io.io_request(io.io_op_open(), u32(1), u64(0), u32(672), u32(33), u64(56), false)))
+  assert(io.io_submit(ring, requests, io.io_request(io.io_op_open(), u32(1), u64(0), u32(672), u32(65), u64(56), false)))
   assert(io.io_submit(ring, requests, io.io_request(io.io_op_rename(), u32(0), u64(0), u32(1152), u32(8), u64(57), false)))
   assert(io.io_wait(ring, requests, completions, region, u32(4)) == u32(4))
   assert(completions[find_tag(completions, u32(4), u64(54))].error == io.io_err_busy())

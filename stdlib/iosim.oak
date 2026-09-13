@@ -86,7 +86,10 @@ iosim_block_bytes: (): u32 = u32(64)
 iosim_file_blocks: (): u32 = u32(64)
 iosim_file_bytes: (): u32 = u32(4096)
 iosim_entries: (): u32 = u32(16)
-iosim_name_bytes: (): u32 = u32(32)
+// A name is at most 64 bytes, NUL included: room for a segment named by
+// the reference's twenty-digit identifier plus a directory prefix (dbs
+// round five, item 12).
+iosim_name_bytes: (): u32 = u32(64)
 iosim_slots: (): u32 = u32(16)
 // The ledger holds this many events, three words each (iosim_ledger is
 // [3072]u64 = 3 x 1024); a scenario that records more is a scenario error.
@@ -110,8 +113,8 @@ iosim_faults: u32
 // and 32 bytes of name at e * 32. Existence and name have a volatile copy
 // the process sees and a durable copy a crash reverts to; fsyncdir copies
 // volatile to durable, as fsync does for a file's size.
-iosim_names: [512]u8
-iosim_names_durable: [512]u8
+iosim_names: [1024]u8
+iosim_names_durable: [1024]u8
 iosim_exists: [16]Bool
 iosim_exists_durable: [16]Bool
 // A directory entry (docs/spec/120-io.md section 3, "Directories"): its

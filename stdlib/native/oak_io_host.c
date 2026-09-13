@@ -46,11 +46,11 @@ static int64_t oak_io_fail(int err) {
 
 int64_t oak_io_host_last_errno(void) { return oak_io_last_errno; }
 
-// A path is one to 32 bytes ending in NUL with no other NUL: the Oak side
+// A path is one to 64 bytes ending in NUL with no other NUL: the Oak side
 // checks it, and so does every hook here before the bytes are a C string
 // (docs/spec/120-io.md section 2, "Paths").
 static int oak_io_path_ok(const uint8_t *path, size_t len) {
-    if (path == 0 || len == 0 || len > 32 || path[len - 1] != 0) return 0;
+    if (path == 0 || len == 0 || len > 64 || path[len - 1] != 0) return 0;
     return memchr(path, 0, len - 1) == 0;
 }
 

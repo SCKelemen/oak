@@ -134,7 +134,8 @@ func buildNative(pkg Package, cfg Config) (*nativeProgram, error) {
 		return nil, err
 	}
 	var source strings.Builder
-	fmt.Fprintf(&source, "#define OAK_COMMAND_LIMIT %d\n#define OAK_MAX_BYTES %d\n#define OAK_OUTPUT_LIMIT %d\n", min(commandLimit, cfg.MaxBytes/commandWidth), cfg.MaxBytes, outputLimit)
+	inputLimit := packageInputLimit(pkg, cfg.MaxBytes)
+	fmt.Fprintf(&source, "#define OAK_COMMAND_LIMIT %d\n#define OAK_MAX_BYTES %d\n#define OAK_OUTPUT_LIMIT %d\n", min(commandLimit, cfg.MaxBytes/commandWidth), inputLimit, outputLimit)
 	source.WriteString(nativePreamble)
 	source.WriteString("\n#define main oak_test_application_entry\n")
 	source.WriteString(generated)
@@ -261,7 +262,7 @@ int main(int argc, char **argv) {
 	// everywhere but Windows; a cross-built harness runs one process per
 	// case as before.
 	resident := cfg.Resident && residentSupported && (pkg.Target.OS == "" || pkg.Target.IsHost())
-	return &nativeProgram{bin: filepath.Join(dir, "test"), dir: dir, build: hex.EncodeToString(hash[:]), maxBytes: cfg.MaxBytes, timeout: cfg.Timeout, metal: kernels, resident: resident, workers: map[*residentWorker]bool{}}, nil
+	return &nativeProgram{bin: filepath.Join(dir, "test"), dir: dir, build: hex.EncodeToString(hash[:]), maxBytes: inputLimit, timeout: cfg.Timeout, metal: kernels, resident: resident, workers: map[*residentWorker]bool{}}, nil
 }
 
 // linkArguments spells the manifests' native inputs as C compiler arguments
