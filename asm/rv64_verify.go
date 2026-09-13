@@ -110,15 +110,15 @@ var rv64ALUImmW = map[string]string{"addiw": "add", "slliw": "shl", "srliw": "sh
 
 // stepRV64 executes one non-control instruction.
 func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string, bool) {
+	if rv64VectorShapes[instr.Mnemonic] != "" {
+		// The vector file under a fixed configuration (asm/rv64_verify_vector.go);
+		// vfmv.v.f/vfmv.f.s cross into the floating-point file from here.
+		return x.stepRV64Vector(instr, state)
+	}
 	for _, operand := range instr.Operands {
 		if reg, isReg := operand.(Register); isReg && reg.Class == ClassRV64F {
 			return x.stepRV64Float(instr, state)
 		}
-	}
-	if rv64VectorShapes[instr.Mnemonic] != "" {
-		// The vector state (vl, vtype, the register file) is outside the
-		// term language: a vector unit is checked and trusted.
-		return "a vector instruction (" + instr.Mnemonic + ")", false
 	}
 	if instr.Mnemonic == "li" {
 		// One constant, however many words the encoder spends on it.
@@ -147,7 +147,11 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 			return "", true
 		}
 		if reg(1).Class == ClassSP {
-			return "a frame address in a register (an owned array addressed by index)", false
+			// `addi rD, sp, imm`: rD holds a frame address (a fixed vector's
+			// spill slot, asm/rv64_verify_vector.go); a scalar access
+			// through it stays outside the model.
+			state.write(reg(0), rvFrameAddrTerm(-state.disp+ops[2].(Immediate).Value))
+			return "", true
 		}
 		l, ok := read(1)
 		if !ok {
@@ -206,6 +210,9 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 	case "auipc":
 		return "a pc-relative address (auipc)", false
 	case "call":
+		// Every vector register is caller-saved and the configuration is
+		// not preserved (the psABI): both are forgotten across the call.
+		state.vregs, state.rvcfg = nil, nil
 		return x.summarizeCall(instr, state)
 	case "jal", "jalr":
 		return "a call", false
