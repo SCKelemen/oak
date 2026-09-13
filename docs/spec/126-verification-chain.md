@@ -144,9 +144,12 @@ conversions, comparisons, `&&`/`||`/`!`, Bool conditionals, block-scoped
 locals and rebindings (`x: T = e`, `x = e`), statement-level conditionals
 whose arms assign locals (`c ? { x = e } | { y = f }`), integer-constant
 matches in value and statement position (`x ? | 0 => a | 1 => b | _ => c`),
-counted loops (`while c { body }`), span element reads and lengths (`v[i]`,
-`len(v)`), owned arrays of scalars (`a: [n]T`, `a[i]`, `a[i] = e`),
-records of scalars (`r: R = R{…}`, `r.f`, `r.f = e`, record parameters),
+counted loops (`while c { body }`) and data-dependent ones, span element
+reads and lengths (`v[i]`,
+`len(v)`), owned arrays (`a: [n]T`, `a[i]`, `a[i] = e`, array literals),
+records (`r: R = R{…}`, `r.f`, `r.f = e`, record parameters), the nesting
+of the two (`r.h[i]`, `a[i].x`), calls that borrow the caller's arrays
+through span parameters and write them back, calls that return records,
 tagged unions of scalar payloads (a variant, a variant match with its
 binding, union parameters), and calls to program functions — and two
 readings of it: `evalX`, the extraction's
@@ -156,7 +159,9 @@ extension by the source's signedness or truncation, a local as its
 `let`-bound value, a statement conditional as the taken arm's values for
 the variables it assigns, a constant match as the if-chain `if x == k₁
 then … else …`, a loop as the fuel-indexed recursion that returns `none`
-when the fuel runs out, an owned array as its `Array` of elements, a
+when the fuel runs out — a data-dependent loop the same recursion, read
+under assignments whose fresh symbols denote the exit values — an owned
+array as its `Array` of elements, a
 record as its `structure` fields, a union as its `inductive` and a variant
 match as the `match`, and an index out of range as a trap — Oak's semantics, where the extraction's
 own `getD`/`setIfInBounds` reads zero and drops the write, a modeling
@@ -175,11 +180,18 @@ arm into the fallback, an owned array as its element leaves `x[k]`
 read through `elementUnderIndex`'s element-by-element select and written
 through `assignUnderIndex`'s select at every element, a record as its
 field leaves `r.f` (`paramAggregate`'s naming, a record literal binding
-each field in the type's order), a union as its `tag` leaf and payload
+each field in the type's order), a nested aggregate as the same leaves
+under longer names (`r.h[k]`, `a[k].x`, the array's leaf naming a
+parameter of the model), a union as its `tag` leaf and payload
 leaves with a variant match the constant match on the tag (`matchArms`'
 `cmpTerm("eq", tag, index)`, the arm's binding an alias of the payload
-leaf), a loop as
-`lowerWhile`'s unrolling while the
+leaf), a borrowing call as `enterCall`'s copy of the owner's leaves into
+the callee's span leaves and their write-back on return with the results
+— a scalar, or the leaves of the record `inlineCallValue` builds — bound
+in the caller, a counted loop as `lowerWhile`'s unrolling, a data-dependent
+loop as `loopEvent`'s summary — the carried locals as the fresh symbols
+`loop<index>.<var>`, the condition and body over them the event's
+one-iteration semantics `verifyLoops` matches against the asm side's — while the
 folded condition is a non-zero constant and `none` when it is not constant
 or the budget runs out — `none` throughout is the Go's "outside the
 subset" — a span element as `selectTerm` over the index at width 32 — a
@@ -214,10 +226,15 @@ the other.
 With it, on arm64, a theorem about an Oak function's extraction composes
 with the verifier's verdict and `Oak.ArmASL` into one statement about the
 machine for a body inside the shared subset: source theorem, `lowerT_eval`,
-the verifier's equality, the ASL bridge. Outside the subset — arrays of
-records and records of arrays, span writes, array literals, record- and
-union-valued calls, the data-dependent loops `loopEvent` summarizes —
-the verifier's lowering is still the Go's alone, related to the
+the verifier's equality, the ASL bridge. A local declared inside a loop
+body or an arm is covered by pre-declaring it: its declaration binds the
+initializer's term as an assignment does, so every later read sees the
+same terms. A data-dependent loop is covered up to the meaning of its
+fresh symbols: the theorem holds for every parameter assignment that
+reads them as the exit values, which is what the symbols stand for, and
+the event's condition and body are instances of the same theorem over any
+iteration's values. Outside the subset — floats and the vector operations
+— the verifier's lowering is still the Go's alone, related to the
 extraction by tests.
 
 For the C route (every function the native lane does not cover, and every
@@ -251,10 +268,15 @@ for a workload):
    rebindings, inlined calls to program functions, statement-level Bool
    conditionals whose arms assign locals, integer-constant matches in
    value and statement position, span element reads and lengths, the
-   constructors' constant folding, counted loops, owned arrays of scalars,
-   records of scalars, and tagged unions of scalar payloads (`letIn`,
-   `call`, `condSet`, `matchInt`, `matchSet`, `elem`, `len`, `whileLoop`,
-   `arrDecl`, `arrGet`, `arrSetE`, `recDecl`, the `Agree` scope invariant;
+   constructors' constant folding, counted loops, owned arrays with
+   literals, records, their nesting, and tagged unions of scalar payloads
+   (`letIn`, `call`, `condSet`, `matchInt`, `matchSet`, `elem`, `len`,
+   `whileLoop`, `arrDecl`, `arrLit`, `arrGet`, `arrSetE`, `recDecl`,
+   `callX`, the `Agree` scope invariant; an array's leaves are named by a
+   function, so `r.h[k]` and `a[k].x` are the same constructors under
+   longer names; a borrowing call copies the owner's leaves into the
+   callee's span leaves and writes them back, binding a scalar or record
+   result in the caller;
    a union is the record of its tag and payload leaves and a variant match
    the constant match on the tag, so it needs no constructor of its own;
    `lowerConditionalStatement`'s select against the extraction's `let
@@ -264,9 +286,13 @@ for a workload):
    `ok` is; an array local as its element leaves `x[k]`, in-range reads
    and writes against the extraction's `Array`, a trap where the index is
    out of range; a record as its field leaves `r.f`, bound by the same
-   named binder a call uses). Next: nested aggregates (arrays of records,
-   records of arrays), span writes, array literals, aggregate-valued
-   calls — so `lowerT_eval` covers the
+   named binder a call uses; a local declared inside a loop body or an
+   arm is a pre-declared local, its declaration the first assignment).
+   What the native bodies use is covered, data-dependent loops included
+   (`whileEvent`: the carried locals as fresh symbols after the loop, the
+   theorem under assignments where the symbols denote the exit values);
+   what remains is at the edges: floats and vectors — so `lowerT_eval`
+   covers the
    bodies `oak build -native` actually verifies rather than their
    arithmetic alone. This is the step that turns "source theorem implies
    machine behavior" from a statement about expressions into one about

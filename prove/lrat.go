@@ -108,12 +108,13 @@ func rup(db map[int]lratClause, variables int, clause lratClause, hints []int, a
 		if !alive {
 			return fmt.Errorf("hint %d names no live clause", id)
 		}
+		// A clause is a set: a literal repeated in the text counts once.
 		remaining, unit := 0, 0
 		for _, lit := range hinted {
 			if assigned[lit] {
 				return fmt.Errorf("hint %d is already satisfied", id)
 			}
-			if !assigned[-lit] {
+			if !assigned[-lit] && lit != unit {
 				remaining++
 				unit = lit
 			}
