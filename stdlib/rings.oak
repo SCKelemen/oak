@@ -187,3 +187,216 @@ pub mpsc_pop[T]: (cursor: [*]MpscCursor, seqs: [*]Atomic[u32], storage: [*]T): O
     .None
   }
 }
+
+// MPMC: the Vyukov bounded queue whole — producers claim positions on
+// `tail`, consumers on `head`, both by compare-exchange, and the per-slot
+// sequence cell carries every handshake: enqueue-ready when seq == pos,
+// dequeue-ready when seq == pos + 1, recycled at seq = pos + capacity. The
+// two claim counters live on separate 64-byte lines. Lock-free on both
+// sides; a thread that loses a claim retries at the position it observed.
+// Claims on either counter are the positions in order (Oak.Rings.
+// claims_distinct), and each slot's payload is published by the release of
+// its sequence and read after the acquire of it (mpsc_payload_race_free is
+// the same instance).
+
+pub MpmcCursor: type = struct {
+  tail: Atomic[u32]
+  producer_pad: [60]u8
+  head: Atomic[u32]
+  consumer_pad: [60]u8
+}
+
+pub mpmc_check: (cursor: [*]MpmcCursor, seqs: [*]Atomic[u32], capacity: u32): () {
+  assert(len(cursor) == u32(1))
+  assert(len(seqs) == capacity)
+  assert(capacity > u32(0))
+  assert((capacity & (capacity - u32(1))) == u32(0))
+  assert(capacity <= u32(2147483648))
+}
+
+// mpmc_init readies every slot for its first round and zeroes both
+// counters. Call it once, before any thread touches the ring.
+pub mpmc_init: (cursor: [*]MpmcCursor, seqs: [*]Atomic[u32]): () {
+  capacity: u32 = len(seqs)
+  mpmc_check(cursor, seqs, capacity)
+  i: u32 = 0
+  while i < capacity {
+    atomic_store_relaxed(seqs[i], i)
+    i = i + 1
+  }
+  atomic_store_relaxed(cursor[0].tail, u32(0))
+  atomic_store_relaxed(cursor[0].head, u32(0))
+}
+
+// mpmc_push claims a position and publishes the item; false when the ring
+// is full (nothing changes).
+pub mpmc_push[T]: (cursor: [*]MpmcCursor, seqs: [*]Atomic[u32], storage: [*]T, item: T): Bool {
+  capacity: u32 = len(storage)
+  mpmc_check(cursor, seqs, capacity)
+  mask: u32 = capacity - u32(1)
+  pos: u32 = atomic_load_relaxed(cursor[0].tail)
+  claimed: Bool = false
+  full: Bool = false
+  while !claimed && !full {
+    seq: u32 = atomic_load_acquire(seqs[pos & mask])
+    dif: i32 = i32_bits_u32(seq - pos)
+    dif == 0 ? {
+      prior: u32 = atomic_compare_exchange_relaxed_relaxed(cursor[0].tail, pos, pos + u32(1))
+      prior == pos ? {
+        claimed = true
+      } | {
+        pos = prior
+      }
+    } | {
+      dif < 0 ? {
+        full = true
+      } | {
+        pos = atomic_load_relaxed(cursor[0].tail)
+      }
+    }
+  }
+  claimed ? {
+    storage[pos & mask] = item
+    atomic_store_release(seqs[pos & mask], pos + u32(1))
+    true
+  } | {
+    false
+  }
+}
+
+// mpmc_pop claims the oldest published position and takes its item; None
+// when the ring is empty (a claimed but unpublished slot at the head also
+// reads as None).
+pub mpmc_pop[T]: (cursor: [*]MpmcCursor, seqs: [*]Atomic[u32], storage: [*]T): Option[T] {
+  capacity: u32 = len(storage)
+  mpmc_check(cursor, seqs, capacity)
+  mask: u32 = capacity - u32(1)
+  pos: u32 = atomic_load_relaxed(cursor[0].head)
+  claimed: Bool = false
+  empty: Bool = false
+  while !claimed && !empty {
+    seq: u32 = atomic_load_acquire(seqs[pos & mask])
+    dif: i32 = i32_bits_u32(seq - (pos + u32(1)))
+    dif == 0 ? {
+      prior: u32 = atomic_compare_exchange_relaxed_relaxed(cursor[0].head, pos, pos + u32(1))
+      prior == pos ? {
+        claimed = true
+      } | {
+        pos = prior
+      }
+    } | {
+      dif < 0 ? {
+        empty = true
+      } | {
+        pos = atomic_load_relaxed(cursor[0].head)
+      }
+    }
+  }
+  claimed ? {
+    item: T = storage[pos & mask]
+    atomic_store_release(seqs[pos & mask], pos + capacity)
+    .Some(item)
+  } | {
+    .None
+  }
+}
+
+// The intrusive MPSC (Vyukov's, the 1024cores "intrusive MPSC node-based
+// queue") over node indices the caller owns — the slots of a slab, a pool,
+// or any `[N]IntrusiveNode` beside a payload array indexed the same way.
+// A link is an index plus one, 0 meaning none; node 0 is the queue's stub
+// and is never handed out. A producer's push is wait-free: one exchange on
+// `head` claims the place after the previous node, and a release store of
+// that node's link publishes the payload the caller wrote before pushing
+// (Oak.Rings.intrusive_payload_race_free). The consumer owns `tail`; it
+// answers Busy when the node after the tail is claimed but not yet linked,
+// so the caller retries rather than blocks. The exchanges linearize the
+// pushes into one chain (Oak.Rings.exchange_chain), and distinct nodes stay
+// distinct along it (chain_nodup).
+
+pub IntrusiveNode: type = struct {
+  next: Atomic[u32]
+}
+
+pub IntrusiveCursor: type = struct {
+  // Producers exchange here: the link of the most recently pushed node.
+  head: Atomic[u32]
+  producer_pad: [60]u8
+  // The consumer's node: the one whose link names the next item.
+  tail: u32
+  consumer_pad: [60]u8
+}
+
+pub IntrusivePop: type = Item: u32 | Empty | Busy
+
+pub intrusive_check: (cursor: [*]IntrusiveCursor, nodes: [*]IntrusiveNode): () {
+  assert(len(cursor) == u32(1))
+  assert(len(nodes) >= u32(2))
+  assert(len(nodes) < u32(4294967295))
+}
+
+// intrusive_init makes node 0 the stub: head and tail both name it.
+pub intrusive_init: (cursor: [*]IntrusiveCursor, nodes: [*]IntrusiveNode): () {
+  intrusive_check(cursor, nodes)
+  atomic_store_relaxed(nodes[0].next, u32(0))
+  atomic_store_relaxed(cursor[0].head, u32(1))
+  cursor[0].tail = u32(0)
+}
+
+// intrusive_push links node `id` (1 ≤ id < len(nodes), not in the queue)
+// after the most recently pushed node. Wait-free: one exchange, one store.
+pub intrusive_push: (cursor: [*]IntrusiveCursor, nodes: [*]IntrusiveNode, id: u32): () {
+  intrusive_check(cursor, nodes)
+  assert(id >= u32(1) && id < len(nodes))
+  atomic_store_relaxed(nodes[id].next, u32(0))
+  prev: u32 = atomic_exchange_acq_rel(cursor[0].head, id + u32(1))
+  atomic_store_release(nodes[prev - u32(1)].next, id + u32(1))
+}
+
+// intrusive_pop takes the oldest linked node: Item(id) hands the node back
+// to the caller (it may be pushed again), Empty means nothing is queued, and
+// Busy means a producer has claimed the next place but not linked it yet.
+pub intrusive_pop: (cursor: [*]IntrusiveCursor, nodes: [*]IntrusiveNode): IntrusivePop {
+  intrusive_check(cursor, nodes)
+  tail: u32 = cursor[0].tail
+  following: u32 = atomic_load_acquire(nodes[tail].next)
+  tail == u32(0) ? {
+    // The stub is at the tail: skip past it when something follows.
+    following == u32(0) ? {
+      .Empty
+    } | {
+      cursor[0].tail = following - u32(1)
+      intrusive_pop_at(cursor, nodes, following - u32(1))
+    }
+  } | {
+    intrusive_pop_at(cursor, nodes, tail)
+  }
+}
+
+// intrusive_pop_at takes the node `tail` (never the stub) once its successor
+// is linked; when it is the last node, the stub is pushed behind it so the
+// chain never empties in the consumer's hands.
+intrusive_pop_at: (cursor: [*]IntrusiveCursor, nodes: [*]IntrusiveNode, tail: u32): IntrusivePop {
+  following: u32 = atomic_load_acquire(nodes[tail].next)
+  following != u32(0) ? {
+    cursor[0].tail = following - u32(1)
+    .Item(tail)
+  } | {
+    head: u32 = atomic_load_acquire(cursor[0].head)
+    head != tail + u32(1) ? {
+      .Busy
+    } | {
+      // Re-link the stub behind the last node so it can be taken.
+      atomic_store_relaxed(nodes[0].next, u32(0))
+      prev: u32 = atomic_exchange_acq_rel(cursor[0].head, u32(1))
+      atomic_store_release(nodes[prev - u32(1)].next, u32(1))
+      after: u32 = atomic_load_acquire(nodes[tail].next)
+      after != u32(0) ? {
+        cursor[0].tail = after - u32(1)
+        .Item(tail)
+      } | {
+        .Busy
+      }
+    }
+  }
+}
