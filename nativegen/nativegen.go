@@ -1130,7 +1130,15 @@ type generator struct {
 	// a call and restored after it (callerSpill), one store and one load per
 	// call instead of one memory access per read or write from a frame slot.
 	callerHomes []int
-	peakScratch int  // the most integer scratch registers live at once
+	peakScratch int // the most integer scratch registers live at once
+	// Arguments beyond the register contract (asm/abi.go): packedStack the
+	// convention, stackParams each such parameter's place (entry-relative
+	// offset), stackArgs the incoming area's size, outgoing the bytes this
+	// function's own calls need below its saved registers.
+	packedStack bool
+	stackParams map[string]asm.ArgPlace
+	stackArgs   int64
+	outgoing    int64
 	pressure    bool // a scalar variable took a caller-saved home or a slot
 	// lv: the liveness pre-pass (liveness.go) deciding which homes a call
 	// saves and which variables cross a call; nil on the rv64 lane.
@@ -1226,6 +1234,10 @@ type Lane struct {
 	// Tables are the program's constant tables by Oak name (GlobalArrayOf):
 	// a body reads one through its data symbol's address.
 	Tables map[string]GlobalArray
+	// PackedStackArgs selects Apple's arm64 convention for arguments beyond
+	// the registers (natural size and alignment on the stack) over the
+	// standard 8-byte slots (asm/abi.go).
+	PackedStackArgs bool
 }
 
 // GlobalStorage is the addressed storage of a top-level scalar of the
@@ -1333,7 +1345,7 @@ func tableSizes(tables map[string]GlobalArray) map[string]int64 {
 func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	switch lane.Arch {
 	case "", asm.ArchArm64:
-		return compileArm64(fn, functions, records, adts, constants, lane.Globals, tc, lane.ElideProven, lane.Tables)
+		return compileArm64(fn, functions, records, adts, constants, lane.Globals, tc, lane.ElideProven, lane.Tables, lane.PackedStackArgs)
 	case asm.ArchRV64:
 		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables)
 	}
@@ -1346,7 +1358,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 // constant globals (docs/spec/90-backend.md §8a); tc is the checker that
 // typed the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
-	return compileArm64(fn, functions, records, adts, constants, nil, tc, false, nil)
+	return compileArm64(fn, functions, records, adts, constants, nil, tc, false, nil, false)
 }
 
 // ElidedGuards reports how many element guards a lowering left out under
@@ -1359,7 +1371,7 @@ var elidedGuards = map[*asm.Function]int{}
 // caller-saved home or a frame slot: the second pass is worth its cost.
 var pressured = map[*asm.Function]bool{}
 
-func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool, tables map[string]GlobalArray) (*asm.Function, error) {
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool, tables map[string]GlobalArray, packed bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
@@ -1369,13 +1381,13 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	if body := inlineBody(fn, functions); body != fn.Body {
 		expanded := *fn
 		expanded.Body = body
-		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, tc, elide, tables); err == nil {
+		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, tc, elide, tables, packed); err == nil {
 			return out, nil
 		} else if _, outside := err.(Unsupported); !outside {
 			return nil, err
 		}
 	}
-	return compileArm64Body(fn, functions, records, adts, constants, globals, tc, elide, tables)
+	return compileArm64Body(fn, functions, records, adts, constants, globals, tc, elide, tables, packed)
 }
 
 // compileArm64Body lowers one function body as given — twice: the first
@@ -1386,8 +1398,8 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 // in registers instead of frame slots. A second pass the lowering refuses
 // (it should not: a variable in a register needs no temporary a slot did)
 // leaves the first pass's code.
-func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool, tables map[string]GlobalArray) (*asm.Function, error) {
-	first, peak, err := compileArm64Pass(fn, functions, records, adts, constants, globals, tc, elide, tables, 0)
+func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool, tables map[string]GlobalArray, packed bool) (*asm.Function, error) {
+	first, peak, err := compileArm64Pass(fn, functions, records, adts, constants, globals, tc, elide, tables, packed, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1395,7 +1407,7 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	if spare <= 0 || !pressured[first] {
 		return first, nil // nothing to gain: every variable already has a register
 	}
-	second, _, err := compileArm64Pass(fn, functions, records, adts, constants, globals, tc, elide, tables, spare)
+	second, _, err := compileArm64Pass(fn, functions, records, adts, constants, globals, tc, elide, tables, packed, spare)
 	if err != nil {
 		return first, nil
 	}
@@ -1406,11 +1418,8 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 // registers, from x15 down, serve as variable homes instead of
 // temporaries. It reports the peak number of integer scratch registers
 // live at once.
-func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool, tables map[string]GlobalArray, spare int) (*asm.Function, int, error) {
-	if len(fn.Parameters) > 8 {
-		return nil, 0, unsupported("more than eight parameters")
-	}
-	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, elide: elide}
+func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool, tables map[string]GlobalArray, packed bool, spare int) (*asm.Function, int, error) {
+	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, elide: elide, packedStack: packed, stackParams: map[string]asm.ArgPlace{}}
 	// A span pair parked in callee-saved registers survives a call, and a
 	// result: the result leaves in x0 (and x1), where a span parameter's
 	// pair is bound, and the checker's span facts flow in text order — a
@@ -1419,6 +1428,9 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	g.hasCalls = mentionsCall(fn.Body)
 	g.argHomes = map[string]int{}
 	g.homesUsed = map[int]bool{}
+	if g.hasCalls {
+		g.outgoing = g.outgoingArea(fn.Body)
+	}
 	if g.hasCalls {
 		g.lv = analyzeLiveness(fn)
 	}
@@ -1443,18 +1455,33 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	if mentionsFloat(fn) || g.recordsMentionFloat(fn) {
 		g.saveAreaV = 8 * (vecCalleeHigh - vecCalleeLow + 1)
 	}
-	// Parameters take AAPCS64's integer registers in order: a scalar one, a
-	// span or view two (base, then the 32-bit length).
-	nextReg := 0
+	// Parameters take AAPCS64's integer registers in order — a scalar one, a
+	// span or view two (base, then the 32-bit length), a record its chunks
+	// or one for a reference — and past the registers the caller's outgoing
+	// area (asm.LayoutArguments), read in the prologue.
+	type paramClass struct {
+		p      *ast.FunctionParameter
+		s      scalar
+		layout *recordLayout
+		sp     span
+		kind   int // 0 scalar, 1 record, 2 span
+	}
+	var intParams []paramClass
+	var classes []asm.ArgClass
 	for _, p := range fn.Parameters {
 		if p.Variadic {
 			return nil, 0, unsupported("variadic parameter %s", p.Name.Value)
 		}
 		if s, ok := scalarOf(p.Type); ok {
-			if !s.isFloat && !s.isVec {
-				g.argHomes[p.Name.Value] = nextReg
-				nextReg++
+			if s.isFloat || s.isVec {
+				continue
 			}
+			size := int64(s.bits / 8)
+			if s.isBool {
+				size = 4
+			}
+			intParams = append(intParams, paramClass{p: p, s: s})
+			classes = append(classes, asm.ArgClass{Words: 1, Bytes: size, Align: size})
 			continue
 		}
 		if name, isRecord := g.recordTypeName(p.Type); isRecord {
@@ -1465,12 +1492,49 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			if layout.isHFA() {
 				return nil, 0, unsupported("parameter %s: %s is a homogeneous floating-point aggregate", p.Name.Value, name)
 			}
+			regs := 1
+			if layout.size <= 16 {
+				regs = layout.chunks()
+			}
+			intParams = append(intParams, paramClass{p: p, layout: layout, kind: 1})
+			classes = append(classes, asm.ArgClass{Words: regs, Bytes: int64(regs) * 8, Align: 8})
+			continue
+		}
+		if sp, ok := g.spanTypeOf(p.Type); ok {
+			intParams = append(intParams, paramClass{p: p, sp: sp, kind: 2})
+			classes = append(classes, asm.ArgClass{Words: 2, Bytes: 16, Align: 8})
+			continue
+		}
+		return nil, 0, unsupported("parameter %s of type %s", p.Name.Value, p.Type.String())
+	}
+	places, stackArgs := asm.LayoutArguments(classes, g.packedStack)
+	g.stackArgs = stackArgs
+	nextReg := 0
+	for i, pc := range intParams {
+		place := places[i]
+		name := pc.p.Name.Value
+		if !place.OnStack && place.Reg+place.Regs > nextReg {
+			nextReg = place.Reg + place.Regs
+		}
+		switch pc.kind {
+		case 0:
+			if place.OnStack {
+				g.stackParams[name] = place
+			} else {
+				g.argHomes[name] = place.Reg
+			}
+		case 1:
+			layout := pc.layout
 			regs, indirect := 1, layout.size > 16
 			if !indirect {
 				regs = layout.chunks()
 			}
-			rp := &recordParam{layout: layout, reg: nextReg, regs: regs, indirect: indirect}
-			if indirect && !recordParamTouched(fn, p.Name.Value) && !layoutHasArray(layout) && g.usedCallee < calleeHigh-calleeLow+1 {
+			rp := &recordParam{layout: layout, reg: place.Reg, regs: regs, indirect: indirect}
+			if place.OnStack {
+				rp.reg = -1
+				g.stackParams[name] = place
+			}
+			if indirect && !recordParamTouched(fn, name) && !layoutHasArray(layout) && g.usedCallee < calleeHigh-calleeLow+1 {
 				// Read in place: the address parked in a callee-saved
 				// register, the fields loaded through it (the checker's
 				// region rule), no copy into the frame. Types drive it: a
@@ -1480,29 +1544,31 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 				g.usedCallee++
 				g.saveArea = 8 * (calleeHigh - calleeLow + 1)
 			}
-			g.recordParams[p.Name.Value] = rp
-			nextReg += regs
-			continue
-		}
-		if sp, ok := g.spanTypeOf(p.Type); ok {
-			sp.argBase, sp.argLen = nextReg, nextReg+1
+			g.recordParams[name] = rp
+		case 2:
+			sp := pc.sp
+			sp.argBase, sp.argLen = place.Reg, place.Reg+1
 			sp.baseReg, sp.lenReg = sp.argBase, sp.argLen
-			nextReg += 2
-			if parkSpans {
+			if place.OnStack {
+				// No register pair arrives: the pair is loaded into
+				// callee-saved registers in the prologue.
+				sp.argBase, sp.argLen = -1, -1
+				g.stackParams[name] = place
+			}
+			if parkSpans || place.OnStack {
 				// Two callee-saved registers, from the pool variables use.
 				if g.usedCallee+2 > calleeHigh-calleeLow+1 {
 					return nil, 0, unsupported("the span parameters and locals exhaust the callee-saved registers")
 				}
 				sp.baseReg, sp.lenReg = calleeLow+g.usedCallee, calleeLow+g.usedCallee+1
 				g.usedCallee += 2
+				g.saveArea = 8 * (calleeHigh - calleeLow + 1)
 			}
-			g.spans[p.Name.Value] = sp
-			continue
+			g.spans[name] = sp
 		}
-		return nil, 0, unsupported("parameter %s of type %s", p.Name.Value, p.Type.String())
 	}
-	if nextReg > 8 {
-		return nil, 0, unsupported("the parameters exhaust the eight argument registers")
+	if len(g.stackParams) > 0 {
+		g.saveArea = 8 * (calleeHigh - calleeLow + 1)
 	}
 	if !g.hasCalls {
 		// x0 (and x1) are left out: the result's registers, written at the
@@ -1601,7 +1667,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 		prologue = append(prologue, g.ins("sub", sp(), sp(), imm(frame)))
 	}
 	if g.hasCalls {
-		prologue = append(prologue, g.ins("stp", xr(29), xr(30), mem(0)))
+		prologue = append(prologue, g.ins("stp", xr(29), xr(30), mem(g.outgoing)))
 	}
 	// Save the callee-saved registers the variables occupy, in pairs.
 	for i := 0; i < g.usedCallee; i += 2 {
@@ -1628,6 +1694,44 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 		prologue = append(prologue, g.ins("mov", xr(g.resultAreaReg), xr(8)))
 	}
 	for _, p := range fn.Parameters {
+		if place, onStack := g.stackParams[p.Name.Value]; onStack {
+			// Beyond the register contract: the argument lies in the
+			// caller's outgoing area, at place.Offset above the entry sp —
+			// frame + place.Offset from the moved sp.
+			out.Bindings = append(out.Bindings, asm.Binding{Param: p.Name.Value, OnStack: true, Stack: place.Offset, Line: fn.Token.Line})
+			at := frame + place.Offset
+			if rp, isRecord := g.recordParams[p.Name.Value]; isRecord {
+				switch {
+				case rp.inPlace:
+					prologue = append(prologue, g.ins("ldr", xr(rp.park), mem(at)))
+				case rp.indirect:
+					prologue = append(prologue, g.ins("ldr", xr(scratchLow), mem(at)))
+					prologue = append(prologue, g.copyIn(rp.local, scratchLow)...)
+				default:
+					for i := 0; i < rp.regs; i++ {
+						prologue = append(prologue, g.ins("ldr", xr(scratchLow), mem(at+int64(8*i))), g.ins("str", xr(scratchLow), g.slotMem(rp.local.offset+int64(8*i))))
+					}
+				}
+				continue
+			}
+			if sp, isSpan := g.spans[p.Name.Value]; isSpan {
+				prologue = append(prologue, g.ins("ldr", xr(sp.baseReg), mem(at)), g.ins("ldr", wr(sp.lenReg), mem(at+8)))
+				continue
+			}
+			s, _ := scalarOf(p.Type)
+			load := "ldr"
+			switch {
+			case s.isBool || s.bits == 32:
+			case s.bits == 8:
+				load = "ldrb"
+			case s.bits == 16:
+				load = "ldrh"
+			}
+			prologue = append(prologue, g.ins(load, reg(scratchLow, s), mem(at)))
+			prologue = append(prologue, g.normalizeInto(scratchLow, s)...)
+			prologue = append(prologue, g.storeVar(p.Name.Value, scratchLow))
+			continue
+		}
 		if rp, isRecord := g.recordParams[p.Name.Value]; isRecord {
 			binding := asm.Binding{Register: xr(rp.reg), Param: p.Name.Value, Line: fn.Token.Line}
 			if rp.regs == 2 {
@@ -1743,6 +1847,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	// Option[u32] in the signature and Option_u32 in the table).
 	out.Composites = Composites(records, adts)
 	out.Constants = constants
+	out.StackArgs, out.PackedStackArgs = g.stackArgs, g.packedStack
 	pressured[out] = g.pressure
 	spell := func(expr ast.Expression) {
 		if expr == nil {
@@ -2452,10 +2557,11 @@ func (g *generator) saveBaseV() int64 { return g.saveBase() + g.saveArea }
 // saveBase is the frame offset of the callee-saved save area: past the
 // [x29, x30] pair when the body calls.
 func (g *generator) saveBase() int64 {
+	base := g.outgoing // the outgoing argument area sits at the bottom
 	if g.hasCalls {
-		return 16
+		base += 16
 	}
-	return 0
+	return base
 }
 
 // hasVariables reports scalar parameters or local declarations: what the
@@ -3256,7 +3362,25 @@ func (g *generator) lowerRecordDeclaration(s *ast.VariableDeclaration, typeName 
 		return err
 	}
 	if s.Value == nil {
-		return unsupported("the record local %s without an initializer", s.Name.Value)
+		// Value-less storage is zero (docs/spec/90-backend.md §6: the C
+		// emitter's `{0}`, the interpreter's zero value): the slots are
+		// zero-filled whole, as an owned array's are.
+		rec := g.declareRecord(s.Name.Value, layout)
+		zero, err := g.alloc(scalars["u64"])
+		if err != nil {
+			return err
+		}
+		g.emit("mov", xr(zero), imm(0))
+		words := (layout.size + 7) / 8
+		for w := int64(0); w < words; w += 2 {
+			if w+1 < words {
+				g.zeroPair(zero, g.slotMem(rec.offset+8*w))
+			} else {
+				g.emit("str", xr(zero), g.slotMem(rec.offset+8*w))
+			}
+		}
+		g.release(zero)
+		return nil
 	}
 	if literal, isLiteral := s.Value.(*ast.RecordLiteral); isLiteral {
 		if literal.TypeName != nil && literal.TypeName.Value != typeName {
@@ -3784,7 +3908,7 @@ func (g *generator) epilogue() {
 		}
 	}
 	if g.hasCalls {
-		g.emit("ldp", xr(29), xr(30), mem(0))
+		g.emit("ldp", xr(29), xr(30), mem(g.outgoing))
 	}
 	if frame > 0 {
 		g.emit("add", sp(), sp(), imm(frame))
@@ -5274,7 +5398,7 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 	if !ok {
 		return 0, unsupported("a call to %s", ident.Value)
 	}
-	if len(e.Arguments) != len(callee.Parameters) || len(e.Arguments) > 8 {
+	if len(e.Arguments) != len(callee.Parameters) {
 		return 0, unsupported("a call to %s with %d arguments", ident.Value, len(e.Arguments))
 	}
 	var resultType *scalar
@@ -5298,20 +5422,79 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 	type argument struct {
 		regs  []int
 		types []scalar
-		fixed bool // the registers are a parked span's, not scratch: never released
+		fixed bool // the registers are a parked span's or a variable's home, never released
+		// A constant scalar is materialized straight into its place at the
+		// move; an argument already stored to its stack slot needs nothing.
+		isConst  bool
+		constant uint64
+		stored   bool
+	}
+	// The integer-class arguments' places, from the callee's signature
+	// (asm/abi.go): known before the arguments are evaluated, so one bound
+	// for the stack is stored as soon as it is computed and holds no
+	// scratch register across the arguments after it.
+	var classes []asm.ArgClass
+	var intArgs []int
+	for i, p := range callee.Parameters {
+		if s, ok := scalarOf(p.Type); ok && (s.isFloat || s.isVec) {
+			continue
+		}
+		class, ok := g.argClassOf(p.Type)
+		if !ok {
+			return 0, unsupported("a call to %s (parameter %s: %s)", ident.Value, p.Name.Value, p.Type.String())
+		}
+		classes = append(classes, class)
+		intArgs = append(intArgs, i)
+	}
+	places, stackBytes := asm.LayoutArguments(classes, g.packedStack)
+	if stackBytes > g.outgoing {
+		return 0, unsupported("a call to %s: %d bytes of stack arguments, more than the frame reserved", ident.Value, stackBytes)
+	}
+	placeOf := map[int]asm.ArgPlace{}
+	for k, i := range intArgs {
+		placeOf[i] = places[k]
 	}
 	var args []argument
+	// push records an argument; one bound for the stack in scratch
+	// registers is stored to its slot now and its registers released.
+	push := func(i int, a argument) {
+		place := placeOf[i]
+		if place.OnStack && !a.fixed && !a.isConst && len(a.regs) > 0 {
+			for j, r := range a.regs {
+				g.emit(stackStoreOf(a.types[j], len(a.regs) == 1), reg(r, a.types[j]), mem(place.Offset+int64(8*j)))
+				g.release(r)
+			}
+			a.regs, a.stored = nil, true
+		}
+		args = append(args, a)
+	}
 	for i, arg := range e.Arguments {
 		p := callee.Parameters[i]
 		if p.Variadic {
 			return 0, unsupported("a call to %s (parameter %s is variadic)", ident.Value, p.Name.Value)
 		}
 		if s, ok := scalarOf(p.Type); ok {
+			if !s.isFloat && !s.isVec {
+				// A constant, or a variable whose home is no argument
+				// register, is read at the move itself: no scratch held.
+				if v, isConst := g.constantOperand(arg, s); isConst {
+					push(i, argument{types: []scalar{s}, isConst: true, constant: v})
+					continue
+				}
+				if ident, isIdent := arg.(*ast.Identifier); isIdent {
+					if v, inReg := g.regs[ident.Value]; inReg && v > 7 && v < vecBase {
+						if t, known := g.types[ident.Value]; known && t == s {
+							push(i, argument{regs: []int{v}, types: []scalar{s}, fixed: true})
+							continue
+						}
+					}
+				}
+			}
 			r, err := g.expr(arg, &s)
 			if err != nil {
 				return 0, err
 			}
-			args = append(args, argument{regs: []int{r}, types: []scalar{s}})
+			push(i, argument{regs: []int{r}, types: []scalar{s}})
 			continue
 		}
 		if name, isRecord := g.recordTypeName(p.Type); isRecord {
@@ -5333,7 +5516,7 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 				// An in-place parameter passed on: the same address (the
 				// callee copies it if it writes its own; a read-only one
 				// reads the caller's memory, which nothing writes meanwhile).
-				args = append(args, argument{regs: []int{rec.reg}, types: []scalar{scalars["u64"]}, fixed: true})
+				push(i, argument{regs: []int{rec.reg}, types: []scalar{scalars["u64"]}, fixed: true})
 				continue
 			}
 			if layout.size > 16 {
@@ -5348,7 +5531,7 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 					return 0, err
 				}
 				g.emit("add", xr(base), sp(), imm(g.slotMem(copied.offset).Offset))
-				args = append(args, argument{regs: []int{base}, types: []scalar{scalars["u64"]}})
+				push(i, argument{regs: []int{base}, types: []scalar{scalars["u64"]}})
 				continue
 			}
 			if rec.inReg || g.slotMem(rec.offset).Offset%8 != 0 {
@@ -5373,7 +5556,7 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 				chunks = append(chunks, r)
 				kinds = append(kinds, scalars["u64"])
 			}
-			args = append(args, argument{regs: chunks, types: kinds})
+			push(i, argument{regs: chunks, types: kinds})
 			continue
 		}
 		target, isSpan := g.spanTypeOf(p.Type)
@@ -5386,7 +5569,7 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 		if err != nil {
 			return 0, unsupported("a call to %s: %v", ident.Value, err)
 		}
-		args = append(args, argument{regs: []int{value.baseReg, value.lenReg}, types: []scalar{scalars["u64"], scalars["u32"]}, fixed: named})
+		push(i, argument{regs: []int{value.baseReg, value.lenReg}, types: []scalar{scalars["u64"], scalars["u32"]}, fixed: named})
 	}
 	// Variables in caller-saved homes: saved before the argument registers
 	// are written (a home may be one of them) and restored after the call.
@@ -5394,27 +5577,48 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 	for _, r := range homes {
 		g.emit("str", xr(r), g.slotMem(g.spillSlot(r)))
 	}
-	general, vector := 0, 0
-	for _, arg := range args {
+	vector := 0
+	for i, arg := range args {
+		place := placeOf[i]
+		if arg.stored {
+			continue
+		}
+		if arg.isConst {
+			typ := arg.types[0]
+			if !place.OnStack {
+				g.constant(place.Reg, arg.constant, typ)
+				continue
+			}
+			tmp, err := g.alloc(typ)
+			if err != nil {
+				return 0, err
+			}
+			g.constant(tmp, arg.constant, typ)
+			g.emit(stackStoreOf(typ, true), reg(tmp, typ), mem(place.Offset))
+			g.release(tmp)
+			continue
+		}
 		for j, r := range arg.regs {
 			typ := arg.types[j]
-			if typ.isVec {
+			switch {
+			case typ.isVec:
 				g.vmove(vector, r-vecBase)
 				vector++
-			} else if typ.isFloat {
+			case typ.isFloat:
 				g.emit("fmov", reg(vecBase+vector, typ), reg(r, typ))
 				vector++
-			} else {
-				g.emit("mov", reg(general, typ), reg(r, typ))
-				general++
+			case !place.OnStack:
+				g.emit("mov", reg(place.Reg+j, typ), reg(r, typ))
+			default:
+				g.emit(stackStoreOf(typ, len(arg.regs) == 1), reg(r, typ), mem(place.Offset+int64(8*j)))
 			}
 			if !arg.fixed {
 				g.release(r)
 			}
 		}
 	}
-	if general > 8 || vector > 8 {
-		return 0, unsupported("a call to %s: the arguments exhaust the argument registers", ident.Value)
+	if vector > 8 {
+		return 0, unsupported("a call to %s: the arguments exhaust the floating-point argument registers", ident.Value)
 	}
 	if recordResult != nil && recordResult.layout.size > 16 {
 		// The callee writes its result into the temp through x8.
@@ -5555,6 +5759,87 @@ func (g *generator) forwardedSlot(name string) (int, bool) {
 		return 0, false
 	}
 	return src.Num, true
+}
+
+// stackStoreOf is the store that writes a scalar argument to its stack
+// slot at the value's own size: a narrow scalar under the packing
+// convention shares its 8 bytes with its neighbors, so a u8 is `strb` and a
+// u16 `strh`; a word of a span or a record chunk is a whole `str`.
+func stackStoreOf(typ scalar, scalarWord bool) string {
+	if !scalarWord || typ.isBool || typ.wide() || typ.bits == 32 {
+		return "str"
+	}
+	switch typ.bits {
+	case 8:
+		return "strb"
+	case 16:
+		return "strh"
+	}
+	return "str"
+}
+
+// argClassOf is a parameter type's integer-class layout description
+// (asm/abi.go): a scalar one register and its natural size, a span two
+// registers and sixteen bytes, a record its chunks or one register for a
+// reference; false for a type outside the subset (floats and vectors take
+// their own registers).
+func (g *generator) argClassOf(typ ast.Expression) (asm.ArgClass, bool) {
+	if s, ok := scalarOf(typ); ok {
+		if s.isFloat || s.isVec {
+			return asm.ArgClass{}, false
+		}
+		size := int64(s.bits / 8)
+		if s.isBool {
+			size = 4
+		}
+		return asm.ArgClass{Words: 1, Bytes: size, Align: size}, true
+	}
+	if name, isRecord := g.recordTypeName(typ); isRecord {
+		layout, err := g.layoutOf(name)
+		if err != nil || layout.isHFA() {
+			return asm.ArgClass{}, false
+		}
+		regs := 1
+		if layout.size <= 16 {
+			regs = layout.chunks()
+		}
+		return asm.ArgClass{Words: regs, Bytes: int64(regs) * 8, Align: 8}, true
+	}
+	if _, ok := g.spanTypeOf(typ); ok {
+		return asm.ArgClass{Words: 2, Bytes: 16, Align: 8}, true
+	}
+	return asm.ArgClass{}, false
+}
+
+// outgoingArea sizes the stack-argument area this body's calls need: the
+// largest over its calls to program functions, from the callees'
+// signatures under the same layout the callees read (rounded to 16).
+func (g *generator) outgoingArea(body ast.Expression) int64 {
+	most := int64(0)
+	walk(body, func(n ast.Node) {
+		call, isCall := n.(*ast.InvocationExpression)
+		if !isCall {
+			return
+		}
+		ident, isIdent := call.Function.(*ast.Identifier)
+		if !isIdent {
+			return
+		}
+		callee, known := g.functions[ident.Value]
+		if !known {
+			return
+		}
+		var classes []asm.ArgClass
+		for _, p := range callee.Parameters {
+			if class, ok := g.argClassOf(p.Type); ok {
+				classes = append(classes, class)
+			}
+		}
+		if _, bytes := asm.LayoutArguments(classes, g.packedStack); bytes > most {
+			most = bytes
+		}
+	})
+	return most
 }
 
 // callerHomesLive lists the caller-saved homes of the variables in scope,
@@ -6536,7 +6821,7 @@ func (g *generator) tailCall(e *ast.InvocationExpression) error {
 // isTailCall recognizes a self-call the loop lowering handles.
 func (g *generator) isTailCall(expr ast.Expression) bool {
 	call, ok := expr.(*ast.InvocationExpression)
-	if !ok || len(g.spans) != 0 {
+	if !ok || len(g.spans) != 0 || len(g.stackParams) != 0 {
 		return false
 	}
 	ident, ok := call.Function.(*ast.Identifier)
@@ -6548,6 +6833,10 @@ func Describe(fn *asm.Function) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s = {\n", fn.Name)
 	for _, bind := range fn.Bindings {
+		if bind.OnStack {
+			fmt.Fprintf(&b, "  bind [sp, #%d] = %s\n", bind.Stack, bind.Param)
+			continue
+		}
 		if bind.Length != nil {
 			fmt.Fprintf(&b, "  bind %s, %s = %s\n", bind.Register.Text, bind.Length.Text, bind.Param)
 			continue
