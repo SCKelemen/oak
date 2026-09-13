@@ -145,8 +145,9 @@ locals and rebindings (`x: T = e`, `x = e`), statement-level conditionals
 whose arms assign locals (`c ? { x = e } | { y = f }`), integer-constant
 matches in value and statement position (`x ? | 0 => a | 1 => b | _ => c`),
 counted loops (`while c { body }`), span element reads and lengths (`v[i]`,
-`len(v)`), owned arrays of scalars (`a: [n]T`, `a[i]`, `a[i] = e`),
-records of scalars (`r: R = R{…}`, `r.f`, `r.f = e`, record parameters),
+`len(v)`), owned arrays (`a: [n]T`, `a[i]`, `a[i] = e`, array literals),
+records (`r: R = R{…}`, `r.f`, `r.f = e`, record parameters), the nesting
+of the two (`r.h[i]`, `a[i].x`),
 tagged unions of scalar payloads (a variant, a variant match with its
 binding, union parameters), and calls to program functions — and two
 readings of it: `evalX`, the extraction's
@@ -175,7 +176,9 @@ arm into the fallback, an owned array as its element leaves `x[k]`
 read through `elementUnderIndex`'s element-by-element select and written
 through `assignUnderIndex`'s select at every element, a record as its
 field leaves `r.f` (`paramAggregate`'s naming, a record literal binding
-each field in the type's order), a union as its `tag` leaf and payload
+each field in the type's order), a nested aggregate as the same leaves
+under longer names (`r.h[k]`, `a[k].x`, the array's leaf naming a
+parameter of the model), a union as its `tag` leaf and payload
 leaves with a variant match the constant match on the tag (`matchArms`'
 `cmpTerm("eq", tag, index)`, the arm's binding an alias of the payload
 leaf), a loop as
@@ -214,8 +217,8 @@ the other.
 With it, on arm64, a theorem about an Oak function's extraction composes
 with the verifier's verdict and `Oak.ArmASL` into one statement about the
 machine for a body inside the shared subset: source theorem, `lowerT_eval`,
-the verifier's equality, the ASL bridge. Outside the subset — arrays of
-records and records of arrays, span writes, array literals, record- and
+the verifier's equality, the ASL bridge. Outside the subset — span writes
+(borrows of a caller's array written back on return), record- and
 union-valued calls, the data-dependent loops `loopEvent` summarizes —
 the verifier's lowering is still the Go's alone, related to the
 extraction by tests.
@@ -251,10 +254,12 @@ for a workload):
    rebindings, inlined calls to program functions, statement-level Bool
    conditionals whose arms assign locals, integer-constant matches in
    value and statement position, span element reads and lengths, the
-   constructors' constant folding, counted loops, owned arrays of scalars,
-   records of scalars, and tagged unions of scalar payloads (`letIn`,
-   `call`, `condSet`, `matchInt`, `matchSet`, `elem`, `len`, `whileLoop`,
-   `arrDecl`, `arrGet`, `arrSetE`, `recDecl`, the `Agree` scope invariant;
+   constructors' constant folding, counted loops, owned arrays with
+   literals, records, their nesting, and tagged unions of scalar payloads
+   (`letIn`, `call`, `condSet`, `matchInt`, `matchSet`, `elem`, `len`,
+   `whileLoop`, `arrDecl`, `arrLit`, `arrGet`, `arrSetE`, `recDecl`, the
+   `Agree` scope invariant; an array's leaves are named by a function, so
+   `r.h[k]` and `a[k].x` are the same constructors under longer names;
    a union is the record of its tag and payload leaves and a variant match
    the constant match on the tag, so it needs no constructor of its own;
    `lowerConditionalStatement`'s select against the extraction's `let
@@ -264,9 +269,9 @@ for a workload):
    `ok` is; an array local as its element leaves `x[k]`, in-range reads
    and writes against the extraction's `Array`, a trap where the index is
    out of range; a record as its field leaves `r.f`, bound by the same
-   named binder a call uses). Next: nested aggregates (arrays of records,
-   records of arrays), span writes, array literals, aggregate-valued
-   calls — so `lowerT_eval` covers the
+   named binder a call uses). Next: span writes (`enterCall`'s borrows
+   and their write-back) and aggregate-valued calls (`inlineCallValue`)
+   — so `lowerT_eval` covers the
    bodies `oak build -native` actually verifies rather than their
    arithmetic alone. This is the step that turns "source theorem implies
    machine behavior" from a statement about expressions into one about
