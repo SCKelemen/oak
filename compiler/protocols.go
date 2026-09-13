@@ -1068,7 +1068,12 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 		}
 		machine.typestate = map[string]bool{}
 		for _, r := range decl.Resources {
-			if r != nil && templates[r.Value] == 1 {
+			// A record template with one type parameter per index — the
+			// state, then one per `fact` clause — carries the protocol in
+			// its type (section 5a). Any other parameter count (region
+			// parameters, ordinary generics) leaves the resource ungoverned
+			// by type, as before.
+			if r != nil && templates[r.Value] == 1+len(decl.Facts) {
 				machine.typestate[r.Value] = true
 			}
 		}
@@ -1151,6 +1156,9 @@ func (m *protocolMachine) resourceFacts(functions map[string]*ast.FunctionStatem
 		return typechecker.ResourceProtocolDeclaration{}, false
 	}
 	facts := typechecker.ResourceProtocolDeclaration{Name: m.name, States: append([]string(nil), m.states...), Initial: m.initial}
+	if len(m.typestate) > 0 {
+		facts.TypestateArity = 1 + len(m.decl.Facts)
+	}
 	for _, r := range m.decl.Resources {
 		facts.ResourceTypes = append(facts.ResourceTypes, r.Value)
 	}
@@ -1746,7 +1754,15 @@ func sortedKeys(m map[string]bool) []string {
 // are never instantiated as values, so they cost nothing at run time.
 func (m *protocolMachine) stateMarkers() []ast.Statement {
 	var out []ast.Statement
-	for _, state := range m.states {
+	names := append([]string(nil), m.states...)
+	for _, fact := range m.decl.Facts {
+		for _, marker := range fact.Markers {
+			if marker != nil {
+				names = append(names, marker.Value)
+			}
+		}
+	}
+	for _, state := range names {
 		src := fmt.Sprintf("%s: type = struct { %s_: u8 }\n", state, snakeCase(state))
 		p := parser.New(layout.New(scanner.New(src)))
 		program := p.ParseProgram()
@@ -1761,16 +1777,67 @@ func (m *protocolMachine) stateMarkers() []ast.Statement {
 // typestateIndex reads Segment[X] from a type expression: the template and
 // the state it names. A bare template or an unrelated type is not indexed.
 func typestateIndex(typ ast.Expression) (template, state string, ok bool) {
-	index, isIndex := typ.(*ast.IndexExpression)
-	if !isIndex || index == nil {
+	template, indices, ok := typestateIndices(typ)
+	if !ok {
 		return "", "", false
 	}
-	left, leftIsIdent := index.Left.(*ast.Identifier)
-	right, rightIsIdent := index.Index.(*ast.Identifier)
-	if !leftIsIdent || !rightIsIdent || left == nil || right == nil {
-		return "", "", false
+	return template, indices[0], true
+}
+
+// typestateIndices reads Segment[S, F, ...] — which the parser spells as
+// nested indexes, `(Segment[S])[F]` — as the template and its indices in
+// order: the state first, then the facts. An index that is not a name, or
+// a bare template, is not indexed.
+func typestateIndices(typ ast.Expression) (template string, indices []string, ok bool) {
+	node, isIndex := typ.(*ast.IndexExpression)
+	for isIndex && node != nil && !node.Dot {
+		name, isIdent := node.Index.(*ast.Identifier)
+		if !isIdent || name == nil {
+			return "", nil, false
+		}
+		indices = append([]string{name.Value}, indices...)
+		switch left := node.Left.(type) {
+		case *ast.Identifier:
+			if left == nil {
+				return "", nil, false
+			}
+			return left.Value, indices, true
+		case *ast.IndexExpression:
+			node = left
+		default:
+			return "", nil, false
+		}
 	}
-	return left.Value, right.Value, true
+	return "", nil, false
+}
+
+// checkFactIndices holds the fact positions of an indexed type to the
+// protocol's fact clauses: as many as declared, each a marker of its set
+// or a type variable of the callable (a fact-polymorphic transition).
+func (m *protocolMachine) checkFactIndices(t *ast.ProtocolTransition, fn *ast.FunctionStatement, typ ast.Expression, indices []string, typeVars map[string]bool, report func(code string, node ast.Node, format string, args ...interface{})) bool {
+	if len(indices) != len(m.decl.Facts) {
+		report(CodeProtocolShape, typ, "transition %s: via %s spells %s with %d fact indices; the protocol declares %d", t.Name.Value, fn.Name.Value, typ.String(), len(indices), len(m.decl.Facts))
+		return false
+	}
+	for i, index := range indices {
+		if typeVars[index] {
+			continue
+		}
+		fact := m.decl.Facts[i]
+		known := false
+		for _, marker := range fact.Markers {
+			known = known || (marker != nil && marker.Value == index)
+		}
+		if !known {
+			var names []string
+			for _, marker := range fact.Markers {
+				names = append(names, marker.Value)
+			}
+			report(CodeProtocolShape, typ, "transition %s: via %s spells %s with %s for fact %s, which is one of %s", t.Name.Value, fn.Name.Value, typ.String(), index, fact.Name.Value, strings.Join(names, " | "))
+			return false
+		}
+	}
+	return true
 }
 
 // typestateResult reads a fallible transition's result type,
@@ -1793,6 +1860,8 @@ func typestateResult(typ ast.Expression) (template, okState, errState string, ok
 	}
 	okTemplate, okState, okIndexed := typestateIndex(inner.Index)
 	errTemplate, errState, errIndexed := typestateIndex(outer.Index)
+	// The fact indices of both arms are held to the fact clauses by the
+	// signature check's parameter walk; here the states are what matter.
 	if !okIndexed || !errIndexed || okTemplate != errTemplate {
 		return "", "", "", false
 	}
@@ -1820,8 +1889,13 @@ func (m *protocolMachine) checkTypestateSignature(t *ast.ProtocolTransition, fn 
 			ok = false
 			return
 		}
-		template, state, indexed := typestateIndex(typ)
+		template, indices, indexed := typestateIndices(typ)
 		if !indexed || !m.typestate[template] {
+			return
+		}
+		state := indices[0]
+		if !m.checkFactIndices(t, fn, typ, indices[1:], typeVars, report) {
+			ok = false
 			return
 		}
 		if typeVars[state] {

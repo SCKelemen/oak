@@ -228,6 +228,13 @@ var iosimSource string
 //go:embed ionative.oak
 var ionativeSource string
 
+// objsim is the simulated realization of the object-store port
+// (docs/spec/121-object-store.md): keyed objects with generation
+// preconditions, tape-driven unavailability and lost acknowledgements.
+//
+//go:embed objsim.oak
+var objsimSource string
+
 // NativeShim is the C source a library package's realization links: the
 // native IO port (ionative) is completion rings over host bindings
 // (stdlib/native/oak_io_host.c). `oak build` and `oak test` link the shim
@@ -308,6 +315,7 @@ var TestingSource = testingSource + "\n" + simStorageSource + "\n" + simSchedSou
 var Packages = map[string]string{
 	"iosim":           iosimSource,
 	"ionative":        ionativeSource,
+	"objsim":          objsimSource,
 	"strings":         stringsSource,
 	"unicode":         unicodeSource,
 	"json":            jsonSource,

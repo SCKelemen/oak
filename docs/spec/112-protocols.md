@@ -706,6 +706,25 @@ The rules:
    resource is left in, a sum over those states when several are possible,
    never a flag (`compiler/e2e_typestate_fallible_test.go`).
 
+6. A handle may carry **fact indices** beyond its state: a `fact F = A | B`
+   clause names a further type parameter of the resource template and the
+   closed set of markers it ranges over, projected to marker types like
+   the states. `Segment[S, F]: type = struct { ... }` with `fact F = Open |
+   Sealed` makes `Segment[Published, Sealed]` a type: a sealed segment is
+   a fact the types see, never a flag the guards test. The template's
+   first parameter is the state and each further one a declared fact, in
+   order; a template with any other parameter count (region parameters,
+   ordinary generics) is not typestate-indexed, as before. A via callable
+   may move a fact (`seal: (s: Segment[Published, Open]): Segment[Published,
+   Sealed]`) or leave it polymorphic (`publish[F]: (s: Segment[Fresh, F]):
+   Segment[Published, F]`); the state position still names a concrete
+   state, and a fact position names a marker of its set or a type variable
+   (`OAK-M0301` otherwise). Construction (rule 4) is keyed on the state;
+   a transition into a state may construct it with any fact. The
+   protocol's machine, module and monitor read no fact: facts are
+   type-level, and the model-checker module is unchanged
+   (`compiler/e2e_typestate_facts_test.go`).
+
 A typestate resource may also carry **region parameters**
 (`50-borrowing.md` §8c): `Node[R, S]: type = struct { data: View[f32, R],
 n: u32 }` with `initial Lazy` and `realize: Lazy -> Realized` gives
