@@ -40,7 +40,11 @@ type Function struct {
 	// `.rv64.oakasm` segment or an `arch rv64` directive. Every phase —
 	// parsing, the seam checker, the verifier, the encoder, the object
 	// writer, and the C emitter — dispatches on it.
-	Arch  string
+	Arch string
+	// Inert marks a unit function that is a dispatch realization
+	// (docs/spec/93-simd.md section 6): off its architecture it is never
+	// called, so the C emitter leaves nothing there instead of #error.
+	Inert bool
 	Items []Item
 	// Directives collected from the block.
 	Bindings []Binding

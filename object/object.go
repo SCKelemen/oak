@@ -93,6 +93,9 @@ type Function struct {
 	// (docs/spec/93-simd.md section 6); the interpreter selects one when
 	// its feature set names the slot's feature, else runs Body.
 	Dispatch []*ast.DispatchSlot
+	// Abstract marks a definition-less declaration (an asm unit's, or an
+	// extern's): the interpreter has no body to run for it.
+	Abstract bool
 }
 
 func (f *Function) Kind() ObjectKind { return FUNCTION }

@@ -1001,13 +1001,16 @@ trailing zeros, the last parent taking the root flag.
 On AArch64 the two hot kernels run through the CPU's instructions:
 `stdlib/hash.arm64.oakasm` (embedded and attached by the loader whenever
 `hash` is imported, its function names rewritten to the package's internal
-names) realizes `crc32c_step7` — seven `crc32cx` steps over the 64-bit
-words `crc32c_update` folds 56 bytes at a time — and `sha256_block_hw` — one
+names) realizes `crc32c_step7_asm` — seven `crc32cx` steps over the 64-bit
+words `crc32c_update` folds 56 bytes at a time — and `sha256_block_asm` — one
 compression through `sha256h`/`sha256h2`/`sha256su0`/`sha256su1`, the state
 read from and written to a span and the block and round constants read
 through views under the assembler checker's dominating length guards. Each
-unit pairs with an Oak declaration that keeps its portable body, so the body
-is the definition: the seam checker admits the unit only within the
+unit is the realization a `dispatch` slot selects (`93-simd.md` §6):
+`crc32c_step7` dispatches to it on FEAT_CRC32 and `sha256_block_hw` on
+FEAT_SHA256, decided once at startup by the processor probe, so an ARMv8.0
+core without the extension runs the Oak body rather than faulting. The
+body is the definition: the seam checker admits the unit only within the
 declared registers and proven memory, the extraction and the interpreter see
 the Oak body, non-AArch64 targets and `-DOAK_PORTABLE_INTRINSICS` builds run
 it, and the differential tests (`compiler/e2e_stdlib_crc_sha_hw_test.go`)

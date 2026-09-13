@@ -216,6 +216,11 @@ func (cg *CodeGenerator) collectSimdUsage(program *ast.Program) (ops []string, a
 // types (with or without operations) also require the typedefs, so any
 // simd usage at all emits them.
 func (cg *CodeGenerator) emitSimdSupport(program *ast.Program) {
+	// The processor probe serves every dispatched function, vectors or not
+	// (docs/spec/93-simd.md section 6.1): it precedes the SIMD gate.
+	if len(cg.dispatchSlots) > 0 {
+		cg.writeRaw(cg.dispatchProbeSource())
+	}
 	ops, arm64Vector, typesMentioned := cg.collectSimdUsage(program)
 	if len(ops) == 0 && len(arm64Vector) == 0 && !typesMentioned && !cg.programMentionsSimdLocals(program) {
 		return
@@ -245,9 +250,6 @@ func (cg *CodeGenerator) emitSimdSupport(program *ast.Program) {
 			shape.Suffix, shape.ElemName, shape.Lanes, shape.Suffix))
 	}
 	cg.write("\n")
-	if len(cg.dispatchSlots) > 0 {
-		cg.writeRaw(cg.dispatchProbeSource())
-	}
 	scalable := programUsesScalable(ops) || cg.programMentionsScalableLocals(program)
 	if scalable {
 		cg.writeRaw(scalableTypedefs)

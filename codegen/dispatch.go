@@ -54,6 +54,8 @@ static u64 oak_cpu_probe(void) {
   u64 f = 0;
   if (hwcap & (1ul << 22)) { f |= OAK_CPU_SVE; }
   if (hwcap2 & (1ul << 1)) { f |= OAK_CPU_SVE2; }
+  if (hwcap & (1ul << 7)) { f |= OAK_CPU_CRC; }   /* HWCAP_CRC32 */
+  if (hwcap & (1ul << 6)) { f |= OAK_CPU_SHA2; }  /* HWCAP_SHA2 */
   return f;
 }
 #elif defined(__aarch64__) && defined(__APPLE__)
@@ -63,12 +65,20 @@ static u64 oak_cpu_probe(void) {
   if (sysctlbyname("hw.optional.arm.FEAT_SVE", &v, &n, 0, 0) == 0 && v != 0) { f |= OAK_CPU_SVE; }
   v = 0; n = sizeof v;
   if (sysctlbyname("hw.optional.arm.FEAT_SVE2", &v, &n, 0, 0) == 0 && v != 0) { f |= OAK_CPU_SVE2; }
+  v = 0; n = sizeof v;
+  if (sysctlbyname("hw.optional.armv8_crc32", &v, &n, 0, 0) == 0 && v != 0) { f |= OAK_CPU_CRC; }
+  v = 0; n = sizeof v;
+  if (sysctlbyname("hw.optional.arm.FEAT_SHA256", &v, &n, 0, 0) == 0 && v != 0) { f |= OAK_CPU_SHA2; }
   return f;
 }
 #elif defined(__aarch64__)
-/* freestanding: ID_AA64PFR0_EL1.SVE [35:32], ID_AA64ZFR0_EL1.SVEver [3:0] (S3_0_C0_C4_4); EL1 or higher */
+/* freestanding: ID_AA64PFR0_EL1.SVE [35:32], ID_AA64ZFR0_EL1.SVEver [3:0] (S3_0_C0_C4_4),
+   ID_AA64ISAR0_EL1.CRC32 [19:16] and .SHA2 [15:12]; EL1 or higher */
 static u64 oak_cpu_probe(void) {
-  u64 pfr0, f = 0;
+  u64 pfr0, isar0, f = 0;
+  __asm__ volatile("mrs %0, ID_AA64ISAR0_EL1" : "=r"(isar0));
+  if ((isar0 >> 16) & 0xfu) { f |= OAK_CPU_CRC; }
+  if ((isar0 >> 12) & 0xfu) { f |= OAK_CPU_SHA2; }
   __asm__ volatile("mrs %0, ID_AA64PFR0_EL1" : "=r"(pfr0));
   if ((pfr0 >> 32) & 0xfu) {
     u64 zfr0;
@@ -181,7 +191,9 @@ func (cg *CodeGenerator) emitDispatchPrologue(fn *ast.FunctionStatement, slots [
 			transfer = call + "; return;"
 		}
 		arch := dispatchArchCondition(feature.Arch)
-		cg.write(fmt.Sprintf("#if (%s) && defined(%s)\n", arch, feature.BaselineMacro))
+		// Under the portable lowering (-DOAK_PORTABLE_INTRINSICS) nothing
+		// dispatches: the realizations are not compiled, the body runs.
+		cg.write(fmt.Sprintf("#if (%s) && defined(%s) && !defined(OAK_PORTABLE_INTRINSICS) && !defined(OAK_SCALAR_SIMD)\n", arch, feature.BaselineMacro))
 		cg.write(fmt.Sprintf("  %s /* the baseline guarantees %s */\n", transfer, feature.Name))
 		cg.write(fmt.Sprintf("#elif (%s) && %s\n", arch, dispatchMacro(feature)))
 		cg.write(fmt.Sprintf("  if (oak_cpu_features & %s) { %s }\n", feature.Macro(), transfer))

@@ -887,7 +887,9 @@ count: (xs: []u8) -> u32 dispatch { sve: count_sve, rvv: count_rvv } = ...
 
 `dispatch { feature: function, ... }` follows the effect and laws clauses,
 at most once. Each slot names a feature of the closed catalog (`sve`,
-`sve2`, `rvv`) and a top-level function of the identical signature. The
+`sve2`, `crc`, `sha2`, `rvv`) and a top-level function of the identical
+signature, which may be a definition-less declaration an `.oakasm` unit
+provides. The
 body is the meaning; the slots are realizations the program selects once
 at startup when the processor has the feature (`93-simd.md` §6).
 

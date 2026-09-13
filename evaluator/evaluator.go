@@ -1313,6 +1313,7 @@ func evalFunctionStatement(fn *ast.FunctionStatement, env *object.Environment) o
 		Env:        env,
 		Variadic:   len(fn.Parameters) > 0 && fn.Parameters[len(fn.Parameters)-1].Variadic,
 		Dispatch:   fn.Dispatch,
+		Abstract:   fn.Body == nil,
 	}
 
 	// If this is a method (has a receiver), store it with a special key: TypeName::methodName
@@ -1857,7 +1858,9 @@ func selectRealization(fn *object.Function) (object.Object, bool) {
 			continue
 		}
 		if realization, found := fn.Env.Get(slot.Realization); found {
-			if target, isFn := realization.(*object.Function); isFn && target != fn {
+			// An asm-unit realization has no Oak body: the interpreter
+			// runs the dispatched function's own (the meaning).
+			if target, isFn := realization.(*object.Function); isFn && target != fn && !target.Abstract {
 				return target, true
 			}
 		}
