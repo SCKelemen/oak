@@ -332,8 +332,14 @@ func TestFloatingPointContract(t *testing.T) {
 	if _, ok := parseRegister("v0.s[4]"); ok {
 		t.Fatal("lane 4 of a .s view is past the register and must not parse")
 	}
-	trusted := verifyCase(t, "twice: (x: f64) -> f64", "x + x", "  bind d0 = x\n  fadd d0, d0, d0\n  ret")
-	if trusted.Kind != VerdictTrusted {
-		t.Fatalf("an FP body must be trusted, got %s: %s", trusted.Kind, trusted.Message)
+	// Floating-point arithmetic is an uninterpreted operation to the
+	// decider (asm/floats_ops.go): the same operation over the same
+	// operands is proven, another operation is a mismatch.
+	proven := verifyCase(t, "twice: (x: f64) -> f64", "x + x", "  bind d0 = x\n  fadd d0, d0, d0\n  ret")
+	if proven.Kind != VerdictProven {
+		t.Fatalf("x + x against fadd must be proven, got %s: %s", proven.Kind, proven.Message)
+	}
+	if v := verifyCase(t, "twice: (x: f64) -> f64", "x + x", "  bind d0 = x\n  fmul d0, d0, d0\n  ret"); v.Kind != VerdictMismatch {
+		t.Fatalf("x + x against fmul must be a mismatch, got %s: %s", v.Kind, v.Message)
 	}
 }
