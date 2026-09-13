@@ -1497,6 +1497,13 @@ func (c *checker) deriveGlobal(instr Instruction, dest Register, regs []Register
 			c.errorf(instr.Line, "add :lo12:%s over %s, which does not hold that symbol's page (adrp first)", sym.Name, regs[1].Text)
 			return
 		}
+		if global := c.fn.Globals[sym.Name]; global.Aggregate {
+			// A top-level record or array: a writable region of its size,
+			// bounded as a record argument's memory is (regionAccess) and
+			// yielding element regions under a constant guard.
+			c.regions[dest.Num] = region{size: global.Size, writable: true}
+			return
+		}
 		c.globalAddrs[dest.Num] = sym.Name
 	}
 }

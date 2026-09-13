@@ -98,3 +98,44 @@ func TestGlobalAddressEncodingAndRelocations(t *testing.T) {
 		}
 	}
 }
+
+// A top-level record or array (Global.Aggregate) is a writable region of
+// its size at its adrp/add address: fields at their offsets and elements
+// under a constant guard are admitted, anything past the size or without
+// the guard is refused (docs/spec/94-assembler.md §9, the OS pilot's N9).
+func TestCheckerGlobalAggregates(t *testing.T) {
+	decl := "peek: (i: u32) -> u32"
+	// Table { slots: [8]Slot (8 bytes each), count: u32 }: 68 bytes.
+	globals := map[string]Global{"table": {Type: "Table", Aggregate: true, Size: 68}}
+	check := func(body string) []string {
+		unit, errs := ParseUnit("agg.oakasm", decl+" = {\n"+body+"\n}\n")
+		if len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		unit.Functions[0].Globals = globals
+		sig, _ := parseSignature(decl)
+		return Check(unit.Functions[0], sig, nil)
+	}
+	address := "  adrp x9, table\n  add x9, x9, :lo12:table\n"
+	// The element address lands in a fresh register, as the generator
+	// emits it: a write to the base register would end its region fact.
+	accept := "  bind w0 = i\n  clobber x9, x10, x11\n" + address + "  ldr w10, [x9, #64]\n  cmp w0, #8\n  b.hs trap\n  add x11, x9, w0, uxtw #3\n  ldr w0, [x11]\n  add w0, w0, w10\n  str w0, [x11, #4]\n  ret\ntrap:\n  brk #1"
+	if findings := check(accept); len(findings) != 0 {
+		t.Fatalf("a field read, a guarded element, and a field store inside the aggregate must pass: %v", findings)
+	}
+	cases := []struct{ name, body, want string }{
+		{"field past the size", "  bind w0 = i\n  clobber x9\n" + address + "  ldr w0, [x9, #68]\n  ret", "outside its 68 bytes"},
+		{"element without a guard", "  bind w0 = i\n  clobber x9, x11\n" + address + "  add x11, x9, w0, uxtw #3\n  ldr w0, [x11]\n  ret", "memory operands go through the declared sp frame or a bound span base"},
+		{"guard admits too many", "  bind w0 = i\n  clobber x9, x11\n" + address + "  cmp w0, #9\n  b.hs trap\n  add x11, x9, w0, uxtw #3\n  ldr w0, [x11]\n  ret\ntrap:\n  brk #1", "memory operands go through the declared sp frame or a bound span base"},
+	}
+	for _, tc := range cases {
+		findings := check(tc.body)
+		if len(findings) == 0 {
+			t.Errorf("%s: must be refused", tc.name)
+			continue
+		}
+		if !strings.Contains(strings.Join(findings, "\n"), tc.want) {
+			t.Errorf("%s: want %q, got %v", tc.name, tc.want, findings)
+		}
+	}
+}

@@ -2523,7 +2523,17 @@ an addressed global external linkage under the assembler label
 can produce), the symbol the companion object's `adrp`/`add` relocations
 (PAGE21/PAGEOFF12 on Mach-O, ADR_PREL_PG_HI21/ADD_ABS_LO12_NC on ELF)
 name; the inline-asm mode spells the pair through `OAK_ASM_PAGE` and
-`OAK_ASM_PAGEOFF`. Constant globals keep folding (above). The rv64 lane
+`OAK_ASM_PAGEOFF`. A top-level record, or an array some statement writes
+(an unwritten array is a constant table, above), is an aggregate global
+(the OS pilot's N9): the same `adrp`/`add` pair names it and the body
+holds it as a record or array place at that address — a field at its
+offset, an element of an array field under the constant guard, an
+element of an array of records through the scaled add or `umaddl` from
+the field's base — while the checker reads the `add :lo12:` of an
+aggregate as a writable region of the aggregate's size, bounds every
+field offset inside it, and derives element regions under the guard as
+it does for a frame array. The verifier leaves a body that reads or
+writes an aggregate global trusted. Constant globals keep folding (above). The rv64 lane
 spells the address as `la rd, G` (auipc then addi, relocated as
 `R_RISCV_PCREL_HI20` and `PCREL_LO12_I`) and reads or writes the cell with
 one `lw`/`sw` (or the width's load and store); its checker admits the
