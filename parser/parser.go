@@ -1415,6 +1415,18 @@ func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 	p.nextToken()
 	exp.Right = p.parseExpression(precedence)
 
+	// Two string literals joined by `+` are one literal (docs/spec/10-syntax.md
+	// section 2a): the parser folds them, so a long literal may be split
+	// across lines and a spelling assembled from pieces costs nothing at
+	// run time. A chain folds pairwise, left to right.
+	if exp.Operator == "+" {
+		if left, isLiteral := exp.Left.(*ast.StringLiteral); isLiteral {
+			if right, isLiteral := exp.Right.(*ast.StringLiteral); isLiteral {
+				return &ast.StringLiteral{BaseNode: left.BaseNode, Token: left.Token, Value: left.Value + right.Value}
+			}
+		}
+	}
+
 	return exp
 }
 
