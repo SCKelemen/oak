@@ -114,13 +114,27 @@ or the verifier, not in the program:
    0.20.2 export does not compile. Building Sail from git (as sail-riscv's
    own CI does) and compiling `spec/lean-sail` turns the restatement into
    an import; the drift test keeps the restatement honest until then.
+   **Attempted (2026-09-13):** Sail built from git in its own opam switch
+   (`sail-dev`, every Sail package pinned) generates the export from
+   sail-riscv 0.14 and from master in nine minutes each, but both exports
+   fail to compile at the same place: the generated `Defs.lean` declares
+   `PTW_Output` over a `pte_bits` not yet in scope, so `PTW_Result` finds
+   no `PTW_Output`. The fix is in Sail's Lean backend or sail-riscv's
+   module order, not in Oak; `spec/lean-sail` builds the moment an export
+   compiles, and its drift tests keep the restatements honest until then.
 3. **The encoder is tested, not proved.** Both Sail models carry decoders
    (sail-riscv's `encdec` mappings; Arm's decode tree). The natural
    connection is a round-trip theorem, `decode (encode i) = i`, for every
    instruction form the encoder emits — stated against the generated
    Lean for RV64 first (the mappings export cleanly), then for AArch64.
    That would make the machine words, not only the semantics, a
-   consequence of the Sail specification.
+   consequence of the Sail specification. **Stated (2026-09-13):**
+   `Oak.RiscV.Enc` restates the encoder's placement and the decided
+   mnemonics' table entries (held to the Go table by
+   `asm/rv64_encoding_lean_test.go`), and
+   `spec/lean-sail/OakSailBridge/Encoding.lean` states thirty theorems
+   `encdec_forwards (instruction) = pure (encode …)` against the export.
+   They await an export that compiles (item 2).
 4. **Calls are the largest trusted class.** The verifier did not model
    `bl`/`call`: 159 of 304 trusted AArch64 bodies and 119 of 295 on RV64
    were trusted for that reason alone. **Closed (2026-09-13):** the

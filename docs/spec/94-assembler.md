@@ -2333,8 +2333,10 @@ export: with Sail built from git the export generates (nine minutes) but
 its `Defs.lean` does not yet compile under lean-sail v5 at sail-riscv 0.14
 (`PTW_Output`, unbound type-level variables), the same class of failure
 the earlier attempt recorded; the theorems are stated and their tactic
-script written, awaiting an export that compiles (sail-riscv's own Lean CI
-builds master with Sail from git).
+script written, awaiting an export that compiles (the export from
+sail-riscv master fails at the same place: the generated `Defs.lean`
+declares a structure over a type not yet in scope, a Sail Lean-backend
+matter).
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
