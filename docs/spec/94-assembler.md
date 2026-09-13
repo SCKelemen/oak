@@ -2655,13 +2655,8 @@ and executable writers' tests.
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
-<<<<<<< HEAD
 transliteration is checked against). The term language and the BDD
 blaster carry over unchanged.
-=======
-transliteration is checked against) and the vector floating-point forms.
-The term language and the BDD blaster carry over unchanged.
->>>>>>> origin/specification
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed
