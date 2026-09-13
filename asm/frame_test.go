@@ -35,12 +35,23 @@ func TestVerifyFrameMemory(t *testing.T) {
 	if explicit.Kind != VerdictProven {
 		t.Fatalf("explicit frame slots must be proven, got %s: %s", explicit.Kind, explicit.Message)
 	}
-	// Reloading a slot never stored is outside the subset: trusted, never a
-	// fresh value that could match by accident.
+	// Reloading a slot never stored reads unspecified bytes: fresh
+	// unknowns (`frame#<addr>`), so a result that depends on them is
+	// refuted — the body computes something the Oak side does not — and a
+	// result that does not (a record chunk's padding) is unaffected. Never
+	// a value that could match by accident: a proof holds for every value
+	// of the unknowns.
 	unstored := verifyCase(t, "inc: (a: u64) -> u64", "a + u64(1)",
 		"  bind x0 = a\n  clobber x9\n  frame 32\n  str x0, [sp, #-32]!\n  ldr x9, [sp, #8]\n  add sp, sp, #32\n  add x0, x9, #1\n  ret")
-	if unstored.Kind != VerdictTrusted || !strings.Contains(unstored.Message, "never stored") {
-		t.Fatalf("a load of an unstored slot must be trusted, got %s: %s", unstored.Kind, unstored.Message)
+	if unstored.Kind != VerdictMismatch || !strings.Contains(unstored.Message, "frame#") {
+		t.Fatalf("a result read from an unstored slot must be refuted over the unknown bytes, got %s: %s", unstored.Kind, unstored.Message)
+	}
+	// A narrower store, a wider reload: the bytes the store reached are
+	// the value, the rest unknowns the result never reads (masked away).
+	padded := verifyCase(t, "low: (a: u32) -> u32", "a",
+		"  bind w0 = a\n  clobber x9\n  frame 16\n  sub sp, sp, #16\n  str w0, [sp, #8]\n  ldr x9, [sp, #8]\n  mov w0, w9\n  add sp, sp, #16\n  ret")
+	if padded.Kind != VerdictProven {
+		t.Fatalf("a wider reload whose unknown bytes the result never reads must be proven, got %s: %s", padded.Kind, padded.Message)
 	}
 	// Frame slots tile: a narrower reload reads the slot's low bytes
 	// (little-endian), so the low half is proven and the high half refuted.

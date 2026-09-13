@@ -29,9 +29,26 @@ var rv64ConditionalBranches = map[string]bool{"beq": true, "bne": true, "blt": t
 // bindRV64Params places the parameters in their LP64 registers as terms.
 // The psABI widens an integer scalar narrower than XLEN by its own sign to
 // 32 bits, then sign-extends to 64: the bits above a narrow parameter are
-// determined, unlike AAPCS64's unspecified upper half.
-func bindRV64Params(fn *Function, sig *ast.FunctionStatement, state *symbolicState, input func(string, int) *term, spans map[string]int64, declared map[string]int) (string, bool) {
+// determined, unlike AAPCS64's unspecified upper half. A record or union
+// parameter arrives as its leaves: up to 16 bytes as one or two register
+// chunks assembled from them (a0, a1), beyond that by reference to the
+// caller's copy, loads through which read the leaves (spanLoadRV64).
+func bindRV64Params(fn *Function, sig *ast.FunctionStatement, state *symbolicState, input func(string, int) *term, spans map[string]int64, declared map[string]int, composites map[string]compositeArg) (string, bool) {
 	for _, param := range sig.Parameters {
+		if comp, isComposite := fn.Composites[typeText(param.Type)]; isComposite && len(comp.Fields) > 0 {
+			leaves, reason, ok := compositeLeaves(fn.Composites, typeText(param.Type), param.Name.Value, 0, nil)
+			if !ok {
+				return reason, false
+			}
+			for _, leaf := range leaves {
+				declared[leaf.name] = leaf.width
+			}
+			composites[param.Name.Value] = compositeArg{leaves: leaves, size: comp.Size}
+			if comp.Size > 16 {
+				declared[spanBaseName(param.Name.Value)] = 64
+			}
+			continue
+		}
 		if elem, _, isSpan := spanShape(param.Type); isSpan {
 			spans[param.Name.Value] = elem
 			declared[spanLenName(param.Name.Value)] = 32
@@ -45,6 +62,20 @@ func bindRV64Params(fn *Function, sig *ast.FunctionStatement, state *symbolicSta
 		declared[param.Name.Value] = bits
 	}
 	for _, binding := range fn.Bindings {
+		if binding.OnStack {
+			return "parameters beyond the register contract (the incoming stack area is not modeled)", false
+		}
+		if cp, isComposite := composites[binding.Param]; isComposite {
+			if cp.size > 16 {
+				state.regs[binding.Register.Num] = paramTerm(spanBaseName(binding.Param), 64)
+				continue
+			}
+			state.regs[binding.Register.Num] = chunkTerm(cp.leaves, 0, input)
+			if binding.Length != nil {
+				state.regs[binding.Length.Num] = chunkTerm(cp.leaves, 1, input)
+			}
+			continue
+		}
 		if binding.Length != nil {
 			if _, isSpan := spans[binding.Param]; !isSpan {
 				return "span binding of a non-span parameter", false
@@ -301,6 +332,21 @@ func (x *pathExecutor) spanLoadRV64(dest Register, mem Memory, width int, name s
 	var span string
 	var index *term
 	if param, offset, isBase := spanBaseOf(address); isBase {
+		if record, isRecord := x.records[param]; isRecord {
+			// The caller's copy of a record argument: a load at a leaf's
+			// exact offset and width is that leaf.
+			value, ok := x.recordBytes(record.leaves, offset+mem.Offset, int64(width))
+			if !ok {
+				return "a load from a record argument cutting through a field", false
+			}
+			value = zeroExtend(value, 64)
+			switch name {
+			case "lw", "lh", "lb":
+				value = extendTerm(value, width*8, 64, true)
+			}
+			state.write(dest, value)
+			return "", true
+		}
 		elem := x.spans[param]
 		offset += mem.Offset
 		if elem == 0 || offset%elem != 0 || offset < 0 {
@@ -344,8 +390,9 @@ func (x *pathExecutor) spanLoadRV64(dest Register, mem Memory, width int, name s
 
 // frameAccessRV64 executes a load or store through the sp frame: the
 // address is entry-relative (-disp + offset) as the checker computes it;
-// a store records the value at its width, a load reads back a slot stored
-// at the same width and extends it as the load spells.
+// a store records the value at its width, a load reads back the bytes it
+// covers (whole slots or pieces of them) and extends them as the load
+// spells.
 func (x *pathExecutor) frameAccessRV64(reg Register, mem Memory, width int, name string, store bool, state *symbolicState) (string, bool) {
 	if mem.Base.Class != ClassSP {
 		return "memory through a register other than sp", false
@@ -359,17 +406,18 @@ func (x *pathExecutor) frameAccessRV64(reg Register, mem Memory, width int, name
 		if !ok {
 			return "unbound register read", false
 		}
-		state.frame[addr] = frameSlot{value: truncate(value, 8*width), width: width}
+		// A store splits the slots it overlaps and a load assembles the
+		// bytes it covers from the slots holding them (storeSlot,
+		// loadSlot), so a record chunk stored with sd is read back field
+		// by field with lw or lbu, as the AArch64 lane's frame is.
+		state.storeSlot(addr, truncate(value, 8*width), int64(width))
 		return "", true
 	}
-	slot, stored := state.frame[addr]
-	if !stored {
+	loaded, ok := x.loadFrame(state, addr, int64(width))
+	if !ok {
 		return "a load from a frame slot never stored on this path", false
 	}
-	if slot.width != width {
-		return "a load whose width differs from the slot's store", false
-	}
-	value := zeroExtend(slot.value, 64)
+	value := zeroExtend(loaded, 64)
 	switch name {
 	case "lw", "lh", "lb":
 		value = extendTerm(value, 8*width, 64, true)

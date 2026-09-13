@@ -733,12 +733,18 @@ var verifiableOps = map[string]string{"add": "add", "sub": "sub", "adds": "add",
 // term, "", true) or ("", reason, false) when the body is outside the
 // verified subset.
 func executeBody(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64) (*term, *pathExecutor, string, bool) {
-	return executeBodyHalf(fn, sig, concrete, 0)
+	return executeBodyChunk(fn, sig, concrete, 0, 0)
 }
 
 // executeBodyHalf is executeBody delivering, for a vector result, the
 // given 64-bit half of v0 (asm/verify_vector.go verifyVectorResult).
 func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64, half int) (*term, *pathExecutor, string, bool) {
+	return executeBodyChunk(fn, sig, concrete, half, 0)
+}
+
+// executeBodyChunk is executeBody delivering, for a record result of two
+// register chunks (9 to 16 bytes: x0 and x1, a0 and a1), the given chunk.
+func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64, half, chunk int) (*term, *pathExecutor, string, bool) {
 	state := &symbolicState{arch: fn.Arch, regs: map[int]*term{}}
 	params := map[string]RegClass{}
 	spans := map[string]int64{} // span/view parameter -> element size in bytes
@@ -756,7 +762,7 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	}
 	if fn.Arch == ArchRV64 {
 		// The RV64 lane binds under the LP64 psABI (asm/rv64_verify.go).
-		if reason, ok := bindRV64Params(fn, sig, state, input, spans, declared); !ok {
+		if reason, ok := bindRV64Params(fn, sig, state, input, spans, declared, composites); !ok {
 			return nil, nil, reason, false
 		}
 	}
@@ -884,10 +890,15 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	}
 	resultClass, hasResult := contractClass(sig.ReturnType)
 	if comp, isComposite := fn.Composites[typeText(sig.ReturnType)]; isComposite && len(comp.Fields) > 0 {
-		// A record result of one chunk comes back in x0; larger ones (two
-		// chunks, or the area addressed by x8) are outside the subset.
-		if comp.Size > 8 {
-			return nil, nil, "a record result beyond one register chunk", false
+		// A record result of one chunk comes back in x0, of two in x0 and
+		// x1 (a0 and a1), each chunk verified in its own run (Verify);
+		// larger ones come back through the area x8 addresses, outside the
+		// subset.
+		if comp.Size > 16 {
+			return nil, nil, "a record result beyond two register chunks (returned through memory)", false
+		}
+		if chunk >= int((comp.Size+7)/8) {
+			return nil, nil, "a result chunk past the record", false
 		}
 		resultClass, hasResult = ClassX, true
 	}
@@ -910,11 +921,12 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 		}
 	}
 	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass, spans: spans, declared: declared, concrete: concrete != nil, env: concrete, records: composites, arch: fn.Arch, globals: fn.Globals, fn: fn}
-	exec.resultReg = Register{Class: resultClass, Num: 0}
+	exec.resultReg = Register{Class: resultClass, Num: chunk}
 	exec.resultHalf = half
 	exec.floatResult = floatResult
+	exec.resultChunk = chunk
 	if fn.Arch == ArchRV64 {
-		exec.resultReg = rv64ResultRegister
+		exec.resultReg = Register{Class: rv64ResultRegister.Class, Num: rv64ResultRegister.Num + chunk}
 	}
 	exec.hasResult = hasResult
 	exec.loopExits = findLoops(fn.Items, labels)
@@ -960,6 +972,7 @@ type pathExecutor struct {
 	// zero for the other result kinds.
 	floatResult int
 	resultHalf  int               // a vector result: the 64-bit half of v0 delivered (asm/verify_vector.go)
+	resultChunk int               // a record result of two chunks: the chunk delivered (0: x0/a0, 1: x1/a1)
 	spans       map[string]int64  // span parameter -> element size in bytes
 	declared    map[string]int    // parameter -> declared width
 	globals     map[string]Global // the globals the body addresses (fn.Globals)
@@ -1209,7 +1222,7 @@ func (x *pathExecutor) frameAccessAt(instr Instruction, state *symbolicState, ad
 		return "", true
 	}
 	for i, reg := range regs {
-		value, ok := state.loadSlot(addr+int64(i)*size, size)
+		value, ok := x.loadFrame(state, addr+int64(i)*size, size)
 		if !ok {
 			value, ok = state.opaqueSlot(addr+int64(i)*size, size)
 		}
@@ -1223,6 +1236,51 @@ func (x *pathExecutor) frameAccessAt(instr Instruction, state *symbolicState, ad
 		}
 	}
 	return "", true
+}
+
+// loadFrame reads size bytes at addr from the frame. A byte no store on
+// the path reached is unspecified — the padding of a record chunk stored
+// at a narrower width, the payload bytes of a union variant not
+// constructed — and becomes a fresh unknown (`frame#<addr>`, zero in a
+// witness run) that later loads of the same byte see again; the Oak side
+// never reads such a byte, so the unknown can only fail a proof, never
+// forge one. A byte that lies inside no frame slot at all (a read outside
+// the declared frame) is still refused.
+func (x *pathExecutor) loadFrame(state *symbolicState, addr, size int64) (*term, bool) {
+	if value, ok := state.loadSlot(addr, size); ok {
+		return value, true
+	}
+	if state.frame == nil {
+		state.frame = map[int64]frameSlot{}
+	}
+	for b := addr; b < addr+size; b++ {
+		covered := false
+		for start, slot := range state.frame {
+			if start <= b && b < start+int64(slot.width) {
+				covered = true
+				break
+			}
+		}
+		if covered {
+			continue
+		}
+		var fresh *term
+		if x.concrete {
+			fresh = constTerm(0, 8)
+		} else {
+			name := fmt.Sprintf("frame#%d", b)
+			if x.freshSyms == nil {
+				x.freshSyms = map[string]int{}
+			}
+			if _, known := x.freshSyms[name]; !known {
+				x.freshSyms[name] = 8
+				x.declared[name] = 8
+			}
+			fresh = paramTerm(name, 8)
+		}
+		state.storeSlot(b, fresh, 1)
+	}
+	return state.loadSlot(addr, size)
 }
 
 // storeSlot records size bytes at addr, splitting any older slot the store
@@ -2273,6 +2331,9 @@ type oakLowering struct {
 	loops     []*loopEvent         // data-dependent loops met, in creation order
 	loopStack []int                // indices of the loops whose bodies are being lowered
 	fresh     map[string]int       // loop-carried fresh symbols -> width
+	// resultChunk: for a record result of two register chunks, the chunk
+	// this lowering's resultTerm packs (Verify runs one chunk at a time).
+	resultChunk int
 	// globals are the mutable top-level scalars the body addresses
 	// (Function.Globals): a read of one is the parameter `global:NAME` of
 	// the proof, the value the cell holds on entry; a write leaves the body
@@ -2977,6 +3038,12 @@ func leafTerms(v *oakValue, prefix string, into map[string]*term) {
 // packAggregate lays an aggregate's leaves into register chunk 0 as the
 // executor assembles a composite (chunkTerm), for a one-chunk result.
 func packAggregate(v *oakValue, leaves []compositeLeaf) (*term, bool) {
+	return packAggregateChunk(v, leaves, 0)
+}
+
+// packAggregateChunk packs the leaves inside register chunk k (bytes 8k
+// to 8k+7) of an aggregate value, each at its offset from the chunk.
+func packAggregateChunk(v *oakValue, leaves []compositeLeaf, k int64) (*term, bool) {
 	terms := map[string]*term{}
 	leafTerms(v, "", terms)
 	tagTerm := func(name string) *term {
@@ -2987,13 +3054,16 @@ func packAggregate(v *oakValue, leaves []compositeLeaf) (*term, bool) {
 	}
 	var chunk *term
 	for _, leaf := range leaves {
+		if leaf.offset < 8*k || leaf.offset >= 8*k+8 {
+			continue
+		}
 		t, has := terms[leaf.name]
 		if !has {
 			return nil, false
 		}
 		placed := zeroExtend(leaf.guarded(adaptWidth(t, leaf.width), tagTerm), 64)
-		if leaf.offset > 0 {
-			placed = binaryTerm("shl", placed, constTerm(uint64(leaf.offset*8), 64))
+		if shift := (leaf.offset - 8*k) * 8; shift > 0 {
+			placed = binaryTerm("shl", placed, constTerm(uint64(shift), 64))
 		}
 		if chunk == nil {
 			chunk = placed
@@ -4705,12 +4775,37 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 	return inputs
 }
 
-// Verify checks one asm function against its Oak fallback body.
+// Verify checks one asm function against its Oak fallback body. A record
+// result of two register chunks (9 to 16 bytes) is verified chunk by
+// chunk — x0 then x1 (a0 then a1) — each run of the paths delivering one
+// chunk against the same chunk packed from the Oak body's value; the
+// verdict is proof only when both are proven, otherwise the first that
+// is not.
 func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Verdict {
 	if shape, isVector := vectorShape(sig.ReturnType); isVector && fn.Arch != ArchRV64 {
 		return verifyVectorResult(fn, sig, oakBody, shape)
 	}
-	asmTerm, exec, reason, ok := executeBody(fn, sig, nil)
+	if _, chunks, isComposite := resultComposite(fn, sig); isComposite && chunks == 2 {
+		first := verifyChunk(fn, sig, oakBody, 0)
+		if first.Kind == VerdictMismatch || first.Kind == VerdictTrusted {
+			return first
+		}
+		second := verifyChunk(fn, sig, oakBody, 1)
+		if second.Kind != VerdictProven {
+			return second
+		}
+		if first.Kind != VerdictProven {
+			return first
+		}
+		return Verdict{Kind: VerdictProven, Message: first.Message + " (both result chunks)"}
+	}
+	return verifyChunk(fn, sig, oakBody, 0)
+}
+
+// verifyChunk is Verify for one result chunk (0 for a scalar or a
+// one-chunk record).
+func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int) Verdict {
+	asmTerm, exec, reason, ok := executeBodyChunk(fn, sig, nil, 0, chunk)
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
@@ -4718,6 +4813,7 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (every path traps) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
 	}
 	lowering := prepareLowering(fn, sig, nil)
+	lowering.resultChunk = chunk
 	for name, width := range exec.freshSyms {
 		lowering.fresh[name] = width // a summarized call's unspecified result bits
 	}
@@ -4740,7 +4836,7 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
-	asmTerm = maskResult(fn, sig, asmTerm)
+	asmTerm = maskResult(fn, sig, asmTerm, chunk)
 	if len(exec.loops) > 0 || len(lowering.loops) > 0 {
 		if len(exec.cells) > 0 || len(lowering.writtenCells()) > 0 || len(exec.writes) > 0 || len(lowering.writes) > 0 {
 			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
@@ -4840,10 +4936,24 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	unit := unitFunction(callee)
 	var resultWidth int
 	var resultSigned bool
+	// A record or union result of up to two register chunks (x0 and x1,
+	// a0 and a1) is summarized chunk by chunk from the callee's aggregate
+	// value; its padding bits are fresh unknowns, as the ABI leaves them.
+	var aggLeaves []compositeLeaf
+	aggChunks := 0
 	if !unit {
 		w, signed, ok := contractBits(callee.ReturnType)
 		if class, isClass := contractClass(callee.ReturnType); !ok || !isClass || class == ClassV {
-			return fmt.Sprintf("a call to %s returning %s", name, typeText(callee.ReturnType)), false
+			returned := typeText(callee.ReturnType)
+			comp, isComposite := x.fn.Composites[returned]
+			if !isComposite || len(comp.Fields) == 0 || comp.Size > 16 {
+				return fmt.Sprintf("a call to %s returning %s", name, returned), false
+			}
+			leaves, _, ok := compositeLeaves(x.fn.Composites, returned, "", 0, nil)
+			if !ok {
+				return fmt.Sprintf("a call to %s returning %s (no layout)", name, returned), false
+			}
+			aggLeaves, aggChunks = leaves, int((comp.Size+7)/8)
 		}
 		resultWidth, resultSigned = w, signed
 	}
@@ -4955,11 +5065,23 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		body = loop
 	}
 	var result *term
-	if unit {
+	var aggregate *oakValue
+	switch {
+	case unit:
 		if reason, ok := lo.lowerUnitBody(body); !ok {
 			return fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
 		}
-	} else {
+	case aggLeaves != nil:
+		typ, ok := lo.oakTypeOf(callee.ReturnType)
+		if !ok || typ.kind == oakScalar {
+			return fmt.Sprintf("a call to %s returning %s (no model)", name, typeText(callee.ReturnType)), false
+		}
+		var reason string
+		aggregate, reason, ok = lo.aggregateValue(body, typ)
+		if !ok {
+			return fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
+		}
+	default:
 		var reason string
 		var ok bool
 		result, reason, ok = lo.lower(body, resultWidth)
@@ -4991,6 +5113,58 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 			}
 			delete(state.regs, 30)
 			state.flags = nil
+		}
+		for _, seen := range x.summarized {
+			if seen == name {
+				return "", true
+			}
+		}
+		x.summarized = append(x.summarized, name)
+		return "", true
+	}
+	if aggregate != nil {
+		chunks := make([]*term, aggChunks)
+		for k := range chunks {
+			chunk, ok := packAggregateChunk(aggregate, aggLeaves, int64(k))
+			if !ok {
+				return fmt.Sprintf("a call to %s returning %s with a leaf the layout lacks", name, typeText(callee.ReturnType)), false
+			}
+			if m := leafMask(aggLeaves, int64(k)); m != ^uint64(0) {
+				// The padding bytes: unspecified by the ABI, zero in a
+				// witness run (the callee's own code cleared them).
+				var pad *term
+				if x.concrete {
+					pad = constTerm(0, 64)
+				} else {
+					x.callSites++
+					padName := fmt.Sprintf("call%d#pad%d", x.callSites, k)
+					if x.freshSyms == nil {
+						x.freshSyms = map[string]int{}
+					}
+					x.freshSyms[padName] = 64
+					x.declared[padName] = 64
+					pad = paramTerm(padName, 64)
+				}
+				chunk = binaryTerm("or", binaryTerm("and", chunk, constTerm(m, 64)), binaryTerm("and", pad, constTerm(^m, 64)))
+			}
+			chunks[k] = chunk
+		}
+		if x.arch == ArchRV64 {
+			for _, r := range []int{1, 5, 6, 7, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31} {
+				delete(state.regs, r)
+			}
+			for k, chunk := range chunks {
+				state.regs[10+k] = chunk
+			}
+		} else {
+			for r := 0; r <= 17; r++ {
+				delete(state.regs, r)
+			}
+			delete(state.regs, 30)
+			state.flags = nil
+			for k, chunk := range chunks {
+				state.regs[k] = chunk
+			}
 		}
 		for _, seen := range x.summarized {
 			if seen == name {
@@ -5158,21 +5332,22 @@ func (lo *oakLowering) lowerUnitBody(body ast.Expression) (string, bool) {
 
 // resultComposite is the function's record or union result when the
 // executor binds it (one register chunk), with its leaves.
-func resultComposite(fn *Function, sig *ast.FunctionStatement) ([]compositeLeaf, bool) {
+func resultComposite(fn *Function, sig *ast.FunctionStatement) ([]compositeLeaf, int, bool) {
 	name := typeText(sig.ReturnType)
 	comp, isComposite := fn.Composites[name]
-	if !isComposite || len(comp.Fields) == 0 || comp.Size > 8 {
-		return nil, false
+	if !isComposite || len(comp.Fields) == 0 || comp.Size > 16 {
+		return nil, 0, false
 	}
 	leaves, _, ok := compositeLeaves(fn.Composites, name, "", 0, nil)
-	return leaves, ok
+	return leaves, int((comp.Size + 7) / 8), ok
 }
 
 // resultTerm lowers the Oak body to the term the executor's result is
-// compared with: a scalar at the contract width, or a one-chunk record
-// packed from its leaves (width 64).
+// compared with: a scalar at the contract width, or a record's register
+// chunk (lo.resultChunk: the first for a one-chunk record) packed from
+// its leaves (width 64).
 func (lo *oakLowering) resultTerm(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) (*term, int, string, bool) {
-	if leaves, isComposite := resultComposite(fn, sig); isComposite {
+	if leaves, _, isComposite := resultComposite(fn, sig); isComposite {
 		typ, ok := lo.oakTypeOf(sig.ReturnType)
 		if !ok || typ.kind == oakScalar {
 			return nil, 0, "a result whose type has no model", false
@@ -5181,7 +5356,7 @@ func (lo *oakLowering) resultTerm(fn *Function, sig *ast.FunctionStatement, oakB
 		if !ok {
 			return nil, 0, reason, false
 		}
-		packed, ok := packAggregate(value, leaves)
+		packed, ok := packAggregateChunk(value, leaves, int64(lo.resultChunk))
 		if !ok {
 			return nil, 0, "a record result with a leaf the layout lacks", false
 		}
@@ -5192,14 +5367,14 @@ func (lo *oakLowering) resultTerm(fn *Function, sig *ast.FunctionStatement, oakB
 	return t, width, reason, ok
 }
 
-// maskResult hides the padding bytes of a one-chunk record result (the Oak
+// maskResult hides the padding bytes of a record result's chunk (the Oak
 // side never reads them, so the comparison is over the fields alone).
-func maskResult(fn *Function, sig *ast.FunctionStatement, asmTerm *term) *term {
-	leaves, isComposite := resultComposite(fn, sig)
+func maskResult(fn *Function, sig *ast.FunctionStatement, asmTerm *term, chunk int) *term {
+	leaves, _, isComposite := resultComposite(fn, sig)
 	if !isComposite {
 		return asmTerm
 	}
-	return binaryTerm("and", zeroExtend(asmTerm, 64), constTerm(leafMask(leaves, 0), 64))
+	return binaryTerm("and", zeroExtend(asmTerm, 64), constTerm(leafMask(leaves, int64(chunk)), 64))
 }
 
 // compositeParamLeaves names every leaf of the record and union
