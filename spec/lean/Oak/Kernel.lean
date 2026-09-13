@@ -178,4 +178,66 @@ theorem phases_perm (ps qs : List (List (Thread Addr Val)))
         (fun i hi hj => hperm (i + 1) (by simpa using hi) (by simpa using hj))
         (fun i hi => hind (i + 1) (by simpa using hi)) (run q m)
 
+/-! ## Fusion (docs/spec/56-kernels.md section 2b)
+
+A kernel that calls another kernel at its own position runs both bodies
+as one thread per position: `fuse t u` is that thread — `u`'s step after
+`t`'s, reading what either reads, writing what either writes — and it is a
+thread in the model's sense (framed, its writes depending only on its
+reads). `independent_fuse` is why the checker may judge the callee's
+accesses as the caller's: when every stage of one position is independent
+of every stage of another, the fused positions are independent, so
+`run_perm` applies to the fused launch as it did to each stage's. -/
+
+/-- Two stages of one position, run in order. -/
+def fuse (t u : Thread Addr Val) : Thread Addr Val where
+  step := fun m => u.step (t.step m)
+  reads := fun a => t.reads a ∨ u.reads a
+  writes := fun a => t.writes a ∨ u.writes a
+  frame := by
+    intro m a hw
+    have ht : ¬ t.writes a := fun h => hw (Or.inl h)
+    have hu : ¬ u.writes a := fun h => hw (Or.inr h)
+    rw [u.frame (t.step m) a hu, t.frame m a ht]
+  reads_only := by
+    intro m m' hagree a hw
+    -- After t's step the two memories agree on everything u reads: on
+    -- t's writes by t's reads_only, elsewhere by t's frame and the
+    -- agreement on u's reads.
+    have hmid : ∀ b, u.reads b → t.step m b = t.step m' b := by
+      intro b hb
+      by_cases htb : t.writes b
+      · exact t.reads_only m m' (fun c hc => hagree c (Or.inl hc)) b htb
+      · rw [t.frame m b htb, t.frame m' b htb]
+        exact hagree b (Or.inr hb)
+    rcases hw with htw | huw
+    · by_cases huw : u.writes a
+      · exact u.reads_only (t.step m) (t.step m') hmid a huw
+      · rw [u.frame (t.step m) a huw, u.frame (t.step m') a huw]
+        exact t.reads_only m m' (fun c hc => hagree c (Or.inl hc)) a htw
+    · exact u.reads_only (t.step m) (t.step m') hmid a huw
+
+/-- **Fused positions stay independent** when each stage of one position is
+independent of each stage of the other. -/
+theorem independent_fuse {t₁ t₂ u₁ u₂ : Thread Addr Val}
+    (h11 : Independent t₁ u₁) (h12 : Independent t₁ u₂)
+    (h21 : Independent t₂ u₁) (h22 : Independent t₂ u₂) :
+    Independent (fuse t₁ t₂) (fuse u₁ u₂) := by
+  refine ⟨fun a hw => ?_, fun a hw => ?_⟩
+  · rcases hw with h | h
+    · exact ⟨fun hr => hr.elim (fun r => (h11.1 a h).1 r) (fun r => (h12.1 a h).1 r),
+        fun hw' => hw'.elim (fun w => (h11.1 a h).2 w) (fun w => (h12.1 a h).2 w)⟩
+    · exact ⟨fun hr => hr.elim (fun r => (h21.1 a h).1 r) (fun r => (h22.1 a h).1 r),
+        fun hw' => hw'.elim (fun w => (h21.1 a h).2 w) (fun w => (h22.1 a h).2 w)⟩
+  · rcases hw with h | h
+    · exact ⟨fun hr => hr.elim (fun r => (h11.2 a h).1 r) (fun r => (h21.2 a h).1 r),
+        fun hw' => hw'.elim (fun w => (h11.2 a h).2 w) (fun w => (h21.2 a h).2 w)⟩
+    · exact ⟨fun hr => hr.elim (fun r => (h12.2 a h).1 r) (fun r => (h22.2 a h).1 r),
+        fun hw' => hw'.elim (fun w => (h12.2 a h).2 w) (fun w => (h22.2 a h).2 w)⟩
+
+/-- Fusing is running the stages in order: the fused launch and the two
+launches compute one memory. -/
+theorem run_fuse (t u : Thread Addr Val) (m : Mem Addr Val) :
+    run [fuse t u] m = run [t, u] m := rfl
+
 end Oak.Kernel

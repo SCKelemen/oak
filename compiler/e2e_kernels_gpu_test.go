@@ -182,6 +182,16 @@ func TestE2EKernelsOnDevice(t *testing.T) {
 	}
 	expectF32s(t, "block_sums", readF32s(t, res.Spans["out"]), 16777222, 36)
 
+	// Fusion: two stages in one launch, the callee inlined as a helper.
+	fused := emitKernels(t, kernelFusionProgram)
+	res, err = gpu.Run(ctx, fused.Source, kernelNamed(t, fused, "scale_shift"), 4, map[string]gpu.Arg{
+		"x": f32s(1, 2, 3, 4), "y": f32s(0, 0, 0, 0), "out": f32s(0, 0, 0, 0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectF32s(t, "scale_shift", readF32s(t, res.Spans["out"]), 3, 5, 7, 9)
+
 	// Record parameters flattened into buffers: a 2x3 by its transpose.
 	matmul := emitKernels(t, kernelMatmulProgram)
 	res, err = gpu.Run(ctx, matmul.Source, kernelNamed(t, matmul, "matmul_t"), 4, map[string]gpu.Arg{
