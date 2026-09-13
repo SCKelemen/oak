@@ -613,11 +613,14 @@ In order of payoff, each reusing a surface that exists:
   is the only Go left on the prover's path; and the prover is the first
   whole program compiled through the verified native backend
   (`94-assembler.md` §9, sixteenth increment; `OAK_SOLVER_NATIVE=1`):
-  712 of its 954 functions lowered to machine code the seam checker
-  admits and the Oak assembler encodes, 123 of them proven equal to
+  734 of its 954 functions lowered to machine code the seam checker
+  admits and the Oak assembler encodes, 190 of them proven equal to
   their Oak bodies, the C build the oracle with identical rows over the
   corpus — verification carried to the object, with the verifier's
-  reach the measure that remains), so what remains is the self-hosted
+  reach the measure that remains; and the first performance step is
+  measured there too: the source-level inliner reaching the prover's
+  accessor chains halved the native binary's time on the bit-level
+  files, `94-assembler.md` §9 seventeenth increment), so what remains is the self-hosted
   compiler, and the backend lowering and verifying the prover whole; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted

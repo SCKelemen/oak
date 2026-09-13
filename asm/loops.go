@@ -660,8 +660,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		asmValue, _, _, okA := executeBody(fn, sig, env)
 		concrete := prepareLowering(fn, sig, env)
 		oakValue, _, _, okO := concrete.resultTerm(fn, sig, oakBody)
-		if !okA || !okO {
-			continue // beyond the unrolling budget on this input
+		if !okA || !okO || asmValue == trapPath {
+			// Beyond the unrolling budget on this input, or an input on
+			// which the body traps (an element read past a length the
+			// input set to zero): no value to compare on either side.
+			continue
 		}
 		got, want := truncate(maskResult(fn, sig, asmValue), width).eval(env), oakValue.eval(env)
 		if got != want {
@@ -1005,6 +1008,17 @@ func impliesEqual(premise, a, b *term, widthOf func(string) int) (holds bool, de
 		allEqual = bl.bdd.apply(opAnd, allEqual, bl.bdd.not(bl.bdd.apply(opXor, aBits[i], bBits[i])))
 	}
 	implication := bl.bdd.apply(opOr, bl.bdd.not(pBits[0]), allEqual)
+	if bl.bdd.exceeded {
+		return false, false
+	}
+	if implication == bddTrue {
+		return true, true
+	}
+	// Under the element reads' functional consistency (blaster.consistency)
+	// the premise and the reads' equalities together may imply the
+	// coupling where the independent reads did not.
+	premiseHolds := bl.apply(opAnd, pBits[0], bl.consistency())
+	implication = bl.apply(opOr, bl.not(premiseHolds), allEqual)
 	if bl.bdd.exceeded {
 		return false, false
 	}

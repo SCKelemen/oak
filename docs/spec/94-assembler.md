@@ -1346,6 +1346,47 @@ the C compiler at `-O1`. That gap is the work the types and the proofs are
 for: the checker's dominating guards and the verifier's loop invariants
 (`i ≤ len(v)`) already state when an access needs no guard, and a proof of
 equality against the Oak body is what licenses removing one.
+**Seventeenth increment — the accessor chains inlined, and reads under
+one memory.** The natively built prover was profiled (`sample` on the
+lattice file): half of its time was in one-line accessors — `state`,
+`term_at`, `tword`, `tkind` — that the C compiler inlines and the native
+backend called, each call paying a prologue, a whole-record copy of its
+by-reference parameter, and a guard. The source-level inliner
+(90-backend.md §9) had not reached them: its candidates and callers were
+block-bodied functions, and the accessors are expression-bodied and call
+one another. It now takes an expression body as the one-statement block it
+denotes and runs in rounds, so the chains flatten; the remaining calls are
+the positions the pass refuses on purpose (loop conditions, short-circuit
+operands, value-position arms). Measured on the binaries themselves — not
+through `oak prove`, whose wall time includes the law file's own checking
+and, on a first run, the prover's build — the native prover on
+`lattice.oak` went from 8.1 s to 3.4 s, `protocols.oak` from 0.82 s to
+0.29 s, `effects.oak` 2.45 s to 2.06 s, `floats.oak` 7.3 s to 6.7 s, the
+exhaustive files (`mono.oak` 15.3 s to 14.7 s, `extents.oak` 10.9 s to
+10.4 s) within noise; the C build is unchanged throughout (it inlined them
+already). Proven functions rose from 123 to 190 (the spliced bodies are
+self-contained), fallbacks fell from 242 to 220. The inlined bodies also
+found three holes in the verification stack, each now closed: **(1)** the
+bit-level decision abstracted every span read at a distinct index as an
+independent value — sound for a proof, but a differing bit under
+independent values is no counterexample, and two inlined bodies were
+rejected as mismatches whose reported values were equal; a read now
+carries functional consistency (Ackermann's reduction, built only once a
+bit differs: reads of one span at equal indices hold equal values, a read
+at an index equal to a constant holds that element parameter), and the
+Oak side splits a read over a conditional in its index (`v[x + (c ? a :
+b)]` is `c ? v[x + a] : v[x + b]`, the machine's own branches), so both
+bodies are proven; **(2)** the loop verifier's concrete witnesses compared
+values on inputs where the body traps (a read past a length the input set
+to zero) — the asm side's trap path and the Oak side's out-of-range read
+now both mark the input as decided by neither; **(3)** a local view of an
+owned array indexed directly (`whole: []u32 = view(&buf); whole[2]`,
+which inlining a helper produced) addressed the frame through the parked
+pair, whose base register carries a frame-address fact the checker
+forgets at the first call — the element now goes through the array's own
+idiom. The prover binary cache (`oaksolver.go`) is keyed on the compiler
+executable as well as the sources, since a compiler change yields a
+different binary from the same files (a stale one was measured once).
 Next increments: the fallback reasons above in the order of their counts,
 so the prover lowers whole; then the verifier past `bl` and unit results —
 calls by inlining or by the callee's proven contract, and effects through

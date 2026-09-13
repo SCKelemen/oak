@@ -100,6 +100,12 @@ type span struct {
 	// the LP64 pair leaves padding above the u32 length, so every bounds
 	// guard compares against this copy (nativegen/rv64.go).
 	norm int
+	// array: for a local view or span over an owned array of the frame
+	// (`whole: []u32 = view(&buf)`), the array itself. Its elements are
+	// reached through the array's own idiom — the frame address and the
+	// constant guard — since the pair's base register carries a frame
+	// address the checker forgets at the first call, not a span fact.
+	array *arrayLocal
 }
 
 // spanTypeOf reads a span or view type of scalar or record elements.
@@ -2596,7 +2602,7 @@ func (g *generator) lowerSpanDeclaration(s *ast.VariableDeclaration, target span
 		g.emit("mov", xr(baseReg), xr(value.baseReg))
 		g.emit("mov", wr(lenReg), wr(value.lenReg))
 	}
-	local := span{elem: target.elem, elemLayout: target.elemLayout, writable: target.writable, baseReg: baseReg, lenReg: lenReg, argBase: -1, argLen: -1}
+	local := span{elem: target.elem, elemLayout: target.elemLayout, writable: target.writable, baseReg: baseReg, lenReg: lenReg, argBase: -1, argLen: -1, array: value.array}
 	delete(g.slots, s.Name.Value)
 	delete(g.types, s.Name.Value)
 	delete(g.regs, s.Name.Value)
@@ -2666,7 +2672,7 @@ func (g *generator) spanValue(expr ast.Expression, target *span, baseReg, lenReg
 		if arr.inReg {
 			return span{}, false, unsupported("%s of an array inside a computed element", fn.Value)
 		}
-		out.elem, out.elemLayout, out.writable = arr.elem, arr.elemLayout, shape.writable
+		out.elem, out.elemLayout, out.writable, out.array = arr.elem, arr.elemLayout, shape.writable, arr
 		g.emit("add", xr(baseReg), sp(), imm(g.slotMem(arr.offset).Offset))
 		g.constant(lenReg, uint64(arr.length), scalars["u32"])
 		return out, false, nil
@@ -5036,6 +5042,10 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if sp.array != nil && sp.elemLayout == nil {
+		// A local view of an owned array: the array's own element idiom.
+		return g.arrayElement(sp.array, e.Index)
+	}
 	r, err := g.guardedIndexAt(sp, e.Index, &e.Token)
 	if err != nil {
 		return 0, err
@@ -5106,6 +5116,13 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 	arr, err := g.arrayOperand(s.Target.Left)
 	if err != nil {
 		return err
+	}
+	if arr == nil {
+		// A local span over an owned array stores through the array's own
+		// idiom (a view refuses below, as any view does).
+		if sp, err := g.spanOperand(s.Target.Left); err == nil && sp.array != nil && sp.elemLayout == nil && sp.writable {
+			arr = sp.array
+		}
 	}
 	if arr != nil {
 		if arr.readOnly {
