@@ -20,6 +20,18 @@ inductive option (k_a : Type) where
   deriving Inhabited, BEq, Repr
   open option
 
+inductive CompareOp where | CompareOp_GT | CompareOp_GE | CompareOp_EQ | CompareOp_LE | CompareOp_LT
+  deriving BEq, Inhabited, Repr
+  open CompareOp
+
+inductive LogicalOp where | LogicalOp_AND | LogicalOp_EOR | LogicalOp_ORR
+  deriving BEq, Inhabited, Repr
+  open LogicalOp
+
+inductive VBitOp where | VBitOp_VBIF | VBitOp_VBIT | VBitOp_VBSL | VBitOp_VEOR
+  deriving BEq, Inhabited, Repr
+  open VBitOp
+
 abbrev Register := PEmpty
 abbrev RegisterType : Register -> Type := PEmpty.elim
 

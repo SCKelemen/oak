@@ -1,5 +1,6 @@
 import Out
 import Oak.ArmASL
+import Oak.NeonSemantics
 
 /-!
 # The Sail bridge: Sail-generated Lean ≡ `Oak.ArmASL`
@@ -227,5 +228,101 @@ theorem HighestSetBit_bridge {w : Nat} (x : BitVec w) :
 theorem CountLeadingZeroBits_bridge {w : Nat} (x : BitVec w) :
     Out.Functions.CountLeadingZeroBits x = Oak.ArmASL.CountLeadingZeroBits x := by
   simp [Out.Functions.CountLeadingZeroBits, Oak.ArmASL.CountLeadingZeroBits, HighestSetBit_bridge, Sail.BitVec.length]
+
+end Oak.SailBridge
+
+/-! ## The vector file (docs/spec/94-assembler.md §8, the vector increment)
+
+`arm_primitives.sail` carries Arm's text for the Advanced SIMD instructions
+the native backend emits, and `Oak.NeonSemantics` states the lane functions
+the verifier applies. The theorems below identify the two at the lane
+level, against the generated code: the element accessor reads the lane of
+the verifier's decomposition, `Ones` is the all-ones lane, `UnsignedSatQ` of
+a lane difference is `uqsub`, the equality test is `cmeq`, `ext` is
+and the bitwise forms are the Lean operators. `ext` and the per-lane loops
+that apply a lane function across a register (`for e in [0:elements-1]`)
+are generated in `Out` and remain to be related to `Oak.Neon.ext` and
+`List.zipWith`: the remaining bridge work
+(`docs/notes/proof-chain-audit-2026-09.md`). -/
+
+namespace Oak.SailBridge
+
+open Oak.Neon
+
+/-- Arm's `Ones` is the all-ones vector. -/
+theorem Ones_eq_allOnes (n : Nat) : Out.Functions.Ones n = BitVec.allOnes n := by
+  apply BitVec.eq_of_getLsbD_eq
+  intro i
+  simp [Out.Functions.Ones, Sail.BitVec.replicateBits, BitVec.getLsbD_replicate, BitVec.getLsbD_allOnes, Nat.mod_one]
+
+/-- ... and its value the all-ones lane of `Oak.Simd`. -/
+theorem Ones_toNat (n : Nat) : (Out.Functions.Ones n).toNat = Oak.Simd.allOnes n := by
+  rw [Ones_eq_allOnes, BitVec.toNat_allOnes, Oak.Simd.allOnes]
+
+/-- The lanes of a register as the verifier decomposes it: lane `k` of
+`size` bits is the bits from `k * size`. -/
+def lanesOf {N : Nat} (v : BitVec N) (size : Nat) : List Nat :=
+  (List.range (N / size)).map (fun k => (v.toNat >>> (k * size)) % 2 ^ size)
+
+/-- **`Elem[]`**: the element accessor reads lane `e`. -/
+theorem aget_Elem_toNat {N : Nat} (v : BitVec N) (e size : Nat) :
+    (Out.Functions.aget_Elem v e size).toNat = (v.toNat >>> (e * size)) % 2 ^ size := by
+  simp [Out.Functions.aget_Elem, Sail.BitVec.slice, BitVec.extractLsb'_toNat, ← Int.natCast_mul, Int.toNat_natCast]
+
+/-- **`UnsignedSatQ`** of a lane difference is the verifier's `uqsub`
+(`Oak.Neon.uqsub`, which is `Oak.Simd.subSat`): saturating at zero, never
+above the lane (the minuend is a lane value). -/
+theorem UnsignedSatQ_uqsub (N x y : Nat) (hx : x < 2 ^ N) :
+    (Out.Functions.UnsignedSatQ ((x : Int) - y) N).1 = BitVec.ofNat N (uqsub x y) := by
+  have hxI : (x : Int) < (2 : Int) ^ N := by
+    have := Int.ofNat_lt.mpr hx
+    rwa [Int.natCast_pow] at this
+  -- The generated `2 ^i N` is the support library's integer power, `2 ^ N.toNat`.
+  have hp : (2 : Int) ^ ((N : Nat) : Int) = (2 : Int) ^ N := by
+    show (2 : Int) ^ ((N : Int).toNat) = _
+    rw [Int.toNat_natCast]
+  unfold Out.Functions.UnsignedSatQ Out.Functions.__GetSlice_int
+  simp only [Int.toNat_zero]
+  split
+  · -- above the lane: impossible for a lane difference
+    rename_i h
+    simp only [decide_eq_true_eq, hp] at h
+    omega
+  · split
+    · -- below zero: saturates to zero, as uqsub does
+      rename_i _ h
+      simp only [decide_eq_true_eq] at h
+      have hlt : ¬ y < x := by omega
+      simp only [uqsub, hlt, ↓reduceIte]
+      simpa using get_slice_int_natCast N 0
+    · -- in range: the difference itself
+      rename_i _ h
+      simp only [decide_eq_true_eq] at h
+      by_cases hlt : y < x
+      · have hcast : (x : Int) - y = ((x - y : Nat) : Int) := by omega
+        simp only [uqsub, hlt, ↓reduceIte, hcast, get_slice_int_natCast]
+      · have hz : (x : Int) - y = 0 := by omega
+        simp only [uqsub, hlt, ↓reduceIte, hz]
+        simpa using get_slice_int_natCast N 0
+
+/-- **The equality test** of `cmeq` — `Ones` on equal lanes, `Zeros`
+otherwise — is the verifier's `cmeq` lane function. -/
+theorem cmeq_test_toNat (size : Nat) (a b : BitVec size) :
+    (if (a == b) = true then Out.Functions.Ones size else Out.Functions.Zeros size).toNat
+      = cmeq size a.toNat b.toNat := by
+  by_cases h : a = b
+  · simp [h, Ones_toNat, cmeq]
+  · have hne : a.toNat ≠ b.toNat := fun heq => h (BitVec.eq_of_toNat_eq heq)
+    simp [h, Out.Functions.Zeros, cmeq, hne]
+
+/-- **`and`, `orr`, `eor`**: the bitwise forms are the operators. -/
+theorem andorr_and {n : Nat} (a b : BitVec n) :
+    Out.Functions.vector_arithmetic_binary_uniform_logical_andorr n false a b .LogicalOp_AND = a &&& b := rfl
+theorem andorr_orr {n : Nat} (a b : BitVec n) :
+    Out.Functions.vector_arithmetic_binary_uniform_logical_andorr n false a b .LogicalOp_ORR = a ||| b := rfl
+theorem andorr_eor {n : Nat} (a b : BitVec n) :
+    Out.Functions.vector_arithmetic_binary_uniform_logical_andorr n false a b .LogicalOp_EOR = a ^^^ b := rfl
+theorem andorr_bic {n : Nat} (a b : BitVec n) :
+    Out.Functions.vector_arithmetic_binary_uniform_logical_andorr n true a b .LogicalOp_AND = a &&& ~~~b := rfl
 
 end Oak.SailBridge

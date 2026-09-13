@@ -790,9 +790,19 @@ built by `dup` and `ext`, each half of the result read back with `umov` —
 and it found the first modeling bug before it shipped: a lane narrowed
 from a wider register must be masked explicitly (`narrowLane`), where the
 scalar `truncate` takes a parameter to be bounded by its declared width.
-Left for the next increments: `simd.store` (a write the straight-line
-model does not follow), float vectors, and grounding the lane functions
-in Arm's Sail text as the scalar primitives are
+Arm's own text is in place for the grounding: `spec/sail/arm_primitives.sail`
+carries the execute bodies of every vector instruction the backend emits
+(`aarch64_vector.sail`, with the register operands as parameters and the
+adaptations listed in the file), Sail generates their Lean, and
+`spec/sail/lean/Bridge.lean` proves the lane-level identities against the
+generated code — `Elem[]` reads the lane of the verifier's decomposition,
+`Ones` is the all-ones lane, `UnsignedSatQ` of a lane difference is
+`uqsub`, the `cmeq` test is `cmeq`, and the bitwise forms are the
+operators. Left for the next increments: the per-lane loops of the
+generated code as `List.zipWith` of the lane functions, `ext` as
+`Oak.Neon.ext`, Arm's recursive `Reduce` (whose termination Sail's Lean
+backend cannot discharge), `simd.store` (a write the straight-line model
+does not follow), and float vectors
 (`docs/notes/proof-chain-audit-2026-09.md`).
 
 ## 9. Native encoding, and the architectures to come
