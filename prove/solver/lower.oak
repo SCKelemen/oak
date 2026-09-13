@@ -166,6 +166,7 @@ Lower: type = struct {
   traps_at: u32,
   argv_at: u32,
   leaves_at: u32,
+  entry_at: u32,
   state_at: u32,
   total: u32,
   max_terms: u32,
@@ -189,6 +190,7 @@ LS_RET_TYPE: u32 = 12
 LS_RET_BLOCK: u32 = 13
 LS_LEAF_SP: u32 = 14
 LS_FRESH: u32 = 15
+LS_STMTS: u32 = 16
 
 lower_layout: (max_terms: u32, leaves: u32): Lower {
   sym_at: u32 = 0
@@ -198,7 +200,8 @@ lower_layout: (max_terms: u32, leaves: u32): Lower {
   traps_at: u32 = path_at + MAX_PATH
   argv_at: u32 = traps_at + MAX_TRAPS
   leaves_at: u32 = argv_at + MAX_ARGV
-  state_at: u32 = leaves_at + MAX_LEAFSTORE
+  entry_at: u32 = leaves_at + MAX_LEAFSTORE
+  state_at: u32 = entry_at + MAX_DEPTH
   Lower {
     sym_at: sym_at,
     snap_at: snap_at,
@@ -207,6 +210,7 @@ lower_layout: (max_terms: u32, leaves: u32): Lower {
     traps_at: traps_at,
     argv_at: argv_at,
     leaves_at: leaves_at,
+    entry_at: entry_at,
     state_at: state_at,
     total: state_at + u32(32),
     max_terms: max_terms,
@@ -752,10 +756,33 @@ bind_aggregate: (lw: Lower, w: [*]u32, sym: u32, typ: u32, block: u32): () {
   w[at + u32(2)] = block
 }
 
+// bind_alias binds a view symbol to the block it aliases, remembering the
+// owner (depth * MAX_SYMBOLS + symbol) a store through it writes back to.
+bind_alias: (lw: Lower, w: [*]u32, sym: u32, typ: u32, block: u32, owner: u32): () {
+  bind_aggregate(lw, w, sym, typ, block)
+  w[sym_slot(lw, w, sym) + u32(3)] = owner
+}
+
+sym_owner: (lw: Lower, w: [*]u32, sym: u32): u32 = w[sym_slot(lw, w, sym) + u32(3)]
+
+// rebind_owners writes a stored-through alias's fresh block back along its
+// owner chain (each owner keeps its type).
+rebind_owners: (lw: Lower, w: [*]u32, sym: u32, fresh: u32): () {
+  owner: u32 = sym_owner(lw, w, sym)
+  guard: u32 = 0
+  while owner != NONE && guard < MAX_DEPTH {
+    oslot: u32 = lw.sym_at + owner * SYM_WORDS
+    w[oslot + u32(2)] = fresh
+    owner = w[oslot + u32(3)]
+    guard = guard + u32(1)
+  }
+}
+
 clear_depth: (lw: Lower, w: [*]u32, depth: u32): () {
   i: u32 = 0
   while i < MAX_SYMBOLS {
     w[lw.sym_at + (depth * MAX_SYMBOLS + i) * SYM_WORDS] = NONE
+    w[lw.sym_at + (depth * MAX_SYMBOLS + i) * SYM_WORDS + u32(3)] = NONE
     i = i + u32(1)
   }
 }
@@ -877,6 +904,7 @@ push_value: (lw: Lower, w: [*]u32, sx: []u32, node: u32, typ: u32): () {
 // push_stmts runs a block's statements; in value position the last is
 // the block's result (word 2 its width, or its type when word 6 is set).
 push_stmts: (lw: Lower, w: [*]u32, sx: []u32, block: u32, width_or_type: u32, value: Bool, agg: Bool): () {
+  set_state(lw, w, LS_STMTS, state(lw, w, LS_STMTS) + u32(1))
   push_frame_l(lw, w, F_STMTS, block, width_or_type)
   sp: u32 = state(lw, w, LS_SP)
   f: u32 = frame_at(lw, w, sp - u32(1))
@@ -961,15 +989,27 @@ resolve_place: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, node: u32): Place {
     kind == SYN_INDEX ? {
       base_type: u32 = node_type(sx, node_a(sx, n))
       k: u32 = constant_index(lw, w, b, sx, node_b(sx, n))
-      // A store through a view is outside the subset (the alias would
-      // not see a copy-on-write store).
-      (k == NONE || is_view_type(sx, base_type) || k >= type_length(sx, base_type)) ? { ok = false } | {
+      // A store through a view reaches an owner it aliases (a span
+      // parameter bound to span(&array)); a view without one is refused.
+      (k == NONE || (k >= type_length(sx, base_type) && !is_view_type(sx, base_type))) ? { ok = false } | {
         offset = offset + k * type_leaves(sx, type_elem(sx, base_type))
         n = node_a(sx, n)
       }
     } | { ok = false } } }
   }
-  ok ? { Place { sym: node_a(sx, n), offset: offset, typ: node_type(sx, node), ok: sym_value(lw, w, node_a(sx, n)) == AGG && !is_view_type(sx, sym_type(lw, w, node_a(sx, n))) } } | { Place { sym: NONE, offset: u32(0), typ: NONE, ok: false } }
+  ok ? {
+    sym: u32 = node_a(sx, n)
+    styp: u32 = sym_type(lw, w, sym)
+    // The store's failure reasons: 42 a view without an owner, 43 a place
+    // past the aliased array, 44 a symbol that is no aggregate.
+    is_view_type(sx, styp) ? {
+      sym_owner(lw, w, sym) == NONE ? { fail_at(lw, w, u32(42)) } | {
+        (type_length(sx, styp) == NONE || offset + type_leaves(sx, node_type(sx, node)) > type_length(sx, styp) * type_leaves(sx, type_elem(sx, styp))) ? { fail_at(lw, w, u32(43)) } | { }
+      }
+    } | { }
+    sym_value(lw, w, sym) != AGG ? { fail_at(lw, w, u32(44)) } | { }
+    Place { sym: sym, offset: offset, typ: node_type(sx, node), ok: !failed(lw, w) }
+  } | { Place { sym: NONE, offset: u32(0), typ: NONE, ok: false } }
 }
 
 // enter_call binds the collected arguments as the callee's parameters in
@@ -981,13 +1021,24 @@ enter_call: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32): () 
   depth: u32 = state(lw, w, LS_DEPTH) + u32(1)
   set_state(lw, w, LS_DEPTH, depth)
   clear_depth(lw, w, depth)
+  w[lw.entry_at + depth] = state(lw, w, LS_STMTS)
+  args: u32 = node_b(sx, node)
   i: u32 = 0
   while i < nargs {
     p: u32 = fn_param_start(sx, callee) + i
     ptype: u32 = param_type(sx, p)
-    // A view parameter takes the argument's concrete view type (its length).
+    // A view parameter takes the argument's concrete view type (its length)
+    // and remembers the owner its stores reach: the array behind span(&a),
+    // or the caller's view symbol passed along.
     bound: u32 = is_view_type(sx, ptype) ? { w[lw.argv_at + base + i * u32(2) + u32(1)] } | { ptype }
-    is_scalar_type(sx, ptype) ? { bind_scalar(lw, w, i, w[lw.argv_at + base + i * u32(2)], ptype) } | { bind_aggregate(lw, w, i, bound, w[lw.argv_at + base + i * u32(2)]) }
+    is_scalar_type(sx, ptype) ? { bind_scalar(lw, w, i, w[lw.argv_at + base + i * u32(2)], ptype) } | {
+      is_view_type(sx, ptype) ? {
+        arg: u32 = list_item(sx, args, i)
+        ak: u32 = node_kind(sx, arg)
+        owner: u32 = (ak == SYN_VIEW || ak == SYN_SYM) ? { (depth - u32(1)) * MAX_SYMBOLS + node_a(sx, arg) } | { NONE }
+        bind_alias(lw, w, i, bound, w[lw.argv_at + base + i * u32(2)], owner)
+      } | { bind_aggregate(lw, w, i, bound, w[lw.argv_at + base + i * u32(2)]) }
+    }
     i = i + u32(1)
   }
   w[f + u32(3)] = nargs + u32(1)
@@ -1682,8 +1733,13 @@ step_stmts: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
   ret: u32 = state(lw, w, LS_RET)
   phase == u32(1) ? {
     typ: u32 = w[f + u32(8)]
+    init: u32 = w[f + u32(10)]
     is_scalar_type(sx, typ) ? { bind_scalar(lw, w, w[f + u32(7)], ret, typ) } | {
-      is_view_type(sx, typ) ? { bind_aggregate(lw, w, w[f + u32(7)], state(lw, w, LS_RET_TYPE), state(lw, w, LS_RET_BLOCK)) } | { bind_aggregate(lw, w, w[f + u32(7)], typ, copy_block(lw, w, state(lw, w, LS_RET_BLOCK), type_leaves(sx, typ))) }
+      is_view_type(sx, typ) ? {
+        // A view local of span(&arr) writes through to the array.
+        owner: u32 = node_kind(sx, init) == SYN_VIEW ? { state(lw, w, LS_DEPTH) * MAX_SYMBOLS + node_a(sx, init) } | { NONE }
+        bind_alias(lw, w, w[f + u32(7)], state(lw, w, LS_RET_TYPE), state(lw, w, LS_RET_BLOCK), owner)
+      } | { bind_aggregate(lw, w, w[f + u32(7)], typ, copy_block(lw, w, state(lw, w, LS_RET_BLOCK), type_leaves(sx, typ))) }
     }
     w[f + u32(3)] = u32(0)
     w[f + u32(4)] = index + u32(1)
@@ -1697,7 +1753,10 @@ step_stmts: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
     w[f + u32(3)] = u32(0)
     w[f + u32(4)] = index + u32(1)
   } | {
-  phase == u32(3) ? { pop_frame_l(lw, w) } | {
+  phase == u32(3) ? {
+    set_state(lw, w, LS_STMTS, state(lw, w, LS_STMTS) - u32(1))
+    pop_frame_l(lw, w)
+  } | {
   phase == u32(5) ? {
     // assert(c): reaching it with c false is a trap.
     add_trap(lw, w, b, t_not1(lw, w, b, ret))
@@ -1709,16 +1768,27 @@ step_stmts: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
     offset: u32 = w[f + u32(8)]
     place_type: u32 = w[f + u32(9)]
     root_type: u32 = sym_type(lw, w, sym)
-    fresh: u32 = copy_block(lw, w, sym_block(lw, w, sym), type_leaves(sx, root_type))
+    // A view's block is the aliased array's: its leaves are the concrete
+    // view's length times the element's.
+    root_leaves: u32 = is_view_type(sx, root_type) ? { type_length(sx, root_type) * type_leaves(sx, type_elem(sx, root_type)) } | { type_leaves(sx, root_type) }
+    owner: u32 = sym_owner(lw, w, sym)
+    fresh: u32 = copy_block(lw, w, sym_block(lw, w, sym), root_leaves)
     fresh == NONE ? { } | {
       is_scalar_type(sx, place_type) ? { set_leaf(lw, w, fresh, offset, ret) } | { copy_leaves(lw, w, state(lw, w, LS_RET_BLOCK), fresh + offset, type_leaves(sx, place_type)) }
-      bind_aggregate(lw, w, sym, root_type, fresh)
+      bind_alias(lw, w, sym, root_type, fresh, owner)
+      // A store through a span reaches its owner only from the callee's
+      // top-level statements: under a conditional the caller's merge
+      // would not see it (reason 40).
+      owner == NONE ? { } | {
+        state(lw, w, LS_STMTS) != w[lw.entry_at + state(lw, w, LS_DEPTH)] + u32(1) ? { fail_at(lw, w, u32(40)) } | { rebind_owners(lw, w, sym, fresh) }
+      }
     }
     w[f + u32(3)] = u32(0)
     w[f + u32(4)] = index + u32(1)
   } | {
   index >= count ? {
     value ? { fail_at(lw, w, u32(18)) } | { }
+    set_state(lw, w, LS_STMTS, state(lw, w, LS_STMTS) - u32(1))
     pop_frame_l(lw, w)
   } | {
     stmt: u32 = list_item(sx, start, index)
@@ -1729,6 +1799,7 @@ step_stmts: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
       init: u32 = node_d(sx, stmt)
       w[f + u32(7)] = node_a(sx, stmt)
       w[f + u32(8)] = typ
+      w[f + u32(10)] = init
       init == NONE ? {
         (is_scalar_type(sx, typ) || is_view_type(sx, typ)) ? { fail_at(lw, w, u32(19)) } | { bind_aggregate(lw, w, node_a(sx, stmt), typ, zero_block(lw, w, b, sx, typ)) }
         w[f + u32(4)] = index + u32(1)
@@ -2711,6 +2782,94 @@ enumerate_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, dom: [*]u64, nte
   }
   verdict == u32(0) ? { u32(5) } | { verdict }
 }
+
+// lower_probe lowers a function root (serialize_function's table) for
+// concrete evaluation: the parameters as leaves, the body under no
+// variable order, every term kept. The result block's leaf terms are the
+// probe's outputs: b[0] the term count, b[5] the result block, b[6] its
+// leaf count; 0 with the reason in the state when the body is outside the
+// lowering's subset. The exploration (explore.oak) then sets the leaves
+// and evaluates (probe_eval).
+lower_probe: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32): u32 {
+  leaves: u32 = syn_leaves(sx)
+  term_base: u32 = HEADER_WORDS + (leaves + MAX_FRESH) * LEAF_WORDS
+  i: u32 = 0
+  while i < u32(32) {
+    set_state(lw, w, i, u32(0))
+    i = i + u32(1)
+  }
+  set_state(lw, w, LS_LEAVES, leaves)
+  set_state(lw, w, LS_STRIDE, leaves + MAX_FRESH + u32(8))
+  set_state(lw, w, LS_TERMS_AT, term_base)
+  leaves > MAX_LEAVES ? { fail_at(lw, w, u32(27)) } | { }
+  fresh: u32 = 0
+  while fresh < MAX_FRESH {
+    b[HEADER_WORDS + (leaves + fresh) * LEAF_WORDS] = u32(0)
+    fresh = fresh + u32(1)
+  }
+  clear_depth(lw, w, u32(0))
+  w[lw.entry_at] = u32(0)
+  root: u32 = syn_theorem(sx)
+  n: u32 = fn_param_count(sx, root)
+  p: u32 = 0
+  while p < n && !failed(lw, w) {
+    pidx: u32 = fn_param_start(sx, root) + p
+    ptype: u32 = param_type(sx, pidx)
+    nleaves: u32 = type_leaves(sx, ptype)
+    block: u32 = alloc_block(lw, w, nleaves)
+    k: u32 = 0
+    while k < nleaves && block != NONE {
+      li: u32 = leaf_index_at(sx, param_leaf_start(sx, pidx) + k)
+      pw: u32 = type_leaf_width(sx, ptype, k)
+      b[HEADER_WORDS + li * LEAF_WORDS] = pw
+      set_leaf(lw, w, block, k, t_param(lw, w, b, li, pw))
+      k = k + u32(1)
+    }
+    is_scalar_type(sx, ptype) ? { bind_scalar(lw, w, p, leaf_at(lw, w, block, u32(0)), ptype) } | { bind_aggregate(lw, w, p, ptype, block) }
+    p = p + u32(1)
+  }
+  rt: u32 = fn_ret_type(sx, root)
+  is_scalar_type(sx, rt) ? { fail_at(lw, w, u32(41)) } | { }
+  failed(lw, w) ? { } | {
+    push_value(lw, w, sx, fn_body(sx, root), rt)
+    run_machine(lw, w, b, sx)
+  }
+  failed(lw, w) ? { u32(0) } | {
+    // The result's leaf terms are copied after the terms: the block store
+    // shares the leaf store the evaluation writes term values into.
+    nterms: u32 = state(lw, w, LS_TERMS)
+    root_base: u32 = term_base + nterms * TERM_WORDS
+    nout: u32 = type_leaves(sx, rt)
+    block: u32 = state(lw, w, LS_RET_BLOCK)
+    k: u32 = 0
+    while k < nout && k < MAX_TRAPS {
+      b[root_base + k] = leaf_at(lw, w, block, k)
+      k = k + u32(1)
+    }
+    b[u32(0)] = nterms
+    b[u32(1)] = leaves + MAX_FRESH
+    b[u32(2)] = u32(0)
+    b[u32(3)] = u32(0)
+    b[u32(4)] = u32(0)
+    b[u32(5)] = root_base
+    b[u32(6)] = nout
+    b[u32(7)] = u32(0)
+    nterms
+  }
+}
+
+// probe_set_leaf writes a leaf's value for the next evaluation.
+probe_set_leaf: (lw: Lower, w: [*]u32, li: u32, value: u64): () {
+  w[lw.snap_at + li * u32(2)] = u32_trunc_u64(value)
+  w[lw.snap_at + li * u32(2) + u32(1)] = u32_trunc_u64(value >> u64(32))
+}
+
+// probe_eval evaluates the lowered probe on the leaf values set: false
+// when a term is outside the evaluator.
+probe_eval: (lw: Lower, w: [*]u32, b: [*]u32): Bool = eval_terms(lw, w, b, b[u32(0)])
+
+// probe_out reads the k-th leaf of the probe's result after an evaluation.
+probe_out: (lw: Lower, w: [*]u32, b: [*]u32, k: u32): u64 = term_value(lw, w, b[b[u32(5)] + k])
 
 // lower_theorem lowers the syntax table into the problem buffer under the
 // variable order asked for: the leaves' variables, the claim at one bit

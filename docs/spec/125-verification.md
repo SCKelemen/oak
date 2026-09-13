@@ -268,10 +268,17 @@ serializer's run over each function), and with `-cross go` the Go
 extractor's projection must match it byte for byte (`the Lean projection
 agrees with the Go extractor`; `TestOakShellAgrees` and
 `TestOakLeanAgrees` require it over the corpus, the Lean files
-included). What the shell leaves to the Go command: protocol invariants
-and liveness, and the compiled-program witness. The protocol obligations
-of §2a stay with the Go decider, whose rows are folded into their
-invariant's.
+included). The protocol invariants and liveness of §2a and §2b run in
+the shell as well (`prove/solver/explore.oak`): the obligations of every
+invariant candidate and a probe function per protocol are generated as
+source text appended to the file and parsed again, the candidate's row is
+folded from the obligations' verdicts, and the reachable states are
+explored by lowering the probe to terms once and evaluating it on
+concrete states and steps — no interpreter — with the fair-trap search of
+§2b over the graph; `spec/oak/machines.oak` states the machines the Go
+prover's tests use, every row's status the Go ladder's. What the shell
+leaves to the Go command: the guard-exclusivity advisory rows and the
+compiled-program witness.
 `TestOakSolverAgrees` runs the default over the whole law corpus.
 
 `-witness` evaluates every decided theorem in the compiled program as
@@ -561,10 +568,15 @@ In order of payoff, each reusing a surface that exists:
   `prove/solver/lean.oak` renders the theorems, the functions they
   reach, and the types those mention to the extractor's text from the
   raw parse tree, the expression types read back from the serializer's
-  run, byte for byte `codegen/lean`'s on every file of the corpus), so
-  what remains with Go on the prover's side is the protocol invariant
-  and liveness exploration and the compiled-program witness; next those
-  two in Oak; then
+  run, byte for byte `codegen/lean`'s on every file of the corpus; and
+  the protocol invariants and liveness run in Oak — `prove/solver/
+  explore.oak` generates the obligations and a probe per protocol as
+  source text, lowers the probe to terms and evaluates it on the
+  reachable states, and searches the fair traps the way the Go prover
+  does, every status the Go ladder's on `spec/oak/machines.oak`), so
+  what remains with Go on the prover's side is the compiled-program
+  witness and the guard-exclusivity advisory rows; next those in Oak;
+  then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
   producers of certificates, so speed and trust are separated; then an
