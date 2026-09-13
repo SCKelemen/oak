@@ -27,7 +27,9 @@ type rvVectorConfigVerify struct {
 // imm`): the entry-relative address is the name's suffix.
 const rvFrameAddrPrefix = "sp@"
 
-func rvFrameAddrTerm(addr int64) *term { return paramTerm(fmt.Sprintf("%s%d", rvFrameAddrPrefix, addr), 64) }
+func rvFrameAddrTerm(addr int64) *term {
+	return paramTerm(fmt.Sprintf("%s%d", rvFrameAddrPrefix, addr), 64)
+}
 
 func rvFrameAddrOf(t *term) (int64, bool) {
 	if t == nil || t.kind != termParam || len(t.name) <= len(rvFrameAddrPrefix) || t.name[:len(rvFrameAddrPrefix)] != rvFrameAddrPrefix {
