@@ -29,6 +29,25 @@ with the highest impact, one residual, one direction.
 | R10 | Inline emission / native backend | **Direction**, unchanged. | Open; sequenced after the perf measurement of the walk. |
 | R6, reopened | The four EL1 accessors, with the pilot's proof that the library lacked them | **Confirmed**; see the corrected R6 row above. | **Landed**: four catalog entries, and the x0 handoff the EL0 entry also wants: `arm64.eret_x0(arg) -> never` is ERET with its argument in `x0` at the instruction (`100-aarch64-control-transfer.md`, register handoff). The same entry is also legal today as an `.oakasm` unit (`system`, `bind`, `msr`, `mov x0, x3`, `isb`, `eret`); both forms are tested. The EL0 entry can fold into the adapter. |
 
+## The native backend for the page-table ports (2026-09-13)
+
+The pilot built the ports through the native backend (`oak build -native`)
+and listed what blocks them; the C-backend differential stays the oracle.
+The span idiom (`50-borrowing.md` §8e) is necessary and — for non-atomic,
+shallow, non-large-stride ports — sufficient for native lowering: doorbell
+and ring_pair lower with zero fallbacks; every residual fallback below is
+a backend gap, not port style.
+
+| # | Gap | Disposition |
+| --- | --- | --- |
+| N1 | Reads of top-level constants (`page_size`, `entries`) left the function to the C backend | **Fixed**: a read of a constant integer top-level binding is folded to its typed literal before the native generator and verifier see the body (`compiler/native_bodies.go`, `codegen.ConstantScalarGlobals`); the emitted C keeps the `static const`. `compiler/e2e_native_constants_test.go`. |
+| N2 | Large record strides (`Regime` = 409 600 bytes) | Open: the stride must be materialized as a multi-instruction immediate before the multiply; a native-backend increment. |
+| N3 | Package-global scratch (`st`, `walk_null`) | Open: the native subset has no addressed globals; a program-relative address (`adrp`/`add`) and the verifier's model of global storage are the increment. |
+| N4 | Compound (multi-read) indexing of an owned-array field of a span element (`timer.next`); a single such access already lowers (ring_pair's `s[dom].sq[idx]`) | Open: the second read of the same element path within one expression; a native-backend increment (reuse of the element's address, or a second address computation under the same facts). |
+| N6 | A deep expression exceeding the scratch-register budget falls back (`timer.take_expired`) | Open: the generator must spill to the frame rather than leave the function to the C backend; a register-allocation increment in `nativegen`. |
+| N7 | An atomic operation on a span-element storage path (`atomic_load_acquire(s[dom].tail)`) falls back; the structure compiles, the atomic does not | Open: the atomic helpers take a local or parameter cell today; the increment is the element address as the atomic's operand, with the memory-model contract unchanged. Blocks the lock-free ports (ring, the queue catalog). |
+| N5 | `oak build` had no object output — executables or `-emit-c` only — so a host-linked native differential test was not a flag flip | **Fixed**: `oak build -o name.o` on a hosted target compiles the emitted C to one relocatable object, asm units inlined (`115-tooling.md`, object output); a harness links it against its own driver. Until N2–N4 land, the freestanding on-path build under QEMU remains the validation route for stage2 and addr_space. |
+
 ## What the round did not do
 
 - It did not measure the stage2 walk. R2's effect is the C compiler's
