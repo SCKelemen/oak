@@ -1156,12 +1156,12 @@ func (g *rvGenerator) expr(expr ast.Expression, hint *scalar) (int, error) {
 			return 0, unsupported("a call through a value")
 		}
 		if ident.Value == "len" && len(e.Arguments) == 1 {
-			if arr := g.arrayOperand(e.Arguments[0]); arr != nil {
+			if _, length, isArray := g.arrayElementOfExpr(e.Arguments[0]); isArray {
 				r, err := g.alloc(scalars["u32"])
 				if err != nil {
 					return 0, err
 				}
-				if err := g.constant(r, uint64(arr.length), scalars["u32"]); err != nil {
+				if err := g.constant(r, uint64(length), scalars["u32"]); err != nil {
 					return 0, err
 				}
 				return r, nil

@@ -95,6 +95,13 @@ type span struct {
 	// (baseReg/lenReg) by the prologue — the checker follows the copies —
 	// so the callee's clobber of x0–x17 never touches it.
 	argBase, argLen int
+	// frameLen: the constant length of a span bound over an owned frame
+	// array (`span(&buf)` / `view(&buf)`), 0 for any other span. Its base
+	// is a frame address to the checker, whose frame idioms (a frame array
+	// access, the element region of a frame array of records) take a
+	// constant index guard `cmp wI, #N` — the length register would leave
+	// every element of the span unaddressable in the binding function.
+	frameLen int64
 	// norm: on the rv64 lane, the register holding the length zero-extended
 	// (`slli n, aL, 32; srli n, n, 32`, the checker's normalization idiom):
 	// the LP64 pair leaves padding above the u32 length, so every bounds
@@ -2597,7 +2604,7 @@ func (g *generator) lowerSpanDeclaration(s *ast.VariableDeclaration, target span
 		g.emit("mov", xr(baseReg), xr(value.baseReg))
 		g.emit("mov", wr(lenReg), wr(value.lenReg))
 	}
-	local := span{elem: target.elem, elemLayout: target.elemLayout, writable: target.writable, baseReg: baseReg, lenReg: lenReg, argBase: -1, argLen: -1}
+	local := span{elem: target.elem, elemLayout: target.elemLayout, writable: target.writable, baseReg: baseReg, lenReg: lenReg, argBase: -1, argLen: -1, frameLen: value.frameLen}
 	delete(g.slots, s.Name.Value)
 	delete(g.types, s.Name.Value)
 	delete(g.regs, s.Name.Value)
@@ -2664,7 +2671,7 @@ func (g *generator) spanValue(expr ast.Expression, target *span, baseReg, lenReg
 		if arr.inReg {
 			return span{}, false, unsupported("%s of an array inside a computed element", fn.Value)
 		}
-		out.elem, out.elemLayout, out.writable = arr.elem, arr.elemLayout, shape.writable
+		out.elem, out.elemLayout, out.writable, out.frameLen = arr.elem, arr.elemLayout, shape.writable, arr.length
 		g.emit("add", xr(baseReg), sp(), imm(g.slotMem(arr.offset).Offset))
 		g.constant(lenReg, uint64(arr.length), scalars["u32"])
 		return out, false, nil
@@ -3050,8 +3057,8 @@ func (g *generator) typeOf(expr ast.Expression, hint *scalar) (scalar, error) {
 			}
 			return field.typ, nil
 		}
-		if arr := g.arrayOperand(e.Left); arr != nil {
-			return arr.elem, nil
+		if elem, _, isArray := g.arrayElementOfExpr(e.Left); isArray {
+			return elem, nil
 		}
 		sp, err := g.spanOperand(e.Left)
 		if err != nil {
@@ -3070,7 +3077,7 @@ func (g *generator) typeOf(expr ast.Expression, hint *scalar) (scalar, error) {
 			return scalar{}, unsupported("a call through a value")
 		}
 		if ident.Value == "len" && len(e.Arguments) == 1 {
-			if g.arrayOperand(e.Arguments[0]) != nil {
+			if _, _, isArray := g.arrayElementOfExpr(e.Arguments[0]); isArray {
 				return scalars["u32"], nil
 			}
 			if _, err := g.spanOperand(e.Arguments[0]); err != nil {
@@ -3700,8 +3707,8 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 			if err != nil {
 				return 0, err
 			}
-			if arr := g.arrayOperand(e.Arguments[0]); arr != nil {
-				g.constant(r, uint64(arr.length), scalars["u32"])
+			if _, length, isArray := g.arrayElementOfExpr(e.Arguments[0]); isArray {
+				g.constant(r, uint64(length), scalars["u32"])
 				return r, nil
 			}
 			sp, err := g.spanOperand(e.Arguments[0])
@@ -4820,10 +4827,19 @@ func (g *generator) guardedIndexAt(sp span, index ast.Expression, tok *token.Tok
 		return 0, err
 	}
 	g.usedTrap = true
-	g.emit("cmp", wr(r), wr(sp.lenReg))
+	if sp.frameLen > 0 && sp.frameLen <= maxCmpImmediate {
+		// A span over a frame array: the frame idiom's constant guard, so
+		// the checker bounds the access inside the declared frame.
+		g.emit("cmp", wr(r), imm(sp.frameLen))
+	} else {
+		g.emit("cmp", wr(r), wr(sp.lenReg))
+	}
 	g.branch("hs", g.trap)
 	return r, nil
 }
+
+// maxCmpImmediate is the largest unshifted `cmp wI, #K` immediate (12 bits).
+const maxCmpImmediate = 4095
 
 // indexValue evaluates an element index into a 32-bit register: a u32 as
 // is; a u64 after checking its high word is zero (an index of 2^32 or more
@@ -4879,6 +4895,40 @@ func (g *generator) arrayOperand(expr ast.Expression) *arrayLocal {
 		return nil
 	}
 	return p.arr
+}
+
+// arrayElementOfExpr is the element type and length of the owned array of
+// scalars an expression names — a local, or an array field through any
+// nesting, including a field of a span element (`s[dom].active`) — or
+// false. Resolved without emitting code: arrayOperand places the array,
+// which for a span element emits the guard and address and holds a
+// register, so typeOf and `len` must not go through it (the OS pilot's
+// N4: every read of `s[dom].f[i]` in a call's arguments or a condition
+// resolved its type through a placement, leaking a scratch register per
+// read until the allocation failed and the function fell back).
+func (g *generator) arrayElementOfExpr(expr ast.Expression) (elem scalar, length int64, ok bool) {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		if arr, isArray := g.arrays[e.Value]; isArray {
+			return arr.elem, arr.length, true
+		}
+	case *ast.IndexExpression:
+		if !e.Dot {
+			return scalar{}, 0, false
+		}
+		base, err := g.recordLayoutOfExpr(e.Left)
+		if err != nil {
+			return scalar{}, 0, false
+		}
+		name, isName := e.Index.(*ast.Identifier)
+		if !isName {
+			return scalar{}, 0, false
+		}
+		if field, has := base.fields[name.Value]; has && field.kind == fieldArray {
+			return field.typ, field.length, true
+		}
+	}
+	return scalar{}, 0, false
 }
 
 // arrayAddress lowers `buf[i]` to a memory operand: a literal index inside

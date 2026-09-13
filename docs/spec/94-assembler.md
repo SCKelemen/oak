@@ -963,7 +963,11 @@ against the declared frame like `[sp, #imm]` — a plain offset must lie
 inside the frame, an indexed access needs a dominating constant index guard
 (`cmp wI, #K` then `b.hs <exit>`) with all `K` elements inside the frame,
 scaled by whole elements, and pre/post-indexing is refused. The fact dies
-with a write to the register or a call, flows through the label fixpoint
+with a write to the register or a call — except in a callee-saved register
+`x19`–`x28`, which the callee preserves, so a span bound over a frame
+array (`span(&buf)`, parked in a callee-saved pair) stays addressable after
+a `bl`; its element guard is the constant `cmp wI, #N` of this idiom, not a
+compare against the length register — flows through the label fixpoint
 with the span and index guards (the meet keeps it only where every
 predecessor agrees on the address), and is exercised by
 `TestCheckerFrameArrays` (an accepted body and eight refusals). A call's
