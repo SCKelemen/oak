@@ -9,11 +9,111 @@ package typechecker
 // initialization). Runtime initialization is written explicitly in main,
 // never hidden in global constructors.
 
-import "github.com/SCKelemen/oak/ast"
+import (
+	"fmt"
+
+	"github.com/SCKelemen/oak/ast"
+)
 
 // CodeGlobalInitializerNotConstant rejects top-level initializers the C
 // backend cannot place in static storage as constant expressions.
 const CodeGlobalInitializerNotConstant = "OAK-T0501"
+
+// CodeMeasuredConstant rejects a malformed measured constant
+// (docs/spec/60-effects-allocation.md section 10b): a range that is not
+// an integer type's, a pinned value outside it, or an assignment to it.
+const CodeMeasuredConstant = "OAK-T0502"
+
+// integerRanges are the value ranges of the fixed-width integer types a
+// measured constant may have.
+var integerRanges = map[string][2]int64{
+	"u8": {0, 255}, "u16": {0, 65535}, "u32": {0, 4294967295}, "u64": {0, 9223372036854775807},
+	"i8": {-128, 127}, "i16": {-32768, 32767}, "i32": {-2147483648, 2147483647}, "i64": {-9223372036854775808, 9223372036854775807},
+}
+
+// MeasuredConstant is one measured constant as declared: its Oak name, its
+// integer type, the inclusive range, and the pinned value the program
+// runs with when none is supplied.
+type MeasuredConstant struct {
+	Name   string
+	Type   string
+	Lo, Hi int64
+	Pinned int64
+}
+
+// MeasuredConstants lists the program's measured constants in declaration
+// order — the knobs a load-time value may turn, for vet and the extraction.
+func (tc *TypeChecker) MeasuredConstants() []MeasuredConstant {
+	return append([]MeasuredConstant(nil), tc.measured...)
+}
+
+// IsMeasured reports whether name is a measured constant.
+func (tc *TypeChecker) IsMeasured(name string) bool {
+	for _, m := range tc.measured {
+		if m.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// pinnedInteger reads a measured constant's initializer: an integer
+// literal, optionally negated or wrapped in its own type's constructor.
+func pinnedInteger(expr ast.Expression, typ string) (int64, bool) {
+	switch e := expr.(type) {
+	case *ast.IntegerLiteral:
+		return e.Value, true
+	case *ast.PrefixExpression:
+		if e.Operator == "-" {
+			if v, ok := pinnedInteger(e.Right, typ); ok {
+				return -v, true
+			}
+		}
+	case *ast.InvocationExpression:
+		if ident, isIdent := e.Function.(*ast.Identifier); isIdent && ident.Value == typ && len(e.Arguments) == 1 {
+			return pinnedInteger(e.Arguments[0], typ)
+		}
+	}
+	return 0, false
+}
+
+// checkMeasured validates a measured constant (docs/spec/60-effects-allocation.md
+// section 10b): an integer type, a range inside the type's, a pinned
+// initializer inside the range. A valid one is recorded; it is never a
+// constant later initializers fold, since its value is the load's.
+func (tc *TypeChecker) checkMeasured(decl *ast.VariableDeclaration) {
+	if decl == nil || decl.Measured == nil || decl.Name == nil {
+		return
+	}
+	typeName, isIdent := decl.Type.(*ast.Identifier)
+	bounds, integer := integerRanges[""]
+	if isIdent {
+		bounds, integer = integerRanges[typeName.Value]
+	}
+	if !isIdent || !integer {
+		tc.addTypeDiagnostic(decl, CodeMeasuredConstant, fmt.Sprintf("measured constant %s needs a fixed-width integer type", decl.Name.Value))
+		return
+	}
+	lo, hi := decl.Measured.Lo, decl.Measured.Hi
+	if lo > hi || lo < bounds[0] || hi > bounds[1] {
+		tc.addTypeDiagnostic(decl, CodeMeasuredConstant, fmt.Sprintf("measured constant %s: the range %d..%d is not a range of %s", decl.Name.Value, lo, hi, typeName.Value))
+		return
+	}
+	if decl.Value == nil {
+		tc.addTypeDiagnostic(decl, CodeMeasuredConstant, fmt.Sprintf("measured constant %s needs a pinned value, its initializer", decl.Name.Value))
+		return
+	}
+	pinned, ok := pinnedInteger(decl.Value, typeName.Value)
+	if !ok {
+		tc.addTypeDiagnostic(decl, CodeMeasuredConstant, fmt.Sprintf("measured constant %s: the pinned value is an integer literal", decl.Name.Value))
+		return
+	}
+	if pinned < lo || pinned > hi {
+		tc.addTypeDiagnostic(decl, CodeMeasuredConstant, fmt.Sprintf("measured constant %s: the pinned value %d is outside %d..%d", decl.Name.Value, pinned, lo, hi))
+		return
+	}
+	tc.measured = append(tc.measured, MeasuredConstant{Name: decl.Name.Value, Type: typeName.Value, Lo: lo, Hi: hi, Pinned: pinned})
+}
 
 // checkGlobalInitializer enforces the constant rule for one top-level
 // declaration.
@@ -26,6 +126,12 @@ func (tc *TypeChecker) checkGlobalInitializer(decl *ast.VariableDeclaration) {
 		// header's definition — so static storage holds it; its value is
 		// unknown to Oak, so it is not a constant later initializers may
 		// read (a C `static const` is not a constant expression either).
+		return
+	}
+	if decl.Measured != nil {
+		// A measured constant's initializer is its pinned value, a literal;
+		// the value the program runs with is the load's, so it is not a
+		// constant later initializers may fold (checkMeasured).
 		return
 	}
 	if tc.IsConstantInitializer(decl.Value) {

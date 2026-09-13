@@ -133,6 +133,7 @@ func lowerVariableDeclaration(vd *ast.VariableDeclaration, tc *typechecker.TypeC
 			Type:     vd.Type,
 			Value:    lowerExpression(vd.Value, tc),
 			Section:  vd.Section,
+			Measured: vd.Measured,
 		}
 	}
 	return vd
@@ -331,7 +332,7 @@ func hoistBoolMatchValue(stmt ast.Statement, tc *typechecker.TypeChecker) ([]ast
 		name = s.Name
 		match = candidate
 		lead = &ast.VariableDeclaration{
-			BaseNode: s.BaseNode, Token: s.Token, Name: s.Name, Type: s.Type, Section: s.Section,
+			BaseNode: s.BaseNode, Token: s.Token, Name: s.Name, Type: s.Type, Section: s.Section, Measured: s.Measured,
 		}
 	case *ast.AssignmentStatement:
 		candidate, isMatch := s.Value.(*ast.MatchExpression)
