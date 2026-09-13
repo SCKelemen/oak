@@ -75,6 +75,17 @@ func TestE2ENativeConstantTables(t *testing.T) {
 				t.Errorf("%s: %s: no native verdict:\n%s", tname, fn, strings.Join(native, "\n"))
 			}
 		}
+		// A table read is the element term of the span the table's Oak name
+		// denotes, on both sides: the bodies reading tables are proven
+		// (table_sum passes a view of a table to a callee: a span argument
+		// in a call summary, a later increment).
+		for _, fn := range []string{"digit_at", "word", "third"} {
+			for _, m := range native {
+				if strings.Contains(m, "asm unit "+fn+":") && !strings.Contains(m, "proven equal") {
+					t.Errorf("%s: %s is not proven: %s", tname, fn, m)
+				}
+			}
+		}
 	}
 	if _, exit, abnormal := buildAndRunFrom(t, "native_tables", New().WithSource("tables.oak", nativeTablesProgram)); abnormal || exit != 0 {
 		t.Fatalf("program: exit = (%d, abnormal=%v), want 0", exit, abnormal)

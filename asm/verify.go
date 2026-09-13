@@ -888,6 +888,15 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 			state.regs[binding.Register.Num] = zeroExtend(input(binding.Param, 32), 64)
 		}
 	}
+	// The program's constant tables read as spans named by their Oak
+	// identifiers: `adrl`/`la` binds a register to the base `&T`, and a
+	// load through it is the element term T[k] — the same term the Oak
+	// side gives T[k] (docs/spec/94-assembler.md §9, constant tables).
+	for symbol, table := range fn.Tables {
+		if table.Elem > 0 {
+			spans[TableName(symbol)] = table.Elem
+		}
+	}
 	resultClass, hasResult := contractClass(sig.ReturnType)
 	if comp, isComposite := fn.Composites[typeText(sig.ReturnType)]; isComposite && len(comp.Fields) > 0 {
 		// A record result of one chunk comes back in x0, of two in x0 and
@@ -1616,6 +1625,22 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 				return nil, nil, reason, false
 			}
 			continue
+		case "adrl":
+			// A constant table's address: the base of the span its Oak
+			// name denotes (executeBodyChunk).
+			dest := instr.Operands[0].(Register)
+			sym, isSym := instr.Operands[1].(Symbol)
+			if !isSym {
+				return nil, nil, "adrl without a symbol", false
+			}
+			if x.fn == nil {
+				return nil, nil, "adrl of a symbol that is not a constant table", false
+			}
+			if _, known := x.fn.Tables[sym.Name]; !known {
+				return nil, nil, "adrl of a symbol that is not a constant table", false
+			}
+			state.write(dest, paramTerm(spanBaseName(TableName(sym.Name)), 64))
+			continue
 		case "b", "j":
 			target, ok := x.labels[instr.Operands[0].(Symbol).Name]
 			if !ok {
@@ -2323,9 +2348,13 @@ var oakComparisons = map[string][2]string{
 // signedness (i8/i16/i32/i64 compare signed, everything else unsigned),
 // and the span/view parameters with their element widths.
 type oakLowering struct {
-	params    map[string]int
-	signed    map[string]bool
-	spans     map[string]spanContract
+	params map[string]int
+	signed map[string]bool
+	spans  map[string]spanContract
+	// tableLens: the program's constant tables by Oak name with their
+	// element counts; a table reads as a span (spans holds its contract)
+	// whose length is the constant (declareTables).
+	tableLens map[string]int64
 	locals    map[string]*oakLocal // statement-body locals, in declaration scope
 	concrete  map[string]uint64    // a witness run: parameters are these constants
 	loops     []*loopEvent         // data-dependent loops met, in creation order
@@ -3787,6 +3816,9 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 			// Oak traps on this input; the witness has no value to compare.
 			return nil, spanContract{}, fmt.Sprintf("an index past len(%s) on this input", ident.Value), false
 		}
+		if length, isTable := lo.tableLens[ident.Value]; isTable && idx.value >= uint64(length) {
+			return nil, spanContract{}, fmt.Sprintf("an index past len(%s) on this input", ident.Value), false
+		}
 		return memoryAt(lo.writes[span], idx, constTerm(elementValue(span, idx.value, contract.elemWidth), contract.elemWidth)), contract, "", true
 	}
 	entry := selectTerm(span, idx, contract.elemWidth)
@@ -4137,6 +4169,41 @@ func instructionFunction(call *ast.InvocationExpression) (op string, width int, 
 	return "", 0, false
 }
 
+// declareTables makes the program's constant tables readable as spans:
+// T[k] is the element term the asm side's load through `adrl`/`la` gives,
+// len(T) the constant element count.
+func (lo *oakLowering) declareTables(tables map[string]Table) {
+	for symbol, table := range tables {
+		if table.Elem <= 0 {
+			continue
+		}
+		name := TableName(symbol)
+		if _, isSpan := lo.spans[name]; isSpan {
+			continue // a parameter shadows the table
+		}
+		lo.spans[name] = spanContract{elemWidth: int(table.Elem) * 8, signed: table.Signed}
+		if lo.tableLens == nil {
+			lo.tableLens = map[string]int64{}
+		}
+		lo.tableLens[name] = table.Size / table.Elem
+	}
+}
+
+// tableLength recognizes len(T) over a constant table: the element count.
+func (lo *oakLowering) tableLength(expr ast.Expression) (int64, bool) {
+	call, isCall := expr.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != 1 {
+		return 0, false
+	}
+	fn, isIdent := call.Function.(*ast.Identifier)
+	arg, argIsIdent := call.Arguments[0].(*ast.Identifier)
+	if !isIdent || !argIsIdent || fn.Value != "len" {
+		return 0, false
+	}
+	length, isTable := lo.tableLens[arg.Value]
+	return length, isTable
+}
+
 // spanLength recognizes len(v) over a span parameter.
 func (lo *oakLowering) spanLength(expr ast.Expression) (string, bool) {
 	call, isCall := expr.(*ast.InvocationExpression)
@@ -4267,6 +4334,9 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 				return nil, "len of a non-array aggregate", false
 			}
 			return constTerm(uint64(place.typ.length), width), "", true
+		}
+		if length, isTable := lo.tableLength(e); isTable {
+			return constTerm(uint64(length), width), "", true
 		}
 		if name, isLen := lo.spanLength(e); isLen {
 			if value, isConcrete := lo.concrete[name]; isConcrete {
@@ -4963,6 +5033,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	lo := newLowering(callee)
 	lo.records, lo.adts, lo.constants = x.fn.Records, x.fn.ADTs, x.fn.Constants
 	lo.functions = x.fn.Callees
+	lo.declareTables(x.fn.Tables)
 	lo.inlining = map[string]bool{name: true}
 	// The callee sees the cells as this path holds them — a store on the
 	// path, else the entry value — and its writes come back into the path
@@ -5233,6 +5304,7 @@ func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	lowering.constants = fn.Constants
 	lowering.globals = fn.Globals
 	lowering.functions = fn.Callees // the Oak body's calls inline (inlineCall)
+	lowering.declareTables(fn.Tables)
 	lowering.concrete = concrete
 	lowering.bindAggregateParams(sig)
 	lowering.declareCells()

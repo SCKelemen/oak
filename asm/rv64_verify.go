@@ -227,6 +227,21 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 	case "lui":
 		state.write(reg(0), constTerm(uint64(ops[1].(Immediate).Value<<12), 64))
 		return "", true
+	case "la":
+		// A constant table's address: the base of the span its Oak name
+		// denotes (executeBodyChunk).
+		sym, isSym := ops[1].(Symbol)
+		if !isSym {
+			return "la without a symbol", false
+		}
+		if x.fn == nil {
+			return "la of a symbol that is not a constant table", false
+		}
+		if _, known := x.fn.Tables[sym.Name]; !known {
+			return "la of a symbol that is not a constant table", false
+		}
+		state.write(reg(0), paramTerm(spanBaseName(TableName(sym.Name)), 64))
+		return "", true
 	case "auipc":
 		return "a pc-relative address (auipc)", false
 	case "call":

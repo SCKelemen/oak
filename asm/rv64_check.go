@@ -955,13 +955,13 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 			c.regions[reg(0).Num] = rvRegion{size: int64(global.Bits / 8), writable: true, rawLen: -1, idxReg: -2, global: true}
 			return false
 		}
-		size, known := c.fn.Tables[sym.Name]
+		table, known := c.fn.Tables[sym.Name]
 		if !known {
 			c.errorf(line, "la %s: not a constant data symbol or global of the program", sym.Name)
 			return false
 		}
 		c.write(reg(0), line)
-		c.regions[reg(0).Num] = rvRegion{size: size, rawLen: -1, idxReg: -2, table: true}
+		c.regions[reg(0).Num] = rvRegion{size: table.Size, rawLen: -1, idxReg: -2, table: true}
 		return false
 	case "li":
 		imm := ops[1].(Immediate).Value
