@@ -1075,6 +1075,7 @@ type generator struct {
 	nslots      int64
 	spill       map[int]int64 // scratch register → its spill slot offset
 	free        []int         // free scratch registers
+	ipScratch   int           // x16/x17 taken as overflow scratch (overflowScratch)
 	live        []int         // allocated scratch registers, allocation order
 	// defined marks the live scratch registers an emitted instruction has
 	// written: a call spills exactly those (a register allocated for an
@@ -1393,6 +1394,9 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	// writes beyond the bound parameters, and the link register.
 	for r := scratchLow; r <= scratchHigh; r++ {
 		out.Clobbers = append(out.Clobbers, xr(r))
+	}
+	for i := 0; i < g.ipScratch; i++ {
+		out.Clobbers = append(out.Clobbers, xr(16+i)) // overflow scratch (overflowScratch)
 	}
 	for i := 0; i < g.usedCallee; i++ {
 		out.Clobbers = append(out.Clobbers, xr(calleeLow+i))
@@ -2383,12 +2387,52 @@ func (g *generator) alloc(typ scalar) (int, error) {
 		g.usedFloat = true
 	}
 	if len(*pool) == 0 {
-		return 0, unsupported("an expression deeper than the scratch registers")
+		if typ.isFloat {
+			return 0, unsupported("an expression deeper than the scratch registers")
+		}
+		r, ok := g.overflowScratch()
+		if !ok {
+			return 0, unsupported("an expression deeper than the scratch registers")
+		}
+		g.live = append(g.live, r)
+		return r, nil
 	}
 	r := (*pool)[len(*pool)-1]
 	*pool = (*pool)[:len(*pool)-1]
 	g.live = append(g.live, r)
 	return r, nil
+}
+
+// overflowScratch widens the integer scratch pool when x9–x15 are all live
+// in one expression (the OS pilot's N6, a deep expression that fell back):
+// x16 and x17 in a function that makes no call (the intra-procedure-call
+// registers, unused by the generator and clobbered only by a veneer at a
+// `bl`), then the next unclaimed callee-saved register, counted with the
+// locals so the prologue saves it and the epilogue restores it. Once
+// released the register stays in the pool. The rv64 lane keeps its own
+// pools.
+func (g *generator) overflowScratch() (int, bool) {
+	if g.rvLane {
+		return 0, false
+	}
+	if !g.hasCalls && g.ipScratch < 2 {
+		r := 16 + g.ipScratch
+		g.ipScratch++
+		return r, true
+	}
+	if g.usedCallee >= calleeHigh-calleeLow+1 {
+		return 0, false
+	}
+	if g.saveArea == 0 {
+		if g.nslots != 0 {
+			// Slot offsets already emitted assume no save area.
+			return 0, false
+		}
+		g.saveArea = 8 * (calleeHigh - calleeLow + 1)
+	}
+	r := calleeLow + g.usedCallee
+	g.usedCallee++
+	return r, true
 }
 
 // put appends one item built elsewhere (ins marks its write for the
