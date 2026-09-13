@@ -101,3 +101,47 @@ pub intrusive_consume: (cursor: [*]rings.IntrusiveCursor, nodes: [*]rings.Intrus
   }
   sum
 }
+
+// The ticket producers and the ticket consumer (rings.mpsc_claim/publish,
+// mpmc_claim_push/publish, mpmc_claim_pop/take): a claim never fails; a
+// publish or take is retried until its slot is free or filled.
+pub mpsc_ticket_produce: (cursor: [*]rings.MpscCursor, seqs: [*]rings.SeqCell, storage: [*]u32, n: u32): u32 {
+  i: u32 = 0
+  spins: u32 = 0
+  while i < n {
+    pos: u32 = rings.mpsc_claim(cursor)
+    while !rings.mpsc_publish[u32](seqs, storage, pos, i + u32(1)) {
+      spins = spins + 1
+    }
+    i = i + 1
+  }
+  spins
+}
+
+pub mpmc_ticket_produce: (cursor: [*]rings.MpmcCursor, seqs: [*]rings.SeqCell, storage: [*]u32, n: u32): u32 {
+  i: u32 = 0
+  spins: u32 = 0
+  while i < n {
+    pos: u32 = rings.mpmc_claim_push(cursor)
+    while !rings.mpmc_publish[u32](seqs, storage, pos, i + u32(1)) {
+      spins = spins + 1
+    }
+    i = i + 1
+  }
+  spins
+}
+
+pub mpmc_ticket_consume: (cursor: [*]rings.MpmcCursor, seqs: [*]rings.SeqCell, storage: [*]u32, n: u32): u64 {
+  taken: u32 = 0
+  sum: u64 = 0
+  while taken < n {
+    pos: u32 = rings.mpmc_claim_pop(cursor)
+    v: u32 = 0
+    while v == u32(0) {
+      v = option_or[u32](rings.mpmc_take[u32](seqs, storage, pos), u32(0))
+    }
+    sum = sum + u64(v)
+    taken = taken + 1
+  }
+  sum
+}

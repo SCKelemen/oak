@@ -287,3 +287,33 @@ theorem mpmc_consumer_claims_distinct (pos : Nat) (claims : List Nat) (final : N
   claims_distinct pos claims final h
 
 end Oak.Rings
+
+/-! ## Ticket claims
+
+A fetch-add claim returns the counter and leaves it one higher, which is
+exactly a `ClaimTrace` step; a trace of tickets therefore hands out the
+consecutive, distinct positions the compare-exchange claims do — with no
+failed attempt in between. The payload handoff of a ticketed slot is the
+sequence cell's release and acquire, `mpsc_payload_race_free`. -/
+
+namespace Oak.Rings
+
+/-- Ticket claims are the same trace: consecutive positions, each distinct. -/
+theorem ticket_claims_consecutive (pos : Nat) (claims : List Nat) (final : Nat)
+    (h : ClaimTrace pos claims final) : claims = List.range' pos claims.length :=
+  claim_trace_range pos claims final h
+
+theorem ticket_claims_distinct (pos : Nat) (claims : List Nat) (final : Nat)
+    (h : ClaimTrace pos claims final) : claims.Nodup :=
+  claims_distinct pos claims final h
+
+/-- A ticket's slot: position `p` lands in slot `p % cap` in round `p / cap`;
+    it is free for round `r` exactly when the cell reads `p`, published when
+    it reads `p + 1`, and recycled to `p + cap` — the value the next round's
+    claimant of the same slot waits for. -/
+theorem ticket_round_trip (p cap : Nat) (hcap : 0 < cap) : (p + cap) % cap = p % cap ∧ (p + cap) / cap = p / cap + 1 := by
+  constructor
+  · simp [Nat.add_mod_right]
+  · rw [Nat.add_div_right p hcap]
+
+end Oak.Rings
