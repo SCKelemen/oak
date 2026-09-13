@@ -147,3 +147,4 @@ import Oak.SailRiscVBridge
 import Oak.Target
 import Oak.Freestanding
 import Oak.Rings
+import Oak.BinaryCodec

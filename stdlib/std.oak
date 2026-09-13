@@ -153,6 +153,14 @@ pub bitset_count: (storage: []u8, bits: u32): Result[u32, BitSetError] {
   }
 }
 
+// The derived binary codec's results (docs/spec/71-codecs.md section 22):
+// encoding fails only for a destination the fixed layout does not fit;
+// decoding for an input shorter than the layout or a Bool byte above one.
+pub BinaryError: type = | DestinationTooSmall
+pub BinaryDecodeError: type = InputTooShort | InvalidBool
+pub binary_result_ok: (value: Result[u32, BinaryError]): Bool = value ? | .Ok(n) => true | .Err(e) => false
+pub binary_result_value: (value: Result[u32, BinaryError]): u32 = value ? | .Ok(n) => n | .Err(e) => u32(4294967295)
+
 // Bounds are checked by subtraction before any indexing or mutation.
 pub EndianError: type = | BufferTooSmall
 pub bytes_range_fits: (length: u32, offset: u32, width: u32): Bool {
