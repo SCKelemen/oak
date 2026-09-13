@@ -88,6 +88,11 @@ var loweringProgramRenders = []struct {
 	// equality selects, the first case outermost, the wildcard the fallback.
 	{"f: (op, a, b: u32) -> u32 = op ? | 0 => a | 1 => b | _ => a + b\n", "((op eq 0) ? a : ((op eq 1) ? b : (a add b)))"},
 	{"f: (op, a: u32) -> u32 = {\n  r: u32 = a\n  op ? | 0 => { r = a + 1 } | 1 => { r = a * 2 } | _ => { }\n  r\n}\n", "((op eq 0) ? (a add 1) : ((op eq 1) ? (a mul 2) : a))"},
+	// Owned arrays (`arrDecl`, `arrGet`, `arrSetE`): a read at a symbolic
+	// index selects element by element, a write at one selects at every
+	// element, literal indices fold to the one element.
+	{"f: (i, v: u32) -> u32 = {\n  a: [3]u32\n  a[0] = v\n  a[1] = v + 1\n  a[2] = v * 2\n  a[i]\n}\n", "((i eq 0) ? v : ((i eq 1) ? (v add 1) : (v mul 2)))"},
+	{"f: (i, v: u32) -> u32 = {\n  a: [2]u32\n  a[i] = v\n  a[1]\n}\n", "((i eq 1) ? v : 0)"},
 }
 
 func TestLoweringProgramsMatchLeanTransliteration(t *testing.T) {
