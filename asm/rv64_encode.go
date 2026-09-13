@@ -43,79 +43,130 @@ func rv64SplitImmediate(value int64) (hi, lo int64) {
 	return hi, lo
 }
 
-func encodeRV64Function(fn *Function) ([]byte, []Relocation, error) {
-	labels := map[string]int64{}
-	offset := int64(0)
+// rv64Piece is one base instruction of the layout: its spelling, the line
+// it came from, its size in bytes (4, or 2 when compressed), and the
+// relocation a `call`'s auipc carries.
+type rv64Piece struct {
+	base     Instruction
+	line     int
+	size     int64
+	callSym  string // the call's symbol, on its auipc
+	fromCall bool
+}
+
+// rv64Expand spells a function as base instructions: `li` of a 32-bit
+// value is lui then addiw, `call` is auipc then jalr, every other pseudo
+// its one base form.
+func rv64Expand(fn *Function) ([]rv64Piece, map[string]int, error) {
+	var units []rv64Piece
+	labelAt := map[string]int{} // label -> index of the unit it precedes
 	for _, item := range fn.Items {
 		switch it := item.(type) {
 		case Label:
-			labels[it.Name] = offset
-		case Instruction:
-			offset += 4 * int64(rv64Words(it))
+			labelAt[it.Name] = len(units)
 		case Align:
 			return nil, nil, fmt.Errorf("%s:%d: align regions are not admitted for rv64 units", fn.Name, it.Line)
-		}
-	}
-	var out []byte
-	var relocs []Relocation
-	offset = 0
-	emit := func(word uint32) {
-		out = append(out, byte(word), byte(word>>8), byte(word>>16), byte(word>>24))
-		offset += 4
-	}
-	for _, item := range fn.Items {
-		instr, isInstr := item.(Instruction)
-		if !isInstr {
-			continue
-		}
-		if instr.Mnemonic == "li" {
-			value := instr.Operands[1].(Immediate).Value
-			if value < -(1<<31) || value >= 1<<31 {
-				return nil, nil, fmt.Errorf("%s:%d: li admits 32-bit immediates in this increment (%d)", fn.Name, instr.Line, value)
-			}
-			if value < -2048 || value > 2047 {
-				hi, lo := rv64SplitImmediate(value)
-				rd := instr.Operands[0].(Register)
-				word, err := encodeRV64Instruction(Instruction{Mnemonic: "lui", Operands: []Operand{rd, Immediate{Value: hi}}}, offset, labels)
-				if err != nil {
-					return nil, nil, fmt.Errorf("%s:%d: %w", fn.Name, instr.Line, err)
+		case Instruction:
+			switch it.Mnemonic {
+			case "li":
+				value := it.Operands[1].(Immediate).Value
+				if value < -(1<<31) || value >= 1<<31 {
+					return nil, nil, fmt.Errorf("%s:%d: li admits 32-bit immediates in this increment (%d)", fn.Name, it.Line, value)
 				}
-				emit(word)
-				if lo != 0 {
-					word, err = encodeRV64Instruction(Instruction{Mnemonic: "addiw", Operands: []Operand{rd, rd, Immediate{Value: lo}}}, offset, labels)
-					if err != nil {
-						return nil, nil, fmt.Errorf("%s:%d: %w", fn.Name, instr.Line, err)
+				if value < -2048 || value > 2047 {
+					hi, lo := rv64SplitImmediate(value)
+					rd := it.Operands[0].(Register)
+					units = append(units, rv64Piece{base: Instruction{Mnemonic: "lui", Operands: []Operand{rd, Immediate{Value: hi}}, Line: it.Line}, line: it.Line, size: 4})
+					if lo != 0 {
+						units = append(units, rv64Piece{base: Instruction{Mnemonic: "addiw", Operands: []Operand{rd, rd, Immediate{Value: lo}}, Line: it.Line}, line: it.Line, size: 4})
 					}
-					emit(word)
+					continue
 				}
+			case "call":
+				// auipc ra, 0; jalr ra, 0(ra) — the linker fills both under
+				// one R_RISCV_CALL_PLT at the auipc; never compressed.
+				ra := Register{Text: "ra", Class: ClassRV64X, Num: 1, Lane: -1}
+				units = append(units,
+					rv64Piece{base: Instruction{Mnemonic: "auipc", Operands: []Operand{ra, Immediate{Value: 0}}, Line: it.Line}, line: it.Line, size: 4, callSym: it.Operands[0].(Symbol).Name, fromCall: true},
+					rv64Piece{base: Instruction{Mnemonic: "jalr", Operands: []Operand{ra, Memory{Base: ra, Mode: MemOffset}}, Line: it.Line}, line: it.Line, size: 4, fromCall: true})
 				continue
 			}
+			units = append(units, rv64Piece{base: rv64Base(it), line: it.Line, size: 4})
 		}
-		if instr.Mnemonic == "call" {
-			// auipc ra, 0; jalr ra, 0(ra) — the linker fills both under one
-			// R_RISCV_CALL_PLT at the auipc.
-			ra := Register{Text: "ra", Class: ClassRV64X, Num: 1, Lane: -1}
-			relocs = append(relocs, Relocation{Offset: int(offset), Kind: "riscv_call_plt", Symbol: instr.Operands[0].(Symbol).Name})
-			word, err := encodeRV64Instruction(Instruction{Mnemonic: "auipc", Operands: []Operand{ra, Immediate{Value: 0}}}, offset, labels)
-			if err != nil {
-				return nil, nil, fmt.Errorf("%s:%d: %w", fn.Name, instr.Line, err)
+	}
+	return units, labelAt, nil
+}
+
+// rv64Offsets places the units and labels at their byte offsets.
+func rv64Offsets(units []rv64Piece, labelAt map[string]int) ([]int64, map[string]int64) {
+	starts := make([]int64, len(units)+1)
+	for i, unit := range units {
+		starts[i+1] = starts[i] + unit.size
+	}
+	labels := make(map[string]int64, len(labelAt))
+	for name, index := range labelAt {
+		labels[name] = starts[index]
+	}
+	return starts, labels
+}
+
+// encodeRV64Function lays the function out — under `option rvc`, every
+// instruction with a compressed form takes two bytes, branches and jumps
+// once their offsets fit, converging from the four-byte layout by
+// shrinking only (RVC, docs/spec/94-assembler.md §9) — and encodes it.
+func encodeRV64Function(fn *Function) ([]byte, []Relocation, error) {
+	units, labelAt, err := rv64Expand(fn)
+	if err != nil {
+		return nil, nil, err
+	}
+	if fn.Compressed {
+		for i := range units {
+			if !units[i].fromCall && rvcCompressible(units[i].base) && !rv64ControlTransfer(units[i].base) {
+				units[i].size = 2
 			}
-			emit(word)
-			word, err = encodeRV64Instruction(Instruction{Mnemonic: "jalr", Operands: []Operand{ra, Memory{Base: ra, Mode: MemOffset}}}, offset, labels)
-			if err != nil {
-				return nil, nil, fmt.Errorf("%s:%d: %w", fn.Name, instr.Line, err)
+		}
+		for changed := true; changed; {
+			changed = false
+			starts, labels := rv64Offsets(units, labelAt)
+			for i := range units {
+				if units[i].size == 2 || units[i].fromCall || !rv64ControlTransfer(units[i].base) || !rvcCompressible(units[i].base) {
+					continue
+				}
+				if _, ok := rvcEncode(units[i].base, starts[i], labels); ok {
+					units[i].size = 2
+					changed = true
+				}
 			}
-			emit(word)
+		}
+	}
+	starts, labels := rv64Offsets(units, labelAt)
+	var out []byte
+	var relocs []Relocation
+	for i, unit := range units {
+		if unit.callSym != "" {
+			relocs = append(relocs, Relocation{Offset: int(starts[i]), Kind: "riscv_call_plt", Symbol: unit.callSym})
+		}
+		if unit.size == 2 {
+			half, ok := rvcEncode(unit.base, starts[i], labels)
+			if !ok {
+				return nil, nil, fmt.Errorf("%s:%d: %s: the compressed form no longer fits", fn.Name, unit.line, unit.base.Mnemonic)
+			}
+			out = append(out, byte(half), byte(half>>8))
 			continue
 		}
-		base := rv64Base(instr)
-		word, err := encodeRV64Instruction(base, offset, labels)
+		word, err := encodeRV64Instruction(unit.base, starts[i], labels)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s:%d: %w", fn.Name, instr.Line, err)
+			return nil, nil, fmt.Errorf("%s:%d: %w", fn.Name, unit.line, err)
 		}
-		emit(word)
+		out = append(out, byte(word), byte(word>>8), byte(word>>16), byte(word>>24))
 	}
 	return out, relocs, nil
+}
+
+// rv64ControlTransfer reports a base instruction whose compressed form
+// depends on a label offset.
+func rv64ControlTransfer(base Instruction) bool {
+	return rv64Branches[base.Mnemonic] || base.Mnemonic == "jal"
 }
 
 // encodeRV64Instruction encodes one base instruction at byte offset pc.
