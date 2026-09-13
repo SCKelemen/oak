@@ -136,6 +136,9 @@ func lowerVariableDeclaration(vd *ast.VariableDeclaration, tc *typechecker.TypeC
 			Section:     vd.Section,
 			Measured:    vd.Measured,
 			Threadgroup: vd.Threadgroup,
+			// Set by the native backend before the lowering runs: the C
+			// emitter reads it off the lowered declaration.
+			NativeAddressed: vd.NativeAddressed,
 		}
 	}
 	return vd

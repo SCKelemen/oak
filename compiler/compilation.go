@@ -700,7 +700,8 @@ func (comp Compilation) EmitNative(format asm.ObjectFormat) Stage[NativeOutput] 
 			// empty one would still declare a machine).
 			return NativeOutput{C: code}, nil
 		}
-		encoded, err := asm.EncodeFunctions(lowered.Model.AsmFunctions, generator.CFunctionName)
+		generator.SetNativeGlobals(asm.AddressedGlobals(lowered.Model.AsmFunctions))
+		encoded, err := asm.EncodeFunctions(lowered.Model.AsmFunctions, generator.AsmSymbol)
 		if err != nil {
 			return NativeOutput{}, fmt.Errorf("asm: %w", err)
 		}
@@ -733,7 +734,8 @@ func (comp Compilation) EmitExecutable() Stage[[]byte] {
 			return nil, err
 		}
 		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
-		encoded, err := asm.EncodeFunctions(lowered.Model.AsmFunctions, generator.CFunctionName)
+		generator.SetNativeGlobals(asm.AddressedGlobals(lowered.Model.AsmFunctions))
+		encoded, err := asm.EncodeFunctions(lowered.Model.AsmFunctions, generator.AsmSymbol)
 		if err != nil {
 			return nil, fmt.Errorf("asm: %w", err)
 		}
@@ -757,7 +759,8 @@ func (comp Compilation) EmitNativeObject(format asm.ObjectFormat) Stage[[]byte] 
 			return nil, err
 		}
 		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
-		encoded, err := asm.EncodeFunctions(lowered.Model.AsmFunctions, generator.CFunctionName)
+		generator.SetNativeGlobals(asm.AddressedGlobals(lowered.Model.AsmFunctions))
+		encoded, err := asm.EncodeFunctions(lowered.Model.AsmFunctions, generator.AsmSymbol)
 		if err != nil {
 			return nil, fmt.Errorf("asm: %w", err)
 		}
@@ -817,7 +820,8 @@ func (comp Compilation) objectOptions() asm.ObjectOptions {
 func (comp Compilation) EmitAsmObject(format asm.ObjectFormat) Stage[[]byte] {
 	return comp.Lower().Then(func(lowered *LoweredProgram) ([]byte, error) {
 		generator := codegen.New(comp.options.PackageName, lowered.Model.TypeChecker)
-		encoded, err := asm.EncodeFunctions(lowered.Model.AsmFunctions, generator.CFunctionName)
+		generator.SetNativeGlobals(asm.AddressedGlobals(lowered.Model.AsmFunctions))
+		encoded, err := asm.EncodeFunctions(lowered.Model.AsmFunctions, generator.AsmSymbol)
 		if err != nil {
 			return nil, fmt.Errorf("asm: %w", err)
 		}

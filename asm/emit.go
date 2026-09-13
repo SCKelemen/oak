@@ -190,6 +190,10 @@ func (instr Instruction) String() string {
 	parts := make([]string, 0, len(instr.Operands))
 	for _, operand := range instr.Operands {
 		if sym, isSym := operand.(Symbol); isSym {
+			if sym.Lo12 {
+				parts = append(parts, ":lo12:"+sym.Name)
+				continue
+			}
 			parts = append(parts, sym.Name)
 			continue
 		}
@@ -220,6 +224,14 @@ func renderInstruction(fn *Function, instr Instruction, symbolFor func(string) s
 	}
 	parts := make([]string, 0, len(instr.Operands))
 	for _, operand := range instr.Operands {
+		if sym, isSym := operand.(Symbol); isSym && mnemonic == "adrp" {
+			// A global's page address, as the platform's assembler spells it
+			// (`sym@PAGE` on Darwin, the bare symbol under GNU as).
+			if _, isLabel := numbers[sym.Name]; !isLabel {
+				parts = append(parts, "\" OAK_ASM_PAGE("+symbolFor(sym.Name)+") \"")
+				continue
+			}
+		}
 		parts = append(parts, renderOperand(operand, symbolFor, numbers, defined))
 	}
 	return mnemonic + " " + strings.Join(parts, ", ")
@@ -290,6 +302,11 @@ func renderOperand(operand Operand, symbolFor func(string) string, numbers map[s
 				return fmt.Sprintf("%db", number)
 			}
 			return fmt.Sprintf("%df", number)
+		}
+		if o.Lo12 {
+			// The low 12 bits of a global's address (`sym@PAGEOFF` on
+			// Darwin, `:lo12:sym` under GNU as).
+			return "\" OAK_ASM_PAGEOFF(" + symbolFor(o.Name) + ") \""
 		}
 		return "\" OAK_ASM_SYMBOL(" + symbolFor(o.Name) + ") \""
 	case SysReg:

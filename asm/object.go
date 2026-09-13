@@ -41,6 +41,18 @@ type EncodedFunction struct {
 	Arch       string // the lane; every function of an object shares it
 }
 
+// AddressedGlobals names every global the functions address
+// (Function.Globals), for the symbol mapping of the object they encode to.
+func AddressedGlobals(functions []*Function) map[string]bool {
+	names := map[string]bool{}
+	for _, fn := range functions {
+		for name := range fn.Globals {
+			names[name] = true
+		}
+	}
+	return names
+}
+
 // EncodeFunctions encodes checked functions for an object; symbolFor maps
 // an Oak function name to its C symbol (the emitter's mangling), for the
 // functions themselves and for the symbols their calls reference.
@@ -284,6 +296,8 @@ func writeMachO(l *textLayout) ([]byte, error) {
 			if r.kind == "adr21" {
 				return nil, fmt.Errorf("object: adr to external symbol %s has no Mach-O relocation (use adrp/add)", r.symbol)
 			}
+		case "lo12":
+			typ, pcrel = 4, 0 // ARM64_RELOC_PAGEOFF12: the low 12 bits of the symbol's address into the add's imm12
 		default:
 			return nil, fmt.Errorf("object: %s to external symbol %s has no Mach-O relocation (conditional branches and bit tests reach only labels within the function)", r.kind, r.symbol)
 		}
@@ -443,6 +457,8 @@ func writeELF(l *textLayout) ([]byte, error) {
 			typ = 274 // R_AARCH64_ADR_PREL_LO21
 		case "adrp21":
 			typ = 275 // R_AARCH64_ADR_PREL_PG_HI21
+		case "lo12":
+			typ = 277 // R_AARCH64_ADD_ABS_LO12_NC
 		case "riscv_call_plt":
 			typ = 19 // R_RISCV_CALL_PLT: the auipc/jalr pair of `call`
 		default:

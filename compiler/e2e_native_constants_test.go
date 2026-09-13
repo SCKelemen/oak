@@ -51,8 +51,11 @@ func TestE2ENativeConstantReads(t *testing.T) {
 			t.Errorf("%s reads constants and must lower natively; diagnostics:\n%s", fn, joined)
 		}
 	}
-	if !strings.Contains(joined, "bump left to the C backend") {
-		t.Errorf("bump writes a global and stays with the C backend; diagnostics:\n%s", joined)
+	// A written global is addressed storage (docs/spec/94-assembler.md §9,
+	// the OS pilot's N3): its writer lowers too, trusted against the C
+	// oracle.
+	if !strings.Contains(joined, "asm unit bump:") {
+		t.Errorf("bump writes a global and must lower natively through its address; diagnostics:\n%s", joined)
 	}
 	emitted, err := New().WithSource("consts.oak", nativeConstantsProgram).WithNativeBodies().EmitC().Get()
 	if err != nil {
@@ -183,12 +186,16 @@ func TestE2ENativeConstants(t *testing.T) {
 			t.Errorf("%s must be proven equal to its Oak body; diagnostics:\n%s", fn, joined)
 		}
 	}
-	// A written global is no constant: its writer and its readers stay with
-	// the C backend.
-	for fn, reason := range map[string]string{"bump": "an assignment to counter", "read_counter": "identifier counter"} {
-		if !strings.Contains(joined, fn+" left to the C backend ("+reason+")") {
-			t.Errorf("%s touches the mutable global counter and must stay with the C backend; diagnostics:\n%s", fn, joined)
+	// A written global is no constant: it is addressed storage
+	// (docs/spec/94-assembler.md §9). Its writer lowers, trusted against the
+	// C oracle; its reader is proven over the cell's entry value.
+	for _, fn := range []string{"bump", "read_counter"} {
+		if !strings.Contains(joined, "asm unit "+fn+":") {
+			t.Errorf("%s touches the mutable global counter and must lower through its address; diagnostics:\n%s", fn, joined)
 		}
+	}
+	if !strings.Contains(joined, "asm unit read_counter: proven equal to its Oak body (linear normal form 1*global:counter + 0") {
+		t.Errorf("read_counter must be proven over the global's entry value; diagnostics:\n%s", joined)
 	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_constants_c", New().WithSource("constants.oak", nativeConstantProgram)); abnormal || code != 42 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)

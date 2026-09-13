@@ -665,6 +665,11 @@ type VariableDeclaration struct {
 	// `pub(opaque)`: the name is exported, the definition is not.
 	Exported bool
 	Opaque   bool
+	// NativeAddressed marks a mutable top-level scalar some natively
+	// lowered body addresses through its symbol (docs/spec/94-assembler.md
+	// §9): the C emitter gives it external linkage under the assembler
+	// label the native code names. Set by the native backend.
+	NativeAddressed bool
 	// Section is the declared linker section of a static
 	// (ring: [8]u64 (section: "shared")); empty for the default
 	// (docs/spec/65-machine-memory.md). Fixed addresses stay with the

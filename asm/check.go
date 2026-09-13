@@ -257,6 +257,13 @@ type checker struct {
 	// inside the extent; the fact dies with a write to the register or a
 	// call and copies through `mov xD, xS`.
 	regions map[int]region
+	// globalPages / globalAddrs: register -> the global whose page address
+	// (`adrp xN, G`) or whose address (`add xA, xN, :lo12:G` over that
+	// page) it holds; a memory access through the latter is the global's
+	// cell at its scalar width (docs/spec/94-assembler.md §9). Both die
+	// with a write to the register and at a call.
+	globalPages map[int]string
+	globalAddrs map[int]string
 	// resultRegs: a composite result's chunk count in x0/x1 (1 for scalars);
 	// resultIndirect: the result is written through x8.
 	resultRegs     int
@@ -556,6 +563,8 @@ func (c *checker) bindContract() {
 	c.spanParams = map[string]spanParam{}
 	c.compositeParams = map[string]compositeParam{}
 	c.regions = map[int]region{}
+	c.globalPages = map[int]string{}
+	c.globalAddrs = map[int]string{}
 	c.resultRegs = 1
 	nextGeneral, nextVector := 0, 0
 	for _, param := range c.fn.Signature.Parameters {
@@ -893,6 +902,8 @@ func (c *checker) forgetGuards() {
 	c.idxFacts = map[int]idxFact{}
 	c.slackFacts = map[int]slackFact{}
 	c.frameAddrs = map[int]int64{}
+	c.globalPages = map[int]string{}
+	c.globalAddrs = map[int]string{}
 	c.leFacts = map[int]int{}
 	c.diffFacts = map[int]diffFact{}
 	c.subFacts = map[int]subFact{}
@@ -1231,6 +1242,11 @@ func (c *checker) instruction(instr Instruction) bool {
 	// the fact survives the write with the halfword replaced (a record
 	// stride of 65 536 bytes or more is spelled movz then movk).
 	priorConst, hadConst := c.constFacts[dest.Num]
+	var priorPage string
+	hadPage := false
+	if len(regs) == 2 {
+		priorPage, hadPage = c.globalPages[regs[1].Num]
+	}
 	// Facts an immediate add or sub carries from its source, read before
 	// the write forgets a destination that is also the source:
 	// `sub wT, wL, #K` on a span length gives the slack register
@@ -1272,6 +1288,7 @@ func (c *checker) instruction(instr Instruction) bool {
 	}
 	c.deriveSpan(instr, dest, regs)
 	c.deriveElement(instr, dest)
+	c.deriveGlobal(instr, dest, regs, priorPage, hadPage)
 	if instr.Mnemonic == "movk" && hadConst && dest.Class == ClassW && len(instr.Operands) == 2 {
 		if imm, isImm := instr.Operands[1].(Immediate); isImm && imm.Value >= 0 && imm.Value <= 0xffff && imm.Shift%16 == 0 && imm.Shift < 32 {
 			c.constFacts[dest.Num] = (priorConst &^ (0xffff << uint(imm.Shift))) | (imm.Value << uint(imm.Shift))
@@ -1296,6 +1313,68 @@ func (c *checker) instruction(instr Instruction) bool {
 		c.flagsValid = true
 	}
 	return false
+}
+
+// deriveGlobal records a global's address: `adrp xN, G` holds G's page
+// when G is one of the function's declared globals (an adrp of any other
+// symbol — a label, an external — leaves no fact, so memory through it is
+// refused as through any unknown base), and `add xA, xN, :lo12:G` over
+// that page holds G's address.
+func (c *checker) deriveGlobal(instr Instruction, dest Register, regs []Register, priorPage string, hadPage bool) {
+	switch instr.Mnemonic {
+	case "adrp":
+		if dest.Class != ClassX || len(instr.Operands) != 2 {
+			return
+		}
+		sym, isSym := instr.Operands[1].(Symbol)
+		if !isSym {
+			return
+		}
+		if _, isGlobal := c.fn.Globals[sym.Name]; !isGlobal {
+			return
+		}
+		c.globalPages[dest.Num] = sym.Name
+	case "add":
+		if dest.Class != ClassX || len(instr.Operands) != 3 || len(regs) != 2 {
+			return
+		}
+		sym, isSym := instr.Operands[2].(Symbol)
+		if !isSym || !sym.Lo12 {
+			return
+		}
+		if !hadPage || priorPage != sym.Name {
+			c.errorf(instr.Line, "add :lo12:%s over %s, which does not hold that symbol's page (adrp first)", sym.Name, regs[1].Text)
+			return
+		}
+		c.globalAddrs[dest.Num] = sym.Name
+	}
+}
+
+// globalAccess admits the one access shape a global's cell takes: `[xA]`
+// with no offset, index, or base update, one register, at exactly the
+// scalar's width; the cell is writable (a constant global never reaches
+// here — the compiler folds it).
+func (c *checker) globalAccess(instr Instruction, matched form, mem Memory, name string, regs []Register, isStore bool) {
+	global := c.fn.Globals[name]
+	if mem.Mode != MemOffset || mem.Index != nil || mem.Offset != 0 {
+		c.errorf(instr.Line, "%s: the global %s is one cell at its address; `[%s]` is the only access shape", instr.Mnemonic, name, mem.Base.Text)
+		return
+	}
+	if len(regs) != 1 {
+		c.errorf(instr.Line, "%s: the global %s is one scalar; a pair or structure access does not fit its cell", instr.Mnemonic, name)
+		return
+	}
+	size := accessBytes(instr.Mnemonic, matched[0])
+	if regs[0].Class == ClassV {
+		size = memorySizeReg(instr.Mnemonic, regs[0])
+	}
+	if size != int64(global.Bits/8) {
+		c.errorf(instr.Line, "%s: a %d-byte access to the global %s, a %d-byte %s", instr.Mnemonic, size, name, global.Bits/8, global.Type)
+		return
+	}
+	if !isStore {
+		c.write(instr, regs[0])
+	}
 }
 
 func registerOperands(operands []Operand) []Register {
@@ -1466,6 +1545,8 @@ func (c *checker) forgetRegisterFacts(num int) {
 	}
 	delete(c.frameAddrs, num)
 	delete(c.regions, num)
+	delete(c.globalPages, num)
+	delete(c.globalAddrs, num)
 	delete(c.leFacts, num)
 	for reg, bound := range c.leFacts {
 		if bound == num {
@@ -1690,6 +1771,10 @@ func (c *checker) memoryAccess(instr Instruction, matched form) {
 		}
 		if extent, isRegion := c.regions[mem.Base.Num]; isRegion {
 			c.regionAccess(instr, matched, mem, extent, regs, isStore)
+			return
+		}
+		if name, isGlobal := c.globalAddrs[mem.Base.Num]; isGlobal {
+			c.globalAccess(instr, matched, mem, name, regs, isStore)
 			return
 		}
 	}

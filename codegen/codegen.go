@@ -61,7 +61,11 @@ type CodeGenerator struct {
 	launchCounter int
 	// mutatedGlobals names the top-level bindings some statement writes,
 	// borrows, or addresses; the others may be C constants (globals.go).
-	mutatedGlobals   map[string]bool
+	mutatedGlobals map[string]bool
+	// nativeGlobals names the globals natively lowered bodies address
+	// (ast.VariableDeclaration.NativeAddressed): emitted with external
+	// linkage under globalSymbol, the name AsmSymbol resolves.
+	nativeGlobals    map[string]bool
 	indentLevel      int
 	types            map[string]bool // Track emitted types to avoid duplicates
 	typeChecker      *typechecker.TypeChecker
@@ -2068,7 +2072,7 @@ func (cg *CodeGenerator) emitAsmUnits() {
 		if _, isRealization := cg.realizationFeature[fn.Name]; isRealization {
 			fn.Inert = true
 		}
-		cg.write(asm.EmitC(fn, cg.cFunctionName(fn.Name), cg.cFunctionName))
+		cg.write(asm.EmitC(fn, cg.cFunctionName(fn.Name), cg.AsmSymbol))
 	}
 }
 
