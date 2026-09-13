@@ -1172,7 +1172,7 @@ const vecScratchLow, vecScratchHigh = 16, 31
 
 // vecTempReserve is how many caller-saved vector registers stay scratch
 // when a function without calls takes the rest for its vector locals.
-const vecTempReserve = 6
+const vecTempReserve = 4
 const vecCalleeLow, vecCalleeHigh = 8, 15
 
 // Lane names the assembler lane a body is lowered on and the target facts
