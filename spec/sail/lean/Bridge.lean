@@ -248,8 +248,10 @@ write (`aget_foldl_aset`), and so the register-level theorems follow:
 the lanes of their operands; `ext` is the byte-lane `ext`, `ushr` the lane
 shift, `sshr #7` on bytes the sign fill of `movemask`, and Arm's recursive
 `Reduce` (stated by hand, since Sail's backend cannot discharge its
-termination) sums eight bytes as the wrapping fold of `addv`. Only `cnt`
-remains (`docs/notes/proof-chain-audit-2026-09.md`). -/
+termination) sums eight bytes as the wrapping fold of `addv`, and `cnt` is
+the population count of each lane (Arm's `BitCount` as
+`Oak.Intrinsics.popcount`). Every vector instruction the native backend
+emits is bridged (`docs/notes/proof-chain-audit-2026-09.md`). -/
 
 namespace Oak.SailBridge
 
@@ -1117,6 +1119,77 @@ theorem reduceAdd_eight_bytes (v : BitVec 64) :
     Nat.shiftRight_zero, Oak.Neon.addv, lanesOf, hr, List.map_cons, List.map_nil, List.foldl_cons,
     List.foldl_nil, Nat.reduceMul, Nat.zero_add]
   omega
+
+
+
+
+/-! ### `cnt`: Arm's `BitCount` is the population count -/
+
+theorem popcount_append (l₁ l₂ : List Bool) :
+    Oak.Intrinsics.popcount (l₁ ++ l₂) = Oak.Intrinsics.popcount l₁ + Oak.Intrinsics.popcount l₂ := by
+  induction l₁ with
+  | nil => simp [Oak.Intrinsics.popcount]
+  | cons b rest ih => cases b <;> simp [Oak.Intrinsics.popcount, ih] <;> omega
+
+/-- The bit test of Arm's loop is the bit. -/
+theorem bitTest_eq {n : Nat} (x : BitVec n) (i : Nat) :
+    ((Sail.BitVec.join1 [Sail.BitVec.access x i] == 1#1) : Bool) = x.getLsbD i := by
+  rw [join1_single, access_eq]
+  cases x.getLsbD i <;> rfl
+
+/-- Counting the set bits as a fold over the bit indices. -/
+theorem foldl_count (c : Nat → Bool) (n : Nat) :
+    (List.range n).foldl (fun (r : Int) (i : Nat) => if c i = true then r + 1 else r) 0
+      = ((Oak.Intrinsics.popcount ((List.range n).map c) : Nat) : Int) := by
+  induction n with
+  | zero => rfl
+  | succ n ih =>
+    rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil, List.map_append, popcount_append, ih]
+    cases hc : c n <;> simp [hc, Oak.Intrinsics.popcount]
+
+/-- **`BitCount`** is the population count of the bits. -/
+theorem BitCount_eq {n : Nat} (x : BitVec n) :
+    BitCount x = ((Oak.Intrinsics.popcount ((List.range n).map (fun i => x.getLsbD i)) : Nat) : Int) := by
+  unfold BitCount
+  simp only [Id.run, bind, pure, Sail.BitVec.length]
+  rw [show ({ stop := (n : Int) - 1 } : IntRange) = laneRange n from rfl, forIn_laneRange_fold]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  rw [foldl_count (fun i => (Sail.BitVec.join1 [Sail.BitVec.access x i] == 1#1))]
+  congr 2
+  apply List.map_congr_left
+  intro i _
+  exact bitTest_eq x i
+
+/-- The `cnt` lane: the population count of the lane (`Oak.Neon.cnt`). -/
+theorem cnt_lane (size : Nat) (x : BitVec size) :
+    (__GetSlice_int size (BitCount x) 0).toNat = Oak.Neon.cnt size x.toNat := by
+  rw [BitCount_eq, getSlice_toNat]
+  · rfl
+  · have h1 := Oak.Intrinsics.popcount_le_width ((List.range size).map (fun i => x.getLsbD i))
+    have h2 : size < 2 ^ size := Nat.lt_two_pow_self
+    simp only [List.length_map, List.length_range] at h1
+    omega
+
+/-- **`cnt`**: lane-wise population count. -/
+theorem cnt_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a : BitVec datasize) :
+    lanesOf (vector_arithmetic_unary_cnt datasize elements esize a) esize
+      = (lanesOf a esize).map (Oak.Neon.cnt esize) := by
+  unfold vector_arithmetic_unary_cnt
+  simp only [Id.run, bind, pure]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl,
+    forIn_laneRange_fold]
+  show lanesOf ((List.foldl (fun (s : Int × BitVec datasize) (j : Int) =>
+      (BitCount (aget_Elem a j.toNat esize),
+        aset_Elem s.2 j.toNat esize (__GetSlice_int esize (BitCount (aget_Elem a j.toNat esize)) 0)))
+      (0, Zeros datasize) (List.map (fun (x : Nat) => (x : Int)) (List.range elements))).2) esize = _
+  rw [result_of_lane_loop2 esize _ (fun j => BitCount (aget_Elem a j esize))
+    (fun j => __GetSlice_int esize (BitCount (aget_Elem a j esize)) 0)]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  rw [lanes_of_fold_write esize elements h hs, lanesOf_eq_map, lanes_div datasize elements esize h hs, List.map_map]
+  apply List.map_congr_left
+  intro j _
+  exact cnt_lane esize _
 
 
 end Lanes

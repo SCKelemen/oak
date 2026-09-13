@@ -811,9 +811,11 @@ support library's iterated halving), `sshr #7` on a byte is the sign fill
 of `movemask` (`sshr7_lane`, decided over the 256 bytes), and Arm's
 recursive `Reduce` — stated by hand as `reduceAdd`, since Sail's Lean
 backend cannot discharge its termination — sums eight bytes as `addv`'s
-fold (`reduceAdd_eight_bytes`). Left for the next increments: `cnt` (a
-popcount lane on the Oak side), `simd.store` (a write the straight-line
-model does not follow), and float vectors
+fold (`reduceAdd_eight_bytes`), and `cnt` is the population count of each
+lane — Arm's `BitCount` loop as `Oak.Intrinsics.popcount` (`cnt_lanes`).
+Every vector instruction the backend emits is bridged to Arm's text. Left
+for the next increments: `simd.store` (a write the straight-line model
+does not follow) and float vectors
 (`docs/notes/proof-chain-audit-2026-09.md`).
 
 ## 9. Native encoding, and the architectures to come
