@@ -763,7 +763,9 @@ func runTest(pkg Package, test Test, index int, native *nativeProgram, cfg Confi
 // result names it beside the signature.
 func FailureClass(signature string) string {
 	switch {
-	case strings.HasPrefix(signature, "invariant:"):
+	case strings.HasPrefix(signature, "invariant:"), strings.HasPrefix(signature, "dispatch:"):
+		// A dispatch realization disagreeing with its body is something
+		// false observed too (docs/spec/93-simd.md section 6.2).
 		return "correctness"
 	case strings.HasPrefix(signature, "liveness:"), signature == "timeout":
 		return "liveness"

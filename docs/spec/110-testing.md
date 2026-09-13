@@ -116,7 +116,9 @@ signature; `test_check` provides stronger failure identity for minimization.
 invariant:7`), so triage and corpus routing differ by what went wrong
 (TigerBeetle's crash, liveness, and correctness exit codes,
 `docs/notes/tigerbeetle-2026-09.md`): **correctness** — an invariant was
-violated (`invariant:<id>`): something false was observed; **liveness** —
+violated (`invariant:<id>`), or a `dispatch` realization disagreed with its
+body (`dispatch:<function>:<feature>`, `93-simd.md` §6.2): something false
+was observed; **liveness** —
 a liveness check failed or the case timed out (`liveness:<id>`,
 `timeout`): something true never arrived; **crash** — a trap, an abnormal
 exit, or a signal (`exit:…`): the program died before saying either;

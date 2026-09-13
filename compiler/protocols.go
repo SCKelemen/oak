@@ -1092,6 +1092,12 @@ func (m *protocolMachine) project() []ast.Statement {
 					stateADT.TagValues = append(stateADT.TagValues, 6*i)
 				}
 			}
+			if lowering.Bases != nil {
+				// The lowered step reads every classed payload member
+				// through the union and selects on the tag; the
+				// constructors zero the value first (ADTType.ZeroInit).
+				out[1].(*ast.ADTType).ZeroInit = true
+			}
 			if lowering.ByteSymbol {
 				step := m.steps[0]
 				run := s.fn(prefix+"_run", []*ast.FunctionParameter{stateParam(), s.param("bytes", s.view(s.id("u8")))}, s.id(stateType),
@@ -1477,30 +1483,57 @@ func (m *protocolMachine) lowering() *ast.ProtocolLowering {
 	sink := len(m.states)
 	// A payload that no guard reads does not affect transitions: the step
 	// is one symbol. Only a payload some guard mentions makes the payload
-	// values the symbols.
+	// values the symbols; widths[i] is that payload's mask, 0 for a step
+	// whose payload no guard reads. A read payload outside u8 and u16
+	// (wider, signed, or not a scalar) leaves the branch tree in place.
+	widths := make([]uint64, len(m.steps))
 	payloads := 0
-	for _, step := range m.steps {
+	for i, step := range m.steps {
 		if step.payload == nil {
 			continue
 		}
+		read := false
 		for _, line := range step.lines {
 			if mentionsIdentifier(line.Guard, step.payload.Name.Value) {
-				payloads++
+				read = true
 				break
 			}
 		}
+		if !read {
+			continue
+		}
+		payloadType, isIdent := step.payload.Type.(*ast.Identifier)
+		if !isIdent {
+			return nil
+		}
+		switch payloadType.Value {
+		case "u8":
+			widths[i] = 0xFF
+		case "u16":
+			widths[i] = 0xFFFF
+		default:
+			return nil
+		}
+		payloads++
 	}
 	lowering := &ast.ProtocolLowering{Protocol: m.name, States: len(m.states)}
 	// firstLine resolves (state, step, payload value) to the target of the
 	// first line whose source and guard hold; ok is false when a guard is
 	// outside the compile-time vocabulary.
-	firstLine := func(state string, step *protocolStep, payload uint64) (target int, legal bool, ok bool) {
+	payloadName := func(step *protocolStep) string {
+		if step.payload == nil {
+			return ""
+		}
+		return step.payload.Name.Value
+	}
+	firstLine := func(state string, i int, payload uint64) (target int, legal bool, ok bool) {
+		step := m.steps[i]
 		for _, line := range step.lines {
 			if line.From.Value != state {
 				continue
 			}
 			if line.Guard != nil {
-				holds, evaluable := evalPayloadGuard(line.Guard, step.payload.Name.Value, payload)
+				holds, evaluable := evalPayloadGuard(line.Guard, payloadName(step), payload, widths[i])
 				if !evaluable {
 					return 0, false, false
 				}
@@ -1519,27 +1552,24 @@ func (m *protocolMachine) lowering() *ast.ProtocolLowering {
 			return nil
 		}
 		for _, state := range m.states {
-			for _, step := range m.steps {
-				target, _, ok := firstLine(state, step, 0)
+			for i := range m.steps {
+				target, _, ok := firstLine(state, i, 0)
 				if !ok {
 					return nil
 				}
 				lowering.Table = append(lowering.Table, target)
 			}
 		}
-	case payloads == 1 && len(m.steps) == 1:
-		step := m.steps[0]
-		payloadType, isIdent := step.payload.Type.(*ast.Identifier)
-		if !isIdent || payloadType.Value != "u8" {
-			return nil
-		}
-		lowering.Symbols, lowering.ByteSymbol, lowering.StepName = 256, true, variantName(step.name)
+	case payloads == 1 && len(m.steps) == 1 && widths[0] == 0xFF:
+		// One byte-driven step: the byte indexes the table directly, no
+		// class lookup in between.
+		lowering.Symbols, lowering.ByteSymbol, lowering.StepName = 256, true, variantName(m.steps[0].name)
 		if len(m.states)*256 > 65536 {
 			return nil
 		}
 		for _, state := range m.states {
 			for value := 0; value < 256; value++ {
-				target, _, ok := firstLine(state, step, uint64(value))
+				target, _, ok := firstLine(state, 0, uint64(value))
 				if !ok {
 					return nil
 				}
@@ -1547,7 +1577,76 @@ func (m *protocolMachine) lowering() *ast.ProtocolLowering {
 			}
 		}
 	default:
-		return nil
+		// Mixed symbols (docs/spec/112-protocols.md section 2a): every step
+		// owns a range of symbols starting at Bases[i]. A step whose payload
+		// no guard reads owns one. A step whose guards read its payload owns
+		// one symbol per class of payload values, where two values are in
+		// the same class when every guard of the step decides them alike —
+		// so the first line that fires is the same for both from every
+		// state (Oak.Protocol.Classes.lowering_correct), and one
+		// representative per class fills the table. Classes[i] maps each
+		// payload value to its class.
+		lowering.Bases = make([]int, len(m.steps))
+		lowering.Classes = make([][]int, len(m.steps))
+		lowering.ClassVariant = make([]string, len(m.steps))
+		var reps [][]uint64
+		for i, step := range m.steps {
+			lowering.Bases[i] = lowering.Symbols
+			if widths[i] == 0 {
+				lowering.Symbols++
+				reps = append(reps, []uint64{0})
+				continue
+			}
+			lowering.ClassVariant[i] = variantName(step.name)
+			classes := make([]int, widths[i]+1)
+			classOf := map[string]int{}
+			var stepReps []uint64
+			outcomes := make([]byte, len(step.lines))
+			for value := uint64(0); value <= widths[i]; value++ {
+				for j, line := range step.lines {
+					outcomes[j] = 't'
+					if line.Guard == nil {
+						continue
+					}
+					holds, evaluable := evalPayloadGuard(line.Guard, step.payload.Name.Value, value, widths[i])
+					if !evaluable {
+						return nil
+					}
+					if !holds {
+						outcomes[j] = 'f'
+					}
+				}
+				key := string(outcomes)
+				class, seen := classOf[key]
+				if !seen {
+					class = len(stepReps)
+					classOf[key] = class
+					stepReps = append(stepReps, value)
+				}
+				classes[value] = class
+			}
+			// The class table is a byte table.
+			if len(stepReps) > 255 {
+				return nil
+			}
+			lowering.Classes[i] = classes
+			lowering.Symbols += len(stepReps)
+			reps = append(reps, stepReps)
+		}
+		if len(m.states)*lowering.Symbols > 65536 {
+			return nil
+		}
+		for _, state := range m.states {
+			for i := range m.steps {
+				for _, rep := range reps[i] {
+					target, _, ok := firstLine(state, i, rep)
+					if !ok {
+						return nil
+					}
+					lowering.Table = append(lowering.Table, target)
+				}
+			}
+		}
 	}
 	// The sink row: every symbol keeps the sink (Oak.Protocol.runSink_sink).
 	for t := 0; t < lowering.Symbols; t++ {
@@ -1569,11 +1668,11 @@ func loweringKind(l *ast.ProtocolLowering, kind string) *ast.ProtocolLowering {
 // (`u8(128)`), `+ - * / %`, comparisons, and `&& || !` — the guard
 // vocabulary of docs/spec/112-protocols.md section 1 without data fields.
 // Arithmetic is unsigned modulo 2^64 with the result masked to the payload
-// width, matching the total machine arithmetic of 20-types.md; division by
-// zero is not evaluable (it would trap at run time). Anything else is
-// reported not evaluable and the lowering falls back to the branch tree.
-func evalPayloadGuard(guard ast.Expression, payload string, value uint64) (bool, bool) {
-	const width = uint64(0xFF)
+// width (`width` is the payload type's mask: 0xFF for u8, 0xFFFF for u16),
+// matching the total machine arithmetic of 20-types.md; division by zero
+// is not evaluable (it would trap at run time). Anything else is reported
+// not evaluable and the lowering falls back to the branch tree.
+func evalPayloadGuard(guard ast.Expression, payload string, value uint64, width uint64) (bool, bool) {
 	var num func(e ast.Expression) (uint64, bool)
 	var boolean func(e ast.Expression) (bool, bool)
 	num = func(e ast.Expression) (uint64, bool) {

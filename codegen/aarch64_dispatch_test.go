@@ -47,8 +47,14 @@ func TestAArch64DispatchShape(t *testing.T) {
 	for _, want := range []string{
 		"#define OAK_CPU_SVE (1ull << 0)",
 		"void oak_cpu_init(void) { oak_cpu_features = oak_cpu_probe(); }",
-		"if (oak_cpu_features & OAK_CPU_SVE) { return oak_count_sevens_sve( input ); }",
-		"return oak_count_sevens_sve( input ); /* the baseline guarantees sve */",
+		"if (oak_cpu_features & OAK_CPU_SVE) {",
+		"return oak_count_sevens_sve( input );",
+		"/* the baseline guarantees sve */",
+		"static inline u32 oak_count_sevens__meaning( oak_view_u8 input )",
+		"return oak_count_sevens__meaning( input );",
+		// Under oak test the claim is checked (docs/spec/93-simd.md section 6.2).
+		"#ifdef OAK_CHECK_DISPATCH",
+		`oak_dispatch_divergence( "count_sevens", "sve" )`,
 		`__attribute__((target("sve"))) u32 oak_count_sevens_sve( oak_view_u8 input )`,
 		"oak_scalable_u8__sve chunk",
 		"oak_simd_load_active_u8__sve( input, offset, active )",
