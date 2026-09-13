@@ -130,8 +130,14 @@ SimLogRecovery: (data: []u8): () {
   requests: [*]iosim.IoRequest = span(&req_store)
   completions: [*]iosim.IoCompletion = span(&cq_store)
   region: [*]u8 = span(&region_store)
-  // torn (1), dropped (4), lost fsync (8)
-  iosim.io_attach(data, u32(13))
+  // The enabled fault kinds are drawn from the tape (swarm testing,
+  // docs/spec/110-testing.md): some subset of torn (1), dropped (4), and
+  // lost fsync (8) — the three a single-disk log can honestly keep — so a
+  // failing tape shrinks toward fewer kinds as well as fewer faults.
+  swarm_store: [1]TestChoices
+  swarm: u32 = test_swarm_mask(span(&swarm_store), data, u32(3))
+  faults: u32 = (swarm & u32(1)) | ((swarm & u32(2)) << u32(1)) | ((swarm & u32(4)) << u32(1))
+  iosim.io_attach(data, faults)
   iosim.io_open_region(ring, region, u32(2))
   test_check(log_open(ring, requests, completions, region), u32(1))
   published: Bool = segment_publish(ring, requests, completions, region)
