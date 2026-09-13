@@ -1720,6 +1720,7 @@ func (g *rvGenerator) resultExpr(expr ast.Expression) error {
 			if err != nil {
 				return err
 			}
+			g.emit("mv", rvReg(out), rvReg(0)) // defined before the arms (generator.resultExpr)
 			if err := g.resultInto(e, out); err != nil {
 				return err
 			}
@@ -2034,14 +2035,86 @@ func (g *rvGenerator) element(e *ast.IndexExpression) (int, error) {
 }
 
 // elementStore lowers `v[i] = e` through a writable span: the value first,
-// then the guarded address, then the store at the element's width.
-func (g *rvGenerator) elementStore(s *ast.IndexAssignmentStatement) error {
-	if s.Target.Dot {
+// placeStore lowers `p.f = e` and `pool[i].f = e`. When the value calls,
+// it is evaluated before the place: an element address computed first
+// would be held across the call, spilled and reloaded, and the checker
+// cannot carry a region through a spill (docs/spec/94-assembler.md §9).
+// The place is computed once to learn its type — that computation is
+// rolled back — then again after the value.
+func (g *rvGenerator) placeStore(s *ast.IndexAssignmentStatement) error {
+	if !mentionsCall(s.Value) {
 		target, err := g.placeOf(s.Target)
 		if err != nil {
 			return err
 		}
 		return g.storeToPlace(target, s)
+	}
+	mark := len(g.items)
+	probe, err := g.placeOf(s.Target)
+	if err != nil {
+		return err
+	}
+	g.items = g.items[:mark]
+	switch {
+	case probe.sc != nil:
+		g.releaseTemps(probe.sc.temps)
+		if probe.sc.readOnly {
+			return unsupported("a store into %s through a read-only view", s.Target.String())
+		}
+		typ := probe.sc.typ
+		value, err := g.exprAs(s.Value, typ)
+		if err != nil {
+			return err
+		}
+		target, err := g.placeOf(s.Target)
+		if err != nil {
+			return err
+		}
+		if target.sc == nil {
+			return unsupported("the place %s changed shape", s.Target.String())
+		}
+		if err := g.fieldStore(target.sc, value); err != nil {
+			return err
+		}
+		g.release(value)
+		g.releaseTemps(target.sc.temps)
+		return nil
+	case probe.rec != nil:
+		g.releaseTemps(probe.rec.temps)
+		if probe.rec.readOnly {
+			return unsupported("a store into %s through a read-only view", s.Target.String())
+		}
+		layout := probe.rec.layout
+		src, err := g.recordValueAs(s.Value, layout)
+		if err != nil {
+			return err
+		}
+		if src.layout != layout {
+			return unsupported("a %s stored into %s (a %s)", src.layout.name, s.Target.String(), layout.name)
+		}
+		target, err := g.placeOf(s.Target)
+		if err != nil {
+			return err
+		}
+		if target.rec == nil {
+			return unsupported("the place %s changed shape", s.Target.String())
+		}
+		err = g.copyBytes(target.rec.loc(), src.loc(), layout.size)
+		g.releaseTemps(src.temps)
+		g.releaseTemps(target.rec.temps)
+		return err
+	}
+	target, err := g.placeOf(s.Target)
+	if err != nil {
+		return err
+	}
+	return g.storeToPlace(target, s)
+}
+
+// then the guarded address, then the store at the element's width.
+func (g *rvGenerator) elementStore(s *ast.IndexAssignmentStatement) error {
+	if s.Target.Dot {
+		return g.placeStore(s)
 	}
 	arr, err := g.arrayOperand(s.Target.Left)
 	if err != nil {
@@ -2800,6 +2873,7 @@ func (g *rvGenerator) resultRecordExpr(expr ast.Expression) error {
 				if err != nil {
 					return err
 				}
+				g.emit("mv", rvReg(out), rvReg(0)) // defined before the arms
 				outs = append(outs, out)
 			}
 			if err := g.resultRecordInto(e, outs); err != nil {

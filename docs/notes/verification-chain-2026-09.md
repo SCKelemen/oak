@@ -44,6 +44,7 @@ of §3 the build failed closed on both lanes.
 | --- | --- | --- | --- | --- | --- | --- |
 | AArch64, before | 87 | 3 | 280 | 88 | 68 | 3 |
 | AArch64, after | 92 | 5 | 304 | 88 | 2 functions | 0 |
+| AArch64, after call summaries and the last two | 101 | 13 | 305 | 93 | 0 | 0 |
 | RV64, before | 36 | 3 | 264 | 156 | 165 | 0 |
 | RV64, after | 38 | 3 | 295 | 156 | 0 | 0 |
 
@@ -120,26 +121,42 @@ or the verifier, not in the program:
    Lean for RV64 first (the mappings export cleanly), then for AArch64.
    That would make the machine words, not only the semantics, a
    consequence of the Sail specification.
-4. **Calls are the largest trusted class.** The verifier does not model
+4. **Calls are the largest trusted class.** The verifier did not model
    `bl`/`call`: 159 of 304 trusted AArch64 bodies and 119 of 295 on RV64
-   are trusted for that reason alone. `oak prove` already inlines
-   same-shape callees at the term level; giving the verifier the same
-   callee inlining (or a proved summary of the callee's own verdict) would
-   move most of them to proven.
+   were trusted for that reason alone. **Closed (2026-09-13):** the
+   verifier takes a call to a program function with a scalar signature
+   at the callee's Oak body (`94-assembler.md` §9, "Call summaries"), on
+   both lanes, and names the callees so taken in the verdict. `bl` is no
+   longer a trusted reason; what remains trusted after it is record
+   results beyond one chunk, vector and floating-point parameters, the
+   path budget, stores through spans (`strb`), and callees returning
+   `()`. The model exposed a latent ABI gap: the AArch64 lane read a
+   narrow call result straight from `w0`, relying on the callee's
+   zero-extension that AAPCS64 does not promise; the caller now
+   normalizes it.
 5. **The extents decision procedure is not refined.** Each rule cites its
    law in `Oak.Extents`, but the Go procedure is not proved to decide the
    laws, as `Oak.ReborrowRefinement` does for reborrow admission. An
    `Oak.ExtentsRefinement` over the fact kinds (`factUpperBound`,
    `factIndexLit`, the conditional-minimum rule) is the same shape of
-   work. The same holds for the seam checkers' new facts (frame element
-   regions, span aliases, composites), recorded as proof debt in STATUS.
+   work. **Closed for the discharge (2026-09-13):**
+   `spec/lean/Oak/ExtentsRefinement.lean` transliterates `indexUnder` and
+   proves `indexUnder_sound`; the fact extraction and kills remain
+   transliterations with laws. The seam checkers' new facts (frame element
+   regions, span aliases, composites) remain proof debt in STATUS.
 6. **The checkers are linear over the block.** Base facts (spans,
    regions, frame addresses) are definitions, not per-path state; guard
    facts already flow through labels by a fixpoint on AArch64. The two
-   remaining AArch64 refusals (`text_fold_next`, `utf8_to_utf16_bytes`: a
-   span base copied into another register across a label) and the
-   backend discipline of §3.2 both come from this. Making base facts part
-   of the label state removes the discipline and the refusals.
+   remaining AArch64 refusals (`text_fold_next`, `utf8_to_utf16_bytes`)
+   and the backend discipline of §3.2 come from this. **Closed for those
+   two (2026-09-13):** a calling value is evaluated before its target
+   place, frame addresses and constants parked in callee-saved registers
+   survive calls, constants join the label fixpoint, and a compare
+   against a register holding a known constant is a constant guard
+   (`94-assembler.md` §9, "The last two refusals"); the stdlib-bearing
+   program now builds natively on both lanes with no refusal. Base
+   facts through spills and spans copied across labels remain outside
+   the label state.
 7. **The object and executable writers have no laws.** Their arithmetic
    (section offsets, relocation ranges, program-header extents) is
    checked at run time and tested against llvm-objdump and QEMU; the

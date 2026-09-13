@@ -198,7 +198,9 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 		return "", true
 	case "auipc":
 		return "a pc-relative address (auipc)", false
-	case "jal", "jalr", "call":
+	case "call":
+		return x.summarizeCall(instr, state)
+	case "jal", "jalr":
 		return "a call", false
 	}
 	if width, isLoad := rv64Loads[name]; isLoad {
