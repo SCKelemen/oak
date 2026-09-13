@@ -1105,6 +1105,11 @@ Facts (`typechecker/extents.go`, laws in `Oak.Extents`):
   without a check. A binding initialized to a masked value carries the
   bound, `idx: u32 = u32_trunc_u64((va >> 21) & 511)` is `idx < 512`
   until `idx` is written, so `table[idx]` is direct as well.
+- **Element stores through a field**: a proven element index is direct in
+  lvalue position too — `pool[i].next = v` under `i < len(pool)`, or the
+  decoded record's `value.lanes[i].a = ...` under `i < 2` — the same
+  proof a read of the element uses (the backend carries the element's
+  source position through the store's lowering).
 - **Field paths**: a container or an index in any of the above may be a
   record field path rooted at a local binding — `t.block[t.filled]` under
   `while t.filled < u32(64)`, `t.h[j]` under `j < 8`, the trailing

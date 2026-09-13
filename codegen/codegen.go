@@ -3083,9 +3083,18 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			info := cg.localContainerOf(e.Left)
 			if info.kind == containerOwnedArray {
 				cg.emitExpressionFragment(e.Left, tc)
-				cg.output.WriteString(".v[ oak_lv_idx( (u64)( ")
-				cg.emitExpressionFragment(e.Index, tc)
-				cg.output.WriteString(fmt.Sprintf(" ), %d ) ]", info.length))
+				if tc != nil && tc.IndexProven(e.Token) {
+					// The checker proved the element in range
+					// (typechecker/extents.go): `a[i].f = v` under `i < N`
+					// selects the element directly, as a read would.
+					cg.output.WriteString(".v[ ")
+					cg.emitExpressionFragment(e.Index, tc)
+					cg.output.WriteString(" ]")
+				} else {
+					cg.output.WriteString(".v[ oak_lv_idx( (u64)( ")
+					cg.emitExpressionFragment(e.Index, tc)
+					cg.output.WriteString(fmt.Sprintf(" ), %d ) ]", info.length))
+				}
 			} else {
 				cg.emitExpressionFragment(e.Left, tc)
 				cg.output.WriteString("[ ")
@@ -4186,6 +4195,15 @@ func (cg *CodeGenerator) emitLvaluePath(expr ast.Expression, tc *typechecker.Typ
 		switch info.kind {
 		case containerOwnedArray:
 			cg.emitLvaluePath(e.Left, tc)
+			if tc != nil && tc.IndexProven(e.Token) {
+				// The checker proved the element in range
+				// (typechecker/extents.go): `a[i].f = v` under `i < N`
+				// selects the element directly, as a read would.
+				cg.output.WriteString(".v[ ")
+				cg.emitExpressionFragment(e.Index, tc)
+				cg.output.WriteString(" ]")
+				return
+			}
 			cg.output.WriteString(".v[ oak_lv_idx( (u64)( ")
 			cg.emitExpressionFragment(e.Index, tc)
 			cg.output.WriteString(fmt.Sprintf(" ), %d ) ]", info.length))
@@ -4203,7 +4221,9 @@ func (cg *CodeGenerator) emitLvaluePath(expr ast.Expression, tc *typechecker.Typ
 		// A lowered core_index over a known container re-emits as a checked
 		// lvalue access.
 		if ident, ok := e.Function.(*ast.Identifier); ok && ident.Value == "core_index" && len(e.Arguments) == 2 {
-			cg.emitLvaluePath(&ast.IndexExpression{Left: e.Arguments[0], Index: e.Arguments[1]}, tc)
+			// The lowered element index carries the source position the
+			// checker keyed its proof by (typechecker/extents.go).
+			cg.emitLvaluePath(&ast.IndexExpression{Token: e.Token, Left: e.Arguments[0], Index: e.Arguments[1]}, tc)
 			return
 		}
 		cg.output.WriteString("OAK_UNSUPPORTED_LVALUE")

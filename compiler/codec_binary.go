@@ -9,15 +9,19 @@ import (
 )
 
 // The derived binary codec (docs/spec/71-codecs.md section 22, dbs ask 9):
-// a closed record of fixed-width integers, Bool, nested records, and fixed
-// arrays is a fixed layout — fields packed in declaration order, each
-// integer at its width in its own endianness (a `bin` tag; little-endian
-// by default), Bool one byte. The size is a compile-time constant, so an
-// encoder checks its destination once and a decoder its input once; every
-// byte is then a plain checked store or load, with no helper call. The
-// functions are ordinary Oak built as typed syntax (compiler/synth.go):
-// __oak_bin_encoded_size_T, __oak_bin_write_unchecked_T, __oak_bin_write_T,
-// __oak_bin_encode_T, __oak_bin_valid_T, __oak_bin_read_unchecked_T, and
+// a closed record of fixed-width integers (u8 to u128, i8 to i64), Bool,
+// nested records, and fixed arrays is a fixed layout — fields packed in
+// declaration order, each integer at its width in its own endianness (a
+// `bin` tag; little-endian by default), Bool one byte. The size is a
+// compile-time constant, so the encoder tests its destination's length
+// once, as the literal comparison `len(dst) >= SIZE`, and then stores
+// every byte at a constant offset — `i * stride + K` inside an array's
+// loop — under that fact; the extents prover discharges each store
+// (Oak.Extents.constant_under_min_length, scaled_under_bound), so the
+// emitted C carries no per-byte check. The decoder reads the same way.
+// Nested records are inlined, so the whole record is one straight-line
+// body. The functions are ordinary Oak built as typed syntax
+// (compiler/synth.go): __oak_bin_encoded_size_T, __oak_bin_encode_T, and
 // __oak_bin_decode_T (Oak.BinaryCodec states the byte laws).
 
 func binaryCodecName(operation, typ string) string { return "__oak_bin_" + operation + "_" + typ }
@@ -41,6 +45,8 @@ func binaryWidth(typ string) int64 {
 		return 4
 	case "u64", "i64":
 		return 8
+	case "u128":
+		return 16
 	}
 	return 0
 }
@@ -151,63 +157,80 @@ func unsignedOf(typ string) string {
 	return typ
 }
 
-// binaryStores emits the stores of one scalar `value` (an expression of
-// type typ) at dst[out..out+w) and advances out.
-func binaryStores(s *synth, typ string, big bool, value ast.Expression, raw string) []ast.Statement {
-	width := binaryWidth(typ)
-	at := func(k int64) ast.Expression {
-		if k == 0 {
-			return s.id("out")
-		}
-		return s.add(s.id("out"), s.u32(k))
-	}
-	var body []ast.Statement
-	switch {
-	case typ == "Bool":
-		body = append(body, s.store(s.index(s.id("dst"), at(0)), s.cond(value, s.u8(1), s.u8(0))))
-	case width == 1:
-		if typ == "i8" {
-			value = s.call("u8_bits_i8", value)
-		}
-		body = append(body, s.store(s.index(s.id("dst"), at(0)), value))
-	default:
-		unsigned := unsignedOf(typ)
-		body = append(body, s.decl(raw, s.id(unsigned), value))
-		if unsigned != typ {
-			body[len(body)-1] = s.decl(raw, s.id(unsigned), s.call(unsigned+"_bits_"+typ, value))
-		}
-		for k := int64(0); k < width; k++ {
-			shift := k
-			if big {
-				shift = width - 1 - k
-			}
-			byteOf := ast.Expression(s.id(raw))
-			if shift != 0 {
-				byteOf = s.infix(s.id(raw), ">>", s.conv(unsigned, s.intLit(8*shift)))
-			}
-			body = append(body, s.store(s.index(s.id("dst"), at(k)), s.call("u8_trunc_"+unsigned, byteOf)))
-		}
-	}
-	return append(body, s.assign("out", s.add(s.id("out"), s.u32(width))))
+// binaryOffset spells a byte's index: the constant `off` plus one term
+// `index * stride` per enclosing array loop. With one term the shape is
+// the prover's scaled index; with none, a constant.
+type binaryOffset struct {
+	terms []binaryTerm
 }
 
-// binaryLoad is the expression reading one scalar of type typ at src[at..).
-func binaryLoad(s *synth, typ string, big bool) ast.Expression {
-	width := binaryWidth(typ)
-	at := func(k int64) ast.Expression {
-		if k == 0 {
-			return s.id("at")
-		}
-		return s.add(s.id("at"), s.u32(k))
+type binaryTerm struct {
+	index  string
+	stride int64
+}
+
+func (o binaryOffset) at(s *synth, off int64) ast.Expression {
+	expr := ast.Expression(s.u32(off))
+	for k := len(o.terms) - 1; k >= 0; k-- {
+		term := o.terms[k]
+		expr = s.add(s.infix(s.id(term.index), "*", s.u32(term.stride)), expr)
 	}
+	return expr
+}
+
+func (o binaryOffset) inside(index string, stride int64) binaryOffset {
+	terms := append(append([]binaryTerm{}, o.terms...), binaryTerm{index: index, stride: stride})
+	return binaryOffset{terms: terms}
+}
+
+// binaryStores emits the stores of one scalar at dst[off..off+w).
+func binaryStores(s *synth, typ string, big bool, value func() ast.Expression, at binaryOffset, off int64) []ast.Statement {
+	width := binaryWidth(typ)
 	switch {
 	case typ == "Bool":
-		return s.ne(s.index(s.id("src"), at(0)), s.u8(0))
+		return []ast.Statement{s.store(s.index(s.id("dst"), at.at(s, off)), s.cond(value(), s.u8(1), s.u8(0)))}
+	case width == 1:
+		v := value()
+		if typ == "i8" {
+			v = s.call("u8_bits_i8", v)
+		}
+		return []ast.Statement{s.store(s.index(s.id("dst"), at.at(s, off)), v)}
+	}
+	unsigned := unsignedOf(typ)
+	raw := func() ast.Expression {
+		v := value()
+		if unsigned != typ {
+			return s.call(unsigned+"_bits_"+typ, v)
+		}
+		return v
+	}
+	out := make([]ast.Statement, 0, width)
+	for k := int64(0); k < width; k++ {
+		shift := k
+		if big {
+			shift = width - 1 - k
+		}
+		byteOf := raw()
+		if shift != 0 {
+			byteOf = s.infix(byteOf, ">>", s.conv(unsigned, s.intLit(8*shift)))
+		}
+		out = append(out, s.store(s.index(s.id("dst"), at.at(s, off+k)), s.call("u8_trunc_"+unsigned, byteOf)))
+	}
+	return out
+}
+
+// binaryLoad is the expression reading one scalar of type typ at src[off..).
+func binaryLoad(s *synth, typ string, big bool, at binaryOffset, off int64) ast.Expression {
+	width := binaryWidth(typ)
+	byteAt := func(k int64) ast.Expression { return s.index(s.id("src"), at.at(s, off+k)) }
+	switch {
+	case typ == "Bool":
+		return s.ne(byteAt(0), s.u8(0))
 	case width == 1:
 		if typ == "i8" {
-			return s.call("i8_bits_u8", s.index(s.id("src"), at(0)))
+			return s.call("i8_bits_u8", byteAt(0))
 		}
-		return s.index(s.id("src"), at(0))
+		return byteAt(0)
 	}
 	unsigned := unsignedOf(typ)
 	var value ast.Expression
@@ -216,7 +239,7 @@ func binaryLoad(s *synth, typ string, big bool) ast.Expression {
 		if big {
 			shift = width - 1 - k
 		}
-		byteOf := ast.Expression(s.conv(unsigned, s.index(s.id("src"), at(k))))
+		byteOf := ast.Expression(s.conv(unsigned, byteAt(k)))
 		if shift != 0 {
 			byteOf = s.infix(byteOf, "<<", s.conv(unsigned, s.intLit(8*shift)))
 		}
@@ -232,7 +255,100 @@ func binaryLoad(s *synth, typ string, big bool) ast.Expression {
 	return value
 }
 
-// deriveBinary builds the encoder side of one type.
+// binaryEncodeRecord emits the stores of a record whose bytes start at
+// `base`, its fields read through `path`.
+func (d *codecDeriver) binaryEncodeRecord(s *synth, typ string, path func() ast.Expression, at binaryOffset, base int64) ([]ast.Statement, error) {
+	fields, err := d.binaryFields(typ)
+	if err != nil {
+		return nil, err
+	}
+	out := []ast.Statement{}
+	off := base
+	for _, field := range fields {
+		fieldPath := func() ast.Expression { return s.field(path(), field.name) }
+		elemSize, err := d.binarySize(field.typ, map[string]bool{})
+		if err != nil {
+			return nil, fmt.Errorf("codec field %s.%s: %w", typ, field.name, err)
+		}
+		element := func(value func() ast.Expression, at binaryOffset, off int64) ([]ast.Statement, error) {
+			if binaryWidth(field.typ) != 0 {
+				return binaryStores(s, field.typ, field.bigEndian, value, at, off), nil
+			}
+			return d.binaryEncodeRecord(s, field.typ, value, at, off)
+		}
+		if field.length == 0 {
+			stmts, err := element(fieldPath, at, off)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, stmts...)
+			off += elemSize
+			continue
+		}
+		// A fixed array: one bounded loop whose code size is independent of
+		// N; each byte at index * stride + constant.
+		index := fmt.Sprintf("index_%s_%d", field.name, s.next)
+		body, err := element(func() ast.Expression { return s.index(fieldPath(), s.id(index)) }, at.inside(index, elemSize), off)
+		if err != nil {
+			return nil, err
+		}
+		body = append(body, s.assign(index, s.add(s.id(index), s.u32(1))))
+		out = append(out, s.decl(index, s.id("u32"), s.intLit(0)), s.loop(s.lt(s.id(index), s.u32(field.length)), body...))
+		off += elemSize * field.length
+	}
+	return out, nil
+}
+
+// binaryDecodeRecord emits the loads of a record into the fields of `path`
+// (rooted at the decoded local), and folds each Bool byte's validity into
+// `valid`.
+func (d *codecDeriver) binaryDecodeRecord(s *synth, typ string, path func() ast.Expression, at binaryOffset, base int64) ([]ast.Statement, error) {
+	fields, err := d.binaryFields(typ)
+	if err != nil {
+		return nil, err
+	}
+	out := []ast.Statement{}
+	off := base
+	for _, field := range fields {
+		into := func() *ast.IndexExpression { return s.field(path(), field.name) }
+		elemSize, err := d.binarySize(field.typ, map[string]bool{})
+		if err != nil {
+			return nil, fmt.Errorf("codec field %s.%s: %w", typ, field.name, err)
+		}
+		element := func(target func() *ast.IndexExpression, at binaryOffset, off int64) ([]ast.Statement, error) {
+			if binaryWidth(field.typ) == 0 {
+				return d.binaryDecodeRecord(s, field.typ, func() ast.Expression { return target() }, at, off)
+			}
+			stmts := []ast.Statement{s.store(target(), binaryLoad(s, field.typ, field.bigEndian, at, off))}
+			if field.typ == "Bool" {
+				stmts = append(stmts, s.assign("valid", s.and(s.id("valid"), s.le(s.index(s.id("src"), at.at(s, off)), s.u8(1)))))
+			}
+			return stmts, nil
+		}
+		if field.length == 0 {
+			stmts, err := element(into, at, off)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, stmts...)
+			off += elemSize
+			continue
+		}
+		index := fmt.Sprintf("index_%s_%d", field.name, s.next)
+		body, err := element(func() *ast.IndexExpression { return s.index(into(), s.id(index)) }, at.inside(index, elemSize), off)
+		if err != nil {
+			return nil, err
+		}
+		body = append(body, s.assign(index, s.add(s.id(index), s.u32(1))))
+		out = append(out, s.decl(index, s.id("u32"), s.intLit(0)), s.loop(s.lt(s.id(index), s.u32(field.length)), body...))
+		off += elemSize * field.length
+	}
+	return out, nil
+}
+
+// deriveBinary builds the three functions of one type: the constant size,
+// the encoder (one length check, then the stores), the decoder (one length
+// check, then the loads and the Bool validation).
 func (d *codecDeriver) deriveBinary(typ string) error {
 	if d.binaryGenerated == nil {
 		d.binaryGenerated = map[string]bool{}
@@ -244,122 +360,59 @@ func (d *codecDeriver) deriveBinary(typ string) error {
 	if err != nil {
 		return err
 	}
-	for _, operation := range []string{"encoded_size", "write_unchecked", "write", "encode", "valid", "read_unchecked", "decode"} {
+	for _, operation := range []string{"encoded_size", "encode", "decode"} {
 		if d.names[binaryCodecName(operation, typ)] {
 			return fmt.Errorf("codec: generated name %s conflicts with a declaration", binaryCodecName(operation, typ))
 		}
 	}
 	d.binaryGenerated[typ] = true
-	sizeName, uncheckedName, writeName, encodeName := binaryCodecName("encoded_size", typ), binaryCodecName("write_unchecked", typ), binaryCodecName("write", typ), binaryCodecName("encode", typ)
-	validName, readName, decodeName := binaryCodecName("valid", typ), binaryCodecName("read_unchecked", typ), binaryCodecName("decode", typ)
+	sizeName, encodeName, decodeName := binaryCodecName("encoded_size", typ), binaryCodecName("encode", typ), binaryCodecName("decode", typ)
 	result := func(s *synth) ast.Expression { return s.app("Result", s.id("u32"), s.id("BinaryError")) }
-
-	write := newSynth("codec:" + uncheckedName)
-	valid := newSynth("codec:" + validName)
-	read := newSynth("codec:" + readName)
-	writeBody := []ast.Statement{write.decl("out", write.id("u32"), write.id("offset"))}
-	validBody := []ast.Statement{valid.decl("at", valid.id("u32"), valid.id("offset")), valid.decl("ok", valid.id("Bool"), valid.boolean(true))}
-	readBody := []ast.Statement{read.decl("value", read.id(typ), nil), read.decl("at", read.id("u32"), read.id("offset"))}
-	if binaryWidth(typ) != 0 {
-		writeBody = append(writeBody, binaryStores(write, typ, false, write.id("value"), "raw")...)
-		if typ == "Bool" {
-			validBody = append(validBody, valid.assign("ok", valid.le(valid.index(valid.id("src"), valid.id("at")), valid.u8(1))))
-		}
-		readBody = append(readBody, read.assign("value", binaryLoad(read, typ, false)))
-	} else {
-		fields, err := d.binaryFields(typ)
-		if err != nil {
-			return err
-		}
-		for _, field := range fields {
-			if binaryWidth(field.typ) == 0 {
-				if err := d.deriveBinary(field.typ); err != nil {
-					return fmt.Errorf("codec field %s.%s: %w", typ, field.name, err)
-				}
-			}
-			elemSize, _ := d.binarySize(field.typ, map[string]bool{})
-			// One element, at `out`/`at`, of the field or of an array element.
-			storeElem := func(s *synth, value ast.Expression) []ast.Statement {
-				if binaryWidth(field.typ) != 0 {
-					// One temporary per field: names are function-scoped.
-					return binaryStores(s, field.typ, field.bigEndian, value, "raw_"+field.name)
-				}
-				return []ast.Statement{s.assign("out", s.add(s.id("out"), s.call(binaryCodecName("write_unchecked", field.typ), value, s.id("dst"), s.id("out"))))}
-			}
-			validElem := func(s *synth) []ast.Statement {
-				switch {
-				case field.typ == "Bool":
-					return []ast.Statement{s.assign("ok", s.and(s.id("ok"), s.le(s.index(s.id("src"), s.id("at")), s.u8(1)))), s.assign("at", s.add(s.id("at"), s.u32(1)))}
-				case binaryWidth(field.typ) != 0:
-					return []ast.Statement{s.assign("at", s.add(s.id("at"), s.u32(elemSize)))}
-				}
-				return []ast.Statement{s.assign("ok", s.and(s.id("ok"), s.call(binaryCodecName("valid", field.typ), s.id("src"), s.id("at")))), s.assign("at", s.add(s.id("at"), s.u32(elemSize)))}
-			}
-			loadElem := func(s *synth, target *ast.IndexExpression) []ast.Statement {
-				if binaryWidth(field.typ) != 0 {
-					return []ast.Statement{s.store(target, binaryLoad(s, field.typ, field.bigEndian)), s.assign("at", s.add(s.id("at"), s.u32(elemSize)))}
-				}
-				return []ast.Statement{s.store(target, s.call(binaryCodecName("read_unchecked", field.typ), s.id("src"), s.id("at"))), s.assign("at", s.add(s.id("at"), s.u32(elemSize)))}
-			}
-			if field.length == 0 {
-				writeBody = append(writeBody, storeElem(write, write.field(write.id("value"), field.name))...)
-				validBody = append(validBody, validElem(valid)...)
-				readBody = append(readBody, loadElem(read, read.field(read.id("value"), field.name))...)
-				continue
-			}
-			// Fixed arrays: a bounded loop whose code size is independent of N.
-			index := "index_" + field.name
-			writeBody = append(writeBody, write.decl(index, write.id("u32"), write.intLit(0)),
-				write.loop(write.lt(write.id(index), write.u32(field.length)),
-					append(storeElem(write, write.index(write.field(write.id("value"), field.name), write.id(index))), write.assign(index, write.add(write.id(index), write.u32(1))))...))
-			validBody = append(validBody, valid.decl(index, valid.id("u32"), valid.intLit(0)),
-				valid.loop(valid.lt(valid.id(index), valid.u32(field.length)),
-					append(validElem(valid), valid.assign(index, valid.add(valid.id(index), valid.u32(1))))...))
-			readBody = append(readBody, read.decl(index, read.id("u32"), read.intLit(0)),
-				read.loop(read.lt(read.id(index), read.u32(field.length)),
-					append(loadElem(read, read.index(read.field(read.id("value"), field.name), read.id(index))), read.assign(index, read.add(read.id(index), read.u32(1))))...))
-		}
-	}
-	writeBody = append(writeBody, write.expr(write.sub(write.id("out"), write.id("offset"))))
-	validBody = append(validBody, valid.expr(valid.id("ok")))
-	readBody = append(readBody, read.expr(read.id("value")))
 
 	sizeS := newSynth("codec:" + sizeName)
 	sizeFn := sizeS.fn(sizeName, []*ast.FunctionParameter{sizeS.param("value", sizeS.id(typ))}, result(sizeS),
 		sizeS.expr(sizeS.variant("Ok", sizeS.u32(size))))
-	uncheckedFn := write.fn(uncheckedName,
-		[]*ast.FunctionParameter{write.param("value", write.id(typ)), write.param("dst", write.span(write.id("u8"))), write.param("offset", write.id("u32"))},
-		write.id("u32"), writeBody...)
-	checked := newSynth("codec:" + writeName)
-	writeFn := checked.fn(writeName,
-		[]*ast.FunctionParameter{checked.param("value", checked.id(typ)), checked.param("dst", checked.span(checked.id("u8"))), checked.param("offset", checked.id("u32"))},
-		result(checked),
-		checked.expr(checked.cond(
-			checked.call("bytes_range_fits", checked.call("len", checked.id("dst")), checked.id("offset"), checked.u32(size)),
-			checked.block(checked.expr(checked.variant("Ok", checked.call(uncheckedName, checked.id("value"), checked.id("dst"), checked.id("offset"))))),
-			checked.block(checked.expr(errVariant(checked, "DestinationTooSmall"))))))
+
 	encode := newSynth("codec:" + encodeName)
+	var stores []ast.Statement
+	if binaryWidth(typ) != 0 {
+		stores = binaryStores(encode, typ, false, func() ast.Expression { return encode.id("value") }, binaryOffset{}, 0)
+	} else if stores, err = d.binaryEncodeRecord(encode, typ, func() ast.Expression { return encode.id("value") }, binaryOffset{}, 0); err != nil {
+		return err
+	}
+	stores = append(stores, encode.expr(encode.variant("Ok", encode.u32(size))))
 	encodeFn := encode.fn(encodeName,
 		[]*ast.FunctionParameter{encode.param("value", encode.id(typ)), encode.param("dst", encode.span(encode.id("u8")))},
 		result(encode),
-		encode.expr(encode.call(writeName, encode.id("value"), encode.id("dst"), encode.u32(0))))
-	validFn := valid.fn(validName,
-		[]*ast.FunctionParameter{valid.param("src", valid.view(valid.id("u8"))), valid.param("offset", valid.id("u32"))},
-		valid.id("Bool"), validBody...)
-	readFn := read.fn(readName,
-		[]*ast.FunctionParameter{read.param("src", read.view(read.id("u8"))), read.param("offset", read.id("u32"))},
-		read.id(typ), readBody...)
+		encode.expr(encode.cond(
+			encode.ge(encode.call("len", encode.id("dst")), encode.u32(size)),
+			encode.block(stores...),
+			encode.block(encode.expr(errVariant(encode, "DestinationTooSmall"))))))
+
 	decode := newSynth("codec:" + decodeName)
+	body := []ast.Statement{decode.decl("value", decode.id(typ), nil), decode.decl("valid", decode.id("Bool"), decode.boolean(true))}
+	if binaryWidth(typ) != 0 {
+		body = append(body, decode.assign("value", binaryLoad(decode, typ, false, binaryOffset{}, 0)))
+		if typ == "Bool" {
+			body = append(body, decode.assign("valid", decode.le(decode.index(decode.id("src"), decode.u32(0)), decode.u8(1))))
+		}
+	} else {
+		loads, err := d.binaryDecodeRecord(decode, typ, func() ast.Expression { return decode.id("value") }, binaryOffset{}, 0)
+		if err != nil {
+			return err
+		}
+		body = append(body, loads...)
+	}
+	body = append(body, decode.expr(decode.cond(decode.id("valid"),
+		decode.block(decode.expr(decode.variant("Ok", decode.id("value")))),
+		decode.block(decode.expr(errVariant(decode, "InvalidBool"))))))
 	decodeFn := decode.fn(decodeName,
 		[]*ast.FunctionParameter{decode.param("src", decode.view(decode.id("u8")))},
 		decode.app("Result", decode.id(typ), decode.id("BinaryDecodeError")),
 		decode.expr(decode.cond(
-			decode.call("bytes_range_fits", decode.call("len", decode.id("src")), decode.u32(0), decode.u32(size)),
-			decode.block(decode.expr(decode.cond(
-				decode.call(validName, decode.id("src"), decode.u32(0)),
-				decode.block(decode.expr(decode.variant("Ok", decode.call(readName, decode.id("src"), decode.u32(0))))),
-				decode.block(decode.expr(errVariant(decode, "InvalidBool")))))),
+			decode.ge(decode.call("len", decode.id("src")), decode.u32(size)),
+			decode.block(body...),
 			decode.block(decode.expr(errVariant(decode, "InputTooShort"))))))
-	d.output = append(d.output, sizeFn, uncheckedFn, writeFn, encodeFn, validFn, readFn, decodeFn)
+	d.output = append(d.output, sizeFn, encodeFn, decodeFn)
 	return nil
 }
