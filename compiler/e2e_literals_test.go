@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -195,5 +196,97 @@ func TestE2EStdlibLiteralsModule(t *testing.T) {
 	_, exit, abnormal := buildAndRunFrom(t, "stdlib_literals", New().WithPackageDir(root))
 	if abnormal || exit != 42 {
 		t.Fatalf("exit %d abnormal %v", exit, abnormal)
+	}
+}
+
+// bigLiteralsProgram declares `n` distinct literals (one group of eight
+// buckets per sixteen, docs/spec/113-literals.md section 2) and checks the
+// projected count against the scalar reference over generated text with
+// every literal planted.
+func bigLiteralsProgram(n int, textLen int) string {
+	var b strings.Builder
+	b.WriteString("Big: literals = {\n")
+	for j := 0; j < n; j++ {
+		// distinct lowercase words of four to seven letters, seeded by j
+		word := make([]byte, 4+j%4)
+		x := uint32(j*7919 + 17)
+		for k := range word {
+			x = x*1664525 + 1013904223
+			word[k] = byte('a' + (x>>24)%26)
+		}
+		fmt.Fprintf(&b, "  \"%s\",\n", word)
+	}
+	b.WriteString("}\n")
+	fmt.Fprintf(&b, `
+scalar_count: (bytes: []u8): u32 {
+  found: u32 = u32(0)
+  pos: u32 = u32(0)
+  while pos < len(bytes) {
+    j: u32 = u32(0)
+    while j < u32(%d) {
+      literals_teddy_literal_at(bytes, pos, view(&big_literal_bytes), view(&big_literal_starts), j) ? { found = found + u32(1) } | { }
+      j = j + u32(1)
+    }
+    pos = pos + u32(1)
+  }
+  found
+}
+
+main: (): u32 {
+  text: [%d]u8
+  seed: u32 = u32(777)
+  i: u32 = u32(0)
+  while i < u32(%d) {
+    seed = seed * u32(1664525) + u32(1013904223)
+    text[i] = u8_trunc_u32(u32(32) + (seed >> u32(8)) %% u32(95))
+    i = i + u32(1)
+  }
+  k: u32 = u32(0)
+  while k < u32(%d) {
+    at: u32 = (k * u32(%d)) %% u32(%d)
+    s: u32 = big_literal_starts[k]
+    n: u32 = big_literal_starts[k + u32(1)] - s
+    m: u32 = u32(0)
+    while m < n {
+      text[at + m] = big_literal_bytes[s + m]
+      m = m + u32(1)
+    }
+    k = k + u32(1)
+  }
+  bytes: []u8 = view(&text)
+  got: u32 = big_count(bytes)
+  want: u32 = scalar_count(bytes)
+  first: u32 = big_find(bytes, u32(0))
+  ok: Bool = got == want && got >= u32(%d) && first < len(bytes) && big_which(bytes, first) < u32(%d)
+  ok ? u32(0) | u32(1)
+}
+`, n, textLen, textLen, n, textLen/n-8, textLen-16, n, n)
+	return b.String()
+}
+
+func TestE2ELiteralsDeclarationLargeSets(t *testing.T) {
+	skipInShort(t)
+	for _, n := range []int{17, 64, 256} {
+		src := bigLiteralsProgram(n, 32768)
+		exit, abnormal := buildAndRun(t, fmt.Sprintf("literals_big_%d", n), src)
+		if abnormal || exit != 0 {
+			t.Fatalf("%d literals: compiled exit %d abnormal %v", n, exit, abnormal)
+		}
+	}
+	if got := interpretChecked(t, bigLiteralsProgram(40, 4096)); got != 0 {
+		t.Fatalf("40 literals interpreted: %d", got)
+	}
+}
+
+func TestLiteralsDeclarationTooMany(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Many: literals = {\n")
+	for j := 0; j < 257; j++ {
+		fmt.Fprintf(&b, "  \"lit%04d\",\n", j)
+	}
+	b.WriteString("}\nmain: (): u32 = u32(0)\n")
+	_, err := New().WithSource("many.oak", b.String()).Check().Get()
+	if err == nil || !strings.Contains(err.Error(), "OAK-M0304") {
+		t.Fatalf("err = %v, want OAK-M0304", err)
 	}
 }
