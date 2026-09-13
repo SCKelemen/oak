@@ -34,6 +34,13 @@ var oakSolverSource string
 //go:embed prove/solver/lower.oak
 var oakLoweringSource string
 
+// oakSyntaxSource is the syntax serializer written in Oak
+// (prove/solver/syntax.oak): the raw parse tree (asm/rawsyntax.go) to the
+// syntax table the lowering reads.
+//
+//go:embed prove/solver/syntax.oak
+var oakSyntaxSource string
+
 // oakSolverDriverSource is the driver around the solver: it reads its
 // order slot from OAK_SOLVER_VARIANT and the problems from its standard
 // input (a header of count, largest term count, budget, and word total,
@@ -72,7 +79,10 @@ write_byte: (v: u8): () {
   host.host_write_all(host.host_stdout(), view(&one)) ? { } | { }
 }
 
-report: (index: u32, status: u32, nodes: u32, lowered: u32, vars: []u32, listed: u32): () {
+// report_head writes a verdict line up to its variables; report ends it,
+// report_lowered appends the serialized theorem's leaf names first (the
+// counterexample of a theorem lowered in Oak reads through them).
+report_head: (index: u32, status: u32, nodes: u32, lowered: u32, vars: []u32, listed: u32): () {
   write_u32(index)
   write_byte(u8(32))
   write_u32(status)
@@ -88,7 +98,40 @@ report: (index: u32, status: u32, nodes: u32, lowered: u32, vars: []u32, listed:
     write_u32(vars[i])
     i = i + u32(1)
   }
+}
+
+report: (index: u32, status: u32, nodes: u32, lowered: u32, vars: []u32, listed: u32): () {
+  report_head(index, status, nodes, lowered, vars, listed)
   write_byte(u8(10))
+}
+
+report_lowered: (index: u32, status: u32, nodes: u32, lowered: u32, vars: []u32, listed: u32, ser: Ser, ser_raw: c.Ptr): () {
+  report_head(index, status, nodes, lowered, vars, listed)
+  write_leaf_names(ser, ser_raw)
+  write_byte(u8(10))
+}
+
+write_names_of: (ser: Ser, w: [*]u32): () {
+  n: u32 = serialized_leaf_count(ser, w)
+  k: u32 = 0
+  while k < n {
+    write_byte(u8(32))
+    len_k: u32 = serialized_leaf_len(ser, w, k)
+    i: u32 = 0
+    while i < len_k {
+      write_byte(u8_trunc_u32(serialized_leaf_byte(ser, w, k, i)))
+      i = i + u32(1)
+    }
+    k = k + u32(1)
+  }
+}
+
+write_leaf_names: (ser: Ser, ser_raw: c.Ptr): () {
+  unsafe {
+    sbuf: Buffer[u32] = c.own[u32](ser_raw, ser.total)
+    write_names_of(ser, span(&sbuf))
+    released_s: c.Ptr = c.disown(sbuf)
+  }
 }
 
 // The order slot this process solves: the first digit of OAK_SOLVER_VARIANT.
@@ -186,6 +229,32 @@ dump_problem: (p: []u32, index: u32): () {
   } | { }
 }
 
+// dump_syntax writes the syntax table the serializer built (an S line)
+// when OAK_SOLVER_DUMP names a file, for the comparison with the Go
+// serializer's.
+dump_syntax: (sx: []u32, index: u32): () {
+  flag: c.Ptr = c_getenv(c.cstr("OAK_SOLVER_DUMP\0"))
+  wanted: Bool = false
+  unsafe {
+    value: []u8 = c.borrow_string(flag)
+    wanted = len(value) > u32(0)
+  }
+  wanted ? {
+    write_byte(u8(83))
+    write_byte(u8(32))
+    write_u32(index)
+    write_byte(u8(32))
+    write_u32(len(sx))
+    i: u32 = 0
+    while i < len(sx) {
+      write_byte(u8(32))
+      write_u32(sx[i])
+      i = i + u32(1)
+    }
+    write_byte(u8(10))
+  } | { }
+}
+
 // leaf_bit_of finds the leaf and bit a variable of the problem stands for
 // (leaf * 64 + bit), NONE for a select variable.
 leaf_bit_of: (p: []u32, v: u32): u32 {
@@ -235,7 +304,7 @@ mentioned_marks: (p: []u32, out: [*]u32, start: u32): u32 {
   count
 }
 
-solve_prefix: (l: Layout, mem: [*]u32, whole: []u32, n: u32, index: u32): () {
+solve_prefix: (l: Layout, mem: [*]u32, whole: []u32, n: u32, index: u32, ser: Ser, ser_raw: c.Ptr): () {
   p: []u32 = subslice(whole, u32(0), n)
   dump_problem(p, index)
   status: u32 = solve(l, mem, p)
@@ -252,7 +321,7 @@ solve_prefix: (l: Layout, mem: [*]u32, whole: []u32, n: u32, index: u32): () {
     i = i + u32(1)
   }
   kept = status == STATUS_REFUTED ? { mentioned_marks(p, span(&vars), kept) } | { kept }
-  report(index, status, node_count(l, mem), u32(1), view(&vars), kept)
+  report_lowered(index, status, node_count(l, mem), u32(1), view(&vars), kept, ser, ser_raw)
 }
 
 // solve_variant solves one Go-lowered problem in a fresh view of the
@@ -324,13 +393,61 @@ witness_check: (lw: Lower, w: [*]u32, b: [*]u32, witness: [*]u32): u32 {
 
 // solve_lowered solves the problem the Oak lowering built (n words at the
 // built buffer's memory) and reports it as lowered in Oak.
-solve_lowered: (l: Layout, lw: Lower, table_raw: c.Ptr, built_raw: c.Ptr, n: u32, index: u32): () {
+solve_lowered: (l: Layout, lw: Lower, table_raw: c.Ptr, built_raw: c.Ptr, n: u32, index: u32, ser: Ser, ser_raw: c.Ptr): () {
   unsafe {
     tbuf: Buffer[u32] = c.own[u32](table_raw, l.total)
     bbuf: Buffer[u32] = c.own[u32](built_raw, lw.built_total)
-    solve_prefix(l, span(&tbuf), view(&bbuf), n, index)
+    solve_prefix(l, span(&tbuf), view(&bbuf), n, index, ser, ser_raw)
     released_t: c.Ptr = c.disown(tbuf)
     released_b: c.Ptr = c.disown(bbuf)
+  }
+}
+
+// serialize_in_oak builds the syntax table of a raw table (asm/rawsyntax.go)
+// in the serializer's memory: the word count, NONE minus the reason when
+// the theorem is outside the subset.
+serialize_in_oak: (ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, rx: []u32): u32 {
+  n: u32 = 0
+  unsafe {
+    sbuf: Buffer[u32] = c.own[u32](ser_raw, ser.total)
+    obuf: Buffer[u32] = c.own[u32](out_raw, ser.out_total)
+    n = serialize_theorem(ser, span(&sbuf), rx, span(&obuf))
+    n = n == u32(0) ? { NONE - serialize_reason(ser, span(&sbuf)) } | { n }
+    released_s: c.Ptr = c.disown(sbuf)
+    released_o: c.Ptr = c.disown(obuf)
+  }
+  n
+}
+
+// lower_and_solve lowers the serialized syntax table (n_syn words of
+// whole) under the slot's order and solves, reporting a witnessed
+// refutation, the diagram's verdict, or the reason the lowering declined.
+lower_and_solve: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, table_raw: c.Ptr, work_raw: c.Ptr, built_raw: c.Ptr, whole: []u32, n_syn: u32, budget: u32, slot: u32, index: u32): () {
+  sx: []u32 = subslice(whole, u32(0), n_syn)
+  dump_syntax(sx, index)
+  witness: [512]u32
+  n: u32 = lower_in_oak(lw, work_raw, built_raw, sx, budget, slot, span(&witness))
+  n == WITNESSED ? {
+    // A witness input refuted the theorem (or fired a trap): reported
+    // with the input's set leaf bits, no diagram built.
+    verdict: u32 = witness[u32(0)] / u32(65536)
+    listed: u32 = witness[u32(0)] % u32(65536)
+    bits: []u32 = view(&witness)
+    report_lowered(index, verdict, u32(0), u32(1), subslice(bits, u32(1), listed), listed, ser, ser_raw)
+  } | {
+    n < u32(0x80000000) ? { solve_lowered(l, lw, table_raw, built_raw, n, index, ser, ser_raw) } | {
+      none: [1]u32
+      reason: u32 = NONE - n
+      report(index, reason == REASON_ORDER ? { STATUS_EXCEEDED } | { STATUS_UNSUPPORTED }, reason, u32(1), view(&none), u32(0))
+    }
+  }
+}
+
+lower_serialized: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, table_raw: c.Ptr, work_raw: c.Ptr, built_raw: c.Ptr, out_raw: c.Ptr, n_syn: u32, budget: u32, slot: u32, index: u32): () {
+  unsafe {
+    obuf: Buffer[u32] = c.own[u32](out_raw, ser.out_total)
+    lower_and_solve(l, lw, ser, ser_raw, table_raw, work_raw, built_raw, view(&obuf), n_syn, budget, slot, index)
+    released_o: c.Ptr = c.disown(obuf)
   }
 }
 
@@ -365,28 +482,33 @@ main: (): i32 {
   table_raw: c.Ptr = malloc(c.Size(l.total * u32(4)))
   work_raw: c.Ptr = malloc(c.Size(lw.total * u32(4)))
   built_raw: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
+  ser: Ser = ser_layout(u32(65536), u32(131072))
+  ser_raw: c.Ptr = malloc(c.Size(ser.total * u32(4)))
+  out_raw: c.Ptr = malloc(c.Size(ser.out_total * u32(4)))
   unsafe {
     problem_bytes: Buffer[u8] = c.own[u8](bytes_raw, total * u32(4))
     words_ok: Bool = read_fully(chunk_raw, span(&problem_bytes), total * u32(4))
     stream: Buffer[u32] = c.own[u32](words_raw, total)
     words_of(view(&problem_bytes), span(&stream), total)
-    words_ok ? { solve_stream(l, lw, view(&stream), table_raw, work_raw, built_raw, count, slot, budget) } | { }
+    words_ok ? { solve_stream(l, lw, ser, ser_raw, out_raw, view(&stream), table_raw, work_raw, built_raw, count, slot, budget) } | { }
     free(c.disown(stream))
     free(c.disown(problem_bytes))
   }
   free(table_raw)
   free(work_raw)
   free(built_raw)
+  free(ser_raw)
+  free(out_raw)
   free(chunk_raw)
   i32_bits_u32(u32(0))
 }
 
 // solve_stream walks the problems stream: per theorem the Go-lowered
-// variants and, when present, the syntax table. With a syntax table,
-// slots 0, 1, and 2 lower it in Oak under the interleaved, blocked, and
-// control-first orders and solve, and slot k solves Go-lowered variant
-// k - 3; without, slot k solves variant k.
-solve_stream: (l: Layout, lw: Lower, data: []u32, table_raw: c.Ptr, work_raw: c.Ptr, built_raw: c.Ptr, count: u32, slot: u32, budget: u32): () {
+// variants and, when present, the raw syntax table. With a raw table,
+// slots 0, 1, and 2 serialize it, lower the syntax table in Oak under the
+// interleaved, blocked, and control-first orders, and solve, and slot k
+// solves Go-lowered variant k - 3; without, slot k solves variant k.
+solve_stream: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, data: []u32, table_raw: c.Ptr, work_raw: c.Ptr, built_raw: c.Ptr, count: u32, slot: u32, budget: u32): () {
   off: u32 = 0
   i: u32 = 0
   while i < count {
@@ -406,21 +528,10 @@ solve_stream: (l: Layout, lw: Lower, data: []u32, table_raw: c.Ptr, work_raw: c.
     off = off + syntax_words
     shift: u32 = syntax_words > u32(0) ? { u32(3) } | { u32(0) }
     (syntax_words > u32(0) && slot < u32(3)) ? {
-      witness: [512]u32
-      n: u32 = lower_in_oak(lw, work_raw, built_raw, subslice(data, syntax_start, syntax_words), budget, slot, span(&witness))
-      n == WITNESSED ? {
-        // A witness input refuted the theorem (or fired a trap): reported
-        // with the input's set leaf bits, no diagram built.
-        verdict: u32 = witness[u32(0)] / u32(65536)
-        listed: u32 = witness[u32(0)] % u32(65536)
-        bits: []u32 = view(&witness)
-        report(i, verdict, u32(0), u32(1), subslice(bits, u32(1), listed), listed)
-      } | {
-        n < u32(0x80000000) ? { solve_lowered(l, lw, table_raw, built_raw, n, i) } | {
-          none: [1]u32
-          reason: u32 = NONE - n
-          report(i, reason == REASON_ORDER ? { STATUS_EXCEEDED } | { STATUS_UNSUPPORTED }, reason, u32(1), view(&none), u32(0))
-        }
+      n_syn: u32 = serialize_in_oak(ser, ser_raw, out_raw, subslice(data, syntax_start, syntax_words))
+      n_syn < u32(0x80000000) ? { lower_serialized(l, lw, ser, ser_raw, table_raw, work_raw, built_raw, out_raw, n_syn, budget, slot, i) } | {
+        none: [1]u32
+        report(i, STATUS_UNSUPPORTED, NONE - n_syn, u32(1), view(&none), u32(0))
       }
     } | {
       want: u32 = slot - shift
@@ -443,7 +554,7 @@ solve_stream: (l: Layout, lw: Lower, data: []u32, table_raw: c.Ptr, work_raw: c.
 // directory under the temporary directory named by the sources' hash,
 // and returns the binary's path; a later run finds it built.
 func oakSolverBinary() (string, error) {
-	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSolverDriverSource))
+	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSyntaxSource + "\x00" + oakSolverDriverSource))
 	dir := filepath.Join(os.TempDir(), "oak-solver-"+hex.EncodeToString(sum[:6]))
 	binary := filepath.Join(dir, "solver")
 	if info, err := os.Stat(binary); err == nil && info.Mode().IsRegular() {
@@ -452,7 +563,7 @@ func oakSolverBinary() (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	for name, text := range map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "main.oak": oakSolverDriverSource} {
+	for name, text := range map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "syntax.oak": oakSyntaxSource, "main.oak": oakSolverDriverSource} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
 			return "", err
 		}
@@ -506,7 +617,8 @@ func encodeProblems(theorems []oakTheorem, budget int) []byte {
 // small under one order is decided in that order's time and the others
 // are stopped.
 // oakTheorem is one pending theorem: its Go-lowered problems, one per
-// variable order, and its syntax table when the Oak lowering can take it.
+// variable order, and its raw syntax table (asm/rawsyntax.go) for the
+// serializer and lowering written in Oak.
 type oakTheorem struct {
 	Problems []asm.Problem
 	Syntax   []uint32
@@ -591,7 +703,7 @@ func runOakSolver(theorems []oakTheorem, budget int) ([]prove.SolverVerdict, err
 	remaining := len(theorems)
 	var firstErr error
 	for l := range lines {
-		if strings.HasPrefix(l.text, "D ") {
+		if strings.HasPrefix(l.text, "D ") || strings.HasPrefix(l.text, "S ") {
 			if dump := os.Getenv("OAK_SOLVER_DUMP"); dump != "" {
 				f, _ := os.OpenFile(dump, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 				if f != nil {
@@ -686,12 +798,14 @@ func runOakSolver(theorems []oakTheorem, budget int) ([]prove.SolverVerdict, err
 
 // parseOakVerdict reads one `index status nodes lowered count vars...` line.
 func parseOakVerdict(text string) (prove.SolverVerdict, int, error) {
+	// index status nodes lowered count vars... names...: the names are the
+	// leaves of a theorem lowered in Oak, as its serializer sorted them.
 	fields := strings.Fields(text)
 	if len(fields) < 5 {
 		return prove.SolverVerdict{}, -1, fmt.Errorf("oak solver: unreadable verdict %q", text)
 	}
 	var numbers []int
-	for _, f := range fields {
+	for _, f := range fields[:5] {
 		n, err := strconv.Atoi(f)
 		if err != nil {
 			return prove.SolverVerdict{}, -1, fmt.Errorf("oak solver: unreadable verdict %q", text)
@@ -699,12 +813,17 @@ func parseOakVerdict(text string) (prove.SolverVerdict, int, error) {
 		numbers = append(numbers, n)
 	}
 	index, status, nodes, lowered, listed := numbers[0], numbers[1], numbers[2], numbers[3], numbers[4]
-	if len(numbers) != 5+listed {
+	if listed < 0 || len(fields) < 5+listed {
 		return prove.SolverVerdict{}, -1, fmt.Errorf("oak solver: unreadable verdict %q", text)
 	}
 	v := prove.SolverVerdict{Status: status, Nodes: nodes, Lowered: lowered != 0}
-	for _, x := range numbers[5:] {
+	for _, f := range fields[5 : 5+listed] {
+		x, err := strconv.Atoi(f)
+		if err != nil {
+			return prove.SolverVerdict{}, -1, fmt.Errorf("oak solver: unreadable verdict %q", text)
+		}
 		v.Vars = append(v.Vars, uint32(x))
 	}
+	v.LeafNames = append(v.LeafNames, fields[5+listed:]...)
 	return v, index, nil
 }

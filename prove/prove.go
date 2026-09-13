@@ -60,19 +60,17 @@ type Result struct {
 	// order, for the Oak solver; fallback is what stands when the solver
 	// cannot decide (enumeration, or the open result with its reason).
 	Problems []asm.Problem
-	// Syntax is the theorem serialized for the lowering written in Oak
-	// (asm.ExportSyntax), when it is in that lowering's subset.
-	Syntax []uint32
-	// LeafNames are the theorem's parameter leaves in the decider's name
-	// order, which the Oak lowering's counterexamples (leaf and bit) name.
-	LeafNames []string
-	fallback  func() Result
+	// Syntax is the theorem's raw syntax table (asm.ExportRaw): the parse
+	// tree for the serializer and lowering written in Oak.
+	Syntax   []uint32
+	fallback func() Result
 }
 
 // SolverVerdict is what the Oak solver reports for one theorem: the
-// status (0 proven, 1 refuted, 2 budget exceeded, 3 unsupported), which
-// variant (variable order) decided, its node count, and, for a refuted
-// theorem, the variables set on a path to the failing root.
+// status (0 proven, 1 refuted, 2 budget exceeded, 3 unsupported, 4 a
+// witness input trapped), which variant (variable order) decided, its
+// node count, and, for a refuted theorem, the variables set on a path to
+// the failing root (or the witness input's set bits).
 type SolverVerdict struct {
 	Status int
 	Winner int
@@ -81,6 +79,9 @@ type SolverVerdict struct {
 	// Lowered is set when the Oak lowering produced the terms (the
 	// interleaved order), not the Go lowering's serialized problem.
 	Lowered bool
+	// LeafNames are the theorem's leaves as the Oak serializer sorted
+	// them, the names a refutation's variables read through.
+	LeafNames []string
 }
 
 // DefaultCases bounds the exhaustive decider: the product of the parameter
@@ -667,24 +668,19 @@ func bitLevel(deferred bool, tc *typechecker.TypeChecker, decls asm.Declarations
 	if reason != "" {
 		return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + reason + ")"}
 	}
-	// The Oak lowering runs the witness pass itself; the Go decider's runs
-	// only for a theorem outside the Oak lowering's subset.
-	syntax, leafNames, _, inSubset := asm.ExportSyntax(stated, callees, decls)
-	if !inSubset {
-		syntax, leafNames = nil, nil
-		if decision, settled := asm.WitnessRefutation(stated, callees, guards, decls); settled {
-			if decision.Kind == asm.DecisionRefuted {
-				return Result{Name: open.Name, Status: Refuted, Detail: decision.Message}
-			}
-			return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + decision.Message + ")"}
-		}
-	}
+	// The parse tree goes to the serializer and lowering written in Oak,
+	// which run the witness pass themselves; the Go decider's witness pass
+	// runs (ResolvePending) only for a theorem the Oak lowering declines.
 	problems, reason, ok := asm.ExportProblems(stated, callees, guards, decls, asm.NodeBudget)
 	if !ok {
 		return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + reason + ")"}
 	}
+	raw, hasBody := asm.ExportRaw(stated, callees, decls)
+	if !hasBody {
+		raw = nil
+	}
 	fallback := Result{Name: open.Name, Status: Open, Detail: open.Detail}
-	return Result{Name: open.Name, Status: Pending, Problems: problems, Syntax: syntax, LeafNames: leafNames, fallback: func() Result { return fallback }}
+	return Result{Name: open.Name, Status: Pending, Problems: problems, Syntax: raw, fallback: func() Result { return fallback }}
 }
 
 // ResolvePending settles the pending results from the Oak solver's
@@ -693,12 +689,21 @@ func bitLevel(deferred bool, tc *typechecker.TypeChecker, decls asm.Declarations
 // read through the problem's owner map, and a budget exceeded or an
 // unsupported term falls back — to the Go decider under every order for
 // the unsupported (goDecider), else to the pending result's fallback.
-func ResolvePending(results []Result, verdicts map[string]SolverVerdict, goDecider func(name string) (Result, bool)) []Result {
+func ResolvePending(results []Result, verdicts map[string]SolverVerdict, goDecider func(name string) (Result, bool), goWitness func(name string) (Result, bool)) []Result {
 	for i, r := range results {
 		if r.Status != Pending {
 			continue
 		}
 		v, has := verdicts[r.Name]
+		if has && !v.Lowered && goWitness != nil {
+			// A theorem the Oak lowering declined keeps the Go decider's
+			// witness pass: a refuting input among the fixed ones is its
+			// counterexample, whatever the diagrams said.
+			if refuted, ok := goWitness(r.Name); ok {
+				results[i] = refuted
+				continue
+			}
+		}
 		settled := Result{Name: r.Name}
 		switch {
 		case has && v.Lowered && v.Status == 0:
@@ -709,9 +714,9 @@ func ResolvePending(results []Result, verdicts map[string]SolverVerdict, goDecid
 			}
 			settled = Result{Name: r.Name, Status: Decided, Detail: fmt.Sprintf("at the bit level (%d BDD nodes%s; lowered and decided in Oak)", v.Nodes, label), Order: order, Nodes: v.Nodes}
 		case has && v.Lowered && v.Status == 1:
-			settled = Result{Name: r.Name, Status: Refuted, Detail: "counterexample " + leafCounterexample(r.LeafNames, v.Vars) + " (lowered and decided in Oak)"}
+			settled = Result{Name: r.Name, Status: Refuted, Detail: "counterexample " + leafCounterexample(v.LeafNames, v.Vars) + " (lowered and decided in Oak)"}
 		case has && v.Lowered && v.Status == 4:
-			settled = Result{Name: r.Name, Status: Refuted, Detail: "the body traps (a shift count at the width, a failed assert, or a construction outside its predicate) at " + leafCounterexample(r.LeafNames, v.Vars) + " (lowered and decided in Oak)"}
+			settled = Result{Name: r.Name, Status: Refuted, Detail: "the body traps (a shift count at the width, a failed assert, or a construction outside its predicate) at " + leafCounterexample(v.LeafNames, v.Vars) + " (lowered and decided in Oak)"}
 		case has && v.Status == 0 && v.Winner >= 0 && v.Winner < len(r.Problems):
 			order := r.Problems[v.Winner].Order
 			label := ""
@@ -806,6 +811,32 @@ func GoDecision(model *compiler.SemanticModel, name, order string) (Result, bool
 		return Result{Name: name, Status: Refuted, Detail: decision.Message}, true
 	}
 	return Result{Name: name, Status: Open, Detail: decision.Message}, true
+}
+
+// GoWitness runs the Go decider's witness pass on the named theorem: the
+// refutation when one of the fixed inputs falsifies the claim or fires a
+// trap obligation.
+func GoWitness(model *compiler.SemanticModel, name string) (Result, bool) {
+	stated, callees, guards, decls, reason, err := deciderInputs(model, name)
+	if err != nil || reason != "" {
+		return Result{}, false
+	}
+	decision, settled := asm.WitnessRefutation(stated, callees, guards, decls)
+	if !settled || decision.Kind != asm.DecisionRefuted {
+		return Result{}, false
+	}
+	return Result{Name: name, Status: Refuted, Detail: decision.Message}, true
+}
+
+// GoSyntax serializes the named theorem with the Go serializer
+// (asm.ExportSyntax): the cross-check of the serializer written in Oak.
+func GoSyntax(model *compiler.SemanticModel, name string) ([]uint32, bool) {
+	stated, callees, _, decls, reason, err := deciderInputs(model, name)
+	if err != nil || reason != "" {
+		return nil, false
+	}
+	words, _, _, ok := asm.ExportSyntax(stated, callees, decls)
+	return words, ok
 }
 
 // blastOr runs the bit-level decider (asm.DecideTheorem) on a theorem the

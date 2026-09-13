@@ -93,7 +93,7 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 		for i, name := range names {
 			byName[name] = verdicts[i]
 		}
-		results = prove.ResolvePending(results, byName, func(name string) (prove.Result, bool) { return prove.GoDecision(model, name, "") })
+		results = prove.ResolvePending(results, byName, func(name string) (prove.Result, bool) { return prove.GoDecision(model, name, "") }, func(name string) (prove.Result, bool) { return prove.GoWitness(model, name) })
 		if *cross == "go" {
 			for i, r := range results {
 				if _, oak := byName[r.Name]; !oak || !(strings.Contains(r.Detail, "the Oak solver") || strings.Contains(r.Detail, "decided in Oak")) || (r.Status != prove.Decided && r.Status != prove.Refuted) {
