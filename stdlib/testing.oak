@@ -4,6 +4,7 @@ pub testing_fail_host: (id: c.UInt32): () = c.extern("oak_test_host_fail")
 pub testing_fail_values_host: (id: c.UInt32, got: c.UInt64, want: c.UInt64, kind: c.UInt32): () = c.extern("oak_test_host_fail_values")
 pub testing_discard: (): () = c.extern("oak_test_host_discard")
 pub testing_classify_host: (id: c.UInt32): () = c.extern("oak_test_host_classify")
+pub testing_liveness_host: (id: c.UInt32): () = c.extern("oak_test_host_liveness")
 pub testing_trace_host: (id: c.UInt32, a: c.UInt64, b: c.UInt64): () = c.extern("oak_test_host_trace")
 pub testing_command_host: (kind: c.UInt32, target: c.UInt32, value: c.UInt32): () = c.extern("oak_test_host_command")
 pub testing_command_limit_host: (): c.UInt32 = c.extern("oak_test_host_command_limit")
@@ -44,6 +45,17 @@ pub testing_trace: (id: u32, a: u64, b: u64): () {
 
 pub test_check: (condition: Bool, id: u32): () {
   !condition ? { testing_fail(id) }
+}
+
+// A liveness check (docs/spec/110-testing.md, "Failure classes"): the
+// scenario has stopped injecting faults and required convergence within
+// its budget — every replica caught up, every pending chain completed —
+// and it did not happen. The failure is classed liveness, not
+// correctness: nothing false was observed, something true never arrived.
+// The signature is liveness:<id>; shrinking and replay compare it like any
+// other.
+pub test_liveness: (condition: Bool, id: u32): () {
+  !condition ? { testing_liveness_host(c.UInt32(id)) }
 }
 
 // A failure that names both values (docs/spec/110-testing.md, "Isolation,

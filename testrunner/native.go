@@ -360,6 +360,10 @@ void oak_test_host_fail_values(uint32_t id, uint64_t got, uint64_t want, uint32_
  }
  exit(101);
 }
+void oak_test_host_liveness(uint32_t id) {
+ if (oak_test_report) { fprintf(oak_test_report, "liveness %u\n", (unsigned)id); fflush(oak_test_report); }
+ exit(101);
+}
 void oak_test_host_discard(void) {
  if (oak_test_report) { fputs("discard\n", oak_test_report); fflush(oak_test_report); }
  exit(102);
@@ -562,17 +566,23 @@ func (p *nativeProgram) run(index int, input []byte) (result outcome) {
 			terminal = "fail"
 			result.signature = "invariant:" + fields[1]
 			result.got, result.want, result.wantNot = failureValues(got, want, kind)
-		} else if len(fields) == 2 && (fields[0] == "class" || fields[0] == "fail") {
+		} else if len(fields) == 2 && (fields[0] == "class" || fields[0] == "fail" || fields[0] == "liveness") {
 			id, e := strconv.ParseUint(fields[1], 10, 32)
 			if e != nil {
 				result.signature = "harness:bad-report"
 				return result
 			}
-			if fields[0] == "class" {
+			switch fields[0] {
+			case "class":
 				result.classes[uint32(id)] = true
-			} else {
+			case "fail":
 				terminal = "fail"
 				result.signature = "invariant:" + fields[1]
+			default:
+				// A liveness check failed: the run ends like a failed
+				// invariant, under its own signature and class.
+				terminal = "fail"
+				result.signature = "liveness:" + fields[1]
 			}
 		} else if len(fields) == 1 && (fields[0] == "pass" || fields[0] == "discard") {
 			terminal = fields[0]
