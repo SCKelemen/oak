@@ -1534,6 +1534,32 @@ func typestateIndex(typ ast.Expression) (template, state string, ok bool) {
 	return left.Value, right.Value, true
 }
 
+// typestateResult reads a fallible transition's result type,
+// `Result[Handle[To], Handle[From]]` (docs/spec/112-protocols.md section
+// 5a): the template, the Ok arm's state and the Err arm's state.
+func typestateResult(typ ast.Expression) (template, okState, errState string, ok bool) {
+	// The parser spells `Result[A, B]` as `(Result[A])[B]`: the outer index
+	// is the Err arm, the inner one the Ok arm.
+	outer, isIndex := typ.(*ast.IndexExpression)
+	if !isIndex || outer == nil || outer.Dot {
+		return "", "", "", false
+	}
+	inner, innerIsIndex := outer.Left.(*ast.IndexExpression)
+	if !innerIsIndex || inner == nil || inner.Dot {
+		return "", "", "", false
+	}
+	result, isIdent := inner.Left.(*ast.Identifier)
+	if !isIdent || result == nil || result.Value != "Result" {
+		return "", "", "", false
+	}
+	okTemplate, okState, okIndexed := typestateIndex(inner.Index)
+	errTemplate, errState, errIndexed := typestateIndex(outer.Index)
+	if !okIndexed || !errIndexed || okTemplate != errTemplate {
+		return "", "", "", false
+	}
+	return okTemplate, okState, errState, true
+}
+
 // checkTypestateSignature holds a via callable to its line: every parameter
 // of a typestate-indexed resource type must name the line's source state,
 // a return of that type must name its target state, a bare template or a
@@ -1577,6 +1603,19 @@ func (m *protocolMachine) checkTypestateSignature(t *ast.ProtocolTransition, fn 
 	if fn.Receiver != nil {
 		check(fn.Receiver.Type, t.From.Value, "takes receiver")
 	}
+	if template, okState, errState, fallible := typestateResult(fn.ReturnType); fallible && m.typestate[template] {
+		// A fallible transition: success hands back the handle in the
+		// target state, failure the same handle in the source state.
+		if typeVars[okState] || typeVars[errState] {
+			report(CodeProtocolShape, fn.ReturnType, "transition %s: via %s returns Result[%s[%s], %s[%s]] with a type variable; a transition names the concrete states", t.Name.Value, fn.Name.Value, template, okState, template, errState)
+			return false
+		}
+		if okState != t.To.Value || errState != t.From.Value {
+			report(CodeProtocolShape, fn.ReturnType, "transition %s: %s -> %s via %s returns Result[%s[%s], %s[%s]], but a fallible transition returns Result[%s[%s], %s[%s]]: the handle in the target state on success, in the source state on failure", t.Name.Value, t.From.Value, t.To.Value, fn.Name.Value, template, okState, template, errState, template, t.To.Value, template, t.From.Value)
+			return false
+		}
+		return ok
+	}
 	check(fn.ReturnType, t.To.Value, "returns")
 	return ok
 }
@@ -1586,6 +1625,10 @@ func (m *protocolMachine) checkTypestateSignature(t *ast.ProtocolTransition, fn 
 // that type in the target state. -1 when the callable is not that shape.
 func (m *protocolMachine) typestateAliasIndex(t *ast.ProtocolTransition, fn *ast.FunctionStatement) int {
 	returned, _, indexedReturn := typestateIndex(fn.ReturnType)
+	if !indexedReturn {
+		// A fallible transition returns the handle inside a Result.
+		returned, _, _, indexedReturn = typestateResult(fn.ReturnType)
+	}
 	if !indexedReturn || !m.typestate[returned] {
 		return -1
 	}

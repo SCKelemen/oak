@@ -656,6 +656,24 @@ The rules:
    via callable of a transition **into** that state (`OAK-B0121`). Only the
    transition may make the claim its target state represents.
 
+5. A transition may **fail and hand the handle back**: its via callable
+   returns `Result[Segment[To], Segment[From]]` — the handle in the target
+   state on success, the same handle in the source state on failure
+   (`try_publish: (s: Segment[Fresh]): Result[Segment[Published],
+   Segment[Fresh]]`). The return type is the whole declaration; there is no
+   `fallible` keyword to disagree with it. The consumed argument's
+   authority flows into whichever arm is matched (`Ok(p)` or `Err(f)`), so
+   the old name is dead on both paths and nothing is duplicated; `try`
+   composes through its ordinary lowering, re-raising the source-state
+   handle. A failed step is a step that did not take: the projection's
+   machine advances only on `Ok`, and the model-checker module needs no
+   new form (the failure is a stutter). Arms in other states, or a
+   type-variable state, are `OAK-M0301`; a later failure that would
+   re-raise a handle in a state the function's failure type does not name
+   is an ordinary type error — the failure type must say which state the
+   resource is left in, a sum over those states when several are possible,
+   never a flag (`compiler/e2e_typestate_fallible_test.go`).
+
 A typestate resource may also carry **region parameters**
 (`50-borrowing.md` §8c): `Node[R, S]: type = struct { data: View[f32, R],
 n: u32 }` with `initial Lazy` and `realize: Lazy -> Realized` gives
