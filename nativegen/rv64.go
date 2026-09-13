@@ -1151,7 +1151,10 @@ func (g *rvGenerator) expr(expr ast.Expression, hint *scalar) (int, error) {
 	case *ast.IndexExpression:
 		return g.element(e)
 	case *ast.InvocationExpression:
-		ident := e.Function.(*ast.Identifier) // typeOf admitted the call
+		ident, isIdent := e.Function.(*ast.Identifier)
+		if !isIdent {
+			return 0, unsupported("a call through a value")
+		}
 		if ident.Value == "len" && len(e.Arguments) == 1 {
 			if arr := g.arrayOperand(e.Arguments[0]); arr != nil {
 				r, err := g.alloc(scalars["u32"])
@@ -1518,7 +1521,10 @@ func (g *rvGenerator) call(e *ast.InvocationExpression) (int, error) {
 // the callee through the area address passed as the hidden first
 // argument.
 func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *recordLocal) (int, error) {
-	ident := e.Function.(*ast.Identifier)
+	ident, isIdent := e.Function.(*ast.Identifier)
+	if !isIdent {
+		return 0, unsupported("a call through a value")
+	}
 	callee, ok := g.functions[ident.Value]
 	if !ok {
 		return 0, unsupported("a call to %s", ident.Value)
@@ -2259,7 +2265,10 @@ var rvFloatIntrinsics = map[string]string{"sqrt": "fsqrt", "abs": "fsgnjx", "min
 // intrinsic lowers a float intrinsic at the call's recorded width
 // (narrower operands widen exactly first).
 func (g *rvGenerator) intrinsic(e *ast.InvocationExpression, typ scalar) (int, error) {
-	ident := e.Function.(*ast.Identifier)
+	ident, isIdent := e.Function.(*ast.Identifier)
+	if !isIdent {
+		return 0, unsupported("a call through a value")
+	}
 	op, ok := rvFloatIntrinsics[ident.Value]
 	if !ok {
 		return 0, unsupported("the intrinsic %s (no single F/D instruction)", ident.Value)
