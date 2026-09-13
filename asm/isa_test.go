@@ -28,7 +28,7 @@ func TestInstructionTableCoverage(t *testing.T) {
 		"cfinv": "cmp x0, x1\n  cfinv",
 		"nop":   "nop", "wfe": "wfe", "wfi": "wfi", "sev": "sev", "sevl": "sevl", "yield": "yield", "csdb": "csdb", "esb": "esb", "hint": "hint #7", "clrex": "clrex",
 		"dmb": "dmb ish", "dsb": "dsb sy", "isb": "isb", "ssbb": "ssbb", "pssbb": "pssbb",
-		"adr": "adr x9, here\nhere:", "adrp": "adrp x9, here\nhere:",
+		"adr": "adr x9, here\nhere:", "adrp": "adrp x9, here\nhere:", "adrl": "adrl x9, table",
 		"bfc": "mov x9, x0\n  bfc x9, #4, #8", "bfm": "mov x9, x0\n  bfm x9, x1, #4, #8", "sbfm": "sbfm x9, x0, #4, #8", "ubfm": "ubfm x9, x0, #4, #8",
 		"lslv": "lslv x9, x0, x1", "lsrv": "lsrv x9, x0, x1", "asrv": "asrv x9, x0, x1", "rorv": "rorv x9, x0, x1", "bfxil": "mov x9, x0\n  bfxil x9, x1, #4, #8", "sbfiz": "sbfiz x9, x0, #4, #8", "smnegl": "smnegl x9, w0, w1", "umnegl": "umnegl x9, w0, w1",
 	}
@@ -240,6 +240,9 @@ func TestInstructionTableCoverage(t *testing.T) {
 		sig, err := parseSignature(decl)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if name == "adrl" {
+			unit.Functions[0].Tables = map[string]int64{"table": 64} // the data symbol the sample addresses
 		}
 		if findings := Check(unit.Functions[0], sig, map[string]bool{"helper": true}); len(findings) != 0 {
 			t.Errorf("%s: checker rejected the sample: %v", name, findings)
