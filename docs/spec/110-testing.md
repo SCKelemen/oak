@@ -27,7 +27,7 @@ and start with a prefix followed by an uppercase ASCII letter or underscore:
 | `Property` | `(data: []u8): ()` | Corpus plus generated cases |
 | `Fuzz` | `(data: []u8): ()` | Corpus plus four built-in seeds |
 | `Sim` | `(data: []u8): ()` | Corpus plus generated simulation inputs |
-| `Table` | `(row: []u8): ()` | One execution per row file under `testdata/oak/<Test>/rows` |
+| `Table` | `(row: []u8): ()` | One execution per row file under `testdata/oak/<Test>/rows`; a `max_bytes` file beside `rows` (a decimal byte count) raises that target's row limit above the run's `-max-bytes` |
 | `Launch` | `(): ()` | One execution; every `test_launch` it makes is replayed on the GPU and compared |
 
 Methods, generic tests, extern tests, variadics, and other signatures reject.

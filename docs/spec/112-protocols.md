@@ -82,7 +82,17 @@ sequence of entries separated by newlines or commas:
   (`OAK-M0301`): a form over a field `data` does not declare, over a
   non-array field, a one-argument form over non-`Bool` elements, a
   two-argument form whose element is not a declared record or whose named
-  field is not `Bool`. A **record payload** carries several fields per
+  field is not `Bool`. The **predicate form** binds each element:
+  `count(data.peers, p, p.acked && u32(p.view) == data.view)`,
+  `all(data.peers, p, ...)`, `any`, `none` — the second argument names the
+  element, the third is a `Bool` predicate over it and `data` (width
+  conversions and operators, no payload, no nested form), so a quorum over
+  an indexed path is declared once rather than unrolled by hand. Its helper
+  binds `p: Peer = data.peers[i]` and folds the predicate; the module
+  writes `Cardinality({k \\in 0..N-1 : pred[p := peers[k]]})` and the
+  bounded quantifiers over the same substitution. A binder that is `data`,
+  `state`, `step` or a data field, a predicate that reads anything else,
+  or one that nests a form is `OAK-M0301`. A **record payload** carries several fields per
   step: `write(cmd: Cmd)` with `Cmd: type = struct { slot: u8, value: u8 }`
   a declared record whose fields are command scalars, read as `cmd.slot`
   in guards and effects; the model-checker module quantifies it over the
@@ -451,8 +461,12 @@ unsupported form (or on `-tlc`, for any module), the projection is written
 as a module of its own, `<Name>Projection`, and a refinement module
 `<Module>Refinement` extends the hand-written module, instantiates the
 projection under the state mapping — `INSTANCE <Name>Projection WITH state
-<- state, count <- n` (`-map state=st,...` renames; unmapped variables
-keep their names and must be declared by the module) — and states
+<- state, count <- n` (`-map state=st,...` renames, and a value may be any
+TLA+ expression over the module's variables — `-map 'count=Cardinality({k
+\\in 0..1 : acked[k]})'`, commas inside brackets belonging to the
+expression, `<-` accepted for `=`, `-map @file` reading the pairs from a
+file one per line, the refinement mapping of a hand-written MC module;
+unmapped variables keep their names and must be declared by the module) — and states
 `RefinementSpec == Projection!Spec`; its configuration is `SPECIFICATION
 Spec`, `PROPERTY RefinementSpec`, the module's own constant values from
 `-against-cfg module.cfg`, and the projection's payload domains at their
