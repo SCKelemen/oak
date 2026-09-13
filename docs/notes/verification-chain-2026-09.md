@@ -145,7 +145,16 @@ or the verifier, not in the program:
    `asm/rv64_encoding_lean_test.go`), and
    `spec/lean-sail/OakSailBridge/Encoding.lean` states thirty theorems
    `encdec_forwards (instruction) = pure (encode …)` against the export.
-   They await an export that compiles (item 2).
+   **Checked (2026-09-14):** with the export compiling (item 2) all thirty
+   prove. Meeting the export corrected them: `encdec_forwards` and the
+   operand mappings live in `LeanRV64D.Functions`; the four-thousand-line
+   match unfolds once rather than through per-clause equations; `congrArg
+   pure` replaces `congr` on the monadic result (the word's width is a
+   nest of `hi - lo + 1` sums); and the six branch theorems were false as
+   stated — the model encodes a branch only for an even offset and errors
+   otherwise, so they carry the evenness as a hypothesis. The encoder is
+   now proved against the ISA's `encdec` for the decided RV64 mnemonics;
+   AArch64's remains tested.
 4. **Calls are the largest trusted class.** The verifier did not model
    `bl`/`call`: 159 of 304 trusted AArch64 bodies and 119 of 295 on RV64
    were trusted for that reason alone. **Closed (2026-09-13):** the

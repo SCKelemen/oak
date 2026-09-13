@@ -2418,15 +2418,17 @@ table. `spec/lean-sail/OakSailBridge/Encoding.lean` states, for every
 register number, immediate, or branch offset, that the word Oak writes for
 a mnemonic is `encdec_forwards` of the instruction it spells — so the
 machine words follow from the specification, and, `encdec` being a
-bijection, the decoder reads them back. The statements build against the
-export: with Sail built from git the export generates (nine minutes) but
-its `Defs.lean` does not yet compile under lean-sail v5 at sail-riscv 0.14
-(`PTW_Output`, unbound type-level variables), the same class of failure
-the earlier attempt recorded; the theorems are stated and their tactic
-script written, awaiting an export that compiles (the export from
-sail-riscv master fails at the same place: the generated `Defs.lean`
-declares a structure over a type not yet in scope, a Sail Lean-backend
-matter).
+bijection, the decoder reads them back. The theorems are checked against
+the export (2026-09-14): the export compiles under
+`spec/lean-sail/patch-export.py` (the Lean backend's slips in the
+virtual-memory types, rems-project/sail#1729), and meeting it corrected
+the statements — the encoder functions live in `LeanRV64D.Functions`,
+the four-thousand-line `encdec_forwards` unfolds once rather than through
+per-clause equations, `congrArg pure` stands in for `congr` on the monadic
+result, and the six branch theorems take the offset's evenness as a
+hypothesis, since the model encodes a branch only for an even offset and
+errors otherwise while Oak's encoder drops the bit. All thirty prove
+(`TestRV64SailBridgeBuilds`).
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
