@@ -551,6 +551,17 @@ point_hash: (v: Point): u64 = derive.hash
   (the strings library's `TextError`) and renders `Point { x: -3, y: 42 }`
   or `Line(3)` into the caller's span through the library's text builder —
   bounds-checked writes, no allocation, decimal integers, `true`/`false`.
+- `derive.reserved_zero` requires `(v: T): Bool` over a record and returns
+  whether every field named `reserved` or `reserved_*` is zero — a
+  fixed-width integer against its typed zero, a `Bool` as `false`, a fixed
+  array of those element by element in a canonical bounded loop — and asks
+  a nested record that holds reserved fields the same through its own
+  helper. It is the wire record's two-sided check (`40-records.md` §6a):
+  `assert(header_reserved_zero(h))` before a write and after a read
+  (TigerBeetle's `Header.invalid()`, `docs/notes/tigerbeetle-2026-09.md`
+  lesson 1). A record with no reserved field anywhere, or a reserved field
+  that is a view, span, string, or record, is rejected (`OAK-M0203`): a
+  check that checks nothing is not derived.
 - `derive.test_generate`, `derive.test_encode`, and `derive.test_decode`
   derive a test-command sum type's tape generator, `TestCommand` packing, and
   range-checked decoder (`110-testing.md`, "Typed commands"); the type is the
