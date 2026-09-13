@@ -351,6 +351,9 @@ grant: [4096]u8 (section: "__DATA,grant")   // Mach-O: segment,section
 
 The section name admits only `[A-Za-z0-9_.,$]`, so nothing but a plain
 section spelling reaches generated C (`__attribute__((section(...)))`).
+The same clause position carries a measured range, `(measured: lo, hi)`,
+for a constant supplied at load (`60-effects-allocation.md` §10b); a
+declaration has one clause or the other.
 Fixed addresses are the linker script's job; only the section is language
 surface. Together with `struct(align: N)`/`packed`, per-field `align`, and
 `static_assert` over `size_of`/`offset_of`, this is the surface a ring or

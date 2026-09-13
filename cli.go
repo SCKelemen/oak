@@ -318,6 +318,13 @@ func vetOne(target, profile string) int {
 			}
 			fmt.Printf("law: %s on %s declares %s — declared, not checked; the REPL's :lean states it and oak prove decides it over small domains\n", who, modules.DemangleText(law.Type), declared)
 		}
+		// Measured constants (docs/spec/60-effects-allocation.md section
+		// 10b) are the knobs a load may turn: list each with its range and
+		// pinned value beside the assumptions, so nothing that changes a
+		// run's constants goes unseen.
+		for _, m := range model.TypeChecker.MeasuredConstants() {
+			fmt.Printf("measured: %s: %s within %d..%d, pinned %d — supplied at load through OAK_MEASURED_%s or the oak_measured_value hook, checked against the range\n", modules.DemangleText(m.Name), m.Type, m.Lo, m.Hi, m.Pinned, measuredHookName(m.Name))
+		}
 		// Refinement constructions are proof status made explicit
 		// (docs/spec/20-types.md section 12): a guard that stayed is a
 		// runtime check, a discharged one cost nothing.
@@ -812,4 +819,13 @@ func installPackage(args []string) int {
 	}
 	fmt.Printf("installed %s\n", output)
 	return 0
+}
+
+// measuredHookName is a measured constant's name at the load-time hook:
+// the Oak name without its package prefix (codegen.measuredHookName).
+func measuredHookName(name string) string {
+	if i := strings.LastIndex(name, "__"); i >= 0 {
+		return name[i+2:]
+	}
+	return name
 }
