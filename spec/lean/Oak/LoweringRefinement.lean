@@ -44,11 +44,15 @@ typed expression language for the subset they share and proves them equal.
   name parameters and only parameters: a local that shadows a parameter
   changes what the source means by the name, never what a term means.
 
-Two things the Go does that the model leaves out, both eval-preserving:
-the term constructors fold constant subterms and drop `x + 0`, and a
-comparison in the condition of an `ite` keeps the operands' width where
-`lowerT` re-widths it to 1 (the executor reads a comparison's width only
-where its 1/0 result is used, and `String` does not print it).
+The term constructors fold as the Go's do (`Term.binary`, `cmpT`, `iteT`,
+`selectT`: constant operands fold, `x + 0` is `x`, a constant condition
+picks its arm, a constant index names the element parameter), each proved
+to evaluate as the node it folds. Two things the Go does that the model
+leaves out, both eval-preserving: a comparison in the condition of an
+`ite` keeps the operands' width where `lowerT` re-widths it to 1 (the
+executor reads a comparison's width only where its 1/0 result is used, and
+`String` does not print it), and `lowerConditionalStatement` skips the
+select when both arms left the same term object.
 
 `asm/lowering_refinement_test.go` pins the Go to `lowerT`: it lowers a
 table of Oak expressions and compares the rendered terms with the renders
@@ -378,13 +382,48 @@ def zeroExtend (t : Term) (w : Nat) : Term :=
 def adaptWidth (t : Term) (w : Nat) : Term :=
   if t.width < w then zeroExtend t w else truncate t w
 
+/-- `binaryTerm(op, left, right)`: two constant operands fold to the
+constant the node evaluates to (at the node's width, the left operand's);
+`x + 0`, `x - 0` and `0 + x` are `x` when `x` already has the node's
+width; otherwise the node. -/
+def Term.binary (op : TOp) (w : Nat) (l r : Term) : Term :=
+  match l, r with
+  | .const a wa, .const b wb => .const (Term.evalBin op w (a % 2 ^ wa % 2 ^ w) (b % 2 ^ wb % 2 ^ w)) w
+  | l, .const b wb =>
+    if b % 2 ^ wb = 0 ∧ (op = .add ∨ op = .sub) ∧ l.width = w then l else .bin op w l (.const b wb)
+  | .const a wa, r =>
+    if a % 2 ^ wa = 0 ∧ op = .add ∧ r.width = w then r else .bin op w (.const a wa) r
+  | l, r => .bin op w l r
+
+/-- `cmpTerm(code, left, right)`: two constant operands fold to the 1/0 the
+comparison evaluates to, at the left operand's width. -/
+def Term.cmpT (code : Cond) (w : Nat) (l r : Term) : Term :=
+  match l, r with
+  | .const a wa, .const b wb => .const ((Term.cmp code w (.const a wa) (.const b wb)).eval (fun _ => 0)) l.width
+  | l, r => .cmp code w l r
+
+/-- `iteTerm(cond, left, right)`: a constant condition picks an arm; the
+node's width is the left arm's. -/
+def Term.iteT (c l r : Term) : Term :=
+  match c with
+  | .const v wc => if v % 2 ^ wc ≠ 0 then l else r
+  | c => .ite l.width c l r
+
+/-- `selectTerm(span, index, width)`: a constant index names the element
+parameter `v[k]` (the index's low 32 bits); a symbolic one is a select
+over the index at width 32. -/
+def Term.selectT (span : String) (w : Nat) (idx : Term) : Term :=
+  match idx with
+  | .const v wi => .param (elemName span (v % 2 ^ wi % 2 ^ 32)) w
+  | idx => .select span w (truncate idx 32)
+
 /-- `extendTerm(t, from, width, signed)` (asm/isa_semantics.go): the low
 `src` bits at the wider width, then for a signed source shifted up and
 arithmetically back down. -/
 def extendTerm (t : Term) (src w : Nat) (signed : Bool) : Term :=
-  let low := Term.bin .and w (adaptWidth t w) (.const (mask src) w)
+  let low := Term.binary .and w (adaptWidth t w) (.const (mask src) w)
   if !signed then low else
-  Term.bin .sar w (Term.bin .shl w low (.const (w - src) w)) (.const (w - src) w)
+  Term.binary .sar w (Term.binary .shl w low (.const (w - src) w)) (.const (w - src) w)
 
 /-- `oakComparisons`: the condition code of an Oak comparison, by
 signedness (unsigned first, signed second in the Go table). -/
@@ -416,8 +455,7 @@ def Assigns.names {P : Params} {S : Spans} : {Γ : Locals} → Assigns P S Γ �
   | _, .cons x _ _ rest => x :: rest.names
 
 /-- `lowerConditionalStatement`'s merge: a local either arm assigned takes
-`iteTerm(cond, afterTrue, afterFalse)` at the true arm's width
-(`iteTerm`'s width is its left operand's); every other local keeps its
+`iteTerm(cond, afterTrue, afterFalse)`; every other local keeps its
 term. The Go skips the select when both arms left the same term object,
 which the model does not track; the select of equal arms is the same
 value. -/
@@ -425,7 +463,7 @@ def mergeScope (c : Term) (names : List String) (σT σF σ : Scope) : Scope :=
   fun y =>
     if y ∈ names then
       match σT y, σF y with
-      | some a, some b => some (.ite a.width c a b)
+      | some a, some b => some (.iteT c a b)
       | _, _ => σ y
     else σ y
 
@@ -456,12 +494,12 @@ def lowerT {P : Params} {S : Spans} : Scope → {Γ : Locals} → {t : Ty} → E
     | some term => adaptWidth term t.width
     | none => .param x t.width
   | _, _, t, .lit _ v => .const v.toNat t.width
-  | σ, _, t, .arith op a b => .bin (arithTOp op) t.width (lowerT σ a) (lowerT σ b)
-  | σ, _, t, .bit op a b _ => .bin (bitTOp op) t.width (lowerT σ a) (lowerT σ b)
-  | σ, _, t, .divPow2 a k _ _ => .bin .shr t.width (lowerT σ a) (.const k t.width)
-  | σ, _, t, .modPow2 a k _ _ => .bin .and t.width (lowerT σ a) (.const (2 ^ k - 1) t.width)
-  | σ, _, t, .neg a => .bin .sub t.width (.const 0 t.width) (lowerT σ a)
-  | σ, _, t, .not a => .bin .xor t.width (lowerT σ a) (.const (mask t.width) t.width)
+  | σ, _, t, .arith op a b => .binary (arithTOp op) t.width (lowerT σ a) (lowerT σ b)
+  | σ, _, t, .bit op a b _ => .binary (bitTOp op) t.width (lowerT σ a) (lowerT σ b)
+  | σ, _, t, .divPow2 a k _ _ => .binary .shr t.width (lowerT σ a) (.const k t.width)
+  | σ, _, t, .modPow2 a k _ _ => .binary .and t.width (lowerT σ a) (.const (2 ^ k - 1) t.width)
+  | σ, _, t, .neg a => .binary .sub t.width (.const 0 t.width) (lowerT σ a)
+  | σ, _, t, .not a => .binary .xor t.width (lowerT σ a) (.const (mask t.width) t.width)
   | σ, _, t, .conv (s := s) _ a =>
     let operand := lowerT σ a
     let converted :=
@@ -469,13 +507,13 @@ def lowerT {P : Params} {S : Spans} : Scope → {Γ : Locals} → {t : Ty} → E
       else truncate operand t.width
     truncate converted t.width
   | σ, _, _, .cmp (s := s) op l r =>
-    zeroExtend (truncate (.cmp (codeOf s.signed op) s.width (lowerT σ l) (lowerT σ r)) 1) 1
-  | σ, _, t, .ite c a b => .ite t.width (lowerT σ c) (lowerT σ a) (lowerT σ b)
+    zeroExtend (truncate (.cmpT (codeOf s.signed op) s.width (lowerT σ l) (lowerT σ r)) 1) 1
+  | σ, _, _, .ite c a b => .iteT (lowerT σ c) (lowerT σ a) (lowerT σ b)
   | σ, _, _, .letIn x v b => lowerT (σ.set x (lowerT σ v)) b
   | σ, _, _, .call _ _ body args => lowerT (bindTerms σ args (fun _ => none)) body
   | σ, _, _, .condSet c armT armF rest =>
     lowerT (mergeScope (lowerT σ c) (armT.names ++ armF.names) (runTerms σ armT) (runTerms σ armF) σ) rest
-  | σ, _, s, .elem _ v _ i => .select v s.width (truncate (lowerT σ i) 32)
+  | σ, _, s, .elem _ v _ i => .selectT v s.width (lowerT σ i)
   | _, _, _, .len v _ => .param (lenName v) 32
 /-- An arm's assignments as `assignLocal` executes them: each value lowered
 at the local's width replaces the local's term, in order. -/
@@ -506,9 +544,39 @@ end
 @[simp] theorem adaptWidth_width (t : Term) (w : Nat) : (adaptWidth t w).width = w := by
   unfold adaptWidth; split <;> simp
 
+theorem Term.binary_width (op : TOp) (w : Nat) (l r : Term) : (Term.binary op w l r).width = w := by
+  unfold Term.binary
+  split
+  · rfl
+  · split
+    · rename_i h; exact h.2.2
+    · rfl
+  · split
+    · rename_i h; exact h.2.2
+    · rfl
+  · rfl
+
+theorem Term.cmpT_width (code : Cond) (w : Nat) {l r : Term} (hw : l.width = w) : (Term.cmpT code w l r).width = w := by
+  unfold Term.cmpT
+  split
+  · exact hw
+  · rfl
+
+theorem Term.iteT_width {c l r : Term} (hw : r.width = l.width) : (Term.iteT c l r).width = l.width := by
+  unfold Term.iteT
+  split
+  · split
+    · rfl
+    · exact hw
+  · rfl
+
+theorem Term.selectT_width (span : String) (w : Nat) (idx : Term) : (Term.selectT span w idx).width = w := by
+  unfold Term.selectT
+  split <;> rfl
+
 @[simp] theorem extendTerm_width (t : Term) (src w : Nat) (signed : Bool) :
     (extendTerm t src w signed).width = w := by
-  unfold extendTerm; split <;> rfl
+  unfold extendTerm; split <;> exact Term.binary_width _ _ _ _
 
 theorem lowerT_width {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P S Γ t) : ∀ σ : Scope, (lowerT σ e).width = t.width := by
   intro σ
@@ -521,16 +589,18 @@ theorem lowerT_width {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P
   | .letIn x v b => exact lowerT_width b _
   | .call params ret body args => exact lowerT_width body _
   | .condSet c armT armF rest => exact lowerT_width rest _
-  | .elem _ _ _ _ => rfl
+  | .elem _ _ _ _ => exact Term.selectT_width _ _ _
   | .len _ _ => rfl
   | .lit _ _ => rfl
-  | .arith _ _ _ => rfl
-  | .bit _ _ _ _ => rfl
-  | .divPow2 _ _ _ _ => rfl
-  | .modPow2 _ _ _ _ => rfl
-  | .neg _ => rfl
-  | .not _ => rfl
-  | .ite _ _ _ => rfl
+  | .arith _ _ _ => exact Term.binary_width _ _ _ _
+  | .bit _ _ _ _ => exact Term.binary_width _ _ _ _
+  | .divPow2 _ _ _ _ => exact Term.binary_width _ _ _ _
+  | .modPow2 _ _ _ _ => exact Term.binary_width _ _ _ _
+  | .neg _ => exact Term.binary_width _ _ _ _
+  | .not _ => exact Term.binary_width _ _ _ _
+  | .ite c a b =>
+    simp only [lowerT]
+    rw [Term.iteT_width (by rw [lowerT_width b, lowerT_width a]), lowerT_width a]
 termination_by structural e
 
 theorem truncate_self (t : Term) (w : Nat) (h : t.width = w) : truncate t w = t := by
@@ -617,6 +687,108 @@ theorem truncate_cmp_eval (code : Cond) (w₀ w : Nat) (l r : Term) (ρ : Env) :
   unfold truncate
   split
   · rfl
+  · rfl
+
+/-! ## The folding constructors evaluate as the nodes they fold -/
+
+theorem Term.binary_topPositive (op : TOp) (w : Nat) {l r : Term} (hl : l.topPositive) (hr : r.topPositive) :
+    (Term.binary op w l r).topPositive := by
+  unfold Term.binary
+  split
+  · trivial
+  · split
+    · exact hl
+    · trivial
+  · split
+    · exact hr
+    · trivial
+  · trivial
+
+theorem Term.binary_eval (op : TOp) (w : Nat) {l r : Term} (ρ : Env) (hl : l.topPositive) (hr : r.topPositive) :
+    (Term.binary op w l r).eval ρ = (Term.bin op w l r).eval ρ := by
+  unfold Term.binary
+  split
+  · simp only [Term.eval]
+    exact Nat.mod_eq_of_lt (Term.evalBin_lt _ _ _ _)
+  · split
+    · rename_i h
+      obtain ⟨hb, hop, hw⟩ := h
+      have hlt : l.eval ρ < 2 ^ w := hw ▸ Term.eval_lt l ρ hl
+      simp only [Term.eval, hb, Nat.zero_mod, Nat.mod_eq_of_lt hlt]
+      rcases hop with rfl | rfl
+      · simp [Term.evalBin, Nat.mod_eq_of_lt hlt]
+      · simp [Term.evalBin, Nat.add_mod_right, Nat.mod_eq_of_lt hlt]
+    · rfl
+  · split
+    · rename_i h
+      obtain ⟨ha, hop, hw⟩ := h
+      subst hop
+      have hlt : r.eval ρ < 2 ^ w := hw ▸ Term.eval_lt r ρ hr
+      simp [Term.eval, Term.evalBin, ha, Nat.mod_eq_of_lt hlt]
+    · rfl
+  · rfl
+
+theorem Term.cmpT_topPositive (code : Cond) (w : Nat) {l r : Term} (hw : 0 < w) : (Term.cmpT code w l r).topPositive := by
+  unfold Term.cmpT
+  split
+  · trivial
+  · exact hw
+
+/-- A folded comparison re-widthed to 1 is the comparison's 1/0. -/
+theorem truncate_cmpT_eval (code : Cond) (w : Nat) {l r : Term} (ρ : Env) (hw : l.width = w) (hpos : 0 < w) :
+    (truncate (Term.cmpT code w l r) 1).eval ρ = (Term.cmp code w l r).eval ρ := by
+  unfold Term.cmpT
+  split
+  · rename_i a wa b wb
+    simp only [Term.width_const] at hw
+    subst hw
+    have h1 : 1 % 2 ^ wa = 1 := Nat.mod_eq_of_lt (Nat.one_lt_two_pow (Nat.pos_iff_ne_zero.mp hpos))
+    unfold truncate
+    split
+    · simp only [Term.eval, Term.width_const]
+      by_cases hc : condHolds code (BitVec.ofNat wa (a % 2 ^ wa)) (BitVec.ofNat wa (b % 2 ^ wb)) = true <;> simp [hc, h1]
+    · simp only [Term.eval, Term.width_const]
+      by_cases hc : condHolds code (BitVec.ofNat wa (a % 2 ^ wa)) (BitVec.ofNat wa (b % 2 ^ wb)) = true <;> simp [hc, h1]
+  · exact truncate_cmp_eval _ _ _ _ _ _
+
+theorem Term.iteT_topPositive {c l r : Term} (hl : l.topPositive) (hr : r.topPositive) : (Term.iteT c l r).topPositive := by
+  unfold Term.iteT
+  split
+  · split
+    · exact hl
+    · exact hr
+  · trivial
+
+theorem Term.iteT_eval {c l r : Term} (ρ : Env) (hl : l.topPositive) (hr : r.topPositive) (hw : r.width = l.width) :
+    (Term.iteT c l r).eval ρ = (Term.ite l.width c l r).eval ρ := by
+  unfold Term.iteT
+  split
+  · rename_i v wc
+    split
+    · rename_i h
+      have h' : (Term.const v wc).eval ρ ≠ 0 := by simpa [Term.eval] using h
+      rw [Term.eval.eq_5, if_pos h', Nat.mod_eq_of_lt (Term.eval_lt l ρ hl)]
+    · rename_i h
+      have h' : ¬ (Term.const v wc).eval ρ ≠ 0 := by simpa [Term.eval] using h
+      rw [Term.eval.eq_5, if_neg h', ← hw, Nat.mod_eq_of_lt (Term.eval_lt r ρ hr)]
+  · rfl
+
+theorem Term.selectT_topPositive (span : String) (w : Nat) (idx : Term) : (Term.selectT span w idx).topPositive := by
+  unfold Term.selectT
+  split <;> trivial
+
+theorem Term.selectT_eval (span : String) (w : Nat) (idx : Term) (ρ : Env) :
+    (Term.selectT span w idx).eval ρ = (Term.select span w (truncate idx 32)).eval ρ := by
+  unfold Term.selectT
+  split
+  · rename_i v wi
+    unfold truncate
+    split
+    · rename_i h
+      simp only [Term.width_const] at h
+      subst h
+      simp [Term.eval, Nat.mod_mod]
+    · simp [Term.eval, Nat.mod_mod]
   · rfl
 
 /-- `zeroExtend` under the mask of the term's own width (the shape
@@ -772,14 +944,18 @@ theorem zeroExtend_topPositive (t : Term) (w : Nat) (hw : 0 < w) (hp : t.topPosi
   · exact hp
   · split <;> first | trivial | exact hw
 
-theorem extendTerm_topPositive (t : Term) (src w : Nat) (signed : Bool) : (extendTerm t src w signed).topPositive := by
-  unfold extendTerm; split <;> trivial
-
 theorem adaptWidth_topPositive (t : Term) (w : Nat) (hw : 0 < w) (hp : t.topPositive) : (adaptWidth t w).topPositive := by
   unfold adaptWidth
   split
   · exact zeroExtend_topPositive t w hw hp
   · exact truncate_topPositive t w hw hp
+
+theorem extendTerm_topPositive (t : Term) (src w : Nat) (signed : Bool) (hw : 0 < w) (ht : t.topPositive) :
+    (extendTerm t src w signed).topPositive := by
+  unfold extendTerm
+  split
+  · exact Term.binary_topPositive _ _ (adaptWidth_topPositive t w hw ht) trivial
+  · exact Term.binary_topPositive _ _ (Term.binary_topPositive _ _ (Term.binary_topPositive _ _ (adaptWidth_topPositive t w hw ht) trivial) trivial) trivial
 
 /-- Every term a scope holds is well formed. -/
 def Scope.wf (σ : Scope) : Prop := ∀ x term, σ x = some term → term.topPositive
@@ -794,12 +970,14 @@ theorem Scope.wf_set {σ : Scope} (hσ : σ.wf) {x : String} {t : Term} (ht : t.
 theorem Scope.wf_empty : Scope.wf (fun _ => none) := by
   intro y term h; cases h
 
-theorem mergeScope_wf {c : Term} {names : List String} {σT σF σ : Scope} (hσ : σ.wf) : (mergeScope c names σT σF σ).wf := by
+theorem mergeScope_wf {c : Term} {names : List String} {σT σF σ : Scope} (hσ : σ.wf) (hT : σT.wf) (hF : σF.wf) :
+    (mergeScope c names σT σF σ).wf := by
   intro y term h
   unfold mergeScope at h
   split at h
   · split at h
-    · cases h; trivial
+    · rename_i a b ha hb
+      cases h; exact Term.iteT_topPositive (hT y a ha) (hF y b hb)
     · exact hσ y term h
   · exact hσ y term h
 
@@ -813,26 +991,27 @@ theorem lowerT_topPositive {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : 
     · rename_i term hterm; exact adaptWidth_topPositive term _ t.width_pos (hσ x term hterm)
     · trivial
   | .cmp op l r =>
-    exact zeroExtend_topPositive _ _ (by decide) (truncate_topPositive _ _ (by decide) (Ty.width_pos _))
+    exact zeroExtend_topPositive _ _ (by decide) (truncate_topPositive _ _ (by decide) (Term.cmpT_topPositive _ _ (Ty.width_pos _)))
   | .conv t a =>
     simp only [lowerT]
     apply truncate_topPositive _ _ t.width_pos
     split
-    · exact extendTerm_topPositive _ _ _ _
+    · exact extendTerm_topPositive _ _ _ _ t.width_pos (lowerT_topPositive a σ hσ)
     · exact truncate_topPositive _ _ t.width_pos (lowerT_topPositive a σ hσ)
   | .letIn x v b => exact lowerT_topPositive b _ (Scope.wf_set hσ (lowerT_topPositive v σ hσ))
   | .call params ret body args => exact lowerT_topPositive body _ (bindTerms_wf args σ hσ _ Scope.wf_empty)
-  | .condSet c armT armF rest => exact lowerT_topPositive rest _ (mergeScope_wf hσ)
-  | .elem _ _ _ _ => trivial
+  | .condSet c armT armF rest =>
+    exact lowerT_topPositive rest _ (mergeScope_wf hσ (runTerms_wf armT σ hσ) (runTerms_wf armF σ hσ))
+  | .elem _ _ _ _ => exact Term.selectT_topPositive _ _ _
   | .len _ _ => trivial
   | .lit _ _ => trivial
-  | .arith _ _ _ => trivial
-  | .bit _ _ _ _ => trivial
-  | .divPow2 _ _ _ _ => trivial
-  | .modPow2 _ _ _ _ => trivial
-  | .neg _ => trivial
-  | .not _ => trivial
-  | .ite _ _ _ => trivial
+  | .arith _ a b => exact Term.binary_topPositive _ _ (lowerT_topPositive a σ hσ) (lowerT_topPositive b σ hσ)
+  | .bit _ a b _ => exact Term.binary_topPositive _ _ (lowerT_topPositive a σ hσ) (lowerT_topPositive b σ hσ)
+  | .divPow2 a _ _ _ => exact Term.binary_topPositive _ _ (lowerT_topPositive a σ hσ) trivial
+  | .modPow2 a _ _ _ => exact Term.binary_topPositive _ _ (lowerT_topPositive a σ hσ) trivial
+  | .neg a => exact Term.binary_topPositive _ _ trivial (lowerT_topPositive a σ hσ)
+  | .not a => exact Term.binary_topPositive _ _ (lowerT_topPositive a σ hσ) trivial
+  | .ite c a b => exact Term.iteT_topPositive (lowerT_topPositive a σ hσ) (lowerT_topPositive b σ hσ)
 termination_by structural e
 theorem bindTerms_wf {P : Params} {S : Spans} {Γ : Locals} {ps : List (String × Ty)} (args : Args P S Γ ps) : ∀ σ : Scope, σ.wf → ∀ acc : Scope, acc.wf → (bindTerms σ args acc).wf := by
   intro σ hσ acc hacc
@@ -840,6 +1019,12 @@ theorem bindTerms_wf {P : Params} {S : Spans} {Γ : Locals} {ps : List (String �
   | .nil => exact hacc
   | .cons a rest => exact bindTerms_wf rest σ hσ _ (Scope.wf_set hacc (lowerT_topPositive a σ hσ))
 termination_by structural args
+theorem runTerms_wf {P : Params} {S : Spans} {Γ : Locals} (arm : Assigns P S Γ) : ∀ σ : Scope, σ.wf → (runTerms σ arm).wf := by
+  intro σ hσ
+  match arm with
+  | .nil => exact hσ
+  | .cons x h e rest => exact runTerms_wf rest _ (Scope.wf_set hσ (lowerT_topPositive e σ hσ))
+termination_by structural arm
 end
 
 /-- A one-bit value is 1 exactly when it is not 0. -/
@@ -940,8 +1125,10 @@ theorem merge_agree {Γ : Locals} {σ σT σF : Scope} {ρ : Env} {l lT lF : Val
     · obtain ⟨a, haσ, haw, hap, hav⟩ := hT.2 y t hy
       obtain ⟨b, hbσ, hbw, hbp, hbv⟩ := hF.2 y t hy
       rw [if_pos hin, haσ, hbσ]
-      refine ⟨.ite a.width c a b, rfl, haw, trivial, ?_⟩
+      have hba : b.width = a.width := hbw.trans haw.symm
+      refine ⟨Term.iteT c a b, rfl, by rw [Term.iteT_width hba, haw], Term.iteT_topPositive hap hbp, ?_⟩
       have key : (c.eval ρ ≠ 0) ↔ (cv = 1) := by rw [hc]; exact BitVec1_ne_zero_iff cv
+      rw [Term.iteT_eval ρ hap hbp hba]
       simp only [Term.eval]
       by_cases h1 : cv = 1
       · rw [if_pos (key.mpr h1), if_pos h1, hav, ← hav, Nat.mod_eq_of_lt (Term.eval_lt a ρ hap)]
@@ -981,12 +1168,16 @@ theorem lowerT_eval {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P 
   | .arith (t := t) op a b =>
     have iha := lowerT_eval a σ ρ l hA
     have ihb := lowerT_eval b σ ρ l hA
-    cases op <;> simp [lowerT, evalX, arithX, arithTOp, Term.eval, Term.evalBin, iha, ihb, Nat.add_comm]
+    simp only [lowerT]
+    rw [Term.binary_eval _ _ ρ (lowerT_topPositive a σ (Agree.wf hA)) (lowerT_topPositive b σ (Agree.wf hA))]
+    cases op <;> simp [evalX, arithX, arithTOp, Term.eval, Term.evalBin, iha, ihb, Nat.add_comm]
   | .bit (t := t) op a b h =>
     have iha := lowerT_eval a σ ρ l hA
     have ihb := lowerT_eval b σ ρ l hA
     have hw := (evalX a ρ l).isLt
-    cases op <;> simp only [lowerT, evalX, bitX, bitTOp, Term.eval, Term.evalBin, iha, ihb, BitVec.toNat_mod_cancel]
+    simp only [lowerT]
+    rw [Term.binary_eval _ _ ρ (lowerT_topPositive a σ (Agree.wf hA)) (lowerT_topPositive b σ (Agree.wf hA))]
+    cases op <;> simp only [evalX, bitX, bitTOp, Term.eval, Term.evalBin, iha, ihb, BitVec.toNat_mod_cancel]
     · rw [BitVec.toNat_and]; exact Nat.mod_eq_of_lt (Nat.and_lt_two_pow _ (evalX b ρ l).isLt)
     · rw [BitVec.toNat_or]; exact Nat.mod_eq_of_lt (Nat.or_lt_two_pow hw (evalX b ρ l).isLt)
     · rw [BitVec.toNat_xor]; exact Nat.mod_eq_of_lt (Nat.xor_lt_two_pow hw (evalX b ρ l).isLt)
@@ -998,7 +1189,9 @@ theorem lowerT_eval {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P 
     have hw := (evalX a ρ l).isLt
     have hk2 : 2 ^ k < 2 ^ t.width := Nat.pow_lt_pow_right (by decide) hk
     have hkw : k < 2 ^ t.width := Nat.lt_of_lt_of_le hk (Nat.le_of_lt Nat.lt_two_pow_self)
-    simp only [lowerT, evalX, Term.eval, Term.evalBin, iha, BitVec.toNat_mod_cancel, BitVec.toNat_udiv,
+    simp only [lowerT]
+    rw [Term.binary_eval .shr t.width (r := .const k t.width) ρ (lowerT_topPositive a σ (Agree.wf hA)) trivial]
+    simp only [evalX, Term.eval, Term.evalBin, iha, BitVec.toNat_mod_cancel, BitVec.toNat_udiv,
       BitVec.toNat_ofNat, Nat.mod_mod, Nat.mod_eq_of_lt hkw, Nat.mod_eq_of_lt hk, Nat.mod_eq_of_lt hk2,
       Nat.shiftRight_eq_div_pow]
     exact Nat.mod_eq_of_lt (Nat.lt_of_le_of_lt (Nat.div_le_self _ _) hw)
@@ -1006,18 +1199,24 @@ theorem lowerT_eval {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P 
     have iha := lowerT_eval a σ ρ l hA
     have hk2 : 2 ^ k < 2 ^ t.width := Nat.pow_lt_pow_right (by decide) hk
     have hm : 2 ^ k - 1 < 2 ^ t.width := by omega
-    simp only [lowerT, evalX, Term.eval, Term.evalBin, iha, BitVec.toNat_mod_cancel, BitVec.toNat_umod,
+    simp only [lowerT]
+    rw [Term.binary_eval .and t.width (r := .const (2 ^ k - 1) t.width) ρ (lowerT_topPositive a σ (Agree.wf hA)) trivial]
+    simp only [evalX, Term.eval, Term.evalBin, iha, BitVec.toNat_mod_cancel, BitVec.toNat_umod,
       BitVec.toNat_ofNat, Nat.mod_mod, Nat.mod_eq_of_lt hm, Nat.mod_eq_of_lt hk2,
       Nat.and_two_pow_sub_one_eq_mod]
     exact Nat.mod_eq_of_lt (Nat.lt_trans (Nat.mod_lt _ (Nat.two_pow_pos k)) hk2)
   | .neg (t := t) a =>
     have iha := lowerT_eval a σ ρ l hA
-    simp [lowerT, evalX, Term.eval, Term.evalBin, iha]
+    simp only [lowerT]
+    rw [Term.binary_eval .sub t.width (l := .const 0 t.width) ρ trivial (lowerT_topPositive a σ (Agree.wf hA))]
+    simp [evalX, Term.eval, Term.evalBin, iha]
   | .not (t := t) a =>
     have iha := lowerT_eval a σ ρ l hA
     have hx : (evalX a ρ l).toNat ^^^ mask t.width = (~~~ evalX a ρ l).toNat := by
       rw [← BitVec.xor_allOnes, BitVec.toNat_xor, BitVec.toNat_allOnes]; rfl
-    simp only [lowerT, evalX, Term.eval, Term.evalBin, iha, BitVec.toNat_mod_cancel, mask_mod, hx]
+    simp only [lowerT]
+    rw [Term.binary_eval .xor t.width (r := .const (mask t.width) t.width) ρ (lowerT_topPositive a σ (Agree.wf hA)) trivial]
+    simp only [evalX, Term.eval, Term.evalBin, iha, BitVec.toNat_mod_cancel, mask_mod, hx]
   | .conv (s := s) t a =>
     have iha := lowerT_eval a σ ρ l hA
     have hs := s.width_pos
@@ -1027,8 +1226,13 @@ theorem lowerT_eval {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P 
     · simp only [hlt, if_true]
       unfold extendTerm
       simp only [adaptWidth, lowerT_width, hlt, if_true]
+      have hze : (zeroExtend (lowerT σ a) t.width).topPositive :=
+        zeroExtend_topPositive _ _ t.width_pos (lowerT_topPositive a σ (Agree.wf hA))
+      have hlowp : (Term.binary .and t.width (zeroExtend (lowerT σ a) t.width) (.const (mask s.width) t.width)).topPositive :=
+        Term.binary_topPositive _ _ hze trivial
       have hlow := zeroExtend_masked_eval (lowerT σ a) s.width t.width ρ (lowerT_width a σ) (Nat.le_of_lt hlt)
       rw [iha, BitVec.toNat_mod_cancel] at hlow
+      rw [← Term.binary_eval .and t.width (r := .const (mask s.width) t.width) ρ hze trivial] at hlow
       have hxw : (evalX a ρ l).toNat < 2 ^ t.width :=
         Nat.lt_of_lt_of_le (evalX a ρ l).isLt (Nat.pow_le_pow_right (by decide) (Nat.le_of_lt hlt))
       by_cases hsig : s.signed = true
@@ -1038,7 +1242,10 @@ theorem lowerT_eval {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P 
           rw [Nat.mod_eq_of_lt this, Nat.mod_eq_of_lt (by omega)]
         have hsh' : (t.width - s.width) % 2 ^ t.width % 2 ^ t.width % t.width = t.width - s.width := by
           rw [Nat.mod_mod, hsh]
-        rw [Term.eval.eq_3, Term.eval.eq_3, hlow]
+        rw [Term.binary_eval .sar t.width (r := .const (t.width - s.width) t.width) ρ
+            (Term.binary_topPositive .shl t.width (r := .const (t.width - s.width) t.width) hlowp trivial) trivial,
+          Term.eval.eq_3, Term.binary_eval .shl t.width (r := .const (t.width - s.width) t.width) ρ hlowp trivial,
+          Term.eval.eq_3, hlow]
         simp only [Term.eval, Term.evalBin, hsh, hsh', Nat.mod_mod]
         rw [← BitVec.toNat_setWidth t.width (evalX a ρ l), ← BitVec.toNat_shiftLeft, BitVec.ofNat_toNat,
           BitVec.setWidth_eq, sshiftRight_shiftLeft_setWidth _ _ hs (Nat.le_of_lt hlt), BitVec.toNat_mod_cancel]
@@ -1052,7 +1259,7 @@ theorem lowerT_eval {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P 
     have ihl := lowerT_eval lhs σ ρ l hA
     have ihr := lowerT_eval rhs σ ρ l hA
     simp only [lowerT]
-    rw [zeroExtend_self _ _ (truncate_width _ _), truncate_cmp_eval]
+    rw [zeroExtend_self _ _ (truncate_width _ _), truncate_cmpT_eval _ _ ρ (lowerT_width lhs σ) s.width_pos]
     simp only [Term.eval, ihl, ihr]
     rw [lowerT_width lhs σ]
     simp only [BitVec.ofNat_toNat, BitVec.setWidth_eq, codeOf_holds, evalX]
@@ -1061,7 +1268,10 @@ theorem lowerT_eval {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P 
     have ihc := lowerT_eval c σ ρ l hA
     have iha := lowerT_eval a σ ρ l hA
     have ihb := lowerT_eval b σ ρ l hA
-    simp only [lowerT, evalX, Term.eval, ihc, iha, ihb, BitVec.toNat_mod_cancel]
+    simp only [lowerT]
+    rw [Term.iteT_eval ρ (lowerT_topPositive a σ (Agree.wf hA)) (lowerT_topPositive b σ (Agree.wf hA))
+      (by rw [lowerT_width b, lowerT_width a])]
+    simp only [evalX, Term.eval, ihc, iha, ihb, lowerT_width a, BitVec.toNat_mod_cancel]
     have key : ((evalX c ρ l).toNat ≠ 0) ↔ (evalX c ρ l = 1) := BitVec1_ne_zero_iff (evalX c ρ l)
     by_cases h : evalX c ρ l = 1
     · rw [if_pos (key.mpr h), if_pos h]
@@ -1088,7 +1298,9 @@ theorem lowerT_eval {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P 
   | .elem s v h i =>
     have ihi := lowerT_eval i σ ρ l hA
     have hi : (evalX i ρ l).toNat < 2 ^ 32 := (evalX i ρ l).isLt
-    simp only [lowerT, evalX, Term.eval]
+    simp only [lowerT]
+    rw [Term.selectT_eval]
+    simp only [evalX, Term.eval]
     rw [truncate_self (lowerT σ i) 32 (by rw [lowerT_width]; rfl), ihi, Nat.mod_eq_of_lt hi, BitVec.toNat_ofNat]
   | .len v h =>
     simp only [lowerT, evalX, Term.eval]
@@ -1289,5 +1501,18 @@ example : (lowerT σ0 (.conv .u32 (.elem .u8 "b" (by decide) (.var .u32 "i" (by 
 /-- `(v: []u32, i: u32) -> Bool = i < len(v)` -/
 example : (lowerT σ0 (.cmp .lt (.var .u32 "i" (by decide)) (.len (s := .u32) "v" (by decide)) : X (ps [("i", .u32)]) (sp [("v", .u32)]) .bool)).render
     = "(i lo len(v))" := by decide
+
+/-! Folding: constant subterms fold as `binaryTerm`, `cmpTerm` and `iteTerm`
+fold them, so the renders are the folded terms. -/
+
+/-- `(a: u32) -> u32 = a + 2 * 3` -/
+example : (lowerT σ0 (.arith .add (.var .u32 "a" (by decide)) (.arith .mul (.lit .u32 2) (.lit .u32 3)) : X (ps [("a", .u32)]) sp0 .u32)).render
+    = "(a add 6)" := by decide
+/-- `(a: u32) -> u32 = a + 0` -/
+example : (lowerT σ0 (.arith .add (.var .u32 "a" (by decide)) (.lit .u32 0) : X (ps [("a", .u32)]) sp0 .u32)).render
+    = "a" := by decide
+/-- `(a, b: u32) -> u32 = 2 < 3 ? a | b` — a constant condition picks its arm. -/
+example : (lowerT σ0 (.ite (.cmp .lt (.lit .u32 2) (.lit .u32 3)) (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)) : X (ps [("a", .u32), ("b", .u32)]) sp0 .u32)).render
+    = "a" := by decide
 
 end Oak.LoweringRefinement
