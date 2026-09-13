@@ -949,19 +949,24 @@ add_proto: (p: Par, w: [*]u32, nm: Names, name: u32, initial: u32, states: [*]u3
       j = j + u32(1)
     }
     states_list: u32 = px_acc_list(p, w, base)
-    // Steps: name, variant, payload type.
+    // Steps: name, variant, payload type, payload name.
     base = pst(p, w, PS_ACC_SP)
     si: u32 = 0
     while si < nsteps {
       ptype: u32 = NONE
+      pname: u32 = NONE
       k: u32 = 0
       while k < nlines && ptype == NONE {
-        (line_word(p, w, lines_base, k, PL_NAME) == steps[si] && line_word(p, w, lines_base, k, PL_PARAM) != NONE) ? { ptype = line_word(p, w, lines_base, k, PL_PTYPE) } | { }
+        (line_word(p, w, lines_base, k, PL_NAME) == steps[si] && line_word(p, w, lines_base, k, PL_PARAM) != NONE) ? {
+          ptype = line_word(p, w, lines_base, k, PL_PTYPE)
+          pname = line_word(p, w, lines_base, k, PL_PARAM)
+        } | { }
         k = k + u32(1)
       }
       px_acc_push(p, w, steps[si])
       px_acc_push(p, w, capitalized_str(p, w, steps[si]))
       px_acc_push(p, w, ptype)
+      px_acc_push(p, w, pname)
       si = si + u32(1)
     }
     steps_list: u32 = px_acc_list(p, w, base)
@@ -991,6 +996,17 @@ add_proto: (p: Par, w: [*]u32, nm: Names, name: u32, initial: u32, states: [*]u3
       e = e + u32(4)
     }
     live_list: u32 = px_acc_list(p, w, base)
+    // The lines: name, source, target, guard.
+    base = pst(p, w, PS_ACC_SP)
+    k: u32 = 0
+    while k < nlines {
+      px_acc_push(p, w, line_word(p, w, lines_base, k, PL_NAME))
+      px_acc_push(p, w, line_word(p, w, lines_base, k, PL_FROM))
+      px_acc_push(p, w, line_word(p, w, lines_base, k, PL_TO))
+      px_acc_push(p, w, line_word(p, w, lines_base, k, PL_GUARD))
+      k = k + u32(1)
+    }
+    lines_list: u32 = px_acc_list(p, w, base)
     w[at] = name
     w[at + u32(1)] = derived_str(p, w, name, true, u64(0), u64(0), u32(0))
     w[at + u32(2)] = nm.state_t
@@ -1006,7 +1022,11 @@ add_proto: (p: Par, w: [*]u32, nm: Names, name: u32, initial: u32, states: [*]u3
     w[at + u32(12)] = nlive
     w[at + u32(13)] = live_list
     w[at + u32(14)] = data_rec
-    w[at + u32(15)] = u32(0)
+    w[at + u32(15)] = nlines
+    w[at + u32(16)] = lines_list
+    w[at + u32(17)] = u32(0)
+    w[at + u32(18)] = u32(0)
+    w[at + u32(19)] = u32(0)
     set_pst(p, w, PS_NPROTOS, n + u32(1))
   }
 }

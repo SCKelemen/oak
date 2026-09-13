@@ -264,9 +264,10 @@ raw_layout: (rx: []u32): Raw {
 // A protocol's entry (PROTO_WORDS words): 0 name, 1 prefix, 2 state type,
 // 3 step type, 4 data type (NONE without data), 5 initial state, 6 state
 // count, 7 states list, 8 step count, 9 steps list (name, variant, payload
-// type), 10 fairness count, 11 fairness list (step, strong), 12 liveness
-// count, 13 liveness list (from text or NONE, target text), 14 data record.
-rproto_word: (rx: []u32, raw: Raw, i: u32, k: u32): u32 = rx[raw.protos_at + i * u32(16) + k]
+// type, payload name), 10 fairness count, 11 fairness list (step, strong), 12 liveness
+// count, 13 liveness list (from text or NONE, target text), 14 data record,
+// 15 line count, 16 lines list (name, from, to, guard node or NONE).
+rproto_word: (rx: []u32, raw: Raw, i: u32, k: u32): u32 = rx[raw.protos_at + i * u32(20) + k]
 
 rs_off: (rx: []u32, raw: Raw, id: u32): u32 = rx[raw.strings_at + id * u32(2)]
 rs_len: (rx: []u32, raw: Raw, id: u32): u32 = rx[raw.strings_at + id * u32(2) + u32(1)]

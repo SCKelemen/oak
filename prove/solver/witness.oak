@@ -385,7 +385,7 @@ witness_fold: (le: Lem, ew: [*]u32, exit: u32): () {
   i: u32 = 0
   while i < n {
     flags: u32 = row_flags(le, ew, i)
-    (flags != u32(0) && (flags & WIT_SKIP) == u32(0)) ? {
+    (flags != u32(0) && (flags & (WIT_SKIP | ROWF_ADVISORY)) == u32(0)) ? {
       index: u32 = flags - u32(1)
       prior: u32 = row_detail(le, ew, i)
       index == exit ? {
@@ -418,7 +418,7 @@ witness_skips: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, cases: u32): () {
   i: u32 = 0
   while i < n {
     flags: u32 = row_flags(le, ew, i)
-    (flags & WIT_SKIP) != u32(0) ? { acc_push_l(le, ew, i) } | { }
+    ((flags & WIT_SKIP) != u32(0) && (flags & ROWF_ADVISORY) == u32(0)) ? { acc_push_l(le, ew, i) } | { }
     i = i + u32(1)
   }
   count: u32 = lst(le, ew, LN_ACC_SP) - base

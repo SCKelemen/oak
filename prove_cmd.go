@@ -379,15 +379,27 @@ func selfProve(target string, cases int, crossCheck bool, leanOut string, witnes
 	}
 	agreed, compared := 0, 0
 	for _, line := range strings.Split(rows, "\n") {
+		// A row is `status    name: detail`; an advisory row's name carries
+		// a colon of its own (`Quantum: guards of tick from Running`), so
+		// the name is the longest prefix before a `: ` the Go ladder knows.
 		fields := strings.Fields(line)
-		if len(fields) < 2 || !strings.HasSuffix(fields[1], ":") || fields[0] == "oak" {
+		if len(fields) < 2 || fields[0] == "oak" || len(line) < 10 {
 			continue
 		}
-		name := strings.TrimSuffix(fields[1], ":")
-		status, known := goStatus[name]
-		if !known {
+		rest := line[10:]
+		name := ""
+		for cut := 0; cut < len(rest); cut++ {
+			if !strings.HasPrefix(rest[cut:], ": ") {
+				continue
+			}
+			if _, known := goStatus[rest[:cut]]; known {
+				name = rest[:cut]
+			}
+		}
+		if name == "" {
 			continue
 		}
+		status := goStatus[name]
 		compared++
 		if string(status) == fields[0] {
 			agreed++
