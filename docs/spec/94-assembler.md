@@ -1633,11 +1633,16 @@ from the temporary pool, from x15 down, and hands them to the variables
 as caller-saved homes — saved around calls like the others, already among
 the clobbers. A second pass the lowering refuses (a variable in a
 register needs no temporary a slot did, so it should not) keeps the
-first's code. `apply`'s loop went from 226 frame accesses to 132. The
-machine was saturated by other sessions' test suites while this landed
-(a load average of thirty), so the timed runs say nothing yet; the
-structural count is the measurement, and the timings follow when the
-machine is quiet.
+first's code. `apply`'s loop went from 226 frame accesses to 132.
+Measured with the machine still shared with other sessions' suites (a
+load average near twenty, so the ratios of interleaved runs are the
+measurement, not the seconds): against the previous build `mono.oak` ran
+10 percent faster, `extents.oak` 7, `effects.oak` 9, `lattice.oak` and
+`floats.oak` within noise; and against the C build in the same runs the
+native prover stands at 1.25–1.4 times its time (`mono.oak` 12.6 s to
+14.0 s against 9.7 s to 10.7 s, `extents.oak` 8.4 s against 6.3 s,
+`effects.oak` 1.85 s against 1.5 s), down from 2–5 times when this track
+began.
 Next increments: the fallback reasons above in the order of their counts,
 so the prover lowers whole; then the verifier past `bl` and unit results —
 calls by inlining or by the callee's proven contract, and effects through
