@@ -539,8 +539,42 @@ s: t.Tensor2 = t.row_major_tensor(m)               // the strided form, for the 
   original at `(i, j)`; `row_major_tensor_at`/`col_major_tensor_at` — the
   strided form reads the same element; `row_major_transpose_transpose`.
 
-Shape in the type (`Tensor[n, k]` with const parameters, `20-types.md`
-§11.0) is the later increment: the layout was the row the pilot lost.
+### 8b. Shape in the type (`import("shape")`)
+
+**Status: implemented (library), 2026-09-14.** The increment §8a named
+next: `Mat[R, N, K]` is a row-major `N × K` matrix over a view whose
+dimensions are **const parameters** (`20-types.md` §11.0), so shape
+agreement is a type equation.
+
+```oak
+s := import("shape")
+
+m: s.Mat[2, 3] = s.mat_of[2, 3](view(&w))     // 2 x 3; N * K must fit the view
+n: s.Mat[3, 2] = s.mat_of[3, 2](view(&v))
+s.mat_matvec(m, x, span(&out))               // x: [3]f32 — K = 3 from both, or a type error
+s.mat_matmul(m, n, span(&prod))              // 2 x 3 by 3 x 2: the shared K is the equation
+```
+
+- `mat_matvec(w: Mat[R, N, K], x: [K]f32, out)` and `mat_matmul(a: Mat[A,
+  N, K], b: Mat[B, K, M], out)` share their dimensions in the signature:
+  a vector of the wrong length or a matrix of the wrong inner dimension
+  is refused at the call ("const parameter K cannot be bound to two
+  lengths"), not asserted at run time. `mat_at` checks against the
+  constants; `mat_rows`/`mat_cols` are them; `mat_row_major` and
+  `mat_tensor` give §8a's layout-typed and the strided forms over the
+  same storage.
+- **What the language needed**: const parameters are now recovered from a
+  region record's instantiation — `Mat[R, N, K]` against `Mat_2_3`, the
+  region erased before the instantiation was named — so the calls above
+  infer `N` and `K`; and a float literal in a generic body (`acc: f32 =
+  0.0`) no longer fails instantiation. Both were checker gaps this
+  library exposed.
+- **Lean** (`Oak.Shape`): `index_lt` (every `(i, j)` lies below `N * K`),
+  `index_injective`, `row_contiguous`. The shape equation itself is a
+  typing fact, checked by the compiler, with nothing left to prove.
+- The package is separate from `tensor` so the tensor package stays
+  template-free for its extraction; `Mat` instantiations are the
+  monomorphized records the extraction already handles per instantiation.
 
 ## 9. Execution on the device (implemented)
 

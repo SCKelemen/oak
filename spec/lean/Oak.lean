@@ -103,6 +103,7 @@ import Oak.SessionObligations
 import Oak.SessionObligationsProved
 import Oak.Measured
 import Oak.Reduce
+import Oak.Shape
 import Oak.Floats
 import Oak.FloatBounds
 import Oak.GraphemeBreak
