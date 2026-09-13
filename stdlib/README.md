@@ -167,6 +167,21 @@ non-empty input (`Oak.Reduce.tree_assoc`), and `tree` is lowered to
 combine performs no effects, which is what lets a kernel body call
 `reduce.tree` (`56-kernels.md` §7) and what a regrouping backend relies on.
 
+## Shape in the type (`import("shape")`)
+
+Matrices whose dimensions are const parameters (`docs/spec/56-kernels.md`
+§8b): `Mat[R, N, K]` is a row-major `N × K` matrix over a view, and the
+functions over it share the dimensions in their signatures, so a shape
+mismatch is a type error at the call.
+
+| Function | Meaning |
+| --- | --- |
+| `Mat[R, N: u32, K: u32]`, `mat_of[R, N, K](data: View[f32, R])` | An `N × K` row-major matrix over the first `N * K` elements of `data` (the shape must fit). |
+| `mat_rows`, `mat_cols`, `mat_at(m, i, j)` | The dimensions (constants of the type) and element `(i, j)` at `i * K + j`, shape-checked against the constants. |
+| `mat_matvec(w: Mat[R, N, K], x: [K]f32, out: [*]f32)` | `out[i] = Σₖ w[i, k] · x[k]`, left to right from 0; the vector's length is `K` by type. |
+| `mat_matmul(a: Mat[A, N, K], b: Mat[B, K, M], out: [*]f32)` | `a · b` row major into `out` (`N * M` elements); the shared `K` is the type equation. |
+| `mat_row_major`, `mat_tensor` | The layout-typed `RowMajor2` and the strided `Tensor2` of the tensor package over the same storage. |
+
 ## Tensors (`import("tensor")`)
 
 Rank-2 tensors as records over borrowed views (`docs/spec/56-kernels.md`

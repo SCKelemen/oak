@@ -198,14 +198,27 @@ message; an error outside every statement leaves them all open with it.
 every bit-level obligation: the clauses go to the **SAT solver written in
 Oak** (`prove/solver/sat.oak`, inside the compiled solver binary) — a
 conflict-driven clause-learning solver in the strict profile over one
-caller-owned word arena, propagation by occurrence lists, first-UIP
-learning with VSIDS activity and phase saving, geometric restarts, every
-learned clause written as an LRAT line as it is learned with the
-propagation order as its hints, the learned clauses reduced at a restart
-once they outnumber a growing limit (unlocked clauses longer than two
-literals, the older half, one deletion line, the store compacted in
-place and the occurrence lists rebuilt), bounded by a conflict budget
-and the store's capacity — or, when `OAK_SAT_SOLVER` names one, to an external
+caller-owned word arena: at load, repeated literals dropped and
+tautologies skipped, then bounded variable elimination (a variable with
+at most ten occurrences on each side whose non-tautological resolvents
+are no more than the clauses they replace and at most twenty-four
+literals is resolved away; each resolvent is an LRAT addition with its
+two parents as hints, the parents are deleted, and they go on an
+elimination stack from which a model is extended back to the original
+formula) — the Tseitin gate variables are what this removes; two watched
+literals per clause (the watch nodes
+fixed at `2c` and `2c+1`, so a watch moves without allocation), first-UIP
+learning with VSIDS activity and phase saving, the learned clause
+minimized (a literal whose reason's other literals are in the clause,
+removed by it, or at level zero is implied by the rest and dropped, its
+reason joining the replay), Luby restarts, every learned clause written
+as an LRAT line as it is learned with its reasons in trail order as the
+hints — the level-zero antecedent chain, the replayed reasons, the
+conflict clause last — the learned clauses reduced at a restart once they
+outnumber a growing limit or the store is three quarters full (unlocked
+clauses longer than two literals below the mean clause activity, one
+deletion line, the store compacted in place and the watch lists rebuilt),
+bounded by a conflict budget and the store's capacity — or, when `OAK_SAT_SOLVER` names one, to an external
 solver invoked directly (`--lrat --no-binary`, an explicit argument list,
 a temporary directory, a timeout); a named solver that is not found skips
 the rung and the summary says so. Either way the solver is untrusted. A
@@ -627,8 +640,8 @@ In order of payoff, each reusing a surface that exists:
   is the only Go left on the prover's path; and the prover is the first
   whole program compiled through the verified native backend
   (`94-assembler.md` §9, sixteenth increment; `OAK_SOLVER_NATIVE=1`):
-  746 of its 954 functions lowered to machine code the seam checker
-  admits and the Oak assembler encodes, 190 of them proven equal to
+  879 of its 954 functions lowered to machine code the seam checker
+  admits and the Oak assembler encodes, 197 of them proven equal to
   their Oak bodies, the C build the oracle with identical rows over the
   corpus — verification carried to the object, with the verifier's
   reach the measure that remains; and the first performance step is
@@ -678,8 +691,12 @@ In order of payoff, each reusing a surface that exists:
 - **A certificate rung.** Landed as `-solver sat` (§3, §4): the clause
   engine, the two LRAT checkers, `Oak.RupCheck`, and the solver written in
   Oak (`prove/solver/sat.oak`) as the rung's default, with clause-database
-  reduction. Next: the clause encoder proved rather than cross-checked;
-  two-watched-literal propagation when a corpus obligation asks for it. The BDD's failure mode
+  reduction, two-watched-literal propagation, minimization, Luby
+  restarts, and bounded variable elimination at load. Next: the clause
+  encoder proved rather than cross-checked; the solver's own laws (a
+  learned clause is implied by its hints; a resolvent by its parents)
+  stated over the arena; subsumption and failed-literal probing when a
+  corpus row asks for them. The BDD's failure mode
   is the node budget on multipliers and wide aggregates, which CDCL
   solvers treat routinely. The rung is the one Lean's `bv_decide` already
   runs:

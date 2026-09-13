@@ -187,6 +187,10 @@ function CountLeadingZeroBits x = {
  *     restated over the Sail standard library;
  *   - the assertions of `Elem[]` and `tbl` that restate the type-level
  *     bounds are dropped, so the functions are pure (no escape effect);
+ *   - the tuple assignments `(result, sat) = SatQ(...)` to declared locals
+ *     are `let` bindings: Sail's Lean backend drops a tuple assignment to
+ *     mutable locals (it generated a unit-typed `let` and returned the
+ *     initial values), so the text is written the way the backend keeps;
  *   - `Reduce` (addv) is recursive on the halves of its input and Sail's
  *     Lean backend cannot discharge its termination; it stays with the
  *     hand transliteration (spec/sail/lean/Bridge.lean);
@@ -274,9 +278,7 @@ function SignedSatQ (i, N) = {
 
 val SatQ : forall ('N : Int) ('i : Int) ('unsigned : Bool), 'N >= 1. (int('i), int('N), bool('unsigned)) -> (bits('N), bool)
 function SatQ (i, N, is_unsigned) = {
-    result : bits('N) = Zeros(N);
-    sat : bool = false;
-    (result, sat) = if is_unsigned then UnsignedSatQ(i, N) else SignedSatQ(i, N);
+    let (result, sat) = if is_unsigned then UnsignedSatQ(i, N) else SignedSatQ(i, N);
     return((result, sat))
 }
 
@@ -406,13 +408,11 @@ function vector_arithmetic_binary_uniform_sub_saturating (datasize, elements, es
     element1 : int = 0;
     element2 : int = 0;
     diff : int = 0;
-    sat : bool = false;
     foreach (e from 0 to (elements - 1) by 1 in inc) {
         element1 = asl_Int(aget_Elem(operand1, e, esize), is_unsigned);
         element2 = asl_Int(aget_Elem(operand2, e, esize), is_unsigned);
         diff = element1 - element2;
-        __tc1 : bits('esize) = Zeros(esize);
-        (__tc1, sat) = SatQ(diff, esize, is_unsigned);
+        let (__tc1, sat) = SatQ(diff, esize, is_unsigned);
         result = aset_Elem(result, e, esize, __tc1)
     };
     result

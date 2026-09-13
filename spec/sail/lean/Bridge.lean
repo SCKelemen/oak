@@ -239,11 +239,19 @@ the verifier applies. The theorems below identify the two at the lane
 level, against the generated code: the element accessor reads the lane of
 the verifier's decomposition, `Ones` is the all-ones lane, `UnsignedSatQ` of
 a lane difference is `uqsub`, the equality test is `cmeq`, `ext` is
-and the bitwise forms are the Lean operators. `ext` and the per-lane loops
-that apply a lane function across a register (`for e in [0:elements-1]`)
-are generated in `Out` and remain to be related to `Oak.Neon.ext` and
-`List.zipWith`: the remaining bridge work
-(`docs/notes/proof-chain-audit-2026-09.md`). -/
+and the bitwise forms are the Lean operators. The per-lane loops that apply
+a lane function across a register (`for e in [0:elements-1]`) are folds
+over the lane indices (`forIn_laneRange_fold`), a written lane reads its
+write (`aget_foldl_aset`), and so the register-level theorems follow:
+`dup`, `add`, `sub`, `cmeq` (register and zero forms), `umin`, `umax`,
+`uqsub`, `tbl`, and `umaxv` each compute the verifier's lane function over
+the lanes of their operands; `ext` is the byte-lane `ext`, `ushr` the lane
+shift, `sshr #7` on bytes the sign fill of `movemask`, and Arm's recursive
+`Reduce` (stated by hand, since Sail's backend cannot discharge its
+termination) sums eight bytes as the wrapping fold of `addv`, and `cnt` is
+the population count of each lane (Arm's `BitCount` as
+`Oak.Intrinsics.popcount`). Every vector instruction the native backend
+emits is bridged (`docs/notes/proof-chain-audit-2026-09.md`). -/
 
 namespace Oak.SailBridge
 
@@ -324,5 +332,866 @@ theorem andorr_eor {n : Nat} (a b : BitVec n) :
     Out.Functions.vector_arithmetic_binary_uniform_logical_andorr n false a b .LogicalOp_EOR = a ^^^ b := rfl
 theorem andorr_bic {n : Nat} (a b : BitVec n) :
     Out.Functions.vector_arithmetic_binary_uniform_logical_andorr n true a b .LogicalOp_AND = a &&& ~~~b := rfl
+
+
+/-! ## The per-lane loops of the generated code -/
+
+section Lanes
+open Out.Functions
+
+
+/-- The generated loops: `for e in [0:n-1:1]i` in `Id`, each step yielding. -/
+def laneRange (n : Nat) : IntRange := { stop := (n : Int) - 1 }
+
+theorem mem_laneRange (n : Nat) (i : Int) : i ∈ laneRange n ↔ 0 ≤ i ∧ i ≤ (n : Int) - 1 := by
+  simp only [laneRange, Membership.mem, IntRange.instMemIntRange]
+  constructor
+  · rintro ⟨h, _⟩
+    simpa using h
+  · intro h
+    refine ⟨by simpa using h, ?_⟩
+    simp
+
+theorem loop_fold {β : Type} (n : Nat) (g : Int → β → β) (k : Nat) :
+    ∀ (i : Nat) (b : β) (hs : ((i : Int) - (laneRange n).start) % (laneRange n).step = 0), i + k = n →
+      IntRange.forIn'.loop (m := Id) (laneRange n) (fun i _ b => pure (ForInStep.yield (g i b))) b i hs
+        = (List.range' i k).foldl (fun s j => g (j : Int) s) b := by
+  induction k with
+  | zero =>
+    intro i b hs hi
+    rw [IntRange.forIn'.loop.eq_1]
+    have hnot : ¬ ((i : Int) ∈ laneRange n) := by
+      rw [mem_laneRange]; omega
+    simp only [hnot, ↓reduceDIte, List.range'_zero, List.map_nil, List.foldl_nil]
+    rfl
+  | succ k ih =>
+    intro i b hs hi
+    rw [IntRange.forIn'.loop.eq_1]
+    have hmem : (i : Int) ∈ laneRange n := by
+      rw [mem_laneRange]; omega
+    simp only [hmem, ↓reduceDIte]
+    show IntRange.forIn'.loop (laneRange n) _ (g (↑i) b) ((i : Int) + (laneRange n).step) _ = _
+    have hstep : ((i : Int) + (laneRange n).step) = ((i + 1 : Nat) : Int) := by simp [laneRange]
+    simp only [List.range'_succ, List.map_cons, List.foldl_cons]
+    have := ih (i + 1) (g (↑i) b) (by simp [laneRange]) (by omega)
+    simp only [hstep]
+    exact this
+
+theorem forIn_laneRange_fold {β : Type} (n : Nat) (init : β) (g : Int → β → β) :
+    (forIn (m := Id) (laneRange n) init (fun i s => ForInStep.yield (g i s)))
+      = (List.range n).foldl (fun s j => g (j : Int) s) init := by
+  show IntRange.forIn' (laneRange n) init (fun i _ s => pure (ForInStep.yield (g i s))) = _
+  unfold IntRange.forIn'
+  have := loop_fold n g n 0 init (by simp [laneRange]) (by omega)
+  simp only [laneRange] at this ⊢
+  rw [List.range_eq_range']
+  exact this
+
+
+
+
+/-- `aset_Elem` unfolded to the support library's masked update. -/
+theorem aset_Elem_eq {N : Nat} (v : BitVec N) (e size : Nat) (x : BitVec size) :
+    aset_Elem v e size x = Sail.BitVec.updateSubrange' v (e * size) size x := by
+  simp [aset_Elem, __SetSlice_bits, Sail.set_slice, ← Int.natCast_mul, Int.toNat_natCast]
+
+theorem getLsbD_updateSubrange' {N : Nat} (v : BitVec N) (start size : Nat) (x : BitVec size) (i : Nat) :
+    (Sail.BitVec.updateSubrange' v start size x).getLsbD i
+      = if start ≤ i ∧ i < start + size ∧ i < N then x.getLsbD (i - start) else v.getLsbD i := by
+  simp only [Sail.BitVec.updateSubrange', BitVec.getLsbD_or, BitVec.getLsbD_and, BitVec.getLsbD_not,
+    BitVec.getLsbD_shiftLeft, BitVec.getLsbD_setWidth, BitVec.getLsbD_allOnes]
+  split
+  · rename_i h
+    obtain ⟨h1, h2, h3⟩ := h
+    have f1 : ¬ i < start := by omega
+    have f2 : i - start < N := by omega
+    have f3 : i - start < size := by omega
+    simp [h3, f1, f2, f3]
+  · rename_i h
+    by_cases h3 : i < N
+    · have hv : (i < N) := h3
+      by_cases h1 : start ≤ i
+      · have h2 : ¬ i < start + size := fun h2 => h ⟨h1, h2, h3⟩
+        have f1 : ¬ i < start := by omega
+        have f3 : ¬ i - start < size := by omega
+        have fx : x.getLsbD (i - start) = false := BitVec.getLsbD_of_ge x (i - start) (by omega)
+        simp [hv, f1, f3, fx]
+      · have f1 : i < start := by omega
+        simp [hv, f1]
+    · rw [BitVec.getLsbD_of_ge v i (by omega)]
+      simp [h3]
+
+/-- Reading the lane just written. -/
+theorem aget_aset_same {N : Nat} (v : BitVec N) (e size : Nat) (x : BitVec size) (h : (e + 1) * size ≤ N) :
+    aget_Elem (aset_Elem v e size x) e size = x := by
+  rw [aset_Elem_eq]
+  apply BitVec.eq_of_getLsbD_eq
+  intro i
+  simp only [aget_Elem, Sail.BitVec.slice, BitVec.getLsbD_extractLsb', getLsbD_updateSubrange',
+    ← Int.natCast_mul, Int.toNat_natCast]
+  have h' : e * size + size ≤ N := by rw [Nat.add_mul, Nat.one_mul] at h; exact h
+  by_cases hi : i < size
+  · have : e * size ≤ e * size + i ∧ e * size + i < e * size + size ∧ e * size + i < N := by omega
+    simp [hi, this]
+  · simp [hi]
+
+/-- Reading another lane than the one written. -/
+theorem aget_aset_other {N : Nat} (v : BitVec N) (e e' size : Nat) (x : BitVec size) (hne : e ≠ e') :
+    aget_Elem (aset_Elem v e' size x) e size = aget_Elem v e size := by
+  rw [aset_Elem_eq]
+  apply BitVec.eq_of_getLsbD_eq
+  intro i
+  simp only [aget_Elem, Sail.BitVec.slice, BitVec.getLsbD_extractLsb', getLsbD_updateSubrange',
+    ← Int.natCast_mul, Int.toNat_natCast]
+  by_cases hi : i < size
+  · have : ¬ (e' * size ≤ e * size + i ∧ e * size + i < e' * size + size ∧ e * size + i < N) := by
+      rcases Nat.lt_or_gt_of_ne hne with hlt | hgt
+      · have : (e + 1) * size ≤ e' * size := Nat.mul_le_mul_right size hlt
+        rw [Nat.add_mul, Nat.one_mul] at this
+        omega
+      · have : (e' + 1) * size ≤ e * size := Nat.mul_le_mul_right size hgt
+        rw [Nat.add_mul, Nat.one_mul] at this
+        omega
+    simp [hi, this]
+  · simp [hi]
+
+
+/-- A projection commutes with a left fold whose steps it follows. -/
+theorem foldl_proj {β γ : Type} (p : β → γ) (g : Int → β → β) (g' : Int → γ → γ)
+    (hp : ∀ e s, p (g e s) = g' e (p s)) (l : List Int) (init : β) :
+    p (l.foldl (fun s j => g j s) init) = l.foldl (fun s j => g' j s) (p init) := by
+  induction l generalizing init with
+  | nil => rfl
+  | cons j rest ih => simp only [List.foldl_cons, ih, hp]
+
+/-- The lanes as the element accessor reads them. -/
+theorem lanesOf_eq_map {N : Nat} (v : BitVec N) (size : Nat) :
+    lanesOf v size = (List.range (N / size)).map (fun j => (aget_Elem v j size).toNat) := by
+  simp [lanesOf, aget_Elem_toNat]
+
+/-- Writing lanes `0 .. n-1` in order: lane `j` reads its write. -/
+theorem aget_foldl_aset {N : Nat} (size n : Nat) (hn : n * size ≤ N) (W : Nat → BitVec size)
+    (init : BitVec N) (j : Nat) (hj : j < n) :
+    aget_Elem ((List.range n).foldl (fun r k => aset_Elem r k size (W k)) init) j size = W j := by
+  induction n generalizing j with
+  | zero => omega
+  | succ n ih =>
+    rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil]
+    by_cases hjn : j = n
+    · subst hjn
+      exact aget_aset_same _ j size (W j) hn
+    · rw [aget_aset_other _ j n size (W n) hjn]
+      exact ih (by rw [Nat.succ_mul] at hn; omega) j (by omega)
+
+/-- ... and a lane at or beyond `n` keeps the initial value. -/
+theorem aget_foldl_aset_ge {N : Nat} (size n : Nat) (W : Nat → BitVec size)
+    (init : BitVec N) (j : Nat) (hj : n ≤ j) :
+    aget_Elem ((List.range n).foldl (fun r k => aset_Elem r k size (W k)) init) j size = aget_Elem init j size := by
+  induction n with
+  | zero => rfl
+  | succ n ih =>
+    rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil,
+      aget_aset_other _ j n size (W n) (by omega)]
+    exact ih (by omega)
+
+
+/-- The lane count of a register split into `esize` lanes. -/
+theorem lanes_div (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize) :
+    datasize / esize = elements := by
+  subst h; exact Nat.mul_div_cancel elements hs
+
+/-- **`dup`**: every lane is the element (`Oak.Simd.splat`). -/
+theorem dup_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (x : BitVec esize) :
+    lanesOf (vector_transfer_integer_dup datasize elements esize x) esize
+      = Oak.Simd.splat elements x.toNat := by
+  unfold vector_transfer_integer_dup
+  simp only [Id.run, bind, pure]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl,
+    forIn_laneRange_fold, lanesOf_eq_map, lanes_div datasize elements esize h hs]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  rw [Oak.Simd.splat, List.eq_replicate_iff]
+  refine ⟨by simp, ?_⟩
+  intro b hb
+  rw [List.mem_map] at hb
+  obtain ⟨j, hj, rfl⟩ := hb
+  rw [List.mem_range] at hj
+  rw [aget_foldl_aset esize elements (by omega) (fun _ => x) (Zeros datasize) j hj]
+
+
+/-- A generated per-lane loop whose state carries the elements beside the
+result: the result component is the fold of the writes alone. -/
+theorem result_of_lane_loop {E₁ E₂ : Type} {N : Nat} (size : Nat) (init : E₁ × E₂ × BitVec N)
+    (f₁ : Nat → E₁) (f₂ : Nat → E₂) (W : Nat → BitVec size) (l : List Int) :
+    (l.foldl (fun (s : E₁ × E₂ × BitVec N) j =>
+        (f₁ j.toNat, f₂ j.toNat, aset_Elem s.2.2 j.toNat size (W j.toNat))) init).2.2
+      = l.foldl (fun r j => aset_Elem r j.toNat size (W j.toNat)) init.2.2 :=
+  foldl_proj (β := E₁ × E₂ × BitVec N) (γ := BitVec N) (fun s => s.2.2)
+    (fun j s => (f₁ j.toNat, f₂ j.toNat, aset_Elem s.2.2 j.toNat size (W j.toNat)))
+    (fun j r => aset_Elem r j.toNat size (W j.toNat)) (fun _ _ => rfl) l init
+
+/-- The lanes of a register written lane by lane are the written values. -/
+theorem lanes_of_fold_write {N : Nat} (size n : Nat) (hn : n * size = N) (hs : 0 < size)
+    (W : Nat → BitVec size) (init : BitVec N) :
+    lanesOf ((List.range n).foldl (fun r k => aset_Elem r k size (W k)) init) size
+      = (List.range n).map (fun j => (W j).toNat) := by
+  rw [lanesOf_eq_map, lanes_div N n size hn hs]
+  apply List.map_congr_left
+  intro j hj
+  rw [List.mem_range] at hj
+  rw [aget_foldl_aset size n (by omega) W init j hj]
+
+/-- A lane-wise operation over two registers, index by index. -/
+theorem zipWith_lanes {N : Nat} (size : Nat) (f : Nat → Nat → Nat) (a b : BitVec N) :
+    List.zipWith f (lanesOf a size) (lanesOf b size)
+      = (List.range (N / size)).map (fun j => f (aget_Elem a j size).toNat (aget_Elem b j size).toNat) := by
+  rw [lanesOf_eq_map, lanesOf_eq_map, List.zipWith_map, List.zipWith_self]
+
+/-- **`add`**: lane-wise wrapping addition (`Oak.Simd.addWrap`). -/
+theorem add_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a b : BitVec datasize) :
+    lanesOf (vector_arithmetic_binary_uniform_add_wrapping_single datasize elements esize a b false) esize
+      = Oak.Simd.addWrap esize (lanesOf a esize) (lanesOf b esize) := by
+  unfold vector_arithmetic_binary_uniform_add_wrapping_single
+  simp only [Id.run, bind, pure, Bool.false_eq_true, ↓reduceIte]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl,
+    forIn_laneRange_fold]
+  show lanesOf ((List.foldl (fun (s : BitVec esize × BitVec esize × BitVec datasize) (j : Int) =>
+      (aget_Elem a j.toNat esize, aget_Elem b j.toNat esize,
+        aset_Elem s.2.2 j.toNat esize (aget_Elem a j.toNat esize + aget_Elem b j.toNat esize)))
+      (Zeros esize, Zeros esize, Zeros datasize) (List.map (fun (x : Nat) => (x : Int)) (List.range elements))).2.2) esize = _
+  rw [result_of_lane_loop esize _ (fun j => aget_Elem a j esize) (fun j => aget_Elem b j esize)
+    (fun j => aget_Elem a j esize + aget_Elem b j esize)]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  rw [lanes_of_fold_write esize elements h hs, Oak.Simd.addWrap, zipWith_lanes, lanes_div datasize elements esize h hs]
+  apply List.map_congr_left
+  intro j _
+  simp [BitVec.toNat_add]
+
+
+
+
+/-! ### Lane values: the written element as the verifier's lane function -/
+
+/-- Integer `min` of two lane values is the lane minimum. -/
+theorem natCast_min (m n : Nat) : min (m : Int) (n : Int) = ((min m n : Nat) : Int) := by
+  by_cases h : m ≤ n
+  · rw [Nat.min_def, if_pos h, Int.min_def, if_pos (Int.ofNat_le.mpr h)]
+  · rw [Nat.min_def, if_neg h, Int.min_def, if_neg (fun h' => h (Int.ofNat_le.mp h'))]
+
+theorem natCast_max (m n : Nat) : max (m : Int) (n : Int) = ((max m n : Nat) : Int) := by
+  by_cases h : m ≤ n
+  · rw [Nat.max_def, if_pos h, Int.max_def, if_pos (Int.ofNat_le.mpr h)]
+  · rw [Nat.max_def, if_neg h, Int.max_def, if_neg (fun h' => h (Int.ofNat_le.mp h'))]
+
+theorem UInt_eq {w : Nat} (x : BitVec w) : UInt x = (x.toNat : Int) := rfl
+
+/-- `__GetSlice_int` of a lane value below the lane's range is that value. -/
+theorem getSlice_toNat (size v : Nat) (hv : v < 2 ^ size) :
+    (__GetSlice_int size (v : Int) 0).toNat = v := by
+  show (Sail.get_slice_int size (v : Int) 0).toNat = v
+  rw [get_slice_int_natCast, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hv]
+
+/-- `umin` lane: the lane minimum (`Oak.Neon.umin`). -/
+theorem umin_lane (size : Nat) (x y : BitVec size) :
+    (__GetSlice_int size (min (UInt x) (UInt y)) 0).toNat = umin x.toNat y.toNat := by
+  rw [UInt_eq, UInt_eq, natCast_min, getSlice_toNat size _ (by have := x.isLt; omega), umin_eq_min]
+
+theorem umax_lane (size : Nat) (x y : BitVec size) :
+    (__GetSlice_int size (max (UInt x) (UInt y)) 0).toNat = umax x.toNat y.toNat := by
+  rw [UInt_eq, UInt_eq, natCast_max, getSlice_toNat size _ (by have := x.isLt; have := y.isLt; omega), umax_eq_max]
+
+/-- `uqsub` lane: `UnsignedSatQ` of the lane difference (`Oak.Neon.uqsub`). -/
+theorem uqsub_lane (size : Nat) (x y : BitVec size) :
+    (UnsignedSatQ (UInt x - UInt y) size).1.toNat = uqsub x.toNat y.toNat := by
+  rw [UInt_eq, UInt_eq, UnsignedSatQ_uqsub size x.toNat y.toNat x.isLt, BitVec.toNat_ofNat, Nat.mod_eq_of_lt]
+  have := x.isLt
+  rw [uqsub_eq_sub]
+  omega
+
+/-- The `cmeq #0` test: `SInt` is zero exactly on the zero lane. -/
+theorem cmeq_zero_test_toNat (size : Nat) (a : BitVec size) :
+    (if (SInt a == 0) = true then Ones size else Zeros size).toNat = cmeq size a.toNat 0 := by
+  have hiff : SInt a = 0 ↔ a = 0#size := by
+    show a.toInt = 0 ↔ a = 0#size
+    rw [← BitVec.toInt_zero (w := size), BitVec.toInt_inj]
+  by_cases h : a = 0#size
+  · subst h
+    have hz : SInt (0#size) = 0 := BitVec.toInt_zero
+    simp [hz, Ones_toNat, cmeq]
+  · have h' : ¬ SInt a = 0 := fun h' => h (hiff.mp h')
+    have hn : a.toNat ≠ 0 := fun hz => h (BitVec.eq_of_toNat_eq (by simpa using hz))
+    simp [h', Zeros, cmeq, hn]
+
+/-! ### Lane loops with more state -/
+
+theorem mem_range_from (s : Nat) (t : Int) (i : Int) :
+    i ∈ ({ start := s, stop := t } : IntRange) ↔ (s : Int) ≤ i ∧ i ≤ t := by
+  simp only [Membership.mem, IntRange.instMemIntRange]
+  constructor
+  · rintro ⟨h, _⟩
+    simpa using h
+  · intro h
+    refine ⟨by simpa using h, ?_⟩
+    simp
+
+/-- The range from `s` (the reductions start at lane 1). -/
+theorem loop_fold_from {β : Type} (s n : Nat) (g : Int → β → β) (k : Nat) :
+    ∀ (i : Nat) (b : β) (hs : ((i : Int) - (({ start := s, stop := (n : Int) - 1 } : IntRange)).start) % 1 = 0),
+      s ≤ i → i + k = n →
+      IntRange.forIn'.loop (m := Id) ({ start := s, stop := (n : Int) - 1 } : IntRange)
+        (fun i _ b => pure (ForInStep.yield (g i b))) b i hs
+        = (List.range' i k).foldl (fun t j => g (j : Int) t) b := by
+  induction k with
+  | zero =>
+    intro i b hs hsi hi
+    rw [IntRange.forIn'.loop.eq_1]
+    have hnot : ¬ ((i : Int) ∈ ({ start := s, stop := (n : Int) - 1 } : IntRange)) := by
+      rw [mem_range_from]; omega
+    simp only [hnot, ↓reduceDIte, List.range'_zero, List.map_nil, List.foldl_nil]
+    rfl
+  | succ k ih =>
+    intro i b hs hsi hi
+    rw [IntRange.forIn'.loop.eq_1]
+    have hmem : (i : Int) ∈ ({ start := s, stop := (n : Int) - 1 } : IntRange) := by
+      rw [mem_range_from]; omega
+    simp only [hmem, ↓reduceDIte]
+    have hstep : ((i : Int) + (({ start := s, stop := (n : Int) - 1 } : IntRange)).step) = ((i + 1 : Nat) : Int) := by simp
+    simp only [List.range'_succ, List.map_cons, List.foldl_cons]
+    have := ih (i + 1) (g (↑i) b) (by simp) (by omega) (by omega)
+    simp only [hstep]
+    exact this
+
+theorem forIn_from_fold {β : Type} (s n : Nat) (hsn : s ≤ n) (init : β) (g : Int → β → β) :
+    (forIn (m := Id) ({ start := s, stop := (n : Int) - 1 } : IntRange) init (fun i t => ForInStep.yield (g i t)))
+      = (List.range' s (n - s)).foldl (fun t j => g (j : Int) t) init := by
+  show IntRange.forIn' _ init (fun i _ t => pure (ForInStep.yield (g i t))) = _
+  unfold IntRange.forIn'
+  exact loop_fold_from s n g (n - s) s init (by simp) (Nat.le_refl s) (by omega)
+
+/-- Conditional writes: a lane at or beyond `n` keeps the initial value. -/
+theorem aget_foldl_aset_cond_ge {N : Nat} (size n : Nat) (c : Nat → Bool) (W : Nat → BitVec size)
+    (init : BitVec N) (j : Nat) (hj : n ≤ j) :
+    aget_Elem ((List.range n).foldl (fun r k => if c k = true then aset_Elem r k size (W k) else r) init) j size
+      = aget_Elem init j size := by
+  induction n with
+  | zero => rfl
+  | succ n ih =>
+    rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil]
+    by_cases hc : c n = true
+    · simp only [hc, ↓reduceIte]
+      rw [aget_aset_other _ j n size (W n) (by omega)]
+      exact ih (by omega)
+    · simp only [hc, Bool.false_eq_true, ↓reduceIte]
+      exact ih (by omega)
+
+/-- Conditional writes (`tbl`): a lane written under its condition, else the initial lane. -/
+theorem aget_foldl_aset_cond {N : Nat} (size n : Nat) (hn : n * size ≤ N) (c : Nat → Bool) (W : Nat → BitVec size)
+    (init : BitVec N) (j : Nat) (hj : j < n) :
+    aget_Elem ((List.range n).foldl (fun r k => if c k = true then aset_Elem r k size (W k) else r) init) j size
+      = if c j = true then W j else aget_Elem init j size := by
+  induction n generalizing j with
+  | zero => omega
+  | succ n ih =>
+    rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil]
+    by_cases hjn : j = n
+    · subst hjn
+      by_cases hc : c j = true
+      · simp only [hc, ↓reduceIte]
+        exact aget_aset_same _ j size (W j) hn
+      · simp only [hc, Bool.false_eq_true, ↓reduceIte]
+        exact aget_foldl_aset_cond_ge size j c W init j (Nat.le_refl j)
+    · have hlt : j < n := by omega
+      by_cases hc : c n = true
+      · simp only [hc, ↓reduceIte]
+        rw [aget_aset_other _ j n size (W n) hjn]
+        exact ih (by rw [Nat.succ_mul] at hn; omega) j hlt
+      · simp only [hc, Bool.false_eq_true, ↓reduceIte]
+        exact ih (by rw [Nat.succ_mul] at hn; omega) j hlt
+
+/-- `aget_Elem` of the zero register is the zero lane. -/
+theorem aget_Zeros (N e size : Nat) : aget_Elem (Zeros N) e size = 0#size := by
+  apply BitVec.eq_of_toNat_eq
+  rw [aget_Elem_toNat]
+  simp [Zeros]
+
+
+/-- The other tuple shapes of the generated loops. -/
+theorem result_of_lane_loop4a {E₁ E₂ E₄ : Type} {N : Nat} (size : Nat) (init : E₁ × E₂ × BitVec N × E₄)
+    (f₁ : Nat → E₁) (f₂ : Nat → E₂) (f₄ : Nat → E₄) (W : Nat → BitVec size) (l : List Int) :
+    (l.foldl (fun (s : E₁ × E₂ × BitVec N × E₄) j =>
+        (f₁ j.toNat, f₂ j.toNat, aset_Elem s.2.2.1 j.toNat size (W j.toNat), f₄ j.toNat)) init).2.2.1
+      = l.foldl (fun r j => aset_Elem r j.toNat size (W j.toNat)) init.2.2.1 :=
+  foldl_proj (β := E₁ × E₂ × BitVec N × E₄) (γ := BitVec N) (fun s => s.2.2.1)
+    (fun j s => (f₁ j.toNat, f₂ j.toNat, aset_Elem s.2.2.1 j.toNat size (W j.toNat), f₄ j.toNat))
+    (fun j r => aset_Elem r j.toNat size (W j.toNat)) (fun _ _ => rfl) l init
+
+theorem result_of_lane_loop4b {E₁ E₂ E₃ : Type} {N : Nat} (size : Nat) (init : E₁ × E₂ × E₃ × BitVec N)
+    (f₁ : Nat → E₁) (f₂ : Nat → E₂) (f₃ : Nat → E₃) (W : Nat → BitVec size) (l : List Int) :
+    (l.foldl (fun (s : E₁ × E₂ × E₃ × BitVec N) j =>
+        (f₁ j.toNat, f₂ j.toNat, f₃ j.toNat, aset_Elem s.2.2.2 j.toNat size (W j.toNat))) init).2.2.2
+      = l.foldl (fun r j => aset_Elem r j.toNat size (W j.toNat)) init.2.2.2 :=
+  foldl_proj (β := E₁ × E₂ × E₃ × BitVec N) (γ := BitVec N) (fun s => s.2.2.2)
+    (fun j s => (f₁ j.toNat, f₂ j.toNat, f₃ j.toNat, aset_Elem s.2.2.2 j.toNat size (W j.toNat)))
+    (fun j r => aset_Elem r j.toNat size (W j.toNat)) (fun _ _ => rfl) l init
+
+theorem result_of_lane_loop3b {E₁ E₃ : Type} {N : Nat} (size : Nat) (init : E₁ × BitVec N × E₃)
+    (f₁ : Nat → E₁) (f₃ : Nat → E₃) (W : Nat → BitVec size) (l : List Int) :
+    (l.foldl (fun (s : E₁ × BitVec N × E₃) j =>
+        (f₁ j.toNat, aset_Elem s.2.1 j.toNat size (W j.toNat), f₃ j.toNat)) init).2.1
+      = l.foldl (fun r j => aset_Elem r j.toNat size (W j.toNat)) init.2.1 :=
+  foldl_proj (β := E₁ × BitVec N × E₃) (γ := BitVec N) (fun s => s.2.1)
+    (fun j s => (f₁ j.toNat, aset_Elem s.2.1 j.toNat size (W j.toNat), f₃ j.toNat))
+    (fun j r => aset_Elem r j.toNat size (W j.toNat)) (fun _ _ => rfl) l init
+
+theorem result_of_lane_loop2 {E₁ : Type} {N : Nat} (size : Nat) (init : E₁ × BitVec N)
+    (f₁ : Nat → E₁) (W : Nat → BitVec size) (l : List Int) :
+    (l.foldl (fun (s : E₁ × BitVec N) j => (f₁ j.toNat, aset_Elem s.2 j.toNat size (W j.toNat))) init).2
+      = l.foldl (fun r j => aset_Elem r j.toNat size (W j.toNat)) init.2 :=
+  foldl_proj (β := E₁ × BitVec N) (γ := BitVec N) (fun s => s.2)
+    (fun j s => (f₁ j.toNat, aset_Elem s.2 j.toNat size (W j.toNat)))
+    (fun j r => aset_Elem r j.toNat size (W j.toNat)) (fun _ _ => rfl) l init
+
+/-! ### The lane theorems -/
+
+/-- **`cmeq`** (register form): the lane equality mask (`Oak.Neon.cmeq`, `Oak.Simd.eqMask`). -/
+theorem cmeq_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a b : BitVec datasize) :
+    lanesOf (vector_arithmetic_binary_uniform_cmp_bitwise false datasize elements esize a b) esize
+      = List.zipWith (cmeq esize) (lanesOf a esize) (lanesOf b esize) := by
+  unfold vector_arithmetic_binary_uniform_cmp_bitwise
+  simp only [Id.run, bind, pure, Bool.false_eq_true, ↓reduceIte]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl,
+    forIn_laneRange_fold]
+  show lanesOf ((List.foldl (fun (s : BitVec esize × BitVec esize × BitVec datasize × Bool) (j : Int) =>
+      (aget_Elem a j.toNat esize, aget_Elem b j.toNat esize,
+        aset_Elem s.2.2.1 j.toNat esize
+          (if (aget_Elem a j.toNat esize == aget_Elem b j.toNat esize) = true then Ones esize else Zeros esize),
+        aget_Elem a j.toNat esize == aget_Elem b j.toNat esize))
+      (Zeros esize, Zeros esize, Zeros datasize, false) (List.map (fun (x : Nat) => (x : Int)) (List.range elements))).2.2.1) esize = _
+  rw [result_of_lane_loop4a esize _ (fun j => aget_Elem a j esize) (fun j => aget_Elem b j esize)
+    (fun j => aget_Elem a j esize == aget_Elem b j esize)
+    (fun j => if (aget_Elem a j esize == aget_Elem b j esize) = true then Ones esize else Zeros esize)]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  rw [lanes_of_fold_write esize elements h hs, zipWith_lanes, lanes_div datasize elements esize h hs]
+  apply List.map_congr_left
+  intro j _
+  exact cmeq_test_toNat esize _ _
+
+/-- **`umin`**: the lane minimum. -/
+theorem umin_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a b : BitVec datasize) :
+    lanesOf (vector_arithmetic_binary_uniform_maxmin_single datasize elements esize a b true true) esize
+      = List.zipWith umin (lanesOf a esize) (lanesOf b esize) := by
+  unfold vector_arithmetic_binary_uniform_maxmin_single
+  simp only [Id.run, bind, pure, ↓reduceIte, asl_Int]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl,
+    forIn_laneRange_fold]
+  show lanesOf ((List.foldl (fun (s : Int × Int × Int × BitVec datasize) (j : Int) =>
+      (UInt (aget_Elem a j.toNat esize), UInt (aget_Elem b j.toNat esize),
+        min (UInt (aget_Elem a j.toNat esize)) (UInt (aget_Elem b j.toNat esize)),
+        aset_Elem s.2.2.2 j.toNat esize
+          (__GetSlice_int esize (min (UInt (aget_Elem a j.toNat esize)) (UInt (aget_Elem b j.toNat esize))) 0)))
+      (0, 0, 0, Zeros datasize) (List.map (fun (x : Nat) => (x : Int)) (List.range elements))).2.2.2) esize = _
+  rw [result_of_lane_loop4b esize _ (fun j => UInt (aget_Elem a j esize)) (fun j => UInt (aget_Elem b j esize))
+    (fun j => min (UInt (aget_Elem a j esize)) (UInt (aget_Elem b j esize)))
+    (fun j => __GetSlice_int esize (min (UInt (aget_Elem a j esize)) (UInt (aget_Elem b j esize))) 0)]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  rw [lanes_of_fold_write esize elements h hs, zipWith_lanes, lanes_div datasize elements esize h hs]
+  apply List.map_congr_left
+  intro j _
+  exact umin_lane esize _ _
+
+/-- **`umax`**: the lane maximum. -/
+theorem umax_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a b : BitVec datasize) :
+    lanesOf (vector_arithmetic_binary_uniform_maxmin_single datasize elements esize a b false true) esize
+      = List.zipWith umax (lanesOf a esize) (lanesOf b esize) := by
+  unfold vector_arithmetic_binary_uniform_maxmin_single
+  simp only [Id.run, bind, pure, Bool.false_eq_true, ↓reduceIte, asl_Int]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl,
+    forIn_laneRange_fold]
+  show lanesOf ((List.foldl (fun (s : Int × Int × Int × BitVec datasize) (j : Int) =>
+      (UInt (aget_Elem a j.toNat esize), UInt (aget_Elem b j.toNat esize),
+        max (UInt (aget_Elem a j.toNat esize)) (UInt (aget_Elem b j.toNat esize)),
+        aset_Elem s.2.2.2 j.toNat esize
+          (__GetSlice_int esize (max (UInt (aget_Elem a j.toNat esize)) (UInt (aget_Elem b j.toNat esize))) 0)))
+      (0, 0, 0, Zeros datasize) (List.map (fun (x : Nat) => (x : Int)) (List.range elements))).2.2.2) esize = _
+  rw [result_of_lane_loop4b esize _ (fun j => UInt (aget_Elem a j esize)) (fun j => UInt (aget_Elem b j esize))
+    (fun j => max (UInt (aget_Elem a j esize)) (UInt (aget_Elem b j esize)))
+    (fun j => __GetSlice_int esize (max (UInt (aget_Elem a j esize)) (UInt (aget_Elem b j esize))) 0)]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  rw [lanes_of_fold_write esize elements h hs, zipWith_lanes, lanes_div datasize elements esize h hs]
+  apply List.map_congr_left
+  intro j _
+  exact umax_lane esize _ _
+
+/-- **`uqsub`**: the saturating lane difference (`Oak.Neon.uqsub`, `Oak.Simd.subSat`). -/
+theorem uqsub_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a b : BitVec datasize) :
+    lanesOf (vector_arithmetic_binary_uniform_sub_saturating datasize elements esize a b true) esize
+      = List.zipWith uqsub (lanesOf a esize) (lanesOf b esize) := by
+  unfold vector_arithmetic_binary_uniform_sub_saturating
+  simp only [Id.run, bind, pure, ↓reduceIte, asl_Int, SatQ]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl,
+    forIn_laneRange_fold]
+  show lanesOf ((List.foldl (fun (s : Int × Int × Int × BitVec datasize) (j : Int) =>
+      (UInt (aget_Elem a j.toNat esize) - UInt (aget_Elem b j.toNat esize),
+        UInt (aget_Elem a j.toNat esize), UInt (aget_Elem b j.toNat esize),
+        aset_Elem s.2.2.2 j.toNat esize
+          (UnsignedSatQ (UInt (aget_Elem a j.toNat esize) - UInt (aget_Elem b j.toNat esize)) esize).1))
+      (0, 0, 0, Zeros datasize) (List.map (fun (x : Nat) => (x : Int)) (List.range elements))).2.2.2) esize = _
+  rw [result_of_lane_loop4b esize _ (fun j => UInt (aget_Elem a j esize) - UInt (aget_Elem b j esize))
+    (fun j => UInt (aget_Elem a j esize)) (fun j => UInt (aget_Elem b j esize))
+    (fun j => (UnsignedSatQ (UInt (aget_Elem a j esize) - UInt (aget_Elem b j esize)) esize).1)]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  rw [lanes_of_fold_write esize elements h hs, zipWith_lanes, lanes_div datasize elements esize h hs]
+  apply List.map_congr_left
+  intro j _
+  exact uqsub_lane esize _ _
+
+/-- **`cmeq #0`**: the lane compared with zero. -/
+theorem cmeq_zero_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a : BitVec datasize) :
+    lanesOf (vector_arithmetic_unary_cmp_int_bulk CompareOp.CompareOp_EQ datasize elements esize a) esize
+      = (lanesOf a esize).map (fun x => cmeq esize x 0) := by
+  unfold vector_arithmetic_unary_cmp_int_bulk
+  simp only [Id.run, bind, pure]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl,
+    forIn_laneRange_fold]
+  show lanesOf ((List.foldl (fun (s : Int × BitVec datasize × Bool) (j : Int) =>
+      (SInt (aget_Elem a j.toNat esize),
+        aset_Elem s.2.1 j.toNat esize
+          (if (SInt (aget_Elem a j.toNat esize) == 0) = true then Ones esize else Zeros esize),
+        SInt (aget_Elem a j.toNat esize) == 0))
+      (0, Zeros datasize, false) (List.map (fun (x : Nat) => (x : Int)) (List.range elements))).2.1) esize = _
+  rw [result_of_lane_loop3b esize _ (fun j => SInt (aget_Elem a j esize)) (fun j => SInt (aget_Elem a j esize) == 0)
+    (fun j => if (SInt (aget_Elem a j esize) == 0) = true then Ones esize else Zeros esize)]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  rw [lanes_of_fold_write esize elements h hs, lanesOf_eq_map, lanes_div datasize elements esize h hs, List.map_map]
+  apply List.map_congr_left
+  intro j _
+  exact cmeq_zero_test_toNat esize _
+
+
+/-- **`sub`**: lane-wise wrapping subtraction (`Oak.Neon.sub`). -/
+theorem sub_lane (size : Nat) (x y : BitVec size) : (x - y).toNat = Oak.Neon.sub size x.toNat y.toNat := by
+  rw [BitVec.toNat_sub, Oak.Neon.sub, Nat.mod_eq_of_lt y.isLt, Nat.add_comm]
+
+theorem sub_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a b : BitVec datasize) :
+    lanesOf (vector_arithmetic_binary_uniform_add_wrapping_single datasize elements esize a b true) esize
+      = List.zipWith (Oak.Neon.sub esize) (lanesOf a esize) (lanesOf b esize) := by
+  unfold vector_arithmetic_binary_uniform_add_wrapping_single
+  simp only [Id.run, bind, pure, ↓reduceIte]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl,
+    forIn_laneRange_fold]
+  show lanesOf ((List.foldl (fun (s : BitVec esize × BitVec esize × BitVec datasize) (j : Int) =>
+      (aget_Elem a j.toNat esize, aget_Elem b j.toNat esize,
+        aset_Elem s.2.2 j.toNat esize (aget_Elem a j.toNat esize - aget_Elem b j.toNat esize)))
+      (Zeros esize, Zeros esize, Zeros datasize) (List.map (fun (x : Nat) => (x : Int)) (List.range elements))).2.2) esize = _
+  rw [result_of_lane_loop esize _ (fun j => aget_Elem a j esize) (fun j => aget_Elem b j esize)
+    (fun j => aget_Elem a j esize - aget_Elem b j esize)]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  rw [lanes_of_fold_write esize elements h hs, zipWith_lanes, lanes_div datasize elements esize h hs]
+  apply List.map_congr_left
+  intro j _
+  exact sub_lane esize _ _
+
+/-- **`tbl`** with one table register over sixteen byte lanes: lane `j` is the
+table's lane at index `j` when it is below sixteen, zero otherwise
+(`Oak.Neon.tbl`, `Oak.Simd.tbl`). -/
+theorem tbl_lanes (indices table : BitVec 128) :
+    lanesOf (vector_transfer_vector_table 128 16 true indices table (Zeros 128)) 8
+      = (lanesOf indices 8).map (Oak.Neon.tbl (lanesOf table 8)) := by
+  unfold vector_transfer_vector_table
+  simp only [Id.run, bind, pure, ↓reduceIte]
+  rw [show ({ stop := ((16 : Nat) : Int) - 1 } : IntRange) = laneRange 16 from rfl, forIn_laneRange_fold]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  simp only [lanesOf_eq_map, List.map_map, Nat.reduceDiv]
+  apply List.map_congr_left
+  intro j hj
+  rw [List.mem_range] at hj
+  simp only [Function.comp]
+  rw [aget_foldl_aset_cond 8 16 (by omega) (fun k => (UInt (aget_Elem indices k 8) <b 16))
+    (fun k => aget_Elem table (UInt (aget_Elem indices k 8)).toNat 8) (Zeros 128) j hj]
+  have hlen : (List.map (fun j => (aget_Elem table j 8).toNat) (List.range 16)).length = 16 := by simp
+  have hidx : (UInt (aget_Elem indices j 8)).toNat = (aget_Elem indices j 8).toNat := by
+    rw [UInt_eq, Int.toNat_natCast]
+  unfold Oak.Neon.tbl
+  by_cases hlt : (aget_Elem indices j 8).toNat < 16
+  · have hb : (UInt (aget_Elem indices j 8) <b 16) = true := by
+      rw [UInt_eq]; exact decide_eq_true (Int.ofNat_lt.mpr hlt)
+    rw [if_pos hb, dif_pos ⟨by omega, hlt⟩, hidx]
+    simp [List.getElem_map, List.getElem_range]
+  · have hb : (UInt (aget_Elem indices j 8) <b 16) = false := by
+      rw [UInt_eq]; exact decide_eq_false (fun h' => hlt (Int.ofNat_lt.mp h'))
+    rw [if_neg (by simp [hb]), dif_neg (by omega), aget_Zeros]
+    rfl
+
+/-- The reduction's running maximum stays a lane value. -/
+theorem foldl_max_lt (size : Nat) (l : List Nat) (init : Nat) (hinit : init < 2 ^ size)
+    (hl : ∀ x ∈ l, x < 2 ^ size) : l.foldl max init < 2 ^ size := by
+  induction l generalizing init with
+  | nil => exact hinit
+  | cons x rest ih =>
+    rw [List.foldl_cons]
+    exact ih (max init x) (by have := hl x (List.mem_cons_self ..); omega)
+      (fun y hy => hl y (List.mem_cons_of_mem x hy))
+
+/-- The integer running maximum is the lane maximum, cast. -/
+theorem foldl_max_cast (f : Nat → Nat) (l : List Nat) (init : Nat) :
+    l.foldl (fun (m : Int) (j : Nat) => max m ((f j : Nat) : Int)) (init : Int)
+      = ((l.foldl (fun m j => max m (f j)) init : Nat) : Int) := by
+  induction l generalizing init with
+  | nil => rfl
+  | cons x rest ih => rw [List.foldl_cons, List.foldl_cons, natCast_max]; exact ih _
+
+/-- **`umaxv`**: the unsigned maximum over the lanes (`Oak.Neon.umaxv`). -/
+theorem umaxv_lane (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (he : 0 < elements) (a : BitVec datasize) :
+    (vector_reduce_intmax datasize elements esize a false true).toNat = Oak.Neon.umaxv (lanesOf a esize) := by
+  obtain ⟨k, rfl⟩ : ∃ k, elements = k + 1 := ⟨elements - 1, by omega⟩
+  unfold vector_reduce_intmax
+  simp only [Id.run, bind, pure, Bool.false_eq_true, ↓reduceIte, asl_Int]
+  show (__GetSlice_int esize (forIn (m := Id) ({ start := ((1 : Nat) : Int), stop := ((k + 1 : Nat) : Int) - 1 } : IntRange)
+      (0, UInt (aget_Elem a 0 esize))
+      (fun (e : Int) (t : Int × Int) => ForInStep.yield (UInt (aget_Elem a e.toNat esize), max t.2 (UInt (aget_Elem a e.toNat esize))))).2 0).toNat = _
+  rw [forIn_from_fold 1 (k + 1) he]
+  rw [foldl_proj (β := Int × Int) (γ := Int) (fun t => t.2)
+    (fun e t => (UInt (aget_Elem a e.toNat esize), max t.2 (UInt (aget_Elem a e.toNat esize))))
+    (fun e m => max m (UInt (aget_Elem a e.toNat esize))) (fun _ _ => rfl)]
+  simp only [List.foldl_map, Int.toNat_natCast, UInt_eq, Nat.add_sub_cancel]
+  rw [foldl_max_cast (fun k => (aget_Elem a k esize).toNat), getSlice_toNat]
+  · rw [Oak.Neon.umaxv, lanesOf_eq_map, lanes_div datasize (k + 1) esize h hs, List.foldl_map,
+      List.range_eq_range', List.range'_succ, List.foldl_cons, Nat.zero_add, Nat.zero_max]
+  · rw [← List.foldl_map (f := fun j => (aget_Elem a j esize).toNat) (g := fun (m v : Nat) => max m v)]
+    apply foldl_max_lt esize _ _ (aget_Elem a 0 esize).isLt
+    intro x hx
+    rw [List.mem_map] at hx
+    obtain ⟨j, _, rfl⟩ := hx
+    exact (aget_Elem a j esize).isLt
+
+
+/-! ### `ext`, the shifts, and `Reduce` -/
+
+
+/-! ### `ext`: the slice of `hi ++ lo` at a byte position -/
+
+/-- A slice of a slice is the slice at the summed offset (within the outer slice). -/
+theorem extractLsb'_extractLsb' {w : Nat} (x : BitVec w) (s₁ l₁ s₂ l₂ : Nat) (h : s₂ + l₂ ≤ l₁) :
+    (x.extractLsb' s₁ l₁).extractLsb' s₂ l₂ = x.extractLsb' (s₁ + s₂) l₂ := by
+  apply BitVec.eq_of_getLsbD_eq
+  intro i
+  simp only [BitVec.getLsbD_extractLsb']
+  by_cases hi : i < l₂
+  · have : s₂ + i < l₁ := by omega
+    simp [hi, this, Nat.add_assoc]
+  · simp [hi]
+
+/-- Lane `j` of the decomposition is the element accessor's value. -/
+theorem lanesOf_getElem {N : Nat} (v : BitVec N) (size j : Nat) (hj : j < (lanesOf v size).length) :
+    (lanesOf v size)[j] = (aget_Elem v j size).toNat := by
+  simp [lanesOf, aget_Elem_toNat]
+
+theorem natMul_toNat (k m : Nat) : ((fun x y : Int => x * y) (k : Int) (m : Int)).toNat = k * m := by
+  show ((k : Int) * (m : Int)).toNat = k * m
+  rw [← Int.natCast_mul, Int.toNat_natCast]
+
+theorem ext_lanes (hi lo : BitVec 128) (p : Nat) (hp : p ≤ 16) :
+    lanesOf (vector_transfer_vector_extract 128 hi lo ((8 * p : Nat) : Int)) 8
+      = Oak.Neon.ext p (lanesOf lo 8) (lanesOf hi 8) := by
+  have hlen_lo : (lanesOf lo 8).length = 16 := by simp [lanesOf]
+  have hlen_hi : (lanesOf hi 8).length = 16 := by simp [lanesOf]
+  unfold vector_transfer_vector_extract Oak.Neon.ext
+  simp only [Int.toNat_natCast, Sail.BitVec.slice]
+  have hcat : BitVec.setWidth (2 * 128) (hi ++ lo) = hi ++ lo := BitVec.setWidth_eq (hi ++ lo)
+  rw [hcat, lanesOf_eq_map (v := BitVec.extractLsb' (8 * p) 128 (hi ++ lo))]
+  apply List.ext_getElem
+  · simp [List.length_take, List.length_drop, hlen_lo, hlen_hi]; omega
+  · intro k hk _
+    have hk16 : k < 16 := by simpa using hk
+    rw [List.getElem_map, List.getElem_range, List.getElem_take, List.getElem_drop]
+    rw [aget_Elem, Sail.BitVec.slice, natMul_toNat, extractLsb'_extractLsb' _ _ _ _ _ (by omega)]
+    by_cases hlt : p + k < 16
+    · rw [List.getElem_append_left (by rw [hlen_lo]; omega), lanesOf_getElem, aget_Elem, Sail.BitVec.slice,
+        natMul_toNat, BitVec.extractLsb'_append_eq_of_add_le (by omega),
+        show 8 * p + k * 8 = (p + k) * 8 by omega]
+    · rw [List.getElem_append_right (by rw [hlen_lo]; omega), lanesOf_getElem, hlen_lo, aget_Elem,
+        Sail.BitVec.slice, natMul_toNat, BitVec.extractLsb'_append_eq_of_le (by omega),
+        show 8 * p + k * 8 - 128 = (p + k - 16) * 8 by omega]
+
+/-! ### The shifts: the support library's iterated halving is the shift -/
+
+theorem iterate_div_two (n : Nat) (a : Nat) :
+    Sail.Nat.iterate (fun x : Int => x / 2) n (a : Int) = ((a >>> n : Nat) : Int) := by
+  induction n generalizing a with
+  | zero => simp [Sail.Nat.iterate]
+  | succ n ih =>
+    rw [Sail.Nat.iterate]
+    have : ((a : Int) / 2) = ((a / 2 : Nat) : Int) := by omega
+    rw [this, ih, Nat.shiftRight_succ_inside]
+
+theorem shiftr_natCast (a n : Nat) : Sail.Int.shiftr (a : Int) (n : Int) = ((a >>> n : Nat) : Int) := by
+  show Sail.Nat.iterate (fun x : Int => x / 2) n (a : Int) = _
+  exact iterate_div_two n a
+
+
+/-- The `ushr` lane: the shifted lane value (`Oak.Neon.ushr`). -/
+theorem ushr_lane {N : Nat} (size j sh : Nat) (x : BitVec size) :
+    (aget_Elem (Zeros N) j size + __GetSlice_int size (_shr_int_general (UInt x + 0) (sh : Int)) 0).toNat
+      = Oak.Neon.ushr sh x.toNat := by
+  rw [aget_Zeros, BitVec.zero_add, _shr_int_general, UInt_eq, Int.add_zero]
+  have hge : ((sh : Int) ≥b 0) = true := decide_eq_true (Int.ofNat_nonneg sh)
+  rw [if_pos hge, shiftr_natCast, getSlice_toNat size _ (by have := x.isLt; have := Nat.shiftRight_le x.toNat sh; omega)]
+  rfl
+
+/-- **`ushr #sh`**: lane-wise logical shift right (`Oak.Neon.ushr`, `Oak.Simd.shr`). -/
+theorem ushr_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a : BitVec datasize) (sh : Nat) :
+    lanesOf (vector_shift_right false datasize elements esize a (Zeros datasize) false (sh : Int) true) esize
+      = (lanesOf a esize).map (Oak.Neon.ushr sh) := by
+  unfold vector_shift_right
+  simp only [Id.run, bind, pure, Bool.false_eq_true, ↓reduceIte, asl_Int]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl,
+    forIn_laneRange_fold]
+  show lanesOf ((List.foldl (fun (s : Int × BitVec datasize) (j : Int) =>
+      (_shr_int_general (UInt (aget_Elem a j.toNat esize) + 0) (sh : Int),
+        aset_Elem s.2 j.toNat esize
+          (aget_Elem (Zeros datasize) j.toNat esize
+            + __GetSlice_int esize (_shr_int_general (UInt (aget_Elem a j.toNat esize) + 0) (sh : Int)) 0)))
+      (0, Zeros datasize) (List.map (fun (x : Nat) => (x : Int)) (List.range elements))).2) esize = _
+  rw [result_of_lane_loop2 esize _ (fun j => _shr_int_general (UInt (aget_Elem a j esize) + 0) (sh : Int))
+    (fun j => aget_Elem (Zeros datasize) j esize
+      + __GetSlice_int esize (_shr_int_general (UInt (aget_Elem a j esize) + 0) (sh : Int)) 0)]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  rw [lanes_of_fold_write esize elements h hs, lanesOf_eq_map, lanes_div datasize elements esize h hs, List.map_map]
+  apply List.map_congr_left
+  intro j _
+  exact ushr_lane esize j sh _
+
+
+/-! ### `sshr #7` on bytes: the sign fill of `movemask` -/
+
+/-- The arithmetic shift of a byte by seven is its sign fill (`Oak.Neon.sshr7`):
+all ones when the top bit is set, zero otherwise. Decided over the 256 bytes. -/
+theorem sshr7_lane (x : BitVec 8) :
+    (__GetSlice_int 8 (_shr_int_general (SInt x + 0) 7) 0).toNat = Oak.Neon.sshr7 x.toNat := by
+  revert x
+  decide
+
+/-! ### `Reduce` for `addv`: Arm's recursive tree, transliterated by hand -/
+
+/-- Arm's `Reduce(ReduceOp_ADD, input, esize)`: the sum of the two halves,
+recursively, down to one element (`aarch64_vector.sail`). Sail's Lean
+backend cannot discharge this recursion's termination, so it is stated
+here by hand. -/
+def reduceAdd (N : Nat) (input : BitVec N) (esize : Nat) : BitVec esize :=
+  if h : N = esize then input.cast h
+  else if hN : esize < N ∧ 0 < esize then
+    reduceAdd (N / 2) (input.extractLsb' (N / 2) (N / 2)) esize
+      + reduceAdd (N / 2) (input.extractLsb' 0 (N / 2)) esize
+  else 0
+termination_by N
+decreasing_by all_goals omega
+
+theorem reduceAdd_step (N : Nat) (input : BitVec N) (esize : Nat) (h1 : N ≠ esize) (h2 : esize < N ∧ 0 < esize) :
+    reduceAdd N input esize
+      = reduceAdd (N / 2) (input.extractLsb' (N / 2) (N / 2)) esize
+        + reduceAdd (N / 2) (input.extractLsb' 0 (N / 2)) esize := by
+  rw [reduceAdd, dif_neg h1, dif_pos h2]
+
+theorem reduceAdd_base (N : Nat) (input : BitVec N) (esize : Nat) (h : N = esize) :
+    reduceAdd N input esize = input.cast h := by
+  rw [reduceAdd, dif_pos h]
+
+/-- **`addv`** over eight bytes: the tree sum is the wrapping fold (`Oak.Neon.addv`). -/
+theorem reduceAdd_eight_bytes (v : BitVec 64) :
+    (reduceAdd 64 v 8).toNat = Oak.Neon.addv 8 (lanesOf v 8) := by
+  have hr : List.range 8 = [0, 1, 2, 3, 4, 5, 6, 7] := rfl
+  rw [reduceAdd_step 64 _ 8 (by decide) (by decide)]
+  simp only [Nat.reduceDiv]
+  simp only [reduceAdd_step 32 _ 8 (by decide) (by decide), Nat.reduceDiv]
+  simp only [reduceAdd_step 16 _ 8 (by decide) (by decide), Nat.reduceDiv]
+  simp only [reduceAdd_base 8 _ 8 rfl]
+  simp only [extractLsb'_extractLsb', Nat.reduceAdd, Nat.reduceLeDiff]
+  simp only [BitVec.toNat_add, BitVec.toNat_cast, BitVec.extractLsb'_toNat, Nat.reducePow, Nat.reduceAdd,
+    Nat.shiftRight_zero, Oak.Neon.addv, lanesOf, hr, List.map_cons, List.map_nil, List.foldl_cons,
+    List.foldl_nil, Nat.reduceMul, Nat.zero_add]
+  omega
+
+
+
+
+/-! ### `cnt`: Arm's `BitCount` is the population count -/
+
+theorem popcount_append (l₁ l₂ : List Bool) :
+    Oak.Intrinsics.popcount (l₁ ++ l₂) = Oak.Intrinsics.popcount l₁ + Oak.Intrinsics.popcount l₂ := by
+  induction l₁ with
+  | nil => simp [Oak.Intrinsics.popcount]
+  | cons b rest ih => cases b <;> simp [Oak.Intrinsics.popcount, ih] <;> omega
+
+/-- The bit test of Arm's loop is the bit. -/
+theorem bitTest_eq {n : Nat} (x : BitVec n) (i : Nat) :
+    ((Sail.BitVec.join1 [Sail.BitVec.access x i] == 1#1) : Bool) = x.getLsbD i := by
+  rw [join1_single, access_eq]
+  cases x.getLsbD i <;> rfl
+
+/-- Counting the set bits as a fold over the bit indices. -/
+theorem foldl_count (c : Nat → Bool) (n : Nat) :
+    (List.range n).foldl (fun (r : Int) (i : Nat) => if c i = true then r + 1 else r) 0
+      = ((Oak.Intrinsics.popcount ((List.range n).map c) : Nat) : Int) := by
+  induction n with
+  | zero => rfl
+  | succ n ih =>
+    rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil, List.map_append, popcount_append, ih]
+    cases hc : c n <;> simp [hc, Oak.Intrinsics.popcount]
+
+/-- **`BitCount`** is the population count of the bits. -/
+theorem BitCount_eq {n : Nat} (x : BitVec n) :
+    BitCount x = ((Oak.Intrinsics.popcount ((List.range n).map (fun i => x.getLsbD i)) : Nat) : Int) := by
+  unfold BitCount
+  simp only [Id.run, bind, pure, Sail.BitVec.length]
+  rw [show ({ stop := (n : Int) - 1 } : IntRange) = laneRange n from rfl, forIn_laneRange_fold]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  rw [foldl_count (fun i => (Sail.BitVec.join1 [Sail.BitVec.access x i] == 1#1))]
+  congr 2
+  apply List.map_congr_left
+  intro i _
+  exact bitTest_eq x i
+
+/-- The `cnt` lane: the population count of the lane (`Oak.Neon.cnt`). -/
+theorem cnt_lane (size : Nat) (x : BitVec size) :
+    (__GetSlice_int size (BitCount x) 0).toNat = Oak.Neon.cnt size x.toNat := by
+  rw [BitCount_eq, getSlice_toNat]
+  · rfl
+  · have h1 := Oak.Intrinsics.popcount_le_width ((List.range size).map (fun i => x.getLsbD i))
+    have h2 : size < 2 ^ size := Nat.lt_two_pow_self
+    simp only [List.length_map, List.length_range] at h1
+    omega
+
+/-- **`cnt`**: lane-wise population count. -/
+theorem cnt_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a : BitVec datasize) :
+    lanesOf (vector_arithmetic_unary_cnt datasize elements esize a) esize
+      = (lanesOf a esize).map (Oak.Neon.cnt esize) := by
+  unfold vector_arithmetic_unary_cnt
+  simp only [Id.run, bind, pure]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl,
+    forIn_laneRange_fold]
+  show lanesOf ((List.foldl (fun (s : Int × BitVec datasize) (j : Int) =>
+      (BitCount (aget_Elem a j.toNat esize),
+        aset_Elem s.2 j.toNat esize (__GetSlice_int esize (BitCount (aget_Elem a j.toNat esize)) 0)))
+      (0, Zeros datasize) (List.map (fun (x : Nat) => (x : Int)) (List.range elements))).2) esize = _
+  rw [result_of_lane_loop2 esize _ (fun j => BitCount (aget_Elem a j esize))
+    (fun j => __GetSlice_int esize (BitCount (aget_Elem a j esize)) 0)]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  rw [lanes_of_fold_write esize elements h hs, lanesOf_eq_map, lanes_div datasize elements esize h hs, List.map_map]
+  apply List.map_congr_left
+  intro j _
+  exact cnt_lane esize _
+
+
+end Lanes
 
 end Oak.SailBridge

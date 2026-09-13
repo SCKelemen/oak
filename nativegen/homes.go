@@ -157,10 +157,22 @@ func (lv *callLiveness) inner(node ast.Node) {
 			}
 		}
 	case *ast.InvocationExpression:
+		// A variable passed as an argument is read at the move into its
+		// argument register, after every other argument — and any call
+		// among them — has been evaluated (callWith defers it), so it
+		// counts past the call's own position too.
+		var deferred []string
 		for _, a := range e.Arguments {
+			if ident, isIdent := a.(*ast.Identifier); isIdent {
+				deferred = append(deferred, ident.Value)
+				continue
+			}
 			lv.inner(a)
 		}
 		lv.calls[e] = lv.next() // the call runs after its arguments
+		for _, name := range deferred {
+			lv.noteUse(name, lv.next())
+		}
 	case *ast.ArrayLiteral:
 		for _, a := range e.Elements {
 			lv.inner(a)

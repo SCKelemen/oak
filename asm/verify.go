@@ -773,6 +773,11 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 		if fn.Arch == ArchRV64 {
 			break
 		}
+		if binding.OnStack {
+			// A parameter in the caller's outgoing area: the executor does
+			// not model the incoming stack (a body reading it stays trusted).
+			return nil, nil, "parameters beyond the register contract (the incoming stack area is not modeled)", false
+		}
 		if cp, isComposite := composites[binding.Param]; isComposite {
 			if cp.size > 16 {
 				// By reference: loads through the base at a leaf's exact

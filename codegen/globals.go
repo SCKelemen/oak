@@ -42,9 +42,12 @@ func (cg *CodeGenerator) emitGlobals(program *ast.Program, tc *typechecker.TypeC
 		if decl.NativeAddressed {
 			cg.nativeGlobals[decl.Name.Value] = true
 			if !labelMacro {
-				// The assembler-label macro, before the FFI prelude defines
-				// it again (identically) further down.
-				cg.write("#ifndef OAK_ASM_SYMBOL\n#define OAK_STRINGIFY_(x) #x\n#define OAK_STRINGIFY(x) OAK_STRINGIFY_(x)\n#define OAK_ASM_SYMBOL(name) OAK_STRINGIFY(__USER_LABEL_PREFIX__) name\n#endif\n")
+				// The assembler-label macro of an addressed global: the
+				// target's user-label prefix (stringified after expansion)
+				// before the quoted name. Its own name, beside the asm units'
+				// OAK_ASM_SYMBOL (which stringifies a bare token) and the FFI
+				// prelude's macros.
+				cg.write("#define OAK_GLOBAL_LABEL__(x) #x\n#define OAK_GLOBAL_LABEL_(x) OAK_GLOBAL_LABEL__(x)\n#define OAK_GLOBAL_LABEL(name) OAK_GLOBAL_LABEL_(__USER_LABEL_PREFIX__) name\n")
 				labelMacro = true
 			}
 		}
@@ -151,7 +154,7 @@ func (cg *CodeGenerator) emitGlobal(decl *ast.VariableDeclaration, tc *typecheck
 			// symbol (docs/spec/94-assembler.md §9): external linkage under
 			// the assembler label the companion object names — a spelling
 			// no function's mangled name can take (cg.globalSymbol).
-			declarator = fmt.Sprintf("%s %s __asm__(OAK_ASM_SYMBOL(\"%s\"))", cg.parseTypeExpression(decl.Type), name, cg.globalSymbol(decl.Name.Value))
+			declarator = fmt.Sprintf("%s %s __asm__(OAK_GLOBAL_LABEL(\"%s\"))", cg.parseTypeExpression(decl.Type), name, cg.globalSymbol(decl.Name.Value))
 		}
 		if declarator == "" {
 			storage := "static"

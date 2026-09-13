@@ -798,11 +798,24 @@ adaptations listed in the file), Sail generates their Lean, and
 generated code — `Elem[]` reads the lane of the verifier's decomposition,
 `Ones` is the all-ones lane, `UnsignedSatQ` of a lane difference is
 `uqsub`, the `cmeq` test is `cmeq`, and the bitwise forms are the
-operators. Left for the next increments: the per-lane loops of the
-generated code as `List.zipWith` of the lane functions, `ext` as
-`Oak.Neon.ext`, Arm's recursive `Reduce` (whose termination Sail's Lean
-backend cannot discharge), `simd.store` (a write the straight-line model
-does not follow), and float vectors
+operators — and the register-level theorems over the generated per-lane
+loops: the loop `for e in [0:elements-1]` is a fold over the lane indices
+(`forIn_laneRange_fold`), a lane written by `Elem[]` reads its write and
+leaves the others (`aget_aset_same`, `aget_aset_other`), so `dup`, `add`,
+`sub`, `cmeq` (register and zero forms), `umin`, `umax`, `uqsub`, `tbl`,
+and `umaxv` compute the verifier's lane functions over the lanes of their
+operands (`dup_lanes`, `add_lanes`, `cmeq_lanes`, `tbl_lanes`,
+`umaxv_lane`, …); `ext #(8p)` reads lane for lane as `Oak.Neon.ext p`
+(`ext_lanes`), `ushr #n` is the lane shift (`ushr_lanes`, through the
+support library's iterated halving), `sshr #7` on a byte is the sign fill
+of `movemask` (`sshr7_lane`, decided over the 256 bytes), and Arm's
+recursive `Reduce` — stated by hand as `reduceAdd`, since Sail's Lean
+backend cannot discharge its termination — sums eight bytes as `addv`'s
+fold (`reduceAdd_eight_bytes`), and `cnt` is the population count of each
+lane — Arm's `BitCount` loop as `Oak.Intrinsics.popcount` (`cnt_lanes`).
+Every vector instruction the backend emits is bridged to Arm's text. Left
+for the next increments: `simd.store` (a write the straight-line model
+does not follow) and float vectors
 (`docs/notes/proof-chain-audit-2026-09.md`).
 
 ## 9. Native encoding, and the architectures to come
@@ -1663,8 +1676,83 @@ to 7.1–7.9 s, `floats.oak` 4.9 s to 4.5 s, `lattice.oak` 3.1 s to 2.9 s,
 native prover stands at 1.1–1.35 times its time (`mono.oak` 11.1–13.1 s
 against 8.3–10 s, `extents.oak` 7.1–7.9 s against 6.2–7.1 s, `floats.oak`
 4.2–4.9 s against 3.7–4.6 s). The rows are identical throughout.
-Next increments: the fallback reasons above in the order of their counts,
-so the prover lowers whole; then the verifier past `bl` and unit results —
+**Twenty-sixth increment — arguments beyond the registers.** Of the
+prover's 206 remaining fallbacks, 139 were one reason in four spellings:
+a ninth integer argument, on the caller's or the callee's side. AAPCS64
+puts it in the caller's outgoing area at the bottom of the caller's
+frame — the callee's sp at entry — and one shared rule now lays that area
+out (`asm/abi.go`, `LayoutArguments`): registers while an argument fits,
+then every integer-class argument after the first that does not on the
+stack, at increasing offsets; under the standard convention each rounded
+to an 8-byte slot, under Apple's arm64 convention a fundamental type at
+its natural size and alignment (composites stay 8-aligned) — the
+convention the target's C compiler follows, since a native caller reaches
+C-compiled callees and C-compiled callers reach native ones across the
+same area. The callee's prologue loads each stack parameter above its
+frame (a scalar at its width, then normalized; a span's base and length
+into the callee-saved pair it would have been parked in; a by-reference
+record's address into its parked register or a copy; a small record's
+chunks into its slots) and binds it as `bind [sp, #off] = p`; the caller
+reserves the largest area its calls need below its saved registers
+(`outgoingArea`, from the callees' signatures under the same rule),
+stores each stack argument at its offset at the value's own width, and
+fills the registers as before. The seam checker recomputes the layout
+from the signature under the function's declared convention and admits a
+load from the incoming area only where a parameter lies — a stack span's
+base word makes the destination a span base and its length word joins the
+span's length registers, a by-reference record's word a read-only region
+— refusing a store there, a read past the area, or a word no parameter
+covers; the verifier leaves a body with stack parameters trusted (the
+incoming area is not in its model yet). Alongside, a call no longer holds
+every argument in a scratch register until the moves: a constant is
+materialized into its place at the move, a variable whose home is no
+argument register is read there at the move, and a stack-bound argument
+is stored as soon as it is computed — which took `main`'s calls with nine
+arguments out of "an expression deeper than the scratch registers", and
+which the checker corrected once on the way (a variable so deferred is
+read after every call among the later arguments, so the liveness
+numbering counts it past the call). Fallbacks fell from 206 to 90, 864
+of 954 functions now lowered, 197 proven; the prover's rows are identical,
+and its compiled witness — a native `witness_all` reaching the C-compiled
+`witness_run` with ten arguments across the packed area — exercises the
+mixed convention on every law file. Executed
+(`TestE2ENativeStackArgs`): nine and twelve scalars of mixed widths, a
+view whose pair lands on the stack and is walked in a loop, a small
+record's chunk and a large record's reference on the stack, and a native
+caller reaching a C-compiled callee with two stack arguments — natively
+against the C backend and the portable realization.
+**Twenty-seventh increment — value-less record locals.** A record local
+declared without an initializer (`out: Bits`, then filled field by field
+— the shape of every bit-vector helper in the BDD engine's blaster) was
+left to the C backend so that no semantics would be invented natively.
+None need be: 90-backend.md §6 has the C emitter initialize such storage
+with `{0}` and the interpreter give it its zero value, so the native
+lowering zero-fills the local's slots whole, as it does an owned array's.
+Seventeen functions follow (fallbacks 90 to 75, 879 of 954 lowered);
+`TestE2ENativeZeroRecord` reads a field of each width before any write
+and after. **What the 75 that remain are.** Twenty-nine take or hold a
+`c.Ptr` and three call foreign code: the prover's I/O shell — `read_file`
+over `c_open`/`c_read`, the buffers `c.own`ed and `c.disown`ed inside
+`unsafe`, the environment and spawn helpers of the witness — whose native
+lowering would be a foreign-call and custody subset (extern symbols the
+checker admits as call targets, `Buffer[T]` as a span with a custody
+state, `c.cstr` and `c.span_of` as the address arithmetic they are) and
+whose verification value is nil, since bodies that call foreign code are
+trusted by construction. Fourteen exhaust the callee-saved registers with
+spans (five or more span parameters and locals, each a parked pair, in
+the exploration and LRAT functions): the checker's span facts live on
+registers and die at a call, so a span cannot spill around calls the way
+a variable does without a checker rule for reloading a fact from a known
+slot. Sixteen are the deepest expressions (the `*_layout` functions'
+record literals, `px_lex`): more temporaries live at once than x9–x15
+and the overflow registers hold. The compute paths — the decider, the
+lowering, the exploration, the projections — are native; what stays in C
+is the shell around them.
+Next increments: the verifier past `bl` and unit results, where the
+proven count (197 of 879) is now the measure — the lowering seam's
+call modeling landing upstream is that work; then guard elision from the
+checker's facts; the foreign-call subset only if the shell itself is to
+be verified —
 calls by inlining or by the callee's proven contract, and effects through
 spans as the result — so that "trusted" shrinks toward the foreign
 boundary; then two-chunk and `x8`-area record results in the verifier,
