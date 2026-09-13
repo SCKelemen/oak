@@ -55,6 +55,9 @@ func ResourceModelFromSemIR(module semir.Module) (ResourceModel, error) {
 		for typeName, protocolName := range protocolOf {
 			if protocolName == protocol.Name && protocol.Initial != "" {
 				model.MarkInitial(typeName, protocol.Initial)
+				if protocol.TypestateArity > 0 {
+					model.MarkTypestate(typeName, protocol.TypestateArity)
+				}
 			}
 		}
 	}

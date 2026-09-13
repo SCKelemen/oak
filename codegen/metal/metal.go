@@ -1574,6 +1574,9 @@ func (em *emitter) call(call *ast.InvocationExpression, want oakType) (string, e
 	if isGroupTree(name) {
 		return em.groupTree(call)
 	}
+	if isGroupLanes(name) {
+		return em.groupLanes(call)
+	}
 	target, known := em.functions[name]
 	if !known {
 		return "", em.fail("call to %s is outside the kernel subset (not a function of the program)", name)
@@ -1635,15 +1638,33 @@ func (em *emitter) call(call *ast.InvocationExpression, want oakType) (string, e
 
 // ---- cooperative reductions ----
 
-// groupTreePrefix is the mangled name of the standard library's
-// reduce.group_tree instances (`reduce__group_utree_<T>`).
-const groupTreePrefix = "reduce__group_utree_"
+// groupTreePrefix and groupLanesPrefix are the mangled names of the
+// standard library's reduce.group_tree and reduce.group_lanes instances
+// (`reduce__group_utree_<T>`, `reduce__group_ulanes_<T>`).
+const (
+	groupTreePrefix  = "reduce__group_utree_"
+	groupLanesPrefix = "reduce__group_ulanes_"
+)
 
-func isGroupTree(name string) bool { return strings.HasPrefix(name, groupTreePrefix) }
+func isGroupTree(name string) bool  { return strings.HasPrefix(name, groupTreePrefix) }
+func isGroupLanes(name string) bool { return strings.HasPrefix(name, groupLanesPrefix) }
 
-// groupShape scans a kernel body for reduce.group_tree calls: their group
-// argument is one integer literal, a power of two up to 1024, shared by
-// every call; the element type of each call is recorded for its scratch.
+// groupCall names a cooperative reduction call: its spelling, argument
+// count, and element type.
+func groupCall(callee string) (spelled string, arity int, element string, ok bool) {
+	switch {
+	case isGroupTree(callee):
+		return "reduce.group_tree", 6, strings.TrimPrefix(callee, groupTreePrefix), true
+	case isGroupLanes(callee):
+		return "reduce.group_lanes", 7, strings.TrimPrefix(callee, groupLanesPrefix), true
+	}
+	return "", 0, "", false
+}
+
+// groupShape scans a kernel body for reduce.group_tree and
+// reduce.group_lanes calls: their group argument is one integer literal, a
+// power of two up to 1024, shared by every call; the element type of each
+// call is recorded for its scratch.
 func (em *emitter) groupShape(fn *ast.FunctionStatement) (int64, []string, error) {
 	var size int64
 	var types []string
@@ -1654,31 +1675,114 @@ func (em *emitter) groupShape(fn *ast.FunctionStatement) (int64, []string, error
 			return
 		}
 		callee, ok := call.Function.(*ast.Identifier)
-		if !ok || !isGroupTree(callee.Value) {
+		if !ok {
 			return
 		}
-		if len(call.Arguments) != 6 {
-			failure = em.fail("reduce.group_tree takes (group, xs, lo, m, zero, f)")
+		spelled, arity, element, isGroup := groupCall(callee.Value)
+		if !isGroup {
+			return
+		}
+		if len(call.Arguments) != arity {
+			if arity == 6 {
+				failure = em.fail("%s takes (group, xs, lo, m, zero, f)", spelled)
+			} else {
+				failure = em.fail("%s takes (group, xs, lo, m, zero, f, run)", spelled)
+			}
 			return
 		}
 		literal, isLiteral := call.Arguments[0].(*ast.IntegerLiteral)
 		if !isLiteral || literal.Value < 1 || literal.Value > 1024 || literal.Value&(literal.Value-1) != 0 {
-			failure = em.fail("reduce.group_tree: the group is an integer literal, a power of two up to 1024 (the threadgroup size), got %s", call.Arguments[0].String())
+			failure = em.fail("%s: the group is an integer literal, a power of two up to 1024 (the threadgroup size), got %s", spelled, call.Arguments[0].String())
 			return
 		}
 		if size != 0 && size != literal.Value {
-			failure = em.fail("reduce.group_tree: one kernel has one group size, got %d and %d", size, literal.Value)
+			failure = em.fail("%s: one kernel has one group size, got %d and %d", spelled, size, literal.Value)
 			return
 		}
 		size = literal.Value
-		element := strings.TrimPrefix(callee.Value, groupTreePrefix)
 		if scalarMSL[element] == "" {
-			failure = em.fail("reduce.group_tree over %s is outside the kernel subset", element)
+			failure = em.fail("%s over %s is outside the kernel subset", spelled, element)
 			return
 		}
 		types = append(types, element)
 	})
 	return size, types, failure
+}
+
+// groupLanes emits the cooperative lane reduction of a reduce.group_lanes
+// call (docs/spec/56-kernels.md section 7): each thread of the group is one
+// lane and folds its elements of the window in index order — element i of
+// the window lands in lane (i / run) % G — then the lanes combine through
+// the xor butterfly over threadgroup scratch: at each offset every thread
+// reads its partner's value before any thread writes, so the round sees the
+// values before it (Oak.Reduce.bfly), and lane 0's value is the result every
+// thread reads. The host computes the same order in reduce.lanes.
+func (em *emitter) groupLanes(call *ast.InvocationExpression) (string, error) {
+	if em.groupSize == 0 || !em.inKernel || em.hoist == nil {
+		return "", em.fail("reduce.group_lanes is called from a kernel body, as a statement's value")
+	}
+	callee := call.Function.(*ast.Identifier)
+	element := strings.TrimPrefix(callee.Value, groupLanesPrefix)
+	scalar := oakType{kind: "scalar", element: element}
+	u32 := oakType{kind: "scalar", element: "u32"}
+	xsRef, xsType, ok := em.bufferRef(call.Arguments[1])
+	if !ok || !xsType.isBuffer() || xsType.element != element {
+		return "", em.fail("reduce.group_lanes: the second argument is a buffer of %s", element)
+	}
+	lo, err := em.expr(call.Arguments[2], u32)
+	if err != nil {
+		return "", err
+	}
+	m, err := em.expr(call.Arguments[3], u32)
+	if err != nil {
+		return "", err
+	}
+	zero, err := em.expr(call.Arguments[4], scalar)
+	if err != nil {
+		return "", err
+	}
+	fnName, isIdent := call.Arguments[5].(*ast.Identifier)
+	if !isIdent || em.functions[fnName.Value] == nil || em.functions[fnName.Value].Kernel {
+		return "", em.fail("reduce.group_lanes: the combine names a function of the program")
+	}
+	combine, err := em.requireHelper(em.functions[fnName.Value], map[string]string{})
+	if err != nil {
+		return "", err
+	}
+	run, err := em.expr(call.Arguments[6], u32)
+	if err != nil {
+		return "", err
+	}
+	em.scratch++
+	n := em.scratch
+	msl := scalarMSL[element]
+	ind := em.indent
+	add := func(format string, args ...interface{}) {
+		*em.hoist = append(*em.hoist, ind+fmt.Sprintf(format, args...))
+	}
+	add("%s oak_gl%d = %s;", msl, n, zero)
+	add("{")
+	add("  uint oak_lo%d = %s;", n, lo)
+	add("  uint oak_m%d = %s;", n, m)
+	add("  uint oak_run%d = %s;", n, run)
+	add("  if ((ulong)oak_lo%d + (ulong)oak_m%d > (ulong)%s) { oak_raise(oak_fault, 4u); oak_m%d = 0u; }", n, n, em.lengthRef(xsRef, xsType), n)
+	add("  if (oak_run%d == 0u) { oak_raise(oak_fault, 6u); oak_run%d = 1u; }", n, n)
+	// This lane's elements: index i of the window with (i / run) % G ==
+	// lid, that is i = (q * G + lid) * run + r for r below run.
+	add("  for (uint oak_b = oak_lid * oak_run%d; oak_b < oak_m%d; oak_b += %du * oak_run%d) {", n, n, em.groupSize, n)
+	add("    for (uint oak_r = 0u; oak_r < oak_run%d && oak_b + oak_r < oak_m%d; oak_r++) { oak_gl%d = %s(oak_gl%d, %s[oak_lo%d + oak_b + oak_r], oak_fault); }", n, n, n, combine, n, xsRef, n)
+	add("  }")
+	add("  oak_scratch%d[oak_lid] = oak_gl%d;", n, n)
+	add("  threadgroup_barrier(mem_flags::mem_threadgroup);")
+	add("  for (uint oak_off = %du; oak_off >= 1u; oak_off >>= 1u) {", em.groupSize/2)
+	add("    %s oak_pair%d = %s(oak_scratch%d[oak_lid], oak_scratch%d[oak_lid ^ oak_off], oak_fault);", msl, n, combine, n, n)
+	add("    threadgroup_barrier(mem_flags::mem_threadgroup);")
+	add("    oak_scratch%d[oak_lid] = oak_pair%d;", n, n)
+	add("    threadgroup_barrier(mem_flags::mem_threadgroup);")
+	add("  }")
+	add("  oak_gl%d = oak_scratch%d[0];", n, n)
+	add("}")
+	return fmt.Sprintf("oak_gl%d", n), nil
 }
 
 // groupTree emits the cooperative reduction of a reduce.group_tree call

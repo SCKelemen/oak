@@ -621,9 +621,11 @@ func analyzeProtocolDecls(decl *ast.ProtocolDeclaration, decls ProtocolDeclarati
 		m.refinements = map[string]*ast.ADTType{}
 	}
 	seen := map[string]bool{}
+	stateNodes := map[string]*ast.Identifier{}
 	addState := func(id *ast.Identifier) {
 		if !seen[id.Value] {
 			seen[id.Value] = true
+			stateNodes[id.Value] = id
 			m.states = append(m.states, id.Value)
 			if r := []rune(id.Value); len(r) > 0 && !unicode.IsUpper(r[0]) {
 				report(CodeProtocolShape, id, "state %s: states are spelled like variants, with an initial capital", id.Value)
@@ -684,13 +686,14 @@ func analyzeProtocolDecls(decl *ast.ProtocolDeclaration, decls ProtocolDeclarati
 				ok = false
 			}
 		}
+		reachable := m.reachableStates()
 		for _, l := range decl.Liveness {
 			for _, side := range []ast.Expression{l.From, l.Target} {
 				if side == nil {
 					continue
 				}
 				if state, isState := livenessState(side); isState {
-					if !seen[state] {
+					if !reachable[state] {
 						report(CodeProtocolShape, side, "eventually names state %s, which protocol %s does not reach", state, decl.Name.Value)
 						ok = false
 					}
@@ -734,9 +737,30 @@ func analyzeProtocolDecls(decl *ast.ProtocolDeclaration, decls ProtocolDeclarati
 				}
 			}
 		}
+		if t.Param != nil && reservedPayloadName(t.Param.Name.Value) {
+			// The projections bind the state, the step, the data record,
+			// the handle, and the monitor under these names, and their
+			// own locals under the oak_ prefix; a payload of the same name
+			// would capture a generated reference (section 2).
+			report(CodeProtocolShape, t.Param.Name, "transition %s: payload name %s is reserved by the projection (state, step, data, handle, m, and names starting with oak_)", t.Name.Value, t.Param.Name.Value)
+			ok = false
+		}
+		if t.Callable != nil && t.Guard != nil {
+			// The resource checker reads the callable's contract, never a
+			// guard; a guarded via line would be enforced by the dynamic
+			// projection alone (section 5).
+			report(CodeProtocolShape, t.Guard, "transition %s: a `via` line carries no `when` guard; the callable's contract decides the step", t.Name.Value)
+			ok = false
+		}
 		if t.Callable != nil && len(decl.Resources) == 0 {
 			report(CodeProtocolShape, t.Callable, "transition %s names a callable, but protocol %s governs no resource type (`resource T`)", t.Name.Value, decl.Name.Value)
 			ok = false
+		}
+		for _, use := range m.dataIndexes(t.Guard, t.Effects) {
+			if value, isLiteral := literalIndex(use.index); isLiteral && value >= use.length {
+				report(CodeProtocolShape, use.index, "transition %s: index %d is out of range for a field of %d elements", t.Name.Value, value, use.length)
+				ok = false
+			}
 		}
 		if decl.Data == nil && mentionsIdentifier(t.Guard, "data") || decl.Data == nil && t.Effects != nil && mentionsIdentifier(t.Effects, "data") {
 			report(CodeProtocolShape, t.Name, "transition %s refers to data, but protocol %s declares none", t.Name.Value, decl.Name.Value)
@@ -781,7 +805,200 @@ func analyzeProtocolDecls(decl *ast.ProtocolDeclaration, decls ProtocolDeclarati
 			ok = false
 		}
 	}
+	if ok && decl.Initial != nil {
+		// Every state is reached from the initial one by some path of
+		// transitions: a state no path reaches is a machine the model
+		// checker never explores, a theorem that holds vacuously, and a
+		// monitor that never moves (section 1).
+		reached := m.reachableStates()
+		for _, state := range m.states {
+			if !reached[state] {
+				report(CodeProtocolShape, stateNodes[state], "protocol %s: no path of transitions leads from %s to state %s", decl.Name.Value, m.initial, state)
+				ok = false
+			}
+		}
+	}
 	return m, ok
+}
+
+// reachableStates is the set of states some path of transitions reaches
+// from the initial state, the initial state included.
+func (m *protocolMachine) reachableStates() map[string]bool {
+	reached := map[string]bool{}
+	if m.initial == "" {
+		return reached
+	}
+	reached[m.initial] = true
+	frontier := []string{m.initial}
+	for len(frontier) > 0 {
+		from := frontier[0]
+		frontier = frontier[1:]
+		for _, t := range m.decl.Transitions {
+			if t.From.Value == from && !reached[t.To.Value] {
+				reached[t.To.Value] = true
+				frontier = append(frontier, t.To.Value)
+			}
+		}
+	}
+	return reached
+}
+
+// reservedPayloadName reports whether a payload parameter name is one the
+// projections bind themselves (docs/spec/112-protocols.md section 2): the
+// state, the step, the data record or span, the static handle, the
+// monitor span, and the generated locals under the oak_ prefix.
+func reservedPayloadName(name string) bool {
+	switch name {
+	case "state", "step", "data", "handle", "m":
+		return true
+	}
+	return strings.HasPrefix(name, "oak_")
+}
+
+// dataIndex is one index into an [N]T data path a line reads or stores:
+// `data.f[i]`, `data.f[i].sub`, `data.replicas[i].log[j]` (two uses).
+type dataIndex struct {
+	index  ast.Expression
+	length int64
+}
+
+// dataIndexes collects every index into an array data path in the given
+// subtrees, in walk order, one per distinct spelling.
+func (m *protocolMachine) dataIndexes(nodes ...ast.Node) []dataIndex {
+	var out []dataIndex
+	seen := map[string]bool{}
+	for _, node := range nodes {
+		if node == nil {
+			continue
+		}
+		visitIndexExpressions(node, func(idx *ast.IndexExpression) {
+			if idx.Dot {
+				return
+			}
+			length, _, isArray := arrayShape(m.dataPathType(idx.Left))
+			if !isArray {
+				return
+			}
+			key := fmt.Sprintf("%s<%d", idx.Index.String(), length)
+			if !seen[key] {
+				seen[key] = true
+				out = append(out, dataIndex{index: idx.Index, length: length})
+			}
+		})
+	}
+	return out
+}
+
+// visitIndexExpressions calls f on every index expression of a subtree in
+// post-order, including a store's target, which is a concrete pointer
+// rather than an expression slot and so invisible to rewriteExpressions.
+func visitIndexExpressions(node ast.Node, f func(*ast.IndexExpression)) {
+	var walk func(v reflect.Value)
+	walk = func(v reflect.Value) {
+		switch v.Kind() {
+		case reflect.Interface, reflect.Pointer:
+			if v.IsNil() {
+				return
+			}
+			idx, isIdx := v.Interface().(*ast.IndexExpression)
+			walk(v.Elem())
+			// Post-order: the indexes inside a path are reported before
+			// the path's own, so a bound is checked only after the
+			// bounds its index expression relies on.
+			if isIdx && v.Kind() == reflect.Pointer {
+				f(idx)
+			}
+		case reflect.Struct:
+			for i := 0; i < v.NumField(); i++ {
+				if v.Type().Field(i).IsExported() {
+					walk(v.Field(i))
+				}
+			}
+		case reflect.Slice:
+			for i := 0; i < v.Len(); i++ {
+				walk(v.Index(i))
+			}
+		case reflect.Map:
+			iter := v.MapRange()
+			for iter.Next() {
+				walk(iter.Value())
+			}
+		}
+	}
+	walk(reflect.ValueOf(node))
+}
+
+// dataPathType is the declared type of a data path (`data.f`, `data.f[i]`,
+// `data.f[i].sub`, ...), nil for anything else.
+func (m *protocolMachine) dataPathType(e ast.Expression) ast.Expression {
+	idx, isIdx := e.(*ast.IndexExpression)
+	if !isIdx || m.decl.Data == nil {
+		return nil
+	}
+	if idx.Dot {
+		field, isIdent := idx.Index.(*ast.Identifier)
+		if !isIdent {
+			return nil
+		}
+		if root, isRoot := idx.Left.(*ast.Identifier); isRoot {
+			if root.Value != "data" {
+				return nil
+			}
+			return m.decl.Data.Fields[field.Value]
+		}
+		if element, isIdent := m.dataPathType(idx.Left).(*ast.Identifier); isIdent {
+			if record, isRecord := m.records[element.Value]; isRecord {
+				return record.Fields[field.Value]
+			}
+		}
+		return nil
+	}
+	if _, element, isArray := arrayShape(m.dataPathType(idx.Left)); isArray {
+		return &ast.Identifier{Value: element}
+	}
+	return nil
+}
+
+// literalIndex reads a constant index: an integer literal, possibly under
+// a conversion (`u32(1)`).
+func literalIndex(e ast.Expression) (int64, bool) {
+	switch n := e.(type) {
+	case *ast.IntegerLiteral:
+		return n.Value, true
+	case *ast.InvocationExpression:
+		if fn, isIdent := n.Function.(*ast.Identifier); isIdent && conversionNames[fn.Value] && len(n.Arguments) == 1 {
+			return literalIndex(n.Arguments[0])
+		}
+	}
+	return 0, false
+}
+
+// lineGuard is a line's effective guard, freshly built: a bound `i <
+// u32(N)` for every non-constant index `i` into an [N]T data path the
+// line's guard or effects use, conjoined with the declared `when` guard
+// (docs/spec/112-protocols.md section 1 "An index is bounded by its
+// line"). Every reading of the declaration — name_legal and name_next, the
+// static projection, the exclusivity theorems, the model-checker module —
+// takes its guard from here, so an out-of-range step is illegal in all of
+// them rather than a trap in some. The bounds come first, inner indexes
+// before the paths that use them, so evaluating a bound never indexes out
+// of range itself; a bound the guard also spells is stated twice rather
+// than trusted to be evaluated first. nil when the line has neither.
+func (m *protocolMachine) lineGuard(s *synth, line *ast.ProtocolTransition) ast.Expression {
+	var terms []ast.Expression
+	for _, use := range m.dataIndexes(line.Guard, line.Effects) {
+		if _, isLiteral := literalIndex(use.index); isLiteral {
+			continue
+		}
+		terms = append(terms, s.lt(cloneExpression(use.index), s.u32(use.length)))
+	}
+	if line.Guard != nil {
+		terms = append(terms, cloneExpression(line.Guard))
+	}
+	if len(terms) == 0 {
+		return nil
+	}
+	return s.and(terms...)
 }
 
 // fieldTypeName is the spelling of a field's type when it is a plain name.
@@ -816,6 +1033,7 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 	var out []ast.Statement
 	found := false
 	declared := map[string]bool{}
+	projectedBy := map[string]string{}
 	functions := map[string]*ast.FunctionStatement{}
 	templates := map[string]int{}
 	for _, stmt := range program.Statements {
@@ -850,7 +1068,12 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 		}
 		machine.typestate = map[string]bool{}
 		for _, r := range decl.Resources {
-			if r != nil && templates[r.Value] == 1 {
+			// A record template with one type parameter per index — the
+			// state, then one per `fact` clause — carries the protocol in
+			// its type (section 5a). Any other parameter count (region
+			// parameters, ordinary generics) leaves the resource ungoverned
+			// by type, as before.
+			if r != nil && templates[r.Value] == 1+len(decl.Facts) {
 				machine.typestate[r.Value] = true
 			}
 		}
@@ -872,10 +1095,30 @@ func lowerProtocols(tree *SyntaxTree) ([]typechecker.ResourceProtocolDeclaration
 			projected = append(projected, machine.quantifierHelpers(snakeCase(machine.name), machine.name+"Data")...)
 		}
 		for _, generated := range projected {
-			if name := declarationName(generated); declared[name] {
+			name := declarationName(generated)
+			if name == "" {
+				continue
+			}
+			if declared[name] {
 				report(CodeProtocolShape, decl.Name, "protocol %s projects %s, which the program already declares", decl.Name.Value, name)
 				ok = false
+				continue
 			}
+			// Two projections may spell one name — a state `State`, a step
+			// `initial` or `monitor`, a protocol `FooBar` beside a state
+			// `Bar` of protocol `Foo` — and the checker would report the
+			// second as a redeclaration of code the program never wrote
+			// (section 1).
+			if by, twice := projectedBy[name]; twice {
+				if by == decl.Name.Value {
+					report(CodeProtocolShape, decl.Name, "protocol %s projects %s twice: a state, step, or protocol name spells the same declaration as another", decl.Name.Value, name)
+				} else {
+					report(CodeProtocolShape, decl.Name, "protocol %s projects %s, which protocol %s already projects", decl.Name.Value, name, by)
+				}
+				ok = false
+				continue
+			}
+			projectedBy[name] = decl.Name.Value
 		}
 		if !ok {
 			continue
@@ -913,6 +1156,9 @@ func (m *protocolMachine) resourceFacts(functions map[string]*ast.FunctionStatem
 		return typechecker.ResourceProtocolDeclaration{}, false
 	}
 	facts := typechecker.ResourceProtocolDeclaration{Name: m.name, States: append([]string(nil), m.states...), Initial: m.initial}
+	if len(m.typestate) > 0 {
+		facts.TypestateArity = 1 + len(m.decl.Facts)
+	}
 	for _, r := range m.decl.Resources {
 		facts.ResourceTypes = append(facts.ResourceTypes, r.Value)
 	}
@@ -1164,21 +1410,21 @@ func (m *protocolMachine) project() []ast.Statement {
 				var legalBody, nextBody []ast.Statement
 				var terms []ast.Expression
 				for k, line := range step.lines {
-					fromName := fmt.Sprintf("from_%d_%d", si, k)
+					fromName := fmt.Sprintf("oak_from_%d_%d", si, k)
 					legalBody = append(legalBody, s.decl(fromName, s.id("Bool"), isState(line.From.Value)))
 					nextBody = append(nextBody, s.decl(fromName, s.id("Bool"), isState(line.From.Value)))
 					var term ast.Expression = s.id(fromName)
-					condition := s.and(s.not(s.id("done")), s.id(fromName))
+					condition := s.and(s.not(s.id("oak_done")), s.id(fromName))
 					if line.Guard != nil {
 						term = s.and(term, cloneExpression(line.Guard))
 						condition = s.and(condition, cloneExpression(line.Guard))
 					}
 					terms = append(terms, term)
-					nextBody = append(nextBody, s.expr(s.cond(condition, s.block(s.assign("result", s.variant(line.To.Value, nil)), s.assign("done", s.boolean(true))), nil)))
+					nextBody = append(nextBody, s.expr(s.cond(condition, s.block(s.assign("oak_result", s.variant(line.To.Value, nil)), s.assign("oak_done", s.boolean(true))), nil)))
 				}
 				legalBody = append(legalBody, s.expr(s.or(terms...)))
 				legalArms = append(legalArms, s.arm(variantName(step.name), binding(step), s.block(legalBody...)))
-				nextBody = append(nextBody, s.expr(s.id("result")))
+				nextBody = append(nextBody, s.expr(s.id("oak_result")))
 				nextArms = append(nextArms, s.arm(variantName(step.name), binding(step), s.block(nextBody...)))
 				continue
 			}
@@ -1203,8 +1449,8 @@ func (m *protocolMachine) project() []ast.Statement {
 		if anyGuarded {
 			next = s.fn(prefix+"_next", []*ast.FunctionParameter{stateParam(), stepParam()}, s.id(stateType),
 				s.expr(s.call("assert", s.call(prefix+"_legal", s.id("state"), s.id("step")))),
-				s.decl("result", s.id(stateType), s.id("state")),
-				s.decl("done", s.id("Bool"), s.boolean(false)),
+				s.decl("oak_result", s.id(stateType), s.id("state")),
+				s.decl("oak_done", s.id("Bool"), s.boolean(false)),
 				s.expr(s.match(s.id("step"), nextArms...)))
 		} else {
 			next = s.fn(prefix+"_next", []*ast.FunctionParameter{stateParam(), stepParam()}, s.id(stateType),
@@ -1281,11 +1527,10 @@ func (m *protocolMachine) project() []ast.Statement {
 		var body []ast.Statement
 		var terms []ast.Expression
 		for k, line := range step.lines {
-			fromName := fmt.Sprintf("from_%d_%d", si, k)
+			fromName := fmt.Sprintf("oak_from_%d_%d", si, k)
 			body = append(body, s.decl(fromName, s.id("Bool"), isState(line.From.Value)))
 			var term ast.Expression = s.id(fromName)
-			if line.Guard != nil {
-				guard := cloneExpression(line.Guard)
+			if guard := m.lineGuard(s, line); guard != nil {
 				holder := &ast.ExpressionStatement{Expression: guard}
 				m.rewriteQuantifiers(holder, prefix, s)
 				term = s.and(term, holder.Expression)
@@ -1305,16 +1550,16 @@ func (m *protocolMachine) project() []ast.Statement {
 	// is written back through the span once: a plain local admits every
 	// field and element assignment, while an element store through a span
 	// into a record field does not lower yet (oak #80).
-	const local = "record"
+	const local = "oak_record"
 	var nextArms []*ast.MatchArm
 	for si, step := range m.steps {
 		var body []ast.Statement
 		for k, line := range step.lines {
-			fromName := fmt.Sprintf("from_%d_%d", si, k)
+			fromName := fmt.Sprintf("oak_from_%d_%d", si, k)
 			body = append(body, s.decl(fromName, s.id("Bool"), isState(line.From.Value)))
-			condition := s.and(s.not(s.id("done")), s.id(fromName))
-			if line.Guard != nil {
-				guard := &ast.ExpressionStatement{Expression: cloneExpression(line.Guard)}
+			condition := s.and(s.not(s.id("oak_done")), s.id(fromName))
+			if effective := m.lineGuard(s, line); effective != nil {
+				guard := &ast.ExpressionStatement{Expression: effective}
 				m.rewriteQuantifiers(guard, prefix, s)
 				condition = s.and(condition, renameIdentifier(guard.Expression, "data", local).(ast.Expression))
 			}
@@ -1325,7 +1570,7 @@ func (m *protocolMachine) project() []ast.Statement {
 				rewritten := renameIdentifier(cloned, "data", local).(*ast.BlockStatement)
 				effects = append(effects, rewritten.Statements...)
 			}
-			effects = append(effects, s.assign("result", s.variant(line.To.Value, nil)), s.assign("done", s.boolean(true)))
+			effects = append(effects, s.assign("oak_result", s.variant(line.To.Value, nil)), s.assign("oak_done", s.boolean(true)))
 			body = append(body, s.expr(s.cond(condition, s.block(effects...), nil)))
 		}
 		nextArms = append(nextArms, s.arm(variantName(step.name), binding(step), s.block(body...)))
@@ -1333,11 +1578,11 @@ func (m *protocolMachine) project() []ast.Statement {
 	next := s.fn(prefix+"_next", []*ast.FunctionParameter{stateParam(), s.param("data", s.span(s.id(dataType))), stepParam()}, s.id(stateType),
 		s.expr(s.call("assert", s.call(prefix+"_legal", s.id("state"), s.index(s.id("data"), s.intLit(0)), s.id("step")))),
 		s.decl(local, s.id(dataType), s.index(s.id("data"), s.intLit(0))),
-		s.decl("result", s.id(stateType), s.id("state")),
-		s.decl("done", s.id("Bool"), s.boolean(false)),
+		s.decl("oak_result", s.id(stateType), s.id("state")),
+		s.decl("oak_done", s.id("Bool"), s.boolean(false)),
 		s.expr(s.match(s.id("step"), nextArms...)),
 		s.store(s.index(s.id("data"), s.intLit(0)), s.id(local)),
-		s.expr(s.id("result")))
+		s.expr(s.id("oak_result")))
 	next.Exported = exported
 	out = append(out, next)
 	out = append(out, m.livenessPredicates(s, prefix, stateType, dataType, true, exported, isState)...)
@@ -1377,7 +1622,9 @@ func (m *protocolMachine) monitorProjection(s *synth, prefix, stateType, stepTyp
 	observe := s.fnExpr(prefix+"_observe", params, s.id("Bool"),
 		s.cond(s.call(prefix+"_legal", legalArgs...),
 			s.block(s.store(monitorState(), s.call(prefix+"_next", nextArgs...)), s.expr(s.boolean(true))),
-			s.block(s.store(violations(), s.add(violations(), s.u32(1))), s.expr(s.boolean(false)))))
+			s.block(s.expr(s.cond(s.lt(violations(), s.u32(4294967295)),
+				s.block(s.store(violations(), s.add(violations(), s.u32(1))), s.expr(s.boolean(false))),
+				s.block(s.expr(s.boolean(false))))))))
 	observe.Exported = exported
 	conforms := s.fnExpr(prefix+"_conforms", []*ast.FunctionParameter{s.param("m", s.span(s.id(monitorType)))}, s.id("Bool"),
 		s.eq(violations(), s.u32(0)))
@@ -1507,7 +1754,15 @@ func sortedKeys(m map[string]bool) []string {
 // are never instantiated as values, so they cost nothing at run time.
 func (m *protocolMachine) stateMarkers() []ast.Statement {
 	var out []ast.Statement
-	for _, state := range m.states {
+	names := append([]string(nil), m.states...)
+	for _, fact := range m.decl.Facts {
+		for _, marker := range fact.Markers {
+			if marker != nil {
+				names = append(names, marker.Value)
+			}
+		}
+	}
+	for _, state := range names {
 		src := fmt.Sprintf("%s: type = struct { %s_: u8 }\n", state, snakeCase(state))
 		p := parser.New(layout.New(scanner.New(src)))
 		program := p.ParseProgram()
@@ -1522,16 +1777,67 @@ func (m *protocolMachine) stateMarkers() []ast.Statement {
 // typestateIndex reads Segment[X] from a type expression: the template and
 // the state it names. A bare template or an unrelated type is not indexed.
 func typestateIndex(typ ast.Expression) (template, state string, ok bool) {
-	index, isIndex := typ.(*ast.IndexExpression)
-	if !isIndex || index == nil {
+	template, indices, ok := typestateIndices(typ)
+	if !ok {
 		return "", "", false
 	}
-	left, leftIsIdent := index.Left.(*ast.Identifier)
-	right, rightIsIdent := index.Index.(*ast.Identifier)
-	if !leftIsIdent || !rightIsIdent || left == nil || right == nil {
-		return "", "", false
+	return template, indices[0], true
+}
+
+// typestateIndices reads Segment[S, F, ...] — which the parser spells as
+// nested indexes, `(Segment[S])[F]` — as the template and its indices in
+// order: the state first, then the facts. An index that is not a name, or
+// a bare template, is not indexed.
+func typestateIndices(typ ast.Expression) (template string, indices []string, ok bool) {
+	node, isIndex := typ.(*ast.IndexExpression)
+	for isIndex && node != nil && !node.Dot {
+		name, isIdent := node.Index.(*ast.Identifier)
+		if !isIdent || name == nil {
+			return "", nil, false
+		}
+		indices = append([]string{name.Value}, indices...)
+		switch left := node.Left.(type) {
+		case *ast.Identifier:
+			if left == nil {
+				return "", nil, false
+			}
+			return left.Value, indices, true
+		case *ast.IndexExpression:
+			node = left
+		default:
+			return "", nil, false
+		}
 	}
-	return left.Value, right.Value, true
+	return "", nil, false
+}
+
+// checkFactIndices holds the fact positions of an indexed type to the
+// protocol's fact clauses: as many as declared, each a marker of its set
+// or a type variable of the callable (a fact-polymorphic transition).
+func (m *protocolMachine) checkFactIndices(t *ast.ProtocolTransition, fn *ast.FunctionStatement, typ ast.Expression, indices []string, typeVars map[string]bool, report func(code string, node ast.Node, format string, args ...interface{})) bool {
+	if len(indices) != len(m.decl.Facts) {
+		report(CodeProtocolShape, typ, "transition %s: via %s spells %s with %d fact indices; the protocol declares %d", t.Name.Value, fn.Name.Value, typ.String(), len(indices), len(m.decl.Facts))
+		return false
+	}
+	for i, index := range indices {
+		if typeVars[index] {
+			continue
+		}
+		fact := m.decl.Facts[i]
+		known := false
+		for _, marker := range fact.Markers {
+			known = known || (marker != nil && marker.Value == index)
+		}
+		if !known {
+			var names []string
+			for _, marker := range fact.Markers {
+				names = append(names, marker.Value)
+			}
+			report(CodeProtocolShape, typ, "transition %s: via %s spells %s with %s for fact %s, which is one of %s", t.Name.Value, fn.Name.Value, typ.String(), index, fact.Name.Value, strings.Join(names, " | "))
+			return false
+		}
+	}
+	return true
 }
 
 // typestateResult reads a fallible transition's result type,
@@ -1554,6 +1860,8 @@ func typestateResult(typ ast.Expression) (template, okState, errState string, ok
 	}
 	okTemplate, okState, okIndexed := typestateIndex(inner.Index)
 	errTemplate, errState, errIndexed := typestateIndex(outer.Index)
+	// The fact indices of both arms are held to the fact clauses by the
+	// signature check's parameter walk; here the states are what matter.
 	if !okIndexed || !errIndexed || okTemplate != errTemplate {
 		return "", "", "", false
 	}
@@ -1581,8 +1889,13 @@ func (m *protocolMachine) checkTypestateSignature(t *ast.ProtocolTransition, fn 
 			ok = false
 			return
 		}
-		template, state, indexed := typestateIndex(typ)
+		template, indices, indexed := typestateIndices(typ)
 		if !indexed || !m.typestate[template] {
+			return
+		}
+		state := indices[0]
+		if !m.checkFactIndices(t, fn, typ, indices[1:], typeVars, report) {
+			ok = false
 			return
 		}
 		if typeVars[state] {

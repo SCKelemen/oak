@@ -174,6 +174,21 @@ theorem index_access_const (elem len i K : Nat) (hidx : i < K) (hlen : K ≤ len
     (i + 1) * elem ≤ elem * len :=
   index_access elem len i (Nat.lt_of_lt_of_le hidx hlen)
 
+/-- **Vector access**: a `K`-lane access at element index `i` touches bytes
+    `[i*elem, (i+K)*elem)`; under the slack guard `i + K ≤ len` (the
+    checker's `sub wT, wL, #K; cmp wI, wT; b.hi trap`, with `len ≥ K` so
+    the subtraction did not wrap) every one of them lies inside the span's
+    `elem * len` bytes. `K = 1` is `index_access`. -/
+theorem index_access_lanes (elem len i K : Nat) (hguard : i + K ≤ len) :
+    (i + K) * elem ≤ elem * len := by
+  calc (i + K) * elem = elem * (i + K) := Nat.mul_comm _ _
+    _ ≤ elem * len := Nat.mul_le_mul_left elem hguard
+
+/-- The slack guard is what the checker reads off the two compares: with
+    `len ≥ K`, `wT = len - K` is exact and `i ≤ wT` is `i + K ≤ len`. -/
+theorem slack_guard (len i K : Nat) (hmin : K ≤ len) (hle : i ≤ len - K) : i + K ≤ len := by
+  omega
+
 /-- **Guard facts across a merge.** A label holds the meet of its
     predecessors' facts: for proven minimum lengths, the smaller of the
     two — which is a valid minimum whichever predecessor control came

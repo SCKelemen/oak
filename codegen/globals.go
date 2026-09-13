@@ -13,6 +13,7 @@ import (
 	"math"
 	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/evaluator"
@@ -51,6 +52,68 @@ func (cg *CodeGenerator) emitGlobals(program *ast.Program, tc *typechecker.TypeC
 	if emitted {
 		cg.write("\n")
 	}
+	cg.emitMeasuredInit(tc)
+}
+
+// emitMeasuredInit emits the load-time initialization of the measured
+// constants (docs/spec/60-effects-allocation.md section 10b): one weak
+// hook, oak_measured_value(name, pinned), that the host may define —
+// hosted builds define it over the environment (OAK_MEASURED_<NAME>, a
+// decimal integer, absent meaning pinned) — and an initializer that asks
+// it for each constant, checks the answer against the declared range, and
+// stops the program with the constant's name otherwise: a knob outside its
+// range never reaches the code proved for the range. Hosted builds run it
+// as a constructor, so an executable sees the values before main and a
+// dynamically loaded library at load; freestanding code calls
+// oak_measured_init from its own startup.
+func (cg *CodeGenerator) emitMeasuredInit(tc *typechecker.TypeChecker) {
+	measured := tc.MeasuredConstants()
+	if len(measured) == 0 {
+		return
+	}
+	cg.write("/* measured constants (docs/spec/60-effects-allocation.md section 10b): the load-time hook and the range check */\n")
+	cg.write("extern int64_t oak_measured_value(const char *name, int64_t pinned) __attribute__((weak));\n")
+	cg.write("#if __STDC_HOSTED__ && !defined(OAK_FREESTANDING)\n")
+	cg.write("#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <errno.h>\n")
+	cg.write("int64_t oak_measured_value(const char *name, int64_t pinned) {\n")
+	cg.write("  char key[128] = \"OAK_MEASURED_\";\n")
+	cg.write("  if (strlen(name) + 13 >= sizeof key) { return pinned; }\n")
+	cg.write("  strcat(key, name);\n")
+	cg.write("  const char *text = getenv(key);\n")
+	cg.write("  if (text == NULL || *text == 0) { return pinned; }\n")
+	cg.write("  errno = 0;\n")
+	cg.write("  char *end = NULL;\n")
+	cg.write("  long long value = strtoll(text, &end, 10);\n")
+	cg.write("  if (errno != 0 || end == text || *end != 0) { fprintf(stderr, \"oak: measured constant %s: %s is not an integer\\n\", name, text); abort(); }\n")
+	cg.write("  return (int64_t)value;\n")
+	cg.write("}\n")
+	cg.write("static void oak_measured_out_of_range(const char *name, int64_t value, int64_t lo, int64_t hi) {\n")
+	cg.write("  fprintf(stderr, \"oak: measured constant %s: %lld is outside %lld..%lld\\n\", name, (long long)value, (long long)lo, (long long)hi);\n")
+	cg.write("  abort();\n")
+	cg.write("}\n")
+	cg.write("__attribute__((constructor)) static void oak_measured_init(void)\n")
+	cg.write("#else\n")
+	cg.write("static void oak_measured_out_of_range(const char *name, int64_t value, int64_t lo, int64_t hi) { (void)name; (void)value; (void)lo; (void)hi; __builtin_trap(); }\n")
+	cg.write("void oak_measured_init(void)\n")
+	cg.write("#endif\n")
+	cg.write("{\n")
+	cg.write("  if (&oak_measured_value == 0) { return; }\n")
+	for _, m := range measured {
+		name := cIdent(m.Name)
+		cg.write(fmt.Sprintf("  { int64_t v = oak_measured_value(%q, %dll); if (v < %dll || v > %dll) { oak_measured_out_of_range(%q, v, %dll, %dll); } %s = (%s)v; }\n",
+			measuredHookName(m.Name), m.Pinned, m.Lo, m.Hi, measuredHookName(m.Name), m.Lo, m.Hi, name, cg.parseTypeExpression(&ast.Identifier{Value: m.Type})))
+	}
+	cg.write("}\n\n")
+}
+
+// measuredHookName is the name a measured constant is asked for by: its
+// Oak name without the package prefix (TILE_GROUPS, not schedule__TILE_GROUPS),
+// so the environment variable is OAK_MEASURED_TILE_GROUPS.
+func measuredHookName(name string) string {
+	if i := strings.LastIndex(name, "__"); i >= 0 {
+		return name[i+2:]
+	}
+	return name
 }
 
 func (cg *CodeGenerator) emitGlobal(decl *ast.VariableDeclaration, tc *typechecker.TypeChecker) {
@@ -145,7 +208,11 @@ func (cg *CodeGenerator) emitGlobal(decl *ast.VariableDeclaration, tc *typecheck
 	cg.foldTypeHint = ""
 	cg.output.WriteString(";\n")
 	// A constant global is readable by the constant initializers after it:
-	// bind its value in the fold environment.
+	// bind its value in the fold environment. A measured constant is not
+	// one: its value is the load's.
+	if decl.Measured != nil {
+		return
+	}
 	cg.constantGlobals[decl.Name.Value] = true
 	if result := evaluator.Eval(decl, cg.foldEnv); result != nil {
 		if e, isErr := result.(*object.Error); isErr {
@@ -329,6 +396,11 @@ func (cg *CodeGenerator) isConstantGlobal(decl *ast.VariableDeclaration) bool {
 	if _, isTargetConstant := cg.targetConstants[decl.Name.Value]; isTargetConstant {
 		return false
 	}
+	if decl.Measured != nil {
+		// A measured constant is written once, at load, by
+		// oak_measured_init: a mutable static, never folded.
+		return false
+	}
 	return typechecker.IsConstantInitializerIn(decl.Value, cg.constantGlobals)
 }
 
@@ -337,6 +409,12 @@ func (cg *CodeGenerator) isConstantGlobal(decl *ast.VariableDeclaration) bool {
 var scalarGlobalTypes = map[string]bool{
 	"u8": true, "u16": true, "u32": true, "u64": true, "i8": true, "i16": true, "i32": true, "i64": true,
 	"f32": true, "f64": true, "Bool": true, "byte": true,
+}
+
+// MutatedGlobals is the set the constant-global rule excludes
+// (docs/spec/90-backend.md §8a), for the native backend's own folding.
+func MutatedGlobals(program *ast.Program) map[string]bool {
+	return mutatedGlobals(program)
 }
 
 // mutatedGlobals names every top-level binding some statement assigns,
