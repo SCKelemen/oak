@@ -104,3 +104,7 @@ The implementation can be tested against vectors and proved functionally correct
 6. Only after the projection and assumptions are explicit, model Double Ratchet/PQXDH behavior against the Signal specifications/reference vectors.
 
 The goal is not to replace mature cryptographic analysis tools. It is to minimize drift between the protocol that is analyzed and the program that actually runs.
+
+## Current proof boundary
+
+The branch now deliberately spans three different evidence classes: static typestate/resource rejection for one-use authority, invariant theorems over reachable protocol states, and executable transition tests. None of those imply symbolic or computational cryptographic security. The next qualitatively new capability is therefore not another Boolean protocol field; it is an explicit adversary/network model and a projection to a crypto-specific verifier.
