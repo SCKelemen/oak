@@ -188,9 +188,28 @@ Done on 2026-09-13:
    which the RV64IM table lacks, so those four are outside the unit
    language rather than trusted by verdict.
 
-Next:
+Next, arm64 first (2026-09-13: every workload runs on arm64, so the lane
+whose chain is proved end to end is the one to deepen; the others wait
+for a workload):
 
-3. **Finish the RISC-V bridge**: build `spec/lean-sail` against a Sail
+3. **Widen the seam** (§4) from scalar expressions to what the verifier
+   lowers for real native bodies: block-scoped locals, inlined calls to
+   program functions, span and owned-array element reads under their
+   guards, and counted loops — each with the extraction's reading
+   (`95-extraction.md`: locals as `let`, calls hoisted, elements as
+   `Array` reads, loops as fuel-indexed recursion), so `lowerT_eval`
+   covers the bodies `oak build -native` actually verifies rather than
+   their arithmetic alone. This is the step that turns "source theorem
+   implies machine behavior" from a statement about expressions into one
+   about functions on arm64.
+4. **Widen translation validation** (§2.4) on arm64: the checked shift
+   helpers under a constant-count specialization (the verifier admits a
+   constant count; the helper's trap check folds away), `oak_index` and
+   `oak_store`'s bounds checks against the guarded element reads and
+   writes the lowering models, and the compare-exchange helper once the
+   verifier's memory model reaches the atomics
+   (`compare_exchange_refinement_test.go` pins its text today).
+5. **Finish the RISC-V bridge** (rv64 is dbs's second target): build `spec/lean-sail` against a Sail
    built from git so the theorems are checked against the export itself
    rather than verbatim copies; extend the decided subset to loads and
    stores through the frame and to the AMOs the memory refinement already
@@ -211,7 +230,7 @@ Next:
    `asm/rv64_sail_bridge_test.go` then runs the bridge. The export's
    `lake build` is large (gigabytes of `.olean`); the attempt stopped
    when the host had about one gigabyte of disk left.
-4. **An amd64 lane and an x86 semantics**: the native backend's third lane,
+6. **An amd64 lane and an x86 semantics** — **deferred** (2026-09-13: no x86-64 workload exists; amd64 stays a C-only target until one does). The native backend's third lane,
    with instruction semantics bridged to a machine-readable x86-64
    specification. Scoped 2026-09-13, in the order that pays first:
    1. `Oak.X86`, the semantics of the integer subset the verifier would
@@ -244,7 +263,7 @@ Next:
       an amd64 host in CI.
    Until step 2 lands amd64 is a C-only target and its chain ends at the
    compiler.
-5. **The microcontrollers**: wait on Arm's M-profile ASL
+7. **The microcontrollers**: wait on Arm's M-profile ASL
    (`docs/notes/oak-cortex-m-deferred`); rv32 can follow rv64's lane once
    the psABI differences are stated.
 
