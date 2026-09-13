@@ -160,8 +160,8 @@ func layOut(functions []EncodedFunction) (*textLayout, error) {
 		if align > l.align {
 			l.align = align
 		}
-		for int64(len(l.text))%align != 0 {
-			l.text = append(l.text, 0x1f, 0x20, 0x03, 0xd5) // nop padding
+		if err := l.pad(fn.Symbol, align); err != nil {
+			return nil, err
 		}
 		start := int64(len(l.text))
 		l.text = append(l.text, fn.Bytes...)
@@ -184,6 +184,38 @@ func layOut(functions []EncodedFunction) (*textLayout, error) {
 		return nil, fmt.Errorf("object: text section of %d bytes exceeds the format's reach", len(l.text))
 	}
 	return l, nil
+}
+
+// pad fills the gap before the next entry with the lane's no-ops, so a
+// disassembler reads the section as instructions throughout. AArch64
+// instructions are one word, so the gap is always whole words. An RV64
+// function under RVC (docs/spec/94-assembler.md, "Compressed encodings")
+// may end on a half word, so its gap is filled in words and closed with
+// one c.nop; a fixed word-sized pad would never reach the boundary
+// (spec/lean/Oak/Assembler.lean, `pad_halfwords_reaches`,
+// `pad_words_misses`).
+func (l *textLayout) pad(symbol string, align int64) error {
+	gap := (align - int64(len(l.text))%align) % align
+	switch l.arch {
+	case ArchRV64:
+		if gap%2 != 0 {
+			return fmt.Errorf("object: %s: the text before it ends on an odd byte", symbol)
+		}
+		for ; gap >= 4; gap -= 4 {
+			l.text = append(l.text, 0x13, 0x00, 0x00, 0x00) // nop (addi x0, x0, 0)
+		}
+		if gap == 2 {
+			l.text = append(l.text, 0x01, 0x00) // c.nop
+		}
+	default:
+		if gap%4 != 0 {
+			return fmt.Errorf("object: %s: the text before it ends inside a word", symbol)
+		}
+		for ; gap > 0; gap -= 4 {
+			l.text = append(l.text, 0x1f, 0x20, 0x03, 0xd5) // nop
+		}
+	}
+	return nil
 }
 
 func log2Align(n int64) uint32 {

@@ -1567,7 +1567,11 @@ function starts as four-byte instructions and shrinks each branch whose
 offset fits until nothing changes, so label arithmetic converges with the
 sizes. The checker and the verifier see the base instructions and are
 unchanged; the object carries `EF_RISCV_RVC`; the QEMU and Sail
-differentials run the strip-mined sum compressed.
+differentials run the strip-mined sum compressed. A compressed function
+holding an odd number of 16-bit instructions ends on a half word, so the
+object writer pads to the next entry in `nop` words closed by one `c.nop`
+(`Oak.Assembler.gap_reaches`, `pad_halfwords_reaches`) — a word-sized pad
+alone would never reach the boundary (`pad_words_misses`).
 
 **The processor decides (landed).** The compiler reads the RISC-V
 extensions of `-cpu` (`target.CPUFeatures`: `+c`/`+v` on a zig-style name
