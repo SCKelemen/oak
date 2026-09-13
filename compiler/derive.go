@@ -168,13 +168,18 @@ func (d *deriver) lowerRequest(fn *ast.FunctionStatement) {
 			d.report(CodeDeriveSignature, fn.Name, "derive.format requires the signature (v: T, dst: [*]u8): Result[u32, TextError] (the strings library's TextError)")
 			return
 		}
+	case "reserved_zero":
+		if len(fn.Parameters) != 1 || fn.Receiver != nil || len(fn.TypeParams) != 0 || !isIdentifierType(fn.ReturnType, "Bool") {
+			d.report(CodeDeriveSignature, fn.Name, "derive.reserved_zero requires the signature (v: T): Bool")
+			return
+		}
 	case "test_generate", "test_encode", "test_decode":
 		// Signature and target type are checked together: the type is the
 		// return type (generate), the parameter (encode), or Option's
 		// argument (decode).
 	default:
 		diag := d.report(CodeDeriveUnknown, fn.Body, "derive.%s is not a derivable operation", kind)
-		diag.AddHelp("derivable operations: derive.equal, derive.hash, derive.compare, derive.format, derive.test_generate, derive.test_encode, derive.test_decode")
+		diag.AddHelp("derivable operations: derive.equal, derive.hash, derive.compare, derive.format, derive.reserved_zero, derive.test_generate, derive.test_encode, derive.test_decode")
 		return
 	}
 	var typeName *ast.Identifier
@@ -284,6 +289,8 @@ func (d *deriver) helper(kind, typeName string, node ast.Node) (string, bool) {
 		fn, ok = d.compareHelper(name, typeName, decl, node)
 	case "format":
 		fn, ok = d.formatHelper(name, typeName, decl, node)
+	case "reserved_zero":
+		fn, ok = d.reservedZeroHelper(name, typeName, decl, node)
 	case "test_generate":
 		fn, ok = d.testGenerateHelper(name, typeName, decl, node)
 	case "test_encode":
@@ -879,4 +886,129 @@ func spellType(expr ast.Expression) string {
 		}
 	}
 	return expr.String()
+}
+
+// --- reserved_zero -----------------------------------------------------
+//
+// A wire record's reserved bytes are zero on both sides (TigerBeetle's
+// `Header.invalid()`; docs/notes/tigerbeetle-2026-09.md lesson 1;
+// docs/spec/40-records.md section 6a): asserted before a write and checked
+// after a read. derive.reserved_zero reads the declaration for the fields
+// named `reserved` or `reserved_*` and returns whether every one of them
+// is zero — a scalar against its typed zero, a Bool as false, a fixed
+// array of scalars element by element in a canonical bounded loop — and
+// asks a nested record that holds reserved fields the same question
+// through its own helper.
+
+// isReservedName is the naming convention the derive reads.
+func isReservedName(name string) bool {
+	return name == "reserved" || strings.HasPrefix(name, "reserved_")
+}
+
+// reservedScalars are the field types a reserved field may have, with the
+// spelling of their zero.
+var reservedScalars = map[string]bool{
+	"i8": true, "i16": true, "i32": true, "i64": true,
+	"u8": true, "u16": true, "u32": true, "u64": true, "u128": true,
+	"int": true, "uint": true, "byte": true, "rune": true, "Bool": true,
+}
+
+// hasReservedFields reports whether a declared record names a reserved
+// field, directly or inside a nested declared record.
+func (d *deriver) hasReservedFields(typeName string, visiting map[string]bool) bool {
+	if visiting[typeName] {
+		return false
+	}
+	visiting[typeName] = true
+	decl := d.types[typeName]
+	if decl == nil {
+		return false
+	}
+	shape, isRecord := recordShape(decl)
+	if !isRecord {
+		return false
+	}
+	for _, field := range shape.FieldOrder {
+		if isReservedName(field.Name) {
+			return true
+		}
+		if ident, isIdent := field.Value.(*ast.Identifier); isIdent {
+			if nested, declared := d.types[ident.Value]; declared && len(nested.TypeParams) == 0 && d.hasReservedFields(ident.Value, visiting) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (d *deriver) reservedZeroHelper(name, typeName string, decl *ast.ADTType, node ast.Node) (*ast.FunctionStatement, bool) {
+	shape, isRecord := recordShape(decl)
+	if !isRecord {
+		d.report(CodeDeriveUnsupported, node, "derive.reserved_zero for %s: reserved fields belong to a record; %s is a sum type", typeName, typeName)
+		return nil, false
+	}
+	s := newSynth(d.helperContext(decl, name))
+	statements := []ast.Statement{s.decl("ok", s.id("Bool"), s.boolean(true))}
+	found := false
+	for _, field := range shape.FieldOrder {
+		value := s.field(s.id("v"), field.Name)
+		if isReservedName(field.Name) {
+			found = true
+			more, ok := d.reservedZeroStatements(s, value, field, node, typeName)
+			if !ok {
+				return nil, false
+			}
+			statements = append(statements, more...)
+			continue
+		}
+		if ident, isIdent := field.Value.(*ast.Identifier); isIdent {
+			if nested, declared := d.types[ident.Value]; declared && len(nested.TypeParams) == 0 && d.hasReservedFields(ident.Value, map[string]bool{}) {
+				found = true
+				helper, ok := d.helper("reserved_zero", ident.Value, node)
+				if !ok {
+					return nil, false
+				}
+				statements = append(statements, s.assign("ok", s.and(s.id("ok"), s.call(helper, value))))
+			}
+		}
+	}
+	if !found {
+		d.report(CodeDeriveUnsupported, node, "derive.reserved_zero for %s: no field is named reserved or reserved_*, and no nested record has one — there is nothing to check", typeName)
+		return nil, false
+	}
+	statements = append(statements, s.expr(s.id("ok")))
+	return s.fnExpr(name, []*ast.FunctionParameter{s.param("v", d.typeExpr(s, typeName))}, s.id("Bool"), s.block(statements...)), true
+}
+
+// reservedZeroStatements folds one reserved field into `ok`.
+func (d *deriver) reservedZeroStatements(s *synth, value *ast.IndexExpression, field ast.RecordField, node ast.Node, typeName string) ([]ast.Statement, bool) {
+	zeroTerm := func(scalar string, element ast.Expression) ast.Expression {
+		if scalar == "Bool" {
+			return s.not(element)
+		}
+		return s.eq(element, s.conv(scalar, s.intLit(0)))
+	}
+	switch t := field.Value.(type) {
+	case *ast.Identifier:
+		if reservedScalars[t.Value] {
+			return []ast.Statement{s.assign("ok", s.and(s.id("ok"), zeroTerm(t.Value, value)))}, true
+		}
+	case *ast.IndexExpression:
+		length, isFixed := t.Index.(*ast.IntegerLiteral)
+		element, isIdent := t.Left.(*ast.Identifier)
+		if isFixed && !t.Dot && isIdent && reservedScalars[element.Value] && length.Value > 0 {
+			// A canonical bounded loop over the array (85-discipline.md
+			// section 3): the counter is the field's own, so two reserved
+			// arrays in one record do not share one.
+			counter := "i_" + field.Name
+			return []ast.Statement{
+				s.decl(counter, s.id("u32"), s.u32(0)),
+				s.loop(s.lt(s.id(counter), s.u32(length.Value)),
+					s.assign("ok", s.and(s.id("ok"), zeroTerm(element.Value, s.index(value, s.id(counter))))),
+					s.assign(counter, s.add(s.id(counter), s.u32(1)))),
+			}, true
+		}
+	}
+	d.report(CodeDeriveUnsupported, node, "derive.reserved_zero for %s: reserved field %s must be a fixed-width integer, Bool, or a fixed array of those; %s is %s", typeName, field.Name, field.Name, spellType(field.Value))
+	return nil, false
 }

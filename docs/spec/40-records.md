@@ -246,7 +246,9 @@ Semantics (`semir.RecordLayoutWithSpec`, the transliteration of
   padded field and the bytes — `3 bytes of padding before field "b" at
   offset 4`, or `3 bytes of tail padding after field "b"` — and the fix is
   to reorder by descending alignment or pad explicitly with a `reserved`
-  field, which then reads and writes as zero like any other. The emitted
+  field, which then reads and writes as zero like any other, and whose
+  zero `derive.reserved_zero` checks on both sides of the device
+  (`83-modules.md` §6.6). The emitted
   C repeats the identity as a compile-time assertion, `sizeof(T)` equal
   to the sum of `sizeof` over its members, so the C compiler ratifies it.
   A `no_padding` record holds only what a wire record can carry:

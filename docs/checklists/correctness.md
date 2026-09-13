@@ -321,7 +321,8 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       `stdx.no_padding`, `Header.invalid()`, `journal.zig`) — Oak:
       `40-records.md` §6a `struct(no_padding)` (checked, `OAK-R0301`,
       wire-safe field shapes), `struct(packed)`, §6b `static_assert`;
-      reserved field zero checks: not stated.
+      `derive.reserved_zero` (`83-modules.md` §6.6) for the reserved
+      bytes on both sides.
 - [ ] **Reserved slots name their own address.** Does an empty slot in a
       ring or table carry its own index (as the op, address, or copy
       number) so a misdirected read of a valid-looking empty slot is
