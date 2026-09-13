@@ -4175,8 +4175,21 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 				return lo.floatConversion(ident.Value, e.Arguments[0], width)
 			}
 		default:
-			if t, op, _, isConv := typechecker.ConversionParts(ident.Value); isConv && (op == "trunc" || op == "bits") {
-				target = t
+			if t, op, src, isConv := typechecker.ConversionParts(ident.Value); isConv {
+				floatSource := src == "f32" || src == "f64"
+				floatTarget := t == "f32" || t == "f64"
+				switch {
+				case floatSource && op == "bits":
+					target = t // a bit move, below
+				case (floatSource || floatTarget) && (op == "trunc" || op == "round" || op == "saturating") && len(e.Arguments) == 1:
+					// A float converted toward zero (trunc: the backend traps
+					// out of range, so the value on the non-trapping paths is
+					// the conversion's; saturating: it saturates, as fcvtz*
+					// does), or a float rounded to another width (round).
+					return lo.floatConversion(t, e.Arguments[0], width)
+				case op == "trunc" || op == "bits":
+					target = t
+				}
 			}
 		}
 		if target != "" {
