@@ -313,7 +313,7 @@ func controlParams(terms []*term) map[string]bool {
 func decideBlasted(bl *blaster, traps []*term, t *term, names []string) (Decision, bool) {
 	for _, trap := range traps {
 		bits := bl.blast(trap)
-		if bits == nil || bl.bdd.exceeded {
+		if bits == nil || bl.exceeded() {
 			return Decision{}, true
 		}
 		if bits[0] != bddFalse {
@@ -322,7 +322,7 @@ func decideBlasted(bl *blaster, traps []*term, t *term, names []string) (Decisio
 		}
 	}
 	bits := bl.blast(t)
-	if bits == nil || bl.bdd.exceeded {
+	if bits == nil || bl.exceeded() {
 		return Decision{}, true
 	}
 	if bits[0] == bddTrue {

@@ -1,6 +1,8 @@
 # Note: symbolic protocol provers and high-performance proof checking
 
-**Status: extraction done; two directions recorded, nothing built.**
+**Status: extraction done; the first increment of the certificate rung
+landed the same day (`125-verification.md` §3 "By certificate", §4
+`-solver sat`).**
 2026-09-13, `specification` branch. Sources read once, on Samuel's ask to
 "check the Tamarin and ProVerif proofs, ParaFROST and cuda-cic, connect to
 crypto proofs, and want a very high-performance proof verification
@@ -146,7 +148,13 @@ trails Kissat. Lean's kernel is C++; Lean4Lean re-implements it in Lean at
 a 20–50% cost and found one soundness bug. No GPU CIC kernel exists in the
 literature; cuda-cic does not check proof terms.
 
-**Assessment**, recorded as `125-verification.md` §7 "A certificate rung":
+**Assessment**, recorded as `125-verification.md` §7 "A certificate rung"
+(items 1 and the checkers of item 2 landed on 2026-09-13: `asm/cnf.go`,
+`prove/lrat.go`, `prove/solver/lrat.oak`, `Oak.RupCheck`; the encoder's
+proof and the solver written in Oak remain. First run with CaDiCaL 3.0.1:
+`spec/oak/machines.oak`'s `bounded__step` — 14,987 BDD nodes under the
+blocked order — closes with a 204-step certificate checked in Go and in
+Oak; `spec/oak/shapes.oak`'s nine rows all agree):
 
 1. Add a SAT rung with LRAT rather than a bigger BDD budget; keep the BDD
    for canonical equivalence and counterexamples.

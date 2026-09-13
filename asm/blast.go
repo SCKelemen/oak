@@ -16,7 +16,10 @@ import (
 )
 
 type blaster struct {
-	bdd    *bdd
+	bdd *bdd
+	// cnf, when set, replaces the diagram engine with the clause engine
+	// (asm/cnf.go): the same lowering, Tseitin clauses instead of nodes.
+	cnf    *cnfBuilder
 	params []string       // parameter order
 	index  map[string]int // parameter -> position
 	widths map[string]int // parameter -> declared width
@@ -219,7 +222,7 @@ func (bl *blaster) varsBits(vars []int, width int) []int {
 	out := make([]int, width)
 	for i := range out {
 		if i < len(vars) {
-			out[i] = bl.bdd.variable(vars[i])
+			out[i] = bl.variable(vars[i])
 		} else {
 			out[i] = bddFalse
 		}
@@ -229,7 +232,7 @@ func (bl *blaster) varsBits(vars []int, width int) []int {
 
 // blast returns width nodes (LSB first), or nil when the budget is exceeded.
 func (bl *blaster) blast(t *term) []int {
-	if bl.bdd.exceeded {
+	if bl.exceeded() {
 		return nil
 	}
 	if bl.memo == nil {
@@ -260,7 +263,7 @@ func (bl *blaster) blastUncached(t *term) []int {
 		declared := bl.widths[t.name]
 		for i := 0; i < t.width; i++ {
 			if i < declared {
-				out[i] = bl.bdd.variable(bl.variableIndex(t.name, i))
+				out[i] = bl.variable(bl.variableIndex(t.name, i))
 			} else {
 				out[i] = bddFalse // zero-extension of a narrower parameter
 			}
@@ -295,9 +298,9 @@ func (bl *blaster) blastUncached(t *term) []int {
 			return nil
 		}
 		for i := range out {
-			out[i] = bl.bdd.ite(cond[0], left[i], right[i])
+			out[i] = bl.ite(cond[0], left[i], right[i])
 		}
-		if bl.bdd.exceeded {
+		if bl.exceeded() {
 			return nil
 		}
 		return out
@@ -311,14 +314,14 @@ func (bl *blaster) blastUncached(t *term) []int {
 	case "and", "or", "xor":
 		op := map[string]int{"and": opAnd, "or": opOr, "xor": opXor}[t.op]
 		for i := range out {
-			out[i] = bl.bdd.apply(op, left[i], right[i])
+			out[i] = bl.apply(op, left[i], right[i])
 		}
 	case "add":
 		out = bl.add(left, right, bddFalse)
 	case "sub":
 		negated := make([]int, len(right))
 		for i := range right {
-			negated[i] = bl.bdd.not(right[i])
+			negated[i] = bl.not(right[i])
 		}
 		out = bl.add(left, negated, bddTrue)
 	case "shl", "shr":
@@ -352,7 +355,7 @@ func (bl *blaster) blastUncached(t *term) []int {
 		shifted := shiftRightArith(left, 1)
 		xor := make([]int, len(left))
 		for i := range left {
-			xor[i] = bl.bdd.apply(opXor, left[i], shifted[i])
+			xor[i] = bl.apply(opXor, left[i], shifted[i])
 		}
 		ones := make([]int, len(left))
 		for i := range ones {
@@ -364,7 +367,7 @@ func (bl *blaster) blastUncached(t *term) []int {
 		// evidence verdict when reached).
 		return nil
 	}
-	if bl.bdd.exceeded {
+	if bl.exceeded() {
 		return nil
 	}
 	return out
@@ -403,9 +406,9 @@ func (bl *blaster) add(a, b []int, carry int) []int {
 func (bl *blaster) addCarry(a, b []int, carry int) ([]int, int) {
 	out := make([]int, len(a))
 	for i := range a {
-		axb := bl.bdd.apply(opXor, a[i], b[i])
-		out[i] = bl.bdd.apply(opXor, axb, carry)
-		carry = bl.bdd.apply(opOr, bl.bdd.apply(opAnd, a[i], b[i]), bl.bdd.apply(opAnd, carry, axb))
+		axb := bl.apply(opXor, a[i], b[i])
+		out[i] = bl.apply(opXor, axb, carry)
+		carry = bl.apply(opOr, bl.apply(opAnd, a[i], b[i]), bl.apply(opAnd, carry, axb))
 	}
 	return out, carry
 }
@@ -417,7 +420,7 @@ func (bl *blaster) addCarry(a, b []int, carry int) ([]int, int) {
 // differs from left's). The condition table is ARM's, transliterated from
 // Oak.AssemblerSemantics.condHolds.
 func (bl *blaster) condition(code string, left, right []int) int {
-	b := bl.bdd
+	b := bl
 	kind, bare := splitFlagsKind(code)
 	var result []int
 	var c, v int
@@ -521,7 +524,7 @@ func (bl *blaster) shiftBarrelArith(a, count []int) []int {
 		shifted := shiftRightArith(current, 1<<uint(s))
 		next := make([]int, len(a))
 		for i := range a {
-			next[i] = bl.bdd.ite(count[s], shifted[i], current[i])
+			next[i] = bl.ite(count[s], shifted[i], current[i])
 		}
 		current = next
 	}
@@ -543,10 +546,10 @@ func (bl *blaster) multiply(a, b []int) []int {
 		}
 		partial := shiftConst(a, i, true)
 		for j := range partial {
-			partial[j] = bl.bdd.apply(opAnd, partial[j], b[i])
+			partial[j] = bl.apply(opAnd, partial[j], b[i])
 		}
 		out = bl.add(out, partial, bddFalse)
-		if bl.bdd.exceeded {
+		if bl.exceeded() {
 			return out
 		}
 	}
@@ -571,7 +574,7 @@ func (bl *blaster) rotateBarrel(a, count []int) []int {
 		rotated := rotateRight(current, 1<<uint(s))
 		next := make([]int, len(a))
 		for i := range a {
-			next[i] = bl.bdd.ite(count[s], rotated[i], current[i])
+			next[i] = bl.ite(count[s], rotated[i], current[i])
 		}
 		current = next
 	}
@@ -628,7 +631,7 @@ func (bl *blaster) popCount(a []int) []int {
 
 func (bl *blaster) countLeadingZeros(a []int) []int {
 	n := len(a)
-	b := bl.bdd
+	b := bl
 	// prefixZero[i]: bits above and including position i are all zero.
 	result := make([]int, n)
 	for i := range result {
@@ -666,7 +669,7 @@ func (bl *blaster) shiftBarrel(a, count []int, left bool) []int {
 		shifted := shiftConst(current, 1<<uint(s), left)
 		next := make([]int, len(a))
 		for i := range a {
-			next[i] = bl.bdd.ite(count[s], shifted[i], current[i])
+			next[i] = bl.ite(count[s], shifted[i], current[i])
 		}
 		current = next
 	}
@@ -675,7 +678,7 @@ func (bl *blaster) shiftBarrel(a, count []int, left bool) []int {
 
 // counterexample turns a differing bit into a concrete parameter assignment.
 func (bl *blaster) counterexample(x, y int) map[string]uint64 {
-	diff := bl.bdd.apply(opXor, x, y)
+	diff := bl.apply(opXor, x, y)
 	assignment := bl.bdd.satisfyingPath(diff)
 	env := make(map[string]uint64, len(bl.params))
 	for variable, value := range assignment {
