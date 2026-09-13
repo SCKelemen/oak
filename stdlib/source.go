@@ -199,6 +199,13 @@ var hostSource string
 //go:embed slab.oak
 var slabSource string
 
+// rings is a library package only (import("rings")): SPSC and MPSC rings
+// over caller-owned storage as consumers of the memory model
+// (docs/spec/65-machine-memory.md section 1; dbs ask 8).
+//
+//go:embed rings.oak
+var ringsSource string
+
 // arena is a library package only (import("arena")): bump reservations of
 // element ranges over an owner such as a Buffer[T]
 // (docs/spec/60-effects-allocation.md section 6).
@@ -309,6 +316,7 @@ var Packages = map[string]string{
 	"arena":           arenaSource,
 	"host":            hostSource,
 	"slab":            slabSource,
+	"rings":           ringsSource,
 	"objc":            objcSource,
 }
 

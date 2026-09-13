@@ -25,7 +25,7 @@ var rv64Sail = rv64Machine{
 	globals:    "volatile unsigned long long tohost __attribute__((aligned(8), section(\".tohost\")));\nvolatile unsigned long long fromhost __attribute__((aligned(8), section(\".tohost\")));\n",
 	putc:       "tohost = (1ull << 56) | (1ull << 48) | (unsigned char)c;",
 	exit:       "tohost = 1; /* device 0: exit code 0 */",
-	start:      ".section .text.init\n.globl _start\n_start:\n  li t0, 0x6000\n  csrs mstatus, t0\n  la sp, _stack_top\n  call cmain\n1: j 1b\n",
+	start:      ".section .text.init\n.globl _start\n_start:\n  li t0, 0x6600\n  csrs mstatus, t0\n  la sp, _stack_top\n  call cmain\n1: j 1b\n",
 	linkScript: "ENTRY(_start)\nSECTIONS {\n  . = 0x80000000;\n  .text : { *(.text.init) *(.text*) }\n  .rodata : { *(.rodata*) *(.srodata*) }\n  . = ALIGN(4096);\n  .tohost : { *(.tohost) }\n  .data : { *(.data*) *(.sdata*) }\n  .bss : { *(.bss*) *(.sbss*) }\n  . = ALIGN(16);\n  . += 0x10000;\n  _stack_top = .;\n}\n",
 	run: func(t *testing.T, image string) string {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)

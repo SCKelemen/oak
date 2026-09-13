@@ -88,6 +88,48 @@ var rv64FloatShapes = map[string]string{
 	"fcvt.s.d": "ffr", "fcvt.d.s": "ffr",
 }
 
+// The vector extension (docs/spec/94-assembler.md §9, RVV 1.0): the
+// landed subset is configuration (vsetvli/vsetivli with an explicit
+// vtype), unit-stride loads and stores of 8- and 32-bit elements, the
+// lane-wise integer operations, the mask producers and consumers, and the
+// sum reduction. rv64VectorShapes gives each mnemonic's operand classes:
+// v a vector register, x an integer register, m a memory operand `(base)`,
+// i an immediate, o the four vtype options (e*, m*, ta|tu, ma|mu).
+var rv64VectorShapes = map[string]string{
+	"vsetvli": "xxoooo", "vsetivli": "xioooo",
+	"vle8.v": "vm", "vle32.v": "vm", "vse8.v": "vm", "vse32.v": "vm",
+	"vadd.vv": "vvv", "vsub.vv": "vvv", "vand.vv": "vvv", "vor.vv": "vvv", "vxor.vv": "vvv", "vminu.vv": "vvv", "vmaxu.vv": "vvv",
+	"vmv.v.x": "vx", "vmv.x.s": "xv", "vredsum.vs": "vvv",
+	"vmseq.vv": "vvv", "vmsne.vx": "vvx", "vmerge.vvm": "vvvv", "vcpop.m": "xv",
+}
+
+// rv64VectorLoads and rv64VectorStores map the unit-stride memory
+// instructions to their element width in bytes (the EEW).
+var rv64VectorLoads = map[string]int64{"vle8.v": 1, "vle32.v": 4}
+var rv64VectorStores = map[string]int64{"vse8.v": 1, "vse32.v": 4}
+
+// rv64VTypeSEW, rv64VTypeLMUL, and rv64VTypePolicy are the vtype fields
+// (RVV 1.0 §3.4): vsew in bits 5:3 as the element width, vlmul in bits
+// 2:0, vta bit 6, vma bit 7.
+var rv64VTypeSEW = map[string]int64{"e8": 1, "e16": 2, "e32": 4, "e64": 8}
+var rv64VTypeLMUL = map[string]int64{"m1": 0, "m2": 1, "m4": 2, "m8": 3, "mf8": 5, "mf4": 6, "mf2": 7}
+var rv64VTypePolicy = map[string]bool{"ta": true, "tu": true, "ma": true, "mu": true}
+
+// rv64VType encodes the vtype immediate of an explicit `e*, m*, ta|tu,
+// ma|mu` option list (rv64CheckVectorShape admits exactly that order).
+func rv64VType(options []Operand) int64 {
+	sew := rv64VTypeSEW[options[0].(Option).Name]
+	vsew := map[int64]int64{1: 0, 2: 1, 4: 2, 8: 3}[sew]
+	vtype := rv64VTypeLMUL[options[1].(Option).Name] | vsew<<3
+	if options[2].(Option).Name == "ta" {
+		vtype |= 1 << 6
+	}
+	if options[3].(Option).Name == "ma" {
+		vtype |= 1 << 7
+	}
+	return vtype
+}
+
 // rv64RoundingModes are the rounding-mode operands the arithmetic and
 // conversions take; absent, the encoder uses dyn (the fcsr's mode).
 var rv64RoundingModes = map[string]int64{"rne": 0, "rtz": 1, "rdn": 2, "rup": 3, "rmm": 4, "dyn": 7}
@@ -164,6 +206,12 @@ func parseRV64Register(text string) (Register, bool) {
 			return Register{Text: lower, Class: ClassRV64F, Num: num, Lane: -1}, true
 		}
 	}
+	if strings.HasPrefix(lower, "v") {
+		num, err := strconv.Atoi(lower[1:])
+		if err == nil && num >= 0 && num <= 31 {
+			return Register{Text: lower, Class: ClassRV64V, Num: num, Lane: -1}, true
+		}
+	}
 	return Register{}, false
 }
 
@@ -224,6 +272,12 @@ func parseRV64Operand(text, mnemonic string) (Operand, error) {
 	if _, isMode := rv64RoundingModes[strings.ToLower(text)]; isMode && rv64FloatShapes[mnemonic] != "" {
 		return Option{Name: strings.ToLower(text)}, nil
 	}
+	if mnemonic == "vsetvli" || mnemonic == "vsetivli" {
+		lower := strings.ToLower(text)
+		if _, isSEW := rv64VTypeSEW[lower]; isSEW || rv64VTypeLMUL[lower] != 0 || lower == "m1" || rv64VTypePolicy[lower] {
+			return Option{Name: lower}, nil
+		}
+	}
 	if isRV64Label(text) {
 		return Symbol{Name: text}, nil
 	}
@@ -277,6 +331,9 @@ func rv64CheckShape(instr Instruction) error {
 	name := instr.Mnemonic
 	if shape, isFloat := rv64FloatShapes[name]; isFloat {
 		return rv64CheckFloatShape(instr, shape)
+	}
+	if shape, isVector := rv64VectorShapes[name]; isVector {
+		return rv64CheckVectorShape(instr, shape)
 	}
 	if width, isFloat := rv64FloatLoads[name]; isFloat || rv64FloatStores[name] != 0 {
 		_ = width
@@ -358,6 +415,63 @@ func rv64CheckFloatShape(instr Instruction, shape string) error {
 	if len(ops) > len(required) {
 		if _, isMode := ops[len(ops)-1].(Option); !isMode {
 			return fmt.Errorf("%s: the last operand must be a rounding mode (rne, rtz, rdn, rup, rmm, dyn)", instr.Mnemonic)
+		}
+	}
+	return nil
+}
+
+// rv64CheckVectorShape validates a vector instruction's operands against
+// its shape. The vtype of vsetvli/vsetivli is spelled in full — element
+// width, LMUL, tail policy, mask policy — so the configuration the checker
+// tracks is the one the author wrote, not an assembler default.
+func rv64CheckVectorShape(instr Instruction, shape string) error {
+	ops := instr.Operands
+	if len(ops) != len(shape) {
+		return fmt.Errorf("%s takes %d operands, got %d", instr.Mnemonic, len(shape), len(ops))
+	}
+	for i, kind := range shape {
+		switch kind {
+		case 'v':
+			if reg, isReg := ops[i].(Register); !isReg || reg.Class != ClassRV64V {
+				return fmt.Errorf("%s: operand %d must be a vector register", instr.Mnemonic, i+1)
+			}
+		case 'x':
+			if reg, isReg := ops[i].(Register); !isReg || (reg.Class != ClassRV64X && reg.Class != ClassSP) {
+				return fmt.Errorf("%s: operand %d must be an integer register", instr.Mnemonic, i+1)
+			}
+		case 'i':
+			if imm, isImm := ops[i].(Immediate); !isImm || imm.Value < 0 || imm.Value > 31 {
+				return fmt.Errorf("%s: operand %d must be an immediate vector length 0..31", instr.Mnemonic, i+1)
+			}
+		case 'm':
+			if mem, isMem := ops[i].(Memory); !isMem || mem.Offset != 0 {
+				return fmt.Errorf("%s: operand %d must be a memory operand (base) without an offset", instr.Mnemonic, i+1)
+			}
+		case 'o':
+			opt, isOpt := ops[i].(Option)
+			if !isOpt {
+				return fmt.Errorf("%s: operand %d must be a vtype option (e8|e16|e32|e64, m1|m2|m4|m8|mf2|mf4|mf8, ta|tu, ma|mu)", instr.Mnemonic, i+1)
+			}
+			position := i - (len(shape) - 4)
+			ok := false
+			switch position {
+			case 0:
+				_, ok = rv64VTypeSEW[opt.Name]
+			case 1:
+				_, ok = rv64VTypeLMUL[opt.Name]
+			case 2:
+				ok = opt.Name == "ta" || opt.Name == "tu"
+			case 3:
+				ok = opt.Name == "ma" || opt.Name == "mu"
+			}
+			if !ok {
+				return fmt.Errorf("%s: the vtype is spelled `e*, m*, ta|tu, ma|mu` in that order (operand %d is %s)", instr.Mnemonic, i+1, opt.Name)
+			}
+		}
+	}
+	if instr.Mnemonic == "vmerge.vvm" {
+		if mask := ops[3].(Register); mask.Num != 0 {
+			return fmt.Errorf("vmerge.vvm takes its mask from v0")
 		}
 	}
 	return nil

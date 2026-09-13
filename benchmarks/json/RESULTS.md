@@ -1,5 +1,36 @@
 # JSON decoder optimization measurements
 
+## Ninth optimization pass: every read under a guard the checker sees
+
+Measured candidate: `sam/json-ceiling` (this commit's tree). Baseline: `f94f8266`.
+Data: `provenguards-{base,cand}-record-2026-09-13.json` and the `-repeat` files
+(event: `provenguards-{base,cand}-event-2026-09-13.json`); five paired samples each,
+load average 12 to 20.
+
+| Workload | Run | Oak ns/document | simdjson ns/document | Paired-ratio median | Paired ratios |
+| --- | --- | ---: | ---: | ---: | --- |
+| record | Baseline | 55.5 | 64.1 | 0.858× | 0.86 0.86 0.87 0.87 0.86 |
+| record | Candidate | 52.3 | 64.7 | 0.815× | 0.81 0.84 0.80 0.82 0.80 |
+| record | Baseline (repeat) | 56.8 | 65.4 | 0.863× | 0.86 0.86 0.85 0.86 0.89 |
+| record | Candidate (repeat) | 52.6 | 66.1 | 0.798× | 0.79 0.80 0.79 0.80 0.80 |
+| event | Baseline | 413.5 | 451.1 | 0.915× | 0.91 0.91 0.92 0.92 0.91 |
+| event | Candidate | 403.8 | 451.7 | 0.894× | 0.89 0.90 0.88 0.91 0.89 |
+| event | Baseline (repeat) | 414.7 | 455.8 | 0.917× | 0.90 0.92 0.91 0.92 0.92 |
+| event | Candidate (repeat) | 403.8 | 456.4 | 0.886× | 0.87 0.91 0.87 0.89 0.89 |
+A per-line count profile of the record reader (`llvm-cov` over an instrumented build
+of the Oak-only loop) found seventeen range-checked byte reads and two and a half
+unproven word loads per document whose guards the checker could not see: the indexed
+elements' sign and leading-zero tests, the closing bracket read through an array
+element, the colon test spelled as a disjunction, the scanner's first digit read
+outside its own guard, the escape decoder's hex digits, and the scanner's word loop
+guarded by `len - at >= 8` rather than the wrap-free form. Each is respelled under the
+guard the checker recognizes; the scanner also takes the twentieth digit and its
+terminator from the register (`docs/spec/71-codecs.md` §20). Six percent off the
+record workload's time and three off the event workload's; the hand-written record
+ceiling is 0.70×. The event baseline is the borrow-checker fix commit (3658a71e):
+the head before it did not compile the event schema (OAK-B0113, a regression of #285).
+
+
 ## Eighth optimization pass: a structural index for fixed integer arrays
 
 Measured candidate: `sam/json-array-index` (this commit's tree). Baseline: `fbc9b1f8`

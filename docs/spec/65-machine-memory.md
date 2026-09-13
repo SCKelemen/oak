@@ -42,6 +42,23 @@ cells, generic arguments) remain rejected in v1. A future borrowed
 `AtomicRef[T]` may transport cell identity without copying it; v1 does not
 manufacture an implicit pointer or heap wrapper.
 
+**Borrowing cells across a call (landed with the rings of dbs ask 8).**
+The one way atomic storage crosses a call is a writable span whose
+elements are cells or records holding cells: `[*]Atomic[u32]`,
+`[*]SpscCursor`. The span borrows the caller's storage — identity, never
+a copy — and an atomic operation names a cell through it by storage path
+(`atomic_store_release(cursor[0].tail, t)`, `atomic_load_acquire(seqs[i])`),
+emitted as the addressed, bounds-checked lvalue the path denotes. An
+element itself still cannot be copied out, passed by value, or returned;
+a view (`[]`) cannot carry a cell, since every cell it named would be
+written. This is the `AtomicRef` the paragraph above anticipated, spelled
+with the span the language already has: `stdlib/rings.oak` is its
+consumer — the SPSC and MPSC rings take their cursor and their cells as
+spans, exactly as the io port's completion rings take theirs (`120-io.md`
+section 2), and the memory-model facts they rely on are stated over the
+happens-before relation of chapter 66 (`Oak.Rings`, and
+`stdlib/README.md` for the contracts).
+
 The canonical consumers are the 1024cores queue family: the intrusive
 MPSC's atomic next links and the bounded MPMC's per-slot sequence cells.
 

@@ -45,6 +45,7 @@ pub io_op_rename: (): u32 = u32(11)
 pub io_op_stat: (): u32 = u32(12)
 pub io_op_unlink: (): u32 = u32(13)
 pub io_op_open_direct: (): u32 = u32(14)
+pub io_op_mkdir: (): u32 = u32(15)
 
 // Direct I/O (docs/spec/120-io.md sections 2, 3, 5): a file opened with
 // open_direct bypasses the host's cache, and its reads and writes must be
@@ -107,6 +108,11 @@ iosim_names: [512]u8
 iosim_names_durable: [512]u8
 iosim_exists: [16]Bool
 iosim_exists_durable: [16]Bool
+// A directory entry (docs/spec/120-io.md section 3, "Directories"): its
+// name is a path like any other; files whose names have it as their parent
+// are its children. The flag belongs to the entry for as long as it is
+// allocated; reuse sets it afresh.
+iosim_is_dir: [16]Bool
 iosim_size: [16]u32
 iosim_size_durable: [16]u32
 // iosim_lied records, per entry, that the device acknowledged an operation
@@ -153,6 +159,7 @@ pub io_attach: (data: []u8, faults: u32): () {
   while e < iosim_entries() {
     iosim_exists[e] = false
     iosim_exists_durable[e] = false
+    iosim_is_dir[e] = false
     iosim_size[e] = u32(0)
     iosim_size_durable[e] = u32(0)
     iosim_lied[e] = false
@@ -363,7 +370,7 @@ iosim_entry_open: (e: u32): Bool {
 // A fresh entry for a new name: not existing now or durably, and held by
 // no slot (an unlinked file stays readable through its handles until they
 // close). iosim_entries() when the directory is full.
-iosim_alloc: (name: [*]u8): u32 {
+iosim_alloc: (name: [*]u8, dir: Bool): u32 {
   chosen: u32 = iosim_entries()
   e: u32 = u32(0)
   while e < iosim_entries() {
@@ -373,10 +380,114 @@ iosim_alloc: (name: [*]u8): u32 {
   chosen < iosim_entries() ? {
     iosim_set_name(chosen, name)
     iosim_exists[chosen] = true
+    iosim_is_dir[chosen] = dir
     iosim_size[chosen] = u32(0)
     iosim_lied[chosen] = false
   }
   chosen
+}
+
+// --- directories -------------------------------------------------------
+//
+// Paths are opaque bytes to the port; the simulated directory reads one
+// thing in them, the last '/': the bytes before it name the parent, and a
+// path without one is a child of the root, spelled ".". A directory is an
+// entry whose iosim_is_dir flag is set; the root is not an entry and always
+// exists. Names are at most 32 bytes including the NUL, so a tree here is
+// shallow — the storage engine's segment directory, not a file system.
+
+// The length of `name`'s parent: the index of its last '/', or 0 when it
+// has none (a child of the root). `name` includes its NUL.
+iosim_parent_len: (name: [*]u8): u32 {
+  n: u32 = len(name)
+  slash: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < n {
+    name[i] == u8(47) ? { slash = i }
+    i = i + u32(1)
+  }
+  slash
+}
+
+// Whether the directory window names the root: "." followed by NUL.
+iosim_is_root: (dir: [*]u8): Bool = len(dir) == u32(2) && dir[0] == u8(46) && dir[1] == u8(0)
+
+// Whether entry e's stored name (volatile or durable) is a direct child of
+// the directory named by `dir` (a path window with its NUL).
+iosim_child_of: (e: u32, dir: [*]u8, durable: Bool): Bool {
+  // The stored name's parent length: index of its last '/'.
+  slash: u32 = u32(0)
+  finished: Bool = false
+  i: u32 = u32(0)
+  while i < iosim_name_bytes() && !finished {
+    b: u8 = durable ? { iosim_names_durable[e * iosim_name_bytes() + i] } | { iosim_names[e * iosim_name_bytes() + i] }
+    b == u8(0) ? { finished = true } | {
+      b == u8(47) ? { slash = i }
+    }
+    i = i + u32(1)
+  }
+  iosim_is_root(dir) ? { slash == u32(0) } | {
+    dir_len: u32 = len(dir) - u32(1)
+    slash != dir_len ? { false } | {
+      same: Bool = true
+      j: u32 = u32(0)
+      while same && j < dir_len {
+        stored: u8 = durable ? { iosim_names_durable[e * iosim_name_bytes() + j] } | { iosim_names[e * iosim_name_bytes() + j] }
+        same = stored == dir[j]
+        j = j + u32(1)
+      }
+      same
+    }
+  }
+}
+
+// Whether the parent directory of the path `name` exists now: the root
+// always does; otherwise an existing entry with the parent's name and the
+// directory flag.
+iosim_parent_exists: (name: [*]u8): Bool {
+  plen: u32 = iosim_parent_len(name)
+  plen == u32(0) ? { true } | {
+    // The parent's path with a NUL: compare against every entry's name.
+    found: Bool = false
+    e: u32 = u32(0)
+    while e < iosim_entries() && !found {
+      iosim_exists[e] && iosim_is_dir[e] ? {
+        same: Bool = true
+        j: u32 = u32(0)
+        while same && j < plen {
+          same = iosim_names[e * iosim_name_bytes() + j] == name[j]
+          j = j + u32(1)
+        }
+        same && (plen == iosim_name_bytes() || iosim_names[e * iosim_name_bytes() + plen] == u8(0)) ? { found = true }
+      }
+      e = e + u32(1)
+    }
+    found
+  }
+}
+
+// Whether the directory named by a path window exists now: the root, or
+// an existing directory entry.
+iosim_dir_exists: (dir: [*]u8): Bool {
+  iosim_is_root(dir) ? { true } | {
+    e: u32 = iosim_find(dir, false)
+    e < iosim_entries() && iosim_is_dir[e]
+  }
+}
+
+// mkdir (op 15): the parent must exist, the name must not; the new
+// directory is durable after fsyncdir on its parent.
+iosim_mkdir: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletion {
+  base: u32 = request.buf.base
+  n: u32 = request.buf.len
+  tag: u64 = request.tag
+  !iosim_path_ok(ring, region, base, n) ? { iosim_fail(tag, io_err_invalid()) } | {
+  name: [*]u8 = subslice(region, base, n)
+  iosim_find(name, false) < iosim_entries() ? { iosim_fail(tag, io_err_exists()) } | {
+  !iosim_parent_exists(name) ? { iosim_fail(tag, io_err_not_found()) } | {
+    entry: u32 = iosim_alloc(name, true)
+    entry >= iosim_entries() ? { iosim_fail(tag, io_err_no_space()) } | { iosim_done(tag, u32(0)) }
+  } } }
 }
 
 // --- blocks ------------------------------------------------------------
@@ -430,31 +541,38 @@ iosim_execute: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletio
   tag: u64 = request.tag
   in_region: Bool = base <= ring[0].region_len && n <= ring[0].region_len - base
   op == io_op_open() || op == io_op_create() || op == io_op_open_direct() ? { iosim_open_or_create(ring, region, request, op == io_op_create(), op == io_op_open_direct()) } | {
+  op == io_op_mkdir() ? { iosim_mkdir(ring, region, request) } | {
   op == io_op_unlink() ? {
     !iosim_path_ok(ring, region, base, n) ? { iosim_fail(tag, io_err_invalid()) } | {
     e: u32 = iosim_find(subslice(region, base, n), false)
     e >= iosim_entries() ? { iosim_fail(tag, io_err_not_found()) } | {
+    iosim_is_dir[e] ? { iosim_fail(tag, io_err_invalid()) } | {
       iosim_exists[e] = false
       iosim_done(tag, u32(0))
-    } }
+    } } }
   } | {
   op == io_op_rename() ? { iosim_rename(ring, region, request) } | {
   op == io_op_readdir() ? { iosim_readdir(ring, region, request) } | {
   op == io_op_fsyncdir() ? {
-    // The directory's path is accepted and ignored: the device is one
-    // directory. Its entries — names and existence — become durable.
+    // The named directory's direct children — their names and existence —
+    // become durable: an entry that is a child now, or was one durably
+    // (an unlinked or renamed-away child), takes its volatile state.
     !iosim_path_ok(ring, region, base, n) ? { iosim_fail(tag, io_err_invalid()) } | {
+    dir: [*]u8 = subslice(region, base, n)
+    !iosim_dir_exists(dir) ? { iosim_fail(tag, io_err_not_found()) } | {
     e: u32 = u32(0)
     while e < iosim_entries() {
-      iosim_exists_durable[e] = iosim_exists[e]
+      iosim_child_of(e, dir, false) || iosim_child_of(e, dir, true) ? {
+        iosim_exists_durable[e] = iosim_exists[e]
+        b: u32 = u32(0)
+        while b < iosim_name_bytes() {
+          iosim_names_durable[e * iosim_name_bytes() + b] = iosim_names[e * iosim_name_bytes() + b]
+          b = b + u32(1)
+        }
+      }
       e = e + u32(1)
     }
-    b: u32 = u32(0)
-    while b < u32(512) {
-      iosim_names_durable[b] = iosim_names[b]
-      b = b + u32(1)
-    }
-    iosim_done(tag, u32(0)) }
+    iosim_done(tag, u32(0)) } }
   } | {
   slot >= ring[0].files || !iosim_open[slot] ? { iosim_fail(tag, io_err_closed()) } | {
   op == io_op_close() ? {
@@ -486,7 +604,7 @@ iosim_execute: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletio
   op == io_op_pread() ? { iosim_pread(region, iosim_slot_entry[slot], u32_trunc_u64(request.offset), base, n, tag) } | {
   op == io_op_pwrite() ? { iosim_pwrite(region, iosim_slot_entry[slot], u32_trunc_u64(request.offset), base, n, tag) } | {
     iosim_fail(tag, io_err_invalid())
-  } } } } } } } } } } } } } } }
+  } } } } } } } } } } } } } } } }
 }
 
 // open (op 1) opens the named file, creating it when absent; create (op 8)
@@ -504,14 +622,16 @@ iosim_open_or_create: (ring: [*]IoRing, region: [*]u8, request: IoRequest, exclu
   name: [*]u8 = subslice(region, base, n)
   existing: u32 = iosim_find(name, false)
   existing < iosim_entries() && exclusive ? { iosim_fail(tag, io_err_exists()) } | {
-    entry: u32 = existing < iosim_entries() ? { existing } | { iosim_alloc(name) }
+  existing < iosim_entries() && iosim_is_dir[existing] ? { iosim_fail(tag, io_err_invalid()) } | {
+  existing >= iosim_entries() && !iosim_parent_exists(name) ? { iosim_fail(tag, io_err_not_found()) } | {
+    entry: u32 = existing < iosim_entries() ? { existing } | { iosim_alloc(name, false) }
     entry >= iosim_entries() ? { iosim_fail(tag, io_err_no_space()) } | {
       iosim_open[slot] = true
       iosim_direct[slot] = direct
       iosim_slot_entry[slot] = entry
       iosim_done(tag, slot)
     }
-  } } }
+  } } } } }
 }
 
 // rename (op 11): the old name is the window's first `offset` bytes, the
@@ -530,11 +650,16 @@ iosim_rename: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletion
   // two names apart.
   source: u32 = iosim_find(subslice(region, base, old_len), false)
   source >= iosim_entries() ? { iosim_fail(tag, io_err_not_found()) } | {
+  // A file, within one directory: a directory's children carry its name,
+  // and a cross-directory move would need two fsyncdirs to be durable —
+  // both outside the port's contract (docs/spec/120-io.md section 3).
+  iosim_is_dir[source] || iosim_parent_len(subslice(region, base, old_len)) != iosim_parent_len(subslice(region, base + old_len, new_len)) ? { iosim_fail(tag, io_err_invalid()) } | {
+  !iosim_parent_exists(subslice(region, base + old_len, new_len)) ? { iosim_fail(tag, io_err_not_found()) } | {
     target: u32 = iosim_find(subslice(region, base + old_len, new_len), false)
     target < iosim_entries() && target != source ? { iosim_exists[target] = false }
     iosim_set_name(source, subslice(region, base + old_len, new_len))
     iosim_done(tag, u32(0))
-  } } }
+  } } } } }
 }
 
 // readdir (op 10): the directory's path is the window's first `offset`
@@ -553,12 +678,14 @@ iosim_readdir: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletio
   out_base: u32 = base + dir_len
   out_len: u32 = n - dir_len
   !iosim_path_ok(ring, region, base, dir_len) || !(out_base <= ring[0].region_len && out_len <= ring[0].region_len - out_base) ? { iosim_fail(tag, io_err_invalid()) } | {
+  !iosim_dir_exists(subslice(region, base, dir_len)) ? { iosim_fail(tag, io_err_not_found()) } | {
   written: u32 = u32(0)
   overflow: Bool = false
   e: u32 = u32(0)
   while e < iosim_entries() && !overflow {
-    iosim_exists[e] ? {
-      i: u32 = u32(0)
+    iosim_exists[e] && iosim_child_of(e, subslice(region, base, dir_len), false) ? {
+      // The base name: the bytes after the directory's name and its '/'.
+      i: u32 = iosim_is_root(subslice(region, base, dir_len)) ? { u32(0) } | { dir_len }
       finished: Bool = false
       while !finished && !overflow {
         b: u8 = iosim_names[e * iosim_name_bytes() + i]
@@ -580,7 +707,7 @@ iosim_readdir: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletio
     }
     e = e + u32(1)
   }
-  overflow ? { iosim_fail(tag, io_err_too_large()) } | { iosim_done(tag, written) } } }
+  overflow ? { iosim_fail(tag, io_err_too_large()) } | { iosim_done(tag, written) } } } }
 }
 
 // stat (op 12): the result is the file's size; when the window holds eight

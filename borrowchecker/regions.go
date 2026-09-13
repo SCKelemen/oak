@@ -545,7 +545,13 @@ func (bc *BorrowChecker) provenanceOwners(expr ast.Expression, env *typechecker.
 			return owners, true
 		}
 		if _, isOwner := bc.ownerStates[e.Value]; isOwner {
-			return map[string]bool{e.Value: true}, true
+			// An owned array named where a borrow is expected borrows
+			// itself. A record that owns an array (section 2) is owned data
+			// when it is returned by value: it carries only what its borrow
+			// fields carry, traced above or through its initializer below.
+			if typ := env.CheckedExpressionType(e); typ == nil || !typechecker.HoldsOwnedArray(typ) {
+				return map[string]bool{e.Value: true}, true
+			}
 		}
 		if value, ok := bc.staticValue(e, 0); ok {
 			return bc.provenanceOwners(value, env)

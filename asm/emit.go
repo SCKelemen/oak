@@ -53,6 +53,13 @@ func EmitC(fn *Function, cSymbol string, symbolFor func(string) string) string {
 			fmt.Fprintf(&b, "  \"  .arch_extension %s\\n\"\n", ext)
 		}
 	}
+	if fn.VectorFile {
+		// The host assembler must accept the vector spellings whatever its
+		// default -march (docs/spec/94-assembler.md §9); the directive is
+		// scoped to this unit.
+		b.WriteString("  \"  .option push\\n\"\n")
+		b.WriteString("  \"  .option arch, +v\\n\"\n")
+	}
 	for _, ext := range extensionDirectives(fn) {
 		// The host assembler must accept the CRC and SHA-2 spellings on
 		// toolchains whose default -march lacks them (GNU as on Linux);
@@ -88,6 +95,9 @@ func EmitC(fn *Function, cSymbol string, symbolFor func(string) string) string {
 			fmt.Fprintf(&b, "  \"  %s\\n\"\n", renderInstruction(fn, it, symbolFor, numbers, defined))
 		}
 		first = false
+	}
+	if fn.VectorFile {
+		b.WriteString("  \"  .option pop\\n\"\n")
 	}
 	b.WriteString(");\n")
 	if fn.Fallback {
@@ -289,6 +299,12 @@ func renderRV64Instruction(instr Instruction, symbolFor func(string) string, num
 	}
 	parts := make([]string, 0, len(instr.Operands))
 	for _, operand := range instr.Operands {
+		if mem, isMem := operand.(Memory); isMem && rv64VectorShapes[instr.Mnemonic] != "" {
+			// A vector memory operand is spelled `(base)`: the unit-stride
+			// forms carry no offset.
+			parts = append(parts, "("+mem.Base.Text+")")
+			continue
+		}
 		parts = append(parts, renderRV64Operand(operand, symbolFor, numbers, defined))
 	}
 	return instr.Mnemonic + " " + strings.Join(parts, ", ")

@@ -1489,13 +1489,51 @@ through `fmv.d.x`) whose expected results are Go's IEEE-754 arithmetic:
 both machines agree on every input, subnormal and overflowing ones
 included; the harnesses enable the FPU (`mstatus.FS`) before calling in.
 
+**The vector extension as checker state (landed).** The vector file is a
+register class of its own (`v0`–`v31`), every register caller-saved and
+clobberable (`clobber v1`), readable once written on the path. The
+generated table gains the subset of riscv-opcodes' `rv_v` the strip-mining
+idiom needs (20 encodings: `vsetvli`/`vsetivli`, `vle8.v`/`vle32.v`,
+`vse8.v`/`vse32.v`, `vadd`/`vsub`/`vand`/`vor`/`vxor`/`vminu`/`vmaxu` `.vv`,
+`vmv.v.x`, `vmv.x.s`, `vredsum.vs`, `vmseq.vv`, `vmsne.vx`, `vmerge.vvm`,
+`vcpop.m`), unmasked, with the vtype spelled in full — `e8|e16|e32|e64,
+m1, ta|tu, ma|mu` — so the configuration the checker tracks is the one the
+author wrote. The configuration is straight-line state: `vsetvli` (or
+`vsetivli`) sets the SEW and what is known of the AVL; every other vector
+instruction needs one in effect, and a label or a call forgets it (the
+psABI preserves neither `vl` nor `vtype`, so a strip-mining loop re-issues
+`vsetvli` at its head — the same rule the simd realizations follow). A
+vector load or store moves `vl` elements of the configured width from its
+base, and `vl ≤ AVL` on every legal implementation (RVV 1.0 §6.3,
+`Oak.RiscV.vsetvlOK`; QEMU's and Sail's `min(AVL, VLMAX)` is one,
+`vsetvl_min_ok`). The checker admits it through a bound span base when the
+AVL is the span's normalized length, or an immediate within a proven
+minimum length (`immediate_access_in_bounds`); and through a guarded
+element address `&v[idx]` when the AVL register holds `len - idx` —
+`sub avl, len, idx` under the guard `idx < len`, a *remaining-count fact*
+— over the same index at the same write generation the address was formed
+from: `idx + vl ≤ idx + (len - idx) = len` (`strip_access_in_bounds`), and
+the loop advances (`strip_progress`). Element width and SEW agree, LMUL is
+1, and a store needs a writable span. A vector unit is checked and
+*trusted* — the vector state is outside the term language, as the
+floating-point file is — and its inline realization scopes
+`.option arch, +v` to the unit so any host assembler accepts it. Every
+mnemonic agrees with `riscv64-elf-as -march=rv64imv`; the QEMU
+(`-cpu rv64,v=true`) and Sail (V "Full") differentials carry the
+strip-mined `[]u32` sum, expected from Go's wrapping arithmetic, with the
+vector unit enabled (`mstatus.VS`) beside the FPU; and `TestRV64VectorChecker`
+holds the rejections — no configuration, configuration lost at a label or
+across a call, width against SEW, an AVL that is not the remaining count,
+the index rewritten between the address and the count, an unclobbered
+vector register, a store into a view, an immediate past the minimum.
+
 Still to come in this lane:
 compressed encodings (RVC changes the label arithmetic), the RVWMO
-instantiation of `MemoryOrder.lean`, the sail-riscv bridge (the Sail C
-emulator as a second oracle, the Lean export as the semantics the
-transliteration is checked against), and for RVV the vector-length and
-type registers (`vsetvli`) as checker state. The term language and the BDD
-blaster carry over unchanged.
+instantiation of `MemoryOrder.lean`, the sail-riscv bridge's export side
+(the Lean export as the semantics the transliteration is checked against),
+masked vector forms (`vm = 0`) and LMUL above one as checker state, and
+the vector unit stitched through the compiler for a `-cpu` with V. The term
+language and the BDD blaster carry over unchanged.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed

@@ -855,6 +855,26 @@ loop agree on whitespace around elements, signs, sixteen-digit values and
 the width boundaries, and every shape the index does not cover reaches
 the loop's code (`compiler/e2e_json_array_test.go`).
 
+A per-line count profile of the record reader (`llvm-cov` over an
+instrumented build, section 17's method) then found the residue between
+it and the hand-written ceiling: seventeen range-checked byte reads per
+document whose guards the checker could not see — the sign and
+leading-zero tests of the indexed elements guarded by the separator
+rather than the length, the closing bracket read through an array
+element, the colon test spelled as a disjunction, the scanner's first
+digit read outside its own guard, and the escape decoder's hex digits —
+and two and a half unproven word loads per document in the scanner's
+word loop, whose guard `len(src) - at >= 8` was not the wrap-free form.
+Each is now spelled under the guard the checker recognizes (a local for
+the last mark, `!(at < len && src[at] == ':')` for the colon, the whole
+scan under the first digit's guard, literal offsets for the hex digits),
+so the emitted reader, scanner and key path carry no range check. The
+scanner also takes the twentieth digit — the one that can overflow — from
+the register when the count capped the run, with the same overflow test
+the byte loop applies, and reads the byte after it as the terminator, so
+a full `u64` costs no byte-loop step and no separate load; the value
+arithmetic is unchanged and the earlier theorems apply as before.
+
 Measured on the local harness with the simdjson control in every run
 (`benchmarks/json/RESULTS.md`, eighth pass, load average 55 to 135): the
 event workload from 1.23 times simdjson's time to 0.91 in two repeats,

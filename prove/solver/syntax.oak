@@ -1,0 +1,2021 @@
+// The syntax serializer, in Oak (docs/spec/125-verification.md section 7;
+// asm/syntax.go is the Go serializer this is the twin of, kept as the
+// cross-check). A theorem, the functions its body names, and the program's
+// record and sum-type declarations arrive as the raw syntax table
+// (asm/rawsyntax.go): the parser's tree with identifiers, operators, and
+// type names as strings, nothing resolved. This program resolves the
+// names, types the subset, lays out every type's leaves and the theorem's
+// leaf names in the decider's order, and builds the syntax table the
+// lowering reads (lower.oak) — or reports the construct that keeps the
+// theorem outside the subset. The Go serializer's walk is recursive; the
+// strict profile admits no unbounded recursion, so it is a frame stack
+// here, as the lowering's is.
+package main
+
+// Raw node kinds (asm/rawsyntax.go).
+RAW_INTLIT: u32 = 0
+RAW_BOOLLIT: u32 = 1
+RAW_FLOATLIT: u32 = 2
+RAW_IDENT: u32 = 3
+RAW_PREFIX: u32 = 4
+RAW_INFIX: u32 = 5
+RAW_BLOCKEXPR: u32 = 6
+RAW_BLOCK: u32 = 7
+RAW_VARIANT: u32 = 8
+RAW_MATCH: u32 = 9
+RAW_PAT_VARIANT: u32 = 10
+RAW_PAT_LITERAL: u32 = 11
+RAW_PAT_WILD: u32 = 12
+RAW_PAT_BINDING: u32 = 13
+RAW_INDEX: u32 = 14
+RAW_RECORDLIT: u32 = 15
+RAW_ARRAYLIT: u32 = 16
+RAW_CALL: u32 = 17
+RAW_EXPRSTMT: u32 = 18
+RAW_VARDECL: u32 = 19
+RAW_ASSIGN: u32 = 20
+RAW_INDEXASSIGN: u32 = 21
+RAW_WHILE: u32 = 22
+RAW_OTHER: u32 = 23
+
+RAW_TYPE_NAME: u32 = 0
+RAW_TYPE_ARRAY: u32 = 1
+
+RAW_HEADER: u32 = 16
+RAW_FLAG_UNUSABLE: u32 = 1
+
+// Capacities of the serializer's tables.
+SR_FUNCS: u32 = 256
+SR_PARAMS: u32 = 2048
+SR_TYPES: u32 = 256
+SR_TLEAVES: u32 = 16384
+SR_FIELDS: u32 = 4096
+SR_VARIANTS: u32 = 2048
+SR_LEAFIDX: u32 = 512
+SR_LNAMES: u32 = 512
+SR_POOL_WORDS: u32 = 32768
+SR_FRAMES: u32 = 4096
+SR_ACC: u32 = 16384
+SR_TSTACK: u32 = 128
+SR_FRAME_WORDS: u32 = 16
+SR_TYPE_WORDS: u32 = 12
+SR_TS_WORDS: u32 = 8
+
+// State words.
+ST_FAILED: u32 = 0
+ST_SP: u32 = 1
+ST_RET: u32 = 2
+ST_ACC_SP: u32 = 3
+ST_NFUNCS: u32 = 4
+ST_NPARAMS: u32 = 5
+ST_NTYPES: u32 = 6
+ST_NTLEAVES: u32 = 7
+ST_NFIELDS: u32 = 8
+ST_NVARIANTS: u32 = 9
+ST_NLEAFIDX: u32 = 10
+ST_NNODES: u32 = 11
+ST_NLISTS: u32 = 12
+ST_MAXSYMS: u32 = 13
+ST_POOL: u32 = 14
+ST_THEOREM: u32 = 15
+ST_LEAVES: u32 = 16
+ST_TSP: u32 = 17
+ST_TRET: u32 = 18
+ST_NLNAMES: u32 = 19
+
+// Frame kinds.
+X_EXPR: u32 = 0
+X_BLOCK: u32 = 1
+X_MATCH: u32 = 2
+X_CONDSTMT: u32 = 3
+X_FUNC: u32 = 4
+
+// Type stack entry kinds.
+TS_EXPR: u32 = 0
+TS_NAME: u32 = 1
+TS_ARRAY: u32 = 2
+TS_RECORD: u32 = 3
+TS_SUM: u32 = 4
+
+// Type key kinds (the serializer's own; the table's kinds are TY_*).
+TK_SCALAR: u32 = 0
+TK_RECORD: u32 = 1
+TK_ARRAY: u32 = 2
+TK_SUM: u32 = 3
+
+// Instruction function codes (asm/syntax.go synInstrOps).
+INSTR_REV: u32 = 10
+INSTR_RBIT: u32 = 13
+INSTR_CLZ: u32 = 14
+INSTR_CNT: u32 = 15
+
+Ser: type = struct {
+  funcs_at: u32,
+  fnames_at: u32,
+  params_at: u32,
+  types_at: u32,
+  tkeys_at: u32,
+  tleaves_at: u32,
+  tlnames_at: u32,
+  fields_at: u32,
+  variants_at: u32,
+  vnames_at: u32,
+  leafidx_at: u32,
+  lnames_at: u32,
+  syms_at: u32,
+  pool_at: u32,
+  frames_at: u32,
+  acc_at: u32,
+  tstack_at: u32,
+  nodes_at: u32,
+  lists_at: u32,
+  state_at: u32,
+  total: u32,
+  cap_nodes: u32,
+  cap_lists: u32,
+  out_total: u32
+}
+
+ser_layout: (cap_nodes: u32, cap_lists: u32): Ser {
+  funcs_at: u32 = 0
+  fnames_at: u32 = funcs_at + SR_FUNCS * SYN_FUNC_WORDS
+  params_at: u32 = fnames_at + SR_FUNCS
+  types_at: u32 = params_at + SR_PARAMS * SYN_PARAM_WORDS
+  tkeys_at: u32 = types_at + SR_TYPES * SR_TYPE_WORDS
+  tleaves_at: u32 = tkeys_at + SR_TYPES * u32(4)
+  tlnames_at: u32 = tleaves_at + SR_TLEAVES * u32(4)
+  fields_at: u32 = tlnames_at + SR_TLEAVES * u32(2)
+  variants_at: u32 = fields_at + SR_FIELDS * u32(4)
+  vnames_at: u32 = variants_at + SR_VARIANTS * u32(4)
+  leafidx_at: u32 = vnames_at + SR_VARIANTS
+  lnames_at: u32 = leafidx_at + SR_LEAFIDX
+  syms_at: u32 = lnames_at + SR_LNAMES * u32(4)
+  pool_at: u32 = syms_at + SR_FUNCS * MAX_SYMBOLS * u32(2)
+  frames_at: u32 = pool_at + SR_POOL_WORDS
+  acc_at: u32 = frames_at + SR_FRAMES * SR_FRAME_WORDS
+  tstack_at: u32 = acc_at + SR_ACC
+  nodes_at: u32 = tstack_at + SR_TSTACK * SR_TS_WORDS
+  lists_at: u32 = nodes_at + cap_nodes * SYN_NODE_WORDS
+  state_at: u32 = lists_at + cap_lists
+  Ser {
+    funcs_at: funcs_at,
+    fnames_at: fnames_at,
+    params_at: params_at,
+    types_at: types_at,
+    tkeys_at: tkeys_at,
+    tleaves_at: tleaves_at,
+    tlnames_at: tlnames_at,
+    fields_at: fields_at,
+    variants_at: variants_at,
+    vnames_at: vnames_at,
+    leafidx_at: leafidx_at,
+    lnames_at: lnames_at,
+    syms_at: syms_at,
+    pool_at: pool_at,
+    frames_at: frames_at,
+    acc_at: acc_at,
+    tstack_at: tstack_at,
+    nodes_at: nodes_at,
+    lists_at: lists_at,
+    state_at: state_at,
+    total: state_at + u32(32),
+    cap_nodes: cap_nodes,
+    cap_lists: cap_lists,
+    out_total: SYN_HEADER + SR_FUNCS * SYN_FUNC_WORDS + SR_PARAMS * SYN_PARAM_WORDS + SR_TYPES * SYN_TYPE_WORDS + SR_TLEAVES * u32(2) + SR_FIELDS * u32(2) + SR_VARIANTS * u32(3) + SR_LEAFIDX + cap_nodes * SYN_NODE_WORDS + cap_lists
+  }
+}
+
+sst: (s: Ser, w: [*]u32, k: u32): u32 = w[s.state_at + k]
+set_sst: (s: Ser, w: [*]u32, k: u32, v: u32): () { w[s.state_at + k] = v }
+sr_fail: (s: Ser, w: [*]u32, code: u32): () {
+  w[s.state_at + ST_FAILED] == u32(0) ? { w[s.state_at + ST_FAILED] = code } | { }
+}
+sr_failed: (s: Ser, w: [*]u32): Bool = w[s.state_at + ST_FAILED] != u32(0)
+
+// --- the raw table ----------------------------------------------------------
+
+Raw: type = struct {
+  strings_at: u32,
+  pool_at: u32,
+  types_at: u32,
+  funcs_at: u32,
+  params_at: u32,
+  records_at: u32,
+  fields_at: u32,
+  adts_at: u32,
+  variants_at: u32,
+  nodes_at: u32,
+  lists_at: u32,
+  nrecords: u32,
+  nadts: u32,
+  nfuncs: u32,
+  theorem: u32
+}
+
+raw_layout: (rx: []u32): Raw {
+  strings_at: u32 = RAW_HEADER
+  pool_at: u32 = strings_at + rx[u32(0)] * u32(2)
+  types_at: u32 = pool_at + rx[u32(1)]
+  funcs_at: u32 = types_at + rx[u32(2)] * u32(4)
+  params_at: u32 = funcs_at + rx[u32(5)] * u32(8)
+  records_at: u32 = params_at + rx[u32(6)] * u32(4)
+  fields_at: u32 = records_at + rx[u32(7)] * u32(4)
+  adts_at: u32 = fields_at + rx[u32(8)] * u32(4)
+  variants_at: u32 = adts_at + rx[u32(9)] * u32(4)
+  nodes_at: u32 = variants_at + rx[u32(10)] * u32(4)
+  lists_at: u32 = nodes_at + rx[u32(3)] * u32(8)
+  nrecords: u32 = rx[u32(7)]
+  nadts: u32 = rx[u32(9)]
+  nfuncs: u32 = rx[u32(5)]
+  theorem_fn: u32 = rx[u32(11)]
+  Raw {
+    strings_at: strings_at,
+    pool_at: pool_at,
+    types_at: types_at,
+    funcs_at: funcs_at,
+    params_at: params_at,
+    records_at: records_at,
+    fields_at: fields_at,
+    adts_at: adts_at,
+    variants_at: variants_at,
+    nodes_at: nodes_at,
+    lists_at: lists_at,
+    nrecords: nrecords,
+    nadts: nadts,
+    nfuncs: nfuncs,
+    theorem: theorem_fn
+  }
+}
+
+rs_off: (rx: []u32, raw: Raw, id: u32): u32 = rx[raw.strings_at + id * u32(2)]
+rs_len: (rx: []u32, raw: Raw, id: u32): u32 = rx[raw.strings_at + id * u32(2) + u32(1)]
+rs_byte_at: (rx: []u32, raw: Raw, at: u32): u32 = (rx[raw.pool_at + at / u32(4)] >> ((at % u32(4)) * u32(8))) & u32(255)
+rs_byte: (rx: []u32, raw: Raw, id: u32, k: u32): u32 = rs_byte_at(rx, raw, rs_off(rx, raw, id) + k)
+
+// Name16 is up to sixteen bytes of a string packed little-endian, with its
+// length: the fixed names the serializer recognizes are compared as such.
+Name16: type = struct { lo: u64, hi: u64, n: u32 }
+
+// rs_segment packs bytes [begin, begin + n) of a string.
+rs_segment: (rx: []u32, raw: Raw, id: u32, begin: u32, n: u32): Name16 {
+  lo: u64 = 0
+  hi: u64 = 0
+  k: u32 = 0
+  while k < n && k < u32(16) {
+    b: u64 = u64(rs_byte(rx, raw, id, begin + k))
+    k < u32(8) ? { lo = lo | (b << u64(k * u32(8))) } | { hi = hi | (b << u64((k - u32(8)) * u32(8))) }
+    k = k + u32(1)
+  }
+  Name16 { lo: lo, hi: hi, n: n }
+}
+
+rs_name: (rx: []u32, raw: Raw, id: u32): Name16 = rs_segment(rx, raw, id, u32(0), rs_len(rx, raw, id))
+
+is_name: (nm: Name16, lo: u64, hi: u64, n: u32): Bool = nm.n == n && nm.lo == lo && nm.hi == hi
+
+rn_kind: (rx: []u32, raw: Raw, n: u32): u32 = rx[raw.nodes_at + n * u32(8)]
+rn_a: (rx: []u32, raw: Raw, n: u32): u32 = rx[raw.nodes_at + n * u32(8) + u32(1)]
+rn_b: (rx: []u32, raw: Raw, n: u32): u32 = rx[raw.nodes_at + n * u32(8) + u32(2)]
+rn_c: (rx: []u32, raw: Raw, n: u32): u32 = rx[raw.nodes_at + n * u32(8) + u32(3)]
+rn_vlo: (rx: []u32, raw: Raw, n: u32): u32 = rx[raw.nodes_at + n * u32(8) + u32(5)]
+rn_vhi: (rx: []u32, raw: Raw, n: u32): u32 = rx[raw.nodes_at + n * u32(8) + u32(6)]
+rl_item: (rx: []u32, raw: Raw, start: u32, i: u32): u32 = rx[raw.lists_at + start + i]
+
+rt_kind: (rx: []u32, raw: Raw, t: u32): u32 = rx[raw.types_at + t * u32(4)]
+rt_a: (rx: []u32, raw: Raw, t: u32): u32 = rx[raw.types_at + t * u32(4) + u32(1)]
+rt_b: (rx: []u32, raw: Raw, t: u32): u32 = rx[raw.types_at + t * u32(4) + u32(2)]
+
+rf_word: (rx: []u32, raw: Raw, f: u32, k: u32): u32 = rx[raw.funcs_at + f * u32(8) + k]
+rp_word: (rx: []u32, raw: Raw, p: u32, k: u32): u32 = rx[raw.params_at + p * u32(4) + k]
+rrec_word: (rx: []u32, raw: Raw, r: u32, k: u32): u32 = rx[raw.records_at + r * u32(4) + k]
+rfield_word: (rx: []u32, raw: Raw, f: u32, k: u32): u32 = rx[raw.fields_at + f * u32(4) + k]
+radt_word: (rx: []u32, raw: Raw, a: u32, k: u32): u32 = rx[raw.adts_at + a * u32(4) + k]
+rvar_word: (rx: []u32, raw: Raw, v: u32, k: u32): u32 = rx[raw.variants_at + v * u32(4) + k]
+
+// raw_find_function finds a program function by name: its raw index, or NONE.
+raw_find_function: (rx: []u32, raw: Raw, name: u32): u32 {
+  found: u32 = NONE
+  i: u32 = 0
+  while i < raw.nfuncs && found == NONE {
+    rf_word(rx, raw, i, u32(0)) == name ? { found = i } | { }
+    i = i + u32(1)
+  }
+  found
+}
+
+raw_find_record: (rx: []u32, raw: Raw, name: u32): u32 {
+  found: u32 = NONE
+  i: u32 = 0
+  while i < raw.nrecords && found == NONE {
+    rrec_word(rx, raw, i, u32(0)) == name ? { found = i } | { }
+    i = i + u32(1)
+  }
+  found
+}
+
+raw_find_adt: (rx: []u32, raw: Raw, name: u32): u32 {
+  found: u32 = NONE
+  i: u32 = 0
+  while i < raw.nadts && found == NONE {
+    radt_word(rx, raw, i, u32(0)) == name ? { found = i } | { }
+    i = i + u32(1)
+  }
+  found
+}
+
+// --- names: the byte pool -----------------------------------------------------
+
+pool_byte: (s: Ser, w: [*]u32, at: u32): u32 = (w[s.pool_at + at / u32(4)] >> ((at % u32(4)) * u32(8))) & u32(255)
+
+pool_push: (s: Ser, w: [*]u32, b: u32): () {
+  at: u32 = sst(s, w, ST_POOL)
+  at >= SR_POOL_WORDS * u32(4) ? { sr_fail(s, w, u32(150)) } | {
+    shift: u32 = (at % u32(4)) * u32(8)
+    word: u32 = s.pool_at + at / u32(4)
+    w[word] = (w[word] & (NONE ^ (u32(255) << shift))) | (b << shift)
+    set_sst(s, w, ST_POOL, at + u32(1))
+  }
+}
+
+pool_push_raw: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, id: u32): () {
+  n: u32 = rs_len(rx, raw, id)
+  k: u32 = 0
+  while k < n {
+    pool_push(s, w, rs_byte(rx, raw, id, k))
+    k = k + u32(1)
+  }
+}
+
+pool_push_pool: (s: Ser, w: [*]u32, off: u32, n: u32): () {
+  k: u32 = 0
+  while k < n {
+    pool_push(s, w, pool_byte(s, w, off + k))
+    k = k + u32(1)
+  }
+}
+
+pool_push_decimal: (s: Ser, w: [*]u32, v: u32): () {
+  digits: [10]u32
+  n: u32 = 0
+  rest: u32 = v
+  digits[u32(0)] = u32(0)
+  rest == u32(0) ? { n = u32(1) } | {
+    while rest > u32(0) {
+      digits[n] = rest % u32(10)
+      rest = rest / u32(10)
+      n = n + u32(1)
+    }
+  }
+  while n > u32(0) {
+    n = n - u32(1)
+    pool_push(s, w, u32(48) + digits[n])
+  }
+}
+
+// name_less: bytewise order of two pool names (the Go string order).
+name_less: (s: Ser, w: [*]u32, a_off: u32, a_len: u32, b_off: u32, b_len: u32): Bool {
+  k: u32 = 0
+  decided: Bool = false
+  less: Bool = false
+  while k < a_len && k < b_len && !decided {
+    ab: u32 = pool_byte(s, w, a_off + k)
+    bb: u32 = pool_byte(s, w, b_off + k)
+    ab != bb ? {
+      decided = true
+      less = ab < bb
+    } | { }
+    k = k + u32(1)
+  }
+  decided ? { less } | { a_len < b_len }
+}
+
+// --- types ----------------------------------------------------------------------
+
+sr_ntypes: (s: Ser, w: [*]u32): u32 = sst(s, w, ST_NTYPES)
+ty_word: (s: Ser, w: [*]u32, t: u32, k: u32): u32 = w[s.types_at + t * SR_TYPE_WORDS + k]
+set_ty_word: (s: Ser, w: [*]u32, t: u32, k: u32, v: u32): () { w[s.types_at + t * SR_TYPE_WORDS + k] = v }
+ty_kind: (s: Ser, w: [*]u32, t: u32): u32 = ty_word(s, w, t, u32(0))
+ty_leaf_count: (s: Ser, w: [*]u32, t: u32): u32 = ty_word(s, w, t, u32(1))
+ty_field_count: (s: Ser, w: [*]u32, t: u32): u32 = ty_word(s, w, t, u32(2))
+ty_variant_count: (s: Ser, w: [*]u32, t: u32): u32 = ty_word(s, w, t, u32(3))
+ty_elem: (s: Ser, w: [*]u32, t: u32): u32 = ty_word(s, w, t, u32(4))
+ty_length: (s: Ser, w: [*]u32, t: u32): u32 = ty_word(s, w, t, u32(5))
+ty_float: (s: Ser, w: [*]u32, t: u32): Bool = t != NONE && ty_word(s, w, t, u32(6)) != u32(0)
+
+// sr_find_type finds the interned type with the key, or NONE (an
+// in-progress record or sum type is a cycle: NONE - 1 marks it).
+sr_find_type: (s: Ser, w: [*]u32, kind: u32, a: u32, b: u32): u32 {
+  found: u32 = NONE
+  n: u32 = sr_ntypes(s, w)
+  i: u32 = 0
+  while i < n && found == NONE {
+    at: u32 = s.tkeys_at + i * u32(4)
+    (w[at] == kind && w[at + u32(1)] == a && w[at + u32(2)] == b) ? { found = w[at + u32(3)] != u32(0) ? { NONE - u32(1) } | { i } } | { }
+    i = i + u32(1)
+  }
+  found
+}
+
+// sr_alloc_type interns a new type under the key (in progress for a
+// record or sum until its members are laid out).
+sr_alloc_type: (s: Ser, w: [*]u32, kind: u32, a: u32, b: u32, in_progress: Bool): u32 {
+  n: u32 = sr_ntypes(s, w)
+  n >= SR_TYPES ? { sr_fail(s, w, u32(151)) } | {
+    at: u32 = s.tkeys_at + n * u32(4)
+    w[at] = kind
+    w[at + u32(1)] = a
+    w[at + u32(2)] = b
+    w[at + u32(3)] = in_progress ? { u32(1) } | { u32(0) }
+    k: u32 = 0
+    while k < SR_TYPE_WORDS {
+      set_ty_word(s, w, n, k, u32(0))
+      k = k + u32(1)
+    }
+    set_ty_word(s, w, n, u32(0), kind == TK_SCALAR ? { TY_SCALAR } | { kind == TK_RECORD ? { TY_RECORD } | { kind == TK_ARRAY ? { TY_ARRAY } | { TY_SUM } } })
+    set_sst(s, w, ST_NTYPES, n + u32(1))
+  }
+  n
+}
+
+sr_type_done: (s: Ser, w: [*]u32, t: u32): () { w[s.tkeys_at + t * u32(4) + u32(3)] = u32(0) }
+
+// sr_add_leaf appends a leaf (width, signedness) to a type, named by the
+// pool bytes [name_off, name_off + name_len).
+sr_add_leaf: (s: Ser, w: [*]u32, t: u32, width: u32, signed: u32, name_off: u32, name_len: u32): () {
+  n: u32 = sst(s, w, ST_NTLEAVES)
+  n >= SR_TLEAVES ? { sr_fail(s, w, u32(152)) } | {
+    at: u32 = s.tleaves_at + n * u32(4)
+    w[at] = width
+    w[at + u32(1)] = signed
+    w[at + u32(2)] = t
+    w[at + u32(3)] = u32(0)
+    w[s.tlnames_at + n * u32(2)] = name_off
+    w[s.tlnames_at + n * u32(2) + u32(1)] = name_len
+    set_sst(s, w, ST_NTLEAVES, n + u32(1))
+    set_ty_word(s, w, t, u32(1), ty_leaf_count(s, w, t) + u32(1))
+  }
+}
+
+// sr_copy_leaves appends every leaf of src to dst, each name prefixed:
+// "." and the raw string (a field or variant name) when prefix_str is
+// given, else "[k]" with the index.
+sr_copy_leaves: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, dst: u32, src: u32, prefix_str: u32, k: u32): () {
+  bound: u32 = sst(s, w, ST_NTLEAVES)
+  e: u32 = 0
+  while e < bound && !sr_failed(s, w) {
+    at: u32 = s.tleaves_at + e * u32(4)
+    w[at + u32(2)] == src ? {
+      off: u32 = sst(s, w, ST_POOL)
+      prefix_str == NONE ? {
+        pool_push(s, w, u32(91))
+        pool_push_decimal(s, w, k)
+        pool_push(s, w, u32(93))
+      } | {
+        pool_push(s, w, u32(46))
+        pool_push_raw(s, w, rx, raw, prefix_str)
+      }
+      pool_push_pool(s, w, w[s.tlnames_at + e * u32(2)], w[s.tlnames_at + e * u32(2) + u32(1)])
+      sr_add_leaf(s, w, dst, w[at], w[at + u32(1)], off, sst(s, w, ST_POOL) - off)
+    } | { }
+    e = e + u32(1)
+  }
+}
+
+// sr_scalar_type interns a scalar (width, signedness, float flag).
+sr_scalar_type: (s: Ser, w: [*]u32, width: u32, signed: u32, is_float: u32): u32 {
+  found: u32 = sr_find_type(s, w, TK_SCALAR, width, signed + u32(2) * is_float)
+  found == NONE ? {
+    t: u32 = sr_alloc_type(s, w, TK_SCALAR, width, signed + u32(2) * is_float, false)
+    sr_failed(s, w) ? { } | {
+      set_ty_word(s, w, t, u32(6), is_float)
+      set_ty_word(s, w, t, u32(7), width)
+      set_ty_word(s, w, t, u32(8), signed)
+      sr_add_leaf(s, w, t, width, signed, sst(s, w, ST_POOL), u32(0))
+    }
+    found = t
+  } | { }
+  found
+}
+
+sr_bool_type: (s: Ser, w: [*]u32): u32 = sr_scalar_type(s, w, u32(1), u32(0), u32(0))
+
+// sr_add_field appends a field (type, leaf offset, name) to a record type.
+sr_add_field: (s: Ser, w: [*]u32, t: u32, ft: u32, offset: u32, name: u32): () {
+  n: u32 = sst(s, w, ST_NFIELDS)
+  n >= SR_FIELDS ? { sr_fail(s, w, u32(153)) } | {
+    at: u32 = s.fields_at + n * u32(4)
+    w[at] = ft
+    w[at + u32(1)] = offset
+    w[at + u32(2)] = t
+    w[at + u32(3)] = name
+    set_sst(s, w, ST_NFIELDS, n + u32(1))
+    set_ty_word(s, w, t, u32(2), ty_field_count(s, w, t) + u32(1))
+  }
+}
+
+// sr_field_entry: the entry of a record type's k-th field, or NONE.
+sr_field_entry: (s: Ser, w: [*]u32, t: u32, k: u32): u32 {
+  found: u32 = NONE
+  seen: u32 = 0
+  n: u32 = sst(s, w, ST_NFIELDS)
+  e: u32 = 0
+  while e < n && found == NONE {
+    w[s.fields_at + e * u32(4) + u32(2)] == t ? {
+      seen == k ? { found = e } | { }
+      seen = seen + u32(1)
+    } | { }
+    e = e + u32(1)
+  }
+  found
+}
+
+// sr_field_index: the index of a record type's field by name, or NONE.
+sr_field_index: (s: Ser, w: [*]u32, t: u32, name: u32): u32 {
+  found: u32 = NONE
+  seen: u32 = 0
+  n: u32 = sst(s, w, ST_NFIELDS)
+  e: u32 = 0
+  while e < n && found == NONE {
+    w[s.fields_at + e * u32(4) + u32(2)] == t ? {
+      w[s.fields_at + e * u32(4) + u32(3)] == name ? { found = seen } | { }
+      seen = seen + u32(1)
+    } | { }
+    e = e + u32(1)
+  }
+  found
+}
+
+sr_add_variant: (s: Ser, w: [*]u32, t: u32, tag: u32, payload: u32, offset: u32, name: u32): () {
+  n: u32 = sst(s, w, ST_NVARIANTS)
+  n >= SR_VARIANTS ? { sr_fail(s, w, u32(154)) } | {
+    at: u32 = s.variants_at + n * u32(4)
+    w[at] = tag
+    w[at + u32(1)] = payload
+    w[at + u32(2)] = offset
+    w[at + u32(3)] = t
+    w[s.vnames_at + n] = name
+    set_sst(s, w, ST_NVARIANTS, n + u32(1))
+    set_ty_word(s, w, t, u32(3), ty_variant_count(s, w, t) + u32(1))
+  }
+}
+
+sr_variant_entry: (s: Ser, w: [*]u32, t: u32, k: u32): u32 {
+  found: u32 = NONE
+  seen: u32 = 0
+  n: u32 = sst(s, w, ST_NVARIANTS)
+  e: u32 = 0
+  while e < n && found == NONE {
+    w[s.variants_at + e * u32(4) + u32(3)] == t ? {
+      seen == k ? { found = e } | { }
+      seen = seen + u32(1)
+    } | { }
+    e = e + u32(1)
+  }
+  found
+}
+
+sr_variant_index: (s: Ser, w: [*]u32, t: u32, name: u32): u32 {
+  found: u32 = NONE
+  seen: u32 = 0
+  n: u32 = sst(s, w, ST_NVARIANTS)
+  e: u32 = 0
+  while e < n && found == NONE {
+    w[s.variants_at + e * u32(4) + u32(3)] == t ? {
+      w[s.vnames_at + e] == name ? { found = seen } | { }
+      seen = seen + u32(1)
+    } | { }
+    e = e + u32(1)
+  }
+  found
+}
+
+// Contract is the lowering's (width, signed, ok); scalar_name_contract
+// reads a scalar type name, with the float names as their bit patterns.
+scalar_name_contract: (nm: Name16): Contract {
+  is_name(nm, u64(0x3875), u64(0), u32(2)) || is_name(nm, u64(0x65747962), u64(0), u32(4)) ? { Contract { width: u32(8), signed: false, ok: true } } | {
+  is_name(nm, u64(0x3869), u64(0), u32(2)) ? { Contract { width: u32(8), signed: true, ok: true } } | {
+  is_name(nm, u64(0x363175), u64(0), u32(3)) ? { Contract { width: u32(16), signed: false, ok: true } } | {
+  is_name(nm, u64(0x363169), u64(0), u32(3)) ? { Contract { width: u32(16), signed: true, ok: true } } | {
+  is_name(nm, u64(0x323375), u64(0), u32(3)) || is_name(nm, u64(0x656E7572), u64(0), u32(4)) ? { Contract { width: u32(32), signed: false, ok: true } } | {
+  is_name(nm, u64(0x323369), u64(0), u32(3)) ? { Contract { width: u32(32), signed: true, ok: true } } | {
+  is_name(nm, u64(0x343675), u64(0), u32(3)) ? { Contract { width: u32(64), signed: false, ok: true } } | {
+  is_name(nm, u64(0x343669), u64(0), u32(3)) ? { Contract { width: u32(64), signed: true, ok: true } } | {
+  is_name(nm, u64(0x6C6F6F42), u64(0), u32(4)) ? { Contract { width: u32(1), signed: false, ok: true } } | {
+  is_name(nm, u64(0x323366), u64(0), u32(3)) ? { Contract { width: u32(32), signed: false, ok: true } } | {
+  is_name(nm, u64(0x343666), u64(0), u32(3)) ? { Contract { width: u32(64), signed: false, ok: true } } | {
+  Contract { width: u32(0), signed: false, ok: false } } } } } } } } } } } }
+}
+
+is_float_name: (nm: Name16): Bool = is_name(nm, u64(0x323366), u64(0), u32(3)) || is_name(nm, u64(0x343666), u64(0), u32(3))
+is_narrow_float_name: (nm: Name16): Bool = is_name(nm, u64(0x363166), u64(0), u32(3)) || is_name(nm, u64(0x36316662), u64(0), u32(4)) || is_name(nm, u64(0x3866), u64(0), u32(2))
+
+// The type stack (sr_resolve_type): entries of SR_TS_WORDS words.
+ts_push: (s: Ser, w: [*]u32, kind: u32, a: u32, b: u32, c: u32, d: u32): () {
+  sp: u32 = sst(s, w, ST_TSP)
+  sp >= SR_TSTACK ? { sr_fail(s, w, u32(155)) } | {
+    at: u32 = s.tstack_at + sp * SR_TS_WORDS
+    w[at] = kind
+    w[at + u32(1)] = a
+    w[at + u32(2)] = b
+    w[at + u32(3)] = c
+    w[at + u32(4)] = d
+    set_sst(s, w, ST_TSP, sp + u32(1))
+  }
+}
+ts_pop: (s: Ser, w: [*]u32): () { set_sst(s, w, ST_TSP, sst(s, w, ST_TSP) - u32(1)) }
+ts_top: (s: Ser, w: [*]u32): u32 = s.tstack_at + (sst(s, w, ST_TSP) - u32(1)) * SR_TS_WORDS
+
+// ts_name resolves a type name on top of the stack: a scalar, a declared
+// record or sum type (interned, its members laid out through the stack),
+// else a failure.
+ts_name: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, name: u32): () {
+  nm: Name16 = rs_name(rx, raw, name)
+  ct: Contract = scalar_name_contract(nm)
+  ct.ok ? {
+    set_sst(s, w, ST_TRET, sr_scalar_type(s, w, ct.width, ct.signed ? { u32(1) } | { u32(0) }, is_float_name(nm) ? { u32(1) } | { u32(0) }))
+    ts_pop(s, w)
+  } | {
+    is_narrow_float_name(nm) ? { sr_fail(s, w, u32(102)) } | {
+      rec: u32 = raw_find_record(rx, raw, name)
+      adt: u32 = rec == NONE ? { raw_find_adt(rx, raw, name) } | { NONE }
+      (rec == NONE && adt == NONE) ? { sr_fail(s, w, u32(103)) } | {
+        kind: u32 = rec == NONE ? { TK_SUM } | { TK_RECORD }
+        found: u32 = sr_find_type(s, w, kind, name, u32(0))
+        found == NONE - u32(1) ? { sr_fail(s, w, u32(104)) } | {
+          found != NONE ? {
+            set_sst(s, w, ST_TRET, found)
+            ts_pop(s, w)
+          } | {
+            t: u32 = sr_alloc_type(s, w, kind, name, u32(0), true)
+            sr_failed(s, w) ? { } | {
+              w[at] = rec == NONE ? { TS_SUM } | { TS_RECORD }
+              w[at + u32(1)] = t
+              w[at + u32(2)] = rec == NONE ? { adt } | { rec }
+              w[at + u32(3)] = u32(0)
+              w[at + u32(4)] = u32(0)
+              rec == NONE ? {
+                off: u32 = sst(s, w, ST_POOL)
+                pool_push(s, w, u32(46))
+                pool_push(s, w, u32(116))
+                pool_push(s, w, u32(97))
+                pool_push(s, w, u32(103))
+                sr_add_leaf(s, w, t, u32(32), u32(0), off, u32(4))
+              } | { }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// ts_record lays out a record's fields in declaration order: each
+// field's type resolved through the stack, then the field and its leaves.
+ts_record: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  t: u32 = w[at + u32(1)]
+  rec: u32 = w[at + u32(2)]
+  next: u32 = w[at + u32(3)]
+  pending: u32 = w[at + u32(4)]
+  fstart: u32 = rrec_word(rx, raw, rec, u32(1))
+  nfields: u32 = rrec_word(rx, raw, rec, u32(2))
+  pending != u32(0) ? {
+    ft: u32 = sst(s, w, ST_TRET)
+    fname: u32 = rfield_word(rx, raw, fstart + next - u32(1), u32(0))
+    sr_add_field(s, w, t, ft, ty_leaf_count(s, w, t), fname)
+    sr_copy_leaves(s, w, rx, raw, t, ft, fname, u32(0))
+    w[at + u32(4)] = u32(0)
+  } | { }
+  sr_failed(s, w) ? { } | {
+    next < nfields ? {
+      w[at + u32(3)] = next + u32(1)
+      w[at + u32(4)] = u32(1)
+      ts_push(s, w, TS_EXPR, rfield_word(rx, raw, fstart + next, u32(1)), u32(0), u32(0), u32(0))
+    } | {
+      sr_type_done(s, w, t)
+      set_sst(s, w, ST_TRET, t)
+      ts_pop(s, w)
+    }
+  }
+}
+
+// ts_sum lays out a sum type's variants: the tag leaf first (at
+// interning), then per variant its payload type through the stack.
+ts_sum: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  t: u32 = w[at + u32(1)]
+  adt: u32 = w[at + u32(2)]
+  next: u32 = w[at + u32(3)]
+  pending: u32 = w[at + u32(4)]
+  vstart: u32 = radt_word(rx, raw, adt, u32(1))
+  nvariants: u32 = radt_word(rx, raw, adt, u32(2))
+  pending != u32(0) ? {
+    pt: u32 = sst(s, w, ST_TRET)
+    v: u32 = vstart + next - u32(1)
+    vname: u32 = rvar_word(rx, raw, v, u32(0))
+    sr_add_variant(s, w, t, rvar_word(rx, raw, v, u32(1)), pt, ty_leaf_count(s, w, t), vname)
+    sr_copy_leaves(s, w, rx, raw, t, pt, vname, u32(0))
+    w[at + u32(4)] = u32(0)
+  } | { }
+  pushed: Bool = false
+  while next < nvariants && !pushed && !sr_failed(s, w) {
+    v: u32 = vstart + next
+    payload: u32 = rvar_word(rx, raw, v, u32(2))
+    next = next + u32(1)
+    w[at + u32(3)] = next
+    payload == NONE ? {
+      sr_add_variant(s, w, t, rvar_word(rx, raw, v, u32(1)), NONE, ty_leaf_count(s, w, t), rvar_word(rx, raw, v, u32(0)))
+    } | {
+      w[at + u32(4)] = u32(1)
+      ts_push(s, w, TS_EXPR, payload, u32(0), u32(0), u32(0))
+      pushed = true
+    }
+  }
+  (!pushed && !sr_failed(s, w)) ? {
+    sr_type_done(s, w, t)
+    set_sst(s, w, ST_TRET, t)
+    ts_pop(s, w)
+  } | { }
+}
+
+// ts_array interns a fixed array once its element type is resolved.
+ts_array: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  elem: u32 = sst(s, w, ST_TRET)
+  length: u32 = w[at + u32(1)]
+  found: u32 = sr_find_type(s, w, TK_ARRAY, elem, length)
+  found == NONE ? {
+    t: u32 = sr_alloc_type(s, w, TK_ARRAY, elem, length, false)
+    sr_failed(s, w) ? { } | {
+      set_ty_word(s, w, t, u32(4), elem)
+      set_ty_word(s, w, t, u32(5), length)
+      k: u32 = 0
+      while k < length && !sr_failed(s, w) {
+        sr_copy_leaves(s, w, rx, raw, t, elem, NONE, k)
+        k = k + u32(1)
+      }
+      found = t
+    }
+  } | { }
+  set_sst(s, w, ST_TRET, found)
+  ts_pop(s, w)
+}
+
+// sr_resolve_type resolves a type expression (mode 0: a raw type
+// expression; mode 1: a type name string) to its interned type, or NONE
+// with the failure recorded.
+sr_resolve_type: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, mode: u32, value: u32): u32 {
+  set_sst(s, w, ST_TSP, u32(0))
+  set_sst(s, w, ST_TRET, NONE)
+  ts_push(s, w, mode == u32(0) ? { TS_EXPR } | { TS_NAME }, value, u32(0), u32(0), u32(0))
+  while sst(s, w, ST_TSP) > u32(0) && !sr_failed(s, w) {
+    at: u32 = ts_top(s, w)
+    kind: u32 = w[at]
+    kind == TS_EXPR ? {
+      texpr: u32 = w[at + u32(1)]
+      tk: u32 = rt_kind(rx, raw, texpr)
+      tk == RAW_TYPE_NAME ? {
+        w[at] = TS_NAME
+        w[at + u32(1)] = rt_a(rx, raw, texpr)
+      } | {
+        tk == RAW_TYPE_ARRAY ? {
+          w[at] = TS_ARRAY
+          w[at + u32(1)] = rt_b(rx, raw, texpr)
+          ts_push(s, w, TS_EXPR, rt_a(rx, raw, texpr), u32(0), u32(0), u32(0))
+        } | { sr_fail(s, w, u32(105)) }
+      }
+    } | {
+    kind == TS_NAME ? { ts_name(s, w, rx, raw, at, w[at + u32(1)]) } | {
+    kind == TS_ARRAY ? { ts_array(s, w, rx, raw, at) } | {
+    kind == TS_RECORD ? { ts_record(s, w, rx, raw, at) } | {
+    kind == TS_SUM ? { ts_sum(s, w, rx, raw, at) } | { sr_fail(s, w, u32(106)) } } } } }
+  }
+  sr_failed(s, w) ? { NONE } | { sst(s, w, ST_TRET) }
+}
+
+sr_type_of_expr: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, texpr: u32): u32 {
+  out: u32 = NONE
+  texpr == NONE ? { sr_fail(s, w, u32(105)) } | { out = sr_resolve_type(s, w, rx, raw, u32(0), texpr) }
+  out
+}
+sr_type_of_name: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, name: u32): u32 = sr_resolve_type(s, w, rx, raw, u32(1), name)
+
+// --- functions and symbols -----------------------------------------------------
+
+sr_nfuncs: (s: Ser, w: [*]u32): u32 = sst(s, w, ST_NFUNCS)
+sf_word: (s: Ser, w: [*]u32, f: u32, k: u32): u32 = w[s.funcs_at + f * SYN_FUNC_WORDS + k]
+set_sf_word: (s: Ser, w: [*]u32, f: u32, k: u32, v: u32): () { w[s.funcs_at + f * SYN_FUNC_WORDS + k] = v }
+
+// sr_find_function: the serialized function by name, or NONE.
+sr_find_function: (s: Ser, w: [*]u32, name: u32): u32 {
+  found: u32 = NONE
+  n: u32 = sr_nfuncs(s, w)
+  i: u32 = 0
+  while i < n && found == NONE {
+    w[s.fnames_at + i] == name ? { found = i } | { }
+    i = i + u32(1)
+  }
+  found
+}
+
+ssym_at: (s: Ser, f: u32, i: u32): u32 = s.syms_at + (f * MAX_SYMBOLS + i) * u32(2)
+
+// sr_find_symbol: the slot of a name among a function's symbols, or NONE.
+sr_find_symbol: (s: Ser, w: [*]u32, f: u32, name: u32): u32 {
+  found: u32 = NONE
+  n: u32 = sf_word(s, w, f, u32(4))
+  i: u32 = 0
+  while i < n && found == NONE {
+    w[ssym_at(s, f, i)] == name ? { found = i } | { }
+    i = i + u32(1)
+  }
+  found
+}
+
+sr_symbol_type: (s: Ser, w: [*]u32, f: u32, i: u32): u32 = w[ssym_at(s, f, i) + u32(1)]
+
+// sr_add_symbol binds a new symbol (name, type) in a function: its slot.
+sr_add_symbol: (s: Ser, w: [*]u32, f: u32, name: u32, typ: u32): u32 {
+  n: u32 = sf_word(s, w, f, u32(4))
+  n >= MAX_SYMBOLS ? { sr_fail(s, w, u32(156)) } | {
+    w[ssym_at(s, f, n)] = name
+    w[ssym_at(s, f, n) + u32(1)] = typ
+    set_sf_word(s, w, f, u32(4), n + u32(1))
+  }
+  n
+}
+
+// sr_bind is a match arm's binding: an existing symbol retyped, else new.
+sr_bind: (s: Ser, w: [*]u32, f: u32, name: u32, typ: u32): u32 {
+  found: u32 = sr_find_symbol(s, w, f, name)
+  found == NONE ? { found = sr_add_symbol(s, w, f, name, typ) } | { w[ssym_at(s, f, found) + u32(1)] = typ }
+  found
+}
+
+// --- nodes, lists, the accumulator ------------------------------------------------
+
+sr_emit: (s: Ser, w: [*]u32, kind: u32, a: u32, b: u32, c: u32, d: u32, vlo: u32, vhi: u32, typ: u32): u32 {
+  n: u32 = sst(s, w, ST_NNODES)
+  n >= s.cap_nodes ? { sr_fail(s, w, u32(157)) } | {
+    at: u32 = s.nodes_at + n * SYN_NODE_WORDS
+    w[at] = kind
+    w[at + u32(1)] = a
+    w[at + u32(2)] = b
+    w[at + u32(3)] = c
+    w[at + u32(4)] = d
+    w[at + u32(5)] = vlo
+    w[at + u32(6)] = vhi
+    w[at + u32(7)] = typ
+    set_sst(s, w, ST_NNODES, n + u32(1))
+  }
+  n
+}
+
+sn_kind: (s: Ser, w: [*]u32, n: u32): u32 = w[s.nodes_at + n * SYN_NODE_WORDS]
+sn_type: (s: Ser, w: [*]u32, n: u32): u32 = w[s.nodes_at + n * SYN_NODE_WORDS + u32(7)]
+sn_is_float: (s: Ser, w: [*]u32, n: u32): Bool = sn_kind(s, w, n) == SYN_FLOATLIT || ty_float(s, w, sn_type(s, w, n))
+
+acc_push: (s: Ser, w: [*]u32, v: u32): () {
+  sp: u32 = sst(s, w, ST_ACC_SP)
+  sp >= SR_ACC ? { sr_fail(s, w, u32(158)) } | {
+    w[s.acc_at + sp] = v
+    set_sst(s, w, ST_ACC_SP, sp + u32(1))
+  }
+}
+
+// acc_list moves the accumulated ids from base into the lists: the
+// list's start.
+acc_list: (s: Ser, w: [*]u32, base: u32): u32 {
+  sp: u32 = sst(s, w, ST_ACC_SP)
+  start: u32 = sst(s, w, ST_NLISTS)
+  count: u32 = sp - base
+  start + count > s.cap_lists ? { sr_fail(s, w, u32(159)) } | {
+    i: u32 = 0
+    while i < count {
+      w[s.lists_at + start + i] = w[s.acc_at + base + i]
+      i = i + u32(1)
+    }
+    set_sst(s, w, ST_NLISTS, start + count)
+  }
+  set_sst(s, w, ST_ACC_SP, base)
+  start
+}
+
+// --- the frame stack ------------------------------------------------------------
+
+sfr_at: (s: Ser, w: [*]u32, i: u32): u32 = s.frames_at + i * SR_FRAME_WORDS
+
+sr_push: (s: Ser, w: [*]u32, kind: u32, node: u32, f: u32): () {
+  sp: u32 = sst(s, w, ST_SP)
+  sp >= SR_FRAMES ? { sr_fail(s, w, u32(160)) } | {
+    at: u32 = sfr_at(s, w, sp)
+    w[at] = kind
+    w[at + u32(1)] = node
+    w[at + u32(2)] = u32(0)
+    w[at + u32(3)] = f
+    k: u32 = 4
+    while k < SR_FRAME_WORDS {
+      w[at + k] = u32(0)
+      k = k + u32(1)
+    }
+    set_sst(s, w, ST_SP, sp + u32(1))
+  }
+}
+
+sr_pop: (s: Ser, w: [*]u32): () { set_sst(s, w, ST_SP, sst(s, w, ST_SP) - u32(1)) }
+
+// sr_deliver pops the frame with the node as its result.
+sr_deliver: (s: Ser, w: [*]u32, id: u32): () {
+  set_sst(s, w, ST_RET, id)
+  sr_pop(s, w)
+}
+
+// sr_push_block pushes a block frame (a raw block node or NONE) in value
+// or statement position.
+sr_push_block: (s: Ser, w: [*]u32, block: u32, f: u32, value: Bool): () {
+  sr_push(s, w, X_BLOCK, block, f)
+  at: u32 = sfr_at(s, w, sst(s, w, ST_SP) - u32(1))
+  w[at + u32(4)] = sst(s, w, ST_ACC_SP)
+  w[at + u32(5)] = value ? { u32(1) } | { u32(0) }
+  w[at + u32(7)] = NONE
+}
+
+// sr_push_block_of pushes the block of a raw block expression in
+// statement position (a conditional's or match arm's body).
+sr_push_block_of: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, body: u32, f: u32, code: u32): () {
+  (body == NONE || rn_kind(rx, raw, body) != RAW_BLOCKEXPR) ? { sr_fail(s, w, code) } | { sr_push_block(s, w, rn_a(rx, raw, body), f, false) }
+}
+
+sr_push_match: (s: Ser, w: [*]u32, node: u32, f: u32, value: Bool): () {
+  sr_push(s, w, X_MATCH, node, f)
+  at: u32 = sfr_at(s, w, sst(s, w, ST_SP) - u32(1))
+  w[at + u32(4)] = sst(s, w, ST_ACC_SP)
+  w[at + u32(5)] = value ? { u32(1) } | { u32(0) }
+  w[at + u32(7)] = NONE
+}
+
+// Cond3 is a Bool conditional's arms (boolConditional in asm/verify.go).
+Cond3: type = struct { ok: Bool, when_true: u32, when_false: u32 }
+
+sr_bool_conditional: (rx: []u32, raw: Raw, node: u32): Cond3 {
+  scrutinee: u32 = rn_a(rx, raw, node)
+  arms: u32 = rn_b(rx, raw, node)
+  narms: u32 = rn_c(rx, raw, node)
+  when_true: u32 = NONE
+  when_false: u32 = NONE
+  ok: Bool = scrutinee != NONE && narms == u32(2)
+  i: u32 = 0
+  while i < u32(2) && ok {
+    pat: u32 = rl_item(rx, raw, arms, i * u32(2))
+    body: u32 = rl_item(rx, raw, arms, i * u32(2) + u32(1))
+    pk: u32 = rn_kind(rx, raw, pat)
+    pk == RAW_PAT_LITERAL ? {
+      value: u32 = rn_a(rx, raw, pat)
+      (value == NONE || rn_kind(rx, raw, value) != RAW_BOOLLIT) ? { ok = false } | {
+        rn_a(rx, raw, value) != u32(0) ? { when_true = body } | { when_false = body }
+      }
+    } | {
+      pk == RAW_PAT_WILD ? {
+        i != u32(1) ? { ok = false } | {
+          when_true == NONE ? { when_true = body } | { when_false = body }
+        }
+      } | { ok = false }
+    }
+    i = i + u32(1)
+  }
+  Cond3 { ok: ok && when_true != NONE && when_false != NONE, when_true: when_true, when_false: when_false }
+}
+
+// --- classification of calls --------------------------------------------------------
+
+// instruction_code: an `arm64.<member>` call's instruction code (asm/syntax.go
+// synInstrOps) with the member width in the upper half, or NONE.
+instruction_code: (rx: []u32, raw: Raw, fnode: u32, nargs: u32): u32 {
+  out: u32 = NONE
+  (rn_kind(rx, raw, fnode) == RAW_INDEX && rn_c(rx, raw, fnode) != u32(0) && nargs == u32(1)) ? {
+    left: u32 = rn_a(rx, raw, fnode)
+    member: u32 = rn_b(rx, raw, fnode)
+    (rn_kind(rx, raw, left) == RAW_IDENT && member != NONE && rn_kind(rx, raw, member) == RAW_IDENT) ? {
+      lib: Name16 = rs_name(rx, raw, rn_a(rx, raw, left))
+      is_name(lib, u64(0x34366D7261), u64(0), u32(5)) ? {
+        m: Name16 = rs_name(rx, raw, rn_a(rx, raw, member))
+        out = is_name(m, u64(0x3233766572), u64(0), u32(5)) ? { INSTR_REV + u32(32) * u32(65536) } | {
+          is_name(m, u64(0x3436766572), u64(0), u32(5)) ? { INSTR_REV + u32(64) * u32(65536) } | {
+          is_name(m, u64(0x323374696272), u64(0), u32(6)) ? { INSTR_RBIT + u32(32) * u32(65536) } | {
+          is_name(m, u64(0x343674696272), u64(0), u32(6)) ? { INSTR_RBIT + u32(64) * u32(65536) } | {
+          is_name(m, u64(0x32337A6C63), u64(0), u32(5)) ? { INSTR_CLZ + u32(32) * u32(65536) } | {
+          is_name(m, u64(0x34367A6C63), u64(0), u32(5)) ? { INSTR_CLZ + u32(64) * u32(65536) } | {
+          is_name(m, u64(0x3233746E63), u64(0), u32(5)) ? { INSTR_CNT + u32(32) * u32(65536) } | {
+          is_name(m, u64(0x3436746E63), u64(0), u32(5)) ? { INSTR_CNT + u32(64) * u32(65536) } | { NONE } } } } } } } }
+      } | { }
+    } | { }
+  } | { }
+  out
+}
+
+// float_intrinsic_code: the code of a float intrinsic the lowering knows
+// as a bit operation (asm/syntax.go synFloatIntrinsics), or NONE.
+float_intrinsic_code: (nm: Name16): u32 {
+  is_name(nm, u64(0x736261), u64(0), u32(3)) ? { FI_ABS } | {
+  is_name(nm, u64(0x6E67697379706F63), u64(0), u32(8)) ? { FI_COPYSIGN } | {
+  is_name(nm, u64(0x6E616E5F7369), u64(0), u32(6)) ? { FI_IS_NAN } | {
+  is_name(nm, u64(0x74696E69665F7369), u64(0x65), u32(9)) ? { FI_IS_FINITE } | {
+  is_name(nm, u64(0x6E69666E695F7369), u64(0x657469), u32(11)) ? { FI_IS_INFINITE } | {
+  is_name(nm, u64(0x616D726F6E5F7369), u64(0x6C), u32(9)) ? { FI_IS_NORMAL } | {
+  is_name(nm, u64(0x726F5F6C61746F74), u64(0x726564), u32(11)) ? { FI_TOTAL_ORDER } | {
+  is_name(nm, u64(0x6E696D), u64(0), u32(3)) ? { FI_MIN } | {
+  is_name(nm, u64(0x78616D), u64(0), u32(3)) ? { FI_MAX } | { NONE } } } } } } } } }
+}
+
+// other_float_intrinsic: a float intrinsic outside the bit operations
+// (typechecker.FloatIntrinsicName less the codes above).
+other_float_intrinsic: (nm: Name16): Bool {
+  is_name(nm, u64(0x616D66), u64(0), u32(3)) || is_name(nm, u64(0x74727173), u64(0), u32(4)) || is_name(nm, u64(0x726F6F6C66), u64(0), u32(5)) ||
+  is_name(nm, u64(0x6C696563), u64(0), u32(4)) || is_name(nm, u64(0x636E757274), u64(0), u32(5)) || is_name(nm, u64(0x646E756F72), u64(0), u32(5)) ||
+  is_name(nm, u64(0x76655F646E756F72), u64(0x6E65), u32(10)) || is_name(nm, u64(0x6D756E5F6E696D), u64(0), u32(7)) || is_name(nm, u64(0x6D756E5F78616D), u64(0), u32(7))
+}
+
+// conversion_primitive: a name of the conversion grammar's primitive set
+// (typechecker conversionPrimitives).
+conversion_primitive: (nm: Name16): Bool {
+  integer: Bool = scalar_name_contract(nm).ok && !is_name(nm, u64(0x6C6F6F42), u64(0), u32(4)) && !is_name(nm, u64(0x65747962), u64(0), u32(4)) && !is_name(nm, u64(0x656E7572), u64(0), u32(4))
+  storage: Bool = is_name(nm, u64(0x38323175), u64(0), u32(4)) || is_name(nm, u64(0x363166), u64(0), u32(3)) || is_name(nm, u64(0x36316662), u64(0), u32(4)) || is_name(nm, u64(0x336D34653866), u64(0), u32(6)) || is_name(nm, u64(0x326D35653866), u64(0), u32(6))
+  integer || storage
+}
+
+conversion_operation: (nm: Name16): Bool {
+  is_name(nm, u64(0x636E757274), u64(0), u32(5)) || is_name(nm, u64(0x6974617275746173), u64(0x676E), u32(10)) || is_name(nm, u64(0x64656B63656863), u64(0), u32(7)) ||
+  is_name(nm, u64(0x73746962), u64(0), u32(4)) || is_name(nm, u64(0x646E756F72), u64(0), u32(5))
+}
+
+is_constructor_name: (nm: Name16): Bool {
+  is_name(nm, u64(0x3875), u64(0), u32(2)) || is_name(nm, u64(0x363175), u64(0), u32(3)) || is_name(nm, u64(0x323375), u64(0), u32(3)) || is_name(nm, u64(0x343675), u64(0), u32(3)) ||
+  is_name(nm, u64(0x3869), u64(0), u32(2)) || is_name(nm, u64(0x363169), u64(0), u32(3)) || is_name(nm, u64(0x323369), u64(0), u32(3)) || is_name(nm, u64(0x343669), u64(0), u32(3))
+}
+
+// Conv is a conversion call's target: width and signedness (0 and unsigned
+// for a primitive without a decider width), whether it is a float
+// pattern, and whether the name is a conversion of the subset at all.
+Conv: type = struct { width: u32, signed: u32, is_float: u32, ok: Bool }
+
+// conversion_target reads a call name: a primitive constructor, or
+// `target_op_source` with op trunc or bits (typechecker.ConversionParts).
+conversion_target: (rx: []u32, raw: Raw, name: u32): Conv {
+  whole: Name16 = rs_name(rx, raw, name)
+  n: u32 = rs_len(rx, raw, name)
+  out: Conv = Conv { width: u32(0), signed: u32(0), is_float: u32(0), ok: false }
+  target: Name16 = whole
+  is_constructor_name(whole) ? { out = Conv { width: u32(0), signed: u32(0), is_float: u32(0), ok: true } } | {
+    last: u32 = NONE
+    k: u32 = n
+    while k > u32(0) && last == NONE {
+      k = k - u32(1)
+      rs_byte(rx, raw, name, k) == u32(95) ? { last = k } | { }
+    }
+    last == NONE ? { } | {
+      first: u32 = NONE
+      j: u32 = 0
+      while j < last && first == NONE {
+        rs_byte(rx, raw, name, j) == u32(95) ? { first = j } | { }
+        j = j + u32(1)
+      }
+      first == NONE ? { } | {
+        target = rs_segment(rx, raw, name, u32(0), first)
+        op: Name16 = rs_segment(rx, raw, name, first + u32(1), last - first - u32(1))
+        source: Name16 = rs_segment(rx, raw, name, last + u32(1), n - last - u32(1))
+        (conversion_primitive(target) && conversion_primitive(source) && conversion_operation(op)) ? {
+          (is_name(op, u64(0x636E757274), u64(0), u32(5)) || is_name(op, u64(0x73746962), u64(0), u32(4))) ? { out = Conv { width: u32(0), signed: u32(0), is_float: u32(0), ok: true } } | { }
+        } | { }
+      }
+    }
+  }
+  out.ok ? {
+    ct: Contract = scalar_name_contract(target)
+    out = Conv { width: ct.ok ? { ct.width } | { u32(0) }, signed: ct.signed ? { u32(1) } | { u32(0) }, is_float: is_float_name(target) ? { u32(1) } | { u32(0) }, ok: true }
+  } | { }
+  out
+}
+
+infix_code: (nm: Name16): u32 {
+  is_name(nm, u64(0x2B), u64(0), u32(1)) ? { IOP_ADD } | {
+  is_name(nm, u64(0x2D), u64(0), u32(1)) ? { IOP_SUB } | {
+  is_name(nm, u64(0x2A), u64(0), u32(1)) ? { IOP_MUL } | {
+  is_name(nm, u64(0x26), u64(0), u32(1)) ? { IOP_AND } | {
+  is_name(nm, u64(0x7C), u64(0), u32(1)) ? { IOP_OR } | {
+  is_name(nm, u64(0x5E), u64(0), u32(1)) ? { IOP_XOR } | {
+  is_name(nm, u64(0x3C3C), u64(0), u32(2)) ? { IOP_SHL } | {
+  is_name(nm, u64(0x3E3E), u64(0), u32(2)) ? { IOP_SHR } | {
+  is_name(nm, u64(0x2F), u64(0), u32(1)) ? { IOP_DIV } | {
+  is_name(nm, u64(0x25), u64(0), u32(1)) ? { IOP_MOD } | {
+  is_name(nm, u64(0x3D3D), u64(0), u32(2)) ? { IOP_EQ } | {
+  is_name(nm, u64(0x3D21), u64(0), u32(2)) ? { IOP_NE } | {
+  is_name(nm, u64(0x3C), u64(0), u32(1)) ? { IOP_LT } | {
+  is_name(nm, u64(0x3D3C), u64(0), u32(2)) ? { IOP_LE } | {
+  is_name(nm, u64(0x3E), u64(0), u32(1)) ? { IOP_GT } | {
+  is_name(nm, u64(0x3D3E), u64(0), u32(2)) ? { IOP_GE } | {
+  is_name(nm, u64(0x2626), u64(0), u32(2)) ? { IOP_ANDAND } | {
+  is_name(nm, u64(0x7C7C), u64(0), u32(2)) ? { IOP_OROR } | { NONE } } } } } } } } } } } } } } } } } }
+}
+
+prefix_code: (nm: Name16): u32 {
+  is_name(nm, u64(0x21), u64(0), u32(1)) ? { u32(0) } | {
+  is_name(nm, u64(0x5E), u64(0), u32(1)) ? { u32(1) } | {
+  is_name(nm, u64(0x2D), u64(0), u32(1)) ? { u32(2) } | { NONE } } }
+}
+
+is_underscore: (rx: []u32, raw: Raw, name: u32): Bool = name == NONE || is_name(rs_name(rx, raw, name), u64(0x5F), u64(0), u32(1))
+
+// --- the expression step ------------------------------------------------------------
+
+// Call phases.
+CP_ARGS_FIRST: u32 = 2
+CP_ARGS_NEXT: u32 = 3
+CP_INSTR: u32 = 10
+CP_FLOAT_FIRST: u32 = 20
+CP_FLOAT_NEXT: u32 = 21
+CP_CONV: u32 = 30
+
+step_call_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, node: u32, f: u32, phase: u32): () {
+  fnode: u32 = rn_a(rx, raw, node)
+  args: u32 = rn_b(rx, raw, node)
+  nargs: u32 = rn_c(rx, raw, node)
+  phase == u32(0) ? {
+    instr: u32 = instruction_code(rx, raw, fnode, nargs)
+    instr != NONE ? {
+      w[at + u32(5)] = instr % u32(65536)
+      w[at + u32(6)] = instr / u32(65536)
+      w[at + u32(2)] = CP_INSTR
+      sr_push(s, w, X_EXPR, rl_item(rx, raw, args, u32(0)), f)
+    } | {
+      rn_kind(rx, raw, fnode) != RAW_IDENT ? { sr_fail(s, w, u32(110)) } | {
+        name: u32 = rn_a(rx, raw, fnode)
+        rawf: u32 = raw_find_function(rx, raw, name)
+        rawf != NONE ? {
+          known: u32 = sr_find_function(s, w, name)
+          known == NONE ? {
+            w[at + u32(2)] = u32(1)
+            sr_push(s, w, X_FUNC, rawf, u32(0))
+          } | {
+            sf_word(s, w, known, u32(3)) == NONE ? { sr_fail(s, w, u32(111)) } | {
+              w[at + u32(2)] = u32(1)
+            }
+          }
+        } | {
+          nm: Name16 = rs_name(rx, raw, name)
+          fcode: u32 = float_intrinsic_code(nm)
+          fcode != NONE ? {
+            w[at + u32(5)] = fcode
+            w[at + u32(4)] = sst(s, w, ST_ACC_SP)
+            w[at + u32(8)] = u32(0)
+            w[at + u32(2)] = CP_FLOAT_FIRST
+          } | {
+            other_float_intrinsic(nm) ? { sr_fail(s, w, u32(112)) } | {
+              nargs != u32(1) ? { sr_fail(s, w, u32(113)) } | {
+                cv: Conv = conversion_target(rx, raw, name)
+                !cv.ok ? { sr_fail(s, w, u32(114)) } | {
+                  w[at + u32(5)] = cv.width
+                  w[at + u32(6)] = cv.signed
+                  w[at + u32(7)] = cv.is_float
+                  w[at + u32(2)] = CP_CONV
+                  sr_push(s, w, X_EXPR, rl_item(rx, raw, args, u32(0)), f)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } | {
+  phase == u32(1) ? {
+    // The callee is serialized: the arguments at its parameter count.
+    cf: u32 = sr_find_function(s, w, rn_a(rx, raw, fnode))
+    (cf == NONE || sf_word(s, w, cf, u32(3)) == NONE) ? { sr_fail(s, w, u32(115)) } | {
+      sf_word(s, w, cf, u32(1)) != nargs ? { sr_fail(s, w, u32(116)) } | {
+        w[at + u32(7)] = cf
+        w[at + u32(4)] = sst(s, w, ST_ACC_SP)
+        w[at + u32(8)] = u32(0)
+        w[at + u32(2)] = CP_ARGS_FIRST
+      }
+    }
+  } | {
+  (phase == CP_ARGS_FIRST || phase == CP_ARGS_NEXT || phase == CP_FLOAT_FIRST || phase == CP_FLOAT_NEXT) ? {
+    (phase == CP_ARGS_NEXT || phase == CP_FLOAT_NEXT) ? { acc_push(s, w, sst(s, w, ST_RET)) } | { }
+    i: u32 = w[at + u32(8)]
+    is_float_call: Bool = phase == CP_FLOAT_FIRST || phase == CP_FLOAT_NEXT
+    i < nargs ? {
+      w[at + u32(8)] = i + u32(1)
+      w[at + u32(2)] = is_float_call ? { CP_FLOAT_NEXT } | { CP_ARGS_NEXT }
+      sr_push(s, w, X_EXPR, rl_item(rx, raw, args, i), f)
+    } | {
+      base: u32 = w[at + u32(4)]
+      is_float_call ? {
+        code: u32 = w[at + u32(5)]
+        float_type: u32 = NONE
+        k: u32 = 0
+        while k < nargs {
+          argt: u32 = sn_type(s, w, w[s.acc_at + base + k])
+          (float_type == NONE && ty_float(s, w, argt)) ? { float_type = argt } | { }
+          k = k + u32(1)
+        }
+        wanted: u32 = code == FI_ABS ? { u32(1) } | { (code == FI_COPYSIGN || code == FI_MIN || code == FI_MAX || code == FI_TOTAL_ORDER) ? { u32(2) } | { u32(1) } }
+        nargs != wanted ? { sr_fail(s, w, u32(117)) } | {
+          typ: u32 = (code >= FI_IS_NAN && code <= FI_TOTAL_ORDER) ? { sr_bool_type(s, w) } | { float_type }
+          list: u32 = acc_list(s, w, base)
+          sr_deliver(s, w, sr_emit(s, w, SYN_FLOATCALL, code, list, nargs, u32(0), u32(0), u32(0), typ))
+        }
+      } | {
+        cf: u32 = w[at + u32(7)]
+        list: u32 = acc_list(s, w, base)
+        sr_deliver(s, w, sr_emit(s, w, SYN_CALL, cf, list, nargs, u32(0), u32(0), u32(0), sf_word(s, w, cf, u32(2))))
+      }
+    }
+  } | {
+  phase == CP_INSTR ? {
+    op: u32 = sst(s, w, ST_RET)
+    width: u32 = w[at + u32(6)]
+    typ: u32 = sr_scalar_type(s, w, width, u32(0), u32(0))
+    sr_deliver(s, w, sr_emit(s, w, SYN_INSTR, w[at + u32(5)], width, op, u32(0), u32(0), u32(0), typ))
+  } | {
+  phase == CP_CONV ? {
+    op: u32 = sst(s, w, ST_RET)
+    width: u32 = w[at + u32(5)]
+    signed: u32 = w[at + u32(6)]
+    typ: u32 = sr_scalar_type(s, w, width, signed, u32(0))
+    w[at + u32(7)] != u32(0) ? { typ = sr_scalar_type(s, w, width, u32(0), u32(1)) } | { }
+    sr_deliver(s, w, sr_emit(s, w, SYN_CONV, width, signed, op, u32(0), u32(0), u32(0), typ))
+  } | { sr_fail(s, w, u32(118)) } } } } }
+}
+
+// step_literal_x serializes a record or array literal: the type first,
+// then the values (a record's in the type's field order, by name).
+step_literal_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, node: u32, f: u32, phase: u32, kind: u32): () {
+  phase == u32(0) ? {
+    t: u32 = NONE
+    kind == RAW_RECORDLIT ? {
+      rn_a(rx, raw, node) == NONE ? { sr_fail(s, w, u32(120)) } | { t = sr_type_of_name(s, w, rx, raw, rn_a(rx, raw, node)) }
+    } | {
+      rn_a(rx, raw, node) == NONE ? { sr_fail(s, w, u32(121)) } | {
+        t = sr_type_of_expr(s, w, rx, raw, rn_a(rx, raw, node))
+        (t != NONE && (ty_kind(s, w, t) != TY_ARRAY || rn_c(rx, raw, node) != ty_length(s, w, t))) ? { sr_fail(s, w, u32(122)) } | { }
+      }
+    }
+    sr_failed(s, w) ? { } | {
+      w[at + u32(5)] = t
+      w[at + u32(4)] = sst(s, w, ST_ACC_SP)
+      w[at + u32(8)] = u32(0)
+      w[at + u32(2)] = u32(1)
+    }
+  } | {
+    phase == u32(2) ? { acc_push(s, w, sst(s, w, ST_RET)) } | { }
+    t: u32 = w[at + u32(5)]
+    i: u32 = w[at + u32(8)]
+    count: u32 = kind == RAW_RECORDLIT ? { ty_field_count(s, w, t) } | { rn_c(rx, raw, node) }
+    i < count ? {
+      w[at + u32(8)] = i + u32(1)
+      w[at + u32(2)] = u32(2)
+      kind == RAW_RECORDLIT ? {
+        // The literal's value for the type's i-th field, by name.
+        fe: u32 = sr_field_entry(s, w, t, i)
+        fname: u32 = w[s.fields_at + fe * u32(4) + u32(3)]
+        pairs: u32 = rn_b(rx, raw, node)
+        npairs: u32 = rn_c(rx, raw, node)
+        value: u32 = NONE
+        j: u32 = 0
+        while j < npairs && value == NONE {
+          rl_item(rx, raw, pairs, j * u32(2)) == fname ? { value = rl_item(rx, raw, pairs, j * u32(2) + u32(1)) } | { }
+          j = j + u32(1)
+        }
+        value == NONE ? { sr_fail(s, w, u32(123)) } | { sr_push(s, w, X_EXPR, value, f) }
+      } | { sr_push(s, w, X_EXPR, rl_item(rx, raw, rn_b(rx, raw, node), i), f) }
+    } | {
+      list: u32 = acc_list(s, w, w[at + u32(4)])
+      sr_deliver(s, w, sr_emit(s, w, kind == RAW_RECORDLIT ? { SYN_RECORDLIT } | { SYN_ARRAYLIT }, t, list, count, u32(0), u32(0), u32(0), t))
+    }
+  }
+}
+
+step_expr_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  node: u32 = w[at + u32(1)]
+  phase: u32 = w[at + u32(2)]
+  f: u32 = w[at + u32(3)]
+  kind: u32 = node == NONE ? { RAW_OTHER } | { rn_kind(rx, raw, node) }
+  ret: u32 = sst(s, w, ST_RET)
+  kind == RAW_INTLIT ? {
+    sr_deliver(s, w, sr_emit(s, w, SYN_INTLIT, u32(0), u32(0), u32(0), u32(0), rn_vlo(rx, raw, node), rn_vhi(rx, raw, node), NONE))
+  } | {
+  kind == RAW_BOOLLIT ? {
+    typ: u32 = sr_bool_type(s, w)
+    sr_deliver(s, w, sr_emit(s, w, SYN_BOOLLIT, rn_a(rx, raw, node), u32(0), u32(0), u32(0), u32(0), u32(0), typ))
+  } | {
+  kind == RAW_FLOATLIT ? {
+    sr_deliver(s, w, sr_emit(s, w, SYN_FLOATLIT, rn_a(rx, raw, node), u32(0), u32(0), u32(0), rn_vlo(rx, raw, node), rn_vhi(rx, raw, node), NONE))
+  } | {
+  kind == RAW_IDENT ? {
+    sym: u32 = sr_find_symbol(s, w, f, rn_a(rx, raw, node))
+    sym == NONE ? { sr_fail(s, w, u32(101)) } | {
+      sr_deliver(s, w, sr_emit(s, w, SYN_SYM, sym, u32(0), u32(0), u32(0), u32(0), u32(0), sr_symbol_type(s, w, f, sym)))
+    }
+  } | {
+  kind == RAW_PREFIX ? {
+    code: u32 = prefix_code(rs_name(rx, raw, rn_a(rx, raw, node)))
+    code == NONE ? { sr_fail(s, w, u32(107)) } | {
+      phase == u32(0) ? {
+        w[at + u32(2)] = u32(1)
+        sr_push(s, w, X_EXPR, rn_b(rx, raw, node), f)
+      } | {
+        typ: u32 = code == u32(0) ? { sr_bool_type(s, w) } | { sn_type(s, w, ret) }
+        sr_deliver(s, w, sr_emit(s, w, SYN_PREFIX, code, ret, u32(0), u32(0), u32(0), u32(0), typ))
+      }
+    }
+  } | {
+  kind == RAW_INFIX ? {
+    code: u32 = infix_code(rs_name(rx, raw, rn_a(rx, raw, node)))
+    code == NONE ? { sr_fail(s, w, u32(108)) } | {
+      phase == u32(0) ? {
+        w[at + u32(2)] = u32(1)
+        sr_push(s, w, X_EXPR, rn_b(rx, raw, node), f)
+      } | {
+        phase == u32(1) ? {
+          w[at + u32(5)] = ret
+          w[at + u32(2)] = u32(2)
+          sr_push(s, w, X_EXPR, rn_c(rx, raw, node), f)
+        } | {
+          left: u32 = w[at + u32(5)]
+          typ: u32 = sn_type(s, w, left)
+          typ == NONE ? { typ = sn_type(s, w, ret) } | { }
+          ((sn_is_float(s, w, left) || sn_is_float(s, w, ret)) && code < IOP_EQ) ? { sr_fail(s, w, u32(109)) } | {
+            code >= IOP_EQ ? { typ = sr_bool_type(s, w) } | { }
+            sr_deliver(s, w, sr_emit(s, w, SYN_INFIX, code, left, ret, u32(0), u32(0), u32(0), typ))
+          }
+        }
+      }
+    }
+  } | {
+  kind == RAW_BLOCKEXPR ? {
+    block: u32 = rn_a(rx, raw, node)
+    sr_pop(s, w)
+    sr_push_block(s, w, block, f, true)
+  } | {
+  kind == RAW_VARIANT ? {
+    phase == u32(0) ? {
+      rn_a(rx, raw, node) == NONE ? { sr_fail(s, w, u32(124)) } | {
+        t: u32 = sr_type_of_name(s, w, rx, raw, rn_a(rx, raw, node))
+        sr_failed(s, w) ? { } | {
+          ty_kind(s, w, t) != TY_SUM ? { sr_fail(s, w, u32(125)) } | {
+            vi: u32 = sr_variant_index(s, w, t, rn_b(rx, raw, node))
+            vi == NONE ? { sr_fail(s, w, u32(126)) } | {
+              ve: u32 = sr_variant_entry(s, w, t, vi)
+              has_payload_type: Bool = w[s.variants_at + ve * u32(4) + u32(1)] != NONE
+              payload: u32 = rn_c(rx, raw, node)
+              (payload == NONE) == has_payload_type ? { sr_fail(s, w, u32(127)) } | {
+                payload == NONE ? {
+                  sr_deliver(s, w, sr_emit(s, w, SYN_VARIANTLIT, t, vi, NONE, u32(0), u32(0), u32(0), t))
+                } | {
+                  w[at + u32(5)] = t
+                  w[at + u32(6)] = vi
+                  w[at + u32(2)] = u32(1)
+                  sr_push(s, w, X_EXPR, payload, f)
+                }
+              }
+            }
+          }
+        }
+      }
+    } | {
+      t: u32 = w[at + u32(5)]
+      sr_deliver(s, w, sr_emit(s, w, SYN_VARIANTLIT, t, w[at + u32(6)], ret, u32(0), u32(0), u32(0), t))
+    }
+  } | {
+  kind == RAW_MATCH ? {
+    phase == u32(0) ? {
+      c3: Cond3 = sr_bool_conditional(rx, raw, node)
+      c3.ok ? {
+        w[at + u32(6)] = c3.when_true
+        w[at + u32(7)] = c3.when_false
+        w[at + u32(2)] = u32(1)
+        sr_push(s, w, X_EXPR, rn_a(rx, raw, node), f)
+      } | {
+        sr_pop(s, w)
+        sr_push_match(s, w, node, f, true)
+      }
+    } | {
+      phase == u32(1) ? {
+        w[at + u32(5)] = ret
+        w[at + u32(2)] = u32(2)
+        sr_push(s, w, X_EXPR, w[at + u32(6)], f)
+      } | {
+        phase == u32(2) ? {
+          w[at + u32(8)] = ret
+          w[at + u32(2)] = u32(3)
+          sr_push(s, w, X_EXPR, w[at + u32(7)], f)
+        } | {
+          then_id: u32 = w[at + u32(8)]
+          typ: u32 = sn_type(s, w, then_id)
+          typ == NONE ? { typ = sn_type(s, w, ret) } | { }
+          sr_deliver(s, w, sr_emit(s, w, SYN_COND, w[at + u32(5)], then_id, ret, u32(0), u32(0), u32(0), typ))
+        }
+      }
+    }
+  } | {
+  kind == RAW_INDEX ? {
+    phase == u32(0) ? {
+      w[at + u32(2)] = u32(1)
+      sr_push(s, w, X_EXPR, rn_a(rx, raw, node), f)
+    } | {
+      phase == u32(1) ? {
+        bt: u32 = sn_type(s, w, ret)
+        index: u32 = rn_b(rx, raw, node)
+        bt == NONE ? { sr_fail(s, w, u32(128)) } | {
+          rn_c(rx, raw, node) != u32(0) ? {
+            (index == NONE || rn_kind(rx, raw, index) != RAW_IDENT || ty_kind(s, w, bt) != TY_RECORD) ? { sr_fail(s, w, u32(129)) } | {
+              k: u32 = sr_field_index(s, w, bt, rn_a(rx, raw, index))
+              k == NONE ? { sr_fail(s, w, u32(130)) } | {
+                fe: u32 = sr_field_entry(s, w, bt, k)
+                sr_deliver(s, w, sr_emit(s, w, SYN_FIELD, ret, k, u32(0), u32(0), u32(0), u32(0), w[s.fields_at + fe * u32(4)]))
+              }
+            }
+          } | {
+            ty_kind(s, w, bt) != TY_ARRAY ? { sr_fail(s, w, u32(131)) } | {
+              w[at + u32(5)] = ret
+              w[at + u32(6)] = bt
+              w[at + u32(2)] = u32(2)
+              sr_push(s, w, X_EXPR, index, f)
+            }
+          }
+        }
+      } | {
+        sr_deliver(s, w, sr_emit(s, w, SYN_INDEX, w[at + u32(5)], ret, u32(0), u32(0), u32(0), u32(0), ty_elem(s, w, w[at + u32(6)])))
+      }
+    }
+  } | {
+  (kind == RAW_RECORDLIT || kind == RAW_ARRAYLIT) ? { step_literal_x(s, w, rx, raw, at, node, f, phase, kind) } | {
+  kind == RAW_CALL ? { step_call_x(s, w, rx, raw, at, node, f, phase) } | { sr_fail(s, w, u32(100)) } } } } } } } } } } } }
+}
+
+// --- blocks ---------------------------------------------------------------------------
+
+// Block sub-states: what the delivered result is.
+BS_NONE: u32 = 0
+BS_APPEND: u32 = 1
+BS_EXPR: u32 = 2
+BS_VARDECL: u32 = 3
+BS_ASSIGN: u32 = 4
+BS_PLACE1: u32 = 5
+BS_PLACE2: u32 = 6
+BS_WHILE1: u32 = 7
+BS_WHILE2: u32 = 8
+
+step_block_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  block: u32 = w[at + u32(1)]
+  f: u32 = w[at + u32(3)]
+  base: u32 = w[at + u32(4)]
+  value: Bool = w[at + u32(5)] != u32(0)
+  i: u32 = w[at + u32(6)]
+  sub: u32 = w[at + u32(8)]
+  ret: u32 = sst(s, w, ST_RET)
+  block == NONE ? { sr_deliver(s, w, sr_emit(s, w, SYN_BLOCK, u32(0), u32(0), u32(0), u32(0), u32(0), u32(0), NONE)) } | {
+    list: u32 = rn_a(rx, raw, block)
+    count: u32 = rn_b(rx, raw, block)
+    // The delivered child.
+    sub == BS_APPEND ? { acc_push(s, w, ret) } | {
+    sub == BS_EXPR ? {
+      acc_push(s, w, ret)
+      w[at + u32(7)] = sn_type(s, w, ret)
+    } | {
+    sub == BS_VARDECL ? { acc_push(s, w, sr_emit(s, w, SYN_VARDECL, w[at + u32(9)], w[at + u32(10)], u32(0), ret, u32(0), u32(0), NONE)) } | {
+    sub == BS_ASSIGN ? { acc_push(s, w, sr_emit(s, w, SYN_ASSIGN, w[at + u32(9)], ret, u32(0), u32(0), u32(0), u32(0), NONE)) } | {
+    sub == BS_PLACE2 ? { acc_push(s, w, sr_emit(s, w, SYN_ASSIGNPLACE, w[at + u32(9)], ret, u32(0), u32(0), u32(0), u32(0), NONE)) } | {
+    sub == BS_WHILE2 ? { acc_push(s, w, sr_emit(s, w, SYN_WHILE, w[at + u32(9)], ret, u32(0), u32(0), u32(0), u32(0), NONE)) } | { } } } } } }
+    w[at + u32(8)] = BS_NONE
+    (sub == BS_PLACE1 || sub == BS_WHILE1) ? {
+      // The place or condition is in; the value or body follows.
+      stmt: u32 = rl_item(rx, raw, list, i - u32(1))
+      w[at + u32(9)] = ret
+      sub == BS_PLACE1 ? {
+        w[at + u32(8)] = BS_PLACE2
+        sr_push(s, w, X_EXPR, rn_b(rx, raw, stmt), f)
+      } | {
+        w[at + u32(8)] = BS_WHILE2
+        sr_push_block(s, w, rn_b(rx, raw, stmt), f, false)
+      }
+    } | {
+      sr_failed(s, w) ? { } | {
+        i < count ? {
+          stmt: u32 = rl_item(rx, raw, list, i)
+          last: Bool = i + u32(1) == count
+          sk: u32 = rn_kind(rx, raw, stmt)
+          w[at + u32(6)] = i + u32(1)
+          sk == RAW_EXPRSTMT ? {
+            e: u32 = rn_a(rx, raw, stmt)
+            is_match: Bool = e != NONE && rn_kind(rx, raw, e) == RAW_MATCH
+            (is_match && (!last || !value)) ? {
+              w[at + u32(8)] = BS_APPEND
+              c3: Cond3 = sr_bool_conditional(rx, raw, e)
+              c3.ok ? {
+                sr_push(s, w, X_CONDSTMT, e, f)
+                cat: u32 = sfr_at(s, w, sst(s, w, ST_SP) - u32(1))
+                w[cat + u32(5)] = c3.when_true
+                w[cat + u32(6)] = c3.when_false
+              } | { sr_push_match(s, w, e, f, false) }
+            } | {
+              (!last || !value) ? { sr_fail(s, w, u32(132)) } | {
+                w[at + u32(8)] = BS_EXPR
+                sr_push(s, w, X_EXPR, e, f)
+              }
+            }
+          } | {
+          sk == RAW_VARDECL ? {
+            texpr: u32 = rn_b(rx, raw, stmt)
+            texpr == NONE ? { sr_fail(s, w, u32(133)) } | {
+              t: u32 = sr_type_of_expr(s, w, rx, raw, texpr)
+              sr_failed(s, w) ? { } | {
+                init: u32 = rn_c(rx, raw, stmt)
+                name: u32 = rn_a(rx, raw, stmt)
+                sym: u32 = sr_find_symbol(s, w, f, name)
+                init == NONE ? {
+                  ty_kind(s, w, t) != TY_ARRAY ? { sr_fail(s, w, u32(134)) } | {
+                    sym == NONE ? { sym = sr_add_symbol(s, w, f, name, t) } | { }
+                    acc_push(s, w, sr_emit(s, w, SYN_VARDECL, sym, t, u32(0), NONE, u32(0), u32(0), NONE))
+                  }
+                } | {
+                  // The initializer is serialized before the symbol binds
+                  // (the Go serializer's order); the symbol is looked up or
+                  // added when the value is in.
+                  w[at + u32(10)] = t
+                  w[at + u32(9)] = name
+                  w[at + u32(8)] = BS_VARDECL
+                  sr_push(s, w, X_EXPR, init, f)
+                }
+              }
+            }
+          } | {
+          sk == RAW_ASSIGN ? {
+            sym: u32 = sr_find_symbol(s, w, f, rn_a(rx, raw, stmt))
+            sym == NONE ? { sr_fail(s, w, u32(135)) } | {
+              w[at + u32(9)] = sym
+              w[at + u32(8)] = BS_ASSIGN
+              sr_push(s, w, X_EXPR, rn_b(rx, raw, stmt), f)
+            }
+          } | {
+          sk == RAW_INDEXASSIGN ? {
+            w[at + u32(8)] = BS_PLACE1
+            sr_push(s, w, X_EXPR, rn_a(rx, raw, stmt), f)
+          } | {
+          sk == RAW_WHILE ? {
+            w[at + u32(8)] = BS_WHILE1
+            sr_push(s, w, X_EXPR, rn_a(rx, raw, stmt), f)
+          } | { sr_fail(s, w, u32(136)) } } } } }
+        } | {
+          typ: u32 = w[at + u32(7)]
+          n: u32 = sst(s, w, ST_ACC_SP) - base
+          start: u32 = acc_list(s, w, base)
+          sr_deliver(s, w, sr_emit(s, w, SYN_BLOCK, start, n, u32(0), u32(0), u32(0), u32(0), typ))
+        }
+      }
+    }
+  }
+}
+
+// step_vardecl_bind binds a declared local once its initializer is in:
+// the block step's BS_VARDECL case reads the symbol from word 9 as a
+// name, so the binding happens here first.
+step_block_bind: (s: Ser, w: [*]u32, at: u32): () {
+  w[at + u32(8)] == BS_VARDECL ? {
+    f: u32 = w[at + u32(3)]
+    name: u32 = w[at + u32(9)]
+    sym: u32 = sr_find_symbol(s, w, f, name)
+    sym == NONE ? { sym = sr_add_symbol(s, w, f, name, w[at + u32(10)]) } | { }
+    w[at + u32(9)] = sym
+  } | { }
+}
+
+// --- matches and statement conditionals -------------------------------------------------
+
+// Match sub-states.
+MS_START: u32 = 0
+MS_SCRUT: u32 = 1
+MS_LIT: u32 = 2
+MS_BODY: u32 = 3
+
+// match_push_body pushes an arm's body: an expression in value position,
+// the block of a block expression in statement position.
+match_push_body: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, body: u32): () {
+  f: u32 = w[at + u32(3)]
+  w[at + u32(8)] = MS_BODY
+  w[at + u32(5)] != u32(0) ? { sr_push(s, w, X_EXPR, body, f) } | { sr_push_block_of(s, w, rx, raw, body, f, u32(140)) }
+}
+
+step_match_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  node: u32 = w[at + u32(1)]
+  f: u32 = w[at + u32(3)]
+  base: u32 = w[at + u32(4)]
+  value: Bool = w[at + u32(5)] != u32(0)
+  i: u32 = w[at + u32(6)]
+  sub: u32 = w[at + u32(8)]
+  ret: u32 = sst(s, w, ST_RET)
+  arms: u32 = rn_b(rx, raw, node)
+  narms: u32 = rn_c(rx, raw, node)
+  advance: Bool = sub == MS_SCRUT || sub == MS_BODY
+  sub == MS_START ? {
+    w[at + u32(8)] = MS_SCRUT
+    sr_push(s, w, X_EXPR, rn_a(rx, raw, node), f)
+  } | {
+    sub == MS_SCRUT ? {
+      st: u32 = sn_type(s, w, ret)
+      st == NONE ? { sr_fail(s, w, u32(141)) } | {
+        w[at + u32(9)] = ret
+        w[at + u32(10)] = st
+        w[at + u32(11)] = ty_kind(s, w, st) == TY_SUM ? { u32(1) } | { u32(0) }
+      }
+    } | {
+      sub == MS_LIT ? {
+        w[at + u32(13)] = ret
+        match_push_body(s, w, rx, raw, at, rl_item(rx, raw, arms, (i - u32(1)) * u32(2) + u32(1)))
+      } | {
+        // The body: the arm's four words.
+        acc_push(s, w, w[at + u32(12)])
+        acc_push(s, w, w[at + u32(13)])
+        acc_push(s, w, w[at + u32(14)])
+        acc_push(s, w, ret)
+        (value && w[at + u32(7)] == NONE) ? { w[at + u32(7)] = sn_type(s, w, ret) } | { }
+      }
+    }
+    (advance && !sr_failed(s, w)) ? {
+      i < narms ? {
+        st: u32 = w[at + u32(10)]
+        is_sum: Bool = w[at + u32(11)] != u32(0)
+        pat: u32 = rl_item(rx, raw, arms, i * u32(2))
+        body: u32 = rl_item(rx, raw, arms, i * u32(2) + u32(1))
+        pk: u32 = rn_kind(rx, raw, pat)
+        w[at + u32(6)] = i + u32(1)
+        w[at + u32(12)] = PAT_WILD
+        w[at + u32(13)] = NONE
+        w[at + u32(14)] = NONE
+        pk == RAW_PAT_VARIANT ? {
+          !is_sum ? { sr_fail(s, w, u32(142)) } | {
+            vi: u32 = sr_variant_index(s, w, st, rn_b(rx, raw, pat))
+            vi == NONE ? { sr_fail(s, w, u32(143)) } | {
+              w[at + u32(12)] = PAT_VARIANT
+              w[at + u32(13)] = vi
+              payload: u32 = rn_c(rx, raw, pat)
+              payload == NONE ? { } | {
+                ppk: u32 = rn_kind(rx, raw, payload)
+                ppk == RAW_PAT_WILD ? { } | {
+                  ppk == RAW_PAT_BINDING ? {
+                    is_underscore(rx, raw, rn_a(rx, raw, payload)) ? { } | {
+                      ve: u32 = sr_variant_entry(s, w, st, vi)
+                      pt: u32 = w[s.variants_at + ve * u32(4) + u32(1)]
+                      pt == NONE ? { sr_fail(s, w, u32(144)) } | { w[at + u32(14)] = sr_bind(s, w, f, rn_a(rx, raw, payload), pt) }
+                    }
+                  } | { sr_fail(s, w, u32(145)) }
+                }
+              }
+              sr_failed(s, w) ? { } | { match_push_body(s, w, rx, raw, at, body) }
+            }
+          }
+        } | {
+        pk == RAW_PAT_LITERAL ? {
+          is_sum ? { sr_fail(s, w, u32(146)) } | {
+            w[at + u32(12)] = PAT_LITERAL
+            w[at + u32(8)] = MS_LIT
+            sr_push(s, w, X_EXPR, rn_a(rx, raw, pat), f)
+          }
+        } | {
+        pk == RAW_PAT_WILD ? { match_push_body(s, w, rx, raw, at, body) } | {
+        pk == RAW_PAT_BINDING ? {
+          is_underscore(rx, raw, rn_a(rx, raw, pat)) ? { } | {
+            !is_sum ? { sr_fail(s, w, u32(147)) } | {
+              w[at + u32(12)] = PAT_BINDING
+              w[at + u32(14)] = sr_bind(s, w, f, rn_a(rx, raw, pat), st)
+            }
+          }
+          sr_failed(s, w) ? { } | { match_push_body(s, w, rx, raw, at, body) }
+        } | { sr_fail(s, w, u32(148)) } } } }
+      } | {
+        narms == u32(0) ? { sr_fail(s, w, u32(149)) } | {
+          typ: u32 = value ? { w[at + u32(7)] } | { NONE }
+          start: u32 = acc_list(s, w, base)
+          sr_deliver(s, w, sr_emit(s, w, value ? { SYN_MATCH } | { SYN_MATCHSTMT }, w[at + u32(9)], start, narms, u32(0), u32(0), u32(0), typ))
+        }
+      }
+    } | { }
+  }
+}
+
+step_condstmt_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  node: u32 = w[at + u32(1)]
+  phase: u32 = w[at + u32(2)]
+  f: u32 = w[at + u32(3)]
+  ret: u32 = sst(s, w, ST_RET)
+  phase == u32(0) ? {
+    w[at + u32(2)] = u32(1)
+    sr_push(s, w, X_EXPR, rn_a(rx, raw, node), f)
+  } | {
+  phase == u32(1) ? {
+    w[at + u32(7)] = ret
+    w[at + u32(2)] = u32(2)
+    sr_push_block_of(s, w, rx, raw, w[at + u32(5)], f, u32(137))
+  } | {
+  phase == u32(2) ? {
+    w[at + u32(8)] = ret
+    w[at + u32(2)] = u32(3)
+    sr_push_block_of(s, w, rx, raw, w[at + u32(6)], f, u32(137))
+  } | {
+    sr_deliver(s, w, sr_emit(s, w, SYN_CONDSTMT, w[at + u32(7)], w[at + u32(8)], ret, u32(0), u32(0), u32(0), NONE))
+  } } }
+}
+
+// --- functions ------------------------------------------------------------------------
+
+// sr_theorem_leaves names the theorem's leaves (parameter name and leaf
+// suffix), sorts them as the decider does, and writes the leaf indices.
+sr_theorem_leaves: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, f: u32): () {
+  pstart: u32 = sf_word(s, w, f, u32(0))
+  nparams: u32 = sf_word(s, w, f, u32(1))
+  rawf: u32 = w[s.fnames_at + f]
+  rawfn: u32 = raw_find_function(rx, raw, rawf)
+  rps: u32 = rf_word(rx, raw, rawfn, u32(1))
+  n: u32 = 0
+  i: u32 = 0
+  while i < nparams && !sr_failed(s, w) {
+    t: u32 = w[s.params_at + (pstart + i) * SYN_PARAM_WORDS]
+    pname: u32 = rp_word(rx, raw, rps + i, u32(0))
+    k: u32 = 0
+    bound: u32 = sst(s, w, ST_NTLEAVES)
+    e: u32 = 0
+    while e < bound && !sr_failed(s, w) {
+      w[s.tleaves_at + e * u32(4) + u32(2)] == t ? {
+        n >= SR_LNAMES ? { sr_fail(s, w, u32(161)) } | {
+          off: u32 = sst(s, w, ST_POOL)
+          pool_push_raw(s, w, rx, raw, pname)
+          pool_push_pool(s, w, w[s.tlnames_at + e * u32(2)], w[s.tlnames_at + e * u32(2) + u32(1)])
+          la: u32 = s.lnames_at + n * u32(4)
+          w[la] = off
+          w[la + u32(1)] = sst(s, w, ST_POOL) - off
+          w[la + u32(2)] = i
+          w[la + u32(3)] = k
+          n = n + u32(1)
+          k = k + u32(1)
+        }
+      } | { }
+      e = e + u32(1)
+    }
+    i = i + u32(1)
+  }
+  // Insertion sort by name.
+  a: u32 = 1
+  while a < n {
+    b: u32 = a
+    while b > u32(0) && name_less(s, w, w[s.lnames_at + b * u32(4)], w[s.lnames_at + b * u32(4) + u32(1)], w[s.lnames_at + (b - u32(1)) * u32(4)], w[s.lnames_at + (b - u32(1)) * u32(4) + u32(1)]) {
+      k: u32 = 0
+      while k < u32(4) {
+        tmp: u32 = w[s.lnames_at + b * u32(4) + k]
+        w[s.lnames_at + b * u32(4) + k] = w[s.lnames_at + (b - u32(1)) * u32(4) + k]
+        w[s.lnames_at + (b - u32(1)) * u32(4) + k] = tmp
+        k = k + u32(1)
+      }
+      b = b - u32(1)
+    }
+    a = a + u32(1)
+  }
+  set_sst(s, w, ST_NLNAMES, n)
+  set_sst(s, w, ST_LEAVES, n)
+  // The leaf indices per parameter, in leaf order: the sorted position.
+  i = u32(0)
+  while i < nparams {
+    t: u32 = w[s.params_at + (pstart + i) * SYN_PARAM_WORDS]
+    leaves: u32 = ty_leaf_count(s, w, t)
+    start: u32 = sst(s, w, ST_NLEAFIDX)
+    w[s.params_at + (pstart + i) * SYN_PARAM_WORDS + u32(1)] = start
+    w[s.params_at + (pstart + i) * SYN_PARAM_WORDS + u32(2)] = leaves
+    k: u32 = 0
+    while k < leaves {
+      pos: u32 = 0
+      j: u32 = 0
+      while j < n {
+        (w[s.lnames_at + j * u32(4) + u32(2)] == i && w[s.lnames_at + j * u32(4) + u32(3)] == k) ? { pos = j } | { }
+        j = j + u32(1)
+      }
+      start + k >= SR_LEAFIDX ? { sr_fail(s, w, u32(162)) } | { w[s.leafidx_at + start + k] = pos }
+      k = k + u32(1)
+    }
+    set_sst(s, w, ST_NLEAFIDX, start + leaves)
+    i = i + u32(1)
+  }
+}
+
+step_func_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  rawf: u32 = w[at + u32(1)]
+  phase: u32 = w[at + u32(2)]
+  is_theorem: Bool = w[at + u32(3)] != u32(0)
+  name: u32 = rf_word(rx, raw, rawf, u32(0))
+  phase == u32(0) ? {
+    known: u32 = sr_find_function(s, w, name)
+    known != NONE ? {
+      sf_word(s, w, known, u32(3)) == NONE ? { sr_fail(s, w, u32(111)) } | { sr_pop(s, w) }
+    } | {
+      (rf_word(rx, raw, rawf, u32(5)) & RAW_FLAG_UNUSABLE) != u32(0) ? { sr_fail(s, w, u32(163)) } | {
+        f: u32 = sr_nfuncs(s, w)
+        f >= SR_FUNCS ? { sr_fail(s, w, u32(164)) } | {
+          set_sst(s, w, ST_NFUNCS, f + u32(1))
+          w[s.fnames_at + f] = name
+          nparams: u32 = rf_word(rx, raw, rawf, u32(2))
+          pstart: u32 = sst(s, w, ST_NPARAMS)
+          set_sf_word(s, w, f, u32(0), pstart)
+          set_sf_word(s, w, f, u32(1), nparams)
+          set_sf_word(s, w, f, u32(3), NONE)
+          set_sf_word(s, w, f, u32(4), u32(0))
+          set_sf_word(s, w, f, u32(5), u32(0))
+          set_sf_word(s, w, f, u32(6), u32(0))
+          set_sf_word(s, w, f, u32(7), u32(0))
+          ret: u32 = is_theorem ? { sr_bool_type(s, w) } | { sr_type_of_expr(s, w, rx, raw, rf_word(rx, raw, rawf, u32(3))) }
+          set_sf_word(s, w, f, u32(2), ret)
+          pstart + nparams > SR_PARAMS ? { sr_fail(s, w, u32(165)) } | { set_sst(s, w, ST_NPARAMS, pstart + nparams) }
+          rps: u32 = rf_word(rx, raw, rawf, u32(1))
+          i: u32 = 0
+          while i < nparams && !sr_failed(s, w) {
+            rp_word(rx, raw, rps + i, u32(2)) != u32(0) ? { sr_fail(s, w, u32(166)) } | {
+              t: u32 = sr_type_of_expr(s, w, rx, raw, rp_word(rx, raw, rps + i, u32(1)))
+              sr_failed(s, w) ? { } | {
+                pa: u32 = s.params_at + (pstart + i) * SYN_PARAM_WORDS
+                w[pa] = t
+                w[pa + u32(1)] = NONE
+                w[pa + u32(2)] = u32(0)
+                w[pa + u32(3)] = u32(0)
+                sr_add_symbol(s, w, f, rp_word(rx, raw, rps + i, u32(0)), t)
+              }
+            }
+            i = i + u32(1)
+          }
+          sr_failed(s, w) ? { } | {
+            is_theorem ? {
+              set_sst(s, w, ST_THEOREM, f)
+              sr_theorem_leaves(s, w, rx, raw, f)
+            } | { }
+            w[at + u32(2)] = u32(1)
+            w[at + u32(4)] = f
+            sr_push(s, w, X_EXPR, rf_word(rx, raw, rawf, u32(4)), f)
+          }
+        }
+      }
+    }
+  } | {
+    f: u32 = w[at + u32(4)]
+    set_sf_word(s, w, f, u32(3), sst(s, w, ST_RET))
+    nsyms: u32 = sf_word(s, w, f, u32(4))
+    nsyms > sst(s, w, ST_MAXSYMS) ? { set_sst(s, w, ST_MAXSYMS, nsyms) } | { }
+    sr_pop(s, w)
+  }
+}
+
+// --- the machine and the output ---------------------------------------------------------
+
+sr_run: (s: Ser, w: [*]u32, rx: []u32, raw: Raw): () {
+  while sst(s, w, ST_SP) > u32(0) && !sr_failed(s, w) {
+    at: u32 = sfr_at(s, w, sst(s, w, ST_SP) - u32(1))
+    kind: u32 = w[at]
+    kind == X_EXPR ? { step_expr_x(s, w, rx, raw, at) } | {
+    kind == X_BLOCK ? {
+      step_block_bind(s, w, at)
+      step_block_x(s, w, rx, raw, at)
+    } | {
+    kind == X_MATCH ? { step_match_x(s, w, rx, raw, at) } | {
+    kind == X_CONDSTMT ? { step_condstmt_x(s, w, rx, raw, at) } | {
+    kind == X_FUNC ? { step_func_x(s, w, rx, raw, at) } | { sr_fail(s, w, u32(167)) } } } } }
+  }
+}
+
+// sr_write_table writes the syntax table (asm/syntax.go's layout) into
+// out: the word count.
+sr_write_table: (s: Ser, w: [*]u32, out: [*]u32): u32 {
+  nfuncs: u32 = sst(s, w, ST_NFUNCS)
+  nparams: u32 = sst(s, w, ST_NPARAMS)
+  ntypes: u32 = sst(s, w, ST_NTYPES)
+  ntleaves: u32 = sst(s, w, ST_NTLEAVES)
+  nfields: u32 = sst(s, w, ST_NFIELDS)
+  nvariants: u32 = sst(s, w, ST_NVARIANTS)
+  nleafidx: u32 = sst(s, w, ST_NLEAFIDX)
+  nnodes: u32 = sst(s, w, ST_NNODES)
+  nlists: u32 = sst(s, w, ST_NLISTS)
+  out[u32(0)] = nfuncs
+  out[u32(1)] = nnodes
+  out[u32(2)] = nlists
+  out[u32(3)] = sst(s, w, ST_MAXSYMS)
+  out[u32(4)] = sst(s, w, ST_THEOREM)
+  out[u32(5)] = sst(s, w, ST_LEAVES)
+  out[u32(6)] = ntypes
+  out[u32(7)] = ntleaves
+  out[u32(8)] = nfields
+  out[u32(9)] = nleafidx
+  out[u32(10)] = nvariants
+  k: u32 = 11
+  while k < SYN_HEADER {
+    out[k] = u32(0)
+    k = k + u32(1)
+  }
+  at: u32 = SYN_HEADER
+  i: u32 = 0
+  while i < nfuncs * SYN_FUNC_WORDS {
+    out[at + i] = w[s.funcs_at + i]
+    i = i + u32(1)
+  }
+  at = at + nfuncs * SYN_FUNC_WORDS
+  i = u32(0)
+  while i < nparams * SYN_PARAM_WORDS {
+    out[at + i] = w[s.params_at + i]
+    i = i + u32(1)
+  }
+  at = at + nparams * SYN_PARAM_WORDS
+  // Types, with their leaves, fields, and variants grouped per type.
+  types_at: u32 = at
+  tleaves_at: u32 = types_at + ntypes * SYN_TYPE_WORDS
+  fields_at: u32 = tleaves_at + ntleaves * u32(2)
+  variants_at: u32 = fields_at + nfields * u32(2)
+  leafidx_at: u32 = variants_at + nvariants * u32(3)
+  nodes_at: u32 = leafidx_at + nleafidx
+  lists_at: u32 = nodes_at + nnodes * SYN_NODE_WORDS
+  leaf_pos: u32 = 0
+  field_pos: u32 = 0
+  variant_pos: u32 = 0
+  t: u32 = 0
+  while t < ntypes {
+    ta: u32 = types_at + t * SYN_TYPE_WORDS
+    kind: u32 = ty_kind(s, w, t)
+    out[ta] = kind
+    out[ta + u32(1)] = ty_leaf_count(s, w, t)
+    out[ta + u32(2)] = leaf_pos
+    out[ta + u32(3)] = kind == TY_SUM ? { variant_pos } | { field_pos }
+    out[ta + u32(4)] = kind == TY_SUM ? { ty_variant_count(s, w, t) } | { ty_field_count(s, w, t) }
+    out[ta + u32(5)] = ty_elem(s, w, t)
+    out[ta + u32(6)] = ty_length(s, w, t)
+    out[ta + u32(7)] = ty_word(s, w, t, u32(6))
+    e: u32 = 0
+    while e < ntleaves {
+      w[s.tleaves_at + e * u32(4) + u32(2)] == t ? {
+        out[tleaves_at + leaf_pos * u32(2)] = w[s.tleaves_at + e * u32(4)]
+        out[tleaves_at + leaf_pos * u32(2) + u32(1)] = w[s.tleaves_at + e * u32(4) + u32(1)]
+        leaf_pos = leaf_pos + u32(1)
+      } | { }
+      e = e + u32(1)
+    }
+    e = u32(0)
+    while e < nfields {
+      w[s.fields_at + e * u32(4) + u32(2)] == t ? {
+        out[fields_at + field_pos * u32(2)] = w[s.fields_at + e * u32(4)]
+        out[fields_at + field_pos * u32(2) + u32(1)] = w[s.fields_at + e * u32(4) + u32(1)]
+        field_pos = field_pos + u32(1)
+      } | { }
+      e = e + u32(1)
+    }
+    e = u32(0)
+    while e < nvariants {
+      w[s.variants_at + e * u32(4) + u32(3)] == t ? {
+        out[variants_at + variant_pos * u32(3)] = w[s.variants_at + e * u32(4)]
+        out[variants_at + variant_pos * u32(3) + u32(1)] = w[s.variants_at + e * u32(4) + u32(1)]
+        out[variants_at + variant_pos * u32(3) + u32(2)] = w[s.variants_at + e * u32(4) + u32(2)]
+        variant_pos = variant_pos + u32(1)
+      } | { }
+      e = e + u32(1)
+    }
+    t = t + u32(1)
+  }
+  i = u32(0)
+  while i < nleafidx {
+    out[leafidx_at + i] = w[s.leafidx_at + i]
+    i = i + u32(1)
+  }
+  i = u32(0)
+  while i < nnodes * SYN_NODE_WORDS {
+    out[nodes_at + i] = w[s.nodes_at + i]
+    i = i + u32(1)
+  }
+  i = u32(0)
+  while i < nlists {
+    out[lists_at + i] = w[s.lists_at + i]
+    i = i + u32(1)
+  }
+  lists_at + nlists
+}
+
+// serialize_theorem builds the syntax table of the raw table's theorem
+// into out: the word count, or 0 with the reason in the state (the
+// construct outside the subset, or a capacity).
+serialize_theorem: (s: Ser, w: [*]u32, rx: []u32, out: [*]u32): u32 {
+  k: u32 = 0
+  while k < u32(32) {
+    set_sst(s, w, k, u32(0))
+    k = k + u32(1)
+  }
+  raw: Raw = raw_layout(rx)
+  sr_push(s, w, X_FUNC, raw.theorem, u32(1))
+  sr_run(s, w, rx, raw)
+  n: u32 = 0
+  sr_failed(s, w) ? { } | { n = sr_write_table(s, w, out) }
+  n
+}
+
+serialize_reason: (s: Ser, w: [*]u32): u32 = sst(s, w, ST_FAILED)
+
+// Leaf names of the serialized theorem (sorted): count, and the k-th
+// name's pool offset and length, for the driver's counterexample report.
+serialized_leaf_count: (s: Ser, w: [*]u32): u32 = sst(s, w, ST_NLNAMES)
+serialized_leaf_off: (s: Ser, w: [*]u32, k: u32): u32 = w[s.lnames_at + k * u32(4)]
+serialized_leaf_len: (s: Ser, w: [*]u32, k: u32): u32 = w[s.lnames_at + k * u32(4) + u32(1)]
+serialized_leaf_byte: (s: Ser, w: [*]u32, k: u32, i: u32): u32 = pool_byte(s, w, serialized_leaf_off(s, w, k) + i)

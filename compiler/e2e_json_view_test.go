@@ -112,3 +112,33 @@ main: (): i32 {
 		}
 	}
 }
+
+// A borrowed record that also owns arrays — the event workload's shape —
+// decodes and is returned from the region-indexed reader: the record is
+// owned data whose view fields borrow the input, not a borrow of a local
+// owner (a regression of the record-owner rule of 50-borrowing.md §2).
+func TestE2EJsonDecodeViewsWithOwnedArrays(t *testing.T) {
+	var source strings.Builder
+	source.WriteString(`import(std)
+Event[R]: type = struct { id: u64, kind: View[u8, R], message: View[u8, R], latencies: [4]u32, deltas: [2]i32 }
+main: (): i32 {
+`)
+	writeTextView(&source, "input", `{"id":7,"kind":"k","message":"hello","latencies":[1,2,3,4],"deltas":[-1,2]}`)
+	source.WriteString(`
+ r: Result[Event, JsonDecodeError] = decode[Event, Json](input)
+ r ?
+  | .Err(_) => { assert(false) }
+  | .Ok(value) => {
+   assert(value.id == u64(7))
+   assert(len(value.kind) == u32(3) && value.kind[1] == u8(107))
+   assert(len(value.message) == u32(7))
+   assert(value.latencies[3] == u32(4) && value.deltas[0] == i32(0) - i32(1))
+  }
+ 42
+}
+`)
+	code, abnormal := buildAndRun(t, "json_view_owned_arrays", source.String())
+	if abnormal || code != 42 {
+		t.Fatalf("exit=(%d,%v)", code, abnormal)
+	}
+}
