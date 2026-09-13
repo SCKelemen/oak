@@ -262,7 +262,7 @@ func (x *pathExecutor) spanLoadRV64(dest Register, mem Memory, width int, name s
 	if int64(width) != x.spans[span] {
 		return fmt.Sprintf("a %d-byte load over %d-byte elements", width, x.spans[span]), false
 	}
-	element := x.element(span, index, width*8)
+	element := x.elementIn(state, span, index, width*8)
 	value := zeroExtend(element, 64)
 	switch name {
 	case "lw", "lh", "lb":

@@ -573,6 +573,11 @@ type symbolicState struct {
 	// name, at the cell's width (docs/spec/94-assembler.md §9); a cell not
 	// here still holds its entry value, the parameter `global:NAME`.
 	globals map[string]*term
+	// writes: the stores this path made through span parameters, by
+	// parameter, oldest first (asm/effects.go); a read consults them
+	// before the entry memory, and the final logs are compared with the
+	// Oak body's.
+	writes map[string][]*spanWrite
 }
 
 type frameSlot struct {
@@ -838,9 +843,6 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	if hasResult && resultClass == ClassV && !vectorResult {
 		return nil, nil, "no integer result", false
 	}
-	if !hasResult && len(fn.Globals) == 0 {
-		return nil, nil, "no integer result", false
-	}
 	labels := map[string]int{}
 	for index, item := range fn.Items {
 		switch it := item.(type) {
@@ -858,8 +860,10 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	}
 	exec.hasResult = hasResult
 	exec.loopExits = findLoops(fn.Items, labels)
-	result, cells, reason, ok := exec.run(0, state)
-	exec.cells = cells
+	result, effects, reason, ok := exec.run(0, state)
+	if effects != nil {
+		exec.cells, exec.writes = effects.cells, effects.writes
+	}
 	return result, exec, reason, ok
 }
 
@@ -903,7 +907,8 @@ type pathExecutor struct {
 	// cells: the written cells after run, merged across every path.
 	hasResult bool
 	cells     map[string]*term
-	concrete  bool // a witness run: every input is a constant
+	writes    map[string][]*spanWrite // the span memories written after run (asm/effects.go)
+	concrete  bool                    // a witness run: every input is a constant
 	loopExits map[int]loopShape
 	loops     []*loopEvent // data-dependent loops met, in creation order
 	loopStack []int        // indices of the loops whose bodies are being executed
@@ -1079,7 +1084,7 @@ func (s *symbolicState) clone() *symbolicState {
 			globals[name] = value
 		}
 	}
-	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, globals: globals}
+	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, globals: globals, writes: cloneWrites(s.writes)}
 }
 
 // frameAccess executes a load or store through the sp frame: the address
@@ -1403,8 +1408,9 @@ func isFrameMemory(instr Instruction) bool {
 
 // run executes from item index pc to a ret on every path.
 // run executes from item index pc to a ret on every path: the result term
-// and the package-global cells written, merged across the paths.
-func (x *pathExecutor) run(pc int, state *symbolicState) (*term, map[string]*term, string, bool) {
+// and the effects (the package-global cells and the span memories
+// written), merged across the paths.
+func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, string, bool) {
 	x.paths++
 	if x.paths > pathBudget {
 		return nil, nil, "more paths than the verifier's budget (a loop whose trip count depends on the inputs, or too many forks)", false
@@ -1421,14 +1427,14 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, map[string]*ter
 		switch instr.Mnemonic {
 		case "ret":
 			if !x.hasResult {
-				return unitResult, state.globals, "", true
+				return unitResult, state.effects(), "", true
 			}
 			if x.resultClass == ClassV {
 				value, ok := state.readVec(0)
 				if !ok {
 					return nil, nil, "result register never written", false
 				}
-				return value.halves()[x.resultHalf], state.globals, "", true
+				return value.halves()[x.resultHalf], state.effects(), "", true
 			}
 			result, ok := state.read(x.resultReg)
 			if !ok {
@@ -1438,7 +1444,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, map[string]*ter
 				// a0 holds the widened result; the contract width reads it.
 				result = truncate(result, widthOf(x.resultClass))
 			}
-			return result, state.globals, "", true
+			return result, state.effects(), "", true
 		case "brk", "ebreak":
 			// A trap: this path delivers no result. The Oak body traps on
 			// the same inputs (a failed bounds check, division by zero, an
@@ -1482,25 +1488,25 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, map[string]*ter
 			// and continued past its exit on fresh loop-carried symbols.
 			if shape, isLoopExit := x.loopExits[pc]; isLoopExit {
 				result, reason, ok := x.loopEvent(shape, instr, state)
-				return result, state.globals, reason, ok
+				return result, state.effects(), reason, ok
 			}
 			// Any other undecided branch forks; backward or forward alike —
 			// an unrecognized loop unfolds until the budgets stop it.
-			taken, takenCells, reason, ok := x.run(target, state.clone())
+			taken, takenEffects, reason, ok := x.run(target, state.clone())
 			if !ok {
 				return nil, nil, reason, false
 			}
-			fallThrough, fallCells, reason, ok := x.run(pc+1, state)
+			fallThrough, fallEffects, reason, ok := x.run(pc+1, state)
 			if !ok {
 				return nil, nil, reason, false
 			}
 			switch {
 			case taken == trapPath:
-				return fallThrough, fallCells, "", true
+				return fallThrough, fallEffects, "", true
 			case fallThrough == trapPath:
-				return taken, takenCells, "", true
+				return taken, takenEffects, "", true
 			}
-			return iteTerm(cond, taken, fallThrough), x.mergeCells(cond, takenCells, fallCells), "", true
+			return iteTerm(cond, taken, fallThrough), x.mergeEffects(cond, takenEffects, fallEffects), "", true
 		}
 		if x.arch == ArchRV64 {
 			if reason, ok := x.stepRV64(instr, state); !ok {
@@ -1533,6 +1539,12 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, map[string]*ter
 			continue
 		}
 		if handled, reason, ok := x.globalStore(instr, state); handled {
+			if !ok {
+				return nil, nil, reason, false
+			}
+			continue
+		}
+		if handled, reason, ok := x.spanStore(instr, state); handled {
 			if !ok {
 				return nil, nil, reason, false
 			}
@@ -1617,7 +1629,7 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		if extra := offset/elem + mem.Offset/elem; extra != 0 {
 			at = binaryTerm("add", at, constTerm(uint64(extra), 32))
 		}
-		state.write(dest, zeroExtend(x.element(name, at, int(elem)*8), widthOf(dest.Class)))
+		state.write(dest, zeroExtend(x.elementIn(state, name, at, int(elem)*8), widthOf(dest.Class)))
 		return "", true
 	}
 	if record, isRecord := x.records[param]; isRecord {
@@ -1673,13 +1685,13 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		if baseIndex != 0 {
 			index = binaryTerm("add", truncate(index, 32), constTerm(uint64(baseIndex), 32))
 		}
-		state.write(dest, extend(x.element(param, index, int(elem)*8)))
+		state.write(dest, extend(x.elementIn(state, param, index, int(elem)*8)))
 		return "", true
 	}
 	if mem.Offset < 0 || mem.Offset%elem != 0 {
 		return "a load not aligned to an element", false
 	}
-	state.write(dest, extend(x.element(param, constTerm(uint64(mem.Offset/elem+baseIndex), 32), int(elem)*8)))
+	state.write(dest, extend(x.elementIn(state, param, constTerm(uint64(mem.Offset/elem+baseIndex), 32), int(elem)*8)))
 	return "", true
 }
 
@@ -2166,6 +2178,10 @@ type oakLowering struct {
 	// conditional merging of locals model the cells; their final values
 	// are the Oak side's written state.
 	cells map[string]*oakLocal
+	// writes: the stores the body makes through span parameters, by
+	// parameter, in program order, each under its path condition
+	// (asm/effects.go); reads consult them before the entry memory.
+	writes map[string][]*spanWrite
 	// functions are the program's functions a body may call; a call to one
 	// in the subset is inlined (inlineCall). Nil outside the theorem decider.
 	functions map[string]*ast.FunctionStatement
@@ -3257,6 +3273,9 @@ func (lo *oakLowering) assignLocal(s *ast.AssignmentStatement) (string, bool) {
 // assignIndexed executes `p.f = e` / `arr[k] = e` / `pool[k].f = e` over
 // aggregate locals.
 func (lo *oakLowering) assignIndexed(s *ast.IndexAssignmentStatement) (string, bool) {
+	if name, contract, isSpan := lo.spanAssignment(s); isSpan {
+		return lo.assignSpanElement(name, contract, s)
+	}
 	if index := s.Target; index != nil && !index.Dot {
 		if _, isConst := lo.constantIndexValue(index.Index); !isConst {
 			base, reason, ok := lo.placeOf(index.Left)
@@ -3554,11 +3573,13 @@ func (lo *oakLowering) spanElement(expr ast.Expression) (name string, contract s
 // select (the loop-carried counter of a data-dependent loop).
 func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanContract, string, bool) {
 	if name, contract, isConst := lo.spanElement(index); isConst {
+		span := index.Left.(*ast.Identifier).Value
+		_, k, _ := elementParam(name)
+		entry := paramTerm(name, contract.elemWidth)
 		if lo.concrete != nil {
-			_, k, _ := elementParam(name)
-			return constTerm(elementValue(index.Left.(*ast.Identifier).Value, k, contract.elemWidth), contract.elemWidth), contract, "", true
+			entry = constTerm(elementValue(span, k, contract.elemWidth), contract.elemWidth)
 		}
-		return paramTerm(name, contract.elemWidth), contract, "", true
+		return memoryAt(lo.writes[span], constTerm(k, 32), entry), contract, "", true
 	}
 	ident, isIdent := index.Left.(*ast.Identifier)
 	if !isIdent || index.Dot {
@@ -3577,15 +3598,16 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 			// Oak traps on this input; the witness has no value to compare.
 			return nil, spanContract{}, fmt.Sprintf("an index past len(%s) on this input", ident.Value), false
 		}
-		return constTerm(elementValue(ident.Value, idx.value, contract.elemWidth), contract.elemWidth), contract, "", true
+		return memoryAt(lo.writes[ident.Value], idx, constTerm(elementValue(ident.Value, idx.value, contract.elemWidth), contract.elemWidth)), contract, "", true
 	}
+	entry := selectTerm(ident.Value, idx, contract.elemWidth)
 	if !lo.trapsTracked {
 		// The asm verifier's side: reads split over a conditional in the
 		// index, as the machine's branches read (selectSplit). The theorem
 		// decider keeps the read whole, as its Oak twin builds it.
-		return selectSplit(ident.Value, idx, contract.elemWidth, 0), contract, "", true
+		entry = selectSplit(ident.Value, idx, contract.elemWidth, 0)
 	}
-	return selectTerm(ident.Value, idx, contract.elemWidth), contract, "", true
+	return memoryAt(lo.writes[ident.Value], idx, entry), contract, "", true
 }
 
 // selectSplit builds a span read at an index holding a conditional by
@@ -4521,9 +4543,9 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 		}
 		if len(exec.loops) > 0 || len(lowering.loops) > 0 {
-			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (package state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
+			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
 		}
-		return decideCells(fn, lowering, exec, nil)
+		return decideEffects(fn, lowering, exec, nil)
 	}
 	oakTerm, width, reason, ok := lowering.resultTerm(fn, sig, oakBody)
 	if !ok {
@@ -4531,8 +4553,8 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 	}
 	asmTerm = maskResult(fn, sig, asmTerm)
 	if len(exec.loops) > 0 || len(lowering.loops) > 0 {
-		if len(exec.cells) > 0 || len(lowering.writtenCells()) > 0 {
-			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (package state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
+		if len(exec.cells) > 0 || len(lowering.writtenCells()) > 0 || len(exec.writes) > 0 || len(lowering.writes) > 0 {
+			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
 		}
 		return verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
 	}
@@ -4541,10 +4563,10 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		note = " (callees taken at their Oak bodies: " + strings.Join(exec.summarized, ", ") + ")"
 	}
 	verdict := decideEqual(fn, lowering, asmTerm, oakTerm, width, note)
-	if verdict.Kind != VerdictProven || (len(exec.cells) == 0 && len(lowering.writtenCells()) == 0) {
+	if verdict.Kind != VerdictProven {
 		return verdict
 	}
-	return decideCells(fn, lowering, exec, &verdict)
+	return decideEffects(fn, lowering, exec, &verdict)
 }
 
 // decideCells decides, for every package-global cell either side writes,

@@ -1748,9 +1748,57 @@ record literals, `px_lex`): more temporaries live at once than x9–x15
 and the overflow registers hold. The compute paths — the decider, the
 lowering, the exploration, the projections — are native; what stays in C
 is the shell around them.
-Next increments: the verifier past `bl` and unit results, where the
-proven count (197 of 879) is now the measure — the lowering seam's
-call modeling landing upstream is that work; then guard elision from the
+**Twenty-eighth increment — memory effects through spans.** The largest
+reason a lowered body stayed trusted was no longer a construct but a
+shape: a function with no result — 246 of the prover's 879, the setters,
+the emitters into the word arena, the arena pushes — was refused before
+execution ("no integer result"), and a function that stored through a
+span on the way to its result stopped at the store ("instruction str").
+A store through a span parameter is now an effect the verdict compares,
+as it compares a result and a package cell (asm/effects.go). Both sides
+keep a write log per span parameter: the asm executor appends an entry
+for every `str`/`strb`/`strh` whose base is a span's (`[xB, wI, uxtw #s]`,
+an element offset, or the element address the atomics build) — the
+32-bit index term and the stored register's value at the element width —
+and a fork's two logs rejoin as a shared prefix plus each side's own
+stores under the branch condition and its negation; the Oak lowering
+appends `v[e] = x` under its path condition, the same statement-level
+conditional and match arms the cells already lower under. A read on
+either side consults its log newest-first before the entry memory — the
+newest store at an equal index under a holding guard, else the entry
+select or element parameter — so a read after a write sees the write
+whether the machine forwards the value from the register or reloads it.
+The final memories are compared at a fresh symbolic index per span
+(`v[?]`, 32 bits, declared as a fresh unknown): the asm memory and the
+Oak memory at that index are two terms at the element width, decided
+exactly as a result is — witnesses, the linear form, the diagrams under
+the reads' functional consistency — and equal at every index is equal
+memories. The bounds stay the checker's: a store the verifier sees is
+already under a dominating length guard, so its only question is which
+element takes which value. Outside the subset, with the reason: a store
+inside a data-dependent loop body (the loop summary has no memory), into
+a by-reference record argument, of a register pair or a vector register,
+and either side's memory written around a data-dependent loop. On the
+prover: 58 unit functions are now proven in the span memory they write
+(`set_lst`, `le_fail`, `cache_put`, `bind_scalar`, `ab_push`, the
+`ap_*` emitters that write inline) and 11 more in their result and their
+memory; proven functions 197 to 265 of 879, no disagreement, the rows
+identical. The remaining unit functions are trusted for two reasons: 106
+call a unit callee with a span in its signature (`ap_lits`, `write_lit`,
+`sb_str`: the call summary threads a callee's cells since #384 but not
+yet its span writes, and a span parameter keeps the call opaque) and 48
+store inside a data-dependent loop. Pinned: `asm/effects_test.go` (a unit writer
+proven, the wrong value and the wrong element refuted, a conditional
+store proven and its unconditional lowering refuted, a result with a
+forwarded write, a swap proven and its reordered lowering refuted at
+`i == j`, a store the body does not make refuted) and
+`compiler/e2e_native_span_effects_test.go` (the same shapes through the
+backend, `fill`'s loop store trusted with the reason, the C backend the
+oracle for the values).
+Next increments: the callee's effects through the call summary — a unit
+callee's log appended to the caller's under the argument substitution,
+which is where the 106 remaining unit functions wait — and stores in
+data-dependent loops as a summarized memory; guard elision from the
 checker's facts; the foreign-call subset only if the shell itself is to
 be verified —
 calls by inlining or by the callee's proven contract, and effects through
