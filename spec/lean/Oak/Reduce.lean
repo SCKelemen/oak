@@ -584,4 +584,191 @@ theorem bounded_sound (f : α → α → α) (hf : Assoc f) (z : α) (xs : List 
     compute f z xs .chain = compute f z xs .tree :=
   (tree_eq_chainFold f hf z xs).symm
 
+/-! ## The lane rule as an order
+
+`reduce.lanes` (docs/spec/55-parallelism.md section 4; the ml pilot's F2):
+`2^k` lane-strided partial accumulators, element `i` folded into lane
+`laneOf i run (2^k)` in index order from `z`, then the xor butterfly over
+the partials — rounds at offsets `2^k / 2, …, 1`, every lane taking
+`f acc[l] acc[l ^ off]` from the values before the round — whose lane 0
+is the result. `bfly` is that lane's value by halving: in the round at
+offset `half`, lane `l < half` takes `f v[l] v[l + half]`, and the later
+rounds never leave the lower half. `lanes_eq_left` is the theorem the
+order rests on: under a commutative monoid it is the sequential fold, so
+the lane rule is a legal regrouping wherever `laws { associative,
+commutative, identity(z) }` hold, and for floating point it is one of the
+groupings `Oak.FloatBounds` bounds. -/
+
+/-- The lane element `i` lands in, with runs of `run` consecutive elements
+per lane. -/
+def laneOf (i run count : Nat) : Nat := (i / run) % count
+
+theorem laneOf_lt (i run count : Nat) (h : 0 < count) : laneOf i run count < count :=
+  Nat.mod_lt _ h
+
+/-- Fold `x` into slot `l` of the partials; a slot past the end is left. -/
+def into (f : α → α → α) (acc : List α) (l : Nat) (x : α) : List α :=
+  match acc[l]? with
+  | some a => acc.set l (f a x)
+  | none => acc
+
+theorem into_zero (f : α → α → α) (a : α) (rest : List α) (x : α) :
+    into f (a :: rest) 0 x = f a x :: rest := by
+  simp [into]
+
+theorem into_succ (f : α → α → α) (a : α) (rest : List α) (m : Nat) (x : α) :
+    into f (a :: rest) (m + 1) x = a :: into f rest m x := by
+  cases h : rest[m]? <;> simp [into, h]
+
+theorem length_into (f : α → α → α) (acc : List α) (l : Nat) (x : α) :
+    (into f acc l x).length = acc.length := by
+  cases h : acc[l]? <;> simp [into, h]
+
+/-- The partials after folding the elements from index `i`, each into the
+slot `slot` names for its index. -/
+def accum (f : α → α → α) (slot : Nat → Nat) : List α → Nat → List α → List α
+  | acc, _, [] => acc
+  | acc, i, x :: xs => accum f slot (into f acc (slot i) x) (i + 1) xs
+
+theorem length_accum (f : α → α → α) (slot : Nat → Nat) :
+    ∀ (xs : List α) (acc : List α) (i : Nat), (accum f slot acc i xs).length = acc.length
+  | [], acc, i => rfl
+  | x :: xs, acc, i => by
+    rw [accum, length_accum f slot xs, length_into]
+
+/-- Lane 0 of the butterfly over `2^k` partials. -/
+def bfly (f : α → α → α) (z : α) : Nat → List α → α
+  | 0, v => v.headD z
+  | k + 1, v => bfly f z k (List.zipWith f (v.take (2 ^ k)) (v.drop (2 ^ k)))
+
+/-- `reduce.lanes` over `2^k` lanes. -/
+def lanes (f : α → α → α) (z : α) (run k : Nat) (xs : List α) : α :=
+  bfly f z k (accum f (fun i => laneOf i run (2 ^ k)) (List.replicate (2 ^ k) z) 0 xs)
+
+theorem bfly_one (f : α → α → α) (z a : α) : bfly f z 0 [a] = a := rfl
+
+/-- Two lanes: lane 0 with lane 1. -/
+theorem bfly_two (f : α → α → α) (z a b : α) : bfly f z 1 [a, b] = f a b := rfl
+
+/-- Four lanes: the round at offset 2 pairs 0 with 2 and 1 with 3, the round
+at offset 1 combines the two. -/
+theorem bfly_four (f : α → α → α) (z a b c d : α) :
+    bfly f z 2 [a, b, c, d] = f (f a c) (f b d) := rfl
+
+/-- Eight lanes: offsets 4, 2, 1. -/
+theorem bfly_eight (f : α → α → α) (z a b c d e g h i : α) :
+    bfly f z 3 [a, b, c, d, e, g, h, i] = f (f (f a e) (f c h)) (f (f b g) (f d i)) := rfl
+
+/-- One lane folds every element in order: `reduce.lanes` at one lane is
+`reduce.left`. -/
+theorem accum_single (f : α → α → α) (slot : Nat → Nat) (hs : ∀ j, slot j = 0) :
+    ∀ (xs : List α) (a : α) (i : Nat), accum f slot [a] i xs = [xs.foldl f a]
+  | [], a, i => rfl
+  | x :: xs, a, i => by
+    rw [accum, hs, into_zero, accum_single f slot hs xs, List.foldl_cons]
+
+theorem lanes_one (f : α → α → α) (z : α) (run : Nat) (xs : List α) :
+    lanes f z run 0 xs = left f z xs := by
+  unfold lanes left
+  rw [Nat.pow_zero, List.replicate_one,
+    accum_single f (fun i => laneOf i run 1) (fun j => Nat.mod_one _) xs z 0]
+  rfl
+
+/-! ### Under a commutative monoid the lane rule is the sequential fold -/
+
+/-- Commutativity. -/
+def Comm (f : α → α → α) : Prop := ∀ a b, f a b = f b a
+
+/-- `z` is a left identity (with `Comm`, a two-sided one). -/
+def LeftId (f : α → α → α) (z : α) : Prop := ∀ a, f z a = a
+
+theorem right_id (f : α → α → α) (z : α) (hc : Comm f) (hz : LeftId f z) (a : α) : f a z = a := by
+  rw [hc, hz]
+
+section CommMonoid
+variable (f : α → α → α) (z : α) (hf : Assoc f) (hc : Comm f) (hz : LeftId f z)
+include hf hc hz
+
+theorem foldl_from (l : List α) : ∀ a, l.foldl f a = f a (l.foldl f z) := by
+  induction l with
+  | nil => intro a; simp [right_id f z hc hz]
+  | cons x l ih =>
+    intro a
+    rw [List.foldl_cons, List.foldl_cons, ih (f a x), ih (f z x), hz, hf]
+
+/-- The fold of a cons: the head combined with the fold of the tail. -/
+theorem total_cons (a : α) (l : List α) : (a :: l).foldl f z = f a (l.foldl f z) := by
+  rw [List.foldl_cons, hz, foldl_from f z hf hc hz]
+
+theorem total_append (l m : List α) : (l ++ m).foldl f z = f (l.foldl f z) (m.foldl f z) := by
+  induction l with
+  | nil => rw [List.nil_append, List.foldl_nil, hz]
+  | cons x l ih => rw [List.cons_append, total_cons f z hf hc hz, total_cons f z hf hc hz, ih, hf]
+
+theorem total_replicate (n : Nat) : (List.replicate n z).foldl f z = z := by
+  induction n with
+  | zero => rfl
+  | succ n ih => rw [List.replicate_succ, total_cons f z hf hc hz, ih, hz]
+
+omit hz in
+/-- The commutative-monoid rearrangement `(a b)(c d) = (a c)(b d)`. -/
+theorem exchange (a b c d : α) : f (f a b) (f c d) = f (f a c) (f b d) := by
+  rw [hf, ← hf b c d, hc b c, hf c b d, ← hf]
+
+/-- Folding `x` into one slot combines it into the total. -/
+theorem total_into (x : α) : ∀ (acc : List α) (l : Nat), l < acc.length →
+    (into f acc l x).foldl f z = f (acc.foldl f z) x
+  | [], l, h => absurd h (Nat.not_lt_zero l)
+  | a :: rest, 0, _ => by
+    rw [into_zero, total_cons f z hf hc hz, total_cons f z hf hc hz, hf, hc x, ← hf]
+  | a :: rest, m + 1, h => by
+    rw [into_succ, total_cons f z hf hc hz, total_into x rest m (Nat.lt_of_succ_lt_succ h),
+      total_cons f z hf hc hz, hf]
+
+/-- The partials' total is the fold of the elements so far. -/
+theorem total_accum (slot : Nat → Nat) :
+    ∀ (xs : List α) (acc : List α) (i : Nat), (∀ j, slot j < acc.length) →
+    (accum f slot acc i xs).foldl f z = xs.foldl f (acc.foldl f z)
+  | [], acc, i, _ => rfl
+  | x :: xs, acc, i, hs => by
+    rw [accum, total_accum slot xs _ (i + 1) (fun j => by rw [length_into]; exact hs j),
+      total_into f z hf hc hz x acc (slot i) (hs i), List.foldl_cons]
+
+/-- Combining two lists lane by lane totals to the two totals combined. -/
+theorem total_zipWith : ∀ (l m : List α), l.length = m.length →
+    (List.zipWith f l m).foldl f z = f (l.foldl f z) (m.foldl f z)
+  | [], [], _ => by rw [List.zipWith_nil_left, List.foldl_nil, hz]
+  | [], _ :: _, h => by simp at h
+  | _ :: _, [], h => by simp at h
+  | a :: l, b :: m, h => by
+    rw [List.zipWith_cons_cons, total_cons f z hf hc hz, total_zipWith l m (by simpa using h),
+      total_cons f z hf hc hz, total_cons f z hf hc hz, exchange f hf hc]
+
+/-- The butterfly's lane 0 is the total of the partials. -/
+theorem bfly_total : ∀ (k : Nat) (v : List α), v.length = 2 ^ k → bfly f z k v = v.foldl f z
+  | 0, v, h => by
+    match v, h with
+    | [a], _ => simp [bfly, total_cons f z hf hc hz, right_id f z hc hz]
+  | k + 1, v, h => by
+    have hlen : (List.zipWith f (v.take (2 ^ k)) (v.drop (2 ^ k))).length = 2 ^ k := by
+      rw [List.length_zipWith, List.length_take, List.length_drop, h, Nat.pow_succ]
+      omega
+    have htake : (v.take (2 ^ k)).length = (v.drop (2 ^ k)).length := by
+      rw [List.length_take, List.length_drop, h, Nat.pow_succ]
+      omega
+    rw [bfly, bfly_total k _ hlen, total_zipWith f z hf hc hz _ _ htake,
+      ← total_append f z hf hc hz, List.take_append_drop]
+
+/-- **The lane rule is the sequential fold** under a commutative monoid:
+whatever the lane count and run, `reduce.lanes` is `reduce.left`. -/
+theorem lanes_eq_left (run k : Nat) (xs : List α) : lanes f z run k xs = left f z xs := by
+  unfold lanes left
+  have hpos : 0 < 2 ^ k := Nat.two_pow_pos k
+  rw [bfly_total f z hf hc hz k _ (by rw [length_accum, List.length_replicate]),
+    total_accum f z hf hc hz _ xs _ 0
+      (fun j => by rw [List.length_replicate]; exact laneOf_lt j run _ hpos),
+    total_replicate f z hf hc hz]
+
+end CommMonoid
+
 end Oak.Reduce
