@@ -1238,6 +1238,14 @@ type FunctionStatement struct {
 	// of the operator, and a statement the REPL's :lean can put to Lean and
 	// `oak prove` can decide. Empty for ordinary functions.
 	Laws []*LawClause
+	// Dispatch names the function's processor-feature realizations
+	// (`dispatch { sve: f_sve, rvv: f_rvv }`, docs/spec/93-simd.md
+	// section 6): each slot is a feature of the closed catalog and a
+	// function of the identical signature the program selects, once at
+	// startup, when the processor has the feature. The body remains the
+	// meaning; a slot is the author's claim of observational equality,
+	// checked differentially, never assumed. Empty for ordinary functions.
+	Dispatch []*DispatchSlot
 	// Lowering, when set, is the compiler-known lowering of a projected
 	// protocol step function (docs/spec/112-protocols.md section 2a,
 	// 90-backend.md section 14): the C backend emits a transition table
@@ -1335,9 +1343,25 @@ func (fs *FunctionStatement) String() string {
 		out.WriteString(strings.Join(names, ", "))
 		out.WriteString(" }")
 	}
+	if len(fs.Dispatch) > 0 {
+		slots := make([]string, 0, len(fs.Dispatch))
+		for _, slot := range fs.Dispatch {
+			slots = append(slots, slot.Feature+": "+slot.Realization)
+		}
+		out.WriteString(" dispatch { ")
+		out.WriteString(strings.Join(slots, ", "))
+		out.WriteString(" }")
+	}
 	out.WriteRune(' ')
 	out.WriteString(fs.Body.String())
 	return out.String()
+}
+
+// DispatchSlot is one `feature: realization` pair of a dispatch clause.
+type DispatchSlot struct {
+	Token       token.Token
+	Feature     string
+	Realization string
 }
 
 // Function parameter

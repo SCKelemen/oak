@@ -305,6 +305,11 @@ func (cg *CodeGenerator) emitLibraryCall(call *ast.InvocationExpression, tc *typ
 			return true
 		}
 		helper := "oak_simd_" + member
+		if cg.featureMode != "" && scalableMember(member) {
+			// A realization's scalable helpers are the mode's copies
+			// (docs/spec/93-simd.md section 6).
+			helper += modeSuffix(cg.featureMode)
+		}
 		// A load or store the checker proved in range (typechecker/extents.go,
 		// recordVectorAccessProof) takes the helper without the trap check.
 		if op, _, _ := simdOpSplit(member); (op == "load" || op == "store") && tc != nil && tc.IndexProven(call.Token) {

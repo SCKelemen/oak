@@ -1047,6 +1047,9 @@ func Apply(fn object.Object, args []object.Object) object.Object {
 func applyFunction(fn object.Object, args []object.Object) object.Object {
 	switch fn := fn.(type) {
 	case *object.Function:
+		if realization, selected := selectRealization(fn); selected {
+			return applyFunction(realization, args)
+		}
 		extendedEnv := extendFunctionEnv(fn, args)
 		evaluated := Eval(fn.Body, extendedEnv)
 		object.ReleaseEnvironment(extendedEnv)
@@ -1309,6 +1312,7 @@ func evalFunctionStatement(fn *ast.FunctionStatement, env *object.Environment) o
 		Body:       &ast.BlockStatement{Statements: []ast.Statement{&ast.ExpressionStatement{Expression: fn.Body}}},
 		Env:        env,
 		Variadic:   len(fn.Parameters) > 0 && fn.Parameters[len(fn.Parameters)-1].Variadic,
+		Dispatch:   fn.Dispatch,
 	}
 
 	// If this is a method (has a receiver), store it with a special key: TypeName::methodName
@@ -1831,4 +1835,32 @@ func evalFieldLifting(adtValue *object.ADTValue, fieldName string, env *object.E
 
 	// If raw value is not a record, field lifting doesn't apply
 	return newError("field lifting only works when ADT has record literal tags, got %s", rawValue.Type())
+}
+
+// Features is the processor-feature set the interpreter mirrors
+// (docs/spec/93-simd.md section 6): the interpreter has no processor, so a
+// test or the REPL declares which features are "available", and a call to
+// a dispatched function then runs the first realization whose feature is
+// in the set — the differential check of the realization's claim against
+// the body. Empty by default: the body runs.
+var Features = map[string]bool{}
+
+// selectRealization applies the dispatch clause the way the emitted C
+// does (Oak.Dispatch.select): the first slot whose feature is available,
+// resolved by name in the function's defining environment.
+func selectRealization(fn *object.Function) (object.Object, bool) {
+	if len(fn.Dispatch) == 0 || len(Features) == 0 {
+		return nil, false
+	}
+	for _, slot := range fn.Dispatch {
+		if !Features[slot.Feature] {
+			continue
+		}
+		if realization, found := fn.Env.Get(slot.Realization); found {
+			if target, isFn := realization.(*object.Function); isFn && target != fn {
+				return target, true
+			}
+		}
+	}
+	return nil, false
 }

@@ -481,6 +481,25 @@ func collectEffectFacts(fn *ast.FunctionStatement, functions map[string]*ast.Fun
 		return f
 	}
 	collectBodyFacts(f, fn.Parameters, fn.Body, functions)
+	// A dispatched function may run any of its realizations
+	// (docs/spec/93-simd.md section 6): each is a callee, so the effects
+	// reachable from the function are the union over the body and every
+	// realization, whichever the processor selects.
+	for _, slot := range fn.Dispatch {
+		if _, known := functions[slot.Realization]; !known {
+			continue
+		}
+		seen := false
+		for _, callee := range f.callees {
+			if callee == slot.Realization {
+				seen = true
+			}
+		}
+		if !seen {
+			f.callees = append(f.callees, slot.Realization)
+		}
+	}
+	sort.Strings(f.callees)
 	return f
 }
 

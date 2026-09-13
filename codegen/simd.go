@@ -9,6 +9,7 @@ package codegen
 
 import (
 	"fmt"
+	"github.com/SCKelemen/oak/semir"
 	"reflect"
 	"sort"
 	"strings"
@@ -244,8 +245,15 @@ func (cg *CodeGenerator) emitSimdSupport(program *ast.Program) {
 			shape.Suffix, shape.ElemName, shape.Lanes, shape.Suffix))
 	}
 	cg.write("\n")
-	if programUsesScalable(ops) || cg.programMentionsScalableLocals(program) {
+	if len(cg.dispatchSlots) > 0 {
+		cg.writeRaw(cg.dispatchProbeSource())
+	}
+	scalable := programUsesScalable(ops) || cg.programMentionsScalableLocals(program)
+	if scalable {
 		cg.writeRaw(scalableTypedefs)
+		for _, mode := range cg.sortedDispatchModes() {
+			cg.writeRaw(cg.dispatchModeTypedefs(mode))
+		}
 	}
 
 	for _, member := range ops {
@@ -269,6 +277,13 @@ func (cg *CodeGenerator) emitSimdSupport(program *ast.Program) {
 			}
 			cg.writeRaw(scalableHelperSource(member))
 			cg.write("\n")
+			for _, mode := range cg.sortedDispatchModes() {
+				// The mode's copy of the helper for the realizations
+				// dispatched to it; where the baseline already is the
+				// mode, or the target has no such feature, the copy is
+				// the baseline helper under the mode's name.
+				cg.writeRaw(fmt.Sprintf("#if %s\n%s#else\n#define oak_simd_%s%s oak_simd_%s\n#endif\n\n", cg.dispatchModeGate(mode), scalableHelperFor(member, mode), member, modeSuffix(mode), member))
+			}
 			continue
 		}
 		op, shape, ok := simdOpSplit(member)
@@ -887,7 +902,60 @@ typedef struct oak_scalable_u32 { u32 lanes[4]; } oak_scalable_u32;
 
 // scalableHelperSource emits one scalable operation's helper: the portable
 // lane loop over the extent, and the RVV intrinsic under the guard.
-func scalableHelperSource(member string) string {
+func scalableHelperSource(member string) string { return scalableHelperFor(member, "") }
+
+// modeSuffix is the spelling a lowering mode appends to the scalable
+// types and helpers of a realization emitted beside the baseline
+// (docs/spec/93-simd.md section 6, one translation unit, two lowerings).
+func modeSuffix(mode string) string {
+	if mode == "" {
+		return ""
+	}
+	return "__" + mode
+}
+
+// scalableHelperFor emits the helper in one lowering mode: "" is the
+// baseline chain (RVV, SVE, portable under the preprocessor guards); "sve"
+// or "rvv" is that realization's body alone, under the mode's names, for
+// a dispatched program whose baseline lacks the feature.
+func scalableHelperFor(member, mode string) string {
+	text := scalableHelperChain(member, mode)
+	if mode == "" {
+		return text
+	}
+	// Cut the portable tail the chain left after the mode's branch.
+	for {
+		i := strings.Index(text, modeCut)
+		if i < 0 {
+			break
+		}
+		j := strings.Index(text[i:], "#endif\n")
+		if j < 0 {
+			break
+		}
+		text = text[:i] + text[i+j+len("#endif\n"):]
+	}
+	sfx := modeSuffix(mode)
+	text = strings.ReplaceAll(text, "oak_simd_"+member+"(", "oak_simd_"+member+sfx+"(")
+	text = strings.ReplaceAll(text, "oak_scalable_u8 ", "oak_scalable_u8"+sfx+" ")
+	text = strings.ReplaceAll(text, "oak_scalable_u32 ", "oak_scalable_u32"+sfx+" ")
+	text = strings.ReplaceAll(text, "OAK_SCALABLE_CAP_U8(", "OAK_SCALABLE_CAP_U8"+sfx+"(")
+	text = strings.ReplaceAll(text, "OAK_SCALABLE_CAP_U32(", "OAK_SCALABLE_CAP_U32"+sfx+"(")
+	attribute := ""
+	for _, feature := range semir.CPUFeatures() {
+		if feature.Mode == mode {
+			attribute = feature.Attribute + " "
+			break
+		}
+	}
+	return strings.ReplaceAll(text, "static inline ", attribute+"static inline ")
+}
+
+// modeCut marks where a mode-only helper's text ends and the chain's
+// portable tail begins.
+const modeCut = "/*OAK_MODE_CUT*/"
+
+func scalableHelperChain(member, mode string) string {
 	var b strings.Builder
 	if member == "count" {
 		b.WriteString("static inline u32 oak_simd_count( oak_active a ) { return (u32)a; }\n")
@@ -911,13 +979,19 @@ func scalableHelperSource(member string) string {
 		pg = "OAK_SVE_PG_U32(a)"
 	}
 	rvv := func(rvvText, sveText string) string {
+		switch mode {
+		case "sve":
+			return sveText + modeCut
+		case "rvv":
+			return rvvText + modeCut
+		}
 		return rvvGuard + "\n" + rvvText + sveElifGuard + "\n" + sveText + "#else\n"
 	}
 	load := func(ptr string) string { return fmt.Sprintf("__riscv_vle%s_v_%s(%s, a)", bits, sfx, ptr) }
 	switch op {
 	case "splat":
 		fmt.Fprintf(&b, "static inline %s oak_simd_%s( %s x, oak_active a ) {\n", vec, member, elem)
-		b.WriteString(rvv(fmt.Sprintf("  return __riscv_vmv_v_x_%s(x, a);\n", sfx), fmt.Sprintf("  return svdup_n_%s(x);\n", elem)))
+		b.WriteString(rvv(fmt.Sprintf("  return __riscv_vmv_v_x_%s(x, a);\n", sfx), fmt.Sprintf("  (void)a; return svdup_n_%s(x);\n", elem)))
 		fmt.Fprintf(&b, "  %s r;\n  for (u32 i = 0; i < a; i++) { r.lanes[i] = x; }\n  return r;\n#endif\n}\n", vec)
 	case "load":
 		fmt.Fprintf(&b, "static inline %s oak_simd_%s( oak_view_%s v, u32 off, oak_active a ) {\n", vec, member, elem)

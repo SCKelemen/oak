@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/SCKelemen/oak/semir"
+
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/lsp"
@@ -881,6 +883,7 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 			tc.kernels[fn.Name.Value] = true
 		}
 	}
+	tc.checkDispatchClauses(program)
 	tc.recordGlobalOwners(program)
 	tc.checkExportSymbols(program)
 	// Pre-declare top-level non-generic function signatures so functions can
@@ -6485,4 +6488,77 @@ func (tc *TypeChecker) literalOperand(expr ast.Expression) bool {
 		return false
 	}
 	return IsLiteralOnlyExpression(call.Arguments[0])
+}
+
+// checkDispatchClauses validates every `dispatch { feature: function }`
+// clause of the program (docs/spec/93-simd.md section 6): each slot names
+// a feature of the closed catalog, at most once, and a top-level function
+// of the identical signature — the same parameter types and return type,
+// spelled the same — that is not the function itself and not dispatched
+// in turn. The body stays the meaning; the clause is checked here so the
+// backend and the interpreter can select without looking again.
+func (tc *TypeChecker) checkDispatchClauses(program *ast.Program) {
+	functions := map[string]*ast.FunctionStatement{}
+	for _, stmt := range program.Statements {
+		if fn, isFn := stmt.(*ast.FunctionStatement); isFn && fn.Name != nil && fn.Receiver == nil {
+			functions[fn.Name.Value] = fn
+		}
+	}
+	signature := func(fn *ast.FunctionStatement) string {
+		parts := make([]string, 0, len(fn.Parameters)+1)
+		for _, param := range fn.Parameters {
+			if param == nil || param.Type == nil {
+				parts = append(parts, "?")
+				continue
+			}
+			parts = append(parts, param.Type.String())
+		}
+		ret := "()"
+		if fn.ReturnType != nil {
+			ret = fn.ReturnType.String()
+		}
+		return "(" + strings.Join(parts, ", ") + ") -> " + ret
+	}
+	for _, fn := range functions {
+		if len(fn.Dispatch) == 0 {
+			continue
+		}
+		if fn.Body == nil {
+			tc.addError(fn.Name, "dispatch: %s has no body; the body is the meaning the realizations are claimed equal to", fn.Name.Value)
+			continue
+		}
+		seen := map[string]bool{}
+		for _, slot := range fn.Dispatch {
+			feature, known := semir.LookupCPUFeature(slot.Feature)
+			if !known {
+				tc.addError(fn.Name, "dispatch: unknown processor feature %q (the catalog: sve, sve2, rvv; docs/spec/93-simd.md section 6)", slot.Feature)
+				continue
+			}
+			if seen[feature.Name] {
+				tc.addError(fn.Name, "dispatch: feature %s appears twice", feature.Name)
+				continue
+			}
+			seen[feature.Name] = true
+			if slot.Realization == fn.Name.Value {
+				tc.addError(fn.Name, "dispatch: %s cannot be its own realization", fn.Name.Value)
+				continue
+			}
+			realization, isFn := functions[slot.Realization]
+			if !isFn {
+				tc.addError(fn.Name, "dispatch: %s is not a top-level function of this package", slot.Realization)
+				continue
+			}
+			if len(realization.Dispatch) != 0 {
+				tc.addError(fn.Name, "dispatch: %s is itself dispatched; realizations are ordinary functions", slot.Realization)
+				continue
+			}
+			if realization.Body == nil {
+				tc.addError(fn.Name, "dispatch: %s has no body", slot.Realization)
+				continue
+			}
+			if want, got := signature(fn), signature(realization); want != got {
+				tc.addError(fn.Name, "dispatch: %s has signature %s, but %s is %s; a realization has the identical signature", slot.Realization, got, fn.Name.Value, want)
+			}
+		}
+	}
 }

@@ -301,6 +301,7 @@ the toolchain.
 | `subslice_extent`, `subslice_check_iff` | same names | decided, bit level |
 | `literal_bound_under_length`, `subtraction_under_bounds`, `subtraction_under_length` | same names | decided, bit level |
 | `scaled_under_bound` | `scaled_under_bound_4`; `scaled_under_bound_512` (`extents_lean.oak`) | decided; proved (the page scale exceeds the BDD budget) |
+| `Oak.Dispatch.select_none`, `select_mem`, `select_deterministic`, `select_static`, `dispatch_sound` | same names | decided, structural (processor-feature dispatch: the body when no feature is available, only the body or a listed realization, one selection per feature set, the static rule, and soundness given the realizations' claimed equality; `93-simd.md` §6.3) |
 | `masked_under_length`, `masked_trunc_under_length`, `masked_saturating_under_length`, `loop_exit_lower_bound`, `increment_keeps_lower_bound`, `increment_without_wrap` | same names | decided, bit level |
 | `decreasing_keeps_upper_bound`, `decreasing_keeps_literal_bound` | same names | decided, bit level |
 | `vector_under_min_length`, `vector_under_offset_bound`, `vector_under_literal_bound` | same names | decided, bit level |
