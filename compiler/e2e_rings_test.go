@@ -49,10 +49,10 @@ main: (): i32 {
     round = round + 1
   }
   mstate: [1]rings.MpscCursor
-  mseqs: [8]Atomic[u32]
+  mseqs: [8]rings.SeqCell
   mdata: [8]u32
   mcursor: [*]rings.MpscCursor = span(&mstate)
-  mseqv: [*]Atomic[u32] = span(&mseqs)
+  mseqv: [*]rings.SeqCell = span(&mseqs)
   mstorage: [*]u32 = span(&mdata)
   rings.mpsc_init(mcursor, mseqv)
   round = u32(0)
@@ -72,10 +72,10 @@ main: (): i32 {
     round = round + 1
   }
   qstate: [1]rings.MpmcCursor
-  qseqs: [8]Atomic[u32]
+  qseqs: [8]rings.SeqCell
   qdata: [8]u32
   qcursor: [*]rings.MpmcCursor = span(&qstate)
-  qseqv: [*]Atomic[u32] = span(&qseqs)
+  qseqv: [*]rings.SeqCell = span(&qseqs)
   qstorage: [*]u32 = span(&qdata)
   rings.mpmc_init(qcursor, qseqv)
   round = u32(0)
@@ -179,12 +179,12 @@ pub spsc_consume: (cursor: [*]rings.SpscCursor, storage: [*]u32, n: u32): u64 {
   sum
 }
 
-pub mpsc_setup: (cursor: [*]rings.MpscCursor, seqs: [*]Atomic[u32]): () {
+pub mpsc_setup: (cursor: [*]rings.MpscCursor, seqs: [*]rings.SeqCell): () {
   rings.mpsc_init(cursor, seqs)
 }
 
 // Producer id pushes id << 24 | k for k in 1..n.
-pub mpsc_produce: (cursor: [*]rings.MpscCursor, seqs: [*]Atomic[u32], storage: [*]u32, id: u32, n: u32): u32 {
+pub mpsc_produce: (cursor: [*]rings.MpscCursor, seqs: [*]rings.SeqCell, storage: [*]u32, id: u32, n: u32): u32 {
   k: u32 = 1
   spins: u32 = 0
   while k <= n {
@@ -195,7 +195,7 @@ pub mpsc_produce: (cursor: [*]rings.MpscCursor, seqs: [*]Atomic[u32], storage: [
 
 // Each producer's items arrive in its own order; the checksum is the sum
 // of every k.
-pub mpsc_consume: (cursor: [*]rings.MpscCursor, seqs: [*]Atomic[u32], storage: [*]u32, total: u32): u64 {
+pub mpsc_consume: (cursor: [*]rings.MpscCursor, seqs: [*]rings.SeqCell, storage: [*]u32, total: u32): u64 {
   last: [16]u32
   taken: u32 = 0
   sum: u64 = 0
@@ -216,11 +216,11 @@ pub mpsc_consume: (cursor: [*]rings.MpscCursor, seqs: [*]Atomic[u32], storage: [
   sum
 }
 
-pub mpmc_setup: (cursor: [*]rings.MpmcCursor, seqs: [*]Atomic[u32]): () {
+pub mpmc_setup: (cursor: [*]rings.MpmcCursor, seqs: [*]rings.SeqCell): () {
   rings.mpmc_init(cursor, seqs)
 }
 
-pub mpmc_produce: (cursor: [*]rings.MpmcCursor, seqs: [*]Atomic[u32], storage: [*]u32, id: u32, n: u32): u32 {
+pub mpmc_produce: (cursor: [*]rings.MpmcCursor, seqs: [*]rings.SeqCell, storage: [*]u32, id: u32, n: u32): u32 {
   k: u32 = 1
   spins: u32 = 0
   while k <= n {
@@ -232,7 +232,7 @@ pub mpmc_produce: (cursor: [*]rings.MpmcCursor, seqs: [*]Atomic[u32], storage: [
 // A consumer takes total items whatever their producers; each producer's
 // items still reach the consumers in that producer's order, so a consumer
 // sees its share of every producer's sequence strictly increasing.
-pub mpmc_consume: (cursor: [*]rings.MpmcCursor, seqs: [*]Atomic[u32], storage: [*]u32, total: u32): u64 {
+pub mpmc_consume: (cursor: [*]rings.MpmcCursor, seqs: [*]rings.SeqCell, storage: [*]u32, total: u32): u64 {
   last: [16]u32
   taken: u32 = 0
   sum: u64 = 0
@@ -300,19 +300,19 @@ const ringsHarness = `
 static oak_rings__SpscCursor spsc_state[1];
 static u32 spsc_data[256];
 static oak_rings__MpscCursor mpsc_state[1];
-static __typeof__(*((oak_span_Atomic_u32 *)0)->base) mpsc_seqs[64];
+static oak_rings__SeqCell mpsc_seqs[64];
 static u32 mpsc_data[64];
 #define SPSC (oak_span_oak_rings_SpscCursor){ spsc_state, 1 }, (oak_span_u32){ spsc_data, 256 }
-#define MPSC (oak_span_oak_rings_MpscCursor){ mpsc_state, 1 }, (oak_span_Atomic_u32){ mpsc_seqs, 64 }, (oak_span_u32){ mpsc_data, 64 }
+#define MPSC (oak_span_oak_rings_MpscCursor){ mpsc_state, 1 }, (oak_span_oak_rings_SeqCell){ mpsc_seqs, 64 }, (oak_span_u32){ mpsc_data, 64 }
 static void *spsc_prod(void *a) { (void)a; oak_spsc_produce(SPSC, N); return NULL; }
 static void *spsc_cons(void *a) { *(u64 *)a = oak_spsc_consume(SPSC, N); return NULL; }
 static void *mpsc_prod(void *a) { oak_mpsc_produce(MPSC, (u32)(long)a, N); return NULL; }
 static void *mpsc_cons(void *a) { *(u64 *)a = oak_mpsc_consume(MPSC, N * P); return NULL; }
 #define M 100000u
 static oak_rings__MpmcCursor mpmc_state[1];
-static __typeof__(*((oak_span_Atomic_u32 *)0)->base) mpmc_seqs[64];
+static oak_rings__SeqCell mpmc_seqs[64];
 static u32 mpmc_data[64];
-#define MPMC (oak_span_oak_rings_MpmcCursor){ mpmc_state, 1 }, (oak_span_Atomic_u32){ mpmc_seqs, 64 }, (oak_span_u32){ mpmc_data, 64 }
+#define MPMC (oak_span_oak_rings_MpmcCursor){ mpmc_state, 1 }, (oak_span_oak_rings_SeqCell){ mpmc_seqs, 64 }, (oak_span_u32){ mpmc_data, 64 }
 static void *mpmc_prod(void *a) { oak_mpmc_produce(MPMC, (u32)(long)a, N); return NULL; }
 static void *mpmc_cons(void *a) { *(u64 *)a = oak_mpmc_consume(MPMC, N); return NULL; }
 static oak_rings__IntrusiveCursor intr_state[1];
@@ -329,14 +329,14 @@ int main(void) {
   if (pthread_create(&p, NULL, spsc_prod, NULL) != 0) return 21;
   pthread_join(p, NULL); pthread_join(c, NULL);
   if (sum != (u64)N * (N + 1) / 2) { printf("spsc sum %llu\\n", (unsigned long long)sum); return 1; }
-  oak_mpsc_setup((oak_span_oak_rings_MpscCursor){ mpsc_state, 1 }, (oak_span_Atomic_u32){ mpsc_seqs, 64 });
+  oak_mpsc_setup((oak_span_oak_rings_MpscCursor){ mpsc_state, 1 }, (oak_span_oak_rings_SeqCell){ mpsc_seqs, 64 });
   sum = 0;
   if (pthread_create(&c, NULL, mpsc_cons, &sum) != 0) return 22;
   for (long i = 0; i < P; i++) if (pthread_create(&ps[i], NULL, mpsc_prod, (void *)(i + 1)) != 0) return 23;
   for (int i = 0; i < P; i++) pthread_join(ps[i], NULL);
   pthread_join(c, NULL);
   if (sum != (u64)P * ((u64)N * (N + 1) / 2)) { printf("mpsc sum %llu\\n", (unsigned long long)sum); return 2; }
-  oak_mpmc_setup((oak_span_oak_rings_MpmcCursor){ mpmc_state, 1 }, (oak_span_Atomic_u32){ mpmc_seqs, 64 });
+  oak_mpmc_setup((oak_span_oak_rings_MpmcCursor){ mpmc_state, 1 }, (oak_span_oak_rings_SeqCell){ mpmc_seqs, 64 });
   u64 sums[P] = {0};
   pthread_t cs[P];
   for (long i = 0; i < P; i++) if (pthread_create(&cs[i], NULL, mpmc_cons, &sums[i]) != 0) return 24;
