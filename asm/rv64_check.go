@@ -198,6 +198,12 @@ type rvRegion struct {
 	// frame marks an element of an owned array in the frame (writable,
 	// no span: rawLen and idxReg name nothing).
 	frame bool
+	// param marks the caller's copy of a by-reference record parameter
+	// (or the result area) arriving in a contract register: the address
+	// holds until the body writes that register, however many times a
+	// later arm writes it — so it survives labels and calls on the path
+	// before the write (forgetGuards).
+	param bool
 }
 
 func checkRV64(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool) []string {
@@ -250,7 +256,7 @@ func (c *rvChecker) bindContract() {
 			// The caller's result area arrives in a0: the parameters follow.
 			c.resultIndirect = true
 			c.bound[10] = true
-			c.regions[10] = rvRegion{size: comp.Size, writable: true, rawLen: -1, idxReg: -2}
+			c.regions[10] = rvRegion{size: comp.Size, writable: true, rawLen: -1, idxReg: -2, param: true}
 			next = 11
 		}
 	}
@@ -365,7 +371,7 @@ func (c *rvChecker) bindContract() {
 			}
 			if comp.indirect {
 				// The caller's copy: readable at constant offsets inside it.
-				c.regions[comp.reg] = rvRegion{size: comp.size, rawLen: -1, idxReg: -2}
+				c.regions[comp.reg] = rvRegion{size: comp.size, rawLen: -1, idxReg: -2, param: true}
 			}
 			continue
 		}
@@ -686,7 +692,7 @@ func (c *rvChecker) forgetGuards() {
 	// it survives labels and calls.
 	regions := map[int]rvRegion{}
 	for reg, region := range c.regions {
-		if c.stable(reg) {
+		if c.stable(reg) || (region.param && !c.written[reg]) {
 			regions[reg] = region
 		}
 	}

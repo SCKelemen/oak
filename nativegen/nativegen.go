@@ -1074,6 +1074,7 @@ type generator struct {
 	nslots      int64
 	spill       map[int]int64 // scratch register → its spill slot offset
 	free        []int         // free scratch registers
+	ipScratch   int           // x16/x17 taken as overflow scratch (overflowScratch)
 	live        []int         // allocated scratch registers, allocation order
 	// defined marks the live scratch registers an emitted instruction has
 	// written: a call spills exactly those (a register allocated for an
@@ -1392,6 +1393,9 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	// writes beyond the bound parameters, and the link register.
 	for r := scratchLow; r <= scratchHigh; r++ {
 		out.Clobbers = append(out.Clobbers, xr(r))
+	}
+	for i := 0; i < g.ipScratch; i++ {
+		out.Clobbers = append(out.Clobbers, xr(16+i)) // overflow scratch (overflowScratch)
 	}
 	for i := 0; i < g.usedCallee; i++ {
 		out.Clobbers = append(out.Clobbers, xr(calleeLow+i))
@@ -1813,7 +1817,7 @@ func (g *generator) bindPayload(name string, rec *recordLocal, field recordField
 			return err
 		}
 		g.declare(name, field.typ)
-		g.items = append(g.items, g.storeVar(name, r))
+		g.put(g.storeVar(name, r))
 		g.release(r)
 		return nil
 	case fieldRecord:
@@ -1979,6 +1983,28 @@ func (g *generator) callRecord(e *ast.InvocationExpression) (*recordLocal, error
 func (g *generator) resultRecordExpr(expr ast.Expression) error {
 	switch e := expr.(type) {
 	case *ast.MatchExpression:
+		if !g.resultIndirect && g.valueOnly(e) {
+			// The arms meet in one frame temporary and the result chunks
+			// load into x0 (and x1) once, at the join — as a scalar result
+			// does (resultInto): a chunk loaded inside an arm would forget
+			// the parameters' span and record facts in the linear checker.
+			var outs []int
+			for i := 0; i < g.resultRecord.chunks(); i++ {
+				out, err := g.alloc(scalars["u64"])
+				if err != nil {
+					return err
+				}
+				outs = append(outs, out)
+			}
+			if err := g.resultRecordInto(e, outs); err != nil {
+				return err
+			}
+			for i, out := range outs {
+				g.emit("mov", xr(i), xr(out))
+				g.release(out)
+			}
+			return nil
+		}
 		if _, _, isBool := boolConditional(e); !isBool {
 			return g.lowerMatch(e, g.resultRecordExpr)
 		}
@@ -2035,6 +2061,67 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 	for i := 0; i < g.resultRecord.chunks(); i++ {
 		g.emit("ldr", xr(i), g.slotMem(rec.offset+int64(8*i)))
 	}
+	return nil
+}
+
+// resultRecordInto lowers a value-only record result into the scratch
+// registers outs, one per chunk: a conditional's arms each load their
+// record's chunks there and meet at the join (registers merge in the
+// verifier's path model where frame slots do not); a block runs its
+// statements and yields its tail.
+func (g *generator) resultRecordInto(expr ast.Expression, outs []int) error {
+	switch e := expr.(type) {
+	case *ast.MatchExpression:
+		if whenTrue, whenFalse, ok := boolConditional(e); ok {
+			elseLabel, end := g.newLabel("else"), g.newLabel("endif")
+			if err := g.condition(e.Scrutinee, elseLabel); err != nil {
+				return err
+			}
+			if err := g.resultRecordInto(whenTrue, outs); err != nil {
+				return err
+			}
+			g.emit("b", asm.Symbol{Name: end})
+			g.label(elseLabel)
+			if err := g.resultRecordInto(whenFalse, outs); err != nil {
+				return err
+			}
+			g.label(end)
+			return nil
+		}
+		return g.lowerMatch(e, func(body ast.Expression) error { return g.resultRecordInto(body, outs) })
+	case *ast.BlockExpression:
+		if e.Block != nil && len(e.Block.Statements) > 0 {
+			g.pushScope()
+			defer g.popScope()
+			stmts := e.Block.Statements
+			if err := g.lowerStatements(stmts[:len(stmts)-1], false, ""); err != nil {
+				return err
+			}
+			if es, ok := stmts[len(stmts)-1].(*ast.ExpressionStatement); ok && !es.Discard {
+				return g.resultRecordInto(es.Expression, outs)
+			}
+			return unsupported("a block whose last statement is not its record result")
+		}
+	}
+	rec, err := g.recordValueAs(expr, g.resultRecord)
+	if err != nil {
+		return err
+	}
+	if rec.layout != g.resultRecord {
+		return unsupported("a %s result where %s is declared", rec.layout.name, g.resultRecord.name)
+	}
+	if rec.inReg || g.slotMem(rec.offset).Offset%8 != 0 {
+		aligned := g.tempRecord(g.resultRecord)
+		if err := g.copyRecord(aligned, rec); err != nil {
+			return err
+		}
+		g.releaseTemps(rec.temps)
+		rec = aligned
+	}
+	for i, out := range outs {
+		g.emit("ldr", xr(out), g.slotMem(rec.offset+int64(8*i)))
+	}
+	g.releaseTemps(rec.temps)
 	return nil
 }
 
@@ -2299,12 +2386,59 @@ func (g *generator) alloc(typ scalar) (int, error) {
 		g.usedFloat = true
 	}
 	if len(*pool) == 0 {
-		return 0, unsupported("an expression deeper than the scratch registers")
+		if typ.isFloat {
+			return 0, unsupported("an expression deeper than the scratch registers")
+		}
+		r, ok := g.overflowScratch()
+		if !ok {
+			return 0, unsupported("an expression deeper than the scratch registers")
+		}
+		g.live = append(g.live, r)
+		return r, nil
 	}
 	r := (*pool)[len(*pool)-1]
 	*pool = (*pool)[:len(*pool)-1]
 	g.live = append(g.live, r)
 	return r, nil
+}
+
+// overflowScratch widens the integer scratch pool when x9–x15 are all live
+// in one expression (the OS pilot's N6, a deep expression that fell back):
+// x16 and x17 in a function that makes no call (the intra-procedure-call
+// registers, unused by the generator and clobbered only by a veneer at a
+// `bl`), then the next unclaimed callee-saved register, counted with the
+// locals so the prologue saves it and the epilogue restores it. Once
+// released the register stays in the pool. The rv64 lane keeps its own
+// pools.
+func (g *generator) overflowScratch() (int, bool) {
+	if g.rvLane {
+		return 0, false
+	}
+	if !g.hasCalls && g.ipScratch < 2 {
+		r := 16 + g.ipScratch
+		g.ipScratch++
+		return r, true
+	}
+	if g.usedCallee >= calleeHigh-calleeLow+1 {
+		return 0, false
+	}
+	if g.saveArea == 0 {
+		if g.nslots != 0 {
+			// Slot offsets already emitted assume no save area.
+			return 0, false
+		}
+		g.saveArea = 8 * (calleeHigh - calleeLow + 1)
+	}
+	r := calleeLow + g.usedCallee
+	g.usedCallee++
+	return r, true
+}
+
+// put appends one item built elsewhere (ins marks its write for the
+// call spill); the emission paths that build their own instruction go
+// through here or emit.
+func (g *generator) put(item asm.Item) {
+	g.items = append(g.items, item)
 }
 
 func (g *generator) release(r int) {
@@ -3159,7 +3293,7 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 				return err
 			}
 			g.declare(s.Name.Value, typ)
-			g.items = append(g.items, g.storeVar(s.Name.Value, r))
+			g.put(g.storeVar(s.Name.Value, r))
 			g.release(r)
 		case *ast.AssignmentStatement:
 			if dst, isRecord := g.records[s.Name.Value]; isRecord {
@@ -3185,7 +3319,7 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 			if err != nil {
 				return err
 			}
-			g.items = append(g.items, g.storeVar(s.Name.Value, r))
+			g.put(g.storeVar(s.Name.Value, r))
 			g.release(r)
 		case *ast.IndexAssignmentStatement:
 			if err := g.elementStore(s); err != nil {
@@ -3537,7 +3671,7 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 			g.constant(r, c.Value, typ)
 			return r, nil
 		}
-		g.items = append(g.items, g.loadVar(e.Value, r))
+		g.put(g.loadVar(e.Value, r))
 		return r, nil
 	case *ast.InfixExpression:
 		return g.infix(e, typ)
@@ -3714,7 +3848,7 @@ func (g *generator) constant(r int, v uint64, s scalar) {
 // operation on the whole register.
 func (g *generator) normalize(r int, s scalar) {
 	for _, it := range g.normalizeInto(r, s) {
-		g.items = append(g.items, it)
+		g.put(it)
 	}
 }
 
@@ -5043,6 +5177,23 @@ func (g *generator) resultExpr(expr ast.Expression) error {
 			return g.tailCall(e)
 		}
 	case *ast.MatchExpression:
+		if g.result != nil && !g.result.isFloat && g.valueOnly(e) {
+			// Every arm yields a value: they meet in one scratch register
+			// and the result register is written once, at the join. The
+			// checker is linear, so a result written inside an arm would
+			// forget the parameters' span and record facts for the arms
+			// after it (docs/spec/94-assembler.md §9).
+			out, err := g.alloc(*g.result)
+			if err != nil {
+				return err
+			}
+			if err := g.resultInto(e, out); err != nil {
+				return err
+			}
+			g.moveResult(out, *g.result)
+			g.release(out)
+			return nil
+		}
 		if _, _, isBool := boolConditional(e); !isBool {
 			return g.lowerMatch(e, g.resultExpr)
 		}
@@ -5102,6 +5253,85 @@ func (g *generator) resultExpr(expr ast.Expression) error {
 	return nil
 }
 
+// valueOnly reports whether a result expression yields its value through
+// plain arms alone: no self tail call (the loop shape the verifier
+// recognizes keeps its own layout) and no call to a never function,
+// anywhere down its conditionals and blocks.
+func (g *generator) valueOnly(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.MatchExpression:
+		for _, arm := range e.Arms {
+			if arm == nil || arm.Body == nil || !g.valueOnly(arm.Body) {
+				return false
+			}
+		}
+		return true
+	case *ast.BlockExpression:
+		if e.Block == nil || len(e.Block.Statements) == 0 {
+			return false
+		}
+		last, ok := e.Block.Statements[len(e.Block.Statements)-1].(*ast.ExpressionStatement)
+		return ok && !last.Discard && g.valueOnly(last.Expression)
+	case *ast.InvocationExpression:
+		if g.isTailCall(e) {
+			return false
+		}
+		if ident, ok := e.Function.(*ast.Identifier); ok {
+			if callee := g.functions[ident.Value]; callee != nil && callee.ReturnType != nil && callee.ReturnType.String() == "never" {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// resultInto lowers a value-only result expression into the register out:
+// a conditional's arms each write out and meet at the join; a block runs
+// its statements and yields its tail.
+func (g *generator) resultInto(expr ast.Expression, out int) error {
+	switch e := expr.(type) {
+	case *ast.MatchExpression:
+		if whenTrue, whenFalse, ok := boolConditional(e); ok {
+			elseLabel, end := g.newLabel("else"), g.newLabel("endif")
+			if err := g.condition(e.Scrutinee, elseLabel); err != nil {
+				return err
+			}
+			if err := g.resultInto(whenTrue, out); err != nil {
+				return err
+			}
+			g.emit("b", asm.Symbol{Name: end})
+			g.label(elseLabel)
+			if err := g.resultInto(whenFalse, out); err != nil {
+				return err
+			}
+			g.label(end)
+			return nil
+		}
+		return g.lowerMatch(e, func(body ast.Expression) error { return g.resultInto(body, out) })
+	case *ast.BlockExpression:
+		if e.Block != nil && len(e.Block.Statements) > 0 {
+			g.pushScope()
+			defer g.popScope()
+			stmts := e.Block.Statements
+			if err := g.lowerStatements(stmts[:len(stmts)-1], false, ""); err != nil {
+				return err
+			}
+			if es, ok := stmts[len(stmts)-1].(*ast.ExpressionStatement); ok && !es.Discard {
+				return g.resultInto(es.Expression, out)
+			}
+		}
+	}
+	r, err := g.expr(expr, g.result)
+	if err != nil {
+		return err
+	}
+	if r != out {
+		g.emit("mov", reg(out, *g.result), reg(r, *g.result))
+		g.release(r)
+	}
+	return nil
+}
+
 // tailCall lowers a self-call in result position as a loop: every argument
 // is evaluated before any parameter slot changes.
 func (g *generator) tailCall(e *ast.InvocationExpression) error {
@@ -5118,7 +5348,7 @@ func (g *generator) tailCall(e *ast.InvocationExpression) error {
 		values = append(values, r)
 	}
 	for i, r := range values {
-		g.items = append(g.items, g.storeVar(g.fn.Parameters[i].Name.Value, r))
+		g.put(g.storeVar(g.fn.Parameters[i].Name.Value, r))
 		g.release(r)
 	}
 	g.emit("b", asm.Symbol{Name: g.head})
@@ -5263,7 +5493,7 @@ func (g *generator) instructionEffect(member string, call *ast.InvocationExpress
 		if g.terminated {
 			return nil
 		}
-		g.items = append(g.items, instr)
+		g.put(instr)
 		return nil
 	}
 	if spec, found, write := semir.LookupArm64SysRegMember(member); found {

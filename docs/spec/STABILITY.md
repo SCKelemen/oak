@@ -45,6 +45,7 @@ compiler's internals, which move freely.
 | Parameterized effects | `60-effects-allocation.md` | direction | |
 | Kernels (`kernel` declarations, launch descriptors, `reduce.group_tree`), the `tensor` and `reduce` packages | `56-kernels.md`, `55-parallelism.md` §4 | stabilizing | the Metal emitter's subset grows; the descriptor line is versioned by its shape |
 | `order tree \| left \| bounded { }` blocks and `reduce.reduce` | `55-parallelism.md` §4 | direction | first increment 2026-09-12; `any` became `bounded` and laws reached plain functions 2026-09-13 |
+| Measured constants (`(measured: lo, hi)`) | `60-effects-allocation.md` §10b | direction | first increment 2026-09-13; the hook's name and the environment spelling are the surface |
 | `view_as[U]` / `span_as[U]` scalar views of record views | `50-borrowing.md` §8d | stabilizing | |
 | `Launch` test targets and `test_launch` | `110-testing.md` | direction | first increment 2026-09-12; the sidecar format is the runner's own |
 | IO port: caller-owned completion rings, `open`/`close`/`pread`/`pwrite`/`fsync`/`fdatasync`/`fsyncdir`, `replace io => iosim\|ionative` | `120-io.md` §8 increments 2–3 | stabilizing | `#106`; `iosim` and the portable `ionative` landed 2026-09-11 with `Oak.IoPort`; the ring shape is fixed by the io_uring increment to come |

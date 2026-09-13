@@ -123,7 +123,7 @@ main: (): i32 = twice(u32(5)) ? | .Ok(v) => { v == u32(3) ? 1 | 2 } | .Err(_) =>
 	if regexp.MustCompile(`(^|[^A-Za-z0-9_])try[^A-Za-z0-9_]`).MatchString(text) {
 		t.Fatalf("a try survived lowering:\n%s", text)
 	}
-	for _, want := range []string{"_try_err_", ".Err(_try_err_"} {
+	for _, want := range []string{"oak_try_err_", ".Err(oak_try_err_"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("lowered program lacks %q:\n%s", want, text)
 		}

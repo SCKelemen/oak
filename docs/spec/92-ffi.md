@@ -157,6 +157,10 @@ right rule for pointers that come *from* C. It leaves no way to hand C a
 buffer that Oak owns. This section adds exactly that, in the only shape the
 borrow checker can vouch for: **a borrowed view or span becomes a pointer
 and a length for the duration of one extern call, and for nothing else.**
+An alignment fact on the span's type (`50-borrowing.md` §2a) does not
+cross: C sees the pointer and the length, and an exported function that
+requires `[* align 4096]u8` states a precondition its C caller meets
+unverified.
 
 #### 2.5.1 Argument forms
 

@@ -26,9 +26,16 @@ func lowerDerivedCodecs(program *ast.Program) ([]CodecLayout, error) {
 			d.schemas[node.Name.Value] = node
 		}
 	}
+	// The words the codec surface reads as its forms stay the program's
+	// where the program declares them (the ml pilot's F23): a call of a
+	// function the program defines is never a codec application.
+	declared := declaredIdentifiers(program)
 	if err := transformSyntax(reflect.ValueOf(program), func(expr ast.Expression) (ast.Expression, error) {
 		call, ok := expr.(*ast.InvocationExpression)
 		if !ok {
+			return expr, nil
+		}
+		if callee, isIdent := call.Function.(*ast.Identifier); isIdent && declared[callee.Value] {
 			return expr, nil
 		}
 		name, args, ordinary := codecApplication(call.Function)
@@ -125,10 +132,15 @@ func lowerDerivedCodecs(program *ast.Program) ([]CodecLayout, error) {
 	}); err != nil {
 		return nil, err
 	}
-	// Reserved producers cannot escape as values or be shadowed by binders.
+	// A codec producer that is not consumed at once — `from` as a value,
+	// `encode` without its type arguments — is refused. The words stay
+	// ordinary everywhere the program declares them itself (the ml
+	// pilot's F23: a function named encode, a local named from): only an
+	// undeclared use of one is the codec form, and the diagnostic says
+	// where.
 	if err := transformSyntax(reflect.ValueOf(program), func(expr ast.Expression) (ast.Expression, error) {
-		if id, ok := expr.(*ast.Identifier); ok && (id.Value == "from" || id.Value == "encode" || id.Value == "encoded_size" || id.Value == "decode" || id.Value == "decode_located") {
-			return nil, fmt.Errorf("codec: %s is reserved for an immediately consumed, explicitly typed codec call", id.Value)
+		if id, ok := expr.(*ast.Identifier); ok && codecProducerNames[id.Value] && !declared[id.Value] {
+			return nil, fmt.Errorf("codec: %d:%d: %s is reserved for an immediately consumed, explicitly typed codec call (encode[T, Json](value, output), from[T](value).to[Json](output)); a program that declares its own %s keeps the name", id.Token.Line, id.Token.Column, id.Value, id.Value)
 		}
 		return expr, nil
 	}); err != nil {
@@ -554,4 +566,37 @@ func isJSONTag(name string) bool {
 	}
 	demangled := modules.DemangleText(name)
 	return strings.HasSuffix(demangled, ".json")
+}
+
+// codecProducerNames are the words the codec surface reads as its forms
+// when the program declares nothing by them (docs/spec/71-codecs.md).
+var codecProducerNames = map[string]bool{"from": true, "encode": true, "encoded_size": true, "decode": true, "decode_located": true}
+
+// declaredIdentifiers collects every name the program binds itself —
+// functions and their parameters, variables, record fields — so a codec
+// word the program declares stays the program's (the ml pilot's F23).
+func declaredIdentifiers(program *ast.Program) map[string]bool {
+	declared := map[string]bool{}
+	walkSyntaxNodes(program, func(node ast.Node) {
+		switch n := node.(type) {
+		case *ast.FunctionStatement:
+			if n.Name != nil {
+				declared[n.Name.Value] = true
+			}
+			for _, param := range n.Parameters {
+				if param != nil && param.Name != nil {
+					declared[param.Name.Value] = true
+				}
+			}
+		case *ast.VariableDeclaration:
+			if n.Name != nil {
+				declared[n.Name.Value] = true
+			}
+		case *ast.RecordLiteral:
+			for _, field := range n.FieldOrder {
+				declared[field.Name] = true
+			}
+		}
+	})
+	return declared
 }

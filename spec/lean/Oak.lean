@@ -3,6 +3,7 @@ import Oak.Effects
 import Oak.EffectRows
 import Oak.Kernel
 import Oak.BufferCustody
+import Oak.AlignmentFact
 import Oak.MemoryOrder
 import Oak.HappensBefore
 import Oak.SequentialConsistency
@@ -92,11 +93,13 @@ import Oak.CompareExchangeRefinement
 import Oak.CheckedArithmeticRefinement
 import Oak.ConversionRefinement
 import Oak.LiteralFitRefinement
+import Oak.LoweringRefinement
 import Oak.Semver
 import Oak.Loops
 import Oak.Regions
 import Oak.SessionObligations
 import Oak.SessionObligationsProved
+import Oak.Measured
 import Oak.Reduce
 import Oak.Floats
 import Oak.FloatBounds
