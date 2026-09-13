@@ -98,6 +98,11 @@ var loweringProgramRenders = []struct {
 	// field leaves as parameters (`paramAggregate`).
 	{"P: type = struct {\n  x: u32\n  y: u32\n}\n\nf: (a, b: u32) -> u32 = {\n  p: P = P { x: a, y: b }\n  p.x = p.x + 1\n  p.x * p.y\n}\n", "((a add 1) mul b)"},
 	{"P: type = struct {\n  x: u32\n  y: u32\n}\n\nf: (p: P) -> u32 = p.x + p.y\n", "(p.x add p.y)"},
+	// Sum types: a tagged union is its tag leaf and one payload leaf per
+	// carrying variant (`u.tag`, `u.B`); a variant match is the constant
+	// match on the tag with the arm's binding an alias of the payload leaf.
+	{"U: type = A | B: u32\n\nf: (v: u32) -> u32 = {\n  u: U = .B(v)\n  u ? | B(x) => x + 1 | A => 0\n}\n", "(v add 1)"},
+	{"U: type = A | B: u32\n\nf: (u: U) -> u32 = u ? | B(x) => x + 1 | A => 0\n", "((u.tag eq 1) ? (u.B add 1) : 0)"},
 }
 
 func TestLoweringProgramsMatchLeanTransliteration(t *testing.T) {
@@ -125,12 +130,19 @@ func TestLoweringProgramsMatchLeanTransliteration(t *testing.T) {
 		// Record declarations (`P: type = struct { ... }`), as prepareLowering
 		// takes them from the unit's declarations.
 		lo.records = map[string]*ast.RecordLiteral{}
+		lo.adts = map[string]*ast.ADTType{}
 		for _, stmt := range program.Statements {
-			if adt, isADT := stmt.(*ast.ADTType); isADT && adt.Name != nil && len(adt.TypeParams) == 0 && len(adt.Variants) == 1 {
+			adt, isADT := stmt.(*ast.ADTType)
+			if !isADT || adt.Name == nil || len(adt.TypeParams) != 0 {
+				continue
+			}
+			if len(adt.Variants) == 1 {
 				if literal, isRecord := adt.Variants[0].Literal.(*ast.RecordLiteral); isRecord {
 					lo.records[adt.Name.Value] = literal
+					continue
 				}
 			}
+			lo.adts[adt.Name.Value] = adt
 		}
 		lo.bindAggregateParams(spec)
 		width, _, ok := contractBits(spec.ReturnType)
