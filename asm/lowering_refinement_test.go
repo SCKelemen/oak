@@ -66,6 +66,10 @@ var loweringProgramRenders = []struct {
 	{"f: (a: u32) -> u32 = {\n  y: u8 = u8_trunc_u32(a)\n  u32(y)\n}\n", "(a and 255)"},
 	{"g: (x: u32) -> u32 = x * x\n\nf: (a: u32) -> u32 = g(a + 1)\n", "((a add 1) mul (a add 1))"},
 	{"h: (x, y: u32) -> u32 = {\n  d: u32 = x - y\n  d & 255\n}\n\nf: (a, b: u32) -> u32 = h(b, a)\n", "((b sub a) and 255)"},
+	// Statement-level conditionals (`condSet`): a local an arm assigns becomes
+	// a select between the arms' terms; an untouched local keeps its term.
+	{"f: (a, b: u32) -> u32 = {\n  m: u32 = a\n  a < b ? { m = b } | { }\n  m * 2\n}\n", "(((a lo b) ? b : a) mul 2)"},
+	{"f: (a, b: u32) -> u32 = {\n  x: u32 = a\n  y: u32 = b\n  a < b ? { x = b\n  y = a } | { x = x + 1 }\n  x - y\n}\n", "(((a lo b) ? b : (a add 1)) sub ((a lo b) ? a : b))"},
 }
 
 func TestLoweringProgramsMatchLeanTransliteration(t *testing.T) {

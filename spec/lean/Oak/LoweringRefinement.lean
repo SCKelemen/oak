@@ -138,7 +138,9 @@ on an integer and `!b` on `Bool`; `conv` is a `u8(x)`…`i64(x)` widening or
 a `{t}_trunc_{s}`/`{t}_bits_{s}` narrowing; `ite` is `if c then a else b`
 (a Bool `match`); `letIn x v b` is the block `x: s = v` (or the rebinding
 `x = v`) followed by `b`; `call params ret body args` is a call to a
-program function with those parameters and body. -/
+program function with those parameters and body; `condSet c armT armF rest`
+is the statement-level Bool conditional `c ? { armT } | { armF }` whose
+arms assign existing locals, followed by `rest`. -/
 inductive Expr (P : Params) : Locals → Ty → Type
   | var {Γ : Locals} (t : Ty) (x : String) (h : resolve P Γ x = some t) : Expr P Γ t
   | lit {Γ : Locals} (t : Ty) (v : BitVec t.width) : Expr P Γ t
@@ -154,6 +156,13 @@ inductive Expr (P : Params) : Locals → Ty → Type
   | letIn {Γ : Locals} {s t : Ty} (x : String) (v : Expr P Γ s) (b : Expr P (Γ.set x s) t) : Expr P Γ t
   | call {Γ : Locals} (params : List (String × Ty)) (ret : Ty)
       (body : Expr P (bindTypes (fun _ => none) params) ret) (args : Args P Γ params) : Expr P Γ ret
+  | condSet {Γ : Locals} {t : Ty} (c : Expr P Γ .bool) (armT armF : Assigns P Γ) (rest : Expr P Γ t) : Expr P Γ t
+/-- A conditional arm in statement position: assignments `x = e` to locals
+already in scope, in order (a declaration inside an arm is scoped to the
+arm and is not in the subset). -/
+inductive Assigns (P : Params) : Locals → Type
+  | nil {Γ : Locals} : Assigns P Γ
+  | cons {Γ : Locals} (x : String) {s : Ty} (h : Γ x = some s) (e : Expr P Γ s) (rest : Assigns P Γ) : Assigns P Γ
 /-- A call's arguments, one per callee parameter, in the caller's scope. -/
 inductive Args (P : Params) : Locals → List (String × Ty) → Type
   | nil {Γ : Locals} : Args P Γ []
@@ -218,7 +227,10 @@ def varX (Γ : Locals) (ρ : Env) (l : Vals) (x : String) : Nat :=
 mutual
 /-- The extraction's reading: `let x := v` binds the value for the rest of
 the block; a call is the callee's body under its parameters bound to the
-argument values (`let (r, …) ← g args`, the callee's own `def`). -/
+argument values (`let (r, …) ← g args`, the callee's own `def`); a
+statement-level conditional rebinds the variables its arms assign to the
+taken arm's values (`let (vars) ← if c then do A; pure (vars) else do B;
+pure (vars)`), the untouched ones being equal on both sides. -/
 def evalX {P : Params} : {Γ : Locals} → {t : Ty} → Expr P Γ t → Env → Vals → BitVec t.width
   | Γ, t, .var _ x _, ρ, l => BitVec.ofNat t.width (varX Γ ρ l x)
   | _, _, .lit _ v, _, _ => v
@@ -233,6 +245,12 @@ def evalX {P : Params} : {Γ : Locals} → {t : Ty} → Expr P Γ t → Env → 
   | _, _, .ite c a b, ρ, l => if evalX c ρ l = 1 then evalX a ρ l else evalX b ρ l
   | _, _, .letIn x v b, ρ, l => evalX b ρ (l.set x (evalX v ρ l).toNat)
   | _, _, .call _ _ body args, ρ, l => evalX body ρ (bindVals args ρ l (fun _ => 0))
+  | _, _, .condSet c armT armF rest, ρ, l =>
+    evalX rest ρ (if evalX c ρ l = 1 then runVals armT ρ l else runVals armF ρ l)
+/-- An arm's assignments, in order (`let x := e` each). -/
+def runVals {P : Params} : {Γ : Locals} → Assigns P Γ → Env → Vals → Vals
+  | _, .nil, _, l => l
+  | _, .cons x _ e rest, ρ, l => runVals rest ρ (l.set x (evalX e ρ l).toNat)
 /-- The callee's values: each argument evaluated in the caller's scope and
 bound to its parameter, in order. -/
 def bindVals {P : Params} : {Γ : Locals} → {ps : List (String × Ty)} → Args P Γ ps → Env → Vals → Vals → Vals
@@ -365,6 +383,25 @@ def Scope := String → Option Term
 def Scope.set (σ : Scope) (x : String) (t : Term) : Scope :=
   fun y => if y = x then some t else σ y
 
+/-- The locals an arm assigns, in order. -/
+def Assigns.names {P : Params} : {Γ : Locals} → Assigns P Γ → List String
+  | _, .nil => []
+  | _, .cons x _ _ rest => x :: rest.names
+
+/-- `lowerConditionalStatement`'s merge: a local either arm assigned takes
+`iteTerm(cond, afterTrue, afterFalse)` at the true arm's width
+(`iteTerm`'s width is its left operand's); every other local keeps its
+term. The Go skips the select when both arms left the same term object,
+which the model does not track; the select of equal arms is the same
+value. -/
+def mergeScope (c : Term) (names : List String) (σT σF σ : Scope) : Scope :=
+  fun y =>
+    if y ∈ names then
+      match σT y, σF y with
+      | some a, some b => some (.ite a.width c a b)
+      | _, _ => σ y
+    else σ y
+
 mutual
 /-- `oakLowering.lower` at the expression's own width, each case as the Go
 spells it: an identifier is its local's term through `adaptWidth` or, for a
@@ -379,7 +416,10 @@ width 1; a Bool conditional `iteTerm`; a local's declaration or rebinding
 lowers the value at the local's width into `lo.locals` and goes on
 (`declareLocal`, `assignLocal`); a call binds the callee's parameters to
 the lowered arguments as a fresh `lo.locals` and lowers the body
-(`enterCall`, `inlineCall`). -/
+(`enterCall`, `inlineCall`); a statement-level conditional runs each arm
+on the locals before it and, for every local an arm assigned, selects
+between the arms' terms by the condition (`lowerConditionalStatement`:
+`iteTerm(truncate(cond, 1), afterTrue, afterFalse)`). -/
 def lowerT {P : Params} : Scope → {Γ : Locals} → {t : Ty} → Expr P Γ t → Term
   | σ, _, t, .var _ x _ =>
     match σ x with
@@ -403,6 +443,13 @@ def lowerT {P : Params} : Scope → {Γ : Locals} → {t : Ty} → Expr P Γ t �
   | σ, _, t, .ite c a b => .ite t.width (lowerT σ c) (lowerT σ a) (lowerT σ b)
   | σ, _, _, .letIn x v b => lowerT (σ.set x (lowerT σ v)) b
   | σ, _, _, .call _ _ body args => lowerT (bindTerms σ args (fun _ => none)) body
+  | σ, _, _, .condSet c armT armF rest =>
+    lowerT (mergeScope (lowerT σ c) (armT.names ++ armF.names) (runTerms σ armT) (runTerms σ armF) σ) rest
+/-- An arm's assignments as `assignLocal` executes them: each value lowered
+at the local's width replaces the local's term, in order. -/
+def runTerms {P : Params} : Scope → {Γ : Locals} → Assigns P Γ → Scope
+  | σ, _, .nil => σ
+  | σ, _, .cons x _ e rest => runTerms (σ.set x (lowerT σ e)) rest
 /-- `enterCall`'s `bound`: each argument lowered in the caller's scope at
 the parameter's width and bound to the parameter, in order. -/
 def bindTerms {P : Params} (σ : Scope) : {Γ : Locals} → {ps : List (String × Ty)} → Args P Γ ps → Scope → Scope
@@ -441,6 +488,7 @@ theorem lowerT_width {P : Params} {Γ : Locals} {t : Ty} (e : Expr P Γ t) : ∀
   | .cmp op l r => simp only [lowerT, zeroExtend_width]; rfl
   | .letIn x v b => exact lowerT_width b _
   | .call params ret body args => exact lowerT_width body _
+  | .condSet c armT armF rest => exact lowerT_width rest _
   | .lit _ _ => rfl
   | .arith _ _ _ => rfl
   | .bit _ _ _ _ => rfl
@@ -703,6 +751,15 @@ theorem Scope.wf_set {σ : Scope} (hσ : σ.wf) {x : String} {t : Term} (ht : t.
 theorem Scope.wf_empty : Scope.wf (fun _ => none) := by
   intro y term h; cases h
 
+theorem mergeScope_wf {c : Term} {names : List String} {σT σF σ : Scope} (hσ : σ.wf) : (mergeScope c names σT σF σ).wf := by
+  intro y term h
+  unfold mergeScope at h
+  split at h
+  · split at h
+    · cases h; trivial
+    · exact hσ y term h
+  · exact hσ y term h
+
 mutual
 theorem lowerT_topPositive {P : Params} {Γ : Locals} {t : Ty} (e : Expr P Γ t) : ∀ σ : Scope, σ.wf → (lowerT σ e).topPositive := by
   intro σ hσ
@@ -722,6 +779,7 @@ theorem lowerT_topPositive {P : Params} {Γ : Locals} {t : Ty} (e : Expr P Γ t)
     · exact truncate_topPositive _ _ t.width_pos (lowerT_topPositive a σ hσ)
   | .letIn x v b => exact lowerT_topPositive b _ (Scope.wf_set hσ (lowerT_topPositive v σ hσ))
   | .call params ret body args => exact lowerT_topPositive body _ (bindTerms_wf args σ hσ _ Scope.wf_empty)
+  | .condSet c armT armF rest => exact lowerT_topPositive rest _ (mergeScope_wf hσ)
   | .lit _ _ => trivial
   | .arith _ _ _ => trivial
   | .bit _ _ _ _ => trivial
@@ -745,6 +803,42 @@ theorem BitVec1_ne_zero_iff (c : BitVec 1) : c.toNat ≠ 0 ↔ c = 1 := by
 
 theorem const_eval_of_lt (v w : Nat) (ρ : Env) (h : v < 2 ^ w) : (Term.const v w).eval ρ % 2 ^ w = v := by
   simp only [Term.eval, Nat.mod_mod]; exact Nat.mod_eq_of_lt h
+
+theorem Locals.set_same {Γ : Locals} {x : String} {s : Ty} (h : Γ x = some s) : Γ.set x s = Γ := by
+  funext y
+  unfold Locals.set
+  split
+  · rename_i heq; subst heq; exact h.symm
+  · rfl
+
+/-- A name an arm assigns is a local. -/
+theorem Assigns.names_local {P : Params} {Γ : Locals} (arm : Assigns P Γ) : ∀ {y : String}, y ∈ arm.names → ∃ s, Γ y = some s := by
+  intro y hy
+  match arm with
+  | .nil => simp [Assigns.names] at hy
+  | .cons x h e rest =>
+    simp only [Assigns.names, List.mem_cons] at hy
+    rcases hy with rfl | hy
+    · exact ⟨_, h⟩
+    · exact rest.names_local hy
+termination_by structural arm
+
+/-- A name an arm does not assign keeps its term and its value. -/
+theorem run_unassigned {P : Params} {Γ : Locals} (arm : Assigns P Γ) : ∀ (σ : Scope) (ρ : Env) (l : Vals) {y : String}, y ∉ arm.names →
+    runTerms σ arm y = σ y ∧ runVals arm ρ l y = l y := by
+  intro σ ρ l y hy
+  match arm with
+  | .nil => exact ⟨rfl, rfl⟩
+  | .cons x h e rest =>
+    simp only [Assigns.names, List.mem_cons, not_or] at hy
+    obtain ⟨hne, hrest⟩ := hy
+    simp only [runTerms, runVals]
+    obtain ⟨h1, h2⟩ := run_unassigned rest (σ.set x (lowerT σ e)) ρ (l.set x (evalX e ρ l).toNat) hrest
+    rw [h1, h2]
+    unfold Scope.set Vals.set
+    rw [if_neg hne, if_neg hne]
+    exact ⟨rfl, rfl⟩
+termination_by structural arm
 
 /-- A scope's two readings agree: a name that is not a local has no term;
 a local's term has the local's width, is well formed, and evaluates to the
@@ -783,9 +877,43 @@ theorem Agree.set {Γ : Locals} {σ : Scope} {ρ : Env} {l : Vals} (h : Agree Γ
       exact ⟨term', by rw [if_neg hne]; exact hσ, hw', hp', by rw [if_neg hne]; exact hv'⟩
 
 mutual
+/-- The merge of two arms agrees with the selected arm's values. -/
+theorem merge_agree {Γ : Locals} {σ σT σF : Scope} {ρ : Env} {l lT lF : Vals} (c : Term) (cv : BitVec 1) (hc : c.eval ρ = cv.toNat)
+    (names : List String) (hA : Agree Γ σ ρ l) (hT : Agree Γ σT ρ lT) (hF : Agree Γ σF ρ lF)
+    (hloc : ∀ y, y ∈ names → ∃ s, Γ y = some s)
+    (hout : ∀ y, y ∉ names → σT y = σ y ∧ lT y = l y ∧ σF y = σ y ∧ lF y = l y) :
+    Agree Γ (mergeScope c names σT σF σ) ρ (if cv = 1 then lT else lF) := by
+  constructor
+  · intro y hy
+    have hn : y ∉ names := fun hin => by obtain ⟨s, hs⟩ := hloc y hin; rw [hs] at hy; cases hy
+    unfold mergeScope
+    rw [if_neg hn]
+    exact hA.1 y hy
+  · intro y t hy
+    unfold mergeScope
+    by_cases hin : y ∈ names
+    · obtain ⟨a, haσ, haw, hap, hav⟩ := hT.2 y t hy
+      obtain ⟨b, hbσ, hbw, hbp, hbv⟩ := hF.2 y t hy
+      rw [if_pos hin, haσ, hbσ]
+      refine ⟨.ite a.width c a b, rfl, haw, trivial, ?_⟩
+      have key : (c.eval ρ ≠ 0) ↔ (cv = 1) := by rw [hc]; exact BitVec1_ne_zero_iff cv
+      simp only [Term.eval]
+      by_cases h1 : cv = 1
+      · rw [if_pos (key.mpr h1), if_pos h1, hav, ← hav, Nat.mod_eq_of_lt (Term.eval_lt a ρ hap)]
+      · rw [if_neg (fun hne => h1 (key.mp hne)), if_neg h1, hbv, ← hbv, haw.trans hbw.symm,
+          Nat.mod_eq_of_lt (Term.eval_lt b ρ hbp)]
+    · rw [if_neg hin]
+      obtain ⟨hσT, hlT, hσF, hlF⟩ := hout y hin
+      obtain ⟨term, hσ, hw, hp, hv⟩ := hA.2 y t hy
+      refine ⟨term, hσ, hw, hp, ?_⟩
+      split
+      · rw [hlT]; exact hv
+      · rw [hlF]; exact hv
+
 /-- The verifier's lowering and the extraction's reading agree on every
 expression of the shared subset, in every agreeing scope: the seam of
-`126-verification-chain.md` §4, closed for expressions, locals and calls. -/
+`126-verification-chain.md` §4, closed for expressions, locals, calls and
+statement-level conditionals. -/
 theorem lowerT_eval {P : Params} {Γ : Locals} {t : Ty} (e : Expr P Γ t) :
     ∀ (σ : Scope) (ρ : Env) (l : Vals), Agree Γ σ ρ l → (lowerT σ e).eval ρ = (evalX e ρ l).toNat := by
   intro σ ρ l hA
@@ -897,7 +1025,33 @@ theorem lowerT_eval {P : Params} {Γ : Locals} {t : Ty} (e : Expr P Γ t) :
     exact lowerT_eval b _ ρ _ (Agree.set hA x (lowerT_width v σ) (lowerT_topPositive v σ (Agree.wf hA)) (lowerT_eval v σ ρ l hA))
   | .call params ret body args =>
     exact lowerT_eval body _ ρ _ (bindArgs_agree args σ ρ l hA _ _ _ (Agree.empty ρ _))
+  | .condSet c armT armF rest =>
+    have hT := runTerms_agree armT σ ρ l hA
+    have hF := runTerms_agree armF σ ρ l hA
+    have hc := lowerT_eval c σ ρ l hA
+    refine lowerT_eval rest _ ρ _ (merge_agree (lowerT σ c) (evalX c ρ l) hc _ hA hT hF ?_ ?_)
+    · intro y hy
+      rcases List.mem_append.mp hy with h | h
+      · exact armT.names_local h
+      · exact armF.names_local h
+    · intro y hy
+      have hyT : y ∉ armT.names := fun h => hy (List.mem_append.mpr (Or.inl h))
+      have hyF : y ∉ armF.names := fun h => hy (List.mem_append.mpr (Or.inr h))
+      obtain ⟨h1, h2⟩ := run_unassigned armT σ ρ l hyT
+      obtain ⟨h3, h4⟩ := run_unassigned armF σ ρ l hyF
+      exact ⟨h1, h2, h3, h4⟩
 termination_by structural e
+/-- Running an arm's assignments keeps the scope agreeing. -/
+theorem runTerms_agree {P : Params} {Γ : Locals} (arm : Assigns P Γ) :
+    ∀ (σ : Scope) (ρ : Env) (l : Vals), Agree Γ σ ρ l → Agree Γ (runTerms σ arm) ρ (runVals arm ρ l) := by
+  intro σ ρ l hA
+  match arm with
+  | .nil => exact hA
+  | .cons x h e rest =>
+    have hA' := Agree.set hA x (lowerT_width e σ) (lowerT_topPositive e σ (Agree.wf hA)) (lowerT_eval e σ ρ l hA)
+    rw [Locals.set_same h] at hA'
+    exact runTerms_agree rest _ ρ _ hA'
+termination_by structural arm
 /-- Binding a call's arguments keeps the callee's scope agreeing: each
 parameter's term has the parameter's width and evaluates to the argument's
 value. -/
@@ -1036,5 +1190,33 @@ example : (lowerT σ0 (.call [("x", .u32), ("y", .u32)] .u32
       (.bit .and (.var .u32 "d" (by decide)) (.lit .u32 255) rfl))
     (.cons (.var .u32 "b" (by decide)) (.cons (.var .u32 "a" (by decide)) .nil)) : X (ps [("a", .u32), ("b", .u32)]) .u32)).render
     = "((b sub a) and 255)" := by decide
+
+/-- `(a, b: u32) -> u32 = { m: u32 = a; a < b ? { m = b } | { }; m * 2 }` -/
+example : (lowerT σ0 (.letIn "m" (.var .u32 "a" (by decide))
+    (.condSet (.cmp .lt (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)))
+      (.cons "m" (by decide) (.var .u32 "b" (by decide)) .nil) .nil
+      (.arith .mul (.var .u32 "m" (by decide)) (.lit .u32 2))) : X (ps [("a", .u32), ("b", .u32)]) .u32)).render
+    = "(((a lo b) ? b : a) mul 2)" := by decide
+/-- `(a, b: u32) -> u32 = { x: u32 = a; y: u32 = b; a < b ? { x = b; y = a } | { x = x + 1 }; x - y }` -/
+example : (lowerT σ0 (.letIn "x" (.var .u32 "a" (by decide)) (.letIn "y" (.var .u32 "b" (by decide))
+    (.condSet (.cmp .lt (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)))
+      (.cons "x" (by decide) (.var .u32 "b" (by decide)) (.cons "y" (by decide) (.var .u32 "a" (by decide)) .nil))
+      (.cons "x" (by decide) (.arith .add (.var .u32 "x" (by decide)) (.lit .u32 1)) .nil)
+      (.arith .sub (.var .u32 "x" (by decide)) (.var .u32 "y" (by decide))))) : X (ps [("a", .u32), ("b", .u32)]) .u32)).render
+    = "(((a lo b) ? b : (a add 1)) sub ((a lo b) ? a : b))" := by decide
+
+/-- `(a, b: u32) -> u32 = { m: u32 = a; a < b ? { m = b } | { }; m * 2 }` -/
+example : (lowerT σ0 (.letIn "m" (.var .u32 "a" (by decide))
+    (.condSet (.cmp .lt (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)))
+      (.cons "m" (by decide) (.var .u32 "b" (by decide)) .nil) .nil
+      (.arith .mul (.var .u32 "m" (by decide)) (.lit .u32 2))) : X (ps [("a", .u32), ("b", .u32)]) .u32)).render
+    = "(((a lo b) ? b : a) mul 2)" := by decide
+/-- `(a, b: u32) -> u32 = { x: u32 = a; y: u32 = b; a < b ? { x = b; y = a } | { x = x + 1 }; x - y }` -/
+example : (lowerT σ0 (.letIn "x" (.var .u32 "a" (by decide)) (.letIn "y" (.var .u32 "b" (by decide))
+    (.condSet (.cmp .lt (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)))
+      (.cons "x" (by decide) (.var .u32 "b" (by decide)) (.cons "y" (by decide) (.var .u32 "a" (by decide)) .nil))
+      (.cons "x" (by decide) (.arith .add (.var .u32 "x" (by decide)) (.lit .u32 1)) .nil)
+      (.arith .sub (.var .u32 "x" (by decide)) (.var .u32 "y" (by decide))))) : X (ps [("a", .u32), ("b", .u32)]) .u32)).render
+    = "(((a lo b) ? b : (a add 1)) sub ((a lo b) ? a : b))" := by decide
 
 end Oak.LoweringRefinement
