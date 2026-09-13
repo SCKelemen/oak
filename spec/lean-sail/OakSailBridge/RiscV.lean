@@ -1,4 +1,7 @@
-import LeanRV64D
+-- The export's Prelude holds the comparison operators the theorems name;
+-- the whole library (`import LeanRV64D`) does not compile yet: its Vmem
+-- module trips the Lean backend (rems-project/sail#1729), see README.
+import LeanRV64D.Prelude
 import Std.Tactic.BVDecide
 
 /-!
@@ -23,6 +26,11 @@ file, so the two cannot drift.
 namespace OakSailBridge
 
 open LeanRV64D
+-- The export puts its prelude functions (sign_extend, bool_to_bit, the
+-- comparison operators, the shift helpers) under LeanRV64D.Functions.
+open LeanRV64D.Functions
+-- shift_bits_left / shift_bits_right moved into the lean-sail library (Sail/Common.lean).
+open Sail
 
 -- OAK-DEF-BEGIN
 abbrev X := BitVec 64
