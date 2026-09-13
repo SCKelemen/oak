@@ -1392,6 +1392,9 @@ func (x *pathExecutor) globalStore(instr Instruction, state *symbolicState) (han
 	if !known {
 		return true, "a store through the address of an undeclared global", false
 	}
+	if global.Aggregate {
+		return true, "a store into a top-level record or array (not modeled)", false
+	}
 	src, isReg := instr.Operands[0].(Register)
 	if !isReg || src.Class == ClassV {
 		return true, "a vector-register store to a global", false
@@ -1626,6 +1629,9 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		global, known := x.globals[name]
 		if !known {
 			return "a load through the address of an undeclared global", false
+		}
+		if global.Aggregate {
+			return "a load from a top-level record or array (not modeled)", false
 		}
 		if mem.Index != nil || mem.Mode != MemOffset || mem.Offset != 0 {
 			return "a load through a global's address away from its cell", false

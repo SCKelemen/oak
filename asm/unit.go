@@ -394,8 +394,13 @@ type Symbol struct {
 // checker admits exactly one access shape to it — `[xA]` at the scalar's
 // width through a register holding its adrp/add address.
 type Global struct {
-	Type string // the Oak scalar type name
-	Bits int    // the scalar's width
+	Type string // the Oak scalar type name, or the aggregate's type text
+	Bits int    // the scalar's width (0 for an aggregate)
+	// Aggregate marks a top-level record or array: its address is a
+	// writable region of Size bytes, whose fields and guarded elements
+	// the checker bounds as it bounds a frame array's.
+	Aggregate bool
+	Size      int64
 }
 
 // SysReg names a system register operand of mrs/msr.
