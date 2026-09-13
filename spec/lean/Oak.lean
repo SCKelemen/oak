@@ -22,6 +22,7 @@ import Oak.StatementBoundary
 import Oak.Protocol
 import Oak.ProtocolClasses
 import Oak.Teddy
+import Oak.TeddyMasks
 import Oak.Utf8Lookup
 import Oak.Utf8Stream
 import Oak.Utf8Flat

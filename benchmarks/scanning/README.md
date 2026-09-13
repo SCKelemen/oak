@@ -69,10 +69,12 @@ and proves the prefilter **sound** (`Oak.Teddy.sound`): a literal that
 occurs at a position has its bucket's bit set in the candidate mask
 there. Hence **exact** (`Oak.Teddy.exact`): verifying a literal only where
 its bucket is a candidate finds exactly its occurrences, so the count the
-kernel reports is the number of occurrences. Not yet modeled: the byte
-level of the masks (the AND of `u8` masks has bit `b` set exactly when
-each operand has), the sixty-four-byte stepping, and the scalar tail;
-the differential check in `literals.oak`'s `main` and the six-way count
+kernel reports is the number of occurrences. `Oak/TeddyMasks.lean` takes
+this to the bytes: the stored entries are OR-folds of bucket bits whose
+bit `b` is the predicate, the AND of masks is bitwise, so the kernel's
+`(cand & bucket_bit(j)) != 0` is exactly `cand` (`bit_candMask`). Not
+yet modeled: the sixty-four-byte stepping and the scalar tail; the
+differential check in `literals.oak`'s `main` and the six-way count
 agreement above cover them.
 
 ## Landed

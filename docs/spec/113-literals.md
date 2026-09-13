@@ -95,11 +95,17 @@ has that nibble at byte `k` — and proves the prefilter **sound**
 bit set in the candidate mask there. Hence **exact** (`Oak.Teddy.exact`):
 verifying a literal only where its bucket is a candidate finds exactly
 its occurrences, so `name_count` is the number of occurrences and
-`name_find` the first. Not yet modeled: the byte level of the masks (the
-AND of `u8` masks has bit `b` set exactly when each operand has), the
-sixty-four-byte stepping, and the tail; the differential tests
-(`compiler/e2e_literals_test.go`, compiled and interpreted against a
-scalar reference) and the harness's six-way count agreement cover them.
+`name_find` the first. `spec/lean/Oak/TeddyMasks.lean` closes the gap to
+the bytes: the entry `build` stores — the OR of the bucket bits of the
+literals whose nibble matches — has bit `b` set exactly when the
+predicate holds (`bit_loEntry`, `bit_hiEntry`), the AND of masks has bit
+`b` set exactly when each operand has (`bit_and`), and so the kernel's
+test `(cand & bucket_bit(j)) != 0` on the stored masks is exactly
+`Oak.Teddy.cand` (`bit_candMask`), with soundness restated on the masks
+(`sound_mask`). Not yet modeled: the sixty-four-byte stepping and the
+tail; the differential tests (`compiler/e2e_literals_test.go`, compiled
+and interpreted against a scalar reference) and the harness's six-way
+count agreement cover them.
 
 Measured on sixteen HTTP tokens over 64 MB (`benchmarks/scanning/`):
 the projected `http_count` runs at 0.10 ns/byte, the hand-written NEON
@@ -116,5 +122,5 @@ same count.
 - Larger sets: more than eight buckets when the set is large enough that
   bucket sharing dominates verification, and a rarest-byte choice of the
   three classified bytes instead of the first three.
-- The byte-level mask model in Lean, closing the gap between the table
-  predicates and the emitted `u8` masks.
+- The stepping and the tail in Lean, over the block model of
+  `Oak.Utf8Blocks`.
