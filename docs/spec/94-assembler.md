@@ -1884,6 +1884,16 @@ verifier as the typed literal `T(init)` on a copy of the body, so
 `page_size` and `entries` cost nothing and leave nothing to the C backend;
 the emitted C keeps the constant (`compiler/native_bodies.go`).
 
+**Atomics.** The builtins of `65-machine-memory.md` lower on the AArch64
+lane when the cell is reached through a writable span (§7a there): the
+element address as a region, `ldar`/`stlr` and their narrow forms,
+`dmb`, and the `ldxr`/`ldaxr` … `stxr`/`stlxr` loop for the
+read-modify-writes. The checker admits the exclusive store through the
+element region; the verifier reads the acquire and exclusive loads as the
+element and models an atomic load as the cell's read, so straight-line
+atomic reads verify while writers and retry loops are trusted against
+the C oracle. The rv64 lane leaves atomics to the C backend.
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against) and fractional-LMUL forms. The term

@@ -73,6 +73,10 @@ func (s scalar) wide() bool { return s.bits == 64 }
 type span struct {
 	elem     scalar
 	writable bool
+	// atomic marks a span of cells (`[*]Atomic[T]`, docs/spec/65-machine-memory.md
+	// section 1): its elements are reached only by the atomic builtins
+	// (nativegen/atomics.go), never by a plain load or store.
+	atomic bool
 	// elemLayout: the element type when the span holds records (elem unused).
 	elemLayout *recordLayout
 	baseReg    int // x register holding the base
@@ -133,6 +137,9 @@ func spanOf(expr ast.Expression) (span, bool) {
 	marker, isIdent := index.Index.(*ast.Identifier)
 	if !isIdent || (marker.Value != "*" && marker.Value != "") {
 		return span{}, false
+	}
+	if carrier, isCell := atomicCarrier(index.Left); isCell {
+		return span{elem: carrier, writable: marker.Value == "*", atomic: true}, true
 	}
 	elem, ok := scalarOf(index.Left)
 	if !ok || elem.isBool {
@@ -292,6 +299,8 @@ const (
 )
 
 type recordField struct {
+	// atomic marks an Atomic[T] cell placed as its carrier T.
+	atomic bool
 	kind   fieldKind
 	typ    scalar // the scalar, or the array's element type
 	offset int64
@@ -468,6 +477,12 @@ func (g *generator) layoutOf(name string) (*recordLayout, error) {
 		var rep semir.RecordFieldRepresentation
 		var placed recordField
 		switch {
+		case func() bool { _, ok := atomicCarrier(field.Value); return ok }():
+			// An atomic cell is placed as its carrier (docs/spec/65-machine-memory.md
+			// section 1); only the atomic builtins reach it.
+			typ, _ := atomicCarrier(field.Value)
+			rep = fieldRepresentations[typ.name]
+			placed = recordField{kind: fieldScalar, typ: typ, atomic: true}
 		case func() bool { _, ok := scalarOf(field.Value); return ok }():
 			typ, _ := scalarOf(field.Value)
 			fixed, placeable := fieldRepresentations[field.Value.String()]
@@ -960,6 +975,9 @@ func unsupported(format string, args ...interface{}) Unsupported {
 
 // generator holds one function's lowering.
 type generator struct {
+	// rvLane marks the rv64 lane's embedding: the AArch64-only lowerings
+	// (the atomics) leave the function to the C backend there.
+	rvLane    bool
 	fn        *ast.FunctionStatement
 	tc        *typechecker.TypeChecker
 	functions map[string]*ast.FunctionStatement
@@ -2677,6 +2695,12 @@ func (g *generator) typeOf(expr ast.Expression, hint *scalar) (scalar, error) {
 			}
 			return scalars["u32"], nil
 		}
+		if spec, isAtomic := semir.LookupAtomicBuiltin(ident.Value); isAtomic {
+			if !spec.ReturnsValue() {
+				return scalar{}, unsupported("the atomic %s in value position", ident.Value)
+			}
+			return g.atomicCellType(e.Arguments[0])
+		}
 		if s, isConv := scalars[ident.Value]; isConv && len(e.Arguments) == 1 && ident.Value != "byte" {
 			return s, nil
 		}
@@ -2985,6 +3009,17 @@ func (g *generator) effect(expr ast.Expression) error {
 		g.release(r)
 		return nil
 	}
+	if spec, isAtomic := semir.LookupAtomicBuiltin(ident.Value); isAtomic {
+		// A store, a fence, or a read-modify-write whose result is dropped.
+		r, err := g.atomic(call, spec, true)
+		if err != nil {
+			return err
+		}
+		if r >= 0 {
+			g.release(r)
+		}
+		return nil
+	}
 	r, err := g.call(call)
 	if err != nil {
 		return err
@@ -3247,6 +3282,9 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 			if _, shadowed := g.functions[ident.Value]; !shadowed {
 				return g.intrinsic(e, typ)
 			}
+		}
+		if spec, isAtomic := semir.LookupAtomicBuiltin(ident.Value); isAtomic {
+			return g.atomic(e, spec, false)
 		}
 		return g.call(e)
 	case *ast.MatchExpression:
@@ -4285,6 +4323,16 @@ func (g *generator) guardedIndex(sp span, index ast.Expression) (int, error) {
 // is past every span and array, so it traps), leaving the low word for the
 // checker's 32-bit index idiom.
 func (g *generator) indexValue(index ast.Expression) (int, error) {
+	if k, isConst := constantValue(index); isConst && k >= 0 && k < 1<<32 {
+		// A bare literal index (`cursor[0]`) is the unsigned constant it
+		// spells, whatever type inference would default it to.
+		r, err := g.alloc(scalars["u32"])
+		if err != nil {
+			return 0, err
+		}
+		g.constant(r, uint64(k), scalars["u32"])
+		return r, nil
+	}
 	idxType, err := g.typeOf(index, nil)
 	if err != nil {
 		return 0, err
