@@ -1923,8 +1923,28 @@ otherwise the configuration would be reserved, `fractional_within_elen`),
 widening from a fractional LMUL doubles the eighths and stays in one
 register until `m1` (`wide_group_fractional`), and an extension's source
 group below `mf8` is refused; the differentials carry the `[]u32` sum
-loaded at `e32/mf2`, widened to `e64/m1`, and reduced there. **Widening
-(third increment).** `vwaddu`/`vwadd`/`vwsubu`/`vwsub`/
+loaded at `e32/mf2`, widened to `e64/m1`, and reduced there. **Vector
+floating point (fifth increment, 2026-09-14).** The table gains
+`vle64.v`/`vse64.v` and the floating-point forms `vfadd.vv`, `vfsub.vv`,
+`vfmul.vv`, `vfmacc.vv` (spelled `vd, vs1, vs2`; the accumulator `vd` is
+read and written), `vfmv.v.f`/`vfmv.f.s` (an `f` operand class: the F
+register the scalar crosses through), `vfcvt.f.xu.v`, and the *ordered*
+reduction `vfredosum.vs` — float addition is not associative, so the
+unordered `vfredusum.vs`, whose grouping is implementation-defined, is
+outside the table; the ordered form folds a strip left to right from the
+scalar it is handed, and a strip-mining loop that hands each strip the
+previous result computes the sequential fold over the whole span
+whatever `vl` each `vsetvli` chose (`Oak.RiscV.ordered_strips_fold`). The
+checker requires `e32` or `e64` under a floating-point form
+(`floatSewOK`: Zve32f/Zve64d; `e16` would be Zvfh), reads and writes the
+F operands under the F lane's rules (bound, clobbered, or written), and
+treats element-0 operands as single registers whatever the LMUL — a
+reduction's scalar input and result and `vmv.x.s`/`vfmv.f.s`'s source
+(RVV 1.0 §14, §16) — so a read of a group's upper register after a
+reduction is a finding. The differentials carry `q = x·k + (x − k)²` per
+element (`vfcvt`, `vfsub`, `vfmul`, `vfmacc` with one rounding) folded in
+order into an f32 sum; QEMU and Sail agree with Go's float32 arithmetic and
+an exactly rounded fma. **Widening (third increment).** `vwaddu`/`vwadd`/`vwsubu`/`vwsub`/
 `vwmulu`/`vwmul .vv` write `2*SEW` elements into a `2*LMUL` group,
 `vzext.vf2`/`vsext.vf2` read a half-width source group, `vnsrl.wi` reads a
 `2*LMUL` source, and `vle16.v`/`vse16.v` move 16-bit elements: each
@@ -2547,8 +2567,8 @@ and executable writers' tests.
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
-transliteration is checked against) and the vector floating-point forms.
-The term language and the BDD blaster carry over unchanged.
+transliteration is checked against). The term language and the BDD
+blaster carry over unchanged.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed

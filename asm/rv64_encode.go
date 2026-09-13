@@ -290,6 +290,11 @@ func encodeRV64Instruction(instr Instruction, pc int64, labels map[string]int64)
 			fields["vs3"], fields["rs1"] = regNum(0), int64(rv64Number(ops[1].(Memory).Base))
 		default:
 			names := [][2]string{{"vd", "rd"}, {"vs2", "rs1"}, {"vs1", "rs1"}}
+			if instr.Mnemonic == "vfmacc.vv" {
+				// The multiply-add family spells the multiplicand first:
+				// `vfmacc.vv vd, vs1, vs2` (RVV 1.0 §13.6).
+				names = [][2]string{{"vd", "rd"}, {"vs1", "rs1"}, {"vs2", "rs1"}}
+			}
 			for i := 0; i < len(ops) && i < 3; i++ {
 				if imm, isImm := ops[i].(Immediate); isImm {
 					fields["zimm5"] = imm.Value // vnsrl.wi's shift

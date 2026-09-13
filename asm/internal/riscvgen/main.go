@@ -100,7 +100,8 @@ func main() {
 // rvVectorSubset is the vector subset the RV64 lane admits: configuration,
 // unit-stride loads and stores of 8- and 32-bit elements, the lane-wise
 // integer operations of the simd catalog, the mask producers and consumers
-// of the predicated operations, and the sum reduction.
+// of the predicated operations, the sum reduction, the widening forms, and
+// the floating-point forms.
 var rvVectorSubset = map[string]bool{
 	"vsetvli": true, "vsetivli": true,
 	"vle8.v": true, "vle32.v": true, "vse8.v": true, "vse32.v": true,
@@ -111,6 +112,13 @@ var rvVectorSubset = map[string]bool{
 	"vle16.v": true, "vse16.v": true,
 	"vwaddu.vv": true, "vwadd.vv": true, "vwsubu.vv": true, "vwsub.vv": true, "vwmulu.vv": true, "vwmul.vv": true,
 	"vzext.vf2": true, "vsext.vf2": true, "vnsrl.wi": true,
+	// 64-bit elements, and the vector floating-point forms (RVV 1.0 §13):
+	// lane-wise add, subtract, multiply, and multiply-add, the moves
+	// between an F register and element 0, the unsigned-integer to float
+	// conversion, and the ordered sum reduction (§14.3).
+	"vle64.v": true, "vse64.v": true,
+	"vfadd.vv": true, "vfsub.vv": true, "vfmul.vv": true, "vfmacc.vv": true,
+	"vfmv.v.f": true, "vfmv.f.s": true, "vfcvt.f.xu.v": true, "vfredosum.vs": true,
 }
 
 // rvCompressedSubset is the RVC subset: the 16-bit forms of the lane's
