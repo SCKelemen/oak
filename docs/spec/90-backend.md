@@ -71,7 +71,9 @@ it: a function's `dispatch { sve: f_sve }` clause selects a realization
 once, before `main`, by a probe of the processor (`93-simd.md` §6).
 Freestanding RISC-V objects are compiled with the medium-any code model
 so they link at the user's address (RAM at `0x80000000` on the `virt`
-machines).
+machines). The asm lane reads the same processor: an rv64 unit that uses the
+vector extension needs a `-cpu` with V, and units compress under C
+(`94-assembler.md` §9).
 
 The compiler emits the same C translation unit for every target; what the
 target decides is:

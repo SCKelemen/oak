@@ -9,6 +9,7 @@
 #define _GNU_SOURCE 1
 #define _POSIX_C_SOURCE 200809L
 #define _DARWIN_C_SOURCE 1
+#define _FILE_OFFSET_BITS 64
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
@@ -45,10 +46,18 @@ static int64_t oak_io_fail(int err) {
 
 int64_t oak_io_host_last_errno(void) { return oak_io_last_errno; }
 
+// A path is one to 32 bytes ending in NUL with no other NUL: the Oak side
+// checks it, and so does every hook here before the bytes are a C string
+// (docs/spec/120-io.md section 2, "Paths").
+static int oak_io_path_ok(const uint8_t *path, size_t len) {
+    if (path == 0 || len == 0 || len > 32 || path[len - 1] != 0) return 0;
+    return memchr(path, 0, len - 1) == 0;
+}
+
 // path is `len` bytes ending in NUL, checked by the Oak side; a window that
 // does not end in NUL is refused here too.
 int64_t oak_io_host_open(const uint8_t *path, size_t len) {
-    if (path == 0 || len == 0 || path[len - 1] != 0) return -OAK_IO_ERR_INVALID;
+    if (!oak_io_path_ok(path, len)) return -OAK_IO_ERR_INVALID;
     int fd = open((const char *)path, O_RDWR | O_CREAT, 0644);
     if (fd < 0) return oak_io_fail(errno);
     return (int64_t)fd;
@@ -60,7 +69,7 @@ int64_t oak_io_host_open(const uint8_t *path, size_t len) {
 // that refuses O_DIRECT reports its EINVAL as Invalid too, and the program
 // decides whether to fall back to a plain open. No retry here.
 int64_t oak_io_host_open_direct(const uint8_t *path, size_t len) {
-    if (path == 0 || len == 0 || path[len - 1] != 0) return -OAK_IO_ERR_INVALID;
+    if (!oak_io_path_ok(path, len)) return -OAK_IO_ERR_INVALID;
 #if defined(__linux__)
     int fd = open((const char *)path, O_RDWR | O_CREAT | O_DIRECT, 0644);
     if (fd < 0) return oak_io_fail(errno);
@@ -82,7 +91,7 @@ int64_t oak_io_host_open_direct(const uint8_t *path, size_t len) {
 // mkdir (op 15): the directory, created with the usual mode; the parent
 // must exist (ENOENT -> NotFound) and the name must not (EEXIST -> Exists).
 int64_t oak_io_host_mkdir(const uint8_t *path, size_t len) {
-    if (path == 0 || len == 0 || path[len - 1] != 0) return -OAK_IO_ERR_INVALID;
+    if (!oak_io_path_ok(path, len)) return -OAK_IO_ERR_INVALID;
     if (mkdir((const char *)path, 0755) != 0) return oak_io_fail(errno);
     return 0;
 }
@@ -115,8 +124,13 @@ int64_t oak_io_host_pwrite(int64_t fd, const uint8_t *buf, size_t len, int64_t o
 int64_t oak_io_host_fsync(int64_t fd, uint32_t data_only) {
     int rc;
 #if defined(__APPLE__)
+    // Darwin's fsync flushes to the drive without asking the drive to
+    // flush its own cache; F_FULLFSYNC does, and is the durability barrier
+    // the contract means (docs/spec/120-io.md section 3). A file system
+    // that does not support it falls back to fsync.
     (void)data_only;
-    rc = fsync((int)fd);
+    rc = fcntl((int)fd, F_FULLFSYNC, 0);
+    if (rc != 0 && errno == ENOTSUP) rc = fsync((int)fd);
 #else
     rc = data_only ? fdatasync((int)fd) : fsync((int)fd);
 #endif
@@ -125,9 +139,17 @@ int64_t oak_io_host_fsync(int64_t fd, uint32_t data_only) {
 }
 
 int64_t oak_io_host_fsyncdir(const uint8_t *path, size_t len) {
-    if (path == 0 || len == 0 || path[len - 1] != 0) return -OAK_IO_ERR_INVALID;
+    if (!oak_io_path_ok(path, len)) return -OAK_IO_ERR_INVALID;
     int fd = open((const char *)path, O_RDONLY);
     if (fd < 0) return oak_io_fail(errno);
+    // A file used as a directory is Invalid, as the simulated realization
+    // says, not a successful fsync of the file.
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        int err = fstat(fd, &st) != 0 ? errno : ENOTDIR;
+        close(fd);
+        return oak_io_fail(err);
+    }
     int rc = fsync(fd);
     int saved = errno;
     close(fd);
@@ -138,7 +160,7 @@ int64_t oak_io_host_fsyncdir(const uint8_t *path, size_t len) {
 // Exclusive create: the file must not exist (EEXIST maps to the port's
 // Exists), the storage engine's atomic if-absent creation.
 int64_t oak_io_host_create(const uint8_t *path, size_t len) {
-    if (path == 0 || len == 0 || path[len - 1] != 0) return -OAK_IO_ERR_INVALID;
+    if (!oak_io_path_ok(path, len)) return -OAK_IO_ERR_INVALID;
     int fd = open((const char *)path, O_RDWR | O_CREAT | O_EXCL, 0644);
     if (fd < 0) return oak_io_fail(errno);
     return (int64_t)fd;
@@ -199,7 +221,7 @@ int64_t oak_io_host_stat(int64_t fd) {
 }
 
 int64_t oak_io_host_unlink(const uint8_t *path, size_t len) {
-    if (path == 0 || len == 0 || path[len - 1] != 0) return -OAK_IO_ERR_INVALID;
+    if (!oak_io_path_ok(path, len)) return -OAK_IO_ERR_INVALID;
     if (unlink((const char *)path) != 0) return oak_io_fail(errno);
     return 0;
 }
