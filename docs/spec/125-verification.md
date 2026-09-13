@@ -201,8 +201,11 @@ conflict-driven clause-learning solver in the strict profile over one
 caller-owned word arena, propagation by occurrence lists, first-UIP
 learning with VSIDS activity and phase saving, geometric restarts, every
 learned clause written as an LRAT line as it is learned with the
-propagation order as its hints, bounded by a conflict budget and the
-store's capacity — or, when `OAK_SAT_SOLVER` names one, to an external
+propagation order as its hints, the learned clauses reduced at a restart
+once they outnumber a growing limit (unlocked clauses longer than two
+literals, the older half, one deletion line, the store compacted in
+place and the occurrence lists rebuilt), bounded by a conflict budget
+and the store's capacity — or, when `OAK_SAT_SOLVER` names one, to an external
 solver invoked directly (`--lrat --no-binary`, an explicit argument list,
 a temporary directory, a timeout); a named solver that is not found skips
 the rung and the summary says so. Either way the solver is untrusted. A
@@ -631,8 +634,8 @@ In order of payoff, each reusing a surface that exists:
   reach the measure that remains; and the first performance step is
   measured there too: the source-level inliner reaching the prover's
   accessor chains and by-reference records read in place brought the
-  native binary from 2–5 times the C build's time to 1.5–1.7 times,
-  `94-assembler.md` §9 seventeenth to nineteenth increments), so what remains is the self-hosted
+  native binary from 2–5 times the C build's time to 1.25–1.4 times,
+  `94-assembler.md` §9 seventeenth to twenty-fourth increments), so what remains is the self-hosted
   compiler, and the backend lowering and verifying the prover whole; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
@@ -674,10 +677,9 @@ In order of payoff, each reusing a surface that exists:
   each with its Lean law.
 - **A certificate rung.** Landed as `-solver sat` (§3, §4): the clause
   engine, the two LRAT checkers, `Oak.RupCheck`, and the solver written in
-  Oak (`prove/solver/sat.oak`) as the rung's default. Next: the clause
-  encoder proved rather than cross-checked; clause-database reduction with
-  deletion lines; two-watched-literal propagation when a corpus obligation
-  asks for it. The BDD's failure mode
+  Oak (`prove/solver/sat.oak`) as the rung's default, with clause-database
+  reduction. Next: the clause encoder proved rather than cross-checked;
+  two-watched-literal propagation when a corpus obligation asks for it. The BDD's failure mode
   is the node budget on multipliers and wide aggregates, which CDCL
   solvers treat routinely. The rung is the one Lean's `bv_decide` already
   runs:

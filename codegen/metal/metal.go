@@ -20,6 +20,7 @@ package metal
 
 import (
 	"fmt"
+	"github.com/SCKelemen/oak/hostform"
 	"regexp"
 	"sort"
 	"strings"
@@ -226,6 +227,12 @@ type emitter struct {
 	// lane(), so a store indexed by one is each lane's own.
 	arena      []string
 	laneLocals map[string]bool
+	// fusing names the kernels on the current fusion path (independence.go);
+	// kernelName and kernelGid are the kernel being emitted and its
+	// position parameter, which a fused callee must be passed.
+	fusing     map[string]bool
+	kernelName string
+	kernelGid  string
 	scratch    int
 	hoist      *[]string
 	inKernel   bool
@@ -498,6 +505,7 @@ func (em *emitter) kernel(fn *ast.FunctionStatement) (*Kernel, string, error) {
 	}
 	em.groupSize, em.scratch, em.inKernel = groupSize, 0, true
 	em.arena, em.laneLocals = nil, map[string]bool{}
+	em.kernelName, em.kernelGid = fn.Name.Value, fn.Parameters[0].Name.Value
 	defer func() { em.groupSize, em.inKernel = 0, false }()
 	desc.Threadgroup = groupSize
 	for i, t := range scratchTypes {
@@ -607,6 +615,11 @@ func (em *emitter) kernel(fn *ast.FunctionStatement) (*Kernel, string, error) {
 // function's emission state is saved around the nested emission.
 func (em *emitter) requireHelper(fn *ast.FunctionStatement, subst map[string]string) (string, error) {
 	name := fn.Name.Value
+	if fn.Kernel {
+		// A fused kernel's helper instance (docs/spec/56-kernels.md
+		// section 2b) lives beside the kernel entry of the same name.
+		name += "__fused"
+	}
 	keys := make([]string, 0, len(subst))
 	for k := range subst {
 		keys = append(keys, k)
@@ -1647,7 +1660,27 @@ func (em *emitter) call(call *ast.InvocationExpression, want oakType) (string, e
 		return "", em.fail("call to %s is outside the kernel subset (not a function of the program)", name)
 	}
 	if target.Kernel {
-		return "", em.fail("a kernel does not call another kernel (%s); share a helper", name)
+		// Fusion (docs/spec/56-kernels.md section 2b): an ordinary kernel
+		// calls another at its own position, and the callee is inlined as
+		// a helper taking the position, its buffers, and the fault word.
+		if !em.inKernel {
+			return "", em.fail("kernel %s is fused from a kernel body, not from a helper", name)
+		}
+		if em.groupSize > 0 {
+			return "", em.fail("a group kernel does not fuse another kernel (%s); fusion joins ordinary kernels", name)
+		}
+		if size, _, _ := em.groupShape(target); size > 0 || hostform.Uses(target) {
+			return "", em.fail("kernel %s is a group kernel; fusion joins ordinary kernels", name)
+		}
+		if name == em.kernelName {
+			return "", em.fail("kernel %s is fused into itself", name)
+		}
+		if len(args) == 0 {
+			return "", em.fail("kernel %s takes its position first", name)
+		}
+		if pos, isIdent := args[0].(*ast.Identifier); !isIdent || pos.Value != em.kernelGid {
+			return "", em.fail("kernel %s is fused at this kernel's position; pass %s as its first argument", name, em.kernelGid)
+		}
 	}
 	if len(args) != len(target.Parameters) {
 		return "", em.fail("call to %s: %d arguments for %d parameters", name, len(args), len(target.Parameters))

@@ -60,7 +60,11 @@ type inlineCandidate struct {
 type inliner struct {
 	functions  map[string]*ast.FunctionStatement
 	candidates map[string]*inlineCandidate
-	counter    int
+	// transitions are the functions a protocol names as `via` callables
+	// (docs/spec/112-protocols.md section 5): the resource analysis judges
+	// a transition at its call, so the call must remain.
+	transitions map[string]bool
+	counter     int
 }
 
 // inlineHelpers rewrites every call to an inlinable helper in program. The
@@ -69,18 +73,37 @@ type inliner struct {
 // so an accessor chain (`tkind` over `tword` over `term_at` over `state`)
 // flattens to the element read it denotes. Rounds stop when a pass inlines
 // nothing new; the bound keeps a pathological program from cycling.
-func inlineHelpers(program *ast.Program) {
+//
+// protocols are the program's protocol declarations (compiler/protocols.go
+// lowers them out of the tree before this pass and keeps them beside it,
+// Protocols(tree)); their via callables stay calls.
+func inlineHelpers(program *ast.Program, protocols []*ast.ProtocolDeclaration) {
 	if program == nil {
 		return
 	}
-	in := &inliner{functions: map[string]*ast.FunctionStatement{}, candidates: map[string]*inlineCandidate{}}
+	in := &inliner{functions: map[string]*ast.FunctionStatement{}, candidates: map[string]*inlineCandidate{}, transitions: map[string]bool{}}
 	duplicates := map[string]bool{}
 	for _, stmt := range program.Statements {
-		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.Name != nil && fn.Receiver == nil {
-			if in.functions[fn.Name.Value] != nil {
-				duplicates[fn.Name.Value] = true
+		switch decl := stmt.(type) {
+		case *ast.FunctionStatement:
+			if decl.Name != nil && decl.Receiver == nil {
+				if in.functions[decl.Name.Value] != nil {
+					duplicates[decl.Name.Value] = true
+				}
+				in.functions[decl.Name.Value] = decl
 			}
-			in.functions[fn.Name.Value] = fn
+		case *ast.ProtocolDeclaration:
+			protocols = append(protocols, decl)
+		}
+	}
+	for _, decl := range protocols {
+		if decl == nil {
+			continue
+		}
+		for _, transition := range decl.Transitions {
+			if transition != nil && transition.Callable != nil {
+				in.transitions[transition.Callable.Value] = true
+			}
 		}
 	}
 	const maxRounds = 8
@@ -157,6 +180,20 @@ func (in *inliner) candidate(fn *ast.FunctionStatement) *inlineCandidate {
 		fn.Kernel || fn.Theorem {
 		return nil
 	}
+	// The effect analysis judges rows at calls (docs/spec/60-effects-allocation.md
+	// section 2, 2a): a helper declaring effects or forbids is a node of
+	// the path a forbids report names, and a helper with a function-typed
+	// parameter checks the argument's row against the parameter's at the
+	// call. Splicing either away would remove the check, so neither is
+	// inlined.
+	if len(fn.Effects) > 0 || fn.EffectsDeclared || len(fn.Forbids) > 0 || in.transitions[fn.Name.Value] {
+		return nil
+	}
+	for _, p := range fn.Parameters {
+		if p != nil && functionTypedSyntax(p.Type) {
+			return nil
+		}
+	}
 	if fn.EndToken.Line <= 0 || fn.EndToken.Line-fn.Token.Line > inlineHelperLines {
 		return nil
 	}
@@ -219,6 +256,13 @@ func (in *inliner) candidate(fn *ast.FunctionStatement) *inlineCandidate {
 		}
 	}
 	return cand
+}
+
+// functionTypedSyntax reports whether a type expression is a function type
+// (`(u32) -> u32 effects { }`), whose value carries an effect row.
+func functionTypedSyntax(expr ast.Expression) bool {
+	_, ok := expr.(*ast.FunctionTypeExpression)
+	return ok
 }
 
 // scalarTypeSyntax reports whether a type expression names a builtin
@@ -573,14 +617,17 @@ func (in *inliner) expand(call *ast.InvocationExpression, cand *inlineCandidate,
 			rename[p.Name.Value] = ident.Value
 			continue
 		}
-		temp := prefix + "a" + strconv.Itoa(i)
+		// Arguments take the segment "arg", renamed locals the segment "l_"
+		// (below), so a local named a1 never meets the temporary of the
+		// second argument (the stdlib's blake3_g).
+		temp := prefix + "arg" + strconv.Itoa(i)
 		typ := cloneExpression(p.Type)
 		stampSemanticContext(reflect.ValueOf(typ), context)
 		stmts = append(stmts, &ast.VariableDeclaration{Token: call.Token, Name: identifierAt(call.Token, temp), Type: typ, Value: arg})
 		rename[p.Name.Value] = temp
 	}
 	for name := range cand.declared {
-		rename[name] = prefix + name
+		rename[name] = prefix + "l_" + name
 	}
 	body := cloneExpression(cand.body).(*ast.BlockExpression)
 	stampSemanticContext(reflect.ValueOf(body), context)
@@ -593,7 +640,7 @@ func (in *inliner) expand(call *ast.InvocationExpression, cand *inlineCandidate,
 	}
 	stmts = append(stmts, bodyStmts...)
 	for name := range cand.declared {
-		scope.declared[prefix+name] = true
+		scope.declared[prefix+"l_"+name] = true
 	}
 	return stmts, tail, true
 }

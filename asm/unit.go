@@ -106,6 +106,11 @@ type Function struct {
 	// verdict is relative to it. Set by the native backend; nil leaves
 	// every call opaque (trusted).
 	Callees map[string]*ast.FunctionStatement
+	// Tables are the program's constant data symbols an `adrl` (AArch64)
+	// or `la` (RV64) may address, by symbol, with their sizes in bytes: the
+	// checker admits guarded element reads inside them (a read-only
+	// region), as it admits a frame array's. Set by the native backend.
+	Tables map[string]int64
 }
 
 // Composite is a record or tagged-union type's shape at the boundary: its

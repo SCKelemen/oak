@@ -60,7 +60,8 @@ which may be `pub`. Rules:
   arrays as parameters, strings, and ADTs are outside.
 - The result is `()`: results leave through spans.
 - The body is in the kernel subset (section 2). A kernel calls **helpers**
-  — ordinary functions in the subset — and never another kernel.
+  — ordinary functions in the subset — and may call another ordinary
+  kernel **at its own position**, which fuses the two (section 2b).
 
 A kernel is otherwise a function: the interpreter runs it, `oak test` tests
 it, the extraction states it, effects and forbids apply to it.
@@ -105,6 +106,7 @@ Inside the subset:
 | `lane(G)` | `oak_lid`, the thread's place in its group of `G` (section 2a); the kernel becomes a group kernel with `G` threads per position |
 | `tile: [N]T (threadgroup)` | `threadgroup T tile[N];` at kernel scope, zeroed by the lanes, one array per group (section 2a) |
 | `barrier()` | `threadgroup_barrier(mem_flags::mem_threadgroup);` at the body's top level (section 2a) |
+| `other(gid, buffers...)`, a call of another ordinary kernel at this position | the callee inlined as a `static inline` helper taking the position, its buffers, and the fault word — **fusion** (section 2b) |
 | `simd_shuffle_xor(v, off)` | `simd_shuffle_xor(v, off)`: lane `lane ^ off`'s value of the scalar local `v`, `off` a literal power of two below 32, in a top-level statement (section 2a) |
 | locals `x: T = e`, `x := e`, assignment | the same, scalars only |
 | `x[i]`, `y[i] = v` | `x[oak_check(i, x_len, oak_fault)]` — the index is checked against the length and a miss raises the fault word (section 3) |
@@ -205,7 +207,49 @@ kernel reverse_blocks: (gid: u32, x: []f32, out: [*]f32): () = {
   is deliberately not an intrinsic: the hardware's order is unspecified,
   and this spelling is the specified one.
 
-What this does not yet do: fusion as a pass (increment (d)).
+### 2b. Fusion
+
+**Status: implemented, 2026-09-14.** The ml pilot's F1, increment (d): the
+fused epilogues its emitters build by string are one kernel calling
+another.
+
+```oak
+kernel scale: (gid: u32, x: []f32, y: [*]f32): () = { gid < len(x) && gid < len(y) ? { y[gid] = x[gid] * 2.0 } }
+kernel shift: (gid: u32, y: [*]f32, out: [*]f32): () = { gid < len(y) && gid < len(out) ? { out[gid] = y[gid] + 1.0 } }
+kernel scale_shift: (gid: u32, x: []f32, y: [*]f32, out: [*]f32): () = {
+  scale(gid, x, y)          // both stages at this position: one launch
+  shift(gid, y, out)
+}
+```
+
+- An **ordinary kernel** (no `lane()`, no threadgroup memory, no
+  cooperative reduction) may call another ordinary kernel with **its own
+  grid position as the first argument** and its buffers passed through.
+  The Metal emitter inlines the callee as a helper — `static inline void
+  scale__fused(uint gid, device const float* x, uint x_len, …, device
+  atomic_uint* oak_fault)`, beside the kernel entry of the same name — and
+  the fused kernel is one launch; the callee stays a
+  kernel of its own, launchable alone. On the host and in the interpreter
+  a kernel is a function, so the fused body is the two calls.
+- **Independence**: the callee's span accesses are judged as the caller's
+  (section 6) — recursively, its own element or tile shape at this
+  position — and the fused kernel has **one shape**: two stages that touch
+  spans in different tile shapes are refused, as is a group kernel on
+  either side, a position argument other than the caller's, and a kernel
+  fused into itself. `Oak.Kernel.fuse` is the fused thread (both stages
+  in order, reading and writing what either does — a thread in the
+  model's sense), `independent_fuse` proves fused positions stay
+  independent when each stage of one is independent of each stage of the
+  other, and `run_fuse` that the fused launch computes what the two
+  launches compute.
+- What fusion does **not** do: eliminate the intermediate buffer. `y`
+  above is still stored and reloaded; an epilogue that should stay in
+  registers is spelled as a helper applied to the value (`out[gid] =
+  relu(dot(...))`), which the subset always allowed. The pass fuses
+  launches, and the register-level fusion is the author's spelling.
+
+This completes the four increments of the pilot's F1; the string emitters
+have nothing left to express that a kernel body cannot.
 
 ## 3. Traps and the fault word
 

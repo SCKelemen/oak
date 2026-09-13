@@ -19,7 +19,7 @@ var rv64ExactConversions = map[string]bool{"fcvt.d.w": true, "fcvt.d.wu": true, 
 // rv64Words is the number of 32-bit words an instruction spends: one,
 // except a 32-bit `li` (lui, then addiw unless the low part is zero).
 func rv64Words(instr Instruction) int {
-	if instr.Mnemonic == "call" {
+	if instr.Mnemonic == "call" || instr.Mnemonic == "la" {
 		return 2
 	}
 	if instr.Mnemonic == "li" {
@@ -51,6 +51,7 @@ type rv64Piece struct {
 	line     int
 	size     int64
 	callSym  string // the call's symbol, on its auipc
+	laSym    string // an la's data symbol, on its auipc (riscv_pcrel over both words)
 	fromCall bool
 }
 
@@ -89,6 +90,16 @@ func rv64Expand(fn *Function) ([]rv64Piece, map[string]int, error) {
 				units = append(units,
 					rv64Piece{base: Instruction{Mnemonic: "auipc", Operands: []Operand{ra, Immediate{Value: 0}}, Line: it.Line}, line: it.Line, size: 4, callSym: it.Operands[0].(Symbol).Name, fromCall: true},
 					rv64Piece{base: Instruction{Mnemonic: "jalr", Operands: []Operand{ra, Memory{Base: ra, Mode: MemOffset}}, Line: it.Line}, line: it.Line, size: 4, fromCall: true})
+				continue
+			case "la":
+				// auipc rd, 0; addi rd, rd, 0 — the pc-relative pair the
+				// linker or the executable writer fills (R_RISCV_PCREL_HI20
+				// on the auipc, R_RISCV_PCREL_LO12_I on the addi); never
+				// compressed.
+				rd := it.Operands[0].(Register)
+				units = append(units,
+					rv64Piece{base: Instruction{Mnemonic: "auipc", Operands: []Operand{rd, Immediate{Value: 0}}, Line: it.Line}, line: it.Line, size: 4, laSym: it.Operands[1].(Symbol).Name, fromCall: true},
+					rv64Piece{base: Instruction{Mnemonic: "addi", Operands: []Operand{rd, rd, Immediate{Value: 0}}, Line: it.Line}, line: it.Line, size: 4, fromCall: true})
 				continue
 			}
 			units = append(units, rv64Piece{base: rv64Base(it), line: it.Line, size: 4})
@@ -145,6 +156,9 @@ func encodeRV64Function(fn *Function) ([]byte, []Relocation, error) {
 	for i, unit := range units {
 		if unit.callSym != "" {
 			relocs = append(relocs, Relocation{Offset: int(starts[i]), Kind: "riscv_call_plt", Symbol: unit.callSym})
+		}
+		if unit.laSym != "" {
+			relocs = append(relocs, Relocation{Offset: int(starts[i]), Kind: "riscv_pcrel", Symbol: unit.laSym})
 		}
 		if unit.size == 2 {
 			half, ok := rvcEncode(unit.base, starts[i], labels)

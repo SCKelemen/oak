@@ -88,6 +88,21 @@ var loweringProgramRenders = []struct {
 	// equality selects, the first case outermost, the wildcard the fallback.
 	{"f: (op, a, b: u32) -> u32 = op ? | 0 => a | 1 => b | _ => a + b\n", "((op eq 0) ? a : ((op eq 1) ? b : (a add b)))"},
 	{"f: (op, a: u32) -> u32 = {\n  r: u32 = a\n  op ? | 0 => { r = a + 1 } | 1 => { r = a * 2 } | _ => { }\n  r\n}\n", "((op eq 0) ? (a add 1) : ((op eq 1) ? (a mul 2) : a))"},
+	// Owned arrays (`arrDecl`, `arrGet`, `arrSetE`): a read at a symbolic
+	// index selects element by element, a write at one selects at every
+	// element, literal indices fold to the one element.
+	{"f: (i, v: u32) -> u32 = {\n  a: [3]u32\n  a[0] = v\n  a[1] = v + 1\n  a[2] = v * 2\n  a[i]\n}\n", "((i eq 0) ? v : ((i eq 1) ? (v add 1) : (v mul 2)))"},
+	{"f: (i, v: u32) -> u32 = {\n  a: [2]u32\n  a[i] = v\n  a[1]\n}\n", "((i eq 1) ? v : 0)"},
+	// Records (`recDecl`): a record is its field leaves `r.f`, a field read
+	// the variable, a field write its rebinding; a record parameter is its
+	// field leaves as parameters (`paramAggregate`).
+	{"P: type = struct {\n  x: u32\n  y: u32\n}\n\nf: (a, b: u32) -> u32 = {\n  p: P = P { x: a, y: b }\n  p.x = p.x + 1\n  p.x * p.y\n}\n", "((a add 1) mul b)"},
+	{"P: type = struct {\n  x: u32\n  y: u32\n}\n\nf: (p: P) -> u32 = p.x + p.y\n", "(p.x add p.y)"},
+	// Sum types: a tagged union is its tag leaf and one payload leaf per
+	// carrying variant (`u.tag`, `u.B`); a variant match is the constant
+	// match on the tag with the arm's binding an alias of the payload leaf.
+	{"U: type = A | B: u32\n\nf: (v: u32) -> u32 = {\n  u: U = .B(v)\n  u ? | B(x) => x + 1 | A => 0\n}\n", "(v add 1)"},
+	{"U: type = A | B: u32\n\nf: (u: U) -> u32 = u ? | B(x) => x + 1 | A => 0\n", "((u.tag eq 1) ? (u.B add 1) : 0)"},
 }
 
 func TestLoweringProgramsMatchLeanTransliteration(t *testing.T) {
@@ -112,6 +127,24 @@ func TestLoweringProgramsMatchLeanTransliteration(t *testing.T) {
 		for _, fn := range fns[:len(fns)-1] {
 			lo.functions[fn.Name.Value] = fn
 		}
+		// Record declarations (`P: type = struct { ... }`), as prepareLowering
+		// takes them from the unit's declarations.
+		lo.records = map[string]*ast.RecordLiteral{}
+		lo.adts = map[string]*ast.ADTType{}
+		for _, stmt := range program.Statements {
+			adt, isADT := stmt.(*ast.ADTType)
+			if !isADT || adt.Name == nil || len(adt.TypeParams) != 0 {
+				continue
+			}
+			if len(adt.Variants) == 1 {
+				if literal, isRecord := adt.Variants[0].Literal.(*ast.RecordLiteral); isRecord {
+					lo.records[adt.Name.Value] = literal
+					continue
+				}
+			}
+			lo.adts[adt.Name.Value] = adt
+		}
+		lo.bindAggregateParams(spec)
 		width, _, ok := contractBits(spec.ReturnType)
 		if !ok {
 			t.Fatalf("%s: no contract width", c.program)

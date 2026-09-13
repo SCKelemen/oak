@@ -142,8 +142,8 @@ main: (): i32 = 0`, CodeKernelSubset},
 main: (): i32 = 0`, CodeKernelSubset},
 		"result": {`kernel k: (gid: u32, x: []f32): f32 = x[gid]
 main: (): i32 = 0`, CodeKernelSubset},
-		"kernel calls kernel": {`kernel a: (gid: u32, y: [*]f32): () = { y[gid] = 1.0 }
-kernel b: (gid: u32, y: [*]f32): () = { a(gid, y) }
+		"kernel calls kernel elsewhere": {`kernel a: (gid: u32, y: [*]f32): () = { y[gid] = 1.0 }
+kernel b: (gid: u32, y: [*]f32): () = { a(gid + 1, y) }
 main: (): i32 = 0`, CodeKernelSubset},
 		"unbounded loop": {`kernel k: (gid: u32, y: [*]f32): () = {
   i: u32 = 0

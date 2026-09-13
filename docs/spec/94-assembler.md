@@ -790,9 +790,19 @@ built by `dup` and `ext`, each half of the result read back with `umov` —
 and it found the first modeling bug before it shipped: a lane narrowed
 from a wider register must be masked explicitly (`narrowLane`), where the
 scalar `truncate` takes a parameter to be bounded by its declared width.
-Left for the next increments: `simd.store` (a write the straight-line
-model does not follow), float vectors, and grounding the lane functions
-in Arm's Sail text as the scalar primitives are
+Arm's own text is in place for the grounding: `spec/sail/arm_primitives.sail`
+carries the execute bodies of every vector instruction the backend emits
+(`aarch64_vector.sail`, with the register operands as parameters and the
+adaptations listed in the file), Sail generates their Lean, and
+`spec/sail/lean/Bridge.lean` proves the lane-level identities against the
+generated code — `Elem[]` reads the lane of the verifier's decomposition,
+`Ones` is the all-ones lane, `UnsignedSatQ` of a lane difference is
+`uqsub`, the `cmeq` test is `cmeq`, and the bitwise forms are the
+operators. Left for the next increments: the per-lane loops of the
+generated code as `List.zipWith` of the lane functions, `ext` as
+`Oak.Neon.ext`, Arm's recursive `Reduce` (whose termination Sail's Lean
+backend cannot discharge), `simd.store` (a write the straight-line model
+does not follow), and float vectors
 (`docs/notes/proof-chain-audit-2026-09.md`).
 
 ## 9. Native encoding, and the architectures to come
@@ -1581,6 +1591,58 @@ call's argument holding a call. What remains in `apply` is the variables
 that outnumber even the caller-saved homes, and the spills of homes dead
 at the call — both the liveness step: live ranges over the statement
 tree, a home spilled at a call only when its variable is read after it.
+**Twenty-third increment — liveness for the homes.** A pre-pass
+(`nativegen/homes.go`) numbers the body in the order the lowering emits it
+and records, per variable, its declaration and its last read, and per
+`while` loop the positions its body spans. A read counts at its own
+position — a call's argument is copied to a scratch register before the
+call — except an operand the lowering reads in place: a variable named
+directly under a binary operation, a comparison, or an element index is
+read by the instruction that runs after the operation's other operands,
+calls included, so it counts at that expression's end; a call counts after
+its arguments; an index assignment's value counts before its index, as
+`elementStore` evaluates them. A variable declared outside a loop and read
+anywhere inside it is live across every call in the loop. From that: a
+call saves a caller-saved home only when its variable is read afterward,
+and a declaration whose variable never crosses a call takes a caller-saved
+home before a callee-saved register (the crossing ones keep the
+callee-saved ones, which cost nothing at a call). Two versions of the
+numbering were wrong on the way and the seam checker refused both as a
+read after `bl` — a read numbered at the same position as the call it
+followed, and an index assignment numbered target-first while the
+lowering evaluates the value first — which is the checker doing what the
+chapter promised for the compiler's own output. This pass complements
+the last-use release within a statement list (`liveness.go`); the two
+are conservative in the same direction. `apply`'s loop: 234 frame
+accesses to 226; 196 functions proven, rows unchanged; the timed runs
+fell within the noise of a machine shared with other sessions' test
+suites, so the structural count is the measurement here. Executed (`TestE2ENativeCallLiveness`): an in-place operand after
+a call, an argument read before its call, a loop-carried variable, an
+index assignment whose value calls, and a variable dead before the calls
+that follow — natively against the C backend and the portable
+realization.
+**Twenty-fourth increment — the scratch registers the expressions never
+reach.** The generator reserved x9–x15 for expression temporaries whatever
+the body needed, and the four caller-saved homes left `apply` with most
+of its variables in slots. A body is now lowered twice when its first
+pass had to give a scalar variable a caller-saved home or a slot: the
+first pass measures the most integer temporaries any expression held at
+once (an overflow into x16, x17 or a callee-saved register counts as all
+of them), and the second withholds the scratch registers above that peak
+from the temporary pool, from x15 down, and hands them to the variables
+as caller-saved homes — saved around calls like the others, already among
+the clobbers. A second pass the lowering refuses (a variable in a
+register needs no temporary a slot did, so it should not) keeps the
+first's code. `apply`'s loop went from 226 frame accesses to 132.
+Measured with the machine still shared with other sessions' suites (a
+load average near twenty, so the ratios of interleaved runs are the
+measurement, not the seconds): against the previous build `mono.oak` ran
+10 percent faster, `extents.oak` 7, `effects.oak` 9, `lattice.oak` and
+`floats.oak` within noise; and against the C build in the same runs the
+native prover stands at 1.25–1.4 times its time (`mono.oak` 12.6 s to
+14.0 s against 9.7 s to 10.7 s, `extents.oak` 8.4 s against 6.3 s,
+`effects.oak` 1.85 s against 1.5 s), down from 2–5 times when this track
+began.
 Next increments: the fallback reasons above in the order of their counts,
 so the prover lowers whole; then the verifier past `bl` and unit results —
 calls by inlining or by the callee's proven contract, and effects through
@@ -2397,6 +2459,56 @@ script written, awaiting an export that compiles (the export from
 sail-riscv master fails at the same place: the generated `Defs.lean`
 declares a structure over a type not yet in scope, a Sail Lean-backend
 matter).
+
+**Statement conditionals and `i32` indices (2026-09-13).** Three statement
+shapes the standard library uses stayed with the C backend on both lanes:
+a conditional with no false arm in statement position (`c ? { … }`), a
+chained conditional (`a ? { … } | b ? { … } | { … }`) as a statement, and
+on RV64 an `i32` element index. The lanes lower the first two as the
+branch structure they are (`statementConditional`, `lowerArm`: an absent
+arm falls through, a chained arm is the next test), and the verifier's
+lowering takes the same shapes (`asm/verify.go`, `statementConditional`).
+An `i32` index is kept in its canonical sign-extended form and guarded as
+an unsigned quantity: a negative index is a huge unsigned value the guard
+traps, exactly as the C backend's cast does. The RV64 prologue rule for
+functions that park span parameters in callee-saved registers without
+frame variables is fixed en route (the saves need a frame). Pinned by
+`compiler/e2e_native_statement_shapes_test.go`.
+
+**Constant tables (2026-09-13).** A top-level array of fixed-width
+integers with a literal initializer that no statement writes — no
+assignment, no element assignment, no mutable borrow — is a constant
+table (`nativegen.GlobalArrayOf`, `compiler.nativeGlobalArrays`). Its
+bytes are a data symbol of the object (`asm.DataSymbol`, `data_<name>`
+under the backend's C symbol prefix) placed in a read-only data section
+after the text: `.rodata` in ELF, `__TEXT,__const` in Mach-O, and in the
+executable the tail of the one loadable segment. A body takes the table's
+address with one pseudo-instruction per lane — `adrl xR, sym` (`adrp` +
+`add`, relocation kind `adrl21`: `R_AARCH64_ADR_PREL_PG_HI21` and
+`ADD_ABS_LO12_NC`, or the Mach-O `PAGE21`/`PAGEOFF12` pair) and `la rd,
+sym` (`auipc` + `addi`, kind `riscv_pcrel`: `R_RISCV_PCREL_HI20` and
+`PCREL_LO12_I` against a local label) — and reads elements through it as
+it reads a record's array: a literal index inside the table is a plain
+offset, any other goes under the constant guard `cmp wI, #N; b.hs trap`
+(a bound past the compare immediate is materialized in a register first,
+which the checker reads as the same constant guard) or `li; bgeu`. The
+checkers know the address as a read-only region of the table's size
+(`asm.Function.Tables`): an element region derives from it as from a
+frame array (`elementRegion`, `deriveTableRegion`), a store through it
+is refused, a symbol the program does not declare is refused. A view of
+a table (`view(&T)`) is a span whose base is the table's address and
+whose length is its element count; `span(&T)` is refused, the table
+being read-only. The verifier does not yet model a table read: a body
+with `adrl`/`la` is trusted with that reason. A constant scalar global is
+folded into every body that reads it, so a natively linked program admits
+both kinds of global (`allNative`). On the stdlib-bearing program the
+tables lowered every body that indexed a global on both lanes with no
+checker refusal, and `oak build -link oak` moved from refusing the first
+global to naming the bodies still with the C backend (36 on AArch64, 120
+on RV64). Pinned: `compiler/e2e_native_tables_test.go` (both lanes
+native; the C build agrees; the freestanding executables carry the bytes
+and run under QEMU), `asm/isa_test.go` (the `adrl` sample), the object
+and executable writers' tests.
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the

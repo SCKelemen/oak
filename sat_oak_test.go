@@ -139,8 +139,9 @@ func TestOakSATFixtures(t *testing.T) {
 		t.Fatalf("empty clause: want unsatisfiable, got %+v %v", outcome, err)
 	}
 	checkBoth(t, "empty clause", empty, outcome.Certificate)
-	// Pigeonhole 4 into 3 and 6 into 5.
-	for _, n := range []int{3, 5} {
+	// Pigeonhole 4 into 3 and 7 into 6; the second learns past the
+	// reduction limit and its certificate carries a deletion line.
+	for _, n := range []int{3, 6} {
 		variables, clauses := pigeonhole(n)
 		cnf := cnfOf(variables, clauses)
 		outcome, err := runOakSAT(cnf)
@@ -151,6 +152,9 @@ func TestOakSATFixtures(t *testing.T) {
 			t.Fatalf("pigeonhole %d: want unsatisfiable, got %+v", n, outcome)
 		}
 		checkBoth(t, fmt.Sprintf("pigeonhole %d", n), cnf, outcome.Certificate)
+		if n == 6 && !strings.Contains(outcome.Certificate, " d ") {
+			t.Fatalf("pigeonhole %d: the run learned enough to reduce, but the certificate has no deletion line", n)
+		}
 	}
 }
 

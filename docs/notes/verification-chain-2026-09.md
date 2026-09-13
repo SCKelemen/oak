@@ -177,6 +177,23 @@ or the verifier, not in the program:
    `Oak.Assembler` frame laws are the model for stating them in Lean.
 8. **amd64.** Only through a lane. Until then, amd64 binaries are the C
    compiler's, checked by the differential corpus alone.
+9. **A real program all the way down.** `oak build -link oak` links a
+   program from the Oak assembler alone, so every body and every global
+   must be native. Measured on the stdlib-bearing program
+   (2026-09-13): the first refusal was its first global. **Closed for
+   globals (2026-09-13):** constant tables live in the object's
+   read-only data and are addressed by `adrl`/`la` under both checkers
+   (`94-assembler.md` §9, "Constant tables"); constant scalars are
+   folded; statement-position and chained conditionals and `i32`
+   indices lower natively ("Statement conditionals and `i32` indices").
+   The link now names what is left: 36 bodies on AArch64 (`is_valid_utf8`
+   in a bare build, more than eight parameters or span parameters past
+   the argument registers, span values chosen by a conditional, a record
+   local without an initializer) and 120 on RV64 (local spans and views,
+   span-of-record parameters, expression depth past the scratch
+   registers, calls through a value, floating-point record results).
+   The verifier trusts a body that reads a table; modeling the read as a
+   load from the symbol's bytes is the next proof step for it.
 
 ## 5. How to reproduce the tally
 
