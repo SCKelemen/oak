@@ -1197,9 +1197,18 @@ func (c *checker) instruction(instr Instruction) bool {
 		}
 		return false
 	}
+	// A movk inserts a halfword into a constant the register already holds:
+	// the fact survives the write with the halfword replaced (a record
+	// stride of 65 536 bytes or more is spelled movz then movk).
+	priorConst, hadConst := c.constFacts[dest.Num]
 	c.write(instr, dest)
 	c.deriveSpan(instr, dest, regs)
 	c.deriveElement(instr, dest)
+	if instr.Mnemonic == "movk" && hadConst && dest.Class == ClassW && len(instr.Operands) == 2 {
+		if imm, isImm := instr.Operands[1].(Immediate); isImm && imm.Value >= 0 && imm.Value <= 0xffff && imm.Shift%16 == 0 && imm.Shift < 32 {
+			c.constFacts[dest.Num] = (priorConst &^ (0xffff << uint(imm.Shift))) | (imm.Value << uint(imm.Shift))
+		}
+	}
 	if instr.Mnemonic == "mov" && len(regs) == 2 && len(instr.Operands) == 2 {
 		if _, isReg := instr.Operands[1].(Register); isReg {
 			c.aliasSpan(dest, regs[1])
@@ -1480,8 +1489,8 @@ func (c *checker) deriveElement(instr Instruction, dest Register) {
 		if dest.Class != ClassW || len(instr.Operands) != 2 {
 			return
 		}
-		if imm, isImm := instr.Operands[1].(Immediate); isImm && imm.Shift == 0 && imm.Value >= 0 {
-			c.constFacts[dest.Num] = imm.Value
+		if imm, isImm := instr.Operands[1].(Immediate); isImm && imm.Value >= 0 && imm.Shift >= 0 && imm.Shift < 32 && imm.Shift%16 == 0 {
+			c.constFacts[dest.Num] = imm.Value << uint(imm.Shift)
 		}
 	case "add":
 		if dest.Class != ClassX || len(instr.Operands) != 3 {
@@ -1498,8 +1507,12 @@ func (c *checker) deriveElement(instr Instruction, dest Register) {
 			}
 			c.elementRegion(dest, base, tail.Reg.Num, int64(1)<<uint(tail.Amount))
 		case Immediate:
-			if extent, isRegion := c.regions[base.Num]; isRegion && tail.Shift == 0 && tail.Value >= 0 && tail.Value <= extent.size {
-				c.regions[dest.Num] = region{size: extent.size - tail.Value, writable: extent.writable}
+			// `add xD, xB, #imm` or `#imm, lsl #12` (a field past 4095
+			// bytes into a large element) narrows the region by the value.
+			if extent, isRegion := c.regions[base.Num]; isRegion && (tail.Shift == 0 || tail.Shift == 12) && tail.Value >= 0 {
+				if value := tail.Value << uint(tail.Shift); value <= extent.size {
+					c.regions[dest.Num] = region{size: extent.size - value, writable: extent.writable}
+				}
 			}
 		}
 	case "umaddl":

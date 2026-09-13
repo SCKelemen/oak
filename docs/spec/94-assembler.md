@@ -1958,6 +1958,13 @@ verifier as the typed literal `T(init)` on a copy of the body, so
 `page_size` and `entries` cost nothing and leave nothing to the C backend;
 the emitted C keeps the constant (`compiler/native_bodies.go`).
 
+**Large elements.** A span or array element wider than 65 536 bytes is
+addressed with its stride built as `movz` then `movk` before the `umaddl`,
+and a field past 4 095 bytes into it through `add xF, xE, #hi, lsl #12`
+and a small remainder in the operand; the checker keeps the stride's
+constant fact through the `movk` and narrows the element region through
+the shifted add (the OS pilot's N2, a 409 600-byte regime).
+
 **Atomics.** The builtins of `65-machine-memory.md` lower on the AArch64
 lane when the cell is reached through a writable span (§7a there): the
 element address as a region, `ldar`/`stlr` and their narrow forms,
