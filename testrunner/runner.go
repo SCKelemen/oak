@@ -235,6 +235,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	for i := range packages {
 		packages[i].Profile = cfg.Profile
 		packages[i].Target = cfg.target
+		packages[i].CPU = cfg.CPU
 		var selected []Test
 		for _, test := range packages[i].Tests {
 			if !run.MatchString(test.Name) || cfg.Fuzz != "" && (test.Kind != "fuzz" || !fuzz.MatchString(test.Name)) || cfg.Sim != "" && (test.Kind != "simulation" || !sim.MatchString(test.Name)) {

@@ -281,9 +281,16 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       (P10 rule 9, MISRA 18.x, Rust) — Oak: `92-ffi.md`, `96-aarch64-mmio.md`.
 - [ ] **Handles over pointers, with generations.** For pooled objects, is
       the reference a typed index plus a generation counter so a stale
-      handle is detected rather than dereferencing freed storage?
-      (DOD, TB, Andre Weissflog's handles) — Oak:
-      `60-effects-allocation.md` §8, `standard-library-design.md` §6.
+      handle is detected rather than dereferencing freed storage? When a
+      table entry is freed, is every *secondary* copy of its identity —
+      a durable or shadow copy, its name bytes — cleared or
+      generation-tagged, and does every membership test consult the
+      existence flag rather than the identity bytes? A two-copy
+      (visible/durable) table hides this because the durable copy is
+      meant to outlive the visible one. (DOD, TB, Andre Weissflog's
+      handles; io-port pass F1) — Oak: `60-effects-allocation.md` §8,
+      `standard-library-design.md` §6; `iosim_alloc` clears the durable
+      name and `fsyncdir` consults `exists_durable`.
 - [ ] **Capacity is declared, exhaustion is a value.** Does every
       fixed-capacity container declare its capacity and return a result on
       exhaustion rather than growing or trapping? Is the capacity a
@@ -351,8 +358,11 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       limit mechanical, with a ratchet so a small function cannot grow
       past it while legacy exceptions shrink? Do long functions keep the
       branching in the parent and pure leaves below ("push ifs up, fors
-      down")? (P10 rule 4, TB `tidy.zig` red zone 70–73) — Oak: not
-      stated as a rule; a strict-profile lint is a candidate.
+      down")? Measure from the declaration line to its closing brace,
+      not from one declaration to the next: doc comments precede
+      declarations. (P10 rule 4, TB `tidy.zig` red zone 70–73) — Oak: not
+      stated as a rule; a strict-profile lint is a candidate;
+      `iosim_execute` (73) and `ionative_execute` (87) are over it.
 - [ ] **Assertion density.** Does every function assert its arguments,
       results, and the invariants it relies on — at least two per
       function on average (TB `replica.zig`: about seven) — one condition
@@ -593,9 +603,21 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       kinds are enabled — from the seed, with some kinds disabled entirely
       per run, so no fixed mask hides an interaction? (TB `vopr.zig`
       `options_swarm`, `fuzz.random_enum_weights`; Regehr's swarm
-      testing) — Oak: `test_swarm_mask` (`110-testing.md` "Choice tapes")
-      draws the enabled kinds from the tape; the WAL scenario uses it;
-      the fault *rate* is still `sim_storage.oak`'s fixed one in eight.
+      testing) Are configuration draws and operation draws taken through
+      one cursor, or from disjoint tape ranges, so the enabled-kinds mask
+      is independent of the first fault roll? — Oak: `test_swarm_mask`
+      (`110-testing.md` "Choice tapes") draws the enabled kinds from the
+      tape; the WAL scenario uses it and hands the device the tape *after*
+      the draw; the fault *rate* is still `sim_storage.oak`'s fixed one
+      in eight.
+- [ ] **The simulation grants exactly the contract, never more.** Does the
+      simulated realization ever provide a guarantee the contract does
+      not — a device-wide `fsync`, ordered completions, whole writes,
+      unlimited names — so that a program passes in simulation and fails
+      natively? Fault injection asks whether faults are injected; this
+      asks whether the fault-free behavior is no stronger than real.
+      (io-port pass F15, F8) — Oak: `120-io.md` §4 per-file `fsync`; the
+      simulated `pwrite` still never completes short — stated in §3.
 - [ ] **Heavy-tailed simulated latency and bursty ids.** Are simulated
       delays minimum plus exponential(mean), and ids drawn bimodally
       (hot/cold) or Zipfian so caches overflow and collide? (TB
@@ -682,8 +704,12 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
       generated inputs; check per module.
 - [ ] **Negative tests.** Does every validator have tests that must
       reject, with the exact error and precedence asserted, not just tests
-      that must accept? (langsec, simdjson) — Oak: `71-codecs.md` error
-      precedence (`InvalidEncoding` over `InvalidSyntax`).
+      that must accept? For every sentence of the form "the realization
+      refuses E when …", which differential test row observes E in *each*
+      realization? A refusal that exists only in prose is untested by
+      construction. (langsec, simdjson; io-port pass F2, F18) — Oak:
+      `71-codecs.md` error precedence (`InvalidEncoding` over
+      `InvalidSyntax`); `120-io.md` §2 "Errors" with one tag per code.
 - [ ] **Roundtrip and algebraic laws.** Are encode∘decode = id,
       decode∘encode = canonicalize, sort idempotence and permutation
       preservation, hash determinism, and ordering laws stated as
@@ -814,12 +840,30 @@ simdjson, simdutf, Hyperscan, data-oriented design (DOD), langsec.
 - [ ] **Canonical encodings only.** Are non-canonical forms (overlong
       UTF-8, non-minimal varints, leading zeros where forbidden, duplicate
       keys) rejected rather than normalized silently, so two encodings of
-      one value cannot bypass a check? (WHATWG, RFC 3629, Protobuf
-      pitfalls) — Oak: `sam/varint-canonical`, `70-strings.md`.
+      one value cannot bypass a check? Path grammars too: `.`, `..`, empty
+      components, leading or trailing separators, an interior NUL — two
+      spellings of one name, or one spelling of two names. (WHATWG, RFC
+      3629, Protobuf pitfalls; io-port pass F4, F6) — Oak:
+      `sam/varint-canonical`, `70-strings.md`; `120-io.md` §2 "Paths" and
+      "Directories".
+- [ ] **Compare the value, not a scalar derived from it.** Where a rule is
+      stated over values (paths, keys, parents), does the code compare the
+      values, or a length, hash, or count derived from them? A
+      `parent_len(a) == parent_len(b)` reads like a parent comparison and
+      is not one. (io-port pass F2) — Oak: `iosim_same_parent` compares
+      bytes.
 - [ ] **Error precedence is specified.** When an input is wrong in two
       ways, which error is reported? Is that order stated, tested, and
-      preserved by every fast path? (simdjson, codec note) — Oak:
-      `71-codecs.md` §4a.
+      preserved by every fast path — including a request that can be
+      wrong in a slot, a window, a path, and an offset at once? (simdjson,
+      codec note; io-port pass F9) — Oak: `71-codecs.md` §4a; `120-io.md`
+      §2 "Errors" for the port, both realizations in that order.
+- [ ] **Partial results are outcomes of the port, not of the host.** For
+      each host call whose result may be partial (read, write, readdir,
+      send), is "partial" a stated completion with a stated program
+      obligation, or does "no retry" push it onto the caller unnamed?
+      (io-port pass F8) — Oak: `120-io.md` §3 "No hidden work" states the
+      short `pwrite`.
 - [ ] **Total functions on untrusted input.** Does any input, however
       adversarial, cause a trap rather than a result in a parser? A trap on
       external input is a denial-of-service bug; a trap on an internal
