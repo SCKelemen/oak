@@ -1226,6 +1226,23 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
+	// The vector helpers the body calls are expanded first (nativegen/inline.go);
+	// the lowering sees the expanded body, the verifier the original. An
+	// expansion the lowering refuses falls back to the body as written.
+	if body := inlineBody(fn, functions); body != fn.Body {
+		expanded := *fn
+		expanded.Body = body
+		if out, err := compileArm64Body(&expanded, functions, records, adts, tc, elide); err == nil {
+			return out, nil
+		} else if _, outside := err.(Unsupported); !outside {
+			return nil, err
+		}
+	}
+	return compileArm64Body(fn, functions, records, adts, tc, elide)
+}
+
+// compileArm64Body lowers one function body as given.
+func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, tc *typechecker.TypeChecker, elide bool) (*asm.Function, error) {
 	if len(fn.Parameters) > 8 {
 		return nil, unsupported("more than eight parameters")
 	}
