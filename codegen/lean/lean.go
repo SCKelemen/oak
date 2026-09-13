@@ -44,7 +44,7 @@ func Emit(program *ast.Program, tc *typechecker.TypeChecker, namespace string, n
 	}
 	em.collectTypes(program)
 	for _, stmt := range program.Statements {
-		if decl, ok := stmt.(*ast.VariableDeclaration); ok && decl.Name != nil && decl.Value != nil {
+		if decl, ok := stmt.(*ast.VariableDeclaration); ok && decl.Name != nil && (decl.Value != nil || decl.Type != nil) {
 			em.globals[decl.Name.Value] = decl
 			em.globalOrder = append(em.globalOrder, decl.Name.Value)
 		}
@@ -111,6 +111,7 @@ func Emit(program *ast.Program, tc *typechecker.TypeChecker, namespace string, n
 			}
 		}
 	}
+	em.analyzeState(candidates)
 	ordered, err := em.dependencyOrder(functionOrder)
 	if err != nil {
 		return "", err
@@ -204,17 +205,26 @@ func (em *emitter) emitGlobals() (string, error) {
 				continue
 			}
 			decl := em.globals[name]
-			var typ string
-			var err error
-			if decl.Type != nil {
-				typ, err = em.leanType(decl.Type)
-			} else if declared := em.env.CheckedDeclarationType(decl); declared != nil {
-				typ, err = em.leanTypeOf(declared)
-			} else {
-				err = fmt.Errorf("global %s has no type", name)
-			}
+			typ, err := em.globalLeanType(name)
 			if err != nil {
 				return "", fmt.Errorf("lean: %w", err)
+			}
+			defName := ident(name)
+			doc := ""
+			if em.mutable[name] {
+				// Package state: the functions that touch it take it as a
+				// parameter and return it; this is the value it starts at.
+				defName = ident(name) + "_init"
+				doc = fmt.Sprintf("/-- `%s` is package state, threaded through the functions that touch it (docs/spec/95-extraction.md section 3); this is its initial value. -/\n", ident(name))
+			}
+			if decl.Value == nil {
+				zero, err := em.zeroTerm(decl.Type, typ)
+				if err != nil {
+					return "", fmt.Errorf("lean: global %s: %w", name, err)
+				}
+				rendered[name] = fmt.Sprintf("%sdef %s : %s := %s\n\n", doc, defName, typ, zero)
+				progressed = true
+				continue
 			}
 			if _, isTargetConstant := typechecker.TargetConstantCall(decl.Value); isTargetConstant {
 				// A target constant (docs/spec/92-ffi.md section 2.11) is a
@@ -238,7 +248,7 @@ func (em *emitter) emitGlobals() (string, error) {
 			if len(hoisted) != 0 {
 				return "", fmt.Errorf("lean: global %s: an initializer that calls a function is outside the extracted subset", name)
 			}
-			rendered[name] = fmt.Sprintf("def %s : %s := %s\n\n", ident(name), typ, term)
+			rendered[name] = fmt.Sprintf("%sdef %s : %s := %s\n\n", doc, defName, typ, term)
 			progressed = true
 		}
 		if !progressed {
@@ -271,10 +281,19 @@ type emitter struct {
 	// leanNames maps a Lean type name back to the ADT it renders.
 	leanNames map[string]string
 	functions map[string]*ast.FunctionStatement
-	// globals holds the program's initialized top-level bindings; the ones
-	// the extracted functions read are emitted as Lean definitions.
+	// globals holds the program's top-level bindings; the ones the
+	// extracted functions read are emitted as Lean definitions, and the ones
+	// some function writes — package state (docs/spec/95-extraction.md
+	// section 3) — are threaded through the functions that touch them.
 	globals     map[string]*ast.VariableDeclaration
 	globalOrder []string
+	// mutable names the globals some function assigns; touched and written
+	// list, per extracted function key, the mutable globals it reads or
+	// writes and the ones it writes, transitively through its callees, in
+	// declaration order.
+	mutable     map[string]bool
+	touched     map[string][]string
+	written     map[string][]string
 	usedGlobals map[string]bool
 	// usesFloatOps records a call to fma, copysign, or round_even, whose
 	// bit-exact carriers live in Oak.FloatOps rather than in Lean's core.
@@ -735,6 +754,23 @@ func (em *emitter) emitFunction(fn *ast.FunctionStatement) (string, error) {
 		typ, _ := em.scope.lookup(fn.Parameters[i].Name.Value)
 		resultTypes = append(resultTypes, typ)
 		spanNames = append(spanNames, ident(fn.Parameters[i].Name.Value))
+	}
+	// Package state (docs/spec/95-extraction.md section 3): every mutable
+	// global the function touches is a parameter, and every one it writes
+	// comes back in the result, after the threaded spans.
+	key := functionKey(fn)
+	for _, g := range em.touched[key] {
+		typ, err := em.globalLeanType(g)
+		if err != nil {
+			return "", fmt.Errorf("lean: %s: package state %s: %w", fn.Name.Value, g, err)
+		}
+		em.scope.declare(g, typ)
+		params = append(params, fmt.Sprintf("(%s : %s)", ident(g), typ))
+	}
+	for _, g := range em.written[key] {
+		typ, _ := em.scope.lookup(g)
+		resultTypes = append(resultTypes, typ)
+		spanNames = append(spanNames, ident(g))
 	}
 
 	body := newScope(em.scope)
@@ -1492,6 +1528,12 @@ func (em *emitter) referencedOuter(bodies ...ast.Expression) []string {
 			if id, ok := e.(*ast.Identifier); ok {
 				mentioned[id.Value] = true
 			}
+			if call, ok := e.(*ast.InvocationExpression); ok {
+				touched, _ := em.callState(call)
+				for _, g := range touched {
+					mentioned[g] = true
+				}
+			}
 		})
 		walkStatements(body, func(stmt ast.Statement) {
 			switch s := stmt.(type) {
@@ -1540,6 +1582,8 @@ func rootIdentifier(expr ast.Expression) string {
 // such writes from loop and arm write sets (oak #186).
 func (em *emitter) callWrites(call *ast.InvocationExpression) []string {
 	owners := spanArguments(call)
+	_, state := em.callState(call)
+	owners = append(owners, state...)
 	callee, ok := call.Function.(*ast.Identifier)
 	if !ok {
 		return owners
@@ -2009,7 +2053,7 @@ func (em *emitter) call(call *ast.InvocationExpression, want string) (string, er
 		if !isDot || !access.Dot || !known {
 			return "", fmt.Errorf("method call %s is outside the extracted subset", call.Function.String())
 		}
-		return em.extractedCall(em.defName(fn), functionParams(fn), append([]ast.Expression{access.Left}, call.Arguments...))
+		return em.extractedCall(call.ResolvedMethod, em.defName(fn), functionParams(fn), append([]ast.Expression{access.Left}, call.Arguments...))
 	}
 	callee, ok := call.Function.(*ast.Identifier)
 	if !ok {
@@ -2212,13 +2256,13 @@ func (em *emitter) call(call *ast.InvocationExpression, want string) (string, er
 	if !known {
 		return "", fmt.Errorf("call to %s is outside the extracted subset", callee.Value)
 	}
-	return em.extractedCall(ident(callee.Value), fn.Parameters, call.Arguments)
+	return em.extractedCall(callee.Value, ident(callee.Value), fn.Parameters, call.Arguments)
 }
 
 // extractedCall applies an extracted definition to its arguments, bound
 // through a hoisted `let r ← name args fuel`; a span argument rebinds its
 // owner to the returned value.
-func (em *emitter) extractedCall(name string, params []*ast.FunctionParameter, arguments []ast.Expression) (string, error) {
+func (em *emitter) extractedCall(key, name string, params []*ast.FunctionParameter, arguments []ast.Expression) (string, error) {
 	if len(arguments) != len(params) {
 		return "", fmt.Errorf("call to %s passes %d arguments for %d parameters", name, len(arguments), len(params))
 	}
@@ -2247,6 +2291,17 @@ func (em *emitter) extractedCall(name string, params []*ast.FunctionParameter, a
 			rebinds = append(rebinds, ident(owner))
 		}
 	}
+	// The callee's package state: passed from the caller's bindings and
+	// rebound from the result (docs/spec/95-extraction.md section 3).
+	for _, g := range em.touched[key] {
+		if _, inScope := em.scope.lookup(g); !inScope {
+			return "", fmt.Errorf("call to %s reaches the package state %s outside its scope", name, g)
+		}
+		args = append(args, ident(g))
+	}
+	for _, g := range em.written[key] {
+		rebinds = append(rebinds, ident(g))
+	}
 	em.temps++
 	result := fmt.Sprintf("r%d", em.temps)
 	if em.hoisted == nil {
@@ -2254,6 +2309,146 @@ func (em *emitter) extractedCall(name string, params []*ast.FunctionParameter, a
 	}
 	*em.hoisted = append(*em.hoisted, fmt.Sprintf("%slet %s ← %s %s fuel", em.indent, tuple(append([]string{result}, rebinds...)), name, strings.Join(args, " ")))
 	return result, nil
+}
+
+// globalLeanType is the Lean type of a top-level binding.
+func (em *emitter) globalLeanType(name string) (string, error) {
+	decl := em.globals[name]
+	if decl.Type != nil {
+		return em.leanType(decl.Type)
+	}
+	if declared := em.env.CheckedDeclarationType(decl); declared != nil {
+		return em.leanTypeOf(declared)
+	}
+	return "", fmt.Errorf("global %s has no type", name)
+}
+
+// analyzeState finds the package state (docs/spec/95-extraction.md section
+// 3): the globals some function assigns, and per extracted function the
+// ones it reads or writes, transitively through its callees. A name the
+// function declares itself shadows the global.
+func (em *emitter) analyzeState(candidates map[string]*ast.FunctionStatement) {
+	em.mutable = map[string]bool{}
+	em.touched = map[string][]string{}
+	em.written = map[string][]string{}
+	type direct struct{ reads, writes map[string]bool }
+	directs := map[string]direct{}
+	scan := func(fn *ast.FunctionStatement) direct {
+		locals := map[string]bool{}
+		for _, p := range functionParams(fn) {
+			locals[p.Name.Value] = true
+		}
+		body := fn.Body
+		walkStatements(body, func(stmt ast.Statement) {
+			if decl, ok := stmt.(*ast.VariableDeclaration); ok && decl.Name != nil {
+				locals[decl.Name.Value] = true
+			}
+		})
+		d := direct{reads: map[string]bool{}, writes: map[string]bool{}}
+		isGlobal := func(name string) bool {
+			_, global := em.globals[name]
+			return global && !locals[name]
+		}
+		walkStatements(body, func(stmt ast.Statement) {
+			switch st := stmt.(type) {
+			case *ast.AssignmentStatement:
+				if isGlobal(st.Name.Value) {
+					d.writes[st.Name.Value] = true
+				}
+			case *ast.IndexAssignmentStatement:
+				if root := rootIdentifier(st.Target); root != "" && isGlobal(root) {
+					d.writes[root] = true
+				}
+			}
+		})
+		walkExpressions(fn.Body, func(e ast.Expression) {
+			switch x := e.(type) {
+			case *ast.Identifier:
+				if isGlobal(x.Value) {
+					d.reads[x.Value] = true
+				}
+			case *ast.InvocationExpression:
+				// span(&G) hands the global to a writer.
+				if callee, ok := x.Function.(*ast.Identifier); ok && callee.Value == "span" && len(x.Arguments) == 1 {
+					if owner := addressOf(x.Arguments[0]); owner != "" && isGlobal(owner) {
+						d.writes[owner] = true
+					}
+				}
+			}
+		})
+		return d
+	}
+	for key, fn := range candidates {
+		if fn.Body == nil {
+			continue
+		}
+		d := scan(fn)
+		directs[key] = d
+		for g := range d.writes {
+			em.mutable[g] = true
+		}
+	}
+	// Transitive closure over the extracted functions' call graphs: a
+	// fixed point, since the sets only grow.
+	touched := map[string]map[string]bool{}
+	written := map[string]map[string]bool{}
+	for key := range em.functions {
+		touched[key], written[key] = map[string]bool{}, map[string]bool{}
+		for g := range directs[key].reads {
+			if em.mutable[g] {
+				touched[key][g] = true
+			}
+		}
+		for g := range directs[key].writes {
+			touched[key][g], written[key][g] = true, true
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		for key, fn := range em.functions {
+			for _, callee := range em.callees(fn) {
+				if _, known := em.functions[callee]; !known {
+					continue
+				}
+				for g := range touched[callee] {
+					if !touched[key][g] {
+						touched[key][g], changed = true, true
+					}
+				}
+				for g := range written[callee] {
+					if !written[key][g] {
+						written[key][g], changed = true, true
+					}
+				}
+			}
+		}
+	}
+	for key := range em.functions {
+		for _, g := range em.globalOrder {
+			if touched[key][g] {
+				em.touched[key] = append(em.touched[key], g)
+				em.usedGlobals[g] = true
+			}
+			if written[key][g] {
+				em.written[key] = append(em.written[key], g)
+			}
+		}
+	}
+}
+
+// callState lists the package state a call touches and writes, for the
+// loop analyses: a loop body that calls a state-touching function threads
+// that state like a variable it mentions.
+func (em *emitter) callState(call *ast.InvocationExpression) (touched, written []string) {
+	key := call.ResolvedMethod
+	if key == "" {
+		callee, ok := call.Function.(*ast.Identifier)
+		if !ok {
+			return nil, nil
+		}
+		key = callee.Value
+	}
+	return em.touched[key], em.written[key]
 }
 
 // argOperand unwraps span(&x) / view(&x) to the &x operand.
@@ -2682,4 +2877,29 @@ func (em *emitter) floatIntrinsic(name string, call *ast.InvocationExpression, w
 		return "", err
 	}
 	return fmt.Sprintf("(%s.%s %s)", width, leanName, inner), nil
+}
+
+// zeroTerm is the Lean value of a zero-initialized global: 0, false, or a
+// fixed array of zeros; anything else fails closed.
+func (em *emitter) zeroTerm(typeExpr ast.Expression, typ string) (string, error) {
+	switch typ {
+	case "Bool":
+		return "false", nil
+	case "UInt8", "UInt16", "UInt32", "UInt64", "Int8", "Int16", "Int32", "Int64":
+		return "0", nil
+	}
+	if index, isArray := typeExpr.(*ast.IndexExpression); isArray && !index.Dot {
+		if length, isLiteral := index.Index.(*ast.IntegerLiteral); isLiteral {
+			element, err := em.leanType(index.Left)
+			if err != nil {
+				return "", err
+			}
+			zero, err := em.zeroTerm(index.Left, element)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("(Array.replicate %d %s)", length.Value, zero), nil
+		}
+	}
+	return "", fmt.Errorf("a zero-initialized global of type %s is outside the extracted subset", typ)
 }

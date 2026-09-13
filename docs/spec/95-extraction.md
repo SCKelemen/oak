@@ -139,6 +139,22 @@ canonically. Intrinsics still without an exact carrier — `trunc`, `min`/`max`
 — the `checked` rows into integers, and the storage formats
 `f16`/`bf16`/`f8` fail closed rather than approximate.
 
+**Sixth: package state is threaded.** A top-level binding some function
+assigns — a counter, a flat arena's next index, a table written by
+`set_at` — is **package state**, and a function that reads or writes it,
+directly or through any callee, takes it as a parameter and, when it
+writes it, returns the new value in its result tuple after the threaded
+spans: `def bump (counter : UInt32) (fuel : Nat) : Option (Unit ×
+UInt32)`, and a caller `let (r1, counter) ← bump counter fuel` rebinds
+it. The initializer is rendered as `NAME_init`, the value the state starts
+at; a zero-initialized state starts at `0`, `false`, or an array of zeros.
+This is the same shape a writable span already has (section 2), so loops
+that touch state thread it as they thread any variable, and a theorem
+about a stateful function quantifies over the state it is given — the
+ml pilot's F25: the packages whose state lives in flat arenas extract, and
+the oracle's `view` package reaches Lean without being rewritten as pure
+functions over parameters. A read-only global stays a constant.
+
 **Fourth: a target constant is uninterpreted.** A top-level binding
 `NAME: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")` (`92-ffi.md` §2.11)
 holds a value the target's C headers define and Oak never learns. The
@@ -197,8 +213,10 @@ functions it reaches. Everything else — strings in encodings other than
 UTF-8, generic templates
 themselves, mutual recursion, extern functions, closures, the storage
 float formats and the intrinsics named in section 3, the `checked`
-float rows, SIMD, FFI (extern calls, `c.fn_at`, `c.msg_send`), assignment to a global — is an
-error naming the construct. Nothing is approximated.
+float rows, SIMD, FFI (extern calls, `c.fn_at`, `c.msg_send`) — is an
+error naming the construct. Nothing is approximated. Assignment to a
+global is inside the subset: the global is package state, threaded
+through the functions that touch it (section 3).
 
 A function named as a `dispatch` realization (`93-simd.md` §6) is not
 part of the meaning — the dispatched function's body is — so a body-less
