@@ -204,6 +204,43 @@ struct in, NEON values through, the struct back), so C callers and
 natively lowered callers agree, and a native function that passes vectors
 to a callee the C backend realizes is itself left to the C backend.
 
+**The RV64 lane (landed 2026-09-14; `nativegen/rv64_simd.go`).** The same
+integer vectors lower on the RV64 lane when the processor carries the
+vector extension (`-cpu ...+v`, `94-assembler.md` §9): a fixed vector is
+one LMUL=1 register whatever the VLEN (VLEN ≥ 128 on every processor with
+V, so the same code runs at 128 and 256), under a configuration the
+lowering sets itself — `vsetivli zero, <lanes>, e<bits>, m1, ta, ma`
+before every vector instruction group, since the checker's configuration
+is straight-line state that labels and calls forget. `v8`–`v15` are the
+operand stack, `v0` the mask, `v1`/`v2` the helpers of the multi-instruction
+operations; every vector register is caller-saved under the psABI, so a
+vector local lives in a sixteen-byte frame slot and a live scratch is
+spilled to one around a call (`t6` addresses the slots). Each operation is
+its RVV instruction: `splat` → `vmv.v.x`; `load`/`store` → `vle`/`vse` of
+the lane width — through a span under the *slack guard* `li k, K; bltu
+len, k; sub t, len, k; bltu t, idx` (`Oak.RiscV.slack_guard`,
+`slack_access_in_bounds`: idx + K ≤ len), through an owned array's literal
+index or a local's slot at a frame address (`frame_vector_in_bounds`);
+`add`/`sub`/`and`/`or`/`xor`/`min`/`max`/`subs` → `vadd`/`vsub`/`vand`/
+`vor`/`vxor`/`vminu`/`vmaxu`/`vssubu .vv`; `eq` → `vmseq.vv` into `v0`
+then `vmerge.vvm` of all-ones over zero; `shr` by a literal → `vsrl.vx`;
+`any`/`all` → `vmsne.vx` against zero then `vcpop.m`; `movemask` →
+`vmslt.vx` against zero (the top bit is the sign) then the mask
+register's low bits through `vmv.x.s` at `e32`; `tbl` → `vrgather.vv`
+under the index-below-16 mask (`vmsltu.vx`, the C realization's rule, so
+the result is the same on every VLEN); `prev` by a literal →
+`vslidedown.vi` then `vslideup.vi`. Unlike the AArch64 lane, wider lanes
+load and store through spans of their own element type (the guard's
+index scales by the lane size). Left to the C backend, reported: the
+float vectors, vectors in signatures (the LP64 lane-array contract has no
+native entry yet), records or arrays of vectors, non-literal shift and
+`prev` counts, and `ctz`/`popcount` (no Zbb assumed). Without V on the
+processor every function mentioning a vector stays with the C backend,
+whose portable lane loop realizes it. The corpus runs under QEMU at VLEN
+128 and 256 against the C backend's RVV realization
+(`compiler/e2e_native_rv64_simd_test.go`); the units are checked and
+trusted — the RV64 verifier's terms do not yet reach the vector file.
+
 The verifier follows the lowering (`94-assembler.md` §8, the seventh
 increment): each NEON instruction above is the lane function `Oak.Simd`
 gives the operation it realizes, so a straight-line vector body is

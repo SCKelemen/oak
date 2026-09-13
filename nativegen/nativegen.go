@@ -1108,6 +1108,8 @@ type generator struct {
 	// The vector file for floating point: scratch and callee-saved pools,
 	// and the d8–d15 save area (fixed once the function mentions a float).
 	freeF       []int
+	freeV       []int // the rv64 lane's vector scratch registers (rvVBase + n)
+	usedVector  bool  // the rv64 lane used the vector extension
 	usedCalleeV int
 	saveAreaV   int64
 	usedFloat   bool
@@ -1234,6 +1236,10 @@ type Lane struct {
 	// Tables are the program's constant tables by Oak name (GlobalArrayOf):
 	// a body reads one through its data symbol's address.
 	Tables map[string]GlobalArray
+	// Vector marks a RISC-V processor with the vector extension (`-cpu
+	// ...+v`): the rv64 lane lowers the fixed simd vectors there
+	// (nativegen/rv64_simd.go) and leaves them to the C backend otherwise.
+	Vector bool
 	// PackedStackArgs selects Apple's arm64 convention for arguments beyond
 	// the registers (natural size and alignment on the stack) over the
 	// standard 8-byte slots (asm/abi.go).
@@ -1347,7 +1353,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 	case "", asm.ArchArm64:
 		return compileArm64(fn, functions, records, adts, constants, lane.Globals, tc, lane.ElideProven, lane.Tables, lane.PackedStackArgs)
 	case asm.ArchRV64:
-		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables)
+		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Vector)
 	}
 	return nil, unsupported("no native backend for the %s lane", lane.Arch)
 }
@@ -2682,6 +2688,8 @@ func (g *generator) noteWrite(mnemonic string, operands []asm.Operand) {
 	switch reg.Class {
 	case asm.ClassV, asm.ClassRV64F:
 		g.defined[vecBase+reg.Num] = true
+	case asm.ClassRV64V:
+		g.defined[rvVBase+reg.Num] = true
 	default:
 		g.defined[reg.Num] = true
 	}
@@ -2696,7 +2704,7 @@ func writesFirstOperand(mnemonic string) bool {
 		return true // the store-exclusive status register
 	case "cmp", "cmn", "tst", "fcmp", "fcmpe", "cbz", "cbnz", "tbz", "tbnz", "ret", "brk", "bl", "b",
 		"beq", "bne", "blt", "bge", "bltu", "bgeu", "j", "jal", "jalr", "call", "ebreak",
-		"sd", "sw", "sh", "sb", "fsd", "fsw":
+		"sd", "sw", "sh", "sb", "fsd", "fsw", "vsetivli", "vsetvli", "vse8.v", "vse16.v", "vse32.v", "vse64.v":
 		return false
 	}
 	return !strings.HasPrefix(mnemonic, "st") && !strings.HasPrefix(mnemonic, "b.")
@@ -2888,12 +2896,15 @@ func dr(n int) asm.Register {
 
 func (g *generator) alloc(typ scalar) (int, error) {
 	pool := &g.free
-	if typ.isFloat || typ.isVec {
+	if typ.isVec && g.rvLane {
+		// The rv64 lane's vector file is its own (nativegen/rv64_simd.go).
+		pool = &g.freeV
+	} else if typ.isFloat || typ.isVec {
 		pool = &g.freeF
 		g.usedFloat = true
 	}
 	if len(*pool) == 0 {
-		if typ.isFloat {
+		if typ.isFloat || (typ.isVec && g.rvLane) {
 			return 0, unsupported("an expression deeper than the scratch registers")
 		}
 		r, ok := g.overflowScratch()
@@ -2971,6 +2982,10 @@ func (g *generator) release(r int) {
 			g.live = append(g.live[:i], g.live[i+1:]...)
 			break
 		}
+	}
+	if r >= rvVBase {
+		g.freeV = append(g.freeV, r)
+		return
 	}
 	if r >= vecBase {
 		g.freeF = append(g.freeF, r)

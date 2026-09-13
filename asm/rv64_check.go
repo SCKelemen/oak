@@ -83,6 +83,10 @@ type rvChecker struct {
 	scaled  map[int]rvScaledFact // register = index << shift
 	regions map[int]rvRegion     // register = the address of one element (size bytes)
 	rem     map[int]rvRemFact    // register = normalized length - guarded index (the remaining count)
+	// slack: register = normalized length - K under len >= K (`sub t, len,
+	// k` after `bltu len, k, trap`): the bound of a K-element vector access
+	// (docs/spec/94-assembler.md §9, Oak.RiscV.slack_guard).
+	slack map[int]rvSlackFact
 	// frameAddrs: register = an entry-relative frame address (`addi rD, sp,
 	// imm`): an owned array's base (docs/spec/94-assembler.md §9). Memory
 	// through it goes through a region formed under a constant index guard.
@@ -169,7 +173,7 @@ func rv64GroupOf(lmul8 int64) int64 {
 // vector register operand is a group of LMUL registers aligned to LMUL.
 func rv64GroupSingle(name string, position int) bool {
 	switch name {
-	case "vmseq.vv", "vmsne.vx":
+	case "vmseq.vv", "vmsne.vx", "vmslt.vx", "vmsltu.vx":
 		return position == 0
 	case "vredsum.vs", "vfredosum.vs":
 		// A reduction's scalar input and result live in element 0 of a
@@ -199,10 +203,20 @@ type rvSpan struct {
 }
 
 // rvIndexFact: the register is below a normalized length register
-// (lenReg >= 0) or below a constant (lenReg < 0, bound).
+// (lenReg >= 0) or below a constant (lenReg < 0, bound). With slack K > 0
+// the fact is idx + K <= len instead: K elements from idx lie inside the
+// span (Oak.RiscV.slack_access_in_bounds).
 type rvIndexFact struct {
 	lenReg int
 	bound  int64
+	slack  int64
+}
+
+// rvSlackFact: the register holds len - K for the normalized length in
+// lenReg, formed under len >= K.
+type rvSlackFact struct {
+	lenReg int
+	k      int64
 }
 
 // rvScaledFact: the register is a guarded index shifted left by shift.
@@ -225,6 +239,9 @@ type rvRegion struct {
 	rawLen   int
 	idxReg   int
 	idxGen   int
+	// lanes: how many elements from the address the guard proved inside
+	// the span — one under an index guard, K under a slack guard.
+	lanes int64
 	// frame marks an element of an owned array in the frame (writable,
 	// no span: rawLen and idxReg name nothing).
 	frame bool
@@ -242,7 +259,7 @@ type rvRegion struct {
 func checkRV64(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool) []string {
 	c := &rvChecker{fn: fn, symbols: symbols, bound: map[int]bool{}, clobbered: map[int]bool{}, written: map[int]bool{}, freed: map[int]bool{}, saved: map[int]*savedState{}, labelDisp: map[string]int64{}, labels: map[string]bool{}, spans: map[int]*rvSpan{}, writes: map[int]int{},
 		fbound: map[int]bool{}, fclobbered: map[int]bool{}, fwritten: map[int]bool{}, ffreed: map[int]bool{}, fsaved: map[int]*savedState{},
-		rem: map[int]rvRemFact{}, gen: map[int]int{}, vclobbered: map[int]bool{}, vwritten: map[int]bool{}, frameAddrs: map[int]int64{}, lenAlias: map[int]int{}, rawDead: map[int]bool{}, composites: map[string]rvComposite{}, regions: map[int]rvRegion{}, resultChunks: 1}
+		rem: map[int]rvRemFact{}, slack: map[int]rvSlackFact{}, gen: map[int]int{}, vclobbered: map[int]bool{}, vwritten: map[int]bool{}, frameAddrs: map[int]int64{}, lenAlias: map[int]int{}, rawDead: map[int]bool{}, composites: map[string]rvComposite{}, regions: map[int]rvRegion{}, resultChunks: 1}
 	shared := &checker{fn: fn}
 	shared.checkSignature(decl)
 	if len(shared.errors) > 0 {
@@ -731,6 +748,7 @@ func (c *rvChecker) forgetGuards() {
 	}
 	c.regions = regions
 	c.rem = map[int]rvRemFact{}
+	c.slack = map[int]rvSlackFact{}
 	c.vcfg = nil
 	for _, span := range c.spans {
 		span.hasMin = false
@@ -755,6 +773,12 @@ func (c *rvChecker) forgetRegister(num int) {
 	delete(c.regions, num)
 	delete(c.frameAddrs, num)
 	delete(c.lenAlias, num)
+	delete(c.slack, num)
+	for reg, fact := range c.slack {
+		if fact.lenReg == num {
+			delete(c.slack, reg)
+		}
+	}
 	for reg, fact := range c.idx {
 		if fact.lenReg == num {
 			delete(c.idx, reg)
@@ -1112,6 +1136,9 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 		}
 		if name == "sub" {
 			pre.deriveRemaining(c, reg(0), reg(1), reg(2))
+			if k, isConst := pre.consts[reg(2).Num]; isConst {
+				pre.deriveSlack(c, reg(0), reg(1), k)
+			}
 		}
 		return false
 	case "addi", "andi", "ori", "xori", "slti", "sltiu", "slli", "srli", "srai", "addiw", "slliw", "srliw", "sraiw":
@@ -1134,6 +1161,9 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 		pre := c.snapshot()
 		c.write(reg(0), line)
 		pre.deriveShift(c, name, reg(0), reg(1), imm)
+		if name == "addi" && imm < 0 {
+			pre.deriveSlack(c, reg(0), reg(1), -imm)
+		}
 		if name == "addi" && reg(1).Class == ClassSP && reg(0).Class == ClassRV64X && reg(0).Num != 0 {
 			// `addi rD, sp, imm`: rD holds a frame address (an owned array's
 			// base, docs/spec/94-assembler.md §9), entry-relative.
@@ -1199,6 +1229,14 @@ func (c *rvChecker) guardFacts(name string, left, right Register) {
 			c.idx[left.Num] = rvIndexFact{lenReg: -1, bound: k}
 		}
 	case "bltu":
+		if slack, isSlack := c.slack[left.Num]; isSlack {
+			// `bltu t, idx, trap` with t = len - K: the fall-through knows
+			// idx <= len - K, so idx + K <= len (Oak.RiscV.slack_guard).
+			if right.Num != 0 {
+				c.idx[right.Num] = rvIndexFact{lenReg: slack.lenReg, slack: slack.k}
+			}
+			return
+		}
 		raw, isLen := c.lenNorm[left.Num]
 		k, isConst := c.consts[right.Num]
 		if !isLen || !isConst || k <= 0 {
@@ -1384,7 +1422,11 @@ func (pre rvSnapshot) deriveRegion(c *rvChecker, dest, left, right Register) {
 	}
 	inBounds := (guard.lenReg >= 0 && pre.lenNorm[guard.lenReg] == span.rawLen) || (guard.lenReg < 0 && span.hasMin && guard.bound <= span.minLen)
 	if inBounds {
-		c.regions[dest.Num] = rvRegion{size: span.elem, writable: span.writable, rawLen: span.rawLen, idxReg: idxReg, idxGen: idxGen}
+		lanes := int64(1)
+		if guard.slack > 0 {
+			lanes = guard.slack
+		}
+		c.regions[dest.Num] = rvRegion{size: span.elem, writable: span.writable, rawLen: span.rawLen, idxReg: idxReg, idxGen: idxGen, lanes: lanes}
 	}
 }
 
@@ -1449,6 +1491,28 @@ func (pre rvSnapshot) deriveTableRegion(c *rvChecker, dest, left, right Register
 		return
 	}
 	c.regions[dest.Num] = rvRegion{size: size, rawLen: -1, idxReg: -2}
+}
+
+// deriveSlack records `sub rD, len, k` (or `addi rD, len, -K`) as len - K
+// when len is a normalized length register whose span is proven at least
+// K long (`bltu len, k, trap` before it): the subtraction does not wrap,
+// and a later `bltu rD, idx, trap` proves idx + K <= len — the bound of a
+// K-element vector access at idx (docs/spec/94-assembler.md §9,
+// Oak.RiscV.slack_guard).
+func (pre rvSnapshot) deriveSlack(c *rvChecker, dest, left Register, k int64) {
+	if dest.Class != ClassRV64X || left.Class != ClassRV64X || dest.Num == 0 || k <= 0 {
+		return
+	}
+	raw, isLen := pre.lenNorm[left.Num]
+	if !isLen {
+		return
+	}
+	for _, span := range pre.spans {
+		if span.rawLen == raw && span.hasMin && span.minLen >= k {
+			c.slack[dest.Num] = rvSlackFact{lenReg: left.Num, k: k}
+			return
+		}
+	}
 }
 
 // deriveRemaining records `sub rD, len, idx` as the remaining count when
@@ -1619,6 +1683,21 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 			}
 		}
 	}
+	if rv64VectorDisjoint[name] {
+		d := reg(0)
+		dLo, dHi := int64(d.Num), int64(d.Num)+groupSize(0)-1
+		for i := 1; i < len(shape); i++ {
+			src, isReg := ops[i].(Register)
+			if !isReg || src.Class != ClassRV64V {
+				continue
+			}
+			sLo, sHi := int64(src.Num), int64(src.Num)+groupSize(i)-1
+			if dLo <= sHi && sLo <= dHi {
+				c.errorf(line, "%s: the destination group %s overlaps the source group %s; a gather's or a slide's destination is disjoint from its sources (RVV 1.0 §16.3, §16.4)", name, d.Text, src.Text)
+				return false
+			}
+		}
+	}
 	if width, isLoad := rv64VectorLoads[name]; isLoad {
 		c.vectorAccess(ops[1].(Memory), width, false, line)
 		group(0, true)
@@ -1692,10 +1771,32 @@ func (c *rvChecker) vectorAccess(mem Memory, width int64, store bool, line int) 
 				return // idx + vl ≤ idx + (len - idx) = len
 			}
 		}
-		c.errorf(line, "vector access through the element address %s: the configuration's AVL must be `sub avl, len, idx` over the same guarded index the address was formed from, with neither rewritten in between (Oak.RiscV.strip_access_in_bounds)", base.Text)
+		if cfg.avlImm > 0 && cfg.avlImm <= region.lanes {
+			return // idx + vl ≤ idx + K ≤ len (Oak.RiscV.slack_access_in_bounds)
+		}
+		c.errorf(line, "vector access through the element address %s: the configuration's AVL must be `sub avl, len, idx` over the same guarded index the address was formed from, with neither rewritten in between (Oak.RiscV.strip_access_in_bounds), or an immediate within the K elements a slack guard proved (`bltu len, k; sub t, len, k; bltu t, idx` — Oak.RiscV.slack_access_in_bounds)", base.Text)
 		return
 	}
-	c.errorf(line, "vector memory through %s: only a bound span base or a guarded element address is admitted", base.Text)
+	if addr, isFrame := c.frameAddrs[base.Num]; isFrame {
+		// A fixed vector in the frame (a vector local's sixteen-byte slot,
+		// an owned array's element): an immediate AVL of K elements of the
+		// configured width at an entry-relative frame address, inside the
+		// declared frame (Oak.RiscV.frame_vector_in_bounds).
+		if cfg.avlImm <= 0 {
+			c.errorf(line, "vector access through the frame address %s needs an immediate AVL (vsetivli): the frame holds fixed vectors", base.Text)
+			return
+		}
+		bytes := cfg.avlImm * width
+		if addr < -c.fn.Frame || addr+bytes > 0 {
+			c.errorf(line, "vector access at entry-relative %d..%d through %s is outside the declared frame [-%d, 0)", addr, addr+bytes, base.Text, c.fn.Frame)
+			return
+		}
+		if addr%width != 0 {
+			c.errorf(line, "vector access at %d through %s is not aligned to its %d-byte elements", addr, base.Text, width)
+		}
+		return
+	}
+	c.errorf(line, "vector memory through %s: only a bound span base, a guarded element address, or a frame address is admitted", base.Text)
 }
 
 // spanAccess checks a load or store through a register other than sp: an

@@ -2441,6 +2441,36 @@ bodies addressing owned arrays through a frame address stay trusted on
 both lanes. `OAK_VERIFY_TRACE=1` prints each failed coupling attempt with
 the two sides' terms.
 
+**RV64 lane, tenth increment — the fixed vectors (landed 2026-09-14;
+`nativegen/rv64_simd.go`).** The native backend lowers `simd.U8x16`/
+`U16x8`/`U32x4`/`U64x2` on this lane when the processor carries V
+(`93-simd.md` §1.4 "The RV64 lane"): one LMUL=1 register per vector under
+a `vsetivli` the lowering emits before every vector instruction group,
+`v8`–`v15` the operand stack, sixteen-byte frame slots for locals and
+call spills. The checker gains what the lowering needs. **The slack
+guard**: `li k, K; bltu len, k, trap` proves `len ≥ K` (the span's minimum
+length, as before); `sub t, len, k` (or `addi t, len, -K`) under that
+minimum records `t = len − K` (`deriveSlack` — the subtraction cannot
+wrap); `bltu t, idx, trap` then records `idx + K ≤ len` on the
+fall-through (an index fact with slack K, `Oak.RiscV.slack_guard`); the
+element address `base + (idx << s)` formed from it is a region K lanes
+deep, and a vector access through it with an immediate AVL at most K is
+in bounds (`slack_access_in_bounds`, `slack_vector_in_bounds`). A slack
+narrower than the AVL is refused. **Frame vectors**: a vector access
+through a frame address (`addi t, sp, off`) with an immediate AVL of K
+elements is admitted when the K·SEW bytes lie inside the declared frame
+at an aligned entry-relative address (`frame_vector_in_bounds`); a
+register AVL through the frame is refused. **The table** gains
+`vssubu.vv`, `vsrl.vx`, `vmslt.vx`, `vmsltu.vx`, `vrgather.vv`,
+`vslideup.vi`, and `vslidedown.vi` (208 encodings, GNU as agreement for
+each, masked and unmasked); the gather's and the slides' destinations
+must not overlap their sources (RVV 1.0 §16.3, §16.4, fail-closed), and
+the less-than masks are single registers like the other comparisons. The
+differentials carry `vslack` — the four elements at a guarded index summed,
+or zero when the span is too short — under QEMU and Sail against Go. The
+units are checked and trusted: the RV64 verifier's terms do not yet reach
+the vector file.
+
 **Executables linked by the Oak assembler (landed; `asm/executable.go`,
 `oak build -link oak`).** A program whose every body the native backend
 lowered links into a final ELF64 executable here, with no system linker
