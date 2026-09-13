@@ -319,3 +319,57 @@ func TestVerifyCountedLoops(t *testing.T) {
 		t.Fatalf("exceeding the path budget must be trusted, got %s: %s", budget.Kind, budget.Message)
 	}
 }
+
+// Constant tables (docs/spec/94-assembler.md §9): `adrl xB, data_T` is the
+// table's address as a span base, so a guarded element read is a lookup
+// over the table — folded to the element at a constant index — and the
+// Oak side's `T[i]` builds the same term. A symbol that is not a table of
+// the program leaves the instruction outside the subset.
+func TestVerifyTableReads(t *testing.T) {
+	table := Table{Name: "T", Elem: 8, Length: 4, Bytes: []byte{10, 20, 30, 40}}
+	verify := func(t *testing.T, decl, oakBody, asmBody string, withTable bool) Verdict {
+		t.Helper()
+		unit, errs := ParseUnit("tables.oakasm", decl+" = {\n"+asmBody+"\n}\n")
+		if len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		fn := unit.Functions[0]
+		fn.Tables = map[string]int64{"data_T": 4}
+		if withTable {
+			fn.TableData = map[string]Table{"data_T": table}
+		}
+		sig, err := parseSignature(decl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if findings := Check(fn, sig, nil); len(findings) != 0 {
+			t.Fatalf("checker: %v", findings)
+		}
+		spec, err := parseSignatureWithBody(decl + " = " + oakBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return Verify(fn, sig, spec.Body)
+	}
+	pick := "  bind w0 = i\n  clobber x9\n  adrl x9, data_T\n  cmp w0, #4\n  b.hs trap\n  ldrb w0, [x9, w0, uxtw]\n  ret\ntrap:\n  brk #1"
+	if v := verify(t, "pick: (i: u32) -> u8", "T[i]", pick, true); v.Kind != VerdictProven {
+		t.Errorf("a guarded table read at a symbolic index must be proven: %s", v.Message)
+	}
+	// A constant index folds to the element on both sides.
+	third := "  bind w0 = i\n  clobber x9\n  adrl x9, data_T\n  ldrb w0, [x9, #2]\n  ret"
+	if v := verify(t, "third: (i: u32) -> u8", "T[u32(2)]", third, true); v.Kind != VerdictProven || !strings.Contains(v.Message, "30") {
+		t.Errorf("a table read at a constant index must fold to the element (30): %s", v.Message)
+	}
+	// The machine reading the wrong element is a mismatch, not a proof.
+	if v := verify(t, "third: (i: u32) -> u8", "T[u32(1)]", third, true); v.Kind != VerdictMismatch {
+		t.Errorf("reading element 2 against Oak's element 1 must mismatch: %s", v.Message)
+	}
+	// len of a table is its length.
+	if v := verify(t, "count: (i: u32) -> u32", "u32(len(T))", "  bind w0 = i\n  movz w0, #4\n  ret", true); v.Kind != VerdictProven {
+		t.Errorf("len(T) folds to the length: %s", v.Message)
+	}
+	// Without the table's data the instruction is outside the subset.
+	if v := verify(t, "pick: (i: u32) -> u8", "T[i]", pick, false); v.Kind != VerdictTrusted || !strings.Contains(v.Message, "not a constant table") {
+		t.Errorf("adrl of an unknown table stays trusted: %s", v.Message)
+	}
+}

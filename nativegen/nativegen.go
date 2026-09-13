@@ -1267,6 +1267,9 @@ type GlobalArray struct {
 	Symbol string
 	Elem   string
 	Length int64
+	// Bytes are the table's contents as the object carries them (the
+	// verifier folds a constant-index read to its element).
+	Bytes []byte
 }
 
 // ElemSize is the width of one element in bytes (the table's alignment).
@@ -1329,6 +1332,17 @@ func GlobalArrayOf(decl *ast.VariableDeclaration) (GlobalArray, []byte, bool) {
 }
 
 // tableSizes is the checker's table of the data symbols a body may address.
+// tableData describes the tables for the verifier (asm.Function.TableData).
+func tableData(tables map[string]GlobalArray) map[string]asm.Table {
+	out := map[string]asm.Table{}
+	for name, gl := range tables {
+		if elem, ok := scalars[gl.Elem]; ok {
+			out[gl.Symbol] = asm.Table{Name: name, Elem: elem.bits, Length: gl.Length, Bytes: gl.Bytes}
+		}
+	}
+	return out
+}
+
 func tableSizes(tables map[string]GlobalArray) map[string]int64 {
 	out := map[string]int64{}
 	for _, gl := range tables {
@@ -1656,7 +1670,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	if frame > 4080 {
 		return nil, 0, unsupported("a frame of %d bytes", frame)
 	}
-	out := &asm.Function{Name: NativeSymbol(fn), Signature: fn, Line: fn.Token.Line, Fallback: true, Records: records, ADTs: adts, System: g.system, Tables: tableSizes(g.tables)}
+	out := &asm.Function{Name: NativeSymbol(fn), Signature: fn, Line: fn.Token.Line, Fallback: true, Records: records, ADTs: adts, System: g.system, Tables: tableSizes(g.tables), TableData: tableData(g.tables)}
 	if len(g.usedGlobals) > 0 {
 		out.Globals = g.usedGlobals
 	}

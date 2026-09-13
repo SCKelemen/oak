@@ -31,6 +31,30 @@ type Unit struct {
 // Function is one asm function: its declared signature (parsed with the
 // Oak parser, so identity with the Oak declaration is a structural
 // comparison) and its instruction block.
+// Table is a constant table of the program as the verifier reads it
+// (Function.TableData): its Oak name, element width in bits, length, and
+// the bytes the object carries, little-endian per element.
+type Table struct {
+	Name   string
+	Elem   int
+	Length int64
+	Bytes  []byte
+	symbol string // the data symbol, kept when the verifier keys tables by Oak name
+}
+
+// Value is the table's element k as an unsigned number.
+func (t Table) Value(k uint64) uint64 {
+	size := uint64(t.Elem / 8)
+	if size == 0 || k >= uint64(t.Length) || (k+1)*size > uint64(len(t.Bytes)) {
+		return 0
+	}
+	var v uint64
+	for i := uint64(0); i < size; i++ {
+		v |= uint64(t.Bytes[k*size+i]) << (8 * i)
+	}
+	return v
+}
+
 type Function struct {
 	Name      string
 	Signature *ast.FunctionStatement
@@ -118,6 +142,12 @@ type Function struct {
 	// checker admits guarded element reads inside them (a read-only
 	// region), as it admits a frame array's. Set by the native backend.
 	Tables map[string]int64
+	// TableData describes the same tables for the verifier: the Oak name,
+	// the element width in bits, the length, and the bytes, so a guarded
+	// read at a constant index folds to the byte and one at a symbolic
+	// index is a lookup term over the table (docs/spec/94-assembler.md §9,
+	// constant tables). Set by the native backend.
+	TableData map[string]Table
 }
 
 // Composite is a record or tagged-union type's shape at the boundary: its

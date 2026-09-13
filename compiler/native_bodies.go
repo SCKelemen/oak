@@ -190,6 +190,7 @@ func nativeGlobalArrays(root *ast.Program) (map[string]nativegen.GlobalArray, []
 		if !ok {
 			continue
 		}
+		table.Bytes = bytes
 		tables[decl.Name.Value] = table
 		data = append(data, asm.DataSymbol{Name: table.Symbol, Bytes: bytes, Align: table.ElemSize()})
 	}

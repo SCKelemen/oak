@@ -903,6 +903,7 @@ type pathExecutor struct {
 	resultClass RegClass
 	resultHalf  int               // a vector result: the 64-bit half of v0 delivered (asm/verify_vector.go)
 	spans       map[string]int64  // span parameter -> element size in bytes
+	tables      map[string]Table  // constant tables addressed so far, by their span name (tableSpanName)
 	declared    map[string]int    // parameter -> declared width
 	globals     map[string]Global // the globals the body addresses (fn.Globals)
 	// hasResult: the function delivers a scalar result; false for a unit
@@ -1494,6 +1495,11 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 				return nil, nil, reason, false
 			}
 			continue
+		case "adrl":
+			if reason, ok := x.tableAddress(instr, state); !ok {
+				return nil, nil, reason, false
+			}
+			continue
 		case "b", "j":
 			target, ok := x.labels[instr.Operands[0].(Symbol).Name]
 			if !ok {
@@ -1836,10 +1842,46 @@ func elementBaseOf(t *term) (param string, baseOffset int64, index *term, shift 
 // element is the span element at an index term; in a concrete run the
 // witness memory's value.
 func (x *pathExecutor) element(span string, index *term, width int) *term {
+	if table, isTable := x.tables[span]; isTable && index.kind == termConst {
+		// A constant table at a constant index is its element.
+		return constTerm(table.Value(index.value&mask(32))&mask(width), width)
+	}
 	if x.concrete && index.kind == termConst {
 		return constTerm(elementValue(span, index.value&mask(32), width), width)
 	}
 	return selectTerm(span, index, width)
+}
+
+// tableSpanName is the span name a constant table reads under on both
+// sides: the data symbol behind a mark no identifier carries.
+func tableSpanName(symbol string) string { return "table:" + symbol }
+
+// tableAddress executes `adrl xD, sym` (AArch64) / `la rD, sym` (RV64): the
+// table's address, as a span base of its element size, so the guarded
+// element reads that follow are lookups over the table (element folds a
+// constant index to the byte). A symbol that is not a table of the
+// program leaves the instruction outside the subset.
+func (x *pathExecutor) tableAddress(instr Instruction, state *symbolicState) (string, bool) {
+	if len(instr.Operands) != 2 || x.fn == nil {
+		return "instruction " + instr.Mnemonic, false
+	}
+	dest, isReg := instr.Operands[0].(Register)
+	sym, isSym := instr.Operands[1].(Symbol)
+	if !isReg || !isSym {
+		return "instruction " + instr.Mnemonic, false
+	}
+	table, known := x.fn.TableData[sym.Name]
+	if !known || table.Elem%8 != 0 || table.Elem == 0 {
+		return fmt.Sprintf("%s %s (not a constant table of the program)", instr.Mnemonic, sym.Name), false
+	}
+	name := tableSpanName(sym.Name)
+	if x.tables == nil {
+		x.tables = map[string]Table{}
+	}
+	x.tables[name] = table
+	x.spans[name] = int64(table.Elem / 8)
+	state.write(dest, paramTerm(spanBaseName(name), 64))
+	return "", true
 }
 
 // step executes one data-processing instruction on the state.
@@ -2251,7 +2293,11 @@ type oakLowering struct {
 	// constants are the program's folded constant globals
 	// (asm.Function.Constants): an identifier naming one is that value.
 	constants map[string]Constant
-	types     map[string]*oakType
+	// tables: the program's constant tables by Oak name (Function.TableData);
+	// `T[i]` reads one as the machine does, a lookup over the table's span
+	// name, folded at a constant index.
+	tables map[string]Table
+	types  map[string]*oakType
 }
 
 // oakLocal is a typed local of a statement body: its current symbolic
@@ -3623,6 +3669,9 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 	if !isIdent || index.Dot {
 		return nil, spanContract{}, "an index that is not into a span parameter", false
 	}
+	if table, isTable := lo.tables[ident.Value]; isTable {
+		return lo.tableElementTerm(table, index.Index)
+	}
 	contract, isSpan := lo.spans[ident.Value]
 	if !isSpan {
 		return nil, spanContract{}, fmt.Sprintf("an index into %s (not a span parameter)", ident.Value), false
@@ -3646,6 +3695,42 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 		entry = selectSplit(ident.Value, idx, contract.elemWidth, 0)
 	}
 	return memoryAt(lo.writes[ident.Value], idx, entry), contract, "", true
+}
+
+// tableElementTerm reads `T[i]` over a constant table: at a constant index
+// the element itself; otherwise a lookup over the table's span name, the
+// term the machine's guarded load builds (tableAddress), split over a
+// conditional in the index as a span read is. An index at or past the
+// length traps on both sides (the checker's guard, Oak's bounds check).
+func (lo *oakLowering) tableElementTerm(table Table, indexExpr ast.Expression) (*term, spanContract, string, bool) {
+	contract := spanContract{elemWidth: table.Elem}
+	idx, reason, ok := lo.lower(indexExpr, 32)
+	if !ok {
+		return nil, spanContract{}, reason, false
+	}
+	if idx.kind == termConst {
+		if idx.value >= uint64(table.Length) {
+			return nil, spanContract{}, fmt.Sprintf("an index past the end of the table %s", table.Name), false
+		}
+		return constTerm(table.Value(idx.value), table.Elem), contract, "", true
+	}
+	lo.addTrap(cmpTerm("hs", idx, constTerm(uint64(table.Length), 32)))
+	span := tableSpanName(table.symbol)
+	if !lo.trapsTracked {
+		return selectSplit(span, idx, table.Elem, 0), contract, "", true
+	}
+	return selectTerm(span, idx, table.Elem), contract, "", true
+}
+
+// tablesByName keys the unit's tables by their Oak name, each remembering
+// its data symbol.
+func tablesByName(tables map[string]Table) map[string]Table {
+	out := map[string]Table{}
+	for symbol, table := range tables {
+		table.symbol = symbol
+		out[table.Name] = table
+	}
+	return out
 }
 
 // selectSplit builds a span read at an index holding a conditional by
@@ -4069,6 +4154,13 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		}
 		return adaptWidth(element, width), "", true
 	case *ast.InvocationExpression:
+		if ident, isIdent := e.Function.(*ast.Identifier); isIdent && ident.Value == "len" && len(e.Arguments) == 1 {
+			if arg, argIsIdent := e.Arguments[0].(*ast.Identifier); argIsIdent {
+				if table, isTable := lo.tables[arg.Value]; isTable {
+					return constTerm(uint64(table.Length), width), "", true
+				}
+			}
+		}
 		// The scalar instruction functions (docs/spec/92-ffi.md section 3.2)
 		// are the verifier's own unary instruction terms — the ISA lowering
 		// and the Oak lowering share their semantics (Oak.Intrinsics).
@@ -4705,6 +4797,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	}
 	lo := newLowering(callee)
 	lo.records, lo.adts, lo.constants = x.fn.Records, x.fn.ADTs, x.fn.Constants
+	lo.tables = tablesByName(x.fn.TableData)
 	lo.functions = x.fn.Callees
 	lo.inlining = map[string]bool{name: true}
 	// The callee sees the cells as this path holds them — a store on the
@@ -4845,6 +4938,7 @@ func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	lowering.constants = fn.Constants
 	lowering.globals = fn.Globals
 	lowering.functions = fn.Callees // the Oak body's calls inline (inlineCall)
+	lowering.tables = tablesByName(fn.TableData)
 	lowering.concrete = concrete
 	lowering.bindAggregateParams(sig)
 	lowering.declareCells()

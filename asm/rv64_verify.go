@@ -196,6 +196,8 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 	case "lui":
 		state.write(reg(0), constTerm(uint64(ops[1].(Immediate).Value<<12), 64))
 		return "", true
+	case "la":
+		return x.tableAddress(instr, state)
 	case "auipc":
 		return "a pc-relative address (auipc)", false
 	case "call":

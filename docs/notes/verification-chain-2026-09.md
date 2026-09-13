@@ -92,6 +92,12 @@ or the verifier, not in the program:
 
 ## 4. What is missing, in the order to close it
 
+**Constant-table reads (2026-09-14, 94-assembler.md §9, constant tables):**
+a read of a constant table was trusted for `adrl`/`la` alone (16 AArch64
+bodies, 8 RV64); the verifier now takes the address as a span base and the
+read as a lookup over the table, folded at a constant index, on both sides.
+Eight of the sixteen are proven; the rest show their next reason.
+
 1. **CI does not check the Sail links.** `formal.yml` builds `spec/lean`
    (160 jobs, passing). Not in CI: `spec/sail/lean` (the Arm bridge; needs
    the lean-sail checkout of `spec/sail/setup.sh` and `sail` for the

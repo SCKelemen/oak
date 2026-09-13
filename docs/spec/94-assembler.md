@@ -2851,3 +2851,35 @@ runs at 0.28 ns/byte where the call tree ran at 0.85 and the C backend at
 kernel that declares some forty vector locals over its expansions. What
 would take the rest: an allocator with liveness across the whole body
 instead of declaration order within it.
+
+### 9.x Constant tables in the verifier (2026-09-14)
+
+A body reading a constant table was trusted for the address instruction
+alone (`instruction adrl`, `instruction la`): sixteen bodies on AArch64 and
+eight on RV64 in the standard-library builder. The table's bytes are fixed,
+so a read is a function of its index, and the verifier now decides it on
+both sides:
+
+- `asm.Function.TableData` (set by the native backend beside `Tables`)
+  carries each table's Oak name, element width, length, and bytes.
+- The executor takes `adrl xB, data_T` / `la rB, data_T` as the table's
+  address in the shape it already knows for a span parameter — a span base
+  of the element's size under the name `table:data_T` — so the guarded
+  element load that follows is the existing span read, a lookup term over
+  the table, folded to the element itself at a constant index
+  (`pathExecutor.tableAddress`, `element`).
+- The Oak side reads `T[i]` as the same lookup (`tableElementTerm`), split
+  over a conditional in the index as a span read is, folded at a constant
+  index, with the bounds trap recorded; `len(T)` is the length.
+
+The equivalence is then between two lookups over the same table at the
+same index, decided by the bit-blaster's functional consistency as span
+reads are; the contents matter only where an index is constant, and there
+both sides read the byte. On the builder eight of the sixteen AArch64
+bodies are proven (`base32_symbol`, `base32_value`, `base64_symbol`,
+`base64_value`, `hex_digit`, `hex_value`, `json_value_boundary`,
+`utf8_sequence_width`); the other eight now show their next reason — the
+path budget, a call passing a span, a `u8` local — which is what the gate
+is for. `TestVerifyTableReads` (a symbolic index, a constant index folded,
+the wrong element a mismatch, `len`, an unknown symbol trusted),
+`TestE2ENativeTables`.

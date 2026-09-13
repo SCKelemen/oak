@@ -296,7 +296,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	if frame > rvMaxFrame {
 		return nil, unsupported("a frame of %d bytes", frame)
 	}
-	out := &asm.Function{Name: fn.Name.Value, Signature: fn, Line: fn.Token.Line, Arch: asm.ArchRV64, Fallback: true, Records: records, ADTs: adts, Tables: tableSizes(g.tables)}
+	out := &asm.Function{Name: fn.Name.Value, Signature: fn, Line: fn.Token.Line, Arch: asm.ArchRV64, Fallback: true, Records: records, ADTs: adts, Tables: tableSizes(g.tables), TableData: tableData(g.tables)}
 	if len(g.usedGlobals) > 0 {
 		out.Globals = g.usedGlobals
 	}
