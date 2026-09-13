@@ -85,8 +85,8 @@ main: (): i32 {
 		}
 	}
 	cfg := ProtocolTLCConfigWith(decl, records)
-	if !strings.Contains(cfg, "    CmdSlot = {0, 1, 2, 3}\n    CmdValue = {0, 1, 2, 3}\n") {
-		t.Fatalf("the record payload's fields each get a domain constant:\n%s", cfg)
+	if !strings.Contains(cfg, "    CmdSlot = {0, 1, 2, 3, 4}\n    CmdValue = {0, 1, 2, 3, 4}\n") {
+		t.Fatalf("the record payload's fields each get a domain constant one past the largest literal (3):\n%s", cfg)
 	}
 	// The projection agrees with itself: the domain definition is read as
 	// a definition, not judged as an action.
