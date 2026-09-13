@@ -20,6 +20,7 @@ import Oak.ResourceResult
 import Oak.MethodMangling
 import Oak.StatementBoundary
 import Oak.Protocol
+import Oak.ProtocolClasses
 import Oak.Utf8Lookup
 import Oak.Utf8Stream
 import Oak.Utf8Flat
