@@ -435,7 +435,11 @@ func TestRingsAtomicBorrowRules(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	accepted := head + "bump: (c: [*]Cursor, cells: [*]Atomic[u32]): u32 {\n  atomic_store_release(c[0].tail, atomic_load_relaxed(cells[0]) + u32(1))\n  atomic_fetch_add_relaxed(cells[0], u32(1))\n}\nmain: (): u32 {\n  state: [1]Cursor\n  cells: [2]Atomic[u32]\n  bump(span(&state), span(&cells)) + bump(span(&state), span(&cells)) + atomic_load_relaxed(state[0].tail)\n}\n"
+	// The two calls are bound before the sum: the C backend leaves the order
+	// of side-effecting operands to the C compiler (gcc evaluates the lowered
+	// call's arguments right to left; STATUS "Left-to-right evaluation"), and
+	// this test is about the borrow rules, not that order.
+	accepted := head + "bump: (c: [*]Cursor, cells: [*]Atomic[u32]): u32 {\n  atomic_store_release(c[0].tail, atomic_load_relaxed(cells[0]) + u32(1))\n  atomic_fetch_add_relaxed(cells[0], u32(1))\n}\nmain: (): u32 {\n  state: [1]Cursor\n  cells: [2]Atomic[u32]\n  first: u32 = bump(span(&state), span(&cells))\n  second: u32 = bump(span(&state), span(&cells))\n  first + second + atomic_load_relaxed(state[0].tail)\n}\n"
 	if got := interpretChecked(t, accepted); got != 3 {
 		t.Fatalf("interpreter: %d, want 3", got)
 	}
