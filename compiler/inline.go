@@ -635,7 +635,7 @@ func (in *inliner) expand(call *ast.InvocationExpression, cand *inlineCandidate,
 	bodyStmts := body.Block.Statements
 	var tail ast.Expression
 	if last, ok := bodyStmts[len(bodyStmts)-1].(*ast.ExpressionStatement); ok && !last.Discard {
-		tail = last.Expression
+		tail = unwrapArms(last.Expression)
 		bodyStmts = bodyStmts[:len(bodyStmts)-1]
 	}
 	stmts = append(stmts, bodyStmts...)
@@ -650,6 +650,45 @@ func (in *inliner) expand(call *ast.InvocationExpression, cand *inlineCandidate,
 // statement position (a statement-position match becomes branches of
 // statements); in a declaration or operand it would have to be emitted as
 // an expression, which the C backend cannot do for a block.
+// unwrapArms rewrites, throughout a tail expression, every match arm whose
+// body is a block holding exactly one expression and nothing else into
+// that expression: `c ? { a } | { b }` is `c ? a | b`, the block only the
+// source's habit. The tail then holds no block where the C form would need
+// one, and the helper — `cache_get`, `mask64`, most one-line conditionals
+// — inlines where it was refused before.
+func unwrapArms(expr ast.Expression) ast.Expression {
+	switch e := expr.(type) {
+	case *ast.MatchExpression:
+		for _, arm := range e.Arms {
+			if arm == nil {
+				continue
+			}
+			if block, isBlock := arm.Body.(*ast.BlockExpression); isBlock && block.Block != nil && len(block.Block.Statements) == 1 {
+				if only, isExpr := block.Block.Statements[0].(*ast.ExpressionStatement); isExpr && !only.Discard && only.Expression != nil {
+					arm.Body = only.Expression
+				}
+			}
+			arm.Body = unwrapArms(arm.Body)
+		}
+		e.Scrutinee = unwrapArms(e.Scrutinee)
+	case *ast.InfixExpression:
+		e.Left = unwrapArms(e.Left)
+		e.Right = unwrapArms(e.Right)
+	case *ast.PrefixExpression:
+		e.Right = unwrapArms(e.Right)
+	case *ast.InvocationExpression:
+		for i := range e.Arguments {
+			e.Arguments[i] = unwrapArms(e.Arguments[i])
+		}
+	case *ast.IndexExpression:
+		e.Left = unwrapArms(e.Left)
+		if !e.Dot {
+			e.Index = unwrapArms(e.Index)
+		}
+	}
+	return expr
+}
+
 func containsBlock(expr ast.Expression) bool {
 	if expr == nil {
 		return false

@@ -1643,6 +1643,26 @@ native prover stands at 1.25–1.4 times its time (`mono.oak` 12.6 s to
 14.0 s against 9.7 s to 10.7 s, `extents.oak` 8.4 s against 6.3 s,
 `effects.oak` 1.85 s against 1.5 s), down from 2–5 times when this track
 began.
+**Twenty-fifth increment — the braces that kept the helpers calls.**
+With the BDD engine's own functions at the top of every profile, the
+question was why `cache_get` — five lines, a leaf — was still a call
+while the C compiler inlines it. The inliner refuses a helper whose tail
+holds a block where the C form would need a block in an expression, and
+the tail `(…) ? { mem[e + u32(2)] } | { NONE }` is such a tail by its
+braces alone: each arm is a block holding one expression. The pass now
+reads an arm of that shape as the expression it holds (`c ? a | b`), so
+`cache_get`, `cache_put`, `push_frame`, `deliver`, `mask64`,
+`witness_count`, and the one-line conditionals throughout the prover
+inline. `apply`'s loop keeps two calls (`mk`, `terminal_case`, both past
+the twelve-line rule) where it had six, and its frame accesses fall from
+132 to 112. Measured over three interleaved rounds on a shared machine
+(load average near thirteen, so the ratios are the measurement): against
+the previous build `mono.oak` 13.6 s to 11.1–13.1 s, `extents.oak` 8.5 s
+to 7.1–7.9 s, `floats.oak` 4.9 s to 4.5 s, `lattice.oak` 3.1 s to 2.9 s,
+`effects.oak` within noise; against the C build in the same runs the
+native prover stands at 1.1–1.35 times its time (`mono.oak` 11.1–13.1 s
+against 8.3–10 s, `extents.oak` 7.1–7.9 s against 6.2–7.1 s, `floats.oak`
+4.2–4.9 s against 3.7–4.6 s). The rows are identical throughout.
 Next increments: the fallback reasons above in the order of their counts,
 so the prover lowers whole; then the verifier past `bl` and unit results —
 calls by inlining or by the callee's proven contract, and effects through

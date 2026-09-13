@@ -443,7 +443,11 @@ pass runs in rounds: a helper that called only helpers is a leaf once
 those are spliced into it, and the next round inlines it in turn — so an
 accessor chain (`tkind` over `tword` over `term_at` over `state`, the
 prover's shape) flattens to the element read it denotes. The rounds stop
-when a pass inlines nothing new. Three shapes are never candidates because
+when a pass inlines nothing new. A match arm in a helper's tail whose
+body is a block holding one expression and nothing else (`c ? { a } | {
+b }`, the source's habit) is that expression, so the tail holds no block
+where the C form would need one; `cache_get`, `mask64`, and the one-line
+conditionals inline where that shape had kept them calls. Three shapes are never candidates because
 a later analysis judges them at the call: a helper declaring `effects` or
 `forbids` (a node of the path a forbids report names), a helper with a
 function-typed parameter (the argument's effect row is checked against the
