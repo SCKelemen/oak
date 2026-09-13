@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SCKelemen/oak/target"
 )
 
 // The kernel adapter's EL0 entry (docs/spec/100-aarch64-control-transfer.md,
@@ -63,7 +65,7 @@ el0_enter: (sp: u64, pc: u64, pstate: u64, arg: u64) -> never = {
   isb
   eret
 }
-`).EmitC().Get()
+`).WithTarget(target.Target{OS: target.OSLinux, Arch: target.ArchArm64}).EmitC().Get()
 	if err != nil {
 		t.Fatalf("assembly-unit EL0 entry failed the asm gate: %v", err)
 	}
