@@ -3043,6 +3043,14 @@ the decision's, and it is the typing rule of the source. Proven bodies:
 `compiler/e2e_native_verdict_aggregates_test.go` (`check_ok` passing a
 sum type to `is_ok`).
 
+**RV64 stores through spans as memories (2026-09-14).** The RV64 lane
+records a store through a span base in the path's write log
+(`spanStoreRV64`, the address resolved as a load's is: `rv64SpanAddress`
+over `&v + K` and `&v + (idx << s)`), so the Oak side's assignments are
+compared as memories on RV64 as they have been on AArch64
+(`decideEffects`). The trusted reason "a store through a span" is gone
+from the RV64 tally: 149 bodies proven on RV64, 151 on AArch64.
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built

@@ -2,6 +2,7 @@ package asm
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/SCKelemen/oak/ast"
 )
@@ -274,7 +275,7 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 					return x.globalStoreRV64(reg(0), mem, width, global, state)
 				}
 			}
-			return "a store through a span (the verifier decides results, not memory effects)", false
+			return x.spanStoreRV64(reg(0), mem, width, state)
 		}
 		return x.frameAccessRV64(reg(0), mem, width, name, true, state)
 	}
@@ -332,55 +333,28 @@ func (x *pathExecutor) globalStoreRV64(src Register, mem Memory, width int, glob
 // checker's guarded-index idiom (docs/spec/94-assembler.md §9). The load
 // width is the element width; lw/lh/lb sign-extend, lwu/lhu/lbu zero-extend.
 func (x *pathExecutor) spanLoadRV64(dest Register, mem Memory, width int, name string, state *symbolicState) (string, bool) {
-	address, bound := state.regs[mem.Base.Num]
-	if !bound {
-		return "a load through a register that is not a span base", false
+	if address, bound := state.regs[mem.Base.Num]; bound {
+		if param, offset, isBase := spanBaseOf(address); isBase {
+			if record, isRecord := x.records[param]; isRecord {
+				// The caller's copy of a record argument: a load at a leaf's
+				// exact offset and width is that leaf.
+				value, ok := x.recordBytes(record.leaves, offset+mem.Offset, int64(width))
+				if !ok {
+					return "a load from a record argument cutting through a field", false
+				}
+				value = zeroExtend(value, 64)
+				switch name {
+				case "lw", "lh", "lb":
+					value = extendTerm(value, width*8, 64, true)
+				}
+				state.write(dest, value)
+				return "", true
+			}
+		}
 	}
-	var span string
-	var index *term
-	if param, offset, isBase := spanBaseOf(address); isBase {
-		if record, isRecord := x.records[param]; isRecord {
-			// The caller's copy of a record argument: a load at a leaf's
-			// exact offset and width is that leaf.
-			value, ok := x.recordBytes(record.leaves, offset+mem.Offset, int64(width))
-			if !ok {
-				return "a load from a record argument cutting through a field", false
-			}
-			value = zeroExtend(value, 64)
-			switch name {
-			case "lw", "lh", "lb":
-				value = extendTerm(value, width*8, 64, true)
-			}
-			state.write(dest, value)
-			return "", true
-		}
-		elem := x.spans[param]
-		offset += mem.Offset
-		if elem == 0 || offset%elem != 0 || offset < 0 {
-			return "a span offset not aligned to an element", false
-		}
-		span, index = param, constTerm(uint64(offset/elem), 32)
-	} else if address.kind == termBinary && address.op == "add" {
-		// &v + (idx << s), either order.
-		base, scaled := address.left, address.right
-		if _, _, isBase := spanBaseOf(base); !isBase {
-			base, scaled = address.right, address.left
-		}
-		param, offset, isBase := spanBaseOf(base)
-		if !isBase || offset != 0 || mem.Offset != 0 {
-			return "a load through an address that is not a span element", false
-		}
-		switch {
-		case x.spans[param] == 1:
-			// Byte elements: the index is the offset, unscaled.
-			span, index = param, scaled
-		case scaled.kind == termBinary && scaled.op == "shl" && scaled.right.kind == termConst && int64(1)<<scaled.right.value == x.spans[param]:
-			span, index = param, scaled.left
-		default:
-			return "an element address whose scale is not the element size", false
-		}
-	} else {
-		return "a load through a register that is not a span base", false
+	span, index, reason, ok := x.rv64SpanAddress(mem, state)
+	if !ok {
+		return reason, false
 	}
 	if int64(width) != x.spans[span] {
 		return fmt.Sprintf("a %d-byte load over %d-byte elements", width, x.spans[span]), false
@@ -392,6 +366,76 @@ func (x *pathExecutor) spanLoadRV64(dest Register, mem Memory, width int, name s
 		value = extendTerm(value, width*8, 64, true)
 	}
 	state.write(dest, value)
+	return "", true
+}
+
+// rv64SpanAddress resolves the address a load or store through a span
+// base names: `&v + K` (a constant offset, K a multiple of the element
+// size) or `&v + (idx << s)` with 2^s the element size — the checker's
+// guarded-index idiom — as the span and the 32-bit element index.
+func (x *pathExecutor) rv64SpanAddress(mem Memory, state *symbolicState) (span string, index *term, reason string, ok bool) {
+	address, bound := state.regs[mem.Base.Num]
+	if !bound {
+		return "", nil, "a load through a register that is not a span base", false
+	}
+	if param, offset, isBase := spanBaseOf(address); isBase {
+		elem := x.spans[param]
+		offset += mem.Offset
+		if elem == 0 || offset%elem != 0 || offset < 0 {
+			return "", nil, "a span offset not aligned to an element", false
+		}
+		return param, constTerm(uint64(offset/elem), 32), "", true
+	}
+	if address.kind == termBinary && address.op == "add" {
+		// &v + (idx << s), either order.
+		base, scaled := address.left, address.right
+		if _, _, isBase := spanBaseOf(base); !isBase {
+			base, scaled = address.right, address.left
+		}
+		param, offset, isBase := spanBaseOf(base)
+		if !isBase || offset != 0 || mem.Offset != 0 {
+			return "", nil, "a load through an address that is not a span element", false
+		}
+		switch {
+		case x.spans[param] == 1:
+			// Byte elements: the index is the offset, unscaled.
+			return param, truncate(scaled, 32), "", true
+		case scaled.kind == termBinary && scaled.op == "shl" && scaled.right.kind == termConst && int64(1)<<scaled.right.value == x.spans[param]:
+			return param, truncate(scaled.left, 32), "", true
+		default:
+			return "", nil, "an element address whose scale is not the element size", false
+		}
+	}
+	return "", nil, "a load through a register that is not a span base", false
+}
+
+// spanStoreRV64 executes a store through a span parameter's base: the
+// element at the address takes the stored register's value at the element
+// width, in the path's write log (asm/effects.go), as the AArch64 lane's
+// spanStore does; the Oak side's assignments are compared as memories.
+func (x *pathExecutor) spanStoreRV64(src Register, mem Memory, width int, state *symbolicState) (string, bool) {
+	if len(x.loopStack) > 0 {
+		return "a span store in a data-dependent loop body", false
+	}
+	if address, bound := state.regs[mem.Base.Num]; bound {
+		if param, _, isBase := spanBaseOf(address); isBase {
+			if _, isRecord := x.records[param]; isRecord {
+				return "a store into a record argument", false
+			}
+		}
+	}
+	span, index, reason, ok := x.rv64SpanAddress(mem, state)
+	if !ok {
+		return strings.Replace(reason, "a load", "a store", 1), false
+	}
+	if int64(width) != x.spans[span] {
+		return fmt.Sprintf("a %d-byte store over %d-byte elements", width, x.spans[span]), false
+	}
+	value, okValue := state.read(src)
+	if !okValue {
+		return "unbound register read", false
+	}
+	state.writes = appendWrite(state.writes, span, index, truncate(value, width*8), nil)
 	return "", true
 }
 
