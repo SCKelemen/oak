@@ -270,6 +270,8 @@ func declarationName(stmt ast.Statement) string {
 		return s.Name.Value
 	case *ast.InterfaceType:
 		return s.Name.Value
+	case *ast.LiteralsDeclaration:
+		return s.Name.Value
 	}
 	return ""
 }

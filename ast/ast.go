@@ -1588,6 +1588,37 @@ type ProtocolDeclaration struct {
 	Exported bool
 }
 
+// LiteralsDeclaration is `Name: literals = { "GET ", "POST " }`
+// (docs/spec/113-literals.md): a set of byte-string literals the compiler
+// projects into a scanner — the nibble tables of the Teddy prefilter
+// computed at compile time and `name_count`, `name_find`, `name_which`
+// over the standard library's kernel.
+type LiteralsDeclaration struct {
+	BaseNode
+	Token    token.Token // the declaration name token
+	EndToken token.Token // closing brace
+	Name     *Identifier
+	Literals []*StringLiteral
+	Exported bool
+}
+
+func (d *LiteralsDeclaration) statementNode()       {}
+func (d *LiteralsDeclaration) TokenLiteral() string { return d.Token.Literal }
+func (d *LiteralsDeclaration) String() string {
+	var out bytes.Buffer
+	out.WriteString(d.Name.Value)
+	out.WriteString(": literals = {")
+	for i, lit := range d.Literals {
+		if i > 0 {
+			out.WriteString(",")
+		}
+		out.WriteString(" ")
+		out.WriteString(fmt.Sprintf("%q", lit.Value))
+	}
+	out.WriteString(" }")
+	return out.String()
+}
+
 // ProtocolFairness is one `fair step` (weak) or `strongly fair step`
 // entry: every line of the step, its payload quantified.
 type ProtocolFairness struct {

@@ -362,6 +362,11 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		if err != nil {
 			return nil, err
 		}
+		// Literals declarations (compiler/literals.go) project into the
+		// scanner's tables and functions over the standard library kernel.
+		if err := lowerLiterals(tree); err != nil {
+			return nil, err
+		}
 		// Declared layout claims (compiler/layout_claims.go): a record that
 		// says struct(no_padding) is measured now, so the diagnostic names
 		// the padded field instead of the backend failing closed.
