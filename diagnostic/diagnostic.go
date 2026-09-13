@@ -463,6 +463,14 @@ func NodeToRange(node ast.Node) lsp.Range {
 		return TokenToRange(&n.Token)
 	case *ast.InterfaceType:
 		return TokenToRange(&n.Token)
+	case *ast.TryExpression:
+		return TokenToRange(&n.Token)
+	case *ast.VariantPattern:
+		return TokenToRange(&n.Token)
+	case *ast.BindingPattern:
+		return TokenToRange(&n.Token)
+	case *ast.ExpressionStatement:
+		return TokenToRange(&n.Token)
 	default:
 		return lsp.Range{Start: lsp.Position{Line: 0, Character: 0}, End: lsp.Position{Line: 0, Character: 0}}
 	}

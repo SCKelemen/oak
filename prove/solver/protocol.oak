@@ -162,10 +162,13 @@ capitalized_str: (p: Par, w: [*]u32, sid: u32): u32 {
   intern_buf(p, w, span(&buf), n + first - first)
 }
 
-// from_str: the local `from_<step>_<line>` of a guarded projection.
+// from_str: the local `oak_from_<step>_<line>` of a guarded projection —
+// the projection's own locals (oak_result, oak_done, oak_record, and these)
+// carry the oak_ prefix the Go projection reserves (compiler/protocols.go
+// reservedPayloadName), so a payload name never captures them.
 from_str: (p: Par, w: [*]u32, si: u32, k: u32): u32 {
   buf: [32]u32
-  n: u32 = nb_lit(span(&buf), u32(0), u64(0x5F6D6F7266), u64(0), u32(5))
+  n: u32 = nb_lit(span(&buf), u32(0), u64(0x6D6F72665F6B616F), u64(0x5F), u32(9))
   n = nb_decimal(span(&buf), n, si)
   n = nb_byte(span(&buf), n, u32(95))
   n = nb_decimal(span(&buf), n, k)
@@ -247,8 +250,8 @@ protocol_names: (p: Par, w: [*]u32, name: u32): Names {
     state_n: lit_str(p, w, u64(0x6574617473), u64(0), u32(5)),
     step_n: lit_str(p, w, u64(0x70657473), u64(0), u32(4)),
     bool_t: lit_str(p, w, u64(0x6C6F6F42), u64(0), u32(4)),
-    result: lit_str(p, w, u64(0x746C75736572), u64(0), u32(6)),
-    done: lit_str(p, w, u64(0x656E6F64), u64(0), u32(4)),
+    result: lit_str(p, w, u64(0x757365725F6B616F), u64(0x746C), u32(10)),
+    done: lit_str(p, w, u64(0x656E6F645F6B616F), u64(0), u32(8)),
     current: lit_str(p, w, u64(0x746E6572727563), u64(0), u32(7)),
     i: lit_str(p, w, u64(0x69), u64(0), u32(1)),
     bytes: lit_str(p, w, u64(0x7365747962), u64(0), u32(5)),
@@ -273,7 +276,7 @@ protocol_names: (p: Par, w: [*]u32, name: u32): Names {
     data_t: derived_str(p, w, name, false, u64(0x61746144), u64(0x0), u32(4)),
     initial_data_f: derived_str(p, w, name, true, u64(0x6C616974696E695F), u64(0x617461645F), u32(13)),
     data_n: lit_str(p, w, u64(0x61746164), u64(0x0), u32(4)),
-    record_n: lit_str(p, w, u64(0x64726F636572), u64(0x0), u32(6))
+    record_n: lit_str(p, w, u64(0x6F6365725F6B616F), u64(0x6472), u32(10))
   }
 }
 

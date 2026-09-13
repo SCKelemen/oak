@@ -3,6 +3,7 @@ import Oak.Effects
 import Oak.EffectRows
 import Oak.Kernel
 import Oak.BufferCustody
+import Oak.AlignmentFact
 import Oak.MemoryOrder
 import Oak.HappensBefore
 import Oak.SequentialConsistency
@@ -97,6 +98,7 @@ import Oak.Loops
 import Oak.Regions
 import Oak.SessionObligations
 import Oak.SessionObligationsProved
+import Oak.Measured
 import Oak.Reduce
 import Oak.Floats
 import Oak.FloatBounds
@@ -143,6 +145,7 @@ import Oak.Stdlib.NormalizeTables
 import Oak.Stdlib.Normalize17
 import Oak.Typestate
 import Oak.IoPort
+import Oak.ObjectStore
 import Oak.ProtocolQuorum
 import Oak.TimeInterval
 import Oak.ProtocolConformance

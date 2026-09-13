@@ -97,15 +97,21 @@ sequence of entries separated by newlines or commas:
   a declared record whose fields are command scalars, read as `cmd.slot`
   in guards and effects; the model-checker module quantifies it over the
   record set `Cmd == [slot: CmdSlot, value: CmdValue]`, one constant per
-  field for the configuration to assign (`CmdSlot = {0, 1, 2, 3}`), and
+  field for the configuration to assign (`CmdSlot = {0, 1, 2, 3, 4}`, one past the largest literal, §4), and
   reads the fields as `cmd.slot`; the typed-command derive generates and encodes it
   field by field, and `oak prove` enumerates it with the step when its
   fields are 8- or 16-bit. A field outside the command scalars is a shape
-  error naming it. An index is checked at
-  run time like any Oak index, so a guard that indexes by the payload
-  bounds it first (`u32(who) < u32(2) && data.parked[u32(who)]`); the
-  model-checker module gets the same conjunct and a payload domain that
-  matches.
+  error naming it. An index into an `[N]T` path is **bounded by its
+  line**: for every non-constant index `i` the line's guard or effects
+  use, `i < u32(N)` is conjoined to the line's guard before it, inner
+  indexes before the paths that use them, and every reading takes its
+  guard from there — `name_legal` and `name_next`, the static projection
+  (§2b), the exclusivity theorems, the model-checker module (§4), the
+  monitor (§2c) — so a step whose index is out of range is illegal
+  everywhere, never a trap in one reading and an evaluation error in
+  another. A guard may still spell the bound (`u32(who) < u32(2) &&
+  data.parked[u32(who)]`); it is then stated twice. A constant index out
+  of range is a shape error.
 
 - `fair step` and `strongly fair step` — a fairness assumption on one step
   name: every line of the step, its payload quantified. The model-checker
@@ -121,8 +127,8 @@ sequence of entries separated by newlines or commas:
   them itself for a finite machine (`125-verification.md` §2b), over the
   reachable states of the projection. Each side is also projected as a
   Bool predicate over the state and data (`name_live1_from`,
-  `name_live1_to`, ...). A state no transition reaches, an unknown step,
-  or data in a protocol that declares none is a shape error
+  `name_live1_to`, ...). A state no path from `initial` reaches, an
+  unknown step, or data in a protocol that declares none is a shape error
   (`OAK-M0301`).
 
 States are the names `initial` and the transition lines mention, in order of
@@ -157,9 +163,17 @@ Shape errors (`OAK-M0301`): no `initial`, no transitions, a lowercase state,
 a payload that is not a scalar or a record of scalars, a payload that changes between lines of one
 step, a `(name, from)` pair declared twice without guards, `data` without
 `init` or `init` without `data`, an `init` that misses or invents a field, a
-guard or effect that names `data` when none is declared, a data field named `state`, `step` or `data` (the projection's own names), a `via` without a
-`resource`, an initial state no transition leaves, and a projection whose
-name the program already declares.
+guard or effect that names `data` when none is declared, a data field named `state`, `step` or `data` (the projection's own names), a payload
+named `state`, `step`, `data`, `handle` or `m` or starting with `oak_`
+(the projections' parameters and locals, §2), a `via` without a
+`resource`, a `when` guard on a `via` line (§5), an initial state no
+transition leaves, a state no path of transitions reaches from the
+initial state, a constant index out of range, a projection whose name the
+program already declares, and two projections that spell one name — a
+state `State`, a step `monitor`, a protocol `FooBar` beside a state `Bar`
+of protocol `Foo` — found over every protocol of the program before any
+is appended, so the checker never reports a redeclaration of code the
+program did not write.
 
 ## 2. Projection into Oak
 
@@ -190,6 +204,13 @@ one-element `NameData` array it spans), asks `name_legal` before acting, and
 moves with `name_next`; an illegal step is a bug in the caller and traps like
 any failed assertion.
 
+The projections' parameters are `state`, `step` and `data` (`handle` in
+§2b, `m` in §2c); their locals carry the `oak_` prefix (`oak_done`,
+`oak_result`, `oak_record`, `oak_from_i_k`, `oak_d`), which no payload may
+take (§1), so a guard that names its payload always reads the argument and
+never a generated binder. Every projected name of every protocol in the
+program is collected before any is appended (§1).
+
 ### 2c. The conformance monitor
 
 The declaration also projects its machine as something an implementation
@@ -200,7 +221,7 @@ written (`docs/notes/tigerbeetle-2026-09.md` finding 7):
 | --- | --- |
 | `NameMonitor` | `struct { state: NameState, violations: u32 }` |
 | `name_monitor` | `(): NameMonitor`, the initial state and no violations |
-| `name_observe` | `(m: [*]NameMonitor, [data: [*]NameData,] step: NameStep): Bool`: when `name_legal` admits the step from the monitor's state (and data), moves with `name_next` and returns true; otherwise counts a violation, leaves the state where the last legal step put it, and returns false |
+| `name_observe` | `(m: [*]NameMonitor, [data: [*]NameData,] step: NameStep): Bool`: when `name_legal` admits the step from the monitor's state (and data), moves with `name_next` and returns true; otherwise counts a violation (the count saturates at the `u32` maximum rather than wrapping to zero), leaves the state where the last legal step put it, and returns false |
 | `name_conforms` | `(m: [*]NameMonitor): Bool`, no violation observed |
 
 An implementation or a scenario feeds the monitor every transition it
@@ -209,7 +230,8 @@ the scenario replays — and asserts `name_conforms` at the end, or
 `test_check(name_observe(...), id)` at each step. A violation is a
 correctness failure by construction: the declaration did not admit what
 the implementation did. Because the monitor keeps the last legal state,
-one violation does not hide the ones after it. A step the guard refuses
+one violation does not hide the ones after it, and because the count
+saturates, no run is long enough to wrap back to conforming. A step the guard refuses
 (`write` with a slot out of range) is a violation like a step from the
 wrong state (`write` after `seal`); both are what `name_legal` says
 (`compiler/e2e_protocol_monitor_test.go`). Cross-replica convergence — the
@@ -315,6 +337,11 @@ applied to the protocol's own machine, and it reuses §5a's checker.
 | `name_t` | one per **source state** of step `t(p: P)`: the step's lines from that state, tried in declaration order as `name_next` tries them. When the group is one unguarded line `From -> To`: `(handle: Name[NameFrom], p: P): Name[NameTo]`, the line's effects applied to the data. A step with several source states projects `name_t_from_s` per state |
 | `NameTOutcome`, `name_t` | when the group has a guard: `NameTOutcome: type = ToS1(Name[NameS1]) \| ToS2(…) \| Refused(Name[NameFrom])` — one variant per target state reached by a line up to and including the first unguarded one, spelled `To` plus the state so it never collides with `NameState`'s variants, and `Refused` only when no line is unguarded (`NameTFromSOutcome` per source state when there are several) — and `name_t: (handle: Name[NameFrom], p: P): NameTOutcome`: the guards are decided on the handle's data at run time, the first line that holds moves the handle into its target's variant, and `Refused` hands the same handle back |
 
+The handle parameter is spelled `handle` and the outcome variants
+`To<State>` and `Refused`; a payload may not be named `handle` (§1), and
+the guards of a group are the lines' effective guards, index bounds
+included (§1), so a step with an index out of range is `Refused`.
+
 The projection registers these as a resource protocol over `Name`
 (`typechecker.ResourceProtocolDeclaration`, spoken in marker names):
 `name_handle` returns fresh authority, every transition consumes its
@@ -365,7 +392,7 @@ payload or a refined field of a record payload, over a **defined set**
 rather than a constant: `Op == {value \in 0..255 : (value < 2)}`, the
 predicate translated like a guard with `value` as its variable, so the
 configuration assigns nothing for it (`oak protocol -cfg` omits it) and
-the domain cannot drift from the declaration — `TypeOK` (`Nat`, `Int`, `BOOLEAN` by field type), and
+the domain cannot drift from the declaration — `TypeOK` (`0..255`, `0..65535`, `0..4294967295` and the signed ranges by field width, `BOOLEAN`; `Nat` and `Int` for 64-bit fields), and
 `Spec`. Guards and effects translate from the subset a line may use: field,
 element and element-field reads (`peers[i].acked`), the payload, literals,
 width conversions, `+ - * / %`, comparisons, `&& || !`, the quantifier
@@ -387,8 +414,11 @@ and declared liveness is the property `Liveness`, one conjunct per entry:
 data side through the same translation as a guard. `oak protocol -tla Name
 -cfg out.cfg` also writes the TLC configuration: `SPECIFICATION Spec`,
 `INVARIANT TypeOK`, `PROPERTY Liveness` when the declaration states one,
-and a small domain per payload constant (`{TRUE, FALSE}`; `{0, 1, 2, 3}`
-for a scalar) to widen as the model needs. Scenarios extend the module for
+and a small domain per payload constant (`{TRUE, FALSE}`; for a scalar
+the integers from 0 through one past the largest literal the
+declaration's guards and effects mention, at least `{0, 1, 2, 3}`, clipped
+to the type's range, so every boundary a guard tests and the value beyond
+it are explored) to widen as the model needs. Scenarios extend the module for
 environment assumptions beyond the declared fairness in a module of their
 own, so regenerating never overwrites hand-written properties. The
 generated header names the source it came from. Conformance (§4a)
@@ -503,7 +533,9 @@ that performs it. With at least one `resource T`, the declaration projects a
 resource protocol fact (typechecker/resource_resolution.go): the protocol's
 states, initial state, and one transition per `via` line, checked against the
 typed program by the existing resource resolution. Lines without `via` stay
-executable-only.
+executable-only. A `via` line carries no `when` guard: the callable's
+contract decides the step, and a guard the resource checker cannot read
+would hold in the dynamic projection alone (`OAK-M0301`).
 
 The callable may carry its **resource parameter modes** in parentheses:
 
@@ -674,6 +706,25 @@ The rules:
    resource is left in, a sum over those states when several are possible,
    never a flag (`compiler/e2e_typestate_fallible_test.go`).
 
+6. A handle may carry **fact indices** beyond its state: a `fact F = A | B`
+   clause names a further type parameter of the resource template and the
+   closed set of markers it ranges over, projected to marker types like
+   the states. `Segment[S, F]: type = struct { ... }` with `fact F = Open |
+   Sealed` makes `Segment[Published, Sealed]` a type: a sealed segment is
+   a fact the types see, never a flag the guards test. The template's
+   first parameter is the state and each further one a declared fact, in
+   order; a template with any other parameter count (region parameters,
+   ordinary generics) is not typestate-indexed, as before. A via callable
+   may move a fact (`seal: (s: Segment[Published, Open]): Segment[Published,
+   Sealed]`) or leave it polymorphic (`publish[F]: (s: Segment[Fresh, F]):
+   Segment[Published, F]`); the state position still names a concrete
+   state, and a fact position names a marker of its set or a type variable
+   (`OAK-M0301` otherwise). Construction (rule 4) is keyed on the state;
+   a transition into a state may construct it with any fact. The
+   protocol's machine, module and monitor read no fact: facts are
+   type-level, and the model-checker module is unchanged
+   (`compiler/e2e_typestate_facts_test.go`).
+
 A typestate resource may also carry **region parameters**
 (`50-borrowing.md` §8c): `Node[R, S]: type = struct { data: View[f32, R],
 n: u32 }` with `initial Lazy` and `realize: Lazy -> Realized` gives
@@ -726,6 +777,19 @@ the first of those to land.
 - Payloads and data beyond the current shapes: a record payload with array
   fields, nested records more than one level deep, and a domain the
   configuration chooses per step rather than the default four values.
+- A symbolic-prover reading (`docs/notes/provers-2026-09.md`). States,
+  lines, payloads, and data map onto Tamarin's multiset rewriting one rule
+  per line — the every-line reading TLC also takes — and a sanity export
+  (`exists-trace` for each state, the invariant theorems as `all-traces`
+  lemmas) would be a third reading to compare with TLC and `oak prove`. A
+  security reading needs what the declaration has no spelling for: message
+  terms with an equational theory, fresh names, channels, an adversary,
+  roles over unbounded sessions, and properties over the trace rather than
+  over `(state, data)`; the constitution's rule that one declaration
+  drives every view argues for adding them to the declaration, not to a
+  side file. Fixed-width arithmetic, division, and index bounds — decided
+  exactly here — have no exact counterpart there, so any export is an
+  abstraction whose direction must be stated.
 
 Landed since this list was first written: mixed-symbol lowering (§2a:
 steps with classed `u8`/`u16` payloads beside steps without), the static

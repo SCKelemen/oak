@@ -122,6 +122,47 @@ run with concrete functions installed in the slots may do;
 effect is in the bound, and `forbids_sound` that a `forbids` on a function
 whose bound excludes the effect holds for every admitted run.
 
+### 2b. Steps as values
+
+The ml pilot's F4 / 5.19, "a step is a value that replays without the
+host": the two effects a device runtime has are **`Device.Launch`** (a
+kernel is enqueued) and **`Device.Readback`** (the host reads a result and
+so waits for the device), declared on the runtime's externs like any
+other class (§2), and a **step** is a record whose function field carries
+the row `{ Device.Launch }`:
+
+```oak
+launch: (kernel: c.UInt32): () effects { Device.Launch } = c.extern("ml_launch")
+readback: (slot: c.UInt32): c.UInt32 effects { Device.Readback } = c.extern("ml_readback")
+
+Step: type = struct { run: (u32) -> () effects { Device.Launch } }
+
+decode_token: (t: u32): () = { launch(c.UInt32(t)) ... }   // launches only
+replay: (s: Step, n: u32): () forbids { Device.Readback } = {
+  run: (u32) -> () effects { Device.Launch } = s.run
+  i: u32 = 0
+  while i < n { run(i)  i = i + 1 }
+}
+s: Step = Step { run: decode_token }                          // checked here
+```
+
+Nothing new is needed for this: `Step { run: decode_token }` is a value
+entering a rowed field, so the body's reachable effects are checked
+against the row where the step is built (§2a, `OAK-E0105`) — a body that
+calls `readback`, directly or through any callee, is refused there by the
+reader's name, and the row is what a later `replay` sees, so its `forbids
+{ Device.Readback }` holds through the value without knowing the body.
+"No host in the loop" is therefore a property the checker gives the
+program, not a discipline a capture API asks of its callers: a step can be
+stored in an array, handed to a scheduler, and replayed, and every run is
+launches only. `Oak.EffectRows.forbids_sound` is the theorem: under the
+row check every effect a run performs is in the static bound. The
+persistent form the pilot may build — a step whose body is one launch of a
+device-side program — is a `Step` whose `run` calls one `launch`; the
+chapter adds no form for it. `compiler/e2e_steps_test.go` pins the idiom:
+a launching step is admitted, a reading step is refused by name, a stored
+step replays under the forbid.
+
 ## 3. No hidden allocation
 
 Ordinary language constructs do not allocate unless their semantics explicitly carry an allocation effect.
@@ -302,6 +343,56 @@ error** naming the global and its position. The generated C never runs a
 hidden global constructor, and the failure is Oak's diagnostic, never the
 C compiler's (ml finding F19). Runtime initialization is written at the top
 of `main`.
+
+### 10b. Measured constants
+
+```oak
+TILE_GROUPS: u32 (measured: 16, 1024) = 128
+```
+
+A **measured constant** is a top-level integer binding whose value is the
+machine's, not the program's: the declaration states the inclusive range
+the program is written for and a **pinned** value inside it, and the value
+the program runs with is supplied **at load**, within the range, or is the
+pinned value when nothing is supplied. The clause takes the place of a
+placement clause after the type (`65-machine-memory.md`); the type is a
+fixed-width integer, the range lies inside the type's, and the pinned
+value is an integer literal inside the range (`OAK-T0502` otherwise). The
+constant is never assigned (`OAK-T0502`), and it is **not a compile-time
+constant**: a later initializer may not fold it (`OAK-T0501`), the C
+backend emits it as a mutable static rather than a folded `static const`
+(`90-backend.md` §8a), and the extent facts learn nothing from its pinned
+value.
+
+**The load.** The compiled program declares one weak hook,
+`int64_t oak_measured_value(const char *name, int64_t pinned)`, and an
+initializer that asks it for each constant by its Oak name without the
+package prefix, checks the answer against the declared range, and stops
+the program — the constant's name and the range on stderr where there is
+one, a trap otherwise — when it lies outside: a knob outside its range
+never reaches code proved for the range. Hosted builds define the hook
+over the environment — `OAK_MEASURED_<NAME>`, a decimal integer, absent or
+empty meaning pinned — and run the initializer as a constructor, so an
+executable sees the values before `main` and a dynamically loaded library
+at load; a host that wants its own source (a tuning file, a measurement)
+defines the hook itself, and the check still stands. Freestanding code
+calls `oak_measured_init` from its startup. The interpreter reads the same
+environment variables under the same check. `oak vet` lists every
+measured constant with its type, range, and pinned value beside the
+recorded assumptions.
+
+**The proof.** The extraction renders a measured constant as an opaque
+value of its type with the range as a hypothesis, `NAME_range`
+(`95-extraction.md` §3): a theorem about code that reads it is a theorem
+for every value the load may admit, which is exactly the set of values a
+run can have — `Oak.Measured.load_in_range` proves that whatever the host
+supplies, the constant a run computes with lies in the declared range,
+`load_none` that nothing supplied means pinned, and `load_dichotomy` that
+a run either computes with a value in the range or does not run. A rule
+proved once over the range is therefore proved for every machine it is
+tuned on, and the proof never names the number (the ml pilot's ask 5.21,
+design log 0080: the split targets of a matmul, measured per machine, with
+the cases theorem quantified over them).
 
 ## 11. Closures
 

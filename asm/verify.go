@@ -1454,7 +1454,10 @@ func (x *pathExecutor) leafInput(name string, width int) *term {
 func (x *pathExecutor) recordBytes(leaves []compositeLeaf, offset, size int64) (*term, bool) {
 	var value *term
 	for _, leaf := range leaves {
-		end := leaf.offset + int64(leaf.width)/8
+		// A leaf narrower than a byte (a Bool) still occupies its byte:
+		// rounding its width down to zero bytes would drop a Bool at the
+		// start of the window and read the field as zero.
+		end := leaf.offset + (int64(leaf.width)+7)/8
 		if end <= offset || leaf.offset >= offset+size {
 			continue
 		}
@@ -1552,13 +1555,28 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 	}
 	{
 		switch instr.Mnemonic {
-		case "mov":
+		case "mov", "movz":
 			dest := instr.Operands[0].(Register)
 			value, ok := operandTerm(state, instr.Operands[1], widthOf(dest.Class))
 			if !ok {
 				return "unbound register read", false
 			}
 			state.write(dest, value)
+		case "movk":
+			// Insert a halfword: the destination's other bits are kept.
+			dest := instr.Operands[0].(Register)
+			width := widthOf(dest.Class)
+			imm, isImm := instr.Operands[1].(Immediate)
+			if !isImm {
+				return "movk without an immediate", false
+			}
+			old, ok := state.read(dest)
+			if !ok {
+				return "unbound register read", false
+			}
+			keep := ^(uint64(0xffff) << uint(imm.Shift)) & mask(width)
+			kept := binaryTerm("and", old, constTerm(keep, width))
+			state.write(dest, binaryTerm("or", kept, constTerm(uint64(imm.Value)<<uint(imm.Shift), width)))
 		case "cmp":
 			left := instr.Operands[0].(Register)
 			width := widthOf(left.Class)
@@ -1899,7 +1917,10 @@ type oakLowering struct {
 	// Records/ADTs) and the shapes resolved from them.
 	records map[string]*ast.RecordLiteral
 	adts    map[string]*ast.ADTType
-	types   map[string]*oakType
+	// constants are the program's folded constant globals
+	// (asm.Function.Constants): an identifier naming one is that value.
+	constants map[string]Constant
+	types     map[string]*oakType
 }
 
 // oakLocal is a typed local of a statement body: its current symbolic
@@ -3189,6 +3210,13 @@ func (lo *oakLowering) constantIndexValue(expr ast.Expression) (int64, bool) {
 		if local, isLocal := lo.locals[e.Value]; isLocal && local.value.kind == termConst {
 			return int64(local.value.value), true
 		}
+		if _, isLocal := lo.locals[e.Value]; !isLocal {
+			if _, isParam := lo.params[e.Value]; !isParam {
+				if value, w, ok := lo.constantValue(e.Value, 64); ok && w <= 64 {
+					return int64(value), true
+				}
+			}
+		}
 	case *ast.InvocationExpression:
 		if ident, isIdent := e.Function.(*ast.Identifier); isIdent && len(e.Arguments) == 1 {
 			switch ident.Value {
@@ -3479,6 +3507,9 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 				return constTerm(value&mask(w), width), "", true
 			}
 			return truncate(paramTerm(e.Value, w), width), "", true
+		}
+		if value, _, ok := lo.constantValue(e.Value, width); ok {
+			return constTerm(value, width), "", true
 		}
 		return nil, fmt.Sprintf("identifier %s (not a parameter)", e.Value), false
 	case *ast.IntegerLiteral:
@@ -3836,6 +3867,26 @@ func (lo *oakLowering) lowerCondition(expr ast.Expression) (*term, string, bool)
 	return cmpTerm(code, left, right), "", true
 }
 
+// constantValue reads a constant global's value at width: the bit pattern
+// at its declared width, sign-extended when the type is signed and width is
+// wider, masked when narrower — the value the native backend materialized
+// (nativegen's constant). Reports the declared width beside the value.
+func (lo *oakLowering) constantValue(name string, width int) (uint64, int, bool) {
+	c, isConst := lo.constants[name]
+	if !isConst {
+		return 0, 0, false
+	}
+	cw, signed, ok := contractBits(&ast.Identifier{Value: c.Type})
+	if !ok {
+		return 0, 0, false
+	}
+	value := c.Value & mask(cw)
+	if signed && width > cw && (value>>uint(cw-1))&1 == 1 {
+		value |= ^mask(cw)
+	}
+	return value & mask(width), cw, true
+}
+
 // operandContract finds the width and signedness of a comparison from the
 // parameters it mentions (Oak's type checker has already made both sides
 // one type; the verifier only needs to read it off a parameter).
@@ -3847,6 +3898,11 @@ func (lo *oakLowering) operandContract(expr ast.Expression) (int, bool, bool) {
 		}
 		if w, isParam := lo.params[e.Value]; isParam {
 			return w, lo.signed[e.Value], true
+		}
+		if c, isConst := lo.constants[e.Value]; isConst {
+			if w, signed, ok := contractBits(&ast.Identifier{Value: c.Type}); ok {
+				return w, signed, true
+			}
 		}
 	case *ast.IndexExpression:
 		if lo.aggregateChain(e) {
@@ -4021,6 +4077,7 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64) *oakLowering {
 	lowering := newLowering(sig)
 	lowering.records, lowering.adts = fn.Records, fn.ADTs
+	lowering.constants = fn.Constants
 	lowering.concrete = concrete
 	lowering.bindAggregateParams(sig)
 	return lowering

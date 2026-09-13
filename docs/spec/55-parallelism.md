@@ -115,6 +115,25 @@ theorem that names which two orders it makes equal. The canonical order
 is the one the program calls; the grouping named is the grouping
 computed.
 
+**The lane rule as an order.** The order a GPU reduction computes with
+— `count` lane-strided partial accumulators, then a butterfly over the
+lanes — is a named order too: `reduce.lanes(xs, zero, f, count, run)`
+folds element `i` into lane `(i / run) % count` (`reduce.lane_of`) in
+index order from `zero`, `count` a power of two up to 256, and combines
+the partials through the xor butterfly — rounds at offsets `count/2, …,
+1`, every lane taking `f(acc[l], acc[l ^ off])` from the values before the
+round — returning lane 0's value. Unlike `tree`, `zero` starts every
+lane. The interpreter, the C, and a kernel's threadgroup
+(`reduce.group_lanes`, `56-kernels.md` §7) compute it bit for bit, so a
+library whose canonical order is the lane rule (the ml pilot's `canon`,
+RFC 0001) writes it as this call and its theorems become language
+theorems: `Oak.Reduce.lanes` is the model, `bfly_two`/`bfly_four`/
+`bfly_eight` spell the butterfly's grouping, `lanes_one` says one lane is
+`reduce.left`, and `lanes_eq_left` proves that under `laws { associative,
+commutative, identity(zero) }` every lane count and run computes the
+sequential fold — the lane rule is a legal regrouping wherever the claim
+holds, and over floats one of the groupings `Oak.FloatBounds` bounds.
+
 **Declaring the order once.** A block may declare the order for every
 reduction inside it, so a routine says it once rather than at each call:
 

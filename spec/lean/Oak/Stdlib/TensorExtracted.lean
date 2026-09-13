@@ -28,6 +28,20 @@ structure MutTensor2 where
   deriving Repr, BEq, DecidableEq
 instance : Inhabited MutTensor2 := ⟨{ data := (#[] : Array Float32), rows := (0 : UInt32), cols := (0 : UInt32), row_stride := (0 : UInt32), col_stride := (0 : UInt32), offset := (0 : UInt32) }⟩
 
+structure RowMajor2 where
+  data : Array Float32
+  rows : UInt32
+  cols : UInt32
+  deriving Repr, BEq, DecidableEq
+instance : Inhabited RowMajor2 := ⟨{ data := (#[] : Array Float32), rows := (0 : UInt32), cols := (0 : UInt32) }⟩
+
+structure ColMajor2 where
+  data : Array Float32
+  rows : UInt32
+  cols : UInt32
+  deriving Repr, BEq, DecidableEq
+instance : Inhabited ColMajor2 := ⟨{ data := (#[] : Array Float32), rows := (0 : UInt32), cols := (0 : UInt32) }⟩
+
 def tensor_of (data : Array Float32) (rows : UInt32) (cols : UInt32) (fuel : Nat) : Option (Tensor2) := do
   let () ← (if (decide ((rows * cols) <= (data.size.toUInt32))) then pure () else none)
   pure ({ data := data, rows := rows, cols := cols, row_stride := cols, col_stride := (1 : UInt32), offset := (0 : UInt32) } : Tensor2)
@@ -235,6 +249,69 @@ def tensor_scale (x : Tensor2) (s : Float32) (out : MutTensor2) (fuel : Nat) : O
   let () ← (if ((out.rows == x.rows) && (out.cols == x.cols)) then pure () else none)
   let i : UInt32 := (0 : UInt32)
   let (out, i) ← tensor_scale.loop1 x s out i fuel
+  pure ((), out)
+
+def row_major_of (data : Array Float32) (rows : UInt32) (cols : UInt32) (fuel : Nat) : Option (RowMajor2) := do
+  let () ← (if (decide ((rows * cols) <= (data.size.toUInt32))) then pure () else none)
+  pure ({ data := data, rows := rows, cols := cols } : RowMajor2)
+
+def col_major_of (data : Array Float32) (rows : UInt32) (cols : UInt32) (fuel : Nat) : Option (ColMajor2) := do
+  let () ← (if (decide ((rows * cols) <= (data.size.toUInt32))) then pure () else none)
+  pure ({ data := data, rows := rows, cols := cols } : ColMajor2)
+
+def row_major_index (rows : UInt32) (cols : UInt32) (i : UInt32) (j : UInt32) (fuel : Nat) : Option (UInt32) := do
+  let () ← (if ((decide (i < rows)) && (decide (j < cols))) then pure () else none)
+  pure ((i * cols) + j)
+
+def col_major_index (rows : UInt32) (cols : UInt32) (i : UInt32) (j : UInt32) (fuel : Nat) : Option (UInt32) := do
+  let () ← (if ((decide (i < rows)) && (decide (j < cols))) then pure () else none)
+  pure (i + (j * rows))
+
+def row_major_at (m : RowMajor2) (i : UInt32) (j : UInt32) (fuel : Nat) : Option (Float32) := do
+  let r1 ← row_major_index m.rows m.cols i j fuel
+  pure (m.data.getD r1.toNat (Float32.ofBits 0))
+
+def col_major_at (m : ColMajor2) (i : UInt32) (j : UInt32) (fuel : Nat) : Option (Float32) := do
+  let r1 ← col_major_index m.rows m.cols i j fuel
+  pure (m.data.getD r1.toNat (Float32.ofBits 0))
+
+def row_major_transpose (m : RowMajor2) (fuel : Nat) : Option (ColMajor2) := do
+  pure ({ data := m.data, rows := m.cols, cols := m.rows } : ColMajor2)
+
+def col_major_transpose (m : ColMajor2) (fuel : Nat) : Option (RowMajor2) := do
+  pure ({ data := m.data, rows := m.cols, cols := m.rows } : RowMajor2)
+
+def row_major_tensor (m : RowMajor2) (fuel : Nat) : Option (Tensor2) := do
+  pure ({ data := m.data, rows := m.rows, cols := m.cols, row_stride := m.cols, col_stride := (1 : UInt32), offset := (0 : UInt32) } : Tensor2)
+
+def col_major_tensor (m : ColMajor2) (fuel : Nat) : Option (Tensor2) := do
+  pure ({ data := m.data, rows := m.rows, cols := m.cols, row_stride := (1 : UInt32), col_stride := m.rows, offset := (0 : UInt32) } : Tensor2)
+
+def matvec_rows.loop2 (w : RowMajor2) (x : Array Float32) (i : UInt32) (acc : Float32) (k : UInt32) : Nat → Option (Float32 × UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if (decide (k < w.cols)) then do
+      let acc := (acc + ((w.data.getD ((i * w.cols) + k).toNat (Float32.ofBits 0)) * (x.getD k.toNat (Float32.ofBits 0))))
+      let k := (k + (1 : UInt32))
+      matvec_rows.loop2 w x i acc k fuel
+    else pure (acc, k)
+
+def matvec_rows.loop1 (w : RowMajor2) (x : Array Float32) (out : Array Float32) (i : UInt32) : Nat → Option (Array Float32 × UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if (decide (i < w.rows)) then do
+      let acc : Float32 := (Float32.ofBits (0x00000000 : UInt32) /- 0.0 -/)
+      let k : UInt32 := (0 : UInt32)
+      let (acc, k) ← matvec_rows.loop2 w x i acc k fuel
+      let out := out.setIfInBounds i.toNat acc
+      let i := (i + (1 : UInt32))
+      matvec_rows.loop1 w x out i fuel
+    else pure (out, i)
+
+def matvec_rows (w : RowMajor2) (x : Array Float32) (out : Array Float32) (fuel : Nat) : Option (Unit × Array Float32) := do
+  let () ← (if (((x.size.toUInt32) == w.cols) && ((out.size.toUInt32) == w.rows)) then pure () else none)
+  let i : UInt32 := (0 : UInt32)
+  let (out, i) ← matvec_rows.loop1 w x out i fuel
   pure ((), out)
 
 end Oak.Stdlib.Tensor

@@ -15,6 +15,7 @@ package compiler
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -251,6 +252,9 @@ func ProtocolTLADeclared(decl *ast.ProtocolDeclaration, origin string, decls Pro
 	}
 	fmt.Fprintf(&b, "Init ==\n    %s\n\n", strings.Join(initTerms, "\n    /\\ "))
 	var nextTerms []string
+	// The effective guards (index bounds conjoined) are built with a
+	// synth whose tokens never reach the module text.
+	guardSynth := newSynth(helperContext(decl.Name.Token.SemanticContext, m.name+"TLA"))
 	for _, step := range m.steps {
 		head := variantName(step.name)
 		payload := ""
@@ -264,8 +268,8 @@ func ProtocolTLADeclared(decl *ast.ProtocolDeclaration, origin string, decls Pro
 		fmt.Fprintf(&b, "%s ==\n", head)
 		for i, line := range step.lines {
 			terms := []string{fmt.Sprintf("state = %q", line.From.Value)}
-			if line.Guard != nil {
-				guard, err := tlaExpr(line.Guard, env.with(payload, false))
+			if effective := m.lineGuard(guardSynth, line); effective != nil {
+				guard, err := tlaExpr(effective, env.with(payload, false))
 				if err != nil {
 					return "", fmt.Errorf("protocol %s: %s from %s: guard: %v", m.name, step.name, line.From.Value, err)
 				}
@@ -421,12 +425,50 @@ func ProtocolTLCConfig(decl *ast.ProtocolDeclaration) string {
 }
 
 // payloadDomain is the small model domain of a scalar payload or field:
-// four values for an integer, both Booleans.
-func payloadDomain(typ ast.Expression) string {
-	if typeName, isIdent := typ.(*ast.Identifier); isIdent && typeName.Value == "Bool" {
+// both Booleans, or the integers from zero through one past the largest
+// literal the declaration's guards and effects mention (at least 0..3),
+// clipped to the type's range — so every boundary a guard tests and the
+// value beyond it are explored (docs/spec/112-protocols.md section 4).
+func payloadDomain(typ ast.Expression, ceiling int64) string {
+	typeName, isIdent := typ.(*ast.Identifier)
+	if isIdent && typeName.Value == "Bool" {
 		return "{TRUE, FALSE}"
 	}
-	return "{0, 1, 2, 3}"
+	top := int64(3)
+	if ceiling+1 > top {
+		top = ceiling + 1
+	}
+	if isIdent && typeName.Value == "u8" && top > 255 {
+		top = 255
+	}
+	if isIdent && typeName.Value == "u16" && top > 65535 {
+		top = 65535
+	}
+	values := make([]string, 0, top+1)
+	for v := int64(0); v <= top; v++ {
+		values = append(values, strconv.FormatInt(v, 10))
+	}
+	return "{" + strings.Join(values, ", ") + "}"
+}
+
+// literalCeiling is the largest integer literal in the declaration's
+// guards and effects, -1 when there is none.
+func literalCeiling(decl *ast.ProtocolDeclaration) int64 {
+	ceiling := int64(-1)
+	for _, t := range decl.Transitions {
+		for _, node := range []ast.Node{t.Guard, t.Effects} {
+			if node == nil {
+				continue
+			}
+			rewriteExpressions(node, func(e ast.Expression) ast.Expression {
+				if lit, isLiteral := e.(*ast.IntegerLiteral); isLiteral && lit.Value > ceiling {
+					ceiling = lit.Value
+				}
+				return nil
+			})
+		}
+	}
+	return ceiling
 }
 
 // payloadRecordFields is the field list of a record payload type.
@@ -496,6 +538,7 @@ func ProtocolTLCConfigDeclared(decl *ast.ProtocolDeclaration, decls ProtocolDecl
 	}
 	seen := map[string]bool{}
 	var constants []string
+	ceiling := literalCeiling(decl)
 	namer := newPayloadDomainNamer(transitionPayloads(decl))
 	for _, t := range decl.Transitions {
 		if t.Param == nil {
@@ -511,14 +554,14 @@ func ProtocolTLCConfigDeclared(decl *ast.ProtocolDeclaration, decls ProtocolDecl
 				if refined(field.Value) {
 					continue
 				}
-				constants = append(constants, fmt.Sprintf("    %s%s = %s", domain, fieldConstant(field.Name), payloadDomain(field.Value)))
+				constants = append(constants, fmt.Sprintf("    %s%s = %s", domain, fieldConstant(field.Name), payloadDomain(field.Value, ceiling)))
 			}
 			continue
 		}
 		if refined(t.Param.Type) {
 			continue
 		}
-		constants = append(constants, fmt.Sprintf("    %s = %s", domain, payloadDomain(t.Param.Type)))
+		constants = append(constants, fmt.Sprintf("    %s = %s", domain, payloadDomain(t.Param.Type, ceiling)))
 	}
 	if len(constants) > 0 {
 		b.WriteString("CONSTANTS\n" + strings.Join(constants, "\n") + "\n")
@@ -640,10 +683,15 @@ func tlaDomainWith(typ ast.Expression, records map[string]*ast.RecordLiteral) st
 		}
 		return "[" + strings.Join(fields, ", ") + "]"
 	}
+	// A fixed-width field's domain is its range, so TypeOK states the width
+	// the projection stores (docs/spec/112-protocols.md section 4).
+	if span, fixed := refinementRanges[id.Value]; fixed {
+		return span
+	}
 	switch id.Value {
 	case "Bool":
 		return "BOOLEAN"
-	case "i8", "i16", "i32", "i64":
+	case "i64":
 		return "Int"
 	default:
 		return "Nat"

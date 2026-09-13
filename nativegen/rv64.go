@@ -140,14 +140,14 @@ type rvGenerator struct {
 
 // compileRV64 lowers one Oak function on the rv64 lane; see Compile for
 // the arguments.
-func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, tc *typechecker.TypeChecker, softFloat bool) (*asm.Function, error) {
+func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	if len(fn.Parameters) > 8 {
 		return nil, unsupported("more than eight parameters")
 	}
-	g := &rvGenerator{generator: generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, line: fn.Token.Line}, softFloat: softFloat, twoChunk: map[string]bool{}}
+	g := &rvGenerator{generator: generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, line: fn.Token.Line}, softFloat: softFloat, twoChunk: map[string]bool{}}
 	g.rvLane = true
 	usesFloat := mentionsFloat(fn) || g.recordsMentionFloat(fn)
 	if usesFloat && softFloat {
@@ -163,6 +163,10 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 		g.saveAreaV = 8 * int64(len(rvFCallee))
 	}
 	g.hasCalls = mentionsCall(fn.Body)
+	// A parked span pair survives a call, and a result: the result leaves
+	// in a0 (and a1), where a span parameter's pair is bound, and the
+	// checker's span facts flow in text order.
+	parkSpans := g.hasCalls || returnsValue(fn)
 	nextReg, nextFReg := 0, 0
 	if fn.ReturnType != nil && fn.ReturnType.String() != "()" {
 		if name, isRecord := g.recordTypeName(fn.ReturnType); isRecord {
@@ -228,7 +232,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 			sp.argBase, sp.argLen = rvArg0+nextReg, rvArg0+nextReg+1
 			sp.baseReg, sp.lenReg = sp.argBase, sp.argLen
 			nextReg += 2
-			if g.hasCalls {
+			if parkSpans {
 				// A call clobbers a0–a7, where the bound pair lives: park
 				// the base, the raw length, and the normalized length in
 				// three callee-saved registers (the checker follows the
@@ -380,6 +384,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	// composite binding rules — also under each signature type's own
 	// spelling, which is what the checker looks up.
 	out.Composites = Composites(records, adts)
+	out.Constants = constants
 	spell := func(expr ast.Expression) {
 		if expr == nil {
 			return
@@ -418,6 +423,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 // ---- items ------------------------------------------------------------
 
 func (g *rvGenerator) ins(mnemonic string, operands ...asm.Operand) asm.Instruction {
+	g.noteWrite(mnemonic, operands)
 	return asm.Instruction{Mnemonic: mnemonic, Operands: operands, Line: g.line}
 }
 
@@ -825,7 +831,15 @@ func (g *rvGenerator) lowerStatements(stmts []ast.Statement, functionBody bool) 
 					continue
 				}
 				if g.result == nil {
-					// A unit function whose last statement is an expression.
+					// A unit function whose last statement is an expression:
+					// a call, an assert, or a conditional or match in
+					// statement position.
+					if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
+						if err := g.lowerConditionalStatement(match); err != nil {
+							return err
+						}
+						continue
+					}
 					if err := g.effect(s.Expression); err != nil {
 						return err
 					}
@@ -1122,6 +1136,12 @@ func (g *rvGenerator) expr(expr ast.Expression, hint *scalar) (int, error) {
 		if err != nil {
 			return 0, err
 		}
+		if c, isConst := g.constantOf(e.Value); isConst {
+			if err := g.constant(r, c.Value, typ); err != nil {
+				return 0, err
+			}
+			return r, nil
+		}
 		g.put(g.loadVar(e.Value, r))
 		return r, nil
 	case *ast.InfixExpression:
@@ -1131,7 +1151,10 @@ func (g *rvGenerator) expr(expr ast.Expression, hint *scalar) (int, error) {
 	case *ast.IndexExpression:
 		return g.element(e)
 	case *ast.InvocationExpression:
-		ident := e.Function.(*ast.Identifier) // typeOf admitted the call
+		ident, isIdent := e.Function.(*ast.Identifier)
+		if !isIdent {
+			return 0, unsupported("a call through a value")
+		}
 		if ident.Value == "len" && len(e.Arguments) == 1 {
 			if arr := g.arrayOperand(e.Arguments[0]); arr != nil {
 				r, err := g.alloc(scalars["u32"])
@@ -1498,7 +1521,10 @@ func (g *rvGenerator) call(e *ast.InvocationExpression) (int, error) {
 // the callee through the area address passed as the hidden first
 // argument.
 func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *recordLocal) (int, error) {
-	ident := e.Function.(*ast.Identifier)
+	ident, isIdent := e.Function.(*ast.Identifier)
+	if !isIdent {
+		return 0, unsupported("a call through a value")
+	}
 	callee, ok := g.functions[ident.Value]
 	if !ok {
 		return 0, unsupported("a call to %s", ident.Value)
@@ -1639,6 +1665,9 @@ func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *record
 	}
 	var spilled []int
 	for _, r := range g.live {
+		if !g.defined[r] {
+			continue // allocated for an enclosing result, not yet written
+		}
 		if _, ok := g.spill[r]; !ok {
 			g.spill[r] = 8 * g.nslots
 			g.nslots++
@@ -1682,6 +1711,22 @@ func (g *rvGenerator) resultExpr(expr ast.Expression) error {
 			return g.tailCall(e)
 		}
 	case *ast.MatchExpression:
+		if g.result != nil && !g.result.isFloat && g.valueOnly(e) {
+			// Every arm yields a value: they meet in one scratch register
+			// and a0 is written once, at the join — a result written inside
+			// an arm would forget the parameters' span and record facts for
+			// the arms after it in the linear checker.
+			out, err := g.alloc(*g.result)
+			if err != nil {
+				return err
+			}
+			if err := g.resultInto(e, out); err != nil {
+				return err
+			}
+			g.moveResult(out)
+			g.release(out)
+			return nil
+		}
 		whenTrue, whenFalse, isBool := boolConditional(e)
 		if !isBool {
 			return g.lowerMatch(e, g.resultExpr)
@@ -1764,6 +1809,82 @@ func (g *rvGenerator) tailCall(e *ast.InvocationExpression) error {
 }
 
 // isTailCall recognizes a self-call the loop lowering handles.
+// valueOnly is the AArch64 lane's rule (generator.valueOnly) with this
+// lane's tail-call test.
+func (g *rvGenerator) valueOnly(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.MatchExpression:
+		for _, arm := range e.Arms {
+			if arm == nil || arm.Body == nil || !g.valueOnly(arm.Body) {
+				return false
+			}
+		}
+		return true
+	case *ast.BlockExpression:
+		if e.Block == nil || len(e.Block.Statements) == 0 {
+			return false
+		}
+		last, ok := e.Block.Statements[len(e.Block.Statements)-1].(*ast.ExpressionStatement)
+		return ok && !last.Discard && g.valueOnly(last.Expression)
+	case *ast.InvocationExpression:
+		if g.isTailCall(e) {
+			return false
+		}
+		if ident, ok := e.Function.(*ast.Identifier); ok {
+			if callee := g.functions[ident.Value]; callee != nil && callee.ReturnType != nil && callee.ReturnType.String() == "never" {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// resultInto lowers a value-only result expression into the register out
+// (generator.resultInto for this lane).
+func (g *rvGenerator) resultInto(expr ast.Expression, out int) error {
+	switch e := expr.(type) {
+	case *ast.MatchExpression:
+		if whenTrue, whenFalse, ok := boolConditional(e); ok {
+			elseLabel, end := g.newLabel("else"), g.newLabel("endif")
+			if err := g.condition(e.Scrutinee, elseLabel); err != nil {
+				return err
+			}
+			if err := g.resultInto(whenTrue, out); err != nil {
+				return err
+			}
+			g.jump(end)
+			g.label(elseLabel)
+			if err := g.resultInto(whenFalse, out); err != nil {
+				return err
+			}
+			g.label(end)
+			return nil
+		}
+		return g.lowerMatch(e, func(body ast.Expression) error { return g.resultInto(body, out) })
+	case *ast.BlockExpression:
+		if e.Block != nil && len(e.Block.Statements) > 0 {
+			g.pushScope()
+			defer g.popScope()
+			stmts := e.Block.Statements
+			if err := g.lowerStatements(stmts[:len(stmts)-1], false); err != nil {
+				return err
+			}
+			if es, ok := stmts[len(stmts)-1].(*ast.ExpressionStatement); ok && !es.Discard {
+				return g.resultInto(es.Expression, out)
+			}
+		}
+	}
+	r, err := g.exprAs(expr, *g.result)
+	if err != nil {
+		return err
+	}
+	if r != out {
+		g.move(out, r)
+		g.release(r)
+	}
+	return nil
+}
+
 func (g *rvGenerator) isTailCall(expr ast.Expression) bool {
 	call, ok := expr.(*ast.InvocationExpression)
 	if !ok || len(g.spans) != 0 {
@@ -2144,7 +2265,10 @@ var rvFloatIntrinsics = map[string]string{"sqrt": "fsqrt", "abs": "fsgnjx", "min
 // intrinsic lowers a float intrinsic at the call's recorded width
 // (narrower operands widen exactly first).
 func (g *rvGenerator) intrinsic(e *ast.InvocationExpression, typ scalar) (int, error) {
-	ident := e.Function.(*ast.Identifier)
+	ident, isIdent := e.Function.(*ast.Identifier)
+	if !isIdent {
+		return 0, unsupported("a call through a value")
+	}
 	op, ok := rvFloatIntrinsics[ident.Value]
 	if !ok {
 		return 0, unsupported("the intrinsic %s (no single F/D instruction)", ident.Value)
@@ -2642,6 +2766,26 @@ func (g *rvGenerator) copyOut(base int, src *recordLocal) error {
 func (g *rvGenerator) resultRecordExpr(expr ast.Expression) error {
 	switch e := expr.(type) {
 	case *ast.MatchExpression:
+		if !g.resultIndirect && g.valueOnly(e) {
+			// The arms meet in one frame temporary and the chunks load into
+			// a0 (and a1) once, at the join (generator.resultRecordExpr).
+			var outs []int
+			for c := 0; c < g.resultRecord.chunks(); c++ {
+				out, err := g.alloc(scalars["u64"])
+				if err != nil {
+					return err
+				}
+				outs = append(outs, out)
+			}
+			if err := g.resultRecordInto(e, outs); err != nil {
+				return err
+			}
+			for c, out := range outs {
+				g.emit("mv", rvReg(rvArg0+c), rvReg(out))
+				g.release(out)
+			}
+			return nil
+		}
 		whenTrue, whenFalse, isBool := boolConditional(e)
 		if !isBool {
 			return g.lowerMatch(e, g.resultRecordExpr)
@@ -2688,6 +2832,56 @@ func (g *rvGenerator) resultRecordExpr(expr ast.Expression) error {
 	}
 	for c := 0; c < g.resultRecord.chunks(); c++ {
 		g.emit("ld", rvReg(rvArg0+c), g.slotMem(rec.offset+int64(8*c)))
+	}
+	g.releaseTemps(rec.temps)
+	return nil
+}
+
+// resultRecordInto lowers a value-only record result into the scratch
+// registers outs, one per chunk (generator.resultRecordInto for this lane).
+func (g *rvGenerator) resultRecordInto(expr ast.Expression, outs []int) error {
+	switch e := expr.(type) {
+	case *ast.MatchExpression:
+		if whenTrue, whenFalse, ok := boolConditional(e); ok {
+			elseLabel, end := g.newLabel("else"), g.newLabel("endif")
+			if err := g.condition(e.Scrutinee, elseLabel); err != nil {
+				return err
+			}
+			if err := g.resultRecordInto(whenTrue, outs); err != nil {
+				return err
+			}
+			g.jump(end)
+			g.label(elseLabel)
+			if err := g.resultRecordInto(whenFalse, outs); err != nil {
+				return err
+			}
+			g.label(end)
+			return nil
+		}
+		return g.lowerMatch(e, func(body ast.Expression) error { return g.resultRecordInto(body, outs) })
+	case *ast.BlockExpression:
+		if e.Block != nil && len(e.Block.Statements) > 0 {
+			g.pushScope()
+			defer g.popScope()
+			stmts := e.Block.Statements
+			if err := g.lowerStatements(stmts[:len(stmts)-1], false); err != nil {
+				return err
+			}
+			if es, ok := stmts[len(stmts)-1].(*ast.ExpressionStatement); ok && !es.Discard {
+				return g.resultRecordInto(es.Expression, outs)
+			}
+			return unsupported("a block whose last statement is not its record result")
+		}
+	}
+	rec, err := g.recordValueAs(expr, g.resultRecord)
+	if err != nil {
+		return err
+	}
+	if rec.layout != g.resultRecord {
+		return unsupported("a %s result where %s is declared", rec.layout.name, g.resultRecord.name)
+	}
+	for c, out := range outs {
+		g.emit("ld", rvReg(out), g.slotMem(rec.offset+int64(8*c)))
 	}
 	g.releaseTemps(rec.temps)
 	return nil
