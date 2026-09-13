@@ -32,6 +32,11 @@ SAT_MALFORMED: u32 = 4
 SAT_EXCEEDED_STORE: u32 = 5
 SAT_EXCEEDED_HINTS: u32 = 6
 
+// An assignment is 0 unassigned, 1 false, 2 true, or 3 eliminated: the
+// variable occurs in no live clause, and its value is reconstructed from
+// the elimination stack when a model is reported.
+SAT_ELIMINATED: u32 = 3
+
 SatLayout: type = struct {
   vars: u32,
   clause_cap: u32,
@@ -57,6 +62,11 @@ SatLayout: type = struct {
   remap_at: u32,
   lock_at: u32,
   cact_at: u32,
+  touched_at: u32,
+  occ_count_at: u32,
+  occ_start_at: u32,
+  occ_list_at: u32,
+  elim_at: u32,
   state_at: u32,
   total: u32
 }
@@ -85,7 +95,10 @@ ST_REDUCTIONS: u32 = 19
 ST_DELETED: u32 = 20
 ST_RESTARTS: u32 = 21
 ST_CLAUSE_INC: u32 = 22
-ST_WORDS: u32 = 24
+ST_ELIM_USED: u32 = 23
+ST_ELIMINATED: u32 = 24
+ST_RESOLVENTS: u32 = 25
+ST_WORDS: u32 = 32
 
 // sat_layout sizes the arena for a variable count, a clause capacity
 // (initial plus learned), and a literal store capacity; occurrence nodes
@@ -113,7 +126,12 @@ sat_layout: (vars: u32, clause_cap: u32, store_cap: u32): SatLayout {
   remap_at: u32 = hints_at + hints_cap
   lock_at: u32 = remap_at + clause_cap
   cact_at: u32 = lock_at + clause_cap
-  state_at: u32 = cact_at + clause_cap
+  touched_at: u32 = cact_at + clause_cap
+  occ_count_at: u32 = touched_at + v
+  occ_start_at: u32 = occ_count_at + u32(2) * v + u32(2)
+  occ_list_at: u32 = occ_start_at + u32(2) * v + u32(2)
+  elim_at: u32 = occ_list_at + store_cap
+  state_at: u32 = elim_at + store_cap
   SatLayout {
     vars: vars, clause_cap: clause_cap, store_cap: store_cap,
     assign_at: assign_at, level_at: level_at, reason_at: reason_at, seen_at: seen_at,
@@ -121,7 +139,8 @@ sat_layout: (vars: u32, clause_cap: u32, store_cap: u32): SatLayout {
     starts_at: starts_at, lengths_at: lengths_at, ids_at: ids_at, store_at: store_at,
     watch_head_at: watch_head_at, watch_next_at: watch_next_at,
     learnt_at: learnt_at, resolved_at: resolved_at, hints_at: hints_at, hints_cap: hints_cap,
-    remap_at: remap_at, lock_at: lock_at, cact_at: cact_at,
+    remap_at: remap_at, lock_at: lock_at, cact_at: cact_at, touched_at: touched_at,
+    occ_count_at: occ_count_at, occ_start_at: occ_start_at, occ_list_at: occ_list_at, elim_at: elim_at,
     state_at: state_at, total: state_at + ST_WORDS
   }
 }
@@ -181,6 +200,35 @@ sat_add_learnt: (l: SatLayout, mem: [*]u32, n: u32, id: u32): u32 {
   result
 }
 
+// sat_dedupe removes repeated literals from the clause in the learnt
+// buffer and reports its length, or SAT_NONE when the clause holds a
+// literal and its negation (a tautology, true under every assignment,
+// which the search need not store). The seen array marks polarities met
+// and is cleared.
+sat_dedupe: (l: SatLayout, mem: [*]u32, n: u32): u32 {
+  kept: u32 = 0
+  taut: Bool = false
+  j: u32 = 0
+  while j < n {
+    lit: u32 = mem[l.learnt_at + j]
+    w: u32 = lit / u32(2)
+    mark: u32 = u32(1) + lit % u32(2)
+    prior: u32 = mem[l.seen_at + w]
+    prior == u32(0) ? {
+      mem[l.seen_at + w] = mark
+      mem[l.learnt_at + kept] = lit
+      kept = kept + u32(1)
+    } | { prior != mark ? { taut = true } | { } }
+    j = j + u32(1)
+  }
+  j = u32(0)
+  while j < kept {
+    mem[l.seen_at + mem[l.learnt_at + j] / u32(2)] = u32(0)
+    j = j + u32(1)
+  }
+  taut ? { SAT_NONE } | { kept }
+}
+
 // sat_init clears the arena and loads the formula from the word table
 // (lrat.oak's protocol: header, then `n, lit...` per clause). Units are
 // enqueued at level zero; an empty clause settles the run at once.
@@ -224,11 +272,12 @@ sat_init: (l: SatLayout, mem: [*]u32, words: []u32, budget: u32): Bool {
         mem[l.learnt_at + j] = lit
         j = j + u32(1)
       }
-      ok ? {
-        added: u32 = sat_add_learnt(l, mem, n, c + u32(1))
+      distinct: u32 = ok ? { sat_dedupe(l, mem, n) } | { u32(0) }
+      ok && distinct != SAT_NONE ? {
+        added: u32 = sat_add_learnt(l, mem, distinct, c + u32(1))
         ok = added != SAT_NONE
-        n == u32(0) ? { sat_set(l, mem, ST_STATUS, SAT_UNSATISFIABLE) } | { }
-        n == u32(1) && ok ? {
+        distinct == u32(0) ? { sat_set(l, mem, ST_STATUS, SAT_UNSATISFIABLE) } | { }
+        distinct == u32(1) && ok ? {
           lit: u32 = mem[l.learnt_at]
           a: u32 = mem[l.assign_at + lit / u32(2)]
           a == u32(0) ? { sat_enqueue(l, mem, lit, added) } | {
@@ -246,8 +295,85 @@ sat_init: (l: SatLayout, mem: [*]u32, words: []u32, budget: u32): Bool {
     sat_set(l, mem, ST_NEXT_ID, clause_count + u32(1))
     sat_set(l, mem, ST_INITIAL, clause_count)
     sat_set(l, mem, ST_REDUCE_LIMIT, clause_count / u32(3) + u32(300))
+    sat_state(l, mem, ST_STATUS) == SAT_RUNNING ? { sat_eliminate(l, mem) } | { }
   } | { sat_set(l, mem, ST_STATUS, SAT_MALFORMED) }
   ok
+}
+
+// sat_delete_marked writes one deletion line for every clause marked 2 in
+// the lock array, compacts the store in place (a kept clause never moves
+// up), remaps clause indices and the trail's reasons, and rebuilds the
+// watch lists from the kept clauses.
+sat_delete_marked: (l: SatLayout, mem: [*]u32): () {
+  clauses: u32 = sat_state(l, mem, ST_CLAUSES)
+  initial: u32 = sat_state(l, mem, ST_INITIAL)
+  n: u32 = sat_state(l, mem, ST_TRAIL_LEN)
+  c: u32 = 0
+  i: u32 = 0
+  write_u32(sat_state(l, mem, ST_NEXT_ID) - u32(1))
+  write_byte(u8(32))
+  write_byte(u8(100))
+  c = u32(0)
+  while c < clauses {
+    mem[l.lock_at + c] == u32(2) ? {
+      write_byte(u8(32))
+      write_u32(mem[l.ids_at + c])
+    } | { }
+    c = c + u32(1)
+  }
+  write_byte(u8(32))
+  write_byte(u8(48))
+  write_byte(u8(10))
+  // Compact: kept clauses slide down in index order.
+  kept: u32 = 0
+  used: u32 = 0
+  c = u32(0)
+  while c < clauses {
+    mem[l.lock_at + c] != u32(2) ? {
+      start: u32 = mem[l.starts_at + c]
+      length: u32 = mem[l.lengths_at + c]
+      j: u32 = 0
+      while j < length {
+        mem[l.store_at + used + j] = mem[l.store_at + start + j]
+        j = j + u32(1)
+      }
+      mem[l.starts_at + kept] = used
+      mem[l.lengths_at + kept] = length
+      mem[l.ids_at + kept] = mem[l.ids_at + c]
+      mem[l.cact_at + kept] = mem[l.cact_at + c] / u32(2)
+      mem[l.remap_at + c] = kept
+      used = used + length
+      kept = kept + u32(1)
+    } | { }
+    c = c + u32(1)
+  }
+  sat_set(l, mem, ST_CLAUSES, kept)
+  sat_set(l, mem, ST_STORE_USED, used)
+  sat_set(l, mem, ST_LEARNED, kept - initial)
+  sat_set(l, mem, ST_DELETED, sat_state(l, mem, ST_DELETED) + (clauses - kept))
+  // Reasons follow their clauses.
+  i = u32(0)
+  while i < n {
+    v: u32 = mem[l.trail_at + i] / u32(2)
+    reason: u32 = mem[l.reason_at + v]
+    reason != SAT_NONE ? { mem[l.reason_at + v] = mem[l.remap_at + reason] } | { }
+    i = i + u32(1)
+  }
+  // Watch lists from the kept clauses.
+  total_lits: u32 = u32(2) * (l.vars + u32(1))
+  i = u32(0)
+  while i < total_lits {
+    mem[l.watch_head_at + i] = SAT_NONE
+    i = i + u32(1)
+  }
+  c = u32(0)
+  while c < kept {
+    mem[l.lengths_at + c] >= u32(2) ? {
+      sat_watch(l, mem, c, u32(0))
+      sat_watch(l, mem, c, u32(1))
+    } | { }
+    c = c + u32(1)
+  }
 }
 
 // sat_reduce drops learned clauses at level zero once they outnumber the
@@ -307,72 +433,7 @@ sat_reduce: (l: SatLayout, mem: [*]u32): () {
       c = c + u32(1)
     }
   } | { }
-  dropped > u32(0) ? {
-    write_u32(sat_state(l, mem, ST_NEXT_ID) - u32(1))
-    write_byte(u8(32))
-    write_byte(u8(100))
-    c = initial
-    while c < clauses {
-      mem[l.lock_at + c] == u32(2) ? {
-        write_byte(u8(32))
-        write_u32(mem[l.ids_at + c])
-      } | { }
-      c = c + u32(1)
-    }
-    write_byte(u8(32))
-    write_byte(u8(48))
-    write_byte(u8(10))
-    // Compact: kept clauses slide down in index order.
-    kept: u32 = 0
-    used: u32 = 0
-    c = u32(0)
-    while c < clauses {
-      mem[l.lock_at + c] != u32(2) ? {
-        start: u32 = mem[l.starts_at + c]
-        length: u32 = mem[l.lengths_at + c]
-        j: u32 = 0
-        while j < length {
-          mem[l.store_at + used + j] = mem[l.store_at + start + j]
-          j = j + u32(1)
-        }
-        mem[l.starts_at + kept] = used
-        mem[l.lengths_at + kept] = length
-        mem[l.ids_at + kept] = mem[l.ids_at + c]
-        mem[l.cact_at + kept] = mem[l.cact_at + c] / u32(2)
-        mem[l.remap_at + c] = kept
-        used = used + length
-        kept = kept + u32(1)
-      } | { }
-      c = c + u32(1)
-    }
-    sat_set(l, mem, ST_CLAUSES, kept)
-    sat_set(l, mem, ST_STORE_USED, used)
-    sat_set(l, mem, ST_LEARNED, kept - initial)
-    sat_set(l, mem, ST_DELETED, sat_state(l, mem, ST_DELETED) + dropped)
-    // Reasons follow their clauses.
-    i = u32(0)
-    while i < n {
-      v: u32 = mem[l.trail_at + i] / u32(2)
-      reason: u32 = mem[l.reason_at + v]
-      reason != SAT_NONE ? { mem[l.reason_at + v] = mem[l.remap_at + reason] } | { }
-      i = i + u32(1)
-    }
-    // Watch lists from the kept clauses.
-    total_lits: u32 = u32(2) * (l.vars + u32(1))
-    i = u32(0)
-    while i < total_lits {
-      mem[l.watch_head_at + i] = SAT_NONE
-      i = i + u32(1)
-    }
-    c = u32(0)
-    while c < kept {
-      mem[l.lengths_at + c] >= u32(2) ? {
-        sat_watch(l, mem, c, u32(0))
-        sat_watch(l, mem, c, u32(1))
-      } | { }
-      c = c + u32(1)
-    }
-  } | { }
+  dropped > u32(0) ? { sat_delete_marked(l, mem) } | { }
   sat_set(l, mem, ST_REDUCTIONS, sat_state(l, mem, ST_REDUCTIONS) + u32(1))
   limit: u32 = sat_state(l, mem, ST_REDUCE_LIMIT)
   sat_set(l, mem, ST_REDUCE_LIMIT, limit + limit / u32(10) + u32(100))
@@ -655,6 +716,293 @@ sat_analyze: (l: SatLayout, mem: [*]u32, conflict: u32): u32 {
   back
 }
 
+// Bounded variable elimination at load (docs/notes/provers-2026-09.md;
+// ParaFROST's central preprocessing, CaDiCaL's too): a variable with few
+// occurrences on each side, whose non-tautological resolvents are no more
+// numerous than the clauses they replace and stay short, is resolved away.
+// Each resolvent is an LRAT addition whose two hints are its parents (the
+// clause with the variable is unit under the resolvent's negation, the
+// clause with its negation then conflicts); the parents are deleted in one
+// deletion line and pushed on the elimination stack with their pivot
+// literal, so a model of the reduced formula extends to the original
+// (sat_extend). The gate variables of a Tseitin encoding are exactly what
+// this removes, and what leaves the arithmetic obligations solvable by
+// unit-heavy reasoning rather than clauses spanning every level.
+
+BVE_OCCURRENCE_CAP: u32 = 10
+BVE_RESOLVENT_CAP: u32 = 24
+
+// sat_resolve writes the resolvent of clauses a (holding literal 2v+1 or
+// 2v) and b (the other polarity) on variable v into the learnt buffer,
+// literals distinct, and returns its length, or SAT_NONE for a tautology.
+// The seen array marks the polarities met per variable and is cleared.
+sat_resolve: (l: SatLayout, mem: [*]u32, a: u32, b: u32, v: u32): u32 {
+  n: u32 = 0
+  taut: Bool = false
+  side: u32 = 0
+  while side < u32(2) {
+    c: u32 = side == u32(0) ? { a } | { b }
+    start: u32 = mem[l.starts_at + c]
+    length: u32 = mem[l.lengths_at + c]
+    j: u32 = 0
+    while j < length {
+      lit: u32 = mem[l.store_at + start + j]
+      w: u32 = lit / u32(2)
+      w != v ? {
+        mark: u32 = u32(1) + lit % u32(2)
+        prior: u32 = mem[l.seen_at + w]
+        prior == u32(0) ? {
+          mem[l.seen_at + w] = mark
+          mem[l.learnt_at + n] = lit
+          n = n + u32(1)
+        } | { prior != mark ? { taut = true } | { } }
+      } | { }
+      j = j + u32(1)
+    }
+    side = side + u32(1)
+  }
+  j: u32 = 0
+  while j < n {
+    mem[l.seen_at + mem[l.learnt_at + j] / u32(2)] = u32(0)
+    j = j + u32(1)
+  }
+  taut ? { SAT_NONE } | { n }
+}
+
+// sat_push_eliminated records a parent clause on the elimination stack as
+// { lits..., pivot, n }, walkable backward from its end.
+sat_push_eliminated: (l: SatLayout, mem: [*]u32, c: u32, pivot: u32): Bool {
+  used: u32 = sat_state(l, mem, ST_ELIM_USED)
+  start: u32 = mem[l.starts_at + c]
+  n: u32 = mem[l.lengths_at + c]
+  fits: Bool = used + n + u32(2) <= l.store_cap
+  fits ? {
+    j: u32 = 0
+    while j < n {
+      mem[l.elim_at + used + j] = mem[l.store_at + start + j]
+      j = j + u32(1)
+    }
+    mem[l.elim_at + used + n] = pivot
+    mem[l.elim_at + used + n + u32(1)] = n
+    sat_set(l, mem, ST_ELIM_USED, used + n + u32(2))
+  } | { }
+  fits
+}
+
+// sat_eliminate runs one pass of bounded variable elimination over the
+// loaded formula, before the first propagation. Occurrence lists are
+// built once (CSR over the store); a variable touched by a resolvent added
+// in this pass is left for the search, since its lists are stale.
+sat_eliminate: (l: SatLayout, mem: [*]u32): () {
+  clauses: u32 = sat_state(l, mem, ST_CLAUSES)
+  lits: u32 = u32(2) * (l.vars + u32(1))
+  i: u32 = 0
+  while i <= lits {
+    mem[l.occ_count_at + i] = u32(0)
+    mem[l.occ_start_at + i] = u32(0)
+    i = i + u32(1)
+  }
+  i = u32(0)
+  while i <= l.vars {
+    mem[l.touched_at + i] = u32(0)
+    i = i + u32(1)
+  }
+  c: u32 = 0
+  while c < clauses {
+    mem[l.lock_at + c] = u32(0)
+    start: u32 = mem[l.starts_at + c]
+    n: u32 = mem[l.lengths_at + c]
+    j: u32 = 0
+    while j < n {
+      lit: u32 = mem[l.store_at + start + j]
+      mem[l.occ_count_at + lit] = mem[l.occ_count_at + lit] + u32(1)
+      j = j + u32(1)
+    }
+    c = c + u32(1)
+  }
+  total: u32 = 0
+  i = u32(0)
+  while i < lits {
+    mem[l.occ_start_at + i] = total
+    total = total + mem[l.occ_count_at + i]
+    mem[l.occ_count_at + i] = total
+    i = i + u32(1)
+  }
+  // Fill from the end of each literal's range downward.
+  fits: Bool = total <= l.store_cap
+  c = u32(0)
+  while c < clauses && fits {
+    start: u32 = mem[l.starts_at + c]
+    n: u32 = mem[l.lengths_at + c]
+    j: u32 = 0
+    while j < n {
+      lit: u32 = mem[l.store_at + start + j]
+      at: u32 = mem[l.occ_count_at + lit] - u32(1)
+      mem[l.occ_count_at + lit] = at
+      mem[l.occ_list_at + at] = c
+      j = j + u32(1)
+    }
+    c = c + u32(1)
+  }
+  // Now occ_count holds each literal's range start and occ_start its end.
+  any_marked: Bool = false
+  v: u32 = 0
+  while v < l.vars && fits && sat_state(l, mem, ST_STATUS) == SAT_RUNNING {
+    pos: u32 = u32(2) * v + u32(1)
+    neg: u32 = u32(2) * v
+    pos_from: u32 = mem[l.occ_count_at + pos]
+    pos_to: u32 = mem[l.occ_start_at + pos + u32(1)]
+    neg_from: u32 = mem[l.occ_count_at + neg]
+    neg_to: u32 = mem[l.occ_start_at + neg + u32(1)]
+    small: Bool = pos_to - pos_from <= BVE_OCCURRENCE_CAP && neg_to - neg_from <= BVE_OCCURRENCE_CAP
+    mem[l.assign_at + v] == u32(0) && mem[l.touched_at + v] == u32(0) && small ? {
+      // Live parents on each side.
+      live_pos: u32 = 0
+      k: u32 = pos_from
+      while k < pos_to {
+        mem[l.lock_at + mem[l.occ_list_at + k]] != u32(2) ? { live_pos = live_pos + u32(1) } | { }
+        k = k + u32(1)
+      }
+      live_neg: u32 = 0
+      k = neg_from
+      while k < neg_to {
+        mem[l.lock_at + mem[l.occ_list_at + k]] != u32(2) ? { live_neg = live_neg + u32(1) } | { }
+        k = k + u32(1)
+      }
+      // Count the resolvents that would be added and the words they take.
+      resolvents: u32 = 0
+      words: u32 = 0
+      admissible: Bool = live_pos + live_neg > u32(0)
+      pa: u32 = pos_from
+      while pa < pos_to && admissible {
+        a: u32 = mem[l.occ_list_at + pa]
+        mem[l.lock_at + a] != u32(2) ? {
+          nb: u32 = neg_from
+          while nb < neg_to && admissible {
+            b: u32 = mem[l.occ_list_at + nb]
+            mem[l.lock_at + b] != u32(2) ? {
+              r: u32 = sat_resolve(l, mem, a, b, v)
+              r != SAT_NONE ? {
+                resolvents = resolvents + u32(1)
+                words = words + r
+                admissible = r <= BVE_RESOLVENT_CAP && resolvents <= live_pos + live_neg
+              } | { }
+            } | { }
+            nb = nb + u32(1)
+          }
+        } | { }
+        pa = pa + u32(1)
+      }
+      capacity: Bool = sat_state(l, mem, ST_CLAUSES) + resolvents + u32(1) <= l.clause_cap && sat_state(l, mem, ST_STORE_USED) + words + u32(1) <= l.store_cap
+      admissible && capacity ? {
+        // Add the resolvents, each with its two parents as hints.
+        pa = pos_from
+        while pa < pos_to && sat_state(l, mem, ST_STATUS) == SAT_RUNNING {
+          a: u32 = mem[l.occ_list_at + pa]
+          mem[l.lock_at + a] != u32(2) ? {
+            nb: u32 = neg_from
+            while nb < neg_to && sat_state(l, mem, ST_STATUS) == SAT_RUNNING {
+              b: u32 = mem[l.occ_list_at + nb]
+              mem[l.lock_at + b] != u32(2) ? {
+                r: u32 = sat_resolve(l, mem, a, b, v)
+                r != SAT_NONE ? {
+                  id: u32 = sat_state(l, mem, ST_NEXT_ID)
+                  sat_set(l, mem, ST_NEXT_ID, id + u32(1))
+                  write_u32(id)
+                  j: u32 = 0
+                  while j < r {
+                    write_byte(u8(32))
+                    sat_write_lit(mem[l.learnt_at + j])
+                    mem[l.touched_at + mem[l.learnt_at + j] / u32(2)] = u32(1)
+                    j = j + u32(1)
+                  }
+                  write_byte(u8(32))
+                  write_byte(u8(48))
+                  write_byte(u8(32))
+                  write_u32(mem[l.ids_at + a])
+                  write_byte(u8(32))
+                  write_u32(mem[l.ids_at + b])
+                  write_byte(u8(32))
+                  write_byte(u8(48))
+                  write_byte(u8(10))
+                  added: u32 = sat_add_learnt(l, mem, r, id)
+                  sat_set(l, mem, ST_RESOLVENTS, sat_state(l, mem, ST_RESOLVENTS) + u32(1))
+                  r == u32(0) ? { sat_set(l, mem, ST_STATUS, SAT_UNSATISFIABLE) } | { }
+                  r == u32(1) && added != SAT_NONE ? {
+                    unit: u32 = mem[l.learnt_at]
+                    value: u32 = mem[l.assign_at + unit / u32(2)]
+                    value == u32(0) ? { sat_enqueue(l, mem, unit, added) } | {
+                      value == sat_lit_true(unit) ? { } | { sat_set(l, mem, ST_PENDING, added) }
+                    }
+                  } | { }
+                } | { }
+              } | { }
+              nb = nb + u32(1)
+            }
+          } | { }
+          pa = pa + u32(1)
+        }
+        // The parents go: onto the elimination stack, marked for deletion.
+        k = pos_from
+        while k < pos_to && fits {
+          a: u32 = mem[l.occ_list_at + k]
+          mem[l.lock_at + a] != u32(2) ? {
+            fits = sat_push_eliminated(l, mem, a, pos)
+            mem[l.lock_at + a] = u32(2)
+          } | { }
+          k = k + u32(1)
+        }
+        k = neg_from
+        while k < neg_to && fits {
+          b: u32 = mem[l.occ_list_at + k]
+          mem[l.lock_at + b] != u32(2) ? {
+            fits = sat_push_eliminated(l, mem, b, neg)
+            mem[l.lock_at + b] = u32(2)
+          } | { }
+          k = k + u32(1)
+        }
+        mem[l.assign_at + v] = SAT_ELIMINATED
+        sat_set(l, mem, ST_ELIMINATED, sat_state(l, mem, ST_ELIMINATED) + u32(1))
+        any_marked = true
+      } | { }
+    } | { }
+    v = v + u32(1)
+  }
+  any_marked ? { sat_delete_marked(l, mem) } | { }
+  // Every clause that remains is part of the formula the search works on.
+  sat_set(l, mem, ST_INITIAL, sat_state(l, mem, ST_CLAUSES))
+  sat_set(l, mem, ST_LEARNED, u32(0))
+  sat_set(l, mem, ST_REDUCE_LIMIT, sat_state(l, mem, ST_CLAUSES) / u32(3) + u32(300))
+}
+
+// sat_extend completes a model over the eliminated variables: each starts
+// false, then the elimination stack is walked backward and a pivot whose
+// clause is not satisfied is flipped true, which satisfies every clause of
+// that variable (the clauses of the other polarity were resolved against).
+sat_extend: (l: SatLayout, mem: [*]u32): () {
+  v: u32 = 0
+  while v < l.vars {
+    mem[l.assign_at + v] == SAT_ELIMINATED ? { mem[l.assign_at + v] = u32(1) } | { }
+    mem[l.assign_at + v] == u32(0) ? { mem[l.assign_at + v] = u32(1) } | { }
+    v = v + u32(1)
+  }
+  end: u32 = sat_state(l, mem, ST_ELIM_USED)
+  while end >= u32(2) {
+    n: u32 = mem[l.elim_at + end - u32(1)]
+    pivot: u32 = mem[l.elim_at + end - u32(2)]
+    first: u32 = end - u32(2) - n
+    satisfied: Bool = false
+    j: u32 = 0
+    while j < n && !satisfied {
+      lit: u32 = mem[l.elim_at + first + j]
+      satisfied = mem[l.assign_at + lit / u32(2)] == sat_lit_true(lit)
+      j = j + u32(1)
+    }
+    satisfied ? { } | { mem[l.assign_at + pivot / u32(2)] = sat_lit_true(pivot) }
+    end = first
+  }
+}
+
 // sat_write_lit writes a literal as a DIMACS integer.
 sat_write_lit: (lit: u32): () {
   lit % u32(2) == u32(0) ? { write_byte(u8(45)) } | { }
@@ -807,7 +1155,10 @@ sat_solve: (l: SatLayout, mem: [*]u32): u32 {
         } | { }
       }
     } | {
-      sat_decide(l, mem) ? { } | { sat_set(l, mem, ST_STATUS, SAT_SATISFIABLE) }
+      sat_decide(l, mem) ? { } | {
+        sat_extend(l, mem)
+        sat_set(l, mem, ST_STATUS, SAT_SATISFIABLE)
+      }
     }
   }
   sat_state(l, mem, ST_STATUS)
