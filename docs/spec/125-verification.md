@@ -637,6 +637,22 @@ In order of payoff, each reusing a surface that exists:
   already models them, division with its zero-divisor obligation like the
   shift's, and the extent facts for linear bounds, inside the compiler,
   each with its Lean law.
+- **A certificate rung.** The BDD's failure mode is the node budget on
+  multipliers and wide aggregates, which CDCL solvers treat routinely.
+  The rung the ladder lacks is the one Lean's `bv_decide` already runs:
+  the bit-blaster emits clauses, an untrusted solver emits an LRAT
+  certificate (never DRAT: checking a DRAT proof costs about what solving
+  did, while native LRAT checks faster than it solves), and a small
+  checker proved once in Lean validates it — solving and trust as separate
+  artifacts, the `-cross` rule kept so a race never hides a disagreement.
+  The trusted base then narrows to the clause encoder, which today is
+  cross-checked against the Go blaster node for node and not proved: the
+  finding to close first. GPU solving is not this shape — ParaFROST's
+  device-side inprocessing pays above megabytes of clauses, and an
+  obligation here is kilobytes — but the many small independent
+  evaluations (the witness pass, exhaustive enumeration, reachable-state
+  exploration) are a kernel of `56-kernels.md`, to be measured before
+  built (`docs/notes/provers-2026-09.md`).
 - **Temporal properties.** Safety through the invariants above (§2a);
   liveness with declared fairness decided over the reachable states (§2b)
   and stated for TLC through the TLA+ module (`112-protocols.md` §4).

@@ -777,6 +777,19 @@ the first of those to land.
 - Payloads and data beyond the current shapes: a record payload with array
   fields, nested records more than one level deep, and a domain the
   configuration chooses per step rather than the default four values.
+- A symbolic-prover reading (`docs/notes/provers-2026-09.md`). States,
+  lines, payloads, and data map onto Tamarin's multiset rewriting one rule
+  per line — the every-line reading TLC also takes — and a sanity export
+  (`exists-trace` for each state, the invariant theorems as `all-traces`
+  lemmas) would be a third reading to compare with TLC and `oak prove`. A
+  security reading needs what the declaration has no spelling for: message
+  terms with an equational theory, fresh names, channels, an adversary,
+  roles over unbounded sessions, and properties over the trace rather than
+  over `(state, data)`; the constitution's rule that one declaration
+  drives every view argues for adding them to the declaration, not to a
+  side file. Fixed-width arithmetic, division, and index bounds — decided
+  exactly here — have no exact counterpart there, so any export is an
+  abstraction whose direction must be stated.
 
 Landed since this list was first written: mixed-symbol lowering (§2a:
 steps with classed `u8`/`u16` payloads beside steps without), the static
