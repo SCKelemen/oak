@@ -175,6 +175,8 @@ type arrayLocal struct {
 	inReg bool
 	reg   int
 	temps []int
+	// readOnly: an array field of a view's element: stores are refused.
+	readOnly bool
 }
 
 // elemSize is the array's element stride in bytes.
@@ -768,10 +770,7 @@ func (g *generator) placeOf(expr ast.Expression) (place, error) {
 		case fieldRecord:
 			return place{rec: &recordLocal{offset: at.offset, layout: field.layout, inReg: at.inReg, reg: at.reg, temps: base.rec.temps, readOnly: base.rec.readOnly}}, nil
 		default:
-			if base.rec.readOnly {
-				return place{}, unsupported("the array field %s of an element read through a view", e.String())
-			}
-			return place{arr: &arrayLocal{offset: at.offset, elem: field.typ, elemLayout: field.layout, length: field.length, inReg: at.inReg, reg: at.reg, temps: base.rec.temps}}, nil
+			return place{arr: &arrayLocal{offset: at.offset, elem: field.typ, elemLayout: field.layout, length: field.length, inReg: at.inReg, reg: at.reg, temps: base.rec.temps, readOnly: base.rec.readOnly}}, nil
 		}
 	}
 	return place{}, nil
@@ -2654,7 +2653,10 @@ func (g *generator) spanValue(expr ast.Expression, target *span, baseReg, lenReg
 		if !isBorrow || borrow.Operator != "&" {
 			return span{}, false, unsupported("%s of %s (only &buf over an owned array)", fn.Value, call.Arguments[0].String())
 		}
-		arr := g.arrayOperand(borrow.Right)
+		arr, err := g.arrayOperand(borrow.Right)
+		if err != nil {
+			return span{}, false, err
+		}
 		if arr == nil {
 			return span{}, false, unsupported("%s of %s (only an owned array)", fn.Value, borrow.Right.String())
 		}
@@ -3050,8 +3052,8 @@ func (g *generator) typeOf(expr ast.Expression, hint *scalar) (scalar, error) {
 			}
 			return field.typ, nil
 		}
-		if arr := g.arrayOperand(e.Left); arr != nil {
-			return arr.elem, nil
+		if elem, _, _, isArray := g.staticArrayOf(e.Left); isArray {
+			return elem, nil
 		}
 		sp, err := g.spanOperand(e.Left)
 		if err != nil {
@@ -3070,7 +3072,7 @@ func (g *generator) typeOf(expr ast.Expression, hint *scalar) (scalar, error) {
 			return scalar{}, unsupported("a call through a value")
 		}
 		if ident.Value == "len" && len(e.Arguments) == 1 {
-			if g.arrayOperand(e.Arguments[0]) != nil {
+			if _, _, _, isArray := g.staticArrayOf(e.Arguments[0]); isArray {
 				return scalars["u32"], nil
 			}
 			if _, err := g.spanOperand(e.Arguments[0]); err != nil {
@@ -3700,8 +3702,8 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 			if err != nil {
 				return 0, err
 			}
-			if arr := g.arrayOperand(e.Arguments[0]); arr != nil {
-				g.constant(r, uint64(arr.length), scalars["u32"])
+			if _, _, length, isArray := g.staticArrayOf(e.Arguments[0]); isArray {
+				g.constant(r, uint64(length), scalars["u32"])
 				return r, nil
 			}
 			sp, err := g.spanOperand(e.Arguments[0])
@@ -4598,7 +4600,10 @@ func (g *generator) arrayArgument(arg ast.Expression, target span) (*arrayLocal,
 	if !isBorrow || borrow.Operator != "&" {
 		return nil, unsupported("%s of %s (only &buf over an owned array local)", ident.Value, call.Arguments[0].String())
 	}
-	arr := g.arrayOperand(borrow.Right)
+	arr, err := g.arrayOperand(borrow.Right)
+	if err != nil {
+		return nil, err
+	}
 	if arr == nil {
 		return nil, unsupported("%s of %s (only an owned array local)", ident.Value, borrow.Right.String())
 	}
@@ -4873,12 +4878,40 @@ func log2Bytes(bytes int) int {
 }
 
 // arrayOperand names an owned array local, or nil.
-func (g *generator) arrayOperand(expr ast.Expression) *arrayLocal {
+func (g *generator) arrayOperand(expr ast.Expression) (*arrayLocal, error) {
 	p, err := g.placeOf(expr)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return p.arr
+	return p.arr, nil
+}
+
+// staticArrayOf resolves the array an expression names — an owned array
+// local, or an array field through any chain of record fields and record
+// elements — without emitting code: the element type and length only. The
+// type queries (typeOf, `len`) go through it, so a query never lowers an
+// element address; placeOf does that once, when the access is lowered.
+func (g *generator) staticArrayOf(expr ast.Expression) (elem scalar, elemLayout *recordLayout, length int64, ok bool) {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		if arr, isArray := g.arrays[e.Value]; isArray {
+			return arr.elem, arr.elemLayout, arr.length, true
+		}
+	case *ast.IndexExpression:
+		if !e.Dot {
+			return scalar{}, nil, 0, false
+		}
+		base, err := g.recordLayoutOfExpr(e.Left)
+		if err != nil {
+			return scalar{}, nil, 0, false
+		}
+		if name, isName := e.Index.(*ast.Identifier); isName {
+			if field, has := base.fields[name.Value]; has && field.kind == fieldArray {
+				return field.typ, field.layout, field.length, true
+			}
+		}
+	}
+	return scalar{}, nil, 0, false
 }
 
 // arrayAddress lowers `buf[i]` to a memory operand: a literal index inside
@@ -4992,7 +5025,11 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 		g.releaseTemps(sc.temps)
 		return r, nil
 	}
-	if arr := g.arrayOperand(e.Left); arr != nil {
+	arr, err := g.arrayOperand(e.Left)
+	if err != nil {
+		return 0, err
+	}
+	if arr != nil {
 		return g.arrayElement(arr, e.Index)
 	}
 	sp, err := g.spanOperand(e.Left)
@@ -5066,7 +5103,14 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 		}
 		return g.storeToPlace(target, s)
 	}
-	if arr := g.arrayOperand(s.Target.Left); arr != nil {
+	arr, err := g.arrayOperand(s.Target.Left)
+	if err != nil {
+		return err
+	}
+	if arr != nil {
+		if arr.readOnly {
+			return unsupported("a store into %s through a view", s.Target.Left.String())
+		}
 		value, err := g.expr(s.Value, &arr.elem)
 		if err != nil {
 			return err
