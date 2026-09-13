@@ -201,3 +201,90 @@ pub find_from: (bytes: []u8, start: u32, patterns: []u8, starts: []u32, total: u
   }
   found
 }
+
+// Streaming: a set scanned across chunk boundaries. A Carry holds the last
+// bytes of the input so far — up to sixty-three, one less than the longest
+// literal a stream admits — and feed counts, for one more chunk, the
+// occurrences that end inside it: those starting in the carried bytes and
+// completed by the chunk, and those starting and ending in the chunk. An
+// occurrence cut by the chunk's end is neither counted nor lost: its start
+// is within the carried bytes and the next chunk completes it. The sum of
+// feeds over the chunks of an input is count over the whole input.
+pub Carry: type = struct {
+  tail: [64]u8
+  have: u32
+}
+
+// carry: the empty stream state.
+pub carry: (): Carry {
+  Carry { tail: [u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0)], have: u32(0) }
+}
+
+// longest: the length of the longest literal of the set.
+longest: (starts: []u32, total: u32): u32 {
+  most: u32 = u32(0)
+  j: u32 = u32(0)
+  while j < total {
+    n: u32 = starts[j + u32(1)] - starts[j]
+    most = n > most ? n | most
+    j = j + u32(1)
+  }
+  most
+}
+
+// joined_at: literal j starts at carried position q, runs past the carried
+// bytes, and is completed by the chunk.
+joined_at: (c: [*]Carry, bytes: []u8, q: u32, patterns: []u8, starts: []u32, j: u32): Bool {
+  have: u32 = c[0].have
+  s: u32 = starts[j]
+  n: u32 = starts[j + u32(1)] - s
+  q + n > have && q + n - have <= len(bytes) ? {
+    k: u32 = u32(0)
+    same: Bool = true
+    while same && k < n {
+      at: u32 = q + k
+      unit: u8 = at < have ? c[0].tail[at] | bytes[at - have]
+      same = unit == patterns[s + k]
+      k = k + u32(1)
+    }
+    same
+  } | { false }
+}
+
+// feed: the occurrences ending in this chunk; the carry advances to the
+// last bytes of the input so far. Every literal must be at most sixty-four
+// bytes (the declaration checks this).
+pub feed: (c: [*]Carry, bytes: []u8, patterns: []u8, starts: []u32, total: u32, tables: []u8): u32 {
+  assert(len(c) >= u32(1))
+  have: u32 = c[0].have
+  assert(have <= u32(63))
+  found: u32 = u32(0)
+  q: u32 = u32(0)
+  while q < have {
+    j: u32 = u32(0)
+    while j < total {
+      joined_at(c, bytes, q, patterns, starts, j) ? { found = found + u32(1) } | { }
+      j = j + u32(1)
+    }
+    q = q + u32(1)
+  }
+  found = found + count(bytes, patterns, starts, total, tables)
+  keep: u32 = longest(starts, total) - u32(1)
+  keep = keep > u32(63) ? u32(63) | keep
+  m: u32 = have + len(bytes)
+  k: u32 = keep < m ? keep | m
+  fresh: [64]u8 = [u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0)]
+  i: u32 = u32(0)
+  while i < k {
+    src: u32 = m - k + i
+    fresh[i] = src < have ? c[0].tail[src] | bytes[src - have]
+    i = i + u32(1)
+  }
+  i = u32(0)
+  while i < u32(64) {
+    c[0].tail[i] = fresh[i]
+    i = i + u32(1)
+  }
+  c[0].have = k
+  found
+}

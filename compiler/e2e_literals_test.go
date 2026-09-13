@@ -82,7 +82,21 @@ main: (): u32 {
       p < len(bytes) ? { walked = walked + u32(1) } | { }
       at = p + u32(1)
     }
-    !ok ? { u32(2) } | walked != got ? { u32(3) } | http_which(bytes, u32(0) + u32(0)) != u32(16) && http_which(bytes, u32(0)) >= u32(16) ? { u32(4) } | { u32(0) }
+    // streaming: chunks of varying sizes fed in turn count what the
+    // whole input counts
+    carry: [1]LiteralsCarry = [http_carry()]
+    sizes: [8]u32 = [u32(1), u32(2), u32(3), u32(5), u32(64), u32(65), u32(1000), u32(4093)]
+    streamed: u32 = u32(0)
+    cursor: u32 = u32(0)
+    round: u32 = u32(0)
+    while cursor < len(bytes) {
+      size: u32 = sizes[round % u32(8)]
+      size = cursor + size > len(bytes) ? len(bytes) - cursor | size
+      streamed = streamed + http_feed(span(&carry), subslice(bytes, cursor, size))
+      cursor = cursor + size
+      round = round + u32(1)
+    }
+    !ok ? { u32(2) } | walked != got ? { u32(3) } | streamed != got ? { u32(5) } | { u32(0) }
   }
 }
 `
@@ -107,6 +121,8 @@ func TestLiteralsDeclarationRejections(t *testing.T) {
 		{"short", "Short: literals = { \"GET \", \"ok\" }\nmain: (): u32 = u32(0)\n", "OAK-M0304"},
 		{"duplicate", "Dup: literals = { \"GET \", \"GET \" }\nmain: (): u32 = u32(0)\n", "OAK-M0304"},
 		{"collision", "Http: literals = { \"GET \" }\nhttp_count: (bytes: []u8): u32 = u32(0)\nmain: (): u32 = u32(0)\n", "OAK-M0304"},
+		{"type-collision", "Http: literals = { \"GET \" }\nHttpMatch: type = struct { z: u8 }\nmain: (): u32 = u32(0)\n", "OAK-M0304"},
+		{"too-long", "Long: literals = { \"" + strings.Repeat("a", 65) + "\" }\nmain: (): u32 = u32(0)\n", "OAK-M0304"},
 		{"not-a-string", "Bad: literals = { 42 }\nmain: (): u32 = u32(0)\n", "string literals"},
 	} {
 		_, err := New().WithSource(tc.name+".oak", tc.src).Check().Get()
@@ -160,7 +176,17 @@ main: (): u32 {
   first: u32 = words_find(bytes, u32(0))
   second: u32 = words_find(bytes, first + u32(1))
   which: u32 = words_which(bytes, u32(190))
-  runtime == u32(3) && declared == u32(3) && first == u32(10) && second == u32(100) && which == u32(2) ? u32(42) | u32(1)
+  m: WordsMatch = words_match(bytes, u32(50))
+  none: WordsMatch = words_match(bytes, u32(195))
+  // streaming through the module's own kernel and through the declaration,
+  // the chunk boundary cutting "alpha" at 100 and "gamma" at 190
+  chunk: [1]lits.Carry = [lits.carry()]
+  fed: u32 = lits.feed(span(&chunk), subslice(bytes, u32(0), u32(102)), view(&patterns), view(&starts), u32(3), view(&tables))
+  fed = fed + lits.feed(span(&chunk), subslice(bytes, u32(102), u32(90)), view(&patterns), view(&starts), u32(3), view(&tables))
+  fed = fed + lits.feed(span(&chunk), subslice(bytes, u32(192), u32(8)), view(&patterns), view(&starts), u32(3), view(&tables))
+  wc: [1]LiteralsCarry = [words_carry()]
+  fedw: u32 = words_feed(span(&wc), subslice(bytes, u32(0), u32(11))) + words_feed(span(&wc), subslice(bytes, u32(11), u32(189)))
+  runtime == u32(3) && declared == u32(3) && first == u32(10) && second == u32(100) && which == u32(2) && m.at == u32(100) && m.which == u32(0) && none.at == u32(200) && none.which == u32(3) && fed == u32(3) && fedw == u32(3) ? u32(42) | u32(1)
 }
 `
 

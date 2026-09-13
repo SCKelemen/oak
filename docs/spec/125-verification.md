@@ -284,8 +284,9 @@ enumerable domains, the text `prove/witness.go` writes — has the
 compiler build it and runs the binary through `posix_spawn`, and folds
 the exit status into the rows (`witnessed in the compiled program`, the
 failing theorem refuted, the skips named), so the compiler is the only
-Go on that path. What the shell leaves to the Go command: the
-guard-exclusivity advisory rows.
+Go on that path. The guard-exclusivity theorems of `112-protocols.md` §1
+are generated and folded into their advisory rows the same way. Every
+row the Go command prints, the shell prints.
 `TestOakSolverAgrees` runs the default over the whole law corpus.
 
 `-witness` evaluates every decided theorem in the compiled program as
@@ -583,10 +584,10 @@ In order of payoff, each reusing a surface that exists:
   does, every status the Go ladder's on `spec/oak/machines.oak`; and
   the compiled witness is driven from Oak — `prove/solver/witness.oak`
   writes the driver, spawns the compiler and the binary, and folds the
-  exit status — so the compiler itself is the only Go left on the
-  prover's path, beside the guard-exclusivity advisory rows), so what
-  remains is the self-hosted compiler; next the guard-exclusivity rows
-  in Oak; then
+  exit status — and the guard-exclusivity theorems are generated and
+  folded into their advisory rows in Oak as well, so the compiler itself
+  is the only Go left on the prover's path), so what remains is the
+  self-hosted compiler; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
   producers of certificates, so speed and trust are separated; then an

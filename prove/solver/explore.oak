@@ -366,6 +366,247 @@ probe_text: (out: [*]u8, at0: u32, rx: []u32, raw: Raw, pi: u32): u32 {
   at
 }
 
+// tb_expr writes an expression the way the Go parser's String() spells
+// it (raw_text in protocol.oak, over the raw table), the identifier
+// from_rid renamed to to_rid: the new length, NONE for a node outside the
+// spelling.
+tb_expr: (out: [*]u8, at0: u32, rx: []u32, raw: Raw, node: u32, from_rid: u32, to_rid: u32): u32 {
+  at: u32 = at0
+  fnode: [64]u32
+  fphase: [64]u32
+  sp: u32 = 1
+  fnode[u32(0)] = node
+  fphase[u32(0)] = u32(0)
+  while sp > u32(0) && at != NONE {
+    i: u32 = sp - u32(1)
+    n: u32 = fnode[i]
+    phase: u32 = fphase[i]
+    kind: u32 = rn_kind(rx, raw, n)
+    a: u32 = rn_a(rx, raw, n)
+    b: u32 = rn_b(rx, raw, n)
+    c: u32 = rn_c(rx, raw, n)
+    pushed: u32 = NONE
+    kind == RAW_IDENT ? {
+      at = tb_rs(out, at, rx, raw, a == from_rid ? { to_rid } | { a })
+      sp = sp - u32(1)
+    } | {
+    kind == RAW_INTLIT ? {
+      at = tb_dec(out, at, rn_vlo(rx, raw, n))
+      sp = sp - u32(1)
+    } | {
+    kind == RAW_BOOLLIT ? {
+      at = a != u32(0) ? { tb_lit(out, at, u64(0x65757274), u64(0x0), u32(4)) } | { tb_lit(out, at, u64(0x65736C6166), u64(0x0), u32(5)) }
+      sp = sp - u32(1)
+    } | {
+    kind == RAW_PREFIX ? {
+      phase == u32(0) ? {
+        at = tb_lit(out, at, u64(0x28), u64(0x0), u32(1))
+        at = tb_rs(out, at, rx, raw, a)
+        fphase[i] = u32(1)
+        pushed = b
+      } | {
+        at = tb_lit(out, at, u64(0x29), u64(0x0), u32(1))
+        sp = sp - u32(1)
+      }
+    } | {
+    kind == RAW_INFIX ? {
+      phase == u32(0) ? {
+        at = tb_lit(out, at, u64(0x28), u64(0x0), u32(1))
+        fphase[i] = u32(1)
+        pushed = b
+      } | {
+      phase == u32(1) ? {
+        at = tb_lit(out, at, u64(0x20), u64(0x0), u32(1))
+        at = tb_rs(out, at, rx, raw, a)
+        at = tb_lit(out, at, u64(0x20), u64(0x0), u32(1))
+        fphase[i] = u32(2)
+        pushed = c
+      } | {
+        at = tb_lit(out, at, u64(0x29), u64(0x0), u32(1))
+        sp = sp - u32(1)
+      } }
+    } | {
+    kind == RAW_INDEX ? {
+      phase == u32(0) ? {
+        at = tb_lit(out, at, u64(0x28), u64(0x0), u32(1))
+        fphase[i] = u32(1)
+        pushed = a
+      } | {
+      phase == u32(1) ? {
+        c != u32(0) ? {
+          at = tb_lit(out, at, u64(0x2E), u64(0x0), u32(1))
+          at = tb_rs(out, at, rx, raw, rn_a(rx, raw, b))
+          at = tb_lit(out, at, u64(0x29), u64(0x0), u32(1))
+          sp = sp - u32(1)
+        } | {
+          at = tb_lit(out, at, u64(0x5B), u64(0x0), u32(1))
+          fphase[i] = u32(2)
+          pushed = b
+        }
+      } | {
+        at = tb_lit(out, at, u64(0x295D), u64(0x0), u32(2))
+        sp = sp - u32(1)
+      } }
+    } | {
+    kind == RAW_CALL ? {
+      phase == u32(0) ? {
+        fphase[i] = u32(1)
+        pushed = a
+      } | {
+        k: u32 = phase - u32(1)
+        k == u32(0) ? { at = tb_lit(out, at, u64(0x28), u64(0x0), u32(1)) } | { }
+        k < c ? {
+          k > u32(0) ? { at = tb_lit(out, at, u64(0x202C), u64(0x0), u32(2)) } | { }
+          fphase[i] = phase + u32(1)
+          pushed = rl_item(rx, raw, b, k)
+        } | {
+          at = tb_lit(out, at, u64(0x29), u64(0x0), u32(1))
+          sp = sp - u32(1)
+        }
+      }
+    } | {
+    kind == RAW_VARIANT ? {
+      phase == u32(0) ? {
+        a == NONE ? { } | { at = tb_rs(out, at, rx, raw, a) }
+        at = tb_lit(out, at, u64(0x2E), u64(0x0), u32(1))
+        at = tb_rs(out, at, rx, raw, b)
+        c == NONE ? { sp = sp - u32(1) } | {
+          at = tb_lit(out, at, u64(0x28), u64(0x0), u32(1))
+          fphase[i] = u32(1)
+          pushed = c
+        }
+      } | {
+        at = tb_lit(out, at, u64(0x29), u64(0x0), u32(1))
+        sp = sp - u32(1)
+      }
+    } | { at = NONE } } } } } } } }
+    pushed == NONE ? { } | {
+      sp >= u32(64) ? { at = NONE } | {
+        fnode[sp] = pushed
+        fphase[sp] = u32(0)
+        sp = sp + u32(1)
+      }
+    }
+  }
+  at
+}
+
+// exclusivity_text writes, for every (step, source state) group of a
+// protocol with two or more guarded lines, one theorem per pair stating
+// that the guards never hold together (compiler/protocol_exclusivity.go):
+// `prefix__exclusive__Name__step__From__i__j: theorem (d: NameData,
+// payload: T) { !(guard_i && guard_j) }`, the guards' `data` renamed to
+// `d`.
+exclusivity_text: (out: [*]u8, at0: u32, rx: []u32, raw: Raw, pi: u32): u32 {
+  at: u32 = at0
+  name: u32 = rproto_word(rx, raw, pi, u32(0))
+  prefix: u32 = rproto_word(rx, raw, pi, u32(1))
+  data_t: u32 = rproto_word(rx, raw, pi, u32(4))
+  nsteps: u32 = rproto_word(rx, raw, pi, u32(8))
+  slist: u32 = rproto_word(rx, raw, pi, u32(9))
+  nlines: u32 = rproto_word(rx, raw, pi, u32(15))
+  llist: u32 = rproto_word(rx, raw, pi, u32(16))
+  d_rid: u32 = NONE
+  si: u32 = 0
+  while si < nsteps && at != NONE {
+    step_name: u32 = rl_item(rx, raw, slist, si * u32(4))
+    ptype: u32 = rl_item(rx, raw, slist, si * u32(4) + u32(2))
+    pname: u32 = rl_item(rx, raw, slist, si * u32(4) + u32(3))
+    // The source states of the step's guarded lines, in order of first
+    // appearance; per source, the guarded lines in order.
+    seen: [64]u32
+    nseen: u32 = 0
+    k: u32 = 0
+    while k < nlines {
+      (rl_item(rx, raw, llist, k * u32(4)) == step_name && rl_item(rx, raw, llist, k * u32(4) + u32(3)) != NONE) ? {
+        from_s: u32 = rl_item(rx, raw, llist, k * u32(4) + u32(1))
+        known: Bool = false
+        j: u32 = 0
+        while j < nseen {
+          known = known || seen[j] == from_s
+          j = j + u32(1)
+        }
+        (known || nseen >= u32(64)) ? { } | {
+          seen[nseen] = from_s
+          nseen = nseen + u32(1)
+        }
+      } | { }
+      k = k + u32(1)
+    }
+    g: u32 = 0
+    while g < nseen && at != NONE {
+      from_s: u32 = seen[g]
+      lines: [64]u32
+      count: u32 = 0
+      k = u32(0)
+      while k < nlines {
+        (rl_item(rx, raw, llist, k * u32(4)) == step_name && rl_item(rx, raw, llist, k * u32(4) + u32(1)) == from_s && rl_item(rx, raw, llist, k * u32(4) + u32(3)) != NONE && count < u32(64)) ? {
+          lines[count] = rl_item(rx, raw, llist, k * u32(4) + u32(3))
+          count = count + u32(1)
+        } | { }
+        k = k + u32(1)
+      }
+      i: u32 = 0
+      while i < count && at != NONE {
+        j: u32 = i + u32(1)
+        while j < count && at != NONE {
+          at = tb_rs(out, at, rx, raw, prefix)
+          at = tb_lit(out, at, u64(0x73756C6378655F5F), u64(0x5F5F657669), u32(13))
+          at = tb_rs(out, at, rx, raw, name)
+          at = tb_lit(out, at, u64(0x5F5F), u64(0x0), u32(2))
+          at = tb_rs(out, at, rx, raw, step_name)
+          at = tb_lit(out, at, u64(0x5F5F), u64(0x0), u32(2))
+          at = tb_rs(out, at, rx, raw, from_s)
+          at = tb_lit(out, at, u64(0x5F5F), u64(0x0), u32(2))
+          at = tb_dec(out, at, i)
+          at = tb_lit(out, at, u64(0x5F5F), u64(0x0), u32(2))
+          at = tb_dec(out, at, j)
+          at = tb_lit(out, at, u64(0x65726F656874203A), u64(0x28206D), u32(11))
+          first: Bool = true
+          data_t == NONE ? { } | {
+            at = tb_lit(out, at, u64(0x203A64), u64(0x0), u32(3))
+            at = tb_rs(out, at, rx, raw, data_t)
+            first = false
+          }
+          ptype == NONE ? { } | {
+            first ? { } | { at = tb_lit(out, at, u64(0x202C), u64(0x0), u32(2)) }
+            at = tb_rs(out, at, rx, raw, pname)
+            at = tb_lit(out, at, u64(0x203A), u64(0x0), u32(2))
+            (rt_kind(rx, raw, ptype) == RAW_TYPE_NAME) ? { at = tb_rs(out, at, rx, raw, rt_a(rx, raw, ptype)) } | { at = NONE }
+          }
+          at = tb_lit(out, at, u64(0x2821207B2029), u64(0x0), u32(6))
+          at = tb_expr(out, at, rx, raw, lines[i], data_rid(rx, raw), d_rid_of(rx, raw))
+          at = tb_lit(out, at, u64(0x20262620), u64(0x0), u32(4))
+          at = tb_expr(out, at, rx, raw, lines[j], data_rid(rx, raw), d_rid_of(rx, raw))
+          at = tb_lit(out, at, u64(0xA7D2029), u64(0x0), u32(4))
+          j = j + u32(1)
+        }
+        i = i + u32(1)
+      }
+      g = g + u32(1)
+    }
+    si = si + u32(1)
+  }
+  at
+}
+
+// data_rid / d_rid_of: the raw string ids of `data` and `d` (NONE when the
+// text never mentions them, and then nothing is renamed).
+data_rid: (rx: []u32, raw: Raw): u32 = raw_find_string(rx, raw, u64(0x61746164), u64(0), u32(4))
+d_rid_of: (rx: []u32, raw: Raw): u32 = raw_find_string(rx, raw, u64(0x64), u64(0), u32(1))
+
+// raw_find_string: the raw string id of a literal, or NONE.
+raw_find_string: (rx: []u32, raw: Raw, lo: u64, hi: u64, n: u32): u32 {
+  count: u32 = rx[u32(0)]
+  found: u32 = NONE
+  i: u32 = 0
+  while i < count && found == NONE {
+    is_name(rs_name(rx, raw, i), lo, hi, n) ? { found = i } | { }
+    i = i + u32(1)
+  }
+  found
+}
+
 // generated_source appends the obligations of every invariant candidate
 // (in declaration order) and a probe per protocol to the file's bytes:
 // the new length (at0 when nothing is generated), or NONE past the
@@ -383,6 +624,11 @@ generated_source: (out: [*]u8, at0: u32, rx: []u32, raw: Raw): u32 {
     pi: u32 = 0
     while pi < raw.nprotos && at != NONE {
       at = probe_text(out, at, rx, raw, pi)
+      pi = pi + u32(1)
+    }
+    pi = u32(0)
+    while pi < raw.nprotos && at != NONE {
+      at = exclusivity_text(out, at, rx, raw, pi)
       pi = pi + u32(1)
     }
   }
@@ -450,6 +696,161 @@ fold_invariants: (le: Lem, ew: [*]u32): () {
 // status_word: a row kind's name.
 status_word: (le: Lem, ew: [*]u32, kind: u32): u32 {
   kind == ROW_DECIDED ? { lstr(le, ew, u64(0x64656469636564), u64(0x0), u32(7)) } | { kind == ROW_REFUTED ? { lstr(le, ew, u64(0x64657475666572), u64(0x0), u32(7)) } | { lstr(le, ew, u64(0x6E65706F), u64(0x0), u32(4)) } }
+}
+
+// --- guard exclusivity ----------------------------------------------------------------------------
+
+// ROWF_ADVISORY marks a row that reports a finding, never deciding the
+// exit status (the guard-exclusivity groups).
+ROWF_ADVISORY: u32 = 1073741824
+
+// is_exclusivity_name: whether a name carries the `__exclusive__` marker.
+is_exclusivity_name: (le: Lem, ew: [*]u32, s: u32): Bool = exclusive_marker_at(le, ew, s) != NONE
+
+// exclusive_marker_at: the offset of `__exclusive__` in the string, or NONE.
+exclusive_marker_at: (le: Lem, ew: [*]u32, s: u32): u32 {
+  n: u32 = s_len(le, ew, s)
+  found: u32 = NONE
+  i: u32 = 0
+  while i + u32(13) <= n && found == NONE {
+    same: Bool = true
+    k: u32 = 0
+    while k < u32(13) && same {
+      want: u32 = k < u32(8) ? { u32_trunc_u64((u64(0x73756C6378655F5F) >> u64(k * u32(8))) & u64(255)) } | { u32_trunc_u64((u64(0x5F5F657669) >> u64((k - u32(8)) * u32(8))) & u64(255)) }
+      same = s_byte(le, ew, s, i + k) == want
+      k = k + u32(1)
+    }
+    same ? { found = i } | { }
+    i = i + u32(1)
+  }
+  found
+}
+
+// str_field: the k-th `__`-separated field of the string after the
+// offset, as a new string (NONE when there are fewer).
+str_field: (le: Lem, ew: [*]u32, s: u32, from_at: u32, k: u32): u32 {
+  n: u32 = s_len(le, ew, s)
+  start: u32 = from_at
+  field: u32 = 0
+  // Advance over k separators.
+  while field < k && start != NONE {
+    i: u32 = start
+    hit: u32 = NONE
+    while i + u32(2) <= n && hit == NONE {
+      (s_byte(le, ew, s, i) == u32(95) && s_byte(le, ew, s, i + u32(1)) == u32(95)) ? { hit = i } | { }
+      i = i + u32(1)
+    }
+    start = hit == NONE ? { NONE } | { hit + u32(2) }
+    field = field + u32(1)
+  }
+  start == NONE ? { NONE } | {
+    end: u32 = start
+    stop: Bool = false
+    while end < n && !stop {
+      (end + u32(2) <= n && s_byte(le, ew, s, end) == u32(95) && s_byte(le, ew, s, end + u32(1)) == u32(95)) ? { stop = true } | { end = end + u32(1) }
+    }
+    sb_begin(le, ew)
+    i: u32 = start
+    while i < end {
+      sb_byte(le, ew, s_byte(le, ew, s, i))
+      i = i + u32(1)
+    }
+    sb_end(le, ew)
+  }
+}
+
+// fold_exclusivity folds the guard-exclusivity pair theorems of one
+// (step, state) group into one advisory row `Protocol: guards of step from
+// State` (prove/prove.go summarizeExclusivity): decided when every pair is
+// disjoint, refuted with the first overlapping pair, open when a pair is
+// undecided. The group rows follow the theorem rows.
+fold_exclusivity: (le: Lem, ew: [*]u32): () {
+  n: u32 = lst(le, ew, LN_NROWS)
+  i: u32 = 0
+  while i < n && !le_failed(le, ew) {
+    name: u32 = row_name(le, ew, i)
+    marker: u32 = exclusive_marker_at(le, ew, name)
+    marker == NONE ? { } | {
+      after: u32 = marker + u32(13)
+      protocol: u32 = str_field(le, ew, name, after, u32(0))
+      step: u32 = str_field(le, ew, name, after, u32(1))
+      from_s: u32 = str_field(le, ew, name, after, u32(2))
+      first: u32 = str_field(le, ew, name, after, u32(3))
+      second: u32 = str_field(le, ew, name, after, u32(4))
+      (protocol == NONE || step == NONE || from_s == NONE || first == NONE || second == NONE) ? { } | {
+        sb_begin(le, ew)
+        sb_str(le, ew, protocol)
+        ap_lits(le, ew, u64(0x736472617567203A), u64(0x20666F20), u32(12))  // : guards of 
+        sb_str(le, ew, step)
+        ap_lits(le, ew, u64(0x206D6F726620), u64(0x0), u32(6))  //  from 
+        sb_str(le, ew, from_s)
+        key: u32 = sb_end(le, ew)
+        gi: u32 = row_named(le, ew, key)
+        gi == NONE ? {
+          row_push(le, ew, ROW_DECIDED, key, NONE)
+          gi = lst(le, ew, LN_NROWS) - u32(1)
+          set_row_flags(le, ew, gi, ROWF_ADVISORY)
+        } | { }
+        flags: u32 = row_flags(le, ew, gi)
+        pairs: u32 = (flags & u32(65535)) + u32(1)
+        settled: Bool = (flags & u32(65536)) != u32(0)
+        kind: u32 = row_kind(le, ew, i)
+        detail: u32 = row_detail(le, ew, i)
+        (kind == ROW_REFUTED && !settled) ? {
+          sb_begin(le, ew)
+          ap_lits(le, ew, u64(0x2073656E696C), u64(0x0), u32(6))  // lines 
+          sb_str(le, ew, first)
+          ap_lits(le, ew, u64(0x20646E6120), u64(0x0), u32(5))  //  and 
+          sb_str(le, ew, second)
+          ap_lits(le, ew, u64(0x746F62206E616320), u64(0x2820657269662068), u32(16))  //  can both fire (
+          sb_str(le, ew, detail)
+          ap_lits(le, ew, u64(0x74206B614F203A29), u64(0x6E696C2073656B61), u32(16))  // ): Oak takes line 
+          ap_lits(le, ew, u64(0x2065), u64(0x0), u32(2))
+          sb_str(le, ew, first)
+          ap_lits(le, ew, u64(0x6F6D20656874202C), u64(0x63656863206C6564), u32(16))  // , the model checker explores both — the readings differ there
+          ap_lits(le, ew, u64(0x6C7078652072656B), u64(0x746F62207365726F), u32(16))
+          ap_lits(le, ew, u64(0x6874209480E22068), u64(0x6E69646165722065), u32(16))
+          ap_lits(le, ew, u64(0x6566666964207367), u64(0x65726568742072), u32(15))
+          set_row(le, ew, gi, ROW_REFUTED, sb_end(le, ew))
+          settled = true
+        } | {
+          (kind != ROW_DECIDED && kind != ROW_REFUTED && !settled && row_kind(le, ew, gi) != ROW_REFUTED) ? {
+            sb_begin(le, ew)
+            ap_lits(le, ew, u64(0x766973756C637865), u64(0x6C20666F20797469), u32(16))  // exclusivity of lines 
+            ap_lits(le, ew, u64(0x2073656E69), u64(0x0), u32(5))
+            sb_str(le, ew, first)
+            ap_lits(le, ew, u64(0x20646E6120), u64(0x0), u32(5))  //  and 
+            sb_str(le, ew, second)
+            ap_lits(le, ew, u64(0x64696365646E7520), u64(0x203A6465), u32(12))  //  undecided: 
+            sb_str(le, ew, detail)
+            set_row(le, ew, gi, kind, sb_end(le, ew))
+          } | { }
+        }
+        set_row_flags(le, ew, gi, ROWF_ADVISORY | (settled ? { u32(65536) } | { u32(0) }) | pairs)
+        set_row(le, ew, i, ROW_DROPPED, detail)
+      }
+    }
+    i = i + u32(1)
+  }
+  // The groups every pair of which is disjoint.
+  m: u32 = lst(le, ew, LN_NROWS)
+  gi: u32 = n
+  while gi < m {
+    (row_kind(le, ew, gi) == ROW_DECIDED && row_detail(le, ew, gi) == NONE) ? {
+      sb_begin(le, ew)
+      ap_lits(le, ew, u64(0x6573697772696170), u64(0x6973756C63786520), u32(16))  // pairwise exclusive (
+      ap_lits(le, ew, u64(0x28206576), u64(0x0), u32(4))
+      sb_dec(le, ew, u64(row_flags(le, ew, gi) & u32(65535)))
+      ap_lits(le, ew, u64(0x3A29737269617020), u64(0x7269662065687420), u32(16))  //  pairs): the first-line reading and the model checker's every-line reading coincide
+      ap_lits(le, ew, u64(0x20656E696C2D7473), u64(0x20676E6964616572), u32(16))
+      ap_lits(le, ew, u64(0x2065687420646E61), u64(0x6863206C65646F6D), u32(16))
+      ap_lits(le, ew, u64(0x20732772656B6365), u64(0x696C2D7972657665), u32(16))
+      ap_lits(le, ew, u64(0x696461657220656E), u64(0x636E696F6320676E), u32(16))
+      ap_lits(le, ew, u64(0x656469), u64(0x0), u32(3))
+      set_row(le, ew, gi, ROW_DECIDED, sb_end(le, ew))
+    } | { }
+    gi = gi + u32(1)
+  }
 }
 
 // --- the reachable graph ------------------------------------------------------------------------
@@ -1246,7 +1647,7 @@ fairness_text: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, pi: u32, out: [*]u32):
     strong: Bool = rl_item(rx, raw, flist, k * u32(2) + u32(1)) != u32(0)
     si: u32 = 0
     while si < nsteps {
-      rl_item(rx, raw, slist, si * u32(3)) == step_name ? {
+      rl_item(rx, raw, slist, si * u32(4)) == step_name ? {
         strong ? { out[u32(1)] = out[u32(1)] | (u32(1) << si) } | { out[u32(0)] = out[u32(0)] | (u32(1) << si) }
       } | { }
       si = si + u32(1)
@@ -1609,7 +2010,7 @@ explore_all: (le: Lem, ew: [*]u32, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, lw:
 // print_rows writes every row not dropped in the command's format and
 // returns the counts.
 print_rows: (le: Lem, ew: [*]u32): Counts {
-  counts: Counts = Counts { decided: u32(0), refuted: u32(0), open: u32(0) }
+  counts: Counts = Counts { decided: u32(0), refuted: u32(0), open: u32(0), failing: u32(0) }
   n: u32 = lst(le, ew, LN_NROWS)
   i: u32 = 0
   while i < n {
@@ -1620,8 +2021,10 @@ print_rows: (le: Lem, ew: [*]u32): Counts {
       txt_colon()
       write_str(le, ew, row_detail(le, ew, i))
       write_byte(u8(10))
-      counts = kind == ROW_DECIDED ? { Counts { decided: counts.decided + u32(1), refuted: counts.refuted, open: counts.open } } | {
-        kind == ROW_REFUTED ? { Counts { decided: counts.decided, refuted: counts.refuted + u32(1), open: counts.open } } | { Counts { decided: counts.decided, refuted: counts.refuted, open: counts.open + u32(1) } }
+      advisory: Bool = (row_flags(le, ew, i) & ROWF_ADVISORY) != u32(0)
+      failing: u32 = (kind == ROW_DECIDED || advisory) ? { counts.failing } | { counts.failing + u32(1) }
+      counts = kind == ROW_DECIDED ? { Counts { decided: counts.decided + u32(1), refuted: counts.refuted, open: counts.open, failing: failing } } | {
+        kind == ROW_REFUTED ? { Counts { decided: counts.decided, refuted: counts.refuted + u32(1), open: counts.open, failing: failing } } | { Counts { decided: counts.decided, refuted: counts.refuted, open: counts.open + u32(1), failing: failing } }
       }
     }
     i = i + u32(1)
