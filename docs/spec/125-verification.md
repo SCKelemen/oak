@@ -198,14 +198,19 @@ message; an error outside every statement leaves them all open with it.
 every bit-level obligation: the clauses go to the **SAT solver written in
 Oak** (`prove/solver/sat.oak`, inside the compiled solver binary) — a
 conflict-driven clause-learning solver in the strict profile over one
-caller-owned word arena, propagation by occurrence lists, first-UIP
-learning with VSIDS activity and phase saving, geometric restarts, every
-learned clause written as an LRAT line as it is learned with the
-propagation order as its hints, the learned clauses reduced at a restart
-once they outnumber a growing limit (unlocked clauses longer than two
-literals, the older half, one deletion line, the store compacted in
-place and the occurrence lists rebuilt), bounded by a conflict budget
-and the store's capacity — or, when `OAK_SAT_SOLVER` names one, to an external
+caller-owned word arena, two watched literals per clause (the watch nodes
+fixed at `2c` and `2c+1`, so a watch moves without allocation), first-UIP
+learning with VSIDS activity and phase saving, the learned clause
+minimized (a literal whose reason's other literals are in the clause,
+removed by it, or at level zero is implied by the rest and dropped, its
+reason joining the replay), Luby restarts, every learned clause written
+as an LRAT line as it is learned with its reasons in trail order as the
+hints — the level-zero antecedent chain, the replayed reasons, the
+conflict clause last — the learned clauses reduced at a restart once they
+outnumber a growing limit or the store is three quarters full (unlocked
+clauses longer than two literals below the mean clause activity, one
+deletion line, the store compacted in place and the watch lists rebuilt),
+bounded by a conflict budget and the store's capacity — or, when `OAK_SAT_SOLVER` names one, to an external
 solver invoked directly (`--lrat --no-binary`, an explicit argument list,
 a temporary directory, a timeout); a named solver that is not found skips
 the rung and the summary says so. Either way the solver is untrusted. A
@@ -678,8 +683,12 @@ In order of payoff, each reusing a surface that exists:
 - **A certificate rung.** Landed as `-solver sat` (§3, §4): the clause
   engine, the two LRAT checkers, `Oak.RupCheck`, and the solver written in
   Oak (`prove/solver/sat.oak`) as the rung's default, with clause-database
-  reduction. Next: the clause encoder proved rather than cross-checked;
-  two-watched-literal propagation when a corpus obligation asks for it. The BDD's failure mode
+  reduction, two-watched-literal propagation, minimization, and Luby
+  restarts. Next: bounded variable elimination at load (the corpus rows
+  the solver gives up on are the ones CaDiCaL settles by eliminating the
+  gate variables); the clause encoder proved rather than cross-checked;
+  the solver's own laws (a learned clause is implied by its hints) stated
+  over the arena. The BDD's failure mode
   is the node budget on multipliers and wide aggregates, which CDCL
   solvers treat routinely. The rung is the one Lean's `bv_decide` already
   runs:

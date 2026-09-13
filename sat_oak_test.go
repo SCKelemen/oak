@@ -132,6 +132,19 @@ func TestOakSATFixtures(t *testing.T) {
 	if !outcome.Satisfiable || !satisfies([][]int{{1, 2}, {-1, 3}, {-2, -3}, {2, 3}}, outcome.Model) {
 		t.Fatalf("chain: want a satisfying model, got %+v", outcome)
 	}
+	// Two contradicting units: found at load, refuted with a certificate.
+	units := cnfOf(2, [][]int{{1}, {-1, 2}, {-2}})
+	outcome, err = runOakSAT(units)
+	if err != nil || !outcome.Unsatisfiable {
+		t.Fatalf("contradicting units: want unsatisfiable, got %+v %v", outcome, err)
+	}
+	checkBoth(t, "contradicting units", units, outcome.Certificate)
+	direct := cnfOf(1, [][]int{{1}, {-1}})
+	outcome, err = runOakSAT(direct)
+	if err != nil || !outcome.Unsatisfiable {
+		t.Fatalf("direct contradiction: want unsatisfiable, got %+v %v", outcome, err)
+	}
+	checkBoth(t, "direct contradiction", direct, outcome.Certificate)
 	// An empty clause in the formula.
 	empty := cnfOf(1, [][]int{{}})
 	outcome, err = runOakSAT(empty)
