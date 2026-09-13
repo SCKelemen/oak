@@ -2035,6 +2035,7 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 				if err != nil {
 					return err
 				}
+				g.emit("mov", xr(out), xr(31)) // defined before the arms (see resultExpr)
 				outs = append(outs, out)
 			}
 			if err := g.resultRecordInto(e, outs); err != nil {
@@ -4872,6 +4873,13 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 		g.emit("fmov", reg(out, *resultType), reg(vecBase, *resultType))
 	} else {
 		g.emit("mov", reg(out, *resultType), reg(0, *resultType))
+		if !resultType.isBool {
+			// AAPCS64 leaves the bits above a narrow result unspecified, as
+			// it does above a narrow argument: the caller normalizes, and
+			// the verifier's call summary holds it to that (a fresh
+			// unknown above the result's width).
+			g.normalize(out, *resultType)
+		}
 	}
 	return out, nil
 }
@@ -5394,14 +5402,86 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 	return r, nil
 }
 
-// elementStore lowers `v[i] = e` through a writable span.
-func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
-	if s.Target.Dot {
+// placeStore lowers `p.f = e` and `pool[i].f = e`. When the value calls,
+// it is evaluated before the place: an element address computed first
+// would be held across the call, spilled and reloaded, and the checker
+// cannot carry a region through a spill (docs/spec/94-assembler.md §9).
+// The place is computed once to learn its type — that computation is
+// rolled back — then again after the value.
+func (g *generator) placeStore(s *ast.IndexAssignmentStatement) error {
+	if !mentionsCall(s.Value) {
 		target, err := g.placeOf(s.Target)
 		if err != nil {
 			return err
 		}
 		return g.storeToPlace(target, s)
+	}
+	mark := len(g.items)
+	probe, err := g.placeOf(s.Target)
+	if err != nil {
+		return err
+	}
+	g.items = g.items[:mark]
+	switch {
+	case probe.sc != nil:
+		g.releaseTemps(probe.sc.temps)
+		if probe.sc.readOnly {
+			return unsupported("a store into %s through a read-only view", s.Target.String())
+		}
+		typ := probe.sc.typ
+		value, err := g.expr(s.Value, &typ)
+		if err != nil {
+			return err
+		}
+		target, err := g.placeOf(s.Target)
+		if err != nil {
+			return err
+		}
+		if target.sc == nil {
+			return unsupported("the place %s changed shape", s.Target.String())
+		}
+		if err := g.fieldStore(target.sc, value); err != nil {
+			return err
+		}
+		g.release(value)
+		g.releaseTemps(target.sc.temps)
+		return nil
+	case probe.rec != nil:
+		g.releaseTemps(probe.rec.temps)
+		if probe.rec.readOnly {
+			return unsupported("a store into %s through a read-only view", s.Target.String())
+		}
+		layout := probe.rec.layout
+		src, err := g.recordValueAs(s.Value, layout)
+		if err != nil {
+			return err
+		}
+		if src.layout != layout {
+			return unsupported("a %s stored into %s (a %s)", src.layout.name, s.Target.String(), layout.name)
+		}
+		target, err := g.placeOf(s.Target)
+		if err != nil {
+			return err
+		}
+		if target.rec == nil {
+			return unsupported("the place %s changed shape", s.Target.String())
+		}
+		err = g.copyBytes(target.rec.loc(), src.loc(), layout.size)
+		g.releaseTemps(src.temps)
+		g.releaseTemps(target.rec.temps)
+		return err
+	}
+	target, err := g.placeOf(s.Target)
+	if err != nil {
+		return err
+	}
+	return g.storeToPlace(target, s)
+}
+
+// elementStore lowers `v[i] = e` through a writable span.
+func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
+	if s.Target.Dot {
+		return g.placeStore(s)
 	}
 	if layout := g.recordArrayElementLayout(s.Target.Left); layout != nil {
 		// `pool[i] = r`: a record element replaced.
@@ -5502,6 +5582,10 @@ func (g *generator) resultExpr(expr ast.Expression) error {
 			if err != nil {
 				return err
 			}
+			// Defined before the arms: an arm that calls before writing it
+			// spills it, and a spill of a never-written register is a read
+			// the checker and the verifier refuse.
+			g.emit("mov", reg(out, *g.result), zeroReg(*g.result))
 			if err := g.resultInto(e, out); err != nil {
 				return err
 			}
@@ -5598,6 +5682,14 @@ func (g *generator) valueOnly(expr ast.Expression) bool {
 		}
 	}
 	return true
+}
+
+// zeroReg spells the zero register at a scalar's width.
+func zeroReg(s scalar) asm.Register {
+	if s.wide() {
+		return xr(31)
+	}
+	return wr(31)
 }
 
 // resultInto lowers a value-only result expression into the register out:

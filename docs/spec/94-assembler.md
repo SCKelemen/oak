@@ -2173,6 +2173,72 @@ the lowered bodies are 92 proven, 5 witnessed, 304 trusted on AArch64 and
 does not summarize calls). Pinned: `compiler/e2e_native_bool_field_test.go`;
 the tally is `docs/notes/verification-chain-2026-09.md`.
 
+**Call summaries (2026-09-13).** A call was the largest reason a lowered
+body stayed trusted (`bl` in 159 of 304 AArch64 bodies, `call` in 119 of
+295 on RV64). The verifier now takes a call to a program function with a
+scalar signature at the callee's Oak body (`asm.Function.Callees`, set by
+the native backend from the program): the arguments are the contract
+registers' terms at the parameters' widths, the callee's body lowers to a
+term over them — its own calls the same way, recursion refused — and the
+result register receives the term in the lane's canonical form: on RV64
+widened as the psABI does; on AArch64 with the bits above the result's
+width a fresh unknown, since AAPCS64 leaves them unspecified (above the
+low word for a Bool, the C enum). Every caller-saved register and the
+flags are forgotten, as after any call. The caller's verdict is then
+relative to the callee's Oak body, which the callee's own verdict covers,
+and it names the callees so taken (`proven … (callees taken at their Oak
+bodies: inc)`); the Oak side inlines the same calls (`inlineCall`, the
+theorem decider's rule). The model found a real gap on landing: the
+AArch64 lane read a narrow call result (`u8`, `u16`) straight from `w0`,
+relying on the callee's zero-extension, which the ABI does not promise —
+the caller now normalizes a narrow result as it normalizes a narrow
+parameter, and the summary's fresh upper bits are what holds it to that.
+A call the summary cannot take — no callee known, a span or record in the
+signature, a body outside the term language, a data-dependent loop —
+leaves the body trusted with the reason. Pinned:
+`asm/call_summary_test.go` (proven, refuted, opaque, span parameter; both
+lanes), `compiler/e2e_native_call_summary_test.go`.
+
+**The last two refusals (2026-09-13).** `text_fold_next` computed an
+element address (`umaddl` over a span of records), held it across the
+call that produced the value, spilled and reloaded it — and the checker
+cannot carry a region through a spill, so the store was refused. Both
+lanes now evaluate a calling value before its place (`placeStore`: the
+place is computed once for its type and rolled back, then again after the
+value). `utf8_to_utf16_bytes` parked a frame address (`add x27, sp, #168`)
+and a loop bound (`movz w28, #2`) in callee-saved registers and compared
+the index against the register; the checker forgot both at the call and
+read the compare as a register guard. A frame address or a constant in a
+callee-saved register now survives a call (the callee preserves the
+register and cannot touch this frame; a later write still forgets it), a
+constant is part of the label fixpoint's state (kept where every
+predecessor agrees), and a compare against a register holding a known
+constant is the constant guard it is (`asm/check_test.go`, "guard against
+a register holding a constant"). With these, `oak build -native` of the
+stdlib-bearing program succeeds on both lanes: every body the backend
+lowers is admitted by the checker.
+
+**The encoder against the Sail encoder (2026-09-13).** The Sail RISC-V
+model's `encdec` mapping is the ISA's own statement of an instruction's
+bits, and its Lean export spells the forward direction as one clause per
+instruction form. `Oak.RiscV.Enc` restates the encoder's placement
+(`placeField`, `encode`: the fixed bits, each field masked to its width and
+shifted to its low bit, exactly `encodeRV64Instruction`) and the table
+entries the verifier decides — thirty mnemonics across the R, RW, I,
+shift-immediate, and B forms, generated from `asm/rv64_encodings_gen.go`
+by `asm/rv64_encoding_lean_test.go`, which holds the Lean block to the
+table. `spec/lean-sail/OakSailBridge/Encoding.lean` states, for every
+register number, immediate, or branch offset, that the word Oak writes for
+a mnemonic is `encdec_forwards` of the instruction it spells — so the
+machine words follow from the specification, and, `encdec` being a
+bijection, the decoder reads them back. The statements build against the
+export: with Sail built from git the export generates (nine minutes) but
+its `Defs.lean` does not yet compile under lean-sail v5 at sail-riscv 0.14
+(`PTW_Output`, unbound type-level variables), the same class of failure
+the earlier attempt recorded; the theorems are stated and their tactic
+script written, awaiting an export that compiles (sail-riscv's own Lean CI
+builds master with Sail from git).
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against) and fractional-LMUL forms. The term

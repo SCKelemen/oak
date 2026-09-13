@@ -793,7 +793,7 @@ func executeBody(fn *Function, sig *ast.FunctionStatement, concrete map[string]u
 			return nil, nil, "alignment directives", false
 		}
 	}
-	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass, spans: spans, declared: declared, concrete: concrete != nil, env: concrete, records: composites, arch: fn.Arch}
+	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass, spans: spans, declared: declared, concrete: concrete != nil, env: concrete, records: composites, arch: fn.Arch, fn: fn}
 	exec.resultReg = Register{Class: resultClass, Num: 0}
 	if fn.Arch == ArchRV64 {
 		exec.resultReg = rv64ResultRegister
@@ -846,6 +846,15 @@ type pathExecutor struct {
 	// concrete inputs of a witness run (nil when symbolic).
 	records map[string]compositeArg
 	env     map[string]uint64
+	// fn is the function under verification (its program tables:
+	// Callees, Records, Constants); summarized names the callees taken at
+	// their Oak bodies (summarizeCall), freshSyms the unknowns those
+	// summaries introduced (the unspecified upper bits of a result), and
+	// callSites counts them for naming.
+	fn         *Function
+	summarized []string
+	freshSyms  map[string]int
+	callSites  int
 }
 
 // compositeArg is a record or union parameter: its scalar leaves and size
@@ -1251,6 +1260,11 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 			// overflowing shift, a failed assert), so the path is outside
 			// the equivalence and drops from the fork it came from.
 			return trapPath, "", true
+		case "bl":
+			if reason, ok := x.summarizeCall(instr, state); !ok {
+				return nil, reason, false
+			}
+			continue
 		case "b", "j":
 			target, ok := x.labels[instr.Operands[0].(Symbol).Name]
 			if !ok {
@@ -4102,6 +4116,9 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (every path traps) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
 	}
 	lowering := prepareLowering(fn, sig, nil)
+	for name, width := range exec.freshSyms {
+		lowering.fresh[name] = width // a summarized call's unspecified result bits
+	}
 	// A tail-recursive body is the loop it compiles to (docs/spec/85-discipline.md).
 	if loop, isTail := tailRecursionAsLoop(sig, oakBody); isTail {
 		oakBody = loop
@@ -4114,7 +4131,135 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 	if len(exec.loops) > 0 || len(lowering.loops) > 0 {
 		return verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
 	}
-	return decideEqual(fn, lowering, asmTerm, oakTerm, width, "")
+	note := ""
+	if len(exec.summarized) > 0 {
+		note = " (callees taken at their Oak bodies: " + strings.Join(exec.summarized, ", ") + ")"
+	}
+	return decideEqual(fn, lowering, asmTerm, oakTerm, width, note)
+}
+
+// summarizeCall takes a call to a program function at the callee's Oak
+// body (docs/spec/94-assembler.md §8, call summaries). The arguments are
+// the contract registers' terms at the parameters' widths; the callee's
+// body lowers to a term over them, with its own calls inlined the same
+// way and recursion refused; the result register receives the term in
+// the lane's canonical form — on RV64 widened as the psABI does, on
+// AArch64 with the bits above the result's width (above the low word for
+// a Bool, the C enum) a fresh unknown, since AAPCS64 leaves them
+// unspecified; and every caller-saved register and the flags are
+// forgotten, as after any call. The caller's verdict is then relative to
+// the callee's Oak body, which the callee's own verdict covers, and it
+// names the callees taken so. A call the summary cannot take — no callee
+// known, a span or record in the signature, a body outside the term
+// language — leaves the function trusted with the reason, as before.
+func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (string, bool) {
+	opaque := "instruction " + instr.Mnemonic
+	if x.arch == ArchRV64 {
+		opaque = "a call"
+	}
+	if len(instr.Operands) == 0 || x.fn == nil {
+		return opaque, false
+	}
+	sym, isSym := instr.Operands[0].(Symbol)
+	if !isSym {
+		return opaque, false
+	}
+	callee := x.fn.Callees[sym.Name]
+	if callee == nil || callee.Body == nil || callee.Name == nil || callee.Receiver != nil || len(callee.TypeParams) != 0 || callee.ExternSymbol != "" {
+		return opaque, false
+	}
+	name := callee.Name.Value
+	if callee.ReturnType == nil {
+		return fmt.Sprintf("a call to %s, which returns nothing", name), false
+	}
+	resultWidth, resultSigned, ok := contractBits(callee.ReturnType)
+	if class, isClass := contractClass(callee.ReturnType); !ok || !isClass || class == ClassV {
+		return fmt.Sprintf("a call to %s returning %s", name, typeText(callee.ReturnType)), false
+	}
+	if len(callee.Parameters) > 8 {
+		return fmt.Sprintf("a call to %s with %d parameters", name, len(callee.Parameters)), false
+	}
+	lo := newLowering(callee)
+	lo.records, lo.adts, lo.constants = x.fn.Records, x.fn.ADTs, x.fn.Constants
+	lo.functions = x.fn.Callees
+	lo.inlining = map[string]bool{name: true}
+	argBase := 0
+	if x.arch == ArchRV64 {
+		argBase = 10 // a0
+	}
+	for i, param := range callee.Parameters {
+		if param.Variadic {
+			return fmt.Sprintf("a call to %s: parameter %s is variadic", name, param.Name.Value), false
+		}
+		w, signed, isScalar := contractBits(param.Type)
+		if class, isClass := contractClass(param.Type); !isScalar || !isClass || class == ClassV {
+			return fmt.Sprintf("a call to %s: parameter %s is not a fixed-width integer", name, param.Name.Value), false
+		}
+		value, has := state.regs[argBase+i]
+		if !has {
+			return "unbound register read", false
+		}
+		lo.locals[param.Name.Value] = &oakLocal{value: truncate(value, w), width: w, signed: signed}
+	}
+	body := callee.Body
+	if loop, isTail := tailRecursionAsLoop(callee, body); isTail {
+		body = loop
+	}
+	result, reason, ok := lo.lower(body, resultWidth)
+	if !ok {
+		return fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
+	}
+	if len(lo.loops) > 0 {
+		return fmt.Sprintf("a call to %s whose body has a data-dependent loop", name), false
+	}
+	value := zeroExtend(result, resultWidth)
+	value = zeroExtend(value, 64)
+	if x.arch == ArchRV64 {
+		for _, r := range []int{1, 5, 6, 7, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31} {
+			delete(state.regs, r) // ra, t0–t6, a1–a7: dead after a call
+		}
+		switch {
+		case resultSigned:
+			value = extendTerm(value, resultWidth, 64, true)
+		case resultWidth == 32:
+			value = extendTerm(value, 32, 64, true) // a u32 arrives sign-extended (Oak.RiscV.widen)
+		}
+		state.regs[10] = value
+	} else {
+		for r := 1; r <= 17; r++ {
+			delete(state.regs, r)
+		}
+		delete(state.regs, 30)
+		state.flags = nil
+		defined := resultWidth
+		if typeText(callee.ReturnType) == "Bool" {
+			defined = 32 // the C enum: the whole low word holds 0 or 1
+		}
+		if defined < 64 {
+			x.callSites++
+			hi := fmt.Sprintf("call%d#hi", x.callSites)
+			var upper *term
+			if x.concrete {
+				upper = constTerm(0, 64-defined) // a witness run: the callee's own code cleared them
+			} else {
+				if x.freshSyms == nil {
+					x.freshSyms = map[string]int{}
+				}
+				x.freshSyms[hi] = 64 - defined
+				x.declared[hi] = 64 - defined
+				upper = paramTerm(hi, 64-defined)
+			}
+			value = binaryTerm("or", value, binaryTerm("shl", zeroExtend(upper, 64), constTerm(uint64(defined), 64)))
+		}
+		state.regs[0] = value
+	}
+	for _, seen := range x.summarized {
+		if seen == name {
+			return "", true
+		}
+	}
+	x.summarized = append(x.summarized, name)
+	return "", true
 }
 
 // prepareLowering builds the Oak side for a function: the signature's
@@ -4124,6 +4269,7 @@ func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	lowering := newLowering(sig)
 	lowering.records, lowering.adts = fn.Records, fn.ADTs
 	lowering.constants = fn.Constants
+	lowering.functions = fn.Callees // the Oak body's calls inline (inlineCall)
 	lowering.concrete = concrete
 	lowering.bindAggregateParams(sig)
 	return lowering

@@ -78,10 +78,14 @@ type guardState struct {
 	mins  map[int]int64
 	idx   map[int]idxFact
 	frame map[int]int64
+	// consts: the registers holding a known constant (movz, mov #imm) — a
+	// loop bound hoisted into a callee-saved register — kept where every
+	// predecessor agrees on the value.
+	consts map[int]int64
 }
 
 func newGuardState() *guardState {
-	return &guardState{mins: map[int]int64{}, idx: map[int]idxFact{}, frame: map[int]int64{}}
+	return &guardState{mins: map[int]int64{}, idx: map[int]idxFact{}, frame: map[int]int64{}, consts: map[int]int64{}}
 }
 
 func (c *checker) guardSnapshot() *guardState {
@@ -96,6 +100,9 @@ func (c *checker) guardSnapshot() *guardState {
 	}
 	for reg, addr := range c.frameAddrs {
 		gs.frame[reg] = addr
+	}
+	for reg, k := range c.constFacts {
+		gs.consts[reg] = k
 	}
 	return gs
 }
@@ -116,6 +123,10 @@ func (c *checker) applyGuards(gs *guardState) {
 	c.frameAddrs = map[int]int64{}
 	for reg, addr := range gs.frame {
 		c.frameAddrs[reg] = addr
+	}
+	c.constFacts = map[int]int64{}
+	for reg, k := range gs.consts {
+		c.constFacts[reg] = k
 	}
 	c.pendingCmp = cmpFact{}
 }
@@ -147,6 +158,11 @@ func meetGuards(a, b *guardState) *guardState {
 			out.idx[reg] = factA
 		}
 	}
+	for reg, kA := range a.consts {
+		if kB, ok := b.consts[reg]; ok && kA == kB {
+			out.consts[reg] = kA
+		}
+	}
 	return out
 }
 
@@ -164,8 +180,13 @@ func guardStatesEqual(a, b map[string]*guardState) bool {
 	}
 	for name, ga := range a {
 		gb, ok := b[name]
-		if !ok || len(ga.mins) != len(gb.mins) || len(ga.idx) != len(gb.idx) || len(ga.frame) != len(gb.frame) {
+		if !ok || len(ga.mins) != len(gb.mins) || len(ga.idx) != len(gb.idx) || len(ga.frame) != len(gb.frame) || len(ga.consts) != len(gb.consts) {
 			return false
+		}
+		for reg, k := range ga.consts {
+			if gb.consts[reg] != k {
+				return false
+			}
 		}
 		for reg, addr := range ga.frame {
 			if gb.frame[reg] != addr {
@@ -1177,7 +1198,11 @@ func (c *checker) instruction(instr Instruction) bool {
 			case Immediate:
 				c.pendingCmp = cmpFact{valid: true, left: dest.Num, rightReg: -1, imm: right.Value}
 			case Register:
-				if right.Class == ClassW && !right.ZeroRegister() {
+				if k, isConst := c.constFacts[right.Num]; isConst && right.Class == ClassW && !right.ZeroRegister() {
+					// A bound hoisted into a register (`movz w28, #2` before
+					// a loop) guards as the immediate would.
+					c.pendingCmp = cmpFact{valid: true, left: dest.Num, rightReg: -1, imm: k}
+				} else if right.Class == ClassW && !right.ZeroRegister() {
 					c.pendingCmp = cmpFact{valid: true, left: dest.Num, rightReg: right.Num}
 				}
 			}
@@ -1934,7 +1959,28 @@ func (c *checker) clobberCallerSaved() {
 	c.written[1] = true
 	c.writtenV[0] = true
 	c.flagsValid = false
+	// A frame address parked in a callee-saved register survives the
+	// call: the callee preserves the register and cannot touch this frame,
+	// and a later write to the register forgets the address as always.
+	parked := map[int]int64{}
+	parkedConsts := map[int]int64{}
+	for reg, addr := range c.frameAddrs {
+		if calleeSavedRegister(reg) && reg != 30 {
+			parked[reg] = addr
+		}
+	}
+	for reg, k := range c.constFacts {
+		if calleeSavedRegister(reg) && reg != 30 {
+			parkedConsts[reg] = k
+		}
+	}
 	c.forgetGuards()
+	for reg, addr := range parked {
+		c.frameAddrs[reg] = addr
+	}
+	for reg, k := range parkedConsts {
+		c.constFacts[reg] = k
+	}
 }
 
 // indirectCall is `blr xN`: a call to an unknown Oak-visible target.
@@ -2143,18 +2189,28 @@ func (c *checker) call(instr Instruction) {
 	c.written[1] = true
 	c.writtenV[0] = true
 	c.flagsValid = false
-	// A frame address is a fact about a register's value, not a guard:
-	// the callee preserves x19–x28 under AAPCS64 (every Oak callee's
-	// save and restore of them is checked), so a span bound over a frame
-	// array and parked there is still addressable after the call.
-	kept := map[int]int64{}
-	for num, addr := range c.frameAddrs {
-		if num >= 19 && num <= 28 {
-			kept[num] = addr
+	// A frame address or a constant is a fact about a register's value,
+	// not a guard: the callee preserves x19–x28 under AAPCS64 (every Oak
+	// callee's save and restore of them is checked), so a span bound over
+	// a frame array and parked there is still addressable after the call,
+	// and a loop bound hoisted there still guards.
+	parked := map[int]int64{}
+	parkedConsts := map[int]int64{}
+	for reg, addr := range c.frameAddrs {
+		if reg >= 19 && reg <= 28 {
+			parked[reg] = addr
+		}
+	}
+	for reg, k := range c.constFacts {
+		if reg >= 19 && reg <= 28 {
+			parkedConsts[reg] = k
 		}
 	}
 	c.forgetGuards()
-	c.frameAddrs = kept
+	c.frameAddrs = parked
+	for reg, k := range parkedConsts {
+		c.constFacts[reg] = k
+	}
 }
 
 func (c *checker) ret(instr Instruction) bool {

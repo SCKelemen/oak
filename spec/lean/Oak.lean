@@ -71,6 +71,7 @@ import Oak.Assembler
 import Oak.AssemblerSemantics
 import Oak.ArmASL
 import Oak.Extents
+import Oak.ExtentsRefinement
 import Oak.Dispatch
 import Oak.Discharge
 import Oak.FloatBits
