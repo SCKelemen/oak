@@ -48,6 +48,13 @@ var oakSyntaxSource string
 //go:embed prove/solver/tree.oak
 var oakTreeSource string
 
+// oakProtocolSource is the protocol lowering written in Oak
+// (prove/solver/protocol.oak): a protocol declaration to the state and
+// step types and the projected functions, as compiler/protocols.go builds.
+//
+//go:embed prove/solver/protocol.oak
+var oakProtocolSource string
+
 // oakSolverDriverSource is the driver around the solver: it reads its
 // order slot from OAK_SOLVER_VARIANT and the problems from its standard
 // input (a header of count, largest term count, budget, and word total,
@@ -765,7 +772,7 @@ solve_stream: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, d
 // directory under the temporary directory named by the sources' hash,
 // and returns the binary's path; a later run finds it built.
 func oakSolverBinary() (string, error) {
-	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSyntaxSource + "\x00" + oakTreeSource + "\x00" + oakSolverDriverSource))
+	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSyntaxSource + "\x00" + oakTreeSource + "\x00" + oakProtocolSource + "\x00" + oakSolverDriverSource))
 	dir := filepath.Join(os.TempDir(), "oak-solver-"+hex.EncodeToString(sum[:6]))
 	binary := filepath.Join(dir, "solver")
 	if info, err := os.Stat(binary); err == nil && info.Mode().IsRegular() {
@@ -774,7 +781,7 @@ func oakSolverBinary() (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	for name, text := range map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "syntax.oak": oakSyntaxSource, "tree.oak": oakTreeSource, "main.oak": oakSolverDriverSource} {
+	for name, text := range map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "syntax.oak": oakSyntaxSource, "tree.oak": oakTreeSource, "protocol.oak": oakProtocolSource, "main.oak": oakSolverDriverSource} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
 			return "", err
 		}

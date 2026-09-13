@@ -61,6 +61,10 @@ const (
 	synVariantLit  = 21 // a = type, b = variant index, c = payload node (NONE for none)
 	synMatch       = 22 // a = scrutinee, b = arms list start, c = arm count (value position)
 	synMatchStmt   = 23 // a = scrutinee, b = arms list start, c = arm count (arms are blocks)
+	synAssert      = 27 // a = the condition (a statement): reaching it false is a trap
+	synView        = 24 // a = the array symbol; the node's type is the view (element, length)
+	synLen         = 25 // a = operand (an array or a view of known length); u32
+	synBuiltin     = 26 // a = builtin code (0 is_valid_utf8), b = operand (a view of u8); Bool
 
 	// An arm in the lists: pattern kind, variant index or literal node,
 	// binding symbol (NONE for none), body node.
@@ -82,6 +86,9 @@ const (
 	synKindRecord = 1
 	synKindArray  = 2
 	synKindSum    = 3
+	// A view of elements: no leaves of its own (it aliases an array's),
+	// the element type, and the length when known (NONE otherwise).
+	synKindView = 4
 )
 
 // synVariantRef is a sum type's variant: its tag value, payload type (-1
@@ -305,8 +312,30 @@ func (w *syntaxWriter) variantIndex(typ int, name string) (int, bool) {
 	return 0, false
 }
 
+// viewTypeID interns a view of elements (length -1 when not known).
+func (w *syntaxWriter) viewTypeID(elem, length int) int {
+	key := fmt.Sprintf("v%d:%d", elem, length)
+	if id, seen := w.typeIndex[key]; seen {
+		return id
+	}
+	id := len(w.types)
+	w.types = append(w.types, &synType{key: key, kind: synKindView, elem: elem, length: length})
+	w.typeIndex[key] = id
+	return id
+}
+
 // typeOfExpr resolves a type expression of the subset.
 func (w *syntaxWriter) typeOfExpr(expr ast.Expression) (int, string, bool) {
+	// `[]T`: a view of T (the parser's IndexExpression with an empty index).
+	if slice, isIndex := expr.(*ast.IndexExpression); isIndex && !slice.Dot {
+		if marker, isIdent := slice.Index.(*ast.Identifier); isIdent && marker.Value == "" {
+			elem, reason, ok := w.typeOfExpr(slice.Left)
+			if !ok {
+				return 0, reason, false
+			}
+			return w.viewTypeID(elem, -1), "", true
+		}
+	}
 	typ, ok := w.lo.oakTypeOf(expr)
 	if !ok {
 		return 0, fmt.Sprintf("the type %s", typeText(expr)), false
@@ -573,8 +602,8 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 			}
 			return 0, fmt.Sprintf("the field %s", name.Value), false
 		}
-		if w.types[bt].kind != synKindArray {
-			return 0, fmt.Sprintf("an index into %s (not an array)", e.Left.String()), false
+		if w.types[bt].kind != synKindArray && w.types[bt].kind != synKindView {
+			return 0, fmt.Sprintf("an index into %s (not an array or a view)", e.Left.String()), false
 		}
 		index, reason, ok := w.expr(f, e.Index)
 		if !ok {
@@ -656,6 +685,56 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 			}
 			return w.node(synCall, uint32(cf.index), w.list(args), uint32(len(args)), 0, 0, 0, cf.ret), "", true
 		}
+		if ident.Value == "view" {
+			// view(&local): an alias of an array symbol's leaves.
+			var name *ast.Identifier
+			if len(e.Arguments) == 1 {
+				if prefix, isPrefix := e.Arguments[0].(*ast.PrefixExpression); isPrefix && prefix.Operator == "&" {
+					name, _ = prefix.Right.(*ast.Identifier)
+				}
+			}
+			if name == nil {
+				return 0, "a view of something other than a local array", false
+			}
+			sym, known := f.symbols[name.Value]
+			if !known || w.types[f.symTypes[sym]].kind != synKindArray {
+				return 0, fmt.Sprintf("a view of %s, which is not a local array", name.Value), false
+			}
+			at := w.types[f.symTypes[sym]]
+			return w.node(synView, uint32(sym), 0, 0, 0, 0, 0, w.viewTypeID(at.elem, at.length)), "", true
+		}
+		if ident.Value == "len" {
+			if len(e.Arguments) != 1 {
+				return 0, "len with more than one argument", false
+			}
+			operand, reason, ok := w.expr(f, e.Arguments[0])
+			if !ok {
+				return 0, reason, false
+			}
+			t := w.nodeType(operand)
+			if t < 0 || (w.types[t].kind != synKindArray && w.types[t].kind != synKindView) {
+				return 0, "len of something other than an array or a view", false
+			}
+			return w.node(synLen, operand, 0, 0, 0, 0, 0, w.scalarType(32, false)), "", true
+		}
+		if ident.Value == "is_valid_utf8" {
+			if len(e.Arguments) != 1 {
+				return 0, "is_valid_utf8 with more than one argument", false
+			}
+			operand, reason, ok := w.expr(f, e.Arguments[0])
+			if !ok {
+				return 0, reason, false
+			}
+			t := w.nodeType(operand)
+			if t < 0 || w.types[t].kind != synKindView {
+				return 0, "is_valid_utf8 of something other than a view", false
+			}
+			elem := w.types[w.types[t].elem]
+			if elem.kind != synKindScalar || elem.width != 8 || elem.signed || elem.float {
+				return 0, "is_valid_utf8 of a view that is not of u8", false
+			}
+			return w.node(synBuiltin, 0, operand, 0, 0, 0, 0, w.scalarType(1, false)), "", true
+		}
 		if code, isFloatIntrinsic := synFloatIntrinsics[ident.Value]; isFloatIntrinsic && typechecker.FloatIntrinsicName(ident.Value) {
 			var args []uint32
 			floatType := -1
@@ -732,6 +811,19 @@ func (w *syntaxWriter) block(f *synFunction, block *ast.BlockStatement, value bo
 		last := i == len(block.Statements)-1
 		switch s := stmt.(type) {
 		case *ast.ExpressionStatement:
+			if call, isCall := s.Expression.(*ast.InvocationExpression); isCall && len(call.Arguments) == 1 {
+				// assert(c): a trap obligation, not a value.
+				if ident, isIdent := call.Function.(*ast.Identifier); isIdent && ident.Value == "assert" {
+					if _, shadowed := w.functions["assert"]; !shadowed {
+						cond, reason, ok := w.expr(f, call.Arguments[0])
+						if !ok {
+							return 0, reason, false
+						}
+						ids = append(ids, w.node(synAssert, cond, 0, 0, 0, 0, 0, -1))
+						continue
+					}
+				}
+			}
 			if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch && (!last || !value) {
 				var id uint32
 				var reason string

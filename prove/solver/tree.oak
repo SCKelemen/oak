@@ -151,6 +151,7 @@ P_ADT: u32 = 6
 P_ARGS: u32 = 7
 P_RECORD: u32 = 8
 P_ARRAY: u32 = 9
+P_PROTOCOL: u32 = 10
 
 Par: type = struct {
   tokens_at: u32,
@@ -1465,7 +1466,13 @@ step_type_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
       px_acc_push(p, w, u32_trunc_u64(int_value(src, tok_start(p, w, cur(p, w)), tok_len(p, w, cur(p, w)))))
       px_advance(p, w)
       px_advance(p, w)
-    } | { px_fail(p, w, u32(340)) }
+    } | {
+      // `[]T`: a view type (NONE marks it among the sizes).
+      cur_kind(p, w) == T_RBRACK ? {
+        px_acc_push(p, w, NONE)
+        px_advance(p, w)
+      } | { px_fail(p, w, u32(340)) }
+    }
   } | {
     k == T_IDENT ? {
       (peek_kind(p, w) == T_DOT || peek_kind(p, w) == T_LBRACK) ? { px_fail(p, w, u32(341)) } | {
@@ -1474,7 +1481,7 @@ step_type_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
         sp: u32 = pst(p, w, PS_ACC_SP)
         while sp > base {
           sp = sp - u32(1)
-          t = px_type(p, w, RAW_TYPE_ARRAY, t, w[p.acc_at + sp])
+          t = w[p.acc_at + sp] == NONE ? { px_type(p, w, RAW_TYPE_SLICE, t, u32(0)) } | { px_type(p, w, RAW_TYPE_ARRAY, t, w[p.acc_at + sp]) }
         }
         set_pst(p, w, PS_ACC_SP, base)
         peek_kind(p, w) == T_AMP ? { px_fail(p, w, u32(342)) } | { px_deliver(p, w, t) }
@@ -1810,10 +1817,23 @@ step_stmt_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
             px_push(p, w, P_FUNC, name, u32(0))
           }
         } | {
-        ((cur_is_word(p, w, src, u64(0x676174), u64(0), u32(3)) || cur_is_word(p, w, src, u64(0x6C6F636F746F7270), u64(0), u32(8))) && peek_kind(p, w) == T_ASSIGN) ? { px_fail(p, w, u32(385)) } | {
+        (cur_is_word(p, w, src, u64(0x6C6F636F746F7270), u64(0), u32(8)) && peek_kind(p, w) == T_ASSIGN) ? {
+          // Name: protocol = { ... }: the machine's lines, then the projection.
+          pst(p, w, PS_BLOCK_DEPTH) > u32(0) ? { px_fail(p, w, u32(385)) } | {
+            px_advance(p, w)
+            expect_peek(p, w, T_LBRACE, u32(429)) ? {
+              px_advance(p, w)
+              w[at + u32(1)] = SP_DEFINED
+              px_push(p, w, P_PROTOCOL, name, NONE)
+              pat: u32 = pfr_at(p, pst(p, w, PS_SP) - u32(1))
+              w[pat + u32(4)] = pst(p, w, PS_ACC_SP)
+            } | { }
+          }
+        } | {
+        (cur_is_word(p, w, src, u64(0x676174), u64(0), u32(3)) && peek_kind(p, w) == T_ASSIGN) ? { px_fail(p, w, u32(385)) } | {
           w[at + u32(1)] = SP_DECL_TYPED
           px_push(p, w, P_TYPE, NONE, NONE)
-        } } } }
+        } } } } }
       } | {
       (pk == T_LBRACK && bracket_group_precedes_colon(p, w)) ? { px_fail(p, w, u32(386)) } | {
       pk == T_ASSIGN ? {
@@ -1939,7 +1959,8 @@ px_run: (p: Par, w: [*]u32, src: []u32): () {
     kind == P_ADT ? { step_adt_p(p, w, src, at) } | {
     kind == P_ARGS ? { step_args_p(p, w, at) } | {
     kind == P_RECORD ? { step_record_p(p, w, src, at) } | {
-    kind == P_ARRAY ? { step_array_p(p, w, src, at) } | { px_fail(p, w, u32(299)) } } } } } } } } } }
+    kind == P_ARRAY ? { step_array_p(p, w, src, at) } | {
+    kind == P_PROTOCOL ? { step_protocol_p(p, w, src, at) } | { px_fail(p, w, u32(299)) } } } } } } } } } } }
   }
 }
 

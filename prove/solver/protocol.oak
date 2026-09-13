@@ -1,0 +1,766 @@
+// The protocol lowering, in Oak (docs/spec/112-protocols.md section 2;
+// compiler/protocols.go is the Go projection this is the twin of, over
+// the data-less machines the law files state). A declaration
+//
+//   Name: protocol = { initial S  step(p: T): From -> To when guard ... }
+//
+// is read by the parser (tree.oak) into lines, and this file synthesizes
+// into the raw tree the declarations the Go compiler projects: the state
+// and step sum types (NameState, NameStep), name_initial, name_legal and
+// name_next (the first line whose source state and guard hold, in
+// declaration order, for a guarded step; a match over the source states
+// for an unguarded one), and, when the machine has a compiler-known
+// lowering (a transition table or shift DFA), the branch-tree twins
+// name_legal_tree and name_next_tree beside them and, for a byte-driven
+// machine, name_run over a view of bytes — the shapes compiler/synth.go
+// builds, node for node, so the syntax tables agree. Data records,
+// resources, fairness, liveness, effects, and via clauses are outside the
+// subset and fail the parse closed.
+package main
+
+// A parsed line: 6 accumulator words.
+PL_NAME: u32 = 0
+PL_PARAM: u32 = 1
+PL_PTYPE: u32 = 2
+PL_FROM: u32 = 3
+PL_TO: u32 = 4
+PL_GUARD: u32 = 5
+PL_WORDS: u32 = 6
+MAX_PSTATES: u32 = 64
+MAX_PSTEPS: u32 = 64
+MAX_PLINES: u32 = 256
+
+// --- name building --------------------------------------------------------------
+
+// nb_byte appends a byte to a name buffer (four bytes per word): the new length.
+nb_byte: (buf: [*]u32, n: u32, b: u32): u32 {
+  n < len(buf) * u32(4) ? {
+    shift: u32 = (n % u32(4)) * u32(8)
+    buf[n / u32(4)] = (buf[n / u32(4)] & (NONE ^ (u32(255) << shift))) | (b << shift)
+  } | { }
+  n + u32(1)
+}
+
+// nb_str appends an interned string's bytes.
+nb_str: (p: Par, w: [*]u32, buf: [*]u32, n: u32, sid: u32): u32 {
+  at: u32 = w[p.strings_at + sid * u32(2)]
+  count: u32 = w[p.strings_at + sid * u32(2) + u32(1)]
+  m: u32 = n
+  k: u32 = 0
+  while k < count {
+    m = nb_byte(buf, m, ppool_byte(p, w, at + k))
+    k = k + u32(1)
+  }
+  m
+}
+
+// nb_lit appends a packed literal (up to sixteen bytes).
+nb_lit: (buf: [*]u32, n: u32, lo: u64, hi: u64, count: u32): u32 {
+  m: u32 = n
+  k: u32 = 0
+  while k < count {
+    b: u32 = k < u32(8) ? { u32_trunc_u64((lo >> u64(k * u32(8))) & u64(255)) } | { u32_trunc_u64((hi >> u64((k - u32(8)) * u32(8))) & u64(255)) }
+    m = nb_byte(buf, m, b)
+    k = k + u32(1)
+  }
+  m
+}
+
+nb_decimal: (buf: [*]u32, n: u32, v: u32): u32 {
+  digits: [10]u32
+  count: u32 = 0
+  rest: u32 = v
+  digits[u32(0)] = u32(0)
+  rest == u32(0) ? { count = u32(1) } | {
+    while rest > u32(0) {
+      digits[count] = rest % u32(10)
+      rest = rest / u32(10)
+      count = count + u32(1)
+    }
+  }
+  m: u32 = n
+  while count > u32(0) {
+    count = count - u32(1)
+    m = nb_byte(buf, m, u32(48) + digits[count])
+  }
+  m
+}
+
+// nb_snake appends a CamelCase string as snake_case (VirtualIrq -> virtual_irq).
+nb_snake: (p: Par, w: [*]u32, buf: [*]u32, n: u32, sid: u32): u32 {
+  at: u32 = w[p.strings_at + sid * u32(2)]
+  count: u32 = w[p.strings_at + sid * u32(2) + u32(1)]
+  m: u32 = n
+  k: u32 = 0
+  while k < count {
+    b: u32 = ppool_byte(p, w, at + k)
+    (b >= u32(65) && b <= u32(90)) ? {
+      k > u32(0) ? { m = nb_byte(buf, m, u32(95)) } | { }
+      m = nb_byte(buf, m, b + u32(32))
+    } | { m = nb_byte(buf, m, b) }
+    k = k + u32(1)
+  }
+  m
+}
+
+// intern_buf interns a built name.
+intern_buf: (p: Par, w: [*]u32, buf: [*]u32, n: u32): u32 {
+  copy: [32]u32
+  k: u32 = 0
+  while k < u32(32) {
+    copy[k] = buf[k]
+    k = k + u32(1)
+  }
+  src: []u32 = view(&copy)
+  px_intern(p, w, src, u32(0), n)
+}
+
+// Synthetic names: the string id of a literal, interned once.
+lit_str: (p: Par, w: [*]u32, lo: u64, hi: u64, count: u32): u32 {
+  buf: [32]u32
+  n: u32 = nb_lit(span(&buf), u32(0), lo, hi, count)
+  intern_buf(p, w, span(&buf), n)
+}
+
+// derived_str: prefix string (a name, or its snake case) followed by a literal suffix.
+derived_str: (p: Par, w: [*]u32, base: u32, snake: Bool, lo: u64, hi: u64, count: u32): u32 {
+  buf: [32]u32
+  n: u32 = snake ? { nb_snake(p, w, span(&buf), u32(0), base) } | { nb_str(p, w, span(&buf), u32(0), base) }
+  n = nb_lit(span(&buf), n, lo, hi, count)
+  intern_buf(p, w, span(&buf), n)
+}
+
+// capitalized_str: a transition name as its step variant (inject -> Inject).
+capitalized_str: (p: Par, w: [*]u32, sid: u32): u32 {
+  buf: [32]u32
+  n: u32 = nb_str(p, w, span(&buf), u32(0), sid)
+  b0: u32 = ppool_byte(p, w, w[p.strings_at + sid * u32(2)])
+  first: u32 = (b0 >= u32(97) && b0 <= u32(122)) ? { nb_byte(span(&buf), u32(0), b0 - u32(32)) } | { u32(0) }
+  intern_buf(p, w, span(&buf), n + first - first)
+}
+
+// from_str: the local `from_<step>_<line>` of a guarded projection.
+from_str: (p: Par, w: [*]u32, si: u32, k: u32): u32 {
+  buf: [32]u32
+  n: u32 = nb_lit(span(&buf), u32(0), u64(0x5F6D6F7266), u64(0), u32(5))
+  n = nb_decimal(span(&buf), n, si)
+  n = nb_byte(span(&buf), n, u32(95))
+  n = nb_decimal(span(&buf), n, k)
+  intern_buf(p, w, span(&buf), n)
+}
+
+// --- node constructors (compiler/synth.go) ----------------------------------------------
+
+mk_ident: (p: Par, w: [*]u32, sid: u32): u32 = px_node(p, w, RAW_IDENT, sid, u32(0), u32(0), u32(0), u32(0))
+mk_bool: (p: Par, w: [*]u32, v: u32): u32 = px_node(p, w, RAW_BOOLLIT, v, u32(0), u32(0), u32(0), u32(0))
+mk_int: (p: Par, w: [*]u32, v: u32): u32 = px_node(p, w, RAW_INTLIT, u32(0), u32(0), u32(0), v, u32(0))
+mk_prefix: (p: Par, w: [*]u32, op: u32, right: u32): u32 = px_node(p, w, RAW_PREFIX, op, right, u32(0), u32(0), u32(0))
+mk_infix: (p: Par, w: [*]u32, op: u32, left: u32, right: u32): u32 = px_node(p, w, RAW_INFIX, op, left, right, u32(0), u32(0))
+mk_variant: (p: Par, w: [*]u32, name: u32, payload: u32): u32 = px_node(p, w, RAW_VARIANT, NONE, name, payload, u32(0), u32(0))
+mk_exprstmt: (p: Par, w: [*]u32, e: u32): u32 = px_node(p, w, RAW_EXPRSTMT, e, u32(0), u32(0), u32(0), u32(0))
+mk_vardecl: (p: Par, w: [*]u32, name: u32, texpr: u32, value: u32): u32 = px_node(p, w, RAW_VARDECL, name, texpr, value, u32(0), u32(0))
+mk_assign: (p: Par, w: [*]u32, name: u32, value: u32): u32 = px_node(p, w, RAW_ASSIGN, name, value, u32(0), u32(0), u32(0))
+mk_index: (p: Par, w: [*]u32, base: u32, at: u32): u32 = px_node(p, w, RAW_INDEX, base, at, u32(0), u32(0), u32(0))
+mk_blockexpr: (p: Par, w: [*]u32, block: u32): u32 = px_node(p, w, RAW_BLOCKEXPR, block, u32(0), u32(0), u32(0), u32(0))
+
+// mk_call1 / mk_call2: a call of a named function with one or two arguments.
+mk_call1: (p: Par, w: [*]u32, fname: u32, a: u32): u32 {
+  base: u32 = pst(p, w, PS_ACC_SP)
+  px_acc_push(p, w, a)
+  start: u32 = px_acc_list(p, w, base)
+  px_node(p, w, RAW_CALL, mk_ident(p, w, fname), start, u32(1), u32(0), u32(0))
+}
+mk_call2: (p: Par, w: [*]u32, fname: u32, a: u32, b: u32): u32 {
+  base: u32 = pst(p, w, PS_ACC_SP)
+  px_acc_push(p, w, a)
+  px_acc_push(p, w, b)
+  start: u32 = px_acc_list(p, w, base)
+  px_node(p, w, RAW_CALL, mk_ident(p, w, fname), start, u32(2), u32(0), u32(0))
+}
+
+// mk_block builds a block (and its block expression) from the statements
+// accumulated since base.
+mk_block: (p: Par, w: [*]u32, base: u32): u32 {
+  count: u32 = pst(p, w, PS_ACC_SP) - base
+  start: u32 = px_acc_list(p, w, base)
+  mk_blockexpr(p, w, px_node(p, w, RAW_BLOCK, start, count, u32(0), u32(0), u32(0)))
+}
+
+// mk_match builds a match from the (pattern, body) pairs accumulated since base.
+mk_match: (p: Par, w: [*]u32, scrutinee: u32, base: u32): u32 {
+  count: u32 = (pst(p, w, PS_ACC_SP) - base) / u32(2)
+  start: u32 = px_acc_list(p, w, base)
+  px_node(p, w, RAW_MATCH, scrutinee, start, count, u32(0), u32(0))
+}
+
+mk_pat_variant: (p: Par, w: [*]u32, name: u32, binding: u32): u32 {
+  payload: u32 = binding == NONE ? { NONE } | { px_node(p, w, RAW_PAT_BINDING, binding, u32(0), u32(0), u32(0), u32(0)) }
+  px_node(p, w, RAW_PAT_VARIANT, NONE, name, payload, u32(0), u32(0))
+}
+mk_pat_wild: (p: Par, w: [*]u32, underscore: u32): u32 = px_node(p, w, RAW_PAT_BINDING, underscore, u32(0), u32(0), u32(0), u32(0))
+mk_pat_bool: (p: Par, w: [*]u32, v: u32): u32 = px_node(p, w, RAW_PAT_LITERAL, mk_bool(p, w, v), u32(0), u32(0), u32(0), u32(0))
+
+// mk_cond: `c ? { then } | { }` — the parser's desugaring, an empty else block.
+mk_cond: (p: Par, w: [*]u32, c: u32, then_block: u32): u32 {
+  base: u32 = pst(p, w, PS_ACC_SP)
+  px_acc_push(p, w, mk_pat_bool(p, w, u32(1)))
+  px_acc_push(p, w, then_block)
+  px_acc_push(p, w, mk_pat_bool(p, w, u32(0)))
+  empty_base: u32 = pst(p, w, PS_ACC_SP)
+  px_acc_push(p, w, mk_block(p, w, empty_base))
+  mk_match(p, w, c, base)
+}
+
+// Names the projection uses (compiler/synth.go spellings).
+Names: type = struct {
+  state_n: u32, step_n: u32, bool_t: u32, result: u32, done: u32, current: u32, i: u32, bytes: u32, u32_t: u32, u8_t: u32,
+  underscore: u32, and_op: u32, or_op: u32, not_op: u32, lt_op: u32, add_op: u32, assert_f: u32, len_f: u32,
+  state_t: u32, step_t: u32, initial_f: u32, legal_f: u32, next_f: u32, legal_tree_f: u32, next_tree_f: u32, run_f: u32
+}
+
+protocol_names: (p: Par, w: [*]u32, name: u32): Names {
+  Names {
+    state_n: lit_str(p, w, u64(0x6574617473), u64(0), u32(5)),
+    step_n: lit_str(p, w, u64(0x70657473), u64(0), u32(4)),
+    bool_t: lit_str(p, w, u64(0x6C6F6F42), u64(0), u32(4)),
+    result: lit_str(p, w, u64(0x746C75736572), u64(0), u32(6)),
+    done: lit_str(p, w, u64(0x656E6F64), u64(0), u32(4)),
+    current: lit_str(p, w, u64(0x746E6572727563), u64(0), u32(7)),
+    i: lit_str(p, w, u64(0x69), u64(0), u32(1)),
+    bytes: lit_str(p, w, u64(0x7365747962), u64(0), u32(5)),
+    u32_t: lit_str(p, w, u64(0x323375), u64(0), u32(3)),
+    u8_t: lit_str(p, w, u64(0x3875), u64(0), u32(2)),
+    underscore: lit_str(p, w, u64(0x5F), u64(0), u32(1)),
+    and_op: lit_str(p, w, u64(0x2626), u64(0), u32(2)),
+    or_op: lit_str(p, w, u64(0x7C7C), u64(0), u32(2)),
+    not_op: lit_str(p, w, u64(0x21), u64(0), u32(1)),
+    lt_op: lit_str(p, w, u64(0x3C), u64(0), u32(1)),
+    add_op: lit_str(p, w, u64(0x2B), u64(0), u32(1)),
+    assert_f: lit_str(p, w, u64(0x747265737361), u64(0), u32(6)),
+    len_f: lit_str(p, w, u64(0x6E656C), u64(0), u32(3)),
+    state_t: derived_str(p, w, name, false, u64(0x6574617453), u64(0), u32(5)),
+    step_t: derived_str(p, w, name, false, u64(0x70657453), u64(0), u32(4)),
+    initial_f: derived_str(p, w, name, true, u64(0x6C616974696E695F), u64(0), u32(8)),
+    legal_f: derived_str(p, w, name, true, u64(0x6C6167656C5F), u64(0), u32(6)),
+    next_f: derived_str(p, w, name, true, u64(0x7478656E5F), u64(0), u32(5)),
+    legal_tree_f: derived_str(p, w, name, true, u64(0x745F6C6167656C5F), u64(0x656572), u32(11)),
+    next_tree_f: derived_str(p, w, name, true, u64(0x72745F7478656E5F), u64(0x6565), u32(10)),
+    run_f: derived_str(p, w, name, true, u64(0x6E75725F), u64(0), u32(4))
+  }
+}
+
+// --- guards ------------------------------------------------------------------------------------
+
+// raw_mentions: whether an expression names the identifier (a walk over
+// the expression node kinds, an explicit stack).
+raw_mentions: (p: Par, w: [*]u32, node: u32, name: u32): Bool {
+  stack: [128]u32
+  sp: u32 = 0
+  found: Bool = false
+  node == NONE ? { } | {
+    stack[u32(0)] = node
+    sp = u32(1)
+  }
+  while sp > u32(0) && !found {
+    sp = sp - u32(1)
+    n: u32 = stack[sp]
+    kind: u32 = pn_kind(p, w, n)
+    a: u32 = pn_a(p, w, n)
+    b: u32 = pn_b(p, w, n)
+    c: u32 = pn_c(p, w, n)
+    kind == RAW_IDENT ? { found = a == name } | {
+    kind == RAW_PREFIX ? {
+      stack[sp] = b
+      sp = sp + u32(1)
+    } | {
+    kind == RAW_INFIX ? {
+      stack[sp] = b
+      stack[sp + u32(1)] = c
+      sp = sp + u32(2)
+    } | {
+    kind == RAW_CALL ? {
+      stack[sp] = a
+      sp = sp + u32(1)
+      k: u32 = 0
+      while k < c && sp < u32(127) {
+        stack[sp] = w[p.lists_at + b + k]
+        sp = sp + u32(1)
+        k = k + u32(1)
+      }
+    } | {
+    kind == RAW_INDEX ? {
+      stack[sp] = a
+      (b != NONE && sp < u32(127)) ? {
+        stack[sp + u32(1)] = b
+        sp = sp + u32(2)
+      } | { sp = sp + u32(1) }
+    } | {
+    kind == RAW_VARIANT ? {
+      c != NONE ? {
+        stack[sp] = c
+        sp = sp + u32(1)
+      } | { }
+    } | {
+    kind == RAW_MATCH ? {
+      stack[sp] = a
+      sp = sp + u32(1)
+      k: u32 = 0
+      while k < c && sp < u32(126) {
+        stack[sp] = w[p.lists_at + b + k * u32(2)]
+        stack[sp + u32(1)] = w[p.lists_at + b + k * u32(2) + u32(1)]
+        sp = sp + u32(2)
+        k = k + u32(1)
+      }
+    } | {
+    kind == RAW_PAT_LITERAL ? {
+      stack[sp] = a
+      sp = sp + u32(1)
+    } | { } } } } } } } }
+  }
+  found
+}
+
+// guard_evaluable: whether a guard is in the compile-time vocabulary of
+// compiler/protocols.go evalPayloadGuard: the payload, integer and Bool
+// literals, the primitive constructors, + - * / %, comparisons, && || !.
+guard_evaluable: (p: Par, w: [*]u32, node: u32, payload: u32): Bool {
+  stack: [128]u32
+  sp: u32 = 1
+  stack[u32(0)] = node
+  ok: Bool = node != NONE
+  while sp > u32(0) && ok {
+    sp = sp - u32(1)
+    n: u32 = stack[sp]
+    kind: u32 = pn_kind(p, w, n)
+    a: u32 = pn_a(p, w, n)
+    b: u32 = pn_b(p, w, n)
+    c: u32 = pn_c(p, w, n)
+    kind == RAW_IDENT ? { ok = a == payload } | {
+    (kind == RAW_INTLIT || kind == RAW_BOOLLIT) ? { } | {
+    kind == RAW_PREFIX ? {
+      ok = is_name(str_name(p, w, a), u64(0x21), u64(0), u32(1))
+      stack[sp] = b
+      sp = sp + u32(1)
+    } | {
+    kind == RAW_INFIX ? {
+      ok = infix_code(str_name(p, w, a)) != NONE
+      stack[sp] = b
+      stack[sp + u32(1)] = c
+      sp = sp + u32(2)
+    } | {
+    kind == RAW_CALL ? {
+      callee: u32 = a
+      ok = c == u32(1) && pn_kind(p, w, callee) == RAW_IDENT && is_constructor_name(str_name(p, w, pn_a(p, w, callee)))
+      stack[sp] = w[p.lists_at + b]
+      sp = sp + u32(1)
+    } | { ok = false } } } } }
+  }
+  ok
+}
+
+// str_name packs an interned string for the fixed-name comparisons.
+str_name: (p: Par, w: [*]u32, sid: u32): Name16 {
+  at: u32 = w[p.strings_at + sid * u32(2)]
+  n: u32 = w[p.strings_at + sid * u32(2) + u32(1)]
+  lo: u64 = 0
+  hi: u64 = 0
+  k: u32 = 0
+  while k < n && k < u32(16) {
+    b: u64 = u64(ppool_byte(p, w, at + k))
+    k < u32(8) ? { lo = lo | (b << u64(k * u32(8))) } | { hi = hi | (b << u64((k - u32(8)) * u32(8))) }
+    k = k + u32(1)
+  }
+  Name16 { lo: lo, hi: hi, n: n }
+}
+
+// --- the machine ----------------------------------------------------------------------------------
+
+// Machine tables (the states and steps): local arrays passed as spans.
+line_word: (p: Par, w: [*]u32, base: u32, k: u32, f: u32): u32 = w[p.acc_at + base + k * PL_WORDS + f]
+
+// is_state_expr: `state ? | .S => true | _ => false`.
+is_state_expr: (p: Par, w: [*]u32, nm: Names, st: u32): u32 {
+  base: u32 = pst(p, w, PS_ACC_SP)
+  px_acc_push(p, w, mk_pat_variant(p, w, st, NONE))
+  px_acc_push(p, w, mk_bool(p, w, u32(1)))
+  px_acc_push(p, w, mk_pat_wild(p, w, nm.underscore))
+  px_acc_push(p, w, mk_bool(p, w, u32(0)))
+  mk_match(p, w, mk_ident(p, w, nm.state_n), base)
+}
+
+// step_binding: the payload name when a guard of the step mentions it, else `_`.
+step_binding: (p: Par, w: [*]u32, nm: Names, lines_base: u32, nlines: u32, name: u32): u32 {
+  binding: u32 = NONE
+  param: u32 = NONE
+  k: u32 = 0
+  while k < nlines {
+    line_word(p, w, lines_base, k, PL_NAME) == name ? {
+      param = line_word(p, w, lines_base, k, PL_PARAM)
+      (param != NONE && raw_mentions(p, w, line_word(p, w, lines_base, k, PL_GUARD), param)) ? { binding = param } | { }
+    } | { }
+    k = k + u32(1)
+  }
+  param == NONE ? { NONE } | { binding == NONE ? { nm.underscore } | { binding } }
+}
+
+// step_arms builds one step's arm bodies for name_legal and name_next
+// (legal_tree: the callee name the next body asserts with): the two
+// pattern-body pairs are pushed on the accumulator at legal_base and
+// next_base... The arms are built one at a time: kind 0 the legal arm,
+// 1 the next arm; the pair (pattern, body) is pushed on the accumulator.
+step_arm: (p: Par, w: [*]u32, nm: Names, lines_base: u32, nlines: u32, nstates: u32, si: u32, name: u32, which: u32): () {
+  binding: u32 = step_binding(p, w, nm, lines_base, nlines, name)
+  variant: u32 = capitalized_str(p, w, name)
+  guarded: Bool = false
+  count: u32 = 0
+  k: u32 = 0
+  while k < nlines {
+    line_word(p, w, lines_base, k, PL_NAME) == name ? {
+      count = count + u32(1)
+      line_word(p, w, lines_base, k, PL_GUARD) != NONE ? { guarded = true } | { }
+    } | { }
+    k = k + u32(1)
+  }
+  body: u32 = NONE
+  guarded ? {
+    stmts: u32 = pst(p, w, PS_ACC_SP)
+    // The legal body: the declarations, then the or-chain of the terms
+    // (built in a second pass over the lines); the next body: each
+    // declaration followed by its conditional.
+    j: u32 = 0
+    k = u32(0)
+    while k < nlines {
+      line_word(p, w, lines_base, k, PL_NAME) == name ? {
+        from_name: u32 = from_str(p, w, si, j)
+        px_acc_push(p, w, mk_vardecl(p, w, from_name, px_type(p, w, RAW_TYPE_NAME, nm.bool_t, u32(0)), is_state_expr(p, w, nm, line_word(p, w, lines_base, k, PL_FROM))))
+        which == u32(1) ? {
+          guard: u32 = line_word(p, w, lines_base, k, PL_GUARD)
+          guard_cond: u32 = mk_infix(p, w, nm.and_op, mk_prefix(p, w, nm.not_op, mk_ident(p, w, nm.done)), mk_ident(p, w, from_name))
+          guard == NONE ? { } | { guard_cond = mk_infix(p, w, nm.and_op, guard_cond, guard) }
+          then_base: u32 = pst(p, w, PS_ACC_SP)
+          px_acc_push(p, w, mk_assign(p, w, nm.result, mk_variant(p, w, line_word(p, w, lines_base, k, PL_TO), NONE)))
+          px_acc_push(p, w, mk_assign(p, w, nm.done, mk_bool(p, w, u32(1))))
+          then_block: u32 = mk_block(p, w, then_base)
+          px_acc_push(p, w, mk_exprstmt(p, w, mk_cond(p, w, guard_cond, then_block)))
+        } | { }
+        j = j + u32(1)
+      } | { }
+      k = k + u32(1)
+    }
+    which == u32(0) ? {
+      chain: u32 = NONE
+      j = u32(0)
+      k = u32(0)
+      while k < nlines {
+        line_word(p, w, lines_base, k, PL_NAME) == name ? {
+          term: u32 = mk_ident(p, w, from_str(p, w, si, j))
+          guard: u32 = line_word(p, w, lines_base, k, PL_GUARD)
+          guard == NONE ? { } | { term = mk_infix(p, w, nm.and_op, term, guard) }
+          chain = chain == NONE ? { term } | { mk_infix(p, w, nm.or_op, chain, term) }
+          j = j + u32(1)
+        } | { }
+        k = k + u32(1)
+      }
+      px_acc_push(p, w, mk_exprstmt(p, w, chain))
+    } | { px_acc_push(p, w, mk_exprstmt(p, w, mk_ident(p, w, nm.result))) }
+    body = mk_block(p, w, stmts)
+  } | {
+    inner: u32 = pst(p, w, PS_ACC_SP)
+    k = u32(0)
+    while k < nlines {
+      line_word(p, w, lines_base, k, PL_NAME) == name ? {
+        px_acc_push(p, w, mk_pat_variant(p, w, line_word(p, w, lines_base, k, PL_FROM), NONE))
+        px_acc_push(p, w, which == u32(0) ? { mk_bool(p, w, u32(1)) } | { mk_variant(p, w, line_word(p, w, lines_base, k, PL_TO), NONE) })
+      } | { }
+      k = k + u32(1)
+    }
+    count != nstates ? {
+      px_acc_push(p, w, mk_pat_wild(p, w, nm.underscore))
+      px_acc_push(p, w, which == u32(0) ? { mk_bool(p, w, u32(0)) } | { mk_ident(p, w, nm.state_n) })
+    } | { }
+    body = mk_match(p, w, mk_ident(p, w, nm.state_n), inner)
+  }
+  px_acc_push(p, w, mk_pat_variant(p, w, variant, binding))
+  px_acc_push(p, w, body)
+}
+
+// add_projected registers a projected function: params (state, step) or
+// (state, bytes), the result type, the body node.
+add_projected: (p: Par, w: [*]u32, nm: Names, fname: u32, with_step: Bool, with_bytes: Bool, ret: u32, body: u32): () {
+  pstart: u32 = pst(p, w, PS_NPARAMS)
+  n: u32 = 0
+  (with_step || with_bytes) ? {
+    px_add_param(p, w, nm.state_n, px_type(p, w, RAW_TYPE_NAME, nm.state_t, u32(0)))
+    with_step ? { px_add_param(p, w, nm.step_n, px_type(p, w, RAW_TYPE_NAME, nm.step_t, u32(0))) } | {
+      px_add_param(p, w, nm.bytes, px_type(p, w, RAW_TYPE_SLICE, px_type(p, w, RAW_TYPE_NAME, nm.u8_t, u32(0)), u32(0)))
+    }
+    n = u32(2)
+  } | { }
+  px_add_func(p, w, fname, pstart, n, ret, body, u32(0))
+}
+
+// next_body builds name_next's block: the assertion (through legal_name),
+// the result and done locals when a step is guarded, the match.
+next_body: (p: Par, w: [*]u32, nm: Names, lines_base: u32, nlines: u32, steps: [*]u32, nsteps: u32, nstates: u32, any_guarded: Bool, legal_name: u32): u32 {
+  stmts: u32 = pst(p, w, PS_ACC_SP)
+  px_acc_push(p, w, mk_exprstmt(p, w, mk_call1(p, w, nm.assert_f, mk_call2(p, w, legal_name, mk_ident(p, w, nm.state_n), mk_ident(p, w, nm.step_n)))))
+  any_guarded ? {
+    px_acc_push(p, w, mk_vardecl(p, w, nm.result, px_type(p, w, RAW_TYPE_NAME, nm.state_t, u32(0)), mk_ident(p, w, nm.state_n)))
+    px_acc_push(p, w, mk_vardecl(p, w, nm.done, px_type(p, w, RAW_TYPE_NAME, nm.bool_t, u32(0)), mk_bool(p, w, u32(0))))
+  } | { }
+  arms: u32 = pst(p, w, PS_ACC_SP)
+  si: u32 = 0
+  while si < nsteps {
+    step_arm(p, w, nm, lines_base, nlines, nstates, si, steps[si], u32(1))
+    si = si + u32(1)
+  }
+  arms_match: u32 = mk_match(p, w, mk_ident(p, w, nm.step_n), arms)
+  px_acc_push(p, w, mk_exprstmt(p, w, arms_match))
+  mk_block(p, w, stmts)
+}
+
+legal_body: (p: Par, w: [*]u32, nm: Names, lines_base: u32, nlines: u32, steps: [*]u32, nsteps: u32, nstates: u32): u32 {
+  arms: u32 = pst(p, w, PS_ACC_SP)
+  si: u32 = 0
+  while si < nsteps {
+    step_arm(p, w, nm, lines_base, nlines, nstates, si, steps[si], u32(0))
+    si = si + u32(1)
+  }
+  mk_match(p, w, mk_ident(p, w, nm.step_n), arms)
+}
+
+// run_body: name_run over a view of bytes.
+run_body: (p: Par, w: [*]u32, nm: Names, step_variant: u32): u32 {
+  stmts: u32 = pst(p, w, PS_ACC_SP)
+  px_acc_push(p, w, mk_vardecl(p, w, nm.current, px_type(p, w, RAW_TYPE_NAME, nm.state_t, u32(0)), mk_ident(p, w, nm.state_n)))
+  px_acc_push(p, w, mk_vardecl(p, w, nm.i, px_type(p, w, RAW_TYPE_NAME, nm.u32_t, u32(0)), mk_call1(p, w, nm.u32_t, mk_int(p, w, u32(0)))))
+  cond: u32 = mk_infix(p, w, nm.lt_op, mk_ident(p, w, nm.i), mk_call1(p, w, nm.len_f, mk_ident(p, w, nm.bytes)))
+  loop_base: u32 = pst(p, w, PS_ACC_SP)
+  px_acc_push(p, w, mk_assign(p, w, nm.current, mk_call2(p, w, nm.next_f, mk_ident(p, w, nm.current), mk_variant(p, w, step_variant, mk_index(p, w, mk_ident(p, w, nm.bytes), mk_ident(p, w, nm.i))))))
+  px_acc_push(p, w, mk_assign(p, w, nm.i, mk_infix(p, w, nm.add_op, mk_ident(p, w, nm.i), mk_call1(p, w, nm.u32_t, mk_int(p, w, u32(1))))))
+  loop_count: u32 = pst(p, w, PS_ACC_SP) - loop_base
+  loop_start: u32 = px_acc_list(p, w, loop_base)
+  loop_block: u32 = px_node(p, w, RAW_BLOCK, loop_start, loop_count, u32(0), u32(0), u32(0))
+  px_acc_push(p, w, px_node(p, w, RAW_WHILE, cond, loop_block, u32(0), u32(0), u32(0)))
+  px_acc_push(p, w, mk_exprstmt(p, w, mk_ident(p, w, nm.current)))
+  mk_block(p, w, stmts)
+}
+
+// project_protocol synthesizes the declarations of a parsed machine: its
+// lines (6 words each) sit on the accumulator from lines_base; initial is
+// the initial state's name.
+project_protocol: (p: Par, w: [*]u32, name: u32, initial: u32, lines_base: u32, nlines: u32): () {
+  nm: Names = protocol_names(p, w, name)
+  states: [64]u32
+  steps: [64]u32
+  nstates: u32 = 0
+  nsteps: u32 = 0
+  // States: the initial, then each line's source and target on first mention.
+  states[u32(0)] = initial
+  nstates = u32(1)
+  k: u32 = 0
+  while k < nlines && !px_failed(p, w) {
+    f: u32 = 0
+    while f < u32(2) {
+      st: u32 = f == u32(0) ? { line_word(p, w, lines_base, k, PL_FROM) } | { line_word(p, w, lines_base, k, PL_TO) }
+      seen: Bool = false
+      j: u32 = 0
+      while j < nstates {
+        seen = seen || states[j] == st
+        j = j + u32(1)
+      }
+      seen ? { } | {
+        nstates >= MAX_PSTATES ? { px_fail(p, w, u32(420)) } | {
+          states[nstates] = st
+          nstates = nstates + u32(1)
+        }
+      }
+      f = f + u32(1)
+    }
+    sname: u32 = line_word(p, w, lines_base, k, PL_NAME)
+    known: Bool = false
+    j: u32 = 0
+    while j < nsteps {
+      known = known || steps[j] == sname
+      j = j + u32(1)
+    }
+    known ? { } | {
+      nsteps >= MAX_PSTEPS ? { px_fail(p, w, u32(421)) } | {
+        steps[nsteps] = sname
+        nsteps = nsteps + u32(1)
+      }
+    }
+    k = k + u32(1)
+  }
+  px_failed(p, w) ? { } | {
+    // The compiler-known lowering: no data (always here), states within
+    // 254, every guard evaluable; a table when no guard reads a payload,
+    // a byte machine when one step's u8 payload is read.
+    payloads: u32 = 0
+    evaluable: Bool = true
+    any_guarded: Bool = false
+    si: u32 = 0
+    while si < nsteps {
+      param: u32 = NONE
+      mentioned: Bool = false
+      k = u32(0)
+      while k < nlines {
+        line_word(p, w, lines_base, k, PL_NAME) == steps[si] ? {
+          param = line_word(p, w, lines_base, k, PL_PARAM)
+          guard: u32 = line_word(p, w, lines_base, k, PL_GUARD)
+          guard == NONE ? { } | {
+            any_guarded = true
+            (param != NONE && raw_mentions(p, w, guard, param)) ? { mentioned = true } | { }
+            evaluable = evaluable && (param != NONE && guard_evaluable(p, w, guard, param))
+          }
+        } | { }
+        k = k + u32(1)
+      }
+      mentioned ? { payloads = payloads + u32(1) } | { }
+      si = si + u32(1)
+    }
+    first_ptype: u32 = NONE
+    k = u32(0)
+    while k < nlines && first_ptype == NONE {
+      line_word(p, w, lines_base, k, PL_NAME) == steps[u32(0)] ? { first_ptype = line_word(p, w, lines_base, k, PL_PTYPE) } | { }
+      k = k + u32(1)
+    }
+    byte_symbol: Bool = payloads == u32(1) && nsteps == u32(1) && first_ptype != NONE && rt_kind_p(p, w, first_ptype) == RAW_TYPE_NAME && is_name(str_name(p, w, rt_a_p(p, w, first_ptype)), u64(0x3875), u64(0), u32(2))
+    table: Bool = payloads == u32(0) && nstates * nsteps <= u32(65536)
+    lowered: Bool = evaluable && nstates <= u32(254) && (table || (byte_symbol && nstates * u32(256) <= u32(65536)))
+    shift: Bool = lowered && nstates + u32(1) <= u32(10)
+    // The state and step sum types.
+    vstart: u32 = pst(p, w, PS_NVARIANTS)
+    j: u32 = 0
+    while j < nstates {
+      px_add_variant(p, w, states[j], shift ? { j * u32(6) } | { j }, NONE)
+      j = j + u32(1)
+    }
+    px_add_adt(p, w, nm.state_t, vstart, nstates)
+    vstart = pst(p, w, PS_NVARIANTS)
+    si = u32(0)
+    while si < nsteps {
+      ptype: u32 = NONE
+      k = u32(0)
+      while k < nlines && ptype == NONE {
+        (line_word(p, w, lines_base, k, PL_NAME) == steps[si] && line_word(p, w, lines_base, k, PL_PARAM) != NONE) ? { ptype = line_word(p, w, lines_base, k, PL_PTYPE) } | { }
+        k = k + u32(1)
+      }
+      px_add_variant(p, w, capitalized_str(p, w, steps[si]), si, ptype)
+      si = si + u32(1)
+    }
+    px_add_adt(p, w, nm.step_t, vstart, nsteps)
+    // name_initial, name_legal, name_next.
+    state_ret: u32 = px_type(p, w, RAW_TYPE_NAME, nm.state_t, u32(0))
+    add_projected(p, w, nm, nm.initial_f, false, false, state_ret, mk_variant(p, w, initial, NONE))
+    add_projected(p, w, nm, nm.legal_f, true, false, px_type(p, w, RAW_TYPE_NAME, nm.bool_t, u32(0)), legal_body(p, w, nm, lines_base, nlines, span(&steps), nsteps, nstates))
+    add_projected(p, w, nm, nm.next_f, true, false, state_ret, next_body(p, w, nm, lines_base, nlines, span(&steps), nsteps, nstates, any_guarded, nm.legal_f))
+    lowered ? {
+      add_projected(p, w, nm, nm.legal_tree_f, true, false, px_type(p, w, RAW_TYPE_NAME, nm.bool_t, u32(0)), legal_body(p, w, nm, lines_base, nlines, span(&steps), nsteps, nstates))
+      add_projected(p, w, nm, nm.next_tree_f, true, false, state_ret, next_body(p, w, nm, lines_base, nlines, span(&steps), nsteps, nstates, any_guarded, nm.legal_tree_f))
+      byte_symbol ? { add_projected(p, w, nm, nm.run_f, false, true, state_ret, run_body(p, w, nm, capitalized_str(p, w, steps[u32(0)]))) } | { }
+    } | { }
+  }
+}
+
+rt_kind_p: (p: Par, w: [*]u32, t: u32): u32 = w[p.types_at + t * u32(4)]
+rt_a_p: (p: Par, w: [*]u32, t: u32): u32 = w[p.types_at + t * u32(4) + u32(1)]
+
+// --- the parser frame -----------------------------------------------------------------------------
+
+// Protocol frame: 2 name, 3 initial, 4 lines base, 5 line name, 6 param
+// name, 7 param type, 8 from, 9 to, 10 guard.
+PP_ENTRY: u32 = 0
+PP_PARAM_TYPED: u32 = 1
+PP_GUARDED: u32 = 2
+
+// protocol_line_done records the line in flight and moves to the next entry.
+protocol_line_done: (p: Par, w: [*]u32, at: u32): () {
+  px_acc_push(p, w, w[at + u32(5)])
+  px_acc_push(p, w, w[at + u32(6)])
+  px_acc_push(p, w, w[at + u32(7)])
+  px_acc_push(p, w, w[at + u32(8)])
+  px_acc_push(p, w, w[at + u32(9)])
+  px_acc_push(p, w, w[at + u32(10)])
+  w[at + u32(1)] = PP_ENTRY
+  px_advance(p, w)
+}
+
+// protocol_line_tail reads `: From -> To [when guard]` after the name and
+// its optional parameter; `then` and `via` are outside the subset.
+protocol_line_tail: (p: Par, w: [*]u32, src: []u32, at: u32): () {
+  expect_peek(p, w, T_COLON, u32(430)) ? {
+    expect_peek(p, w, T_IDENT, u32(431)) ? {
+      w[at + u32(8)] = px_intern_token(p, w, src, cur(p, w))
+      expect_peek(p, w, T_ARROW, u32(432)) ? {
+        expect_peek(p, w, T_IDENT, u32(433)) ? {
+          w[at + u32(9)] = px_intern_token(p, w, src, cur(p, w))
+          w[at + u32(10)] = NONE
+          peek_is_word(p, w, src, u64(0x6E656877), u64(0), u32(4)) ? {
+            px_advance(p, w)
+            px_advance(p, w)
+            w[at + u32(1)] = PP_GUARDED
+            px_push_expr(p, w, PR_LOWEST)
+          } | {
+            (peek_is_word(p, w, src, u64(0x6E656874), u64(0), u32(4)) || peek_is_word(p, w, src, u64(0x616976), u64(0), u32(3))) ? { px_fail(p, w, u32(434)) } | { protocol_line_done(p, w, at) }
+          }
+        } | { }
+      } | { }
+    } | { }
+  } | { }
+}
+
+step_protocol_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
+  phase: u32 = w[at + u32(1)]
+  phase == PP_PARAM_TYPED ? {
+    w[at + u32(7)] = pst(p, w, PS_RET)
+    expect_peek(p, w, T_RPAREN, u32(435)) ? { protocol_line_tail(p, w, src, at) } | { }
+  } | {
+  phase == PP_GUARDED ? {
+    w[at + u32(10)] = pst(p, w, PS_RET)
+    (peek_is_word(p, w, src, u64(0x6E656874), u64(0), u32(4)) || peek_is_word(p, w, src, u64(0x616976), u64(0), u32(3))) ? { px_fail(p, w, u32(434)) } | { protocol_line_done(p, w, at) }
+  } | {
+    // PP_ENTRY: the cursor is on an entry's first token, or `}`.
+    while cur_kind(p, w) == T_COMMA || cur_kind(p, w) == T_SEMI { px_advance(p, w) }
+    k: u32 = cur_kind(p, w)
+    k == T_RBRACE ? {
+      base: u32 = w[at + u32(4)]
+      nlines: u32 = (pst(p, w, PS_ACC_SP) - base) / PL_WORDS
+      (w[at + u32(3)] == NONE || nlines == u32(0)) ? { px_fail(p, w, u32(436)) } | {
+        project_protocol(p, w, w[at + u32(2)], w[at + u32(3)], base, nlines)
+        set_pst(p, w, PS_ACC_SP, base)
+        px_deliver(p, w, NONE)
+      }
+    } | {
+    k != T_IDENT ? { px_fail(p, w, u32(437)) } | {
+      cur_is_word(p, w, src, u64(0x6C616974696E69), u64(0), u32(7)) ? {
+        expect_peek(p, w, T_IDENT, u32(438)) ? {
+          w[at + u32(3)] != NONE ? { px_fail(p, w, u32(439)) } | {
+            w[at + u32(3)] = px_intern_token(p, w, src, cur(p, w))
+            px_advance(p, w)
+          }
+        } | { }
+      } | {
+        outside: Bool = cur_is_word(p, w, src, u64(0x656372756F736572), u64(0), u32(8)) || cur_is_word(p, w, src, u64(0x72696166), u64(0), u32(4)) ||
+          cur_is_word(p, w, src, u64(0x796C676E6F727473), u64(0), u32(8)) || cur_is_word(p, w, src, u64(0x6C6175746E657665), u64(0x796C), u32(10)) ||
+          cur_is_word(p, w, src, u64(0x61746164), u64(0), u32(4)) || cur_is_word(p, w, src, u64(0x74696E69), u64(0), u32(4))
+        outside ? { px_fail(p, w, u32(440)) } | {
+          w[at + u32(5)] = px_intern_token(p, w, src, cur(p, w))
+          w[at + u32(6)] = NONE
+          w[at + u32(7)] = NONE
+          peek_kind(p, w) == T_LPAREN ? {
+            px_advance(p, w)
+            expect_peek(p, w, T_IDENT, u32(441)) ? {
+              w[at + u32(6)] = px_intern_token(p, w, src, cur(p, w))
+              expect_peek(p, w, T_COLON, u32(442)) ? {
+                px_advance(p, w)
+                w[at + u32(1)] = PP_PARAM_TYPED
+                px_push(p, w, P_TYPE, NONE, NONE)
+              } | { }
+            } | { }
+          } | { protocol_line_tail(p, w, src, at) }
+        }
+      }
+    } }
+  } }
+}

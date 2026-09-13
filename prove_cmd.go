@@ -121,6 +121,22 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 					replayOrder = "" // the Oak lowering's orders are its own; any order of the Go decider's may confirm the verdict
 				}
 				fromGo, ok := prove.GoDecision(model, r.Name, replayOrder)
+				if ok && fromGo.Status == prove.Open {
+					// The Go lowering does not take the theorem: the Go
+					// interpreter's enumeration is the cross-check when the
+					// domain is finite, else the verdict stands alone.
+					if enumerated, finite := prove.GoEnumeration(model, r.Name, *cases); finite {
+						if enumerated.Status == r.Status {
+							results[i].Detail += "; the Go interpreter agrees"
+						} else {
+							results[i].Status = prove.Open
+							results[i].Detail = fmt.Sprintf("the Go interpreter disagrees with the Oak solver: Go %s (%s), Oak %s (%s)", enumerated.Status, enumerated.Detail, r.Status, r.Detail)
+						}
+					} else {
+						results[i].Detail += "; the Go decider does not take it"
+					}
+					continue
+				}
 				switch {
 				case !ok:
 					continue
