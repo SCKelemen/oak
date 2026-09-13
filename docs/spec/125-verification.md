@@ -516,6 +516,10 @@ parameter), which the whole-instance equality implies.
 
 ## 7. Direction
 
+`126-verification-chain.md` maps what each hop from source to object is
+worth per target — proved, refined, audited, differential, or trusted —
+and where a source-level theorem stops reaching the machine today.
+
 In order of payoff, each reusing a surface that exists:
 
 - **The verifier in Oak.** The aim is a compiler whose semantics, solver,
