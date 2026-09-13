@@ -798,11 +798,17 @@ adaptations listed in the file), Sail generates their Lean, and
 generated code — `Elem[]` reads the lane of the verifier's decomposition,
 `Ones` is the all-ones lane, `UnsignedSatQ` of a lane difference is
 `uqsub`, the `cmeq` test is `cmeq`, and the bitwise forms are the
-operators. Left for the next increments: the per-lane loops of the
-generated code as `List.zipWith` of the lane functions, `ext` as
-`Oak.Neon.ext`, Arm's recursive `Reduce` (whose termination Sail's Lean
-backend cannot discharge), `simd.store` (a write the straight-line model
-does not follow), and float vectors
+operators — and the register-level theorems over the generated per-lane
+loops: the loop `for e in [0:elements-1]` is a fold over the lane indices
+(`forIn_laneRange_fold`), a lane written by `Elem[]` reads its write and
+leaves the others (`aget_aset_same`, `aget_aset_other`), so `dup`, `add`,
+`sub`, `cmeq` (register and zero forms), `umin`, `umax`, `uqsub`, `tbl`,
+and `umaxv` compute the verifier's lane functions over the lanes of their
+operands (`dup_lanes`, `add_lanes`, `cmeq_lanes`, `tbl_lanes`,
+`umaxv_lane`, …). Left for the next increments: `ext` as `Oak.Neon.ext`,
+the shifts, `cnt`, Arm's recursive `Reduce` (whose termination Sail's
+Lean backend cannot discharge), `simd.store` (a write the straight-line
+model does not follow), and float vectors
 (`docs/notes/proof-chain-audit-2026-09.md`).
 
 ## 9. Native encoding, and the architectures to come
