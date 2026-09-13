@@ -113,7 +113,7 @@ func buildPackage(args []string) int {
 	metalCheck := false
 	lines, emitC, nativeBodies := false, false, false
 	asmMode, linkMode := "", "c"
-	fs := newFlagSet("build", "oak build [-o out] [-target os/arch] [-cpu name] [-opt 0..3] [-emit-c] [-header out.h] [-lean out.lean] [-metal out.metal] [-profile default|strict] [-asm native|c] [-native] [-link c|oak] [-lines] [dir|file.oak|pattern]...")
+	fs := newFlagSet("build", "oak build [-o out] [-target os/arch] [-cpu name] [-opt 0..3] [-emit-c] [-header out.h] [-lean out.lean] [-lean-floats bits] [-metal out.metal] [-profile default|strict] [-asm native|c] [-native] [-link c|oak] [-lines] [dir|file.oak|pattern]...")
 	fs.StringVar(&targetFlag, "target", "", "platform os/arch, e.g. linux/riscv64 or freestanding/arm (default: OAKOS/OAKARCH, else the host; docs/spec/90-backend.md section 2a)")
 	fs.StringVar(&cpu, "cpu", "", "processor for the C compiler's -mcpu, e.g. cortex_m0 (default: OAKCPU, else the target's default)")
 	fs.StringVar(&opt, "opt", "", "C compiler optimization level 0..3 (default: OAKOPT, else 1; docs/spec/05-ergonomics-and-cost.md, the mechanical backend)")
