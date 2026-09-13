@@ -1,5 +1,5 @@
 diff --git a/Sail/Sail.lean b/Sail/Sail.lean
-index 24720fa..c155de2 100644
+index 24720fa..9adc173 100644
 --- a/Sail/Sail.lean
 +++ b/Sail/Sail.lean
 @@ -536,14 +536,17 @@ def readReg (r : Register) : PreSailM RegisterType c ue (RegisterType r) := do
@@ -24,3 +24,28 @@ index 24720fa..c155de2 100644
  
  @[simp_sail]
  def reg_deref (reg_ref : @RegisterRef Register RegisterType α) : PreSailM RegisterType c ue α :=
+@@ -883,3 +886,24 @@ macro_rules | `(tactic| decreasing_trivial) => `(tactic|
+ -- termination.
+ @[wf_preprocess]
+ theorem cond_eq_ite (b : Bool) (x y : α) : cond b x y = ite b x y := by cases b <;> rfl
++
++/-! Oak's floating-point primitives (spec/sail/arm_primitives.sail maps Arm's
++`FPAdd`, `FPSub`, `FPMul`, `FPMulAdd`, `FPMin`, `FPMax`, `FPMinNum`,
++`FPMaxNum`, and `FPSqrt` here; spec/sail/lean-sail-4.33.patch carries this
++block): the IEEE operations left uninterpreted, as the Oak assembler's
++verifier leaves them (asm/floats_ops.go, Oak.Uninterpreted). Their bit-level
++model is Oak.FloatOps; the differentials check the operations themselves
++against the hardware. -/
++namespace Sail
++
++opaque FPAdd {N : Nat} (op1 op2 : BitVec N) (fpcr : BitVec 32) : BitVec N
++opaque FPSub {N : Nat} (op1 op2 : BitVec N) (fpcr : BitVec 32) : BitVec N
++opaque FPMul {N : Nat} (op1 op2 : BitVec N) (fpcr : BitVec 32) : BitVec N
++opaque FPMulAdd {N : Nat} (addend op1 op2 : BitVec N) (fpcr : BitVec 32) : BitVec N
++opaque FPMin {N : Nat} (op1 op2 : BitVec N) (fpcr : BitVec 32) : BitVec N
++opaque FPMax {N : Nat} (op1 op2 : BitVec N) (fpcr : BitVec 32) : BitVec N
++opaque FPMinNum {N : Nat} (op1 op2 : BitVec N) (fpcr : BitVec 32) : BitVec N
++opaque FPMaxNum {N : Nat} (op1 op2 : BitVec N) (fpcr : BitVec 32) : BitVec N
++opaque FPSqrt {N : Nat} (op : BitVec N) (fpcr : BitVec 32) : BitVec N
++
++end Sail
