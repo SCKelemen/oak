@@ -145,7 +145,7 @@ func (l *tryLowering) lowerBlock(stmts []ast.Statement, kind tryKind) []ast.Stat
 		case *ast.VariableDeclaration:
 			if candidate, isTry := s.Value.(*ast.TryExpression); isTry {
 				t = candidate
-				okPattern = &ast.BindingPattern{Token: s.Name.Token, Name: s.Name}
+				okPattern = &ast.BindingPattern{Token: s.Name.Token, Name: s.Name, Ascribed: s.Type}
 			}
 		case *ast.ExpressionStatement:
 			if candidate, isTry := s.Expression.(*ast.TryExpression); isTry {

@@ -822,6 +822,11 @@ type BindingPattern struct {
 	BaseNode
 	Token token.Token
 	Name  *Identifier
+	// Ascribed is the type the binding was declared with, when the
+	// pattern was synthesized from a declaration (`x: T = try e`,
+	// compiler/try.go): the checker compares it with the payload's type.
+	// Nil for a pattern the parser produced.
+	Ascribed Expression
 }
 
 func (bp *BindingPattern) patternNode()         {}

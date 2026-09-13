@@ -3723,6 +3723,15 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 	case *ast.WildcardPattern:
 		return expectedType
 	case *ast.BindingPattern:
+		if p.Ascribed != nil {
+			// `x: T = try e` (docs/spec/10-syntax.md section 2d): T must be
+			// the payload's type.
+			declared := tc.parseTypeExpression(p.Ascribed)
+			if declared != nil && expectedType != nil && !declared.Equals(expectedType) {
+				tc.addError(p.Name, "try binds %s: %s, but the payload is %s", p.Name.Value, declared, expectedType)
+				return nil
+			}
+		}
 		tc.env.SetType(p.Name.Value, expectedType)
 		return expectedType
 	case *ast.LiteralPattern:

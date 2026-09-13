@@ -116,9 +116,9 @@ not leave the function — a `while` body, a non-tail block, an operand
 (`f(try g(x))`) — and it is a diagnostic at the `try` (`OAK-M0401`), as
 are a bare `try e` statement (bind it or discard it on purpose) and a
 `try` as a block's last statement (nothing follows to use the value). The
-annotation `T` is the payload's type: the binding takes the payload's type
-and a different annotation is not yet compared — the checker sees the
-pattern binding, not the declaration. There is no `try` for a function
+annotation `T` must be the payload's type: the synthesized binding carries
+it, and the checker reports `try binds a: u64, but the payload is u32` at
+the name. There is no `try` for a function
 returning anything else, and no non-local exit: the constitution's rule
 that a result is the only way out stands (`85-discipline.md` §3a).
 
