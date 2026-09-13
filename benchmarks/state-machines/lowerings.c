@@ -6,6 +6,8 @@
 //   B. one byte-driven DFA (UTF-8 validity, 9 states, 256 symbols), 64MB
 //   C. a table of 1M machines, each stepped once per round, 32 rounds
 //   D. one data-carrying machine with guarded lines, 64M steps
+//   E. one mixed-symbol machine (payload-less steps beside a byte-driven
+//      and a u16-driven step, guards on the payloads), 16M steps
 //
 // Variants per workload:
 //   branch : the branch tree clang produces from Oak's generated C today
@@ -20,7 +22,7 @@
 #include <string.h>
 #include <time.h>
 
-typedef uint8_t u8; typedef uint32_t u32; typedef uint64_t u64;
+typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32; typedef uint64_t u64;
 
 static double now_ns(void) {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -358,11 +360,165 @@ static void bench_d(u32 n) {
     free(steps);
 }
 
+/* ------------------------------------------------------------------ */
+/* E. Mixed symbols (docs/spec/112-protocols.md section 2a): the Mixed
+   protocol of compiler/e2e_protocol_lowering_test.go — Idle/Reading/Word,
+   steps start, byte(b: u8) with four guard classes, word(n: u16) with
+   three, stop. The branch form is the projected Oak body (legal evaluates
+   the guards, next asserts legal and re-evaluates them); the table form is
+   the emitted shift DFA: symbol = base[tag] + classes[tag][payload], then
+   (rows[symbol] >> state) & 63. */
+enum { E_IDLE, E_READING, E_WORD, NSTATES_E = 3, E_SINK = 3 };
+enum { E_START, E_BYTE, E_WORD_STEP, E_STOP };
+typedef struct { u8 tag; u16 payload; } EStep;
+
+static inline int e_byte_digit(u32 b) { return b >= 48 && b <= 57; }
+static inline int e_byte_letter(u32 b) { return b >= 97 && b <= 122; }
+static inline int e_legal(u32 state, EStep st) {
+    switch (st.tag) {
+    case E_START: return state == E_IDLE;
+    case E_BYTE:
+        if (state == E_READING) return e_byte_digit(st.payload) || e_byte_letter(st.payload);
+        if (state == E_WORD) return e_byte_letter(st.payload) || st.payload == 32;
+        return 0;
+    case E_WORD_STEP:
+        if (state == E_WORD) return st.payload < 1000 || (st.payload >= 1000 && st.payload % 7 == 0);
+        return 0;
+    case E_STOP: return state == E_READING || state == E_WORD;
+    }
+    __builtin_trap();
+}
+__attribute__((noinline)) static u32 e_next_branch(u32 state, EStep st) {
+    if (!e_legal(state, st)) __builtin_trap();
+    u32 result = state; int done = 0;
+    switch (st.tag) {
+    case E_START: result = E_READING; break;
+    case E_BYTE:
+        if (state == E_READING) {
+            if (!done && e_byte_digit(st.payload)) { result = E_READING; done = 1; }
+            if (!done && e_byte_letter(st.payload)) { result = E_WORD; done = 1; }
+        } else if (state == E_WORD) {
+            if (!done && e_byte_letter(st.payload)) { result = E_WORD; done = 1; }
+            if (!done && st.payload == 32) { result = E_READING; done = 1; }
+        }
+        break;
+    case E_WORD_STEP:
+        if (state == E_WORD) {
+            if (!done && st.payload < 1000) { result = E_IDLE; done = 1; }
+            if (!done && st.payload >= 1000 && st.payload % 7 == 0) { result = E_WORD; done = 1; }
+        }
+        break;
+    case E_STOP: result = E_IDLE; break;
+    default: __builtin_trap();
+    }
+    return result;
+}
+/* the emitted tables: classes by first-seen outcome vector, 9 symbols */
+static u8 e_classes_byte[256];
+static u8 e_classes_word[65536];
+static u64 e_rows[9];
+static const u32 e_base[4] = { 0, 1, 5, 8 };
+static u8 e_classes_all[1 + 256 + 65536 + 1];
+static const u32 e_off[4] = { 0, 1, 257, 65793 };
+static const u32 e_mask[4] = { 0, 0xFF, 0xFFFF, 0 };
+static void e_build(void) {
+    for (u32 b = 0; b < 256; b++) e_classes_byte[b] = b == 32 ? 1 : e_byte_digit(b) ? 2 : e_byte_letter(b) ? 3 : 0;
+    for (u32 n = 0; n < 65536; n++) e_classes_word[n] = n < 1000 ? 0 : n % 7 == 0 ? 2 : 1;
+    memcpy(e_classes_all + 1, e_classes_byte, 256); memcpy(e_classes_all + 257, e_classes_word, 65536);
+    static const u16 byte_rep[4] = { 0, 32, 48, 97 }, word_rep[3] = { 0, 1000, 1001 };
+    for (u32 sym = 0; sym < 9; sym++) {
+        u64 row = (u64)(6 * E_SINK) << (6 * E_SINK);
+        for (u32 s = 0; s < NSTATES_E; s++) {
+            EStep st;
+            if (sym == 0) st = (EStep){ E_START, 0 };
+            else if (sym < 5) st = (EStep){ E_BYTE, byte_rep[sym - 1] };
+            else if (sym < 8) st = (EStep){ E_WORD_STEP, word_rep[sym - 5] };
+            else st = (EStep){ E_STOP, 0 };
+            u32 t = e_legal(s, st) ? e_next_branch(s, st) : E_SINK;
+            row |= (u64)(6 * t) << (6 * s);
+        }
+        e_rows[sym] = row;
+    }
+}
+__attribute__((noinline)) static u32 e_next_table(u32 state6, EStep st) {
+    u32 sym;
+    switch (st.tag) {
+    case E_BYTE: sym = e_base[E_BYTE] + e_classes_byte[st.payload]; break;
+    case E_WORD_STEP: sym = e_base[E_WORD_STEP] + e_classes_word[st.payload]; break;
+    default: sym = e_base[st.tag]; break;
+    }
+    u32 next = (u32)((e_rows[sym] >> state6) & 63u);
+    if (next == 6 * E_SINK) __builtin_trap();
+    return next;
+}
+/* branch-free variant: one concatenated class table, the tag selects an
+   offset and a payload mask (0 for a payload-less step), no switch */
+__attribute__((noinline)) static u32 e_next_table_flat(u32 state6, EStep st) {
+    u32 sym = e_base[st.tag] + e_classes_all[e_off[st.tag] + (st.payload & e_mask[st.tag])];
+    u32 next = (u32)((e_rows[sym] >> state6) & 63u);
+    if (next == 6 * E_SINK) __builtin_trap();
+    return next;
+}
+/* select variant: no punning — each classed payload member is read and a
+   select on the tag picks it (csel/cmov), payload-less tags select 0 */
+__attribute__((noinline)) static u32 e_next_table_sel(u32 state6, EStep st) {
+    u32 pb = (u8)st.payload, pw = st.payload;
+    u32 p = st.tag == E_BYTE ? pb : st.tag == E_WORD_STEP ? pw : 0;
+    u32 sym = e_base[st.tag] + e_classes_all[e_off[st.tag] + p];
+    u32 next = (u32)((e_rows[sym] >> state6) & 63u);
+    if (next == 6 * E_SINK) __builtin_trap();
+    return next;
+}
+static void bench_e(u32 n) {
+    e_build();
+    EStep *steps = malloc(n * sizeof(EStep));
+    u32 s = E_IDLE;
+    for (u32 i = 0; i < n; i++) {
+        EStep st; u32 r = rng();
+        switch (s) {
+        case E_IDLE: st = (EStep){ E_START, 0 }; break;
+        case E_READING:
+            if (r % 3 == 0) st = (EStep){ E_BYTE, (u16)(48 + r / 3 % 10) };
+            else if (r % 3 == 1) st = (EStep){ E_BYTE, (u16)(97 + r / 3 % 26) };
+            else st = (EStep){ E_STOP, 0 };
+            break;
+        default:
+            if (r % 5 == 0) st = (EStep){ E_BYTE, (u16)(97 + r / 5 % 26) };
+            else if (r % 5 == 1) st = (EStep){ E_BYTE, 32 };
+            else if (r % 5 == 2) st = (EStep){ E_WORD_STEP, (u16)(r / 5 % 1000) };
+            else if (r % 5 == 3) st = (EStep){ E_WORD_STEP, (u16)(1001 + 7 * (r / 5 % 9000)) };
+            else st = (EStep){ E_STOP, 0 };
+            break;
+        }
+        steps[i] = st; s = e_next_branch(s, st);
+    }
+    double tb = 1e30, tt = 1e30, tf = 1e30, ts = 1e30; u32 rb = 0, rt = 0, rf = 0, rs = 0;
+    for (int r = 0; r < REPS; r++) {
+        double t0 = now_ns(); u32 st = E_IDLE;
+        for (u32 i = 0; i < n; i++) st = e_next_branch(st, steps[i]);
+        tb = best(tb, now_ns() - t0); rb = st;
+        t0 = now_ns(); st = 6 * E_IDLE;
+        for (u32 i = 0; i < n; i++) st = e_next_table(st, steps[i]);
+        tt = best(tt, now_ns() - t0); rt = st / 6;
+        t0 = now_ns(); st = 6 * E_IDLE;
+        for (u32 i = 0; i < n; i++) st = e_next_table_flat(st, steps[i]);
+        tf = best(tf, now_ns() - t0); rf = st / 6;
+        t0 = now_ns(); st = 6 * E_IDLE;
+        for (u32 i = 0; i < n; i++) st = e_next_table_sel(st, steps[i]);
+        ts = best(ts, now_ns() - t0); rs = st / 6;
+    }
+    if (rb != rt || rb != rf || rb != rs) { printf("E: MISMATCH\n"); exit(1); }
+    printf("E  mixed-symbol machine (4 steps, 9 symbols), %u input-driven steps\n", n);
+    printf("   branch                 %6.2f ns/step\n   table, tag switch      %6.2f ns/step\n   table, flat classes    %6.2f ns/step\n   table, flat + selects  %6.2f ns/step\n", tb / n, tt / n, tf / n, ts / n);
+    free(steps);
+}
+
 int main(void) {
     bench_a(64u << 20);
     bench_b(64u << 20);
     bench_c(1u << 20, 32);
     bench_c(16u << 20, 4);
     bench_d(64u << 20);
+    bench_e(16u << 20);
     return 0;
 }
