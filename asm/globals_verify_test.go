@@ -3,6 +3,8 @@ package asm
 import (
 	"strings"
 	"testing"
+
+	"github.com/SCKelemen/oak/ast"
 )
 
 // verifyGlobalsCase is verifyCase over a body that addresses package
@@ -65,5 +67,64 @@ func TestVerifyGlobalWriters(t *testing.T) {
 		"  bind w0 = k\n  clobber x9, x10\n"+address("x9", "st")+"  ldr w10, [x9]\n  str w0, [x9]\n  add w0, w0, w10\n  ret", globals)
 	if extra.Kind != VerdictMismatch || !strings.Contains(extra.Message, "the package global st") {
 		t.Fatalf("a store the body does not make must be a mismatch, got %s: %s", extra.Kind, extra.Message)
+	}
+}
+
+// Cells thread through calls (docs/spec/94-assembler.md §9): a callee's
+// summary sees the caller's current cell values and its writes come back
+// to the caller's path; a unit callee is summarized for its writes alone.
+func TestVerifyGlobalsThroughCalls(t *testing.T) {
+	globals := map[string]Global{"st": {Type: "u32", Bits: 32}}
+	callees := map[string]*ast.FunctionStatement{}
+	for _, text := range []string{
+		"bump_st: () -> () = {\n  st = st + u32(1)\n}",
+		"read_st: () -> u32 = {\n  st\n}",
+	} {
+		fn, err := parseSignatureWithBody(text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		callees[fn.Name.Value] = fn
+	}
+	symbols := map[string]bool{"bump_st": true, "read_st": true}
+	run := func(decl, oakBody, asmBody string) Verdict {
+		t.Helper()
+		unit, errs := ParseUnit("gc.oakasm", decl+" = {\n"+asmBody+"\n}\n")
+		if len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		unit.Functions[0].Globals = globals
+		unit.Functions[0].Callees = callees
+		sig, err := parseSignature(decl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if findings := Check(unit.Functions[0], sig, symbols); len(findings) != 0 {
+			t.Fatalf("checker: %v", findings)
+		}
+		spec, err := parseSignatureWithBody(decl + " = " + oakBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unit.Functions[0].Callees = callees
+		return Verify(unit.Functions[0], sig, spec.Body)
+	}
+	prologue := "  clobber x9, x29, x30\n  frame 16\n  sub sp, sp, #16\n  stp x29, x30, [sp]\n"
+	epilogue := "  ldp x29, x30, [sp]\n  add sp, sp, #16\n  ret"
+	address := "  adrp x9, st\n  add x9, x9, :lo12:st\n"
+	// after: () -> u32 { bump_st(); st }: the unit callee's write is read back.
+	after := run("after: () -> u32", "{\n  bump_st()\n  st\n}", prologue+"  bl bump_st\n"+address+"  ldr w0, [x9]\n"+epilogue)
+	if after.Kind != VerdictProven || !strings.Contains(after.Message, "package state it writes (st)") {
+		t.Fatalf("a unit callee's write must reach the caller's read and cell, got %s: %s", after.Kind, after.Message)
+	}
+	// seed: (k: u32) -> u32 { st = k; read_st() }: the caller's store is what the callee reads.
+	seed := run("seed: (k: u32) -> u32", "{\n  st = k\n  read_st()\n}", "  bind w0 = k\n"+prologue+address+"  str w0, [x9]\n  bl read_st\n"+epilogue)
+	if seed.Kind != VerdictProven || !strings.Contains(seed.Message, "package state it writes (st)") {
+		t.Fatalf("a callee must read the caller's stored cell, got %s: %s", seed.Kind, seed.Message)
+	}
+	// The lowering that forgets the call: the Oak body bumps, the asm does not.
+	forgot := run("after: () -> u32", "{\n  bump_st()\n  st\n}", "  clobber x9\n"+address+"  ldr w0, [x9]\n  ret")
+	if forgot.Kind != VerdictMismatch {
+		t.Fatalf("a lowering that drops the callee's write must be a mismatch, got %s: %s", forgot.Kind, forgot.Message)
 	}
 }
