@@ -93,6 +93,22 @@ func zeroValue(typeExpr ast.Expression, env *object.Environment) (object.Object,
 			}
 			return record, true
 		}
+		// A sum type's zero is its first variant, with a zero payload: tag
+		// zero, which is what the backend's zero-initialized storage reads
+		// (docs/spec/30-adts-patterns.md). A declared record holding a
+		// protocol's state (its NameMonitor) starts there.
+		if adt, ok := env.GetADTType(t.Value); ok && len(adt.Variants) > 0 && len(adt.TypeParams) == 0 {
+			first := adt.Variants[0]
+			value := &object.ADTValue{TypeName: t.Value, Variant: first.Name}
+			if first.Payload != "" {
+				payload, known := zeroValue(&ast.Identifier{Value: first.Payload}, env)
+				if !known {
+					return nil, false
+				}
+				value.Value = payload
+			}
+			return value, true
+		}
 	case *ast.IndexExpression:
 		// A generic record instantiation (Idx[Thread], Ring[u8, 4]) zeroes the
 		// template's fields under the argument bindings; the template
