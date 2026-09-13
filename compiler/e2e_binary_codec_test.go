@@ -142,9 +142,10 @@ func TestE2EBinaryCodec(t *testing.T) {
 }
 
 // Zero cost, verified in the C (docs/spec/71-codecs.md section 4): the
-// unchecked writer and reader call no byte helper and check no capacity;
-// the checked entry checks once; the size is the constant; the fluent
-// spellings emit the same C as the direct ones.
+// encoder and the decoder each check the buffer's length once, as the
+// literal comparison, and every byte under it is a direct store or load —
+// no byte helper, no bounds-check helper; the size is the constant; the
+// fluent spellings emit the same C as the direct ones.
 func TestBinaryCodecLowering(t *testing.T) {
 	emitted, err := New().WithSource("binary_codec.oak", binaryCodecProgram).EmitC().Get()
 	if err != nil {
@@ -155,23 +156,19 @@ func TestBinaryCodecLowering(t *testing.T) {
 			t.Fatalf("unexpected lowering: %s", forbidden)
 		}
 	}
-	// The prelude's endian helpers exist in the C; the generated codec must
-	// not call them: every byte is a shift, a truncation, and a store.
-	unchecked := cFunctionBody(t, emitted, "oak___oak_bin_write_unchecked_Header")
-	reader := cFunctionBody(t, emitted, "oak___oak_bin_read_unchecked_Header")
-	for _, body := range []string{unchecked, reader} {
-		for _, forbidden := range []string{"bytes_write_", "bytes_read_", "bytes_range_fits", "oak_assert("} {
+	for _, name := range []string{"oak___oak_bin_encode_Header", "oak___oak_bin_decode_Header"} {
+		body := binaryDefinition(t, emitted, name)
+		for _, forbidden := range []string{"bytes_write_", "bytes_read_", "bytes_range_fits", "oak_assert(", "oak_span_store_u8(", "oak_span_index_u8(", "oak_view_index_u8(", "oak_index(", "oak_store(", "oak_lv_idx(", "oak_bounds_trap", "__oak_bin_write", "__oak_bin_read"} {
 			if strings.Contains(body, forbidden) {
-				t.Fatalf("a generated unchecked function contains %q:\n%s", forbidden, body)
+				t.Fatalf("%s contains %q:\n%s", name, forbidden, body)
 			}
 		}
-	}
-	if !strings.Contains(unchecked, "oak___oak_bin_write_unchecked_Inner(") {
-		t.Fatalf("the nested record does not write through its unchecked writer:\n%s", unchecked)
-	}
-	checked := cFunctionBody(t, emitted, "oak___oak_bin_write_Header")
-	if strings.Count(checked, "oak_bytes_range_fits(") != 1 {
-		t.Fatalf("the checked writer checks %d times:\n%s", strings.Count(checked, "oak_bytes_range_fits("), checked)
+		if strings.Count(body, ".len) >= ((u32)( 36 ))") != 1 {
+			t.Fatalf("%s does not check the length exactly once against 36:\n%s", name, body)
+		}
+		if strings.Count(body, ").base[") < 28 {
+			t.Fatalf("%s accesses fewer than 28 byte positions directly (arrays loop):\n%s", name, body)
+		}
 	}
 	size := cFunctionBody(t, emitted, "oak___oak_bin_encoded_size_Header")
 	if !strings.Contains(size, "36") {
@@ -185,6 +182,70 @@ func TestBinaryCodecLowering(t *testing.T) {
 	}
 	if emitted != directC {
 		t.Fatal("the fluent codec spellings emitted different C from the direct calls")
+	}
+}
+
+// binaryDefinition cuts a derived function's definition out of the emitted
+// C: the line at column zero that opens its body (the derived functions
+// follow the program, so their call sites come first), to the closing brace.
+func binaryDefinition(t *testing.T, code, name string) string {
+	t.Helper()
+	marker := " " + name + "( "
+	for from := 0; ; {
+		i := strings.Index(code[from:], marker)
+		if i < 0 {
+			t.Fatalf("no definition of %s in the emitted C", name)
+		}
+		at := from + i
+		lineStart := strings.LastIndexByte(code[:at], '\n') + 1
+		lineEnd := at + strings.IndexByte(code[at:], '\n')
+		line := code[lineStart:lineEnd]
+		if !strings.HasPrefix(line, " ") && strings.HasSuffix(strings.TrimRight(line, " "), "{") {
+			end := strings.Index(code[lineStart:], "\n}\n")
+			if end < 0 {
+				t.Fatalf("unterminated definition of %s", name)
+			}
+			return code[lineStart : lineStart+end+3]
+		}
+		from = at + len(marker)
+	}
+}
+
+// A u128 field: sixteen bytes in either order, round-tripped.
+const binaryU128Program = `import(std)
+bin: tag = { endian: string }
+Ids: type = struct {
+  checksum: u128
+  id(bin: "be"): u128
+  tail: u8
+}
+main: (): i32 {
+  v: Ids
+  v.checksum = (u128(u64(0x0102030405060708)) << u128(64)) | u128(u64(0x090A0B0C0D0E0F10))
+  v.id = (u128(u64(1)) << u128(120)) | u128(u64(2))
+  v.tail = u8(9)
+  data: [33]u8
+  ok: Bool = binary_result_value(encoded_size[Ids, Binary](v)) == u32(33)
+  true ? {
+    dst: [*]u8 = span(&data)
+    ok = ok && binary_result_value(encode[Ids, Binary](v, dst)) == u32(33)
+    // checksum little-endian: low byte first; id big-endian: high byte first
+    ok = ok && dst[0] == u8(0x10) && dst[7] == u8(0x09) && dst[8] == u8(0x08) && dst[15] == u8(0x01)
+    ok = ok && dst[16] == u8(1) && dst[30] == u8(0) && dst[31] == u8(2) && dst[32] == u8(9)
+  } | { ok = false }
+  back: Result[Ids, BinaryDecodeError] = decode[Ids, Binary](view(&data))
+  back ? | .Ok(w) => { ok = ok && w.checksum == v.checksum && w.id == v.id && w.tail == v.tail } | .Err(e) => { ok = false }
+  ok ? 42 | 1
+}
+`
+
+func TestE2EBinaryCodecU128(t *testing.T) {
+	if got := interpretChecked(t, binaryU128Program); got != 42 {
+		t.Fatalf("interpreter: %d", got)
+	}
+	_, code, abnormal := buildAndRunOutput(t, "binary_codec_u128", binaryU128Program)
+	if abnormal || code != 42 {
+		t.Fatalf("compiled: exit %d abnormal %v", code, abnormal)
 	}
 }
 

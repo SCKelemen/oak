@@ -936,8 +936,8 @@ from[Binary](input).to[Header]()
 ```
 
 `Binary` is a compile-time format marker beside `Json`. A closed record of
-fixed-width integers, `Bool`, nested records, and fixed arrays `[N]T` is a
-**fixed layout**: fields packed in declaration order with no padding, each
+fixed-width integers (`u8`–`u128`, `i8`–`i64`), `Bool`, nested records, and
+fixed arrays `[N]T` is a **fixed layout**: fields packed in declaration order with no padding, each
 integer at its width in its own endianness, `Bool` one byte (`1`/`0`),
 records and arrays inline. Endianness is per field through the `bin` tag
 — the bare string or `{ endian: "le" | "be" }` — and little-endian
@@ -966,17 +966,24 @@ Strings and recursive records have no fixed layout and are refused with
 the reason.
 
 The size is a compile-time constant, so encoding checks its destination
-**once** (`bytes_range_fits`) and then stores every byte through the
-unchecked writer — a shift, a truncation, a checked Oak store; no helper
-call — and a short destination is refused with the bytes unchanged.
-Decoding checks its input once (`InputTooShort` below the layout's size;
-longer input is read at its front, the header-of-a-page case), validates
-every `Bool` byte (`InvalidBool` above one), and constructs the value with
-the unchecked reader. There is no positioned form: a fixed layout fails as
-a whole, and `decode_located` names the JSON operation. The fluent
+**once**, as the literal comparison `len(output) >= SIZE`, and then stores
+every byte at a constant offset — `i * stride + K` inside a fixed array's
+loop — under that fact; the extents prover discharges each store
+(`Oak.Extents.constant_under_min_length`, `scaled_under_bound`), so the
+emitted C is one length test and straight-line direct stores: no byte
+helper, no bounds-check helper, no call for a nested record (its fields
+are inlined). A short destination is refused with the bytes unchanged.
+Decoding checks its input once the same way (`InputTooShort` below the
+layout's size; longer input is read at its front, the header-of-a-page
+case), reads every byte directly, validates every `Bool` byte
+(`InvalidBool` above one, reported after the whole record is read), and
+constructs the value. There is no positioned form: a fixed layout fails
+as a whole, and `decode_located` names the JSON operation. The fluent
 spellings lower to the same C as the direct calls
-(`compiler/e2e_binary_codec_test.go` holds the witness, the exact bytes of
-a mixed-endian header, and the round trip in both realizations).
+(`compiler/e2e_binary_codec_test.go` holds the witness — the derived
+bodies contain no checked access and exactly one length test — the exact
+bytes of a mixed-endian header, a `u128` in both orders, and the round
+trip in both realizations).
 
 `Oak.BinaryCodec` states the byte laws: reading the `w` bytes written for
 a value gives the value modulo `256^w`, exactly within the width
