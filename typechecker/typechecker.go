@@ -874,9 +874,16 @@ func (tc *TypeChecker) CheckProgram(program *ast.Program) {
 	tc.specializeRefinementTemplates(program)
 	// Resolve declared types before caching function signatures. Otherwise a
 	// span of a named record can retain an unresolved type variable.
+	// Tag schemas first: a record's field tags resolve against the schemas
+	// of the whole package, whichever file declares them and in whatever
+	// order the files are merged (the dbs pilot's round-five finding 7).
 	for _, stmt := range program.Statements {
-		switch stmt.(type) {
-		case *ast.ADTType, *ast.TagDeclaration:
+		if _, isTag := stmt.(*ast.TagDeclaration); isTag {
+			tc.checkStatement(stmt)
+		}
+	}
+	for _, stmt := range program.Statements {
+		if _, isADT := stmt.(*ast.ADTType); isADT {
 			tc.checkStatement(stmt)
 		}
 	}

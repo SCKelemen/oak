@@ -225,6 +225,26 @@ var iosimSource string
 //go:embed ionative.oak
 var ionativeSource string
 
+// NativeShim is the C source a library package's realization links: the
+// native IO port (ionative) is completion rings over host bindings
+// (stdlib/native/oak_io_host.c). `oak build` and `oak test` link the shim
+// whenever the package is part of the program (compiler.LinkInput of kind
+// "source"), so `replace io => ionative` needs no `link` line and no copy
+// of the shim in the consumer's tree (docs/notes/oak-requests-2026-09-13.md
+// finding 6).
+type NativeShim struct {
+	File   string
+	Source string
+}
+
+//go:embed native/oak_io_host.c
+var ioHostShimSource string
+
+// NativeShims maps a library package to the shim its realization links.
+var NativeShims = map[string]NativeShim{
+	"ionative": {File: "oak_io_host.c", Source: ioHostShimSource},
+}
+
 // Prelude is the core library (std.oak): Option, Result, Overflow, byte and
 // ring helpers. Every standard library package builds on it unqualified, and
 // the loader splices it into any program that imports a library package.
