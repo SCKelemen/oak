@@ -40,9 +40,12 @@ Apple arm64, 2026-09-13.
      locals in sixteen-byte frame slots (AAPCS64 preserves only the low
      halves of v8–v15), so the validator's nine vector locals are loaded
      and stored around every step.
-  3. **Guard elision.** Every vector load carries its two compares even
-     where the loop condition `off <= len(bytes) - 64` already proves the
-     access; the C backend's loads are unchecked there.
+  3. **Guard elision** — measured and found not to matter. The vector
+     loads under a loop condition `len(v) >= N && off <= len(v) - N` now
+     carry no compares (the checker reads the proof off the condition),
+     and the time did not move: 0.46 ns/byte with and without, on a loaded
+     machine. The predictor had absorbed the always-taken branches; the
+     instructions saved are real, the time is in the calls and spills.
 - Both backends agree on the verdict, and the end-to-end test
   (`compiler/e2e_native_simd_test.go`) checks every operation's result
   against the C backend, so the gap is speed, not meaning.

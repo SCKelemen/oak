@@ -1121,6 +1121,11 @@ type generator struct {
 	line      int
 	trap      string // the trap block's label (division by zero, shift overflow, assert)
 	usedTrap  bool
+	// loopFacts: what the enclosing while conditions prove about a span
+	// and an index variable inside their bodies (nativegen/simd.go
+	// vecGuardedIndex): `len(v) >= N && i <= len(v) - N` proves
+	// i + N <= len(v) until i is assigned.
+	loopFacts []loopFact
 	// terminated: an unconditional jump was emitted and no label has
 	// followed — instructions there are unreachable and are not emitted (the
 	// checker refuses them).
@@ -3485,6 +3490,7 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 				return err
 			}
 			g.assignVar(s.Name.Value, r)
+			g.killLoopFacts(s.Name.Value)
 		case *ast.IndexAssignmentStatement:
 			if err := g.elementStore(s); err != nil {
 				return err
@@ -3623,9 +3629,12 @@ func (g *generator) lowerWhile(loop *ast.WhileStatement) error {
 		return err
 	}
 	g.loops = append(g.loops, end)
+	facts := len(g.loopFacts)
+	g.loopFacts = append(g.loopFacts, loopFactsOf(loop.Condition)...)
 	g.pushScope()
 	err := g.lowerStatements(loop.Body.Statements, false, "")
 	g.popScope()
+	g.loopFacts = g.loopFacts[:facts]
 	g.loops = g.loops[:len(g.loops)-1]
 	if err != nil {
 		return err
@@ -3720,10 +3729,58 @@ var inverseCondition = map[string]string{"eq": "ne", "ne": "eq", "lo": "hs", "hs
 // verifier's loop recognizer read.
 func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFalse bool) error {
 	if infix, ok := expr.(*ast.InfixExpression); ok {
+		// Short-circuit connectives branch per operand, so each comparison
+		// keeps the `cmp; b.cond` shape whose facts the checker reads
+		// (a loop guard `len(v) >= N && i <= len(v) - N` proves the body's
+		// vector accesses).
+		switch infix.Operator {
+		case "&&":
+			if jumpIfFalse {
+				if err := g.conditionBranch(infix.Left, target, true); err != nil {
+					return err
+				}
+				return g.conditionBranch(infix.Right, target, true)
+			}
+			skip := g.newLabel("and")
+			if err := g.conditionBranch(infix.Left, skip, true); err != nil {
+				return err
+			}
+			if err := g.conditionBranch(infix.Right, target, false); err != nil {
+				return err
+			}
+			g.label(skip)
+			return nil
+		case "||":
+			if !jumpIfFalse {
+				if err := g.conditionBranch(infix.Left, target, false); err != nil {
+					return err
+				}
+				return g.conditionBranch(infix.Right, target, false)
+			}
+			skip := g.newLabel("or")
+			if err := g.conditionBranch(infix.Left, skip, false); err != nil {
+				return err
+			}
+			if err := g.conditionBranch(infix.Right, target, true); err != nil {
+				return err
+			}
+			g.label(skip)
+			return nil
+		}
 		if codes, isComparison := conditionCodes[infix.Operator]; isComparison {
 			if operand, err := g.operandType(infix); err == nil && !operand.isFloat {
 				left, leftOK := g.simpleOperand(infix.Left, operand, false)
 				right, rightOK := g.simpleOperand(infix.Right, operand, true)
+				computed := -1
+				if leftOK && !rightOK {
+					// A computed right operand (`len(v) - u32(N)`): into a
+					// scratch, then the same compare-and-branch.
+					r, err := g.expr(infix.Right, &operand)
+					if err != nil {
+						return err
+					}
+					computed, right, rightOK = r, reg(r, operand), true
+				}
 				if leftOK && rightOK {
 					code := codes[0]
 					if operand.signed {
@@ -3734,6 +3791,9 @@ func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFa
 					}
 					g.emit("cmp", left, right)
 					g.branch(code, target)
+					if computed >= 0 {
+						g.release(computed)
+					}
 					return nil
 				}
 			}

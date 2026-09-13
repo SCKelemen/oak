@@ -209,9 +209,12 @@ passed in as a view runs at 0.40 ns/byte through the native backend
 against 0.08 through the C backend on the same 64 MB input, both correct.
 The lowering is the same instructions; the gap is what the native backend
 does not do yet — inline the per-block calls (the C compiler flattens the
-kernel into one loop with every vector in a register), keep vector locals
-in registers across calls, and elide the length guard the loop condition
-already proves.
+kernel into one loop with every vector in a register) and keep vector
+locals in registers across calls. Eliding the length guards the loop
+condition proves (landed the same day: the checker reads the proof off
+the condition's compares) removed the compares and branches from the loop
+and changed the time by nothing measurable — the predictor had already
+absorbed them; the cost is the calls and the spills around them.
 
 On a scalable-vector target such as RISC-V V or AArch64 SVE, fixed vectors
 remain fixed semantic values. The backend may use a scalable register to

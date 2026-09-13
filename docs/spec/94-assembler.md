@@ -297,8 +297,18 @@ the span whose length register is `wL` (`slackFacts`), and `cmp wI, wT;
 b.hi trap` leaves the fall-through path knowing `wI + 16 ≤ len`
 (`idxFacts` with `slack`), which admits an access of `16 / elem` elements
 at `wI` with `uxtw #log2(elem)` (`Oak.Assembler.index_access_lanes`,
-`slack_guard`). The facts die as index facts do: a write to `wI`, `wT`,
-or `wL` forgets them.
+`slack_guard`). The constant may sit in a register a `movz` just filled
+(`constFacts`), as the generator spells converted literals; a slack fact
+follows a copy (`mov wJ, wI`) and an added constant (`add wJ, wI, #k`
+leaves `wJ + (K - k) <= len`), so the loads at `off + 16`, `off + 32`,
+`off + 48` of a sixty-four-byte step are admitted by the loop condition's
+own compares — the native backend emits no guard where its loop condition
+`len(v) >= u32(N) && i <= len(v) - u32(N)` already proves the access
+(`nativegen` loop facts, dead once `i` is assigned). The facts die as
+index facts do: a write to `wI`, `wT`, or `wL` forgets them. A span's
+proven minimum length is a fact about the span, not about a register: it
+survives the overwrite of a copy of the length and lapses only when no
+register holds the length.
 
 - **The operand-stack shorthand** (§2) is implemented as desugaring
   (`asm/stack.go`): `push <param>` writes the parameter's contract binding
