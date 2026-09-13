@@ -140,14 +140,14 @@ type rvGenerator struct {
 
 // compileRV64 lowers one Oak function on the rv64 lane; see Compile for
 // the arguments.
-func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool) (*asm.Function, error) {
+func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool, tables map[string]GlobalArray) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
 	if len(fn.Parameters) > 8 {
 		return nil, unsupported("more than eight parameters")
 	}
-	g := &rvGenerator{generator: generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, line: fn.Token.Line}, softFloat: softFloat, twoChunk: map[string]bool{}}
+	g := &rvGenerator{generator: generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, tables: tables, line: fn.Token.Line}, softFloat: softFloat, twoChunk: map[string]bool{}}
 	g.rvLane = true
 	usesFloat := mentionsFloat(fn) || g.recordsMentionFloat(fn)
 	if usesFloat && softFloat {
@@ -252,7 +252,10 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	if nextReg > 8 || nextFReg > 8 {
 		return nil, unsupported("the parameters exhaust the eight argument registers")
 	}
-	if hasVariables(fn) || (g.hasCalls && len(g.spans) > 0) || g.resultIndirect {
+	// The save area exists whenever a callee-saved register is written:
+	// a variable, a parked span pair (a call, or a result leaving through
+	// the pair's registers), or the result area's address.
+	if hasVariables(fn) || (parkSpans && len(g.spans) > 0) || g.resultIndirect {
 		g.saveArea = 8 * int64(len(rvCallee))
 	}
 	// In a leaf, each span's normalized length lives in an argument register
@@ -293,7 +296,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	if frame > rvMaxFrame {
 		return nil, unsupported("a frame of %d bytes", frame)
 	}
-	out := &asm.Function{Name: fn.Name.Value, Signature: fn, Line: fn.Token.Line, Arch: asm.ArchRV64, Fallback: true, Records: records, ADTs: adts}
+	out := &asm.Function{Name: fn.Name.Value, Signature: fn, Line: fn.Token.Line, Arch: asm.ArchRV64, Fallback: true, Records: records, ADTs: adts, Tables: tableSizes(g.tables)}
 	g.line = fn.Token.Line
 	var prologue []asm.Item
 	if frame > 0 {
@@ -960,7 +963,7 @@ func (g *rvGenerator) lowerIf(s *ast.IfStatement) error {
 
 // lowerConditionalStatement: `c ? { ... } | { ... }` in statement position.
 func (g *rvGenerator) lowerConditionalStatement(match *ast.MatchExpression) error {
-	whenTrue, whenFalse, ok := boolConditional(match)
+	whenTrue, whenFalse, ok := statementConditional(match)
 	if !ok {
 		return g.lowerMatch(match, g.lowerArm)
 	}
@@ -970,6 +973,10 @@ func (g *rvGenerator) lowerConditionalStatement(match *ast.MatchExpression) erro
 	}
 	if err := g.lowerArm(whenTrue); err != nil {
 		return err
+	}
+	if whenFalse == nil {
+		g.label(elseLabel)
+		return nil
 	}
 	g.jump(end)
 	g.label(elseLabel)
@@ -981,6 +988,12 @@ func (g *rvGenerator) lowerConditionalStatement(match *ast.MatchExpression) erro
 }
 
 func (g *rvGenerator) lowerArm(arm ast.Expression) error {
+	if arm == nil {
+		return nil
+	}
+	if chained, isMatch := arm.(*ast.MatchExpression); isMatch {
+		return g.lowerConditionalStatement(chained)
+	}
 	block, isBlock := arm.(*ast.BlockExpression)
 	if !isBlock {
 		// An arm that is a call or assert in statement position.
@@ -1525,7 +1538,7 @@ func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *record
 	if !isIdent {
 		return 0, unsupported("a call through a value")
 	}
-	callee, ok := g.functions[ident.Value]
+	callee, ok := g.functions[g.calleeName(ident)]
 	if !ok {
 		return 0, unsupported("a call to %s", ident.Value)
 	}
@@ -1675,7 +1688,7 @@ func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *record
 		g.emit(pick(r < vecBase, "sd", "fsd"), rvReg(r), g.slotMem(g.spill[r]))
 		spilled = append(spilled, r)
 	}
-	g.emit("call", asm.Symbol{Name: ident.Value})
+	g.emit("call", asm.Symbol{Name: g.calleeName(ident)})
 	for _, r := range spilled {
 		g.emit(pick(r < vecBase, "ld", "fld"), rvReg(r), g.slotMem(g.spill[r]))
 	}
@@ -1951,18 +1964,21 @@ func (g *rvGenerator) guardedAddress(sp span, index ast.Expression) (int, error)
 	if err != nil {
 		return 0, err
 	}
-	if idxType.signed || idxType.isBool || idxType.isFloat {
-		return 0, unsupported("an element index of type %s (indices are unsigned)", idxType.name)
+	if idxType.isBool || idxType.isFloat || (idxType.signed && idxType.bits != 32) {
+		return 0, unsupported("an element index of type %s (indices are unsigned or i32)", idxType.name)
 	}
 	r, err := g.expr(index, &idxType)
 	if err != nil {
 		return 0, err
 	}
 	R := rvReg(r)
-	if idxType.bits < 64 {
+	if idxType.bits < 64 && !idxType.signed {
 		g.emit("slli", R, R, imm(32))
 		g.emit("srli", R, R, imm(32))
 	}
+	// An i32 index stays in its canonical sign-extended form: a negative
+	// index is a huge unsigned value the guard traps, as the C backend's
+	// `(u64)(i)` cast does; a non-negative one is its own zero-extension.
 	g.usedTrap = true
 	g.emit("bgeu", R, rvReg(sp.norm), asm.Symbol{Name: g.trap})
 	if shift := log2Bytes(sp.elem.bits / 8); shift > 0 {
@@ -2214,29 +2230,36 @@ func (g *rvGenerator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem sca
 func (g *rvGenerator) arrayAddress(arr *arrayLocal, index ast.Expression) (asm.Memory, int, error) {
 	size := arr.elemSize()
 	if k, isConst := constantValue(index); isConst && k >= 0 && k < arr.length {
+		if arr.inReg {
+			return asm.Memory{Base: rvReg(arr.reg), Offset: arr.offset + k*size, Mode: asm.MemOffset}, -1, nil
+		}
 		return g.slotMem(arr.offset + k*size), -1, nil
 	}
 	idxType, err := g.typeOf(index, nil)
 	if err != nil {
 		return asm.Memory{}, 0, err
 	}
-	if idxType.signed || idxType.isBool || idxType.isFloat {
-		return asm.Memory{}, 0, unsupported("an element index of type %s (indices are unsigned)", idxType.name)
+	if idxType.isBool || idxType.isFloat || (idxType.signed && idxType.bits != 32) {
+		return asm.Memory{}, 0, unsupported("an element index of type %s (indices are unsigned or i32)", idxType.name)
 	}
 	r, err := g.expr(index, &idxType)
 	if err != nil {
 		return asm.Memory{}, 0, err
 	}
 	R := rvReg(r)
-	if idxType.bits < 64 {
+	if idxType.bits < 64 && !idxType.signed {
 		g.emit("slli", R, R, imm(32))
 		g.emit("srli", R, R, imm(32))
 	}
-	base, err := g.alloc(scalars["u64"])
-	if err != nil {
-		return asm.Memory{}, 0, err
+	base := arr.reg
+	if !arr.inReg {
+		if base, err = g.alloc(scalars["u64"]); err != nil {
+			return asm.Memory{}, 0, err
+		}
+		g.emit("addi", rvReg(base), rvSP(), imm(g.slotMem(arr.offset).Offset))
+	} else if arr.offset != 0 {
+		return asm.Memory{}, 0, unsupported("an array at offset %d inside a register-addressed place", arr.offset)
 	}
-	g.emit("addi", rvReg(base), rvSP(), imm(g.slotMem(arr.offset).Offset))
 	bound, err := g.alloc(scalars["u64"])
 	if err != nil {
 		return asm.Memory{}, 0, err
@@ -2249,7 +2272,9 @@ func (g *rvGenerator) arrayAddress(arr *arrayLocal, index ast.Expression) (asm.M
 		g.emit("slli", R, R, imm(int64(shift)))
 	}
 	g.emit("add", R, rvReg(base), R)
-	g.release(base)
+	if !arr.inReg {
+		g.release(base)
+	}
 	return asm.Memory{Base: R, Offset: 0, Mode: asm.MemOffset}, r, nil
 }
 
@@ -2286,7 +2311,15 @@ func (g *rvGenerator) arraySpanArgument(callee string, arg ast.Expression, targe
 	if err != nil {
 		return 0, 0, err
 	}
-	g.emit("addi", rvReg(base), rvSP(), imm(g.slotMem(arr.offset).Offset))
+	if arr.inReg {
+		if target.writable {
+			return 0, 0, unsupported("a call to %s: span of the constant table %s (read-only)", callee, borrow.Right.String())
+		}
+		g.emit("mv", rvReg(base), rvReg(arr.reg))
+		g.releaseTemps(arr.temps)
+	} else {
+		g.emit("addi", rvReg(base), rvSP(), imm(g.slotMem(arr.offset).Offset))
+	}
 	length, err := g.alloc(scalars["u32"])
 	if err != nil {
 		return 0, 0, err
@@ -2568,6 +2601,16 @@ func (g *rvGenerator) clampNarrow(r int, target scalar) error {
 // placeOf resolves an access chain to its place in the frame (the shared
 // resolver, docs/spec/94-assembler.md §9); a chain through a call's result
 // is outside this lane's subset (records do not cross calls here yet).
+// arrayOperand resolves the array an expression names through the RV64
+// lane's placeOf (a constant table's address is taken with `la`).
+func (g *rvGenerator) arrayOperand(expr ast.Expression) (*arrayLocal, error) {
+	p, err := g.placeOf(expr)
+	if err != nil {
+		return nil, err
+	}
+	return p.arr, nil
+}
+
 func (g *rvGenerator) placeOf(expr ast.Expression) (place, error) {
 	switch e := expr.(type) {
 	case *ast.Identifier:
@@ -2576,6 +2619,16 @@ func (g *rvGenerator) placeOf(expr ast.Expression) (place, error) {
 		}
 		if arr, isArray := g.arrays[e.Value]; isArray {
 			return place{arr: arr}, nil
+		}
+		if gl, isTable := g.tables[e.Value]; isTable {
+			// A constant table: its address in a scratch register (la), a
+			// read-only array at offset 0 from it.
+			r, err := g.alloc(scalars["u64"])
+			if err != nil {
+				return place{}, err
+			}
+			g.emit("la", rvReg(r), asm.Symbol{Name: gl.Symbol})
+			return place{arr: &arrayLocal{elem: scalars[gl.Elem], length: gl.Length, inReg: true, reg: r, temps: []int{r}, readOnly: true}}, nil
 		}
 	case *ast.IndexExpression:
 		if !e.Dot {

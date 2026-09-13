@@ -3,6 +3,7 @@ package compiler
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"strconv"
 
 	"github.com/SCKelemen/oak/asm"
@@ -26,7 +27,7 @@ import (
 // are reported), and its Oak body stays as the portable realization. A
 // function outside the backend's subset is left to the C backend, with the
 // reason reported as information.
-func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.TypeChecker) ([]*asm.Function, []*diagnostic.Diagnostic) {
+func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.TypeChecker) ([]*asm.Function, []asm.DataSymbol, []*diagnostic.Diagnostic) {
 	var diagnostics []*diagnostic.Diagnostic
 	functions := map[string]*ast.FunctionStatement{}
 	records := map[string]*ast.RecordLiteral{}
@@ -65,6 +66,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 	specializeInstantiations(tc, templates, records, adts)
 	constants := constantGlobals(root, tc)
 	globals, globalDecls := addressableGlobals(root, tc, constants)
+	tables, data := nativeGlobalArrays(root)
 	var lowered []*asm.Function
 	for _, stmt := range root.Statements {
 		fn, ok := stmt.(*ast.FunctionStatement)
@@ -76,7 +78,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// its folded value (constants); the C emitter keeps the body and
 		// its `static const`.
 		source := fn
-		lane := nativegen.Lane{Arch: comp.options.Target.AsmArch(), SoftFloat: comp.options.Target.Freestanding() && comp.options.Target.Arch == target.ArchRiscv64}
+		lane := nativegen.Lane{Arch: comp.options.Target.AsmArch(), SoftFloat: comp.options.Target.Freestanding() && comp.options.Target.Arch == target.ArchRiscv64, Tables: tables}
 		// Check elision (docs/spec/94-assembler.md §9): an element access the
 		// typechecker proved in range is lowered without its guard first;
 		// if the seam checker cannot admit the body from the facts on the
@@ -161,7 +163,110 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		}
 		lowered = kept
 	}
-	return lowered, diagnostics
+	return lowered, data, diagnostics
+}
+
+// nativeGlobalArrays collects the program's constant tables: top-level
+// arrays of fixed-width integers with literal initializers that no
+// statement writes — no assignment, no element assignment, no mutable
+// borrow (`span(&t)`, `&t` outside `view`). A native body reads one through
+// its data symbol (nativegen.GlobalArray), and the object carries the bytes
+// in its read-only data section (docs/spec/94-assembler.md §9, constant
+// tables). The C backend keeps its own `static const` copy for the bodies
+// it realizes; the two never alias, both being constant.
+func nativeGlobalArrays(root *ast.Program) (map[string]nativegen.GlobalArray, []asm.DataSymbol) {
+	if root == nil {
+		return nil, nil
+	}
+	mutated := mutatedTables(root)
+	tables := map[string]nativegen.GlobalArray{}
+	var data []asm.DataSymbol
+	for _, stmt := range root.Statements {
+		decl, isDecl := stmt.(*ast.VariableDeclaration)
+		if !isDecl || decl.Name == nil || decl.Section != "" || mutated[decl.Name.Value] {
+			continue
+		}
+		table, bytes, ok := nativegen.GlobalArrayOf(decl)
+		if !ok {
+			continue
+		}
+		tables[decl.Name.Value] = table
+		data = append(data, asm.DataSymbol{Name: table.Symbol, Bytes: bytes, Align: table.ElemSize()})
+	}
+	return tables, data
+}
+
+// mutatedTables names every top-level identifier some statement may write:
+// the target of an assignment or element assignment, or the operand of a
+// borrow `&x` that is not the argument of `view(...)` (a shared borrow).
+func mutatedTables(program *ast.Program) map[string]bool {
+	mutated := map[string]bool{}
+	var walk func(v reflect.Value, shared bool)
+	walk = func(v reflect.Value, shared bool) {
+		switch v.Kind() {
+		case reflect.Interface, reflect.Pointer:
+			if v.IsNil() {
+				return
+			}
+			switch node := v.Interface().(type) {
+			case *ast.AssignmentStatement:
+				if node.Name != nil {
+					mutated[node.Name.Value] = true
+				}
+			case *ast.IndexAssignmentStatement:
+				if root, ok := pathRoot(node.Target); ok {
+					mutated[root] = true
+				}
+			case *ast.InvocationExpression:
+				if fn, isIdent := node.Function.(*ast.Identifier); isIdent && fn.Value == "view" {
+					for _, arg := range node.Arguments {
+						walk(reflect.ValueOf(arg), true)
+					}
+					return
+				}
+			case *ast.PrefixExpression:
+				if node.Operator == "&" && !shared {
+					if root, ok := pathRoot(node.Right); ok {
+						mutated[root] = true
+					}
+				}
+			}
+			walk(v.Elem(), false)
+		case reflect.Struct:
+			for i := 0; i < v.NumField(); i++ {
+				if v.Type().Field(i).IsExported() {
+					walk(v.Field(i), false)
+				}
+			}
+		case reflect.Slice, reflect.Array:
+			for i := 0; i < v.Len(); i++ {
+				walk(v.Index(i), false)
+			}
+		case reflect.Map:
+			for _, key := range v.MapKeys() {
+				walk(v.MapIndex(key), false)
+			}
+		}
+	}
+	walk(reflect.ValueOf(program), false)
+	return mutated
+}
+
+// pathRoot is the identifier a place expression roots at: `t`, `t[i]`,
+// `t.f[i]`, `*t`.
+func pathRoot(expr ast.Expression) (string, bool) {
+	for {
+		switch e := expr.(type) {
+		case *ast.Identifier:
+			return e.Value, true
+		case *ast.IndexExpression:
+			expr = e.Left
+		case *ast.PrefixExpression:
+			expr = e.Right
+		default:
+			return "", false
+		}
+	}
 }
 
 // specializeInstantiations adds every generic ADT instantiation the
