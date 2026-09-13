@@ -373,6 +373,52 @@ structurally, then shows the model keeps every entry it wrote, because a
 row writes indices below the next row's (`writeRow_inside`,
 `writeRows_outside`); the fuel is the three loop bounds.
 
+### 8a. Layout in the type
+
+**Status: implemented (library), 2026-09-13.** The ml pilot's F6 / 5.20:
+the last reference row it loses is a matvec over a weight stored `[K, N]`,
+and every weight it would choose is stored `[N, K]`, so the layout it
+cannot make fast should not type. `RowMajor2[R]` and `ColMajor2[R]` are
+matrices whose strides are their **type's**: element `(i, j)` of a
+`RowMajor2` is at `i * cols + j` — `j` contiguous — and of a `ColMajor2`
+at `i + j * rows` — `i` contiguous. Neither carries stride fields.
+
+```oak
+m: t.RowMajor2 = t.row_major_of(view(&w), n, k)    // [n, k], k contiguous
+mt: t.ColMajor2 = t.row_major_transpose(m)         // [k, n], the same storage, retyped
+t.matvec_rows(m, view(&x), span(&out))             // takes RowMajor2 only
+s: t.Tensor2 = t.row_major_tensor(m)               // the strided form, for the general accessors
+```
+
+- `row_major_of`/`col_major_of` view the first `rows * cols` elements
+  (the shape must fit); `row_major_at`/`col_major_at` read an element
+  after the shape check (`row_major_index`, `col_major_index`).
+- **Transposition is a change of type.** `row_major_transpose` returns
+  the `ColMajor2` over the same storage and `col_major_transpose` the
+  `RowMajor2`; no element moves.
+- **A function states its layout in its signature.** `matvec_rows(w:
+  RowMajor2, x, out)` computes `out[i] = Σₖ w[i, k] · x[k]` reading each
+  row from consecutive storage — the k-contiguous form a bandwidth-bound
+  matvec wants — and a `ColMajor2` argument is a type error at the call,
+  not a slow path at run time. A library's `linear` is written the same
+  way, and the lane rule it uses is stated over the type.
+- `row_major_tensor`/`col_major_tensor` give the strided `Tensor2` (row
+  stride `cols`, column stride 1, offset 0; and row stride 1, column
+  stride `rows`), so the general accessors and kernels over `Tensor2`
+  see either.
+- **Kernels take them** as records like `Tensor2` (§1): `kernel matvec[R]:
+  (gid: u32, w: t.RowMajor2[R], x: []f32, out: [*]f32)` flattens `w` into
+  its buffer and two scalars.
+- **Lean** (`Oak.Stdlib.Tensor`, over the extraction):
+  `row_major_contiguous` and `col_major_contiguous` — the index of the
+  next element along the contiguous axis is the index plus one;
+  `transpose_retypes` — reading the transpose at `(j, i)` is reading the
+  original at `(i, j)`; `row_major_tensor_at`/`col_major_tensor_at` — the
+  strided form reads the same element; `row_major_transpose_transpose`.
+
+Shape in the type (`Tensor[n, k]` with const parameters, `20-types.md`
+§11.0) is the later increment: the layout was the row the pilot lost.
+
 ## 9. Execution on the device (implemented)
 
 The Metal framework ships with macOS and compiles shader source at run
