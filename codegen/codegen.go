@@ -5089,6 +5089,10 @@ func neonTypeOf(typeExpr ast.Expression) (neon neonVector, ok bool) {
 		return neonVector{ctype: "uint32x4_t", suffix: "u32", oak: "u32x4"}, true
 	case "simd.U64x2":
 		return neonVector{ctype: "uint64x2_t", suffix: "u64", oak: "u64x2"}, true
+	case "simd.F32x4":
+		return neonVector{ctype: "float32x4_t", suffix: "f32", oak: "f32x4"}, true
+	case "simd.F64x2":
+		return neonVector{ctype: "float64x2_t", suffix: "f64", oak: "f64x2"}, true
 	}
 	return neonVector{}, false
 }

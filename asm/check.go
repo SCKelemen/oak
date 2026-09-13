@@ -1851,6 +1851,15 @@ func (c *checker) elementRegion(dest, base Register, index int, size int64) {
 		return
 	}
 	if fact, isSpan := c.spans[base.Num]; isSpan && fact.elem == size {
+		if bound.slack && bound.boundReg >= 0 && fact.holdsLen(bound.boundReg) && fact.hasMin && bound.bound <= fact.minLen {
+			// Under the slack guard wI + K <= len (with len >= K, so the
+			// subtraction did not wrap) the K elements from wI lie inside
+			// the span (Oak.Assembler.index_access_lanes): xE addresses a
+			// region of K elements — a vector load or store over lanes
+			// wider than a byte goes through it (nativegen/simd.go).
+			c.regions[dest.Num] = region{size: size * bound.bound, writable: fact.writable}
+			return
+		}
 		inBounds := (bound.boundReg >= 0 && fact.holdsLen(bound.boundReg)) || (bound.boundReg < 0 && fact.hasMin && bound.bound <= fact.minLen)
 		if inBounds {
 			c.regions[dest.Num] = region{size: size, writable: fact.writable}

@@ -53,6 +53,9 @@ type scalar struct {
 	isVec    bool
 	lanes    int
 	laneBits int
+	// laneFloat marks the floating-point vectors simd.F32x4/F64x2
+	// (docs/spec/93-simd.md section 1.2a): lanes are f32/f64 values.
+	laneFloat bool
 }
 
 var scalars = map[string]scalar{

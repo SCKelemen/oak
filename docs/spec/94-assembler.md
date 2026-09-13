@@ -2808,7 +2808,13 @@ with memory or a call reports "not verified: trusted per §5".
 
 The native backend lowers the fixed vectors (`93-simd.md` §1.4 "The native
 backend"): values in the vector register file, one NEON instruction per
-operation, loads and stores under the slack guard of §7. A function whose
+operation, loads and stores under the slack guard of §7 — over lanes wider
+than a byte through the element address `add xE, xB, wI, uxtw #s`, which
+the checker records under the slack guard `wI + K ≤ len` (and `len ≥ K`)
+as a region of `K` elements (`elementRegion`, `index_access_lanes`), so
+the sixteen-byte `ldr`/`str q` through `xE` is a region access proven
+inside the span; the floating-point vectors landed 2026-09-14 (§1.4 of
+`93-simd.md`). A function whose
 signature carries a vector follows the vector register contract this
 chapter's `contractClass` already assigns to `simd.*` (v0–v7), which the C
 backend's lane-array struct does not (AAPCS64 passes a sixteen-byte
