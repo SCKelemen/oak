@@ -92,6 +92,15 @@ or the verifier, not in the program:
 
 ## 4. What is missing, in the order to close it
 
+**The gate (2026-09-14, `oak build -verified`, 94-assembler.md §9):** the
+build that accepts only proven functions whose callees are accepted, and
+prints what stands between the program and a proof, reason by reason. On
+the standard-library builder: arm64 99 of 494 accepted, rv64 42 of 494;
+the histogram names the increments in order — aggregate call results,
+non-scalar callee parameters in summaries, the path budget, byte and span
+stores, the rv64 load-width rule. Every item below is now a number that
+moves.
+
 1. **CI does not check the Sail links.** `formal.yml` builds `spec/lean`
    (160 jobs, passing). Not in CI: `spec/sail/lean` (the Arm bridge; needs
    the lean-sail checkout of `spec/sail/setup.sh` and `sail` for the

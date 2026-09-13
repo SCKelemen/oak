@@ -188,6 +188,11 @@ type SemanticModel struct {
 	// their data symbols (docs/spec/94-assembler.md §9); the companion
 	// object and the executable carry them in their read-only data.
 	NativeData []asm.DataSymbol
+	// NativeReport is what the native backend did with every function it
+	// saw: proven, witnessed, trusted, mismatched, left to the C backend, or
+	// refused by the seam checker, with the reason and the callees a
+	// verdict rests on (compiler.Verified renders it as the burn-down list).
+	NativeReport []NativeOutcome
 }
 
 // LoweredProgram is the executable-oriented AST plus its semantic model.
@@ -441,6 +446,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		}
 		asmFunctions, asmDiagnostics := stitcher.stitchAsmUnits(tree.Root)
 		var nativeData []asm.DataSymbol
+		var nativeReport []NativeOutcome
 		if err := comp.gate("asm", asmDiagnostics, tree.Modules); err != nil {
 			return nil, err
 		}
@@ -483,15 +489,16 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 			// The native body backend has an AArch64 and an RV64 lane
 			// (nativegen): on a target without a lane every body stays with
 			// the C backend.
-			nativeFunctions, data, nativeDiagnostics := comp.lowerNativeBodies(tree.Root, tc)
+			nativeFunctions, data, nativeDiagnostics, outcomes := comp.lowerNativeBodies(tree.Root, tc)
 			if err := comp.gate("native", nativeDiagnostics, tree.Modules); err != nil {
 				return nil, err
 			}
 			asmFunctions = append(asmFunctions, nativeFunctions...)
 			nativeData = data
+			nativeReport = outcomes
 		}
 
-		model := &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc, AsmFunctions: asmFunctions, NativeData: nativeData}
+		model := &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc, AsmFunctions: asmFunctions, NativeData: nativeData, NativeReport: nativeReport}
 		model.Diagnostics = append(model.Diagnostics, tc.Diagnostics()...)
 		model.Diagnostics = append(model.Diagnostics, codecLayoutDiagnostics(tree.CodecLayouts)...)
 

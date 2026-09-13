@@ -27,8 +27,12 @@ import (
 // are reported), and its Oak body stays as the portable realization. A
 // function outside the backend's subset is left to the C backend, with the
 // reason reported as information.
-func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.TypeChecker) ([]*asm.Function, []asm.DataSymbol, []*diagnostic.Diagnostic) {
+func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.TypeChecker) ([]*asm.Function, []asm.DataSymbol, []*diagnostic.Diagnostic, []NativeOutcome) {
 	var diagnostics []*diagnostic.Diagnostic
+	var outcomes []NativeOutcome
+	record := func(name, kind, reason string, callees []string) {
+		outcomes = append(outcomes, NativeOutcome{Name: name, Kind: kind, Reason: reason, Callees: callees})
+	}
 	functions := map[string]*ast.FunctionStatement{}
 	records := map[string]*ast.RecordLiteral{}
 	adts := map[string]*ast.ADTType{}
@@ -90,9 +94,11 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		if err != nil {
 			if _, outside := err.(nativegen.Unsupported); outside {
 				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (%v)", fn.Name.Value, err)))
+				record(fn.Name.Value, OutcomeLeft, err.Error(), nil)
 				continue
 			}
 			diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
+			record(fn.Name.Value, OutcomeLeft, err.Error(), nil)
 			continue
 		}
 		findings := asm.Check(asmFn, source, symbols)
@@ -102,6 +108,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			asmFn, err = nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
 			if err != nil {
 				diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
+				record(fn.Name.Value, OutcomeLeft, err.Error(), nil)
 				continue
 			}
 			findings = asm.Check(asmFn, source, symbols)
@@ -120,14 +127,17 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			for _, finding := range findings {
 				diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: the checker refuses the lowering of %s: %s", fn.Name.Value, finding)))
 			}
+			record(fn.Name.Value, OutcomeRefused, findings[0], nil)
 			continue
 		}
 		verdict := asm.Verify(asmFn, source, source.Body)
 		if verdict.Kind == asm.VerdictMismatch {
 			diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", "native backend: "+verdict.Message))
+			record(fn.Name.Value, OutcomeMismatch, verdict.Reason(), verdict.Callees)
 			continue
 		}
 		diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", "native backend: "+verdict.Message))
+		record(fn.Name.Value, outcomeKind(verdict.Kind), verdict.Reason(), verdict.Callees)
 		fn.NativeBacked = true
 		fn.AsmArch = asmFn.Arch // the C emitter guards the Oak body by the lane's negation
 		for name := range asmFn.Globals {
@@ -157,13 +167,18 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 				fn.NativeBacked = false
 				fn.AsmArch = ""
 				changed = true
+				for i := range outcomes {
+					if outcomes[i].Name == fn.Name.Value {
+						outcomes[i] = NativeOutcome{Name: fn.Name.Value, Kind: OutcomeLeft, Reason: "passes vectors to a callee the C backend realizes"}
+					}
+				}
 				continue
 			}
 			kept = append(kept, asmFn)
 		}
 		lowered = kept
 	}
-	return lowered, data, diagnostics
+	return lowered, data, diagnostics, outcomes
 }
 
 // nativeGlobalArrays collects the program's constant tables: top-level

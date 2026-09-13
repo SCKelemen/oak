@@ -37,6 +37,40 @@ import (
 type Verdict struct {
 	Kind    VerdictKind
 	Message string
+	// Callees are the program functions the verdict took at their Oak
+	// bodies (pathExecutor.summarizeCall): a proven verdict is relative to
+	// theirs, and a verified build (compiler.Verified) accepts the unit
+	// only when every one of them is accepted too.
+	Callees []string
+}
+
+// Reason is the verdict's reason as a phrase without the unit's name: what
+// kept a trusted unit outside the decided subset, what left a witnessed
+// unit short of proof, "" for a proven unit, and the disagreement for a
+// mismatch. The verified build's histogram counts these.
+func (v Verdict) Reason() string {
+	switch v.Kind {
+	case VerdictProven:
+		return ""
+	case VerdictTrusted:
+		if i := strings.Index(v.Message, "not verified ("); i >= 0 {
+			rest := v.Message[i+len("not verified ("):]
+			if j := strings.LastIndex(rest, ") — trusted"); j >= 0 {
+				return rest[:j]
+			}
+		}
+	case VerdictWitnessed:
+		if i := strings.Index(v.Message, "(evidence, not proof: "); i >= 0 {
+			rest := v.Message[i+len("(evidence, not proof: "):]
+			if j := strings.LastIndex(rest, ")"); j >= 0 {
+				return rest[:j]
+			}
+		}
+	}
+	if i := strings.Index(v.Message, ": "); i >= 0 {
+		return v.Message[i+2:]
+	}
+	return v.Message
 }
 
 type VerdictKind int
@@ -4485,17 +4519,22 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		if len(exec.cells) > 0 || len(lowering.writtenCells()) > 0 {
 			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (package state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
 		}
-		return verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
+		verdict := verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
+		verdict.Callees = exec.summarized
+		return verdict
 	}
 	note := ""
 	if len(exec.summarized) > 0 {
 		note = " (callees taken at their Oak bodies: " + strings.Join(exec.summarized, ", ") + ")"
 	}
 	verdict := decideEqual(fn, lowering, asmTerm, oakTerm, width, note)
+	verdict.Callees = exec.summarized
 	if verdict.Kind != VerdictProven || (len(exec.cells) == 0 && len(lowering.writtenCells()) == 0) {
 		return verdict
 	}
-	return decideCells(fn, lowering, exec, &verdict)
+	cells := decideCells(fn, lowering, exec, &verdict)
+	cells.Callees = exec.summarized
+	return cells
 }
 
 // decideCells decides, for every package-global cell either side writes,

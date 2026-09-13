@@ -111,9 +111,9 @@ func buildPackage(args []string) int {
 	output, header, leanOut, metalOut, profile, targetFlag, cpu, opt := "", "", "", "", "", "", "", ""
 	leanFloats := ""
 	metalCheck := false
-	lines, emitC, nativeBodies := false, false, false
+	lines, emitC, nativeBodies, verified := false, false, false, false
 	asmMode, linkMode := "", "c"
-	fs := newFlagSet("build", "oak build [-o out] [-target os/arch] [-cpu name] [-opt 0..3] [-emit-c] [-header out.h] [-lean out.lean] [-lean-floats bits] [-metal out.metal] [-profile default|strict] [-asm native|c] [-native] [-link c|oak] [-lines] [dir|file.oak|pattern]...")
+	fs := newFlagSet("build", "oak build [-o out] [-target os/arch] [-cpu name] [-opt 0..3] [-emit-c] [-header out.h] [-lean out.lean] [-lean-floats bits] [-metal out.metal] [-profile default|strict] [-asm native|c] [-native] [-verified] [-link c|oak] [-lines] [dir|file.oak|pattern]...")
 	fs.StringVar(&targetFlag, "target", "", "platform os/arch, e.g. linux/riscv64 or freestanding/arm (default: OAKOS/OAKARCH, else the host; docs/spec/90-backend.md section 2a)")
 	fs.StringVar(&cpu, "cpu", "", "processor for the C compiler's -mcpu, e.g. cortex_m0 (default: OAKCPU, else the target's default)")
 	fs.StringVar(&opt, "opt", "", "C compiler optimization level 0..3 (default: OAKOPT, else 1; docs/spec/05-ergonomics-and-cost.md, the mechanical backend)")
@@ -128,6 +128,7 @@ func buildPackage(args []string) int {
 	fs.StringVar(&asmMode, "asm", "", "asm units: native (Oak assembler companion object) or c (inline __asm__; default native where the target has a lane; docs/spec/94-assembler.md section 9)")
 	fs.BoolVar(&lines, "lines", false, "emit #line directives so C diagnostics point at Oak source")
 	fs.BoolVar(&nativeBodies, "native", false, "lower Oak bodies through the native backend where its subset reaches (docs/spec/94-assembler.md section 9)")
+	fs.BoolVar(&verified, "verified", false, "the verified build: every function must be lowered natively and proven equal to its Oak body, its callees included; anything else is rejected and the reasons are counted (docs/spec/94-assembler.md section 9). Implies -native")
 	fs.StringVar(&linkMode, "link", "c", "link: c (the target's C compiler links the emitted C and the companion object), oak (the Oak assembler alone realizes the natively lowered bodies: a static ELF executable on Linux, a relocatable object on a freestanding target; implies -native), or oak-image (a standalone freestanding image with Oak's start stub, for an emulator or a bare board)")
 	rest, code, stop := parseFlags(fs, args)
 	if stop {
@@ -171,7 +172,7 @@ func buildPackage(args []string) int {
 		return 2
 	}
 	for _, dir := range targets {
-		if code := buildOne(dir, output, header, leanOut, leanFloats, metalOut, profile, asmMode, linkMode, tgt, cpu, lines, emitC, nativeBodies, metalCheck, asmGiven); code != 0 {
+		if code := buildOne(dir, output, header, leanOut, leanFloats, metalOut, profile, asmMode, linkMode, tgt, cpu, lines, emitC, nativeBodies || verified, verified, metalCheck, asmGiven); code != 0 {
 			return code
 		}
 	}
@@ -179,7 +180,7 @@ func buildPackage(args []string) int {
 }
 
 // buildOne builds a single package or file.
-func buildOne(dir, output, header, leanOut, leanFloats, metalOut, profile, asmMode, linkMode string, tgt target.Target, cpu string, lines, emitC, nativeBodies, metalCheck, asmGiven bool) int {
+func buildOne(dir, output, header, leanOut, leanFloats, metalOut, profile, asmMode, linkMode string, tgt target.Target, cpu string, lines, emitC, nativeBodies, verified, metalCheck, asmGiven bool) int {
 	comp, err := compilationFor(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
@@ -191,6 +192,20 @@ func buildOne(dir, output, header, leanOut, leanFloats, metalOut, profile, asmMo
 	}
 	if nativeBodies {
 		comp = comp.WithNativeBodies()
+	}
+	if verified {
+		// The verified gate (docs/spec/94-assembler.md §9): the report is
+		// printed whatever the outcome; a rejection fails the build.
+		report, err := comp.Verified().Get()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "oak build: %v\n", err)
+			return 1
+		}
+		fmt.Fprint(os.Stderr, report.String())
+		if len(report.Rejected) != 0 {
+			fmt.Fprintf(os.Stderr, "oak build: -verified rejects %d of %d functions\n", len(report.Rejected), report.Total)
+			return 1
+		}
 	}
 	if strings.HasSuffix(output, ".c") {
 		emitC = true

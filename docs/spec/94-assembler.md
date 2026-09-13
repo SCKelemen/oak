@@ -2764,3 +2764,39 @@ runs at 0.28 ns/byte where the call tree ran at 0.85 and the C backend at
 kernel that declares some forty vector locals over its expansions. What
 would take the rest: an allocator with liveness across the whole body
 instead of declaration order within it.
+
+### 9.x The verified build (2026-09-14)
+
+`oak build -verified` is the gate the chain's audit asked for
+(`docs/notes/verification-chain-2026-09.md` §4): a build that accepts a
+function only when the native backend lowered it, the seam checker admitted
+it, and the verifier proved it equal to its Oak body — and, because a proven
+verdict is relative to the callees it took at their Oak bodies (§8, call
+summaries), only when every such callee is accepted too, to a fixpoint
+(`compiler.acceptedClosure`). Everything else is rejected with its reason:
+witnessed (evidence is not proof), trusted (the reason the verifier gave),
+mismatched, refused by the checker, left to the C backend (the backend's
+reason), or resting on a callee that is not accepted. An asm unit is
+trusted per §5 and rejected as such; a method or generic template is
+outside the lane.
+
+The report is the burn-down list. `asm.Verdict` now carries `Callees` and
+answers `Reason()` (the phrase without the unit's name); the native backend
+records a `NativeOutcome` per function (`SemanticModel.NativeReport`);
+`compiler.Verified` renders the totals by kind, the rejection reasons
+counted with names and numbers abstracted (`a call to F`, `parameter P`,
+`N bytes`), and every rejected function with its own reason. A rejection
+fails the build with exit status 1; the report is printed either way.
+
+Measured on `examples/stdlib_builder.oak` the day the gate landed:
+
+| lane | functions | accepted | rejected | of which | largest reasons |
+|---|---|---|---|---|---|
+| arm64 | 494 | 99 | 395 | 354 trusted, 32 left to C, 9 witnessed | a record result beyond one chunk 49; vector or non-integer parameters 40; a summary refusing a non-scalar callee parameter 39; the path budget 31; `strb` 25; callees returning `Result`/`Option` aggregates 62 across types; `adrl` table reads 16 |
+| rv64 | 494 | 42 | 452 | 329 trusted, 116 left to C, 7 witnessed | vector or non-integer parameters 85; a load whose width differs from the slot's store 48; a record parameter left to C 36; a record result beyond one chunk 31; a record local left to C 28; span stores 14 |
+
+So the next verifier increments, by what they unlock: aggregate call
+results (a `Result` or record beyond one chunk, 111 on arm64 between the
+callee and the caller sides), non-scalar callee parameters in summaries,
+the path budget, byte and span stores, and on rv64 the load-width rule.
+`TestE2EVerifiedGate`, `TestAcceptedClosure`, `TestAbstractReason`.
