@@ -431,7 +431,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		// code-emitting stages (compiler/inline.go), after the units are
 		// stitched so a declaration a unit realizes keeps its calls.
 		if comp.options.InlineHelpers {
-			inlineHelpers(tree.Root)
+			inlineHelpers(tree.Root, Protocols(tree))
 		}
 		env := object.NewEnvironment()
 		tc := typechecker.NewWithPlatformSizes(env, comp.options.IntSize, comp.options.PtrSize)

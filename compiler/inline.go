@@ -58,9 +58,12 @@ type inlineCandidate struct {
 }
 
 type inliner struct {
-	functions  map[string]*ast.FunctionStatement
-	candidates map[string]*inlineCandidate
-	counter    int
+	functions map[string]*ast.FunctionStatement
+	// transitions names the functions a protocol's `via` clauses name:
+	// never inlined (candidate).
+	transitions map[string]bool
+	candidates  map[string]*inlineCandidate
+	counter     int
 }
 
 // inlineHelpers rewrites every call to an inlinable helper in program. The
@@ -69,11 +72,11 @@ type inliner struct {
 // so an accessor chain (`tkind` over `tword` over `term_at` over `state`)
 // flattens to the element read it denotes. Rounds stop when a pass inlines
 // nothing new; the bound keeps a pathological program from cycling.
-func inlineHelpers(program *ast.Program) {
+func inlineHelpers(program *ast.Program, protocols []*ast.ProtocolDeclaration) {
 	if program == nil {
 		return
 	}
-	in := &inliner{functions: map[string]*ast.FunctionStatement{}, candidates: map[string]*inlineCandidate{}}
+	in := &inliner{functions: map[string]*ast.FunctionStatement{}, candidates: map[string]*inlineCandidate{}, transitions: map[string]bool{}}
 	duplicates := map[string]bool{}
 	for _, stmt := range program.Statements {
 		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.Name != nil && fn.Receiver == nil {
@@ -83,6 +86,31 @@ func inlineHelpers(program *ast.Program) {
 			in.functions[fn.Name.Value] = fn
 		}
 	}
+	// A protocol's via callables perform its transitions
+	// (docs/spec/112-protocols.md section 5a): the resource checker admits
+	// a handle's new state only inside them, so they keep their calls. The
+	// protocol lowering has moved the declarations beside the tree by now
+	// (compiler/protocols.go, Protocols); the walk covers a program that
+	// still carries them.
+	noteTransitions := func(protocol *ast.ProtocolDeclaration) {
+		for _, transition := range protocol.Transitions {
+			if transition != nil && transition.Callable != nil && transition.CallableType == nil {
+				in.transitions[transition.Callable.Value] = true
+			}
+		}
+	}
+	for _, protocol := range protocols {
+		if protocol != nil {
+			noteTransitions(protocol)
+		}
+	}
+	walkSyntax(reflect.ValueOf(program), func(node any) bool {
+		if protocol, ok := node.(*ast.ProtocolDeclaration); ok {
+			noteTransitions(protocol)
+			return false
+		}
+		return true
+	})
 	const maxRounds = 8
 	for round := 0; round < maxRounds; round++ {
 		in.candidates = map[string]*inlineCandidate{}
@@ -159,6 +187,22 @@ func (in *inliner) candidate(fn *ast.FunctionStatement) *inlineCandidate {
 	}
 	if fn.EndToken.Line <= 0 || fn.EndToken.Line-fn.Token.Line > inlineHelperLines {
 		return nil
+	}
+	// The effect analysis (compiler/effects.go) reads declared rows and
+	// forbids clauses off the call graph and follows function values into
+	// rowed parameters: a helper that declares effects or forbids, or takes
+	// a function value, keeps its calls so those facts stay visible —
+	// inlining `grow` into `mid` would erase the path `hot -> mid -> grow`,
+	// and inlining `launch(f, x)` the unrowed value flowing into `step`.
+	if len(fn.Effects) > 0 || len(fn.Forbids) > 0 || in.transitions[fn.Name.Value] {
+		return nil
+	}
+	for _, p := range fn.Parameters {
+		if p != nil && p.Type != nil {
+			if _, isFunction := p.Type.(*ast.FunctionTypeExpression); isFunction {
+				return nil
+			}
+		}
 	}
 	body, _ := functionBlock(fn)
 	if body == nil || body.Block == nil || len(body.Block.Statements) == 0 || body.Block.DeferredFrom > 0 {
@@ -564,6 +608,11 @@ func (in *inliner) expand(call *ast.InvocationExpression, cand *inlineCandidate,
 	}
 	in.counter++
 	prefix := "__inl" + strconv.Itoa(in.counter) + "_"
+	// Three name spaces under one instance prefix, kept apart by their
+	// first letters: argument temporaries `a<i>`, the result `r`, and the
+	// callee's own locals `l_<name>` — a local may itself be named `a1` or
+	// `r` (BLAKE3's quarter round names its words a1, a2), and the plain
+	// prefix once let it collide with the temporary for argument 1.
 	context := helperContext(cand.fn.Name.Token.SemanticContext, fmt.Sprintf("inline:%s:%d", cand.fn.Name.Value, in.counter))
 	rename := map[string]string{}
 	var stmts []ast.Statement
@@ -580,7 +629,7 @@ func (in *inliner) expand(call *ast.InvocationExpression, cand *inlineCandidate,
 		rename[p.Name.Value] = temp
 	}
 	for name := range cand.declared {
-		rename[name] = prefix + name
+		rename[name] = prefix + inlineLocalMark + name
 	}
 	body := cloneExpression(cand.body).(*ast.BlockExpression)
 	stampSemanticContext(reflect.ValueOf(body), context)
@@ -593,10 +642,15 @@ func (in *inliner) expand(call *ast.InvocationExpression, cand *inlineCandidate,
 	}
 	stmts = append(stmts, bodyStmts...)
 	for name := range cand.declared {
-		scope.declared[prefix+name] = true
+		scope.declared[prefix+inlineLocalMark+name] = true
 	}
 	return stmts, tail, true
 }
+
+// inlineLocalMark separates an inlined callee's locals from the
+// instance's argument temporaries (`a<i>`) and result (`r`) under the same
+// prefix: `l_` begins no temporary's name.
+const inlineLocalMark = "l_"
 
 // containsBlock reports whether an expression holds a block anywhere — a
 // match with block arms, typically. Such a value is only lowered in

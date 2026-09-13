@@ -34,7 +34,11 @@ Pt: type = struct {
 		seq  bool // whether the C must carry sequencing temporaries
 	}{
 		{"infix operands", "next(span(&s)) * 10 + next(span(&s))", 12, true},
-		{"call arguments", "pair(next(span(&s)), next(span(&s)))", 12, true},
+		// `pair` is an inlinable helper (compiler/inline.go): its arguments
+		// are hoisted into typed temporaries, one statement each in call
+		// order, so the sequencing is the statements' and no temporary of
+		// the C emitter's own is needed.
+		{"call arguments", "pair(next(span(&s)), next(span(&s)))", 12, false},
 		{"nested groups", "pair(next(span(&s)) * 10 + next(span(&s)), next(span(&s)))", 123, true},
 		{"record fields", "p: Pt = Pt { x: next(span(&s)), y: next(span(&s)) }\n  p.x * 10 + p.y", 12, true},
 		{"array elements", "a: [2]u32 = [2]u32{ next(span(&s)), next(span(&s)) }\n  a[0] * 10 + a[1]", 12, true},

@@ -414,7 +414,10 @@ the helper's element accesses (`50-borrowing.md`, "Proof through a
 helper") and neither backend emits a check for them. The transformation is
 statement-level and visible in the emitted C: the helper's statements go
 before the statement holding the call, its declared names are renamed into
-the reserved `__inl<N>_` namespace (Oak forbids shadowing), a plain
+the reserved `__inl<N>_` namespace — `__inl<N>_l_<name>` for the helper's
+locals, `__inl<N>_a<i>` for copied arguments, `__inl<N>_r` for the result,
+three spellings that cannot meet (a local named `a1` or `r` once collided
+with the temporaries) — a plain
 identifier argument substitutes for a parameter the helper never assigns
 (so the caller's facts about it apply unchanged), a scalar argument of any
 other shape is copied into a typed temporary, and the helper's tail
@@ -423,7 +426,10 @@ statement's whole value, through a typed result temporary when it is an
 operand. The pass refuses rather than reorders: nothing moves across a
 short-circuit operator, a match arm in value position, a loop condition,
 or a function literal; a call is not hoisted above a user-function call
-this pass does not inline; a helper that writes through a span parameter
+this pass does not inline; a helper that declares `effects` or `forbids`
+or takes a function value is never inlined, so the effect analysis
+(`compiler/effects.go`) keeps the call graph and the value flows it reads;
+a helper that writes through a span parameter
 is inlined only where nothing else in the statement is evaluated; a helper
 whose locals or copied arguments are not scalars, or whose tail holds a
 block, stays a call where the C form would need a block in an expression.
