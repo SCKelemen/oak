@@ -428,6 +428,45 @@ def vlmax (vlen sew lmul : Nat) : Nat := lmul * vlen / sew
 theorem vlmax_m1_e32_128 : vlmax 128 32 1 = 4 := by decide
 theorem vlmax_m2_e32_128 : vlmax 128 32 2 = 8 := by decide
 
+/-! ### Fractional LMUL (`94-assembler.md` §9, RVV 1.0 §3.4.2)
+
+The checker keeps LMUL in eighths: `mf8 = 1`, `mf4 = 2`, `mf2 = 4`,
+`m1 = 8`, …, `m8 = 64`. A fractional LMUL fills part of one register, so
+its operand group is one register and every alignment fact holds trivially
+(`groupOf`); the element width it may hold is bounded by ELEN — the
+configuration is reserved when `SEW / LMUL > ELEN` — and widening from a
+fractional LMUL doubles the eighths without leaving the single register
+until `m1`. -/
+
+/-- The register count of an operand group at `lmul8 / 8`. -/
+def groupOf (lmul8 : Nat) : Nat := if lmul8 < 8 then 1 else lmul8 / 8
+
+theorem groupOf_fractional (lmul8 : Nat) (h : lmul8 < 8) : groupOf lmul8 = 1 := by
+  simp [groupOf, h]
+
+theorem groupOf_integral : ∀ lmul8 ∈ [8, 16, 32, 64], groupOf lmul8 = lmul8 / 8 := by decide
+
+/-- VLMAX in eighths: `lmul8 * vlen / (8 * sew)`. -/
+def vlmax8 (vlen sew lmul8 : Nat) : Nat := lmul8 * vlen / (8 * sew)
+
+theorem vlmax8_mf2_e32_128 : vlmax8 128 32 4 = 2 := by decide
+theorem vlmax8_agrees (vlen sew lmul : Nat) : vlmax8 vlen sew (lmul * 8) = vlmax vlen sew lmul := by
+  unfold vlmax8 vlmax
+  rw [show lmul * 8 * vlen = 8 * (lmul * vlen) by ac_rfl]
+  exact Nat.mul_div_mul_left _ _ (by decide)
+
+/-- The configurations the checker admits: `SEW / LMUL ≤ ELEN`, that is
+`sew * 8 ≤ elen * lmul8` over eighths. -/
+def withinElen (sew elen lmul8 : Nat) : Prop := sew * 8 ≤ elen * lmul8
+
+theorem fractional_within_elen : withinElen 32 64 4 ∧ withinElen 16 64 2 ∧ withinElen 8 64 1 ∧ ¬ withinElen 64 64 4 := by
+  unfold withinElen
+  decide
+
+/-- Widening from a fractional LMUL stays in one register until `m1`: the
+wide group of `mf2` is `m1`, one register. -/
+theorem wide_group_fractional : ∀ lmul8 ∈ [1, 2, 4], groupOf (2 * lmul8) = 1 := by decide
+
 /-- A masked element is one of the vl elements: whatever the mask, the
     strip-mining bound covers it. -/
 theorem masked_access_in_bounds (len idx vlmax vl i : Nat) (hguard : idx < len)

@@ -2002,8 +2002,17 @@ group of LMUL registers aligned to LMUL (RVV 1.0 §3.4.2,
 `group_within_file`): every register of the group is read or written, so
 a group must be wholly clobbered before it is written and an unaligned
 group is a finding; mask destinations and mask sources (the comparisons'
-`vd`, `vcpop.m`'s source, `v0`) stay single registers; fractional LMUL is
-refused. **Widening (third increment).** `vwaddu`/`vwadd`/`vwsubu`/`vwsub`/
+`vd`, `vcpop.m`'s source, `v0`) stay single registers. **Fractional LMUL
+(fourth increment)**: `mf2`, `mf4`, and `mf8` are admitted — the checker
+keeps LMUL in eighths, a fractional group is one register
+(`Oak.RiscV.groupOf`), the ratio `SEW / LMUL` must stay within `ELEN = 64`
+(`e64` needs `m1`, `e32` at least `mf2`, `e16` at least `mf4`, `e8` any;
+otherwise the configuration would be reserved, `fractional_within_elen`),
+widening from a fractional LMUL doubles the eighths and stays in one
+register until `m1` (`wide_group_fractional`), and an extension's source
+group below `mf8` is refused; the differentials carry the `[]u32` sum
+loaded at `e32/mf2`, widened to `e64/m1`, and reduced there. **Widening
+(third increment).** `vwaddu`/`vwadd`/`vwsubu`/`vwsub`/
 `vwmulu`/`vwmul .vv` write `2*SEW` elements into a `2*LMUL` group,
 `vzext.vf2`/`vsext.vf2` read a half-width source group, `vnsrl.wi` reads a
 `2*LMUL` source, and `vle16.v`/`vse16.v` move 16-bit elements: each
@@ -2025,7 +2034,7 @@ across a call, width against SEW, an AVL that is not the remaining count,
 the index rewritten between the address and the count, an unclobbered
 vector register, a store into a view, an immediate past the minimum, an
 unaligned group, a mask register never written, a group not wholly
-clobbered, fractional LMUL — and the differentials carry the masked
+clobbered, `e64` at `mf2` — and the differentials carry the masked
 strip loop at LMUL=2 (the sum of the elements that differ from `k`,
 under `mu` so the accumulator's masked-off lanes stay zero).
 
@@ -2626,8 +2635,8 @@ and executable writers' tests.
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
-transliteration is checked against) and fractional-LMUL forms. The term
-language and the BDD blaster carry over unchanged.
+transliteration is checked against) and the vector floating-point forms.
+The term language and the BDD blaster carry over unchanged.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
 algorithm" to "a stated postcondition". With Oak fallback bodies landed
