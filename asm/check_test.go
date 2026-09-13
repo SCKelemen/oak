@@ -122,7 +122,10 @@ func TestCheckerFrameArrays(t *testing.T) {
 		{"base past the frame", prologue + "  add x9, sp, #8\n  cmp w0, #4\n  b.hs trap\n  ldr w0, [x9, w0, uxtw #2]\n  add sp, sp, #16\n  ret\ntrap:\n  brk #1", "past the declared 16-byte frame"},
 		{"offset outside the frame", prologue + "  add x9, sp, #8\n  ldr w0, [x9, #12]\n  add sp, sp, #16\n  ret", "outside the declared 16-byte frame"},
 		{"scale not the element", prologue + "  add x9, sp, #0\n  cmp w0, #4\n  b.hs trap\n  ldr w0, [x9, w0, uxtw #1]\n  add sp, sp, #16\n  ret\ntrap:\n  brk #1", "whole elements"},
-		{"guard against a register is no constant", prologue + "  add x9, sp, #0\n  mov w10, #4\n  cmp w0, w10\n  b.hs trap\n  ldr w0, [x9, w0, uxtw #2]\n  add sp, sp, #16\n  ret\ntrap:\n  brk #1", "without a dominating constant index guard"},
+		// A register holding a known constant (`mov w10, #4`) guards as the
+		// immediate would: the checker knows the value (constFacts) until
+		// the register is written.
+		{"guard against a register holding a constant", prologue + "  add x9, sp, #0\n  mov w10, #4\n  cmp w0, w10\n  b.hs trap\n  ldr w0, [x9, w0, uxtw #2]\n  add sp, sp, #16\n  ret\ntrap:\n  brk #1", ""},
 		// Two predecessors with different frame addresses in x9: the merge
 		// holds neither.
 		{"address lost at a merge", prologue + "  cbz w0, other\n  add x9, sp, #0\n  b join\nother:\n  add x9, sp, #8\njoin:\n  ldr w0, [x9, #4]\n  add sp, sp, #16\n  ret", "memory operands go through the declared sp frame or a bound span base"},
@@ -365,8 +368,11 @@ func TestCheckerSpanAliases(t *testing.T) {
 	}
 	cases := []struct{ name, body, want string }{
 		{"original base dies at the call", prologue + "  mov w9, #0\n  cmp w9, w20\n  b.hs trap\n  ldr w0, [x0, w9, uxtw #2]\n" + epilogue, "memory operands go through the declared sp frame or a bound span base"},
-		{"length copy overwritten", prologue + "  mov w20, #8\n  mov w9, #0\n  cmp w9, w20\n  b.hs trap\n  ldr w0, [x19, w9, uxtw #2]\n" + epilogue, "not this span's length register"},
-		{"guard against another register", prologue + "  mov w9, #0\n  mov w0, #4\n  cmp w9, w0\n  b.hs trap\n  ldr w0, [x19, w9, uxtw #2]\n" + epilogue, "not this span's length register"},
+		// The overwritten copy holds a known constant, so the compare is a
+		// constant guard — which proves nothing about a span with no
+		// proven minimum length.
+		{"length copy overwritten", prologue + "  mov w20, #8\n  mov w9, #0\n  cmp w9, w20\n  b.hs trap\n  ldr w0, [x19, w9, uxtw #2]\n" + epilogue, "the span's proven minimum length is 0"},
+		{"guard against another register", prologue + "  mov w9, #0\n  mov w0, #4\n  cmp w9, w0\n  b.hs trap\n  ldr w0, [x19, w9, uxtw #2]\n" + epilogue, "the span's proven minimum length is 0"},
 		{"length guard through the copy", prologue + "  cmp w20, #1\n  b.lo trap\n  ldr w0, [x19]\n" + epilogue, ""},
 	}
 	for _, tc := range cases {

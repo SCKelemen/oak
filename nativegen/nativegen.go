@@ -1085,7 +1085,15 @@ type generator struct {
 	// slots once those run out; regs maps a variable to its register.
 	regs       map[string]int
 	usedCallee int
-	saveArea   int64 // bytes reserved for the callee-saved pairs (fixed once any variable exists)
+	// Registers and slots of variables whose scope has closed, reused by
+	// later declarations (an inlined block's locals die with the block):
+	// callee-saved general registers, callee-saved vector registers (as
+	// vecBase+n), eight-byte slots, sixteen-byte slots.
+	freeCallee  []int
+	freeCalleeV []int
+	freeSlots8  []int64
+	freeSlots16 []int64
+	saveArea    int64 // bytes reserved for the callee-saved pairs (fixed once any variable exists)
 	// The vector file for floating point: scratch and callee-saved pools,
 	// and the d8–d15 save area (fixed once the function mentions a float).
 	freeF       []int
@@ -1097,7 +1105,15 @@ type generator struct {
 	spill       map[int]int64 // scratch register → its spill slot offset
 	free        []int         // free scratch registers
 	ipScratch   int           // x16/x17 taken as overflow scratch (overflowScratch)
-	live        []int         // allocated scratch registers, allocation order
+	// In a leaf (no call) the argument registers are homes: a scalar
+	// parameter stays where it arrived, and the argument registers no
+	// parameter occupies hold locals before any callee-saved register is
+	// taken (leafHomes, in order; argHomes names each parameter's). Nothing
+	// need be saved for them, and the prologue moves nothing.
+	leafHomes []int
+	argHomes  map[string]int
+	homesUsed map[int]bool // every argument register handed out as a home
+	live      []int        // allocated scratch registers, allocation order
 	// defined marks the live scratch registers an emitted instruction has
 	// written: a call spills exactly those (a register allocated for an
 	// enclosing expression's result and not yet written holds nothing, and
@@ -1113,6 +1129,11 @@ type generator struct {
 	line      int
 	trap      string // the trap block's label (division by zero, shift overflow, assert)
 	usedTrap  bool
+	// loopFacts: what the enclosing while conditions prove about a span
+	// and an index variable inside their bodies (nativegen/simd.go
+	// vecGuardedIndex): `len(v) >= N && i <= len(v) - N` proves
+	// i + N <= len(v) until i is assigned.
+	loopFacts []loopFact
 	// terminated: an unconditional jump was emitted and no label has
 	// followed — instructions there are unreachable and are not emitted (the
 	// checker refuses them).
@@ -1139,6 +1160,7 @@ type slotBinding struct {
 	arr    *arrayLocal  // an owned array local (offset/typ/reg unused)
 	rec    *recordLocal // an owned record local (offset/typ/reg unused)
 	sp     *span        // a local span or view, register-resident
+	freed  bool         // register or slot already returned after the last use
 }
 
 const scratchLow, scratchHigh = 9, 15
@@ -1147,6 +1169,10 @@ const calleeLow, calleeHigh = 19, 28
 // The vector file: v16–v23 scratch (caller-saved), v8–v15 for float
 // variables (callee-saved: their d views are saved and restored).
 const vecScratchLow, vecScratchHigh = 16, 31
+
+// vecTempReserve is how many caller-saved vector registers stay scratch
+// when a function without calls takes the rest for its vector locals.
+const vecTempReserve = 4
 const vecCalleeLow, vecCalleeHigh = 8, 15
 
 // Lane names the assembler lane a body is lowered on and the target facts
@@ -1200,6 +1226,23 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
+	// The vector helpers the body calls are expanded first (nativegen/inline.go);
+	// the lowering sees the expanded body, the verifier the original. An
+	// expansion the lowering refuses falls back to the body as written.
+	if body := inlineBody(fn, functions); body != fn.Body {
+		expanded := *fn
+		expanded.Body = body
+		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, tc, elide); err == nil {
+			return out, nil
+		} else if _, outside := err.(Unsupported); !outside {
+			return nil, err
+		}
+	}
+	return compileArm64Body(fn, functions, records, adts, constants, tc, elide)
+}
+
+// compileArm64Body lowers one function body as given.
+func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, elide bool) (*asm.Function, error) {
 	if len(fn.Parameters) > 8 {
 		return nil, unsupported("more than eight parameters")
 	}
@@ -1209,7 +1252,10 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	// pair is bound, and the checker's span facts flow in text order — a
 	// result placed in one arm would end the span before a later arm
 	// walks it.
-	parkSpans := mentionsCall(fn.Body) || returnsValue(fn)
+	g.hasCalls = mentionsCall(fn.Body)
+	g.argHomes = map[string]int{}
+	g.homesUsed = map[int]bool{}
+	parkSpans := g.hasCalls || returnsValue(fn)
 	if hasVariables(fn) || parkSpans {
 		g.saveArea = 8 * (calleeHigh - calleeLow + 1)
 	}
@@ -1229,8 +1275,11 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 		if p.Variadic {
 			return nil, unsupported("variadic parameter %s", p.Name.Value)
 		}
-		if _, ok := scalarOf(p.Type); ok {
-			nextReg++
+		if s, ok := scalarOf(p.Type); ok {
+			if !s.isFloat && !s.isVec {
+				g.argHomes[p.Name.Value] = nextReg
+				nextReg++
+			}
 			continue
 		}
 		if name, isRecord := g.recordTypeName(p.Type); isRecord {
@@ -1280,7 +1329,16 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	if nextReg > 8 {
 		return nil, unsupported("the parameters exhaust the eight argument registers")
 	}
-	g.hasCalls = mentionsCall(fn.Body)
+	if !g.hasCalls {
+		// x0 (and x1) are left out: the result's registers, written at the
+		// end, whatever the result's type.
+		for r := nextReg; r < 8; r++ {
+			if r <= 1 {
+				continue
+			}
+			g.leafHomes = append(g.leafHomes, r)
+		}
+	}
 	if fn.ReturnType != nil && fn.ReturnType.String() == "never" {
 		// The function leaves by an exception return, never by ret.
 		g.never = true
@@ -1319,7 +1377,11 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	g.pushScope()
 	for _, p := range fn.Parameters {
 		if s, ok := scalarOf(p.Type); ok {
-			g.declare(p.Name.Value, s)
+			if home, isHome := g.argHomes[p.Name.Value]; isHome && !g.hasCalls {
+				g.declareAt(p.Name.Value, s, home)
+			} else {
+				g.declare(p.Name.Value, s)
+			}
 		}
 		if rp, isRecord := g.recordParams[p.Name.Value]; isRecord {
 			if rp.inPlace {
@@ -1424,7 +1486,9 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 		}
 		out.Bindings = append(out.Bindings, asm.Binding{Register: bound, Param: p.Name.Value, Line: fn.Token.Line})
 		prologue = append(prologue, g.normalizeInto(i, s)...)
-		prologue = append(prologue, g.storeVar(p.Name.Value, i))
+		if v, inReg := g.regs[p.Name.Value]; !inReg || v != i {
+			prologue = append(prologue, g.storeVar(p.Name.Value, i))
+		}
 	}
 	// The loop header a tail self-call re-enters: after the parameters are
 	// in their slots.
@@ -1463,6 +1527,15 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 			}
 		}
 		out.Clobbers = append(out.Clobbers, xr(29), xr(30)) // saved by the prologue's stp, restored by ldp
+	} else {
+		// A leaf writes the argument registers that are homes (a parameter
+		// assigned, a local placed there).
+		integerResult := g.result != nil && !g.result.isFloat && !g.result.isVec
+		for r := 0; r <= 7; r++ {
+			if g.homesUsed[r] && !(integerResult && r == 0) {
+				out.Clobbers = append(out.Clobbers, xr(r))
+			}
+		}
 	}
 	if g.usedX8 {
 		out.Clobbers = append(out.Clobbers, xr(8))
@@ -2035,6 +2108,7 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 				if err != nil {
 					return err
 				}
+				g.emit("mov", xr(out), xr(31)) // defined before the arms (see resultExpr)
 				outs = append(outs, out)
 			}
 			if err := g.resultRecordInto(e, outs); err != nil {
@@ -2070,7 +2144,7 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 			g.pushScope()
 			defer g.popScope()
 			stmts := e.Block.Statements
-			if err := g.lowerStatements(stmts[:len(stmts)-1], false, ""); err != nil {
+			if err := g.lowerStatementsBefore(stmts[:len(stmts)-1], stmts[len(stmts)-1]); err != nil {
 				return err
 			}
 			if es, ok := stmts[len(stmts)-1].(*ast.ExpressionStatement); ok && !es.Discard {
@@ -2135,7 +2209,9 @@ func (g *generator) resultRecordInto(expr ast.Expression, outs []int) error {
 			g.pushScope()
 			defer g.popScope()
 			stmts := e.Block.Statements
-			if err := g.lowerStatements(stmts[:len(stmts)-1], false, ""); err != nil {
+			// The trailing expression still reads the block's locals: its
+			// uses count before any register is released (nativegen/liveness.go).
+			if err := g.lowerStatementsBefore(stmts[:len(stmts)-1], stmts[len(stmts)-1]); err != nil {
 				return err
 			}
 			if es, ok := stmts[len(stmts)-1].(*ast.ExpressionStatement); ok && !es.Discard {
@@ -2503,6 +2579,20 @@ func (g *generator) popScope() {
 	top := g.scopes[len(g.scopes)-1]
 	g.scopes = g.scopes[:len(g.scopes)-1]
 	for name := range top {
+		// The variable's register or slot returns to the pool for the
+		// declarations that follow.
+		if b := top[name]; b.arr == nil && b.rec == nil && b.sp == nil && !b.freed {
+			switch {
+			case b.reg >= vecBase:
+				g.freeCalleeV = append(g.freeCalleeV, b.reg)
+			case b.reg >= 0:
+				g.freeCallee = append(g.freeCallee, b.reg)
+			case b.offset >= 0 && b.typ.isVec:
+				g.freeSlots16 = append(g.freeSlots16, b.offset)
+			case b.offset >= 0:
+				g.freeSlots8 = append(g.freeSlots8, b.offset)
+			}
+		}
 		delete(g.slots, name)
 		delete(g.types, name)
 		delete(g.regs, name)
@@ -3045,10 +3135,20 @@ func (g *generator) declare(name string, s scalar) int64 {
 		// makes no call (a callee may clobber their upper halves), else a
 		// sixteen-byte, sixteen-aligned frame slot.
 		g.usedFloat = true
-		if !g.hasCalls && g.usedCalleeV < vecCalleeHigh-vecCalleeLow+1 {
+		switch {
+		case !g.hasCalls && len(g.freeCalleeV) > 0:
+			r, g.freeCalleeV = g.freeCalleeV[len(g.freeCalleeV)-1], g.freeCalleeV[:len(g.freeCalleeV)-1]
+		case !g.hasCalls && g.usedCalleeV < vecCalleeHigh-vecCalleeLow+1:
 			r = vecBase + vecCalleeLow + g.usedCalleeV
 			g.usedCalleeV++
-		} else {
+		case !g.hasCalls && len(g.freeF) > vecTempReserve:
+			// No call clobbers the caller-saved vector registers, so a
+			// function without calls keeps locals in them too, leaving the
+			// deepest expression its temporaries.
+			r, g.freeF = g.freeF[0], g.freeF[1:]
+		case len(g.freeSlots16) > 0:
+			offset, g.freeSlots16 = g.freeSlots16[len(g.freeSlots16)-1], g.freeSlots16[:len(g.freeSlots16)-1]
+		default:
 			if g.nslots%2 != 0 {
 				g.nslots++
 			}
@@ -3057,23 +3157,47 @@ func (g *generator) declare(name string, s scalar) int64 {
 		}
 	} else if s.isFloat {
 		g.usedFloat = true
-		if g.usedCalleeV < vecCalleeHigh-vecCalleeLow+1 {
+		switch {
+		case len(g.freeCalleeV) > 0:
+			r, g.freeCalleeV = g.freeCalleeV[len(g.freeCalleeV)-1], g.freeCalleeV[:len(g.freeCalleeV)-1]
+		case g.usedCalleeV < vecCalleeHigh-vecCalleeLow+1:
 			r = vecBase + vecCalleeLow + g.usedCalleeV
 			g.usedCalleeV++
-		} else {
+		case len(g.freeSlots8) > 0:
+			offset, g.freeSlots8 = g.freeSlots8[len(g.freeSlots8)-1], g.freeSlots8[:len(g.freeSlots8)-1]
+		default:
 			offset = 8 * g.nslots
 			g.nslots++
 		}
-	} else if g.usedCallee < calleeHigh-calleeLow+1 {
-		r = calleeLow + g.usedCallee
-		g.usedCallee++
+	} else if !g.hasCalls && len(g.leafHomes) > 0 {
+		r = g.leafHomes[0]
+		g.leafHomes = g.leafHomes[1:]
+		g.homesUsed[r] = true
 	} else {
-		offset = 8 * g.nslots
-		g.nslots++
+		switch {
+		case len(g.freeCallee) > 0:
+			r, g.freeCallee = g.freeCallee[len(g.freeCallee)-1], g.freeCallee[:len(g.freeCallee)-1]
+		case g.usedCallee < calleeHigh-calleeLow+1:
+			r = calleeLow + g.usedCallee
+			g.usedCallee++
+		case len(g.freeSlots8) > 0:
+			offset, g.freeSlots8 = g.freeSlots8[len(g.freeSlots8)-1], g.freeSlots8[:len(g.freeSlots8)-1]
+		default:
+			offset = 8 * g.nslots
+			g.nslots++
+		}
 	}
 	g.slots[name], g.types[name], g.regs[name] = offset, s, r
 	g.scopes[len(g.scopes)-1][name] = slotBinding{offset: offset, typ: s, reg: r}
 	return offset
+}
+
+// declareAt binds a scalar variable to a given register: a leaf's
+// parameter in the argument register it arrived in.
+func (g *generator) declareAt(name string, s scalar, r int) {
+	g.homesUsed[r] = true
+	g.slots[name], g.types[name], g.regs[name] = -1, s, r
+	g.scopes[len(g.scopes)-1][name] = slotBinding{offset: -1, typ: s, reg: r}
 }
 
 // slotMem is the frame address of a slot: past the [x29, x30] pair and the
@@ -3353,151 +3477,25 @@ func (g *generator) moveResult(r int, s scalar) {
 // lowerStatements lowers a block; in a function body the last expression
 // statement is the result.
 func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, retLabel string) error {
+	return g.lowerStatementList(stmts, functionBody, retLabel, nil)
+}
+
+// lowerStatementsBefore lowers a list whose scope continues into `trailing`
+// (a block's result expression): a local the trailing node mentions is
+// not released within the list.
+func (g *generator) lowerStatementsBefore(stmts []ast.Statement, trailing ast.Node) error {
+	return g.lowerStatementList(stmts, false, "", trailing)
+}
+
+func (g *generator) lowerStatementList(stmts []ast.Statement, functionBody bool, retLabel string, trailing ast.Node) error {
+	lastUse := lastUses(stmts, trailing)
 	for i, stmt := range stmts {
 		last := functionBody && i == len(stmts)-1
 		g.line = statementLine(stmt)
-		switch s := stmt.(type) {
-		case *ast.VariableDeclaration:
-			if elem, length, isArray := arrayOf(s.Type); isArray {
-				if err := g.lowerArrayDeclaration(s, elem, length); err != nil {
-					return err
-				}
-				continue
-			}
-			if s.Type != nil && g.isArrayType(s.Type) {
-				_, elemLayout, length, err := g.arrayTypeOf(s.Type)
-				if err != nil {
-					return err
-				}
-				if err := g.lowerRecordArrayDeclaration(s, elemLayout, length); err != nil {
-					return err
-				}
-				continue
-			}
-			if typeName, isRecord := g.recordTypeName(s.Type); isRecord {
-				if err := g.lowerRecordDeclaration(s, typeName); err != nil {
-					return err
-				}
-				continue
-			}
-			if target, isSpan := g.spanTypeOf(s.Type); isSpan {
-				if err := g.lowerSpanDeclaration(s, target); err != nil {
-					return err
-				}
-				continue
-			}
-			if s.Value == nil {
-				return unsupported("a local without an initializer")
-			}
-			var typ scalar
-			if s.Type != nil {
-				t, ok := scalarOf(s.Type)
-				if !ok {
-					return unsupported("a local of type %s", s.Type.String())
-				}
-				typ = t
-			} else {
-				t, err := g.typeOf(s.Value, nil)
-				if err != nil {
-					return err
-				}
-				typ = t
-			}
-			r, err := g.expr(s.Value, &typ)
-			if err != nil {
-				return err
-			}
-			g.declare(s.Name.Value, typ)
-			g.assignVar(s.Name.Value, r)
-		case *ast.AssignmentStatement:
-			if dst, isRecord := g.records[s.Name.Value]; isRecord {
-				// `q = p` / `q = f(p)` / `q = .Some(x)`: a whole-record copy.
-				from, err := g.recordValueAs(s.Value, dst.layout)
-				if err != nil {
-					return err
-				}
-				if from.layout != dst.layout {
-					return unsupported("an assignment of a %s to the %s %s", from.layout.name, dst.layout.name, s.Name.Value)
-				}
-				if err := g.copyRecord(dst, from); err != nil {
-					return err
-				}
-				g.releaseTemps(from.temps)
-				continue
-			}
-			typ, ok := g.types[s.Name.Value]
-			if !ok {
-				return unsupported("an assignment to %s", s.Name.Value)
-			}
-			r, err := g.expr(s.Value, &typ)
-			if err != nil {
-				return err
-			}
-			g.assignVar(s.Name.Value, r)
-		case *ast.IndexAssignmentStatement:
-			if err := g.elementStore(s); err != nil {
-				return err
-			}
-		case *ast.WhileStatement:
-			if err := g.lowerWhile(s); err != nil {
-				return err
-			}
-		case *ast.IfStatement:
-			if err := g.lowerIf(s); err != nil {
-				return err
-			}
-		case *ast.BreakStatement:
-			if len(g.loops) == 0 {
-				return unsupported("break outside a loop")
-			}
-			g.emit("b", asm.Symbol{Name: g.loops[len(g.loops)-1]})
-		case *ast.BlockStatement:
-			g.pushScope()
-			err := g.lowerStatements(s.Statements, false, "")
-			g.popScope()
-			if err != nil {
-				return err
-			}
-		case *ast.ExpressionStatement:
-			if last && !s.Discard {
-				if g.resultRecord != nil {
-					if err := g.resultRecordExpr(s.Expression); err != nil {
-						return err
-					}
-					continue
-				}
-				if g.result == nil {
-					// A unit function whose last statement is an expression:
-					// a call, an assert, or a conditional or match in
-					// statement position.
-					if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
-						if err := g.lowerConditionalStatement(match); err != nil {
-							return err
-						}
-						continue
-					}
-					if err := g.effect(s.Expression); err != nil {
-						return err
-					}
-					continue
-				}
-				if err := g.resultExpr(s.Expression); err != nil {
-					return err
-				}
-				continue
-			}
-			if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
-				if err := g.lowerConditionalStatement(match); err != nil {
-					return err
-				}
-				continue
-			}
-			if err := g.effect(s.Expression); err != nil {
-				return err
-			}
-		default:
-			return unsupported("%T", stmt)
+		if err := g.lowerStatement(stmt, last, retLabel); err != nil {
+			return err
 		}
+		g.releaseDead(lastUse, i)
 	}
 	if functionBody && (g.result != nil || g.resultRecord != nil) {
 		if len(stmts) == 0 {
@@ -3506,6 +3504,152 @@ func (g *generator) lowerStatements(stmts []ast.Statement, functionBody bool, re
 		if es, ok := stmts[len(stmts)-1].(*ast.ExpressionStatement); !ok || es.Discard {
 			return unsupported("a body whose last statement is not its result")
 		}
+	}
+	return nil
+}
+
+// lowerStatement lowers one statement of a block; last marks the function
+// body's result statement.
+func (g *generator) lowerStatement(stmt ast.Statement, last bool, retLabel string) error {
+	switch s := stmt.(type) {
+	case *ast.VariableDeclaration:
+		if elem, length, isArray := arrayOf(s.Type); isArray {
+			if err := g.lowerArrayDeclaration(s, elem, length); err != nil {
+				return err
+			}
+			return nil
+		}
+		if s.Type != nil && g.isArrayType(s.Type) {
+			_, elemLayout, length, err := g.arrayTypeOf(s.Type)
+			if err != nil {
+				return err
+			}
+			if err := g.lowerRecordArrayDeclaration(s, elemLayout, length); err != nil {
+				return err
+			}
+			return nil
+		}
+		if typeName, isRecord := g.recordTypeName(s.Type); isRecord {
+			if err := g.lowerRecordDeclaration(s, typeName); err != nil {
+				return err
+			}
+			return nil
+		}
+		if target, isSpan := g.spanTypeOf(s.Type); isSpan {
+			if err := g.lowerSpanDeclaration(s, target); err != nil {
+				return err
+			}
+			return nil
+		}
+		if s.Value == nil {
+			return unsupported("a local without an initializer")
+		}
+		var typ scalar
+		if s.Type != nil {
+			t, ok := scalarOf(s.Type)
+			if !ok {
+				return unsupported("a local of type %s", s.Type.String())
+			}
+			typ = t
+		} else {
+			t, err := g.typeOf(s.Value, nil)
+			if err != nil {
+				return err
+			}
+			typ = t
+		}
+		r, err := g.expr(s.Value, &typ)
+		if err != nil {
+			return err
+		}
+		g.declare(s.Name.Value, typ)
+		g.assignVar(s.Name.Value, r)
+	case *ast.AssignmentStatement:
+		if dst, isRecord := g.records[s.Name.Value]; isRecord {
+			// `q = p` / `q = f(p)` / `q = .Some(x)`: a whole-record copy.
+			from, err := g.recordValueAs(s.Value, dst.layout)
+			if err != nil {
+				return err
+			}
+			if from.layout != dst.layout {
+				return unsupported("an assignment of a %s to the %s %s", from.layout.name, dst.layout.name, s.Name.Value)
+			}
+			if err := g.copyRecord(dst, from); err != nil {
+				return err
+			}
+			g.releaseTemps(from.temps)
+			return nil
+		}
+		typ, ok := g.types[s.Name.Value]
+		if !ok {
+			return unsupported("an assignment to %s", s.Name.Value)
+		}
+		r, err := g.expr(s.Value, &typ)
+		if err != nil {
+			return err
+		}
+		g.assignVar(s.Name.Value, r)
+		g.killLoopFacts(s.Name.Value)
+	case *ast.IndexAssignmentStatement:
+		if err := g.elementStore(s); err != nil {
+			return err
+		}
+	case *ast.WhileStatement:
+		if err := g.lowerWhile(s); err != nil {
+			return err
+		}
+	case *ast.IfStatement:
+		if err := g.lowerIf(s); err != nil {
+			return err
+		}
+	case *ast.BreakStatement:
+		if len(g.loops) == 0 {
+			return unsupported("break outside a loop")
+		}
+		g.emit("b", asm.Symbol{Name: g.loops[len(g.loops)-1]})
+	case *ast.BlockStatement:
+		g.pushScope()
+		err := g.lowerStatements(s.Statements, false, "")
+		g.popScope()
+		if err != nil {
+			return err
+		}
+	case *ast.ExpressionStatement:
+		if last && !s.Discard {
+			if g.resultRecord != nil {
+				if err := g.resultRecordExpr(s.Expression); err != nil {
+					return err
+				}
+				return nil
+			}
+			if g.result == nil {
+				// A unit function whose last statement is an expression:
+				// a call, an assert, or a conditional or match in
+				// statement position.
+				if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
+					return g.lowerConditionalStatement(match)
+				}
+				if err := g.effect(s.Expression); err != nil {
+					return err
+				}
+				return nil
+			}
+			if err := g.resultExpr(s.Expression); err != nil {
+				return err
+			}
+			return nil
+		}
+		if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
+			if err := g.lowerConditionalStatement(match); err != nil {
+				return err
+			}
+			return nil
+		}
+		if err := g.effect(s.Expression); err != nil {
+			return err
+		}
+	default:
+		return unsupported("%T", stmt)
 	}
 	return nil
 }
@@ -3572,9 +3716,12 @@ func (g *generator) lowerWhile(loop *ast.WhileStatement) error {
 		return err
 	}
 	g.loops = append(g.loops, end)
+	facts := len(g.loopFacts)
+	g.loopFacts = append(g.loopFacts, loopFactsOf(loop.Condition)...)
 	g.pushScope()
 	err := g.lowerStatements(loop.Body.Statements, false, "")
 	g.popScope()
+	g.loopFacts = g.loopFacts[:facts]
 	g.loops = g.loops[:len(g.loops)-1]
 	if err != nil {
 		return err
@@ -3669,10 +3816,58 @@ var inverseCondition = map[string]string{"eq": "ne", "ne": "eq", "lo": "hs", "hs
 // verifier's loop recognizer read.
 func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFalse bool) error {
 	if infix, ok := expr.(*ast.InfixExpression); ok {
+		// Short-circuit connectives branch per operand, so each comparison
+		// keeps the `cmp; b.cond` shape whose facts the checker reads
+		// (a loop guard `len(v) >= N && i <= len(v) - N` proves the body's
+		// vector accesses).
+		switch infix.Operator {
+		case "&&":
+			if jumpIfFalse {
+				if err := g.conditionBranch(infix.Left, target, true); err != nil {
+					return err
+				}
+				return g.conditionBranch(infix.Right, target, true)
+			}
+			skip := g.newLabel("and")
+			if err := g.conditionBranch(infix.Left, skip, true); err != nil {
+				return err
+			}
+			if err := g.conditionBranch(infix.Right, target, false); err != nil {
+				return err
+			}
+			g.label(skip)
+			return nil
+		case "||":
+			if !jumpIfFalse {
+				if err := g.conditionBranch(infix.Left, target, false); err != nil {
+					return err
+				}
+				return g.conditionBranch(infix.Right, target, false)
+			}
+			skip := g.newLabel("or")
+			if err := g.conditionBranch(infix.Left, skip, false); err != nil {
+				return err
+			}
+			if err := g.conditionBranch(infix.Right, target, true); err != nil {
+				return err
+			}
+			g.label(skip)
+			return nil
+		}
 		if codes, isComparison := conditionCodes[infix.Operator]; isComparison {
 			if operand, err := g.operandType(infix); err == nil && !operand.isFloat {
 				left, leftOK := g.simpleOperand(infix.Left, operand, false)
 				right, rightOK := g.simpleOperand(infix.Right, operand, true)
+				computed := -1
+				if leftOK && !rightOK {
+					// A computed right operand (`len(v) - u32(N)`): into a
+					// scratch, then the same compare-and-branch.
+					r, err := g.expr(infix.Right, &operand)
+					if err != nil {
+						return err
+					}
+					computed, right, rightOK = r, reg(r, operand), true
+				}
 				if leftOK && rightOK {
 					code := codes[0]
 					if operand.signed {
@@ -3683,6 +3878,9 @@ func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFa
 					}
 					g.emit("cmp", left, right)
 					g.branch(code, target)
+					if computed >= 0 {
+						g.release(computed)
+					}
 					return nil
 				}
 			}
@@ -3894,12 +4092,14 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 		g.pushScope()
 		defer g.popScope()
 		stmts := e.Block.Statements
-		if err := g.lowerStatements(stmts[:len(stmts)-1], false, ""); err != nil {
-			return 0, err
-		}
 		es, ok := stmts[len(stmts)-1].(*ast.ExpressionStatement)
 		if !ok {
 			return 0, unsupported("a block whose last statement is not an expression")
+		}
+		// The result still mentions the block's locals: their last use is
+		// past the statements lowered here.
+		if err := g.lowerStatementsBefore(stmts[:len(stmts)-1], es); err != nil {
+			return 0, err
 		}
 		return g.expr(es.Expression, &typ)
 	}
@@ -4010,7 +4210,9 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		g.emit("mov", wr(out), wr(l))
+		if !g.retargetLast(l, out) {
+			g.emit("mov", wr(out), wr(l))
+		}
 		g.release(l)
 		if e.Operator == "&&" {
 			g.emit("cbz", wr(out), asm.Symbol{Name: end})
@@ -4021,7 +4223,9 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		g.emit("mov", wr(out), wr(rr))
+		if !g.retargetLast(rr, out) {
+			g.emit("mov", wr(out), wr(rr))
+		}
 		g.release(rr)
 		g.label(end)
 		return out, nil
@@ -4080,6 +4284,28 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 	}
 	if mnemonic, direct := directArithmetic[e.Operator]; direct && !typ.isFloat && !typ.isVec {
 		return g.directInfix(e, typ, mnemonic)
+	}
+	if (e.Operator == "<<" || e.Operator == ">>") && !typ.signed && !typ.isFloat && !typ.isVec {
+		if count, isConst := constantValue(e.Right); isConst && count >= 0 && count < int64(typ.bits) {
+			// A constant-count shift reads its operand where it lies.
+			l, lfixed, err := g.operand(e.Left, typ)
+			if err != nil {
+				return 0, err
+			}
+			out := l
+			if lfixed {
+				if out, err = g.alloc(typ); err != nil {
+					return 0, err
+				}
+			}
+			op := "lsl"
+			if e.Operator == ">>" {
+				op = "lsr"
+			}
+			g.emit(op, reg(out, typ), reg(l, typ), imm(count))
+			g.normalize(out, typ)
+			return out, nil
+		}
 	}
 	l, err := g.expr(e.Left, &typ)
 	if err != nil {
@@ -4872,6 +5098,13 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 		g.emit("fmov", reg(out, *resultType), reg(vecBase, *resultType))
 	} else {
 		g.emit("mov", reg(out, *resultType), reg(0, *resultType))
+		if !resultType.isBool {
+			// AAPCS64 leaves the bits above a narrow result unspecified, as
+			// it does above a narrow argument: the caller normalizes, and
+			// the verifier's call summary holds it to that (a fresh
+			// unknown above the result's width).
+			g.normalize(out, *resultType)
+		}
 	}
 	return out, nil
 }
@@ -5113,6 +5346,24 @@ func (g *generator) guardedIndexAt(sp span, index ast.Expression, tok *token.Tok
 			}
 			g.elided++
 			return r, nil
+		}
+	}
+	if ident, isIdent := index.(*ast.Identifier); isIdent && tok != nil {
+		// An index that is a register variable of unsigned 32-bit type:
+		// the guard compares the variable's own register and the access
+		// indexes by it — no copy (the checker keys its fact on the
+		// compared register, whichever it is).
+		if v, inReg := g.regs[ident.Value]; inReg && v >= 0 && v < vecBase {
+			if t, ok := g.types[ident.Value]; ok && !t.signed && !t.isBool && !t.isFloat && !t.isVec && !t.wide() {
+				g.usedTrap = true
+				if sp.frameLen > 0 && sp.frameLen <= maxCmpImmediate {
+					g.emit("cmp", wr(v), imm(sp.frameLen))
+				} else {
+					g.emit("cmp", wr(v), wr(sp.lenReg))
+				}
+				g.branch("hs", g.trap)
+				return -v - 2, nil
+			}
 		}
 	}
 	r, err := g.indexValue(index)
@@ -5394,14 +5645,86 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 	return r, nil
 }
 
-// elementStore lowers `v[i] = e` through a writable span.
-func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
-	if s.Target.Dot {
+// placeStore lowers `p.f = e` and `pool[i].f = e`. When the value calls,
+// it is evaluated before the place: an element address computed first
+// would be held across the call, spilled and reloaded, and the checker
+// cannot carry a region through a spill (docs/spec/94-assembler.md §9).
+// The place is computed once to learn its type — that computation is
+// rolled back — then again after the value.
+func (g *generator) placeStore(s *ast.IndexAssignmentStatement) error {
+	if !mentionsCall(s.Value) {
 		target, err := g.placeOf(s.Target)
 		if err != nil {
 			return err
 		}
 		return g.storeToPlace(target, s)
+	}
+	mark := len(g.items)
+	probe, err := g.placeOf(s.Target)
+	if err != nil {
+		return err
+	}
+	g.items = g.items[:mark]
+	switch {
+	case probe.sc != nil:
+		g.releaseTemps(probe.sc.temps)
+		if probe.sc.readOnly {
+			return unsupported("a store into %s through a read-only view", s.Target.String())
+		}
+		typ := probe.sc.typ
+		value, err := g.expr(s.Value, &typ)
+		if err != nil {
+			return err
+		}
+		target, err := g.placeOf(s.Target)
+		if err != nil {
+			return err
+		}
+		if target.sc == nil {
+			return unsupported("the place %s changed shape", s.Target.String())
+		}
+		if err := g.fieldStore(target.sc, value); err != nil {
+			return err
+		}
+		g.release(value)
+		g.releaseTemps(target.sc.temps)
+		return nil
+	case probe.rec != nil:
+		g.releaseTemps(probe.rec.temps)
+		if probe.rec.readOnly {
+			return unsupported("a store into %s through a read-only view", s.Target.String())
+		}
+		layout := probe.rec.layout
+		src, err := g.recordValueAs(s.Value, layout)
+		if err != nil {
+			return err
+		}
+		if src.layout != layout {
+			return unsupported("a %s stored into %s (a %s)", src.layout.name, s.Target.String(), layout.name)
+		}
+		target, err := g.placeOf(s.Target)
+		if err != nil {
+			return err
+		}
+		if target.rec == nil {
+			return unsupported("the place %s changed shape", s.Target.String())
+		}
+		err = g.copyBytes(target.rec.loc(), src.loc(), layout.size)
+		g.releaseTemps(src.temps)
+		g.releaseTemps(target.rec.temps)
+		return err
+	}
+	target, err := g.placeOf(s.Target)
+	if err != nil {
+		return err
+	}
+	return g.storeToPlace(target, s)
+}
+
+// elementStore lowers `v[i] = e` through a writable span.
+func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
+	if s.Target.Dot {
+		return g.placeStore(s)
 	}
 	if layout := g.recordArrayElementLayout(s.Target.Left); layout != nil {
 		// `pool[i] = r`: a record element replaced.
@@ -5502,6 +5825,10 @@ func (g *generator) resultExpr(expr ast.Expression) error {
 			if err != nil {
 				return err
 			}
+			// Defined before the arms: an arm that calls before writing it
+			// spills it, and a spill of a never-written register is a read
+			// the checker and the verifier refuse.
+			g.emit("mov", reg(out, *g.result), zeroReg(*g.result))
 			if err := g.resultInto(e, out); err != nil {
 				return err
 			}
@@ -5551,7 +5878,7 @@ func (g *generator) resultExpr(expr ast.Expression) error {
 			g.pushScope()
 			defer g.popScope()
 			stmts := e.Block.Statements
-			if err := g.lowerStatements(stmts[:len(stmts)-1], false, ""); err != nil {
+			if err := g.lowerStatementsBefore(stmts[:len(stmts)-1], stmts[len(stmts)-1]); err != nil {
 				return err
 			}
 			if es, ok := stmts[len(stmts)-1].(*ast.ExpressionStatement); ok && !es.Discard {
@@ -5600,6 +5927,14 @@ func (g *generator) valueOnly(expr ast.Expression) bool {
 	return true
 }
 
+// zeroReg spells the zero register at a scalar's width.
+func zeroReg(s scalar) asm.Register {
+	if s.wide() {
+		return xr(31)
+	}
+	return wr(31)
+}
+
 // resultInto lowers a value-only result expression into the register out:
 // a conditional's arms each write out and meet at the join; a block runs
 // its statements and yields its tail.
@@ -5628,7 +5963,9 @@ func (g *generator) resultInto(expr ast.Expression, out int) error {
 			g.pushScope()
 			defer g.popScope()
 			stmts := e.Block.Statements
-			if err := g.lowerStatements(stmts[:len(stmts)-1], false, ""); err != nil {
+			// The trailing expression still reads the block's locals: its
+			// uses count before any register is released (nativegen/liveness.go).
+			if err := g.lowerStatementsBefore(stmts[:len(stmts)-1], stmts[len(stmts)-1]); err != nil {
 				return err
 			}
 			if es, ok := stmts[len(stmts)-1].(*ast.ExpressionStatement); ok && !es.Discard {

@@ -104,6 +104,9 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		} else if elided := nativegen.ElidedGuards(asmFn); elided > 0 && len(findings) == 0 {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d element guard(s) elided under the checker's own facts", fn.Name.Value, elided)))
 		}
+		// The verifier takes calls to program functions at their Oak bodies
+		// (asm.Function.Callees, docs/spec/94-assembler.md §8).
+		asmFn.Callees = functions
 		if os.Getenv("OAK_NATIVE_DUMP") != "" {
 			// A debugging aid: the lowered assembly of every function, as the
 			// checker sees it.

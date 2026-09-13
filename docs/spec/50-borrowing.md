@@ -1245,3 +1245,15 @@ helper's `buf[i]` becomes the caller's `buf[i]`, under the caller's
 guard, and is proven like any other access there. The helper's own
 definition keeps its check; the inlined copies carry none. Pinned in
 `compiler/e2e_inline_proof_test.go`.
+
+**The discharge, refined.** The decision that an access is in range
+(`indexUnder` in `typechecker/extents.go`) is transliterated in
+`Oak.ExtentsRefinement` — the fact kinds it consults, the index shapes the
+recognizers read, `lengthAtLeast`, the literal bounds, and the decision
+itself — and `indexUnder_sound` proves that whenever the transliteration
+accepts an access, the index is below the container's length in every
+environment where the live facts hold, each shape by the `Oak.Extents` law
+its Go rule cites. The Go is kept line for line with the Lean. The
+correspondence is scoped to the discharge: the extraction of facts from
+conditions, declarations, and loops, and the flow-sensitive kills, remain
+transliterations whose laws `Oak.Extents` states one by one.

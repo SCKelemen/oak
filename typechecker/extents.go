@@ -922,7 +922,11 @@ func (tc *TypeChecker) provenBelow(index ast.Expression, bound int64) bool {
 }
 
 // indexUnder decides whether the live facts prove index < the extent of
-// the container name (typed arr), by the laws of Oak.Extents.
+// the container name (typed arr), by the laws of Oak.Extents. It is
+// maintained as a line-for-line transliteration of
+// Oak.ExtentsRefinement.indexUnder (spec/lean/Oak/ExtentsRefinement.lean),
+// whose soundness theorem shows the decision below every live fact's
+// meaning: shape by shape, the cited law.
 func (tc *TypeChecker) indexUnder(indexExpr ast.Expression, name string, arr *ArrayType) bool {
 	proven := false
 	// lengthAtLeast: the container is known to hold at least n elements —

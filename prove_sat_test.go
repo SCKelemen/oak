@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -94,25 +95,28 @@ func TestCertificateRungTrustsOnlyCheckedAnswers(t *testing.T) {
 // and no row disagrees with the ladder. Skipped where no solver is
 // installed.
 func TestCertificateRungWithSolver(t *testing.T) {
-	if os.Getenv("OAK_SAT_SOLVER") == "" {
-		if _, err := os.Stat("/opt/homebrew/bin/cadical"); err != nil {
-			if _, err := os.Stat("/usr/local/bin/cadical"); err != nil {
-				t.Skip("no cadical on this machine")
+	run := func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		proveCommand([]string{"-solver", "sat", filepath.Join("spec", "oak", "machines.oak")}, &out, &errOut)
+		text := out.String()
+		for _, want := range []string{"bounded__step: at the bit level", "an LRAT certificate of", "checked in Go and in Oak", "oak prove: 15 decided"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("output lacks %q:\n%s%s", want, text, errOut.String())
 			}
 		}
-	}
-	var out, errOut bytes.Buffer
-	proveCommand([]string{"-solver", "sat", filepath.Join("spec", "oak", "machines.oak")}, &out, &errOut)
-	text := out.String()
-	if strings.Contains(text, "the certificate rung was skipped") {
-		t.Skip("no solver found by the rung")
-	}
-	for _, want := range []string{"bounded__step: at the bit level", "an LRAT certificate of", "checked in Go and in Oak", "oak prove: 15 decided"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("output lacks %q:\n%s%s", want, text, errOut.String())
+		if strings.Contains(text, "disagrees") || strings.Contains(text, "was skipped") {
+			t.Fatalf("a row disagrees or the rung was skipped:\n%s", text)
 		}
 	}
-	if strings.Contains(text, "disagrees") {
-		t.Fatalf("a row disagrees:\n%s", text)
-	}
+	t.Run("oak solver", func(t *testing.T) {
+		t.Setenv("OAK_SAT_SOLVER", "")
+		run(t)
+	})
+	t.Run("cadical", func(t *testing.T) {
+		if _, err := exec.LookPath("cadical"); err != nil {
+			t.Skip("no cadical on this machine")
+		}
+		t.Setenv("OAK_SAT_SOLVER", "cadical")
+		run(t)
+	})
 }
