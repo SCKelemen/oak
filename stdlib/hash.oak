@@ -94,10 +94,12 @@ sha256_block: (h: [8]u32, block: []u8): [8]u32 {
 // sha256_block_hw: the chaining value in `h` (eight words) advanced by one
 // 64-byte block, with the round constants passed as a view so the AArch64
 // unit (hash.arm64.oakasm) reads them under a proven guard. A short operand
-// leaves `h` unchanged. This body is the portable definition: the unit is
-// checked against it, the Lean extraction sees it, and it runs off AArch64
-// or under -DOAK_PORTABLE_INTRINSICS.
-sha256_block_hw: (h: [*]u32, block: []u8, k: []u32): () {
+// leaves `h` unchanged. This body is the meaning: the Lean extraction sees
+// it, and it runs wherever the processor lacks FEAT_SHA256 — off AArch64,
+// under -DOAK_PORTABLE_INTRINSICS, or on an ARMv8.0 core. Where the
+// processor has it, the `sha2` slot selects the unit (sha256_block_asm),
+// chosen once at startup (docs/spec/93-simd.md section 6).
+sha256_block_hw: (h: [*]u32, block: []u8, k: []u32): () dispatch { sha2: sha256_block_asm } {
   len(h) >= u32(8) && len(block) >= u32(64) && len(k) >= u32(64) ? {
     entry: [8]u32
     i: u32 = 0
@@ -113,6 +115,9 @@ sha256_block_hw: (h: [*]u32, block: []u8, k: []u32): () {
     }
   }
 }
+
+// sha256_block_asm: the AArch64 unit's declaration; its body is the unit.
+sha256_block_asm: (h: [*]u32, block: []u8, k: []u32): ()
 
 // One compression of a 64-byte block read in place from the input: the
 // bulk path of `sha256_update`, which never copies a full block. The one
@@ -295,12 +300,16 @@ crc32c_word_at: (chunk: []u8, at: u32): u64 {
 }
 
 // crc32c_step7: the running (uninverted) CRC-32C state advanced by seven
-// little-endian 64-bit words, 56 bytes. On AArch64 this is seven crc32cx
-// instructions (hash.arm64.oakasm); this body is the portable definition
-// the unit is checked against, the one the extraction sees, and the one
-// that runs elsewhere.
-crc32c_step7: (state: u32, a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64): u32 =
+// little-endian 64-bit words, 56 bytes. This body is the meaning: the one
+// the extraction sees and the one that runs wherever the processor lacks
+// FEAT_CRC32. On a processor that has it, the `crc` slot selects the
+// AArch64 unit (crc32c_step7_asm, hash.arm64.oakasm: seven crc32cx
+// instructions), chosen once at startup (docs/spec/93-simd.md section 6).
+crc32c_step7: (state: u32, a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64): u32 dispatch { crc: crc32c_step7_asm } =
   crc32c_word(crc32c_word(crc32c_word(crc32c_word(crc32c_word(crc32c_word(crc32c_word(state, a), b), c), d), e), f), g)
+
+// crc32c_step7_asm: the AArch64 unit's declaration; its body is the unit.
+crc32c_step7_asm: (state: u32, a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64): u32
 
 // crc32c_word folds one little-endian 64-bit word through the table, low
 // byte first, exactly as the byte loop does.

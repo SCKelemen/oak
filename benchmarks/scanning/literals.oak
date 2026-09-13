@@ -1,0 +1,58 @@
+package main
+
+// The literal set of literals.h as a `literals` declaration
+// (docs/spec/113-literals.md): the compiler computes the Teddy nibble
+// tables from it and projects http_count, http_find, and http_which over
+// the standard library kernel (stdlib/literals.oak). scan_oak.c times
+// http_count on the shared input; main checks the projection against a
+// scalar reference on generated text.
+
+Http: literals = {
+  "GET ", "POST ", "PUT ", "DELETE ",
+  "Host: ", "User-Agent", "Content-Length", "Content-Type",
+  "Accept: ", "Cookie: ", "HTTP/1.1", "Connection",
+  "Referer: ", "Location: ", "Set-Cookie", "X-Forwarded",
+}
+
+// scalar_count: the reference — every literal tried at every position.
+scalar_count: (bytes: []u8): u32 {
+  found: u32 = u32(0)
+  pos: u32 = u32(0)
+  while pos < len(bytes) {
+    j: u32 = u32(0)
+    while j < u32(16) {
+      literals_teddy_literal_at(bytes, pos, view(&http_literal_bytes), view(&http_literal_starts), j) ? { found = found + u32(1) } | { }
+      j = j + u32(1)
+    }
+    pos = pos + u32(1)
+  }
+  found
+}
+
+main: (): u32 {
+  text: [65536]u8
+  seed: u32 = u32(12345)
+  i: u32 = u32(0)
+  while i < u32(65536) {
+    seed = seed * u32(1664525) + u32(1013904223)
+    text[i] = u8_trunc_u32(u32(32) + (seed >> u32(8)) % u32(95))
+    i = i + u32(1)
+  }
+  k: u32 = u32(0)
+  while k < u32(60) {
+    j: u32 = k % u32(16)
+    at: u32 = k * u32(1000) + (k * u32(37)) % u32(900)
+    s: u32 = http_literal_starts[j]
+    n: u32 = http_literal_starts[j + u32(1)] - s
+    m: u32 = u32(0)
+    while m < n {
+      text[at + m] = http_literal_bytes[s + m]
+      m = m + u32(1)
+    }
+    k = k + u32(1)
+  }
+  bytes: []u8 = view(&text)
+  got: u32 = http_count(bytes)
+  want: u32 = scalar_count(bytes)
+  got == want && got >= u32(60) ? u32(0) | u32(1) + (got % u32(100))
+}

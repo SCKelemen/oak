@@ -1,0 +1,130 @@
+{
+  "metadata": {
+    "schema": "oak-rings-benchmark-v1",
+    "mode": "wall time of the whole transfer, producers and consumers on pthreads, checksum verified",
+    "items": 2000000,
+    "samples": 5,
+    "capacity": 1024,
+    "machine": "arm64",
+    "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+    "cpu": "Apple M4 Max",
+    "logical_cpu_count": 16,
+    "oak": {
+      "sha": "702b0b5da0be1048a2785ef10e5aa8e44c4975e3",
+      "tracked_changes": true
+    },
+    "cc": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+    "go": "go version go1.27.1 darwin/arm64",
+    "flags": [
+      "-O2"
+    ],
+    "core_affinity": "not controlled",
+    "generated_c_sha256": "58f4f4ef1ee2156170894c838afab96216dee153d340fc1026a779a95c9d1bb9"
+  },
+  "results": {
+    "spsc/spin": {
+      "threads": "1 producer, 1 consumer",
+      "oak_ns_per_item": 8.831,
+      "oak_ns_per_item_min": 7.877,
+      "oak_ns_per_item_max": 9.754,
+      "producer_spins_median": 5729,
+      "go_channel_ns_per_item": 24.7370835,
+      "oak_over_go_time": 0.3569943886068865
+    },
+    "mpsc/spin": {
+      "threads": "4 producers, 1 consumer",
+      "oak_ns_per_item": 126.329,
+      "oak_ns_per_item_min": 107.132,
+      "oak_ns_per_item_max": 143.934,
+      "producer_spins_median": 0,
+      "go_channel_ns_per_item": 35.8179165,
+      "oak_over_go_time": 3.526977902246212
+    },
+    "mpmc/spin": {
+      "threads": "4 producers, 4 consumers",
+      "oak_ns_per_item": 217.455,
+      "oak_ns_per_item_min": 215.286,
+      "oak_ns_per_item_max": 220.837,
+      "producer_spins_median": 14036242,
+      "go_channel_ns_per_item": 36.670271,
+      "oak_over_go_time": 5.930007989305561
+    },
+    "mpsc_ticket/spin": {
+      "threads": "4 producers, 1 consumer",
+      "oak_ns_per_item": 72.788,
+      "oak_ns_per_item_min": 44.396,
+      "oak_ns_per_item_max": 76.393,
+      "producer_spins_median": 0,
+      "go_channel_ns_per_item": 35.8179165,
+      "oak_over_go_time": 2.032167337259832
+    },
+    "mpmc_ticket/spin": {
+      "threads": "4 producers, 4 consumers",
+      "oak_ns_per_item": 99.703,
+      "oak_ns_per_item_min": 99.362,
+      "oak_ns_per_item_max": 102.02,
+      "producer_spins_median": 10878719,
+      "go_channel_ns_per_item": 36.670271,
+      "oak_over_go_time": 2.718905458866121
+    },
+    "intrusive/spin": {
+      "threads": "4 producers, 1 consumer",
+      "oak_ns_per_item": 48.958,
+      "oak_ns_per_item_min": 37.002,
+      "oak_ns_per_item_max": 54.06,
+      "producer_spins_median": 0
+    },
+    "spsc/yield": {
+      "threads": "1 producer, 1 consumer",
+      "oak_ns_per_item": 9.657,
+      "oak_ns_per_item_min": 6.27,
+      "oak_ns_per_item_max": 12.951,
+      "producer_spins_median": 27,
+      "go_channel_ns_per_item": 24.7370835,
+      "oak_over_go_time": 0.39038555212056425
+    },
+    "mpsc/yield": {
+      "threads": "4 producers, 1 consumer",
+      "oak_ns_per_item": 136.03,
+      "oak_ns_per_item_min": 124.657,
+      "oak_ns_per_item_max": 142.882,
+      "producer_spins_median": 11,
+      "go_channel_ns_per_item": 35.8179165,
+      "oak_over_go_time": 3.79782000999416
+    },
+    "mpmc/yield": {
+      "threads": "4 producers, 4 consumers",
+      "oak_ns_per_item": 211.517,
+      "oak_ns_per_item_min": 201.81,
+      "oak_ns_per_item_max": 231.176,
+      "producer_spins_median": 59261,
+      "go_channel_ns_per_item": 36.670271,
+      "oak_over_go_time": 5.76807845243358
+    },
+    "mpsc_ticket/yield": {
+      "threads": "4 producers, 1 consumer",
+      "oak_ns_per_item": 75.388,
+      "oak_ns_per_item_min": 52.624,
+      "oak_ns_per_item_max": 95.258,
+      "producer_spins_median": 1506,
+      "go_channel_ns_per_item": 35.8179165,
+      "oak_over_go_time": 2.104756707442768
+    },
+    "mpmc_ticket/yield": {
+      "threads": "4 producers, 4 consumers",
+      "oak_ns_per_item": 104.228,
+      "oak_ns_per_item_min": 100.644,
+      "oak_ns_per_item_max": 114.701,
+      "producer_spins_median": 8564,
+      "go_channel_ns_per_item": 36.670271,
+      "oak_over_go_time": 2.8423024198539464
+    },
+    "intrusive/yield": {
+      "threads": "4 producers, 1 consumer",
+      "oak_ns_per_item": 56.133,
+      "oak_ns_per_item_min": 47.818,
+      "oak_ns_per_item_max": 60.026,
+      "producer_spins_median": 0
+    }
+  }
+}

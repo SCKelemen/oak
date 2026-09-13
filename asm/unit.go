@@ -40,7 +40,11 @@ type Function struct {
 	// `.rv64.oakasm` segment or an `arch rv64` directive. Every phase —
 	// parsing, the seam checker, the verifier, the encoder, the object
 	// writer, and the C emitter — dispatches on it.
-	Arch  string
+	Arch string
+	// Inert marks a unit function that is a dispatch realization
+	// (docs/spec/93-simd.md section 6): off its architecture it is never
+	// called, so the C emitter leaves nothing there instead of #error.
+	Inert bool
 	Items []Item
 	// Directives collected from the block.
 	Bindings []Binding
@@ -48,6 +52,14 @@ type Function struct {
 	Frame    int64 // declared stack frame in bytes, 0 when none
 	System   bool  // capability for mrs/msr/eret
 	Align    int64 // function entry alignment, 0 for the default
+	// Compressed marks an rv64 unit under `option rvc`: the encoder emits
+	// the 16-bit compressed form of every instruction that has one
+	// (docs/spec/94-assembler.md §9); the checker and the verifier see the
+	// same base instructions either way.
+	Compressed bool
+	// CompressedSet marks that the unit spelled option rvc or norvc itself;
+	// otherwise the compiler decides from the processor.
+	CompressedSet bool
 	// FloatFile marks an rv64 unit that reads or writes the floating-point
 	// register file (the F and D extensions): its contract is LP64D, so
 	// the target must link against an lp64d toolchain (set by the checker).
@@ -71,6 +83,12 @@ type Function struct {
 	// aggregate locals of the Oak body (docs/spec/94-assembler.md §8).
 	Records map[string]*ast.RecordLiteral
 	ADTs    map[string]*ast.ADTType
+	// TwoChunkResults names the callees whose result is a record of 9 to
+	// 16 bytes — two chunks, in a0 and a1 under the LP64 psABI — set by the
+	// native backend from the program's signatures, so the RV64 checker
+	// lets the body read a1 after a call to one of them (it sees no callee
+	// signature otherwise; a1 is dead after every other call).
+	TwoChunkResults map[string]bool
 }
 
 // Composite is a record or tagged-union type's shape at the boundary: its
@@ -541,6 +559,19 @@ func ParseUnit(path, text string) (*Unit, []error) {
 			current.Frame = bytes
 		case "system":
 			current.System = true
+		case "option":
+			// `option rvc` / `option norvc`: the RV64 lane's compressed
+			// encodings, per function.
+			if len(fields) != 2 || (fields[1] != "rvc" && fields[1] != "norvc") {
+				fail(lineNo, "option takes rvc or norvc")
+				continue
+			}
+			if current.Arch != ArchRV64 {
+				fail(lineNo, "option rvc applies to rv64 units")
+				continue
+			}
+			current.Compressed = fields[1] == "rvc"
+			current.CompressedSet = true
 		case "align":
 			if len(fields) != 2 {
 				fail(lineNo, "align takes one byte count")

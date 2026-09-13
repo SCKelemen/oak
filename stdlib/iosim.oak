@@ -88,6 +88,12 @@ iosim_file_bytes: (): u32 = u32(4096)
 iosim_entries: (): u32 = u32(16)
 iosim_name_bytes: (): u32 = u32(32)
 iosim_slots: (): u32 = u32(16)
+// The ledger holds this many events, three words each (iosim_ledger is
+// [3072]u64 = 3 x 1024); a scenario that records more is a scenario error.
+iosim_ledger_events: (): u32 = u32(1024)
+// The first bytes of the run's tape the device reads; beyond them the tape
+// is exhausted and injects nothing.
+iosim_tape_bytes: (): u32 = u32(256)
 iosim_sched_actors: (): u32 = u32(32)
 iosim_sched_bound: (): u32 = u32(4)
 
@@ -146,9 +152,9 @@ iosim_ledger_count: u32
 // arguments.
 pub io_attach: (data: []u8, faults: u32): () {
   n: u32 = len(data)
-  n > u32(256) ? { n = u32(256) }
+  n > iosim_tape_bytes() ? { n = iosim_tape_bytes() }
   i: u32 = u32(0)
-  while i < u32(256) {
+  while i < iosim_tape_bytes() {
     iosim_tape[i] = i < n ? { data[i] } | { u8(0) }
     i = i + u32(1)
   }
@@ -166,7 +172,7 @@ pub io_attach: (data: []u8, faults: u32): () {
     e = e + u32(1)
   }
   b: u32 = u32(0)
-  while b < u32(512) {
+  while b < iosim_entries() * iosim_name_bytes() {
     iosim_names[b] = u8(0)
     iosim_names_durable[b] = u8(0)
     b = b + u32(1)
@@ -207,7 +213,7 @@ pub iosim_crash_at: (now: u64): () {
     e = e + u32(1)
   }
   b: u32 = u32(0)
-  while b < u32(512) {
+  while b < iosim_entries() * iosim_name_bytes() {
     iosim_names[b] = iosim_names_durable[b]
     b = b + u32(1)
   }
@@ -270,12 +276,14 @@ pub iosim_ledger_tag: (i: u32): u64 = iosim_ledger[i * u32(3) + u32(1)]
 pub iosim_ledger_value: (i: u32): u64 = iosim_ledger[i * u32(3) + u32(2)]
 
 iosim_record: (kind: u64, tag: u64, value: u64): () {
-  iosim_ledger_count < u32(1024) ? {
-    iosim_ledger[iosim_ledger_count * u32(3)] = kind
-    iosim_ledger[iosim_ledger_count * u32(3) + u32(1)] = tag
-    iosim_ledger[iosim_ledger_count * u32(3) + u32(2)] = value
-    iosim_ledger_count = iosim_ledger_count + u32(1)
-  }
+  // Every submit and completion is a trace event; a scenario that
+  // outruns the ledger is a scenario error, like one that submits while
+  // the process is down (docs/spec/120-io.md section 4).
+  assert(iosim_ledger_count < iosim_ledger_events())
+  iosim_ledger[iosim_ledger_count * u32(3)] = kind
+  iosim_ledger[iosim_ledger_count * u32(3) + u32(1)] = tag
+  iosim_ledger[iosim_ledger_count * u32(3) + u32(2)] = value
+  iosim_ledger_count = iosim_ledger_count + u32(1)
 }
 
 // io_open_region registers the caller's byte region and the file table
@@ -326,10 +334,45 @@ iosim_with_byte: (word: u64, i: u32, b: u8): u64 {
 // --- names -------------------------------------------------------------
 
 // A path window is well formed when it lies in the region, is one to 32
-// bytes long, and ends in NUL: the same rule the native realization
-// applies before handing the bytes to the operating system.
-iosim_path_ok: (ring: [*]IoRing, region: [*]u8, base: u32, n: u32): Bool =
-  base <= ring[0].region_len && n <= ring[0].region_len - base && n > u32(0) && n <= iosim_name_bytes() && region[base + n - u32(1)] == u8(0)
+// bytes long, ends in NUL, and holds no other NUL: the same rule the
+// native realization applies before handing the bytes to the operating
+// system (docs/spec/120-io.md section 2, "Paths").
+iosim_path_ok: (ring: [*]IoRing, region: [*]u8, base: u32, n: u32): Bool {
+  base <= ring[0].region_len && n <= ring[0].region_len - base && n > u32(0) && n <= iosim_name_bytes() && region[base + n - u32(1)] == u8(0) ? {
+    clean: Bool = true
+    i: u32 = u32(0)
+    while i + u32(1) < n {
+      region[base + i] == u8(0) ? { clean = false }
+      i = i + u32(1)
+    }
+    clean
+  } | { false }
+}
+
+// A name a file or directory may have (docs/spec/120-io.md section 2,
+// "Directories"): components separated by '/', each non-empty and neither
+// "." nor ".." — so no leading, trailing, or doubled '/', and the root
+// "." is not a name. `name` includes its NUL.
+iosim_name_ok: (name: [*]u8): Bool {
+  n: u32 = len(name)
+  ok: Bool = n > u32(1)
+  start: u32 = u32(0)
+  i: u32 = u32(0)
+  while ok && i < n {
+    name[i] == u8(47) || name[i] == u8(0) ? {
+      part: u32 = i - start
+      part == u32(0) ? { ok = false }
+      part == u32(1) && name[start] == u8(46) ? { ok = false }
+      part == u32(2) && name[start] == u8(46) && name[start + u32(1)] == u8(46) ? { ok = false }
+      start = i + u32(1)
+    }
+    i = i + u32(1)
+  }
+  ok
+}
+
+// A directory path: the root, or a name.
+iosim_dir_ok: (dir: [*]u8): Bool = iosim_is_root(dir) || iosim_name_ok(dir)
 
 // Whether entry e's name (volatile, or durable) is exactly `name`.
 iosim_name_is: (e: u32, name: [*]u8, durable: Bool): Bool {
@@ -388,6 +431,13 @@ iosim_alloc: (name: [*]u8, dir: Bool): u32 {
   }
   chosen < iosim_entries() ? {
     iosim_set_name(chosen, name)
+    // The entry has no durable existence, so its durable name bytes are
+    // stale: cleared, so no membership test can read them as a child.
+    b: u32 = u32(0)
+    while b < iosim_name_bytes() {
+      iosim_names_durable[chosen * iosim_name_bytes() + b] = u8(0)
+      b = b + u32(1)
+    }
     iosim_exists[chosen] = true
     iosim_is_dir[chosen] = dir
     iosim_size[chosen] = u32(0)
@@ -450,37 +500,65 @@ iosim_child_of: (e: u32, dir: [*]u8, durable: Bool): Bool {
   }
 }
 
-// Whether the parent directory of the path `name` exists now: the root
-// always does; otherwise an existing entry with the parent's name and the
-// directory flag.
-iosim_parent_exists: (name: [*]u8): Bool {
+// What the parent of the path `name` is now: 0 when nothing has the
+// parent's name (NotFound), 1 when a directory does (the root always is
+// one), 2 when a file does (Invalid: a file used as a directory).
+iosim_parent_state: (name: [*]u8): u32 {
   plen: u32 = iosim_parent_len(name)
-  plen == u32(0) ? { true } | {
-    // The parent's path with a NUL: compare against every entry's name.
-    found: Bool = false
+  plen == u32(0) ? { u32(1) } | {
+    // The parent's path without its NUL: compare against every entry.
+    state: u32 = u32(0)
     e: u32 = u32(0)
-    while e < iosim_entries() && !found {
-      iosim_exists[e] && iosim_is_dir[e] ? {
+    while e < iosim_entries() && state == u32(0) {
+      iosim_exists[e] ? {
         same: Bool = true
         j: u32 = u32(0)
         while same && j < plen {
           same = iosim_names[e * iosim_name_bytes() + j] == name[j]
           j = j + u32(1)
         }
-        same && (plen == iosim_name_bytes() || iosim_names[e * iosim_name_bytes() + plen] == u8(0)) ? { found = true }
+        same && (plen == iosim_name_bytes() || iosim_names[e * iosim_name_bytes() + plen] == u8(0)) ? {
+          state = iosim_is_dir[e] ? { u32(1) } | { u32(2) }
+        }
       }
       e = e + u32(1)
     }
-    found
+    state
   }
 }
 
-// Whether the directory named by a path window exists now: the root, or
-// an existing directory entry.
-iosim_dir_exists: (dir: [*]u8): Bool {
-  iosim_is_root(dir) ? { true } | {
+// What the directory named by a path window is now: 1 the root or a
+// directory, 2 a file, 0 nothing.
+iosim_dir_state: (dir: [*]u8): u32 {
+  iosim_is_root(dir) ? { u32(1) } | {
     e: u32 = iosim_find(dir, false)
-    e < iosim_entries() && iosim_is_dir[e]
+    e >= iosim_entries() ? { u32(0) } | { iosim_is_dir[e] ? { u32(1) } | { u32(2) } }
+  }
+}
+
+// The index of the last '/' in the path window [base, base + n), or 0.
+iosim_parent_len_at: (region: [*]u8, base: u32, n: u32): u32 {
+  slash: u32 = u32(0)
+  i: u32 = u32(0)
+  while i < n {
+    region[base + i] == u8(47) ? { slash = i }
+    i = i + u32(1)
+  }
+  slash
+}
+
+// Whether two path windows of one region name children of the same
+// directory: the parents' bytes are equal, not merely their lengths.
+iosim_same_parent: (region: [*]u8, a: u32, alen: u32, b: u32, blen: u32): Bool {
+  plen: u32 = iosim_parent_len_at(region, a, alen)
+  plen != iosim_parent_len_at(region, b, blen) ? { false } | {
+    same: Bool = true
+    j: u32 = u32(0)
+    while same && j < plen {
+      same = region[a + j] == region[b + j]
+      j = j + u32(1)
+    }
+    same
   }
 }
 
@@ -492,11 +570,16 @@ iosim_mkdir: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletion 
   tag: u64 = request.tag
   !iosim_path_ok(ring, region, base, n) ? { iosim_fail(tag, io_err_invalid()) } | {
   name: [*]u8 = subslice(region, base, n)
+  // The root exists already; any other reserved shape is not a name.
+  iosim_is_root(name) ? { iosim_fail(tag, io_err_exists()) } | {
+  !iosim_name_ok(name) ? { iosim_fail(tag, io_err_invalid()) } | {
   iosim_find(name, false) < iosim_entries() ? { iosim_fail(tag, io_err_exists()) } | {
-  !iosim_parent_exists(name) ? { iosim_fail(tag, io_err_not_found()) } | {
+  parent: u32 = iosim_parent_state(name)
+  parent == u32(0) ? { iosim_fail(tag, io_err_not_found()) } | {
+  parent == u32(2) ? { iosim_fail(tag, io_err_invalid()) } | {
     entry: u32 = iosim_alloc(name, true)
     entry >= iosim_entries() ? { iosim_fail(tag, io_err_no_space()) } | { iosim_done(tag, u32(0)) }
-  } } }
+  } } } } } }
 }
 
 // --- blocks ------------------------------------------------------------
@@ -566,12 +649,13 @@ iosim_execute: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletio
   op == io_op_mkdir() ? { iosim_mkdir(ring, region, request) } | {
   op == io_op_unlink() ? {
     !iosim_path_ok(ring, region, base, n) ? { iosim_fail(tag, io_err_invalid()) } | {
+    !iosim_name_ok(subslice(region, base, n)) ? { iosim_fail(tag, io_err_invalid()) } | {
     e: u32 = iosim_find(subslice(region, base, n), false)
     e >= iosim_entries() ? { iosim_fail(tag, io_err_not_found()) } | {
     iosim_is_dir[e] ? { iosim_fail(tag, io_err_invalid()) } | {
       iosim_exists[e] = false
       iosim_done(tag, u32(0))
-    } } }
+    } } } }
   } | {
   op == io_op_rename() ? { iosim_rename(ring, region, request) } | {
   op == io_op_readdir() ? { iosim_readdir(ring, region, request) } | {
@@ -581,10 +665,13 @@ iosim_execute: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletio
     // (an unlinked or renamed-away child), takes its volatile state.
     !iosim_path_ok(ring, region, base, n) ? { iosim_fail(tag, io_err_invalid()) } | {
     dir: [*]u8 = subslice(region, base, n)
-    !iosim_dir_exists(dir) ? { iosim_fail(tag, io_err_not_found()) } | {
+    !iosim_dir_ok(dir) || iosim_dir_state(dir) == u32(2) ? { iosim_fail(tag, io_err_invalid()) } | {
+    iosim_dir_state(dir) == u32(0) ? { iosim_fail(tag, io_err_not_found()) } | {
     e: u32 = u32(0)
     while e < iosim_entries() {
-      iosim_child_of(e, dir, false) || iosim_child_of(e, dir, true) ? {
+      // A child now, or a durable child (whose durable existence says so —
+      // stale name bytes of a reused entry are not membership).
+      iosim_child_of(e, dir, false) || (iosim_exists_durable[e] && iosim_child_of(e, dir, true)) ? {
         iosim_exists_durable[e] = iosim_exists[e]
         b: u32 = u32(0)
         while b < iosim_name_bytes() {
@@ -594,7 +681,7 @@ iosim_execute: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletio
       }
       e = e + u32(1)
     }
-    iosim_done(tag, u32(0)) } }
+    iosim_done(tag, u32(0)) } } }
   } | {
   slot >= ring[0].files || !iosim_open[slot] ? { iosim_fail(tag, io_err_closed()) } | {
   op == io_op_close() ? {
@@ -603,18 +690,13 @@ iosim_execute: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletio
     iosim_done(tag, u32(0))
   } | {
   op == io_op_fsync() || op == io_op_fdatasync() ? {
-    fault: u32 = sim_disk_fsync(span(&iosim_disk), span(&iosim_durable), span(&iosim_volatile), span(&iosim_flags), span(&iosim_choices), view(&iosim_tape), iosim_faults)
-    // A lost fsync leaves one dirty block of some file undurable; the
-    // device does not say whose, so every open file's acknowledgement is
-    // suspect.
-    fault != u32(0) ? {
-      s: u32 = u32(0)
-      while s < iosim_slots() {
-        iosim_open[s] ? { iosim_lied[iosim_slot_entry[s]] = true } | { }
-        s = s + u32(1)
-      }
-    }
+    // This file's blocks only, as fsync(fd) promises (docs/spec/120-io.md
+    // section 4): a device-wide flush would pass a program that forgot to
+    // sync one of its files. A lost fsync leaves one of this file's dirty
+    // blocks undurable, so its acknowledgement is a lie.
     entry: u32 = iosim_slot_entry[slot]
+    fault: u32 = sim_disk_fsync_range(span(&iosim_disk), span(&iosim_durable), span(&iosim_volatile), span(&iosim_flags), entry * iosim_file_blocks(), (entry + u32(1)) * iosim_file_blocks(), span(&iosim_choices), view(&iosim_tape), iosim_faults)
+    fault != u32(0) ? { iosim_lied[entry] = true }
     iosim_size_durable[entry] = iosim_size[entry]
     iosim_done(tag, u32(0))
   } | {
@@ -639,13 +721,19 @@ iosim_open_or_create: (ring: [*]IoRing, region: [*]u8, request: IoRequest, exclu
   base: u32 = request.buf.base
   n: u32 = request.buf.len
   tag: u64 = request.tag
-  slot >= ring[0].files || !iosim_path_ok(ring, region, base, n) || (direct && ring[0].sector == u32(0)) ? { iosim_fail(tag, io_err_invalid()) } | {
+  // Precedence (docs/spec/120-io.md section 2, "Errors"): path and slot,
+  // then the slot's state, then the sector, then the name.
+  !iosim_path_ok(ring, region, base, n) || slot >= ring[0].files ? { iosim_fail(tag, io_err_invalid()) } | {
   iosim_open[slot] ? { iosim_fail(tag, io_err_busy()) } | {
+  direct && ring[0].sector == u32(0) ? { iosim_fail(tag, io_err_invalid()) } | {
   name: [*]u8 = subslice(region, base, n)
+  !iosim_name_ok(name) ? { iosim_fail(tag, io_err_invalid()) } | {
   existing: u32 = iosim_find(name, false)
   existing < iosim_entries() && exclusive ? { iosim_fail(tag, io_err_exists()) } | {
   existing < iosim_entries() && iosim_is_dir[existing] ? { iosim_fail(tag, io_err_invalid()) } | {
-  existing >= iosim_entries() && !iosim_parent_exists(name) ? { iosim_fail(tag, io_err_not_found()) } | {
+  parent: u32 = existing < iosim_entries() ? { u32(1) } | { iosim_parent_state(name) }
+  parent == u32(0) ? { iosim_fail(tag, io_err_not_found()) } | {
+  parent == u32(2) ? { iosim_fail(tag, io_err_invalid()) } | {
     entry: u32 = existing < iosim_entries() ? { existing } | { iosim_alloc(name, false) }
     entry >= iosim_entries() ? { iosim_fail(tag, io_err_no_space()) } | {
       iosim_open[slot] = true
@@ -653,7 +741,7 @@ iosim_open_or_create: (ring: [*]IoRing, region: [*]u8, request: IoRequest, exclu
       iosim_slot_entry[slot] = entry
       iosim_done(tag, slot)
     }
-  } } } } }
+  } } } } } } } }
 }
 
 // rename (op 11): the old name is the window's first `offset` bytes, the
@@ -670,18 +758,24 @@ iosim_rename: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletion
   !iosim_path_ok(ring, region, base, old_len) || !iosim_path_ok(ring, region, base + old_len, new_len) ? { iosim_fail(tag, io_err_invalid()) } | {
   // One reborrow of the region at a time: the borrow checker holds the
   // two names apart.
+  !iosim_name_ok(subslice(region, base, old_len)) || !iosim_name_ok(subslice(region, base + old_len, new_len)) ? { iosim_fail(tag, io_err_invalid()) } | {
   source: u32 = iosim_find(subslice(region, base, old_len), false)
   source >= iosim_entries() ? { iosim_fail(tag, io_err_not_found()) } | {
   // A file, within one directory: a directory's children carry its name,
   // and a cross-directory move would need two fsyncdirs to be durable —
-  // both outside the port's contract (docs/spec/120-io.md section 3).
-  iosim_is_dir[source] || iosim_parent_len(subslice(region, base, old_len)) != iosim_parent_len(subslice(region, base + old_len, new_len)) ? { iosim_fail(tag, io_err_invalid()) } | {
-  !iosim_parent_exists(subslice(region, base + old_len, new_len)) ? { iosim_fail(tag, io_err_not_found()) } | {
+  // both outside the port's contract (docs/spec/120-io.md section 3). The
+  // parents are compared byte for byte, never by length alone.
+  iosim_is_dir[source] || !iosim_same_parent(region, base, old_len, base + old_len, new_len) ? { iosim_fail(tag, io_err_invalid()) } | {
+  parent: u32 = iosim_parent_state(subslice(region, base + old_len, new_len))
+  parent == u32(0) ? { iosim_fail(tag, io_err_not_found()) } | {
+  parent == u32(2) ? { iosim_fail(tag, io_err_invalid()) } | {
     target: u32 = iosim_find(subslice(region, base + old_len, new_len), false)
+    // Replacing a directory is not a rename of a file.
+    target < iosim_entries() && target != source && iosim_is_dir[target] ? { iosim_fail(tag, io_err_invalid()) } | {
     target < iosim_entries() && target != source ? { iosim_exists[target] = false }
     iosim_set_name(source, subslice(region, base + old_len, new_len))
     iosim_done(tag, u32(0))
-  } } } } }
+  } } } } } } } }
 }
 
 // readdir (op 10): the directory's path is the window's first `offset`
@@ -700,7 +794,8 @@ iosim_readdir: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletio
   out_base: u32 = base + dir_len
   out_len: u32 = n - dir_len
   !iosim_path_ok(ring, region, base, dir_len) || !(out_base <= ring[0].region_len && out_len <= ring[0].region_len - out_base) ? { iosim_fail(tag, io_err_invalid()) } | {
-  !iosim_dir_exists(subslice(region, base, dir_len)) ? { iosim_fail(tag, io_err_not_found()) } | {
+  !iosim_dir_ok(subslice(region, base, dir_len)) || iosim_dir_state(subslice(region, base, dir_len)) == u32(2) ? { iosim_fail(tag, io_err_invalid()) } | {
+  iosim_dir_state(subslice(region, base, dir_len)) == u32(0) ? { iosim_fail(tag, io_err_not_found()) } | {
   written: u32 = u32(0)
   overflow: Bool = false
   e: u32 = u32(0)
@@ -717,19 +812,14 @@ iosim_readdir: (ring: [*]IoRing, region: [*]u8, request: IoRequest): IoCompletio
         } | { overflow = true }
         b == u8(0) ? { finished = true }
         i = i + u32(1)
-        i >= iosim_name_bytes() && !finished ? {
-          // A full-width name has no stored NUL: write one.
-          written < out_len ? {
-            region[out_base + written] = u8(0)
-            written = written + u32(1)
-          } | { overflow = true }
-          finished = true
-        }
+        // A stored name always ends in NUL within its 32 bytes
+        // (iosim_path_ok admits nothing longer).
+        assert(finished || i < iosim_name_bytes())
       }
     }
     e = e + u32(1)
   }
-  overflow ? { iosim_fail(tag, io_err_too_large()) } | { iosim_done(tag, written) } } } }
+  overflow ? { iosim_fail(tag, io_err_too_large()) } | { iosim_done(tag, written) } } } } }
 }
 
 // stat (op 12): the result is the file's size; when the window holds eight

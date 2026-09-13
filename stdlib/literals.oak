@@ -1,0 +1,467 @@
+package literals
+
+// Multi-literal scanning over Oak's portable vectors (docs/spec/113-literals.md,
+// docs/spec/93-simd.md): the Teddy prefilter of Hyperscan. Literals are
+// hashed into eight buckets by index; for each of the first three bytes of
+// every literal a low-nibble and a high-nibble table hold bucket masks; at
+// a position the AND of the six lookups over the three bytes there is the
+// candidate mask, and a literal is compared against the input only where
+// its bucket's bit is set. Oak.Teddy proves the prefilter sound (a literal
+// at a position sets its bucket's bit there), so the count is exact.
+//
+// A literal set is a concatenation `patterns` with `starts[j] .. starts[j+1]`
+// the bytes of literal j, `count` literals, every literal at least three
+// bytes, and the 96-byte `tables` that `build` fills. The `literals`
+// declaration (`Name: literals = { "GET ", "POST " }`) computes all three at
+// compile time and calls this kernel; this module is the same kernel for a
+// set built at run time.
+
+// bucket_bit: literal j sits in bucket j % 8.
+bucket_bit: (j: u32): u8 {
+  bits: [8]u8 = [u8(1), u8(2), u8(4), u8(8), u8(16), u8(32), u8(64), u8(128)]
+  bits[j % u32(8)]
+}
+
+// groups_of: one eight-bucket group per sixteen literals (two literals per
+// bucket at most), so a bucket's candidates verify against few literals
+// and the prefilter keeps its selectivity as the set grows. Measured
+// (benchmarks/scanning/scale.c): a single group serves sixteen literals
+// at the ceiling and falls to a tenth of Vectorscan's speed at 256; a
+// group per sixteen stays ahead of it to 64 and beside it at 256.
+pub groups_of: (total: u32): u32 = (total + u32(15)) / u32(16)
+
+// build fills, for every group, the six sixteen-entry nibble tables — low
+// and high nibble of the first, second, and third byte of each of its
+// literals — with bucket masks: 96 bytes per group, group g at 96 * g.
+pub build: (patterns: []u8, starts: []u32, total: u32, tables: [*]u8): () {
+  groups: u32 = groups_of(total)
+  assert(len(tables) >= u32(96) * groups && total + u32(1) <= len(starts))
+  i: u32 = u32(0)
+  while i < u32(96) * groups {
+    tables[i] = u8(0)
+    i = i + u32(1)
+  }
+  j: u32 = u32(0)
+  while j < total {
+    s: u32 = starts[j]
+    assert(starts[j + u32(1)] >= s + u32(3) && starts[j + u32(1)] <= len(patterns))
+    bit: u8 = bucket_bit(j)
+    base: u32 = u32(96) * (j / u32(16))
+    k: u32 = u32(0)
+    while k < u32(3) {
+      c: u8 = patterns[s + k]
+      lo: u32 = base + u32(32) * k + u32(c & u8(15))
+      hi: u32 = base + u32(32) * k + u32(16) + u32(c >> u8(4))
+      tables[lo] = tables[lo] | bit
+      tables[hi] = tables[hi] | bit
+      k = k + u32(1)
+    }
+    j = j + u32(1)
+  }
+}
+
+// literal_at: literal j of the set occurs at pos.
+pub literal_at: (bytes: []u8, pos: u32, patterns: []u8, starts: []u32, j: u32): Bool {
+  s: u32 = starts[j]
+  e: u32 = starts[j + u32(1)]
+  n: u32 = e - s
+  pos + n <= len(bytes) ? {
+    k: u32 = u32(0)
+    same: Bool = true
+    while same && k < n {
+      same = bytes[pos + k] == patterns[s + k]
+      k = k + u32(1)
+    }
+    same
+  } | { false }
+}
+
+// which_at: the index of the first literal that occurs at pos, or total.
+pub which_at: (bytes: []u8, pos: u32, patterns: []u8, starts: []u32, total: u32): u32 {
+  found: u32 = total
+  j: u32 = u32(0)
+  while found == total && j < total {
+    literal_at(bytes, pos, patterns, starts, j) ? { found = j } | { }
+    j = j + u32(1)
+  }
+  found
+}
+
+// classify: the candidate lanes of one block — the bucket masks whose
+// first three bytes match at each position — from a group's six tables,
+// the block, and the blocks one and two bytes on.
+classify: (lo0: simd.U8x16, hi0: simd.U8x16, lo1: simd.U8x16, hi1: simd.U8x16, lo2: simd.U8x16, hi2: simd.U8x16, nib: simd.U8x16, b0: simd.U8x16, b1: simd.U8x16, b2: simd.U8x16): simd.U8x16 {
+  m0: simd.U8x16 = simd.and_u8x16(simd.tbl_u8x16(lo0, simd.and_u8x16(b0, nib)), simd.tbl_u8x16(hi0, simd.shr_u8x16(b0, u32(4))))
+  m1: simd.U8x16 = simd.and_u8x16(simd.tbl_u8x16(lo1, simd.and_u8x16(b1, nib)), simd.tbl_u8x16(hi1, simd.shr_u8x16(b1, u32(4))))
+  m2: simd.U8x16 = simd.and_u8x16(simd.tbl_u8x16(lo2, simd.and_u8x16(b2, nib)), simd.tbl_u8x16(hi2, simd.shr_u8x16(b2, u32(4))))
+  simd.and_u8x16(simd.and_u8x16(m0, m1), m2)
+}
+
+// verify_count: the literals of [first, last) that occur at the candidate
+// lanes of one block.
+verify_count: (cand: simd.U8x16, bytes: []u8, base: u32, patterns: []u8, starts: []u32, first: u32, last: u32): u32 {
+  lanes: [16]u8 = [u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0)]
+  simd.store_u8x16(span(&lanes), u32(0), cand)
+  hits: u32 = u32(0)
+  l: u32 = u32(0)
+  while l < u32(16) {
+    m: u8 = lanes[l]
+    m != u8(0) ? {
+      j: u32 = first
+      while j < last {
+        (m & bucket_bit(j)) != u8(0) && literal_at(bytes, base + l, patterns, starts, j) ? { hits = hits + u32(1) } | { }
+        j = j + u32(1)
+      }
+    } | { }
+    l = l + u32(1)
+  }
+  hits
+}
+
+// verify_first: the first candidate lane of one block where some literal
+// of [first, last) occurs, as a position, or len(bytes) when none does.
+verify_first: (cand: simd.U8x16, bytes: []u8, base: u32, patterns: []u8, starts: []u32, first: u32, last: u32): u32 {
+  lanes: [16]u8 = [u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0)]
+  simd.store_u8x16(span(&lanes), u32(0), cand)
+  n: u32 = len(bytes)
+  found: u32 = n
+  l: u32 = u32(0)
+  while found == n && l < u32(16) {
+    m: u8 = lanes[l]
+    m != u8(0) ? {
+      j: u32 = first
+      while found == n && j < last {
+        (m & bucket_bit(j)) != u8(0) && literal_at(bytes, base + l, patterns, starts, j) ? { found = base + l } | { }
+        j = j + u32(1)
+      }
+    } | { }
+    l = l + u32(1)
+  }
+  found
+}
+
+// step_count: the occurrences starting in one step with candidates —
+// every group's candidates per block, verified against its literals.
+step_count: (bytes: []u8, off: u32, patterns: []u8, starts: []u32, total: u32, tables: []u8, groups: u32, nib: simd.U8x16, a0: simd.U8x16, a1: simd.U8x16, a2: simd.U8x16, b0: simd.U8x16, b1: simd.U8x16, b2: simd.U8x16, c0: simd.U8x16, c1: simd.U8x16, c2: simd.U8x16, d0: simd.U8x16, d1: simd.U8x16, d2: simd.U8x16): u32 {
+  found: u32 = u32(0)
+  g: u32 = u32(0)
+  while g < groups {
+    first: u32 = u32(16) * g
+    last: u32 = first + u32(16) < total ? first + u32(16) | total
+    base: u32 = u32(96) * g
+    lo0: simd.U8x16 = simd.load_u8x16(tables, base)
+    hi0: simd.U8x16 = simd.load_u8x16(tables, base + u32(16))
+    lo1: simd.U8x16 = simd.load_u8x16(tables, base + u32(32))
+    hi1: simd.U8x16 = simd.load_u8x16(tables, base + u32(48))
+    lo2: simd.U8x16 = simd.load_u8x16(tables, base + u32(64))
+    hi2: simd.U8x16 = simd.load_u8x16(tables, base + u32(80))
+    ca: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, a0, a1, a2)
+    cb: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, b0, b1, b2)
+    cc: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, c0, c1, c2)
+    cd: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, d0, d1, d2)
+    simd.any_u8x16(ca) ? { found = found + verify_count(ca, bytes, off, patterns, starts, first, last) } | { }
+    simd.any_u8x16(cb) ? { found = found + verify_count(cb, bytes, off + u32(16), patterns, starts, first, last) } | { }
+    simd.any_u8x16(cc) ? { found = found + verify_count(cc, bytes, off + u32(32), patterns, starts, first, last) } | { }
+    simd.any_u8x16(cd) ? { found = found + verify_count(cd, bytes, off + u32(48), patterns, starts, first, last) } | { }
+    g = g + u32(1)
+  }
+  found
+}
+
+// count: the number of occurrences of every literal in bytes. Sixty-four
+// bytes a step under the wrap-free guard: twelve loads, every group's
+// tables and lookups, one test; only a step with candidates classifies
+// again, out of line, and verifies. The last bytes are tried literal by
+// literal.
+pub count: (bytes: []u8, patterns: []u8, starts: []u32, total: u32, tables: []u8): u32 {
+  groups: u32 = groups_of(total)
+  assert(len(tables) >= u32(96) * groups)
+  nib: simd.U8x16 = simd.splat_u8x16(u8(15))
+  found: u32 = u32(0)
+  off: u32 = u32(0)
+  groups == u32(1) ? {
+    // one group (up to sixteen literals): its tables loaded once for the
+    // whole scan — the shape measured at the ceiling
+    lo0: simd.U8x16 = simd.load_u8x16(tables, u32(0))
+    hi0: simd.U8x16 = simd.load_u8x16(tables, u32(16))
+    lo1: simd.U8x16 = simd.load_u8x16(tables, u32(32))
+    hi1: simd.U8x16 = simd.load_u8x16(tables, u32(48))
+    lo2: simd.U8x16 = simd.load_u8x16(tables, u32(64))
+    hi2: simd.U8x16 = simd.load_u8x16(tables, u32(80))
+    while len(bytes) >= u32(66) && off <= len(bytes) - u32(66) {
+      a0: simd.U8x16 = simd.load_u8x16(bytes, off)
+      a1: simd.U8x16 = simd.load_u8x16(bytes, off + u32(1))
+      a2: simd.U8x16 = simd.load_u8x16(bytes, off + u32(2))
+      b0: simd.U8x16 = simd.load_u8x16(bytes, off + u32(16))
+      b1: simd.U8x16 = simd.load_u8x16(bytes, off + u32(17))
+      b2: simd.U8x16 = simd.load_u8x16(bytes, off + u32(18))
+      c0: simd.U8x16 = simd.load_u8x16(bytes, off + u32(32))
+      c1: simd.U8x16 = simd.load_u8x16(bytes, off + u32(33))
+      c2: simd.U8x16 = simd.load_u8x16(bytes, off + u32(34))
+      d0: simd.U8x16 = simd.load_u8x16(bytes, off + u32(48))
+      d1: simd.U8x16 = simd.load_u8x16(bytes, off + u32(49))
+      d2: simd.U8x16 = simd.load_u8x16(bytes, off + u32(50))
+      ca: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, a0, a1, a2)
+      cb: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, b0, b1, b2)
+      cc: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, c0, c1, c2)
+      cd: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, d0, d1, d2)
+      any: simd.U8x16 = simd.or_u8x16(simd.or_u8x16(ca, cb), simd.or_u8x16(cc, cd))
+      simd.any_u8x16(any) ? {
+        found = found + step_count(bytes, off, patterns, starts, total, tables, groups, nib, a0, a1, a2, b0, b1, b2, c0, c1, c2, d0, d1, d2)
+      } | { }
+      off = off + u32(64)
+    }
+  } | {
+    while len(bytes) >= u32(66) && off <= len(bytes) - u32(66) {
+      a0: simd.U8x16 = simd.load_u8x16(bytes, off)
+      a1: simd.U8x16 = simd.load_u8x16(bytes, off + u32(1))
+      a2: simd.U8x16 = simd.load_u8x16(bytes, off + u32(2))
+      b0: simd.U8x16 = simd.load_u8x16(bytes, off + u32(16))
+      b1: simd.U8x16 = simd.load_u8x16(bytes, off + u32(17))
+      b2: simd.U8x16 = simd.load_u8x16(bytes, off + u32(18))
+      c0: simd.U8x16 = simd.load_u8x16(bytes, off + u32(32))
+      c1: simd.U8x16 = simd.load_u8x16(bytes, off + u32(33))
+      c2: simd.U8x16 = simd.load_u8x16(bytes, off + u32(34))
+      d0: simd.U8x16 = simd.load_u8x16(bytes, off + u32(48))
+      d1: simd.U8x16 = simd.load_u8x16(bytes, off + u32(49))
+      d2: simd.U8x16 = simd.load_u8x16(bytes, off + u32(50))
+      // every group's candidates over the four blocks, ORed; the group loop
+      // sits in this body so the classification inlines and the step is
+      // call-free until it has something to verify
+      any: simd.U8x16 = simd.splat_u8x16(u8(0))
+      g: u32 = u32(0)
+      while g < groups {
+        base: u32 = u32(96) * g
+        lo0: simd.U8x16 = simd.load_u8x16(tables, base)
+        hi0: simd.U8x16 = simd.load_u8x16(tables, base + u32(16))
+        lo1: simd.U8x16 = simd.load_u8x16(tables, base + u32(32))
+        hi1: simd.U8x16 = simd.load_u8x16(tables, base + u32(48))
+        lo2: simd.U8x16 = simd.load_u8x16(tables, base + u32(64))
+        hi2: simd.U8x16 = simd.load_u8x16(tables, base + u32(80))
+        ca: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, a0, a1, a2)
+        cb: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, b0, b1, b2)
+        cc: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, c0, c1, c2)
+        cd: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, d0, d1, d2)
+        any = simd.or_u8x16(any, simd.or_u8x16(simd.or_u8x16(ca, cb), simd.or_u8x16(cc, cd)))
+        g = g + u32(1)
+      }
+      simd.any_u8x16(any) ? {
+        found = found + step_count(bytes, off, patterns, starts, total, tables, groups, nib, a0, a1, a2, b0, b1, b2, c0, c1, c2, d0, d1, d2)
+      } | { }
+      off = off + u32(64)
+    }
+  }
+  while off < len(bytes) {
+    j: u32 = u32(0)
+    while j < total {
+      literal_at(bytes, off, patterns, starts, j) ? { found = found + u32(1) } | { }
+      j = j + u32(1)
+    }
+    off = off + u32(1)
+  }
+  found
+}
+
+// step_first: the first position in one step with candidates where some
+// literal occurs, or len(bytes): the earliest position over every group.
+step_first: (bytes: []u8, off: u32, patterns: []u8, starts: []u32, total: u32, tables: []u8, groups: u32, nib: simd.U8x16, a0: simd.U8x16, a1: simd.U8x16, a2: simd.U8x16, b0: simd.U8x16, b1: simd.U8x16, b2: simd.U8x16, c0: simd.U8x16, c1: simd.U8x16, c2: simd.U8x16, d0: simd.U8x16, d1: simd.U8x16, d2: simd.U8x16): u32 {
+  n: u32 = len(bytes)
+  found: u32 = n
+  g: u32 = u32(0)
+  while g < groups {
+    first: u32 = u32(16) * g
+    last: u32 = first + u32(16) < total ? first + u32(16) | total
+    base: u32 = u32(96) * g
+    lo0: simd.U8x16 = simd.load_u8x16(tables, base)
+    hi0: simd.U8x16 = simd.load_u8x16(tables, base + u32(16))
+    lo1: simd.U8x16 = simd.load_u8x16(tables, base + u32(32))
+    hi1: simd.U8x16 = simd.load_u8x16(tables, base + u32(48))
+    lo2: simd.U8x16 = simd.load_u8x16(tables, base + u32(64))
+    hi2: simd.U8x16 = simd.load_u8x16(tables, base + u32(80))
+    ca: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, a0, a1, a2)
+    cb: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, b0, b1, b2)
+    cc: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, c0, c1, c2)
+    cd: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, d0, d1, d2)
+    here: u32 = n
+    simd.any_u8x16(ca) ? { here = verify_first(ca, bytes, off, patterns, starts, first, last) } | { }
+    here == n && simd.any_u8x16(cb) ? { here = verify_first(cb, bytes, off + u32(16), patterns, starts, first, last) } | { }
+    here == n && simd.any_u8x16(cc) ? { here = verify_first(cc, bytes, off + u32(32), patterns, starts, first, last) } | { }
+    here == n && simd.any_u8x16(cd) ? { here = verify_first(cd, bytes, off + u32(48), patterns, starts, first, last) } | { }
+    found = here < found ? here | found
+    g = g + u32(1)
+  }
+  found
+}
+
+// find_from: the first position at or after `start` where some literal
+// occurs, or len(bytes) when none does.
+pub find_from: (bytes: []u8, start: u32, patterns: []u8, starts: []u32, total: u32, tables: []u8): u32 {
+  groups: u32 = groups_of(total)
+  assert(len(tables) >= u32(96) * groups)
+  nib: simd.U8x16 = simd.splat_u8x16(u8(15))
+  n: u32 = len(bytes)
+  found: u32 = n
+  off: u32 = start > n ? n | start
+  groups == u32(1) ? {
+    lo0: simd.U8x16 = simd.load_u8x16(tables, u32(0))
+    hi0: simd.U8x16 = simd.load_u8x16(tables, u32(16))
+    lo1: simd.U8x16 = simd.load_u8x16(tables, u32(32))
+    hi1: simd.U8x16 = simd.load_u8x16(tables, u32(48))
+    lo2: simd.U8x16 = simd.load_u8x16(tables, u32(64))
+    hi2: simd.U8x16 = simd.load_u8x16(tables, u32(80))
+    while found == n && n >= u32(66) && off <= n - u32(66) {
+      a0: simd.U8x16 = simd.load_u8x16(bytes, off)
+      a1: simd.U8x16 = simd.load_u8x16(bytes, off + u32(1))
+      a2: simd.U8x16 = simd.load_u8x16(bytes, off + u32(2))
+      b0: simd.U8x16 = simd.load_u8x16(bytes, off + u32(16))
+      b1: simd.U8x16 = simd.load_u8x16(bytes, off + u32(17))
+      b2: simd.U8x16 = simd.load_u8x16(bytes, off + u32(18))
+      c0: simd.U8x16 = simd.load_u8x16(bytes, off + u32(32))
+      c1: simd.U8x16 = simd.load_u8x16(bytes, off + u32(33))
+      c2: simd.U8x16 = simd.load_u8x16(bytes, off + u32(34))
+      d0: simd.U8x16 = simd.load_u8x16(bytes, off + u32(48))
+      d1: simd.U8x16 = simd.load_u8x16(bytes, off + u32(49))
+      d2: simd.U8x16 = simd.load_u8x16(bytes, off + u32(50))
+      ca: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, a0, a1, a2)
+      cb: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, b0, b1, b2)
+      cc: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, c0, c1, c2)
+      cd: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, d0, d1, d2)
+      any: simd.U8x16 = simd.or_u8x16(simd.or_u8x16(ca, cb), simd.or_u8x16(cc, cd))
+      simd.any_u8x16(any) ? {
+        found = step_first(bytes, off, patterns, starts, total, tables, groups, nib, a0, a1, a2, b0, b1, b2, c0, c1, c2, d0, d1, d2)
+      } | { }
+      off = off + u32(64)
+    }
+  } | {
+    while found == n && n >= u32(66) && off <= n - u32(66) {
+      a0: simd.U8x16 = simd.load_u8x16(bytes, off)
+      a1: simd.U8x16 = simd.load_u8x16(bytes, off + u32(1))
+      a2: simd.U8x16 = simd.load_u8x16(bytes, off + u32(2))
+      b0: simd.U8x16 = simd.load_u8x16(bytes, off + u32(16))
+      b1: simd.U8x16 = simd.load_u8x16(bytes, off + u32(17))
+      b2: simd.U8x16 = simd.load_u8x16(bytes, off + u32(18))
+      c0: simd.U8x16 = simd.load_u8x16(bytes, off + u32(32))
+      c1: simd.U8x16 = simd.load_u8x16(bytes, off + u32(33))
+      c2: simd.U8x16 = simd.load_u8x16(bytes, off + u32(34))
+      d0: simd.U8x16 = simd.load_u8x16(bytes, off + u32(48))
+      d1: simd.U8x16 = simd.load_u8x16(bytes, off + u32(49))
+      d2: simd.U8x16 = simd.load_u8x16(bytes, off + u32(50))
+      // every group's candidates over the four blocks, ORed; the group loop
+      // sits in this body so the classification inlines and the step is
+      // call-free until it has something to verify
+      any: simd.U8x16 = simd.splat_u8x16(u8(0))
+      g: u32 = u32(0)
+      while g < groups {
+        base: u32 = u32(96) * g
+        lo0: simd.U8x16 = simd.load_u8x16(tables, base)
+        hi0: simd.U8x16 = simd.load_u8x16(tables, base + u32(16))
+        lo1: simd.U8x16 = simd.load_u8x16(tables, base + u32(32))
+        hi1: simd.U8x16 = simd.load_u8x16(tables, base + u32(48))
+        lo2: simd.U8x16 = simd.load_u8x16(tables, base + u32(64))
+        hi2: simd.U8x16 = simd.load_u8x16(tables, base + u32(80))
+        ca: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, a0, a1, a2)
+        cb: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, b0, b1, b2)
+        cc: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, c0, c1, c2)
+        cd: simd.U8x16 = classify(lo0, hi0, lo1, hi1, lo2, hi2, nib, d0, d1, d2)
+        any = simd.or_u8x16(any, simd.or_u8x16(simd.or_u8x16(ca, cb), simd.or_u8x16(cc, cd)))
+        g = g + u32(1)
+      }
+      simd.any_u8x16(any) ? {
+        found = step_first(bytes, off, patterns, starts, total, tables, groups, nib, a0, a1, a2, b0, b1, b2, c0, c1, c2, d0, d1, d2)
+      } | { }
+      off = off + u32(64)
+    }
+  }
+  while found == n && off < n {
+    which_at(bytes, off, patterns, starts, total) < total ? { found = off } | { }
+    off = off + u32(1)
+  }
+  found
+}
+
+// Streaming: a set scanned across chunk boundaries. A Carry holds the last
+// bytes of the input so far — up to sixty-three, one less than the longest
+// literal a stream admits — and feed counts, for one more chunk, the
+// occurrences that end inside it: those starting in the carried bytes and
+// completed by the chunk, and those starting and ending in the chunk. An
+// occurrence cut by the chunk's end is neither counted nor lost: its start
+// is within the carried bytes and the next chunk completes it. The sum of
+// feeds over the chunks of an input is count over the whole input.
+pub Carry: type = struct {
+  tail: [64]u8
+  have: u32
+}
+
+// carry: the empty stream state.
+pub carry: (): Carry {
+  Carry { tail: [u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0)], have: u32(0) }
+}
+
+// longest: the length of the longest literal of the set.
+longest: (starts: []u32, total: u32): u32 {
+  most: u32 = u32(0)
+  j: u32 = u32(0)
+  while j < total {
+    n: u32 = starts[j + u32(1)] - starts[j]
+    most = n > most ? n | most
+    j = j + u32(1)
+  }
+  most
+}
+
+// joined_at: literal j starts at carried position q, runs past the carried
+// bytes, and is completed by the chunk.
+joined_at: (c: [*]Carry, bytes: []u8, q: u32, patterns: []u8, starts: []u32, j: u32): Bool {
+  have: u32 = c[0].have
+  s: u32 = starts[j]
+  n: u32 = starts[j + u32(1)] - s
+  q + n > have && q + n - have <= len(bytes) ? {
+    k: u32 = u32(0)
+    same: Bool = true
+    while same && k < n {
+      at: u32 = q + k
+      unit: u8 = at < have ? c[0].tail[at] | bytes[at - have]
+      same = unit == patterns[s + k]
+      k = k + u32(1)
+    }
+    same
+  } | { false }
+}
+
+// feed: the occurrences ending in this chunk; the carry advances to the
+// last bytes of the input so far. Every literal must be at most sixty-four
+// bytes (the declaration checks this).
+pub feed: (c: [*]Carry, bytes: []u8, patterns: []u8, starts: []u32, total: u32, tables: []u8): u32 {
+  assert(len(c) >= u32(1))
+  have: u32 = c[0].have
+  assert(have <= u32(63))
+  found: u32 = u32(0)
+  q: u32 = u32(0)
+  while q < have {
+    j: u32 = u32(0)
+    while j < total {
+      joined_at(c, bytes, q, patterns, starts, j) ? { found = found + u32(1) } | { }
+      j = j + u32(1)
+    }
+    q = q + u32(1)
+  }
+  found = found + count(bytes, patterns, starts, total, tables)
+  keep: u32 = longest(starts, total) - u32(1)
+  keep = keep > u32(63) ? u32(63) | keep
+  m: u32 = have + len(bytes)
+  k: u32 = keep < m ? keep | m
+  fresh: [64]u8 = [u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0)]
+  i: u32 = u32(0)
+  while i < k {
+    src: u32 = m - k + i
+    fresh[i] = src < have ? c[0].tail[src] | bytes[src - have]
+    i = i + u32(1)
+  }
+  i = u32(0)
+  while i < u32(64) {
+    c[0].tail[i] = fresh[i]
+    i = i + u32(1)
+  }
+  c[0].have = k
+  found
+}

@@ -476,7 +476,7 @@ a target library if their machine contract is explicit.
 
 ## 6. Realizations and the processor probe
 
-**Status: landed (first increment) — `sve`, `sve2`, `rvv`; design in
+**Status: landed — `sve`, `sve2`, `rvv`, `crc`, `sha2`; design in
 `docs/notes/cpu-dispatch-design-2026-09.md`.**
 
 A binary built at a target's baseline runs on processors with more. A
@@ -494,11 +494,35 @@ count_sevens_sve: (xs: []u8) -> u32 = {
 
 **The clause.** `dispatch { feature: function, ... }` follows the effect
 and laws clauses, at most once. Each slot names a feature of the closed
-catalog — `sve`, `sve2` (AArch64), `rvv` (RISC-V V) — and a top-level
-function of the **identical signature** (parameter types and return type),
-which is not itself dispatched. A feature appears at most once. A slot
-whose feature belongs to another architecture is inert on this target:
-not compiled, not consulted.
+catalog — `sve`, `sve2`, `crc` (FEAT_CRC32), `sha2` (FEAT_SHA256) on
+AArch64; `rvv` (RISC-V V) — and a top-level function of the **identical
+signature** (parameter types and return type), which is not itself
+dispatched. A feature appears at most once. A slot whose feature belongs
+to another architecture is inert on this target: not compiled, not
+consulted.
+
+**A realization is not called directly.** Its code is compiled for its
+feature; the only way to reach it is the dispatched function's selection,
+so a direct call is a compile error (`dispatch: f_sve is a realization;
+call the function that dispatches to it`). A test that wants the
+realization's answer calls the dispatched function on a processor that
+has the feature, where §6.2 compares the two.
+
+**An asm unit as a realization.** The realization may be a
+definition-less declaration whose body an `.oakasm` unit provides
+(`94-assembler.md` §7): then the dispatched function's Oak body is the
+portable definition — the meaning, what the extraction sees — and the unit
+runs only where the processor has the feature. Off the unit's
+architecture the declaration is inert (nothing is emitted, not the
+`#error` a lone body-less declaration gets), and the interpreter, which
+has no processor, runs the body. This is how the hash package's AArch64
+kernels are wired (`stdlib/hash.oak`, `hash.arm64.oakasm`):
+`crc32c_step7` dispatches to `crc32c_step7_asm` on `crc` and
+`sha256_block_hw` to `sha256_block_asm` on `sha2`, so an ARMv8.0 core
+without the extension computes the same checksum from the Oak body
+instead of faulting on `crc32cx`
+(`compiler/e2e_hash_dispatch_test.go`; the hardware and portable paths
+still agree with Go's digests, `compiler/e2e_stdlib_crc_sha_hw_test.go`).
 
 **The body is the meaning.** The interpreter runs it, the Lean extraction
 and `oak prove` see it. A slot is the author's claim that its realization
@@ -520,9 +544,9 @@ the probe first. The probe by target:
 
 | Target | Probe |
 | --- | --- |
-| `linux/arm64` | `getauxval(AT_HWCAP)` bit 22 (`HWCAP_SVE`); `AT_HWCAP2` bit 1 (`HWCAP2_SVE2`) |
-| `darwin/arm64` | `sysctlbyname("hw.optional.arm.FEAT_SVE")`; absent reads as 0 |
-| `freestanding/arm64` | `MRS ID_AA64PFR0_EL1` bits [35:32] (SVE), `ID_AA64ZFR0_EL1` bits [3:0] ≥ 1 (SVE2); EL1 or higher |
+| `linux/arm64` | `getauxval(AT_HWCAP)` bits 22 (`HWCAP_SVE`), 7 (`HWCAP_CRC32`), 6 (`HWCAP_SHA2`); `AT_HWCAP2` bit 1 (`HWCAP2_SVE2`) |
+| `darwin/arm64` | `sysctlbyname` of `hw.optional.arm.FEAT_SVE`, `FEAT_SVE2`, `hw.optional.armv8_crc32`, `hw.optional.arm.FEAT_SHA256`; absent reads as 0 |
+| `freestanding/arm64` | `MRS ID_AA64PFR0_EL1` bits [35:32] (SVE), `ID_AA64ZFR0_EL1` bits [3:0] ≥ 1 (SVE2), `ID_AA64ISAR0_EL1` bits [19:16] (CRC32) and [15:12] (SHA2); EL1 or higher |
 | `linux/riscv64` | `riscv_hwprobe` (syscall 258), key `IMA_EXT_0`, bit 2 (`V`) |
 | `freestanding/riscv64` | none (`misa` is M-mode only): `rvv` is available only when the build guarantees it |
 
@@ -532,10 +556,12 @@ freestanding ones; an uninitialized word reads as "no features" and
 selects the body.
 
 **The static rule.** When the build baseline guarantees a feature
-(`-cpu generic+sve` defines `__ARM_FEATURE_SVE`; `+v` defines
-`__riscv_vector`), the dispatched function *is* that realization: no
-probe bit is consulted, no branch emitted. Runtime dispatch is only ever
-the difference between the baseline and the processor.
+(`-cpu generic+sve` defines `__ARM_FEATURE_SVE`, `+crc` `__ARM_FEATURE_CRC32`,
+`+sha2` `__ARM_FEATURE_SHA2`; `+v` defines `__riscv_vector`), the
+dispatched function *is* that realization: no probe bit is consulted, no
+branch emitted. Runtime dispatch is only ever the difference between the
+baseline and the processor. Under `-DOAK_PORTABLE_INTRINSICS` nothing
+dispatches: the realizations are not compiled and every body runs.
 
 **The call.** No function pointers. The dispatched function's C body
 opens with one branch per applicable slot, in clause order, on the
@@ -558,7 +584,32 @@ way (`target("arch=+v")`, `__rvv`). The locality rule (OAK-S0401) is what
 makes this sound: no scalable value crosses a function boundary or lands
 in a record, so a realization's types are its own.
 
-### 6.2 The interpreter's feature set
+### 6.2 Checked claims
+
+**Under `oak test`, the claim is checked on the processor.** The test
+runner compiles the package with `OAK_CHECK_DISPATCH`, and a dispatched
+function whose realization the probe selects then runs **both** the
+realization and its own body on the same arguments and compares the
+results; a disagreement ends the case as the correctness failure
+`dispatch:<function>:<feature>` (`110-testing.md`, failure classes). This
+is the claim's real check — the realization's actual code, an `.oakasm`
+unit included, against the meaning, on the hardware that has the feature
+— and it costs ordinary builds nothing: without the flag the wrapper
+transfers to the realization and returns. Checked shapes are the pure
+ones: a fixed-width integer or `Bool` result and no span parameter, so
+running the body after the realization cannot observe the realization's
+effects. A realization that writes through a span (the hash package's
+`sha256_block_asm`) or returns a record is transferred unchecked; its
+differential test stays the author's (`e2e_stdlib_crc_sha_hw_test.go`).
+
+The backend emits the body under a private name (`oak_f__meaning`, `static
+inline`) and the public function as the wrapper: per slot the static rule
+or the branch on the word, then the meaning. `codegen/aarch64_dispatch_test.go`
+pins the shape; `testrunner/dispatch_test.go` runs a deliberately wrong
+`crc` realization through `oak test` on a processor with CRC and requires
+the `dispatch:` failure, and a correct one passes.
+
+### 6.3 The interpreter's feature set
 
 The interpreter has one portable semantics and no processor. It carries a
 feature set (`evaluator.Features`, empty by default), set by a test or
@@ -566,7 +617,8 @@ the REPL; with `sve` in the set, a call to a dispatched function runs the
 `sve` realization's Oak body in place of the function's own. Because the
 scalable API is extent-independent (§4), the realization has a meaning in
 the interpreter, and the two runs — with and without the feature — are
-the differential check of the slot's claim. `compiler/e2e_dispatch_test.go`
+a second differential check of the slot's claim (the first is §6.2's,
+on the hardware). `compiler/e2e_dispatch_test.go`
 runs a dispatched program with the empty set, with `sve`, in native C on
 the host (whose probe selects the body where SVE is absent), and under
 `qemu-system-aarch64 -cpu max,sve-max-vq=…` (whose probe selects the SVE
@@ -574,7 +626,7 @@ realization), and requires one answer; `codegen/aarch64_dispatch_test.go`
 pins the C shape: the probe, the branch on the word, the attribute and
 the `whilelo`/`ptrue` predicates inside the realization alone.
 
-### 6.3 What is proved
+### 6.4 What is proved
 
 `Oak.Dispatch`: `select` is a function of the available features and the
 clause; `select_none` (no available feature: the body), `select_mem` (the

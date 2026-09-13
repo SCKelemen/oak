@@ -1,0 +1,65 @@
+// Protocol invariants and liveness (docs/spec/125-verification.md sections
+// 2a and 2b), stated over the machines the Go prover's tests use, decided
+// by the prover written in Oak: an invariant candidate's obligations are
+// generated and folded into its row, a candidate left short of `decided`
+// is evaluated on the reachable states, and every `eventually` entry is a
+// fair-trap search over them.
+
+// A turnstile whose coin counter saturates: once unlocked it has been paid.
+Turnstile: protocol = {
+  data { coins: u8 }
+  init { coins: u8(0) }
+  initial Locked
+  coin: Locked -> Unlocked then { data.coins = data.coins < u8(255) ? { data.coins + u8(1) } | { data.coins } }
+  coin: Unlocked -> Unlocked then { data.coins = data.coins < u8(255) ? { data.coins + u8(1) } | { data.coins } }
+  push: Unlocked -> Locked
+  push: Locked -> Locked
+}
+
+paid: theorem (s: TurnstileState, d: TurnstileData) { s == .Locked || d.coins > u8(0) }
+
+// A scheduler quantum over a u32 budget: the inductive step decides at the
+// bit level, the liveness entries over the three reachable states.
+Quantum: protocol = {
+  data { budget: u32 }
+  init { budget: u32(2) }
+  initial Running
+  tick: Running -> Running when data.budget > u32(1) then { data.budget = data.budget - u32(1) }
+  tick: Running -> Yielded when data.budget <= u32(1) then { data.budget = u32(2) }
+  resume: Yielded -> Running
+  signal(on: Bool): Running -> Running
+  fair tick
+  fair resume
+  fair signal
+  eventually Yielded
+  eventually Running -> Yielded
+  eventually Yielded -> Running
+  eventually Running -> data.budget == u32(1)
+}
+
+bounded: theorem (s: QuantumState, d: QuantumData) { d.budget >= u32(1) && d.budget <= u32(2) }
+
+// An intermittently enabled step needs strong fairness to reach Done.
+Toggle: protocol = {
+  initial A
+  flip: A -> B
+  flop: B -> A
+  go: A -> Done
+  fair flip
+  fair flop
+  strongly fair go
+  eventually Done
+}
+
+// A machine without data, with a payload-carrying step, enumerated.
+Irq: protocol = {
+  initial Idle
+  inject: Idle -> Pending
+  acknowledge: Pending -> Active
+  eoi: Active -> Idle
+  program(compare: u8): Idle -> Idle
+}
+
+never_stuck: theorem (s: IrqState) { s == .Idle || s == .Pending || s == .Active }
+
+main: (): i32 = 0

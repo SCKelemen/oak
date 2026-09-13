@@ -259,10 +259,34 @@ three variable orders raced in one process — and prints the rows in the
 command's format; no Go is on the path from the file to the rows, and
 with `-cross go` the Go ladder decides the same file and every row's
 status must agree (`the Go ladder agrees on N of N rows`;
-`TestOakShellAgrees` requires it over the corpus). What the shell leaves
-to the Go command: protocol invariants and liveness, the compiled-program
-witness, and the Lean projection. The protocol obligations of §2a
-stay with the Go decider, whose rows are folded into their invariant's.
+`TestOakShellAgrees` requires it over the corpus). With `-lean out.lean`
+the shell writes the Lean projection too (`prove/solver/lean.oak`: the
+theorems, the functions they reach, and the record and sum types those
+mention, rendered to the text of §5 from the raw parse tree, the
+expression types the Go extractor reads from the checker taken from the
+serializer's run over each function), and with `-cross go` the Go
+extractor's projection must match it byte for byte (`the Lean projection
+agrees with the Go extractor`; `TestOakShellAgrees` and
+`TestOakLeanAgrees` require it over the corpus, the Lean files
+included). The protocol invariants and liveness of §2a and §2b run in
+the shell as well (`prove/solver/explore.oak`): the obligations of every
+invariant candidate and a probe function per protocol are generated as
+source text appended to the file and parsed again, the candidate's row is
+folded from the obligations' verdicts, and the reachable states are
+explored by lowering the probe to terms once and evaluating it on
+concrete states and steps — no interpreter — with the fair-trap search of
+§2b over the graph; `spec/oak/machines.oak` states the machines the Go
+prover's tests use, every row's status the Go ladder's. The compiled
+witness runs from the shell too (`prove/solver/witness.oak`): with
+`-witness` the shell writes the driver's source — the file without its
+`main`, the generated obligations, and the driver's `main` over the
+enumerable domains, the text `prove/witness.go` writes — has the
+compiler build it and runs the binary through `posix_spawn`, and folds
+the exit status into the rows (`witnessed in the compiled program`, the
+failing theorem refuted, the skips named), so the compiler is the only
+Go on that path. The guard-exclusivity theorems of `112-protocols.md` §1
+are generated and folded into their advisory rows the same way. Every
+row the Go command prints, the shell prints.
 `TestOakSolverAgrees` runs the default over the whole law corpus.
 
 `-witness` evaluates every decided theorem in the compiled program as
@@ -334,7 +358,7 @@ the toolchain.
 | `literal_bound_under_length`, `subtraction_under_bounds`, `subtraction_under_length` | same names | decided, bit level |
 | `scaled_under_bound` | `scaled_under_bound_4`; `scaled_under_bound_512` (`extents_lean.oak`) | decided; proved (the page scale exceeds the BDD budget) |
 | `Oak.Dispatch.select_none`, `select_mem`, `select_deterministic`, `select_static`, `dispatch_sound` | same names | decided, structural (processor-feature dispatch: the body when no feature is available, only the body or a listed realization, one selection per feature set, the static rule, and soundness given the realizations' claimed equality; `93-simd.md` §6.3) |
-| `masked_under_length`, `masked_trunc_under_length`, `masked_saturating_under_length`, `loop_exit_lower_bound`, `increment_keeps_lower_bound`, `increment_without_wrap` | same names | decided, bit level |
+| `masked_under_length`, `masked_trunc_under_length`, `masked_saturating_under_length`, `bound_through_literal`, `scaled2_under_bound`, `loop_exit_lower_bound`, `increment_keeps_lower_bound`, `increment_without_wrap` | same names | decided, bit level |
 | `decreasing_keeps_upper_bound`, `decreasing_keeps_literal_bound` | same names | decided, bit level |
 | `vector_under_min_length`, `vector_under_offset_bound`, `vector_under_literal_bound` | same names | decided, bit level |
 | `midpoint_under_bound`, `midpoint_under_length`, `div_bound_scaled`, `div_bound_under_length` | same names at scale 2 and 512 (`extents_lean.oak`) | proved by Lean (the decider has no division) |
@@ -548,10 +572,22 @@ In order of payoff, each reusing a surface that exists:
   Go decider or interpreter confirming each; and the shell itself is an
   Oak program — `-solver self` reads the file, decides, and prints the
   rows with no Go on the path, every status the Go ladder's over the
-  corpus), so what remains with Go on the prover's side is the Lean
-  projection of the unbounded laws, the protocol invariant and liveness
-  exploration, and the compiled-program witness; next the Lean
-  projection in Oak; then
+  corpus; and the Lean projection is an Oak program too —
+  `prove/solver/lean.oak` renders the theorems, the functions they
+  reach, and the types those mention to the extractor's text from the
+  raw parse tree, the expression types read back from the serializer's
+  run, byte for byte `codegen/lean`'s on every file of the corpus; and
+  the protocol invariants and liveness run in Oak — `prove/solver/
+  explore.oak` generates the obligations and a probe per protocol as
+  source text, lowers the probe to terms and evaluates it on the
+  reachable states, and searches the fair traps the way the Go prover
+  does, every status the Go ladder's on `spec/oak/machines.oak`; and
+  the compiled witness is driven from Oak — `prove/solver/witness.oak`
+  writes the driver, spawns the compiler and the binary, and folds the
+  exit status — and the guard-exclusivity theorems are generated and
+  folded into their advisory rows in Oak as well, so the compiler itself
+  is the only Go left on the prover's path), so what remains is the
+  self-hosted compiler; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
   producers of certificates, so speed and trust are separated; then an

@@ -23,7 +23,7 @@ const CPrelude = `/* asm units (docs/spec/94-assembler.md): top-level assembly b
 func EmitCExtern(fn *Function, cSymbol string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "/* asm unit: %s — encoded by the Oak assembler into the companion object as %s */\n", fn.Name, cSymbol)
-	if !fn.Fallback {
+	if !fn.Fallback && !fn.Inert {
 		fmt.Fprintf(&b, "#if !(%s) || defined(OAK_PORTABLE_INTRINSICS)\n", archCondition(fn))
 		fmt.Fprintf(&b, "#error \"asm unit %s requires %s (no Oak fallback body declared)\"\n", fn.Name, archName(fn))
 		b.WriteString("#endif\n")
@@ -103,6 +103,12 @@ func EmitC(fn *Function, cSymbol string, symbolFor func(string) string) string {
 	if fn.Fallback {
 		// The Oak body is emitted by the ordinary function emitter under the
 		// complementary condition.
+		b.WriteString("#endif\n\n")
+		return b.String()
+	}
+	if fn.Inert {
+		// A dispatch realization: off its architecture the slot is inert
+		// and nothing calls the symbol.
 		b.WriteString("#endif\n\n")
 		return b.String()
 	}
@@ -190,6 +196,15 @@ func (instr Instruction) String() string {
 		parts = append(parts, renderOperand(operand, func(s string) string { return s }, nil, nil))
 	}
 	return mnemonic + " " + strings.Join(parts, ", ")
+}
+
+// Spell renders an instruction of the function's lane as `.oakasm` text,
+// labels and symbols by name (diagnostics and tests).
+func (fn *Function) Spell(instr Instruction) string {
+	if fn.Arch == ArchRV64 {
+		return renderRV64Instruction(instr, nil, nil, nil)
+	}
+	return instr.String()
 }
 
 func renderInstruction(fn *Function, instr Instruction, symbolFor func(string) string, numbers map[string]int, defined map[string]bool) string {

@@ -42,7 +42,9 @@ the union of the body's and every realization's, so a realization cannot
 hide an allocation behind a feature the checker did not run on.
 
 **2. Features are a closed catalog tied to an architecture.** `sve`,
-`sve2` (AArch64), `rvv` (RISC-V V). A slot for another architecture is
+`sve2`, `crc`, `sha2` (AArch64), `rvv` (RISC-V V) — the last two added
+the same day for the hash package's kernels, the first asm units used as
+realizations. A slot for another architecture is
 inert on this target — not compiled, not consulted. Adding a feature is a
 catalog entry in `semir` (its architecture, the C preprocessor macro
 that means the build baseline already guarantees it, the function
@@ -92,6 +94,14 @@ helpers). The locality rule of the scalable API (OAK-S0401) is what makes
 this sound: sizeless values never cross a function boundary or land in a
 record, so a realization's types are its own business.
 
+**6a. The claim is checked where it matters.** Under `oak test` the
+package is compiled with `OAK_CHECK_DISPATCH`: a dispatched function of
+pure shape (integer or Bool result, no span parameter) runs the selected
+realization *and* its body and compares; a disagreement is the
+correctness failure `dispatch:<function>:<feature>`. This is the check
+that reaches asm units and the actual hardware; the interpreter's below
+is the second, for realizations with Oak bodies.
+
 **7. How the interpreter mirrors it.** The interpreter has one portable
 semantics and no processor. It carries a feature set (`evaluator.Features`,
 default empty), set by a test or the REPL; with `sve` in the set, a call
@@ -115,9 +125,10 @@ that is the only thing left to check.
 
 ## What is not settled
 
-- **A wider vocabulary.** `crc`, `sha2`, `aes`, `lse`, `dotprod`, `i8mm`,
-  and the RISC-V `zba`/`zbb`/`zvbb` are natural entries; each needs its
-  attribute spelling, its probe bit, and a realization worth writing.
+- **A wider vocabulary.** `aes`, `lse`, `dotprod`, `i8mm`, and the
+  RISC-V `zba`/`zbb`/`zvbb` are natural entries; each needs its attribute
+  spelling, its probe bit, and a realization worth writing (`crc` and
+  `sha2` came with the hash package's).
 - **Per-call-site selection** (a hot loop that hoists the branch itself)
   is deliberately not offered: the C compiler hoists a branch on a
   loaded constant, and a program that wants it explicit can dispatch the

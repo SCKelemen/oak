@@ -25,7 +25,30 @@ PL_PTYPE: u32 = 2
 PL_FROM: u32 = 3
 PL_TO: u32 = 4
 PL_GUARD: u32 = 5
-PL_WORDS: u32 = 6
+PL_EFFECTS: u32 = 6
+PL_WORDS: u32 = 7
+
+// Protocol extras (fairness and liveness entries), 4 words each in the
+// parser's pextra region: kind (1 fair, 2 eventually), a, b, c.
+PX_FAIR: u32 = 1
+PX_LIVE: u32 = 2
+
+pextra_push: (p: Par, w: [*]u32, kind: u32, a: u32, b: u32, c: u32): () {
+  n: u32 = pst(p, w, PS_NPEXTRA)
+  n + u32(4) > PX_PEXTRA ? { px_fail(p, w, u32(445)) } | {
+    at: u32 = p.pextra_at + n
+    w[at] = kind
+    w[at + u32(1)] = a
+    w[at + u32(2)] = b
+    w[at + u32(3)] = c
+    set_pst(p, w, PS_NPEXTRA, n + u32(4))
+  }
+}
+
+pextra_word: (p: Par, w: [*]u32, at: u32, k: u32): u32 = w[p.pextra_at + at + k]
+
+pn_vlo_p: (p: Par, w: [*]u32, n: u32): u32 = w[p.nodes_at + n * u32(8) + u32(5)]
+pn_vhi_p: (p: Par, w: [*]u32, n: u32): u32 = w[p.nodes_at + n * u32(8) + u32(6)]
 MAX_PSTATES: u32 = 64
 MAX_PSTEPS: u32 = 64
 MAX_PLINES: u32 = 256
@@ -215,7 +238,8 @@ mk_cond: (p: Par, w: [*]u32, c: u32, then_block: u32): u32 {
 Names: type = struct {
   state_n: u32, step_n: u32, bool_t: u32, result: u32, done: u32, current: u32, i: u32, bytes: u32, u32_t: u32, u8_t: u32,
   underscore: u32, and_op: u32, or_op: u32, not_op: u32, lt_op: u32, add_op: u32, assert_f: u32, len_f: u32,
-  state_t: u32, step_t: u32, initial_f: u32, legal_f: u32, next_f: u32, legal_tree_f: u32, next_tree_f: u32, run_f: u32
+  state_t: u32, step_t: u32, initial_f: u32, legal_f: u32, next_f: u32, legal_tree_f: u32, next_tree_f: u32, run_f: u32,
+  data_t: u32, initial_data_f: u32, data_n: u32, record_n: u32
 }
 
 protocol_names: (p: Par, w: [*]u32, name: u32): Names {
@@ -245,8 +269,327 @@ protocol_names: (p: Par, w: [*]u32, name: u32): Names {
     next_f: derived_str(p, w, name, true, u64(0x7478656E5F), u64(0), u32(5)),
     legal_tree_f: derived_str(p, w, name, true, u64(0x745F6C6167656C5F), u64(0x656572), u32(11)),
     next_tree_f: derived_str(p, w, name, true, u64(0x72745F7478656E5F), u64(0x6565), u32(10)),
-    run_f: derived_str(p, w, name, true, u64(0x6E75725F), u64(0), u32(4))
+    run_f: derived_str(p, w, name, true, u64(0x6E75725F), u64(0), u32(4)),
+    data_t: derived_str(p, w, name, false, u64(0x61746144), u64(0x0), u32(4)),
+    initial_data_f: derived_str(p, w, name, true, u64(0x6C616974696E695F), u64(0x617461645F), u32(13)),
+    data_n: lit_str(p, w, u64(0x61746164), u64(0x0), u32(4)),
+    record_n: lit_str(p, w, u64(0x64726F636572), u64(0x0), u32(6))
   }
+}
+
+// intern_long interns a built name of up to 512 bytes.
+intern_long: (p: Par, w: [*]u32, buf: [*]u32, n: u32): u32 {
+  copy: [128]u32
+  k: u32 = 0
+  while k < u32(128) {
+    copy[k] = buf[k]
+    k = k + u32(1)
+  }
+  src: []u32 = view(&copy)
+  px_intern(p, w, src, u32(0), n)
+}
+
+// live_pred_name: `prefix_liveK_from` / `prefix_liveK_to` (compiler/protocols.go
+// ProtocolLivenessName), k one-based.
+live_pred_name: (p: Par, w: [*]u32, name: u32, k: u32, from_side: Bool): u32 {
+  buf: [32]u32
+  n: u32 = nb_snake(p, w, span(&buf), u32(0), name)
+  n = nb_lit(span(&buf), n, u64(0x6576696C5F), u64(0x0), u32(5))
+  n = nb_decimal(span(&buf), n, k)
+  n = from_side ? { nb_lit(span(&buf), n, u64(0x6D6F72665F), u64(0x0), u32(5)) } | { nb_lit(span(&buf), n, u64(0x6F745F), u64(0x0), u32(3)) }
+  intern_buf(p, w, span(&buf), n)
+}
+
+// --- cloning and spelling raw subtrees ------------------------------------------------
+
+// clone_subtree deep-copies an expression or statement subtree, renaming
+// the identifier `from` to `to` (compiler/protocols.go renameIdentifier on
+// a cloned term): an explicit stack, each frame's children delivered on
+// the accumulator in order.
+clone_subtree: (p: Par, w: [*]u32, node: u32, from_name: u32, to_name: u32): u32 {
+  fnode: [256]u32
+  fphase: [256]u32
+  fbase: [256]u32
+  sp: u32 = 1
+  fnode[u32(0)] = node
+  fphase[u32(0)] = u32(0)
+  fbase[u32(0)] = u32(0)
+  result: u32 = NONE
+  node == NONE ? { sp = u32(0) } | { }
+  while sp > u32(0) && !px_failed(p, w) {
+    i: u32 = sp - u32(1)
+    n: u32 = fnode[i]
+    kind: u32 = pn_kind(p, w, n)
+    a: u32 = pn_a(p, w, n)
+    b: u32 = pn_b(p, w, n)
+    c: u32 = pn_c(p, w, n)
+    fphase[i] == u32(0) ? {
+      fbase[i] = pst(p, w, PS_ACC_SP)
+      fphase[i] = u32(1)
+      // The children, pushed last first so the first is cloned first.
+      room: Bool = sp + u32(8) < u32(256)
+      !room ? { px_fail(p, w, u32(446)) } | {
+        (kind == RAW_PREFIX || kind == RAW_ASSIGN) ? {
+          fnode[sp] = b
+          fphase[sp] = u32(0)
+          sp = sp + u32(1)
+        } | {
+        (kind == RAW_INFIX || kind == RAW_INDEXASSIGN || kind == RAW_WHILE || kind == RAW_INDEX) ? {
+          second: u32 = kind == RAW_INFIX ? { c } | { b }
+          first: u32 = kind == RAW_INFIX ? { b } | { a }
+          fnode[sp] = second
+          fphase[sp] = u32(0)
+          fnode[sp + u32(1)] = first
+          fphase[sp + u32(1)] = u32(0)
+          sp = sp + u32(2)
+        } | {
+        (kind == RAW_EXPRSTMT || kind == RAW_BLOCKEXPR || kind == RAW_PAT_LITERAL) ? {
+          fnode[sp] = a
+          fphase[sp] = u32(0)
+          sp = sp + u32(1)
+        } | {
+        (kind == RAW_VARIANT || kind == RAW_VARDECL || kind == RAW_PAT_VARIANT) ? {
+          c != NONE ? {
+            fnode[sp] = c
+            fphase[sp] = u32(0)
+            sp = sp + u32(1)
+          } | { }
+        } | {
+        kind == RAW_CALL ? {
+          sp + c + u32(1) >= u32(256) ? { px_fail(p, w, u32(446)) } | {
+            k: u32 = c
+            while k > u32(0) {
+              k = k - u32(1)
+              fnode[sp] = w[p.lists_at + b + k]
+              fphase[sp] = u32(0)
+              sp = sp + u32(1)
+            }
+            fnode[sp] = a
+            fphase[sp] = u32(0)
+            sp = sp + u32(1)
+          }
+        } | {
+        (kind == RAW_ARRAYLIT || kind == RAW_BLOCK) ? {
+          count: u32 = kind == RAW_BLOCK ? { b } | { c }
+          list: u32 = kind == RAW_BLOCK ? { a } | { b }
+          sp + count >= u32(256) ? { px_fail(p, w, u32(446)) } | {
+            k: u32 = count
+            while k > u32(0) {
+              k = k - u32(1)
+              fnode[sp] = w[p.lists_at + list + k]
+              fphase[sp] = u32(0)
+              sp = sp + u32(1)
+            }
+          }
+        } | {
+        kind == RAW_RECORDLIT ? {
+          sp + c >= u32(256) ? { px_fail(p, w, u32(446)) } | {
+            k: u32 = c
+            while k > u32(0) {
+              k = k - u32(1)
+              fnode[sp] = w[p.lists_at + b + k * u32(2) + u32(1)]
+              fphase[sp] = u32(0)
+              sp = sp + u32(1)
+            }
+          }
+        } | {
+        kind == RAW_MATCH ? {
+          sp + c * u32(2) + u32(1) >= u32(256) ? { px_fail(p, w, u32(446)) } | {
+            k: u32 = c
+            while k > u32(0) {
+              k = k - u32(1)
+              fnode[sp] = w[p.lists_at + b + k * u32(2) + u32(1)]
+              fphase[sp] = u32(0)
+              fnode[sp + u32(1)] = w[p.lists_at + b + k * u32(2)]
+              fphase[sp + u32(1)] = u32(0)
+              sp = sp + u32(2)
+            }
+            fnode[sp] = a
+            fphase[sp] = u32(0)
+            sp = sp + u32(1)
+          }
+        } | { } } } } } } } }
+      }
+    } | {
+      // The children are in: build the copy.
+      base: u32 = fbase[i]
+      out: u32 = NONE
+      kind == RAW_IDENT ? { out = mk_ident(p, w, a == from_name ? { to_name } | { a }) } | {
+      (kind == RAW_INTLIT || kind == RAW_BOOLLIT || kind == RAW_FLOATLIT || kind == RAW_PAT_WILD || kind == RAW_PAT_BINDING || kind == RAW_OTHER) ? {
+        out = px_node(p, w, kind, a, b, c, pn_vlo_p(p, w, n), pn_vhi_p(p, w, n))
+      } | {
+      (kind == RAW_PREFIX || kind == RAW_ASSIGN) ? { out = px_node(p, w, kind, (kind == RAW_ASSIGN && a == from_name) ? { to_name } | { a }, w[p.acc_at + base], u32(0), u32(0), u32(0)) } | {
+      kind == RAW_INFIX ? { out = px_node(p, w, kind, a, w[p.acc_at + base], w[p.acc_at + base + u32(1)], u32(0), u32(0)) } | {
+      (kind == RAW_INDEXASSIGN || kind == RAW_WHILE) ? { out = px_node(p, w, kind, w[p.acc_at + base], w[p.acc_at + base + u32(1)], u32(0), u32(0), u32(0)) } | {
+      kind == RAW_INDEX ? { out = px_node(p, w, kind, w[p.acc_at + base], w[p.acc_at + base + u32(1)], c, u32(0), u32(0)) } | {
+      (kind == RAW_EXPRSTMT || kind == RAW_BLOCKEXPR || kind == RAW_PAT_LITERAL) ? { out = px_node(p, w, kind, w[p.acc_at + base], u32(0), u32(0), u32(0), u32(0)) } | {
+      (kind == RAW_VARIANT || kind == RAW_PAT_VARIANT) ? { out = px_node(p, w, kind, a, b, c == NONE ? { NONE } | { w[p.acc_at + base] }, u32(0), u32(0)) } | {
+      kind == RAW_VARDECL ? { out = px_node(p, w, kind, a == from_name ? { to_name } | { a }, b, c == NONE ? { NONE } | { w[p.acc_at + base] }, u32(0), u32(0)) } | {
+      kind == RAW_CALL ? {
+        callee: u32 = w[p.acc_at + base]
+        start: u32 = px_acc_list(p, w, base + u32(1))
+        out = px_node(p, w, kind, callee, start, c, u32(0), u32(0))
+      } | {
+      (kind == RAW_ARRAYLIT || kind == RAW_BLOCK) ? {
+        start: u32 = px_acc_list(p, w, base)
+        out = kind == RAW_BLOCK ? { px_node(p, w, kind, start, b, u32(0), u32(0), u32(0)) } | { px_node(p, w, kind, a, start, c, u32(0), u32(0)) }
+      } | {
+      kind == RAW_RECORDLIT ? {
+        // The pairs: the original names with the cloned values.
+        k: u32 = c
+        while k > u32(0) {
+          k = k - u32(1)
+          value: u32 = w[p.acc_at + base + k]
+          w[p.acc_at + base + k * u32(2)] = w[p.lists_at + b + k * u32(2)]
+          w[p.acc_at + base + k * u32(2) + u32(1)] = value
+        }
+        set_pst(p, w, PS_ACC_SP, base + c * u32(2))
+        start: u32 = px_acc_list(p, w, base)
+        out = px_node(p, w, kind, a, start, c, u32(0), u32(0))
+      } | {
+      kind == RAW_MATCH ? {
+        scrutinee: u32 = w[p.acc_at + base]
+        start: u32 = px_acc_list(p, w, base + u32(1))
+        out = px_node(p, w, kind, scrutinee, start, c, u32(0), u32(0))
+      } | { px_fail(p, w, u32(447)) } } } } } } } } } } } } }
+      set_pst(p, w, PS_ACC_SP, base)
+      sp = sp - u32(1)
+      sp > u32(0) ? { px_acc_push(p, w, out) } | { result = out }
+    }
+  }
+  result
+}
+
+// raw_text spells an expression the way the Go parser's String() does
+// (ast.go): an identifier bare, an infix `(l op r)`, a prefix `(op r)`, a
+// field `(l.f)`, an index `(l[i])`, a call `f(a, b)`, a literal as its
+// value; interned as a string. The liveness rows quote the entries so.
+raw_text: (p: Par, w: [*]u32, node: u32): u32 {
+  buf: [128]u32
+  n: u32 = 0
+  fnode: [64]u32
+  fphase: [64]u32
+  sp: u32 = 1
+  fnode[u32(0)] = node
+  fphase[u32(0)] = u32(0)
+  while sp > u32(0) && !px_failed(p, w) {
+    i: u32 = sp - u32(1)
+    cur_n: u32 = fnode[i]
+    phase: u32 = fphase[i]
+    kind: u32 = pn_kind(p, w, cur_n)
+    a: u32 = pn_a(p, w, cur_n)
+    b: u32 = pn_b(p, w, cur_n)
+    c: u32 = pn_c(p, w, cur_n)
+    pushed: u32 = NONE
+    kind == RAW_IDENT ? {
+      n = nb_str(p, w, span(&buf), n, a)
+      sp = sp - u32(1)
+    } | {
+    kind == RAW_INTLIT ? {
+      n = nb_decimal(span(&buf), n, pn_vlo_p(p, w, cur_n))
+      sp = sp - u32(1)
+    } | {
+    kind == RAW_BOOLLIT ? {
+      n = a != u32(0) ? { nb_lit(span(&buf), n, u64(0x65757274), u64(0x0), u32(4)) } | { nb_lit(span(&buf), n, u64(0x65736C6166), u64(0x0), u32(5)) }
+      sp = sp - u32(1)
+    } | {
+    kind == RAW_PREFIX ? {
+      phase == u32(0) ? {
+        n = nb_byte(span(&buf), n, u32(40))
+        n = nb_str(p, w, span(&buf), n, a)
+        fphase[i] = u32(1)
+        pushed = b
+      } | {
+        n = nb_byte(span(&buf), n, u32(41))
+        sp = sp - u32(1)
+      }
+    } | {
+    kind == RAW_INFIX ? {
+      phase == u32(0) ? {
+        n = nb_byte(span(&buf), n, u32(40))
+        fphase[i] = u32(1)
+        pushed = b
+      } | {
+      phase == u32(1) ? {
+        n = nb_byte(span(&buf), n, u32(32))
+        n = nb_str(p, w, span(&buf), n, a)
+        n = nb_byte(span(&buf), n, u32(32))
+        fphase[i] = u32(2)
+        pushed = c
+      } | {
+        n = nb_byte(span(&buf), n, u32(41))
+        sp = sp - u32(1)
+      } }
+    } | {
+    kind == RAW_INDEX ? {
+      phase == u32(0) ? {
+        n = nb_byte(span(&buf), n, u32(40))
+        fphase[i] = u32(1)
+        pushed = a
+      } | {
+      phase == u32(1) ? {
+        c != u32(0) ? {
+          n = nb_byte(span(&buf), n, u32(46))
+          n = nb_str(p, w, span(&buf), n, pn_a(p, w, b))
+          n = nb_byte(span(&buf), n, u32(41))
+          sp = sp - u32(1)
+        } | {
+          n = nb_byte(span(&buf), n, u32(91))
+          fphase[i] = u32(2)
+          pushed = b
+        }
+      } | {
+        n = nb_byte(span(&buf), n, u32(93))
+        n = nb_byte(span(&buf), n, u32(41))
+        sp = sp - u32(1)
+      } }
+    } | {
+    kind == RAW_CALL ? {
+      phase == u32(0) ? {
+        fphase[i] = u32(1)
+        pushed = a
+      } | {
+        // After the callee (phase 1) and after each argument.
+        k: u32 = phase - u32(1)
+        k == u32(0) ? { n = nb_byte(span(&buf), n, u32(40)) } | { }
+        k < c ? {
+          k > u32(0) ? { n = nb_lit(span(&buf), n, u64(0x202C), u64(0x0), u32(2)) } | { }
+          fphase[i] = phase + u32(1)
+          pushed = w[p.lists_at + b + k]
+        } | {
+          n = nb_byte(span(&buf), n, u32(41))
+          sp = sp - u32(1)
+        }
+      }
+    } | {
+    kind == RAW_VARIANT ? {
+      phase == u32(0) ? {
+        a == NONE ? { } | { n = nb_str(p, w, span(&buf), n, a) }
+        n = nb_byte(span(&buf), n, u32(46))
+        n = nb_str(p, w, span(&buf), n, b)
+        c == NONE ? { sp = sp - u32(1) } | {
+          n = nb_byte(span(&buf), n, u32(40))
+          fphase[i] = u32(1)
+          pushed = c
+        }
+      } | {
+        n = nb_byte(span(&buf), n, u32(41))
+        sp = sp - u32(1)
+      }
+    } | {
+      n = nb_byte(span(&buf), n, u32(63))
+      sp = sp - u32(1)
+    } } } } } } } }
+    pushed == NONE ? { } | {
+      sp >= u32(64) ? { px_fail(p, w, u32(448)) } | {
+        fnode[sp] = pushed
+        fphase[sp] = u32(0)
+        sp = sp + u32(1)
+      }
+    }
+  }
+  n >= u32(512) ? { px_fail(p, w, u32(448)) } | { }
+  intern_long(p, w, span(&buf), n)
 }
 
 // --- guards ------------------------------------------------------------------------------------
@@ -408,10 +751,11 @@ step_binding: (p: Par, w: [*]u32, nm: Names, lines_base: u32, nlines: u32, name:
 // pattern-body pairs are pushed on the accumulator at legal_base and
 // next_base... The arms are built one at a time: kind 0 the legal arm,
 // 1 the next arm; the pair (pattern, body) is pushed on the accumulator.
-step_arm: (p: Par, w: [*]u32, nm: Names, lines_base: u32, nlines: u32, nstates: u32, si: u32, name: u32, which: u32): () {
+step_arm: (p: Par, w: [*]u32, nm: Names, lines_base: u32, nlines: u32, nstates: u32, si: u32, name: u32, which: u32, with_data: Bool): () {
   binding: u32 = step_binding(p, w, nm, lines_base, nlines, name)
   variant: u32 = capitalized_str(p, w, name)
-  guarded: Bool = false
+  // With data every step takes the sequential shape (compiler/protocols.go).
+  guarded: Bool = with_data
   count: u32 = 0
   k: u32 = 0
   while k < nlines {
@@ -436,8 +780,17 @@ step_arm: (p: Par, w: [*]u32, nm: Names, lines_base: u32, nlines: u32, nstates: 
         which == u32(1) ? {
           guard: u32 = line_word(p, w, lines_base, k, PL_GUARD)
           guard_cond: u32 = mk_infix(p, w, nm.and_op, mk_prefix(p, w, nm.not_op, mk_ident(p, w, nm.done)), mk_ident(p, w, from_name))
-          guard == NONE ? { } | { guard_cond = mk_infix(p, w, nm.and_op, guard_cond, guard) }
+          // The guard and the effects read the local copy of the data record.
+          guard == NONE ? { } | { guard_cond = mk_infix(p, w, nm.and_op, guard_cond, with_data ? { clone_subtree(p, w, guard, nm.data_n, nm.record_n) } | { guard }) }
           then_base: u32 = pst(p, w, PS_ACC_SP)
+          effects: u32 = line_word(p, w, lines_base, k, PL_EFFECTS)
+          effects == NONE ? { } | {
+            e: u32 = 0
+            while e < pn_b(p, w, effects) && !px_failed(p, w) {
+              px_acc_push(p, w, clone_subtree(p, w, w[p.lists_at + pn_a(p, w, effects) + e], nm.data_n, nm.record_n))
+              e = e + u32(1)
+            }
+          }
           px_acc_push(p, w, mk_assign(p, w, nm.result, mk_variant(p, w, line_word(p, w, lines_base, k, PL_TO), NONE)))
           px_acc_push(p, w, mk_assign(p, w, nm.done, mk_bool(p, w, u32(1))))
           then_block: u32 = mk_block(p, w, then_base)
@@ -462,7 +815,12 @@ step_arm: (p: Par, w: [*]u32, nm: Names, lines_base: u32, nlines: u32, nstates: 
         k = k + u32(1)
       }
       px_acc_push(p, w, mk_exprstmt(p, w, chain))
-    } | { px_acc_push(p, w, mk_exprstmt(p, w, mk_ident(p, w, nm.result))) }
+    } | {
+      // The data-less next match is the function's value, its arms ending
+      // in `result`; with data the match is a statement (the store through
+      // the span and `result` follow it).
+      with_data ? { } | { px_acc_push(p, w, mk_exprstmt(p, w, mk_ident(p, w, nm.result))) }
+    }
     body = mk_block(p, w, stmts)
   } | {
     inner: u32 = pst(p, w, PS_ACC_SP)
@@ -499,6 +857,180 @@ add_projected: (p: Par, w: [*]u32, nm: Names, fname: u32, with_step: Bool, with_
   px_add_func(p, w, fname, pstart, n, ret, body, u32(0))
 }
 
+// add_fn registers a projected function whose parameters were added from
+// pstart (n of them).
+add_fn: (p: Par, w: [*]u32, fname: u32, pstart: u32, n: u32, ret: u32, body: u32): () {
+  px_add_func(p, w, fname, pstart, n, ret, body, u32(0))
+}
+
+// data_legal_body / data_next_body: the projections of a machine with data
+// (compiler/protocols.go project, the withData branch).
+data_legal_body: (p: Par, w: [*]u32, nm: Names, lines_base: u32, nlines: u32, steps: [*]u32, nsteps: u32, nstates: u32): u32 {
+  arms: u32 = pst(p, w, PS_ACC_SP)
+  si: u32 = 0
+  while si < nsteps {
+    step_arm(p, w, nm, lines_base, nlines, nstates, si, steps[si], u32(0), true)
+    si = si + u32(1)
+  }
+  mk_match(p, w, mk_ident(p, w, nm.step_n), arms)
+}
+
+data_next_body: (p: Par, w: [*]u32, nm: Names, lines_base: u32, nlines: u32, steps: [*]u32, nsteps: u32, nstates: u32): u32 {
+  stmts: u32 = pst(p, w, PS_ACC_SP)
+  data0: u32 = mk_index(p, w, mk_ident(p, w, nm.data_n), mk_int(p, w, u32(0)))
+  legal_call: u32 = mk_call3(p, w, nm.legal_f, mk_ident(p, w, nm.state_n), data0, mk_ident(p, w, nm.step_n))
+  px_acc_push(p, w, mk_exprstmt(p, w, mk_call1(p, w, nm.assert_f, legal_call)))
+  px_acc_push(p, w, mk_vardecl(p, w, nm.record_n, px_type(p, w, RAW_TYPE_NAME, nm.data_t, u32(0)), mk_index(p, w, mk_ident(p, w, nm.data_n), mk_int(p, w, u32(0)))))
+  px_acc_push(p, w, mk_vardecl(p, w, nm.result, px_type(p, w, RAW_TYPE_NAME, nm.state_t, u32(0)), mk_ident(p, w, nm.state_n)))
+  px_acc_push(p, w, mk_vardecl(p, w, nm.done, px_type(p, w, RAW_TYPE_NAME, nm.bool_t, u32(0)), mk_bool(p, w, u32(0))))
+  arms: u32 = pst(p, w, PS_ACC_SP)
+  si: u32 = 0
+  while si < nsteps {
+    step_arm(p, w, nm, lines_base, nlines, nstates, si, steps[si], u32(1), true)
+    si = si + u32(1)
+  }
+  px_acc_push(p, w, mk_exprstmt(p, w, mk_match(p, w, mk_ident(p, w, nm.step_n), arms)))
+  px_acc_push(p, w, px_node(p, w, RAW_INDEXASSIGN, mk_index(p, w, mk_ident(p, w, nm.data_n), mk_int(p, w, u32(0))), mk_ident(p, w, nm.record_n), u32(0), u32(0), u32(0)))
+  px_acc_push(p, w, mk_exprstmt(p, w, mk_ident(p, w, nm.result)))
+  mk_block(p, w, stmts)
+}
+
+// liveness_predicates projects each `eventually` side as a Bool function
+// over the state (and data): a capitalized identifier is the test that the
+// state is it, anything else the expression itself.
+liveness_predicates: (p: Par, w: [*]u32, nm: Names, name: u32, extra_start: u32, extra_end: u32, with_data: Bool): () {
+  k: u32 = 0
+  e: u32 = extra_start
+  while e < extra_end && !px_failed(p, w) {
+    pextra_word(p, w, e, u32(0)) == PX_LIVE ? {
+      k = k + u32(1)
+      side: u32 = 0
+      while side < u32(2) {
+        term: u32 = side == u32(0) ? { pextra_word(p, w, e, u32(1)) } | { pextra_word(p, w, e, u32(2)) }
+        term == NONE ? { } | {
+          pstart: u32 = pst(p, w, PS_NPARAMS)
+          px_add_param(p, w, nm.state_n, px_type(p, w, RAW_TYPE_NAME, nm.state_t, u32(0)))
+          with_data ? { px_add_param(p, w, nm.data_n, px_type(p, w, RAW_TYPE_NAME, nm.data_t, u32(0))) } | { }
+          is_state: Bool = pn_kind(p, w, term) == RAW_IDENT && is_capitalized(p, w, pn_a(p, w, term))
+          body: u32 = is_state ? { is_state_expr(p, w, nm, pn_a(p, w, term)) } | { term }
+          add_fn(p, w, live_pred_name(p, w, name, k, side == u32(0)), pstart, with_data ? { u32(2) } | { u32(1) }, px_type(p, w, RAW_TYPE_NAME, nm.bool_t, u32(0)), body)
+        }
+        side = side + u32(1)
+      }
+    } | { }
+    e = e + u32(4)
+  }
+}
+
+is_capitalized: (p: Par, w: [*]u32, sid: u32): Bool {
+  b0: u32 = ppool_byte(p, w, w[p.strings_at + sid * u32(2)])
+  w[p.strings_at + sid * u32(2) + u32(1)] > u32(0) && b0 >= u32(65) && b0 <= u32(90)
+}
+
+mk_call3: (p: Par, w: [*]u32, fname: u32, a: u32, b: u32, c: u32): u32 {
+  base: u32 = pst(p, w, PS_ACC_SP)
+  px_acc_push(p, w, a)
+  px_acc_push(p, w, b)
+  px_acc_push(p, w, c)
+  start: u32 = px_acc_list(p, w, base)
+  px_node(p, w, RAW_CALL, mk_ident(p, w, fname), start, u32(3), u32(0), u32(0))
+}
+
+// add_proto records the machine in the protocols section (PROTO_WORDS words).
+add_proto: (p: Par, w: [*]u32, nm: Names, name: u32, initial: u32, states: [*]u32, nstates: u32, steps: [*]u32, nsteps: u32, lines_base: u32, nlines: u32, extra_start: u32, extra_end: u32, with_data: Bool, data_rec: u32): () {
+  n: u32 = pst(p, w, PS_NPROTOS)
+  n >= PX_PROTOS ? { px_fail(p, w, u32(449)) } | {
+    at: u32 = p.protos_at + n * PROTO_WORDS
+    // States.
+    base: u32 = pst(p, w, PS_ACC_SP)
+    j: u32 = 0
+    while j < nstates {
+      px_acc_push(p, w, states[j])
+      j = j + u32(1)
+    }
+    states_list: u32 = px_acc_list(p, w, base)
+    // Steps: name, variant, payload type, payload name.
+    base = pst(p, w, PS_ACC_SP)
+    si: u32 = 0
+    while si < nsteps {
+      ptype: u32 = NONE
+      pname: u32 = NONE
+      k: u32 = 0
+      while k < nlines && ptype == NONE {
+        (line_word(p, w, lines_base, k, PL_NAME) == steps[si] && line_word(p, w, lines_base, k, PL_PARAM) != NONE) ? {
+          ptype = line_word(p, w, lines_base, k, PL_PTYPE)
+          pname = line_word(p, w, lines_base, k, PL_PARAM)
+        } | { }
+        k = k + u32(1)
+      }
+      px_acc_push(p, w, steps[si])
+      px_acc_push(p, w, capitalized_str(p, w, steps[si]))
+      px_acc_push(p, w, ptype)
+      px_acc_push(p, w, pname)
+      si = si + u32(1)
+    }
+    steps_list: u32 = px_acc_list(p, w, base)
+    // Fairness: step name, strong flag. Liveness: the texts.
+    base = pst(p, w, PS_ACC_SP)
+    nfair: u32 = 0
+    e: u32 = extra_start
+    while e < extra_end {
+      pextra_word(p, w, e, u32(0)) == PX_FAIR ? {
+        px_acc_push(p, w, pextra_word(p, w, e, u32(1)))
+        px_acc_push(p, w, pextra_word(p, w, e, u32(2)))
+        nfair = nfair + u32(1)
+      } | { }
+      e = e + u32(4)
+    }
+    fair_list: u32 = px_acc_list(p, w, base)
+    base = pst(p, w, PS_ACC_SP)
+    nlive: u32 = 0
+    e = extra_start
+    while e < extra_end && !px_failed(p, w) {
+      pextra_word(p, w, e, u32(0)) == PX_LIVE ? {
+        from_n: u32 = pextra_word(p, w, e, u32(1))
+        px_acc_push(p, w, from_n == NONE ? { NONE } | { raw_text(p, w, from_n) })
+        px_acc_push(p, w, raw_text(p, w, pextra_word(p, w, e, u32(2))))
+        nlive = nlive + u32(1)
+      } | { }
+      e = e + u32(4)
+    }
+    live_list: u32 = px_acc_list(p, w, base)
+    // The lines: name, source, target, guard.
+    base = pst(p, w, PS_ACC_SP)
+    k: u32 = 0
+    while k < nlines {
+      px_acc_push(p, w, line_word(p, w, lines_base, k, PL_NAME))
+      px_acc_push(p, w, line_word(p, w, lines_base, k, PL_FROM))
+      px_acc_push(p, w, line_word(p, w, lines_base, k, PL_TO))
+      px_acc_push(p, w, line_word(p, w, lines_base, k, PL_GUARD))
+      k = k + u32(1)
+    }
+    lines_list: u32 = px_acc_list(p, w, base)
+    w[at] = name
+    w[at + u32(1)] = derived_str(p, w, name, true, u64(0), u64(0), u32(0))
+    w[at + u32(2)] = nm.state_t
+    w[at + u32(3)] = nm.step_t
+    w[at + u32(4)] = with_data ? { nm.data_t } | { NONE }
+    w[at + u32(5)] = initial
+    w[at + u32(6)] = nstates
+    w[at + u32(7)] = states_list
+    w[at + u32(8)] = nsteps
+    w[at + u32(9)] = steps_list
+    w[at + u32(10)] = nfair
+    w[at + u32(11)] = fair_list
+    w[at + u32(12)] = nlive
+    w[at + u32(13)] = live_list
+    w[at + u32(14)] = data_rec
+    w[at + u32(15)] = nlines
+    w[at + u32(16)] = lines_list
+    w[at + u32(17)] = u32(0)
+    w[at + u32(18)] = u32(0)
+    w[at + u32(19)] = u32(0)
+    set_pst(p, w, PS_NPROTOS, n + u32(1))
+  }
+}
+
 // next_body builds name_next's block: the assertion (through legal_name),
 // the result and done locals when a step is guarded, the match.
 next_body: (p: Par, w: [*]u32, nm: Names, lines_base: u32, nlines: u32, steps: [*]u32, nsteps: u32, nstates: u32, any_guarded: Bool, legal_name: u32): u32 {
@@ -511,7 +1043,7 @@ next_body: (p: Par, w: [*]u32, nm: Names, lines_base: u32, nlines: u32, steps: [
   arms: u32 = pst(p, w, PS_ACC_SP)
   si: u32 = 0
   while si < nsteps {
-    step_arm(p, w, nm, lines_base, nlines, nstates, si, steps[si], u32(1))
+    step_arm(p, w, nm, lines_base, nlines, nstates, si, steps[si], u32(1), false)
     si = si + u32(1)
   }
   arms_match: u32 = mk_match(p, w, mk_ident(p, w, nm.step_n), arms)
@@ -523,7 +1055,7 @@ legal_body: (p: Par, w: [*]u32, nm: Names, lines_base: u32, nlines: u32, steps: 
   arms: u32 = pst(p, w, PS_ACC_SP)
   si: u32 = 0
   while si < nsteps {
-    step_arm(p, w, nm, lines_base, nlines, nstates, si, steps[si], u32(0))
+    step_arm(p, w, nm, lines_base, nlines, nstates, si, steps[si], u32(0), false)
     si = si + u32(1)
   }
   mk_match(p, w, mk_ident(p, w, nm.step_n), arms)
@@ -549,8 +1081,10 @@ run_body: (p: Par, w: [*]u32, nm: Names, step_variant: u32): u32 {
 // project_protocol synthesizes the declarations of a parsed machine: its
 // lines (6 words each) sit on the accumulator from lines_base; initial is
 // the initial state's name.
-project_protocol: (p: Par, w: [*]u32, name: u32, initial: u32, lines_base: u32, nlines: u32): () {
+project_protocol: (p: Par, w: [*]u32, name: u32, initial: u32, lines_base: u32, nlines: u32, data_start: u32, data_count: u32, init_node: u32, extra_start: u32, extra_end: u32): () {
   nm: Names = protocol_names(p, w, name)
+  with_data: Bool = data_start != NONE
+  (with_data != (init_node != NONE)) ? { px_fail(p, w, u32(444)) } | { }
   states: [64]u32
   steps: [64]u32
   nstates: u32 = 0
@@ -627,7 +1161,7 @@ project_protocol: (p: Par, w: [*]u32, name: u32, initial: u32, lines_base: u32, 
     }
     byte_symbol: Bool = payloads == u32(1) && nsteps == u32(1) && first_ptype != NONE && rt_kind_p(p, w, first_ptype) == RAW_TYPE_NAME && is_name(str_name(p, w, rt_a_p(p, w, first_ptype)), u64(0x3875), u64(0), u32(2))
     table: Bool = payloads == u32(0) && nstates * nsteps <= u32(65536)
-    lowered: Bool = evaluable && nstates <= u32(254) && (table || (byte_symbol && nstates * u32(256) <= u32(65536)))
+    lowered: Bool = !with_data && evaluable && nstates <= u32(254) && (table || (byte_symbol && nstates * u32(256) <= u32(65536)))
     shift: Bool = lowered && nstates + u32(1) <= u32(10)
     // The state and step sum types.
     vstart: u32 = pst(p, w, PS_NVARIANTS)
@@ -650,16 +1184,37 @@ project_protocol: (p: Par, w: [*]u32, name: u32, initial: u32, lines_base: u32, 
       si = si + u32(1)
     }
     px_add_adt(p, w, nm.step_t, vstart, nsteps)
+    data_rec: u32 = NONE
+    with_data ? {
+      data_rec = pst(p, w, PS_NRECORDS)
+      px_add_record(p, w, nm.data_t, data_start, data_count)
+    } | { }
     // name_initial, name_legal, name_next.
     state_ret: u32 = px_type(p, w, RAW_TYPE_NAME, nm.state_t, u32(0))
     add_projected(p, w, nm, nm.initial_f, false, false, state_ret, mk_variant(p, w, initial, NONE))
-    add_projected(p, w, nm, nm.legal_f, true, false, px_type(p, w, RAW_TYPE_NAME, nm.bool_t, u32(0)), legal_body(p, w, nm, lines_base, nlines, span(&steps), nsteps, nstates))
-    add_projected(p, w, nm, nm.next_f, true, false, state_ret, next_body(p, w, nm, lines_base, nlines, span(&steps), nsteps, nstates, any_guarded, nm.legal_f))
+    with_data ? {
+      add_fn(p, w, nm.initial_data_f, pst(p, w, PS_NPARAMS), u32(0), px_type(p, w, RAW_TYPE_NAME, nm.data_t, u32(0)), init_node)
+      lstart: u32 = pst(p, w, PS_NPARAMS)
+      px_add_param(p, w, nm.state_n, px_type(p, w, RAW_TYPE_NAME, nm.state_t, u32(0)))
+      px_add_param(p, w, nm.data_n, px_type(p, w, RAW_TYPE_NAME, nm.data_t, u32(0)))
+      px_add_param(p, w, nm.step_n, px_type(p, w, RAW_TYPE_NAME, nm.step_t, u32(0)))
+      add_fn(p, w, nm.legal_f, lstart, u32(3), px_type(p, w, RAW_TYPE_NAME, nm.bool_t, u32(0)), data_legal_body(p, w, nm, lines_base, nlines, span(&steps), nsteps, nstates))
+      nstart: u32 = pst(p, w, PS_NPARAMS)
+      px_add_param(p, w, nm.state_n, px_type(p, w, RAW_TYPE_NAME, nm.state_t, u32(0)))
+      px_add_param(p, w, nm.data_n, px_type(p, w, RAW_TYPE_SPAN, px_type(p, w, RAW_TYPE_NAME, nm.data_t, u32(0)), u32(0)))
+      px_add_param(p, w, nm.step_n, px_type(p, w, RAW_TYPE_NAME, nm.step_t, u32(0)))
+      add_fn(p, w, nm.next_f, nstart, u32(3), state_ret, data_next_body(p, w, nm, lines_base, nlines, span(&steps), nsteps, nstates))
+    } | {
+      add_projected(p, w, nm, nm.legal_f, true, false, px_type(p, w, RAW_TYPE_NAME, nm.bool_t, u32(0)), legal_body(p, w, nm, lines_base, nlines, span(&steps), nsteps, nstates))
+      add_projected(p, w, nm, nm.next_f, true, false, state_ret, next_body(p, w, nm, lines_base, nlines, span(&steps), nsteps, nstates, any_guarded, nm.legal_f))
+    }
     lowered ? {
       add_projected(p, w, nm, nm.legal_tree_f, true, false, px_type(p, w, RAW_TYPE_NAME, nm.bool_t, u32(0)), legal_body(p, w, nm, lines_base, nlines, span(&steps), nsteps, nstates))
       add_projected(p, w, nm, nm.next_tree_f, true, false, state_ret, next_body(p, w, nm, lines_base, nlines, span(&steps), nsteps, nstates, any_guarded, nm.legal_tree_f))
       byte_symbol ? { add_projected(p, w, nm, nm.run_f, false, true, state_ret, run_body(p, w, nm, capitalized_str(p, w, steps[u32(0)]))) } | { }
     } | { }
+    liveness_predicates(p, w, nm, name, extra_start, extra_end, with_data)
+    add_proto(p, w, nm, name, initial, span(&states), nstates, span(&steps), nsteps, lines_base, nlines, extra_start, extra_end, with_data, data_rec)
   }
 }
 
@@ -668,11 +1223,19 @@ rt_a_p: (p: Par, w: [*]u32, t: u32): u32 = w[p.types_at + t * u32(4) + u32(1)]
 
 // --- the parser frame -----------------------------------------------------------------------------
 
-// Protocol frame: 2 name, 3 initial, 4 lines base, 5 line name, 6 param
-// name, 7 param type, 8 from, 9 to, 10 guard.
+// Protocol frame: 2 name, 3 initial, 4 lines base, 5 line name (or the
+// first liveness term), 6 param name (or the data field group base), 7
+// param type, 8 from, 9 to, 10 guard, 11 effects, 12 data field start
+// (NONE without data), 13 data field count, 14 init literal, 15 extras
+// start.
 PP_ENTRY: u32 = 0
 PP_PARAM_TYPED: u32 = 1
 PP_GUARDED: u32 = 2
+PP_EFFECTS: u32 = 3
+PP_DATA_TYPED: u32 = 4
+PP_INIT: u32 = 5
+PP_LIVE_FIRST: u32 = 6
+PP_LIVE_SECOND: u32 = 7
 
 // protocol_line_done records the line in flight and moves to the next entry.
 protocol_line_done: (p: Par, w: [*]u32, at: u32): () {
@@ -682,12 +1245,27 @@ protocol_line_done: (p: Par, w: [*]u32, at: u32): () {
   px_acc_push(p, w, w[at + u32(8)])
   px_acc_push(p, w, w[at + u32(9)])
   px_acc_push(p, w, w[at + u32(10)])
+  px_acc_push(p, w, w[at + u32(11)])
   w[at + u32(1)] = PP_ENTRY
   px_advance(p, w)
 }
 
-// protocol_line_tail reads `: From -> To [when guard]` after the name and
-// its optional parameter; `then` and `via` are outside the subset.
+// protocol_line_rest reads what follows the guard: `then { effects }`, or
+// the line's end; `via` is outside the subset.
+protocol_line_rest: (p: Par, w: [*]u32, src: []u32, at: u32): () {
+  peek_is_word(p, w, src, u64(0x6E656874), u64(0), u32(4)) ? {
+    px_advance(p, w)
+    expect_peek(p, w, T_LBRACE, u32(450)) ? {
+      w[at + u32(1)] = PP_EFFECTS
+      px_push_block(p, w, u32(0))
+    } | { }
+  } | {
+    peek_is_word(p, w, src, u64(0x616976), u64(0), u32(3)) ? { px_fail(p, w, u32(434)) } | { protocol_line_done(p, w, at) }
+  }
+}
+
+// protocol_line_tail reads `: From -> To [when guard] [then { effects }]`
+// after the name and its optional parameter.
 protocol_line_tail: (p: Par, w: [*]u32, src: []u32, at: u32): () {
   expect_peek(p, w, T_COLON, u32(430)) ? {
     expect_peek(p, w, T_IDENT, u32(431)) ? {
@@ -696,18 +1274,43 @@ protocol_line_tail: (p: Par, w: [*]u32, src: []u32, at: u32): () {
         expect_peek(p, w, T_IDENT, u32(433)) ? {
           w[at + u32(9)] = px_intern_token(p, w, src, cur(p, w))
           w[at + u32(10)] = NONE
+          w[at + u32(11)] = NONE
           peek_is_word(p, w, src, u64(0x6E656877), u64(0), u32(4)) ? {
             px_advance(p, w)
             px_advance(p, w)
             w[at + u32(1)] = PP_GUARDED
             px_push_expr(p, w, PR_LOWEST)
-          } | {
-            (peek_is_word(p, w, src, u64(0x6E656874), u64(0), u32(4)) || peek_is_word(p, w, src, u64(0x616976), u64(0), u32(3))) ? { px_fail(p, w, u32(434)) } | { protocol_line_done(p, w, at) }
-          }
+          } | { protocol_line_rest(p, w, src, at) }
         } | { }
       } | { }
     } | { }
   } | { }
+}
+
+// protocol_data_field reads a data record's field group at the current
+// token (`}` ends the record): the names, then the group's type.
+protocol_data_field: (p: Par, w: [*]u32, src: []u32, at: u32): () {
+  while cur_kind(p, w) == T_COMMA { px_advance(p, w) }
+  cur_kind(p, w) == T_RBRACE ? {
+    w[at + u32(1)] = PP_ENTRY
+    px_advance(p, w)
+  } | {
+    cur_kind(p, w) != T_IDENT ? { px_fail(p, w, u32(451)) } | {
+      w[at + u32(6)] = pst(p, w, PS_ACC_SP)
+      px_acc_push(p, w, px_intern_token(p, w, src, cur(p, w)))
+      while peek_kind(p, w) == T_COMMA && !px_failed(p, w) {
+        px_advance(p, w)
+        expect_peek(p, w, T_IDENT, u32(451)) ? { px_acc_push(p, w, px_intern_token(p, w, src, cur(p, w))) } | { }
+      }
+      px_failed(p, w) ? { } | {
+        expect_peek(p, w, T_COLON, u32(452)) ? {
+          px_advance(p, w)
+          w[at + u32(1)] = PP_DATA_TYPED
+          px_push(p, w, P_TYPE, NONE, NONE)
+        } | { }
+      }
+    }
+  }
 }
 
 step_protocol_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
@@ -718,16 +1321,62 @@ step_protocol_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
   } | {
   phase == PP_GUARDED ? {
     w[at + u32(10)] = pst(p, w, PS_RET)
-    (peek_is_word(p, w, src, u64(0x6E656874), u64(0), u32(4)) || peek_is_word(p, w, src, u64(0x616976), u64(0), u32(3))) ? { px_fail(p, w, u32(434)) } | { protocol_line_done(p, w, at) }
+    protocol_line_rest(p, w, src, at)
+  } | {
+  phase == PP_EFFECTS ? {
+    w[at + u32(11)] = pst(p, w, PS_RET)
+    peek_is_word(p, w, src, u64(0x616976), u64(0), u32(3)) ? { px_fail(p, w, u32(434)) } | { protocol_line_done(p, w, at) }
+  } | {
+  phase == PP_DATA_TYPED ? {
+    base: u32 = w[at + u32(6)]
+    sp: u32 = pst(p, w, PS_ACC_SP)
+    i: u32 = base
+    while i < sp {
+      px_add_field(p, w, w[p.acc_at + i], pst(p, w, PS_RET))
+      i = i + u32(1)
+    }
+    w[at + u32(13)] = w[at + u32(13)] + (sp - base)
+    set_pst(p, w, PS_ACC_SP, base)
+    px_advance(p, w)
+    protocol_data_field(p, w, src, at)
+  } | {
+  phase == PP_INIT ? {
+    w[at + u32(14)] = pst(p, w, PS_RET)
+    w[at + u32(1)] = PP_ENTRY
+    px_advance(p, w)
+  } | {
+  phase == PP_LIVE_FIRST ? {
+    peek_kind(p, w) == T_ARROW ? {
+      w[at + u32(5)] = pst(p, w, PS_RET)
+      px_advance(p, w)
+      px_advance(p, w)
+      w[at + u32(1)] = PP_LIVE_SECOND
+      px_push_expr(p, w, PR_LOWEST)
+    } | {
+      pextra_push(p, w, PX_LIVE, NONE, pst(p, w, PS_RET), u32(0))
+      w[at + u32(1)] = PP_ENTRY
+      px_advance(p, w)
+    }
+  } | {
+  phase == PP_LIVE_SECOND ? {
+    pextra_push(p, w, PX_LIVE, w[at + u32(5)], pst(p, w, PS_RET), u32(0))
+    w[at + u32(1)] = PP_ENTRY
+    px_advance(p, w)
   } | {
     // PP_ENTRY: the cursor is on an entry's first token, or `}`.
+    w[at + u32(15)] == NONE ? {
+      w[at + u32(15)] = pst(p, w, PS_NPEXTRA)
+      w[at + u32(12)] = NONE
+      w[at + u32(13)] = u32(0)
+      w[at + u32(14)] = NONE
+    } | { }
     while cur_kind(p, w) == T_COMMA || cur_kind(p, w) == T_SEMI { px_advance(p, w) }
     k: u32 = cur_kind(p, w)
     k == T_RBRACE ? {
       base: u32 = w[at + u32(4)]
       nlines: u32 = (pst(p, w, PS_ACC_SP) - base) / PL_WORDS
       (w[at + u32(3)] == NONE || nlines == u32(0)) ? { px_fail(p, w, u32(436)) } | {
-        project_protocol(p, w, w[at + u32(2)], w[at + u32(3)], base, nlines)
+        project_protocol(p, w, w[at + u32(2)], w[at + u32(3)], base, nlines, w[at + u32(12)], w[at + u32(13)], w[at + u32(14)], w[at + u32(15)], pst(p, w, PS_NPEXTRA))
         set_pst(p, w, PS_ACC_SP, base)
         px_deliver(p, w, NONE)
       }
@@ -741,10 +1390,50 @@ step_protocol_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
           }
         } | { }
       } | {
-        outside: Bool = cur_is_word(p, w, src, u64(0x656372756F736572), u64(0), u32(8)) || cur_is_word(p, w, src, u64(0x72696166), u64(0), u32(4)) ||
-          cur_is_word(p, w, src, u64(0x796C676E6F727473), u64(0), u32(8)) || cur_is_word(p, w, src, u64(0x6C6175746E657665), u64(0x796C), u32(10)) ||
-          cur_is_word(p, w, src, u64(0x61746164), u64(0), u32(4)) || cur_is_word(p, w, src, u64(0x74696E69), u64(0), u32(4))
-        outside ? { px_fail(p, w, u32(440)) } | {
+      cur_is_word(p, w, src, u64(0x61746164), u64(0), u32(4)) ? {
+        // data { field: T, ... }
+        (w[at + u32(12)] != NONE) ? { px_fail(p, w, u32(443)) } | {
+          expect_peek(p, w, T_LBRACE, u32(453)) ? {
+            w[at + u32(12)] = pst(p, w, PS_NFIELDS)
+            w[at + u32(13)] = u32(0)
+            px_advance(p, w)
+            protocol_data_field(p, w, src, at)
+          } | { }
+        }
+      } | {
+      cur_is_word(p, w, src, u64(0x74696E69), u64(0), u32(4)) ? {
+        // init { field: value, ... }: a record literal of the data type.
+        (w[at + u32(14)] != NONE) ? { px_fail(p, w, u32(443)) } | {
+          expect_peek(p, w, T_LBRACE, u32(454)) ? {
+            w[at + u32(1)] = PP_INIT
+            px_push(p, w, P_RECORD, derived_str(p, w, w[at + u32(2)], false, u64(0x61746144), u64(0), u32(4)), pst(p, w, PS_ACC_SP))
+          } | { }
+        }
+      } | {
+      (cur_is_word(p, w, src, u64(0x72696166), u64(0), u32(4)) || cur_is_word(p, w, src, u64(0x796C676E6F727473), u64(0), u32(8))) ? {
+        // fair step / strongly fair step
+        strong: Bool = cur_is_word(p, w, src, u64(0x796C676E6F727473), u64(0), u32(8))
+        ok: Bool = true
+        strong ? {
+          peek_is_word(p, w, src, u64(0x72696166), u64(0), u32(4)) ? { px_advance(p, w) } | {
+            px_fail(p, w, u32(455))
+            ok = false
+          }
+        } | { }
+        ok ? {
+          expect_peek(p, w, T_IDENT, u32(456)) ? {
+            pextra_push(p, w, PX_FAIR, px_intern_token(p, w, src, cur(p, w)), strong ? { u32(1) } | { u32(0) }, u32(0))
+            px_advance(p, w)
+          } | { }
+        } | { }
+      } | {
+      cur_is_word(p, w, src, u64(0x6C6175746E657665), u64(0x796C), u32(10)) ? {
+        // eventually target / eventually from -> target
+        px_advance(p, w)
+        w[at + u32(1)] = PP_LIVE_FIRST
+        px_push_expr(p, w, PR_LOWEST)
+      } | {
+        cur_is_word(p, w, src, u64(0x656372756F736572), u64(0), u32(8)) ? { px_fail(p, w, u32(440)) } | {
           w[at + u32(5)] = px_intern_token(p, w, src, cur(p, w))
           w[at + u32(6)] = NONE
           w[at + u32(7)] = NONE
@@ -760,7 +1449,7 @@ step_protocol_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
             } | { }
           } | { protocol_line_tail(p, w, src, at) }
         }
-      }
+      } } } } }
     } }
-  } }
+  } } } } } } }
 }

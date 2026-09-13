@@ -2195,6 +2195,7 @@ var (
 	fieldAccessorType   = reflect.TypeOf(ast.FieldAccessorExpression{})
 	importStmtType      = reflect.TypeOf(ast.ImportStatement{})
 	fieldTagType        = reflect.TypeOf(ast.FieldTag{})
+	dispatchSlotType    = reflect.TypeOf(ast.DispatchSlot{})
 	packageStmtType     = reflect.TypeOf(ast.PackageStatement{})
 )
 
@@ -2226,6 +2227,13 @@ func (sv *syntaxVisitor) walk(v reflect.Value, label bool) {
 		}
 		if t == fieldTagType && sv.tag != nil && v.CanAddr() {
 			sv.tag(v.FieldByName("Name").Addr().Interface().(*string))
+		}
+		if t == dispatchSlotType && sv.tag != nil && v.CanAddr() {
+			// A dispatch slot names its realization as a string
+			// (docs/spec/93-simd.md section 6): a library package's
+			// realization resolves to the package's internal name like any
+			// other reference.
+			sv.tag(v.FieldByName("Realization").Addr().Interface().(*string))
 		}
 		for i := 0; i < v.NumField(); i++ {
 			field := t.Field(i)

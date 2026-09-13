@@ -81,6 +81,15 @@ func Emit(program *ast.Program, tc *typechecker.TypeChecker, namespace string, n
 			queue = append(queue, name)
 		}
 	}
+	// A dispatch realization is not part of the meaning: the dispatched
+	// function's body is (docs/spec/93-simd.md section 6). A body-less one
+	// — an asm unit's declaration — is skipped rather than refused.
+	realizations := map[string]bool{}
+	for _, fn := range candidates {
+		for _, slot := range fn.Dispatch {
+			realizations[slot.Realization] = true
+		}
+	}
 	for len(queue) > 0 {
 		name := queue[0]
 		queue = queue[1:]
@@ -88,6 +97,9 @@ func Emit(program *ast.Program, tc *typechecker.TypeChecker, namespace string, n
 			continue
 		}
 		fn := candidates[name]
+		if fn.Body == nil && realizations[name] {
+			continue
+		}
 		if len(fn.TypeParams) != 0 || fn.ExternSymbol != "" || fn.Body == nil {
 			return "", fmt.Errorf("lean: %s: generics and extern functions are outside the extracted subset", name)
 		}

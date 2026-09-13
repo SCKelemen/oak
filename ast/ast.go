@@ -984,6 +984,12 @@ type ADTType struct {
 	// makes for shift-DFA state types (tags are the offsets 6*i). Matching
 	// compares tags by name, so nothing else observes the values.
 	TagValues []int `json:",omitempty"`
+	// ZeroInit makes every constructor zero the whole value before storing
+	// the tag and payload, so a read of any payload member finds
+	// initialized bytes. The protocol projection sets it on the step type
+	// of a mixed-symbol machine, whose lowered step reads each classed
+	// payload member and selects on the tag (90-backend.md section 14).
+	ZeroInit bool `json:",omitempty"`
 }
 
 func (adt *ADTType) statementNode()       {}
@@ -1274,7 +1280,12 @@ type FunctionStatement struct {
 // step's u8 payload when ByteSymbol is set (guards over the payload are
 // evaluated at compile time for every value). Table holds (States+1) rows
 // of Symbols entries: the next state's index, or States (the sink, also
-// the illegal sentinel); the sink row maps every symbol to the sink. Shift
+// the illegal sentinel); the sink row maps every symbol to the sink. A
+// mixed-symbol machine (steps with read payloads beside steps without, or
+// a u16 payload) sets Bases: step i owns the symbols from Bases[i], one
+// when Classes[i] is nil, else one per class of its payload values, with
+// Classes[i][value] the class and ClassVariant[i] the variant carrying the
+// payload; the runtime symbol is Bases[tag] + Classes[tag][payload]. Shift
 // selects the shift-DFA form, admitted when States+1 <= 10, under which the
 // state ADT's tags are the offsets 6*i (ADTType.TagValues) and a step is
 // (rows[symbol] >> state) & 63. Oak.Protocol proves both forms compute the
@@ -1288,6 +1299,10 @@ type ProtocolLowering struct {
 	StepName   string // the variant carrying the byte payload, ByteSymbol only
 	Table      []int
 	Shift      bool
+	// Mixed symbols, nil otherwise.
+	Bases        []int
+	Classes      [][]int
+	ClassVariant []string
 }
 
 // EffectName is one `Namespace.Name` in an effect clause.
@@ -1571,6 +1586,37 @@ type ProtocolDeclaration struct {
 	Fairness []*ProtocolFairness
 	Liveness []*ProtocolLiveness
 	Exported bool
+}
+
+// LiteralsDeclaration is `Name: literals = { "GET ", "POST " }`
+// (docs/spec/113-literals.md): a set of byte-string literals the compiler
+// projects into a scanner — the nibble tables of the Teddy prefilter
+// computed at compile time and `name_count`, `name_find`, `name_which`
+// over the standard library's kernel.
+type LiteralsDeclaration struct {
+	BaseNode
+	Token    token.Token // the declaration name token
+	EndToken token.Token // closing brace
+	Name     *Identifier
+	Literals []*StringLiteral
+	Exported bool
+}
+
+func (d *LiteralsDeclaration) statementNode()       {}
+func (d *LiteralsDeclaration) TokenLiteral() string { return d.Token.Literal }
+func (d *LiteralsDeclaration) String() string {
+	var out bytes.Buffer
+	out.WriteString(d.Name.Value)
+	out.WriteString(": literals = {")
+	for i, lit := range d.Literals {
+		if i > 0 {
+			out.WriteString(",")
+		}
+		out.WriteString(" ")
+		out.WriteString(fmt.Sprintf("%q", lit.Value))
+	}
+	out.WriteString(" }")
+	return out.String()
 }
 
 // ProtocolFairness is one `fair step` (weak) or `strongly fair step`

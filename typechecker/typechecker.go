@@ -523,6 +523,10 @@ type TypeChecker struct {
 	// kernels names the program's kernel declarations (docs/spec/56-kernels.md);
 	// test_launch (110-testing.md, "Launch targets") takes one.
 	kernels map[string]bool
+	// dispatchRealizations names the functions a dispatch clause selects
+	// (docs/spec/93-simd.md section 6): reached only through their
+	// dispatched function, never called directly.
+	dispatchRealizations map[string]bool
 	// orderScopes is the stack of enclosing `order` blocks' orders
 	// (docs/spec/55-parallelism.md section 4): the innermost decides what
 	// reduce.reduce inside it names.
@@ -2496,6 +2500,14 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 		return tc.checkFieldAccessorInvocation(accessor.Field.Value, expr)
 	}
 	if ident, ok := expr.Function.(*ast.Identifier); ok {
+		if tc.dispatchRealizations[ident.Value] {
+			// A realization is compiled for its feature and reached only
+			// through the dispatched function's selection; a direct call
+			// would run it on a processor without the feature (the dbs
+			// pilot's B10, docs/notes/dbs-feedback-2026-09.md).
+			tc.addError(expr, "dispatch: %s is a realization; call the function that dispatches to it, which selects it only where the processor has the feature", ident.Value)
+			return nil
+		}
 		if atomicType, recognized := tc.checkAtomicInvocation(ident.Value, expr); recognized {
 			return atomicType
 		}
@@ -6764,9 +6776,15 @@ func (tc *TypeChecker) checkDispatchClauses(program *ast.Program) {
 		}
 		return "(" + strings.Join(parts, ", ") + ") -> " + ret
 	}
+	tc.dispatchRealizations = map[string]bool{}
 	for _, fn := range functions {
 		if len(fn.Dispatch) == 0 {
 			continue
+		}
+		for _, slot := range fn.Dispatch {
+			if slot.Realization != fn.Name.Value {
+				tc.dispatchRealizations[slot.Realization] = true
+			}
 		}
 		if fn.Body == nil {
 			tc.addError(fn.Name, "dispatch: %s has no body; the body is the meaning the realizations are claimed equal to", fn.Name.Value)
@@ -6797,10 +6815,9 @@ func (tc *TypeChecker) checkDispatchClauses(program *ast.Program) {
 				tc.addError(fn.Name, "dispatch: %s is itself dispatched; realizations are ordinary functions", slot.Realization)
 				continue
 			}
-			if realization.Body == nil {
-				tc.addError(fn.Name, "dispatch: %s has no body", slot.Realization)
-				continue
-			}
+			// A definition-less realization is legal: its body is an
+			// .oakasm unit's (docs/spec/93-simd.md section 6, asm units
+			// as realizations); the asm gate requires the unit.
 			if want, got := signature(fn), signature(realization); want != got {
 				tc.addError(fn.Name, "dispatch: %s has signature %s, but %s is %s; a realization has the identical signature", slot.Realization, got, fn.Name.Value, want)
 			}

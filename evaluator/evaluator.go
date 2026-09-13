@@ -1314,6 +1314,7 @@ func evalFunctionStatement(fn *ast.FunctionStatement, env *object.Environment) o
 		Env:        env,
 		Variadic:   len(fn.Parameters) > 0 && fn.Parameters[len(fn.Parameters)-1].Variadic,
 		Dispatch:   fn.Dispatch,
+		Abstract:   fn.Body == nil,
 	}
 
 	// If this is a method (has a receiver), store it with a special key: TypeName::methodName
@@ -1591,11 +1592,25 @@ func evalRecordLiteral(rl *ast.RecordLiteral, env *object.Environment) object.Ob
 	// For type-qualified literals, we just evaluate the fields normally
 	// The TypeName is only used by the typechecker, not the evaluator
 
-	// Fields evaluate in source order (docs/spec/10-syntax.md §3d) — never
-	// in the map's, which the left-to-right conformance test caught varying
-	// between runs.
-	for _, field := range recordFieldsInOrder(rl) {
-		fieldName, fieldExpr := field.Name, field.Value
+	// Fields evaluate in source order (docs/spec/10-syntax.md section 3d:
+	// left to right, the order the C backend sequences), never in the Go
+	// map's order: a side-effecting field expression must see the effects
+	// of the fields written before it.
+	names := make([]string, 0, len(rl.Fields))
+	for _, field := range rl.FieldOrder {
+		if _, present := rl.Fields[field.Name]; present {
+			names = append(names, field.Name)
+		}
+	}
+	if len(names) != len(rl.Fields) {
+		names = names[:0]
+		for name := range rl.Fields {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+	}
+	for _, fieldName := range names {
+		fieldExpr := rl.Fields[fieldName]
 		// Check if this looks like a type definition context
 		// In type definitions, field expressions are type annotations (identifiers like u8, i32)
 		// In value contexts, field expressions are values
@@ -1862,29 +1877,12 @@ func selectRealization(fn *object.Function) (object.Object, bool) {
 			continue
 		}
 		if realization, found := fn.Env.Get(slot.Realization); found {
-			if target, isFn := realization.(*object.Function); isFn && target != fn {
+			// An asm-unit realization has no Oak body: the interpreter
+			// runs the dispatched function's own (the meaning).
+			if target, isFn := realization.(*object.Function); isFn && target != fn && !target.Abstract {
 				return target, true
 			}
 		}
 	}
 	return nil, false
-}
-
-// recordFieldsInOrder lists a record literal's fields as written; a literal
-// built without FieldOrder falls back to its map, sorted by name so the
-// order is at least deterministic.
-func recordFieldsInOrder(rl *ast.RecordLiteral) []ast.RecordField {
-	if len(rl.FieldOrder) > 0 {
-		return rl.FieldOrder
-	}
-	names := make([]string, 0, len(rl.Fields))
-	for name := range rl.Fields {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	fields := make([]ast.RecordField, 0, len(names))
-	for _, name := range names {
-		fields = append(fields, ast.RecordField{Name: name, Value: rl.Fields[name]})
-	}
-	return fields
 }

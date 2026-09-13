@@ -40,6 +40,7 @@ RAW_OTHER: u32 = 23
 
 RAW_TYPE_NAME: u32 = 0
 RAW_TYPE_ARRAY: u32 = 1
+RAW_TYPE_SPAN: u32 = 2
 RAW_TYPE_SLICE: u32 = 3
 
 RAW_HEADER: u32 = 16
@@ -83,6 +84,7 @@ ST_LEAVES: u32 = 16
 ST_TSP: u32 = 17
 ST_TRET: u32 = 18
 ST_NLNAMES: u32 = 19
+ST_CAPTURE: u32 = 20
 
 // Frame kinds.
 X_EXPR: u32 = 0
@@ -132,6 +134,7 @@ Ser: type = struct {
   nodes_at: u32,
   lists_at: u32,
   state_at: u32,
+  capture_at: u32,
   total: u32,
   cap_nodes: u32,
   cap_lists: u32,
@@ -159,6 +162,7 @@ ser_layout: (cap_nodes: u32, cap_lists: u32): Ser {
   nodes_at: u32 = tstack_at + SR_TSTACK * SR_TS_WORDS
   lists_at: u32 = nodes_at + cap_nodes * SYN_NODE_WORDS
   state_at: u32 = lists_at + cap_lists
+  capture_at: u32 = state_at + u32(32)
   Ser {
     funcs_at: funcs_at,
     fnames_at: fnames_at,
@@ -180,7 +184,8 @@ ser_layout: (cap_nodes: u32, cap_lists: u32): Ser {
     nodes_at: nodes_at,
     lists_at: lists_at,
     state_at: state_at,
-    total: state_at + u32(32),
+    capture_at: capture_at,
+    total: capture_at + cap_nodes,
     cap_nodes: cap_nodes,
     cap_lists: cap_lists,
     out_total: SYN_HEADER + SR_FUNCS * SYN_FUNC_WORDS + SR_PARAMS * SYN_PARAM_WORDS + SR_TYPES * SYN_TYPE_WORDS + SR_TLEAVES * u32(2) + SR_FIELDS * u32(2) + SR_VARIANTS * u32(3) + SR_LEAFIDX + cap_nodes * SYN_NODE_WORDS + cap_lists
@@ -211,7 +216,9 @@ Raw: type = struct {
   nrecords: u32,
   nadts: u32,
   nfuncs: u32,
-  theorem: u32
+  theorem: u32,
+  protos_at: u32,
+  nprotos: u32
 }
 
 raw_layout: (rx: []u32): Raw {
@@ -230,6 +237,9 @@ raw_layout: (rx: []u32): Raw {
   nadts: u32 = rx[u32(9)]
   nfuncs: u32 = rx[u32(5)]
   theorem_fn: u32 = rx[u32(11)]
+  // The protocols section follows the lists (tree.oak px_write_table).
+  protos_at: u32 = lists_at + rx[u32(4)]
+  nprotos: u32 = rx[u32(12)]
   Raw {
     strings_at: strings_at,
     pool_at: pool_at,
@@ -245,9 +255,19 @@ raw_layout: (rx: []u32): Raw {
     nrecords: nrecords,
     nadts: nadts,
     nfuncs: nfuncs,
-    theorem: theorem_fn
+    theorem: theorem_fn,
+    protos_at: protos_at,
+    nprotos: nprotos
   }
 }
+
+// A protocol's entry (PROTO_WORDS words): 0 name, 1 prefix, 2 state type,
+// 3 step type, 4 data type (NONE without data), 5 initial state, 6 state
+// count, 7 states list, 8 step count, 9 steps list (name, variant, payload
+// type, payload name), 10 fairness count, 11 fairness list (step, strong), 12 liveness
+// count, 13 liveness list (from text or NONE, target text), 14 data record,
+// 15 line count, 16 lines list (name, from, to, guard node or NONE).
+rproto_word: (rx: []u32, raw: Raw, i: u32, k: u32): u32 = rx[raw.protos_at + i * u32(20) + k]
 
 rs_off: (rx: []u32, raw: Raw, id: u32): u32 = rx[raw.strings_at + id * u32(2)]
 rs_len: (rx: []u32, raw: Raw, id: u32): u32 = rx[raw.strings_at + id * u32(2) + u32(1)]
@@ -792,9 +812,10 @@ sr_resolve_type: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, mode: u32, value: u32)
         w[at] = TS_NAME
         w[at + u32(1)] = rt_a(rx, raw, texpr)
       } | {
-        (tk == RAW_TYPE_ARRAY || tk == RAW_TYPE_SLICE) ? {
+        (tk == RAW_TYPE_ARRAY || tk == RAW_TYPE_SLICE || tk == RAW_TYPE_SPAN) ? {
+          // A span types as a view (the lowering writes through it).
           w[at] = TS_ARRAY
-          w[at + u32(1)] = tk == RAW_TYPE_SLICE ? { NONE } | { rt_b(rx, raw, texpr) }
+          w[at + u32(1)] = tk == RAW_TYPE_ARRAY ? { rt_b(rx, raw, texpr) } | { NONE }
           ts_push(s, w, TS_EXPR, rt_a(rx, raw, texpr), u32(0), u32(0), u32(0))
         } | { sr_fail(s, w, u32(105)) }
       }
@@ -946,9 +967,17 @@ sr_push_typed: (s: Ser, w: [*]u32, node: u32, f: u32, expected: u32): () {
   w[at + u32(7)] = expected
 }
 
-// sr_deliver pops the frame with the node as its result.
+// sr_deliver pops the frame with the node as its result. Under type
+// capture (serialize_captured) the delivered node's type is recorded
+// against the frame's raw node, for the Lean projection (lean.oak).
 sr_deliver: (s: Ser, w: [*]u32, id: u32): () {
   set_sst(s, w, ST_RET, id)
+  sst(s, w, ST_CAPTURE) != u32(0) ? {
+    at: u32 = sfr_at(s, w, sst(s, w, ST_SP) - u32(1))
+    kind: u32 = w[at]
+    node: u32 = w[at + u32(1)]
+    ((kind == X_EXPR || kind == X_MATCH || kind == X_BLOCK) && node != NONE && node < s.cap_nodes && id != NONE && id < sst(s, w, ST_NNODES)) ? { w[s.capture_at + node] = sn_type(s, w, id) } | { }
+  } | { }
   sr_pop(s, w)
 }
 
@@ -1196,8 +1225,11 @@ step_call_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, node: u32, f: u32
         } | {
           nm: Name16 = rs_name(rx, raw, name)
           fcode: u32 = float_intrinsic_code(nm)
-          is_name(nm, u64(0x77656976), u64(0), u32(4)) ? {
-            // view(&local): an alias of an array symbol's leaves.
+          (is_name(nm, u64(0x77656976), u64(0), u32(4)) || is_name(nm, u64(0x6E617073), u64(0), u32(4))) ? {
+            // view(&local): an alias of an array symbol's leaves; span(&local)
+            // the same alias, writable (word b = 1): the lowering writes
+            // stores through it back to the array.
+            writable: u32 = is_name(nm, u64(0x6E617073), u64(0), u32(4)) ? { u32(1) } | { u32(0) }
             arg: u32 = nargs == u32(1) ? { rl_item(rx, raw, args, u32(0)) } | { NONE }
             ok: Bool = arg != NONE && rn_kind(rx, raw, arg) == RAW_PREFIX && is_name(rs_name(rx, raw, rn_a(rx, raw, arg)), u64(0x26), u64(0), u32(1)) && rn_kind(rx, raw, rn_b(rx, raw, arg)) == RAW_IDENT
             !ok ? { sr_fail(s, w, u32(190)) } | {
@@ -1205,7 +1237,7 @@ step_call_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, node: u32, f: u32
               (sym == NONE || ty_kind(s, w, sr_symbol_type(s, w, f, sym)) != TY_ARRAY) ? { sr_fail(s, w, u32(191)) } | {
                 at_t: u32 = sr_symbol_type(s, w, f, sym)
                 vt: u32 = sr_view_type(s, w, ty_elem(s, w, at_t), ty_length(s, w, at_t))
-                sr_deliver(s, w, sr_emit(s, w, SYN_VIEW, sym, u32(0), u32(0), u32(0), u32(0), u32(0), vt))
+                sr_deliver(s, w, sr_emit(s, w, SYN_VIEW, sym, writable, u32(0), u32(0), u32(0), u32(0), vt))
               }
             }
           } | {
@@ -1417,7 +1449,9 @@ step_expr_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
         phase == u32(1) ? {
           w[at + u32(5)] = ret
           w[at + u32(2)] = u32(2)
-          sr_push(s, w, X_EXPR, rn_c(rx, raw, node), f)
+          // The right operand takes the left's type as its context (a bare
+          // `.Variant` beside a sum-typed operand, as the checker reads it).
+          sr_push_typed(s, w, rn_c(rx, raw, node), f, sn_type(s, w, ret))
         } | {
           left: u32 = w[at + u32(5)]
           typ: u32 = sn_type(s, w, left)
@@ -1896,10 +1930,14 @@ sr_theorem_leaves: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, f: u32): () {
   }
 }
 
+// The function frame's word 3: 0 a callee, 1 the theorem root (a Bool
+// result, its leaves named), 2 a function root (its declared result, its
+// leaves named: the exploration's probes).
 step_func_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
   rawf: u32 = w[at + u32(1)]
   phase: u32 = w[at + u32(2)]
-  is_theorem: Bool = w[at + u32(3)] != u32(0)
+  is_theorem: Bool = w[at + u32(3)] == u32(1)
+  is_root: Bool = w[at + u32(3)] != u32(0)
   name: u32 = rf_word(rx, raw, rawf, u32(0))
   phase == u32(0) ? {
     known: u32 = sr_find_function(s, w, name)
@@ -1920,7 +1958,10 @@ step_func_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
           set_sf_word(s, w, f, u32(5), u32(0))
           set_sf_word(s, w, f, u32(6), u32(0))
           set_sf_word(s, w, f, u32(7), u32(0))
-          ret: u32 = is_theorem ? { sr_bool_type(s, w) } | { sr_type_of_expr(s, w, rx, raw, rf_word(rx, raw, rawf, u32(3))) }
+          // A theorem's result is Bool, as a root or as a callee (an
+          // invariant candidate called by its obligations and the probe).
+          declared_theorem: Bool = (rf_word(rx, raw, rawf, u32(5)) & u32(2)) != u32(0)
+          ret: u32 = (is_theorem || declared_theorem) ? { sr_bool_type(s, w) } | { sr_type_of_expr(s, w, rx, raw, rf_word(rx, raw, rawf, u32(3))) }
           set_sf_word(s, w, f, u32(2), ret)
           pstart + nparams > SR_PARAMS ? { sr_fail(s, w, u32(165)) } | { set_sst(s, w, ST_NPARAMS, pstart + nparams) }
           rps: u32 = rf_word(rx, raw, rawf, u32(1))
@@ -1940,7 +1981,7 @@ step_func_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
             i = i + u32(1)
           }
           sr_failed(s, w) ? { } | {
-            is_theorem ? {
+            is_root ? {
               set_sst(s, w, ST_THEOREM, f)
               sr_theorem_leaves(s, w, rx, raw, f)
             } | { }
@@ -2108,6 +2149,50 @@ serialize_theorem: (s: Ser, w: [*]u32, rx: []u32, out: [*]u32, theorem_fn: u32):
 }
 
 serialize_reason: (s: Ser, w: [*]u32): u32 = sst(s, w, ST_FAILED)
+
+// serialize_captured is serialize_theorem with type capture: the type of
+// every raw node delivered during the run is recorded in the capture
+// table (NONE for the rest), for the Lean projection.
+serialize_captured: (s: Ser, w: [*]u32, rx: []u32, out: [*]u32, theorem_fn: u32): u32 {
+  k: u32 = 0
+  while k < u32(32) {
+    set_sst(s, w, k, u32(0))
+    k = k + u32(1)
+  }
+  nnodes: u32 = rx[u32(3)]
+  n: u32 = 0
+  while n < nnodes && n < s.cap_nodes {
+    w[s.capture_at + n] = NONE
+    n = n + u32(1)
+  }
+  set_sst(s, w, ST_CAPTURE, u32(1))
+  raw: Raw = raw_layout(rx)
+  sr_push(s, w, X_FUNC, theorem_fn, u32(1))
+  sr_run(s, w, rx, raw)
+  m: u32 = 0
+  sr_failed(s, w) ? { } | { m = sr_write_table(s, w, out) }
+  m
+}
+
+// serialize_function serializes a function root (its declared result type,
+// its leaves named as a theorem's): the table's word count, or 0.
+serialize_function: (s: Ser, w: [*]u32, rx: []u32, out: [*]u32, fi: u32): u32 {
+  k: u32 = 0
+  while k < u32(32) {
+    set_sst(s, w, k, u32(0))
+    k = k + u32(1)
+  }
+  raw: Raw = raw_layout(rx)
+  sr_push(s, w, X_FUNC, fi, u32(2))
+  sr_run(s, w, rx, raw)
+  n: u32 = 0
+  sr_failed(s, w) ? { } | { n = sr_write_table(s, w, out) }
+  n
+}
+
+// sr_type_key_a: the first key word of an interned type (a record or sum
+// type's raw name).
+sr_type_key_a: (s: Ser, w: [*]u32, t: u32): u32 = w[s.tkeys_at + t * u32(4) + u32(1)]
 
 // Leaf names of the serialized theorem (sorted): count, and the k-th
 // name's pool offset and length, for the driver's counterexample report.

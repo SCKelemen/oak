@@ -436,3 +436,36 @@ theorem masked_access_in_bounds (len idx vlmax vl i : Nat) (hguard : idx < len)
   omega
 
 end Oak.RiscV
+
+/-! ## Compressed immediates (RVC, `94-assembler.md` §9)
+
+A compressed instruction denotes its base instruction: the 6-bit signed
+field carries exactly the values -32..31 the encoder admits, and a scaled
+offset field carries exactly the aligned offsets below its bound. -/
+
+namespace Oak.RiscV
+
+/-- Every value the encoder places in a 6-bit two's-complement field reads
+    back as itself. -/
+theorem imm6_round_trip : ∀ v : Fin 64, (BitVec.ofInt 6 ((v.val : Int) - 32)).toInt = (v.val : Int) - 32 := by
+  decide
+
+/-- A scaled offset field is exact for aligned offsets below the bound:
+    `off = scale * (off / scale)` when `scale ∣ off`. -/
+theorem scaled_offset_exact (scale off bound : Nat) (hs : 0 < scale) (hdiv : scale ∣ off) (hlt : off < bound * scale) :
+    scale * (off / scale) = off ∧ off / scale < bound := by
+  obtain ⟨q, hq⟩ := hdiv
+  subst hq
+  rw [Nat.mul_div_cancel_left q hs]
+  refine ⟨rfl, ?_⟩
+  rw [Nat.mul_comm bound scale] at hlt
+  exact Nat.lt_of_mul_lt_mul_left hlt
+
+/-- c.lwsp: word offsets below 256 bytes; c.ldsp: doubleword offsets below 512. -/
+theorem lwsp_offsets (off : Nat) (h4 : 4 ∣ off) (hlt : off < 256) : 4 * (off / 4) = off ∧ off / 4 < 64 :=
+  scaled_offset_exact 4 off 64 (by decide) h4 hlt
+
+theorem ldsp_offsets (off : Nat) (h8 : 8 ∣ off) (hlt : off < 512) : 8 * (off / 8) = off ∧ off / 8 < 64 :=
+  scaled_offset_exact 8 off 64 (by decide) h8 hlt
+
+end Oak.RiscV

@@ -137,12 +137,20 @@ pub sim_disk_write: (disk: [*]SimDisk, durable: [*]u64, volatile: [*]u64, flags:
 // Persist every dirty block. Returns the injected fault (0 none, 8 lost: one
 // dirty block is acknowledged but stays undurable, its durable copy marked
 // stale — the volatile copy too, since the acknowledgement is a lie).
-pub sim_disk_fsync: (disk: [*]SimDisk, durable: [*]u64, volatile: [*]u64, flags: [*]u32, choices: [*]TestChoices, data: []u8, faults: u32): u32 {
+pub sim_disk_fsync: (disk: [*]SimDisk, durable: [*]u64, volatile: [*]u64, flags: [*]u32, choices: [*]TestChoices, data: []u8, faults: u32): u32 =
+  sim_disk_fsync_range(disk, durable, volatile, flags, u32(0), disk[0].blocks, choices, data, faults)
+
+// The fsync of one file: the blocks [lo, hi) — what a file system's
+// fsync(fd) promises, and no more. A simulation that persisted every dirty
+// block on any fsync would pass a program that forgot to sync one of its
+// files (docs/spec/120-io.md section 4).
+pub sim_disk_fsync_range: (disk: [*]SimDisk, durable: [*]u64, volatile: [*]u64, flags: [*]u32, lo: u32, hi: u32, choices: [*]TestChoices, data: []u8, faults: u32): u32 {
   assert(len(disk) == u32(1) && disk[0].running)
+  assert(lo <= hi && hi <= disk[0].blocks)
   words: u32 = disk[0].words
   dirty: u32 = u32(0)
-  b: u32 = u32(0)
-  while b < disk[0].blocks {
+  b: u32 = lo
+  while b < hi {
     sim_disk_dirty(flags, b) ? { dirty = dirty + u32(1) }
     b = b + u32(1)
   }
@@ -152,8 +160,8 @@ pub sim_disk_fsync: (disk: [*]SimDisk, durable: [*]u64, volatile: [*]u64, flags:
   fault == u32(8) ? {
     pick: u32 = test_range(choices, data, u32(0), dirty - u32(1))
     seen: u32 = u32(0)
-    b = u32(0)
-    while b < disk[0].blocks {
+    b = lo
+    while b < hi {
       sim_disk_dirty(flags, b) ? {
         seen == pick ? { lose = b }
         seen = seen + u32(1)
@@ -162,8 +170,8 @@ pub sim_disk_fsync: (disk: [*]SimDisk, durable: [*]u64, volatile: [*]u64, flags:
     }
     disk[0].lost = disk[0].lost + u32(1)
   }
-  b = u32(0)
-  while b < disk[0].blocks {
+  b = lo
+  while b < hi {
     sim_disk_dirty(flags, b) ? {
       b == lose ? {
         flags[b * u32(2) + u32(1)] = flags[b * u32(2) + u32(1)] | u32(8)

@@ -1,0 +1,4172 @@
+// The Lean projection, in Oak (docs/spec/125-verification.md section 7;
+// codegen/lean is the Go extractor this is the twin of, kept as the
+// cross-check). A parsed law file (tree.oak) arrives as the raw syntax
+// table; the theorems, the functions they reach, and the record and sum
+// types those mention are rendered to the Lean 4 text of
+// docs/spec/95-extraction.md, byte for byte what the Go extractor writes:
+// every fixed-width integer the Lean UInt of that width, every array and
+// view an Array, every function an Option of its result under a fuel,
+// every loop a fuel-indexed helper, every conditional an if over the
+// variables its arms assign. The expression types the Go extractor reads
+// from the checker come from the serializer (syntax.oak): a serializer run
+// records the type of every raw node it delivers, and the projection reads
+// them back. Anything outside the subset fails closed with a reason, never
+// an approximation. The Go extractor's walk is recursive; the strict
+// profile admits no unbounded recursion, so it is a frame stack here.
+//
+// Text is built in a byte arena: a string is an (offset, length) pair, a
+// line a string, the output a list of lines written through libc.
+package main
+
+c_creat: (path: c.String, mode: c.Int): c.UInt64 = c.extern("creat")
+c_write: (fd: c.Int, data: c.Ptr, count: c.Size): c.UInt64 = c.extern("write")
+
+// Capacities.
+LE_BYTES_WORDS: u32 = 4194304
+LE_STRS: u32 = 524288
+LE_LINES: u32 = 131072
+LE_HELPERS: u32 = 4096
+LE_SCOPE: u32 = 8192
+LE_SCOPE_WORDS: u32 = 3
+LE_FRAMES: u32 = 4096
+LE_FRAME_WORDS: u32 = 16
+LE_ACC: u32 = 65536
+LE_NODES: u32 = 131072
+LE_RSTRS: u32 = 65536
+LE_FUNCS: u32 = 2048
+LE_FUNC_WORDS: u32 = 4
+LE_CLIST: u32 = 65536
+LE_TYPES: u32 = 1024
+LE_WORK: u32 = 65536
+LE_TCACHE: u32 = 256
+LE_CONSTS: u32 = 64
+LE_ROWS: u32 = 4096
+LE_ROW_WORDS: u32 = 4
+
+// State words.
+LN_FAILED: u32 = 0
+LN_SP: u32 = 1
+LN_RET: u32 = 2
+LN_ACC_SP: u32 = 3
+LN_LINE_SP: u32 = 4
+LN_NHELPERS: u32 = 5
+LN_SCOPE_SP: u32 = 6
+LN_SCOPE_BASE: u32 = 7
+LN_NSTRS: u32 = 8
+LN_NBYTES: u32 = 9
+LN_TEMPS: u32 = 10
+LN_LOOPS: u32 = 11
+LN_INDENT: u32 = 12
+LN_FNNAME: u32 = 13
+LN_USES_UTF8: u32 = 14
+LN_USES_FLOAT: u32 = 15
+LN_BUILD_OFF: u32 = 16
+LN_NFORDER: u32 = 17
+LN_NORDERED: u32 = 18
+LN_GEN: u32 = 19
+LN_NCLIST: u32 = 20
+LN_RECURSIVE: u32 = 21
+LN_NTORDER: u32 = 22
+LN_HAS_THEOREM: u32 = 23
+LN_NROWS: u32 = 30
+
+// Frame kinds.
+LF_EXPR: u32 = 0
+LF_STMT: u32 = 1
+LF_BLOCK: u32 = 2
+LF_CONDSTMT: u32 = 3
+LF_MATCHSTMT: u32 = 4
+LF_DOVALUE: u32 = 5
+LF_ARMRESULT: u32 = 6
+LF_ARMBODY: u32 = 7
+LF_VALCHAIN: u32 = 8
+LF_MATCHVAL: u32 = 9
+LF_WHILE: u32 = 10
+LF_INDEXTERM: u32 = 11
+LF_CALL: u32 = 12
+
+// Pre-interned strings (lc).
+LC_EMPTY: u32 = 0
+LC_BOOL: u32 = 1
+LC_UNIT: u32 = 2
+LC_UINT8: u32 = 3
+LC_UINT16: u32 = 4
+LC_UINT32: u32 = 5
+LC_UINT64: u32 = 6
+LC_INT8: u32 = 7
+LC_INT16: u32 = 8
+LC_INT32: u32 = 9
+LC_INT64: u32 = 10
+LC_FLOAT: u32 = 11
+LC_FLOAT32: u32 = 12
+LC_BYTES: u32 = 13
+LC_IND2: u32 = 14
+LC_IND4: u32 = 15
+LC_IND6: u32 = 16
+LC_PAREN_UNIT: u32 = 17
+LC_UNDERSCORE: u32 = 18
+LC_TRUE: u32 = 19
+LC_FALSE: u32 = 20
+LC_NAT: u32 = 21
+
+Lem: type = struct {
+  bytes_at: u32,
+  strs_at: u32,
+  lines_at: u32,
+  helpers_at: u32,
+  scope_at: u32,
+  frames_at: u32,
+  acc_at: u32,
+  ntype_at: u32,
+  rnames_at: u32,
+  markw_at: u32,
+  markd_at: u32,
+  markm_at: u32,
+  funcs_at: u32,
+  forder_at: u32,
+  ordered_at: u32,
+  clist_at: u32,
+  tused_at: u32,
+  torder_at: u32,
+  fseen_at: u32,
+  lroots_at: u32,
+  work_at: u32,
+  tcache_at: u32,
+  consts_at: u32,
+  rows_at: u32,
+  state_at: u32,
+  total: u32
+}
+
+lem_layout: (): Lem {
+  bytes_at: u32 = 0
+  strs_at: u32 = bytes_at + LE_BYTES_WORDS
+  lines_at: u32 = strs_at + LE_STRS * u32(2)
+  helpers_at: u32 = lines_at + LE_LINES
+  scope_at: u32 = helpers_at + LE_HELPERS
+  frames_at: u32 = scope_at + LE_SCOPE * LE_SCOPE_WORDS
+  acc_at: u32 = frames_at + LE_FRAMES * LE_FRAME_WORDS
+  ntype_at: u32 = acc_at + LE_ACC
+  rnames_at: u32 = ntype_at + LE_NODES
+  markw_at: u32 = rnames_at + LE_RSTRS
+  markd_at: u32 = markw_at + LE_RSTRS
+  markm_at: u32 = markd_at + LE_RSTRS
+  funcs_at: u32 = markm_at + LE_RSTRS
+  forder_at: u32 = funcs_at + LE_FUNCS * LE_FUNC_WORDS
+  ordered_at: u32 = forder_at + LE_FUNCS
+  clist_at: u32 = ordered_at + LE_FUNCS
+  tused_at: u32 = clist_at + LE_CLIST
+  torder_at: u32 = tused_at + LE_TYPES * u32(2)
+  fseen_at: u32 = torder_at + LE_TYPES
+  lroots_at: u32 = fseen_at + LE_FUNCS
+  work_at: u32 = lroots_at + LE_FUNCS
+  tcache_at: u32 = work_at + LE_WORK
+  consts_at: u32 = tcache_at + LE_TCACHE
+  rows_at: u32 = consts_at + LE_CONSTS
+  state_at: u32 = rows_at + LE_ROWS * LE_ROW_WORDS
+  Lem {
+    bytes_at: bytes_at,
+    strs_at: strs_at,
+    lines_at: lines_at,
+    helpers_at: helpers_at,
+    scope_at: scope_at,
+    frames_at: frames_at,
+    acc_at: acc_at,
+    ntype_at: ntype_at,
+    rnames_at: rnames_at,
+    markw_at: markw_at,
+    markd_at: markd_at,
+    markm_at: markm_at,
+    funcs_at: funcs_at,
+    forder_at: forder_at,
+    ordered_at: ordered_at,
+    clist_at: clist_at,
+    tused_at: tused_at,
+    torder_at: torder_at,
+    fseen_at: fseen_at,
+    lroots_at: lroots_at,
+    work_at: work_at,
+    tcache_at: tcache_at,
+    consts_at: consts_at,
+    rows_at: rows_at,
+    state_at: state_at,
+    total: state_at + u32(32)
+  }
+}
+
+lst: (le: Lem, ew: [*]u32, k: u32): u32 = ew[le.state_at + k]
+set_lst: (le: Lem, ew: [*]u32, k: u32, v: u32): () { ew[le.state_at + k] = v }
+le_fail: (le: Lem, ew: [*]u32, code: u32): () {
+  ew[le.state_at + LN_FAILED] == u32(0) ? { ew[le.state_at + LN_FAILED] = code } | { }
+}
+le_failed: (le: Lem, ew: [*]u32): Bool = ew[le.state_at + LN_FAILED] != u32(0)
+
+// --- the byte arena and its strings ----------------------------------------------
+
+ab_byte: (le: Lem, ew: [*]u32, at: u32): u32 = (ew[le.bytes_at + at / u32(4)] >> ((at % u32(4)) * u32(8))) & u32(255)
+
+ab_push: (le: Lem, ew: [*]u32, b: u32): () {
+  at: u32 = lst(le, ew, LN_NBYTES)
+  at >= LE_BYTES_WORDS * u32(4) ? { le_fail(le, ew, u32(901)) } | {
+    shift: u32 = (at % u32(4)) * u32(8)
+    word: u32 = le.bytes_at + at / u32(4)
+    ew[word] = (ew[word] & (NONE ^ (u32(255) << shift))) | (b << shift)
+    set_lst(le, ew, LN_NBYTES, at + u32(1))
+  }
+}
+
+s_off: (le: Lem, ew: [*]u32, id: u32): u32 = ew[le.strs_at + id * u32(2)]
+s_len: (le: Lem, ew: [*]u32, id: u32): u32 = ew[le.strs_at + id * u32(2) + u32(1)]
+s_byte: (le: Lem, ew: [*]u32, id: u32, k: u32): u32 = ab_byte(le, ew, s_off(le, ew, id) + k)
+
+// sb_begin opens the builder at the arena's end; the pieces appended
+// until sb_end become one string. Builders do not nest: every piece is a
+// finished string or a literal.
+sb_begin: (le: Lem, ew: [*]u32): () {
+  lst(le, ew, LN_BUILD_OFF) != NONE ? { le_fail(le, ew, u32(902)) } | { set_lst(le, ew, LN_BUILD_OFF, lst(le, ew, LN_NBYTES)) }
+}
+
+sb_end: (le: Lem, ew: [*]u32): u32 {
+  off: u32 = lst(le, ew, LN_BUILD_OFF)
+  n: u32 = lst(le, ew, LN_NSTRS)
+  id: u32 = NONE
+  (off == NONE || n >= LE_STRS) ? { le_fail(le, ew, u32(903)) } | {
+    ew[le.strs_at + n * u32(2)] = off
+    ew[le.strs_at + n * u32(2) + u32(1)] = lst(le, ew, LN_NBYTES) - off
+    set_lst(le, ew, LN_NSTRS, n + u32(1))
+    id = n
+  }
+  set_lst(le, ew, LN_BUILD_OFF, NONE)
+  id
+}
+
+sb_byte: (le: Lem, ew: [*]u32, b: u32): () { ab_push(le, ew, b) }
+
+sb_str: (le: Lem, ew: [*]u32, id: u32): () {
+  id == NONE ? { le_fail(le, ew, u32(904)) } | {
+    n: u32 = s_len(le, ew, id)
+    off: u32 = s_off(le, ew, id)
+    k: u32 = 0
+    while k < n {
+      ab_push(le, ew, ab_byte(le, ew, off + k))
+      k = k + u32(1)
+    }
+  }
+}
+
+// ap_lits appends up to sixteen packed literal bytes.
+ap_lits: (le: Lem, ew: [*]u32, lo: u64, hi: u64, n: u32): () {
+  k: u32 = 0
+  while k < n {
+    b: u32 = k < u32(8) ? { u32_trunc_u64((lo >> u64(k * u32(8))) & u64(255)) } | { u32_trunc_u64((hi >> u64((k - u32(8)) * u32(8))) & u64(255)) }
+    ab_push(le, ew, b)
+    k = k + u32(1)
+  }
+}
+
+sb_dec: (le: Lem, ew: [*]u32, v: u64): () {
+  buf: [24]u8
+  start: u32 = 24
+  n: u64 = v
+  start = start - u32(1)
+  buf[start] = u8(48) + u8_trunc_u32(u32_trunc_u64(n % u64(10)))
+  n = n / u64(10)
+  while n > u64(0) {
+    start = start - u32(1)
+    buf[start] = u8(48) + u8_trunc_u32(u32_trunc_u64(n % u64(10)))
+    n = n / u64(10)
+  }
+  while start < u32(24) {
+    ab_push(le, ew, u32(buf[start]))
+    start = start + u32(1)
+  }
+}
+
+// sb_hex appends v as `digits` uppercase hexadecimal digits.
+sb_hex: (le: Lem, ew: [*]u32, v: u64, digits: u32): () {
+  k: u32 = digits
+  while k > u32(0) {
+    k = k - u32(1)
+    d: u32 = u32_trunc_u64((v >> u64(k * u32(4))) & u64(15))
+    ab_push(le, ew, d < u32(10) ? { u32(48) + d } | { u32(55) + d })
+  }
+}
+
+// lstr makes a string of up to sixteen literal bytes.
+lstr: (le: Lem, ew: [*]u32, lo: u64, hi: u64, n: u32): u32 {
+  sb_begin(le, ew)
+  ap_lits(le, ew, lo, hi, n)
+  sb_end(le, ew)
+}
+
+cat2: (le: Lem, ew: [*]u32, a: u32, b: u32): u32 {
+  sb_begin(le, ew)
+  sb_str(le, ew, a)
+  sb_str(le, ew, b)
+  sb_end(le, ew)
+}
+
+cat3: (le: Lem, ew: [*]u32, a: u32, b: u32, c: u32): u32 {
+  sb_begin(le, ew)
+  sb_str(le, ew, a)
+  sb_str(le, ew, b)
+  sb_str(le, ew, c)
+  sb_end(le, ew)
+}
+
+// paren wraps a string: "(" s ")".
+paren: (le: Lem, ew: [*]u32, s: u32): u32 {
+  sb_begin(le, ew)
+  sb_byte(le, ew, u32(40))
+  sb_str(le, ew, s)
+  sb_byte(le, ew, u32(41))
+  sb_end(le, ew)
+}
+
+str_eq: (le: Lem, ew: [*]u32, a: u32, b: u32): Bool {
+  same: Bool = a == b
+  (!same && a != NONE && b != NONE && s_len(le, ew, a) == s_len(le, ew, b)) ? {
+    n: u32 = s_len(le, ew, a)
+    k: u32 = 0
+    same = true
+    while k < n && same {
+      same = s_byte(le, ew, a, k) == s_byte(le, ew, b, k)
+      k = k + u32(1)
+    }
+  } | { }
+  same
+}
+
+// str_less: bytewise order (the Go string order).
+str_less: (le: Lem, ew: [*]u32, a: u32, b: u32): Bool {
+  na: u32 = s_len(le, ew, a)
+  nb: u32 = s_len(le, ew, b)
+  k: u32 = 0
+  decided: Bool = false
+  less: Bool = false
+  while k < na && k < nb && !decided {
+    ca: u32 = s_byte(le, ew, a, k)
+    cb: u32 = s_byte(le, ew, b, k)
+    ca != cb ? {
+      decided = true
+      less = ca < cb
+    } | { }
+    k = k + u32(1)
+  }
+  decided ? { less } | { na < nb }
+}
+
+// str_name16 packs a string's first sixteen bytes.
+str_name16: (le: Lem, ew: [*]u32, id: u32): Name16 {
+  lo: u64 = 0
+  hi: u64 = 0
+  n: u32 = s_len(le, ew, id)
+  k: u32 = 0
+  while k < n && k < u32(16) {
+    b: u64 = u64(s_byte(le, ew, id, k))
+    k < u32(8) ? { lo = lo | (b << u64(k * u32(8))) } | { hi = hi | (b << u64((k - u32(8)) * u32(8))) }
+    k = k + u32(1)
+  }
+  Name16 { lo: lo, hi: hi, n: n }
+}
+
+str_is: (le: Lem, ew: [*]u32, id: u32, lo: u64, hi: u64, n: u32): Bool = id != NONE && is_name(str_name16(le, ew, id), lo, hi, n)
+
+// str_starts: whether the string begins with the packed literal.
+str_starts: (le: Lem, ew: [*]u32, id: u32, lo: u64, hi: u64, n: u32): Bool {
+  ok: Bool = id != NONE && s_len(le, ew, id) >= n
+  k: u32 = 0
+  while k < n && ok {
+    want: u32 = k < u32(8) ? { u32_trunc_u64((lo >> u64(k * u32(8))) & u64(255)) } | { u32_trunc_u64((hi >> u64((k - u32(8)) * u32(8))) & u64(255)) }
+    ok = s_byte(le, ew, id, k) == want
+    k = k + u32(1)
+  }
+  ok
+}
+
+lc: (le: Lem, ew: [*]u32, k: u32): u32 = ew[le.consts_at + k]
+
+le_intern_consts: (le: Lem, ew: [*]u32): () {
+  ew[le.consts_at + LC_EMPTY] = lstr(le, ew, u64(0), u64(0), u32(0))
+  ew[le.consts_at + LC_BOOL] = lstr(le, ew, u64(0x6C6F6F42), u64(0x0), u32(4))
+  ew[le.consts_at + LC_UNIT] = lstr(le, ew, u64(0x74696E55), u64(0x0), u32(4))
+  ew[le.consts_at + LC_UINT8] = lstr(le, ew, u64(0x38746E4955), u64(0x0), u32(5))
+  ew[le.consts_at + LC_UINT16] = lstr(le, ew, u64(0x3631746E4955), u64(0x0), u32(6))
+  ew[le.consts_at + LC_UINT32] = lstr(le, ew, u64(0x3233746E4955), u64(0x0), u32(6))
+  ew[le.consts_at + LC_UINT64] = lstr(le, ew, u64(0x3436746E4955), u64(0x0), u32(6))
+  ew[le.consts_at + LC_INT8] = lstr(le, ew, u64(0x38746E49), u64(0x0), u32(4))
+  ew[le.consts_at + LC_INT16] = lstr(le, ew, u64(0x3631746E49), u64(0x0), u32(5))
+  ew[le.consts_at + LC_INT32] = lstr(le, ew, u64(0x3233746E49), u64(0x0), u32(5))
+  ew[le.consts_at + LC_INT64] = lstr(le, ew, u64(0x3436746E49), u64(0x0), u32(5))
+  ew[le.consts_at + LC_FLOAT] = lstr(le, ew, u64(0x74616F6C46), u64(0x0), u32(5))
+  ew[le.consts_at + LC_FLOAT32] = lstr(le, ew, u64(0x323374616F6C46), u64(0x0), u32(7))
+  ew[le.consts_at + LC_BYTES] = lstr(le, ew, u64(0x4955207961727241), u64(0x38746E), u32(11))
+  ew[le.consts_at + LC_IND2] = lstr(le, ew, u64(0x2020), u64(0x0), u32(2))
+  ew[le.consts_at + LC_IND4] = lstr(le, ew, u64(0x20202020), u64(0x0), u32(4))
+  ew[le.consts_at + LC_IND6] = lstr(le, ew, u64(0x202020202020), u64(0x0), u32(6))
+  ew[le.consts_at + LC_PAREN_UNIT] = lstr(le, ew, u64(0x2928), u64(0x0), u32(2))
+  ew[le.consts_at + LC_UNDERSCORE] = lstr(le, ew, u64(0x5F), u64(0x0), u32(1))
+  ew[le.consts_at + LC_TRUE] = lstr(le, ew, u64(0x65757274), u64(0x0), u32(4))
+  ew[le.consts_at + LC_FALSE] = lstr(le, ew, u64(0x65736C6166), u64(0x0), u32(5))
+  ew[le.consts_at + LC_NAT] = lstr(le, ew, u64(0x74614E), u64(0x0), u32(3))
+}
+
+// --- Lean type names --------------------------------------------------------------
+
+// IntW is the width and signedness of a Lean fixed-width integer type name.
+IntW: type = struct { bits: u32, signed: Bool, ok: Bool }
+
+lean_int_width: (le: Lem, ew: [*]u32, id: u32): IntW {
+  str_is(le, ew, id, u64(0x38746E4955), u64(0x0), u32(5)) ? { IntW { bits: u32(8), signed: false, ok: true } } | {
+  str_is(le, ew, id, u64(0x3631746E4955), u64(0x0), u32(6)) ? { IntW { bits: u32(16), signed: false, ok: true } } | {
+  str_is(le, ew, id, u64(0x3233746E4955), u64(0x0), u32(6)) ? { IntW { bits: u32(32), signed: false, ok: true } } | {
+  str_is(le, ew, id, u64(0x3436746E4955), u64(0x0), u32(6)) ? { IntW { bits: u32(64), signed: false, ok: true } } | {
+  str_is(le, ew, id, u64(0x38746E49), u64(0x0), u32(4)) ? { IntW { bits: u32(8), signed: true, ok: true } } | {
+  str_is(le, ew, id, u64(0x3631746E49), u64(0x0), u32(5)) ? { IntW { bits: u32(16), signed: true, ok: true } } | {
+  str_is(le, ew, id, u64(0x3233746E49), u64(0x0), u32(5)) ? { IntW { bits: u32(32), signed: true, ok: true } } | {
+  str_is(le, ew, id, u64(0x3436746E49), u64(0x0), u32(5)) ? { IntW { bits: u32(64), signed: true, ok: true } } | {
+  IntW { bits: u32(0), signed: false, ok: false } } } } } } } } }
+}
+
+is_float_lean: (le: Lem, ew: [*]u32, id: u32): Bool = str_is(le, ew, id, u64(0x74616F6C46), u64(0x0), u32(5)) || str_is(le, ew, id, u64(0x323374616F6C46), u64(0x0), u32(7))
+
+// int_lean: the Lean integer type of a width and signedness.
+int_lean: (le: Lem, ew: [*]u32, bits: u32, signed: Bool): u32 {
+  bits == u32(8) ? { lc(le, ew, signed ? { LC_INT8 } | { LC_UINT8 }) } | {
+  bits == u32(16) ? { lc(le, ew, signed ? { LC_INT16 } | { LC_UINT16 }) } | {
+  bits == u32(32) ? { lc(le, ew, signed ? { LC_INT32 } | { LC_UINT32 }) } | {
+  lc(le, ew, signed ? { LC_INT64 } | { LC_UINT64 }) } } }
+}
+
+// primitive_lean: the Lean type of an Oak primitive type name, or NONE.
+primitive_lean: (le: Lem, ew: [*]u32, nm: Name16): u32 {
+  is_name(nm, u64(0x3875), u64(0x0), u32(2)) ? { lc(le, ew, LC_UINT8) } | {
+  is_name(nm, u64(0x363175), u64(0x0), u32(3)) ? { lc(le, ew, LC_UINT16) } | {
+  is_name(nm, u64(0x323375), u64(0x0), u32(3)) ? { lc(le, ew, LC_UINT32) } | {
+  is_name(nm, u64(0x343675), u64(0x0), u32(3)) ? { lc(le, ew, LC_UINT64) } | {
+  is_name(nm, u64(0x3869), u64(0x0), u32(2)) ? { lc(le, ew, LC_INT8) } | {
+  is_name(nm, u64(0x363169), u64(0x0), u32(3)) ? { lc(le, ew, LC_INT16) } | {
+  is_name(nm, u64(0x323369), u64(0x0), u32(3)) ? { lc(le, ew, LC_INT32) } | {
+  is_name(nm, u64(0x343669), u64(0x0), u32(3)) ? { lc(le, ew, LC_INT64) } | {
+  is_name(nm, u64(0x6C6F6F42), u64(0x0), u32(4)) ? { lc(le, ew, LC_BOOL) } | {
+  is_name(nm, u64(0x2928), u64(0x0), u32(2)) ? { lc(le, ew, LC_UNIT) } | {
+  is_name(nm, u64(0x323366), u64(0x0), u32(3)) ? { lc(le, ew, LC_FLOAT32) } | {
+  is_name(nm, u64(0x343666), u64(0x0), u32(3)) ? { lc(le, ew, LC_FLOAT) } | { NONE } } } } } } } } } } } }
+}
+
+// element_of: the element type of "Array T", or NONE.
+element_of: (le: Lem, ew: [*]u32, id: u32): u32 {
+  str_starts(le, ew, id, u64(0x207961727241), u64(0x0), u32(6)) ? {
+    sb_begin(le, ew)
+    n: u32 = s_len(le, ew, id)
+    k: u32 = 6
+    while k < n {
+      sb_byte(le, ew, s_byte(le, ew, id, k))
+      k = k + u32(1)
+    }
+    sb_end(le, ew)
+  } | { NONE }
+}
+
+array_of: (le: Lem, ew: [*]u32, elem: u32): u32 {
+  sb_begin(le, ew)
+  ap_lits(le, ew, u64(0x207961727241), u64(0x0), u32(6))  // Array 
+  sb_str(le, ew, elem)
+  sb_end(le, ew)
+}
+
+// zero_of: the default value of a Lean type.
+zero_of: (le: Lem, ew: [*]u32, t: u32): u32 {
+  str_is(le, ew, t, u64(0x6C6F6F42), u64(0x0), u32(4)) ? { lc(le, ew, LC_FALSE) } | {
+  str_is(le, ew, t, u64(0x74696E55), u64(0x0), u32(4)) ? { lc(le, ew, LC_PAREN_UNIT) } | {
+  (str_starts(le, ew, t, u64(0x746E4955), u64(0x0), u32(4)) || str_starts(le, ew, t, u64(0x746E49), u64(0x0), u32(3))) ? {
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x203A203028), u64(0x0), u32(5))  // (0 : 
+    sb_str(le, ew, t)
+    sb_byte(le, ew, u32(41))
+    sb_end(le, ew)
+  } | {
+  is_float_lean(le, ew, t) ? {
+    sb_begin(le, ew)
+    sb_byte(le, ew, u32(40))
+    sb_str(le, ew, t)
+    ap_lits(le, ew, u64(0x2073746942666F2E), u64(0x2930), u32(10))  // .ofBits 0)
+    sb_end(le, ew)
+  } | {
+  str_starts(le, ew, t, u64(0x207961727241), u64(0x0), u32(6)) ? {
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x203A205D5B2328), u64(0x0), u32(7))  // (#[] : 
+    sb_str(le, ew, t)
+    sb_byte(le, ew, u32(41))
+    sb_end(le, ew)
+  } | {
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x746C756166656428), u64(0x203A20), u32(11))  // (default : 
+    sb_str(le, ew, t)
+    sb_byte(le, ew, u32(41))
+    sb_end(le, ew)
+  } } } } }
+}
+
+// --- raw names as strings ------------------------------------------------------------
+
+// rstr interns a raw string as an arena string (once).
+rstr: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, id: u32): u32 {
+  id >= LE_RSTRS ? { le_fail(le, ew, u32(905)) } | { }
+  found: u32 = id < LE_RSTRS ? { ew[le.rnames_at + id] } | { NONE }
+  (found == NONE && id < LE_RSTRS) ? {
+    sb_begin(le, ew)
+    n: u32 = rs_len(rx, raw, id)
+    k: u32 = 0
+    while k < n {
+      sb_byte(le, ew, rs_byte(rx, raw, id, k))
+      k = k + u32(1)
+    }
+    found = sb_end(le, ew)
+    ew[le.rnames_at + id] = found
+  } | { }
+  found
+}
+
+// lean_reserved: the Lean keywords and the names the translation itself
+// uses (codegen/lean leanReserved); ident escapes them with a trailing
+// underscore.
+lean_reserved: (nm: Name16): Bool {
+  n: u32 = nm.n
+  hit: Bool = false
+  n == u32(2) ? { hit = is_name(nm, u64(0x7461), u64(0x0), u32(2)) || is_name(nm, u64(0x6F64), u64(0x0), u32(2)) || is_name(nm, u64(0x6669), u64(0x0), u32(2)) || is_name(nm, u64(0x6E69), u64(0x0), u32(2)) || is_name(nm, u64(0x7962), u64(0x0), u32(2)) || is_name(nm, u64(0x6469), u64(0x0), u32(2)) } | { }  // at do if in by id
+  n == u32(3) ? { hit = is_name(nm, u64(0x646E65), u64(0x0), u32(3)) || is_name(nm, u64(0x6E7566), u64(0x0), u32(3)) || is_name(nm, u64(0x74656C), u64(0x0), u32(3)) || is_name(nm, u64(0x666564), u64(0x0), u32(3)) || is_name(nm, u64(0x726F66), u64(0x0), u32(3)) || is_name(nm, u64(0x797274), u64(0x0), u32(3)) || is_name(nm, u64(0x74756D), u64(0x0), u32(3)) || is_name(nm, u64(0x74614E), u64(0x0), u32(3)) } | { }  // end fun let def for try mut Nat
+  n == u32(4) ? { hit = is_name(nm, u64(0x6E656874), u64(0x0), u32(4)) || is_name(nm, u64(0x65736C65), u64(0x0), u32(4)) || is_name(nm, u64(0x65766168), u64(0x0), u32(4)) || is_name(nm, u64(0x6D6F7266), u64(0x0), u32(4)) || is_name(nm, u64(0x68746977), u64(0x0), u32(4)) || is_name(nm, u64(0x6E65706F), u64(0x0), u32(4)) || is_name(nm, u64(0x636C6163), u64(0x0), u32(4)) || is_name(nm, u64(0x776F6873), u64(0x0), u32(4)) || is_name(nm, u64(0x65707974), u64(0x0), u32(4)) || is_name(nm, u64(0x65727570), u64(0x0), u32(4)) || is_name(nm, u64(0x6C657566), u64(0x0), u32(4)) || is_name(nm, u64(0x656E6F6E), u64(0x0), u32(4)) || is_name(nm, u64(0x656D6F73), u64(0x0), u32(4)) || is_name(nm, u64(0x65757274), u64(0x0), u32(4)) || is_name(nm, u64(0x6C6F6F42), u64(0x0), u32(4)) || is_name(nm, u64(0x6174656D), u64(0x0), u32(4)) || is_name(nm, u64(0x74696D6F), u64(0x0), u32(4)) || is_name(nm, u64(0x796C6E6F), u64(0x0), u32(4)) || is_name(nm, u64(0x65707954), u64(0x0), u32(4)) || is_name(nm, u64(0x706F7250), u64(0x0), u32(4)) || is_name(nm, u64(0x74726F53), u64(0x0), u32(4)) } | { }  // then else have from with open calc show type pure fuel none some true Bool meta omit only Type Prop Sort
+  n == u32(5) ? { hit = is_name(nm, u64(0x686374616D), u64(0x0), u32(5)) || is_name(nm, u64(0x6572656877), u64(0x0), u32(5)) || is_name(nm, u64(0x7463617865), u64(0x0), u32(5)) || is_name(nm, u64(0x6F72746E69), u64(0x0), u32(5)) || is_name(nm, u64(0x7373616C63), u64(0x0), u32(5)) || is_name(nm, u64(0x6D6F697861), u64(0x0), u32(5)) || is_name(nm, u64(0x7972726F73), u64(0x0), u32(5)) || is_name(nm, u64(0x6F7263616D), u64(0x0), u32(5)) || is_name(nm, u64(0x7869666E69), u64(0x0), u32(5)) || is_name(nm, u64(0x6B61657262), u64(0x0), u32(5)) || is_name(nm, u64(0x656C696877), u64(0x0), u32(5)) || is_name(nm, u64(0x6863746163), u64(0x0), u32(5)) || is_name(nm, u64(0x65736C6166), u64(0x0), u32(5)) || is_name(nm, u64(0x7961727241), u64(0x0), u32(5)) || is_name(nm, u64(0x616D6D656C), u64(0x0), u32(5)) || is_name(nm, u64(0x676E697375), u64(0x0), u32(5)) || is_name(nm, u64(0x6C61636F6C), u64(0x0), u32(5)) || is_name(nm, u64(0x6E75666F6E), u64(0x0), u32(5)) || is_name(nm, u64(0x74616F6C46), u64(0x0), u32(5)) } | { }  // match where exact intro class axiom sorry macro infix break while catch false Array lemma using local nofun Float
+  n == u32(6) ? { hit = is_name(nm, u64(0x6E696174626F), u64(0x0), u32(6)) || is_name(nm, u64(0x6C617574756D), u64(0x0), u32(6)) || is_name(nm, u64(0x766572626261), u64(0x0), u32(6)) || is_name(nm, u64(0x74726F706D69), u64(0x0), u32(6)) || is_name(nm, u64(0x7861746E7973), u64(0x0), u32(6)) || is_name(nm, u64(0x786966657270), u64(0x0), u32(6)) || is_name(nm, u64(0x65757161706F), u64(0x0), u32(6)) || is_name(nm, u64(0x656661736E75), u64(0x0), u32(6)) || is_name(nm, u64(0x6E7275746572), u64(0x0), u32(6)) || is_name(nm, u64(0x7373656C6E75), u64(0x0), u32(6)) || is_name(nm, u64(0x746165706572), u64(0x0), u32(6)) || is_name(nm, u64(0x6E6F6974704F), u64(0x0), u32(6)) || is_name(nm, u64(0x63696C627570), u64(0x0), u32(6)) || is_name(nm, u64(0x74726F707865), u64(0x0), u32(6)) || is_name(nm, u64(0x6465706F6373), u64(0x0), u32(6)) || is_name(nm, u64(0x676E69646968), u64(0x0), u32(6)) } | { }  // obtain mutual abbrev import syntax prefix opaque unsafe return unless repeat Option public export scoped hiding
+  n == u32(7) ? { hit = is_name(nm, u64(0x6E6F6974636573), u64(0x0), u32(7)) || is_name(nm, u64(0x6D65726F656874), u64(0x0), u32(7)) || is_name(nm, u64(0x656C706D617865), u64(0x0), u32(7)) || is_name(nm, u64(0x6C616974726170), u64(0x0), u32(7)) || is_name(nm, u64(0x65746176697270), u64(0x0), u32(7)) || is_name(nm, u64(0x73646E65747865), u64(0x0), u32(7)) || is_name(nm, u64(0x78696674736F70), u64(0x0), u32(7)) || is_name(nm, u64(0x796C6C616E6966), u64(0x0), u32(7)) || is_name(nm, u64(0x746C7561666564), u64(0x0), u32(7)) || is_name(nm, u64(0x6564756C636E69), u64(0x0), u32(7)) || is_name(nm, u64(0x686374616D6F6E), u64(0x0), u32(7)) || is_name(nm, u64(0x323374616F6C46), u64(0x0), u32(7)) } | { }  // section theorem example partial private extends postfix finally default include nomatch Float32
+  n == u32(8) ? { hit = is_name(nm, u64(0x676E697669726564), u64(0x0), u32(8)) || is_name(nm, u64(0x656C626169726176), u64(0x0), u32(8)) || is_name(nm, u64(0x7365636966667573), u64(0x0), u32(8)) || is_name(nm, u64(0x65636E6174736E69), u64(0x0), u32(8)) || is_name(nm, u64(0x6E6F697461746F6E), u64(0x0), u32(8)) || is_name(nm, u64(0x6573726576696E75), u64(0x0), u32(8)) || is_name(nm, u64(0x65756E69746E6F63), u64(0x0), u32(8)) || is_name(nm, u64(0x676E696D616E6572), u64(0x0), u32(8)) } | { }  // deriving variable suffices instance notation universe continue renaming
+  n == u32(9) ? { hit = is_name(nm, u64(0x7275746375727473), u64(0x65), u32(9)) || is_name(nm, u64(0x63617073656D616E), u64(0x65), u32(9)) || is_name(nm, u64(0x65746365746F7270), u64(0x64), u32(9)) || is_name(nm, u64(0x7669746375646E69), u64(0x65), u32(9)) || is_name(nm, u64(0x7475626972747461), u64(0x65), u32(9)) } | { }  // structure namespace protected inductive attribute
+  n == u32(13) ? { hit = is_name(nm, u64(0x75706D6F636E6F6E), u64(0x656C626174), u32(13)) || is_name(nm, u64(0x6973616572636564), u64(0x79625F676E), u32(13)) } | { }  // noncomputable decreasing_by
+  n == u32(14) ? { hit = is_name(nm, u64(0x74616E696D726574), u64(0x79625F6E6F69), u32(14)) } | { }  // termination_by
+  hit
+}
+
+// ident renders an Oak identifier (a raw string) as a Lean identifier.
+ident: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, id: u32): u32 {
+  s: u32 = rstr(le, ew, rx, raw, id)
+  lean_reserved(rs_name(rx, raw, id)) ? {
+    sb_begin(le, ew)
+    sb_str(le, ew, s)
+    sb_byte(le, ew, u32(95))
+    sb_end(le, ew)
+  } | { s }
+}
+
+// ident_str escapes an arena string the same way.
+ident_str: (le: Lem, ew: [*]u32, s: u32): u32 {
+  lean_reserved(str_name16(le, ew, s)) ? {
+    sb_begin(le, ew)
+    sb_str(le, ew, s)
+    sb_byte(le, ew, u32(95))
+    sb_end(le, ew)
+  } | { s }
+}
+
+// --- the accumulator, the lines, the helpers ----------------------------------------------
+
+acc_push_l: (le: Lem, ew: [*]u32, v: u32): () {
+  sp: u32 = lst(le, ew, LN_ACC_SP)
+  sp >= LE_ACC ? { le_fail(le, ew, u32(906)) } | {
+    ew[le.acc_at + sp] = v
+    set_lst(le, ew, LN_ACC_SP, sp + u32(1))
+  }
+}
+
+acc_at_l: (le: Lem, ew: [*]u32, i: u32): u32 = ew[le.acc_at + i]
+
+// join_acc joins the strings accumulated from base with the separator
+// (a string), then pops them.
+join_acc: (le: Lem, ew: [*]u32, base: u32, sep: u32): u32 {
+  sp: u32 = lst(le, ew, LN_ACC_SP)
+  sb_begin(le, ew)
+  i: u32 = base
+  while i < sp {
+    i > base ? { sb_str(le, ew, sep) } | { }
+    sb_str(le, ew, ew[le.acc_at + i])
+    i = i + u32(1)
+  }
+  set_lst(le, ew, LN_ACC_SP, base)
+  sb_end(le, ew)
+}
+
+line_push: (le: Lem, ew: [*]u32, s: u32): () {
+  sp: u32 = lst(le, ew, LN_LINE_SP)
+  sp >= LE_LINES ? { le_fail(le, ew, u32(907)) } | {
+    ew[le.lines_at + sp] = s
+    set_lst(le, ew, LN_LINE_SP, sp + u32(1))
+  }
+}
+
+// line_push_ind pushes the current indent followed by the text.
+line_push_ind: (le: Lem, ew: [*]u32, s: u32): () {
+  line_push(le, ew, cat2(le, ew, lst(le, ew, LN_INDENT), s))
+}
+
+// line_close appends ")" to the last line.
+line_close: (le: Lem, ew: [*]u32): () {
+  sp: u32 = lst(le, ew, LN_LINE_SP)
+  sp == u32(0) ? { le_fail(le, ew, u32(908)) } | {
+    last: u32 = ew[le.lines_at + sp - u32(1)]
+    sb_begin(le, ew)
+    sb_str(le, ew, last)
+    sb_byte(le, ew, u32(41))
+    ew[le.lines_at + sp - u32(1)] = sb_end(le, ew)
+  }
+}
+
+helper_push: (le: Lem, ew: [*]u32, s: u32): () {
+  n: u32 = lst(le, ew, LN_NHELPERS)
+  n >= LE_HELPERS ? { le_fail(le, ew, u32(909)) } | {
+    ew[le.helpers_at + n] = s
+    set_lst(le, ew, LN_NHELPERS, n + u32(1))
+  }
+}
+
+// --- the scope ------------------------------------------------------------------------
+
+// A scope entry: the name (an arena string), its Lean type, and the raw
+// string id of the name (NONE for a synthesized name).
+scope_push: (le: Lem, ew: [*]u32, name: u32, typ: u32, rid: u32): () {
+  sp: u32 = lst(le, ew, LN_SCOPE_SP)
+  sp >= LE_SCOPE ? { le_fail(le, ew, u32(910)) } | {
+    at: u32 = le.scope_at + sp * LE_SCOPE_WORDS
+    ew[at] = name
+    ew[at + u32(1)] = typ
+    ew[at + u32(2)] = rid
+    set_lst(le, ew, LN_SCOPE_SP, sp + u32(1))
+  }
+}
+
+scope_name: (le: Lem, ew: [*]u32, i: u32): u32 = ew[le.scope_at + i * LE_SCOPE_WORDS]
+scope_type: (le: Lem, ew: [*]u32, i: u32): u32 = ew[le.scope_at + i * LE_SCOPE_WORDS + u32(1)]
+scope_rid: (le: Lem, ew: [*]u32, i: u32): u32 = ew[le.scope_at + i * LE_SCOPE_WORDS + u32(2)]
+
+// scope_lookup: the Lean type of the visible variable named by the raw
+// string, or NONE.
+scope_lookup: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, rid: u32): u32 {
+  name: u32 = rstr(le, ew, rx, raw, rid)
+  found: u32 = NONE
+  i: u32 = lst(le, ew, LN_SCOPE_SP)
+  base: u32 = lst(le, ew, LN_SCOPE_BASE)
+  while i > base && found == NONE {
+    i = i - u32(1)
+    (scope_rid(le, ew, i) == rid || str_eq(le, ew, scope_name(le, ew, i), name)) ? { found = scope_type(le, ew, i) } | { }
+  }
+  found
+}
+
+declare_raw: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, rid: u32, typ: u32): () {
+  scope_push(le, ew, rstr(le, ew, rx, raw, rid), typ, rid)
+}
+
+// --- marks over raw string ids (the walkers' sets) -----------------------------------------
+
+mark_gen: (le: Lem, ew: [*]u32): u32 {
+  g: u32 = lst(le, ew, LN_GEN) + u32(1)
+  set_lst(le, ew, LN_GEN, g)
+  g
+}
+
+set_mark: (le: Lem, ew: [*]u32, table: u32, rid: u32, g: u32): () {
+  rid < LE_RSTRS ? { ew[table + rid] = g } | { le_fail(le, ew, u32(911)) }
+}
+
+has_mark: (le: Lem, ew: [*]u32, table: u32, rid: u32, g: u32): Bool = rid < LE_RSTRS && ew[table + rid] == g
+
+// --- the function table -------------------------------------------------------------------
+
+// Per raw function (LE_FUNC_WORDS words): 0 in the extracted set, 1 the
+// callee list start, 2 the callee count (NONE before computed), 3 the
+// dependency-order visit state (0, 1 in progress, 2 done) or recursion flag.
+lfn_word: (le: Lem, ew: [*]u32, fi: u32, k: u32): u32 = ew[le.funcs_at + fi * LE_FUNC_WORDS + k]
+set_lfn_word: (le: Lem, ew: [*]u32, fi: u32, k: u32, v: u32): () { ew[le.funcs_at + fi * LE_FUNC_WORDS + k] = v }
+fn_in_set: (le: Lem, ew: [*]u32, fi: u32): Bool = fi < LE_FUNCS && lfn_word(le, ew, fi, u32(0)) != u32(0)
+
+// is_threaded_texpr: a span type `[*]T`, the writable storage a function
+// returns beside its result (docs/spec/95-extraction.md section 2).
+is_threaded_texpr: (rx: []u32, raw: Raw, texpr: u32): Bool = texpr != NONE && rt_kind(rx, raw, texpr) == RAW_TYPE_SPAN
+
+// address_owner: the identifier behind `&x` (or `span(&x)` / `view(&x)`), or NONE.
+address_owner: (rx: []u32, raw: Raw, node: u32): u32 {
+  n: u32 = node
+  (n != NONE && rn_kind(rx, raw, n) == RAW_CALL && rn_c(rx, raw, n) == u32(1) && rn_kind(rx, raw, rn_a(rx, raw, n)) == RAW_IDENT) ? {
+    nm: Name16 = rs_name(rx, raw, rn_a(rx, raw, rn_a(rx, raw, n)))
+    (is_name(nm, u64(0x6E617073), u64(0x0), u32(4)) || is_name(nm, u64(0x77656976), u64(0x0), u32(4))) ? { n = rl_item(rx, raw, rn_b(rx, raw, n), u32(0)) } | { }
+  } | { }
+  (n != NONE && rn_kind(rx, raw, n) == RAW_PREFIX && is_name(rs_name(rx, raw, rn_a(rx, raw, n)), u64(0x26), u64(0x0), u32(1)) && rn_kind(rx, raw, rn_b(rx, raw, n)) == RAW_IDENT) ? { rn_a(rx, raw, rn_b(rx, raw, n)) } | { NONE }
+}
+
+// span_owner_of: the owner of an inline `span(&owner)` argument, or NONE.
+span_owner_of: (rx: []u32, raw: Raw, node: u32): u32 {
+  ok: Bool = node != NONE && rn_kind(rx, raw, node) == RAW_CALL && rn_c(rx, raw, node) == u32(1) && rn_kind(rx, raw, rn_a(rx, raw, node)) == RAW_IDENT && is_name(rs_name(rx, raw, rn_a(rx, raw, rn_a(rx, raw, node))), u64(0x6E617073), u64(0x0), u32(4))
+  ok ? { address_owner(rx, raw, node) } | { NONE }
+}
+
+// --- the raw tree walker --------------------------------------------------------------------
+
+// Walk modes.
+WK_ASSIGNED: u32 = 0
+WK_REFERENCED: u32 = 1
+WK_CALLEES: u32 = 2
+WK_NEEDSDO: u32 = 3
+
+root_ident: (rx: []u32, raw: Raw, node: u32): u32 {
+  n: u32 = node
+  while n != NONE && rn_kind(rx, raw, n) == RAW_INDEX {
+    n = rn_a(rx, raw, n)
+  }
+  (n != NONE && rn_kind(rx, raw, n) == RAW_IDENT) ? { rn_a(rx, raw, n) } | { NONE }
+}
+
+// walk visits every node under root (statements and expressions alike,
+// as the Go walkers do together) with an explicit stack, marking under
+// generation g: assigned names in markw and declared names in markd
+// (WK_ASSIGNED), mentioned names in markm (WK_REFERENCED), callee names
+// pushed onto the accumulator once each (WK_CALLEES, markm as the seen
+// set), or the do-block need (WK_NEEDSDO): true when found.
+walk: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, root: u32, mode: u32, g: u32): Bool {
+  sp: u32 = 0
+  hit: Bool = false
+  root != NONE ? {
+    ew[le.work_at] = root
+    sp = u32(1)
+  } | { }
+  while sp > u32(0) && !le_failed(le, ew) {
+    sp = sp - u32(1)
+    n: u32 = ew[le.work_at + sp]
+    kind: u32 = rn_kind(rx, raw, n)
+    a: u32 = rn_a(rx, raw, n)
+    b: u32 = rn_b(rx, raw, n)
+    c: u32 = rn_c(rx, raw, n)
+    // The node's own marks.
+    mode == WK_ASSIGNED ? {
+      kind == RAW_ASSIGN ? { set_mark(le, ew, le.markw_at, a, g) } | {
+      kind == RAW_INDEXASSIGN ? {
+        r: u32 = root_ident(rx, raw, a)
+        r != NONE ? { set_mark(le, ew, le.markw_at, r, g) } | { }
+      } | {
+      kind == RAW_VARDECL ? { set_mark(le, ew, le.markd_at, a, g) } | {
+      kind == RAW_CALL ? {
+        // A call rebinds the owners of its span(&owner) arguments, and of
+        // every argument at an extracted callee's span parameter.
+        callee_fn: u32 = rn_kind(rx, raw, a) == RAW_IDENT ? { raw_find_function(rx, raw, rn_a(rx, raw, a)) } | { NONE }
+        i: u32 = 0
+        while i < c {
+          arg: u32 = rl_item(rx, raw, b, i)
+          owner: u32 = span_owner_of(rx, raw, arg)
+          owner != NONE ? { set_mark(le, ew, le.markw_at, owner, g) } | {
+            (callee_fn != NONE && fn_in_set(le, ew, callee_fn) && i < rf_word(rx, raw, callee_fn, u32(2)) && is_threaded_texpr(rx, raw, rp_word(rx, raw, rf_word(rx, raw, callee_fn, u32(1)) + i, u32(1)))) ? {
+              o2: u32 = address_owner(rx, raw, arg)
+              (o2 == NONE && rn_kind(rx, raw, arg) == RAW_IDENT) ? { o2 = rn_a(rx, raw, arg) } | { }
+              o2 != NONE ? { set_mark(le, ew, le.markw_at, o2, g) } | { }
+            } | { }
+          }
+          i = i + u32(1)
+        }
+      } | { } } } }
+    } | {
+    mode == WK_REFERENCED ? {
+      (kind == RAW_IDENT || kind == RAW_ASSIGN) ? { set_mark(le, ew, le.markm_at, a, g) } | {
+      kind == RAW_INDEXASSIGN ? {
+        r: u32 = root_ident(rx, raw, a)
+        r != NONE ? { set_mark(le, ew, le.markm_at, r, g) } | { }
+      } | { } }
+    } | {
+    mode == WK_CALLEES ? {
+      (kind == RAW_CALL && rn_kind(rx, raw, a) == RAW_IDENT) ? {
+        callee: u32 = rn_a(rx, raw, a)
+        has_mark(le, ew, le.markm_at, callee, g) ? { } | {
+          set_mark(le, ew, le.markm_at, callee, g)
+          acc_push_l(le, ew, callee)
+        }
+      } | { }
+    } | {
+      // WK_NEEDSDO
+      kind == RAW_BLOCKEXPR ? {
+        blk: u32 = a
+        (rn_b(rx, raw, blk) != u32(1) || rn_kind(rx, raw, rl_item(rx, raw, rn_a(rx, raw, blk), u32(0))) != RAW_EXPRSTMT) ? { hit = true } | { }
+      } | {
+      (kind == RAW_CALL && rn_kind(rx, raw, a) == RAW_IDENT) ? {
+        rf: u32 = raw_find_function(rx, raw, rn_a(rx, raw, a))
+        (rf != NONE && fn_in_set(le, ew, rf)) ? { hit = true } | { }
+      } | { } }
+    } } }
+    // The children.
+    room: Bool = sp + u32(8) < LE_WORK
+    !room ? { le_fail(le, ew, u32(912)) } | {
+      kind == RAW_BLOCKEXPR ? {
+        a != NONE ? {
+          ew[le.work_at + sp] = a
+          sp = sp + u32(1)
+        } | { }
+      } | {
+      kind == RAW_BLOCK ? {
+        count: u32 = b
+        sp + count >= LE_WORK ? { le_fail(le, ew, u32(912)) } | {
+          // Statements pushed in reverse, so they pop in order.
+          i: u32 = count
+          while i > u32(0) {
+            i = i - u32(1)
+            ew[le.work_at + sp] = rl_item(rx, raw, a, i)
+            sp = sp + u32(1)
+          }
+        }
+      } | {
+      kind == RAW_MATCH ? {
+        narms: u32 = c
+        sp + narms + u32(1) >= LE_WORK ? { le_fail(le, ew, u32(912)) } | {
+          i: u32 = narms
+          while i > u32(0) {
+            i = i - u32(1)
+            ew[le.work_at + sp] = rl_item(rx, raw, b, i * u32(2) + u32(1))
+            sp = sp + u32(1)
+          }
+          ew[le.work_at + sp] = a
+          sp = sp + u32(1)
+        }
+      } | {
+      kind == RAW_INFIX ? {
+        ew[le.work_at + sp] = c
+        ew[le.work_at + sp + u32(1)] = b
+        sp = sp + u32(2)
+      } | {
+      (kind == RAW_PREFIX || kind == RAW_EXPRSTMT || kind == RAW_ASSIGN) ? {
+        child: u32 = kind == RAW_PREFIX ? { b } | { kind == RAW_ASSIGN ? { b } | { a } }
+        child != NONE ? {
+          ew[le.work_at + sp] = child
+          sp = sp + u32(1)
+        } | { }
+      } | {
+      kind == RAW_CALL ? {
+        nargs: u32 = c
+        sp + nargs + u32(1) >= LE_WORK ? { le_fail(le, ew, u32(912)) } | {
+          i: u32 = nargs
+          while i > u32(0) {
+            i = i - u32(1)
+            ew[le.work_at + sp] = rl_item(rx, raw, b, i)
+            sp = sp + u32(1)
+          }
+          ew[le.work_at + sp] = a
+          sp = sp + u32(1)
+        }
+      } | {
+      kind == RAW_INDEX ? {
+        c == u32(0) ? {
+          ew[le.work_at + sp] = b
+          sp = sp + u32(1)
+        } | { }
+        ew[le.work_at + sp] = a
+        sp = sp + u32(1)
+      } | {
+      kind == RAW_RECORDLIT ? {
+        npairs: u32 = c
+        sp + npairs >= LE_WORK ? { le_fail(le, ew, u32(912)) } | {
+          i: u32 = npairs
+          while i > u32(0) {
+            i = i - u32(1)
+            ew[le.work_at + sp] = rl_item(rx, raw, b, i * u32(2) + u32(1))
+            sp = sp + u32(1)
+          }
+        }
+      } | {
+      kind == RAW_ARRAYLIT ? {
+        count: u32 = c
+        sp + count >= LE_WORK ? { le_fail(le, ew, u32(912)) } | {
+          i: u32 = count
+          while i > u32(0) {
+            i = i - u32(1)
+            ew[le.work_at + sp] = rl_item(rx, raw, b, i)
+            sp = sp + u32(1)
+          }
+        }
+      } | {
+      kind == RAW_VARIANT ? {
+        c != NONE ? {
+          ew[le.work_at + sp] = c
+          sp = sp + u32(1)
+        } | { }
+      } | {
+      kind == RAW_VARDECL ? {
+        c != NONE ? {
+          ew[le.work_at + sp] = c
+          sp = sp + u32(1)
+        } | { }
+      } | {
+      kind == RAW_INDEXASSIGN ? {
+        ew[le.work_at + sp] = b
+        ew[le.work_at + sp + u32(1)] = a
+        sp = sp + u32(2)
+      } | {
+      kind == RAW_WHILE ? {
+        ew[le.work_at + sp] = b
+        ew[le.work_at + sp + u32(1)] = a
+        sp = sp + u32(2)
+      } | { } } } } } } } } } } } } }
+    }
+  }
+  hit
+}
+
+// --- captured expression types --------------------------------------------------------------
+
+// xtype: the Lean type the serializer recorded for a raw expression node
+// (the checker's type in the Go extractor), or NONE; a block expression's
+// is its block's.
+xtype: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, node: u32): u32 {
+  n: u32 = node
+  (n != NONE && rn_kind(rx, raw, n) == RAW_BLOCKEXPR) ? { n = rn_a(rx, raw, n) } | { }
+  (n == NONE || n >= LE_NODES) ? { NONE } | { ew[le.ntype_at + n] }
+}
+
+// --- type declarations ------------------------------------------------------------------------
+
+// The declared types are the raw records then the raw sum types, indexed
+// together: t < nrecords is a record.
+ntdecls: (raw: Raw): u32 = raw.nrecords + raw.nadts
+tdecl_is_record: (raw: Raw, t: u32): Bool = t < raw.nrecords
+tdecl_name: (rx: []u32, raw: Raw, t: u32): u32 = t < raw.nrecords ? { rrec_word(rx, raw, t, u32(0)) } | { radt_word(rx, raw, t - raw.nrecords, u32(0)) }
+tdecl_ord: (rx: []u32, raw: Raw, t: u32): u32 = t < raw.nrecords ? { rrec_word(rx, raw, t, u32(3)) } | { radt_word(rx, raw, t - raw.nrecords, u32(3)) }
+
+find_tdecl: (rx: []u32, raw: Raw, name: u32): u32 {
+  found: u32 = NONE
+  t: u32 = 0
+  n: u32 = ntdecls(raw)
+  while t < n && found == NONE {
+    tdecl_name(rx, raw, t) == name ? { found = t } | { }
+    t = t + u32(1)
+  }
+  found
+}
+
+// find_tdecl_lean: the declared type whose Lean name is the string.
+find_tdecl_lean: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, s: u32): u32 {
+  found: u32 = NONE
+  t: u32 = 0
+  n: u32 = ntdecls(raw)
+  while t < n && found == NONE && s != NONE {
+    str_eq(le, ew, ident(le, ew, rx, raw, tdecl_name(rx, raw, t)), s) ? { found = t } | { }
+    t = t + u32(1)
+  }
+  found
+}
+
+type_used: (le: Lem, ew: [*]u32, t: u32): Bool = ew[le.tused_at + t * u32(2)] != u32(0)
+mark_type_used: (le: Lem, ew: [*]u32, t: u32): () { ew[le.tused_at + t * u32(2)] = u32(1) }
+
+// tdecl_lean: the Lean name of a declared type, marked for emission.
+tdecl_lean: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, t: u32): u32 {
+  mark_type_used(le, ew, t)
+  ident(le, ew, rx, raw, tdecl_name(rx, raw, t))
+}
+
+// lean_type renders a raw type expression: the primitives, `string` as
+// bytes, a declared record or sum type (marked used), and [N]T, []T as
+// Array T; NONE with the failure recorded otherwise.
+lean_type: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, texpr: u32): u32 {
+  depth: u32 = 0
+  t: u32 = texpr
+  while t != NONE && rt_kind(rx, raw, t) != RAW_TYPE_NAME {
+    depth = depth + u32(1)
+    t = rt_a(rx, raw, t)
+  }
+  base: u32 = NONE
+  t == NONE ? { le_fail(le, ew, u32(920)) } | {
+    name: u32 = rt_a(rx, raw, t)
+    nm: Name16 = rs_name(rx, raw, name)
+    base = primitive_lean(le, ew, nm)
+    base == NONE ? {
+      is_name(nm, u64(0x676E69727473), u64(0x0), u32(6)) ? { base = lc(le, ew, LC_BYTES) } | {
+        td: u32 = find_tdecl(rx, raw, name)
+        td == NONE ? { le_fail(le, ew, u32(921)) } | { base = tdecl_lean(le, ew, rx, raw, td) }
+      }
+    } | { }
+  }
+  out: u32 = base
+  (base != NONE && depth > u32(0)) ? {
+    sb_begin(le, ew)
+    k: u32 = 0
+    while k < depth {
+      ap_lits(le, ew, u64(0x207961727241), u64(0x0), u32(6))  // Array 
+      k = k + u32(1)
+    }
+    sb_str(le, ew, base)
+    out = sb_end(le, ew)
+  } | { }
+  out
+}
+
+// initial_value: the zero value of a declaration without an initializer;
+// a fixed array of a literal length is that many zeroes.
+initial_value: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, texpr: u32, lean: u32): u32 {
+  (texpr != NONE && rt_kind(rx, raw, texpr) == RAW_TYPE_ARRAY) ? {
+    elem: u32 = element_of(le, ew, lean)
+    z: u32 = zero_of(le, ew, elem == NONE ? { lean } | { elem })
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x65722E7961727241), u64(0x2065746163696C70), u32(16))  // Array.replicate 
+    sb_dec(le, ew, u64(rt_b(rx, raw, texpr)))
+    sb_byte(le, ew, u32(32))
+    sb_str(le, ew, z)
+    sb_end(le, ew)
+  } | { zero_of(le, ew, lean) }
+}
+
+// record_field_texpr: the raw type expression of a record's field by
+// name, or NONE.
+record_field_texpr: (rx: []u32, raw: Raw, rec: u32, field: u32): u32 {
+  fstart: u32 = rrec_word(rx, raw, rec, u32(1))
+  nfields: u32 = rrec_word(rx, raw, rec, u32(2))
+  found: u32 = NONE
+  i: u32 = 0
+  while i < nfields && found == NONE {
+    rfield_word(rx, raw, fstart + i, u32(0)) == field ? { found = rfield_word(rx, raw, fstart + i, u32(1)) } | { }
+    i = i + u32(1)
+  }
+  found
+}
+
+// record_field_type: the Lean type of a record's field (the record by
+// its Lean type name), or NONE with the failure recorded.
+record_field_type: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, rec_lean: u32, field: u32): u32 {
+  td: u32 = find_tdecl_lean(le, ew, rx, raw, rec_lean)
+  out: u32 = NONE
+  (td == NONE || !tdecl_is_record(raw, td)) ? { le_fail(le, ew, u32(922)) } | {
+    texpr: u32 = record_field_texpr(rx, raw, td, field)
+    texpr == NONE ? { le_fail(le, ew, u32(923)) } | { out = lean_type(le, ew, rx, raw, texpr) }
+  }
+  out
+}
+
+// variant_entry: the raw variant entry of a sum type declaration (t: the
+// declared type index) named by the raw string, or NONE.
+variant_entry: (rx: []u32, raw: Raw, t: u32, name: u32): u32 {
+  adt: u32 = t - raw.nrecords
+  vstart: u32 = radt_word(rx, raw, adt, u32(1))
+  nvariants: u32 = radt_word(rx, raw, adt, u32(2))
+  found: u32 = NONE
+  i: u32 = 0
+  while i < nvariants && found == NONE {
+    rvar_word(rx, raw, vstart + i, u32(0)) == name ? { found = vstart + i } | { }
+    i = i + u32(1)
+  }
+  found
+}
+
+// literal_term renders an integer at a Lean type: "(V : T)"; a value
+// above 2^63 - 1 prints unsigned at an unsigned type, wrapped negative at
+// a signed one (the Go extractor's int64 spelling).
+literal_term: (le: Lem, ew: [*]u32, value: u64, typ: u32): u32 {
+  negative: Bool = (value >> u64(63)) != u64(0) && !str_starts(le, ew, typ, u64(0x746E4955), u64(0x0), u32(4))
+  sb_begin(le, ew)
+  sb_byte(le, ew, u32(40))
+  negative ? {
+    sb_byte(le, ew, u32(45))
+    sb_dec(le, ew, (u64(0) - value))
+  } | { sb_dec(le, ew, value) }
+  ap_lits(le, ew, u64(0x203A20), u64(0x0), u32(3))  //  : 
+  sb_str(le, ew, typ)
+  sb_byte(le, ew, u32(41))
+  sb_end(le, ew)
+}
+
+// lit_str_fuel_arm: the recursion arm's head line.
+lit_str_fuel_arm: (le: Lem, ew: [*]u32): u32 {
+  sb_begin(le, ew)
+  ap_lits(le, ew, u64(0x6C657566207C2020), u64(0x203E3D2031202B20), u32(16))  //   | fuel + 1 => do
+  ap_lits(le, ew, u64(0x6F64), u64(0x0), u32(2))
+  sb_end(le, ew)
+}
+
+// decimal: a plain decimal string.
+decimal: (le: Lem, ew: [*]u32, value: u64): u32 {
+  sb_begin(le, ew)
+  sb_dec(le, ew, value)
+  sb_end(le, ew)
+}
+
+node_value: (rx: []u32, raw: Raw, node: u32): u64 = u64(rn_vlo(rx, raw, node)) | (u64(rn_vhi(rx, raw, node)) << u64(32))
+
+// tuple_acc: the accumulated strings from base as a tuple ("a", "(a, b)",
+// "()" for none), popped.
+tuple_acc: (le: Lem, ew: [*]u32, base: u32): u32 {
+  n: u32 = lst(le, ew, LN_ACC_SP) - base
+  n == u32(1) ? {
+    s: u32 = acc_at_l(le, ew, base)
+    set_lst(le, ew, LN_ACC_SP, base)
+    s
+  } | {
+    sep: u32 = lstr(le, ew, u64(0x202C), u64(0x0), u32(2))
+    paren(le, ew, join_acc(le, ew, base, sep))
+  }
+}
+
+// tuple_type_acc: "(T)" or "(A × B)", popped.
+tuple_type_acc: (le: Lem, ew: [*]u32, base: u32): u32 {
+  sep: u32 = lstr(le, ew, u64(0x2097C320), u64(0x0), u32(4))
+  paren(le, ew, join_acc(le, ew, base, sep))
+}
+
+// --- the walkers' results in scope order -------------------------------------------------------
+
+// collect_written pushes the scope indices of the visible variables the
+// marked bodies assign and do not declare (generation g), in scope order:
+// the count.
+collect_written: (le: Lem, ew: [*]u32, g: u32): u32 {
+  n: u32 = 0
+  i: u32 = lst(le, ew, LN_SCOPE_BASE)
+  sp: u32 = lst(le, ew, LN_SCOPE_SP)
+  while i < sp {
+    rid: u32 = scope_rid(le, ew, i)
+    (rid != NONE && has_mark(le, ew, le.markw_at, rid, g) && !has_mark(le, ew, le.markd_at, rid, g)) ? {
+      acc_push_l(le, ew, i)
+      n = n + u32(1)
+    } | { }
+    i = i + u32(1)
+  }
+  n
+}
+
+// collect_mentioned pushes the scope indices of the visible variables the
+// marked bodies mention, in scope order: the count.
+collect_mentioned: (le: Lem, ew: [*]u32, g: u32): u32 {
+  n: u32 = 0
+  i: u32 = lst(le, ew, LN_SCOPE_BASE)
+  sp: u32 = lst(le, ew, LN_SCOPE_SP)
+  while i < sp {
+    rid: u32 = scope_rid(le, ew, i)
+    (rid != NONE && has_mark(le, ew, le.markm_at, rid, g)) ? {
+      acc_push_l(le, ew, i)
+      n = n + u32(1)
+    } | { }
+    i = i + u32(1)
+  }
+  n
+}
+
+// outs_of_arms marks the arm bodies of a match (all narms of them) as
+// assigned and returns the written tuple ("()" for none); the written
+// names joined by ", " go to out (NONE for none).
+Outs: type = struct { outs: u32, joined: u32, count: u32 }
+
+outs_of_arms: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, node: u32): Outs {
+  g: u32 = mark_gen(le, ew)
+  arms: u32 = rn_b(rx, raw, node)
+  narms: u32 = rn_c(rx, raw, node)
+  i: u32 = 0
+  while i < narms {
+    hit: Bool = walk(le, ew, rx, raw, rl_item(rx, raw, arms, i * u32(2) + u32(1)), WK_ASSIGNED, g)
+    i = i + u32(1)
+  }
+  base: u32 = lst(le, ew, LN_ACC_SP)
+  n: u32 = collect_written(le, ew, g)
+  joined: u32 = NONE
+  outs: u32 = lc(le, ew, LC_PAREN_UNIT)
+  n > u32(0) ? {
+    // The indices become the escaped names.
+    k: u32 = 0
+    while k < n {
+      ew[le.acc_at + base + k] = ident_str(le, ew, scope_name(le, ew, ew[le.acc_at + base + k]))
+      k = k + u32(1)
+    }
+    sep: u32 = lstr(le, ew, u64(0x202C), u64(0x0), u32(2))
+    joined = join_acc(le, ew, base, sep)
+    outs = n == u32(1) ? { joined } | { paren(le, ew, joined) }
+  } | { set_lst(le, ew, LN_ACC_SP, base) }
+  Outs { outs: outs, joined: joined, count: n }
+}
+
+// --- callees ----------------------------------------------------------------------------------
+
+rname_less: (rx: []u32, raw: Raw, a: u32, b: u32): Bool {
+  na: u32 = rs_len(rx, raw, a)
+  nb: u32 = rs_len(rx, raw, b)
+  k: u32 = 0
+  decided: Bool = false
+  less: Bool = false
+  while k < na && k < nb && !decided {
+    ca: u32 = rs_byte(rx, raw, a, k)
+    cb: u32 = rs_byte(rx, raw, b, k)
+    ca != cb ? {
+      decided = true
+      less = ca < cb
+    } | { }
+    k = k + u32(1)
+  }
+  decided ? { less } | { na < nb }
+}
+
+// fn_callees computes (once) the sorted callee names of a raw function:
+// the list start; the count is fn word 2.
+fn_callees: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, fi: u32): u32 {
+  lfn_word(le, ew, fi, u32(2)) == NONE ? {
+    g: u32 = mark_gen(le, ew)
+    base: u32 = lst(le, ew, LN_ACC_SP)
+    hit: Bool = walk(le, ew, rx, raw, rf_word(rx, raw, fi, u32(4)), WK_CALLEES, g)
+    sp: u32 = lst(le, ew, LN_ACC_SP)
+    // Insertion sort by name.
+    a: u32 = base + u32(1)
+    while a < sp {
+      b: u32 = a
+      while b > base && rname_less(rx, raw, ew[le.acc_at + b], ew[le.acc_at + b - u32(1)]) {
+        tmp: u32 = ew[le.acc_at + b]
+        ew[le.acc_at + b] = ew[le.acc_at + b - u32(1)]
+        ew[le.acc_at + b - u32(1)] = tmp
+        b = b - u32(1)
+      }
+      a = a + u32(1)
+    }
+    start: u32 = lst(le, ew, LN_NCLIST)
+    count: u32 = sp - base
+    start + count > LE_CLIST ? { le_fail(le, ew, u32(924)) } | {
+      i: u32 = 0
+      while i < count {
+        ew[le.clist_at + start + i] = ew[le.acc_at + base + i]
+        i = i + u32(1)
+      }
+      set_lst(le, ew, LN_NCLIST, start + count)
+    }
+    set_lst(le, ew, LN_ACC_SP, base)
+    set_lfn_word(le, ew, fi, u32(1), start)
+    set_lfn_word(le, ew, fi, u32(2), count)
+  } | { }
+  lfn_word(le, ew, fi, u32(1))
+}
+
+callee_at: (le: Lem, ew: [*]u32, start: u32, i: u32): u32 = ew[le.clist_at + start + i]
+
+// --- the frame stack -------------------------------------------------------------------------------
+
+lf_at: (le: Lem, i: u32): u32 = le.frames_at + i * LE_FRAME_WORDS
+
+lx_push: (le: Lem, ew: [*]u32, kind: u32, node: u32, w3: u32, w4: u32): () {
+  sp: u32 = lst(le, ew, LN_SP)
+  sp >= LE_FRAMES ? { le_fail(le, ew, u32(925)) } | {
+    at: u32 = lf_at(le, sp)
+    ew[at] = kind
+    ew[at + u32(1)] = node
+    ew[at + u32(2)] = u32(0)
+    ew[at + u32(3)] = w3
+    ew[at + u32(4)] = w4
+    k: u32 = 5
+    while k < LE_FRAME_WORDS {
+      ew[at + k] = u32(0)
+      k = k + u32(1)
+    }
+    set_lst(le, ew, LN_SP, sp + u32(1))
+  }
+}
+
+lx_pop: (le: Lem, ew: [*]u32): () { set_lst(le, ew, LN_SP, lst(le, ew, LN_SP) - u32(1)) }
+
+lx_deliver: (le: Lem, ew: [*]u32, s: u32): () {
+  set_lst(le, ew, LN_RET, s)
+  lx_pop(le, ew)
+}
+
+// lx_push_expr pushes an expression frame wanting the Lean type (NONE
+// when the context fixes nothing).
+lx_push_expr: (le: Lem, ew: [*]u32, node: u32, want: u32): () {
+  node == NONE ? { le_fail(le, ew, u32(926)) } | { lx_push(le, ew, LF_EXPR, node, want, u32(0)) }
+}
+
+// widened applies the implicit integer widening the Go extractor makes
+// explicit: a narrower integer of the same signedness in a wider context
+// takes the wanted type's conversion.
+widened: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, node: u32, term: u32, want: u32): u32 {
+  wi: IntW = lean_int_width(le, ew, want)
+  out: u32 = term
+  wi.ok ? {
+    have: u32 = xtype(le, ew, rx, raw, node)
+    hi: IntW = lean_int_width(le, ew, have)
+    (hi.ok && !str_eq(le, ew, have, want) && hi.signed == wi.signed && hi.bits < wi.bits) ? {
+      sb_begin(le, ew)
+      sb_byte(le, ew, u32(40))
+      sb_str(le, ew, term)
+      ap_lits(le, ew, u64(0x6F742E), u64(0x0), u32(3))  // .to
+      sb_str(le, ew, want)
+      sb_byte(le, ew, u32(41))
+      out = sb_end(le, ew)
+    } | { }
+  } | { }
+  out
+}
+
+// lx_deliver_expr delivers an expression's term, widened to its context.
+lx_deliver_expr: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, node: u32, term: u32, want: u32): () {
+  lx_deliver(le, ew, widened(le, ew, rx, raw, node, term, want))
+}
+
+// --- match shapes -------------------------------------------------------------------------------
+
+pat_is_wild: (rx: []u32, raw: Raw, pat: u32): Bool {
+  k: u32 = rn_kind(rx, raw, pat)
+  k == RAW_PAT_WILD || (k == RAW_PAT_BINDING && is_name(rs_name(rx, raw, rn_a(rx, raw, pat)), u64(0x5F), u64(0x0), u32(1)))
+}
+
+is_bool_conditional: (rx: []u32, raw: Raw, node: u32): Bool {
+  arms: u32 = rn_b(rx, raw, node)
+  ok: Bool = rn_c(rx, raw, node) == u32(2)
+  i: u32 = 0
+  while i < u32(2) && ok {
+    pat: u32 = rl_item(rx, raw, arms, i * u32(2))
+    ok = rn_kind(rx, raw, pat) == RAW_PAT_LITERAL && rn_kind(rx, raw, rn_a(rx, raw, pat)) == RAW_BOOLLIT
+    i = i + u32(1)
+  }
+  ok
+}
+
+// is_integer_match: every arm but the last a literal integer pattern, the
+// last a literal or the wildcard.
+is_integer_match: (rx: []u32, raw: Raw, node: u32): Bool {
+  arms: u32 = rn_b(rx, raw, node)
+  narms: u32 = rn_c(rx, raw, node)
+  ok: Bool = narms >= u32(2)
+  i: u32 = 0
+  while i < narms && ok {
+    pat: u32 = rl_item(rx, raw, arms, i * u32(2))
+    k: u32 = rn_kind(rx, raw, pat)
+    k == RAW_PAT_LITERAL ? { ok = rn_kind(rx, raw, rn_a(rx, raw, pat)) == RAW_INTLIT } | {
+      ok = i + u32(1) == narms && pat_is_wild(rx, raw, pat)
+    }
+    i = i + u32(1)
+  }
+  ok
+}
+
+// is_variant_match: at least one variant pattern, the rest wildcards or
+// whole-value bindings.
+is_variant_match: (rx: []u32, raw: Raw, node: u32): Bool {
+  arms: u32 = rn_b(rx, raw, node)
+  narms: u32 = rn_c(rx, raw, node)
+  saw: Bool = false
+  ok: Bool = true
+  i: u32 = 0
+  while i < narms && ok {
+    k: u32 = rn_kind(rx, raw, rl_item(rx, raw, arms, i * u32(2)))
+    k == RAW_PAT_VARIANT ? { saw = true } | { ok = k == RAW_PAT_WILD || k == RAW_PAT_BINDING }
+    i = i + u32(1)
+  }
+  ok && saw
+}
+
+// arm_body: the i-th arm's body of a match; for a Bool conditional the
+// arms are ordered true first (i = 0) and false second.
+arm_body: (rx: []u32, raw: Raw, node: u32, i: u32, bool_cond: Bool): u32 {
+  arms: u32 = rn_b(rx, raw, node)
+  bool_cond ? {
+    // The true arm first, whichever the source spelled first.
+    first_true: Bool = rn_a(rx, raw, rn_a(rx, raw, rl_item(rx, raw, arms, u32(0)))) != u32(0)
+    k: u32 = (i == u32(0)) == first_true ? { u32(0) } | { u32(1) }
+    rl_item(rx, raw, arms, k * u32(2) + u32(1))
+  } | { rl_item(rx, raw, arms, i * u32(2) + u32(1)) }
+}
+
+// needs_do: whether any arm of a match carries statements or a call to an
+// extracted function, so the match must be bound through a do-block.
+needs_do: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, node: u32): Bool {
+  arms: u32 = rn_b(rx, raw, node)
+  narms: u32 = rn_c(rx, raw, node)
+  hit: Bool = false
+  i: u32 = 0
+  while i < narms && !hit {
+    hit = walk(le, ew, rx, raw, rl_item(rx, raw, arms, i * u32(2) + u32(1)), WK_NEEDSDO, u32(0))
+    i = i + u32(1)
+  }
+  hit
+}
+
+// arm_value_node: a value-position arm's expression: the expression
+// itself, or the single expression statement of a block; NONE otherwise.
+arm_value_node: (rx: []u32, raw: Raw, body: u32): u32 {
+  body == NONE ? { NONE } | {
+    rn_kind(rx, raw, body) == RAW_BLOCKEXPR ? {
+      blk: u32 = rn_a(rx, raw, body)
+      (blk == NONE || rn_b(rx, raw, blk) != u32(1)) ? { NONE } | {
+        stmt: u32 = rl_item(rx, raw, rn_a(rx, raw, blk), u32(0))
+        rn_kind(rx, raw, stmt) == RAW_EXPRSTMT ? { rn_a(rx, raw, stmt) } | { NONE }
+      }
+    } | { body }
+  }
+}
+
+// scrutinee_adt: the declared sum type a variant match dispatches on (by
+// the scrutinee's recorded type), or NONE.
+scrutinee_adt: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, node: u32): u32 {
+  t: u32 = find_tdecl_lean(le, ew, rx, raw, xtype(le, ew, rx, raw, rn_a(rx, raw, node)))
+  (t != NONE && tdecl_is_record(raw, t)) ? { NONE } | { t }
+}
+
+// pattern_text renders a match pattern against a declared sum type,
+// declaring its binders in the current scope; NONE with the failure
+// recorded otherwise. Variant payload chains are rendered from the leaf
+// outward.
+pattern_text: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, pat: u32, t: u32): u32 {
+  k: u32 = rn_kind(rx, raw, pat)
+  out: u32 = NONE
+  k == RAW_PAT_WILD ? { out = lc(le, ew, LC_UNDERSCORE) } | {
+  k == RAW_PAT_BINDING ? {
+    pat_is_wild(rx, raw, pat) ? { out = lc(le, ew, LC_UNDERSCORE) } | {
+      declare_raw(le, ew, rx, raw, rn_a(rx, raw, pat), tdecl_lean(le, ew, rx, raw, t))
+      out = ident(le, ew, rx, raw, rn_a(rx, raw, pat))
+    }
+  } | {
+  k == RAW_PAT_VARIANT ? {
+    // The chain of variant levels, then the leaf.
+    names: [16]u32
+    depth: u32 = 0
+    cur_t: u32 = t
+    cur_p: u32 = pat
+    leaf: u32 = NONE
+    leaf_t: u32 = NONE
+    ok: Bool = true
+    while ok && cur_p != NONE && rn_kind(rx, raw, cur_p) == RAW_PAT_VARIANT {
+      ve: u32 = variant_entry(rx, raw, cur_t, rn_b(rx, raw, cur_p))
+      (ve == NONE || depth >= u32(16)) ? { ok = false } | {
+        names[depth] = ident(le, ew, rx, raw, rn_b(rx, raw, cur_p))
+        depth = depth + u32(1)
+        payload_t: u32 = rvar_word(rx, raw, ve, u32(2))
+        inner: u32 = rn_c(rx, raw, cur_p)
+        inner == NONE ? {
+          payload_t != NONE ? { ok = false } | { }
+          leaf = NONE
+          cur_p = NONE
+        } | {
+          payload_t == NONE ? { ok = false } | {
+            leaf_t = lean_type(le, ew, rx, raw, payload_t)
+            rn_kind(rx, raw, inner) == RAW_PAT_VARIANT ? {
+              cur_t = find_tdecl_lean(le, ew, rx, raw, leaf_t)
+              (cur_t == NONE || tdecl_is_record(raw, cur_t)) ? { ok = false } | { cur_p = inner }
+            } | {
+              leaf = inner
+              cur_p = NONE
+            }
+          }
+        }
+      }
+    }
+    !ok ? { le_fail(le, ew, u32(927)) } | {
+      // The leaf's text.
+      text: u32 = NONE
+      leaf != NONE ? {
+        lk: u32 = rn_kind(rx, raw, leaf)
+        (lk == RAW_PAT_WILD || (lk == RAW_PAT_BINDING && pat_is_wild(rx, raw, leaf))) ? { text = lc(le, ew, LC_UNDERSCORE) } | {
+        lk == RAW_PAT_BINDING ? {
+          declare_raw(le, ew, rx, raw, rn_a(rx, raw, leaf), leaf_t)
+          text = ident(le, ew, rx, raw, rn_a(rx, raw, leaf))
+        } | {
+        lk == RAW_PAT_LITERAL ? {
+          lit: u32 = rn_a(rx, raw, leaf)
+          rn_kind(rx, raw, lit) == RAW_INTLIT ? { text = literal_term(le, ew, node_value(rx, raw, lit), leaf_t) } | {
+            rn_kind(rx, raw, lit) == RAW_BOOLLIT ? { text = lc(le, ew, rn_a(rx, raw, lit) != u32(0) ? { LC_TRUE } | { LC_FALSE }) } | { le_fail(le, ew, u32(928)) }
+          }
+        } | { le_fail(le, ew, u32(928)) } } }
+      } | { }
+      // Compose from the innermost level outward.
+      i: u32 = depth
+      while i > u32(0) && !le_failed(le, ew) {
+        i = i - u32(1)
+        sb_begin(le, ew)
+        text == NONE ? {
+          sb_byte(le, ew, u32(46))
+          sb_str(le, ew, names[i])
+        } | {
+          ap_lits(le, ew, u64(0x2E28), u64(0x0), u32(2))  // (.
+          sb_str(le, ew, names[i])
+          sb_byte(le, ew, u32(32))
+          sb_str(le, ew, text)
+          sb_byte(le, ew, u32(41))
+        }
+        text = sb_end(le, ew)
+      }
+      out = text
+    }
+  } | { le_fail(le, ew, u32(929)) } } }
+  out
+}
+
+// --- expressions ----------------------------------------------------------------------------------
+
+// Expression frame words: 1 node, 2 phase, 3 want, 4 s1, 5 s2, 6 t1, 7
+// accumulator base, 8 i, 9 aux, 10 aux2.
+
+// Infix classes.
+IC_LOGICAL: u32 = 1
+IC_EQUALITY: u32 = 2
+IC_ORDER: u32 = 3
+IC_BITWISE: u32 = 4
+IC_ARITH: u32 = 5
+
+infix_class: (nm: Name16): u32 {
+  (is_name(nm, u64(0x2626), u64(0x0), u32(2)) || is_name(nm, u64(0x7C7C), u64(0x0), u32(2))) ? { IC_LOGICAL } | {
+  (is_name(nm, u64(0x3D3D), u64(0x0), u32(2)) || is_name(nm, u64(0x3D21), u64(0x0), u32(2))) ? { IC_EQUALITY } | {
+  (is_name(nm, u64(0x3C), u64(0x0), u32(1)) || is_name(nm, u64(0x3D3C), u64(0x0), u32(2)) || is_name(nm, u64(0x3E), u64(0x0), u32(1)) || is_name(nm, u64(0x3D3E), u64(0x0), u32(2))) ? { IC_ORDER } | {
+  (is_name(nm, u64(0x26), u64(0x0), u32(1)) || is_name(nm, u64(0x7C), u64(0x0), u32(1)) || is_name(nm, u64(0x5E), u64(0x0), u32(1)) || is_name(nm, u64(0x3C3C), u64(0x0), u32(2)) || is_name(nm, u64(0x3E3E), u64(0x0), u32(2))) ? { IC_BITWISE } | {
+  (is_name(nm, u64(0x2B), u64(0x0), u32(1)) || is_name(nm, u64(0x2D), u64(0x0), u32(1)) || is_name(nm, u64(0x2A), u64(0x0), u32(1)) || is_name(nm, u64(0x2F), u64(0x0), u32(1)) || is_name(nm, u64(0x25), u64(0x0), u32(1))) ? { IC_ARITH } | { u32(0) } } } } }
+}
+
+// lean_infix_op: the Lean spelling of an Oak infix operator.
+lean_infix_op: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, op: u32): u32 {
+  nm: Name16 = rs_name(rx, raw, op)
+  is_name(nm, u64(0x26), u64(0x0), u32(1)) ? { lstr(le, ew, u64(0x262626), u64(0x0), u32(3)) } | {
+  is_name(nm, u64(0x7C), u64(0x0), u32(1)) ? { lstr(le, ew, u64(0x7C7C7C), u64(0x0), u32(3)) } | {
+  is_name(nm, u64(0x5E), u64(0x0), u32(1)) ? { lstr(le, ew, u64(0x5E5E5E), u64(0x0), u32(3)) } | {
+  is_name(nm, u64(0x3C3C), u64(0x0), u32(2)) ? { lstr(le, ew, u64(0x3C3C3C), u64(0x0), u32(3)) } | {
+  is_name(nm, u64(0x3E3E), u64(0x0), u32(2)) ? { lstr(le, ew, u64(0x3E3E3E), u64(0x0), u32(3)) } | { rstr(le, ew, rx, raw, op) } } } } }
+}
+
+// infix3 renders "(l OP r)".
+infix3: (le: Lem, ew: [*]u32, l: u32, op: u32, r: u32): u32 {
+  sb_begin(le, ew)
+  sb_byte(le, ew, u32(40))
+  sb_str(le, ew, l)
+  sb_byte(le, ew, u32(32))
+  sb_str(le, ew, op)
+  sb_byte(le, ew, u32(32))
+  sb_str(le, ew, r)
+  sb_byte(le, ew, u32(41))
+  sb_end(le, ew)
+}
+
+// element_type_of: the Lean element type of an array-valued expression: a
+// variable's declared type first, else its recorded type.
+element_type_of: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, node: u32): u32 {
+  out: u32 = NONE
+  rn_kind(rx, raw, node) == RAW_IDENT ? {
+    t: u32 = scope_lookup(le, ew, rx, raw, rn_a(rx, raw, node))
+    t != NONE ? { out = element_of(le, ew, t) } | { }
+  } | { }
+  out == NONE ? { out = element_of(le, ew, xtype(le, ew, rx, raw, node)) } | { }
+  out
+}
+
+// Index-term frame: 1 index node, 2 phase. A literal is its decimal;
+// anything else is the term at its recorded type (UInt32 by default) with
+// .toNat.
+step_indexterm_l: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  node: u32 = ew[at + u32(1)]
+  ew[at + u32(2)] == u32(0) ? {
+    rn_kind(rx, raw, node) == RAW_INTLIT ? { lx_deliver(le, ew, decimal(le, ew, node_value(rx, raw, node))) } | {
+      // The checker records an index narrower than u32 at u32 (its
+      // implicit widening), which the term then spells out.
+      typ: u32 = xtype(le, ew, rx, raw, node)
+      ti: IntW = lean_int_width(le, ew, typ)
+      (typ == NONE || (ti.ok && !ti.signed && ti.bits < u32(32))) ? { typ = lc(le, ew, LC_UINT32) } | { }
+      ew[at + u32(2)] = u32(1)
+      lx_push_expr(le, ew, node, typ)
+    }
+  } | {
+    sb_begin(le, ew)
+    sb_str(le, ew, lst(le, ew, LN_RET))
+    ap_lits(le, ew, u64(0x74614E6F742E), u64(0x0), u32(6))  // .toNat
+    lx_deliver(le, ew, sb_end(le, ew))
+  }
+}
+
+// getd renders "(base.getD idx zero)".
+getd: (le: Lem, ew: [*]u32, base: u32, idx: u32, zero: u32): u32 {
+  sb_begin(le, ew)
+  sb_byte(le, ew, u32(40))
+  sb_str(le, ew, base)
+  ap_lits(le, ew, u64(0x20447465672E), u64(0x0), u32(6))  // .getD 
+  sb_str(le, ew, idx)
+  sb_byte(le, ew, u32(32))
+  sb_str(le, ew, zero)
+  sb_byte(le, ew, u32(41))
+  sb_end(le, ew)
+}
+
+// array_literal_term: "(#[a, b] : Array T)", or a concatenation of
+// 128-element chunks for a long table.
+array_literal_term: (le: Lem, ew: [*]u32, base: u32, elem: u32): u32 {
+  sp: u32 = lst(le, ew, LN_ACC_SP)
+  n: u32 = sp - base
+  sb_begin(le, ew)
+  n <= u32(128) ? {
+    ap_lits(le, ew, u64(0x5B2328), u64(0x0), u32(3))  // (#[
+    i: u32 = 0
+    while i < n {
+      i > u32(0) ? { ap_lits(le, ew, u64(0x202C), u64(0x0), u32(2)) } | { }
+      sb_str(le, ew, ew[le.acc_at + base + i])
+      i = i + u32(1)
+    }
+    ap_lits(le, ew, u64(0x61727241203A205D), u64(0x2079), u32(10))  // ] : Array 
+    sb_str(le, ew, elem)
+    sb_byte(le, ew, u32(41))
+  } | {
+    ap_lits(le, ew, u64(0x2828), u64(0x0), u32(2))  // ((
+    i: u32 = 0
+    while i < n {
+      (i % u32(128)) == u32(0) ? {
+        i > u32(0) ? { ap_lits(le, ew, u64(0x5B23202B2B205D), u64(0x0), u32(7)) } | { ap_lits(le, ew, u64(0x5B23), u64(0x0), u32(2)) }
+      } | { ap_lits(le, ew, u64(0x202C), u64(0x0), u32(2)) }
+      sb_str(le, ew, ew[le.acc_at + base + i])
+      i = i + u32(1)
+    }
+    ap_lits(le, ew, u64(0x727241203A20295D), u64(0x207961), u32(11))  // ]) : Array 
+    sb_str(le, ew, elem)
+    sb_byte(le, ew, u32(41))
+  }
+  set_lst(le, ew, LN_ACC_SP, base)
+  sb_end(le, ew)
+}
+
+step_expr_l: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  node: u32 = ew[at + u32(1)]
+  phase: u32 = ew[at + u32(2)]
+  want: u32 = ew[at + u32(3)]
+  kind: u32 = rn_kind(rx, raw, node)
+  ret: u32 = lst(le, ew, LN_RET)
+  kind == RAW_INTLIT ? {
+    want == NONE ? { le_fail(le, ew, u32(940)) } | { lx_deliver(le, ew, literal_term(le, ew, node_value(rx, raw, node), want)) }
+  } | {
+  kind == RAW_BOOLLIT ? {
+    lx_deliver(le, ew, lc(le, ew, rn_a(rx, raw, node) != u32(0) ? { LC_TRUE } | { LC_FALSE }))
+  } | {
+  kind == RAW_FLOATLIT ? { le_fail(le, ew, u32(941)) } | {
+  kind == RAW_IDENT ? {
+    t: u32 = scope_lookup(le, ew, rx, raw, rn_a(rx, raw, node))
+    t == NONE ? { le_fail(le, ew, u32(942)) } | { lx_deliver_expr(le, ew, rx, raw, node, ident(le, ew, rx, raw, rn_a(rx, raw, node)), want) }
+  } | {
+  kind == RAW_PREFIX ? {
+    nm: Name16 = rs_name(rx, raw, rn_a(rx, raw, node))
+    is_not: Bool = is_name(nm, u64(0x21), u64(0x0), u32(1))
+    is_neg: Bool = is_name(nm, u64(0x2D), u64(0x0), u32(1))
+    is_cpl: Bool = is_name(nm, u64(0x5E), u64(0x0), u32(1))
+    (!is_not && !is_neg && !is_cpl) ? { le_fail(le, ew, u32(943)) } | {
+      phase == u32(0) ? {
+        typ: u32 = is_not ? { lc(le, ew, LC_BOOL) } | { xtype(le, ew, rx, raw, node) }
+        (typ == NONE) ? { typ = want } | { }
+        ew[at + u32(6)] = typ
+        ew[at + u32(2)] = u32(1)
+        lx_push_expr(le, ew, rn_b(rx, raw, node), typ)
+      } | {
+        sb_begin(le, ew)
+        is_not ? { ap_lits(le, ew, u64(0x2128), u64(0x0), u32(2)) } | {
+          is_cpl ? { ap_lits(le, ew, u64(0x7E7E7E28), u64(0x0), u32(4)) } | {
+            is_float_lean(le, ew, ew[at + u32(6)]) ? { ap_lits(le, ew, u64(0x2D28), u64(0x0), u32(2)) } | { ap_lits(le, ew, u64(0x202D203028), u64(0x0), u32(5)) }
+          }
+        }
+        sb_str(le, ew, ret)
+        sb_byte(le, ew, u32(41))
+        lx_deliver_expr(le, ew, rx, raw, node, sb_end(le, ew), want)
+      }
+    }
+  } | {
+  kind == RAW_INFIX ? {
+    op: u32 = rn_a(rx, raw, node)
+    cls: u32 = infix_class(rs_name(rx, raw, op))
+    left: u32 = rn_b(rx, raw, node)
+    right: u32 = rn_c(rx, raw, node)
+    cls == u32(0) ? { le_fail(le, ew, u32(944)) } | {
+      phase == u32(0) ? {
+        typ: u32 = NONE
+        cls == IC_LOGICAL ? { typ = lc(le, ew, LC_BOOL) } | {
+        (cls == IC_EQUALITY || cls == IC_ORDER) ? {
+          typ = xtype(le, ew, rx, raw, left)
+          typ == NONE ? { typ = xtype(le, ew, rx, raw, right) } | { }
+        } | {
+          typ = xtype(le, ew, rx, raw, node)
+          typ == NONE ? { typ = xtype(le, ew, rx, raw, left) } | { }
+          (typ == NONE && cls == IC_ARITH) ? { typ = xtype(le, ew, rx, raw, right) } | { }
+          typ == NONE ? { typ = want } | { }
+        } }
+        ew[at + u32(6)] = typ
+        ew[at + u32(2)] = u32(1)
+        lx_push_expr(le, ew, left, typ)
+      } | {
+      phase == u32(1) ? {
+        ew[at + u32(4)] = ret
+        ew[at + u32(2)] = u32(2)
+        lx_push_expr(le, ew, right, ew[at + u32(6)])
+      } | {
+        l: u32 = ew[at + u32(4)]
+        text: u32 = infix3(le, ew, l, lean_infix_op(le, ew, rx, raw, op), ret)
+        cls == IC_ORDER ? {
+          sb_begin(le, ew)
+          ap_lits(le, ew, u64(0x2065646963656428), u64(0x0), u32(8))  // (decide 
+          sb_str(le, ew, text)
+          sb_byte(le, ew, u32(41))
+          text = sb_end(le, ew)
+        } | { }
+        lx_deliver_expr(le, ew, rx, raw, node, text, want)
+      } }
+    }
+  } | {
+  kind == RAW_INDEX ? {
+    left: u32 = rn_a(rx, raw, node)
+    index: u32 = rn_b(rx, raw, node)
+    dot: Bool = rn_c(rx, raw, node) != u32(0)
+    phase == u32(0) ? {
+      (dot && (index == NONE || rn_kind(rx, raw, index) != RAW_IDENT)) ? { le_fail(le, ew, u32(945)) } | {
+        ew[at + u32(2)] = u32(1)
+        lx_push_expr(le, ew, left, NONE)
+      }
+    } | {
+    phase == u32(1) ? {
+      dot ? {
+        fld: u32 = ident(le, ew, rx, raw, rn_a(rx, raw, index))
+        sb_begin(le, ew)
+        sb_str(le, ew, ret)
+        sb_byte(le, ew, u32(46))
+        sb_str(le, ew, fld)
+        lx_deliver_expr(le, ew, rx, raw, node, sb_end(le, ew), want)
+      } | {
+        elem: u32 = element_type_of(le, ew, rx, raw, left)
+        elem == NONE ? { le_fail(le, ew, u32(946)) } | {
+          ew[at + u32(4)] = ret
+          ew[at + u32(6)] = elem
+          ew[at + u32(2)] = u32(2)
+          lx_push(le, ew, LF_INDEXTERM, index, u32(0), u32(0))
+        }
+      }
+    } | {
+      lx_deliver_expr(le, ew, rx, raw, node, getd(le, ew, ew[at + u32(4)], ret, zero_of(le, ew, ew[at + u32(6)])), want)
+    } }
+  } | {
+  kind == RAW_BLOCKEXPR ? {
+    inner: u32 = arm_value_node(rx, raw, node)
+    inner == NONE ? { le_fail(le, ew, u32(947)) } | {
+      lx_pop(le, ew)
+      lx_push_expr(le, ew, inner, want)
+    }
+  } | {
+  kind == RAW_RECORDLIT ? {
+    tname: u32 = rn_a(rx, raw, node)
+    pairs: u32 = rn_b(rx, raw, node)
+    npairs: u32 = rn_c(rx, raw, node)
+    tname == NONE ? { le_fail(le, ew, u32(948)) } | {
+      phase == u32(0) ? {
+        ew[at + u32(7)] = lst(le, ew, LN_ACC_SP)
+        ew[at + u32(8)] = u32(0)
+        ew[at + u32(6)] = ident(le, ew, rx, raw, tname)
+        ew[at + u32(2)] = u32(1)
+      } | {
+        i: u32 = ew[at + u32(8)]
+        phase == u32(2) ? {
+          fname: u32 = ident(le, ew, rx, raw, rl_item(rx, raw, pairs, (i - u32(1)) * u32(2)))
+          sb_begin(le, ew)
+          sb_str(le, ew, fname)
+          ap_lits(le, ew, u64(0x203D3A20), u64(0x0), u32(4))  //  := 
+          sb_str(le, ew, ret)
+          acc_push_l(le, ew, sb_end(le, ew))
+        } | { }
+        i < npairs ? {
+          ew[at + u32(8)] = i + u32(1)
+          ew[at + u32(2)] = u32(2)
+          ft: u32 = record_field_type(le, ew, rx, raw, ew[at + u32(6)], rl_item(rx, raw, pairs, i * u32(2)))
+          ft == NONE ? { le_fail(le, ew, u32(949)) } | { lx_push_expr(le, ew, rl_item(rx, raw, pairs, i * u32(2) + u32(1)), ft) }
+        } | {
+          sep: u32 = lstr(le, ew, u64(0x202C), u64(0x0), u32(2))
+          fields: u32 = join_acc(le, ew, ew[at + u32(7)], sep)
+          sb_begin(le, ew)
+          ap_lits(le, ew, u64(0x207B28), u64(0x0), u32(3))  // ({ 
+          sb_str(le, ew, fields)
+          ap_lits(le, ew, u64(0x203A207D20), u64(0x0), u32(5))  //  } : 
+          sb_str(le, ew, ew[at + u32(6)])
+          sb_byte(le, ew, u32(41))
+          lx_deliver_expr(le, ew, rx, raw, node, sb_end(le, ew), want)
+        }
+      }
+    }
+  } | {
+  kind == RAW_ARRAYLIT ? {
+    items: u32 = rn_b(rx, raw, node)
+    count: u32 = rn_c(rx, raw, node)
+    phase == u32(0) ? {
+      array_type: u32 = want
+      rn_a(rx, raw, node) != NONE ? { array_type = lean_type(le, ew, rx, raw, rn_a(rx, raw, node)) } | { }
+      elem: u32 = element_of(le, ew, array_type)
+      elem == NONE ? { elem = element_of(le, ew, xtype(le, ew, rx, raw, node)) } | { }
+      elem == NONE ? { le_fail(le, ew, u32(950)) } | {
+        ew[at + u32(6)] = elem
+        ew[at + u32(7)] = lst(le, ew, LN_ACC_SP)
+        ew[at + u32(8)] = u32(0)
+        ew[at + u32(2)] = u32(1)
+      }
+    } | {
+      phase == u32(2) ? { acc_push_l(le, ew, ret) } | { }
+      i: u32 = ew[at + u32(8)]
+      i < count ? {
+        ew[at + u32(8)] = i + u32(1)
+        ew[at + u32(2)] = u32(2)
+        lx_push_expr(le, ew, rl_item(rx, raw, items, i), ew[at + u32(6)])
+      } | {
+        lx_deliver_expr(le, ew, rx, raw, node, array_literal_term(le, ew, ew[at + u32(7)], ew[at + u32(6)]), want)
+      }
+    }
+  } | {
+  kind == RAW_VARIANT ? {
+    phase == u32(0) ? {
+      // The concrete sum type: the recorded type, the spelled type name,
+      // else the type the context wants.
+      t: u32 = find_tdecl_lean(le, ew, rx, raw, xtype(le, ew, rx, raw, node))
+      (t == NONE && rn_a(rx, raw, node) != NONE) ? { t = find_tdecl(rx, raw, rn_a(rx, raw, node)) } | { }
+      t == NONE ? { t = find_tdecl_lean(le, ew, rx, raw, want) } | { }
+      (t == NONE || tdecl_is_record(raw, t)) ? { le_fail(le, ew, u32(951)) } | {
+        ve: u32 = variant_entry(rx, raw, t, rn_b(rx, raw, node))
+        ve == NONE ? { le_fail(le, ew, u32(952)) } | {
+          lean_name: u32 = tdecl_lean(le, ew, rx, raw, t)
+          vname: u32 = ident(le, ew, rx, raw, rn_b(rx, raw, node))
+          payload_t: u32 = rvar_word(rx, raw, ve, u32(2))
+          payload: u32 = rn_c(rx, raw, node)
+          payload == NONE ? {
+            payload_t != NONE ? { le_fail(le, ew, u32(953)) } | {
+              sb_begin(le, ew)
+              sb_str(le, ew, lean_name)
+              sb_byte(le, ew, u32(46))
+              sb_str(le, ew, vname)
+              lx_deliver_expr(le, ew, rx, raw, node, sb_end(le, ew), want)
+            }
+          } | {
+            payload_t == NONE ? { le_fail(le, ew, u32(954)) } | {
+              pt: u32 = lean_type(le, ew, rx, raw, payload_t)
+              ew[at + u32(4)] = lean_name
+              ew[at + u32(5)] = vname
+              ew[at + u32(2)] = u32(1)
+              lx_push_expr(le, ew, payload, pt)
+            }
+          }
+        }
+      }
+    } | {
+      sb_begin(le, ew)
+      sb_byte(le, ew, u32(40))
+      sb_str(le, ew, ew[at + u32(4)])
+      sb_byte(le, ew, u32(46))
+      sb_str(le, ew, ew[at + u32(5)])
+      sb_byte(le, ew, u32(32))
+      sb_str(le, ew, ret)
+      sb_byte(le, ew, u32(41))
+      lx_deliver_expr(le, ew, rx, raw, node, sb_end(le, ew), want)
+    }
+  } | {
+  kind == RAW_MATCH ? {
+    is_bool: Bool = is_bool_conditional(rx, raw, node)
+    is_int: Bool = !is_bool && is_integer_match(rx, raw, node)
+    is_var: Bool = !is_bool && !is_int && is_variant_match(rx, raw, node)
+    (!is_bool && !is_int && !is_var) ? { le_fail(le, ew, u32(955)) } | {
+      lx_pop(le, ew)
+      needs_do(le, ew, rx, raw, node) ? { lx_push(le, ew, LF_DOVALUE, node, want, is_bool ? { u32(0) } | { is_int ? { u32(1) } | { u32(2) } }) } | {
+        is_var ? { lx_push(le, ew, LF_MATCHVAL, node, want, u32(0)) } | { lx_push(le, ew, LF_VALCHAIN, node, want, is_bool ? { u32(1) } | { u32(0) }) }
+      }
+    }
+  } | {
+  kind == RAW_CALL ? {
+    lx_pop(le, ew)
+    lx_push(le, ew, LF_CALL, node, want, u32(0))
+  } | { le_fail(le, ew, u32(956)) } } } } } } } } } } } } }
+}
+
+// chain_cond: the i-th guard of a conditional chain over the rendered
+// scrutinee: the scrutinee itself for a Bool conditional, "(s == lit)"
+// for an integer match.
+chain_cond: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, node: u32, bool_cond: Bool, s: u32, typ: u32, i: u32): u32 {
+  bool_cond ? { s } | {
+    pat: u32 = rl_item(rx, raw, rn_b(rx, raw, node), i * u32(2))
+    lit: u32 = literal_term(le, ew, node_value(rx, raw, rn_a(rx, raw, pat)), typ)
+    op: u32 = lstr(le, ew, u64(0x3D3D), u64(0x0), u32(2))
+    infix3(le, ew, s, op, lit)
+  }
+}
+
+// Value chain frame (a conditional or integer match whose arms are plain
+// values): 1 node, 2 phase, 3 want, 4 scrutinee, 5 type, 6 Bool flag, 7
+// accumulator base, 8 arm index.
+step_valchain_l: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  node: u32 = ew[at + u32(1)]
+  phase: u32 = ew[at + u32(2)]
+  want: u32 = ew[at + u32(3)]
+  flag: u32 = phase == u32(0) ? { ew[at + u32(4)] } | { ew[at + u32(6)] }
+  bool_cond: Bool = flag != u32(0)
+  narms: u32 = bool_cond ? { u32(2) } | { rn_c(rx, raw, node) }
+  ret: u32 = lst(le, ew, LN_RET)
+  phase == u32(0) ? {
+    ew[at + u32(6)] = ew[at + u32(4)]
+    typ: u32 = bool_cond ? { lc(le, ew, LC_BOOL) } | { xtype(le, ew, rx, raw, rn_a(rx, raw, node)) }
+    typ == NONE ? { le_fail(le, ew, u32(957)) } | {
+      ew[at + u32(5)] = typ
+      ew[at + u32(2)] = u32(1)
+      lx_push_expr(le, ew, rn_a(rx, raw, node), typ)
+    }
+  } | {
+    phase == u32(1) ? {
+      ew[at + u32(4)] = ret
+      ew[at + u32(7)] = lst(le, ew, LN_ACC_SP)
+      ew[at + u32(8)] = u32(0)
+    } | { acc_push_l(le, ew, ret) }
+    i: u32 = ew[at + u32(8)]
+    i < narms ? {
+      ew[at + u32(8)] = i + u32(1)
+      ew[at + u32(2)] = u32(2)
+      v: u32 = arm_value_node(rx, raw, arm_body(rx, raw, node, i, bool_cond))
+      v == NONE ? { le_fail(le, ew, u32(958)) } | { lx_push_expr(le, ew, v, want) }
+    } | {
+      base: u32 = ew[at + u32(7)]
+      s: u32 = ew[at + u32(4)]
+      typ: u32 = ew[at + u32(5)]
+      // The guards, then the text.
+      conds_base: u32 = lst(le, ew, LN_ACC_SP)
+      k: u32 = 0
+      while k + u32(1) < narms {
+        acc_push_l(le, ew, chain_cond(le, ew, rx, raw, node, bool_cond, s, typ, k))
+        k = k + u32(1)
+      }
+      sb_begin(le, ew)
+      sb_byte(le, ew, u32(40))
+      k = u32(0)
+      while k < narms {
+        k + u32(1) == narms ? {
+          ap_lits(le, ew, u64(0x2065736C65), u64(0x0), u32(5))  // else 
+          sb_str(le, ew, ew[le.acc_at + base + k])
+        } | {
+          k > u32(0) ? { ap_lits(le, ew, u64(0x2065736C65), u64(0x0), u32(5)) } | { }
+          ap_lits(le, ew, u64(0x206669), u64(0x0), u32(3))  // if 
+          sb_str(le, ew, ew[le.acc_at + conds_base + k])
+          ap_lits(le, ew, u64(0x206E65687420), u64(0x0), u32(6))  //  then 
+          sb_str(le, ew, ew[le.acc_at + base + k])
+          sb_byte(le, ew, u32(32))
+        }
+        k = k + u32(1)
+      }
+      sb_byte(le, ew, u32(41))
+      text: u32 = sb_end(le, ew)
+      set_lst(le, ew, LN_ACC_SP, base)
+      lx_deliver_expr(le, ew, rx, raw, node, text, want)
+    }
+  }
+}
+
+// Variant match frame in value position: 1 node, 2 phase, 3 want, 4
+// scrutinee, 5 declared type, 6 its Lean name, 7 accumulator base, 8 arm
+// index, 9 saved scope top.
+step_matchval_l: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  node: u32 = ew[at + u32(1)]
+  phase: u32 = ew[at + u32(2)]
+  want: u32 = ew[at + u32(3)]
+  narms: u32 = rn_c(rx, raw, node)
+  arms: u32 = rn_b(rx, raw, node)
+  ret: u32 = lst(le, ew, LN_RET)
+  phase == u32(0) ? {
+    t: u32 = scrutinee_adt(le, ew, rx, raw, node)
+    t == NONE ? { le_fail(le, ew, u32(959)) } | {
+      ew[at + u32(5)] = t
+      ew[at + u32(6)] = tdecl_lean(le, ew, rx, raw, t)
+      ew[at + u32(2)] = u32(1)
+      lx_push_expr(le, ew, rn_a(rx, raw, node), ew[at + u32(6)])
+    }
+  } | {
+    phase == u32(1) ? {
+      ew[at + u32(4)] = ret
+      ew[at + u32(7)] = lst(le, ew, LN_ACC_SP)
+      ew[at + u32(8)] = u32(0)
+    } | {
+      acc_push_l(le, ew, ret)
+      set_lst(le, ew, LN_SCOPE_SP, ew[at + u32(9)])
+    }
+    i: u32 = ew[at + u32(8)]
+    i < narms ? {
+      ew[at + u32(8)] = i + u32(1)
+      ew[at + u32(2)] = u32(2)
+      ew[at + u32(9)] = lst(le, ew, LN_SCOPE_SP)
+      pat: u32 = pattern_text(le, ew, rx, raw, rl_item(rx, raw, arms, i * u32(2)), ew[at + u32(5)])
+      acc_push_l(le, ew, pat)
+      v: u32 = arm_value_node(rx, raw, rl_item(rx, raw, arms, i * u32(2) + u32(1)))
+      (v == NONE || pat == NONE) ? { le_fail(le, ew, u32(958)) } | { lx_push_expr(le, ew, v, want) }
+    } | {
+      base: u32 = ew[at + u32(7)]
+      sb_begin(le, ew)
+      ap_lits(le, ew, u64(0x20686374616D28), u64(0x0), u32(7))  // (match 
+      sb_str(le, ew, ew[at + u32(4)])
+      ap_lits(le, ew, u64(0x6874697720), u64(0x0), u32(5))  //  with
+      k: u32 = 0
+      while k < narms {
+        ap_lits(le, ew, u64(0x207C20), u64(0x0), u32(3))  //  | 
+        sb_str(le, ew, ew[le.acc_at + base + k * u32(2)])
+        ap_lits(le, ew, u64(0x203E3D20), u64(0x0), u32(4))  //  => 
+        sb_str(le, ew, ew[le.acc_at + base + k * u32(2) + u32(1)])
+        k = k + u32(1)
+      }
+      sb_byte(le, ew, u32(41))
+      text: u32 = sb_end(le, ew)
+      set_lst(le, ew, LN_ACC_SP, base)
+      lx_deliver_expr(le, ew, rx, raw, node, text, want)
+    }
+  }
+}
+
+// with_indent returns the current indent with four more spaces.
+indent_deeper: (le: Lem, ew: [*]u32): u32 = cat2(le, ew, lst(le, ew, LN_INDENT), lc(le, ew, LC_IND4))
+
+// pure_line: "<indent>pure <outs>)" with the given indent.
+pure_line: (le: Lem, ew: [*]u32, indent: u32, outs: u32, closing: Bool): u32 {
+  sb_begin(le, ew)
+  sb_str(le, ew, indent)
+  ap_lits(le, ew, u64(0x2065727570), u64(0x0), u32(5))  // pure 
+  sb_str(le, ew, outs)
+  closing ? { sb_byte(le, ew, u32(41)) } | { }
+  sb_end(le, ew)
+}
+
+// Do-value frame (a value-position conditional or variant match whose
+// arms carry statements or calls): 1 node, 2 phase, 3 want, 4 scrutinee,
+// 5 type (the declared sum type, or the guard type), 6 shape (0 Bool, 1
+// integer, 2 variant), 7 saved indent, 8 arm index, 9 saved scope top, 10
+// the result temporary, 11 the written names joined (NONE for none), 12
+// arm count.
+step_dovalue_l: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  node: u32 = ew[at + u32(1)]
+  phase: u32 = ew[at + u32(2)]
+  want: u32 = ew[at + u32(3)]
+  shape: u32 = phase == u32(0) ? { ew[at + u32(4)] } | { ew[at + u32(6)] }
+  bool_cond: Bool = shape == u32(0)
+  narms: u32 = bool_cond ? { u32(2) } | { rn_c(rx, raw, node) }
+  arms: u32 = rn_b(rx, raw, node)
+  ret: u32 = lst(le, ew, LN_RET)
+  phase == u32(0) ? {
+    ew[at + u32(6)] = shape
+    typ: u32 = NONE
+    shape == u32(2) ? {
+      t: u32 = scrutinee_adt(le, ew, rx, raw, node)
+      t == NONE ? { le_fail(le, ew, u32(959)) } | {
+        ew[at + u32(5)] = t
+        typ = tdecl_lean(le, ew, rx, raw, t)
+      }
+    } | {
+      typ = bool_cond ? { lc(le, ew, LC_BOOL) } | { xtype(le, ew, rx, raw, rn_a(rx, raw, node)) }
+      typ == NONE ? { le_fail(le, ew, u32(957)) } | { ew[at + u32(5)] = typ }
+    }
+    le_failed(le, ew) ? { } | {
+      ew[at + u32(2)] = u32(1)
+      lx_push_expr(le, ew, rn_a(rx, raw, node), typ)
+    }
+  } | {
+    phase == u32(1) ? {
+      ew[at + u32(4)] = ret
+      o: Outs = outs_of_arms(le, ew, rx, raw, node)
+      ew[at + u32(11)] = o.joined
+      temps: u32 = lst(le, ew, LN_TEMPS) + u32(1)
+      set_lst(le, ew, LN_TEMPS, temps)
+      sb_begin(le, ew)
+      sb_byte(le, ew, u32(114))
+      sb_dec(le, ew, u64(temps))
+      r: u32 = sb_end(le, ew)
+      ew[at + u32(10)] = r
+      // let (rN, w...) ← (match s with   |   let (rN, w...) ← (
+      sb_begin(le, ew)
+      sb_str(le, ew, lst(le, ew, LN_INDENT))
+      ap_lits(le, ew, u64(0x2074656C), u64(0x0), u32(4))  // let 
+      o.joined == NONE ? { sb_str(le, ew, r) } | {
+        sb_byte(le, ew, u32(40))
+        sb_str(le, ew, r)
+        ap_lits(le, ew, u64(0x202C), u64(0x0), u32(2))  // , 
+        sb_str(le, ew, o.joined)
+        sb_byte(le, ew, u32(41))
+      }
+      ap_lits(le, ew, u64(0x28209086E220), u64(0x0), u32(6))  //  ← (
+      shape == u32(2) ? {
+        ap_lits(le, ew, u64(0x20686374616D), u64(0x0), u32(6))  // match 
+        sb_str(le, ew, ret)
+        ap_lits(le, ew, u64(0x6874697720), u64(0x0), u32(5))  //  with
+      } | { }
+      line_push(le, ew, sb_end(le, ew))
+      ew[at + u32(8)] = u32(0)
+    } | {
+      // An arm's value is in.
+      joined: u32 = ew[at + u32(11)]
+      saved: u32 = ew[at + u32(7)]
+      sb_begin(le, ew)
+      joined == NONE ? { sb_str(le, ew, ret) } | {
+        sb_byte(le, ew, u32(40))
+        sb_str(le, ew, ret)
+        ap_lits(le, ew, u64(0x202C), u64(0x0), u32(2))  // , 
+        sb_str(le, ew, joined)
+        sb_byte(le, ew, u32(41))
+      }
+      tup: u32 = sb_end(le, ew)
+      line_push(le, ew, pure_line(le, ew, cat2(le, ew, saved, lc(le, ew, LC_IND4)), tup, true))
+      set_lst(le, ew, LN_SCOPE_SP, ew[at + u32(9)])
+      set_lst(le, ew, LN_INDENT, saved)
+    }
+    i: u32 = ew[at + u32(8)]
+    i < narms ? {
+      ew[at + u32(8)] = i + u32(1)
+      ew[at + u32(2)] = u32(2)
+      ew[at + u32(9)] = lst(le, ew, LN_SCOPE_SP)
+      ew[at + u32(7)] = lst(le, ew, LN_INDENT)
+      body: u32 = arm_body(rx, raw, node, i, bool_cond)
+      pat: u32 = shape == u32(2) ? { pattern_text(le, ew, rx, raw, rl_item(rx, raw, arms, i * u32(2)), ew[at + u32(5)]) } | { NONE }
+      cond: u32 = (shape != u32(2) && i + u32(1) < narms) ? { chain_cond(le, ew, rx, raw, node, bool_cond, ew[at + u32(4)], ew[at + u32(5)], i) } | { NONE }
+      sb_begin(le, ew)
+      sb_str(le, ew, lst(le, ew, LN_INDENT))
+      ap_lits(le, ew, u64(0x2020), u64(0x0), u32(2))  //   
+      shape == u32(2) ? {
+        ap_lits(le, ew, u64(0x207C), u64(0x0), u32(2))  // | 
+        pat == NONE ? { } | { sb_str(le, ew, pat) }
+        ap_lits(le, ew, u64(0x3E3D20), u64(0x0), u32(3))  //  =>
+      } | {
+        i + u32(1) == narms ? { ap_lits(le, ew, u64(0x65736C65), u64(0x0), u32(4)) } | {
+          i > u32(0) ? { ap_lits(le, ew, u64(0x2065736C65), u64(0x0), u32(5)) } | { }
+          ap_lits(le, ew, u64(0x206669), u64(0x0), u32(3))  // if 
+          sb_str(le, ew, cond)
+          ap_lits(le, ew, u64(0x6E65687420), u64(0x0), u32(5))  //  then
+        }
+      }
+      ap_lits(le, ew, u64(0x6F642820), u64(0x0), u32(4))  //  (do
+      line_push(le, ew, sb_end(le, ew))
+      set_lst(le, ew, LN_INDENT, indent_deeper(le, ew))
+      lx_push(le, ew, LF_ARMRESULT, body, want, u32(0))
+    } | {
+      line_close(le, ew)
+      lx_deliver_expr(le, ew, rx, raw, node, ew[at + u32(10)], want)
+    }
+  }
+}
+
+// Arm-result frame (a do-arm's statements, then its value): 1 body, 2
+// phase, 3 want.
+step_armresult_l: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  body: u32 = ew[at + u32(1)]
+  phase: u32 = ew[at + u32(2)]
+  want: u32 = ew[at + u32(3)]
+  phase == u32(0) ? {
+    (body != NONE && rn_kind(rx, raw, body) == RAW_BLOCKEXPR) ? {
+      blk: u32 = rn_a(rx, raw, body)
+      count: u32 = blk == NONE ? { u32(0) } | { rn_b(rx, raw, blk) }
+      count == u32(0) ? { le_fail(le, ew, u32(960)) } | {
+        last: u32 = rl_item(rx, raw, rn_a(rx, raw, blk), count - u32(1))
+        rn_kind(rx, raw, last) != RAW_EXPRSTMT ? { le_fail(le, ew, u32(961)) } | {
+          ew[at + u32(4)] = rn_a(rx, raw, last)
+          ew[at + u32(2)] = u32(1)
+          lx_push(le, ew, LF_BLOCK, rn_a(rx, raw, blk), count - u32(1), u32(0))
+        }
+      }
+    } | {
+      ew[at + u32(2)] = u32(2)
+      lx_push_expr(le, ew, body, want)
+    }
+  } | {
+  phase == u32(1) ? {
+    ew[at + u32(2)] = u32(2)
+    lx_push_expr(le, ew, ew[at + u32(4)], want)
+  } | { lx_deliver(le, ew, lst(le, ew, LN_RET)) } }
+}
+
+// --- calls ---------------------------------------------------------------------------------------------
+
+// Call modes.
+CM_USER: u32 = 1
+CM_LEN: u32 = 2
+CM_UTF8: u32 = 3
+CM_INTCONV: u32 = 4
+CM_FWIDEN: u32 = 5
+CM_CONV: u32 = 6
+CM_FLOAT1: u32 = 7
+CM_FLOATN: u32 = 8
+
+// Conversion operations.
+CV_TRUNC: u32 = 1
+CV_BITS: u32 = 2
+CV_SATURATING: u32 = 3
+CV_ROUND: u32 = 4
+CV_CHECKED: u32 = 5
+
+conv_op_code: (nm: Name16): u32 {
+  is_name(nm, u64(0x636E757274), u64(0x0), u32(5)) ? { CV_TRUNC } | {
+  is_name(nm, u64(0x73746962), u64(0x0), u32(4)) ? { CV_BITS } | {
+  is_name(nm, u64(0x6974617275746173), u64(0x676E), u32(10)) ? { CV_SATURATING } | {
+  is_name(nm, u64(0x646E756F72), u64(0x0), u32(5)) ? { CV_ROUND } | {
+  is_name(nm, u64(0x64656B63656863), u64(0x0), u32(7)) ? { CV_CHECKED } | { u32(0) } } } } }
+}
+
+// ConvParts reads a `target_op_source` name: ok when it has the shape with
+// a known operation and primitive types on both sides.
+ConvParts: type = struct { target: u32, source: u32, op: u32, ok: Bool }
+
+conversion_parts: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, name: u32): ConvParts {
+  n: u32 = rs_len(rx, raw, name)
+  p1: u32 = NONE
+  p2: u32 = NONE
+  k: u32 = 0
+  while k < n {
+    rs_byte(rx, raw, name, k) == u32(95) ? {
+      p1 == NONE ? { p1 = k } | { p2 == NONE ? { p2 = k } | { } }
+    } | { }
+    k = k + u32(1)
+  }
+  out: ConvParts = ConvParts { target: NONE, source: NONE, op: u32(0), ok: false }
+  (p1 != NONE && p2 != NONE && p1 > u32(0) && p2 > p1 + u32(1) && p2 + u32(1) < n) ? {
+    target: u32 = primitive_lean(le, ew, rs_segment(rx, raw, name, u32(0), p1))
+    op: u32 = conv_op_code(rs_segment(rx, raw, name, p1 + u32(1), p2 - p1 - u32(1)))
+    source: u32 = primitive_lean(le, ew, rs_segment(rx, raw, name, p2 + u32(1), n - p2 - u32(1)))
+    (target != NONE && source != NONE && op != u32(0)) ? { out = ConvParts { target: target, source: source, op: op, ok: true } } | { }
+  } | { }
+  out
+}
+
+// float_unary_code: the Lean name index of a unary float intrinsic, or NONE;
+// FLOATN_* the n-ary carriers of Oak.FloatOps.
+FU_SQRT: u32 = 1
+FU_ABS: u32 = 2
+FU_FLOOR: u32 = 3
+FU_CEIL: u32 = 4
+FU_ROUND: u32 = 5
+FU_IS_NAN: u32 = 6
+FU_IS_FINITE: u32 = 7
+FU_IS_INFINITE: u32 = 8
+FN_FMA: u32 = 20
+FN_COPYSIGN: u32 = 21
+FN_ROUND_EVEN: u32 = 22
+FU_OTHER: u32 = 30
+
+float_intrinsic_kind: (nm: Name16): u32 {
+  is_name(nm, u64(0x74727173), u64(0x0), u32(4)) ? { FU_SQRT } | {
+  is_name(nm, u64(0x736261), u64(0x0), u32(3)) ? { FU_ABS } | {
+  is_name(nm, u64(0x726F6F6C66), u64(0x0), u32(5)) ? { FU_FLOOR } | {
+  is_name(nm, u64(0x6C696563), u64(0x0), u32(4)) ? { FU_CEIL } | {
+  is_name(nm, u64(0x646E756F72), u64(0x0), u32(5)) ? { FU_ROUND } | {
+  is_name(nm, u64(0x6E616E5F7369), u64(0x0), u32(6)) ? { FU_IS_NAN } | {
+  is_name(nm, u64(0x74696E69665F7369), u64(0x65), u32(9)) ? { FU_IS_FINITE } | {
+  is_name(nm, u64(0x6E69666E695F7369), u64(0x657469), u32(11)) ? { FU_IS_INFINITE } | {
+  is_name(nm, u64(0x616D66), u64(0x0), u32(3)) ? { FN_FMA } | {
+  is_name(nm, u64(0x6E67697379706F63), u64(0x0), u32(8)) ? { FN_COPYSIGN } | {
+  is_name(nm, u64(0x76655F646E756F72), u64(0x6E65), u32(10)) ? { FN_ROUND_EVEN } | {
+  (is_name(nm, u64(0x636E757274), u64(0x0), u32(5)) || is_name(nm, u64(0x6E696D), u64(0x0), u32(3)) || is_name(nm, u64(0x78616D), u64(0x0), u32(3)) || is_name(nm, u64(0x616D726F6E5F7369), u64(0x6C), u32(9)) || is_name(nm, u64(0x726F5F6C61746F74), u64(0x726564), u32(11))) ? { FU_OTHER } | { NONE } } } } } } } } } } } }
+}
+
+ap_float_unary_name: (le: Lem, ew: [*]u32, code: u32): () {
+  code == FU_SQRT ? { ap_lits(le, ew, u64(0x74727173), u64(0x0), u32(4)) } | {
+  code == FU_ABS ? { ap_lits(le, ew, u64(0x736261), u64(0x0), u32(3)) } | {
+  code == FU_FLOOR ? { ap_lits(le, ew, u64(0x726F6F6C66), u64(0x0), u32(5)) } | {
+  code == FU_CEIL ? { ap_lits(le, ew, u64(0x6C696563), u64(0x0), u32(4)) } | {
+  code == FU_ROUND ? { ap_lits(le, ew, u64(0x646E756F72), u64(0x0), u32(5)) } | {
+  code == FU_IS_NAN ? { ap_lits(le, ew, u64(0x4E614E7369), u64(0x0), u32(5)) } | {
+  code == FU_IS_FINITE ? { ap_lits(le, ew, u64(0x6574696E69467369), u64(0x0), u32(8)) } | { ap_lits(le, ew, u64(0x666E497369), u64(0x0), u32(5)) } } } } } } }
+}
+
+// dot_conv renders "(inner.toT)".
+dot_conv: (le: Lem, ew: [*]u32, inner: u32, target: u32): u32 {
+  sb_begin(le, ew)
+  sb_byte(le, ew, u32(40))
+  sb_str(le, ew, inner)
+  ap_lits(le, ew, u64(0x6F742E), u64(0x0), u32(3))  // .to
+  sb_str(le, ew, target)
+  sb_byte(le, ew, u32(41))
+  sb_end(le, ew)
+}
+
+// Bounds of the fixed-width integers, as decimal strings.
+int_max_str: (le: Lem, ew: [*]u32, bits: u32, signed: Bool): u32 {
+  v: u64 = signed ? { (u64(1) << u64(bits - u32(1))) - u64(1) } | { bits == u32(64) ? { u64(0) - u64(1) } | { (u64(1) << u64(bits)) - u64(1) } }
+  decimal(le, ew, v)
+}
+
+int_min_str: (le: Lem, ew: [*]u32, bits: u32): u32 {
+  sb_begin(le, ew)
+  sb_byte(le, ew, u32(45))
+  sb_dec(le, ew, u64(1) << u64(bits - u32(1)))
+  sb_end(le, ew)
+}
+
+// typed renders "(V : T)" from a value string.
+typed_str: (le: Lem, ew: [*]u32, v: u32, t: u32): u32 {
+  sb_begin(le, ew)
+  sb_byte(le, ew, u32(40))
+  sb_str(le, ew, v)
+  ap_lits(le, ew, u64(0x203A20), u64(0x0), u32(3))  //  : 
+  sb_str(le, ew, t)
+  sb_byte(le, ew, u32(41))
+  sb_end(le, ew)
+}
+
+// conversion_term renders the rows of the conversion scheme over the
+// rendered operand; NONE with the failure recorded for a row without a
+// Lean carrier.
+conversion_term: (le: Lem, ew: [*]u32, inner: u32, target: u32, source: u32, op: u32): u32 {
+  tf: Bool = is_float_lean(le, ew, target)
+  sf: Bool = is_float_lean(le, ew, source)
+  out: u32 = NONE
+  (tf || sf) ? {
+    (op == CV_ROUND && str_is(le, ew, target, u64(0x323374616F6C46), u64(0x0), u32(7)) && str_is(le, ew, source, u64(0x74616F6C46), u64(0x0), u32(5))) ? { out = dot_conv(le, ew, inner, target) } | {
+    (op == CV_ROUND && tf && !sf) ? { out = dot_conv(le, ew, inner, target) } | {
+    (op == CV_BITS && tf && ((str_is(le, ew, target, u64(0x74616F6C46), u64(0x0), u32(5)) && str_is(le, ew, source, u64(0x3436746E4955), u64(0x0), u32(6))) || (str_is(le, ew, target, u64(0x323374616F6C46), u64(0x0), u32(7)) && str_is(le, ew, source, u64(0x3233746E4955), u64(0x0), u32(6))))) ? {
+      sb_begin(le, ew)
+      sb_byte(le, ew, u32(40))
+      sb_str(le, ew, target)
+      ap_lits(le, ew, u64(0x2073746942666F2E), u64(0x0), u32(8))  // .ofBits 
+      sb_str(le, ew, inner)
+      sb_byte(le, ew, u32(41))
+      out = sb_end(le, ew)
+    } | {
+    (op == CV_BITS && sf && ((str_is(le, ew, source, u64(0x74616F6C46), u64(0x0), u32(5)) && str_is(le, ew, target, u64(0x3436746E4955), u64(0x0), u32(6))) || (str_is(le, ew, source, u64(0x323374616F6C46), u64(0x0), u32(7)) && str_is(le, ew, target, u64(0x3233746E4955), u64(0x0), u32(6))))) ? {
+      sb_begin(le, ew)
+      sb_byte(le, ew, u32(40))
+      sb_str(le, ew, inner)
+      ap_lits(le, ew, u64(0x29737469426F742E), u64(0x0), u32(8))  // .toBits)
+      out = sb_end(le, ew)
+    } | {
+    ((op == CV_SATURATING || op == CV_TRUNC) && sf && !tf) ? { out = dot_conv(le, ew, inner, target) } | { le_fail(le, ew, u32(964)) } } } } }
+  } | {
+    (op == CV_TRUNC || op == CV_BITS) ? { out = dot_conv(le, ew, inner, target) } | {
+    op == CV_SATURATING ? {
+      ti: IntW = lean_int_width(le, ew, target)
+      max: u32 = int_max_str(le, ew, ti.bits, ti.signed)
+      max_s: u32 = typed_str(le, ew, max, source)
+      max_t: u32 = typed_str(le, ew, max, target)
+      min: u32 = ti.signed ? { int_min_str(le, ew, ti.bits) } | { NONE }
+      min_s: u32 = ti.signed ? { typed_str(le, ew, min, source) } | { NONE }
+      min_t: u32 = ti.signed ? { typed_str(le, ew, min, target) } | { NONE }
+      sb_begin(le, ew)
+      ap_lits(le, ew, u64(0x20666928), u64(0x0), u32(4))  // (if 
+      sb_str(le, ew, inner)
+      ap_lits(le, ew, u64(0x203E20), u64(0x0), u32(3))  //  > 
+      sb_str(le, ew, max_s)
+      ap_lits(le, ew, u64(0x206E65687420), u64(0x0), u32(6))  //  then 
+      sb_str(le, ew, max_t)
+      ti.signed ? {
+        ap_lits(le, ew, u64(0x66692065736C6520), u64(0x20), u32(9))  //  else if 
+        sb_str(le, ew, inner)
+        ap_lits(le, ew, u64(0x203C20), u64(0x0), u32(3))  //  < 
+        sb_str(le, ew, min_s)
+        ap_lits(le, ew, u64(0x206E65687420), u64(0x0), u32(6))  //  then 
+        sb_str(le, ew, min_t)
+      } | { }
+      ap_lits(le, ew, u64(0x2065736C6520), u64(0x0), u32(6))  //  else 
+      sb_str(le, ew, inner)
+      ap_lits(le, ew, u64(0x6F742E), u64(0x0), u32(3))  // .to
+      sb_str(le, ew, target)
+      sb_byte(le, ew, u32(41))
+      out = sb_end(le, ew)
+    } | { le_fail(le, ew, u32(963)) } }
+  }
+  out
+}
+
+// Call frame: 1 node, 2 phase, 3 want, 4 mode, 5 target or width type, 6
+// source type or callee, 7 accumulator base, 8 i, 9 name, 10 code.
+step_call_l: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  node: u32 = ew[at + u32(1)]
+  phase: u32 = ew[at + u32(2)]
+  want: u32 = ew[at + u32(3)]
+  fnode: u32 = rn_a(rx, raw, node)
+  args: u32 = rn_b(rx, raw, node)
+  nargs: u32 = rn_c(rx, raw, node)
+  ret: u32 = lst(le, ew, LN_RET)
+  phase == u32(0) ? {
+    rn_kind(rx, raw, fnode) != RAW_IDENT ? { le_fail(le, ew, u32(930)) } | {
+      name: u32 = rn_a(rx, raw, fnode)
+      nm: Name16 = rs_name(rx, raw, name)
+      user: u32 = raw_find_function(rx, raw, name)
+      arg0: u32 = nargs > u32(0) ? { rl_item(rx, raw, args, u32(0)) } | { NONE }
+      ew[at + u32(9)] = name
+      (is_name(nm, u64(0x657479625F727473), u64(0x73), u32(9)) || is_name(nm, u64(0x6D6F72665F727473), u64(0x386674755F), u32(13)) || is_name(nm, u64(0x73615F77656976), u64(0x0), u32(7)) || is_name(nm, u64(0x73615F6E617073), u64(0x0), u32(7)) || is_name(nm, u64(0x6563696C73627573), u64(0x0), u32(8))) ? { le_fail(le, ew, u32(931)) } | {
+      is_name(nm, u64(0x6E656C), u64(0x0), u32(3)) ? {
+        nargs != u32(1) ? { le_fail(le, ew, u32(932)) } | {
+          ew[at + u32(4)] = CM_LEN
+          ew[at + u32(2)] = u32(1)
+          lx_push_expr(le, ew, arg0, NONE)
+        }
+      } | {
+      is_name(nm, u64(0x64696C61765F7369), u64(0x386674755F), u32(13)) ? {
+        nargs != u32(1) ? { le_fail(le, ew, u32(932)) } | {
+          ew[at + u32(4)] = CM_UTF8
+          ew[at + u32(2)] = u32(1)
+          lx_push_expr(le, ew, arg0, NONE)
+        }
+      } | {
+      (is_name(nm, u64(0x77656976), u64(0x0), u32(4)) || is_name(nm, u64(0x6E617073), u64(0x0), u32(4))) ? {
+        ok: Bool = nargs == u32(1) && rn_kind(rx, raw, arg0) == RAW_PREFIX && is_name(rs_name(rx, raw, rn_a(rx, raw, arg0)), u64(0x26), u64(0x0), u32(1)) && rn_kind(rx, raw, rn_b(rx, raw, arg0)) == RAW_IDENT
+        !ok ? { le_fail(le, ew, u32(933)) } | {
+          owner: u32 = rn_a(rx, raw, rn_b(rx, raw, arg0))
+          scope_lookup(le, ew, rx, raw, owner) == NONE ? { le_fail(le, ew, u32(934)) } | { lx_deliver_expr(le, ew, rx, raw, node, ident(le, ew, rx, raw, owner), want) }
+        }
+      } | {
+      (is_name(nm, u64(0x323366), u64(0x0), u32(3)) || is_name(nm, u64(0x343666), u64(0x0), u32(3))) ? {
+        nargs != u32(1) ? { le_fail(le, ew, u32(932)) } | {
+          target: u32 = lc(le, ew, is_name(nm, u64(0x323366), u64(0x0), u32(3)) ? { LC_FLOAT32 } | { LC_FLOAT })
+          ew[at + u32(5)] = target
+          ew[at + u32(6)] = xtype(le, ew, rx, raw, arg0)
+          ew[at + u32(4)] = CM_FWIDEN
+          ew[at + u32(2)] = u32(1)
+          lx_push_expr(le, ew, arg0, target)
+        }
+      } | {
+      (primitive_lean(le, ew, nm) != NONE && lean_int_width(le, ew, primitive_lean(le, ew, nm)).ok) ? {
+        nargs != u32(1) ? { le_fail(le, ew, u32(932)) } | {
+          target: u32 = primitive_lean(le, ew, nm)
+          rn_kind(rx, raw, arg0) == RAW_INTLIT ? { lx_deliver_expr(le, ew, rx, raw, node, literal_term(le, ew, node_value(rx, raw, arg0), target), want) } | {
+            source: u32 = xtype(le, ew, rx, raw, arg0)
+            ew[at + u32(5)] = target
+            ew[at + u32(6)] = source
+            ew[at + u32(4)] = CM_INTCONV
+            ew[at + u32(2)] = u32(1)
+            lx_push_expr(le, ew, arg0, source)
+          }
+        }
+      } | {
+        cp: ConvParts = conversion_parts(le, ew, rx, raw, name)
+        cp.ok ? {
+          (str_is(le, ew, cp.target, u64(0x6C6F6F42), u64(0x0), u32(4)) || str_is(le, ew, cp.source, u64(0x6C6F6F42), u64(0x0), u32(4)) || str_is(le, ew, cp.target, u64(0x74696E55), u64(0x0), u32(4)) || str_is(le, ew, cp.source, u64(0x74696E55), u64(0x0), u32(4))) ? { le_fail(le, ew, u32(962)) } | {
+            nargs != u32(1) ? { le_fail(le, ew, u32(932)) } | {
+              ew[at + u32(5)] = cp.target
+              ew[at + u32(6)] = cp.source
+              ew[at + u32(10)] = cp.op
+              ew[at + u32(4)] = CM_CONV
+              ew[at + u32(2)] = u32(1)
+              lx_push_expr(le, ew, arg0, cp.source)
+            }
+          }
+        } | {
+          fk: u32 = user == NONE ? { float_intrinsic_kind(nm) } | { NONE }
+          fk != NONE ? {
+            fk == FU_OTHER ? { le_fail(le, ew, u32(965)) } | {
+            fk >= FN_FMA ? {
+              arity: u32 = fk == FN_FMA ? { u32(3) } | { fk == FN_COPYSIGN ? { u32(2) } | { u32(1) } }
+              nargs != arity ? { le_fail(le, ew, u32(966)) } | {
+                width: u32 = NONE
+                k: u32 = 0
+                while k < nargs && width == NONE {
+                  width = xtype(le, ew, rx, raw, rl_item(rx, raw, args, k))
+                  k = k + u32(1)
+                }
+                (width == NONE && is_float_lean(le, ew, want)) ? { width = want } | { }
+                !is_float_lean(le, ew, width) ? { le_fail(le, ew, u32(967)) } | {
+                  ew[at + u32(5)] = width
+                  ew[at + u32(10)] = fk
+                  ew[at + u32(4)] = CM_FLOATN
+                  ew[at + u32(7)] = lst(le, ew, LN_ACC_SP)
+                  ew[at + u32(8)] = u32(0)
+                  ew[at + u32(2)] = u32(1)
+                }
+              }
+            } | {
+              nargs != u32(1) ? { le_fail(le, ew, u32(966)) } | {
+                width: u32 = xtype(le, ew, rx, raw, arg0)
+                (width == NONE && is_float_lean(le, ew, want)) ? { width = want } | { }
+                !is_float_lean(le, ew, width) ? { le_fail(le, ew, u32(967)) } | {
+                  ew[at + u32(5)] = width
+                  ew[at + u32(10)] = fk
+                  ew[at + u32(4)] = CM_FLOAT1
+                  ew[at + u32(2)] = u32(1)
+                  lx_push_expr(le, ew, arg0, width)
+                }
+              }
+            } }
+          } | {
+            user == NONE ? { le_fail(le, ew, u32(936)) } | {
+              !fn_in_set(le, ew, user) ? { le_fail(le, ew, u32(935)) } | {
+                rf_word(rx, raw, user, u32(2)) != nargs ? { le_fail(le, ew, u32(968)) } | {
+                  ew[at + u32(6)] = user
+                  ew[at + u32(4)] = CM_USER
+                  ew[at + u32(7)] = lst(le, ew, LN_ACC_SP)
+                  ew[at + u32(8)] = u32(0)
+                  ew[at + u32(2)] = u32(1)
+                }
+              }
+            }
+          }
+        }
+      } } } } } }
+    }
+  } | {
+    mode: u32 = ew[at + u32(4)]
+    mode == CM_LEN ? {
+      sb_begin(le, ew)
+      sb_byte(le, ew, u32(40))
+      sb_str(le, ew, ret)
+      ap_lits(le, ew, u64(0x6F742E657A69732E), u64(0x293233746E4955), u32(15))  // .size.toUInt32)
+      lx_deliver_expr(le, ew, rx, raw, node, sb_end(le, ew), want)
+    } | {
+    mode == CM_UTF8 ? {
+      set_lst(le, ew, LN_USES_UTF8, u32(1))
+      sb_begin(le, ew)
+      ap_lits(le, ew, u64(0x6674552E6B614F28), u64(0x61762E6365784538), u32(16))  // (Oak.Utf8Exec.valid 
+      ap_lits(le, ew, u64(0x2064696C), u64(0x0), u32(4))
+      sb_str(le, ew, ret)
+      sb_byte(le, ew, u32(41))
+      lx_deliver_expr(le, ew, rx, raw, node, sb_end(le, ew), want)
+    } | {
+    mode == CM_FWIDEN ? {
+      target: u32 = ew[at + u32(5)]
+      source: u32 = ew[at + u32(6)]
+      (source == NONE || str_eq(le, ew, source, target)) ? { lx_deliver_expr(le, ew, rx, raw, node, ret, want) } | {
+        (str_is(le, ew, target, u64(0x74616F6C46), u64(0x0), u32(5)) && str_is(le, ew, source, u64(0x323374616F6C46), u64(0x0), u32(7))) ? {
+          sb_begin(le, ew)
+          sb_byte(le, ew, u32(40))
+          sb_str(le, ew, ret)
+          ap_lits(le, ew, u64(0x74616F6C466F742E), u64(0x29), u32(9))  // .toFloat)
+          lx_deliver_expr(le, ew, rx, raw, node, sb_end(le, ew), want)
+        } | { le_fail(le, ew, u32(969)) }
+      }
+    } | {
+    mode == CM_INTCONV ? {
+      target: u32 = ew[at + u32(5)]
+      source: u32 = ew[at + u32(6)]
+      (source == NONE || str_eq(le, ew, source, target)) ? { lx_deliver_expr(le, ew, rx, raw, node, ret, want) } | { lx_deliver_expr(le, ew, rx, raw, node, dot_conv(le, ew, ret, target), want) }
+    } | {
+    mode == CM_CONV ? {
+      text: u32 = conversion_term(le, ew, ret, ew[at + u32(5)], ew[at + u32(6)], ew[at + u32(10)])
+      text == NONE ? { } | { lx_deliver_expr(le, ew, rx, raw, node, text, want) }
+    } | {
+    mode == CM_FLOAT1 ? {
+      sb_begin(le, ew)
+      sb_byte(le, ew, u32(40))
+      sb_str(le, ew, ew[at + u32(5)])
+      sb_byte(le, ew, u32(46))
+      ap_float_unary_name(le, ew, ew[at + u32(10)])
+      sb_byte(le, ew, u32(32))
+      sb_str(le, ew, ret)
+      sb_byte(le, ew, u32(41))
+      lx_deliver_expr(le, ew, rx, raw, node, sb_end(le, ew), want)
+    } | {
+      // CM_USER and CM_FLOATN: the arguments in order, then the term.
+      phase == u32(2) ? { acc_push_l(le, ew, ret) } | { }
+      i: u32 = ew[at + u32(8)]
+      i < nargs ? {
+        ew[at + u32(8)] = i + u32(1)
+        ew[at + u32(2)] = u32(2)
+        mode == CM_FLOATN ? { lx_push_expr(le, ew, rl_item(rx, raw, args, i), ew[at + u32(5)]) } | {
+          user: u32 = ew[at + u32(6)]
+          ptype: u32 = lean_type(le, ew, rx, raw, rp_word(rx, raw, rf_word(rx, raw, user, u32(1)) + i, u32(1)))
+          ptype == NONE ? { le_fail(le, ew, u32(920)) } | { lx_push_expr(le, ew, rl_item(rx, raw, args, i), ptype) }
+        }
+      } | {
+        base: u32 = ew[at + u32(7)]
+        sep: u32 = lstr(le, ew, u64(0x20), u64(0x0), u32(1))
+        joined: u32 = join_acc(le, ew, base, sep)
+        mode == CM_FLOATN ? {
+          set_lst(le, ew, LN_USES_FLOAT, u32(1))
+          code: u32 = ew[at + u32(10)]
+          sb_begin(le, ew)
+          ap_lits(le, ew, u64(0x6F6C462E6B614F28), u64(0x2E73704F7461), u32(14))  // (Oak.FloatOps.
+          code == FN_FMA ? { ap_lits(le, ew, u64(0x616D66), u64(0x0), u32(3)) } | { code == FN_COPYSIGN ? { ap_lits(le, ew, u64(0x6E67697379706F63), u64(0x0), u32(8)) } | { ap_lits(le, ew, u64(0x657645646E756F72), u64(0x6E), u32(9)) } }
+          str_is(le, ew, ew[at + u32(5)], u64(0x323374616F6C46), u64(0x0), u32(7)) ? { ap_lits(le, ew, u64(0x3233), u64(0x0), u32(2)) } | { ap_lits(le, ew, u64(0x3436), u64(0x0), u32(2)) }
+          sb_byte(le, ew, u32(32))
+          sb_str(le, ew, joined)
+          sb_byte(le, ew, u32(41))
+          lx_deliver_expr(le, ew, rx, raw, node, sb_end(le, ew), want)
+        } | {
+          temps: u32 = lst(le, ew, LN_TEMPS) + u32(1)
+          set_lst(le, ew, LN_TEMPS, temps)
+          sb_begin(le, ew)
+          sb_byte(le, ew, u32(114))
+          sb_dec(le, ew, u64(temps))
+          r: u32 = sb_end(le, ew)
+          callee_name: u32 = ident(le, ew, rx, raw, ew[at + u32(9)])
+          // The owners rebound by the span parameters: `let (r, owner) ← ...`.
+          user_fn: u32 = ew[at + u32(6)]
+          rbase: u32 = lst(le, ew, LN_ACC_SP)
+          acc_push_l(le, ew, r)
+          ai: u32 = 0
+          while ai < nargs && !le_failed(le, ew) {
+            is_threaded_texpr(rx, raw, rp_word(rx, raw, rf_word(rx, raw, user_fn, u32(1)) + ai, u32(1))) ? {
+              argn: u32 = rl_item(rx, raw, args, ai)
+              owner: u32 = address_owner(rx, raw, argn)
+              (owner == NONE && rn_kind(rx, raw, argn) == RAW_IDENT) ? { owner = rn_a(rx, raw, argn) } | { }
+              owner == NONE ? { le_fail(le, ew, u32(988)) } | { acc_push_l(le, ew, ident(le, ew, rx, raw, owner)) }
+            } | { }
+            ai = ai + u32(1)
+          }
+          bound: u32 = tuple_acc(le, ew, rbase)
+          sb_begin(le, ew)
+          sb_str(le, ew, lst(le, ew, LN_INDENT))
+          ap_lits(le, ew, u64(0x2074656C), u64(0x0), u32(4))  // let 
+          sb_str(le, ew, bound)
+          ap_lits(le, ew, u64(0x209086E220), u64(0x0), u32(5))  //  ← 
+          sb_str(le, ew, callee_name)
+          sb_byte(le, ew, u32(32))
+          sb_str(le, ew, joined)
+          ap_lits(le, ew, u64(0x6C65756620), u64(0x0), u32(5))  //  fuel
+          line_push(le, ew, sb_end(le, ew))
+          lx_deliver_expr(le, ew, rx, raw, node, r, want)
+        }
+      }
+    } } } } } }
+  }
+}
+
+// --- statements ----------------------------------------------------------------------------------------
+
+// Block frame: 1 list start, 3 count, 4 index, 5 new scope flag, 6 saved
+// scope top, 7 entered.
+step_block_l: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  list: u32 = ew[at + u32(1)]
+  count: u32 = ew[at + u32(3)]
+  i: u32 = ew[at + u32(4)]
+  new_scope: Bool = ew[at + u32(5)] != u32(0)
+  (new_scope && ew[at + u32(7)] == u32(0)) ? {
+    ew[at + u32(6)] = lst(le, ew, LN_SCOPE_SP)
+    ew[at + u32(7)] = u32(1)
+  } | { }
+  i < count ? {
+    ew[at + u32(4)] = i + u32(1)
+    lx_push(le, ew, LF_STMT, rl_item(rx, raw, list, i), u32(0), u32(0))
+  } | {
+    new_scope ? { set_lst(le, ew, LN_SCOPE_SP, ew[at + u32(6)]) } | { }
+    lx_pop(le, ew)
+  }
+}
+
+lx_push_block: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, blk: u32, new_scope: Bool): () {
+  blk == NONE ? { } | {
+    lx_push(le, ew, LF_BLOCK, rn_a(rx, raw, blk), rn_b(rx, raw, blk), u32(0))
+    at: u32 = lf_at(le, lst(le, ew, LN_SP) - u32(1))
+    ew[at + u32(5)] = new_scope ? { u32(1) } | { u32(0) }
+  }
+}
+
+// Arm-body frame (a conditional arm in statement position): replaced by
+// the block in a new scope, or the nested conditional.
+step_armbody_l: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  body: u32 = ew[at + u32(1)]
+  lx_pop(le, ew)
+  body == NONE ? { le_fail(le, ew, u32(972)) } | {
+    k: u32 = rn_kind(rx, raw, body)
+    k == RAW_BLOCKEXPR ? { lx_push_block(le, ew, rx, raw, rn_a(rx, raw, body), true) } | {
+    k == RAW_MATCH ? {
+      (is_bool_conditional(rx, raw, body) || is_integer_match(rx, raw, body)) ? { lx_push(le, ew, LF_CONDSTMT, body, u32(0), u32(0)) } | {
+        is_variant_match(rx, raw, body) ? { lx_push(le, ew, LF_MATCHSTMT, body, u32(0), u32(0)) } | { le_fail(le, ew, u32(972)) }
+      }
+    } | { le_fail(le, ew, u32(972)) } }
+  }
+}
+
+// Conditional statement frame: 1 node, 2 phase, 4 scrutinee, 5 type, 6
+// outs, 7 saved indent, 8 arm index, 12 arm count; the Bool flag is set
+// at push in word 3.
+step_condstmt_l: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  node: u32 = ew[at + u32(1)]
+  phase: u32 = ew[at + u32(2)]
+  bool_cond: Bool = is_bool_conditional(rx, raw, node)
+  narms: u32 = bool_cond ? { u32(2) } | { rn_c(rx, raw, node) }
+  ret: u32 = lst(le, ew, LN_RET)
+  phase == u32(0) ? {
+    typ: u32 = bool_cond ? { lc(le, ew, LC_BOOL) } | { xtype(le, ew, rx, raw, rn_a(rx, raw, node)) }
+    typ == NONE ? { le_fail(le, ew, u32(957)) } | {
+      ew[at + u32(5)] = typ
+      ew[at + u32(2)] = u32(1)
+      lx_push_expr(le, ew, rn_a(rx, raw, node), typ)
+    }
+  } | {
+    phase == u32(1) ? {
+      ew[at + u32(4)] = ret
+      o: Outs = outs_of_arms(le, ew, rx, raw, node)
+      ew[at + u32(6)] = o.outs
+      ew[at + u32(8)] = u32(0)
+    } | {
+      line_push(le, ew, pure_line(le, ew, lst(le, ew, LN_INDENT), ew[at + u32(6)], true))
+      set_lst(le, ew, LN_INDENT, ew[at + u32(7)])
+    }
+    i: u32 = ew[at + u32(8)]
+    i < narms ? {
+      ew[at + u32(8)] = i + u32(1)
+      ew[at + u32(2)] = u32(2)
+      cond: u32 = i + u32(1) < narms ? { chain_cond(le, ew, rx, raw, node, bool_cond, ew[at + u32(4)], ew[at + u32(5)], i) } | { NONE }
+      sb_begin(le, ew)
+      sb_str(le, ew, lst(le, ew, LN_INDENT))
+      i == u32(0) ? {
+        ap_lits(le, ew, u64(0x2074656C), u64(0x0), u32(4))  // let 
+        sb_str(le, ew, ew[at + u32(6)])
+        ap_lits(le, ew, u64(0x666928209086E220), u64(0x20), u32(9))  //  ← (if 
+        sb_str(le, ew, cond)
+        ap_lits(le, ew, u64(0x6428206E65687420), u64(0x6F), u32(9))  //  then (do
+      } | {
+        i + u32(1) == narms ? { ap_lits(le, ew, u64(0x282065736C652020), u64(0x6F64), u32(10)) } | {
+          ap_lits(le, ew, u64(0x692065736C652020), u64(0x2066), u32(10))  //   else if 
+          sb_str(le, ew, cond)
+          ap_lits(le, ew, u64(0x6428206E65687420), u64(0x6F), u32(9))  //  then (do
+        }
+      }
+      line_push(le, ew, sb_end(le, ew))
+      ew[at + u32(7)] = lst(le, ew, LN_INDENT)
+      set_lst(le, ew, LN_INDENT, indent_deeper(le, ew))
+      lx_push(le, ew, LF_ARMBODY, arm_body(rx, raw, node, i, bool_cond), u32(0), u32(0))
+    } | {
+      line_close(le, ew)
+      lx_pop(le, ew)
+    }
+  }
+}
+
+// Variant match statement frame: 1 node, 2 phase, 4 scrutinee, 5 declared
+// type, 6 outs, 7 saved indent, 8 arm index, 9 saved scope top.
+step_matchstmt_l: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  node: u32 = ew[at + u32(1)]
+  phase: u32 = ew[at + u32(2)]
+  narms: u32 = rn_c(rx, raw, node)
+  arms: u32 = rn_b(rx, raw, node)
+  ret: u32 = lst(le, ew, LN_RET)
+  phase == u32(0) ? {
+    t: u32 = scrutinee_adt(le, ew, rx, raw, node)
+    t == NONE ? { le_fail(le, ew, u32(959)) } | {
+      ew[at + u32(5)] = t
+      ew[at + u32(2)] = u32(1)
+      lx_push_expr(le, ew, rn_a(rx, raw, node), tdecl_lean(le, ew, rx, raw, t))
+    }
+  } | {
+    phase == u32(1) ? {
+      ew[at + u32(4)] = ret
+      o: Outs = outs_of_arms(le, ew, rx, raw, node)
+      ew[at + u32(6)] = o.outs
+      ew[at + u32(8)] = u32(0)
+      sb_begin(le, ew)
+      sb_str(le, ew, lst(le, ew, LN_INDENT))
+      ap_lits(le, ew, u64(0x2074656C), u64(0x0), u32(4))  // let 
+      sb_str(le, ew, o.outs)
+      ap_lits(le, ew, u64(0x616D28209086E220), u64(0x20686374), u32(12))  //  ← (match 
+      sb_str(le, ew, ret)
+      ap_lits(le, ew, u64(0x6874697720), u64(0x0), u32(5))  //  with
+      line_push(le, ew, sb_end(le, ew))
+    } | {
+      line_push(le, ew, pure_line(le, ew, lst(le, ew, LN_INDENT), ew[at + u32(6)], true))
+      set_lst(le, ew, LN_INDENT, ew[at + u32(7)])
+      set_lst(le, ew, LN_SCOPE_SP, ew[at + u32(9)])
+    }
+    i: u32 = ew[at + u32(8)]
+    i < narms ? {
+      ew[at + u32(8)] = i + u32(1)
+      ew[at + u32(2)] = u32(2)
+      ew[at + u32(9)] = lst(le, ew, LN_SCOPE_SP)
+      pat: u32 = pattern_text(le, ew, rx, raw, rl_item(rx, raw, arms, i * u32(2)), ew[at + u32(5)])
+      sb_begin(le, ew)
+      sb_str(le, ew, lst(le, ew, LN_INDENT))
+      ap_lits(le, ew, u64(0x207C2020), u64(0x0), u32(4))  //   | 
+      pat == NONE ? { } | { sb_str(le, ew, pat) }
+      ap_lits(le, ew, u64(0x6F6428203E3D20), u64(0x0), u32(7))  //  => (do
+      line_push(le, ew, sb_end(le, ew))
+      ew[at + u32(7)] = lst(le, ew, LN_INDENT)
+      set_lst(le, ew, LN_INDENT, indent_deeper(le, ew))
+      lx_push(le, ew, LF_ARMBODY, rl_item(rx, raw, arms, i * u32(2) + u32(1)), u32(0), u32(0))
+    } | {
+      line_close(le, ew)
+      lx_pop(le, ew)
+    }
+  }
+}
+
+// While frame: 1 node, 2 phase, 3 line base, 4 saved scope top, 5 saved
+// scope base, 6 saved indent, 7 helper name, 8 outs, 9 the reads joined.
+step_while_l: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  node: u32 = ew[at + u32(1)]
+  phase: u32 = ew[at + u32(2)]
+  cond: u32 = rn_a(rx, raw, node)
+  body: u32 = rn_b(rx, raw, node)
+  ret: u32 = lst(le, ew, LN_RET)
+  phase == u32(0) ? {
+    loops: u32 = lst(le, ew, LN_LOOPS) + u32(1)
+    set_lst(le, ew, LN_LOOPS, loops)
+    sb_begin(le, ew)
+    sb_str(le, ew, lst(le, ew, LN_FNNAME))
+    ap_lits(le, ew, u64(0x706F6F6C2E), u64(0x0), u32(5))  // .loop
+    sb_dec(le, ew, u64(loops))
+    name: u32 = sb_end(le, ew)
+    ew[at + u32(7)] = name
+    // The outer variables the loop reads (its parameters, in scope order)
+    // and writes (its results).
+    g1: u32 = mark_gen(le, ew)
+    h1: Bool = walk(le, ew, rx, raw, cond, WK_REFERENCED, g1)
+    h2: Bool = walk(le, ew, rx, raw, body, WK_REFERENCED, g1)
+    g2: u32 = mark_gen(le, ew)
+    h3: Bool = walk(le, ew, rx, raw, body, WK_ASSIGNED, g2)
+    base_r: u32 = lst(le, ew, LN_ACC_SP)
+    nreads: u32 = collect_mentioned(le, ew, g1)
+    // The escaped names of the reads, after their indices.
+    base_rn: u32 = lst(le, ew, LN_ACC_SP)
+    k: u32 = 0
+    while k < nreads {
+      acc_push_l(le, ew, ident_str(le, ew, scope_name(le, ew, acc_at_l(le, ew, base_r + k))))
+      k = k + u32(1)
+    }
+    // "(v : T) (w : U)" and "v w".
+    sb_begin(le, ew)
+    k = u32(0)
+    while k < nreads {
+      idx: u32 = acc_at_l(le, ew, base_r + k)
+      k > u32(0) ? { sb_byte(le, ew, u32(32)) } | { }
+      sb_byte(le, ew, u32(40))
+      sb_str(le, ew, acc_at_l(le, ew, base_rn + k))
+      ap_lits(le, ew, u64(0x203A20), u64(0x0), u32(3))  //  : 
+      sb_str(le, ew, scope_type(le, ew, idx))
+      sb_byte(le, ew, u32(41))
+      k = k + u32(1)
+    }
+    params: u32 = sb_end(le, ew)
+    sb_begin(le, ew)
+    k = u32(0)
+    while k < nreads {
+      k > u32(0) ? { sb_byte(le, ew, u32(32)) } | { }
+      sb_str(le, ew, acc_at_l(le, ew, base_rn + k))
+      k = k + u32(1)
+    }
+    reads_joined: u32 = sb_end(le, ew)
+    ew[at + u32(9)] = reads_joined
+    base_w: u32 = lst(le, ew, LN_ACC_SP)
+    nwrites: u32 = collect_written(le, ew, g2)
+    base_wn: u32 = lst(le, ew, LN_ACC_SP)
+    k = u32(0)
+    while k < nwrites {
+      acc_push_l(le, ew, ident_str(le, ew, scope_name(le, ew, acc_at_l(le, ew, base_w + k))))
+      k = k + u32(1)
+    }
+    sb_begin(le, ew)
+    k = u32(0)
+    while k < nwrites {
+      k > u32(0) ? { ap_lits(le, ew, u64(0x202C), u64(0x0), u32(2)) } | { }
+      sb_str(le, ew, acc_at_l(le, ew, base_wn + k))
+      k = k + u32(1)
+    }
+    outs_joined: u32 = sb_end(le, ew)
+    outs: u32 = nwrites == u32(0) ? { lc(le, ew, LC_PAREN_UNIT) } | { nwrites == u32(1) ? { outs_joined } | { paren(le, ew, outs_joined) } }
+    ew[at + u32(8)] = outs
+    sb_begin(le, ew)
+    sb_byte(le, ew, u32(40))
+    nwrites == u32(0) ? { ap_lits(le, ew, u64(0x74696E55), u64(0x0), u32(4)) } | { }
+    k = u32(0)
+    while k < nwrites {
+      idx: u32 = acc_at_l(le, ew, base_w + k)
+      k > u32(0) ? { ap_lits(le, ew, u64(0x2097C320), u64(0x0), u32(4)) } | { }
+      sb_str(le, ew, scope_type(le, ew, idx))
+      k = k + u32(1)
+    }
+    sb_byte(le, ew, u32(41))
+    result_types: u32 = sb_end(le, ew)
+    // The helper's scope: the reads alone.
+    old_sp: u32 = lst(le, ew, LN_SCOPE_SP)
+    ew[at + u32(4)] = old_sp
+    ew[at + u32(5)] = lst(le, ew, LN_SCOPE_BASE)
+    ew[at + u32(6)] = lst(le, ew, LN_INDENT)
+    k = u32(0)
+    while k < nreads {
+      idx: u32 = acc_at_l(le, ew, base_r + k)
+      scope_push(le, ew, scope_name(le, ew, idx), scope_type(le, ew, idx), scope_rid(le, ew, idx))
+      k = k + u32(1)
+    }
+    set_lst(le, ew, LN_SCOPE_BASE, old_sp)
+    set_lst(le, ew, LN_ACC_SP, base_r)
+    // The helper's head.
+    ew[at + u32(3)] = lst(le, ew, LN_LINE_SP)
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x20666564), u64(0x0), u32(4))  // def 
+    sb_str(le, ew, name)
+    sb_byte(le, ew, u32(32))
+    sb_str(le, ew, params)
+    ap_lits(le, ew, u64(0xE22074614E203A20), u64(0x6F6974704F209286), u32(16))  //  : Nat → Option 
+    ap_lits(le, ew, u64(0x206E), u64(0x0), u32(2))
+    sb_str(le, ew, result_types)
+    line_push(le, ew, sb_end(le, ew))
+    line_push(le, ew, lstr(le, ew, u64(0x3E3D2030207C2020), u64(0x656E6F6E20), u32(13)))
+    line_push(le, ew, lit_str_fuel_arm(le, ew))
+    set_lst(le, ew, LN_INDENT, lc(le, ew, LC_IND4))
+    ew[at + u32(2)] = u32(1)
+    lx_push_expr(le, ew, cond, lc(le, ew, LC_BOOL))
+  } | {
+  phase == u32(1) ? {
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x20666920202020), u64(0x0), u32(7))  //     if 
+    sb_str(le, ew, ret)
+    ap_lits(le, ew, u64(0x6F64206E65687420), u64(0x0), u32(8))  //  then do
+    line_push(le, ew, sb_end(le, ew))
+    set_lst(le, ew, LN_INDENT, lc(le, ew, LC_IND6))
+    ew[at + u32(2)] = u32(2)
+    lx_push_block(le, ew, rx, raw, body, false)
+  } | {
+    name: u32 = ew[at + u32(7)]
+    reads_joined: u32 = ew[at + u32(9)]
+    outs: u32 = ew[at + u32(8)]
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x202020202020), u64(0x0), u32(6))  //       
+    sb_str(le, ew, name)
+    sb_byte(le, ew, u32(32))
+    sb_str(le, ew, reads_joined)
+    ap_lits(le, ew, u64(0x6C65756620), u64(0x0), u32(5))  //  fuel
+    line_push(le, ew, sb_end(le, ew))
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x65736C6520202020), u64(0x206572757020), u32(14))  //     else pure 
+    sb_str(le, ew, outs)
+    line_push(le, ew, sb_end(le, ew))
+    // The helper's text: its lines, each ended.
+    h0: u32 = ew[at + u32(3)]
+    sp: u32 = lst(le, ew, LN_LINE_SP)
+    sb_begin(le, ew)
+    i: u32 = h0
+    while i < sp {
+      sb_str(le, ew, ew[le.lines_at + i])
+      sb_byte(le, ew, u32(10))
+      i = i + u32(1)
+    }
+    helper_push(le, ew, sb_end(le, ew))
+    set_lst(le, ew, LN_LINE_SP, h0)
+    set_lst(le, ew, LN_SCOPE_SP, ew[at + u32(4)])
+    set_lst(le, ew, LN_SCOPE_BASE, ew[at + u32(5)])
+    set_lst(le, ew, LN_INDENT, ew[at + u32(6)])
+    sb_begin(le, ew)
+    sb_str(le, ew, lst(le, ew, LN_INDENT))
+    ap_lits(le, ew, u64(0x2074656C), u64(0x0), u32(4))  // let 
+    sb_str(le, ew, outs)
+    ap_lits(le, ew, u64(0x209086E220), u64(0x0), u32(5))  //  ← 
+    sb_str(le, ew, name)
+    sb_byte(le, ew, u32(32))
+    sb_str(le, ew, reads_joined)
+    ap_lits(le, ew, u64(0x6C65756620), u64(0x0), u32(5))  //  fuel
+    line_push(le, ew, sb_end(le, ew))
+    lx_pop(le, ew)
+  } }
+}
+
+// let_line renders "<indent>let NAME[ : T] := TERM".
+let_line: (le: Lem, ew: [*]u32, name: u32, typ: u32, term: u32): u32 {
+  sb_begin(le, ew)
+  sb_str(le, ew, lst(le, ew, LN_INDENT))
+  ap_lits(le, ew, u64(0x2074656C), u64(0x0), u32(4))  // let 
+  sb_str(le, ew, name)
+  typ == NONE ? { } | {
+    ap_lits(le, ew, u64(0x203A20), u64(0x0), u32(3))  //  : 
+    sb_str(le, ew, typ)
+  }
+  ap_lits(le, ew, u64(0x203D3A20), u64(0x0), u32(4))  //  := 
+  sb_str(le, ew, term)
+  sb_end(le, ew)
+}
+
+// Element assignment shapes.
+IA_ELEMENT: u32 = 1
+IA_FIELD: u32 = 2
+IA_ELEMENT_FIELD: u32 = 3
+IA_FIELD_ELEMENT: u32 = 4
+
+// Statement frame: 1 node, 2 phase, 3 type, 4 index term, 5 aux, 6 aux2,
+// 7 aux3, 8 shape.
+step_stmt_l: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, at: u32): () {
+  node: u32 = ew[at + u32(1)]
+  phase: u32 = ew[at + u32(2)]
+  kind: u32 = rn_kind(rx, raw, node)
+  a: u32 = rn_a(rx, raw, node)
+  b: u32 = rn_b(rx, raw, node)
+  c: u32 = rn_c(rx, raw, node)
+  ret: u32 = lst(le, ew, LN_RET)
+  kind == RAW_VARDECL ? {
+    phase == u32(0) ? {
+      typ: u32 = b != NONE ? { lean_type(le, ew, rx, raw, b) } | { xtype(le, ew, rx, raw, c) }
+      typ == NONE ? { le_fail(le, ew, u32(975)) } | {
+        ew[at + u32(3)] = typ
+        c == NONE ? {
+          line_push(le, ew, let_line(le, ew, ident(le, ew, rx, raw, a), typ, initial_value(le, ew, rx, raw, b, typ)))
+          declare_raw(le, ew, rx, raw, a, typ)
+          lx_pop(le, ew)
+        } | {
+          ew[at + u32(2)] = u32(1)
+          lx_push_expr(le, ew, c, typ)
+        }
+      }
+    } | {
+      line_push(le, ew, let_line(le, ew, ident(le, ew, rx, raw, a), ew[at + u32(3)], ret))
+      declare_raw(le, ew, rx, raw, a, ew[at + u32(3)])
+      lx_pop(le, ew)
+    }
+  } | {
+  kind == RAW_ASSIGN ? {
+    phase == u32(0) ? {
+      typ: u32 = scope_lookup(le, ew, rx, raw, a)
+      typ == NONE ? { le_fail(le, ew, u32(976)) } | {
+        ew[at + u32(2)] = u32(1)
+        lx_push_expr(le, ew, b, typ)
+      }
+    } | {
+      line_push(le, ew, let_line(le, ew, ident(le, ew, rx, raw, a), NONE, ret))
+      lx_pop(le, ew)
+    }
+  } | {
+  kind == RAW_INDEXASSIGN ? {
+    target: u32 = a
+    phase == u32(0) ? {
+      rn_kind(rx, raw, target) != RAW_INDEX ? { le_fail(le, ew, u32(970)) } | {
+        tleft: u32 = rn_a(rx, raw, target)
+        tindex: u32 = rn_b(rx, raw, target)
+        tdot: Bool = rn_c(rx, raw, target) != u32(0)
+        left_is_index: Bool = rn_kind(rx, raw, tleft) == RAW_INDEX
+        left_dot: Bool = left_is_index && rn_c(rx, raw, tleft) != u32(0)
+        tdot ? {
+          (left_is_index && !left_dot) ? {
+            // arr[i].field = v
+            arr: u32 = rn_a(rx, raw, tleft)
+            (rn_kind(rx, raw, arr) != RAW_IDENT || rn_kind(rx, raw, tindex) != RAW_IDENT) ? { le_fail(le, ew, u32(977)) } | {
+              elem: u32 = element_of(le, ew, scope_lookup(le, ew, rx, raw, rn_a(rx, raw, arr)))
+              elem == NONE ? { le_fail(le, ew, u32(978)) } | {
+                ft: u32 = record_field_type(le, ew, rx, raw, elem, rn_a(rx, raw, tindex))
+                ft == NONE ? { } | {
+                  ew[at + u32(8)] = IA_ELEMENT_FIELD
+                  ew[at + u32(3)] = ft
+                  ew[at + u32(5)] = ident(le, ew, rx, raw, rn_a(rx, raw, arr))
+                  ew[at + u32(6)] = ident(le, ew, rx, raw, rn_a(rx, raw, tindex))
+                  ew[at + u32(7)] = zero_of(le, ew, elem)
+                  ew[at + u32(2)] = u32(1)
+                  lx_push(le, ew, LF_INDEXTERM, rn_b(rx, raw, tleft), u32(0), u32(0))
+                }
+              }
+            }
+          } | {
+            // base.field = v
+            (rn_kind(rx, raw, tleft) != RAW_IDENT || rn_kind(rx, raw, tindex) != RAW_IDENT) ? { le_fail(le, ew, u32(977)) } | {
+              rt: u32 = scope_lookup(le, ew, rx, raw, rn_a(rx, raw, tleft))
+              rt == NONE ? { le_fail(le, ew, u32(976)) } | {
+                ft: u32 = record_field_type(le, ew, rx, raw, rt, rn_a(rx, raw, tindex))
+                ft == NONE ? { } | {
+                  ew[at + u32(8)] = IA_FIELD
+                  ew[at + u32(5)] = ident(le, ew, rx, raw, rn_a(rx, raw, tleft))
+                  ew[at + u32(6)] = ident(le, ew, rx, raw, rn_a(rx, raw, tindex))
+                  ew[at + u32(2)] = u32(2)
+                  lx_push_expr(le, ew, b, ft)
+                }
+              }
+            }
+          }
+        } | {
+          left_dot ? {
+            // r.field[i] = v
+            rec: u32 = rn_a(rx, raw, tleft)
+            fld: u32 = rn_b(rx, raw, tleft)
+            (rn_kind(rx, raw, rec) != RAW_IDENT || rn_kind(rx, raw, fld) != RAW_IDENT) ? { le_fail(le, ew, u32(977)) } | {
+              rt: u32 = scope_lookup(le, ew, rx, raw, rn_a(rx, raw, rec))
+              rt == NONE ? { le_fail(le, ew, u32(976)) } | {
+                ft: u32 = record_field_type(le, ew, rx, raw, rt, rn_a(rx, raw, fld))
+                elem: u32 = element_of(le, ew, ft)
+                (ft == NONE || elem == NONE) ? { le_fail(le, ew, u32(971)) } | {
+                  ew[at + u32(8)] = IA_FIELD_ELEMENT
+                  ew[at + u32(3)] = elem
+                  ew[at + u32(5)] = ident(le, ew, rx, raw, rn_a(rx, raw, rec))
+                  ew[at + u32(6)] = ident(le, ew, rx, raw, rn_a(rx, raw, fld))
+                  ew[at + u32(2)] = u32(1)
+                  lx_push(le, ew, LF_INDEXTERM, tindex, u32(0), u32(0))
+                }
+              }
+            }
+          } | {
+            // a[i] = v
+            rn_kind(rx, raw, tleft) != RAW_IDENT ? { le_fail(le, ew, u32(977)) } | {
+              elem: u32 = element_of(le, ew, scope_lookup(le, ew, rx, raw, rn_a(rx, raw, tleft)))
+              elem == NONE ? { le_fail(le, ew, u32(978)) } | {
+                ew[at + u32(8)] = IA_ELEMENT
+                ew[at + u32(3)] = elem
+                ew[at + u32(5)] = ident(le, ew, rx, raw, rn_a(rx, raw, tleft))
+                ew[at + u32(2)] = u32(1)
+                lx_push(le, ew, LF_INDEXTERM, tindex, u32(0), u32(0))
+              }
+            }
+          }
+        }
+      }
+    } | {
+    phase == u32(1) ? {
+      // The index is in; the value follows.
+      ew[at + u32(4)] = ret
+      ew[at + u32(2)] = u32(2)
+      lx_push_expr(le, ew, b, ew[at + u32(3)])
+    } | {
+      shape: u32 = ew[at + u32(8)]
+      base: u32 = ew[at + u32(5)]
+      fld: u32 = ew[at + u32(6)]
+      idx: u32 = ew[at + u32(4)]
+      sb_begin(le, ew)
+      sb_str(le, ew, lst(le, ew, LN_INDENT))
+      ap_lits(le, ew, u64(0x2074656C), u64(0x0), u32(4))  // let 
+      sb_str(le, ew, base)
+      ap_lits(le, ew, u64(0x203D3A20), u64(0x0), u32(4))  //  := 
+      shape == IA_ELEMENT ? {
+        sb_str(le, ew, base)
+        ap_lits(le, ew, u64(0x6E4966497465732E), u64(0x2073646E756F42), u32(15))  // .setIfInBounds 
+        sb_str(le, ew, idx)
+        sb_byte(le, ew, u32(32))
+        sb_str(le, ew, ret)
+      } | {
+      shape == IA_FIELD ? {
+        ap_lits(le, ew, u64(0x207B), u64(0x0), u32(2))  // { 
+        sb_str(le, ew, base)
+        ap_lits(le, ew, u64(0x206874697720), u64(0x0), u32(6))  //  with 
+        sb_str(le, ew, fld)
+        ap_lits(le, ew, u64(0x203D3A20), u64(0x0), u32(4))  //  := 
+        sb_str(le, ew, ret)
+        ap_lits(le, ew, u64(0x7D20), u64(0x0), u32(2))  //  }
+      } | {
+      shape == IA_ELEMENT_FIELD ? {
+        sb_str(le, ew, base)
+        ap_lits(le, ew, u64(0x6E4966497465732E), u64(0x2073646E756F42), u32(15))  // .setIfInBounds 
+        sb_str(le, ew, idx)
+        ap_lits(le, ew, u64(0x28207B20), u64(0x0), u32(4))  //  { (
+        sb_str(le, ew, base)
+        ap_lits(le, ew, u64(0x20447465672E), u64(0x0), u32(6))  // .getD 
+        sb_str(le, ew, idx)
+        sb_byte(le, ew, u32(32))
+        sb_str(le, ew, ew[at + u32(7)])
+        ap_lits(le, ew, u64(0x20687469772029), u64(0x0), u32(7))  // ) with 
+        sb_str(le, ew, fld)
+        ap_lits(le, ew, u64(0x203D3A20), u64(0x0), u32(4))  //  := 
+        sb_str(le, ew, ret)
+        ap_lits(le, ew, u64(0x7D20), u64(0x0), u32(2))  //  }
+      } | {
+        ap_lits(le, ew, u64(0x207B), u64(0x0), u32(2))  // { 
+        sb_str(le, ew, base)
+        ap_lits(le, ew, u64(0x206874697720), u64(0x0), u32(6))  //  with 
+        sb_str(le, ew, fld)
+        ap_lits(le, ew, u64(0x203D3A20), u64(0x0), u32(4))  //  := 
+        sb_str(le, ew, base)
+        sb_byte(le, ew, u32(46))
+        sb_str(le, ew, fld)
+        ap_lits(le, ew, u64(0x6E4966497465732E), u64(0x2073646E756F42), u32(15))  // .setIfInBounds 
+        sb_str(le, ew, idx)
+        sb_byte(le, ew, u32(32))
+        sb_str(le, ew, ret)
+        ap_lits(le, ew, u64(0x7D20), u64(0x0), u32(2))  //  }
+      } } }
+      line_push(le, ew, sb_end(le, ew))
+      lx_pop(le, ew)
+    } }
+  } | {
+  kind == RAW_WHILE ? {
+    lx_pop(le, ew)
+    lx_push(le, ew, LF_WHILE, node, u32(0), u32(0))
+  } | {
+  kind == RAW_BLOCK ? {
+    lx_pop(le, ew)
+    lx_push_block(le, ew, rx, raw, node, false)
+  } | {
+  kind == RAW_EXPRSTMT ? {
+    e: u32 = a
+    ek: u32 = e == NONE ? { RAW_OTHER } | { rn_kind(rx, raw, e) }
+    ek == RAW_MATCH ? {
+      lx_pop(le, ew)
+      (is_bool_conditional(rx, raw, e) || is_integer_match(rx, raw, e)) ? { lx_push(le, ew, LF_CONDSTMT, e, u32(0), u32(0)) } | {
+        is_variant_match(rx, raw, e) ? { lx_push(le, ew, LF_MATCHSTMT, e, u32(0), u32(0)) } | { le_fail(le, ew, u32(973)) }
+      }
+    } | {
+    ek == RAW_CALL ? {
+      callee: u32 = rn_a(rx, raw, e)
+      nm: Name16 = rn_kind(rx, raw, callee) == RAW_IDENT ? { rs_name(rx, raw, rn_a(rx, raw, callee)) } | { Name16 { lo: u64(0), hi: u64(0), n: u32(0) } }
+      nargs: u32 = rn_c(rx, raw, e)
+      is_assert: Bool = is_name(nm, u64(0x747265737361), u64(0x0), u32(6)) && nargs == u32(1)
+      is_eq: Bool = is_name(nm, u64(0x655F747265737361), u64(0x71), u32(9)) && nargs == u32(2)
+      is_ne: Bool = is_name(nm, u64(0x6E5F747265737361), u64(0x65), u32(9)) && nargs == u32(2)
+      is_assert ? {
+        phase == u32(0) ? {
+          ew[at + u32(2)] = u32(1)
+          lx_push_expr(le, ew, rl_item(rx, raw, rn_b(rx, raw, e), u32(0)), lc(le, ew, LC_BOOL))
+        } | {
+          sb_begin(le, ew)
+          sb_str(le, ew, lst(le, ew, LN_INDENT))
+          ap_lits(le, ew, u64(0xE22029282074656C), u64(0x20666928209086), u32(15))  // let () ← (if 
+          sb_str(le, ew, ret)
+          ap_lits(le, ew, u64(0x7570206E65687420), u64(0x6C65202928206572), u32(16))  //  then pure () else none)
+          ap_lits(le, ew, u64(0x29656E6F6E206573), u64(0x0), u32(8))
+          line_push(le, ew, sb_end(le, ew))
+          lx_pop(le, ew)
+        }
+      } | {
+      (is_eq || is_ne) ? {
+        phase == u32(0) ? {
+          ew[at + u32(2)] = u32(1)
+          lx_push_expr(le, ew, rl_item(rx, raw, rn_b(rx, raw, e), u32(0)), NONE)
+        } | {
+        phase == u32(1) ? {
+          ew[at + u32(5)] = ret
+          ew[at + u32(2)] = u32(2)
+          lx_push_expr(le, ew, rl_item(rx, raw, rn_b(rx, raw, e), u32(1)), NONE)
+        } | {
+          sb_begin(le, ew)
+          sb_str(le, ew, lst(le, ew, LN_INDENT))
+          ap_lits(le, ew, u64(0xE22029282074656C), u64(0x20666928209086), u32(15))  // let () ← (if 
+          sb_str(le, ew, ew[at + u32(5)])
+          ap_lits(le, ew, u64(0x203D3D20), u64(0x0), u32(4))  //  == 
+          sb_str(le, ew, ret)
+          is_eq ? { ap_lits(le, ew, u64(0x7570206E65687420), u64(0x6C65202928206572), u32(16)) } | { ap_lits(le, ew, u64(0x6F6E206E65687420), u64(0x2065736C6520656E), u32(16)) }
+          is_eq ? { ap_lits(le, ew, u64(0x29656E6F6E206573), u64(0x0), u32(8)) } | { ap_lits(le, ew, u64(0x2929282065727570), u64(0x0), u32(8)) }
+          line_push(le, ew, sb_end(le, ew))
+          lx_pop(le, ew)
+        } }
+      } | {
+        // A call for its effects: its hoisted binding alone.
+        phase == u32(0) ? {
+          ew[at + u32(2)] = u32(1)
+          lx_push_expr(le, ew, e, NONE)
+        } | { lx_pop(le, ew) }
+      } }
+    } | { le_fail(le, ew, u32(974)) } }
+  } | { le_fail(le, ew, u32(979)) } } } } } }
+}
+
+// --- the machine -------------------------------------------------------------------------------------
+
+lx_run: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw): () {
+  while lst(le, ew, LN_SP) > u32(0) && !le_failed(le, ew) {
+    at: u32 = lf_at(le, lst(le, ew, LN_SP) - u32(1))
+    kind: u32 = ew[at]
+    kind == LF_EXPR ? { step_expr_l(le, ew, rx, raw, at) } | {
+    kind == LF_STMT ? { step_stmt_l(le, ew, rx, raw, at) } | {
+    kind == LF_BLOCK ? { step_block_l(le, ew, rx, raw, at) } | {
+    kind == LF_CONDSTMT ? { step_condstmt_l(le, ew, rx, raw, at) } | {
+    kind == LF_MATCHSTMT ? { step_matchstmt_l(le, ew, rx, raw, at) } | {
+    kind == LF_DOVALUE ? { step_dovalue_l(le, ew, rx, raw, at) } | {
+    kind == LF_ARMRESULT ? { step_armresult_l(le, ew, rx, raw, at) } | {
+    kind == LF_ARMBODY ? { step_armbody_l(le, ew, rx, raw, at) } | {
+    kind == LF_VALCHAIN ? { step_valchain_l(le, ew, rx, raw, at) } | {
+    kind == LF_MATCHVAL ? { step_matchval_l(le, ew, rx, raw, at) } | {
+    kind == LF_WHILE ? { step_while_l(le, ew, rx, raw, at) } | {
+    kind == LF_INDEXTERM ? { step_indexterm_l(le, ew, rx, raw, at) } | {
+    kind == LF_CALL ? { step_call_l(le, ew, rx, raw, at) } | { le_fail(le, ew, u32(984)) } } } } } } } } } } } } }
+  }
+}
+
+// --- the extracted set and its order ---------------------------------------------------------------------
+
+fn_is_theorem: (rx: []u32, raw: Raw, fi: u32): Bool = (rf_word(rx, raw, fi, u32(5)) & u32(2)) != u32(0)
+fn_is_root: (le: Lem, ew: [*]u32, fi: u32): Bool = ew[le.lroots_at + fi] != u32(0)
+
+// collect_functions closes the roots over their callees (breadth first,
+// the roots in declaration order): the discovery order in forder.
+collect_functions: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw): () {
+  base: u32 = lst(le, ew, LN_ACC_SP)
+  fi: u32 = 0
+  while fi < raw.nfuncs {
+    fn_is_root(le, ew, fi) ? { acc_push_l(le, ew, fi) } | { }
+    fi = fi + u32(1)
+  }
+  head: u32 = base
+  while head < lst(le, ew, LN_ACC_SP) && !le_failed(le, ew) {
+    f: u32 = acc_at_l(le, ew, head)
+    head = head + u32(1)
+    fn_in_set(le, ew, f) ? { } | {
+      ((rf_word(rx, raw, f, u32(5)) & RAW_FLAG_UNUSABLE) != u32(0) || rf_word(rx, raw, f, u32(4)) == NONE) ? { le_fail(le, ew, u32(981)) } | {
+        set_lfn_word(le, ew, f, u32(0), u32(1))
+        n: u32 = lst(le, ew, LN_NFORDER)
+        n >= LE_FUNCS ? { le_fail(le, ew, u32(985)) } | {
+          ew[le.forder_at + n] = f
+          set_lst(le, ew, LN_NFORDER, n + u32(1))
+        }
+        start: u32 = fn_callees(le, ew, rx, raw, f)
+        count: u32 = lfn_word(le, ew, f, u32(2))
+        k: u32 = 0
+        while k < count {
+          rf: u32 = raw_find_function(rx, raw, callee_at(le, ew, start, k))
+          rf != NONE ? { acc_push_l(le, ew, rf) } | { }
+          k = k + u32(1)
+        }
+      }
+    }
+  }
+  set_lst(le, ew, LN_ACC_SP, base)
+}
+
+fn_state: (le: Lem, ew: [*]u32, fi: u32): u32 = lfn_word(le, ew, fi, u32(3)) & u32(3)
+fn_recursive: (le: Lem, ew: [*]u32, fi: u32): Bool = (lfn_word(le, ew, fi, u32(3)) & u32(4)) != u32(0)
+set_fn_state: (le: Lem, ew: [*]u32, fi: u32, s: u32): () { set_lfn_word(le, ew, fi, u32(3), (lfn_word(le, ew, fi, u32(3)) & u32(4)) | s) }
+set_fn_recursive: (le: Lem, ew: [*]u32, fi: u32): () { set_lfn_word(le, ew, fi, u32(3), lfn_word(le, ew, fi, u32(3)) | u32(4)) }
+
+// order_functions sorts the set so callees precede callers (a depth-first
+// walk from each discovered function, callees by name); a self-call marks
+// the function recursive, any other cycle fails closed.
+order_functions: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw): () {
+  n: u32 = lst(le, ew, LN_NFORDER)
+  i: u32 = 0
+  while i < n && !le_failed(le, ew) {
+    root: u32 = ew[le.forder_at + i]
+    i = i + u32(1)
+    fn_state(le, ew, root) == u32(2) ? { } | {
+      // The stack: pairs (function, next callee index).
+      sp: u32 = 0
+      ew[le.work_at] = root
+      ew[le.work_at + u32(1)] = u32(0)
+      sp = u32(1)
+      while sp > u32(0) && !le_failed(le, ew) {
+        f: u32 = ew[le.work_at + (sp - u32(1)) * u32(2)]
+        k: u32 = ew[le.work_at + (sp - u32(1)) * u32(2) + u32(1)]
+        fn_state(le, ew, f) == u32(0) ? { set_fn_state(le, ew, f, u32(1)) } | { }
+        start: u32 = fn_callees(le, ew, rx, raw, f)
+        count: u32 = lfn_word(le, ew, f, u32(2))
+        pushed: Bool = false
+        while k < count && !pushed && !le_failed(le, ew) {
+          rf: u32 = raw_find_function(rx, raw, callee_at(le, ew, start, k))
+          k = k + u32(1)
+          rf == f ? { set_fn_recursive(le, ew, f) } | {
+            (rf != NONE && fn_in_set(le, ew, rf)) ? {
+              fn_state(le, ew, rf) == u32(1) ? { le_fail(le, ew, u32(982)) } | {
+                fn_state(le, ew, rf) == u32(0) ? {
+                  ew[le.work_at + (sp - u32(1)) * u32(2) + u32(1)] = k
+                  sp * u32(2) + u32(2) >= LE_WORK ? { le_fail(le, ew, u32(912)) } | {
+                    ew[le.work_at + sp * u32(2)] = rf
+                    ew[le.work_at + sp * u32(2) + u32(1)] = u32(0)
+                    sp = sp + u32(1)
+                    pushed = true
+                  }
+                } | { }
+              }
+            } | { }
+          }
+        }
+        (!pushed && !le_failed(le, ew)) ? {
+          set_fn_state(le, ew, f, u32(2))
+          m: u32 = lst(le, ew, LN_NORDERED)
+          ew[le.ordered_at + m] = f
+          set_lst(le, ew, LN_NORDERED, m + u32(1))
+          sp = sp - u32(1)
+        } | { }
+      }
+    }
+  }
+}
+
+// --- functions ------------------------------------------------------------------------------------------
+
+// insert_helpers moves the lines from p up by the helper count and writes
+// the helpers at p, in order; the helper list is emptied.
+insert_helpers: (le: Lem, ew: [*]u32, p: u32): () {
+  nh: u32 = lst(le, ew, LN_NHELPERS)
+  sp: u32 = lst(le, ew, LN_LINE_SP)
+  nh == u32(0) ? { } | {
+    sp + nh >= LE_LINES ? { le_fail(le, ew, u32(907)) } | {
+      i: u32 = sp
+      while i > p {
+        i = i - u32(1)
+        ew[le.lines_at + i + nh] = ew[le.lines_at + i]
+      }
+      k: u32 = 0
+      while k < nh {
+        ew[le.lines_at + p + k] = ew[le.helpers_at + k]
+        k = k + u32(1)
+      }
+      set_lst(le, ew, LN_LINE_SP, sp + nh)
+      set_lst(le, ew, LN_NHELPERS, u32(0))
+    }
+  }
+}
+
+// The fixed lines of a theorem's script and of the type declarations.
+lit_str_setopt: (le: Lem, ew: [*]u32): u32 {
+  sb_begin(le, ew)
+  ap_lits(le, ew, u64(0x6974706F5F746573), u64(0x65746E696C206E6F), u32(16))  // set_option linter.unusedSimpArgs false in
+  ap_lits(le, ew, u64(0x646573756E752E72), u64(0x73677241706D6953), u32(16))
+  ap_lits(le, ew, u64(0x692065736C616620), u64(0x6E), u32(9))
+  sb_end(le, ew)
+}
+
+lit_str_simp: (le: Lem, ew: [*]u32): u32 {
+  sb_begin(le, ew)
+  ap_lits(le, ew, u64(0x6F20706D69732020), u64(0x7275705B20796C6E), u32(16))  //   simp only [pure, bind, Option.bind_some, Option.bind_none, oak_bind_ite, Option.ite_none_right_eq_some, Option.some.injEq, decide_eq_true_eq] at *
+  ap_lits(le, ew, u64(0x2C646E6962202C65), u64(0x2E6E6F6974704F20), u32(16))
+  ap_lits(le, ew, u64(0x6D6F735F646E6962), u64(0x6F6974704F202C65), u32(16))
+  ap_lits(le, ew, u64(0x6E5F646E69622E6E), u64(0x6B616F202C656E6F), u32(16))
+  ap_lits(le, ew, u64(0x74695F646E69625F), u64(0x6F6974704F202C65), u32(16))
+  ap_lits(le, ew, u64(0x6F6E5F6574692E6E), u64(0x74686769725F656E), u32(16))
+  ap_lits(le, ew, u64(0x656D6F735F71655F), u64(0x6E6F6974704F202C), u32(16))
+  ap_lits(le, ew, u64(0x6E692E656D6F732E), u64(0x636564202C71456A), u32(16))
+  ap_lits(le, ew, u64(0x745F71655F656469), u64(0x205D71655F657572), u32(16))
+  ap_lits(le, ew, u64(0x2A207461), u64(0x0), u32(4))
+  sb_end(le, ew)
+}
+
+lit_str_first: (le: Lem, ew: [*]u32): u32 {
+  sb_begin(le, ew)
+  ap_lits(le, ew, u64(0x2074737269662020), u64(0x207C206C6672207C), u32(16))  //   first | rfl | decide | omega | bv_decide | ((repeat' split) <;> (try simp_all) <;> first | rfl | decide | omega | bv_decide)
+  ap_lits(le, ew, u64(0x7C20656469636564), u64(0x7C206167656D6F20), u32(16))
+  ap_lits(le, ew, u64(0x696365645F766220), u64(0x722828207C206564), u32(16))
+  ap_lits(le, ew, u64(0x7320277461657065), u64(0x3B3C202974696C70), u32(16))
+  ap_lits(le, ew, u64(0x732079727428203E), u64(0x296C6C615F706D69), u32(16))
+  ap_lits(le, ew, u64(0x726966203E3B3C20), u64(0x6C6672207C207473), u32(16))
+  ap_lits(le, ew, u64(0x6469636564207C20), u64(0x67656D6F207C2065), u32(16))
+  ap_lits(le, ew, u64(0x645F7662207C2061), u64(0x296564696365), u32(14))
+  sb_end(le, ew)
+}
+
+lit_str_deriving_record: (le: Lem, ew: [*]u32): u32 {
+  sb_begin(le, ew)
+  ap_lits(le, ew, u64(0x6976697265642020), u64(0x2C7270655220676E), u32(16))  //   deriving Repr, BEq, DecidableEq
+  ap_lits(le, ew, u64(0x6544202C71454220), u64(0x45656C6261646963), u32(16))
+  ap_lits(le, ew, u64(0x71), u64(0x0), u32(1))
+  sb_end(le, ew)
+}
+
+lit_str_deriving_sum: (le: Lem, ew: [*]u32): u32 {
+  sb_begin(le, ew)
+  ap_lits(le, ew, u64(0x6976697265642020), u64(0x2C7270655220676E), u32(16))  //   deriving Repr, Inhabited, BEq, DecidableEq
+  ap_lits(le, ew, u64(0x74696261686E4920), u64(0x2C714542202C6465), u32(16))
+  ap_lits(le, ew, u64(0x6261646963654420), u64(0x7145656C), u32(12))
+  sb_end(le, ew)
+}
+
+// unfold_names: the theorem and every extracted function it reaches,
+// breadth first, callees by name: joined by spaces.
+unfold_names: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, fi: u32): u32 {
+  g: u32 = mark_gen(le, ew)
+  base: u32 = lst(le, ew, LN_ACC_SP)
+  acc_push_l(le, ew, fi)
+  ew[le.fseen_at + fi] = g
+  head: u32 = base
+  while head < lst(le, ew, LN_ACC_SP) && !le_failed(le, ew) {
+    f: u32 = acc_at_l(le, ew, head)
+    head = head + u32(1)
+    start: u32 = fn_callees(le, ew, rx, raw, f)
+    count: u32 = lfn_word(le, ew, f, u32(2))
+    k: u32 = 0
+    while k < count {
+      rf: u32 = raw_find_function(rx, raw, callee_at(le, ew, start, k))
+      (rf != NONE && fn_in_set(le, ew, rf) && ew[le.fseen_at + rf] != g) ? {
+        ew[le.fseen_at + rf] = g
+        acc_push_l(le, ew, rf)
+      } | { }
+      k = k + u32(1)
+    }
+  }
+  sp: u32 = lst(le, ew, LN_ACC_SP)
+  i: u32 = base
+  while i < sp {
+    ew[le.acc_at + i] = ident(le, ew, rx, raw, rf_word(rx, raw, acc_at_l(le, ew, i), u32(0)))
+    i = i + u32(1)
+  }
+  sep: u32 = lstr(le, ew, u64(0x20), u64(0x0), u32(1))
+  join_acc(le, ew, base, sep)
+}
+
+// emit_function renders one extracted function: its loop helpers, its
+// definition, and for a theorem its statement; then a blank line.
+emit_function: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, fi: u32): () {
+  name: u32 = ident(le, ew, rx, raw, rf_word(rx, raw, fi, u32(0)))
+  set_lst(le, ew, LN_FNNAME, name)
+  set_lst(le, ew, LN_SCOPE_SP, u32(0))
+  set_lst(le, ew, LN_SCOPE_BASE, u32(0))
+  set_lst(le, ew, LN_NHELPERS, u32(0))
+  set_lst(le, ew, LN_LOOPS, u32(0))
+  set_lst(le, ew, LN_TEMPS, u32(0))
+  set_lst(le, ew, LN_SP, u32(0))
+  set_lst(le, ew, LN_ACC_SP, u32(0))
+  recursive: Bool = fn_recursive(le, ew, fi)
+  is_theorem: Bool = fn_is_theorem(rx, raw, fi)
+  // Parameters.
+  pstart: u32 = rf_word(rx, raw, fi, u32(1))
+  nparams: u32 = rf_word(rx, raw, fi, u32(2))
+  base: u32 = lst(le, ew, LN_ACC_SP)
+  i: u32 = 0
+  while i < nparams && !le_failed(le, ew) {
+    rp_word(rx, raw, pstart + i, u32(2)) != u32(0) ? { le_fail(le, ew, u32(986)) } | {
+      typ: u32 = lean_type(le, ew, rx, raw, rp_word(rx, raw, pstart + i, u32(1)))
+      typ == NONE ? { } | {
+        declare_raw(le, ew, rx, raw, rp_word(rx, raw, pstart + i, u32(0)), typ)
+        pname: u32 = ident(le, ew, rx, raw, rp_word(rx, raw, pstart + i, u32(0)))
+        sb_begin(le, ew)
+        sb_byte(le, ew, u32(40))
+        sb_str(le, ew, pname)
+        ap_lits(le, ew, u64(0x203A20), u64(0x0), u32(3))  //  : 
+        sb_str(le, ew, typ)
+        sb_byte(le, ew, u32(41))
+        acc_push_l(le, ew, sb_end(le, ew))
+      }
+    }
+    i = i + u32(1)
+  }
+  sep: u32 = lstr(le, ew, u64(0x20), u64(0x0), u32(1))
+  params: u32 = join_acc(le, ew, base, sep)
+  return_type: u32 = is_theorem ? { lc(le, ew, LC_BOOL) } | { rf_word(rx, raw, fi, u32(3)) == NONE ? { lc(le, ew, LC_UNIT) } | { lean_type(le, ew, rx, raw, rf_word(rx, raw, fi, u32(3))) } }
+  // The span parameters are returned beside the result: the tuple type of
+  // the head, and their names after the result term.
+  tbase: u32 = lst(le, ew, LN_ACC_SP)
+  acc_push_l(le, ew, return_type)
+  i = u32(0)
+  while i < nparams && !le_failed(le, ew) {
+    is_threaded_texpr(rx, raw, rp_word(rx, raw, pstart + i, u32(1))) ? { acc_push_l(le, ew, scope_lookup(le, ew, rx, raw, rp_word(rx, raw, pstart + i, u32(0)))) } | { }
+    i = i + u32(1)
+  }
+  result_types: u32 = tuple_type_acc(le, ew, tbase)
+  le_failed(le, ew) ? { } | {
+    set_lst(le, ew, LN_INDENT, lc(le, ew, recursive ? { LC_IND4 } | { LC_IND2 }))
+    p: u32 = lst(le, ew, LN_LINE_SP)
+    // The head.
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x20666564), u64(0x0), u32(4))  // def 
+    sb_str(le, ew, name)
+    sb_byte(le, ew, u32(32))
+    sb_str(le, ew, params)
+    recursive ? {
+      ap_lits(le, ew, u64(0xE22074614E203A20), u64(0x6F6974704F209286), u32(16))  //  : Nat → Option 
+      ap_lits(le, ew, u64(0x206E), u64(0x0), u32(2))
+    } | {
+      ap_lits(le, ew, u64(0x3A206C6575662820), u64(0x203A202974614E20), u32(16))  //  (fuel : Nat) : Option 
+      ap_lits(le, ew, u64(0x206E6F6974704F), u64(0x0), u32(7))
+    }
+    sb_str(le, ew, result_types)
+    recursive ? { } | { ap_lits(le, ew, u64(0x6F64203D3A20), u64(0x0), u32(6)) }
+    line_push(le, ew, sb_end(le, ew))
+    recursive ? {
+      line_push(le, ew, lstr(le, ew, u64(0x3E3D2030207C2020), u64(0x656E6F6E20), u32(13)))
+      line_push(le, ew, lit_str_fuel_arm(le, ew))
+    } | { }
+    // The body: statements, then the result.
+    body: u32 = rf_word(rx, raw, fi, u32(4))
+    result: u32 = NONE
+    is_unit: Bool = str_is(le, ew, return_type, u64(0x74696E55), u64(0x0), u32(4))
+    (body != NONE && rn_kind(rx, raw, body) == RAW_BLOCKEXPR) ? {
+      blk: u32 = rn_a(rx, raw, body)
+      count: u32 = blk == NONE ? { u32(0) } | { rn_b(rx, raw, blk) }
+      nstmts: u32 = count
+      (!is_unit && count > u32(0)) ? {
+        last: u32 = rl_item(rx, raw, rn_a(rx, raw, blk), count - u32(1))
+        rn_kind(rx, raw, last) != RAW_EXPRSTMT ? { le_fail(le, ew, u32(980)) } | {
+          result = rn_a(rx, raw, last)
+          nstmts = count - u32(1)
+        }
+      } | { }
+      (count > u32(0) && !le_failed(le, ew)) ? {
+        lx_push(le, ew, LF_BLOCK, rn_a(rx, raw, blk), nstmts, u32(0))
+        lx_run(le, ew, rx, raw)
+      } | { }
+    } | { result = body }
+    term: u32 = lc(le, ew, LC_PAREN_UNIT)
+    (result != NONE && !le_failed(le, ew)) ? {
+      lx_push_expr(le, ew, result, return_type)
+      lx_run(le, ew, rx, raw)
+      term = lst(le, ew, LN_RET)
+    } | { }
+    le_failed(le, ew) ? { } | {
+      // `pure (result, spans...)`.
+      obase: u32 = lst(le, ew, LN_ACC_SP)
+      acc_push_l(le, ew, term)
+      i = u32(0)
+      while i < nparams {
+        is_threaded_texpr(rx, raw, rp_word(rx, raw, pstart + i, u32(1))) ? { acc_push_l(le, ew, ident(le, ew, rx, raw, rp_word(rx, raw, pstart + i, u32(0)))) } | { }
+        i = i + u32(1)
+      }
+      outs_term: u32 = tuple_acc(le, ew, obase)
+      line_push(le, ew, pure_line(le, ew, lst(le, ew, LN_INDENT), outs_term, false))
+      is_theorem ? {
+        set_lst(le, ew, LN_HAS_THEOREM, u32(1))
+        line_push(le, ew, lit_str_setopt(le, ew))
+        pbase: u32 = lst(le, ew, LN_ACC_SP)
+        k: u32 = 0
+        while k < nparams {
+          acc_push_l(le, ew, ident(le, ew, rx, raw, rp_word(rx, raw, pstart + k, u32(0))))
+          k = k + u32(1)
+        }
+        sb_begin(le, ew)
+        ap_lits(le, ew, u64(0x206D65726F656874), u64(0x0), u32(8))  // theorem 
+        sb_str(le, ew, name)
+        ap_lits(le, ew, u64(0x2073646C6F685F), u64(0x0), u32(7))  // _holds 
+        sb_str(le, ew, params)
+        ap_lits(le, ew, u64(0x3A206C6575662820), u64(0x203A202974614E20), u32(16))  //  (fuel : Nat) : 
+        sb_str(le, ew, name)
+        k = u32(0)
+        while k < nparams {
+          sb_byte(le, ew, u32(32))
+          sb_str(le, ew, acc_at_l(le, ew, pbase + k))
+          k = k + u32(1)
+        }
+        ap_lits(le, ew, u64(0x203D206C65756620), u64(0x75727420656D6F73), u32(16))  //  fuel = some true := by
+        ap_lits(le, ew, u64(0x7962203D3A2065), u64(0x0), u32(7))
+        line_push(le, ew, sb_end(le, ew))
+        set_lst(le, ew, LN_ACC_SP, pbase)
+        unfolds: u32 = unfold_names(le, ew, rx, raw, fi)
+        sb_begin(le, ew)
+        ap_lits(le, ew, u64(0x646C6F666E752020), u64(0x20), u32(9))  //   unfold 
+        sb_str(le, ew, unfolds)
+        line_push(le, ew, sb_end(le, ew))
+        line_push(le, ew, lit_str_simp(le, ew))
+        line_push(le, ew, lit_str_first(le, ew))
+      } | { }
+      insert_helpers(le, ew, p)
+      line_push(le, ew, lc(le, ew, LC_EMPTY))
+    }
+  }
+}
+
+// --- types --------------------------------------------------------------------------------------------------
+
+// type_refs pushes the declared types a type's members mention (fields,
+// payloads), each once, sorted by name: the count.
+type_refs: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, t: u32): u32 {
+  base: u32 = lst(le, ew, LN_ACC_SP)
+  g: u32 = mark_gen(le, ew)
+  is_rec: Bool = tdecl_is_record(raw, t)
+  start: u32 = is_rec ? { rrec_word(rx, raw, t, u32(1)) } | { radt_word(rx, raw, t - raw.nrecords, u32(1)) }
+  count: u32 = is_rec ? { rrec_word(rx, raw, t, u32(2)) } | { radt_word(rx, raw, t - raw.nrecords, u32(2)) }
+  i: u32 = 0
+  while i < count {
+    texpr: u32 = is_rec ? { rfield_word(rx, raw, start + i, u32(1)) } | { rvar_word(rx, raw, start + i, u32(2)) }
+    while texpr != NONE && rt_kind(rx, raw, texpr) != RAW_TYPE_NAME {
+      texpr = rt_a(rx, raw, texpr)
+    }
+    texpr != NONE ? {
+      name: u32 = rt_a(rx, raw, texpr)
+      ref: u32 = find_tdecl(rx, raw, name)
+      (ref != NONE && !has_mark(le, ew, le.markm_at, name, g)) ? {
+        set_mark(le, ew, le.markm_at, name, g)
+        acc_push_l(le, ew, ref)
+      } | { }
+    } | { }
+    i = i + u32(1)
+  }
+  sp: u32 = lst(le, ew, LN_ACC_SP)
+  a: u32 = base + u32(1)
+  while a < sp {
+    b: u32 = a
+    while b > base && rname_less(rx, raw, tdecl_name(rx, raw, ew[le.acc_at + b]), tdecl_name(rx, raw, ew[le.acc_at + b - u32(1)])) {
+      tmp: u32 = ew[le.acc_at + b]
+      ew[le.acc_at + b] = ew[le.acc_at + b - u32(1)]
+      ew[le.acc_at + b - u32(1)] = tmp
+      b = b - u32(1)
+    }
+    a = a + u32(1)
+  }
+  sp - base
+}
+
+tstate: (le: Lem, ew: [*]u32, t: u32): u32 = ew[le.tused_at + t * u32(2) + u32(1)]
+set_tstate: (le: Lem, ew: [*]u32, t: u32, s: u32): () { ew[le.tused_at + t * u32(2) + u32(1)] = s }
+
+// order_types lists the used types, dependencies first, else in
+// declaration order: torder.
+order_types: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw): () {
+  n: u32 = ntdecls(raw)
+  // Declaration order: by ordinal.
+  done: u32 = 0
+  while done < n && !le_failed(le, ew) {
+    // The next unvisited-in-order type: the least ordinal not yet taken.
+    best: u32 = NONE
+    t: u32 = 0
+    while t < n {
+      (ew[le.tused_at + t * u32(2)] < u32(2) && (best == NONE || tdecl_ord(rx, raw, t) < tdecl_ord(rx, raw, best))) ? { best = t } | { }
+      t = t + u32(1)
+    }
+    done = done + u32(1)
+    // Taken (used flag 1 becomes 3, unused 0 becomes 2).
+    ew[le.tused_at + best * u32(2)] = ew[le.tused_at + best * u32(2)] + u32(2)
+    (ew[le.tused_at + best * u32(2)] == u32(3) && tstate(le, ew, best) == u32(0)) ? {
+      // Depth-first from best: pairs (type, next ref index) on the work stack.
+      sp: u32 = 1
+      ew[le.work_at] = best
+      ew[le.work_at + u32(1)] = u32(0)
+      while sp > u32(0) && !le_failed(le, ew) {
+        tcur: u32 = ew[le.work_at + (sp - u32(1)) * u32(2)]
+        k: u32 = ew[le.work_at + (sp - u32(1)) * u32(2) + u32(1)]
+        tstate(le, ew, tcur) == u32(0) ? { set_tstate(le, ew, tcur, u32(1)) } | { }
+        base: u32 = lst(le, ew, LN_ACC_SP)
+        nrefs: u32 = type_refs(le, ew, rx, raw, tcur)
+        pushed: Bool = false
+        while k < nrefs && !pushed {
+          ref: u32 = acc_at_l(le, ew, base + k)
+          k = k + u32(1)
+          (ref != tcur && tstate(le, ew, ref) == u32(0)) ? {
+            ew[le.work_at + (sp - u32(1)) * u32(2) + u32(1)] = k
+            ew[le.work_at + sp * u32(2)] = ref
+            ew[le.work_at + sp * u32(2) + u32(1)] = u32(0)
+            sp = sp + u32(1)
+            pushed = true
+          } | { }
+        }
+        set_lst(le, ew, LN_ACC_SP, base)
+        !pushed ? {
+          set_tstate(le, ew, tcur, u32(2))
+          m: u32 = lst(le, ew, LN_NTORDER)
+          ew[le.torder_at + m] = tcur
+          set_lst(le, ew, LN_NTORDER, m + u32(1))
+          sp = sp - u32(1)
+        } | { }
+      }
+    } | { }
+  }
+}
+
+// emit_type pushes a record as a structure with its Inhabited instance,
+// or a sum type as an inductive; then a blank line.
+emit_type: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, t: u32): () {
+  name: u32 = ident(le, ew, rx, raw, tdecl_name(rx, raw, t))
+  tdecl_is_record(raw, t) ? {
+    fstart: u32 = rrec_word(rx, raw, t, u32(1))
+    nfields: u32 = rrec_word(rx, raw, t, u32(2))
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x7275746375727473), u64(0x2065), u32(10))  // structure 
+    sb_str(le, ew, name)
+    ap_lits(le, ew, u64(0x657265687720), u64(0x0), u32(6))  //  where
+    line_push(le, ew, sb_end(le, ew))
+    base: u32 = lst(le, ew, LN_ACC_SP)
+    i: u32 = 0
+    while i < nfields && !le_failed(le, ew) {
+      fname: u32 = ident(le, ew, rx, raw, rfield_word(rx, raw, fstart + i, u32(0)))
+      texpr: u32 = rfield_word(rx, raw, fstart + i, u32(1))
+      typ: u32 = lean_type(le, ew, rx, raw, texpr)
+      typ == NONE ? { } | {
+        sb_begin(le, ew)
+        ap_lits(le, ew, u64(0x2020), u64(0x0), u32(2))  //   
+        sb_str(le, ew, fname)
+        ap_lits(le, ew, u64(0x203A20), u64(0x0), u32(3))  //  : 
+        sb_str(le, ew, typ)
+        line_push(le, ew, sb_end(le, ew))
+        init: u32 = initial_value(le, ew, rx, raw, texpr, typ)
+        sb_begin(le, ew)
+        sb_str(le, ew, fname)
+        ap_lits(le, ew, u64(0x203D3A20), u64(0x0), u32(4))  //  := 
+        sb_str(le, ew, init)
+        acc_push_l(le, ew, sb_end(le, ew))
+      }
+      i = i + u32(1)
+    }
+    line_push(le, ew, lit_str_deriving_record(le, ew))
+    sep: u32 = lstr(le, ew, u64(0x202C), u64(0x0), u32(2))
+    zero: u32 = join_acc(le, ew, base, sep)
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x65636E6174736E69), u64(0x6261686E49203A20), u32(16))  // instance : Inhabited 
+    ap_lits(le, ew, u64(0x2064657469), u64(0x0), u32(5))
+    sb_str(le, ew, name)
+    ap_lits(le, ew, u64(0x7BA89FE2203D3A20), u64(0x20), u32(9))  //  := ⟨{ 
+    sb_str(le, ew, zero)
+    ap_lits(le, ew, u64(0xA99FE27D20), u64(0x0), u32(5))  //  }⟩
+    line_push(le, ew, sb_end(le, ew))
+  } | {
+    adt: u32 = t - raw.nrecords
+    vstart: u32 = radt_word(rx, raw, adt, u32(1))
+    nvariants: u32 = radt_word(rx, raw, adt, u32(2))
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x7669746375646E69), u64(0x2065), u32(10))  // inductive 
+    sb_str(le, ew, name)
+    ap_lits(le, ew, u64(0x657265687720), u64(0x0), u32(6))  //  where
+    line_push(le, ew, sb_end(le, ew))
+    i: u32 = 0
+    while i < nvariants && !le_failed(le, ew) {
+      vname: u32 = ident(le, ew, rx, raw, rvar_word(rx, raw, vstart + i, u32(0)))
+      payload: u32 = rvar_word(rx, raw, vstart + i, u32(2))
+      typ: u32 = payload == NONE ? { NONE } | { lean_type(le, ew, rx, raw, payload) }
+      (payload != NONE && typ == NONE) ? { } | {
+        sb_begin(le, ew)
+        ap_lits(le, ew, u64(0x207C2020), u64(0x0), u32(4))  //   | 
+        sb_str(le, ew, vname)
+        payload == NONE ? { } | {
+          ap_lits(le, ew, u64(0x616F6C7961702820), u64(0x203A2064), u32(12))  //  (payload : 
+          sb_str(le, ew, typ)
+          sb_byte(le, ew, u32(41))
+        }
+        line_push(le, ew, sb_end(le, ew))
+      }
+      i = i + u32(1)
+    }
+    line_push(le, ew, lit_str_deriving_sum(le, ew))
+  }
+  line_push(le, ew, lc(le, ew, LC_EMPTY))
+}
+
+// --- the header ---------------------------------------------------------------------------------------------
+
+emit_header: (le: Lem, ew: [*]u32): () {
+  sb_begin(le, ew)
+  ap_lits(le, ew, u64(0x72656E6547202D2D), u64(0x2079622064657461), u32(16))  // -- Generated by the Oak compiler (codegen/lean): do not edit.
+  ap_lits(le, ew, u64(0x206B614F20656874), u64(0x72656C69706D6F63), u32(16))
+  ap_lits(le, ew, u64(0x656765646F632820), u64(0x3A296E61656C2F6E), u32(16))
+  ap_lits(le, ew, u64(0x20746F6E206F6420), u64(0x2E74696465), u32(13))
+  line_push(le, ew, sb_end(le, ew))
+  sb_begin(le, ew)
+  ap_lits(le, ew, u64(0x6172747845202D2D), u64(0x6F72662064657463), u32(16))  // -- Extracted from the type-checked program; docs/spec/95-extraction.md
+  ap_lits(le, ew, u64(0x797420656874206D), u64(0x6B636568632D6570), u32(16))
+  ap_lits(le, ew, u64(0x72676F7270206465), u64(0x73636F64203B6D61), u32(16))
+  ap_lits(le, ew, u64(0x35392F636570732F), u64(0x746361727478652D), u32(16))
+  ap_lits(le, ew, u64(0x646D2E6E6F69), u64(0x0), u32(6))
+  line_push(le, ew, sb_end(le, ew))
+  sb_begin(le, ew)
+  ap_lits(le, ew, u64(0x6574617473202D2D), u64(0x7274206568742073), u32(16))  // -- states the translation and its modeling choices.
+  ap_lits(le, ew, u64(0x6F6974616C736E61), u64(0x746920646E61206E), u32(16))
+  ap_lits(le, ew, u64(0x696C65646F6D2073), u64(0x63696F686320676E), u32(16))
+  ap_lits(le, ew, u64(0x2E7365), u64(0x0), u32(3))
+  line_push(le, ew, sb_end(le, ew))
+  line_push(le, ew, lc(le, ew, LC_EMPTY))
+  lst(le, ew, LN_HAS_THEOREM) != u32(0) ? {
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x532074726F706D69), u64(0x69746361542E6474), u32(16))  // import Std.Tactic.BVDecide
+    ap_lits(le, ew, u64(0x6963654456422E63), u64(0x6564), u32(10))
+    line_push(le, ew, sb_end(le, ew))
+    line_push(le, ew, lc(le, ew, LC_EMPTY))
+  } | { }
+  lst(le, ew, LN_USES_FLOAT) != u32(0) ? {
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x4F2074726F706D69), u64(0x74616F6C462E6B61), u32(16))  // import Oak.FloatOps
+    ap_lits(le, ew, u64(0x73704F), u64(0x0), u32(3))
+    line_push(le, ew, sb_end(le, ew))
+    line_push(le, ew, lc(le, ew, LC_EMPTY))
+  } | { }
+  lst(le, ew, LN_USES_UTF8) != u32(0) ? {
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x4F2074726F706D69), u64(0x45386674552E6B61), u32(16))  // import Oak.Utf8Exec
+    ap_lits(le, ew, u64(0x636578), u64(0x0), u32(3))
+    line_push(le, ew, sb_end(le, ew))
+    line_push(le, ew, lc(le, ew, LC_EMPTY))
+  } | { }
+  sb_begin(le, ew)
+  ap_lits(le, ew, u64(0x6974706F5F746573), u64(0x496F747561206E6F), u32(16))  // set_option autoImplicit false
+  ap_lits(le, ew, u64(0x20746963696C706D), u64(0x65736C6166), u32(13))
+  line_push(le, ew, sb_end(le, ew))
+  sb_begin(le, ew)
+  ap_lits(le, ew, u64(0x6974706F5F746573), u64(0x65746E696C206E6F), u32(16))  // set_option linter.unusedVariables false
+  ap_lits(le, ew, u64(0x646573756E752E72), u64(0x656C626169726156), u32(16))
+  ap_lits(le, ew, u64(0x65736C61662073), u64(0x0), u32(7))
+  line_push(le, ew, sb_end(le, ew))
+  sb_begin(le, ew)
+  ap_lits(le, ew, u64(0x6974706F5F746573), u64(0x655278616D206E6F), u32(16))  // set_option maxRecDepth 65536
+  ap_lits(le, ew, u64(0x3620687470654463), u64(0x36333535), u32(12))
+  line_push(le, ew, sb_end(le, ew))
+  sb_begin(le, ew)
+  ap_lits(le, ew, u64(0x6974706F5F746573), u64(0x654878616D206E6F), u32(16))  // set_option maxHeartbeats 4000000
+  ap_lits(le, ew, u64(0x7374616562747261), u64(0x3030303030303420), u32(16))
+  line_push(le, ew, sb_end(le, ew))
+  sb_begin(le, ew)
+  ap_lits(le, ew, u64(0x63617073656D616E), u64(0x68542E6B614F2065), u32(16))  // namespace Oak.Theorems
+  ap_lits(le, ew, u64(0x736D65726F65), u64(0x0), u32(6))
+  line_push(le, ew, sb_end(le, ew))
+  line_push(le, ew, lc(le, ew, LC_EMPTY))
+  lst(le, ew, LN_HAS_THEOREM) != u32(0) ? {
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x206D65726F656874), u64(0x646E69625F6B616F), u32(16))  // theorem oak_bind_ite {α β : Type} (c : Prop) [Decidable c] (a : α) (f : α → Option β) :
+    ap_lits(le, ew, u64(0xB1CE7B206574695F), u64(0x7954203A20B2CE20), u32(16))
+    ap_lits(le, ew, u64(0x3A206328207D6570), u64(0x5B2029706F725020), u32(16))
+    ap_lits(le, ew, u64(0x6C62616469636544), u64(0x206128205D632065), u32(16))
+    ap_lits(le, ew, u64(0x66282029B1CE203A), u64(0x86E220B1CE203A20), u32(16))
+    ap_lits(le, ew, u64(0x6E6F6974704F2092), u64(0x3A2029B2CE20), u32(14))
+    line_push(le, ew, sb_end(le, ew))
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x2066692820202020), u64(0x73206E6568742063), u32(16))  //     (if c then some a else none).bind f = if c then f a else none := by
+    ap_lits(le, ew, u64(0x6C65206120656D6F), u64(0x29656E6F6E206573), u32(16))
+    ap_lits(le, ew, u64(0x206620646E69622E), u64(0x742063206669203D), u32(16))
+    ap_lits(le, ew, u64(0x20612066206E6568), u64(0x6E6F6E2065736C65), u32(16))
+    ap_lits(le, ew, u64(0x7962203D3A2065), u64(0x0), u32(7))
+    line_push(le, ew, sb_end(le, ew))
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x2074696C70732020), u64(0x6C6672203E3B3C), u32(15))  //   split <;> rfl
+    line_push(le, ew, sb_end(le, ew))
+    line_push(le, ew, lc(le, ew, LC_EMPTY))
+  } | { }
+}
+
+// --- the projection -----------------------------------------------------------------------------------------
+
+// Output ranges (state words): the header, the types, the functions.
+LN_H0: u32 = 24
+LN_H1: u32 = 25
+LN_T0: u32 = 26
+LN_T1: u32 = 27
+LN_F0: u32 = 28
+LN_F1: u32 = 29
+
+// le_reset clears a projection's working state (the interned strings,
+// the recorded node types, and the raw names persist).
+le_reset: (le: Lem, ew: [*]u32, raw: Raw): () {
+  set_lst(le, ew, LN_FAILED, u32(0))
+  set_lst(le, ew, LN_SP, u32(0))
+  set_lst(le, ew, LN_RET, NONE)
+  set_lst(le, ew, LN_ACC_SP, u32(0))
+  set_lst(le, ew, LN_LINE_SP, u32(0))
+  set_lst(le, ew, LN_NHELPERS, u32(0))
+  set_lst(le, ew, LN_SCOPE_SP, u32(0))
+  set_lst(le, ew, LN_SCOPE_BASE, u32(0))
+  set_lst(le, ew, LN_TEMPS, u32(0))
+  set_lst(le, ew, LN_LOOPS, u32(0))
+  set_lst(le, ew, LN_USES_UTF8, u32(0))
+  set_lst(le, ew, LN_USES_FLOAT, u32(0))
+  set_lst(le, ew, LN_BUILD_OFF, NONE)
+  set_lst(le, ew, LN_NFORDER, u32(0))
+  set_lst(le, ew, LN_NORDERED, u32(0))
+  set_lst(le, ew, LN_NCLIST, u32(0))
+  set_lst(le, ew, LN_NTORDER, u32(0))
+  set_lst(le, ew, LN_HAS_THEOREM, u32(0))
+  fi: u32 = 0
+  while fi < LE_FUNCS {
+    set_lfn_word(le, ew, fi, u32(0), u32(0))
+    set_lfn_word(le, ew, fi, u32(1), u32(0))
+    set_lfn_word(le, ew, fi, u32(2), NONE)
+    set_lfn_word(le, ew, fi, u32(3), u32(0))
+    ew[le.fseen_at + fi] = u32(0)
+    fi = fi + u32(1)
+  }
+  t: u32 = 0
+  while t < LE_TYPES {
+    ew[le.tused_at + t * u32(2)] = u32(0)
+    ew[le.tused_at + t * u32(2) + u32(1)] = u32(0)
+    t = t + u32(1)
+  }
+}
+
+// le_init clears everything once per file.
+le_init: (le: Lem, ew: [*]u32, raw: Raw): () {
+  set_lst(le, ew, LN_NSTRS, u32(0))
+  set_lst(le, ew, LN_NBYTES, u32(0))
+  set_lst(le, ew, LN_GEN, u32(0))
+  set_lst(le, ew, LN_BUILD_OFF, NONE)
+  set_lst(le, ew, LN_FAILED, u32(0))
+  k: u32 = 0
+  while k < LE_NODES {
+    ew[le.ntype_at + k] = NONE
+    k = k + u32(1)
+  }
+  k = u32(0)
+  while k < LE_RSTRS {
+    ew[le.rnames_at + k] = NONE
+    ew[le.markw_at + k] = u32(0)
+    ew[le.markd_at + k] = u32(0)
+    ew[le.markm_at + k] = u32(0)
+    k = k + u32(1)
+  }
+  k = u32(0)
+  while k < LE_FUNCS {
+    ew[le.lroots_at + k] = u32(0)
+    k = k + u32(1)
+  }
+  le_intern_consts(le, ew)
+  le_reset(le, ew, raw)
+}
+
+// project renders the roots' closure into the line stack: the functions,
+// the types, the header; false with the reason in the state on failure.
+project: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw): Bool {
+  le_reset(le, ew, raw)
+  (raw.nfuncs > LE_FUNCS || ntdecls(raw) > LE_TYPES || rx[u32(3)] > LE_NODES || rx[u32(0)] > LE_RSTRS) ? { le_fail(le, ew, u32(983)) } | { }
+  le_failed(le, ew) ? { } | { collect_functions(le, ew, rx, raw) }
+  le_failed(le, ew) ? { } | { order_functions(le, ew, rx, raw) }
+  set_lst(le, ew, LN_F0, lst(le, ew, LN_LINE_SP))
+  n: u32 = lst(le, ew, LN_NORDERED)
+  i: u32 = 0
+  while i < n && !le_failed(le, ew) {
+    emit_function(le, ew, rx, raw, ew[le.ordered_at + i])
+    i = i + u32(1)
+  }
+  set_lst(le, ew, LN_F1, lst(le, ew, LN_LINE_SP))
+  set_lst(le, ew, LN_T0, lst(le, ew, LN_LINE_SP))
+  le_failed(le, ew) ? { } | { order_types(le, ew, rx, raw) }
+  m: u32 = lst(le, ew, LN_NTORDER)
+  i = u32(0)
+  while i < m && !le_failed(le, ew) {
+    emit_type(le, ew, rx, raw, ew[le.torder_at + i])
+    i = i + u32(1)
+  }
+  set_lst(le, ew, LN_T1, lst(le, ew, LN_LINE_SP))
+  set_lst(le, ew, LN_H0, lst(le, ew, LN_LINE_SP))
+  le_failed(le, ew) ? { } | { emit_header(le, ew) }
+  set_lst(le, ew, LN_H1, lst(le, ew, LN_LINE_SP))
+  !le_failed(le, ew)
+}
+
+// --- the output file -----------------------------------------------------------------------------------------
+
+// Fill is a writer position: the next line and byte, and the bytes filled.
+Fill: type = struct { line: u32, at: u32, n: u32 }
+
+// output_line: the k-th line of the output (the header, the types, the
+// functions, then the footer).
+output_line: (le: Lem, ew: [*]u32, k: u32, footer: u32): u32 {
+  nh: u32 = lst(le, ew, LN_H1) - lst(le, ew, LN_H0)
+  nt: u32 = lst(le, ew, LN_T1) - lst(le, ew, LN_T0)
+  nf: u32 = lst(le, ew, LN_F1) - lst(le, ew, LN_F0)
+  k < nh ? { ew[le.lines_at + lst(le, ew, LN_H0) + k] } | {
+  k < nh + nt ? { ew[le.lines_at + lst(le, ew, LN_T0) + k - nh] } | {
+  k < nh + nt + nf ? { ew[le.lines_at + lst(le, ew, LN_F0) + k - nh - nt] } | { footer } } }
+}
+
+output_lines: (le: Lem, ew: [*]u32): u32 = (lst(le, ew, LN_H1) - lst(le, ew, LN_H0)) + (lst(le, ew, LN_T1) - lst(le, ew, LN_T0)) + (lst(le, ew, LN_F1) - lst(le, ew, LN_F0)) + u32(1)
+
+// fill_chunk copies output bytes from the position into out8 (each line
+// ended by a newline): the next position and the count.
+fill_chunk: (le: Lem, ew: [*]u32, out8: [*]u8, line0: u32, at0: u32, footer: u32): Fill {
+  n: u32 = 0
+  line: u32 = line0
+  at: u32 = at0
+  total: u32 = output_lines(le, ew)
+  cap: u32 = len(out8)
+  while line < total && n < cap {
+    s: u32 = output_line(le, ew, line, footer)
+    slen: u32 = s_len(le, ew, s)
+    while at <= slen && n < cap {
+      at == slen ? { out8[n] = u8(10) } | { out8[n] = u8_trunc_u32(s_byte(le, ew, s, at)) }
+      n = n + u32(1)
+      at = at + u32(1)
+    }
+    at > slen ? {
+      line = line + u32(1)
+      at = u32(0)
+    } | { }
+  }
+  Fill { line: line, at: at, n: n }
+}
+
+// write_projection writes the rendered lines to the file at path (NUL-
+// terminated): false when the file cannot be written.
+write_projection: (le: Lem, ew: [*]u32, path: []u8): Bool {
+  fd_word: u32 = u32_trunc_u64(u64(c_creat(c.cstr(path), c.Int(420))))
+  fd: c.Int = c.Int(i32_bits_u32(fd_word))
+  ok: Bool = fd_word != NONE
+  footer: u32 = lstr(le, ew, u64(0x2E6B614F20646E65), u64(0x736D65726F656854), u32(16))
+  buf8: [65536]u8
+  line: u32 = 0
+  at: u32 = 0
+  more: Bool = ok
+  while more {
+    r: Fill = fill_chunk(le, ew, span(&buf8), line, at, footer)
+    r.n > u32(0) ? {
+      whole: []u8 = view(&buf8)
+      part: []u8 = subslice(whole, u32(0), r.n)
+      written: u64 = u64(c_write(fd, c.span_of(part)))
+      ok = written == u64(r.n)
+    } | { }
+    more = ok && r.n == len(buf8)
+    line = r.line
+    at = r.at
+  }
+  fd_word != NONE ? {
+    closed: c.Int = c_close(fd)
+  } | { }
+  ok
+}
+
+// --- type capture -----------------------------------------------------------------------------------------
+
+// syn_type_str renders a serializer type as its Lean type name.
+syn_type_str: (le: Lem, ew: [*]u32, ser: Ser, sw: [*]u32, rx: []u32, raw: Raw, t: u32): u32 {
+  depth: u32 = 0
+  tcur: u32 = t
+  while tcur != NONE && (ty_kind(ser, sw, tcur) == TY_ARRAY || ty_kind(ser, sw, tcur) == TY_VIEW) {
+    depth = depth + u32(1)
+    tcur = ty_elem(ser, sw, tcur)
+  }
+  base: u32 = NONE
+  tcur == NONE ? { } | {
+    k: u32 = ty_kind(ser, sw, tcur)
+    k == TY_SCALAR ? {
+      width: u32 = ty_word(ser, sw, tcur, u32(7))
+      ty_float(ser, sw, tcur) ? { base = lc(le, ew, width == u32(32) ? { LC_FLOAT32 } | { LC_FLOAT }) } | {
+        width == u32(1) ? { base = lc(le, ew, LC_BOOL) } | { base = int_lean(le, ew, width, ty_word(ser, sw, tcur, u32(8)) != u32(0)) }
+      }
+    } | { base = ident(le, ew, rx, raw, sr_type_key_a(ser, sw, tcur)) }
+  }
+  out: u32 = base
+  (base != NONE && depth > u32(0)) ? {
+    sb_begin(le, ew)
+    d: u32 = 0
+    while d < depth {
+      ap_lits(le, ew, u64(0x207961727241), u64(0x0), u32(6))  // Array 
+      d = d + u32(1)
+    }
+    sb_str(le, ew, base)
+    out = sb_end(le, ew)
+  } | { }
+  out
+}
+
+// capture_fill records the types the serializer captured for the raw
+// nodes it delivered (the first recording of a node stands).
+capture_fill: (le: Lem, ew: [*]u32, ser: Ser, sw: [*]u32, rx: []u32, raw: Raw): () {
+  k: u32 = 0
+  while k < LE_TCACHE {
+    ew[le.tcache_at + k] = NONE
+    k = k + u32(1)
+  }
+  nnodes: u32 = rx[u32(3)]
+  n: u32 = 0
+  while n < nnodes && n < LE_NODES && n < ser.cap_nodes {
+    c: u32 = sw[ser.capture_at + n]
+    (c != NONE && ew[le.ntype_at + n] == NONE) ? {
+      s: u32 = c < LE_TCACHE ? { ew[le.tcache_at + c] } | { NONE }
+      s == NONE ? {
+        s = syn_type_str(le, ew, ser, sw, rx, raw, c)
+        c < LE_TCACHE ? { ew[le.tcache_at + c] = s } | { }
+      } | { }
+      ew[le.ntype_at + n] = s
+    } | { }
+    n = n + u32(1)
+  }
+}
+
+// --- the entry -------------------------------------------------------------------------------------------------
+
+// capture_in_oak runs the serializer over one function with type capture
+// and records the node types in the projection's table.
+capture_in_oak: (le: Lem, le_raw: c.Ptr, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, rx: []u32, raw: Raw, fi: u32): () {
+  unsafe {
+    lean_sbuf: Buffer[u32] = c.own[u32](ser_raw, ser.total)
+    lean_obuf: Buffer[u32] = c.own[u32](out_raw, ser.out_total)
+    lean_ebuf: Buffer[u32] = c.own[u32](le_raw, le.total)
+    n: u32 = serialize_captured(ser, span(&lean_sbuf), rx, span(&lean_obuf), fi)
+    capture_fill(le, span(&lean_ebuf), ser, span(&lean_sbuf), rx, raw)
+    released_ls: c.Ptr = c.disown(lean_sbuf)
+    released_lo: c.Ptr = c.disown(lean_obuf)
+    released_le: c.Ptr = c.disown(lean_ebuf)
+  }
+}
+
+// set_roots marks the theorems as roots: all of them (only NONE), or the
+// one given.
+set_roots: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, only: u32): () {
+  fi: u32 = 0
+  while fi < raw.nfuncs && fi < LE_FUNCS {
+    // The guard-exclusivity pair theorems are folded into advisory rows and
+    // never named as roots by the Go command.
+    root_ok: Bool = fn_is_theorem(rx, raw, fi) && (only == NONE || only == fi) && !is_exclusivity_name(le, ew, rstr(le, ew, rx, raw, rf_word(rx, raw, fi, u32(0))))
+    ew[le.lroots_at + fi] = root_ok ? { u32(1) } | { u32(0) }
+    fi = fi + u32(1)
+  }
+}
+
+// project_roots renders the file's theorems: every theorem when the
+// extraction takes them all, else the ones it takes alone (the Go
+// command's fallback); writes the file. Returns 0, or the reason.
+project_roots: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, path: []u8): u32 {
+  reason: u32 = 0
+  set_roots(le, ew, rx, raw, NONE)
+  ok: Bool = project(le, ew, rx, raw)
+  !ok ? {
+    first_reason: u32 = lst(le, ew, LN_FAILED)
+    // Each theorem alone; the ones that project become the roots.
+    kept: u32 = 0
+    t: u32 = 0
+    while t < raw.nfuncs {
+      fn_is_theorem(rx, raw, t) ? {
+        set_roots(le, ew, rx, raw, t)
+        alone: Bool = project(le, ew, rx, raw)
+        alone ? {
+          ew[le.lroots_at + LE_FUNCS - u32(1) - kept] = t
+          kept = kept + u32(1)
+        } | { }
+      } | { }
+      t = t + u32(1)
+    }
+    // The kept roots (stored from the table's end) become the flags.
+    set_roots(le, ew, rx, raw, NONE - u32(1))
+    k: u32 = 0
+    while k < kept {
+      ew[le.lroots_at + ew[le.lroots_at + LE_FUNCS - u32(1) - k]] = u32(1)
+      k = k + u32(1)
+    }
+    ok = project(le, ew, rx, raw)
+    !ok ? { reason = first_reason } | {
+      // The Go command annotates the open rows it could not project;
+      // one line names the count and the first reason here.
+      txt_not_projected()
+      write_u32(first_reason)
+      txt_close()
+      write_byte(u8(10))
+    }
+  } | { }
+  (ok && !write_projection(le, ew, path)) ? { reason = u32(999) } | { }
+  reason
+}
+
+// project_file captures the node types over every function of the file,
+// then projects and writes: 0, or the reason.
+project_file: (le: Lem, le_raw: c.Ptr, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, rx: []u32, raw: Raw, path: []u8): u32 {
+  reason: u32 = 0
+  unsafe {
+    lean_ebuf0: Buffer[u32] = c.own[u32](le_raw, le.total)
+    le_init(le, span(&lean_ebuf0), raw)
+    released_le0: c.Ptr = c.disown(lean_ebuf0)
+  }
+  fi: u32 = 0
+  while fi < raw.nfuncs {
+    (rf_word(rx, raw, fi, u32(5)) & RAW_FLAG_UNUSABLE) == u32(0) ? { capture_in_oak(le, le_raw, ser, ser_raw, out_raw, rx, raw, fi) } | { }
+    fi = fi + u32(1)
+  }
+  unsafe {
+    lean_ebuf: Buffer[u32] = c.own[u32](le_raw, le.total)
+    reason = project_roots(le, span(&lean_ebuf), rx, raw, path)
+    released_le: c.Ptr = c.disown(lean_ebuf)
+  }
+  reason
+}

@@ -115,6 +115,9 @@ PX_FRAMES: u32 = 4096
 PX_ACC: u32 = 16384
 PX_FRAME_WORDS: u32 = 16
 PX_TOKEN_WORDS: u32 = 4
+PX_PEXTRA: u32 = 4096
+PX_PROTOS: u32 = 64
+PROTO_WORDS: u32 = 20
 
 // State words.
 PS_FAILED: u32 = 0
@@ -139,6 +142,9 @@ PS_ARM_DEPTH: u32 = 18
 PS_BRACE_OFF: u32 = 19
 PS_SRC_LEN: u32 = 20
 PS_BLOCK_DEPTH: u32 = 21
+PS_NDECLS: u32 = 22
+PS_NPEXTRA: u32 = 23
+PS_NPROTOS: u32 = 24
 
 // Frame kinds.
 P_EXPR: u32 = 0
@@ -168,6 +174,8 @@ Par: type = struct {
   lists_at: u32,
   frames_at: u32,
   acc_at: u32,
+  pextra_at: u32,
+  protos_at: u32,
   state_at: u32,
   total: u32,
   out_total: u32
@@ -188,7 +196,9 @@ par_layout: (): Par {
   lists_at: u32 = nodes_at + PX_NODES * u32(8)
   frames_at: u32 = lists_at + PX_LISTS
   acc_at: u32 = frames_at + PX_FRAMES * PX_FRAME_WORDS
-  state_at: u32 = acc_at + PX_ACC
+  pextra_at: u32 = acc_at + PX_ACC
+  protos_at: u32 = pextra_at + PX_PEXTRA
+  state_at: u32 = protos_at + PX_PROTOS * PROTO_WORDS
   Par {
     tokens_at: tokens_at,
     strings_at: strings_at,
@@ -204,9 +214,11 @@ par_layout: (): Par {
     lists_at: lists_at,
     frames_at: frames_at,
     acc_at: acc_at,
+    pextra_at: pextra_at,
+    protos_at: protos_at,
     state_at: state_at,
     total: state_at + u32(32),
-    out_total: RAW_HEADER + PX_STRINGS * u32(2) + PX_POOL_WORDS + PX_TYPES * u32(4) + PX_FUNCS * u32(8) + PX_PARAMS * u32(4) + PX_RECORDS * u32(4) + PX_FIELDS * u32(4) + PX_ADTS * u32(4) + PX_VARIANTS * u32(4) + PX_NODES * u32(8) + PX_LISTS
+    out_total: RAW_HEADER + PX_STRINGS * u32(2) + PX_POOL_WORDS + PX_TYPES * u32(4) + PX_FUNCS * u32(8) + PX_PARAMS * u32(4) + PX_RECORDS * u32(4) + PX_FIELDS * u32(4) + PX_ADTS * u32(4) + PX_VARIANTS * u32(4) + PX_NODES * u32(8) + PX_LISTS + PX_PROTOS * PROTO_WORDS
   }
 }
 
@@ -640,6 +652,19 @@ px_add_func: (p: Par, w: [*]u32, name: u32, pstart: u32, nparams: u32, ret: u32,
   }
 }
 
+// px_set_span records the source byte span of the function just added
+// (words 6 and 7: the first byte, one past the last), from its statement's
+// first byte to the current token's end; the witness driver (witness.oak)
+// leaves `main` out by it.
+px_set_span: (p: Par, w: [*]u32, start: u32): () {
+  n: u32 = pst(p, w, PS_NFUNCS)
+  n == u32(0) ? { } | {
+    at: u32 = p.funcs_at + (n - u32(1)) * u32(8)
+    w[at + u32(6)] = start
+    w[at + u32(7)] = tok_start(p, w, cur(p, w)) + tok_len(p, w, cur(p, w))
+  }
+}
+
 px_add_field: (p: Par, w: [*]u32, name: u32, texpr: u32): () {
   n: u32 = pst(p, w, PS_NFIELDS)
   n >= PX_FIELDS ? { px_fail(p, w, u32(264)) } | {
@@ -659,7 +684,10 @@ px_add_record: (p: Par, w: [*]u32, name: u32, start: u32, count: u32): () {
     w[at] = name
     w[at + u32(1)] = start
     w[at + u32(2)] = count
-    w[at + u32(3)] = u32(0)
+    // The declaration ordinal among the file's types (the Lean projection
+    // emits types in declaration order).
+    w[at + u32(3)] = pst(p, w, PS_NDECLS)
+    set_pst(p, w, PS_NDECLS, pst(p, w, PS_NDECLS) + u32(1))
     set_pst(p, w, PS_NRECORDS, n + u32(1))
   }
 }
@@ -683,7 +711,8 @@ px_add_adt: (p: Par, w: [*]u32, name: u32, start: u32, count: u32): () {
     w[at] = name
     w[at + u32(1)] = start
     w[at + u32(2)] = count
-    w[at + u32(3)] = u32(0)
+    w[at + u32(3)] = pst(p, w, PS_NDECLS)
+    set_pst(p, w, PS_NDECLS, pst(p, w, PS_NDECLS) + u32(1))
     set_pst(p, w, PS_NADTS, n + u32(1))
   }
 }
@@ -1467,11 +1496,18 @@ step_type_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
       px_advance(p, w)
       px_advance(p, w)
     } | {
-      // `[]T`: a view type (NONE marks it among the sizes).
+      // `[]T`: a view type (NONE marks it among the sizes); `[*]T`: a span
+      // (NONE - 1).
       cur_kind(p, w) == T_RBRACK ? {
         px_acc_push(p, w, NONE)
         px_advance(p, w)
-      } | { px_fail(p, w, u32(340)) }
+      } | {
+        (cur_kind(p, w) == T_MUL && peek_kind(p, w) == T_RBRACK) ? {
+          px_acc_push(p, w, NONE - u32(1))
+          px_advance(p, w)
+          px_advance(p, w)
+        } | { px_fail(p, w, u32(340)) }
+      }
     }
   } | {
     k == T_IDENT ? {
@@ -1481,7 +1517,8 @@ step_type_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
         sp: u32 = pst(p, w, PS_ACC_SP)
         while sp > base {
           sp = sp - u32(1)
-          t = w[p.acc_at + sp] == NONE ? { px_type(p, w, RAW_TYPE_SLICE, t, u32(0)) } | { px_type(p, w, RAW_TYPE_ARRAY, t, w[p.acc_at + sp]) }
+          size: u32 = w[p.acc_at + sp]
+          t = size == NONE ? { px_type(p, w, RAW_TYPE_SLICE, t, u32(0)) } | { size == NONE - u32(1) ? { px_type(p, w, RAW_TYPE_SPAN, t, u32(0)) } | { px_type(p, w, RAW_TYPE_ARRAY, t, size) } }
         }
         set_pst(p, w, PS_ACC_SP, base)
         peek_kind(p, w) == T_AMP ? { px_fail(p, w, u32(342)) } | { px_deliver(p, w, t) }
@@ -1538,6 +1575,7 @@ func_body: (p: Par, w: [*]u32, src: []u32, at: u32): () {
         // Definition-less: a declaration an asm unit defines.
         w[at + u32(3)] != u32(0) ? { px_fail(p, w, u32(355)) } | {
           px_add_func(p, w, w[at + u32(2)], w[at + u32(4)], w[at + u32(5)], w[at + u32(6)], NONE, RAW_FLAG_UNUSABLE)
+          px_set_span(p, w, w[at + u32(9)])
           px_deliver(p, w, NONE)
         }
       }
@@ -1591,6 +1629,7 @@ step_func_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
     (is_theorem && w[at + u32(6)] != NONE) ? { px_fail(p, w, u32(357)) } | {
       // Flag bit 2 marks a theorem for the shell's ladder.
       px_add_func(p, w, w[at + u32(2)], w[at + u32(4)], w[at + u32(5)], w[at + u32(6)], ret, is_theorem ? { u32(2) } | { u32(0) })
+      px_set_span(p, w, w[at + u32(9)])
       px_deliver(p, w, NONE)
     }
   } } } }
@@ -1781,6 +1820,8 @@ step_stmt_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
     k == T_IDENT ? {
       name: u32 = px_intern_token(p, w, src, cur(p, w))
       w[at + u32(3)] = name
+      // The statement's first byte: a function's span in the source.
+      w[at + u32(7)] = tok_start(p, w, cur(p, w))
       contextual: Bool = (cur_is_word(p, w, src, u64(0x6E65706F), u64(0), u32(4)) && pk == T_IMPORT) ||
         (cur_is_word(p, w, src, u64(0x726F74617265706F), u64(0), u32(8)) && pk == T_LPAREN) ||
         (cur_is_word(p, w, src, u64(0x6C656E72656B), u64(0), u32(6)) && pk == T_IDENT && (tok_ahead(p, w, u32(2)) == T_COLON || tok_ahead(p, w, u32(2)) == T_LBRACK)) ||
@@ -1804,6 +1845,7 @@ step_stmt_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
             px_advance(p, w)
             w[at + u32(1)] = SP_DEFINED
             px_push(p, w, P_FUNC, name, u32(1))
+            w[pfr_at(p, pst(p, w, PS_SP) - u32(1)) + u32(9)] = w[at + u32(7)]
           }
         } | {
         cur_kind(p, w) == T_TYPE ? {
@@ -1816,6 +1858,7 @@ step_stmt_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
           pst(p, w, PS_BLOCK_DEPTH) > u32(0) ? { px_fail(p, w, u32(384)) } | {
             w[at + u32(1)] = SP_DEFINED
             px_push(p, w, P_FUNC, name, u32(0))
+            w[pfr_at(p, pst(p, w, PS_SP) - u32(1)) + u32(9)] = w[at + u32(7)]
           }
         } | {
         (cur_is_word(p, w, src, u64(0x6C6F636F746F7270), u64(0), u32(8)) && peek_kind(p, w) == T_ASSIGN) ? {
@@ -1850,6 +1893,7 @@ step_stmt_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
           px_advance(p, w)
           w[at + u32(1)] = SP_DEFINED
           px_push(p, w, P_FUNC, name, u32(0))
+          w[pfr_at(p, pst(p, w, PS_SP) - u32(1)) + u32(9)] = w[at + u32(7)]
         }
       } | {
         w[at + u32(1)] = SP_EXPR
@@ -1999,7 +2043,8 @@ px_write_table: (p: Par, w: [*]u32, out: [*]u32, out_at: u32): u32 {
   out[out_at + u32(9)] = nadts
   out[out_at + u32(10)] = nvariants
   out[out_at + u32(11)] = NONE
-  k: u32 = 12
+  out[out_at + u32(12)] = pst(p, w, PS_NPROTOS)
+  k: u32 = 13
   while k < RAW_HEADER {
     out[out_at + k] = u32(0)
     k = k + u32(1)
@@ -2016,6 +2061,9 @@ px_write_table: (p: Par, w: [*]u32, out: [*]u32, out_at: u32): u32 {
   at = px_copy(w, p.variants_at, out, at, nvariants * u32(4))
   at = px_copy(w, p.nodes_at, out, at, nnodes * u32(8))
   at = px_copy(w, p.lists_at, out, at, nlists)
+  // The protocols section (docs/spec/125-verification.md section 2a):
+  // per protocol PROTO_WORDS words, after the lists.
+  at = px_copy(w, p.protos_at, out, at, pst(p, w, PS_NPROTOS) * PROTO_WORDS)
   at - out_at
 }
 
@@ -2093,7 +2141,7 @@ lower_qualified_variants: (p: Par, w: [*]u32): () {
 
 // px_table_words: the raw table's size in words, before it is written.
 px_table_words: (p: Par, w: [*]u32): u32 {
-  RAW_HEADER + pst(p, w, PS_NSTRINGS) * u32(2) + (pst(p, w, PS_POOL) + u32(3)) / u32(4) + pst(p, w, PS_NTYPES) * u32(4) + pst(p, w, PS_NFUNCS) * u32(8) + pst(p, w, PS_NPARAMS) * u32(4) + pst(p, w, PS_NRECORDS) * u32(4) + pst(p, w, PS_NFIELDS) * u32(4) + pst(p, w, PS_NADTS) * u32(4) + pst(p, w, PS_NVARIANTS) * u32(4) + pst(p, w, PS_NNODES) * u32(8) + pst(p, w, PS_NLISTS)
+  RAW_HEADER + pst(p, w, PS_NSTRINGS) * u32(2) + (pst(p, w, PS_POOL) + u32(3)) / u32(4) + pst(p, w, PS_NTYPES) * u32(4) + pst(p, w, PS_NFUNCS) * u32(8) + pst(p, w, PS_NPARAMS) * u32(4) + pst(p, w, PS_NRECORDS) * u32(4) + pst(p, w, PS_NFIELDS) * u32(4) + pst(p, w, PS_NADTS) * u32(4) + pst(p, w, PS_NVARIANTS) * u32(4) + pst(p, w, PS_NNODES) * u32(8) + pst(p, w, PS_NLISTS) + pst(p, w, PS_NPROTOS) * PROTO_WORDS
 }
 
 // parse_source lexes and parses a source file (n bytes, four per word)

@@ -1,0 +1,2033 @@
+// Protocol invariants and liveness, in Oak (docs/spec/125-verification.md
+// sections 2a and 2b; prove/protocols.go and prove/liveness.go are the Go
+// twins). An invariant candidate — a theorem over a protocol's projected
+// state and data — gets its two obligations generated as source text the
+// shell appends to the file and parses again, the way the Go command
+// rewrites the parsed program; the candidate's row is then folded from
+// the obligations' verdicts. A candidate the inductive check leaves short
+// of `decided`, and every `eventually` entry, is decided over the
+// reachable states of the projection: a probe function per protocol
+// (generated beside the obligations) computes, for a state, its data and
+// a step, whether the step is legal, the next state and data, the initial
+// state and data, and every predicate of interest; the probe is serialized
+// and lowered to terms once (lower_probe) and evaluated on concrete inputs
+// (probe_eval), so no interpreter is needed. The graph is explored
+// breadth first from the initial state, bounded by -cases; liveness is the
+// fair-trap search of the Go command: Tarjan's components over the states
+// that avoid the target, weak and strong fairness read off the edges, a
+// failing strongly fair step refining the set. Rows spell states and sets
+// the way the Go command does.
+package main
+
+// Row kinds (shell.oak's) and the dropped mark.
+ROW_DROPPED: u32 = 3
+
+// --- the row table -----------------------------------------------------------------
+
+// A row: kind, name (an arena string), detail (an arena string), flags.
+row_push: (le: Lem, ew: [*]u32, kind: u32, name: u32, detail: u32): () {
+  n: u32 = lst(le, ew, LN_NROWS)
+  n >= LE_ROWS ? { le_fail(le, ew, u32(990)) } | {
+    at: u32 = le.rows_at + n * LE_ROW_WORDS
+    ew[at] = kind
+    ew[at + u32(1)] = name
+    ew[at + u32(2)] = detail
+    ew[at + u32(3)] = u32(0)
+    set_lst(le, ew, LN_NROWS, n + u32(1))
+  }
+}
+
+row_kind: (le: Lem, ew: [*]u32, i: u32): u32 = ew[le.rows_at + i * LE_ROW_WORDS]
+row_name: (le: Lem, ew: [*]u32, i: u32): u32 = ew[le.rows_at + i * LE_ROW_WORDS + u32(1)]
+row_detail: (le: Lem, ew: [*]u32, i: u32): u32 = ew[le.rows_at + i * LE_ROW_WORDS + u32(2)]
+set_row: (le: Lem, ew: [*]u32, i: u32, kind: u32, detail: u32): () {
+  ew[le.rows_at + i * LE_ROW_WORDS] = kind
+  ew[le.rows_at + i * LE_ROW_WORDS + u32(2)] = detail
+}
+
+// row_named: the row whose name is the string, or NONE.
+row_named: (le: Lem, ew: [*]u32, name: u32): u32 {
+  n: u32 = lst(le, ew, LN_NROWS)
+  found: u32 = NONE
+  i: u32 = 0
+  while i < n && found == NONE {
+    str_eq(le, ew, row_name(le, ew, i), name) ? { found = i } | { }
+    i = i + u32(1)
+  }
+  found
+}
+
+// write_str writes an arena string to the standard output.
+write_str: (le: Lem, ew: [*]u32, s: u32): () {
+  n: u32 = s_len(le, ew, s)
+  k: u32 = 0
+  while k < n {
+    write_byte(u8_trunc_u32(s_byte(le, ew, s, k)))
+    k = k + u32(1)
+  }
+}
+
+// --- protocols and candidates --------------------------------------------------------------
+
+// proto_of_state_type: the protocol whose state type is the raw string, or NONE.
+proto_of_state_type: (rx: []u32, raw: Raw, sid: u32): u32 {
+  found: u32 = NONE
+  i: u32 = 0
+  while i < raw.nprotos && found == NONE {
+    rproto_word(rx, raw, i, u32(2)) == sid ? { found = i } | { }
+    i = i + u32(1)
+  }
+  found
+}
+
+// candidate_proto: the protocol a theorem is an invariant candidate of
+// (parameters exactly (s: NameState) or (s: NameState, d: NameData)), or NONE.
+candidate_proto: (rx: []u32, raw: Raw, fi: u32): u32 {
+  nparams: u32 = rf_word(rx, raw, fi, u32(2))
+  pstart: u32 = rf_word(rx, raw, fi, u32(1))
+  out: u32 = NONE
+  (fn_is_theorem(rx, raw, fi) && nparams >= u32(1) && nparams <= u32(2)) ? {
+    t0: u32 = rp_word(rx, raw, pstart, u32(1))
+    rt_kind(rx, raw, t0) == RAW_TYPE_NAME ? {
+      pi: u32 = proto_of_state_type(rx, raw, rt_a(rx, raw, t0))
+      pi != NONE ? {
+        with_data: Bool = rproto_word(rx, raw, pi, u32(4)) != NONE
+        with_data == (nparams == u32(2)) ? {
+          with_data ? {
+            t1: u32 = rp_word(rx, raw, pstart + u32(1), u32(1))
+            (rt_kind(rx, raw, t1) == RAW_TYPE_NAME && rt_a(rx, raw, t1) == rproto_word(rx, raw, pi, u32(4))) ? { out = pi } | { }
+          } | { out = pi }
+        } | { }
+      } | { }
+    } | { }
+  } | { }
+  out
+}
+
+// --- generated source: the obligations and the probes ----------------------------------------
+
+// A text buffer over bytes: tb_lit appends up to sixteen packed literal
+// bytes, tb_rs a raw string, tb_dec a decimal; each returns the new
+// length, or NONE past the capacity.
+tb_lit: (out: [*]u8, at: u32, lo: u64, hi: u64, n: u32): u32 {
+  m: u32 = at
+  k: u32 = 0
+  while k < n && m != NONE {
+    b: u32 = k < u32(8) ? { u32_trunc_u64((lo >> u64(k * u32(8))) & u64(255)) } | { u32_trunc_u64((hi >> u64((k - u32(8)) * u32(8))) & u64(255)) }
+    m < len(out) ? {
+      out[m] = u8_trunc_u32(b)
+      m = m + u32(1)
+    } | { m = NONE }
+    k = k + u32(1)
+  }
+  m
+}
+
+tb_rs: (out: [*]u8, at: u32, rx: []u32, raw: Raw, sid: u32): u32 {
+  m: u32 = at
+  n: u32 = rs_len(rx, raw, sid)
+  k: u32 = 0
+  while k < n && m != NONE {
+    m < len(out) ? {
+      out[m] = u8_trunc_u32(rs_byte(rx, raw, sid, k))
+      m = m + u32(1)
+    } | { m = NONE }
+    k = k + u32(1)
+  }
+  m
+}
+
+tb_dec: (out: [*]u8, at: u32, v: u32): u32 {
+  digits: [10]u32
+  count: u32 = 0
+  rest: u32 = v
+  digits[u32(0)] = u32(0)
+  rest == u32(0) ? { count = u32(1) } | {
+    while rest > u32(0) {
+      digits[count] = rest % u32(10)
+      rest = rest / u32(10)
+      count = count + u32(1)
+    }
+  }
+  m: u32 = at
+  while count > u32(0) && m != NONE {
+    count = count - u32(1)
+    m < len(out) ? {
+      out[m] = u8(48) + u8_trunc_u32(digits[count])
+      m = m + u32(1)
+    } | { m = NONE }
+  }
+  m
+}
+
+// obligation_text writes an invariant candidate's two obligations
+// (prove/protocols.go obligationSource).
+obligation_text: (out: [*]u8, at0: u32, rx: []u32, raw: Raw, fi: u32, pi: u32): u32 {
+  at: u32 = at0
+  name: u32 = rf_word(rx, raw, fi, u32(0))
+  prefix: u32 = rproto_word(rx, raw, pi, u32(1))
+  state_t: u32 = rproto_word(rx, raw, pi, u32(2))
+  step_t: u32 = rproto_word(rx, raw, pi, u32(3))
+  data_t: u32 = rproto_word(rx, raw, pi, u32(4))
+  with_data: Bool = data_t != NONE
+  // NAME__base: theorem () { NAME(prefix_initial()[, prefix_initial_data()]) }
+  at = tb_rs(out, at, rx, raw, name)
+  at = tb_lit(out, at, u64(0x203A657361625F5F), u64(0x206D65726F656874), u32(16))
+  at = tb_lit(out, at, u64(0x207B202928), u64(0x0), u32(5))
+  at = tb_rs(out, at, rx, raw, name)
+  at = tb_lit(out, at, u64(0x28), u64(0x0), u32(1))
+  at = tb_rs(out, at, rx, raw, prefix)
+  at = tb_lit(out, at, u64(0x6C616974696E695F), u64(0x2928), u32(10))
+  with_data ? {
+    at = tb_lit(out, at, u64(0x202C), u64(0x0), u32(2))
+    at = tb_rs(out, at, rx, raw, prefix)
+    at = tb_lit(out, at, u64(0x6C616974696E695F), u64(0x2928617461645F), u32(15))
+  } | { }
+  at = tb_lit(out, at, u64(0xA7D2029), u64(0x0), u32(4))
+  // NAME__step: theorem (s: XState[, d: XData], step: XStep) { ... }
+  at = tb_rs(out, at, rx, raw, name)
+  at = tb_lit(out, at, u64(0x203A706574735F5F), u64(0x206D65726F656874), u32(16))
+  at = tb_lit(out, at, u64(0x203A7328), u64(0x0), u32(4))
+  at = tb_rs(out, at, rx, raw, state_t)
+  with_data ? {
+    at = tb_lit(out, at, u64(0x203A64202C), u64(0x0), u32(5))
+    at = tb_rs(out, at, rx, raw, data_t)
+  } | { }
+  at = tb_lit(out, at, u64(0x203A70657473202C), u64(0x0), u32(8))
+  at = tb_rs(out, at, rx, raw, step_t)
+  at = tb_lit(out, at, u64(0xA7B2029), u64(0x0), u32(4))
+  with_data ? {
+    at = tb_lit(out, at, u64(0x5B203A6675622020), u64(0x5D31), u32(10))
+    at = tb_rs(out, at, rx, raw, data_t)
+    at = tb_lit(out, at, u64(0x5D315B203D20), u64(0x0), u32(6))
+    at = tb_rs(out, at, rx, raw, data_t)
+    at = tb_lit(out, at, u64(0xA7D2064207B), u64(0x0), u32(6))
+    at = tb_lit(out, at, u64(0x28212020), u64(0x0), u32(4))
+    at = tb_rs(out, at, rx, raw, name)
+    at = tb_lit(out, at, u64(0x26202964202C7328), u64(0x2026), u32(10))
+    at = tb_rs(out, at, rx, raw, prefix)
+    at = tb_lit(out, at, u64(0x73286C6167656C5F), u64(0x657473202C64202C), u32(16))
+    at = tb_lit(out, at, u64(0x207C7C20292970), u64(0x0), u32(7))
+    at = tb_rs(out, at, rx, raw, name)
+    at = tb_lit(out, at, u64(0x28), u64(0x0), u32(1))
+    at = tb_rs(out, at, rx, raw, prefix)
+    at = tb_lit(out, at, u64(0x2C73287478656E5F), u64(0x6226286E61707320), u32(16))
+    at = tb_lit(out, at, u64(0x657473202C296675), u64(0x5B667562202C2970), u32(16))
+    at = tb_lit(out, at, u64(0xA7D0A295D30), u64(0x0), u32(6))
+  } | {
+    at = tb_lit(out, at, u64(0x28212020), u64(0x0), u32(4))
+    at = tb_rs(out, at, rx, raw, name)
+    at = tb_lit(out, at, u64(0x20262620297328), u64(0x0), u32(7))
+    at = tb_rs(out, at, rx, raw, prefix)
+    at = tb_lit(out, at, u64(0x73286C6167656C5F), u64(0x292970657473202C), u32(16))
+    at = tb_lit(out, at, u64(0x207C7C20), u64(0x0), u32(4))
+    at = tb_rs(out, at, rx, raw, name)
+    at = tb_lit(out, at, u64(0x28), u64(0x0), u32(1))
+    at = tb_rs(out, at, rx, raw, prefix)
+    at = tb_lit(out, at, u64(0x2C73287478656E5F), u64(0xA29297065747320), u32(16))
+    at = tb_lit(out, at, u64(0xA7D), u64(0x0), u32(2))
+  }
+  at
+}
+
+// probe_text writes a protocol's probe record and function: legal, the
+// next state and data, the initial state and data, then one Bool per
+// liveness side (in entry order) and per invariant candidate (in
+// declaration order).
+probe_text: (out: [*]u8, at0: u32, rx: []u32, raw: Raw, pi: u32): u32 {
+  at: u32 = at0
+  name: u32 = rproto_word(rx, raw, pi, u32(0))
+  prefix: u32 = rproto_word(rx, raw, pi, u32(1))
+  state_t: u32 = rproto_word(rx, raw, pi, u32(2))
+  step_t: u32 = rproto_word(rx, raw, pi, u32(3))
+  data_t: u32 = rproto_word(rx, raw, pi, u32(4))
+  with_data: Bool = data_t != NONE
+  nlive: u32 = rproto_word(rx, raw, pi, u32(12))
+  live_list: u32 = rproto_word(rx, raw, pi, u32(13))
+  // The record.
+  at = tb_rs(out, at, rx, raw, name)
+  at = tb_lit(out, at, u64(0x74203A65626F7250), u64(0x7473203D20657079), u32(16))
+  at = tb_lit(out, at, u64(0x6C207B2074637572), u64(0x6F42203A6C616765), u32(16))
+  at = tb_lit(out, at, u64(0x3A74786E202C6C6F), u64(0x20), u32(9))
+  at = tb_rs(out, at, rx, raw, state_t)
+  with_data ? {
+    at = tb_lit(out, at, u64(0x203A61746164202C), u64(0x0), u32(8))
+    at = tb_rs(out, at, rx, raw, data_t)
+  } | { }
+  at = tb_lit(out, at, u64(0x203A74696E69202C), u64(0x0), u32(8))
+  at = tb_rs(out, at, rx, raw, state_t)
+  with_data ? {
+    at = tb_lit(out, at, u64(0x3A6174616469202C), u64(0x20), u32(9))
+    at = tb_rs(out, at, rx, raw, data_t)
+  } | { }
+  q: u32 = 0
+  k: u32 = 0
+  while k < nlive {
+    side: u32 = 0
+    while side < u32(2) {
+      (side == u32(1) || rl_item(rx, raw, live_list, k * u32(2)) != NONE) ? {
+        at = tb_lit(out, at, u64(0x71202C), u64(0x0), u32(3))
+        at = tb_dec(out, at, q)
+        at = tb_lit(out, at, u64(0x6C6F6F42203A), u64(0x0), u32(6))
+        q = q + u32(1)
+      } | { }
+      side = side + u32(1)
+    }
+    k = k + u32(1)
+  }
+  fi: u32 = 0
+  while fi < raw.nfuncs {
+    candidate_proto(rx, raw, fi) == pi ? {
+      at = tb_lit(out, at, u64(0x71202C), u64(0x0), u32(3))
+      at = tb_dec(out, at, q)
+      at = tb_lit(out, at, u64(0x6C6F6F42203A), u64(0x0), u32(6))
+      q = q + u32(1)
+    } | { }
+    fi = fi + u32(1)
+  }
+  at = tb_lit(out, at, u64(0xA7D20), u64(0x0), u32(3))
+  // The function.
+  at = tb_rs(out, at, rx, raw, prefix)
+  at = tb_lit(out, at, u64(0x203A65626F72705F), u64(0x203A657461747328), u32(16))
+  at = tb_rs(out, at, rx, raw, state_t)
+  with_data ? {
+    at = tb_lit(out, at, u64(0x203A61746164202C), u64(0x0), u32(8))
+    at = tb_rs(out, at, rx, raw, data_t)
+  } | { }
+  at = tb_lit(out, at, u64(0x203A70657473202C), u64(0x0), u32(8))
+  at = tb_rs(out, at, rx, raw, step_t)
+  at = tb_lit(out, at, u64(0x203A29), u64(0x0), u32(3))
+  at = tb_rs(out, at, rx, raw, name)
+  at = tb_lit(out, at, u64(0xA7B2065626F7250), u64(0x0), u32(8))
+  with_data ? {
+    at = tb_lit(out, at, u64(0x5B203A6675622020), u64(0x5D31), u32(10))
+    at = tb_rs(out, at, rx, raw, data_t)
+    at = tb_lit(out, at, u64(0x5D315B203D20), u64(0x0), u32(6))
+    at = tb_rs(out, at, rx, raw, data_t)
+    at = tb_lit(out, at, u64(0x7D2061746164207B), u64(0xA), u32(9))
+  } | { }
+  at = tb_lit(out, at, u64(0x3A6C6167656C2020), u64(0x203D206C6F6F4220), u32(16))
+  at = tb_rs(out, at, rx, raw, prefix)
+  with_data ? { at = tb_lit(out, at, u64(0x73286C6167656C5F), u64(0x6164202C65746174), u32(16)) } | { at = tb_lit(out, at, u64(0x73286C6167656C5F), u64(0x7473202C65746174), u32(16)) }
+  with_data ? { at = tb_lit(out, at, u64(0x70657473202C6174), u64(0xA29), u32(10)) } | { at = tb_lit(out, at, u64(0xA297065), u64(0x0), u32(4)) }
+  at = tb_lit(out, at, u64(0x203A74786E2020), u64(0x0), u32(7))
+  at = tb_rs(out, at, rx, raw, state_t)
+  at = tb_lit(out, at, u64(0x6C6167656C203D20), u64(0x207B203F20), u32(13))
+  at = tb_rs(out, at, rx, raw, prefix)
+  with_data ? { at = tb_lit(out, at, u64(0x7473287478656E5F), u64(0x617073202C657461), u32(16)) } | { at = tb_lit(out, at, u64(0x7473287478656E5F), u64(0x657473202C657461), u32(16)) }
+  with_data ? { at = tb_lit(out, at, u64(0x2C2966756226286E), u64(0x7D20297065747320), u32(16)) } | { at = tb_lit(out, at, u64(0x7D202970), u64(0x0), u32(4)) }
+  at = tb_lit(out, at, u64(0x617473207B207C20), u64(0xA7D206574), u32(13))
+  at = tb_lit(out, at, u64(0x2020), u64(0x0), u32(2))
+  at = tb_rs(out, at, rx, raw, name)
+  at = tb_lit(out, at, u64(0x207B2065626F7250), u64(0x6C203A6C6167656C), u32(16))
+  at = tb_lit(out, at, u64(0x786E202C6C616765), u64(0x74786E203A74), u32(14))
+  with_data ? { at = tb_lit(out, at, u64(0x203A61746164202C), u64(0x5D305B667562), u32(14)) } | { }
+  at = tb_lit(out, at, u64(0x203A74696E69202C), u64(0x0), u32(8))
+  at = tb_rs(out, at, rx, raw, prefix)
+  at = tb_lit(out, at, u64(0x6C616974696E695F), u64(0x2928), u32(10))
+  with_data ? {
+    at = tb_lit(out, at, u64(0x3A6174616469202C), u64(0x20), u32(9))
+    at = tb_rs(out, at, rx, raw, prefix)
+    at = tb_lit(out, at, u64(0x6C616974696E695F), u64(0x2928617461645F), u32(15))
+  } | { }
+  q = u32(0)
+  k = u32(0)
+  while k < nlive {
+    side: u32 = 0
+    while side < u32(2) {
+      (side == u32(1) || rl_item(rx, raw, live_list, k * u32(2)) != NONE) ? {
+        at = tb_lit(out, at, u64(0x71202C), u64(0x0), u32(3))
+        at = tb_dec(out, at, q)
+        at = tb_lit(out, at, u64(0x203A), u64(0x0), u32(2))
+        at = tb_rs(out, at, rx, raw, prefix)
+        at = tb_lit(out, at, u64(0x6576696C5F), u64(0x0), u32(5))
+        at = tb_dec(out, at, k + u32(1))
+        side == u32(0) ? { at = tb_lit(out, at, u64(0x7473286D6F72665F), u64(0x657461), u32(11)) } | { at = tb_lit(out, at, u64(0x74617473286F745F), u64(0x65), u32(9)) }
+        with_data ? { at = tb_lit(out, at, u64(0x2961746164202C), u64(0x0), u32(7)) } | { at = tb_lit(out, at, u64(0x29), u64(0x0), u32(1)) }
+        q = q + u32(1)
+      } | { }
+      side = side + u32(1)
+    }
+    k = k + u32(1)
+  }
+  fi = u32(0)
+  while fi < raw.nfuncs {
+    candidate_proto(rx, raw, fi) == pi ? {
+      at = tb_lit(out, at, u64(0x71202C), u64(0x0), u32(3))
+      at = tb_dec(out, at, q)
+      at = tb_lit(out, at, u64(0x203A), u64(0x0), u32(2))
+      at = tb_rs(out, at, rx, raw, rf_word(rx, raw, fi, u32(0)))
+      with_data ? { at = tb_lit(out, at, u64(0x202C657461747328), u64(0x2961746164), u32(13)) } | { at = tb_lit(out, at, u64(0x29657461747328), u64(0x0), u32(7)) }
+      q = q + u32(1)
+    } | { }
+    fi = fi + u32(1)
+  }
+  at = tb_lit(out, at, u64(0xA7D0A7D20), u64(0x0), u32(5))
+  at
+}
+
+// tb_expr writes an expression the way the Go parser's String() spells
+// it (raw_text in protocol.oak, over the raw table), the identifier
+// from_rid renamed to to_rid: the new length, NONE for a node outside the
+// spelling.
+tb_expr: (out: [*]u8, at0: u32, rx: []u32, raw: Raw, node: u32, from_rid: u32, to_rid: u32): u32 {
+  at: u32 = at0
+  fnode: [64]u32
+  fphase: [64]u32
+  sp: u32 = 1
+  fnode[u32(0)] = node
+  fphase[u32(0)] = u32(0)
+  while sp > u32(0) && at != NONE {
+    i: u32 = sp - u32(1)
+    n: u32 = fnode[i]
+    phase: u32 = fphase[i]
+    kind: u32 = rn_kind(rx, raw, n)
+    a: u32 = rn_a(rx, raw, n)
+    b: u32 = rn_b(rx, raw, n)
+    c: u32 = rn_c(rx, raw, n)
+    pushed: u32 = NONE
+    kind == RAW_IDENT ? {
+      at = tb_rs(out, at, rx, raw, a == from_rid ? { to_rid } | { a })
+      sp = sp - u32(1)
+    } | {
+    kind == RAW_INTLIT ? {
+      at = tb_dec(out, at, rn_vlo(rx, raw, n))
+      sp = sp - u32(1)
+    } | {
+    kind == RAW_BOOLLIT ? {
+      at = a != u32(0) ? { tb_lit(out, at, u64(0x65757274), u64(0x0), u32(4)) } | { tb_lit(out, at, u64(0x65736C6166), u64(0x0), u32(5)) }
+      sp = sp - u32(1)
+    } | {
+    kind == RAW_PREFIX ? {
+      phase == u32(0) ? {
+        at = tb_lit(out, at, u64(0x28), u64(0x0), u32(1))
+        at = tb_rs(out, at, rx, raw, a)
+        fphase[i] = u32(1)
+        pushed = b
+      } | {
+        at = tb_lit(out, at, u64(0x29), u64(0x0), u32(1))
+        sp = sp - u32(1)
+      }
+    } | {
+    kind == RAW_INFIX ? {
+      phase == u32(0) ? {
+        at = tb_lit(out, at, u64(0x28), u64(0x0), u32(1))
+        fphase[i] = u32(1)
+        pushed = b
+      } | {
+      phase == u32(1) ? {
+        at = tb_lit(out, at, u64(0x20), u64(0x0), u32(1))
+        at = tb_rs(out, at, rx, raw, a)
+        at = tb_lit(out, at, u64(0x20), u64(0x0), u32(1))
+        fphase[i] = u32(2)
+        pushed = c
+      } | {
+        at = tb_lit(out, at, u64(0x29), u64(0x0), u32(1))
+        sp = sp - u32(1)
+      } }
+    } | {
+    kind == RAW_INDEX ? {
+      phase == u32(0) ? {
+        at = tb_lit(out, at, u64(0x28), u64(0x0), u32(1))
+        fphase[i] = u32(1)
+        pushed = a
+      } | {
+      phase == u32(1) ? {
+        c != u32(0) ? {
+          at = tb_lit(out, at, u64(0x2E), u64(0x0), u32(1))
+          at = tb_rs(out, at, rx, raw, rn_a(rx, raw, b))
+          at = tb_lit(out, at, u64(0x29), u64(0x0), u32(1))
+          sp = sp - u32(1)
+        } | {
+          at = tb_lit(out, at, u64(0x5B), u64(0x0), u32(1))
+          fphase[i] = u32(2)
+          pushed = b
+        }
+      } | {
+        at = tb_lit(out, at, u64(0x295D), u64(0x0), u32(2))
+        sp = sp - u32(1)
+      } }
+    } | {
+    kind == RAW_CALL ? {
+      phase == u32(0) ? {
+        fphase[i] = u32(1)
+        pushed = a
+      } | {
+        k: u32 = phase - u32(1)
+        k == u32(0) ? { at = tb_lit(out, at, u64(0x28), u64(0x0), u32(1)) } | { }
+        k < c ? {
+          k > u32(0) ? { at = tb_lit(out, at, u64(0x202C), u64(0x0), u32(2)) } | { }
+          fphase[i] = phase + u32(1)
+          pushed = rl_item(rx, raw, b, k)
+        } | {
+          at = tb_lit(out, at, u64(0x29), u64(0x0), u32(1))
+          sp = sp - u32(1)
+        }
+      }
+    } | {
+    kind == RAW_VARIANT ? {
+      phase == u32(0) ? {
+        a == NONE ? { } | { at = tb_rs(out, at, rx, raw, a) }
+        at = tb_lit(out, at, u64(0x2E), u64(0x0), u32(1))
+        at = tb_rs(out, at, rx, raw, b)
+        c == NONE ? { sp = sp - u32(1) } | {
+          at = tb_lit(out, at, u64(0x28), u64(0x0), u32(1))
+          fphase[i] = u32(1)
+          pushed = c
+        }
+      } | {
+        at = tb_lit(out, at, u64(0x29), u64(0x0), u32(1))
+        sp = sp - u32(1)
+      }
+    } | { at = NONE } } } } } } } }
+    pushed == NONE ? { } | {
+      sp >= u32(64) ? { at = NONE } | {
+        fnode[sp] = pushed
+        fphase[sp] = u32(0)
+        sp = sp + u32(1)
+      }
+    }
+  }
+  at
+}
+
+// exclusivity_text writes, for every (step, source state) group of a
+// protocol with two or more guarded lines, one theorem per pair stating
+// that the guards never hold together (compiler/protocol_exclusivity.go):
+// `prefix__exclusive__Name__step__From__i__j: theorem (d: NameData,
+// payload: T) { !(guard_i && guard_j) }`, the guards' `data` renamed to
+// `d`.
+exclusivity_text: (out: [*]u8, at0: u32, rx: []u32, raw: Raw, pi: u32): u32 {
+  at: u32 = at0
+  name: u32 = rproto_word(rx, raw, pi, u32(0))
+  prefix: u32 = rproto_word(rx, raw, pi, u32(1))
+  data_t: u32 = rproto_word(rx, raw, pi, u32(4))
+  nsteps: u32 = rproto_word(rx, raw, pi, u32(8))
+  slist: u32 = rproto_word(rx, raw, pi, u32(9))
+  nlines: u32 = rproto_word(rx, raw, pi, u32(15))
+  llist: u32 = rproto_word(rx, raw, pi, u32(16))
+  d_rid: u32 = NONE
+  si: u32 = 0
+  while si < nsteps && at != NONE {
+    step_name: u32 = rl_item(rx, raw, slist, si * u32(4))
+    ptype: u32 = rl_item(rx, raw, slist, si * u32(4) + u32(2))
+    pname: u32 = rl_item(rx, raw, slist, si * u32(4) + u32(3))
+    // The source states of the step's guarded lines, in order of first
+    // appearance; per source, the guarded lines in order.
+    seen: [64]u32
+    nseen: u32 = 0
+    k: u32 = 0
+    while k < nlines {
+      (rl_item(rx, raw, llist, k * u32(4)) == step_name && rl_item(rx, raw, llist, k * u32(4) + u32(3)) != NONE) ? {
+        from_s: u32 = rl_item(rx, raw, llist, k * u32(4) + u32(1))
+        known: Bool = false
+        j: u32 = 0
+        while j < nseen {
+          known = known || seen[j] == from_s
+          j = j + u32(1)
+        }
+        (known || nseen >= u32(64)) ? { } | {
+          seen[nseen] = from_s
+          nseen = nseen + u32(1)
+        }
+      } | { }
+      k = k + u32(1)
+    }
+    g: u32 = 0
+    while g < nseen && at != NONE {
+      from_s: u32 = seen[g]
+      lines: [64]u32
+      count: u32 = 0
+      k = u32(0)
+      while k < nlines {
+        (rl_item(rx, raw, llist, k * u32(4)) == step_name && rl_item(rx, raw, llist, k * u32(4) + u32(1)) == from_s && rl_item(rx, raw, llist, k * u32(4) + u32(3)) != NONE && count < u32(64)) ? {
+          lines[count] = rl_item(rx, raw, llist, k * u32(4) + u32(3))
+          count = count + u32(1)
+        } | { }
+        k = k + u32(1)
+      }
+      i: u32 = 0
+      while i < count && at != NONE {
+        j: u32 = i + u32(1)
+        while j < count && at != NONE {
+          at = tb_rs(out, at, rx, raw, prefix)
+          at = tb_lit(out, at, u64(0x73756C6378655F5F), u64(0x5F5F657669), u32(13))
+          at = tb_rs(out, at, rx, raw, name)
+          at = tb_lit(out, at, u64(0x5F5F), u64(0x0), u32(2))
+          at = tb_rs(out, at, rx, raw, step_name)
+          at = tb_lit(out, at, u64(0x5F5F), u64(0x0), u32(2))
+          at = tb_rs(out, at, rx, raw, from_s)
+          at = tb_lit(out, at, u64(0x5F5F), u64(0x0), u32(2))
+          at = tb_dec(out, at, i)
+          at = tb_lit(out, at, u64(0x5F5F), u64(0x0), u32(2))
+          at = tb_dec(out, at, j)
+          at = tb_lit(out, at, u64(0x65726F656874203A), u64(0x28206D), u32(11))
+          first: Bool = true
+          data_t == NONE ? { } | {
+            at = tb_lit(out, at, u64(0x203A64), u64(0x0), u32(3))
+            at = tb_rs(out, at, rx, raw, data_t)
+            first = false
+          }
+          ptype == NONE ? { } | {
+            first ? { } | { at = tb_lit(out, at, u64(0x202C), u64(0x0), u32(2)) }
+            at = tb_rs(out, at, rx, raw, pname)
+            at = tb_lit(out, at, u64(0x203A), u64(0x0), u32(2))
+            (rt_kind(rx, raw, ptype) == RAW_TYPE_NAME) ? { at = tb_rs(out, at, rx, raw, rt_a(rx, raw, ptype)) } | { at = NONE }
+          }
+          at = tb_lit(out, at, u64(0x2821207B2029), u64(0x0), u32(6))
+          at = tb_expr(out, at, rx, raw, lines[i], data_rid(rx, raw), d_rid_of(rx, raw))
+          at = tb_lit(out, at, u64(0x20262620), u64(0x0), u32(4))
+          at = tb_expr(out, at, rx, raw, lines[j], data_rid(rx, raw), d_rid_of(rx, raw))
+          at = tb_lit(out, at, u64(0xA7D2029), u64(0x0), u32(4))
+          j = j + u32(1)
+        }
+        i = i + u32(1)
+      }
+      g = g + u32(1)
+    }
+    si = si + u32(1)
+  }
+  at
+}
+
+// data_rid / d_rid_of: the raw string ids of `data` and `d` (NONE when the
+// text never mentions them, and then nothing is renamed).
+data_rid: (rx: []u32, raw: Raw): u32 = raw_find_string(rx, raw, u64(0x61746164), u64(0), u32(4))
+d_rid_of: (rx: []u32, raw: Raw): u32 = raw_find_string(rx, raw, u64(0x64), u64(0), u32(1))
+
+// raw_find_string: the raw string id of a literal, or NONE.
+raw_find_string: (rx: []u32, raw: Raw, lo: u64, hi: u64, n: u32): u32 {
+  count: u32 = rx[u32(0)]
+  found: u32 = NONE
+  i: u32 = 0
+  while i < count && found == NONE {
+    is_name(rs_name(rx, raw, i), lo, hi, n) ? { found = i } | { }
+    i = i + u32(1)
+  }
+  found
+}
+
+// generated_source appends the obligations of every invariant candidate
+// (in declaration order) and a probe per protocol to the file's bytes:
+// the new length (at0 when nothing is generated), or NONE past the
+// capacity.
+generated_source: (out: [*]u8, at0: u32, rx: []u32, raw: Raw): u32 {
+  at: u32 = at0
+  raw.nprotos == u32(0) ? { } | {
+    at = tb_lit(out, at, u64(0xA), u64(0x0), u32(1))
+    fi: u32 = 0
+    while fi < raw.nfuncs && at != NONE {
+      pi: u32 = candidate_proto(rx, raw, fi)
+      pi == NONE ? { } | { at = obligation_text(out, at, rx, raw, fi, pi) }
+      fi = fi + u32(1)
+    }
+    pi: u32 = 0
+    while pi < raw.nprotos && at != NONE {
+      at = probe_text(out, at, rx, raw, pi)
+      pi = pi + u32(1)
+    }
+    pi = u32(0)
+    while pi < raw.nprotos && at != NONE {
+      at = exclusivity_text(out, at, rx, raw, pi)
+      pi = pi + u32(1)
+    }
+  }
+  at
+}
+
+// --- folding the obligations into their candidate's row ---------------------------------------
+
+// fold_invariants replaces each candidate's row by its obligations'
+// verdicts (prove/prove.go summarizeInvariants).
+fold_invariants: (le: Lem, ew: [*]u32): () {
+  n: u32 = lst(le, ew, LN_NROWS)
+  i: u32 = 0
+  while i < n && !le_failed(le, ew) {
+    base_name: u32 = cat2(le, ew, row_name(le, ew, i), lstr(le, ew, u64(0x657361625F5F), u64(0x0), u32(6)))
+    step_name: u32 = cat2(le, ew, row_name(le, ew, i), lstr(le, ew, u64(0x706574735F5F), u64(0x0), u32(6)))
+    bi: u32 = row_named(le, ew, base_name)
+    si: u32 = row_named(le, ew, step_name)
+    (bi != NONE && si != NONE) ? {
+      bk: u32 = row_kind(le, ew, bi)
+      sk: u32 = row_kind(le, ew, si)
+      bd: u32 = row_detail(le, ew, bi)
+      sd: u32 = row_detail(le, ew, si)
+      (bk == ROW_DECIDED && sk == ROW_DECIDED) ? {
+        sb_begin(le, ew)
+        ap_lits(le, ew, u64(0x6E61697261766E69), u64(0x2065736162203A74), u32(16))  // invariant: base 
+        sb_str(le, ew, bd)
+        ap_lits(le, ew, u64(0x2070657473202C), u64(0x0), u32(7))  // , step 
+        sb_str(le, ew, sd)
+        set_row(le, ew, i, ROW_DECIDED, sb_end(le, ew))
+      } | {
+      bk == ROW_REFUTED ? {
+        sb_begin(le, ew)
+        ap_lits(le, ew, u64(0x6E61697261766E69), u64(0x20736C6961662074), u32(16))  // invariant fails initially: 
+        ap_lits(le, ew, u64(0x6C6C616974696E69), u64(0x203A79), u32(11))
+        sb_str(le, ew, bd)
+        set_row(le, ew, i, ROW_REFUTED, sb_end(le, ew))
+      } | {
+      sk == ROW_REFUTED ? {
+        sb_begin(le, ew)
+        ap_lits(le, ew, u64(0x6E61697261766E69), u64(0x746F6E2073692074), u32(16))  // invariant is not preserved: 
+        ap_lits(le, ew, u64(0x7672657365727020), u64(0x203A6465), u32(12))
+        sb_str(le, ew, sd)
+        set_row(le, ew, i, ROW_REFUTED, sb_end(le, ew))
+      } | {
+        bs: u32 = status_word(le, ew, bk)
+        ss: u32 = status_word(le, ew, sk)
+        sb_begin(le, ew)
+        ap_lits(le, ew, u64(0x6E61697261766E69), u64(0x2065736162203A74), u32(16))  // invariant: base 
+        sb_str(le, ew, bs)
+        ap_lits(le, ew, u64(0x2820), u64(0x0), u32(2))  //  (
+        sb_str(le, ew, bd)
+        ap_lits(le, ew, u64(0x2070657473202C29), u64(0x0), u32(8))  // ), step 
+        sb_str(le, ew, ss)
+        ap_lits(le, ew, u64(0x2820), u64(0x0), u32(2))  //  (
+        sb_str(le, ew, sd)
+        sb_byte(le, ew, u32(41))
+        set_row(le, ew, i, ROW_OPEN, sb_end(le, ew))
+      } } }
+    } | { }
+    i = i + u32(1)
+  }
+}
+
+// status_word: a row kind's name.
+status_word: (le: Lem, ew: [*]u32, kind: u32): u32 {
+  kind == ROW_DECIDED ? { lstr(le, ew, u64(0x64656469636564), u64(0x0), u32(7)) } | { kind == ROW_REFUTED ? { lstr(le, ew, u64(0x64657475666572), u64(0x0), u32(7)) } | { lstr(le, ew, u64(0x6E65706F), u64(0x0), u32(4)) } }
+}
+
+// --- guard exclusivity ----------------------------------------------------------------------------
+
+// ROWF_ADVISORY marks a row that reports a finding, never deciding the
+// exit status (the guard-exclusivity groups).
+ROWF_ADVISORY: u32 = 1073741824
+
+// is_exclusivity_name: whether a name carries the `__exclusive__` marker.
+is_exclusivity_name: (le: Lem, ew: [*]u32, s: u32): Bool = exclusive_marker_at(le, ew, s) != NONE
+
+// exclusive_marker_at: the offset of `__exclusive__` in the string, or NONE.
+exclusive_marker_at: (le: Lem, ew: [*]u32, s: u32): u32 {
+  n: u32 = s_len(le, ew, s)
+  found: u32 = NONE
+  i: u32 = 0
+  while i + u32(13) <= n && found == NONE {
+    same: Bool = true
+    k: u32 = 0
+    while k < u32(13) && same {
+      want: u32 = k < u32(8) ? { u32_trunc_u64((u64(0x73756C6378655F5F) >> u64(k * u32(8))) & u64(255)) } | { u32_trunc_u64((u64(0x5F5F657669) >> u64((k - u32(8)) * u32(8))) & u64(255)) }
+      same = s_byte(le, ew, s, i + k) == want
+      k = k + u32(1)
+    }
+    same ? { found = i } | { }
+    i = i + u32(1)
+  }
+  found
+}
+
+// str_field: the k-th `__`-separated field of the string after the
+// offset, as a new string (NONE when there are fewer).
+str_field: (le: Lem, ew: [*]u32, s: u32, from_at: u32, k: u32): u32 {
+  n: u32 = s_len(le, ew, s)
+  start: u32 = from_at
+  field: u32 = 0
+  // Advance over k separators.
+  while field < k && start != NONE {
+    i: u32 = start
+    hit: u32 = NONE
+    while i + u32(2) <= n && hit == NONE {
+      (s_byte(le, ew, s, i) == u32(95) && s_byte(le, ew, s, i + u32(1)) == u32(95)) ? { hit = i } | { }
+      i = i + u32(1)
+    }
+    start = hit == NONE ? { NONE } | { hit + u32(2) }
+    field = field + u32(1)
+  }
+  start == NONE ? { NONE } | {
+    end: u32 = start
+    stop: Bool = false
+    while end < n && !stop {
+      (end + u32(2) <= n && s_byte(le, ew, s, end) == u32(95) && s_byte(le, ew, s, end + u32(1)) == u32(95)) ? { stop = true } | { end = end + u32(1) }
+    }
+    sb_begin(le, ew)
+    i: u32 = start
+    while i < end {
+      sb_byte(le, ew, s_byte(le, ew, s, i))
+      i = i + u32(1)
+    }
+    sb_end(le, ew)
+  }
+}
+
+// fold_exclusivity folds the guard-exclusivity pair theorems of one
+// (step, state) group into one advisory row `Protocol: guards of step from
+// State` (prove/prove.go summarizeExclusivity): decided when every pair is
+// disjoint, refuted with the first overlapping pair, open when a pair is
+// undecided. The group rows follow the theorem rows.
+fold_exclusivity: (le: Lem, ew: [*]u32): () {
+  n: u32 = lst(le, ew, LN_NROWS)
+  i: u32 = 0
+  while i < n && !le_failed(le, ew) {
+    name: u32 = row_name(le, ew, i)
+    marker: u32 = exclusive_marker_at(le, ew, name)
+    marker == NONE ? { } | {
+      after: u32 = marker + u32(13)
+      protocol: u32 = str_field(le, ew, name, after, u32(0))
+      step: u32 = str_field(le, ew, name, after, u32(1))
+      from_s: u32 = str_field(le, ew, name, after, u32(2))
+      first: u32 = str_field(le, ew, name, after, u32(3))
+      second: u32 = str_field(le, ew, name, after, u32(4))
+      (protocol == NONE || step == NONE || from_s == NONE || first == NONE || second == NONE) ? { } | {
+        sb_begin(le, ew)
+        sb_str(le, ew, protocol)
+        ap_lits(le, ew, u64(0x736472617567203A), u64(0x20666F20), u32(12))  // : guards of 
+        sb_str(le, ew, step)
+        ap_lits(le, ew, u64(0x206D6F726620), u64(0x0), u32(6))  //  from 
+        sb_str(le, ew, from_s)
+        key: u32 = sb_end(le, ew)
+        gi: u32 = row_named(le, ew, key)
+        gi == NONE ? {
+          row_push(le, ew, ROW_DECIDED, key, NONE)
+          gi = lst(le, ew, LN_NROWS) - u32(1)
+          set_row_flags(le, ew, gi, ROWF_ADVISORY)
+        } | { }
+        flags: u32 = row_flags(le, ew, gi)
+        pairs: u32 = (flags & u32(65535)) + u32(1)
+        settled: Bool = (flags & u32(65536)) != u32(0)
+        kind: u32 = row_kind(le, ew, i)
+        detail: u32 = row_detail(le, ew, i)
+        (kind == ROW_REFUTED && !settled) ? {
+          sb_begin(le, ew)
+          ap_lits(le, ew, u64(0x2073656E696C), u64(0x0), u32(6))  // lines 
+          sb_str(le, ew, first)
+          ap_lits(le, ew, u64(0x20646E6120), u64(0x0), u32(5))  //  and 
+          sb_str(le, ew, second)
+          ap_lits(le, ew, u64(0x746F62206E616320), u64(0x2820657269662068), u32(16))  //  can both fire (
+          sb_str(le, ew, detail)
+          ap_lits(le, ew, u64(0x74206B614F203A29), u64(0x6E696C2073656B61), u32(16))  // ): Oak takes line 
+          ap_lits(le, ew, u64(0x2065), u64(0x0), u32(2))
+          sb_str(le, ew, first)
+          ap_lits(le, ew, u64(0x6F6D20656874202C), u64(0x63656863206C6564), u32(16))  // , the model checker explores both — the readings differ there
+          ap_lits(le, ew, u64(0x6C7078652072656B), u64(0x746F62207365726F), u32(16))
+          ap_lits(le, ew, u64(0x6874209480E22068), u64(0x6E69646165722065), u32(16))
+          ap_lits(le, ew, u64(0x6566666964207367), u64(0x65726568742072), u32(15))
+          set_row(le, ew, gi, ROW_REFUTED, sb_end(le, ew))
+          settled = true
+        } | {
+          (kind != ROW_DECIDED && kind != ROW_REFUTED && !settled && row_kind(le, ew, gi) != ROW_REFUTED) ? {
+            sb_begin(le, ew)
+            ap_lits(le, ew, u64(0x766973756C637865), u64(0x6C20666F20797469), u32(16))  // exclusivity of lines 
+            ap_lits(le, ew, u64(0x2073656E69), u64(0x0), u32(5))
+            sb_str(le, ew, first)
+            ap_lits(le, ew, u64(0x20646E6120), u64(0x0), u32(5))  //  and 
+            sb_str(le, ew, second)
+            ap_lits(le, ew, u64(0x64696365646E7520), u64(0x203A6465), u32(12))  //  undecided: 
+            sb_str(le, ew, detail)
+            set_row(le, ew, gi, kind, sb_end(le, ew))
+          } | { }
+        }
+        set_row_flags(le, ew, gi, ROWF_ADVISORY | (settled ? { u32(65536) } | { u32(0) }) | pairs)
+        set_row(le, ew, i, ROW_DROPPED, detail)
+      }
+    }
+    i = i + u32(1)
+  }
+  // The groups every pair of which is disjoint.
+  m: u32 = lst(le, ew, LN_NROWS)
+  gi: u32 = n
+  while gi < m {
+    (row_kind(le, ew, gi) == ROW_DECIDED && row_detail(le, ew, gi) == NONE) ? {
+      sb_begin(le, ew)
+      ap_lits(le, ew, u64(0x6573697772696170), u64(0x6973756C63786520), u32(16))  // pairwise exclusive (
+      ap_lits(le, ew, u64(0x28206576), u64(0x0), u32(4))
+      sb_dec(le, ew, u64(row_flags(le, ew, gi) & u32(65535)))
+      ap_lits(le, ew, u64(0x3A29737269617020), u64(0x7269662065687420), u32(16))  //  pairs): the first-line reading and the model checker's every-line reading coincide
+      ap_lits(le, ew, u64(0x20656E696C2D7473), u64(0x20676E6964616572), u32(16))
+      ap_lits(le, ew, u64(0x2065687420646E61), u64(0x6863206C65646F6D), u32(16))
+      ap_lits(le, ew, u64(0x20732772656B6365), u64(0x696C2D7972657665), u32(16))
+      ap_lits(le, ew, u64(0x696461657220656E), u64(0x636E696F6320676E), u32(16))
+      ap_lits(le, ew, u64(0x656469), u64(0x0), u32(3))
+      set_row(le, ew, gi, ROW_DECIDED, sb_end(le, ew))
+    } | { }
+    gi = gi + u32(1)
+  }
+}
+
+// --- the reachable graph ------------------------------------------------------------------------
+
+EX_STATES: u32 = 65536
+EX_SLEAVES: u32 = 16
+EX_EDGES: u32 = 1048576
+EX_HASH: u32 = 131072
+EX_PREDS: u32 = 32
+EX_SETW: u32 = 2048
+EX_FRAMES: u32 = 24
+EX_COMPS: u32 = 65536
+
+Exp: type = struct {
+  sv_at: u32,
+  sedge_at: u32,
+  edges_at: u32,
+  hash_at: u32,
+  pred_at: u32,
+  tj_index_at: u32,
+  tj_low_at: u32,
+  tj_on_at: u32,
+  tj_stack_at: u32,
+  dfs_at: u32,
+  comp_at: u32,
+  cidx_at: u32,
+  reach_at: u32,
+  inside_at: u32,
+  set_at: u32,
+  queue_at: u32,
+  state_at: u32,
+  total: u32
+}
+
+exp_layout: (): Exp {
+  sv_at: u32 = 0
+  sedge_at: u32 = sv_at + EX_STATES * EX_SLEAVES * u32(2)
+  edges_at: u32 = sedge_at + EX_STATES * u32(2)
+  hash_at: u32 = edges_at + EX_EDGES * u32(3)
+  pred_at: u32 = hash_at + EX_HASH
+  tj_index_at: u32 = pred_at + EX_PREDS * EX_SETW
+  tj_low_at: u32 = tj_index_at + EX_STATES
+  tj_on_at: u32 = tj_low_at + EX_STATES
+  tj_stack_at: u32 = tj_on_at + EX_STATES
+  dfs_at: u32 = tj_stack_at + EX_STATES
+  comp_at: u32 = dfs_at + EX_STATES * u32(2)
+  cidx_at: u32 = comp_at + EX_COMPS
+  reach_at: u32 = cidx_at + EX_STATES + u32(1)
+  inside_at: u32 = reach_at + EX_SETW
+  set_at: u32 = inside_at + EX_SETW
+  queue_at: u32 = set_at + EX_FRAMES * EX_SETW
+  state_at: u32 = queue_at + EX_STATES
+  Exp {
+    sv_at: sv_at,
+    sedge_at: sedge_at,
+    edges_at: edges_at,
+    hash_at: hash_at,
+    pred_at: pred_at,
+    tj_index_at: tj_index_at,
+    tj_low_at: tj_low_at,
+    tj_on_at: tj_on_at,
+    tj_stack_at: tj_stack_at,
+    dfs_at: dfs_at,
+    comp_at: comp_at,
+    cidx_at: cidx_at,
+    reach_at: reach_at,
+    inside_at: inside_at,
+    set_at: set_at,
+    queue_at: queue_at,
+    state_at: state_at,
+    total: state_at + u32(32)
+  }
+}
+
+// Exploration state words.
+XS_NSTATES: u32 = 0
+XS_NEDGES: u32 = 1
+XS_NLEAVES: u32 = 2
+XS_NCOMP: u32 = 3
+XS_COMP_TOP: u32 = 4
+XS_FAILED: u32 = 5
+
+xst: (ex: Exp, xw: [*]u32, k: u32): u32 = xw[ex.state_at + k]
+set_xst: (ex: Exp, xw: [*]u32, k: u32, v: u32): () { xw[ex.state_at + k] = v }
+
+sv_get: (ex: Exp, xw: [*]u32, at: u32, j: u32): u64 = (u64(xw[ex.sv_at + (at * EX_SLEAVES + j) * u32(2) + u32(1)]) << u64(32)) | u64(xw[ex.sv_at + (at * EX_SLEAVES + j) * u32(2)])
+sv_set: (ex: Exp, xw: [*]u32, at: u32, j: u32, v: u64): () {
+  xw[ex.sv_at + (at * EX_SLEAVES + j) * u32(2)] = u32_trunc_u64(v)
+  xw[ex.sv_at + (at * EX_SLEAVES + j) * u32(2) + u32(1)] = u32_trunc_u64(v >> u64(32))
+}
+
+edge_step: (ex: Exp, xw: [*]u32, e: u32): u32 = xw[ex.edges_at + e * u32(3)]
+edge_to: (ex: Exp, xw: [*]u32, e: u32): u32 = xw[ex.edges_at + e * u32(3) + u32(1)]
+edge_changes: (ex: Exp, xw: [*]u32, e: u32): Bool = xw[ex.edges_at + e * u32(3) + u32(2)] != u32(0)
+edges_start: (ex: Exp, xw: [*]u32, at: u32): u32 = xw[ex.sedge_at + at * u32(2)]
+edges_count: (ex: Exp, xw: [*]u32, at: u32): u32 = xw[ex.sedge_at + at * u32(2) + u32(1)]
+
+pred_bit: (ex: Exp, xw: [*]u32, q: u32, at: u32): Bool = ((xw[ex.pred_at + q * EX_SETW + at / u32(32)] >> (at % u32(32))) & u32(1)) != u32(0)
+set_pred_bit: (ex: Exp, xw: [*]u32, q: u32, at: u32, v: Bool): () {
+  word: u32 = ex.pred_at + q * EX_SETW + at / u32(32)
+  mask: u32 = u32(1) << (at % u32(32))
+  xw[word] = v ? { xw[word] | mask } | { xw[word] & (NONE ^ mask) }
+}
+
+set_has: (xw: [*]u32, base: u32, at: u32): Bool = ((xw[base + at / u32(32)] >> (at % u32(32))) & u32(1)) != u32(0)
+set_add: (xw: [*]u32, base: u32, at: u32): () { xw[base + at / u32(32)] = xw[base + at / u32(32)] | (u32(1) << (at % u32(32))) }
+set_clear: (xw: [*]u32, base: u32): () {
+  k: u32 = 0
+  while k < EX_SETW {
+    xw[base + k] = u32(0)
+    k = k + u32(1)
+  }
+}
+set_copy: (xw: [*]u32, dst: u32, src: u32): () {
+  k: u32 = 0
+  while k < EX_SETW {
+    xw[dst + k] = xw[src + k]
+    k = k + u32(1)
+  }
+}
+set_count: (xw: [*]u32, base: u32, nstates: u32): u32 {
+  n: u32 = 0
+  at: u32 = 0
+  while at < nstates {
+    set_has(xw, base, at) ? { n = n + u32(1) } | { }
+    at = at + u32(1)
+  }
+  n
+}
+
+// state_hash hashes the leaf values in the scratch state (index nstates).
+state_hash: (ex: Exp, xw: [*]u32, at: u32, nleaves: u32): u32 {
+  h: u64 = 0xCBF29CE484222325
+  j: u32 = 0
+  while j < nleaves {
+    h = (h ^ sv_get(ex, xw, at, j)) * u64(0x100000001B3)
+    j = j + u32(1)
+  }
+  u32_trunc_u64(h ^ (h >> u64(32))) % EX_HASH
+}
+
+// add_state interns the scratch state written at index nstates: its
+// index (the existing one when seen).
+add_state: (ex: Exp, xw: [*]u32, nleaves: u32): u32 {
+  n: u32 = xst(ex, xw, XS_NSTATES)
+  h: u32 = state_hash(ex, xw, n, nleaves)
+  found: u32 = NONE
+  while found == NONE {
+    e: u32 = xw[ex.hash_at + h]
+    e == NONE ? {
+      n >= EX_STATES ? { found = n } | {
+        xw[ex.hash_at + h] = n
+        xw[ex.sedge_at + n * u32(2)] = xst(ex, xw, XS_NEDGES)
+        xw[ex.sedge_at + n * u32(2) + u32(1)] = u32(0)
+        set_xst(ex, xw, XS_NSTATES, n + u32(1))
+        found = n
+      }
+    } | {
+      same: Bool = true
+      j: u32 = 0
+      while j < nleaves && same {
+        same = sv_get(ex, xw, e, j) == sv_get(ex, xw, n, j)
+        j = j + u32(1)
+      }
+      same ? { found = e } | { h = (h + u32(1)) % EX_HASH }
+    }
+  }
+  found
+}
+
+// --- the probe --------------------------------------------------------------------------------------
+
+// Probe holds the probe's layout: the syntax root and parameter indices,
+// the result type's field offsets, the step domain.
+Probe: type = struct {
+  root: u32, state_p: u32, data_p: u32, step_p: u32, state_t: u32, data_t: u32, step_t: u32,
+  off_legal: u32, off_nxt: u32, off_data: u32, off_init: u32, off_idata: u32, off_q: u32,
+  data_leaves: u32, nsteps: u64, ok: Bool
+}
+
+probe_layout: (sx: []u32, with_data: Bool, dom: [*]u64): Probe {
+  root: u32 = syn_theorem(sx)
+  pstart: u32 = fn_param_start(sx, root)
+  state_p: u32 = pstart
+  data_p: u32 = with_data ? { pstart + u32(1) } | { NONE }
+  step_p: u32 = with_data ? { pstart + u32(2) } | { pstart + u32(1) }
+  rt: u32 = fn_ret_type(sx, root)
+  data_t: u32 = with_data ? { param_type(sx, data_p) } | { NONE }
+  data_leaves: u32 = with_data ? { type_leaves(sx, data_t) } | { u32(0) }
+  f: u32 = 0
+  off_legal: u32 = field_offset(sx, rt, f)
+  f = f + u32(1)
+  off_nxt: u32 = field_offset(sx, rt, f)
+  f = f + u32(1)
+  off_data: u32 = with_data ? { field_offset(sx, rt, f) } | { u32(0) }
+  with_data ? { f = f + u32(1) } | { }
+  off_init: u32 = field_offset(sx, rt, f)
+  f = f + u32(1)
+  off_idata: u32 = with_data ? { field_offset(sx, rt, f) } | { u32(0) }
+  with_data ? { f = f + u32(1) } | { }
+  off_q: u32 = f < type_field_count(sx, rt) ? { field_offset(sx, rt, f) } | { type_leaves(sx, rt) }
+  step_t: u32 = param_type(sx, step_p)
+  nsteps: u64 = dom[step_t]
+  state_t: u32 = param_type(sx, state_p)
+  shape_ok: Bool = fn_param_count(sx, root) == (with_data ? { u32(3) } | { u32(2) }) && data_leaves + u32(1) <= EX_SLEAVES
+  Probe {
+    root: root, state_p: state_p, data_p: data_p, step_p: step_p, state_t: state_t, data_t: data_t, step_t: step_t,
+    off_legal: off_legal, off_nxt: off_nxt, off_data: off_data, off_init: off_init, off_idata: off_idata, off_q: off_q,
+    data_leaves: data_leaves, nsteps: nsteps, ok: shape_ok
+  }
+}
+
+// probe_set_state writes a graph state's leaves (the state tag and the
+// data leaves) into the probe's state and data parameters.
+probe_set_state: (lw: Lower, w: [*]u32, sx: []u32, pr: Probe, ex: Exp, xw: [*]u32, at: u32): () {
+  probe_set_leaf(lw, w, leaf_index_at(sx, param_leaf_start(sx, pr.state_p)), sv_get(ex, xw, at, u32(0)))
+  j: u32 = 0
+  while j < pr.data_leaves {
+    probe_set_leaf(lw, w, leaf_index_at(sx, param_leaf_start(sx, pr.data_p) + j), sv_get(ex, xw, at, u32(1) + j))
+    j = j + u32(1)
+  }
+}
+
+// step_variant_of: the variant index of the k-th step value (the
+// enumeration order of set_param_value: variants in order, each payload's
+// values in order).
+step_variant_of: (sx: []u32, dom: [*]u64, t: u32, k: u64): u32 {
+  n: u32 = type_field_count(sx, t)
+  rest: u64 = k
+  v: u32 = 0
+  found: u32 = NONE
+  while v < n && found == NONE {
+    payload: u32 = variant_payload(sx, t, v)
+    size: u64 = payload == NONE ? { u64(1) } | { dom[payload] }
+    rest < size ? { found = v } | { rest = rest - size }
+    v = v + u32(1)
+  }
+  found
+}
+
+// explore_graph enumerates the reachable states of the projection through
+// the probe: 0, or the reason (a code the row spells).
+XR_STEPS: u32 = 1
+XR_STATES: u32 = 2
+XR_EVAL: u32 = 3
+XR_PROBE: u32 = 4
+XR_SHAPE: u32 = 5
+
+explore_graph: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, pr: Probe, dom: [*]u64, ex: Exp, xw: [*]u32, cases: u32, nq: u32): u32 {
+  reason: u32 = 0
+  nleaves: u32 = u32(1) + pr.data_leaves
+  set_xst(ex, xw, XS_NSTATES, u32(0))
+  set_xst(ex, xw, XS_NEDGES, u32(0))
+  set_xst(ex, xw, XS_NLEAVES, nleaves)
+  k: u32 = 0
+  while k < EX_HASH {
+    xw[ex.hash_at + k] = NONE
+    k = k + u32(1)
+  }
+  k = u32(0)
+  while k < EX_PREDS * EX_SETW {
+    xw[ex.pred_at + k] = u32(0)
+    k = k + u32(1)
+  }
+  (pr.nsteps == DOMAIN_INFINITE || pr.nsteps > u64(cases)) ? { reason = XR_STEPS } | { }
+  // The initial state: every leaf zero, the probe's init fields read.
+  reason == u32(0) ? {
+    li: u32 = 0
+    while li < syn_leaves(sx) {
+      probe_set_leaf(lw, w, li, u64(0))
+      li = li + u32(1)
+    }
+    set_param_value(lw, w, sx, dom, pr.step_t, param_leaf_start(sx, pr.step_p), u64(0))
+    !probe_eval(lw, w, b) ? { reason = XR_EVAL } | {
+      sv_set(ex, xw, u32(0), u32(0), probe_out(lw, w, b, pr.off_init))
+      j: u32 = 0
+      while j < pr.data_leaves {
+        sv_set(ex, xw, u32(0), u32(1) + j, probe_out(lw, w, b, pr.off_idata + j))
+        j = j + u32(1)
+      }
+      first: u32 = add_state(ex, xw, nleaves)
+    }
+  } | { }
+  at: u32 = 0
+  while at < xst(ex, xw, XS_NSTATES) && reason == u32(0) {
+    // A state's edges are appended while it is processed, so its range
+    // starts here.
+    xw[ex.sedge_at + at * u32(2)] = xst(ex, xw, XS_NEDGES)
+    xw[ex.sedge_at + at * u32(2) + u32(1)] = u32(0)
+    ks: u64 = 0
+    while ks < pr.nsteps && reason == u32(0) {
+      probe_set_state(lw, w, sx, pr, ex, xw, at)
+      set_param_value(lw, w, sx, dom, pr.step_t, param_leaf_start(sx, pr.step_p), ks)
+      !probe_eval(lw, w, b) ? { reason = XR_EVAL } | {
+        ks == u64(0) ? {
+          q: u32 = 0
+          while q < nq && q < EX_PREDS {
+            set_pred_bit(ex, xw, q, at, (probe_out(lw, w, b, pr.off_q + q) & u64(1)) != u64(0))
+            q = q + u32(1)
+          }
+        } | { }
+        (probe_out(lw, w, b, pr.off_legal) & u64(1)) != u64(0) ? {
+          n: u32 = xst(ex, xw, XS_NSTATES)
+          n >= EX_STATES ? { reason = XR_STATES } | {
+            sv_set(ex, xw, n, u32(0), probe_out(lw, w, b, pr.off_nxt))
+            j: u32 = 0
+            while j < pr.data_leaves {
+              sv_set(ex, xw, n, u32(1) + j, probe_out(lw, w, b, pr.off_data + j))
+              j = j + u32(1)
+            }
+            tgt: u32 = add_state(ex, xw, nleaves)
+            xst(ex, xw, XS_NSTATES) > cases ? { reason = XR_STATES } | {
+              ne: u32 = xst(ex, xw, XS_NEDGES)
+              ne >= EX_EDGES ? { reason = XR_STATES } | {
+                xw[ex.edges_at + ne * u32(3)] = step_variant_of(sx, dom, pr.step_t, ks)
+                xw[ex.edges_at + ne * u32(3) + u32(1)] = tgt
+                xw[ex.edges_at + ne * u32(3) + u32(2)] = tgt != at ? { u32(1) } | { u32(0) }
+                set_xst(ex, xw, XS_NEDGES, ne + u32(1))
+                xw[ex.sedge_at + at * u32(2) + u32(1)] = edges_count(ex, xw, at) + u32(1)
+              }
+            }
+          }
+        } | { }
+      }
+      ks = ks + u64(1)
+    }
+    at = at + u32(1)
+  }
+  reason
+}
+
+// --- spelling states -----------------------------------------------------------------------------
+
+// state_name: the variant name of a state tag (the protocol's states list).
+state_name: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, sx: []u32, pi: u32, state_t: u32, tag: u64): u32 {
+  n: u32 = type_field_count(sx, state_t)
+  v: u32 = 0
+  found: u32 = NONE
+  while v < n && found == NONE {
+    u64(variant_tag(sx, state_t, v)) == tag ? { found = v } | { }
+    v = v + u32(1)
+  }
+  (found == NONE || found >= rproto_word(rx, raw, pi, u32(6))) ? { lstr(le, ew, u64(0x3F), u64(0x0), u32(1)) } | { rstr(le, ew, rx, raw, rl_item(rx, raw, rproto_word(rx, raw, pi, u32(7)), found)) }
+}
+
+// scalar_text spells a leaf value at its width and signedness (the
+// interpreter's Inspect: decimal, negative for a signed value, a Bool as
+// true or false).
+scalar_text: (le: Lem, ew: [*]u32, v: u64, width: u32, signed: Bool): u32 {
+  width == u32(1) ? { lc(le, ew, (v & u64(1)) != u64(0) ? { LC_TRUE } | { LC_FALSE }) } | {
+    negative: Bool = signed && width < u32(64) && ((v >> u64(width - u32(1))) & u64(1)) != u64(0)
+    sb_begin(le, ew)
+    negative ? {
+      sb_byte(le, ew, u32(45))
+      sb_dec(le, ew, (u64(1) << u64(width)) - v)
+    } | { sb_dec(le, ew, v) }
+    sb_end(le, ew)
+  }
+}
+
+// describe_state spells a graph state: the state name, and with data
+// ` with {field: value, ...}` (fields in name order, the Go command's
+// canonical key).
+describe_state: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, sx: []u32, pi: u32, pr: Probe, ex: Exp, xw: [*]u32, at: u32): u32 {
+  name: u32 = state_name(le, ew, rx, raw, sx, pi, pr.state_t, sv_get(ex, xw, at, u32(0)))
+  pr.data_t == NONE ? { name } | {
+    rec: u32 = rproto_word(rx, raw, pi, u32(14))
+    fstart: u32 = rrec_word(rx, raw, rec, u32(1))
+    nfields: u32 = rrec_word(rx, raw, rec, u32(2))
+    // Field indices sorted by name.
+    order: [64]u32
+    n: u32 = nfields < u32(64) ? { nfields } | { u32(64) }
+    i: u32 = 0
+    while i < n {
+      order[i] = i
+      i = i + u32(1)
+    }
+    a: u32 = 1
+    while a < n {
+      bq: u32 = a
+      while bq > u32(0) && rname_less(rx, raw, rfield_word(rx, raw, fstart + order[bq], u32(0)), rfield_word(rx, raw, fstart + order[bq - u32(1)], u32(0))) {
+        tmp: u32 = order[bq]
+        order[bq] = order[bq - u32(1)]
+        order[bq - u32(1)] = tmp
+        bq = bq - u32(1)
+      }
+      a = a + u32(1)
+    }
+    // The pieces: "name: value" per field, then the text.
+    base: u32 = lst(le, ew, LN_ACC_SP)
+    i = u32(0)
+    while i < n {
+      fi: u32 = order[i]
+      off: u32 = field_offset(sx, pr.data_t, fi)
+      fname: u32 = rstr(le, ew, rx, raw, rfield_word(rx, raw, fstart + fi, u32(0)))
+      value: u32 = scalar_text(le, ew, sv_get(ex, xw, at, u32(1) + off), type_leaf_width(sx, pr.data_t, off), type_leaf_signed(sx, pr.data_t, off))
+      sb_begin(le, ew)
+      sb_str(le, ew, fname)
+      ap_lits(le, ew, u64(0x203A), u64(0x0), u32(2))  // : 
+      sb_str(le, ew, value)
+      acc_push_l(le, ew, sb_end(le, ew))
+      i = i + u32(1)
+    }
+    sep: u32 = lstr(le, ew, u64(0x202C), u64(0x0), u32(2))
+    fields: u32 = join_acc(le, ew, base, sep)
+    sb_begin(le, ew)
+    sb_str(le, ew, name)
+    ap_lits(le, ew, u64(0x7B206874697720), u64(0x0), u32(7))  //  with {
+    sb_str(le, ew, fields)
+    sb_byte(le, ew, u32(125))
+    sb_end(le, ew)
+  }
+}
+
+// describe_set spells a component (ascending state indices): the first
+// four states, then `... (N states)`.
+describe_set: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, sx: []u32, pi: u32, pr: Probe, ex: Exp, xw: [*]u32, comp_start: u32, comp_n: u32): u32 {
+  base: u32 = lst(le, ew, LN_ACC_SP)
+  i: u32 = 0
+  while i < comp_n && i < u32(4) {
+    acc_push_l(le, ew, describe_state(le, ew, rx, raw, sx, pi, pr, ex, xw, xw[ex.comp_at + comp_start + i]))
+    i = i + u32(1)
+  }
+  comp_n > u32(4) ? {
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x28202E2E2E), u64(0x0), u32(5))  // ... (
+    sb_dec(le, ew, u64(comp_n))
+    ap_lits(le, ew, u64(0x2973657461747320), u64(0x0), u32(8))  //  states)
+    acc_push_l(le, ew, sb_end(le, ew))
+  } | { }
+  sep: u32 = lstr(le, ew, u64(0x203B), u64(0x0), u32(2))
+  inner: u32 = join_acc(le, ew, base, sep)
+  sb_begin(le, ew)
+  sb_byte(le, ew, u32(123))
+  sb_str(le, ew, inner)
+  sb_byte(le, ew, u32(125))
+  sb_end(le, ew)
+}
+
+// reason_text: the exploration's refusal, in the Go command's words.
+reason_text: (le: Lem, ew: [*]u32, reason: u32, nsteps: u64, cases: u32, code: u32): u32 {
+  sb_begin(le, ew)
+  reason == XR_STEPS ? {
+    ap_lits(le, ew, u64(0x203A7370657473), u64(0x0), u32(7))  // steps: 
+    sb_dec(le, ew, nsteps)
+    ap_lits(le, ew, u64(0x6176207065747320), u64(0x637865207365756C), u32(16))  //  step values exceed 
+    ap_lits(le, ew, u64(0x20646565), u64(0x0), u32(4))
+    sb_dec(le, ew, u64(cases))
+    ap_lits(le, ew, u64(0x2820736573616320), u64(0x7420656E69666572), u32(16))  //  cases (refine the payload types, or raise -cases)
+    ap_lits(le, ew, u64(0x6F6C796170206568), u64(0x7365707974206461), u32(16))
+    ap_lits(le, ew, u64(0x69617220726F202C), u64(0x657361632D206573), u32(16))
+    ap_lits(le, ew, u64(0x2973), u64(0x0), u32(2))
+  } | {
+  reason == XR_STATES ? {
+    ap_lits(le, ew, u64(0x6168742065726F6D), u64(0x206E), u32(10))  // more than 
+    sb_dec(le, ew, u64(cases))
+    ap_lits(le, ew, u64(0x6261686361657220), u64(0x657461747320656C), u32(16))  //  reachable states (raise -cases)
+    ap_lits(le, ew, u64(0x6573696172282073), u64(0x2973657361632D20), u32(16))
+  } | {
+  reason == XR_EVAL ? {
+    ap_lits(le, ew, u64(0x697461756C617665), u64(0x656C696166206E6F), u32(16))  // evaluation failed: a term outside the evaluator
+    ap_lits(le, ew, u64(0x7265742061203A64), u64(0x64697374756F206D), u32(16))
+    ap_lits(le, ew, u64(0x7665206568742065), u64(0x726F7461756C61), u32(15))
+  } | {
+  reason == XR_PROBE ? {
+    ap_lits(le, ew, u64(0x626F727020656874), u64(0x74756F2073692065), u32(16))  // the probe is outside the Oak lowering's subset (reason 
+    ap_lits(le, ew, u64(0x6568742065646973), u64(0x776F6C206B614F20), u32(16))
+    ap_lits(le, ew, u64(0x207327676E697265), u64(0x2820746573627573), u32(16))
+    ap_lits(le, ew, u64(0x206E6F73616572), u64(0x0), u32(7))
+    sb_dec(le, ew, u64(code))
+    sb_byte(le, ew, u32(41))
+  } | {
+    ap_lits(le, ew, u64(0x626F727020656874), u64(0x6E61207361682065), u32(16))  // the probe has an unexpected shape
+    ap_lits(le, ew, u64(0x63657078656E7520), u64(0x7061687320646574), u32(16))
+    ap_lits(le, ew, u64(0x65), u64(0x0), u32(1))
+  } } } }
+  sb_end(le, ew)
+}
+
+// --- liveness: components and fair traps -------------------------------------------------------------
+
+// components computes the strongly connected components of the subgraph
+// on the set (Tarjan, nodes ascending, singletons included) into the
+// component pool from XS_COMP_TOP: the component boundaries go to cidx
+// from cidx_base; returns the component count.
+components: (ex: Exp, xw: [*]u32, set_base: u32, nstates: u32, cidx_base: u32): u32 {
+  at: u32 = 0
+  while at < nstates {
+    xw[ex.tj_index_at + at] = NONE
+    xw[ex.tj_on_at + at] = u32(0)
+    at = at + u32(1)
+  }
+  counter: u32 = 0
+  tsp: u32 = 0
+  ncomp: u32 = 0
+  pool: u32 = xst(ex, xw, XS_COMP_TOP)
+  xw[ex.cidx_at + cidx_base] = pool
+  root: u32 = 0
+  while root < nstates {
+    (set_has(xw, set_base, root) && xw[ex.tj_index_at + root] == NONE) ? {
+      // An explicit call stack of (node, next edge offset).
+      dsp: u32 = 1
+      xw[ex.dfs_at] = root
+      xw[ex.dfs_at + u32(1)] = u32(0)
+      xw[ex.tj_index_at + root] = counter
+      xw[ex.tj_low_at + root] = counter
+      counter = counter + u32(1)
+      xw[ex.tj_stack_at + tsp] = root
+      tsp = tsp + u32(1)
+      xw[ex.tj_on_at + root] = u32(1)
+      while dsp > u32(0) {
+        v: u32 = xw[ex.dfs_at + (dsp - u32(1)) * u32(2)]
+        k: u32 = xw[ex.dfs_at + (dsp - u32(1)) * u32(2) + u32(1)]
+        n_e: u32 = edges_count(ex, xw, v)
+        // Advance over edges leaving the set or already indexed.
+        descended: Bool = false
+        while k < n_e && !descended {
+          e: u32 = edges_start(ex, xw, v) + k
+          tgt: u32 = edge_to(ex, xw, e)
+          k = k + u32(1)
+          set_has(xw, set_base, tgt) ? {
+            xw[ex.tj_index_at + tgt] == NONE ? {
+              xw[ex.dfs_at + (dsp - u32(1)) * u32(2) + u32(1)] = k
+              xw[ex.tj_index_at + tgt] = counter
+              xw[ex.tj_low_at + tgt] = counter
+              counter = counter + u32(1)
+              xw[ex.tj_stack_at + tsp] = tgt
+              tsp = tsp + u32(1)
+              xw[ex.tj_on_at + tgt] = u32(1)
+              xw[ex.dfs_at + dsp * u32(2)] = tgt
+              xw[ex.dfs_at + dsp * u32(2) + u32(1)] = u32(0)
+              dsp = dsp + u32(1)
+              descended = true
+            } | {
+              (xw[ex.tj_on_at + tgt] != u32(0) && xw[ex.tj_index_at + tgt] < xw[ex.tj_low_at + v]) ? { xw[ex.tj_low_at + v] = xw[ex.tj_index_at + tgt] } | { }
+            }
+          } | { }
+        }
+        descended ? { } | {
+          // v is finished: emit its component if it is a root, then return
+          // its low link to the parent.
+          xw[ex.tj_low_at + v] == xw[ex.tj_index_at + v] ? {
+            popping: Bool = true
+            while popping {
+              tsp = tsp - u32(1)
+              top: u32 = xw[ex.tj_stack_at + tsp]
+              xw[ex.tj_on_at + top] = u32(0)
+              pool < EX_COMPS ? {
+                xw[ex.comp_at + pool] = top
+                pool = pool + u32(1)
+              } | { }
+              popping = top != v
+            }
+            ncomp = ncomp + u32(1)
+            xw[ex.cidx_at + cidx_base + ncomp] = pool
+          } | { }
+          dsp = dsp - u32(1)
+          dsp > u32(0) ? {
+            parent: u32 = xw[ex.dfs_at + (dsp - u32(1)) * u32(2)]
+            xw[ex.tj_low_at + v] < xw[ex.tj_low_at + parent] ? { xw[ex.tj_low_at + parent] = xw[ex.tj_low_at + v] } | { }
+          } | { }
+        }
+      }
+    } | { }
+    root = root + u32(1)
+  }
+  set_xst(ex, xw, XS_COMP_TOP, pool)
+  ncomp
+}
+
+// sort_component sorts a component's states ascending (in place).
+sort_component: (ex: Exp, xw: [*]u32, start: u32, n: u32): () {
+  a: u32 = 1
+  while a < n {
+    bq: u32 = a
+    while bq > u32(0) && xw[ex.comp_at + start + bq] < xw[ex.comp_at + start + bq - u32(1)] {
+      tmp: u32 = xw[ex.comp_at + start + bq]
+      xw[ex.comp_at + start + bq] = xw[ex.comp_at + start + bq - u32(1)]
+      xw[ex.comp_at + start + bq - u32(1)] = tmp
+      bq = bq - u32(1)
+    }
+    a = a + u32(1)
+  }
+}
+
+// enabled_in: whether a step (variant index) is enabled as a step at a
+// state: an edge taking it that changes the state or the data.
+enabled_in: (ex: Exp, xw: [*]u32, at: u32, step: u32): Bool {
+  found: Bool = false
+  e: u32 = edges_start(ex, xw, at)
+  end: u32 = e + edges_count(ex, xw, at)
+  while e < end && !found {
+    found = edge_step(ex, xw, e) == step && edge_changes(ex, xw, e)
+    e = e + u32(1)
+  }
+  found
+}
+
+// taken_inside: whether a step is taken (changing) from a state of the
+// component into the component (inside_at holds the component's set).
+taken_inside: (ex: Exp, xw: [*]u32, comp_start: u32, comp_n: u32, step: u32): Bool {
+  found: Bool = false
+  i: u32 = 0
+  while i < comp_n && !found {
+    at: u32 = xw[ex.comp_at + comp_start + i]
+    e: u32 = edges_start(ex, xw, at)
+    end: u32 = e + edges_count(ex, xw, at)
+    while e < end && !found {
+      found = edge_step(ex, xw, e) == step && edge_changes(ex, xw, e) && set_has(xw, ex.inside_at, edge_to(ex, xw, e))
+      e = e + u32(1)
+    }
+    i = i + u32(1)
+  }
+  found
+}
+
+// Fairness: the weak and strong step sets as bit masks over the step
+// variant indices (at most 32 steps take part).
+Fair: type = struct { weak: u32, strong: u32 }
+
+// fair_component finds a fair strongly connected set inside the set at
+// set_base (prove/liveness.go fairComponent): the component's start and
+// count in the pool through out (2 words); false when none. A strongly
+// fair step enabled somewhere in a component but never taken inside it
+// refines the component by the states where it is disabled, depth first,
+// on an explicit frame stack (each frame a set and its components).
+fair_component: (ex: Exp, xw: [*]u32, set_base: u32, nstates: u32, fair: Fair, out: [*]u32): Bool {
+  found: Bool = false
+  // Frame k: set at set_at + k * EX_SETW, components from cidx base
+  // k * (EX_STATES / EX_FRAMES)... the cidx and pool grow as a stack: each
+  // frame remembers its cidx base, its count, and its next component.
+  fcidx: [24]u32
+  fcount: [24]u32
+  fnext: [24]u32
+  fpool: [24]u32
+  sp: u32 = 1
+  set_copy(xw, ex.set_at, set_base)
+  fcidx[u32(0)] = u32(0)
+  fpool[u32(0)] = xst(ex, xw, XS_COMP_TOP)
+  fcount[u32(0)] = components(ex, xw, ex.set_at, nstates, u32(0))
+  fnext[u32(0)] = u32(0)
+  while sp > u32(0) && !found {
+    i: u32 = sp - u32(1)
+    fnext[i] >= fcount[i] ? {
+      // The frame's components are exhausted.
+      set_xst(ex, xw, XS_COMP_TOP, fpool[i])
+      sp = sp - u32(1)
+    } | {
+      c: u32 = fnext[i]
+      fnext[i] = c + u32(1)
+      cstart: u32 = xw[ex.cidx_at + fcidx[i] + c]
+      cn: u32 = xw[ex.cidx_at + fcidx[i] + c + u32(1)] - cstart
+      // The component's membership.
+      set_clear(xw, ex.inside_at)
+      j: u32 = 0
+      while j < cn {
+        set_add(xw, ex.inside_at, xw[ex.comp_at + cstart + j])
+        j = j + u32(1)
+      }
+      // Dead under weak fairness: a weakly fair step enabled throughout
+      // and never taken inside.
+      dead: Bool = false
+      step: u32 = 0
+      while step < u32(32) && !dead {
+        ((fair.weak >> step) & u32(1)) != u32(0) ? {
+          everywhere: Bool = true
+          j = u32(0)
+          while j < cn && everywhere {
+            everywhere = enabled_in(ex, xw, xw[ex.comp_at + cstart + j], step)
+            j = j + u32(1)
+          }
+          (everywhere && !taken_inside(ex, xw, cstart, cn, step)) ? { dead = true } | { }
+        } | { }
+        step = step + u32(1)
+      }
+      dead ? { } | {
+        failing: u32 = 0
+        step = u32(0)
+        while step < u32(32) {
+          ((fair.strong >> step) & u32(1)) != u32(0) ? {
+            somewhere: Bool = false
+            j = u32(0)
+            while j < cn && !somewhere {
+              somewhere = enabled_in(ex, xw, xw[ex.comp_at + cstart + j], step)
+              j = j + u32(1)
+            }
+            (somewhere && !taken_inside(ex, xw, cstart, cn, step)) ? { failing = failing | (u32(1) << step) } | { }
+          } | { }
+          step = step + u32(1)
+        }
+        failing == u32(0) ? {
+          sort_component(ex, xw, cstart, cn)
+          out[u32(0)] = cstart
+          out[u32(1)] = cn
+          found = true
+        } | {
+          // The smaller set: the component less the states where a failing
+          // step is enabled.
+          sp >= EX_FRAMES ? { } | {
+            nbase: u32 = ex.set_at + sp * EX_SETW
+            set_clear(xw, nbase)
+            kept: u32 = 0
+            j = u32(0)
+            while j < cn {
+              at: u32 = xw[ex.comp_at + cstart + j]
+              keep: Bool = true
+              step = u32(0)
+              while step < u32(32) && keep {
+                (((failing >> step) & u32(1)) != u32(0) && enabled_in(ex, xw, at, step)) ? { keep = false } | { }
+                step = step + u32(1)
+              }
+              keep ? {
+                set_add(xw, nbase, at)
+                kept = kept + u32(1)
+              } | { }
+              j = j + u32(1)
+            }
+            (kept > u32(0) && kept < cn) ? {
+              fcidx[sp] = fcidx[i] + fcount[i] + u32(1)
+              fpool[sp] = xst(ex, xw, XS_COMP_TOP)
+              fcount[sp] = components(ex, xw, nbase, nstates, fcidx[sp])
+              fnext[sp] = u32(0)
+              sp = sp + u32(1)
+            } | { }
+          }
+        }
+      }
+    }
+  }
+  found ? { } | { set_xst(ex, xw, XS_COMP_TOP, fpool[u32(0)]) }
+  found
+}
+
+// fair_trap searches from each start (the queue holds them, nstarts) for
+// a fair component among the states reachable without passing the target
+// (predicate bit q_to): the start and the component through out (3
+// words: start, component start, count); false when none.
+fair_trap: (ex: Exp, xw: [*]u32, nstates: u32, nstarts: u32, q_to: u32, fair: Fair, out: [*]u32): Bool {
+  found: Bool = false
+  s: u32 = 0
+  while s < nstarts && !found {
+    start: u32 = xw[ex.queue_at + EX_STATES / u32(2) + s]
+    set_clear(xw, ex.reach_at)
+    set_add(xw, ex.reach_at, start)
+    // Breadth first in the queue's first half.
+    head: u32 = 0
+    tail: u32 = 1
+    xw[ex.queue_at] = start
+    while head < tail {
+      at: u32 = xw[ex.queue_at + head]
+      head = head + u32(1)
+      e: u32 = edges_start(ex, xw, at)
+      end: u32 = e + edges_count(ex, xw, at)
+      while e < end {
+        tgt: u32 = edge_to(ex, xw, e)
+        (!pred_bit(ex, xw, q_to, tgt) && !set_has(xw, ex.reach_at, tgt)) ? {
+          set_add(xw, ex.reach_at, tgt)
+          tail < EX_STATES / u32(2) ? {
+            xw[ex.queue_at + tail] = tgt
+            tail = tail + u32(1)
+          } | { }
+        } | { }
+        e = e + u32(1)
+      }
+    }
+    comp: [2]u32
+    set_xst(ex, xw, XS_COMP_TOP, u32(0))
+    fair_component(ex, xw, ex.reach_at, nstates, fair, span(&comp)) ? {
+      out[u32(0)] = start
+      out[u32(1)] = comp[u32(0)]
+      out[u32(2)] = comp[u32(1)]
+      found = true
+    } | { }
+    s = s + u32(1)
+  }
+  found
+}
+
+// --- the rows -----------------------------------------------------------------------------------------
+
+// fairness_text: `under fair tick, strongly fair resume` or `with no
+// fairness declared`; the masks over the step variant indices.
+fairness_text: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, pi: u32, out: [*]u32): u32 {
+  nfair: u32 = rproto_word(rx, raw, pi, u32(10))
+  flist: u32 = rproto_word(rx, raw, pi, u32(11))
+  nsteps: u32 = rproto_word(rx, raw, pi, u32(8))
+  slist: u32 = rproto_word(rx, raw, pi, u32(9))
+  out[u32(0)] = u32(0)
+  out[u32(1)] = u32(0)
+  base: u32 = lst(le, ew, LN_ACC_SP)
+  k: u32 = 0
+  while k < nfair {
+    step_name: u32 = rl_item(rx, raw, flist, k * u32(2))
+    strong: Bool = rl_item(rx, raw, flist, k * u32(2) + u32(1)) != u32(0)
+    si: u32 = 0
+    while si < nsteps {
+      rl_item(rx, raw, slist, si * u32(4)) == step_name ? {
+        strong ? { out[u32(1)] = out[u32(1)] | (u32(1) << si) } | { out[u32(0)] = out[u32(0)] | (u32(1) << si) }
+      } | { }
+      si = si + u32(1)
+    }
+    name: u32 = rstr(le, ew, rx, raw, step_name)
+    sb_begin(le, ew)
+    strong ? { ap_lits(le, ew, u64(0x796C676E6F727473), u64(0x207269616620), u32(14)) } | { ap_lits(le, ew, u64(0x2072696166), u64(0x0), u32(5)) }
+    sb_str(le, ew, name)
+    acc_push_l(le, ew, sb_end(le, ew))
+    k = k + u32(1)
+  }
+  nfair == u32(0) ? {
+    set_lst(le, ew, LN_ACC_SP, base)
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x206F6E2068746977), u64(0x7373656E72696166), u32(16))  // with no fairness declared
+    ap_lits(le, ew, u64(0x6572616C63656420), u64(0x64), u32(9))
+    sb_end(le, ew)
+  } | {
+    sep: u32 = lstr(le, ew, u64(0x202C), u64(0x0), u32(2))
+    joined: u32 = join_acc(le, ew, base, sep)
+    sb_begin(le, ew)
+    ap_lits(le, ew, u64(0x207265646E75), u64(0x0), u32(6))  // under 
+    sb_str(le, ew, joined)
+    sb_end(le, ew)
+  }
+}
+
+// entry_text: `eventually T` or `eventually F -> T`.
+entry_text: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, pi: u32, k: u32): u32 {
+  llist: u32 = rproto_word(rx, raw, pi, u32(13))
+  from_s: u32 = rl_item(rx, raw, llist, k * u32(2))
+  target: u32 = rstr(le, ew, rx, raw, rl_item(rx, raw, llist, k * u32(2) + u32(1)))
+  from_text: u32 = from_s == NONE ? { NONE } | { rstr(le, ew, rx, raw, from_s) }
+  sb_begin(le, ew)
+  ap_lits(le, ew, u64(0x6C6175746E657665), u64(0x20796C), u32(11))  // eventually 
+  from_text == NONE ? { } | {
+    sb_str(le, ew, from_text)
+    ap_lits(le, ew, u64(0x203E2D20), u64(0x0), u32(4))  //  -> 
+  }
+  sb_str(le, ew, target)
+  sb_end(le, ew)
+}
+
+// live_row_name: `prefix_liveK`.
+live_row_name: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, pi: u32, k: u32): u32 {
+  prefix: u32 = rstr(le, ew, rx, raw, rproto_word(rx, raw, pi, u32(1)))
+  sb_begin(le, ew)
+  sb_str(le, ew, prefix)
+  ap_lits(le, ew, u64(0x6576696C5F), u64(0x0), u32(5))  // _live
+  sb_dec(le, ew, u64(k + u32(1)))
+  sb_end(le, ew)
+}
+
+// serialize_function_in_oak owns the serializer's buffers around a probe's
+// serialization: the table's word count, or NONE - reason.
+serialize_function_in_oak: (ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, rx: []u32, fi: u32): u32 {
+  n: u32 = 0
+  unsafe {
+    pf_sbuf: Buffer[u32] = c.own[u32](ser_raw, ser.total)
+    pf_obuf: Buffer[u32] = c.own[u32](out_raw, ser.out_total)
+    n = serialize_function(ser, span(&pf_sbuf), rx, span(&pf_obuf), fi)
+    n = n == u32(0) ? { NONE - serialize_reason(ser, span(&pf_sbuf)) } | { n }
+    released_pfs: c.Ptr = c.disown(pf_sbuf)
+    released_pfo: c.Ptr = c.disown(pf_obuf)
+  }
+  n
+}
+
+// count_candidates: the protocol's invariant candidates, and how many are
+// not decided after the fold (through out: total, pending).
+count_candidates: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, pi: u32, out: [*]u32): () {
+  out[u32(0)] = u32(0)
+  out[u32(1)] = u32(0)
+  fi: u32 = 0
+  while fi < raw.nfuncs {
+    candidate_proto(rx, raw, fi) == pi ? {
+      out[u32(0)] = out[u32(0)] + u32(1)
+      ri: u32 = row_named(le, ew, rstr(le, ew, rx, raw, rf_word(rx, raw, fi, u32(0))))
+      (ri != NONE && row_kind(le, ew, ri) != ROW_DECIDED) ? { out[u32(1)] = out[u32(1)] + u32(1) } | { }
+    } | { }
+    fi = fi + u32(1)
+  }
+}
+
+// failure_rows leaves the pending candidates with the reason appended to
+// their detail and opens every liveness row with it.
+failure_rows: (le: Lem, ew: [*]u32, rx: []u32, raw: Raw, pi: u32, why: u32): () {
+  nlive: u32 = rproto_word(rx, raw, pi, u32(12))
+  fi: u32 = 0
+  while fi < raw.nfuncs {
+    candidate_proto(rx, raw, fi) == pi ? {
+      ri: u32 = row_named(le, ew, rstr(le, ew, rx, raw, rf_word(rx, raw, fi, u32(0))))
+      (ri != NONE && row_kind(le, ew, ri) != ROW_DECIDED) ? {
+        prior: u32 = row_detail(le, ew, ri)
+        sb_begin(le, ew)
+        sb_str(le, ew, prior)
+        ap_lits(le, ew, u64(0x6168636165722820), u64(0x7461747320656C62), u32(16))  //  (reachable states: 
+        ap_lits(le, ew, u64(0x203A7365), u64(0x0), u32(4))
+        sb_str(le, ew, why)
+        sb_byte(le, ew, u32(41))
+        set_row(le, ew, ri, row_kind(le, ew, ri), sb_end(le, ew))
+      } | { }
+    } | { }
+    fi = fi + u32(1)
+  }
+  k: u32 = 0
+  while k < nlive {
+    text: u32 = entry_text(le, ew, rx, raw, pi, k)
+    name: u32 = live_row_name(le, ew, rx, raw, pi, k)
+    sb_begin(le, ew)
+    sb_str(le, ew, text)
+    ap_lits(le, ew, u64(0x203A), u64(0x0), u32(2))  // : 
+    sb_str(le, ew, why)
+    row_push(le, ew, ROW_OPEN, name, sb_end(le, ew))
+    k = k + u32(1)
+  }
+}
+
+// explore_lowered lowers the serialized probe, explores the graph, and
+// writes the rows (the verdicts, or the reason).
+explore_lowered: (le: Lem, ew: [*]u32, sx: []u32, lw: Lower, w: [*]u32, b: [*]u32, ex: Exp, xw: [*]u32, rx: []u32, raw: Raw, pi: u32, cases: u32, ncand: u32): () {
+  with_data: Bool = rproto_word(rx, raw, pi, u32(4)) != NONE
+  nlive: u32 = rproto_word(rx, raw, pi, u32(12))
+  llist: u32 = rproto_word(rx, raw, pi, u32(13))
+  dom: [256]u64
+  reason: u32 = 0
+  code: u32 = 0
+  nsteps: u64 = 0
+  nterms: u32 = lower_probe(lw, w, b, sx)
+  nterms == u32(0) ? {
+    reason = XR_PROBE
+    code = lower_reason(lw, w)
+  } | {
+    syn_types(sx) > MAX_DOMAIN_TYPES ? { reason = XR_SHAPE } | {
+      compute_domains(sx, span(&dom))
+      pr: Probe = probe_layout(sx, with_data, span(&dom))
+      nsteps = pr.nsteps
+      !pr.ok ? { reason = XR_SHAPE } | {
+        nq: u32 = 0
+        k: u32 = 0
+        while k < nlive {
+          nq = nq + (rl_item(rx, raw, llist, k * u32(2)) == NONE ? { u32(1) } | { u32(2) })
+          k = k + u32(1)
+        }
+        reason = explore_graph(lw, w, b, sx, pr, span(&dom), ex, xw, cases, nq + ncand)
+        (reason == u32(0) && trace_env()) ? { dump_graph(le, ew, sx, pr, ex, xw, rx, raw, pi) } | { }
+        reason == u32(0) ? { explore_rows(le, ew, sx, pr, span(&dom), ex, xw, rx, raw, pi, cases, ncand) } | { }
+      }
+    }
+  }
+  reason == u32(0) ? { } | { failure_rows(le, ew, rx, raw, pi, reason_text(le, ew, reason, nsteps, cases, code)) }
+}
+
+// explore_view narrows the serializer's output to the table and explores.
+explore_view: (le: Lem, ew: [*]u32, whole: []u32, n_syn: u32, lw: Lower, w: [*]u32, b: [*]u32, ex: Exp, xw: [*]u32, rx: []u32, raw: Raw, pi: u32, cases: u32, ncand: u32): () {
+  sx: []u32 = subslice(whole, u32(0), n_syn)
+  explore_lowered(le, ew, sx, lw, w, b, ex, xw, rx, raw, pi, cases, ncand)
+}
+
+// explore_protocol decides one protocol's candidates left short of
+// `decided` over the reachable states and appends its liveness rows: the
+// probe is serialized and lowered once, the graph built from it.
+explore_protocol: (le: Lem, ew: [*]u32, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, lw: Lower, work_raw: c.Ptr, built_raw: c.Ptr, ex: Exp, ex_raw: c.Ptr, rx: []u32, raw: Raw, pi: u32, cases: u32): () {
+  nlive: u32 = rproto_word(rx, raw, pi, u32(12))
+  cands: [2]u32
+  count_candidates(le, ew, rx, raw, pi, span(&cands))
+  (cands[u32(1)] == u32(0) && nlive == u32(0)) ? { } | {
+    pname: u32 = cat2(le, ew, rstr(le, ew, rx, raw, rproto_word(rx, raw, pi, u32(1))), lstr(le, ew, u64(0x65626F72705F), u64(0x0), u32(6)))
+    packed: [64]u32
+    k: u32 = 0
+    while k < u32(64) {
+      packed[k] = u32(0)
+      k = k + u32(1)
+    }
+    k = u32(0)
+    while k < s_len(le, ew, pname) && k < u32(256) {
+      packed[k / u32(4)] = packed[k / u32(4)] | (s_byte(le, ew, pname, k) << ((k % u32(4)) * u32(8)))
+      k = k + u32(1)
+    }
+    packed_view: []u32 = view(&packed)
+    probe_fi: u32 = raw_find_function_named(rx, packed_view, s_len(le, ew, pname))
+    n_syn: u32 = probe_fi == NONE ? { NONE } | { serialize_function_in_oak(ser, ser_raw, out_raw, rx, probe_fi) }
+    n_syn >= u32(0x80000000) ? {
+      failure_rows(le, ew, rx, raw, pi, reason_text(le, ew, XR_PROBE, u64(0), cases, NONE - n_syn))
+    } | {
+      unsafe {
+        px_obuf: Buffer[u32] = c.own[u32](out_raw, ser.out_total)
+        px_wbuf: Buffer[u32] = c.own[u32](work_raw, lw.total)
+        px_bbuf: Buffer[u32] = c.own[u32](built_raw, lw.built_total)
+        px_xbuf: Buffer[u32] = c.own[u32](ex_raw, ex.total)
+        explore_view(le, ew, view(&px_obuf), n_syn, lw, span(&px_wbuf), span(&px_bbuf), ex, span(&px_xbuf), rx, raw, pi, cases, cands[u32(0)])
+        released_pxo: c.Ptr = c.disown(px_obuf)
+        released_pxw: c.Ptr = c.disown(px_wbuf)
+        released_pxb: c.Ptr = c.disown(px_bbuf)
+        released_pxx: c.Ptr = c.disown(px_xbuf)
+      }
+    }
+  }
+}
+
+// dump_graph prints the reachable graph (OAK_PROVE_TRACE=1): each state
+// with its predicate bits and edges.
+dump_graph: (le: Lem, ew: [*]u32, sx: []u32, pr: Probe, ex: Exp, xw: [*]u32, rx: []u32, raw: Raw, pi: u32): () {
+  nstates: u32 = xst(ex, xw, XS_NSTATES)
+  at: u32 = 0
+  while at < nstates {
+    write_u32(at)
+    write_byte(u8(32))
+    write_str(le, ew, describe_state(le, ew, rx, raw, sx, pi, pr, ex, xw, at))
+    write_byte(u8(32))
+    q: u32 = 0
+    while q < u32(8) {
+      write_byte(pred_bit(ex, xw, q, at) ? { u8(49) } | { u8(48) })
+      q = q + u32(1)
+    }
+    e: u32 = edges_start(ex, xw, at)
+    end: u32 = e + edges_count(ex, xw, at)
+    while e < end {
+      write_byte(u8(32))
+      write_u32(edge_step(ex, xw, e))
+      write_byte(u8(45))
+      write_u32(edge_to(ex, xw, e))
+      e = e + u32(1)
+    }
+    write_byte(u8(10))
+    at = at + u32(1)
+  }
+}
+
+// explore_rows writes the verdicts over an explored graph: the pending
+// candidates, then the liveness entries.
+explore_rows: (le: Lem, ew: [*]u32, sx: []u32, pr: Probe, dom: [*]u64, ex: Exp, xw: [*]u32, rx: []u32, raw: Raw, pi: u32, cases: u32, ncand: u32): () {
+  nstates: u32 = xst(ex, xw, XS_NSTATES)
+  nlive: u32 = rproto_word(rx, raw, pi, u32(12))
+  llist: u32 = rproto_word(rx, raw, pi, u32(13))
+  nq_live: u32 = 0
+  k: u32 = 0
+  while k < nlive {
+    nq_live = nq_live + (rl_item(rx, raw, llist, k * u32(2)) == NONE ? { u32(1) } | { u32(2) })
+    k = k + u32(1)
+  }
+  // Candidates: the q bits after the liveness sides, in declaration order.
+  q: u32 = nq_live
+  fi: u32 = 0
+  while fi < raw.nfuncs {
+    candidate_proto(rx, raw, fi) == pi ? {
+      cname: u32 = rstr(le, ew, rx, raw, rf_word(rx, raw, fi, u32(0)))
+      ri: u32 = row_named(le, ew, cname)
+      (ri != NONE && row_kind(le, ew, ri) != ROW_DECIDED) ? {
+        failing: u32 = NONE
+        at: u32 = 0
+        while at < nstates && failing == NONE {
+          pred_bit(ex, xw, q, at) ? { } | { failing = at }
+          at = at + u32(1)
+        }
+        prior: u32 = row_detail(le, ew, ri)
+        failing == NONE ? {
+          sb_begin(le, ew)
+          ap_lits(le, ew, u64(0x6E61697261766E69), u64(0x73646C6F68203A74), u32(16))  // invariant: holds on all 
+          ap_lits(le, ew, u64(0x206C6C61206E6F20), u64(0x0), u32(8))
+          sb_dec(le, ew, u64(nstates))
+          ap_lits(le, ew, u64(0x6261686361657220), u64(0x657461747320656C), u32(16))  //  reachable states (
+          ap_lits(le, ew, u64(0x282073), u64(0x0), u32(3))
+          sb_str(le, ew, prior)
+          sb_byte(le, ew, u32(41))
+          set_row(le, ew, ri, ROW_DECIDED, sb_end(le, ew))
+        } | {
+          desc: u32 = describe_state(le, ew, rx, raw, sx, pi, pr, ex, xw, failing)
+          sb_begin(le, ew)
+          ap_lits(le, ew, u64(0x6E61697261766E69), u64(0x20736C6961662074), u32(16))  // invariant fails at the reachable state 
+          ap_lits(le, ew, u64(0x7220656874207461), u64(0x656C626168636165), u32(16))
+          ap_lits(le, ew, u64(0x20657461747320), u64(0x0), u32(7))
+          sb_str(le, ew, desc)
+          ap_lits(le, ew, u64(0x2820), u64(0x0), u32(2))  //  (
+          sb_str(le, ew, prior)
+          sb_byte(le, ew, u32(41))
+          set_row(le, ew, ri, ROW_REFUTED, sb_end(le, ew))
+        }
+        // The obligation rows no longer count on their own.
+        bi: u32 = row_named(le, ew, cat2(le, ew, cname, lstr(le, ew, u64(0x657361625F5F), u64(0x0), u32(6))))
+        si: u32 = row_named(le, ew, cat2(le, ew, cname, lstr(le, ew, u64(0x706574735F5F), u64(0x0), u32(6))))
+        bi == NONE ? { } | { set_row(le, ew, bi, ROW_DROPPED, row_detail(le, ew, bi)) }
+        si == NONE ? { } | { set_row(le, ew, si, ROW_DROPPED, row_detail(le, ew, si)) }
+      } | { }
+      q = q + u32(1)
+    } | { }
+    fi = fi + u32(1)
+  }
+  // Liveness.
+  masks: [2]u32
+  under: u32 = fairness_text(le, ew, rx, raw, pi, span(&masks))
+  fair: Fair = Fair { weak: masks[u32(0)], strong: masks[u32(1)] }
+  q = u32(0)
+  k = u32(0)
+  while k < nlive {
+    has_from: Bool = rl_item(rx, raw, llist, k * u32(2)) != NONE
+    q_from: u32 = has_from ? { q } | { NONE }
+    q_to: u32 = has_from ? { q + u32(1) } | { q }
+    q = q + (has_from ? { u32(2) } | { u32(1) })
+    text: u32 = entry_text(le, ew, rx, raw, pi, k)
+    name: u32 = live_row_name(le, ew, rx, raw, pi, k)
+    // The starts, in the queue's second half.
+    nstarts: u32 = 0
+    has_from ? {
+      at: u32 = 0
+      while at < nstates {
+        (pred_bit(ex, xw, q_from, at) && !pred_bit(ex, xw, q_to, at) && nstarts < EX_STATES / u32(2)) ? {
+          xw[ex.queue_at + EX_STATES / u32(2) + nstarts] = at
+          nstarts = nstarts + u32(1)
+        } | { }
+        at = at + u32(1)
+      }
+    } | {
+      pred_bit(ex, xw, q_to, u32(0)) ? { } | {
+        xw[ex.queue_at + EX_STATES / u32(2)] = u32(0)
+        nstarts = u32(1)
+      }
+    }
+    trap: [3]u32
+    fair_trap(ex, xw, nstates, nstarts, q_to, fair, span(&trap)) ? {
+      from_desc: u32 = describe_state(le, ew, rx, raw, sx, pi, pr, ex, xw, trap[u32(0)])
+      set_desc: u32 = describe_set(le, ew, rx, raw, sx, pi, pr, ex, xw, trap[u32(1)], trap[u32(2)])
+      sb_begin(le, ew)
+      sb_str(le, ew, text)
+      ap_lits(le, ew, u64(0x65746E756F63203A), u64(0x656C706D61786572), u32(16))  // : counterexample 
+      ap_lits(le, ew, u64(0x20), u64(0x0), u32(1))
+      sb_str(le, ew, under)
+      ap_lits(le, ew, u64(0x206D6F7266203A), u64(0x0), u32(7))  // : from 
+      sb_str(le, ew, from_desc)
+      ap_lits(le, ew, u64(0x2072696166206120), u64(0x726F697661686562), u32(16))  //  a fair behavior never reaches the target, staying within 
+      ap_lits(le, ew, u64(0x7220726576656E20), u64(0x7420736568636165), u32(16))
+      ap_lits(le, ew, u64(0x6567726174206568), u64(0x6979617473202C74), u32(16))
+      ap_lits(le, ew, u64(0x696874697720676E), u64(0x206E), u32(10))
+      sb_str(le, ew, set_desc)
+      row_push(le, ew, ROW_REFUTED, name, sb_end(le, ew))
+    } | {
+      sb_begin(le, ew)
+      sb_str(le, ew, text)
+      ap_lits(le, ew, u64(0x2073646C6F68203A), u64(0x206C6C61206E6F), u32(15))  // : holds on all 
+      sb_dec(le, ew, u64(nstates))
+      ap_lits(le, ew, u64(0x6261686361657220), u64(0x657461747320656C), u32(16))  //  reachable states 
+      ap_lits(le, ew, u64(0x2073), u64(0x0), u32(2))
+      sb_str(le, ew, under)
+      row_push(le, ew, ROW_DECIDED, name, sb_end(le, ew))
+    }
+    k = k + u32(1)
+  }
+}
+
+// explore_all runs the exploration for every protocol.
+explore_all: (le: Lem, ew: [*]u32, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, lw: Lower, work_raw: c.Ptr, built_raw: c.Ptr, ex_raw: c.Ptr, rx: []u32, raw: Raw, cases: u32): () {
+  ex: Exp = exp_layout()
+  pi: u32 = 0
+  while pi < raw.nprotos && !le_failed(le, ew) {
+    explore_protocol(le, ew, ser, ser_raw, out_raw, lw, work_raw, built_raw, ex, ex_raw, rx, raw, pi, cases)
+    pi = pi + u32(1)
+  }
+}
+
+// print_rows writes every row not dropped in the command's format and
+// returns the counts.
+print_rows: (le: Lem, ew: [*]u32): Counts {
+  counts: Counts = Counts { decided: u32(0), refuted: u32(0), open: u32(0), failing: u32(0) }
+  n: u32 = lst(le, ew, LN_NROWS)
+  i: u32 = 0
+  while i < n {
+    kind: u32 = row_kind(le, ew, i)
+    kind == ROW_DROPPED ? { } | {
+      kind == ROW_DECIDED ? { txt_decided() } | { kind == ROW_REFUTED ? { txt_refuted() } | { txt_open() } }
+      write_str(le, ew, row_name(le, ew, i))
+      txt_colon()
+      write_str(le, ew, row_detail(le, ew, i))
+      write_byte(u8(10))
+      advisory: Bool = (row_flags(le, ew, i) & ROWF_ADVISORY) != u32(0)
+      failing: u32 = (kind == ROW_DECIDED || advisory) ? { counts.failing } | { counts.failing + u32(1) }
+      counts = kind == ROW_DECIDED ? { Counts { decided: counts.decided + u32(1), refuted: counts.refuted, open: counts.open, failing: failing } } | {
+        kind == ROW_REFUTED ? { Counts { decided: counts.decided, refuted: counts.refuted + u32(1), open: counts.open, failing: failing } } | { Counts { decided: counts.decided, refuted: counts.refuted, open: counts.open + u32(1), failing: failing } }
+      }
+    }
+    i = i + u32(1)
+  }
+  counts
+}

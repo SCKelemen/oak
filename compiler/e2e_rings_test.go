@@ -49,10 +49,10 @@ main: (): i32 {
     round = round + 1
   }
   mstate: [1]rings.MpscCursor
-  mseqs: [8]Atomic[u32]
+  mseqs: [8]rings.SeqCell
   mdata: [8]u32
   mcursor: [*]rings.MpscCursor = span(&mstate)
-  mseqv: [*]Atomic[u32] = span(&mseqs)
+  mseqv: [*]rings.SeqCell = span(&mseqs)
   mstorage: [*]u32 = span(&mdata)
   rings.mpsc_init(mcursor, mseqv)
   round = u32(0)
@@ -72,10 +72,10 @@ main: (): i32 {
     round = round + 1
   }
   qstate: [1]rings.MpmcCursor
-  qseqs: [8]Atomic[u32]
+  qseqs: [8]rings.SeqCell
   qdata: [8]u32
   qcursor: [*]rings.MpmcCursor = span(&qstate)
-  qseqv: [*]Atomic[u32] = span(&qseqs)
+  qseqv: [*]rings.SeqCell = span(&qseqs)
   qstorage: [*]u32 = span(&qdata)
   rings.mpmc_init(qcursor, qseqv)
   round = u32(0)
@@ -125,6 +125,65 @@ main: (): i32 {
     round = round + 1
   }
   assert(taken == u32(300))
+  // tickets on the MPSC ring: claims are consecutive, a publish waits for
+  // a free slot, the consumer is the same
+  tstate: [1]rings.MpscCursor
+  tseqs: [4]rings.SeqCell
+  tdata: [4]u32
+  tcursor: [*]rings.MpscCursor = span(&tstate)
+  tseqv: [*]rings.SeqCell = span(&tseqs)
+  tstorage: [*]u32 = span(&tdata)
+  rings.mpsc_init(tcursor, tseqv)
+  round = u32(0)
+  while round < u32(30) {
+    p0: u32 = rings.mpsc_claim(tcursor)
+    p1: u32 = rings.mpsc_claim(tcursor)
+    assert(p1 == p0 + u32(1) && p0 == round * u32(2))
+    assert(rings.mpsc_publish[u32](tseqv, tstorage, p1, p1 * u32(3)))
+    // p0 unpublished: the consumer waits at it
+    assert(option_or[u32](rings.mpsc_pop[u32](tcursor, tseqv, tstorage), u32(7)) == u32(7))
+    assert(rings.mpsc_publish[u32](tseqv, tstorage, p0, p0 * u32(3)))
+    assert(option_or[u32](rings.mpsc_pop[u32](tcursor, tseqv, tstorage), u32(7)) == p0 * u32(3))
+    assert(option_or[u32](rings.mpsc_pop[u32](tcursor, tseqv, tstorage), u32(7)) == p1 * u32(3))
+    round = round + 1
+  }
+  // a fifth ticket's publish waits until a slot is recycled
+  q: [4]u32
+  q[0] = rings.mpsc_claim(tcursor)
+  q[1] = rings.mpsc_claim(tcursor)
+  q[2] = rings.mpsc_claim(tcursor)
+  q[3] = rings.mpsc_claim(tcursor)
+  extra: u32 = rings.mpsc_claim(tcursor)
+  assert(rings.mpsc_publish[u32](tseqv, tstorage, q[0], u32(1)) && rings.mpsc_publish[u32](tseqv, tstorage, q[1], u32(2)))
+  assert(rings.mpsc_publish[u32](tseqv, tstorage, q[2], u32(3)) && rings.mpsc_publish[u32](tseqv, tstorage, q[3], u32(4)))
+  assert(!rings.mpsc_publish[u32](tseqv, tstorage, extra, u32(5)))
+  assert(option_or[u32](rings.mpsc_pop[u32](tcursor, tseqv, tstorage), u32(0)) == u32(1))
+  assert(rings.mpsc_publish[u32](tseqv, tstorage, extra, u32(5)))
+  kk: u32 = 2
+  while kk <= u32(5) {
+    assert(option_or[u32](rings.mpsc_pop[u32](tcursor, tseqv, tstorage), u32(0)) == kk)
+    kk = kk + 1
+  }
+  // tickets on the MPMC ring, both sides
+  ustate: [1]rings.MpmcCursor
+  useqs: [4]rings.SeqCell
+  udata: [4]u32
+  ucursor: [*]rings.MpmcCursor = span(&ustate)
+  useqv: [*]rings.SeqCell = span(&useqs)
+  ustorage: [*]u32 = span(&udata)
+  rings.mpmc_init(ucursor, useqv)
+  round = u32(0)
+  while round < u32(30) {
+    c0: u32 = rings.mpmc_claim_pop(ucursor)
+    // nothing published yet: the take waits
+    none: Bool = rings.mpmc_take[u32](useqv, ustorage, c0) ? | .None => true | .Some(v) => false
+    assert(none)
+    w0: u32 = rings.mpmc_claim_push(ucursor)
+    assert(w0 == c0)
+    assert(rings.mpmc_publish[u32](useqv, ustorage, w0, w0 + u32(11)))
+    assert(option_or[u32](rings.mpmc_take[u32](useqv, ustorage, c0), u32(0)) == w0 + u32(11))
+    round = round + 1
+  }
   i32_bits_u32(acc % u32(200))
 }
 `
@@ -179,12 +238,12 @@ pub spsc_consume: (cursor: [*]rings.SpscCursor, storage: [*]u32, n: u32): u64 {
   sum
 }
 
-pub mpsc_setup: (cursor: [*]rings.MpscCursor, seqs: [*]Atomic[u32]): () {
+pub mpsc_setup: (cursor: [*]rings.MpscCursor, seqs: [*]rings.SeqCell): () {
   rings.mpsc_init(cursor, seqs)
 }
 
 // Producer id pushes id << 24 | k for k in 1..n.
-pub mpsc_produce: (cursor: [*]rings.MpscCursor, seqs: [*]Atomic[u32], storage: [*]u32, id: u32, n: u32): u32 {
+pub mpsc_produce: (cursor: [*]rings.MpscCursor, seqs: [*]rings.SeqCell, storage: [*]u32, id: u32, n: u32): u32 {
   k: u32 = 1
   spins: u32 = 0
   while k <= n {
@@ -195,7 +254,7 @@ pub mpsc_produce: (cursor: [*]rings.MpscCursor, seqs: [*]Atomic[u32], storage: [
 
 // Each producer's items arrive in its own order; the checksum is the sum
 // of every k.
-pub mpsc_consume: (cursor: [*]rings.MpscCursor, seqs: [*]Atomic[u32], storage: [*]u32, total: u32): u64 {
+pub mpsc_consume: (cursor: [*]rings.MpscCursor, seqs: [*]rings.SeqCell, storage: [*]u32, total: u32): u64 {
   last: [16]u32
   taken: u32 = 0
   sum: u64 = 0
@@ -216,11 +275,11 @@ pub mpsc_consume: (cursor: [*]rings.MpscCursor, seqs: [*]Atomic[u32], storage: [
   sum
 }
 
-pub mpmc_setup: (cursor: [*]rings.MpmcCursor, seqs: [*]Atomic[u32]): () {
+pub mpmc_setup: (cursor: [*]rings.MpmcCursor, seqs: [*]rings.SeqCell): () {
   rings.mpmc_init(cursor, seqs)
 }
 
-pub mpmc_produce: (cursor: [*]rings.MpmcCursor, seqs: [*]Atomic[u32], storage: [*]u32, id: u32, n: u32): u32 {
+pub mpmc_produce: (cursor: [*]rings.MpmcCursor, seqs: [*]rings.SeqCell, storage: [*]u32, id: u32, n: u32): u32 {
   k: u32 = 1
   spins: u32 = 0
   while k <= n {
@@ -232,7 +291,7 @@ pub mpmc_produce: (cursor: [*]rings.MpmcCursor, seqs: [*]Atomic[u32], storage: [
 // A consumer takes total items whatever their producers; each producer's
 // items still reach the consumers in that producer's order, so a consumer
 // sees its share of every producer's sequence strictly increasing.
-pub mpmc_consume: (cursor: [*]rings.MpmcCursor, seqs: [*]Atomic[u32], storage: [*]u32, total: u32): u64 {
+pub mpmc_consume: (cursor: [*]rings.MpmcCursor, seqs: [*]rings.SeqCell, storage: [*]u32, total: u32): u64 {
   last: [16]u32
   taken: u32 = 0
   sum: u64 = 0
@@ -255,6 +314,55 @@ pub mpmc_consume: (cursor: [*]rings.MpmcCursor, seqs: [*]Atomic[u32], storage: [
 
 pub intrusive_setup: (cursor: [*]rings.IntrusiveCursor, nodes: [*]rings.IntrusiveNode): () {
   rings.intrusive_init(cursor, nodes)
+}
+
+// The ticket producers: one claim each, then publish until the slot frees.
+pub mpsc_ticket_produce: (cursor: [*]rings.MpscCursor, seqs: [*]rings.SeqCell, storage: [*]u32, id: u32, n: u32): u32 {
+  k: u32 = 1
+  spins: u32 = 0
+  while k <= n {
+    pos: u32 = rings.mpsc_claim(cursor)
+    while !rings.mpsc_publish[u32](seqs, storage, pos, (id << u32(24)) | k) {
+      spins = spins + 1
+    }
+    k = k + 1
+  }
+  spins
+}
+
+pub mpmc_ticket_produce: (cursor: [*]rings.MpmcCursor, seqs: [*]rings.SeqCell, storage: [*]u32, id: u32, n: u32): u32 {
+  k: u32 = 1
+  spins: u32 = 0
+  while k <= n {
+    pos: u32 = rings.mpmc_claim_push(cursor)
+    while !rings.mpmc_publish[u32](seqs, storage, pos, (id << u32(24)) | k) {
+      spins = spins + 1
+    }
+    k = k + 1
+  }
+  spins
+}
+
+// A ticket consumer takes total items in claim order.
+pub mpmc_ticket_consume: (cursor: [*]rings.MpmcCursor, seqs: [*]rings.SeqCell, storage: [*]u32, total: u32): u64 {
+  last: [16]u32
+  taken: u32 = 0
+  sum: u64 = 0
+  while taken < total {
+    pos: u32 = rings.mpmc_claim_pop(cursor)
+    v: u32 = 0
+    while v == u32(0) {
+      v = option_or[u32](rings.mpmc_take[u32](seqs, storage, pos), u32(0))
+    }
+    id: u32 = v >> u32(24)
+    k: u32 = v & u32(16777215)
+    assert(id < u32(16))
+    assert(k > last[id])
+    last[id] = k
+    sum = sum + u64(k)
+    taken = taken + 1
+  }
+  sum
 }
 
 // Producer id owns nodes first..first+n-1 and writes each payload before
@@ -300,19 +408,19 @@ const ringsHarness = `
 static oak_rings__SpscCursor spsc_state[1];
 static u32 spsc_data[256];
 static oak_rings__MpscCursor mpsc_state[1];
-static __typeof__(*((oak_span_Atomic_u32 *)0)->base) mpsc_seqs[64];
+static oak_rings__SeqCell mpsc_seqs[64];
 static u32 mpsc_data[64];
 #define SPSC (oak_span_oak_rings_SpscCursor){ spsc_state, 1 }, (oak_span_u32){ spsc_data, 256 }
-#define MPSC (oak_span_oak_rings_MpscCursor){ mpsc_state, 1 }, (oak_span_Atomic_u32){ mpsc_seqs, 64 }, (oak_span_u32){ mpsc_data, 64 }
+#define MPSC (oak_span_oak_rings_MpscCursor){ mpsc_state, 1 }, (oak_span_oak_rings_SeqCell){ mpsc_seqs, 64 }, (oak_span_u32){ mpsc_data, 64 }
 static void *spsc_prod(void *a) { (void)a; oak_spsc_produce(SPSC, N); return NULL; }
 static void *spsc_cons(void *a) { *(u64 *)a = oak_spsc_consume(SPSC, N); return NULL; }
 static void *mpsc_prod(void *a) { oak_mpsc_produce(MPSC, (u32)(long)a, N); return NULL; }
 static void *mpsc_cons(void *a) { *(u64 *)a = oak_mpsc_consume(MPSC, N * P); return NULL; }
 #define M 100000u
 static oak_rings__MpmcCursor mpmc_state[1];
-static __typeof__(*((oak_span_Atomic_u32 *)0)->base) mpmc_seqs[64];
+static oak_rings__SeqCell mpmc_seqs[64];
 static u32 mpmc_data[64];
-#define MPMC (oak_span_oak_rings_MpmcCursor){ mpmc_state, 1 }, (oak_span_Atomic_u32){ mpmc_seqs, 64 }, (oak_span_u32){ mpmc_data, 64 }
+#define MPMC (oak_span_oak_rings_MpmcCursor){ mpmc_state, 1 }, (oak_span_oak_rings_SeqCell){ mpmc_seqs, 64 }, (oak_span_u32){ mpmc_data, 64 }
 static void *mpmc_prod(void *a) { oak_mpmc_produce(MPMC, (u32)(long)a, N); return NULL; }
 static void *mpmc_cons(void *a) { *(u64 *)a = oak_mpmc_consume(MPMC, N); return NULL; }
 static oak_rings__IntrusiveCursor intr_state[1];
@@ -321,6 +429,9 @@ static u32 intr_values[1 + P * M];
 #define INTR_QUEUE (oak_span_oak_rings_IntrusiveCursor){ intr_state, 1 }, (oak_span_oak_rings_IntrusiveNode){ intr_nodes, 1 + P * M }
 #define INTR INTR_QUEUE, (oak_span_u32){ intr_values, 1 + P * M }
 static void *intrusive_prod(void *a) { oak_intrusive_produce(INTR, (u32)(long)a * M + 1, M); return NULL; }
+static void *mpsc_ticket_prod(void *a) { oak_mpsc_ticket_produce(MPSC, (u32)(long)a, N); return NULL; }
+static void *mpmc_ticket_prod(void *a) { oak_mpmc_ticket_produce(MPMC, (u32)(long)a, N); return NULL; }
+static void *mpmc_ticket_cons(void *a) { *(u64 *)a = oak_mpmc_ticket_consume(MPMC, N); return NULL; }
 static void *intrusive_cons(void *a) { *(u64 *)a = oak_intrusive_consume(INTR, P * M); return NULL; }
 int main(void) {
   pthread_t p, c, ps[P];
@@ -329,14 +440,14 @@ int main(void) {
   if (pthread_create(&p, NULL, spsc_prod, NULL) != 0) return 21;
   pthread_join(p, NULL); pthread_join(c, NULL);
   if (sum != (u64)N * (N + 1) / 2) { printf("spsc sum %llu\\n", (unsigned long long)sum); return 1; }
-  oak_mpsc_setup((oak_span_oak_rings_MpscCursor){ mpsc_state, 1 }, (oak_span_Atomic_u32){ mpsc_seqs, 64 });
+  oak_mpsc_setup((oak_span_oak_rings_MpscCursor){ mpsc_state, 1 }, (oak_span_oak_rings_SeqCell){ mpsc_seqs, 64 });
   sum = 0;
   if (pthread_create(&c, NULL, mpsc_cons, &sum) != 0) return 22;
   for (long i = 0; i < P; i++) if (pthread_create(&ps[i], NULL, mpsc_prod, (void *)(i + 1)) != 0) return 23;
   for (int i = 0; i < P; i++) pthread_join(ps[i], NULL);
   pthread_join(c, NULL);
   if (sum != (u64)P * ((u64)N * (N + 1) / 2)) { printf("mpsc sum %llu\\n", (unsigned long long)sum); return 2; }
-  oak_mpmc_setup((oak_span_oak_rings_MpmcCursor){ mpmc_state, 1 }, (oak_span_Atomic_u32){ mpmc_seqs, 64 });
+  oak_mpmc_setup((oak_span_oak_rings_MpmcCursor){ mpmc_state, 1 }, (oak_span_oak_rings_SeqCell){ mpmc_seqs, 64 });
   u64 sums[P] = {0};
   pthread_t cs[P];
   for (long i = 0; i < P; i++) if (pthread_create(&cs[i], NULL, mpmc_cons, &sums[i]) != 0) return 24;
@@ -345,6 +456,22 @@ int main(void) {
   sum = 0;
   for (int i = 0; i < P; i++) { pthread_join(cs[i], NULL); sum += sums[i]; }
   if (sum != (u64)P * ((u64)N * (N + 1) / 2)) { printf("mpmc sum %llu\\n", (unsigned long long)sum); return 3; }
+  // tickets: the same rings re-initialized, the same checksums
+  oak_mpsc_setup((oak_span_oak_rings_MpscCursor){ mpsc_state, 1 }, (oak_span_oak_rings_SeqCell){ mpsc_seqs, 64 });
+  sum = 0;
+  if (pthread_create(&c, NULL, mpsc_cons, &sum) != 0) return 28;
+  for (long i = 0; i < P; i++) if (pthread_create(&ps[i], NULL, mpsc_ticket_prod, (void *)(i + 1)) != 0) return 29;
+  for (int i = 0; i < P; i++) pthread_join(ps[i], NULL);
+  pthread_join(c, NULL);
+  if (sum != (u64)P * ((u64)N * (N + 1) / 2)) { printf("mpsc ticket sum %llu\\n", (unsigned long long)sum); return 5; }
+  oak_mpmc_setup((oak_span_oak_rings_MpmcCursor){ mpmc_state, 1 }, (oak_span_oak_rings_SeqCell){ mpmc_seqs, 64 });
+  for (long i = 0; i < P; i++) sums[i] = 0;
+  for (long i = 0; i < P; i++) if (pthread_create(&cs[i], NULL, mpmc_ticket_cons, &sums[i]) != 0) return 30;
+  for (long i = 0; i < P; i++) if (pthread_create(&ps[i], NULL, mpmc_ticket_prod, (void *)(i + 1)) != 0) return 31;
+  for (int i = 0; i < P; i++) pthread_join(ps[i], NULL);
+  sum = 0;
+  for (int i = 0; i < P; i++) { pthread_join(cs[i], NULL); sum += sums[i]; }
+  if (sum != (u64)P * ((u64)N * (N + 1) / 2)) { printf("mpmc ticket sum %llu\\n", (unsigned long long)sum); return 6; }
   oak_intrusive_setup(INTR_QUEUE);
   sum = 0;
   if (pthread_create(&c, NULL, intrusive_cons, &sum) != 0) return 26;

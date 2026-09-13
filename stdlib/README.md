@@ -100,14 +100,25 @@ produce: (n: u32): () {
 | `spsc_push[T](cursor, storage, item)` | producer only; `true` appends, `false` leaves a full ring unchanged; the slot write is released by the store of `tail` |
 | `spsc_pop[T](cursor, storage)` | consumer only; `Some(T)` removes the oldest item, `None` leaves an empty ring unchanged; the slot read precedes the release of `head` |
 | `spsc_count(cursor)` | items between the indices as this thread sees them |
-| `mpsc_init(cursor, seqs)` | readies every slot (`seq = slot`) before any thread touches the ring |
+| `mpsc_init(cursor, seqs)` | readies every slot (`seq = slot`) before any thread touches the ring; `seqs` is `[N]SeqCell`, one sequence cell per 64-byte line |
 | `mpsc_push[T](cursor, seqs, storage, item)` | any producer, concurrently; claims a position by compare-exchange on `tail`, publishes with a release of the slot's sequence; `false` when full |
 | `mpsc_pop[T](cursor, seqs, storage)` | the single consumer; `Some(T)` for the oldest published item, `None` otherwise; recycles the slot with a release of `seq = pos + capacity` |
 
 | `mpmc_init(cursor, seqs)` / `mpmc_push[T]` / `mpmc_pop[T]` | the Vyukov bounded queue whole: producers claim on `tail`, consumers on `head`, both by compare-exchange; `false`/`None` when full/empty |
+| `mpsc_claim(cursor)` / `mpsc_publish[T](seqs, storage, pos, item)` | the ticket producer: one fetch-add claim that never fails, then a publish that is `false` until the consumer recycles the slot (retry or yield); the consumer is `mpsc_pop` |
+| `mpmc_claim_push` / `mpmc_publish[T]`, `mpmc_claim_pop` / `mpmc_take[T]` | the ticket MPMC: producers and consumers each claim a position by fetch-add and then publish or take it once the sequence cell allows; `mpmc_take` is `None` until published |
 | `intrusive_init(cursor, nodes)` | node 0 becomes the stub; links are index + 1, 0 none |
 | `intrusive_push(cursor, nodes, id)` | wait-free for any producer: one exchange on `head`, one release store of the previous node's link; the caller wrote the node's payload before |
 | `intrusive_pop(cursor, nodes)` | the single consumer: `Item(id)` hands the oldest node back, `Empty`, or `Busy` when the next place is claimed but not yet linked |
+
+**Two claim styles, the application's choice.** `mpsc_push`/`mpmc_push`
+claim by compare-exchange and refuse a full ring at once, at the cost of
+retried claims under producer contention; the ticket forms claim by
+fetch-add — never a retry, never a refusal — but the position handed out
+must be published or taken eventually (a claimed, unpublished position
+stalls the consumers behind it), so the application decides how to wait.
+Use one style per ring. Both share the sequence-cell handoff and the same
+consumers. The cost table below records both.
 
 FIFO per producer (`Oak.Rings.pop_returns_pushed`), no push into a full
 ring (`count_le_cap`), distinct claims on every counter (`claims_distinct`,
@@ -118,7 +129,12 @@ race-free under the release/acquire pairs (`spsc_payload_race_free`,
 `intrusive_payload_race_free`).
 Each SPSC side caches the other's index and refreshes it only when the cache
 says stop, so an uncontended push or pop touches one cache line of the
-cursor; the two indices live on separate 64-byte lines. Witnessed
+cursor; the two indices live on separate 64-byte lines, and each MPSC/MPMC
+sequence cell on its own (`SeqCell`). Costs are measured in
+[`benchmarks/rings/`](../benchmarks/rings/RESULTS.md): about 10 ns per item
+through the SPSC ring, 60 through the intrusive queue with four producers,
+150–220 through the compare-exchange rings at four producers (claim
+contention; under 25 ns with one). Witnessed
 sequentially in both realizations and across pthreads, plain and under
 ThreadSanitizer (`compiler/e2e_rings_test.go`), and under the memory
 refinement layers: the compiled operations carry `ldar`/`stlr` and the
@@ -192,6 +208,33 @@ step, then the scalar decoder from a sequence boundary (`70-strings.md`
 | Function | Semantics |
 | --- | --- |
 | `valid` | true iff `bytes` is well-formed UTF-8: no overlong forms, no surrogates, nothing above U+10FFFF, no truncated sequence, no stray continuation |
+
+## Literal sets (`import("literals")`)
+
+`stdlib/literals.oak` is the Teddy prefilter of Hyperscan written in
+Oak's portable vectors (`docs/spec/113-literals.md`): a set of literals
+in eight buckets, a low-nibble and a high-nibble table of bucket masks
+for each of the first three bytes of every literal, sixty-four bytes a
+step, candidates verified against the literal. `build(patterns, starts,
+total, tables)` fills the 96-byte tables for a set given as the
+concatenated `patterns` with `starts[j] .. starts[j+1]` literal `j`;
+`count`, `find_from`, `which_at`, and `literal_at` take the set the same
+way. The `literals` declaration is the compile-time spelling: its tables
+are precomputed by the compiler and its projected functions call this
+kernel. Sound by `Oak.Teddy`; measured at 0.10 ns/byte on sixteen HTTP
+tokens, the hand-written C ceiling, ahead of Vectorscan (0.18) and RE2
+(1.69) (`benchmarks/scanning/`).
+
+| Function | Semantics |
+| --- | --- |
+| `groups_of` | one eight-bucket group per sixteen literals: `⌈total / 16⌉` |
+| `build` | fills the six nibble tables of every group (96 bytes per group); every literal at least three bytes |
+| `count` | occurrences of every literal, overlapping and coincident ones each counted |
+| `find_from` | first position at or after `start` where some literal occurs, else `len(bytes)` |
+| `which_at` | index of the first literal occurring at `pos`, else `total` |
+| `literal_at` | whether literal `j` occurs at `pos` |
+| `Carry`, `carry()` | the state of a stream: the last bytes so far (one less than the longest literal, at most 63) |
+| `feed` | the occurrences ending in one more chunk; the carry advances. Feeds over an input's chunks sum to `count` of the whole |
 
 ## Bytes
 
@@ -1001,13 +1044,16 @@ trailing zeros, the last parent taking the root flag.
 On AArch64 the two hot kernels run through the CPU's instructions:
 `stdlib/hash.arm64.oakasm` (embedded and attached by the loader whenever
 `hash` is imported, its function names rewritten to the package's internal
-names) realizes `crc32c_step7` — seven `crc32cx` steps over the 64-bit
-words `crc32c_update` folds 56 bytes at a time — and `sha256_block_hw` — one
+names) realizes `crc32c_step7_asm` — seven `crc32cx` steps over the 64-bit
+words `crc32c_update` folds 56 bytes at a time — and `sha256_block_asm` — one
 compression through `sha256h`/`sha256h2`/`sha256su0`/`sha256su1`, the state
 read from and written to a span and the block and round constants read
 through views under the assembler checker's dominating length guards. Each
-unit pairs with an Oak declaration that keeps its portable body, so the body
-is the definition: the seam checker admits the unit only within the
+unit is the realization a `dispatch` slot selects (`93-simd.md` §6):
+`crc32c_step7` dispatches to it on FEAT_CRC32 and `sha256_block_hw` on
+FEAT_SHA256, decided once at startup by the processor probe, so an ARMv8.0
+core without the extension runs the Oak body rather than faulting. The
+body is the definition: the seam checker admits the unit only within the
 declared registers and proven memory, the extraction and the interpreter see
 the Oak body, non-AArch64 targets and `-DOAK_PORTABLE_INTRINSICS` builds run
 it, and the differential tests (`compiler/e2e_stdlib_crc_sha_hw_test.go`)

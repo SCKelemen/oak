@@ -71,6 +71,11 @@ theorem kill_is_conservative (i i' len : Nat) (hfact : i < len) (hsame : i' = i)
 theorem bound_through_upper (i n len : Nat) (hi : i < n) (hn : n ≤ len) : i < len :=
   Nat.lt_of_lt_of_le hi hn
 
+/-- The same through a literal bound on the binding: from `i < n` and
+    `n < B`, `i < B - 1` (`resolveIndexPairs`, factIndexLit) — a guard
+    `count <= 8` (`count < 9`) puts every `i < count` below 8. -/
+theorem bound_through_literal (i n B : Nat) (hi : i < n) (hn : n < B) : i < B - 1 := by omega
+
 /-- A Bool binding stands for the condition assigned to it: if `valid` is
     `true` and `valid` was assigned `c`, then `c` held when it was assigned
     (`boolBindingFacts`); strengthening `valid = valid && c'` keeps `c` and
@@ -119,6 +124,18 @@ theorem scaled_under_bound (i K j U len : Nat) (hi : i < U) (hlen : (U - 1) * K 
     i * K + j < len := by
   have hle : i ≤ U - 1 := by omega
   have := Nat.mul_le_mul_right K hle
+  omega
+
+/-- Two scaled indices under literal bounds: from `i < U₁`, `j < U₂` and
+    `(U₁ - 1) * K + (U₂ - 1) * M + c < len`, `i * K + j * M + c < len`
+    (`recordIndexProof`, `scaledIndex2`) — a loop inside a loop over a flat
+    buffer, the binary codec's arrays of records with array fields. -/
+theorem scaled2_under_bound (i j K M c U₁ U₂ len : Nat) (hi : i < U₁) (hj : j < U₂)
+    (hlen : (U₁ - 1) * K + (U₂ - 1) * M + c < len) : i * K + j * M + c < len := by
+  have h1 : i ≤ U₁ - 1 := by omega
+  have h2 : j ≤ U₂ - 1 := by omega
+  have := Nat.mul_le_mul_right K h1
+  have := Nat.mul_le_mul_right M h2
   omega
 
 /-- A masked index is below every length above the mask: from `M < len`,
