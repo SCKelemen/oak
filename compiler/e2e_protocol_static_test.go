@@ -9,7 +9,7 @@ import (
 // without a resource clause projects its machine into a handle's type —
 // `Door[DoorClosed]`, one marker per state, `door_handle()` at the initial
 // state, and one function per line that consumes the handle and returns
-// it in its target state (a `DoorOpenOutcome`, Moved or Refused, when the line is guarded). The same
+// it in its target state (a `DoorOpenOutcome`, `Open` or `Refused`, when the line is guarded). The same
 // lines build the dynamic projection, and the two agree.
 const staticProtocolProgram = `
 Door: protocol = {
@@ -26,12 +26,12 @@ main: (): i32 {
   opened: DoorOpenOutcome = door_open(shut)
   opened ?
   | .Refused(_) => { 1 }
-  | .Moved(ajar) => {
+  | .Open(ajar) => {
     back: Door[DoorClosed] = door_close(ajar)
     locked: Door[DoorClosed] = door_lock(back)
     refused: DoorOpenOutcome = door_open(locked)
     refused ?
-    | .Moved(_) => { 2 }
+    | .Open(_) => { 2 }
     | .Refused(still) => {
       // The dynamic projection over the same steps reads the same data.
       store: [1]DoorData = [door_initial_data()]
