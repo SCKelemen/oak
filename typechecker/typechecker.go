@@ -2278,11 +2278,19 @@ func (tc *TypeChecker) borrowAlignment(owner ast.Expression, array *ArrayType) u
 	if !declared {
 		return alignmentFact(align)
 	}
+	// A packed record places its fields back to back, so an element's
+	// natural alignment says nothing about a field's offset (a `[4]u64`
+	// after a `u8` sits at offset 1; docs/spec/40-records.md section 6a).
+	// Only the record's own declared alignment, at offset zero, survives.
+	packed := shape.Layout != nil && shape.Layout.Packed
+	if packed {
+		align = 1
+	}
 	for i, f := range shape.FieldOrder {
 		if f.Name != field.Value {
 			continue
 		}
-		if f.Align > align {
+		if f.Align > align && !packed {
 			align = f.Align
 		}
 		if i == 0 && shape.Layout != nil && shape.Layout.Align > align {
@@ -2485,6 +2493,10 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 			tc.addError(fn, "function literal: expected return type %s, got %s", declaredReturn, returnType)
 			return nil
 		}
+	}
+	if typed && !tc.alignmentAssignable(returnType, declaredReturn) {
+		tc.addError(fn, "function literal: returns %s, but the body yields %s: a declaration may not claim more than the borrow gives", declaredReturn, returnType)
+		return nil
 	}
 	if typed {
 		returnType = declaredReturn
@@ -4626,6 +4638,12 @@ func (tc *TypeChecker) isAssignable(valueType, varType Type) bool {
 		}
 	}
 
+	// A function value's parameter and result facts have a direction too
+	// (alignmentAssignable), which structural equality does not see.
+	if _, isFunction := valueType.(*FunctionType); isFunction && !tc.alignmentAssignable(valueType, varType) {
+		return false
+	}
+
 	// Exact match
 	if valueType.Equals(varType) {
 		return true
@@ -4940,6 +4958,11 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 	// Check that body type matches return type
 	if !bodyType.Equals(returnType) {
 		tc.addError(stmt, "function %s: expected return type %s, got %s", stmt.Name.Value, returnType, bodyType)
+	} else if !tc.alignmentAssignable(bodyType, returnType) {
+		// The declared fact on a returned view or span is a claim about
+		// the body, checked like any other position (docs/spec/50-borrowing.md
+		// section 2a): a declaration may not claim more than the borrow gives.
+		tc.addError(stmt, "function %s: returns %s, but the body yields %s: a declaration may not claim more than the borrow gives", stmt.Name.Value, returnType, bodyType)
 	}
 
 	// Restore environment
@@ -5799,12 +5822,31 @@ func (t *ArrayType) Equals(other Type) bool {
 // only when both types are views or spans and the value's fact is weaker
 // than the required one.
 func (tc *TypeChecker) alignmentAssignable(valueType, varType Type) bool {
-	value, isArray := valueType.(*ArrayType)
-	target, targetIsArray := varType.(*ArrayType)
-	if !isArray || !targetIsArray || !(value.IsSlice || value.IsSpan) || !(target.IsSlice || target.IsSpan) {
-		return true
+	switch value := valueType.(type) {
+	case *ArrayType:
+		target, targetIsArray := varType.(*ArrayType)
+		if !targetIsArray || !(value.IsSlice || value.IsSpan) || !(target.IsSlice || target.IsSpan) {
+			return true
+		}
+		return target.Align == 0 || value.Align >= target.Align
+	case *FunctionType:
+		// A function value stands where a function type is required when
+		// each argument the target supplies flows into the value's
+		// parameter (contravariant: a value requiring [* align 4096]u8
+		// cannot stand where ([*]u8) -> T is expected) and the value's
+		// result flows into the target's (covariant).
+		target, targetIsFunction := varType.(*FunctionType)
+		if !targetIsFunction || len(value.Parameters) != len(target.Parameters) {
+			return true
+		}
+		for i, parameter := range value.Parameters {
+			if !tc.alignmentAssignable(target.Parameters[i], parameter) {
+				return false
+			}
+		}
+		return tc.alignmentAssignable(value.ReturnType, target.ReturnType)
 	}
-	return target.Align == 0 || value.Align >= target.Align
+	return true
 }
 
 // alignedInto reports whether a view or span with this alignment fact may
@@ -6005,7 +6047,7 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 					IsSlice:     false,
 					IsSpan:      true,
 					ElementType: elementType,
-					Align:       indexExpr.Align,
+					Align:       alignmentFact(indexExpr.Align),
 				}
 			} else if ident.Value == "" {
 				// Slice type: []T (empty identifier means slice)
@@ -6014,7 +6056,7 @@ func (tc *TypeChecker) parseTypeExpression(expr ast.Expression) Type {
 					IsSlice:     true,
 					IsSpan:      false,
 					ElementType: elementType,
-					Align:       indexExpr.Align,
+					Align:       alignmentFact(indexExpr.Align),
 				}
 			}
 		} else if indexExpr.Left == nil {
@@ -6192,7 +6234,7 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 					IsSlice:     false,
 					IsSpan:      true,
 					ElementType: elementType,
-					Align:       indexExpr.Align,
+					Align:       alignmentFact(indexExpr.Align),
 				}
 			} else if ident.Value == "" {
 				// Slice type: []T
@@ -6201,7 +6243,7 @@ func (tc *TypeChecker) parseTypeExpressionNonIntersection(expr ast.Expression) T
 					IsSlice:     true,
 					IsSpan:      false,
 					ElementType: elementType,
-					Align:       indexExpr.Align,
+					Align:       alignmentFact(indexExpr.Align),
 				}
 			}
 		} else if indexExpr.Left == nil {

@@ -74,9 +74,18 @@ type tryLowering struct {
 	// are numbered per function, so they are unique (no shadowing) and
 	// stable under edits elsewhere in the file.
 	sites int
+	// refused records every try already reported, so the leftover sweep
+	// reports one refusal once (docs/spec/15-diagnostics.md section 9).
+	refused map[*ast.TryExpression]bool
 }
 
 func (l *tryLowering) report(node ast.Node, format string, args ...interface{}) {
+	if t, isTry := node.(*ast.TryExpression); isTry {
+		if l.refused == nil {
+			l.refused = map[*ast.TryExpression]bool{}
+		}
+		l.refused[t] = true
+	}
 	l.diags = append(l.diags, diagnostic.NewDiagnosticFromNodeWithCode(node, "compiler", CodeTryShape, fmt.Sprintf(format, args...)))
 }
 
@@ -88,17 +97,27 @@ func lowerTry(program *ast.Program) error {
 		if !isFunction || fn.Body == nil {
 			continue
 		}
-		kind, propagates := tryKindOf(fn.ReturnType)
-		if !propagates {
-			continue
-		}
 		l.sites = 0
-		fn.Body = l.lowerTail(fn.Body, kind)
+		if kind, propagates := tryKindOf(fn.ReturnType); propagates {
+			fn.Body = l.lowerTail(fn.Body, kind)
+		}
+		// A function literal with a declared Result or Option return type
+		// is a function of its own: a try in its body returns from the
+		// literal. Binders keep counting within the enclosing declaration,
+		// so a literal's binder never shadows the function's.
+		_ = transformSyntax(reflect.ValueOf(fn.Body), func(e ast.Expression) (ast.Expression, error) {
+			if literal, isLiteral := e.(*ast.FunctionLiteral); isLiteral && literal.Body != nil {
+				if kind, propagates := tryKindOf(literal.ReturnType); propagates {
+					literal.Body.Statements = l.lowerBlock(literal.Body.Statements, literal.Body.DeferredFrom, kind)
+				}
+			}
+			return e, nil
+		})
 	}
 	// Whatever is left is a try the rule does not cover.
 	_ = transformSyntax(reflect.ValueOf(program), func(e ast.Expression) (ast.Expression, error) {
-		if t, isTry := e.(*ast.TryExpression); isTry {
-			l.report(t, "try here does not return from the function: propagate only in a block whose value is the function's Result or Option — the body, or a tail `?` arm — as `x: T = try e` or `_ = try e`")
+		if t, isTry := e.(*ast.TryExpression); isTry && !l.refused[t] {
+			l.report(t, "try here does not return from the function: propagate only in a block whose value is the function's Result or Option — the body, or a tail `?` arm — as `x: T = try e` or `_ = try e`; the declared return type is read as spelled, Result[…] or Option[…], not through an alias")
 		}
 		return e, nil
 	})
@@ -113,7 +132,7 @@ func (l *tryLowering) lowerTail(expr ast.Expression, kind tryKind) ast.Expressio
 	switch e := expr.(type) {
 	case *ast.BlockExpression:
 		if e.Block != nil {
-			e.Block.Statements = l.lowerBlock(e.Block.Statements, kind)
+			e.Block.Statements = l.lowerBlock(e.Block.Statements, e.Block.DeferredFrom, kind)
 		}
 		return e
 	case *ast.MatchExpression:
@@ -136,8 +155,20 @@ func (l *tryLowering) lowerTail(expr ast.Expression, kind tryKind) ast.Expressio
 }
 
 // lowerBlock lowers the statements of a tail block: the first statement
-// that propagates nests the rest of the block into the Ok arm.
-func (l *tryLowering) lowerBlock(stmts []ast.Statement, kind tryKind) []ast.Statement {
+// that propagates nests the rest of the block into the Ok arm. A block
+// whose statements the parser moved from a `defer` (deferredFrom > 0)
+// refuses the form: nesting the rest into the Ok arm would run the
+// deferred statements on the Ok path alone, and a deferred statement
+// belongs on every path (docs/spec/10-syntax.md section 2d).
+func (l *tryLowering) lowerBlock(stmts []ast.Statement, deferredFrom int, kind tryKind) []ast.Statement {
+	if deferredFrom > 0 {
+		for _, stmt := range stmts {
+			if t := tryOf(stmt); t != nil {
+				l.report(t, "try in a block with `defer`: the deferred statements would run on the Ok path alone; bind the result with a match, or move the try into a function of its own")
+				return stmts
+			}
+		}
+	}
 	for i, stmt := range stmts {
 		var t *ast.TryExpression
 		var okPattern ast.Pattern
@@ -175,12 +206,28 @@ func (l *tryLowering) lowerBlock(stmts []ast.Statement, kind tryKind) []ast.Stat
 			l.report(t, "try in the last statement of a block: nothing follows to use the value; end the block with the result it produces (`try e` alone as the block's value re-wraps it)")
 			return stmts
 		}
-		rest = l.lowerBlock(append([]ast.Statement(nil), rest...), kind)
+		rest = l.lowerBlock(append([]ast.Statement(nil), rest...), 0, kind)
 		body := &ast.BlockExpression{Token: t.Token, Block: &ast.BlockStatement{Token: t.Token, Statements: rest}}
 		lowered := append([]ast.Statement(nil), stmts[:i]...)
 		return append(lowered, &ast.ExpressionStatement{Token: t.Token, Expression: l.match(t, kind, okPattern, body)})
 	}
 	return stmts
+}
+
+// tryOf is the try a statement carries directly: `x: T = try e`,
+// `_ = try e`, or `try e`.
+func tryOf(stmt ast.Statement) *ast.TryExpression {
+	switch s := stmt.(type) {
+	case *ast.VariableDeclaration:
+		if t, isTry := s.Value.(*ast.TryExpression); isTry {
+			return t
+		}
+	case *ast.ExpressionStatement:
+		if t, isTry := s.Expression.(*ast.TryExpression); isTry {
+			return t
+		}
+	}
+	return nil
 }
 
 // match builds `e ? | .Err(err) => .Err(err) | .Ok(pattern) => body` (or
@@ -200,11 +247,14 @@ func (l *tryLowering) match(t *ast.TryExpression, kind tryKind, okPattern ast.Pa
 	return &ast.MatchExpression{Token: t.Token, Scrutinee: t.Operand, Arms: []*ast.MatchArm{errArm, okArm}}
 }
 
-// tryName is a binder no program spells, numbered per function so nested
-// forms never shadow (Oak forbids shadowing) and the name does not move
-// when unrelated lines do.
+// tryName is a generated binder under the compiler's oak_ prefix (the
+// convention every lowering shares; docs/spec/112-protocols.md section 2),
+// numbered per function so nested forms never shadow and the name does
+// not move when unrelated lines do. A program that spells the same name
+// binds it lexically outside the generated arm and is not captured: the
+// arm reads only the binder it declares.
 func tryName(site int, role string) string {
-	return fmt.Sprintf("_try_%s_%d", role, site)
+	return fmt.Sprintf("oak_try_%s_%d", role, site)
 }
 
 func ident(at token.Token, name string) *ast.Identifier {
