@@ -1096,6 +1096,17 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 		return
 	}
 
+	// A dispatched function (docs/spec/93-simd.md section 6) is emitted as
+	// its meaning — the body, under a private name — followed by the
+	// public wrapper that selects a realization or calls the meaning.
+	slots, dispatched := cg.dispatchSlots[funcName]
+	dispatched = dispatched && fn.Receiver == nil
+	publicName := cFuncName
+	if dispatched {
+		cFuncName = publicName + "__meaning"
+		defer cg.emitDispatchWrapper(fn, slots, publicName, cFuncName)
+	}
+
 	// Build Oak function signature
 	signature := cg.buildFunctionSignature(fn)
 
@@ -1131,7 +1142,11 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 
 	// Emit function signature (C style: space inside parentheses)
 	cg.emitLineDirective(fn.Token)
-	cg.write(fmt.Sprintf("%s%s%s %s( ", attribute, cg.linkage(funcName), returnType, cFuncName))
+	linkage := cg.linkage(funcName)
+	if dispatched {
+		linkage = "static inline "
+	}
+	cg.write(fmt.Sprintf("%s%s%s %s( ", attribute, linkage, returnType, cFuncName))
 
 	// If method, add receiver as first parameter
 	if fn.Receiver != nil {
@@ -1162,14 +1177,6 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 
 	cg.write(" ) {\n")
 	cg.indentLevel++
-
-	// A dispatched function selects its realization first (docs/spec/
-	// 93-simd.md section 6.1): outright where the baseline guarantees the
-	// feature (the static rule), else by one branch on the probed word;
-	// then it falls into its own body, the meaning.
-	if slots, dispatched := cg.dispatchSlots[funcName]; dispatched && fn.Receiver == nil {
-		cg.emitDispatchPrologue(fn, slots, returnType)
-	}
 
 	cg.foreignFnLocals = nil
 	cg.localTypes = cg.buildLocalTypes(fn)
