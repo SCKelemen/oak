@@ -81,10 +81,12 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 		for _, r := range results {
 			if r.Status == prove.Pending {
 				names = append(names, r.Name)
-				theorems = append(theorems, oakTheorem{Problems: r.Problems, Syntax: r.Syntax})
+				theorems = append(theorems, oakTheorem{Name: r.Name, Problems: r.Problems})
 			}
 		}
-		verdicts, err := runOakSolver(theorems, asm.NodeBudget)
+		// The source files go to the parser written in Oak, which finds
+		// each pending theorem by name.
+		verdicts, err := runOakSolver(theorems, lawSources(target), asm.NodeBudget)
 		if err != nil {
 			fmt.Fprintf(stderr, "oak prove: %v\n", err)
 			return 2
@@ -205,4 +207,36 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "oak prove: wrote %s\n", *leanOut)
 	}
 	return exit
+}
+
+// lawSources reads the Oak sources the prover streams to the parser
+// written in Oak: the file itself, or every `.oak` file of the package
+// directory, in name order.
+func lawSources(target string) [][]byte {
+	info, err := os.Stat(target)
+	if err != nil {
+		return nil
+	}
+	if !info.IsDir() {
+		text, err := os.ReadFile(target)
+		if err != nil {
+			return nil
+		}
+		return [][]byte{text}
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		return nil
+	}
+	var sources [][]byte
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".oak") || strings.HasPrefix(name, ".") {
+			continue
+		}
+		if text, err := os.ReadFile(filepath.Join(target, name)); err == nil {
+			sources = append(sources, text)
+		}
+	}
+	return sources
 }

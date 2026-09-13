@@ -1995,16 +1995,17 @@ sr_write_table: (s: Ser, w: [*]u32, out: [*]u32): u32 {
 }
 
 // serialize_theorem builds the syntax table of the raw table's theorem
-// into out: the word count, or 0 with the reason in the state (the
-// construct outside the subset, or a capacity).
-serialize_theorem: (s: Ser, w: [*]u32, rx: []u32, out: [*]u32): u32 {
+// (the header's, or theorem_fn when given) into out: the word count, or 0
+// with the reason in the state (the construct outside the subset, or a
+// capacity).
+serialize_theorem: (s: Ser, w: [*]u32, rx: []u32, out: [*]u32, theorem_fn: u32): u32 {
   k: u32 = 0
   while k < u32(32) {
     set_sst(s, w, k, u32(0))
     k = k + u32(1)
   }
   raw: Raw = raw_layout(rx)
-  sr_push(s, w, X_FUNC, raw.theorem, u32(1))
+  sr_push(s, w, X_FUNC, theorem_fn == NONE ? { raw.theorem } | { theorem_fn }, u32(1))
   sr_run(s, w, rx, raw)
   n: u32 = 0
   sr_failed(s, w) ? { } | { n = sr_write_table(s, w, out) }

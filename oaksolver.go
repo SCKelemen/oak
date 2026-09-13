@@ -41,6 +41,13 @@ var oakLoweringSource string
 //go:embed prove/solver/syntax.oak
 var oakSyntaxSource string
 
+// oakTreeSource is the lexer and parser written in Oak
+// (prove/solver/tree.oak): a law file's bytes to the raw parse tree the
+// serializer reads.
+//
+//go:embed prove/solver/tree.oak
+var oakTreeSource string
+
 // oakSolverDriverSource is the driver around the solver: it reads its
 // order slot from OAK_SOLVER_VARIANT and the problems from its standard
 // input (a header of count, largest term count, budget, and word total,
@@ -406,12 +413,12 @@ solve_lowered: (l: Layout, lw: Lower, table_raw: c.Ptr, built_raw: c.Ptr, n: u32
 // serialize_in_oak builds the syntax table of a raw table (asm/rawsyntax.go)
 // in the serializer's memory: the word count, NONE minus the reason when
 // the theorem is outside the subset.
-serialize_in_oak: (ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, rx: []u32): u32 {
+serialize_in_oak: (ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, rx: []u32, theorem_fn: u32): u32 {
   n: u32 = 0
   unsafe {
     sbuf: Buffer[u32] = c.own[u32](ser_raw, ser.total)
     obuf: Buffer[u32] = c.own[u32](out_raw, ser.out_total)
-    n = serialize_theorem(ser, span(&sbuf), rx, span(&obuf))
+    n = serialize_theorem(ser, span(&sbuf), rx, span(&obuf), theorem_fn)
     n = n == u32(0) ? { NONE - serialize_reason(ser, span(&sbuf)) } | { n }
     released_s: c.Ptr = c.disown(sbuf)
     released_o: c.Ptr = c.disown(obuf)
@@ -451,6 +458,81 @@ lower_serialized: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, table_raw: c.
   }
 }
 
+// parse_files parses every source file of the stream (its leading files
+// section: the count, then per file the byte count and the bytes, four per
+// word) into the arena: word 0 the file count, then per file the table's
+// offset, word count (0 when the file did not parse), and parse reason.
+// Returns the stream offset where the theorems begin.
+parse_files: (par: Par, par_raw: c.Ptr, data: []u32, arena: [*]u32): u32 {
+  nfiles: u32 = data[u32(0)]
+  arena[u32(0)] = nfiles
+  off: u32 = 1
+  at: u32 = u32(1) + nfiles * u32(3)
+  f: u32 = 0
+  unsafe {
+    pbuf: Buffer[u32] = c.own[u32](par_raw, par.total)
+    while f < nfiles {
+      nbytes: u32 = data[off]
+      off = off + u32(1)
+      nwords: u32 = (nbytes + u32(3)) / u32(4)
+      src: []u32 = subslice(data, off, nwords)
+      cap: u32 = nbytes * u32(16) + u32(16384)
+      n: u32 = parse_source(par, span(&pbuf), src, nbytes, arena, at, cap)
+      arena[u32(1) + f * u32(3)] = at
+      arena[u32(2) + f * u32(3)] = n
+      arena[u32(3) + f * u32(3)] = parse_reason(par, span(&pbuf))
+      at = at + cap
+      off = off + nwords
+      f = f + u32(1)
+    }
+    released_p: c.Ptr = c.disown(pbuf)
+  }
+  off
+}
+
+// files_arena_words: the arena the files section needs.
+files_arena_words: (data: []u32): u32 {
+  nfiles: u32 = data[u32(0)]
+  total: u32 = u32(1) + nfiles * u32(3)
+  off: u32 = 1
+  f: u32 = 0
+  while f < nfiles {
+    nbytes: u32 = data[off]
+    total = total + nbytes * u32(16) + u32(16384)
+    off = off + u32(1) + (nbytes + u32(3)) / u32(4)
+    f = f + u32(1)
+  }
+  total
+}
+
+// find_theorem finds the named theorem (its bytes in name, n of them) in
+// the parsed files: the file's table offset and length and the function
+// index, through out (3 words; word 3 the first parse failure's reason);
+// false when no file declares it.
+find_theorem: (arena: []u32, name: []u32, n: u32, out: [*]u32): Bool {
+  nfiles: u32 = arena[u32(0)]
+  found: Bool = false
+  out[u32(3)] = u32(0)
+  f: u32 = 0
+  while f < nfiles && !found {
+    at: u32 = arena[u32(1) + f * u32(3)]
+    len_f: u32 = arena[u32(2) + f * u32(3)]
+    (len_f == u32(0) && out[u32(3)] == u32(0)) ? { out[u32(3)] = arena[u32(3) + f * u32(3)] } | { }
+    len_f > u32(0) ? {
+      rx: []u32 = subslice(arena, at, len_f)
+      fi: u32 = raw_find_function_named(rx, name, n)
+      fi != NONE ? {
+        out[u32(0)] = at
+        out[u32(1)] = len_f
+        out[u32(2)] = fi
+        found = true
+      } | { }
+    } | { }
+    f = f + u32(1)
+  }
+  found
+}
+
 main: (): i32 {
   slot: u32 = variant_slot()
   chunk_raw: c.Ptr = malloc(c.Size(CHUNK))
@@ -485,12 +567,19 @@ main: (): i32 {
   ser: Ser = ser_layout(u32(65536), u32(131072))
   ser_raw: c.Ptr = malloc(c.Size(ser.total * u32(4)))
   out_raw: c.Ptr = malloc(c.Size(ser.out_total * u32(4)))
+  par: Par = par_layout()
+  par_raw: c.Ptr = malloc(c.Size(par.total * u32(4)))
   unsafe {
     problem_bytes: Buffer[u8] = c.own[u8](bytes_raw, total * u32(4))
     words_ok: Bool = read_fully(chunk_raw, span(&problem_bytes), total * u32(4))
     stream: Buffer[u32] = c.own[u32](words_raw, total)
     words_of(view(&problem_bytes), span(&stream), total)
-    words_ok ? { solve_stream(l, lw, ser, ser_raw, out_raw, view(&stream), table_raw, work_raw, built_raw, count, slot, budget) } | { }
+    arena_words: u32 = words_ok ? { files_arena_words(view(&stream)) } | { u32(1) }
+    arena_raw: c.Ptr = malloc(c.Size(arena_words * u32(4)))
+    tables: Buffer[u32] = c.own[u32](arena_raw, arena_words)
+    theorems_at: u32 = words_ok ? { parse_files(par, par_raw, view(&stream), span(&tables)) } | { u32(0) }
+    words_ok ? { solve_stream(l, lw, ser, ser_raw, out_raw, view(&stream), view(&tables), theorems_at, table_raw, work_raw, built_raw, count, slot, budget) } | { }
+    free(c.disown(tables))
     free(c.disown(stream))
     free(c.disown(problem_bytes))
   }
@@ -499,17 +588,20 @@ main: (): i32 {
   free(built_raw)
   free(ser_raw)
   free(out_raw)
+  free(par_raw)
   free(chunk_raw)
   i32_bits_u32(u32(0))
 }
 
-// solve_stream walks the problems stream: per theorem the Go-lowered
-// variants and, when present, the raw syntax table. With a raw table,
-// slots 0, 1, and 2 serialize it, lower the syntax table in Oak under the
+// solve_stream walks the theorems of the stream (from theorems_at, after
+// the files): per theorem the Go-lowered variants and the theorem's name.
+// With source files parsed, slots 0, 1, and 2 find the theorem in a
+// file's tree, serialize it, lower the syntax table in Oak under the
 // interleaved, blocked, and control-first orders, and solve, and slot k
-// solves Go-lowered variant k - 3; without, slot k solves variant k.
-solve_stream: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, data: []u32, table_raw: c.Ptr, work_raw: c.Ptr, built_raw: c.Ptr, count: u32, slot: u32, budget: u32): () {
-  off: u32 = 0
+// solves Go-lowered variant k - 3; without files, slot k solves variant k.
+solve_stream: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, data: []u32, arena: []u32, theorems_at: u32, table_raw: c.Ptr, work_raw: c.Ptr, built_raw: c.Ptr, count: u32, slot: u32, budget: u32): () {
+  off: u32 = theorems_at
+  nfiles: u32 = arena[u32(0)]
   i: u32 = 0
   while i < count {
     variants: u32 = data[off]
@@ -522,16 +614,24 @@ solve_stream: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, d
       off = off + words
       j = j + u32(1)
     }
-    syntax_words: u32 = data[off]
+    name_bytes: u32 = data[off]
     off = off + u32(1)
-    syntax_start: u32 = off
-    off = off + syntax_words
-    shift: u32 = syntax_words > u32(0) ? { u32(3) } | { u32(0) }
-    (syntax_words > u32(0) && slot < u32(3)) ? {
-      n_syn: u32 = serialize_in_oak(ser, ser_raw, out_raw, subslice(data, syntax_start, syntax_words))
-      n_syn < u32(0x80000000) ? { lower_serialized(l, lw, ser, ser_raw, table_raw, work_raw, built_raw, out_raw, n_syn, budget, slot, i) } | {
-        none: [1]u32
-        report(i, STATUS_UNSUPPORTED, NONE - n_syn, u32(1), view(&none), u32(0))
+    name_words: u32 = (name_bytes + u32(3)) / u32(4)
+    name_start: u32 = off
+    off = off + name_words
+    shift: u32 = nfiles > u32(0) ? { u32(3) } | { u32(0) }
+    (nfiles > u32(0) && slot < u32(3)) ? {
+      where: [4]u32
+      none: [1]u32
+      find_theorem(arena, subslice(data, name_start, name_words), name_bytes, span(&where)) ? {
+        n_syn: u32 = serialize_in_oak(ser, ser_raw, out_raw, subslice(arena, where[u32(0)], where[u32(1)]), where[u32(2)])
+        n_syn < u32(0x80000000) ? { lower_serialized(l, lw, ser, ser_raw, table_raw, work_raw, built_raw, out_raw, n_syn, budget, slot, i) } | {
+          report(i, STATUS_UNSUPPORTED, NONE - n_syn, u32(1), view(&none), u32(0))
+        }
+      } | {
+        // No file parsed declares the theorem (a generated obligation, or
+        // a file outside the parser's subset: its reason, else 400).
+        report(i, STATUS_UNSUPPORTED, where[u32(3)] == u32(0) ? { u32(400) } | { where[u32(3)] }, u32(1), view(&none), u32(0))
       }
     } | {
       want: u32 = slot - shift
@@ -554,7 +654,7 @@ solve_stream: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, d
 // directory under the temporary directory named by the sources' hash,
 // and returns the binary's path; a later run finds it built.
 func oakSolverBinary() (string, error) {
-	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSyntaxSource + "\x00" + oakSolverDriverSource))
+	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSyntaxSource + "\x00" + oakTreeSource + "\x00" + oakSolverDriverSource))
 	dir := filepath.Join(os.TempDir(), "oak-solver-"+hex.EncodeToString(sum[:6]))
 	binary := filepath.Join(dir, "solver")
 	if info, err := os.Stat(binary); err == nil && info.Mode().IsRegular() {
@@ -563,7 +663,7 @@ func oakSolverBinary() (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	for name, text := range map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "syntax.oak": oakSyntaxSource, "main.oak": oakSolverDriverSource} {
+	for name, text := range map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "syntax.oak": oakSyntaxSource, "tree.oak": oakTreeSource, "main.oak": oakSolverDriverSource} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
 			return "", err
 		}
@@ -580,10 +680,20 @@ func oakSolverBinary() (string, error) {
 }
 
 // encodeProblems writes the problems file the driver reads.
-func encodeProblems(theorems []oakTheorem, budget int) []byte {
-	maxTerms, total := 1, 0
+func encodeProblems(theorems []oakTheorem, sources [][]byte, budget int) []byte {
+	packed := func(b []byte) []uint32 {
+		out := make([]uint32, (len(b)+3)/4)
+		for i, c := range b {
+			out[i/4] |= uint32(c) << (8 * uint(i%4))
+		}
+		return out
+	}
+	maxTerms, total := 1, 1
+	for _, src := range sources {
+		total += 1 + (len(src)+3)/4
+	}
 	for _, th := range theorems {
-		total += 2 + len(th.Syntax)
+		total += 2 + (len(th.Name)+3)/4
 		for _, p := range th.Problems {
 			total += 1 + len(p.Words)
 			if p.Terms > maxTerms {
@@ -593,14 +703,20 @@ func encodeProblems(theorems []oakTheorem, budget int) []byte {
 	}
 	words := make([]uint32, 0, 4+total)
 	words = append(words, uint32(len(theorems)), uint32(maxTerms), uint32(budget), uint32(total))
+	// The files first: the count, then per file its byte count and bytes.
+	words = append(words, uint32(len(sources)))
+	for _, src := range sources {
+		words = append(words, uint32(len(src)))
+		words = append(words, packed(src)...)
+	}
 	for _, th := range theorems {
 		words = append(words, uint32(len(th.Problems)))
 		for _, p := range th.Problems {
 			words = append(words, uint32(len(p.Words)))
 			words = append(words, p.Words...)
 		}
-		words = append(words, uint32(len(th.Syntax)))
-		words = append(words, th.Syntax...)
+		words = append(words, uint32(len(th.Name)))
+		words = append(words, packed([]byte(th.Name))...)
 	}
 	buf := make([]byte, 4*len(words))
 	for i, w := range words {
@@ -616,12 +732,12 @@ func encodeProblems(theorems []oakTheorem, budget int) []byte {
 // runs across goroutines, run across processes, so a theorem that is
 // small under one order is decided in that order's time and the others
 // are stopped.
-// oakTheorem is one pending theorem: its Go-lowered problems, one per
-// variable order, and its raw syntax table (asm/rawsyntax.go) for the
-// serializer and lowering written in Oak.
+// oakTheorem is one pending theorem: its name (the parser written in Oak
+// finds it in the streamed source files) and its Go-lowered problems, one
+// per variable order.
 type oakTheorem struct {
+	Name     string
 	Problems []asm.Problem
-	Syntax   []uint32
 }
 
 // oakOrders is the number of variable orders the Oak lowering races when
@@ -632,14 +748,18 @@ const oakOrders = 3
 // slots is the number of solver processes the theorem's verdict can come
 // from: its Go-lowered variants, plus the Oak lowering's orders when it
 // applies.
-func (th oakTheorem) slots() int {
-	if len(th.Syntax) > 0 {
+// slots is the number of solver slots a theorem occupies: the Oak
+// lowering's three orders when source files are streamed, then the
+// Go-lowered variants.
+func (th oakTheorem) slots(withSources bool) int {
+	if withSources {
 		return len(th.Problems) + oakOrders
 	}
 	return len(th.Problems)
 }
 
-func runOakSolver(theorems []oakTheorem, budget int) ([]prove.SolverVerdict, error) {
+func runOakSolver(theorems []oakTheorem, sources [][]byte, budget int) ([]prove.SolverVerdict, error) {
+	withSources := len(sources) > 0
 	if len(theorems) == 0 {
 		return nil, nil
 	}
@@ -647,7 +767,7 @@ func runOakSolver(theorems []oakTheorem, budget int) ([]prove.SolverVerdict, err
 	if err != nil {
 		return nil, err
 	}
-	encoded := encodeProblems(theorems, budget)
+	encoded := encodeProblems(theorems, sources, budget)
 	if os.Getenv("OAK_SOLVER_KEEP") != "" {
 		kept := filepath.Join(os.TempDir(), fmt.Sprintf("oak-problems-%d.bin", os.Getpid()))
 		_ = os.WriteFile(kept, encoded, 0o644)
@@ -655,8 +775,8 @@ func runOakSolver(theorems []oakTheorem, budget int) ([]prove.SolverVerdict, err
 	}
 	slots := 1
 	for _, th := range theorems {
-		if th.slots() > slots {
-			slots = th.slots()
+		if th.slots(withSources) > slots {
+			slots = th.slots(withSources)
 		}
 	}
 	type line struct {
@@ -713,6 +833,9 @@ func runOakSolver(theorems []oakTheorem, budget int) ([]prove.SolverVerdict, err
 			}
 			continue
 		}
+		if os.Getenv("OAK_SOLVER_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "oak solver slot %d: %s\n", l.slot, l.text)
+		}
 		v, index, err := parseOakVerdict(l.text)
 		if err != nil {
 			if firstErr == nil {
@@ -722,11 +845,11 @@ func runOakSolver(theorems []oakTheorem, budget int) ([]prove.SolverVerdict, err
 		}
 		// A slot the theorem has no variant for reports the budget exceeded
 		// as a placeholder; only its own slots count.
-		if index < 0 || index >= len(theorems) || settled[index] || l.slot >= theorems[index].slots() {
+		if index < 0 || index >= len(theorems) || settled[index] || l.slot >= theorems[index].slots(withSources) {
 			continue
 		}
 		answered[index]++
-		hasSyntax := len(theorems[index].Syntax) > 0
+		hasSyntax := withSources
 		isOak := hasSyntax && l.slot < oakOrders
 		v.Winner = l.slot
 		if hasSyntax {
@@ -769,7 +892,7 @@ func runOakSolver(theorems []oakTheorem, budget int) ([]prove.SolverVerdict, err
 					}
 				}
 			}
-			if !settled[index] && answered[index] == theorems[index].slots() {
+			if !settled[index] && answered[index] == theorems[index].slots(withSources) {
 				verdicts[index] = prove.SolverVerdict{Status: failing[index], Winner: -1}
 				settled[index] = true
 				remaining--

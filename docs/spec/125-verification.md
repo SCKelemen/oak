@@ -194,12 +194,15 @@ ladder; a theorem is never a build error for being open.
 The bit-level rung is decided by the solver written in Oak
 (`prove/solver/bdd.oak`, §7) by default: a theorem the exhaustive decider
 does not reach is lowered to the decider's terms and serialized under
-every variable order that applies as a word table — and, always, as its
-raw parse tree (`asm/rawsyntax.go`: identifiers, operators, and type
-names as strings, nothing resolved), which the serializer written in Oak
-(`prove/solver/syntax.oak`) resolves, types, and lays out into the syntax
-table of the lowering written in Oak when the theorem is in that
-lowering's subset (integers, Bool, floats as their
+every variable order that applies as a word table — and the law file's
+source bytes go along, once per run. The lexer and parser written in Oak
+(`prove/solver/tree.oak`) read them into the raw parse tree (identifiers,
+operators, and type names as strings, nothing resolved; the same grammar
+as the Go front end over the law-file subset, run as a frame stack), the
+serializer written in Oak (`prove/solver/syntax.oak`) resolves, types,
+and lays out that tree into the syntax table of the lowering written in
+Oak when the theorem is in that lowering's subset (integers, Bool, floats
+as their
 IEEE patterns, records of them, fixed arrays, and sum types as
 parameters, locals, arguments, and results; the arithmetic, bitwise,
 shift, comparison, and Boolean operators; conversions; the scalar
@@ -218,10 +221,12 @@ values of the parameters the terms mention, the first two crossed, then
 claim or fires a trap obligation settles the theorem before any diagram
 is built, and is reported as the counterexample through the leaf names
 the serializer sorted), and its verdict is preferred whenever it decides;
-a theorem the serializer or lowering declines takes the Go decider's
-witness pass instead. The Go serializer (`asm/syntax.go`) is kept as the
-cross-check: `TestOakSyntaxAgrees` compares the two serializers' tables
-word for word over the corpus. The
+a theorem the parser, serializer, or lowering declines takes the Go
+decider's witness pass instead. The Go serializer (`asm/syntax.go`) is
+kept as the cross-check: `TestOakSyntaxAgrees` compares the table the Oak
+parser and serializer build from source with the Go parser's and
+serializer's, word for word, over the corpus (`OAK_SOLVER_TRACE=1`
+prints every verdict line the solver processes, reasons included). The
 solver and its driver are one fixed Oak program, built once through the
 backend and kept, and the pending theorems of a run are streamed to it on
 standard input, one process per order at the same time, each theorem
@@ -497,10 +502,12 @@ In order of payoff, each reusing a surface that exists:
   decided in Oak today, node for node the Go decider's counts wherever
   the orders coincide, and every refutation names the counterexample the
   Go decider names; and the syntax table itself is built in Oak from the
-  raw parse tree, word for word the Go serializer's over the corpus), so
-  on the bit-level path the Go that remains is the parser and the type
-  checker, whose tree is dumped as strings and numbers; next the parser
-  and checker themselves, in Oak, producing that tree; then
+  law file's bytes — lexer, parser, and serializer — word for word the Go
+  front end's over the corpus), so on the bit-level path the Go that
+  remains is the ladder itself: choosing which theorems are pending
+  (the exhaustive rung), streaming the sources, and reading the verdicts;
+  next the exhaustive rung and the ladder in Oak, so `oak prove` is an
+  Oak program end to end; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
   producers of certificates, so speed and trust are separated; then an

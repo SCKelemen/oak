@@ -60,9 +60,6 @@ type Result struct {
 	// order, for the Oak solver; fallback is what stands when the solver
 	// cannot decide (enumeration, or the open result with its reason).
 	Problems []asm.Problem
-	// Syntax is the theorem's raw syntax table (asm.ExportRaw): the parse
-	// tree for the serializer and lowering written in Oak.
-	Syntax   []uint32
 	fallback func() Result
 }
 
@@ -668,19 +665,15 @@ func bitLevel(deferred bool, tc *typechecker.TypeChecker, decls asm.Declarations
 	if reason != "" {
 		return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + reason + ")"}
 	}
-	// The parse tree goes to the serializer and lowering written in Oak,
-	// which run the witness pass themselves; the Go decider's witness pass
-	// runs (ResolvePending) only for a theorem the Oak lowering declines.
+	// The source goes to the parser, serializer, and lowering written in
+	// Oak, which run the witness pass themselves; the Go decider's witness
+	// pass runs (ResolvePending) only for a theorem the Oak side declines.
 	problems, reason, ok := asm.ExportProblems(stated, callees, guards, decls, asm.NodeBudget)
 	if !ok {
 		return Result{Name: open.Name, Status: Open, Detail: open.Detail + " (bit-level: " + reason + ")"}
 	}
-	raw, hasBody := asm.ExportRaw(stated, callees, decls)
-	if !hasBody {
-		raw = nil
-	}
 	fallback := Result{Name: open.Name, Status: Open, Detail: open.Detail}
-	return Result{Name: open.Name, Status: Pending, Problems: problems, Syntax: raw, fallback: func() Result { return fallback }}
+	return Result{Name: open.Name, Status: Pending, Problems: problems, fallback: func() Result { return fallback }}
 }
 
 // ResolvePending settles the pending results from the Oak solver's
