@@ -209,7 +209,31 @@ func (em *emitter) emitGlobals() (string, error) {
 			if err != nil {
 				return "", fmt.Errorf("lean: %w", err)
 			}
-
+			if decl.Measured != nil {
+				// A measured constant (docs/spec/60-effects-allocation.md
+				// section 10b) is opaque within its range: theorems about
+				// code reading it quantify over every value the load may
+				// supply, and the range is the hypothesis `NAME_range`
+				// they may take (95-extraction.md section 3).
+				rendered[name] = fmt.Sprintf("/-- `%s` is measured within `%d..%d`, pinned to `%s` when the load supplies nothing. -/\nopaque %s : %s\n\nvariable (%s_range : (%d : %s) ≤ %s ∧ %s ≤ (%d : %s))\n\n",
+					ident(name), decl.Measured.Lo, decl.Measured.Hi, decl.Value.String(), ident(name), typ, ident(name), decl.Measured.Lo, typ, ident(name), ident(name), decl.Measured.Hi, typ)
+				progressed = true
+				continue
+			}
+			defName := ident(name)
+			doc := ""
+			if em.mutable[name] {
+				// Package state: the functions that touch it take it as a
+				// parameter and return it; this is the value it starts at.
+				defName = ident(name) + "_init"
+				doc = fmt.Sprintf("/-- `%s` is package state, threaded through the functions that touch it (docs/spec/95-extraction.md section 3); this is its initial value. -/\n", ident(name))
+			}
+			if decl.Value == nil {
+				zero, err := em.zeroTerm(decl.Type, typ)
+				if err != nil {
+					return "", fmt.Errorf("lean: global %s: %w", name, err)
+				}
+				rendered[name] = fmt.Sprintf("%sdef %s : %s := %s\n\n", doc, defName, typ, zero)
 				progressed = true
 				continue
 			}
