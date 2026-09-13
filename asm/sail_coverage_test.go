@@ -32,7 +32,16 @@ import (
 //
 // The test skips when the external model or the disassembler is absent.
 
-const sailArmModel = "/Users/sam/oak/external/sail-arm/arm-v8.5-a/model/aarch_decode.sail"
+// sailArmModel locates Arm's decode tree: `OAK_SAIL_ARM_MODEL` when set,
+// else the checkout under external/ (gitignored) beside this package.
+var sailArmModel = sailArmModelPath()
+
+func sailArmModelPath() string {
+	if path := os.Getenv("OAK_SAIL_ARM_MODEL"); path != "" {
+		return path
+	}
+	return filepath.Join("..", "external", "sail-arm", "arm-v8.5-a", "model", "aarch_decode.sail")
+}
 
 var llvmMCCandidates = []string{"/opt/homebrew/opt/llvm/bin/llvm-mc", "/usr/local/opt/llvm/bin/llvm-mc"}
 
@@ -184,17 +193,23 @@ var sailExcluded = map[string]string{
 
 func TestSailDecodeCoverage(t *testing.T) {
 	if _, err := os.Stat(sailArmModel); err != nil {
-		t.Skipf("sail-arm model not present: %v", err)
+		requireOracle(t, "sail-arm model not present: "+err.Error())
 	}
 	llvmMC := ""
+	if path, err := exec.LookPath("llvm-mc"); err == nil {
+		llvmMC = path
+	}
 	for _, candidate := range llvmMCCandidates {
+		if llvmMC != "" {
+			break
+		}
 		if _, err := os.Stat(candidate); err == nil {
 			llvmMC = candidate
 			break
 		}
 	}
 	if llvmMC == "" {
-		t.Skip("llvm-mc not present")
+		requireOracle(t, "llvm-mc not present")
 	}
 	classes, err := parseSailDecodeClasses(sailArmModel)
 	if err != nil {

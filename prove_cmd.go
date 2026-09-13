@@ -28,14 +28,15 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 	check := flags.Bool("check", false, "run Lean on the projection (-lean) and report the statements it proves")
 	leanBinary := flags.String("lean-binary", "lean", "the Lean executable -check runs")
 	cases := flags.Int("cases", prove.DefaultCases, "largest parameter domain the exhaustive decider enumerates")
-	solver := flags.String("solver", "oak", "the decider: oak (the Go ladder with the solver written in Oak, prove/solver), self (the prover written in Oak end to end: the file to the rows), or go")
+	solver := flags.String("solver", "oak", "the decider: oak (the Go ladder with the solver written in Oak, prove/solver), self (the prover written in Oak end to end: the file to the rows), go, or sat (the Go ladder, then the certificate rung: an external SAT solver's LRAT certificate checked in Go and in Oak)")
+	cnfDir := flags.String("cnf", "", "write every bit-level obligation's clauses to this directory as DIMACS, one name.cnf per theorem")
 	cross := flags.String("cross", "go", "with -solver oak, the cross-check of every bit-level verdict: go (the Go decider under the same order must agree, node for node) or none")
 	witness := flags.Bool("witness", false, "also evaluate the exhaustively decided theorems in the compiled program")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() > 1 || (*check && *leanOut == "") {
-		fmt.Fprintln(stderr, "usage: oak prove [-lean out.lean [-check [-lean-binary lean]]] [-cases N] [-witness] [-solver oak|go] [-cross go|none] [dir|file.oak]")
+		fmt.Fprintln(stderr, "usage: oak prove [-lean out.lean [-check [-lean-binary lean]]] [-cases N] [-witness] [-solver oak|go|sat] [-cross go|none] [-cnf dir] [dir|file.oak]")
 		return 2
 	}
 	target := "."
@@ -75,6 +76,12 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 	if len(results) == 0 {
 		fmt.Fprintln(stdout, "oak prove: no theorems")
 		return 0
+	}
+	if *solver == "sat" || *cnfDir != "" {
+		// The certificate rung (prove_sat.go): the clauses of every
+		// bit-level obligation, a SAT solver when one is installed, and its
+		// certificate checked twice before a row changes.
+		results = certificateRung(model, results, *solver == "sat", *cnfDir, stdout)
 	}
 	if *solver == "oak" {
 		// The Oak solver (prove/solver/bdd.oak) decides the bit-level rung:

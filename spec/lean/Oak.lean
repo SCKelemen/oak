@@ -158,4 +158,5 @@ import Oak.Freestanding
 import Oak.Rings
 import Oak.BinaryCodec
 import Oak.BddComplement
+import Oak.RupCheck
 import Oak.RVWMO

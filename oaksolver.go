@@ -87,6 +87,13 @@ var oakWitnessSource string
 //go:embed prove/solver/driver.oak
 var oakDriverHelpersSource string
 
+// The LRAT certificate checker (prove/solver/lrat.oak): the twin of
+// prove/lrat.go for the certificate rung, reached through
+// OAK_SOLVER_MODE=lrat with the encoded formula and certificate on stdin.
+//
+//go:embed prove/solver/lrat.oak
+var oakLRATSource string
+
 // oakSolverDriverSource is the driver around the solver: it reads its
 // order slot from OAK_SOLVER_VARIANT and the problems from its standard
 // input (a header of count, largest term count, budget, and word total,
@@ -238,8 +245,114 @@ shell_mode: (): Bool {
   is_prove
 }
 
+// lrat_mode: OAK_SOLVER_MODE=lrat selects the certificate checker (lrat.oak).
+lrat_mode: (): Bool {
+  p: c.Ptr = c_getenv(c.cstr("OAK_SOLVER_MODE\0"))
+  is_lrat: Bool = false
+  unsafe {
+    value: []u8 = c.borrow_string(p)
+    is_lrat = len(value) == u32(4) && value[u32(0)] == u8(108) && value[u32(1)] == u8(114)
+  }
+  is_lrat
+}
+
 main: (): i32 {
-  shell_mode() ? { shell_main() } | { stream_main() }
+  shell_mode() ? { shell_main() } | { lrat_mode() ? { lrat_main() } | { stream_main() } }
+}
+
+// lrat_fill copies n words from src into dst.
+lrat_fill: (dst: [*]u32, src: []u32, n: u32): () {
+  i: u32 = 0
+  while i < n && i < len(src) && i < len(dst) {
+    dst[i] = src[i]
+    i = i + u32(1)
+  }
+}
+
+// lrat_words_at assembles little-endian words from bytes into words[at..].
+lrat_words_at: (bytes: []u8, words: [*]u32, at: u32, count: u32): () {
+  i: u32 = 0
+  while i < count {
+    words[at + i] = u32(bytes[i * u32(4)]) | (u32(bytes[i * u32(4) + u32(1)]) << u32(8)) | (u32(bytes[i * u32(4) + u32(2)]) << u32(16)) | (u32(bytes[i * u32(4) + u32(3)]) << u32(24))
+    i = i + u32(1)
+  }
+}
+
+// lrat_main reads the encoded formula and certificate (lrat.oak's word
+// protocol) from standard input, checks it over caller-owned storage sized
+// from the header, and writes one line: lrat status additions deletions.
+lrat_main: (): i32 {
+  chunk_raw: c.Ptr = malloc(c.Size(CHUNK))
+  header_bytes_raw: c.Ptr = malloc(c.Size(LRAT_HEADER_WORDS * u32(4)))
+  header_words_raw: c.Ptr = malloc(c.Size(LRAT_HEADER_WORDS * u32(4)))
+  header_ok: Bool = false
+  h: [8]u32
+  unsafe {
+    header_bytes: Buffer[u8] = c.own[u8](header_bytes_raw, LRAT_HEADER_WORDS * u32(4))
+    header_ok = read_fully(chunk_raw, span(&header_bytes), LRAT_HEADER_WORDS * u32(4))
+    header_words: Buffer[u32] = c.own[u32](header_words_raw, LRAT_HEADER_WORDS)
+    words_of(view(&header_bytes), span(&header_words), LRAT_HEADER_WORDS)
+    lrat_fill(span(&h), view(&header_words), LRAT_HEADER_WORDS)
+    free(c.disown(header_words))
+    free(c.disown(header_bytes))
+  }
+  header_ok = header_ok && h[u32(0)] == LRAT_MAGIC
+  variables: u32 = header_ok ? { h[u32(1)] + u32(1) } | { u32(1) }
+  body_words: u32 = header_ok ? { h[u32(3)] + h[u32(4)] } | { u32(0) }
+  ids: u32 = header_ok ? { h[u32(5)] + u32(1) } | { u32(1) }
+  store_words: u32 = header_ok ? { h[u32(6)] + u32(1) } | { u32(1) }
+  total: u32 = LRAT_HEADER_WORDS + body_words
+  bytes_raw: c.Ptr = malloc(c.Size(body_words * u32(4) + u32(4)))
+  words_raw: c.Ptr = malloc(c.Size(total * u32(4)))
+  starts_raw: c.Ptr = malloc(c.Size(ids * u32(4)))
+  lengths_raw: c.Ptr = malloc(c.Size(ids * u32(4)))
+  alive_raw: c.Ptr = malloc(c.Size(ids))
+  store_raw: c.Ptr = malloc(c.Size(store_words * u32(4)))
+  assign_raw: c.Ptr = malloc(c.Size(variables))
+  trail_raw: c.Ptr = malloc(c.Size(variables * u32(4)))
+  status: u32 = LRAT_CAPACITY
+  additions: u32 = 0
+  deletions: u32 = 0
+  unsafe {
+    body: Buffer[u8] = c.own[u8](bytes_raw, body_words * u32(4) + u32(4))
+    body_ok: Bool = body_words == u32(0) || read_fully(chunk_raw, span(&body), body_words * u32(4))
+    words: Buffer[u32] = c.own[u32](words_raw, total)
+    lrat_fill(span(&words), view(&h), LRAT_HEADER_WORDS)
+    lrat_words_at(view(&body), span(&words), LRAT_HEADER_WORDS, body_words)
+    starts: Buffer[u32] = c.own[u32](starts_raw, ids)
+    lengths: Buffer[u32] = c.own[u32](lengths_raw, ids)
+    alive: Buffer[u8] = c.own[u8](alive_raw, ids)
+    store: Buffer[u32] = c.own[u32](store_raw, store_words)
+    assign: Buffer[u8] = c.own[u8](assign_raw, variables)
+    trail: Buffer[u32] = c.own[u32](trail_raw, variables)
+    out: [3]u32
+    header_ok && body_ok ? {
+      status = lrat_check(view(&words), span(&starts), span(&lengths), span(&alive), span(&store), span(&assign), span(&trail), span(&out))
+      additions = out[u32(1)]
+      deletions = out[u32(2)]
+    } | { status = LRAT_MALFORMED }
+    free(c.disown(trail))
+    free(c.disown(assign))
+    free(c.disown(store))
+    free(c.disown(alive))
+    free(c.disown(lengths))
+    free(c.disown(starts))
+    free(c.disown(words))
+    free(c.disown(body))
+  }
+  free(chunk_raw)
+  write_byte(u8(108))
+  write_byte(u8(114))
+  write_byte(u8(97))
+  write_byte(u8(116))
+  write_byte(u8(32))
+  write_u32(status)
+  write_byte(u8(32))
+  write_u32(additions)
+  write_byte(u8(32))
+  write_u32(deletions)
+  write_byte(u8(10))
+  0
 }
 
 stream_main: (): i32 {
@@ -364,7 +477,18 @@ solve_stream: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, d
 // directory under the temporary directory named by the sources' hash,
 // and returns the binary's path; a later run finds it built.
 func oakSolverBinary() (string, error) {
-	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSyntaxSource + "\x00" + oakTreeSource + "\x00" + oakProtocolSource + "\x00" + oakShellSource + "\x00" + oakLeanSource + "\x00" + oakExploreSource + "\x00" + oakWitnessSource + "\x00" + oakDriverHelpersSource + "\x00" + oakSolverDriverSource))
+	// The cache key covers the prover's sources and the compiler that
+	// builds them (the executable's size and modification time): a compiler
+	// change — an inliner rule, a backend lowering — yields a different
+	// binary from the same sources, and a stale one would be measured and
+	// tested in its place.
+	compilerIdentity := ""
+	if exe, err := os.Executable(); err == nil {
+		if info, err := os.Stat(exe); err == nil {
+			compilerIdentity = fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
+		}
+	}
+	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSyntaxSource + "\x00" + oakTreeSource + "\x00" + oakProtocolSource + "\x00" + oakShellSource + "\x00" + oakLeanSource + "\x00" + oakExploreSource + "\x00" + oakWitnessSource + "\x00" + oakDriverHelpersSource + "\x00" + oakLRATSource + "\x00" + oakSolverDriverSource + "\x00" + compilerIdentity))
 	// OAK_SOLVER_NATIVE=1 builds the prover through the native backend
 	// (docs/spec/94-assembler.md §9): every function the backend reaches is
 	// checked, verified against its Oak body, and encoded by the Oak
@@ -383,7 +507,7 @@ func oakSolverBinary() (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	for name, text := range map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "syntax.oak": oakSyntaxSource, "tree.oak": oakTreeSource, "protocol.oak": oakProtocolSource, "shell.oak": oakShellSource, "lean.oak": oakLeanSource, "explore.oak": oakExploreSource, "witness.oak": oakWitnessSource, "driver.oak": oakDriverHelpersSource, "main.oak": oakSolverDriverSource} {
+	for name, text := range map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "syntax.oak": oakSyntaxSource, "tree.oak": oakTreeSource, "protocol.oak": oakProtocolSource, "shell.oak": oakShellSource, "lean.oak": oakLeanSource, "explore.oak": oakExploreSource, "witness.oak": oakWitnessSource, "driver.oak": oakDriverHelpersSource, "lrat.oak": oakLRATSource, "main.oak": oakSolverDriverSource} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
 			return "", err
 		}
@@ -677,4 +801,42 @@ func parseOakVerdict(text string) (prove.SolverVerdict, int, error) {
 	}
 	v.LeafNames = append(v.LeafNames, fields[5+listed:]...)
 	return v, index, nil
+}
+
+// OakLRATVerdict is what the checker written in Oak reported: its status
+// (0 accepted; the codes are lrat.oak's) and the steps it counted.
+type OakLRATVerdict struct {
+	Status               int
+	Additions, Deletions int
+}
+
+// runOakLRAT checks a certificate with the checker written in Oak
+// (prove/solver/lrat.oak) inside the compiled solver binary, the encoded
+// words on its standard input.
+func runOakLRAT(formula, certificate string) (OakLRATVerdict, error) {
+	words, err := prove.EncodeLRATWords(formula, certificate)
+	if err != nil {
+		return OakLRATVerdict{}, err
+	}
+	solver, err := oakSolverBinary()
+	if err != nil {
+		return OakLRATVerdict{}, err
+	}
+	encoded := make([]byte, 4*len(words))
+	for i, w := range words {
+		binary.LittleEndian.PutUint32(encoded[4*i:], w)
+	}
+	run := exec.Command(solver)
+	run.Env = append(os.Environ(), "OAK_SOLVER_MODE=lrat")
+	run.Stdin = bytes.NewReader(encoded)
+	run.Stderr = os.Stderr
+	out, err := run.Output()
+	if err != nil {
+		return OakLRATVerdict{}, fmt.Errorf("oak lrat checker: %v", err)
+	}
+	var verdict OakLRATVerdict
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "lrat %d %d %d", &verdict.Status, &verdict.Additions, &verdict.Deletions); err != nil {
+		return OakLRATVerdict{}, fmt.Errorf("oak lrat checker: unreadable verdict %q", strings.TrimSpace(string(out)))
+	}
+	return verdict, nil
 }

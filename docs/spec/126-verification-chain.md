@@ -135,23 +135,32 @@ nothing in Lean stated that the verifier's Oak lowering (Go,
 extraction's embedding agree — both transliterated `20-types.md` §11.1 and
 were held to it by tests.
 
-`Oak.LoweringRefinement` closes it for the scalar subset the two share.
-The module states one typed expression language — parameters, checked
-literals, the wrapping `+ - *`, the unsigned bitwise operators and shifts,
-`/` and `%` by a constant power of two, negation and complement, the
-widening and narrowing conversions, comparisons, `&&`/`||`/`!`, Bool
-conditionals — and two readings of it: `evalX`, the extraction's
+`Oak.LoweringRefinement` closes it for the subset the two share. The
+module states one typed expression language over a function's parameters
+and the locals in scope — variables, checked literals, the wrapping
+`+ - *`, the unsigned bitwise operators and shifts, `/` and `%` by a
+constant power of two, negation and complement, the widening and narrowing
+conversions, comparisons, `&&`/`||`/`!`, Bool conditionals, block-scoped
+locals and rebindings (`x: T = e`, `x = e`), and calls to program
+functions — and two readings of it: `evalX`, the extraction's
 (`UIntN`/`IntN` arithmetic as `BitVec` arithmetic, shift counts modulo the
 width, `decide` of the signed or unsigned order, `toIntN`/`toUIntN` as
-extension by the source's signedness or truncation), and `lowerT`, the
-verifier's (`oakLowering.lower` case by case, with `truncate`,
-`zeroExtend`, `adaptWidth` and `extendTerm` spelled as the Go spells them,
-shape cases included, over `Term.eval`, the executor). `lowerT_eval`
-proves the lowered term evaluates to the embedding's value for every
-expression and every parameter assignment; the comparison codes are
-related to the extraction's comparisons through the flag lemmas of
-`Oak.AssemblerSemantics`, the signed ones bit-blasted at 8, 16, 32 and 64
-bits. `asm/lowering_refinement_test.go` pins the Go lowering to `lowerT`:
+extension by the source's signedness or truncation, a local as its
+`let`-bound value, a call as the callee's body under its parameters), and
+`lowerT`, the verifier's (`oakLowering.lower` case by case, with
+`truncate`, `zeroExtend`, `adaptWidth` and `extendTerm` spelled as the Go
+spells them, shape cases included, a local lowered once and substituted
+through `adaptWidth(local.value, width)`, a call bound through
+`enterCall`'s fresh scope and inlined, over `Term.eval`, the executor).
+`lowerT_eval` proves the lowered term evaluates to the embedding's value
+for every expression, every parameter assignment, and every agreeing scope
+(`Agree`: each local's term has the local's width and evaluates to its
+value); the comparison codes are related to the extraction's comparisons
+through the flag lemmas of `Oak.AssemblerSemantics`, the signed ones
+bit-blasted at 8, 16, 32 and 64 bits. Parameters and locals live in
+separate value environments because the verifier's terms name parameters
+only: a local shadowing a parameter changes what the source means by the
+name, never what a term means. `asm/lowering_refinement_test.go` pins the Go lowering to `lowerT`:
 the rendered terms of a table of Oak expressions must be the renders
 stated as examples in the Lean file, so either side changing must visit
 the other. Two eval-preserving liberties the Go takes are left out of the
@@ -163,8 +172,9 @@ With it, on arm64, a theorem about an Oak function's extraction composes
 with the verifier's verdict and `Oak.ArmASL` into one statement about the
 machine for a body inside the shared subset: source theorem, `lowerT_eval`,
 the verifier's equality, the ASL bridge. Outside the subset — loops,
-aggregates, spans, inlined calls — the verifier's lowering is still the
-Go's alone, related to the extraction by tests.
+statement-level conditionals, aggregates, span and array elements — the
+verifier's lowering is still the Go's alone, related to the extraction by
+tests.
 
 For the C route (every function the native lane does not cover, and every
 function on amd64 and the microcontrollers), the source-level proofs reach
@@ -188,9 +198,30 @@ Done on 2026-09-13:
    which the RV64IM table lacks, so those four are outside the unit
    language rather than trusted by verdict.
 
-Next:
+Next, arm64 first (2026-09-13: every workload runs on arm64, so the lane
+whose chain is proved end to end is the one to deepen; the others wait
+for a workload):
 
-3. **Finish the RISC-V bridge**: build `spec/lean-sail` against a Sail
+3. **Widen the seam** (§4) from scalar expressions to what the verifier
+   lowers for real native bodies. Done 2026-09-13: block-scoped locals and
+   rebindings, and inlined calls to program functions (`letIn`, `call`,
+   the `Agree` scope invariant). Next: statement-level conditionals
+   (`c ? { x = e } | { }`, `lowerConditionalStatement` against the
+   extraction's `let (vars) ← if c then … else …`), span and owned-array
+   element reads under their guards, and counted loops (`lowerWhile`
+   against the fuel-indexed recursion) — so `lowerT_eval` covers the
+   bodies `oak build -native` actually verifies rather than their
+   arithmetic alone. This is the step that turns "source theorem implies
+   machine behavior" from a statement about expressions into one about
+   functions on arm64.
+4. **Widen translation validation** (§2.4) on arm64: the checked shift
+   helpers under a constant-count specialization (the verifier admits a
+   constant count; the helper's trap check folds away), `oak_index` and
+   `oak_store`'s bounds checks against the guarded element reads and
+   writes the lowering models, and the compare-exchange helper once the
+   verifier's memory model reaches the atomics
+   (`compare_exchange_refinement_test.go` pins its text today).
+5. **Finish the RISC-V bridge** (rv64 is dbs's second target): build `spec/lean-sail` against a Sail
    built from git so the theorems are checked against the export itself
    rather than verbatim copies; extend the decided subset to loads and
    stores through the frame and to the AMOs the memory refinement already
@@ -211,7 +242,7 @@ Next:
    `asm/rv64_sail_bridge_test.go` then runs the bridge. The export's
    `lake build` is large (gigabytes of `.olean`); the attempt stopped
    when the host had about one gigabyte of disk left.
-4. **An amd64 lane and an x86 semantics**: the native backend's third lane,
+6. **An amd64 lane and an x86 semantics** — **deferred** (2026-09-13: no x86-64 workload exists; amd64 stays a C-only target until one does). The native backend's third lane,
    with instruction semantics bridged to a machine-readable x86-64
    specification. Scoped 2026-09-13, in the order that pays first:
    1. `Oak.X86`, the semantics of the integer subset the verifier would
@@ -244,7 +275,7 @@ Next:
       an amd64 host in CI.
    Until step 2 lands amd64 is a C-only target and its chain ends at the
    compiler.
-5. **The microcontrollers**: wait on Arm's M-profile ASL
+7. **The microcontrollers**: wait on Arm's M-profile ASL
    (`docs/notes/oak-cortex-m-deferred`); rv32 can follow rv64's lane once
    the psABI differences are stated.
 

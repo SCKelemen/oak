@@ -253,6 +253,12 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 	for k, v := range bc.bufferOwners {
 		savedBufferOwners[k] = v
 	}
+	// Custody is per function too: a buffer handed back in one body says
+	// nothing about a same-named local of the next.
+	savedConsumedOwners := make(map[string]bool)
+	for k, v := range bc.consumedOwners {
+		savedConsumedOwners[k] = v
+	}
 	savedBlockDepth := bc.currentBlockDepth
 	savedPendingReturn := bc.pendingReturn
 	savedInitializers, savedPayloads := bc.initializers, bc.payloadBindings
@@ -346,6 +352,7 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 	bc.activeBorrows = savedActiveBorrows
 	bc.ownerOf = savedOwnerOf
 	bc.bufferOwners = savedBufferOwners
+	bc.consumedOwners = savedConsumedOwners
 	bc.currentBlockDepth = savedBlockDepth
 	bc.pendingReturn = savedPendingReturn
 	bc.initializers, bc.payloadBindings = savedInitializers, savedPayloads

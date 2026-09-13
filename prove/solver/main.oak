@@ -90,5 +90,84 @@ main: (): i32 {
     failures = (raced.status == STATUS_PROVEN && raced.winner == u32(0)) ? { failures } | { failures + u32(128) }
     free(c.disown(mem))
   }
+  failures = lrat_self_check() ? { failures } | { failures + u32(256) }
   i32_bits_u32(failures)
+}
+
+// lrat_self_check runs the certificate checker (lrat.oak) on the four
+// clauses over two variables with every sign pattern — unsatisfiable —
+// and its two-step certificate (prove/lrat_test.go's fixture), then on the
+// same certificate with its conflict hint removed, which must be refused.
+lrat_words: (broken: Bool): [32]u32 {
+  w: [32]u32
+  w[u32(0)] = LRAT_MAGIC
+  w[u32(1)] = u32(2)
+  w[u32(2)] = u32(4)
+  w[u32(3)] = u32(12)
+  w[u32(4)] = broken ? { u32(15) } | { u32(16) }
+  w[u32(5)] = u32(6)
+  w[u32(6)] = u32(9)
+  // Clauses 1..4: (1 2) (-1 2) (1 -2) (-1 -2); literal 2*(v-1)+polarity.
+  w[u32(8)] = u32(2)
+  w[u32(9)] = u32(1)
+  w[u32(10)] = u32(3)
+  w[u32(11)] = u32(2)
+  w[u32(12)] = u32(0)
+  w[u32(13)] = u32(3)
+  w[u32(14)] = u32(2)
+  w[u32(15)] = u32(1)
+  w[u32(16)] = u32(2)
+  w[u32(17)] = u32(2)
+  w[u32(18)] = u32(0)
+  w[u32(19)] = u32(2)
+  // Step 5: add (2) with hints 1 2.
+  w[u32(20)] = u32(0)
+  w[u32(21)] = u32(5)
+  w[u32(22)] = u32(1)
+  w[u32(23)] = u32(3)
+  w[u32(24)] = u32(2)
+  w[u32(25)] = u32(1)
+  w[u32(26)] = u32(2)
+  // Step 6: add the empty clause with hints 5 3 4 (the broken form drops 4).
+  w[u32(27)] = u32(0)
+  w[u32(28)] = u32(6)
+  w[u32(29)] = u32(0)
+  w[u32(30)] = broken ? { u32(2) } | { u32(3) }
+  w[u32(31)] = u32(5)
+  w
+}
+
+lrat_self_check: (): Bool {
+  good: [32]u32 = lrat_words(false)
+  // The good certificate needs two more hint words than the array holds
+  // in the broken layout; lay it out in a wider buffer.
+  words: [36]u32
+  i: u32 = 0
+  while i < u32(32) {
+    words[i] = good[i]
+    i = i + u32(1)
+  }
+  words[u32(32)] = u32(3)
+  words[u32(33)] = u32(4)
+  starts: [8]u32
+  lengths: [8]u32
+  alive: [8]u8
+  store: [16]u32
+  assign: [4]u8
+  trail: [4]u32
+  out: [3]u32
+  words_view: []u32 = view(&words)
+  accepted: u32 = lrat_check(subslice(words_view, u32(0), u32(34)), span(&starts), span(&lengths), span(&alive), span(&store), span(&assign), span(&trail), span(&out))
+  ok: Bool = accepted == LRAT_ACCEPTED && out[u32(1)] == u32(2) && out[u32(2)] == u32(0)
+  bad: [32]u32 = lrat_words(true)
+  bad_words: [34]u32
+  i = u32(0)
+  while i < u32(32) {
+    bad_words[i] = bad[i]
+    i = i + u32(1)
+  }
+  bad_words[u32(32)] = u32(3)
+  bad_view: []u32 = view(&bad_words)
+  refused: u32 = lrat_check(subslice(bad_view, u32(0), u32(33)), span(&starts), span(&lengths), span(&alive), span(&store), span(&assign), span(&trail), span(&out))
+  ok && refused == LRAT_NO_CONFLICT
 }

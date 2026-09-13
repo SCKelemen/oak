@@ -107,6 +107,12 @@ type span struct {
 	// the LP64 pair leaves padding above the u32 length, so every bounds
 	// guard compares against this copy (nativegen/rv64.go).
 	norm int
+	// array: for a local view or span over an owned array of the frame
+	// (`whole: []u32 = view(&buf)`), the array itself. Its elements are
+	// reached through the array's own idiom — the frame address and the
+	// constant guard — since the pair's base register carries a frame
+	// address the checker forgets at the first call, not a span fact.
+	array *arrayLocal
 }
 
 // spanTypeOf reads a span or view type of scalar or record elements.
@@ -398,6 +404,12 @@ type recordParam struct {
 	regs     int
 	indirect bool
 	local    *recordLocal
+	// inPlace: a by-reference parameter the body only reads, kept as the
+	// caller's memory addressed by the callee-saved register park (the
+	// checker's read-only region, copied there by `mov`), never copied into
+	// the frame; a callee taking it by reference receives the same address.
+	inPlace bool
+	park    int
 }
 
 // isHFA reports a homogeneous floating-point aggregate (all fields one
@@ -481,6 +493,9 @@ type recordLocal struct {
 	temps  []int // scratch registers to release once the place is consumed
 	// readOnly: an element of a view ([]T): stores are refused.
 	readOnly bool
+	// paramRef: an in-place by-reference parameter (recordParam.inPlace):
+	// the caller's memory, passed on by its address.
+	paramRef bool
 }
 
 func (r *recordLocal) loc() loc { return loc{inReg: r.inReg, reg: r.reg, offset: r.offset} }
@@ -1230,7 +1245,18 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 			if !indirect {
 				regs = layout.chunks()
 			}
-			g.recordParams[p.Name.Value] = &recordParam{layout: layout, reg: nextReg, regs: regs, indirect: indirect}
+			rp := &recordParam{layout: layout, reg: nextReg, regs: regs, indirect: indirect}
+			if indirect && !recordParamTouched(fn, p.Name.Value) && !layoutHasArray(layout) && g.usedCallee < calleeHigh-calleeLow+1 {
+				// Read in place: the address parked in a callee-saved
+				// register, the fields loaded through it (the checker's
+				// region rule), no copy into the frame. Types drive it: a
+				// parameter the body never writes, borrows, or addresses is
+				// the caller's copy for the whole call.
+				rp.inPlace, rp.park = true, calleeLow+g.usedCallee
+				g.usedCallee++
+				g.saveArea = 8 * (calleeHigh - calleeLow + 1)
+			}
+			g.recordParams[p.Name.Value] = rp
 			nextReg += regs
 			continue
 		}
@@ -1296,7 +1322,11 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 			g.declare(p.Name.Value, s)
 		}
 		if rp, isRecord := g.recordParams[p.Name.Value]; isRecord {
-			rp.local = g.declareRecord(p.Name.Value, rp.layout)
+			if rp.inPlace {
+				rp.local = g.bindParamRef(p.Name.Value, rp)
+			} else {
+				rp.local = g.declareRecord(p.Name.Value, rp.layout)
+			}
 		}
 	}
 	g.head = g.newLabel("head")
@@ -1352,7 +1382,11 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 				binding.Length = &second
 			}
 			out.Bindings = append(out.Bindings, binding)
-			if rp.indirect {
+			if rp.inPlace {
+				// The caller's copy stays where it is: its address parks in
+				// a callee-saved register (the region fact follows the mov).
+				prologue = append(prologue, g.ins("mov", xr(rp.park), xr(rp.reg)))
+			} else if rp.indirect {
 				// The caller's copy, addressed by the register: copy it into
 				// the frame (the body may write its own copy).
 				prologue = append(prologue, g.copyIn(rp.local, rp.reg)...)
@@ -2570,6 +2604,80 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 
 // declareRecord gives an owned record local its frame storage in whole
 // 8-byte slots.
+// bindParamRef binds an in-place record parameter: the caller's memory at
+// the parked address register, read-only.
+func (g *generator) bindParamRef(name string, rp *recordParam) *recordLocal {
+	rec := &recordLocal{inReg: true, reg: rp.park, layout: rp.layout, readOnly: true, paramRef: true}
+	delete(g.slots, name)
+	delete(g.types, name)
+	delete(g.regs, name)
+	g.records[name] = rec
+	g.scopes[len(g.scopes)-1][name] = slotBinding{reg: -1, rec: rec}
+	return rec
+}
+
+// recordParamTouched reports whether a body assigns a record parameter or
+// a path under it, takes its address (`&p`, `&p.f`: view, span,
+// address_of), or calls the function itself (a tail self-call rebinds the
+// parameters) — the uses under which the parameter needs a copy of its own.
+func recordParamTouched(fn *ast.FunctionStatement, name string) bool {
+	touched := false
+	walk(fn.Body, func(n ast.Node) {
+		switch e := n.(type) {
+		case *ast.AssignmentStatement:
+			if e.Name != nil && e.Name.Value == name {
+				touched = true
+			}
+		case *ast.IndexAssignmentStatement:
+			if root, ok := pathRoot(e.Target); ok && root == name {
+				touched = true
+			}
+		case *ast.PrefixExpression:
+			if e.Operator == "&" {
+				if root, ok := pathRoot(e.Right); ok && root == name {
+					touched = true
+				}
+			}
+		case *ast.InvocationExpression:
+			if ident, isIdent := e.Function.(*ast.Identifier); isIdent && fn.Name != nil && ident.Value == fn.Name.Value {
+				touched = true
+			}
+		}
+	})
+	return touched
+}
+
+// pathRoot is the identifier at the root of an access path (`p.f[i].g`).
+func pathRoot(expr ast.Expression) (string, bool) {
+	for {
+		switch e := expr.(type) {
+		case *ast.Identifier:
+			return e.Value, true
+		case *ast.IndexExpression:
+			expr = e.Left
+		default:
+			return "", false
+		}
+	}
+}
+
+// layoutHasArray reports an owned-array field anywhere in a layout: such a
+// field is walked through a frame address, which an in-place parameter
+// has none of.
+func layoutHasArray(l *recordLayout) bool {
+	for _, f := range l.fields {
+		switch f.kind {
+		case fieldArray:
+			return true
+		case fieldRecord:
+			if f.layout != nil && layoutHasArray(f.layout) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (g *generator) declareRecord(name string, layout *recordLayout) *recordLocal {
 	rec := &recordLocal{offset: 8 * g.nslots, layout: layout}
 	g.nslots += (layout.size + 7) / 8
@@ -2603,7 +2711,7 @@ func (g *generator) lowerSpanDeclaration(s *ast.VariableDeclaration, target span
 		g.emit("mov", xr(baseReg), xr(value.baseReg))
 		g.emit("mov", wr(lenReg), wr(value.lenReg))
 	}
-	local := span{elem: target.elem, elemLayout: target.elemLayout, writable: target.writable, baseReg: baseReg, lenReg: lenReg, argBase: -1, argLen: -1, frameLen: value.frameLen}
+	local := span{elem: target.elem, elemLayout: target.elemLayout, writable: target.writable, baseReg: baseReg, lenReg: lenReg, argBase: -1, argLen: -1, array: value.array, frameLen: value.frameLen}
 	delete(g.slots, s.Name.Value)
 	delete(g.types, s.Name.Value)
 	delete(g.regs, s.Name.Value)
@@ -2673,7 +2781,7 @@ func (g *generator) spanValue(expr ast.Expression, target *span, baseReg, lenReg
 		if arr.inReg {
 			return span{}, false, unsupported("%s of an array inside a computed element", fn.Value)
 		}
-		out.elem, out.elemLayout, out.writable, out.frameLen = arr.elem, arr.elemLayout, shape.writable, arr.length
+		out.elem, out.elemLayout, out.writable, out.array, out.frameLen = arr.elem, arr.elemLayout, shape.writable, arr, arr.length
 		g.emit("add", xr(baseReg), sp(), imm(g.slotMem(arr.offset).Offset))
 		g.constant(lenReg, uint64(arr.length), scalars["u32"])
 		return out, false, nil
@@ -4448,6 +4556,13 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 			if rec.layout != layout {
 				return 0, unsupported("a call to %s: a %s where %s is expected", ident.Value, rec.layout.name, name)
 			}
+			if layout.size > 16 && rec.paramRef {
+				// An in-place parameter passed on: the same address (the
+				// callee copies it if it writes its own; a read-only one
+				// reads the caller's memory, which nothing writes meanwhile).
+				args = append(args, argument{regs: []int{rec.reg}, types: []scalar{scalars["u64"]}, fixed: true})
+				continue
+			}
 			if layout.size > 16 {
 				// By reference to a copy the callee owns.
 				copied := g.tempRecord(layout)
@@ -5052,6 +5167,10 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if sp.array != nil && sp.elemLayout == nil {
+		// A local view of an owned array: the array's own element idiom.
+		return g.arrayElement(sp.array, e.Index)
+	}
 	r, err := g.guardedIndexAt(sp, e.Index, &e.Token)
 	if err != nil {
 		return 0, err
@@ -5122,6 +5241,13 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 	arr, err := g.arrayOperand(s.Target.Left)
 	if err != nil {
 		return err
+	}
+	if arr == nil {
+		// A local span over an owned array stores through the array's own
+		// idiom (a view refuses below, as any view does).
+		if sp, err := g.spanOperand(s.Target.Left); err == nil && sp.array != nil && sp.elemLayout == nil && sp.writable {
+			arr = sp.array
+		}
 	}
 	if arr != nil {
 		if arr.readOnly {

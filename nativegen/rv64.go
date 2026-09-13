@@ -1988,6 +1988,12 @@ func (g *rvGenerator) element(e *ast.IndexExpression) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if arr == nil {
+		// A local view of an owned array: the array's own element idiom.
+		if sp, err := g.spanOperand(e.Left); err == nil && sp.array != nil && sp.elemLayout == nil {
+			arr = sp.array
+		}
+	}
 	if arr != nil {
 		address, tmp, err := g.arrayAddress(arr, e.Index)
 		if err != nil {
@@ -2040,6 +2046,11 @@ func (g *rvGenerator) elementStore(s *ast.IndexAssignmentStatement) error {
 	arr, err := g.arrayOperand(s.Target.Left)
 	if err != nil {
 		return err
+	}
+	if arr == nil {
+		if sp, err := g.spanOperand(s.Target.Left); err == nil && sp.array != nil && sp.elemLayout == nil && sp.writable {
+			arr = sp.array
+		}
 	}
 	if arr != nil {
 		if arr.readOnly {

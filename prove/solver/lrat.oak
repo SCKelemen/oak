@@ -1,0 +1,235 @@
+// The LRAT certificate checker written in Oak (docs/spec/125-verification.md
+// §3, the certificate rung; prove/lrat.go is the Go twin, Oak.RupCheck the
+// soundness statement). A certificate is a sequence of steps over a clause
+// database: an addition names a clause and, in order, the live clauses
+// whose unit propagation under the clause's negation reaches a conflict;
+// a deletion names live clauses to drop. Checking is one linear pass per
+// step over caller-owned storage — no allocation, no recursion, every
+// loop bounded by a count read from the input and checked against the
+// storage it indexes — and the empty clause must be derived.
+//
+// Word protocol (u32, prove/lrat.go encodeLRAT): header of LRAT_HEADER_WORDS
+// { magic, variables, clause_count, literal_words, step_words, max_id,
+// store_words, 0 }; then each initial clause as { n, lit... } (clause ids 1,
+// 2, ...); then the steps: { 0, id, n, lit..., m, hint... } for an addition
+// and { 1, id, k, cid... } for a deletion. A literal is 2 * (variable - 1)
+// + polarity, polarity 1 positive. RAT hints cannot be encoded and are
+// refused before encoding.
+
+LRAT_MAGIC: u32 = 1280459348
+LRAT_HEADER_WORDS: u32 = 8
+
+LRAT_ACCEPTED: u32 = 0
+LRAT_MALFORMED: u32 = 1
+LRAT_NOT_LIVE: u32 = 2
+LRAT_NOT_UNIT: u32 = 3
+LRAT_NO_CONFLICT: u32 = 4
+LRAT_ID_ORDER: u32 = 5
+LRAT_NO_EMPTY: u32 = 6
+LRAT_CAPACITY: u32 = 7
+LRAT_SATISFIED: u32 = 8
+
+// An assignment is 0 unassigned, 1 false, 2 true.
+LRAT_UNASSIGNED: u8 = 0
+
+// lrat_true_value is the assignment under which the literal holds.
+lrat_true_value: (lit: u32): u8 = lit % u32(2) == u32(1) ? u8(2) | u8(1)
+lrat_false_value: (lit: u32): u8 = lit % u32(2) == u32(1) ? u8(1) | u8(2)
+
+// lrat_undo clears the variables the step assigned.
+lrat_undo: (assign: [*]u8, trail: [*]u32, used: u32): () {
+  i: u32 = 0
+  while i < used {
+    assign[trail[i]] = LRAT_UNASSIGNED
+    i = i + u32(1)
+  }
+}
+
+// lrat_rup checks one addition: the target literals at words[target_at..]
+// are assumed false, then each hint at words[hints_at..] is a unit that
+// assigns its remaining literal or the conflict that ends the chain.
+lrat_rup: (words: []u32, target_at: u32, target_n: u32, hints_at: u32, hints_n: u32, starts: [*]u32, lengths: [*]u32, alive: [*]u8, store: [*]u32, assign: [*]u8, trail: [*]u32, variables: u32, max_id: u32): u32 {
+  status: u32 = LRAT_ACCEPTED
+  settled: Bool = false
+  used: u32 = 0
+  i: u32 = 0
+  while i < target_n && status == LRAT_ACCEPTED && !settled {
+    lit: u32 = words[target_at + i]
+    variable: u32 = lit / u32(2)
+    variable < variables ? {
+      wanted: u8 = lrat_false_value(lit)
+      prior: u8 = assign[variable]
+      prior == LRAT_UNASSIGNED ? {
+        assign[variable] = wanted
+        trail[used] = variable
+        used = used + u32(1)
+      } | {
+        // The clause holds a literal and its negation: a tautology, true
+        // under every assignment, needs no hints.
+        settled = prior != wanted
+      }
+    } | { status = LRAT_MALFORMED }
+    i = i + u32(1)
+  }
+  h: u32 = 0
+  while h < hints_n && status == LRAT_ACCEPTED && !settled {
+    id: u32 = words[hints_at + h]
+    live: Bool = id <= max_id && id > u32(0) && alive[id] != u8(0)
+    live ? {
+      start: u32 = starts[id]
+      count: u32 = lengths[id]
+      remaining: u32 = 0
+      unit: u32 = 0
+      j: u32 = 0
+      while j < count && status == LRAT_ACCEPTED {
+        lit: u32 = store[start + j]
+        a: u8 = assign[lit / u32(2)]
+        a == lrat_true_value(lit) ? { status = LRAT_SATISFIED } | {
+          a == LRAT_UNASSIGNED ? {
+            remaining = remaining + u32(1)
+            unit = lit
+          } | { }
+        }
+        j = j + u32(1)
+      }
+      status == LRAT_ACCEPTED ? {
+        remaining == u32(0) ? {
+          // The conflict: it must be the chain's last hint.
+          h + u32(1) == hints_n ? { settled = true } | { status = LRAT_MALFORMED }
+        } | {
+          remaining == u32(1) ? {
+            assign[unit / u32(2)] = lrat_true_value(unit)
+            trail[used] = unit / u32(2)
+            used = used + u32(1)
+          } | { status = LRAT_NOT_UNIT }
+        }
+      } | { }
+    } | { status = LRAT_NOT_LIVE }
+    h = h + u32(1)
+  }
+  status == LRAT_ACCEPTED && !settled ? { status = LRAT_NO_CONFLICT } | { }
+  lrat_undo(assign, trail, used)
+  status
+}
+
+// lrat_check checks a whole certificate. The caller owns every array:
+// starts, lengths, and alive indexed by clause id up to max_id; store the
+// literal store of store_words; assign and trail of variables entries. The
+// result is written to out as { status, additions, deletions }.
+lrat_check: (words: []u32, starts: [*]u32, lengths: [*]u32, alive: [*]u8, store: [*]u32, assign: [*]u8, trail: [*]u32, out: [*]u32): u32 {
+  status: u32 = LRAT_ACCEPTED
+  additions: u32 = 0
+  deletions: u32 = 0
+  ok: Bool = len(words) >= LRAT_HEADER_WORDS && words[u32(0)] == LRAT_MAGIC && len(out) >= u32(3)
+  variables: u32 = ok ? { words[u32(1)] } | { u32(0) }
+  clause_count: u32 = ok ? { words[u32(2)] } | { u32(0) }
+  literal_words: u32 = ok ? { words[u32(3)] } | { u32(0) }
+  step_words: u32 = ok ? { words[u32(4)] } | { u32(0) }
+  max_id: u32 = ok ? { words[u32(5)] } | { u32(0) }
+  store_words: u32 = ok ? { words[u32(6)] } | { u32(0) }
+  ok = ok && LRAT_HEADER_WORDS + literal_words <= len(words) && LRAT_HEADER_WORDS + literal_words + step_words <= len(words)
+  ok = ok && len(starts) > max_id && len(lengths) > max_id && len(alive) > max_id
+  ok = ok && len(store) >= store_words && len(assign) >= variables && len(trail) >= variables
+  ok = ok && clause_count <= max_id
+  status = ok ? { LRAT_ACCEPTED } | { LRAT_CAPACITY }
+  i: u32 = 0
+  while i <= max_id && ok {
+    alive[i] = u8(0)
+    i = i + u32(1)
+  }
+  i = u32(0)
+  while i < variables && ok {
+    assign[i] = LRAT_UNASSIGNED
+    i = i + u32(1)
+  }
+  // The initial clauses, ids 1..clause_count, into the store.
+  at: u32 = LRAT_HEADER_WORDS
+  end: u32 = LRAT_HEADER_WORDS + literal_words
+  used: u32 = 0
+  empty: Bool = false
+  c: u32 = 1
+  while c <= clause_count && status == LRAT_ACCEPTED {
+    n: u32 = at < end ? { words[at] } | { u32(0) }
+    fits: Bool = at < end && at + u32(1) + n <= end && used + n <= store_words
+    fits ? {
+      starts[c] = used
+      lengths[c] = n
+      j: u32 = 0
+      while j < n && status == LRAT_ACCEPTED {
+        lit: u32 = words[at + u32(1) + j]
+        lit / u32(2) < variables ? { store[used + j] = lit } | { status = LRAT_MALFORMED }
+        j = j + u32(1)
+      }
+      used = used + n
+      at = at + u32(1) + n
+      alive[c] = u8(1)
+      empty = empty || n == u32(0)
+    } | { status = LRAT_MALFORMED }
+    c = c + u32(1)
+  }
+  status == LRAT_ACCEPTED && at != end ? { status = LRAT_MALFORMED } | { }
+  // The steps.
+  last: u32 = clause_count
+  at = end
+  end = end + step_words
+  while at < end && status == LRAT_ACCEPTED {
+    kind: u32 = words[at]
+    kind == u32(1) ? {
+      // Deletion: { 1, id, k, cid... }.
+      at + u32(3) <= end ? {
+        id: u32 = words[at + u32(1)]
+        k: u32 = words[at + u32(2)]
+        at + u32(3) + k <= end && id >= last ? {
+          d: u32 = 0
+          while d < k && status == LRAT_ACCEPTED {
+            cid: u32 = words[at + u32(3) + d]
+            cid <= max_id && cid > u32(0) && alive[cid] != u8(0) ? { alive[cid] = u8(0) } | { status = LRAT_NOT_LIVE }
+            d = d + u32(1)
+          }
+          deletions = deletions + k
+          at = at + u32(3) + k
+        } | { status = id >= last ? { LRAT_MALFORMED } | { LRAT_ID_ORDER } }
+      } | { status = LRAT_MALFORMED }
+    } | {
+      kind == u32(0) ? {
+        // Addition: { 0, id, n, lit..., m, hint... }.
+        at + u32(3) <= end ? {
+          id: u32 = words[at + u32(1)]
+          n: u32 = words[at + u32(2)]
+          lits_at: u32 = at + u32(3)
+          shape: Bool = lits_at + n + u32(1) <= end
+          m: u32 = shape ? { words[lits_at + n] } | { u32(0) }
+          hints_at: u32 = lits_at + n + u32(1)
+          shape = shape && hints_at + m <= end
+          shape ? {
+            id > last && id <= max_id ? {
+              status = lrat_rup(words, lits_at, n, hints_at, m, starts, lengths, alive, store, assign, trail, variables, max_id)
+              status == LRAT_ACCEPTED ? {
+                used + n <= store_words ? {
+                  starts[id] = used
+                  lengths[id] = n
+                  j: u32 = 0
+                  while j < n {
+                    store[used + j] = words[lits_at + j]
+                    j = j + u32(1)
+                  }
+                  used = used + n
+                  alive[id] = u8(1)
+                  last = id
+                  additions = additions + u32(1)
+                  empty = empty || n == u32(0)
+                } | { status = LRAT_CAPACITY }
+              } | { }
+            } | { status = LRAT_ID_ORDER }
+            at = hints_at + m
+          } | { status = LRAT_MALFORMED }
+        } | { status = LRAT_MALFORMED }
+      } | { status = LRAT_MALFORMED }
+    }
+  }
+  status == LRAT_ACCEPTED && !empty ? { status = LRAT_NO_EMPTY } | { }
+  out[u32(0)] = status
+  out[u32(1)] = additions
+  out[u32(2)] = deletions
+  status
+}

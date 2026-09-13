@@ -1,0 +1,378 @@
+package prove
+
+// An LRAT certificate checker (docs/spec/125-verification.md §3, the
+// certificate rung; Oak.RupCheck states its soundness). LRAT is the hinted
+// clausal proof format: every added clause names, in order, the clauses
+// whose unit propagation — under the added clause's negation — reaches a
+// conflict, so checking is one linear pass per step and never a search.
+// Deletions free clauses the proof no longer needs. RAT steps (a hint
+// list with negative entries) are not spoken: the rung asks its solver for
+// RUP-only proofs and refuses anything else. The checker written in Oak
+// (prove/solver/lrat.oak) is its twin; a row is decided when both accept.
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// lratLimit bounds the text one certificate or formula may be.
+const lratLimit = 1 << 30
+
+// LRATResult counts what an accepted certificate did.
+type LRATResult struct {
+	Additions int
+	Deletions int
+}
+
+// lratClause is a clause by its literals; a nil entry in the database is
+// an absent or deleted clause.
+type lratClause []int
+
+// ParseDIMACS reads a formula: the variable count and its clauses in order,
+// clause 1 first, as LRAT numbers them.
+func ParseDIMACS(text string) (int, []lratClause, error) {
+	if len(text) > lratLimit {
+		return 0, nil, fmt.Errorf("formula text exceeds %d bytes", lratLimit)
+	}
+	variables, declared := 0, -1
+	var clauses []lratClause
+	var current lratClause
+	for lineNumber, line := range strings.Split(text, "\n") {
+		words := strings.Fields(line)
+		if len(words) == 0 || words[0] == "c" {
+			continue
+		}
+		if words[0] == "p" {
+			if declared >= 0 || len(words) != 4 || words[1] != "cnf" {
+				return 0, nil, fmt.Errorf("line %d: malformed DIMACS header", lineNumber+1)
+			}
+			n, err1 := strconv.Atoi(words[2])
+			m, err2 := strconv.Atoi(words[3])
+			if err1 != nil || err2 != nil || n < 0 || m < 0 {
+				return 0, nil, fmt.Errorf("line %d: malformed DIMACS header", lineNumber+1)
+			}
+			variables, declared = n, m
+			continue
+		}
+		if declared < 0 {
+			return 0, nil, fmt.Errorf("line %d: clauses before the header", lineNumber+1)
+		}
+		for _, word := range words {
+			lit, err := strconv.Atoi(word)
+			if err != nil {
+				return 0, nil, fmt.Errorf("line %d: %q is not a literal", lineNumber+1, word)
+			}
+			if lit == 0 {
+				clauses = append(clauses, current)
+				current = nil
+				continue
+			}
+			if lit > variables || -lit > variables {
+				return 0, nil, fmt.Errorf("line %d: literal %d names no declared variable", lineNumber+1, lit)
+			}
+			current = append(current, lit)
+		}
+	}
+	if len(current) != 0 {
+		return 0, nil, fmt.Errorf("the last clause is not terminated")
+	}
+	if len(clauses) != declared {
+		return 0, nil, fmt.Errorf("the header declares %d clauses, the text has %d", declared, len(clauses))
+	}
+	return variables, clauses, nil
+}
+
+// rup checks one addition: assuming every literal of the clause false,
+// each hint in order must be a unit (assigning its remaining literal) or
+// the conflict, and the last hint must be the conflict. A clause that
+// contains a literal and its negation needs no hints.
+func rup(db map[int]lratClause, variables int, clause lratClause, hints []int, assigned map[int]bool) error {
+	for k := range assigned {
+		delete(assigned, k)
+	}
+	for _, lit := range clause {
+		if lit == 0 || lit > variables || -lit > variables {
+			return fmt.Errorf("literal %d names no declared variable", lit)
+		}
+		if assigned[lit] {
+			return nil // tautology: l and ¬l both in the clause
+		}
+		assigned[-lit] = true
+	}
+	for i, id := range hints {
+		if id <= 0 {
+			return fmt.Errorf("hint %d is not a RUP hint (RAT steps are not spoken)", id)
+		}
+		hinted, alive := db[id]
+		if !alive {
+			return fmt.Errorf("hint %d names no live clause", id)
+		}
+		remaining, unit := 0, 0
+		for _, lit := range hinted {
+			if assigned[lit] {
+				return fmt.Errorf("hint %d is already satisfied", id)
+			}
+			if !assigned[-lit] {
+				remaining++
+				unit = lit
+			}
+		}
+		switch remaining {
+		case 0:
+			if i != len(hints)-1 {
+				return fmt.Errorf("hint %d is the conflict but %d hints follow it", id, len(hints)-1-i)
+			}
+			return nil
+		case 1:
+			assigned[unit] = true
+		default:
+			return fmt.Errorf("hint %d is neither unit nor the conflict", id)
+		}
+	}
+	return fmt.Errorf("the hints reach no conflict")
+}
+
+// CheckLRAT checks a certificate against a formula: every addition is a
+// RUP step over the live clauses, every deletion names live clauses, ids
+// increase, and the empty clause is derived. The first failing line is
+// named. The clause and hint bounds are the parsed formula's.
+func CheckLRAT(formula, certificate string) (LRATResult, error) {
+	var result LRATResult
+	if len(certificate) > lratLimit {
+		return result, fmt.Errorf("certificate text exceeds %d bytes", lratLimit)
+	}
+	variables, clauses, err := ParseDIMACS(formula)
+	if err != nil {
+		return result, err
+	}
+	db := make(map[int]lratClause, len(clauses))
+	empty := false
+	for i, clause := range clauses {
+		db[i+1] = clause
+		if len(clause) == 0 {
+			empty = true
+		}
+	}
+	last := len(clauses)
+	assigned := map[int]bool{}
+	for lineNumber, line := range strings.Split(certificate, "\n") {
+		words := strings.Fields(line)
+		if len(words) == 0 || words[0] == "c" {
+			continue
+		}
+		fail := func(format string, args ...interface{}) (LRATResult, error) {
+			return result, fmt.Errorf("certificate line %d: %s", lineNumber+1, fmt.Sprintf(format, args...))
+		}
+		if len(words) < 3 {
+			return fail("a step needs an id, its body, and a terminating 0")
+		}
+		id, err := strconv.Atoi(words[0])
+		if err != nil || id <= 0 {
+			return fail("%q is not a step id", words[0])
+		}
+		if words[1] == "d" {
+			if id < last || words[len(words)-1] != "0" {
+				return fail("a deletion carries the last id and ends in 0")
+			}
+			for _, word := range words[2 : len(words)-1] {
+				n, err := strconv.Atoi(word)
+				if err != nil || n <= 0 {
+					return fail("%q is not a clause id", word)
+				}
+				if _, alive := db[n]; !alive {
+					return fail("deleting clause %d, which is not live", n)
+				}
+				delete(db, n)
+				result.Deletions++
+			}
+			continue
+		}
+		if id <= last {
+			return fail("id %d does not increase past %d", id, last)
+		}
+		numbers := make([]int, 0, len(words)-1)
+		zeros := []int{}
+		for _, word := range words[1:] {
+			n, err := strconv.Atoi(word)
+			if err != nil {
+				return fail("%q is not an integer", word)
+			}
+			if n == 0 {
+				zeros = append(zeros, len(numbers))
+			}
+			numbers = append(numbers, n)
+		}
+		if len(zeros) != 2 || zeros[1] != len(numbers)-1 {
+			return fail("an addition is `id literals 0 hints 0`")
+		}
+		clause := lratClause(numbers[:zeros[0]])
+		hints := numbers[zeros[0]+1 : len(numbers)-1]
+		if err := rup(db, variables, clause, hints, assigned); err != nil {
+			return fail("%v", err)
+		}
+		db[id] = clause
+		last = id
+		result.Additions++
+		if len(clause) == 0 {
+			empty = true
+		}
+	}
+	if !empty {
+		return result, fmt.Errorf("the certificate never derives the empty clause")
+	}
+	return result, nil
+}
+
+// LRATStep is one parsed certificate line: an addition of a clause with
+// its hints, or a deletion of clause ids.
+type LRATStep struct {
+	Delete bool
+	ID     int
+	Lits   []int
+	Hints  []int
+	IDs    []int
+}
+
+// ParseLRAT reads a certificate's steps without checking them; a step with
+// a non-positive hint (a RAT step) is refused here.
+func ParseLRAT(certificate string) ([]LRATStep, error) {
+	if len(certificate) > lratLimit {
+		return nil, fmt.Errorf("certificate text exceeds %d bytes", lratLimit)
+	}
+	var steps []LRATStep
+	for lineNumber, line := range strings.Split(certificate, "\n") {
+		words := strings.Fields(line)
+		if len(words) == 0 || words[0] == "c" {
+			continue
+		}
+		fail := func(format string, args ...interface{}) ([]LRATStep, error) {
+			return nil, fmt.Errorf("certificate line %d: %s", lineNumber+1, fmt.Sprintf(format, args...))
+		}
+		if len(words) < 3 {
+			return fail("a step needs an id, its body, and a terminating 0")
+		}
+		id, err := strconv.Atoi(words[0])
+		if err != nil || id <= 0 {
+			return fail("%q is not a step id", words[0])
+		}
+		if words[1] == "d" {
+			if words[len(words)-1] != "0" {
+				return fail("a deletion ends in 0")
+			}
+			step := LRATStep{Delete: true, ID: id}
+			for _, word := range words[2 : len(words)-1] {
+				n, err := strconv.Atoi(word)
+				if err != nil || n <= 0 {
+					return fail("%q is not a clause id", word)
+				}
+				step.IDs = append(step.IDs, n)
+			}
+			steps = append(steps, step)
+			continue
+		}
+		numbers := make([]int, 0, len(words)-1)
+		zeros := []int{}
+		for _, word := range words[1:] {
+			n, err := strconv.Atoi(word)
+			if err != nil {
+				return fail("%q is not an integer", word)
+			}
+			if n == 0 {
+				zeros = append(zeros, len(numbers))
+			}
+			numbers = append(numbers, n)
+		}
+		if len(zeros) != 2 || zeros[1] != len(numbers)-1 {
+			return fail("an addition is `id literals 0 hints 0`")
+		}
+		step := LRATStep{ID: id, Lits: numbers[:zeros[0]], Hints: numbers[zeros[0]+1 : len(numbers)-1]}
+		for _, hint := range step.Hints {
+			if hint <= 0 {
+				return fail("hint %d is not a RUP hint (RAT steps are not spoken)", hint)
+			}
+		}
+		steps = append(steps, step)
+	}
+	return steps, nil
+}
+
+// LRATMagic heads the word encoding the checker written in Oak reads.
+const LRATMagic = 1280459348
+
+// EncodeLRATWords encodes a formula and certificate for the checker
+// written in Oak (prove/solver/lrat.oak's word protocol): a header, the
+// initial clauses, then the steps, literals as 2*(variable-1)+polarity.
+func EncodeLRATWords(formula, certificate string) ([]uint32, error) {
+	variables, clauses, err := ParseDIMACS(formula)
+	if err != nil {
+		return nil, err
+	}
+	steps, err := ParseLRAT(certificate)
+	if err != nil {
+		return nil, err
+	}
+	lit := func(l int) (uint32, error) {
+		if l == 0 || l > variables || -l > variables {
+			return 0, fmt.Errorf("literal %d names no declared variable", l)
+		}
+		if l > 0 {
+			return uint32(2*(l-1) + 1), nil
+		}
+		return uint32(2 * (-l - 1)), nil
+	}
+	words := make([]uint32, 8)
+	literalWords, storeWords, maxID := 0, 0, len(clauses)
+	for _, clause := range clauses {
+		words = append(words, uint32(len(clause)))
+		for _, l := range clause {
+			w, err := lit(l)
+			if err != nil {
+				return nil, err
+			}
+			words = append(words, w)
+		}
+		literalWords += 1 + len(clause)
+		storeWords += len(clause)
+	}
+	stepStart := len(words)
+	for _, step := range steps {
+		if step.ID > maxID {
+			maxID = step.ID
+		}
+		if step.Delete {
+			words = append(words, 1, uint32(step.ID), uint32(len(step.IDs)))
+			for _, id := range step.IDs {
+				if id > maxID {
+					maxID = id
+				}
+				words = append(words, uint32(id))
+			}
+			continue
+		}
+		words = append(words, 0, uint32(step.ID), uint32(len(step.Lits)))
+		for _, l := range step.Lits {
+			w, err := lit(l)
+			if err != nil {
+				return nil, err
+			}
+			words = append(words, w)
+		}
+		words = append(words, uint32(len(step.Hints)))
+		for _, hint := range step.Hints {
+			if hint > maxID {
+				maxID = hint
+			}
+			words = append(words, uint32(hint))
+		}
+		storeWords += len(step.Lits)
+	}
+	words[0] = LRATMagic
+	words[1] = uint32(variables)
+	words[2] = uint32(len(clauses))
+	words[3] = uint32(literalWords)
+	words[4] = uint32(len(words) - stepStart)
+	words[5] = uint32(maxID)
+	words[6] = uint32(storeWords)
+	return words, nil
+}

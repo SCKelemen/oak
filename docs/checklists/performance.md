@@ -874,14 +874,16 @@ proof-search guidance; `docs/notes/provers-2026-09.md`.
       assignment is enough — and is "node budget exceeded" a hand-off to
       the next engine rather than a downgrade to evidence? (ParaFROST and
       CaDiCaL versus ROBDD practice) — Oak: `asm/blast.go` node budget,
-      three orders raced (`125-verification.md` §3, §4); `open` — no SAT
-      rung.
+      three orders raced; the certificate rung `-solver sat` decides a row
+      the budget left open (`125-verification.md` §3, §4); `open` — the
+      hand-off is a flag, not automatic.
 - [ ] **Solver untrusted, certificate checked.** Does every fast decider
       emit a certificate — LRAT, not DRAT, for clausal steps — that a small,
       separately proved checker validates, so speed and trust are separate
       artifacts? (Lean `bv_decide`: CaDiCaL to LRAT to a checker proved in
-      Lean; `cake_lpr`; ACL2 `lrat-check`) — Oak: `125-verification.md` §7
-      names the direction; `open`.
+      Lean; `cake_lpr`; ACL2 `lrat-check`) — Oak: `125-verification.md` §3
+      "By certificate": LRAT, checked in Go and in Oak, `Oak.RupCheck`;
+      the checkers are cross-checked, not proved — `open` for that half.
 - [ ] **Checking is cheaper than solving, measured.** Is certificate
       checking time measured against solving time per obligation and kept
       below it? DRAT checking costs about what solving cost; native LRAT

@@ -1,5 +1,7 @@
 /oak
 /oak_test
+# a stray `go build` output once committed by mistake
+/state
 *.test
 verify_golden
 spec/lean/.lake/

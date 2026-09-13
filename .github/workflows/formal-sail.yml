@@ -1,0 +1,118 @@
+name: Formal Verification (Sail)
+
+# The links between Oak's semantics and the Sail ISA specifications
+# (docs/spec/94-assembler.md §8–§9, docs/notes/verification-chain-2026-09.md
+# §4.1). Every input is fetched here, pinned, and required: the tests that
+# would skip without an oracle fail instead (OAK_REQUIRE_ORACLES).
+#
+#   - spec/sail/lean: Arm's ASL → Sail → Lean ≡ Oak.ArmASL, built with lake
+#     against rems-project/lean-sail (spec/sail/setup.sh pins the revision)
+#   - asm/sail_lean_test.go: the committed Sail-generated Lean equals what
+#     the pinned Sail release generates
+#   - asm/sail_coverage_test.go: the AArch64 table audited against Arm's
+#     decode tree (rems-project/sail-arm), llvm-mc as the text oracle
+#   - asm/rv64_sail_test.go: the RV64 differential units under the Sail
+#     RISC-V C emulator (the riscv/sail-riscv release binary)
+#   - asm/rv64_qemu_test.go: the same units under QEMU
+#   - asm/rv64_test.go: every RV64 mnemonic against GNU as
+#   - asm/rv64_sail_bridge_test.go: the RV64 bridge's restated definitions
+#     have not drifted from spec/lean/Oak/RiscV.lean
+
+on:
+  push:
+    branches:
+      - specification
+    paths:
+      - 'asm/**'
+      - 'spec/sail/**'
+      - 'spec/lean/Oak/RiscV.lean'
+      - 'spec/lean/Oak/ArmASL.lean'
+      - 'spec/lean/Oak/AssemblerSemantics.lean'
+      - 'spec/lean-sail/**'
+      - '.github/workflows/formal-sail.yml'
+  pull_request:
+    branches:
+      - specification
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SAIL_RELEASE: 0.20.2-binary
+  SAIL_SHA256: 26b59bcab2d66e9f220d317dfe45f8b09170ed70e59a824553d6f525134d1ff6
+  SAIL_RISCV_RELEASE: "0.14"
+  SAIL_RISCV_SHA256: 363f851ba91c674cd818040e232c4baf0ec382406a0a9696b1dde687ea160b2a
+  SAIL_ARM_COMMIT: 1bf2e5574ba9d704639a28401b6a387dcb113cae
+
+jobs:
+  sail:
+    name: Sail bridges and oracles
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install the oracles' tools (RISC-V GNU tools, QEMU, llvm-mc)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf qemu-system-misc llvm
+          llvm-mc --version | head -1
+          riscv64-unknown-elf-gcc --version | head -1
+
+      - name: Install the pinned Sail release
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/rems-project/sail/releases/download/${SAIL_RELEASE}/sail-Linux-x86_64.tar.gz" -o /tmp/sail.tar.gz
+          echo "${SAIL_SHA256}  /tmp/sail.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/sail.tar.gz -C "$HOME"
+          echo "$HOME/sail/bin" >> "$GITHUB_PATH"
+          "$HOME/sail/bin/sail" --version
+
+      - name: Install the pinned Sail RISC-V emulator
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/riscv/sail-riscv/releases/download/${SAIL_RISCV_RELEASE}/sail-riscv-Linux-x86_64.tar.gz" -o /tmp/sail-riscv.tar.gz
+          echo "${SAIL_RISCV_SHA256}  /tmp/sail-riscv.tar.gz" | sha256sum -c -
+          mkdir -p external/sail-riscv/build/c_emulator
+          tar -xzf /tmp/sail-riscv.tar.gz -C /tmp sail-riscv-Linux-x86_64/bin/sail_riscv_sim
+          install -m 0755 /tmp/sail-riscv-Linux-x86_64/bin/sail_riscv_sim external/sail-riscv/build/c_emulator/sail_riscv_sim
+          external/sail-riscv/build/c_emulator/sail_riscv_sim --version
+
+      - name: Fetch Arm's Sail model (the decode tree only, pinned)
+        run: |
+          set -euo pipefail
+          git init -q external/sail-arm
+          git -C external/sail-arm remote add origin https://github.com/rems-project/sail-arm.git
+          git -C external/sail-arm sparse-checkout init --cone
+          git -C external/sail-arm sparse-checkout set arm-v8.5-a/model
+          git -C external/sail-arm fetch -q --depth 1 --filter=blob:none origin "${SAIL_ARM_COMMIT}"
+          git -C external/sail-arm checkout -q FETCH_HEAD
+          test -f external/sail-arm/arm-v8.5-a/model/aarch_decode.sail
+
+      - name: Install elan
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
+          tar -xzf /tmp/elan.tar.gz -C /tmp
+          /tmp/elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch the Sail Lean support library at its pinned revision
+        run: sh spec/sail/setup.sh
+
+      - name: Build the Arm bridge (Sail-generated Lean ≡ Oak.ArmASL)
+        working-directory: spec/sail/lean
+        run: lake build
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+
+      - name: Run the oracle tests, every oracle required
+        env:
+          OAK_REQUIRE_ORACLES: "1"
+        run: go test ./asm -run 'TestSailLeanGenerationCurrent|TestSailDecodeCoverage|TestRV64SailDifferential|TestRV64QEMUDifferential|TestRV64EncoderAgreesWithGNUAs|TestRV64RVC|TestRV64Vector|TestRV64SailBridgeDefinitionsMatch' -count=1 -v
