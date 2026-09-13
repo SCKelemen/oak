@@ -95,6 +95,13 @@ type span struct {
 	// (baseReg/lenReg) by the prologue — the checker follows the copies —
 	// so the callee's clobber of x0–x17 never touches it.
 	argBase, argLen int
+	// frameLen: the constant length of a span bound over an owned frame
+	// array (`span(&buf)` / `view(&buf)`), 0 for any other span. Its base
+	// is a frame address to the checker, whose frame idioms (a frame array
+	// access, the element region of a frame array of records) take a
+	// constant index guard `cmp wI, #N` — the length register would leave
+	// every element of the span unaddressable in the binding function.
+	frameLen int64
 	// norm: on the rv64 lane, the register holding the length zero-extended
 	// (`slli n, aL, 32; srli n, n, 32`, the checker's normalization idiom):
 	// the LP64 pair leaves padding above the u32 length, so every bounds
@@ -2704,7 +2711,7 @@ func (g *generator) lowerSpanDeclaration(s *ast.VariableDeclaration, target span
 		g.emit("mov", xr(baseReg), xr(value.baseReg))
 		g.emit("mov", wr(lenReg), wr(value.lenReg))
 	}
-	local := span{elem: target.elem, elemLayout: target.elemLayout, writable: target.writable, baseReg: baseReg, lenReg: lenReg, argBase: -1, argLen: -1, array: value.array}
+	local := span{elem: target.elem, elemLayout: target.elemLayout, writable: target.writable, baseReg: baseReg, lenReg: lenReg, argBase: -1, argLen: -1, array: value.array, frameLen: value.frameLen}
 	delete(g.slots, s.Name.Value)
 	delete(g.types, s.Name.Value)
 	delete(g.regs, s.Name.Value)
@@ -2774,7 +2781,7 @@ func (g *generator) spanValue(expr ast.Expression, target *span, baseReg, lenReg
 		if arr.inReg {
 			return span{}, false, unsupported("%s of an array inside a computed element", fn.Value)
 		}
-		out.elem, out.elemLayout, out.writable, out.array = arr.elem, arr.elemLayout, shape.writable, arr
+		out.elem, out.elemLayout, out.writable, out.array, out.frameLen = arr.elem, arr.elemLayout, shape.writable, arr, arr.length
 		g.emit("add", xr(baseReg), sp(), imm(g.slotMem(arr.offset).Offset))
 		g.constant(lenReg, uint64(arr.length), scalars["u32"])
 		return out, false, nil
@@ -4940,10 +4947,19 @@ func (g *generator) guardedIndexAt(sp span, index ast.Expression, tok *token.Tok
 		return 0, err
 	}
 	g.usedTrap = true
-	g.emit("cmp", wr(r), wr(sp.lenReg))
+	if sp.frameLen > 0 && sp.frameLen <= maxCmpImmediate {
+		// A span over a frame array: the frame idiom's constant guard, so
+		// the checker bounds the access inside the declared frame.
+		g.emit("cmp", wr(r), imm(sp.frameLen))
+	} else {
+		g.emit("cmp", wr(r), wr(sp.lenReg))
+	}
 	g.branch("hs", g.trap)
 	return r, nil
 }
+
+// maxCmpImmediate is the largest unshifted `cmp wI, #K` immediate (12 bits).
+const maxCmpImmediate = 4095
 
 // indexValue evaluates an element index into a 32-bit register: a u32 as
 // is; a u64 after checking its high word is zero (an index of 2^32 or more
