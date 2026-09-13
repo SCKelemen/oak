@@ -171,6 +171,17 @@ func TestE2EKernelsOnDevice(t *testing.T) {
 	}
 	expectF32s(t, "reverse_blocks", readF32s(t, res.Spans["out"]), 14, 23, 32, 41, 58, 67, 76, 85)
 
+	// The simdgroup shuffle: the hand-spelled butterfly over eight lanes
+	// computes the lane rule's bits (2^24 + 6, not the sequential 2^24).
+	simd := emitKernels(t, kernelSimdProgram)
+	res, err = gpu.Run(ctx, simd.Source, kernelNamed(t, simd, "block_sums"), 2, map[string]gpu.Arg{
+		"x": f32s(16777216, 1, 1, 1, 1, 1, 1, 1, 1, 2, 3, 4, 5, 6, 7, 8), "out": f32s(0, 0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectF32s(t, "block_sums", readF32s(t, res.Spans["out"]), 16777222, 36)
+
 	// Record parameters flattened into buffers: a 2x3 by its transpose.
 	matmul := emitKernels(t, kernelMatmulProgram)
 	res, err = gpu.Run(ctx, matmul.Source, kernelNamed(t, matmul, "matmul_t"), 4, map[string]gpu.Arg{

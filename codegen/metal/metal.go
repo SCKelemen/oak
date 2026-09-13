@@ -1606,6 +1606,26 @@ func (em *emitter) call(call *ast.InvocationExpression, want oakType) (string, e
 			return "", em.fail("lane() is a kernel body's; a helper runs for one lane and has no group")
 		}
 		return "oak_lid", nil
+	case name == "simd_shuffle_xor":
+		// The simdgroup shuffle (docs/spec/56-kernels.md section 2a): the
+		// value of x in lane `lane ^ off`; the offset stays below 32, so
+		// the partner is in this thread's simdgroup whatever the group.
+		if em.groupSize == 0 || !em.inKernel {
+			return "", em.fail("simd_shuffle_xor is a kernel body's; a helper runs for one lane")
+		}
+		if len(args) != 2 {
+			return "", em.fail("simd_shuffle_xor takes (x, off)")
+		}
+		source := em.operandType(args[0], want)
+		inner, err := em.expr(args[0], source)
+		if err != nil {
+			return "", err
+		}
+		off, isLiteral := args[1].(*ast.IntegerLiteral)
+		if !isLiteral || off.Value < 1 || off.Value >= 32 || off.Value >= em.groupSize {
+			return "", em.fail("simd_shuffle_xor: the offset is a literal below 32 and below the group size %d", em.groupSize)
+		}
+		return fmt.Sprintf("simd_shuffle_xor(%s, %du)", inner, off.Value), nil
 	case name == "barrier":
 		return "", em.fail("barrier() is a statement of the kernel body's top level")
 	case name == "total_order" || name == "assert" || name == "subslice" || name == "view" || name == "span":

@@ -2669,6 +2669,25 @@ func (tc *TypeChecker) checkInvocationExpression(expr *ast.InvocationExpression)
 			}
 			return &UnitType{}
 		}
+		// simd_shuffle_xor(x, off) (docs/spec/56-kernels.md section 2a): the
+		// value of x in lane `lane ^ off`, off an integer literal.
+		if ident.Value == "simd_shuffle_xor" {
+			if len(expr.Arguments) != 2 {
+				tc.addError(expr, "simd_shuffle_xor takes a scalar local and an offset literal: simd_shuffle_xor(v, 16)")
+				return &PrimitiveType{Name: "f32"}
+			}
+			argType := tc.checkExpression(expr.Arguments[0])
+			if lit, isLiteral := expr.Arguments[1].(*ast.IntegerLiteral); !isLiteral || lit.Value < 1 || lit.Value >= 32 || lit.Value&(lit.Value-1) != 0 {
+				tc.addError(expr.Arguments[1], "simd_shuffle_xor's offset is an integer literal, a power of two below 32")
+			}
+			if prim, isPrim := argType.(*PrimitiveType); isPrim {
+				return prim
+			}
+			if argType != nil {
+				tc.addError(expr.Arguments[0], "simd_shuffle_xor shuffles a scalar, got %s", argType)
+			}
+			return &PrimitiveType{Name: "f32"}
+		}
 		// test_launch(kernel, grid, args...) (docs/spec/110-testing.md,
 		// "Launch targets"): the kernel runs over grid positions on the
 		// host, and the launch — its inputs and the spans after — is

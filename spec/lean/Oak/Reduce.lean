@@ -771,4 +771,105 @@ theorem lanes_eq_left (run k : Nat) (xs : List α) : lanes f z run k xs = left f
 
 end CommMonoid
 
+/-! ## The simdgroup shuffle spells the butterfly
+
+`simd_shuffle_xor(v, off)` (docs/spec/56-kernels.md section 2a) gives lane
+`l` the value lane `l ^ off` holds. One round of the butterfly at offset
+`half` over `2 * half` lanes therefore pairs lane `l < half` with
+`l + half` and lane `l ≥ half` with `l - half`; `shuffleRound` is that
+round on the vector of every lane's value, and `shuffleButterfly` the
+rounds at descending offsets. `shuffle_butterfly_lane0` is the theorem a
+kernel that spells `v = f(v, simd_shuffle_xor(v, off))` for `off = G/2 …
+1` relies on: lane 0 ends holding exactly `bfly f z k v`, the lane-rule
+butterfly of `reduce.lanes`, so the hand-spelled reduction computes the
+bits `group_lanes` computes. The rounds below `half` never pair a lower
+lane with an upper one, which is why the lower half after a round is all
+lane 0 ever reads again (`shuffleRound_take`). -/
+
+/-- One butterfly round over `2 * half` lanes: lane `l` takes
+`f v[l] v[l ^ half]`. -/
+def shuffleRound (f : α → α → α) (half : Nat) (v : List α) : List α :=
+  List.zipWith f (v.take half) (v.drop half) ++ List.zipWith f (v.drop half) (v.take half)
+
+/-- The rounds at offsets `2^(k-1), …, 1`, every lane updated. -/
+def shuffleButterfly (f : α → α → α) : Nat → List α → List α
+  | 0, v => v
+  | k + 1, v => shuffleButterfly f k (shuffleRound f (2 ^ k) v)
+
+theorem shuffleRound_length (f : α → α → α) (half : Nat) (v : List α) (hlen : v.length = 2 * half) :
+    (shuffleRound f half v).length = 2 * half := by
+  unfold shuffleRound
+  rw [List.length_append, List.length_zipWith, List.length_zipWith, List.length_take, List.length_drop, hlen]
+  omega
+
+theorem zipWith_take_right (f : α → α → α) : ∀ (l m : List α) (n : Nat), l.length ≤ n →
+    List.zipWith f l (m.take n) = List.zipWith f l m
+  | [], _, _, _ => by simp
+  | _ :: _, [], _, _ => by simp
+  | a :: l, b :: m, n, h => by
+    cases n with
+    | zero => simp at h
+    | succ n =>
+      simp only [List.take_succ_cons, List.zipWith_cons_cons]
+      rw [zipWith_take_right f l m n (by simpa using h)]
+
+/-- The lower half after a round is the halving butterfly's next vector,
+for any vector long enough for the round. -/
+theorem shuffleRound_take (f : α → α → α) (half : Nat) (v : List α) (hlen : 2 * half ≤ v.length) :
+    (shuffleRound f half v).take half = List.zipWith f (v.take half) (v.drop half) := by
+  unfold shuffleRound
+  have h : (List.zipWith f (v.take half) (v.drop half)).length = half := by
+    rw [List.length_zipWith, List.length_take, List.length_drop]
+    omega
+  rw [List.take_append_of_le_length (by omega), List.take_of_length_le (by omega)]
+
+/-- A round at offset `2^k` pairs each of the lower `2^(k+1)` lanes within
+that block, so the lower half of the round of `w` is the round of the
+lower half of `w`, as far as lane 0 reads. -/
+theorem shuffleRound_lower (f : α → α → α) (k : Nat) (w : List α) (hlen : 2 ^ (k + 2) ≤ w.length) :
+    (shuffleRound f (2 ^ k) w).take (2 ^ k) = (shuffleRound f (2 ^ k) (w.take (2 ^ (k + 1)))).take (2 ^ k) := by
+  have hk : 2 ^ (k + 1) = 2 * 2 ^ k := by rw [Nat.pow_succ]; omega
+  have hk2 : 2 ^ (k + 2) = 2 * 2 ^ (k + 1) := by rw [Nat.pow_succ 2 (k + 1)]; omega
+  rw [shuffleRound_take f (2 ^ k) w (by omega),
+    shuffleRound_take f (2 ^ k) (w.take (2 ^ (k + 1))) (by rw [List.length_take]; omega),
+    List.take_take, List.drop_take, Nat.min_eq_left (by omega)]
+  rw [zipWith_take_right f (w.take (2 ^ k)) (w.drop (2 ^ k)) (2 ^ (k + 1) - 2 ^ k)
+    (by rw [List.length_take]; omega)]
+
+/-- The rounds that follow a round at `2^k` keep to the lower `2^k` lanes,
+so lane 0 of the whole is lane 0 of the lower half's butterfly. -/
+theorem shuffle_lower (f : α → α → α) (z : α) :
+    ∀ (k : Nat) (w : List α), 2 ^ (k + 1) ≤ w.length →
+      (shuffleButterfly f k w).headD z = (shuffleButterfly f k (w.take (2 ^ k))).headD z
+  | 0, w, _ => by
+    simp only [shuffleButterfly, Nat.pow_zero]
+    cases w with
+    | nil => rfl
+    | cons a _ => rfl
+  | k + 1, w, hlen => by
+    simp only [shuffleButterfly]
+    have hk : 2 ^ (k + 1) = 2 * 2 ^ k := by rw [Nat.pow_succ]; omega
+    have hk2 : 2 ^ (k + 2) = 2 * 2 ^ (k + 1) := by rw [Nat.pow_succ 2 (k + 1)]; omega
+    have h1 := shuffle_lower f z k (shuffleRound f (2 ^ k) w) (by
+      unfold shuffleRound
+      rw [List.length_append, List.length_zipWith, List.length_zipWith, List.length_take, List.length_drop]
+      omega)
+    have h2 := shuffle_lower f z k (shuffleRound f (2 ^ k) (w.take (2 ^ (k + 1)))) (by
+      unfold shuffleRound
+      rw [List.length_append, List.length_zipWith, List.length_zipWith, List.length_take, List.length_drop, List.length_take]
+      omega)
+    rw [h1, h2, shuffleRound_lower f k w hlen]
+
+/-- **Lane 0 of the shuffled butterfly is the halving butterfly.** -/
+theorem shuffle_butterfly_lane0 (f : α → α → α) (z : α) :
+    ∀ (k : Nat) (v : List α), v.length = 2 ^ k → (shuffleButterfly f k v).headD z = bfly f z k v
+  | 0, v, _ => rfl
+  | k + 1, v, hlen => by
+    simp only [shuffleButterfly, bfly]
+    have hround : (shuffleRound f (2 ^ k) v).length = 2 ^ (k + 1) := by
+      rw [shuffleRound_length f (2 ^ k) v (by rw [hlen, Nat.pow_succ]; omega), Nat.pow_succ]; omega
+    rw [shuffle_lower f z k _ (Nat.le_of_eq hround.symm), shuffleRound_take f (2 ^ k) v (by rw [hlen, Nat.pow_succ]; omega)]
+    exact shuffle_butterfly_lane0 f z k _ (by
+      rw [List.length_zipWith, List.length_take, List.length_drop, hlen, Nat.pow_succ]; omega)
+
 end Oak.Reduce

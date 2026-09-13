@@ -105,6 +105,7 @@ Inside the subset:
 | `lane(G)` | `oak_lid`, the thread's place in its group of `G` (section 2a); the kernel becomes a group kernel with `G` threads per position |
 | `tile: [N]T (threadgroup)` | `threadgroup T tile[N];` at kernel scope, zeroed by the lanes, one array per group (section 2a) |
 | `barrier()` | `threadgroup_barrier(mem_flags::mem_threadgroup);` at the body's top level (section 2a) |
+| `simd_shuffle_xor(v, off)` | `simd_shuffle_xor(v, off)`: lane `lane ^ off`'s value of the scalar local `v`, `off` a literal power of two below 32, in a top-level statement (section 2a) |
 | locals `x: T = e`, `x := e`, assignment | the same, scalars only |
 | `x[i]`, `y[i] = v` | `x[oak_check(i, x_len, oak_fault)]` — the index is checked against the length and a miss raises the fault word (section 3) |
 | `len(x)` | `x_len` |
@@ -187,9 +188,24 @@ kernel reverse_blocks: (gid: u32, x: []f32, out: [*]f32): () = {
   array's initializer may not mention `lane()`; a local living across a
   barrier is annotated and scalar.
 
-What this does not yet do: the simdgroup intrinsics (increment (c),
-`simd_shuffle_xor` and `simd_sum` under the three-witness rule) and fusion
-as a pass (increment (d)).
+- **`simd_shuffle_xor(v, off)`** (increment (c)) is the value of the
+  top-level scalar local `v` in lane `lane ^ off`, `off` an integer
+  literal, a power of two below 32 and below the group, used in a
+  statement at the body's top level (every lane has reached it). Metal
+  emits the simdgroup shuffle; since `off < 32` the partner is always in
+  the thread's own simdgroup. The host form ends a phase before the
+  statement, reads each shuffle's partner slot into a per-lane temp in a
+  phase of its own — so a statement that also writes its source
+  (`v = v + simd_shuffle_xor(v, 4)`) never reads a partner early — and
+  runs the statement in the next phase. Spelled at descending offsets,
+  `v = v + simd_shuffle_xor(v, off)` for `off = G/2 … 1` is the lane-rule
+  butterfly: `Oak.Reduce.shuffle_butterfly_lane0` proves lane 0 ends with
+  `bfly`, the value `reduce.lanes` and `group_lanes` compute, so a
+  hand-spelled reduction and the library's agree bit for bit. `simd_sum`
+  is deliberately not an intrinsic: the hardware's order is unspecified,
+  and this spelling is the specified one.
+
+What this does not yet do: fusion as a pass (increment (d)).
 
 ## 3. Traps and the fault word
 
