@@ -36,6 +36,13 @@ import (
 type Verdict struct {
 	Kind    VerdictKind
 	Message string
+	// CanonicalResult: the result register was proven to hold the result
+	// in the lane's canonical form beyond the contract width — a narrow
+	// integer zero- or sign-extended through the 32-bit register on
+	// AArch64, the LP64 psABI widening on RV64 — so a caller may read it
+	// whole (pathExecutor.call). Always true for a proven full-width
+	// result; decided separately for a narrow one.
+	CanonicalResult bool
 }
 
 type VerdictKind int
@@ -798,6 +805,7 @@ func executeBody(fn *Function, sig *ast.FunctionStatement, concrete map[string]u
 	if fn.Arch == ArchRV64 {
 		exec.resultReg = rv64ResultRegister
 	}
+	exec.program, exec.self, exec.tables = fn.Program, fn.Name, fn
 	exec.loopExits = findLoops(fn.Items, labels)
 	result, reason, ok := exec.run(0, state)
 	return result, exec, reason, ok
@@ -846,6 +854,16 @@ type pathExecutor struct {
 	// concrete inputs of a witness run (nil when symbolic).
 	records map[string]compositeArg
 	env     map[string]uint64
+	// program and self: the rest of the program for calls (nil: every call
+	// is outside the subset) and this unit's own symbol; inlined lists the
+	// callees whose proven units decided a call, for the verdict's message.
+	program *ProgramContext
+	self    string
+	tables  *Function
+	inlined []string
+	// witnessedCallees: inlined callees whose unit is only witnessed; the
+	// caller's verdict is then evidence, not proof.
+	witnessedCallees []string
 }
 
 // compositeArg is a record or union parameter: its scalar leaves and size
@@ -1304,6 +1322,12 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, string, bool) {
 		}
 		if x.arch == ArchRV64 {
 			if reason, ok := x.stepRV64(instr, state); !ok {
+				return nil, reason, false
+			}
+			continue
+		}
+		if instr.Mnemonic == "bl" {
+			if reason, ok := x.call(instr, state); !ok {
 				return nil, reason, false
 			}
 			continue
@@ -4110,12 +4134,249 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
+	rawResult := asmTerm
 	asmTerm = maskResult(fn, sig, asmTerm)
+	var verdict Verdict
 	if len(exec.loops) > 0 || len(lowering.loops) > 0 {
-		return verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
+		verdict = verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
+	} else {
+		verdict = decideEqual(fn, lowering, asmTerm, oakTerm, width, "")
 	}
-	return decideEqual(fn, lowering, asmTerm, oakTerm, width, "")
+	verdict = withInlinedCalls(fn, verdict, exec.inlined, exec.witnessedCallees)
+	if verdict.Kind == VerdictProven || verdict.Kind == VerdictWitnessed {
+		verdict.CanonicalResult = canonicalResult(fn, sig, lowering, rawResult, oakTerm, width, len(exec.loops) > 0 || len(lowering.loops) > 0)
+	}
+	return verdict
 }
+
+// canonicalResult decides whether the result register holds the result in
+// the lane's canonical form beyond the contract width (Verdict.CanonicalResult):
+// on AArch64 a narrow integer zero-extended (unsigned) or sign-extended
+// (signed) through the 32-bit register, a Bool as 0 or 1; on RV64 the LP64
+// psABI widening bindRV64Params states. A full-width result is canonical
+// by construction. Only a proof counts; a loop body is not decided here.
+func canonicalResult(fn *Function, sig *ast.FunctionStatement, lowering *oakLowering, rawResult, oakTerm *term, width int, loops bool) bool {
+	if sig.ReturnType == nil {
+		return false
+	}
+	if _, isComposite := resultComposite(fn, sig); isComposite {
+		return false
+	}
+	_, signed, isScalar := contractBits(sig.ReturnType)
+	if !isScalar {
+		return false
+	}
+	registerWidth := 64
+	if fn.Arch != ArchRV64 && width <= 32 {
+		registerWidth = 32
+	}
+	if width == registerWidth {
+		return true
+	}
+	if loops {
+		return false
+	}
+	var want *term
+	switch {
+	case typeText(sig.ReturnType) == "Bool":
+		want = zeroExtend(oakTerm, registerWidth)
+	case fn.Arch == ArchRV64 && !signed && width < 32:
+		want = zeroExtend(oakTerm, registerWidth)
+	case fn.Arch == ArchRV64:
+		// Signed values and 32-bit values sign-extend to the register.
+		want = extendTerm(oakTerm, width, registerWidth, true)
+	default:
+		want = extendTerm(oakTerm, width, registerWidth, signed)
+	}
+	verdict := decideEqual(fn, lowering, truncate(rawResult, registerWidth), want, registerWidth, " (canonical result)")
+	return verdict.Kind == VerdictProven
+}
+
+// withInlinedCalls names, in a proven or witnessed verdict, the callees
+// whose units decided the unit's calls: the verdict holds for the caller
+// given theirs, and the chain is on record. A call decided by a unit that
+// is only witnessed makes the caller's verdict evidence, not proof.
+func withInlinedCalls(fn *Function, verdict Verdict, inlined, witnessed []string) Verdict {
+	if len(inlined) == 0 || (verdict.Kind != VerdictProven && verdict.Kind != VerdictWitnessed) {
+		return verdict
+	}
+	unique := func(names []string) []string {
+		seen := map[string]bool{}
+		var out []string
+		for _, name := range names {
+			if !seen[name] {
+				seen[name] = true
+				out = append(out, name)
+			}
+		}
+		return out
+	}
+	list := func(names []string, kind string) string {
+		plural, whose := "", "its"
+		if len(names) > 1 {
+			plural, whose = "s", "their"
+		}
+		return fmt.Sprintf("the call%s to %s by %s %s unit%s", plural, strings.Join(names, ", "), whose, kind, plural)
+	}
+	proven := unique(inlined)
+	weak := unique(witnessed)
+	isWeak := map[string]bool{}
+	for _, name := range weak {
+		isWeak[name] = true
+	}
+	var strong []string
+	for _, name := range proven {
+		if !isWeak[name] {
+			strong = append(strong, name)
+		}
+	}
+	var notes []string
+	if len(strong) > 0 {
+		notes = append(notes, list(strong, "proven"))
+	}
+	if len(weak) > 0 {
+		notes = append(notes, list(weak, "witness-checked"))
+	}
+	if len(weak) > 0 && verdict.Kind == VerdictProven {
+		// Proven given the callee's semantics, which is only witnessed.
+		return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every path given %s (evidence, not proof: %s witness-checked, not proven)", fn.Name, strings.Join(notes, " and "), strings.Join(weak, ", "))}
+	}
+	verdict.Message += "; " + strings.Join(notes, " and ")
+	return verdict
+}
+
+// call decides `bl f` (arm64) / `call f`, `jal f` (rv64) by the callee's
+// Oak body when the program context admits it (docs/spec/94-assembler.md
+// §9, calls): f is a program function whose parameters and result are
+// fixed-width integers or Bool (no span, record, float or vector, so it
+// reaches no memory of the caller's) and whose own unit is proven, so the
+// machine code at f computes f's Oak body. The arguments are the terms in
+// the argument registers at the parameters' contract widths; the result
+// lands in the result register as the callee's unit leaves it (the bits
+// above a narrow result unspecified, as the contract says); every
+// caller-saved register and the flags are forgotten, as the callee owns
+// them under the ABI (the seam checker enforces the same at the seam).
+func (x *pathExecutor) call(instr Instruction, state *symbolicState) (string, bool) {
+	sym, isSym := instr.Operands[len(instr.Operands)-1].(Symbol)
+	if !isSym {
+		return "a call through a register", false
+	}
+	name := sym.Name
+	if x.program == nil {
+		return "instruction " + instr.Mnemonic, false
+	}
+	callee, known := x.program.Functions[name]
+	if !known || callee == nil {
+		return fmt.Sprintf("a call to %s (not a program function)", name), false
+	}
+	if name == x.self {
+		return fmt.Sprintf("a recursive call to %s", name), false
+	}
+	kind, verified := x.program.Verdicts[name]
+	if !verified {
+		return fmt.Sprintf("a call to %s (its unit is not verified)", name), false
+	}
+	if kind != VerdictProven && kind != VerdictWitnessed {
+		return fmt.Sprintf("a call to %s (its unit is %s)", name, kind.String()), false
+	}
+	if callee.ReturnType == nil {
+		return fmt.Sprintf("a call to %s, which returns nothing", name), false
+	}
+	resultWidth, resultSigned, ok := contractBits(callee.ReturnType)
+	if !ok || isFloatTypeText(typeText(callee.ReturnType)) {
+		return fmt.Sprintf("a call to %s returning %s", name, typeText(callee.ReturnType)), false
+	}
+	if !x.program.Canonical[name] {
+		// The caller reads the result register whole (the native backend
+		// keeps narrow values canonical), so the callee must have proven
+		// the bits beyond the contract width too.
+		return fmt.Sprintf("a call to %s whose result is not proven canonical in its register", name), false
+	}
+	if len(callee.Parameters) > 8 {
+		return fmt.Sprintf("a call to %s with %d parameters", name, len(callee.Parameters)), false
+	}
+	lo := newLowering(callee)
+	lo.records, lo.adts, lo.constants = x.tables.Records, x.tables.ADTs, x.tables.Constants
+	lo.functions = x.program.Functions
+	lo.inlining = map[string]bool{x.self: true, name: true}
+	bound := map[string]*oakLocal{}
+	for i, param := range callee.Parameters {
+		w, signed, isScalar := contractBits(param.Type)
+		if !isScalar || param.Variadic || isFloatTypeText(typeText(param.Type)) {
+			return fmt.Sprintf("a call to %s: parameter %s of type %s", name, param.Name.Value, typeText(param.Type)), false
+		}
+		var reg Register
+		if x.arch == ArchRV64 {
+			reg = Register{Class: ClassX, Num: 10 + i} // a0–a7
+		} else if w > 32 {
+			reg = Register{Class: ClassX, Num: i}
+		} else {
+			reg = Register{Class: ClassW, Num: i}
+		}
+		value, ok := operandTerm(state, reg, w)
+		if !ok {
+			return "unbound register read", false
+		}
+		bound[param.Name.Value] = &oakLocal{value: value, width: w, signed: signed}
+	}
+	lo.locals = bound
+	body := callee.Body
+	if loop, isTail := tailRecursionAsLoop(callee, body); isTail {
+		body = loop
+	}
+	result, reason, ok := lo.lower(body, resultWidth)
+	if !ok {
+		return fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
+	}
+	if len(lo.loops) > 0 {
+		return fmt.Sprintf("a call to %s whose body has a data-dependent loop", name), false
+	}
+	// The callee owns the caller-saved registers and the flags.
+	if x.arch == ArchRV64 {
+		for _, num := range []int{1, 5, 6, 7, 28, 29, 30, 31} {
+			delete(state.regs, num)
+		}
+		for num := 10; num <= 17; num++ {
+			delete(state.regs, num)
+		}
+	} else {
+		for num := 0; num <= 18; num++ {
+			delete(state.regs, num)
+		}
+		delete(state.regs, 30)
+		state.flags = nil
+	}
+	// The result in its register, in the canonical form the callee's unit
+	// proved (canonicalResult).
+	x.inlined = append(x.inlined, name)
+	if kind == VerdictWitnessed {
+		x.witnessedCallees = append(x.witnessedCallees, name)
+	}
+	isBool := typeText(callee.ReturnType) == "Bool"
+	switch {
+	case x.arch == ArchRV64:
+		var value *term
+		switch {
+		case resultWidth == 64:
+			value = result
+		case isBool || (!resultSigned && resultWidth < 32):
+			value = zeroExtend(result, 64)
+		default:
+			value = extendTerm(result, resultWidth, 64, true)
+		}
+		state.regs[10] = value
+	case resultWidth == 64:
+		state.regs[0] = result
+	case isBool:
+		state.regs[0] = zeroExtend(result, 64)
+	default:
+		// Through the 32-bit register, zero-extended above it (a w write).
+		state.regs[0] = zeroExtend(extendTerm(result, resultWidth, 32, resultSigned), 64)
+	}
+	return "", true
+}
+
+func isFloatTypeText(text string) bool { return text == "f32" || text == "f64" }
 
 // prepareLowering builds the Oak side for a function: the signature's
 // contract, the program's declarations, the record and union parameters as
@@ -4125,6 +4386,12 @@ func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	lowering.records, lowering.adts = fn.Records, fn.ADTs
 	lowering.constants = fn.Constants
 	lowering.concrete = concrete
+	if fn.Program != nil {
+		// A call to a program function in the Oak body is inlined
+		// (inlineCall), as the machine side decides `bl` by the callee's
+		// proven unit (pathExecutor.call).
+		lowering.functions = fn.Program.Functions
+	}
 	lowering.bindAggregateParams(sig)
 	return lowering
 }

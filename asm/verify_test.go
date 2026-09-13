@@ -3,6 +3,8 @@ package asm
 import (
 	"strings"
 	"testing"
+
+	"github.com/SCKelemen/oak/ast"
 )
 
 func verifyCase(t *testing.T, decl, oakBody, asmBody string) Verdict {
@@ -315,5 +317,144 @@ func TestVerifyCountedLoops(t *testing.T) {
 	budget := verifyCase(t, "triple: (a: u32) -> u32", guardedTriple, manyForks)
 	if budget.Kind != VerdictTrusted || !strings.Contains(budget.Message, "budget") {
 		t.Fatalf("exceeding the path budget must be trusted, got %s: %s", budget.Kind, budget.Message)
+	}
+}
+
+// Calls (docs/spec/94-assembler.md §9): `bl f` is decided by f's Oak body
+// over the argument registers when f is a program function of fixed-width
+// integer parameters and result whose own unit is proven; the callee owns
+// x0–x18, x30 and the flags across the call. Without the callee's verdict,
+// with a callee that is only witnessed, with a span parameter, or in a
+// recursion, the call stays outside the subset.
+func TestVerifyInlinesProvenCallees(t *testing.T) {
+	parse := func(t *testing.T, decl, asmBody string) (*Function, *ast.FunctionStatement) {
+		t.Helper()
+		unit, errs := ParseUnit("calls.oakasm", decl+" = {\n"+asmBody+"\n}\n")
+		if len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		sig, err := parseSignature(decl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if findings := Check(unit.Functions[0], sig, map[string]bool{"inc": true, "twice": true, "sum": true, "narrow": true}); len(findings) != 0 {
+			t.Fatalf("checker: %v", findings)
+		}
+		return unit.Functions[0], sig
+	}
+	spec := func(t *testing.T, decl, oakBody string) *ast.FunctionStatement {
+		t.Helper()
+		fn, err := parseSignatureWithBody(decl + " = " + oakBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fn
+	}
+	incDecl, incOak := "inc: (x: u32) -> u32", "x + u32(1)"
+	incAsm := "  bind w0 = x\n  add w0, w0, #1\n  ret"
+	incFn, incSig := parse(t, incDecl, incAsm)
+	incSpec := spec(t, incDecl, incOak)
+	functions := map[string]*ast.FunctionStatement{"inc": incSpec}
+	program := &ProgramContext{Functions: functions, Verdicts: map[string]VerdictKind{}, Canonical: map[string]bool{}}
+	incFn.Program = program
+	if v := Verify(incFn, incSig, incSpec.Body); v.Kind != VerdictProven || !v.CanonicalResult {
+		t.Fatalf("inc: %s (canonical %v)", v.Message, v.CanonicalResult)
+	}
+	program.Verdicts["inc"] = VerdictProven
+	program.Canonical["inc"] = true
+
+	// twice: x -> inc(inc(x)), two calls, the frame saving the link register.
+	twiceDecl, twiceOak := "twice: (x: u32) -> u32", "inc(inc(x))"
+	twiceAsm := "  bind w0 = x\n  clobber x29, x30\n  frame 16\n  sub sp, sp, #16\n  stp x29, x30, [sp]\n  bl inc\n  bl inc\n  ldp x29, x30, [sp]\n  add sp, sp, #16\n  ret"
+	twiceFn, twiceSig := parse(t, twiceDecl, twiceAsm)
+	twiceSpec := spec(t, twiceDecl, twiceOak)
+	functions["twice"] = twiceSpec
+	twiceFn.Program = program
+	v := Verify(twiceFn, twiceSig, twiceSpec.Body)
+	if v.Kind != VerdictProven || !strings.Contains(v.Message, "the call to inc by its proven unit") {
+		t.Fatalf("twice with a proven callee: %s", v.Message)
+	}
+	// A caller that keeps a value in a caller-saved register across the
+	// call reads what the callee owned. The seam checker refuses the body
+	// outright; the verifier, reached without the checker, refuses it too.
+	staleAsm := "  bind w0 = x\n  clobber x9, x29, x30\n  frame 16\n  sub sp, sp, #16\n  stp x29, x30, [sp]\n  mov w9, w0\n  bl inc\n  add w0, w0, w9\n  ldp x29, x30, [sp]\n  add sp, sp, #16\n  ret"
+	staleUnit, errs := ParseUnit("stale.oakasm", "sum: (x: u32) -> u32 = {\n"+staleAsm+"\n}\n")
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	staleFn := staleUnit.Functions[0]
+	staleSig, err := parseSignature("sum: (x: u32) -> u32")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findings := Check(staleFn, staleSig, map[string]bool{"inc": true}); len(findings) == 0 {
+		t.Fatal("the checker must refuse a caller-saved register read after the call")
+	}
+	staleSpec := spec(t, "sum: (x: u32) -> u32", "inc(x) + x")
+	functions["sum"] = staleSpec
+	staleFn.Program = program
+	if v := Verify(staleFn, staleSig, staleSpec.Body); v.Kind != VerdictTrusted || !strings.Contains(v.Message, "unbound register read") {
+		t.Fatalf("a caller-saved register read after the call must be refused: %s", v.Message)
+	}
+	// The same caller with the value parked in a callee-saved register: proven.
+	parkedAsm := "  bind w0 = x\n  clobber x19, x29, x30\n  frame 32\n  sub sp, sp, #32\n  stp x29, x30, [sp]\n  str x19, [sp, #16]\n  mov w19, w0\n  bl inc\n  add w0, w0, w19\n  ldr x19, [sp, #16]\n  ldp x29, x30, [sp]\n  add sp, sp, #32\n  ret"
+	parkedFn, parkedSig := parse(t, "sum: (x: u32) -> u32", parkedAsm)
+	parkedFn.Program = program
+	if v := Verify(parkedFn, parkedSig, staleSpec.Body); v.Kind != VerdictProven {
+		t.Fatalf("sum through a callee-saved register: %s", v.Message)
+	}
+	// Without the callee's verdict the call is outside the subset; with a
+	// callee that is only witnessed the caller's verdict is evidence.
+	twiceFn.Program = &ProgramContext{Functions: functions, Verdicts: map[string]VerdictKind{}, Canonical: map[string]bool{"inc": true}}
+	if v := Verify(twiceFn, twiceSig, twiceSpec.Body); v.Kind != VerdictTrusted || !strings.Contains(v.Message, "a call to inc (its unit is not verified)") {
+		t.Errorf("unverified callee: %s", v.Message)
+	}
+	twiceFn.Program = &ProgramContext{Functions: functions, Verdicts: map[string]VerdictKind{"inc": VerdictWitnessed}, Canonical: map[string]bool{"inc": true}}
+	if v := Verify(twiceFn, twiceSig, twiceSpec.Body); v.Kind != VerdictWitnessed || !strings.Contains(v.Message, "evidence, not proof: inc witness-checked") || strings.Contains(v.Message, "proven equal") {
+		t.Errorf("witnessed callee: %s", v.Message)
+	}
+	twiceFn.Program = &ProgramContext{Functions: functions, Verdicts: map[string]VerdictKind{"inc": VerdictTrusted}, Canonical: map[string]bool{"inc": true}}
+	if v := Verify(twiceFn, twiceSig, twiceSpec.Body); v.Kind != VerdictTrusted || !strings.Contains(v.Message, "a call to inc (its unit is trusted)") {
+		t.Errorf("trusted callee: %s", v.Message)
+	}
+	// No program context: the instruction is outside the subset as before.
+	twiceFn.Program = nil
+	if v := Verify(twiceFn, twiceSig, twiceSpec.Body); v.Kind != VerdictTrusted || !strings.Contains(v.Message, "instruction bl") {
+		t.Errorf("without a program context: %s", v.Message)
+	}
+	// A narrow result: the callee's unit decides whether the register holds
+	// it canonically (zero-extended for u8). A callee that leaves the upper
+	// bits alone is proven at the contract width but not canonical, and a
+	// call to it stays outside the subset; a callee that masks is canonical,
+	// and its caller may read the register whole.
+	narrowDecl, narrowOak := "narrow: (x: u8) -> u8", "x + u8(1)"
+	looseFn, looseSig := parse(t, narrowDecl, "  bind w0 = x\n  add w0, w0, #1\n  ret")
+	narrowSpec := spec(t, narrowDecl, narrowOak)
+	functions["narrow"] = narrowSpec
+	looseFn.Program = program
+	loose := Verify(looseFn, looseSig, narrowSpec.Body)
+	if loose.Kind != VerdictProven || loose.CanonicalResult {
+		t.Fatalf("narrow without masking: proven at width, not canonical; got %s (canonical %v)", loose.Message, loose.CanonicalResult)
+	}
+	tidyFn, tidySig := parse(t, narrowDecl, "  bind w0 = x\n  add w0, w0, #1\n  and w0, w0, #255\n  ret")
+	tidyFn.Program = program
+	tidy := Verify(tidyFn, tidySig, narrowSpec.Body)
+	if tidy.Kind != VerdictProven || !tidy.CanonicalResult {
+		t.Fatalf("narrow with masking must be canonical: %s (canonical %v)", tidy.Message, tidy.CanonicalResult)
+	}
+	useDecl, useOak := "use: (x: u8) -> u32", "u32(narrow(x))"
+	useSpec := spec(t, useDecl, useOak)
+	functions["use"] = useSpec
+	useAsm := "  bind w0 = x\n  clobber x29, x30\n  frame 16\n  sub sp, sp, #16\n  stp x29, x30, [sp]\n  bl narrow\n  ldp x29, x30, [sp]\n  add sp, sp, #16\n  ret"
+	useFn, useSig := parse(t, useDecl, useAsm)
+	program.Verdicts["narrow"] = VerdictProven
+	program.Canonical["narrow"] = false
+	useFn.Program = program
+	if v := Verify(useFn, useSig, useSpec.Body); v.Kind != VerdictTrusted || !strings.Contains(v.Message, "not proven canonical") {
+		t.Fatalf("a call to a non-canonical narrow callee must stay outside the subset: %s", v.Message)
+	}
+	program.Canonical["narrow"] = true
+	if v := Verify(useFn, useSig, useSpec.Body); v.Kind != VerdictProven {
+		t.Fatalf("a call to a canonical narrow callee, the register read whole: %s", v.Message)
 	}
 }

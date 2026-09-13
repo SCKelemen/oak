@@ -65,6 +65,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 	specializeInstantiations(tc, templates, records, adts)
 	constants := constantGlobals(root, tc)
 	var lowered []*asm.Function
+	var pending []pendingUnit
 	for _, stmt := range root.Statements {
 		fn, ok := stmt.(*ast.FunctionStatement)
 		if !ok || fn.Name == nil || fn.Body == nil || fn.AsmBacked || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 {
@@ -115,11 +116,29 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			}
 			continue
 		}
+		pending = append(pending, pendingUnit{fn: fn, source: source, asmFn: asmFn})
+	}
+	// Verification, callees first (docs/spec/94-assembler.md §9, calls): a
+	// unit's `bl f` is decided by f's Oak body when f's own unit is proven,
+	// so f is verified before its callers. The program context carries the
+	// functions by symbol and the verdicts as they accrue; a cycle
+	// (recursion through another function) verifies in source order and
+	// its calls stay outside the subset.
+	program := &asm.ProgramContext{Functions: map[string]*ast.FunctionStatement{}, Verdicts: map[string]asm.VerdictKind{}, Canonical: map[string]bool{}}
+	for name, fn := range functions {
+		program.Functions[name] = fn
+		program.Functions[nativegen.NativeSymbol(fn)] = fn
+	}
+	for _, unit := range calleesFirst(pending) {
+		fn, source, asmFn := unit.fn, unit.source, unit.asmFn
+		asmFn.Program = program
 		verdict := asm.Verify(asmFn, source, source.Body)
 		if verdict.Kind == asm.VerdictMismatch {
 			diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", "native backend: "+verdict.Message))
 			continue
 		}
+		program.Verdicts[asmFn.Name] = verdict.Kind
+		program.Canonical[asmFn.Name] = verdict.CanonicalResult
 		diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", "native backend: "+verdict.Message))
 		fn.NativeBacked = true
 		fn.AsmArch = asmFn.Arch // the C emitter guards the Oak body by the lane's negation
@@ -285,4 +304,57 @@ func constantGlobals(root *ast.Program, tc *typechecker.TypeChecker) map[string]
 		}
 	}
 	return out
+}
+
+// pendingUnit is a lowered, checked unit awaiting its verdict.
+type pendingUnit struct {
+	fn, source *ast.FunctionStatement
+	asmFn      *asm.Function
+}
+
+// calleesFirst orders units so that every callee among them precedes its
+// callers (Kahn's algorithm over the call targets); units in a cycle, and
+// the rest, keep their source order.
+func calleesFirst(units []pendingUnit) []pendingUnit {
+	index := map[string]int{}
+	for i, unit := range units {
+		index[unit.asmFn.Name] = i
+	}
+	callers := make([][]int, len(units)) // callee index -> caller indices
+	remaining := make([]int, len(units)) // unverified callees per unit
+	for i, unit := range units {
+		for _, target := range asm.CallTargets(unit.asmFn) {
+			j, among := index[target]
+			if !among || j == i {
+				continue
+			}
+			callers[j] = append(callers[j], i)
+			remaining[i]++
+		}
+	}
+	var order []pendingUnit
+	done := make([]bool, len(units))
+	for {
+		progressed := false
+		for i := range units {
+			if done[i] || remaining[i] != 0 {
+				continue
+			}
+			done[i] = true
+			progressed = true
+			order = append(order, units[i])
+			for _, caller := range callers[i] {
+				remaining[caller]--
+			}
+		}
+		if !progressed {
+			break
+		}
+	}
+	for i := range units {
+		if !done[i] {
+			order = append(order, units[i]) // a cycle: source order
+		}
+	}
+	return order
 }

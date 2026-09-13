@@ -337,7 +337,7 @@ with `BitVec.carry`, `rippleSum_eq_add` gives bit i of `a + b`, and
 `rippleSum_eq_sub` gives bit i of `a - b` through the complement chain with
 carry-in 1), **witness-checked** only when the bit-level decision exceeds
 its node budget (evidence, labeled so), and **trusted** when the body or the
-Oak expression is outside the executable subset (labels, calls, memory,
+Oak expression is outside the executable subset (labels, calls to functions whose unit is not proven, memory,
 system instructions, non-constant shift counts on the Oak side — Oak traps
 where the machine wraps the count).
 
@@ -577,7 +577,7 @@ on the wide moves. By group, with the verifier's status:
 | multiply, divide | `mul smull umull smaddl umaddl smsubl umsubl smnegl umnegl smulh umulh udiv sdiv` | modeled; two symbolic operands, high products, and division exceed the bit-level budget (evidence); Oak's `/` and `%` trap and stay unlowered |
 | memory | `ldr str ldp stp ldnp stnp ldrb ldrh strb strh ldrsb ldrsh ldrsw ldpsw ldur stur ldurb ldurh sturb sturh ldursb ldursh ldursw`, the unprivileged `ldtr sttr ldtrb ldtrh sttrb sttrh ldtrsb ldtrsh ldtrsw`, `adr adrp`, `prfm prfum rprfm` | loads through spans and the frame modeled (sign-extending loads sign-extend the element); the unprivileged forms, `adr`/`adrp`, and the prefetches checked only |
 | ordered, exclusive, atomic | `ldar ldxr ldaxr ldapr stlr stxr stlxr ldlar stllr` (+`b`/`h`), the pairs `ldxp ldaxp stxp stlxp`, the LSE set `ldadd ldclr ldeor ldset ldsmax ldsmin ldumax ldumin swp cas` × {`-`,`a`,`l`,`al`} × {`-`,`b`,`h`}, `casp` × {`-`,`a`,`l`,`al`}, the store-only `stadd stclr steor stset stsmax stsmin stumax stumin` × {`-`,`l`} × {`-`,`b`,`h`}, `clrex` | checked: a guarded writable span, one element or pair sized by the value registers, roles per operation (`stxr`/`stxp` write their status register, `cas`/`casp` read every register, the store-only forms write none); trusted by the verifier |
-| branches | `b b.cond cbz cbnz tbz tbnz bl blr br ret ret-xN` | `br`/`blr` checked as an indirect transfer/call; trusted |
+| branches | `b b.cond cbz cbnz tbz tbnz bl blr br ret ret-xN` | `br`/`blr` checked as an indirect transfer/call; trusted. `bl f` to a program function of integer scalar signature is decided by f's own proven unit (§9, calls) |
 | hints, traps, exceptions | `nop wfe wfi sev sevl yield csdb esb ssbb pssbb hint brk svc hvc smc` | hints have no value semantics; `brk` ends control; `svc`/`hvc`/`smc` need `system` and clobber the caller-saved state; trusted |
 | system, barriers, maintenance | `mrs msr eret eretaa eretab dmb dsb isb dc ic tlbi at cfp cpp dvp` | checked under `system`; trusted |
 | CRC, flags | `crc32{b,h,w,x} crc32c{b,h,w,x} cfinv` | checked; trusted |
@@ -1001,7 +1001,8 @@ guard through the copy holds. Executed (`TestE2ENativeSpanCalls`): a view
 forwarded twice with `len` read after the calls, a store loop calling a
 helper for every element, and two parked views with a leaf called before
 and inside the loop — natively against the C backend and the portable
-realization. Bodies that call remain trusted by the verifier (§5).
+realization. Bodies that call remained trusted by the verifier until the
+calls increment of §9 (2026-09-13) decided them by the callee's unit.
 **Sixth increment — record locals.** A declared record type of scalar
 fields (`Point: type = struct { x: i32, y: i32 }`) is placed by
 `semir.RecordLayoutWithSpec` over the C backend's field representations
@@ -2220,3 +2221,67 @@ C backend realizes is itself left to the C backend, to a fixpoint
 (`compiler/native_bodies.go`), so no call crosses the two contracts
 unconverted. The suffix is reserved the way `__` is: no Oak identifier
 ends in it.
+
+### 9.x Calls decided by the callee's unit (2026-09-13)
+
+A native body that calls a program function was trusted by the verifier
+for the call alone: `bl` had no case in the symbolic executor (`instruction
+bl`; on RV64 `a call`), and the Oak side's call inlining
+(`docs/spec/125-verification.md` §3, `inlineCall`) was reached only by
+`oak prove`. On the standard-library builder that was the largest trusted
+class on both lanes (151 AArch64 bodies, 224 RV64).
+
+**The rule.** `asm.Function.Program` carries the rest of the program as
+the verifier may assume it: the functions by the symbol a call names and
+the verdicts of the units verified so far, with a mark for each whose
+result register is canonical (below). The compiler verifies units
+callee-first (`compiler/native_bodies.go`, `calleesFirst`: Kahn's
+algorithm over `asm.CallTargets`; a cycle keeps source order and its calls
+stay trusted). At `bl f` (`call f`/`jal f` on RV64) the executor
+(`pathExecutor.call`) decides the call when
+
+- f is a program function, not the unit itself, whose parameters and
+  result are fixed-width integers or `Bool` — no span, record, float or
+  vector, so f reaches no memory of the caller's and its effect is its
+  result;
+- f's own unit is proven (or witnessed: the caller's verdict is then
+  evidence, "given the call to f by its witness-checked unit"); and
+- f's result is proven canonical in its register.
+
+The arguments are the terms in the argument registers (x0–x7 at the
+parameters' contract widths; a0–a7) bound as f's locals, f's body lowered
+by the Oak side's own lowering (tail recursion as its loop; a
+data-dependent loop refuses), the result written to the result register,
+and every caller-saved register (x0–x18 and x30; ra, t0–t6, a0–a7) and the
+flags forgotten — what the callee owns under the ABI, which the seam
+checker enforces at the same seam. The Oak side inlines the same call
+(`prepareLowering` now sets the function table), so both sides carry f's
+Oak body and the caller's equivalence is decided as before; a proven
+verdict names the callees it rests on ("the call to f by its proven
+unit").
+
+**Canonical results.** The verifier had proved a unit's result at the
+contract width only, while the native backend's callers read the result
+register whole — a narrow value is kept canonical (zero-extended unsigned,
+sign-extended signed, through the 32-bit register; the LP64 widening on
+RV64), and a caller converting `u32(f(x))` for a `u8` result emits no
+mask. Modeling the bits above a narrow call result as unspecified, as
+AAPCS64 permits, therefore refuted such callers: a real gap between what
+the callee's unit proved and what its callers assume. `Verdict.
+CanonicalResult` closes it: for a narrow integer or `Bool` result the
+verifier decides, as a second equivalence at the register's width, that
+the register holds the canonical form (`canonicalResult`); only then may
+a call site read the register whole, and a call to a callee whose result
+is not proven canonical stays outside the subset ("whose result is not
+proven canonical in its register"). A full-width result is canonical by
+construction; a loop-verified narrow result is not decided yet.
+
+**Measured** (`examples/stdlib_builder.oak`): AArch64 94 → 98 proven,
+5 → 9 witnessed; RV64 76 → 80 proven. The gain is bounded by the callees:
+of the AArch64 callers still trusted for a call, 65 call a unit that is
+itself trusted (a record result, a variable shift, a call of its own), 41
+call a function left to the C backend, and 7 a unit whose narrow result
+is not proven canonical. `TestVerifyInlinesProvenCallees` (the rule, its
+refusals, the canonical gate), `TestE2ENativeCalls` (callees with counted
+loops, which the helper inliner keeps as calls; a caller before its callee
+in the source; a narrow and a `Bool` result), `TestE2ENativeBodies`.

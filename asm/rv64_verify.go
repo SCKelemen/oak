@@ -198,8 +198,10 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 		return "", true
 	case "auipc":
 		return "a pc-relative address (auipc)", false
-	case "jal", "jalr", "call":
-		return "a call", false
+	case "call", "jal":
+		return x.call(instr, state)
+	case "jalr":
+		return "a call through a register", false
 	}
 	if width, isLoad := rv64Loads[name]; isLoad {
 		if ops[1].(Memory).Base.Class != ClassSP {

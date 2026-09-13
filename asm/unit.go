@@ -31,6 +31,46 @@ type Unit struct {
 // Function is one asm function: its declared signature (parsed with the
 // Oak parser, so identity with the Oak declaration is a structural
 // comparison) and its instruction block.
+// ProgramContext is the rest of the program as the verifier sees it from
+// one unit: the functions by the symbol a call names, and the verdicts of
+// the units verified so far (the compiler verifies callees first). A call
+// to a function whose unit is proven is decided by that function's Oak
+// body over the argument registers (asm/verify.go, pathExecutor.call).
+type ProgramContext struct {
+	Functions map[string]*ast.FunctionStatement
+	Verdicts  map[string]VerdictKind
+	// Canonical marks the units whose result register was proven to hold
+	// the result in the lane's canonical form (Verdict.CanonicalResult): a
+	// call site may then read the register whole, as the native backend's
+	// callers do, instead of the contract width alone.
+	Canonical map[string]bool
+}
+
+// CallTargets lists the symbols a unit calls (`bl` on arm64, `call` and
+// `jal` on rv64), in order of first appearance: the compiler verifies a
+// program's units callee-first so that a caller's calls can be decided by
+// its callees' verdicts.
+func CallTargets(fn *Function) []string {
+	seen := map[string]bool{}
+	var targets []string
+	for _, item := range fn.Items {
+		instr, isInstr := item.(Instruction)
+		if !isInstr || len(instr.Operands) == 0 {
+			continue
+		}
+		switch instr.Mnemonic {
+		case "bl", "call", "jal":
+		default:
+			continue
+		}
+		if sym, isSym := instr.Operands[len(instr.Operands)-1].(Symbol); isSym && !seen[sym.Name] {
+			seen[sym.Name] = true
+			targets = append(targets, sym.Name)
+		}
+	}
+	return targets
+}
+
 type Function struct {
 	Name      string
 	Signature *ast.FunctionStatement
@@ -78,6 +118,11 @@ type Function struct {
 	// declarations (never from the unit text), so the checker binds them
 	// under AAPCS64's composite rules (docs/spec/94-assembler.md §9).
 	Composites map[string]Composite
+	// Program: what the verifier may assume about the rest of the program
+	// when the unit calls into it (docs/spec/94-assembler.md §9, calls):
+	// the program's functions by symbol and the verdicts of the units
+	// already verified. nil leaves every call outside the decided subset.
+	Program *ProgramContext
 	// Records and ADTs: the program's monomorphic record and tagged-union
 	// declarations, by name — set by the compiler so the verifier can model
 	// aggregate locals of the Oak body (docs/spec/94-assembler.md §8).

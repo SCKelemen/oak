@@ -145,6 +145,18 @@ or the verifier, not in the program:
    same-shape callees at the term level; giving the verifier the same
    callee inlining (or a proved summary of the callee's own verdict) would
    move most of them to proven.
+   **Landed (2026-09-13, 94-assembler.md §9, calls):** the compiler
+   verifies callee-first and the executor decides `bl f` / `call f` by f's
+   own proven (or witnessed) unit for integer-scalar signatures, forgetting
+   the caller-saved registers and flags; the Oak side inlines the same
+   call. Doing so exposed a real gap: units were proven at the contract
+   width while the backend's callers read a narrow result register whole,
+   so `Verdict.CanonicalResult` now proves the canonical widening and a
+   call site relies on it only when proven. The class did not collapse as
+   hoped — AArch64 94 → 98 proven, 5 → 9 witnessed; RV64 76 → 80 — because
+   most callers call a unit that is itself trusted (65) or left to the C
+   backend (41). The next steps are the callees' own reasons: record
+   results beyond one chunk, variable shift counts, and `strb`.
 5. **The extents decision procedure is not refined.** Each rule cites its
    law in `Oak.Extents`, but the Go procedure is not proved to decide the
    laws, as `Oak.ReborrowRefinement` does for reborrow admission. An
