@@ -250,7 +250,18 @@ naming both. For a theorem the Oak lowering decided the row says `lowered and
 decided in Oak`, and the Go lowering and decider must reach the same
 verdict (`the Go lowering and decider agree`; the node counts are each
 lowering's own). `-solver go` keeps the bit-level rung with the Go decider
-alone; `-cross none` skips the replay. The protocol obligations of §2a
+alone; `-cross none` skips the replay. `-solver self` runs the prover
+written in Oak end to end (`prove/solver/shell.oak`): the solver program
+reads the law file itself, parses it, decides every theorem it declares
+in source order by the same ladder — the exhaustive rung when the domains
+fit the bound and the body has no loop, else the witness pass and the
+three variable orders raced in one process — and prints the rows in the
+command's format; no Go is on the path from the file to the rows, and
+with `-cross go` the Go ladder decides the same file and every row's
+status must agree (`the Go ladder agrees on N of N rows`;
+`TestOakShellAgrees` requires it over the corpus). What the shell leaves
+to the Go command: protocol invariants and liveness, the compiled-program
+witness, and the Lean projection. The protocol obligations of §2a
 stay with the Go decider, whose rows are folded into their invariant's.
 `TestOakSolverAgrees` runs the default over the whole law corpus.
 
@@ -526,11 +537,13 @@ In order of payoff, each reusing a surface that exists:
   does, `assert` a trap obligation, aggregates compared structurally, a
   bare `.Variant` typed by its context — so every one of the corpus's 214
   decided laws decides in Oak: 165 at the bit level, 49 exhaustively, the
-  Go decider or interpreter confirming each), so the Go that remains on
-  the prover's path is the ladder's shell alone — reading the files,
-  streaming them, printing the rows — and the Lean projection of the
-  unbounded laws; next the shell itself as an Oak program, then the
-  projection; then
+  Go decider or interpreter confirming each; and the shell itself is an
+  Oak program — `-solver self` reads the file, decides, and prints the
+  rows with no Go on the path, every status the Go ladder's over the
+  corpus), so what remains with Go on the prover's side is the Lean
+  projection of the unbounded laws, the protocol invariant and liveness
+  exploration, and the compiled-program witness; next the Lean
+  projection in Oak; then
   proof certificates — a small checking kernel (clausal steps and
   equational rewrites) proved once in Lean, with the fast solvers untrusted
   producers of certificates, so speed and trust are separated; then an

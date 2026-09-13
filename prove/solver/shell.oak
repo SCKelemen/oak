@@ -1,0 +1,588 @@
+// The prover's shell, in Oak: `oak prove` on a law file from the first
+// byte to the printed rows. Selected by OAK_SOLVER_MODE=prove, the file
+// named by OAK_PROVE_FILE, the exhaustive bound by OAK_PROVE_CASES. The
+// file is read through libc, parsed (tree.oak), and every theorem it
+// declares is decided in source order by the ladder the Go command runs
+// (prove/prove.go): the exhaustive rung when the parameter domains fit
+// the bound and the body has no counted loop, else the bit level — the
+// witness pass, then the three variable orders raced in one process
+// (bdd.oak solve_race) — and the rows print as the Go command prints
+// them, so the two outputs compare line for line. What the shell does not
+// do stays with the Go command: protocol invariants and liveness, the
+// compiled-program witness, and the Lean projection.
+package main
+
+c_open: (path: c.String, flags: c.Int): c.UInt64 = c.extern("open")
+c_close: (fd: c.Int): c.Int = c.extern("close")
+
+FILE_MAX: u32 = 8388608
+
+// write_lit writes up to sixteen packed bytes.
+write_lit: (lo: u64, hi: u64, n: u32): () {
+  k: u32 = 0
+  while k < n {
+    b: u32 = k < u32(8) ? { u32_trunc_u64((lo >> u64(k * u32(8))) & u64(255)) } | { u32_trunc_u64((hi >> u64((k - u32(8)) * u32(8))) & u64(255)) }
+    write_byte(u8_trunc_u32(b))
+    k = k + u32(1)
+  }
+}
+
+write_u64: (v: u64): () {
+  buf: [24]u8
+  start: u32 = 24
+  n: u64 = v
+  start = start - u32(1)
+  buf[start] = u8(48) + u8_trunc_u32(u32_trunc_u64(n % u64(10)))
+  n = n / u64(10)
+  while n > u64(0) {
+    start = start - u32(1)
+    buf[start] = u8(48) + u8_trunc_u32(u32_trunc_u64(n % u64(10)))
+    n = n / u64(10)
+  }
+  digits: []u8 = view(&buf)
+  host.host_write_all(host.host_stdout(), subslice(digits, start, u32(24) - start)) ? { } | { }
+}
+
+txt_decided: (): () {
+  write_lit(u64(0x2064656469636564), u64(0x2020), u32(10))
+}
+
+txt_refuted: (): () {
+  write_lit(u64(0x2064657475666572), u64(0x2020), u32(10))
+}
+
+txt_open: (): () {
+  write_lit(u64(0x202020206E65706F), u64(0x2020), u32(10))
+}
+
+txt_colon: (): () {
+  write_lit(u64(0x203A), u64(0x0), u32(2))
+}
+
+txt_bit_level: (): () {
+  write_lit(u64(0x6220656874207461), u64(0x6C6576656C207469), u32(16))
+  write_lit(u64(0x2820), u64(0x0), u32(2))
+}
+
+txt_bdd_nodes: (): () {
+  write_lit(u64(0x646F6E2044444220), u64(0x7365), u32(10))
+}
+
+txt_blocks: (): () {
+  write_lit(u64(0x656D61726170202C), u64(0x206E692073726574), u32(16))
+  write_lit(u64(0x736B636F6C62), u64(0x0), u32(6))
+}
+
+txt_control: (): () {
+  write_lit(u64(0x6F72746E6F63202C), u64(0x662073746962206C), u32(16))
+  write_lit(u64(0x74737269), u64(0x0), u32(4))
+}
+
+txt_close: (): () {
+  write_lit(u64(0x29), u64(0x0), u32(1))
+}
+
+txt_all: (): () {
+  write_lit(u64(0x206C6C61), u64(0x0), u32(4))
+}
+
+txt_cases: (): () {
+  write_lit(u64(0x736573616320), u64(0x0), u32(6))
+}
+
+txt_counterexample: (): () {
+  write_lit(u64(0x657265746E756F63), u64(0x20656C706D6178), u32(15))
+}
+
+txt_traps: (): () {
+  write_lit(u64(0x79646F6220656874), u64(0x2820737061727420), u32(16))
+  write_lit(u64(0x2074666968732061), u64(0x746120746E756F63), u32(16))
+  write_lit(u64(0x6469772065687420), u64(0x61662061202C6874), u32(16))
+  write_lit(u64(0x7373612064656C69), u64(0x20726F202C747265), u32(16))
+  write_lit(u64(0x7274736E6F632061), u64(0x6F206E6F69746375), u32(16))
+  write_lit(u64(0x6920656469737475), u64(0x6964657270207374), u32(16))
+  write_lit(u64(0x7461202965746163), u64(0x20), u32(9))
+}
+
+txt_outside: (): () {
+  write_lit(u64(0x206564697374756F), u64(0x206B614F20656874), u32(16))
+  write_lit(u64(0x676E697265776F6C), u64(0x6573627573207327), u32(16))
+  write_lit(u64(0x6F73616572282074), u64(0x206E), u32(10))
+}
+
+txt_exceeded: (): () {
+  write_lit(u64(0x2D74696220656874), u64(0x6564206C6576656C), u32(16))
+  write_lit(u64(0x65206E6F69736963), u64(0x2064656465656378), u32(16))
+  write_lit(u64(0x65646F6E20737469), u64(0x74656764756220), u32(15))
+}
+
+txt_unsupported: (): () {
+  write_lit(u64(0x2D74696220656874), u64(0x6564206C6576656C), u32(16))
+  write_lit(u64(0x6D206E6F69736963), u64(0x6E75206E61207465), u32(16))
+  write_lit(u64(0x6574726F70707573), u64(0x6D7265742064), u32(14))
+}
+
+txt_eval_failed: (): () {
+  write_lit(u64(0x6C61766520656874), u64(0x74206E6F69746175), u32(16))
+  write_lit(u64(0x6F20646570706172), u64(0x6920656D6F73206E), u32(16))
+  write_lit(u64(0x7475706E), u64(0x0), u32(4))
+}
+
+txt_summary: (): () {
+  write_lit(u64(0x766F7270206B616F), u64(0x203A65), u32(11))
+}
+
+txt_no_theorems: (): () {
+  write_lit(u64(0x766F7270206B616F), u64(0x6874206F6E203A65), u32(16))
+  write_lit(u64(0x736D65726F65), u64(0x0), u32(6))
+}
+
+txt_no_file: (): () {
+  write_lit(u64(0x766F7270206B616F), u64(0x505F4B414F203A65), u32(16))
+  write_lit(u64(0x4C49465F45564F52), u64(0x746F6E2073692045), u32(16))
+  write_lit(u64(0x6C62616461657220), u64(0x65), u32(9))
+}
+
+txt_parse_failed: (): () {
+  write_lit(u64(0x766F7270206B616F), u64(0x6620656874203A65), u32(16))
+  write_lit(u64(0x6F20736920656C69), u64(0x7420656469737475), u32(16))
+  write_lit(u64(0x70206B614F206568), u64(0x2073277265737261), u32(16))
+  write_lit(u64(0x2820746573627573), u64(0x206E6F73616572), u32(15))
+}
+
+txt_sep: (): () {
+  write_lit(u64(0x202C), u64(0x0), u32(2))
+}
+
+txt_decided_w: (): () {
+  write_lit(u64(0x6465646963656420), u64(0x0), u32(8))
+}
+
+txt_open_w: (): () {
+  write_lit(u64(0x6E65706F20), u64(0x0), u32(5))
+}
+
+txt_refuted_w: (): () {
+  write_lit(u64(0x6465747566657220), u64(0x0), u32(8))
+}
+
+txt_eq: (): () {
+  write_lit(u64(0x3D), u64(0x0), u32(1))
+}
+
+txt_eq_sp: (): () {
+  write_lit(u64(0x203D20), u64(0x0), u32(3))
+}
+
+txt_minus: (): () {
+  write_lit(u64(0x2D), u64(0x0), u32(1))
+}
+
+// copy_env copies an environment value into out: its length, 0 when unset
+// or too long.
+copy_env: (p: c.Ptr, out: [*]u8): u32 {
+  n: u32 = 0
+  unsafe {
+    value: []u8 = c.borrow_string(p)
+    n = len(value)
+    k: u32 = 0
+    while k < n && k < len(out) {
+      out[k] = value[k]
+      k = k + u32(1)
+    }
+    // NUL-terminated, for c.cstr.
+    n + u32(1) < len(out) ? { out[n] = u8(0) } | { }
+  }
+  n + u32(1) < len(out) ? { n } | { u32(0) }
+}
+
+// read_file reads the whole file at path (NUL-terminated in path_buf)
+// into bytes_raw (FILE_MAX bytes): the byte count, NONE when unreadable.
+read_file: (path: []u8, chunk_raw: c.Ptr, bytes_raw: c.Ptr): u32 {
+  // open's int result in the low word: all ones is failure.
+  fd_word: u32 = u32_trunc_u64(u64(c_open(c.cstr(path), c.Int(0))))
+  fd: c.Int = c.Int(i32_bits_u32(fd_word))
+  total: u32 = 0
+  ok: Bool = fd_word != NONE
+  unsafe {
+    file_dest: Buffer[u8] = c.own[u8](bytes_raw, FILE_MAX)
+    reading: Bool = ok
+    while reading {
+      got: u64 = u64(c_read(fd, chunk_raw, c.Size(CHUNK)))
+      (got > u64(0) && got <= u64(CHUNK) && total + u32_trunc_u64(got) <= FILE_MAX) ? {
+        chunk: Buffer[u8] = c.own[u8](chunk_raw, CHUNK)
+        copy_chunk(view(&chunk), u32_trunc_u64(got), span(&file_dest), total)
+        released: c.Ptr = c.disown(chunk)
+        total = total + u32_trunc_u64(got)
+      } | { reading = false }
+    }
+    released_d: c.Ptr = c.disown(file_dest)
+  }
+  closed: c.Int = ok ? { c_close(fd) } | { c.Int(0) }
+  ok ? { total } | { NONE }
+}
+
+// A decided theorem's row pieces.
+ROW_DECIDED: u32 = 0
+ROW_REFUTED: u32 = 1
+ROW_OPEN: u32 = 2
+
+write_name: (rx: []u32, raw: Raw, sid: u32): () {
+  n: u32 = rs_len(rx, raw, sid)
+  k: u32 = 0
+  while k < n {
+    write_byte(u8_trunc_u32(rs_byte(rx, raw, sid, k)))
+    k = k + u32(1)
+  }
+}
+
+row_head: (kind: u32, rx: []u32, raw: Raw, name: u32): () {
+  kind == ROW_DECIDED ? { txt_decided() } | { kind == ROW_REFUTED ? { txt_refuted() } | { txt_open() } }
+  write_name(rx, raw, name)
+  txt_colon()
+}
+
+// write_counterexample prints the leaves the terms mention with their
+// values, signed leaves as such, from the bits and marks list (the
+// driver's report convention), `name=value` or `name = value`.
+write_counterexample: (ser: Ser, sw: [*]u32, bits: []u32, listed: u32, spaced: Bool): () {
+  nleaves: u32 = serialized_leaf_count(ser, sw)
+  first: Bool = true
+  li: u32 = 0
+  while li < nleaves {
+    mentioned: Bool = false
+    signed_width: u32 = 0
+    value: u64 = 0
+    k: u32 = 0
+    while k < listed {
+      v: u32 = bits[k]
+      (v & MENTIONED) != u32(0) ? { mentioned = mentioned || (v - MENTIONED) == li } | {
+        (v & SIGNED) != u32(0) ? { ((v - SIGNED) / u32(64)) == li ? { signed_width = (v - SIGNED) % u32(64) } | { } } | {
+          (v / u32(64)) == li ? { value = value | (u64(1) << u64(v % u32(64))) } | { }
+        }
+      }
+      k = k + u32(1)
+    }
+    mentioned ? {
+      first ? { } | { txt_sep() }
+      first = false
+      n: u32 = serialized_leaf_len(ser, sw, li)
+      i: u32 = 0
+      while i < n {
+        write_byte(u8_trunc_u32(serialized_leaf_byte(ser, sw, li, i)))
+        i = i + u32(1)
+      }
+      spaced ? { txt_eq_sp() } | { txt_eq() }
+      (signed_width > u32(0) && signed_width < u32(64) && (value >> u64(signed_width - u32(1))) != u64(0)) ? {
+        txt_minus()
+        write_u64((u64(1) << u64(signed_width)) - value)
+      } | { write_u64(value) }
+    } | { }
+    li = li + u32(1)
+  }
+}
+
+write_counterexample_of: (ser: Ser, ser_raw: c.Ptr, bits: []u32, listed: u32, spaced: Bool): () {
+  unsafe {
+    sbuf: Buffer[u32] = c.own[u32](ser_raw, ser.total)
+    write_counterexample(ser, span(&sbuf), bits, listed, spaced)
+    released_s: c.Ptr = c.disown(sbuf)
+  }
+}
+
+// race_views races the lowered problems (n0, n1, n2 words of the three
+// built views; variants of them) on the three node tables: out[0] the
+// status, out[1] the winner, out[2] its node count, out[3] the number of
+// leaf bits (then marks) that follow for a refutation.
+race_views: (l: Layout, m0: [*]u32, w0: []u32, n0: u32, m1: [*]u32, w1: []u32, n1: u32, m2: [*]u32, w2: []u32, n2: u32, variants: u32, out: [*]u32): () {
+  p0: []u32 = subslice(w0, u32(0), n0)
+  p1: []u32 = subslice(w1, u32(0), n1)
+  p2: []u32 = subslice(w2, u32(0), n2)
+  r: Race = solve_race(l, m0, p0, m1, p1, m2, p2, variants)
+  out[u32(0)] = r.status
+  out[u32(1)] = r.winner
+  out[u32(2)] = r.nodes
+  out[u32(3)] = u32(0)
+  r.status == STATUS_REFUTED ? {
+    vars: [512]u32
+    listed: u32 = r.winner == u32(0) ? { witness_vars(l, m0, p0, span(&vars)) } | { r.winner == u32(1) ? { witness_vars(l, m1, p1, span(&vars)) } | { witness_vars(l, m2, p2, span(&vars)) } }
+    kept: u32 = 0
+    i: u32 = 0
+    while i < listed && kept + u32(4) < len(out) {
+      lb: u32 = r.winner == u32(0) ? { leaf_bit_of(p0, vars[i]) } | { r.winner == u32(1) ? { leaf_bit_of(p1, vars[i]) } | { leaf_bit_of(p2, vars[i]) } }
+      lb == NONE ? { } | {
+        out[u32(4) + kept] = lb
+        kept = kept + u32(1)
+      }
+      i = i + u32(1)
+    }
+    marked: u32 = r.winner == u32(0) ? { mentioned_marks(p0, out, u32(4) + kept) } | { r.winner == u32(1) ? { mentioned_marks(p1, out, u32(4) + kept) } | { mentioned_marks(p2, out, u32(4) + kept) } }
+    out[u32(3)] = marked - u32(4)
+  } | { }
+}
+
+// race_in_oak owns the tables and built buffers around race_views.
+race_in_oak: (l: Layout, lw: Lower, t0: c.Ptr, t1: c.Ptr, t2: c.Ptr, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, n0: u32, n1: u32, n2: u32, variants: u32, out: [*]u32): () {
+  unsafe {
+    tab0: Buffer[u32] = c.own[u32](t0, l.total)
+    tab1: Buffer[u32] = c.own[u32](t1, l.total)
+    tab2: Buffer[u32] = c.own[u32](t2, l.total)
+    built0: Buffer[u32] = c.own[u32](b0, lw.built_total)
+    built1: Buffer[u32] = c.own[u32](b1, lw.built_total)
+    built2: Buffer[u32] = c.own[u32](b2, lw.built_total)
+    race_views(l, span(&tab0), view(&built0), n0, span(&tab1), view(&built1), n1, span(&tab2), view(&built2), n2, variants, out)
+    r0: c.Ptr = c.disown(tab0)
+    r1: c.Ptr = c.disown(tab1)
+    r2: c.Ptr = c.disown(tab2)
+    r3: c.Ptr = c.disown(built0)
+    r4: c.Ptr = c.disown(built1)
+    r5: c.Ptr = c.disown(built2)
+  }
+}
+
+// Counts of the rows: decided, refuted, open.
+Counts: type = struct { decided: u32, refuted: u32, open: u32 }
+
+// decide_one decides one theorem (its raw function index) and prints its
+// row: the kind it printed.
+decide_one: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, work_raw: c.Ptr, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, t0: c.Ptr, t1: c.Ptr, t2: c.Ptr, rx: []u32, raw: Raw, fi: u32, cases: u32, budget: u32): u32 {
+  name: u32 = rf_word(rx, raw, fi, u32(0))
+  kind: u32 = ROW_OPEN
+  n_syn: u32 = serialize_in_oak(ser, ser_raw, out_raw, rx, fi)
+  n_syn >= u32(0x80000000) ? {
+    row_head(ROW_OPEN, rx, raw, name)
+    txt_outside()
+    write_u32(NONE - n_syn)
+    txt_close()
+    write_byte(u8(10))
+  } | {
+    unsafe {
+      obuf: Buffer[u32] = c.own[u32](out_raw, ser.out_total)
+      kind = decide_serialized(l, lw, ser, ser_raw, work_raw, b0, b1, b2, t0, t1, t2, rx, raw, name, view(&obuf), n_syn, cases, budget)
+      released_o: c.Ptr = c.disown(obuf)
+    }
+  }
+  kind
+}
+
+decide_serialized: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, work_raw: c.Ptr, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, t0: c.Ptr, t1: c.Ptr, t2: c.Ptr, rx: []u32, raw: Raw, name: u32, whole: []u32, n_syn: u32, cases: u32, budget: u32): u32 {
+  sx: []u32 = subslice(whole, u32(0), n_syn)
+  witness: [512]u32
+  dom: [256]u64
+  kind: u32 = ROW_OPEN
+  total: u64 = theorem_domain(sx, u64(cases), span(&dom))
+  exhaustive: Bool = total != DOMAIN_INFINITE && !has_loop(sx)
+  n0: u32 = lower_in_oak(lw, work_raw, b0, sx, budget, u32(0), span(&witness), !exhaustive)
+  (exhaustive && n0 < u32(0x80000000)) ? {
+    verdict: u32 = enumerate_in_oak(lw, work_raw, b0, sx, span(&dom), total, span(&witness))
+    verdict == u32(5) ? {
+      kind = ROW_DECIDED
+      row_head(ROW_DECIDED, rx, raw, name)
+      txt_all()
+      write_u64(total)
+      txt_cases()
+    } | {
+      verdict == u32(7) ? {
+        kind = ROW_REFUTED
+        row_head(ROW_REFUTED, rx, raw, name)
+        txt_counterexample()
+        bits: []u32 = view(&witness)
+        marked: u32 = signed_marks(sx, span(&witness), witness[u32(0)] + u32(1))
+        write_counterexample_of(ser, ser_raw, subslice(bits, u32(1), marked - u32(1)), marked - u32(1), true)
+      } | {
+        row_head(ROW_OPEN, rx, raw, name)
+        txt_eval_failed()
+      }
+    }
+    write_byte(u8(10))
+  } | {
+  n0 == WITNESSED ? {
+    verdict: u32 = witness[u32(0)] / u32(65536)
+    listed: u32 = witness[u32(0)] % u32(65536)
+    kind = ROW_REFUTED
+    row_head(ROW_REFUTED, rx, raw, name)
+    verdict == u32(4) ? { txt_traps() } | { txt_counterexample() }
+    bits: []u32 = view(&witness)
+    marked: u32 = signed_marks(sx, span(&witness), listed + u32(1))
+    write_counterexample_of(ser, ser_raw, subslice(bits, u32(1), marked - u32(1)), marked - u32(1), false)
+    write_byte(u8(10))
+  } | {
+  n0 >= u32(0x80000000) ? {
+    row_head(ROW_OPEN, rx, raw, name)
+    txt_outside()
+    write_u32(NONE - n0)
+    txt_close()
+    write_byte(u8(10))
+  } | {
+    // The bit level: the other orders when they apply, then the race.
+    scratch: [512]u32
+    n1: u32 = lower_in_oak(lw, work_raw, b1, sx, budget, u32(1), span(&scratch), false)
+    n2: u32 = lower_in_oak(lw, work_raw, b2, sx, budget, u32(2), span(&scratch), false)
+    has1: Bool = n1 < u32(0x80000000)
+    has2: Bool = n2 < u32(0x80000000)
+    // Variants are packed in order: the second slot takes order 2 when 1 does not apply.
+    variants: u32 = u32(1) + (has1 ? { u32(1) } | { u32(0) }) + (has2 ? { u32(1) } | { u32(0) })
+    out: [520]u32
+    in_order: Bool = has1 || !has2
+    in_order ? { race_in_oak(l, lw, t0, t1, t2, b0, b1, b2, n0, has1 ? { n1 } | { n0 }, has2 ? { n2 } | { n0 }, variants, span(&out)) } | {
+      race_in_oak(l, lw, t0, t1, t2, b0, b2, b1, n0, n2, n0, variants, span(&out))
+    }
+    status: u32 = out[u32(0)]
+    winner: u32 = out[u32(1)]
+    order: u32 = winner == u32(0) ? { u32(0) } | { (winner == u32(1) && has1) ? { u32(1) } | { u32(2) } }
+    status == STATUS_PROVEN ? {
+      kind = ROW_DECIDED
+      row_head(ROW_DECIDED, rx, raw, name)
+      txt_bit_level()
+      write_u32(out[u32(2)])
+      txt_bdd_nodes()
+      order == u32(1) ? { txt_blocks() } | { order == u32(2) ? { txt_control() } | { } }
+      txt_close()
+    } | {
+    status == STATUS_REFUTED ? {
+      kind = ROW_REFUTED
+      row_head(ROW_REFUTED, rx, raw, name)
+      txt_counterexample()
+      listed: u32 = out[u32(3)]
+      marked: u32 = signed_marks(sx, span(&out), u32(4) + listed)
+      bits: []u32 = view(&out)
+      write_counterexample_of(ser, ser_raw, subslice(bits, u32(4), marked - u32(4)), marked - u32(4), false)
+    } | {
+      row_head(ROW_OPEN, rx, raw, name)
+      status == STATUS_UNSUPPORTED ? { txt_unsupported() } | { txt_exceeded() }
+    } }
+    write_byte(u8(10))
+  } } }
+  kind
+}
+
+// shell_main runs the ladder over the file's theorems.
+shell_main: (): i32 {
+  path_buf: [1024]u8
+  cases_buf: [16]u8
+  path_len: u32 = copy_env(c_getenv(c.cstr("OAK_PROVE_FILE\0")), span(&path_buf))
+  cases_len: u32 = copy_env(c_getenv(c.cstr("OAK_PROVE_CASES\0")), span(&cases_buf))
+  cases: u32 = 0
+  k: u32 = 0
+  while k < cases_len {
+    cases = cases * u32(10) + u32(cases_buf[k] - u8(48))
+    k = k + u32(1)
+  }
+  cases = cases == u32(0) ? { u32(65536) } | { cases }
+  budget: u32 = 2000000
+  chunk_raw: c.Ptr = malloc(c.Size(CHUNK))
+  bytes_raw: c.Ptr = malloc(c.Size(FILE_MAX))
+  path_view: []u8 = view(&path_buf)
+  path: []u8 = subslice(path_view, u32(0), path_len + u32(1))
+  nbytes: u32 = path_len == u32(0) ? { NONE } | { read_file(path, chunk_raw, bytes_raw) }
+  code: i32 = 0
+  nbytes == NONE ? {
+    txt_no_file()
+    write_byte(u8(10))
+    code = i32(2)
+  } | {
+    nwords: u32 = (nbytes + u32(3)) / u32(4)
+    words_raw: c.Ptr = malloc(c.Size((nwords + u32(1)) * u32(4)))
+    par: Par = par_layout()
+    par_raw: c.Ptr = malloc(c.Size(par.total * u32(4)))
+    arena_words: u32 = nbytes * u32(16) + u32(16384)
+    arena_raw: c.Ptr = malloc(c.Size(arena_words * u32(4)))
+    n_raw: u32 = 0
+    reason: u32 = 0
+    unsafe {
+      file_bytes: Buffer[u8] = c.own[u8](bytes_raw, FILE_MAX)
+      file_words: Buffer[u32] = c.own[u32](words_raw, nwords + u32(1))
+      words_of_prefix(view(&file_bytes), span(&file_words), nbytes)
+      pbuf: Buffer[u32] = c.own[u32](par_raw, par.total)
+      tables: Buffer[u32] = c.own[u32](arena_raw, arena_words)
+      n_raw = parse_source(par, span(&pbuf), view(&file_words), nbytes, span(&tables), u32(0), arena_words)
+      reason = parse_reason(par, span(&pbuf))
+      released_p: c.Ptr = c.disown(pbuf)
+      released_w: c.Ptr = c.disown(file_words)
+      released_f: c.Ptr = c.disown(file_bytes)
+      n_raw == u32(0) ? {
+        txt_parse_failed()
+        write_u32(reason)
+        txt_close()
+        write_byte(u8(10))
+        code = i32(2)
+      } | { code = prove_tables(view(&tables), n_raw, cases, budget) }
+      released_t: c.Ptr = c.disown(tables)
+    }
+  }
+  code
+}
+
+// words_of_prefix packs n bytes into words, the tail word zero-padded.
+words_of_prefix: (bytes: []u8, words: [*]u32, n: u32): () {
+  i: u32 = 0
+  while i < n {
+    (i % u32(4)) == u32(0) ? { words[i / u32(4)] = u32(0) } | { }
+    words[i / u32(4)] = words[i / u32(4)] | (u32(bytes[i]) << ((i % u32(4)) * u32(8)))
+    i = i + u32(1)
+  }
+}
+
+// prove_tables decides every theorem of the parsed file and prints the summary.
+prove_tables: (arena: []u32, n_raw: u32, cases: u32, budget: u32): i32 {
+  rx: []u32 = subslice(arena, u32(0), n_raw)
+  raw: Raw = raw_layout(rx)
+  lowered_terms: u32 = 131072
+  l: Layout = layout_for(budget, lowered_terms)
+  lw: Lower = lower_layout(lowered_terms, u32(64))
+  ser: Ser = ser_layout(u32(65536), u32(131072))
+  ser_raw: c.Ptr = malloc(c.Size(ser.total * u32(4)))
+  out_raw: c.Ptr = malloc(c.Size(ser.out_total * u32(4)))
+  work_raw: c.Ptr = malloc(c.Size(lw.total * u32(4)))
+  b0: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
+  b1: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
+  b2: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
+  t0: c.Ptr = malloc(c.Size(l.total * u32(4)))
+  t1: c.Ptr = malloc(c.Size(l.total * u32(4)))
+  t2: c.Ptr = malloc(c.Size(l.total * u32(4)))
+  counts: Counts = Counts { decided: u32(0), refuted: u32(0), open: u32(0) }
+  theorems: u32 = 0
+  fi: u32 = 0
+  while fi < raw.nfuncs {
+    (rf_word(rx, raw, fi, u32(5)) & u32(2)) != u32(0) ? {
+      theorems = theorems + u32(1)
+      kind: u32 = decide_one(l, lw, ser, ser_raw, out_raw, work_raw, b0, b1, b2, t0, t1, t2, rx, raw, fi, cases, budget)
+      counts = kind == ROW_DECIDED ? { Counts { decided: counts.decided + u32(1), refuted: counts.refuted, open: counts.open } } | {
+        kind == ROW_REFUTED ? { Counts { decided: counts.decided, refuted: counts.refuted + u32(1), open: counts.open } } | { Counts { decided: counts.decided, refuted: counts.refuted, open: counts.open + u32(1) } }
+      }
+    } | { }
+    fi = fi + u32(1)
+  }
+  theorems == u32(0) ? { txt_no_theorems() } | {
+    // The summary, statuses in name order: decided, open, refuted.
+    txt_summary()
+    first: Bool = true
+    counts.decided > u32(0) ? {
+      write_u32(counts.decided)
+      txt_decided_w()
+      first = false
+    } | { }
+    counts.open > u32(0) ? {
+      first ? { } | { txt_sep() }
+      write_u32(counts.open)
+      txt_open_w()
+      first = false
+    } | { }
+    counts.refuted > u32(0) ? {
+      first ? { } | { txt_sep() }
+      write_u32(counts.refuted)
+      txt_refuted_w()
+    } | { }
+  }
+  write_byte(u8(10))
+  free(t0)
+  free(t1)
+  free(t2)
+  free(b0)
+  free(b1)
+  free(b2)
+  free(work_raw)
+  free(out_raw)
+  free(ser_raw)
+  counts.refuted > u32(0) ? { i32(1) } | { i32(0) }
+}

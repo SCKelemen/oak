@@ -28,7 +28,7 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 	check := flags.Bool("check", false, "run Lean on the projection (-lean) and report the statements it proves")
 	leanBinary := flags.String("lean-binary", "lean", "the Lean executable -check runs")
 	cases := flags.Int("cases", prove.DefaultCases, "largest parameter domain the exhaustive decider enumerates")
-	solver := flags.String("solver", "oak", "the bit-level decider: oak (the solver written in Oak, prove/solver) or go")
+	solver := flags.String("solver", "oak", "the decider: oak (the Go ladder with the solver written in Oak, prove/solver), self (the prover written in Oak end to end: the file to the rows), or go")
 	cross := flags.String("cross", "go", "with -solver oak, the cross-check of every bit-level verdict: go (the Go decider under the same order must agree, node for node) or none")
 	witness := flags.Bool("witness", false, "also evaluate the exhaustively decided theorems in the compiled program")
 	if err := flags.Parse(args); err != nil {
@@ -43,6 +43,11 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 		target = flags.Arg(0)
 	}
 	target = filepath.Clean(target)
+	if *solver == "self" {
+		// The prover written in Oak (prove/solver/shell.oak): the file to
+		// the rows, with the Go ladder as the cross-check when asked.
+		return selfProve(target, *cases, *cross == "go", stdout, stderr)
+	}
 	// Invariant candidates get their base and step obligations generated
 	// before checking (prove/protocols.go), and declared operator laws
 	// their theorems (prove/laws.go).
@@ -269,4 +274,87 @@ func lawSources(target string) [][]byte {
 		}
 	}
 	return sources
+}
+
+// selfProve runs the prover written in Oak on one law file: the solver
+// program in its shell mode (OAK_SOLVER_MODE=prove) reads the file, decides
+// every theorem, and prints the rows. With crossCheck the Go ladder decides
+// the same file and every row's status must agree.
+func selfProve(target string, cases int, crossCheck bool, stdout, stderr io.Writer) int {
+	info, err := os.Stat(target)
+	if err != nil || info.IsDir() {
+		fmt.Fprintf(stderr, "oak prove: -solver self takes one law file, got %s\n", target)
+		return 2
+	}
+	binary, err := oakSolverBinary()
+	if err != nil {
+		fmt.Fprintf(stderr, "oak prove: %v\n", err)
+		return 2
+	}
+	absolute, err := filepath.Abs(target)
+	if err != nil {
+		fmt.Fprintf(stderr, "oak prove: %v\n", err)
+		return 2
+	}
+	run := exec.Command(binary)
+	run.Env = append(os.Environ(), "OAK_SOLVER_MODE=prove", "OAK_PROVE_FILE="+absolute, fmt.Sprintf("OAK_PROVE_CASES=%d", cases))
+	var out strings.Builder
+	run.Stdout = &out
+	run.Stderr = stderr
+	runErr := run.Run()
+	rows := out.String()
+	fmt.Fprint(stdout, rows)
+	code := 0
+	if runErr != nil {
+		if exit, isExit := runErr.(*exec.ExitError); isExit {
+			code = exit.ExitCode()
+		} else {
+			fmt.Fprintf(stderr, "oak prove: %v\n", runErr)
+			return 2
+		}
+	}
+	if !crossCheck {
+		return code
+	}
+	// The Go ladder on the same file, row by row.
+	source, err := os.ReadFile(target)
+	if err != nil {
+		fmt.Fprintf(stderr, "oak prove: %v\n", err)
+		return 2
+	}
+	model, err := compiler.New().WithSyntaxRewrite(prove.Obligations).WithSource(target, string(source)).Check().Get()
+	if err != nil {
+		fmt.Fprintf(stderr, "oak prove: %v\n", err)
+		return 2
+	}
+	results, err := prove.Theorems(model, cases)
+	if err != nil {
+		fmt.Fprintf(stderr, "oak prove: %v\n", err)
+		return 2
+	}
+	goStatus := map[string]prove.Status{}
+	for _, r := range results {
+		goStatus[r.Name] = r.Status
+	}
+	agreed, compared := 0, 0
+	for _, line := range strings.Split(rows, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !strings.HasSuffix(fields[1], ":") || fields[0] == "oak" {
+			continue
+		}
+		name := strings.TrimSuffix(fields[1], ":")
+		status, known := goStatus[name]
+		if !known {
+			continue
+		}
+		compared++
+		if string(status) == fields[0] {
+			agreed++
+			continue
+		}
+		fmt.Fprintf(stdout, "oak prove: the Go ladder disagrees on %s: Go %s, Oak %s\n", name, status, fields[0])
+		code = 1
+	}
+	fmt.Fprintf(stdout, "oak prove: the Go ladder agrees on %d of %d rows\n", agreed, compared)
+	return code
 }

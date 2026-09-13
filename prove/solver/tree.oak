@@ -1589,7 +1589,8 @@ step_func_p: (p: Par, w: [*]u32, src: []u32, at: u32): () {
     // FP_BODIED
     is_theorem: Bool = w[at + u32(3)] != u32(0)
     (is_theorem && w[at + u32(6)] != NONE) ? { px_fail(p, w, u32(357)) } | {
-      px_add_func(p, w, w[at + u32(2)], w[at + u32(4)], w[at + u32(5)], w[at + u32(6)], ret, u32(0))
+      // Flag bit 2 marks a theorem for the shell's ladder.
+      px_add_func(p, w, w[at + u32(2)], w[at + u32(4)], w[at + u32(5)], w[at + u32(6)], ret, is_theorem ? { u32(2) } | { u32(0) })
       px_deliver(p, w, NONE)
     }
   } } } }
