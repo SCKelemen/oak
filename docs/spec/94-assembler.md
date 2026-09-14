@@ -2360,6 +2360,35 @@ local — an array, a record, a sum — at its zero value, as both backends
 fill it, where it refused a record or a sum. `compiler/e2e_native_rv64_span_locals_test.go`
 runs a program with both on the bare machine under QEMU and on the
 AArch64 host against the C backend.
+**Thirty-fifth increment — variable shift counts (2026-09-15;
+`asm/verify.go` lowerVariableShift, `Oak.Shifts`).** A body shifting by a
+count that is not a constant — `shifts`, `byte_shift` of the rv64 extra
+corpus — was trusted ("the Oak body contains a non-constant shift count")
+unless the count's range stayed below the width. Oak traps at the width
+(docs/spec/10-syntax.md §3b) and so does the native code — both backends
+guard the count (`cmp wN, #width; b.hs trap`, `bgeu n, width, trap`)
+before the register shift — and the executor already drops a trapping
+path from its fork, so the equivalence is over the counts below the width,
+where the guarded machine shift is Oak's. The Oak side now lowers the
+shift at the machine's register width — a w register on AArch64 for
+operands up to 32 bits, `sllw`/`srlw` on RV64 for a 32-bit operand and
+XLEN for a narrower one — and truncates back, so that on the counts the
+trap removes the term is the machine's wrapped value rather than a claim
+about Oak's (trapping) result; below the width the two coincide
+(`Oak.Shifts`: the widened shift masked back is the narrow shift for
+every count below the width, and a count below the width is its own
+remainder at the register width). The claim rests on the machine's
+guard: the executor records, on every path, the trap bound under which a
+register-count shift ran (`cmp wN, #K; b.hs trap` bounds wN below K, and
+so does `li rK, K; bgeu rN, rK, trap` on the rv64 lane), and the Oak side
+admits the variable count only when every such shift was guarded at or
+below Oak's width — a shift with no guard, or one guarded at the
+register's width rather than the operand's, stays trusted as before, since
+there Oak traps where the machine delivers. A signed operand keeps the
+refusal, as the backends leave those bodies to C. `shifts` and `byte_shift` are proven
+on both lanes (`asm/shift_test.go`; `compiler/e2e_native_rv64_test.go`);
+the theorem decider's treatment — the trap as a recorded obligation — is
+unchanged.
 
 **Thirty-eighth increment — frame loads at a data-dependent index
 (2026-09-15; `asm/verify.go` boundedFrameLoad, `Oak.FrameIndex`).** A load
@@ -3795,6 +3824,70 @@ way, and it is the next thing to tighten. Pinned: `asm/effects_test.go`
 `TestVerifySummarizedLoops` (a summing callee behind a result and a
 filling callee behind a unit caller proven by coupling the callee's
 loop; the wrong constant to the callee a mismatch).
+
+**The verdict cache, identity masks, and the coupling's candidates
+(2026-09-14).** Three things, found in order. First, the builds were
+cached but the verifications were not: every `oak build -native`
+re-verified every body. A verdict is a function of what the verifier
+reads — the lowered assembly as the checker sees it, the Oak body after
+inlining, the bodies of the program functions the body can reach through
+calls (the summaries inline them), the program's type, global, and
+constant declarations, the record layouts and addressed globals of the
+unit, the lane and its stack convention, and the compiler executable
+itself — and `compiler/verdict_cache.go` keys a verdict on all of it and
+keeps it under `$TMPDIR/oak-verify-cache`. A rebuild of an unchanged
+program takes every verdict from the cache; an edit re-verifies the
+edited function and the functions that reach it, no other; a changed
+compiler (its size and modification time, as the solver caches key)
+invalidates everything. The build reports `N of M verdicts from the
+verdict cache`; `oak build -verify-fresh` and `OAK_VERIFY_CACHE=0` bypass
+it for the full check. `TestVerdictCache` pins the cold build, the warm
+build with identical verdicts, the callee change that re-verifies the
+callee, its caller, and `main` but not an unrelated body, and the
+bypass. On the prover a warm rebuild takes 30 seconds where the cold
+build takes over three minutes. Second, a mask of every bit at a term's
+width is now the identity in the constructors (`x & 0xFFFFFFFF` at 32
+bits is `x`; a truncation of a zero-extension is the extended term), and
+`x - x`, `x ^ x`, `x & x`, `x | x` fold when the two sides are the same
+term to a small structural depth (two reads of one address are built as
+distinct nodes): nine more bodies prove, `fact`'s 64-bit product on RV64
+among them, and several proofs close as "the same term on both sides".
+Third, the coupling search's candidates: a Bool variable pairs only with
+a register whose header holds a 0/1 value (once an outer loop's register
+is coupled, the outer variable's declared width decides; an uncoupled
+one stays a candidate for the viability pass), and a variable the
+iteration changes never pairs with a register the iteration leaves as it
+found it, nor the reverse. `sat_extend` — three nested loops over the
+SAT arena, the Bool `satisfied` inside — went from 96 seconds of search
+to about a minute under this machine's load, still the slowest body by
+far, still evidence; what remains there is a genuine pairing (`end` with
+a register carrying `mem[l.state_at + 23]`) whose preservation is a
+decision over the arena's memory terms, and it is bounded by the loop
+proof's budgets. On the prover: proven 362 to 371, no disagreement, the
+rows identical. **Found by the cache:** a warm rebuild missed 146 of the
+979 verdicts, and the lowered assembly of those bodies differed between
+two builds of one source — a register chosen as `w24` in one and `w25`
+in the next — because the backend returned dead variables' registers to
+its pools in map order (`popScope`, `releaseDead`). The pools are filled
+in name order now; two builds produce identical assembly, verdicts, and
+objects, and the warm rebuild of the prover takes fifteen seconds with
+every verdict from the cache. **A counterexample reads the memory the
+diagrams chose.** Integer division became an uninterpreted operation the
+same afternoon, and nineteen bodies that divide by a constant the
+machine shifts by (`at / 4`, `lit / 2`) were reported as mismatches —
+"asm yields 51, Oak yields 51": the diagrams differ under values of the
+operation that the operation never takes, and the terms agree on the
+input. The bit-level difference is now confirmed by evaluating both
+terms on the counterexample's input before it is a mismatch (the
+thirty-first increment's rule, landed alongside). For that evaluation to
+be the arbiter it must read the memory the diagrams chose, so a
+counterexample reports each element read at the index its bits took
+with the value its variables took (`v[k]`), and the evaluator reads such
+an element from the input before the fixed memory — a compare-exchange
+storing the wrong value under a symbolic index stays a mismatch
+(`TestVerifyAtomicsCompareExchange`) rather than evaluating equal on the
+fixed memory. On the prover the nineteen are evidence, and the native
+build, which a mismatch fails, builds again: proven 376.
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
