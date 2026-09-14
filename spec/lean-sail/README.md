@@ -30,7 +30,7 @@ cd ../../../../spec/lean-sail && lake update && lake build
 
 ## Status
 
-Builds (2026-09-14): 36 semantics theorems and 30 encoding theorems check
+Builds (2026-09-14): 42 semantics theorems and 30 encoding theorems check
 against the export itself. The export is sail-riscv at 497209b9
 (2026-08-19), the last commit whose Lean export compiles — the model's
 `vmem_types.sail` gained type-level `root_level('v)` definitions the Sail
@@ -46,8 +46,14 @@ Two proof shapes matter against the real export: `encdec_forwards` is a
 concrete arm rather than handing it to `simp`, and the branch arm is
 defined only for even offsets (its guard on bit 0), so the branch theorems
 carry `delta &&& 1 = 0`, which Oak's B-form offsets satisfy by
-construction. Not yet bridged: the high-half multiplies, the divisions and
-remainders, and the loads, stores and AMOs (monadic memory).
+construction. The multiplies and divisions bridge through integers: the
+model computes on `Int` (`mult_to_bits_half`, `Int.tdiv`/`Int.tmod` with
+the zero-divisor and overflow cases spelled out) and truncates, and
+`BitVec.ofInt` is a ring homomorphism with `toInt_sdiv`/`toInt_srem` core
+lemmas, so the model's integer results are Oak's `mul`/`mulh`/`mulhu` and
+`div`/`divu`/`rem`/`remu` on bit vectors. Not yet bridged: the W-form
+divisions (Oak's Lean model states the totalization at 64 bits only), and
+the loads, stores and AMOs (monadic memory).
 
 `spec/lean/Oak/SailRiscVBridge.lean` keeps the RTYPEW, comparison and
 branch theorems checkable inside Oak's own project, against verbatim
