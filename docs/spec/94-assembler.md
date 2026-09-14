@@ -2329,8 +2329,11 @@ array beyond the summary's budget stays trusted with the reason. The
 span-effects `main` is proven on both lanes, as are `filled` and `squares`
 of the rv64 corpus, whose callees loop over the array
 (`asm/span_args_test.go`; `compiler/e2e_native_span_effects_test.go`,
-`compiler/e2e_native_rv64_test.go`). A table passed to a callee stays with
-the span-parameter rule for now (`table_sum`).
+`compiler/e2e_native_rv64_test.go`). A constant table handed to a callee
+(`sum_view(view(&TABLE))`) is the table passed whole: its address beside
+its constant element count takes the span-parameter alias, and `len` over
+the callee's parameter resolves through the alias to the table's count, so
+`table_sum` is proven too (`compiler/e2e_native_tables_test.go`).
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
