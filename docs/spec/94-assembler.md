@@ -1046,7 +1046,7 @@ application of `fadd`, which the witnesses cannot tell apart:
 `asm/float_loop_test.go`). What stays trusted: the rounding intrinsics
 (`floor`, `ceil`, `trunc`, `round`), a float converted to `u8` or `u16`
 (the narrow saturation); a loop body that stores (`fill_f64`) is the
-thirtieth increment's, below.
+thirty-first increment's, below.
 
 **Vector stores as memories (2026-09-14; `asm/effects.go`,
 `asm/verify_simd.go`).** The twenty-eighth increment's write log takes
@@ -2202,7 +2202,56 @@ store, a callee storing another value refuted; `TestVerifyBoundedShift`)
 and `compiler/e2e_native_callee_effects_test.go` (the arena shape: a
 record and a span passed through two levels of unit callees, the constant
 count unrolled, the bounded shift proven, a data count trusted).
-**Thirtieth increment — stores in data-dependent loops (2026-09-15;
+**Thirtieth increment — stack arguments in the call summary.** A call
+whose arguments exceed the eight registers (`px_node` with eleven, the
+syntax-node constructors `mk_*` behind it) left the summary at "arguments
+beyond the registers". The summary now lays the callee's parameters out
+by the shared rule and reads the ones beyond the registers from the
+caller's outgoing area, which is the path's frame at the call's sp: a
+scalar its natural size at its offset, zero-extended as the callee's
+load is; a span's base and, eight bytes on, its four-byte length; a
+by-reference record's address. The classification is one function now
+(`classifyArguments`, asm/abi.go): the checker's contract binding, the
+backend's placement, and the summary's reading share it, so the three
+cannot disagree on a slot. On the prover: proven 281 to 299 of 879 (the
+`mk_*` constructors, `cnf_header`/`cnf_lit`, `add_fn`, `trailing_zeros`),
+no disagreement, the rows identical. **Where the build's time went.** With
+the summaries reaching the arena emitters, the verifier's share of a
+native prover build rose to about four CPU-minutes, and sampling put it
+not in the diagrams but in the witness pass of `decideEqual`: each of
+the 324 boundary inputs evaluated the two memory terms through a map
+memo, and a memory built by a chain of summarized stores is a DAG of
+tens of thousands of nodes. The pass now numbers the terms once and
+evaluates them through slices (`termEvaluator`, which the theorem
+decider already used) and thins the inputs so that it visits a bounded
+number of nodes (`witnessVisitBudget`; the witnesses are the early
+refutation, the decision that follows is the proof), which took the
+slowest evidence verdicts from twenty seconds to two; the range bound of
+a shift count is memoized per lowering rather than per shift (a count
+that reads memory written by earlier summarized calls is a large DAG),
+and `significantBits`, which a zero test's flag reading consults, walks
+that DAG once per call rather than once per path through it — an
+emitter with fourteen string literals (`reason_text`) took the verifier
+past thirty minutes there before the memo, and takes a second after.
+Alongside, the functional consistency constraint skips a pair of reads
+whose indices are provably at different elements by their linear forms
+(the `base + 9` against `base + 16` of the arena), keeping it linear
+rather than quadratic in such a body's reads. The cost that remains is
+the reach itself, measured on one machine with the two compilers
+interleaved: the native prover build took about 30 CPU-seconds per
+compile before the twenty-eighth increment and takes about 220 after the
+thirtieth (the verifier's share about 150: evidence verdicts running the
+three orders to the node budget about 90, `emit_header` alone about 40
+exhausting the path budget across its conditional pushes, the proofs
+about 20). `TestOakShellAgreesNative` builds both provers and runs the
+corpus on each in about seven minutes on a loaded machine — under CI's
+45-minute package timeout, over `go test`'s ten-minute default when the
+whole root package runs on a busy host. Pinned:
+`compiler/e2e_native_stack_summary_test.go` (a callee with three
+arguments on the stack of mixed widths — `u16`, `u32`, `u64`, a `Bool` —
+summarized into a unit caller proven in its span and into a caller
+proven in its result and its span; the C backend the oracle).
+**Thirty-first increment — stores in data-dependent loops (2026-09-15;
 `asm/loops.go`, `asm/effects.go`, `Oak.LoopStores`).** A counting loop
 that stores one element per iteration — `fill`, `fill_f64`, every
 "write `f(i)` at `i`" loop of the native corpora — was trusted on both
@@ -2257,7 +2306,7 @@ evidence, not proof. With it `fill`, `fill_f64`, `scale_in_place`,
 corpora assert it; package cells written around a data-dependent loop
 stay trusted.
 
-**Thirty-first increment — integer division as an uninterpreted
+**Thirty-second increment — integer division as an uninterpreted
 operation (2026-09-15; `asm/floats_ops.go`, `asm/verify.go`,
 `asm/rv64_verify.go`, `Oak.IntegerDivision`).** `/` and `%` by a divisor
 that is not a constant power of two left a unit trusted on both lanes
@@ -2279,7 +2328,7 @@ too, so the applications compared lie off `b = 0`; the theorem decider
 states the zero divisor as a trap obligation, and the witness evaluation
 returns the AArch64 result there. A structural decision precedes the
 diagrams in the straight-line decider as it does in the coupling
-(`termEquivalent`, the thirtieth increment): `(a / b) * 100 + a % b` is
+(`termEquivalent`, the thirty-first increment): `(a / b) * 100 + a % b` is
 the same term on both sides once the quotient is shared, and `divmod`,
 `quot`, and `rem` are proven on both lanes (`asm/division_test.go`;
 swapped operands and signed against unsigned division are mismatches).
@@ -2287,11 +2336,10 @@ The lowering written in Oak mirrors the rule (`FOP_UDIV`, `FOP_SDIV`, the
 trap, `int_sdiv` for the fold), and `spec/oak/intrinsics.oak` states
 `rem_is_sub_div`, `signed_rem_is_sub_div`, and `div_same_operands`.
 
-Next increments: stack arguments in the call summary (the outgoing area's
-slots are frame slots the executor already holds); loop stores whose
-order differs between the sides (pairing by guard rather than by
-position); guard elision from the
-checker's facts; the foreign-call subset only if the shell itself is to
+Next increments: loop stores whose order differs between the sides
+(pairing by guard rather than by position; the span-writing loops behind
+`sb_str` and `px_acc_list` where they store in more than program order);
+guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
 be verified —
 calls by inlining or by the callee's proven contract, and effects through
 spans as the result — so that "trusted" shrinks toward the foreign
