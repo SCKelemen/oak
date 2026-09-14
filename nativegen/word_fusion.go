@@ -175,3 +175,54 @@ func (g *generator) fusedWordLoad(w wordAssembly, typ scalar) (int, error) {
 	g.fusedWords++
 	return out, nil
 }
+
+// rvFusedWordLoad is fusedWordLoad on the rv64 lane: the slack guard in
+// the lane's shape (`li k, K; bltu norm, k, trap; sub t, norm, k; bltu t,
+// idx, trap`, Oak.RiscV.slack_guard), then the element address and one
+// `ld`/`lwu`/`lhu` at it — the checker admits the wider access through a
+// region the guard marked K lanes deep.
+func (g *rvGenerator) rvFusedWordLoad(w wordAssembly, typ scalar) (int, error) {
+	sp := g.spans[w.span]
+	idxType, err := g.typeOf(w.index, nil)
+	if err != nil {
+		return 0, err
+	}
+	if idxType.isBool || idxType.isFloat || idxType.isVec || (idxType.signed && idxType.bits != 32) {
+		return 0, unsupported("an element index of type %s (indices are unsigned or i32)", idxType.name)
+	}
+	r, err := g.expr(w.index, &idxType)
+	if err != nil {
+		return 0, err
+	}
+	R := rvReg(r)
+	if idxType.bits < 64 && !idxType.signed {
+		g.emit("slli", R, R, imm(32))
+		g.emit("srli", R, R, imm(32))
+	}
+	k, err := g.alloc(scalars["u64"])
+	if err != nil {
+		return 0, err
+	}
+	t, err := g.alloc(scalars["u64"])
+	if err != nil {
+		return 0, err
+	}
+	g.usedTrap = true
+	g.emit("li", rvReg(k), imm(w.bytes))
+	g.emit("bltu", rvReg(sp.norm), rvReg(k), asm.Symbol{Name: g.trap})
+	g.emit("sub", rvReg(t), rvReg(sp.norm), rvReg(k))
+	g.emit("bltu", rvReg(t), R, asm.Symbol{Name: g.trap})
+	g.release(t)
+	g.release(k)
+	g.emit("add", R, rvReg(sp.baseReg), R)
+	load := "ld"
+	switch w.bytes {
+	case 4:
+		load = "lwu"
+	case 2:
+		load = "lhu"
+	}
+	g.emit(load, R, asm.Memory{Base: R, Offset: 0, Mode: asm.MemOffset})
+	g.fusedWords++
+	return r, nil
+}

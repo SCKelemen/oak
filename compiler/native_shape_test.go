@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/SCKelemen/oak/asm"
+	"github.com/SCKelemen/oak/target"
 )
 
 // The shapes the native optimization program pins (docs/spec/94-assembler.md
@@ -151,4 +152,41 @@ func TestNativeShapesRegistersInLoops(t *testing.T) {
 	if !strings.Contains(model.NativeVerdicts["word_at"].Message, "proven") {
 		t.Errorf("word_at's fused load must stay proven: %s", model.NativeVerdicts["word_at"].Message)
 	}
+}
+
+// The rv64 lane fuses the word assembly too (rvFusedWordLoad): one `ld`
+// under the lane's slack guard, proven against the same Oak body.
+func TestNativeShapesRV64WordFusion(t *testing.T) {
+	bare := target.Target{OS: target.OSFreestanding, Arch: target.ArchRiscv64}
+	comp := New().WithSource("shape.oak", nativeShapeProgram).WithTarget(bare).WithNativeBodies().WithNativeAsm()
+	model, err := comp.SemanticModel().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fn := range model.AsmFunctions {
+		if fn.Name != "word_at" {
+			continue
+		}
+		bytes, words := 0, 0
+		for _, item := range fn.Items {
+			if ins, isIns := item.(asm.Instruction); isIns {
+				switch ins.Mnemonic {
+				case "lbu", "lb":
+					bytes++
+				case "ld":
+					if mem, isMem := ins.Operands[1].(asm.Memory); isMem && mem.Base.Class != asm.ClassSP {
+						words++
+					}
+				}
+			}
+		}
+		if bytes != 0 || words != 1 {
+			t.Errorf("rv64 word_at must load its word once (%d byte loads, %d word loads)", bytes, words)
+		}
+		if !strings.Contains(model.NativeVerdicts["word_at"].Message, "proven") {
+			t.Errorf("rv64 word_at's fused load must stay proven: %s", model.NativeVerdicts["word_at"].Message)
+		}
+		return
+	}
+	t.Fatal("word_at was not lowered on the rv64 lane")
 }

@@ -1516,6 +1516,9 @@ func pick(wide bool, full, w string) string {
 }
 
 func (g *rvGenerator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
+	if w, isWord := g.recognizeWordAssembly(e, typ); isWord {
+		return g.rvFusedWordLoad(w, typ) // nativegen/word_fusion.go
+	}
 	switch e.Operator {
 	case "&&", "||":
 		b := scalars["Bool"]

@@ -2611,7 +2611,9 @@ vector one, and the verifier reads a load wider than the span's element as
 the or of the elements shifted to their positions
 (`Oak.Assembler.wide_load_assembles`, `wide_load_assembles32`), so the
 fused load is proven equal to the eight reads and a big-endian body is
-refuted. Two checker facts came with them (§7): a length equality and the
+refuted; the rv64 lane fuses the same shape (`ld` at the element address
+under its slack guard, the checker admitting a wider scalar access through
+a region the guard marked K lanes deep). Two checker facts came with them (§7): a length equality and the
 sum shape of a slack guard. `dot` went from 13 to 8 instructions per
 element and from 3.2× to 1.0× of the C backend, `tiled` from about twelve
 per element to four (0.67×), `crc32c`'s 56-byte step from about 500 to 178
