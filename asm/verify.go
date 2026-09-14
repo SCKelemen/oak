@@ -131,6 +131,10 @@ type term struct {
 	left  *term
 	right *term
 	cond  *term // termIte
+	// The known-bits memo (knownBits, asm/floats_ops.go): set once computed.
+	kbDone  bool
+	kbValue uint64
+	kbKnown uint64
 }
 
 // conditionHolds is the ARM condition-code semantics over the NZCV flags
@@ -253,7 +257,72 @@ func cmpTerm(code string, left, right *term) *term {
 	if left.kind == termConst && right.kind == termConst {
 		return constTerm(t.eval(nil), left.width)
 	}
+	if right.kind == termConst && right.value == 0 && (code == "eq" || code == "ne") {
+		if distributed, isReduction := zeroTestOfReduction(code, left, left.width); isReduction {
+			return distributed
+		}
+	}
 	return t
+}
+
+// isLowMask reports whether m is 2^k - 1 for some k.
+func isLowMask(m uint64) bool { return m&(m+1) == 0 }
+
+// significantBits bounds the position of a term's highest set bit: its
+// width, or less for a masked, compared, or selected value.
+func significantBits(t *term) int {
+	switch t.kind {
+	case termConst:
+		return bits.Len64(t.value)
+	case termCmp:
+		return 1
+	case termIte:
+		return min(t.width, max(significantBits(t.left), significantBits(t.right)))
+	case termBinary:
+		switch t.op {
+		case "and":
+			n := t.width
+			if t.right.kind == termConst {
+				n = min(n, bits.Len64(t.right.value))
+			}
+			return min(n, significantBits(t.left))
+		case "or", "xor":
+			return min(t.width, max(significantBits(t.left), significantBits(t.right)))
+		}
+	}
+	return t.width
+}
+
+// zeroTestOfReduction distributes a zero test over a max or min chain — the
+// `umaxv`/`uminv` reductions (asm/verify_vector.go laneReduce), each step
+// `ite(l hi r, l, r)` or `ite(l lo r, l, r)` — into per-lane tests, at the
+// given width: max(l, r) ≠ 0 ⇔ l ≠ 0 ∨ r ≠ 0, max(l, r) = 0 ⇔ l = 0 ∧ r = 0,
+// and dually for min (Oak.NeonSemantics.umaxv_ne_zero_iff,
+// umaxv_cmeq_zero_iff). The chain's diagram over sixteen free lanes
+// exceeds the node budget; the lane tests are linear. Zero-extensions of
+// the chain are looked through; a truncation is not (it drops bits).
+func zeroTestOfReduction(code string, t *term, width int) (*term, bool) {
+	// Masks that keep every significant bit — a zero-extension, or the
+	// lane's extraction from the register it was placed in — do not change
+	// the value; they are looked through.
+	for t.kind == termBinary && t.op == "and" && t.right.kind == termConst && isLowMask(t.right.value) && significantBits(t.left) <= min(bits.Len64(t.right.value), t.width) {
+		t = t.left
+	}
+	if t.kind != termIte || t.cond.kind != termCmp || (t.cond.op != "hi" && t.cond.op != "lo") || t.cond.left != t.left || t.cond.right != t.right {
+		return nil, false
+	}
+	isMax := t.cond.op == "hi"
+	side := func(x *term) *term {
+		if distributed, isReduction := zeroTestOfReduction(code, x, width); isReduction {
+			return distributed
+		}
+		return zeroExtend(cmpTerm(code, x, constTerm(0, x.width)), width)
+	}
+	op := "and"
+	if isMax == (code == "ne") {
+		op = "or"
+	}
+	return binaryTerm(op, side(t.left), side(t.right)), true
 }
 
 func iteTerm(cond, left, right *term) *term {

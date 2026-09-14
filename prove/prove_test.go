@@ -485,8 +485,10 @@ main: (): i32 = 0
 }
 
 // Floats at the bit level: a law about a NaN min is not provable (the
-// backend's NaN result is a fresh symbol), and arithmetic is not a bit
-// operation, so it stays open.
+// backend's NaN payload is the platform's), and arithmetic is an
+// uninterpreted operation (asm/floats_ops.go), so a law that needs an
+// algebraic property of it — commutation, here — is refuted: `x + y` and
+// `y + x` are two applications, equal only when the operands are.
 func TestFloatBitLevel(t *testing.T) {
 	src := `
 min_nan_commutes: theorem (x: f32, y: f32) { u32_bits_f32(min(x, y)) == u32_bits_f32(min(y, x)) }
@@ -505,7 +507,7 @@ main: (): i32 = 0
 	if r := got["min_nan_commutes"]; r.Status != Refuted {
 		t.Errorf("min_nan_commutes: %+v", r)
 	}
-	if r := got["add_commutes"]; r.Status != Open || !strings.Contains(r.Detail, "floating-point +") {
+	if r := got["add_commutes"]; r.Status != Refuted {
 		t.Errorf("add_commutes: %+v", r)
 	}
 	if r := got["abs_nonnegative"]; r.Status != Decided {

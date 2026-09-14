@@ -33,7 +33,14 @@
 // while its condition folds, a statement conditional merges the locals its
 // arms assign, and a call is inlined with the arguments bound at the
 // callee's parameter types and the result adapted by the callee's result
-// signedness.
+// signedness. A float is its IEEE pattern: negation, abs, copysign, the
+// classifiers, the comparisons, min, max, and total_order are bit
+// operations (asm/floats_lowering.go); `+ - * /`, sqrt, fma, min_num and
+// max_num beside a NaN, the NaN a min or max yields, and the conversions
+// f32(x), f64(x), `_round_`, `_trunc_`, `_saturating_` are operation terms
+// (kind 6, asm/floats_ops.go) the solver abstracts as uninterpreted
+// values — folded to the IEEE value when every operand bit is known
+// (float_eval, the twin of floatEval), as the Go constructor folds them.
 package main
 
 // Syntax node kinds (asm/syntax.go).
@@ -65,6 +72,7 @@ SYN_VIEW: u32 = 24
 SYN_LEN: u32 = 25
 SYN_BUILTIN: u32 = 26
 SYN_ASSERT: u32 = 27
+SYN_FLOATCONV: u32 = 28
 
 // An arm in the lists: pattern kind, variant index or literal node,
 // binding symbol, body node.
@@ -84,7 +92,10 @@ FI_IS_NORMAL: u32 = 5
 FI_TOTAL_ORDER: u32 = 6
 FI_MIN: u32 = 7
 FI_MAX: u32 = 8
-MAX_FRESH: u32 = 8
+FI_SQRT: u32 = 9
+FI_FMA: u32 = 10
+FI_MIN_NUM: u32 = 11
+FI_MAX_NUM: u32 = 12
 
 TY_SCALAR: u32 = 0
 TY_RECORD: u32 = 1
@@ -168,6 +179,7 @@ Lower: type = struct {
   leaves_at: u32,
   entry_at: u32,
   state_at: u32,
+  known_at: u32,
   total: u32,
   max_terms: u32,
   built_total: u32
@@ -189,7 +201,6 @@ LS_TERMS_AT: u32 = 11
 LS_RET_TYPE: u32 = 12
 LS_RET_BLOCK: u32 = 13
 LS_LEAF_SP: u32 = 14
-LS_FRESH: u32 = 15
 LS_STMTS: u32 = 16
 
 lower_layout: (max_terms: u32, leaves: u32): Lower {
@@ -212,9 +223,10 @@ lower_layout: (max_terms: u32, leaves: u32): Lower {
     leaves_at: leaves_at,
     entry_at: entry_at,
     state_at: state_at,
-    total: state_at + u32(32),
+    known_at: state_at + u32(32),
+    total: state_at + u32(32) + max_terms * KNOWN_WORDS,
     max_terms: max_terms,
-    built_total: HEADER_WORDS + (leaves + MAX_FRESH) * LEAF_WORDS + max_terms * TERM_WORDS + MAX_TRAPS + u32(1) + SELECT_SLOTS_OUT * u32(64)
+    built_total: HEADER_WORDS + leaves * LEAF_WORDS + max_terms * TERM_WORDS + MAX_TRAPS + u32(1) + SELECT_SLOTS_OUT * u32(64)
   }
 }
 
@@ -297,13 +309,6 @@ node_vhi: (sx: []u32, n: u32): u32 = node_word(sx, n, u32(6))
 node_type: (sx: []u32, n: u32): u32 = node_word(sx, n, u32(7))
 list_item: (sx: []u32, start: u32, i: u32): u32 = sx[syn_lists_at(sx) + start + i]
 
-// is_float_node: a node of a float type, or a float literal (typed by its context).
-is_float_node: (sx: []u32, n: u32): Bool = node_kind(sx, n) == SYN_FLOATLIT || is_float_type(sx, node_type(sx, n))
-
-// float_width_of: the width of a float node with a type, 0 for a literal
-// or a node that is not a float.
-float_width_of: (sx: []u32, n: u32): u32 = is_float_type(sx, node_type(sx, n)) ? { scalar_width(sx, node_type(sx, n)) } | { u32(0) }
-
 // --- state, terms ---------------------------------------------------------
 
 state: (lw: Lower, w: [*]u32, k: u32): u32 = w[lw.state_at + k]
@@ -328,6 +333,89 @@ is_const: (lw: Lower, w: [*]u32, b: [*]u32, t: u32): Bool = tkind(lw, w, b, t) =
 
 mask64: (width: u32): u64 = width >= u32(64) ? { u64(0xFFFFFFFFFFFFFFFF) } | { (u64(1) << u64(width)) - u64(1) }
 
+// --- known bits (asm/floats_ops.go knownBits) --------------------------------
+
+// The bits of a term every parameter assignment fixes: the mask of the
+// fixed bits and their values (zero where unknown), four words per term
+// in the work buffer, computed when the term is built from its operands'
+// entries — the same transfer the Go constructor runs, so the two
+// lowerings fold the same float applications (t_float). Constants; and,
+// or, xor; a shift by a constant count; the width adapters (and-masks); a
+// conditional under a known selector bit, else the bits its arms agree
+// on; a comparison's zero upper bits. Everything else is unknown.
+KNOWN_WORDS: u32 = 4
+
+Known: type = struct { value: u64, known: u64 }
+
+kb_get: (lw: Lower, w: [*]u32, t: u32): Known {
+  k: u32 = lw.known_at + t * KNOWN_WORDS
+  value: u64 = (u64(w[k + u32(1)]) << u64(32)) | u64(w[k])
+  known: u64 = (u64(w[k + u32(3)]) << u64(32)) | u64(w[k + u32(2)])
+  Known { value: value, known: known }
+}
+
+kb_set: (lw: Lower, w: [*]u32, t: u32, kb: Known): () {
+  k: u32 = lw.known_at + t * KNOWN_WORDS
+  w[k] = u32_trunc_u64(kb.value)
+  w[k + u32(1)] = u32_trunc_u64(kb.value >> u64(32))
+  w[k + u32(2)] = u32_trunc_u64(kb.known)
+  w[k + u32(3)] = u32_trunc_u64(kb.known >> u64(32))
+}
+
+// kb_adapt reads an operand's known bits as the blaster reads the operand
+// at the term's width: zero-extended (the upper bits known zero) or
+// truncated.
+kb_adapt: (lw: Lower, w: [*]u32, b: [*]u32, t: u32, width: u32): Known {
+  kb: Known = kb_get(lw, w, t)
+  from: u32 = twidth(lw, w, b, t)
+  from < width ? { Known { value: kb.value, known: kb.known | (mask64(width) ^ mask64(from)) } } | {
+    from > width ? { Known { value: kb.value & mask64(width), known: kb.known & mask64(width) } } | { kb }
+  }
+}
+
+kb_of_new: (lw: Lower, w: [*]u32, b: [*]u32, kind: u32, op: u32, width: u32, a: u32, bb: u32, c: u32, vlo: u32, vhi: u32): Known {
+  m: u64 = mask64(width)
+  none: Known = Known { value: u64(0), known: u64(0) }
+  kind == KIND_CONST ? { Known { value: ((u64(vhi) << u64(32)) | u64(vlo)) & m, known: m } } | {
+  kind == KIND_CMP ? { Known { value: u64(0), known: m ^ u64(1) } } | {
+  kind == KIND_ITE ? {
+    l: Known = kb_adapt(lw, w, b, a, width)
+    r: Known = kb_adapt(lw, w, b, bb, width)
+    kc: Known = kb_get(lw, w, c)
+    (kc.known & u64(1)) == u64(1) ? { (kc.value & u64(1)) == u64(1) ? { l } | { r } } | {
+      agreed: u64 = l.known & r.known & (u64(0xFFFFFFFFFFFFFFFF) ^ (l.value ^ r.value))
+      Known { value: l.value & agreed, known: agreed }
+    }
+  } | {
+  kind == KIND_BINARY ? {
+    l: Known = kb_adapt(lw, w, b, a, width)
+    (op == BOP_AND || op == BOP_OR || op == BOP_XOR) ? {
+      r: Known = kb_adapt(lw, w, b, bb, width)
+      op == BOP_AND ? {
+        known: u64 = (l.known & r.known) | (l.known & (u64(0xFFFFFFFFFFFFFFFF) ^ l.value)) | (r.known & (u64(0xFFFFFFFFFFFFFFFF) ^ r.value))
+        Known { value: l.value & r.value & known, known: known }
+      } | {
+      op == BOP_OR ? {
+        known: u64 = (l.known & r.known) | (l.known & l.value) | (r.known & r.value)
+        Known { value: (l.value | r.value) & known, known: known }
+      } | {
+        known: u64 = l.known & r.known
+        Known { value: (l.value ^ r.value) & known, known: known }
+      } }
+    } | {
+    ((op == BOP_SHL || op == BOP_SHR || op == BOP_SAR) && is_const(lw, w, b, bb)) ? {
+      n: u64 = tvalue(lw, w, b, bb) % u64(width)
+      shifted_in: u64 = m ^ (m >> n)
+      op == BOP_SHL ? { Known { value: (l.value << n) & m, known: ((l.known << n) | mask64(u32_trunc_u64(n))) & m } } | {
+      op == BOP_SHR ? { Known { value: l.value >> n, known: (l.known >> n) | shifted_in } } | {
+        sign_known: Bool = ((l.known >> u64(width - u32(1))) & u64(1)) == u64(1)
+        sign_set: Bool = ((l.value >> u64(width - u32(1))) & u64(1)) == u64(1)
+        Known { value: (l.value >> n) | ((sign_known && sign_set) ? { shifted_in } | { u64(0) }), known: (l.known >> n) | (sign_known ? { shifted_in } | { u64(0) }) }
+      } }
+    } | { none } }
+  } | { none } } } }
+}
+
 term_new: (lw: Lower, w: [*]u32, b: [*]u32, kind: u32, op: u32, width: u32, a: u32, bb: u32, c: u32, vlo: u32, vhi: u32): u32 {
   t: u32 = state(lw, w, LS_TERMS)
   t >= lw.max_terms ? { fail_at(lw, w, u32(1)) } | {
@@ -340,6 +428,7 @@ term_new: (lw: Lower, w: [*]u32, b: [*]u32, kind: u32, op: u32, width: u32, a: u
     b[at + u32(5)] = c
     b[at + u32(6)] = vlo
     b[at + u32(7)] = vhi
+    kb_set(lw, w, t, kb_of_new(lw, w, b, kind, op, width, a, bb, c, vlo, vhi))
     set_state(lw, w, LS_TERMS, t + u32(1))
   }
   t >= lw.max_terms ? { u32(0) } | { t }
@@ -582,19 +671,161 @@ float_compare: (lw: Lower, w: [*]u32, b: [*]u32, op: u32, x: u32, y: u32, fw: u3
   t_orbit(lw, w, b, float_less(lw, w, b, nan, both_zero, sy, sx, mag_y, mag_x), eq) } } } } }
 }
 
-// fresh_leaf is a symbol no law may pin down (the NaN a min or max
-// yields): a leaf past the parameters, its width recorded.
-fresh_leaf: (lw: Lower, w: [*]u32, b: [*]u32, fw: u32): u32 {
-  k: u32 = state(lw, w, LS_FRESH)
-  k >= MAX_FRESH ? { fail_at(lw, w, u32(29)) } | { set_state(lw, w, LS_FRESH, k + u32(1)) }
-  li: u32 = state(lw, w, LS_LEAVES) + k
-  k >= MAX_FRESH ? { } | { b[HEADER_WORDS + li * LEAF_WORDS] = fw }
-  t_param(lw, w, b, li, fw)
+// --- the operation terms (asm/floats_ops.go) ---------------------------------
+
+// The IEEE evaluation of an operation over known operand patterns, the
+// twin of floatEval: NaN operands follow Arm's FPProcessNaNs (a signaling
+// NaN wins over a quiet one, earlier operands over later, the result
+// quieted; a fused multiply-add orders the addend first), an invalid
+// operation over numbers yields the default NaN, and the arithmetic is the
+// backend's own at the width — the solver is an Oak program, so its f32
+// and f64 operations are the IEEE operations the decider evaluates.
+
+FeNaN: type = struct { bits: u64, is: Bool }
+
+fe_quiet: (w: u32): u64 = (float_mantissa_mask(w) + u64(1)) >> u64(1)
+fe_is_nan: (v: u64, w: u32): Bool = (v & float_exponent_mask(w)) == float_exponent_mask(w) && (v & float_mantissa_mask(w)) != u64(0)
+fe_is_snan: (v: u64, w: u32): Bool = fe_is_nan(v, w) && (v & fe_quiet(w)) == u64(0)
+fe_default_nan: (w: u32): u64 = float_exponent_mask(w) | fe_quiet(w)
+fe_canonical: (v: u64, w: u32): u64 = fe_is_nan(v, w) ? { fe_default_nan(w) } | { v }
+fe_sign: (v: u64, w: u32): Bool = ((v >> u64(w - u32(1))) & u64(1)) == u64(1)
+
+// fe_arm_nan is FPProcessNaNs over n operands in priority order: the first
+// signaling NaN quieted, else the first quiet NaN; none when no operand is
+// a NaN.
+fe_arm_nan: (w: u32, n: u32, x: u64, y: u64, z: u64): FeNaN {
+  fe_is_snan(x, w) ? { FeNaN { bits: x | fe_quiet(w), is: true } } | {
+  (n > u32(1) && fe_is_snan(y, w)) ? { FeNaN { bits: y | fe_quiet(w), is: true } } | {
+  (n > u32(2) && fe_is_snan(z, w)) ? { FeNaN { bits: z | fe_quiet(w), is: true } } | {
+  fe_is_nan(x, w) ? { FeNaN { bits: x, is: true } } | {
+  (n > u32(1) && fe_is_nan(y, w)) ? { FeNaN { bits: y, is: true } } | {
+  (n > u32(2) && fe_is_nan(z, w)) ? { FeNaN { bits: z, is: true } } | { FeNaN { bits: u64(0), is: false } } } } } } }
+}
+
+fe_f32: (v: u64): f32 = f32_bits_u32(u32_trunc_u64(v))
+fe_f64: (v: u64, w: u32): f64 = w == u32(32) ? { f64(fe_f32(v)) } | { f64_bits_u64(v) }
+fe_bits32: (x: f32): u64 = u64(u32_bits_f32(x))
+// fe_bits is a double's pattern at the width (rounded to single for 32).
+fe_bits: (x: f64, w: u32): u64 = w == u32(32) ? { fe_bits32(f32_round_f64(x)) } | { u64_bits_f64(x) }
+
+// fe_arith: fadd, fsub, fmul, fdiv, and fnan (the NaN a min or max yields:
+// the sum's, as floatEval computes it).
+fe_arith: (op: u32, w: u32, a: u64, bb: u64): u64 {
+  nan: FeNaN = fe_arm_nan(w, u32(2), a, bb, u64(0))
+  nan.is ? { nan.bits } | {
+    w == u32(32) ? {
+      x: f32 = fe_f32(a)
+      y: f32 = fe_f32(bb)
+      r: f32 = op == FOP_FSUB ? { x - y } | { op == FOP_FMUL ? { x * y } | { op == FOP_FDIV ? { x / y } | { x + y } } }
+      fe_canonical(fe_bits32(r), u32(32))
+    } | {
+      x: f64 = f64_bits_u64(a)
+      y: f64 = f64_bits_u64(bb)
+      r: f64 = op == FOP_FSUB ? { x - y } | { op == FOP_FMUL ? { x * y } | { op == FOP_FDIV ? { x / y } | { x + y } } }
+      fe_canonical(u64_bits_f64(r), u32(64))
+    }
+  }
+}
+
+// fe_minmax: fminnm and fmaxnm (IEEE 754-2008 minNum/maxNum): a quiet NaN
+// beside a number yields the number; a signaling NaN or two NaNs follow
+// FPProcessNaNs; -0.0 orders below +0.0.
+fe_minmax: (op: u32, w: u32, a: u64, bb: u64): u64 {
+  a_nan: Bool = fe_is_nan(a, w)
+  b_nan: Bool = fe_is_nan(bb, w)
+  (a_nan && !b_nan && !fe_is_snan(a, w)) ? { bb } | {
+  (b_nan && !a_nan && !fe_is_snan(bb, w)) ? { a } | {
+    nan: FeNaN = fe_arm_nan(w, u32(2), a, bb, u64(0))
+    nan.is ? { nan.bits } | {
+      x: f64 = fe_f64(a, w)
+      y: f64 = fe_f64(bb, w)
+      less: Bool = x < y || (x == y && fe_sign(a, w) && !fe_sign(bb, w))
+      op == FOP_FMINNM ? { less ? { a } | { bb } } | { less ? { bb } | { a } }
+    }
+  } }
+}
+
+// fe_to_int: fcvtzs and fcvtzu at width w of a double: toward zero,
+// saturating at the integer range, NaN to zero (floatEval's convertToInt).
+fe_to_int: (x0: f64, w: u32, signed: Bool): u64 {
+  m: u64 = mask64(w)
+  x: f64 = trunc(x0)
+  half: u64 = u64(1) << u64(w - u32(1))
+  x0 != x0 ? { u64(0) } | {
+  signed ? {
+    lo: f64 = -(f64_round_u64(half))
+    hi: f64 = f64_round_u64(half - u64(1))
+    x <= lo ? { half & m } | {
+    x >= hi ? { half - u64(1) } | {
+      x < 0.0 ? { (u64(0) - u64_trunc_f64(-x)) & m } | { u64_trunc_f64(x) & m }
+    } }
+  } | {
+    top: f64 = w == u32(64) ? { f64_round_u64(half) * 2.0 } | { f64_round_u64(u64(1) << u64(w)) }
+    x <= 0.0 ? { u64(0) } | { x >= top ? { m } | { u64_trunc_f64(x) & m } }
+  } }
+}
+
+// float_eval evaluates an operation at width w over the operand patterns
+// (a at width wa, which fixes a conversion's source format or integer
+// width; y and z at w).
+float_eval: (op: u32, w: u32, a: u64, y: u64, z: u64, wa: u32): u64 {
+  (op == FOP_FADD || op == FOP_FSUB || op == FOP_FMUL || op == FOP_FDIV || op == FOP_FNAN) ? { fe_arith(op, w, a, y) } | {
+  (op == FOP_FMINNM || op == FOP_FMAXNM) ? { fe_minmax(op, w, a, y) } | {
+  op == FOP_FSQRT ? {
+    nan: FeNaN = fe_arm_nan(w, u32(1), a, u64(0), u64(0))
+    nan.is ? { nan.bits } | {
+      w == u32(32) ? { fe_canonical(fe_bits32(sqrt(fe_f32(a))), u32(32)) } | { fe_canonical(u64_bits_f64(sqrt(f64_bits_u64(a))), u32(64)) }
+    }
+  } | {
+  op == FOP_FMA ? {
+    // The addend is examined first (FPProcessNaNs3 on addend, op1, op2).
+    nan: FeNaN = fe_arm_nan(w, u32(3), z, a, y)
+    nan.is ? { nan.bits } | {
+      w == u32(32) ? { fe_canonical(fe_bits32(fma(fe_f32(a), fe_f32(y), fe_f32(z))), u32(32)) } | {
+        fe_canonical(u64_bits_f64(fma(f64_bits_u64(a), f64_bits_u64(y), f64_bits_u64(z))), u32(64))
+      }
+    }
+  } | {
+  op == FOP_FCVT ? { fe_bits(fe_f64(a, wa), w) } | {
+  op == FOP_SCVTF ? {
+    // The integer sign-extended from its width: the magnitude converted,
+    // negated back (the conversion rounds symmetrically).
+    neg: Bool = fe_sign(a, wa)
+    mag: u64 = neg ? { (u64(0) - a) & mask64(wa) } | { a }
+    fe_bits(neg ? { -(f64_round_u64(mag)) } | { f64_round_u64(mag) }, w)
+  } | {
+  op == FOP_UCVTF ? { fe_bits(f64_round_u64(a), w) } | {
+    fe_to_int(fe_f64(a, wa), w, op == FOP_FCVTZS)
+  } } } } } } }
+}
+
+// t_float builds an operation term at width over its operands (y, z NONE
+// past the arity), folded to the IEEE value when every operand's bits are
+// known — the Go constructor's rule (floatTerm), so both lowerings hand the
+// solver the same applications.
+t_float: (lw: Lower, w: [*]u32, b: [*]u32, op: u32, width: u32, x: u32, y: u32, z: u32): u32 {
+  n: u32 = fop_arity(op)
+  none: Known = Known { value: u64(0), known: u64(0) }
+  kx: Known = kb_get(lw, w, x)
+  ky: Known = n > u32(1) ? { kb_get(lw, w, y) } | { none }
+  kz: Known = n > u32(2) ? { kb_get(lw, w, z) } | { none }
+  fixed: Bool = kx.known == mask64(twidth(lw, w, b, x)) && (n < u32(2) || ky.known == mask64(twidth(lw, w, b, y))) && (n < u32(3) || kz.known == mask64(twidth(lw, w, b, z)))
+  fixed ? { t_const64(lw, w, b, float_eval(op, width, kx.value, ky.value, kz.value, twidth(lw, w, b, x)), width) } | {
+    term_new(lw, w, b, KIND_FLOAT, op, width, x, n > u32(1) ? { y } | { NONE }, n > u32(2) ? { z } | { NONE }, u32(0), u32(0))
+  }
+}
+
+// float_some_nan is the NaN a min or max yields on a NaN operand: the
+// `fnan` operation (the platform's payload) with the exponent and quiet
+// bits forced, so the value is a quiet NaN whatever the payload
+// (asm/floats_lowering.go floatSomeNaN).
+float_some_nan: (lw: Lower, w: [*]u32, b: [*]u32, x: u32, y: u32, fw: u32): u32 {
+  t_binary(lw, w, b, BOP_OR, t_float(lw, w, b, FOP_FNAN, fw, x, y, NONE), t_const64(lw, w, b, float_exponent_mask(fw) | fe_quiet(fw), fw))
 }
 
 // float_intrinsic builds a float intrinsic over its lowered arguments (at
 // the float width fw), adapted to the context width.
-float_intrinsic: (lw: Lower, w: [*]u32, b: [*]u32, code: u32, x: u32, y: u32, fw: u32, width: u32): u32 {
+float_intrinsic: (lw: Lower, w: [*]u32, b: [*]u32, code: u32, x: u32, y: u32, z: u32, fw: u32, width: u32): u32 {
   sign: u32 = t_const64(lw, w, b, float_sign_mask(fw), fw)
   magnitude: u32 = t_const64(lw, w, b, float_magnitude_mask(fw), fw)
   exponent: u32 = t_const64(lw, w, b, float_exponent_mask(fw), fw)
@@ -614,16 +845,70 @@ float_intrinsic: (lw: Lower, w: [*]u32, b: [*]u32, code: u32, x: u32, y: u32, fw
     key_y: u32 = t_ite(lw, w, b, float_sign_bit(lw, w, b, y, fw), t_binary(lw, w, b, BOP_XOR, y, magnitude), y)
     t_zero_extend(lw, w, b, t_bit(lw, w, b, t_cmp(lw, w, b, CC_LE, key_x, key_y)), width)
   } | {
-    // min and max: equal operands pick by sign, the rest by order; a NaN
-    // operand yields a fresh symbol.
+  code == FI_SQRT ? { t_adapt(lw, w, b, t_float(lw, w, b, FOP_FSQRT, fw, x, NONE, NONE), width) } | {
+  code == FI_FMA ? { t_adapt(lw, w, b, t_float(lw, w, b, FOP_FMA, fw, x, y, z), width) } | {
+    // min, max, min_num, max_num: equal operands pick by sign, the rest
+    // by order (floatMinMax, floatMinMaxNum); a NaN operand yields the
+    // forced `fnan` for min and max, the fminnm/fmaxnm operation (the
+    // platform's rule) for min_num and max_num.
+    minimum: Bool = code == FI_MIN || code == FI_MIN_NUM
     nan: u32 = t_orbit(lw, w, b, float_is_nan(lw, w, b, x, fw), float_is_nan(lw, w, b, y, fw))
     eq: u32 = float_compare(lw, w, b, IOP_EQ, x, y, fw)
     lt: u32 = float_compare(lw, w, b, IOP_LT, x, y, fw)
     sx: u32 = float_sign_bit(lw, w, b, x, fw)
-    ordered: u32 = code == FI_MIN ? { t_ite(lw, w, b, eq, t_ite(lw, w, b, sx, x, y), t_ite(lw, w, b, lt, x, y)) } | { t_ite(lw, w, b, eq, t_ite(lw, w, b, sx, y, x), t_ite(lw, w, b, lt, y, x)) }
-    t_adapt(lw, w, b, t_ite(lw, w, b, nan, fresh_leaf(lw, w, b, fw), ordered), width)
-  } } } } } } }
+    ordered: u32 = minimum ? { t_ite(lw, w, b, eq, t_ite(lw, w, b, sx, x, y), t_ite(lw, w, b, lt, x, y)) } | { t_ite(lw, w, b, eq, t_ite(lw, w, b, sx, y, x), t_ite(lw, w, b, lt, y, x)) }
+    on_nan: u32 = code == FI_MIN_NUM ? { t_float(lw, w, b, FOP_FMINNM, fw, x, y, NONE) } | {
+      code == FI_MAX_NUM ? { t_float(lw, w, b, FOP_FMAXNM, fw, x, y, NONE) } | { float_some_nan(lw, w, b, x, y, fw) }
+    }
+    t_adapt(lw, w, b, t_ite(lw, w, b, nan, on_nan, ordered), width)
+  } } } } } } } } }
 }
+
+// float_shape is the Go lowering's floatWidthOf over the syntax: 0 for a
+// node that is not a float, 1 for a float without a width of its own (a
+// literal, or an expression over literals: the context decides), else
+// the width. Negation, the arithmetic operators, and a conditional are
+// read through to their operands (the left one first); a call to a
+// program function is not a float here, as in Go; a classifier is Bool.
+float_shape: (sx: []u32, node: u32): u32 {
+  stack: [64]u32
+  sp: u32 = 1
+  stack[u32(0)] = node
+  out: u32 = 0
+  found: Bool = false
+  while sp > u32(0) && !found {
+    sp = sp - u32(1)
+    n: u32 = stack[sp]
+    kind: u32 = node_kind(sx, n)
+    kind == SYN_FLOATLIT ? {
+      out = u32(1)
+      found = true
+    } | {
+    (kind == SYN_PREFIX && node_a(sx, n) == u32(2)) ? { stack[sp] = node_b(sx, n) ; sp = sp + u32(1) } | {
+    (kind == SYN_INFIX && (node_a(sx, n) == IOP_ADD || node_a(sx, n) == IOP_SUB || node_a(sx, n) == IOP_MUL || node_a(sx, n) == IOP_DIV)) ? {
+      sp + u32(2) <= u32(64) ? {
+        stack[sp] = node_c(sx, n)
+        stack[sp + u32(1)] = node_b(sx, n)
+        sp = sp + u32(2)
+      } | { }
+    } | {
+    kind == SYN_COND ? { stack[sp] = node_b(sx, n) ; sp = sp + u32(1) } | {
+    kind == SYN_CALL ? { } | {
+    (kind == SYN_FLOATCALL && node_a(sx, n) >= FI_IS_NAN && node_a(sx, n) <= FI_TOTAL_ORDER) ? { } | {
+    is_float_type(sx, node_type(sx, n)) ? {
+      out = scalar_width(sx, node_type(sx, n))
+      found = true
+    } | {
+    kind == SYN_FLOATCALL ? {
+      out = u32(1)
+      found = true
+    } | { } } } } } } } }
+  }
+  out
+}
+
+// float_width_or is a float shape's width, or the context's (64, else 32).
+float_width_or: (shape: u32, width: u32): u32 = shape >= u32(32) ? { shape } | { width == u32(64) ? { u32(64) } | { u32(32) } }
 
 // --- paths, traps -----------------------------------------------------------
 
@@ -853,7 +1138,7 @@ contract_of: (lw: Lower, w: [*]u32, sx: []u32, node: u32): Contract {
       sym: u32 = node_a(sx, n)
       (sym_value(lw, w, sym) != NONE && sym_value(lw, w, sym) != AGG) ? { out = Contract { width: scalar_width(sx, sym_type(lw, w, sym)), signed: scalar_signed(sx, sym_type(lw, w, sym)), ok: true } } | { }
     } | {
-    kind == SYN_CONV ? { out = Contract { width: node_a(sx, n), signed: node_b(sx, n) != u32(0), ok: true } } | {
+    (kind == SYN_CONV || kind == SYN_FLOATCONV) ? { out = Contract { width: node_a(sx, n), signed: node_b(sx, n) != u32(0), ok: true } } | {
     ((kind == SYN_CALL || kind == SYN_FLOATCALL) && is_scalar_type(sx, typ)) ? { out = Contract { width: scalar_width(sx, typ), signed: scalar_signed(sx, typ), ok: true } } | {
     kind == SYN_INSTR ? { out = Contract { width: node_b(sx, n), signed: false, ok: true } } | {
     kind == SYN_LEN ? { out = Contract { width: u32(32), signed: false, ok: true } } | {
@@ -1092,6 +1377,30 @@ step_call: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, width
 // step_infix advances an infix node in value position.
 step_infix: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, width: u32, phase: u32, ret: u32): () {
   op: u32 = node_a(sx, node)
+  shape_l: u32 = (is_comparison(op) || is_boolean_op(op)) ? { u32(0) } | { float_shape(sx, node_b(sx, node)) }
+  shape_r: u32 = (is_comparison(op) || is_boolean_op(op)) ? { u32(0) } | { float_shape(sx, node_c(sx, node)) }
+  (shape_l != u32(0) || shape_r != u32(0)) ? {
+    // Floating-point arithmetic: the IEEE operation at the operands'
+    // width as an operation term; the backends never contract, so
+    // `a * b + c` is two operations. Only `+ - * /` read as floats.
+    (op == IOP_ADD || op == IOP_SUB || op == IOP_MUL || op == IOP_DIV) ? {
+      phase == u32(0) ? {
+        fw: u32 = shape_l >= u32(32) ? { shape_l } | { shape_r >= u32(32) ? { shape_r } | { width } }
+        w[f + u32(6)] = fw
+        w[f + u32(3)] = u32(1)
+        push_frame_l(lw, w, F_EXPR, node_b(sx, node), fw)
+      } | {
+      phase == u32(1) ? {
+        w[f + u32(4)] = ret
+        w[f + u32(3)] = u32(2)
+        push_frame_l(lw, w, F_EXPR, node_c(sx, node), w[f + u32(6)])
+      } | {
+        fop: u32 = op == IOP_ADD ? { FOP_FADD } | { op == IOP_SUB ? { FOP_FSUB } | { op == IOP_MUL ? { FOP_FMUL } | { FOP_FDIV } } }
+        set_state(lw, w, LS_RET, t_adapt(lw, w, b, t_float(lw, w, b, fop, w[f + u32(6)], w[f + u32(4)], ret, NONE), width))
+        pop_frame_l(lw, w)
+      } }
+    } | { fail_at(lw, w, u32(45)) }
+  } | {
   (is_comparison(op) || is_boolean_op(op)) ? {
     phase == u32(0) ? {
       w[f + u32(3)] = u32(1)
@@ -1138,7 +1447,7 @@ step_infix: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, widt
       set_state(lw, w, LS_RET, t_binary(lw, w, b, bop, w[f + u32(4)], ret))
       pop_frame_l(lw, w)
     } }
-  } }
+  } } }
 }
 
 // step_access advances a field or element read in scalar position
@@ -1284,7 +1593,7 @@ step_expr: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
     } | {
       op == u32(0) ? { set_state(lw, w, LS_RET, t_zero_extend(lw, w, b, t_truncate(lw, w, b, ret, u32(1)), width)) } | {
         op == u32(1) ? { set_state(lw, w, LS_RET, t_binary(lw, w, b, BOP_XOR, ret, t_const64(lw, w, b, mask64(width), width))) } | {
-          is_float_node(sx, node_b(sx, node)) ? {
+          float_shape(sx, node_b(sx, node)) != u32(0) ? {
             // Negation of a float flips the sign bit (total, NaN included).
             set_state(lw, w, LS_RET, t_binary(lw, w, b, BOP_XOR, ret, t_const64(lw, w, b, float_sign_mask(width), width)))
           } | {
@@ -1358,32 +1667,103 @@ step_expr: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
     pop_frame_l(lw, w)
     push_frame_l(lw, w, F_MATCH, node, width)
     w[frame_at(lw, w, state(lw, w, LS_SP) - u32(1)) + u32(6)] = u32(0)
-  } | { fail_at(lw, w, u32(12)) } } } } } } } } } } } } } } }
+  } | {
+  kind == SYN_FLOATCONV ? { step_float_conv(lw, w, b, sx, f, node, width, phase, ret) } | { fail_at(lw, w, u32(12)) } } } } } } } } } } } } } } } }
+}
+
+// The conversion modes of step_float_conv (word 4 of its frame).
+FC_LITERAL: u32 = 1
+FC_FCVT: u32 = 2
+FC_SCVTF: u32 = 3
+FC_UCVTF: u32 = 4
+FC_FCVTZS: u32 = 5
+FC_FCVTZU: u32 = 6
+
+// step_float_conv advances a conversion through a float (the Go
+// lowering's floatConversion): a float literal is the target's constant;
+// between float widths `fcvt` (nothing between equal widths); from an
+// integer `scvtf`/`ucvtf` at the integer's contract width; to an integer
+// `fcvtzs`/`fcvtzu` at the target's width (toward zero, saturating, NaN to
+// zero), a target narrower than 32 bits refused; then the result sits in
+// the context at the target's contract.
+step_float_conv: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, width: u32, phase: u32, ret: u32): () {
+  target: u32 = node_a(sx, node)
+  target_signed: Bool = node_b(sx, node) != u32(0)
+  src_node: u32 = node_c(sx, node)
+  target_float: Bool = node_d(sx, node) != u32(0)
+  phase == u32(0) ? {
+    shape: u32 = float_shape(sx, src_node)
+    w[f + u32(3)] = u32(1)
+    shape == u32(1) ? {
+      // A literal: the target's constant.
+      target_float ? {
+        w[f + u32(4)] = FC_LITERAL
+        push_frame_l(lw, w, F_EXPR, src_node, target)
+      } | { fail_at(lw, w, u32(46)) }
+    } | {
+    (target_float && shape != u32(0)) ? {
+      w[f + u32(4)] = FC_FCVT
+      w[f + u32(5)] = shape
+      push_frame_l(lw, w, F_EXPR, src_node, shape)
+    } | {
+    target_float ? {
+      src: Contract = contract_of(lw, w, sx, src_node)
+      src.ok ? {
+        w[f + u32(4)] = src.signed ? { FC_SCVTF } | { FC_UCVTF }
+        w[f + u32(5)] = src.width
+        push_frame_l(lw, w, F_EXPR, src_node, src.width)
+      } | { fail_at(lw, w, u32(47)) }
+    } | {
+    shape != u32(0) ? {
+      target < u32(32) ? { fail_at(lw, w, u32(48)) } | {
+        w[f + u32(4)] = target_signed ? { FC_FCVTZS } | { FC_FCVTZU }
+        w[f + u32(5)] = shape
+        push_frame_l(lw, w, F_EXPR, src_node, shape)
+      }
+    } | { fail_at(lw, w, u32(49)) } } } }
+  } | {
+    mode: u32 = w[f + u32(4)]
+    mode == FC_LITERAL ? { set_state(lw, w, LS_RET, t_adapt(lw, w, b, ret, width)) } | {
+      converted: u32 = mode == FC_FCVT ? { w[f + u32(5)] == target ? { ret } | { t_float(lw, w, b, FOP_FCVT, target, ret, NONE, NONE) } } | {
+        fop: u32 = mode == FC_SCVTF ? { FOP_SCVTF } | { mode == FC_UCVTF ? { FOP_UCVTF } | { mode == FC_FCVTZS ? { FOP_FCVTZS } | { FOP_FCVTZU } } }
+        t_float(lw, w, b, fop, target, ret, NONE, NONE)
+      }
+      set_state(lw, w, LS_RET, target < width ? { t_extend(lw, w, b, converted, target, width, target_signed) } | { t_truncate(lw, w, b, converted, width) })
+    }
+    pop_frame_l(lw, w)
+  }
 }
 
 // step_float_call advances a float intrinsic: the arguments at the float
-// width (a typed argument's, else the context's: 64 or 32), then the bit
-// operation.
+// width (the first typed argument's, else the context's: 64 or 32), then
+// the operation (floatArgumentWidth, lowerFloatIntrinsic).
 step_float_call: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, width: u32, phase: u32, ret: u32): () {
   code: u32 = node_a(sx, node)
   args: u32 = node_b(sx, node)
   nargs: u32 = node_c(sx, node)
   phase == u32(0) ? {
-    fw: u32 = float_width_of(sx, list_item(sx, args, u32(0)))
-    fw = (fw == u32(0) && nargs > u32(1)) ? { float_width_of(sx, list_item(sx, args, u32(1))) } | { fw }
+    fw: u32 = 0
+    i: u32 = 0
+    while i < nargs && fw == u32(0) {
+      shape: u32 = float_shape(sx, list_item(sx, args, i))
+      fw = shape >= u32(32) ? { shape } | { fw }
+      i = i + u32(1)
+    }
     fw = fw == u32(0) ? { width == u32(64) ? { u32(64) } | { u32(32) } } | { fw }
     w[f + u32(6)] = fw
     w[f + u32(3)] = u32(1)
     push_frame_l(lw, w, F_EXPR, list_item(sx, args, u32(0)), fw)
   } | {
-  (phase == u32(1) && nargs > u32(1)) ? {
-    w[f + u32(4)] = ret
-    w[f + u32(3)] = u32(2)
-    push_frame_l(lw, w, F_EXPR, list_item(sx, args, u32(1)), w[f + u32(6)])
+  phase < nargs ? {
+    // Argument phase - 1 returned: keep it (words 4, 5), lower the next.
+    w[f + u32(3) + phase] = ret
+    w[f + u32(3)] = phase + u32(1)
+    push_frame_l(lw, w, F_EXPR, list_item(sx, args, phase), w[f + u32(6)])
   } | {
     x: u32 = nargs > u32(1) ? { w[f + u32(4)] } | { ret }
-    y: u32 = nargs > u32(1) ? { ret } | { NONE }
-    set_state(lw, w, LS_RET, float_intrinsic(lw, w, b, code, x, y, w[f + u32(6)], width))
+    y: u32 = nargs > u32(2) ? { w[f + u32(5)] } | { nargs > u32(1) ? { ret } | { NONE } }
+    z: u32 = nargs > u32(2) ? { ret } | { NONE }
+    set_state(lw, w, LS_RET, float_intrinsic(lw, w, b, code, x, y, z, w[f + u32(6)], width))
     pop_frame_l(lw, w)
   } }
 }
@@ -1648,13 +2028,14 @@ step_cond: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32): () {
   (kind == SYN_INFIX && is_comparison(node_a(sx, node))) ? {
     left_node: u32 = node_b(sx, node)
     right_node: u32 = node_c(sx, node)
-    floats: Bool = is_float_node(sx, left_node) || is_float_node(sx, right_node)
+    shape_l: u32 = float_shape(sx, left_node)
+    shape_r: u32 = float_shape(sx, right_node)
+    floats: Bool = shape_l != u32(0) || shape_r != u32(0)
     phase == u32(0) ? {
       floats ? {
-        // IEEE comparison over the bit patterns at the typed operand's width.
-        fw: u32 = float_width_of(sx, left_node)
-        fw = fw == u32(0) ? { float_width_of(sx, right_node) } | { fw }
-        fw = fw == u32(0) ? { u32(64) } | { fw }
+        // IEEE comparison over the bit patterns at the typed operand's
+        // width (the left one's first; 64 for literals alone).
+        fw: u32 = shape_l >= u32(32) ? { shape_l } | { shape_r >= u32(32) ? { shape_r } | { u32(64) } }
         w[f + u32(2)] = fw
         w[f + u32(3)] = u32(1)
         push_frame_l(lw, w, F_EXPR, left_node, fw)
@@ -2212,7 +2593,7 @@ mark_control_subtree: (lw: Lower, w: [*]u32, b: [*]u32, root: u32): () {
           (sp + u32(3) <= MAX_LFRAMES * LOWER_FRAME_WORDS) ? {
             w[lw.frames_at + sp] = tword(lw, w, b, t, u32(3))
             w[lw.frames_at + sp + u32(1)] = tword(lw, w, b, t, u32(4))
-            w[lw.frames_at + sp + u32(2)] = kind == KIND_ITE ? { tword(lw, w, b, t, u32(5)) } | { NONE }
+            w[lw.frames_at + sp + u32(2)] = (kind == KIND_ITE || kind == KIND_FLOAT) ? { tword(lw, w, b, t, u32(5)) } | { NONE }
             sp = sp + u32(3)
           } | { }
         }
@@ -2338,7 +2719,7 @@ reachable_terms: (lw: Lower, w: [*]u32, b: [*]u32, nterms: u32, ntraps: u32, cla
         sp + u32(3) <= stack_cap ? {
           w[lw.snap_at + sp] = tword(lw, w, b, t, u32(3))
           w[lw.snap_at + sp + u32(1)] = kind == KIND_SELECT ? { NONE } | { tword(lw, w, b, t, u32(4)) }
-          w[lw.snap_at + sp + u32(2)] = kind == KIND_ITE ? { tword(lw, w, b, t, u32(5)) } | { NONE }
+          w[lw.snap_at + sp + u32(2)] = (kind == KIND_ITE || kind == KIND_FLOAT) ? { tword(lw, w, b, t, u32(5)) } | { NONE }
           sp = sp + u32(3)
         } | { ok = false }
       }
@@ -2367,13 +2748,13 @@ compact_terms: (lw: Lower, w: [*]u32, b: [*]u32, nterms: u32, ntraps: u32, claim
         b[dst] = kind
         b[dst + u32(1)] = b[src + u32(1)]
         b[dst + u32(2)] = b[src + u32(2)]
-        remap: Bool = kind == KIND_BINARY || kind == KIND_CMP || kind == KIND_ITE || kind == KIND_SELECT
+        remap: Bool = kind == KIND_BINARY || kind == KIND_CMP || kind == KIND_ITE || kind == KIND_SELECT || kind == KIND_FLOAT
         a: u32 = b[src + u32(3)]
         bb: u32 = b[src + u32(4)]
         c: u32 = b[src + u32(5)]
         b[dst + u32(3)] = (remap && a != NONE) ? { w[lw.leaves_at + a] } | { a }
         b[dst + u32(4)] = (remap && bb != NONE && kind != KIND_SELECT) ? { w[lw.leaves_at + bb] } | { bb }
-        b[dst + u32(5)] = (kind == KIND_ITE && c != NONE) ? { w[lw.leaves_at + c] } | { c }
+        b[dst + u32(5)] = ((kind == KIND_ITE || kind == KIND_FLOAT) && c != NONE) ? { w[lw.leaves_at + c] } | { c }
         b[dst + u32(6)] = b[src + u32(6)]
         b[dst + u32(7)] = b[src + u32(7)]
         kept = kept + u32(1)
@@ -2456,8 +2837,9 @@ leaf_value: (lw: Lower, w: [*]u32, li: u32): u64 = (u64(w[lw.snap_at + li * u32(
 term_value: (lw: Lower, w: [*]u32, t: u32): u64 = (u64(w[lw.leaves_at + t * u32(2) + u32(1)]) << u64(32)) | u64(w[lw.leaves_at + t * u32(2)])
 
 // eval_terms evaluates every term in order under the leaf values (the
-// leaf store holds the values, two words per term); false when a term is
-// outside the evaluator (a select).
+// leaf store holds the values, two words per term), an operation term as
+// its IEEE value (float_eval); false when a term is outside the evaluator
+// (a select).
 eval_terms: (lw: Lower, w: [*]u32, b: [*]u32, nterms: u32): Bool {
   ok: Bool = true
   t: u32 = 0
@@ -2472,7 +2854,14 @@ eval_terms: (lw: Lower, w: [*]u32, b: [*]u32, nterms: u32): Bool {
     kind == KIND_CONST ? { value = tvalue(lw, w, b, t) } | {
     kind == KIND_BINARY ? { value = fold_binary(tword(lw, w, b, t, u32(1)), term_value(lw, w, a) & m, bb == NONE ? { u64(0) } | { term_value(lw, w, bb) & m }, width) } | {
     kind == KIND_CMP ? { value = fold_cmp(tword(lw, w, b, t, u32(1)), term_value(lw, w, a), term_value(lw, w, bb), twidth(lw, w, b, a)) } | {
-    kind == KIND_ITE ? { value = (term_value(lw, w, tword(lw, w, b, t, u32(5))) & u64(1)) != u64(0) ? { term_value(lw, w, a) & m } | { term_value(lw, w, bb) & m } } | { ok = false } } } } }
+    kind == KIND_ITE ? { value = (term_value(lw, w, tword(lw, w, b, t, u32(5))) & u64(1)) != u64(0) ? { term_value(lw, w, a) & m } | { term_value(lw, w, bb) & m } } | {
+    kind == KIND_FLOAT ? {
+      c: u32 = tword(lw, w, b, t, u32(5))
+      va: u64 = term_value(lw, w, a) & mask64(twidth(lw, w, b, a))
+      vb: u64 = bb == NONE ? { u64(0) } | { term_value(lw, w, bb) & mask64(twidth(lw, w, b, bb)) }
+      vc: u64 = c == NONE ? { u64(0) } | { term_value(lw, w, c) & mask64(twidth(lw, w, b, c)) }
+      value = float_eval(tword(lw, w, b, t, u32(1)), width, va, vb, vc, twidth(lw, w, b, a)) & m
+    } | { ok = false } } } } } }
     w[lw.leaves_at + t * u32(2)] = u32_trunc_u64(value)
     w[lw.leaves_at + t * u32(2) + u32(1)] = u32_trunc_u64(value >> u64(32))
     t = t + u32(1)
@@ -2792,21 +3181,16 @@ enumerate_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, dom: [*]u64, nte
 // and evaluates (probe_eval).
 lower_probe: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32): u32 {
   leaves: u32 = syn_leaves(sx)
-  term_base: u32 = HEADER_WORDS + (leaves + MAX_FRESH) * LEAF_WORDS
+  term_base: u32 = HEADER_WORDS + leaves * LEAF_WORDS
   i: u32 = 0
   while i < u32(32) {
     set_state(lw, w, i, u32(0))
     i = i + u32(1)
   }
   set_state(lw, w, LS_LEAVES, leaves)
-  set_state(lw, w, LS_STRIDE, leaves + MAX_FRESH + u32(8))
+  set_state(lw, w, LS_STRIDE, leaves + u32(8))
   set_state(lw, w, LS_TERMS_AT, term_base)
   leaves > MAX_LEAVES ? { fail_at(lw, w, u32(27)) } | { }
-  fresh: u32 = 0
-  while fresh < MAX_FRESH {
-    b[HEADER_WORDS + (leaves + fresh) * LEAF_WORDS] = u32(0)
-    fresh = fresh + u32(1)
-  }
   clear_depth(lw, w, u32(0))
   w[lw.entry_at] = u32(0)
   root: u32 = syn_theorem(sx)
@@ -2847,7 +3231,7 @@ lower_probe: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32): u32 {
       k = k + u32(1)
     }
     b[u32(0)] = nterms
-    b[u32(1)] = leaves + MAX_FRESH
+    b[u32(1)] = leaves
     b[u32(2)] = u32(0)
     b[u32(3)] = u32(0)
     b[u32(4)] = u32(0)
@@ -2878,11 +3262,10 @@ probe_out: (lw: Lower, w: [*]u32, b: [*]u32, k: u32): u64 = term_value(lw, w, b[
 // outside the lowering's subset or the order does not apply (reason 28).
 lower_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, budget: u32, order: u32): u32 {
   leaves: u32 = syn_leaves(sx)
-  // The fresh symbols a NaN min or max yields are parameters of the
-  // interleaved order too (the Go decider names them among its
-  // parameters), so the stride counts them beside the eight select slots.
-  stride: u32 = leaves + MAX_FRESH + u32(8)
-  term_base: u32 = HEADER_WORDS + (leaves + MAX_FRESH) * LEAF_WORDS
+  // The interleaved order's stride: the parameters beside the eight
+  // interleaved select slots (the Go blaster's stride).
+  stride: u32 = leaves + u32(8)
+  term_base: u32 = HEADER_WORDS + leaves * LEAF_WORDS
   i: u32 = 0
   while i < u32(32) {
     set_state(lw, w, i, u32(0))
@@ -2892,13 +3275,6 @@ lower_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, budget: u32, order: 
   set_state(lw, w, LS_STRIDE, stride)
   set_state(lw, w, LS_TERMS_AT, term_base)
   leaves > MAX_LEAVES ? { fail_at(lw, w, u32(27)) } | { }
-  // The fresh leaves' entries follow the parameters' (MAX_FRESH of them,
-  // width 0 while unused): the table's leaf count includes them all.
-  fresh: u32 = 0
-  while fresh < MAX_FRESH {
-    b[HEADER_WORDS + (leaves + fresh) * LEAF_WORDS] = u32(0)
-    fresh = fresh + u32(1)
-  }
   clear_depth(lw, w, u32(0))
   theorem: u32 = syn_theorem(sx)
   n: u32 = fn_param_count(sx, theorem)
@@ -2945,19 +3321,12 @@ lower_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, budget: u32, order: 
     applies ? {
       order == ORDER_INTERLEAVED ? { } | { leaf_blocks(lw, w, sx, leaves, order == ORDER_CONTROL) }
       li: u32 = 0
-      while li < leaves + MAX_FRESH {
+      while li < leaves {
         base: u32 = HEADER_WORDS + li * LEAF_WORDS
         pw: u32 = b[base]
         bit: u32 = 0
         while bit < u32(64) {
-          // A fresh leaf is interleaved with the parameters (after them in
-          // the stride); under a blocked order it takes a block of its own
-          // past the parameters' blocks.
-          v: u32 = li >= leaves ? {
-            order == ORDER_INTERLEAVED ? { bit * stride + li } | { u32(64) * leaves + (li - leaves) * u32(64) + bit }
-          } | {
-            order == ORDER_INTERLEAVED ? { bit * stride + li } | { w[lw.argv_at + li * u32(3)] + bit * w[lw.argv_at + li * u32(3) + u32(1)] + w[lw.argv_at + li * u32(3) + u32(2)] }
-          }
+          v: u32 = order == ORDER_INTERLEAVED ? { bit * stride + li } | { w[lw.argv_at + li * u32(3)] + bit * w[lw.argv_at + li * u32(3) + u32(1)] + w[lw.argv_at + li * u32(3) + u32(2)] }
           b[base + u32(1) + bit] = bit < pw ? { v } | { NONE }
           bit = bit + u32(1)
         }
@@ -2975,7 +3344,7 @@ lower_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, budget: u32, order: 
       while slot < SELECT_SLOTS_OUT {
         bit: u32 = 0
         while bit < u32(64) {
-          b[select_base + slot * u32(64) + bit] = (order == ORDER_INTERLEAVED && slot < u32(8)) ? { bit * stride + leaves + MAX_FRESH + slot } | {
+          b[select_base + slot * u32(64) + bit] = (order == ORDER_INTERLEAVED && slot < u32(8)) ? { bit * stride + leaves + slot } | {
             order == ORDER_INTERLEAVED ? { u32(64) * stride + (slot - u32(8)) * u32(64) + bit } | { u32(64) * stride + slot * u32(64) + bit }
           }
           bit = bit + u32(1)
@@ -2983,7 +3352,7 @@ lower_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, budget: u32, order: 
         slot = slot + u32(1)
       }
       b[u32(0)] = nterms
-      b[u32(1)] = leaves + MAX_FRESH
+      b[u32(1)] = leaves
       b[u32(2)] = ntraps + u32(1)
       b[u32(3)] = budget
       b[u32(4)] = SELECT_SLOTS_OUT

@@ -50,6 +50,7 @@ import Oak.Intrinsics
 import Oak.CInterop
 import Oak.Simd
 import Oak.Uninterpreted
+import Oak.KnownBits
 import Oak.NeonSemantics
 import Oak.Monomorphization
 import Oak.Handles

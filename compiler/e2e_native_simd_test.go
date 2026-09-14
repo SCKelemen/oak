@@ -174,7 +174,8 @@ func TestE2ENativeSimd(t *testing.T) {
 // the straight-line vector helpers are proven, the two-block composition
 // is evidence (the bit-level decision exceeds its budget), and the loop
 // kernel is evidence too (its three data-dependent loops summarized, the
-// witnesses agree, the coupling proof pairs scalars only) — the verdicts
+// witnesses agree; the tail array has no machine image and the error
+// accumulator's obligation exceeds the node budget) — the verdicts
 // docs/notes/proof-chain-audit-2026-09.md records for the vector link.
 func TestE2ENativeSimdKernelVerdicts(t *testing.T) {
 	requireArm64Host(t)

@@ -5,8 +5,14 @@
 // min, max, and total_order are bit operations it settles for every
 // pattern, NaNs and both zeros included. Bit equality is stated through
 // the bits rows (`u32_bits_f32`) where IEEE equality would not do (NaN is
-// unequal to itself; the zeros are equal). Arithmetic and rounding are not
-// bit operations; their laws stay in Oak.Floats.
+// unequal to itself; the zeros are equal). Arithmetic, sqrt, fma,
+// min_num/max_num beside a NaN, and the conversions are uninterpreted
+// operations (spec/lean/Oak/Uninterpreted.lean): the decider knows only
+// that equal operands give equal results, and folds an operation whose
+// operand bits are all known to its IEEE value — so the structural laws
+// at the end hold, and no algebraic law of the arithmetic is stated here
+// (those stay in Oak.Floats). Every law is decided by the solver written
+// in Oak and by the Go decider alike.
 
 // Negation and abs.
 neg_involutive: theorem (x: f32) { u32_bits_f32(-(-x)) == u32_bits_f32(x) }
@@ -55,5 +61,41 @@ min_below_both: theorem (x: f32, y: f32) { is_nan(x) || is_nan(y) || (min(x, y) 
 max_above_both: theorem (x: f32, y: f32) { is_nan(x) || is_nan(y) || (max(x, y) >= x && max(x, y) >= y) }
 min_max_cover: theorem (x: f32, y: f32) { is_nan(x) || is_nan(y) || (u32_bits_f32(min(x, y)) ^ u32_bits_f32(max(x, y))) == (u32_bits_f32(x) ^ u32_bits_f32(y)) }
 min_orders_zeros: theorem () { u32_bits_f32(min(f32_bits_u32(u32(0)), f32_bits_u32(u32(2147483648)))) == u32(2147483648) }
+
+// A NaN operand makes min and max NaN: the result's payload is the
+// platform's, its class is not.
+min_nan_is_nan: theorem (x: f32, y: f32) { !is_nan(x) || is_nan(min(x, y)) }
+max_nan_is_nan: theorem (x: f32, y: f32) { !is_nan(y) || is_nan(max(x, y)) }
+
+// min_num and max_num on numbers are min and max; on a NaN operand they
+// are the platform's operation, so the laws hypothesize numbers.
+min_num_is_min: theorem (x: f32, y: f32) { is_nan(x) || is_nan(y) || u32_bits_f32(min_num(x, y)) == u32_bits_f32(min(x, y)) }
+max_num_is_max: theorem (x: f64, y: f64) { is_nan(x) || is_nan(y) || u64_bits_f64(max_num(x, y)) == u64_bits_f64(max(x, y)) }
+min_num_commutative: theorem (x: f32, y: f32) { is_nan(x) || is_nan(y) || u32_bits_f32(min_num(x, y)) == u32_bits_f32(min_num(y, x)) }
+
+// The uninterpreted operations: equal operand patterns give equal
+// results, whatever the operation computes. abs(-x) and abs(x) are one
+// pattern, so are copysign(abs(x), x) and x, n | 0 and n, n * 1 and n.
+sqrt_of_abs_neg: theorem (x: f32) { u32_bits_f32(sqrt(abs(-x))) == u32_bits_f32(sqrt(abs(x))) }
+sqrt_of_abs_neg_64: theorem (x: f64) { u64_bits_f64(sqrt(abs(-x))) == u64_bits_f64(sqrt(abs(x))) }
+add_of_neg_neg: theorem (x: f32, y: f32) { u32_bits_f32(-(-x) + y) == u32_bits_f32(x + y) }
+sub_of_copysign_abs: theorem (x: f32, y: f32) { u32_bits_f32(copysign(abs(x), x) - y) == u32_bits_f32(x - y) }
+mul_of_neg_neg_64: theorem (x: f64, y: f64) { u64_bits_f64(x * -(-y)) == u64_bits_f64(x * y) }
+div_of_abs_neg: theorem (x: f32, y: f32) { u32_bits_f32(x / abs(-y)) == u32_bits_f32(x / abs(y)) }
+fma_of_abs_neg: theorem (a: f32, b: f32, c: f32) { u32_bits_f32(fma(abs(-a), b, c)) == u32_bits_f32(fma(abs(a), b, c)) }
+round_of_abs_neg: theorem (x: f64) { u32_bits_f32(f32_round_f64(abs(-x))) == u32_bits_f32(f32_round_f64(abs(x))) }
+widen_of_abs_neg: theorem (x: f32) { u64_bits_f64(f64(abs(-x))) == u64_bits_f64(f64(abs(x))) }
+saturating_of_abs_neg: theorem (x: f32) { i32_saturating_f32(abs(-x)) == i32_saturating_f32(abs(x)) }
+saturating_unsigned_of_abs_neg: theorem (x: f64) { u64_saturating_f64(abs(-x)) == u64_saturating_f64(abs(x)) }
+from_unsigned_of_or_zero: theorem (n: u32) { u32_bits_f32(f32_round_u32(n | u32(0))) == u32_bits_f32(f32_round_u32(n)) }
+from_signed_of_times_one: theorem (n: i64) { u64_bits_f64(f64_round_i64(n * i64(1))) == u64_bits_f64(f64_round_i64(n)) }
+
+// An operation over known operand bits folds to its IEEE value in both
+// lowerings: literals, and bits the operators settle whatever the
+// parameter (n & 0 is 0).
+sqrt_of_four: theorem () { u32_bits_f32(sqrt(f32_bits_u32(u32(1082130432)))) == u32(1073741824) }
+sqrt_of_known_bits: theorem (n: u32) { u32_bits_f32(sqrt(f32_bits_u32((n & u32(0)) | u32(1082130432)))) == u32(1073741824) }
+fma_of_literals: theorem () { u64_bits_f64(fma(f64_bits_u64(u64(4611686018427387904)), f64_bits_u64(u64(4613937818241073152)), f64_bits_u64(u64(4607182418800017408)))) == u64(4619567317775286272) }
+from_unsigned_literal: theorem () { u32_bits_f32(f32_round_u32(u32(3))) == u32(1077936128) }
 
 main: (): i32 = 0
