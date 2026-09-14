@@ -187,12 +187,13 @@ func TestE2ENativeSimd(t *testing.T) {
 }
 
 // The UTF-8 kernel of benchmarks/native (the simdutf lookup algorithm):
-// the straight-line vector helpers, the four-block composition, and the
-// loop kernel itself are proven — the kernel's three data-dependent loops
-// coupled inductively, every obligation decided as the same term on both
-// sides once the machine's branch is settled by a case split
-// (docs/spec/94-assembler.md §8) — the verdicts
-// docs/notes/proof-chain-audit-2026-09.md records for the vector link.
+// the straight-line vector helpers, the four-block composition, the loop
+// kernel, and the entry `valid` reading its tables from package globals
+// are proven — the three data-dependent loops coupled inductively, every
+// obligation decided as the same term on both sides once the machine's
+// branch is settled by a case split (docs/spec/94-assembler.md §8) — the
+// verdicts docs/notes/proof-chain-audit-2026-09.md records for the vector
+// link.
 func TestE2ENativeSimdKernelVerdicts(t *testing.T) {
 	requireArm64Host(t)
 	src, err := os.ReadFile("../benchmarks/native/utf8_valid.oak")
@@ -217,7 +218,9 @@ func TestE2ENativeSimdKernelVerdicts(t *testing.T) {
 	if !strings.Contains(joined, "asm unit check_blocks_neon_abi: proven") {
 		t.Errorf("check_blocks_neon_abi must be proven; diagnostics:\n%s", joined)
 	}
-	if !strings.Contains(joined, "asm unit valid_with: proven equal to its Oak body at the bit level — 3 data-dependent loops coupled inductively") {
-		t.Errorf("valid_with must be proven by loop coupling; diagnostics:\n%s", joined)
+	for _, fn := range []string{"valid_with", "valid"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven equal to its Oak body at the bit level — 3 data-dependent loops coupled inductively") {
+			t.Errorf("%s must be proven by loop coupling; diagnostics:\n%s", fn, joined)
+		}
 	}
 }

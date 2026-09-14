@@ -775,10 +775,11 @@ side as well. Verdicts on the SIMD corpus (`compiler/e2e_native_simd_test.go`):
 `double_it_neon_abi` proven on both halves; on the UTF-8 kernel
 (`benchmarks/native/utf8_valid.oak`): `special_cases` and `check_block`
 proven on both halves of their vector results, `check_blocks` proven
-(the same term on both sides), and the loop kernel `valid_with`
-**proven** since the increments below: its three data-dependent loops
-coupled inductively, every obligation the same term on both sides once
-the machine's branch is settled by a case split. The lane functions are stated in Lean as
+(the same term on both sides), and the loop kernel `valid_with` and the
+validator's entry `valid` **proven** since the increments below: their
+three data-dependent loops coupled inductively, every obligation the same
+term on both sides once the machine's branch is settled by a case split.
+The lane functions are stated in Lean as
 `Oak.NeonSemantics` (`spec/lean/Oak/NeonSemantics.lean`) and each is
 proved to be the `Oak.Simd` operation the lowering uses it for:
 `uqsub_eq_subSat`, `cmeq_eq_eqMask`, `add_eq_addWrap`, `ushr_eq_shr`,
@@ -969,9 +970,15 @@ slots), every continue condition, one-iteration obligation, and the
 result after the loops decided — in eight seconds, no diagram of a
 `check_block` lane among them. The RV64 `fact` loop's 64-bit product,
 witnessed before, is proven the same way (the same term once the w view
-reads back what it wrote). `TestE2ENativeSimdKernelVerdicts` asserts the
-kernel's proof; the trace (`OAK_VERIFY_TRACE`) prints each case split,
-the pruned sizes, and whether the sides became one term.
+reads back what it wrote). And the validator's entry `valid`, which reads
+its four tables from package globals (`view(&table_high1)`, …) rather
+than a span parameter, is proven the same way in four seconds: a vector
+load from `view(&T)` over a constant table reads the span the table is
+declared as (§9, `declareTables`), the elements `T[k]` the machine's
+`adrl` then `ldr q` gives — so the UTF-8 validator is verified from its
+entry to its kernel. `TestE2ENativeSimdKernelVerdicts` asserts both
+proofs; the trace (`OAK_VERIFY_TRACE`) prints each case split, the pruned
+sizes, and whether the sides became one term.
 
 **The floating-point forms (2026-09-14).** `spec/sail/arm_primitives.sail`
 gains Arm's execute bodies for `fadd`/`faddp`, `fsub`, `fmul`, `fmla`/

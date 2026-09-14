@@ -29,7 +29,8 @@ the function uses. Every link below is one of **proved** (a Lean theorem),
   vector helpers are **proved** against their Oak bodies at the bit level
   — `special_cases` and `check_block` of the UTF-8 kernel on both halves
   of their vector results, the SIMD corpus entire — with `check_blocks`
-  and the loop kernel `valid_with` **proved** as well (2026-09-14, the
+  and the loop kernel `valid_with` — and the validator's entry `valid`,
+  its tables read from package globals — **proved** as well (2026-09-14, the
   loop increments: the vector file and the frame are loop-carried, the
   three data-dependent loops are coupled inductively with lane groups
   paired to register halves and the tail bytes to their frame slots, and
