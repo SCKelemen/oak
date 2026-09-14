@@ -3575,6 +3575,21 @@ significant-bits bound walked a term as a tree, exponential over an ite
 chain whose arms share subterms, and one body took twenty minutes; it is
 memoized over the DAG (`significantBitsMemo`).
 
+**Bool loop variables (2026-09-14).** `valid = false` inside a counted
+loop — `text_is_ascii`, `utf16_count`, the searches that set `found` —
+left the body witnessed: the Oak variable is one bit, the register holds
+it as 0 or 1 in a word, and the coupling paired only variables and
+registers of one width (or a 32-bit variable in a 64-bit register). A
+1-bit variable now pairs with a 32- or 64-bit general register by
+zero-extension (`widen` takes the register's width), the relation
+`r = zext(x) + b` as for the widened 32-bit case. On the stdlib-bearing
+program the proven bodies rose from 176 to 197 on AArch64 and from 163
+to 175 on RV64 — the largest single step of the day — with no mismatch.
+What the witnessed verdicts leave now: bodies past the bit-level node
+budget, continue conditions and results after loops the coupling does
+not prove, and two stores under conditions the proof does not relate.
+Pinned: `compiler/e2e_native_loop_bool_test.go` (both lanes).
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built
