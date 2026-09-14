@@ -161,7 +161,12 @@ were held to it by tests.
 module states one typed expression language over a function's parameters
 and the locals in scope — variables, checked literals, the wrapping
 `+ - *`, the unsigned bitwise operators and shifts, `/` and `%` by a
-constant power of two, negation and complement, the widening and narrowing
+constant power of two (a shift and a mask) and by any divisor (the
+uninterpreted quotient `udiv`/`sdiv` and the remainder `a - (a / b) * b`,
+`Term.uop`; the zero divisor is Oak's trap, so the theorem speaks where
+the extraction has a value, and the signed remainder identity is proved at
+every width, `srem_eq_sub_sdiv_mul`), negation and complement, the widening
+and narrowing
 conversions, comparisons, `&&`/`||`/`!`, Bool conditionals, block-scoped
 locals and rebindings (`x: T = e`, `x = e`), statement-level conditionals
 whose arms assign locals (`c ? { x = e } | { y = f }`), integer-constant

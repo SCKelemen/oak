@@ -1,4 +1,5 @@
 import Oak.AssemblerSemantics
+import Oak.IntegerDivision
 
 /-!
 # The seam between the verifier's Oak lowering and the Lean extraction
@@ -106,6 +107,13 @@ inductive CmpOp
 /-- The wrapping arithmetic (`20-types.md` §11.1), on every integer type. -/
 inductive ArithOp
   | add | sub | mul
+  deriving DecidableEq, Repr
+
+/-- Division and remainder by any divisor (`20-types.md` §11.1): a zero
+divisor traps (the extraction yields no value), `MIN / -1` is `MIN` and
+`MIN % -1` is `0`. -/
+inductive DivOp
+  | div | rem
   deriving DecidableEq, Repr
 
 /-- The bitwise operators and shifts (`10-syntax.md` §3b: unsigned operands
@@ -264,6 +272,7 @@ inductive Expr (P : Params) (S : Spans) : Locals → Ty → Type
   | bit {Γ : Locals} (op : BitOp) {t : Ty} (a b : Expr P S Γ t) (h : t.signed = false) : Expr P S Γ t
   | divPow2 {Γ : Locals} {t : Ty} (a : Expr P S Γ t) (k : Nat) (hk : k < t.width) (hu : t.signed = false) : Expr P S Γ t
   | modPow2 {Γ : Locals} {t : Ty} (a : Expr P S Γ t) (k : Nat) (hk : k < t.width) (hu : t.signed = false) : Expr P S Γ t
+  | divRem {Γ : Locals} {t : Ty} (op : DivOp) (a b : Expr P S Γ t) : Expr P S Γ t
   | neg {Γ : Locals} {t : Ty} (a : Expr P S Γ t) : Expr P S Γ t
   | not {Γ : Locals} {t : Ty} (a : Expr P S Γ t) : Expr P S Γ t
   | conv {Γ : Locals} {s : Ty} (t : Ty) (a : Expr P S Γ s) : Expr P S Γ t
@@ -380,6 +389,13 @@ def arithX (op : ArithOp) {w : Nat} (x y : BitVec w) : BitVec w :=
   | .sub => x - y
   | .mul => x * y
 
+/-- Division at the type's signedness, on a nonzero divisor: `UIntN`'s `/`
+and `%`, `IntN`'s truncating `sdiv` and `srem`. -/
+def divX (signed : Bool) (op : DivOp) {w : Nat} (x y : BitVec w) : BitVec w :=
+  match op with
+  | .div => if signed then x.sdiv y else x / y
+  | .rem => if signed then x.srem y else x % y
+
 /-- The bitwise operators; a shift by the count modulo the width, as
 `UInt32.shiftLeft` and its siblings take it. -/
 def bitX (op : BitOp) {w : Nat} (x y : BitVec w) : BitVec w :=
@@ -480,6 +496,8 @@ def evalX {P : Params} {S : Spans} : {Γ : Locals} → {t : Ty} → Expr P S Γ 
   | _, _, .bit op a b _, ρ, l, F => (evalX a ρ l F).bind fun x => (evalX b ρ l F).bind fun y => some (bitX op x y)
   | _, t, .divPow2 a k _ _, ρ, l, F => (evalX a ρ l F).bind fun x => some (x / BitVec.ofNat t.width (2 ^ k))
   | _, t, .modPow2 a k _ _, ρ, l, F => (evalX a ρ l F).bind fun x => some (x % BitVec.ofNat t.width (2 ^ k))
+  | _, t, .divRem op a b, ρ, l, F => (evalX a ρ l F).bind fun x => (evalX b ρ l F).bind fun y =>
+      if y = 0 then none else some (divX t.signed op x y)
   | _, _, .neg a, ρ, l, F => (evalX a ρ l F).bind fun x => some (0 - x)
   | _, _, .not a, ρ, l, F => (evalX a ρ l F).bind fun x => some (~~~ x)
   | _, t, .conv (s := s) _ a, ρ, l, F => (evalX a ρ l F).bind fun x => some (convX s t x)
@@ -563,6 +581,14 @@ inductive TOp
   | add | sub | and | or | xor | shl | shr | sar | mul
   deriving DecidableEq, Repr
 
+/-- The integer quotients the verifier keeps as uninterpreted operations
+(`floatTerm("udiv"/"sdiv", …)`, docs/spec/94-assembler.md §8, the
+thirty-first increment): shared by every side that divides the same
+operands, evaluated as the machine's total division. -/
+inductive UOp
+  | udiv | sdiv
+  deriving DecidableEq, Repr
+
 /-- A term: `termParam`, `termConst`, `termBinary`, `termCmp`, `termIte`,
 `termSelect` (`name[index]`, a span element at a symbolic 32-bit index)
 with the width the Go node carries. -/
@@ -573,6 +599,7 @@ inductive Term
   | cmp (code : Cond) (w : Nat) (l r : Term)
   | ite (w : Nat) (c l r : Term)
   | select (span : String) (w : Nat) (idx : Term)
+  | uop (op : UOp) (w : Nat) (l r : Term)
   deriving DecidableEq
 
 def Term.width : Term → Nat
@@ -582,6 +609,7 @@ def Term.width : Term → Nat
   | .cmp _ w _ _ => w
   | .ite w _ _ _ => w
   | .select _ w _ => w
+  | .uop _ w _ _ => w
 
 @[simp] theorem Term.width_param (n : String) (w : Nat) : (Term.param n w).width = w := rfl
 @[simp] theorem Term.width_const (v w : Nat) : (Term.const v w).width = w := rfl
@@ -589,6 +617,7 @@ def Term.width : Term → Nat
 @[simp] theorem Term.width_cmp (c : Cond) (w : Nat) (l r : Term) : (Term.cmp c w l r).width = w := rfl
 @[simp] theorem Term.width_ite (w : Nat) (c l r : Term) : (Term.ite w c l r).width = w := rfl
 @[simp] theorem Term.width_select (n : String) (w : Nat) (i : Term) : (Term.select n w i).width = w := rfl
+@[simp] theorem Term.width_uop (op : UOp) (w : Nat) (l r : Term) : (Term.uop op w l r).width = w := rfl
 
 /-- `mask(width)`. -/
 def mask (w : Nat) : Nat := 2 ^ w - 1
@@ -608,6 +637,15 @@ def Term.evalBin (op : TOp) (w : Nat) (a b : Nat) : Nat :=
   | .sar => ((BitVec.ofNat w a).sshiftRight (b % w)).toNat % 2 ^ w
   | .mul => (a * b) % 2 ^ w
 
+/-- The quotient's evaluation (`floatEval` for `udiv`/`sdiv`,
+asm/floats_ops.go): the operands masked to the width; a zero divisor
+yields 0 (the AArch64 result); `sdiv` is the truncating `BitVec.sdiv`,
+whose `MIN / -1` is `MIN` — Go's `-a` wrapped. -/
+def Term.evalU (op : UOp) (w : Nat) (a b : Nat) : Nat :=
+  match op with
+  | .udiv => (if b = 0 then 0 else a / b) % 2 ^ w
+  | .sdiv => (if b = 0 then 0 else ((BitVec.ofNat w a).sdiv (BitVec.ofNat w b)).toNat) % 2 ^ w
+
 /-- `term.evalUncached`: a parameter or constant masked to its width; a
 binary node's operands evaluate at their own widths and are masked to
 this node's; a comparison is the condition code on the flags of `l - r` at
@@ -623,6 +661,7 @@ def Term.eval : Term → Env → Nat
     if condHolds code (BitVec.ofNat l.width (l.eval ρ)) (BitVec.ofNat l.width (r.eval ρ)) then 1 else 0
   | .ite w c l r, ρ => if c.eval ρ ≠ 0 then l.eval ρ % 2 ^ w else r.eval ρ % 2 ^ w
   | .select span w idx, ρ => ρ (elemName span (idx.eval ρ % 2 ^ 32)) % 2 ^ w
+  | .uop op w l r, ρ => Term.evalU op w (l.eval ρ % 2 ^ w) (r.eval ρ % 2 ^ w)
 
 /-- `truncate(t, width)`: a constant (its value already masked to its
 width), a parameter or a comparison is re-widthed; anything else is masked
@@ -707,6 +746,17 @@ def arithTOp : ArithOp → TOp
 
 def bitTOp : BitOp → TOp
   | .and => .and | .or => .or | .xor => .xor | .shl => .shl | .shr => .shr
+
+/-- The verifier's division: the quotient the uninterpreted `udiv`/`sdiv`
+of the operands at their width, the remainder `a - (a / b) * b` (the
+machines' definition, `Oak.IntegerDivision`); the lowering then widens by
+the type's signedness as it does every result (`extendTerm`), here at the
+type's own width. -/
+def divT (signed : Bool) (op : DivOp) (w : Nat) (l r : Term) : Term :=
+  let q := Term.uop (if signed then .sdiv else .udiv) w l r
+  match op with
+  | .div => q
+  | .rem => Term.binary .sub w l (Term.binary .mul w q r)
 
 /-- The verifier's term environment, `lo.locals`: each local's lowered
 term (`oakLocal.value`); `none` for a name that is not a local. -/
@@ -855,6 +905,8 @@ def lowerT {P : Params} {S : Spans} : Scope → {Γ : Locals} → {t : Ty} → E
   | σ, _, t, .bit op a b _ => (lowerT σ a).bind fun l => (lowerT σ b).bind fun r => some (.binary (bitTOp op) t.width l r)
   | σ, _, t, .divPow2 a k _ _ => (lowerT σ a).bind fun l => some (.binary .shr t.width l (.const k t.width))
   | σ, _, t, .modPow2 a k _ _ => (lowerT σ a).bind fun l => some (.binary .and t.width l (.const (2 ^ k - 1) t.width))
+  | σ, _, t, .divRem op a b => (lowerT σ a).bind fun l => (lowerT σ b).bind fun r =>
+      some (extendTerm (divT t.signed op t.width l r) t.width t.width t.signed)
   | σ, _, t, .neg a => (lowerT σ a).bind fun r => some (.binary .sub t.width (.const 0 t.width) r)
   | σ, _, t, .not a => (lowerT σ a).bind fun l => some (.binary .xor t.width l (.const (mask t.width) t.width))
   | σ, _, t, .conv (s := s) _ a =>
@@ -1009,6 +1061,10 @@ theorem lowerT_width {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P
     simp only [lowerT, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨l, -, r, -, rfl⟩ := h
     exact Term.binary_width _ _ _ _
+  | .divRem _ a b =>
+    simp only [lowerT, Option.bind_eq_some_iff, Option.some.injEq] at h
+    obtain ⟨l, -, r, -, rfl⟩ := h
+    exact extendTerm_width _ _ _ _
   | .bit _ a b _ =>
     simp only [lowerT, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨l, -, r, -, rfl⟩ := h
@@ -1126,6 +1182,11 @@ def Term.topPositive : Term → Prop
 theorem Term.evalBin_lt (op : TOp) (w a b : Nat) : Term.evalBin op w a b < 2 ^ w := by
   cases op <;> simp only [Term.evalBin] <;> exact Nat.mod_lt _ (Nat.two_pow_pos w)
 
+theorem Term.evalU_lt (op : UOp) (w a b : Nat) : Term.evalU op w a b < 2 ^ w := by
+  cases op <;> simp only [Term.evalU] <;> exact Nat.mod_lt _ (Nat.two_pow_pos w)
+
+theorem Term.uop_topPositive (op : UOp) (w : Nat) (l r : Term) : (Term.uop op w l r).topPositive := trivial
+
 theorem Term.eval_lt (t : Term) (ρ : Env) (hp : t.topPositive) : t.eval ρ < 2 ^ t.width := by
   cases t with
   | param n w => exact Nat.mod_lt _ (Nat.two_pow_pos w)
@@ -1141,6 +1202,7 @@ theorem Term.eval_lt (t : Term) (ρ : Env) (hp : t.topPositive) : t.eval ρ < 2 
     simp only [Term.eval, Term.width_param, Term.width_const, Term.width_bin, Term.width_cmp, Term.width_ite]
     split <;> exact Nat.mod_lt _ (Nat.two_pow_pos w)
   | select n w i => exact Nat.mod_lt _ (Nat.two_pow_pos w)
+  | uop op w l r => exact Term.evalU_lt _ _ _ _
 
 theorem mask_lt (w : Nat) : mask w < 2 ^ w := by
   unfold mask; have := Nat.two_pow_pos w; omega
@@ -1183,6 +1245,10 @@ theorem truncate_eval (t : Term) (w : Nat) (ρ : Env) (hw : 0 < w) (hle : w ≤ 
     rw [and_mask_of_le _ _ _ (Nat.le_refl w), Nat.mod_mod]
   | select n w₀ i =>
     simp only [truncate, Term.width_select] at heq ⊢
+    simp only [heq, ite_false, Term.eval, Term.evalBin, mask_mod, Nat.mod_mod]
+    rw [and_mask_of_le _ _ _ (Nat.le_refl w), Nat.mod_mod]
+  | uop op w₀ l r =>
+    simp only [truncate, Term.width_uop] at heq ⊢
     simp only [heq, ite_false, Term.eval, Term.evalBin, mask_mod, Nat.mod_mod]
     rw [and_mask_of_le _ _ _ (Nat.le_refl w), Nat.mod_mod]
 
@@ -1363,6 +1429,10 @@ theorem zeroExtend_masked_eval (t : Term) (w₀ w : Nat) (ρ : Env) (h₀ : t.wi
     simp only [Term.width_select] at heq hle hlt hm hself
     simp only [zeroExtend, Term.width_select, heq, ite_false, Term.eval, Term.evalBin, hm, hlt, and_mask_of_le _ _ _ hle, Nat.mod_mod]
     rw [and_mask_of_le _ _ _ (Nat.le_refl w₀), Nat.mod_mod]
+  | uop op w₀ l r =>
+    simp only [Term.width_uop] at heq hle hlt hm hself
+    simp only [zeroExtend, Term.width_uop, heq, ite_false, Term.eval, Term.evalBin, hm, hlt, and_mask_of_le _ _ _ hle, Nat.mod_mod]
+    exact hself _
 
 /-- A value shifted up to the top of a wider word and arithmetically back
 down is its sign extension. -/
@@ -1490,6 +1560,68 @@ theorem extendTerm_topPositive (t : Term) (src w : Nat) (signed : Bool) (hw : 0 
   · exact Term.binary_topPositive _ _ (adaptWidth_topPositive t w hw ht) trivial
   · exact Term.binary_topPositive _ _ (Term.binary_topPositive _ _ (Term.binary_topPositive _ _ (adaptWidth_topPositive t w hw ht) trivial) trivial) trivial
 
+/-- The signed remainder is the dividend less the truncated quotient times
+the divisor at every width (`Oak.IntegerDivision.srem_eq_sub_sdiv_mul_8`
+decides it at the byte width): through the integers, where `tmod` is
+`a - b * tdiv a b` and lies strictly inside the signed range. -/
+theorem srem_eq_sub_sdiv_mul {w : Nat} (x y : BitVec w) : x.srem y = x - x.sdiv y * y := by
+  cases w with
+  | zero => simp [BitVec.eq_nil x]
+  | succ w' =>
+    apply BitVec.toInt_inj.mp
+    rw [BitVec.toInt_srem, BitVec.toInt_sub, BitVec.toInt_mul, BitVec.toInt_sdiv,
+      Int.bmod_mul_bmod, Int.sub_bmod_bmod,
+      show x.toInt - x.toInt.tdiv y.toInt * y.toInt = x.toInt.tmod y.toInt from by rw [Int.tmod_def, Int.mul_comm]]
+    symm
+    have hx1 := BitVec.toInt_lt (x := x)
+    have hx2 := BitVec.le_toInt x
+    have hy1 := BitVec.toInt_lt (x := y)
+    have hy2 := BitVec.le_toInt y
+    have habs := Int.natAbs_tmod x.toInt y.toInt
+    have hpow : (2 : Nat) ^ (w' + 1) = 2 * 2 ^ w' := by rw [Nat.pow_succ, Nat.mul_comm]
+    have hpow' : (2 : Int) ^ (w' + 1 - 1) = ((2 ^ w' : Nat) : Int) := by simp
+    rw [hpow] at *
+    rw [hpow'] at hx1 hx2 hy1 hy2
+    -- `tmod` lies strictly inside the signed range: below the divisor's
+    -- magnitude, or the dividend itself when the divisor is zero.
+    apply Int.bmod_eq_of_le
+    · generalize (2 ^ w' : Nat) = k at *
+      by_cases hy : y.toInt = 0
+      · rw [hy, Int.tmod_zero]; omega
+      · have hlt : (x.toInt.tmod y.toInt).natAbs < y.toInt.natAbs := by
+          rw [habs]; exact Nat.mod_lt _ (Int.natAbs_pos.mpr hy)
+        omega
+    · generalize (2 ^ w' : Nat) = k at *
+      by_cases hy : y.toInt = 0
+      · rw [hy, Int.tmod_zero]; omega
+      · have hlt : (x.toInt.tmod y.toInt).natAbs < y.toInt.natAbs := by
+          rw [habs]; exact Nat.mod_lt _ (Int.natAbs_pos.mpr hy)
+        omega
+
+/-- Extending a term from its own width to itself is the identity on its
+value: the mask keeps every bit, the shifts by zero move none. -/
+theorem extendTerm_self_eval (t : Term) (w : Nat) (signed : Bool) (ρ : Env) (hw : t.width = w) (hp : t.topPositive) (hpos : 0 < w) :
+    (extendTerm t w w signed).eval ρ = t.eval ρ % 2 ^ w := by
+  have hlt := Term.eval_lt t ρ hp
+  rw [hw] at hlt
+  have hadapt : adaptWidth t w = t := by
+    simp only [adaptWidth, hw, Nat.lt_irrefl, if_false]
+    exact truncate_self t w hw
+  have hlow : (Term.binary .and w (adaptWidth t w) (.const (mask w) w)).eval ρ = t.eval ρ % 2 ^ w := by
+    rw [hadapt, Term.binary_eval .and w (r := .const (mask w) w) ρ hp trivial]
+    simp only [Term.eval, Term.evalBin, mask_mod]
+    rw [and_mask_of_le _ _ _ (Nat.le_refl w), Nat.mod_mod]
+  have hlowp : (Term.binary .and w (adaptWidth t w) (.const (mask w) w)).topPositive :=
+    Term.binary_topPositive _ _ (adaptWidth_topPositive t w hpos hp) trivial
+  unfold extendTerm
+  cases signed
+  · simpa using hlow
+  · simp only [Bool.not_true, Bool.false_eq_true, if_false, Nat.sub_self]
+    rw [Term.binary_eval .sar w (r := .const 0 w) ρ (Term.binary_topPositive .shl w (r := .const 0 w) hlowp trivial) trivial,
+      Term.eval.eq_3, Term.binary_eval .shl w (r := .const 0 w) ρ hlowp trivial, Term.eval.eq_3, hlow]
+    simp only [Term.eval, Term.evalBin, Nat.zero_mod, Nat.shiftLeft_zero, Nat.mod_mod, BitVec.sshiftRight_zero,
+      BitVec.toNat_ofNat, Nat.mod_eq_of_lt hlt]
+
 /-- Every term a scope holds is well formed. -/
 def Scope.wf (σ : Scope) : Prop := ∀ x term, σ x = some term → term.topPositive
 
@@ -1602,6 +1734,14 @@ theorem lowerT_topPositive {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : 
     simp only [lowerT, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨l, hl, r, hr, rfl⟩ := h
     exact Term.binary_topPositive _ _ (lowerT_topPositive a σ l hσ hl) (lowerT_topPositive b σ r hσ hr)
+  | .divRem (t := t) op a b =>
+    simp only [lowerT, Option.bind_eq_some_iff, Option.some.injEq] at h
+    obtain ⟨l, hl, r, hr, rfl⟩ := h
+    apply extendTerm_topPositive _ _ _ _ t.width_pos
+    cases op
+    · trivial
+    · exact Term.binary_topPositive _ _ (lowerT_topPositive a σ l hσ hl)
+        (Term.binary_topPositive _ _ (Term.uop_topPositive _ _ _ _) (lowerT_topPositive b σ r hσ hr))
   | .bit _ a b _ =>
     simp only [lowerT, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨l, hl, r, hr, rfl⟩ := h
@@ -2703,6 +2843,49 @@ theorem lowerT_eval {P : Params} {S : Spans} {Γ : Locals} {t : Ty} (e : Expr P 
       BitVec.toNat_ofNat, Nat.mod_mod, Nat.mod_eq_of_lt hm, Nat.mod_eq_of_lt hk2,
       Nat.and_two_pow_sub_one_eq_mod]
     exact Nat.mod_eq_of_lt (Nat.lt_trans (Nat.mod_lt _ (Nat.two_pow_pos k)) hk2)
+  | .divRem (t := t) op a b =>
+    intro v hv
+    simp only [lowerT, Option.bind_eq_some_iff, Option.some.injEq] at h
+    obtain ⟨ta, ha, tb, hb, rfl⟩ := h
+    simp only [evalX, Option.bind_eq_some_iff] at hv
+    obtain ⟨va, hva, vb, hvb, hv⟩ := hv
+    have iha := lowerT_eval a σ ρ l F ta va hA ha hva
+    have ihb := lowerT_eval b σ ρ l F tb vb hA hb hvb
+    have hta := lowerT_topPositive a σ ta (Agree.wf hA) ha
+    have htb := lowerT_topPositive b σ tb (Agree.wf hA) hb
+    have hwa := lowerT_width a σ ta ha
+    -- The extraction has a value only on a nonzero divisor.
+    by_cases hz : vb = 0
+    · simp [hz] at hv
+    simp only [hz, if_false, Option.some.injEq] at hv
+    subst hv
+    have hnz : vb.toNat ≠ 0 := fun h0 => hz (BitVec.eq_of_toNat_eq (by simpa using h0))
+    -- The quotient term evaluates to the quotient.
+    have hq : (Term.uop (if t.signed then .sdiv else .udiv) t.width ta tb).eval ρ = (divX t.signed .div va vb).toNat := by
+      cases hs : t.signed <;>
+        simp only [Term.eval, Term.evalU, divX, hs, Bool.false_eq_true, if_false, if_true, iha, ihb,
+          BitVec.toNat_mod_cancel, hnz, BitVec.ofNat_toNat, BitVec.setWidth_eq]
+      · rw [BitVec.toNat_udiv]; exact Nat.mod_eq_of_lt (Nat.lt_of_le_of_lt (Nat.div_le_self _ _) va.isLt)
+    -- The division term at the type's width, before the identity extension.
+    have hd : (divT t.signed op t.width ta tb).eval ρ = (divX t.signed op va vb).toNat := by
+      cases op
+      · exact hq
+      · simp only [divT]
+        rw [Term.binary_eval .sub t.width ρ hta (Term.binary_topPositive .mul t.width (Term.uop_topPositive _ _ _ _) htb),
+          Term.eval.eq_3, Term.binary_eval .mul t.width ρ (Term.uop_topPositive _ _ _ _) htb, Term.eval.eq_3, hq, iha, ihb]
+        simp only [Term.evalBin, BitVec.toNat_mod_cancel, Term.width_uop]
+        cases hs : t.signed <;> simp only [divX, hs, Bool.false_eq_true, if_false, if_true]
+        · rw [Oak.IntegerDivision.umod_eq_sub_udiv_mul va vb, BitVec.toNat_sub, BitVec.toNat_mul, Nat.mod_mod]
+          exact congrArg (· % 2 ^ t.width) (Nat.add_comm _ _)
+        · rw [srem_eq_sub_sdiv_mul va vb, BitVec.toNat_sub, BitVec.toNat_mul, Nat.mod_mod]
+          exact congrArg (· % 2 ^ t.width) (Nat.add_comm _ _)
+    have hdw : (divT t.signed op t.width ta tb).width = t.width := by
+      cases op <;> simp [divT, Term.binary_width]
+    have hdp : (divT t.signed op t.width ta tb).topPositive := by
+      cases op
+      · trivial
+      · exact Term.binary_topPositive _ _ hta (Term.binary_topPositive _ _ (Term.uop_topPositive _ _ _ _) htb)
+    rw [extendTerm_self_eval _ _ _ ρ hdw hdp t.width_pos, hd, BitVec.toNat_mod_cancel]
   | .neg (t := t) a =>
     intro v hv
     simp only [lowerT, Option.bind_eq_some_iff, Option.some.injEq] at h
@@ -3138,6 +3321,9 @@ lowers each Oak expression below through `oakLowering.lower` and compares
 the print with the string stated here, so the Go lowering is pinned to
 `lowerT` case by case: a change to either side has to visit the other. -/
 
+def UOp.render : UOp → String
+  | .udiv => "udiv" | .sdiv => "sdiv"
+
 def TOp.render : TOp → String
   | .add => "add" | .sub => "sub" | .and => "and" | .or => "or" | .xor => "xor"
   | .shl => "shl" | .shr => "shr" | .sar => "sar" | .mul => "mul"
@@ -3154,6 +3340,7 @@ def Term.render : Term → String
   | .cmp code _ l r => "(" ++ l.render ++ " " ++ condRender code ++ " " ++ r.render ++ ")"
   | .ite _ c l r => "(" ++ c.render ++ " ? " ++ l.render ++ " : " ++ r.render ++ ")"
   | .select n _ i => n ++ "[" ++ i.render ++ "]"
+  | .uop op w l r => op.render ++ toString w ++ "(" ++ l.render ++ ", " ++ r.render ++ ")"
 
 /-- Parameters from a list; the empty local scope and term scope. -/
 def ps (l : List (String × Ty)) : Params := fun x => (l.find? (fun p => p.1 = x)).map (·.2)
@@ -3173,6 +3360,10 @@ example : lowered? ((.arith .sub (.var .u32 "a" (by decide)) (.var .u32 "b" (by 
 /-- `(a: u32) -> u32 = a * 3` -/
 example : lowered? ((.arith .mul (.var .u32 "a" (by decide)) (.lit .u32 3) : X (ps [("a", .u32)]) sp0 .u32)) = some "(a mul 3)" := by decide
 /-- `(a: u32) -> u32 = a / 8` -/
+example : lowered? ((.divRem .div (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)) : X (ps [("a", .u32), ("b", .u32)]) sp0 .u32)) = some "(udiv32(a, b) and 4294967295)" := by decide
+example : lowered? ((.divRem .rem (.var .u32 "a" (by decide)) (.var .u32 "b" (by decide)) : X (ps [("a", .u32), ("b", .u32)]) sp0 .u32)) = some "((a sub (udiv32(a, b) mul b)) and 4294967295)" := by decide
+example : lowered? ((.divRem .div (.var .i32 "a" (by decide)) (.var .i32 "b" (by decide)) : X (ps [("a", .i32), ("b", .i32)]) sp0 .i32)) = some "(((sdiv32(a, b) and 4294967295) shl 0) sar 0)" := by decide
+example : lowered? ((.divRem .rem (.var .i8 "a" (by decide)) (.var .i8 "b" (by decide)) : X (ps [("a", .i8), ("b", .i8)]) sp0 .i8)) = some "((((a sub (sdiv8(a, b) mul b)) and 255) shl 0) sar 0)" := by decide
 example : lowered? ((.divPow2 (.var .u32 "a" (by decide)) 3 (by decide) rfl : X (ps [("a", .u32)]) sp0 .u32)) = some "(a shr 3)" := by decide
 /-- `(a: u32) -> u32 = a % 8` -/
 example : lowered? ((.modPow2 (.var .u32 "a" (by decide)) 3 (by decide) rfl : X (ps [("a", .u32)]) sp0 .u32)) = some "(a and 7)" := by decide
