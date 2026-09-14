@@ -774,11 +774,11 @@ side as well. Verdicts on the SIMD corpus (`compiler/e2e_native_simd_test.go`):
 `lanes_mask`, `logic`, `shuffle`, `words`, `bits`, `doubled_mask` proven,
 `double_it_neon_abi` proven on both halves; on the UTF-8 kernel
 (`benchmarks/native/utf8_valid.oak`): `special_cases` and `check_block`
-proven on both halves of their vector results, `check_blocks` evidence
-(the two-block composition exceeds the node budget), the loop kernel
-`valid_with` **evidence** since the loop increment below (76 concrete
-inputs; every loop variable of its three loops is coupled, and the
-`error` obligation exceeds the node budget). The lane functions are stated in Lean as
+proven on both halves of their vector results, `check_blocks` proven
+(the same term on both sides), and the loop kernel `valid_with`
+**proven** since the increments below: its three data-dependent loops
+coupled inductively, every obligation the same term on both sides once
+the machine's branch is settled by a case split. The lane functions are stated in Lean as
 `Oak.NeonSemantics` (`spec/lean/Oak/NeonSemantics.lean`) and each is
 proved to be the `Oak.Simd` operation the lowering uses it for:
 `uqsub_eq_subSat`, `cmeq_eq_eqMask`, `add_eq_addWrap`, `ushr_eq_shr`,
@@ -916,8 +916,62 @@ kernel every loop variable of the three loops is now coupled — `off`,
 sixteen `tail` bytes to theirs — in seventeen seconds, and the one
 obligation left is `error`'s: one iteration of the sixty-four-byte loop
 is the `check_blocks` composition, whose decision exceeds the node budget
-as it does straight-line. `valid_with` is **evidence** for exactly that
-reason (`docs/notes/proof-chain-audit-2026-09.md`).
+as it does straight-line. That was the state before the increment that
+follows.
+
+**The kernel proven (2026-09-14).** Measuring rather than guessing at the
+budget settled what the diagrams can and cannot do. Every "bit-level"
+proof of the kernel's straight-line helpers — `special_cases`,
+`check_block`, the four-block `check_blocks` — was in fact **structural**:
+the two sides lower to the same term (`equalTerms`, "the same term on
+both sides"), and no diagram was ever built for them; the diagram of one
+`check_block` lane over symbolic tables is already near the budget and the
+composition's is beyond it at 16M nodes as at 2M. So the route to the
+loop kernel is to make the two sides *spell* one term wherever they mean
+one, and to decide the rest by algebra rather than by diagram. Four
+spellings were unified. A **w view reads back the 32-bit term its write
+zero-extended**, not a mask over the extension, so the machine's element
+index `off + 16 + k` is the Oak side's and the two reads of an element
+share one abstraction — with independent abstractions the equality had
+to go through the quadratic consistency constraint, which is what put
+`check_blocks` through span loads over the budget. A **lane read out of a
+recognizable pack** — a vector spilled and reloaded, a frame word
+assembled from byte slots, a loop-carried register the substitution made
+the pack of its Oak lanes — is the lane term itself (`unpackLane`,
+`extractedLane`, applied at extraction and at substitution), not a mask
+over a shift over the pack. **Bitwise vector operations** run at the
+finer of their operands' lane widths, and byte by byte over two words
+that are packs of nothing recognizable (two loop symbols), since bitwise
+operations distribute over lanes: the machine then spells `error |
+check_blocks` lane by lane as the Oak side does, where a word-level or
+over two packs spelled a different term. And a coupling whose header
+values are one term is an **equality** (b = 0) rather than `b = P − P`.
+Two decisions were added beside the diagrams. A **case split** on the
+condition of the largest branch (`splitDecide`, nested at most twice):
+each case is decided under its condition as a premise, and under a
+premise the terms are **pruned** first (`pruneUnder`: a branch whose
+condition the premise implies or refutes, decided on a small diagram of
+the premise and the condition, becomes the arm the premise selects — the
+steps of a table lookup, `index = k`, excepted) and the diagrams, when
+still needed, prune the same branches as they blast (`blaster.assume`).
+The kernel's `any(step & 0x80) ? … | …` is one machine branch over the
+merged path values against sixteen Oak lane branches on the same
+condition; settled by the split, the arms are the same term on both
+sides. Second, a result that is a **reduction over lanes** — `!any(error
+| prev_incomplete)`, the Oak `or` of `lane ≠ 0` tests against the
+machine's `umaxv`, `cmp #0`, `cset`, `eor #1` — is decided by its lane
+tests (`equalReductions`): the same negation and the same lanes, each the
+same term on both sides, whatever order or width the reduction was
+spelled in. With these, `valid_with` is **proven**: three data-dependent
+loops coupled inductively (`off`, `error`, `prev_input`,
+`prev_incomplete`, `i`, the sixteen `tail` bytes to their registers and
+slots), every continue condition, one-iteration obligation, and the
+result after the loops decided — in eight seconds, no diagram of a
+`check_block` lane among them. The RV64 `fact` loop's 64-bit product,
+witnessed before, is proven the same way (the same term once the w view
+reads back what it wrote). `TestE2ENativeSimdKernelVerdicts` asserts the
+kernel's proof; the trace (`OAK_VERIFY_TRACE`) prints each case split,
+the pruned sizes, and whether the sides became one term.
 
 **The floating-point forms (2026-09-14).** `spec/sail/arm_primitives.sail`
 gains Arm's execute bodies for `fadd`/`faddp`, `fsub`, `fmul`, `fmla`/
@@ -947,7 +1001,7 @@ applies the same operations to the same lanes; and the identification of
 `Sail.FPAdd` with the verifier's `fadd` — IEEE addition under Arm's NaN
 rules — is what the silicon differential checks on the host core and
 `Oak.FloatOps` models at the bit level. The loop increment's remainder
-above (the `check_blocks` obligation's node budget) is what is left.
+above was closed by the kernel's proof.
 
 **Floating point as uninterpreted operations (eighth increment,
 2026-09-14; `asm/floats_ops.go`, `asm/verify_float.go`).** Until this
@@ -2389,6 +2443,35 @@ refusal, as the backends leave those bodies to C. `shifts` and `byte_shift` are 
 on both lanes (`asm/shift_test.go`; `compiler/e2e_native_rv64_test.go`);
 the theorem decider's treatment — the trap as a recorded obligation — is
 unchanged.
+**Thirty-sixth increment — span arguments over the caller's owned arrays
+(2026-09-15; `asm/span_args.go`, `Oak.SpanArguments`).** The call summary
+took a span argument only as one of the caller's span parameters passed
+whole, so every `main` that handed its own array to a helper —
+`put(span(&buf), …)`, `fill(span(&buf), …)`, `sum(view(&buf))` — was
+trusted ("the span argument v is not one of the caller's span parameters
+passed whole"), on both lanes. The summary now recognizes the pair the
+backends build for `span(&buf)` / `view(&buf)`: the array's frame address
+(`add xN, sp, #off`; `addi rN, sp, off`) and its constant length, and
+binds the callee's parameter as the Oak side's inline binds it — an
+aggregate local holding the array's elements, each read from its frame
+slot (a zero-filled array reads as zeros through the slot tiling), so the
+body's element reads and writes, its `len`, and its data-dependent loops
+(which carry the aggregate's leaves as fresh symbols, the same symbols on
+both sides) are the aggregate's. After the body a writable span's final
+leaves are stored back, leaf `i` into slot `i` (`Oak.SpanArguments`: the
+slots are pairwise disjoint and lie inside the array, a leaf written back
+is read back from its slot, and a second element's write-back leaves the
+first's bytes). An array that follows a store at a data-dependent index
+(the frame's unknown region), a length that is not a constant, or an
+array beyond the summary's budget stays trusted with the reason. The
+span-effects `main` is proven on both lanes, as are `filled` and `squares`
+of the rv64 corpus, whose callees loop over the array
+(`asm/span_args_test.go`; `compiler/e2e_native_span_effects_test.go`,
+`compiler/e2e_native_rv64_test.go`). A constant table handed to a callee
+(`sum_view(view(&TABLE))`) is the table passed whole: its address beside
+its constant element count takes the span-parameter alias, and `len` over
+the callee's parameter resolves through the alias to the table's count, so
+`table_sum` is proven too (`compiler/e2e_native_tables_test.go`).
 
 **Thirty-seventh increment — unit bodies without effects (2026-09-15;
 `asm/effects.go` decideEffects, `Oak.UnitBodies`).** A unit function whose

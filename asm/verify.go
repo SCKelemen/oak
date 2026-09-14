@@ -915,6 +915,13 @@ func (s *symbolicState) read(reg Register) (*term, bool) {
 		return nil, false
 	}
 	if reg.Class == ClassW {
+		// A w view reads back the 32-bit term a w write zero-extended (not
+		// a mask over the extension): the machine then spells an element
+		// index exactly as the Oak side does, and the two sides' reads of
+		// one element share a single abstraction in the decision.
+		if value.kind == termBinary && value.op == "and" && value.right.kind == termConst && value.right.value == mask(32) && value.left.width == 32 {
+			return value.left, true
+		}
 		return truncate(value, 32), true
 	}
 	return value, true
@@ -1744,8 +1751,15 @@ func (s *symbolicState) loadSlot(addr, size int64) (*term, bool) {
 				if take > addr+size-cursor {
 					take = addr + size - cursor
 				}
-				piece := truncate(binaryTerm("shr", slot.value, constTerm(uint64((cursor-start)*8), slot.value.width)), int(take)*8)
-				placed := zeroExtend(piece, int(size)*8)
+				// The piece is placed as packLanes places a lane — masked to
+				// its width at the full width — so a word assembled from byte
+				// slots is a recognizable pack of them (unpackLane).
+				shifted := slot.value
+				if cursor > start {
+					shifted = binaryTerm("shr", slot.value, constTerm(uint64((cursor-start)*8), slot.value.width))
+				}
+				piece := truncate(shifted, int(take)*8)
+				placed := widenLane(piece, int(take)*8, int(size)*8)
 				if cursor > addr {
 					placed = binaryTerm("shl", placed, constTerm(uint64((cursor-addr)*8), int(size)*8))
 				}
@@ -4938,7 +4952,9 @@ func (lo *oakLowering) declareTables(tables map[string]Table) {
 	}
 }
 
-// tableLength recognizes len(T) over a constant table: the element count.
+// tableLength recognizes len(T) over a constant table, or over a callee's
+// span parameter aliased to one (`sum_view(view(&TABLE))`): the element
+// count.
 func (lo *oakLowering) tableLength(expr ast.Expression) (int64, bool) {
 	call, isCall := expr.(*ast.InvocationExpression)
 	if !isCall || len(call.Arguments) != 1 {
@@ -4949,8 +4965,23 @@ func (lo *oakLowering) tableLength(expr ast.Expression) (int64, bool) {
 	if !isIdent || !argIsIdent || fn.Value != "len" {
 		return 0, false
 	}
-	length, isTable := lo.tableLens[arg.Value]
+	length, isTable := lo.tableLens[lo.spanRoot(arg.Value)]
 	return length, isTable
+}
+
+// isTableLength reports a constant term that is a table's element count:
+// the length a caller passes beside the table's address (`adrl xB, T; movz
+// wL, #N`), so `view(&T)` handed to a callee is the table passed whole.
+func (x *pathExecutor) isTableLength(length *term, owner string) bool {
+	if length.kind != termConst || x.fn == nil {
+		return false
+	}
+	for symbol, table := range x.fn.Tables {
+		if TableName(symbol) == owner && table.Elem > 0 {
+			return int64(length.value&mask(32)) == table.Size/table.Elem
+		}
+	}
+	return false
 }
 
 // spanLength recognizes len(v) over a span parameter.
@@ -5965,6 +5996,9 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	lo := newLowering(callee)
 	lo.arch = x.arch
 	lo.records, lo.adts, lo.constants = x.fn.Records, x.fn.ADTs, x.fn.Constants
+	// The span arguments bound to the caller's owned frame arrays, written
+	// back after the body (asm/span_args.go).
+	var frameBorrows []frameBorrow
 	lo.functions = x.fn.Callees
 	lo.declareTables(x.fn.Tables)
 	lo.inlining = map[string]bool{name: true}
@@ -6135,10 +6169,19 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 				var offset int64
 				owner, offset, whole = spanBaseOf(base)
 				_, isRecord := x.records[owner]
-				whole = whole && !isRecord && offset == 0 && x.spans[owner] == arg.elem && x.isSpanLength(length, owner)
+				whole = whole && !isRecord && offset == 0 && x.spans[owner] == arg.elem && (x.isSpanLength(length, owner) || x.isTableLength(length, owner))
 			}
 			if !whole {
-				return fmt.Sprintf("a call to %s: the span argument %s is not one of the caller's span parameters passed whole", name, param.Name.Value), false
+				// A span or view over the caller's owned frame array
+				// (`span(&buf)`): the callee's parameter is the array's
+				// contents as an aggregate local, written back after the
+				// body when the span is writable (asm/span_args.go).
+				borrow, reason, ok := x.frameArrayArgument(state, lo, name, param.Name.Value, param.Type, arg.elem, base, length, hasBase && hasLen)
+				if !ok {
+					return reason, false
+				}
+				frameBorrows = append(frameBorrows, borrow)
+				break
 			}
 			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
 			lo.spans[param.Name.Value] = spanContract{elemWidth: int(arg.elem) * 8, signed: strings.HasPrefix(elemType, "i")}
@@ -6216,6 +6259,11 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		}
 	}
 	state.writes = lo.writes // the callee's stores through the caller's spans
+	for _, borrow := range frameBorrows {
+		if reason, ok := borrow.writeBack(state, lo); !ok {
+			return fmt.Sprintf("a call to %s: %s", name, reason), false
+		}
+	}
 	for cellName, cell := range lo.cells {
 		if cell.value != seeds[cellName] {
 			if state.globals == nil {
@@ -6800,6 +6848,9 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	if equalTerms(asmTerm, adaptWidth(oakTerm, width)) {
 		// The same term on both sides (a memory both sides built from the
 		// same stores, a call summary's result): no diagram needed.
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "verify %s: the same term on both sides (%d nodes)\n", fn.Name, termSize(asmTerm, map[*term]int{}))
+		}
 		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (the same term on both sides)%s", fn.Name, note)}
 	}
 
@@ -6836,6 +6887,14 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 		// quotient times a divisor, say, whose diagram no budget affords):
 		// equal by structure (asm/loops.go termEquivalent).
 		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (the same term on both sides, beyond the diagrams' budget)%s", fn.Name, note)}
+	}
+	// Past the budget under every order: a case split on the largest
+	// branch, each case decided with the branches it settles pruned
+	// (splitDecide). A proof there is a proof; a refutation or an
+	// undecided case keeps the evidence verdict, the witnesses having
+	// agreed.
+	if holds, decided := splitDecide(constTerm(1, 1), asmTerm, adaptWidth(oakTerm, width), lowering.declaredWidth, nil, 0); decided && holds {
+		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level (%d-bit result, under a case split on its branch conditions)%s", fn.Name, width, note)}
 	}
 	return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exceeded its node budget)", fn.Name)}
 }
@@ -6891,7 +6950,13 @@ func hasUninterpreted(t *term) bool {
 // first and stopped this one).
 func blastEqual(bl *blaster, fn *Function, names []string, asmTerm, oakTerm *term, width int, note string) (Verdict, bool) {
 	asmBits := bl.blast(asmTerm)
+	if os.Getenv("OAK_VERIFY_TRACE") != "" {
+		fmt.Fprintf(os.Stderr, "verify %s: (%s) asm: %d term nodes, %d selects, %d bdd nodes, exceeded=%v\n", fn.Name, bl.label, termSize(asmTerm, map[*term]int{}), len(bl.selects), len(bl.bdd.nodes), bl.bdd.exceeded)
+	}
 	oakBits := bl.blast(oakTerm)
+	if os.Getenv("OAK_VERIFY_TRACE") != "" {
+		fmt.Fprintf(os.Stderr, "verify %s: (%s) oak: %d term nodes, %d selects, %d bdd nodes, exceeded=%v\n", fn.Name, bl.label, termSize(oakTerm, map[*term]int{}), len(bl.selects), len(bl.bdd.nodes), bl.bdd.exceeded)
+	}
 	if asmBits == nil || oakBits == nil || bl.bdd.exceeded {
 		return Verdict{}, true
 	}
