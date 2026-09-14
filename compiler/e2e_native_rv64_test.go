@@ -495,7 +495,9 @@ func TestE2ENativeRV64FloatsUnderQEMU(t *testing.T) {
 	}
 	// The NaN-propagating min/max lower behind two NaN tests (rvMinMax) and
 	// the verifier proves them against Oak's min/max up to the NaN payload.
-	for _, fn := range []string{"least", "most"} {
+	// The float span reduction is proven through the loop recognizer: flw
+	// through the span element address, the accumulator in fs0.
+	for _, fn := range []string{"least", "most", "total"} {
 		if !strings.Contains(joined, "asm unit "+fn+": proven") {
 			t.Errorf("%s was not proven by the verifier; diagnostics:\n%s", fn, joined)
 		}
