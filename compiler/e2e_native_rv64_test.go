@@ -52,7 +52,7 @@ func TestE2ENativeRV64Lowers(t *testing.T) {
 		}
 	}
 	// divw/remw as the uninterpreted quotient and a - (a / b) * b
-	// (docs/spec/94-assembler.md §8, thirty-first increment).
+	// (docs/spec/94-assembler.md §8, thirty-second increment).
 	if !strings.Contains(joined, "asm unit divmod: proven") {
 		t.Errorf("divmod was not proven by the verifier; diagnostics:\n%s", joined)
 	}
@@ -404,7 +404,7 @@ func TestE2ENativeRV64SpansUnderQEMU(t *testing.T) {
 		}
 	}
 	// The stores in the loop bodies are proven through the coupling
-	// (docs/spec/94-assembler.md §8, thirtieth increment), the in-place
+	// (docs/spec/94-assembler.md §8, thirty-first increment), the in-place
 	// loops reading the loop's memory.
 	for _, fn := range []string{"fill", "scale_in_place", "running"} {
 		if !strings.Contains(joined, "asm unit "+fn+": proven") {

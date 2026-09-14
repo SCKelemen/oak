@@ -38,7 +38,7 @@ var floatOps = map[string]int{
 	// §11.3.5), one function of the operands on both sides.
 	"fnan": 2,
 	// Integer division: the quotient as an uninterpreted operation of its
-	// operands (docs/spec/94-assembler.md §8, thirty-first increment); the
+	// operands (docs/spec/94-assembler.md §8, thirty-second increment); the
 	// remainder is a - (a / b) * b on every side (the machines' definition,
 	// Oak.IntegerDivision). Both lanes trap on a zero divisor, so the
 	// applications compared lie off b = 0; the evaluation returns the

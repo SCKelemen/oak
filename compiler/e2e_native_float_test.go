@@ -135,7 +135,7 @@ func TestE2ENativeFloats(t *testing.T) {
 	// The float span reduction is proven through the loop recognizer: the
 	// element loads through the s view and the accumulator in d8
 	// (docs/spec/94-assembler.md §8, floats in loop bodies); fill_f64's
-	// store in its loop body through the coupling (thirtieth increment).
+	// store in its loop body through the coupling (thirty-first increment).
 	for _, fn := range []string{"total", "fill_f64"} {
 		if !strings.Contains(joined, "asm unit "+fn+": proven") {
 			t.Errorf("%s was not proven by the verifier; diagnostics:\n%s", fn, joined)

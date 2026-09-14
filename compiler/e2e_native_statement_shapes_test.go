@@ -78,7 +78,7 @@ func TestE2ENativeStatementShapes(t *testing.T) {
 		}
 		// mark_bits stores before its body forks on the bit test: the
 		// store is proven through the coupling (docs/spec/94-assembler.md
-		// §8, thirtieth increment).
+		// §8, thirty-first increment).
 		proven := false
 		for _, m := range native {
 			if strings.Contains(m, "asm unit mark_bits: proven") {

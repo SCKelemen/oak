@@ -3,7 +3,7 @@ import Std.Tactic.BVDecide
 /-!
 # Oak.IntegerDivision — the remainder as a - (a / b) * b
 
-The assembler-unit verifier (docs/spec/94-assembler.md §8, thirty-first
+The assembler-unit verifier (docs/spec/94-assembler.md §8, thirty-second
 increment) models integer division by a divisor that is not a constant
 power of two as an uninterpreted operation of its operands — `udiv`,
 `sdiv` in `asm/floats_ops.go`, shared with the Oak side by the same

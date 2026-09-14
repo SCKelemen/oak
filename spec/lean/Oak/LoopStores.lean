@@ -1,7 +1,7 @@
 /-!
 # Oak.LoopStores — stores in data-dependent loops through the coupling
 
-The assembler-unit verifier (docs/spec/94-assembler.md §8, thirtieth
+The assembler-unit verifier (docs/spec/94-assembler.md §8, thirty-first
 increment; `asm/loops.go` verifyLoops) proves a counting loop that stores
 one element per iteration not by summarizing its memory but by coupling:
 the two sides' loop states are related by the affine coupling `R` the

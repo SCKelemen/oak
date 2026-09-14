@@ -6,7 +6,7 @@ import (
 )
 
 // Integer division and remainder as uninterpreted operations of the
-// operands (docs/spec/94-assembler.md §8, thirty-first increment): the
+// operands (docs/spec/94-assembler.md §8, thirty-second increment): the
 // quotient is one function on both sides, the remainder a - (a / b) * b —
 // the AArch64 lowering's sdiv/udiv then msub, RISC-V's rem/remu, Oak's %
 // — so the native `divmod`, `quot`, and `rem` are proven; a zero divisor

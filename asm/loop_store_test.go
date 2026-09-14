@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Stores in data-dependent loops (docs/spec/94-assembler.md §8, thirtieth
+// Stores in data-dependent loops (docs/spec/94-assembler.md §8, thirty-first
 // increment): a counting loop that stores one element per iteration is
 // proven through the coupling — each iteration's store reaches the same
 // element with the same value on both sides — and refuted on concrete
