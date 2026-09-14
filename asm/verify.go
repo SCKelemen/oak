@@ -392,7 +392,53 @@ func binaryTerm(op string, left, right *term) *term {
 	if left.kind == termConst && left.value == 0 && op == "add" && right.width == t.width {
 		return right
 	}
+	// A mask of every bit at the width is the identity: `x & 0xFFFFFFFF`
+	// at 32 bits is x. Without the fold two reads of one address, one of
+	// them masked, are different terms, and a coupling offset that is zero
+	// (`hr - hx`) looks like a memory difference the diagrams must decide.
+	if op == "and" && right.kind == termConst && right.value&mask(left.width) == mask(left.width) && left.width == t.width {
+		return left
+	}
+	if op == "and" && left.kind == termConst && left.value&mask(right.width) == mask(right.width) && right.width == t.width {
+		return right
+	}
+	// x - x and x ^ x are zero; x & x and x | x are x. The two sides are
+	// often distinct nodes for one value — two reads of one address, each
+	// built afresh — so the comparison is structural, to a small depth.
+	if (op == "sub" || op == "xor" || op == "and" || op == "or") && left.width == right.width && left.width == t.width {
+		budget := sameTermBudget
+		if sameTerm(left, right, &budget) {
+			if op == "sub" || op == "xor" {
+				return constTerm(0, t.width)
+			}
+			return left
+		}
+	}
 	return t
+}
+
+// sameTermBudget bounds the nodes a structural comparison of two terms
+// visits (sameTerm): enough for a read's index arithmetic, not a DAG.
+const sameTermBudget = 48
+
+// sameTerm reports two terms structurally equal, visiting at most *budget
+// nodes; false when the budget runs out.
+func sameTerm(a, b *term, budget *int) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil || *budget <= 0 {
+		return false
+	}
+	*budget--
+	if a.kind != b.kind || a.width != b.width || a.op != b.op || a.name != b.name || a.value != b.value {
+		return false
+	}
+	switch a.kind {
+	case termConst, termParam:
+		return true
+	}
+	return sameTerm(a.cond, b.cond, budget) && sameTerm(a.left, b.left, budget) && sameTerm(a.right, b.right, budget)
 }
 
 // adaptWidth views a term at another width: a narrower term zero-extends,
@@ -897,6 +943,11 @@ func truncate(t *term, width int) *term {
 		return &term{kind: termParam, width: width, name: t.name}
 	case termCmp:
 		return &term{kind: termCmp, width: width, op: t.op, left: t.left, right: t.right}
+	case termBinary:
+		// Truncating a zero-extension back to its width is the extended term.
+		if t.op == "and" && t.right.kind == termConst && t.right.value == mask(width) && t.left.width == width {
+			return t.left
+		}
 	}
 	return &term{kind: termBinary, width: width, op: "and", left: t, right: constTerm(mask(width), width)}
 }
@@ -912,6 +963,11 @@ func zeroExtend(t *term, width int) *term {
 		return &term{kind: termParam, width: width, name: t.name}
 	case termCmp:
 		return &term{kind: termCmp, width: width, op: t.op, left: t.left, right: t.right}
+	case termBinary:
+		// Extending a truncation of a wider term is the wider term masked.
+		if t.op == "and" && t.right.kind == termConst && t.right.value == mask(t.width) && t.left.width == width {
+			return &term{kind: termBinary, width: width, op: "and", left: t.left, right: constTerm(mask(t.width), width)}
+		}
 	}
 	// The narrow computation's wrap is preserved by masking to its width.
 	return &term{kind: termBinary, width: width, op: "and", left: t, right: constTerm(mask(t.width), width)}
