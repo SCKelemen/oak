@@ -1705,7 +1705,15 @@ func (x *pathExecutor) registerFrameAccess(instr Instruction, state *symbolicSta
 			// symbols (an evidence verdict at most). A load at such an index
 			// stays outside the subset.
 			if !isStoreMnemonic(instr.Mnemonic) {
-				return "a frame load at a data-dependent index", false
+				// A load at a guarded index reads the elements merged
+				// under the index (docs/spec/94-assembler.md §8, frame
+				// loads at a data-dependent index; Oak.FrameIndex), as
+				// the Oak side reads an array element under a symbolic
+				// index (elementUnderIndex).
+				if bound, isBounded := state.bounds[mem.Index.Num]; isBounded {
+					return x.boundedFrameLoad(instr, state, addr, truncate(index, 32), bound, mem.Shift)
+				}
+				return "a frame load at a data-dependent index (the index is not guarded)", false
 			}
 			if bound, isBounded := state.bounds[mem.Index.Num]; isBounded && x.boundedFrameStore(instr, state, addr, truncate(index, 32), bound, mem.Shift) {
 				return "", true
@@ -1772,6 +1780,46 @@ func (x *pathExecutor) boundedFrameStore(instr Instruction, state *symbolicState
 		state.frame[t.start] = frameSlot{value: binaryTerm("or", kept, binaryTerm("shl", chosen, constTerm(offset, width))), width: slot.width}
 	}
 	return true
+}
+
+// boundedFrameLoad performs a load at a symbolic element index below
+// bound from the frame array at base: the elements the frame holds,
+// merged under `index == e` from the last element down — the same fold
+// as the Oak side's elementUnderIndex, so on an index at or past the
+// bound (the path the guard's trap removes) both sides read the last
+// element and no mismatch is invented there (Oak.FrameIndex.chain_select,
+// chain_beyond). The value is then extended as the load extends it.
+func (x *pathExecutor) boundedFrameLoad(instr Instruction, state *symbolicState, base int64, index *term, bound uint64, shift int) (string, bool) {
+	regs := registerOperands(instr.Operands[:len(instr.Operands)-1])
+	if len(regs) != 1 || regs[0].Class == ClassV || isPairAccess(instr.Mnemonic) {
+		return "a frame load at a data-dependent index (" + instr.Mnemonic + ")", false
+	}
+	size := memorySize(instr.Mnemonic, regs[0].Class)
+	if int64(1)<<uint(shift) != size || bound == 0 || bound > 64 {
+		return "a frame load at a data-dependent index (the guard's bound or the scale is outside the subset)", false
+	}
+	if state.unknownFrom != nil && base+int64(bound)*size > *state.unknownFrom {
+		return "a frame load at a data-dependent index into the frame's unknown region", false
+	}
+	var merged *term
+	for e := int64(bound) - 1; e >= 0; e-- {
+		value, ok := x.loadFrame(state, base+e*size, size)
+		if !ok {
+			return "a frame load at a data-dependent index over a slot never stored on this path", false
+		}
+		value = truncate(value, int(size)*8)
+		if merged == nil {
+			merged = value // the last element: the default beyond the bound
+			continue
+		}
+		merged = iteTerm(cmpTerm("eq", index, constTerm(uint64(e), 32)), value, merged)
+	}
+	if isSignExtendingLoad(instr.Mnemonic) {
+		state.write(regs[0], extendTerm(merged, int(size)*8, widthOf(regs[0].Class), true))
+	} else {
+		state.write(regs[0], zeroExtend(merged, widthOf(regs[0].Class)))
+	}
+	return "", true
 }
 
 // opaqueSlot is the value of a slot in the forgotten region: a fresh
