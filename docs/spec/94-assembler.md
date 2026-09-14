@@ -3540,6 +3540,28 @@ gone; proven bodies rose to 174 on AArch64 and 165 on RV64. Pinned:
 result, a conditional store; both lanes), the `fill` case of
 `compiler/e2e_native_span_effects_test.go`, now proven on both lanes.
 
+**The loop proof's budgets (2026-09-14).** Recognizing the loops that
+call functions and store through spans made the prover's native build
+(the shell test's `OAK_SOLVER_NATIVE=1`) run without end on one body:
+`fill_chunk`, nested loops whose bodies call the Lean emitter's large
+functions, where the coupling search substituted into and walked the
+summarized calls' terms for every one of thousands of candidates. The
+loop proof is now bounded three ways, each deterministic: the candidates
+its search tries (`loopSearchBudget`), the diagram nodes all of its
+implications spend together (`loopProofNodeBudget`, `impliesEqualWithin`
+drawing from one `nodeBudget`), and the size of the events' terms it
+will search over at all (`loopTermNodeBudget`); past any of them the
+verdict is evidence with the budget named. A coupling's description is
+built only for the couplings chosen, and an implication whose two sides
+are the same term (`equalTerms`, memoized over the DAG) is decided
+without a diagram — in `decideEqual` too, after the linear normal form.
+The two sides of the loop proof's span memories would otherwise both be
+blasted though they are built from the same stores. `OAK_NATIVE_TIMING=1`
+prints each body's verification time (`compiler/native_bodies.go`). The
+prover's native build: 180 s before this section's loop increments, 265
+s after them with the budgets, 330 bodies proven where 294 were, no
+mismatch; the standard-library tally keeps its 176 and 167.
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built

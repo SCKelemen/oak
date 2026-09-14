@@ -487,6 +487,32 @@ func (t *term) evalUncached(env map[string]uint64, memo termMemo) uint64 {
 
 // String prints a term for diagnostics, bounded: a DAG's expansion can be
 // exponential in its depth, so the print stops after a few hundred nodes.
+// equalTerms reports two terms structurally identical: the same kind,
+// width, name, value, operator, and children — a cheap proof of equality
+// before any diagram is built. Memoized over pairs of nodes, since the
+// terms are DAGs.
+func equalTerms(a, b *term) bool {
+	return equalTermsMemo(a, b, map[[2]*term]bool{})
+}
+
+func equalTermsMemo(a, b *term, memo map[[2]*term]bool) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	key := [2]*term{a, b}
+	if known, seen := memo[key]; seen {
+		return known
+	}
+	memo[key] = false // a cycle (there are none) would read as unequal
+	equal := a.kind == b.kind && a.width == b.width && a.name == b.name && a.value == b.value && a.op == b.op &&
+		equalTermsMemo(a.left, b.left, memo) && equalTermsMemo(a.right, b.right, memo) && equalTermsMemo(a.cond, b.cond, memo)
+	memo[key] = equal
+	return equal
+}
+
 func (t *term) String() string {
 	budget := 400
 	return t.stringBounded(&budget)
@@ -2607,6 +2633,10 @@ type oakLowering struct {
 	params map[string]int
 	signed map[string]bool
 	spans  map[string]spanContract
+	// writableSpans names the function's `[*]T` parameters: the spans a
+	// loop body may store through, which take a loop's memory marker on
+	// both sides (loopEvent, summarizeLoop).
+	writableSpans map[string]bool
 	// tagDomains: every union tag parameter with its variants' tag values
 	// (recordTagDomains); the decision is over inputs inside them.
 	tagDomains map[string][]int64
@@ -6218,9 +6248,12 @@ func newLowering(sig *ast.FunctionStatement) *oakLowering {
 	// body, or a block or match in result position (resultTerm through
 	// aggregateValue) — writes into a map; the dbs pilot's `-native` panic
 	// was a nil map on the result path (docs/notes/dbs-feedback-2026-09.md).
-	lowering := &oakLowering{params: map[string]int{}, signed: map[string]bool{}, spans: map[string]spanContract{}, fresh: map[string]int{}, floats: map[string]int{}, locals: map[string]*oakLocal{}}
+	lowering := &oakLowering{params: map[string]int{}, signed: map[string]bool{}, spans: map[string]spanContract{}, fresh: map[string]int{}, floats: map[string]int{}, locals: map[string]*oakLocal{}, writableSpans: map[string]bool{}}
 	for _, param := range sig.Parameters {
 		if elem, _, isSpan := spanShape(param.Type); isSpan {
+			if isWritableSpan(param.Type) {
+				lowering.writableSpans[param.Name.Value] = true
+			}
 			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
 			lowering.spans[param.Name.Value] = spanContract{elemWidth: int(elem) * 8, signed: strings.HasPrefix(elemType, "i"), float: elemType == "f32" || elemType == "f64"}
 			continue
@@ -6331,6 +6364,11 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	}
 	if a, o := asmTerm.linearAt(width), oakTerm.linearAt(width); a != nil && o != nil && a.equal(o) {
 		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (linear normal form %s)%s", fn.Name, a, note)}
+	}
+	if equalTerms(asmTerm, adaptWidth(oakTerm, width)) {
+		// The same term on both sides (a memory both sides built from the
+		// same stores, a call summary's result): no diagram needed.
+		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (the same term on both sides)%s", fn.Name, note)}
 	}
 
 	// Beyond the linear form: bit-blast both sides. Equal canonical nodes

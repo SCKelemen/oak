@@ -651,44 +651,16 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	}
 	ev.cond = cond
 	_ = exit
-	// The spans the body stores through take the loop's memory marker
-	// before the iteration runs, so the body's reads see the iteration's
-	// unknown memory and its stores layer on it. They are found by a
-	// discovery run of the body, whose other traces (inner loop events,
-	// call sites, fresh symbols) are undone.
+	// The writable span parameters (`[*]T`, the only spans a body can
+	// store through) take the loop's memory marker before the iteration
+	// runs, so the body's reads see the iteration's unknown memory and its
+	// stores layer on it; the Oak side marks the same parameters from the
+	// same signature (loopEvent).
 	storedSpans := map[string]bool{}
-	{
-		savedLoops, savedSites := len(x.loops), x.callSites
-		savedFresh := map[string]int{}
-		for name, width := range x.freshSyms {
-			savedFresh[name] = width
-		}
-		savedDeclared := map[string]int{}
-		for name, width := range x.declared {
-			savedDeclared[name] = width
-		}
-		x.loopStack = append(x.loopStack, ev.index)
-		ends, _, ok := x.runBody(shape, freshState.clone())
-		x.loopStack = x.loopStack[:len(x.loopStack)-1]
-		if ok {
-			for _, end := range ends {
-				for span, log := range end.state.writes {
-					if len(log) > len(freshState.writes[span]) {
-						storedSpans[span] = true
-					}
-				}
-			}
-		}
-		x.loops = x.loops[:savedLoops]
-		x.callSites = savedSites
-		x.freshSyms = savedFresh
-		x.declared = savedDeclared
+	writtenSpans := writableSpanParams(x.fn, x.spans)
+	for _, span := range writtenSpans {
+		storedSpans[span] = true
 	}
-	writtenSpans := make([]string, 0, len(storedSpans))
-	for span := range storedSpans {
-		writtenSpans = append(writtenSpans, span)
-	}
-	sort.Strings(writtenSpans)
 	for _, span := range writtenSpans {
 		freshState.writes = appendMarker(freshState.writes, span, ev.index)
 	}
@@ -723,7 +695,7 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	for _, end := range ends {
 		for span, log := range end.state.writes {
 			if !storedSpans[span] && len(log) > len(freshState.writes[span]) {
-				return nil, "a store through a span the discovery run did not reach (in a loop body)", false
+				return nil, "a store through a span that is not a writable parameter (in a loop body)", false
 			}
 		}
 	}
@@ -755,6 +727,26 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	}
 	freshState.flags = nil
 	return freshState, "", true
+}
+
+// writableSpanParams names the function's writable span parameters
+// (`[*]T`) that the executor knows as spans, sorted: the spans a loop's
+// body may store through, which take the loop's memory marker.
+func writableSpanParams(fn *Function, spans map[string]int64) []string {
+	var out []string
+	if fn == nil || fn.Signature == nil {
+		return out
+	}
+	for _, param := range fn.Signature.Parameters {
+		if param == nil || param.Name == nil || !isWritableSpan(param.Type) {
+			continue
+		}
+		if _, known := spans[param.Name.Value]; known {
+			out = append(out, param.Name.Value)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // summarizeCallInLoop is summarizeCall inside a loop's header or body: the
@@ -1215,11 +1207,11 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	// The spans the body stores through take the loop's memory marker
 	// (asm/effects.go): the body reads the iteration's unknown memory and
 	// its stores layer on it; the asm side places the same marker.
-	stored := map[string]bool{}
-	lo.spanStoresIn(loop.Body, stored)
-	storedSpans := make([]string, 0, len(stored))
-	for span := range stored {
-		storedSpans = append(storedSpans, span)
+	storedSpans := make([]string, 0, len(lo.writableSpans))
+	for span := range lo.writableSpans {
+		if _, isSpan := lo.spans[span]; isSpan {
+			storedSpans = append(storedSpans, span)
+		}
 	}
 	sort.Strings(storedSpans)
 	before := map[string]int{}
@@ -1284,32 +1276,6 @@ func leafRefs(v *oakValue, prefix string, into map[string]*oakValue) {
 	}
 	for k, elem := range v.elems {
 		leafRefs(elem, fmt.Sprintf("%s[%d]", prefix, k), into)
-	}
-}
-
-// spanStoresIn names the spans a loop body stores through, at any depth
-// (nested loops, conditional arms), by their roots.
-func (lo *oakLowering) spanStoresIn(body *ast.BlockStatement, into map[string]bool) {
-	if body == nil {
-		return
-	}
-	for _, stmt := range body.Statements {
-		switch s := stmt.(type) {
-		case *ast.IndexAssignmentStatement:
-			if name, _, isSpan := lo.spanAssignment(s); isSpan {
-				into[lo.spanRoot(name)] = true
-			}
-		case *ast.WhileStatement:
-			lo.spanStoresIn(s.Body, into)
-		case *ast.ExpressionStatement:
-			if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
-				for _, arm := range match.Arms {
-					if block, isBlock := arm.Body.(*ast.BlockExpression); isBlock {
-						lo.spanStoresIn(block.Block, into)
-					}
-				}
-			}
-		}
 	}
 }
 
@@ -1418,8 +1384,20 @@ type coupling struct {
 	reg   string
 	a     int
 	b     *term
-	show  string
 	ext   string // "" (same width), "zext" or "sext": a 64-bit register carrying a widened 32-bit variable
+}
+
+// show spells the coupling for the verdict (built only for the couplings
+// chosen: a candidate's offset term may be large).
+func (c coupling) show() string {
+	switch {
+	case c.a == 1 && c.b.kind == termConst && c.b.value == 0:
+		return c.local + "↔" + c.reg
+	case c.a == 1:
+		return fmt.Sprintf("%s = %s + %s", c.reg, c.local, c.b)
+	default:
+		return fmt.Sprintf("%s = %s - %s", c.reg, c.b, c.local)
+	}
 }
 
 // widen applies a coupling's widening to a 32-bit term.
@@ -1614,7 +1592,19 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		return lowering.declaredWidth(name)
 	}
+	// Every implication of this proof spends from one budget.
+	budget := &nodeBudget{remaining: loopProofNodeBudget}
+	implies := func(premise, a, b *term) (bool, bool) {
+		return impliesEqualWithin(premise, a, b, widthOfName, budget)
+	}
 
+	// The coupling search substitutes into and walks the events' terms for
+	// every candidate; terms past the size budget (a body of summarized
+	// calls to large functions) leave the loop as evidence rather than
+	// minutes of search.
+	if nodes := loopTermNodes(asmLoops, oakLoops); nodes > loopTermNodeBudget {
+		return evidence(fmt.Sprintf("the loops' terms hold %d nodes, past the coupling's budget of %d", nodes, loopTermNodeBudget))
+	}
 	// Coupling. A candidate pairs an Oak loop variable x of event k with a
 	// register r of the same width of the matching asm event through an
 	// affine relation r = a*x + b, a ∈ {+1, -1}, with b read off the header
@@ -1678,8 +1668,8 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			atHeader[ev.freshName(local)] = ev.header[local]
 			afterBody[ev.freshName(local)] = ev.next[local]
 		}
-		holds, decidedEntry := impliesEqual(constTerm(1, 1), substitute(inv, atHeader), constTerm(1, 1), widthOfName)
-		preserved, decidedStep := impliesEqual(binaryTerm("and", truncate(inv, 1), truncate(guard, 1)), substitute(inv, afterBody), constTerm(1, 1), widthOfName)
+		holds, decidedEntry := implies(constTerm(1, 1), substitute(inv, atHeader), constTerm(1, 1))
+		preserved, decidedStep := implies(binaryTerm("and", truncate(inv, 1), truncate(guard, 1)), substitute(inv, afterBody), constTerm(1, 1))
 		if decidedEntry && holds && decidedStep && preserved {
 			invariants[k] = truncate(inv, 1)
 		}
@@ -1782,15 +1772,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 					if !invariant {
 						continue
 					}
-					show := s.name + "↔" + reg
-					switch {
-					case a == 1 && b.kind == termConst && b.value == 0:
-					case a == 1:
-						show = fmt.Sprintf("%s = %s + %s", reg, s.name, b)
-					default:
-						show = fmt.Sprintf("%s = %s - %s", reg, b, s.name)
-					}
-					out = append(out, coupling{event: s.event, local: s.name, reg: reg, a: a, b: b, show: show, ext: ext})
+					out = append(out, coupling{event: s.event, local: s.name, reg: reg, a: a, b: b, ext: ext})
 				}
 			}
 		}
@@ -1865,7 +1847,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			}
 			if refutedByCoupling(premise, next, asmNext, widthOfName) {
 				if trace {
-					fmt.Fprintf(os.Stderr, "verify %s: a valuation refutes one iteration preserving %s\n", fn.Name, c.show)
+					fmt.Fprintf(os.Stderr, "verify %s: a valuation refutes one iteration preserving %s\n", fn.Name, c.show())
 				}
 				conflict = conflictOf(asmLoops[s.event].next[c.reg])
 				conflict[depthOf[asmLoops[s.event].freshName(c.reg)]] = true
@@ -1908,7 +1890,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				viable = true
 				break
 			}
-			last = c.show
+			last = c.show()
 		}
 		if !viable {
 			if last == "" {
@@ -1918,6 +1900,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 	}
 	visited := 0
+	steps := 0 // the candidates tried, against loopSearchBudget
 	// The search is conflict-directed: a failure below returns the depths
 	// its refutation depended on, and a level whose choice is not among
 	// them passes the failure up without trying its other candidates (the
@@ -1933,7 +1916,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if i == len(slots) {
 			for k := range oakLoops {
 				oakEv, asmEv := oakLoops[k], asmLoops[k]
-				if equal, decided := impliesEqual(bodyPremise(k, sigma, false), substitute(oakEv.cond, sigma), substitute(asmEv.cond, sigma), widthOfName); !decided || !equal {
+				if equal, decided := implies(bodyPremise(k, sigma, false), substitute(oakEv.cond, sigma), substitute(asmEv.cond, sigma)); !decided || !equal {
 					failure = fmt.Sprintf("loop %d's continue conditions were not proven equal", k+1)
 					if trace {
 						fmt.Fprintf(os.Stderr, "verify %s: %s (decided=%v)\n  oak: %s\n  asm: %s\n  premise: %s\n", fn.Name, failure, decided, substitute(oakEv.cond, sigma), substitute(asmEv.cond, sigma), bodyPremise(k, sigma, false))
@@ -1960,8 +1943,8 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 					} else {
 						next = binaryTerm("sub", c.b, next)
 					}
-					if equal, decided := impliesEqual(premise, next, substitute(asmEv.next[c.reg], sigma), widthOfName); !decided || !equal {
-						failure = fmt.Sprintf("one iteration of loop %d was not proven to preserve %s", k+1, c.show)
+					if equal, decided := implies(premise, next, substitute(asmEv.next[c.reg], sigma)); !decided || !equal {
+						failure = fmt.Sprintf("one iteration of loop %d was not proven to preserve %s", k+1, c.show())
 						if trace {
 							fmt.Fprintf(os.Stderr, "verify %s: %s (decided=%v)\n  oak next: %s\n  asm next: %s\n", fn.Name, failure, decided, next, substitute(asmEv.next[c.reg], sigma))
 						}
@@ -1986,9 +1969,14 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			total[depthOf[name]] = true
 		}
 		for _, c := range candidates {
+			steps++
+			if steps > loopSearchBudget {
+				failure = fmt.Sprintf("the coupling search tried %d candidates, its budget", loopSearchBudget)
+				return false, total
+			}
 			asmName := asmLoops[s.event].freshName(c.reg)
 			if trace {
-				fmt.Fprintf(os.Stderr, "verify %s: search depth %d: %s\n", fn.Name, i, c.show)
+				fmt.Fprintf(os.Stderr, "verify %s: search depth %d: %s\n", fn.Name, i, c.show())
 			}
 			used[asmName] = true
 			chosen[s.key] = c
@@ -2032,6 +2020,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if failure == "" {
 			failure = fmt.Sprintf("no register is an affine image of the loop variable %s of loop %d at its header", s.name, s.event+1)
 		}
+		if budget.remaining <= 0 {
+			failure = "the loop proof's diagram budget ran out in the coupling search"
+		}
 		return false, total
 	}
 	if ok, _ := search(0); !ok {
@@ -2039,7 +2030,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	}
 	var pairs []string
 	for _, s := range slots {
-		pairs = append(pairs, chosen[s.key].show)
+		pairs = append(pairs, chosen[s.key].show())
 	}
 	// The iterations' stores: each event's two sides store through the
 	// same spans, the same number of times, at indices and values proven
@@ -2047,7 +2038,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// an inner loop's marker matches its counterpart by name.
 	for k, oakEv := range oakLoops {
 		asmEv := asmLoops[k]
-		if reason, ok := coupledWrites(k, oakEv, asmEv, sigma, bodyPremise(k, sigma, true), lowering, widthOfName); !ok {
+		if reason, ok := coupledWrites(k, oakEv, asmEv, sigma, bodyPremise(k, sigma, true), lowering, implies); !ok {
 			return evidence(reason)
 		}
 	}
@@ -2074,10 +2065,10 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 	}
 	if asmTerm != nil {
-		equal, decided := impliesEqual(premise, oakTerm, substitute(truncate(asmTerm, width), sigma), widthOfName)
+		equal, decided := implies(premise, oakTerm, substitute(truncate(asmTerm, width), sigma))
 		if !decided || !equal {
 			if trace {
-			fmt.Fprintf(os.Stderr, "verify %s: results not proven equal (decided=%v)\n  oak: %s\n  asm: %s\n  premise: %s\n", fn.Name, decided, oakTerm, substitute(truncate(asmTerm, width), sigma), premise)
+				fmt.Fprintf(os.Stderr, "verify %s: results not proven equal (decided=%v)\n  oak: %s\n  asm: %s\n  premise: %s\n", fn.Name, decided, oakTerm, substitute(truncate(asmTerm, width), sigma), premise)
 			}
 			return evidence("the results after the loops were not proven equal")
 		}
@@ -2108,7 +2099,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		entry := selectTerm(name, at, elemWidth)
 		asmMemory := substitute(memoryAt(exec.writes[name], at, entry), sigma)
 		oakMemory := memoryAt(lowering.writes[name], at, entry)
-		if equal, decided := impliesEqual(premise, oakMemory, asmMemory, widthOfName); !decided || !equal {
+		if equal, decided := implies(premise, oakMemory, asmMemory); !decided || !equal {
 			if trace {
 				fmt.Fprintf(os.Stderr, "verify %s: span %s after the loops (decided=%v)\n  oak: %s\n  asm: %s\n", fn.Name, name, decided, oakMemory, asmMemory)
 			}
@@ -2145,7 +2136,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 // index and value proven equal under the coupling and the body premise
 // and its guard likewise (a missing guard is "always"); a marker of an
 // inner loop's memory matches its counterpart by name.
-func coupledWrites(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premise *term, lowering *oakLowering, widthOfName func(string) int) (string, bool) {
+func coupledWrites(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premise *term, lowering *oakLowering, implies func(premise, a, b *term) (bool, bool)) (string, bool) {
 	spans := map[string]bool{}
 	for span := range oakEv.writes {
 		spans[span] = true
@@ -2172,10 +2163,10 @@ func coupledWrites(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premi
 					return fmt.Sprintf("store %d of loop %d through %s: an inner loop's memory on one side only", i+1, k+1, span), false
 				}
 			} else {
-				if equal, decided := impliesEqual(premise, truncate(o.index, 32), substitute(truncate(a.index, 32), sigma), widthOfName); !decided || !equal {
+				if equal, decided := implies(premise, truncate(o.index, 32), substitute(truncate(a.index, 32), sigma)); !decided || !equal {
 					return fmt.Sprintf("store %d of loop %d through %s: the indices were not proven equal", i+1, k+1, span), false
 				}
-				if equal, decided := impliesEqual(premise, truncate(o.value, contract.elemWidth), substitute(truncate(a.value, contract.elemWidth), sigma), widthOfName); !decided || !equal {
+				if equal, decided := implies(premise, truncate(o.value, contract.elemWidth), substitute(truncate(a.value, contract.elemWidth), sigma)); !decided || !equal {
 					return fmt.Sprintf("store %d of loop %d through %s: the values were not proven equal", i+1, k+1, span), false
 				}
 			}
@@ -2186,7 +2177,7 @@ func coupledWrites(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premi
 			if ag == nil {
 				ag = always
 			}
-			if equal, decided := impliesEqual(premise, truncate(og, 1), substitute(truncate(ag, 1), sigma), widthOfName); !decided || !equal {
+			if equal, decided := implies(premise, truncate(og, 1), substitute(truncate(ag, 1), sigma)); !decided || !equal {
 				return fmt.Sprintf("store %d of loop %d through %s: the conditions were not proven equal", i+1, k+1, span), false
 			}
 		}
@@ -2239,6 +2230,61 @@ func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term
 	return &out
 }
 
+// loopSearchBudget bounds the coupling candidates one loop proof's search
+// tries.
+const loopSearchBudget = 1500
+
+// loopTermNodeBudget bounds the distinct nodes of the loop events' terms
+// (headers, conditions, next values, stores) the coupling search works
+// over.
+const loopTermNodeBudget = 100000
+
+// loopTermNodes counts the distinct term nodes of every event's terms on
+// both sides.
+func loopTermNodes(asmLoops, oakLoops []*loopEvent) int {
+	visited := map[*term]bool{}
+	var count func(t *term)
+	count = func(t *term) {
+		if t == nil || visited[t] {
+			return
+		}
+		visited[t] = true
+		count(t.left)
+		count(t.right)
+		count(t.cond)
+	}
+	for _, side := range [][]*loopEvent{asmLoops, oakLoops} {
+		for _, ev := range side {
+			count(ev.cond)
+			for _, name := range ev.vars {
+				count(ev.header[name])
+				count(ev.next[name])
+			}
+			for _, writes := range ev.writes {
+				for _, w := range writes {
+					count(w.index)
+					count(w.value)
+					count(w.guard)
+				}
+			}
+		}
+	}
+	return len(visited)
+}
+
+// nodeBudget is the diagram nodes one loop proof may spend across all of
+// its implications (loopProofNodeBudget): a coupling search that keeps
+// failing candidates near the per-decision budget ends as evidence rather
+// than running for minutes.
+type nodeBudget struct{ remaining int }
+
+// loopProofNodeBudget bounds one loop proof's diagram nodes in all;
+// loopDecisionNodeBudget bounds each of its implications.
+const (
+	loopProofNodeBudget    = 8 * blastNodeBudget
+	loopDecisionNodeBudget = blastNodeBudget
+)
+
 // impliesEqual decides premise → (a = b) at the terms' common width:
 // valuations first (one satisfying the premise under which the sides
 // differ refutes it — elements read the fixed memory, as the witness layer
@@ -2246,11 +2292,23 @@ func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term
 // raced as decideEqual races them; decided is false when every order
 // exceeds the node budget.
 func impliesEqual(premise, a, b *term, widthOf func(string) int) (holds bool, decided bool) {
+	return impliesEqualWithin(premise, a, b, widthOf, nil)
+}
+
+// impliesEqualWithin is impliesEqual spending from a shared budget when
+// one is given: a decision that would exceed what remains is undecided.
+func impliesEqualWithin(premise, a, b *term, widthOf func(string) int, budget *nodeBudget) (holds bool, decided bool) {
 	width := a.width
 	if b.width > width {
 		width = b.width
 	}
 	a, b = adaptWidth(a, width), adaptWidth(b, width)
+	if equalTerms(a, b) {
+		return true, true // the same term on both sides: no diagram needed
+	}
+	if budget != nil && budget.remaining <= 0 {
+		return false, false
+	}
 	mentioned := map[string]bool{}
 	collectParams(premise, mentioned)
 	collectParams(a, mentioned)
