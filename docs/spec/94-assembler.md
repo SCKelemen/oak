@@ -2326,12 +2326,13 @@ lane; the verifier holds the slot as a frame slot at its offset above the
 entry sp. A span or a record beyond the registers stays with the C backend
 in this increment — the psABI may split a two-word aggregate across the
 last register and the stack, which the shared layout does not model — and
-the lane says so. On the stack-argument corpus `nine` lowers and is
-proven and `twelve` is evidence as on AArch64; `tail_sum` and
-`records_last` stay with the C backend with the reason, and so does
-`through_c`, whose eight register arguments alone exceed the lane's
-operand stack (the AArch64 lane spares scratch by reading variables and
-constants at the move, a separate increment)
+the lane says so. A call's constant arguments and the variables homed in
+callee-saved registers are read at the move, as on AArch64, holding no
+scratch register: `through_c`, which passes ten arguments to a C function,
+lowers where its eight register arguments alone exceeded the operand
+stack. On the stack-argument corpus `nine` lowers and is proven and
+`twelve` is evidence as on AArch64; `tail_sum` and `records_last` stay
+with the C backend with the reason
 (`compiler/e2e_native_rv64_stack_args_test.go`, the corpus run on the
 bare machine under QEMU against the C backend's realization;
 `asm/stack_params_test.go`).

@@ -20,7 +20,7 @@ import (
 func TestE2ENativeRV64StackArgs(t *testing.T) {
 	_, infos := nativeRV64Lower(t, rv64Linux, nativeStackArgsProgram)
 	joined := strings.Join(infos, "\n")
-	for _, fn := range []string{"nine", "twelve"} {
+	for _, fn := range []string{"nine", "twelve", "through_c"} {
 		if !strings.Contains(joined, "asm unit "+fn+":") {
 			t.Errorf("%s was not lowered by the rv64 lane; diagnostics:\n%s", fn, joined)
 		}
@@ -33,11 +33,11 @@ func TestE2ENativeRV64StackArgs(t *testing.T) {
 			t.Errorf("%s (a span or record on the stack) must stay with the C backend with the reason; diagnostics:\n%s", fn, joined)
 		}
 	}
-	// through_c's eight register arguments alone exceed the operand stack
-	// (the lane evaluates every argument into a scratch register): still
-	// the C backend's, for a reason other than the stack.
-	if !strings.Contains(joined, "through_c left to the C backend") {
-		t.Errorf("through_c should stay with the C backend; diagnostics:\n%s", joined)
+	// through_c passes ten arguments to a C function: its variable and
+	// constant arguments are read at the move and the two beyond the
+	// registers go through the outgoing area.
+	if !strings.Contains(joined, "asm unit through_c:") {
+		t.Errorf("through_c should be lowered; diagnostics:\n%s", joined)
 	}
 	// Executed on the bare machine under QEMU against the C backend's
 	// realization (the harness of the span corpus), and under a user-mode

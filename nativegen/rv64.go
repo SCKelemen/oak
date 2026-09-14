@@ -1767,6 +1767,15 @@ func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *record
 		return place, true
 	}
 	stackOf := map[int]int64{}
+	// A constant, or a variable whose home is a callee-saved register, is
+	// read at the move itself and holds no scratch register (the AArch64
+	// lane's rule): a constant argument is a negative entry of regs
+	// indexing constArgs, a variable's home its register, kept (fixed).
+	type constArg struct {
+		v uint64
+		s scalar
+	}
+	var constArgs []constArg
 	// laterCalls[i]: an argument after the i-th calls, so a slot stored
 	// before it would be overwritten by the nested call's own arguments.
 	laterCalls := make([]bool, len(e.Arguments)+1)
@@ -1885,6 +1894,22 @@ func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *record
 		if !ok {
 			return 0, unsupported("a call to %s (parameter %s: %s)", ident.Value, p.Name.Value, p.Type.String())
 		}
+		if !argPlace.OnStack && !s.isFloat && !s.isVec {
+			if v, isConst := g.constantOperand(arg, s); isConst {
+				constArgs = append(constArgs, constArg{v: v, s: s})
+				regs = append(regs, -len(constArgs))
+				continue
+			}
+			if id, isIdent := arg.(*ast.Identifier); isIdent {
+				if h, inReg := g.regs[id.Value]; inReg && h >= 0 && h < vecBase && (h < rvArg0 || h > rvArg0+7) {
+					if t, known := g.types[id.Value]; known && t == s {
+						fixed[h] = true
+						regs = append(regs, h)
+						continue
+					}
+				}
+			}
+		}
 		r, err := g.exprAs(arg, s)
 		if err != nil {
 			return 0, err
@@ -1906,6 +1931,15 @@ func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *record
 	general, floating := 0, 0
 	var vectorArgs []int // vector arguments, in order: v8, v9, … after the spills
 	for _, r := range regs {
+		if r < 0 {
+			// A constant argument: materialized in its argument register.
+			c := constArgs[-r-1]
+			if err := g.constant(rvArg0+general, c.v, c.s); err != nil {
+				return 0, err
+			}
+			general++
+			continue
+		}
 		if r >= rvVBase {
 			// A vector argument travels in v8–v23; the argument registers
 			// are the operand stack, so the move waits until every live
