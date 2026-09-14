@@ -2322,11 +2322,8 @@ now spell the binding as the compiler does, `bind [sp, #N] = p`, under
 the packed convention. `nine` is proven; `twelve`, a 64-bit sum of
 twelve unknowns, reads them all and stays evidence at the diagrams'
 budget; dropping a stack parameter from the body is a mismatch
-(`asm/stack_params_test.go`). `tail_sum`, whose span arrives on the
-stack, reads it and is evidence too: the coupling search pairs its
-counter with the accumulator's register, whose header value is an
-affine image of the counter's, and does not back out of the choice — a
-limit of the search, not of the slot model.
+(`asm/stack_params_test.go`); `tail_sum`, whose span arrives on the
+stack and is walked in a loop, is proven.
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
