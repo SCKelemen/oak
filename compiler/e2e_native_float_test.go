@@ -24,6 +24,10 @@ clamp: (x: f64, lo: f64, hi: f64) -> f64 = x < lo ? lo | (x > hi ? hi | x)
 
 neg_abs: (x: f32) -> f32 = -abs(x)
 
+least: (a: f64, b: f64) -> f64 = min(a, b)
+
+most: (a: f32, b: f32) -> f32 = max(a, b)
+
 hypot_sq: (a: f64, b: f64) -> f64 = fma(a, a, b * b)
 
 widen_round: (x: f32) -> f32 = f32_round_f64(f64(x) * 3.0)
@@ -70,6 +74,15 @@ main: (): i32 {
   assert(clamp(5.0, 0.0, 1.0) == 1.0)
   assert(clamp(0.5, 0.0, 1.0) == 0.5)
   assert(neg_abs(-2.5) == -2.5)
+  assert(least(1.0, 2.0) == 1.0)
+  assert(most(1.0, 2.0) == 2.0)
+  nan64: f64 = f64_bits_u64(u64(9221120237041090560))
+  a_nan: f64 = least(nan64, 1.0)
+  assert(a_nan != a_nan)
+  b_nan: f64 = least(1.0, nan64)
+  assert(b_nan != b_nan)
+  negzero: f64 = f64_bits_u64(u64(9223372036854775808))
+  assert(u64_bits_f64(least(0.0, negzero)) == u64(9223372036854775808))
   assert(hypot_sq(3.0, 4.0) == 25.0)
   assert(widen_round(1.5) == 4.5)
   assert(to_int(-7.9) == i32(-7))
@@ -114,7 +127,7 @@ func TestE2ENativeFloats(t *testing.T) {
 	if abnormal || code != 42 {
 		t.Fatalf("native floats: exit = (%d, abnormal=%v), want 42\n%s", code, abnormal, joined)
 	}
-	for _, fn := range []string{"scale", "halve", "clamp", "neg_abs", "hypot_sq", "widen_round", "to_int", "sat_int", "from_int", "bits_of", "total", "fill_f64", "combine"} {
+	for _, fn := range []string{"scale", "halve", "clamp", "neg_abs", "least", "most", "hypot_sq", "widen_round", "to_int", "sat_int", "from_int", "bits_of", "total", "fill_f64", "combine"} {
 		if !strings.Contains(joined, "asm unit "+fn+":") {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}

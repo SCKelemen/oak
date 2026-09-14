@@ -2807,6 +2807,18 @@ the RV64 lane lowers every function of the AArch64 simd corpora but the
 `ctz`/`popcount` helpers (no Zbb), and the two lanes' native backends
 stand at parity on the fixed vectors.
 
+**RV64 lane, thirteenth increment — IEEE `min`/`max` (2026-09-14).** Oak's
+`min`/`max` (754-2019 minimum/maximum: a NaN operand yields NaN, `-0.0`
+below `+0.0`) had no single F/D instruction on RISC-V — `fmin`/`fmax` are
+the number-selecting minNum/maxNum — and stayed with the C backend. They
+now lower as `fmin`/`fmax` behind two NaN tests (`rvMinMax`: `feq` of each
+operand with itself is false exactly on a NaN, which is then kept as the
+result), the scalar form of the mask merge the vector lowering uses. The
+verifier proves both against the Oak body up to the NaN payload (`least`,
+`most` in the shared float corpus, `compiler/e2e_native_float_test.go`,
+proven on both lanes), and the AArch64 lane's `fmin`/`fmax` stay the one
+instruction they were.
+
 **Executables linked by the Oak assembler (landed; `asm/executable.go`,
 `oak build -link oak`).** A program whose every body the native backend
 lowered links into a final ELF64 executable here, with no system linker
