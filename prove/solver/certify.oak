@@ -16,10 +16,9 @@ CERT_CONSTANT_FALSE: u32 = 4
 CERT_REFUSED: u32 = 5
 CERT_MODEL_UNCONFIRMED: u32 = 6
 
-CERT_CONFLICTS: u32 = 200000
-
-// cert_conflicts is the conflict budget: OAK_PROVE_CONFLICTS (`oak prove
-// -conflicts N`) when set to digits, else CERT_CONFLICTS.
+// cert_conflicts is the requested conflict budget: OAK_PROVE_CONFLICTS
+// (`oak prove -conflicts N`) when set to digits, else zero, which
+// sat_conflicts scales with the clause count.
 cert_conflicts: (): u32 {
   buf: [16]u8
   n: u32 = copy_env(c_getenv(c.cstr("OAK_PROVE_CONFLICTS\0")), span(&buf))
@@ -29,7 +28,7 @@ cert_conflicts: (): u32 {
     value = value * u32(10) + u32(buf[k] - u8(48))
     k = k + u32(1)
   }
-  value == u32(0) ? { CERT_CONFLICTS } | { value }
+  value
 }
 CERT_RECORD_WORDS: u32 = 16777216
 

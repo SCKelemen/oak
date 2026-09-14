@@ -1104,10 +1104,11 @@ func runOakLRAT(formula, certificate string) (OakLRATVerdict, error) {
 	return verdict, nil
 }
 
-// OakSATBudget bounds the conflicts one run of the solver written in Oak
-// may spend before reporting exhaustion; the rung is a cross-check of a
-// row the ladder already decided, so it gives up rather than wait.
-const OakSATBudget = 200000
+// OakSATBudget is the conflict budget passed by default: zero, which the
+// solver scales with the obligation (sat_conflicts in prove/solver/sat.oak:
+// 200,000 or 100 per clause, whichever is larger); `oak prove -conflicts N`
+// sets a flat budget instead.
+const OakSATBudget = 0
 
 // runOakSAT solves the obligation with the SAT solver written in Oak
 // (prove/solver/sat.oak) inside the compiled solver binary: the clauses go
