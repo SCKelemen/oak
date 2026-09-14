@@ -191,7 +191,9 @@ or the verifier, not in the program:
    `TestArgumentLayoutMatchesLeanTransliteration`, `94-assembler.md` §9.z),
    and span aliases (`Oak.SpanAlias`: `forgetRegisterFacts` and `aliasSpan`
    sound against a register file, `TestSpanAliasMatchesLeanTransliteration`,
-   §9.aa); the RV64 checker's move rule remains.
+   §9.aa), and the RV64 checker's move rule (`Oak.RiscVSpanAlias`,
+   `TestRV64SpanAliasMatchesLeanTransliteration`, §9.ab). The checker
+   facts named in STATUS are all refined.
 6. **The checkers are linear over the block.** Base facts (spans,
    regions, frame addresses) are definitions, not per-path state; guard
    facts already flow through labels by a fixpoint on AArch64. The two
