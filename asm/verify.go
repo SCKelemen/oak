@@ -24,10 +24,12 @@ import (
 	"fmt"
 	"github.com/SCKelemen/oak/typechecker"
 	"math/bits"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/semir"
@@ -5326,6 +5328,12 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 // verdict is proof only when both are proven, otherwise the first that
 // is not.
 func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Verdict {
+	if os.Getenv("OAK_VERIFY_TRACE") != "" {
+		started := time.Now()
+		defer func() {
+			fmt.Fprintf(os.Stderr, "verify %s: %s\n", fn.Name, time.Since(started).Round(time.Millisecond))
+		}()
+	}
 	if shape, isVector := vectorShape(sig.ReturnType); isVector {
 		return verifyVectorResult(fn, sig, oakBody, shape)
 	}
