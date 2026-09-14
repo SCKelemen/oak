@@ -1170,7 +1170,7 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 	exec.loopExits = findLoopsIn(fn.Name, fn.Items, labels, fn.Callees)
 	result, effects, reason, ok := exec.run(0, state)
 	if effects != nil {
-		exec.cells, exec.writes = effects.cells, effects.writes
+		exec.cells, exec.writes, exec.trap = effects.cells, effects.writes, effects.trap
 	}
 	return result, exec, reason, ok
 }
@@ -1238,7 +1238,10 @@ type pathExecutor struct {
 	fn         *Function
 	summarized []string
 	freshSyms  map[string]int
-	callSites  int
+	// trap is the condition under which the machine traps (pathEffects.trap
+	// of the whole body): the equivalence is decided outside it.
+	trap      *term
+	callSites int
 	// freshCount numbers the unspecified lane values of the RV64 vector
 	// model (asm/rv64_verify_vector.go freshLane).
 	freshCount int
@@ -1975,8 +1978,10 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			// A trap: this path delivers no result. The Oak body traps on
 			// the same inputs (a failed bounds check, division by zero, an
 			// overflowing shift, a failed assert), so the path is outside
-			// the equivalence and drops from the fork it came from.
-			return trapPath, nil, "", true
+			// the equivalence: it drops from the fork it came from, and
+			// the condition that reached it leaves the input domain
+			// (pathEffects.trap).
+			return trapPath, &pathEffects{trap: constTerm(1, 1)}, "", true
 		case "bl":
 			if reason, ok := x.summarizeCall(instr, state); !ok {
 				return nil, nil, reason, false
@@ -2046,9 +2051,9 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			}
 			switch {
 			case taken == trapPath:
-				return fallThrough, fallEffects, "", true
+				return fallThrough, withTrap(fallEffects, mergeTrap(cond, takenEffects, fallEffects)), "", true
 			case fallThrough == trapPath:
-				return taken, takenEffects, "", true
+				return taken, withTrap(takenEffects, mergeTrap(cond, takenEffects, fallEffects)), "", true
 			}
 			return iteTerm(cond, taken, fallThrough), x.mergeEffects(cond, takenEffects, fallEffects), "", true
 		}
@@ -2322,7 +2327,9 @@ func spanBaseOf(t *term) (param string, offset int64, ok bool) {
 // not the term's; docs/spec/65-machine-memory.md section 7).
 func isLoad(mnemonic string) bool {
 	switch mnemonic {
-	case "ldar", "ldarb", "ldarh", "ldxr", "ldxrb", "ldxrh", "ldaxr", "ldaxrb", "ldaxrh":
+	case "ldar", "ldarb", "ldarh", "ldxr", "ldxrb", "ldxrh", "ldaxr", "ldaxrb", "ldaxrh", "ldapr", "ldaprb", "ldaprh":
+		// ldapr: the RCpc acquire load (Armv8.3, what clang emits for an
+		// acquire load on the Apple cores and other LRCPC targets).
 		return true
 	}
 	return isPlainLoad(mnemonic)
@@ -2800,6 +2807,10 @@ type oakLowering struct {
 	// verifier leaves it off: there the machine wraps where Oak traps.
 	trapsTracked bool
 	traps        []*term
+	// machineTrap is the asm side's trap condition (pathExecutor.trap):
+	// the inputs on which the machine trapped — where Oak traps too, on
+	// the same guard — leave the input domain (domainCondition).
+	machineTrap *term
 	// floats names the parameters and locals of f32/f64 type (their width),
 	// whose operations and comparisons are IEEE (asm/floats_lowering.go).
 	floats      map[string]int
@@ -3446,6 +3457,9 @@ func (lo *oakLowering) recordTagDomains(typ *oakType, prefix string) {
 // of its variants' values", or nil when the parameters have no unions.
 func (lo *oakLowering) domainCondition() *term {
 	var cond *term
+	if lo.machineTrap != nil {
+		cond = binaryTerm("xor", truncate(lo.machineTrap, 1), constTerm(1, 1))
+	}
 	names := make([]string, 0, len(lo.tagDomains))
 	for name := range lo.tagDomains {
 		names = append(names, name)
@@ -5573,6 +5587,7 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	}
 	lowering := prepareLowering(fn, sig, nil)
 	lowering.resultChunk = chunk
+	lowering.machineTrap = exec.trap
 	for name, width := range exec.freshSyms {
 		lowering.fresh[name] = width // a summarized call's unspecified result bits
 	}
@@ -6690,6 +6705,24 @@ func equalityBlasters(names []string, widths map[string]int, asmTerm, oakTerm *t
 	return blasters
 }
 
+// hasUninterpreted reports a term with an uninterpreted operation node
+// (termFloat: a floating-point operation or an integer quotient).
+func hasUninterpreted(t *term) bool {
+	seen := map[*term]bool{}
+	var walk func(t *term) bool
+	walk = func(t *term) bool {
+		if t == nil || seen[t] {
+			return false
+		}
+		seen[t] = true
+		if t.kind == termFloat {
+			return true
+		}
+		return walk(t.left) || walk(t.right) || walk(t.cond)
+	}
+	return walk(t)
+}
+
 // blastEqual decides the equality under one variable order: proof, a
 // counterexample, or the budget exceeded (also when another order finished
 // first and stopped this one).
@@ -6723,6 +6756,16 @@ func blastEqual(bl *blaster, fn *Function, names []string, asmTerm, oakTerm *ter
 			continue // equal under every memory, though not node for node
 		}
 		env := bl.counterexampleOf(differs)
+		if asmTerm.eval(env) == oakTerm.eval(env) && (hasUninterpreted(asmTerm) || hasUninterpreted(oakTerm)) {
+			// The diagrams abstract an uninterpreted operation — a quotient
+			// at another width, or one under an arm the other side folds
+			// away — as an independent value, so this counterexample is the
+			// abstraction's, not the terms': the evaluation agrees on it.
+			// The bit level cannot decide such a pair; the verdict is the
+			// witness set's (asm/floats_ops.go, docs/spec/94-assembler.md
+			// §8, the thirty-first increment).
+			return Verdict{}, true
+		}
 		return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (bit %d differs): asm yields %d, Oak yields %d (asm term %s; Oak term %s)", fn.Name, describeEnv(names, env), i, asmTerm.eval(env), oakTerm.eval(env), asmTerm, oakTerm)}, false
 	}
 	order := ""

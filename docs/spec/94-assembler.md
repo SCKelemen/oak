@@ -2413,7 +2413,11 @@ features beyond the M4's.
 **RISC-V: the RV64 lane (first increment landed).** The second
 architecture, RV64IM first (the base integer set with multiplication,
 control transfer, loads and stores — what a hypervisor's or a database
-engine's hot integer paths need), then the F/D and V extensions. A unit
+engine's hot integer paths need), then the F/D and V extensions, and the
+A extension's `lr`/`sc` and `amo*` (`asm/rv64_atomics.go`: through a span
+element as the plain accesses, with their `.aq`/`.rl`/`.aqrl` suffixes,
+the checker holding them to the same bounds and the verifier deciding
+them under the sequential model of `65-machine-memory.md` §7a). A unit
 names the lane in its path (`name.rv64.oakasm`) or with an `arch rv64`
 directive before its bindings; every phase dispatches on it
 (`Function.Arch`). The specification situation is better than Arm's: the
@@ -2454,7 +2458,7 @@ Lean. What is new against the AArch64 lane, and how it landed:
   semantics (a zero divisor gives all ones and the dividend, the signed
   overflow the dividend and 0 — `Oak.RiscV.div_zero` and its kin,
   `rv64Divide` in Go); `auipc` and calls are outside the verified subset
-  (checked, trusted). The pseudo-instructions `mv li not neg negw sext.w
+  (checked, trusted). The pseudo-instructions `mv li not neg negw sext.w seqz snez sltz sgtz
   j jr ret nop beqz bnez bgez bltz blez bgtz call` are the assembler's
   spellings of base encodings (`li` up to 32 bits as `lui`+`addiw`,
   `call` as `auipc`+`jalr` under one `R_RISCV_CALL_PLT`).
