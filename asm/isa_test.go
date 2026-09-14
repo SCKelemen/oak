@@ -242,7 +242,7 @@ func TestInstructionTableCoverage(t *testing.T) {
 			t.Fatal(err)
 		}
 		if name == "adrl" {
-			unit.Functions[0].Tables = map[string]int64{"table": 64} // the data symbol the sample addresses
+			unit.Functions[0].Tables = map[string]Table{"table": {Size: 64, Elem: 8}} // the data symbol the sample addresses
 		}
 		if findings := Check(unit.Functions[0], sig, map[string]bool{"helper": true}); len(findings) != 0 {
 			t.Errorf("%s: checker rejected the sample: %v", name, findings)

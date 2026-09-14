@@ -961,8 +961,12 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// Witnesses: concrete inputs decide every loop.
 	checked := 0
 	for _, env := range loopWitnessInputs(fn, sig) {
-		asmValue, _, reasonA, okA := executeBody(fn, sig, env)
+		if !lowering.inDomain(env) {
+			continue // a union tag outside its variants: not a well-typed input
+		}
+		asmValue, _, reasonA, okA := executeBodyChunk(fn, sig, env, 0, exec.resultChunk)
 		concrete := prepareLowering(fn, sig, env)
+		concrete.resultChunk = exec.resultChunk
 		oakValue, _, reasonO, okO := concrete.resultTerm(fn, sig, oakBody)
 		if os.Getenv("OAK_VERIFY_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "witness %s %v: asm ok=%v %q trap=%v; oak ok=%v %q\n", fn.Name, env, okA, reasonA, asmValue == trapPath, okO, reasonO)
@@ -973,7 +977,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			// input set to zero): no value to compare on either side.
 			continue
 		}
-		got, want := truncate(maskResult(fn, sig, asmValue), width).eval(env), oakValue.eval(env)
+		got, want := truncate(maskResult(fn, sig, asmValue, exec.resultChunk), width).eval(env), oakValue.eval(env)
 		if got != want {
 			names := make([]string, 0, len(env))
 			for name := range env {

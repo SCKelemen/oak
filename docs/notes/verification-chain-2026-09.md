@@ -192,8 +192,21 @@ or the verifier, not in the program:
    local without an initializer) and 120 on RV64 (local spans and views,
    span-of-record parameters, expression depth past the scratch
    registers, calls through a value, floating-point record results).
-   The verifier trusts a body that reads a table; modeling the read as a
-   load from the symbol's bytes is the next proof step for it.
+   **The verified profile (2026-09-14):** `oak build -verified` refuses
+   any witnessed, trusted, or C body and prints the burn-down list
+   (`94-assembler.md` §9, "The verified profile"). Its first day closed,
+   on both lanes: record results of two chunks, calls returning or taking
+   records and sum types, span arguments to summarized calls, table reads
+   as span elements, frame bytes no store reached, RV64 record
+   parameters, RV64 byte-granular frame slots, and RV64 stores through
+   spans as memories; and it found the decision had to be over well-typed
+   union tags. The stdlib-bearing program went from 115 to 151 proven
+   bodies on AArch64 and from 42 to 149 on RV64, with no mismatch. What
+   leads the list now: the path budget (data-dependent loops the coupling
+   does not reach), vector and floating-point parameters (outside the
+   scalar profile by design), results past 16 bytes returned through
+   memory, stores in loop bodies, unit callees with loops, and writable
+   span arguments to summarized calls.
 
 ## 5. How to reproduce the tally
 

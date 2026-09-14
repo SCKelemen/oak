@@ -848,8 +848,39 @@ with its Oak body on 76 concrete inputs and is **evidence** — the coupling
 proof pairs a scalar Oak variable with a register, and the kernel's loop
 variables are lanes, so its loops are witnessed, not proven. Left for the
 next increments: coupling for vector lanes (a lane variable against a
-register half), `simd.store` (a write the straight-line model does not
-follow) and float vectors (`docs/notes/proof-chain-audit-2026-09.md`).
+register half) and `simd.store` (a write the straight-line model does not
+follow) (`docs/notes/proof-chain-audit-2026-09.md`); the float vectors
+follow.
+
+**The floating-point forms (2026-09-14).** `spec/sail/arm_primitives.sail`
+gains Arm's execute bodies for `fadd`/`faddp`, `fsub`, `fmul`, `fmla`/
+`fmls`, `fmin`/`fmax` (the 1985 forms), `fminnm`/`fmaxnm` (2008),
+`fsqrt`, and `fneg`/`fabs`, with the register operands and `FPCR` as
+parameters, and Arm's `FPNeg`/`FPAbs` as written. The IEEE operations
+themselves — `FPAdd`, `FPSub`, `FPMul`, `FPMulAdd`, `FPMin`, `FPMax`,
+`FPMinNum`, `FPMaxNum`, `FPSqrt`, defined in Arm's text over reals — are
+declared without bodies and mapped by Sail's `lean` extern binding to
+uninterpreted constants of the same names in the support library
+(`spec/sail/lean-sail-4.33.patch` carries them): exactly the standing the
+verifier gives them (`asm/floats_ops.go`, `Oak.Uninterpreted`). The
+bridge then proves, against the generated code, that each instruction
+applies its operation lane for lane — `fadd_lanes`, `fsub_lanes`,
+`fmul_lanes`, `fmla_lanes` (`FPMulAdd` of the accumulator's lane and the
+multiplicands', the verifier's `fma`), `fmls_lanes` (the first
+multiplicand negated), `fmin_lanes`/`fmax_lanes`, `fminnm_lanes`/
+`fmaxnm_lanes`, `fsqrt_lanes`, `fneg_lanes`/`fabs_lanes`, and
+`faddp_lanes` (lane `j` is `FPAdd` of lanes `2j` and `2j+1` of the
+concatenation `operand2 @ operand1`, the adjacent-pair shape the
+verifier's `faddp` builds and the `reduce_add` tree is made of) — and
+that `FPNeg` flips the sign bit and `FPAbs` clears it at both widths
+(`FPNeg_32`, `FPNeg_64`, `FPAbs_32`, `FPAbs_64`, decided). So the chain
+for a float unit is: the verifier proves the unit equal to its Oak body
+up to the operation terms; the bridge proves Arm's instruction text
+applies the same operations to the same lanes; and the identification of
+`Sail.FPAdd` with the verifier's `fadd` — IEEE addition under Arm's NaN
+rules — is what the silicon differential checks on the host core and
+`Oak.FloatOps` models at the bit level. The loop increment's remainder
+above (lane coupling, `simd.store`) is what is left.
 
 **Floating point as uninterpreted operations (eighth increment,
 2026-09-14; `asm/floats_ops.go`, `asm/verify_float.go`).** Until this
@@ -2936,8 +2967,8 @@ frame array (`elementRegion`, `deriveTableRegion`), a store through it
 is refused, a symbol the program does not declare is refused. A view of
 a table (`view(&T)`) is a span whose base is the table's address and
 whose length is its element count; `span(&T)` is refused, the table
-being read-only. The verifier does not yet model a table read: a body
-with `adrl`/`la` is trusted with that reason. A constant scalar global is
+being read-only. The verifier reads a table as the span its Oak name
+denotes (below, "Table reads"). A constant scalar global is
 folded into every body that reads it, so a natively linked program admits
 both kinds of global (`allNative`). On the stdlib-bearing program the
 tables lowered every body that indexed a global on both lanes with no
@@ -2948,9 +2979,141 @@ native; the C build agrees; the freestanding executables carry the bytes
 and run under QEMU), `asm/isa_test.go` (the `adrl` sample), the object
 and executable writers' tests.
 
+**The verified profile (2026-09-14).** `oak build -verified` holds a
+program to the verified native profile: every body the program reaches is
+lowered by the native backend and carries a proven verdict — none
+witnessed, none trusted, none left to the C backend — and the Oak
+assembler links it alone (`-link oak` is implied). The theorem such a
+build stands for is the chain of this section: each body's Oak semantics
+(the extraction, `Oak.LoweringRefinement`) equals the emitted assembly's
+(`Oak.AssemblerSemantics`, `Oak.ArmASL`, the Sail bridges) under the
+checker's memory discipline; what the chain does not yet cover is stated
+where it is trusted (the checker facts and the writers in STATUS, the
+RV64 export in the audit note). A program the profile refuses gets the
+burn-down list: every reason with the bodies it holds back, largest
+first, so the distance to the profile is a number that moves
+(`Compilation.verifiedProfile`, `SemanticModel.NativeVerdicts`,
+`NativeFallbacks`). On the stdlib-bearing program the first list holds
+380 bodies on AArch64 and 453 on RV64; the largest reasons are record
+results beyond one register chunk, vector or floating-point parameters,
+the path budget, table reads (`adrl`/`la`), unit callees, and calls
+returning a `Result` — the order in which the verifier grows next.
+Pinned: `compiler/e2e_verified_profile_test.go` (a proven program links
+on both lanes; a variable shift count is refused with its reason; a body
+left to C is refused with its reason).
+
+**Record results of two chunks, aggregate call summaries, unknown frame
+bytes (2026-09-14).** The first burn-down of the verified profile. A
+record or union result of 9 to 16 bytes comes back in two register chunks
+(x0 and x1; a0 and a1) and is verified chunk by chunk: `Verify` runs the
+paths once per chunk, each run delivering that chunk's register against
+the same chunk packed from the Oak body's aggregate value
+(`packAggregateChunk`, the padding masked by `leafMask`), and the verdict
+is proof only when both chunks are proven (`(both result chunks)`). A
+result past 16 bytes, returned through the area x8 addresses, is still
+trusted, now with that reason. A call to a program function returning a
+record or a sum type of up to two chunks is summarized like a scalar call:
+the callee's body is lowered to its aggregate value over the argument
+terms, packed into its chunks, and bound to x0 and x1 (a0 and a1), with
+the padding bits fresh unknowns (`callN#padK`) as the ABI leaves them —
+so a caller matching on a `Result` a callee returns is proven relative to
+the callee's Oak body. A load of frame bytes no store on the path reached
+— the padding of a record chunk stored at a narrower width, the payload
+of a union variant not constructed — no longer refuses the body: the
+bytes are fresh unknowns (`frame#<addr>`) that later loads of the same
+byte see again, so a result that never reads them is unaffected and a
+result that depends on them is refuted (the body computes from
+uninitialized memory), never matched by accident; a witness run still
+refuses such a load, since a chosen value could coincide. The RV64
+frame model takes the AArch64 lane's byte-granular slots (`storeSlot`,
+`loadSlot`): a record chunk stored with `sd` is read back field by field
+with `lw` or `lbu`, which had been trusted as "a load whose width differs
+from the slot's store". And the RV64 lane binds record and union
+parameters as the AArch64 lane does (`bindRV64Params`): up to 16 bytes as
+one or two register chunks assembled from the leaves, beyond that by
+reference to the caller's copy, a load through which reads the leaf at
+its offset — they had been trusted as "vector or non-integer parameters".
+On the stdlib-bearing program the proven bodies rose from 115 to 127 on
+AArch64 and from 42 to 113 on RV64, with no mismatch and no change in the
+C build. Pinned:
+`compiler/e2e_native_verdict_aggregates_test.go` (two-chunk results
+proven chunk by chunk, a `Result`-returning callee taken at its body, a
+one-chunk record parameter's padding, both lanes), `asm/frame_test.go`
+(an unstored slot's bytes refute a result that reads them and leave one
+that does not).
+
+**Table reads (2026-09-14).** The verifier reads a constant table as a
+span named by the table's Oak identifier: `adrl xR, sym` and `la rd, sym`
+bind the register to the base `&T` (`asm.Function.Tables` carries the
+element width and signedness beside the size, `asm.TableName` the Oak
+name), a load through it is the element term `T[k]` — the same select
+term the Oak side gives `T[k]`, with functional consistency between
+reads — and `len(T)` on the Oak side is the constant element count. The
+bytes themselves are not consulted: both sides read the same memory, so
+the equivalence is over the same uninterpreted elements, and a witness
+run draws them from the fixed element function as it does for a span.
+The trusted reason `instruction adrl`/`la` is gone from the tally: the
+proven bodies rose to 137 on AArch64 and 120 on RV64. With it, the
+layout table a body carries (`Composites`) also spells the result types
+of the program's functions, so a summarized call returning a record or
+sum type finds its layout. Pinned: `compiler/e2e_native_tables_test.go`
+(the table-reading bodies proven on both lanes).
+
+**Span arguments in call summaries; a Bool's cell (2026-09-14).** The
+call summary's span aliases (the twenty-ninth increment above) landed
+the same day as a second implementation of the same idea, which is
+dropped in its favor; what remains of it is a finding: a summarized
+`Bool` field's cell is the C enum's whole word, defined 0 or 1 by the
+callee, so the summary's padding unknowns must leave it alone
+(`definedMask`, over `leafMask`'s single bit). The first tally with
+aliased span arguments reported one mismatch (`path_get_esc`) that was
+exactly that, and none after. Pinned:
+`compiler/e2e_native_verdict_aggregates_test.go` (`head_sum` over
+`first_two`).
+
+**Aggregate arguments in call summaries; well-typed union tags
+(2026-09-14).** A callee's record or union parameter of up to two chunks
+is bound in the summary from its argument registers (`unpackAggregate`,
+the inverse of `packAggregateChunk`: each leaf the slice of the chunk at
+its offset and width), so `text_decode_ok(result)` and its kind are
+taken at their Oak bodies; a parameter past 16 bytes, passed by
+reference, is still refused. The layout table a body carries spells the
+parameter types of the program's functions as well as their results.
+Landing this exposed a latent gap in the decision itself: on the asm side
+a union parameter's chunks are assembled with each payload leaf under its
+tag (`compositeLeaf.guarded`, since the variants overlap in memory),
+while the Oak side binds every payload leaf free; on a tag outside the
+variants — an input no well-typed program produces — the asm traps where
+the Oak match falls through its last arm, and once a summarized callee
+read the payload the two sides disagreed there (`encoding_failure` and
+seven more, all the `X_failure` shape). The decision is now over
+well-typed inputs: `recordTagDomains` notes every union tag parameter's
+variant values, `decideEqual` compares both sides under the condition
+that each tag is one of them (`domainCondition`; outside it both sides
+are the same zero), and the witness runs skip assignments outside it
+(`inDomain`). The lowering's terms are unchanged, so
+`Oak.LoweringRefinement`'s transliteration still holds; the assumption is
+the decision's, and it is the typing rule of the source. Proven bodies:
+149 on AArch64, 132 on RV64, no mismatch. Pinned:
+`compiler/e2e_native_verdict_aggregates_test.go` (`check_ok` passing a
+sum type to `is_ok`).
+
+**RV64 stores through spans as memories (2026-09-14).** The RV64 lane
+records a store through a span base in the path's write log
+(`spanStoreRV64`, the address resolved as a load's is: `rv64SpanAddress`
+over `&v + K` and `&v + (idx << s)`), so the Oak side's assignments are
+compared as memories on RV64 as they have been on AArch64
+(`decideEffects`). The trusted reason "a store through a span" is gone
+from the RV64 tally: 149 bodies proven on RV64, 151 on AArch64.
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
-transliteration is checked against). The term language and the BDD
+transliteration is checked against). Retried 2026-09-14 with Sail built
+from git master (`dba5f00`, still versioned 0.20.2) against sail-riscv
+master (`22fad38`): the export generates, and its `Defs.lean` fails as
+before — `k_v` unbound at `root_level`, `PTW_Output` out of scope — a
+Sail Lean-backend matter, not ours; the theorems stay checked against the
+verbatim copies (`Oak.SailRiscVBridge`). The term language and the BDD
 blaster carry over unchanged.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's

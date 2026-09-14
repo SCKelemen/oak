@@ -117,8 +117,20 @@ type Function struct {
 	// or `la` (RV64) may address, by symbol, with their sizes in bytes: the
 	// checker admits guarded element reads inside them (a read-only
 	// region), as it admits a frame array's. Set by the native backend.
-	Tables map[string]int64
+	Tables map[string]Table
 }
+
+// Table is a constant data symbol's shape: its size in bytes, the width of
+// one element in bytes, and whether the elements are signed. The Oak name
+// of the table is the symbol without its `data_` prefix (TableName).
+type Table struct {
+	Size   int64
+	Elem   int64
+	Signed bool
+}
+
+// TableName is the Oak identifier a table's data symbol was made from.
+func TableName(symbol string) string { return strings.TrimPrefix(symbol, "data_") }
 
 // Composite is a record or tagged-union type's shape at the boundary: its
 // size in bytes, whether it is a homogeneous floating-point aggregate
