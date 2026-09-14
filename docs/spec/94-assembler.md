@@ -1360,7 +1360,13 @@ rejects), the encoder and object writer realize it, and the Oak body stays
 as the portable realization under `OAK_PORTABLE_INTRINSICS` — the
 differential oracle. `Compilation.WithNativeBodies()` (CLI `-native`)
 switches it on; a function outside the subset is left to the C backend
-with the reason reported.
+with the reason reported. So is a function with a `dispatch` clause
+(`93-simd.md` §6), whatever its body: the function is the selection
+between its realizations, made once from the processor's probed features,
+and only the C backend emits that selection; lowering its Oak body would
+define the symbol as the portable realization and leave the hardware unit
+unreachable (measured on CRC-32C, 23× behind, `benchmarks/native/README.md`).
+Its callers lower as usual and call the C backend's definition.
 
 The subset: parameters, locals, and results of the fixed-width integers
 and `Bool` (or a unit result); literals; wrapping `+ - * & | ^`; `/` and
