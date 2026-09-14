@@ -54,3 +54,17 @@ func LayoutArguments(args []ArgClass, packed bool) ([]ArgPlace, int64) {
 	}
 	return places, (off + 15) / 16 * 16
 }
+
+// compositeChunks is the register class of a record parameter under
+// AAPCS64: up to 16 bytes in ceil(size/8) consecutive registers, each an
+// 8-byte chunk of the memory image; larger by reference in one register.
+// Maintained line for line with Oak.ArgumentLayout.compositeChunks
+// (spec/lean/Oak/ArgumentLayout.lean), which proves the chunks cover the
+// record's bytes with none empty; asm/abi_refinement_test.go renders the
+// layouts the Lean file states as examples.
+func compositeChunks(size int64) (regs int, indirect bool) {
+	if size > 16 {
+		return 1, true
+	}
+	return int((size + 7) / 8), false
+}

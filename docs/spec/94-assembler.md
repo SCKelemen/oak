@@ -3494,3 +3494,33 @@ runs at 0.28 ns/byte where the call tree ran at 0.85 and the C backend at
 kernel that declares some forty vector locals over its expansions. What
 would take the rest: an allocator with liveness across the whole body
 instead of declaration order within it.
+
+### 9.z The argument layout refined (2026-09-14)
+
+Both lanes place integer-class arguments by one rule (`asm/abi.go`,
+`LayoutArguments`): the eight argument registers in order while each
+argument's words fit, then the stack at increasing offsets, every
+argument after the first that spilled going to the stack too, each
+rounded to its alignment — 8 bytes under the standard convention, its
+natural size and alignment under Apple's packed one — and the area rounded
+to 16. The checker's record-parameter class is a second rule
+(`compositeChunks`, `asm/abi.go`): up to 16 bytes in `⌈size/8⌉`
+registers, larger by reference in one. `spec/lean/Oak/ArgumentLayout.lean`
+transliterates both, maintained line for line with the Go, and proves what
+the checkers and the lowering rely on: every register place lies inside
+x0–x7 and no two overlap (`regs_within`, `places_ordered`); every stack
+place is aligned as its class asks, no two overlap, and the rounded area
+covers them all (`stack_within`, `stack_area_covers`); no register place
+follows a stack place (`places_ordered`); and a record's chunks cover its
+bytes with none empty, a larger record going by reference
+(`composite_chunks_cover`, `composite_indirect`). The Go is pinned to the
+model the same way as the lowering and the checker's region rules:
+`TestArgumentLayoutMatchesLeanTransliteration` (`asm/abi_refinement_test.go`)
+renders six layouts — words only, spans and two-chunk records, a ninth
+word on the stack, a span that does not fit taking what follows with it,
+packed and standard narrow scalars — and seven record sizes as the
+`example … := by decide` lines the Lean file states, and Lean's kernel
+evaluates each; a layout the Go changes fails the test until the Lean
+states the new one. Register widths (the 32-bit `w` forms of narrow
+arguments, §7) and the floating-point class are outside the model; the
+psABI layout on the RV64 lane shares the fold with `a0–a7` for `x0–x7`.

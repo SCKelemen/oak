@@ -606,10 +606,7 @@ func (c *checker) bindContract() {
 				c.errorf(c.fn.Line, "parameter %s: %s is a homogeneous floating-point aggregate (v registers); v1 leaves it to the C backend", param.Name.Value, typeText(param.Type))
 				continue
 			}
-			regs, indirect := 1, comp.Size > 16
-			if !indirect {
-				regs = int((comp.Size + 7) / 8)
-			}
+			regs, indirect := compositeChunks(comp.Size)
 			c.paramClass[param.Name.Value] = ClassX
 			ints = append(ints, intParam{param: param, class: ArgClass{Words: regs, Bytes: int64(regs) * 8, Align: 8}, comp: &compositeParam{regs: regs, size: comp.Size, indirect: indirect}})
 			continue
