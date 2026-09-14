@@ -101,6 +101,11 @@ func TestE2ENativeCalleeEffects(t *testing.T) {
 	if strings.Contains(joined, "asm unit push_lits: not verified") {
 		t.Errorf("push_lits must be decided under its 64-bit shift guard; diagnostics:\n%s", joined)
 	}
+	// main passes its own Arena record by reference: the callee reads the
+	// caller's frame copy (docs/spec/94-assembler.md §8, record arguments).
+	if !strings.Contains(joined, "asm unit main: proven equal to its Oak body") {
+		t.Errorf("main must be proven through its record argument; diagnostics:\n%s", joined)
+	}
 	if !strings.Contains(joined, "asm unit push_then_count: proven equal to its Oak body") || !strings.Contains(joined, "and the span memory it writes (w)") {
 		t.Errorf("push_then_count must be proven in its result and its span memory; diagnostics:\n%s", joined)
 	}
@@ -113,5 +118,18 @@ func TestE2ENativeCalleeEffects(t *testing.T) {
 	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_callee_effects_c", New().WithSource("callee_effects.oak", nativeCalleeEffectsProgram)); abnormal || code != 42 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)
+	}
+}
+
+// The rv64 lane copies a by-reference record it passes on into its frame
+// and hands the copy's address: the summary reads the record back from
+// the frame slots, so the callers are proven there too.
+func TestE2ENativeCalleeEffectsRV64(t *testing.T) {
+	_, infos := nativeRV64Lower(t, rv64Linux, nativeCalleeEffectsProgram)
+	joined := strings.Join(infos, "\n")
+	for _, fn := range []string{"push_ab", "push_n", "push_then_count", "main"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven equal to its Oak body") {
+			t.Errorf("rv64: %s must be proven through its record argument; diagnostics:\n%s", fn, joined)
+		}
 	}
 }

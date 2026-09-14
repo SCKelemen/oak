@@ -3953,6 +3953,40 @@ func (x *pathExecutor) bindAggregateArgument(lo *oakLowering, param *ast.Functio
 	return len(chunks), "", true
 }
 
+// frameRecordArgument binds a summarized callee's by-reference record
+// parameter to the caller's copy in its frame at addr: the record's
+// 8-byte chunks read from the slots (a chunk's unstored bytes are the
+// frame's unknowns) and unpacked leaf by leaf, as a by-value record's
+// register chunks are (docs/spec/94-assembler.md §8, record arguments).
+func (x *pathExecutor) frameRecordArgument(lo *oakLowering, param *ast.FunctionParameter, comp Composite, addr int64, state *symbolicState, name string) (string, bool) {
+	paramText := typeText(param.Type)
+	typ, isType := lo.oakTypeOf(param.Type)
+	if len(comp.Fields) == 0 || !isType || typ.kind == oakScalar {
+		return fmt.Sprintf("a call to %s: parameter %s has a type without a model", name, param.Name.Value), false
+	}
+	leaves, _, ok := compositeLeaves(x.fn.Composites, paramText, "", 0, nil)
+	if !ok {
+		return fmt.Sprintf("a call to %s: parameter %s (no layout)", name, param.Name.Value), false
+	}
+	if state.unknownFrom != nil && addr+comp.Size > *state.unknownFrom {
+		return fmt.Sprintf("a call to %s: the record argument %s lies in the frame's unknown region", name, param.Name.Value), false
+	}
+	chunks := make([]*term, (comp.Size+7)/8)
+	for k := range chunks {
+		value, has := x.loadFrame(state, addr+int64(8*k), 8)
+		if !has {
+			return fmt.Sprintf("a call to %s: the record argument %s is not held in the frame", name, param.Name.Value), false
+		}
+		chunks[k] = value
+	}
+	value, ok := unpackAggregate(typ, leaves, chunks)
+	if !ok {
+		return fmt.Sprintf("a call to %s: parameter %s has a leaf the layout lacks", name, param.Name.Value), false
+	}
+	lo.locals[param.Name.Value] = &oakLocal{agg: value}
+	return "", true
+}
+
 // unpackAggregate reads an aggregate value of the type from its register
 // chunks (the inverse of packAggregateChunk): each leaf is the slice of
 // the chunk at its offset and width.
@@ -5021,6 +5055,13 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	calleeAlias := map[string]string{}
 	calleeOffset := map[string]*term{}
 	calleeLen := map[string]*term{}
+	// The program's constant tables are in scope for the callee as they
+	// are for the caller (`sum_view(view(&TABLE))` inside a callee).
+	for table := range lo.tableLens {
+		if contract, isSpan := lo.spans[table]; isSpan {
+			calleeSpans[table] = contract
+		}
+	}
 	calleeViews := map[string]aggView{}
 	// A span or view parameter borrows a caller's array: the callee works
 	// on a copy and, since the conditional lowering re-points locals at
@@ -6511,6 +6552,16 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 			base, has := word(place, 0, 8)
 			if !has {
 				return fmt.Sprintf("a call to %s: the record argument %s is not a record parameter of the caller", name, param.Name.Value), false
+			}
+			if addr, isFrame := frameAddressOf(base); isFrame || func() bool { addr, isFrame = rvFrameAddrOf(base); return isFrame }() {
+				// The caller's copy of the record in its frame (the rv64
+				// lane copies a by-reference record it passes on, and a
+				// record local passed by reference): the callee's parameter
+				// is the aggregate read from the frame slots.
+				if reason, ok := x.frameRecordArgument(lo, param, arg.comp, addr, state, name); !ok {
+					return reason, false
+				}
+				continue
 			}
 			owner, offset, isBase := spanBaseOf(base)
 			if _, isRecord := x.records[owner]; !isBase || offset != 0 || !isRecord {

@@ -364,6 +364,15 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 			if base, index, bound, size, isElement := rv64FrameElement(state, mem); isElement {
 				return x.rv64FrameElementLoad(reg(0), width, name, base, index, bound, size, state)
 			}
+			if base, held := state.regs[mem.Base.Num]; held {
+				if addr, isFrame := rv64FrameAddrPlusConst(base); isFrame {
+					// A record local's field, or an array's element at a
+					// constant index, through the frame address in a
+					// register (`addi t0, sp, off; lw a0, 4(t0)`, or the
+					// address advanced by a constant).
+					return x.frameAccessRV64At(reg(0), addr+mem.Offset, width, name, false, state)
+				}
+			}
 			return x.spanLoadRV64(reg(0), mem, width, name, state)
 		}
 		return x.frameAccessRV64(reg(0), mem, width, name, false, state)
@@ -378,6 +387,11 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 			}
 			if base, index, bound, size, isElement := rv64FrameElement(state, mem); isElement {
 				return x.rv64FrameElementStore(reg(0), width, base, index, bound, size, state)
+			}
+			if base, held := state.regs[mem.Base.Num]; held {
+				if addr, isFrame := rv64FrameAddrPlusConst(base); isFrame {
+					return x.frameAccessRV64At(reg(0), addr+mem.Offset, width, name, true, state)
+				}
 			}
 			return x.spanStoreRV64(reg(0), mem, width, state)
 		}
@@ -569,7 +583,12 @@ func (x *pathExecutor) frameAccessRV64(reg Register, mem Memory, width int, name
 	if mem.Base.Class != ClassSP {
 		return "memory through a register other than sp", false
 	}
-	addr := -state.disp + mem.Offset
+	return x.frameAccessRV64At(reg, -state.disp+mem.Offset, width, name, store, state)
+}
+
+// frameAccessRV64At is frameAccessRV64 at an entry-relative address: from
+// sp directly, or from a frame address held in a register.
+func (x *pathExecutor) frameAccessRV64At(reg Register, addr int64, width int, name string, store bool, state *symbolicState) (string, bool) {
 	if state.frame == nil {
 		state.frame = map[int64]frameSlot{}
 	}
@@ -608,4 +627,22 @@ func isSimpleElement(address *term) bool {
 	_, _, leftBase := spanBaseOf(address.left)
 	_, _, rightBase := spanBaseOf(address.right)
 	return leftBase || rightBase
+}
+
+// rv64FrameAddrPlusConst reads a frame address held in a register, or such
+// an address advanced by constants (`add t0, t0, t1` with t1 a field's
+// offset), as the entry-relative address.
+func rv64FrameAddrPlusConst(t *term) (int64, bool) {
+	if addr, isFrame := rvFrameAddrOf(t); isFrame {
+		return addr, true
+	}
+	if t.kind == termBinary && t.op == "add" {
+		if addr, isFrame := rv64FrameAddrPlusConst(t.left); isFrame && t.right.kind == termConst {
+			return addr + int64(t.right.value), true
+		}
+		if addr, isFrame := rv64FrameAddrPlusConst(t.right); isFrame && t.left.kind == termConst {
+			return addr + int64(t.left.value), true
+		}
+	}
+	return 0, false
 }

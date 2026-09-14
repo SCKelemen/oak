@@ -2574,6 +2574,29 @@ and array corpora are proven on both lanes (`asm/agg_views_test.go`;
 `compiler/e2e_native_array_test.go`); `Oak.Subslice.view_index_in_owner`
 states that the translated index of a view stays inside its owner.
 
+**Forty-first increment — tables in a callee, records from the frame,
+and the rv64 lane's register-held frame addresses (2026-09-16;
+`asm/verify.go` frameRecordArgument, `asm/rv64_verify.go`).** Three small
+gaps the corpus tally kept: an inlined callee saw only its parameters as
+spans, so `sum_view(view(&TABLE))` inside `table_sum` was "not a borrow
+of an aggregate local" and the tables `main` was trusted — the callee's
+span table now carries the program's constant tables as the caller's
+does; a by-reference record argument that is the caller's own copy in its
+frame — a record local passed on, and on the rv64 lane every by-reference
+record passed on, which the lane copies before the call — was "not a
+record parameter of the caller" — the summary now reads the record's
+8-byte chunks from the frame slots and unpacks them leaf by leaf, as a
+by-value record's register chunks are (a chunk's unstored bytes the
+frame's unknowns), so `push_ab`, `push_n`, `push_then_count`, and the
+callee-effects `main` are proven on both lanes; and the rv64 executor
+routes a load or store through a register holding a frame address —
+`addi t0, sp, off; lw a0, 4(t0)`, or the address advanced by a constant
+(`add t0, t0, t1` with a field's offset) — to the frame slot, as the
+AArch64 executor's registerFrameMemory does. `Oak.SpanArguments.
+record_chunks_disjoint`: the copy's chunks are disjoint slots, so reading
+them back is the record. (`compiler/e2e_native_tables_test.go`,
+`compiler/e2e_native_callee_effects_test.go`.)
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
