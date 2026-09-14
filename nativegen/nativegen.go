@@ -1542,12 +1542,20 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	}
 	var intParams []paramClass
 	var classes []asm.ArgClass
+	vectorParams := 0
 	for _, p := range fn.Parameters {
 		if p.Variadic {
 			return nil, 0, unsupported("variadic parameter %s", p.Name.Value)
 		}
 		if s, ok := scalarOf(p.Type); ok {
 			if s.isFloat || s.isVec {
+				// Floats and fixed vectors arrive in v0–v7 (AAPCS64); a ninth
+				// would go on the stack, which the register contract does
+				// not spell — the function stays with the C backend.
+				vectorParams++
+				if vectorParams > 8 {
+					return nil, 0, unsupported("parameter %s: more than eight floating-point or vector parameters (the register contract passes eight, in v0–v7)", p.Name.Value)
+				}
 				continue
 			}
 			size := int64(s.bits / 8)

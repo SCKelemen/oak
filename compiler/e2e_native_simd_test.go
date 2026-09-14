@@ -112,6 +112,19 @@ picked: (b: []u8) -> u32 {
   simd.movemask_u8x16(vec_pick(hi, lo)) + simd.movemask_u8x16(vec_pick(a, lo))
 }
 
+// Nine vector parameters exceed the register contract (v0–v7): the
+// function is left to the C backend, reported, and the program still
+// runs through the shim — movemask of the or of nine copies of hi is 65535.
+nine: (a: simd.U8x16, b: simd.U8x16, c: simd.U8x16, d: simd.U8x16, e: simd.U8x16, f: simd.U8x16, g: simd.U8x16, h: simd.U8x16, i: simd.U8x16): u32 {
+  simd.movemask_u8x16(simd.or_u8x16(simd.or_u8x16(simd.or_u8x16(a, b), simd.or_u8x16(c, d)), simd.or_u8x16(simd.or_u8x16(e, f), simd.or_u8x16(simd.or_u8x16(g, h), i))))
+}
+
+ninth: (b: []u8) -> u32 {
+  a: simd.U8x16 = simd.load_u8x16(b, u32(0))
+  hi: simd.U8x16 = simd.or_u8x16(a, simd.splat_u8x16(u8(128)))
+  nine(a, a, a, a, a, a, a, a, hi)
+}
+
 main: (): u32 {
   data: [32]u8
   i: u32 = u32(0)
@@ -139,7 +152,8 @@ main: (): u32 {
   ok8: Bool = doubled_mask(view(&data)) == u32(128)
   ok9: Bool = c_side(view(&data), view(&data), view(&data), view(&data), view(&data)) == u32(128)
   ok10: Bool = picked(view(&data)) == u32(65535)
-  ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 ? u32(42) | (ok1 ? u32(0) | u32(1)) + (ok2 ? u32(0) | u32(2)) + (ok3 ? u32(0) | u32(4)) + (ok4 ? u32(0) | u32(8)) + (ok5 ? u32(0) | u32(16)) + (ok6 ? u32(0) | u32(32)) + (ok7 ? u32(0) | u32(64)) + (ok8 ? u32(0) | u32(128)) + (ok9 ? u32(0) | u32(200)) + (ok10 ? u32(0) | u32(210))
+  ok11: Bool = ninth(view(&data)) == u32(65535)
+  ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 && ok11 ? u32(42) | (ok1 ? u32(0) | u32(1)) + (ok2 ? u32(0) | u32(2)) + (ok3 ? u32(0) | u32(4)) + (ok4 ? u32(0) | u32(8)) + (ok5 ? u32(0) | u32(16)) + (ok6 ? u32(0) | u32(32)) + (ok7 ? u32(0) | u32(64)) + (ok8 ? u32(0) | u32(128)) + (ok9 ? u32(0) | u32(200)) + (ok10 ? u32(0) | u32(210)) + (ok11 ? u32(0) | u32(220))
 }
 `
 
@@ -162,6 +176,9 @@ func TestE2ENativeSimd(t *testing.T) {
 		if !strings.Contains(joined, "asm unit "+fn+":") {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
+	}
+	if !strings.Contains(joined, "nine left to the C backend (parameter i: more than eight floating-point or vector parameters") {
+		t.Errorf("nine (nine vector parameters) must be left to the C backend, reported; diagnostics:\n%s", joined)
 	}
 	if !strings.Contains(joined, "c_side left to the C backend") {
 		t.Errorf("c_side must stay on the C backend (the shim's caller); diagnostics:\n%s", joined)
