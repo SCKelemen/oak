@@ -212,6 +212,58 @@ theorem index_access_bytes (elem len i b : Nat) (hguard : i < len)
   have h := index_access elem len i hguard
   omega
 
+/-! ## Derived element regions (the seam checker's `elementRegion`,
+`frameArrayAccess`, `regionAccess`; refined in `Oak.CheckerRefinement`)
+
+Integers model signed byte addresses and Go's `int64`. An element index
+`i` read from a register is non-negative. -/
+
+/-- A frame array's element: with the `K` elements of `size` bytes at
+    `addr` inside the frame (`-frame ≤ addr`, `addr + K·size ≤ 0`), the
+    element `i < K` lies inside it. -/
+theorem frame_element (frame addr size K i : Int)
+    (hlo : -frame ≤ addr) (hhi : addr + K * size ≤ 0)
+    (hi : 0 ≤ i) (hidx : i < K) (hsize : 0 ≤ size) :
+    InFrame frame (addr + i * size) size := by
+  have h1 : (i + 1) * size ≤ K * size := Int.mul_le_mul_of_nonneg_right (by omega) hsize
+  rw [Int.add_mul, Int.one_mul] at h1
+  have h2 : 0 ≤ i * size := Int.mul_nonneg hi hsize
+  unfold InFrame
+  constructor <;> omega
+
+/-- A span element under `i < len`: its `size` bytes at `i·size` lie inside
+    the span's `size·len` (the `Int` twin of `index_access`). -/
+theorem span_element (size len i : Int) (hi : 0 ≤ i) (hsize : 0 ≤ size) (hlt : i < len) :
+    i * size + size ≤ size * len := by
+  have h1 : (i + 1) * size ≤ len * size := Int.mul_le_mul_of_nonneg_right (by omega) hsize
+  rw [Int.add_mul, Int.one_mul, Int.mul_comm len size] at h1
+  exact h1
+
+/-- `K` elements from `i` under the slack guard `i + K ≤ len`: their
+    `K·size` bytes lie inside the span (the `Int` twin of
+    `index_access_lanes`). -/
+theorem span_element_lanes (size len i K : Int) (hsize : 0 ≤ size) (hsum : i + K ≤ len) :
+    i * size + size * K ≤ size * len := by
+  have h1 : (i + K) * size ≤ len * size := Int.mul_le_mul_of_nonneg_right hsum hsize
+  rw [Int.add_mul, Int.mul_comm K size, Int.mul_comm len size] at h1
+  exact h1
+
+/-- An element of a bounded region: with `K` elements of `size` bytes
+    inside `extent` bytes, the element `i < K` lies inside it. -/
+theorem region_element (extent size K i : Int) (hfit : K * size ≤ extent)
+    (hi : 0 ≤ i) (hidx : i < K) (hsize : 0 ≤ size) :
+    i * size + size ≤ extent := by
+  have h1 : (i + 1) * size ≤ K * size := Int.mul_le_mul_of_nonneg_right (by omega) hsize
+  rw [Int.add_mul, Int.one_mul] at h1
+  omega
+
+/-- Every byte of an access `[off, off+size)` admitted inside `extent`
+    bytes lies inside them. -/
+theorem region_offset_bytes (extent off size b : Int) (hlo : 0 ≤ off) (hhi : off + size ≤ extent)
+    (hb : off ≤ b ∧ b < off + size) : 0 ≤ b ∧ b < extent := by
+  obtain ⟨hb1, hb2⟩ := hb
+  constructor <;> omega
+
 /-! ## Entry padding
 
 `asm/object.go` (`textLayout.pad`) fills the gap before an entry with the

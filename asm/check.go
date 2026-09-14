@@ -1843,34 +1843,80 @@ func (c *checker) elementRegion(dest, base Register, index int, size int64) {
 	if !guarded {
 		return
 	}
+	var frameAddr *int64
 	if addr, isFrame := c.frameAddrs[base.Num]; isFrame {
-		if bound.boundReg >= 0 || bound.bound <= 0 || addr < -c.fn.Frame || addr+bound.bound*size > 0 {
-			return
-		}
-		c.regions[dest.Num] = region{size: size, writable: true}
-		return
+		frameAddr = &addr
 	}
-	if fact, isSpan := c.spans[base.Num]; isSpan && fact.elem == size {
-		if bound.slack && bound.boundReg >= 0 && fact.holdsLen(bound.boundReg) && fact.hasMin && bound.bound <= fact.minLen {
-			// Under the slack guard wI + K <= len (with len >= K, so the
-			// subtraction did not wrap) the K elements from wI lie inside
-			// the span (Oak.Assembler.index_access_lanes): xE addresses a
-			// region of K elements — a vector load or store over lanes
-			// wider than a byte goes through it (nativegen/simd.go).
-			c.regions[dest.Num] = region{size: size * bound.bound, writable: fact.writable}
-			return
+	var extent *region
+	if r, isRegion := c.regions[base.Num]; isRegion {
+		extent = &r
+	}
+	if derived, ok := elementRegionOf(c.fn.Frame, frameAddr, c.spans[base.Num], extent, bound, size); ok {
+		c.regions[dest.Num] = derived
+	}
+}
+
+// elementRegionOf is the decision of elementRegion over the facts on the
+// base — maintained line for line with Oak.CheckerRefinement.elementRegion
+// (spec/lean/Oak/CheckerRefinement.lean), which proves every byte of an
+// access inside the derived region lies inside the object the base
+// addresses; asm/checker_refinement_test.go renders the decisions the Lean
+// file states as examples. A frame address: the K elements of size bytes
+// must lie inside the frame, under an immediate guard. A span of elements
+// of this size: under the slack guard wI + K <= len (with len >= K, so
+// the subtraction did not wrap; K > 0 where the fact is recorded) the K
+// elements from wI lie inside the span (Oak.Assembler.index_access_lanes),
+// a region of K elements for a vector access (nativegen/simd.go);
+// otherwise one element under a register bound holding the length, or
+// an immediate bound below the proven minimum. A bounded region (a
+// constant table's address, adrl): the K elements must lie inside it.
+func elementRegionOf(frame int64, frameAddr *int64, span *spanFact, extent *region, bound idxFact, size int64) (region, bool) {
+	if frameAddr != nil {
+		addr := *frameAddr
+		if bound.boundReg >= 0 || bound.bound <= 0 || addr < -frame || addr+bound.bound*size > 0 {
+			return region{}, false
 		}
-		inBounds := (bound.boundReg >= 0 && fact.holdsLen(bound.boundReg)) || (bound.boundReg < 0 && fact.hasMin && bound.bound <= fact.minLen)
+		return region{size: size, writable: true}, true
+	}
+	if span != nil && span.elem == size {
+		if bound.slack && bound.boundReg >= 0 && span.holdsLen(bound.boundReg) && span.hasMin && bound.bound <= span.minLen {
+			return region{size: size * bound.bound, writable: span.writable}, true
+		}
+		inBounds := (bound.boundReg >= 0 && span.holdsLen(bound.boundReg)) || (bound.boundReg < 0 && span.hasMin && bound.bound <= span.minLen)
 		if inBounds {
-			c.regions[dest.Num] = region{size: size, writable: fact.writable}
+			return region{size: size, writable: span.writable}, true
 		}
-		return
+		return region{}, false
 	}
-	// Over a bounded region (a constant table's address, adrl): the K
-	// elements of size bytes must lie inside it.
-	if extent, isRegion := c.regions[base.Num]; isRegion && bound.boundReg < 0 && bound.bound > 0 && bound.bound*size <= extent.size {
-		c.regions[dest.Num] = region{size: size, writable: extent.writable}
+	if extent != nil && bound.boundReg < 0 && bound.bound > 0 && bound.bound*size <= extent.size {
+		return region{size: size, writable: extent.writable}, true
 	}
+	return region{}, false
+}
+
+// regionAdmits is the arithmetic of regionAccess (Oak.CheckerRefinement.regionAdmits):
+// an access of size bytes at [xR, #off] (index nil) or [xR, wJ, uxtw]
+// under the constant guard wJ < bound inside a region, a store needing a
+// writable one. The operand shapes and the alignment stay regionAccess's.
+func regionAdmits(extent region, isStore bool, off, size int64, index *idxFact) bool {
+	if isStore && !extent.writable {
+		return false
+	}
+	if index != nil {
+		return index.boundReg < 0 && index.bound*size <= extent.size
+	}
+	return 0 <= off && off+size <= extent.size
+}
+
+// frameArrayAdmits is the arithmetic of frameArrayAccess
+// (Oak.CheckerRefinement.frameArrayAdmits): through the entry-relative
+// frame address base, [xN, #off] inside the frame, or [xN, wI, uxtw] under
+// the constant guard wI < bound with the bound elements inside it.
+func frameArrayAdmits(frame, base, off, size int64, index *idxFact) bool {
+	if index != nil {
+		return index.boundReg < 0 && -frame <= base && base+index.bound*size <= 0
+	}
+	return -frame <= base+off && base+off+size <= 0
 }
 
 // aliasSpan records a register move that copies a span's base or length:
@@ -2060,7 +2106,7 @@ func (c *checker) regionAccess(instr Instruction, matched form, mem Memory, exte
 			c.errorf(instr.Line, "%s indexed by %s without a dominating constant index guard: `cmp %s, #K` then `b.hs <exit>` bounds the array's index", instr.Mnemonic, index.Text, index.Text)
 			return
 		}
-		if bound.bound*size > extent.size {
+		if !regionAdmits(extent, isStore, 0, size, &bound) {
 			c.errorf(instr.Line, "%s: the guard admits %d elements of %d bytes, past the %d bytes addressed by %s", instr.Mnemonic, bound.bound, size, extent.size, mem.Base.Text)
 			return
 		}
@@ -2071,7 +2117,7 @@ func (c *checker) regionAccess(instr Instruction, matched form, mem Memory, exte
 		}
 		return
 	}
-	if mem.Offset < 0 || mem.Offset+size > extent.size {
+	if !regionAdmits(extent, isStore, mem.Offset, size, nil) {
 		c.errorf(instr.Line, "%s touches record bytes [%d, %d) through %s, outside its %d bytes", instr.Mnemonic, mem.Offset, mem.Offset+size, mem.Base.Text, extent.size)
 		return
 	}
@@ -2099,9 +2145,8 @@ func (c *checker) frameArrayAccess(instr Instruction, matched form, mem Memory, 
 	if len(regs) > 0 && regs[0].Class == ClassV {
 		size = memorySizeReg(instr.Mnemonic, regs[0])
 	}
-	inFrame := func(lo, hi int64) bool { return lo >= -c.fn.Frame && hi <= 0 }
 	if mem.Index == nil {
-		if !inFrame(base+mem.Offset, base+mem.Offset+size) {
+		if !frameArrayAdmits(c.fn.Frame, base, mem.Offset, size, nil) {
 			c.errorf(instr.Line, "%s touches [%d, %d) relative to entry sp through %s, outside the declared %d-byte frame", instr.Mnemonic, base+mem.Offset, base+mem.Offset+size, mem.Base.Text, c.fn.Frame)
 			return
 		}
@@ -2121,7 +2166,7 @@ func (c *checker) frameArrayAccess(instr Instruction, matched form, mem Memory, 
 			c.errorf(instr.Line, "%s indexed by %s without a dominating constant index guard: `cmp %s, #K` then `b.hs <exit>` bounds the frame array's index", instr.Mnemonic, index.Text, index.Text)
 			return
 		}
-		if !inFrame(base, base+bound.bound*size) {
+		if !frameArrayAdmits(c.fn.Frame, base, 0, size, &bound) {
 			c.errorf(instr.Line, "%s: the guard admits %d elements of %d bytes at %d relative to entry sp, past the declared %d-byte frame", instr.Mnemonic, bound.bound, size, base, c.fn.Frame)
 			return
 		}
