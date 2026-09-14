@@ -207,11 +207,15 @@ or the verifier, not in the program:
    summarized now (`94-assembler.md` §9, "Exit tests that read memory",
    "Calls and spills inside loops"), and the path-budget bodies fell from
    71 to 21 on AArch64 and from 58 to 10 on RV64, with 166 and 160 bodies
-   proven. What leads the list now: vector and floating-point parameters
-   (outside the scalar profile by design), stores through spans inside
-   loop bodies (the span memory carried through the loop summary is the
-   next shape), results past 16 bytes returned through memory, and unit
-   callees whose bodies assert.
+   proven. Then the span memory through the loop summary landed ("Span
+   memories through loops"), with the loop proof's budgets that keep the
+   prover's native build bounded: 176 and 167 proven, no mismatch. What
+   leads the list now: vector and floating-point parameters (outside the
+   scalar profile by design), results past 16 bytes returned through
+   memory, unit callees whose bodies assert, the path budget (loops that
+   call functions with memory effects), and the witnessed verdicts — Bool
+   loop variables the coupling finds no register image for, and bodies
+   past the bit-level node budget.
 
 ## 5. How to reproduce the tally
 
