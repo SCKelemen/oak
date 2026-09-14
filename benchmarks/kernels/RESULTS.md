@@ -178,8 +178,30 @@ its elements in registers (`acc: [8]f32` is eight accumulators in
 `s8`–`s15`), and a squared operand is loaded once — `tiled`'s loop goes from
 about twelve instructions per element (a frame load and store per
 accumulator, the element loaded twice) to four (`add, ldr, fmul, fadd`),
-under a six-instruction header. The
-ranking of the rest — accumulator arrays in registers, the copy through the
-scratch register, common subexpressions within a statement, inlining the
-call chain, then unrolling — is the native optimization program's order.
+under a six-instruction header. Measured on the same loaded machine, best
+samples: `dot` 1.36× the C backend (from 3.2×), `tiled` 0.35× (the native
+loop is now ahead of clang over the C backend's checked reads), `sum`
+unchanged at 3.4×.
+
+What remains, in the program's order:
+
+1. **Reductions unrolled with several accumulators** (`sum`): clang takes
+   eight elements per iteration into four vector accumulators and adds the
+   lanes at the end. The native backend can emit that under the checker's
+   slack idiom, but the verifier's loop coupling pairs one Oak variable with
+   one register as an affine image; a reduction over a wrapping,
+   associative operator needs the image *sum of registers* (`total = r2 +
+   r3 + r4 + r5`), a coupling rule with its law in Lean — so the codegen
+   and the coupling land together, or the verdict falls to evidence.
+2. **Bounds facts through arithmetic** (`search`, `page_probe`): `mid = lo
+   + (hi - lo) / 2` under `lo < hi` and `hi <= len(keys)` is below the
+   length, which the typechecker proves and the checker cannot follow (it
+   has no upper-bound fact on a register that survives the loop label, nor
+   the arithmetic step); the guards stay.
+3. **Inlining the call chain** (`crc32c`, the utf8 validator): the hardware
+   `crc32cx` unit is reached through four levels of calls per step; an
+   asm-level inliner with register renaming, or a source-level one with a
+   register allocator that keeps the flattened body's locals in registers.
+4. **Loop-invariant header arithmetic** (`tiled`'s `len(a) - 8` recomputed
+   every iteration under the slack idiom).
 
