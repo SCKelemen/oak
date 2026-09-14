@@ -559,6 +559,14 @@ func alignedWrites(asm, oak []*spanWrite) ([][2]*term, bool) {
 func decideEffects(fn *Function, lowering *oakLowering, exec *pathExecutor, result *Verdict) Verdict {
 	writesCells := len(exec.cells) > 0 || len(lowering.writtenCells()) > 0
 	writesSpans := len(exec.writes) > 0 || len(lowering.writes) > 0
+	if !writesCells && !writesSpans && result == nil {
+		// A unit body with no effect on either side — an assert over a
+		// call, a body whose stores the model tracks are none — leaves the
+		// entry state as it is on both sides, so the sides agree
+		// (docs/spec/94-assembler.md §8, unit bodies without effects;
+		// Oak.UnitBodies: an empty effect log is the identity).
+		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (a unit body that writes no package state and no span memory on either side)", fn.Name)}
+	}
 	if writesCells {
 		verdict := decideCells(fn, lowering, exec, result)
 		if verdict.Kind != VerdictProven || !writesSpans {

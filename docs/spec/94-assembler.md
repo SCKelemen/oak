@@ -2473,6 +2473,19 @@ its constant element count takes the span-parameter alias, and `len` over
 the callee's parameter resolves through the alias to the table's count, so
 `table_sum` is proven too (`compiler/e2e_native_tables_test.go`).
 
+**Thirty-seventh increment — unit bodies without effects (2026-09-15;
+`asm/effects.go` decideEffects, `Oak.UnitBodies`).** A unit function whose
+body has no effect the model tracks — `check_all`, an assert over a call,
+on both lanes — was trusted ("no integer result"): a unit body is decided
+in the package cells and the span memories it writes, and with neither
+side writing any there was nothing to compare. Nothing to compare is the
+agreement: both sides leave the entry state as it is, so the body is
+proven "(a unit body that writes no package state and no span memory on
+either side)" (`Oak.UnitBodies`: the empty effect log is the identity, and
+two empty logs agree exactly when the entry states do). A body that does
+store through a span the signature lacks, or writes a cell the Oak body
+does not, is decided as before (`asm/unit_bodies_test.go`).
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
