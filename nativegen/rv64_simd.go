@@ -35,10 +35,25 @@ import (
 // (the top bit is the sign) then the mask register's low bits through
 // vmv.x.s at e32; `tbl` -> vrgather.vv under the index-below-16 mask
 // (vmsltu.vx), as the C realization does; `prev` by a literal ->
-// vslidedown.vi then vslideup.vi. What this lane leaves to the C backend,
-// reported as such: the float vectors, vectors in signatures (the LP64
-// struct contract), records or arrays of vectors, a shift or `prev` count
-// that is not a literal, and the ctz/popcount helpers (no Zbb).
+// vslidedown.vi then vslideup.vi. The float vectors simd.F32x4/F64x2
+// (docs/spec/93-simd.md section 1.2a) lower the same way under an e32/e64
+// configuration: `splat` -> vfmv.v.f; `add`/`sub`/`mul`/`div` -> vfadd/
+// vfsub/vfmul/vfdiv .vv; `fma` -> vfmacc.vv into the addend's register
+// (one rounding); `sqrt` -> vfsqrt.v; `neg`/`abs` -> vfsgnjn/vfsgnjx .vv of
+// a value with itself; `min`/`max` -> vfmin/vfmax .vv (IEEE minimumNumber/
+// maximumNumber: -0.0 below +0.0, a NaN operand suppressed) then the
+// catalog's NaN propagation restored lane by lane — `vmfne.vv v0, x, x`
+// marks x's NaN lanes and `vmerge.vvm` puts x back there, for each
+// operand (Oak.Simd.rvvMinMax); `extract` at a literal lane ->
+// vslidedown.vi then vfmv.f.s; `insert` at a literal lane -> vid.v,
+// vmseq.vx against the lane, vfmerge.vfm; `reduce_add` -> the
+// specification's pairwise tree (l0 + l1) + (l2 + l3), two slide-and-add
+// steps (Oak.Simd.rvv_reduce4: t = x + slide(x, 1); (t + slide(t, 2))[0]),
+// one step for two lanes, never vfredosum's sequential fold. What this
+// lane leaves to the C backend, reported as such: vectors in signatures
+// (the LP64 struct contract), records or arrays of vectors, a shift,
+// `prev`, `extract`, or `insert` count that is not a literal, and the
+// ctz/popcount helpers (no Zbb).
 
 // rvVBase offsets the vector register file in the generator's numbering:
 // register rvVBase+n is vN.
@@ -142,17 +157,26 @@ func rvMentionsFloat(fn *ast.FunctionStatement) bool {
 	if fn.ReturnType != nil && isFloatType(fn.ReturnType) {
 		return true
 	}
+	// A float vector's lanes cross through the floating-point file (splat,
+	// extract, insert, reduce_add), so it counts too.
+	isFloatVec := func(expr ast.Expression) bool {
+		s, ok := scalarOf(expr)
+		return ok && s.isVec && s.laneFloat
+	}
 	found := false
 	walk(fn.Body, func(n ast.Node) {
 		switch e := n.(type) {
 		case *ast.FloatLiteral:
 			found = true
 		case *ast.VariableDeclaration:
-			if e.Type != nil && isFloatType(e.Type) {
+			if e.Type != nil && (isFloatType(e.Type) || isFloatVec(e.Type)) {
 				found = true
 			}
 		case *ast.InvocationExpression:
 			if ident, ok := e.Function.(*ast.Identifier); ok && (strings.Contains(ident.Value, "f32") || strings.Contains(ident.Value, "f64") || typechecker.FloatIntrinsicName(ident.Value)) {
+				found = true
+			}
+			if member, isSimd := simdCallee(e.Function); isSimd && (strings.HasSuffix(member, "_f32x4") || strings.HasSuffix(member, "_f64x2")) {
 				found = true
 			}
 		}
@@ -203,9 +227,10 @@ func (g *rvGenerator) rvSimdOp(member string, args []ast.Expression) (int, error
 	if !ok {
 		return 0, unsupported("the simd operation %s", member)
 	}
-	arity := map[string]int{"splat": 1, "load": 2, "store": 3, "add": 2, "sub": 2, "and": 2, "or": 2, "xor": 2, "min": 2, "max": 2, "eq": 2, "subs": 2, "shr": 2, "any": 1, "all": 1, "tbl": 2, "prev": 3, "movemask": 1}
+	arity := map[string]int{"splat": 1, "load": 2, "store": 3, "add": 2, "sub": 2, "and": 2, "or": 2, "xor": 2, "min": 2, "max": 2, "eq": 2, "subs": 2, "shr": 2, "any": 1, "all": 1, "tbl": 2, "prev": 3, "movemask": 1,
+		"mul": 2, "div": 2, "fma": 3, "sqrt": 1, "neg": 1, "abs": 1, "extract": 2, "insert": 3, "reduce_add": 1}
 	want, known := arity[op]
-	if !known {
+	if !known || !shape.admitsOp(op) {
 		return 0, unsupported("the simd operation %s", member)
 	}
 	if len(args) != want {
@@ -225,14 +250,21 @@ func (g *rvGenerator) rvSimdOp(member string, args []ast.Expression) (int, error
 			return 0, err
 		}
 		g.vconf(shape)
-		g.emit("vmv.v.x", vsr(v), rvReg(r))
+		if shape.laneFloat {
+			g.emit("vfmv.v.f", vsr(v), rvReg(r))
+		} else {
+			g.emit("vmv.v.x", vsr(v), rvReg(r))
+		}
 		g.release(r)
 		return v, nil
 	case "load":
 		return g.rvSimdLoad(member, shape, args[0], args[1])
 	case "store":
 		return g.rvSimdStore(member, shape, args[0], args[1], args[2])
-	case "add", "sub", "and", "or", "xor", "min", "max", "subs":
+	case "add", "sub", "and", "or", "xor", "min", "max", "subs", "mul", "div":
+		if shape.laneFloat {
+			return g.rvSimdFloatBinary(op, shape, args[0], args[1])
+		}
 		mnemonic := map[string]string{"add": "vadd.vv", "sub": "vsub.vv", "and": "vand.vv", "or": "vor.vv", "xor": "vxor.vv", "min": "vminu.vv", "max": "vmaxu.vv", "subs": "vssubu.vv"}[op]
 		a, err := g.expr(args[0], &shape)
 		if err != nil {
@@ -246,6 +278,117 @@ func (g *rvGenerator) rvSimdOp(member string, args []ast.Expression) (int, error
 		g.emit(mnemonic, vsr(a), vsr(a), vsr(b))
 		g.release(b)
 		return a, nil
+	case "fma":
+		// vfmacc.vv vd, vs1, vs2: vd = vs1 * vs2 + vd in one rounding; the
+		// addend's register is the destination.
+		a, err := g.expr(args[0], &shape)
+		if err != nil {
+			return 0, err
+		}
+		b, err := g.expr(args[1], &shape)
+		if err != nil {
+			return 0, err
+		}
+		c, err := g.expr(args[2], &shape)
+		if err != nil {
+			return 0, err
+		}
+		g.vconf(shape)
+		g.emit("vfmacc.vv", vsr(c), vsr(a), vsr(b))
+		g.release(b)
+		g.release(a)
+		return c, nil
+	case "sqrt", "neg", "abs":
+		a, err := g.expr(args[0], &shape)
+		if err != nil {
+			return 0, err
+		}
+		g.vconf(shape)
+		switch op {
+		case "sqrt":
+			g.emit("vfsqrt.v", vsr(a), vsr(a))
+		case "neg":
+			g.emit("vfsgnjn.vv", vsr(a), vsr(a), vsr(a)) // the sign negated: -x
+		default:
+			g.emit("vfsgnjx.vv", vsr(a), vsr(a), vsr(a)) // the sign xored with itself: |x|
+		}
+		return a, nil
+	case "extract":
+		// Lane k: slid down to element 0 (k > 0), then out through vfmv.f.s.
+		k, isConst := constantValue(args[1])
+		if !isConst {
+			return 0, unsupported("simd.%s at a lane that is not a literal", member)
+		}
+		if k < 0 || k >= lanes {
+			return 0, unsupported("simd.%s at lane %d (past the lanes; traps)", member, k)
+		}
+		a, err := g.expr(args[0], &shape)
+		if err != nil {
+			return 0, err
+		}
+		r, err := g.alloc(scalars[shape.laneName()])
+		if err != nil {
+			return 0, err
+		}
+		g.vconf(shape)
+		src := vsr(a)
+		if k > 0 {
+			g.emit("vslidedown.vi", rvVReg(rvVHelp1), vsr(a), imm(k))
+			src = rvVReg(rvVHelp1)
+		}
+		g.emit("vfmv.f.s", rvReg(r), src)
+		g.release(a)
+		return r, nil
+	case "insert":
+		// The vector with lane k replaced: the lane indices (vid.v) compared
+		// with k give the one-lane mask, and vfmerge.vfm puts the scalar
+		// there and keeps the rest.
+		k, isConst := constantValue(args[1])
+		if !isConst {
+			return 0, unsupported("simd.%s at a lane that is not a literal", member)
+		}
+		if k < 0 || k >= lanes {
+			return 0, unsupported("simd.%s at lane %d (past the lanes; traps)", member, k)
+		}
+		a, err := g.expr(args[0], &shape)
+		if err != nil {
+			return 0, err
+		}
+		f, err := g.exprAs(args[2], scalars[shape.laneName()])
+		if err != nil {
+			return 0, err
+		}
+		g.vconf(shape)
+		g.emit("vid.v", rvVReg(rvVHelp1))
+		g.emit("li", rvReg(rvVAddr), imm(k))
+		g.emit("vmseq.vx", rvVReg(rvVMask), rvVReg(rvVHelp1), rvReg(rvVAddr))
+		g.emit("vfmerge.vfm", vsr(a), vsr(a), rvReg(f), rvVReg(rvVMask))
+		g.release(f)
+		return a, nil
+	case "reduce_add":
+		// The pairwise tree (l0 + l1) + (l2 + l3) (docs/spec/93-simd.md
+		// section 1.2a; Oak.Simd.rvv_reduce4): t = x + slide(x, 1) holds
+		// l0+l1 at lane 0 and l2+l3 at lane 2; t + slide(t, 2) holds the
+		// tree at lane 0. Two lanes: one step. The slides read the tail
+		// past vl into the lanes the result never reads.
+		a, err := g.expr(args[0], &shape)
+		if err != nil {
+			return 0, err
+		}
+		r, err := g.alloc(scalars[shape.laneName()])
+		if err != nil {
+			return 0, err
+		}
+		g.vconf(shape)
+		g.emit("vslidedown.vi", rvVReg(rvVHelp1), vsr(a), imm(1))
+		g.emit("vfadd.vv", vsr(a), vsr(a), rvVReg(rvVHelp1))
+		if lanes == 4 {
+			g.emit("vslidedown.vi", rvVReg(rvVHelp1), vsr(a), imm(2))
+			g.emit("vfadd.vv", vsr(a), vsr(a), rvVReg(rvVHelp1))
+		}
+		g.emit("vfmv.f.s", rvReg(r), vsr(a))
+		g.release(a)
+		return r, nil
 	case "eq":
 		// The equal lanes as a mask in v0, then all-ones where the mask
 		// holds over zero elsewhere (vmerge.vvm vd, vs2, vs1, v0: vs1 where
@@ -387,6 +530,42 @@ func (g *rvGenerator) rvSimdOp(member string, args []ast.Expression) (int, error
 		return prev, nil
 	}
 	return 0, unsupported("the simd operation %s", member)
+}
+
+// rvSimdFloatBinary lowers the lane-wise float arithmetic and the catalog's
+// min/max (docs/spec/93-simd.md section 1.2a): add/sub/mul/div are one
+// instruction; min/max are IEEE 754-2019 minimum/maximum — RVV's vfmin/
+// vfmax are minimumNumber/maximumNumber (-0.0 below +0.0 as required, but a
+// quiet NaN operand suppressed), so each operand's NaN lanes, found by
+// comparing it with itself (vmfne.vv), are merged back over the result
+// (Oak.Simd.rvvMinMax: a NaN operand yields that NaN, the rest is the
+// number-preferring minimum, which agrees with the catalog on numbers).
+func (g *rvGenerator) rvSimdFloatBinary(op string, shape scalar, left, right ast.Expression) (int, error) {
+	a, err := g.expr(left, &shape)
+	if err != nil {
+		return 0, err
+	}
+	b, err := g.expr(right, &shape)
+	if err != nil {
+		return 0, err
+	}
+	g.vconf(shape)
+	switch op {
+	case "add", "sub", "mul", "div":
+		mnemonic := map[string]string{"add": "vfadd.vv", "sub": "vfsub.vv", "mul": "vfmul.vv", "div": "vfdiv.vv"}[op]
+		g.emit(mnemonic, vsr(a), vsr(a), vsr(b))
+	case "min", "max":
+		mnemonic := map[string]string{"min": "vfmin.vv", "max": "vfmax.vv"}[op]
+		g.emit(mnemonic, rvVReg(rvVHelp1), vsr(a), vsr(b))
+		g.emit("vmfne.vv", rvVReg(rvVMask), vsr(a), vsr(a))
+		g.emit("vmerge.vvm", rvVReg(rvVHelp1), rvVReg(rvVHelp1), vsr(a), rvVReg(rvVMask))
+		g.emit("vmfne.vv", rvVReg(rvVMask), vsr(b), vsr(b))
+		g.emit("vmerge.vvm", vsr(a), rvVReg(rvVHelp1), vsr(b), rvVReg(rvVMask))
+	default:
+		return 0, unsupported("the simd operation %s over float lanes", op)
+	}
+	g.release(b)
+	return a, nil
 }
 
 // rvSimdLoad lowers `simd.load_*(v, i)`: a literal index into an owned array
