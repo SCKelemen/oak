@@ -2,8 +2,7 @@ package asm
 
 import "testing"
 
-// An assert in a verified body (docs/spec/94-assembler.md §8, thirty-second
-// increment): the lowering's `cbz <cond>, trap` is a trap arm the executor
+// An assert in a verified body (docs/spec/94-assembler.md §9, "Asserts under the verifier"): the lowering's `cbz <cond>, trap` is a trap arm the executor
 // drops, and the Oak side leaves the assert out likewise, so the two sides
 // are compared on the paths where the assert held.
 func TestVerifyAssert(t *testing.T) {

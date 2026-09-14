@@ -2283,27 +2283,7 @@ The lowering written in Oak mirrors the rule (`FOP_UDIV`, `FOP_SDIV`, the
 trap, `int_sdiv` for the fold), and `spec/oak/intrinsics.oak` states
 `rem_is_sub_div`, `signed_rem_is_sub_div`, and `div_same_operands`.
 
-**Thirty-second increment — an assert as a trap arm (2026-09-15;
-`asm/verify.go` lowerAssert, `Oak.TrapArms`).** A body with an `assert`
-was trusted ("the Oak body contains an assert"), and so was every caller
-whose summary reached one (`check_all`, `corner_sum`, the `main`s of the
-corpora). The lowering emits `cbz <cond>, trap` (`beqz` on RV64) for an
-assert, and the executor already drops a branch to a trap block — the
-checker's element guards are the same shape — so the asm side's term is
-the fall-through path's, on which the assert held. The Oak side now
-lowers the assert the same way: the condition for its shape, then
-nothing (an assert has no value and, where it holds, no effect); under
-the theorem decider it stays the trap obligation it was. The two sides
-are thus compared on the paths where the assert held
-(`Oak.TrapArms.guarded_congr`: two computations under one guard agree
-exactly when their values do where the guard holds), which is what a
-verdict on a trapping body can mean; a unit body that only asserts has
-nothing to compare and stays at "no integer result" (`check_all`). The
-nested corpus's `corner_sum` and the callers reaching it are proven on
-both lanes (`asm/assert_test.go`: a body with two asserts proven, the
-wrong result after them a mismatch).
-
-**Thirty-third increment — parameters in the caller's outgoing area
+**Thirty-second increment — parameters in the caller's outgoing area
 (2026-09-15; `asm/verify.go` executeBodyChunk, `asm/unit.go`,
 `Oak.StackArguments`).** The thirtieth increment read a callee's stack
 arguments from the caller's side; the callee's own side still refused
@@ -3691,6 +3671,47 @@ body store a mismatch, a result after the loop, a store before the loop
 read after it, and the differing store before the loop refuted) and
 `compiler/e2e_native_loop_stores_test.go` (a loop storing through a
 callee, both lanes).
+**Asserts under the verifier (2026-09-14).** A body with an `assert`, or
+a call to a unit callee whose body asserts (`text_require`), was trusted:
+the Oak lowering refused the assert wherever traps are not tracked, and
+the assembler verifier's lowering does not track them — it has no
+obligations to prove, since the executor drops a trapping path from its
+fork (`brk` delivers no result) and the equivalence is over the inputs
+on which every guard holds. An assert is therefore a no-op on the Oak
+side of the verifier: the trapping inputs are outside the equivalence on
+both sides, exactly as an element guard's or a divisor's are. The
+theorem decider's reading (a trap obligation to prove impossible) is
+unchanged. Proven bodies rose to 201 on AArch64 and 179 on RV64; the
+asserting callees that remain trusted do so for their span arguments,
+not their asserts. Pinned: `compiler/e2e_native_assert_callee_test.go`
+(a body with an assert, a caller of an asserting unit callee; both
+lanes).
+
+**Callees with loops in the call summary (2026-09-14).** A call to a
+function whose body has a data-dependent loop (`sb_str`, `px_acc_list`,
+the syntax walkers) left the summary at "whose body has a data-dependent
+loop". The callee's loop events are now the caller's: the callee's
+lowering inside the summary numbers its events after the caller's
+(`oakLowering.loopBase`) and nests them under the loop being executed,
+its fresh symbols are declared for the verdict, and its markers are
+keyed by the caller-rooted span names (`writableSpans` with
+`rootContracts`, since the callee's names are aliases). The Oak side
+inlines the same body and creates the same events in the same order, so
+the coupling pairs them by identity — the same fresh names on both
+sides — and the obligations are the callee's own; a witness run inside
+the summary takes the caller's concrete span length for the callee's
+(`isSpanLength`). On the prover: proven 354 to 362 (`bytes_equal`,
+`find_tdecl`, `root_ident`, `taken_inside`, the mark walkers), no
+disagreement, the rows identical; the callers of `sb_str` now stop at
+its `%` by a data-dependent divisor. The verifier's time is unchanged by
+this, but one body, `sat_extend`, went from a fast refusal to 75 seconds
+of coupling search under the Bool-variable pairings that landed the same
+morning (a `satisfied` flag pairing with every register of the enclosing
+loops); the search budget bounds it and the verdict is evidence either
+way, and it is the next thing to tighten. Pinned: `asm/effects_test.go`
+`TestVerifySummarizedLoops` (a summing callee behind a result and a
+filling callee behind a unit caller proven by coupling the callee's
+loop; the wrong constant to the callee a mismatch).
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the

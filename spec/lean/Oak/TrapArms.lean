@@ -5,7 +5,7 @@ The assembler-unit verifier compares an asm unit with its Oak body on the
 paths that deliver a result: a branch to a trap block (the checker's
 element guard, the lowering's `cbz <cond>, trap` for an `assert`) is an
 arm the executor drops, so the asm side's term is the fall-through path's
-(docs/spec/94-assembler.md §8, thirty-second increment). The Oak side
+(docs/spec/94-assembler.md §9, "Asserts under the verifier"). The Oak side
 lowers an `assert(cond)` the same way — the condition for its shape, then
 nothing: an assert has no value and, where it holds, no effect. The
 theorems below are that reading: a computation that traps unless `c`

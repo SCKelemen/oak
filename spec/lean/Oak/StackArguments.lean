@@ -6,7 +6,7 @@ import Std.Tactic.BVDecide
 A parameter beyond the register contract arrives in the caller's
 outgoing area, at a fixed offset above the callee's entry sp
 (`asm.LayoutArguments`, the shared classification `classifyArguments`).
-The verifier (docs/spec/94-assembler.md §8, thirty-third increment)
+The verifier (docs/spec/94-assembler.md §8, thirty-second increment)
 holds it in the frame slot at that offset, at the size the caller stored
 it: a narrow scalar its own bytes, a `Bool` the four of the C int, a
 64-bit scalar eight, a span its base at the offset and its 32-bit length

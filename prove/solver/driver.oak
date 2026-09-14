@@ -13,6 +13,56 @@ free: (p: c.Ptr): () = c.extern("free")
 c_getenv: (name: c.String): c.Ptr = c.extern("getenv")
 c_read: (fd: c.Int, buf: c.Ptr, n: c.Size): c.UInt64 = c.extern("read")
 
+// Output is buffered: every writer appends to out_buf, which goes to
+// standard output when full, before a child process is spawned
+// (witness.oak), and at exit (write_flush from main). A certificate of
+// half a million steps was one write call per byte before this, half its
+// wall time in the kernel.
+OUT_CAP: u32 = 65536
+out_buf: [65536]u8
+out_len: u32 = 0
+
+// The bytes go out through a local chunk: a view of a global owner may
+// not be live across a call (the callee could write the global), so the
+// global buffer is read into the chunk and the chunk's view is what is
+// written.
+write_flush: (): () {
+  chunk: [4096]u8
+  at: u32 = 0
+  while at < out_len {
+    n: u32 = out_len - at
+    n = n > u32(4096) ? { u32(4096) } | { n }
+    k: u32 = 0
+    while k < n {
+      chunk[k] = out_buf[at + k]
+      k = k + u32(1)
+    }
+    piece: []u8 = view(&chunk)
+    host.host_write_all(host.host_stdout(), subslice(piece, u32(0), n)) ? { } | { }
+    at = at + n
+  }
+  out_len = u32(0)
+}
+
+write_byte: (v: u8): () {
+  out_len >= OUT_CAP ? { write_flush() } | { }
+  out_buf[out_len] = v
+  out_len = out_len + u32(1)
+}
+
+// write_span appends n bytes of a local buffer from `start`: one capacity
+// check, then a copy with no branch in the loop (the native verifier
+// unrolls a short counted loop; a branch per iteration would fork it).
+write_span: (bytes: []u8, start: u32, n: u32): () {
+  out_len + n > OUT_CAP ? { write_flush() } | { }
+  k: u32 = 0
+  while k < n {
+    out_buf[out_len + k] = bytes[start + k]
+    k = k + u32(1)
+  }
+  out_len = out_len + n
+}
+
 write_u32: (v: u32): () {
   buf: [12]u8
   start: u32 = 12
@@ -25,13 +75,7 @@ write_u32: (v: u32): () {
     buf[start] = u8(48) + u8_trunc_u32(n % u32(10))
     n = n / u32(10)
   }
-  digits: []u8 = view(&buf)
-  host.host_write_all(host.host_stdout(), subslice(digits, start, u32(12) - start)) ? { } | { }
-}
-
-write_byte: (v: u8): () {
-  one: [1]u8 = [1]u8{ v }
-  host.host_write_all(host.host_stdout(), view(&one)) ? { } | { }
+  write_span(view(&buf), start, u32(12) - start)
 }
 
 // report_head writes a verdict line up to its variables; report ends it,

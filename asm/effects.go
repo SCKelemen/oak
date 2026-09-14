@@ -387,6 +387,17 @@ func (lo *oakLowering) assignSpanElement(name string, contract spanContract, s *
 	return "", true
 }
 
+// isSpanLength reports a term that is the caller's span length: the
+// parameter `len(v)` in a symbolic run, its concrete value in a witness
+// run (where the length register holds the input's constant).
+func (x *pathExecutor) isSpanLength(length *term, span string) bool {
+	if x.concrete {
+		value, known := x.env[spanLenName(span)]
+		return known && length.kind == termConst && length.value&mask(32) == value&mask(32)
+	}
+	return isParamNamed(length, spanLenName(span))
+}
+
 // isParamNamed reports a term that is the parameter name at any width:
 // the node itself, or its zero-extension by a mask (the width adapters
 // copy a parameter node at the use width).

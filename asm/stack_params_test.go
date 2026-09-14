@@ -6,7 +6,7 @@ import (
 )
 
 // A parameter beyond the register contract arrives in the caller's
-// outgoing area (docs/spec/94-assembler.md §8, thirty-third increment):
+// outgoing area (docs/spec/94-assembler.md §8, thirty-second increment):
 // the executor holds it in the frame slot at its offset above the entry
 // sp, at the size the caller stored it, so the body's load reads the
 // parameter. The native lowering of `nine` (a byte on the stack) and of

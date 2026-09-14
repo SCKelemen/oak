@@ -175,7 +175,7 @@ the checker and are the next `decided` rung.
 ## 4. `oak prove`
 
 ```text
-oak prove [-lean out.lean [-check [-lean-binary lean]]] [-cases N] [-solver oak|go|sat] [-cnf dir] [dir|file.oak]
+oak prove [-lean out.lean [-check [-lean-binary lean]]] [-cases N] [-solver oak|go|sat|self] [-cnf dir] [-conflicts N] [dir|file.oak]
 ```
 
 type-checks the package (a directory through the module loader, or one
@@ -233,7 +233,14 @@ A verdict without an accepted certificate, and a model the clause engine
 does not confirm, change nothing and are reported as such: the solver is
 untrusted, the checkers settle the row. An invariant candidate's summary
 row is read through its generated base and step obligations, since the
-predicate alone is not a theorem over every state. `-cnf dir` writes every bit-level
+predicate alone is not a theorem over every state. `-conflicts N` is the
+conflicts the solver written in Oak may spend on one obligation, on the
+Go-driven rung and inside `-solver self` alike; by default the budget
+scales with the obligation — 200,000 or 100 per clause, whichever is
+larger (`sat_conflicts`), so a 6,442-clause extents row that needs 562,050
+conflicts closes in the corpus while the one needing 1.4 million gives up
+cheaply — and `-conflicts N` sets a flat budget instead; a row past the
+budget keeps the ladder's verdict and says the rung gave no verdict. `-cnf dir` writes every bit-level
 obligation's clauses as DIMACS (`name.cnf`) for any solver or checker to
 read; the clause engine agrees with the diagram engine input for input over
 the corpus (`prove/lrat_test.go`), the two checkers accept and refuse the
@@ -671,7 +678,7 @@ In order of payoff, each reusing a surface that exists:
   whole program compiled through the verified native backend
   (`94-assembler.md` §9, sixteenth increment; `OAK_SOLVER_NATIVE=1`):
   879 of its 954 functions lowered to machine code the seam checker
-  admits and the Oak assembler encodes, 354 of them proven equal to
+  admits and the Oak assembler encodes, 362 of them proven equal to
   their Oak bodies — their results, the package cells they write, and,
   since the twenty-eighth increment, the span memories they store
   through, compared at a fresh index, a callee's stores reaching its
@@ -743,9 +750,12 @@ In order of payoff, each reusing a surface that exists:
   widest extents rows (`vector_under_offset_bound`,
   `vector_under_literal_bound`) stop at the rung's two-hundred-thousand-
   conflict budget and close at 562,050 and 1,406,520 conflicts; probing
-  finds no unit in them (CaDiCaL needs 7 and 112 seconds). Next: the text
-  path's output buffered (one write per byte today, half the wall time of
-  a long certificate), and a budget the caller can raise for a row. The BDD's failure mode
+  finds no unit in them (CaDiCaL needs 7 and 112 seconds); `-conflicts N`
+  raises the budget for a run, and the solver's output is buffered (it was
+  one `write` call per byte: the first of those rows went from 101 to 10
+  seconds on the text path). The budget scales with the clause count by
+  default, so `vector_under_literal_bound` closes by certificate in the
+  corpus (`TestScaledBudgetClosesWideRow`). Next: subsumption. The BDD's failure mode
   is the node budget on multipliers and wide aggregates, which CDCL
   solvers treat routinely. The rung is the one Lean's `bv_decide` already
   runs:

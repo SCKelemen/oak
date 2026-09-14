@@ -58,6 +58,12 @@ xor_problem: (commute: Bool): [192]u32 {
 }
 
 main: (): i32 {
+  code: i32 = main_body()
+  write_flush()
+  code
+}
+
+main_body: (): i32 {
   l: Layout = layout_for(u32(4096), u32(8))
   raw: c.Ptr = malloc(c.Size(l.total * u32(4)))
   failures: u32 = 0
