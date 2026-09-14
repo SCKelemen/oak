@@ -153,6 +153,19 @@ theorem store_load_roundtrip {off : Nat} {buf : List Nat} {v : Vec}
   rw [← hTakeLen, List.drop_left]
   exact List.take_left ..
 
+/-- **A store is one write per lane**: element `off + k` of the stored
+buffer is lane `k` (the verifier's `simd.store` lowering and the `str q` /
+`vse*.v` model append one write per lane at consecutive indices,
+asm/effects.go). -/
+theorem store_lane {off k : Nat} {buf : List Nat} {v : Vec}
+    (hk : k < v.length) (hFit : off + v.length ≤ buf.length) :
+    (store off buf v)[off + k]? = v[k]? := by
+  have hTakeLen : (buf.take off).length = off := by
+    rw [List.length_take]; omega
+  unfold store
+  rw [List.getElem?_append_right (by omega), hTakeLen, Nat.add_sub_cancel_left,
+    List.getElem?_append_left hk]
+
 /-- **Stores are local**: elements before the stored region are unchanged. -/
 theorem store_preserves_prefix {off : Nat} {buf : List Nat} {v : Vec}
     (i : Nat) (hi : i < off) (hoff : off ≤ buf.length) :

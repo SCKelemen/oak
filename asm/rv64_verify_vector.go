@@ -1,6 +1,9 @@
 package asm
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // The RV64 lane's vector file as terms under a fixed configuration
 // (docs/spec/94-assembler.md §8, §9). A `vsetivli zero, K, eS, m1, ta, ma`
@@ -469,7 +472,7 @@ func (x *pathExecutor) rv64VectorLoad(dest Register, mem Memory, K, bits int, st
 		if k > 0 {
 			position = binaryTerm("add", index, constTerm(uint64(k), 32))
 		}
-		lanes[k] = x.element(span, position, bits)
+		lanes[k] = x.elementIn(state, span, position, bits)
 	}
 	state.writeLanes(dest, lanes, bits)
 	return "", true
@@ -485,7 +488,36 @@ func (x *pathExecutor) rv64VectorStore(src Register, mem Memory, K, bits int, st
 	if addr, isFrame := rvFrameAddrOf(address); isFrame {
 		return x.rv64VectorFrame(src, addr+mem.Offset, K, bits, true, state)
 	}
-	return "a vector store through a span (the verifier decides results, not memory effects)", false
+	// A store through a span: K writes at consecutive elements in the
+	// path's write log (asm/effects.go), as the AArch64 lane's `str q`.
+	if len(x.loopStack) > 0 {
+		return "a span store in a data-dependent loop body", false
+	}
+	if param, _, isBase := spanBaseOf(address); isBase {
+		if _, isRecord := x.records[param]; isRecord {
+			return "a store into a record argument", false
+		}
+	}
+	span, index, reason, ok := x.rv64SpanElementAddress(address, mem.Offset)
+	if !ok {
+		return strings.Replace(reason, "a load", "a store", 1), false
+	}
+	if int64(bits/8) != x.spans[span] {
+		return fmt.Sprintf("%d-bit vector elements stored over %d-byte span elements", bits, x.spans[span]), false
+	}
+	value, okVec := state.readVec(src.Num)
+	if !okVec {
+		return "unbound vector register read", false
+	}
+	lanes := value.lanesAt(bits)[:K]
+	for k, lane := range lanes {
+		at := index
+		if k > 0 {
+			at = binaryTerm("add", index, constTerm(uint64(k), 32))
+		}
+		state.writes = appendWrite(state.writes, span, at, lane, nil)
+	}
+	return "", true
 }
 
 // rv64VectorFrame is a whole-register spill or reload at an entry-relative
