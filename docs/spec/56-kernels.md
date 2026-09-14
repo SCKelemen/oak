@@ -60,7 +60,8 @@ which may be `pub`. Rules:
   arrays as parameters, strings, and ADTs are outside.
 - The result is `()`: results leave through spans.
 - The body is in the kernel subset (section 2). A kernel calls **helpers**
-  — ordinary functions in the subset — and never another kernel.
+  — ordinary functions in the subset — and may call another ordinary
+  kernel **at its own position**, which fuses the two (section 2b).
 
 A kernel is otherwise a function: the interpreter runs it, `oak test` tests
 it, the extraction states it, effects and forbids apply to it.
@@ -105,6 +106,7 @@ Inside the subset:
 | `lane(G)` | `oak_lid`, the thread's place in its group of `G` (section 2a); the kernel becomes a group kernel with `G` threads per position |
 | `tile: [N]T (threadgroup)` | `threadgroup T tile[N];` at kernel scope, zeroed by the lanes, one array per group (section 2a) |
 | `barrier()` | `threadgroup_barrier(mem_flags::mem_threadgroup);` at the body's top level (section 2a) |
+| `other(gid, buffers...)`, a call of another ordinary kernel at this position | the callee inlined as a `static inline` helper taking the position, its buffers, and the fault word — **fusion** (section 2b) |
 | `simd_shuffle_xor(v, off)` | `simd_shuffle_xor(v, off)`: lane `lane ^ off`'s value of the scalar local `v`, `off` a literal power of two below 32, in a top-level statement (section 2a) |
 | locals `x: T = e`, `x := e`, assignment | the same, scalars only |
 | `x[i]`, `y[i] = v` | `x[oak_check(i, x_len, oak_fault)]` — the index is checked against the length and a miss raises the fault word (section 3) |
@@ -205,7 +207,49 @@ kernel reverse_blocks: (gid: u32, x: []f32, out: [*]f32): () = {
   is deliberately not an intrinsic: the hardware's order is unspecified,
   and this spelling is the specified one.
 
-What this does not yet do: fusion as a pass (increment (d)).
+### 2b. Fusion
+
+**Status: implemented, 2026-09-14.** The ml pilot's F1, increment (d): the
+fused epilogues its emitters build by string are one kernel calling
+another.
+
+```oak
+kernel scale: (gid: u32, x: []f32, y: [*]f32): () = { gid < len(x) && gid < len(y) ? { y[gid] = x[gid] * 2.0 } }
+kernel shift: (gid: u32, y: [*]f32, out: [*]f32): () = { gid < len(y) && gid < len(out) ? { out[gid] = y[gid] + 1.0 } }
+kernel scale_shift: (gid: u32, x: []f32, y: [*]f32, out: [*]f32): () = {
+  scale(gid, x, y)          // both stages at this position: one launch
+  shift(gid, y, out)
+}
+```
+
+- An **ordinary kernel** (no `lane()`, no threadgroup memory, no
+  cooperative reduction) may call another ordinary kernel with **its own
+  grid position as the first argument** and its buffers passed through.
+  The Metal emitter inlines the callee as a helper — `static inline void
+  scale__fused(uint gid, device const float* x, uint x_len, …, device
+  atomic_uint* oak_fault)`, beside the kernel entry of the same name — and
+  the fused kernel is one launch; the callee stays a
+  kernel of its own, launchable alone. On the host and in the interpreter
+  a kernel is a function, so the fused body is the two calls.
+- **Independence**: the callee's span accesses are judged as the caller's
+  (section 6) — recursively, its own element or tile shape at this
+  position — and the fused kernel has **one shape**: two stages that touch
+  spans in different tile shapes are refused, as is a group kernel on
+  either side, a position argument other than the caller's, and a kernel
+  fused into itself. `Oak.Kernel.fuse` is the fused thread (both stages
+  in order, reading and writing what either does — a thread in the
+  model's sense), `independent_fuse` proves fused positions stay
+  independent when each stage of one is independent of each stage of the
+  other, and `run_fuse` that the fused launch computes what the two
+  launches compute.
+- What fusion does **not** do: eliminate the intermediate buffer. `y`
+  above is still stored and reloaded; an epilogue that should stay in
+  registers is spelled as a helper applied to the value (`out[gid] =
+  relu(dot(...))`), which the subset always allowed. The pass fuses
+  launches, and the register-level fusion is the author's spelling.
+
+This completes the four increments of the pilot's F1; the string emitters
+have nothing left to express that a kernel body cannot.
 
 ## 3. Traps and the fault word
 
@@ -495,8 +539,42 @@ s: t.Tensor2 = t.row_major_tensor(m)               // the strided form, for the 
   original at `(i, j)`; `row_major_tensor_at`/`col_major_tensor_at` — the
   strided form reads the same element; `row_major_transpose_transpose`.
 
-Shape in the type (`Tensor[n, k]` with const parameters, `20-types.md`
-§11.0) is the later increment: the layout was the row the pilot lost.
+### 8b. Shape in the type (`import("shape")`)
+
+**Status: implemented (library), 2026-09-14.** The increment §8a named
+next: `Mat[R, N, K]` is a row-major `N × K` matrix over a view whose
+dimensions are **const parameters** (`20-types.md` §11.0), so shape
+agreement is a type equation.
+
+```oak
+s := import("shape")
+
+m: s.Mat[2, 3] = s.mat_of[2, 3](view(&w))     // 2 x 3; N * K must fit the view
+n: s.Mat[3, 2] = s.mat_of[3, 2](view(&v))
+s.mat_matvec(m, x, span(&out))               // x: [3]f32 — K = 3 from both, or a type error
+s.mat_matmul(m, n, span(&prod))              // 2 x 3 by 3 x 2: the shared K is the equation
+```
+
+- `mat_matvec(w: Mat[R, N, K], x: [K]f32, out)` and `mat_matmul(a: Mat[A,
+  N, K], b: Mat[B, K, M], out)` share their dimensions in the signature:
+  a vector of the wrong length or a matrix of the wrong inner dimension
+  is refused at the call ("const parameter K cannot be bound to two
+  lengths"), not asserted at run time. `mat_at` checks against the
+  constants; `mat_rows`/`mat_cols` are them; `mat_row_major` and
+  `mat_tensor` give §8a's layout-typed and the strided forms over the
+  same storage.
+- **What the language needed**: const parameters are now recovered from a
+  region record's instantiation — `Mat[R, N, K]` against `Mat_2_3`, the
+  region erased before the instantiation was named — so the calls above
+  infer `N` and `K`; and a float literal in a generic body (`acc: f32 =
+  0.0`) no longer fails instantiation. Both were checker gaps this
+  library exposed.
+- **Lean** (`Oak.Shape`): `index_lt` (every `(i, j)` lies below `N * K`),
+  `index_injective`, `row_contiguous`. The shape equation itself is a
+  typing fact, checked by the compiler, with nothing left to prove.
+- The package is separate from `tensor` so the tensor package stays
+  template-free for its extraction; `Mat` instantiations are the
+  monomorphized records the extraction already handles per instantiation.
 
 ## 9. Execution on the device (implemented)
 

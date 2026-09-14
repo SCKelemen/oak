@@ -1,13 +1,6 @@
 import LeanRV64D
 import Std.Tactic.BVDecide
 
--- `encdec_forwards` is a four-thousand-line match: its per-clause equation
--- lemmas do not generate within the heartbeat budget, so each theorem
--- unfolds the definition once and lets the match reduce on its constructor.
--- The word's width is a nest of `hi - lo + 1` sums the elaborator must unify
--- with 32: `congr` on the monadic `pure` does not manage it within the
--- heartbeat budget, `congrArg pure` does.
-
 /-!
 # Oak's RV64 encoder against the Sail RISC-V model's encoder
 
@@ -29,12 +22,13 @@ against `spec/lean/Oak/RiscV.lean` and `asm/rv64_encoding_lean_test.go`
 holds the table to the encoder's.
 -/
 
+set_option linter.unusedSimpArgs false
+
 namespace OakSailBridge.Enc
 
-open LeanRV64D
--- The export puts encdec_forwards and the operand mappings under LeanRV64D.Functions.
-open LeanRV64D.Functions
 open Sail
+open LeanRV64D
+open LeanRV64D.Functions
 
 -- OAK-DEF-BEGIN
 /-- One operand field of an encoding: the bits `[hi:lo]` of the word. -/
@@ -127,219 +121,216 @@ abbrev reg (r : BitVec 5) : regidx := .Regidx r
 theorem add_encoding (rd rs1 rs2 : BitVec 5) :
     encdec_forwards (.RTYPE (reg rs2, reg rs1, reg rd, .ADD)) = pure (encode add (rOperands rd rs1 rs2)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, add, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, add, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  congr 1
   bv_decide
 theorem sub_encoding (rd rs1 rs2 : BitVec 5) :
     encdec_forwards (.RTYPE (reg rs2, reg rs1, reg rd, .SUB)) = pure (encode sub (rOperands rd rs1 rs2)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, sub, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, sub, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  congr 1
   bv_decide
 theorem sll_encoding (rd rs1 rs2 : BitVec 5) :
     encdec_forwards (.RTYPE (reg rs2, reg rs1, reg rd, .SLL)) = pure (encode sll (rOperands rd rs1 rs2)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, sll, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, sll, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  congr 1
   bv_decide
 theorem slt_encoding (rd rs1 rs2 : BitVec 5) :
     encdec_forwards (.RTYPE (reg rs2, reg rs1, reg rd, .SLT)) = pure (encode slt (rOperands rd rs1 rs2)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, slt, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, slt, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  congr 1
   bv_decide
 theorem sltu_encoding (rd rs1 rs2 : BitVec 5) :
     encdec_forwards (.RTYPE (reg rs2, reg rs1, reg rd, .SLTU)) = pure (encode sltu (rOperands rd rs1 rs2)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, sltu, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, sltu, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  congr 1
   bv_decide
 theorem xor__encoding (rd rs1 rs2 : BitVec 5) :
     encdec_forwards (.RTYPE (reg rs2, reg rs1, reg rd, .XOR)) = pure (encode xor_ (rOperands rd rs1 rs2)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, xor_, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, xor_, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  congr 1
   bv_decide
 theorem srl_encoding (rd rs1 rs2 : BitVec 5) :
     encdec_forwards (.RTYPE (reg rs2, reg rs1, reg rd, .SRL)) = pure (encode srl (rOperands rd rs1 rs2)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, srl, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, srl, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  congr 1
   bv_decide
 theorem sra_encoding (rd rs1 rs2 : BitVec 5) :
     encdec_forwards (.RTYPE (reg rs2, reg rs1, reg rd, .SRA)) = pure (encode sra (rOperands rd rs1 rs2)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, sra, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, sra, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  congr 1
   bv_decide
 theorem or__encoding (rd rs1 rs2 : BitVec 5) :
     encdec_forwards (.RTYPE (reg rs2, reg rs1, reg rd, .OR)) = pure (encode or_ (rOperands rd rs1 rs2)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, or_, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, or_, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  congr 1
   bv_decide
 theorem and__encoding (rd rs1 rs2 : BitVec 5) :
     encdec_forwards (.RTYPE (reg rs2, reg rs1, reg rd, .AND)) = pure (encode and_ (rOperands rd rs1 rs2)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, and_, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, and_, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  congr 1
   bv_decide
 /-! ## The word forms: `‖ 0111011`. -/
 
 theorem addw_encoding (rd rs1 rs2 : BitVec 5) :
     encdec_forwards (.RTYPEW (reg rs2, reg rs1, reg rd, .ADDW)) = pure (encode addw (rOperands rd rs1 rs2)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, addw, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, addw, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  congr 1
   bv_decide
 theorem subw_encoding (rd rs1 rs2 : BitVec 5) :
     encdec_forwards (.RTYPEW (reg rs2, reg rs1, reg rd, .SUBW)) = pure (encode subw (rOperands rd rs1 rs2)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, subw, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, subw, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  congr 1
   bv_decide
 theorem sllw_encoding (rd rs1 rs2 : BitVec 5) :
     encdec_forwards (.RTYPEW (reg rs2, reg rs1, reg rd, .SLLW)) = pure (encode sllw (rOperands rd rs1 rs2)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, sllw, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, sllw, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  congr 1
   bv_decide
 theorem srlw_encoding (rd rs1 rs2 : BitVec 5) :
     encdec_forwards (.RTYPEW (reg rs2, reg rs1, reg rd, .SRLW)) = pure (encode srlw (rOperands rd rs1 rs2)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, srlw, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, srlw, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  congr 1
   bv_decide
 theorem sraw_encoding (rd rs1 rs2 : BitVec 5) :
     encdec_forwards (.RTYPEW (reg rs2, reg rs1, reg rd, .SRAW)) = pure (encode sraw (rOperands rd rs1 rs2)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, sraw, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, sraw, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  congr 1
   bv_decide
 /-! ## I-type: `imm ‖ rs1 ‖ funct3 ‖ rd ‖ 0010011`. -/
 
 theorem addi_encoding (rd rs1 : BitVec 5) (imm : BitVec 12) :
     encdec_forwards (.ITYPE (imm, reg rs1, reg rd, .ADDI)) = pure (encode addi (iOperands rd rs1 imm)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, addi, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  refine congrArg (fun w : BitVec 32 => (pure w : SailM (BitVec 32))) ?_
+  simp only [encdec_reg_forwards, encdec_iop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, encode, addi, placeField, List.foldl, iOperands]
   bv_decide
 theorem slti_encoding (rd rs1 : BitVec 5) (imm : BitVec 12) :
     encdec_forwards (.ITYPE (imm, reg rs1, reg rd, .SLTI)) = pure (encode slti (iOperands rd rs1 imm)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, slti, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  refine congrArg (fun w : BitVec 32 => (pure w : SailM (BitVec 32))) ?_
+  simp only [encdec_reg_forwards, encdec_iop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, encode, slti, placeField, List.foldl, iOperands]
   bv_decide
 theorem sltiu_encoding (rd rs1 : BitVec 5) (imm : BitVec 12) :
     encdec_forwards (.ITYPE (imm, reg rs1, reg rd, .SLTIU)) = pure (encode sltiu (iOperands rd rs1 imm)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, sltiu, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  refine congrArg (fun w : BitVec 32 => (pure w : SailM (BitVec 32))) ?_
+  simp only [encdec_reg_forwards, encdec_iop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, encode, sltiu, placeField, List.foldl, iOperands]
   bv_decide
 theorem xori_encoding (rd rs1 : BitVec 5) (imm : BitVec 12) :
     encdec_forwards (.ITYPE (imm, reg rs1, reg rd, .XORI)) = pure (encode xori (iOperands rd rs1 imm)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, xori, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  refine congrArg (fun w : BitVec 32 => (pure w : SailM (BitVec 32))) ?_
+  simp only [encdec_reg_forwards, encdec_iop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, encode, xori, placeField, List.foldl, iOperands]
   bv_decide
 theorem ori_encoding (rd rs1 : BitVec 5) (imm : BitVec 12) :
     encdec_forwards (.ITYPE (imm, reg rs1, reg rd, .ORI)) = pure (encode ori (iOperands rd rs1 imm)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, ori, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  refine congrArg (fun w : BitVec 32 => (pure w : SailM (BitVec 32))) ?_
+  simp only [encdec_reg_forwards, encdec_iop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, encode, ori, placeField, List.foldl, iOperands]
   bv_decide
 theorem andi_encoding (rd rs1 : BitVec 5) (imm : BitVec 12) :
     encdec_forwards (.ITYPE (imm, reg rs1, reg rd, .ANDI)) = pure (encode andi (iOperands rd rs1 imm)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, andi, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  refine congrArg (fun w : BitVec 32 => (pure w : SailM (BitVec 32))) ?_
+  simp only [encdec_reg_forwards, encdec_iop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, encode, andi, placeField, List.foldl, iOperands]
   bv_decide
 /-! ## Shifts by an immediate: `funct6 ‖ shamt ‖ rs1 ‖ funct3 ‖ rd ‖ 0010011`. -/
 
 theorem slli_encoding (rd rs1 : BitVec 5) (shamt : BitVec 6) :
     encdec_forwards (.SHIFTIOP (shamt, reg rs1, reg rd, .SLLI)) = pure (encode slli (shiftOperands rd rs1 shamt)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, slli, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, slli, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  congr 1
   bv_decide
 theorem srli_encoding (rd rs1 : BitVec 5) (shamt : BitVec 6) :
     encdec_forwards (.SHIFTIOP (shamt, reg rs1, reg rd, .SRLI)) = pure (encode srli (shiftOperands rd rs1 shamt)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, srli, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, srli, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  congr 1
   bv_decide
 theorem srai_encoding (rd rs1 : BitVec 5) (shamt : BitVec 6) :
     encdec_forwards (.SHIFTIOP (shamt, reg rs1, reg rd, .SRAI)) = pure (encode srai (shiftOperands rd rs1 shamt)) := by
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb]
-  refine congrArg pure ?_
-  simp only [encode, srai, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, srai, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  congr 1
   bv_decide
-/-! ## Branches: the 13-bit offset's halves permuted as the ISA lays them out. -/
+/-! ## Branches: the 13-bit offset's halves permuted as the ISA lays them out.
+    The model's `encdec` is defined only for even offsets (its arm guards on
+    bit 0, the odd case a pattern-match failure); Oak's B-form offsets are
+    instruction addresses' differences, even by construction. -/
 
-theorem beq_encoding (rs1 rs2 : BitVec 5) (delta : BitVec 13) (even : delta.extractLsb 0 0 = 0#1) :
+theorem beq_encoding (rs1 rs2 : BitVec 5) (delta : BitVec 13) (h : delta &&& 1 = 0) :
     encdec_forwards (.BTYPE (delta, reg rs2, reg rs1, .BEQ)) = pure (encode beq (bOperands rs1 rs2 delta)) := by
+  have hb : ((Sail.BitVec.extractLsb delta 0 0) == (0#1 : (BitVec 1))) = true := by
+    simp only [Sail.BitVec.extractLsb, beq_iff_eq]
+    bv_decide
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, even, beq_self_eq_true, ite_true]
-  refine congrArg pure ?_
-  simp only [encode, beq, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [hb, ↓reduceIte]
+  refine congrArg (fun w : BitVec 32 => (pure w : SailM (BitVec 32))) ?_
+  simp only [encdec_reg_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, beq, placeField, List.foldl, bOperands, bimm12hi, bimm12lo]
   bv_decide
-theorem bne_encoding (rs1 rs2 : BitVec 5) (delta : BitVec 13) (even : delta.extractLsb 0 0 = 0#1) :
+theorem bne_encoding (rs1 rs2 : BitVec 5) (delta : BitVec 13) (h : delta &&& 1 = 0) :
     encdec_forwards (.BTYPE (delta, reg rs2, reg rs1, .BNE)) = pure (encode bne (bOperands rs1 rs2 delta)) := by
+  have hb : ((Sail.BitVec.extractLsb delta 0 0) == (0#1 : (BitVec 1))) = true := by
+    simp only [Sail.BitVec.extractLsb, beq_iff_eq]
+    bv_decide
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, even, beq_self_eq_true, ite_true]
-  refine congrArg pure ?_
-  simp only [encode, bne, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [hb, ↓reduceIte]
+  refine congrArg (fun w : BitVec 32 => (pure w : SailM (BitVec 32))) ?_
+  simp only [encdec_reg_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, bne, placeField, List.foldl, bOperands, bimm12hi, bimm12lo]
   bv_decide
-theorem blt_encoding (rs1 rs2 : BitVec 5) (delta : BitVec 13) (even : delta.extractLsb 0 0 = 0#1) :
+theorem blt_encoding (rs1 rs2 : BitVec 5) (delta : BitVec 13) (h : delta &&& 1 = 0) :
     encdec_forwards (.BTYPE (delta, reg rs2, reg rs1, .BLT)) = pure (encode blt (bOperands rs1 rs2 delta)) := by
+  have hb : ((Sail.BitVec.extractLsb delta 0 0) == (0#1 : (BitVec 1))) = true := by
+    simp only [Sail.BitVec.extractLsb, beq_iff_eq]
+    bv_decide
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, even, beq_self_eq_true, ite_true]
-  refine congrArg pure ?_
-  simp only [encode, blt, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [hb, ↓reduceIte]
+  refine congrArg (fun w : BitVec 32 => (pure w : SailM (BitVec 32))) ?_
+  simp only [encdec_reg_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, blt, placeField, List.foldl, bOperands, bimm12hi, bimm12lo]
   bv_decide
-theorem bge_encoding (rs1 rs2 : BitVec 5) (delta : BitVec 13) (even : delta.extractLsb 0 0 = 0#1) :
+theorem bge_encoding (rs1 rs2 : BitVec 5) (delta : BitVec 13) (h : delta &&& 1 = 0) :
     encdec_forwards (.BTYPE (delta, reg rs2, reg rs1, .BGE)) = pure (encode bge (bOperands rs1 rs2 delta)) := by
+  have hb : ((Sail.BitVec.extractLsb delta 0 0) == (0#1 : (BitVec 1))) = true := by
+    simp only [Sail.BitVec.extractLsb, beq_iff_eq]
+    bv_decide
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, even, beq_self_eq_true, ite_true]
-  refine congrArg pure ?_
-  simp only [encode, bge, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [hb, ↓reduceIte]
+  refine congrArg (fun w : BitVec 32 => (pure w : SailM (BitVec 32))) ?_
+  simp only [encdec_reg_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, bge, placeField, List.foldl, bOperands, bimm12hi, bimm12lo]
   bv_decide
-theorem bltu_encoding (rs1 rs2 : BitVec 5) (delta : BitVec 13) (even : delta.extractLsb 0 0 = 0#1) :
+theorem bltu_encoding (rs1 rs2 : BitVec 5) (delta : BitVec 13) (h : delta &&& 1 = 0) :
     encdec_forwards (.BTYPE (delta, reg rs2, reg rs1, .BLTU)) = pure (encode bltu (bOperands rs1 rs2 delta)) := by
+  have hb : ((Sail.BitVec.extractLsb delta 0 0) == (0#1 : (BitVec 1))) = true := by
+    simp only [Sail.BitVec.extractLsb, beq_iff_eq]
+    bv_decide
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, even, beq_self_eq_true, ite_true]
-  refine congrArg pure ?_
-  simp only [encode, bltu, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [hb, ↓reduceIte]
+  refine congrArg (fun w : BitVec 32 => (pure w : SailM (BitVec 32))) ?_
+  simp only [encdec_reg_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, bltu, placeField, List.foldl, bOperands, bimm12hi, bimm12lo]
   bv_decide
-theorem bgeu_encoding (rs1 rs2 : BitVec 5) (delta : BitVec 13) (even : delta.extractLsb 0 0 = 0#1) :
+theorem bgeu_encoding (rs1 rs2 : BitVec 5) (delta : BitVec 13) (h : delta &&& 1 = 0) :
     encdec_forwards (.BTYPE (delta, reg rs2, reg rs1, .BGEU)) = pure (encode bgeu (bOperands rs1 rs2 delta)) := by
+  have hb : ((Sail.BitVec.extractLsb delta 0 0) == (0#1 : (BitVec 1))) = true := by
+    simp only [Sail.BitVec.extractLsb, beq_iff_eq]
+    bv_decide
   unfold encdec_forwards
-  simp only [encdec_reg_forwards, encdec_iop_forwards, encdec_bop_forwards, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, even, beq_self_eq_true, ite_true]
-  refine congrArg pure ?_
-  simp only [encode, bgeu, placeField, List.foldl, rOperands, iOperands, shiftOperands, bOperands, bimm12hi, bimm12lo]
+  simp only [hb, ↓reduceIte]
+  refine congrArg (fun w : BitVec 32 => (pure w : SailM (BitVec 32))) ?_
+  simp only [encdec_reg_forwards, encdec_bop_forwards, reg, zero_extend, Sail.BitVec.zeroExtend, Sail.BitVec.extractLsb, encode, bgeu, placeField, List.foldl, bOperands, bimm12hi, bimm12lo]
   bv_decide
 end OakSailBridge.Enc

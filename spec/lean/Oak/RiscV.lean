@@ -49,6 +49,29 @@ def sra (a b : X) : X := a.sshiftRight (b.truncate 6).toNat
 def slt (a b : X) : X := if a.slt b then 1 else 0
 def sltu (a b : X) : X := if a.ult b then 1 else 0
 
+/-- The high halves of the 128-bit products (`mulhu`, `mulh`): the operands
+    zero- or sign-extended, as the verifier's `umulh`/`smulh` terms compute
+    them (`asm/isa_semantics.go`). -/
+def mulhu (a b : X) : X := ((a.zeroExtend 128 * b.zeroExtend 128) >>> 64).truncate 64
+def mulh (a b : X) : X := ((a.signExtend 128 * b.signExtend 128) >>> 64).truncate 64
+
+/-- The divisions at any width, totalized as the ISA says: a zero divisor
+    yields all ones for the quotient and the dividend for the remainder;
+    the signed overflow (the minimum by minus one) yields the dividend and
+    remainder zero (`rv64Divide` in `asm/isa_semantics.go`). The 64-bit
+    instances below are the register forms; the W forms compute at 32 bits
+    and sign-extend. -/
+def divuN {w : Nat} (a b : BitVec w) : BitVec w := if b = 0 then BitVec.allOnes w else a / b
+def remuN {w : Nat} (a b : BitVec w) : BitVec w := if b = 0 then a else a % b
+def divN {w : Nat} (a b : BitVec w) : BitVec w :=
+  if b = 0 then BitVec.allOnes w
+  else if a = BitVec.intMin w ∧ b = BitVec.allOnes w then a
+  else a.sdiv b
+def remN {w : Nat} (a b : BitVec w) : BitVec w :=
+  if b = 0 then a
+  else if a = BitVec.intMin w ∧ b = BitVec.allOnes w then 0
+  else a.srem b
+
 def divu (a b : X) : X := if b = 0 then BitVec.allOnes 64 else a / b
 def remu (a b : X) : X := if b = 0 then a else a % b
 def div (a b : X) : X :=
@@ -59,6 +82,31 @@ def rem (a b : X) : X :=
   if b = 0 then a
   else if a = BitVec.intMin 64 ∧ b = BitVec.allOnes 64 then 0
   else a.srem b
+
+theorem divu_eq_divuN (a b : X) : divu a b = divuN a b := rfl
+theorem remu_eq_remuN (a b : X) : remu a b = remuN a b := rfl
+theorem div_eq_divN (a b : X) : div a b = divN a b := rfl
+theorem rem_eq_remN (a b : X) : rem a b = remN a b := rfl
+
+/-- The W-form divisions (`divw`, `divuw`, `remw`, `remuw`): the low
+    halves divided at 32 bits with the same totalization, the result
+    sign-extended (the verifier's `rv.div*` terms at width 32, widened). -/
+def divuw (a b : X) : X := sextW (divuN (a.truncate 32) (b.truncate 32))
+def divw (a b : X) : X := sextW (divN (a.truncate 32) (b.truncate 32))
+def remuw (a b : X) : X := sextW (remuN (a.truncate 32) (b.truncate 32))
+def remw (a b : X) : X := sextW (remN (a.truncate 32) (b.truncate 32))
+
+/-- The pure parts of a load or store the verifier decides (`spanLoadRV64`,
+    `spanStoreRV64`, `frameAccessRV64` in `asm/rv64_verify.go`): the
+    effective address is the base plus the sign-extended 12-bit immediate;
+    a load's value is the element zero-extended (`lbu`, `lhu`, `lwu`) or
+    sign-extended (`lb`, `lh`, `lw`); a store's data is the register's low
+    bytes. The access itself — which element the address names, and that
+    it lies inside the span or the frame — is the checker's obligation. -/
+def effectiveAddress (base : X) (imm : BitVec 12) : X := base + imm.signExtend 64
+def loadValue {w : Nat} (unsigned : Bool) (v : BitVec w) : X :=
+  if unsigned then v.zeroExtend 64 else v.signExtend 64
+def storeData (w : Nat) (x : X) : BitVec w := x.truncate w
 
 /-- The W-forms are the 64-bit operation truncated and sign-extended: the
     verifier may compute either way. -/
@@ -175,6 +223,20 @@ theorem widen_truncate_u8 (v : BitVec 8) : (widen 8 false v).truncate 8 = v := b
 theorem widen_truncate_i8 (v : BitVec 8) : (widen 8 true v).truncate 8 = v := by
   simp only [widen, sextW]; bv_decide
 
+/-- A 32-bit loop local carried zero-extended in a 64-bit register — an
+    RV64 `f` register under the file's low-bits convention, the low half of
+    an AArch64 `v` register, which every scalar write zero-fills
+    (`asm/loops.go`, the coupling's `zext` widening for `f`/`v` variables):
+    a body that reads the register at 32 bits and writes its result back
+    zero-extended preserves the coupling `r = zext x`, whatever the body's
+    function `f` — the float reduction's `fadd.s`/`fadd sN` over the
+    accumulator included. -/
+theorem zext_coupling_preserved (f : BitVec 32 → BitVec 32) (x : BitVec 32) (r : X)
+    (h : r = x.setWidth 64) : (f (r.setWidth 32)).setWidth 64 = (f x).setWidth 64 := by
+  subst h
+  have low : (x.setWidth 64).setWidth 32 = x := by bv_decide
+  rw [low]
+
 /-- A widened `u32` parameter is already a W-form fixed point: `sext.w`
     on it is the identity, which is why `addw` on two widened `u32`s is
     their 32-bit sum widened. -/
@@ -184,9 +246,11 @@ theorem addw_widen (x y : BitVec 32) :
 
 /-! ## The index guard (span element memory, `94-assembler.md` §9)
 
-The LP64 pair leaves a span's `u32` length in the low half of its register
-with padding above; the checker admits a bound only from the *normalized*
-copy `(len << 32) >> 32`. On the fall-through of `bgeu idx, lenN, exit`
+The LP64 pair carries a span's `u32` length widened like any `u32`
+argument (sign-extended from bit 31); the checker admits a bound from the
+*normalized* copy `(len << 32) >> 32` against any index, or from the raw
+pair when both are widened `u32` parameters (`index_guard_widened`,
+below). On the fall-through of `bgeu idx, lenN, exit`
 the branch did not hold, so `idx <u lenN`; since `lenN < 2^32`, the index
 is below the length and fits 32 bits, and `idx << s` for `2^s` the element
 size addresses element `idx` without wrapping — what `deriveRegion`
@@ -225,6 +289,63 @@ theorem scaled_index_exact (idx len : X) (s : Nat) (hs : s ≤ 31)
   calc idx.toNat * 2 ^ s < 2 ^ 32 * 2 ^ s := Nat.mul_lt_mul_of_pos_right hidx (Nat.two_pow_pos s)
     _ = 2 ^ (32 + s) := by rw [Nat.pow_add]
     _ ≤ 2 ^ 64 := Nat.pow_le_pow_right (by decide) (by omega)
+
+/-- The normalization pair is the zero extension of the low half: the
+    verifier folds `(x << 32) >> 32` to it (`asm/rv64_verify.go`). -/
+theorem normalize_eq (len : X) : normalize len = (len.truncate 32).zeroExtend 64 := by
+  apply BitVec.eq_of_toNat_eq
+  have h := len.isLt
+  rw [normalize, BitVec.toNat_ushiftRight, BitVec.toNat_shiftLeft, BitVec.toNat_setWidth, BitVec.toNat_setWidth,
+    Nat.shiftLeft_eq, Nat.shiftRight_eq_div_pow]
+  simp only [Nat.reducePow] at *
+  omega
+
+/-! ### GCC's shape of the guarded read
+
+A C compiler compares the psABI pair raw: `bgeu idx, len` with both
+registers holding widened `u32` parameters (`widen`), then zero-extends
+and scales the index in one `slli 32; srli 32-s`, and adds into the base
+register. The widening makes the raw comparison the 32-bit comparison, and
+the fused pair is the scaled zero extension — the shapes `deriveRegion`
+admits through the `widened` and `half` facts. -/
+
+/-- The fall-through of `bgeu idx, len` on two widened `u32` values proves
+    the 32-bit comparison: sign extension preserves unsigned order between
+    values of one width. -/
+theorem index_guard_widened (i len : BitVec 32)
+    (h : Br.holds .bgeu (widen 32 false i) (widen 32 false len) = false) :
+    i.toNat < len.toNat := by
+  simp only [Br.holds, Bool.not_eq_false', widen, sextW] at h
+  have hlt : i.ult len = true := by bv_decide
+  exact BitVec.ult_iff_toNat_lt.mp hlt
+
+/-- A widened `u32` is the parameter modulo `2^32`. -/
+theorem widen_toNat_mod (i : BitVec 32) : (widen 32 false i).toNat % 2 ^ 32 = i.toNat := by
+  have h := congrArg BitVec.toNat (widen_truncate_u32 i)
+  simpa [BitVec.toNat_setWidth] using h
+
+/-- `slli 32` then `srli 32-s` on a widened index is the zero extension
+    shifted by `s`: the index scaled by `2^s`, without wrap. -/
+theorem widened_scale (i : BitVec 32) (s : Nat) (hs : s ≤ 32) :
+    ((widen 32 false i) <<< 32) >>> (32 - s) = (i.zeroExtend 64) <<< s := by
+  apply BitVec.eq_of_toNat_eq
+  have hi := i.isLt
+  have hmod := widen_toNat_mod i
+  have hW := (widen 32 false i).isLt
+  rw [BitVec.toNat_ushiftRight, BitVec.toNat_shiftLeft, BitVec.toNat_shiftLeft, BitVec.toNat_setWidth,
+    Nat.shiftLeft_eq, Nat.shiftLeft_eq, Nat.shiftRight_eq_div_pow]
+  have hpow : 2 ^ s * 2 ^ (32 - s) = (2:Nat) ^ 32 := by
+    rw [← Nat.pow_add, Nat.add_sub_of_le hs]
+  have hs' : (2:Nat) ^ s ≤ 2 ^ 32 := Nat.pow_le_pow_right (by decide) hs
+  have hleft : (widen 32 false i).toNat * 2 ^ 32 % 2 ^ 64 = i.toNat * 2 ^ 32 := by
+    generalize (widen 32 false i).toNat = W at *
+    simp only [Nat.reducePow] at *
+    omega
+  have hsmall : i.toNat * 2 ^ s < 2 ^ 64 :=
+    calc i.toNat * 2 ^ s < 2 ^ 32 * 2 ^ 32 := Nat.mul_lt_mul_of_lt_of_le hi hs' (by decide)
+      _ = 2 ^ 64 := by decide
+  rw [hleft, ← hpow, ← Nat.mul_assoc, Nat.mul_div_cancel _ (Nat.two_pow_pos _),
+    Nat.mod_eq_of_lt (Nat.lt_trans hi (by decide)), Nat.mod_eq_of_lt hsmall]
 
 /-! ## Loop couplings of widened variables (`94-assembler.md` §9)
 
@@ -270,11 +391,13 @@ parameters never share a register and a binding names each register at
 most once. -/
 
 inductive Kind where
-  | int | float
+  | int | float | vector
   deriving DecidableEq, Repr
 
-/-- A register of the contract: the file and the index into `a0`–`a7` or
-    `fa0`–`fa7`. -/
+/-- A register of the contract: the file and the index into `a0`–`a7`,
+    `fa0`–`fa7`, or `v8`–`v23` (the vector kind's index `i` is register
+    `v(8 + i)`, RVV psABI: vector arguments in `v8`–`v23`, a vector result in
+    `v8`). -/
 structure Reg where
   kind : Kind
   index : Nat
@@ -283,27 +406,28 @@ structure Reg where
 /-- The placement of a parameter list: the k-th parameter of each kind
     takes the k-th register of its file. -/
 def lp64dBinding : List Kind → List Reg
-  | ks => go ks 0 0
+  | ks => go ks 0 0 0
 where
-  go : List Kind → Nat → Nat → List Reg
-    | [], _, _ => []
-    | .int :: rest, i, f => ⟨.int, i⟩ :: go rest (i + 1) f
-    | .float :: rest, i, f => ⟨.float, f⟩ :: go rest i (f + 1)
+  go : List Kind → Nat → Nat → Nat → List Reg
+    | [], _, _, _ => []
+    | .int :: rest, i, f, v => ⟨.int, i⟩ :: go rest (i + 1) f v
+    | .float :: rest, i, f, v => ⟨.float, f⟩ :: go rest i (f + 1) v
+    | .vector :: rest, i, f, v => ⟨.vector, v⟩ :: go rest i f (v + 1)
 
 theorem lp64dBinding_length (ks : List Kind) : (lp64dBinding ks).length = ks.length := by
-  suffices h : ∀ ks i f, (lp64dBinding.go ks i f).length = ks.length from h ks 0 0
+  suffices h : ∀ ks i f v, (lp64dBinding.go ks i f v).length = ks.length from h ks 0 0 0
   intro ks
   induction ks with
   | nil => intros; rfl
-  | cons k rest ih => intro i f; cases k <;> simp [lp64dBinding.go, ih]
+  | cons k rest ih => intro i f v; cases k <;> simp [lp64dBinding.go, ih]
 
 /-- Each parameter keeps its kind's file. -/
 theorem lp64dBinding_kinds (ks : List Kind) : (lp64dBinding ks).map Reg.kind = ks := by
-  suffices h : ∀ ks i f, (lp64dBinding.go ks i f).map Reg.kind = ks from h ks 0 0
+  suffices h : ∀ ks i f v, (lp64dBinding.go ks i f v).map Reg.kind = ks from h ks 0 0 0
   intro ks
   induction ks with
   | nil => intros; rfl
-  | cons k rest ih => intro i f; cases k <;> simp [lp64dBinding.go, ih]
+  | cons k rest ih => intro i f v; cases k <;> simp [lp64dBinding.go, ih]
 
 /-- Every list of kinds up to the contract's width (eight of each file)
     places its parameters in distinct registers: decided exhaustively. -/
@@ -317,6 +441,39 @@ theorem lp64dBinding_nodup_upto8 : ∀ ks ∈ allKinds 8, (lp64dBinding ks).Nodu
 /-- Two examples the tests use: `(a, b, c : f64)` and `(n : u32, x : f64)`. -/
 theorem lp64dBinding_fma : lp64dBinding [.float, .float, .float] = [⟨.float, 0⟩, ⟨.float, 1⟩, ⟨.float, 2⟩] := rfl
 theorem lp64dBinding_mixed : lp64dBinding [.int, .float, .int, .float] = [⟨.int, 0⟩, ⟨.float, 0⟩, ⟨.int, 1⟩, ⟨.float, 1⟩] := rfl
+
+/-! ### Vectors across the call boundary
+
+A function whose signature carries a fixed `simd` vector follows the RVV
+psABI's vector calling convention at its native entry (`<name>_rvv_abi`,
+docs/spec/94-assembler.md §9): the k-th vector parameter arrives in
+`v(8 + k)`, independently of the integer and float files, and a vector
+result leaves in `v8`. The C backend's lane-array struct crosses in the
+integer registers instead, so the C emitter converts at the boundary. -/
+
+/-- The vector register of the k-th vector parameter. -/
+def vectorArgReg (k : Nat) : Nat := 8 + k
+
+/-- The argument registers are `v8`–`v23`: sixteen of them. -/
+theorem vectorArgReg_within (k : Nat) (hk : k < 16) : 8 ≤ vectorArgReg k ∧ vectorArgReg k ≤ 23 := by
+  unfold vectorArgReg; omega
+
+/-- The result register is the first argument register (a unary vector
+function's parameter and result share `v8`). -/
+theorem vectorResultReg_eq : vectorArgReg 0 = 8 := rfl
+
+/-- The vector file is placed beside the others: `(a : simd.U8x16, k : u32,
+b : simd.U8x16)` binds `v8`, `a0`, `v9`. -/
+theorem lp64dBinding_vector : lp64dBinding [.vector, .int, .vector] = [⟨.vector, 0⟩, ⟨.int, 0⟩, ⟨.vector, 1⟩] := rfl
+
+/-- Every list of kinds of up to six parameters over the three files places
+    its parameters in distinct registers: decided exhaustively. -/
+def allKinds3 : Nat → List (List Kind)
+  | 0 => [[]]
+  | n + 1 => [] :: ((allKinds3 n).flatMap fun ks => [Kind.int :: ks, Kind.float :: ks, Kind.vector :: ks])
+
+set_option maxRecDepth 20000 in
+theorem lp64dBinding_nodup_vectors_upto6 : ∀ ks ∈ allKinds3 6, (lp64dBinding ks).Nodup := by decide
 
 /-- The move instructions between the files are bit identities: a value
     moved to the floating-point file and back is unchanged, so an integer
@@ -427,6 +584,150 @@ def vlmax (vlen sew lmul : Nat) : Nat := lmul * vlen / sew
 
 theorem vlmax_m1_e32_128 : vlmax 128 32 1 = 4 := by decide
 theorem vlmax_m2_e32_128 : vlmax 128 32 2 = 8 := by decide
+
+/-! ### Fractional LMUL (`94-assembler.md` §9, RVV 1.0 §3.4.2)
+
+The checker keeps LMUL in eighths: `mf8 = 1`, `mf4 = 2`, `mf2 = 4`,
+`m1 = 8`, …, `m8 = 64`. A fractional LMUL fills part of one register, so
+its operand group is one register and every alignment fact holds trivially
+(`groupOf`); the element width it may hold is bounded by ELEN — the
+configuration is reserved when `SEW / LMUL > ELEN` — and widening from a
+fractional LMUL doubles the eighths without leaving the single register
+until `m1`. -/
+
+/-- The register count of an operand group at `lmul8 / 8`. -/
+def groupOf (lmul8 : Nat) : Nat := if lmul8 < 8 then 1 else lmul8 / 8
+
+theorem groupOf_fractional (lmul8 : Nat) (h : lmul8 < 8) : groupOf lmul8 = 1 := by
+  simp [groupOf, h]
+
+theorem groupOf_integral : ∀ lmul8 ∈ [8, 16, 32, 64], groupOf lmul8 = lmul8 / 8 := by decide
+
+/-- VLMAX in eighths: `lmul8 * vlen / (8 * sew)`. -/
+def vlmax8 (vlen sew lmul8 : Nat) : Nat := lmul8 * vlen / (8 * sew)
+
+theorem vlmax8_mf2_e32_128 : vlmax8 128 32 4 = 2 := by decide
+theorem vlmax8_agrees (vlen sew lmul : Nat) : vlmax8 vlen sew (lmul * 8) = vlmax vlen sew lmul := by
+  unfold vlmax8 vlmax
+  rw [show lmul * 8 * vlen = 8 * (lmul * vlen) by ac_rfl]
+  exact Nat.mul_div_mul_left _ _ (by decide)
+
+/-- The configurations the checker admits: `SEW / LMUL ≤ ELEN`, that is
+`sew * 8 ≤ elen * lmul8` over eighths. -/
+def withinElen (sew elen lmul8 : Nat) : Prop := sew * 8 ≤ elen * lmul8
+
+theorem fractional_within_elen : withinElen 32 64 4 ∧ withinElen 16 64 2 ∧ withinElen 8 64 1 ∧ ¬ withinElen 64 64 4 := by
+  unfold withinElen
+  decide
+
+/-- Widening from a fractional LMUL stays in one register until `m1`: the
+wide group of `mf2` is `m1`, one register. -/
+theorem wide_group_fractional : ∀ lmul8 ∈ [1, 2, 4], groupOf (2 * lmul8) = 1 := by decide
+
+/-! ### The vector floating-point forms (fifth increment)
+
+Floating-point addition is not associative, so a reduction's result depends
+on the order it adds in. `vfredosum.vs` (RVV 1.0 §14.3) is the *ordered*
+form: it folds the strip's elements left to right into the scalar it was
+handed. A strip-mining loop hands each strip the previous strip's result,
+and the whole is one left fold over the span in element order — the
+sequential sum the differential expects from Go. The unordered
+`vfredusum.vs`, whose grouping is implementation-defined, is not in the
+table. -/
+
+/-- One strip: the ordered reduction of `xs` from the running scalar `acc`. -/
+def orderedStrip (f : α → β → α) (acc : α) (xs : List β) : α := xs.foldl f acc
+
+/-- The strips in order: each starts from the previous one's result. -/
+def orderedStrips (f : α → β → α) (acc : α) (strips : List (List β)) : α :=
+  strips.foldl (orderedStrip f) acc
+
+/-- Two consecutive strips fold as one strip over their concatenation. -/
+theorem ordered_strip_append (f : α → β → α) (acc : α) (xs ys : List β) :
+    orderedStrip f (orderedStrip f acc xs) ys = orderedStrip f acc (xs ++ ys) := by
+  simp [orderedStrip, List.foldl_append]
+
+/-- The strip-mined ordered reduction is the sequential fold over the
+whole span in element order, whatever the strip boundaries (the `vl`
+each `vsetvli` chose). -/
+theorem ordered_strips_fold (f : α → β → α) (acc : α) (strips : List (List β)) :
+    orderedStrips f acc strips = orderedStrip f acc strips.flatten := by
+  induction strips generalizing acc with
+  | nil => rfl
+  | cons xs rest ih =>
+    simp only [orderedStrips, List.foldl_cons, List.flatten_cons]
+    rw [← ordered_strip_append]
+    exact ih (orderedStrip f acc xs)
+
+/-- The element widths the floating-point forms admit: `e32` (Zve32f) and
+`e64` (Zve64d); `e8` has no float format and `e16` would need Zvfh. -/
+def floatSewOK (sew : Nat) : Prop := sew = 32 ∨ sew = 64
+
+theorem float_sew_admitted : floatSewOK 32 ∧ floatSewOK 64 ∧ ¬ floatSewOK 16 ∧ ¬ floatSewOK 8 := by
+  unfold floatSewOK; omega
+
+/-! ### Fixed vectors on the native lane: the slack guard
+
+The native backend's fixed 128-bit vectors (docs/spec/93-simd.md §1.4) load
+K elements at a guarded index. The guard is spelled `bltu len, k, trap`
+(len ≥ K), `sub t, len, k` (t = len − K, no wrap), `bltu t, idx, trap`
+(idx ≤ len − K): together idx + K ≤ len, and every one of the K elements
+from idx lies inside the span. A vector local's sixteen-byte slot and an
+owned array's element are frame memory: an immediate AVL of K elements at
+an entry-relative address inside the declared frame. -/
+
+/-- The three instructions of the slack guard prove idx + K ≤ len. -/
+theorem slack_guard (len idx k t : Nat) (hmin : k ≤ len) (ht : t = len - k) (hguard : ¬ t < idx) :
+    idx + k ≤ len := by
+  omega
+
+/-- Under idx + K ≤ len, the K elements from idx are inside the span. -/
+theorem slack_access_in_bounds (len idx k i : Nat) (h : idx + k ≤ len) (hi : i < k) : idx + i < len := by
+  omega
+
+/-- The AVL the configuration sets is at most K (`vsetivli` with an immediate
+    within the guard's K), and vl ≤ AVL: every accessed element is inside. -/
+theorem slack_vector_in_bounds (len idx k avl vlmax vl i : Nat) (h : idx + k ≤ len) (havl : avl ≤ k)
+    (hv : vsetvlOK avl vlmax vl) (hi : i < vl) : idx + i < len := by
+  unfold vsetvlOK at hv
+  omega
+
+/-- A fixed vector in the frame: K elements of `width` bytes at an
+    entry-relative address `addr` (negative, above `-frame`) end at or before
+    the entry sp, so every byte lies inside the declared frame. -/
+theorem frame_vector_in_bounds (frame addr k width i : Int) (hlo : -frame ≤ addr) (hhi : addr + k * width ≤ 0)
+    (hi : 0 ≤ i) (hik : i < k * width) : -frame ≤ addr + i ∧ addr + i < 0 := by
+  omega
+
+/-! ### Fixed configurations in the verifier (asm/rv64_verify_vector.go)
+
+The verifier models the vector file under `vsetivli zero, K, eS, m1` when
+`K · S ≤ 128`: on every implementation with `VLEN ≥ 128` the maximum
+length at `eS/m1` is at least `K`, so `vl = min(K, VLMAX) = K` exactly and
+the instructions act on `K` lanes whatever the VLEN. The lanes past `vl`
+are tail-agnostic (RVV 1.0 §3.4.3): the verifier gives them fresh unknown
+values, so a unit whose result depends on them is a mismatch and one that
+masks them out is proven. -/
+
+/-- With `VLEN ≥ 128`, `K` lanes of `S` bits with `K · S ≤ 128` fit: `K ≤ VLMAX`. -/
+theorem fixed_lanes_fit (vlen K S : Nat) (hS : 0 < S) (hvlen : 128 ≤ vlen) (hKS : K * S ≤ 128) :
+    K ≤ vlmax vlen S 1 := by
+  unfold vlmax
+  rw [Nat.one_mul]
+  exact (Nat.le_div_iff_mul_le hS).2 (by omega)
+
+/-- Under such a configuration `vl` is `K` exactly, on every VLEN. -/
+theorem fixed_config_vl (vlen K S : Nat) (hK : 0 < K) (hS : 0 < S) (hvlen : 128 ≤ vlen) (hKS : K * S ≤ 128) :
+    vsetvlOK K (vlmax vlen S 1) (min K (vlmax vlen S 1)) ∧ min K (vlmax vlen S 1) = K := by
+  refine ⟨vsetvl_min_ok _ _ ?_, Nat.min_eq_left (fixed_lanes_fit vlen K S hS hvlen hKS)⟩
+  unfold vlmax
+  rw [Nat.one_mul]
+  have hSK : S ≤ K * S := Nat.le_mul_of_pos_left S hK
+  exact Nat.div_pos (by omega) hS
+
+/-- The sixteen bytes, eight halfwords, four words, and two doublewords of
+the fixed vectors all fit, as does the one-element `e32` read of a mask. -/
+theorem fixed_shapes_fit : 16 * 8 ≤ 128 ∧ 8 * 16 ≤ 128 ∧ 4 * 32 ≤ 128 ∧ 2 * 64 ≤ 128 ∧ 1 * 32 ≤ 128 := by decide
 
 /-- A masked element is one of the vl elements: whatever the mask, the
     strip-mining bound covers it. -/

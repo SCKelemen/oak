@@ -132,6 +132,19 @@ func TestOakSATFixtures(t *testing.T) {
 	if !outcome.Satisfiable || !satisfies([][]int{{1, 2}, {-1, 3}, {-2, -3}, {2, 3}}, outcome.Model) {
 		t.Fatalf("chain: want a satisfying model, got %+v", outcome)
 	}
+	// Two contradicting units: found at load, refuted with a certificate.
+	units := cnfOf(2, [][]int{{1}, {-1, 2}, {-2}})
+	outcome, err = runOakSAT(units)
+	if err != nil || !outcome.Unsatisfiable {
+		t.Fatalf("contradicting units: want unsatisfiable, got %+v %v", outcome, err)
+	}
+	checkBoth(t, "contradicting units", units, outcome.Certificate)
+	direct := cnfOf(1, [][]int{{1}, {-1}})
+	outcome, err = runOakSAT(direct)
+	if err != nil || !outcome.Unsatisfiable {
+		t.Fatalf("direct contradiction: want unsatisfiable, got %+v %v", outcome, err)
+	}
+	checkBoth(t, "direct contradiction", direct, outcome.Certificate)
 	// An empty clause in the formula.
 	empty := cnfOf(1, [][]int{{}})
 	outcome, err = runOakSAT(empty)
@@ -139,8 +152,9 @@ func TestOakSATFixtures(t *testing.T) {
 		t.Fatalf("empty clause: want unsatisfiable, got %+v %v", outcome, err)
 	}
 	checkBoth(t, "empty clause", empty, outcome.Certificate)
-	// Pigeonhole 4 into 3 and 6 into 5.
-	for _, n := range []int{3, 5} {
+	// Pigeonhole 4 into 3 and 7 into 6; the second learns past the
+	// reduction limit and its certificate carries a deletion line.
+	for _, n := range []int{3, 6} {
 		variables, clauses := pigeonhole(n)
 		cnf := cnfOf(variables, clauses)
 		outcome, err := runOakSAT(cnf)
@@ -151,7 +165,180 @@ func TestOakSATFixtures(t *testing.T) {
 			t.Fatalf("pigeonhole %d: want unsatisfiable, got %+v", n, outcome)
 		}
 		checkBoth(t, fmt.Sprintf("pigeonhole %d", n), cnf, outcome.Certificate)
+		if n == 6 && !strings.Contains(outcome.Certificate, " d ") {
+			t.Fatalf("pigeonhole %d: the run learned enough to reduce, but the certificate has no deletion line", n)
+		}
 	}
+}
+
+// Probing runs before the search: a failed literal is learned as a unit
+// with its hints, and a literal implied by both polarities of a variable
+// through two recorded implications, deleted once the unit stands. The
+// formulas are unsatisfiable so the certificate is kept and checked, and
+// the probing steps come first.
+func TestOakSATProbing(t *testing.T) {
+	// x forces a and b, they force c, and x forbids c; not x forces d
+	// and e, they force f, and not x forbids f. Both polarities fail (and
+	// no pair of clauses subsumes or strengthens another): the first probe
+	// learns a unit of x, whose propagation at level zero closes the
+	// derivation.
+	variables, failed := padded([][]int{{-1, 2}, {-1, 3}, {-2, -3, 4}, {-1, -4}, {1, 5}, {1, 6}, {-5, -6, 7}, {1, -7}}, 7, 1, 2, 3, 4, 5, 6, 7)
+	cnf := cnfOf(variables, failed)
+	outcome, err := runOakSAT(cnf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Unsatisfiable {
+		t.Fatalf("failed literal: want unsatisfiable, got %+v", outcome)
+	}
+	steps := certificateSteps(outcome.Certificate)
+	if len(steps) != 2 || len(steps[0].literals) != 1 || abs(steps[0].literals[0]) != 1 || len(steps[1].literals) != 0 {
+		t.Fatalf("failed literal: want a unit of x then the empty clause, got %+v\n%s", steps, outcome.Certificate)
+	}
+	checkBoth(t, "failed literal", cnf, outcome.Certificate)
+	// u follows from x through a and from not x through b, so u is a
+	// unit though neither polarity fails; beside it the pigeonhole formula
+	// on fresh variables keeps the whole unsatisfiable without any pair of
+	// clauses subsuming or strengthening another.
+	holes, pigeons := pigeonhole(3)
+	core := [][]int{{-1, 2}, {1, 3}, {-2, 4}, {-3, 4}}
+	protect := []int{1, 2, 3, 4}
+	for _, c := range pigeons {
+		shifted := make([]int, len(c))
+		for i, l := range c {
+			if l > 0 {
+				shifted[i] = l + 4
+			} else {
+				shifted[i] = l - 4
+			}
+		}
+		core = append(core, shifted)
+	}
+	for v := 5; v <= 4+holes; v++ {
+		protect = append(protect, v)
+	}
+	variables, both := padded(core, 4+holes, protect...)
+	cnf = cnfOf(variables, both)
+	outcome, err = runOakSAT(cnf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Unsatisfiable {
+		t.Fatalf("both polarities: want unsatisfiable, got %+v", outcome)
+	}
+	steps = certificateSteps(outcome.Certificate)
+	if len(steps) < 4 {
+		t.Fatalf("both polarities: want two implications, a unit, and more, got %+v\n%s", steps, outcome.Certificate)
+	}
+	if len(steps[0].literals) != 2 || len(steps[1].literals) != 2 || len(steps[2].literals) != 1 || steps[2].literals[0] != 4 {
+		t.Fatalf("both polarities: want x|u and -x|u, then the unit u, got %+v\n%s", steps, outcome.Certificate)
+	}
+	if len(steps[2].hints) != 2 || steps[2].hints[0] != steps[0].id || steps[2].hints[1] != steps[1].id {
+		t.Fatalf("both polarities: the unit's hints must be the two implications, got %+v", steps[2])
+	}
+	if !strings.Contains(outcome.Certificate, fmt.Sprintf(" d %d %d 0", steps[0].id, steps[1].id)) {
+		t.Fatalf("both polarities: the implications are not deleted after the unit\n%s", outcome.Certificate)
+	}
+	if len(steps[len(steps)-1].literals) != 0 {
+		t.Fatalf("both polarities: want the empty clause last, got %+v", steps[len(steps)-1])
+	}
+	checkBoth(t, "both polarities", cnf, outcome.Certificate)
+}
+
+// Subsumption at load: a clause holding another is deleted, and a clause
+// holding another but for one negated literal loses that literal through
+// a two-hint addition, before anything else is derived.
+func TestOakSATSubsumption(t *testing.T) {
+	// {1,2} subsumes {1,2,3} and strengthens {-1,2,4} to {2,4}; the
+	// contradiction on 2 through 5 and 6 makes the whole unsatisfiable.
+	variables, clauses := padded([][]int{{1, 2}, {1, 2, 3}, {-1, 2, 4}, {-2, 5}, {-2, -5}, {2, 6}, {2, -6}}, 6, 1, 2, 3, 4, 5, 6)
+	cnf := cnfOf(variables, clauses)
+	outcome, err := runOakSAT(cnf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Unsatisfiable {
+		t.Fatalf("subsumption: want unsatisfiable, got %+v", outcome)
+	}
+	steps := certificateSteps(outcome.Certificate)
+	if len(steps) == 0 || len(steps[0].literals) != 2 || steps[0].literals[0] != 2 || steps[0].literals[1] != 4 || len(steps[0].hints) != 2 || steps[0].hints[0] != 3 || steps[0].hints[1] != 1 {
+		t.Fatalf("subsumption: want the first step to strengthen clause 3 by clause 1 into 2 4, got %+v\n%s", steps, outcome.Certificate)
+	}
+	deleted := false
+	for _, line := range strings.Split(outcome.Certificate, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 2 && fields[1] == "d" {
+			has := map[string]bool{}
+			for _, f := range fields[2:] {
+				has[f] = true
+			}
+			if has["2"] && has["3"] {
+				deleted = true
+			}
+		}
+	}
+	if !deleted {
+		t.Fatalf("subsumption: the subsumed clause 2 and the strengthened clause 3 must be deleted together:\n%s", outcome.Certificate)
+	}
+	checkBoth(t, "subsumption", cnf, outcome.Certificate)
+}
+
+// padded appends, for each listed variable, eleven clauses holding it
+// positively beside two of twelve frame variables, and every three-literal
+// positive clause over the frame, so bounded variable elimination (at most
+// ten occurrences on each side) passes over the listed variables and the
+// frame alike. The frame is satisfied by any assignment making it true
+// and constrains nothing else.
+func padded(clauses [][]int, variables int, protect ...int) (int, [][]int) {
+	frame := make([]int, 12)
+	for i := range frame {
+		frame[i] = variables + 1 + i
+	}
+	for _, v := range protect {
+		for i := 0; i < 11; i++ {
+			clauses = append(clauses, []int{v, frame[i], frame[i+1]})
+		}
+	}
+	for i := 0; i < 12; i++ {
+		for j := i + 1; j < 12; j++ {
+			for k := j + 1; k < 12; k++ {
+				clauses = append(clauses, []int{frame[i], frame[j], frame[k]})
+			}
+		}
+	}
+	return variables + 12, clauses
+}
+
+type certificateStep struct {
+	id       int
+	literals []int
+	hints    []int
+}
+
+// certificateSteps reads the addition lines of an LRAT text.
+func certificateSteps(text string) []certificateStep {
+	var steps []certificateStep
+	for _, line := range strings.Split(text, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[1] == "d" {
+			continue
+		}
+		var step certificateStep
+		fmt.Sscan(fields[0], &step.id)
+		i := 1
+		for ; i < len(fields) && fields[i] != "0"; i++ {
+			var l int
+			fmt.Sscan(fields[i], &l)
+			step.literals = append(step.literals, l)
+		}
+		for i++; i < len(fields) && fields[i] != "0"; i++ {
+			var h int
+			fmt.Sscan(fields[i], &h)
+			step.hints = append(step.hints, h)
+		}
+		steps = append(steps, step)
+	}
+	return steps
 }
 
 // Random 3-SAT near the threshold, against brute force: the verdict agrees,

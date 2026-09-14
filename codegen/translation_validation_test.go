@@ -53,6 +53,11 @@ type validatedHelper struct {
 	spec    string // Oak body: the helper's specification
 	cSource string // C wrapper calling the prelude helper
 	bar     verdictBar
+	// outside names the lanes whose compiler emits a shape the verifier's
+	// unit language does not have, with the reason; the helper is reported
+	// outside the decided subset there (a mismatch still fails) and held to
+	// bar on the other lanes.
+	outside map[string]string
 }
 
 func translationValidationHelpers() []validatedHelper {
@@ -72,8 +77,8 @@ func translationValidationHelpers() []validatedHelper {
 		binary("add", "+", proofRequired)
 		binary("sub", "-", proofRequired)
 		binary("mul", "*", witnessRequired)
-		binary("div", "/", mismatchForbidden)
-		binary("rem", "%", mismatchForbidden)
+		binary("div", "/", witnessRequired)
+		binary("rem", "%", witnessRequired)
 		name := "tv_neg_" + ty
 		helpers = append(helpers, validatedHelper{
 			name:    name,
@@ -83,6 +88,63 @@ func translationValidationHelpers() []validatedHelper {
 			bar:     proofRequired,
 		})
 	}
+	// The checked shifts under a constant count: the count is below the
+	// width, so the trap check folds away and the verifier's Oak side admits
+	// the constant shift (a variable count it refuses: Oak traps where the
+	// machine wraps).
+	for _, ty := range []string{"u8", "u16", "u32", "u64"} {
+		width := typechecker.PrimitiveBits(ty)
+		for _, count := range []int{1, 3, width - 1} {
+			for _, op := range []struct{ name, oak string }{{"shl", "<<"}, {"shr", ">>"}} {
+				name := fmt.Sprintf("tv_%s%d_%s", op.name, count, ty)
+				helpers = append(helpers, validatedHelper{
+					name:    name,
+					decl:    fmt.Sprintf("%s: (v: %s) -> %s", name, ty, ty),
+					spec:    fmt.Sprintf("v %s %d", op.oak, count),
+					cSource: fmt.Sprintf("%s %s(%s v) { return oak_%s_%s(v, %d); }\n", ty, name, ty, op.name, ty, count),
+					bar:     proofRequired,
+				})
+			}
+		}
+	}
+	// The guarded element read (`oak_index`): the bounds check is a trap
+	// path, the read itself a span load the verifier decides against the
+	// Oak element read.
+	for _, ty := range []string{"u8", "u16", "u32", "u64"} {
+		name := "tv_index_" + ty
+		helpers = append(helpers, validatedHelper{
+			name:    name,
+			decl:    fmt.Sprintf("%s: (v: []%s, i: u32) -> %s", name, ty, ty),
+			spec:    "v[i]",
+			cSource: fmt.Sprintf("%s %s(const %s *base, u32 len, u32 i) { return oak_index(base, len, i); }\n", ty, name, ty),
+			bar:     proofRequired,
+		})
+	}
+	// The guarded element write (`oak_store`): a unit helper whose effect
+	// is the store; the verifier proves the span memory it writes against
+	// the Oak assignment (asm/effects.go).
+	for _, ty := range []string{"u8", "u16", "u32", "u64"} {
+		name := "tv_store_" + ty
+		helpers = append(helpers, validatedHelper{
+			name:    name,
+			decl:    fmt.Sprintf("%s: (v: [*]%s, i: u32, x: %s) -> ()", name, ty, ty),
+			spec:    "{ v[i] = x }",
+			cSource: fmt.Sprintf("void %s(%s *base, u32 len, u32 i, %s x) { oak_store(base, len, i, x); }\n", name, ty, ty),
+			bar:     proofRequired,
+		})
+	}
+	// The strong compare-exchange helper on a cell reached through a span
+	// element under the index guard: the value observed and the guarded
+	// store (docs/spec/65-machine-memory.md section 7a). clang spells it as
+	// the exclusive loop (armv8.0) or `casal` (LSE); GCC's rv64 `lr.w`/`sc.w`
+	// are not in the rv64 unit language.
+	helpers = append(helpers, validatedHelper{
+		name:    "tv_cas_u32",
+		decl:    "tv_cas_u32: (v: [*]Atomic[u32], i: u32, expected, desired: u32) -> u32",
+		spec:    "atomic_compare_exchange_acq_rel_acquire(v[i], expected, desired)",
+		cSource: "u32 tv_cas_u32(_Atomic(u32) *base, u32 len, u32 i, u32 expected, u32 desired) { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } return __oak_cas_u32_acq_rel_acquire(base + i, expected, desired); }\n",
+		bar:     proofRequired,
+	})
 	for _, conv := range []string{"u8_trunc_u32", "u16_trunc_u64", "u32_trunc_u64", "i8_trunc_i32", "i16_trunc_i64", "i32_trunc_i64", "i32_bits_u32", "u32_bits_i32", "u64_bits_i64", "i64_bits_u64", "u8_trunc_i32", "i8_trunc_u64"} {
 		target, _, source, ok := typechecker.ConversionParts(conv)
 		if !ok {
@@ -100,6 +162,46 @@ func translationValidationHelpers() []validatedHelper {
 	return helpers
 }
 
+// casHelperText is the prelude's strong compare-exchange helper for u32 at
+// acq_rel/acquire, as `generateC` emits it (the text
+// spec/lean/Oak/CompareExchangeRefinement.lean transliterates).
+const casHelperText = "static inline u32 __oak_cas_u32_acq_rel_acquire(_Atomic(u32) *cell, u32 expected, u32 desired) {\n" +
+	"  u32 observed = expected;\n" +
+	"  (void)atomic_compare_exchange_strong_explicit(cell, &observed, desired, OAK_ORDER_CAS_ACQ_REL, memory_order_acquire);\n" +
+	"  return observed;\n" +
+	"}\n"
+
+// guardMacroLines are the prelude's guarded element read and checked
+// shift helpers, pinned to the emitted text like arithmeticMacroLines:
+// these are the lines the validated units are compiled from.
+var guardMacroLines = []string{
+	`static inline u64 oak_bounds_trap(void) { __builtin_trap(); return 0; }`,
+	`#define oak_index(base, len, i) ((u64)(i) < (u64)(len) ? (base)[(i)] : (base)[oak_bounds_trap()])`,
+	`#define OAK_SHIFT_HELPERS(T, W) \`,
+	`  static inline T oak_shl_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v << n); } \`,
+	`  static inline T oak_shr_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v >> n); }`,
+	`OAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u) OAK_SHIFT_HELPERS(u64, 64u)`,
+	`#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)`,
+}
+
+func TestGuardMacrosMatchValidatedText(t *testing.T) {
+	output := generateC(t, "package main\n\nmain: (): i32 {\n  a: u32 = u32(3)\n  i32_bits_u32(a << 2)\n}\n")
+	for _, line := range guardMacroLines {
+		if !strings.Contains(output, line+"\n") {
+			t.Fatalf("emitted prelude lacks the pinned line\n%s\n— update guardMacroLines (codegen/translation_validation_test.go); output:\n%s", line, output)
+		}
+	}
+	// The compare-exchange helper and the order macros, from a program
+	// that uses the helper.
+	withCAS := generateC(t, "package main\n\ncell: Atomic[u32]\n\nmain: (): i32 {\n  atomic_store_relaxed(cell, u32(1))\n  seen: u32 = atomic_compare_exchange_acq_rel_acquire(cell, u32(1), u32(2))\n  i32_bits_u32(atomic_load_acquire(cell) - seen - u32(1))\n}\n")
+	if !strings.Contains(withCAS, casHelperText) {
+		t.Fatalf("emitted C lacks the pinned compare-exchange helper\n%s\n— update casHelperText (codegen/translation_validation_test.go); output:\n%s", casHelperText, withCAS)
+	}
+	if !strings.Contains(withCAS, atomicOrderMacros) {
+		t.Fatalf("emitted C lacks the atomic order macros; output:\n%s", withCAS)
+	}
+}
+
 // translationValidationC is a freestanding C translation unit: the prelude
 // helpers as the backend emits them, and one exported wrapper per helper.
 func translationValidationC(helpers []validatedHelper) string {
@@ -108,6 +210,10 @@ func translationValidationC(helpers []validatedHelper) string {
 	b.WriteString("typedef __INT8_TYPE__ i8; typedef __INT16_TYPE__ i16; typedef __INT32_TYPE__ i32; typedef __INT64_TYPE__ i64;\n")
 	b.WriteString("#define INT8_MIN (-128)\n#define INT16_MIN (-32768)\n#define INT32_MIN (-2147483647-1)\n#define INT64_MIN (-9223372036854775807LL-1)\n")
 	b.WriteString(strings.Join(arithmeticMacroLines, "\n") + "\n")
+	b.WriteString(strings.Join(guardMacroLines, "\n") + "\n")
+	b.WriteString("#include <stdatomic.h>\n")
+	b.WriteString(atomicOrderMacros)
+	b.WriteString(casHelperText)
 	seen := map[string]bool{}
 	for _, h := range helpers {
 		if strings.HasPrefix(h.name, "tv_") && strings.Contains(h.name, "_trunc_") || strings.Contains(h.name, "_bits_") {
@@ -161,12 +267,58 @@ func assemblyFunctions(assembly string, comment string) map[string][]string {
 			functions[current] = append(functions[current], "L"+m[1]+":")
 			continue
 		}
+		if m := tvNumericLabel.FindStringSubmatch(line); m != nil {
+			// GCC's numeric local labels (`1:`, referenced as `1b`/`1f`):
+			// kept as markers, resolved below.
+			functions[current] = append(functions[current], "N"+m[1]+":")
+			continue
+		}
 		if strings.HasPrefix(line, ".") || strings.HasSuffix(line, ":") {
 			continue
 		}
 		functions[current] = append(functions[current], tvLocalRef.ReplaceAllString(line, "L$1"))
 	}
+	for name, lines := range functions {
+		functions[name] = resolveNumericLabels(lines)
+	}
 	return functions
+}
+
+var (
+	tvNumericLabel = regexp.MustCompile(`^([0-9]+):$`)
+	tvNumericRef   = regexp.MustCompile(`\b([0-9]+)([bf])\b`)
+)
+
+// resolveNumericLabels gives every numeric local label a unique name and
+// rewrites its backward (`Nb`, the nearest definition before) and forward
+// (`Nf`, the nearest after) references to it.
+func resolveNumericLabels(lines []string) []string {
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		if m := tvNumericLabel.FindStringSubmatch(strings.TrimPrefix(line, "N")); m != nil && strings.HasPrefix(line, "N") {
+			out[i] = fmt.Sprintf("N%s_%d:", m[1], i)
+			continue
+		}
+		out[i] = tvNumericRef.ReplaceAllStringFunc(line, func(ref string) string {
+			m := tvNumericRef.FindStringSubmatch(ref)
+			number, direction := m[1], m[2]
+			if direction == "b" {
+				for j := i - 1; j >= 0; j-- {
+					if lines[j] == "N"+number+":" {
+						return fmt.Sprintf("N%s_%d", number, j)
+					}
+				}
+			} else {
+				for j := i + 1; j < len(lines); j++ {
+					if lines[j] == "N"+number+":" {
+						return fmt.Sprintf("N%s_%d", number, j)
+					}
+				}
+			}
+			return ref
+		})
+	}
+	return out
 }
 
 func parseOakSpec(t *testing.T, source string) *ast.FunctionStatement {
@@ -192,6 +344,22 @@ func unitFor(arch string, h validatedHelper, sig *ast.FunctionStatement, body []
 	bound := map[string]bool{}
 	index := 0
 	for _, param := range sig.Parameters {
+		if isSpanType(param.Type) {
+			// A span or view is its base and length: two argument registers
+			// (AAPCS64: x0, w1; LP64: a0, a1).
+			if arch == asm.ArchRV64 {
+				fmt.Fprintf(&b, "  bind a%d, a%d = %s\n", index, index+1, param.Name.Value)
+				bound[fmt.Sprintf("a%d", index)] = true
+				bound[fmt.Sprintf("a%d", index+1)] = true
+			} else {
+				fmt.Fprintf(&b, "  bind x%d, w%d = %s\n", index, index+1, param.Name.Value)
+				for _, r := range []string{fmt.Sprintf("x%d", index), fmt.Sprintf("w%d", index), fmt.Sprintf("x%d", index+1), fmt.Sprintf("w%d", index+1)} {
+					bound[r] = true
+				}
+			}
+			index += 2
+			continue
+		}
 		bits := typechecker.PrimitiveBits(paramTypeName(param.Type))
 		var reg string
 		if arch == asm.ArchRV64 {
@@ -242,6 +410,16 @@ func unitFor(arch string, h validatedHelper, sig *ast.FunctionStatement, body []
 	return b.String()
 }
 
+// isSpanType recognizes `[]T` and `[*]T` parameter types.
+func isSpanType(expr ast.Expression) bool {
+	index, ok := expr.(*ast.IndexExpression)
+	if !ok || index.Dot {
+		return false
+	}
+	marker, isMarker := index.Index.(*ast.Identifier)
+	return isMarker && (marker.Value == "" || marker.Value == "*")
+}
+
 func paramTypeName(expr ast.Expression) string {
 	if ident, ok := expr.(*ast.Identifier); ok {
 		return ident.Value
@@ -278,6 +456,10 @@ func validateTranslation(t *testing.T, arch string, compile func(cPath, sPath st
 		}
 		sig := parseOakSpec(t, h.decl)
 		spec := parseOakSpec(t, h.decl+" = "+h.spec)
+		if reason, isOutside := h.outside[arch]; isOutside {
+			t.Logf("%s %s: %s", arch, h.name, reason)
+			h.bar = mismatchForbidden
+		}
 		unitText := unitFor(arch, h, sig, body)
 		unit, errs := asm.ParseUnit("helpers."+arch+".oakasm", unitText)
 		if len(errs) != 0 {
@@ -325,6 +507,41 @@ func TestTranslationValidationArm64(t *testing.T) {
 	}
 	validateTranslation(t, asm.ArchArm64, func(cPath, sPath string) error {
 		out, err := exec.Command(clang, "--target=aarch64-none-elf", "-std=c11", "-O1", "-ffreestanding",
+			"-fno-asynchronous-unwind-tables", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-S", cPath, "-o", sPath).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%v\n%s", err, out)
+		}
+		return nil
+	}, "//")
+}
+
+// The Apple M-series lane: what the Apple cores' compilers emit (LSE
+// atomics, `ldapr` for an acquire load, the same guards); `-mcpu=apple-m1`
+// is what a darwin/arm64 build of Oak's C compiles with.
+func TestTranslationValidationArm64Apple(t *testing.T) {
+	clang, err := exec.LookPath("clang")
+	if err != nil {
+		t.Skip("clang is required to compile the prelude helpers for arm64")
+	}
+	validateTranslation(t, asm.ArchArm64, func(cPath, sPath string) error {
+		out, err := exec.Command(clang, "--target=aarch64-none-elf", "-mcpu=apple-m1", "-std=c11", "-O1", "-ffreestanding",
+			"-fno-asynchronous-unwind-tables", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-S", cPath, "-o", sPath).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%v\n%s", err, out)
+		}
+		return nil
+	}, "//")
+}
+
+// The LSE lane: armv8.1-a spells the atomics as single instructions
+// (`casal`) where armv8.0 loops on the exclusives; both are decided.
+func TestTranslationValidationArm64LSE(t *testing.T) {
+	clang, err := exec.LookPath("clang")
+	if err != nil {
+		t.Skip("clang is required to compile the prelude helpers for arm64")
+	}
+	validateTranslation(t, asm.ArchArm64, func(cPath, sPath string) error {
+		out, err := exec.Command(clang, "--target=aarch64-none-elf", "-march=armv8.1-a", "-std=c11", "-O1", "-ffreestanding",
 			"-fno-asynchronous-unwind-tables", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-S", cPath, "-o", sPath).CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("%v\n%s", err, out)

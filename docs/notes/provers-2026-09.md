@@ -152,7 +152,53 @@ literature; cuda-cic does not check proof terms.
 (items 1 and the checkers of item 2 landed on 2026-09-13: `asm/cnf.go`,
 `prove/lrat.go`, `prove/solver/lrat.oak`, `Oak.RupCheck`; the solver
 written in Oak landed the same day as the rung's default,
-`prove/solver/sat.oak`; the encoder's proof remains. First run with CaDiCaL 3.0.1:
+`prove/solver/sat.oak`, then clause-database reduction with deletion lines,
+two watched literals, learned-clause minimization, Luby restarts,
+activity-based reduction, and bounded variable elimination at load; the
+encoder's laws are stated in `Oak.Tseitin` and its code checked against
+them by truth table; the clause engine written in Oak (`cnf.oak`) now
+sits beside the Go one and is the rung's default, the two agreeing clause
+for clause in count over the corpus; and the rung runs inside the prover
+written in Oak too (`certify.oak`), the solver recording its steps as
+words for the checker in the same process, so `-solver self` goes from
+the law file to a checked certificate with no Go on the path — the Go
+engine, the Go checker, and the Go ladder are the twins that must agree;
+and the solver's own laws are stated in `Oak.SolverLaws`, over the relation
+`Oak.RupCheck` decides — the resolvent step as a two-hint chain implied by
+its parents, the replayed reasons in trail order then the conflict as a
+chain from the learned clause's negation, the mark discipline of
+`sat_analyze` over a propagation trail giving that condition, and
+`sat_extend`'s reconstruction modeling the eliminated clauses whenever the
+resolvents hold. `Oak.RupCheck` is why an accepted record refutes the
+formula; `Oak.SolverLaws` is why the solver's record is accepted, a
+completeness statement about the recording, with the code itself still
+checked by fixtures and the corpus rather than proved. On the corpus the solver agrees with the ladder
+on every bit-level row of `machines`, `shapes`, `lattice`, and `effects`,
+and on twenty-two of `extents`' twenty-four, the whole corpus in about a
+minute. Elimination was the decisive step, as the ParaFROST and CaDiCaL
+reading predicted: the arithmetic obligations whose learned clauses
+spanned every decision level become unit-heavy once the Tseitin gate
+variables are resolved away. The two rows still open are the widest
+(178k and 244k BDD nodes). Failed-literal probing landed next (2026-09-14):
+it shrinks several certificates but finds no unit in those two rows —
+Tseitin arithmetic after elimination has no failed literal at level one —
+and they close only past the budget, at 562k and 1.4M conflicts, where
+CaDiCaL itself needs 7 and 112 seconds. The measurement also showed the
+text path spending half its wall time in the kernel: the driver writes
+one byte per `write` call. Both landed the same day: the driver buffers
+its output (flushed when full, before a spawn, at exit; the 562k-conflict
+row from 101 to 10 seconds, kernel time from 42 seconds to nil), and `oak
+prove -conflicts N` sets the solver's budget on both paths, so a row past
+the default can be asked for its certificate rather than the corpus paying
+for it on every run; the default budget then became 100 conflicts per
+clause with a floor of 200,000, which closes the 562k-conflict row in the
+corpus and leaves the 1.4M one to give up. The buffered writer also exposed an exponential
+walk in the native backend's verifier (`significantBits` over shared
+subterms of an unrolled loop, memoized the same day by a parallel
+increment). Subsumption with self-subsuming resolution landed last, at
+load; over the learned clauses at every reduction it was measured and left
+out — one wide row 31% fewer conflicts, the other 43% more — which closes
+the list of techniques the reading named ahead of any GPU question. First run with CaDiCaL 3.0.1:
 `spec/oak/machines.oak`'s `bounded__step` — 14,987 BDD nodes under the
 blocked order — closes with a 204-step certificate checked in Go and in
 Oak; `spec/oak/shapes.oak`'s nine rows all agree):

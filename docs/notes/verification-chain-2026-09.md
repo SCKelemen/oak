@@ -202,6 +202,45 @@ or the verifier, not in the program:
    `Oak.Assembler` frame laws are the model for stating them in Lean.
 8. **amd64.** Only through a lane. Until then, amd64 binaries are the C
    compiler's, checked by the differential corpus alone.
+9. **A real program all the way down.** `oak build -link oak` links a
+   program from the Oak assembler alone, so every body and every global
+   must be native. Measured on the stdlib-bearing program
+   (2026-09-13): the first refusal was its first global. **Closed for
+   globals (2026-09-13):** constant tables live in the object's
+   read-only data and are addressed by `adrl`/`la` under both checkers
+   (`94-assembler.md` §9, "Constant tables"); constant scalars are
+   folded; statement-position and chained conditionals and `i32`
+   indices lower natively ("Statement conditionals and `i32` indices").
+   The link now names what is left: 36 bodies on AArch64 (`is_valid_utf8`
+   in a bare build, more than eight parameters or span parameters past
+   the argument registers, span values chosen by a conditional, a record
+   local without an initializer) and 120 on RV64 (local spans and views,
+   span-of-record parameters, expression depth past the scratch
+   registers, calls through a value, floating-point record results).
+   **The verified profile (2026-09-14):** `oak build -verified` refuses
+   any witnessed, trusted, or C body and prints the burn-down list
+   (`94-assembler.md` §9, "The verified profile"). Its first day closed,
+   on both lanes: record results of two chunks, calls returning or taking
+   records and sum types, span arguments to summarized calls, table reads
+   as span elements, frame bytes no store reached, RV64 record
+   parameters, RV64 byte-granular frame slots, and RV64 stores through
+   spans as memories; and it found the decision had to be over well-typed
+   union tags. The stdlib-bearing program went from 115 to 151 proven
+   bodies on AArch64 and from 42 to 149 on RV64, with no mismatch. What
+   led the list next: the path budget, which was mostly loops whose exit
+   tests read memory or call a program function; those are recognized and
+   summarized now (`94-assembler.md` §9, "Exit tests that read memory",
+   "Calls and spills inside loops"), and the path-budget bodies fell from
+   71 to 21 on AArch64 and from 58 to 10 on RV64, with 166 and 160 bodies
+   proven. Then the span memory through the loop summary landed ("Span
+   memories through loops"), with the loop proof's budgets that keep the
+   prover's native build bounded: 176 and 167 proven, no mismatch. What
+   leads the list now: vector and floating-point parameters (outside the
+   scalar profile by design), results past 16 bytes returned through
+   memory, unit callees whose bodies assert, the path budget (loops that
+   call functions with memory effects), and the witnessed verdicts — Bool
+   loop variables the coupling finds no register image for, and bodies
+   past the bit-level node budget.
 
 ## 5. How to reproduce the tally
 

@@ -99,7 +99,7 @@ func TestRV64ParseLane(t *testing.T) {
 	// Rejections at parse time.
 	// (vector spellings outside the landed subset, an offset on a vector
 	// memory operand, and a vtype spelled short all fail at parse.)
-	for _, bad := range []string{"  vfadd.vv v0, v1, v2", "  vle32.v v1, 4(a0)", "  vsetvli t0, a1, e32, m1", "  add a0, a0", "  ld a0, [sp]", "  addi a0, a0, a1", "  x32 a0"} {
+	for _, bad := range []string{"  vfredusum.vs v0, v1, v2", "  vle32.v v1, 4(a0)", "  vsetvli t0, a1, e32, m1", "  add a0, a0", "  ld a0, [sp]", "  addi a0, a0, a1", "  x32 a0"} {
 		if _, errs := rv64Unit(t, rv64AddDecl, "  bind a0 = left\n  bind a1 = right\n"+bad+"\n  ret"); len(errs) == 0 {
 			t.Errorf("%q parsed", strings.TrimSpace(bad))
 		}
@@ -522,9 +522,10 @@ func TestRV64EmitC(t *testing.T) {
 }
 
 // Span element memory (docs/spec/94-assembler.md §9): the LP64 length
-// register carries padding above bit 31, so a bound needs the normalized
-// copy; an element is addressed through a guarded index scaled by the
-// element size, or at a constant offset below a proven minimum length.
+// register is the psABI-widened u32, so a bound needs the normalized copy
+// (or, GCC's shape, the raw comparison of two widened u32 parameters); an
+// element is addressed through a guarded index scaled by the element
+// size, or at a constant offset below a proven minimum length.
 const rv64SumDecl = "sum_rv: (v: []u32) -> u32"
 const rv64SumBody = `
   bind a0, a1 = v
@@ -638,26 +639,49 @@ empty:
   ret
 empty:
   ebreak`},
+		// GCC's shape (Oak.RiscV.index_guard_widened, widened_scale): the
+		// widened u32 pair compared raw, the index zero-extended and scaled
+		// in one shift pair, the element address formed in the base.
+		"gcc guarded read": {rv64IndexDecl, rv64IndexBody},
+		"gcc guarded byte read": {"index_rv8: (v: []u8, i: u32) -> u8", `
+  bind a0, a1 = v
+  bind a2 = i
+  bgeu a2, a1, trap
+  slli a2, a2, 32
+  srli a2, a2, 32
+  add a0, a0, a2
+  lbu a0, 0(a0)
+  ret
+trap:
+  ebreak`},
 	} {
 		if findings := rv64Check(t, c[0], c[1]); len(findings) != 0 {
 			t.Errorf("%s: %v", name, findings)
 		}
 	}
 	rejections := map[string][3]string{
-		"no guard":                        {rv64FirstDecl, "  bind a0, a1 = v\n  lw a0, 0(a0)\n  ret", "without a length guard"},
-		"raw length as bound":             {rv64SumDecl, strings.Replace(rv64SumBody, "  bgeu t0, t1, done", "  bgeu t0, a1, done", 1), "only the sp frame, a bound span base under a length guard, or a guarded element address"},
-		"wrong scale":                     {rv64SumDecl, strings.Replace(rv64SumBody, "  slli t2, t0, 2", "  slli t2, t0, 3", 1), "guarded element address"},
-		"width mismatch":                  {rv64SumDecl, strings.Replace(rv64SumBody, "  lw t2, 0(t2)", "  ld t2, 0(t2)", 1), "outside its 4-byte element"},
-		"offset past element":             {rv64SumDecl, strings.Replace(rv64SumBody, "  lw t2, 0(t2)", "  lw t2, 4(t2)", 1), "outside its 4-byte element"},
-		"store to a view":                 {rv64FirstDecl, strings.Replace(rv64FirstBody, "  lw a0, 0(a0)", "  sw t0, 0(a0)\n  li a0, 0", 1), "read-only view"},
-		"guard lost at label":             {rv64FirstDecl, strings.Replace(rv64FirstBody, "  lw a0, 0(a0)", "again:\n  lw a0, 0(a0)", 1), "without a length guard"},
-		"past the minimum":                {rv64FirstDecl, strings.Replace(rv64FirstBody, "  lw a0, 0(a0)", "  lw a0, 4(a0)", 1), "reaches past the 1 elements"},
-		"guard on the wrong register":     {rv64SumDecl, strings.Replace(rv64SumBody, "  slli t2, t0, 2", "  slli t2, t3, 2", 1), "guarded element address"},
-		"bound base after a call":         {"walk_rv: (v: []u32) -> u32", "  bind a0, a1 = v\n  clobber t0, t1\n  frame 48\n  addi sp, sp, -48\n  sd ra, 0(sp)\n  sd s2, 24(sp)\n  sd s3, 32(sp)\n  mv s2, a1\n  slli s3, s2, 32\n  srli s3, s3, 32\n  call helper\n  li t0, 0\n  bgeu t0, s3, empty\n  slli t0, t0, 2\n  add t0, a0, t0\n  lw a0, 0(t0)\n  ld s2, 24(sp)\n  ld s3, 32(sp)\n  ld ra, 0(sp)\n  addi sp, sp, 48\n  ret\nempty:\n  ebreak", "only the sp frame, a bound span base under a length guard, or a guarded element address"},
-		"clobbered raw length normalized": {"walk_rv: (v: []u32) -> u32", "  bind a0, a1 = v\n  clobber t0, t1\n  frame 32\n  addi sp, sp, -32\n  sd ra, 0(sp)\n  sd s1, 16(sp)\n  mv s1, a0\n  call helper\n  slli t1, a1, 32\n  srli t1, t1, 32\n  li t0, 0\n  bgeu t0, t1, empty\n  slli t0, t0, 2\n  add t0, s1, t0\n  lw a0, 0(t0)\n  ld s1, 16(sp)\n  ld ra, 0(sp)\n  addi sp, sp, 32\n  ret\nempty:\n  ebreak", "neither bound nor written"},
-		"frame array past the frame":      {"pick_rv: (i: u32) -> u32", "  bind a0 = i\n  clobber t0, t1, t2\n  frame 16\n  addi sp, sp, -16\n  addi t1, sp, 0\n  li t2, 5\n  bgeu a0, t2, trap\n  slli t0, a0, 2\n  add t0, t1, t0\n  lw a0, 0(t0)\n  addi sp, sp, 16\n  ret\ntrap:\n  ebreak", "guarded element address"},
-		"frame array without a guard":     {"pick_rv: (i: u32) -> u32", "  bind a0 = i\n  clobber t0, t1\n  frame 16\n  addi sp, sp, -16\n  addi t1, sp, 0\n  slli t0, a0, 2\n  add t0, t1, t0\n  lw a0, 0(t0)\n  addi sp, sp, 16\n  ret", "guarded element address"},
-		"frame array wrong scale":         {"pick_rv: (i: u32) -> u32", "  bind a0 = i\n  clobber t0, t1, t2\n  frame 16\n  addi sp, sp, -16\n  addi t1, sp, 0\n  li t2, 4\n  bgeu a0, t2, trap\n  slli t0, a0, 3\n  add t0, t1, t0\n  lw a0, 0(t0)\n  addi sp, sp, 16\n  ret\ntrap:\n  ebreak", "guarded element address"},
+		"no guard": {rv64FirstDecl, "  bind a0, a1 = v\n  lw a0, 0(a0)\n  ret", "without a length guard"},
+		// The raw guard proves only the low halves' order: the index must be
+		// zero-extended before it scales or addresses.
+		"raw guard scaled without zero extension": {rv64IndexDecl, strings.Replace(strings.Replace(rv64IndexBody, "  slli a5, a2, 32\n", "", 1), "  srli a2, a5, 30\n", "  slli a2, a2, 2\n", 1), "guarded element address"},
+		"raw guard unscaled byte address":         {"index_rv8: (v: []u8, i: u32) -> u8", "  bind a0, a1 = v\n  bind a2 = i\n  bgeu a2, a1, trap\n  add a0, a0, a2\n  lbu a0, 0(a0)\n  ret\ntrap:\n  ebreak", "guarded element address"},
+		"raw guard on a rewritten index":          {rv64IndexDecl, strings.Replace(rv64IndexBody, "  bgeu a2, a1, trap\n", "  addi a2, a2, 1\n  bgeu a2, a1, trap\n", 1), "guarded element address"},
+		"raw guard against a rewritten length":    {rv64IndexDecl, strings.Replace(rv64IndexBody, "  bgeu a2, a1, trap\n", "  addi a1, a1, -1\n  bgeu a2, a1, trap\n", 1), "guarded element address"},
+		"raw guard on a u64 index":                {"index_rv64: (v: []u32, i: u64) -> u32", strings.TrimPrefix(rv64IndexBody, "\n"), "guarded element address"},
+		"fused scale of the wrong width":          {rv64IndexDecl, strings.Replace(rv64IndexBody, "  srli a2, a5, 30\n", "  srli a2, a5, 29\n", 1), "guarded element address"},
+		"raw length as bound":                     {rv64SumDecl, strings.Replace(rv64SumBody, "  bgeu t0, t1, done", "  bgeu t0, a1, done", 1), "only the sp frame, a bound span base under a length guard, or a guarded element address"},
+		"wrong scale":                             {rv64SumDecl, strings.Replace(rv64SumBody, "  slli t2, t0, 2", "  slli t2, t0, 3", 1), "guarded element address"},
+		"width mismatch":                          {rv64SumDecl, strings.Replace(rv64SumBody, "  lw t2, 0(t2)", "  ld t2, 0(t2)", 1), "outside its 4-byte element"},
+		"offset past element":                     {rv64SumDecl, strings.Replace(rv64SumBody, "  lw t2, 0(t2)", "  lw t2, 4(t2)", 1), "outside its 4-byte element"},
+		"store to a view":                         {rv64FirstDecl, strings.Replace(rv64FirstBody, "  lw a0, 0(a0)", "  sw t0, 0(a0)\n  li a0, 0", 1), "read-only view"},
+		"guard lost at label":                     {rv64FirstDecl, strings.Replace(rv64FirstBody, "  lw a0, 0(a0)", "again:\n  lw a0, 0(a0)", 1), "without a length guard"},
+		"past the minimum":                        {rv64FirstDecl, strings.Replace(rv64FirstBody, "  lw a0, 0(a0)", "  lw a0, 4(a0)", 1), "reaches past the 1 elements"},
+		"guard on the wrong register":             {rv64SumDecl, strings.Replace(rv64SumBody, "  slli t2, t0, 2", "  slli t2, t3, 2", 1), "guarded element address"},
+		"bound base after a call":                 {"walk_rv: (v: []u32) -> u32", "  bind a0, a1 = v\n  clobber t0, t1\n  frame 48\n  addi sp, sp, -48\n  sd ra, 0(sp)\n  sd s2, 24(sp)\n  sd s3, 32(sp)\n  mv s2, a1\n  slli s3, s2, 32\n  srli s3, s3, 32\n  call helper\n  li t0, 0\n  bgeu t0, s3, empty\n  slli t0, t0, 2\n  add t0, a0, t0\n  lw a0, 0(t0)\n  ld s2, 24(sp)\n  ld s3, 32(sp)\n  ld ra, 0(sp)\n  addi sp, sp, 48\n  ret\nempty:\n  ebreak", "only the sp frame, a bound span base under a length guard, or a guarded element address"},
+		"clobbered raw length normalized":         {"walk_rv: (v: []u32) -> u32", "  bind a0, a1 = v\n  clobber t0, t1\n  frame 32\n  addi sp, sp, -32\n  sd ra, 0(sp)\n  sd s1, 16(sp)\n  mv s1, a0\n  call helper\n  slli t1, a1, 32\n  srli t1, t1, 32\n  li t0, 0\n  bgeu t0, t1, empty\n  slli t0, t0, 2\n  add t0, s1, t0\n  lw a0, 0(t0)\n  ld s1, 16(sp)\n  ld ra, 0(sp)\n  addi sp, sp, 32\n  ret\nempty:\n  ebreak", "neither bound nor written"},
+		"frame array past the frame":              {"pick_rv: (i: u32) -> u32", "  bind a0 = i\n  clobber t0, t1, t2\n  frame 16\n  addi sp, sp, -16\n  addi t1, sp, 0\n  li t2, 5\n  bgeu a0, t2, trap\n  slli t0, a0, 2\n  add t0, t1, t0\n  lw a0, 0(t0)\n  addi sp, sp, 16\n  ret\ntrap:\n  ebreak", "guarded element address"},
+		"frame array without a guard":             {"pick_rv: (i: u32) -> u32", "  bind a0 = i\n  clobber t0, t1\n  frame 16\n  addi sp, sp, -16\n  addi t1, sp, 0\n  slli t0, a0, 2\n  add t0, t1, t0\n  lw a0, 0(t0)\n  addi sp, sp, 16\n  ret", "guarded element address"},
+		"frame array wrong scale":                 {"pick_rv: (i: u32) -> u32", "  bind a0 = i\n  clobber t0, t1, t2\n  frame 16\n  addi sp, sp, -16\n  addi t1, sp, 0\n  li t2, 4\n  bgeu a0, t2, trap\n  slli t0, a0, 3\n  add t0, t1, t0\n  lw a0, 0(t0)\n  addi sp, sp, 16\n  ret\ntrap:\n  ebreak", "guarded element address"},
 	}
 	for name, c := range rejections {
 		findings := rv64Check(t, c[0], c[1])
@@ -671,8 +695,45 @@ empty:
 	}
 }
 
+// GCC's guarded element read of `oak_index` at -O1 (docs/spec/94-assembler.md
+// §9, span element memory): the psABI pair compared raw, the fused
+// zero-extend-and-scale, the address in the base register.
+const rv64IndexDecl = "index_rv: (v: []u32, i: u32) -> u32"
+const rv64IndexBody = `
+  bind a0, a1 = v
+  bind a2 = i
+  clobber a5
+  bgeu a2, a1, trap
+  slli a5, a2, 32
+  srli a2, a5, 30
+  add a0, a0, a2
+  lw a0, 0(a0)
+  ret
+trap:
+  ebreak`
+
 func TestRV64SpanMemoryVerify(t *testing.T) {
-	v := rv64Verify(t, rv64FirstDecl, "{ v[0] }", rv64FirstBody)
+	v := rv64Verify(t, rv64IndexDecl, "{ v[i] }", rv64IndexBody)
+	if v.Kind != VerdictProven {
+		t.Errorf("gcc guarded read: %s (%s)", v.Kind, v.Message)
+	}
+	v = rv64Verify(t, rv64IndexDecl, "{ v[i + u32(1)] }", rv64IndexBody)
+	if v.Kind != VerdictMismatch {
+		t.Errorf("gcc guarded read mismatch not reported: %s (%s)", v.Kind, v.Message)
+	}
+	// GCC's guarded store (`oak_store`): the same shape, the element written
+	// and proven as span memory (spanStoreRV64); a wrong value is a mismatch.
+	storeDecl := "store_rv: (v: [*]u32, i: u32, x: u32) -> ()"
+	storeBody := strings.Replace(strings.Replace(rv64IndexBody, "  lw a0, 0(a0)\n", "  sw a3, 0(a0)\n", 1), "  bind a2 = i\n", "  bind a2 = i\n  bind a3 = x\n", 1)
+	v = rv64Verify(t, storeDecl, "{ v[i] = x }", storeBody)
+	if v.Kind != VerdictProven || !strings.Contains(v.Message, "the span memory it writes (v)") {
+		t.Errorf("gcc guarded store: %s (%s)", v.Kind, v.Message)
+	}
+	v = rv64Verify(t, storeDecl, "{ v[i] = x + u32(1) }", storeBody)
+	if v.Kind != VerdictMismatch {
+		t.Errorf("gcc guarded store mismatch not reported: %s (%s)", v.Kind, v.Message)
+	}
+	v = rv64Verify(t, rv64FirstDecl, "{ v[0] }", rv64FirstBody)
 	if v.Kind != VerdictProven {
 		t.Errorf("first element: %s (%s)", v.Kind, v.Message)
 	}
@@ -773,15 +834,24 @@ func TestRV64FloatChecker(t *testing.T) {
 			t.Errorf("%q parsed", strings.TrimSpace(bad))
 		}
 	}
-	// Trusted, never mismatched.
+	// Verified up to the IEEE operations (asm/rv64_verify_float.go): the
+	// fused unit is fma(a, b, c), and a body that spells the two
+	// operations a * b + c is a mismatch (the backends never contract).
 	fn, _ := rv64Unit(t, rv64FmaDecl, rv64FmaBody)
 	sig, _ := parseSignature(rv64FmaDecl)
-	spec, err := parseSignatureWithBody(rv64FmaDecl + " = { a * b + c }")
+	fused, err := parseSignatureWithBody(rv64FmaDecl + " = { fma(a, b, c) }")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v := Verify(fn, sig, spec.Body); v.Kind != VerdictTrusted {
-		t.Errorf("float unit verdict %s (%s), want trusted", v.Kind, v.Message)
+	if v := Verify(fn, sig, fused.Body); v.Kind != VerdictProven {
+		t.Errorf("float unit verdict %s (%s), want proven", v.Kind, v.Message)
+	}
+	separate, err := parseSignatureWithBody(rv64FmaDecl + " = { a * b + c }")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := Verify(fn, sig, separate.Body); v.Kind != VerdictMismatch {
+		t.Errorf("float unit verdict %s (%s), want mismatch", v.Kind, v.Message)
 	}
 }
 

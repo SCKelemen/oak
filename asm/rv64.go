@@ -49,7 +49,7 @@ var rv64Table = func() map[string]*rv64Encoding {
 
 // rv64Pseudo are the assembler's spellings: each is one base instruction
 // (li and call may be two words).
-var rv64Pseudo = map[string]bool{"mv": true, "li": true, "not": true, "neg": true, "negw": true, "sext.w": true, "j": true, "jr": true, "ret": true, "nop": true, "beqz": true, "bnez": true, "bgez": true, "bltz": true, "blez": true, "bgtz": true, "call": true}
+var rv64Pseudo = map[string]bool{"mv": true, "li": true, "not": true, "neg": true, "negw": true, "sext.w": true, "seqz": true, "snez": true, "sltz": true, "sgtz": true, "j": true, "jr": true, "ret": true, "nop": true, "beqz": true, "bnez": true, "bgez": true, "bltz": true, "blez": true, "bgtz": true, "call": true, "la": true}
 
 // rv64Branches are the conditional branches: they compare two registers,
 // so the checker's flags rule becomes the comparison-branch rule.
@@ -92,9 +92,11 @@ var rv64FloatShapes = map[string]string{
 // landed subset is configuration (vsetvli/vsetivli with an explicit
 // vtype), unit-stride loads and stores of 8- and 32-bit elements, the
 // lane-wise integer operations, the mask producers and consumers, and the
-// sum reduction. rv64VectorShapes gives each mnemonic's operand classes:
-// v a vector register, x an integer register, m a memory operand `(base)`,
-// i an immediate, o the four vtype options (e*, m*, ta|tu, ma|mu).
+// sum reduction, the widening forms, and the floating-point forms.
+// rv64VectorShapes gives each mnemonic's operand classes: v a vector
+// register, x an integer register, f a floating-point register, m a memory
+// operand `(base)`, i an immediate, o the four vtype options (e*, m*,
+// ta|tu, ma|mu).
 var rv64VectorShapes = map[string]string{
 	"vsetvli": "xxoooo", "vsetivli": "xioooo",
 	"vle8.v": "vm", "vle16.v": "vm", "vle32.v": "vm", "vse8.v": "vm", "vse16.v": "vm", "vse32.v": "vm",
@@ -105,6 +107,48 @@ var rv64VectorShapes = map[string]string{
 	// sources, and the narrowing shift (a 2*LMUL source).
 	"vwaddu.vv": "vvv", "vwadd.vv": "vvv", "vwsubu.vv": "vvv", "vwsub.vv": "vvv", "vwmulu.vv": "vvv", "vwmul.vv": "vvv",
 	"vzext.vf2": "vv", "vsext.vf2": "vv", "vnsrl.wi": "vvi",
+	// Floating-point forms (RVV 1.0 §13, §14.3): lane-wise arithmetic over
+	// e32/e64 elements, the multiply-add `vfmacc.vv vd, vs1, vs2` (vd is
+	// read and written), the moves between an F register and element 0,
+	// the unsigned-integer conversion, and the ordered sum reduction —
+	// float addition is not associative, so only the form whose result is
+	// the sequential sum is admitted (Oak.RiscV.ordered_strips_fold).
+	"vle64.v": "vm", "vse64.v": "vm",
+	"vfadd.vv": "vvv", "vfsub.vv": "vvv", "vfmul.vv": "vvv", "vfmacc.vv": "vvv",
+	"vfmv.v.f": "vf", "vfmv.f.s": "fv", "vfcvt.f.xu.v": "vv", "vfredosum.vs": "vvv",
+	// The fixed-vector catalog on the native lane (docs/spec/93-simd.md
+	// §1.4, 94-assembler.md §9): saturating subtract, the shift by a
+	// register, the less-than masks (signed for movemask's top bit,
+	// unsigned for tbl's index rule), the gather, and the slides — the
+	// gather's and the slides' destinations must not overlap their
+	// sources (RVV 1.0 §16.3, §16.4, applied fail-closed).
+	"vssubu.vv": "vvv", "vsrl.vx": "vvx", "vmslt.vx": "vvx", "vmsltu.vx": "vvx",
+	"vrgather.vv": "vvv", "vslideup.vi": "vvi", "vslidedown.vi": "vvi",
+	// The float vectors on the native lane (docs/spec/93-simd.md §1.2a,
+	// §1.4): division, square root, the number-preferring minimum and
+	// maximum (RVV 1.0 §13.11: a quiet NaN operand is suppressed — the
+	// catalog's NaN-propagating min/max are rebuilt from them with the
+	// vmfne self-test and vmerge), the sign injections `vfsgnjn.vv v, v, v`
+	// (neg) and `vfsgnjx.vv v, v, v` (abs), and the lane insert: `vid.v`
+	// (the lane indices), `vmseq.vx` against the lane, `vfmerge.vfm vd,
+	// vs2, fs1, v0` (fs1 where the mask holds, vs2 elsewhere).
+	"vfdiv.vv": "vvv", "vfsqrt.v": "vv", "vfmin.vv": "vvv", "vfmax.vv": "vvv", "vfsgnjn.vv": "vvv", "vfsgnjx.vv": "vvv",
+	"vmfne.vv": "vvv", "vid.v": "v", "vmseq.vx": "vvx", "vfmerge.vfm": "vvfv",
+}
+
+// rv64VectorDisjoint are the forms whose destination group must not
+// overlap any source group (RVV 1.0 §16.3.1 vslideup, §16.4 vrgather;
+// vslidedown is held to the same rule, fail-closed).
+var rv64VectorDisjoint = map[string]bool{"vrgather.vv": true, "vslideup.vi": true, "vslidedown.vi": true}
+
+// rv64VectorFloat are the vector forms that operate on floating-point
+// elements: they need e32 or e64 (Zve32f/Zve64d; e16 is Zvfh, not
+// admitted) and the F/D unit.
+var rv64VectorFloat = map[string]bool{
+	"vfadd.vv": true, "vfsub.vv": true, "vfmul.vv": true, "vfmacc.vv": true,
+	"vfmv.v.f": true, "vfmv.f.s": true, "vfcvt.f.xu.v": true, "vfredosum.vs": true,
+	"vfdiv.vv": true, "vfsqrt.v": true, "vfmin.vv": true, "vfmax.vv": true, "vfsgnjn.vv": true, "vfsgnjx.vv": true,
+	"vmfne.vv": true, "vfmerge.vfm": true,
 }
 
 // rv64VectorEMUL is the register-group factor of a vector operand relative
@@ -141,6 +185,12 @@ var rv64Maskable = map[string]bool{
 	"vle16.v": true, "vse16.v": true,
 	"vwaddu.vv": true, "vwadd.vv": true, "vwsubu.vv": true, "vwsub.vv": true, "vwmulu.vv": true, "vwmul.vv": true,
 	"vzext.vf2": true, "vsext.vf2": true, "vnsrl.wi": true,
+	"vle64.v": true, "vse64.v": true,
+	"vfadd.vv": true, "vfsub.vv": true, "vfmul.vv": true, "vfmacc.vv": true, "vfcvt.f.xu.v": true, "vfredosum.vs": true,
+	"vssubu.vv": true, "vsrl.vx": true, "vmslt.vx": true, "vmsltu.vx": true,
+	"vrgather.vv": true, "vslideup.vi": true, "vslidedown.vi": true,
+	"vfdiv.vv": true, "vfsqrt.v": true, "vfmin.vv": true, "vfmax.vv": true, "vfsgnjn.vv": true, "vfsgnjx.vv": true,
+	"vmfne.vv": true, "vid.v": true, "vmseq.vx": true,
 }
 
 // rv64Masked reports a vector instruction spelled with the `v0.t` mask.
@@ -154,8 +204,8 @@ func rv64Masked(instr Instruction) bool {
 
 // rv64VectorLoads and rv64VectorStores map the unit-stride memory
 // instructions to their element width in bytes (the EEW).
-var rv64VectorLoads = map[string]int64{"vle8.v": 1, "vle16.v": 2, "vle32.v": 4}
-var rv64VectorStores = map[string]int64{"vse8.v": 1, "vse16.v": 2, "vse32.v": 4}
+var rv64VectorLoads = map[string]int64{"vle8.v": 1, "vle16.v": 2, "vle32.v": 4, "vle64.v": 8}
+var rv64VectorStores = map[string]int64{"vse8.v": 1, "vse16.v": 2, "vse32.v": 4, "vse64.v": 8}
 
 // rv64VTypeSEW, rv64VTypeLMUL, and rv64VTypePolicy are the vtype fields
 // (RVV 1.0 §3.4): vsew in bits 5:3 as the element width, vlmul in bits
@@ -279,7 +329,9 @@ func rv64Number(reg Register) int {
 func parseRV64Instruction(fields []string, lineNo int) ([]Instruction, error) {
 	mnemonic := strings.ToLower(fields[0])
 	if _, base := rv64Table[mnemonic]; !base && !rv64Pseudo[mnemonic] {
-		return nil, fmt.Errorf("unknown instruction %q (not in the RV64IM table)", mnemonic)
+		if _, _, _, isAtomic := rv64AtomicSpelling(mnemonic); !isAtomic {
+			return nil, fmt.Errorf("unknown instruction %q (not in the RV64IMA table)", mnemonic)
+		}
 	}
 	var operands []Operand
 	for _, text := range fields[1:] {
@@ -381,6 +433,9 @@ func rv64CheckShape(instr Instruction) error {
 		return nil
 	}
 	name := instr.Mnemonic
+	if _, _, isAtomic := rv64Atomic(name); isAtomic {
+		return rv64AtomicShape(instr)
+	}
 	if shape, isFloat := rv64FloatShapes[name]; isFloat {
 		return rv64CheckFloatShape(instr, shape)
 	}
@@ -410,7 +465,11 @@ func rv64CheckShape(instr Instruction) error {
 		return shape("r", "i")
 	case name == "call":
 		return shape("l")
-	case name == "mv" || name == "not" || name == "neg" || name == "negw" || name == "sext.w":
+	case name == "la":
+		// la rd, sym: the address of a program data symbol (auipc then addi
+		// under a pc-relative relocation pair).
+		return shape("r", "l")
+	case name == "mv" || name == "not" || name == "neg" || name == "negw" || name == "sext.w" || name == "seqz" || name == "snez" || name == "sltz" || name == "sgtz":
 		return shape("r", "r")
 	case rv64Loads[name] != 0 || rv64Stores[name] != 0:
 		return shape("r", "m")
@@ -497,6 +556,10 @@ func rv64CheckVectorShape(instr Instruction, shape string) error {
 			if reg, isReg := ops[i].(Register); !isReg || (reg.Class != ClassRV64X && reg.Class != ClassSP) {
 				return fmt.Errorf("%s: operand %d must be an integer register", instr.Mnemonic, i+1)
 			}
+		case 'f':
+			if reg, isReg := ops[i].(Register); !isReg || reg.Class != ClassRV64F {
+				return fmt.Errorf("%s: operand %d must be a floating-point register", instr.Mnemonic, i+1)
+			}
 		case 'i':
 			if imm, isImm := ops[i].(Immediate); !isImm || imm.Value < 0 || imm.Value > 31 {
 				return fmt.Errorf("%s: operand %d must be an immediate in 0..31", instr.Mnemonic, i+1)
@@ -527,9 +590,9 @@ func rv64CheckVectorShape(instr Instruction, shape string) error {
 			}
 		}
 	}
-	if instr.Mnemonic == "vmerge.vvm" {
+	if instr.Mnemonic == "vmerge.vvm" || instr.Mnemonic == "vfmerge.vfm" {
 		if mask := ops[3].(Register); mask.Num != 0 {
-			return fmt.Errorf("vmerge.vvm takes its mask from v0")
+			return fmt.Errorf("%s takes its mask from v0", instr.Mnemonic)
 		}
 	}
 	return nil
@@ -553,6 +616,15 @@ func rv64Base(instr Instruction) Instruction {
 		out.Mnemonic, out.Operands = "subw", []Operand{ops[0], zero, ops[1]}
 	case "sext.w":
 		out.Mnemonic, out.Operands = "addiw", []Operand{ops[0], ops[1], Immediate{Value: 0}}
+	case "seqz":
+		// seqz rd, rs: rd = (rs == 0), which is `rs <u 1`.
+		out.Mnemonic, out.Operands = "sltiu", []Operand{ops[0], ops[1], Immediate{Value: 1}}
+	case "snez":
+		out.Mnemonic, out.Operands = "sltu", []Operand{ops[0], zero, ops[1]}
+	case "sltz":
+		out.Mnemonic, out.Operands = "slt", []Operand{ops[0], ops[1], zero}
+	case "sgtz":
+		out.Mnemonic, out.Operands = "slt", []Operand{ops[0], zero, ops[1]}
 	case "nop":
 		out.Mnemonic, out.Operands = "addi", []Operand{zero, zero, Immediate{Value: 0}}
 	case "j":

@@ -279,7 +279,16 @@ func stepISA(instr Instruction, state *symbolicState) (handled bool, reason stri
 
 // extendTerm zero- or sign-extends the low `from` bits of a term to width.
 func extendTerm(t *term, from, width int, signed bool) *term {
-	low := binaryTerm("and", adaptWidth(t, width), constTerm(mask(from), width))
+	var low *term
+	if from == width {
+		// The type's identity extension, kept as the mask the lowering
+		// model spells (Oak.LoweringRefinement: `x and mask`, then for a
+		// signed type `shl 0`/`sar 0`), not folded as the constructors
+		// would fold an identity mask elsewhere.
+		low = &term{kind: termBinary, width: width, op: "and", left: adaptWidth(t, width), right: constTerm(mask(from), width)}
+	} else {
+		low = binaryTerm("and", adaptWidth(t, width), constTerm(mask(from), width))
+	}
 	if !signed {
 		return low
 	}

@@ -276,6 +276,71 @@ done:
 			}
 			return total & 0xffffffff
 		}, body: rv64VWideBody})
+	// The fractional-LMUL sum: e32/mf2 strips widened to e64/m1, the low
+	// 32 bits of the u64 total — the wrapping u32 sum.
+	oracles = append(oracles, rv64Oracle{decl: rv64VFracDecl, cType: "unsigned int", width: 32, span: "v", inputs: [][2]uint64{{0, 7}, {1, 0}, {2, 5}, {3, 1}, {5, 9}, {8, 1}, {13, 0xffffffff}, {16, 2}},
+		spanExpect: func(elems []uint64, k uint64) uint64 {
+			total := uint64(0)
+			for _, e := range elems {
+				total += e
+			}
+			return total & 0xffffffff
+		}, body: rv64VFracBody})
+	// The floating-point strip: q = x*k + (x-k)^2 per element with one
+	// rounding for the multiply-add, folded in order into an f32 sum;
+	// expected from Go's float32 arithmetic (explicit conversions keep
+	// every operation rounded once) and an exactly rounded fma32.
+	oracles = append(oracles, rv64Oracle{decl: rv64VFSumDecl, cType: "unsigned int", width: 32, span: "v", inputs: [][2]uint64{{0, 7}, {1, 0}, {2, 5}, {3, 1}, {5, 9}, {8, 1}, {13, 0xffffffff}, {16, 2}},
+		spanExpect: func(elems []uint64, k uint64) uint64 {
+			kf := float32(uint32(k))
+			total := float32(0)
+			for _, e := range elems {
+				x := float32(uint32(e))
+				d := float32(x - kf)
+				p := float32(d * d)
+				total = float32(total + fma32(x, kf, p))
+			}
+			return uint64(math.Float32bits(total))
+		}, body: rv64VFSumBody})
+	// The fixed vector at a guarded index (the native backend's idiom): the
+	// four elements at k summed when k + 4 <= len, else zero.
+	oracles = append(oracles, rv64Oracle{decl: rv64VSlackDecl, cType: "unsigned int", width: 32, span: "v", inputs: [][2]uint64{{0, 0}, {3, 0}, {4, 0}, {4, 1}, {5, 1}, {8, 4}, {8, 5}, {16, 12}, {16, 13}},
+		spanExpect: func(elems []uint64, k uint64) uint64 {
+			if k+4 > uint64(len(elems)) {
+				return 0
+			}
+			total := uint32(0)
+			for _, e := range elems[k : k+4] {
+				total += uint32(e)
+			}
+			return uint64(total)
+		}, body: rv64VSlackBody})
+	// The float vectors' fixed-lane forms: x = float(v[i]) / k, |x| rooted,
+	// the NaN-propagating minimum against 1.0, 2.0 at lane 1, the pairwise
+	// tree; expected from Go's float32 arithmetic (0/0 gives the default
+	// NaN on both machines, the same bits).
+	oracles = append(oracles, rv64Oracle{decl: rv64VFPairDecl, cType: "unsigned int", width: 32, span: "v", inputs: [][2]uint64{{0, 7}, {3, 1}, {4, 0}, {4, 1}, {5, 9}, {8, 3}, {13, 0xffffffff}, {16, 2}},
+		spanExpect: func(elems []uint64, k uint64) uint64 {
+			if len(elems) < 4 {
+				return 0
+			}
+			kf := float32(uint32(k))
+			lanes := make([]float32, 4)
+			for i := range lanes {
+				x := float32(uint32(elems[i]))
+				y := float32(x / kf)
+				z := float32(math.Sqrt(float64(float32(math.Abs(float64(y))))))
+				// IEEE 754-2019 minimum against 1.0: a NaN propagates.
+				if z != z || z < 1.0 {
+					lanes[i] = z
+				} else {
+					lanes[i] = 1.0
+				}
+			}
+			lanes[1] = 2.0
+			total := float32(float32(lanes[0]+lanes[1]) + float32(lanes[2]+lanes[3]))
+			return uint64(math.Float32bits(total))
+		}, body: rv64VFPairBody})
 	// OAK_RV64_ORACLE=name narrows the run to one unit while diagnosing.
 	if only := os.Getenv("OAK_RV64_ORACLE"); only != "" {
 		var kept []rv64Oracle

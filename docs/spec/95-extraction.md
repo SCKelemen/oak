@@ -159,6 +159,26 @@ ml pilot's F25: the packages whose state lives in flat arenas extract, and
 the oracle's `view` package reaches Lean without being rewritten as pure
 functions over parameters. A read-only global stays a constant.
 
+**Seventh: `f32` arithmetic at the bit level, on request.** Lean's
+`Float32` is the host's binary32 with opaque arithmetic: it computes the
+right bits but a theorem cannot see how `+` rounds. Under `oak build -lean
+out.lean -lean-floats bits` the extraction renders `f32` addition,
+subtraction, and multiplication through `Oak.FloatOps.add32`, `sub32`, and
+`mul32` — each one `fma` with an exact operand, so one rounding of the
+exact result over the bit pattern, executable and defined — and a theorem
+about the extracted code reaches the rounding. `Oak.FloatOps.roundShift_eq_roundNat`
+and `roundTo_value` are the bridge to the evaluation discipline's integer
+model: the rounding `encode` performs on a significand is
+`Oak.Floats.roundNat`, and in the normal range the value it packs —
+significand times its exponent's power — *is* `roundNat prec n`, so the
+bounds of `Oak.FloatBounds` are bounds on these functions wherever the
+exact result rounds to a normal number (the ml pilot's E4, RFC 0004's
+`bounded`). Subnormal and overflowing results follow IEEE 754-2019 in the
+code and are outside the integer model, as `Oak.Floats` says of itself. Division and the comparisons stay Lean's.
+`compiler/lean_float_bits_test.go` holds the three functions to the host's
+binary32 on edge and random operands; the default mode is unchanged, so an
+extraction that never states a rounding fact keeps Lean's operators.
+
 **Fourth: a target constant is uninterpreted.** A top-level binding
 `NAME: c.Int = c.const("CLOCK_MONOTONIC", "<time.h>")` (`92-ffi.md` §2.11)
 holds a value the target's C headers define and Oak never learns. The

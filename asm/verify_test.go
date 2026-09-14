@@ -53,7 +53,7 @@ func TestVerifyVerdicts(t *testing.T) {
 	// flag composition with or/xor, and a subtraction are proven; a wrong
 	// mask is a mismatch with a concrete counterexample.
 	masked := verifyCase(t, "low_nibble: (v: u32) -> u32", "(v >> 4) & u32(15)", "  bind w0 = v\n  clobber w9\n  lsr w9, w0, #4\n  and w0, w9, #15\n  ret")
-	if masked.Kind != VerdictProven || !strings.Contains(masked.Message, "bit level") {
+	if masked.Kind != VerdictProven || !(strings.Contains(masked.Message, "bit level") || strings.Contains(masked.Message, "the same term")) {
 		t.Fatalf("shift-and-mask must be proven at the bit level, got %s: %s", masked.Kind, masked.Message)
 	}
 	flags := verifyCase(t, "compose: (a, b: u64) -> u64", "(a | (b << 8)) ^ u64(255)", "  bind x0 = a\n  bind x1 = b\n  clobber x9\n  lsl x9, x1, #8\n  orr x0, x0, x9\n  eor x0, x0, #255\n  ret")
@@ -101,7 +101,7 @@ func TestVerifyConditionalSelects(t *testing.T) {
 	maxDecl := "max32: (a, b: u32) -> u32"
 	maxBody := "a < b ? b | a"
 	proven := verifyCase(t, maxDecl, maxBody, "  bind w0 = a\n  bind w1 = b\n  cmp w0, w1\n  csel w0, w1, w0, lo\n  ret")
-	if proven.Kind != VerdictProven || !strings.Contains(proven.Message, "bit level") {
+	if proven.Kind != VerdictProven || !(strings.Contains(proven.Message, "bit level") || strings.Contains(proven.Message, "the same term")) {
 		t.Fatalf("unsigned max via csel lo must be proven, got %s: %s", proven.Kind, proven.Message)
 	}
 	// The reversed comparison with swapped select operands is the same function.
@@ -243,7 +243,9 @@ func TestVerifySpanMemory(t *testing.T) {
 	if signedMax.Kind != VerdictProven {
 		t.Fatalf("signed element max must be proven, got %s: %s", signedMax.Kind, signedMax.Message)
 	}
-	// Outside the subset: a byte span read as a word, a store through a span.
+	// Outside the subset: a byte span read as a word. A store through a
+	// span is inside it since the twenty-eighth increment (asm/effects.go):
+	// a lowering that bumps the element the body only reads is refuted.
 	bytes := verifyCase(t, "b0: (v: []u8) -> u32", "len(v) < u32(4) ? u32(0) | u32(v[0])",
 		"  bind x0, w1 = v\n  cmp w1, #4\n  b.lo short\n  ldr w0, [x0]\n  ret\nshort:\n  mov w0, #0\n  ret")
 	if bytes.Kind != VerdictTrusted {
@@ -251,8 +253,8 @@ func TestVerifySpanMemory(t *testing.T) {
 	}
 	store := verifyCase(t, "bump: (v: [*]u32) -> u32", "len(v) < u32(1) ? u32(0) | v[0]",
 		"  bind x0, w1 = v\n  clobber w9\n  cmp w1, #1\n  b.lo short\n  ldr w9, [x0]\n  add w9, w9, #1\n  str w9, [x0]\n  mov w0, w9\n  ret\nshort:\n  mov w0, #0\n  ret")
-	if store.Kind != VerdictTrusted {
-		t.Fatalf("a store through a span must be trusted, got %s: %s", store.Kind, store.Message)
+	if store.Kind != VerdictMismatch {
+		t.Fatalf("a store the body does not make must be a mismatch, got %s: %s", store.Kind, store.Message)
 	}
 }
 
@@ -287,7 +289,7 @@ func TestVerifyCountedLoops(t *testing.T) {
 	popcount := "{\n  x: u32 = v\n  count: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < u32(8) {\n    count = count + (x & u32(1))\n    x = x >> u32(1)\n    i = i + u32(1)\n  }\n  count\n}"
 	popAsm := "  bind w0 = v\n  clobber w9, w10, w11\n  mov w9, #0\n  mov w10, #8\nloop:\n  and w11, w0, #1\n  add w9, w9, w11\n  lsr w0, w0, #1\n  sub w10, w10, #1\n  cmp w10, #0\n  b.ne loop\n  mov w0, w9\n  ret"
 	bits := verifyCase(t, "popcount8: (v: u32) -> u32", popcount, popAsm)
-	if bits.Kind != VerdictProven || !strings.Contains(bits.Message, "bit level") {
+	if bits.Kind != VerdictProven || !(strings.Contains(bits.Message, "bit level") || strings.Contains(bits.Message, "the same term")) {
 		t.Fatalf("popcount8 must be proven at the bit level, got %s: %s", bits.Kind, bits.Message)
 	}
 	// Seven iterations for eight is a mismatch with a concrete input.

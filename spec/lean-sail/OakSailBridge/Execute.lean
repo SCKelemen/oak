@@ -52,25 +52,6 @@ def br : bop → Br
   | .BLTU => .bltu
   | .BGEU => .bgeu
 
-theorem sll_bridge (x1 x2 : X) :
-    shift_bits_left x1 (Sail.BitVec.extractLsb x2 5 0) = sll x1 x2 := by
-  simp only [shift_bits_left, Sail.BitVec.extractLsb, sll]
-  bv_decide
-
-theorem srl_bridge (x1 x2 : X) :
-    shift_bits_right x1 (Sail.BitVec.extractLsb x2 5 0) = srl x1 x2 := by
-  simp only [shift_bits_right, Sail.BitVec.extractLsb, srl]
-  bv_decide
-
-theorem sra_bridge (x1 x2 : X) :
-    shift_bits_right_arith x1 (Sail.BitVec.extractLsb x2 5 0) = sra x1 x2 := by
-  simp only [shift_bits_right_arith, Sail.BitVec.extractLsb, Sail.BitVec.toNatInt, Int.toNat, sra]
-  bv_decide
-
-/-- The model's full-width shift amount is `extractLsb x2 (log2_xlen -i 1) 0`
-with `log2_xlen = 6`: the low five bits, Oak's `truncate 6`. -/
-theorem log2_xlen_pred : ((Functions.log2_xlen : Int) - 1).toNat = 5 := by decide
-
 theorem execute_RTYPEW_canonical (rs2 rs1 rd : regidx) (op : ropw) :
     execute_RTYPEW rs2 rs1 rd op = (do
       let x1 ← rX_bits rs1
@@ -78,7 +59,7 @@ theorem execute_RTYPEW_canonical (rs2 rs1 rd : regidx) (op : ropw) :
       wX_bits rd (rtypew op x1 x2)
       pure RETIRE_SUCCESS) := by
   unfold execute_RTYPEW
-  cases op <;> simp only [rtypew, bind_assoc, pure_bind, addw_bridge, subw_bridge, sllw_bridge, srlw_bridge, sraw_bridge]
+  cases op <;> simp only [rtypew, pure_bind, addw_bridge, subw_bridge, sllw_bridge, srlw_bridge, sraw_bridge]
 
 theorem execute_RTYPE_canonical (rs2 rs1 rd : regidx) (op : rop) :
     execute_RTYPE rs2 rs1 rd op = (do
@@ -87,10 +68,9 @@ theorem execute_RTYPE_canonical (rs2 rs1 rd : regidx) (op : rop) :
       wX_bits rd (rtype op x1 x2)
       pure RETIRE_SUCCESS) := by
   unfold execute_RTYPE
-  cases op <;> simp only [rtype, bind_assoc, pure_bind, slt_bridge, sltu_bridge]
-  -- The shift cases: the model's shift amount is `extractLsb x2 (log2_xlen -i 1) 0`
-  -- with `log2_xlen = 6`; reduced, it is Oak's `extractLsb x2 5 0`.
-  all_goals (rw [log2_xlen_pred]; simp only [sll_bridge, srl_bridge, sra_bridge])
+  -- The shift bridges (OakSailBridge.RiscV) take the model's shift amount
+  -- as written, `extractLsb x2 (log2_xlen -i 1) 0`.
+  cases op <;> simp only [rtype, bind_assoc, pure_bind, slt_bridge, sltu_bridge, sll_bridge, srl_bridge, sra_bridge]
 
 theorem execute_BTYPE_canonical (imm : BitVec 13) (rs2 rs1 : regidx) (op : bop) :
     execute_BTYPE imm rs2 rs1 op = (do

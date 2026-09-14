@@ -83,6 +83,13 @@ type Function struct {
 	// aggregate locals of the Oak body (docs/spec/94-assembler.md §8).
 	Records map[string]*ast.RecordLiteral
 	ADTs    map[string]*ast.ADTType
+	// StackArgs is the size of the incoming stack-argument area a function
+	// may read above its entry sp (asm.LayoutArguments), and PackedStackArgs
+	// the convention it was laid out under (Apple's packing, or the
+	// standard 8-byte slots). The checker recomputes both from the
+	// signature and holds the body to its reading.
+	StackArgs       int64
+	PackedStackArgs bool
 	// Constants: the program's constant globals (docs/spec/90-backend.md
 	// §8a — a typed scalar binding with a constant initializer that no
 	// statement writes, borrows, or addresses) folded to their values — set
@@ -106,7 +113,24 @@ type Function struct {
 	// verdict is relative to it. Set by the native backend; nil leaves
 	// every call opaque (trusted).
 	Callees map[string]*ast.FunctionStatement
+	// Tables are the program's constant data symbols an `adrl` (AArch64)
+	// or `la` (RV64) may address, by symbol, with their sizes in bytes: the
+	// checker admits guarded element reads inside them (a read-only
+	// region), as it admits a frame array's. Set by the native backend.
+	Tables map[string]Table
 }
+
+// Table is a constant data symbol's shape: its size in bytes, the width of
+// one element in bytes, and whether the elements are signed. The Oak name
+// of the table is the symbol without its `data_` prefix (TableName).
+type Table struct {
+	Size   int64
+	Elem   int64
+	Signed bool
+}
+
+// TableName is the Oak identifier a table's data symbol was made from.
+func TableName(symbol string) string { return strings.TrimPrefix(symbol, "data_") }
 
 // Composite is a record or tagged-union type's shape at the boundary: its
 // size in bytes, whether it is a homogeneous floating-point aggregate
@@ -223,6 +247,28 @@ type Binding struct {
 	Length   *Register
 	Param    string
 	Line     int
+	// OnStack binds a parameter beyond the register contract: it arrives in
+	// the caller's outgoing area at Stack bytes above the entry sp (its
+	// second word, a span's length, at Stack+8). Set by the compiler for
+	// native bodies; a unit spells no such binding.
+	OnStack bool
+	Stack   int64
+}
+
+// parseStackBinding reads `[sp, #N]`, the place of a parameter beyond
+// the register contract: N bytes above the entry sp.
+func parseStackBinding(text string) (int64, bool) {
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "[sp,") || !strings.HasSuffix(text, "]") {
+		return 0, false
+	}
+	inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, "[sp,"), "]"))
+	inner = strings.TrimPrefix(inner, "#")
+	offset, err := strconv.ParseInt(inner, 0, 64)
+	if err != nil || offset < 0 {
+		return 0, false
+	}
+	return offset, true
 }
 
 // Operand kinds.
@@ -376,8 +422,13 @@ type Symbol struct {
 // checker admits exactly one access shape to it — `[xA]` at the scalar's
 // width through a register holding its adrp/add address.
 type Global struct {
-	Type string // the Oak scalar type name
-	Bits int    // the scalar's width
+	Type string // the Oak scalar type name, or the aggregate's type text
+	Bits int    // the scalar's width (0 for an aggregate)
+	// Aggregate marks a top-level record or array: its address is a
+	// writable region of Size bytes, whose fields and guarded elements
+	// the checker bounds as it bounds a frame array's.
+	Aggregate bool
+	Size      int64
 }
 
 // SysReg names a system register operand of mrs/msr.
@@ -558,6 +609,13 @@ func ParseUnit(path, text string) (*Unit, []error) {
 			// bind w0 = left  |  bind x0, w1 = frame
 			switch {
 			case len(fields) == 4 && fields[2] == "=":
+				if offset, onStack := parseStackBinding(fields[1]); onStack {
+					// bind [sp, #N] = p: a parameter beyond the register
+					// contract, N bytes above the entry sp (the compiler's
+					// spelling for native bodies, Describe's output).
+					current.Bindings = append(current.Bindings, Binding{Register: Register{Class: ClassSP, Text: "sp", Lane: -1}, Param: fields[3], Line: lineNo, OnStack: true, Stack: offset})
+					continue
+				}
 				reg, ok := parseReg(fields[1])
 				if !ok {
 					fail(lineNo, "bind: unknown register %q", fields[1])

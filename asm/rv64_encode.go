@@ -19,7 +19,7 @@ var rv64ExactConversions = map[string]bool{"fcvt.d.w": true, "fcvt.d.wu": true, 
 // rv64Words is the number of 32-bit words an instruction spends: one,
 // except a 32-bit `li` (lui, then addiw unless the low part is zero).
 func rv64Words(instr Instruction) int {
-	if instr.Mnemonic == "call" {
+	if instr.Mnemonic == "call" || instr.Mnemonic == "la" {
 		return 2
 	}
 	if instr.Mnemonic == "li" {
@@ -51,6 +51,7 @@ type rv64Piece struct {
 	line     int
 	size     int64
 	callSym  string // the call's symbol, on its auipc
+	laSym    string // an la's data symbol, on its auipc (riscv_pcrel over both words)
 	fromCall bool
 }
 
@@ -89,6 +90,16 @@ func rv64Expand(fn *Function) ([]rv64Piece, map[string]int, error) {
 				units = append(units,
 					rv64Piece{base: Instruction{Mnemonic: "auipc", Operands: []Operand{ra, Immediate{Value: 0}}, Line: it.Line}, line: it.Line, size: 4, callSym: it.Operands[0].(Symbol).Name, fromCall: true},
 					rv64Piece{base: Instruction{Mnemonic: "jalr", Operands: []Operand{ra, Memory{Base: ra, Mode: MemOffset}}, Line: it.Line}, line: it.Line, size: 4, fromCall: true})
+				continue
+			case "la":
+				// auipc rd, 0; addi rd, rd, 0 — the pc-relative pair the
+				// linker or the executable writer fills (R_RISCV_PCREL_HI20
+				// on the auipc, R_RISCV_PCREL_LO12_I on the addi); never
+				// compressed.
+				rd := it.Operands[0].(Register)
+				units = append(units,
+					rv64Piece{base: Instruction{Mnemonic: "auipc", Operands: []Operand{rd, Immediate{Value: 0}}, Line: it.Line}, line: it.Line, size: 4, laSym: it.Operands[1].(Symbol).Name, fromCall: true},
+					rv64Piece{base: Instruction{Mnemonic: "addi", Operands: []Operand{rd, rd, Immediate{Value: 0}}, Line: it.Line}, line: it.Line, size: 4, fromCall: true})
 				continue
 			}
 			units = append(units, rv64Piece{base: rv64Base(it), line: it.Line, size: 4})
@@ -146,6 +157,9 @@ func encodeRV64Function(fn *Function) ([]byte, []Relocation, error) {
 		if unit.callSym != "" {
 			relocs = append(relocs, Relocation{Offset: int(starts[i]), Kind: "riscv_call_plt", Symbol: unit.callSym})
 		}
+		if unit.laSym != "" {
+			relocs = append(relocs, Relocation{Offset: int(starts[i]), Kind: "riscv_pcrel", Symbol: unit.laSym})
+		}
 		if unit.size == 2 {
 			half, ok := rvcEncode(unit.base, starts[i], labels)
 			if !ok {
@@ -172,12 +186,30 @@ func rv64ControlTransfer(base Instruction) bool {
 // encodeRV64Instruction encodes one base instruction at byte offset pc.
 func encodeRV64Instruction(instr Instruction, pc int64, labels map[string]int64) (uint32, error) {
 	enc, known := rv64Table[instr.Mnemonic]
-	if !known {
-		return 0, fmt.Errorf("no encoding for %s", instr.Mnemonic)
-	}
 	ops := instr.Operands
 	fields := map[string]int64{}
 	regNum := func(i int) int64 { return int64(rv64Number(ops[i].(Register))) }
+	_, _, _, isAtomic := rv64AtomicSpelling(instr.Mnemonic)
+	if base, aq, rl, ok := rv64AtomicSpelling(instr.Mnemonic); ok {
+		// lr rd, 0(rs1); sc/amo rd, rs2, 0(rs1); the ordering bits from the
+		// mnemonic's suffix.
+		enc, known = rv64Table[base], true
+		mem := ops[len(ops)-1].(Memory)
+		fields["rd"], fields["rs1"] = regNum(0), int64(rv64Number(mem.Base))
+		if len(ops) == 3 {
+			fields["rs2"] = regNum(1)
+		}
+		fields["aq"], fields["rl"] = 0, 0
+		if aq {
+			fields["aq"] = 1
+		}
+		if rl {
+			fields["rl"] = 1
+		}
+	}
+	if !known {
+		return 0, fmt.Errorf("no encoding for %s", instr.Mnemonic)
+	}
 	branchOffset := func(sym Symbol, bits int) (int64, error) {
 		target, isLabel := labels[sym.Name]
 		if !isLabel {
@@ -191,6 +223,8 @@ func encodeRV64Instruction(instr Instruction, pc int64, labels map[string]int64)
 		return delta, nil
 	}
 	switch {
+	case isAtomic:
+		// The fields were set above.
 	case rv64FloatShapes[instr.Mnemonic] != "":
 		// rd, rs1, rs2, rs3 by position; the rounding mode (rm) from the
 		// trailing option, dyn (0b111) when absent — GNU as's default.
@@ -276,6 +310,11 @@ func encodeRV64Instruction(instr Instruction, pc int64, labels map[string]int64)
 			fields["vs3"], fields["rs1"] = regNum(0), int64(rv64Number(ops[1].(Memory).Base))
 		default:
 			names := [][2]string{{"vd", "rd"}, {"vs2", "rs1"}, {"vs1", "rs1"}}
+			if instr.Mnemonic == "vfmacc.vv" {
+				// The multiply-add family spells the multiplicand first:
+				// `vfmacc.vv vd, vs1, vs2` (RVV 1.0 §13.6).
+				names = [][2]string{{"vd", "rd"}, {"vs1", "rs1"}, {"vs2", "rs1"}}
+			}
 			for i := 0; i < len(ops) && i < 3; i++ {
 				if imm, isImm := ops[i].(Immediate); isImm {
 					fields["zimm5"] = imm.Value // vnsrl.wi's shift

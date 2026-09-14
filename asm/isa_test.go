@@ -28,7 +28,7 @@ func TestInstructionTableCoverage(t *testing.T) {
 		"cfinv": "cmp x0, x1\n  cfinv",
 		"nop":   "nop", "wfe": "wfe", "wfi": "wfi", "sev": "sev", "sevl": "sevl", "yield": "yield", "csdb": "csdb", "esb": "esb", "hint": "hint #7", "clrex": "clrex",
 		"dmb": "dmb ish", "dsb": "dsb sy", "isb": "isb", "ssbb": "ssbb", "pssbb": "pssbb",
-		"adr": "adr x9, here\nhere:", "adrp": "adrp x9, here\nhere:",
+		"adr": "adr x9, here\nhere:", "adrp": "adrp x9, here\nhere:", "adrl": "adrl x9, table",
 		"bfc": "mov x9, x0\n  bfc x9, #4, #8", "bfm": "mov x9, x0\n  bfm x9, x1, #4, #8", "sbfm": "sbfm x9, x0, #4, #8", "ubfm": "ubfm x9, x0, #4, #8",
 		"lslv": "lslv x9, x0, x1", "lsrv": "lsrv x9, x0, x1", "asrv": "asrv x9, x0, x1", "rorv": "rorv x9, x0, x1", "bfxil": "mov x9, x0\n  bfxil x9, x1, #4, #8", "sbfiz": "sbfiz x9, x0, #4, #8", "smnegl": "smnegl x9, w0, w1", "umnegl": "umnegl x9, w0, w1",
 	}
@@ -241,6 +241,9 @@ func TestInstructionTableCoverage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if name == "adrl" {
+			unit.Functions[0].Tables = map[string]Table{"table": {Size: 64, Elem: 8}} // the data symbol the sample addresses
+		}
 		if findings := Check(unit.Functions[0], sig, map[string]bool{"helper": true}); len(findings) != 0 {
 			t.Errorf("%s: checker rejected the sample: %v", name, findings)
 		}
@@ -303,14 +306,22 @@ func TestVerifyGeneralPurposeISA(t *testing.T) {
 	if clz.Kind != VerdictProven {
 		t.Fatalf("clz against its loop specification must be proven, got %s: %s", clz.Kind, clz.Message)
 	}
-	// Division and the ordered/atomic accesses are outside the subset.
+	// Division is outside the subset.
 	div := verifyCase(t, "half: (a, b: u32) -> u32", "a", "  bind w0 = a\n  bind w1 = b\n  udiv w0, w0, w1\n  ret")
 	if div.Kind == VerdictProven {
 		t.Fatalf("udiv must not be proven against the identity: %s", div.Message)
 	}
-	atomic := verifyCase(t, "bump: (s: [*]u32) -> u32", "u32(0)", "  bind x0, w1 = s\n  clobber w9, w10\n  cmp w1, #1\n  b.lo short\n  mov w9, #1\n  ldadd w9, w10, [x0]\n  mov w0, w10\n  ret\nshort:\n  mov w0, #0\n  ret")
-	if atomic.Kind != VerdictTrusted || !strings.Contains(atomic.Message, "atomic") {
-		t.Fatalf("an atomic must be trusted, got %s: %s", atomic.Kind, atomic.Message)
+	// An LSE atomic is decided under the sequential model
+	// (docs/spec/65-machine-memory.md section 7a, asm/atomics.go): the
+	// fetch-add's old value and its write, or a mismatch against the
+	// identity.
+	bump := "  bind x0, w1 = s\n  clobber w9, w10\n  cmp w1, #1\n  b.lo short\n  mov w9, #1\n  ldadd w9, w10, [x0]\n  mov w0, w10\n  ret\nshort:\n  mov w0, #0\n  ret"
+	atomic := verifyCase(t, "bump: (s: [*]u32) -> u32", "len(s) == u32(0) ? u32(0) | atomic_fetch_add_relaxed(s[0], u32(1))", bump)
+	if atomic.Kind != VerdictProven || !strings.Contains(atomic.Message, "the span memory it writes (s)") {
+		t.Fatalf("an atomic must be proven in its result and its span, got %s: %s", atomic.Kind, atomic.Message)
+	}
+	if identity := verifyCase(t, "bump: (s: [*]u32) -> u32", "u32(0)", bump); identity.Kind != VerdictMismatch {
+		t.Fatalf("an atomic against the identity must be a mismatch, got %s: %s", identity.Kind, identity.Message)
 	}
 }
 
@@ -329,8 +340,14 @@ func TestFloatingPointContract(t *testing.T) {
 	if _, ok := parseRegister("v0.s[4]"); ok {
 		t.Fatal("lane 4 of a .s view is past the register and must not parse")
 	}
-	trusted := verifyCase(t, "twice: (x: f64) -> f64", "x + x", "  bind d0 = x\n  fadd d0, d0, d0\n  ret")
-	if trusted.Kind != VerdictTrusted {
-		t.Fatalf("an FP body must be trusted, got %s: %s", trusted.Kind, trusted.Message)
+	// Floating-point arithmetic is an uninterpreted operation to the
+	// decider (asm/floats_ops.go): the same operation over the same
+	// operands is proven, another operation is a mismatch.
+	proven := verifyCase(t, "twice: (x: f64) -> f64", "x + x", "  bind d0 = x\n  fadd d0, d0, d0\n  ret")
+	if proven.Kind != VerdictProven {
+		t.Fatalf("x + x against fadd must be proven, got %s: %s", proven.Kind, proven.Message)
+	}
+	if v := verifyCase(t, "twice: (x: f64) -> f64", "x + x", "  bind d0 = x\n  fmul d0, d0, d0\n  ret"); v.Kind != VerdictMismatch {
+		t.Fatalf("x + x against fmul must be a mismatch, got %s: %s", v.Kind, v.Message)
 	}
 }

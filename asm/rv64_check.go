@@ -36,6 +36,12 @@ type rvChecker struct {
 	fn      *Function
 	symbols map[string]bool
 	errors  []string
+	// stackParams maps the entry-relative offset of a scalar parameter
+	// beyond the register contract to its name, stackArgs the incoming
+	// area's size (docs/spec/94-assembler.md §9, parameters beyond the
+	// registers); a load from the area binds what it reads.
+	stackParams map[int64]string
+	stackArgs   int64
 
 	hasResult bool
 	never     bool
@@ -59,6 +65,7 @@ type rvChecker struct {
 	// fa0 the result; fs0–fs11 are callee-saved under the same obligation
 	// as s0–s11; ft0–ft11 and the fa registers are clobberable.
 	floatResult   bool
+	vectorResult  bool // a fixed vector result in v8 (the RVV psABI)
 	fbound        map[int]bool
 	fclobbered    map[int]bool
 	fwritten      map[int]bool
@@ -74,15 +81,44 @@ type rvChecker struct {
 	// Span element memory (docs/spec/94-assembler.md §9). Every fact below
 	// is forgotten at a label and on a write to a register it names, so a
 	// guard protects exactly the straight-line code after it.
-	writes  map[int]int          // register -> number of instructions writing it (whole body)
-	spans   map[int]*rvSpan      // bound base register -> the span
-	shl32   map[int]int          // register = raw length register << 32 (half of a normalization)
-	lenNorm map[int]int          // register holding a span's length zero-extended -> its raw length register
-	consts  map[int]int64        // register = constant (li)
-	idx     map[int]rvIndexFact  // register < a normalized length register, or < a constant
-	scaled  map[int]rvScaledFact // register = index << shift
-	regions map[int]rvRegion     // register = the address of one element (size bytes)
-	rem     map[int]rvRemFact    // register = normalized length - guarded index (the remaining count)
+	writes map[int]int // register -> number of instructions writing it (whole body)
+	// The definition sites, by item index (countWrites): a region held by a
+	// register whose every definition precedes a label, with no label
+	// between its first definition and that one and no branch into that
+	// label from before its last definition, holds at the label on every
+	// path (definedBefore) — GCC forms an element address in two or three
+	// instructions before a loop head.
+	firstWrite map[int]int
+	lastWrite  map[int]int
+	labelIndex map[string]int
+	branchesTo map[string][]int
+	spans      map[int]*rvSpan      // bound base register -> the span
+	shl32      map[int]int          // register = raw length register << 32 (half of a normalization)
+	lenNorm    map[int]int          // register holding a span's length zero-extended -> its raw length register
+	consts     map[int]int64        // register = constant (li)
+	idx        map[int]rvIndexFact  // register < a normalized length register, or < a constant
+	scaled     map[int]rvScaledFact // register = index << shift
+	// widened: register = an unmodified `u32` parameter as the psABI
+	// widened it (sign-extended from bit 31, Oak.RiscV.widen): a scalar
+	// `u32`, or a span's length register. Two of them compare raw
+	// (`bgeu idx, len`) as their 32-bit values do
+	// (Oak.RiscV.index_guard_widened): GCC's guard.
+	widened      map[int]bool
+	entryWidened map[int]bool // the widened parameters at entry (bindContract)
+	// half: register = a raw-guarded widened index << 32, the first half
+	// of the fused zero-extend-and-scale `slli 32; srli 32-s`
+	// (Oak.RiscV.widened_scale).
+	half    map[int]rvIndexFact
+	regions map[int]rvRegion  // register = the address of one element (size bytes)
+	rem     map[int]rvRemFact // register = normalized length - guarded index (the remaining count)
+	// slack: register = normalized length - K under len >= K (`sub t, len,
+	// k` after `bltu len, k, trap`): the bound of a K-element vector access
+	// (docs/spec/94-assembler.md §9, Oak.RiscV.slack_guard).
+	slack       map[int]rvSlackFact
+	le          map[int]int
+	diff        map[int]rvDiffFact
+	subCount    map[int]rvSubFact
+	scaledStart map[int]rvScaledStart
 	// frameAddrs: register = an entry-relative frame address (`addi rD, sp,
 	// imm`): an owned array's base (docs/spec/94-assembler.md §9). Memory
 	// through it goes through a region formed under a constant index guard.
@@ -129,15 +165,38 @@ type rvRemFact struct {
 }
 
 // rvVectorConfig is the vector configuration in effect: the element width
-// SEW in bytes (LMUL is 1 in this increment), and the AVL — an immediate
-// (vsetivli) or what is known of the register (vsetvli). vl ≤ AVL always
-// (RVV 1.0 §6.3, Oak.RiscV.vsetvlOK).
+// SEW in bytes, LMUL in eighths (mf8 = 1 … m1 = 8 … m8 = 64), and the AVL —
+// an immediate (vsetivli) or what is known of the register (vsetvli). vl ≤
+// AVL always (RVV 1.0 §6.3, Oak.RiscV.vsetvlOK).
 type rvVectorConfig struct {
 	sew    int64
-	lmul   int64 // 1, 2, 4, or 8: every vector register operand is a group of lmul registers
+	lmul8  int64 // LMUL * 8: a fractional LMUL's group is one register (Oak.RiscV.groupOf)
 	avlImm int64 // -1 when the AVL is a register
 	rem    *rvRemFact
 	line   int
+}
+
+// rv64LMULEighths maps a vtype LMUL spelling to LMUL * 8.
+var rv64LMULEighths = map[string]int64{"mf8": 1, "mf4": 2, "mf2": 4, "m1": 8, "m2": 16, "m4": 32, "m8": 64}
+
+// rv64LMULName spells LMUL * 8 as a vtype option, for messages.
+func rv64LMULName(lmul8 int64) string {
+	for name, v := range rv64LMULEighths {
+		if v == lmul8 {
+			return name
+		}
+	}
+	return fmt.Sprintf("%d/8", lmul8)
+}
+
+// rv64GroupOf is the register count of an operand group at LMUL * 8
+// (RVV 1.0 §3.4.2): LMUL registers at or above m1, one register below
+// (Oak.RiscV.groupOf).
+func rv64GroupOf(lmul8 int64) int64 {
+	if lmul8 < 8 {
+		return 1
+	}
+	return lmul8 / 8
 }
 
 // rv64GroupSingle names the operands that are one register whatever the
@@ -146,11 +205,18 @@ type rvVectorConfig struct {
 // vector register operand is a group of LMUL registers aligned to LMUL.
 func rv64GroupSingle(name string, position int) bool {
 	switch name {
-	case "vmseq.vv", "vmsne.vx":
+	case "vmseq.vv", "vmsne.vx", "vmslt.vx", "vmsltu.vx", "vmseq.vx", "vmfne.vv":
 		return position == 0
+	case "vredsum.vs", "vfredosum.vs":
+		// A reduction's scalar input and result live in element 0 of a
+		// single register, not a group (RVV 1.0 §14).
+		return position == 0 || position == 2
+	case "vmv.x.s", "vfmv.f.s":
+		// Element 0 of the source, whatever the LMUL (RVV 1.0 §16.1, §16.2).
+		return position == 1
 	case "vcpop.m":
 		return position == 1
-	case "vmerge.vvm":
+	case "vmerge.vvm", "vfmerge.vfm":
 		return position == 3
 	}
 	return false
@@ -169,10 +235,44 @@ type rvSpan struct {
 }
 
 // rvIndexFact: the register is below a normalized length register
-// (lenReg >= 0) or below a constant (lenReg < 0, bound).
+// (lenReg >= 0) or below a constant (lenReg < 0, bound). With slack K > 0
+// the fact is idx + K <= len instead: K elements from idx lie inside the
+// span (Oak.RiscV.slack_access_in_bounds). With raw set, the register and
+// lenReg (a raw length register) are widened `u32` values whose low
+// halves compare: only the fused zero-extend-and-scale (`half`, then
+// `scaled`) may use it, since the register's upper half is the sign
+// extension.
 type rvIndexFact struct {
 	lenReg int
 	bound  int64
+	slack  int64
+	raw    bool
+}
+
+// The derived-span idiom, `subslice(v, start, n)` on this lane
+// (docs/spec/94-assembler.md §9, subslice on the rv64 lane; the AArch64
+// checker's deriveSpan): `bltu rL, rS, trap` over a normalized length rL
+// proves rS <= len (le[rS] = rL); `sub rT, rL, rS` under it makes rT =
+// len - start (diff[rT]); `bltu rT, rN, trap` proves rN <= len - start
+// (subCount[rN]); `slli rX, rS, s` scales the start (scaledStart[rX]);
+// and `add rD, rB, rX` over the span at rB with that length derives the
+// span at rD whose length register is rN — every index i < rN has start
+// + i < len (Oak.Subslice.derived_index_in_bounds). The count register
+// is its own normalized length: the guard `bltu rT, rN` admits only a
+// value at most len - start < 2^32. The facts die with a write to any
+// register involved, at labels, and at calls.
+type rvDiffFact struct{ lenReg, startReg int }
+type rvSubFact struct{ startReg, lenReg int }
+type rvScaledStart struct {
+	startReg int
+	shift    int
+}
+
+// rvSlackFact: the register holds len - K for the normalized length in
+// lenReg, formed under len >= K.
+type rvSlackFact struct {
+	lenReg int
+	k      int64
 }
 
 // rvScaledFact: the register is a guarded index shifted left by shift.
@@ -195,9 +295,18 @@ type rvRegion struct {
 	rawLen   int
 	idxReg   int
 	idxGen   int
+	// lanes: how many elements from the address the guard proved inside
+	// the span — one under an index guard, K under a slack guard.
+	lanes int64
 	// frame marks an element of an owned array in the frame (writable,
 	// no span: rawLen and idxReg name nothing).
 	frame bool
+	// global marks a package global's cell (`la` of a Function.Globals
+	// name): writable, and accessed whole — at offset 0, at its width.
+	global bool
+	// table marks the whole of a constant data symbol (`la`): read-only,
+	// its guarded elements derived like a frame array's.
+	table bool
 	// param marks the caller's copy of a by-reference record parameter
 	// (or the result area) arriving in a contract register: the address
 	// holds until the body writes that register, however many times a
@@ -209,7 +318,7 @@ type rvRegion struct {
 func checkRV64(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool) []string {
 	c := &rvChecker{fn: fn, symbols: symbols, bound: map[int]bool{}, clobbered: map[int]bool{}, written: map[int]bool{}, freed: map[int]bool{}, saved: map[int]*savedState{}, labelDisp: map[string]int64{}, labels: map[string]bool{}, spans: map[int]*rvSpan{}, writes: map[int]int{},
 		fbound: map[int]bool{}, fclobbered: map[int]bool{}, fwritten: map[int]bool{}, ffreed: map[int]bool{}, fsaved: map[int]*savedState{},
-		rem: map[int]rvRemFact{}, gen: map[int]int{}, vclobbered: map[int]bool{}, vwritten: map[int]bool{}, frameAddrs: map[int]int64{}, lenAlias: map[int]int{}, rawDead: map[int]bool{}, composites: map[string]rvComposite{}, regions: map[int]rvRegion{}, resultChunks: 1}
+		rem: map[int]rvRemFact{}, slack: map[int]rvSlackFact{}, le: map[int]int{}, diff: map[int]rvDiffFact{}, subCount: map[int]rvSubFact{}, scaledStart: map[int]rvScaledStart{}, firstWrite: map[int]int{}, lastWrite: map[int]int{}, labelIndex: map[string]int{}, branchesTo: map[string][]int{}, widened: map[int]bool{}, entryWidened: map[int]bool{}, half: map[int]rvIndexFact{}, gen: map[int]int{}, vclobbered: map[int]bool{}, vwritten: map[int]bool{}, frameAddrs: map[int]int64{}, lenAlias: map[int]int{}, rawDead: map[int]bool{}, composites: map[string]rvComposite{}, regions: map[int]rvRegion{}, resultChunks: 1}
 	shared := &checker{fn: fn}
 	shared.checkSignature(decl)
 	if len(shared.errors) > 0 {
@@ -223,7 +332,12 @@ func checkRV64(fn *Function, decl *ast.FunctionStatement, symbols map[string]boo
 		return c.errors
 	}
 	c.countWrites()
-	c.forgetGuards()
+	c.forgetGuards(-1)
+	// At entry every widened parameter holds; where paths meet, only the
+	// registers the body never writes certainly still do (forgetGuards).
+	for reg := range c.entryWidened {
+		c.widened[reg] = true
+	}
 	c.walk()
 	for _, b := range fn.Bindings {
 		if b.Register.Class == ClassRV64F {
@@ -248,9 +362,12 @@ func (c *rvChecker) bindContract() {
 	sig := c.fn.Signature
 	next := 10
 	nextFloat := 10 // fa0–fa7
+	nextVector := 8 // v8–v23, the RVV psABI's vector argument registers
 	expect := map[string]int{}
 	expectLen := map[string]int{}
 	expectFloat := map[string]int{}
+	expectVector := map[string]int{}
+	expectStack := map[string]int64{}
 	if sig.ReturnType != nil {
 		if comp, isComposite := c.fn.Composites[typeText(sig.ReturnType)]; isComposite && comp.Size > 16 {
 			// The caller's result area arrives in a0: the parameters follow.
@@ -280,6 +397,19 @@ func (c *rvChecker) bindContract() {
 			continue
 		}
 		if class, ok := contractClass(param.Type); ok && class == ClassV {
+			if strings.HasPrefix(typeText(param.Type), "simd.") {
+				// A fixed vector: v8–v23 in declaration order, a file of its
+				// own beside the integer and float ones (the RVV psABI,
+				// Oak.RiscV.lp64dBinding with the vector kind); the native
+				// entry's contract (docs/spec/94-assembler.md §9).
+				if nextVector > 23 {
+					c.errorf(c.fn.Line, "parameter %s: the vector register contract v8–v23 is exhausted", param.Name.Value)
+					continue
+				}
+				expectVector[param.Name.Value] = nextVector
+				nextVector++
+				continue
+			}
 			// f32/f64 under LP64D: fa0–fa7 in declaration order, independent
 			// of the integer registers (Oak.RiscV.lp64dBinding).
 			if !strings.HasPrefix(typeText(param.Type), "simd.") {
@@ -307,12 +437,21 @@ func (c *rvChecker) bindContract() {
 			continue
 		}
 		if next > 17 {
-			c.errorf(c.fn.Line, "parameter %s: the integer register contract a0–a7 is exhausted", param.Name.Value)
+			// Beyond a0–a7: the caller's outgoing area, XLEN-sized slots in
+			// order (the LP64 psABI), the scalar widened as a register holds
+			// it.
+			if c.stackParams == nil {
+				c.stackParams = map[int64]string{}
+			}
+			c.stackParams[c.stackArgs] = param.Name.Value
+			expectStack[param.Name.Value] = c.stackArgs
+			c.stackArgs += 8
 			continue
 		}
 		expect[param.Name.Value] = next
 		next++
 	}
+	c.stackArgs = (c.stackArgs + 15) / 16 * 16
 	if sig.ReturnType != nil && typeText(sig.ReturnType) != "()" {
 		if comp, isComposite := c.fn.Composites[typeText(sig.ReturnType)]; isComposite {
 			switch {
@@ -327,7 +466,10 @@ func (c *rvChecker) bindContract() {
 			c.never = true
 		} else if class, ok := contractClass(sig.ReturnType); ok && class == ClassV && !strings.HasPrefix(typeText(sig.ReturnType), "simd.") {
 			c.floatResult = true // f32/f64 in fa0
-		} else if !ok || class == ClassV {
+		} else if ok && class == ClassV {
+			c.vectorResult = true // a fixed vector in v8
+			c.usesVectorFile = true
+		} else if !ok {
 			c.errorf(c.fn.Line, "result type %s is not carried by the rv64 contract", typeText(sig.ReturnType))
 		} else {
 			c.hasResult = true
@@ -336,7 +478,10 @@ func (c *rvChecker) bindContract() {
 	seen := map[string]bool{}
 	for _, b := range c.fn.Bindings {
 		want, declared := expect[b.Param]
-		if _, isFloat := expectFloat[b.Param]; !declared && !isFloat {
+		_, isFloat := expectFloat[b.Param]
+		_, isVector := expectVector[b.Param]
+		offset, isStack := expectStack[b.Param]
+		if !declared && !isFloat && !isVector && !isStack {
 			c.errorf(b.Line, "bind names %s, which is not a parameter", b.Param)
 			continue
 		}
@@ -345,6 +490,22 @@ func (c *rvChecker) bindContract() {
 			continue
 		}
 		seen[b.Param] = true
+		if isStack || b.OnStack {
+			if !isStack || !b.OnStack || b.Stack != offset {
+				c.errorf(b.Line, "bind: parameter %s arrives on the stack at entry sp + %d (the register contract is exhausted): bind [sp, #%d] = %s", b.Param, offset, offset, b.Param)
+			}
+			continue
+		}
+		if vreg, isVec := expectVector[b.Param]; isVec {
+			if b.Register.Class != ClassRV64V || b.Register.Num != vreg || b.Length != nil {
+				c.errorf(b.Line, "parameter %s must be bound to v%d (its vector contract register), not %s", b.Param, vreg, b.Register.Text)
+				continue
+			}
+			// Bound whole: readable as written, on entry.
+			c.vwritten[vreg] = true
+			c.usesVectorFile = true
+			continue
+		}
 		if freg, isFloat := expectFloat[b.Param]; isFloat {
 			if b.Register.Class != ClassRV64F || b.Register.Num != freg || b.Length != nil {
 				c.errorf(b.Line, "parameter %s must be bound to %s (its LP64D contract register), not %s", b.Param, rv64FloatRegisterName(freg), b.Register.Text)
@@ -381,11 +542,14 @@ func (c *rvChecker) bindContract() {
 				continue
 			}
 			c.bound[lenReg] = true
+			c.entryWidened[lenReg] = true // the u32 length, widened by the psABI
 			elem, writable, _ := spanShape(sigParamType(sig, b.Param))
 			c.spans[want] = &rvSpan{rawLen: lenReg, elem: elem, writable: writable}
 		} else if b.Length != nil {
 			c.errorf(b.Line, "parameter %s is not a span; bind one register", b.Param)
 			continue
+		} else if bits, signed, isInt := contractBits(sigParamType(sig, b.Param)); isInt && bits == 32 && !signed {
+			c.entryWidened[want] = true
 		}
 		c.bound[want] = true
 	}
@@ -394,9 +558,19 @@ func (c *rvChecker) bindContract() {
 			c.errorf(c.fn.Line, "parameter %s is not bound (`bind %s = %s`)", name, rv64RegisterName(reg), name)
 		}
 	}
+	for name, offset := range expectStack {
+		if !seen[name] {
+			c.errorf(c.fn.Line, "parameter %s is not bound (`bind [sp, #%d] = %s`)", name, offset, name)
+		}
+	}
 	for name, reg := range expectFloat {
 		if !seen[name] {
 			c.errorf(c.fn.Line, "parameter %s is not bound (`bind %s = %s`)", name, rv64FloatRegisterName(reg), name)
+		}
+	}
+	for name, reg := range expectVector {
+		if !seen[name] {
+			c.errorf(c.fn.Line, "parameter %s is not bound (`bind v%d = %s`)", name, reg, name)
 		}
 	}
 	for _, reg := range c.fn.Clobbers {
@@ -556,10 +730,10 @@ func (c *rvChecker) walk() {
 		}
 	}
 	terminated := false
-	for _, item := range c.fn.Items {
+	for i, item := range c.fn.Items {
 		switch it := item.(type) {
 		case Label:
-			c.enterLabel(it)
+			c.enterLabel(it, i)
 			terminated = false
 		case Align:
 			c.errorf(it.Line, "align regions are not admitted for rv64 units in this increment")
@@ -603,6 +777,22 @@ func (c *rvChecker) countWrites() {
 			}
 		}
 	}
+	// The item index of every label, definition and branch (definedBefore).
+	itemOf := make([]int, 0, len(instrs))
+	for i, item := range c.fn.Items {
+		switch it := item.(type) {
+		case Label:
+			c.labelIndex[it.Name] = i
+		case Instruction:
+			itemOf = append(itemOf, i)
+			base := rv64Base(it)
+			if rv64Branches[base.Mnemonic] || base.Mnemonic == "jal" {
+				if sym, isSym := base.Operands[len(base.Operands)-1].(Symbol); isSym {
+					c.branchesTo[sym.Name] = append(c.branchesTo[sym.Name], i)
+				}
+			}
+		}
+	}
 	for i, base := range instrs {
 		if len(base.Operands) == 0 || rv64Branches[base.Mnemonic] || rv64Stores[base.Mnemonic] != 0 || base.Mnemonic == "call" {
 			continue
@@ -611,6 +801,10 @@ func (c *rvChecker) countWrites() {
 		if !isReg || dest.Class != ClassRV64X {
 			continue
 		}
+		if _, seen := c.firstWrite[dest.Num]; !seen {
+			c.firstWrite[dest.Num] = itemOf[i]
+		}
+		c.lastWrite[dest.Num] = itemOf[i]
 		// The normalization pair `slli rX, len, 32; srli rX, rX, 32` is one
 		// definition of rX: its second half counts with its first.
 		if base.Mnemonic == "srli" && i > 0 && isNormalization(instrs[i-1], base, rawLens) {
@@ -645,11 +839,40 @@ func isNormalization(first, second Instruction, rawLens map[int]bool) bool {
 // stable reports a register written by at most one instruction in the body.
 func (c *rvChecker) stable(num int) bool { return c.writes[num] <= 1 }
 
+// definedBefore reports a register whose value at the label (item index
+// at) is the same on every path reaching it: every definition precedes the
+// label, no label lies between the first definition and this one (no path
+// enters the definitions midway), and no branch reaches this label from
+// before the last definition (no path skips one). A backward branch from
+// inside the loop the label heads re-enters with the register untouched.
+func (c *rvChecker) definedBefore(num int, at int) bool {
+	last, written := c.lastWrite[num]
+	if !written || last >= at {
+		return false
+	}
+	for _, idx := range c.labelIndex {
+		if idx > c.firstWrite[num] && idx < at {
+			return false
+		}
+	}
+	for name, idx := range c.labelIndex {
+		if idx != at {
+			continue
+		}
+		for _, from := range c.branchesTo[name] {
+			if from < last {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // forgetGuards drops the guard facts where paths meet (a label) or after a
 // call: index bounds, scaled indices, element regions, minimum lengths.
 // Normalized lengths, half-normalizations, and constants held by stable
 // registers survive (countWrites).
-func (c *rvChecker) forgetGuards() {
+func (c *rvChecker) forgetGuards(at int) {
 	// A normalized (or half-normalized) copy holds the length of the span
 	// it names whatever happens to the raw register afterwards: only the
 	// copy's own register must be written once.
@@ -687,17 +910,32 @@ func (c *rvChecker) forgetGuards() {
 	c.frameAddrs = frameAddrs
 	c.idx = map[int]rvIndexFact{}
 	c.scaled = map[int]rvScaledFact{}
+	c.half = map[int]rvIndexFact{}
+	c.le = map[int]int{}
+	c.diff = map[int]rvDiffFact{}
+	c.subCount = map[int]rvSubFact{}
+	c.scaledStart = map[int]rvScaledStart{}
+	// A parameter register the body never writes holds its widened value
+	// on every path.
+	widened := map[int]bool{}
+	for reg := range c.widened {
+		if c.writes[reg] == 0 {
+			widened[reg] = true
+		}
+	}
+	c.widened = widened
 	// A region in a register written once holds one fixed address (the
 	// caller's record or result area parked in a callee-saved register):
 	// it survives labels and calls.
 	regions := map[int]rvRegion{}
 	for reg, region := range c.regions {
-		if c.stable(reg) || (region.param && !c.written[reg]) {
+		if c.stable(reg) || (region.param && !c.written[reg]) || (at >= 0 && c.definedBefore(reg, at)) {
 			regions[reg] = region
 		}
 	}
 	c.regions = regions
 	c.rem = map[int]rvRemFact{}
+	c.slack = map[int]rvSlackFact{}
 	c.vcfg = nil
 	for _, span := range c.spans {
 		span.hasMin = false
@@ -719,12 +957,49 @@ func (c *rvChecker) forgetRegister(num int) {
 	delete(c.consts, num)
 	delete(c.idx, num)
 	delete(c.scaled, num)
+	delete(c.widened, num)
+	delete(c.half, num)
 	delete(c.regions, num)
 	delete(c.frameAddrs, num)
 	delete(c.lenAlias, num)
+	delete(c.slack, num)
+	delete(c.le, num)
+	for reg, lenReg := range c.le {
+		if lenReg == num {
+			delete(c.le, reg)
+		}
+	}
+	delete(c.diff, num)
+	for reg, fact := range c.diff {
+		if fact.lenReg == num || fact.startReg == num {
+			delete(c.diff, reg)
+		}
+	}
+	delete(c.subCount, num)
+	for reg, fact := range c.subCount {
+		if fact.lenReg == num || fact.startReg == num {
+			delete(c.subCount, reg)
+		}
+	}
+	delete(c.scaledStart, num)
+	for reg, fact := range c.scaledStart {
+		if fact.startReg == num {
+			delete(c.scaledStart, reg)
+		}
+	}
+	for reg, fact := range c.slack {
+		if fact.lenReg == num {
+			delete(c.slack, reg)
+		}
+	}
 	for reg, fact := range c.idx {
 		if fact.lenReg == num {
 			delete(c.idx, reg)
+		}
+	}
+	for reg, fact := range c.half {
+		if fact.lenReg == num {
+			delete(c.half, reg)
 		}
 	}
 	for reg, fact := range c.scaled {
@@ -751,8 +1026,8 @@ func (c *rvChecker) forgetRegister(num int) {
 // so the displacement is the branches' (the trap block after `ret`); a
 // label reachable only by a later branch has no known displacement and is
 // refused, as the AArch64 checker refuses it.
-func (c *rvChecker) enterLabel(label Label) {
-	c.forgetGuards()
+func (c *rvChecker) enterLabel(label Label, at int) {
+	c.forgetGuards(at)
 	known, has := c.labelDisp[label.Name]
 	switch {
 	case has && !c.unreachable && known != c.disp:
@@ -792,8 +1067,12 @@ func (c *rvChecker) frameAddress(mem Memory, width int64, line int) (int64, bool
 		return 0, false
 	}
 	addr := -c.disp + mem.Offset
-	if addr < -c.fn.Frame || addr+width > 0 {
-		c.errorf(line, "frame access at entry-relative %d..%d is outside the declared frame [-%d, 0)", addr, addr+width, c.fn.Frame)
+	if addr < -c.fn.Frame || (addr+width > 0 && (addr < 0 || addr+width > c.stackArgs)) {
+		if c.stackArgs > 0 {
+			c.errorf(line, "frame access at entry-relative %d..%d is outside the declared frame [-%d, 0) and the %d-byte incoming argument area", addr, addr+width, c.fn.Frame, c.stackArgs)
+		} else {
+			c.errorf(line, "frame access at entry-relative %d..%d is outside the declared frame [-%d, 0)", addr, addr+width, c.fn.Frame)
+		}
 		return 0, false
 	}
 	if addr%width != 0 {
@@ -814,7 +1093,7 @@ func (c *rvChecker) call(target string, line int) {
 	}
 	c.saved[1].written = true
 	c.saved[1].restored = false
-	c.forgetGuards()
+	c.forgetGuards(-1)
 	// vl, vtype, and every vector register are not preserved across a call.
 	c.vwritten = map[int]bool{}
 	for num := 0; num <= 31; num++ {
@@ -825,9 +1104,11 @@ func (c *rvChecker) call(target string, line int) {
 		}
 	}
 	// The callee's floating-point result is readable in fa0, as its integer
-	// result is in a0: the checker sees no callee signature, so it gives
-	// the two result registers the same latitude (the AArch64 checker's v0).
+	// result is in a0, and a vector result in v8: the checker sees no
+	// callee signature, so it gives the result registers the same latitude
+	// (the AArch64 checker's v0).
 	c.fwritten[10] = true
+	c.vwritten[8] = true
 	for num := 5; num <= 31; num++ {
 		if num >= 5 && num <= 7 || num >= 10 && num <= 17 || num >= 28 {
 			delete(c.written, num)
@@ -880,6 +1161,28 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 		return false
 	case "auipc":
 		c.write(reg(0), line)
+		return false
+	case "la":
+		// The address of a constant data symbol: a read-only region of its
+		// size, written once so it survives labels (stable).
+		sym, isSym := ops[1].(Symbol)
+		if !isSym {
+			c.errorf(line, "la takes a data symbol")
+			return false
+		}
+		if global, isGlobal := c.fn.Globals[sym.Name]; isGlobal {
+			// A package global's cell (docs/spec/94-assembler.md §9).
+			c.write(reg(0), line)
+			c.regions[reg(0).Num] = rvRegion{size: int64(global.Bits / 8), writable: true, rawLen: -1, idxReg: -2, global: true}
+			return false
+		}
+		table, known := c.fn.Tables[sym.Name]
+		if !known {
+			c.errorf(line, "la %s: not a constant data symbol or global of the program", sym.Name)
+			return false
+		}
+		c.write(reg(0), line)
+		c.regions[reg(0).Num] = rvRegion{size: table.Size, rawLen: -1, idxReg: -2, table: true}
 		return false
 	case "li":
 		imm := ops[1].(Immediate).Value
@@ -1002,6 +1305,11 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 		c.write(reg(0), line)
 		return false
 	}
+	if kind, width, isAtomic := rv64Atomic(name); isAtomic {
+		// lr/sc and the amos through a span element (asm/rv64_atomics.go).
+		c.atomicAccess(kind, width, ops, line)
+		return false
+	}
 	if width, isLoad := rv64Loads[name]; isLoad {
 		mem := ops[1].(Memory)
 		if mem.Base.Class != ClassSP {
@@ -1012,6 +1320,21 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 		}
 		addr, ok := c.frameAddress(mem, int64(width), line)
 		dest := reg(0)
+		if ok && addr >= 0 {
+			// The incoming argument area: a whole slot of a scalar
+			// parameter beyond the registers, read into a general
+			// register as the widened value the caller stored.
+			name, isParam := c.stackParams[addr]
+			if !isParam || width != 8 || dest.Class != ClassRV64X {
+				c.errorf(line, "%s reads entry sp + %d, which holds no whole stack parameter", instr.Mnemonic, addr)
+				return false
+			}
+			c.write(dest, line)
+			if bits, signed, isInt := contractBits(sigParamType(c.fn.Signature, name)); isInt && bits == 32 && !signed {
+				c.entryWidened[dest.Num] = true
+			}
+			return false
+		}
 		if ok && dest.Class == ClassRV64X && rv64Preserved(dest.Num) {
 			state := c.saved[dest.Num]
 			if state.saved && width == 8 && state.slot == addr {
@@ -1041,6 +1364,10 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 			return false
 		}
 		addr, ok := c.frameAddress(mem, int64(width), line)
+		if ok && addr >= 0 {
+			c.errorf(line, "%s writes the caller's argument area at entry sp + %d", instr.Mnemonic, addr)
+			return false
+		}
 		if ok && src.Class == ClassRV64X && rv64Preserved(src.Num) && width == 8 {
 			state := c.saved[src.Num]
 			if !state.saved && !state.written {
@@ -1063,6 +1390,12 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 		}
 		if name == "sub" {
 			pre.deriveRemaining(c, reg(0), reg(1), reg(2))
+			if lenReg, isLE := pre.le[reg(2).Num]; isLE && lenReg == reg(1).Num && reg(0).Num != 0 {
+				c.diff[reg(0).Num] = rvDiffFact{lenReg: reg(1).Num, startReg: reg(2).Num}
+			}
+			if k, isConst := pre.consts[reg(2).Num]; isConst {
+				pre.deriveSlack(c, reg(0), reg(1), k)
+			}
 		}
 		return false
 	case "addi", "andi", "ori", "xori", "slti", "sltiu", "slli", "srli", "srai", "addiw", "slliw", "srliw", "sraiw":
@@ -1085,6 +1418,9 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 		pre := c.snapshot()
 		c.write(reg(0), line)
 		pre.deriveShift(c, name, reg(0), reg(1), imm)
+		if name == "addi" && imm < 0 {
+			pre.deriveSlack(c, reg(0), reg(1), -imm)
+		}
 		if name == "addi" && reg(1).Class == ClassSP && reg(0).Class == ClassRV64X && reg(0).Num != 0 {
 			// `addi rD, sp, imm`: rD holds a frame address (an owned array's
 			// base, docs/spec/94-assembler.md §9), entry-relative.
@@ -1125,6 +1461,9 @@ func (c *rvChecker) ret(line int) bool {
 			c.errorf(line, "ret with %s written but not restored from its frame slot", rv64FloatRegisterName(num))
 		}
 	}
+	if c.vectorResult && !c.vwritten[8] {
+		c.errorf(line, "ret without writing the result register v8")
+	}
 	if c.floatResult && !c.fwritten[10] && !c.fbound[10] {
 		c.errorf(line, "ret without writing the result register fa0")
 	}
@@ -1148,8 +1487,36 @@ func (c *rvChecker) guardFacts(name string, left, right Register) {
 		}
 		if k, isConst := c.consts[right.Num]; isConst && k > 0 {
 			c.idx[left.Num] = rvIndexFact{lenReg: -1, bound: k}
+			return
+		}
+		// GCC's guard: the widened `u32` index against the widened `u32`
+		// length, raw. Sign extension preserves the unsigned order of two
+		// 32-bit values (Oak.RiscV.index_guard_widened), so the low
+		// halves compare; the fact is usable only through the fused
+		// zero-extend-and-scale.
+		if c.widened[left.Num] && c.widened[right.Num] {
+			if pre := c.snapshot(); pre.rawLen(right.Num) {
+				c.idx[left.Num] = rvIndexFact{lenReg: pre.canonicalRaw(right.Num), raw: true}
+			}
 		}
 	case "bltu":
+		// `bltu rL, rS, trap` over a normalized length: the fall-through
+		// knows start <= len; `bltu rT, rN, trap` over rT = len - start:
+		// the count is at most len - start (the derived-span idiom).
+		if _, isLen := c.lenNorm[left.Num]; isLen && right.Num != 0 {
+			c.le[right.Num] = left.Num
+		}
+		if d, isDiff := c.diff[left.Num]; isDiff && right.Num != 0 {
+			c.subCount[right.Num] = rvSubFact{startReg: d.startReg, lenReg: d.lenReg}
+		}
+		if slack, isSlack := c.slack[left.Num]; isSlack {
+			// `bltu t, idx, trap` with t = len - K: the fall-through knows
+			// idx <= len - K, so idx + K <= len (Oak.RiscV.slack_guard).
+			if right.Num != 0 {
+				c.idx[right.Num] = rvIndexFact{lenReg: slack.lenReg, slack: slack.k}
+			}
+			return
+		}
 		raw, isLen := c.lenNorm[left.Num]
 		k, isConst := c.consts[right.Num]
 		if !isLen || !isConst || k <= 0 {
@@ -1168,17 +1535,22 @@ func (c *rvChecker) guardFacts(name string, left, right Register) {
 // destination: the facts of the sources, read before the write forgets
 // them (the destination may be one of the sources).
 type rvSnapshot struct {
-	shl32      map[int]int
-	lenNorm    map[int]int
-	consts     map[int]int64
-	idx        map[int]rvIndexFact
-	scaled     map[int]rvScaledFact
-	spans      map[int]*rvSpan
-	gen        map[int]int
-	frameAddrs map[int]int64
-	lenAlias   map[int]int
-	rawDead    map[int]bool
-	regions    map[int]rvRegion
+	le          map[int]int
+	diff        map[int]rvDiffFact
+	subCount    map[int]rvSubFact
+	scaledStart map[int]rvScaledStart
+	shl32       map[int]int
+	lenNorm     map[int]int
+	consts      map[int]int64
+	idx         map[int]rvIndexFact
+	scaled      map[int]rvScaledFact
+	half        map[int]rvIndexFact
+	spans       map[int]*rvSpan
+	gen         map[int]int
+	frameAddrs  map[int]int64
+	lenAlias    map[int]int
+	rawDead     map[int]bool
+	regions     map[int]rvRegion
 }
 
 func (c *rvChecker) snapshot() rvSnapshot {
@@ -1201,6 +1573,10 @@ func (c *rvChecker) snapshot() rvSnapshot {
 	for k, v := range c.scaled {
 		scaled[k] = v
 	}
+	half := make(map[int]rvIndexFact, len(c.half))
+	for k, v := range c.half {
+		half[k] = v
+	}
 	spans := make(map[int]*rvSpan, len(c.spans))
 	for k, v := range c.spans {
 		copied := *v
@@ -1218,7 +1594,19 @@ func (c *rvChecker) snapshot() rvSnapshot {
 	for k, v := range c.regions {
 		regions[k] = v
 	}
-	return rvSnapshot{shl32: copyInt(c.shl32), lenNorm: copyInt(c.lenNorm), consts: consts, idx: idx, scaled: scaled, spans: spans, gen: copyInt(c.gen), frameAddrs: frameAddrs, lenAlias: copyInt(c.lenAlias), rawDead: rawDead, regions: regions}
+	diff := make(map[int]rvDiffFact, len(c.diff))
+	for k, v := range c.diff {
+		diff[k] = v
+	}
+	subCount := make(map[int]rvSubFact, len(c.subCount))
+	for k, v := range c.subCount {
+		subCount[k] = v
+	}
+	scaledStart := make(map[int]rvScaledStart, len(c.scaledStart))
+	for k, v := range c.scaledStart {
+		scaledStart[k] = v
+	}
+	return rvSnapshot{le: copyInt(c.le), diff: diff, subCount: subCount, scaledStart: scaledStart, shl32: copyInt(c.shl32), lenNorm: copyInt(c.lenNorm), consts: consts, idx: idx, scaled: scaled, half: half, spans: spans, gen: copyInt(c.gen), frameAddrs: frameAddrs, lenAlias: copyInt(c.lenAlias), rawDead: rawDead, regions: regions}
 }
 
 // rawLen reports a register holding a span's raw length: the bound
@@ -1260,12 +1648,31 @@ func (pre rvSnapshot) deriveShift(c *rvChecker, name string, dest, src Register,
 			c.shl32[dest.Num] = pre.canonicalRaw(src.Num)
 			return
 		}
-		if guard, guarded := pre.idx[src.Num]; guarded && imm >= 0 && imm < 32 {
+		guard, guarded := pre.idx[src.Num]
+		if guarded && guard.raw {
+			// The first half of GCC's fused zero-extend-and-scale: the
+			// widened index shifted out of its upper half.
+			if imm == 32 {
+				c.half[dest.Num] = guard
+			}
+			return
+		}
+		if guarded && imm >= 0 && imm < 32 {
 			c.scaled[dest.Num] = rvScaledFact{guard: guard, shift: int(imm), idxReg: src.Num, idxGen: pre.gen[src.Num]}
+		}
+		if _, isStart := pre.le[src.Num]; isStart && imm >= 0 && imm <= 4 {
+			c.scaledStart[dest.Num] = rvScaledStart{startReg: src.Num, shift: int(imm)}
 		}
 	case "srli":
 		if raw, half := pre.shl32[src.Num]; half && imm == 32 {
 			c.lenNorm[dest.Num] = raw
+		}
+		if guard, isHalf := pre.half[src.Num]; isHalf && imm >= 1 && imm <= 32 {
+			// `srli d, (idx << 32), 32-s` is the zero-extended index scaled
+			// by 2^s (Oak.RiscV.widened_scale): a scaled index whose guard
+			// is the raw comparison. The index register is not nameable
+			// for a `len - idx` count.
+			c.scaled[dest.Num] = rvScaledFact{guard: guard, shift: int(32 - imm), idxReg: -2}
 		}
 	case "addi":
 		if src.Num == 0 {
@@ -1317,10 +1724,15 @@ func (pre rvSnapshot) deriveRegion(c *rvChecker, dest, left, right Register) {
 		pre.deriveFrameRegion(c, dest, left, right)
 		return
 	}
-	if dest.Num == base.Num {
+	if pre.deriveSpan(c, dest, span, offset) {
 		return
 	}
+	// The address may replace the base (`add a0, a0, t`, GCC's shape): the
+	// write already forgot the span in dest, the region takes its place.
 	guard, guarded := pre.idx[offset.Num]
+	if guarded && guard.raw {
+		guarded = false // a raw-guarded index addresses nothing until zero-extended
+	}
 	shift := 0
 	idxReg, idxGen := offset.Num, pre.gen[offset.Num]
 	if scale, isScaled := pre.scaled[offset.Num]; isScaled {
@@ -1330,13 +1742,48 @@ func (pre rvSnapshot) deriveRegion(c *rvChecker, dest, left, right Register) {
 	if !guarded || int64(1)<<uint(shift) != span.elem {
 		return
 	}
-	if guard.lenReg < 0 {
-		idxReg = -2 // a constant bound: no `len - idx` can name it
+	if guard.lenReg < 0 || guard.raw {
+		idxReg = -2 // a constant bound or a raw guard: no `len - idx` can name it
 	}
-	inBounds := (guard.lenReg >= 0 && pre.lenNorm[guard.lenReg] == span.rawLen) || (guard.lenReg < 0 && span.hasMin && guard.bound <= span.minLen)
+	inBounds := (guard.raw && guard.lenReg == span.rawLen) ||
+		(!guard.raw && guard.lenReg >= 0 && pre.lenNorm[guard.lenReg] == span.rawLen) ||
+		(guard.lenReg < 0 && span.hasMin && guard.bound <= span.minLen)
 	if inBounds {
-		c.regions[dest.Num] = rvRegion{size: span.elem, writable: span.writable, rawLen: span.rawLen, idxReg: idxReg, idxGen: idxGen}
+		lanes := int64(1)
+		if guard.slack > 0 {
+			lanes = guard.slack
+		}
+		c.regions[dest.Num] = rvRegion{size: span.elem, writable: span.writable, rawLen: span.rawLen, idxReg: idxReg, idxGen: idxGen, lanes: lanes}
 	}
+}
+
+// deriveSpan records `add rD, rB, rX` over the span at rB as the derived
+// span `subslice(v, start, n)` when rX is the start scaled by the element
+// size (or the start itself for byte elements), the start is proven at
+// most the span's length, and some rN is proven at most len - start: the
+// span at rD has the length register rN, which is also its own normalized
+// length (a value the guard admitted is below 2^32).
+func (pre rvSnapshot) deriveSpan(c *rvChecker, dest Register, span *rvSpan, offset Register) bool {
+	startReg, shift := offset.Num, 0
+	if scaled, isScaled := pre.scaledStart[offset.Num]; isScaled {
+		startReg, shift = scaled.startReg, scaled.shift
+	}
+	lenReg, isStart := pre.le[startReg]
+	if !isStart || int64(1)<<uint(shift) != span.elem || pre.lenNorm[lenReg] != span.rawLen {
+		return false
+	}
+	count := -1
+	for reg, fact := range pre.subCount {
+		if fact.startReg == startReg && fact.lenReg == lenReg && (count < 0 || reg < count) {
+			count = reg
+		}
+	}
+	if count < 0 || count == dest.Num {
+		return false
+	}
+	c.spans[dest.Num] = &rvSpan{rawLen: count, elem: span.elem, writable: span.writable}
+	c.lenNorm[count] = count
+	return true
 }
 
 // deriveFrameRegion records `add rD, base, t` as the address of one element
@@ -1352,7 +1799,11 @@ func (pre rvSnapshot) deriveFrameRegion(c *rvChecker, dest, left, right Register
 		base, offset = right, left
 		addr, isFrame = pre.frameAddrs[base.Num]
 	}
-	if !isFrame || dest.Num == base.Num {
+	if !isFrame {
+		pre.deriveTableRegion(c, dest, left, right)
+		return
+	}
+	if dest.Num == base.Num {
 		return
 	}
 	guard, guarded := pre.idx[offset.Num]
@@ -1370,6 +1821,56 @@ func (pre rvSnapshot) deriveFrameRegion(c *rvChecker, dest, left, right Register
 	c.regions[dest.Num] = rvRegion{size: size, writable: true, rawLen: -1, idxReg: -2, frame: true}
 }
 
+// deriveTableRegion records `add rD, table, t` as one element of a
+// constant data symbol (`la`): t is an index guarded below a constant K,
+// scaled by 2^s, with every one of the K elements inside the table.
+func (pre rvSnapshot) deriveTableRegion(c *rvChecker, dest, left, right Register) {
+	base, offset := left, right
+	table, isTable := pre.regions[base.Num]
+	if !isTable || !table.table {
+		base, offset = right, left
+		table, isTable = pre.regions[base.Num]
+	}
+	if !isTable || !table.table || dest.Num == base.Num {
+		return
+	}
+	guard, guarded := pre.idx[offset.Num]
+	shift := 0
+	if scale, isScaled := pre.scaled[offset.Num]; isScaled {
+		guard, guarded, shift = scale.guard, true, scale.shift
+	}
+	if !guarded || guard.lenReg >= 0 || guard.bound <= 0 {
+		return
+	}
+	size := int64(1) << uint(shift)
+	if guard.bound*size > table.size {
+		return
+	}
+	c.regions[dest.Num] = rvRegion{size: size, rawLen: -1, idxReg: -2}
+}
+
+// deriveSlack records `sub rD, len, k` (or `addi rD, len, -K`) as len - K
+// when len is a normalized length register whose span is proven at least
+// K long (`bltu len, k, trap` before it): the subtraction does not wrap,
+// and a later `bltu rD, idx, trap` proves idx + K <= len — the bound of a
+// K-element vector access at idx (docs/spec/94-assembler.md §9,
+// Oak.RiscV.slack_guard).
+func (pre rvSnapshot) deriveSlack(c *rvChecker, dest, left Register, k int64) {
+	if dest.Class != ClassRV64X || left.Class != ClassRV64X || dest.Num == 0 || k <= 0 {
+		return
+	}
+	raw, isLen := pre.lenNorm[left.Num]
+	if !isLen {
+		return
+	}
+	for _, span := range pre.spans {
+		if span.rawLen == raw && span.hasMin && span.minLen >= k {
+			c.slack[dest.Num] = rvSlackFact{lenReg: left.Num, k: k}
+			return
+		}
+	}
+}
+
 // deriveRemaining records `sub rD, len, idx` as the remaining count when
 // len is a normalized length register and idx is guarded below it: the
 // AVL a strip-mining loop hands to vsetvli (docs/spec/94-assembler.md §9,
@@ -1382,7 +1883,7 @@ func (pre rvSnapshot) deriveRemaining(c *rvChecker, dest, left, right Register) 
 		return
 	}
 	guard, guarded := pre.idx[right.Num]
-	if !guarded || guard.lenReg != left.Num {
+	if !guarded || guard.raw || guard.lenReg != left.Num {
 		return
 	}
 	c.rem[dest.Num] = rvRemFact{lenReg: left.Num, idxReg: right.Num, idxGen: pre.gen[right.Num]}
@@ -1404,17 +1905,20 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 	}
 	switch name {
 	case "vsetvli", "vsetivli":
-		cfg := &rvVectorConfig{sew: rv64VTypeSEW[ops[2].(Option).Name], lmul: 1, avlImm: -1, line: line}
-		switch lmul := ops[3].(Option).Name; lmul {
-		case "m1":
-		case "m2":
-			cfg.lmul = 2
-		case "m4":
-			cfg.lmul = 4
-		case "m8":
-			cfg.lmul = 8
-		default:
-			c.errorf(line, "%s: fractional LMUL (%s) is not admitted; the groups the checker tracks are m1, m2, m4, m8", name, lmul)
+		cfg := &rvVectorConfig{sew: rv64VTypeSEW[ops[2].(Option).Name], lmul8: 8, avlImm: -1, line: line}
+		lmulName := ops[3].(Option).Name
+		lmul8, known := rv64LMULEighths[lmulName]
+		if !known {
+			c.errorf(line, "%s: LMUL %s is not one of mf8, mf4, mf2, m1, m2, m4, m8", name, lmulName)
+			lmul8 = 8
+		}
+		cfg.lmul8 = lmul8
+		// A fractional LMUL narrows the elements a register holds: the
+		// ratio SEW/LMUL stays within ELEN = 64 (RVV 1.0 §3.4.2, vill
+		// otherwise; Oak.RiscV.fractional_within_elen), so e64 needs at
+		// least m1, e32 at least mf2, e16 at least mf4.
+		if cfg.sew*8*8 > 64*lmul8 {
+			c.errorf(line, "%s: e%d at %s puts SEW/LMUL past ELEN=64 (the configuration would be reserved); e%d needs LMUL at least %s", name, cfg.sew*8, lmulName, cfg.sew*8, rv64LMULName(cfg.sew*8*8/64))
 		}
 		if name == "vsetvli" {
 			avl := reg(1)
@@ -1453,24 +1957,21 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 	// rule, applied fail-closed), and the wide group stays within the file
 	// and its element width within 64 bits (Oak.RiscV.wide_group_within_file).
 	groupSize := func(position int) int64 {
-		count := c.vcfg.lmul
 		if rv64GroupSingle(name, position) {
 			return 1
 		}
+		emul8 := c.vcfg.lmul8
 		switch rv64VectorEMUL(name, position) {
 		case 2:
-			count *= 2
+			emul8 *= 2
 		case 0:
-			count /= 2
-			if count == 0 {
-				count = 1
-			}
+			emul8 /= 2
 		}
-		return count
+		return rv64GroupOf(emul8)
 	}
 	if rv64VectorEMUL(name, 0) == 2 || rv64VectorEMUL(name, 1) == 2 {
-		if c.vcfg.lmul*2 > 8 {
-			c.errorf(line, "%s: the wide group would be LMUL=%d, past the file's eight registers", name, c.vcfg.lmul*2)
+		if c.vcfg.lmul8*2 > 64 {
+			c.errorf(line, "%s: the wide group would be LMUL=%s, past the file's eight registers", name, rv64LMULName(c.vcfg.lmul8*2))
 			return false
 		}
 		if rv64VectorEMUL(name, 0) == 2 && c.vcfg.sew*2 > 8 {
@@ -1480,6 +1981,17 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 	}
 	if (name == "vzext.vf2" || name == "vsext.vf2") && c.vcfg.sew < 2 {
 		c.errorf(line, "%s: the source elements would be narrower than 8 bits (SEW is e8)", name)
+		return false
+	}
+	if (name == "vzext.vf2" || name == "vsext.vf2") && c.vcfg.lmul8 < 2 {
+		c.errorf(line, "%s: the source group would be LMUL=%s/2, below mf8", name, rv64LMULName(c.vcfg.lmul8))
+		return false
+	}
+	// The floating-point forms need single- or double-precision elements
+	// (RVV 1.0 §13: Zve32f gives e32, Zve64d e64; e8 has no float format
+	// and e16 needs Zvfh, which the lane does not assume).
+	if rv64VectorFloat[name] && c.vcfg.sew < 4 {
+		c.errorf(line, "%s: the floating-point forms need e32 or e64 elements (SEW is e%d)", name, c.vcfg.sew*8)
 		return false
 	}
 	group := func(position int, write bool) {
@@ -1497,7 +2009,7 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 		}
 		count := groupSize(position)
 		if int64(r.Num)%count != 0 {
-			c.errorf(line, "%s: %s is not aligned to the register group of LMUL=%d (Oak.RiscV.group_within_file)", name, r.Text, count)
+			c.errorf(line, "%s: %s is not aligned to the register group of LMUL=%s (Oak.RiscV.group_within_file)", name, r.Text, rv64LMULName(count*8))
 			return
 		}
 		for k := int64(0); k < count; k++ {
@@ -1527,6 +2039,21 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 			}
 		}
 	}
+	if rv64VectorDisjoint[name] {
+		d := reg(0)
+		dLo, dHi := int64(d.Num), int64(d.Num)+groupSize(0)-1
+		for i := 1; i < len(shape); i++ {
+			src, isReg := ops[i].(Register)
+			if !isReg || src.Class != ClassRV64V {
+				continue
+			}
+			sLo, sHi := int64(src.Num), int64(src.Num)+groupSize(i)-1
+			if dLo <= sHi && sLo <= dHi {
+				c.errorf(line, "%s: the destination group %s overlaps the source group %s; a gather's or a slide's destination is disjoint from its sources (RVV 1.0 §16.3, §16.4)", name, d.Text, src.Text)
+				return false
+			}
+		}
+	}
 	if width, isLoad := rv64VectorLoads[name]; isLoad {
 		c.vectorAccess(ops[1].(Memory), width, false, line)
 		group(0, true)
@@ -1539,6 +2066,9 @@ func (c *rvChecker) vectorInstruction(base Instruction, shape string, line int) 
 	}
 	for i := 1; i < len(shape); i++ {
 		group(i, false)
+	}
+	if name == "vfmacc.vv" {
+		group(0, false) // the accumulator: vd = vs1 * vs2 + vd
 	}
 	group(0, true)
 	return false
@@ -1597,10 +2127,32 @@ func (c *rvChecker) vectorAccess(mem Memory, width int64, store bool, line int) 
 				return // idx + vl ≤ idx + (len - idx) = len
 			}
 		}
-		c.errorf(line, "vector access through the element address %s: the configuration's AVL must be `sub avl, len, idx` over the same guarded index the address was formed from, with neither rewritten in between (Oak.RiscV.strip_access_in_bounds)", base.Text)
+		if cfg.avlImm > 0 && cfg.avlImm <= region.lanes {
+			return // idx + vl ≤ idx + K ≤ len (Oak.RiscV.slack_access_in_bounds)
+		}
+		c.errorf(line, "vector access through the element address %s: the configuration's AVL must be `sub avl, len, idx` over the same guarded index the address was formed from, with neither rewritten in between (Oak.RiscV.strip_access_in_bounds), or an immediate within the K elements a slack guard proved (`bltu len, k; sub t, len, k; bltu t, idx` — Oak.RiscV.slack_access_in_bounds)", base.Text)
 		return
 	}
-	c.errorf(line, "vector memory through %s: only a bound span base or a guarded element address is admitted", base.Text)
+	if addr, isFrame := c.frameAddrs[base.Num]; isFrame {
+		// A fixed vector in the frame (a vector local's sixteen-byte slot,
+		// an owned array's element): an immediate AVL of K elements of the
+		// configured width at an entry-relative frame address, inside the
+		// declared frame (Oak.RiscV.frame_vector_in_bounds).
+		if cfg.avlImm <= 0 {
+			c.errorf(line, "vector access through the frame address %s needs an immediate AVL (vsetivli): the frame holds fixed vectors", base.Text)
+			return
+		}
+		bytes := cfg.avlImm * width
+		if addr < -c.fn.Frame || addr+bytes > 0 {
+			c.errorf(line, "vector access at entry-relative %d..%d through %s is outside the declared frame [-%d, 0)", addr, addr+bytes, base.Text, c.fn.Frame)
+			return
+		}
+		if addr%width != 0 {
+			c.errorf(line, "vector access at %d through %s is not aligned to its %d-byte elements", addr, base.Text, width)
+		}
+		return
+	}
+	c.errorf(line, "vector memory through %s: only a bound span base, a guarded element address, or a frame address is admitted", base.Text)
 }
 
 // spanAccess checks a load or store through a register other than sp: an
@@ -1613,6 +2165,10 @@ func (c *rvChecker) spanAccess(mem Memory, width int64, store bool, line int) {
 		return
 	}
 	if region, isRegion := c.regions[base.Num]; isRegion {
+		if region.global && (mem.Offset != 0 || width != region.size) {
+			c.errorf(line, "%d-byte access at offset %d through %s: a global is one cell of %d bytes at its address", width, mem.Offset, base.Text, region.size)
+			return
+		}
 		if mem.Offset < 0 || mem.Offset+width > region.size {
 			c.errorf(line, "access at %d..%d through %s is outside its %d-byte element", mem.Offset, mem.Offset+width, base.Text, region.size)
 			return

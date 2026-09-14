@@ -14,8 +14,8 @@ the function uses. Every link below is one of **proved** (a Lean theorem),
 | Link | AArch64, scalar | AArch64, vectors | RISC-V 64, scalar | Both lanes, C backend |
 | --- | --- | --- | --- | --- |
 | Oak program ⟶ its specification (the source proofs: `Oak.Utf8Blocks.program_valid`, `Oak.Protocol`, `Oak.Teddy`, `Oak.Simd` lane laws) | proved, about the Oak text extracted to Lean (`codegen/lean`) | proved, the same way | proved, the same way | proved, the same way |
-| Oak body ⟶ emitted instructions (`asm.Verify`) | **proved** for linear straight-line bodies (normal forms), **evidence** for bounded loops and span element loads over witnesses, **trusted** past the unrolling budget | **proved** for straight-line vector bodies (2026-09-13, the seventh increment: `asm/verify_vector.go`, `asm/verify_simd.go` — the SIMD corpus, the UTF-8 kernel's `special_cases` and `check_block` on both halves of their vector results), **evidence** for `check_blocks` (the node budget), **trusted** for the loop kernels and `simd.store` | proved / evidence as AArch64, the RV64 lane of the same verifier | **trusted**: the C compiler's output is never compared with the Oak body; the differential tests (C, interpreter, portable, NEON, RVV) are the check |
-| Instruction semantics ⟶ the vendor's specification | **proved**: `Oak.AssemblerSemantics` ≡ `Oak.ArmASL` ≡ Sail-generated Lean for `AddWithCarry`, `ConditionHolds`, the conditional selects and compares, `HighestSetBit`/`CountLeadingZeroBits` (`spec/sail/lean/Bridge.lean`); **evidence** on silicon for 181 register-level bodies × 60 inputs | **proved against `Oak.Simd`, not yet against Arm**: the NEON lane functions the verifier applies (`asm/verify_vector.go`) are stated in Lean as `Oak.NeonSemantics` and each is proved to be the `Oak.Simd` operation the lowering uses it for (`uqsub_eq_subSat`, `cmeq_eq_eqMask`, `tbl_eq_tbl`, `ext_eq_prev`, `umaxv_ne_zero_iff`, `umaxv_cmeq_zero_iff`, `movemaskBytes_eq_movemask`); **evidence** on silicon for 160 vector bodies × 60 inputs (`asm/silicon_test.go`, the lane functions against the host core); no Sail vector primitives in `spec/sail/` yet | **proved**: `Oak.RiscV` ≡ the Sail RISC-V model's Lean export (bridge, two halves); **evidence**: the Sail emulator and QEMU agree on the differential units | not applicable |
+| Oak body ⟶ emitted instructions (`asm.Verify`) | **proved** for linear straight-line bodies (normal forms), **evidence** for bounded loops and span element loads over witnesses, **trusted** past the unrolling budget | **proved** for straight-line vector bodies (2026-09-13, the seventh increment: `asm/verify_vector.go`, `asm/verify_simd.go` — the SIMD corpus, the UTF-8 kernel's `special_cases` and `check_block` on both halves of their vector results), **proved** for `check_blocks` and for the loop kernel `valid_with` (2026-09-14, the loop increments: three data-dependent loops coupled inductively, every obligation the same term on both sides under a case split on the kernel's branch), **trusted** for `simd.store` | proved / evidence as AArch64, the RV64 lane of the same verifier | **trusted**: the C compiler's output is never compared with the Oak body; the differential tests (C, interpreter, portable, NEON, RVV) are the check |
+| Instruction semantics ⟶ the vendor's specification | **proved**: `Oak.AssemblerSemantics` ≡ `Oak.ArmASL` ≡ Sail-generated Lean for `AddWithCarry`, `ConditionHolds`, the conditional selects and compares, `HighestSetBit`/`CountLeadingZeroBits` (`spec/sail/lean/Bridge.lean`); **evidence** on silicon for 181 register-level bodies × 60 inputs | **proved against `Oak.Simd`; the Arm text in place, bridged at the lane level**: the NEON lane functions the verifier applies (`asm/verify_vector.go`) are stated in Lean as `Oak.NeonSemantics` and proved to be the `Oak.Simd` operations; `spec/sail/arm_primitives.sail` carries Arm's own text for every instruction the backend emits (`Elem[]`, `UnsignedSatQ`, `BitCount`, `tbl`, `ext`, `dup`, the lane-wise arithmetic, compares, shifts, reductions, `cnt`, the bitwise forms), Sail generates its Lean, and `spec/sail/lean/Bridge.lean` proves the lane-level identities (`Elem[]` reads the lane, `Ones` is the all-ones lane, `UnsignedSatQ` of a difference is `uqsub`, the `cmeq` test is `cmeq`, the bitwise forms are the operators); the per-lane loops of the generated code are folds over the lane indices and each written lane reads its write, so `dup`, `add`, `sub`, `cmeq` (register and zero forms), `umin`, `umax`, `uqsub`, `tbl`, and `umaxv` are **proved** to compute the verifier's lane functions over the operands' lanes; `ext` is the byte-lane `ext`, `ushr` the lane shift, `sshr #7` on bytes the sign fill of `movemask` (decided over the 256 bytes), and Arm's recursive `Reduce` — stated by hand, since Sail's backend cannot discharge its termination — sums eight bytes as `addv`'s fold, and `cnt` is the population count of each lane (Arm's `BitCount` as `Oak.Intrinsics.popcount`) — every vector instruction the backend emits is bridged; **evidence** on silicon for 160 vector bodies × 60 inputs | **proved**: `Oak.RiscV` ≡ the Sail RISC-V model's Lean export (bridge, two halves); **evidence**: the Sail emulator and QEMU agree on the differential units | not applicable |
 | Instruction text ⟶ machine word (the encoder) | **audited**: the table is generated from Arm's ISA XML and checked against Arm's Sail decode tree and templates | audited the same way (the NEON encodings are in the table and the audit) | audited against the Sail RISC-V decoder (`rv64_*` tests), RVC forms included | the system assembler, trusted |
 
 ## What this means for the golden cases
@@ -29,15 +29,27 @@ the function uses. Every link below is one of **proved** (a Lean theorem),
   vector helpers are **proved** against their Oak bodies at the bit level
   — `special_cases` and `check_block` of the UTF-8 kernel on both halves
   of their vector results, the SIMD corpus entire — with `check_blocks`
-  evidence and the loop kernel trusted. What remains open one layer lower
+  and the loop kernel `valid_with` **proved** as well (2026-09-14, the
+  loop increments: the vector file and the frame are loop-carried, the
+  three data-dependent loops are coupled inductively with lane groups
+  paired to register halves and the tail bytes to their frame slots, and
+  every obligation — the continue conditions, one iteration of each
+  loop, the result after the loops — is the same term on both sides once
+  the machine's branch is settled by a case split; the `check_blocks`
+  composition itself is proved structurally, never as a diagram, which no
+  budget up to 16M nodes decides). What remains open one layer lower
   is the meaning of the instructions themselves: the verifier states that
   `tbl`, `ext`, `cmeq`, `uqsub`, `umaxv`, `sshr`, `addv` are `Oak.Simd`'s
   `tbl`, `prev`, `eqMask`, `subSat`, `anyLane`, `shr`, `movemask` as Go
   lane functions, and `Oak.NeonSemantics` proves the same statements in
   Lean over the same definitions, and the silicon differential checks the
-  lane functions against the host core (160 vector bodies × 60 inputs);
-  what is missing is Arm's own text for them — the Sail vector primitives
-  are not yet in `spec/sail/`.
+  lane functions against the host core (160 vector bodies × 60 inputs).
+  Arm's own text for the instructions is now in `spec/sail/` and generated
+  to Lean; the bridge proves the register-level theorems for `dup`, `add`,
+  `sub`, `cmeq`, `umin`, `umax`, `uqsub`, `tbl`, and `umaxv` against the
+  generated loops, `ext`, `ushr`, and `sshr #7` on bytes, and the eight-byte
+  `Reduce` against the hand-stated tree, and `cnt`: every vector
+  instruction the backend emits is bridged to Arm's text.
 - Scalar Oak functions without spans beyond the subset — the state
   machines' `next`/`legal` tables, arithmetic helpers, the protocol
   projections without data — are the only functions today whose proof
@@ -55,7 +67,10 @@ the function uses. Every link below is one of **proved** (a Lean theorem),
    (`asm/verify_simd.go`); a vector result decided half by half. Result:
    `special_cases` and `check_block` proven on both halves, `check_blocks`
    evidence, the loop kernel trusted (`docs/spec/94-assembler.md` §8, the
-   seventh increment).
+   seventh increment) — then evidence with the loop increment of
+   2026-09-14 (vector registers, frame slots and Oak aggregates
+   loop-carried; a frame store at a data-dependent index forgets the
+   region; conjunctive loop guards recognized).
 2. **The NEON meaning proved in Lean — done (2026-09-13).**
    `Oak.NeonSemantics` (`spec/lean/Oak/NeonSemantics.lean`) states each
    instruction's lane function as the verifier applies it and proves it is
@@ -64,13 +79,27 @@ the function uses. Every link below is one of **proved** (a Lean theorem),
    `Simd.subSat`, `cmeq` is `Simd.eqMask`, `add` is `addWrap`, `ushr` is
    `shr`, `umaxv` decides `anyLane` and (after `cmeq #0`) `allLanes`, and
    the `sshr #7`/`and`/`addv`/`orr` sequence is `Simd.movemask 8`.
-3. **Grounding against Arm.** The Sail text of the vector primitives
-   (`Elem[]`, `UnsignedSatQ`, `BitCount`, the `ext` and `tbl` index
-   functions) added to `spec/sail/arm_primitives.sail`, Lean generated,
-   and `Oak.NeonSemantics` proved equal to it, as `Oak.ArmASL` is today.
-   The silicon half is done (2026-09-13): the differential runs 160
-   vector bodies against the host core, and caught the lane-narrowing
-   bug on its first run.
+3. **Grounding against Arm — the text in place, the lane level bridged
+   (2026-09-13).** `spec/sail/arm_primitives.sail` carries Arm's Sail for
+   `Elem[]`, `UnsignedSatQ`/`SatQ`, `BitCount`, and the execute bodies of
+   every vector instruction the backend emits, with the register operands
+   as parameters (the adaptations are listed in the file); Sail generates
+   the Lean and `Bridge.lean` proves the register-level theorems against
+   it: the generated per-lane loops are folds over the lane indices, a
+   written lane reads its write, and `dup`, `add`, `sub`, `cmeq` (both
+   forms), `umin`, `umax`, `uqsub`, `tbl`, and `umaxv` compute the
+   verifier's lane functions over the operands' lanes; `ext` is
+   `Oak.Neon.ext` over the byte lanes, `ushr` the lane shift, `sshr #7` on
+   bytes the sign fill (decided over the 256 bytes), and the eight-byte
+   `Reduce` — stated by hand, since Sail's Lean backend cannot discharge
+   its termination — is `addv`'s fold, and `cnt` is the population count
+   of each lane (Arm's `BitCount` as `Oak.Intrinsics.popcount`). Nothing
+   the backend emits is left unbridged. Found on the way: the backend drops a tuple
+   assignment to declared locals (it generated a unit-typed `let` and
+   returned the initial values), so `SatQ` and the saturating subtract are
+   written with `let` bindings. The silicon half is done: the differential
+   runs 160 vector bodies against the host core, and caught the
+   lane-narrowing bug on its first run.
 4. **RISC-V vectors.** Not lowered natively; the C backend's RVV path is
    trusted. A native RVV lowering would enter at step 1 with the Sail
    RISC-V vector model as its ground.

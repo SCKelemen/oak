@@ -101,6 +101,20 @@ var oakLRATSource string
 //go:embed prove/solver/sat.oak
 var oakSATSource string
 
+// The clause engine written in Oak (prove/solver/cnf.oak): the diagram
+// engine's term walk emitting Tseitin clauses, reached through
+// OAK_SOLVER_MODE=cnf with the problem table on stdin.
+//
+//go:embed prove/solver/cnf.oak
+var oakCNFSource string
+
+// The certificate rung inside the prover written in Oak
+// (prove/solver/certify.oak): clauses, solver, and checker in one process
+// for `-solver self`.
+//
+//go:embed prove/solver/certify.oak
+var oakCertifySource string
+
 // oakSolverDriverSource is the driver around the solver: it reads its
 // order slot from OAK_SOLVER_VARIANT and the problems from its standard
 // input (a header of count, largest term count, budget, and word total,
@@ -264,7 +278,9 @@ lrat_mode: (): Bool {
 }
 
 main: (): i32 {
-  shell_mode() ? { shell_main() } | { lrat_mode() ? { lrat_main() } | { sat_mode() ? { sat_main() } | { stream_main() } } }
+  code: i32 = shell_mode() ? { shell_main() } | { lrat_mode() ? { lrat_main() } | { sat_mode() ? { sat_main() } | { cnf_mode() ? { cnf_main() } | { stream_main() } } } }
+  write_flush()
+  code
 }
 
 // lrat_fill copies n words from src into dst.
@@ -325,7 +341,7 @@ sat_main: (): i32 {
   store_cap: u32 = header_ok ? { h[u32(6)] + u32(1) } | { u32(1) }
   budget: u32 = header_ok ? { h[u32(7)] } | { u32(0) }
   total: u32 = LRAT_HEADER_WORDS + body_words
-  l: SatLayout = sat_layout(variables, clause_cap, store_cap)
+  l: SatLayout = sat_layout(variables, clause_cap, store_cap, u32(0))
   bytes_raw: c.Ptr = malloc(c.Size(body_words * u32(4) + u32(4)))
   words_raw: c.Ptr = malloc(c.Size(total * u32(4)))
   arena_raw: c.Ptr = malloc(c.Size(l.total * u32(4)))
@@ -337,12 +353,67 @@ sat_main: (): i32 {
     lrat_fill(span(&words), view(&h), LRAT_HEADER_WORDS)
     lrat_words_at(view(&body), span(&words), LRAT_HEADER_WORDS, body_words)
     arena: Buffer[u32] = c.own[u32](arena_raw, l.total)
-    header_ok && body_ok && sat_init(l, span(&arena), view(&words), budget) ? {
+    header_ok && body_ok && sat_init(l, span(&arena), view(&words), budget, false) ? {
       status = sat_solve(l, span(&arena))
     } | { }
-    write_byte(u8(115))
+    sat_report(l, span(&arena), status, variables)
+    free(c.disown(arena))
+    free(c.disown(words))
+    free(c.disown(body))
+  }
+  free(chunk_raw)
+  0
+}
+
+// sat_report writes the verdict line and, when satisfiable, the model.
+sat_report: (l: SatLayout, arena: [*]u32, status: u32, variables: u32): () {
+  // A comment line with the run's counts: conflicts, probed variables,
+  // units from probing, eliminated variables, subsumed clauses,
+  // strengthened clauses.
+  write_byte(u8(99))
+  write_byte(u8(32))
+  write_u32(sat_state(l, arena, ST_CONFLICTS))
+  write_byte(u8(32))
+  write_u32(sat_state(l, arena, ST_PROBED))
+  write_byte(u8(32))
+  write_u32(sat_state(l, arena, ST_PROBE_UNITS))
+  write_byte(u8(32))
+  write_u32(sat_state(l, arena, ST_ELIMINATED))
+  write_byte(u8(32))
+  write_u32(sat_state(l, arena, ST_SUBSUMED))
+  write_byte(u8(32))
+  write_u32(sat_state(l, arena, ST_STRENGTHENED))
+  write_byte(u8(10))
+  write_byte(u8(115))
+  write_byte(u8(32))
+  status == SAT_SATISFIABLE ? {
+    write_byte(u8(83))
+    write_byte(u8(65))
+    write_byte(u8(84))
+    write_byte(u8(73))
+    write_byte(u8(83))
+    write_byte(u8(70))
+    write_byte(u8(73))
+    write_byte(u8(65))
+    write_byte(u8(66))
+    write_byte(u8(76))
+    write_byte(u8(69))
+    write_byte(u8(10))
+    write_byte(u8(118))
+    v: u32 = 0
+    while v < variables {
+      write_byte(u8(32))
+      arena[l.assign_at + v] == u32(2) ? { } | { write_byte(u8(45)) }
+      write_u32(v + u32(1))
+      v = v + u32(1)
+    }
     write_byte(u8(32))
-    status == SAT_SATISFIABLE ? {
+    write_byte(u8(48))
+    write_byte(u8(10))
+  } | {
+    status == SAT_UNSATISFIABLE ? {
+      write_byte(u8(85))
+      write_byte(u8(78))
       write_byte(u8(83))
       write_byte(u8(65))
       write_byte(u8(84))
@@ -355,51 +426,123 @@ sat_main: (): i32 {
       write_byte(u8(76))
       write_byte(u8(69))
       write_byte(u8(10))
-      write_byte(u8(118))
-      v: u32 = 0
-      while v < variables {
-        write_byte(u8(32))
-        arena_view: []u32 = view(&arena)
-        arena_view[l.assign_at + v] == u32(2) ? { } | { write_byte(u8(45)) }
-        write_u32(v + u32(1))
-        v = v + u32(1)
-      }
+    } | {
+      write_byte(u8(85))
+      write_byte(u8(78))
+      write_byte(u8(75))
+      write_byte(u8(78))
+      write_byte(u8(79))
+      write_byte(u8(87))
+      write_byte(u8(78))
       write_byte(u8(32))
-      write_byte(u8(48))
+      write_u32(status)
+      write_byte(u8(32))
+      write_u32(sat_state(l, arena, ST_CONFLICTS))
+      write_byte(u8(10))
+    }
+  }
+}
+
+// cnf_mode: OAK_SOLVER_MODE=cnf selects the clause engine (cnf.oak) with
+// the SAT solver behind it: the problem table in, the formula, the
+// certificate, and the verdict out.
+cnf_mode: (): Bool {
+  p: c.Ptr = c_getenv(c.cstr("OAK_SOLVER_MODE\0"))
+  is_cnf: Bool = false
+  unsafe {
+    value: []u8 = c.borrow_string(p)
+    is_cnf = len(value) == u32(3) && value[u32(0)] == u8(99) && value[u32(1)] == u8(110)
+  }
+  is_cnf
+}
+
+// cnf_main reads a four-word header { problem words, node budget, clause
+// region words, conflict budget } and the problem table, lowers the terms
+// to clauses in Oak, prints the formula (p, f, and i lines), then solves
+// it in this process, the certificate lines streaming as they are learned,
+// and prints the verdict. A lowering that folds the obligation to a
+// constant prints "s CONSTANT 1" (proven) or "s CONSTANT 2" (refuted); one
+// that exceeds a budget or meets an unsupported term prints "s UNKNOWN 7".
+cnf_main: (): i32 {
+  chunk_raw: c.Ptr = malloc(c.Size(CHUNK))
+  header_bytes_raw: c.Ptr = malloc(c.Size(u32(16)))
+  header_words_raw: c.Ptr = malloc(c.Size(u32(16)))
+  h: [4]u32
+  header_ok: Bool = false
+  unsafe {
+    header_bytes: Buffer[u8] = c.own[u8](header_bytes_raw, u32(16))
+    header_ok = read_fully(chunk_raw, span(&header_bytes), u32(16))
+    header_words: Buffer[u32] = c.own[u32](header_words_raw, u32(4))
+    words_of(view(&header_bytes), span(&header_words), u32(4))
+    h = copy_header(view(&header_words))
+    free(c.disown(header_words))
+    free(c.disown(header_bytes))
+  }
+  problem_words: u32 = header_ok ? { h[u32(0)] } | { u32(0) }
+  node_budget: u32 = header_ok ? { h[u32(1)] } | { u32(1) }
+  clause_words: u32 = header_ok ? { h[u32(2)] } | { u32(64) }
+  conflict_budget: u32 = header_ok ? { h[u32(3)] } | { u32(0) }
+  bytes_raw: c.Ptr = malloc(c.Size(problem_words * u32(4) + u32(4)))
+  words_raw: c.Ptr = malloc(c.Size(problem_words * u32(4) + u32(4)))
+  unsafe {
+    body: Buffer[u8] = c.own[u8](bytes_raw, problem_words * u32(4) + u32(4))
+    body_ok: Bool = problem_words > u32(0) && read_fully(chunk_raw, span(&body), problem_words * u32(4))
+    problem: Buffer[u32] = c.own[u32](words_raw, problem_words + u32(1))
+    words_of(view(&body), span(&problem), problem_words)
+    terms: u32 = body_ok && problem_words >= HEADER_WORDS ? { problem_terms(view(&problem)) } | { u32(0) }
+    l: Layout = layout_for_clauses(node_budget, terms + u32(1), clause_words)
+    arena_raw: c.Ptr = malloc(c.Size(l.total * u32(4)))
+    arena: Buffer[u32] = c.own[u32](arena_raw, l.total)
+    outcome: u32 = body_ok && terms > u32(0) ? { cnf_lower(l, span(&arena), view(&problem)) } | { NONE }
+    outcome == NONE ? {
+      write_byte(u8(115))
+      write_byte(u8(32))
+      write_byte(u8(85))
+      write_byte(u8(78))
+      write_byte(u8(75))
+      write_byte(u8(78))
+      write_byte(u8(79))
+      write_byte(u8(87))
+      write_byte(u8(78))
+      write_byte(u8(32))
+      write_byte(u8(55))
       write_byte(u8(10))
     } | {
-      status == SAT_UNSATISFIABLE ? {
-        write_byte(u8(85))
+      outcome != CNF_CLAUSE ? {
+        write_byte(u8(115))
+        write_byte(u8(32))
+        write_byte(u8(67))
+        write_byte(u8(79))
         write_byte(u8(78))
         write_byte(u8(83))
-        write_byte(u8(65))
         write_byte(u8(84))
-        write_byte(u8(73))
-        write_byte(u8(83))
-        write_byte(u8(70))
-        write_byte(u8(73))
         write_byte(u8(65))
-        write_byte(u8(66))
-        write_byte(u8(76))
-        write_byte(u8(69))
+        write_byte(u8(78))
+        write_byte(u8(84))
+        write_byte(u8(32))
+        write_u32(outcome)
         write_byte(u8(10))
       } | {
-        write_byte(u8(85))
-        write_byte(u8(78))
-        write_byte(u8(75))
-        write_byte(u8(78))
-        write_byte(u8(79))
-        write_byte(u8(87))
-        write_byte(u8(78))
-        write_byte(u8(32))
-        write_u32(status)
-        write_byte(u8(32))
-        write_u32(sat_state(l, span(&arena), ST_CONFLICTS))
-        write_byte(u8(10))
+        cnf_write_formula(l, span(&arena))
+        cnf_set_capacities(span(&arena), l.clauses_at, conflict_budget)
+        region_view: []u32 = view(&arena)
+        variables: u32 = region_view[l.clauses_at + u32(1)]
+        literal_words: u32 = region_view[l.clauses_at + u32(3)]
+        clause_cap: u32 = region_view[l.clauses_at + u32(5)]
+        store_cap: u32 = region_view[l.clauses_at + u32(6)]
+        sl: SatLayout = sat_layout(variables, clause_cap, store_cap, u32(0))
+        sat_raw: c.Ptr = malloc(c.Size(sl.total * u32(4)))
+        sat_arena: Buffer[u32] = c.own[u32](sat_raw, sl.total)
+        status: u32 = SAT_MALFORMED
+        sat_init(sl, span(&sat_arena), subslice(region_view, l.clauses_at, LRAT_HEADER_WORDS + literal_words), conflict_budget, false) ? {
+          status = sat_solve(sl, span(&sat_arena))
+        } | { }
+        sat_report(sl, span(&sat_arena), status, variables)
+        free(c.disown(sat_arena))
       }
     }
     free(c.disown(arena))
-    free(c.disown(words))
+    free(c.disown(problem))
     free(c.disown(body))
   }
   free(chunk_raw)
@@ -613,7 +756,7 @@ func oakSolverBinary() (string, error) {
 			compilerIdentity = fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
 		}
 	}
-	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSyntaxSource + "\x00" + oakTreeSource + "\x00" + oakProtocolSource + "\x00" + oakShellSource + "\x00" + oakLeanSource + "\x00" + oakExploreSource + "\x00" + oakWitnessSource + "\x00" + oakDriverHelpersSource + "\x00" + oakLRATSource + "\x00" + oakLRATSource + "\x00" + oakSATSource + "\x00" + oakSolverDriverSource + "\x00" + compilerIdentity))
+	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSyntaxSource + "\x00" + oakTreeSource + "\x00" + oakProtocolSource + "\x00" + oakShellSource + "\x00" + oakLeanSource + "\x00" + oakExploreSource + "\x00" + oakWitnessSource + "\x00" + oakDriverHelpersSource + "\x00" + oakLRATSource + "\x00" + oakLRATSource + "\x00" + oakSATSource + "\x00" + oakCNFSource + "\x00" + oakCertifySource + "\x00" + oakSolverDriverSource + "\x00" + compilerIdentity))
 	// OAK_SOLVER_NATIVE=1 builds the prover through the native backend
 	// (docs/spec/94-assembler.md §9): every function the backend reaches is
 	// checked, verified against its Oak body, and encoded by the Oak
@@ -632,7 +775,7 @@ func oakSolverBinary() (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	for name, text := range map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "syntax.oak": oakSyntaxSource, "tree.oak": oakTreeSource, "protocol.oak": oakProtocolSource, "shell.oak": oakShellSource, "lean.oak": oakLeanSource, "explore.oak": oakExploreSource, "witness.oak": oakWitnessSource, "driver.oak": oakDriverHelpersSource, "lrat.oak": oakLRATSource, "sat.oak": oakSATSource, "main.oak": oakSolverDriverSource} {
+	for name, text := range map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "syntax.oak": oakSyntaxSource, "tree.oak": oakTreeSource, "protocol.oak": oakProtocolSource, "shell.oak": oakShellSource, "lean.oak": oakLeanSource, "explore.oak": oakExploreSource, "witness.oak": oakWitnessSource, "driver.oak": oakDriverHelpersSource, "lrat.oak": oakLRATSource, "sat.oak": oakSATSource, "cnf.oak": oakCNFSource, "certify.oak": oakCertifySource, "main.oak": oakSolverDriverSource} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
 			return "", err
 		}
@@ -966,15 +1109,23 @@ func runOakLRAT(formula, certificate string) (OakLRATVerdict, error) {
 	return verdict, nil
 }
 
-// OakSATBudget bounds the conflicts one run of the solver written in Oak
-// may spend before reporting exhaustion.
-const OakSATBudget = 2000000
+// OakSATBudget is the conflict budget passed by default: zero, which the
+// solver scales with the obligation (sat_conflicts in prove/solver/sat.oak:
+// 200,000 or 100 per clause, whichever is larger); `oak prove -conflicts N`
+// sets a flat budget instead.
+const OakSATBudget = 0
 
 // runOakSAT solves the obligation with the SAT solver written in Oak
 // (prove/solver/sat.oak) inside the compiled solver binary: the clauses go
 // in as words, the certificate lines, verdict, and model come back as text
 // parsed like an external solver's (prove.ParseSolverOutput).
 func runOakSAT(cnf asm.CNF) (prove.SATOutcome, error) {
+	return runOakSATWithin(cnf, OakSATBudget)
+}
+
+// runOakSATWithin is runOakSAT under a conflict budget of the caller's
+// (`oak prove -conflicts N`).
+func runOakSATWithin(cnf asm.CNF, budget int) (prove.SATOutcome, error) {
 	words, err := prove.EncodeLRATWords(cnf.Text, "")
 	if err != nil {
 		return prove.SATOutcome{}, err
@@ -984,7 +1135,7 @@ func runOakSAT(cnf asm.CNF) (prove.SATOutcome, error) {
 	literals := words[6]
 	words[5] = 8*words[2] + 65536
 	words[6] = 64*literals + 1<<20
-	words[7] = OakSATBudget
+	words[7] = uint32(budget)
 	solver, err := oakSolverBinary()
 	if err != nil {
 		return prove.SATOutcome{}, err
@@ -1002,4 +1153,84 @@ func runOakSAT(cnf asm.CNF) (prove.SATOutcome, error) {
 		return prove.SATOutcome{}, fmt.Errorf("oak sat solver: %v", err)
 	}
 	return prove.ParseSolverOutput(string(out), true)
+}
+
+// OakClauseRun is what the clause engine written in Oak and the solver
+// behind it reported for one problem: the formula as DIMACS, the input
+// variables mapped back to the blaster's, a constant fold of the
+// obligation (1 proven, 2 refuted, 0 neither), and the solver's outcome.
+type OakClauseRun struct {
+	Formula   string
+	Variables int
+	Clauses   int
+	Inputs    map[int]uint32
+	Constant  int
+	Outcome   prove.SATOutcome
+}
+
+// runOakClauses lowers a problem to clauses in Oak (prove/solver/cnf.oak)
+// and solves them in the same process (prove/solver/sat.oak), reading back
+// the formula, the certificate, and the verdict.
+func runOakClauses(problem asm.Problem) (OakClauseRun, error) {
+	return runOakClausesWithin(problem, OakSATBudget)
+}
+
+// runOakClausesWithin is runOakClauses under a conflict budget of the
+// caller's.
+func runOakClausesWithin(problem asm.Problem, budget int) (OakClauseRun, error) {
+	solver, err := oakSolverBinary()
+	if err != nil {
+		return OakClauseRun{}, err
+	}
+	clauseWords := uint32(problem.Terms)*6144 + 65536
+	words := append([]uint32{uint32(len(problem.Words)), uint32(asm.NodeBudget), clauseWords, uint32(budget)}, problem.Words...)
+	encoded := make([]byte, 4*len(words))
+	for i, w := range words {
+		binary.LittleEndian.PutUint32(encoded[4*i:], w)
+	}
+	run := exec.Command(solver)
+	run.Env = append(os.Environ(), "OAK_SOLVER_MODE=cnf")
+	run.Stdin = bytes.NewReader(encoded)
+	run.Stderr = os.Stderr
+	out, err := run.Output()
+	if err != nil {
+		return OakClauseRun{}, fmt.Errorf("oak clause engine: %v", err)
+	}
+	result := OakClauseRun{Inputs: map[int]uint32{}}
+	var formula, rest strings.Builder
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	scanner.Buffer(make([]byte, 0, 1<<16), 1<<26)
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "p cnf "):
+			formula.WriteString(line)
+			formula.WriteByte('\n')
+			fmt.Sscanf(line, "p cnf %d %d", &result.Variables, &result.Clauses)
+		case strings.HasPrefix(line, "f "):
+			formula.WriteString(line[2:])
+			formula.WriteByte('\n')
+		case strings.HasPrefix(line, "i "):
+			var node int
+			var variable uint32
+			if _, err := fmt.Sscanf(line, "i %d %d", &node, &variable); err == nil {
+				result.Inputs[node] = variable
+			}
+		case strings.HasPrefix(line, "s CONSTANT "):
+			fmt.Sscanf(line, "s CONSTANT %d", &result.Constant)
+		default:
+			rest.WriteString(line)
+			rest.WriteByte('\n')
+		}
+	}
+	result.Formula = formula.String()
+	if result.Constant != 0 {
+		return result, nil
+	}
+	outcome, err := prove.ParseSolverOutput(rest.String(), true)
+	if err != nil {
+		return result, err
+	}
+	result.Outcome = outcome
+	return result, nil
 }

@@ -2,6 +2,7 @@ package asm
 
 import (
 	"fmt"
+	"math/bits"
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
@@ -48,6 +49,10 @@ func (v vecValue) lanesAt(bits int) []*term {
 	for k := range out {
 		half := halves[(k*bits)/64]
 		shift := (k * bits) % 64
+		if lane, isPacked := unpackLane(half, shift, bits); isPacked {
+			out[k] = lane // the lane a pack placed here, as it was
+			continue
+		}
 		t := half
 		if shift > 0 {
 			t = binaryTerm("shr", half, constTerm(uint64(shift), 64))
@@ -55,6 +60,155 @@ func (v vecValue) lanesAt(bits int) []*term {
 		out[k] = narrowLane(t, bits)
 	}
 	return out
+}
+
+// bitwiseLaneBits is the lane width a bitwise operation over two vectors
+// is computed at: the finer of the operands' representations, and for two
+// word-represented operands (reloaded from the frame, or a loop's fresh
+// symbols) the finest width at which both words are recognizable packs —
+// so the operation is spelled lane by lane, as the Oak side spells it,
+// and a stored-and-reloaded vector meets the same terms as one kept in a
+// register. Two words neither of which is a pack stay whole.
+func bitwiseLaneBits(left, right vecValue) int {
+	if bits := min(left.bits, right.bits); bits < 64 {
+		return bits
+	}
+	for _, bits := range []int{8, 16, 32} {
+		if packedAt(left, bits) && packedAt(right, bits) {
+			return bits
+		}
+	}
+	// Two words that are packs of nothing recognizable — a loop's fresh
+	// symbols for two registers — are combined byte by byte: bitwise
+	// operations distribute over lanes, and once a substitution makes the
+	// words packs of Oak lanes the bytes are those lanes.
+	return 8
+}
+
+// packedAt reports whether both words of a value are packs of lanes of
+// the given width (a constant word is).
+func packedAt(v vecValue, bits int) bool {
+	for _, half := range v.halves() {
+		if half.kind == termConst {
+			continue
+		}
+		if !unpackWord(half, bits, map[int]*term{}) {
+			return false
+		}
+	}
+	return true
+}
+
+// extractedLane recognizes a lane extraction from a pack — `(word >> s) &
+// mask(bits)` or `word & mask(bits)` where the word is a recognizable
+// pack — and returns the lane placed there (a loop-carried register's
+// fresh symbol, once substituted by the pack of its Oak lanes, yields
+// those lanes rather than shifted masks over the pack).
+func extractedLane(t *term) (*term, bool) {
+	if t.kind != termBinary || t.op != "and" || t.right.kind != termConst || !isLowMask(t.right.value) || t.right.value == 0 {
+		return nil, false
+	}
+	bits := bits.Len64(t.right.value)
+	if bits == 0 || 64%bits != 0 {
+		return nil, false
+	}
+	word, shift := t.left, 0
+	if word.kind == termBinary && word.op == "shr" && word.right.kind == termConst {
+		shift = int(word.right.value)
+		word = word.left
+	}
+	if shift%bits != 0 || shift >= 64 || word.width != 64 {
+		return nil, false
+	}
+	lane, ok := unpackLane(word, shift, bits)
+	if !ok {
+		return nil, false
+	}
+	return adaptWidth(lane, t.width), true
+}
+
+// unpackLane finds, in a 64-bit word packLanes built, the lane of the
+// given width placed at the given shift, and returns the lane term itself
+// (its masks and placement stripped). A vector stored to the frame and
+// reloaded, or a loop-carried register expressed as the pack of its lanes,
+// thereby yields the very lane terms it was packed from, so both sides
+// of a comparison keep one spelling for one lane and decide as the same
+// term where a diagram of the lanes would be beyond the budget.
+func unpackLane(word *term, shift, bits int) (*term, bool) {
+	lanes := map[int]*term{}
+	if !unpackWord(word, bits, lanes) {
+		return nil, false
+	}
+	if lane, placed := lanes[shift]; placed {
+		return lane, true
+	}
+	return constTerm(0, bits), true // a position the pack left empty
+}
+
+// unpackWord decomposes a word into the lanes packLanes placed in it — an
+// or of lanes each shifted to a distinct position, or a single placed lane
+// — into lanes by shift; false when the word is not such a pack (an or of
+// two vectors' words, say, whose lanes overlap).
+func unpackWord(word *term, bits int, lanes map[int]*term) bool {
+	if word.kind == termConst && word.value == 0 {
+		return true
+	}
+	if word.kind != termBinary {
+		return false
+	}
+	switch word.op {
+	case "or":
+		return unpackWord(word.left, bits, lanes) && unpackWord(word.right, bits, lanes)
+	case "shl":
+		if word.right.kind != termConst || word.right.value%uint64(bits) != 0 || word.right.value >= 64 {
+			return false
+		}
+		return placeLane(word.left, int(word.right.value), bits, lanes)
+	case "and":
+		return placeLane(word, 0, bits, lanes)
+	}
+	return false
+}
+
+// placeLane records the lane placed at shift, refusing a position taken.
+func placeLane(placed *term, shift, bits int, lanes map[int]*term) bool {
+	lane, ok := placedLane(placed, bits)
+	if !ok {
+		return false
+	}
+	if _, taken := lanes[shift]; taken {
+		return false
+	}
+	lanes[shift] = lane
+	return true
+}
+
+// placedLane recognizes widenLane's placement of a lane at bit 0 of a
+// 64-bit word — the lane zero-extended and masked to its width — and
+// returns the lane at its width.
+func placedLane(t *term, bits int) (*term, bool) {
+	if t.kind == termConst {
+		if t.value>>uint(bits) != 0 {
+			return nil, false
+		}
+		return constTerm(t.value, bits), true
+	}
+	if t.kind != termBinary || t.op != "and" || t.right.kind != termConst || t.right.value != mask(bits) || t.width != 64 {
+		return nil, false
+	}
+	inner := t.left
+	switch inner.kind {
+	case termParam:
+		return &term{kind: termParam, width: bits, name: inner.name}, true // zeroExtend re-widthed the parameter
+	case termCmp:
+		return &term{kind: termCmp, width: bits, op: inner.op, left: inner.left, right: inner.right}, true
+	case termBinary:
+		// zeroExtend of a computation: `and(lane, mask(lane.width))` at 64.
+		if inner.op == "and" && inner.right.kind == termConst && inner.right.value == mask(bits) && inner.left.width == bits {
+			return inner.left, true
+		}
+	}
+	return nil, false
 }
 
 // narrowLane views a term at a lane width with an explicit mask. Unlike
@@ -70,6 +224,15 @@ func narrowLane(t *term, bits int) *term {
 		return constTerm(t.value, bits)
 	case termCmp:
 		return truncate(t, bits) // a 1/0 value at any width
+	case termBinary:
+		// A lane already masked to its width (widenLane's placement) needs
+		// no second mask.
+		if t.op == "and" && t.right.kind == termConst && t.right.value == mask(bits) && t.left.width == bits {
+			return t.left
+		}
+		if t.op == "and" && t.right.kind == termConst && t.right.value == mask(bits) {
+			return &term{kind: termBinary, width: bits, op: "and", left: t.left, right: constTerm(mask(bits), bits)}
+		}
 	}
 	return &term{kind: termBinary, width: bits, op: "and", left: t, right: constTerm(mask(bits), bits)}
 }
@@ -131,7 +294,9 @@ func (s *symbolicState) readVec(num int) (vecValue, bool) {
 	if value, bound := s.vregs[num]; bound {
 		return value, true
 	}
-	if calleeSavedVector(num) {
+	if s.arch != ArchRV64 && calleeSavedVector(num) {
+		// AAPCS64 preserves the low halves of v8–v15; the RVV psABI
+		// preserves no vector register, so on RV64 an unwritten one is unbound.
 		value := vecValue{bits: 64, lanes: []*term{paramTerm(fmt.Sprintf("entry.v%d.lo", num), 64), paramTerm(fmt.Sprintf("entry.v%d.hi", num), 64)}}
 		s.writeVec(num, value)
 		return value, true
@@ -328,6 +493,9 @@ func (x *pathExecutor) stepVector(instr Instruction, state *symbolicState) (stri
 	refuse := func() (string, bool) {
 		return "a floating-point or vector instruction (" + instr.Mnemonic + ")", false
 	}
+	if handled, reason, ok := x.stepFloat(instr, state); handled {
+		return reason, ok
+	}
 	ops := instr.Operands
 	reg := func(i int) (Register, bool) {
 		if i >= len(ops) {
@@ -369,7 +537,7 @@ func (x *pathExecutor) stepVector(instr Instruction, state *symbolicState) (stri
 			return "", true
 		}
 		op := map[string]string{"orr": "or", "and": "and", "eor": "xor", "bic": "and"}[instr.Mnemonic]
-		bits := left.bits
+		bits := bitwiseLaneBits(left, right)
 		l, r := left.lanesAt(bits), right.lanesAt(bits)
 		out := make([]*term, len(l))
 		for k := range l {
@@ -638,15 +806,21 @@ func (x *pathExecutor) vectorFrameAccessAt(instr Instruction, state *symbolicSta
 				state.storeSlot(offset, narrowLane(halves[0], int(size)*8), size)
 			}
 		} else {
+			slot := func(at, width int64) (*term, bool) {
+				if value, ok := state.loadSlot(at, width); ok {
+					return value, true
+				}
+				return state.opaqueSlot(at, width)
+			}
 			if size == 16 {
-				low, okL := state.loadSlot(offset, 8)
-				high, okH := state.loadSlot(offset+8, 8)
+				low, okL := slot(offset, 8)
+				high, okH := slot(offset+8, 8)
 				if !okL || !okH {
 					return "a load from a frame slot never stored on this path", false
 				}
 				state.writeVec(reg.Num, vecOfLanes([]*term{low, high}, 64))
 			} else {
-				value, ok := state.loadSlot(offset, size)
+				value, ok := slot(offset, size)
 				if !ok {
 					return "a load from a frame slot never stored on this path", false
 				}
@@ -661,7 +835,10 @@ func (x *pathExecutor) vectorFrameAccessAt(instr Instruction, state *symbolicSta
 // loadVector executes `ldr qD, [xB, wI, uxtw #s]` / `ldr qD, [xB, #off]`
 // through a span base: the sixteen bytes from element wI (the seam checker
 // has placed the access under a guard proving wI + 16/elem <= len), one
-// element term per lane. A d view reads eight bytes into the low half.
+// element term per lane. A d view reads eight bytes into the low half; an
+// s view one four-byte element — an f32 span's element into the low lane,
+// the rest of the register zero as every scalar write leaves it
+// (docs/spec/94-assembler.md §8, floats in loop bodies).
 func (x *pathExecutor) loadVector(instr Instruction, state *symbolicState) (string, bool) {
 	dest := instr.Operands[0].(Register)
 	mem, isMem := instr.Operands[1].(Memory)
@@ -669,7 +846,7 @@ func (x *pathExecutor) loadVector(instr Instruction, state *symbolicState) (stri
 		return "a vector load outside the modeled subset (" + instr.Mnemonic + ")", false
 	}
 	size := dest.VecBytes()
-	if size != 16 && size != 8 {
+	if size != 16 && size != 8 && size != 4 {
 		return "a vector load through the " + dest.Vec + " view", false
 	}
 	if mem.Base.Class == ClassSP {
@@ -713,7 +890,7 @@ func (x *pathExecutor) loadVector(instr Instruction, state *symbolicState) (stri
 		if k > 0 {
 			at = binaryTerm("add", index, constTerm(uint64(k), 32))
 		}
-		lanes[k] = x.element(param, at, bits)
+		lanes[k] = x.elementIn(state, param, at, bits)
 	}
 	state.writeLanes(dest, lanes, bits)
 	return "", true
@@ -729,7 +906,7 @@ func vectorShape(expr ast.Expression) (typechecker.SimdShape, bool) {
 		return typechecker.SimdShape{}, false
 	}
 	for _, shape := range typechecker.SimdShapes {
-		if shape.TypeName == name[len("simd."):] && !shape.Float {
+		if shape.TypeName == name[len("simd."):] {
 			return shape, true
 		}
 	}
@@ -775,6 +952,9 @@ func verifyVectorResult(fn *Function, sig *ast.FunctionStatement, oakBody ast.Ex
 	lanes := make([]*term, len(value.elems))
 	for k, elem := range value.elems {
 		lanes[k] = elem.scalar
+		if shape.Float {
+			lanes[k] = floatCanonicalNaN(narrowLane(elem.scalar, laneWidth(shape)), laneWidth(shape))
+		}
 	}
 	oakHalves := packLanes(lanes, laneWidth(shape))
 	var verdicts []Verdict
@@ -792,6 +972,15 @@ func verifyVectorResult(fn *Function, sig *ast.FunctionStatement, oakBody ast.Ex
 		note := " (low half of the vector result)"
 		if half == 1 {
 			note = " (high half of the vector result)"
+		}
+		if shape.Float {
+			// The machine's lanes up to their NaN payloads, as the Oak side's.
+			bits := laneWidth(shape)
+			machine := vecValue{bits: 64, lanes: []*term{asmTerm, constTerm(0, 64)}}.lanesAt(bits)[:vecBits/bits/2]
+			for k := range machine {
+				machine[k] = floatCanonicalNaN(machine[k], bits)
+			}
+			asmTerm = packLanes(machine, bits)[0]
 		}
 		verdict := decideEqual(fn, lowering, asmTerm, oakHalves[half], 64, note)
 		if verdict.Kind == VerdictMismatch {

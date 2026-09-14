@@ -44,8 +44,7 @@ write_u64: (v: u64): () {
     buf[start] = u8(48) + u8_trunc_u32(u32_trunc_u64(n % u64(10)))
     n = n / u64(10)
   }
-  digits: []u8 = view(&buf)
-  host.host_write_all(host.host_stdout(), subslice(digits, start, u32(24) - start)) ? { } | { }
+  write_span(view(&buf), start, u32(24) - start)
 }
 
 txt_decided: (): () {
@@ -451,6 +450,13 @@ decide_serialized: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw
     status: u32 = out[u32(0)]
     winner: u32 = out[u32(1)]
     order: u32 = winner == u32(0) ? { u32(0) } | { (winner == u32(1) && has1) ? { u32(1) } | { u32(2) } }
+    // The certificate rung (certify.oak): the interleaved problem lowered
+    // to clauses, solved, and the certificate checked, all here; a
+    // cross-check of the diagram's verdict, or the verdict when the
+    // diagram exceeded its budget.
+    cert: [520]u32
+    certify_in_oak(lw, b0, n0, budget, span(&cert))
+    cert_view: []u32 = view(&cert)
     status == STATUS_PROVEN ? {
       kind = ROW_DECIDED
       ap_bit_level(le, ew)
@@ -458,6 +464,7 @@ decide_serialized: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw
       ap_bdd_nodes(le, ew)
       order == u32(1) ? { ap_blocks(le, ew) } | { order == u32(2) ? { ap_control(le, ew) } | { } }
       ap_close(le, ew)
+      ap_certificate_after_proven(le, ew, cert_view) ? { } | { kind = ROW_OPEN }
     } | {
     status == STATUS_REFUTED ? {
       kind = ROW_REFUTED
@@ -466,8 +473,38 @@ decide_serialized: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw
       marked: u32 = signed_marks(sx, span(&out), u32(4) + listed)
       bits: []u32 = view(&out)
       ap_counterexample_of(le, ew, ser, ser_raw, subslice(bits, u32(4), marked - u32(4)), marked - u32(4), false)
+      ap_certificate_after_refuted(le, ew, cert_view) ? { } | { kind = ROW_OPEN }
     } | {
-      status == STATUS_UNSUPPORTED ? { ap_unsupported(le, ew) } | { ap_exceeded(le, ew) }
+      cert[u32(0)] == CERT_PROVEN ? {
+        kind = ROW_DECIDED
+        ap_bit_level(le, ew)
+        ap_cert_bit_level(le, ew)
+        sb_dec(le, ew, u64(cert[u32(1)]))
+        ap_cert_steps(le, ew)
+        ap_close(le, ew)
+      } | {
+      cert[u32(0)] == CERT_CONSTANT_TRUE ? {
+        kind = ROW_DECIDED
+        ap_bit_level(le, ew)
+        ap_cert_constant(le, ew)
+        ap_close(le, ew)
+      } | {
+      cert[u32(0)] == CERT_MODEL ? {
+        kind = ROW_REFUTED
+        ap_counterexample_word(le, ew)
+        listed: u32 = cert[u32(3)]
+        marked: u32 = signed_marks(sx, span(&cert), u32(4) + listed)
+        cbits: []u32 = view(&cert)
+        ap_counterexample_of(le, ew, ser, ser_raw, subslice(cbits, u32(4), marked - u32(4)), marked - u32(4), false)
+        ap_cert_model(le, ew)
+      } | {
+      cert[u32(0)] == CERT_CONSTANT_FALSE ? {
+        kind = ROW_REFUTED
+        ap_cert_constant(le, ew)
+      } | {
+        status == STATUS_UNSUPPORTED ? { ap_unsupported(le, ew) } | { ap_exceeded(le, ew) }
+        ap_cert_none(le, ew)
+      } } } }
     } }
   } } }
   kind

@@ -456,7 +456,7 @@ func (p *Parser) parseStatement() ast.Statement {
 		} else if p.peekTokenIs(token.ASSIGN) {
 			// Assignment: x = expr (must refer to existing variable)
 			return p.parseAssignmentStatement()
-		} else if p.peekTokenIs(token.LPAREN) && p.callableDefinitionAhead() {
+		} else if p.peekTokenIs(token.LPAREN) && !p.quantifierAhead() && p.callableDefinitionAhead() {
 			// Colon-less definition form (docs/spec/10-syntax.md §3):
 			// add(l: u32, r: u32): u32 = l + r
 			name := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
@@ -640,10 +640,57 @@ func (p *Parser) parseIdentifier() ast.Expression {
 		return p.parseVariantExpression()
 	}
 
+	// A bounded quantifier (docs/spec/10-syntax.md section 3e): `forall`
+	// or `exists` followed by `(`, a name, and `:` binds; the words stay
+	// ordinary identifiers everywhere else (`exists` is a local in the
+	// library).
+	if p.quantifierAhead() {
+		return p.parseQuantifierExpression()
+	}
+
 	// Check if this might be Type.Variant (Type followed by DOT)
 	// We'll check this in parseVariantExpression if needed
 	// For now, return identifier and let field access handle Type.Variant
 	return &ast.Identifier{Token: p.currentToken, Value: literal}
+}
+
+// quantifierAhead reports the binder form of a bounded quantifier at the
+// current token: `forall` or `exists`, then `(`, a name, and `:`
+// (docs/spec/10-syntax.md section 3e). At statement level it takes
+// precedence over the colon-less definition form, so `forall (x: u8) { … }`
+// is a quantifier statement, never a function named forall.
+func (p *Parser) quantifierAhead() bool {
+	literal := p.currentToken.Literal
+	return (literal == "forall" || literal == "exists") && p.peekTokenIs(token.LPAREN) &&
+		p.lookaheadSignificant(2).TokenKind == token.IDENT && p.lookaheadSignificant(3).TokenKind == token.COLON
+}
+
+// parseQuantifierExpression parses `forall (x: T, y: U) { body }` with the
+// current token on the quantifier word: the binders read as a parameter
+// list, the body is a brace block (docs/spec/10-syntax.md section 3e).
+func (p *Parser) parseQuantifierExpression() ast.Expression {
+	expr := &ast.QuantifierExpression{Token: p.currentToken, Universal: p.currentToken.Literal == "forall"}
+	p.nextToken() // onto '('
+	binders := p.parseFunctionParameters()
+	if binders == nil {
+		return nil
+	}
+	for _, binder := range binders {
+		if binder.Variadic {
+			p.addErrorAtToken(&binder.Token, "a quantifier binder cannot be variadic")
+			return nil
+		}
+	}
+	expr.Binders = binders
+	if !p.expectPeek(token.LBRACE) {
+		return nil
+	}
+	block := p.parseBlockStatement()
+	if block == nil {
+		return nil
+	}
+	expr.Body = &ast.BlockExpression{Token: block.Token, Block: block}
+	return expr
 }
 
 // parseDotVariantExpression parses bare variant construction in expression

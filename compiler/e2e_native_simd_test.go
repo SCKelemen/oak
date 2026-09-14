@@ -81,12 +81,15 @@ doubled_mask: (b: []u8) -> u32 {
   simd.movemask_u8x16(simd.eq_u8x16(d, simd.splat_u8x16(u8(14))))
 }
 
-// A vector across the C boundary: five views exhaust the argument
-// registers, so this caller stays on the C backend and reaches double_it
-// through the converting shim under its Oak name.
-c_side: (a: []u8, b: []u8, c: []u8, d: []u8, e: []u8) -> u32 {
+// A vector across the C boundary: a foreign pointer local keeps this
+// caller on the C backend (five views no longer do, since arguments
+// beyond the registers cross the stack), so it reaches double_it through
+// the converting shim under its Oak name.
+c_side: (a: []u8, b: []u8, cc: []u8, d: []u8, e: []u8) -> u32 {
+  nothing: c.Ptr = c.null()
+  _ = nothing
   v: simd.U8x16 = double_it(simd.load_u8x16(a, u32(0)))
-  simd.movemask_u8x16(simd.eq_u8x16(v, simd.splat_u8x16(u8(14)))) + len(b) + len(c) + len(d) + len(e) - u32(128)
+  simd.movemask_u8x16(simd.eq_u8x16(v, simd.splat_u8x16(u8(14)))) + len(b) + len(cc) + len(d) + len(e) - u32(128)
 }
 
 // The scalar helpers: 3 + 8 + 64 + 64.
@@ -151,9 +154,10 @@ func TestE2ENativeSimd(t *testing.T) {
 	// straight-line vector body is proven against its Oak body, the
 	// vector-contract callee on both halves of v0, and doubled_mask
 	// through the expanded callee (nativegen/inline.go) inlined on the Oak
-	// side too. combine_store has no result and across_call makes a call:
-	// trusted, as their scalar counterparts are.
-	for _, fn := range []string{"lanes_mask", "logic", "shuffle", "words", "bits", "double_it_neon_abi", "doubled_mask"} {
+	// side too, and combine_store in the span memory its vector store
+	// leaves (asm/effects.go). across_call makes a call: trusted, as its
+	// scalar counterparts are.
+	for _, fn := range []string{"lanes_mask", "logic", "combine_store", "shuffle", "words", "bits", "double_it_neon_abi", "doubled_mask"} {
 		if !strings.Contains(joined, "asm unit "+fn+": proven") {
 			t.Errorf("%s must be proven equal to its Oak body; diagnostics:\n%s", fn, joined)
 		}
@@ -167,10 +171,12 @@ func TestE2ENativeSimd(t *testing.T) {
 }
 
 // The UTF-8 kernel of benchmarks/native (the simdutf lookup algorithm):
-// the straight-line vector helpers are proven, the two-block composition
-// is evidence (the bit-level decision exceeds its budget), the loop kernel
-// is trusted — the verdicts docs/notes/proof-chain-audit-2026-09.md
-// records for the vector link.
+// the straight-line vector helpers, the four-block composition, and the
+// loop kernel itself are proven — the kernel's three data-dependent loops
+// coupled inductively, every obligation decided as the same term on both
+// sides once the machine's branch is settled by a case split
+// (docs/spec/94-assembler.md §8) — the verdicts
+// docs/notes/proof-chain-audit-2026-09.md records for the vector link.
 func TestE2ENativeSimdKernelVerdicts(t *testing.T) {
 	requireArm64Host(t)
 	src, err := os.ReadFile("../benchmarks/native/utf8_valid.oak")
@@ -192,7 +198,10 @@ func TestE2ENativeSimdKernelVerdicts(t *testing.T) {
 			t.Errorf("%s must be proven on both halves of the vector result; diagnostics:\n%s", fn, joined)
 		}
 	}
-	if !strings.Contains(joined, "asm unit check_blocks_neon_abi: agrees with its Oak body on every witness input") && !strings.Contains(joined, "asm unit check_blocks_neon_abi: proven") {
-		t.Errorf("check_blocks_neon_abi must be evidence or proof; diagnostics:\n%s", joined)
+	if !strings.Contains(joined, "asm unit check_blocks_neon_abi: proven") {
+		t.Errorf("check_blocks_neon_abi must be proven; diagnostics:\n%s", joined)
+	}
+	if !strings.Contains(joined, "asm unit valid_with: proven equal to its Oak body at the bit level — 3 data-dependent loops coupled inductively") {
+		t.Errorf("valid_with must be proven by loop coupling; diagnostics:\n%s", joined)
 	}
 }

@@ -1,0 +1,273 @@
+// The clause engine written in Oak (docs/spec/125-verification.md §3 "By
+// certificate"; the twin of asm/cnf.go as bdd.oak is of asm/bdd.go). Under
+// STATE_MODE 1 the diagram engine's apply, ite, and variable_node come here:
+// the same term walk (blast_term), the same folds (terminal_case and the
+// mux folds), and Tseitin's clauses for every gate that is not folded,
+// one fresh variable per distinct gate found through the unique table.
+// Edges are `2 * node + c` as in the diagram, node 0 the false terminal,
+// so `not` is the same bit flip and a node number is a DIMACS variable.
+// The clauses accumulate in the layout's clause region in lrat.oak's word
+// protocol — eight header words, then { n, lit... } per clause with a
+// literal 2 * (variable - 1) + polarity — so the SAT solver (sat.oak) and
+// the certificate checker read them without translation. The laws are
+// Oak.Tseitin.
+
+// Unique-table keys: a binary gate is its op with both operands, a mux the
+// selector under CNF_ITE_KEY, an input its variable index under
+// CNF_VAR_KEY (no operands, no clauses).
+CNF_ITE_KEY: u32 = 2147483648
+CNF_VAR_KEY: u32 = 1073741824
+
+// cnf_node finds or creates the node for a key; STATE_CREATED says which.
+// Past the node budget the exceeded flag is set and NONE returned.
+cnf_node: (l: Layout, mem: [*]u32, key: u32, a: u32, b: u32): u32 {
+  h: u32 = hash3(key, a, b) & l.umask
+  found: u32 = NONE
+  mem[l.state_at + STATE_CREATED] = u32(0)
+  while found == NONE && mem[l.state_at + STATE_EXCEEDED] == u32(0) {
+    e: u32 = mem[l.unique_at + h]
+    e == u32(0) ? {
+      count: u32 = mem[l.state_at + STATE_COUNT]
+      count >= l.cap ? { mem[l.state_at + STATE_EXCEEDED] = u32(1) } | {
+        mem[l.var_at + count] = key
+        mem[l.low_at + count] = a
+        mem[l.high_at + count] = b
+        mem[l.unique_at + h] = count + u32(1)
+        mem[l.state_at + STATE_COUNT] = count + u32(1)
+        mem[l.state_at + STATE_CREATED] = u32(1)
+        found = count
+      }
+    } | {
+      n: u32 = e - u32(1)
+      (mem[l.var_at + n] == key && mem[l.low_at + n] == a && mem[l.high_at + n] == b) ? { found = n } | { h = (h + u32(1)) & l.umask }
+    }
+  }
+  found
+}
+
+// cnf_lit is the literal word of an edge: positive when the edge is not
+// complemented.
+cnf_lit: (edge: u32): u32 = u32(2) * ((edge >> u32(1)) - u32(1)) + (u32(1) - (edge & u32(1)))
+
+// cnf_emit appends a clause of up to three edges (NONE for fewer).
+cnf_emit: (l: Layout, mem: [*]u32, a: u32, b: u32, c: u32): () {
+  n: u32 = c == NONE ? { b == NONE ? { u32(1) } | { u32(2) } } | { u32(3) }
+  used: u32 = mem[l.state_at + STATE_CLAUSES_USED]
+  at: u32 = l.clauses_at + LRAT_HEADER_WORDS + used
+  used + n + u32(1) + LRAT_HEADER_WORDS <= l.clauses_cap ? {
+    mem[at] = n
+    mem[at + u32(1)] = cnf_lit(a)
+    n >= u32(2) ? { mem[at + u32(2)] = cnf_lit(b) } | { }
+    n >= u32(3) ? { mem[at + u32(3)] = cnf_lit(c) } | { }
+    mem[l.state_at + STATE_CLAUSES_USED] = used + n + u32(1)
+    mem[l.state_at + STATE_CLAUSE_COUNT] = mem[l.state_at + STATE_CLAUSE_COUNT] + u32(1)
+  } | { mem[l.state_at + STATE_EXCEEDED] = u32(1) }
+}
+
+// cnf_variable is the input node of a blaster variable.
+cnf_variable: (l: Layout, mem: [*]u32, v: u32): u32 {
+  n: u32 = cnf_node(l, mem, CNF_VAR_KEY | v, u32(0), u32(0))
+  n == NONE ? { BDD_FALSE } | { n << u32(1) }
+}
+
+// cnf_apply is the Tseitin gate for x op y after the folds the diagram
+// engine performs on terminal shapes (Oak.Tseitin's fold laws).
+cnf_apply: (l: Layout, mem: [*]u32, op: u32, x: u32, y: u32): u32 {
+  t: u32 = terminal_case(op, x, y)
+  t != NONE ? { t } | {
+    cx: u32 = x > y ? { y } | { x }
+    cy: u32 = x > y ? { x } | { y }
+    n: u32 = cnf_node(l, mem, op, cx, cy)
+    n == NONE ? { BDD_FALSE } | {
+      g: u32 = n << u32(1)
+      mem[l.state_at + STATE_CREATED] == u32(1) ? {
+        op == OP_AND ? {
+          cnf_emit(l, mem, g ^ u32(1), cx, NONE)
+          cnf_emit(l, mem, g ^ u32(1), cy, NONE)
+          cnf_emit(l, mem, g, cx ^ u32(1), cy ^ u32(1))
+        } | {
+          op == OP_OR ? {
+            cnf_emit(l, mem, g, cx ^ u32(1), NONE)
+            cnf_emit(l, mem, g, cy ^ u32(1), NONE)
+            cnf_emit(l, mem, g ^ u32(1), cx, cy)
+          } | {
+            cnf_emit(l, mem, g ^ u32(1), cx, cy)
+            cnf_emit(l, mem, g ^ u32(1), cx ^ u32(1), cy ^ u32(1))
+            cnf_emit(l, mem, g, cx ^ u32(1), cy)
+            cnf_emit(l, mem, g, cx, cy ^ u32(1))
+          }
+        }
+      } | { }
+      g
+    }
+  }
+}
+
+// cnf_ite is the mux gate after its folds (the same as asm/cnf.go's).
+cnf_ite: (l: Layout, mem: [*]u32, c: u32, t: u32, e: u32): u32 {
+  c == BDD_TRUE ? { t } | {
+  c == BDD_FALSE ? { e } | {
+  t == e ? { t } | {
+  (t == BDD_TRUE && e == BDD_FALSE) ? { c } | {
+  (t == BDD_FALSE && e == BDD_TRUE) ? { c ^ u32(1) } | {
+  t == BDD_TRUE ? { cnf_apply(l, mem, OP_OR, c, e) } | {
+  t == BDD_FALSE ? { cnf_apply(l, mem, OP_AND, c ^ u32(1), e) } | {
+  e == BDD_TRUE ? { cnf_apply(l, mem, OP_OR, c ^ u32(1), t) } | {
+  e == BDD_FALSE ? { cnf_apply(l, mem, OP_AND, c, t) } | {
+    n: u32 = cnf_node(l, mem, CNF_ITE_KEY | c, t, e)
+    n == NONE ? { BDD_FALSE } | {
+      g: u32 = n << u32(1)
+      mem[l.state_at + STATE_CREATED] == u32(1) ? {
+        cnf_emit(l, mem, g ^ u32(1), c ^ u32(1), t)
+        cnf_emit(l, mem, g ^ u32(1), c, e)
+        cnf_emit(l, mem, g, c ^ u32(1), t ^ u32(1))
+        cnf_emit(l, mem, g, c, e ^ u32(1))
+        cnf_emit(l, mem, g ^ u32(1), t, e)
+        cnf_emit(l, mem, g, t ^ u32(1), e ^ u32(1))
+      } | { }
+      g
+    }
+  } } } } } } } } }
+}
+
+// The obligation clause's outcome: CNF_CLAUSE when a clause was added and
+// the solver must decide, CNF_PROVEN when the obligation folded to false
+// (no trap can fire and the claim is the constant true), CNF_REFUTED when
+// it folded to true (a trap always fires, or the claim is the constant
+// false and no trap is present).
+CNF_CLAUSE: u32 = 0
+CNF_PROVEN: u32 = 1
+CNF_REFUTED: u32 = 2
+
+// cnf_obligation appends "some trap fires or the claim is false" from the
+// blasted roots (traps first, the claim last), one literal per root that
+// is not a constant.
+cnf_obligation: (l: Layout, mem: [*]u32, p: []u32): u32 {
+  roots: u32 = problem_roots(p)
+  used: u32 = mem[l.state_at + STATE_CLAUSES_USED]
+  at: u32 = l.clauses_at + LRAT_HEADER_WORDS + used
+  n: u32 = 0
+  always: Bool = false
+  fits: Bool = used + roots + u32(1) + LRAT_HEADER_WORDS <= l.clauses_cap
+  r: u32 = 0
+  while r < roots && fits {
+    root: u32 = p[roots_at(p) + r]
+    bit: u32 = mem[l.bits_at + root * u32(64)]
+    claim: Bool = r + u32(1) == roots
+    lit: u32 = claim ? { bit ^ u32(1) } | { bit }
+    lit == BDD_TRUE ? { always = true } | {
+      lit == BDD_FALSE ? { } | {
+        mem[at + u32(1) + n] = cnf_lit(lit)
+        n = n + u32(1)
+      }
+    }
+    r = r + u32(1)
+  }
+  fits ? { } | { mem[l.state_at + STATE_EXCEEDED] = u32(1) }
+  always ? { CNF_REFUTED } | {
+    n == u32(0) ? { CNF_PROVEN } | {
+      mem[at] = n
+      mem[l.state_at + STATE_CLAUSES_USED] = used + n + u32(1)
+      mem[l.state_at + STATE_CLAUSE_COUNT] = mem[l.state_at + STATE_CLAUSE_COUNT] + u32(1)
+      CNF_CLAUSE
+    }
+  }
+}
+
+// cnf_set_capacities writes the solver's capacities into the clause
+// region's header words 5, 6, and 7 from its counts: eight learned clauses
+// per clause plus a floor, sixty-four literal words per literal plus a
+// floor, and the conflict budget.
+cnf_set_capacities: (region: [*]u32, at: u32, conflict_budget: u32): () {
+  region[at + u32(5)] = u32(8) * region[at + u32(2)] + u32(65536)
+  region[at + u32(6)] = u32(64) * region[at + u32(3)] + u32(1048576)
+  region[at + u32(7)] = sat_conflicts(conflict_budget, region[at + u32(2)])
+}
+
+// cnf_header fills the region's eight header words for sat.oak and
+// lrat.oak: the magic, the variable count (nodes less the terminal), the
+// clause count, the literal words, no steps, and the capacities the
+// caller sets after (5, 6, 7).
+cnf_header: (l: Layout, mem: [*]u32): () {
+  h: u32 = l.clauses_at
+  mem[h] = LRAT_MAGIC
+  mem[h + u32(1)] = mem[l.state_at + STATE_COUNT] - u32(1)
+  mem[h + u32(2)] = mem[l.state_at + STATE_CLAUSE_COUNT]
+  mem[h + u32(3)] = mem[l.state_at + STATE_CLAUSES_USED]
+  mem[h + u32(4)] = u32(0)
+  mem[h + u32(5)] = u32(0)
+  mem[h + u32(6)] = u32(0)
+  mem[h + u32(7)] = u32(0)
+}
+
+// cnf_lower blasts every term of the problem in clause mode and appends
+// the obligation; the result is a CNF_ outcome, or NONE when a term is
+// unsupported or a budget was exceeded.
+cnf_lower: (l: Layout, mem: [*]u32, p: []u32): u32 {
+  solver_init(l, mem)
+  mem[l.state_at + STATE_MODE] = u32(1)
+  n: u32 = problem_terms(p)
+  t: u32 = 0
+  supported: Bool = true
+  while t < n && supported && !exceeded(l, mem) {
+    supported = blast_term(l, mem, p, t)
+    t = t + u32(1)
+  }
+  result: u32 = NONE
+  supported && !exceeded(l, mem) ? {
+    outcome: u32 = cnf_obligation(l, mem, p)
+    exceeded(l, mem) ? { } | {
+      cnf_header(l, mem)
+      result = outcome
+    }
+  } | { }
+  result
+}
+
+// cnf_write_formula prints the region as DIMACS: the `p cnf` line, one `f`
+// line per clause (literals as signed variables), and one `i` line per
+// input node naming its blaster variable, for the model to be read back.
+cnf_write_formula: (l: Layout, mem: [*]u32): () {
+  variables: u32 = mem[l.clauses_at + u32(1)]
+  count: u32 = mem[l.clauses_at + u32(2)]
+  write_byte(u8(112))
+  write_byte(u8(32))
+  write_byte(u8(99))
+  write_byte(u8(110))
+  write_byte(u8(102))
+  write_byte(u8(32))
+  write_u32(variables)
+  write_byte(u8(32))
+  write_u32(count)
+  write_byte(u8(10))
+  at: u32 = l.clauses_at + LRAT_HEADER_WORDS
+  end: u32 = at + mem[l.clauses_at + u32(3)]
+  while at < end {
+    n: u32 = mem[at]
+    write_byte(u8(102))
+    j: u32 = 0
+    while j < n {
+      write_byte(u8(32))
+      sat_write_lit(mem[at + u32(1) + j])
+      j = j + u32(1)
+    }
+    write_byte(u8(32))
+    write_byte(u8(48))
+    write_byte(u8(10))
+    at = at + u32(1) + n
+  }
+  node: u32 = 1
+  nodes: u32 = mem[l.state_at + STATE_COUNT]
+  while node < nodes {
+    key: u32 = mem[l.var_at + node]
+    (key & CNF_VAR_KEY) != u32(0) && (key & CNF_ITE_KEY) == u32(0) ? {
+      write_byte(u8(105))
+      write_byte(u8(32))
+      write_u32(node)
+      write_byte(u8(32))
+      write_u32(key ^ CNF_VAR_KEY)
+      write_byte(u8(10))
+    } | { }
+    node = node + u32(1)
+  }
+}

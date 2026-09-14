@@ -540,6 +540,18 @@ func lowerExpression(expr ast.Expression, tc *typechecker.TypeChecker) ast.Expre
 			})
 		}
 		return lowered
+	case *ast.QuantifierExpression:
+		// The body lowers as a block value; the binders are untouched.
+		if e.Body == nil || e.Body.Block == nil || len(e.Body.Block.Statements) == 0 {
+			return e
+		}
+		return &ast.QuantifierExpression{
+			BaseNode:  e.BaseNode,
+			Token:     e.Token,
+			Universal: e.Universal,
+			Binders:   e.Binders,
+			Body:      lowerFunctionBodyBlock(e.Body, tc),
+		}
 	case *ast.BlockExpression:
 		// A block expression's final statement is its VALUE: it lowers as
 		// an expression (a tail match stays a match for return-position

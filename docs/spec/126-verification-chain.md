@@ -83,9 +83,31 @@ and conversion helpers — the text `Oak.ArithmeticRefinement` and
 `Oak.ConversionRefinement` prove — are compiled by clang for arm64 and by
 GCC for rv64, and each function runs through the assembler verifier (§2.5)
 as a unit whose Oak body is the helper's operator, so for these helpers
-the compiler's output is checked, not trusted (add, sub, neg and the
-conversions proven, multiplication witnessed, division and remainder
-outside the lowering's subset because the divisor is a variable); and
+the compiler's output is checked, not trusted (add, sub, neg, the
+conversions and the checked shifts at the constant counts 1, 3 and
+width − 1 proven — the count below the width, the helper's trap check
+folds away and the verifier admits the constant shift — multiplication
+witnessed, division and remainder decided through the uninterpreted
+quotient (`94-assembler.md` §8, the thirty-first increment): the 32- and
+64-bit quotients and every remainder proven structurally, the narrow
+quotients (computed at 32 bits by the helper, at 8 or 16 by Oak) and the
+signed ones behind the `MIN / -1` arm witnessed, since a bit-level
+counterexample the diagrams raise for two applications of an
+uninterpreted quotient and the evaluation refutes is the abstraction's,
+not the terms' (`blastEqual`), and the machine's zero-divisor trap path
+leaves the input domain (`pathEffects.trap`); the guarded element read
+`oak_index` over a
+`[]T` parameter is proven against `v[i]` on both lanes — clang's
+`cmp w2, w1; b.hs; ldr [x0, w2, uxtw #s]` is the arm64 checker's guarded
+element shape, and GCC's `bgeu i, len` on the psABI's widened `u32` pair,
+fused `slli 32; srli 32−s` zero-extend-and-scale, and `add` into the base
+register is the rv64 checker's second admitted shape
+(`Oak.RiscV.index_guard_widened`, `widened_scale`; `94-assembler.md` §9);
+the guarded element write `oak_store` over a `[*]T` parameter is proven
+against `v[i] = x` on both lanes as the span memory the unit writes
+(the verifier's memory effects, `asm/effects.go`), the same shapes with a
+store; the pinned prelude text of these helpers is what `generateC` emits,
+`TestGuardMacrosMatchValidatedText`); and
 every differential test executes the object. The
 driver selection itself is **proved** (`Oak.Target`: lane and object
 format as functions of the target, LP64 or ILP32, `OAK_CC` precedence,
@@ -115,8 +137,8 @@ QEMU where present.
 
 | Target | Source → C | C → object | Asm/native lane | ISA semantics the lane is held to | Encoding | Execution check |
 | --- | --- | --- | --- | --- | --- | --- |
-| linux/arm64, darwin/arm64, freestanding/arm64 | refined core + differential | trusted (cc); the trusted-core helpers translation-validated through the verifier | arm64: verifier proof/evidence/trusted | **proved to Arm's ASL**: `Oak.ArmASL` transliterates the Sail Armv8.5-A primitives with the Sail text beside each, proved equal to `Oak.AssemblerSemantics`; the hand transliteration is proved against Sail's mechanically generated Lean (`spec/sail/lean/Out.lean`); the decode tree **audited** (`asm/sail_coverage_test.go`), operand forms audited against the A64 ISA XML | table **generated from the ISA XML**, checked against `llvm-mc` | silicon **differential** (181 bodies × 60 inputs on the host core) |
-| linux/riscv64, freestanding/riscv64 | refined core + differential; RVWMO mapping proved | trusted (cc); the trusted-core helpers translation-validated through the verifier | rv64: same verifier, RISC-V semantics (`Oak.RiscV`) | **bridged to the Sail RISC-V model** for `RTYPE`, `RTYPEW`, `BTYPE` (`Oak.SailRiscVBridge` restates the export's primitives verbatim, a Go test keeps the copies honest against the fetched sources); loads, stores, AMOs, `auipc`, calls are outside the decided subset; the Lean-against-export project (`spec/lean-sail`) waits on a Sail newer than the opam release | own encoder (`rv64_encodings_gen`) checked against GNU `as`; RVC | `qemu-system-riscv64` where present |
+| linux/arm64, darwin/arm64, freestanding/arm64 | refined core + differential | trusted (cc); every trusted-core helper translation-validated through the verifier, as clang builds it at armv8.0, at armv8.1-a and for the Apple cores (73 proven, 20 witnessed) | arm64: verifier proof/evidence/trusted; atomics and division decided under the sequential model | **proved to Arm's ASL**: `Oak.ArmASL` transliterates the Sail Armv8.5-A primitives with the Sail text beside each, proved equal to `Oak.AssemblerSemantics`; the hand transliteration is proved against Sail's mechanically generated Lean (`spec/sail/lean/Out.lean`); the decode tree **audited** (`asm/sail_coverage_test.go`), operand forms audited against the A64 ISA XML | table **generated from the ISA XML**, checked against `llvm-mc` | silicon **differential** (181 bodies × 60 inputs on the host core) |
+| linux/riscv64, freestanding/riscv64 | refined core + differential; RVWMO mapping proved | trusted (cc); every trusted-core helper translation-validated through the verifier (75 proven, 18 witnessed) | rv64: same verifier, RISC-V semantics (`Oak.RiscV`); loads, stores and the A extension's `lr`/`sc`/`amo*` through spans decided under the sequential model | **bridged to the Sail RISC-V model**: `spec/lean-sail` builds against the export itself (Sail from git, sail-riscv 497209b9) — 53 semantics theorems (every integer instruction the verifier decides, the pure parts of loads and stores) and 30 encoding theorems; `Oak.SailRiscVBridge` keeps the R/W/B subset checkable without the export; the memory monad stays audited | own encoder (`rv64_encodings_gen`, RV64IMAFD + the V and C subsets) checked against GNU `as`; RVC | `qemu-system-riscv64` where present |
 | linux/amd64, darwin/amd64, freestanding/amd64 | refined core + differential | trusted (cc) | **none** (`Oak.Target.lane = none`) | **none**: no Oak semantics of x86-64 and no bridge to a machine-readable x86 specification | none | host execution (differential) |
 | freestanding/arm (Cortex-M), freestanding/riscv32 | refined core + differential; ILP32 proved | trusted (cc) | none | none (Arm's M-profile ASL is not public; `docs/notes/oak-cortex-m-deferred`) | none | cross build only |
 
@@ -139,23 +161,36 @@ were held to it by tests.
 module states one typed expression language over a function's parameters
 and the locals in scope — variables, checked literals, the wrapping
 `+ - *`, the unsigned bitwise operators and shifts, `/` and `%` by a
-constant power of two, negation and complement, the widening and narrowing
+constant power of two (a shift and a mask) and by any divisor (the
+uninterpreted quotient `udiv`/`sdiv` and the remainder `a - (a / b) * b`,
+`Term.uop`; the zero divisor is Oak's trap, so the theorem speaks where
+the extraction has a value, and the signed remainder identity is proved at
+every width, `srem_eq_sub_sdiv_mul`), negation and complement, the widening
+and narrowing
 conversions, comparisons, `&&`/`||`/`!`, Bool conditionals, block-scoped
 locals and rebindings (`x: T = e`, `x = e`), statement-level conditionals
 whose arms assign locals (`c ? { x = e } | { y = f }`), integer-constant
 matches in value and statement position (`x ? | 0 => a | 1 => b | _ => c`),
-counted loops (`while c { body }`), span element reads and lengths (`v[i]`,
-`len(v)`), owned arrays of scalars (`a: [n]T`, `a[i]`, `a[i] = e`),
-records of scalars (`r: R = R{…}`, `r.f`, `r.f = e`, record parameters),
-and calls to program functions — and two readings of it: `evalX`, the extraction's
+counted loops (`while c { body }`) and data-dependent ones, span element
+reads and lengths (`v[i]`,
+`len(v)`), owned arrays (`a: [n]T`, `a[i]`, `a[i] = e`, array literals),
+records (`r: R = R{…}`, `r.f`, `r.f = e`, record parameters), the nesting
+of the two (`r.h[i]`, `a[i].x`), calls that borrow the caller's arrays
+through span parameters and write them back, calls that return records,
+tagged unions of scalar payloads (a variant, a variant match with its
+binding, union parameters), and calls to program functions — and two
+readings of it: `evalX`, the extraction's
 (`UIntN`/`IntN` arithmetic as `BitVec` arithmetic, shift counts modulo the
 width, `decide` of the signed or unsigned order, `toIntN`/`toUIntN` as
 extension by the source's signedness or truncation, a local as its
 `let`-bound value, a statement conditional as the taken arm's values for
 the variables it assigns, a constant match as the if-chain `if x == k₁
 then … else …`, a loop as the fuel-indexed recursion that returns `none`
-when the fuel runs out, an owned array as its `Array` of elements, a
-record as its `structure` fields, and an index out of range as a trap — Oak's semantics, where the extraction's
+when the fuel runs out — a data-dependent loop the same recursion, read
+under assignments whose fresh symbols denote the exit values — an owned
+array as its `Array` of elements, a
+record as its `structure` fields, a union as its `inductive` and a variant
+match as the `match`, and an index out of range as a trap — Oak's semantics, where the extraction's
 own `getD`/`setIfInBounds` reads zero and drops the write, a modeling
 choice `95-extraction.md` §3 already marks as its own, a span element as the memory cell
 at the index — the span's contents padded with zeros, `v.getD i.toNat
@@ -172,8 +207,18 @@ arm into the fallback, an owned array as its element leaves `x[k]`
 read through `elementUnderIndex`'s element-by-element select and written
 through `assignUnderIndex`'s select at every element, a record as its
 field leaves `r.f` (`paramAggregate`'s naming, a record literal binding
-each field in the type's order), a loop as
-`lowerWhile`'s unrolling while the
+each field in the type's order), a nested aggregate as the same leaves
+under longer names (`r.h[k]`, `a[k].x`, the array's leaf naming a
+parameter of the model), a union as its `tag` leaf and payload
+leaves with a variant match the constant match on the tag (`matchArms`'
+`cmpTerm("eq", tag, index)`, the arm's binding an alias of the payload
+leaf), a borrowing call as `enterCall`'s copy of the owner's leaves into
+the callee's span leaves and their write-back on return with the results
+— a scalar, or the leaves of the record `inlineCallValue` builds — bound
+in the caller, a counted loop as `lowerWhile`'s unrolling, a data-dependent
+loop as `loopEvent`'s summary — the carried locals as the fresh symbols
+`loop<index>.<var>`, the condition and body over them the event's
+one-iteration semantics `verifyLoops` matches against the asm side's — while the
 folded condition is a non-zero constant and `none` when it is not constant
 or the budget runs out — `none` throughout is the Go's "outside the
 subset" — a span element as `selectTerm` over the index at width 32 — a
@@ -208,10 +253,15 @@ the other.
 With it, on arm64, a theorem about an Oak function's extraction composes
 with the verifier's verdict and `Oak.ArmASL` into one statement about the
 machine for a body inside the shared subset: source theorem, `lowerT_eval`,
-the verifier's equality, the ASL bridge. Outside the subset — sum types,
-arrays of records and records of arrays, span writes, array literals,
-record-valued calls, the data-dependent loops `loopEvent` summarizes —
-the verifier's lowering is still the Go's alone, related to the
+the verifier's equality, the ASL bridge. A local declared inside a loop
+body or an arm is covered by pre-declaring it: its declaration binds the
+initializer's term as an assignment does, so every later read sees the
+same terms. A data-dependent loop is covered up to the meaning of its
+fresh symbols: the theorem holds for every parameter assignment that
+reads them as the exit values, which is what the symbols stand for, and
+the event's condition and body are instances of the same theorem over any
+iteration's values. Outside the subset — floats and the vector operations
+— the verifier's lowering is still the Go's alone, related to the
 extraction by tests.
 
 For the C route (every function the native lane does not cover, and every
@@ -229,12 +279,17 @@ Done on 2026-09-13:
    scalars — block-scoped locals, inlined calls, span elements, counted
    loops — with the extraction's reading of each.
 2. **Translation validation of the trusted core** (§2.4):
-   `codegen/translation_validation_test.go`, arm64 through clang and rv64
-   through GCC. What it does not decide: the shift helpers (a variable
-   count: Oak traps, the verifier refuses) and division and remainder (a
-   variable divisor); on rv64 the signed division helpers use `seqz`,
-   which the RV64IM table lacks, so those four are outside the unit
-   language rather than trusted by verdict.
+   `codegen/translation_validation_test.go`, arm64 through clang — at
+   armv8.0, at armv8.1-a (LSE), and as the Apple cores' compilers build it
+   (`-mcpu=apple-m1`: LSE atomics, `ldapr` for an acquire load) — and rv64
+   through GCC. Every helper is decided on arm64 (73 proven, 20
+   witnessed: the multiplications and the narrow and signed divisions);
+   what it does not decide
+   is the shift helpers under a variable count (Oak traps, the verifier
+   refuses) — the constant-count specializations are proven. Every helper
+   is decided on rv64 too (80 proven, 13 witnessed) since the unit
+   language gained the A extension (GCC's `lr.w`/`sc.w` compare-exchange
+   loop, the element address formed before the loop head).
 
 Next, arm64 first (2026-09-13: every workload runs on arm64, so the lane
 whose chain is proved end to end is the one to deepen; the others wait
@@ -245,10 +300,17 @@ for a workload):
    rebindings, inlined calls to program functions, statement-level Bool
    conditionals whose arms assign locals, integer-constant matches in
    value and statement position, span element reads and lengths, the
-   constructors' constant folding, counted loops, owned arrays of scalars,
-   and records of scalars (`letIn`, `call`, `condSet`, `matchInt`,
-   `matchSet`, `elem`, `len`, `whileLoop`, `arrDecl`, `arrGet`, `arrSetE`,
-   `recDecl`, the `Agree` scope invariant;
+   constructors' constant folding, counted loops, owned arrays with
+   literals, records, their nesting, and tagged unions of scalar payloads
+   (`letIn`, `call`, `condSet`, `matchInt`, `matchSet`, `elem`, `len`,
+   `whileLoop`, `arrDecl`, `arrLit`, `arrGet`, `arrSetE`, `recDecl`,
+   `callX`, the `Agree` scope invariant; an array's leaves are named by a
+   function, so `r.h[k]` and `a[k].x` are the same constructors under
+   longer names; a borrowing call copies the owner's leaves into the
+   callee's span leaves and writes them back, binding a scalar or record
+   result in the caller;
+   a union is the record of its tag and payload leaves and a variant match
+   the constant match on the tag, so it needs no constructor of its own;
    `lowerConditionalStatement`'s select against the extraction's `let
    (vars) ← if c then … else …`; `selectTerm` against `getD` over a memory
    named as the verifier names it, `v[k]`; `lowerWhile`'s unrolling against
@@ -256,57 +318,65 @@ for a workload):
    `ok` is; an array local as its element leaves `x[k]`, in-range reads
    and writes against the extraction's `Array`, a trap where the index is
    out of range; a record as its field leaves `r.f`, bound by the same
-   named binder a call uses). Next: sum types (the tag leaf and the
-   payload leaves, variant patterns as tag equalities, bindings as leaf
-   aliases), nested aggregates, span writes, array literals — so
-   `lowerT_eval` covers the
+   named binder a call uses; a local declared inside a loop body or an
+   arm is a pre-declared local, its declaration the first assignment).
+   What the native bodies use is covered, data-dependent loops included
+   (`whileEvent`: the carried locals as fresh symbols after the loop, the
+   theorem under assignments where the symbols denote the exit values);
+   what remains is at the edges: floats and vectors — so `lowerT_eval`
+   covers the
    bodies `oak build -native` actually verifies rather than their
    arithmetic alone. This is the step that turns "source theorem implies
    machine behavior" from a statement about expressions into one about
    functions on arm64.
-4. **Widen translation validation** (§2.4) on arm64: the checked shift
-   helpers under a constant-count specialization (the verifier admits a
-   constant count; the helper's trap check folds away), `oak_index` and
-   `oak_store`'s bounds checks against the guarded element reads and
-   writes the lowering models, and the compare-exchange helper once the
-   verifier's memory model reaches the atomics
-   (`compare_exchange_refinement_test.go` pins its text today).
-5. **Finish the RISC-V bridge** (rv64 is dbs's second target): build `spec/lean-sail` against a Sail
-   built from git so the theorems are checked against the export itself
-   rather than verbatim copies; extend the decided subset to loads and
-   stores through the frame and to the AMOs the memory refinement already
-   pins. Attempted 2026-09-13; the blocker is now exact. The opam release
-   0.20.2 exports do not compile (§2.5 of `94-assembler.md`), and a
-   `libsail` pinned from git fails to build against a release install
-   because git's `libsail` runs `sail_maker embed` at build time and
-   `sail_maker` is a separate opam package there — pinning only `libsail`,
-   `sail` and `sail_lean_backend` leaves the release `sail_maker` 0.20.2
-   on the path, which has no `embed`, so the rule prints its usage and
-   fails. The recipe is therefore: pin every package of the Sail
-   repository from one checkout (`opam pin add -n .` in it, `sail_maker`
-   included, then `opam install sail_maker libsail sail
-   sail_lean_backend`), then `cmake -S external/sail-riscv -B
-   external/sail-riscv/build && cmake --build external/sail-riscv/build
-   --target generated_lean_rv64d`, `lake build` in
-   `build/model/Lean_RV64D`, and `lake build` in `spec/lean-sail`;
-   `asm/rv64_sail_bridge_test.go` then runs the bridge. The export's
-   `lake build` is large (gigabytes of `.olean`); the attempt stopped
-   when the host had about one gigabyte of disk left.
-   **Done for the decided subset (2026-09-13):** that recipe, from the
-   `sail-dev` opam switch (Sail `sail2` dba5f007), generates the
-   sail-riscv 0.14 export; the Lean backend still leaves seven
-   virtual-memory type sites in Sail syntax (rems-project/sail#1729),
-   and four more in `Vmem` (shadowed type synonyms, and the two-stage
-   translation's constant termination measure), which
-   `spec/lean-sail/patch-export.py` repairs without touching instruction
-   semantics. The whole export then builds; `spec/lean-sail` proves the
-   data theorems against the imported operators and rewrites
-   `execute_RTYPEW`, `execute_RTYPE` and `execute_BTYPE` to Oak's
-   canonical bodies through the monad laws, so the register plumbing is
-   checked too. `TestRV64SailBridgeBuilds` and
-   `TestRV64SailBridgeStubsMatchSail` run. What remains of this item is
-   the patch (gone when upstream fixes #1729) and the wider decided
-   subset.
+4. **Widen translation validation** (§2.4) on arm64: landed for the
+   checked shift helpers under constant-count specializations (1, 3,
+   width − 1 at every unsigned width; the verifier admits a constant
+   count, the helper's trap check folds away) and for `oak_index` against
+   the guarded element read `v[i]` — proven on arm64 and, since the rv64
+   checker admits GCC's shape (`bgeu i, len` on the raw widened `u32`
+   pair, `slli 32; srli 32−s` zero-extending and scaling in one step, the
+   address formed in the base register; `Oak.RiscV.index_guard_widened`,
+   `widened_scale`), on rv64; and for `oak_store` against the guarded
+   element write `v[i] = x`, proven on both lanes as the span memory the
+   unit writes; and for the strong compare-exchange helper
+   `__oak_cas_u32_acq_rel_acquire` on a cell reached through a guarded
+   span element, proven against `atomic_compare_exchange_acq_rel_acquire`
+   in both of clang's spellings — the exclusive loop (armv8.0) and `casal`
+   (armv8.1-a, a second arm64 lane) — once the verifier's memory model
+   reached the atomics under the sequential model (`65-machine-memory.md`
+   §7a, `asm/atomics.go`: the exclusive store succeeds, so the retry is
+   decided). GCC's rv64 `lr.w`/`sc.w` loop is outside the rv64 unit
+   language and is reported so. **Item complete** for the helpers the
+   prelude has.
+5. **Finish the RISC-V bridge** (rv64 is dbs's second target): **landed
+   2026-09-14** for the integer instructions. With Sail built from git
+   (every package of the rems-project/sail checkout pinned in one opam
+   switch, `sail_maker` included) the export of sail-riscv 497209b9
+   (2026-08-19) generates in minutes and builds under lean-sail v5 in
+   135 jobs (130 MB, not gigabytes); `spec/lean-sail` builds against it,
+   53 semantics theorems and 30 encoding theorems checked against the
+   export itself (`94-assembler.md` §9, `spec/lean-sail/README.md`), and
+   `asm/rv64_sail_bridge_test.go` runs the build when the export is
+   present. Two facts to keep: sail-riscv's current model does not export
+   (`vmem_types.sail`'s type-level `root_level('v)` comes out with unbound
+   `k_v`; upstream's own `compile-lean` workflow has been red since
+   2026-09-04), so the checkout under `external/` is pinned to the last
+   commit whose export compiles; and the model's `encdec` branch arm is
+   defined only for even offsets, so the branch encoding theorems carry
+   that hypothesis. Every integer instruction the verifier decides is
+   bridged, and of the loads and stores the address, alignment guard,
+   extension and truncation are; what stays audited rather than proved is
+   the model's address translation and memory access in the monad, for
+   which the checker's bounds and the verifier's flat element memory
+   stand in. The rv64 verifier decides no atomics, so the AMOs the memory
+   refinement pins at the C level have nothing to bridge yet. **Execute
+   bodies and CI (2026-09-14):** `spec/lean-sail/OakSailBridge/Execute.lean`
+   rewrites the generated `execute_RTYPEW`, `execute_RTYPE` and
+   `execute_BTYPE` to their canonical monadic shape through the monad laws
+   and the data theorems, so the register plumbing is checked too; and the
+   `rv64-bridge` job of `formal-sail.yml` builds Sail from git, the export,
+   and this bridge on every pull request, with the export required.
 6. **An amd64 lane and an x86 semantics** — **deferred** (2026-09-13: no x86-64 workload exists; amd64 stays a C-only target until one does). The native backend's third lane,
    with instruction semantics bridged to a machine-readable x86-64
    specification. Scoped 2026-09-13, in the order that pays first:

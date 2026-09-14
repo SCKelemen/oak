@@ -3,7 +3,9 @@ package compiler
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"strconv"
+	"time"
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
@@ -26,8 +28,9 @@ import (
 // are reported), and its Oak body stays as the portable realization. A
 // function outside the backend's subset is left to the C backend, with the
 // reason reported as information.
-func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.TypeChecker) ([]*asm.Function, []*diagnostic.Diagnostic) {
+func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.TypeChecker) nativeLowering {
 	var diagnostics []*diagnostic.Diagnostic
+	result := nativeLowering{Verdicts: map[string]asm.Verdict{}, Fallbacks: map[string]string{}}
 	functions := map[string]*ast.FunctionStatement{}
 	records := map[string]*ast.RecordLiteral{}
 	adts := map[string]*ast.ADTType{}
@@ -57,14 +60,18 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			functions[fn.Name.Value] = fn
 			if nativegen.VectorContract(fn) {
 				// The native entry of a function under the vector contract
-				// (nativegen.VectorContractSuffix): a call target too.
-				symbols[nativegen.NativeSymbol(fn)] = true
+				// (nativegen.VectorContractSuffix, RVVContractSuffix): a
+				// call target too.
+				symbols[nativegen.NativeSymbolFor(comp.options.Target.AsmArch(), fn)] = true
 			}
 		}
 	}
 	specializeInstantiations(tc, templates, records, adts)
+	declarations := programDeclarations(root)
+	verified, fromCache := 0, 0 // the verdict cache's tally, reported once
 	constants := constantGlobals(root, tc)
-	globals, globalDecls := addressableGlobals(root, tc, constants)
+	globals, aggregates, globalDecls := addressableGlobals(root, tc, constants, records)
+	tables, data := nativeGlobalArrays(root)
 	var lowered []*asm.Function
 	for _, stmt := range root.Statements {
 		fn, ok := stmt.(*ast.FunctionStatement)
@@ -76,7 +83,10 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// its folded value (constants); the C emitter keeps the body and
 		// its `static const`.
 		source := fn
-		lane := nativegen.Lane{Arch: comp.options.Target.AsmArch(), SoftFloat: comp.options.Target.Freestanding() && comp.options.Target.Arch == target.ArchRiscv64}
+		lane := nativegen.Lane{Arch: comp.options.Target.AsmArch(), SoftFloat: comp.options.Target.Freestanding() && comp.options.Target.Arch == target.ArchRiscv64, Tables: tables, PackedStackArgs: comp.options.Target.OS == target.OSDarwin}
+		// The processor decides the rv64 lane's vector lowering: the fixed
+		// simd vectors need V (docs/spec/93-simd.md §1.4, 94-assembler.md §9).
+		lane.Vector = comp.options.Target.Arch == target.ArchRiscv64 && comp.options.Target.CPUFeatures(comp.options.CPU)["v"]
 		// Check elision (docs/spec/94-assembler.md §9): an element access the
 		// typechecker proved in range is lowered without its guard first;
 		// if the seam checker cannot admit the body from the facts on the
@@ -84,10 +94,12 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// decides safety; the elision is only what it already knows.
 		lane.ElideProven = lane.Arch == asm.ArchArm64
 		lane.Globals = globals
+		lane.Aggregates = aggregates
 		asmFn, err := nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
 		if err != nil {
 			if _, outside := err.(nativegen.Unsupported); outside {
 				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (%v)", fn.Name.Value, err)))
+				result.Fallbacks[fn.Name.Value] = err.Error()
 				continue
 			}
 			diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
@@ -120,12 +132,40 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			}
 			continue
 		}
-		verdict := asm.Verify(asmFn, source, source.Body)
+		verifyStart := time.Now()
+		// The verdict cache (compiler/verdict_cache.go): a body verified
+		// before under the same key — the same assembly, Oak body, reachable
+		// callees, declarations, and compiler — keeps its verdict.
+		cacheDir := verdictCacheDir()
+		if comp.options.VerifyFresh {
+			cacheDir = ""
+		}
+		cacheKey := ""
+		if cacheDir != "" {
+			cacheKey = verdictCacheKey(asmFn, source, functions, declarations)
+		}
+		verdict, cached := cachedVerdict(cacheDir, cacheKey)
+		if !cached {
+			verdict = asm.Verify(asmFn, source, source.Body)
+			storeVerdict(cacheDir, cacheKey, verdict)
+		} else {
+			fromCache++
+		}
+		verified++
+		if os.Getenv("OAK_NATIVE_TIMING") != "" {
+			// A profiling aid: how long each body's verification took.
+			note := ""
+			if cached {
+				note = ", cached"
+			}
+			fmt.Fprintf(os.Stderr, "timing: %s: %.2fs (%s%s)\n", fn.Name.Value, time.Since(verifyStart).Seconds(), verdict.Kind, note)
+		}
 		if verdict.Kind == asm.VerdictMismatch {
 			diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", "native backend: "+verdict.Message))
 			continue
 		}
 		diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", "native backend: "+verdict.Message))
+		result.Verdicts[fn.Name.Value] = verdict
 		fn.NativeBacked = true
 		fn.AsmArch = asmFn.Arch // the C emitter guards the Oak body by the lane's negation
 		for name := range asmFn.Globals {
@@ -147,6 +187,8 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			for _, callee := range nativegen.VectorCallees(fn, functions) {
 				if target := functions[callee]; target != nil && !target.NativeBacked {
 					diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (it passes vectors to %s, which the C backend realizes)", fn.Name.Value, callee)))
+					result.Fallbacks[fn.Name.Value] = fmt.Sprintf("it passes vectors to %s, which the C backend realizes", callee)
+					delete(result.Verdicts, fn.Name.Value)
 					demoted = true
 					break
 				}
@@ -161,7 +203,128 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		}
 		lowered = kept
 	}
-	return lowered, diagnostics
+	if verified > 0 {
+		// The verdict cache's tally: how many of the verified bodies kept a
+		// verdict from an earlier build under the same key.
+		diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %d of %d verdicts from the verdict cache", fromCache, verified)))
+	}
+	result.Functions, result.Data, result.Diagnostics = lowered, data, diagnostics
+	return result
+}
+
+// nativeLowering is what the native backend made of a program: the
+// lowered functions and their constant tables, each lowered body's
+// verdict by Oak name, each body left to the C backend with the reason,
+// and the diagnostics that say the same in prose.
+type nativeLowering struct {
+	Functions   []*asm.Function
+	Data        []asm.DataSymbol
+	Verdicts    map[string]asm.Verdict
+	Fallbacks   map[string]string
+	Diagnostics []*diagnostic.Diagnostic
+}
+
+// nativeGlobalArrays collects the program's constant tables: top-level
+// arrays of fixed-width integers with literal initializers that no
+// statement writes — no assignment, no element assignment, no mutable
+// borrow (`span(&t)`, `&t` outside `view`). A native body reads one through
+// its data symbol (nativegen.GlobalArray), and the object carries the bytes
+// in its read-only data section (docs/spec/94-assembler.md §9, constant
+// tables). The C backend keeps its own `static const` copy for the bodies
+// it realizes; the two never alias, both being constant.
+func nativeGlobalArrays(root *ast.Program) (map[string]nativegen.GlobalArray, []asm.DataSymbol) {
+	if root == nil {
+		return nil, nil
+	}
+	mutated := mutatedTables(root)
+	tables := map[string]nativegen.GlobalArray{}
+	var data []asm.DataSymbol
+	for _, stmt := range root.Statements {
+		decl, isDecl := stmt.(*ast.VariableDeclaration)
+		if !isDecl || decl.Name == nil || decl.Section != "" || mutated[decl.Name.Value] {
+			continue
+		}
+		table, bytes, ok := nativegen.GlobalArrayOf(decl)
+		if !ok {
+			continue
+		}
+		tables[decl.Name.Value] = table
+		data = append(data, asm.DataSymbol{Name: table.Symbol, Bytes: bytes, Align: table.ElemSize()})
+	}
+	return tables, data
+}
+
+// mutatedTables names every top-level identifier some statement may write:
+// the target of an assignment or element assignment, or the operand of a
+// borrow `&x` that is not the argument of `view(...)` (a shared borrow).
+func mutatedTables(program *ast.Program) map[string]bool {
+	mutated := map[string]bool{}
+	var walk func(v reflect.Value, shared bool)
+	walk = func(v reflect.Value, shared bool) {
+		switch v.Kind() {
+		case reflect.Interface, reflect.Pointer:
+			if v.IsNil() {
+				return
+			}
+			switch node := v.Interface().(type) {
+			case *ast.AssignmentStatement:
+				if node.Name != nil {
+					mutated[node.Name.Value] = true
+				}
+			case *ast.IndexAssignmentStatement:
+				if root, ok := pathRoot(node.Target); ok {
+					mutated[root] = true
+				}
+			case *ast.InvocationExpression:
+				if fn, isIdent := node.Function.(*ast.Identifier); isIdent && fn.Value == "view" {
+					for _, arg := range node.Arguments {
+						walk(reflect.ValueOf(arg), true)
+					}
+					return
+				}
+			case *ast.PrefixExpression:
+				if node.Operator == "&" && !shared {
+					if root, ok := pathRoot(node.Right); ok {
+						mutated[root] = true
+					}
+				}
+			}
+			walk(v.Elem(), false)
+		case reflect.Struct:
+			for i := 0; i < v.NumField(); i++ {
+				if v.Type().Field(i).IsExported() {
+					walk(v.Field(i), false)
+				}
+			}
+		case reflect.Slice, reflect.Array:
+			for i := 0; i < v.Len(); i++ {
+				walk(v.Index(i), false)
+			}
+		case reflect.Map:
+			for _, key := range v.MapKeys() {
+				walk(v.MapIndex(key), false)
+			}
+		}
+	}
+	walk(reflect.ValueOf(program), false)
+	return mutated
+}
+
+// pathRoot is the identifier a place expression roots at: `t`, `t[i]`,
+// `t.f[i]`, `*t`.
+func pathRoot(expr ast.Expression) (string, bool) {
+	for {
+		switch e := expr.(type) {
+		case *ast.Identifier:
+			return e.Value, true
+		case *ast.IndexExpression:
+			expr = e.Left
+		case *ast.PrefixExpression:
+			expr = e.Right
+		default:
+			return "", false
+		}
+	}
 }
 
 // specializeInstantiations adds every generic ADT instantiation the
@@ -256,11 +419,12 @@ var constantScalarTypes = map[string]bool{
 // may address (docs/spec/94-assembler.md §9, the OS pilot's N3): a typed
 // scalar binding some statement writes (the constant ones are folded
 // instead), neither measured nor a target constant.
-func addressableGlobals(root *ast.Program, tc *typechecker.TypeChecker, constants map[string]asm.Constant) (map[string]asm.Global, map[string]*ast.VariableDeclaration) {
+func addressableGlobals(root *ast.Program, tc *typechecker.TypeChecker, constants map[string]asm.Constant, records map[string]*ast.RecordLiteral) (map[string]asm.Global, map[string]*ast.VariableDeclaration, map[string]*ast.VariableDeclaration) {
 	globals := map[string]asm.Global{}
+	aggregates := map[string]*ast.VariableDeclaration{}
 	decls := map[string]*ast.VariableDeclaration{}
 	if root == nil {
-		return globals, decls
+		return globals, aggregates, decls
 	}
 	mutated := codegen.MutatedGlobals(root)
 	targetConstants := map[string]bool{}
@@ -275,7 +439,26 @@ func addressableGlobals(root *ast.Program, tc *typechecker.TypeChecker, constant
 			continue
 		}
 		name := decl.Name.Value
-		if _, isConst := constants[name]; isConst || !mutated[name] || targetConstants[name] {
+		if _, isConst := constants[name]; isConst || targetConstants[name] {
+			continue
+		}
+		// A top-level record, or a written array (an unwritten array is a
+		// constant table, nativegen.Lane.Tables): an aggregate the body
+		// addresses as a place (the OS pilot's N9).
+		if typeName, isIdent := decl.Type.(*ast.Identifier); isIdent {
+			if _, isRecord := records[typeName.Value]; isRecord {
+				aggregates[name] = decl
+				decls[name] = decl
+				continue
+			}
+		} else if index, isIndex := decl.Type.(*ast.IndexExpression); isIndex && !index.Dot {
+			if _, isLit := index.Index.(*ast.IntegerLiteral); isLit && mutated[name] {
+				aggregates[name] = decl
+				decls[name] = decl
+			}
+			continue
+		}
+		if !mutated[name] {
 			continue
 		}
 		typeName, isIdent := decl.Type.(*ast.Identifier)
@@ -289,7 +472,7 @@ func addressableGlobals(root *ast.Program, tc *typechecker.TypeChecker, constant
 		globals[name] = global
 		decls[name] = decl
 	}
-	return globals, decls
+	return globals, aggregates, decls
 }
 
 func constantGlobals(root *ast.Program, tc *typechecker.TypeChecker) map[string]asm.Constant {

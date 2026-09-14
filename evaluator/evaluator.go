@@ -251,6 +251,9 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		}
 		return evalMatchExpression(scrutinee, node.Arms, env)
 
+	case *ast.QuantifierExpression:
+		return evalQuantifierExpression(node, env)
+
 	case *ast.ADTType:
 		return evalADTType(node, env)
 

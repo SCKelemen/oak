@@ -28,10 +28,24 @@ import (
 	"github.com/SCKelemen/oak/typechecker"
 )
 
+// Options select the extraction's modeling choices a driver may vary.
+type Options struct {
+	// BitFloats renders f32 addition, subtraction, and multiplication
+	// through Oak.FloatOps' bit-level operations instead of Lean's opaque
+	// Float32 operators (docs/spec/95-extraction.md section 3).
+	BitFloats bool
+}
+
 // Emit extracts the named declarations of program (all of them when names is
 // nil) into one Lean module body under the given namespace.
 func Emit(program *ast.Program, tc *typechecker.TypeChecker, namespace string, names map[string]bool) (string, error) {
+	return EmitWith(program, tc, namespace, names, Options{})
+}
+
+// EmitWith is Emit under the given options.
+func EmitWith(program *ast.Program, tc *typechecker.TypeChecker, namespace string, names map[string]bool, options Options) (string, error) {
 	em := &emitter{
+		options:     options,
 		tc:          tc,
 		env:         tc.Env(),
 		adts:        map[string]*ast.ADTType{},
@@ -274,8 +288,9 @@ func (em *emitter) emitGlobals() (string, error) {
 }
 
 type emitter struct {
-	tc  *typechecker.TypeChecker
-	env *typechecker.TypeEnvironment
+	options Options
+	tc      *typechecker.TypeChecker
+	env     *typechecker.TypeEnvironment
 	// valueBinding is the Lean name `value` reads as while a refinement's
 	// predicate is rendered (predicateTerm); empty otherwise.
 	valueBinding string
@@ -1939,6 +1954,8 @@ func (em *emitter) exprValue(expr ast.Expression, want string) (string, error) {
 		return em.armValue(e, want)
 	case *ast.InvocationExpression:
 		return em.call(e, want)
+	case *ast.QuantifierExpression:
+		return em.quantifier(e)
 	}
 	return "", fmt.Errorf("expression %T is outside the extracted subset", expr)
 }
@@ -2032,6 +2049,22 @@ func (em *emitter) infix(e *ast.InfixExpression, want string) (string, error) {
 		right, err := em.expr(e.Right, typ)
 		if err != nil {
 			return "", err
+		}
+		if em.options.BitFloats && typ == "Float32" {
+			// The bit-level operations (docs/spec/95-extraction.md section
+			// 3, "Seventh"): one rounding of the exact result, defined
+			// over the bit pattern, so a theorem reaches the rounding.
+			switch e.Operator {
+			case "+":
+				em.usesFloatOps = true
+				return fmt.Sprintf("(Oak.FloatOps.add32 %s %s)", left, right), nil
+			case "-":
+				em.usesFloatOps = true
+				return fmt.Sprintf("(Oak.FloatOps.sub32 %s %s)", left, right), nil
+			case "*":
+				em.usesFloatOps = true
+				return fmt.Sprintf("(Oak.FloatOps.mul32 %s %s)", left, right), nil
+			}
 		}
 		return fmt.Sprintf("(%s %s %s)", left, e.Operator, right), nil
 	}
@@ -2726,6 +2759,8 @@ func walkExpressions(expr ast.Expression, visit func(ast.Expression)) {
 		}
 		visit(e)
 		switch x := e.(type) {
+		case *ast.QuantifierExpression:
+			exprs(x.Body)
 		case *ast.BlockExpression:
 			if x.Block != nil {
 				stmts(x.Block.Statements)

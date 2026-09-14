@@ -1,3 +1,6 @@
+import Oak.Floats
+import Oak.FloatBounds
+
 /-!
 # Oak.FloatOps — bit-exact carriers for the float intrinsics Lean lacks
 
@@ -29,6 +32,22 @@ exact:
 
 Both widths share the code through `Fmt`; `Float` and `Float32` wrappers
 convert through `toBits`/`ofBits`, which are exact.
+
+**The bridge to `Oak.Floats`** (the ml pilot's E4). Lean's `Float32`
+arithmetic is opaque, so a theorem about extracted code cannot see how `+`
+rounds. `add32`, `sub32`, and `mul32` below are the same operations at the
+bit level — each is one `fma` with an exact operand, so each is one
+rounding of the exact result, which is IEEE 754-2019 addition,
+subtraction, and multiplication — and the extraction renders `f32`
+arithmetic through them under `-lean-floats bits`
+(docs/spec/95-extraction.md section 3). `roundShift_eq_roundNat` is the
+bridge itself: the rounding `Fmt.encode` performs on a significand is the
+integer rounding `Oak.Floats.roundNat` of the evaluation discipline, so the
+bounds of `Oak.FloatBounds` (RFC 0004's `bounded`) speak about these
+functions. What remains for a full bridge is the decode of `encode`'s
+result back to `±m · 2^e` in the normal range; the differential test
+(`compiler/lean_float_bits_test.go`) holds the three functions to the
+host's binary32 on random and edge operands meanwhile.
 -/
 
 namespace Oak.FloatOps
@@ -75,17 +94,23 @@ def roundShift (n s : Nat) : Nat :=
   let half := 2 ^ (s - 1)
   if r > half || (r = half && q % 2 = 1) then q + 1 else q
 
+/-- The rounded significand and exponent of `n · 2^e` (`n ≠ 0`), before
+packing: the significand is brought to `prec` bits (or to the subnormal
+quantum) to nearest, ties to even, and a carry out of the top bit
+renormalizes. -/
+def roundTo (f : Fmt) (n : Nat) (e : Int) : Nat × Int :=
+  let len : Nat := Nat.log2 n + 1
+  let eu : Int := max (e + len - f.prec) f.emin
+  let q0 : Nat :=
+    if e ≥ eu then n <<< (e - eu).toNat else roundShift n (eu - e).toNat
+  if q0 = 2 ^ f.prec then (q0 / 2, eu + 1) else (q0, eu)
+
 /-- Round `±n · 2^e` (`n ≠ 0`) once to the format, to nearest, ties to
 even; overflow yields the infinity of that sign, small values the
 subnormal encoding. -/
 def encode (f : Fmt) (neg : Bool) (n : Nat) (e : Int) : Nat :=
   if n = 0 then f.signOnly neg else
-  let len : Nat := Nat.log2 n + 1
-  let eu : Int := max (e + len - f.prec) f.emin
-  let q0 : Nat :=
-    if e ≥ eu then n <<< (e - eu).toNat else roundShift n (eu - e).toNat
-  let (q, eu) : Nat × Int :=
-    if q0 = 2 ^ f.prec then (q0 / 2, eu + 1) else (q0, eu)
+  let (q, eu) : Nat × Int := f.roundTo n e
   if q < 2 ^ f.fracBits then f.signOnly neg + q
   else
     let expF : Int := eu + f.fracBits + f.bias
@@ -145,6 +170,98 @@ def roundEven64 (x : Float) : Float :=
   let r := if tie && odd then (if x < 0.0 then t + 1.0 else t - 1.0) else t
   if r == 0.0 then copysign64 r x else r
 
+/-- Bit-exact binary32 addition: one rounding of the exact sum (`a * 1 + b`). -/
+def add32 (a b : Float32) : Float32 := fma32 a (Float32.ofBits 0x3F800000) b
+
+/-- Bit-exact binary32 subtraction: one rounding of `a - b`. -/
+def sub32 (a b : Float32) : Float32 :=
+  fma32 a (Float32.ofBits 0x3F800000) (Float32.ofBits (b.toBits ^^^ 0x80000000))
+
+/-- Bit-exact binary32 multiplication: one rounding of `a * b`; the addend
+`-0` leaves a zero product's sign alone (`(+0) + (-0) = +0`, `(-0) + (-0) =
+-0`) and every other product unchanged. -/
+def mul32 (a b : Float32) : Float32 := fma32 a b (Float32.ofBits 0x80000000)
+
+/-- A value at or above `2^p` has more than `p` bits. -/
+theorem bitlen_gt (p n : Nat) (hn : 2 ^ p ≤ n) : p < Oak.Floats.bitlen n := by
+  have h := Oak.Floats.bitlen_upper n
+  exact (Nat.pow_lt_pow_iff_right (by decide)).mp (Nat.lt_of_le_of_lt hn h)
+
+/-- **The bridge.** Rounding a significand `n ≥ 2^p` to `p` bits drops
+`s = bitlen n - p` low bits to nearest, ties to even, and `Fmt.roundShift`
+returns exactly the kept bits of `Oak.Floats.roundNat`: the bit-level
+rounding of `encode` and the integer rounding of the evaluation discipline
+are one operation. -/
+theorem roundShift_eq_roundNat (p n : Nat) (hn : 2 ^ p ≤ n) :
+    Fmt.roundShift n (Oak.Floats.bitlen n - p) * 2 ^ (Oak.Floats.bitlen n - p) = Oak.Floats.roundNat p n := by
+  have hs : 1 ≤ Oak.Floats.bitlen n - p := by have := bitlen_gt p n hn; omega
+  unfold Fmt.roundShift Oak.Floats.roundNat
+  have hlt : ¬ n < 2 ^ p := Nat.not_lt.mpr hn
+  simp only [hlt, if_false, Nat.shiftRight_eq_div_pow]
+  generalize hsdef : Oak.Floats.bitlen n - p = s at hs ⊢
+  have hunit : 2 ^ s / 2 = 2 ^ (s - 1) := by
+    obtain ⟨t, rfl⟩ : ∃ t, s = t + 1 := ⟨s - 1, by omega⟩
+    simp [Nat.pow_succ]
+  rw [hunit]
+  generalize hq : n / 2 ^ s = q
+  generalize hr : n % 2 ^ s = r
+  generalize hh : 2 ^ (s - 1) = h
+  rcases Nat.lt_trichotomy r h with hlt' | heq | hgt
+  · have h1 : ¬ (r > h) := by omega
+    have h2 : ¬ (r = h) := by omega
+    simp [hlt', h1, h2]
+  · by_cases hodd : q % 2 = 1
+    · simp [heq, hodd]
+    · have h0 : q % 2 = 0 := by omega
+      simp [heq, h0]
+  · have h1 : ¬ (r < h) := by omega
+    simp [hgt, h1]
+
+/-- `Nat.log2 n + 1` is the bit length `Oak.Floats` counts. -/
+theorem log2_succ_eq_bitlen (n : Nat) (h : 0 < n) : Nat.log2 n + 1 = Oak.Floats.bitlen n := by
+  have hne : n ≠ 0 := Nat.pos_iff_ne_zero.mp h
+  have hup := Oak.Floats.bitlen_upper n
+  have hlo := Oak.Floats.bitlen_lower hne
+  have h1 : Nat.log2 n < Oak.Floats.bitlen n := (Nat.log2_lt hne).mpr hup
+  have h2 : Oak.Floats.bitlen n - 1 ≤ Nat.log2 n := (Nat.le_log2 hne).mpr hlo
+  omega
+
+/-- **The bridge, at the value.** For a significand at or above `2^prec`
+whose rounding stays in the normal range, the value `roundTo` returns —
+the significand times its exponent's power — is `Oak.Floats.roundNat prec n`:
+what `encode` packs into the bit pattern is the evaluation discipline's
+rounded integer, so a bound proved in `Oak.FloatBounds` over `roundNat`
+is a bound on `add32`, `sub32`, and `mul32` wherever their exact result
+has a normal rounding. -/
+theorem roundTo_value (f : Fmt) (n : Nat) (hprec : 0 < f.prec) (hn : 2 ^ f.prec ≤ n)
+    (hnorm : f.emin ≤ ((Oak.Floats.bitlen n : Nat) : Int) - f.prec) :
+    (f.roundTo n 0).1 * 2 ^ (f.roundTo n 0).2.toNat = Oak.Floats.roundNat f.prec n := by
+  have hpos : 0 < n := Nat.lt_of_lt_of_le (Nat.two_pow_pos _) hn
+  have hlen := log2_succ_eq_bitlen n hpos
+  have hgt : f.prec < Oak.Floats.bitlen n := bitlen_gt f.prec n hn
+  unfold Fmt.roundTo
+  simp only [hlen]
+  have heu : max ((0 : Int) + (Oak.Floats.bitlen n : Nat) - f.prec) f.emin = ((Oak.Floats.bitlen n : Nat) : Int) - f.prec := by
+    omega
+  rw [heu]
+  have hnot : ¬ ((0 : Int) ≥ ((Oak.Floats.bitlen n : Nat) : Int) - f.prec) := by omega
+  simp only [hnot, if_false]
+  have hs : (((Oak.Floats.bitlen n : Nat) : Int) - f.prec - 0).toNat = Oak.Floats.bitlen n - f.prec := by omega
+  rw [hs]
+  have hkey := roundShift_eq_roundNat f.prec n hn
+  by_cases hq : Fmt.roundShift n (Oak.Floats.bitlen n - f.prec) = 2 ^ f.prec
+  · simp only [hq, if_true]
+    rw [← hkey, hq]
+    have hs1 : (((Oak.Floats.bitlen n : Nat) : Int) - f.prec + 1).toNat = Oak.Floats.bitlen n - f.prec + 1 := by omega
+    rw [hs1, Nat.pow_succ]
+    obtain ⟨t, ht⟩ : ∃ t, f.prec = t + 1 := ⟨f.prec - 1, by omega⟩
+    rw [ht, Nat.pow_succ, Nat.mul_div_cancel _ (by decide)]
+    ac_rfl
+  · simp only [hq, if_false]
+    have hs2 : (((Oak.Floats.bitlen n : Nat) : Int) - f.prec).toNat = Oak.Floats.bitlen n - f.prec := by omega
+    rw [hs2, hkey]
+
+/-- Round to nearest, ties to even (C `rint`). -/
 def roundEven32 (x : Float32) : Float32 :=
   if x.isNaN || x.isInf then x else
   let t := x.round

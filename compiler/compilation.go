@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"errors"
 	"fmt"
 	"github.com/SCKelemen/oak/target"
 	"reflect"
@@ -48,6 +49,10 @@ type Options struct {
 	// AsmUnits are the `.oakasm` translation units providing bodies for
 	// definition-less declarations (docs/spec/94-assembler.md).
 	AsmUnits []SourceText
+	// LeanFloats selects how the extraction renders f32 arithmetic
+	// (docs/spec/95-extraction.md section 3): "" for Lean's Float32
+	// operators, "bits" for the bit-level Oak.FloatOps operations.
+	LeanFloats string
 	// LineDirectives makes the C backend emit #line directives so C
 	// diagnostics and debuggers attribute generated code to Oak source
 	// (docs/spec/90-backend.md section 10). Off by default: the generated C
@@ -71,12 +76,22 @@ type Options struct {
 	// verified asm function and realized like an asm unit; the rest keep
 	// the C backend (docs/spec/94-assembler.md §9).
 	NativeBodies bool
+	// VerifyFresh verifies every native body anew, bypassing the verdict
+	// cache (compiler/verdict_cache.go): the full check, for a release or
+	// a doubt about the cache.
+	VerifyFresh bool
 	// InlineHelpers runs the source-level inlining of private leaf helpers
 	// before type checking (compiler/inline.go, docs/spec/90-backend.md
 	// section 9), so the caller's extent facts prove the helper's element
 	// accesses. Set by the code-emitting stages; the semantic model, the
 	// Lean emitters, and the prover see the program as written.
 	InlineHelpers bool
+	// VerifiedProfile holds the build to the verified native profile
+	// (docs/spec/94-assembler.md §9, "The verified profile"): every body
+	// the program reaches is lowered natively and its verdict is proven;
+	// a witnessed or trusted body, or one left to the C backend, refuses
+	// the build, naming the reason. Implies NativeBodies.
+	VerifiedProfile bool
 }
 
 // Compilation is the public, Roslyn-style compiler value. With* methods return
@@ -180,6 +195,16 @@ type SemanticModel struct {
 	// AsmFunctions are the checked asm-unit functions the backend emits as
 	// top-level assembly blocks.
 	AsmFunctions []*asm.Function
+	// NativeData are the constant tables the native bodies read through
+	// their data symbols (docs/spec/94-assembler.md §9); the companion
+	// object and the executable carry them in their read-only data.
+	NativeData []asm.DataSymbol
+	// NativeVerdicts are the verifier's verdicts for the natively lowered
+	// bodies, by Oak name; NativeFallbacks names each body the native
+	// backend left to the C backend with the reason. The verified profile
+	// reads both (verifiedProfile).
+	NativeVerdicts  map[string]asm.Verdict
+	NativeFallbacks map[string]string
 }
 
 // LoweredProgram is the executable-oriented AST plus its semantic model.
@@ -260,6 +285,21 @@ func (comp Compilation) WithNativeBodies() Compilation {
 	return comp
 }
 
+// WithVerifyFresh returns a compilation that verifies every native body
+// anew, ignoring the verdict cache.
+func (comp Compilation) WithVerifyFresh() Compilation {
+	comp.options.VerifyFresh = true
+	return comp
+}
+
+// WithVerifiedProfile returns a compilation held to the verified native
+// profile (Options.VerifiedProfile): only proven bodies link.
+func (comp Compilation) WithVerifiedProfile() Compilation {
+	comp.options.VerifiedProfile = true
+	comp.options.NativeBodies = true
+	return comp
+}
+
 // WithPackageName returns a compilation configured for packageName.
 func (comp Compilation) WithPackageName(packageName string) Compilation {
 	comp.options.PackageName = packageName
@@ -279,6 +319,14 @@ func (comp Compilation) WithPlatformSizes(intSize, ptrSize int) Compilation {
 // ("default" or "strict", docs/spec/85-discipline.md section 1).
 func (comp Compilation) WithProfile(profile string) Compilation {
 	comp.options.Profile = profile
+	return comp
+}
+
+// WithLeanFloats selects the extraction's rendering of f32 arithmetic:
+// "bits" for Oak.FloatOps' bit-level operations (docs/spec/95-extraction.md
+// section 3), "" for Lean's operators.
+func (comp Compilation) WithLeanFloats(mode string) Compilation {
+	comp.options.LeanFloats = mode
 	return comp
 }
 
@@ -424,6 +472,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 			stitcher.options.AsmUnits = append(append([]SourceText(nil), comp.options.AsmUnits...), tree.Modules.AsmUnits...)
 		}
 		asmFunctions, asmDiagnostics := stitcher.stitchAsmUnits(tree.Root)
+		var native nativeLowering
 		if err := comp.gate("asm", asmDiagnostics, tree.Modules); err != nil {
 			return nil, err
 		}
@@ -431,7 +480,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		// code-emitting stages (compiler/inline.go), after the units are
 		// stitched so a declaration a unit realizes keeps its calls.
 		if comp.options.InlineHelpers {
-			inlineHelpers(tree.Root)
+			inlineHelpers(tree.Root, Protocols(tree))
 		}
 		env := object.NewEnvironment()
 		tc := typechecker.NewWithPlatformSizes(env, comp.options.IntSize, comp.options.PtrSize)
@@ -466,14 +515,14 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 			// The native body backend has an AArch64 and an RV64 lane
 			// (nativegen): on a target without a lane every body stays with
 			// the C backend.
-			nativeFunctions, nativeDiagnostics := comp.lowerNativeBodies(tree.Root, tc)
-			if err := comp.gate("native", nativeDiagnostics, tree.Modules); err != nil {
+			native = comp.lowerNativeBodies(tree.Root, tc)
+			if err := comp.gate("native", native.Diagnostics, tree.Modules); err != nil {
 				return nil, err
 			}
-			asmFunctions = append(asmFunctions, nativeFunctions...)
+			asmFunctions = append(asmFunctions, native.Functions...)
 		}
 
-		model := &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc, AsmFunctions: asmFunctions}
+		model := &SemanticModel{Tree: tree, PublicRoot: publicRoot, TypeChecker: tc, AsmFunctions: asmFunctions, NativeData: native.Data, NativeVerdicts: native.Verdicts, NativeFallbacks: native.Fallbacks}
 		model.Diagnostics = append(model.Diagnostics, tc.Diagnostics()...)
 		model.Diagnostics = append(model.Diagnostics, codecLayoutDiagnostics(tree.CodecLayouts)...)
 
@@ -705,7 +754,7 @@ func (comp Compilation) EmitNative(format asm.ObjectFormat) Stage[NativeOutput] 
 		if err != nil {
 			return NativeOutput{}, fmt.Errorf("asm: %w", err)
 		}
-		object, err := asm.WriteObjectWith(format, encoded, comp.objectOptions())
+		object, err := asm.WriteObjectWith(format, encoded, comp.objectOptions(nativeData(lowered.Model.NativeData, generator.CFunctionName)))
 		if err != nil {
 			return NativeOutput{}, err
 		}
@@ -730,6 +779,9 @@ func (comp Compilation) EmitExecutable() Stage[[]byte] {
 		if tgt.AsmArch() == "" || (tgt.OS != target.OSLinux && !tgt.Freestanding()) {
 			return nil, fmt.Errorf("link: no native executable format for %s (linux and freestanding targets on the arm64 and rv64 lanes)", tgt)
 		}
+		if err := comp.verifiedProfile(lowered); err != nil {
+			return nil, err
+		}
 		if err := comp.allNative(lowered, true); err != nil {
 			return nil, err
 		}
@@ -739,7 +791,7 @@ func (comp Compilation) EmitExecutable() Stage[[]byte] {
 		if err != nil {
 			return nil, fmt.Errorf("asm: %w", err)
 		}
-		return asm.WriteExecutable(encoded, asm.ExecutableOptions{OS: tgt.OS, Arch: tgt.AsmArch(), Entry: generator.CFunctionName("main"), RV64FloatABI: comp.objectOptions().RV64FloatABI})
+		return asm.WriteExecutable(encoded, asm.ExecutableOptions{OS: tgt.OS, Arch: tgt.AsmArch(), Entry: generator.CFunctionName("main"), RV64FloatABI: comp.objectOptions(nil).RV64FloatABI, Data: nativeData(lowered.Model.NativeData, generator.CFunctionName)})
 	})
 }
 
@@ -755,6 +807,9 @@ func (comp Compilation) EmitNativeObject(format asm.ObjectFormat) Stage[[]byte] 
 	comp.options.NativeAsm = true
 	comp.options.NativeBodies = true
 	return comp.Lower().Then(func(lowered *LoweredProgram) ([]byte, error) {
+		if err := comp.verifiedProfile(lowered); err != nil {
+			return nil, err
+		}
 		if err := comp.allNative(lowered, false); err != nil {
 			return nil, err
 		}
@@ -764,8 +819,80 @@ func (comp Compilation) EmitNativeObject(format asm.ObjectFormat) Stage[[]byte] 
 		if err != nil {
 			return nil, fmt.Errorf("asm: %w", err)
 		}
-		return asm.WriteObjectWith(format, encoded, comp.objectOptions())
+		return asm.WriteObjectWith(format, encoded, comp.objectOptions(nativeData(lowered.Model.NativeData, generator.CFunctionName)))
 	})
+}
+
+// verifiedProfile holds a lowered program to the verified native profile
+// when the compilation asks for it (Options.VerifiedProfile,
+// docs/spec/94-assembler.md §9, "The verified profile"): every body the
+// native backend lowered must carry a proven verdict, and no body may
+// have stayed with the C backend. The refusal is the burn-down list —
+// every reason with the bodies it holds back — so the distance to the
+// profile is what the message says.
+func (comp Compilation) verifiedProfile(lowered *LoweredProgram) error {
+	if !comp.options.VerifiedProfile {
+		return nil
+	}
+	held := map[string][]string{}
+	total := 0
+	for name, verdict := range lowered.Model.NativeVerdicts {
+		if verdict.Kind == asm.VerdictProven {
+			continue
+		}
+		held[verdictReason(verdict)] = append(held[verdictReason(verdict)], name)
+		total++
+	}
+	for name, reason := range lowered.Model.NativeFallbacks {
+		key := "left to the C backend: " + reason
+		held[key] = append(held[key], name)
+		total++
+	}
+	if total == 0 {
+		return nil
+	}
+	reasons := make([]string, 0, len(held))
+	for reason := range held {
+		reasons = append(reasons, reason)
+	}
+	sort.Slice(reasons, func(i, j int) bool {
+		if len(held[reasons[i]]) != len(held[reasons[j]]) {
+			return len(held[reasons[i]]) > len(held[reasons[j]])
+		}
+		return reasons[i] < reasons[j]
+	})
+	var out strings.Builder
+	fmt.Fprintf(&out, "verified profile: %d bodies are not proven (docs/spec/94-assembler.md §9):", total)
+	for _, reason := range reasons {
+		names := held[reason]
+		sort.Strings(names)
+		fmt.Fprintf(&out, "\n  %s (%d): %s", reason, len(names), strings.Join(names, ", "))
+	}
+	return errors.New(out.String())
+}
+
+// verdictReason is the reason a verdict short of proof gives: the text
+// inside "not verified (…)" of a trusted verdict, after "evidence, not
+// proof: " of a witnessed one, and the kind's name when neither is found.
+func verdictReason(verdict asm.Verdict) string {
+	message := verdict.Message
+	switch verdict.Kind {
+	case asm.VerdictTrusted:
+		if i := strings.Index(message, "not verified ("); i >= 0 {
+			rest := message[i+len("not verified ("):]
+			if j := strings.LastIndex(rest, ") — trusted"); j >= 0 {
+				return "trusted: " + rest[:j]
+			}
+		}
+		return "trusted"
+	case asm.VerdictWitnessed:
+		if i := strings.Index(message, "evidence, not proof: "); i >= 0 {
+			rest := strings.TrimSuffix(message[i+len("evidence, not proof: "):], ")")
+			return "witnessed: " + rest
+		}
+		return "witnessed"
+	}
+	return verdict.Kind.String()
 }
 
 // allNative checks that a lowered program can be realized by the Oak
@@ -774,6 +901,16 @@ func (comp Compilation) EmitNativeObject(format asm.ObjectFormat) Stage[[]byte] 
 func (comp Compilation) allNative(lowered *LoweredProgram, requireMain bool) error {
 	var left []string
 	hasMain := false
+	// A constant table lives in the object's read-only data
+	// (SemanticModel.NativeData); a constant scalar is folded into every
+	// body that reads it (constantGlobals). Neither needs the C backend.
+	nativeTables := map[string]bool{}
+	for _, table := range lowered.Model.NativeData {
+		nativeTables[strings.TrimPrefix(table.Name, "data_")] = true
+	}
+	for name := range constantGlobals(lowered.Root, lowered.Model.TypeChecker) {
+		nativeTables[name] = true
+	}
 	for _, stmt := range lowered.Root.Statements {
 		switch d := stmt.(type) {
 		case *ast.FunctionStatement:
@@ -790,6 +927,9 @@ func (comp Compilation) allNative(lowered *LoweredProgram, requireMain bool) err
 				return fmt.Errorf("link: %s is an extern binding to %s; a natively linked program has no C to provide it", d.Name.Value, d.ExternSymbol)
 			}
 		case *ast.VariableDeclaration:
+			if d.Name != nil && nativeTables[d.Name.Value] {
+				continue
+			}
 			return fmt.Errorf("link: the global %s needs the C backend; a natively linked program has none", d.Name.Value)
 		}
 	}
@@ -803,14 +943,26 @@ func (comp Compilation) allNative(lowered *LoweredProgram, requireMain bool) err
 	return nil
 }
 
+// nativeData names the constant tables as the object names them: under
+// the same C symbol prefix the functions carry, so a body's relocation
+// (renamed by asm.EncodeFunctions) reaches its table.
+func nativeData(data []asm.DataSymbol, symbolFor func(string) string) []asm.DataSymbol {
+	out := make([]asm.DataSymbol, 0, len(data))
+	for _, table := range data {
+		table.Name = symbolFor(table.Name)
+		out = append(out, table)
+	}
+	return out
+}
+
 // objectOptions are the target facts the companion object records: a
 // hosted RISC-V target links against an lp64d libc (rv64gc), a
 // freestanding one against the lp64 bare-metal toolchains.
-func (comp Compilation) objectOptions() asm.ObjectOptions {
+func (comp Compilation) objectOptions(data []asm.DataSymbol) asm.ObjectOptions {
 	if comp.options.Target.Arch == target.ArchRiscv64 && !comp.options.Target.Freestanding() {
-		return asm.ObjectOptions{RV64FloatABI: "double"}
+		return asm.ObjectOptions{RV64FloatABI: "double", Data: data}
 	}
-	return asm.ObjectOptions{}
+	return asm.ObjectOptions{Data: data}
 }
 
 // EmitAsmObject encodes the compilation's checked asm units with the Oak
@@ -825,7 +977,7 @@ func (comp Compilation) EmitAsmObject(format asm.ObjectFormat) Stage[[]byte] {
 		if err != nil {
 			return nil, fmt.Errorf("asm: %w", err)
 		}
-		return asm.WriteObjectWith(format, encoded, comp.objectOptions())
+		return asm.WriteObjectWith(format, encoded, comp.objectOptions(nativeData(lowered.Model.NativeData, generator.CFunctionName)))
 	})
 }
 
@@ -853,7 +1005,7 @@ func (comp Compilation) EmitLeanRoots(namespace string, roots []string) Stage[st
 		for _, root := range roots {
 			names[root] = true
 		}
-		return lean.Emit(model.Tree.Root, model.TypeChecker, namespace, names)
+		return lean.EmitWith(model.Tree.Root, model.TypeChecker, namespace, names, lean.Options{BitFloats: comp.options.LeanFloats == "bits"})
 	})
 }
 
@@ -889,7 +1041,7 @@ func (comp Compilation) EmitLean(namespace string) Stage[string] {
 		} else {
 			names = nil
 		}
-		return lean.Emit(model.Tree.Root, model.TypeChecker, namespace, names)
+		return lean.EmitWith(model.Tree.Root, model.TypeChecker, namespace, names, lean.Options{BitFloats: comp.options.LeanFloats == "bits"})
 	})
 }
 

@@ -1,6 +1,7 @@
 package asm
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -141,5 +142,126 @@ func TestVerifyNestedLoops(t *testing.T) {
 	flat := verifyCase(t, decl, "{\n  acc: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < n {\n    acc = acc + m\n    i = i + u32(1)\n  }\n  acc\n}", asmGrid)
 	if flat.Kind != VerdictTrusted || !strings.Contains(flat.Message, "data-dependent loops") {
 		t.Fatalf("differing loop counts must be trusted, got %s: %s", flat.Kind, flat.Message)
+	}
+}
+
+// A loop guarded by a conjunction (`len(v) >= 4 && i <= len(v) - 4`, the
+// vector kernels' idiom) lowers to two exit tests at the header with a
+// `sub` between them; the loop's continue condition is that neither exit
+// is taken (docs/spec/94-assembler.md §8, the vector increment).
+func TestVerifyConjunctiveExitLoop(t *testing.T) {
+	decl := "strided: (v: []u32) -> u32"
+	oak := "{\n  acc: u32 = u32(0)\n  i: u32 = u32(0)\n  while len(v) >= u32(4) && i <= len(v) - u32(4) {\n    acc = acc + v[i]\n    i = i + u32(4)\n  }\n  acc\n}"
+	walk := `  bind x0, w1 = v
+  clobber w9, w10, w11, w12
+  mov w9, #0
+  mov w10, #0
+loop:
+  cmp w1, #4
+  b.lo done
+  sub w12, w1, #4
+  cmp w9, w12
+  b.hi done
+  ldr w11, [x0, w9, uxtw #2]
+  add w10, w10, w11
+  add w9, w9, #4
+  b loop
+done:
+  mov w0, w10
+  ret`
+	verdict := verifyCase(t, decl, oak, walk)
+	if verdict.Kind == VerdictTrusted || verdict.Kind == VerdictMismatch {
+		t.Fatalf("the conjunctively guarded loop must be verified, got %s: %s", verdict.Kind, verdict.Message)
+	}
+	// Striding by eight in the asm against four in Oak: a concrete input refutes it.
+	stride := verifyCase(t, decl, oak, strings.Replace(walk, "add w9, w9, #4", "add w9, w9, #8", 1))
+	if stride.Kind != VerdictMismatch {
+		t.Fatalf("the wrong stride must be a mismatch, got %s: %s", stride.Kind, stride.Message)
+	}
+}
+
+// A vector accumulator across a data-dependent loop: the Oak lanes
+// `acc[0..7]` and `acc[8..15]` are coupled as packs to the halves of the
+// register that carries them, so the loop is proven, not witnessed
+// (docs/spec/94-assembler.md §8, the loop increment).
+func TestVerifyVectorLoopCoupling(t *testing.T) {
+	decl := "anyset: (v: []u8) -> u32"
+	oak := "{\n  acc: simd.U8x16 = simd.splat_u8x16(u8(0))\n  i: u32 = u32(0)\n  while len(v) >= u32(16) && i <= len(v) - u32(16) {\n    acc = simd.or_u8x16(acc, simd.load_u8x16(v, i))\n    i = i + u32(16)\n  }\n  simd.any_u8x16(acc) ? u32(1) | u32(0)\n}"
+	walk := `  bind x0, w1 = v
+  clobber w9, w10, w12, v16, v17
+  movi v16.16b, #0
+  mov w9, #0
+loop:
+  cmp w1, #16
+  b.lo done
+  sub w12, w1, #16
+  cmp w9, w12
+  b.hi done
+  ldr q17, [x0, w9, uxtw]
+  orr v16.16b, v16.16b, v17.16b
+  add w9, w9, #16
+  b loop
+done:
+  umaxv b16, v16.16b
+  umov w10, v16.b[0]
+  cmp w10, #0
+  cset w0, ne
+  ret`
+	verdict := verifyCase(t, decl, oak, walk)
+	if verdict.Kind != VerdictProven || !strings.Contains(verdict.Message, "acc[0..7]↔v16.lo") {
+		t.Fatalf("the vector accumulator loop must be proven with its lanes coupled, got %s: %s", verdict.Kind, verdict.Message)
+	}
+	// Accumulating with and instead of or: refuted on a concrete input.
+	wrong := verifyCase(t, decl, oak, strings.Replace(walk, "orr v16.16b", "and v16.16b", 1))
+	if wrong.Kind != VerdictMismatch {
+		t.Fatalf("the wrong accumulation must be a mismatch, got %s: %s", wrong.Kind, wrong.Message)
+	}
+}
+
+// A byte copy into a frame array at a data-dependent index (the UTF-8
+// kernel's tail): under the checker's index guard the store names sixteen
+// possible slots, each taking the value when the index selects it, so the
+// array is loop-carried memory and its lanes couple to the slots — single
+// byte slots when the array was zeroed byte by byte, packed into the two
+// words when it was zeroed as a pair (docs/spec/94-assembler.md §8).
+func TestVerifyFrameArrayLoop(t *testing.T) {
+	decl := "tailcopy: (v: []u8) -> u32"
+	oak := "{\n  tail: [16]u8 = [u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0)]\n  i: u32 = u32(0)\n  while i < len(v) && i < u32(16) {\n    tail[i] = v[i]\n    i = i + u32(1)\n  }\n  u32(tail[3])\n}"
+	body := func(init string) string {
+		return "  bind x0, w1 = v\n  clobber w9, w10, w11, x12, v16\n  frame 16\n  sub sp, sp, #16\n" + init + `  mov w9, #0
+loop:
+  cmp w9, #16
+  b.hs done
+  cmp w9, w1
+  b.hs done
+  ldrb w10, [x0, w9, uxtw]
+  add x12, sp, #0
+  cmp w9, #16
+  b.hs trap
+  strb w10, [x12, w9, uxtw]
+  add w9, w9, #1
+  b loop
+done:
+  ldr q16, [sp]
+  add sp, sp, #16
+  umov w0, v16.b[3]
+  ret
+trap:
+  brk #1`
+	}
+	var bytes strings.Builder
+	for k := 0; k < 16; k++ {
+		fmt.Fprintf(&bytes, "  strb wzr, [sp, #%d]\n", k)
+	}
+	for name, init := range map[string]string{"byte slots": bytes.String(), "word slots": "  stp xzr, xzr, [sp]\n"} {
+		verdict := verifyCase(t, decl, oak, body(init))
+		if verdict.Kind != VerdictProven {
+			t.Fatalf("%s: the tail copy must be proven, got %s: %s", name, verdict.Kind, verdict.Message)
+		}
+		// Storing every byte at index 0 instead: refuted on a concrete input.
+		wrong := verifyCase(t, decl, oak, strings.Replace(body(init), "strb w10, [x12, w9, uxtw]", "strb w10, [x12]", 1))
+		if wrong.Kind != VerdictMismatch {
+			t.Fatalf("%s: the wrong index must be a mismatch, got %s: %s", name, wrong.Kind, wrong.Message)
+		}
 	}
 }

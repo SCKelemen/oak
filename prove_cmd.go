@@ -28,6 +28,7 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 	check := flags.Bool("check", false, "run Lean on the projection (-lean) and report the statements it proves")
 	leanBinary := flags.String("lean-binary", "lean", "the Lean executable -check runs")
 	cases := flags.Int("cases", prove.DefaultCases, "largest parameter domain the exhaustive decider enumerates")
+	conflicts := flags.Int("conflicts", OakSATBudget, "conflicts the certificate rung's solver may spend on one obligation (0: 200,000 or 100 per clause, whichever is larger)")
 	solver := flags.String("solver", "oak", "the decider: oak (the Go ladder with the solver written in Oak, prove/solver), self (the prover written in Oak end to end: the file to the rows), go, or sat (the Go ladder, then the certificate rung: an external SAT solver's LRAT certificate checked in Go and in Oak)")
 	cnfDir := flags.String("cnf", "", "write every bit-level obligation's clauses to this directory as DIMACS, one name.cnf per theorem")
 	cross := flags.String("cross", "go", "with -solver oak, the cross-check of every bit-level verdict: go (the Go decider under the same order must agree, node for node) or none")
@@ -36,7 +37,7 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if flags.NArg() > 1 || (*check && *leanOut == "") {
-		fmt.Fprintln(stderr, "usage: oak prove [-lean out.lean [-check [-lean-binary lean]]] [-cases N] [-witness] [-solver oak|go|sat] [-cross go|none] [-cnf dir] [dir|file.oak]")
+		fmt.Fprintln(stderr, "usage: oak prove [-lean out.lean [-check [-lean-binary lean]]] [-cases N] [-witness] [-solver oak|go|sat|self] [-cross go|none] [-cnf dir] [-conflicts N] [dir|file.oak]")
 		return 2
 	}
 	target := "."
@@ -47,7 +48,7 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 	if *solver == "self" {
 		// The prover written in Oak (prove/solver/shell.oak): the file to
 		// the rows, with the Go ladder as the cross-check when asked.
-		return selfProve(target, *cases, *cross == "go", *leanOut, *witness, stdout, stderr)
+		return selfProve(target, *cases, *conflicts, *cross == "go", *leanOut, *witness, stdout, stderr)
 	}
 	// Invariant candidates get their base and step obligations generated
 	// before checking (prove/protocols.go), and declared operator laws
@@ -81,7 +82,7 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 		// The certificate rung (prove_sat.go): the clauses of every
 		// bit-level obligation, a SAT solver when one is installed, and its
 		// certificate checked twice before a row changes.
-		results = certificateRung(model, results, *solver == "sat", *cnfDir, stdout)
+		results = certificateRung(model, results, *solver == "sat", *cnfDir, *conflicts, stdout)
 	}
 	if *solver == "oak" {
 		// The Oak solver (prove/solver/bdd.oak) decides the bit-level rung:
@@ -303,7 +304,7 @@ func lawSources(target string) [][]byte {
 // projection (lean.oak). With crossCheck the Go ladder decides the same
 // file and every row's status must agree, and the Go extractor's
 // projection must match the written one byte for byte.
-func selfProve(target string, cases int, crossCheck bool, leanOut string, witness bool, stdout, stderr io.Writer) int {
+func selfProve(target string, cases, conflicts int, crossCheck bool, leanOut string, witness bool, stdout, stderr io.Writer) int {
 	info, err := os.Stat(target)
 	if err != nil || info.IsDir() {
 		fmt.Fprintf(stderr, "oak prove: -solver self takes one law file, got %s\n", target)
@@ -320,7 +321,7 @@ func selfProve(target string, cases int, crossCheck bool, leanOut string, witnes
 		return 2
 	}
 	run := exec.Command(binary)
-	run.Env = append(os.Environ(), "OAK_SOLVER_MODE=prove", "OAK_PROVE_FILE="+absolute, fmt.Sprintf("OAK_PROVE_CASES=%d", cases))
+	run.Env = append(os.Environ(), "OAK_SOLVER_MODE=prove", "OAK_PROVE_FILE="+absolute, fmt.Sprintf("OAK_PROVE_CASES=%d", cases), fmt.Sprintf("OAK_PROVE_CONFLICTS=%d", conflicts))
 	if leanOut != "" {
 		leanAbsolute, err := filepath.Abs(leanOut)
 		if err != nil {
@@ -376,6 +377,12 @@ func selfProve(target string, cases int, crossCheck bool, leanOut string, witnes
 		return 2
 	}
 	results, err := prove.Theorems(model, cases)
+	if err == nil {
+		// The same ladder the shell runs: the certificate rung follows the
+		// diagram on the Go side too, so a row the diagram left over its
+		// budget and the certificate decided compares like with like.
+		results = certificateRung(model, results, true, "", conflicts, io.Discard)
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "oak prove: %v\n", err)
 		return 2

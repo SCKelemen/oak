@@ -85,6 +85,7 @@ type CodeGenerator struct {
 	seqCounter         int
 	seqTypeofFallbacks int
 	noSequence         bool
+	quantifierCounter  int
 	// globalTypes classifies top-level bindings (static globals) the same
 	// way localTypes classifies function locals.
 	globalTypes map[string]localContainer
@@ -1060,10 +1061,12 @@ func (cg *CodeGenerator) emitFunction(fn *ast.FunctionStatement, tc *typechecker
 		if arch == "" {
 			arch = asm.ArchArm64 // the lane is recorded by the stitcher and the native backend; AArch64 is the default lane
 		}
+		cond := asm.ArchCondition(arch)
 		if fn.NativeBacked && vectorContract(fn) {
 			cg.emitVectorShim(fn, arch)
+			cond = vectorEntryCondition(arch) // the fallback body serves where the entry's types do not
 		}
-		cg.write(fmt.Sprintf("#if !(%s) || defined(OAK_PORTABLE_INTRINSICS)\n", asm.ArchCondition(arch)))
+		cg.write(fmt.Sprintf("#if !(%s) || defined(OAK_PORTABLE_INTRINSICS)\n", cond))
 		defer cg.write("#endif\n")
 	}
 
@@ -3495,6 +3498,8 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 	case *ast.MatchExpression:
 		// Pattern matching - this is complex, emit as a block
 		cg.emitMatchExpressionInline(e, tc)
+	case *ast.QuantifierExpression:
+		cg.emitQuantifierExpression(e, tc)
 	case *ast.ArrayLiteral:
 		cg.emitArrayLiteral(e, tc)
 	case *ast.RecordLiteral:
@@ -5089,6 +5094,10 @@ func neonTypeOf(typeExpr ast.Expression) (neon neonVector, ok bool) {
 		return neonVector{ctype: "uint32x4_t", suffix: "u32", oak: "u32x4"}, true
 	case "simd.U64x2":
 		return neonVector{ctype: "uint64x2_t", suffix: "u64", oak: "u64x2"}, true
+	case "simd.F32x4":
+		return neonVector{ctype: "float32x4_t", suffix: "f32", oak: "f32x4"}, true
+	case "simd.F64x2":
+		return neonVector{ctype: "float64x2_t", suffix: "f64", oak: "f64x2"}, true
 	}
 	return neonVector{}, false
 }
@@ -5099,10 +5108,56 @@ type neonVector struct {
 	oak    string // the lane-array struct: u8x16
 }
 
+// rvvTypeOf maps a fixed vector type to its RVV spelling (a single-register
+// group at LMUL=1) and the unit-stride load and store intrinsics of its
+// lanes (docs/spec/94-assembler.md §9, vectors across the call boundary).
+func rvvTypeOf(typeExpr ast.Expression) (rvv rvvVector, ok bool) {
+	if typeExpr == nil {
+		return rvvVector{}, false
+	}
+	switch typeExpr.String() {
+	case "simd.U8x16":
+		return rvvVector{ctype: "vuint8m1_t", load: "__riscv_vle8_v_u8m1", store: "__riscv_vse8_v_u8m1", lanes: 16, oak: "u8x16"}, true
+	case "simd.U16x8":
+		return rvvVector{ctype: "vuint16m1_t", load: "__riscv_vle16_v_u16m1", store: "__riscv_vse16_v_u16m1", lanes: 8, oak: "u16x8"}, true
+	case "simd.U32x4":
+		return rvvVector{ctype: "vuint32m1_t", load: "__riscv_vle32_v_u32m1", store: "__riscv_vse32_v_u32m1", lanes: 4, oak: "u32x4"}, true
+	case "simd.U64x2":
+		return rvvVector{ctype: "vuint64m1_t", load: "__riscv_vle64_v_u64m1", store: "__riscv_vse64_v_u64m1", lanes: 2, oak: "u64x2"}, true
+	case "simd.F32x4":
+		return rvvVector{ctype: "vfloat32m1_t", load: "__riscv_vle32_v_f32m1", store: "__riscv_vse32_v_f32m1", lanes: 4, oak: "f32x4"}, true
+	case "simd.F64x2":
+		return rvvVector{ctype: "vfloat64m1_t", load: "__riscv_vle64_v_f64m1", store: "__riscv_vse64_v_f64m1", lanes: 2, oak: "f64x2"}, true
+	}
+	return rvvVector{}, false
+}
+
+type rvvVector struct {
+	ctype string // vuint8m1_t
+	load  string // __riscv_vle8_v_u8m1
+	store string // __riscv_vse8_v_u8m1
+	lanes int    // the vl of the load and store
+	oak   string // the lane-array struct: u8x16
+}
+
 // nativeEntryName is the C symbol of a vector-contract function's native
-// entry (nativegen.NativeSymbol under the emitter's mangling).
+// entry (nativegen.NativeSymbolFor under the emitter's mangling): the
+// lane's suffix, `_neon_abi` or `_rvv_abi`.
 func (cg *CodeGenerator) nativeEntryName(fn *ast.FunctionStatement) string {
+	if fn.AsmArch == asm.ArchRV64 {
+		return cg.cFunctionName(fn.Name.Value + "_rvv_abi")
+	}
 	return cg.cFunctionName(fn.Name.Value + "_neon_abi")
+}
+
+// vectorEntryCondition guards the native entry and its shim: the lane's
+// architecture, and on RV64 the vector extension the entry's types need
+// (the C is compiled for the processor the bodies were lowered for).
+func vectorEntryCondition(arch string) string {
+	if arch == asm.ArchRV64 {
+		return asm.ArchCondition(arch) + " && defined(__riscv_vector)"
+	}
+	return asm.ArchCondition(arch)
 }
 
 // emitVectorEntryPrototype declares the native entry of a function under
@@ -5114,15 +5169,15 @@ func (cg *CodeGenerator) emitVectorEntryPrototype(fn *ast.FunctionStatement) {
 	if arch == "" {
 		arch = asm.ArchArm64
 	}
-	cg.write(fmt.Sprintf("#if (%s) && !defined(OAK_PORTABLE_INTRINSICS)\n", asm.ArchCondition(arch)))
+	cg.write(fmt.Sprintf("#if (%s) && !defined(OAK_PORTABLE_INTRINSICS)\n", vectorEntryCondition(arch)))
 	ret := cg.parseTypeExpression(fn.ReturnType)
-	if neon, ok := neonTypeOf(fn.ReturnType); ok {
-		ret = neon.ctype
+	if ctype, ok := cg.vectorEntryType(fn.ReturnType, arch); ok {
+		ret = ctype
 	}
 	var params []string
 	for _, p := range fn.Parameters {
-		if neon, ok := neonTypeOf(p.Type); ok {
-			params = append(params, fmt.Sprintf("%s %s", neon.ctype, cIdent(p.Name.Value)))
+		if ctype, ok := cg.vectorEntryType(p.Type, arch); ok {
+			params = append(params, fmt.Sprintf("%s %s", ctype, cIdent(p.Name.Value)))
 		} else {
 			params = append(params, cg.cParameter(p.Type, p.Name.Value))
 		}
@@ -5133,26 +5188,53 @@ func (cg *CodeGenerator) emitVectorEntryPrototype(fn *ast.FunctionStatement) {
 	cg.write(fmt.Sprintf("%s %s( %s );\n#endif\n", ret, cg.nativeEntryName(fn), strings.Join(params, ", ")))
 }
 
+// vectorEntryType is the C type a fixed vector takes at the native entry on
+// a lane: the NEON vector type on AArch64, the RVV single-register type on
+// RV64 (which the compiler passes in v8–v23 and returns in v8, the vector
+// calling convention every function with vector arguments follows).
+func (cg *CodeGenerator) vectorEntryType(typeExpr ast.Expression, arch string) (string, bool) {
+	if arch == asm.ArchRV64 {
+		rvv, ok := rvvTypeOf(typeExpr)
+		return rvv.ctype, ok
+	}
+	neon, ok := neonTypeOf(typeExpr)
+	return neon.ctype, ok
+}
+
 // emitVectorShim defines the Oak name of a natively lowered vector-contract
 // function as a converting call to its native entry: lane-array structs in,
-// NEON values through, the struct back out (docs/spec/93-simd.md section
-// 1.4). The C compiler inlines it at every call.
+// NEON or RVV values through, the struct back out (docs/spec/93-simd.md
+// section 1.4). The C compiler inlines it at every call.
 func (cg *CodeGenerator) emitVectorShim(fn *ast.FunctionStatement, arch string) {
-	cg.write(fmt.Sprintf("#if (%s) && !defined(OAK_PORTABLE_INTRINSICS)\n", asm.ArchCondition(arch)))
+	cg.write(fmt.Sprintf("#if (%s) && !defined(OAK_PORTABLE_INTRINSICS)\n", vectorEntryCondition(arch)))
 	ret := cg.parseTypeExpression(fn.ReturnType)
 	cg.write(fmt.Sprintf("%s %s( %s ) {\n", ret, cg.cFunctionName(fn.Name.Value), cg.cParameterList(fn)))
 	var args []string
 	for _, p := range fn.Parameters {
-		if neon, ok := neonTypeOf(p.Type); ok {
-			args = append(args, fmt.Sprintf("vld1q_%s( %s.lanes )", neon.suffix, cIdent(p.Name.Value)))
-		} else {
-			args = append(args, cIdent(p.Name.Value))
+		switch {
+		case arch == asm.ArchRV64:
+			if rvv, ok := rvvTypeOf(p.Type); ok {
+				args = append(args, fmt.Sprintf("%s( %s.lanes, %d )", rvv.load, cIdent(p.Name.Value), rvv.lanes))
+				continue
+			}
+		default:
+			if neon, ok := neonTypeOf(p.Type); ok {
+				args = append(args, fmt.Sprintf("vld1q_%s( %s.lanes )", neon.suffix, cIdent(p.Name.Value)))
+				continue
+			}
 		}
+		args = append(args, cIdent(p.Name.Value))
 	}
 	call := fmt.Sprintf("%s( %s )", cg.nativeEntryName(fn), strings.Join(args, ", "))
 	switch {
 	case fn.ReturnType == nil || fn.ReturnType.String() == "()":
 		cg.write(fmt.Sprintf("  %s;\n}\n#endif\n", call))
+	case arch == asm.ArchRV64:
+		if rvv, ok := rvvTypeOf(fn.ReturnType); ok {
+			cg.write(fmt.Sprintf("  %s out;\n  %s( out.lanes, %s, %d );\n  return out;\n}\n#endif\n", rvv.oak, rvv.store, call, rvv.lanes))
+		} else {
+			cg.write(fmt.Sprintf("  return %s;\n}\n#endif\n", call))
+		}
 	default:
 		if neon, ok := neonTypeOf(fn.ReturnType); ok {
 			cg.write(fmt.Sprintf("  %s out;\n  vst1q_%s( out.lanes, %s );\n  return out;\n}\n#endif\n", neon.oak, neon.suffix, call))

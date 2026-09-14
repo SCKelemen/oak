@@ -51,6 +51,11 @@ func TestE2ENativeRV64Lowers(t *testing.T) {
 			t.Errorf("%s was not lowered by the rv64 lane; diagnostics:\n%s", fn, joined)
 		}
 	}
+	// divw/remw as the uninterpreted quotient and a - (a / b) * b
+	// (docs/spec/94-assembler.md §8, thirty-first increment).
+	if !strings.Contains(joined, "asm unit divmod: proven") {
+		t.Errorf("divmod was not proven by the verifier; diagnostics:\n%s", joined)
+	}
 	if machine := binary.LittleEndian.Uint16(native.Object[18:20]); machine != 243 {
 		t.Fatalf("companion object e_machine %d, want EM_RISCV (243)", machine)
 	}
@@ -78,8 +83,10 @@ var rv64Virt = nativeRV64Machine{
 	// A trap (an ebreak from a failed guard) lands in the machine-mode
 	// handler, which prints TRAP and exits, so a trapping run is a fast
 	// verdict rather than a hung machine.
-	// mstatus.FS is set so the FPU is on for the hard-float runs.
-	startAsm: ".section .text.init\n.globl _start\n_start:\n  la sp, _stack_top\n  li t0, 0x6000\n  csrs mstatus, t0\n  la t0, trap_handler\n  csrw mtvec, t0\n  call cmain\n1: j 1b\n" +
+	// mstatus.FS is set so the FPU is on for the hard-float runs, and
+	// mstatus.VS so the vector unit is on for the runs with V (the bits are
+	// ignored on a processor without it).
+	startAsm: ".section .text.init\n.globl _start\n_start:\n  la sp, _stack_top\n  li t0, 0x6600\n  csrs mstatus, t0\n  la t0, trap_handler\n  csrw mtvec, t0\n  call cmain\n1: j 1b\n" +
 		"trap_handler:\n  li t0, 0x10000000\n  li t1, 84\n  sb t1, 0(t0)\n  li t1, 82\n  sb t1, 0(t0)\n  li t1, 65\n  sb t1, 0(t0)\n  li t1, 80\n  sb t1, 0(t0)\n  li t1, 10\n  sb t1, 0(t0)\n  li t0, 0x100000\n  li t1, 0x5555\n  sw t1, 0(t0)\n2: j 2b\n",
 	origin: "0x80000000",
 }
@@ -100,6 +107,22 @@ func runNativeRV64Bare(t *testing.T, name string, native NativeOutput) string {
 // freestanding target's soft-float lp64.
 func runNativeRV64BareABI(t *testing.T, name string, native NativeOutput, hardFloat bool) string {
 	t.Helper()
+	return runNativeRV64BareWith(t, name, native, nativeRV64Run{hardFloat: hardFloat})
+}
+
+// nativeRV64Run selects the machine a bare run needs: the hard-float ABI,
+// and the vector extension at a VLEN (the C backend's RVV realization and
+// the native lane's vector units both need V on the processor;
+// mstatus.VS is enabled by the start code).
+type nativeRV64Run struct {
+	hardFloat bool
+	vector    bool
+	vlen      int
+}
+
+func runNativeRV64BareWith(t *testing.T, name string, native NativeOutput, run nativeRV64Run) string {
+	t.Helper()
+	hardFloat := run.hardFloat
 	bare := target.Target{OS: target.OSFreestanding, Arch: target.ArchRiscv64}
 	if _, err := exec.LookPath(rv64Virt.qemu); err != nil {
 		t.Skipf("%s not present", rv64Virt.qemu)
@@ -120,6 +143,9 @@ func runNativeRV64BareABI(t *testing.T, name string, native NativeOutput, hardFl
 	cpu, abi := bare.DefaultCPU(), "lp64"
 	if hardFloat {
 		cpu, abi = "generic_rv64+m+a+f+d", "lp64d"
+	}
+	if run.vector {
+		cpu += "+v"
 	}
 	objArgs := []string{"cc", "--target=" + bare.ZigTriple(), "-mcpu=" + cpu, "-mabi=" + abi, "-mcmodel=medany", "-ffreestanding", "-nostdlib", "-fno-unwind-tables", "-fno-asynchronous-unwind-tables", "-DOAK_FREESTANDING", "-std=c99", "-O1", "-ffp-contract=off"}
 	if hardFloat {
@@ -167,6 +193,13 @@ func runNativeRV64BareABI(t *testing.T, name string, native NativeOutput, hardFl
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	args := append([]string{"-M", "virt", "-bios", "none", "-nographic", "-monitor", "none", "-kernel", image}, rv64Virt.extraArgs...)
+	if run.vector {
+		vlen := run.vlen
+		if vlen == 0 {
+			vlen = 128
+		}
+		args = append(args, "-cpu", fmt.Sprintf("rv64,v=true,vlen=%d", vlen))
+	}
 	cmd := exec.CommandContext(ctx, rv64Virt.qemu, args...)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
@@ -293,9 +326,11 @@ func TestE2ENativeRV64ExtraUnderQEMU(t *testing.T) {
 			t.Fatalf("%s was not lowered by the rv64 lane; diagnostics:\n%s", fn, joined)
 		}
 	}
-	// The rest are trusted (calls, a non-constant shift count, division by
-	// a variable) or agree on every witness (the u16 product's BDD).
-	for _, fn := range []string{"wide", "short_neg", "cmp_u", "cmp_s", "either", "many", "mix2", "widen_u", "widen_s", "narrow8", "narrow_s8", "big_neg", "flip"} {
+	// The rest are trusted (calls) or agree on every witness (the u16
+	// product's BDD). A variable shift count is proven below the width,
+	// where the guarded native shift is Oak's (docs/spec/94-assembler.md
+	// §8, variable shift counts).
+	for _, fn := range []string{"wide", "short_neg", "shifts", "byte_shift", "cmp_u", "cmp_s", "either", "many", "mix2", "widen_u", "widen_s", "narrow8", "narrow_s8", "big_neg", "flip"} {
 		if !strings.Contains(joined, "asm unit "+fn+": proven") {
 			t.Errorf("%s must be proven equal to its Oak body; diagnostics:\n%s", fn, joined)
 		}
@@ -316,9 +351,23 @@ func TestE2ENativeRV64ExtraUnderQEMU(t *testing.T) {
 // two native lanes, the C backend as the oracle for both.
 func TestE2ENativeRV64ExtraOnArm64(t *testing.T) {
 	requireArm64Host(t)
-	comp := New().WithSource("native.oak", nativeRV64Extra).WithNativeBodies().WithNativeAsm()
+	var infos []string
+	comp := New().WithSource("native.oak", nativeRV64Extra).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
+		if d.Source == "native" {
+			infos = append(infos, d.Message)
+		}
+	})
 	if _, code, abnormal := buildAndRunFrom(t, "native_extra_arm64", comp); abnormal || code != 7 {
-		t.Fatalf("arm64 native bodies: exit = (%d, abnormal=%v), want 7", code, abnormal)
+		t.Fatalf("arm64 native bodies: exit = (%d, abnormal=%v), want 7\n%s", code, abnormal, strings.Join(infos, "\n"))
+	}
+	// The variable shift counts are proven on this lane too: the guarded
+	// w-register shift below the width is Oak's (docs/spec/94-assembler.md
+	// §8, variable shift counts).
+	joined := strings.Join(infos, "\n")
+	for _, fn := range []string{"shifts", "byte_shift"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven") {
+			t.Errorf("%s must be proven equal to its Oak body; diagnostics:\n%s", fn, joined)
+		}
 	}
 }
 
@@ -460,9 +509,18 @@ func TestE2ENativeRV64FloatsUnderQEMU(t *testing.T) {
 	skipInShort(t)
 	native, infos := nativeRV64Lower(t, rv64Linux, nativeFloatProgram)
 	joined := strings.Join(infos, "\n")
-	for _, fn := range []string{"scale", "halve", "clamp", "neg_abs", "hypot_sq", "widen_round", "to_int", "sat_int", "from_int", "bits_of", "total", "fill_f64", "combine", "main"} {
+	for _, fn := range []string{"scale", "halve", "clamp", "neg_abs", "least", "most", "hypot_sq", "widen_round", "to_int", "sat_int", "from_int", "bits_of", "total", "fill_f64", "combine", "main"} {
 		if !strings.Contains(joined, "asm unit "+fn+":") {
 			t.Fatalf("%s was not lowered by the rv64 lane; diagnostics:\n%s", fn, joined)
+		}
+	}
+	// The NaN-propagating min/max lower behind two NaN tests (rvMinMax) and
+	// the verifier proves them against Oak's min/max up to the NaN payload.
+	// The float span reduction is proven through the loop recognizer: flw
+	// through the span element address, the accumulator in fs0.
+	for _, fn := range []string{"least", "most", "total"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven") {
+			t.Errorf("%s was not proven by the verifier; diagnostics:\n%s", fn, joined)
 		}
 	}
 	if out := runNativeRV64BareABI(t, "native_rv64_floats", native, true); !strings.Contains(out, "0000002a\n") {
@@ -739,7 +797,32 @@ func TestE2ENativeRV64LoopVerdicts(t *testing.T) {
 			t.Errorf("%s must be proven by loop coupling: %s", fn, verdicts[fn])
 		}
 	}
-	if !strings.Contains(verdicts["fact"], "agrees with its Oak body") {
-		t.Errorf("fact must be witnessed (its product exceeds the proof budget): %s", verdicts["fact"])
+	// fact's 64-bit product exceeded the proof budget until the identity
+	// masks folded (asm/verify.go binaryTerm); it is proven by coupling now,
+	// and evidence remains acceptable should the budget move.
+	if !strings.Contains(verdicts["fact"], "coupled inductively") && !strings.Contains(verdicts["fact"], "agrees with its Oak body") {
+		t.Errorf("fact must be proven by coupling or witnessed: %s", verdicts["fact"])
+	}
+	// A unit body without effects (check_all: an assert over a call) is
+	// proven: neither side writes package state or a span memory
+	// (docs/spec/94-assembler.md §8, unit bodies without effects).
+	if !strings.Contains(verdicts["check_all"], "proven equal to its Oak body") {
+		t.Errorf("check_all must be proven as a unit body without effects: %s", verdicts["check_all"])
+	}
+	// A load from an owned array at a data-dependent index reads the
+	// elements merged under the guarded index on this lane too, the bound
+	// following the index term through the scaled add
+	// (docs/spec/94-assembler.md §8, frame loads at a data-dependent index).
+	if !strings.Contains(verdicts["signed_bytes"], "proven equal to its Oak body") {
+		t.Errorf("signed_bytes must be proven through the guarded element load: %s", verdicts["signed_bytes"])
+	}
+	// A caller passing a span over its own array to a looping callee is
+	// proven through the summary: the callee's parameter is the array's
+	// contents, its loop carries the elements (docs/spec/94-assembler.md
+	// §8, span arguments over owned arrays).
+	for _, fn := range []string{"filled", "squares"} {
+		if !strings.Contains(verdicts[fn], "proven equal to its Oak body") || !strings.Contains(verdicts[fn], "callees taken at their Oak bodies") {
+			t.Errorf("%s must be proven through its callee's summary over the owned array: %s", fn, verdicts[fn])
+		}
 	}
 }

@@ -14,6 +14,15 @@ const CPrelude = `/* asm units (docs/spec/94-assembler.md): top-level assembly b
 #define OAK_ASM_STR_(x) #x
 #define OAK_ASM_STR(x) OAK_ASM_STR_(x)
 #define OAK_ASM_SYMBOL(name) OAK_ASM_STR(__USER_LABEL_PREFIX__) #name
+/* a global's page address and its low 12 bits, as the platform's assembler
+   spells them (adrp/add, docs/spec/94-assembler.md section 9) */
+#if defined(__APPLE__)
+#define OAK_ASM_PAGE(name) OAK_ASM_SYMBOL(name) "@PAGE"
+#define OAK_ASM_PAGEOFF(name) OAK_ASM_SYMBOL(name) "@PAGEOFF"
+#else
+#define OAK_ASM_PAGE(name) OAK_ASM_SYMBOL(name)
+#define OAK_ASM_PAGEOFF(name) ":lo12:" OAK_ASM_SYMBOL(name)
+#endif
 `
 
 // EmitCExtern is EmitC's counterpart when the unit is encoded by the Oak
@@ -125,6 +134,19 @@ func archCondition(fn *Function) string { return ArchCondition(fn.Arch) }
 
 // ArchCondition is the preprocessor test for a lane's architecture: the
 // asm unit applies under it, the Oak fallback body under its negation.
+// VectorEntrySuffix marks the native entry of a function whose signature
+// carries a fixed vector on a lane: `_neon_abi` on AArch64 (v0–v7),
+// `_rvv_abi` on RV64 (v8–v23, the RVV psABI). The C emitter defines the
+// Oak name as a converting shim over the entry, and the verifier's call
+// summary reads the callee through the suffix (docs/spec/94-assembler.md
+// §9). No Oak identifier ends in either.
+func VectorEntrySuffix(arch string) string {
+	if arch == ArchRV64 {
+		return "_rvv_abi"
+	}
+	return "_neon_abi"
+}
+
 func ArchCondition(arch string) string {
 	if arch == ArchRV64 {
 		return "defined(__riscv) && (__riscv_xlen == 64)"
