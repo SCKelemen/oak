@@ -4697,6 +4697,11 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 		}
 		return g.expr(es.Expression, &typ)
 	}
+	if _, isQuantifier := expr.(*ast.QuantifierExpression); isQuantifier {
+		// A bounded quantifier enumerates a domain: the C backend's loop
+		// realizes it (docs/spec/10-syntax.md section 3e).
+		return 0, unsupported("a bounded quantifier")
+	}
 	return 0, unsupported("%T", expr)
 }
 

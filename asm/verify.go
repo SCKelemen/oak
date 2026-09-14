@@ -79,7 +79,24 @@ const (
 	// witness, decided as an uninterpreted function (asm/floats_ops.go,
 	// Oak.Uninterpreted).
 	termFloat
+	// termQuant is a bounded quantifier over a fresh parameter (name, its
+	// width in value): op "forall" or "exists", left the 1-bit body
+	// (docs/spec/10-syntax.md section 3e). A witness enumerates the
+	// domain; the blaster eliminates the parameter's variables from the
+	// body's diagram bit by bit (asm/blast.go).
+	termQuant
 )
+
+// quantTerm is the quantifier op over the bound parameter name of the
+// given width, body a 1-bit term.
+func quantTerm(op, name string, width int, body *term) *term {
+	return &term{kind: termQuant, width: 1, op: op, name: name, value: uint64(width), left: truncate(body, 1)}
+}
+
+// quantifierBound reports a name the theorem lowering minted for a
+// quantifier's binder (`x@q1`): a leaf of the blast, never a parameter a
+// counterexample names.
+func quantifierBound(name string) bool { return strings.Contains(name, "@q") }
 
 // selectTerm is the element of span at index: a constant index is the
 // element parameter v[k]; a symbolic one is a select node, evaluated
@@ -431,6 +448,29 @@ func (t *term) evalUncached(env map[string]uint64, memo termMemo) uint64 {
 		return t.value & m
 	case termSelect:
 		return elementValue(t.name, memo.eval(t.left, env)&mask(32), t.width) & m
+	case termQuant:
+		// The body under every value of the bound parameter, in a memo of
+		// its own per value (its subterms depend on the binding); the
+		// enumeration stops at the deciding value, as the interpreter's.
+		saved, wasBound := env[t.name]
+		universal := t.op == "forall"
+		holds := universal
+		for v := uint64(0); v < uint64(1)<<uint(t.value); v++ {
+			env[t.name] = v
+			if (mapMemo{}.eval(t.left, env)&1 == 1) != universal {
+				holds = !universal
+				break
+			}
+		}
+		if wasBound {
+			env[t.name] = saved
+		} else {
+			delete(env, t.name)
+		}
+		if holds {
+			return 1
+		}
+		return 0
 	case termFloat:
 		args := make([]uint64, 0, 3)
 		widths := make([]int, 0, 3)
@@ -536,6 +576,8 @@ func (t *term) stringBounded(budget *int) string {
 		return fmt.Sprintf("(%s ? %s : %s)", t.cond.stringBounded(budget), t.left.stringBounded(budget), t.right.stringBounded(budget))
 	case termSelect:
 		return fmt.Sprintf("%s[%s]", t.name, t.left.stringBounded(budget))
+	case termQuant:
+		return fmt.Sprintf("(%s %s:%d. %s)", t.op, t.name, t.value, t.left.stringBounded(budget))
 	case termFloat:
 		parts := []string{}
 		for _, arg := range []*term{t.left, t.right, t.cond} {
@@ -584,7 +626,7 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		return &linearForm{width: w, coeffs: map[string]uint64{t.name: 1}}
 	case termConst:
 		return &linearForm{width: w, constant: t.value & m}
-	case termCmp, termIte, termSelect, termFloat:
+	case termCmp, termIte, termSelect, termFloat, termQuant:
 		return nil
 	}
 	switch t.op {
@@ -2709,7 +2751,8 @@ type oakLowering struct {
 	// arch is the lane an asm unit's Oak body is lowered against ("" for
 	// the theorem decider): the RV64 lane's quotients are its own
 	// operations (asm/floats_ops.go rv.udiv, rv.sdiv).
-	arch string
+	arch        string
+	quantifiers int // quantifier binders minted (lowerQuantifier)
 	// resultChunk: for a record result of two register chunks, the chunk
 	// this lowering's resultTerm packs (Verify runs one chunk at a time).
 	resultChunk int
@@ -5081,6 +5124,12 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		return binaryTerm(op, left, right), "", true
 	case *ast.BlockExpression:
 		return lo.lowerBlock(e.Block, width)
+	case *ast.QuantifierExpression:
+		t, reason, ok := lo.lowerQuantifier(e)
+		if !ok {
+			return nil, reason, false
+		}
+		return zeroExtend(t, width), "", true
 	case *ast.MatchExpression:
 		// A value-position Bool conditional over a comparison of parameters:
 		// `a < b ? b | a`. The comparison happens at the operands' own width
@@ -5118,6 +5167,73 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		return iteTerm(cond, left, right), "", true
 	}
 	return nil, fmt.Sprintf("%T", expr), false
+}
+
+// lowerQuantifier lowers `forall (x: T) { body }` / `exists (x: T) { body }`
+// (docs/spec/10-syntax.md section 3e): each binder is a fresh parameter
+// of its scalar width (`x@qN`; Bool 1, u8/i8 8, u16/i16 16), the body is
+// lowered to its bit with the binders as locals, and the result is the
+// quantifier term over the innermost binder outward. A binder over a sum
+// type is left to the enumeration rung (the tag would need its domain
+// hypothesis inside the elimination). A trap the body may take under some
+// value of a binder is the quantifier's trap: the obligation is decided
+// over the binder as a free leaf.
+func (lo *oakLowering) lowerQuantifier(expr *ast.QuantifierExpression) (*term, string, bool) {
+	if expr.Body == nil || expr.Body.Block == nil {
+		return nil, "a quantifier without a body", false
+	}
+	if lo.locals == nil {
+		lo.locals = map[string]*oakLocal{}
+	}
+	type bound struct {
+		name  string
+		fresh string
+		width int
+		prev  *oakLocal
+		had   bool
+	}
+	binders := make([]bound, 0, len(expr.Binders))
+	restore := func() {
+		for i := len(binders) - 1; i >= 0; i-- {
+			b := binders[i]
+			if b.had {
+				lo.locals[b.name] = b.prev
+			} else {
+				delete(lo.locals, b.name)
+			}
+		}
+	}
+	for _, binder := range expr.Binders {
+		width, signed, isScalar := contractBits(binder.Type)
+		if typeText(binder.Type) == "Bool" {
+			width, signed, isScalar = 1, false, true
+		}
+		if !isScalar || width > 16 {
+			restore()
+			return nil, fmt.Sprintf("a quantifier over %s (the bit level takes Bool and the 8- and 16-bit integers)", typeText(binder.Type)), false
+		}
+		lo.quantifiers++
+		fresh := fmt.Sprintf("%s@q%d", binder.Name.Value, lo.quantifiers)
+		lo.params[fresh] = width
+		lo.signed[fresh] = signed
+		prev, had := lo.locals[binder.Name.Value]
+		lo.locals[binder.Name.Value] = &oakLocal{value: paramTerm(fresh, width), width: width, signed: signed}
+		binders = append(binders, bound{name: binder.Name.Value, fresh: fresh, width: width, prev: prev, had: had})
+	}
+	body, reason, ok := lo.lowerBlock(expr.Body.Block, 1)
+	restore()
+	if !ok {
+		return nil, reason, false
+	}
+	op := "exists"
+	if expr.Universal {
+		op = "forall"
+	}
+	t := truncate(body, 1)
+	for i := len(binders) - 1; i >= 0; i-- {
+		t = quantTerm(op, binders[i].fresh, binders[i].width, t)
+	}
+	return t, "", true
 }
 
 // lowerCondition lowers a Bool condition — a comparison, or comparisons
@@ -6673,6 +6789,9 @@ func (lo *oakLowering) declaredWidth(name string) int {
 func describeEnv(names []string, env map[string]uint64) string {
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
+		if quantifierBound(name) {
+			continue // a quantifier's binder: the body ranged over it
+		}
 		parts = append(parts, fmt.Sprintf("%s=%d", name, env[name]))
 	}
 	return strings.Join(parts, ", ")

@@ -385,6 +385,16 @@ func (bl *blaster) blastUncached(t *term) []int {
 			return nil
 		}
 		return bl.selectBits(t.name, idx, t.width, t.left)
+	case termQuant:
+		holds, ok := bl.quantify(t)
+		if !ok {
+			return nil
+		}
+		for i := range out {
+			out[i] = bddFalse
+		}
+		out[0] = holds
+		return out
 	case termFloat:
 		// An uninterpreted operation: its value is a fresh block shared by
 		// every application of the same operation to the same operand
@@ -826,4 +836,50 @@ func (bl *blaster) counterexampleOf(node int) map[string]uint64 {
 		env[owner.param] |= uint64(1) << uint(owner.bit)
 	}
 	return env
+}
+
+// quantify eliminates a quantifier's bound parameter from its body's
+// diagram (docs/spec/10-syntax.md section 3e): under the diagram engine,
+// `forall` is the conjunction and `exists` the disjunction of the two
+// cofactors at each of the parameter's variables, innermost bit first —
+// the diagram of the body with the variables gone, sound by Shannon's
+// expansion. Under the clause engine there is no cofactor, so the domain
+// is expanded: the body under every constant value of the parameter, up
+// to 256 values; a wider binder is declined there.
+func (bl *blaster) quantify(t *term) (int, bool) {
+	op := opAnd
+	if t.op == "exists" {
+		op = opOr
+	}
+	width := int(t.value)
+	if bl.cnf != nil {
+		if width > 8 {
+			return 0, false
+		}
+		acc := bddTrue
+		if op == opOr {
+			acc = bddFalse
+		}
+		for v := uint64(0); v < uint64(1)<<uint(width); v++ {
+			body := bl.blast(substitute(t.left, map[string]*term{t.name: constTerm(v, width)}))
+			if body == nil {
+				return 0, false
+			}
+			acc = bl.apply(op, acc, body[0])
+		}
+		return acc, !bl.exceeded()
+	}
+	body := bl.blast(t.left)
+	if body == nil {
+		return 0, false
+	}
+	f := body[0]
+	for bit := 0; bit < width; bit++ {
+		v := bl.variableIndex(t.name, bit)
+		f = bl.bdd.apply(op, bl.bdd.restrict(f, v, false), bl.bdd.restrict(f, v, true))
+		if bl.exceeded() {
+			return 0, false
+		}
+	}
+	return f, true
 }
