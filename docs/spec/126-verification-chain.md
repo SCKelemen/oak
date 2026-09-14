@@ -87,8 +87,12 @@ the compiler's output is checked, not trusted (add, sub, neg, the
 conversions and the checked shifts at the constant counts 1, 3 and
 width − 1 proven — the count below the width, the helper's trap check
 folds away and the verifier admits the constant shift — multiplication
-witnessed, division and remainder outside the lowering's subset because
-the divisor is a variable; the guarded element read `oak_index` over a
+witnessed, division and remainder witnessed: the lowering states them as
+the totalized division terms and the machine's zero-divisor guard is met
+by construction, its trap path leaving the input domain
+(`pathEffects.trap`), so a helper that divided without the guard would be
+a mismatch, and the bit-level decision stops short of division as it does
+of multiplication; the guarded element read `oak_index` over a
 `[]T` parameter is proven against `v[i]` on both lanes — clang's
 `cmp w2, w1; b.hs; ldr [x0, w2, uxtw #s]` is the arm64 checker's guarded
 element shape, and GCC's `bgeu i, len` on the psABI's widened `u32` pair,
@@ -266,12 +270,15 @@ Done on 2026-09-13:
    scalars — block-scoped locals, inlined calls, span elements, counted
    loops — with the extraction's reading of each.
 2. **Translation validation of the trusted core** (§2.4):
-   `codegen/translation_validation_test.go`, arm64 through clang and rv64
-   through GCC. What it does not decide: the shift helpers (a variable
-   count: Oak traps, the verifier refuses) and division and remainder (a
-   variable divisor); on rv64 the signed division helpers use `seqz`,
-   which the RV64IM table lacks, so those four are outside the unit
-   language rather than trusted by verdict.
+   `codegen/translation_validation_test.go`, arm64 through clang — at
+   armv8.0, at armv8.1-a (LSE), and as the Apple cores' compilers build it
+   (`-mcpu=apple-m1`: LSE atomics, `ldapr` for an acquire load) — and rv64
+   through GCC. Every helper is decided on arm64 (69 proven, 24
+   witnessed: the multiplications and divisions); what it does not decide
+   is the shift helpers under a variable count (Oak traps, the verifier
+   refuses) — the constant-count specializations are proven — and, on
+   rv64, the compare-exchange helper (`lr`/`sc` are not in the RV64IM unit
+   language).
 
 Next, arm64 first (2026-09-13: every workload runs on arm64, so the lane
 whose chain is proved end to end is the one to deepen; the others wait

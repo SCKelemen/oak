@@ -77,8 +77,8 @@ func translationValidationHelpers() []validatedHelper {
 		binary("add", "+", proofRequired)
 		binary("sub", "-", proofRequired)
 		binary("mul", "*", witnessRequired)
-		binary("div", "/", mismatchForbidden)
-		binary("rem", "%", mismatchForbidden)
+		binary("div", "/", witnessRequired)
+		binary("rem", "%", witnessRequired)
 		name := "tv_neg_" + ty
 		helpers = append(helpers, validatedHelper{
 			name:    name,
@@ -462,6 +462,24 @@ func TestTranslationValidationArm64(t *testing.T) {
 	}
 	validateTranslation(t, asm.ArchArm64, func(cPath, sPath string) error {
 		out, err := exec.Command(clang, "--target=aarch64-none-elf", "-std=c11", "-O1", "-ffreestanding",
+			"-fno-asynchronous-unwind-tables", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-S", cPath, "-o", sPath).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%v\n%s", err, out)
+		}
+		return nil
+	}, "//")
+}
+
+// The Apple M-series lane: what the Apple cores' compilers emit (LSE
+// atomics, `ldapr` for an acquire load, the same guards); `-mcpu=apple-m1`
+// is what a darwin/arm64 build of Oak's C compiles with.
+func TestTranslationValidationArm64Apple(t *testing.T) {
+	clang, err := exec.LookPath("clang")
+	if err != nil {
+		t.Skip("clang is required to compile the prelude helpers for arm64")
+	}
+	validateTranslation(t, asm.ArchArm64, func(cPath, sPath string) error {
+		out, err := exec.Command(clang, "--target=aarch64-none-elf", "-mcpu=apple-m1", "-std=c11", "-O1", "-ffreestanding",
 			"-fno-asynchronous-unwind-tables", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-S", cPath, "-o", sPath).CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("%v\n%s", err, out)

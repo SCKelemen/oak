@@ -503,7 +503,11 @@ implements and decided exhaustively. The instruction functions decide because th
 `arm64.rev32`, `rbit`, `clz`, and `cnt` to the verifier's own instruction
 terms — the semantics the assembler lane is checked against — with `cnt`
 as a population-count term (an adder tree over the operand's bits), and
-divides by an unsigned constant power of two as a shift or a mask. Floating-point
+divides by an unsigned constant power of two as a shift or a mask, and by
+any other divisor as the totalized division terms (`20-types.md` §11.1:
+a zero divisor traps — a recorded obligation under the theorem decider,
+the machine's own guard under the asm verifier — and `MIN / -1` wraps),
+which the witness pass decides. Floating-point
 arithmetic, sqrt, fma, and the conversions lower to *uninterpreted*
 operation terms (`asm/floats_ops.go`, `94-assembler.md` §8): a theorem
 whose two sides apply the same IEEE operations to the same operands in the

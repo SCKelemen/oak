@@ -2343,7 +2343,7 @@ Lean. What is new against the AArch64 lane, and how it landed:
   semantics (a zero divisor gives all ones and the dividend, the signed
   overflow the dividend and 0 — `Oak.RiscV.div_zero` and its kin,
   `rv64Divide` in Go); `auipc` and calls are outside the verified subset
-  (checked, trusted). The pseudo-instructions `mv li not neg negw sext.w
+  (checked, trusted). The pseudo-instructions `mv li not neg negw sext.w seqz snez sltz sgtz
   j jr ret nop beqz bnez bgez bltz blez bgtz call` are the assembler's
   spellings of base encodings (`li` up to 32 bits as `lui`+`addiw`,
   `call` as `auipc`+`jalr` under one `R_RISCV_CALL_PLT`).

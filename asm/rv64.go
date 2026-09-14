@@ -49,7 +49,7 @@ var rv64Table = func() map[string]*rv64Encoding {
 
 // rv64Pseudo are the assembler's spellings: each is one base instruction
 // (li and call may be two words).
-var rv64Pseudo = map[string]bool{"mv": true, "li": true, "not": true, "neg": true, "negw": true, "sext.w": true, "j": true, "jr": true, "ret": true, "nop": true, "beqz": true, "bnez": true, "bgez": true, "bltz": true, "blez": true, "bgtz": true, "call": true, "la": true}
+var rv64Pseudo = map[string]bool{"mv": true, "li": true, "not": true, "neg": true, "negw": true, "sext.w": true, "seqz": true, "snez": true, "sltz": true, "sgtz": true, "j": true, "jr": true, "ret": true, "nop": true, "beqz": true, "bnez": true, "bgez": true, "bltz": true, "blez": true, "bgtz": true, "call": true, "la": true}
 
 // rv64Branches are the conditional branches: they compare two registers,
 // so the checker's flags rule becomes the comparison-branch rule.
@@ -464,7 +464,7 @@ func rv64CheckShape(instr Instruction) error {
 		// la rd, sym: the address of a program data symbol (auipc then addi
 		// under a pc-relative relocation pair).
 		return shape("r", "l")
-	case name == "mv" || name == "not" || name == "neg" || name == "negw" || name == "sext.w":
+	case name == "mv" || name == "not" || name == "neg" || name == "negw" || name == "sext.w" || name == "seqz" || name == "snez" || name == "sltz" || name == "sgtz":
 		return shape("r", "r")
 	case rv64Loads[name] != 0 || rv64Stores[name] != 0:
 		return shape("r", "m")
@@ -611,6 +611,15 @@ func rv64Base(instr Instruction) Instruction {
 		out.Mnemonic, out.Operands = "subw", []Operand{ops[0], zero, ops[1]}
 	case "sext.w":
 		out.Mnemonic, out.Operands = "addiw", []Operand{ops[0], ops[1], Immediate{Value: 0}}
+	case "seqz":
+		// seqz rd, rs: rd = (rs == 0), which is `rs <u 1`.
+		out.Mnemonic, out.Operands = "sltiu", []Operand{ops[0], ops[1], Immediate{Value: 1}}
+	case "snez":
+		out.Mnemonic, out.Operands = "sltu", []Operand{ops[0], zero, ops[1]}
+	case "sltz":
+		out.Mnemonic, out.Operands = "slt", []Operand{ops[0], ops[1], zero}
+	case "sgtz":
+		out.Mnemonic, out.Operands = "slt", []Operand{ops[0], zero, ops[1]}
 	case "nop":
 		out.Mnemonic, out.Operands = "addi", []Operand{zero, zero, Immediate{Value: 0}}
 	case "j":

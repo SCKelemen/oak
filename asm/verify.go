@@ -1090,7 +1090,7 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 	exec.loopExits = findLoopsIn(fn.Name, fn.Items, labels, fn.Callees)
 	result, effects, reason, ok := exec.run(0, state)
 	if effects != nil {
-		exec.cells, exec.writes = effects.cells, effects.writes
+		exec.cells, exec.writes, exec.trap = effects.cells, effects.writes, effects.trap
 	}
 	return result, exec, reason, ok
 }
@@ -1158,7 +1158,10 @@ type pathExecutor struct {
 	fn         *Function
 	summarized []string
 	freshSyms  map[string]int
-	callSites  int
+	// trap is the condition under which the machine traps (pathEffects.trap
+	// of the whole body): the equivalence is decided outside it.
+	trap      *term
+	callSites int
 	// freshCount numbers the unspecified lane values of the RV64 vector
 	// model (asm/rv64_verify_vector.go freshLane).
 	freshCount int
@@ -1895,8 +1898,10 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			// A trap: this path delivers no result. The Oak body traps on
 			// the same inputs (a failed bounds check, division by zero, an
 			// overflowing shift, a failed assert), so the path is outside
-			// the equivalence and drops from the fork it came from.
-			return trapPath, nil, "", true
+			// the equivalence: it drops from the fork it came from, and
+			// the condition that reached it leaves the input domain
+			// (pathEffects.trap).
+			return trapPath, &pathEffects{trap: constTerm(1, 1)}, "", true
 		case "bl":
 			if reason, ok := x.summarizeCall(instr, state); !ok {
 				return nil, nil, reason, false
@@ -1966,9 +1971,9 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			}
 			switch {
 			case taken == trapPath:
-				return fallThrough, fallEffects, "", true
+				return fallThrough, withTrap(fallEffects, mergeTrap(cond, takenEffects, fallEffects)), "", true
 			case fallThrough == trapPath:
-				return taken, takenEffects, "", true
+				return taken, withTrap(takenEffects, mergeTrap(cond, takenEffects, fallEffects)), "", true
 			}
 			return iteTerm(cond, taken, fallThrough), x.mergeEffects(cond, takenEffects, fallEffects), "", true
 		}
@@ -2242,7 +2247,9 @@ func spanBaseOf(t *term) (param string, offset int64, ok bool) {
 // not the term's; docs/spec/65-machine-memory.md section 7).
 func isLoad(mnemonic string) bool {
 	switch mnemonic {
-	case "ldar", "ldarb", "ldarh", "ldxr", "ldxrb", "ldxrh", "ldaxr", "ldaxrb", "ldaxrh":
+	case "ldar", "ldarb", "ldarh", "ldxr", "ldxrb", "ldxrh", "ldaxr", "ldaxrb", "ldaxrh", "ldapr", "ldaprb", "ldaprh":
+		// ldapr: the RCpc acquire load (Armv8.3, what clang emits for an
+		// acquire load on the Apple cores and other LRCPC targets).
 		return true
 	}
 	return isPlainLoad(mnemonic)
@@ -2695,6 +2702,10 @@ type oakLowering struct {
 	// verifier leaves it off: there the machine wraps where Oak traps.
 	trapsTracked bool
 	traps        []*term
+	// machineTrap is the asm side's trap condition (pathExecutor.trap):
+	// the inputs on which the machine trapped — where Oak traps too, on
+	// the same guard — leave the input domain (domainCondition).
+	machineTrap *term
 	// floats names the parameters and locals of f32/f64 type (their width),
 	// whose operations and comparisons are IEEE (asm/floats_lowering.go).
 	floats      map[string]int
@@ -3334,6 +3345,9 @@ func (lo *oakLowering) recordTagDomains(typ *oakType, prefix string) {
 // of its variants' values", or nil when the parameters have no unions.
 func (lo *oakLowering) domainCondition() *term {
 	var cond *term
+	if lo.machineTrap != nil {
+		cond = binaryTerm("xor", truncate(lo.machineTrap, 1), constTerm(1, 1))
+	}
 	names := make([]string, 0, len(lo.tagDomains))
 	for name := range lo.tagDomains {
 		names = append(names, name)
@@ -4942,9 +4956,12 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		}
 		if e.Operator == "/" || e.Operator == "%" {
 			// Unsigned division and remainder by a constant power of two
-			// are a shift and a mask; anything else stays outside the
-			// subset (the Lean projection states it).
-			if _, signed, isScalar := lo.operandContract(e); isScalar && !signed {
+			// are a shift and a mask (the Lean projection states these).
+			w, signed, isScalar := lo.operandContract(e)
+			if !isScalar {
+				return nil, fmt.Sprintf("operator %s outside the integer types", e.Operator), false
+			}
+			if !signed {
 				right, reason, okR := lo.lower(e.Right, width)
 				if !okR {
 					return nil, reason, false
@@ -4960,7 +4977,39 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 					return binaryTerm("shr", left, constTerm(uint64(bits.TrailingZeros64(right.value)), width)), "", true
 				}
 			}
-			return nil, fmt.Sprintf("operator %s (only by an unsigned constant power of two)", e.Operator), false
+			// Any other divisor: Oak traps on zero and is total otherwise,
+			// `MIN / -1` the minimum and `MIN % -1` zero
+			// (docs/spec/20-types.md section 11.1) — the totalized division
+			// terms (`rv64Divide` in asm/isa_semantics.go), computed at the
+			// operands' width and signedness. The zero divisor is a trap
+			// obligation for the theorem decider; the asm verifier meets the
+			// machine's own guard, whose trap path leaves the comparison,
+			// and a body that divides without one disagrees at zero. The
+			// bit-level decision does not reach division: the verdict is
+			// the witness set's (evidence), as for multiplication.
+			left, reason, okL := lo.lower(e.Left, w)
+			if !okL {
+				return nil, reason, false
+			}
+			right, reason, okR := lo.lower(e.Right, w)
+			if !okR {
+				return nil, reason, false
+			}
+			if lo.trapsTracked {
+				lo.addTrap(cmpTerm("eq", right, constTerm(0, w)))
+			}
+			op := map[string]string{"/": "rv.divu", "%": "rv.remu"}[e.Operator]
+			if signed {
+				op = map[string]string{"/": "rv.div", "%": "rv.rem"}[e.Operator]
+			}
+			quotient := binaryTerm(op, left, right)
+			switch {
+			case width == w:
+				return quotient, "", true
+			case width > w:
+				return extendTerm(quotient, w, width, signed), "", true
+			}
+			return truncate(quotient, width), "", true
 		}
 		op, ok := oakOps[e.Operator]
 		if !ok {
@@ -5358,6 +5407,7 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	}
 	lowering := prepareLowering(fn, sig, nil)
 	lowering.resultChunk = chunk
+	lowering.machineTrap = exec.trap
 	for name, width := range exec.freshSyms {
 		lowering.fresh[name] = width // a summarized call's unspecified result bits
 	}
