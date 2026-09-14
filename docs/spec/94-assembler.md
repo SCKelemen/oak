@@ -3142,6 +3142,33 @@ compared as memories on RV64 as they have been on AArch64
 (`decideEffects`). The trusted reason "a store through a span" is gone
 from the RV64 tally: 149 bodies proven on RV64, 151 on AArch64.
 
+**Exit tests that read memory (2026-09-14).** The path budget was the
+verified profile's largest reason, and most of it was one shape: a loop
+whose exit test reads an element under a guard — `while nd > 0 &&
+digits[nd-1] == 48`, `while i < len(text) && text[i] == 32` — which the
+recognizer did not take as a loop (its header held only pure register
+instructions ending in a branch to the exit label), so the executor
+unrolled it until the budget stopped it. The header is now every exit
+test from the label to the last branch leaving the loop, and an exit
+test may hold an element guard (a branch to the trap block, whose taken
+path traps as the Oak side's element read does), the guarded load itself
+(a scalar load through a span or table base, read as the executor reads
+it), and — the RV64 lane's spelling of `&&` — a forward branch to a label
+inside the header, which forks the header's paths (`loopShape.internal`,
+`isGuardBranch`, `isHeaderLoad`). The continue condition is then the
+disjunction over the header's paths of "this path is taken and no exit
+test on it is taken" (`headerCondition`, a small path walk bounded by
+`headerPathBudget`); the exit tests' temporaries — a compare operand's
+setup, a loaded element, a short-circuit's flag — are scratch, never
+paired as loop-carried and unbound past the loop, which generalizes the
+one setup register the RV64 lane excused before. An undecided branch at
+any header branch, internal or exit, summarizes the loop; a forward
+branch after the last exit is the body's own conditional, as before. On
+the stdlib-bearing program the path-budget bodies fell from 71 to 43 on
+AArch64 and from 58 to 34 on RV64; proven bodies rose to 165 and 158.
+Pinned: `compiler/e2e_native_loop_header_loads_test.go` (both shapes,
+both lanes, the C build agreeing).
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built
