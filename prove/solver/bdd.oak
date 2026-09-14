@@ -92,6 +92,8 @@ Layout: type = struct {
   selects_at: u32,
   select_cap: u32,
   state_at: u32,
+  clauses_at: u32,
+  clauses_cap: u32,
   total: u32
 }
 
@@ -100,6 +102,13 @@ Layout: type = struct {
 STATE_COUNT: u32 = 0
 STATE_EXCEEDED: u32 = 1
 STATE_SELECTS: u32 = 2
+// STATE_MODE selects the engine behind apply, ite, and variable_node: 0
+// the decision diagram, 1 the clause engine (cnf.oak), which shares the
+// term walk, the unique table (as its gate memo), and the folds.
+STATE_MODE: u32 = 3
+STATE_CLAUSES_USED: u32 = 4
+STATE_CLAUSE_COUNT: u32 = 5
+STATE_CREATED: u32 = 6
 
 next_pow2: (n: u32): u32 {
   p: u32 = 1
@@ -141,7 +150,34 @@ layout_for: (cap: u32, terms: u32): Layout {
     selects_at: selects_at,
     select_cap: u32(16),
     state_at: state_at,
+    clauses_at: state_at + u32(16),
+    clauses_cap: u32(0),
     total: state_at + u32(16)
+  }
+}
+
+// layout_for_clauses is layout_for with a clause region of the given words
+// after the state, for the clause engine (cnf.oak).
+layout_for_clauses: (cap: u32, terms: u32, clause_words: u32): Layout {
+  base: Layout = layout_for(cap, terms)
+  Layout {
+    cap: base.cap,
+    var_at: base.var_at,
+    low_at: base.low_at,
+    high_at: base.high_at,
+    unique_at: base.unique_at,
+    umask: base.umask,
+    cache_at: base.cache_at,
+    cmask: base.cmask,
+    stack_at: base.stack_at,
+    stack_cap: base.stack_cap,
+    bits_at: base.bits_at,
+    selects_at: base.selects_at,
+    select_cap: base.select_cap,
+    state_at: base.state_at,
+    clauses_at: base.total,
+    clauses_cap: clause_words,
+    total: base.total + clause_words
   }
 }
 
@@ -168,6 +204,10 @@ solver_init: (l: Layout, mem: [*]u32): () {
   mem[l.state_at + STATE_COUNT] = u32(1)
   mem[l.state_at + STATE_EXCEEDED] = u32(0)
   mem[l.state_at + STATE_SELECTS] = u32(0)
+  mem[l.state_at + STATE_MODE] = u32(0)
+  mem[l.state_at + STATE_CLAUSES_USED] = u32(0)
+  mem[l.state_at + STATE_CLAUSE_COUNT] = u32(0)
+  mem[l.state_at + STATE_CREATED] = u32(0)
 }
 
 node_count: (l: Layout, mem: [*]u32): u32 = mem[l.state_at + STATE_COUNT]
@@ -223,7 +263,7 @@ mk: (l: Layout, mem: [*]u32, v: u32, low0: u32, high0: u32): u32 {
   }
 }
 
-variable_node: (l: Layout, mem: [*]u32, v: u32): u32 = mk(l, mem, v, BDD_FALSE, BDD_TRUE)
+variable_node: (l: Layout, mem: [*]u32, v: u32): u32 = mem[l.state_at + STATE_MODE] == u32(1) ? { cnf_variable(l, mem, v) } | { mk(l, mem, v, BDD_FALSE, BDD_TRUE) }
 
 // The terminal cases of apply, NONE when there is none.
 terminal_case: (op: u32, x: u32, y: u32): u32 {
@@ -275,7 +315,9 @@ push_frame: (l: Layout, mem: [*]u32, sp: u32, op: u32, x: u32, y: u32): () {
 // memoized in the cache, run with an explicit stack. A frame is (op, x, y,
 // phase, v, xh, yh, low result, high result): phase 0 has not looked at its
 // operands, phase 1 waits on the low cofactor, phase 2 on the high one.
-apply: (l: Layout, mem: [*]u32, op: u32, x0: u32, y0: u32): u32 {
+apply: (l: Layout, mem: [*]u32, op: u32, x0: u32, y0: u32): u32 = mem[l.state_at + STATE_MODE] == u32(1) ? { cnf_apply(l, mem, op, x0, y0) } | { bdd_apply(l, mem, op, x0, y0) }
+
+bdd_apply: (l: Layout, mem: [*]u32, op: u32, x0: u32, y0: u32): u32 {
   result: u32 = BDD_FALSE
   sp: u32 = 1
   push_frame(l, mem, u32(0), op, x0, y0)
@@ -357,7 +399,9 @@ apply: (l: Layout, mem: [*]u32, op: u32, x0: u32, y0: u32): u32 {
 bdd_not: (l: Layout, mem: [*]u32, a: u32): u32 = a ^ u32(1)
 
 // ite is (c and t) or (not c and e), as the Go decider spells it.
-bdd_ite: (l: Layout, mem: [*]u32, c: u32, t: u32, e: u32): u32 {
+bdd_ite: (l: Layout, mem: [*]u32, c: u32, t: u32, e: u32): u32 = mem[l.state_at + STATE_MODE] == u32(1) ? { cnf_ite(l, mem, c, t, e) } | { diagram_ite(l, mem, c, t, e) }
+
+diagram_ite: (l: Layout, mem: [*]u32, c: u32, t: u32, e: u32): u32 {
   ct: u32 = apply(l, mem, OP_AND, c, t)
   nce: u32 = apply(l, mem, OP_AND, bdd_not(l, mem, c), e)
   apply(l, mem, OP_OR, ct, nce)

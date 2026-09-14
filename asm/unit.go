@@ -117,8 +117,20 @@ type Function struct {
 	// or `la` (RV64) may address, by symbol, with their sizes in bytes: the
 	// checker admits guarded element reads inside them (a read-only
 	// region), as it admits a frame array's. Set by the native backend.
-	Tables map[string]int64
+	Tables map[string]Table
 }
+
+// Table is a constant data symbol's shape: its size in bytes, the width of
+// one element in bytes, and whether the elements are signed. The Oak name
+// of the table is the symbol without its `data_` prefix (TableName).
+type Table struct {
+	Size   int64
+	Elem   int64
+	Signed bool
+}
+
+// TableName is the Oak identifier a table's data symbol was made from.
+func TableName(symbol string) string { return strings.TrimPrefix(symbol, "data_") }
 
 // Composite is a record or tagged-union type's shape at the boundary: its
 // size in bytes, whether it is a homogeneous floating-point aggregate
@@ -394,8 +406,13 @@ type Symbol struct {
 // checker admits exactly one access shape to it — `[xA]` at the scalar's
 // width through a register holding its adrp/add address.
 type Global struct {
-	Type string // the Oak scalar type name
-	Bits int    // the scalar's width
+	Type string // the Oak scalar type name, or the aggregate's type text
+	Bits int    // the scalar's width (0 for an aggregate)
+	// Aggregate marks a top-level record or array: its address is a
+	// writable region of Size bytes, whose fields and guarded elements
+	// the checker bounds as it bounds a frame array's.
+	Aggregate bool
+	Size      int64
 }
 
 // SysReg names a system register operand of mrs/msr.

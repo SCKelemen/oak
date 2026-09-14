@@ -821,15 +821,24 @@ func TestRV64FloatChecker(t *testing.T) {
 			t.Errorf("%q parsed", strings.TrimSpace(bad))
 		}
 	}
-	// Trusted, never mismatched.
+	// Verified up to the IEEE operations (asm/rv64_verify_float.go): the
+	// fused unit is fma(a, b, c), and a body that spells the two
+	// operations a * b + c is a mismatch (the backends never contract).
 	fn, _ := rv64Unit(t, rv64FmaDecl, rv64FmaBody)
 	sig, _ := parseSignature(rv64FmaDecl)
-	spec, err := parseSignatureWithBody(rv64FmaDecl + " = { a * b + c }")
+	fused, err := parseSignatureWithBody(rv64FmaDecl + " = { fma(a, b, c) }")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v := Verify(fn, sig, spec.Body); v.Kind != VerdictTrusted {
-		t.Errorf("float unit verdict %s (%s), want trusted", v.Kind, v.Message)
+	if v := Verify(fn, sig, fused.Body); v.Kind != VerdictProven {
+		t.Errorf("float unit verdict %s (%s), want proven", v.Kind, v.Message)
+	}
+	separate, err := parseSignatureWithBody(rv64FmaDecl + " = { a * b + c }")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := Verify(fn, sig, separate.Body); v.Kind != VerdictMismatch {
+		t.Errorf("float unit verdict %s (%s), want mismatch", v.Kind, v.Message)
 	}
 }
 

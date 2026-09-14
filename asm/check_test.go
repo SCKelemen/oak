@@ -1,6 +1,7 @@
 package asm
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -289,6 +290,45 @@ func TestCheckerSubslice(t *testing.T) {
 				t.Fatal(errs)
 			}
 			sig, _ := parseSignature(decl)
+			joined := strings.Join(Check(unit.Functions[0], sig, nil), "\n")
+			if !strings.Contains(joined, tc.want) {
+				t.Fatalf("expected a finding mentioning %q, got:\n%s", tc.want, joined)
+			}
+		})
+	}
+}
+
+// A vector access over lanes wider than a byte (docs/spec/94-assembler.md
+// §9.x, nativegen/simd.go): the element address `add xE, xB, wI, uxtw #s`
+// under the slack guard `wI + K <= len` (with `len >= K`) is a region of
+// K elements, so a sixteen-byte `ldr q` through it lies inside the span
+// (Oak.Assembler.index_access_lanes); a guard leaving fewer elements, or a
+// plain index guard, leaves a region the access overruns.
+func TestCheckerLaneRegion(t *testing.T) {
+	decl := "first: (v: []u32, i: u32) -> u32"
+	guard := func(k int) string {
+		return "  bind x0, w1 = v\n  bind w2 = i\n  clobber x9, x10, v0\n  cmp w1, #" + strconv.Itoa(k) + "\n  b.lo trap\n  sub w9, w1, #" + strconv.Itoa(k) + "\n  cmp w2, w9\n  b.hi trap\n  add x10, x0, w2, uxtw #2\n"
+	}
+	epilogue := "  ldr q0, [x10]\n  mov w0, v0.s[1]\n  ret\ntrap:\n  brk #1"
+	unit, errs := ParseUnit("lanes.oakasm", decl+" = {\n"+guard(4)+epilogue+"\n}\n")
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	sig, _ := parseSignature(decl)
+	if findings := Check(unit.Functions[0], sig, nil); len(findings) != 0 {
+		t.Fatalf("the four-lane load under the slack guard must pass: %v", findings)
+	}
+	rejects := []struct{ name, body, want string }{
+		{"guard leaves two elements", guard(2) + epilogue, "outside its 8 bytes"},
+		{"plain index guard", "  bind x0, w1 = v\n  bind w2 = i\n  clobber x9, x10, v0\n  cmp w2, w1\n  b.hs trap\n  add x10, x0, w2, uxtw #2\n" + epilogue, "outside its 4 bytes"},
+		{"store through a view", guard(4) + "  ldr q0, [x10]\n  str q0, [x10]\n  mov w0, v0.s[1]\n  ret\ntrap:\n  brk #1", "read-only"},
+	}
+	for _, tc := range rejects {
+		t.Run(tc.name, func(t *testing.T) {
+			unit, errs := ParseUnit("lanes.oakasm", decl+" = {\n"+tc.body+"\n}\n")
+			if len(errs) != 0 {
+				t.Fatal(errs)
+			}
 			joined := strings.Join(Check(unit.Functions[0], sig, nil), "\n")
 			if !strings.Contains(joined, tc.want) {
 				t.Fatalf("expected a finding mentioning %q, got:\n%s", tc.want, joined)

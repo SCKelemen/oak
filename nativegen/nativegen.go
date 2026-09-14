@@ -53,6 +53,9 @@ type scalar struct {
 	isVec    bool
 	lanes    int
 	laneBits int
+	// laneFloat marks the floating-point vectors simd.F32x4/F64x2
+	// (docs/spec/93-simd.md section 1.2a): lanes are f32/f64 values.
+	laneFloat bool
 }
 
 var scalars = map[string]scalar{
@@ -755,6 +758,9 @@ func (g *generator) placeOf(expr ast.Expression) (place, error) {
 			g.emit("adrl", xr(r), asm.Symbol{Name: gl.Symbol})
 			return place{arr: &arrayLocal{elem: scalars[gl.Elem], length: gl.Length, inReg: true, reg: r, temps: []int{r}, readOnly: true}}, nil
 		}
+		if decl, isAggregate := g.aggregates[e.Value]; isAggregate && !g.shadowed(e.Value) {
+			return g.globalAggregatePlace(e.Value, decl)
+		}
 	case *ast.IndexExpression:
 		if !e.Dot {
 			// An element of an array or span of records: `pool[i]`.
@@ -821,9 +827,6 @@ func (g *generator) recordElement(arr *arrayLocal, index ast.Expression) (place,
 		at := arr.loc().plus(k * stride)
 		return place{rec: &recordLocal{offset: at.offset, layout: arr.elemLayout, inReg: at.inReg, reg: at.reg, temps: arr.temps}}, nil
 	}
-	if arr.inReg {
-		return place{}, unsupported("a computed index into an array of records inside a computed element")
-	}
 	r, err := g.indexValue(index)
 	if err != nil {
 		return place{}, err
@@ -836,7 +839,17 @@ func (g *generator) recordElement(arr *arrayLocal, index ast.Expression) (place,
 	if err != nil {
 		return place{}, err
 	}
-	g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
+	if arr.inReg {
+		// An array of records inside a register-based place (a global
+		// aggregate, a span element): its base is the place's register
+		// plus the field offset; the checker narrows the region through
+		// the add and derives the element region under the guard.
+		if err := g.addOffset(base, arr.reg, arr.offset); err != nil {
+			return place{}, err
+		}
+	} else {
+		g.emit("add", xr(base), sp(), imm(g.slotMem(arr.offset).Offset))
+	}
 	if err := g.constantGuard(r, arr.length); err != nil {
 		return place{}, err
 	}
@@ -859,7 +872,43 @@ func (g *generator) recordElement(arr *arrayLocal, index ast.Expression) (place,
 	}
 	g.release(base)
 	g.release(r)
-	return place{rec: &recordLocal{layout: arr.elemLayout, inReg: true, reg: element, temps: []int{element}}}, nil
+	if arr.inReg {
+		g.releaseTemps(arr.temps)
+	}
+	return place{rec: &recordLocal{layout: arr.elemLayout, inReg: true, reg: element, temps: []int{element}, readOnly: arr.readOnly}}, nil
+}
+
+// globalAggregatePlace is a top-level record or array at its symbol's
+// address (adrp/add, docs/spec/94-assembler.md §9): a record place, or an
+// array place, in a fresh register — fields and guarded elements through
+// it as through a span element's.
+func (g *generator) globalAggregatePlace(name string, decl *ast.VariableDeclaration) (place, error) {
+	if typeName, isRecord := g.recordTypeName(decl.Type); isRecord {
+		layout, err := g.layoutOf(typeName)
+		if err != nil {
+			return place{}, err
+		}
+		global := asm.Global{Type: typeName, Aggregate: true, Size: layout.size}
+		addr, err := g.globalAddress(name, global)
+		if err != nil {
+			return place{}, err
+		}
+		return place{rec: &recordLocal{layout: layout, inReg: true, reg: addr, temps: []int{addr}}}, nil
+	}
+	elem, elemLayout, length, err := g.arrayTypeOf(decl.Type)
+	if err != nil {
+		return place{}, err
+	}
+	size := length * int64(elem.bits/8)
+	if elemLayout != nil {
+		size = length * elemLayout.size
+	}
+	global := asm.Global{Type: decl.Type.String(), Aggregate: true, Size: size}
+	addr, err := g.globalAddress(name, global)
+	if err != nil {
+		return place{}, err
+	}
+	return place{arr: &arrayLocal{elem: elem, elemLayout: elemLayout, length: length, inReg: true, reg: addr, temps: []int{addr}}}, nil
 }
 
 // recordLayoutOfExpr resolves the record type an expression denotes without
@@ -870,6 +919,11 @@ func (g *generator) recordLayoutOfExpr(expr ast.Expression) (*recordLayout, erro
 	case *ast.Identifier:
 		if rec, isRecord := g.records[e.Value]; isRecord {
 			return rec.layout, nil
+		}
+		if decl, isAggregate := g.aggregates[e.Value]; isAggregate && !g.shadowed(e.Value) {
+			if typeName, isRecord := g.recordTypeName(decl.Type); isRecord {
+				return g.layoutOf(typeName)
+			}
 		}
 	case *ast.IndexExpression:
 		if e.Dot {
@@ -956,6 +1010,11 @@ func (g *generator) recordArrayElementLayout(expr ast.Expression) *recordLayout 
 		}
 		if sp, isSpan := g.spans[e.Value]; isSpan {
 			return sp.elemLayout
+		}
+		if decl, isAggregate := g.aggregates[e.Value]; isAggregate && !g.shadowed(e.Value) {
+			if _, elemLayout, _, err := g.arrayTypeOf(decl.Type); err == nil {
+				return elemLayout
+			}
 		}
 	case *ast.IndexExpression:
 		if e.Dot {
@@ -1108,6 +1167,8 @@ type generator struct {
 	// The vector file for floating point: scratch and callee-saved pools,
 	// and the d8–d15 save area (fixed once the function mentions a float).
 	freeF       []int
+	freeV       []int // the rv64 lane's vector scratch registers (rvVBase + n)
+	usedVector  bool  // the rv64 lane used the vector extension
 	usedCalleeV int
 	saveAreaV   int64
 	usedFloat   bool
@@ -1160,12 +1221,15 @@ type generator struct {
 	// usedGlobals the ones this body addressed (asm.Function.Globals).
 	globals     map[string]asm.Global
 	usedGlobals map[string]asm.Global
-	labels      int
-	loops       []string // break targets
-	hasCalls    bool
-	line        int
-	trap        string // the trap block's label (division by zero, shift overflow, assert)
-	usedTrap    bool
+	// aggregates are the program's addressable top-level records and
+	// arrays (Lane.Aggregates), placed at their symbol's address.
+	aggregates map[string]*ast.VariableDeclaration
+	labels     int
+	loops      []string // break targets
+	hasCalls   bool
+	line       int
+	trap       string // the trap block's label (division by zero, shift overflow, assert)
+	usedTrap   bool
 	// loopFacts: what the enclosing while conditions prove about a span
 	// and an index variable inside their bodies (nativegen/simd.go
 	// vecGuardedIndex): `len(v) >= N && i <= len(v) - N` proves
@@ -1231,9 +1295,17 @@ type Lane struct {
 	// name with their storage width; the generator records the ones a body
 	// uses in asm.Function.Globals. Nil leaves every global unsupported.
 	Globals map[string]asm.Global
+	// Aggregates are the program's mutable top-level records and arrays
+	// (the OS pilot's N9): addressed as a record or array place at the
+	// symbol's address, fields and guarded elements through it.
+	Aggregates map[string]*ast.VariableDeclaration
 	// Tables are the program's constant tables by Oak name (GlobalArrayOf):
 	// a body reads one through its data symbol's address.
 	Tables map[string]GlobalArray
+	// Vector marks a RISC-V processor with the vector extension (`-cpu
+	// ...+v`): the rv64 lane lowers the fixed simd vectors there
+	// (nativegen/rv64_simd.go) and leaves them to the C backend otherwise.
+	Vector bool
 	// PackedStackArgs selects Apple's arm64 convention for arguments beyond
 	// the registers (natural size and alignment on the stack) over the
 	// standard 8-byte slots (asm/abi.go).
@@ -1328,12 +1400,14 @@ func GlobalArrayOf(decl *ast.VariableDeclaration) (GlobalArray, []byte, bool) {
 	return GlobalArray{Symbol: "data_" + decl.Name.Value, Elem: elem.name, Length: length}, bytes, true
 }
 
-// tableSizes is the checker's table of the data symbols a body may address.
-func tableSizes(tables map[string]GlobalArray) map[string]int64 {
-	out := map[string]int64{}
+// tableSizes is the checkers' and the verifier's table of the data
+// symbols a body may address: each with its size, element width, and
+// signedness.
+func tableSizes(tables map[string]GlobalArray) map[string]asm.Table {
+	out := map[string]asm.Table{}
 	for _, gl := range tables {
 		if elem, ok := scalars[gl.Elem]; ok {
-			out[gl.Symbol] = gl.Length * int64(elem.bits/8)
+			out[gl.Symbol] = asm.Table{Size: gl.Length * int64(elem.bits/8), Elem: int64(elem.bits / 8), Signed: elem.signed}
 		}
 	}
 	return out
@@ -1345,9 +1419,9 @@ func tableSizes(tables map[string]GlobalArray) map[string]int64 {
 func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	switch lane.Arch {
 	case "", asm.ArchArm64:
-		return compileArm64(fn, functions, records, adts, constants, lane.Globals, tc, lane.ElideProven, lane.Tables, lane.PackedStackArgs)
+		return compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.Tables, lane.PackedStackArgs)
 	case asm.ArchRV64:
-		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables)
+		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector)
 	}
 	return nil, unsupported("no native backend for the %s lane", lane.Arch)
 }
@@ -1358,7 +1432,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 // constant globals (docs/spec/90-backend.md §8a); tc is the checker that
 // typed the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
-	return compileArm64(fn, functions, records, adts, constants, nil, tc, false, nil, false)
+	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false)
 }
 
 // ElidedGuards reports how many element guards a lowering left out under
@@ -1371,7 +1445,7 @@ var elidedGuards = map[*asm.Function]int{}
 // caller-saved home or a frame slot: the second pass is worth its cost.
 var pressured = map[*asm.Function]bool{}
 
-func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool, tables map[string]GlobalArray, packed bool) (*asm.Function, error) {
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, tables map[string]GlobalArray, packed bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
@@ -1381,13 +1455,13 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	if body := inlineBody(fn, functions); body != fn.Body {
 		expanded := *fn
 		expanded.Body = body
-		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, tc, elide, tables, packed); err == nil {
+		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, aggregates, tc, elide, tables, packed); err == nil {
 			return out, nil
 		} else if _, outside := err.(Unsupported); !outside {
 			return nil, err
 		}
 	}
-	return compileArm64Body(fn, functions, records, adts, constants, globals, tc, elide, tables, packed)
+	return compileArm64Body(fn, functions, records, adts, constants, globals, aggregates, tc, elide, tables, packed)
 }
 
 // compileArm64Body lowers one function body as given — twice: the first
@@ -1398,8 +1472,8 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 // in registers instead of frame slots. A second pass the lowering refuses
 // (it should not: a variable in a register needs no temporary a slot did)
 // leaves the first pass's code.
-func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool, tables map[string]GlobalArray, packed bool) (*asm.Function, error) {
-	first, peak, err := compileArm64Pass(fn, functions, records, adts, constants, globals, tc, elide, tables, packed, 0)
+func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, tables map[string]GlobalArray, packed bool) (*asm.Function, error) {
+	first, peak, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, tables, packed, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1407,7 +1481,7 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	if spare <= 0 || !pressured[first] {
 		return first, nil // nothing to gain: every variable already has a register
 	}
-	second, _, err := compileArm64Pass(fn, functions, records, adts, constants, globals, tc, elide, tables, packed, spare)
+	second, _, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, tables, packed, spare)
 	if err != nil {
 		return first, nil
 	}
@@ -1418,8 +1492,8 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 // registers, from x15 down, serve as variable homes instead of
 // temporaries. It reports the peak number of integer scratch registers
 // live at once.
-func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, tc *typechecker.TypeChecker, elide bool, tables map[string]GlobalArray, packed bool, spare int) (*asm.Function, int, error) {
-	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, elide: elide, packedStack: packed, stackParams: map[string]asm.ArgPlace{}}
+func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, tables map[string]GlobalArray, packed bool, spare int) (*asm.Function, int, error) {
+	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, aggregates: aggregates, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, elide: elide, packedStack: packed, stackParams: map[string]asm.ArgPlace{}}
 	// A span pair parked in callee-saved registers survives a call, and a
 	// result: the result leaves in x0 (and x1), where a span parameter's
 	// pair is bound, and the checker's span facts flow in text order — a
@@ -1872,6 +1946,19 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 		spell(p.Type)
 	}
 	spell(fn.ReturnType)
+	// The result types of the program's functions too: the verifier
+	// summarizes a call returning a record or a sum type from the callee's
+	// aggregate value packed by this table (asm/verify.go summarizeCall).
+	for _, callee := range g.functions {
+		if callee != nil {
+			spell(callee.ReturnType)
+			for _, p := range callee.Parameters {
+				if p != nil {
+					spell(p.Type)
+				}
+			}
+		}
+	}
 	if g.elided > 0 {
 		elidedGuards[out] = g.elided
 	}
@@ -2682,6 +2769,8 @@ func (g *generator) noteWrite(mnemonic string, operands []asm.Operand) {
 	switch reg.Class {
 	case asm.ClassV, asm.ClassRV64F:
 		g.defined[vecBase+reg.Num] = true
+	case asm.ClassRV64V:
+		g.defined[rvVBase+reg.Num] = true
 	default:
 		g.defined[reg.Num] = true
 	}
@@ -2696,7 +2785,7 @@ func writesFirstOperand(mnemonic string) bool {
 		return true // the store-exclusive status register
 	case "cmp", "cmn", "tst", "fcmp", "fcmpe", "cbz", "cbnz", "tbz", "tbnz", "ret", "brk", "bl", "b",
 		"beq", "bne", "blt", "bge", "bltu", "bgeu", "j", "jal", "jalr", "call", "ebreak",
-		"sd", "sw", "sh", "sb", "fsd", "fsw":
+		"sd", "sw", "sh", "sb", "fsd", "fsw", "vsetivli", "vsetvli", "vse8.v", "vse16.v", "vse32.v", "vse64.v":
 		return false
 	}
 	return !strings.HasPrefix(mnemonic, "st") && !strings.HasPrefix(mnemonic, "b.")
@@ -2888,12 +2977,15 @@ func dr(n int) asm.Register {
 
 func (g *generator) alloc(typ scalar) (int, error) {
 	pool := &g.free
-	if typ.isFloat || typ.isVec {
+	if typ.isVec && g.rvLane {
+		// The rv64 lane's vector file is its own (nativegen/rv64_simd.go).
+		pool = &g.freeV
+	} else if typ.isFloat || typ.isVec {
 		pool = &g.freeF
 		g.usedFloat = true
 	}
 	if len(*pool) == 0 {
-		if typ.isFloat {
+		if typ.isFloat || (typ.isVec && g.rvLane) {
 			return 0, unsupported("an expression deeper than the scratch registers")
 		}
 		r, ok := g.overflowScratch()
@@ -2971,6 +3063,10 @@ func (g *generator) release(r int) {
 			g.live = append(g.live[:i], g.live[i+1:]...)
 			break
 		}
+	}
+	if r >= rvVBase {
+		g.freeV = append(g.freeV, r)
+		return
 	}
 	if r >= vecBase {
 		g.freeF = append(g.freeF, r)
@@ -6240,6 +6336,11 @@ func (g *generator) staticArrayOf(expr ast.Expression) (elem scalar, elemLayout 
 		}
 		if gl, isTable := g.tables[e.Value]; isTable {
 			return scalars[gl.Elem], nil, gl.Length, true
+		}
+		if decl, isAggregate := g.aggregates[e.Value]; isAggregate && !g.shadowed(e.Value) {
+			if elem, elemLayout, length, err := g.arrayTypeOf(decl.Type); err == nil {
+				return elem, elemLayout, length, true
+			}
 		}
 	case *ast.IndexExpression:
 		if !e.Dot {

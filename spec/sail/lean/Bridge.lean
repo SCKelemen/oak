@@ -1192,6 +1192,243 @@ theorem cnt_lanes (datasize elements esize : Nat) (h : elements * esize = datasi
   exact cnt_lane esize _
 
 
+/-! ### The floating-point forms: the IEEE operation applied lane for lane
+
+Arm's `FPAdd`, `FPMul`, … are uninterpreted here (`Sail.FPAdd`, …, the
+support library's constants the fragment maps them to), exactly as the
+verifier's operation terms are (asm/floats_ops.go, Oak.Uninterpreted). Each
+theorem states that the instruction's generated body applies the operation
+to the lanes of its operands, index by index — the lane structure the
+verifier builds (asm/verify_float.go) — so the correspondence between the
+two rests on one identification, `Sail.FPAdd` with the verifier's `fadd`,
+which the differentials check against the hardware. The sign operations
+`FPNeg`/`FPAbs` are bit operations on both sides and are proven as such. -/
+
+/-- The float write loop's result: the fold over the lanes with the
+written value `W j` (the three-local shape element1, element2, result). -/
+theorem float_lanes_of_loop (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (f₁ f₂ : Nat → BitVec esize) (W : Nat → BitVec esize) :
+    lanesOf ((List.foldl (fun (s : BitVec esize × BitVec esize × BitVec datasize) (j : Int) =>
+        (f₁ j.toNat, f₂ j.toNat, aset_Elem s.2.2 j.toNat esize (W j.toNat)))
+      (Zeros esize, Zeros esize, Zeros datasize) (List.map (fun (x : Nat) => (x : Int)) (List.range elements))).2.2) esize
+      = (List.range elements).map (fun j => (W j).toNat) := by
+  rw [result_of_lane_loop esize _ f₁ f₂ W]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  exact lanes_of_fold_write esize elements h hs W (Zeros datasize)
+
+/-- **`fadd`** (vector, `pair` false): lane `j` is `FPAdd` of the operands' lanes `j`. -/
+theorem fadd_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a b : BitVec datasize) (fpcr : BitVec 32) :
+    lanesOf (vector_arithmetic_binary_uniform_add_fp datasize elements esize a b fpcr false) esize
+      = (List.range elements).map (fun j => (Sail.FPAdd (aget_Elem a j esize) (aget_Elem b j esize) fpcr).toNat) := by
+  unfold vector_arithmetic_binary_uniform_add_fp
+  simp only [Id.run, bind, pure, Bool.false_eq_true, ↓reduceIte]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl, forIn_laneRange_fold]
+  exact float_lanes_of_loop datasize elements esize h hs (fun j => aget_Elem a j esize) (fun j => aget_Elem b j esize)
+    (fun j => Sail.FPAdd (aget_Elem a j esize) (aget_Elem b j esize) fpcr)
+
+/-- **`fsub`** (`abs` false): lane `j` is `FPSub` of the lanes. -/
+theorem fsub_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a b : BitVec datasize) (fpcr : BitVec 32) :
+    lanesOf (vector_arithmetic_binary_uniform_sub_fp datasize elements esize a b fpcr false) esize
+      = (List.range elements).map (fun j => (Sail.FPSub (aget_Elem a j esize) (aget_Elem b j esize) fpcr).toNat) := by
+  unfold vector_arithmetic_binary_uniform_sub_fp
+  simp only [Id.run, bind, pure, Bool.false_eq_true, ↓reduceIte]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl, forIn_laneRange_fold]
+  show lanesOf ((List.foldl (fun (s : BitVec esize × BitVec esize × BitVec esize × BitVec datasize) (j : Int) =>
+      (Sail.FPSub (aget_Elem a j.toNat esize) (aget_Elem b j.toNat esize) fpcr, aget_Elem a j.toNat esize, aget_Elem b j.toNat esize,
+        aset_Elem s.2.2.2 j.toNat esize (Sail.FPSub (aget_Elem a j.toNat esize) (aget_Elem b j.toNat esize) fpcr)))
+      (Zeros esize, Zeros esize, Zeros esize, Zeros datasize) (List.map (fun (x : Nat) => (x : Int)) (List.range elements))).2.2.2) esize = _
+  rw [result_of_lane_loop4b esize _ (fun j => Sail.FPSub (aget_Elem a j esize) (aget_Elem b j esize) fpcr)
+    (fun j => aget_Elem a j esize) (fun j => aget_Elem b j esize)
+    (fun j => Sail.FPSub (aget_Elem a j esize) (aget_Elem b j esize) fpcr)]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  exact lanes_of_fold_write esize elements h hs _ (Zeros datasize)
+
+/-- **`fmul`**: lane `j` is `FPMul` of the lanes. -/
+theorem fmul_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a b : BitVec datasize) (fpcr : BitVec 32) :
+    lanesOf (vector_arithmetic_binary_uniform_mul_fp_product datasize elements esize a b fpcr) esize
+      = (List.range elements).map (fun j => (Sail.FPMul (aget_Elem a j esize) (aget_Elem b j esize) fpcr).toNat) := by
+  unfold vector_arithmetic_binary_uniform_mul_fp_product
+  simp only [Id.run, bind, pure]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl, forIn_laneRange_fold]
+  exact float_lanes_of_loop datasize elements esize h hs (fun j => aget_Elem a j esize) (fun j => aget_Elem b j esize)
+    (fun j => Sail.FPMul (aget_Elem a j esize) (aget_Elem b j esize) fpcr)
+
+/-- **`fmla`** (`sub_op` false): lane `j` is `FPMulAdd` of the accumulator's
+lane and the multiplicands' lanes — one rounding, the verifier's `fma`. -/
+theorem fmla_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a b c : BitVec datasize) (fpcr : BitVec 32) :
+    lanesOf (vector_arithmetic_binary_uniform_mul_fp_fused datasize elements esize a b c fpcr false) esize
+      = (List.range elements).map (fun j => (Sail.FPMulAdd (aget_Elem c j esize) (aget_Elem a j esize) (aget_Elem b j esize) fpcr).toNat) := by
+  unfold vector_arithmetic_binary_uniform_mul_fp_fused
+  simp only [Id.run, bind, pure, Bool.false_eq_true, ↓reduceIte]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl, forIn_laneRange_fold]
+  exact float_lanes_of_loop datasize elements esize h hs (fun j => aget_Elem a j esize) (fun j => aget_Elem b j esize)
+    (fun j => Sail.FPMulAdd (aget_Elem c j esize) (aget_Elem a j esize) (aget_Elem b j esize) fpcr)
+
+/-- **`fmls`** (`sub_op` true): the first multiplicand negated. -/
+theorem fmls_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a b c : BitVec datasize) (fpcr : BitVec 32) :
+    lanesOf (vector_arithmetic_binary_uniform_mul_fp_fused datasize elements esize a b c fpcr true) esize
+      = (List.range elements).map (fun j => (Sail.FPMulAdd (aget_Elem c j esize) (FPNeg (aget_Elem a j esize)) (aget_Elem b j esize) fpcr).toNat) := by
+  unfold vector_arithmetic_binary_uniform_mul_fp_fused
+  simp only [Id.run, bind, pure, ↓reduceIte]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl, forIn_laneRange_fold]
+  exact float_lanes_of_loop datasize elements esize h hs (fun j => FPNeg (aget_Elem a j esize)) (fun j => aget_Elem b j esize)
+    (fun j => Sail.FPMulAdd (aget_Elem c j esize) (FPNeg (aget_Elem a j esize)) (aget_Elem b j esize) fpcr)
+
+/-- **`fmin`** / **`fmax`** (1985 semantics, `pair` false). -/
+theorem fmin_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a b : BitVec datasize) (fpcr : BitVec 32) :
+    lanesOf (vector_arithmetic_binary_uniform_maxmin_fp_1985 datasize elements esize a b fpcr true false) esize
+      = (List.range elements).map (fun j => (Sail.FPMin (aget_Elem a j esize) (aget_Elem b j esize) fpcr).toNat) := by
+  unfold vector_arithmetic_binary_uniform_maxmin_fp_1985
+  simp only [Id.run, bind, pure, Bool.false_eq_true, ↓reduceIte]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl, forIn_laneRange_fold]
+  exact float_lanes_of_loop datasize elements esize h hs (fun j => aget_Elem a j esize) (fun j => aget_Elem b j esize)
+    (fun j => Sail.FPMin (aget_Elem a j esize) (aget_Elem b j esize) fpcr)
+
+theorem fmax_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a b : BitVec datasize) (fpcr : BitVec 32) :
+    lanesOf (vector_arithmetic_binary_uniform_maxmin_fp_1985 datasize elements esize a b fpcr false false) esize
+      = (List.range elements).map (fun j => (Sail.FPMax (aget_Elem a j esize) (aget_Elem b j esize) fpcr).toNat) := by
+  unfold vector_arithmetic_binary_uniform_maxmin_fp_1985
+  simp only [Id.run, bind, pure, Bool.false_eq_true, ↓reduceIte]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl, forIn_laneRange_fold]
+  exact float_lanes_of_loop datasize elements esize h hs (fun j => aget_Elem a j esize) (fun j => aget_Elem b j esize)
+    (fun j => Sail.FPMax (aget_Elem a j esize) (aget_Elem b j esize) fpcr)
+
+/-- **`fminnm`** / **`fmaxnm`** (2008 semantics, `pair` false). -/
+theorem fminnm_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a b : BitVec datasize) (fpcr : BitVec 32) :
+    lanesOf (vector_arithmetic_binary_uniform_maxmin_fp_2008 datasize elements esize a b fpcr true false) esize
+      = (List.range elements).map (fun j => (Sail.FPMinNum (aget_Elem a j esize) (aget_Elem b j esize) fpcr).toNat) := by
+  unfold vector_arithmetic_binary_uniform_maxmin_fp_2008
+  simp only [Id.run, bind, pure, Bool.false_eq_true, ↓reduceIte]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl, forIn_laneRange_fold]
+  exact float_lanes_of_loop datasize elements esize h hs (fun j => aget_Elem a j esize) (fun j => aget_Elem b j esize)
+    (fun j => Sail.FPMinNum (aget_Elem a j esize) (aget_Elem b j esize) fpcr)
+
+theorem fmaxnm_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a b : BitVec datasize) (fpcr : BitVec 32) :
+    lanesOf (vector_arithmetic_binary_uniform_maxmin_fp_2008 datasize elements esize a b fpcr false false) esize
+      = (List.range elements).map (fun j => (Sail.FPMaxNum (aget_Elem a j esize) (aget_Elem b j esize) fpcr).toNat) := by
+  unfold vector_arithmetic_binary_uniform_maxmin_fp_2008
+  simp only [Id.run, bind, pure, Bool.false_eq_true, ↓reduceIte]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl, forIn_laneRange_fold]
+  exact float_lanes_of_loop datasize elements esize h hs (fun j => aget_Elem a j esize) (fun j => aget_Elem b j esize)
+    (fun j => Sail.FPMaxNum (aget_Elem a j esize) (aget_Elem b j esize) fpcr)
+
+/-- The unary write loop (the two-local shape element, result). -/
+theorem float_unary_lanes_of_loop (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (f₁ : Nat → BitVec esize) (W : Nat → BitVec esize) :
+    lanesOf ((List.foldl (fun (s : BitVec esize × BitVec datasize) (j : Int) =>
+        (f₁ j.toNat, aset_Elem s.2 j.toNat esize (W j.toNat)))
+      (Zeros esize, Zeros datasize) (List.map (fun (x : Nat) => (x : Int)) (List.range elements))).2) esize
+      = (List.range elements).map (fun j => (W j).toNat) := by
+  rw [result_of_lane_loop2 esize _ f₁ W]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  exact lanes_of_fold_write esize elements h hs W (Zeros datasize)
+
+/-- **`fsqrt`**: lane `j` is `FPSqrt` of the lane. -/
+theorem fsqrt_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a : BitVec datasize) (fpcr : BitVec 32) :
+    lanesOf (vector_arithmetic_unary_special_sqrt datasize elements esize a fpcr) esize
+      = (List.range elements).map (fun j => (Sail.FPSqrt (aget_Elem a j esize) fpcr).toNat) := by
+  unfold vector_arithmetic_unary_special_sqrt
+  simp only [Id.run, bind, pure]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl, forIn_laneRange_fold]
+  exact float_unary_lanes_of_loop datasize elements esize h hs (fun j => aget_Elem a j esize)
+    (fun j => Sail.FPSqrt (aget_Elem a j esize) fpcr)
+
+/-- **`fneg`** (`neg` true) and **`fabs`** (`neg` false): the sign operations lane for lane. -/
+theorem fneg_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a : BitVec datasize) :
+    lanesOf (vector_arithmetic_unary_diffneg_fp datasize elements esize a true) esize
+      = (List.range elements).map (fun j => (FPNeg (aget_Elem a j esize)).toNat) := by
+  unfold vector_arithmetic_unary_diffneg_fp
+  simp only [Id.run, bind, pure, ↓reduceIte]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl, forIn_laneRange_fold]
+  exact float_unary_lanes_of_loop datasize elements esize h hs (fun j => FPNeg (aget_Elem a j esize))
+    (fun j => FPNeg (aget_Elem a j esize))
+
+theorem fabs_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a : BitVec datasize) :
+    lanesOf (vector_arithmetic_unary_diffneg_fp datasize elements esize a false) esize
+      = (List.range elements).map (fun j => (FPAbs (aget_Elem a j esize)).toNat) := by
+  unfold vector_arithmetic_unary_diffneg_fp
+  simp only [Id.run, bind, pure, Bool.false_eq_true, ↓reduceIte]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl, forIn_laneRange_fold]
+  exact float_unary_lanes_of_loop datasize elements esize h hs (fun j => FPAbs (aget_Elem a j esize))
+    (fun j => FPAbs (aget_Elem a j esize))
+
+/-- **`FPNeg`** flips the sign bit and **`FPAbs`** clears it — the verifier's
+bit operations (asm/verify_float.go floatNeg, floatAbs), at both widths. The
+generated code casts the one-plus-rest concatenation back to the width; the
+`show` states the width arithmetic evaluated. -/
+theorem FPNeg_32 (x : BitVec 32) : FPNeg x = x ^^^ 0x80000000#32 := by
+  simp only [FPNeg, Sail.BitVec.length, join1_single, access_eq, Sail.BitVec.slice]
+  show BitVec.setWidth 32 (~~~BitVec.ofBool (x.getLsbD 31) +++ BitVec.extractLsb' 0 31 x) = _
+  rw [BitVec.setWidth_eq]
+  bv_decide
+
+theorem FPNeg_64 (x : BitVec 64) : FPNeg x = x ^^^ 0x8000000000000000#64 := by
+  simp only [FPNeg, Sail.BitVec.length, join1_single, access_eq, Sail.BitVec.slice]
+  show BitVec.setWidth 64 (~~~BitVec.ofBool (x.getLsbD 63) +++ BitVec.extractLsb' 0 63 x) = _
+  rw [BitVec.setWidth_eq]
+  bv_decide
+
+theorem FPAbs_32 (x : BitVec 32) : FPAbs x = x &&& 0x7fffffff#32 := by
+  simp only [FPAbs, Sail.BitVec.length, Sail.BitVec.slice]
+  show BitVec.setWidth 32 (0#1 +++ BitVec.extractLsb' 0 31 x) = _
+  rw [BitVec.setWidth_eq]
+  bv_decide
+
+theorem FPAbs_64 (x : BitVec 64) : FPAbs x = x &&& 0x7fffffffffffffff#64 := by
+  simp only [FPAbs, Sail.BitVec.length, Sail.BitVec.slice]
+  show BitVec.setWidth 64 (0#1 +++ BitVec.extractLsb' 0 63 x) = _
+  rw [BitVec.setWidth_eq]
+  bv_decide
+
+/-- The write loop's result over the Int-indexed lanes the generated code
+computes with (`2 * e`, `2 * e + 1` in Int arithmetic). -/
+theorem result_of_lane_loop_int {E₁ E₂ : Type} {N : Nat} (size : Nat) (init : E₁ × E₂ × BitVec N)
+    (f₁ : Int → E₁) (f₂ : Int → E₂) (W : Int → BitVec size) (l : List Int) :
+    (l.foldl (fun (s : E₁ × E₂ × BitVec N) j =>
+        (f₁ j, f₂ j, aset_Elem s.2.2 j.toNat size (W j))) init).2.2
+      = l.foldl (fun r j => aset_Elem r j.toNat size (W j)) init.2.2 :=
+  foldl_proj (β := E₁ × E₂ × BitVec N) (γ := BitVec N) (fun s => s.2.2)
+    (fun j s => (f₁ j, f₂ j, aset_Elem s.2.2 j.toNat size (W j)))
+    (fun j r => aset_Elem r j.toNat size (W j)) (fun _ _ => rfl) l init
+
+/-- **`faddp`** (`pair` true): lane `j` is `FPAdd` of lanes `2j` and `2j+1` of
+`operand2 @ operand1` (the generated code casts the concatenation to
+`2 * datasize` bits) — the adjacent pairs of the first operand, then of
+the second, the shape the verifier's `faddp` builds and the pairwise
+`reduce_add` tree is made of. -/
+theorem faddp_lanes (datasize elements esize : Nat) (h : elements * esize = datasize) (hs : 0 < esize)
+    (a b : BitVec datasize) (fpcr : BitVec 32) :
+    lanesOf (vector_arithmetic_binary_uniform_add_fp datasize elements esize a b fpcr true) esize
+      = (List.range elements).map (fun j => (Sail.FPAdd (aget_Elem (BitVec.setWidth (2 * datasize) (b ++ a)) (2 * j) esize) (aget_Elem (BitVec.setWidth (2 * datasize) (b ++ a)) (2 * j + 1) esize) fpcr).toNat) := by
+  unfold vector_arithmetic_binary_uniform_add_fp
+  simp only [Id.run, bind, pure, ↓reduceIte]
+  rw [show ({ stop := (elements : Int) - 1 } : IntRange) = laneRange elements from rfl, forIn_laneRange_fold]
+  show lanesOf ((List.foldl (fun (s : BitVec esize × BitVec esize × BitVec datasize) (j : Int) =>
+      (aget_Elem (BitVec.setWidth (2 * datasize) (b ++ a)) (2 * j).toNat esize, aget_Elem (BitVec.setWidth (2 * datasize) (b ++ a)) (2 * j + 1).toNat esize,
+        aset_Elem s.2.2 j.toNat esize (Sail.FPAdd (aget_Elem (BitVec.setWidth (2 * datasize) (b ++ a)) (2 * j).toNat esize) (aget_Elem (BitVec.setWidth (2 * datasize) (b ++ a)) (2 * j + 1).toNat esize) fpcr)))
+      (Zeros esize, Zeros esize, Zeros datasize) (List.map (fun (x : Nat) => (x : Int)) (List.range elements))).2.2) esize = _
+  rw [result_of_lane_loop_int esize _ (fun j => aget_Elem (BitVec.setWidth (2 * datasize) (b ++ a)) (2 * j).toNat esize) (fun j => aget_Elem (BitVec.setWidth (2 * datasize) (b ++ a)) (2 * j + 1).toNat esize)
+    (fun j => Sail.FPAdd (aget_Elem (BitVec.setWidth (2 * datasize) (b ++ a)) (2 * j).toNat esize) (aget_Elem (BitVec.setWidth (2 * datasize) (b ++ a)) (2 * j + 1).toNat esize) fpcr)]
+  simp only [List.foldl_map, Int.toNat_natCast]
+  rw [lanes_of_fold_write esize elements h hs (fun k => Sail.FPAdd (aget_Elem (BitVec.setWidth (2 * datasize) (b ++ a)) (2 * (k : Int)).toNat esize) (aget_Elem (BitVec.setWidth (2 * datasize) (b ++ a)) (2 * (k : Int) + 1).toNat esize) fpcr) (Zeros datasize)]
+  apply List.map_congr_left
+  intro j _
+  have h2 : (2 * (j : Int)).toNat = 2 * j := by omega
+  have h3 : (2 * (j : Int) + 1).toNat = 2 * j + 1 := by omega
+  simp only [h2, h3]
+
 end Lanes
 
 end Oak.SailBridge
