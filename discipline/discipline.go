@@ -463,6 +463,8 @@ func collectCallEdges(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			for _, arm := range e.Arms {
 				walkExpr(arm.Body, tail)
 			}
+		case *ast.QuantifierExpression:
+			walkExpr(e.Body, false)
 		case *ast.InfixExpression:
 			walkExpr(e.Left, false)
 			walkExpr(e.Right, false)
@@ -564,6 +566,8 @@ func countCalls(expr ast.Expression, name string) int {
 			for _, arm := range n.Arms {
 				walkExpr(arm.Body)
 			}
+		case *ast.QuantifierExpression:
+			walkExpr(n.Body)
 		case *ast.InfixExpression:
 			walkExpr(n.Left)
 			walkExpr(n.Right)

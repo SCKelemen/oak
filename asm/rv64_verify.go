@@ -72,7 +72,32 @@ func bindRV64Params(fn *Function, sig *ast.FunctionStatement, state *symbolicSta
 	}
 	for _, binding := range fn.Bindings {
 		if binding.OnStack {
-			return "parameters beyond the register contract (the incoming stack area is not modeled)", false
+			// A scalar beyond a0–a7: the caller's outgoing area holds it
+			// widened in an XLEN-sized slot at Stack above the entry sp
+			// (the LP64 psABI), as a register would (Oak.RiscV.widen); the
+			// body's `ld` of the slot reads the parameter. A span or record
+			// there is outside this increment.
+			if _, isComposite := composites[binding.Param]; isComposite {
+				return "a record parameter beyond the register contract (the incoming stack area holds scalars only)", false
+			}
+			if _, isSpan := spans[binding.Param]; isSpan {
+				return "a span parameter beyond the register contract (the incoming stack area holds scalars only)", false
+			}
+			bits := declared[binding.Param]
+			_, signed, _ := contractBits(sigParamType(sig, binding.Param))
+			value := zeroExtend(input(binding.Param, bits), 64)
+			switch {
+			case bits == 64:
+			case signed:
+				value = extendTerm(value, bits, 64, true)
+			case bits == 32:
+				value = extendTerm(value, 32, 64, true)
+			}
+			if state.frame == nil {
+				state.frame = map[int64]frameSlot{}
+			}
+			state.storeSlot(binding.Stack, value, 8)
+			continue
 		}
 		if cp, isComposite := composites[binding.Param]; isComposite {
 			if cp.size > 16 {

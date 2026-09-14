@@ -2305,6 +2305,61 @@ budget; dropping a stack parameter from the body is a mismatch
 (`asm/stack_params_test.go`); `tail_sum`, whose span arrives on the
 stack and is walked in a loop, is proven.
 
+**Thirty-third increment — the RV64 lane's parameters beyond the
+registers (2026-09-15; `nativegen/rv64.go`, `asm/rv64_check.go`,
+`asm/rv64_verify.go`).** The rv64 lane left every function with more than
+eight argument words to the C backend ("more than eight parameters", "the
+parameters exhaust the eight argument registers"), and every call with
+more than eight arguments. It now lays the integer-class parameters out
+by the shared rule (`asm.LayoutArguments`, unpacked: XLEN-sized slots in
+order, as the LP64 psABI passes them) and reads a scalar beyond a0–a7
+from the caller's outgoing area in the prologue — `ld t0, frame+N(sp)`,
+the slot holding the value widened as a register would (`Oak.RiscV.widen`,
+so the callee's homes hold the canonical form) — and a native caller
+stores its scalar arguments beyond the registers into the outgoing area
+at its frame's bottom (the return address and the callee-saved area move
+up by it), each into its slot as it is evaluated when no later argument
+calls. The checker learns the incoming area (a load of a whole slot binds
+the parameter, widened for a `u32`; a store into the area is refused) and
+the binding `bind [sp, #N] = p`, which a unit may now spell on either
+lane; the verifier holds the slot as a frame slot at its offset above the
+entry sp. A span or a record beyond the registers stays with the C backend
+in this increment — the psABI may split a two-word aggregate across the
+last register and the stack, which the shared layout does not model — and
+the lane says so. A call's constant arguments and the variables homed in
+callee-saved registers are read at the move, as on AArch64, holding no
+scratch register: `through_c`, which passes ten arguments to a C function,
+lowers where its eight register arguments alone exceeded the operand
+stack. On the stack-argument corpus `nine` lowers and is proven and
+`twelve` is evidence as on AArch64; `tail_sum` and `records_last` stay
+with the C backend with the reason
+(`compiler/e2e_native_rv64_stack_args_test.go`, the corpus run on the
+bare machine under QEMU against the C backend's realization;
+`asm/stack_params_test.go`).
+
+**Thirty-fourth increment — the RV64 lane's span locals and value-less
+records (2026-09-15; `nativegen/rv64.go`; `spec/lean/Oak/SpanLocals.lean`).**
+A `main` that named a view
+of its own array (`whole: []u32 = view(&buf)`), or declared a record
+without an initializer, stayed with the C backend on the rv64 lane ("a
+local of type ([]u32)", "the record local p without an initializer"),
+while the AArch64 lane lowered both. The lane now binds a span or view
+local over an owned frame array as it binds a parked span parameter: the
+array's frame address (`addi sB, sp, off`) and its constant length (`li
+sL, N`) in two callee-saved registers, the length register serving as the
+raw and the normalized length, so the local reads and stores through the
+checker's guarded-index idiom, passes on as a `{base, len}` pair, and
+another named span aliases by copying the registers; a subslice stays with
+the C backend in this increment. A record local without an initializer is
+zero-filled from the zero register, word by word (docs/spec/90-backend.md
+§6). The Lean model states the pair's two facts — a guarded element access
+(`i < n`) stays inside the array's slots and so below the frame, as an
+instance of the checker's span access rule, and the word-by-word zero fill
+is the record's zero value — and the verifier's Oak side now holds every value-less aggregate
+local — an array, a record, a sum — at its zero value, as both backends
+fill it, where it refused a record or a sum. `compiler/e2e_native_rv64_span_locals_test.go`
+runs a program with both on the bare machine under QEMU and on the
+AArch64 host against the C backend.
 **Thirty-fifth increment — variable shift counts (2026-09-15;
 `asm/verify.go` lowerVariableShift, `Oak.Shifts`).** A body shifting by a
 count that is not a constant — `shifts`, `byte_shift` of the rv64 extra
@@ -3149,7 +3204,9 @@ addressed with its stride built as `movz` then `movk` before the `umaddl`,
 and a field past 4 095 bytes into it through `add xF, xE, #hi, lsl #12`
 and a small remainder in the operand; the checker keeps the stride's
 constant fact through the `movk` and narrows the element region through
-the shifted add (the OS pilot's N2, a 409 600-byte regime).
+the shifted add — and through a second add in place (`add xA, xA, #48`),
+reading the region the source held before the write (the OS pilot's N2,
+a 409 600-byte regime, and N8's field at 393 264 bytes).
 
 **Array fields of elements, read anywhere.** `pool[i].f[j]` — an owned
 array inside a record element of a span, view, or array — is addressed

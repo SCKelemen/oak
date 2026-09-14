@@ -4697,6 +4697,11 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 		}
 		return g.expr(es.Expression, &typ)
 	}
+	if _, isQuantifier := expr.(*ast.QuantifierExpression); isQuantifier {
+		// A bounded quantifier enumerates a domain: the C backend's loop
+		// realizes it (docs/spec/10-syntax.md section 3e).
+		return 0, unsupported("a bounded quantifier")
+	}
 	return 0, unsupported("%T", expr)
 }
 
@@ -6368,7 +6373,14 @@ func (g *generator) staticArrayOf(expr ast.Expression) (elem scalar, elemLayout 
 func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression) (address asm.Memory, indexReg, baseReg int, err error) {
 	size := int64(arr.elem.bits / 8)
 	if k, isConst := constantValue(index); isConst && k >= 0 && k < arr.length {
-		return g.memOf(arr.loc().plus(k * size)), -1, -1, nil
+		// A constant element: its place — rebased through a temporary when
+		// the offset is past the load's immediate (a field far into a large
+		// element, the OS pilot's N8), returned as the base to release.
+		mem, temp, err := g.reachable(arr.loc().plus(k*size), size)
+		if err != nil {
+			return asm.Memory{}, 0, 0, err
+		}
+		return mem, -1, temp, nil
 	}
 	r, err := g.indexValue(index)
 	if err != nil {
