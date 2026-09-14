@@ -843,6 +843,15 @@ func (comp Compilation) verifiedProfile(lowered *LoweredProgram) error {
 		held[verdictReason(verdict)] = append(held[verdictReason(verdict)], name)
 		total++
 	}
+	// A proven verdict is relative to the callees its summaries took at
+	// their Oak bodies (asm.Verdict.Callees): the body is accepted only
+	// when every one of them is, to a fixpoint. The refusal names the callee
+	// each such body rests on.
+	for name, callee := range provenRestingOnUnproven(lowered.Model.NativeVerdicts) {
+		key := "proven, resting on a callee that is not proven"
+		held[key] = append(held[key], name+" (via "+callee+")")
+		total++
+	}
 	for name, reason := range lowered.Model.NativeFallbacks {
 		key := "left to the C backend: " + reason
 		held[key] = append(held[key], name)
@@ -869,6 +878,34 @@ func (comp Compilation) verifiedProfile(lowered *LoweredProgram) error {
 		fmt.Fprintf(&out, "\n  %s (%d): %s", reason, len(names), strings.Join(names, ", "))
 	}
 	return errors.New(out.String())
+}
+
+// provenRestingOnUnproven closes the proven verdicts over their callees:
+// a proven body whose summary took a callee that is not itself accepted —
+// not proven, left to the C backend, or unknown to the native backend —
+// is dropped, to a fixpoint, and named with the first such callee.
+func provenRestingOnUnproven(verdicts map[string]asm.Verdict) map[string]string {
+	accepted := map[string]bool{}
+	for name, verdict := range verdicts {
+		if verdict.Kind == asm.VerdictProven {
+			accepted[name] = true
+		}
+	}
+	resting := map[string]string{}
+	for changed := true; changed; {
+		changed = false
+		for name := range accepted {
+			for _, callee := range verdicts[name].Callees {
+				if !accepted[callee] {
+					resting[name] = callee
+					delete(accepted, name)
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	return resting
 }
 
 // verdictReason is the reason a verdict short of proof gives: the text

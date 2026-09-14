@@ -3662,7 +3662,13 @@ the path budget, table reads (`adrl`/`la`), unit callees, and calls
 returning a `Result` — the order in which the verifier grows next.
 Pinned: `compiler/e2e_verified_profile_test.go` (a proven program links
 on both lanes; a variable shift count is refused with its reason; a body
-left to C is refused with its reason).
+left to C is refused with its reason). A proven verdict is relative to the callees its
+summaries took at their Oak bodies (§8, call summaries), so the profile
+accepts a body only when every one of them is accepted too, to a fixpoint
+(`compiler.provenRestingOnUnproven`); a body that rests on a callee that
+is trusted, witnessed, left to the C backend, or outside the native lane
+is refused as "proven, resting on a callee that is not proven", naming
+the callee — the chain the profile stands on is closed, not assumed.
 
 **Record results of two chunks, aggregate call summaries, unknown frame
 bytes (2026-09-14).** The first burn-down of the verified profile. A
