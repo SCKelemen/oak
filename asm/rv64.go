@@ -124,6 +124,16 @@ var rv64VectorShapes = map[string]string{
 	// sources (RVV 1.0 §16.3, §16.4, applied fail-closed).
 	"vssubu.vv": "vvv", "vsrl.vx": "vvx", "vmslt.vx": "vvx", "vmsltu.vx": "vvx",
 	"vrgather.vv": "vvv", "vslideup.vi": "vvi", "vslidedown.vi": "vvi",
+	// The float vectors on the native lane (docs/spec/93-simd.md §1.2a,
+	// §1.4): division, square root, the number-preferring minimum and
+	// maximum (RVV 1.0 §13.11: a quiet NaN operand is suppressed — the
+	// catalog's NaN-propagating min/max are rebuilt from them with the
+	// vmfne self-test and vmerge), the sign injections `vfsgnjn.vv v, v, v`
+	// (neg) and `vfsgnjx.vv v, v, v` (abs), and the lane insert: `vid.v`
+	// (the lane indices), `vmseq.vx` against the lane, `vfmerge.vfm vd,
+	// vs2, fs1, v0` (fs1 where the mask holds, vs2 elsewhere).
+	"vfdiv.vv": "vvv", "vfsqrt.v": "vv", "vfmin.vv": "vvv", "vfmax.vv": "vvv", "vfsgnjn.vv": "vvv", "vfsgnjx.vv": "vvv",
+	"vmfne.vv": "vvv", "vid.v": "v", "vmseq.vx": "vvx", "vfmerge.vfm": "vvfv",
 }
 
 // rv64VectorDisjoint are the forms whose destination group must not
@@ -137,6 +147,8 @@ var rv64VectorDisjoint = map[string]bool{"vrgather.vv": true, "vslideup.vi": tru
 var rv64VectorFloat = map[string]bool{
 	"vfadd.vv": true, "vfsub.vv": true, "vfmul.vv": true, "vfmacc.vv": true,
 	"vfmv.v.f": true, "vfmv.f.s": true, "vfcvt.f.xu.v": true, "vfredosum.vs": true,
+	"vfdiv.vv": true, "vfsqrt.v": true, "vfmin.vv": true, "vfmax.vv": true, "vfsgnjn.vv": true, "vfsgnjx.vv": true,
+	"vmfne.vv": true, "vfmerge.vfm": true,
 }
 
 // rv64VectorEMUL is the register-group factor of a vector operand relative
@@ -177,6 +189,8 @@ var rv64Maskable = map[string]bool{
 	"vfadd.vv": true, "vfsub.vv": true, "vfmul.vv": true, "vfmacc.vv": true, "vfcvt.f.xu.v": true, "vfredosum.vs": true,
 	"vssubu.vv": true, "vsrl.vx": true, "vmslt.vx": true, "vmsltu.vx": true,
 	"vrgather.vv": true, "vslideup.vi": true, "vslidedown.vi": true,
+	"vfdiv.vv": true, "vfsqrt.v": true, "vfmin.vv": true, "vfmax.vv": true, "vfsgnjn.vv": true, "vfsgnjx.vv": true,
+	"vmfne.vv": true, "vid.v": true, "vmseq.vx": true,
 }
 
 // rv64Masked reports a vector instruction spelled with the `v0.t` mask.
@@ -571,9 +585,9 @@ func rv64CheckVectorShape(instr Instruction, shape string) error {
 			}
 		}
 	}
-	if instr.Mnemonic == "vmerge.vvm" {
+	if instr.Mnemonic == "vmerge.vvm" || instr.Mnemonic == "vfmerge.vfm" {
 		if mask := ops[3].(Register); mask.Num != 0 {
-			return fmt.Errorf("vmerge.vvm takes its mask from v0")
+			return fmt.Errorf("%s takes its mask from v0", instr.Mnemonic)
 		}
 	}
 	return nil
