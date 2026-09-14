@@ -194,7 +194,30 @@ func (x *pathExecutor) mergeEffects(cond *term, taken, fallThrough *pathEffects)
 // the newest store on the path at that index, else the entry memory
 // (element), which in a concrete run is the witness memory's value.
 func (x *pathExecutor) elementIn(state *symbolicState, span string, index *term, width int) *term {
+	x.noteSpanRead(span)
 	return memoryAt(state.writes[span], index, x.element(span, index, width))
+}
+
+// noteSpanRead records a span read for the loop summaries (asm/loops.go):
+// a loop body may not read a span it stores to, since the summary carries
+// registers, not memories, and a span a data-dependent loop wrote is
+// closed to reads afterwards (its final memory is the loop's).
+func (x *pathExecutor) noteSpanRead(span string) {
+	if x.spanReads != nil {
+		x.spanReads[span] = true
+	}
+	if x.loopWritten[span] && x.taint == "" {
+		x.taint = fmt.Sprintf("a read of %s after a data-dependent loop wrote it", span)
+	}
+}
+
+func (lo *oakLowering) noteSpanRead(span string) {
+	if lo.spanReads != nil {
+		lo.spanReads[span] = true
+	}
+	if lo.loopWritten[span] && lo.taint == "" {
+		lo.taint = fmt.Sprintf("a read of %s after a data-dependent loop wrote it", span)
+	}
 }
 
 // spanStore executes a store through a span parameter's base: the
@@ -251,8 +274,8 @@ func (x *pathExecutor) spanStore(instr Instruction, state *symbolicState) (handl
 	if vector && (src.Lane >= 0 || instr.Mnemonic != "str" || (src.VecBytes() != 16 && src.VecBytes() != 8)) {
 		return true, "a vector-register store to a span through the " + src.Vec + " view", false
 	}
-	if len(x.loopStack) > 0 {
-		return true, "a span store in a data-dependent loop body", false
+	if x.loopWritten[param] {
+		return true, fmt.Sprintf("a store through %s after a data-dependent loop wrote it", param), false
 	}
 	if mem.Mode != MemOffset {
 		return true, "a span base moved by pre/post-index", false
@@ -341,8 +364,8 @@ func (lo *oakLowering) spanAssignment(s *ast.IndexAssignmentStatement) (name str
 // (the store is dominated by a length guard); the verifier records which
 // element takes which value.
 func (lo *oakLowering) assignSpanElement(name string, contract spanContract, s *ast.IndexAssignmentStatement) (string, bool) {
-	if len(lo.loopStack) > 0 {
-		return "a span store in a data-dependent loop body", false
+	if lo.loopWritten[lo.spanRoot(name)] {
+		return fmt.Sprintf("a store through %s after a data-dependent loop wrote it", name), false
 	}
 	index, reason, ok := lo.lower(s.Target.Index, 32)
 	if !ok {

@@ -398,6 +398,11 @@ func TestE2ENativeRV64SpansUnderQEMU(t *testing.T) {
 			t.Fatalf("%s was not lowered by the rv64 lane; diagnostics:\n%s", fn, joined)
 		}
 	}
+	// The store in fill's loop body is proven through the coupling
+	// (docs/spec/94-assembler.md §8, thirtieth increment).
+	if !strings.Contains(joined, "asm unit fill: proven") {
+		t.Errorf("fill was not proven by the verifier; diagnostics:\n%s", joined)
+	}
 	// The guarded element load, the coupled loops, and the tail recursion
 	// as a loop are proven, as on the AArch64 lane.
 	for _, fn := range []string{"at", "sum", "byte_total", "count_down"} {
@@ -497,7 +502,7 @@ func TestE2ENativeRV64FloatsUnderQEMU(t *testing.T) {
 	// the verifier proves them against Oak's min/max up to the NaN payload.
 	// The float span reduction is proven through the loop recognizer: flw
 	// through the span element address, the accumulator in fs0.
-	for _, fn := range []string{"least", "most", "total"} {
+	for _, fn := range []string{"least", "most", "total", "fill_f64"} {
 		if !strings.Contains(joined, "asm unit "+fn+": proven") {
 			t.Errorf("%s was not proven by the verifier; diagnostics:\n%s", fn, joined)
 		}

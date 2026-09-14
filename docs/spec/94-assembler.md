@@ -1013,7 +1013,8 @@ mismatch and the swapped `v[i] + acc` evidence only (another
 application of `fadd`, which the witnesses cannot tell apart:
 `asm/float_loop_test.go`). What stays trusted: the rounding intrinsics
 (`floor`, `ceil`, `trunc`, `round`), a float converted to `u8` or `u16`
-(the narrow saturation), and a loop body that stores (`fill_f64`).
+(the narrow saturation); a loop body that stores (`fill_f64`) is the
+thirtieth increment's, below.
 
 **Vector stores as memories (2026-09-14; `asm/effects.go`,
 `asm/verify_simd.go`).** The twenty-eighth increment's write log takes
@@ -2169,9 +2170,46 @@ store, a callee storing another value refuted; `TestVerifyBoundedShift`)
 and `compiler/e2e_native_callee_effects_test.go` (the arena shape: a
 record and a span passed through two levels of unit callees, the constant
 count unrolled, the bounded shift proven, a data count trusted).
+**Thirtieth increment — stores in data-dependent loops (2026-09-15;
+`asm/loops.go`, `asm/effects.go`, `Oak.LoopStores`).** A counting loop
+that stores one element per iteration — `fill`, `fill_f64`, every
+"write `f(i)` at `i`" loop of the native corpora — was trusted on both
+lanes ("a store in a loop body"), since the loop summary carries registers
+and frame slots, not memories. It still does: the increment proves the
+stores through the coupling instead of summarizing the memory. Both
+sides' summaries run the body's stores as ordinary writes and then lift
+the iteration's one store per span out of the running log
+(`loopEvent.writes`: its element, value, and guard over the fresh
+symbols), so the state past the loop holds the writes made before it;
+the coupling proof, once the affine pairing is found, adds one obligation
+per loop and span under the body premise — the Oak store and the asm
+store, the latter under the substitution, reach the same element, store
+the same value at the element width, and happen under the same guard —
+and then compares the straight-line memories before and after the loops
+at a fresh index under the exit premise, as `decideSpans` does without
+loops. `Oak.LoopStores.run_mem_eq` is why the obligations suffice: two
+loops whose states are coupled, whose continue conditions agree under the
+coupling, whose iterations preserve it, and whose iterations' stores are
+equal under it leave equal memories after any number of steps. The
+witness layer refutes: on each concrete input the loops unroll and the
+two logs are compared element by element below the input's length, so
+`s[i] = x - u16_trunc_u32(i)` against the `fill` lowering is a mismatch
+naming the element (`asm/loop_store_test.go`, both lanes). What the
+method excludes it refuses with the reason: a body reading the span it
+stores to (the summary has no memory for the previous iterations' writes
+to reach), more than one store per span per iteration or a store on a
+body of more than one path (the pairing is by position), and any read or
+store of a loop-written span after the loop (its final memory is the
+loop's, so the span is closed: `loopWritten`, a taint the verdict
+reports). With it `fill` and `fill_f64` are proven on both lanes and
+the native span corpus asserts it; package cells written around a
+data-dependent loop stay trusted.
+
 Next increments: stack arguments in the call summary (the outgoing area's
-slots are frame slots the executor already holds); stores in
-data-dependent loops as a summarized memory; guard elision from the
+slots are frame slots the executor already holds); loop stores through
+more than one path or several per iteration (pairing by guard rather
+than by position), and a body reading the elements it wrote (a memory
+carried through the coupling); guard elision from the
 checker's facts; the foreign-call subset only if the shell itself is to
 be verified —
 calls by inlining or by the callee's proven contract, and effects through

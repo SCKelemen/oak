@@ -100,6 +100,7 @@ import Oak.LiteralFitRefinement
 import Oak.LoweringRefinement
 import Oak.Semver
 import Oak.Loops
+import Oak.LoopStores
 import Oak.Regions
 import Oak.SessionObligations
 import Oak.SessionObligationsProved

@@ -1096,8 +1096,15 @@ type pathExecutor struct {
 	loopExits map[int]loopShape
 	loops     []*loopEvent // data-dependent loops met, in creation order
 	loopStack []int        // indices of the loops whose bodies are being executed
-	paths     int
-	steps     int
+	// loopWritten: the spans a data-dependent loop stored to; spanReads
+	// collects the spans read while a loop is summarized; taint names a
+	// read of a loop-written span past its loop (asm/effects.go
+	// noteSpanRead, asm/loops.go).
+	loopWritten map[string]bool
+	spanReads   map[string]bool
+	taint       string
+	paths       int
+	steps       int
 	// records: record and union parameters by name (their leaves), env the
 	// concrete inputs of a witness run (nil when symbolic).
 	records map[string]compositeArg
@@ -2508,7 +2515,11 @@ type oakLowering struct {
 	concrete  map[string]uint64    // a witness run: parameters are these constants
 	loops     []*loopEvent         // data-dependent loops met, in creation order
 	loopStack []int                // indices of the loops whose bodies are being lowered
-	fresh     map[string]int       // loop-carried fresh symbols -> width
+	// loopWritten, spanReads, taint: as the executor's (asm/effects.go).
+	loopWritten map[string]bool
+	spanReads   map[string]bool
+	taint       string
+	fresh       map[string]int // loop-carried fresh symbols -> width
 	// resultChunk: for a record result of two register chunks, the chunk
 	// this lowering's resultTerm packs (Verify runs one chunk at a time).
 	resultChunk int
@@ -4107,6 +4118,7 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 		if lo.concrete != nil {
 			entry = constTerm(elementValue(span, k, contract.elemWidth), contract.elemWidth)
 		}
+		lo.noteSpanRead(span)
 		return memoryAt(lo.writes[span], constTerm(k, 32), entry), contract, "", true
 	}
 	ident, isIdent := index.Left.(*ast.Identifier)
@@ -4122,6 +4134,7 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 		return nil, spanContract{}, reason, false
 	}
 	span := lo.spanRoot(ident.Value)
+	lo.noteSpanRead(span)
 	if lo.concrete != nil && idx.kind == termConst {
 		if length, known := lo.concrete[spanLenName(span)]; known && idx.value >= length {
 			// Oak traps on this input; the witness has no value to compare.
@@ -5210,13 +5223,21 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		oakBody = loop
 	}
 	if !exec.hasResult {
-		// A unit function that writes package state: the cells are the
-		// whole comparison.
+		// A unit function that writes package state or span memory: the
+		// cells and the spans are the whole comparison; around a
+		// data-dependent loop, the span memories through the coupling
+		// (verifyLoops), the cells not yet.
 		if reason, ok := lowering.lowerUnitBody(oakBody); !ok {
 			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 		}
+		if taint := exec.taint + lowering.taint; taint != "" {
+			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, taint)}
+		}
 		if len(exec.loops) > 0 || len(lowering.loops) > 0 {
-			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
+			if len(exec.cells) > 0 || len(lowering.writtenCells()) > 0 {
+				return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (package state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
+			}
+			return verifyLoops(fn, sig, oakBody, exec, lowering, nil, nil, 0)
 		}
 		return decideEffects(fn, lowering, exec, nil)
 	}
@@ -5230,9 +5251,12 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		asmTerm = floatCanonicalNaN(truncate(asmTerm, width), width)
 		oakTerm = floatCanonicalNaN(truncate(oakTerm, width), width)
 	}
+	if taint := exec.taint + lowering.taint; taint != "" {
+		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, taint)}
+	}
 	if len(exec.loops) > 0 || len(lowering.loops) > 0 {
-		if len(exec.cells) > 0 || len(lowering.writtenCells()) > 0 || len(exec.writes) > 0 || len(lowering.writes) > 0 {
-			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
+		if len(exec.cells) > 0 || len(lowering.writtenCells()) > 0 {
+			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (package state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
 		}
 		return verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
 	}
