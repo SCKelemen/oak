@@ -1606,9 +1606,10 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		checked++
 	}
-	if checked == 0 && asmTerm != nil {
-		return trusted("no concrete input decided the loops within budget")
-	}
+	// No concrete input deciding the loops within budget (a callee's loop
+	// over a count the memory holds) leaves the witnesses empty; the
+	// coupling below is an induction that needs none, so the decision
+	// proceeds and the verdict says how many inputs agreed.
 	evidence := func(reason string) Verdict {
 		return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on %d concrete inputs (evidence, not proof: %s)", fn.Name, checked, reason)}
 	}

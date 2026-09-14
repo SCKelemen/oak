@@ -3951,6 +3951,28 @@ storing the wrong value under a symbolic index stays a mismatch
 fixed memory. On the prover the nineteen are evidence, and the native
 build, which a mismatch fails, builds again: proven 376.
 
+**The domain conjoined lazily; the coupling without a witness
+(2026-09-14).** The trap domain that joined the decision the same
+afternoon — the equivalence holds where the machine does not trap, and
+where Oak traps on the same guard — wrapped both terms in the domain
+before the diagrams saw them, and twenty-seven proofs on the prover fell
+to the node budget under the wrapping. The domain is now handled as the
+reads' consistency is: checked on every witness input, and conjoined at
+the bit level only once a bit differs, since equality everywhere is
+equality inside the domain; its own unknowns (a union tag, the operands
+of the guard) join the decision's parameters — a parameter the diagrams
+were not told of blasted to a constant zero, which made the domain false
+and every difference a proof for the length of one test run, and the
+blaster now fails closed on such a parameter, as if over budget. And a
+body whose loops no concrete input decided within budget (a callee's
+loop over a count the memory holds) was left trusted before the
+coupling; the coupling is an induction that needs no witness, so the
+decision proceeds and the verdict says how many inputs agreed, eighty
+bodies among them. On the prover: proven 376 to 391, trusted 513 to 427,
+evidence 63 to 134 — most of the new evidence is loops whose carried
+record local (`params`) has no register image at the header, and loops
+over the node budget — no disagreement, the rows identical.
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built
