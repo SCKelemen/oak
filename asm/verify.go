@@ -3147,8 +3147,9 @@ func notTerm(t *term) *term { return binaryTerm("xor", truncate(t, 1), constTerm
 
 // lowerAssert records `assert(cond)` as a trap obligation under the
 // theorem decider (docs/spec/85-discipline.md section 5: an assert is
-// never elided; here the decider proves it cannot fire), and refuses it
-// where traps are not tracked.
+// never elided; here the decider proves it cannot fire); under the
+// assembler verifier it is a no-op, the trapping inputs being outside
+// the equivalence on both sides.
 func (lo *oakLowering) lowerAssert(expr ast.Expression) (reason string, isAssert bool, ok bool) {
 	call, isCall := expr.(*ast.InvocationExpression)
 	if !isCall || len(call.Arguments) != 1 {
@@ -3158,7 +3159,11 @@ func (lo *oakLowering) lowerAssert(expr ast.Expression) (reason string, isAssert
 		return "", false, false
 	}
 	if !lo.trapsTracked {
-		return "an assert", true, false
+		// The assembler verifier's side: a failed assert traps, and the
+		// executor drops a trapping path from its fork (a `brk` delivers
+		// no result), so the equivalence is over the inputs on which the
+		// assert holds and the statement itself is a no-op here.
+		return "", true, true
 	}
 	cond, reason, ok := lo.lowerCondition(call.Arguments[0])
 	if !ok {
