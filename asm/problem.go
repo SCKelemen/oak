@@ -9,9 +9,17 @@ import "github.com/SCKelemen/oak/ast"
 // variable of each of 64 bits — the terms in dependency order, 8 words
 // each (kind, op, width, a, b, c, value low, value high), the roots (the
 // trap obligations first, the claim last), and the select slots'
-// variables. The Oak solver blasts the same terms under the same order as
-// the Go decider did, so the two agree on the verdict and on the node
-// count, or one of them is wrong.
+// variables. The kinds: 0 a parameter (a = leaf), 1 a constant, 2 a
+// binary operation (op in problemBinaryOps), 3 a comparison (op = flags
+// kind * 16 + condition code), 4 a conditional (c, a, b), 5 an element
+// read of a span (op = the span, a = the index), 6 a floating-point
+// operation (op in problemFloatOps; a, b, c the operands, NONE past the
+// arity) — the last two abstracted as uninterpreted values: a select slot
+// per distinct (span, index bits) or (operation, width, operand bits), the
+// slots numbered in the order the blast meets them and their variables
+// serialized after the roots. The Oak solver blasts the same terms under
+// the same order as the Go decider did, so the two agree on the verdict
+// and on the node count, or one of them is wrong.
 type Problem struct {
 	Words  []uint32
 	Order  string // interleaved, blocks, or control: the variable order serialized
@@ -74,6 +82,16 @@ var problemConditionCodes = map[string]uint32{
 }
 
 var problemFlagKinds = map[string]uint32{"": 0, "add": 1, "and": 2}
+
+// problemFloatOps numbers the floating-point operations (asm/floats_ops.go
+// floatOps) for kind 6. The Oak solver keys an application's select slot
+// by 0x40000000 | op << 8 | width and the operands' bits concatenated (a,
+// then b, then c, each at its own width), the same sharing the Go blaster
+// gets from floatOpSpan and the operand bits.
+var problemFloatOps = map[string]uint32{
+	"fadd": 0, "fsub": 1, "fmul": 2, "fdiv": 3, "fsqrt": 4, "fma": 5, "fminnm": 6, "fmaxnm": 7, "fnan": 8,
+	"fcvt": 9, "scvtf": 10, "ucvtf": 11, "fcvtzs": 12, "fcvtzu": 13,
+}
 
 // orderNames maps a blaster's label to the order name a Problem carries.
 var orderNames = map[string]string{"": "interleaved", "parameters in blocks": "blocks", "control bits first": "control"}
@@ -186,10 +204,10 @@ func serializeProblem(bl *blaster, claim *term, traps []*term, budget int, order
 			op = id
 			a = operand(t.left)
 		case termFloat:
-			// A floating-point operation: outside the Oak solver's subset
-			// (it reports unsupported); the Go decider abstracts it.
+			// A floating-point operation, an uninterpreted value on both
+			// sides (kind 6; asm/floats_ops.go).
 			kind = 6
-			op = problemNone
+			op = problemFloatOps[t.op]
 			a, b, c = operand(t.left), operand(t.right), operand(t.cond)
 		}
 		words = append(words, kind, op, uint32(t.width), a, b, c, vlo, vhi)

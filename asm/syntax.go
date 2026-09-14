@@ -62,9 +62,13 @@ const (
 	synMatch       = 22 // a = scrutinee, b = arms list start, c = arm count (value position)
 	synMatchStmt   = 23 // a = scrutinee, b = arms list start, c = arm count (arms are blocks)
 	synAssert      = 27 // a = the condition (a statement): reaching it false is a trap
-	synView        = 24 // a = the array symbol; the node's type is the view (element, length)
-	synLen         = 25 // a = operand (an array or a view of known length); u32
-	synBuiltin     = 26 // a = builtin code (0 is_valid_utf8), b = operand (a view of u8); Bool
+	// A conversion through a floating-point operation term
+	// (asm/floats_lowering.go floatConversion): a = target width, b =
+	// target signedness, c = operand, d = 1 when the target is a float.
+	synFloatConv = 28
+	synView      = 24 // a = the array symbol; the node's type is the view (element, length)
+	synLen       = 25 // a = operand (an array or a view of known length); u32
+	synBuiltin   = 26 // a = builtin code (0 is_valid_utf8), b = operand (a view of u8); Bool
 
 	// An arm in the lists: pattern kind, variant index or literal node,
 	// binding symbol (NONE for none), body node.
@@ -75,11 +79,15 @@ const (
 	synPatBinding = 3
 )
 
-// The float intrinsics the lowering knows as bit operations
-// (asm/floats_lowering.go).
+// The float intrinsics the lowering knows: the bit operations, and the
+// operation terms sqrt, fma, min_num, and max_num (asm/floats_lowering.go);
+// synFloatArity is each code's argument count.
 var synFloatIntrinsics = map[string]uint32{
 	"abs": 0, "copysign": 1, "is_nan": 2, "is_finite": 3, "is_infinite": 4, "is_normal": 5, "total_order": 6, "min": 7, "max": 8,
+	"sqrt": 9, "fma": 10, "min_num": 11, "max_num": 12,
 }
+
+var synFloatArity = map[uint32]int{0: 1, 1: 2, 2: 1, 3: 1, 4: 1, 5: 1, 6: 2, 7: 2, 8: 2, 9: 1, 10: 3, 11: 2, 12: 2}
 
 const (
 	synKindScalar = 0
@@ -522,7 +530,9 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 		if typ < 0 {
 			typ = w.nodeType(right)
 		}
-		if (w.isFloatNode(left) || w.isFloatNode(right)) && code < 10 {
+		if (w.isFloatNode(left) || w.isFloatNode(right)) && code < 10 && code != 0 && code != 1 && code != 2 && code != 8 {
+			// Float arithmetic (+ - * /) is an operation term; the rest of
+			// the integer operators have no float reading.
 			return 0, fmt.Sprintf("floating-point %s (not a bit operation)", e.Operator), false
 		}
 		if code >= 10 {
@@ -748,10 +758,7 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 					floatType = t
 				}
 			}
-			if (code <= 1 || code >= 7) && len(args) != map[uint32]int{0: 1, 1: 2, 7: 2, 8: 2}[code] {
-				return 0, fmt.Sprintf("the float intrinsic %s with %d arguments", ident.Value, len(args)), false
-			}
-			if code >= 2 && code <= 5 && len(args) != 1 || code == 6 && len(args) != 2 {
+			if len(args) != synFloatArity[code] {
 				return 0, fmt.Sprintf("the float intrinsic %s with %d arguments", ident.Value, len(args)), false
 			}
 			typ := floatType
@@ -766,13 +773,33 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 		if len(e.Arguments) != 1 {
 			return 0, fmt.Sprintf("call to %s", ident.Value), false
 		}
+		// The conversions, as the Go lowering reads them (asm/verify.go):
+		// an integer constructor and the trunc and bits rows between
+		// integers are contract changes; f32(x), f64(x), an integer
+		// constructor over a float, and the trunc, round, and saturating
+		// rows with a float source or target are operation terms
+		// (floatConversion); a bits row stays a bit move either way.
 		target := ""
+		floatConv := false
 		switch ident.Value {
 		case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64":
 			target = ident.Value
+		case "f32", "f64":
+			target = ident.Value
+			floatConv = true
 		default:
-			if t, op, _, isConv := typechecker.ConversionParts(ident.Value); isConv && (op == "trunc" || op == "bits") {
-				target = t
+			if t, op, src, isConv := typechecker.ConversionParts(ident.Value); isConv {
+				floatSource := src == "f32" || src == "f64"
+				floatTarget := t == "f32" || t == "f64"
+				switch {
+				case op == "bits":
+					target = t
+				case (floatSource || floatTarget) && (op == "trunc" || op == "round" || op == "saturating"):
+					target = t
+					floatConv = true
+				case op == "trunc":
+					target = t
+				}
 			}
 		}
 		if target == "" {
@@ -783,14 +810,23 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 		if !ok {
 			return 0, reason, false
 		}
+		if !floatConv && target[0] != 'f' && ident.Value == target && w.isFloatNode(operand) {
+			// The integer constructor over a float is the conversion toward zero.
+			floatConv = true
+		}
 		signedWord := uint32(0)
 		if signed {
 			signedWord = 1
 		}
 		resultType := w.scalarType(width, signed)
+		floatTargetWord := uint32(0)
 		if target == "f32" || target == "f64" {
-			// A bits row into a float: the pattern, typed float.
+			// A float result: the pattern, typed float.
 			resultType, _, _ = w.typeID(&oakType{kind: oakScalar, width: width, float: true})
+			floatTargetWord = 1
+		}
+		if floatConv {
+			return w.node(synFloatConv, uint32(width), signedWord, operand, floatTargetWord, 0, 0, resultType), "", true
 		}
 		return w.node(synConv, uint32(width), signedWord, operand, 0, 0, 0, resultType), "", true
 	}

@@ -42,6 +42,33 @@ KIND_BINARY: u32 = 2
 KIND_CMP: u32 = 3
 KIND_ITE: u32 = 4
 KIND_SELECT: u32 = 5
+// A floating-point operation (asm/floats_ops.go): an uninterpreted value
+// of its operands, a select slot keyed by the operation and its operand
+// bits (asm/problem.go problemFloatOps numbers the op word).
+KIND_FLOAT: u32 = 6
+
+FOP_FADD: u32 = 0
+FOP_FSUB: u32 = 1
+FOP_FMUL: u32 = 2
+FOP_FDIV: u32 = 3
+FOP_FSQRT: u32 = 4
+FOP_FMA: u32 = 5
+FOP_FMINNM: u32 = 6
+FOP_FMAXNM: u32 = 7
+FOP_FNAN: u32 = 8
+FOP_FCVT: u32 = 9
+FOP_SCVTF: u32 = 10
+FOP_UCVTF: u32 = 11
+FOP_FCVTZS: u32 = 12
+FOP_FCVTZU: u32 = 13
+
+// fop_arity is an operation's operand count.
+fop_arity: (op: u32): u32 = op == FOP_FMA ? { u32(3) } | { (op == FOP_FSQRT || op >= FOP_FCVT) ? { u32(1) } | { u32(2) } }
+
+// The select slot key of an operation at a width: apart from every span's
+// (the spans are numbered from 0).
+FLOAT_KEY: u32 = 0x40000000
+float_key: (op: u32, width: u32): u32 = FLOAT_KEY | (op << u32(8)) | width
 
 BOP_AND: u32 = 0
 BOP_OR: u32 = 1
@@ -74,8 +101,16 @@ STATUS_UNSUPPORTED: u32 = 3
 HEADER_WORDS: u32 = 8
 LEAF_WORDS: u32 = 65
 TERM_WORDS: u32 = 8
-SELECT_SLOT_WORDS: u32 = 34
+// A select slot in the solver's memory: the key (a span, or an operation
+// at its width), the index node count, then the index nodes — 32 for a
+// span element, an operation's operand bits (up to three 64-bit operands)
+// for an application.
+INDEX_WORDS: u32 = 192
+SELECT_SLOT_WORDS: u32 = 194
 FRAME_WORDS: u32 = 16
+
+// A slot index: the nodes of the operand bits, and how many.
+Index: type = struct { at: [192]u32, n: u32 }
 
 Layout: type = struct {
   cap: u32,
@@ -735,19 +770,22 @@ operand: (l: Layout, mem: [*]u32, p: []u32, t: u32, which: u32, w: u32): Bits {
   load_bits(l, mem, o, term_width(p, o), w)
 }
 
-// select_bits abstracts a span element at a symbolic index as fresh
-// variables, one slot per distinct (span, index), the index compared node
-// by node; NONE-filled bits when the slots given run out.
-select_bits: (l: Layout, mem: [*]u32, p: []u32, span: u32, idx: Bits, w: u32): Bits {
+// select_bits abstracts an uninterpreted value — a span element at a
+// symbolic index, or an operation applied to operand bits — as fresh
+// variables, one slot per distinct (key, index), the index compared node
+// by node (equal operand diagrams share the value, as the Go blaster's
+// selectBits shares them; Oak.Uninterpreted.ackermann_sound); NONE-filled
+// bits when the slots given run out.
+select_bits: (l: Layout, mem: [*]u32, p: []u32, key: u32, idx: Index, w: u32): Bits {
   out: Bits
   used: u32 = mem[l.state_at + STATE_SELECTS]
   slot: u32 = NONE
   s: u32 = 0
   while s < used && slot == NONE {
     e: u32 = l.selects_at + s * SELECT_SLOT_WORDS
-    same: Bool = mem[e] == span
+    same: Bool = mem[e] == key && mem[e + u32(1)] == idx.n
     i: u32 = 0
-    while i < u32(32) && same {
+    while i < idx.n && same {
       same = mem[e + u32(2) + i] == idx.at[i]
       i = i + u32(1)
     }
@@ -757,10 +795,10 @@ select_bits: (l: Layout, mem: [*]u32, p: []u32, span: u32, idx: Bits, w: u32): B
   slot == NONE ? {
     (used < l.select_cap && used < problem_select_slots(p)) ? {
       e: u32 = l.selects_at + used * SELECT_SLOT_WORDS
-      mem[e] = span
-      mem[e + u32(1)] = u32(1)
+      mem[e] = key
+      mem[e + u32(1)] = idx.n
       i: u32 = 0
-      while i < u32(32) {
+      while i < idx.n {
         mem[e + u32(2) + i] = idx.at[i]
         i = i + u32(1)
       }
@@ -804,8 +842,37 @@ blast_term: (l: Layout, mem: [*]u32, p: []u32, t: u32): Bool {
     }
   } | {
   kind == KIND_SELECT ? {
-    idx: Bits = operand(l, mem, p, t, u32(0), u32(32))
+    bits: Bits = operand(l, mem, p, t, u32(0), u32(32))
+    idx: Index
+    i: u32 = 0
+    while i < u32(32) {
+      idx.at[i] = bits.at[i]
+      i = i + u32(1)
+    }
+    idx.n = u32(32)
     out = select_bits(l, mem, p, term_op(p, t), idx, w)
+    ok = out.at[u32(0)] != NONE
+  } | {
+  kind == KIND_FLOAT ? {
+    // The operands' bits in order, each at its own width, key the
+    // application's slot; nothing is folded here (an application over
+    // known operands folded when the lowering built it).
+    idx: Index
+    n: u32 = 0
+    k: u32 = 0
+    while k < fop_arity(term_op(p, t)) {
+      o: u32 = k == u32(0) ? { term_a(p, t) } | { k == u32(1) ? { term_b(p, t) } | { term_c(p, t) } }
+      ow: u32 = term_width(p, o)
+      i: u32 = 0
+      while i < ow {
+        idx.at[n] = mem[l.bits_at + o * u32(64) + i]
+        n = n + u32(1)
+        i = i + u32(1)
+      }
+      k = k + u32(1)
+    }
+    idx.n = n
+    out = select_bits(l, mem, p, float_key(term_op(p, t), w), idx, w)
     ok = out.at[u32(0)] != NONE
   } | {
   kind == KIND_CMP ? {
@@ -841,7 +908,7 @@ blast_term: (l: Layout, mem: [*]u32, p: []u32, t: u32): Bool {
       x: Bits = pointwise(l, mem, OP_XOR, left, shift_right_arith(left, u32(1), w), w)
       out = add_bits(l, mem, count_leading_zeros(l, mem, x, w), all_ones(w), BDD_FALSE, w)
     } | { ok = false } } } } } } } } } } } } } }
-  } } } } }
+  } } } } } }
   ok ? { store_bits(l, mem, t, out, w) } | { }
   ok
 }

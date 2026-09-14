@@ -50,6 +50,7 @@ import Oak.Intrinsics
 import Oak.CInterop
 import Oak.Simd
 import Oak.Uninterpreted
+import Oak.KnownBits
 import Oak.NeonSemantics
 import Oak.Monomorphization
 import Oak.Handles
@@ -163,5 +164,6 @@ import Oak.Rings
 import Oak.BinaryCodec
 import Oak.BddComplement
 import Oak.RupCheck
+import Oak.SolverLaws
 import Oak.Tseitin
 import Oak.RVWMO

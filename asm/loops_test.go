@@ -178,3 +178,41 @@ done:
 		t.Fatalf("the wrong stride must be a mismatch, got %s: %s", stride.Kind, stride.Message)
 	}
 }
+
+// A vector accumulator across a data-dependent loop: the Oak lanes
+// `acc[0..7]` and `acc[8..15]` are coupled as packs to the halves of the
+// register that carries them, so the loop is proven, not witnessed
+// (docs/spec/94-assembler.md §8, the loop increment).
+func TestVerifyVectorLoopCoupling(t *testing.T) {
+	decl := "anyset: (v: []u8) -> u32"
+	oak := "{\n  acc: simd.U8x16 = simd.splat_u8x16(u8(0))\n  i: u32 = u32(0)\n  while len(v) >= u32(16) && i <= len(v) - u32(16) {\n    acc = simd.or_u8x16(acc, simd.load_u8x16(v, i))\n    i = i + u32(16)\n  }\n  simd.any_u8x16(acc) ? u32(1) | u32(0)\n}"
+	walk := `  bind x0, w1 = v
+  clobber w9, w10, w12, v16, v17
+  movi v16.16b, #0
+  mov w9, #0
+loop:
+  cmp w1, #16
+  b.lo done
+  sub w12, w1, #16
+  cmp w9, w12
+  b.hi done
+  ldr q17, [x0, w9, uxtw]
+  orr v16.16b, v16.16b, v17.16b
+  add w9, w9, #16
+  b loop
+done:
+  umaxv b16, v16.16b
+  umov w10, v16.b[0]
+  cmp w10, #0
+  cset w0, ne
+  ret`
+	verdict := verifyCase(t, decl, oak, walk)
+	if verdict.Kind != VerdictProven || !strings.Contains(verdict.Message, "acc[0..7]↔v16.lo") {
+		t.Fatalf("the vector accumulator loop must be proven with its lanes coupled, got %s: %s", verdict.Kind, verdict.Message)
+	}
+	// Accumulating with and instead of or: refuted on a concrete input.
+	wrong := verifyCase(t, decl, oak, strings.Replace(walk, "orr v16.16b", "and v16.16b", 1))
+	if wrong.Kind != VerdictMismatch {
+		t.Fatalf("the wrong accumulation must be a mismatch, got %s: %s", wrong.Kind, wrong.Message)
+	}
+}
