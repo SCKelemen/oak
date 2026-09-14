@@ -3119,7 +3119,9 @@ addressed with its stride built as `movz` then `movk` before the `umaddl`,
 and a field past 4 095 bytes into it through `add xF, xE, #hi, lsl #12`
 and a small remainder in the operand; the checker keeps the stride's
 constant fact through the `movk` and narrows the element region through
-the shifted add (the OS pilot's N2, a 409 600-byte regime).
+the shifted add — and through a second add in place (`add xA, xA, #48`),
+reading the region the source held before the write (the OS pilot's N2,
+a 409 600-byte regime, and N8's field at 393 264 bytes).
 
 **Array fields of elements, read anywhere.** `pool[i].f[j]` — an owned
 array inside a record element of a span, view, or array — is addressed

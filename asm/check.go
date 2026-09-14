@@ -1415,6 +1415,14 @@ func (c *checker) instruction(instr Instruction) bool {
 			}
 		}
 	}
+	// The source's region before the write: an immediate add that narrows
+	// a region in place (`add xA, xA, #48`, the second add of a field past
+	// one immediate's reach) must still see it.
+	var priorRegion region
+	hadRegion := false
+	if len(regs) >= 2 {
+		priorRegion, hadRegion = c.regions[regs[1].Num]
+	}
 	c.write(instr, dest)
 	if slack != nil {
 		c.slackFacts[dest.Num] = *slack
@@ -1423,7 +1431,7 @@ func (c *checker) instruction(instr Instruction) bool {
 		c.idxFacts[dest.Num] = *carried
 	}
 	c.deriveSpan(instr, dest, regs)
-	c.deriveElement(instr, dest)
+	c.deriveElement(instr, dest, priorRegion, hadRegion)
 	c.deriveGlobal(instr, dest, regs, priorPage, hadPage)
 	if instr.Mnemonic == "movk" && hadConst && dest.Class == ClassW && len(instr.Operands) == 2 {
 		if imm, isImm := instr.Operands[1].(Immediate); isImm && imm.Value >= 0 && imm.Value <= 0xffff && imm.Shift%16 == 0 && imm.Shift < 32 {
@@ -1767,7 +1775,7 @@ func (c *checker) deriveSpan(instr Instruction, dest Register, regs []Register) 
 // wK, xB` likewise with the stride c in wK makes xE a c-byte region; `add
 // xD, xS, #imm` over a region of n bytes with 0 <= imm <= n makes xD the
 // region's tail of n - imm bytes (a field inside the element).
-func (c *checker) deriveElement(instr Instruction, dest Register) {
+func (c *checker) deriveElement(instr Instruction, dest Register, priorRegion region, hadRegion bool) {
 	switch instr.Mnemonic {
 	case "movz", "mov":
 		if dest.Class != ClassW || len(instr.Operands) != 2 {
@@ -1781,21 +1789,24 @@ func (c *checker) deriveElement(instr Instruction, dest Register) {
 			return
 		}
 		base, okB := instr.Operands[1].(Register)
-		if !okB || base.Class != ClassX || dest.Num == base.Num {
+		if !okB || base.Class != ClassX {
 			return
 		}
 		switch tail := instr.Operands[2].(type) {
 		case Extended:
-			if tail.Kind != "uxtw" || tail.Reg.Class != ClassW {
+			if dest.Num == base.Num || tail.Kind != "uxtw" || tail.Reg.Class != ClassW {
 				return
 			}
 			c.elementRegion(dest, base, tail.Reg.Num, int64(1)<<uint(tail.Amount))
 		case Immediate:
 			// `add xD, xB, #imm` or `#imm, lsl #12` (a field past 4095
-			// bytes into a large element) narrows the region by the value.
-			if extent, isRegion := c.regions[base.Num]; isRegion && (tail.Shift == 0 || tail.Shift == 12) && tail.Value >= 0 {
-				if value := tail.Value << uint(tail.Shift); value <= extent.size {
-					c.regions[dest.Num] = region{size: extent.size - value, writable: extent.writable}
+			// bytes into a large element) narrows the region by the value —
+			// in place too (`add xA, xA, #48`, the second add reaching a
+			// field past one immediate: the OS pilot's N8), read from the
+			// region the source held before the write.
+			if hadRegion && (tail.Shift == 0 || tail.Shift == 12) && tail.Value >= 0 {
+				if value := tail.Value << uint(tail.Shift); value <= priorRegion.size {
+					c.regions[dest.Num] = region{size: priorRegion.size - value, writable: priorRegion.writable}
 				}
 			}
 		}
