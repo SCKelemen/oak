@@ -22,7 +22,7 @@ import (
 	"github.com/SCKelemen/oak/prove"
 )
 
-func certificateRung(model *compiler.SemanticModel, results []prove.Result, run bool, cnfDir string, stdout io.Writer) []prove.Result {
+func certificateRung(model *compiler.SemanticModel, results []prove.Result, run bool, cnfDir string, conflicts int, stdout io.Writer) []prove.Result {
 	// The solver: the one written in Oak (prove/solver/sat.oak) behind the
 	// clause engine written in Oak (prove/solver/cnf.oak), unless
 	// OAK_SAT_SOLVER names an external one, which then takes the Go clause
@@ -41,7 +41,7 @@ func certificateRung(model *compiler.SemanticModel, results []prove.Result, run 
 			}
 		default:
 			oakPath = true
-			solve = runOakSAT
+			solve = func(cnf asm.CNF) (prove.SATOutcome, error) { return runOakSATWithin(cnf, conflicts) }
 		}
 	}
 	if cnfDir != "" {
@@ -74,7 +74,7 @@ func certificateRung(model *compiler.SemanticModel, results []prove.Result, run 
 			continue
 		}
 		if oakPath {
-			results[i] = oakClauseRung(model, r, cnf)
+			results[i] = oakClauseRung(model, r, cnf, conflicts)
 			continue
 		}
 		if cnf.Settled != nil {
@@ -164,12 +164,12 @@ func agreeSettled(r prove.Result, settled *asm.Decision) prove.Result {
 // Go clause engine's lowering (goCNF) is the cross-check: equal variable
 // and clause counts say the two engines agree; otherwise the Go clauses
 // are solved too and the verdicts must match.
-func oakClauseRung(model *compiler.SemanticModel, r prove.Result, goCNF asm.CNF) prove.Result {
+func oakClauseRung(model *compiler.SemanticModel, r prove.Result, goCNF asm.CNF, conflicts int) prove.Result {
 	problem, reason, err := prove.ProblemFor(model, r.Name, "interleaved", asm.NodeBudget)
 	if err != nil || reason != "" {
 		return r
 	}
-	run, err := runOakClauses(problem)
+	run, err := runOakClausesWithin(problem, conflicts)
 	if err != nil {
 		r.Detail += "; the certificate rung gave no verdict (" + err.Error() + ")"
 		return r
@@ -195,7 +195,7 @@ func oakClauseRung(model *compiler.SemanticModel, r prove.Result, goCNF asm.CNF)
 	default:
 		// The lowerings differ in shape: solve the Go clauses too and
 		// require the same verdict.
-		goOutcome, err := runOakSAT(goCNF)
+		goOutcome, err := runOakSATWithin(goCNF, conflicts)
 		switch {
 		case goCNF.Settled != nil:
 			engines = fmt.Sprintf("; the Go clause engine folds the obligation to a constant where Oak's has %d clauses", run.Clauses)
