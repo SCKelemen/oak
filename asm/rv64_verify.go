@@ -361,6 +361,9 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 					return x.globalLoadRV64(reg(0), mem, width, name, global, state)
 				}
 			}
+			if base, index, bound, size, isElement := rv64FrameElement(state, mem); isElement {
+				return x.rv64FrameElementLoad(reg(0), width, name, base, index, bound, size, state)
+			}
 			return x.spanLoadRV64(reg(0), mem, width, name, state)
 		}
 		return x.frameAccessRV64(reg(0), mem, width, name, false, state)
@@ -372,6 +375,9 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 				if global, isGlobal := globalAddrOf(base); isGlobal {
 					return x.globalStoreRV64(reg(0), mem, width, global, state)
 				}
+			}
+			if base, index, bound, size, isElement := rv64FrameElement(state, mem); isElement {
+				return x.rv64FrameElementStore(reg(0), width, base, index, bound, size, state)
 			}
 			return x.spanStoreRV64(reg(0), mem, width, state)
 		}
