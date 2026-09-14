@@ -797,7 +797,10 @@ func TestE2ENativeRV64LoopVerdicts(t *testing.T) {
 			t.Errorf("%s must be proven by loop coupling: %s", fn, verdicts[fn])
 		}
 	}
-	if !strings.Contains(verdicts["fact"], "agrees with its Oak body") {
-		t.Errorf("fact must be witnessed (its product exceeds the proof budget): %s", verdicts["fact"])
+	// fact's 64-bit product exceeded the proof budget until the identity
+	// masks folded (asm/verify.go binaryTerm); it is proven by coupling now,
+	// and evidence remains acceptable should the budget move.
+	if !strings.Contains(verdicts["fact"], "coupled inductively") && !strings.Contains(verdicts["fact"], "agrees with its Oak body") {
+		t.Errorf("fact must be proven by coupling or witnessed: %s", verdicts["fact"])
 	}
 }

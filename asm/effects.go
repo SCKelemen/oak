@@ -64,6 +64,12 @@ func appendMarker(log map[string][]*spanWrite, span string, loop int) map[string
 type pathEffects struct {
 	cells  map[string]*term
 	writes map[string][]*spanWrite
+	// trap is the 1-bit condition under which the machine path traps
+	// (brk): nil when no path from here does. The equivalence holds on
+	// the inputs where the machine does not trap — where Oak traps too,
+	// on the same guard — so the decision conjoins its negation to the
+	// input domain (oakLowering.domainCondition).
+	trap *term
 }
 
 func (s *symbolicState) effects() *pathEffects {
@@ -218,7 +224,41 @@ func (x *pathExecutor) mergeEffects(cond *term, taken, fallThrough *pathEffects)
 	if fallThrough != nil {
 		fallCells, fallWrites = fallThrough.cells, fallThrough.writes
 	}
-	return &pathEffects{cells: x.mergeCells(cond, takenCells, fallCells), writes: mergeWrites(cond, takenWrites, fallWrites)}
+	return &pathEffects{cells: x.mergeCells(cond, takenCells, fallCells), writes: mergeWrites(cond, takenWrites, fallWrites), trap: mergeTrap(cond, taken, fallThrough)}
+}
+
+// mergeTrap is the trap condition of a fork: the taken side's under cond,
+// the fall-through's otherwise; nil when neither side traps.
+func mergeTrap(cond *term, taken, fallThrough *pathEffects) *term {
+	var takenTrap, fallTrap *term
+	if taken != nil {
+		takenTrap = taken.trap
+	}
+	if fallThrough != nil {
+		fallTrap = fallThrough.trap
+	}
+	if takenTrap == nil && fallTrap == nil {
+		return nil
+	}
+	if takenTrap == nil {
+		takenTrap = constTerm(0, 1)
+	}
+	if fallTrap == nil {
+		fallTrap = constTerm(0, 1)
+	}
+	return iteTerm(truncate(cond, 1), takenTrap, fallTrap)
+}
+
+// withTrap is effects with the trap condition set: the surviving side of a
+// fork whose other side trapped keeps its cells and writes and records
+// where the machine trapped.
+func withTrap(effects *pathEffects, trap *term) *pathEffects {
+	if effects == nil {
+		return &pathEffects{trap: trap}
+	}
+	out := *effects
+	out.trap = trap
+	return &out
 }
 
 // elementIn is the span element at an index term as the path sees it:

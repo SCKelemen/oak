@@ -348,6 +348,11 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 	case "jal", "jalr":
 		return "a call", false
 	}
+	if kind, width, isAtomic := rv64Atomic(name); isAtomic {
+		// lr/sc and the amos through a span element under the sequential
+		// model (asm/rv64_atomics.go).
+		return x.atomicRV64(kind, width, ops, state)
+	}
 	if width, isLoad := rv64Loads[name]; isLoad {
 		mem := ops[1].(Memory)
 		if mem.Base.Class != ClassSP {

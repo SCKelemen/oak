@@ -10,6 +10,29 @@ func maxValue(t *term) uint64 {
 	return maxValueMemo(t, map[*term]uint64{})
 }
 
+// maxValueDeclared is maxValue with a parameter bounded by its declared
+// width rather than the width of the node that mentions it (a Bool loop
+// variable zero-extended into a 64-bit register is still at most 1).
+func maxValueDeclared(t *term, widthOf func(string) int) uint64 {
+	memo := map[*term]uint64{}
+	var bound func(t *term) uint64
+	bound = func(t *term) uint64 {
+		if t.kind == termParam {
+			if w := widthOf(t.name); w > 0 && w < t.width {
+				return mask(w)
+			}
+			return mask(t.width)
+		}
+		if v, seen := memo[t]; seen {
+			return v
+		}
+		v := maxValueOfWith(t, memo, bound)
+		memo[t] = v
+		return v
+	}
+	return bound(t)
+}
+
 // maxValue is the bound under the lowering's own memo, which every shift
 // the lowering meets shares: a count that reads memory written by earlier
 // summarized calls is a large DAG, and bounding it afresh at each shift
@@ -32,6 +55,11 @@ func maxValueMemo(t *term, memo map[*term]uint64) uint64 {
 }
 
 func maxValueOf(t *term, memo map[*term]uint64) uint64 {
+	return maxValueOfWith(t, memo, func(u *term) uint64 { return maxValueMemo(u, memo) })
+}
+
+// maxValueOfWith bounds one node given a bound for its operands.
+func maxValueOfWith(t *term, memo map[*term]uint64, sub func(*term) uint64) uint64 {
 	m := mask(t.width)
 	switch t.kind {
 	case termConst:
@@ -39,7 +67,7 @@ func maxValueOf(t *term, memo map[*term]uint64) uint64 {
 	case termCmp:
 		return 1
 	case termIte:
-		l, r := maxValueMemo(t.left, memo), maxValueMemo(t.right, memo)
+		l, r := sub(t.left), sub(t.right)
 		if l < r {
 			l = r
 		}
@@ -48,10 +76,10 @@ func maxValueOf(t *term, memo map[*term]uint64) uint64 {
 		}
 		return l
 	case termBinary:
-		l := maxValueMemo(t.left, memo)
+		l := sub(t.left)
 		var r uint64
 		if t.right != nil {
-			r = maxValueMemo(t.right, memo)
+			r = sub(t.right)
 		}
 		switch t.op {
 		case "and":

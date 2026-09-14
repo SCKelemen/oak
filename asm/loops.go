@@ -1783,9 +1783,28 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			if len(s.locals) > 1 {
 				signs = []int{1}
 			}
+			// A register the iteration leaves as it found it cannot be an
+			// affine image of a variable the iteration changes, nor a
+			// changing register of an unchanging variable: neither pairing
+			// is ever preserved, and each would cost a decision over the
+			// body's terms (an inner loop carrying the outer counters).
+			if regFixed, varFixed := isFreshSymbol(asmEv.next[reg], asmEv.fresh[reg]), slotUnchanged(s, oakEv); regFixed != varFixed {
+				continue
+			}
 			for _, ext := range widenings {
 				hx := widen(hx, ext, asmEv.width[reg])
 				hr := substitute(asmEv.header[reg], sigma)
+				if s.width() == 1 && maxValueDeclared(hr, widthOfName) > 1 && !isUncoupledLoopSymbol(hr, sigma) {
+					// A Bool variable pairs with a register holding a 0/1
+					// value at the header, not with an address or a count
+					// offset by the flag: those pairings are never preserved
+					// and each costs a decision. A header that is an outer
+					// loop's register not yet coupled (the viability pass, an
+					// outer slot still open) is unknown and stays a candidate;
+					// once coupled it is the outer Oak variable's symbol, and
+					// its declared width decides.
+					continue
+				}
 				for _, a := range signs {
 					var b *term
 					if a == 1 {
@@ -2737,3 +2756,55 @@ const couplingValuations = 80
 
 // couplingSearchBudget bounds the pairings the coupling search visits.
 const couplingSearchBudget = 4096
+
+// isUncoupledLoopSymbol reports a term that is a loop's fresh symbol
+// itself, at any width, which the substitution does not yet map (an inner
+// loop's register whose header value is the outer loop's symbol for it,
+// the outer slot still open).
+func isUncoupledLoopSymbol(t *term, sigma map[string]*term) bool {
+	for t != nil {
+		switch t.kind {
+		case termParam:
+			return strings.HasPrefix(t.name, "loop") && sigma[t.name] == nil
+		case termBinary:
+			if t.op == "and" && t.right.kind == termConst {
+				t = t.left
+				continue
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// isFreshSymbol reports a one-iteration value that is the variable's own
+// fresh symbol at any width: the iteration left the variable unchanged.
+func isFreshSymbol(next, fresh *term) bool {
+	if next == nil || fresh == nil {
+		return false
+	}
+	for next != nil {
+		switch next.kind {
+		case termParam:
+			return next.name == fresh.name
+		case termBinary:
+			if next.op == "and" && next.right.kind == termConst {
+				next = next.left
+				continue
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// slotUnchanged reports a slot every one of whose locals the iteration
+// leaves unchanged.
+func slotUnchanged(s loopSlot, ev *loopEvent) bool {
+	for _, local := range s.locals {
+		if !isFreshSymbol(ev.next[local], ev.fresh[local]) {
+			return false
+		}
+	}
+	return true
+}

@@ -393,7 +393,53 @@ func binaryTerm(op string, left, right *term) *term {
 	if left.kind == termConst && left.value == 0 && op == "add" && right.width == t.width {
 		return right
 	}
+	// A mask of every bit at the width is the identity: `x & 0xFFFFFFFF`
+	// at 32 bits is x. Without the fold two reads of one address, one of
+	// them masked, are different terms, and a coupling offset that is zero
+	// (`hr - hx`) looks like a memory difference the diagrams must decide.
+	if op == "and" && right.kind == termConst && right.value&mask(left.width) == mask(left.width) && left.width == t.width {
+		return left
+	}
+	if op == "and" && left.kind == termConst && left.value&mask(right.width) == mask(right.width) && right.width == t.width {
+		return right
+	}
+	// x - x and x ^ x are zero; x & x and x | x are x. The two sides are
+	// often distinct nodes for one value — two reads of one address, each
+	// built afresh — so the comparison is structural, to a small depth.
+	if (op == "sub" || op == "xor" || op == "and" || op == "or") && left.width == right.width && left.width == t.width {
+		budget := sameTermBudget
+		if sameTerm(left, right, &budget) {
+			if op == "sub" || op == "xor" {
+				return constTerm(0, t.width)
+			}
+			return left
+		}
+	}
 	return t
+}
+
+// sameTermBudget bounds the nodes a structural comparison of two terms
+// visits (sameTerm): enough for a read's index arithmetic, not a DAG.
+const sameTermBudget = 48
+
+// sameTerm reports two terms structurally equal, visiting at most *budget
+// nodes; false when the budget runs out.
+func sameTerm(a, b *term, budget *int) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil || *budget <= 0 {
+		return false
+	}
+	*budget--
+	if a.kind != b.kind || a.width != b.width || a.op != b.op || a.name != b.name || a.value != b.value {
+		return false
+	}
+	switch a.kind {
+	case termConst, termParam:
+		return true
+	}
+	return sameTerm(a.cond, b.cond, budget) && sameTerm(a.left, b.left, budget) && sameTerm(a.right, b.right, budget)
 }
 
 // adaptWidth views a term at another width: a narrower term zero-extends,
@@ -448,7 +494,13 @@ func (t *term) evalUncached(env map[string]uint64, memo termMemo) uint64 {
 	case termConst:
 		return t.value & m
 	case termSelect:
-		return elementValue(t.name, memo.eval(t.left, env)&mask(32), t.width) & m
+		// The element the diagrams' counterexample chose, when it named
+		// one (counterexampleOf); else the fixed memory.
+		k := memo.eval(t.left, env) & mask(32)
+		if value, chosen := env[spanElemName(t.name, int64(k))]; chosen {
+			return value & m
+		}
+		return elementValue(t.name, k, t.width) & m
 	case termQuant:
 		// The body under every value of the bound parameter, in a memo of
 		// its own per value (its subterms depend on the binding); the
@@ -927,6 +979,11 @@ func truncate(t *term, width int) *term {
 		return &term{kind: termParam, width: width, name: t.name}
 	case termCmp:
 		return &term{kind: termCmp, width: width, op: t.op, left: t.left, right: t.right}
+	case termBinary:
+		// Truncating a zero-extension back to its width is the extended term.
+		if t.op == "and" && t.right.kind == termConst && t.right.value == mask(width) && t.left.width == width {
+			return t.left
+		}
 	}
 	return &term{kind: termBinary, width: width, op: "and", left: t, right: constTerm(mask(width), width)}
 }
@@ -942,6 +999,11 @@ func zeroExtend(t *term, width int) *term {
 		return &term{kind: termParam, width: width, name: t.name}
 	case termCmp:
 		return &term{kind: termCmp, width: width, op: t.op, left: t.left, right: t.right}
+	case termBinary:
+		// Extending a truncation of a wider term is the wider term masked.
+		if t.op == "and" && t.right.kind == termConst && t.right.value == mask(t.width) && t.left.width == width {
+			return &term{kind: termBinary, width: width, op: "and", left: t.left, right: constTerm(mask(t.width), width)}
+		}
 	}
 	// The narrow computation's wrap is preserved by masking to its width.
 	return &term{kind: termBinary, width: width, op: "and", left: t, right: constTerm(mask(t.width), width)}
@@ -1200,7 +1262,7 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 	exec.loopExits = findLoopsIn(fn.Name, fn.Items, labels, fn.Callees)
 	result, effects, reason, ok := exec.run(0, state)
 	if effects != nil {
-		exec.cells, exec.writes = effects.cells, effects.writes
+		exec.cells, exec.writes, exec.trap = effects.cells, effects.writes, effects.trap
 	}
 	return result, exec, reason, ok
 }
@@ -1268,7 +1330,10 @@ type pathExecutor struct {
 	fn         *Function
 	summarized []string
 	freshSyms  map[string]int
-	callSites  int
+	// trap is the condition under which the machine traps (pathEffects.trap
+	// of the whole body): the equivalence is decided outside it.
+	trap      *term
+	callSites int
 	// notes is the record every path shares (pathNotes): the shift
 	// count guards, read by the verdict's lowering.
 	notes *pathNotes
@@ -2027,8 +2092,10 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			// A trap: this path delivers no result. The Oak body traps on
 			// the same inputs (a failed bounds check, division by zero, an
 			// overflowing shift, a failed assert), so the path is outside
-			// the equivalence and drops from the fork it came from.
-			return trapPath, nil, "", true
+			// the equivalence: it drops from the fork it came from, and
+			// the condition that reached it leaves the input domain
+			// (pathEffects.trap).
+			return trapPath, &pathEffects{trap: constTerm(1, 1)}, "", true
 		case "bl":
 			if reason, ok := x.summarizeCall(instr, state); !ok {
 				return nil, nil, reason, false
@@ -2098,9 +2165,9 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			}
 			switch {
 			case taken == trapPath:
-				return fallThrough, fallEffects, "", true
+				return fallThrough, withTrap(fallEffects, mergeTrap(cond, takenEffects, fallEffects)), "", true
 			case fallThrough == trapPath:
-				return taken, takenEffects, "", true
+				return taken, withTrap(takenEffects, mergeTrap(cond, takenEffects, fallEffects)), "", true
 			}
 			return iteTerm(cond, taken, fallThrough), x.mergeEffects(cond, takenEffects, fallEffects), "", true
 		}
@@ -2374,7 +2441,9 @@ func spanBaseOf(t *term) (param string, offset int64, ok bool) {
 // not the term's; docs/spec/65-machine-memory.md section 7).
 func isLoad(mnemonic string) bool {
 	switch mnemonic {
-	case "ldar", "ldarb", "ldarh", "ldxr", "ldxrb", "ldxrh", "ldaxr", "ldaxrb", "ldaxrh":
+	case "ldar", "ldarb", "ldarh", "ldxr", "ldxrb", "ldxrh", "ldaxr", "ldaxrb", "ldaxrh", "ldapr", "ldaprb", "ldaprh":
+		// ldapr: the RCpc acquire load (Armv8.3, what clang emits for an
+		// acquire load on the Apple cores and other LRCPC targets).
 		return true
 	}
 	return isPlainLoad(mnemonic)
@@ -2890,6 +2959,10 @@ type oakLowering struct {
 	// verifier leaves it off: there the machine wraps where Oak traps.
 	trapsTracked bool
 	traps        []*term
+	// machineTrap is the asm side's trap condition (pathExecutor.trap):
+	// the inputs on which the machine trapped — where Oak traps too, on
+	// the same guard — leave the input domain (domainCondition).
+	machineTrap *term
 	// shiftGuardMax: the executor's largest trap bound over the register
 	// count shifts it ran (pathNotes); a variable shift count lowers only
 	// under a guard at or below its width.
@@ -3540,6 +3613,9 @@ func (lo *oakLowering) recordTagDomains(typ *oakType, prefix string) {
 // of its variants' values", or nil when the parameters have no unions.
 func (lo *oakLowering) domainCondition() *term {
 	var cond *term
+	if lo.machineTrap != nil {
+		cond = binaryTerm("xor", truncate(lo.machineTrap, 1), constTerm(1, 1))
+	}
 	names := make([]string, 0, len(lo.tagDomains))
 	for name := range lo.tagDomains {
 		names = append(names, name)
@@ -5671,6 +5747,7 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	}
 	lowering := prepareLowering(fn, sig, nil)
 	lowering.resultChunk = chunk
+	lowering.machineTrap = exec.trap
 	if exec.notes != nil {
 		lowering.shiftGuardMax = exec.notes.shiftGuardMax
 	}
@@ -6791,6 +6868,24 @@ func equalityBlasters(names []string, widths map[string]int, asmTerm, oakTerm *t
 	return blasters
 }
 
+// hasUninterpreted reports a term with an uninterpreted operation node
+// (termFloat: a floating-point operation or an integer quotient).
+func hasUninterpreted(t *term) bool {
+	seen := map[*term]bool{}
+	var walk func(t *term) bool
+	walk = func(t *term) bool {
+		if t == nil || seen[t] {
+			return false
+		}
+		seen[t] = true
+		if t.kind == termFloat {
+			return true
+		}
+		return walk(t.left) || walk(t.right) || walk(t.cond)
+	}
+	return walk(t)
+}
+
 // blastEqual decides the equality under one variable order: proof, a
 // counterexample, or the budget exceeded (also when another order finished
 // first and stopped this one).
@@ -6824,6 +6919,16 @@ func blastEqual(bl *blaster, fn *Function, names []string, asmTerm, oakTerm *ter
 			continue // equal under every memory, though not node for node
 		}
 		env := bl.counterexampleOf(differs)
+		if asmTerm.eval(env) == oakTerm.eval(env) && (hasUninterpreted(asmTerm) || hasUninterpreted(oakTerm)) {
+			// The diagrams abstract an uninterpreted operation — a quotient
+			// at another width, or one under an arm the other side folds
+			// away — as an independent value, so this counterexample is the
+			// abstraction's, not the terms': the evaluation agrees on it.
+			// The bit level cannot decide such a pair; the verdict is the
+			// witness set's (asm/floats_ops.go, docs/spec/94-assembler.md
+			// §8, the thirty-first increment).
+			return Verdict{}, true
+		}
 		return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (bit %d differs): asm yields %d, Oak yields %d (asm term %s; Oak term %s)", fn.Name, describeEnv(names, env), i, asmTerm.eval(env), oakTerm.eval(env), asmTerm, oakTerm)}, false
 	}
 	order := ""

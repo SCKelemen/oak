@@ -81,13 +81,23 @@ type rvChecker struct {
 	// Span element memory (docs/spec/94-assembler.md §9). Every fact below
 	// is forgotten at a label and on a write to a register it names, so a
 	// guard protects exactly the straight-line code after it.
-	writes  map[int]int          // register -> number of instructions writing it (whole body)
-	spans   map[int]*rvSpan      // bound base register -> the span
-	shl32   map[int]int          // register = raw length register << 32 (half of a normalization)
-	lenNorm map[int]int          // register holding a span's length zero-extended -> its raw length register
-	consts  map[int]int64        // register = constant (li)
-	idx     map[int]rvIndexFact  // register < a normalized length register, or < a constant
-	scaled  map[int]rvScaledFact // register = index << shift
+	writes map[int]int // register -> number of instructions writing it (whole body)
+	// The definition sites, by item index (countWrites): a region held by a
+	// register whose every definition precedes a label, with no label
+	// between its first definition and that one and no branch into that
+	// label from before its last definition, holds at the label on every
+	// path (definedBefore) — GCC forms an element address in two or three
+	// instructions before a loop head.
+	firstWrite map[int]int
+	lastWrite  map[int]int
+	labelIndex map[string]int
+	branchesTo map[string][]int
+	spans      map[int]*rvSpan      // bound base register -> the span
+	shl32      map[int]int          // register = raw length register << 32 (half of a normalization)
+	lenNorm    map[int]int          // register holding a span's length zero-extended -> its raw length register
+	consts     map[int]int64        // register = constant (li)
+	idx        map[int]rvIndexFact  // register < a normalized length register, or < a constant
+	scaled     map[int]rvScaledFact // register = index << shift
 	// widened: register = an unmodified `u32` parameter as the psABI
 	// widened it (sign-extended from bit 31, Oak.RiscV.widen): a scalar
 	// `u32`, or a span's length register. Two of them compare raw
@@ -285,7 +295,7 @@ type rvRegion struct {
 func checkRV64(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool) []string {
 	c := &rvChecker{fn: fn, symbols: symbols, bound: map[int]bool{}, clobbered: map[int]bool{}, written: map[int]bool{}, freed: map[int]bool{}, saved: map[int]*savedState{}, labelDisp: map[string]int64{}, labels: map[string]bool{}, spans: map[int]*rvSpan{}, writes: map[int]int{},
 		fbound: map[int]bool{}, fclobbered: map[int]bool{}, fwritten: map[int]bool{}, ffreed: map[int]bool{}, fsaved: map[int]*savedState{},
-		rem: map[int]rvRemFact{}, slack: map[int]rvSlackFact{}, widened: map[int]bool{}, entryWidened: map[int]bool{}, half: map[int]rvIndexFact{}, gen: map[int]int{}, vclobbered: map[int]bool{}, vwritten: map[int]bool{}, frameAddrs: map[int]int64{}, lenAlias: map[int]int{}, rawDead: map[int]bool{}, composites: map[string]rvComposite{}, regions: map[int]rvRegion{}, resultChunks: 1}
+		rem: map[int]rvRemFact{}, slack: map[int]rvSlackFact{}, firstWrite: map[int]int{}, lastWrite: map[int]int{}, labelIndex: map[string]int{}, branchesTo: map[string][]int{}, widened: map[int]bool{}, entryWidened: map[int]bool{}, half: map[int]rvIndexFact{}, gen: map[int]int{}, vclobbered: map[int]bool{}, vwritten: map[int]bool{}, frameAddrs: map[int]int64{}, lenAlias: map[int]int{}, rawDead: map[int]bool{}, composites: map[string]rvComposite{}, regions: map[int]rvRegion{}, resultChunks: 1}
 	shared := &checker{fn: fn}
 	shared.checkSignature(decl)
 	if len(shared.errors) > 0 {
@@ -299,7 +309,7 @@ func checkRV64(fn *Function, decl *ast.FunctionStatement, symbols map[string]boo
 		return c.errors
 	}
 	c.countWrites()
-	c.forgetGuards()
+	c.forgetGuards(-1)
 	// At entry every widened parameter holds; where paths meet, only the
 	// registers the body never writes certainly still do (forgetGuards).
 	for reg := range c.entryWidened {
@@ -697,10 +707,10 @@ func (c *rvChecker) walk() {
 		}
 	}
 	terminated := false
-	for _, item := range c.fn.Items {
+	for i, item := range c.fn.Items {
 		switch it := item.(type) {
 		case Label:
-			c.enterLabel(it)
+			c.enterLabel(it, i)
 			terminated = false
 		case Align:
 			c.errorf(it.Line, "align regions are not admitted for rv64 units in this increment")
@@ -744,6 +754,22 @@ func (c *rvChecker) countWrites() {
 			}
 		}
 	}
+	// The item index of every label, definition and branch (definedBefore).
+	itemOf := make([]int, 0, len(instrs))
+	for i, item := range c.fn.Items {
+		switch it := item.(type) {
+		case Label:
+			c.labelIndex[it.Name] = i
+		case Instruction:
+			itemOf = append(itemOf, i)
+			base := rv64Base(it)
+			if rv64Branches[base.Mnemonic] || base.Mnemonic == "jal" {
+				if sym, isSym := base.Operands[len(base.Operands)-1].(Symbol); isSym {
+					c.branchesTo[sym.Name] = append(c.branchesTo[sym.Name], i)
+				}
+			}
+		}
+	}
 	for i, base := range instrs {
 		if len(base.Operands) == 0 || rv64Branches[base.Mnemonic] || rv64Stores[base.Mnemonic] != 0 || base.Mnemonic == "call" {
 			continue
@@ -752,6 +778,10 @@ func (c *rvChecker) countWrites() {
 		if !isReg || dest.Class != ClassRV64X {
 			continue
 		}
+		if _, seen := c.firstWrite[dest.Num]; !seen {
+			c.firstWrite[dest.Num] = itemOf[i]
+		}
+		c.lastWrite[dest.Num] = itemOf[i]
 		// The normalization pair `slli rX, len, 32; srli rX, rX, 32` is one
 		// definition of rX: its second half counts with its first.
 		if base.Mnemonic == "srli" && i > 0 && isNormalization(instrs[i-1], base, rawLens) {
@@ -786,11 +816,40 @@ func isNormalization(first, second Instruction, rawLens map[int]bool) bool {
 // stable reports a register written by at most one instruction in the body.
 func (c *rvChecker) stable(num int) bool { return c.writes[num] <= 1 }
 
+// definedBefore reports a register whose value at the label (item index
+// at) is the same on every path reaching it: every definition precedes the
+// label, no label lies between the first definition and this one (no path
+// enters the definitions midway), and no branch reaches this label from
+// before the last definition (no path skips one). A backward branch from
+// inside the loop the label heads re-enters with the register untouched.
+func (c *rvChecker) definedBefore(num int, at int) bool {
+	last, written := c.lastWrite[num]
+	if !written || last >= at {
+		return false
+	}
+	for _, idx := range c.labelIndex {
+		if idx > c.firstWrite[num] && idx < at {
+			return false
+		}
+	}
+	for name, idx := range c.labelIndex {
+		if idx != at {
+			continue
+		}
+		for _, from := range c.branchesTo[name] {
+			if from < last {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // forgetGuards drops the guard facts where paths meet (a label) or after a
 // call: index bounds, scaled indices, element regions, minimum lengths.
 // Normalized lengths, half-normalizations, and constants held by stable
 // registers survive (countWrites).
-func (c *rvChecker) forgetGuards() {
+func (c *rvChecker) forgetGuards(at int) {
 	// A normalized (or half-normalized) copy holds the length of the span
 	// it names whatever happens to the raw register afterwards: only the
 	// copy's own register must be written once.
@@ -843,7 +902,7 @@ func (c *rvChecker) forgetGuards() {
 	// it survives labels and calls.
 	regions := map[int]rvRegion{}
 	for reg, region := range c.regions {
-		if c.stable(reg) || (region.param && !c.written[reg]) {
+		if c.stable(reg) || (region.param && !c.written[reg]) || (at >= 0 && c.definedBefore(reg, at)) {
 			regions[reg] = region
 		}
 	}
@@ -916,8 +975,8 @@ func (c *rvChecker) forgetRegister(num int) {
 // so the displacement is the branches' (the trap block after `ret`); a
 // label reachable only by a later branch has no known displacement and is
 // refused, as the AArch64 checker refuses it.
-func (c *rvChecker) enterLabel(label Label) {
-	c.forgetGuards()
+func (c *rvChecker) enterLabel(label Label, at int) {
+	c.forgetGuards(at)
 	known, has := c.labelDisp[label.Name]
 	switch {
 	case has && !c.unreachable && known != c.disp:
@@ -983,7 +1042,7 @@ func (c *rvChecker) call(target string, line int) {
 	}
 	c.saved[1].written = true
 	c.saved[1].restored = false
-	c.forgetGuards()
+	c.forgetGuards(-1)
 	// vl, vtype, and every vector register are not preserved across a call.
 	c.vwritten = map[int]bool{}
 	for num := 0; num <= 31; num++ {
@@ -1193,6 +1252,11 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 			c.read(reg(i), line)
 		}
 		c.write(reg(0), line)
+		return false
+	}
+	if kind, width, isAtomic := rv64Atomic(name); isAtomic {
+		// lr/sc and the amos through a span element (asm/rv64_atomics.go).
+		c.atomicAccess(kind, width, ops, line)
 		return false
 	}
 	if width, isLoad := rv64Loads[name]; isLoad {

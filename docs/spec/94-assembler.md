@@ -2442,7 +2442,11 @@ features beyond the M4's.
 **RISC-V: the RV64 lane (first increment landed).** The second
 architecture, RV64IM first (the base integer set with multiplication,
 control transfer, loads and stores — what a hypervisor's or a database
-engine's hot integer paths need), then the F/D and V extensions. A unit
+engine's hot integer paths need), then the F/D and V extensions, and the
+A extension's `lr`/`sc` and `amo*` (`asm/rv64_atomics.go`: through a span
+element as the plain accesses, with their `.aq`/`.rl`/`.aqrl` suffixes,
+the checker holding them to the same bounds and the verifier deciding
+them under the sequential model of `65-machine-memory.md` §7a). A unit
 names the lane in its path (`name.rv64.oakasm`) or with an `arch rv64`
 directive before its bindings; every phase dispatches on it
 (`Function.Arch`). The specification situation is better than Arm's: the
@@ -2483,7 +2487,7 @@ Lean. What is new against the AArch64 lane, and how it landed:
   semantics (a zero divisor gives all ones and the dividend, the signed
   overflow the dividend and 0 — `Oak.RiscV.div_zero` and its kin,
   `rv64Divide` in Go); `auipc` and calls are outside the verified subset
-  (checked, trusted). The pseudo-instructions `mv li not neg negw sext.w
+  (checked, trusted). The pseudo-instructions `mv li not neg negw sext.w seqz snez sltz sgtz
   j jr ret nop beqz bnez bgez bltz blez bgtz call` are the assembler's
   spellings of base encodings (`li` up to 32 bits as `lui`+`addiw`,
   `call` as `auipc`+`jalr` under one `R_RISCV_CALL_PLT`).
@@ -3799,6 +3803,70 @@ way, and it is the next thing to tighten. Pinned: `asm/effects_test.go`
 `TestVerifySummarizedLoops` (a summing callee behind a result and a
 filling callee behind a unit caller proven by coupling the callee's
 loop; the wrong constant to the callee a mismatch).
+
+**The verdict cache, identity masks, and the coupling's candidates
+(2026-09-14).** Three things, found in order. First, the builds were
+cached but the verifications were not: every `oak build -native`
+re-verified every body. A verdict is a function of what the verifier
+reads — the lowered assembly as the checker sees it, the Oak body after
+inlining, the bodies of the program functions the body can reach through
+calls (the summaries inline them), the program's type, global, and
+constant declarations, the record layouts and addressed globals of the
+unit, the lane and its stack convention, and the compiler executable
+itself — and `compiler/verdict_cache.go` keys a verdict on all of it and
+keeps it under `$TMPDIR/oak-verify-cache`. A rebuild of an unchanged
+program takes every verdict from the cache; an edit re-verifies the
+edited function and the functions that reach it, no other; a changed
+compiler (its size and modification time, as the solver caches key)
+invalidates everything. The build reports `N of M verdicts from the
+verdict cache`; `oak build -verify-fresh` and `OAK_VERIFY_CACHE=0` bypass
+it for the full check. `TestVerdictCache` pins the cold build, the warm
+build with identical verdicts, the callee change that re-verifies the
+callee, its caller, and `main` but not an unrelated body, and the
+bypass. On the prover a warm rebuild takes 30 seconds where the cold
+build takes over three minutes. Second, a mask of every bit at a term's
+width is now the identity in the constructors (`x & 0xFFFFFFFF` at 32
+bits is `x`; a truncation of a zero-extension is the extended term), and
+`x - x`, `x ^ x`, `x & x`, `x | x` fold when the two sides are the same
+term to a small structural depth (two reads of one address are built as
+distinct nodes): nine more bodies prove, `fact`'s 64-bit product on RV64
+among them, and several proofs close as "the same term on both sides".
+Third, the coupling search's candidates: a Bool variable pairs only with
+a register whose header holds a 0/1 value (once an outer loop's register
+is coupled, the outer variable's declared width decides; an uncoupled
+one stays a candidate for the viability pass), and a variable the
+iteration changes never pairs with a register the iteration leaves as it
+found it, nor the reverse. `sat_extend` — three nested loops over the
+SAT arena, the Bool `satisfied` inside — went from 96 seconds of search
+to about a minute under this machine's load, still the slowest body by
+far, still evidence; what remains there is a genuine pairing (`end` with
+a register carrying `mem[l.state_at + 23]`) whose preservation is a
+decision over the arena's memory terms, and it is bounded by the loop
+proof's budgets. On the prover: proven 362 to 371, no disagreement, the
+rows identical. **Found by the cache:** a warm rebuild missed 146 of the
+979 verdicts, and the lowered assembly of those bodies differed between
+two builds of one source — a register chosen as `w24` in one and `w25`
+in the next — because the backend returned dead variables' registers to
+its pools in map order (`popScope`, `releaseDead`). The pools are filled
+in name order now; two builds produce identical assembly, verdicts, and
+objects, and the warm rebuild of the prover takes fifteen seconds with
+every verdict from the cache. **A counterexample reads the memory the
+diagrams chose.** Integer division became an uninterpreted operation the
+same afternoon, and nineteen bodies that divide by a constant the
+machine shifts by (`at / 4`, `lit / 2`) were reported as mismatches —
+"asm yields 51, Oak yields 51": the diagrams differ under values of the
+operation that the operation never takes, and the terms agree on the
+input. The bit-level difference is now confirmed by evaluating both
+terms on the counterexample's input before it is a mismatch (the
+thirty-first increment's rule, landed alongside). For that evaluation to
+be the arbiter it must read the memory the diagrams chose, so a
+counterexample reports each element read at the index its bits took
+with the value its variables took (`v[k]`), and the evaluator reads such
+an element from the input before the fixed memory — a compare-exchange
+storing the wrong value under a symbolic index stays a mismatch
+(`TestVerifyAtomicsCompareExchange`) rather than evaluating equal on the
+fixed memory. On the prover the nineteen are evidence, and the native
+build, which a mismatch fails, builds again: proven 376.
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
