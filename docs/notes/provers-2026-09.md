@@ -190,7 +190,9 @@ its output (flushed when full, before a spawn, at exit; the 562k-conflict
 row from 101 to 10 seconds, kernel time from 42 seconds to nil), and `oak
 prove -conflicts N` sets the solver's budget on both paths, so a row past
 the default can be asked for its certificate rather than the corpus paying
-for it on every run. The buffered writer also exposed an exponential
+for it on every run; the default budget then became 100 conflicts per
+clause with a floor of 200,000, which closes the 562k-conflict row in the
+corpus and leaves the 1.4M one to give up. The buffered writer also exposed an exponential
 walk in the native backend's verifier (`significantBits` over shared
 subterms of an unrolled loop, memoized the same day by a parallel
 increment). Subsumption is

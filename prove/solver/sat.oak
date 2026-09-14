@@ -266,11 +266,11 @@ sat_init: (l: SatLayout, mem: [*]u32, words: []u32, budget: u32, quiet: Bool): B
   sat_set(l, mem, ST_ACTIVITY_INC, u32(1024))
   sat_set(l, mem, ST_CLAUSE_INC, u32(1024))
   sat_set(l, mem, ST_RESTART_LIMIT, u32(100))
-  sat_set(l, mem, ST_BUDGET, budget)
   sat_set(l, mem, ST_PRINT, quiet ? { u32(0) } | { u32(1) })
   sat_set(l, mem, ST_RECORD_ON, u32(0))
   ok: Bool = len(words) >= LRAT_HEADER_WORDS && words[u32(0)] == LRAT_MAGIC && words[u32(1)] == l.vars
   clause_count: u32 = ok ? { words[u32(2)] } | { u32(0) }
+  sat_set(l, mem, ST_BUDGET, sat_conflicts(budget, clause_count))
   literal_words: u32 = ok ? { words[u32(3)] } | { u32(0) }
   ok = ok && LRAT_HEADER_WORDS + literal_words <= len(words)
   // The record: the header and the clauses as given, the steps to follow.
@@ -781,6 +781,19 @@ sat_analyze_from: (l: SatLayout, mem: [*]u32, conflict: u32, skip: u32, to_decis
 // (sat_extend). The gate variables of a Tseitin encoding are exactly what
 // this removes, and what leaves the arithmetic obligations solvable by
 // unit-heavy reasoning rather than clauses spanning every level.
+
+// The conflict budget scales with the obligation: a caller's explicit
+// budget stands; zero asks for SAT_DEFAULT_CONFLICTS or
+// SAT_CONFLICTS_PER_CLAUSE per clause, whichever is larger (a 6,442-clause
+// extents row closes at 562,050 conflicts, about ten seconds once the
+// output is buffered; docs/spec/125-verification.md §4 `-conflicts`).
+SAT_DEFAULT_CONFLICTS: u32 = 200000
+SAT_CONFLICTS_PER_CLAUSE: u32 = 100
+
+sat_conflicts: (requested: u32, clauses: u32): u32 {
+  scaled: u32 = SAT_CONFLICTS_PER_CLAUSE * clauses
+  requested != u32(0) ? { requested } | { scaled > SAT_DEFAULT_CONFLICTS ? { scaled } | { SAT_DEFAULT_CONFLICTS } }
+}
 
 BVE_OCCURRENCE_CAP: u32 = 10
 BVE_RESOLVENT_CAP: u32 = 24

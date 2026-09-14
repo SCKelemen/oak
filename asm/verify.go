@@ -980,9 +980,45 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 			break
 		}
 		if binding.OnStack {
-			// A parameter in the caller's outgoing area: the executor does
-			// not model the incoming stack (a body reading it stays trusted).
-			return nil, nil, "parameters beyond the register contract (the incoming stack area is not modeled)", false
+			// A parameter in the caller's outgoing area: the frame slot at
+			// Stack bytes above the entry sp holds it, at the size the
+			// caller stored it (classifyArguments: a narrow scalar its own
+			// bytes, a Bool the four of the C int, a 64-bit scalar eight),
+			// a span's base at Stack and its 32-bit length at Stack+8, a
+			// by-value record its chunks, a by-reference one its address
+			// (docs/spec/94-assembler.md §8, thirty-second increment;
+			// Oak.StackArguments). The body's loads then read the
+			// parameters as they read any frame slot.
+			if state.frame == nil {
+				state.frame = map[int64]frameSlot{}
+			}
+			switch {
+			case composites[binding.Param].leaves != nil:
+				cp := composites[binding.Param]
+				if cp.size > 16 {
+					state.storeSlot(binding.Stack, paramTerm(spanBaseName(binding.Param), 64), 8)
+					continue
+				}
+				state.storeSlot(binding.Stack, chunkTerm(cp.leaves, 0, input), 8)
+				if cp.size > 8 {
+					state.storeSlot(binding.Stack+8, chunkTerm(cp.leaves, 1, input), 8)
+				}
+			case spans[binding.Param] != 0:
+				state.storeSlot(binding.Stack, paramTerm(spanBaseName(binding.Param), 64), 8)
+				state.storeSlot(binding.Stack+8, input(spanLenName(binding.Param), 32), 4)
+			case params[binding.Param] == ClassX:
+				state.storeSlot(binding.Stack, input(binding.Param, 64), 8)
+			case boolParams[binding.Param]:
+				state.storeSlot(binding.Stack, zeroExtend(input(binding.Param, 1), 32), 4)
+			default:
+				bits := declared[binding.Param]
+				if bits < 32 {
+					state.storeSlot(binding.Stack, input(binding.Param, bits), int64(bits+7)/8)
+				} else {
+					state.storeSlot(binding.Stack, input(binding.Param, 32), 4)
+				}
+			}
+			continue
 		}
 		if cp, isComposite := composites[binding.Param]; isComposite {
 			if cp.size > 16 {
@@ -2435,6 +2471,17 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 				hole := constTerm(^mask(int(fieldWidth))&mask(width), width)
 				state.write(dest, binaryTerm("or", binaryTerm("and", current, hole), extracted))
 			}
+		case "udiv", "sdiv":
+			// The quotient as the uninterpreted operation (asm/floats_ops.go);
+			// the lowering's msub then forms the remainder a - q*b.
+			dest := instr.Operands[0].(Register)
+			width := widthOf(dest.Class)
+			n, okN := operandTerm(state, instr.Operands[1], width)
+			m, okM := operandTerm(state, instr.Operands[2], width)
+			if !okN || !okM {
+				return "unbound register read", false
+			}
+			state.write(dest, floatTerm(instr.Mnemonic, width, n, m))
 		case "madd", "msub":
 			dest := instr.Operands[0].(Register)
 			width := widthOf(dest.Class)
@@ -2666,6 +2713,10 @@ type oakLowering struct {
 	loops     []*loopEvent         // data-dependent loops met, in creation order
 	loopStack []int                // indices of the loops whose bodies are being lowered
 	fresh     map[string]int       // loop-carried fresh symbols -> width
+	// arch is the lane an asm unit's Oak body is lowered against ("" for
+	// the theorem decider): the RV64 lane's quotients are its own
+	// operations (asm/floats_ops.go rv.udiv, rv.sdiv).
+	arch string
 	// resultChunk: for a record result of two register chunks, the chunk
 	// this lowering's resultTerm packs (Verify runs one chunk at a time).
 	resultChunk int
@@ -2689,6 +2740,15 @@ type oakLowering struct {
 	spanAlias map[string]string
 	// bounds memoizes maxValue over the lowering's terms (asm/range.go).
 	bounds map[*term]uint64
+	// loopBase offsets the indices of the loop events this lowering
+	// creates: a callee lowered inside a call summary numbers its loops
+	// after the caller's, so the fresh symbols `loop<k>.<var>` of the two
+	// sides — which inline the same callee body — coincide (asm/loops.go).
+	loopBase int
+	// rootContracts holds the element contracts of the caller-rooted
+	// writable spans a loop marks (loopEvent), for a callee lowering whose
+	// own span names are aliases of them.
+	rootContracts map[string]spanContract
 	// functions are the program's functions a body may call; a call to one
 	// in the subset is inlined (inlineCall). Nil outside the theorem decider.
 	functions map[string]*ast.FunctionStatement
@@ -3180,7 +3240,9 @@ func (lo *oakLowering) lowerAssert(expr ast.Expression) (reason string, isAssert
 	if !ok {
 		return reason, true, false
 	}
-	lo.addTrap(binaryTerm("xor", truncate(cond, 1), constTerm(1, 1)))
+	if lo.trapsTracked {
+		lo.addTrap(binaryTerm("xor", truncate(cond, 1), constTerm(1, 1)))
+	}
 	return "", true, true
 }
 
@@ -4963,60 +5025,49 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		}
 		if e.Operator == "/" || e.Operator == "%" {
 			// Unsigned division and remainder by a constant power of two
-			// are a shift and a mask (the Lean projection states these).
+			// are a shift and a mask. Any other divisor: the quotient is
+			// the uninterpreted operation udiv/sdiv of the operands at
+			// their width (asm/floats_ops.go) and the remainder is
+			// a - (a / b) * b, the machines' definition (Oak.IntegerDivision;
+			// the AArch64 lowering's msub, RISC-V's rem); a zero divisor
+			// traps, which the theorem decider states as an obligation and
+			// the asm verifier meets in the lowering's guard.
 			w, signed, isScalar := lo.operandContract(e)
 			if !isScalar {
-				return nil, fmt.Sprintf("operator %s outside the integer types", e.Operator), false
+				return nil, fmt.Sprintf("operator %s over operands without a contract", e.Operator), false
 			}
-			if !signed {
-				right, reason, okR := lo.lower(e.Right, width)
-				if !okR {
-					return nil, reason, false
-				}
-				if right.kind == termConst && right.value != 0 && right.value&(right.value-1) == 0 {
-					left, reason, okL := lo.lower(e.Left, width)
-					if !okL {
-						return nil, reason, false
-					}
-					if e.Operator == "%" {
-						return binaryTerm("and", left, constTerm(right.value-1, width)), "", true
-					}
-					return binaryTerm("shr", left, constTerm(uint64(bits.TrailingZeros64(right.value)), width)), "", true
-				}
-			}
-			// Any other divisor: Oak traps on zero and is total otherwise,
-			// `MIN / -1` the minimum and `MIN % -1` zero
-			// (docs/spec/20-types.md section 11.1) — the totalized division
-			// terms (`rv64Divide` in asm/isa_semantics.go), computed at the
-			// operands' width and signedness. The zero divisor is a trap
-			// obligation for the theorem decider; the asm verifier meets the
-			// machine's own guard, whose trap path leaves the comparison,
-			// and a body that divides without one disagrees at zero. The
-			// bit-level decision does not reach division: the verdict is
-			// the witness set's (evidence), as for multiplication.
-			left, reason, okL := lo.lower(e.Left, w)
-			if !okL {
-				return nil, reason, false
+			if w == 0 {
+				w = width
 			}
 			right, reason, okR := lo.lower(e.Right, w)
 			if !okR {
 				return nil, reason, false
 			}
+			left, reason, okL := lo.lower(e.Left, w)
+			if !okL {
+				return nil, reason, false
+			}
+			if !signed && right.kind == termConst && right.value != 0 && right.value&(right.value-1) == 0 {
+				if e.Operator == "%" {
+					return adaptWidth(binaryTerm("and", left, constTerm(right.value-1, w)), width), "", true
+				}
+				return adaptWidth(binaryTerm("shr", left, constTerm(uint64(bits.TrailingZeros64(right.value)), w)), width), "", true
+			}
 			if lo.trapsTracked {
 				lo.addTrap(cmpTerm("eq", right, constTerm(0, w)))
 			}
-			op := map[string]string{"/": "rv.divu", "%": "rv.remu"}[e.Operator]
+			op := "udiv"
 			if signed {
-				op = map[string]string{"/": "rv.div", "%": "rv.rem"}[e.Operator]
+				op = "sdiv"
 			}
-			quotient := binaryTerm(op, left, right)
-			switch {
-			case width == w:
-				return quotient, "", true
-			case width > w:
-				return extendTerm(quotient, w, width, signed), "", true
+			if lo.arch == ArchRV64 {
+				op = "rv." + op
 			}
-			return truncate(quotient, width), "", true
+			quotient := floatTerm(op, w, left, right)
+			if e.Operator == "%" {
+				return extendTerm(binaryTerm("sub", left, binaryTerm("mul", quotient, right)), w, width, signed), "", true
+			}
+			return extendTerm(quotient, w, width, signed), "", true
 		}
 		op, ok := oakOps[e.Operator]
 		if !ok {
@@ -5633,6 +5684,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		return fmt.Sprintf("a call to %s with %d parameters", name, len(callee.Parameters)), false
 	}
 	lo := newLowering(callee)
+	lo.arch = x.arch
 	lo.records, lo.adts, lo.constants = x.fn.Records, x.fn.ADTs, x.fn.Constants
 	lo.functions = x.fn.Callees
 	lo.declareTables(x.fn.Tables)
@@ -5655,6 +5707,14 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	}
 	lo.concrete = x.env // a witness run: the callee's leaves are the caller's constants
 	lo.writes = cloneWrites(state.writes)
+	lo.loopBase = len(x.loops)
+	lo.loopStack = append([]int(nil), x.loopStack...)
+	lo.writableSpans = map[string]bool{}
+	lo.rootContracts = map[string]spanContract{}
+	for _, span := range writableSpanParams(x.fn, x.spans) {
+		lo.writableSpans[span] = true
+		lo.rootContracts[span] = spanContract{elemWidth: int(x.spans[span]) * 8}
+	}
 	// The arguments by the shared layout (asm/abi.go): registers while
 	// they fit, then the caller's outgoing area — slots of this path's
 	// frame at the call's sp, which the executor holds as the caller
@@ -5796,7 +5856,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 				var offset int64
 				owner, offset, whole = spanBaseOf(base)
 				_, isRecord := x.records[owner]
-				whole = whole && !isRecord && offset == 0 && x.spans[owner] == arg.elem && isParamNamed(length, spanLenName(owner))
+				whole = whole && !isRecord && offset == 0 && x.spans[owner] == arg.elem && x.isSpanLength(length, owner)
 			}
 			if !whole {
 				return fmt.Sprintf("a call to %s: the span argument %s is not one of the caller's span parameters passed whole", name, param.Name.Value), false
@@ -5859,8 +5919,22 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 			return fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
 		}
 	}
-	if len(lo.loops) > 0 {
-		return fmt.Sprintf("a call to %s whose body has a data-dependent loop", name), false
+	// The callee's data-dependent loops are the caller's events: numbered
+	// after the caller's (loopBase), nested under the loop being executed,
+	// their fresh symbols declared for the verdict; the Oak side inlines
+	// the same body and creates the same events, which the coupling pairs
+	// by identity (asm/loops.go).
+	for _, ev := range lo.loops {
+		x.loops = append(x.loops, ev)
+	}
+	for symbol, width := range lo.fresh {
+		if x.freshSyms == nil {
+			x.freshSyms = map[string]int{}
+		}
+		if _, known := x.freshSyms[symbol]; !known {
+			x.freshSyms[symbol] = width
+			x.declared[symbol] = width
+		}
 	}
 	state.writes = lo.writes // the callee's stores through the caller's spans
 	for cellName, cell := range lo.cells {
@@ -6056,6 +6130,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 // aggregates, and (in a witness run) the concrete inputs.
 func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64) *oakLowering {
 	lowering := newLowering(sig)
+	lowering.arch = fn.Arch
 	lowering.records, lowering.adts = fn.Records, fn.ADTs
 	lowering.constants = fn.Constants
 	lowering.globals = fn.Globals
@@ -6325,11 +6400,12 @@ func newLowering(sig *ast.FunctionStatement) *oakLowering {
 	// body, or a block or match in result position (resultTerm through
 	// aggregateValue) — writes into a map; the dbs pilot's `-native` panic
 	// was a nil map on the result path (docs/notes/dbs-feedback-2026-09.md).
-	lowering := &oakLowering{params: map[string]int{}, signed: map[string]bool{}, spans: map[string]spanContract{}, fresh: map[string]int{}, floats: map[string]int{}, locals: map[string]*oakLocal{}, writableSpans: map[string]bool{}}
+	lowering := &oakLowering{params: map[string]int{}, signed: map[string]bool{}, spans: map[string]spanContract{}, fresh: map[string]int{}, floats: map[string]int{}, locals: map[string]*oakLocal{}, writableSpans: map[string]bool{}, rootContracts: map[string]spanContract{}}
 	for _, param := range sig.Parameters {
 		if elem, _, isSpan := spanShape(param.Type); isSpan {
 			if isWritableSpan(param.Type) {
 				lowering.writableSpans[param.Name.Value] = true
+				lowering.rootContracts[param.Name.Value] = lowering.spans[param.Name.Value]
 			}
 			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
 			lowering.spans[param.Name.Value] = spanContract{elemWidth: int(elem) * 8, signed: strings.HasPrefix(elemType, "i"), float: elemType == "f32" || elemType == "f64"}
@@ -6476,6 +6552,12 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 			return a.verdict
 		}
 	}
+	if termEquivalent(truncate(asmTerm, width), truncate(oakTerm, width), width, map[[3]any]bool{}) {
+		// The same term on both sides up to the width adapters' masks (a
+		// quotient times a divisor, say, whose diagram no budget affords):
+		// equal by structure (asm/loops.go termEquivalent).
+		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (the same term on both sides, beyond the diagrams' budget)%s", fn.Name, note)}
+	}
 	return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exceeded its node budget)", fn.Name)}
 }
 
@@ -6505,6 +6587,24 @@ func equalityBlasters(names []string, widths map[string]int, asmTerm, oakTerm *t
 		blasters = append(blasters, newControlFirstBlaster(names, widths, control))
 	}
 	return blasters
+}
+
+// hasUninterpreted reports a term with an uninterpreted operation node
+// (termFloat: a floating-point operation or an integer quotient).
+func hasUninterpreted(t *term) bool {
+	seen := map[*term]bool{}
+	var walk func(t *term) bool
+	walk = func(t *term) bool {
+		if t == nil || seen[t] {
+			return false
+		}
+		seen[t] = true
+		if t.kind == termFloat {
+			return true
+		}
+		return walk(t.left) || walk(t.right) || walk(t.cond)
+	}
+	return walk(t)
 }
 
 // blastEqual decides the equality under one variable order: proof, a
@@ -6540,6 +6640,16 @@ func blastEqual(bl *blaster, fn *Function, names []string, asmTerm, oakTerm *ter
 			continue // equal under every memory, though not node for node
 		}
 		env := bl.counterexampleOf(differs)
+		if asmTerm.eval(env) == oakTerm.eval(env) && (hasUninterpreted(asmTerm) || hasUninterpreted(oakTerm)) {
+			// The diagrams abstract an uninterpreted operation — a quotient
+			// at another width, or one under an arm the other side folds
+			// away — as an independent value, so this counterexample is the
+			// abstraction's, not the terms': the evaluation agrees on it.
+			// The bit level cannot decide such a pair; the verdict is the
+			// witness set's (asm/floats_ops.go, docs/spec/94-assembler.md
+			// §8, the thirty-first increment).
+			return Verdict{}, true
+		}
 		return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (bit %d differs): asm yields %d, Oak yields %d (asm term %s; Oak term %s)", fn.Name, describeEnv(names, env), i, asmTerm.eval(env), oakTerm.eval(env), asmTerm, oakTerm)}, false
 	}
 	order := ""

@@ -50,6 +50,7 @@ import Oak.Intrinsics
 import Oak.CInterop
 import Oak.Simd
 import Oak.Uninterpreted
+import Oak.IntegerDivision
 import Oak.KnownBits
 import Oak.NeonSemantics
 import Oak.Monomorphization
@@ -100,6 +101,8 @@ import Oak.LiteralFitRefinement
 import Oak.LoweringRefinement
 import Oak.Semver
 import Oak.Loops
+import Oak.TrapArms
+import Oak.StackArguments
 import Oak.Regions
 import Oak.SessionObligations
 import Oak.SessionObligationsProved

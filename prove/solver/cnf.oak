@@ -181,7 +181,7 @@ cnf_obligation: (l: Layout, mem: [*]u32, p: []u32): u32 {
 cnf_set_capacities: (region: [*]u32, at: u32, conflict_budget: u32): () {
   region[at + u32(5)] = u32(8) * region[at + u32(2)] + u32(65536)
   region[at + u32(6)] = u32(64) * region[at + u32(3)] + u32(1048576)
-  region[at + u32(7)] = conflict_budget
+  region[at + u32(7)] = sat_conflicts(conflict_budget, region[at + u32(2)])
 }
 
 // cnf_header fills the region's eight header words for sat.oak and

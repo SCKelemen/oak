@@ -51,6 +51,11 @@ func TestE2ENativeRV64Lowers(t *testing.T) {
 			t.Errorf("%s was not lowered by the rv64 lane; diagnostics:\n%s", fn, joined)
 		}
 	}
+	// divw/remw as the uninterpreted quotient and a - (a / b) * b
+	// (docs/spec/94-assembler.md §8, thirty-first increment).
+	if !strings.Contains(joined, "asm unit divmod: proven") {
+		t.Errorf("divmod was not proven by the verifier; diagnostics:\n%s", joined)
+	}
 	if machine := binary.LittleEndian.Uint16(native.Object[18:20]); machine != 243 {
 		t.Fatalf("companion object e_machine %d, want EM_RISCV (243)", machine)
 	}
