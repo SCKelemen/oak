@@ -222,9 +222,9 @@ func (lo *oakLowering) lowerFloatIntrinsic(name string, call *ast.InvocationExpr
 	case "fma":
 		return asFloat(floatTerm("fma", w, args[0], args[1], args[2]))
 	case "min_num":
-		return asFloat(floatTerm("fminnm", w, args[0], args[1]))
+		return asFloat(floatMinMaxNum("min", args[0], args[1], w))
 	case "max_num":
-		return asFloat(floatTerm("fmaxnm", w, args[0], args[1]))
+		return asFloat(floatMinMaxNum("max", args[0], args[1], w))
 	}
 	return nil, fmt.Sprintf("the float intrinsic %s (not a bit operation)", name), false
 }
@@ -246,7 +246,54 @@ func floatMinMax(name string, a, b *term, w int) *term {
 	} else {
 		ordered = iteTerm(eq, iteTerm(sa, b, a), iteTerm(lt, b, a))
 	}
-	return iteTerm(nan, floatTerm("fnan", w, a, b), ordered)
+	return iteTerm(nan, floatSomeNaN(a, b, w), ordered)
+}
+
+// floatSomeNaN is the NaN a min or max yields on a NaN operand: the
+// operation term `fnan` (the platform's choice of payload) with the
+// exponent and quiet bits forced, so the decider knows the value is a
+// quiet NaN whatever the payload — and floatCanonicalNaN identifies it
+// with every other NaN. The witness value is unchanged: `fnan` evaluates
+// to a quiet NaN already.
+func floatSomeNaN(a, b *term, w int) *term {
+	_, _, exponent, mantissa := floatMasks(w)
+	return binaryTerm("or", floatTerm("fnan", w, a, b), constTerm(exponent|(mantissa+1)>>1, w))
+}
+
+// floatMinMaxNum is IEEE 754-2008 minNum/maxNum over w-bit patterns
+// (Oak's `min_num`/`max_num`; Arm's fminnm/fmaxnm, RISC-V's fmin/fmax,
+// RVV's vfmin/vfmax): on numbers it is the same order as minimum/maximum
+// (-0.0 below +0.0), so that part is the bit-level chain floatMinMax
+// uses; a NaN operand yields the `fminnm`/`fmaxnm` operation term (the
+// other operand for a quiet NaN, a quieted signaling NaN on Arm, the
+// canonical NaN for two NaNs on RISC-V — the platform's rule, left to the
+// operation). Both sides build the same shape, so a unit's min/max on
+// numbers is decided exactly and its NaN handling up to the operation.
+func floatMinMaxNum(name string, a, b *term, w int) *term {
+	nan := orBit(floatIsNaN(a, w), floatIsNaN(b, w))
+	eq, _ := floatCompare("==", a, b, w)
+	lt, _ := floatCompare("<", a, b, w)
+	sa := bit(binaryTerm("shr", a, constTerm(uint64(w-1), w)))
+	var ordered *term
+	op := "fminnm"
+	if name == "min" {
+		ordered = iteTerm(eq, iteTerm(sa, a, b), iteTerm(lt, a, b))
+	} else {
+		ordered = iteTerm(eq, iteTerm(sa, b, a), iteTerm(lt, b, a))
+		op = "fmaxnm"
+	}
+	return iteTerm(nan, floatTerm(op, w, a, b), ordered)
+}
+
+// floatCanonicalNaN maps every NaN pattern of a w-bit float to the
+// canonical quiet NaN: the verdict on a float result is taken up to the
+// NaN payload, which docs/spec/20-types.md §11.3.5 leaves to the platform
+// (no law may rely on it), so two units that yield NaNs of different
+// payloads on the same input agree.
+func floatCanonicalNaN(t *term, w int) *term {
+	_, _, exponent, mantissa := floatMasks(w)
+	canonical := constTerm(exponent|(mantissa+1)>>1, w)
+	return iteTerm(floatIsNaN(t, w), canonical, t)
 }
 
 // floatConversion lowers `f32(x)`, `f64(x)`, and the integer constructors

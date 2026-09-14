@@ -206,3 +206,63 @@ trap:
 		t.Fatalf("a register AVL must leave the unit trusted, got %s: %s", v.Kind, v.Message)
 	}
 }
+
+// The float vector forms the RV64 native lowering emits (nativegen/rv64_simd.go,
+// the eleventh increment) decide against the Oak simd operations: the
+// min/max sequence with the NaN propagation restored through masks, the
+// insert through vid/vmseq/vfmerge, the extract through a slide, the sign
+// injections, and the pairwise reduce through slides.
+func TestRV64VerifyFloatVector(t *testing.T) {
+	// Two f32 spans of proven length, lanes loaded at their bases.
+	head := `  bind a0, a1 = a
+  bind a2, a3 = b
+  clobber t0, t1, t2, t6, ft0, ft1, v0, v1, v8, v9, v10, v11
+  slli t1, a1, 32
+  srli t1, t1, 32
+  slli t2, a3, 32
+  srli t2, t2, 32
+  li t0, 4
+  bltu t1, t0, trap
+  bltu t2, t0, trap
+  vsetivli zero, 4, e32, m1, ta, ma
+  vle32.v v8, (a0)
+  vle32.v v9, (a2)
+`
+	tail := "trap:\n  ebreak"
+	// min: vfmin then the NaN operands merged back over the result; the
+	// result is read through the pairwise reduce's first lane pair.
+	lane0 := "  vfmv.f.s fa0, v10\n  ret\n"
+	decl := "least: (a: []f32, b: []f32) -> f32"
+	minSeq := "  vfmin.vv v10, v8, v9\n  vmfne.vv v0, v8, v8\n  vmerge.vvm v10, v10, v8, v0\n  vmfne.vv v0, v9, v9\n  vmerge.vvm v10, v10, v9, v0\n"
+	if v := rv64Verify(t, decl, "simd.extract_f32x4(simd.min_f32x4(simd.load_f32x4(a, u32(0)), simd.load_f32x4(b, u32(0))), 0)", head+minSeq+lane0+tail); v.Kind != VerdictProven {
+		t.Fatalf("min through vfmin and the NaN merges must be proven, got %s: %s", v.Kind, v.Message)
+	}
+	// Without the merges vfmin suppresses a NaN operand: a mismatch.
+	if v := rv64Verify(t, decl, "simd.extract_f32x4(simd.min_f32x4(simd.load_f32x4(a, u32(0)), simd.load_f32x4(b, u32(0))), 0)", head+"  vfmin.vv v10, v8, v9\n"+lane0+tail); v.Kind != VerdictMismatch {
+		t.Fatalf("bare vfmin against min must be a mismatch, got %s: %s", v.Kind, v.Message)
+	}
+	// div, sqrt, neg, abs lane-wise; extract of lane 2 through a slide.
+	body := "simd.extract_f32x4(simd.neg_f32x4(simd.abs_f32x4(simd.sqrt_f32x4(simd.div_f32x4(simd.load_f32x4(a, u32(0)), simd.load_f32x4(b, u32(0)))))), 2)"
+	seq := "  vfdiv.vv v10, v8, v9\n  vfsqrt.v v10, v10\n  vfsgnjx.vv v10, v10, v10\n  vfsgnjn.vv v10, v10, v10\n  vslidedown.vi v11, v10, 2\n  vfmv.f.s fa0, v11\n  ret\n"
+	if v := rv64Verify(t, "third: (a: []f32, b: []f32) -> f32", body, head+seq+tail); v.Kind != VerdictProven {
+		t.Fatalf("div/sqrt/abs/neg and a slid extract must be proven, got %s: %s", v.Kind, v.Message)
+	}
+	if v := rv64Verify(t, "third: (a: []f32, b: []f32) -> f32", body, head+strings.Replace(seq, "vslidedown.vi v11, v10, 2", "vslidedown.vi v11, v10, 1", 1)+tail); v.Kind != VerdictMismatch {
+		t.Fatalf("extracting the wrong lane must be a mismatch, got %s: %s", v.Kind, v.Message)
+	}
+	// insert at lane 1 through vid/vmseq/vfmerge, read back at lane 1.
+	insert := "  fmv.w.x ft0, zero\n  vid.v v11\n  li t6, 1\n  vmseq.vx v0, v11, t6\n  vfmerge.vfm v8, v8, ft0, v0\n  vslidedown.vi v11, v8, 1\n  vfmv.f.s fa0, v11\n  ret\n"
+	if v := rv64Verify(t, "set1: (a: []f32, b: []f32) -> f32", "simd.extract_f32x4(simd.insert_f32x4(simd.load_f32x4(a, u32(0)), 1, 0.0), 1)", head+insert+tail); v.Kind != VerdictProven {
+		t.Fatalf("insert through vid/vmseq/vfmerge must be proven, got %s: %s", v.Kind, v.Message)
+	}
+	// reduce_add as the pairwise tree through two slide-and-add steps.
+	reduce := "  vfmul.vv v10, v8, v9\n  vslidedown.vi v11, v10, 1\n  vfadd.vv v10, v10, v11\n  vslidedown.vi v11, v10, 2\n  vfadd.vv v10, v10, v11\n  vfmv.f.s fa0, v10\n  ret\n"
+	if v := rv64Verify(t, "dot: (a: []f32, b: []f32) -> f32", "simd.reduce_add_f32x4(simd.mul_f32x4(simd.load_f32x4(a, u32(0)), simd.load_f32x4(b, u32(0))))", head+reduce+tail); v.Kind != VerdictProven {
+		t.Fatalf("the pairwise reduce through slides must be proven, got %s: %s", v.Kind, v.Message)
+	}
+	// vfredosum's sequential fold is the other grouping: a mismatch.
+	ordered := "  vfmul.vv v10, v8, v9\n  fmv.w.x ft0, zero\n  vfmv.v.f v11, ft0\n  vfredosum.vs v10, v10, v11\n  vfmv.f.s fa0, v10\n  ret\n"
+	if v := rv64Verify(t, "dot: (a: []f32, b: []f32) -> f32", "simd.reduce_add_f32x4(simd.mul_f32x4(simd.load_f32x4(a, u32(0)), simd.load_f32x4(b, u32(0))))", head+ordered+tail); v.Kind != VerdictMismatch {
+		t.Fatalf("the ordered reduction against the pairwise tree must be a mismatch, got %s: %s", v.Kind, v.Message)
+	}
+}

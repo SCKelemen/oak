@@ -53,8 +53,10 @@ func floatArith(mnemonic string, w int, args ...*term) (*term, bool) {
 	switch mnemonic {
 	case "fadd", "fsub", "fmul", "fdiv":
 		return floatTerm(mnemonic, w, args[0], args[1]), true
-	case "fminnm", "fmaxnm":
-		return floatTerm(mnemonic, w, args[0], args[1]), true
+	case "fminnm":
+		return floatMinMaxNum("min", args[0], args[1], w), true
+	case "fmaxnm":
+		return floatMinMaxNum("max", args[0], args[1], w), true
 	case "fmin":
 		return floatMinMax("min", args[0], args[1], w), true
 	case "fmax":

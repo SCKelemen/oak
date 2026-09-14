@@ -98,4 +98,29 @@ canonical nodes. -/
 theorem structural_eq {α : Type} (I : Interp α) (ρ : Nat → α) (s t : Term) (h : s = t) :
     eval I ρ s = eval I ρ t := by subst h; rfl
 
+/-! ### Verdicts up to the NaN payload
+
+A float result is compared after every NaN pattern is mapped to one
+canonical NaN (`asm/floats_lowering.go` floatCanonicalNaN): the payload is
+the platform's (docs/spec/20-types.md §11.3.5). Two NaNs compare equal,
+and two numbers compare equal exactly when they are equal. -/
+
+/-- Canonicalization over an abstract NaN predicate and canonical value. -/
+def canon {α : Type} (isNaN : α → Prop) [DecidablePred isNaN] (c : α) (x : α) : α :=
+  if isNaN x then c else x
+
+theorem canon_eq_of_nan {α : Type} (isNaN : α → Prop) [DecidablePred isNaN] (c x y : α)
+    (hx : isNaN x) (hy : isNaN y) : canon isNaN c x = canon isNaN c y := by
+  simp [canon, hx, hy]
+
+theorem canon_eq_iff_of_not_nan {α : Type} (isNaN : α → Prop) [DecidablePred isNaN] (c x y : α)
+    (hx : ¬ isNaN x) (hy : ¬ isNaN y) : canon isNaN c x = canon isNaN c y ↔ x = y := by
+  simp [canon, hx, hy]
+
+/-- A number and a NaN never compare equal when the canonical value is a NaN. -/
+theorem canon_ne_of_nan_not_nan {α : Type} (isNaN : α → Prop) [DecidablePred isNaN] (c x y : α)
+    (hc : isNaN c) (hx : isNaN x) (hy : ¬ isNaN y) : canon isNaN c x ≠ canon isNaN c y := by
+  simp only [canon, hx, hy, ↓reduceIte]
+  intro h; exact hy (h ▸ hc)
+
 end Oak.Uninterpreted
