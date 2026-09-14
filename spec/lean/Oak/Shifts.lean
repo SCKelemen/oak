@@ -56,6 +56,16 @@ theorem count_below_width_wraps_to_itself (n : BitVec 32) (h : n < 32) :
     simpa using this
   exact Nat.mod_eq_of_lt this
 
+/-- The 64-bit case: the backend's guard compares the x register
+    (`cmp xN, #64; b.hs trap`), and a count below 64 is its own remainder
+    at XLEN, so the guarded `lsl xD, xS, xN` is Oak's shift. -/
+theorem count_below_width_wraps_to_itself64 (n : BitVec 64) (h : n < 64) :
+    n.toNat % 64 = n.toNat := by
+  have : n.toNat < 64 := by
+    have := BitVec.lt_def.mp h
+    simpa using this
+  exact Nat.mod_eq_of_lt this
+
 /-- On a count at or beyond a byte's width but below the register's, the
     widened left shift masked back is zero — the machine's value on the
     path the trap removes, which the verifier's term reproduces rather than

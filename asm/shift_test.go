@@ -41,6 +41,18 @@ func TestVerifyVariableShift(t *testing.T) {
 	}
 }
 
+// A 64-bit operand: the count guard compares the x register (`cmp x, #64`),
+// which bounds the count as a w compare bounds an index.
+func TestVerifyVariableShift64(t *testing.T) {
+	wide := "  bind x0 = x\n  bind x1 = n\n  clobber x9, x10, x1\n  frame 80\n  sub sp, sp, #80\nhead_1:\n  mov x9, x0\n  mov x10, x1\n  cmp x10, #64\n  b.hs trap_3\n  lsr x9, x9, x10\n  mov x0, x9\nret_2:\n  add sp, sp, #80\n  ret\ntrap_3:\n  brk #1"
+	if v := verifyCase(t, "shr64: (x: u64, n: u64) -> u64", "x >> n", wide); v.Kind != VerdictProven {
+		t.Fatalf("shr64 must be proven, got %s: %s", v.Kind, v.Message)
+	}
+	if v := verifyCase(t, "shr64: (x: u64, n: u64) -> u64", "x >> n", strings.Replace(wide, "cmp x10, #64", "cmp x10, #128", 1)); v.Kind != VerdictTrusted {
+		t.Fatalf("a 64-bit shift guarded above the width must stay trusted, got %s: %s", v.Kind, v.Message)
+	}
+}
+
 // The RV64 lane: sllw for a 32-bit operand, sll at XLEN with the mask
 // back for a byte, both under `bgeu n, width, trap`.
 func TestRV64VerifyVariableShift(t *testing.T) {
