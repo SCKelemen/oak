@@ -114,7 +114,11 @@ type rvChecker struct {
 	// slack: register = normalized length - K under len >= K (`sub t, len,
 	// k` after `bltu len, k, trap`): the bound of a K-element vector access
 	// (docs/spec/94-assembler.md §9, Oak.RiscV.slack_guard).
-	slack map[int]rvSlackFact
+	slack       map[int]rvSlackFact
+	le          map[int]int
+	diff        map[int]rvDiffFact
+	subCount    map[int]rvSubFact
+	scaledStart map[int]rvScaledStart
 	// frameAddrs: register = an entry-relative frame address (`addi rD, sp,
 	// imm`): an owned array's base (docs/spec/94-assembler.md §9). Memory
 	// through it goes through a region formed under a constant index guard.
@@ -245,6 +249,25 @@ type rvIndexFact struct {
 	raw    bool
 }
 
+// The derived-span idiom, `subslice(v, start, n)` on this lane
+// (docs/spec/94-assembler.md §9, subslice on the rv64 lane; the AArch64
+// checker's deriveSpan): `bltu rL, rS, trap` over a normalized length rL
+// proves rS <= len (le[rS] = rL); `sub rT, rL, rS` under it makes rT =
+// len - start (diff[rT]); `bltu rT, rN, trap` proves rN <= len - start
+// (subCount[rN]); `slli rX, rS, s` scales the start (scaledStart[rX]);
+// and `add rD, rB, rX` over the span at rB with that length derives the
+// span at rD whose length register is rN — every index i < rN has start
+// + i < len (Oak.Subslice.derived_index_in_bounds). The count register
+// is its own normalized length: the guard `bltu rT, rN` admits only a
+// value at most len - start < 2^32. The facts die with a write to any
+// register involved, at labels, and at calls.
+type rvDiffFact struct{ lenReg, startReg int }
+type rvSubFact struct{ startReg, lenReg int }
+type rvScaledStart struct {
+	startReg int
+	shift    int
+}
+
 // rvSlackFact: the register holds len - K for the normalized length in
 // lenReg, formed under len >= K.
 type rvSlackFact struct {
@@ -295,7 +318,7 @@ type rvRegion struct {
 func checkRV64(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool) []string {
 	c := &rvChecker{fn: fn, symbols: symbols, bound: map[int]bool{}, clobbered: map[int]bool{}, written: map[int]bool{}, freed: map[int]bool{}, saved: map[int]*savedState{}, labelDisp: map[string]int64{}, labels: map[string]bool{}, spans: map[int]*rvSpan{}, writes: map[int]int{},
 		fbound: map[int]bool{}, fclobbered: map[int]bool{}, fwritten: map[int]bool{}, ffreed: map[int]bool{}, fsaved: map[int]*savedState{},
-		rem: map[int]rvRemFact{}, slack: map[int]rvSlackFact{}, firstWrite: map[int]int{}, lastWrite: map[int]int{}, labelIndex: map[string]int{}, branchesTo: map[string][]int{}, widened: map[int]bool{}, entryWidened: map[int]bool{}, half: map[int]rvIndexFact{}, gen: map[int]int{}, vclobbered: map[int]bool{}, vwritten: map[int]bool{}, frameAddrs: map[int]int64{}, lenAlias: map[int]int{}, rawDead: map[int]bool{}, composites: map[string]rvComposite{}, regions: map[int]rvRegion{}, resultChunks: 1}
+		rem: map[int]rvRemFact{}, slack: map[int]rvSlackFact{}, le: map[int]int{}, diff: map[int]rvDiffFact{}, subCount: map[int]rvSubFact{}, scaledStart: map[int]rvScaledStart{}, firstWrite: map[int]int{}, lastWrite: map[int]int{}, labelIndex: map[string]int{}, branchesTo: map[string][]int{}, widened: map[int]bool{}, entryWidened: map[int]bool{}, half: map[int]rvIndexFact{}, gen: map[int]int{}, vclobbered: map[int]bool{}, vwritten: map[int]bool{}, frameAddrs: map[int]int64{}, lenAlias: map[int]int{}, rawDead: map[int]bool{}, composites: map[string]rvComposite{}, regions: map[int]rvRegion{}, resultChunks: 1}
 	shared := &checker{fn: fn}
 	shared.checkSignature(decl)
 	if len(shared.errors) > 0 {
@@ -888,6 +911,10 @@ func (c *rvChecker) forgetGuards(at int) {
 	c.idx = map[int]rvIndexFact{}
 	c.scaled = map[int]rvScaledFact{}
 	c.half = map[int]rvIndexFact{}
+	c.le = map[int]int{}
+	c.diff = map[int]rvDiffFact{}
+	c.subCount = map[int]rvSubFact{}
+	c.scaledStart = map[int]rvScaledStart{}
 	// A parameter register the body never writes holds its widened value
 	// on every path.
 	widened := map[int]bool{}
@@ -936,6 +963,30 @@ func (c *rvChecker) forgetRegister(num int) {
 	delete(c.frameAddrs, num)
 	delete(c.lenAlias, num)
 	delete(c.slack, num)
+	delete(c.le, num)
+	for reg, lenReg := range c.le {
+		if lenReg == num {
+			delete(c.le, reg)
+		}
+	}
+	delete(c.diff, num)
+	for reg, fact := range c.diff {
+		if fact.lenReg == num || fact.startReg == num {
+			delete(c.diff, reg)
+		}
+	}
+	delete(c.subCount, num)
+	for reg, fact := range c.subCount {
+		if fact.lenReg == num || fact.startReg == num {
+			delete(c.subCount, reg)
+		}
+	}
+	delete(c.scaledStart, num)
+	for reg, fact := range c.scaledStart {
+		if fact.startReg == num {
+			delete(c.scaledStart, reg)
+		}
+	}
 	for reg, fact := range c.slack {
 		if fact.lenReg == num {
 			delete(c.slack, reg)
@@ -1339,6 +1390,9 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 		}
 		if name == "sub" {
 			pre.deriveRemaining(c, reg(0), reg(1), reg(2))
+			if lenReg, isLE := pre.le[reg(2).Num]; isLE && lenReg == reg(1).Num && reg(0).Num != 0 {
+				c.diff[reg(0).Num] = rvDiffFact{lenReg: reg(1).Num, startReg: reg(2).Num}
+			}
 			if k, isConst := pre.consts[reg(2).Num]; isConst {
 				pre.deriveSlack(c, reg(0), reg(1), k)
 			}
@@ -1446,6 +1500,15 @@ func (c *rvChecker) guardFacts(name string, left, right Register) {
 			}
 		}
 	case "bltu":
+		// `bltu rL, rS, trap` over a normalized length: the fall-through
+		// knows start <= len; `bltu rT, rN, trap` over rT = len - start:
+		// the count is at most len - start (the derived-span idiom).
+		if _, isLen := c.lenNorm[left.Num]; isLen && right.Num != 0 {
+			c.le[right.Num] = left.Num
+		}
+		if d, isDiff := c.diff[left.Num]; isDiff && right.Num != 0 {
+			c.subCount[right.Num] = rvSubFact{startReg: d.startReg, lenReg: d.lenReg}
+		}
 		if slack, isSlack := c.slack[left.Num]; isSlack {
 			// `bltu t, idx, trap` with t = len - K: the fall-through knows
 			// idx <= len - K, so idx + K <= len (Oak.RiscV.slack_guard).
@@ -1472,18 +1535,22 @@ func (c *rvChecker) guardFacts(name string, left, right Register) {
 // destination: the facts of the sources, read before the write forgets
 // them (the destination may be one of the sources).
 type rvSnapshot struct {
-	shl32      map[int]int
-	lenNorm    map[int]int
-	consts     map[int]int64
-	idx        map[int]rvIndexFact
-	scaled     map[int]rvScaledFact
-	half       map[int]rvIndexFact
-	spans      map[int]*rvSpan
-	gen        map[int]int
-	frameAddrs map[int]int64
-	lenAlias   map[int]int
-	rawDead    map[int]bool
-	regions    map[int]rvRegion
+	le          map[int]int
+	diff        map[int]rvDiffFact
+	subCount    map[int]rvSubFact
+	scaledStart map[int]rvScaledStart
+	shl32       map[int]int
+	lenNorm     map[int]int
+	consts      map[int]int64
+	idx         map[int]rvIndexFact
+	scaled      map[int]rvScaledFact
+	half        map[int]rvIndexFact
+	spans       map[int]*rvSpan
+	gen         map[int]int
+	frameAddrs  map[int]int64
+	lenAlias    map[int]int
+	rawDead     map[int]bool
+	regions     map[int]rvRegion
 }
 
 func (c *rvChecker) snapshot() rvSnapshot {
@@ -1527,7 +1594,19 @@ func (c *rvChecker) snapshot() rvSnapshot {
 	for k, v := range c.regions {
 		regions[k] = v
 	}
-	return rvSnapshot{shl32: copyInt(c.shl32), lenNorm: copyInt(c.lenNorm), consts: consts, idx: idx, scaled: scaled, half: half, spans: spans, gen: copyInt(c.gen), frameAddrs: frameAddrs, lenAlias: copyInt(c.lenAlias), rawDead: rawDead, regions: regions}
+	diff := make(map[int]rvDiffFact, len(c.diff))
+	for k, v := range c.diff {
+		diff[k] = v
+	}
+	subCount := make(map[int]rvSubFact, len(c.subCount))
+	for k, v := range c.subCount {
+		subCount[k] = v
+	}
+	scaledStart := make(map[int]rvScaledStart, len(c.scaledStart))
+	for k, v := range c.scaledStart {
+		scaledStart[k] = v
+	}
+	return rvSnapshot{le: copyInt(c.le), diff: diff, subCount: subCount, scaledStart: scaledStart, shl32: copyInt(c.shl32), lenNorm: copyInt(c.lenNorm), consts: consts, idx: idx, scaled: scaled, half: half, spans: spans, gen: copyInt(c.gen), frameAddrs: frameAddrs, lenAlias: copyInt(c.lenAlias), rawDead: rawDead, regions: regions}
 }
 
 // rawLen reports a register holding a span's raw length: the bound
@@ -1580,6 +1659,9 @@ func (pre rvSnapshot) deriveShift(c *rvChecker, name string, dest, src Register,
 		}
 		if guarded && imm >= 0 && imm < 32 {
 			c.scaled[dest.Num] = rvScaledFact{guard: guard, shift: int(imm), idxReg: src.Num, idxGen: pre.gen[src.Num]}
+		}
+		if _, isStart := pre.le[src.Num]; isStart && imm >= 0 && imm <= 4 {
+			c.scaledStart[dest.Num] = rvScaledStart{startReg: src.Num, shift: int(imm)}
 		}
 	case "srli":
 		if raw, half := pre.shl32[src.Num]; half && imm == 32 {
@@ -1642,6 +1724,9 @@ func (pre rvSnapshot) deriveRegion(c *rvChecker, dest, left, right Register) {
 		pre.deriveFrameRegion(c, dest, left, right)
 		return
 	}
+	if pre.deriveSpan(c, dest, span, offset) {
+		return
+	}
 	// The address may replace the base (`add a0, a0, t`, GCC's shape): the
 	// write already forgot the span in dest, the region takes its place.
 	guard, guarded := pre.idx[offset.Num]
@@ -1670,6 +1755,35 @@ func (pre rvSnapshot) deriveRegion(c *rvChecker, dest, left, right Register) {
 		}
 		c.regions[dest.Num] = rvRegion{size: span.elem, writable: span.writable, rawLen: span.rawLen, idxReg: idxReg, idxGen: idxGen, lanes: lanes}
 	}
+}
+
+// deriveSpan records `add rD, rB, rX` over the span at rB as the derived
+// span `subslice(v, start, n)` when rX is the start scaled by the element
+// size (or the start itself for byte elements), the start is proven at
+// most the span's length, and some rN is proven at most len - start: the
+// span at rD has the length register rN, which is also its own normalized
+// length (a value the guard admitted is below 2^32).
+func (pre rvSnapshot) deriveSpan(c *rvChecker, dest Register, span *rvSpan, offset Register) bool {
+	startReg, shift := offset.Num, 0
+	if scaled, isScaled := pre.scaledStart[offset.Num]; isScaled {
+		startReg, shift = scaled.startReg, scaled.shift
+	}
+	lenReg, isStart := pre.le[startReg]
+	if !isStart || int64(1)<<uint(shift) != span.elem || pre.lenNorm[lenReg] != span.rawLen {
+		return false
+	}
+	count := -1
+	for reg, fact := range pre.subCount {
+		if fact.startReg == startReg && fact.lenReg == lenReg && (count < 0 || reg < count) {
+			count = reg
+		}
+	}
+	if count < 0 || count == dest.Num {
+		return false
+	}
+	c.spans[dest.Num] = &rvSpan{rawLen: count, elem: span.elem, writable: span.writable}
+	c.lenNorm[count] = count
+	return true
 }
 
 // deriveFrameRegion records `add rD, base, t` as the address of one element

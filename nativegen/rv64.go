@@ -1892,6 +1892,25 @@ func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *record
 				fixed[sp.baseReg], fixed[sp.lenReg] = true, true
 				continue
 			}
+			if call, isCall := arg.(*ast.InvocationExpression); isCall && len(call.Arguments) == 3 {
+				if fn, isFn := call.Function.(*ast.Identifier); isFn && fn.Value == "subslice" {
+					// `subslice(v, start, n)` as an argument: the derived
+					// pair in two scratch registers.
+					base, err := g.alloc(scalars["u64"])
+					if err != nil {
+						return 0, err
+					}
+					length, err := g.alloc(scalars["u64"])
+					if err != nil {
+						return 0, err
+					}
+					if err := g.subsliceInto(call, target, base, length); err != nil {
+						return 0, err
+					}
+					regs = append(regs, base, length)
+					continue
+				}
+			}
 			// `view(&buf)` / `span(&buf)` over an owned array local: the
 			// callee receives the {frame address, N} pair.
 			base, length, err := g.arraySpanArgument(ident.Value, arg, target)
@@ -2700,8 +2719,16 @@ func (g *rvGenerator) lowerSpanDeclaration(s *ast.VariableDeclaration, target sp
 		local.frameLen, local.array = src.frameLen, src.array
 	case *ast.InvocationExpression:
 		fn, isIdent := v.Function.(*ast.Identifier)
+		if isIdent && fn.Value == "subslice" && len(v.Arguments) == 3 {
+			// A derived span: the pair {base + start·elem, n} under the C
+			// helper's check, in the callee-saved registers.
+			if err := g.subsliceInto(v, target, baseReg, lenReg); err != nil {
+				return err
+			}
+			break
+		}
 		if !isIdent || (fn.Value != "view" && fn.Value != "span") || len(v.Arguments) != 1 {
-			return unsupported("the span local %s from %s (only view(&buf) or span(&buf) over an owned array, or another span)", s.Name.Value, s.Value.String())
+			return unsupported("the span local %s from %s (only view(&buf), span(&buf), or subslice over a span, or another span)", s.Name.Value, s.Value.String())
 		}
 		if target.writable && fn.Value != "span" {
 			return unsupported("the span local %s: a view where a span is expected", s.Name.Value)
@@ -2733,6 +2760,87 @@ func (g *rvGenerator) lowerSpanDeclaration(s *ast.VariableDeclaration, target sp
 	delete(g.regs, s.Name.Value)
 	g.spans[s.Name.Value] = local
 	g.scopes[len(g.scopes)-1][s.Name.Value] = slotBinding{reg: -1, sp: &local}
+	return nil
+}
+
+// subsliceInto lowers `subslice(v, start, n)` over a named span into the
+// pair {baseReg, lenReg} (docs/spec/94-assembler.md §9, subslice on the
+// rv64 lane): the C helper's check first — `bltu norm, start, trap` (start
+// > len), `sub rest, norm, start`, `bltu rest, n, trap` (n > len - start)
+// — over the zero-extended start and count, then the base advanced by the
+// start scaled to the element size and the length copied. The checker
+// follows the idiom into a derived span whose length register is its own
+// normalized length (asm/rv64_check.go deriveSpan): a count the guard
+// admitted is at most len - start, below 2^32.
+func (g *rvGenerator) subsliceInto(call *ast.InvocationExpression, target span, baseReg, lenReg int) error {
+	src, isIdent := call.Arguments[0].(*ast.Identifier)
+	if !isIdent {
+		return unsupported("subslice of %s (the rv64 lane slices a named span)", call.Arguments[0].String())
+	}
+	sp, isSpan := g.spans[src.Value]
+	if !isSpan {
+		return unsupported("subslice of %s, which is not a span", src.Value)
+	}
+	if !sameElements(sp, target) || (target.writable && !sp.writable) {
+		return unsupported("subslice of %s does not fit the span type", src.Value)
+	}
+	if stride := sp.stride(); stride&(stride-1) != 0 || stride > 16 {
+		return unsupported("subslice over %d-byte elements (the derived-span idiom scales by a power of two up to 16)", stride)
+	}
+	u32 := scalars["u32"]
+	for _, bound := range call.Arguments[1:] {
+		typ, err := g.typeOf(bound, &u32)
+		if err != nil {
+			return err
+		}
+		if typ != u32 {
+			return unsupported("a subslice bound of type %s (the native subset takes u32)", typ.name)
+		}
+	}
+	start, err := g.exprAs(call.Arguments[1], u32)
+	if err != nil {
+		return err
+	}
+	S := rvReg(start)
+	g.emit("slli", S, S, imm(32))
+	g.emit("srli", S, S, imm(32))
+	// The count, zero-extended in its scratch register, lands in the length
+	// register by one write — the guard names that register, and a
+	// register written once keeps its facts across the labels of a loop
+	// (asm/rv64_check.go forgetGuards).
+	count, err := g.exprAs(call.Arguments[2], u32)
+	if err != nil {
+		return err
+	}
+	C := rvReg(count)
+	g.emit("slli", C, C, imm(32))
+	g.emit("srli", C, C, imm(32))
+	L := rvReg(lenReg)
+	g.emit("mv", L, C)
+	g.release(count)
+	g.usedTrap = true
+	g.emit("bltu", rvReg(sp.norm), S, asm.Symbol{Name: g.trap})
+	rest, err := g.alloc(scalars["u64"])
+	if err != nil {
+		return err
+	}
+	g.emit("sub", rvReg(rest), rvReg(sp.norm), S)
+	g.emit("bltu", rvReg(rest), L, asm.Symbol{Name: g.trap})
+	g.release(rest)
+	// The start scaled into a fresh register: the guards' facts are keyed
+	// by the start register, which a scaling in place would forget.
+	scaled := start
+	if shift := log2Bytes(int(sp.stride())); shift > 0 {
+		if scaled, err = g.alloc(scalars["u64"]); err != nil {
+			return err
+		}
+		g.emit("slli", rvReg(scaled), S, imm(int64(shift)))
+	}
+	g.emit("add", rvReg(baseReg), rvReg(sp.baseReg), rvReg(scaled))
+	if scaled != start {
+		g.release(scaled)
+	}
+	g.release(start)
 	return nil
 }
 
