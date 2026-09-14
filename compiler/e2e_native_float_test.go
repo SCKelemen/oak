@@ -132,6 +132,13 @@ func TestE2ENativeFloats(t *testing.T) {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
+	// The float span reduction is proven through the loop recognizer: the
+	// element loads through the s view and the accumulator in d8
+	// (docs/spec/94-assembler.md §8, floats in loop bodies); fill_f64
+	// stores in its loop body and stays trusted, like every storing loop.
+	if !strings.Contains(joined, "asm unit total: proven") {
+		t.Errorf("total was not proven by the verifier; diagnostics:\n%s", joined)
+	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_floats_c", New().WithSource("floats.oak", nativeFloatProgram)); abnormal || code != 42 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)
 	}

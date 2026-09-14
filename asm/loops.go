@@ -338,21 +338,28 @@ type loopEvent struct {
 	width  map[string]int
 	cond   *term            // continue condition over the fresh symbols (1/0)
 	next   map[string]*term // value after one iteration, over the fresh symbols
+	// floats marks the Oak side's f32/f64 locals: only they pair with a
+	// vector register half or an RV64 f register zero-extended.
+	floats map[string]bool
+	// writes: the stores one iteration makes through each span, over the
+	// fresh symbols and the iteration's memory (the loop's marker), each
+	// under the body path condition it happens on. The coupling proof
+	// compares the two sides' stores pairwise (verifyLoops).
+	writes map[string][]*spanWrite
 }
 
 func (ev *loopEvent) freshName(v string) string { return fmt.Sprintf("loop%d.%s", ev.index, v) }
 
 // loopEvent summarizes the top-level asm loop whose exit branch was just
 // reached with an undecided condition, then continues past the exit.
-func (x *pathExecutor) loopEvent(shape loopShape, exit Instruction, state *symbolicState) (*term, string, bool) {
+func (x *pathExecutor) loopEvent(shape loopShape, exit Instruction, state *symbolicState) (*term, *pathEffects, string, bool) {
 	post, reason, ok := x.summarizeLoop(shape, exit, state)
 	if !ok {
-		return nil, reason, false
+		return nil, nil, reason, false
 	}
-	// The cells written past the exit belong to a body the verdict trusts
-	// (package state around a data-dependent loop): the result suffices.
-	result, _, reason, ok := x.run(shape.exitLabel, post)
-	return result, reason, ok
+	// The effects are the run's past the exit: the loop's memory markers
+	// and what the code after the loop stores.
+	return x.run(shape.exitLabel, post)
 }
 
 // summarizeLoop records the loop event and returns the state past the
@@ -419,6 +426,10 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// v register or, spilled, in a sixteen-byte slot. Each is two 64-bit
 	// symbols (its halves; a slot per eight bytes).
 	writtenV := map[int]bool{}
+	// The RV64 lane's floating-point registers the body writes: each one
+	// symbol at the width of the pattern it holds at the header (the file
+	// holds patterns at the width of the instruction that wrote them).
+	writtenF := map[int]bool{}
 	// writtenSlots: the frame slots the body stores, by address, with the
 	// store's width (4 or 8 bytes: a spilled w register or an x one); a
 	// slot stored at two widths, or two stores overlapping, is refused.
@@ -428,7 +439,7 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		if !isInstr || isConditionalBranch(instr.Mnemonic) || isUnconditionalJump(instr.Mnemonic) {
 			continue
 		}
-		if isFrameMemory(instr) && (isStoreMnemonic(instr.Mnemonic) || rv64Stores[instr.Mnemonic] != 0) {
+		if isFrameMemory(instr) && (isStoreMnemonic(instr.Mnemonic) || rv64Stores[instr.Mnemonic] != 0 || rv64FloatStores[instr.Mnemonic] != 0) {
 			mem := instr.Operands[len(instr.Operands)-1].(Memory)
 			if mem.Mode != MemOffset {
 				return nil, "a frame access moving sp in a loop body", false
@@ -436,6 +447,9 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 			addr := -state.disp + mem.Offset
 			for _, reg := range registerOperands(instr.Operands[:len(instr.Operands)-1]) {
 				size := int64(rv64Stores[instr.Mnemonic])
+				if size == 0 {
+					size = int64(rv64FloatStores[instr.Mnemonic])
+				}
 				if size == 0 {
 					size = memorySizeReg(instr.Mnemonic, reg)
 					if isPairAccess(instr.Mnemonic) {
@@ -467,11 +481,16 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 			}
 			continue
 		}
-		if isStoreMnemonic(instr.Mnemonic) || rv64Stores[instr.Mnemonic] != 0 {
+		if isStoreMnemonic(instr.Mnemonic) || rv64Stores[instr.Mnemonic] != 0 || rv64FloatStores[instr.Mnemonic] != 0 {
 			continue
 		}
-		if dest, isReg := instr.Operands[0].(Register); isReg && dest.Class == ClassV {
-			writtenV[dest.Num] = true
+		if dest, isReg := instr.Operands[0].(Register); isReg {
+			switch dest.Class {
+			case ClassV:
+				writtenV[dest.Num] = true
+			case ClassRV64F:
+				writtenF[dest.Num] = true
+			}
 		}
 	}
 	ev := &loopEvent{index: len(x.loops) + 1, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}}
@@ -512,27 +531,30 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		}
 		freshState.writeVec(reg, vecOfLanes(halves, 64))
 	}
-	slots := make([]int64, 0, len(writtenSlots))
-	for addr := range writtenSlots {
-		slots = append(slots, addr)
+	scratchF := map[int]bool{}
+	fregs := make([]int, 0, len(writtenF))
+	for reg := range writtenF {
+		fregs = append(fregs, reg)
 	}
-	sort.Slice(slots, func(i, j int) bool { return slots[i] < slots[j] })
-	if freshState.frame == nil {
-		freshState.frame = map[int64]frameSlot{}
-	}
-	for _, addr := range slots {
-		size := writtenSlots[addr]
-		name := fmt.Sprintf("s%d:%d", addr, size)
-		fresh := paramTerm(ev.freshName(name), int(size)*8)
-		x.declared[fresh.name] = int(size) * 8
-		value, bound := state.loadSlot(addr, size)
-		freshState.storeSlot(addr, fresh, size)
+	sort.Ints(fregs)
+	for _, reg := range fregs {
+		// A callee-saved register (fs0–fs11) read before any write carries
+		// the caller's pattern (entry.fN), as state.read binds it.
+		value, bound := state.read(Register{Class: ClassRV64F, Num: reg, Lane: -1})
+		width := 64
+		if bound {
+			width = value.width
+		}
+		name := fmt.Sprintf("f%d", reg)
+		fresh := paramTerm(ev.freshName(name), width)
+		x.declared[fresh.name] = width
+		freshState.write(Register{Class: ClassRV64F, Num: reg, Lane: -1}, fresh)
 		if !bound {
-			scratchSlots[addr] = true
+			scratchF[reg] = true
 			continue
 		}
 		ev.vars = append(ev.vars, name)
-		ev.width[name] = int(size) * 8
+		ev.width[name] = width
 		ev.header[name] = value
 		ev.fresh[name] = fresh
 	}
@@ -570,6 +592,56 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		x.declared[fresh.name] = width
 		freshState.regs[reg] = zeroExtend(fresh, 64)
 	}
+	// A store through a frame address register at a data-dependent index
+	// (`strb wV, [xB, wI, uxtw]`, the tail copy) reaches slots no syntactic
+	// scan names: the body runs once on the fresh register state, before
+	// the slots' symbols exist, and every slot it changes or creates joins
+	// the loop-carried slots at its width (a body with inner loops or
+	// calls is not probed: the probe would summarize them a second time).
+	if x.hasIndexedFrameStore(shape) && !x.hasInnerLoopOrCall(shape) {
+		probe := freshState.clone()
+		if ends, _, ok := x.runBody(shape, probe); ok {
+			for _, end := range ends {
+				for addr, slot := range end.state.frame {
+					before, held := state.frame[addr]
+					if held && before.width == slot.width && before.value == slot.value {
+						continue
+					}
+					if _, known := writtenSlots[addr]; known {
+						continue
+					}
+					if !held {
+						continue // a scratch piece the body created; not carried
+					}
+					writtenSlots[addr] = int64(slot.width)
+				}
+			}
+		}
+	}
+	slots := make([]int64, 0, len(writtenSlots))
+	for addr := range writtenSlots {
+		slots = append(slots, addr)
+	}
+	sort.Slice(slots, func(i, j int) bool { return slots[i] < slots[j] })
+	if freshState.frame == nil {
+		freshState.frame = map[int64]frameSlot{}
+	}
+	for _, addr := range slots {
+		size := writtenSlots[addr]
+		name := fmt.Sprintf("s%d:%d", addr, size)
+		fresh := paramTerm(ev.freshName(name), int(size)*8)
+		x.declared[fresh.name] = int(size) * 8
+		value, bound := state.loadSlot(addr, size)
+		freshState.storeSlot(addr, fresh, size)
+		if !bound {
+			scratchSlots[addr] = true
+			continue
+		}
+		ev.vars = append(ev.vars, name)
+		ev.width[name] = int(size) * 8
+		ev.header[name] = value
+		ev.fresh[name] = fresh
+	}
 	// The continue condition: no exit test taken along the header's paths,
 	// each test evaluated on the fresh state after the header instructions
 	// before it (headerCondition).
@@ -579,6 +651,19 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	}
 	ev.cond = cond
 	_ = exit
+	// The writable span parameters (`[*]T`, the only spans a body can
+	// store through) take the loop's memory marker before the iteration
+	// runs, so the body's reads see the iteration's unknown memory and its
+	// stores layer on it; the Oak side marks the same parameters from the
+	// same signature (loopEvent).
+	storedSpans := map[string]bool{}
+	writtenSpans := writableSpanParams(x.fn, x.spans)
+	for _, span := range writtenSpans {
+		storedSpans[span] = true
+	}
+	for _, span := range writtenSpans {
+		freshState.writes = appendMarker(freshState.writes, span, ev.index)
+	}
 	// One iteration of the body on the fresh state: its paths (a branch
 	// inside the body forks on its condition; an inner loop is summarized
 	// in place) all reach the back edge and merge register by register
@@ -588,6 +673,31 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	x.loopStack = x.loopStack[:len(x.loopStack)-1]
 	if !ok {
 		return nil, reason + " (in a loop body)", false
+	}
+	// The iteration's stores, each path's under its condition, in path
+	// order; the state past the loop keeps the marker alone (the loop's
+	// memory is the iteration's unknown memory, which the coupling proof
+	// identifies with the Oak side's).
+	for _, span := range writtenSpans {
+		before := len(freshState.writes[span])
+		var stores []*spanWrite
+		for _, end := range ends {
+			log := end.state.writes[span]
+			if len(log) > before {
+				stores = append(stores, guardWrites(log[before:], end.cond)...)
+			}
+		}
+		if ev.writes == nil {
+			ev.writes = map[string][]*spanWrite{}
+		}
+		ev.writes[span] = stores
+	}
+	for _, end := range ends {
+		for span, log := range end.state.writes {
+			if !storedSpans[span] && len(log) > len(freshState.writes[span]) {
+				return nil, "a store through a span that is not a writable parameter (in a loop body)", false
+			}
+		}
 	}
 	for _, name := range ev.vars {
 		merged := ends[len(ends)-1].valueOfVar(name, freshState)
@@ -609,11 +719,34 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	for reg := range scratchV {
 		delete(freshState.vregs, reg)
 	}
+	for reg := range scratchF {
+		delete(freshState.fregs, reg)
+	}
 	for addr := range scratchSlots {
 		delete(freshState.frame, addr)
 	}
 	freshState.flags = nil
 	return freshState, "", true
+}
+
+// writableSpanParams names the function's writable span parameters
+// (`[*]T`) that the executor knows as spans, sorted: the spans a loop's
+// body may store through, which take the loop's memory marker.
+func writableSpanParams(fn *Function, spans map[string]int64) []string {
+	var out []string
+	if fn == nil || fn.Signature == nil {
+		return out
+	}
+	for _, param := range fn.Signature.Parameters {
+		if param == nil || param.Name == nil || !isWritableSpan(param.Type) {
+			continue
+		}
+		if _, known := spans[param.Name.Value]; known {
+			out = append(out, param.Name.Value)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // summarizeCallInLoop is summarizeCall inside a loop's header or body: the
@@ -742,7 +875,8 @@ func (e bodyEnd) valueOf(reg int, header *symbolicState) *term {
 
 // valueOfVar is a loop-carried variable's value at the end of the path:
 // a general register (`r9`), a half of a vector register (`v8.lo`,
-// `v8.hi`), or a frame slot with its width in bytes (`s-144:8`, `s-100:4`).
+// `v8.hi`), an RV64 floating-point register (`f8`), or a frame slot with
+// its width in bytes (`s-144:8`, `s-100:4`).
 func (e bodyEnd) valueOfVar(name string, header *symbolicState) *term {
 	var reg int
 	var side string
@@ -751,6 +885,12 @@ func (e bodyEnd) valueOfVar(name string, header *symbolicState) *term {
 	case len(name) > 1 && name[0] == 'r':
 		fmt.Sscanf(name, "r%d", &reg)
 		return e.valueOf(reg, header)
+	case len(name) > 1 && name[0] == 'f':
+		fmt.Sscanf(name, "f%d", &reg)
+		if value, written := e.state.fregs[reg]; written {
+			return value
+		}
+		return header.fregs[reg]
 	case len(name) > 1 && name[0] == 'v':
 		fmt.Sscanf(name, "v%d.%s", &reg, &side)
 		value, bound := e.state.vregs[reg]
@@ -770,6 +910,37 @@ func (e bodyEnd) valueOfVar(name string, header *symbolicState) *term {
 		value, _ := header.loadSlot(addr, size)
 		return value
 	}
+}
+
+// hasIndexedFrameStore reports a store in the body through an x register
+// with a register index (a frame array element at a data-dependent index;
+// registerFrameMemory decides at run time whether the base is a frame
+// address).
+func (x *pathExecutor) hasIndexedFrameStore(shape loopShape) bool {
+	for i := shape.bodyStart; i < shape.bodyEnd; i++ {
+		instr, isInstr := x.items[i].(Instruction)
+		if !isInstr || !isStoreMnemonic(instr.Mnemonic) || len(instr.Operands) == 0 {
+			continue
+		}
+		if mem, isMem := instr.Operands[len(instr.Operands)-1].(Memory); isMem && mem.Base.Class == ClassX && mem.Index != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// hasInnerLoopOrCall reports a recognized inner loop exit or a call inside
+// the body.
+func (x *pathExecutor) hasInnerLoopOrCall(shape loopShape) bool {
+	for i := shape.bodyStart; i < shape.bodyEnd; i++ {
+		if _, isExit := x.loopExits[i]; isExit {
+			return true
+		}
+		if instr, isInstr := x.items[i].(Instruction); isInstr && (instr.Mnemonic == "bl" || instr.Mnemonic == "call") {
+			return true
+		}
+	}
+	return false
 }
 
 // bodyPathBudget bounds the paths one loop body may fork into.
@@ -830,7 +1001,9 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 				}
 				if isTrapBlock(x.items, target) {
 					// The trap arm delivers no result; the body continues on
-					// the fall-through path, outside the trapping inputs.
+					// the fall-through path, outside the trapping inputs —
+					// under the index bound the guard establishes.
+					st.noteTrapGuard(instr)
 					pc++
 					continue
 				}
@@ -871,6 +1044,15 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 					continue
 				}
 				if !isLoad(instr.Mnemonic) {
+					// A store through a span: into the iteration's memory
+					// (the loop's marker), recorded for the coupling proof.
+					if handled, reason, ok := x.spanStore(instr, st); handled {
+						if !ok {
+							return nil, reason, false
+						}
+						pc++
+						continue
+					}
 					return nil, "a store in a loop body", false
 				}
 				if dest, isReg := instr.Operands[0].(Register); isReg && dest.Class == ClassV {
@@ -889,8 +1071,8 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 					// stores stay outside a summarized body as on AArch64.
 					base := rv64Base(instr)
 					if len(base.Operands) == 2 {
-						if mem, isMem := base.Operands[1].(Memory); isMem && mem.Base.Class != ClassSP && rv64Stores[base.Mnemonic] != 0 {
-							return nil, "a store in a loop body", false
+						if mem, isMem := base.Operands[1].(Memory); isMem && mem.Base.Class != ClassSP && rv64FloatStores[base.Mnemonic] != 0 {
+							return nil, "a floating-point store in a loop body", false
 						}
 					}
 					if reason, ok := x.stepRV64(instr, st); !ok {
@@ -982,6 +1164,9 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	for _, name := range carried {
 		local, isLocal := lo.locals[name]
 		if !isLocal {
+			if _, isSpan := lo.spans[name]; isSpan {
+				continue // a store through a span: the loop's memory, below
+			}
 			return fmt.Sprintf("an assignment to %s (not a local)", name), false
 		}
 		if local.agg != nil {
@@ -1008,10 +1193,32 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		ev.vars = append(ev.vars, name)
 		ev.width[name] = local.width
 		ev.header[name] = local.value
+		if _, isFloat := lo.floats[name]; isFloat {
+			if ev.floats == nil {
+				ev.floats = map[string]bool{}
+			}
+			ev.floats[name] = true
+		}
 		fresh := paramTerm(ev.freshName(name), local.width)
 		lo.fresh[fresh.name] = local.width
 		ev.fresh[name] = fresh
 		local.value = fresh
+	}
+	// The spans the body stores through take the loop's memory marker
+	// (asm/effects.go): the body reads the iteration's unknown memory and
+	// its stores layer on it; the asm side places the same marker.
+	storedSpans := make([]string, 0, len(lo.writableSpans))
+	for span := range lo.writableSpans {
+		if _, isSpan := lo.spans[span]; isSpan {
+			storedSpans = append(storedSpans, span)
+		}
+	}
+	sort.Strings(storedSpans)
+	before := map[string]int{}
+	for _, span := range storedSpans {
+		lo.writes = appendMarker(lo.writes, span, ev.index)
+		lo.spans[loopMemoryName(ev.index, span)] = lo.spans[span] // the unknown memory's element width
+		before[span] = len(lo.writes[span])
 	}
 	cond, reason, ok := lo.lowerCondition(loop.Condition)
 	if !ok {
@@ -1024,6 +1231,16 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	lo.loopStack = lo.loopStack[:len(lo.loopStack)-1]
 	if !ok {
 		return reason, false
+	}
+	// The iteration's stores, for the coupling proof; past the loop the
+	// span's contents are the marker's unknown memory.
+	for _, span := range storedSpans {
+		log := lo.writes[span]
+		if ev.writes == nil {
+			ev.writes = map[string][]*spanWrite{}
+		}
+		ev.writes[span] = append([]*spanWrite{}, log[before[span]:]...)
+		lo.writes[span] = log[:before[span]:before[span]]
 	}
 	for _, name := range ev.vars {
 		if local, isLocal := lo.locals[name]; isLocal && local.agg == nil {
@@ -1167,8 +1384,20 @@ type coupling struct {
 	reg   string
 	a     int
 	b     *term
-	show  string
 	ext   string // "" (same width), "zext" or "sext": a 64-bit register carrying a widened 32-bit variable
+}
+
+// show spells the coupling for the verdict (built only for the couplings
+// chosen: a candidate's offset term may be large).
+func (c coupling) show() string {
+	switch {
+	case c.a == 1 && c.b.kind == termConst && c.b.value == 0:
+		return c.local + "↔" + c.reg
+	case c.a == 1:
+		return fmt.Sprintf("%s = %s + %s", c.reg, c.local, c.b)
+	default:
+		return fmt.Sprintf("%s = %s - %s", c.reg, c.b, c.local)
+	}
 }
 
 // widen applies a coupling's widening to a 32-bit term.
@@ -1211,9 +1440,21 @@ func (s loopSlot) pack(values map[string]*term) *term {
 // `root[0]`..`root[n-1]` of one aggregate, all of width w dividing 64 and
 // numbered without gaps, form groups of 64/w consecutive lanes when they
 // fill whole groups; any other variable is a slot of its own.
-func laneSlots(events []*loopEvent) []loopSlot {
+func laneSlots(events []*loopEvent, machine []*loopEvent) []loopSlot {
 	var slots []loopSlot
 	for k, ev := range events {
+		// The lanes stay single when the machine event holds symbols at the
+		// lane's width — a byte array in one-byte frame slots — and are
+		// packed when it holds them only as wider words (vector halves).
+		singles := func(w, lanes int) bool {
+			count := 0
+			for _, name := range machine[k].vars {
+				if machine[k].width[name] == w {
+					count++
+				}
+			}
+			return count >= lanes
+		}
 		type lane struct {
 			index int
 			local string
@@ -1252,7 +1493,7 @@ func laneSlots(events []*loopEvent) []loopSlot {
 			if w > 0 && 64%w == 0 {
 				per = 64 / w
 			}
-			grouped := per > 0 && len(lanes)%per == 0
+			grouped := per > 1 && len(lanes)%per == 0 && !singles(w, len(lanes))
 			for i, l := range lanes {
 				if l.index != i || ev.width[l.local] != w {
 					grouped = false
@@ -1299,9 +1540,15 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			return trusted("the data-dependent loops nest differently on the two sides")
 		}
 	}
-	// Witnesses: concrete inputs decide every loop.
+	// Witnesses: concrete inputs decide every loop. A unit function (no
+	// result term: the span memories are the comparison) has none here;
+	// its proof is the coupling alone.
 	checked := 0
-	for _, env := range loopWitnessInputs(fn, sig) {
+	witnessInputs := loopWitnessInputs(fn, sig)
+	if asmTerm == nil {
+		witnessInputs = nil
+	}
+	for _, env := range witnessInputs {
 		if !lowering.inDomain(env) {
 			continue // a union tag outside its variants: not a well-typed input
 		}
@@ -1329,7 +1576,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		checked++
 	}
-	if checked == 0 {
+	if checked == 0 && asmTerm != nil {
 		return trusted("no concrete input decided the loops within budget")
 	}
 	evidence := func(reason string) Verdict {
@@ -1345,7 +1592,19 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		return lowering.declaredWidth(name)
 	}
+	// Every implication of this proof spends from one budget.
+	budget := &nodeBudget{remaining: loopProofNodeBudget}
+	implies := func(premise, a, b *term) (bool, bool) {
+		return impliesEqualWithin(premise, a, b, widthOfName, budget)
+	}
 
+	// The coupling search substitutes into and walks the events' terms for
+	// every candidate; terms past the size budget (a body of summarized
+	// calls to large functions) leave the loop as evidence rather than
+	// minutes of search.
+	if nodes := loopTermNodes(asmLoops, oakLoops); nodes > loopTermNodeBudget {
+		return evidence(fmt.Sprintf("the loops' terms hold %d nodes, past the coupling's budget of %d", nodes, loopTermNodeBudget))
+	}
 	// Coupling. A candidate pairs an Oak loop variable x of event k with a
 	// register r of the same width of the matching asm event through an
 	// affine relation r = a*x + b, a ∈ {+1, -1}, with b read off the header
@@ -1363,7 +1622,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// one 64-bit machine symbol: a vector register half or a frame slot
 	// holds the lanes packed, lane k at bits k*w, so the coupling pairs the
 	// pack of the group with the symbol (asm/verify_vector.go packLanes).
-	slots := laneSlots(oakLoops)
+	slots := laneSlots(oakLoops, asmLoops)
 	// Slots whose one-iteration value mentions fewer of the event's own
 	// variables come first: their register's value after one iteration then
 	// mentions only coupled symbols as soon as they are paired, so a wrong
@@ -1381,7 +1640,12 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		return count
 	}
-	sort.SliceStable(slots, func(i, j int) bool { return dependencies(slots[i]) < dependencies(slots[j]) })
+	sort.SliceStable(slots, func(i, j int) bool {
+		if slots[i].event != slots[j].event {
+			return slots[i].event < slots[j].event
+		}
+		return dependencies(slots[i]) < dependencies(slots[j])
+	})
 	// Invariant candidates per event: the guard weakened to its closure
 	// (`x < e` gives `x ≤ e`) when it holds at the header and one iteration
 	// preserves it under the guard; else the trivial invariant.
@@ -1404,8 +1668,8 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			atHeader[ev.freshName(local)] = ev.header[local]
 			afterBody[ev.freshName(local)] = ev.next[local]
 		}
-		holds, decidedEntry := impliesEqual(constTerm(1, 1), substitute(inv, atHeader), constTerm(1, 1), widthOfName)
-		preserved, decidedStep := impliesEqual(binaryTerm("and", truncate(inv, 1), truncate(guard, 1)), substitute(inv, afterBody), constTerm(1, 1), widthOfName)
+		holds, decidedEntry := implies(constTerm(1, 1), substitute(inv, atHeader), constTerm(1, 1))
+		preserved, decidedStep := implies(binaryTerm("and", truncate(inv, 1), truncate(guard, 1)), substitute(inv, afterBody), constTerm(1, 1))
 		if decidedEntry && holds && decidedStep && preserved {
 			invariants[k] = truncate(inv, 1)
 		}
@@ -1447,12 +1711,15 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	used := map[string]bool{} // asm fresh symbol names already paired
 	sigma := map[string]*term{}
 	var failure string
-	candidatesFor := func(s loopSlot) []coupling {
+	// candidatesFor lists the pairings open to a slot; taken names the
+	// symbols other slots hold, which a conflict-directed search charges to
+	// the depths that took them when no candidate is left.
+	candidatesFor := func(s loopSlot) (out []coupling, taken []string) {
 		oakEv, asmEv := oakLoops[s.event], asmLoops[s.event]
 		hx := s.pack(oakEv.header)
-		var out []coupling
 		for _, reg := range asmEv.vars {
 			if used[asmEv.freshName(reg)] {
+				taken = append(taken, asmEv.freshName(reg))
 				continue
 			}
 			// A 64-bit register may carry a 32-bit Oak variable widened (the
@@ -1462,6 +1729,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			// widening is a candidate image; the coupling is r = ext(x) + b at
 			// 64 bits and one iteration must preserve it. A lane group is
 			// paired at its packed width, as r = pack(x) + b only.
+			if strings.HasPrefix(reg, "f") && !oakEv.floats[s.name] {
+				continue // the RV64 float file holds float locals only
+			}
 			var widenings []string
 			signs := []int{1, -1}
 			switch {
@@ -1469,6 +1739,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				widenings = []string{""}
 			case len(s.locals) == 1 && asmEv.width[reg] == 64 && s.width() == 32 && strings.HasPrefix(reg, "r"):
 				widenings = []string{"zext", "sext"}
+			case len(s.locals) == 1 && oakEv.floats[s.name] && asmEv.width[reg] == 64 && s.width() == 32 && (strings.HasPrefix(reg, "v") || strings.HasPrefix(reg, "f")):
+				// An f32 local in the low lane of a v register (a scalar
+				// write zeroes the rest) or in an RV64 f register (the file's
+				// low-bits convention): zero-extended only.
+				widenings = []string{"zext"}
 			default:
 				continue
 			}
@@ -1497,19 +1772,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 					if !invariant {
 						continue
 					}
-					show := s.name + "↔" + reg
-					switch {
-					case a == 1 && b.kind == termConst && b.value == 0:
-					case a == 1:
-						show = fmt.Sprintf("%s = %s + %s", reg, s.name, b)
-					default:
-						show = fmt.Sprintf("%s = %s - %s", reg, b, s.name)
-					}
-					out = append(out, coupling{event: s.event, local: s.name, reg: reg, a: a, b: b, show: show, ext: ext})
+					out = append(out, coupling{event: s.event, local: s.name, reg: reg, a: a, b: b, ext: ext})
 				}
 			}
 		}
-		return out
+		return out, taken
 	}
 	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
 	// resolved: the term mentions no asm loop symbol still to be coupled.
@@ -1527,13 +1794,49 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		return true
 	}
-	// pendingRefuted prunes the search: the one-iteration obligation of a
-	// chosen slot, and an event's continue-condition agreement, are checked
-	// on valuations as soon as their asm side mentions only coupled symbols
-	// (the leaf would find the same refutation after every completion
-	// below). Slots verified here are remembered until their choice is
-	// undone.
+	// verified: the slots whose one-iteration obligation a valuation pass
+	// has already checked under the current choices (pendingRefuted).
 	verified := map[string]bool{}
+	// depthOf: the search depth at which each asm symbol was paired, for
+	// the conflict sets of conflict-directed backjumping.
+	depthOf := map[string]int{}
+	// conflictOf is the set of depths whose choices an obligation depends
+	// on: the slots owning the asm symbols its asm side mentions.
+	// An asm loop symbol the obligation mentions that no slot has paired
+	// (a register that mirrors a variable, chosen for it while the loop's
+	// own register went unpaired) could be taken by a slot at any depth:
+	// such a failure depends on every depth, so the search backtracks to
+	// each of them rather than passing the failure up.
+	conflictOf := func(terms ...*term) map[int]bool {
+		mentioned := map[string]bool{}
+		for _, t := range terms {
+			collectParams(t, mentioned)
+		}
+		set := map[int]bool{}
+		unpairedEvents := map[int]bool{}
+		for name := range mentioned {
+			if depth, paired := depthOf[name]; paired {
+				set[depth] = true
+				continue
+			}
+			var k int
+			var reg string
+			if n, _ := fmt.Sscanf(name, "loop%d.%s", &k, &reg); n == 2 && k >= 1 && k <= len(asmLoops) {
+				if _, isVar := asmLoops[k-1].width[reg]; isVar {
+					unpairedEvents[k-1] = true
+				}
+			}
+		}
+		if len(unpairedEvents) > 0 {
+			// The slots of the same event could have taken the symbol.
+			for _, depth := range depthOf {
+				if depth < len(slots) && unpairedEvents[slots[depth].event] {
+					set[depth] = true
+				}
+			}
+		}
+		return set
+	}
 	// preservation is slot s's one-iteration obligation under coupling c
 	// and the current substitution: (premise, Oak side, asm side, whether
 	// the asm side mentions only coupled symbols).
@@ -1548,7 +1851,13 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		return bodyPremise(s.event, sigma, true), next, asmNext, resolved(asmNext)
 	}
-	pendingRefuted := func() (refuted bool, newly []string) {
+	// pendingRefuted prunes the search: the one-iteration obligation of a
+	// chosen slot, and an event's continue-condition agreement, are checked
+	// on valuations as soon as their asm side mentions only coupled symbols
+	// (the leaf would find the same refutation after every completion
+	// below). Slots verified here are remembered until their choice is
+	// undone. A refutation names the depths it depends on.
+	pendingRefuted := func() (conflict map[int]bool, newly []string) {
 		for _, s := range slots {
 			c, isChosen := chosen[s.key]
 			if !isChosen || verified[s.key] {
@@ -1560,9 +1869,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			}
 			if refutedByCoupling(premise, next, asmNext, widthOfName) {
 				if trace {
-					fmt.Fprintf(os.Stderr, "verify %s: a valuation refutes one iteration preserving %s\n", fn.Name, c.show)
+					fmt.Fprintf(os.Stderr, "verify %s: a valuation refutes one iteration preserving %s\n", fn.Name, c.show())
 				}
-				return true, newly
+				conflict = conflictOf(asmLoops[s.event].next[c.reg])
+				conflict[depthOf[asmLoops[s.event].freshName(c.reg)]] = true
+				return conflict, newly
 			}
 			verified[s.key] = true
 			newly = append(newly, s.key)
@@ -1573,10 +1884,10 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				if trace {
 					fmt.Fprintf(os.Stderr, "verify %s: a valuation refutes loop %d's continue conditions agreeing\n", fn.Name, k+1)
 				}
-				return true, newly
+				return conflictOf(asmLoops[k].cond), newly
 			}
 		}
-		return false, newly
+		return nil, newly
 	}
 	// Viability first: a slot none of whose candidates survives its own
 	// obligation — no symbol of its width in the event, or every pairing
@@ -1586,7 +1897,8 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	for _, s := range slots {
 		viable := false
 		var last string
-		for _, c := range candidatesFor(s) {
+		candidates, _ := candidatesFor(s)
+		for _, c := range candidates {
 			asmName := asmLoops[s.event].freshName(c.reg)
 			sigma[asmName] = widen(s.pack(oakLoops[s.event].fresh), c.ext)
 			if c.a == 1 {
@@ -1600,7 +1912,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				viable = true
 				break
 			}
-			last = c.show
+			last = c.show()
 		}
 		if !viable {
 			if last == "" {
@@ -1610,22 +1922,33 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 	}
 	visited := 0
-	var search func(i int) bool
-	search = func(i int) bool {
+	// The search is conflict-directed: a failure below returns the depths
+	// its refutation depended on, and a level whose choice is not among
+	// them passes the failure up without trying its other candidates (the
+	// sixteen slots of a byte array between an accumulator and the register
+	// it was wrongly paired with are never re-enumerated).
+	var search func(i int) (bool, map[int]bool)
+	search = func(i int) (bool, map[int]bool) {
 		visited++
 		if visited > couplingSearchBudget {
 			failure = "the coupling search exceeded its budget"
-			return false
+			return false, nil
 		}
 		if i == len(slots) {
 			for k := range oakLoops {
 				oakEv, asmEv := oakLoops[k], asmLoops[k]
-				if equal, decided := impliesEqual(bodyPremise(k, sigma, false), substitute(oakEv.cond, sigma), substitute(asmEv.cond, sigma), widthOfName); !decided || !equal {
+				if equal, decided := implies(bodyPremise(k, sigma, false), substitute(oakEv.cond, sigma), substitute(asmEv.cond, sigma)); !decided || !equal {
 					failure = fmt.Sprintf("loop %d's continue conditions were not proven equal", k+1)
 					if trace {
 						fmt.Fprintf(os.Stderr, "verify %s: %s (decided=%v)\n  oak: %s\n  asm: %s\n  premise: %s\n", fn.Name, failure, decided, substitute(oakEv.cond, sigma), substitute(asmEv.cond, sigma), bodyPremise(k, sigma, false))
 					}
-					return false
+					if !decided {
+						// Beyond the node budget under this pairing; another
+						// pairing may decide (the proof's own budget,
+						// nodeBudget, bounds the search).
+						failure += " (the bit-level decision exceeded its node budget)"
+					}
+					return false, conflictOf(asmEv.cond)
 				}
 				premise := bodyPremise(k, sigma, true)
 				for _, s := range slots {
@@ -1641,25 +1964,38 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 					} else {
 						next = binaryTerm("sub", c.b, next)
 					}
-					if equal, decided := impliesEqual(premise, next, substitute(asmEv.next[c.reg], sigma), widthOfName); !decided || !equal {
-						failure = fmt.Sprintf("one iteration of loop %d was not proven to preserve %s", k+1, c.show)
+					if equal, decided := implies(premise, next, substitute(asmEv.next[c.reg], sigma)); !decided || !equal {
+						failure = fmt.Sprintf("one iteration of loop %d was not proven to preserve %s", k+1, c.show())
 						if trace {
 							fmt.Fprintf(os.Stderr, "verify %s: %s (decided=%v)\n  oak next: %s\n  asm next: %s\n", fn.Name, failure, decided, next, substitute(asmEv.next[c.reg], sigma))
 						}
-						return false
+						if !decided {
+							failure += " (the bit-level decision exceeded its node budget)"
+						}
+						conflict := conflictOf(asmEv.next[c.reg])
+						conflict[depthOf[asmEv.freshName(c.reg)]] = true
+						return false, conflict
 					}
 				}
 			}
-			return true
+			return true, nil
 		}
 		s := slots[i]
-		for _, c := range candidatesFor(s) {
+		total := map[int]bool{}
+		candidates, taken := candidatesFor(s)
+		// The symbols other slots hold would have been candidates here:
+		// their depths are part of any failure of this slot.
+		for _, name := range taken {
+			total[depthOf[name]] = true
+		}
+		for _, c := range candidates {
 			asmName := asmLoops[s.event].freshName(c.reg)
 			if trace {
-				fmt.Fprintf(os.Stderr, "verify %s: search depth %d: %s\n", fn.Name, i, c.show)
+				fmt.Fprintf(os.Stderr, "verify %s: search depth %d: %s\n", fn.Name, i, c.show())
 			}
 			used[asmName] = true
 			chosen[s.key] = c
+			depthOf[asmName] = i
 			// r = a*x + b: the register's fresh symbol expressed for x (the
 			// pack of the lanes' symbols for a group).
 			x := widen(s.pack(oakLoops[s.event].fresh), c.ext)
@@ -1668,12 +2004,12 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			} else {
 				sigma[asmName] = binaryTerm("sub", c.b, x)
 			}
-			refuted, newly := pendingRefuted()
-			if !refuted && search(i+1) {
-				return true
-			}
-			if visited > couplingSearchBudget {
-				return false
+			conflict, newly := pendingRefuted()
+			if conflict == nil {
+				var ok bool
+				if ok, conflict = search(i + 1); ok {
+					return true, nil
+				}
 			}
 			for _, key := range newly {
 				delete(verified, key)
@@ -1681,18 +2017,45 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			delete(used, asmName)
 			delete(chosen, s.key)
 			delete(sigma, asmName)
+			delete(depthOf, asmName)
+			if visited > couplingSearchBudget {
+				return false, nil
+			}
+			if !conflict[i] {
+				// This level's choice played no part: no other candidate here
+				// can change the outcome, so the conflict passes up.
+				return false, conflict
+			}
+			for depth := range conflict {
+				if depth != i {
+					total[depth] = true
+				}
+			}
 		}
 		if failure == "" {
 			failure = fmt.Sprintf("no register is an affine image of the loop variable %s of loop %d at its header", s.name, s.event+1)
 		}
-		return false
+		if budget.remaining <= 0 {
+			failure = "the loop proof's diagram budget ran out in the coupling search"
+		}
+		return false, total
 	}
-	if !search(0) {
+	if ok, _ := search(0); !ok {
 		return evidence(failure)
 	}
 	var pairs []string
 	for _, s := range slots {
-		pairs = append(pairs, chosen[s.key].show)
+		pairs = append(pairs, chosen[s.key].show())
+	}
+	// The iterations' stores: each event's two sides store through the
+	// same spans, the same number of times, at indices and values proven
+	// equal under the coupling and the body's premise, under equal guards;
+	// an inner loop's marker matches its counterpart by name.
+	for k, oakEv := range oakLoops {
+		asmEv := asmLoops[k]
+		if reason, ok := coupledWrites(k, oakEv, asmEv, sigma, bodyPremise(k, sigma, true), lowering, implies); !ok {
+			return evidence(reason)
+		}
 	}
 	// The exit comparison, under every top-level loop's exit premise. A
 	// result reading a loop-carried register no Oak variable is coupled to
@@ -1716,12 +2079,51 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			premise = binaryTerm("and", premise, exitPremise(k, sigma))
 		}
 	}
-	equal, decided := impliesEqual(premise, oakTerm, substitute(truncate(asmTerm, width), sigma), widthOfName)
-	if !decided || !equal {
-		if trace {
-			fmt.Fprintf(os.Stderr, "verify %s: results not proven equal (decided=%v)\n  oak: %s\n  asm: %s\n  premise: %s\n", fn.Name, decided, oakTerm, substitute(truncate(asmTerm, width), sigma), premise)
+	if asmTerm != nil {
+		equal, decided := implies(premise, oakTerm, substitute(truncate(asmTerm, width), sigma))
+		if !decided || !equal {
+			if trace {
+				fmt.Fprintf(os.Stderr, "verify %s: results not proven equal (decided=%v)\n  oak: %s\n  asm: %s\n  premise: %s\n", fn.Name, decided, oakTerm, substitute(truncate(asmTerm, width), sigma), premise)
+			}
+			return evidence("the results after the loops were not proven equal")
 		}
-		return evidence("the results after the loops were not proven equal")
+	}
+	// The span memories after the loops: the final element at a fresh
+	// index over the entry memory, as decideSpans compares them, here under
+	// the coupling and the exit premise.
+	spanNames := map[string]bool{}
+	for name := range exec.writes {
+		spanNames[name] = true
+	}
+	for name := range lowering.writes {
+		spanNames[name] = true
+	}
+	writtenSpans := make([]string, 0, len(spanNames))
+	for name := range spanNames {
+		writtenSpans = append(writtenSpans, name)
+	}
+	sort.Strings(writtenSpans)
+	for _, name := range writtenSpans {
+		contract, isSpan := lowering.spans[name]
+		if !isSpan {
+			return trusted(fmt.Sprintf("a store through %s, which the Oak signature does not declare as a span", name))
+		}
+		elemWidth := contract.elemWidth
+		lowering.fresh[spanIndexName(name)] = 32
+		at := paramTerm(spanIndexName(name), 32)
+		entry := selectTerm(name, at, elemWidth)
+		asmMemory := substitute(memoryAt(exec.writes[name], at, entry), sigma)
+		oakMemory := memoryAt(lowering.writes[name], at, entry)
+		if equal, decided := implies(premise, oakMemory, asmMemory); !decided || !equal {
+			if trace {
+				fmt.Fprintf(os.Stderr, "verify %s: span %s after the loops (decided=%v)\n  oak: %s\n  asm: %s\n", fn.Name, name, decided, oakMemory, asmMemory)
+			}
+			return evidence(fmt.Sprintf("the memory of the span %s after the loops was not proven equal", name))
+		}
+	}
+	memoryNote := ""
+	if len(writtenSpans) > 0 {
+		memoryNote = " and the span memory it writes (" + strings.Join(writtenSpans, ", ") + ")"
 	}
 	var notes []string
 	for k, inv := range invariants {
@@ -1737,7 +2139,65 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	if len(oakLoops) > 1 {
 		loopsNote = fmt.Sprintf("%d nested data-dependent loops coupled inductively", len(oakLoops))
 	}
-	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level — %s (%s)%s, %d concrete inputs agree", fn.Name, loopsNote, strings.Join(pairs, ", "), invariantNote, checked)}
+	witnessNote := fmt.Sprintf(", %d concrete inputs agree", checked)
+	if asmTerm == nil {
+		witnessNote = ""
+	}
+	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level — %s (%s)%s%s%s", fn.Name, loopsNote, strings.Join(pairs, ", "), invariantNote, memoryNote, witnessNote)}
+}
+
+// coupledWrites checks that one iteration of loop k stores alike on both
+// sides: through the same spans, the same number of times, each store's
+// index and value proven equal under the coupling and the body premise
+// and its guard likewise (a missing guard is "always"); a marker of an
+// inner loop's memory matches its counterpart by name.
+func coupledWrites(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premise *term, lowering *oakLowering, implies func(premise, a, b *term) (bool, bool)) (string, bool) {
+	spans := map[string]bool{}
+	for span := range oakEv.writes {
+		spans[span] = true
+	}
+	for span := range asmEv.writes {
+		spans[span] = true
+	}
+	names := make([]string, 0, len(spans))
+	for span := range spans {
+		names = append(names, span)
+	}
+	sort.Strings(names)
+	always := constTerm(1, 1)
+	for _, span := range names {
+		oakWrites, asmWrites := oakEv.writes[span], asmEv.writes[span]
+		if len(oakWrites) != len(asmWrites) {
+			return fmt.Sprintf("one iteration of loop %d stores through %s %d times on the Oak side and %d on the asm side", k+1, span, len(oakWrites), len(asmWrites)), false
+		}
+		contract := lowering.spans[span]
+		for i := range oakWrites {
+			o, a := oakWrites[i], asmWrites[i]
+			if o.memory != "" || a.memory != "" {
+				if o.memory != a.memory {
+					return fmt.Sprintf("store %d of loop %d through %s: an inner loop's memory on one side only", i+1, k+1, span), false
+				}
+			} else {
+				if equal, decided := implies(premise, truncate(o.index, 32), substitute(truncate(a.index, 32), sigma)); !decided || !equal {
+					return fmt.Sprintf("store %d of loop %d through %s: the indices were not proven equal", i+1, k+1, span), false
+				}
+				if equal, decided := implies(premise, truncate(o.value, contract.elemWidth), substitute(truncate(a.value, contract.elemWidth), sigma)); !decided || !equal {
+					return fmt.Sprintf("store %d of loop %d through %s: the values were not proven equal", i+1, k+1, span), false
+				}
+			}
+			og, ag := o.guard, a.guard
+			if og == nil {
+				og = always
+			}
+			if ag == nil {
+				ag = always
+			}
+			if equal, decided := implies(premise, truncate(og, 1), substitute(truncate(ag, 1), sigma)); !decided || !equal {
+				return fmt.Sprintf("store %d of loop %d through %s: the conditions were not proven equal", i+1, k+1, span), false
+			}
+		}
+	}
+	return "", true
 }
 
 // substitute replaces parameters by terms (the asm loop symbols by their
@@ -1785,6 +2245,57 @@ func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term
 	return &out
 }
 
+// loopTermNodeBudget bounds the distinct nodes of the loop events' terms
+// (headers, conditions, next values, stores) the coupling search works
+// over.
+const loopTermNodeBudget = 100000
+
+// loopTermNodes counts the distinct term nodes of every event's terms on
+// both sides.
+func loopTermNodes(asmLoops, oakLoops []*loopEvent) int {
+	visited := map[*term]bool{}
+	var count func(t *term)
+	count = func(t *term) {
+		if t == nil || visited[t] {
+			return
+		}
+		visited[t] = true
+		count(t.left)
+		count(t.right)
+		count(t.cond)
+	}
+	for _, side := range [][]*loopEvent{asmLoops, oakLoops} {
+		for _, ev := range side {
+			count(ev.cond)
+			for _, name := range ev.vars {
+				count(ev.header[name])
+				count(ev.next[name])
+			}
+			for _, writes := range ev.writes {
+				for _, w := range writes {
+					count(w.index)
+					count(w.value)
+					count(w.guard)
+				}
+			}
+		}
+	}
+	return len(visited)
+}
+
+// nodeBudget is the diagram nodes one loop proof may spend across all of
+// its implications (loopProofNodeBudget): a coupling search that keeps
+// failing candidates near the per-decision budget ends as evidence rather
+// than running for minutes.
+type nodeBudget struct{ remaining int }
+
+// loopProofNodeBudget bounds one loop proof's diagram nodes in all;
+// loopDecisionNodeBudget bounds each of its implications.
+const (
+	loopProofNodeBudget    = 8 * blastNodeBudget
+	loopDecisionNodeBudget = blastNodeBudget
+)
+
 // impliesEqual decides premise → (a = b) at the terms' common width:
 // valuations first (one satisfying the premise under which the sides
 // differ refutes it — elements read the fixed memory, as the witness layer
@@ -1792,11 +2303,23 @@ func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term
 // raced as decideEqual races them; decided is false when every order
 // exceeds the node budget.
 func impliesEqual(premise, a, b *term, widthOf func(string) int) (holds bool, decided bool) {
+	return impliesEqualWithin(premise, a, b, widthOf, nil)
+}
+
+// impliesEqualWithin is impliesEqual spending from a shared budget when
+// one is given: a decision that would exceed what remains is undecided.
+func impliesEqualWithin(premise, a, b *term, widthOf func(string) int, budget *nodeBudget) (holds bool, decided bool) {
 	width := a.width
 	if b.width > width {
 		width = b.width
 	}
 	a, b = adaptWidth(a, width), adaptWidth(b, width)
+	if equalTerms(a, b) {
+		return true, true // the same term on both sides: no diagram needed
+	}
+	if budget != nil && budget.remaining <= 0 {
+		return false, false
+	}
 	mentioned := map[string]bool{}
 	collectParams(premise, mentioned)
 	collectParams(a, mentioned)
@@ -1896,21 +2419,61 @@ func refutedByValuation(premise, a, b *term, names []string, widths map[string]i
 		}
 		free = append(free, name)
 	}
+	// The constants the obligation compares against (a lane index, a
+	// stride, a length bound) are the values a symbol must take for an
+	// index to select a lane or a guard to turn: they join the small and
+	// the random values.
+	constants := []uint64{0, 1}
+	seen := map[uint64]bool{0: true, 1: true}
+	collectConstants(premise, seen, &constants)
+	collectConstants(a, seen, &constants)
+	collectConstants(b, seen, &constants)
 	seed := uint64(0xD1B54A32D192ED03)
+	random := func() uint64 {
+		seed ^= seed << 13
+		seed ^= seed >> 7
+		seed ^= seed << 17
+		return seed
+	}
+	// Targeted valuations first: a comparison of a symbol with a constant
+	// (`i = 11`, the index selecting a lane; `len < 64`, a guard) is
+	// decided one way or the other by the symbol taking the constant and
+	// its neighbors, so each such pair is tried with the rest random.
+	var targets []comparisonTarget
+	collectTargets(premise, &targets, map[*term]bool{})
+	collectTargets(a, &targets, map[*term]bool{})
+	collectTargets(b, &targets, map[*term]bool{})
+	if len(targets) > couplingTargets {
+		targets = targets[:couplingTargets]
+	}
+	for _, target := range targets {
+		for _, delta := range []uint64{0, 1, ^uint64(0)} {
+			env := map[string]uint64{}
+			for _, name := range free {
+				env[name] = random() & mask(widths[name])
+			}
+			env[target.name] = (target.value + delta) & mask(widths[target.name])
+			if premise.eval(env) != 0 && a.eval(env) != b.eval(env) {
+				return true
+			}
+		}
+	}
 	for round := 0; round < couplingValuations; round++ {
 		env := map[string]uint64{}
 		for _, name := range free {
-			seed ^= seed << 13
-			seed ^= seed >> 7
-			seed ^= seed << 17
-			value := seed
-			switch round % 4 {
+			value := random()
+			switch round % 5 {
 			case 0:
 				value = 0 // every symbol zero, then small values
 			case 1:
 				value = seed % 8
 			case 2:
 				value = mask(widths[name]) - seed%4
+			case 3:
+				value = constants[(seed>>8)%uint64(len(constants))]
+				if seed&1 == 1 {
+					value++
+				}
 			}
 			env[name] = value & mask(widths[name])
 		}
@@ -1924,8 +2487,68 @@ func refutedByValuation(premise, a, b *term, names []string, widths map[string]i
 	return false
 }
 
+// A comparisonTarget is a symbol compared with a constant somewhere in an
+// obligation, and the constant.
+type comparisonTarget struct {
+	name  string
+	value uint64
+}
+
+// collectTargets gathers the (symbol, constant) pairs of the comparisons
+// in a term, looking through width changes of the symbol.
+func collectTargets(t *term, into *[]comparisonTarget, visited map[*term]bool) {
+	if t == nil || visited[t] {
+		return
+	}
+	visited[t] = true
+	if t.kind == termCmp {
+		symbol := func(side *term) (string, bool) {
+			for side != nil && side.kind == termBinary && side.op == "and" && side.right.kind == termConst && isLowMask(side.right.value) {
+				side = side.left
+			}
+			if side != nil && side.kind == termParam {
+				return side.name, true
+			}
+			return "", false
+		}
+		if name, isSymbol := symbol(t.left); isSymbol && t.right.kind == termConst {
+			*into = append(*into, comparisonTarget{name: name, value: t.right.value})
+		} else if name, isSymbol := symbol(t.right); isSymbol && t.left.kind == termConst {
+			*into = append(*into, comparisonTarget{name: name, value: t.left.value})
+		}
+	}
+	collectTargets(t.cond, into, visited)
+	collectTargets(t.left, into, visited)
+	collectTargets(t.right, into, visited)
+}
+
+// couplingTargets caps the targeted valuations of one obligation.
+const couplingTargets = 96
+
+// collectConstants gathers the constants a term mentions (once each).
+func collectConstants(t *term, seen map[uint64]bool, into *[]uint64) {
+	collectConstantsVisited(t, seen, into, map[*term]bool{})
+}
+
+func collectConstantsVisited(t *term, seen map[uint64]bool, into *[]uint64, visited map[*term]bool) {
+	if t == nil || visited[t] {
+		return
+	}
+	visited[t] = true
+	if t.kind == termConst {
+		if !seen[t.value] && len(*into) < 64 {
+			seen[t.value] = true
+			*into = append(*into, t.value)
+		}
+		return
+	}
+	collectConstantsVisited(t.cond, seen, into, visited)
+	collectConstantsVisited(t.left, seen, into, visited)
+	collectConstantsVisited(t.right, seen, into, visited)
+}
+
 // couplingValuations is the number of valuations tried before a diagram.
-const couplingValuations = 48
+const couplingValuations = 80
 
 // couplingSearchBudget bounds the pairings the coupling search visits.
 const couplingSearchBudget = 4096

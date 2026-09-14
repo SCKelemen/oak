@@ -1,6 +1,7 @@
 package asm
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -214,5 +215,53 @@ done:
 	wrong := verifyCase(t, decl, oak, strings.Replace(walk, "orr v16.16b", "and v16.16b", 1))
 	if wrong.Kind != VerdictMismatch {
 		t.Fatalf("the wrong accumulation must be a mismatch, got %s: %s", wrong.Kind, wrong.Message)
+	}
+}
+
+// A byte copy into a frame array at a data-dependent index (the UTF-8
+// kernel's tail): under the checker's index guard the store names sixteen
+// possible slots, each taking the value when the index selects it, so the
+// array is loop-carried memory and its lanes couple to the slots — single
+// byte slots when the array was zeroed byte by byte, packed into the two
+// words when it was zeroed as a pair (docs/spec/94-assembler.md §8).
+func TestVerifyFrameArrayLoop(t *testing.T) {
+	decl := "tailcopy: (v: []u8) -> u32"
+	oak := "{\n  tail: [16]u8 = [u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0), u8(0)]\n  i: u32 = u32(0)\n  while i < len(v) && i < u32(16) {\n    tail[i] = v[i]\n    i = i + u32(1)\n  }\n  u32(tail[3])\n}"
+	body := func(init string) string {
+		return "  bind x0, w1 = v\n  clobber w9, w10, w11, x12, v16\n  frame 16\n  sub sp, sp, #16\n" + init + `  mov w9, #0
+loop:
+  cmp w9, #16
+  b.hs done
+  cmp w9, w1
+  b.hs done
+  ldrb w10, [x0, w9, uxtw]
+  add x12, sp, #0
+  cmp w9, #16
+  b.hs trap
+  strb w10, [x12, w9, uxtw]
+  add w9, w9, #1
+  b loop
+done:
+  ldr q16, [sp]
+  add sp, sp, #16
+  umov w0, v16.b[3]
+  ret
+trap:
+  brk #1`
+	}
+	var bytes strings.Builder
+	for k := 0; k < 16; k++ {
+		fmt.Fprintf(&bytes, "  strb wzr, [sp, #%d]\n", k)
+	}
+	for name, init := range map[string]string{"byte slots": bytes.String(), "word slots": "  stp xzr, xzr, [sp]\n"} {
+		verdict := verifyCase(t, decl, oak, body(init))
+		if verdict.Kind != VerdictProven {
+			t.Fatalf("%s: the tail copy must be proven, got %s: %s", name, verdict.Kind, verdict.Message)
+		}
+		// Storing every byte at index 0 instead: refuted on a concrete input.
+		wrong := verifyCase(t, decl, oak, strings.Replace(body(init), "strb w10, [x12, w9, uxtw]", "strb w10, [x12]", 1))
+		if wrong.Kind != VerdictMismatch {
+			t.Fatalf("%s: the wrong index must be a mismatch, got %s: %s", name, wrong.Kind, wrong.Message)
+		}
 	}
 }

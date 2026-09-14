@@ -777,8 +777,8 @@ side as well. Verdicts on the SIMD corpus (`compiler/e2e_native_simd_test.go`):
 proven on both halves of their vector results, `check_blocks` evidence
 (the two-block composition exceeds the node budget), the loop kernel
 `valid_with` **evidence** since the loop increment below (76 concrete
-inputs; the tail array has no machine image and the `error` obligation
-exceeds the node budget). The lane functions are stated in Lean as
+inputs; every loop variable of its three loops is coupled, and the
+`error` obligation exceeds the node budget). The lane functions are stated in Lean as
 `Oak.NeonSemantics` (`spec/lean/Oak/NeonSemantics.lean`) and each is
 proved to be the `Oak.Simd` operation the lowering uses it for:
 `uqsub_eq_subSat`, `cmeq_eq_eqMask`, `add_eq_addWrap`, `ushr_eq_shr`,
@@ -883,9 +883,41 @@ has no machine image, since the byte copy into it stores at a
 data-dependent index and the frame region is opaque after it (a frame
 array as a loop-carried memory is the next step), and the `error`
 accumulator's one-iteration obligation is the `check_blocks` composition,
-beyond the node budget. Left for the
-next increment: the frame array as a loop-carried memory
-(`docs/notes/proof-chain-audit-2026-09.md`).
+beyond the node budget.
+
+**The frame array as a loop-carried memory (2026-09-14).** The tail copy
+stores at a data-dependent index (`strb wV, [xB, wI, uxtw]`), and the
+checker admits it only under a dominating guard `cmp wI, #K; b.hs <trap>`
+(§9). The executor now keeps that bound: the path falling through the
+guard records `wI < K` (`symbolicState.bounds`, cleared when the register
+is written), and a store at the register's index then names the K
+possible slots, each taking `ite(index = e, value, old)` in place — a
+byte inside a wider slot as a bit-field replace, so the slot keeps its
+width and the frame keeps its shape. The loop summary finds the slots
+such a store reaches by running the body once on the fresh register
+state before the slots' symbols exist (a body with inner loops or calls
+is not probed), and carries each changed slot at its width; the coupling
+pairs the array's lanes singly with byte slots, or packed when the
+machine holds the array as words (`TestVerifyFrameArrayLoop`: a
+sixteen-byte tail copy proven under both layouts, the store at a fixed
+index refuted). **The search, conflict-directed.** With sixteen tail
+slots between an accumulator and the register it was wrongly paired
+with, chronological backtracking re-enumerated the tail on every
+failure; the search now returns the depths a refutation depended on —
+the slots owning the symbols the obligation mentions, and the slots
+holding the symbols a level could not choose — and a level not among
+them passes the failure up untried. An obligation the bit level cannot
+decide within its budget ends the search: no other pairing shrinks it.
+The valuations try, for every comparison of a symbol with a constant in
+an obligation, the symbol at that constant and its neighbors (an index
+selecting a lane), then the small, boundary, and random values. On the
+kernel every loop variable of the three loops is now coupled — `off`,
+`error`, `prev_input`, `prev_incomplete` to their registers, `i` and the
+sixteen `tail` bytes to theirs — in seventeen seconds, and the one
+obligation left is `error`'s: one iteration of the sixty-four-byte loop
+is the `check_blocks` composition, whose decision exceeds the node budget
+as it does straight-line. `valid_with` is **evidence** for exactly that
+reason (`docs/notes/proof-chain-audit-2026-09.md`).
 
 **The floating-point forms (2026-09-14).** `spec/sail/arm_primitives.sail`
 gains Arm's execute bodies for `fadd`/`faddp`, `fsub`, `fmul`, `fmla`/
@@ -915,7 +947,7 @@ applies the same operations to the same lanes; and the identification of
 `Sail.FPAdd` with the verifier's `fadd` — IEEE addition under Arm's NaN
 rules — is what the silicon differential checks on the host core and
 `Oak.FloatOps` models at the bit level. The loop increment's remainder
-above (the frame array as a loop-carried memory) is what is left.
+above (the `check_blocks` obligation's node budget) is what is left.
 
 **Floating point as uninterpreted operations (eighth increment,
 2026-09-14; `asm/floats_ops.go`, `asm/verify_float.go`).** Until this
@@ -995,9 +1027,25 @@ prefix operand carries its contract (`f64_round_i64(-n)` converts a
 signed 64-bit source); `-diff(a, b)` against `bl diff`/`fneg` is proven
 naming the callee, `-diff(b, a)` and the un-negated call are mismatches,
 on both lanes (`asm/float_call_test.go`; `spec/oak/floats.oak`
-`neg_of_call`, `call_is_its_body`, `from_signed_of_neg`). What stays
-trusted: the rounding intrinsics (`floor`, `ceil`, `trunc`, `round`) and
-a float converted to `u8` or `u16` (the narrow saturation).
+`neg_of_call`, `call_is_its_body`, `from_signed_of_neg`). Floats in loop
+bodies: an f32 span's element loads through the `s` view (`ldr sN, [xB,
+wI, uxtw #2]`, the element into the low lane, the rest of the register
+zero as every scalar write leaves it) and an f32/f64 element through
+`flw`/`fld` at a span element address on RV64 (`fsw`/`fsd` store one,
+outside a loop body; inside, a store keeps the loop trusted like every
+storing loop); the RV64 lane's floating-point registers the body writes
+are loop-carried variables (`f8`, one symbol at the pattern's width, as
+the `v8.lo`/`v8.hi` halves are), and the coupling pairs a 32-bit float
+local with a 64-bit `v` half or `f` register zero-extended
+(`Oak.RiscV.zext_coupling_preserved`: a body reading the register at 32
+bits and writing back zero-extended preserves `r = zext x`). With it the
+native `total` — the accumulator in `d8`/`fs0`, the counter in
+`w2`/`s4` — is proven on both lanes; `acc - v[i]` against `fadd` is a
+mismatch and the swapped `v[i] + acc` evidence only (another
+application of `fadd`, which the witnesses cannot tell apart:
+`asm/float_loop_test.go`). What stays trusted: the rounding intrinsics
+(`floor`, `ceil`, `trunc`, `round`), a float converted to `u8` or `u16`
+(the narrow saturation), and a loop body that stores (`fill_f64`).
 
 **Vector stores as memories (2026-09-14; `asm/effects.go`,
 `asm/verify_simd.go`).** The twenty-eighth increment's write log takes
@@ -1042,7 +1090,8 @@ the NEON `fmin`/`fmax` match — the sign injections `fsgnj`/`fsgnjn`/
 extended) and the other bit moves, `fcvt` between the widths and from
 the integer file at its width and signedness, and to the integer file
 under `rtz` (the contract converts toward zero; without `rtz` the unit
-stays trusted); `flw`/`fld`/`fsw`/`fsd` through the frame. The vector
+stays trusted); `flw`/`fld`/`fsw`/`fsd` through the frame or, at a span
+element address, the element at the access width. The vector
 file is modeled under a *fixed configuration*: `vsetivli zero, K, eS, m1`
 with `K·S ≤ 128`, under which `vl = K` on every VLEN ≥ 128
 (`Oak.RiscV.fixed_config_vl`, `fixed_lanes_fit`) and the instructions are
@@ -2152,10 +2201,58 @@ store, a callee storing another value refuted; `TestVerifyBoundedShift`)
 and `compiler/e2e_native_callee_effects_test.go` (the arena shape: a
 record and a span passed through two levels of unit callees, the constant
 count unrolled, the bounded shift proven, a data count trusted).
-Next increments: stack arguments in the call summary (the outgoing area's
-slots are frame slots the executor already holds); stores in
-data-dependent loops as a summarized memory; guard elision from the
-checker's facts; the foreign-call subset only if the shell itself is to
+**Thirtieth increment — stack arguments in the call summary.** A call
+whose arguments exceed the eight registers (`px_node` with eleven, the
+syntax-node constructors `mk_*` behind it) left the summary at "arguments
+beyond the registers". The summary now lays the callee's parameters out
+by the shared rule and reads the ones beyond the registers from the
+caller's outgoing area, which is the path's frame at the call's sp: a
+scalar its natural size at its offset, zero-extended as the callee's
+load is; a span's base and, eight bytes on, its four-byte length; a
+by-reference record's address. The classification is one function now
+(`classifyArguments`, asm/abi.go): the checker's contract binding, the
+backend's placement, and the summary's reading share it, so the three
+cannot disagree on a slot. On the prover: proven 281 to 299 of 879 (the
+`mk_*` constructors, `cnf_header`/`cnf_lit`, `add_fn`, `trailing_zeros`),
+no disagreement, the rows identical. **Where the build's time went.** With
+the summaries reaching the arena emitters, the verifier's share of a
+native prover build rose to about four CPU-minutes, and sampling put it
+not in the diagrams but in the witness pass of `decideEqual`: each of
+the 324 boundary inputs evaluated the two memory terms through a map
+memo, and a memory built by a chain of summarized stores is a DAG of
+tens of thousands of nodes. The pass now numbers the terms once and
+evaluates them through slices (`termEvaluator`, which the theorem
+decider already used) and thins the inputs so that it visits a bounded
+number of nodes (`witnessVisitBudget`; the witnesses are the early
+refutation, the decision that follows is the proof), which took the
+slowest evidence verdicts from twenty seconds to two; the range bound of
+a shift count is memoized per lowering rather than per shift (a count
+that reads memory written by earlier summarized calls is a large DAG),
+and `significantBits`, which a zero test's flag reading consults, walks
+that DAG once per call rather than once per path through it — an
+emitter with fourteen string literals (`reason_text`) took the verifier
+past thirty minutes there before the memo, and takes a second after.
+Alongside, the functional consistency constraint skips a pair of reads
+whose indices are provably at different elements by their linear forms
+(the `base + 9` against `base + 16` of the arena), keeping it linear
+rather than quadratic in such a body's reads. The cost that remains is
+the reach itself, measured on one machine with the two compilers
+interleaved: the native prover build took about 30 CPU-seconds per
+compile before the twenty-eighth increment and takes about 220 after the
+thirtieth (the verifier's share about 150: evidence verdicts running the
+three orders to the node budget about 90, `emit_header` alone about 40
+exhausting the path budget across its conditional pushes, the proofs
+about 20). `TestOakShellAgreesNative` builds both provers and runs the
+corpus on each in about seven minutes on a loaded machine — under CI's
+45-minute package timeout, over `go test`'s ten-minute default when the
+whole root package runs on a busy host. Pinned:
+`compiler/e2e_native_stack_summary_test.go` (a callee with three
+arguments on the stack of mixed widths — `u16`, `u32`, `u64`, a `Bool` —
+summarized into a unit caller proven in its span and into a caller
+proven in its result and its span; the C backend the oracle).
+Next increments: stores in data-dependent loops as a summarized memory
+(the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
+with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
 be verified —
 calls by inlining or by the callee's proven contract, and effects through
 spans as the result — so that "trusted" shrinks toward the foreign
@@ -3419,6 +3516,64 @@ spans inside loop bodies (23 and 14 bodies), which need the span memory
 carried through the summary — the next shape. Pinned:
 `compiler/e2e_native_loop_header_loads_test.go` (`skip_blank`, `weigh`:
 a `pub` callee in an exit test and in a body, both lanes).
+
+**Span memories through loops (2026-09-14).** A store through a span
+inside a data-dependent loop body was the last shape the loop summary
+refused, and with the loops themselves recognized it was the largest
+reason left after vectors and floats. The write log (`spanWrite`) now
+has a marker: from a loop's marker on, a span's contents are the unknown
+memory `loop<K>.<span>` — the span as some iteration of loop K sees it,
+and as the loop leaves it — whose element at an index is a select over
+that name (`memoryAt`). Both sides place the marker at the loop for every
+span the body stores through: the asm side finds those spans by a
+discovery run of the body whose other traces are undone, the Oak side by
+a walk of the body (`spanStoresIn`). The iteration then runs on the
+marked memory — its reads see the unknown memory, its stores layer on it
+— and each side's loop event records the iteration's stores, each under
+the body path it happens on (`loopEvent.writes`). The coupling proof
+compares them pairwise (`coupledWrites`): the same spans, the same
+number of stores, indices and values proven equal under the coupling and
+the body premise, guards equal, an inner loop's marker matched by name.
+The memories after the loops are then compared as `decideSpans` compares
+them — the final element at a fresh index over the entry memory — under
+the coupling and the exit premise; a unit function whose only effect is
+the memory takes this path with no result term (its proof is the coupling
+alone, with no witness run). This is an induction: equal memories at
+entry, iterations proven to store alike on equal state, so the two
+unknown memories are one memory. Found on landing: the executor returned
+the effects of the state at a loop's exit branch, not of the run past
+it, so the marker never reached the comparison. On the stdlib-bearing
+program the bodies trusted for a store in a loop body (23 and 14) are
+gone; proven bodies rose to 174 on AArch64 and 165 on RV64. Pinned:
+`compiler/e2e_native_loop_stores_test.go` (a unit fill, a copy with a
+result, a conditional store; both lanes), the `fill` case of
+`compiler/e2e_native_span_effects_test.go`, now proven on both lanes.
+
+**The loop proof's budgets (2026-09-14).** Recognizing the loops that
+call functions and store through spans made the prover's native build
+(the shell test's `OAK_SOLVER_NATIVE=1`) run without end on one body:
+`fill_chunk`, nested loops whose bodies call the Lean emitter's large
+functions, where the coupling search substituted into and walked the
+summarized calls' terms for every one of thousands of candidates. The
+loop proof is now bounded three ways, each deterministic: the candidates
+its search tries (`loopSearchBudget`), the diagram nodes all of its
+implications spend together (`loopProofNodeBudget`, `impliesEqualWithin`
+drawing from one `nodeBudget`), and the size of the events' terms it
+will search over at all (`loopTermNodeBudget`); past any of them the
+verdict is evidence with the budget named. A coupling's description is
+built only for the couplings chosen, and an implication whose two sides
+are the same term (`equalTerms`, memoized over the DAG) is decided
+without a diagram — in `decideEqual` too, after the linear normal form.
+The two sides of the loop proof's span memories would otherwise both be
+blasted though they are built from the same stores. `OAK_NATIVE_TIMING=1`
+prints each body's verification time (`compiler/native_bodies.go`). The
+prover's native build: 180 s before this section's loop increments, 265
+s after them with the budgets, 330 bodies proven where 294 were, no
+mismatch; the standard-library tally keeps its 176 and 167. Found in the
+same measurement, in the zero-test rewrite of the vector reductions: the
+significant-bits bound walked a term as a tree, exponential over an ite
+chain whose arms share subterms, and one body took twenty minutes; it is
+memoized over the DAG (`significantBitsMemo`).
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the

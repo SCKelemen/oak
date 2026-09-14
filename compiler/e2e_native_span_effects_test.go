@@ -98,8 +98,8 @@ func TestE2ENativeSpanEffects(t *testing.T) {
 	if !strings.Contains(joined, "asm unit bump: proven equal to its Oak body") || !strings.Contains(joined, "and the span memory it writes (v)") {
 		t.Errorf("bump must be proven in its result and its span memory; diagnostics:\n%s", joined)
 	}
-	if !strings.Contains(joined, "asm unit fill: not verified (") {
-		t.Errorf("fill stores inside a data-dependent loop and must stay trusted; diagnostics:\n%s", joined)
+	if !strings.Contains(joined, "asm unit fill: proven equal to its Oak body") || !strings.Contains(joined, "the span memory it writes (v)") {
+		t.Errorf("fill stores inside a data-dependent loop and must be proven through the loop's memory; diagnostics:\n%s", joined)
 	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_span_effects_c", New().WithSource("effects.oak", nativeSpanEffectsProgram)); abnormal || code != 42 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)
@@ -132,7 +132,7 @@ func TestE2ENativeSpanEffectsRV64(t *testing.T) {
 	if !strings.Contains(joined, "asm unit bump: proven equal to its Oak body") || !strings.Contains(joined, "and the span memory it writes (v)") {
 		t.Errorf("rv64: bump must be proven in its result and its span memory; diagnostics:\n%s", joined)
 	}
-	if !strings.Contains(joined, "asm unit fill: not verified (") {
-		t.Errorf("rv64: fill stores inside a data-dependent loop and must stay trusted; diagnostics:\n%s", joined)
+	if !strings.Contains(joined, "asm unit fill: proven equal to its Oak body") || !strings.Contains(joined, "the span memory it writes (v)") {
+		t.Errorf("rv64: fill stores inside a data-dependent loop and must be proven through the loop's memory; diagnostics:\n%s", joined)
 	}
 }

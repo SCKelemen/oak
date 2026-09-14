@@ -223,6 +223,20 @@ theorem widen_truncate_u8 (v : BitVec 8) : (widen 8 false v).truncate 8 = v := b
 theorem widen_truncate_i8 (v : BitVec 8) : (widen 8 true v).truncate 8 = v := by
   simp only [widen, sextW]; bv_decide
 
+/-- A 32-bit loop local carried zero-extended in a 64-bit register — an
+    RV64 `f` register under the file's low-bits convention, the low half of
+    an AArch64 `v` register, which every scalar write zero-fills
+    (`asm/loops.go`, the coupling's `zext` widening for `f`/`v` variables):
+    a body that reads the register at 32 bits and writes its result back
+    zero-extended preserves the coupling `r = zext x`, whatever the body's
+    function `f` — the float reduction's `fadd.s`/`fadd sN` over the
+    accumulator included. -/
+theorem zext_coupling_preserved (f : BitVec 32 → BitVec 32) (x : BitVec 32) (r : X)
+    (h : r = x.setWidth 64) : (f (r.setWidth 32)).setWidth 64 = (f x).setWidth 64 := by
+  subst h
+  have low : (x.setWidth 64).setWidth 32 = x := by bv_decide
+  rw [low]
+
 /-- A widened `u32` parameter is already a W-form fixed point: `sext.w`
     on it is the identity, which is why `addw` on two widened `u32`s is
     their 32-bit sum widened. -/
