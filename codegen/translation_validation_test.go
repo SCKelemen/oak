@@ -53,11 +53,6 @@ type validatedHelper struct {
 	spec    string // Oak body: the helper's specification
 	cSource string // C wrapper calling the prelude helper
 	bar     verdictBar
-	// outside names the lanes whose compiler emits a shape the verifier's
-	// checker does not admit, with the reason; the helper is reported
-	// outside the decided subset there (a mismatch still fails) and held to
-	// bar on the other lanes.
-	outside map[string]string
 }
 
 func translationValidationHelpers() []validatedHelper {
@@ -118,13 +113,6 @@ func translationValidationHelpers() []validatedHelper {
 			spec:    "v[i]",
 			cSource: fmt.Sprintf("%s %s(const %s *base, u32 len, u32 i) { return oak_index(base, len, i); }\n", ty, name, ty),
 			bar:     proofRequired,
-			// GCC compares the psABI's sign-extended `u32` pair raw
-			// (`bgeu i, len`), zero-extends and scales the index in one
-			// `slli 32; srli 32-s`, and adds into the base register; the
-			// rv64 checker admits a bound only from the normalized length
-			// copy (`docs/spec/94-assembler.md`, span element memory) and an
-			// element address in a register other than the base.
-			outside: map[string]string{"rv64": "GCC's guarded index shape is outside the checker's admitted address shapes"},
 		})
 	}
 	for _, conv := range []string{"u8_trunc_u32", "u16_trunc_u64", "u32_trunc_u64", "i8_trunc_i32", "i16_trunc_i64", "i32_trunc_i64", "i32_bits_u32", "u32_bits_i32", "u64_bits_i64", "i64_bits_u64", "u8_trunc_i32", "i8_trunc_u64"} {
@@ -370,10 +358,6 @@ func validateTranslation(t *testing.T, arch string, compile func(cPath, sPath st
 		}
 		sig := parseOakSpec(t, h.decl)
 		spec := parseOakSpec(t, h.decl+" = "+h.spec)
-		if reason, isOutside := h.outside[arch]; isOutside {
-			t.Logf("%s %s: %s", arch, h.name, reason)
-			h.bar = mismatchForbidden
-		}
 		unitText := unitFor(arch, h, sig, body)
 		unit, errs := asm.ParseUnit("helpers."+arch+".oakasm", unitText)
 		if len(errs) != 0 {

@@ -2193,11 +2193,13 @@ ABI for a hosted RISC-V target, lp64 for freestanding), and `oak build
 through `zig cc` from any host.
 
 **Span element memory (landed).** A `[]T`/`[*]T` parameter arrives as the
-`a_i`/`a_{i+1}` pair with the `u32` length in the *low half* of its
-register and padding above it, so a comparison against the raw register
-proves nothing. The checker admits a bound only from the normalized copy,
-the exact pair `slli rX, a_{i+1}, 32` then `srli rX, rX, 32` (one
-definition of rX, so the fact survives labels). From there the guard facts
+`a_i`/`a_{i+1}` pair with the `u32` length widened like any other `u32`
+argument — sign-extended from bit 31 (`Oak.RiscV.widen`), so the raw
+register compares correctly only against another widened `u32`. The
+checker admits a bound from the normalized copy, the exact pair
+`slli rX, a_{i+1}, 32` then `srli rX, rX, 32` (one definition of rX, so the
+fact survives labels), against any index; or from the raw register
+against an unmodified widened `u32` parameter (below). From there the guard facts
 mirror the AArch64 lane, computed on straight-line code and forgotten
 where paths meet (a label) and after a call: the fall-through of
 `bgeu idx, lenN, exit` proves `idx < len` (`Oak.RiscV.index_guard`, and
@@ -2208,7 +2210,19 @@ against a constant register (`li`) proves `idx < K`; the fall-through of
 `slli t, idx, s` carries the guard scaled by `2^s`
 (`scaled_index_exact`: no wrap), and `add r, base, t` with `2^s` the
 element size makes `r` the address of one element — a region of `2^s`
-bytes, writable iff the span is. Memory through a register other than
+bytes, writable iff the span is; `r` may be the base register itself (the
+write forgets the span, the region takes its place). GCC's shape for the
+prelude's `oak_index` at `-O1` is admitted as well: `bgeu idx, len` on the
+*raw* pair, with both registers unmodified widened `u32` parameters (the
+index a scalar, the length a span's), proves the low halves' order
+(`index_guard_widened`: sign extension preserves the unsigned order of
+two 32-bit values) and yields a *raw* index fact that addresses nothing
+by itself; the fused zero-extend-and-scale `slli t, idx, 32` then
+`srli t, t, 32-s` turns it into the scaled index (`widened_scale`:
+`(widen i << 32) >> (32-s) = zext i << s`), from which `add` forms the
+region as above. A raw guard on a register that is not a widened `u32`
+parameter (a `u64`, a rewritten index or length), or scaled without the
+zero extension, is refused. Memory through a register other than
 `sp` is then admitted in exactly two shapes: inside a region
 (`offset + width <= 2^s`), or at a constant offset below the proven
 minimum length through the base itself, at the element width and a

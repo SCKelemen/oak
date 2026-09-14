@@ -82,8 +82,19 @@ type rvChecker struct {
 	consts  map[int]int64        // register = constant (li)
 	idx     map[int]rvIndexFact  // register < a normalized length register, or < a constant
 	scaled  map[int]rvScaledFact // register = index << shift
-	regions map[int]rvRegion     // register = the address of one element (size bytes)
-	rem     map[int]rvRemFact    // register = normalized length - guarded index (the remaining count)
+	// widened: register = an unmodified `u32` parameter as the psABI
+	// widened it (sign-extended from bit 31, Oak.RiscV.widen): a scalar
+	// `u32`, or a span's length register. Two of them compare raw
+	// (`bgeu idx, len`) as their 32-bit values do
+	// (Oak.RiscV.index_guard_widened): GCC's guard.
+	widened      map[int]bool
+	entryWidened map[int]bool // the widened parameters at entry (bindContract)
+	// half: register = a raw-guarded widened index << 32, the first half
+	// of the fused zero-extend-and-scale `slli 32; srli 32-s`
+	// (Oak.RiscV.widened_scale).
+	half    map[int]rvIndexFact
+	regions map[int]rvRegion  // register = the address of one element (size bytes)
+	rem     map[int]rvRemFact // register = normalized length - guarded index (the remaining count)
 	// slack: register = normalized length - K under len >= K (`sub t, len,
 	// k` after `bltu len, k, trap`): the bound of a K-element vector access
 	// (docs/spec/94-assembler.md §9, Oak.RiscV.slack_guard).
@@ -206,11 +217,16 @@ type rvSpan struct {
 // rvIndexFact: the register is below a normalized length register
 // (lenReg >= 0) or below a constant (lenReg < 0, bound). With slack K > 0
 // the fact is idx + K <= len instead: K elements from idx lie inside the
-// span (Oak.RiscV.slack_access_in_bounds).
+// span (Oak.RiscV.slack_access_in_bounds). With raw set, the register and
+// lenReg (a raw length register) are widened `u32` values whose low
+// halves compare: only the fused zero-extend-and-scale (`half`, then
+// `scaled`) may use it, since the register's upper half is the sign
+// extension.
 type rvIndexFact struct {
 	lenReg int
 	bound  int64
 	slack  int64
+	raw    bool
 }
 
 // rvSlackFact: the register holds len - K for the normalized length in
@@ -263,7 +279,7 @@ type rvRegion struct {
 func checkRV64(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool) []string {
 	c := &rvChecker{fn: fn, symbols: symbols, bound: map[int]bool{}, clobbered: map[int]bool{}, written: map[int]bool{}, freed: map[int]bool{}, saved: map[int]*savedState{}, labelDisp: map[string]int64{}, labels: map[string]bool{}, spans: map[int]*rvSpan{}, writes: map[int]int{},
 		fbound: map[int]bool{}, fclobbered: map[int]bool{}, fwritten: map[int]bool{}, ffreed: map[int]bool{}, fsaved: map[int]*savedState{},
-		rem: map[int]rvRemFact{}, slack: map[int]rvSlackFact{}, gen: map[int]int{}, vclobbered: map[int]bool{}, vwritten: map[int]bool{}, frameAddrs: map[int]int64{}, lenAlias: map[int]int{}, rawDead: map[int]bool{}, composites: map[string]rvComposite{}, regions: map[int]rvRegion{}, resultChunks: 1}
+		rem: map[int]rvRemFact{}, slack: map[int]rvSlackFact{}, widened: map[int]bool{}, entryWidened: map[int]bool{}, half: map[int]rvIndexFact{}, gen: map[int]int{}, vclobbered: map[int]bool{}, vwritten: map[int]bool{}, frameAddrs: map[int]int64{}, lenAlias: map[int]int{}, rawDead: map[int]bool{}, composites: map[string]rvComposite{}, regions: map[int]rvRegion{}, resultChunks: 1}
 	shared := &checker{fn: fn}
 	shared.checkSignature(decl)
 	if len(shared.errors) > 0 {
@@ -278,6 +294,11 @@ func checkRV64(fn *Function, decl *ast.FunctionStatement, symbols map[string]boo
 	}
 	c.countWrites()
 	c.forgetGuards()
+	// At entry every widened parameter holds; where paths meet, only the
+	// registers the body never writes certainly still do (forgetGuards).
+	for reg := range c.entryWidened {
+		c.widened[reg] = true
+	}
 	c.walk()
 	for _, b := range fn.Bindings {
 		if b.Register.Class == ClassRV64F {
@@ -465,11 +486,14 @@ func (c *rvChecker) bindContract() {
 				continue
 			}
 			c.bound[lenReg] = true
+			c.entryWidened[lenReg] = true // the u32 length, widened by the psABI
 			elem, writable, _ := spanShape(sigParamType(sig, b.Param))
 			c.spans[want] = &rvSpan{rawLen: lenReg, elem: elem, writable: writable}
 		} else if b.Length != nil {
 			c.errorf(b.Line, "parameter %s is not a span; bind one register", b.Param)
 			continue
+		} else if bits, signed, isInt := contractBits(sigParamType(sig, b.Param)); isInt && bits == 32 && !signed {
+			c.entryWidened[want] = true
 		}
 		c.bound[want] = true
 	}
@@ -776,6 +800,16 @@ func (c *rvChecker) forgetGuards() {
 	c.frameAddrs = frameAddrs
 	c.idx = map[int]rvIndexFact{}
 	c.scaled = map[int]rvScaledFact{}
+	c.half = map[int]rvIndexFact{}
+	// A parameter register the body never writes holds its widened value
+	// on every path.
+	widened := map[int]bool{}
+	for reg := range c.widened {
+		if c.writes[reg] == 0 {
+			widened[reg] = true
+		}
+	}
+	c.widened = widened
 	// A region in a register written once holds one fixed address (the
 	// caller's record or result area parked in a callee-saved register):
 	// it survives labels and calls.
@@ -809,6 +843,8 @@ func (c *rvChecker) forgetRegister(num int) {
 	delete(c.consts, num)
 	delete(c.idx, num)
 	delete(c.scaled, num)
+	delete(c.widened, num)
+	delete(c.half, num)
 	delete(c.regions, num)
 	delete(c.frameAddrs, num)
 	delete(c.lenAlias, num)
@@ -821,6 +857,11 @@ func (c *rvChecker) forgetRegister(num int) {
 	for reg, fact := range c.idx {
 		if fact.lenReg == num {
 			delete(c.idx, reg)
+		}
+	}
+	for reg, fact := range c.half {
+		if fact.lenReg == num {
+			delete(c.half, reg)
 		}
 	}
 	for reg, fact := range c.scaled {
@@ -1277,6 +1318,17 @@ func (c *rvChecker) guardFacts(name string, left, right Register) {
 		}
 		if k, isConst := c.consts[right.Num]; isConst && k > 0 {
 			c.idx[left.Num] = rvIndexFact{lenReg: -1, bound: k}
+			return
+		}
+		// GCC's guard: the widened `u32` index against the widened `u32`
+		// length, raw. Sign extension preserves the unsigned order of two
+		// 32-bit values (Oak.RiscV.index_guard_widened), so the low
+		// halves compare; the fact is usable only through the fused
+		// zero-extend-and-scale.
+		if c.widened[left.Num] && c.widened[right.Num] {
+			if pre := c.snapshot(); pre.rawLen(right.Num) {
+				c.idx[left.Num] = rvIndexFact{lenReg: pre.canonicalRaw(right.Num), raw: true}
+			}
 		}
 	case "bltu":
 		if slack, isSlack := c.slack[left.Num]; isSlack {
@@ -1310,6 +1362,7 @@ type rvSnapshot struct {
 	consts     map[int]int64
 	idx        map[int]rvIndexFact
 	scaled     map[int]rvScaledFact
+	half       map[int]rvIndexFact
 	spans      map[int]*rvSpan
 	gen        map[int]int
 	frameAddrs map[int]int64
@@ -1338,6 +1391,10 @@ func (c *rvChecker) snapshot() rvSnapshot {
 	for k, v := range c.scaled {
 		scaled[k] = v
 	}
+	half := make(map[int]rvIndexFact, len(c.half))
+	for k, v := range c.half {
+		half[k] = v
+	}
 	spans := make(map[int]*rvSpan, len(c.spans))
 	for k, v := range c.spans {
 		copied := *v
@@ -1355,7 +1412,7 @@ func (c *rvChecker) snapshot() rvSnapshot {
 	for k, v := range c.regions {
 		regions[k] = v
 	}
-	return rvSnapshot{shl32: copyInt(c.shl32), lenNorm: copyInt(c.lenNorm), consts: consts, idx: idx, scaled: scaled, spans: spans, gen: copyInt(c.gen), frameAddrs: frameAddrs, lenAlias: copyInt(c.lenAlias), rawDead: rawDead, regions: regions}
+	return rvSnapshot{shl32: copyInt(c.shl32), lenNorm: copyInt(c.lenNorm), consts: consts, idx: idx, scaled: scaled, half: half, spans: spans, gen: copyInt(c.gen), frameAddrs: frameAddrs, lenAlias: copyInt(c.lenAlias), rawDead: rawDead, regions: regions}
 }
 
 // rawLen reports a register holding a span's raw length: the bound
@@ -1397,12 +1454,28 @@ func (pre rvSnapshot) deriveShift(c *rvChecker, name string, dest, src Register,
 			c.shl32[dest.Num] = pre.canonicalRaw(src.Num)
 			return
 		}
-		if guard, guarded := pre.idx[src.Num]; guarded && imm >= 0 && imm < 32 {
+		guard, guarded := pre.idx[src.Num]
+		if guarded && guard.raw {
+			// The first half of GCC's fused zero-extend-and-scale: the
+			// widened index shifted out of its upper half.
+			if imm == 32 {
+				c.half[dest.Num] = guard
+			}
+			return
+		}
+		if guarded && imm >= 0 && imm < 32 {
 			c.scaled[dest.Num] = rvScaledFact{guard: guard, shift: int(imm), idxReg: src.Num, idxGen: pre.gen[src.Num]}
 		}
 	case "srli":
 		if raw, half := pre.shl32[src.Num]; half && imm == 32 {
 			c.lenNorm[dest.Num] = raw
+		}
+		if guard, isHalf := pre.half[src.Num]; isHalf && imm >= 1 && imm <= 32 {
+			// `srli d, (idx << 32), 32-s` is the zero-extended index scaled
+			// by 2^s (Oak.RiscV.widened_scale): a scaled index whose guard
+			// is the raw comparison. The index register is not nameable
+			// for a `len - idx` count.
+			c.scaled[dest.Num] = rvScaledFact{guard: guard, shift: int(32 - imm), idxReg: -2}
 		}
 	case "addi":
 		if src.Num == 0 {
@@ -1454,10 +1527,12 @@ func (pre rvSnapshot) deriveRegion(c *rvChecker, dest, left, right Register) {
 		pre.deriveFrameRegion(c, dest, left, right)
 		return
 	}
-	if dest.Num == base.Num {
-		return
-	}
+	// The address may replace the base (`add a0, a0, t`, GCC's shape): the
+	// write already forgot the span in dest, the region takes its place.
 	guard, guarded := pre.idx[offset.Num]
+	if guarded && guard.raw {
+		guarded = false // a raw-guarded index addresses nothing until zero-extended
+	}
 	shift := 0
 	idxReg, idxGen := offset.Num, pre.gen[offset.Num]
 	if scale, isScaled := pre.scaled[offset.Num]; isScaled {
@@ -1467,10 +1542,12 @@ func (pre rvSnapshot) deriveRegion(c *rvChecker, dest, left, right Register) {
 	if !guarded || int64(1)<<uint(shift) != span.elem {
 		return
 	}
-	if guard.lenReg < 0 {
-		idxReg = -2 // a constant bound: no `len - idx` can name it
+	if guard.lenReg < 0 || guard.raw {
+		idxReg = -2 // a constant bound or a raw guard: no `len - idx` can name it
 	}
-	inBounds := (guard.lenReg >= 0 && pre.lenNorm[guard.lenReg] == span.rawLen) || (guard.lenReg < 0 && span.hasMin && guard.bound <= span.minLen)
+	inBounds := (guard.raw && guard.lenReg == span.rawLen) ||
+		(!guard.raw && guard.lenReg >= 0 && pre.lenNorm[guard.lenReg] == span.rawLen) ||
+		(guard.lenReg < 0 && span.hasMin && guard.bound <= span.minLen)
 	if inBounds {
 		lanes := int64(1)
 		if guard.slack > 0 {
@@ -1577,7 +1654,7 @@ func (pre rvSnapshot) deriveRemaining(c *rvChecker, dest, left, right Register) 
 		return
 	}
 	guard, guarded := pre.idx[right.Num]
-	if !guarded || guard.lenReg != left.Num {
+	if !guarded || guard.raw || guard.lenReg != left.Num {
 		return
 	}
 	c.rem[dest.Num] = rvRemFact{lenReg: left.Num, idxReg: right.Num, idxGen: pre.gen[right.Num]}
