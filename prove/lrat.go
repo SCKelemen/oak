@@ -83,38 +83,140 @@ func ParseDIMACS(text string) (int, []lratClause, error) {
 	return variables, clauses, nil
 }
 
+// lratScanner walks a certificate's bytes line by line without allocating
+// per token: the certificate of a wide obligation runs to hundreds of
+// thousands of lines and over a hundred megabytes, and splitting it into
+// strings cost more than checking it.
+type lratScanner struct {
+	text string
+	at   int
+	line int // the current line, one-based
+}
+
+// nextLine positions the scanner on the next line; false at the end.
+func (sc *lratScanner) nextLine() bool {
+	if sc.at >= len(sc.text) {
+		return false
+	}
+	sc.line++
+	return true
+}
+
+// token returns the next space-separated token of the current line and
+// whether there was one; the line's newline is consumed with its last
+// token.
+func (sc *lratScanner) token() (string, bool) {
+	for sc.at < len(sc.text) && (sc.text[sc.at] == ' ' || sc.text[sc.at] == '\t' || sc.text[sc.at] == '\r') {
+		sc.at++
+	}
+	if sc.at >= len(sc.text) || sc.text[sc.at] == '\n' {
+		if sc.at < len(sc.text) {
+			sc.at++
+		}
+		return "", false
+	}
+	start := sc.at
+	for sc.at < len(sc.text) && sc.text[sc.at] != ' ' && sc.text[sc.at] != '\t' && sc.text[sc.at] != '\r' && sc.text[sc.at] != '\n' {
+		sc.at++
+	}
+	return sc.text[start:sc.at], true
+}
+
+// skipLine drops the rest of the current line.
+func (sc *lratScanner) skipLine() {
+	for sc.at < len(sc.text) && sc.text[sc.at] != '\n' {
+		sc.at++
+	}
+	if sc.at < len(sc.text) {
+		sc.at++
+	}
+}
+
+// lratAssignment is the assumed and propagated literals of one RUP step:
+// a stamp per literal, current when it equals the step's generation, so a
+// step costs no clearing.
+type lratAssignment struct {
+	stamps []uint32
+	gen    uint32
+}
+
+func (a *lratAssignment) next() {
+	a.gen++
+	if a.gen == 0 {
+		for i := range a.stamps {
+			a.stamps[i] = 0
+		}
+		a.gen = 1
+	}
+}
+
+func lratIndex(lit int) int {
+	if lit > 0 {
+		return 2 * lit
+	}
+	return 2*(-lit) + 1
+}
+
+func (a *lratAssignment) holds(lit int) bool { return a.stamps[lratIndex(lit)] == a.gen }
+func (a *lratAssignment) set(lit int)        { a.stamps[lratIndex(lit)] = a.gen }
+
+// lratDatabase is the live clauses by id: ids increase, so a slice.
+type lratDatabase struct {
+	clauses []lratClause
+	alive   []bool
+}
+
+func (db *lratDatabase) get(id int) (lratClause, bool) {
+	if id < 0 || id >= len(db.alive) || !db.alive[id] {
+		return nil, false
+	}
+	return db.clauses[id], true
+}
+
+func (db *lratDatabase) put(id int, clause lratClause) {
+	for len(db.alive) <= id {
+		db.alive = append(db.alive, false)
+		db.clauses = append(db.clauses, nil)
+	}
+	db.alive[id] = true
+	db.clauses[id] = clause
+}
+
+func (db *lratDatabase) drop(id int) {
+	db.alive[id] = false
+	db.clauses[id] = nil
+}
+
 // rup checks one addition: assuming every literal of the clause false,
 // each hint in order must be a unit (assigning its remaining literal) or
 // the conflict, and the last hint must be the conflict. A clause that
 // contains a literal and its negation needs no hints.
-func rup(db map[int]lratClause, variables int, clause lratClause, hints []int, assigned map[int]bool) error {
-	for k := range assigned {
-		delete(assigned, k)
-	}
+func rup(db *lratDatabase, variables int, clause lratClause, hints []int, assigned *lratAssignment) error {
+	assigned.next()
 	for _, lit := range clause {
 		if lit == 0 || lit > variables || -lit > variables {
 			return fmt.Errorf("literal %d names no declared variable", lit)
 		}
-		if assigned[lit] {
+		if assigned.holds(lit) {
 			return nil // tautology: l and ¬l both in the clause
 		}
-		assigned[-lit] = true
+		assigned.set(-lit)
 	}
 	for i, id := range hints {
 		if id <= 0 {
 			return fmt.Errorf("hint %d is not a RUP hint (RAT steps are not spoken)", id)
 		}
-		hinted, alive := db[id]
+		hinted, alive := db.get(id)
 		if !alive {
 			return fmt.Errorf("hint %d names no live clause", id)
 		}
 		// A clause is a set: a literal repeated in the text counts once.
 		remaining, unit := 0, 0
 		for _, lit := range hinted {
-			if assigned[lit] {
+			if assigned.holds(lit) {
 				return fmt.Errorf("hint %d is already satisfied", id)
 			}
-			if !assigned[-lit] && lit != unit {
+			if !assigned.holds(-lit) && lit != unit {
 				remaining++
 				unit = lit
 			}
@@ -126,7 +228,7 @@ func rup(db map[int]lratClause, variables int, clause lratClause, hints []int, a
 			}
 			return nil
 		case 1:
-			assigned[unit] = true
+			assigned.set(unit)
 		default:
 			return fmt.Errorf("hint %d is neither unit nor the conflict", id)
 		}
@@ -147,44 +249,62 @@ func CheckLRAT(formula, certificate string) (LRATResult, error) {
 	if err != nil {
 		return result, err
 	}
-	db := make(map[int]lratClause, len(clauses))
+	db := &lratDatabase{clauses: make([]lratClause, 0, len(clauses)+1), alive: make([]bool, 0, len(clauses)+1)}
 	empty := false
 	for i, clause := range clauses {
-		db[i+1] = clause
+		db.put(i+1, clause)
 		if len(clause) == 0 {
 			empty = true
 		}
 	}
 	last := len(clauses)
-	assigned := map[int]bool{}
-	for lineNumber, line := range strings.Split(certificate, "\n") {
-		words := strings.Fields(line)
-		if len(words) == 0 || words[0] == "c" {
+	assigned := &lratAssignment{stamps: make([]uint32, 2*variables+2)}
+	sc := &lratScanner{text: certificate}
+	var numbers []int
+	for sc.nextLine() {
+		first, ok := sc.token()
+		if !ok || first == "c" {
+			sc.skipLine()
 			continue
 		}
 		fail := func(format string, args ...interface{}) (LRATResult, error) {
-			return result, fmt.Errorf("certificate line %d: %s", lineNumber+1, fmt.Sprintf(format, args...))
+			return result, fmt.Errorf("certificate line %d: %s", sc.line, fmt.Sprintf(format, args...))
 		}
-		if len(words) < 3 {
+		id, err := strconv.Atoi(first)
+		if err != nil || id <= 0 {
+			return fail("%q is not a step id", first)
+		}
+		second, ok := sc.token()
+		if !ok {
 			return fail("a step needs an id, its body, and a terminating 0")
 		}
-		id, err := strconv.Atoi(words[0])
-		if err != nil || id <= 0 {
-			return fail("%q is not a step id", words[0])
-		}
-		if words[1] == "d" {
-			if id < last || words[len(words)-1] != "0" {
+		if second == "d" {
+			if id < last {
 				return fail("a deletion carries the last id and ends in 0")
 			}
-			for _, word := range words[2 : len(words)-1] {
+			numbers = numbers[:0]
+			for {
+				word, ok := sc.token()
+				if !ok {
+					break
+				}
 				n, err := strconv.Atoi(word)
-				if err != nil || n <= 0 {
+				if err != nil {
 					return fail("%q is not a clause id", word)
 				}
-				if _, alive := db[n]; !alive {
+				numbers = append(numbers, n)
+			}
+			if len(numbers) == 0 || numbers[len(numbers)-1] != 0 {
+				return fail("a deletion carries the last id and ends in 0")
+			}
+			for _, n := range numbers[:len(numbers)-1] {
+				if n <= 0 {
+					return fail("%q is not a clause id", strconv.Itoa(n))
+				}
+				if _, alive := db.get(n); !alive {
 					return fail("deleting clause %d, which is not live", n)
 				}
-				delete(db, n)
+				db.drop(n)
 				result.Deletions++
 			}
 			continue
@@ -192,27 +312,42 @@ func CheckLRAT(formula, certificate string) (LRATResult, error) {
 		if id <= last {
 			return fail("id %d does not increase past %d", id, last)
 		}
-		numbers := make([]int, 0, len(words)-1)
-		zeros := []int{}
-		for _, word := range words[1:] {
+		// The rest of the line: `literals 0 hints 0`, the second token
+		// already read.
+		numbers = numbers[:0]
+		zeros := [2]int{-1, -1}
+		zeroCount := 0
+		word := second
+		for {
 			n, err := strconv.Atoi(word)
 			if err != nil {
 				return fail("%q is not an integer", word)
 			}
 			if n == 0 {
-				zeros = append(zeros, len(numbers))
+				if zeroCount < 2 {
+					zeros[zeroCount] = len(numbers)
+				}
+				zeroCount++
 			}
 			numbers = append(numbers, n)
+			word, ok = sc.token()
+			if !ok {
+				break
+			}
 		}
-		if len(zeros) != 2 || zeros[1] != len(numbers)-1 {
+		if len(numbers) < 2 {
+			return fail("a step needs an id, its body, and a terminating 0")
+		}
+		if zeroCount != 2 || zeros[1] != len(numbers)-1 {
 			return fail("an addition is `id literals 0 hints 0`")
 		}
-		clause := lratClause(numbers[:zeros[0]])
+		clause := make(lratClause, zeros[0])
+		copy(clause, numbers[:zeros[0]])
 		hints := numbers[zeros[0]+1 : len(numbers)-1]
 		if err := rup(db, variables, clause, hints, assigned); err != nil {
 			return fail("%v", err)
 		}
-		db[id] = clause
+		db.put(id, clause)
 		last = id
 		result.Additions++
 		if len(clause) == 0 {
