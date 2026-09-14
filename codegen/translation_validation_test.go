@@ -115,6 +115,19 @@ func translationValidationHelpers() []validatedHelper {
 			bar:     proofRequired,
 		})
 	}
+	// The guarded element write (`oak_store`): a unit helper whose effect
+	// is the store; the verifier proves the span memory it writes against
+	// the Oak assignment (asm/effects.go).
+	for _, ty := range []string{"u8", "u16", "u32", "u64"} {
+		name := "tv_store_" + ty
+		helpers = append(helpers, validatedHelper{
+			name:    name,
+			decl:    fmt.Sprintf("%s: (v: [*]%s, i: u32, x: %s) -> ()", name, ty, ty),
+			spec:    "{ v[i] = x }",
+			cSource: fmt.Sprintf("void %s(%s *base, u32 len, u32 i, %s x) { oak_store(base, len, i, x); }\n", name, ty, ty),
+			bar:     proofRequired,
+		})
+	}
 	for _, conv := range []string{"u8_trunc_u32", "u16_trunc_u64", "u32_trunc_u64", "i8_trunc_i32", "i16_trunc_i64", "i32_trunc_i64", "i32_bits_u32", "u32_bits_i32", "u64_bits_i64", "i64_bits_u64", "u8_trunc_i32", "i8_trunc_u64"} {
 		target, _, source, ok := typechecker.ConversionParts(conv)
 		if !ok {
@@ -142,6 +155,7 @@ var guardMacroLines = []string{
 	`  static inline T oak_shl_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v << n); } \`,
 	`  static inline T oak_shr_##T(T v, T n) { if (n >= W) { __builtin_trap(); } return (T)(v >> n); }`,
 	`OAK_SHIFT_HELPERS(u8, 8u) OAK_SHIFT_HELPERS(u16, 16u) OAK_SHIFT_HELPERS(u32, 32u) OAK_SHIFT_HELPERS(u64, 64u)`,
+	`#define oak_store(base, len, i, v) do { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } (base)[(i)] = (v); } while (0)`,
 }
 
 func TestGuardMacrosMatchValidatedText(t *testing.T) {

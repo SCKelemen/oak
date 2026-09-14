@@ -720,6 +720,18 @@ func TestRV64SpanMemoryVerify(t *testing.T) {
 	if v.Kind != VerdictMismatch {
 		t.Errorf("gcc guarded read mismatch not reported: %s (%s)", v.Kind, v.Message)
 	}
+	// GCC's guarded store (`oak_store`): the same shape, the element written
+	// and proven as span memory (spanStoreRV64); a wrong value is a mismatch.
+	storeDecl := "store_rv: (v: [*]u32, i: u32, x: u32) -> ()"
+	storeBody := strings.Replace(strings.Replace(rv64IndexBody, "  lw a0, 0(a0)\n", "  sw a3, 0(a0)\n", 1), "  bind a2 = i\n", "  bind a2 = i\n  bind a3 = x\n", 1)
+	v = rv64Verify(t, storeDecl, "{ v[i] = x }", storeBody)
+	if v.Kind != VerdictProven || !strings.Contains(v.Message, "the span memory it writes (v)") {
+		t.Errorf("gcc guarded store: %s (%s)", v.Kind, v.Message)
+	}
+	v = rv64Verify(t, storeDecl, "{ v[i] = x + u32(1) }", storeBody)
+	if v.Kind != VerdictMismatch {
+		t.Errorf("gcc guarded store mismatch not reported: %s (%s)", v.Kind, v.Message)
+	}
 	v = rv64Verify(t, rv64FirstDecl, "{ v[0] }", rv64FirstBody)
 	if v.Kind != VerdictProven {
 		t.Errorf("first element: %s (%s)", v.Kind, v.Message)
