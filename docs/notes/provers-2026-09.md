@@ -185,8 +185,15 @@ Tseitin arithmetic after elimination has no failed literal at level one —
 and they close only past the budget, at 562k and 1.4M conflicts, where
 CaDiCaL itself needs 7 and 112 seconds. The measurement also showed the
 text path spending half its wall time in the kernel: the driver writes
-one byte per `write` call. Buffering that, a budget the caller can raise,
-and subsumption are the next steps, still ahead of any GPU question. First run with CaDiCaL 3.0.1:
+one byte per `write` call. Both landed the same day: the driver buffers
+its output (flushed when full, before a spawn, at exit; the 562k-conflict
+row from 101 to 10 seconds, kernel time from 42 seconds to nil), and `oak
+prove -conflicts N` sets the solver's budget on both paths, so a row past
+the default can be asked for its certificate rather than the corpus paying
+for it on every run. The buffered writer also exposed an exponential
+walk in the native backend's verifier (`significantBits` over shared
+subterms of an unrolled loop, now memoized on the term). Subsumption is
+the next technique, still ahead of any GPU question. First run with CaDiCaL 3.0.1:
 `spec/oak/machines.oak`'s `bounded__step` — 14,987 BDD nodes under the
 blocked order — closes with a 204-step certificate checked in Go and in
 Oak; `spec/oak/shapes.oak`'s nine rows all agree):

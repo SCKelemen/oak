@@ -135,6 +135,11 @@ type term struct {
 	kbDone  bool
 	kbValue uint64
 	kbKnown uint64
+	// The significant-bits memo (significantBits): set once computed. The
+	// terms of an unrolled loop share subterms; without the memo the walk
+	// is exponential in the depth of the sharing.
+	sbDone  bool
+	sbValue int
 }
 
 // conditionHolds is the ARM condition-code semantics over the NZCV flags
@@ -271,6 +276,16 @@ func isLowMask(m uint64) bool { return m&(m+1) == 0 }
 // significantBits bounds the position of a term's highest set bit: its
 // width, or less for a masked, compared, or selected value.
 func significantBits(t *term) int {
+	if t.sbDone {
+		return t.sbValue
+	}
+	n := significantBitsUncached(t)
+	t.sbValue = n
+	t.sbDone = true
+	return n
+}
+
+func significantBitsUncached(t *term) int {
 	switch t.kind {
 	case termConst:
 		return bits.Len64(t.value)
