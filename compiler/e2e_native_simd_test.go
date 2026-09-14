@@ -174,7 +174,7 @@ func TestE2ENativeSimd(t *testing.T) {
 // the straight-line vector helpers are proven, the two-block composition
 // is evidence (the bit-level decision exceeds its budget), and the loop
 // kernel is evidence too (its three data-dependent loops summarized, the
-// witnesses agree; the tail array has no machine image and the error
+// witnesses agree, every loop variable is coupled, and the error
 // accumulator's obligation exceeds the node budget) — the verdicts
 // docs/notes/proof-chain-audit-2026-09.md records for the vector link.
 func TestE2ENativeSimdKernelVerdicts(t *testing.T) {
@@ -201,7 +201,7 @@ func TestE2ENativeSimdKernelVerdicts(t *testing.T) {
 	if !strings.Contains(joined, "asm unit check_blocks_neon_abi: agrees with its Oak body on every witness input") && !strings.Contains(joined, "asm unit check_blocks_neon_abi: proven") {
 		t.Errorf("check_blocks_neon_abi must be evidence or proof; diagnostics:\n%s", joined)
 	}
-	if !strings.Contains(joined, "asm unit valid_with: agrees with its Oak body on") || !strings.Contains(joined, "concrete inputs (evidence, not proof:") {
-		t.Errorf("valid_with must be witnessed evidence, never trusted; diagnostics:\n%s", joined)
+	if !strings.Contains(joined, "asm unit valid_with: agrees with its Oak body on") || !strings.Contains(joined, "concrete inputs (evidence, not proof: one iteration of loop 1 was not proven to preserve error") || !strings.Contains(joined, "exceeded its node budget") {
+		t.Errorf("valid_with must be witnessed evidence with every loop variable coupled and only the error obligation past the budget; diagnostics:\n%s", joined)
 	}
 }

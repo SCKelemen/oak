@@ -777,8 +777,8 @@ side as well. Verdicts on the SIMD corpus (`compiler/e2e_native_simd_test.go`):
 proven on both halves of their vector results, `check_blocks` evidence
 (the two-block composition exceeds the node budget), the loop kernel
 `valid_with` **evidence** since the loop increment below (76 concrete
-inputs; the tail array has no machine image and the `error` obligation
-exceeds the node budget). The lane functions are stated in Lean as
+inputs; every loop variable of its three loops is coupled, and the
+`error` obligation exceeds the node budget). The lane functions are stated in Lean as
 `Oak.NeonSemantics` (`spec/lean/Oak/NeonSemantics.lean`) and each is
 proved to be the `Oak.Simd` operation the lowering uses it for:
 `uqsub_eq_subSat`, `cmeq_eq_eqMask`, `add_eq_addWrap`, `ushr_eq_shr`,
@@ -883,9 +883,41 @@ has no machine image, since the byte copy into it stores at a
 data-dependent index and the frame region is opaque after it (a frame
 array as a loop-carried memory is the next step), and the `error`
 accumulator's one-iteration obligation is the `check_blocks` composition,
-beyond the node budget. Left for the
-next increment: the frame array as a loop-carried memory
-(`docs/notes/proof-chain-audit-2026-09.md`).
+beyond the node budget.
+
+**The frame array as a loop-carried memory (2026-09-14).** The tail copy
+stores at a data-dependent index (`strb wV, [xB, wI, uxtw]`), and the
+checker admits it only under a dominating guard `cmp wI, #K; b.hs <trap>`
+(§9). The executor now keeps that bound: the path falling through the
+guard records `wI < K` (`symbolicState.bounds`, cleared when the register
+is written), and a store at the register's index then names the K
+possible slots, each taking `ite(index = e, value, old)` in place — a
+byte inside a wider slot as a bit-field replace, so the slot keeps its
+width and the frame keeps its shape. The loop summary finds the slots
+such a store reaches by running the body once on the fresh register
+state before the slots' symbols exist (a body with inner loops or calls
+is not probed), and carries each changed slot at its width; the coupling
+pairs the array's lanes singly with byte slots, or packed when the
+machine holds the array as words (`TestVerifyFrameArrayLoop`: a
+sixteen-byte tail copy proven under both layouts, the store at a fixed
+index refuted). **The search, conflict-directed.** With sixteen tail
+slots between an accumulator and the register it was wrongly paired
+with, chronological backtracking re-enumerated the tail on every
+failure; the search now returns the depths a refutation depended on —
+the slots owning the symbols the obligation mentions, and the slots
+holding the symbols a level could not choose — and a level not among
+them passes the failure up untried. An obligation the bit level cannot
+decide within its budget ends the search: no other pairing shrinks it.
+The valuations try, for every comparison of a symbol with a constant in
+an obligation, the symbol at that constant and its neighbors (an index
+selecting a lane), then the small, boundary, and random values. On the
+kernel every loop variable of the three loops is now coupled — `off`,
+`error`, `prev_input`, `prev_incomplete` to their registers, `i` and the
+sixteen `tail` bytes to theirs — in seventeen seconds, and the one
+obligation left is `error`'s: one iteration of the sixty-four-byte loop
+is the `check_blocks` composition, whose decision exceeds the node budget
+as it does straight-line. `valid_with` is **evidence** for exactly that
+reason (`docs/notes/proof-chain-audit-2026-09.md`).
 
 **The floating-point forms (2026-09-14).** `spec/sail/arm_primitives.sail`
 gains Arm's execute bodies for `fadd`/`faddp`, `fsub`, `fmul`, `fmla`/
@@ -915,7 +947,7 @@ applies the same operations to the same lanes; and the identification of
 `Sail.FPAdd` with the verifier's `fadd` — IEEE addition under Arm's NaN
 rules — is what the silicon differential checks on the host core and
 `Oak.FloatOps` models at the bit level. The loop increment's remainder
-above (the frame array as a loop-carried memory) is what is left.
+above (the `check_blocks` obligation's node budget) is what is left.
 
 **Floating point as uninterpreted operations (eighth increment,
 2026-09-14; `asm/floats_ops.go`, `asm/verify_float.go`).** Until this
