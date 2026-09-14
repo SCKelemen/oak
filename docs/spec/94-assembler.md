@@ -1000,7 +1000,46 @@ the sign injections; `copysign` against `fsgnj.d`; `a < b` against
 through the slack idiom, `any` through `vcpop.m`, the masked gather, the
 slides for `prev`, a whole-register spill, and the ordered f32 dot product
 `(((0 + a₀b₀) + a₁b₁) + a₂b₂) + a₃b₃` against `vfmul`/`vfredosum` proven,
-with the pairwise grouping a mismatch.
+with the pairwise grouping a mismatch. **The float vectors of the native
+RV64 lane (2026-09-14).** The forms the eleventh native increment emits
+join the model: `vfdiv.vv`, `vfsqrt.v`, `vfsgnjn.vv`/`vfsgnjx.vv` (the
+sign injections as bit operations: `neg`/`abs`), `vmfne.vv` (the IEEE
+`!=` into a mask), `vid.v` (lane `i` holds `i`), `vmseq.vx`,
+`vfmerge.vfm` (`v0[i] ? fs1 : vs2[i]`), and `vfmin.vv`/`vfmax.vv`. Three
+refinements make the lane's sequences decide. *The number-preferring
+minimum and maximum* (`min_num`/`max_num`, Arm's `fminnm`/`fmaxnm`,
+RISC-V's `fmin`/`fmax`, RVV's `vfmin`/`vfmax`) are one hybrid term on
+every side (`floatMinMaxNum`): on numbers the same bit-level order chain
+as `minimum`/`maximum` (they agree there, `-0.0` below `+0.0`), on a NaN
+operand the `fminnm`/`fmaxnm` operation term — so the RVV lowering of
+`min`, which is `vfmin` with the NaN operands merged back over the result
+through `vmfne`/`vmerge`, is proven equal to Oak's `min` on numbers
+exactly and on NaNs up to the next point. *A float result is decided up
+to its NaN payload* (`floatCanonicalNaN`, applied to both sides of an
+`f32`/`f64` result and to every lane of a float vector result): the
+payload is the platform's (docs/spec/20-types.md §11.3.5, no law may
+rely on it), so a unit that yields one operand's NaN where the body's
+`min` yields the sum's NaN agrees; the NaN a `min`/`max` yields carries
+its exponent and quiet bits forced (`floatSomeNaN`) so the decider knows
+it is a NaN whatever the payload, and the witness value is unchanged.
+*An operation over operands whose every bit the diagram has settled folds
+to its IEEE value at blast time* (the mask bits the tail unknowns cannot
+reach settle this way), as the constructor folds constant applications —
+without it a folded constant on the Oak side met an abstracted
+application on the machine side. The callee-saved float registers
+`fs0`–`fs11` carry the caller's pattern on entry (`entry.fN`), so a
+prologue's `fsd`/`fld` pair round-trips. With these, every function of
+the native RV64 float and integer simd corpora that returns a value is
+**proven** (`compiler/e2e_native_rv64_float_simd_test.go`,
+`compiler/e2e_native_rv64_simd_test.go` assert it: `arith`, `dot`,
+`pairwise`, `minmax`, `doubles`, `words_view`, and the integer
+`lanes_mask`, `logic`, `shuffle`, `words`, …; the two units that store
+through a span stay trusted), as every NEON float unit is
+(`compiler/e2e_native_float_simd_test.go`). The lowering's shapes are
+decided in `asm/rv64_verify_vector_test.go`: the min sequence proven and
+bare `vfmin` a mismatch; div/sqrt/abs/neg with a slid extract; the
+vid/vmseq/vfmerge insert; the pairwise reduce through slides proven and
+`vfredosum`'s fold a mismatch.
 
 ## 9. Native encoding, and the architectures to come
 

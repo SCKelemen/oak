@@ -150,6 +150,16 @@ func TestE2ENativeRV64SimdLowers(t *testing.T) {
 			t.Errorf("%s was not lowered by the rv64 lane; diagnostics:\n%s", fn, joined)
 		}
 	}
+	// The verifier decides the vector units under their fixed
+	// configurations (docs/spec/94-assembler.md §8, ninth increment).
+	for _, fn := range nativeRV64SimdFunctions {
+		if fn == "combine_store" {
+			continue // a store through a span: a memory effect the verifier does not follow
+		}
+		if !strings.Contains(joined, "asm unit "+fn+": proven") {
+			t.Errorf("%s was not proven by the verifier; diagnostics:\n%s", fn, joined)
+		}
+	}
 	if native.Object == nil {
 		t.Fatal("no companion object")
 	}

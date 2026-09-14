@@ -83,8 +83,7 @@ func (x *pathExecutor) stepRV64Float(instr Instruction, state *symbolicState) (s
 		if !okA || !okB {
 			return "unbound floating-point register read", false
 		}
-		op := map[string]string{"fmin": "fminnm", "fmax": "fmaxnm"}[base]
-		state.write(reg(0), floatTerm(op, w, truncate(a, w), truncate(b, w)))
+		state.write(reg(0), floatMinMaxNum(map[string]string{"fmin": "min", "fmax": "max"}[base], truncate(a, w), truncate(b, w), w))
 		return "", true
 	case "fsgnj", "fsgnjn", "fsgnjx":
 		// rd takes rs1's magnitude and rs2's sign (negated; xored with
