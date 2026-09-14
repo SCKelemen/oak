@@ -1279,13 +1279,13 @@ func (c *checker) instruction(instr Instruction) bool {
 			c.errorf(instr.Line, "adrl takes a data symbol")
 			return false
 		}
-		size, known := c.fn.Tables[sym.Name]
+		table, known := c.fn.Tables[sym.Name]
 		if !known {
 			c.errorf(instr.Line, "adrl %s: not a constant data symbol of the program", sym.Name)
 			return false
 		}
 		c.write(instr, dest)
-		c.regions[dest.Num] = region{size: size}
+		c.regions[dest.Num] = region{size: table.Size}
 		return false
 	}
 

@@ -552,3 +552,190 @@ function vector_arithmetic_binary_uniform_logical_bsleor (datasize, vm, vn, dst,
     let operand1 = operand1;
     operand1 ^ (operand2 ^ operand4 & operand3)
 }
+
+/* aarch64_float.sail: FPNeg, FPAbs — the sign operations (the width
+ * assertion dropped: the verifier's views are 32 and 64 bits). */
+val FPNeg : forall ('N : Int), 'N >= 1. bits('N) -> bits('N)
+function FPNeg op = {
+    ~([op['N - 1]]) @ slice(op, 0, 'N - 1)
+}
+
+val FPAbs : forall ('N : Int), 'N >= 1. bits('N) -> bits('N)
+function FPAbs op = {
+    0b0 @ slice(op, 0, 'N - 1)
+}
+
+/* aarch64_float.sail: the IEEE operations behind the floating-point
+ * instructions — FPAdd, FPSub, FPMul, FPMulAdd, FPMin, FPMax, FPMinNum,
+ * FPMaxNum, FPSqrt — are defined there over reals (FPRoundBase). Here they
+ * are declared without bodies and mapped to the uninterpreted constants of
+ * the same names in the Sail support library (spec/sail/lean-sail-4.33.patch),
+ * exactly as the assembler's verifier leaves them uninterpreted
+ * (asm/floats_ops.go, Oak.Uninterpreted): the bridge states how each
+ * instruction applies them, lane for lane, and the differentials check the
+ * operations themselves against the hardware. FPCR is a parameter (the
+ * model reads the register). */
+val FPAdd = pure { lean: "Sail.FPAdd" } : forall 'N, 'N in {32, 64}. (bits('N), bits('N), bits(32)) -> bits('N)
+val FPSub = pure { lean: "Sail.FPSub" } : forall 'N, 'N in {32, 64}. (bits('N), bits('N), bits(32)) -> bits('N)
+val FPMul = pure { lean: "Sail.FPMul" } : forall 'N, 'N in {32, 64}. (bits('N), bits('N), bits(32)) -> bits('N)
+val FPMulAdd = pure { lean: "Sail.FPMulAdd" } : forall 'N, 'N in {32, 64}. (bits('N), bits('N), bits('N), bits(32)) -> bits('N)
+val FPMin = pure { lean: "Sail.FPMin" } : forall 'N, 'N in {32, 64}. (bits('N), bits('N), bits(32)) -> bits('N)
+val FPMax = pure { lean: "Sail.FPMax" } : forall 'N, 'N in {32, 64}. (bits('N), bits('N), bits(32)) -> bits('N)
+val FPMinNum = pure { lean: "Sail.FPMinNum" } : forall 'N, 'N in {32, 64}. (bits('N), bits('N), bits(32)) -> bits('N)
+val FPMaxNum = pure { lean: "Sail.FPMaxNum" } : forall 'N, 'N in {32, 64}. (bits('N), bits('N), bits(32)) -> bits('N)
+val FPSqrt = pure { lean: "Sail.FPSqrt" } : forall 'N, 'N in {32, 64}. (bits('N), bits(32)) -> bits('N)
+
+/* aarch64_vector.sail: fadd (pair false), faddp (pair true: adjacent pairs
+ * of operand2 @ operand1). */
+val vector_arithmetic_binary_uniform_add_fp : forall 'datasize 'elements 'esize, ('esize in {32, 64} & 'elements >= 1 & 'elements * 'esize == 'datasize).
+  (int('datasize), int('elements), int('esize), bits('datasize), bits('datasize), bits(32), bool) -> bits('datasize)
+function vector_arithmetic_binary_uniform_add_fp (datasize, elements, esize, operand1, operand2, fpcr, pair) = {
+    result : bits('datasize) = Zeros(datasize);
+    let concat : bits(2 * 'datasize) = operand2 @ operand1;
+    element1 : bits('esize) = Zeros(esize);
+    element2 : bits('esize) = Zeros(esize);
+    foreach (e from 0 to (elements - 1) by 1 in inc) {
+        if pair then {
+            element1 = aget_Elem(concat, 2 * e, esize);
+            element2 = aget_Elem(concat, 2 * e + 1, esize)
+        } else {
+            element1 = aget_Elem(operand1, e, esize);
+            element2 = aget_Elem(operand2, e, esize)
+        };
+        result = aset_Elem(result, e, esize, FPAdd(element1, element2, fpcr))
+    };
+    result
+}
+
+/* aarch64_vector.sail: fsub (abs false; fabd with abs). */
+val vector_arithmetic_binary_uniform_sub_fp : forall 'datasize 'elements 'esize, ('esize in {32, 64} & 'elements >= 1 & 'elements * 'esize == 'datasize).
+  (int('datasize), int('elements), int('esize), bits('datasize), bits('datasize), bits(32), bool) -> bits('datasize)
+function vector_arithmetic_binary_uniform_sub_fp (datasize, elements, esize, operand1, operand2, fpcr, abs) = {
+    result : bits('datasize) = Zeros(datasize);
+    element1 : bits('esize) = Zeros(esize);
+    element2 : bits('esize) = Zeros(esize);
+    diff : bits('esize) = Zeros(esize);
+    foreach (e from 0 to (elements - 1) by 1 in inc) {
+        element1 = aget_Elem(operand1, e, esize);
+        element2 = aget_Elem(operand2, e, esize);
+        diff = FPSub(element1, element2, fpcr);
+        result = aset_Elem(result, e, esize, if abs then FPAbs(diff) else diff)
+    };
+    result
+}
+
+/* aarch64_vector.sail: fmul. */
+val vector_arithmetic_binary_uniform_mul_fp_product : forall 'datasize 'elements 'esize, ('esize in {32, 64} & 'elements >= 1 & 'elements * 'esize == 'datasize).
+  (int('datasize), int('elements), int('esize), bits('datasize), bits('datasize), bits(32)) -> bits('datasize)
+function vector_arithmetic_binary_uniform_mul_fp_product (datasize, elements, esize, operand1, operand2, fpcr) = {
+    result : bits('datasize) = Zeros(datasize);
+    element1 : bits('esize) = Zeros(esize);
+    element2 : bits('esize) = Zeros(esize);
+    foreach (e from 0 to (elements - 1) by 1 in inc) {
+        element1 = aget_Elem(operand1, e, esize);
+        element2 = aget_Elem(operand2, e, esize);
+        result = aset_Elem(result, e, esize, FPMul(element1, element2, fpcr))
+    };
+    result
+}
+
+/* aarch64_vector.sail: fmla (sub_op false), fmls (sub_op true); the
+ * accumulator V(d) the instruction reads is the parameter operand3. */
+val vector_arithmetic_binary_uniform_mul_fp_fused : forall 'datasize 'elements 'esize, ('esize in {32, 64} & 'elements >= 1 & 'elements * 'esize == 'datasize).
+  (int('datasize), int('elements), int('esize), bits('datasize), bits('datasize), bits('datasize), bits(32), bool) -> bits('datasize)
+function vector_arithmetic_binary_uniform_mul_fp_fused (datasize, elements, esize, operand1, operand2, operand3, fpcr, sub_op) = {
+    result : bits('datasize) = Zeros(datasize);
+    element1 : bits('esize) = Zeros(esize);
+    element2 : bits('esize) = Zeros(esize);
+    foreach (e from 0 to (elements - 1) by 1 in inc) {
+        element1 = aget_Elem(operand1, e, esize);
+        element2 = aget_Elem(operand2, e, esize);
+        if sub_op then {
+            element1 = FPNeg(element1)
+        };
+        result = aset_Elem(result, e, esize, FPMulAdd(aget_Elem(operand3, e, esize), element1, element2, fpcr))
+    };
+    result
+}
+
+/* aarch64_vector.sail: fmin, fmax (IEEE 754-1985 semantics: a NaN operand
+ * propagates; pair for fminp/fmaxp). */
+val vector_arithmetic_binary_uniform_maxmin_fp_1985 : forall 'datasize 'elements 'esize, ('esize in {32, 64} & 'elements >= 1 & 'elements * 'esize == 'datasize).
+  (int('datasize), int('elements), int('esize), bits('datasize), bits('datasize), bits(32), bool, bool) -> bits('datasize)
+function vector_arithmetic_binary_uniform_maxmin_fp_1985 (datasize, elements, esize, operand1, operand2, fpcr, minimum, pair) = {
+    result : bits('datasize) = Zeros(datasize);
+    let concat : bits(2 * 'datasize) = operand2 @ operand1;
+    element1 : bits('esize) = Zeros(esize);
+    element2 : bits('esize) = Zeros(esize);
+    foreach (e from 0 to (elements - 1) by 1 in inc) {
+        if pair then {
+            element1 = aget_Elem(concat, 2 * e, esize);
+            element2 = aget_Elem(concat, 2 * e + 1, esize)
+        } else {
+            element1 = aget_Elem(operand1, e, esize);
+            element2 = aget_Elem(operand2, e, esize)
+        };
+        if minimum then {
+            result = aset_Elem(result, e, esize, FPMin(element1, element2, fpcr))
+        } else {
+            result = aset_Elem(result, e, esize, FPMax(element1, element2, fpcr))
+        }
+    };
+    result
+}
+
+/* aarch64_vector.sail: fminnm, fmaxnm (IEEE 754-2008 minNum/maxNum). */
+val vector_arithmetic_binary_uniform_maxmin_fp_2008 : forall 'datasize 'elements 'esize, ('esize in {32, 64} & 'elements >= 1 & 'elements * 'esize == 'datasize).
+  (int('datasize), int('elements), int('esize), bits('datasize), bits('datasize), bits(32), bool, bool) -> bits('datasize)
+function vector_arithmetic_binary_uniform_maxmin_fp_2008 (datasize, elements, esize, operand1, operand2, fpcr, minimum, pair) = {
+    result : bits('datasize) = Zeros(datasize);
+    let concat : bits(2 * 'datasize) = operand2 @ operand1;
+    element1 : bits('esize) = Zeros(esize);
+    element2 : bits('esize) = Zeros(esize);
+    foreach (e from 0 to (elements - 1) by 1 in inc) {
+        if pair then {
+            element1 = aget_Elem(concat, 2 * e, esize);
+            element2 = aget_Elem(concat, 2 * e + 1, esize)
+        } else {
+            element1 = aget_Elem(operand1, e, esize);
+            element2 = aget_Elem(operand2, e, esize)
+        };
+        if minimum then {
+            result = aset_Elem(result, e, esize, FPMinNum(element1, element2, fpcr))
+        } else {
+            result = aset_Elem(result, e, esize, FPMaxNum(element1, element2, fpcr))
+        }
+    };
+    result
+}
+
+/* aarch64_vector.sail: fsqrt. */
+val vector_arithmetic_unary_special_sqrt : forall 'datasize 'elements 'esize, ('esize in {32, 64} & 'elements >= 1 & 'elements * 'esize == 'datasize).
+  (int('datasize), int('elements), int('esize), bits('datasize), bits(32)) -> bits('datasize)
+function vector_arithmetic_unary_special_sqrt (datasize, elements, esize, operand, fpcr) = {
+    result : bits('datasize) = Zeros(datasize);
+    element : bits('esize) = Zeros(esize);
+    foreach (e from 0 to (elements - 1) by 1 in inc) {
+        element = aget_Elem(operand, e, esize);
+        result = aset_Elem(result, e, esize, FPSqrt(element, fpcr))
+    };
+    result
+}
+
+/* aarch64_vector.sail: fneg (neg true), fabs (neg false). */
+val vector_arithmetic_unary_diffneg_fp : forall 'datasize 'elements 'esize, ('esize in {32, 64} & 'elements >= 1 & 'elements * 'esize == 'datasize).
+  (int('datasize), int('elements), int('esize), bits('datasize), bool) -> bits('datasize)
+function vector_arithmetic_unary_diffneg_fp (datasize, elements, esize, operand, neg) = {
+    result : bits('datasize) = Zeros(datasize);
+    element : bits('esize) = Zeros(esize);
+    foreach (e from 0 to (elements - 1) by 1 in inc) {
+        element = aget_Elem(operand, e, esize);
+        if neg then {
+            element = FPNeg(element)
+        } else {
+            element = FPAbs(element)
+        };
+        result = aset_Elem(result, e, esize, element)
+    };
+    result
+}

@@ -1400,12 +1400,14 @@ func GlobalArrayOf(decl *ast.VariableDeclaration) (GlobalArray, []byte, bool) {
 	return GlobalArray{Symbol: "data_" + decl.Name.Value, Elem: elem.name, Length: length}, bytes, true
 }
 
-// tableSizes is the checker's table of the data symbols a body may address.
-func tableSizes(tables map[string]GlobalArray) map[string]int64 {
-	out := map[string]int64{}
+// tableSizes is the checkers' and the verifier's table of the data
+// symbols a body may address: each with its size, element width, and
+// signedness.
+func tableSizes(tables map[string]GlobalArray) map[string]asm.Table {
+	out := map[string]asm.Table{}
 	for _, gl := range tables {
 		if elem, ok := scalars[gl.Elem]; ok {
-			out[gl.Symbol] = gl.Length * int64(elem.bits/8)
+			out[gl.Symbol] = asm.Table{Size: gl.Length * int64(elem.bits/8), Elem: int64(elem.bits / 8), Signed: elem.signed}
 		}
 	}
 	return out
@@ -1944,6 +1946,19 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 		spell(p.Type)
 	}
 	spell(fn.ReturnType)
+	// The result types of the program's functions too: the verifier
+	// summarizes a call returning a record or a sum type from the callee's
+	// aggregate value packed by this table (asm/verify.go summarizeCall).
+	for _, callee := range g.functions {
+		if callee != nil {
+			spell(callee.ReturnType)
+			for _, p := range callee.Parameters {
+				if p != nil {
+					spell(p.Type)
+				}
+			}
+		}
+	}
 	if g.elided > 0 {
 		elidedGuards[out] = g.elided
 	}

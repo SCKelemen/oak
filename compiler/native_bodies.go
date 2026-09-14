@@ -27,8 +27,9 @@ import (
 // are reported), and its Oak body stays as the portable realization. A
 // function outside the backend's subset is left to the C backend, with the
 // reason reported as information.
-func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.TypeChecker) ([]*asm.Function, []asm.DataSymbol, []*diagnostic.Diagnostic) {
+func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.TypeChecker) nativeLowering {
 	var diagnostics []*diagnostic.Diagnostic
+	result := nativeLowering{Verdicts: map[string]asm.Verdict{}, Fallbacks: map[string]string{}}
 	functions := map[string]*ast.FunctionStatement{}
 	records := map[string]*ast.RecordLiteral{}
 	adts := map[string]*ast.ADTType{}
@@ -94,6 +95,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		if err != nil {
 			if _, outside := err.(nativegen.Unsupported); outside {
 				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (%v)", fn.Name.Value, err)))
+				result.Fallbacks[fn.Name.Value] = err.Error()
 				continue
 			}
 			diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
@@ -132,6 +134,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			continue
 		}
 		diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", "native backend: "+verdict.Message))
+		result.Verdicts[fn.Name.Value] = verdict
 		fn.NativeBacked = true
 		fn.AsmArch = asmFn.Arch // the C emitter guards the Oak body by the lane's negation
 		for name := range asmFn.Globals {
@@ -153,6 +156,8 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			for _, callee := range nativegen.VectorCallees(fn, functions) {
 				if target := functions[callee]; target != nil && !target.NativeBacked {
 					diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (it passes vectors to %s, which the C backend realizes)", fn.Name.Value, callee)))
+					result.Fallbacks[fn.Name.Value] = fmt.Sprintf("it passes vectors to %s, which the C backend realizes", callee)
+					delete(result.Verdicts, fn.Name.Value)
 					demoted = true
 					break
 				}
@@ -167,7 +172,20 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		}
 		lowered = kept
 	}
-	return lowered, data, diagnostics
+	result.Functions, result.Data, result.Diagnostics = lowered, data, diagnostics
+	return result
+}
+
+// nativeLowering is what the native backend made of a program: the
+// lowered functions and their constant tables, each lowered body's
+// verdict by Oak name, each body left to the C backend with the reason,
+// and the diagnostics that say the same in prose.
+type nativeLowering struct {
+	Functions   []*asm.Function
+	Data        []asm.DataSymbol
+	Verdicts    map[string]asm.Verdict
+	Fallbacks   map[string]string
+	Diagnostics []*diagnostic.Diagnostic
 }
 
 // nativeGlobalArrays collects the program's constant tables: top-level
