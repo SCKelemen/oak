@@ -50,6 +50,13 @@ env:
   SAIL_RISCV_RELEASE: "0.14"
   SAIL_RISCV_SHA256: 363f851ba91c674cd818040e232c4baf0ec382406a0a9696b1dde687ea160b2a
   SAIL_ARM_COMMIT: 1bf2e5574ba9d704639a28401b6a387dcb113cae
+  # The RV64 export needs Sail built from git (spec/lean-sail/README.md):
+  # the 0.20.2 release's Lean backend predates the `LeanRV64D` namespace and
+  # the lean-sail v5 pin that sail-riscv 0.14's hand-written RiscvExtras.lean
+  # expects, so its export does not compile. sail-riscv's own Lean CI builds
+  # Sail from source for the same reason.
+  SAIL_GIT_COMMIT: dba5f0078f3a4c8d854ddda1d7ba5f59370c1d02
+  OCAML_VERSION: 5.2.1
 
 jobs:
   sail:
@@ -128,7 +135,9 @@ jobs:
   rv64-bridge:
     name: RV64 bridge against the Sail export
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    # Sail from source (~25 min) and the export (~90 min) on a cold cache;
+    # minutes with both caches warm.
+    timeout-minutes: 300
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -137,18 +146,34 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev zlib1g-dev python3
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev zlib1g-dev python3 pkg-config opam z3
 
-      - name: Install the pinned Sail release
+      # The opam switch holding Sail, keyed by the commit and the compiler.
+      - name: Restore Sail built from git
+        id: sail-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.opam
+          key: sail-git-${{ env.SAIL_GIT_COMMIT }}-ocaml-${{ env.OCAML_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Build Sail from git
+        if: steps.sail-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          curl -sSfL "https://github.com/rems-project/sail/releases/download/${SAIL_RELEASE}/sail-Linux-x86_64.tar.gz" -o /tmp/sail.tar.gz
-          echo "${SAIL_SHA256}  /tmp/sail.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/sail.tar.gz -C "$HOME"
-          echo "$HOME/sail/bin" >> "$GITHUB_PATH"
-          # The release bundles the z3 Sail shells out to; within this step
-          # PATH does not yet carry GITHUB_PATH, so name the directory.
-          PATH="$HOME/sail/bin:$PATH" sail --version
+          opam init --yes --no-setup --bare --disable-sandboxing
+          opam switch create sail-dev "ocaml-base-compiler.${OCAML_VERSION}" --yes
+          git clone -q https://github.com/rems-project/sail.git /tmp/sail
+          git -C /tmp/sail checkout -q "${SAIL_GIT_COMMIT}"
+          # Every package pinned from the one checkout: libsail's build runs
+          # `sail_maker embed`, so sail_maker must come from the same tree.
+          opam pin add --switch sail-dev --no-action --yes /tmp/sail
+          opam install --switch sail-dev --yes sail_maker libsail sail sail_lean_backend
+
+      - name: Put Sail on PATH
+        run: |
+          set -euo pipefail
+          echo "$HOME/.opam/sail-dev/bin" >> "$GITHUB_PATH"
+          "$HOME/.opam/sail-dev/bin/sail" --version
 
       - name: Install elan
         shell: bash
@@ -160,14 +185,14 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       # The export, generated and built, keyed by everything that shapes it:
-      # the Sail release, the sail-riscv release, the repair script, and the
+      # the Sail commit, the sail-riscv release, the repair script, and the
       # bridge's lean-sail pin.
       - name: Restore the built export
         id: export-cache
         uses: actions/cache@v4
         with:
           path: external/sail-riscv/build/model/Lean_RV64D
-          key: rv64-export-${{ env.SAIL_RELEASE }}-${{ env.SAIL_RISCV_RELEASE }}-${{ hashFiles('spec/lean-sail/patch-export.py', 'spec/lean-sail/lake-manifest.json', 'spec/lean-sail/lean-toolchain') }}
+          key: rv64-export-${{ env.SAIL_GIT_COMMIT }}-${{ env.SAIL_RISCV_RELEASE }}-${{ hashFiles('spec/lean-sail/patch-export.py', 'spec/lean-sail/lake-manifest.json', 'spec/lean-sail/lean-toolchain') }}
 
       - name: Generate, repair, and build the export
         if: steps.export-cache.outputs.cache-hit != 'true'
