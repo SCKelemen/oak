@@ -186,12 +186,30 @@ func rv64ControlTransfer(base Instruction) bool {
 // encodeRV64Instruction encodes one base instruction at byte offset pc.
 func encodeRV64Instruction(instr Instruction, pc int64, labels map[string]int64) (uint32, error) {
 	enc, known := rv64Table[instr.Mnemonic]
-	if !known {
-		return 0, fmt.Errorf("no encoding for %s", instr.Mnemonic)
-	}
 	ops := instr.Operands
 	fields := map[string]int64{}
 	regNum := func(i int) int64 { return int64(rv64Number(ops[i].(Register))) }
+	_, _, _, isAtomic := rv64AtomicSpelling(instr.Mnemonic)
+	if base, aq, rl, ok := rv64AtomicSpelling(instr.Mnemonic); ok {
+		// lr rd, 0(rs1); sc/amo rd, rs2, 0(rs1); the ordering bits from the
+		// mnemonic's suffix.
+		enc, known = rv64Table[base], true
+		mem := ops[len(ops)-1].(Memory)
+		fields["rd"], fields["rs1"] = regNum(0), int64(rv64Number(mem.Base))
+		if len(ops) == 3 {
+			fields["rs2"] = regNum(1)
+		}
+		fields["aq"], fields["rl"] = 0, 0
+		if aq {
+			fields["aq"] = 1
+		}
+		if rl {
+			fields["rl"] = 1
+		}
+	}
+	if !known {
+		return 0, fmt.Errorf("no encoding for %s", instr.Mnemonic)
+	}
 	branchOffset := func(sym Symbol, bits int) (int64, error) {
 		target, isLabel := labels[sym.Name]
 		if !isLabel {
@@ -205,6 +223,8 @@ func encodeRV64Instruction(instr Instruction, pc int64, labels map[string]int64)
 		return delta, nil
 	}
 	switch {
+	case isAtomic:
+		// The fields were set above.
 	case rv64FloatShapes[instr.Mnemonic] != "":
 		// rd, rs1, rs2, rs3 by position; the rounding mode (rm) from the
 		// trailing option, dyn (0b111) when absent — GNU as's default.

@@ -72,7 +72,32 @@ func bindRV64Params(fn *Function, sig *ast.FunctionStatement, state *symbolicSta
 	}
 	for _, binding := range fn.Bindings {
 		if binding.OnStack {
-			return "parameters beyond the register contract (the incoming stack area is not modeled)", false
+			// A scalar beyond a0–a7: the caller's outgoing area holds it
+			// widened in an XLEN-sized slot at Stack above the entry sp
+			// (the LP64 psABI), as a register would (Oak.RiscV.widen); the
+			// body's `ld` of the slot reads the parameter. A span or record
+			// there is outside this increment.
+			if _, isComposite := composites[binding.Param]; isComposite {
+				return "a record parameter beyond the register contract (the incoming stack area holds scalars only)", false
+			}
+			if _, isSpan := spans[binding.Param]; isSpan {
+				return "a span parameter beyond the register contract (the incoming stack area holds scalars only)", false
+			}
+			bits := declared[binding.Param]
+			_, signed, _ := contractBits(sigParamType(sig, binding.Param))
+			value := zeroExtend(input(binding.Param, bits), 64)
+			switch {
+			case bits == 64:
+			case signed:
+				value = extendTerm(value, bits, 64, true)
+			case bits == 32:
+				value = extendTerm(value, 32, 64, true)
+			}
+			if state.frame == nil {
+				state.frame = map[int64]frameSlot{}
+			}
+			state.storeSlot(binding.Stack, value, 8)
+			continue
 		}
 		if cp, isComposite := composites[binding.Param]; isComposite {
 			if cp.size > 16 {
@@ -210,6 +235,9 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 		if !okL || !okR {
 			return "unbound register read", false
 		}
+		if op == "shl" || op == "shr" || op == "sar" {
+			state.noteVariableShift(reg(2).Num) // the count's trap guard, if any
+		}
 		state.write(reg(0), rv64ALUTerm(op, l, r, 64))
 		return "", true
 	}
@@ -252,6 +280,9 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 		r, okR := read(2)
 		if !okL || !okR {
 			return "unbound register read", false
+		}
+		if op == "shl" || op == "shr" || op == "sar" {
+			state.noteVariableShift(reg(2).Num)
 		}
 		state.write(reg(0), extendTerm(rv64ALUTerm(op, truncate(l, 32), truncate(r, 32), 32), 32, 64, true))
 		return "", true
@@ -317,6 +348,11 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 	case "jal", "jalr":
 		return "a call", false
 	}
+	if kind, width, isAtomic := rv64Atomic(name); isAtomic {
+		// lr/sc and the amos through a span element under the sequential
+		// model (asm/rv64_atomics.go).
+		return x.atomicRV64(kind, width, ops, state)
+	}
 	if width, isLoad := rv64Loads[name]; isLoad {
 		mem := ops[1].(Memory)
 		if mem.Base.Class != ClassSP {
@@ -324,6 +360,9 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 				if global, isGlobal := globalAddrOf(base); isGlobal {
 					return x.globalLoadRV64(reg(0), mem, width, name, global, state)
 				}
+			}
+			if base, index, bound, size, isElement := rv64FrameElement(state, mem); isElement {
+				return x.rv64FrameElementLoad(reg(0), width, name, base, index, bound, size, state)
 			}
 			return x.spanLoadRV64(reg(0), mem, width, name, state)
 		}
@@ -336,6 +375,9 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 				if global, isGlobal := globalAddrOf(base); isGlobal {
 					return x.globalStoreRV64(reg(0), mem, width, global, state)
 				}
+			}
+			if base, index, bound, size, isElement := rv64FrameElement(state, mem); isElement {
+				return x.rv64FrameElementStore(reg(0), width, base, index, bound, size, state)
 			}
 			return x.spanStoreRV64(reg(0), mem, width, state)
 		}
@@ -448,6 +490,15 @@ func (x *pathExecutor) rv64SpanAddress(mem Memory, state *symbolicState) (span s
 		}
 		return param, constTerm(uint64(offset/elem), 32), "", true
 	}
+	if address.kind == termBinary && address.op == "add" && mem.Offset == 0 {
+		// A derived span's base (`subslice`, asm/derived_spans.go), possibly
+		// re-sliced and then indexed: the root's index is the sum.
+		for _, elem := range []int64{1, 2, 4, 8, 16} {
+			if root, index, isDerived := spanAddressOf(address, elem); isDerived && x.spans[root] == elem && index != nil && !isSimpleElement(address) {
+				return root, index, "", true
+			}
+		}
+	}
 	if address.kind == termBinary && address.op == "add" {
 		// &v + (idx << s), either order.
 		base, scaled := address.left, address.right
@@ -455,18 +506,29 @@ func (x *pathExecutor) rv64SpanAddress(mem Memory, state *symbolicState) (span s
 			base, scaled = address.right, address.left
 		}
 		param, offset, isBase := spanBaseOf(base)
-		if !isBase || offset != 0 || mem.Offset != 0 {
+		if !isBase || mem.Offset != 0 {
 			return "", nil, "a load through an address that is not a span element", false
 		}
+		elem := x.spans[param]
+		if elem == 0 || offset%elem != 0 || offset < 0 {
+			return "", nil, "an element address whose base is not aligned to an element", false
+		}
+		// A constant base offset — a subslice at a constant start folded
+		// into the base (asm/derived_spans.go) — is whole elements ahead.
+		var index *term
 		switch {
-		case x.spans[param] == 1:
+		case elem == 1:
 			// Byte elements: the index is the offset, unscaled.
-			return param, truncate(scaled, 32), "", true
-		case scaled.kind == termBinary && scaled.op == "shl" && scaled.right.kind == termConst && int64(1)<<scaled.right.value == x.spans[param]:
-			return param, truncate(scaled.left, 32), "", true
+			index = truncate(scaled, 32)
+		case scaled.kind == termBinary && scaled.op == "shl" && scaled.right.kind == termConst && int64(1)<<scaled.right.value == elem:
+			index = truncate(scaled.left, 32)
 		default:
 			return "", nil, "an element address whose scale is not the element size", false
 		}
+		if offset != 0 {
+			index = binaryTerm("add", index, constTerm(uint64(offset/elem), 32))
+		}
+		return param, index, "", true
 	}
 	return "", nil, "a load through a register that is not a span base", false
 }
@@ -534,4 +596,16 @@ func (x *pathExecutor) frameAccessRV64(reg Register, mem Memory, width int, name
 	}
 	state.write(reg, value)
 	return "", true
+}
+
+// isSimpleElement reports `&v + (idx << s)` / `&v + idx`: the one-add
+// shape rv64SpanAddress resolves itself (its scale check names the
+// element size); anything deeper is a derived span's address.
+func isSimpleElement(address *term) bool {
+	if address.kind != termBinary || address.op != "add" {
+		return false
+	}
+	_, _, leftBase := spanBaseOf(address.left)
+	_, _, rightBase := spanBaseOf(address.right)
+	return leftBase || rightBase
 }

@@ -24,6 +24,7 @@ package asm
 
 import (
 	"fmt"
+	"math/bits"
 	"os"
 	"sort"
 	"strconv"
@@ -346,6 +347,12 @@ type loopEvent struct {
 	// under the body path condition it happens on. The coupling proof
 	// compares the two sides' stores pairwise (verifyLoops).
 	writes map[string][]*spanWrite
+	// oakDerived marks an event a call summary took from a callee's Oak
+	// body (summarizeCall): its variables are the callee's locals, named
+	// as the Oak side names them, not registers — the register-class
+	// readings of a variable's name (`r9`, `v8.lo`, `f10`, `s-16:8`) do
+	// not apply to it.
+	oakDerived bool
 	// entry: each marked span's write log at the loop's entry, over the
 	// span's entry memory — what the marker replaced. The coupling proof
 	// requires the two sides' entry memories equal (the induction's base;
@@ -1118,7 +1125,7 @@ func upperClear(t *term, declared map[string]int) bool {
 		return strings.HasPrefix(t.name, "loop") && t.width <= 32
 	case termCmp:
 		return true
-	case termSelect, termFloat:
+	case termSelect, termFloat, termQuant:
 		return t.width <= 32
 	case termIte:
 		return upperClear(t.left, declared) && upperClear(t.right, declared)
@@ -1605,9 +1612,10 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		checked++
 	}
-	if checked == 0 && asmTerm != nil {
-		return trusted("no concrete input decided the loops within budget")
-	}
+	// No concrete input deciding the loops within budget (a callee's loop
+	// over a count the memory holds) leaves the witnesses empty; the
+	// coupling below is an induction that needs none, so the decision
+	// proceeds and the verdict says how many inputs agreed.
 	evidence := func(reason string) Verdict {
 		return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on %d concrete inputs (evidence, not proof: %s)", fn.Name, checked, reason)}
 	}
@@ -1622,7 +1630,19 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		return lowering.declaredWidth(name)
 	}
 	// Every implication of this proof spends from one budget.
-	budget := &nodeBudget{remaining: loopProofNodeBudget}
+	// A body no concrete input decided within budget gets an eighth of the
+	// proof's budgets, each
+	// implication bounded by what is left: its
+	// coupling is as sound as any, but without
+	// a witness the search over a hopeless pairing has nothing to refute
+	// it early. On the prover the forty-five such bodies that prove do so
+	// in under three seconds each, and the seventy-five that end in
+	// evidence spent minutes on the way there under the full budgets.
+	proofNodes, searchBudget := loopProofNodeBudget, couplingSearchBudget
+	if checked == 0 {
+		proofNodes, searchBudget = loopProofNodeBudget/8, couplingSearchBudget/8
+	}
+	budget := &nodeBudget{remaining: proofNodes}
 	implies := func(premise, a, b *term) (bool, bool) {
 		return impliesEqualWithin(premise, a, b, widthOfName, budget)
 	}
@@ -1747,6 +1767,12 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		oakEv, asmEv := oakLoops[s.event], asmLoops[s.event]
 		hx := s.pack(oakEv.header)
 		for _, reg := range asmEv.vars {
+			if asmEv.oakDerived && reg != s.name {
+				// A callee's loop taken from its Oak body on both sides: the
+				// variables are the same locals under the same names, and
+				// the pairing is the identity — no search over the others.
+				continue
+			}
 			if used[asmEv.freshName(reg)] {
 				taken = append(taken, asmEv.freshName(reg))
 				continue
@@ -1758,7 +1784,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			// widening is a candidate image; the coupling is r = ext(x) + b at
 			// 64 bits and one iteration must preserve it. A lane group is
 			// paired at its packed width, as r = pack(x) + b only.
-			if strings.HasPrefix(reg, "f") && !oakEv.floats[s.name] {
+			if !asmEv.oakDerived && strings.HasPrefix(reg, "f") && !oakEv.floats[s.name] {
 				continue // the RV64 float file holds float locals only
 			}
 			var widenings []string
@@ -1780,17 +1806,39 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			default:
 				continue
 			}
-			if len(s.locals) > 1 {
-				signs = []int{1}
+			if len(s.locals) > 1 || asmEv.oakDerived || s.width() == 1 {
+				signs = []int{1} // a lane group, a callee's own local, or a Bool: never negated
+			}
+			// A register the iteration leaves as it found it cannot be an
+			// affine image of a variable the iteration changes, nor a
+			// changing register of an unchanging variable: neither pairing
+			// is ever preserved, and each would cost a decision over the
+			// body's terms (an inner loop carrying the outer counters).
+			if regFixed, varFixed := isFreshSymbol(asmEv.next[reg], asmEv.fresh[reg]), slotUnchanged(s, oakEv); regFixed != varFixed {
+				continue
 			}
 			for _, ext := range widenings {
 				hx := widen(hx, ext, asmEv.width[reg])
 				hr := substitute(asmEv.header[reg], sigma)
+				if s.width() == 1 && maxValueDeclared(hr, widthOfName) > 1 && !isUncoupledLoopSymbol(hr, sigma) {
+					// A Bool variable pairs with a register holding a 0/1
+					// value at the header, not with an address or a count
+					// offset by the flag: those pairings are never preserved
+					// and each costs a decision. A header that is an outer
+					// loop's register not yet coupled (the viability pass, an
+					// outer slot still open) is unknown and stays a candidate;
+					// once coupled it is the outer Oak variable's symbol, and
+					// its declared width decides.
+					continue
+				}
 				for _, a := range signs {
 					var b *term
-					if a == 1 {
+					switch {
+					case a == 1 && equalTerms(hr, hx):
+						b = constTerm(0, hr.width) // equality: the header values are one term
+					case a == 1:
 						b = binaryTerm("sub", hr, hx)
-					} else {
+					default:
 						b = binaryTerm("add", hr, hx)
 					}
 					mentioned := map[string]bool{}
@@ -1931,6 +1979,13 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		viable := false
 		var last string
 		candidates, _ := candidatesFor(s)
+		if trace {
+			shows := make([]string, 0, len(candidates))
+			for _, c := range candidates {
+				shows = append(shows, c.show())
+			}
+			fmt.Fprintf(os.Stderr, "verify %s: slot %s of loop %d (asm vars %v): candidates %v\n", fn.Name, s.name, s.event+1, asmLoops[s.event].vars, shows)
+		}
 		for _, c := range candidates {
 			asmName := asmLoops[s.event].freshName(c.reg)
 			sigma[asmName] = widen(s.pack(oakLoops[s.event].fresh), c.ext, asmLoops[s.event].width[c.reg])
@@ -1963,7 +2018,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	var search func(i int) (bool, map[int]bool)
 	search = func(i int) (bool, map[int]bool) {
 		visited++
-		if visited > couplingSearchBudget {
+		if visited > searchBudget {
 			failure = "the coupling search exceeded its budget"
 			return false, nil
 		}
@@ -2051,7 +2106,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			delete(chosen, s.key)
 			delete(sigma, asmName)
 			delete(depthOf, asmName)
-			if visited > couplingSearchBudget {
+			if visited > searchBudget {
 				return false, nil
 			}
 			if !conflict[i] {
@@ -2189,7 +2244,14 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	}
 	loopsNote := "data-dependent loop coupled inductively"
 	if len(oakLoops) > 1 {
-		loopsNote = fmt.Sprintf("%d nested data-dependent loops coupled inductively", len(oakLoops))
+		shape := "data-dependent loops"
+		for _, ev := range oakLoops {
+			if ev.parent != 0 {
+				shape = "nested data-dependent loops"
+				break
+			}
+		}
+		loopsNote = fmt.Sprintf("%d %s coupled inductively", len(oakLoops), shape)
 	}
 	witnessNote := fmt.Sprintf(", %d concrete inputs agree", checked)
 	if asmTerm == nil {
@@ -2426,6 +2488,12 @@ func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term
 	out.cond = substituteMemo(t.cond, sigma, memo)
 	out.left = substituteMemo(t.left, sigma, memo)
 	out.right = substituteMemo(t.right, sigma, memo)
+	if lane, isExtraction := extractedLane(&out); isExtraction {
+		// A lane read out of a register the substitution made a pack of
+		// the Oak lanes is that Oak lane (extractedLane).
+		memo[t] = lane
+		return lane
+	}
 	memo[t] = &out
 	return &out
 }
@@ -2494,13 +2562,34 @@ func impliesEqual(premise, a, b *term, widthOf func(string) int) (holds bool, de
 // impliesEqualWithin is impliesEqual spending from a shared budget when
 // one is given: a decision that would exceed what remains is undecided.
 func impliesEqualWithin(premise, a, b *term, widthOf func(string) int, budget *nodeBudget) (holds bool, decided bool) {
+	return impliesEqualDepth(premise, a, b, widthOf, budget, 0)
+}
+
+// impliesEqualDepth is impliesEqualWithin at a case-split depth: when every
+// variable order exceeds its budget, the decision splits on the condition
+// of the largest branch in the terms and decides both cases under it
+// (splitDecide), up to splitDepth deep.
+func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
 	width := a.width
 	if b.width > width {
 		width = b.width
 	}
 	a, b = adaptWidth(a, width), adaptWidth(b, width)
+	branching := hasLargeBranch(a) || hasLargeBranch(b)
+	if premise.kind != termConst && branching {
+		// The premise settles branches on both sides (a loop guard, a case
+		// split's condition): with those pruned the sides may be one term.
+		pruned := pruneUnder(premise, []*term{a, b}, widthOf)
+		a, b = pruned[0], pruned[1]
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "verify: pruned under the premise: a %d nodes, b %d nodes, same=%v\n", termSize(a, map[*term]int{}), termSize(b, map[*term]int{}), equalTerms(a, b))
+		}
+	}
 	if equalTerms(a, b) {
 		return true, true // the same term on both sides: no diagram needed
+	}
+	if equalReductions(a, b) {
+		return true, true // the same lane tests, reduced and negated alike
 	}
 	if budget != nil && budget.remaining <= 0 {
 		return false, false
@@ -2525,6 +2614,12 @@ func impliesEqualWithin(premise, a, b *term, widthOf func(string) int, budget *n
 	results := make(chan attempt, len(blasters))
 	for _, bl := range blasters {
 		bl.bdd.stop = &stop
+		if budget != nil && budget.remaining < bl.bdd.budget {
+			// One implication spends no more than the proof has left: the
+			// shared budget bounds the diagrams as they grow, not only the
+			// number of implications tried.
+			bl.bdd.budget = budget.remaining
+		}
 		go func(bl *blaster) {
 			holds, decided := impliesEqualUnder(bl, premise, a, b, width)
 			results <- attempt{holds, decided}
@@ -2536,7 +2631,325 @@ func impliesEqualWithin(premise, a, b *term, widthOf func(string) int, budget *n
 			return r.holds, true
 		}
 	}
-	return false, false
+	if !branching {
+		return false, false // no branch worth a split: the diagrams were the decision
+	}
+	return splitDecide(premise, a, b, widthOf, budget, depth)
+}
+
+// hasLargeBranch reports an ite in the term, other than a table lookup's
+// step, whose arms together exceed largeBranch nodes: the branches a case
+// split or a pruning under a premise can shrink a decision by.
+func hasLargeBranch(t *term) bool {
+	sizes := map[*term]int{}
+	visited := map[*term]bool{}
+	var walk func(t *term) bool
+	walk = func(t *term) bool {
+		if t == nil || visited[t] {
+			return false
+		}
+		visited[t] = true
+		if t.kind == termIte && t.cond.kind != termConst && !isLookupStep(t.cond, sizes) && termSize(t.left, sizes)+termSize(t.right, sizes) >= largeBranch {
+			return true
+		}
+		return walk(t.cond) || walk(t.left) || walk(t.right)
+	}
+	return walk(t)
+}
+
+// largeBranch is the arm size from which a branch is worth splitting on.
+const largeBranch = 200
+
+// splitDecide decides premise → (a = b) by a case split on the condition
+// of the largest branch in a or b: both cases must hold, and either
+// refuted refutes the whole (a counterexample under a stronger premise is
+// one under the premise). Under each case the blaster prunes every ite
+// the case settles, so a branch on a condition over many inputs — the
+// UTF-8 kernel's "any high bit in the sixty-four bytes" — no longer
+// multiplies its arms' diagrams. Undecided past splitDepth.
+func splitDecide(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+	if depth >= splitDepth {
+		return false, false
+	}
+	cond := splitCondition(a, b)
+	if cond == nil {
+		return false, false
+	}
+	if os.Getenv("OAK_VERIFY_TRACE") != "" {
+		fmt.Fprintf(os.Stderr, "verify: case split at depth %d on %s\n", depth, abbreviate(cond.String(), 150))
+	}
+	c := truncate(cond, 1)
+	for polarity, branch := range []*term{c, binaryTerm("xor", c, constTerm(1, 1))} {
+		holds, decided := impliesEqualDepth(binaryTerm("and", premise, branch), a, b, widthOf, budget, depth+1)
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "verify: case split depth %d polarity %d: holds=%v decided=%v\n", depth, polarity, holds, decided)
+		}
+		if !decided {
+			return false, false
+		}
+		if !holds {
+			return false, true
+		}
+	}
+	return true, true
+}
+
+// splitDepth bounds the case splits nested in one decision.
+const splitDepth = 2
+
+// pruneUnder rewrites terms under a premise: an ite whose condition the
+// premise implies or refutes — decided on a small diagram of the premise
+// and the condition alone — becomes the arm the premise selects, so that
+// two sides which agree once a branch is settled become one term (equal
+// structurally, no diagram of their arms needed), and any diagram still
+// built is over the arms alone. The walk is memoized over the DAG; a
+// condition past the small budget leaves its branch in place.
+func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term {
+	mentioned := map[string]bool{}
+	collectParams(premise, mentioned)
+	for _, t := range terms {
+		collectParams(t, mentioned)
+	}
+	names := make([]string, 0, len(mentioned))
+	widths := map[string]int{}
+	for name := range mentioned {
+		names = append(names, name)
+		widths[name] = widthOf(name)
+	}
+	sort.Strings(names)
+	bl := newBlaster(names, widths)
+	bl.bdd = newBDD(pruneNodeBudget)
+	pBits := bl.blast(premise)
+	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
+	if pBits == nil || bl.bdd.exceeded || pBits[0] == bddTrue {
+		if trace {
+			fmt.Fprintf(os.Stderr, "verify: pruning skipped: premise nil=%v exceeded=%v trivial=%v (%d nodes)\n", pBits == nil, bl.bdd.exceeded, pBits != nil && pBits[0] == bddTrue, len(bl.bdd.nodes))
+		}
+		return terms
+	}
+	assume := pBits[0]
+	ites, settled, unblastable := 0, 0, 0
+	defer func() {
+		if trace {
+			fmt.Fprintf(os.Stderr, "verify: pruning: %d branches met, %d settled, %d conditions beyond the small budget, %d nodes\n", ites, settled, unblastable, len(bl.bdd.nodes))
+		}
+	}()
+	memo := map[*term]*term{}
+	sizes := map[*term]int{}
+	var rewrite func(t *term) *term
+	rewrite = func(t *term) *term {
+		if t == nil {
+			return nil
+		}
+		if done, seen := memo[t]; seen {
+			return done
+		}
+		out := t
+		switch t.kind {
+		case termConst, termParam:
+		case termIte:
+			if isLookupStep(t.cond, sizes) {
+				// A table lookup's step (`index = k`) is never settled by a
+				// premise worth splitting on; its condition would only spend
+				// the budget.
+				c, l, r := rewrite(t.cond), rewrite(t.left), rewrite(t.right)
+				if c != t.cond || l != t.left || r != t.right {
+					copy := *t
+					copy.cond, copy.left, copy.right = c, l, r
+					out = &copy
+				}
+				break
+			}
+			ites++
+			cond := bl.blast(t.cond)
+			if cond == nil || bl.bdd.exceeded {
+				unblastable++
+				break // the condition is beyond the small budget: keep the branch
+			}
+			implied := bl.bdd.apply(opAnd, assume, bl.bdd.not(cond[0])) == bddFalse
+			refuted := bl.bdd.apply(opAnd, assume, cond[0]) == bddFalse
+			if bl.bdd.exceeded {
+				unblastable++
+				break
+			}
+			switch {
+			case implied:
+				settled++
+				out = adaptWidth(rewrite(t.left), t.width)
+			case refuted:
+				settled++
+				out = adaptWidth(rewrite(t.right), t.width)
+			default:
+				if trace && termSize(t.left, sizes)+termSize(t.right, sizes) > 1000 {
+					fmt.Fprintf(os.Stderr, "verify: pruning left a branch of %d nodes unsettled on %s\n", termSize(t.left, sizes)+termSize(t.right, sizes), abbreviate(t.cond.String(), 120))
+				}
+				c, l, r := rewrite(t.cond), rewrite(t.left), rewrite(t.right)
+				if c != t.cond || l != t.left || r != t.right {
+					copy := *t
+					copy.cond, copy.left, copy.right = c, l, r
+					out = &copy
+				}
+			}
+		default:
+			l, r := rewrite(t.left), rewrite(t.right)
+			if l != t.left || r != t.right {
+				copy := *t
+				copy.left, copy.right = l, r
+				out = &copy
+			}
+		}
+		memo[t] = out
+		return out
+	}
+	pruned := make([]*term, len(terms))
+	for i, t := range terms {
+		pruned[i] = rewrite(t)
+	}
+	return pruned
+}
+
+// isLookupStep recognizes the condition of one step of a table lookup
+// (laneTable): an equality of a small index term with a constant.
+func isLookupStep(cond *term, sizes map[*term]int) bool {
+	return cond.kind == termCmp && cond.op == "eq" && cond.right.kind == termConst && termSize(cond.left, sizes) <= 8
+}
+
+// pruneNodeBudget bounds the diagram pruneUnder decides conditions on:
+// conditions are small, and a pass that cannot settle them cheaply is
+// skipped.
+const pruneNodeBudget = 200000
+
+// equalReductions decides two 1/0 results that each test whether some
+// lane of a vector is nonzero — `any` as the Oak side spells it (an or of
+// `lane ≠ 0` tests) and as the machine spells it (`umaxv`, `cmp #0`,
+// `cset`, `eor #1`, distributed by cmpTerm) — by their lane tests: the
+// same negation and the same lanes, each lane the same term on both
+// sides. A reduction over lanes that are one term is one value, whatever
+// order or width the reduction was spelled in; the diagram of the lanes
+// themselves (a table-driven classification) is never needed.
+func equalReductions(a, b *term) bool {
+	lanesA, negA, okA := laneTests(a)
+	lanesB, negB, okB := laneTests(b)
+	if !okA || !okB || negA != negB || len(lanesA) != len(lanesB) || len(lanesA) == 0 {
+		return false
+	}
+	used := make([]bool, len(lanesB))
+	for _, lane := range lanesA {
+		matched := false
+		for j, other := range lanesB {
+			if !used[j] && equalTerms(lane, other) {
+				used[j] = true
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+// laneTests reads a 1/0 term as a negated-or-not disjunction of `x ≠ 0`
+// tests and returns the x's; ok is false for any other shape.
+func laneTests(t *term) (lanes []*term, negated bool, ok bool) {
+	for {
+		switch {
+		case t.kind == termBinary && t.op == "and" && t.right.kind == termConst && t.right.value == 1:
+			t = t.left // a Bool narrowed to its bit
+			continue
+		case t.kind == termBinary && t.op == "and" && t.right.kind == termConst && isLowMask(t.right.value) && t.left.width <= bits.Len64(t.right.value):
+			t = t.left // a zero-extension
+			continue
+		case t.kind == termBinary && t.op == "xor" && t.right.kind == termConst && t.right.value == 1:
+			negated = !negated
+			t = t.left
+			continue
+		case t.kind == termIte && t.left.kind == termConst && t.right.kind == termConst && t.left.value == 1 && t.right.value == 0:
+			t = t.cond // cset: the condition as 1/0
+			continue
+		case t.kind == termIte && t.left.kind == termConst && t.right.kind == termConst && t.left.value == 0 && t.right.value == 1:
+			negated = !negated
+			t = t.cond
+			continue
+		case t.kind == termCmp && t.op == "eq" && t.right.kind == termConst && t.right.value == 0 && t.left.kind == termIte && t.left.left.kind == termConst && t.left.right.kind == termConst && t.left.left.value == 1 && t.left.right.value == 0:
+			negated = !negated // (c ? 1 : 0) == 0 is ¬c
+			t = t.left.cond
+			continue
+		}
+		break
+	}
+	var collect func(t *term) bool
+	collect = func(t *term) bool {
+		switch {
+		case t.kind == termConst && t.value == 0:
+			return true
+		case t.kind == termBinary && t.op == "or":
+			return collect(t.left) && collect(t.right)
+		case t.kind == termCmp && t.op == "ne" && t.right.kind == termConst && t.right.value == 0:
+			lanes = append(lanes, t.left)
+			return true
+		case t.kind == termBinary && t.op == "and" && t.right.kind == termConst && isLowMask(t.right.value) && t.left.width <= bits.Len64(t.right.value):
+			return collect(t.left) // a test zero-extended
+		}
+		return false
+	}
+	if !collect(t) {
+		return nil, false, false
+	}
+	return lanes, negated, true
+}
+
+// splitCondition is the condition of the ite in a or b with the largest
+// arms (by shared-node count), nil when neither has a branch.
+func splitCondition(a, b *term) *term {
+	sizes := map[*term]int{}
+	var best *term
+	bestSize := 0
+	visited := map[*term]bool{}
+	var walk func(t *term)
+	walk = func(t *term) {
+		if t == nil || visited[t] {
+			return
+		}
+		visited[t] = true
+		if t.kind == termIte && t.cond.kind != termConst {
+			if size := termSize(t.left, sizes) + termSize(t.right, sizes); size > bestSize {
+				best, bestSize = t.cond, size
+			}
+		}
+		walk(t.cond)
+		walk(t.left)
+		walk(t.right)
+	}
+	walk(a)
+	walk(b)
+	return best
+}
+
+// termSize measures a term as a tree, saturating at termSizeCap: shared
+// subterms count once per reference (a heuristic for the size of the
+// diagram a branch's arms would need, not a node count).
+func termSize(t *term, memo map[*term]int) int {
+	if t == nil {
+		return 0
+	}
+	if n, seen := memo[t]; seen {
+		return n
+	}
+	n := min(termSizeCap, 1+termSize(t.cond, memo)+termSize(t.left, memo)+termSize(t.right, memo))
+	memo[t] = n
+	return n
+}
+
+const termSizeCap = 1 << 40
+
+// abbreviate cuts a rendering for a trace line.
+func abbreviate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // refutedByCoupling is refutedByValuation over the symbols the obligation
@@ -2565,6 +2978,12 @@ func refutedByCoupling(premise, a, b *term, widthOf func(string) int) bool {
 // variable order.
 func impliesEqualUnder(bl *blaster, premise, a, b *term, width int) (holds bool, decided bool) {
 	pBits := bl.blast(premise)
+	if pBits == nil {
+		return false, false
+	}
+	if pBits[0] != bddTrue {
+		bl.assume, bl.assumed = pBits[0], true // the premise settles the branches it decides
+	}
 	aBits, bBits := bl.blast(a), bl.blast(b)
 	if pBits == nil || aBits == nil || bBits == nil || bl.bdd.exceeded {
 		return false, false
@@ -2631,6 +3050,18 @@ func refutedByValuation(premise, a, b *term, names []string, widths map[string]i
 	if len(targets) > couplingTargets {
 		targets = targets[:couplingTargets]
 	}
+	// The terms are numbered once and evaluated through slices
+	// (termEvaluator, as decideEqual's witness pass evaluates); the
+	// valuations are thinned so the pass visits a bounded number of nodes,
+	// since an obligation over summarized callees is a large DAG.
+	evaluator := newTermEvaluator(premise, a, b)
+	rounds := couplingValuations
+	if visits := len(evaluator.terms) * (3*len(targets) + rounds); visits > witnessVisitBudget {
+		rounds = witnessVisitBudget / (3*len(targets) + 1) / max(len(evaluator.terms), 1)
+		if rounds < 8 {
+			rounds = 8
+		}
+	}
 	for _, target := range targets {
 		for _, delta := range []uint64{0, 1, ^uint64(0)} {
 			env := map[string]uint64{}
@@ -2638,12 +3069,12 @@ func refutedByValuation(premise, a, b *term, names []string, widths map[string]i
 				env[name] = random() & mask(widths[name])
 			}
 			env[target.name] = (target.value + delta) & mask(widths[target.name])
-			if premise.eval(env) != 0 && a.eval(env) != b.eval(env) {
+			if evaluator.evaluate(premise, env) != 0 && evaluator.evaluate(a, env) != evaluator.evaluate(b, env) {
 				return true
 			}
 		}
 	}
-	for round := 0; round < couplingValuations; round++ {
+	for round := 0; round < rounds; round++ {
 		env := map[string]uint64{}
 		for _, name := range free {
 			value := random()
@@ -2662,10 +3093,10 @@ func refutedByValuation(premise, a, b *term, names []string, widths map[string]i
 			}
 			env[name] = value & mask(widths[name])
 		}
-		if premise.eval(env) == 0 {
+		if evaluator.evaluate(premise, env) == 0 {
 			continue
 		}
-		if a.eval(env) != b.eval(env) {
+		if evaluator.evaluate(a, env) != evaluator.evaluate(b, env) {
 			return true
 		}
 	}
@@ -2737,3 +3168,55 @@ const couplingValuations = 80
 
 // couplingSearchBudget bounds the pairings the coupling search visits.
 const couplingSearchBudget = 4096
+
+// isUncoupledLoopSymbol reports a term that is a loop's fresh symbol
+// itself, at any width, which the substitution does not yet map (an inner
+// loop's register whose header value is the outer loop's symbol for it,
+// the outer slot still open).
+func isUncoupledLoopSymbol(t *term, sigma map[string]*term) bool {
+	for t != nil {
+		switch t.kind {
+		case termParam:
+			return strings.HasPrefix(t.name, "loop") && sigma[t.name] == nil
+		case termBinary:
+			if t.op == "and" && t.right.kind == termConst {
+				t = t.left
+				continue
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// isFreshSymbol reports a one-iteration value that is the variable's own
+// fresh symbol at any width: the iteration left the variable unchanged.
+func isFreshSymbol(next, fresh *term) bool {
+	if next == nil || fresh == nil {
+		return false
+	}
+	for next != nil {
+		switch next.kind {
+		case termParam:
+			return next.name == fresh.name
+		case termBinary:
+			if next.op == "and" && next.right.kind == termConst {
+				next = next.left
+				continue
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// slotUnchanged reports a slot every one of whose locals the iteration
+// leaves unchanged.
+func slotUnchanged(s loopSlot, ev *loopEvent) bool {
+	for _, local := range s.locals {
+		if !isFreshSymbol(ev.next[local], ev.fresh[local]) {
+			return false
+		}
+	}
+	return true
+}

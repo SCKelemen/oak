@@ -47,6 +47,14 @@ type blaster struct {
 	// owners maps a parameter variable back to its parameter bit, for
 	// counterexamples under either order.
 	owners map[int]variableOwner
+	// assume, when assumed is set, is a diagram the decision holds under
+	// (an implication's premise, a case split's condition): an ite whose
+	// condition the assumption implies or refutes blasts as that arm
+	// alone, so a branch on a condition over many inputs never multiplies
+	// its arms' diagrams.
+	assume  int
+	assumed bool
+	pruned  int // branches the assumption settled (trace)
 }
 
 type variableOwner struct {
@@ -370,7 +378,14 @@ func (bl *blaster) blastUncached(t *term) []int {
 		}
 		return out
 	case termParam:
-		declared := bl.widths[t.name]
+		declared, known := bl.widths[t.name]
+		if !known {
+			// A parameter the decision was not told of would blast to a
+			// constant zero and could turn a difference into a proof; the
+			// diagram fails closed instead, as if over budget.
+			bl.bdd.exceeded = true
+			return nil
+		}
 		for i := 0; i < t.width; i++ {
 			if i < declared {
 				out[i] = bl.variable(bl.variableIndex(t.name, i))
@@ -385,6 +400,16 @@ func (bl *blaster) blastUncached(t *term) []int {
 			return nil
 		}
 		return bl.selectBits(t.name, idx, t.width, t.left)
+	case termQuant:
+		holds, ok := bl.quantify(t)
+		if !ok {
+			return nil
+		}
+		for i := range out {
+			out[i] = bddFalse
+		}
+		out[0] = holds
+		return out
 	case termFloat:
 		// An uninterpreted operation: its value is a fresh block shared by
 		// every application of the same operation to the same operand
@@ -424,9 +449,25 @@ func (bl *blaster) blastUncached(t *term) []int {
 		return out
 	case termIte:
 		cond := bl.blast(t.cond)
+		if cond == nil {
+			return nil
+		}
+		if bl.assumed && bl.cnf == nil {
+			if bl.bdd.apply(opAnd, bl.assume, bl.bdd.not(cond[0])) == bddFalse {
+				bl.pruned++
+				return bl.adapt(bl.blast(t.left), t.width) // the assumption implies the condition
+			}
+			if bl.bdd.apply(opAnd, bl.assume, cond[0]) == bddFalse {
+				bl.pruned++
+				return bl.adapt(bl.blast(t.right), t.width) // the assumption refutes it
+			}
+			if bl.bdd.exceeded {
+				return nil
+			}
+		}
 		left := bl.adapt(bl.blast(t.left), t.width)
 		right := bl.adapt(bl.blast(t.right), t.width)
-		if cond == nil || left == nil || right == nil {
+		if left == nil || right == nil {
 			return nil
 		}
 		for i := range out {
@@ -825,5 +866,80 @@ func (bl *blaster) counterexampleOf(node int) map[string]uint64 {
 		}
 		env[owner.param] |= uint64(1) << uint(owner.bit)
 	}
+	// The element reads the diagrams gave values to: each select at the
+	// index its bits take under the assignment is the element parameter
+	// `v[k]` with the value its variables take, so that evaluating the
+	// terms on this input reads the memory the diagrams chose (an
+	// uninterpreted operation's application, index nil, is not reported:
+	// the evaluation computes the operation itself, which is what tells a
+	// difference under the abstraction from a counterexample).
+	for _, sel := range bl.selects {
+		if sel.index == nil {
+			continue
+		}
+		var k uint64
+		for i, bit := range sel.idx {
+			if bl.bdd.holdsUnder(bit, assignment) {
+				k |= uint64(1) << uint(i)
+			}
+		}
+		name := spanElemName(sel.span, int64(k))
+		if _, given := env[name]; given {
+			continue // a constant-index read of the same element: a parameter already reported
+		}
+		var value uint64
+		for i, variable := range sel.vars {
+			if assignment[variable] {
+				value |= uint64(1) << uint(i)
+			}
+		}
+		env[name] = value
+	}
 	return env
+}
+
+// quantify eliminates a quantifier's bound parameter from its body's
+// diagram (docs/spec/10-syntax.md section 3e): under the diagram engine,
+// `forall` is the conjunction and `exists` the disjunction of the two
+// cofactors at each of the parameter's variables, innermost bit first —
+// the diagram of the body with the variables gone, sound by Shannon's
+// expansion. Under the clause engine there is no cofactor, so the domain
+// is expanded: the body under every constant value of the parameter, up
+// to 256 values; a wider binder is declined there.
+func (bl *blaster) quantify(t *term) (int, bool) {
+	op := opAnd
+	if t.op == "exists" {
+		op = opOr
+	}
+	width := int(t.value)
+	if bl.cnf != nil {
+		if width > 8 {
+			return 0, false
+		}
+		acc := bddTrue
+		if op == opOr {
+			acc = bddFalse
+		}
+		for v := uint64(0); v < uint64(1)<<uint(width); v++ {
+			body := bl.blast(substitute(t.left, map[string]*term{t.name: constTerm(v, width)}))
+			if body == nil {
+				return 0, false
+			}
+			acc = bl.apply(op, acc, body[0])
+		}
+		return acc, !bl.exceeded()
+	}
+	body := bl.blast(t.left)
+	if body == nil {
+		return 0, false
+	}
+	f := body[0]
+	for bit := 0; bit < width; bit++ {
+		v := bl.variableIndex(t.name, bit)
+		f = bl.bdd.apply(op, bl.bdd.restrict(f, v, false), bl.bdd.restrict(f, v, true))
+		if bl.exceeded() {
+			return 0, false
+		}
+	}
+	return f, true
 }

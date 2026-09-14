@@ -108,6 +108,16 @@ func TestE2ENativeSubslice(t *testing.T) {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
+	// Derived spans are the root span at an offset (docs/spec/94-assembler.md
+	// §8, derived spans): the subslice locals of fields and edge, the
+	// re-sliced span clear_middle writes through, and the subslice handed
+	// to sum are all proven; main, passing an owned array into fields,
+	// stays trusted (a span local over an aggregate).
+	for _, fn := range []string{"fields", "clear_middle", "edge"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven equal to its Oak body") {
+			t.Errorf("%s must be proven through its derived spans; diagnostics:\n%s", fn, joined)
+		}
+	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_subslice_c", New().WithSource("subslice.oak", nativeSubsliceProgram)); abnormal || code != 42 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)
 	}

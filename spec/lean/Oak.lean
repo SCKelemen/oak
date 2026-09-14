@@ -72,10 +72,13 @@ import Oak.Propagation
 import Oak.ChoiceTape
 import Oak.FieldTags
 import Oak.Assembler
+import Oak.ArgumentLayout
+import Oak.SpanAlias
 import Oak.AssemblerSemantics
 import Oak.ArmASL
 import Oak.Extents
 import Oak.ExtentsRefinement
+import Oak.CheckerRefinement
 import Oak.Dispatch
 import Oak.Discharge
 import Oak.FloatBits
@@ -103,6 +106,12 @@ import Oak.Semver
 import Oak.Loops
 import Oak.TrapArms
 import Oak.StackArguments
+import Oak.Subslice
+import Oak.UnitBodies
+import Oak.FrameIndex
+import Oak.SpanLocals
+import Oak.Shifts
+import Oak.SpanArguments
 import Oak.Regions
 import Oak.SessionObligations
 import Oak.SessionObligationsProved

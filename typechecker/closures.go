@@ -110,6 +110,15 @@ func (tc *TypeChecker) closureCaptures(fn *ast.FunctionLiteral) []string {
 					walkStmt(stmt, blockLocals)
 				}
 			}
+		case *ast.QuantifierExpression:
+			// The binders are the body's own locals, never captures.
+			bodyLocals := copyLocals(locals)
+			for _, binder := range e.Binders {
+				if binder != nil && binder.Name != nil {
+					bodyLocals[binder.Name.Value] = true
+				}
+			}
+			walkExpr(e.Body, bodyLocals)
 		case *ast.ArrayLiteral:
 			for _, elem := range e.Elements {
 				walkExpr(elem, locals)

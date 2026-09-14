@@ -64,6 +64,12 @@ func appendMarker(log map[string][]*spanWrite, span string, loop int) map[string
 type pathEffects struct {
 	cells  map[string]*term
 	writes map[string][]*spanWrite
+	// trap is the 1-bit condition under which the machine path traps
+	// (brk): nil when no path from here does. The equivalence holds on
+	// the inputs where the machine does not trap — where Oak traps too,
+	// on the same guard — so the decision conjoins its negation to the
+	// input domain (oakLowering.domainCondition).
+	trap *term
 }
 
 func (s *symbolicState) effects() *pathEffects {
@@ -218,7 +224,41 @@ func (x *pathExecutor) mergeEffects(cond *term, taken, fallThrough *pathEffects)
 	if fallThrough != nil {
 		fallCells, fallWrites = fallThrough.cells, fallThrough.writes
 	}
-	return &pathEffects{cells: x.mergeCells(cond, takenCells, fallCells), writes: mergeWrites(cond, takenWrites, fallWrites)}
+	return &pathEffects{cells: x.mergeCells(cond, takenCells, fallCells), writes: mergeWrites(cond, takenWrites, fallWrites), trap: mergeTrap(cond, taken, fallThrough)}
+}
+
+// mergeTrap is the trap condition of a fork: the taken side's under cond,
+// the fall-through's otherwise; nil when neither side traps.
+func mergeTrap(cond *term, taken, fallThrough *pathEffects) *term {
+	var takenTrap, fallTrap *term
+	if taken != nil {
+		takenTrap = taken.trap
+	}
+	if fallThrough != nil {
+		fallTrap = fallThrough.trap
+	}
+	if takenTrap == nil && fallTrap == nil {
+		return nil
+	}
+	if takenTrap == nil {
+		takenTrap = constTerm(0, 1)
+	}
+	if fallTrap == nil {
+		fallTrap = constTerm(0, 1)
+	}
+	return iteTerm(truncate(cond, 1), takenTrap, fallTrap)
+}
+
+// withTrap is effects with the trap condition set: the surviving side of a
+// fork whose other side trapped keeps its cells and writes and records
+// where the machine trapped.
+func withTrap(effects *pathEffects, trap *term) *pathEffects {
+	if effects == nil {
+		return &pathEffects{trap: trap}
+	}
+	out := *effects
+	out.trap = trap
+	return &out
 }
 
 // elementIn is the span element at an index term as the path sees it:
@@ -258,6 +298,25 @@ func (x *pathExecutor) spanStore(instr Instruction, state *symbolicState) (handl
 		}
 		param, offset, index, shift = name, off, idx, sh
 		elem := x.spans[param]
+		if derived, at, isDerived := spanAddressOf(base, elem); isDerived && elem > 0 {
+			// A derived span's base (asm/derived_spans.go): the root's
+			// index is the sum, a scaled index in the addressing mode added.
+			param, index, offset, shift = derived, at, 0, log2(elem)
+			if mem.Index != nil {
+				if int64(1)<<uint(mem.Shift) != elem {
+					return true, "an indexed store whose scale is not the element size", false
+				}
+				further, ok := state.read(*mem.Index)
+				if !ok {
+					return true, "unbound register read", false
+				}
+				index = addIndex(index, truncate(further, 32))
+				mem.Index = nil
+			}
+			if index == nil {
+				index = constTerm(0, 32)
+			}
+		}
 		if elem == 0 || int64(1)<<uint(shift) != elem || offset%elem != 0 {
 			return true, "a store through an element address not aligned to an element", false
 		}
@@ -378,6 +437,7 @@ func (lo *oakLowering) assignSpanElement(name string, contract spanContract, s *
 		return reason, false
 	}
 	root := lo.spanRoot(name)
+	index = lo.spanIndex(name, index) // a derived span: start + i in the root
 	if lo.concrete != nil && index.kind == termConst {
 		if length, known := lo.concrete[spanLenName(root)]; known && index.value >= length {
 			return fmt.Sprintf("an index past len(%s) on this input", name), false
@@ -519,6 +579,14 @@ func alignedWrites(asm, oak []*spanWrite) ([][2]*term, bool) {
 func decideEffects(fn *Function, lowering *oakLowering, exec *pathExecutor, result *Verdict) Verdict {
 	writesCells := len(exec.cells) > 0 || len(lowering.writtenCells()) > 0
 	writesSpans := len(exec.writes) > 0 || len(lowering.writes) > 0
+	if !writesCells && !writesSpans && result == nil {
+		// A unit body with no effect on either side — an assert over a
+		// call, a body whose stores the model tracks are none — leaves the
+		// entry state as it is on both sides, so the sides agree
+		// (docs/spec/94-assembler.md §8, unit bodies without effects;
+		// Oak.UnitBodies: an empty effect log is the identity).
+		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (a unit body that writes no package state and no span memory on either side)", fn.Name)}
+	}
 	if writesCells {
 		verdict := decideCells(fn, lowering, exec, result)
 		if verdict.Kind != VerdictProven || !writesSpans {

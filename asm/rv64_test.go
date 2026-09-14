@@ -522,9 +522,10 @@ func TestRV64EmitC(t *testing.T) {
 }
 
 // Span element memory (docs/spec/94-assembler.md §9): the LP64 length
-// register carries padding above bit 31, so a bound needs the normalized
-// copy; an element is addressed through a guarded index scaled by the
-// element size, or at a constant offset below a proven minimum length.
+// register is the psABI-widened u32, so a bound needs the normalized copy
+// (or, GCC's shape, the raw comparison of two widened u32 parameters); an
+// element is addressed through a guarded index scaled by the element
+// size, or at a constant offset below a proven minimum length.
 const rv64SumDecl = "sum_rv: (v: []u32) -> u32"
 const rv64SumBody = `
   bind a0, a1 = v

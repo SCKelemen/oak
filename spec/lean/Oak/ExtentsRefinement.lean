@@ -448,4 +448,20 @@ theorem indexUnder_sound (facts : List Fact) (name : String) (static : Option Na
       | lowerLit => simp at hmatch
       | divIndex => simp at hmatch
 
+
+/-! ## The decisions rendered by the Go checker
+
+Each line is one index site of `typechecker/extents_refinement_test.go`:
+the live facts, the container's static extent, and the shape the
+recognizers read, rendered by the Go checker with its decision and checked
+here by `decide`. The test fails when a rendering is missing, `lake build`
+when a rendering is wrong. -/
+
+example : indexUnder [] "v" (some 8) (Shape.const 3) = true := by decide
+example : indexUnder [] "v" (some 8) (Shape.masked 0 7) = true := by decide
+example : indexUnder [Fact.indexLit "i" 6] "v" (some 8) (Shape.offset "i" 2) = true := by decide
+example : indexUnder [Fact.indexLit "i" 4] "v" (some 8) (Shape.scaled "i" 2 1) = true := by decide
+example : indexUnder [Fact.minLen "v" 4, Fact.indexLit "i" 4] "v" none (Shape.offset "i" 0) = true := by decide
+example : indexUnder [Fact.indexLit "i" 9] "v" (some 8) (Shape.offset "i" 0) = false := by decide
+
 end Oak.ExtentsRefinement
