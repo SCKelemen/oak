@@ -37,6 +37,17 @@ var floatOps = map[string]int{
 	// NaN whose payload the platform chooses (docs/spec/20-types.md
 	// §11.3.5), one function of the operands on both sides.
 	"fnan": 2,
+	// Integer division: the quotient as an uninterpreted operation of its
+	// operands (docs/spec/94-assembler.md §8, thirty-first increment); the
+	// remainder is a - (a / b) * b on every side (the machines' definition,
+	// Oak.IntegerDivision). Both lanes trap on a zero divisor, so the
+	// applications compared lie off b = 0; the evaluation returns the
+	// AArch64 result there (0).
+	"udiv": 2, "sdiv": 2,
+	// The RV64 lane's quotients: the same functions off b = 0, where the
+	// M extension yields all ones (unprivileged spec §7.2) and the QEMU
+	// differential reads them (asm/rv64_qemu_test.go).
+	"rv.udiv": 2, "rv.sdiv": 2,
 	// Conversions: fcvt changes the float width (operand width to the
 	// term's), scvtf/ucvtf make a float from a signed/unsigned integer of
 	// the operand's width, fcvtzs/fcvtzu make an integer of the term's
@@ -45,7 +56,12 @@ var floatOps = map[string]int{
 }
 
 // floatTerm builds a floating-point operation term at width over args,
-// folding it when every operand is a constant.
+// folding it to the IEEE value when every operand's bits are known
+// (knownBits): a constant, or a term every assignment fixes — a masked
+// selector bit the tail unknowns cannot reach, `(2 | (tail << 4)) & 1`.
+// The fold is syntactic, over the term DAG, so the theorem lowering
+// written in Oak (prove/solver/lower.oak, t_float) makes the same
+// decision on the same terms; the blaster folds nothing more.
 func floatTerm(op string, width int, args ...*term) *term {
 	arity, known := floatOps[op]
 	if !known || len(args) != arity {
@@ -58,21 +74,113 @@ func floatTerm(op string, width int, args ...*term) *term {
 	if len(args) > 2 {
 		t.cond = args[2]
 	}
-	constant := true
 	values := make([]uint64, len(args))
 	widths := make([]int, len(args))
 	for i, arg := range args {
-		if arg.kind != termConst {
-			constant = false
-			break
+		value, fixed := knownBits(arg)
+		if fixed != mask(arg.width) {
+			return t
 		}
-		values[i] = arg.value & mask(arg.width)
+		values[i] = value
 		widths[i] = arg.width
 	}
-	if constant {
-		return constTerm(floatEval(op, width, values, widths)&mask(width), width)
+	return constTerm(floatEval(op, width, values, widths)&mask(width), width)
+}
+
+// knownBits is the known-bits analysis over the term DAG: the bits of t
+// that every parameter assignment fixes, as the mask of the fixed bits and
+// their values (zero where unknown). The transfer is small and exact on
+// the shapes the lowerings build around a float operand — a constant; and,
+// or, xor (a zero conjunct or a one disjunct settles a bit); a shift by a
+// constant count (the bits shifted in are zero, or the sign when known);
+// the width adapters, which are and-masks; a conditional under a known
+// selector bit (its arm), else the bits its arms agree on; a comparison,
+// whose bits above the first are zero — and
+// everything else (a parameter, a select, an operation, an adder) is
+// unknown. A bit it calls known is that constant under every assignment
+// (spec/lean/Oak/KnownBits.lean), so a fold over known operands is the
+// IEEE value the decider would find on every path. Memoized in the term:
+// terms are immutable once built.
+func knownBits(t *term) (value, known uint64) {
+	if t.kbDone {
+		return t.kbValue, t.kbKnown
 	}
-	return t
+	m := mask(t.width)
+	switch t.kind {
+	case termConst:
+		value, known = t.value&m, m
+	case termCmp:
+		known = m &^ 1
+	case termIte:
+		// A known selector bit picks its arm (a selector the constructor
+		// could not fold: a masked bit of a shifted parameter); otherwise
+		// the bits the arms agree on.
+		lv, lk := adaptKnown(t.left, t.width)
+		rv, rk := adaptKnown(t.right, t.width)
+		if cv, ck := knownBits(t.cond); ck&1 == 1 {
+			if cv&1 == 1 {
+				value, known = lv, lk
+			} else {
+				value, known = rv, rk
+			}
+			break
+		}
+		known = lk & rk &^ (lv ^ rv)
+		value = lv & known
+	case termBinary:
+		lv, lk := adaptKnown(t.left, t.width)
+		switch t.op {
+		case "and":
+			rv, rk := adaptKnown(t.right, t.width)
+			known = (lk & rk) | (lk &^ lv) | (rk &^ rv)
+			value = lv & rv & known
+		case "or":
+			rv, rk := adaptKnown(t.right, t.width)
+			known = (lk & rk) | (lk & lv) | (rk & rv)
+			value = (lv | rv) & known
+		case "xor":
+			rv, rk := adaptKnown(t.right, t.width)
+			known = lk & rk
+			value = (lv ^ rv) & known
+		case "shl", "shr", "sar":
+			if t.right.kind != termConst {
+				break
+			}
+			n := uint(t.right.value % uint64(t.width))
+			switch t.op {
+			case "shl":
+				known = ((lk << n) | (mask(int(n)))) & m
+				value = (lv << n) & m
+			case "shr":
+				known = (lk >> n) | (m &^ (m >> n))
+				value = lv >> n
+			case "sar":
+				known = lk >> n
+				value = lv >> n
+				if lk>>uint(t.width-1)&1 == 1 {
+					known |= m &^ (m >> n)
+					if lv>>uint(t.width-1)&1 == 1 {
+						value |= m &^ (m >> n)
+					}
+				}
+			}
+		}
+	}
+	t.kbDone, t.kbValue, t.kbKnown = true, value, known
+	return value, known
+}
+
+// adaptKnown is knownBits of an operand as the blaster reads it at the
+// term's width: zero-extended (the upper bits known zero) or truncated.
+func adaptKnown(t *term, width int) (value, known uint64) {
+	value, known = knownBits(t)
+	if t.width < width {
+		known |= mask(width) &^ mask(t.width)
+	} else if t.width > width {
+		value &= mask(width)
+		known &= mask(width)
+	}
+	return value, known
 }
 
 // floatOpSpan names the uninterpreted function the blaster abstracts an
@@ -104,6 +212,28 @@ func floatEval(op string, width int, args []uint64, widths []int) uint64 {
 		return math.Float64bits(x)
 	}
 	switch op {
+	case "udiv", "rv.udiv":
+		a, b := args[0]&mask(width), args[1]&mask(width)
+		if b == 0 {
+			if op == "rv.udiv" {
+				return mask(width)
+			}
+			return 0
+		}
+		return a / b
+	case "sdiv", "rv.sdiv":
+		shift := uint(64 - width)
+		a, b := int64(args[0]<<shift)>>shift, int64(args[1]<<shift)>>shift
+		if b == 0 {
+			if op == "rv.sdiv" {
+				return mask(width) // -1
+			}
+			return 0
+		}
+		if b == -1 {
+			return uint64(-a) & mask(width) // the minimum divided by -1 wraps to itself
+		}
+		return uint64(a/b) & mask(width)
 	case "fadd", "fsub", "fmul", "fdiv", "fnan":
 		if nan, isNaN := armNaN(width, args[0], args[1]); isNaN {
 			return nan

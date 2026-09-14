@@ -3080,7 +3080,15 @@ func (g *generator) pushScope() { g.scopes = append(g.scopes, map[string]slotBin
 func (g *generator) popScope() {
 	top := g.scopes[len(g.scopes)-1]
 	g.scopes = g.scopes[:len(g.scopes)-1]
+	// In name order: the pools' order decides which register a later
+	// declaration takes, and a map's order would make the lowering differ
+	// between two builds of one source.
+	names := make([]string, 0, len(top))
 	for name := range top {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
 		// The variable's register or slot returns to the pool for the
 		// declarations that follow.
 		if b := top[name]; b.arr == nil && b.rec == nil && b.sp == nil && !b.freed {
@@ -4696,6 +4704,11 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 			return 0, err
 		}
 		return g.expr(es.Expression, &typ)
+	}
+	if _, isQuantifier := expr.(*ast.QuantifierExpression); isQuantifier {
+		// A bounded quantifier enumerates a domain: the C backend's loop
+		// realizes it (docs/spec/10-syntax.md section 3e).
+		return 0, unsupported("a bounded quantifier")
 	}
 	return 0, unsupported("%T", expr)
 }
@@ -6368,12 +6381,28 @@ func (g *generator) staticArrayOf(expr ast.Expression) (elem scalar, elemLayout 
 func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression) (address asm.Memory, indexReg, baseReg int, err error) {
 	size := int64(arr.elem.bits / 8)
 	if k, isConst := constantValue(index); isConst && k >= 0 && k < arr.length {
-		return g.memOf(arr.loc().plus(k * size)), -1, -1, nil
+		// A constant element: its place — rebased through a temporary when
+		// the offset is past the load's immediate (a field far into a large
+		// element, the OS pilot's N8), returned as the base to release.
+		mem, temp, err := g.reachable(arr.loc().plus(k*size), size)
+		if err != nil {
+			return asm.Memory{}, 0, 0, err
+		}
+		return mem, -1, temp, nil
 	}
 	r, err := g.indexValue(index)
 	if err != nil {
 		return asm.Memory{}, 0, 0, err
 	}
+	return g.arrayAddressReg(arr, r)
+}
+
+// arrayAddressReg is arrayAddress over an index already evaluated into
+// the 32-bit scratch register r (an index computed before the place, when
+// its expression calls — the call's clobber must precede the place's
+// facts, docs/spec/94-assembler.md §9).
+func (g *generator) arrayAddressReg(arr *arrayLocal, r int) (address asm.Memory, indexReg, baseReg int, err error) {
+	size := int64(arr.elem.bits / 8)
 	base, err := g.alloc(scalars["u64"])
 	if err != nil {
 		return asm.Memory{}, 0, 0, err
@@ -6392,6 +6421,23 @@ func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression) (address
 	}
 	idx := wr(r)
 	return asm.Memory{Base: xr(base), Index: &idx, Shift: log2Bytes(int(size)), Extend: "uxtw"}, r, base, nil
+}
+
+// callsProgramFunction reports an expression that calls one of the
+// program's functions (a `bl` in the lowering, which clobbers every
+// scratch register and, to the checker, every fact about them).
+func (g *generator) callsProgramFunction(expr ast.Expression) bool {
+	found := false
+	walk(expr, func(n ast.Node) {
+		if call, isCall := n.(*ast.InvocationExpression); isCall && !found {
+			if ident, isIdent := call.Function.(*ast.Identifier); isIdent {
+				if _, known := g.functions[ident.Value]; known {
+					found = true
+				}
+			}
+		}
+	})
+	return found
 }
 
 // constantGuard emits the constant index guard `cmp wI, #N; b.hs trap`
@@ -6418,7 +6464,20 @@ func (g *generator) constantGuard(r int, length int64) error {
 
 // arrayElement lowers a load from an owned array local.
 func (g *generator) arrayElement(arr *arrayLocal, index ast.Expression) (int, error) {
-	address, idx, base, err := g.arrayAddress(arr, index)
+	return g.arrayElementReg(arr, index, -1)
+}
+
+// arrayElementReg is arrayElement over an index already in register r
+// (r < 0: evaluate index here).
+func (g *generator) arrayElementReg(arr *arrayLocal, index ast.Expression, r int) (int, error) {
+	var address asm.Memory
+	var idx, base int
+	var err error
+	if r >= 0 {
+		address, idx, base, err = g.arrayAddressReg(arr, r)
+	} else {
+		address, idx, base, err = g.arrayAddress(arr, index)
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -6491,6 +6550,25 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 		}
 		g.releaseTemps(sc.temps)
 		return r, nil
+	}
+	if _, _, _, isArray := g.staticArrayOf(e.Left); isArray && g.callsProgramFunction(e.Index) {
+		// The index calls: evaluate it before the place, so the call's
+		// clobber of the scratch registers precedes the element address
+		// and the facts the checker holds about it (the OS pilot's N8).
+		if _, isConst := constantValue(e.Index); !isConst {
+			r, err := g.indexValue(e.Index)
+			if err != nil {
+				return 0, err
+			}
+			arr, err := g.arrayOperand(e.Left)
+			if err != nil {
+				return 0, err
+			}
+			if arr == nil {
+				return 0, unsupported("an index into %s (not an array)", e.Left.String())
+			}
+			return g.arrayElementReg(arr, e.Index, r)
+		}
 	}
 	arr, err := g.arrayOperand(e.Left)
 	if err != nil {
@@ -6646,6 +6724,25 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 		}
 		return g.storeToPlace(target, s)
 	}
+	// Operands that call are evaluated before the place: a `bl` clobbers
+	// the scratch registers and, to the checker, every fact about them,
+	// so an element address computed first would come back from its spill
+	// slot without provenance (the OS pilot's N8, `s[dom].pages[cell(i, j)]`).
+	value, idxReg := -1, -1
+	if elem, _, _, isArray := g.staticArrayOf(s.Target.Left); isArray && (g.callsProgramFunction(s.Value) || g.callsProgramFunction(s.Target.Index)) {
+		v, err := g.expr(s.Value, &elem)
+		if err != nil {
+			return err
+		}
+		value = v
+		if _, isConst := constantValue(s.Target.Index); !isConst {
+			r, err := g.indexValue(s.Target.Index)
+			if err != nil {
+				return err
+			}
+			idxReg = r
+		}
+	}
 	arr, err := g.arrayOperand(s.Target.Left)
 	if err != nil {
 		return err
@@ -6661,11 +6758,20 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 		if arr.readOnly {
 			return unsupported("a store into %s through a view", s.Target.Left.String())
 		}
-		value, err := g.expr(s.Value, &arr.elem)
-		if err != nil {
-			return err
+		if value < 0 {
+			v, err := g.expr(s.Value, &arr.elem)
+			if err != nil {
+				return err
+			}
+			value = v
 		}
-		address, idx, base, err := g.arrayAddress(arr, s.Target.Index)
+		var address asm.Memory
+		var idx, base int
+		if idxReg >= 0 {
+			address, idx, base, err = g.arrayAddressReg(arr, idxReg)
+		} else {
+			address, idx, base, err = g.arrayAddress(arr, s.Target.Index)
+		}
 		if err != nil {
 			return err
 		}
@@ -6685,7 +6791,7 @@ func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 	if !sp.writable {
 		return unsupported("a store through the view %s", s.Target.Left.String())
 	}
-	value, err := g.expr(s.Value, &sp.elem)
+	value, err = g.expr(s.Value, &sp.elem)
 	if err != nil {
 		return err
 	}

@@ -83,6 +83,13 @@ func TestE2ENativeStackArgs(t *testing.T) {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
+	// The byte parameter on the stack is read from its frame slot
+	// (docs/spec/94-assembler.md §8, thirty-second increment).
+	for _, fn := range []string{"nine", "tail_sum"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven") {
+			t.Errorf("%s was not proven by the verifier; diagnostics:\n%s", fn, joined)
+		}
+	}
 	if !strings.Contains(joined, "c_side left to the C backend") {
 		t.Errorf("c_side should stay with the C backend (the mixed-ABI leg); diagnostics:\n%s", joined)
 	}

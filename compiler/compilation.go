@@ -76,6 +76,10 @@ type Options struct {
 	// verified asm function and realized like an asm unit; the rest keep
 	// the C backend (docs/spec/94-assembler.md §9).
 	NativeBodies bool
+	// VerifyFresh verifies every native body anew, bypassing the verdict
+	// cache (compiler/verdict_cache.go): the full check, for a release or
+	// a doubt about the cache.
+	VerifyFresh bool
 	// InlineHelpers runs the source-level inlining of private leaf helpers
 	// before type checking (compiler/inline.go, docs/spec/90-backend.md
 	// section 9), so the caller's extent facts prove the helper's element
@@ -278,6 +282,13 @@ func (comp Compilation) Target() target.Target { return comp.options.Target }
 // (nativegen) where its subset reaches, realizing them like asm units.
 func (comp Compilation) WithNativeBodies() Compilation {
 	comp.options.NativeBodies = true
+	return comp
+}
+
+// WithVerifyFresh returns a compilation that verifies every native body
+// anew, ignoring the verdict cache.
+func (comp Compilation) WithVerifyFresh() Compilation {
+	comp.options.VerifyFresh = true
 	return comp
 }
 
@@ -832,6 +843,15 @@ func (comp Compilation) verifiedProfile(lowered *LoweredProgram) error {
 		held[verdictReason(verdict)] = append(held[verdictReason(verdict)], name)
 		total++
 	}
+	// A proven verdict is relative to the callees its summaries took at
+	// their Oak bodies (asm.Verdict.Callees): the body is accepted only
+	// when every one of them is, to a fixpoint. The refusal names the callee
+	// each such body rests on.
+	for name, callee := range provenRestingOnUnproven(lowered.Model.NativeVerdicts) {
+		key := "proven, resting on a callee that is not proven"
+		held[key] = append(held[key], name+" (via "+callee+")")
+		total++
+	}
 	for name, reason := range lowered.Model.NativeFallbacks {
 		key := "left to the C backend: " + reason
 		held[key] = append(held[key], name)
@@ -858,6 +878,34 @@ func (comp Compilation) verifiedProfile(lowered *LoweredProgram) error {
 		fmt.Fprintf(&out, "\n  %s (%d): %s", reason, len(names), strings.Join(names, ", "))
 	}
 	return errors.New(out.String())
+}
+
+// provenRestingOnUnproven closes the proven verdicts over their callees:
+// a proven body whose summary took a callee that is not itself accepted —
+// not proven, left to the C backend, or unknown to the native backend —
+// is dropped, to a fixpoint, and named with the first such callee.
+func provenRestingOnUnproven(verdicts map[string]asm.Verdict) map[string]string {
+	accepted := map[string]bool{}
+	for name, verdict := range verdicts {
+		if verdict.Kind == asm.VerdictProven {
+			accepted[name] = true
+		}
+	}
+	resting := map[string]string{}
+	for changed := true; changed; {
+		changed = false
+		for name := range accepted {
+			for _, callee := range verdicts[name].Callees {
+				if !accepted[callee] {
+					resting[name] = callee
+					delete(accepted, name)
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	return resting
 }
 
 // verdictReason is the reason a verdict short of proof gives: the text

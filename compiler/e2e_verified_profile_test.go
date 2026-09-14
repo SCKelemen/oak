@@ -21,12 +21,23 @@ main: (): i32 {
 }
 `
 
-// A shift by a non-constant count is a trusted verdict on both lanes: the
-// verifier's term language has no variable shift.
-const verifiedProfileHeldProgram = `shl: (x: u32, n: u32): u32 = x << n
+// A loop with a second exit (`break`) is a trusted verdict on both lanes:
+// the loop recognizer takes one exit, so the body unfolds past the path
+// budget (a shift by a non-constant count, the earlier example, is proven
+// since the thirty-fifth increment).
+const verifiedProfileHeldProgram = `held: (n: u32): u32 {
+  acc: u32 = u32(0)
+  i: u32 = u32(0)
+  while i <= n {
+    i == u32(1000) ? { break } | { }
+    acc = acc + i
+    i = i + u32(1)
+  }
+  acc
+}
 
 main: (): i32 {
-  i32_bits_u32(shl(u32(1), u32(3)) - u32(8))
+  i32_bits_u32(u32(6) - u32(6))
 }
 `
 
@@ -50,7 +61,7 @@ func TestE2EVerifiedProfileRefusesTrustedBodies(t *testing.T) {
 		if err == nil {
 			t.Fatalf("%s: a trusted body linked under the verified profile", tgt)
 		}
-		for _, want := range []string{"verified profile: 1 bodies are not proven", "trusted: the Oak body contains a non-constant shift count (1): shl"} {
+		for _, want := range []string{"verified profile: 1 bodies are not proven", "trusted: more paths than the verifier's budget (a loop whose trip count depends on the inputs, or too many forks) (1): held"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("%s: refusal lacks %q:\n%s", tgt, want, err)
 			}

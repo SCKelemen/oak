@@ -480,6 +480,45 @@ depends on the order therefore has one meaning on every target, and
 `compiler/e2e_evaluation_order_test.go` holds the interpreter and the
 compiled C to it.
 
+## 3e. Bounded quantifiers
+
+```oak
+Color: type = Red | Green | Blue
+
+all_wrap: (): Bool = forall (x: u16) { x + u16(1) - u16(1) == x }
+has_pair: (n: u8): Bool = exists (a: u8, b: u8) { a < b && u16(a) + u16(b) == u16(n) }
+some_blue: (): Bool = exists (c: Color) { c == .Blue }
+```
+
+`forall (binders) { body }` and `exists (binders) { body }` are `Bool`
+expressions. The binders use the parameter grammar (§3) and are in scope
+in the body only; the body is a `Bool` block. `forall` is the conjunction
+of the body over every assignment of the binders, `exists` the
+disjunction. Every binder type must be finite and small enough to
+enumerate: `Bool`, `u8`, `i8`, `u16`, `i16`, or a sum type whose variants
+carry no payload (at most 65536 values per binder); a refined integer is
+stated by its base with the refinement in the body, and anything else is
+a type error naming the binder.
+
+The words are contextual: `forall` or `exists` followed by `(`, a name,
+and `:` opens a quantifier, and the words are ordinary identifiers
+everywhere else (the library has a local named `exists`). At statement
+level the quantifier form takes precedence over the colon-less
+definition form, so no function is named `forall` or `exists` that way.
+
+Evaluation is the enumeration: the binders in declaration order, values
+ascending (`false` before `true`, variants in declaration order), the
+last binder fastest, stopping at the first assignment that decides the
+result — a false body under `forall`, a true one under `exists`. The
+body's effects happen for the assignments visited, in that order, so a
+body that traps for an assignment past the deciding one does not trap;
+in the theorem decider (`125-verification.md` §2), whose bit level has no
+order, a trap under any assignment of a binder is the quantifier's trap.
+The C backend realizes the enumeration as a loop per binder around the
+body; the native lanes leave a body with a quantifier to C. A quantifier
+compiles as the loop it is — over `u16` that is 65536 evaluations of the
+body — so it belongs in a theorem, a test, or a check, not in a hot path.
+
 ## 4. Blocks and layout
 
 Statement/expression blocks may be delimited by indentation or explicit braces. Both normalize to the same structural token stream and AST.

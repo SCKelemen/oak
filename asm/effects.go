@@ -32,11 +32,31 @@ import (
 // register pair, or of a vector register is outside the subset and leaves
 // the function trusted with the reason.
 
-// spanWrite is one store to a span parameter along a path.
+// spanWrite is one store to a span parameter along a path — or, with
+// memory set, a loop memory marker: from here the span's contents are the
+// unknown memory `loop<K>.<span>` (the span as some iteration of loop K
+// sees it, and as the loop leaves it), whose element at an index is a
+// select over that name. Both sides place the marker at the same loop,
+// and the coupling proof shows the loops' iterations store alike
+// (verifyLoops), so the two unknown memories are the same memory.
 type spanWrite struct {
-	index *term // 32-bit element index
-	value *term // at the element width
-	guard *term // 1-bit condition under which the store happens; nil: always
+	index  *term  // 32-bit element index
+	value  *term  // at the element width
+	guard  *term  // 1-bit condition under which the store happens; nil: always
+	memory string // a loop memory marker's name, "" for a store
+}
+
+// loopMemoryName is the unknown memory of a span across loop K.
+func loopMemoryName(loop int, span string) string { return fmt.Sprintf("loop%d.%s", loop, span) }
+
+// appendMarker records that from here the span's contents are the loop's
+// unknown memory.
+func appendMarker(log map[string][]*spanWrite, span string, loop int) map[string][]*spanWrite {
+	if log == nil {
+		log = map[string][]*spanWrite{}
+	}
+	log[span] = append(log[span][:len(log[span]):len(log[span])], &spanWrite{memory: loopMemoryName(loop, span)})
+	return log
 }
 
 // pathEffects is what a path through the asm body leaves behind besides
@@ -44,6 +64,12 @@ type spanWrite struct {
 type pathEffects struct {
 	cells  map[string]*term
 	writes map[string][]*spanWrite
+	// trap is the 1-bit condition under which the machine path traps
+	// (brk): nil when no path from here does. The equivalence holds on
+	// the inputs where the machine does not trap — where Oak traps too,
+	// on the same guard — so the decision conjoins its negation to the
+	// input domain (oakLowering.domainCondition).
+	trap *term
 }
 
 func (s *symbolicState) effects() *pathEffects {
@@ -85,6 +111,17 @@ func memoryAt(log []*spanWrite, index, base *term) *term {
 		form = index.linearAt(32)
 	}
 	for _, w := range log {
+		if w.memory != "" {
+			// A loop memory marker: the element is the unknown memory's,
+			// under the marker's guard when it has one (an inner loop
+			// reached on some of the enclosing body's paths).
+			at := selectTerm(w.memory, index, base.width)
+			if w.guard != nil {
+				at = iteTerm(truncate(w.guard, 1), at, value)
+			}
+			value = at
+			continue
+		}
 		// Two indices in linear normal form over the same unknowns are
 		// equal or unequal by their constants alone — the arena's
 		// `base + k` addressing — which spares the diagrams an equality
@@ -141,7 +178,7 @@ func guardWrites(writes []*spanWrite, cond *term) []*spanWrite {
 		if w.guard != nil {
 			guard = binaryTerm("and", truncate(w.guard, 1), cond)
 		}
-		out = append(out, &spanWrite{index: w.index, value: w.value, guard: guard})
+		out = append(out, &spanWrite{index: w.index, value: w.value, guard: guard, memory: w.memory})
 	}
 	return out
 }
@@ -187,7 +224,41 @@ func (x *pathExecutor) mergeEffects(cond *term, taken, fallThrough *pathEffects)
 	if fallThrough != nil {
 		fallCells, fallWrites = fallThrough.cells, fallThrough.writes
 	}
-	return &pathEffects{cells: x.mergeCells(cond, takenCells, fallCells), writes: mergeWrites(cond, takenWrites, fallWrites)}
+	return &pathEffects{cells: x.mergeCells(cond, takenCells, fallCells), writes: mergeWrites(cond, takenWrites, fallWrites), trap: mergeTrap(cond, taken, fallThrough)}
+}
+
+// mergeTrap is the trap condition of a fork: the taken side's under cond,
+// the fall-through's otherwise; nil when neither side traps.
+func mergeTrap(cond *term, taken, fallThrough *pathEffects) *term {
+	var takenTrap, fallTrap *term
+	if taken != nil {
+		takenTrap = taken.trap
+	}
+	if fallThrough != nil {
+		fallTrap = fallThrough.trap
+	}
+	if takenTrap == nil && fallTrap == nil {
+		return nil
+	}
+	if takenTrap == nil {
+		takenTrap = constTerm(0, 1)
+	}
+	if fallTrap == nil {
+		fallTrap = constTerm(0, 1)
+	}
+	return iteTerm(truncate(cond, 1), takenTrap, fallTrap)
+}
+
+// withTrap is effects with the trap condition set: the surviving side of a
+// fork whose other side trapped keeps its cells and writes and records
+// where the machine trapped.
+func withTrap(effects *pathEffects, trap *term) *pathEffects {
+	if effects == nil {
+		return &pathEffects{trap: trap}
+	}
+	out := *effects
+	out.trap = trap
+	return &out
 }
 
 // elementIn is the span element at an index term as the path sees it:
@@ -240,16 +311,25 @@ func (x *pathExecutor) spanStore(instr Instruction, state *symbolicState) (handl
 		return true, "a pair store to a span", false
 	}
 	src, isReg := instr.Operands[0].(Register)
-	if !isReg || src.Class == ClassV {
-		return true, "a vector-register store to a span", false
+	if !isReg {
+		return true, "a store to a span from an operand that is not a register", false
 	}
-	if len(x.loopStack) > 0 {
-		return true, "a span store in a data-dependent loop body", false
+	// A vector register's store (`str qN` / `str dN`) writes its bytes as
+	// whole elements: one write per lane, at consecutive indices — the
+	// native lowering's `simd.store` (nativegen/simd.go), the Oak side's
+	// simdStore (asm/verify_simd.go).
+	vector := src.Class == ClassV
+	if vector && (src.Lane >= 0 || instr.Mnemonic != "str" || (src.VecBytes() != 16 && src.VecBytes() != 8)) {
+		return true, "a vector-register store to a span through the " + src.Vec + " view", false
 	}
 	if mem.Mode != MemOffset {
 		return true, "a span base moved by pre/post-index", false
 	}
-	if size := memorySize(instr.Mnemonic, src.Class); size != elem {
+	if vector {
+		if int64(src.VecBytes())%elem != 0 {
+			return true, fmt.Sprintf("a %d-byte vector store over %d-byte elements", src.VecBytes(), elem), false
+		}
+	} else if size := memorySize(instr.Mnemonic, src.Class); size != elem {
 		return true, fmt.Sprintf("a %d-byte store over %d-byte elements", size, elem), false
 	}
 	if baseOffset%elem != 0 || mem.Offset%elem != 0 {
@@ -282,6 +362,22 @@ func (x *pathExecutor) spanStore(instr Instruction, state *symbolicState) (handl
 	if extra != 0 {
 		index = binaryTerm("add", index, constTerm(uint64(extra), 32))
 	}
+	if vector {
+		value, okVec := state.readVec(src.Num)
+		if !okVec {
+			return true, "unbound vector register read", false
+		}
+		bits := int(elem) * 8
+		lanes := value.lanesAt(bits)[:int64(src.VecBytes())/elem]
+		for k, lane := range lanes {
+			at := index
+			if k > 0 {
+				at = binaryTerm("add", index, constTerm(uint64(k), 32))
+			}
+			state.writes = appendWrite(state.writes, param, at, truncate(lane, bits), nil)
+		}
+		return true, "", true
+	}
 	value, okValue := state.read(src)
 	if !okValue {
 		return true, "unbound register read", false
@@ -313,9 +409,6 @@ func (lo *oakLowering) spanAssignment(s *ast.IndexAssignmentStatement) (name str
 // (the store is dominated by a length guard); the verifier records which
 // element takes which value.
 func (lo *oakLowering) assignSpanElement(name string, contract spanContract, s *ast.IndexAssignmentStatement) (string, bool) {
-	if len(lo.loopStack) > 0 {
-		return "a span store in a data-dependent loop body", false
-	}
 	index, reason, ok := lo.lower(s.Target.Index, 32)
 	if !ok {
 		return reason, false
@@ -332,6 +425,17 @@ func (lo *oakLowering) assignSpanElement(name string, contract spanContract, s *
 	}
 	lo.writes = appendWrite(lo.writes, root, index, truncate(value, contract.elemWidth), lo.path)
 	return "", true
+}
+
+// isSpanLength reports a term that is the caller's span length: the
+// parameter `len(v)` in a symbolic run, its concrete value in a witness
+// run (where the length register holds the input's constant).
+func (x *pathExecutor) isSpanLength(length *term, span string) bool {
+	if x.concrete {
+		value, known := x.env[spanLenName(span)]
+		return known && length.kind == termConst && length.value&mask(32) == value&mask(32)
+	}
+	return isParamNamed(length, spanLenName(span))
 }
 
 // isParamNamed reports a term that is the parameter name at any width:
@@ -390,6 +494,29 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 		lowering.fresh[spanIndexName(name)] = 32
 		at := paramTerm(spanIndexName(name), 32)
 		entry := selectTerm(name, at, width)
+		// Two logs of the same unconditional writes at the same indices in
+		// the same order leave the same memory exactly when each pair of
+		// values agrees: a vector store's sixteen lanes decide as sixteen
+		// small equalities rather than one sixteen-way conditional at a
+		// symbolic index (Oak.Simd.store_lane). Otherwise the memories are
+		// compared at the fresh index.
+		if pairs, aligned := alignedWrites(exec.writes[name], lowering.writes[name]); aligned {
+			decided := true
+			for _, pair := range pairs {
+				verdict := decideEqual(fn, lowering, pair[0], pair[1], width, "")
+				if verdict.Kind == VerdictMismatch {
+					verdict.Message = strings.Replace(verdict.Message, "asm unit "+fn.Name, fmt.Sprintf("asm unit %s (the span %s)", fn.Name, name), 1)
+					return verdict
+				}
+				if verdict.Kind != VerdictProven {
+					decided = false
+					break
+				}
+			}
+			if decided {
+				continue
+			}
+		}
 		asmMemory := memoryAt(exec.writes[name], at, entry)
 		oakMemory := memoryAt(lowering.writes[name], at, entry)
 		verdict := decideEqual(fn, lowering, asmMemory, oakMemory, width, "")
@@ -405,11 +532,41 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body in %s", fn.Name, spans)}
 }
 
+// alignedWrites pairs the values of two write logs that are the same
+// sequence of unconditional writes at the same indices (each index pair
+// equal in linear normal form); false when the logs differ in length, a
+// write is guarded, or an index pair is not known equal.
+func alignedWrites(asm, oak []*spanWrite) ([][2]*term, bool) {
+	if len(asm) == 0 || len(asm) != len(oak) {
+		return nil, false
+	}
+	pairs := make([][2]*term, len(asm))
+	for i := range asm {
+		if asm[i].guard != nil || oak[i].guard != nil {
+			return nil, false
+		}
+		known, equal := indexRelation(asm[i].index.linearAt(32), oak[i].index)
+		if !known || !equal {
+			return nil, false
+		}
+		pairs[i] = [2]*term{asm[i].value, oak[i].value}
+	}
+	return pairs, true
+}
+
 // decideEffects decides the package cells and then the span memories
 // either side writes, after the result's proven verdict when there is one.
 func decideEffects(fn *Function, lowering *oakLowering, exec *pathExecutor, result *Verdict) Verdict {
 	writesCells := len(exec.cells) > 0 || len(lowering.writtenCells()) > 0
 	writesSpans := len(exec.writes) > 0 || len(lowering.writes) > 0
+	if !writesCells && !writesSpans && result == nil {
+		// A unit body with no effect on either side — an assert over a
+		// call, a body whose stores the model tracks are none — leaves the
+		// entry state as it is on both sides, so the sides agree
+		// (docs/spec/94-assembler.md §8, unit bodies without effects;
+		// Oak.UnitBodies: an empty effect log is the identity).
+		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (a unit body that writes no package state and no span memory on either side)", fn.Name)}
+	}
 	if writesCells {
 		verdict := decideCells(fn, lowering, exec, result)
 		if verdict.Kind != VerdictProven || !writesSpans {

@@ -597,52 +597,37 @@ func (c *checker) bindContract() {
 	}
 	var ints []intParam
 	nextVector := 0
-	for _, param := range c.fn.Signature.Parameters {
-		if comp, isComposite := c.fn.Composites[typeText(param.Type)]; isComposite {
-			// AAPCS64 composites: up to 16 bytes in consecutive x registers
-			// (each an 8-byte chunk of the memory image), larger by reference
-			// to a copy the caller owns.
-			if comp.HFA {
-				c.errorf(c.fn.Line, "parameter %s: %s is a homogeneous floating-point aggregate (v registers); v1 leaves it to the C backend", param.Name.Value, typeText(param.Type))
-				continue
-			}
-			regs, indirect := 1, comp.Size > 16
-			if !indirect {
-				regs = int((comp.Size + 7) / 8)
-			}
+	// The classification is the shared one (asm/abi.go classifyArguments):
+	// the backend places arguments by it and the call summary reads them
+	// by it, so the three never disagree.
+	for _, arg := range classifyArguments(c.fn.Signature.Parameters, c.fn.Composites) {
+		param := arg.param
+		if arg.problem != "" {
+			c.errorf(c.fn.Line, "%s", arg.problem)
+			continue
+		}
+		switch arg.kind {
+		case argRecord:
 			c.paramClass[param.Name.Value] = ClassX
-			ints = append(ints, intParam{param: param, class: ArgClass{Words: regs, Bytes: int64(regs) * 8, Align: 8}, comp: &compositeParam{regs: regs, size: comp.Size, indirect: indirect}})
-			continue
-		}
-		if elem, writable, isSpan := c.spanShapeOf(param.Type); isSpan {
+			ints = append(ints, intParam{param: param, class: arg.class, comp: &compositeParam{regs: arg.class.Words, size: arg.comp.Size, indirect: arg.indirect}})
+		case argSpan:
 			c.paramClass[param.Name.Value] = ClassX
-			ints = append(ints, intParam{param: param, class: ArgClass{Words: 2, Bytes: 16, Align: 8}, span: &spanParam{elem: elem, writable: writable}})
-			continue
-		}
-		class, ok := contractClass(param.Type)
-		if !ok {
-			c.errorf(c.fn.Line, "parameter %s: type %s cannot cross the asm boundary in v1 (fixed-width integers, Bool, simd vectors)", param.Name.Value, typeText(param.Type))
-			continue
-		}
-		c.paramClass[param.Name.Value] = class
-		c.paramView[param.Name.Value] = floatView(param.Type)
-		if class == ClassV {
+			ints = append(ints, intParam{param: param, class: arg.class, span: &spanParam{elem: arg.elem, writable: arg.writable}})
+		case argVector:
+			c.paramClass[param.Name.Value] = ClassV
+			c.paramView[param.Name.Value] = floatView(param.Type)
 			if nextVector > 7 {
 				c.errorf(c.fn.Line, "more than eight vector parameters exceed the register contract")
 				continue
 			}
 			c.paramRegister[param.Name.Value] = nextVector
 			nextVector++
-			continue
+		default:
+			class, _ := contractClass(param.Type)
+			c.paramClass[param.Name.Value] = class
+			c.paramView[param.Name.Value] = floatView(param.Type)
+			ints = append(ints, intParam{param: param, class: arg.class, scalarSz: arg.scalarSz})
 		}
-		size := int64(8)
-		if bits, _, known := contractBits(param.Type); known && bits <= 32 {
-			size = 4 // a narrow scalar's stack slot under the packing convention: the C int it widens to
-			if typeText(param.Type) != "Bool" {
-				size = int64(bits+7) / 8
-			}
-		}
-		ints = append(ints, intParam{param: param, class: ArgClass{Words: 1, Bytes: size, Align: size}, scalarSz: size})
 	}
 	classes := make([]ArgClass, len(ints))
 	for i, ip := range ints {
@@ -1430,6 +1415,14 @@ func (c *checker) instruction(instr Instruction) bool {
 			}
 		}
 	}
+	// The source's region before the write: an immediate add that narrows
+	// a region in place (`add xA, xA, #48`, the second add of a field past
+	// one immediate's reach) must still see it.
+	var priorRegion region
+	hadRegion := false
+	if len(regs) >= 2 {
+		priorRegion, hadRegion = c.regions[regs[1].Num]
+	}
 	c.write(instr, dest)
 	if slack != nil {
 		c.slackFacts[dest.Num] = *slack
@@ -1438,7 +1431,7 @@ func (c *checker) instruction(instr Instruction) bool {
 		c.idxFacts[dest.Num] = *carried
 	}
 	c.deriveSpan(instr, dest, regs)
-	c.deriveElement(instr, dest)
+	c.deriveElement(instr, dest, priorRegion, hadRegion)
 	c.deriveGlobal(instr, dest, regs, priorPage, hadPage)
 	if instr.Mnemonic == "movk" && hadConst && dest.Class == ClassW && len(instr.Operands) == 2 {
 		if imm, isImm := instr.Operands[1].(Immediate); isImm && imm.Value >= 0 && imm.Value <= 0xffff && imm.Shift%16 == 0 && imm.Shift < 32 {
@@ -1782,7 +1775,7 @@ func (c *checker) deriveSpan(instr Instruction, dest Register, regs []Register) 
 // wK, xB` likewise with the stride c in wK makes xE a c-byte region; `add
 // xD, xS, #imm` over a region of n bytes with 0 <= imm <= n makes xD the
 // region's tail of n - imm bytes (a field inside the element).
-func (c *checker) deriveElement(instr Instruction, dest Register) {
+func (c *checker) deriveElement(instr Instruction, dest Register, priorRegion region, hadRegion bool) {
 	switch instr.Mnemonic {
 	case "movz", "mov":
 		if dest.Class != ClassW || len(instr.Operands) != 2 {
@@ -1796,21 +1789,24 @@ func (c *checker) deriveElement(instr Instruction, dest Register) {
 			return
 		}
 		base, okB := instr.Operands[1].(Register)
-		if !okB || base.Class != ClassX || dest.Num == base.Num {
+		if !okB || base.Class != ClassX {
 			return
 		}
 		switch tail := instr.Operands[2].(type) {
 		case Extended:
-			if tail.Kind != "uxtw" || tail.Reg.Class != ClassW {
+			if dest.Num == base.Num || tail.Kind != "uxtw" || tail.Reg.Class != ClassW {
 				return
 			}
 			c.elementRegion(dest, base, tail.Reg.Num, int64(1)<<uint(tail.Amount))
 		case Immediate:
 			// `add xD, xB, #imm` or `#imm, lsl #12` (a field past 4095
-			// bytes into a large element) narrows the region by the value.
-			if extent, isRegion := c.regions[base.Num]; isRegion && (tail.Shift == 0 || tail.Shift == 12) && tail.Value >= 0 {
-				if value := tail.Value << uint(tail.Shift); value <= extent.size {
-					c.regions[dest.Num] = region{size: extent.size - value, writable: extent.writable}
+			// bytes into a large element) narrows the region by the value —
+			// in place too (`add xA, xA, #48`, the second add reaching a
+			// field past one immediate: the OS pilot's N8), read from the
+			// region the source held before the write.
+			if hadRegion && (tail.Shift == 0 || tail.Shift == 12) && tail.Value >= 0 {
+				if value := tail.Value << uint(tail.Shift); value <= priorRegion.size {
+					c.regions[dest.Num] = region{size: priorRegion.size - value, writable: priorRegion.writable}
 				}
 			}
 		}

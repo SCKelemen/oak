@@ -2,6 +2,7 @@ package nativegen
 
 import (
 	"reflect"
+	"sort"
 
 	"github.com/SCKelemen/oak/ast"
 )
@@ -91,8 +92,15 @@ func (g *generator) releaseDead(last map[string]int, i int) {
 		return
 	}
 	top := g.scopes[len(g.scopes)-1]
-	for name, idx := range last {
-		if idx != i {
+	// In name order, so the pools' order — and the registers later
+	// declarations take — is the same in every build of one source.
+	names := make([]string, 0, len(last))
+	for name := range last {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if last[name] != i {
 			continue
 		}
 		b, ok := top[name]

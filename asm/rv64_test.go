@@ -522,9 +522,10 @@ func TestRV64EmitC(t *testing.T) {
 }
 
 // Span element memory (docs/spec/94-assembler.md §9): the LP64 length
-// register carries padding above bit 31, so a bound needs the normalized
-// copy; an element is addressed through a guarded index scaled by the
-// element size, or at a constant offset below a proven minimum length.
+// register is the psABI-widened u32, so a bound needs the normalized copy
+// (or, GCC's shape, the raw comparison of two widened u32 parameters); an
+// element is addressed through a guarded index scaled by the element
+// size, or at a constant offset below a proven minimum length.
 const rv64SumDecl = "sum_rv: (v: []u32) -> u32"
 const rv64SumBody = `
   bind a0, a1 = v
@@ -719,6 +720,18 @@ func TestRV64SpanMemoryVerify(t *testing.T) {
 	v = rv64Verify(t, rv64IndexDecl, "{ v[i + u32(1)] }", rv64IndexBody)
 	if v.Kind != VerdictMismatch {
 		t.Errorf("gcc guarded read mismatch not reported: %s (%s)", v.Kind, v.Message)
+	}
+	// GCC's guarded store (`oak_store`): the same shape, the element written
+	// and proven as span memory (spanStoreRV64); a wrong value is a mismatch.
+	storeDecl := "store_rv: (v: [*]u32, i: u32, x: u32) -> ()"
+	storeBody := strings.Replace(strings.Replace(rv64IndexBody, "  lw a0, 0(a0)\n", "  sw a3, 0(a0)\n", 1), "  bind a2 = i\n", "  bind a2 = i\n  bind a3 = x\n", 1)
+	v = rv64Verify(t, storeDecl, "{ v[i] = x }", storeBody)
+	if v.Kind != VerdictProven || !strings.Contains(v.Message, "the span memory it writes (v)") {
+		t.Errorf("gcc guarded store: %s (%s)", v.Kind, v.Message)
+	}
+	v = rv64Verify(t, storeDecl, "{ v[i] = x + u32(1) }", storeBody)
+	if v.Kind != VerdictMismatch {
+		t.Errorf("gcc guarded store mismatch not reported: %s (%s)", v.Kind, v.Message)
 	}
 	v = rv64Verify(t, rv64FirstDecl, "{ v[0] }", rv64FirstBody)
 	if v.Kind != VerdictProven {
