@@ -488,9 +488,16 @@ func TestE2ENativeRV64FloatsUnderQEMU(t *testing.T) {
 	skipInShort(t)
 	native, infos := nativeRV64Lower(t, rv64Linux, nativeFloatProgram)
 	joined := strings.Join(infos, "\n")
-	for _, fn := range []string{"scale", "halve", "clamp", "neg_abs", "hypot_sq", "widen_round", "to_int", "sat_int", "from_int", "bits_of", "total", "fill_f64", "combine", "main"} {
+	for _, fn := range []string{"scale", "halve", "clamp", "neg_abs", "least", "most", "hypot_sq", "widen_round", "to_int", "sat_int", "from_int", "bits_of", "total", "fill_f64", "combine", "main"} {
 		if !strings.Contains(joined, "asm unit "+fn+":") {
 			t.Fatalf("%s was not lowered by the rv64 lane; diagnostics:\n%s", fn, joined)
+		}
+	}
+	// The NaN-propagating min/max lower behind two NaN tests (rvMinMax) and
+	// the verifier proves them against Oak's min/max up to the NaN payload.
+	for _, fn := range []string{"least", "most"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven") {
+			t.Errorf("%s was not proven by the verifier; diagnostics:\n%s", fn, joined)
 		}
 	}
 	if out := runNativeRV64BareABI(t, "native_rv64_floats", native, true); !strings.Contains(out, "0000002a\n") {
