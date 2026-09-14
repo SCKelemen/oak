@@ -109,7 +109,9 @@ ST_ADDED_LITS: u32 = 28
 ST_PRINT: u32 = 29
 ST_RECORD_OVERFLOW: u32 = 30
 ST_PROBE_UNITS: u32 = 31 // units from probing: failed literals and both-polarity implications
-ST_WORDS: u32 = 32
+ST_SUBSUMED: u32 = 32
+ST_STRENGTHENED: u32 = 33
+ST_WORDS: u32 = 40
 
 // sat_layout sizes the arena for a variable count, a clause capacity
 // (initial plus learned), and a literal store capacity; occurrence nodes
@@ -322,6 +324,7 @@ sat_init: (l: SatLayout, mem: [*]u32, words: []u32, budget: u32, quiet: Bool): B
     sat_set(l, mem, ST_INITIAL, clause_count)
     sat_set(l, mem, ST_REDUCE_LIMIT, clause_count / u32(3) + u32(300))
     sat_state(l, mem, ST_STATUS) == SAT_RUNNING ? { sat_eliminate(l, mem) } | { }
+    sat_state(l, mem, ST_STATUS) == SAT_RUNNING ? { sat_subsume(l, mem) } | { }
   } | { sat_set(l, mem, ST_STATUS, SAT_MALFORMED) }
   ok
 }
@@ -769,6 +772,207 @@ sat_analyze_from: (l: SatLayout, mem: [*]u32, conflict: u32, skip: u32, to_decis
   back
 }
 
+// sat_build_occurrences fills the CSR occurrence lists over the first
+// `clauses` clauses: afterward occ_count holds each literal's range start
+// in occ_list and occ_start its end. False when the store does not fit.
+sat_build_occurrences: (l: SatLayout, mem: [*]u32, clauses: u32): Bool {
+  lits: u32 = u32(2) * (l.vars + u32(1))
+  i: u32 = 0
+  while i <= lits {
+    mem[l.occ_count_at + i] = u32(0)
+    mem[l.occ_start_at + i] = u32(0)
+    i = i + u32(1)
+  }
+  c: u32 = 0
+  while c < clauses {
+    start: u32 = mem[l.starts_at + c]
+    n: u32 = mem[l.lengths_at + c]
+    j: u32 = 0
+    while j < n {
+      lit: u32 = mem[l.store_at + start + j]
+      mem[l.occ_count_at + lit] = mem[l.occ_count_at + lit] + u32(1)
+      j = j + u32(1)
+    }
+    c = c + u32(1)
+  }
+  total: u32 = 0
+  i = u32(0)
+  while i < lits {
+    mem[l.occ_start_at + i] = total
+    total = total + mem[l.occ_count_at + i]
+    mem[l.occ_count_at + i] = total
+    i = i + u32(1)
+  }
+  // Fill from the end of each literal's range downward.
+  fits: Bool = total <= l.store_cap
+  c = u32(0)
+  while c < clauses && fits {
+    start: u32 = mem[l.starts_at + c]
+    n: u32 = mem[l.lengths_at + c]
+    j: u32 = 0
+    while j < n {
+      lit: u32 = mem[l.store_at + start + j]
+      at: u32 = mem[l.occ_count_at + lit] - u32(1)
+      mem[l.occ_count_at + lit] = at
+      mem[l.occ_list_at + at] = c
+      j = j + u32(1)
+    }
+    c = c + u32(1)
+  }
+  fits
+}
+
+// Subsumption and self-subsuming resolution (SatELite, Eén and Biere
+// 2005): at load after elimination, each unlocked clause C is held against the clauses in the occurrence list of its
+// least-occurring literal l and of l's negation. A clause holding every
+// literal of C is deleted (a deletion line). A clause D holding every
+// literal of C but one, and that one negated, is strengthened by dropping
+// the negated literal: the resolvent of C and D on it, an LRAT addition
+// with hints D then C (under the resolvent's negation D is unit on the
+// negated literal and C then conflicts; Oak.SolverLaws.resolvent_propagates),
+// added as a new clause and D deleted. Reasons of trail literals are
+// locked. Work is bounded by literal visits and an occurrence cap. Over
+// the learned clauses at every reduction the pass was measured too: one
+// of the two widest extents rows closed in 31% fewer conflicts, the other
+// needed 43% more, so the search's clauses are left alone (a knob when a
+// row asks for it).
+
+SUB_OCCURRENCE_CAP: u32 = 512
+SUB_WORK: u32 = 4000000
+
+// sat_strengthen records and adds the clause D without the literal
+// `drop`, with hints D then C, and marks D deleted. A unit is enqueued at
+// level zero (a false unit is the pending conflict); an empty clause
+// settles the run.
+sat_strengthen: (l: SatLayout, mem: [*]u32, d: u32, c: u32, drop: u32): () {
+  start: u32 = mem[l.starts_at + d]
+  n: u32 = mem[l.lengths_at + d]
+  kept: u32 = 0
+  j: u32 = 0
+  while j < n {
+    lit: u32 = mem[l.store_at + start + j]
+    lit != drop ? {
+      mem[l.learnt_at + kept] = lit
+      kept = kept + u32(1)
+    } | { }
+    j = j + u32(1)
+  }
+  sat_set(l, mem, ST_LEARNT_LEN, kept)
+  mem[l.hints_at] = mem[l.ids_at + d]
+  mem[l.hints_at + u32(1)] = mem[l.ids_at + c]
+  sat_set(l, mem, ST_HINTS_LEN, u32(2))
+  id: u32 = sat_state(l, mem, ST_NEXT_ID)
+  sat_set(l, mem, ST_NEXT_ID, id + u32(1))
+  sat_emit(l, mem, id)
+  mem[l.lock_at + d] = u32(2)
+  sat_set(l, mem, ST_STRENGTHENED, sat_state(l, mem, ST_STRENGTHENED) + u32(1))
+  kept == u32(0) ? { sat_set(l, mem, ST_STATUS, SAT_UNSATISFIABLE) } | {
+    added: u32 = sat_add_learnt(l, mem, kept, id)
+    added != SAT_NONE ? { mem[l.lock_at + added] = u32(0) } | { }
+    added != SAT_NONE && kept == u32(1) ? {
+      u: u32 = mem[l.learnt_at]
+      a: u32 = mem[l.assign_at + u / u32(2)]
+      a == u32(0) ? { sat_enqueue(l, mem, u, added) } | {
+        a == sat_lit_true(u) ? { } | { sat_set(l, mem, ST_PENDING, added) }
+      }
+    } | { }
+  }
+}
+
+// sat_subsume runs one pass over the clauses present at entry.
+sat_subsume: (l: SatLayout, mem: [*]u32): () {
+  clauses: u32 = sat_state(l, mem, ST_CLAUSES)
+  c: u32 = 0
+  while c < clauses {
+    mem[l.lock_at + c] = u32(0)
+    c = c + u32(1)
+  }
+  n: u32 = sat_state(l, mem, ST_TRAIL_LEN)
+  i: u32 = 0
+  while i < n {
+    reason: u32 = mem[l.reason_at + mem[l.trail_at + i] / u32(2)]
+    reason != SAT_NONE ? { mem[l.lock_at + reason] = u32(1) } | { }
+    i = i + u32(1)
+  }
+  fits: Bool = sat_build_occurrences(l, mem, clauses)
+  work: u32 = 0
+  any_marked: Bool = false
+  c = u32(0)
+  while c < clauses && fits && work < SUB_WORK && sat_state(l, mem, ST_STATUS) == SAT_RUNNING {
+    start: u32 = mem[l.starts_at + c]
+    len: u32 = mem[l.lengths_at + c]
+    mem[l.lock_at + c] == u32(0) && len > u32(0) ? {
+      // The least-occurring literal, and the marks.
+      best: u32 = SAT_NONE
+      best_count: u32 = 0
+      j: u32 = 0
+      while j < len {
+        lit: u32 = mem[l.store_at + start + j]
+        mem[l.seen_at + lit / u32(2)] = u32(1) + lit % u32(2)
+        count: u32 = mem[l.occ_start_at + lit + u32(1)] - mem[l.occ_count_at + lit]
+        best == SAT_NONE || count < best_count ? {
+          best = lit
+          best_count = count
+        } | { }
+        j = j + u32(1)
+      }
+      best_count <= SUB_OCCURRENCE_CAP ? {
+        side: u32 = 0
+        while side < u32(2) && sat_state(l, mem, ST_STATUS) == SAT_RUNNING {
+          probe: u32 = best ^ side
+          k: u32 = mem[l.occ_count_at + probe]
+          k_end: u32 = mem[l.occ_start_at + probe + u32(1)]
+          while k < k_end && sat_state(l, mem, ST_STATUS) == SAT_RUNNING {
+            d: u32 = mem[l.occ_list_at + k]
+            d != c && mem[l.lock_at + d] == u32(0) && mem[l.lengths_at + d] >= len ? {
+              dstart: u32 = mem[l.starts_at + d]
+              dlen: u32 = mem[l.lengths_at + d]
+              hits: u32 = 0
+              flips: u32 = 0
+              flipped: u32 = 0
+              m: u32 = 0
+              while m < dlen {
+                q: u32 = mem[l.store_at + dstart + m]
+                mark: u32 = mem[l.seen_at + q / u32(2)]
+                mark == u32(1) + q % u32(2) ? { hits = hits + u32(1) } | {
+                  mark != u32(0) ? {
+                    flips = flips + u32(1)
+                    flipped = q
+                  } | { }
+                }
+                m = m + u32(1)
+              }
+              work = work + dlen
+              hits == len ? {
+                mem[l.lock_at + d] = u32(2)
+                any_marked = true
+                sat_set(l, mem, ST_SUBSUMED, sat_state(l, mem, ST_SUBSUMED) + u32(1))
+              } | {
+                // Strengthening re-adds the clause: only with room for
+                // it, a full store being a reason to reduce, not to stop.
+                room: Bool = sat_state(l, mem, ST_CLAUSES) < l.clause_cap && sat_state(l, mem, ST_STORE_USED) + dlen <= l.store_cap
+                hits + u32(1) == len && flips == u32(1) && room ? {
+                  sat_strengthen(l, mem, d, c, flipped)
+                  any_marked = true
+                } | { }
+              }
+            } | { }
+            k = k + u32(1)
+          }
+          side = side + u32(1)
+        }
+      } | { }
+      j = u32(0)
+      while j < len {
+        mem[l.seen_at + mem[l.store_at + start + j] / u32(2)] = u32(0)
+        j = j + u32(1)
+      }
+    } | { }
+    c = c + u32(1)
+  }
+  any_marked && sat_state(l, mem, ST_STATUS) == SAT_RUNNING ? { sat_delete_marked(l, mem) } | { }
+}
+
 // Bounded variable elimination at load (docs/notes/provers-2026-09.md;
 // ParaFROST's central preprocessing, CaDiCaL's too): a variable with few
 // occurrences on each side, whose non-tautological resolvents are no more
@@ -861,14 +1065,7 @@ sat_push_eliminated: (l: SatLayout, mem: [*]u32, c: u32, pivot: u32): Bool {
 // in this pass is left for the search, since its lists are stale.
 sat_eliminate: (l: SatLayout, mem: [*]u32): () {
   clauses: u32 = sat_state(l, mem, ST_CLAUSES)
-  lits: u32 = u32(2) * (l.vars + u32(1))
   i: u32 = 0
-  while i <= lits {
-    mem[l.occ_count_at + i] = u32(0)
-    mem[l.occ_start_at + i] = u32(0)
-    i = i + u32(1)
-  }
-  i = u32(0)
   while i <= l.vars {
     mem[l.touched_at + i] = u32(0)
     i = i + u32(1)
@@ -876,41 +1073,9 @@ sat_eliminate: (l: SatLayout, mem: [*]u32): () {
   c: u32 = 0
   while c < clauses {
     mem[l.lock_at + c] = u32(0)
-    start: u32 = mem[l.starts_at + c]
-    n: u32 = mem[l.lengths_at + c]
-    j: u32 = 0
-    while j < n {
-      lit: u32 = mem[l.store_at + start + j]
-      mem[l.occ_count_at + lit] = mem[l.occ_count_at + lit] + u32(1)
-      j = j + u32(1)
-    }
     c = c + u32(1)
   }
-  total: u32 = 0
-  i = u32(0)
-  while i < lits {
-    mem[l.occ_start_at + i] = total
-    total = total + mem[l.occ_count_at + i]
-    mem[l.occ_count_at + i] = total
-    i = i + u32(1)
-  }
-  // Fill from the end of each literal's range downward.
-  fits: Bool = total <= l.store_cap
-  c = u32(0)
-  while c < clauses && fits {
-    start: u32 = mem[l.starts_at + c]
-    n: u32 = mem[l.lengths_at + c]
-    j: u32 = 0
-    while j < n {
-      lit: u32 = mem[l.store_at + start + j]
-      at: u32 = mem[l.occ_count_at + lit] - u32(1)
-      mem[l.occ_count_at + lit] = at
-      mem[l.occ_list_at + at] = c
-      j = j + u32(1)
-    }
-    c = c + u32(1)
-  }
-  // Now occ_count holds each literal's range start and occ_start its end.
+  fits: Bool = sat_build_occurrences(l, mem, clauses)
   any_marked: Bool = false
   v: u32 = 0
   while v < l.vars && fits && sat_state(l, mem, ST_STATUS) == SAT_RUNNING {

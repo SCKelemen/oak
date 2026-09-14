@@ -368,7 +368,8 @@ sat_main: (): i32 {
 // sat_report writes the verdict line and, when satisfiable, the model.
 sat_report: (l: SatLayout, arena: [*]u32, status: u32, variables: u32): () {
   // A comment line with the run's counts: conflicts, probed variables,
-  // units from probing, eliminated variables.
+  // units from probing, eliminated variables, subsumed clauses,
+  // strengthened clauses.
   write_byte(u8(99))
   write_byte(u8(32))
   write_u32(sat_state(l, arena, ST_CONFLICTS))
@@ -378,6 +379,10 @@ sat_report: (l: SatLayout, arena: [*]u32, status: u32, variables: u32): () {
   write_u32(sat_state(l, arena, ST_PROBE_UNITS))
   write_byte(u8(32))
   write_u32(sat_state(l, arena, ST_ELIMINATED))
+  write_byte(u8(32))
+  write_u32(sat_state(l, arena, ST_SUBSUMED))
+  write_byte(u8(32))
+  write_u32(sat_state(l, arena, ST_STRENGTHENED))
   write_byte(u8(10))
   write_byte(u8(115))
   write_byte(u8(32))
