@@ -1918,15 +1918,35 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// the conflict sets of conflict-directed backjumping.
 	depthOf := map[string]int{}
 	// conflictOf is the set of depths whose choices an obligation depends
-	// on: the slots owning the asm symbols its asm side mentions.
+	// on: the slots owning the asm symbols its asm side mentions. An asm
+	// loop symbol it mentions that no slot has taken (the counter's
+	// register, when the counter was paired with a scratch register of
+	// the same header value) could be taken by a slot at any depth chosen
+	// so far, so such an obligation charges every one of them: the search
+	// then backs out of the pairing that left the register free rather
+	// than passing the failure up past it.
 	conflictOf := func(terms ...*term) map[int]bool {
 		mentioned := map[string]bool{}
 		for _, t := range terms {
 			collectParams(t, mentioned)
 		}
 		set := map[int]bool{}
+		unpaired := false
 		for name := range mentioned {
 			if depth, paired := depthOf[name]; paired {
+				set[depth] = true
+				continue
+			}
+			var k int
+			var reg string
+			if n, _ := fmt.Sscanf(name, "loop%d.%s", &k, &reg); n == 2 && k >= 1 && k <= len(asmLoops) {
+				if _, isAsm := asmLoops[k-1].width[reg]; isAsm {
+					unpaired = true
+				}
+			}
+		}
+		if unpaired {
+			for _, depth := range depthOf {
 				set[depth] = true
 			}
 		}

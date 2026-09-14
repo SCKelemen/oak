@@ -2304,7 +2304,14 @@ the verdict reports); sequences that differ in length or order are
 evidence, not proof. With it `fill`, `fill_f64`, `scale_in_place`,
 `running`, and `mark_bits` are proven on both lanes and the native
 corpora assert it; package cells written around a data-dependent loop
-stay trusted.
+stay trusted. One repair to the conflict-directed coupling search
+landed with it: an obligation whose asm side mentions a loop symbol no
+slot has taken (the counter's register, when the counter was paired
+with a scratch register holding the same header value) charges every
+depth chosen so far, so the search backs out of the pairing that left
+the register free instead of passing the failure up past it — the RV64
+`fill` with a bound parameter, whose `t0` holds zero at the header like
+the counter, is proven again.
 
 **Thirty-second increment — integer division as an uninterpreted
 operation (2026-09-15; `asm/floats_ops.go`, `asm/verify.go`,
