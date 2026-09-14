@@ -784,4 +784,13 @@ func TestE2ENativeRV64LoopVerdicts(t *testing.T) {
 	if !strings.Contains(verdicts["fact"], "agrees with its Oak body") {
 		t.Errorf("fact must be witnessed (its product exceeds the proof budget): %s", verdicts["fact"])
 	}
+	// A caller passing a span over its own array to a looping callee is
+	// proven through the summary: the callee's parameter is the array's
+	// contents, its loop carries the elements (docs/spec/94-assembler.md
+	// §8, span arguments over owned arrays).
+	for _, fn := range []string{"filled", "squares"} {
+		if !strings.Contains(verdicts[fn], "proven equal to its Oak body") || !strings.Contains(verdicts[fn], "callees taken at their Oak bodies") {
+			t.Errorf("%s must be proven through its callee's summary over the owned array: %s", fn, verdicts[fn])
+		}
+	}
 }

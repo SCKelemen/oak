@@ -5671,6 +5671,9 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	lo := newLowering(callee)
 	lo.arch = x.arch
 	lo.records, lo.adts, lo.constants = x.fn.Records, x.fn.ADTs, x.fn.Constants
+	// The span arguments bound to the caller's owned frame arrays, written
+	// back after the body (asm/span_args.go).
+	var frameBorrows []frameBorrow
 	lo.functions = x.fn.Callees
 	lo.declareTables(x.fn.Tables)
 	lo.inlining = map[string]bool{name: true}
@@ -5844,7 +5847,16 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 				whole = whole && !isRecord && offset == 0 && x.spans[owner] == arg.elem && x.isSpanLength(length, owner)
 			}
 			if !whole {
-				return fmt.Sprintf("a call to %s: the span argument %s is not one of the caller's span parameters passed whole", name, param.Name.Value), false
+				// A span or view over the caller's owned frame array
+				// (`span(&buf)`): the callee's parameter is the array's
+				// contents as an aggregate local, written back after the
+				// body when the span is writable (asm/span_args.go).
+				borrow, reason, ok := x.frameArrayArgument(state, lo, name, param.Name.Value, param.Type, arg.elem, base, length, hasBase && hasLen)
+				if !ok {
+					return reason, false
+				}
+				frameBorrows = append(frameBorrows, borrow)
+				break
 			}
 			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
 			lo.spans[param.Name.Value] = spanContract{elemWidth: int(arg.elem) * 8, signed: strings.HasPrefix(elemType, "i")}
@@ -5922,6 +5934,11 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		}
 	}
 	state.writes = lo.writes // the callee's stores through the caller's spans
+	for _, borrow := range frameBorrows {
+		if reason, ok := borrow.writeBack(state, lo); !ok {
+			return fmt.Sprintf("a call to %s: %s", name, reason), false
+		}
+	}
 	for cellName, cell := range lo.cells {
 		if cell.value != seeds[cellName] {
 			if state.globals == nil {
