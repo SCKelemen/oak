@@ -1153,7 +1153,7 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	assignedLocals(loop.Body, assigned)
 	declared := map[string]bool{}
 	declaredLocals(loop.Body, declared)
-	ev := &loopEvent{index: len(lo.loops) + 1, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}}
+	ev := &loopEvent{index: lo.loopBase + len(lo.loops) + 1, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}}
 	if n := len(lo.loopStack); n > 0 {
 		ev.parent = lo.loopStack[n-1]
 	}
@@ -1211,11 +1211,21 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	// The spans the body stores through take the loop's memory marker
 	// (asm/effects.go): the body reads the iteration's unknown memory and
 	// its stores layer on it; the asm side places the same marker.
+	// The writable spans are the caller-rooted ones (writableSpans, the
+	// function's `[*]T` parameters): inside an inlined or summarized
+	// callee the names in scope are aliases of them, so the marker is
+	// keyed by the root, as the write logs are.
 	storedSpans := make([]string, 0, len(lo.writableSpans))
+	contracts := map[string]spanContract{}
 	for span := range lo.writableSpans {
-		if _, isSpan := lo.spans[span]; isSpan {
-			storedSpans = append(storedSpans, span)
+		if contract, isSpan := lo.spans[span]; isSpan {
+			contracts[span] = contract
+		} else if contract, isRoot := lo.rootContracts[span]; isRoot {
+			contracts[span] = contract
+		} else {
+			continue
 		}
+		storedSpans = append(storedSpans, span)
 	}
 	sort.Strings(storedSpans)
 	before := map[string]int{}
@@ -1223,7 +1233,7 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	for _, span := range storedSpans {
 		ev.entry[span] = lo.writes[span]
 		lo.writes = appendMarker(lo.writes, span, ev.index)
-		lo.spans[loopMemoryName(ev.index, span)] = lo.spans[span] // the unknown memory's element width
+		lo.spans[loopMemoryName(ev.index, span)] = contracts[span] // the unknown memory's element width
 		before[span] = len(lo.writes[span])
 	}
 	cond, reason, ok := lo.lowerCondition(loop.Condition)
