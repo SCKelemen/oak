@@ -11,8 +11,8 @@ import (
 // assembler.md §9, the OS pilot's V1): a field of an element, an element
 // of an array field by a symbolic or constant index, and the N4 shape,
 // through a view or a span, with a small element (the shifted add) and a
-// 4 KiB one (the umaddl stride). The writer stays trusted. Native exit ==
-// C exit.
+// 4 KiB one (the umaddl stride); the writers are proven in the leaf
+// memories they write. Native exit == C exit.
 const nativeRecordSpanProofProgram = `
 Node: type = struct { value: u32, next: u32, weight: u64 }
 Leaf: type = struct { entries: [512]u64, level: u32, flags: u32 }
@@ -42,6 +42,19 @@ set_level: (leaves: [*]Leaf, t: u32, v: u32): () {
   t < len(leaves) ? { leaves[t].level = v; leaves[t].entries[u32(9)] = u64(40); leaves[t].entries[u32(7)] = u64(5) } | { }
 }
 
+// A writer over a counted loop and a symbolic element index.
+fill: (doms: [*]Dom, d: u32, base: u32): u32 {
+  d < len(doms) ? {
+    i: u32 = u32(0)
+    while i < u32(8) {
+      doms[d].pending[i] = base + i * u32(2)
+      i = i + u32(1)
+    }
+    doms[d].count = u32(8)
+    doms[d].pending[u32(3)] + doms[d].count
+  } | { u32(0) }
+}
+
 main: (): i32 {
   nodes: [3]Node
   nodes[u32(1)].value = u32(6)
@@ -52,8 +65,9 @@ main: (): i32 {
   doms[u32(1)].pending[u32(2)] = u32(8)
   doms[u32(1)].count = u32(1)
   set_level(span(&leaves), u32(0), u32(3))
-  // 10 + 11 + (40 + 3) + 5 + 9 = 78
-  i32_bits_u32(peek(view(&nodes), u32(1)) + u32_trunc_u64(heavy(span(&nodes), u32(2)) + walk(span(&leaves), u32(0), u32(9)) + fixed(view(&leaves), u32(0))) + pend(span(&doms), u32(1), u32(2)))
+  f: u32 = fill(span(&doms), u32(0), u32(1))   // 7 + 8 = 15
+  // 10 + 11 + (40 + 3) + 5 + 9 + 15 = 93
+  i32_bits_u32(peek(view(&nodes), u32(1)) + u32_trunc_u64(heavy(span(&nodes), u32(2)) + walk(span(&leaves), u32(0), u32(9)) + fixed(view(&leaves), u32(0))) + pend(span(&doms), u32(1), u32(2)) + f)
 }
 `
 
@@ -67,18 +81,23 @@ func TestE2ENativeRecordSpanReadersProven(t *testing.T) {
 	})
 	_, code, abnormal := buildAndRunFrom(t, "native_record_span_proof", comp)
 	joined := strings.Join(infos, "\n")
-	if abnormal || code != 78 {
-		t.Fatalf("native: exit = (%d, abnormal=%v), want 78\n%s", code, abnormal, joined)
+	if abnormal || code != 93 {
+		t.Fatalf("native: exit = (%d, abnormal=%v), want 93\n%s", code, abnormal, joined)
 	}
 	for _, fn := range []string{"peek", "heavy", "walk", "fixed", "pend"} {
 		if !strings.Contains(joined, "asm unit "+fn+": proven") {
 			t.Errorf("%s reads a span of records and must be proven; diagnostics:\n%s", fn, joined)
 		}
 	}
-	if !strings.Contains(joined, "asm unit set_level:") {
-		t.Errorf("set_level must lower natively; diagnostics:\n%s", joined)
+	// Writers are proven in the leaf memories they write: the span's
+	// final memory at a fresh index agrees on both sides.
+	if !strings.Contains(joined, "asm unit set_level: proven equal to its Oak body in the span memory it writes (leaves.entries, leaves.level)") {
+		t.Errorf("set_level must be proven in the memories it writes; diagnostics:\n%s", joined)
 	}
-	if _, code, abnormal := buildAndRunFrom(t, "native_record_span_proof_c", New().WithSource("record_span_proof.oak", nativeRecordSpanProofProgram)); abnormal || code != 78 {
-		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 78", code, abnormal)
+	if !strings.Contains(joined, "asm unit fill: proven") || !strings.Contains(joined, "span memory it writes (doms.count, doms.pending)") {
+		t.Errorf("fill (a counted loop of stores, then a read back) must be proven in result and memories; diagnostics:\n%s", joined)
+	}
+	if _, code, abnormal := buildAndRunFrom(t, "native_record_span_proof_c", New().WithSource("record_span_proof.oak", nativeRecordSpanProofProgram)); abnormal || code != 93 {
+		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 93", code, abnormal)
 	}
 }

@@ -283,6 +283,9 @@ func (x *pathExecutor) spanStore(instr Instruction, state *symbolicState) (handl
 	if !bound {
 		return false, "", false
 	}
+	if handled, reason, ok := x.recordSpanStore(instr, mem, base, state); handled {
+		return true, reason, ok
+	}
 	param, baseOffset, isSpan := spanBaseOf(base)
 	var index *term
 	if isSpan {
@@ -503,13 +506,19 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 	}
 	sort.Strings(sorted)
 	for _, name := range sorted {
-		contract, isSpan := lowering.spans[name]
-		if !isSpan {
-			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (a store through %s, which the Oak signature does not declare as a span) — trusted per docs/spec/94-assembler.md §5", fn.Name, name)}
-		}
-		width := contract.elemWidth
-		if elem := exec.spans[name]; int(elem)*8 != width {
-			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the span %s has %d-byte elements in the contract and %d-bit ones in the Oak signature) — trusted per docs/spec/94-assembler.md §5", fn.Name, name, elem, width)}
+		var width int
+		if leafWidth, isLeaf := lowering.recordLeafWidth(name); isLeaf {
+			// A record span's leaf memory (`v.f`): the leaf's width.
+			width = leafWidth
+		} else {
+			contract, isSpan := lowering.spans[name]
+			if !isSpan {
+				return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (a store through %s, which the Oak signature does not declare as a span) — trusted per docs/spec/94-assembler.md §5", fn.Name, name)}
+			}
+			width = contract.elemWidth
+			if elem := exec.spans[name]; int(elem)*8 != width {
+				return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the span %s has %d-byte elements in the contract and %d-bit ones in the Oak signature) — trusted per docs/spec/94-assembler.md §5", fn.Name, name, elem, width)}
+			}
 		}
 		lowering.fresh[spanIndexName(name)] = 32
 		at := paramTerm(spanIndexName(name), 32)
@@ -520,10 +529,10 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 		// small equalities rather than one sixteen-way conditional at a
 		// symbolic index (Oak.Simd.store_lane). Otherwise the memories are
 		// compared at the fresh index.
-		if pairs, aligned := alignedWrites(exec.writes[name], lowering.writes[name]); aligned {
+		if pairs, aligned := alignedWrites(exec.writes[name], lowering.writes[name], width); aligned {
 			decided := true
 			for _, pair := range pairs {
-				verdict := decideEqual(fn, lowering, pair[0], pair[1], width, "")
+				verdict := decideEqual(fn, lowering, pair.asm, pair.oak, pair.width, "")
 				if verdict.Kind == VerdictMismatch {
 					verdict.Message = strings.Replace(verdict.Message, "asm unit "+fn.Name, fmt.Sprintf("asm unit %s (the span %s)", fn.Name, name), 1)
 					return verdict
@@ -552,24 +561,36 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body in %s", fn.Name, spans)}
 }
 
+// writePair is one equality the aligned fast path decides: two values at
+// the element width, or two guards at one bit.
+type writePair struct {
+	asm, oak *term
+	width    int
+}
+
 // alignedWrites pairs the values of two write logs that are the same
-// sequence of unconditional writes at the same indices (each index pair
-// equal in linear normal form); false when the logs differ in length, a
-// write is guarded, or an index pair is not known equal.
-func alignedWrites(asm, oak []*spanWrite) ([][2]*term, bool) {
+// sequence of writes at the same indices (each index pair equal in linear
+// normal form): the values, and — for writes guarded on both sides, as a
+// store under a conditional is — the guards, decided as one-bit terms.
+// False when the logs differ in length, a write is guarded on one side
+// only, or an index pair is not known equal.
+func alignedWrites(asm, oak []*spanWrite, width int) ([]writePair, bool) {
 	if len(asm) == 0 || len(asm) != len(oak) {
 		return nil, false
 	}
-	pairs := make([][2]*term, len(asm))
+	var pairs []writePair
 	for i := range asm {
-		if asm[i].guard != nil || oak[i].guard != nil {
+		if (asm[i].guard == nil) != (oak[i].guard == nil) || asm[i].memory != "" || oak[i].memory != "" {
 			return nil, false
 		}
 		known, equal := indexRelation(asm[i].index.linearAt(32), oak[i].index)
 		if !known || !equal {
 			return nil, false
 		}
-		pairs[i] = [2]*term{asm[i].value, oak[i].value}
+		if asm[i].guard != nil {
+			pairs = append(pairs, writePair{asm: truncate(asm[i].guard, 1), oak: truncate(oak[i].guard, 1), width: 1})
+		}
+		pairs = append(pairs, writePair{asm: asm[i].value, oak: oak[i].value, width: width})
 	}
 	return pairs, true
 }

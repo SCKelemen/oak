@@ -51,4 +51,15 @@ func TestVerifyRecordSpanReads(t *testing.T) {
 	if v := run(decl, sum, prologue+"  ldr w0, [x9]\n  add w0, w0, w0"+epilogue); v.Kind != VerdictMismatch {
 		t.Fatalf("doubling the value for value + next must be a mismatch, got %s: %s", v.Kind, v.Message)
 	}
+	// Writers: the store lands in the leaf's memory and the final memories
+	// are compared; storing into the wrong field is a mismatch.
+	wdecl := "bump: (pool: [*]Node, i: u32) -> ()"
+	wprologue := "  bind x0, w1 = pool\n  bind w2 = i\n  clobber x9, x10\n  cmp w2, w1\n  b.hs trap\n  add x9, x0, w2, uxtw #3\n"
+	wbody := "{\n  i < len(pool) ? { pool[i].value = pool[i].next + u32(1) } | { }\n}"
+	if v := run(wdecl, wbody, wprologue+"  ldr w10, [x9, #4]\n  add w10, w10, #1\n  str w10, [x9]"+epilogue); v.Kind != VerdictProven || !strings.Contains(v.Message, "span memory it writes (pool.value)") {
+		t.Fatalf("a store into a record span's field must be proven in its memory, got %s: %s", v.Kind, v.Message)
+	}
+	if v := run(wdecl, wbody, wprologue+"  ldr w10, [x9, #4]\n  add w10, w10, #1\n  str w10, [x9, #4]"+epilogue); v.Kind != VerdictMismatch {
+		t.Fatalf("storing into next for value must be a mismatch, got %s: %s", v.Kind, v.Message)
+	}
 }
