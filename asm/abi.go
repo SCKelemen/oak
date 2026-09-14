@@ -101,10 +101,7 @@ func classifyArguments(params []*ast.FunctionParameter, composites map[string]Co
 				out = append(out, arg)
 				continue
 			}
-			regs, indirect := 1, comp.Size > 16
-			if !indirect {
-				regs = int((comp.Size + 7) / 8)
-			}
+			regs, indirect := compositeChunks(comp.Size)
 			arg.indirect = indirect
 			arg.class = ArgClass{Words: regs, Bytes: int64(regs) * 8, Align: 8}
 			out = append(out, arg)
@@ -161,4 +158,18 @@ func spanShapeIn(expr ast.Expression, composites map[string]Composite) (elem int
 		return 0, false, false
 	}
 	return comp.Size, marker.Value == "*", true
+}
+
+// compositeChunks is the register class of a record parameter under
+// AAPCS64: up to 16 bytes in ceil(size/8) consecutive registers, each an
+// 8-byte chunk of the memory image; larger by reference in one register.
+// Maintained line for line with Oak.ArgumentLayout.compositeChunks
+// (spec/lean/Oak/ArgumentLayout.lean), which proves the chunks cover the
+// record's bytes with none empty; asm/abi_refinement_test.go renders the
+// layouts the Lean file states as examples.
+func compositeChunks(size int64) (regs int, indirect bool) {
+	if size > 16 {
+		return 1, true
+	}
+	return int((size + 7) / 8), false
 }
