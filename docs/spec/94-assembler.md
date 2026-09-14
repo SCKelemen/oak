@@ -1022,11 +1022,18 @@ rely on it), so a unit that yields one operand's NaN where the body's
 `min` yields the sum's NaN agrees; the NaN a `min`/`max` yields carries
 its exponent and quiet bits forced (`floatSomeNaN`) so the decider knows
 it is a NaN whatever the payload, and the witness value is unchanged.
-*An operation over operands whose every bit the diagram has settled folds
-to its IEEE value at blast time* (the mask bits the tail unknowns cannot
-reach settle this way), as the constructor folds constant applications —
-without it a folded constant on the Oak side met an abstracted
-application on the machine side. The callee-saved float registers
+*An operation over operands whose every bit is known folds to its IEEE
+value when the term is built* (`floatTerm`, by a known-bits analysis over
+the term DAG — constants; and, or, xor; shifts by a constant; the width
+masks; a conditional under a known selector bit; `Oak.KnownBits` proves
+each transfer sound — so the mask bits the tail unknowns cannot reach
+fold), as the constructor folds constant applications — without it a
+folded constant on the Oak side met an abstracted application on the
+machine side. The fold is syntactic rather than the diagram's, so the
+theorem lowering written in Oak makes the same fold on the same terms and
+the solver written in Oak blasts the same applications (kind 6 of the
+problem table, `docs/spec/125-verification.md` §7); the blaster itself
+folds nothing. The callee-saved float registers
 `fs0`–`fs11` carry the caller's pattern on entry (`entry.fN`), so a
 prologue's `fsd`/`fld` pair round-trips. With these, every function of
 the native RV64 float and integer simd corpora that returns a value is

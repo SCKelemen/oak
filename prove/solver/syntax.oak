@@ -1074,7 +1074,8 @@ instruction_code: (rx: []u32, raw: Raw, fnode: u32, nargs: u32): u32 {
 }
 
 // float_intrinsic_code: the code of a float intrinsic the lowering knows
-// as a bit operation (asm/syntax.go synFloatIntrinsics), or NONE.
+// (asm/syntax.go synFloatIntrinsics): the bit operations, and sqrt, fma,
+// min_num, and max_num as operation terms; NONE for the rest.
 float_intrinsic_code: (nm: Name16): u32 {
   is_name(nm, u64(0x736261), u64(0), u32(3)) ? { FI_ABS } | {
   is_name(nm, u64(0x6E67697379706F63), u64(0), u32(8)) ? { FI_COPYSIGN } | {
@@ -1084,15 +1085,27 @@ float_intrinsic_code: (nm: Name16): u32 {
   is_name(nm, u64(0x616D726F6E5F7369), u64(0x6C), u32(9)) ? { FI_IS_NORMAL } | {
   is_name(nm, u64(0x726F5F6C61746F74), u64(0x726564), u32(11)) ? { FI_TOTAL_ORDER } | {
   is_name(nm, u64(0x6E696D), u64(0), u32(3)) ? { FI_MIN } | {
-  is_name(nm, u64(0x78616D), u64(0), u32(3)) ? { FI_MAX } | { NONE } } } } } } } } }
+  is_name(nm, u64(0x78616D), u64(0), u32(3)) ? { FI_MAX } | {
+  is_name(nm, u64(0x74727173), u64(0), u32(4)) ? { FI_SQRT } | {
+  is_name(nm, u64(0x616D66), u64(0), u32(3)) ? { FI_FMA } | {
+  is_name(nm, u64(0x6D756E5F6E696D), u64(0), u32(7)) ? { FI_MIN_NUM } | {
+  is_name(nm, u64(0x6D756E5F78616D), u64(0), u32(7)) ? { FI_MAX_NUM } | { NONE } } } } } } } } } } } } }
 }
 
-// other_float_intrinsic: a float intrinsic outside the bit operations
-// (typechecker.FloatIntrinsicName less the codes above).
+// float_intrinsic_arity is a code's argument count (asm/syntax.go
+// synFloatArity).
+float_intrinsic_arity: (code: u32): u32 {
+  code == FI_FMA ? { u32(3) } | {
+    (code == FI_COPYSIGN || code == FI_TOTAL_ORDER || code == FI_MIN || code == FI_MAX || code == FI_MIN_NUM || code == FI_MAX_NUM) ? { u32(2) } | { u32(1) }
+  }
+}
+
+// other_float_intrinsic: a float intrinsic outside the lowering's subset
+// (typechecker.FloatIntrinsicName less the codes above: the rounding
+// intrinsics).
 other_float_intrinsic: (nm: Name16): Bool {
-  is_name(nm, u64(0x616D66), u64(0), u32(3)) || is_name(nm, u64(0x74727173), u64(0), u32(4)) || is_name(nm, u64(0x726F6F6C66), u64(0), u32(5)) ||
-  is_name(nm, u64(0x6C696563), u64(0), u32(4)) || is_name(nm, u64(0x636E757274), u64(0), u32(5)) || is_name(nm, u64(0x646E756F72), u64(0), u32(5)) ||
-  is_name(nm, u64(0x76655F646E756F72), u64(0x6E65), u32(10)) || is_name(nm, u64(0x6D756E5F6E696D), u64(0), u32(7)) || is_name(nm, u64(0x6D756E5F78616D), u64(0), u32(7))
+  is_name(nm, u64(0x726F6F6C66), u64(0), u32(5)) || is_name(nm, u64(0x6C696563), u64(0), u32(4)) || is_name(nm, u64(0x636E757274), u64(0), u32(5)) ||
+  is_name(nm, u64(0x646E756F72), u64(0), u32(5)) || is_name(nm, u64(0x76655F646E756F72), u64(0x6E65), u32(10))
 }
 
 // conversion_primitive: a name of the conversion grammar's primitive set
@@ -1115,17 +1128,24 @@ is_constructor_name: (nm: Name16): Bool {
 
 // Conv is a conversion call's target: width and signedness (0 and unsigned
 // for a primitive without a decider width), whether it is a float
-// pattern, and whether the name is a conversion of the subset at all.
-Conv: type = struct { width: u32, signed: u32, is_float: u32, ok: Bool }
+// pattern, whether the conversion goes through a float operation term
+// (f32(x), f64(x), and the trunc, round, and saturating rows with a float
+// source or target; asm/floats_lowering.go floatConversion), whether the
+// name is an integer constructor (over a float operand, an operation
+// term too), and whether the name is a conversion of the subset at all.
+Conv: type = struct { width: u32, signed: u32, is_float: u32, float_conv: u32, constructor: u32, ok: Bool }
 
 // conversion_target reads a call name: a primitive constructor, or
-// `target_op_source` with op trunc or bits (typechecker.ConversionParts).
+// `target_op_source` with op trunc or bits, or round or saturating with
+// a float source or target (typechecker.ConversionParts, as asm/syntax.go
+// admits them).
 conversion_target: (rx: []u32, raw: Raw, name: u32): Conv {
   whole: Name16 = rs_name(rx, raw, name)
   n: u32 = rs_len(rx, raw, name)
-  out: Conv = Conv { width: u32(0), signed: u32(0), is_float: u32(0), ok: false }
+  out: Conv = Conv { width: u32(0), signed: u32(0), is_float: u32(0), float_conv: u32(0), constructor: u32(0), ok: false }
   target: Name16 = whole
-  is_constructor_name(whole) ? { out = Conv { width: u32(0), signed: u32(0), is_float: u32(0), ok: true } } | {
+  is_constructor_name(whole) ? { out = Conv { width: u32(0), signed: u32(0), is_float: u32(0), float_conv: u32(0), constructor: u32(1), ok: true } } | {
+  is_float_name(whole) ? { out = Conv { width: u32(0), signed: u32(0), is_float: u32(0), float_conv: u32(1), constructor: u32(0), ok: true } } | {
     last: u32 = NONE
     k: u32 = n
     while k > u32(0) && last == NONE {
@@ -1144,14 +1164,20 @@ conversion_target: (rx: []u32, raw: Raw, name: u32): Conv {
         op: Name16 = rs_segment(rx, raw, name, first + u32(1), last - first - u32(1))
         source: Name16 = rs_segment(rx, raw, name, last + u32(1), n - last - u32(1))
         (conversion_primitive(target) && conversion_primitive(source) && conversion_operation(op)) ? {
-          (is_name(op, u64(0x636E757274), u64(0), u32(5)) || is_name(op, u64(0x73746962), u64(0), u32(4))) ? { out = Conv { width: u32(0), signed: u32(0), is_float: u32(0), ok: true } } | { }
+          through_float: Bool = is_float_name(source) || is_float_name(target)
+          bits_row: Bool = is_name(op, u64(0x73746962), u64(0), u32(4))
+          trunc_row: Bool = is_name(op, u64(0x636E757274), u64(0), u32(5))
+          rounding: Bool = is_name(op, u64(0x646E756F72), u64(0), u32(5)) || is_name(op, u64(0x6974617275746173), u64(0x676E), u32(10))
+          bits_row ? { out = Conv { width: u32(0), signed: u32(0), is_float: u32(0), float_conv: u32(0), constructor: u32(0), ok: true } } | {
+          (through_float && (trunc_row || rounding)) ? { out = Conv { width: u32(0), signed: u32(0), is_float: u32(0), float_conv: u32(1), constructor: u32(0), ok: true } } | {
+          trunc_row ? { out = Conv { width: u32(0), signed: u32(0), is_float: u32(0), float_conv: u32(0), constructor: u32(0), ok: true } } | { } } }
         } | { }
       }
     }
-  }
+  } }
   out.ok ? {
     ct: Contract = scalar_name_contract(target)
-    out = Conv { width: ct.ok ? { ct.width } | { u32(0) }, signed: ct.signed ? { u32(1) } | { u32(0) }, is_float: is_float_name(target) ? { u32(1) } | { u32(0) }, ok: true }
+    out = Conv { width: ct.ok ? { ct.width } | { u32(0) }, signed: ct.signed ? { u32(1) } | { u32(0) }, is_float: is_float_name(target) ? { u32(1) } | { u32(0) }, float_conv: out.float_conv, constructor: out.constructor, ok: true }
   } | { }
   out
 }
@@ -1267,6 +1293,8 @@ step_call_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, node: u32, f: u32
                   w[at + u32(5)] = cv.width
                   w[at + u32(6)] = cv.signed
                   w[at + u32(7)] = cv.is_float
+                  w[at + u32(9)] = cv.float_conv
+                  w[at + u32(10)] = cv.constructor
                   w[at + u32(2)] = CP_CONV
                   sr_push(s, w, X_EXPR, rl_item(rx, raw, args, u32(0)), f)
                 }
@@ -1309,8 +1337,7 @@ step_call_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, node: u32, f: u32
           (float_type == NONE && ty_float(s, w, argt)) ? { float_type = argt } | { }
           k = k + u32(1)
         }
-        wanted: u32 = code == FI_ABS ? { u32(1) } | { (code == FI_COPYSIGN || code == FI_MIN || code == FI_MAX || code == FI_TOTAL_ORDER) ? { u32(2) } | { u32(1) } }
-        nargs != wanted ? { sr_fail(s, w, u32(117)) } | {
+        nargs != float_intrinsic_arity(code) ? { sr_fail(s, w, u32(117)) } | {
           typ: u32 = (code >= FI_IS_NAN && code <= FI_TOTAL_ORDER) ? { sr_bool_type(s, w) } | { float_type }
           list: u32 = acc_list(s, w, base)
           sr_deliver(s, w, sr_emit(s, w, SYN_FLOATCALL, code, list, nargs, u32(0), u32(0), u32(0), typ))
@@ -1353,7 +1380,12 @@ step_call_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32, node: u32, f: u32
     signed: u32 = w[at + u32(6)]
     typ: u32 = sr_scalar_type(s, w, width, signed, u32(0))
     w[at + u32(7)] != u32(0) ? { typ = sr_scalar_type(s, w, width, u32(0), u32(1)) } | { }
-    sr_deliver(s, w, sr_emit(s, w, SYN_CONV, width, signed, op, u32(0), u32(0), u32(0), typ))
+    // Through a float operation: by the name, or an integer constructor
+    // over a float operand (the conversion toward zero).
+    through_float: Bool = w[at + u32(9)] != u32(0) || (w[at + u32(10)] != u32(0) && sn_is_float(s, w, op))
+    through_float ? { sr_deliver(s, w, sr_emit(s, w, SYN_FLOATCONV, width, signed, op, w[at + u32(7)], u32(0), u32(0), typ)) } | {
+      sr_deliver(s, w, sr_emit(s, w, SYN_CONV, width, signed, op, u32(0), u32(0), u32(0), typ))
+    }
   } | { sr_fail(s, w, u32(118)) } } } } } } }
 }
 
@@ -1456,7 +1488,9 @@ step_expr_x: (s: Ser, w: [*]u32, rx: []u32, raw: Raw, at: u32): () {
           left: u32 = w[at + u32(5)]
           typ: u32 = sn_type(s, w, left)
           typ == NONE ? { typ = sn_type(s, w, ret) } | { }
-          ((sn_is_float(s, w, left) || sn_is_float(s, w, ret)) && code < IOP_EQ) ? { sr_fail(s, w, u32(109)) } | {
+          // Float arithmetic (+ - * /) is an operation term; the other
+          // integer operators have no float reading.
+          ((sn_is_float(s, w, left) || sn_is_float(s, w, ret)) && code < IOP_EQ && code != IOP_ADD && code != IOP_SUB && code != IOP_MUL && code != IOP_DIV) ? { sr_fail(s, w, u32(109)) } | {
             code >= IOP_EQ ? { typ = sr_bool_type(s, w) } | { }
             sr_deliver(s, w, sr_emit(s, w, SYN_INFIX, code, left, ret, u32(0), u32(0), u32(0), typ))
           }
