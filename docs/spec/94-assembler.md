@@ -3560,7 +3560,11 @@ blasted though they are built from the same stores. `OAK_NATIVE_TIMING=1`
 prints each body's verification time (`compiler/native_bodies.go`). The
 prover's native build: 180 s before this section's loop increments, 265
 s after them with the budgets, 330 bodies proven where 294 were, no
-mismatch; the standard-library tally keeps its 176 and 167.
+mismatch; the standard-library tally keeps its 176 and 167. Found in the
+same measurement, in the zero-test rewrite of the vector reductions: the
+significant-bits bound walked a term as a tree, exponential over an ite
+chain whose arms share subterms, and one body took twenty minutes; it is
+memoized over the DAG (`significantBitsMemo`).
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
