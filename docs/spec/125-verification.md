@@ -255,7 +255,12 @@ scales with the obligation — 200,000 or 100 per clause, whichever is
 larger (`sat_conflicts`), so a 6,442-clause extents row that needs 562,050
 conflicts closes in the corpus while the one needing 1.4 million gives up
 cheaply — and `-conflicts N` sets a flat budget instead; a row past the
-budget keeps the ladder's verdict and says the rung gave no verdict. `-cnf dir` writes every bit-level
+budget keeps the ladder's verdict and says the rung gave no verdict. The solver written in Oak hands its certificate over as the word record it
+kept while learning, not as text: the checker written in Oak checks the
+record in the solver's process and the Go checker reads the same words
+(`prove.CheckLRATWords`), so a certificate is neither printed nor parsed
+on the way; an external solver's certificate is text, checked as before.
+`-cnf dir` writes every bit-level
 obligation's clauses as DIMACS (`name.cnf`) for any solver or checker to
 read; the clause engine agrees with the diagram engine input for input over
 the corpus (`prove/lrat_test.go`), the two checkers accept and refuse the
