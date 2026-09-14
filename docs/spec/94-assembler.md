@@ -3269,6 +3269,34 @@ verifier proves both against the Oak body up to the NaN payload (`least`,
 proven on both lanes), and the AArch64 lane's `fmin`/`fmax` stay the one
 instruction they were.
 
+**RV64 lane, fourteenth increment — `subslice` (2026-09-16;
+`nativegen/rv64.go` subsliceInto, `asm/rv64_check.go` deriveSpan,
+`Oak.Subslice`).** The lane left every body with a span local or a span
+argument built by `subslice(v, start, n)` to the C backend ("the span
+local field from subslice(...)"), while the AArch64 lane lowered the
+derived pair since its ninth increment. The lane now lowers the C helper's
+check over the zero-extended start and count — `bltu norm, start, trap`
+(start > len), `sub rest, norm, start`, `bltu rest, n, trap` (n > len -
+start) — then the base advanced by the start scaled to the element size
+(into a fresh register: the guards' facts are keyed by the start register)
+and the count copied by one write into the length register, callee-saved
+for a local, scratch for an argument. The checker follows the idiom as
+the AArch64 checker follows its own: the first guard proves start ≤ len
+over a normalized length, the subtraction under it forms len - start, the
+second guard proves n ≤ len - start, and the add over the span's base with
+the scaled start derives the span whose length register is n — which is
+also its own normalized length, since a count the guard admitted is at
+most len - start, below 2^32 (`Oak.Subslice`: every index below n names an
+element of the original span, a re-slice composes, and the count is below
+the width). The derived facts die with a write to any register involved,
+at labels, and at calls, so the length register must be written once for
+a derived span used inside a loop. The AArch64 corpus (`fields`,
+`clear_middle`, `edge`) lowers whole and runs on the bare machine under
+QEMU with the C backend's exit code
+(`compiler/e2e_native_rv64_subslice_test.go`; `asm/rv64_subslice_test.go`);
+the verifier trusts the derived spans' bodies on both lanes as before (a
+derived base is not a span parameter to the summary).
+
 **Executables linked by the Oak assembler (landed; `asm/executable.go`,
 `oak build -link oak`).** A program whose every body the native backend
 lowered links into a final ELF64 executable here, with no system linker
