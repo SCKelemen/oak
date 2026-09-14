@@ -4201,3 +4201,30 @@ runs at 0.28 ns/byte where the call tree ran at 0.85 and the C backend at
 kernel that declares some forty vector locals over its expansions. What
 would take the rest: an allocator with liveness across the whole body
 instead of declaration order within it.
+
+### 9.x The region rules refined (2026-09-14)
+
+The seam checker's derived-base rules — `elementRegion` (what
+`xE = xB + wI·size` addresses under the index guard: one element of a frame
+array, a span of records, or a constant table, or `K` elements under a
+slack guard), `regionAccess` (an access inside such a region), and
+`frameArrayAccess` (an access through a frame address) — were the checker
+facts STATUS listed as proof debt. `spec/lean/Oak/CheckerRefinement.lean`
+transliterates the three decisions (`elementRegion`, `regionAdmits`,
+`frameArrayAdmits`; the Go is factored onto the same pure functions,
+`asm.elementRegionOf`, `asm.regionAdmits`, `asm.frameArrayAdmits`) and
+proves them sound against new laws in `Oak.Assembler` — `frame_element`,
+`span_element`, `span_element_lanes`, `region_element`,
+`region_offset_bytes` — with the guard's meaning stated once
+(`GuardMeans`: an immediate bound is `i < bound`; a register bound holding
+the length is `i < len`, or `i + bound ≤ len` with `bound ≥ 1` for the
+slack form, which is what `sub wT, wL, #K` records only for `K > 0`).
+`frameElement_sound`, `spanElement_sound`, `regionElement_sound`,
+`regionAdmits_offset_sound`/`_index_sound`, `frameArrayAdmits_offset_sound`
+/`_index_sound`, the fail-closed corollaries, and the compositions
+`frame_element_then_access` / `span_element_then_access` (a derived region,
+then an access inside it, lands inside the frame or the span). The pin:
+`asm/checker_refinement_test.go` renders the Go decisions on a corpus as
+the `example … := by decide` lines the Lean file states, so a change on
+either side fails the other. Still debt: `aliasSpan` (a base or length
+copied between registers) and the composite layout facts.

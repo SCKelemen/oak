@@ -183,8 +183,15 @@ or the verifier, not in the program:
    proves `indexUnder_sound`; the fact extraction and kills remain
    transliterations with laws. **Pinned (2026-09-14):** the Go decision is
    rendered against the Lean model's examples
-   (`typechecker/extents_refinement_test.go`), as the lowering seam is. The seam checkers' new facts (frame element
-   regions, span aliases, composites) remain proof debt in STATUS.
+   (`typechecker/extents_refinement_test.go`), as the lowering seam is. The
+   seam checkers' new facts are refined too (2026-09-14): frame element
+   regions and the accesses through them (`Oak.CheckerRefinement`, pinned
+   by `asm/checker_refinement_test.go`), the argument layout and record
+   chunks (`Oak.ArgumentLayout`,
+   `TestArgumentLayoutMatchesLeanTransliteration`, `94-assembler.md` §9.z),
+   and span aliases (`Oak.SpanAlias`: `forgetRegisterFacts` and `aliasSpan`
+   sound against a register file, `TestSpanAliasMatchesLeanTransliteration`,
+   §9.aa); the RV64 checker's move rule remains.
 6. **The checkers are linear over the block.** Base facts (spans,
    regions, frame addresses) are definitions, not per-path state; guard
    facts already flow through labels by a fixpoint on AArch64. The two
