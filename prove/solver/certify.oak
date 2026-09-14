@@ -30,7 +30,68 @@ cert_conflicts: (): u32 {
   }
   value
 }
-CERT_RECORD_WORDS: u32 = 16777216
+// lrat_check_record checks a finished record (sat_record_finish) with the
+// checker written in Oak over scratch sized from the record's header, and
+// reports its status; out receives status, additions, deletions.
+lrat_check_record: (record: []u32, variables: u32, out: [*]u32): u32 {
+  ids: u32 = record[u32(5)] + u32(1)
+  store_words: u32 = record[u32(6)] + u32(1)
+  vars: u32 = variables + u32(1)
+  accepted: u32 = LRAT_CAPACITY
+  unsafe {
+    starts_raw: c.Ptr = malloc(c.Size(ids * u32(4)))
+    lengths_raw: c.Ptr = malloc(c.Size(ids * u32(4)))
+    alive_raw: c.Ptr = malloc(c.Size(ids))
+    store_raw: c.Ptr = malloc(c.Size(store_words * u32(4)))
+    assign_raw: c.Ptr = malloc(c.Size(vars))
+    trail_raw: c.Ptr = malloc(c.Size(vars * u32(4)))
+    starts: Buffer[u32] = c.own[u32](starts_raw, ids)
+    lengths: Buffer[u32] = c.own[u32](lengths_raw, ids)
+    alive: Buffer[u8] = c.own[u8](alive_raw, ids)
+    store: Buffer[u32] = c.own[u32](store_raw, store_words)
+    assign: Buffer[u8] = c.own[u8](assign_raw, vars)
+    trail: Buffer[u32] = c.own[u32](trail_raw, vars)
+    accepted = lrat_check(record, span(&starts), span(&lengths), span(&alive), span(&store), span(&assign), span(&trail), out)
+    free(c.disown(trail))
+    free(c.disown(assign))
+    free(c.disown(store))
+    free(c.disown(alive))
+    free(c.disown(lengths))
+    free(c.disown(starts))
+  }
+  accepted
+}
+
+// write_words_file writes words little-endian to a new file at the
+// NUL-terminated path, through a local byte chunk; false when the file
+// could not be created or a write fell short.
+write_words_file: (path: []u8, words: []u32): Bool {
+  fd_word: u32 = u32_trunc_u64(u64(c_creat(c.cstr(path), c.Int(420))))
+  ok: Bool = fd_word != NONE
+  fd: c.Int = c.Int(i32_bits_u32(fd_word))
+  chunk: [16384]u8
+  at: u32 = 0
+  n: u32 = len(words)
+  while at < n && ok {
+    count: u32 = n - at > u32(4096) ? { u32(4096) } | { n - at }
+    k: u32 = 0
+    while k < count {
+      w: u32 = words[at + k]
+      chunk[u32(4) * k] = u8_trunc_u32(w & u32(255))
+      chunk[u32(4) * k + u32(1)] = u8_trunc_u32((w >> u32(8)) & u32(255))
+      chunk[u32(4) * k + u32(2)] = u8_trunc_u32((w >> u32(16)) & u32(255))
+      chunk[u32(4) * k + u32(3)] = u8_trunc_u32((w >> u32(24)) & u32(255))
+      k = k + u32(1)
+    }
+    piece: []u8 = view(&chunk)
+    part: []u8 = subslice(piece, u32(0), u32(4) * count)
+    written: u64 = u64(c_write(fd, c.span_of(part)))
+    ok = written == u64(u32(4) * count)
+    at = at + count
+  }
+  fd_word != NONE ? { closed: c.Int = c_close(fd) } | { }
+  ok
+}
 
 // certify_in_oak runs the rung over the problem in the built buffer b0
 // (its first n0 words), allocating what it needs for this theorem alone.
@@ -65,7 +126,9 @@ certify_over: (whole: []u32, n0: u32, node_budget: u32, out: [*]u32): () {
       literal_words: u32 = region_view[clause_layout.clauses_at + u32(3)]
       clause_cap: u32 = region_view[clause_layout.clauses_at + u32(5)]
       store_cap: u32 = region_view[clause_layout.clauses_at + u32(6)]
-      sl: SatLayout = sat_layout(variables, clause_cap, store_cap, CERT_RECORD_WORDS)
+      clause_count: u32 = region_view[clause_layout.clauses_at + u32(2)]
+      record_cap: u32 = sat_record_cap(sat_conflicts(conflicts, clause_count), LRAT_HEADER_WORDS + literal_words)
+      sl: SatLayout = sat_layout(variables, clause_cap, store_cap, record_cap)
       sat_raw: c.Ptr = malloc(c.Size(sl.total * u32(4)))
       sat_arena: Buffer[u32] = c.own[u32](sat_raw, sl.total)
       status: u32 = SAT_MALFORMED
@@ -77,33 +140,12 @@ certify_over: (whole: []u32, n0: u32, node_budget: u32, out: [*]u32): () {
         length == u32(0) ? { out[u32(0)] = CERT_REFUSED } | {
           sat_view: []u32 = view(&sat_arena)
           record: []u32 = subslice(sat_view, sl.record_at, length)
-          ids: u32 = record[u32(5)] + u32(1)
-          store_words: u32 = record[u32(6)] + u32(1)
-          vars: u32 = variables + u32(1)
-          starts_raw: c.Ptr = malloc(c.Size(ids * u32(4)))
-          lengths_raw: c.Ptr = malloc(c.Size(ids * u32(4)))
-          alive_raw: c.Ptr = malloc(c.Size(ids))
-          store_raw: c.Ptr = malloc(c.Size(store_words * u32(4)))
-          assign_raw: c.Ptr = malloc(c.Size(vars))
-          trail_raw: c.Ptr = malloc(c.Size(vars * u32(4)))
-          starts: Buffer[u32] = c.own[u32](starts_raw, ids)
-          lengths: Buffer[u32] = c.own[u32](lengths_raw, ids)
-          alive: Buffer[u8] = c.own[u8](alive_raw, ids)
-          store: Buffer[u32] = c.own[u32](store_raw, store_words)
-          assign: Buffer[u8] = c.own[u8](assign_raw, vars)
-          trail: Buffer[u32] = c.own[u32](trail_raw, vars)
           checked: [3]u32
-          accepted: u32 = lrat_check(record, span(&starts), span(&lengths), span(&alive), span(&store), span(&assign), span(&trail), span(&checked))
+          accepted: u32 = lrat_check_record(record, variables, span(&checked))
           accepted == LRAT_ACCEPTED ? {
             out[u32(0)] = CERT_PROVEN
             out[u32(1)] = checked[u32(1)] + checked[u32(2)]
           } | { out[u32(0)] = CERT_REFUSED }
-          free(c.disown(trail))
-          free(c.disown(assign))
-          free(c.disown(store))
-          free(c.disown(alive))
-          free(c.disown(lengths))
-          free(c.disown(starts))
         }
       } | {
         status == SAT_SATISFIABLE ? {

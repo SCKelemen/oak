@@ -360,6 +360,138 @@ func CheckLRAT(formula, certificate string) (LRATResult, error) {
 	return result, nil
 }
 
+// CheckLRATWords checks a certificate in the checkers' word protocol (the
+// form the solver written in Oak records and prove/solver/lrat.oak reads;
+// EncodeLRATWords writes it from text): the eight-word header, the clauses
+// as `n, literals...` with literal words 2(v-1)+polarity, then steps
+// `0, id, n, literals..., m, hints...` and `1, id, k, ids...`. The same
+// RUP relation as CheckLRAT, over the same database and assignment.
+func CheckLRATWords(words []uint32) (LRATResult, error) {
+	var result LRATResult
+	if len(words) < 8 || words[0] != LRATMagic {
+		return result, fmt.Errorf("the record does not start with the LRAT header")
+	}
+	variables := int(words[1])
+	clauseCount := int(words[2])
+	literalWords := int(words[3])
+	if 8+literalWords > len(words) {
+		return result, fmt.Errorf("the record's clauses run past its end")
+	}
+	literal := func(w uint32) (int, error) {
+		v := int(w/2) + 1
+		if v > variables {
+			return 0, fmt.Errorf("literal word %d names no declared variable", w)
+		}
+		if w%2 == 1 {
+			return v, nil
+		}
+		return -v, nil
+	}
+	db := &lratDatabase{clauses: make([]lratClause, 0, clauseCount+1), alive: make([]bool, 0, clauseCount+1)}
+	empty := false
+	at := 8
+	for c := 0; c < clauseCount; c++ {
+		if at >= 8+literalWords {
+			return result, fmt.Errorf("the record holds fewer clauses than its header declares")
+		}
+		n := int(words[at])
+		at++
+		if at+n > 8+literalWords {
+			return result, fmt.Errorf("clause %d runs past the clause words", c+1)
+		}
+		clause := make(lratClause, n)
+		for j := 0; j < n; j++ {
+			l, err := literal(words[at+j])
+			if err != nil {
+				return result, fmt.Errorf("clause %d: %v", c+1, err)
+			}
+			clause[j] = l
+		}
+		at += n
+		db.put(c+1, clause)
+		if n == 0 {
+			empty = true
+		}
+	}
+	last := clauseCount
+	assigned := &lratAssignment{stamps: make([]uint32, 2*variables+2)}
+	var hints []int
+	step := 0
+	for at < len(words) {
+		step++
+		fail := func(format string, args ...interface{}) (LRATResult, error) {
+			return result, fmt.Errorf("certificate step %d: %s", step, fmt.Sprintf(format, args...))
+		}
+		if at+3 > len(words) {
+			return fail("a step needs a kind, an id, and a count")
+		}
+		kind, id, count := words[at], int(words[at+1]), int(words[at+2])
+		at += 3
+		if id <= 0 {
+			return fail("%d is not a step id", id)
+		}
+		switch kind {
+		case 1:
+			if id < last {
+				return fail("a deletion carries the last id")
+			}
+			if at+count > len(words) {
+				return fail("the deletion's ids run past the record")
+			}
+			for _, w := range words[at : at+count] {
+				n := int(w)
+				if _, alive := db.get(n); n <= 0 || !alive {
+					return fail("deleting clause %d, which is not live", n)
+				}
+				db.drop(n)
+				result.Deletions++
+			}
+			at += count
+		case 0:
+			if id <= last {
+				return fail("id %d does not increase past %d", id, last)
+			}
+			if at+count+1 > len(words) {
+				return fail("the addition's literals run past the record")
+			}
+			clause := make(lratClause, count)
+			for j := 0; j < count; j++ {
+				l, err := literal(words[at+j])
+				if err != nil {
+					return fail("%v", err)
+				}
+				clause[j] = l
+			}
+			at += count
+			m := int(words[at])
+			at++
+			if at+m > len(words) {
+				return fail("the addition's hints run past the record")
+			}
+			hints = hints[:0]
+			for _, w := range words[at : at+m] {
+				hints = append(hints, int(w))
+			}
+			at += m
+			if err := rup(db, variables, clause, hints, assigned); err != nil {
+				return fail("%v", err)
+			}
+			db.put(id, clause)
+			last = id
+			result.Additions++
+			if count == 0 {
+				empty = true
+			}
+		default:
+			return fail("%d is neither an addition (0) nor a deletion (1)", kind)
+		}
+	}
+	if !empty {
+		return result, fmt.Errorf("the certificate never derives the empty clause")
+	}
+	return result, nil
+}
+
 // LRATStep is one parsed certificate line: an addition of a clause with
 // its hints, or a deletion of clause ids.
 type LRATStep struct {

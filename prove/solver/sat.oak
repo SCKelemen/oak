@@ -248,7 +248,15 @@ sat_dedupe: (l: SatLayout, mem: [*]u32, n: u32): u32 {
 // (lrat.oak's protocol: header, then `n, lit...` per clause). Units are
 // enqueued at level zero; an empty clause settles the run at once.
 sat_init: (l: SatLayout, mem: [*]u32, words: []u32, budget: u32, quiet: Bool): Bool {
+  // Everything but the record is cleared; the record is written before it
+  // is read, and left untouched its pages cost nothing (a budget-sized
+  // record can run to hundreds of megabytes).
   i: u32 = 0
+  while i < l.record_at {
+    mem[i] = u32(0)
+    i = i + u32(1)
+  }
+  i = l.state_at
   while i < l.total {
     mem[i] = u32(0)
     i = i + u32(1)
@@ -993,6 +1001,19 @@ sat_subsume: (l: SatLayout, mem: [*]u32): () {
 // output is buffered; docs/spec/125-verification.md §4 `-conflicts`).
 SAT_DEFAULT_CONFLICTS: u32 = 200000
 SAT_CONFLICTS_PER_CLAUSE: u32 = 100
+
+// sat_record_cap sizes the certificate record for a budget: the header and
+// clauses (`base`) plus sixty-four words a conflict — the widest extents
+// row's certificate averages fifty-eight per addition, deletions
+// included — within a quarter-billion words.
+SAT_RECORD_PER_CONFLICT: u32 = 64
+SAT_RECORD_MAX: u32 = 268435456
+
+sat_record_cap: (budget: u32, base: u32): u32 {
+  per: u32 = budget > SAT_RECORD_MAX / SAT_RECORD_PER_CONFLICT ? { SAT_RECORD_MAX } | { SAT_RECORD_PER_CONFLICT * budget }
+  total: u32 = base + per
+  total > SAT_RECORD_MAX ? { SAT_RECORD_MAX } | { total }
+}
 
 sat_conflicts: (requested: u32, clauses: u32): u32 {
   scaled: u32 = SAT_CONFLICTS_PER_CLAUSE * clauses
