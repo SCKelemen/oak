@@ -11,8 +11,9 @@ import (
 
 // Portable SIMD through the native backend's RV64 lane (docs/spec/93-simd.md
 // section 1.4, nativegen/rv64_simd.go): the integer fixed-vector corpus of
-// e2e_native_simd_test.go, without the functions whose signatures carry a
-// vector (the LP64 lane-array contract stays with the C backend) and the
+// e2e_native_simd_test.go — double_it's vector signature under the RVV
+// psABI contract (v8 in, v8 out; the native entry is double_it_rvv_abi and
+// the C emitter's shim converts the lane-array struct) — without the
 // ctz/popcount helpers (no Zbb on the lane), lowered to RVV under
 // `vsetivli` configurations, admitted by the checker through the slack
 // guard and the frame vector rule, and executed under QEMU with V beside
@@ -85,6 +86,25 @@ across_call: (b: []u8) -> u32 {
 
 words_zero: () -> u32 = u32(0)
 
+// A vector across a native-to-native call: double_it keeps the vector
+// register contract at its native entry (v8 in, v8 out under the RVV psABI).
+double_it: (v: simd.U8x16) -> simd.U8x16 = simd.add_u8x16(v, v)
+
+doubled_mask: (b: []u8) -> u32 {
+  d: simd.U8x16 = double_it(simd.load_u8x16(b, u32(0)))
+  simd.movemask_u8x16(simd.eq_u8x16(d, simd.splat_u8x16(u8(14))))
+}
+
+// A vector across the C boundary: a foreign pointer local keeps this
+// caller on the C backend, so it reaches double_it through the converting
+// shim under its Oak name (the lane-array struct in, vle8 into v8).
+c_side: (a: []u8) -> u32 {
+  nothing: c.Ptr = c.null()
+  _ = nothing
+  v: simd.U8x16 = double_it(simd.load_u8x16(a, u32(0)))
+  simd.movemask_u8x16(simd.eq_u8x16(v, simd.splat_u8x16(u8(14))))
+}
+
 main: (): u32 {
   data: [32]u8
   i: u32 = u32(0)
@@ -116,13 +136,15 @@ main: (): u32 {
   ok6: Bool = across_call(view(&data)) == u32(128)
   // lanes 4..7 hold 4, 5, 6, 7; minus one, lane 3 equals 6: bit 3.
   ok7: Bool = wide_load(view(&wide)) == u32(8)
-  ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 ? u32(42) | (ok1 ? u32(0) | u32(1)) + (ok2 ? u32(0) | u32(2)) + (ok3 ? u32(0) | u32(4)) + (ok4 ? u32(0) | u32(8)) + (ok5 ? u32(0) | u32(16)) + (ok6 ? u32(0) | u32(32)) + (ok7 ? u32(0) | u32(64))
+  ok8: Bool = doubled_mask(view(&data)) == u32(128)
+  ok9: Bool = c_side(view(&data)) == u32(128)
+  ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 ? u32(42) | (ok1 ? u32(0) | u32(1)) + (ok2 ? u32(0) | u32(2)) + (ok3 ? u32(0) | u32(4)) + (ok4 ? u32(0) | u32(8)) + (ok5 ? u32(0) | u32(16)) + (ok6 ? u32(0) | u32(32)) + (ok7 ? u32(0) | u32(64)) + (ok8 ? u32(0) | u32(128)) + (ok9 ? u32(0) | u32(200))
 }
 `
 
 // The functions the rv64 lane lowers; main addresses owned arrays through
 // frame addresses and stays with the C backend on both lanes.
-var nativeRV64SimdFunctions = []string{"lanes_mask", "logic", "combine_store", "shuffle", "words", "wide_load", "across_call", "words_zero"}
+var nativeRV64SimdFunctions = []string{"lanes_mask", "logic", "combine_store", "shuffle", "words", "wide_load", "across_call", "words_zero", "double_it_rvv_abi", "doubled_mask"}
 
 // nativeRV64LowerCPU is nativeRV64Lower for a named processor.
 func nativeRV64LowerCPU(t *testing.T, tgt target.Target, cpu, source string) (NativeOutput, []string) {
@@ -150,11 +172,29 @@ func TestE2ENativeRV64SimdLowers(t *testing.T) {
 			t.Errorf("%s was not lowered by the rv64 lane; diagnostics:\n%s", fn, joined)
 		}
 	}
+	// The vector-signature entry and its caller are proven by the verifier
+	// under the v8 contract (docs/spec/94-assembler.md §9).
+	for _, fn := range []string{"double_it_rvv_abi", "doubled_mask"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven") {
+			t.Errorf("%s was not proven by the verifier; diagnostics:\n%s", fn, joined)
+		}
+	}
 	if native.Object == nil {
 		t.Fatal("no companion object")
 	}
 	if !strings.Contains(native.C, "__riscv_v") {
 		t.Error("the C backend must carry the RVV realization for the bodies it keeps")
+	}
+	// The C emitter defines double_it as a converting shim over its native
+	// entry (the lane-array struct loaded into a vector register), and
+	// c_side, kept on the C backend by its foreign pointer, calls it.
+	for _, text := range []string{"vuint8m1_t", "double_it_rvv_abi", "__riscv_vle8_v_u8m1", "__riscv_vse8_v_u8m1"} {
+		if !strings.Contains(native.C, text) {
+			t.Errorf("the emitted C lacks %q (the RVV shim)", text)
+		}
+	}
+	if !strings.Contains(joined, "c_side left to the C backend") {
+		t.Errorf("c_side must stay with the C backend; diagnostics:\n%s", joined)
 	}
 	// Without V on the processor the vector bodies stay with the C backend,
 	// whose portable lane loop realizes them.

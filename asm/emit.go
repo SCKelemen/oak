@@ -134,6 +134,19 @@ func archCondition(fn *Function) string { return ArchCondition(fn.Arch) }
 
 // ArchCondition is the preprocessor test for a lane's architecture: the
 // asm unit applies under it, the Oak fallback body under its negation.
+// VectorEntrySuffix marks the native entry of a function whose signature
+// carries a fixed vector on a lane: `_neon_abi` on AArch64 (v0–v7),
+// `_rvv_abi` on RV64 (v8–v23, the RVV psABI). The C emitter defines the
+// Oak name as a converting shim over the entry, and the verifier's call
+// summary reads the callee through the suffix (docs/spec/94-assembler.md
+// §9). No Oak identifier ends in either.
+func VectorEntrySuffix(arch string) string {
+	if arch == ArchRV64 {
+		return "_rvv_abi"
+	}
+	return "_neon_abi"
+}
+
 func ArchCondition(arch string) string {
 	if arch == ArchRV64 {
 		return "defined(__riscv) && (__riscv_xlen == 64)"

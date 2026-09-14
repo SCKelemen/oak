@@ -610,3 +610,37 @@ func TestRV64VectorEncoderAgreesWithGNUAs(t *testing.T) {
 		t.Fatalf("encodings differ at byte %d: ours %x, GNU as %x", offset, ours[offset:min(offset+4, len(ours))], theirs[offset:min(offset+4, len(theirs))])
 	}
 }
+
+// Vectors across the call boundary (docs/spec/94-assembler.md §9, the RVV
+// psABI): a fixed-vector parameter is bound to v8–v23 in declaration
+// order, a fixed-vector result is written to v8 before ret.
+func TestRV64VectorContract(t *testing.T) {
+	decl := "double: (v: simd.U8x16) -> simd.U8x16"
+	body := `  bind v8 = v
+  clobber v8, v9
+  vsetivli zero, 16, e8, m1, ta, ma
+  vadd.vv v8, v8, v8
+  ret`
+	if findings := rv64Check(t, decl, body); len(findings) != 0 {
+		t.Fatalf("the vector contract unit must check: %v", findings)
+	}
+	two := "blend: (a: simd.U8x16, k: u32, b: simd.U8x16) -> simd.U8x16"
+	if findings := rv64Check(t, two, "  bind v8 = a\n  bind a0 = k\n  bind v9 = b\n  clobber v8, v9\n  vsetivli zero, 16, e8, m1, ta, ma\n  vadd.vv v8, v8, v9\n  ret"); len(findings) != 0 {
+		t.Fatalf("two vector parameters bind v8 and v9 beside the integer file: %v", findings)
+	}
+	rejections := map[string][3]string{
+		"bound to the wrong register":  {decl, strings.Replace(body, "bind v8 = v", "bind v9 = v", 1), "must be bound to v8"},
+		"result never written":         {"fill: (k: u32) -> simd.U8x16", "  bind a0 = k\n  clobber v8, v9\n  vsetivli zero, 16, e8, m1, ta, ma\n  vmv.v.x v9, a0\n  ret", "without writing the result register v8"},
+		"bound to an integer register": {decl, strings.Replace(body, "bind v8 = v", "bind a0 = v", 1), "must be bound to v8"},
+	}
+	for name, tc := range rejections {
+		findings := rv64Check(t, tc[0], tc[1])
+		if len(findings) == 0 {
+			t.Errorf("%s: accepted", name)
+			continue
+		}
+		if !strings.Contains(strings.Join(findings, "\n"), tc[2]) {
+			t.Errorf("%s: findings %v lack %q", name, findings, tc[2])
+		}
+	}
+}

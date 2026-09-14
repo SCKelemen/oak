@@ -143,6 +143,11 @@ type rvGenerator struct {
 	// vectors are lowered (nativegen/rv64_simd.go); without it a function
 	// mentioning them stays with the C backend.
 	vector bool
+	// vecParams maps a vector parameter to its argument register (v8–v23,
+	// the RVV psABI); vectorCall marks a call that passes or receives a
+	// vector, which clobbers the argument registers past the operand stack.
+	vecParams  map[string]int
+	vectorCall bool
 }
 
 // compileRV64 lowers one Oak function on the rv64 lane; see Compile for
@@ -190,7 +195,8 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	// in a0 (and a1), where a span parameter's pair is bound, and the
 	// checker's span facts flow in text order.
 	parkSpans := g.hasCalls || returnsValue(fn)
-	nextReg, nextFReg := 0, 0
+	nextReg, nextFReg, nextVReg := 0, 0, 0
+	g.vecParams = map[string]int{}
 	if fn.ReturnType != nil && fn.ReturnType.String() != "()" {
 		if name, isRecord := g.recordTypeName(fn.ReturnType); isRecord {
 			// A record result under the psABI: up to 16 bytes back in a0 (and
@@ -216,9 +222,10 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 			if !ok {
 				return nil, unsupported("result of type %s", fn.ReturnType.String())
 			}
-			if s.isVec {
-				return nil, unsupported("a vector result (the LP64 lane-array contract stays with the C backend)")
-			}
+			// A vector result leaves in v8 (the RVV psABI's vector return
+			// register; docs/spec/94-assembler.md §9, vectors across the
+			// call boundary); the C emitter's shim converts it back to the
+			// lane-array struct.
 			g.result = &s
 		}
 	}
@@ -248,7 +255,14 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 		}
 		if sc, ok := scalarOf(p.Type); ok {
 			if sc.isVec {
-				return nil, unsupported("parameter %s of a vector type (the LP64 lane-array contract stays with the C backend)", p.Name.Value)
+				// A vector parameter arrives in v8–v23 in declaration order
+				// (the RVV psABI), independent of the integer and float files.
+				if nextVReg >= rvVArgs {
+					return nil, unsupported("parameter %s: the vector register contract v8–v23 is exhausted", p.Name.Value)
+				}
+				g.vecParams[p.Name.Value] = rvVArg0 + nextVReg
+				nextVReg++
+				continue
 			}
 			if sc.isFloat {
 				nextFReg++
@@ -325,7 +339,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	if frame > rvMaxFrame {
 		return nil, unsupported("a frame of %d bytes", frame)
 	}
-	out := &asm.Function{Name: fn.Name.Value, Signature: fn, Line: fn.Token.Line, Arch: asm.ArchRV64, Fallback: true, Records: records, ADTs: adts, Tables: tableSizes(g.tables)}
+	out := &asm.Function{Name: NativeSymbolFor(asm.ArchRV64, fn), Signature: fn, Line: fn.Token.Line, Arch: asm.ArchRV64, Fallback: true, Records: records, ADTs: adts, Tables: tableSizes(g.tables)}
 	if len(g.usedGlobals) > 0 {
 		out.Globals = g.usedGlobals
 	}
@@ -386,6 +400,13 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 			out.Bindings = append(out.Bindings, asm.Binding{Register: rvFReg(rvFArg0 + fregIndex), Param: p.Name.Value, Line: fn.Token.Line})
 			prologue = append(prologue, g.storeVar(p.Name.Value, vecBase+rvFArg0+fregIndex))
 			fregIndex++
+			continue
+		}
+		if vreg, isVec := g.vecParams[p.Name.Value]; isVec {
+			// Bound whole in its argument register, then stored to its slot
+			// (every vector local lives in the frame).
+			out.Bindings = append(out.Bindings, asm.Binding{Register: rvVReg(vreg), Param: p.Name.Value, Line: fn.Token.Line})
+			prologue = append(prologue, g.vecSlotStoreItems(rvVBase+vreg, g.slots[p.Name.Value])...)
 			continue
 		}
 		out.Bindings = append(out.Bindings, asm.Binding{Register: rvReg(rvArg0 + regIndex), Param: p.Name.Value, Line: fn.Token.Line})
@@ -452,9 +473,16 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	}
 	if g.usedVector {
 		// Every vector register is caller-saved: the mask, the helpers, and
-		// the operand stack are clobbers (docs/spec/94-assembler.md §9).
+		// the operand stack are clobbers (docs/spec/94-assembler.md §9); so
+		// are the argument registers a vector call writes past the operand
+		// stack (v16–v23).
 		for v := 0; v < rvVCount; v++ {
 			out.Clobbers = append(out.Clobbers, rvVReg(v))
+		}
+		if g.vectorCall || len(g.vecParams) > rvVCount-rvVArg0 {
+			for v := rvVCount; v < rvVArg0+rvVArgs; v++ {
+				out.Clobbers = append(out.Clobbers, rvVReg(v))
+			}
 		}
 	}
 	if g.usedFloat {
@@ -784,6 +812,10 @@ func (g *rvGenerator) epilogue() {
 
 // moveResult places a value in the result register: a0, or fa0 for a float.
 func (g *rvGenerator) moveResult(r int) {
+	if r >= rvVBase {
+		g.moveVec(rvVBase+rvVArg0, r) // a vector result leaves in v8
+		return
+	}
 	if r >= vecBase {
 		g.move(vecBase+rvFArg0, r)
 		return
@@ -1684,10 +1716,7 @@ func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *record
 			if !ok {
 				return 0, unsupported("a call to %s returning %s", ident.Value, callee.ReturnType.String())
 			}
-			if s.isVec {
-				return 0, unsupported("a call to %s returning a vector (the LP64 lane-array contract stays with the C backend)", ident.Value)
-			}
-			resultType = &s
+			resultType = &s // a vector result comes back in v8
 		}
 	}
 	for i, arg := range e.Arguments {
@@ -1763,9 +1792,6 @@ func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *record
 		if !ok {
 			return 0, unsupported("a call to %s (parameter %s: %s)", ident.Value, p.Name.Value, p.Type.String())
 		}
-		if s.isVec {
-			return 0, unsupported("a call to %s passing a vector (the LP64 lane-array contract stays with the C backend)", ident.Value)
-		}
 		r, err := g.exprAs(arg, s)
 		if err != nil {
 			return 0, err
@@ -1774,7 +1800,15 @@ func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *record
 	}
 
 	general, floating := 0, 0
+	var vectorArgs []int // vector arguments, in order: v8, v9, … after the spills
 	for _, r := range regs {
+		if r >= rvVBase {
+			// A vector argument travels in v8–v23; the argument registers
+			// are the operand stack, so the move waits until every live
+			// vector is spilled and reads the argument from its slot.
+			vectorArgs = append(vectorArgs, r)
+			continue
+		}
 		if r >= vecBase {
 			g.move(vecBase+rvFArg0+floating, r)
 			floating++
@@ -1786,8 +1820,11 @@ func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *record
 			g.release(r)
 		}
 	}
-	if general > 8 || floating > 8 {
+	if general > 8 || floating > 8 || len(vectorArgs) > rvVArgs {
 		return 0, unsupported("a call to %s: the arguments exhaust the argument registers", ident.Value)
+	}
+	if len(vectorArgs) > 0 || (resultType != nil && resultType.isVec) {
+		g.vectorCall = true
 	}
 	var spilled []int
 	for _, r := range g.live {
@@ -1808,13 +1845,42 @@ func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *record
 		}
 		spilled = append(spilled, r)
 	}
-	g.emit("call", asm.Symbol{Name: g.calleeName(ident)})
+	for k, r := range vectorArgs {
+		// Every vector argument is a defined live temporary, spilled above:
+		// reload it straight into its argument register.
+		if _, isSpilled := g.spill[r]; !isSpilled {
+			return 0, unsupported("a call to %s: a vector argument without a spill slot", ident.Value)
+		}
+		g.vecSlotLoad(rvVBase+rvVArg0+k, g.spill[r])
+	}
+	target := g.calleeName(ident)
+	if callee, declared := g.functions[target]; declared {
+		// A callee under the vector contract is reached at its native
+		// entry; the compiler lowers it natively or drops this caller.
+		target = NativeSymbolFor(asm.ArchRV64, callee)
+	}
+	g.emit("call", asm.Symbol{Name: target})
+	var vectorOut int
+	if resultType != nil && resultType.isVec {
+		// The vector result in v8 is copied out before the spilled operand
+		// stack (v8–v15 among it) is reloaded; the fresh register is free,
+		// so no reload lands on it.
+		out, err := g.alloc(*resultType)
+		if err != nil {
+			return 0, err
+		}
+		g.moveVec(out, rvVBase+rvVArg0)
+		vectorOut = out
+	}
 	for _, r := range spilled {
 		if r >= rvVBase {
 			g.vecSlotLoad(r, g.spill[r])
 			continue
 		}
 		g.emit(pick(r < vecBase, "ld", "fld"), rvReg(r), g.slotMem(g.spill[r]))
+	}
+	if resultType != nil && resultType.isVec {
+		return vectorOut, nil
 	}
 	if recordResult != nil {
 		if recordResult.layout.size <= 16 {
@@ -1848,7 +1914,7 @@ func (g *rvGenerator) resultExpr(expr ast.Expression) error {
 			return g.tailCall(e)
 		}
 	case *ast.MatchExpression:
-		if g.result != nil && !g.result.isFloat && g.valueOnly(e) {
+		if g.result != nil && !g.result.isFloat && !g.result.isVec && g.valueOnly(e) {
 			// Every arm yields a value: they meet in one scratch register
 			// and a0 is written once, at the join — a result written inside
 			// an arm would forget the parameters' span and record facts for
@@ -2025,8 +2091,8 @@ func (g *rvGenerator) resultInto(expr ast.Expression, out int) error {
 
 func (g *rvGenerator) isTailCall(expr ast.Expression) bool {
 	call, ok := expr.(*ast.InvocationExpression)
-	if !ok || len(g.spans) != 0 {
-		return false
+	if !ok || len(g.spans) != 0 || VectorContract(g.fn) {
+		return false // a vector-contract self-call goes through the call path
 	}
 	ident, ok := call.Function.(*ast.Identifier)
 	return ok && ident.Value == g.fn.Name.Value

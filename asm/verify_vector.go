@@ -131,7 +131,9 @@ func (s *symbolicState) readVec(num int) (vecValue, bool) {
 	if value, bound := s.vregs[num]; bound {
 		return value, true
 	}
-	if calleeSavedVector(num) {
+	if s.arch != ArchRV64 && calleeSavedVector(num) {
+		// AAPCS64 preserves the low halves of v8–v15; the RVV psABI
+		// preserves no vector register, so on RV64 an unwritten one is unbound.
 		value := vecValue{bits: 64, lanes: []*term{paramTerm(fmt.Sprintf("entry.v%d.lo", num), 64), paramTerm(fmt.Sprintf("entry.v%d.hi", num), 64)}}
 		s.writeVec(num, value)
 		return value, true

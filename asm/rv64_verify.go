@@ -56,6 +56,14 @@ func bindRV64Params(fn *Function, sig *ast.FunctionStatement, state *symbolicSta
 			declared[spanBaseName(param.Name.Value)] = 64
 			continue
 		}
+		if shape, isVector := vectorShape(param.Type); isVector {
+			// A fixed vector: its lanes are the leaves `p[k]`, the register
+			// (v8–v23) the whole (asm/verify_vector.go).
+			for k := 0; k < shape.Lanes; k++ {
+				declared[spanElemName(param.Name.Value, int64(k))] = laneWidth(shape)
+			}
+			continue
+		}
 		bits, _, ok := contractBits(param.Type)
 		if !ok {
 			return "vector or non-integer parameters", false
@@ -91,6 +99,14 @@ func bindRV64Params(fn *Function, sig *ast.FunctionStatement, state *symbolicSta
 			state.write(binding.Register, input(binding.Param, bits))
 			continue
 		}
+		if binding.Register.Class == ClassRV64V {
+			shape, isVector := vectorShape(sigParamType(sig, binding.Param))
+			if !isVector {
+				return "a vector register bound to a non-vector parameter", false
+			}
+			state.writeVec(binding.Register.Num, vectorParamValue(binding.Param, shape, input))
+			continue
+		}
 		_, signed, _ := contractBits(sigParamType(sig, binding.Param))
 		value := zeroExtend(input(binding.Param, bits), 64)
 		switch {
@@ -115,9 +131,11 @@ func sigParamType(sig *ast.FunctionStatement, name string) ast.Expression {
 }
 
 // rv64ResultRegister is a0 as the executor's ret reads it; an f32/f64
-// result is fa0 (LP64D).
+// result is fa0 (LP64D); a fixed vector result is v8 (the RVV psABI).
 var rv64ResultRegister = Register{Text: "a0", Class: ClassRV64X, Num: 10, Lane: -1}
 var rv64FloatResultRegister = Register{Text: "fa0", Class: ClassRV64F, Num: 10, Lane: -1}
+
+const rv64VectorResultRegister = 8
 
 // rv64BranchCondition is the comparison a conditional branch tests.
 func rv64BranchCondition(instr Instruction, state *symbolicState) (*term, string, bool) {
@@ -262,9 +280,9 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 	case "auipc":
 		return "a pc-relative address (auipc)", false
 	case "call":
-		// Every vector register is caller-saved and the configuration is
-		// not preserved (the psABI): both are forgotten across the call.
-		state.vregs, state.rvcfg = nil, nil
+		// The summary reads the vector arguments, then forgets the vector
+		// file and its configuration (caller-saved under the psABI) and
+		// writes a vector result to v8.
 		return x.summarizeCall(instr, state)
 	case "jal", "jalr":
 		return "a call", false

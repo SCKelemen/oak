@@ -59,8 +59,9 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			functions[fn.Name.Value] = fn
 			if nativegen.VectorContract(fn) {
 				// The native entry of a function under the vector contract
-				// (nativegen.VectorContractSuffix): a call target too.
-				symbols[nativegen.NativeSymbol(fn)] = true
+				// (nativegen.VectorContractSuffix, RVVContractSuffix): a
+				// call target too.
+				symbols[nativegen.NativeSymbolFor(comp.options.Target.AsmArch(), fn)] = true
 			}
 		}
 	}

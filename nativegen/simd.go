@@ -808,7 +808,15 @@ func (g *generator) simdPopcount(member string, args []ast.Expression) (int, err
 // backend's lane-array struct does not, so the C emitter defines the Oak
 // name as a converting shim over the suffixed native entry
 // (codegen/codegen.go emitVectorShim). Identifiers never end in it.
-const VectorContractSuffix = "_neon_abi"
+const VectorContractSuffix = "_neon_abi" // asm.VectorEntrySuffix(asm.ArchArm64)
+
+// RVVContractSuffix is the RV64 lane's counterpart (docs/spec/94-assembler.md
+// §9, "vectors across the call boundary"): the native entry takes its
+// vectors in the RVV psABI's argument registers v8–v23 and returns one in
+// v8, where the C backend's lane-array struct crosses in the integer
+// registers, so the C emitter defines the Oak name as a converting shim
+// over the suffixed entry (codegen/codegen.go emitVectorShim).
+const RVVContractSuffix = "_rvv_abi" // asm.VectorEntrySuffix(asm.ArchRV64)
 
 // VectorContract reports a function whose parameters or result include a
 // fixed vector type.
@@ -830,10 +838,17 @@ func VectorContract(fn *ast.FunctionStatement) bool {
 }
 
 // NativeSymbol is the Oak-level name the native lowering of fn is encoded
-// under: the function's own name, suffixed under the vector contract.
+// under on the AArch64 lane: the function's own name, suffixed under the
+// vector contract.
 func NativeSymbol(fn *ast.FunctionStatement) string {
+	return NativeSymbolFor(asm.ArchArm64, fn)
+}
+
+// NativeSymbolFor is NativeSymbol on the given lane: the vector contract's
+// suffix is the lane's (`_neon_abi`, `_rvv_abi`).
+func NativeSymbolFor(arch string, fn *ast.FunctionStatement) string {
 	if VectorContract(fn) {
-		return fn.Name.Value + VectorContractSuffix
+		return fn.Name.Value + asm.VectorEntrySuffix(arch)
 	}
 	return fn.Name.Value
 }
