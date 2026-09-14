@@ -509,6 +509,39 @@ def floatSewOK (sew : Nat) : Prop := sew = 32 ∨ sew = 64
 theorem float_sew_admitted : floatSewOK 32 ∧ floatSewOK 64 ∧ ¬ floatSewOK 16 ∧ ¬ floatSewOK 8 := by
   unfold floatSewOK; omega
 
+/-! ### Fixed vectors on the native lane: the slack guard
+
+The native backend's fixed 128-bit vectors (docs/spec/93-simd.md §1.4) load
+K elements at a guarded index. The guard is spelled `bltu len, k, trap`
+(len ≥ K), `sub t, len, k` (t = len − K, no wrap), `bltu t, idx, trap`
+(idx ≤ len − K): together idx + K ≤ len, and every one of the K elements
+from idx lies inside the span. A vector local's sixteen-byte slot and an
+owned array's element are frame memory: an immediate AVL of K elements at
+an entry-relative address inside the declared frame. -/
+
+/-- The three instructions of the slack guard prove idx + K ≤ len. -/
+theorem slack_guard (len idx k t : Nat) (hmin : k ≤ len) (ht : t = len - k) (hguard : ¬ t < idx) :
+    idx + k ≤ len := by
+  omega
+
+/-- Under idx + K ≤ len, the K elements from idx are inside the span. -/
+theorem slack_access_in_bounds (len idx k i : Nat) (h : idx + k ≤ len) (hi : i < k) : idx + i < len := by
+  omega
+
+/-- The AVL the configuration sets is at most K (`vsetivli` with an immediate
+    within the guard's K), and vl ≤ AVL: every accessed element is inside. -/
+theorem slack_vector_in_bounds (len idx k avl vlmax vl i : Nat) (h : idx + k ≤ len) (havl : avl ≤ k)
+    (hv : vsetvlOK avl vlmax vl) (hi : i < vl) : idx + i < len := by
+  unfold vsetvlOK at hv
+  omega
+
+/-- A fixed vector in the frame: K elements of `width` bytes at an
+    entry-relative address `addr` (negative, above `-frame`) end at or before
+    the entry sp, so every byte lies inside the declared frame. -/
+theorem frame_vector_in_bounds (frame addr k width i : Int) (hlo : -frame ≤ addr) (hhi : addr + k * width ≤ 0)
+    (hi : 0 ≤ i) (hik : i < k * width) : -frame ≤ addr + i ∧ addr + i < 0 := by
+  omega
+
 /-- A masked element is one of the vl elements: whatever the mask, the
     strip-mining bound covers it. -/
 theorem masked_access_in_bounds (len idx vlmax vl i : Nat) (hguard : idx < len)
