@@ -2367,9 +2367,18 @@ product, its high half the high half of the extended product), and the
 divisions and remainders `div`, `divu`, `rem`, `remu` (the model computes
 on `Int` with `tdiv`/`tmod` and spells the zero-divisor and overflow cases
 out; `BitVec.toInt_sdiv`/`toInt_srem` and the bound `|a tdiv b| ≤ |a|`
-carry them to Oak's totalized `sdiv`/`srem`) — 42 theorems, every integer
-instruction the verifier's tables decide except the W-form divisions,
-whose 32-bit totalization `Oak.RiscV` does not yet state. The generation
+carry them to Oak's totalized `sdiv`/`srem`), and their W forms through
+the width-generic `divN`/`remN` — every integer instruction the
+verifier's tables decide. Of the loads and stores the pure parts are
+theorems: the effective address `rX rs1 + sign_extend imm`
+(`ext_data_get_addr`), the alignment guard (`is_aligned_vaddr`, the
+checker's multiple-of-width obligation), the loaded value's extension
+(`extend_value`) and the stored data's truncation, against
+`Oak.RiscV.effectiveAddress`, `loadValue`, `storeData`; the model's
+address translation and memory access (`translateAddr`, `mem_read`,
+`mem_write`, in the monad) are what the checker's bounds and the
+verifier's flat element memory stand in for — an audited hop. 53
+theorems in all. The generation
 and build steps are in `spec/lean-sail/README.md`; the Go test builds the
 project when the export is present and skips otherwise.
 

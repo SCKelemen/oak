@@ -330,7 +330,7 @@ for a workload):
    switch, `sail_maker` included) the export of sail-riscv 497209b9
    (2026-08-19) generates in minutes and builds under lean-sail v5 in
    135 jobs (130 MB, not gigabytes); `spec/lean-sail` builds against it,
-   42 semantics theorems and 30 encoding theorems checked against the
+   53 semantics theorems and 30 encoding theorems checked against the
    export itself (`94-assembler.md` §9, `spec/lean-sail/README.md`), and
    `asm/rv64_sail_bridge_test.go` runs the build when the export is
    present. Two facts to keep: sail-riscv's current model does not export
@@ -339,10 +339,13 @@ for a workload):
    2026-09-04), so the checkout under `external/` is pinned to the last
    commit whose export compiles; and the model's `encdec` branch arm is
    defined only for even offsets, so the branch encoding theorems carry
-   that hypothesis. Still open here: the W-form divisions (`Oak.RiscV`
-   states the totalization at 64 bits only), and the loads, stores and
-   AMOs the memory refinement pins, whose export is monadic memory rather
-   than a pure expression.
+   that hypothesis. Every integer instruction the verifier decides is
+   bridged, and of the loads and stores the address, alignment guard,
+   extension and truncation are; what stays audited rather than proved is
+   the model's address translation and memory access in the monad, for
+   which the checker's bounds and the verifier's flat element memory
+   stand in. The rv64 verifier decides no atomics, so the AMOs the memory
+   refinement pins at the C level have nothing to bridge yet.
 6. **An amd64 lane and an x86 semantics** — **deferred** (2026-09-13: no x86-64 workload exists; amd64 stays a C-only target until one does). The native backend's third lane,
    with instruction semantics bridged to a machine-readable x86-64
    specification. Scoped 2026-09-13, in the order that pays first:
