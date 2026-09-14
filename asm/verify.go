@@ -959,7 +959,7 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 		}
 	}
 	exec.hasResult = hasResult
-	exec.loopExits = findLoops(fn.Items, labels)
+	exec.loopExits = findLoopsIn(fn.Name, fn.Items, labels, fn.Callees)
 	result, effects, reason, ok := exec.run(0, state)
 	if effects != nil {
 		exec.cells, exec.writes = effects.cells, effects.writes

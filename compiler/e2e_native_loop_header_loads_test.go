@@ -30,9 +30,34 @@ skip_spaces: (text: []u8, at: u32) -> u32 {
   i
 }
 
+// pub keeps is_blank a call (the source-level inliner leaves exported
+// functions), so the loop's exit test and body call a program function,
+// summarized on the iteration's fresh symbols.
+pub is_blank: (b: u8) -> Bool = b == u8(32) || b == u8(9)
+
+pub weight: (b: u8) -> u32 = u32(b) & u32(3)
+
+skip_blank: (text: []u8, at: u32) -> u32 {
+  i: u32 = at
+  while i < len(text) && is_blank(text[i]) {
+    i = i + u32(1)
+  }
+  i
+}
+
+weigh: (text: []u8) -> u32 {
+  i: u32 = u32(0)
+  total: u32 = u32(0)
+  while i < len(text) {
+    total = total + weight(text[i])
+    i = i + u32(1)
+  }
+  total
+}
+
 main: (): i32 {
   buf: [6]u8 = [6]u8{49, 50, 48, 48, 32, 32}
-  i32_bits_u32(trim_zeros(view(&buf), u32(4)) + skip_spaces(view(&buf), u32(4)) - u32(2) - u32(6))
+  i32_bits_u32(trim_zeros(view(&buf), u32(4)) + skip_spaces(view(&buf), u32(4)) + skip_blank(view(&buf), u32(4)) + weigh(view(&buf)) - u32(2) - u32(6) - u32(6) - u32(3))
 }
 `
 
@@ -53,7 +78,7 @@ func TestE2ENativeLoopHeaderLoads(t *testing.T) {
 			t.Fatalf("%s: native build: %v", tname, err)
 		}
 		joined := strings.Join(native, "\n")
-		for _, fn := range []string{"trim_zeros", "skip_spaces"} {
+		for _, fn := range []string{"trim_zeros", "skip_spaces", "skip_blank", "weigh"} {
 			verdict := ""
 			for _, m := range native {
 				if strings.Contains(m, "asm unit "+fn+":") {

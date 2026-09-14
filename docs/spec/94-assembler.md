@@ -3169,6 +3169,34 @@ AArch64 and from 58 to 34 on RV64; proven bodies rose to 165 and 158.
 Pinned: `compiler/e2e_native_loop_header_loads_test.go` (both shapes,
 both lanes, the C build agreeing).
 
+**Calls and spills inside loops (2026-09-14).** With the exit tests
+reading memory, the remaining path-budget loops were, almost all of
+them, loops that call a program function — in the exit test (`while i <
+n && is_space(text[i])`) or in the body (`total = total + weight(t[i])`)
+— and the spills the native backend places around such a call. A call
+to a program function is now summarized inside the loop as it is outside
+(`summarizeCallInLoop`): on the header's paths and on the body's, the
+callee's result a term over the iteration's fresh symbols; a callee with
+memory effects (stores through spans, package cells) is refused, since
+the loop summary carries registers and frame slots, not memories. The
+recognizer takes such a call in a header or a body when its target is a
+function of the program (`findLoopsIn` knows the callees), and a spill
+or reload of the frame in the header too (`isFrameSpill`); the call's
+result registers are temporaries, never paired as loop-carried. The
+loop-carried frame slots are now tracked at the store's width — a
+spilled `w` register is a 4-byte slot (`s<addr>:4`), an `x` register an
+8-byte one — where before a narrow store in a body refused the loop, and
+the RV64 lane's body runner takes frame memory through the same slot
+model instead of refusing it. `OAK_VERIFY_TRACE=1` now also reports
+every back edge the recognizer does not take as a loop, with the reason
+and the function, which is how these shapes were found. On the
+stdlib-bearing program the path-budget bodies fell to 21 on AArch64 and
+10 on RV64; what those loops leave behind is now mostly stores through
+spans inside loop bodies (23 and 14 bodies), which need the span memory
+carried through the summary — the next shape. Pinned:
+`compiler/e2e_native_loop_header_loads_test.go` (`skip_blank`, `weigh`:
+a `pub` callee in an exit test and in a body, both lanes).
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built
