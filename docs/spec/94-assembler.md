@@ -1000,7 +1000,46 @@ the sign injections; `copysign` against `fsgnj.d`; `a < b` against
 through the slack idiom, `any` through `vcpop.m`, the masked gather, the
 slides for `prev`, a whole-register spill, and the ordered f32 dot product
 `(((0 + a₀b₀) + a₁b₁) + a₂b₂) + a₃b₃` against `vfmul`/`vfredosum` proven,
-with the pairwise grouping a mismatch.
+with the pairwise grouping a mismatch. **The float vectors of the native
+RV64 lane (2026-09-14).** The forms the eleventh native increment emits
+join the model: `vfdiv.vv`, `vfsqrt.v`, `vfsgnjn.vv`/`vfsgnjx.vv` (the
+sign injections as bit operations: `neg`/`abs`), `vmfne.vv` (the IEEE
+`!=` into a mask), `vid.v` (lane `i` holds `i`), `vmseq.vx`,
+`vfmerge.vfm` (`v0[i] ? fs1 : vs2[i]`), and `vfmin.vv`/`vfmax.vv`. Three
+refinements make the lane's sequences decide. *The number-preferring
+minimum and maximum* (`min_num`/`max_num`, Arm's `fminnm`/`fmaxnm`,
+RISC-V's `fmin`/`fmax`, RVV's `vfmin`/`vfmax`) are one hybrid term on
+every side (`floatMinMaxNum`): on numbers the same bit-level order chain
+as `minimum`/`maximum` (they agree there, `-0.0` below `+0.0`), on a NaN
+operand the `fminnm`/`fmaxnm` operation term — so the RVV lowering of
+`min`, which is `vfmin` with the NaN operands merged back over the result
+through `vmfne`/`vmerge`, is proven equal to Oak's `min` on numbers
+exactly and on NaNs up to the next point. *A float result is decided up
+to its NaN payload* (`floatCanonicalNaN`, applied to both sides of an
+`f32`/`f64` result and to every lane of a float vector result): the
+payload is the platform's (docs/spec/20-types.md §11.3.5, no law may
+rely on it), so a unit that yields one operand's NaN where the body's
+`min` yields the sum's NaN agrees; the NaN a `min`/`max` yields carries
+its exponent and quiet bits forced (`floatSomeNaN`) so the decider knows
+it is a NaN whatever the payload, and the witness value is unchanged.
+*An operation over operands whose every bit the diagram has settled folds
+to its IEEE value at blast time* (the mask bits the tail unknowns cannot
+reach settle this way), as the constructor folds constant applications —
+without it a folded constant on the Oak side met an abstracted
+application on the machine side. The callee-saved float registers
+`fs0`–`fs11` carry the caller's pattern on entry (`entry.fN`), so a
+prologue's `fsd`/`fld` pair round-trips. With these, every function of
+the native RV64 float and integer simd corpora that returns a value is
+**proven** (`compiler/e2e_native_rv64_float_simd_test.go`,
+`compiler/e2e_native_rv64_simd_test.go` assert it: `arith`, `dot`,
+`pairwise`, `minmax`, `doubles`, `words_view`, and the integer
+`lanes_mask`, `logic`, `shuffle`, `words`, …; the two units that store
+through a span stay trusted), as every NEON float unit is
+(`compiler/e2e_native_float_simd_test.go`). The lowering's shapes are
+decided in `asm/rv64_verify_vector_test.go`: the min sequence proven and
+bare `vfmin` a mismatch; div/sqrt/abs/neg with a slid extract; the
+vid/vmseq/vfmerge insert; the pairwise reduce through slides proven and
+`vfredosum`'s fold a mismatch.
 
 ## 9. Native encoding, and the architectures to come
 
@@ -3186,6 +3225,61 @@ over `&v + K` and `&v + (idx << s)`), so the Oak side's assignments are
 compared as memories on RV64 as they have been on AArch64
 (`decideEffects`). The trusted reason "a store through a span" is gone
 from the RV64 tally: 149 bodies proven on RV64, 151 on AArch64.
+
+**Exit tests that read memory (2026-09-14).** The path budget was the
+verified profile's largest reason, and most of it was one shape: a loop
+whose exit test reads an element under a guard — `while nd > 0 &&
+digits[nd-1] == 48`, `while i < len(text) && text[i] == 32` — which the
+recognizer did not take as a loop (its header held only pure register
+instructions ending in a branch to the exit label), so the executor
+unrolled it until the budget stopped it. The header is now every exit
+test from the label to the last branch leaving the loop, and an exit
+test may hold an element guard (a branch to the trap block, whose taken
+path traps as the Oak side's element read does), the guarded load itself
+(a scalar load through a span or table base, read as the executor reads
+it), and — the RV64 lane's spelling of `&&` — a forward branch to a label
+inside the header, which forks the header's paths (`loopShape.internal`,
+`isGuardBranch`, `isHeaderLoad`). The continue condition is then the
+disjunction over the header's paths of "this path is taken and no exit
+test on it is taken" (`headerCondition`, a small path walk bounded by
+`headerPathBudget`); the exit tests' temporaries — a compare operand's
+setup, a loaded element, a short-circuit's flag — are scratch, never
+paired as loop-carried and unbound past the loop, which generalizes the
+one setup register the RV64 lane excused before. An undecided branch at
+any header branch, internal or exit, summarizes the loop; a forward
+branch after the last exit is the body's own conditional, as before. On
+the stdlib-bearing program the path-budget bodies fell from 71 to 43 on
+AArch64 and from 58 to 34 on RV64; proven bodies rose to 165 and 158.
+Pinned: `compiler/e2e_native_loop_header_loads_test.go` (both shapes,
+both lanes, the C build agreeing).
+
+**Calls and spills inside loops (2026-09-14).** With the exit tests
+reading memory, the remaining path-budget loops were, almost all of
+them, loops that call a program function — in the exit test (`while i <
+n && is_space(text[i])`) or in the body (`total = total + weight(t[i])`)
+— and the spills the native backend places around such a call. A call
+to a program function is now summarized inside the loop as it is outside
+(`summarizeCallInLoop`): on the header's paths and on the body's, the
+callee's result a term over the iteration's fresh symbols; a callee with
+memory effects (stores through spans, package cells) is refused, since
+the loop summary carries registers and frame slots, not memories. The
+recognizer takes such a call in a header or a body when its target is a
+function of the program (`findLoopsIn` knows the callees), and a spill
+or reload of the frame in the header too (`isFrameSpill`); the call's
+result registers are temporaries, never paired as loop-carried. The
+loop-carried frame slots are now tracked at the store's width — a
+spilled `w` register is a 4-byte slot (`s<addr>:4`), an `x` register an
+8-byte one — where before a narrow store in a body refused the loop, and
+the RV64 lane's body runner takes frame memory through the same slot
+model instead of refusing it. `OAK_VERIFY_TRACE=1` now also reports
+every back edge the recognizer does not take as a loop, with the reason
+and the function, which is how these shapes were found. On the
+stdlib-bearing program the path-budget bodies fell to 21 on AArch64 and
+10 on RV64; what those loops leave behind is now mostly stores through
+spans inside loop bodies (23 and 14 bodies), which need the span memory
+carried through the summary — the next shape. Pinned:
+`compiler/e2e_native_loop_header_loads_test.go` (`skip_blank`, `weigh`:
+a `pub` callee in an exit test and in a body, both lanes).
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the

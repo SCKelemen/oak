@@ -372,6 +372,9 @@ func (bl *blaster) blastUncached(t *term) []int {
 		// Oak.Uninterpreted.ackermann_sound). The "span" is the operation
 		// at its width; the "index" is the operands' bits in order.
 		var idx []int
+		var args []uint64
+		var widths []int
+		constant := true
 		for _, arg := range []*term{t.left, t.right, t.cond} {
 			if arg == nil {
 				continue
@@ -381,6 +384,33 @@ func (bl *blaster) blastUncached(t *term) []int {
 				return nil
 			}
 			idx = append(idx, bits...)
+			// An operand whose every bit the diagram has settled is a
+			// constant: the operation folds to its IEEE value, as the
+			// constructor folds a constant application (a mask bit that
+			// the tail unknowns cannot reach settles this way).
+			var value uint64
+			for i, b := range bits {
+				switch b {
+				case bddTrue:
+					value |= uint64(1) << uint(i)
+				case bddFalse:
+				default:
+					constant = false
+				}
+			}
+			args = append(args, value)
+			widths = append(widths, arg.width)
+		}
+		if constant {
+			value := floatEval(t.op, t.width, args, widths) & mask(t.width)
+			out := make([]int, t.width)
+			for i := range out {
+				out[i] = bddFalse
+				if (value>>uint(i))&1 == 1 {
+					out[i] = bddTrue
+				}
+			}
+			return out
 		}
 		return bl.selectBits(floatOpSpan(t.op, t.width), idx, t.width)
 	case termCmp:

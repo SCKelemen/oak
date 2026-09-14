@@ -786,6 +786,9 @@ func verifyVectorResult(fn *Function, sig *ast.FunctionStatement, oakBody ast.Ex
 	lanes := make([]*term, len(value.elems))
 	for k, elem := range value.elems {
 		lanes[k] = elem.scalar
+		if shape.Float {
+			lanes[k] = floatCanonicalNaN(narrowLane(elem.scalar, laneWidth(shape)), laneWidth(shape))
+		}
 	}
 	oakHalves := packLanes(lanes, laneWidth(shape))
 	var verdicts []Verdict
@@ -803,6 +806,15 @@ func verifyVectorResult(fn *Function, sig *ast.FunctionStatement, oakBody ast.Ex
 		note := " (low half of the vector result)"
 		if half == 1 {
 			note = " (high half of the vector result)"
+		}
+		if shape.Float {
+			// The machine's lanes up to their NaN payloads, as the Oak side's.
+			bits := laneWidth(shape)
+			machine := vecValue{bits: 64, lanes: []*term{asmTerm, constTerm(0, 64)}}.lanesAt(bits)[:vecBits/bits/2]
+			for k := range machine {
+				machine[k] = floatCanonicalNaN(machine[k], bits)
+			}
+			asmTerm = packLanes(machine, bits)[0]
 		}
 		verdict := decideEqual(fn, lowering, asmTerm, oakHalves[half], 64, note)
 		if verdict.Kind == VerdictMismatch {

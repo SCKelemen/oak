@@ -140,7 +140,7 @@ func (x *pathExecutor) stepRV64Vector(instr Instruction, state *symbolicState) (
 		return x.rv64VectorStore(reg(0), ops[1].(Memory), K, bits, state)
 	}
 	switch name {
-	case "vadd.vv", "vsub.vv", "vand.vv", "vor.vv", "vxor.vv", "vminu.vv", "vmaxu.vv", "vssubu.vv", "vfadd.vv", "vfsub.vv", "vfmul.vv":
+	case "vadd.vv", "vsub.vv", "vand.vv", "vor.vv", "vxor.vv", "vminu.vv", "vmaxu.vv", "vssubu.vv", "vfadd.vv", "vfsub.vv", "vfmul.vv", "vfdiv.vv", "vfmin.vv", "vfmax.vv", "vfsgnjn.vv", "vfsgnjx.vv":
 		a, okA := lanesOf(reg(1))
 		b, okB := lanesOf(reg(2))
 		if !okA || !okB {
@@ -149,8 +149,23 @@ func (x *pathExecutor) stepRV64Vector(instr Instruction, state *symbolicState) (
 		out := make([]*term, K)
 		for k := range out {
 			switch name {
-			case "vfadd.vv", "vfsub.vv", "vfmul.vv":
-				out[k] = floatTerm(map[string]string{"vfadd.vv": "fadd", "vfsub.vv": "fsub", "vfmul.vv": "fmul"}[name], bits, a[k], b[k])
+			case "vfadd.vv", "vfsub.vv", "vfmul.vv", "vfdiv.vv":
+				out[k] = floatTerm(map[string]string{"vfadd.vv": "fadd", "vfsub.vv": "fsub", "vfmul.vv": "fmul", "vfdiv.vv": "fdiv"}[name], bits, a[k], b[k])
+			case "vfmin.vv", "vfmax.vv":
+				// IEEE minimumNumber/maximumNumber (RVV 1.0 §13.11): the
+				// order on numbers, the operation term on a NaN operand.
+				out[k] = floatMinMaxNum(map[string]string{"vfmin.vv": "min", "vfmax.vv": "max"}[name], a[k], b[k], bits)
+			case "vfsgnjn.vv", "vfsgnjx.vv":
+				// vs2's magnitude with vs1's sign negated (fneg when vs1 =
+				// vs2) or xored with vs2's (fabs when vs1 = vs2).
+				sign, magnitude, _, _ := floatMasks(bits)
+				signBits := binaryTerm("and", b[k], constTerm(sign, bits))
+				if name == "vfsgnjn.vv" {
+					signBits = binaryTerm("xor", signBits, constTerm(sign, bits))
+				} else {
+					signBits = binaryTerm("xor", signBits, binaryTerm("and", a[k], constTerm(sign, bits)))
+				}
+				out[k] = binaryTerm("or", binaryTerm("and", a[k], constTerm(magnitude, bits)), signBits)
 			default:
 				op := map[string]string{"vadd.vv": "add", "vsub.vv": "sub", "vand.vv": "and", "vor.vv": "or", "vxor.vv": "xor", "vminu.vv": "umin", "vmaxu.vv": "umax", "vssubu.vv": "uqsub"}[name]
 				out[k] = laneBinary(op, a[k], b[k])
@@ -172,16 +187,55 @@ func (x *pathExecutor) stepRV64Vector(instr Instruction, state *symbolicState) (
 		}
 		write(reg(0), out)
 		return "", true
-	case "vfcvt.f.xu.v":
+	case "vfcvt.f.xu.v", "vfsqrt.v":
 		a, okA := lanesOf(reg(1))
 		if !okA {
 			return "unbound vector register read", false
 		}
 		out := make([]*term, K)
 		for k := range out {
-			out[k] = floatTerm("ucvtf", bits, a[k])
+			if name == "vfsqrt.v" {
+				out[k] = floatTerm("fsqrt", bits, a[k])
+			} else {
+				out[k] = floatTerm("ucvtf", bits, a[k])
+			}
 		}
 		write(reg(0), out)
+		return "", true
+	case "vid.v":
+		// Lane i holds i (RVV 1.0 §15.8).
+		out := make([]*term, K)
+		for k := range out {
+			out[k] = constTerm(uint64(k), bits)
+		}
+		write(reg(0), out)
+		return "", true
+	case "vfmerge.vfm":
+		// vd = v0[i] ? fs1 : vs2[i] (RVV 1.0 §13.15); the mask is v0.
+		a, okA := lanesOf(reg(1))
+		scalar, okF := state.read(reg(2))
+		packed, okM := maskOf(reg(3))
+		if !okA || !okF || !okM {
+			return "unbound register read", false
+		}
+		lane := truncate(scalar, bits)
+		out := make([]*term, K)
+		for k := range out {
+			out[k] = iteTerm(maskBit(packed, k), lane, a[k])
+		}
+		write(reg(0), out)
+		return "", true
+	case "vmfne.vv":
+		// The IEEE `!=` per lane into a mask (true for a NaN operand).
+		a, okA := lanesOf(reg(1))
+		b, okB := lanesOf(reg(2))
+		if !okA || !okB {
+			return "unbound vector register read", false
+		}
+		writeMask(reg(0), func(k int) *term {
+			ne, _ := floatCompare("!=", a[k], b[k], bits)
+			return ne
+		})
 		return "", true
 	case "vsrl.vx":
 		a, okA := lanesOf(reg(1))
@@ -234,7 +288,7 @@ func (x *pathExecutor) stepRV64Vector(instr Instruction, state *symbolicState) (
 		}
 		state.write(reg(0), a[0])
 		return "", true
-	case "vmseq.vv", "vmsne.vx", "vmslt.vx", "vmsltu.vx":
+	case "vmseq.vv", "vmseq.vx", "vmsne.vx", "vmslt.vx", "vmsltu.vx":
 		a, okA := lanesOf(reg(1))
 		if !okA {
 			return "unbound vector register read", false
@@ -256,7 +310,7 @@ func (x *pathExecutor) stepRV64Vector(instr Instruction, state *symbolicState) (
 				b[k] = lane
 			}
 		}
-		code := map[string]string{"vmseq.vv": "eq", "vmsne.vx": "ne", "vmslt.vx": "lt", "vmsltu.vx": "lo"}[name]
+		code := map[string]string{"vmseq.vv": "eq", "vmseq.vx": "eq", "vmsne.vx": "ne", "vmslt.vx": "lt", "vmsltu.vx": "lo"}[name]
 		writeMask(reg(0), func(k int) *term { return truncate(cmpTerm(code, a[k], b[k]), 1) })
 		return "", true
 	case "vmerge.vvm":

@@ -130,9 +130,15 @@ func TestE2ENativeRV64FloatSimdLowers(t *testing.T) {
 			t.Errorf("%s was not lowered by the rv64 lane; diagnostics:\n%s", fn, joined)
 		}
 	}
-	// The float vector-signature entry and its caller are proven by the
-	// verifier under the v8 contract (docs/spec/94-assembler.md §9).
-	for _, fn := range []string{"scale_rvv_abi", "scaled"} {
+	// The verifier decides the float units against their Oak bodies up to
+	// the IEEE operations (docs/spec/94-assembler.md §8, ninth increment):
+	// the lane arithmetic, the min/max sequence with its NaN merges, the
+	// slid extracts, the vid/vmseq/vfmerge inserts, and the pairwise
+	// reduce through slides are proven.
+	for _, fn := range nativeRV64FloatSimdFunctions {
+		if fn == "unary" {
+			continue // a store through a span: a memory effect the verifier does not follow
+		}
 		if !strings.Contains(joined, "asm unit "+fn+": proven") {
 			t.Errorf("%s was not proven by the verifier; diagnostics:\n%s", fn, joined)
 		}

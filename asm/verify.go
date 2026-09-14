@@ -648,6 +648,17 @@ func (s *symbolicState) read(reg Register) (*term, bool) {
 	}
 	if reg.Class == ClassRV64F {
 		value, bound := s.fregs[reg.Num]
+		if !bound && rv64FloatCalleeSaved(reg.Num) {
+			// A callee-saved float register (fs0–fs11) carries the caller's
+			// pattern on entry: an opaque symbol the save/restore pair
+			// round-trips (LP64D, docs/spec/94-assembler.md §9).
+			value = paramTerm(fmt.Sprintf("entry.f%d", reg.Num), 64)
+			if s.fregs == nil {
+				s.fregs = map[int]*term{}
+			}
+			s.fregs[reg.Num] = value
+			bound = true
+		}
 		return value, bound
 	}
 	value, ok := s.regs[reg.Num]
@@ -959,7 +970,7 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 		}
 	}
 	exec.hasResult = hasResult
-	exec.loopExits = findLoops(fn.Items, labels)
+	exec.loopExits = findLoopsIn(fn.Name, fn.Items, labels, fn.Callees)
 	result, effects, reason, ok := exec.run(0, state)
 	if effects != nil {
 		exec.cells, exec.writes = effects.cells, effects.writes
@@ -1210,7 +1221,19 @@ func (s *symbolicState) clone() *symbolicState {
 			globals[name] = value
 		}
 	}
-	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, globals: globals, writes: cloneWrites(s.writes), unknownFrom: s.unknownFrom}
+	var fregs map[int]*term
+	if s.fregs != nil {
+		fregs = make(map[int]*term, len(s.fregs))
+		for reg, value := range s.fregs {
+			fregs[reg] = value
+		}
+	}
+	var rvcfg *rvVectorConfigVerify
+	if s.rvcfg != nil {
+		cfg := *s.rvcfg
+		rvcfg = &cfg
+	}
+	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, fregs: fregs, rvcfg: rvcfg, globals: globals, writes: cloneWrites(s.writes), unknownFrom: s.unknownFrom}
 }
 
 // frameAccess executes a load or store through the sp frame: the address
@@ -5122,6 +5145,11 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
 	asmTerm = maskResult(fn, sig, asmTerm, chunk)
+	if name := typeText(sig.ReturnType); name == "f32" || name == "f64" {
+		// A float result is decided up to its NaN payload (floatCanonicalNaN).
+		asmTerm = floatCanonicalNaN(truncate(asmTerm, width), width)
+		oakTerm = floatCanonicalNaN(truncate(oakTerm, width), width)
+	}
 	if len(exec.loops) > 0 || len(lowering.loops) > 0 {
 		if len(exec.cells) > 0 || len(lowering.writtenCells()) > 0 || len(exec.writes) > 0 || len(lowering.writes) > 0 {
 			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}

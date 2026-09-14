@@ -202,11 +202,16 @@ or the verifier, not in the program:
    spans as memories; and it found the decision had to be over well-typed
    union tags. The stdlib-bearing program went from 115 to 151 proven
    bodies on AArch64 and from 42 to 149 on RV64, with no mismatch. What
-   leads the list now: the path budget (data-dependent loops the coupling
-   does not reach), vector and floating-point parameters (outside the
-   scalar profile by design), results past 16 bytes returned through
-   memory, stores in loop bodies, unit callees with loops, and writable
-   span arguments to summarized calls.
+   led the list next: the path budget, which was mostly loops whose exit
+   tests read memory or call a program function; those are recognized and
+   summarized now (`94-assembler.md` §9, "Exit tests that read memory",
+   "Calls and spills inside loops"), and the path-budget bodies fell from
+   71 to 21 on AArch64 and from 58 to 10 on RV64, with 166 and 160 bodies
+   proven. What leads the list now: vector and floating-point parameters
+   (outside the scalar profile by design), stores through spans inside
+   loop bodies (the span memory carried through the loop summary is the
+   next shape), results past 16 bytes returned through memory, and unit
+   callees whose bodies assert.
 
 ## 5. How to reproduce the tally
 

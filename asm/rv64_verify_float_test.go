@@ -72,6 +72,12 @@ func TestRV64VerifyFloat(t *testing.T) {
 	if v := rv64Verify(t, "bits: (x: f32) -> u32", "u32_bits_f32(x)", "  bind fa0 = x\n  fmv.x.w a0, fa0\n  ret"); v.Kind != VerdictProven {
 		t.Fatalf("u32_bits_f32 against fmv.x.w must be proven, got %s: %s", v.Kind, v.Message)
 	}
+	// Branches over the float file: each path's writes are its own (the
+	// state clone carries the float registers), so the clamp decides.
+	clamp := "  bind fa0 = x\n  bind fa1 = lo\n  bind fa2 = hi\n  clobber t0, ft0\n  flt.d t0, fa0, fa1\n  beqz t0, above\n  fsgnj.d fa0, fa1, fa1\n  ret\nabove:\n  flt.d t0, fa2, fa0\n  beqz t0, inside\n  fsgnj.d fa0, fa2, fa2\ninside:\n  ret"
+	if v := rv64Verify(t, "clamp: (x, lo, hi: f64) -> f64", "x < lo ? lo | (hi < x ? hi | x)", clamp); v.Kind != VerdictProven {
+		t.Fatalf("the clamp over branches must be proven, got %s: %s", v.Kind, v.Message)
+	}
 	// A float through the frame: stored and reloaded.
 	if v := rv64Verify(t, "same: (x: f64) -> f64", "x", "  bind fa0 = x\n  frame 16\n  addi sp, sp, -16\n  fsd fa0, 8(sp)\n  fld fa0, 8(sp)\n  addi sp, sp, 16\n  ret"); v.Kind != VerdictProven {
 		t.Fatalf("a float round-tripped through the frame must be proven, got %s: %s", v.Kind, v.Message)
