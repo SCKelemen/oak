@@ -345,6 +345,9 @@ type loopEvent struct {
 	// same guards each iteration, position by position (verifyLoops,
 	// Oak.LoopStores).
 	writes map[string][]*spanWrite
+	// floats marks the Oak side's f32/f64 locals: only they pair with a
+	// vector register half or an RV64 f register zero-extended.
+	floats map[string]bool
 }
 
 func (ev *loopEvent) freshName(v string) string { return fmt.Sprintf("loop%d.%s", ev.index, v) }
@@ -558,30 +561,6 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		ev.header[name] = value
 		ev.fresh[name] = fresh
 	}
-	slots := make([]int64, 0, len(writtenSlots))
-	for addr := range writtenSlots {
-		slots = append(slots, addr)
-	}
-	sort.Slice(slots, func(i, j int) bool { return slots[i] < slots[j] })
-	if freshState.frame == nil {
-		freshState.frame = map[int64]frameSlot{}
-	}
-	for _, addr := range slots {
-		size := writtenSlots[addr]
-		name := fmt.Sprintf("s%d:%d", addr, size)
-		fresh := paramTerm(ev.freshName(name), int(size)*8)
-		x.declared[fresh.name] = int(size) * 8
-		value, bound := state.loadSlot(addr, size)
-		freshState.storeSlot(addr, fresh, size)
-		if !bound {
-			scratchSlots[addr] = true
-			continue
-		}
-		ev.vars = append(ev.vars, name)
-		ev.width[name] = int(size) * 8
-		ev.header[name] = value
-		ev.fresh[name] = fresh
-	}
 	for _, reg := range regs {
 		name := fmt.Sprintf("r%d", reg)
 		width := 64
@@ -615,6 +594,56 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		// value built from it is then known to be zero-extended.
 		x.declared[fresh.name] = width
 		freshState.regs[reg] = zeroExtend(fresh, 64)
+	}
+	// A store through a frame address register at a data-dependent index
+	// (`strb wV, [xB, wI, uxtw]`, the tail copy) reaches slots no syntactic
+	// scan names: the body runs once on the fresh register state, before
+	// the slots' symbols exist, and every slot it changes or creates joins
+	// the loop-carried slots at its width (a body with inner loops or
+	// calls is not probed: the probe would summarize them a second time).
+	if x.hasIndexedFrameStore(shape) && !x.hasInnerLoopOrCall(shape) {
+		probe := freshState.clone()
+		if ends, _, ok := x.runBody(shape, probe); ok {
+			for _, end := range ends {
+				for addr, slot := range end.state.frame {
+					before, held := state.frame[addr]
+					if held && before.width == slot.width && before.value == slot.value {
+						continue
+					}
+					if _, known := writtenSlots[addr]; known {
+						continue
+					}
+					if !held {
+						continue // a scratch piece the body created; not carried
+					}
+					writtenSlots[addr] = int64(slot.width)
+				}
+			}
+		}
+	}
+	slots := make([]int64, 0, len(writtenSlots))
+	for addr := range writtenSlots {
+		slots = append(slots, addr)
+	}
+	sort.Slice(slots, func(i, j int) bool { return slots[i] < slots[j] })
+	if freshState.frame == nil {
+		freshState.frame = map[int64]frameSlot{}
+	}
+	for _, addr := range slots {
+		size := writtenSlots[addr]
+		name := fmt.Sprintf("s%d:%d", addr, size)
+		fresh := paramTerm(ev.freshName(name), int(size)*8)
+		x.declared[fresh.name] = int(size) * 8
+		value, bound := state.loadSlot(addr, size)
+		freshState.storeSlot(addr, fresh, size)
+		if !bound {
+			scratchSlots[addr] = true
+			continue
+		}
+		ev.vars = append(ev.vars, name)
+		ev.width[name] = int(size) * 8
+		ev.header[name] = value
+		ev.fresh[name] = fresh
 	}
 	// The continue condition: no exit test taken along the header's paths,
 	// each test evaluated on the fresh state after the header instructions
@@ -952,6 +981,37 @@ func (e bodyEnd) valueOfVar(name string, header *symbolicState) *term {
 	}
 }
 
+// hasIndexedFrameStore reports a store in the body through an x register
+// with a register index (a frame array element at a data-dependent index;
+// registerFrameMemory decides at run time whether the base is a frame
+// address).
+func (x *pathExecutor) hasIndexedFrameStore(shape loopShape) bool {
+	for i := shape.bodyStart; i < shape.bodyEnd; i++ {
+		instr, isInstr := x.items[i].(Instruction)
+		if !isInstr || !isStoreMnemonic(instr.Mnemonic) || len(instr.Operands) == 0 {
+			continue
+		}
+		if mem, isMem := instr.Operands[len(instr.Operands)-1].(Memory); isMem && mem.Base.Class == ClassX && mem.Index != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// hasInnerLoopOrCall reports a recognized inner loop exit or a call inside
+// the body.
+func (x *pathExecutor) hasInnerLoopOrCall(shape loopShape) bool {
+	for i := shape.bodyStart; i < shape.bodyEnd; i++ {
+		if _, isExit := x.loopExits[i]; isExit {
+			return true
+		}
+		if instr, isInstr := x.items[i].(Instruction); isInstr && (instr.Mnemonic == "bl" || instr.Mnemonic == "call") {
+			return true
+		}
+	}
+	return false
+}
+
 // bodyPathBudget bounds the paths one loop body may fork into.
 const bodyPathBudget = 64
 
@@ -1010,7 +1070,9 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 				}
 				if isTrapBlock(x.items, target) {
 					// The trap arm delivers no result; the body continues on
-					// the fall-through path, outside the trapping inputs.
+					// the fall-through path, outside the trapping inputs —
+					// under the index bound the guard establishes.
+					st.noteTrapGuard(instr)
 					pc++
 					continue
 				}
@@ -1196,6 +1258,12 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		ev.vars = append(ev.vars, name)
 		ev.width[name] = local.width
 		ev.header[name] = local.value
+		if _, isFloat := lo.floats[name]; isFloat {
+			if ev.floats == nil {
+				ev.floats = map[string]bool{}
+			}
+			ev.floats[name] = true
+		}
 		fresh := paramTerm(ev.freshName(name), local.width)
 		lo.fresh[fresh.name] = local.width
 		ev.fresh[name] = fresh
@@ -1484,9 +1552,21 @@ func (s loopSlot) pack(values map[string]*term) *term {
 // `root[0]`..`root[n-1]` of one aggregate, all of width w dividing 64 and
 // numbered without gaps, form groups of 64/w consecutive lanes when they
 // fill whole groups; any other variable is a slot of its own.
-func laneSlots(events []*loopEvent) []loopSlot {
+func laneSlots(events []*loopEvent, machine []*loopEvent) []loopSlot {
 	var slots []loopSlot
 	for k, ev := range events {
+		// The lanes stay single when the machine event holds symbols at the
+		// lane's width — a byte array in one-byte frame slots — and are
+		// packed when it holds them only as wider words (vector halves).
+		singles := func(w, lanes int) bool {
+			count := 0
+			for _, name := range machine[k].vars {
+				if machine[k].width[name] == w {
+					count++
+				}
+			}
+			return count >= lanes
+		}
 		type lane struct {
 			index int
 			local string
@@ -1525,7 +1605,7 @@ func laneSlots(events []*loopEvent) []loopSlot {
 			if w > 0 && 64%w == 0 {
 				per = 64 / w
 			}
-			grouped := per > 0 && len(lanes)%per == 0
+			grouped := per > 1 && len(lanes)%per == 0 && !singles(w, len(lanes))
 			for i, l := range lanes {
 				if l.index != i || ev.width[l.local] != w {
 					grouped = false
@@ -1651,7 +1731,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// one 64-bit machine symbol: a vector register half or a frame slot
 	// holds the lanes packed, lane k at bits k*w, so the coupling pairs the
 	// pack of the group with the symbol (asm/verify_vector.go packLanes).
-	slots := laneSlots(oakLoops)
+	slots := laneSlots(oakLoops, asmLoops)
 	// Slots whose one-iteration value mentions fewer of the event's own
 	// variables come first: their register's value after one iteration then
 	// mentions only coupled symbols as soon as they are paired, so a wrong
@@ -1669,7 +1749,12 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		return count
 	}
-	sort.SliceStable(slots, func(i, j int) bool { return dependencies(slots[i]) < dependencies(slots[j]) })
+	sort.SliceStable(slots, func(i, j int) bool {
+		if slots[i].event != slots[j].event {
+			return slots[i].event < slots[j].event
+		}
+		return dependencies(slots[i]) < dependencies(slots[j])
+	})
 	// Invariant candidates per event: the guard weakened to its closure
 	// (`x < e` gives `x ≤ e`) when it holds at the header and one iteration
 	// preserves it under the guard; else the trivial invariant.
@@ -1735,12 +1820,15 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	used := map[string]bool{} // asm fresh symbol names already paired
 	sigma := map[string]*term{}
 	var failure string
-	candidatesFor := func(s loopSlot) []coupling {
+	// candidatesFor lists the pairings open to a slot; taken names the
+	// symbols other slots hold, which a conflict-directed search charges to
+	// the depths that took them when no candidate is left.
+	candidatesFor := func(s loopSlot) (out []coupling, taken []string) {
 		oakEv, asmEv := oakLoops[s.event], asmLoops[s.event]
 		hx := s.pack(oakEv.header)
-		var out []coupling
 		for _, reg := range asmEv.vars {
 			if used[asmEv.freshName(reg)] {
+				taken = append(taken, asmEv.freshName(reg))
 				continue
 			}
 			// A 64-bit register may carry a 32-bit Oak variable widened (the
@@ -1750,6 +1838,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			// widening is a candidate image; the coupling is r = ext(x) + b at
 			// 64 bits and one iteration must preserve it. A lane group is
 			// paired at its packed width, as r = pack(x) + b only.
+			if strings.HasPrefix(reg, "f") && !oakEv.floats[s.name] {
+				continue // the RV64 float file holds float locals only
+			}
 			var widenings []string
 			signs := []int{1, -1}
 			switch {
@@ -1757,7 +1848,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				widenings = []string{""}
 			case len(s.locals) == 1 && asmEv.width[reg] == 64 && s.width() == 32 && strings.HasPrefix(reg, "r"):
 				widenings = []string{"zext", "sext"}
-			case len(s.locals) == 1 && asmEv.width[reg] == 64 && s.width() == 32 && (strings.HasPrefix(reg, "v") || strings.HasPrefix(reg, "f")):
+			case len(s.locals) == 1 && oakEv.floats[s.name] && asmEv.width[reg] == 64 && s.width() == 32 && (strings.HasPrefix(reg, "v") || strings.HasPrefix(reg, "f")):
 				// An f32 local in the low lane of a v register (a scalar
 				// write zeroes the rest) or in an RV64 f register (the file's
 				// low-bits convention): zero-extended only.
@@ -1802,7 +1893,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				}
 			}
 		}
-		return out
+		return out, taken
 	}
 	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
 	// resolved: the term mentions no asm loop symbol still to be coupled.
@@ -1820,13 +1911,27 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		return true
 	}
-	// pendingRefuted prunes the search: the one-iteration obligation of a
-	// chosen slot, and an event's continue-condition agreement, are checked
-	// on valuations as soon as their asm side mentions only coupled symbols
-	// (the leaf would find the same refutation after every completion
-	// below). Slots verified here are remembered until their choice is
-	// undone.
+	// verified: the slots whose one-iteration obligation a valuation pass
+	// has already checked under the current choices (pendingRefuted).
 	verified := map[string]bool{}
+	// depthOf: the search depth at which each asm symbol was paired, for
+	// the conflict sets of conflict-directed backjumping.
+	depthOf := map[string]int{}
+	// conflictOf is the set of depths whose choices an obligation depends
+	// on: the slots owning the asm symbols its asm side mentions.
+	conflictOf := func(terms ...*term) map[int]bool {
+		mentioned := map[string]bool{}
+		for _, t := range terms {
+			collectParams(t, mentioned)
+		}
+		set := map[int]bool{}
+		for name := range mentioned {
+			if depth, paired := depthOf[name]; paired {
+				set[depth] = true
+			}
+		}
+		return set
+	}
 	// preservation is slot s's one-iteration obligation under coupling c
 	// and the current substitution: (premise, Oak side, asm side, whether
 	// the asm side mentions only coupled symbols).
@@ -1841,7 +1946,13 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		return bodyPremise(s.event, sigma, true), next, asmNext, resolved(asmNext)
 	}
-	pendingRefuted := func() (refuted bool, newly []string) {
+	// pendingRefuted prunes the search: the one-iteration obligation of a
+	// chosen slot, and an event's continue-condition agreement, are checked
+	// on valuations as soon as their asm side mentions only coupled symbols
+	// (the leaf would find the same refutation after every completion
+	// below). Slots verified here are remembered until their choice is
+	// undone. A refutation names the depths it depends on.
+	pendingRefuted := func() (conflict map[int]bool, newly []string) {
 		for _, s := range slots {
 			c, isChosen := chosen[s.key]
 			if !isChosen || verified[s.key] {
@@ -1855,7 +1966,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				if trace {
 					fmt.Fprintf(os.Stderr, "verify %s: a valuation refutes one iteration preserving %s\n", fn.Name, c.show)
 				}
-				return true, newly
+				conflict = conflictOf(asmLoops[s.event].next[c.reg])
+				conflict[depthOf[asmLoops[s.event].freshName(c.reg)]] = true
+				return conflict, newly
 			}
 			verified[s.key] = true
 			newly = append(newly, s.key)
@@ -1866,10 +1979,10 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				if trace {
 					fmt.Fprintf(os.Stderr, "verify %s: a valuation refutes loop %d's continue conditions agreeing\n", fn.Name, k+1)
 				}
-				return true, newly
+				return conflictOf(asmLoops[k].cond), newly
 			}
 		}
-		return false, newly
+		return nil, newly
 	}
 	// Viability first: a slot none of whose candidates survives its own
 	// obligation — no symbol of its width in the event, or every pairing
@@ -1879,7 +1992,8 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	for _, s := range slots {
 		viable := false
 		var last string
-		for _, c := range candidatesFor(s) {
+		candidates, _ := candidatesFor(s)
+		for _, c := range candidates {
 			asmName := asmLoops[s.event].freshName(c.reg)
 			sigma[asmName] = widen(s.pack(oakLoops[s.event].fresh), c.ext)
 			if c.a == 1 {
@@ -1903,12 +2017,17 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 	}
 	visited := 0
-	var search func(i int) bool
-	search = func(i int) bool {
+	// The search is conflict-directed: a failure below returns the depths
+	// its refutation depended on, and a level whose choice is not among
+	// them passes the failure up without trying its other candidates (the
+	// sixteen slots of a byte array between an accumulator and the register
+	// it was wrongly paired with are never re-enumerated).
+	var search func(i int) (bool, map[int]bool)
+	search = func(i int) (bool, map[int]bool) {
 		visited++
 		if visited > couplingSearchBudget {
 			failure = "the coupling search exceeded its budget"
-			return false
+			return false, nil
 		}
 		if i == len(slots) {
 			for k := range oakLoops {
@@ -1918,7 +2037,13 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 					if trace {
 						fmt.Fprintf(os.Stderr, "verify %s: %s (decided=%v)\n  oak: %s\n  asm: %s\n  premise: %s\n", fn.Name, failure, decided, substitute(oakEv.cond, sigma), substitute(asmEv.cond, sigma), bodyPremise(k, sigma, false))
 					}
-					return false
+					if !decided {
+						// The obligation, not the pairing, is beyond the budget:
+						// no other pairing shrinks it, so the search ends here.
+						failure += " (the bit-level decision exceeded its node budget)"
+						return false, nil
+					}
+					return false, conflictOf(asmEv.cond)
 				}
 				premise := bodyPremise(k, sigma, true)
 				for _, s := range slots {
@@ -1939,20 +2064,34 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 						if trace {
 							fmt.Fprintf(os.Stderr, "verify %s: %s (decided=%v)\n  oak next: %s\n  asm next: %s\n", fn.Name, failure, decided, next, substitute(asmEv.next[c.reg], sigma))
 						}
-						return false
+						if !decided {
+							failure += " (the bit-level decision exceeded its node budget)"
+							return false, nil
+						}
+						conflict := conflictOf(asmEv.next[c.reg])
+						conflict[depthOf[asmEv.freshName(c.reg)]] = true
+						return false, conflict
 					}
 				}
 			}
-			return true
+			return true, nil
 		}
 		s := slots[i]
-		for _, c := range candidatesFor(s) {
+		total := map[int]bool{}
+		candidates, taken := candidatesFor(s)
+		// The symbols other slots hold would have been candidates here:
+		// their depths are part of any failure of this slot.
+		for _, name := range taken {
+			total[depthOf[name]] = true
+		}
+		for _, c := range candidates {
 			asmName := asmLoops[s.event].freshName(c.reg)
 			if trace {
 				fmt.Fprintf(os.Stderr, "verify %s: search depth %d: %s\n", fn.Name, i, c.show)
 			}
 			used[asmName] = true
 			chosen[s.key] = c
+			depthOf[asmName] = i
 			// r = a*x + b: the register's fresh symbol expressed for x (the
 			// pack of the lanes' symbols for a group).
 			x := widen(s.pack(oakLoops[s.event].fresh), c.ext)
@@ -1961,12 +2100,12 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			} else {
 				sigma[asmName] = binaryTerm("sub", c.b, x)
 			}
-			refuted, newly := pendingRefuted()
-			if !refuted && search(i+1) {
-				return true
-			}
-			if visited > couplingSearchBudget {
-				return false
+			conflict, newly := pendingRefuted()
+			if conflict == nil {
+				var ok bool
+				if ok, conflict = search(i + 1); ok {
+					return true, nil
+				}
 			}
 			for _, key := range newly {
 				delete(verified, key)
@@ -1974,13 +2113,27 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			delete(used, asmName)
 			delete(chosen, s.key)
 			delete(sigma, asmName)
+			delete(depthOf, asmName)
+			if visited > couplingSearchBudget {
+				return false, nil
+			}
+			if !conflict[i] {
+				// This level's choice played no part: no other candidate here
+				// can change the outcome, so the conflict passes up.
+				return false, conflict
+			}
+			for depth := range conflict {
+				if depth != i {
+					total[depth] = true
+				}
+			}
 		}
 		if failure == "" {
 			failure = fmt.Sprintf("no register is an affine image of the loop variable %s of loop %d at its header", s.name, s.event+1)
 		}
-		return false
+		return false, total
 	}
-	if !search(0) {
+	if ok, _ := search(0); !ok {
 		return evidence(failure)
 	}
 	var pairs []string
@@ -2440,21 +2593,61 @@ func refutedByValuation(premise, a, b *term, names []string, widths map[string]i
 		}
 		free = append(free, name)
 	}
+	// The constants the obligation compares against (a lane index, a
+	// stride, a length bound) are the values a symbol must take for an
+	// index to select a lane or a guard to turn: they join the small and
+	// the random values.
+	constants := []uint64{0, 1}
+	seen := map[uint64]bool{0: true, 1: true}
+	collectConstants(premise, seen, &constants)
+	collectConstants(a, seen, &constants)
+	collectConstants(b, seen, &constants)
 	seed := uint64(0xD1B54A32D192ED03)
+	random := func() uint64 {
+		seed ^= seed << 13
+		seed ^= seed >> 7
+		seed ^= seed << 17
+		return seed
+	}
+	// Targeted valuations first: a comparison of a symbol with a constant
+	// (`i = 11`, the index selecting a lane; `len < 64`, a guard) is
+	// decided one way or the other by the symbol taking the constant and
+	// its neighbors, so each such pair is tried with the rest random.
+	var targets []comparisonTarget
+	collectTargets(premise, &targets, map[*term]bool{})
+	collectTargets(a, &targets, map[*term]bool{})
+	collectTargets(b, &targets, map[*term]bool{})
+	if len(targets) > couplingTargets {
+		targets = targets[:couplingTargets]
+	}
+	for _, target := range targets {
+		for _, delta := range []uint64{0, 1, ^uint64(0)} {
+			env := map[string]uint64{}
+			for _, name := range free {
+				env[name] = random() & mask(widths[name])
+			}
+			env[target.name] = (target.value + delta) & mask(widths[target.name])
+			if premise.eval(env) != 0 && a.eval(env) != b.eval(env) {
+				return true
+			}
+		}
+	}
 	for round := 0; round < couplingValuations; round++ {
 		env := map[string]uint64{}
 		for _, name := range free {
-			seed ^= seed << 13
-			seed ^= seed >> 7
-			seed ^= seed << 17
-			value := seed
-			switch round % 4 {
+			value := random()
+			switch round % 5 {
 			case 0:
 				value = 0 // every symbol zero, then small values
 			case 1:
 				value = seed % 8
 			case 2:
 				value = mask(widths[name]) - seed%4
+			case 3:
+				value = constants[(seed>>8)%uint64(len(constants))]
+				if seed&1 == 1 {
+					value++
+				}
 			}
 			env[name] = value & mask(widths[name])
 		}
@@ -2468,8 +2661,68 @@ func refutedByValuation(premise, a, b *term, names []string, widths map[string]i
 	return false
 }
 
+// A comparisonTarget is a symbol compared with a constant somewhere in an
+// obligation, and the constant.
+type comparisonTarget struct {
+	name  string
+	value uint64
+}
+
+// collectTargets gathers the (symbol, constant) pairs of the comparisons
+// in a term, looking through width changes of the symbol.
+func collectTargets(t *term, into *[]comparisonTarget, visited map[*term]bool) {
+	if t == nil || visited[t] {
+		return
+	}
+	visited[t] = true
+	if t.kind == termCmp {
+		symbol := func(side *term) (string, bool) {
+			for side != nil && side.kind == termBinary && side.op == "and" && side.right.kind == termConst && isLowMask(side.right.value) {
+				side = side.left
+			}
+			if side != nil && side.kind == termParam {
+				return side.name, true
+			}
+			return "", false
+		}
+		if name, isSymbol := symbol(t.left); isSymbol && t.right.kind == termConst {
+			*into = append(*into, comparisonTarget{name: name, value: t.right.value})
+		} else if name, isSymbol := symbol(t.right); isSymbol && t.left.kind == termConst {
+			*into = append(*into, comparisonTarget{name: name, value: t.left.value})
+		}
+	}
+	collectTargets(t.cond, into, visited)
+	collectTargets(t.left, into, visited)
+	collectTargets(t.right, into, visited)
+}
+
+// couplingTargets caps the targeted valuations of one obligation.
+const couplingTargets = 96
+
+// collectConstants gathers the constants a term mentions (once each).
+func collectConstants(t *term, seen map[uint64]bool, into *[]uint64) {
+	collectConstantsVisited(t, seen, into, map[*term]bool{})
+}
+
+func collectConstantsVisited(t *term, seen map[uint64]bool, into *[]uint64, visited map[*term]bool) {
+	if t == nil || visited[t] {
+		return
+	}
+	visited[t] = true
+	if t.kind == termConst {
+		if !seen[t.value] && len(*into) < 64 {
+			seen[t.value] = true
+			*into = append(*into, t.value)
+		}
+		return
+	}
+	collectConstantsVisited(t.cond, seen, into, visited)
+	collectConstantsVisited(t.left, seen, into, visited)
+	collectConstantsVisited(t.right, seen, into, visited)
+}
+
 // couplingValuations is the number of valuations tried before a diagram.
-const couplingValuations = 48
+const couplingValuations = 80
 
 // couplingSearchBudget bounds the pairings the coupling search visits.
 const couplingSearchBudget = 4096

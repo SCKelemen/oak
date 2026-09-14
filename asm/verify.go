@@ -671,6 +671,11 @@ type symbolicState struct {
 	// unknownFrom, when set, is the lowest frame address a store at a
 	// data-dependent index reached: slots from there up hold opaque values.
 	unknownFrom *int64
+	// bounds: register number -> exclusive bound K established on this
+	// path by `cmp wI, #K; b.hs <trap>` (the checker's frame-array index
+	// guard), cleared when the register is written. A frame store at the
+	// register's index then names K possible slots (registerFrameAccess).
+	bounds map[int]uint64
 	// fregs is the RV64 lane's floating-point file (f0–f31, a class of its
 	// own): register number -> the IEEE bit pattern at its width
 	// (asm/rv64_verify_float.go); nil until a float instruction runs.
@@ -709,6 +714,11 @@ type flagsFact struct {
 	// ccmp: the comparison's flags when cond holds, else the immediate NZCV.
 	cond     *term
 	elseNZCV int64
+	// A `cmp wI, #K`: the register and the immediate, for the index bound a
+	// `b.hs <trap>` on these flags establishes on the fall-through path
+	// (symbolicState.bounds); indexReg is -1 otherwise.
+	indexReg int
+	bound    uint64
 }
 
 func (s *symbolicState) read(reg Register) (*term, bool) {
@@ -762,6 +772,7 @@ func (s *symbolicState) write(reg Register, value *term) {
 		value = zeroExtend(value, 64) // AArch64: a 32-bit write zeroes the upper half
 	}
 	s.regs[reg.Num] = value
+	delete(s.bounds, reg.Num)
 }
 
 // The proof's names for a global (docs/spec/94-assembler.md §9): its
@@ -1316,7 +1327,26 @@ func (s *symbolicState) clone() *symbolicState {
 		cfg := *s.rvcfg
 		rvcfg = &cfg
 	}
-	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, fregs: fregs, rvcfg: rvcfg, globals: globals, writes: cloneWrites(s.writes), unknownFrom: s.unknownFrom}
+	var bounds map[int]uint64
+	if len(s.bounds) > 0 {
+		bounds = make(map[int]uint64, len(s.bounds))
+		for reg, bound := range s.bounds {
+			bounds[reg] = bound
+		}
+	}
+	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, fregs: fregs, rvcfg: rvcfg, globals: globals, writes: cloneWrites(s.writes), unknownFrom: s.unknownFrom, bounds: bounds}
+}
+
+// noteTrapGuard records, on the path that falls through a `b.hs <trap>`
+// reading `cmp wI, #K`, that wI < K: the index bound of a frame array.
+func (s *symbolicState) noteTrapGuard(instr Instruction) {
+	if instr.Mnemonic != "b." || (instr.Cond != "hs" && instr.Cond != "cs") || s.flags == nil || s.flags.unknown || s.flags.indexReg < 0 || s.flags.kind != "" {
+		return
+	}
+	if s.bounds == nil {
+		s.bounds = map[int]uint64{}
+	}
+	s.bounds[s.flags.indexReg] = s.flags.bound
 }
 
 // frameAccess executes a load or store through the sp frame: the address
@@ -1559,12 +1589,20 @@ func (x *pathExecutor) registerFrameAccess(instr Instruction, state *symbolicSta
 		}
 		if index.kind != termConst {
 			// A store at a data-dependent index into a frame array (a loop
-			// filling a tail buffer): no single slot is named, so every slot
-			// from the array's base up is forgotten and reads there become
-			// opaque symbols (an evidence verdict at most). A load at such an
-			// index stays outside the subset.
+			// filling a tail buffer). Under the checker's index guard
+			// (`cmp wI, #K; b.hs <trap>`, state.bounds) the store names K
+			// possible slots and each takes the value under the condition
+			// that the index selects it — the frame array as a memory, so
+			// the slots stay loop-carried state. Without the bound, or over
+			// slots the frame does not hold whole, every slot from the
+			// array's base up is forgotten and reads there become opaque
+			// symbols (an evidence verdict at most). A load at such an index
+			// stays outside the subset.
 			if !isStoreMnemonic(instr.Mnemonic) {
 				return "a frame load at a data-dependent index", false
+			}
+			if bound, isBounded := state.bounds[mem.Index.Num]; isBounded && x.boundedFrameStore(instr, state, addr, truncate(index, 32), bound, mem.Shift) {
+				return "", true
 			}
 			state.forgetFrameFrom(addr)
 			return "", true
@@ -1572,6 +1610,62 @@ func (x *pathExecutor) registerFrameAccess(instr Instruction, state *symbolicSta
 		addr += int64(index.value&mask(32)) << uint(mem.Shift)
 	}
 	return x.frameAccessAt(instr, state, addr)
+}
+
+// boundedFrameStore performs a store at a symbolic element index below
+// bound into the frame array at base: element e's bytes, inside one slot
+// the frame holds, take ite(index = e, value, old) in place, the slot
+// keeping its width. It reports false — nothing written — when an element
+// lies in no single slot.
+func (x *pathExecutor) boundedFrameStore(instr Instruction, state *symbolicState, base int64, index *term, bound uint64, shift int) bool {
+	regs := registerOperands(instr.Operands[:len(instr.Operands)-1])
+	if len(regs) != 1 || regs[0].Class == ClassV || isPairAccess(instr.Mnemonic) {
+		return false
+	}
+	size := memorySize(instr.Mnemonic, regs[0].Class)
+	if int64(1)<<uint(shift) != size || bound > 64 {
+		return false
+	}
+	value, ok := state.read(regs[0])
+	if !ok {
+		return false
+	}
+	value = truncate(value, int(size)*8)
+	type target struct {
+		start int64
+		slot  frameSlot
+		at    int64
+	}
+	targets := make([]target, 0, bound)
+	for e := uint64(0); e < bound; e++ {
+		at := base + int64(e)*size
+		found := false
+		for start, slot := range state.frame {
+			if start <= at && at+size <= start+int64(slot.width) {
+				targets = append(targets, target{start: start, slot: slot, at: at})
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	for e, t := range targets {
+		cond := truncate(cmpTerm("eq", index, constTerm(uint64(e), 32)), 1)
+		slot := state.frame[t.start] // the slot as updated by earlier elements
+		width := slot.width * 8
+		if int64(slot.width) == size {
+			state.frame[t.start] = frameSlot{value: iteTerm(cond, value, slot.value), width: slot.width}
+			continue
+		}
+		offset := uint64((t.at - t.start) * 8)
+		old := truncate(binaryTerm("shr", slot.value, constTerm(offset, width)), int(size)*8)
+		chosen := zeroExtend(iteTerm(cond, value, old), width)
+		kept := binaryTerm("and", slot.value, constTerm(^(mask(int(size)*8)<<offset)&mask(width), width))
+		state.frame[t.start] = frameSlot{value: binaryTerm("or", kept, binaryTerm("shl", chosen, constTerm(offset, width))), width: slot.width}
+	}
+	return true
 }
 
 // opaqueSlot is the value of a slot in the forgotten region: a fresh
@@ -1840,6 +1934,9 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			taken, takenEffects, reason, ok := x.run(target, state.clone())
 			if !ok {
 				return nil, nil, reason, false
+			}
+			if isTrapBlock(x.items, target) {
+				state.noteTrapGuard(instr)
 			}
 			fallThrough, fallEffects, reason, ok := x.run(pc+1, state)
 			if !ok {
@@ -2225,7 +2322,10 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 			if !okL || !okR {
 				return "unbound register read", false
 			}
-			state.flags = &flagsFact{left: l, right: r, width: width}
+			state.flags = &flagsFact{left: l, right: r, width: width, indexReg: -1}
+			if imm, isImm := instr.Operands[1].(Immediate); isImm && left.Class == ClassW && imm.Shift == 0 {
+				state.flags.indexReg, state.flags.bound = left.Num, uint64(imm.Value)
+			}
 		case "csel", "cset":
 			// The select reads the flags as the comparison that produced them.
 			if state.flags == nil || state.flags.unknown {
@@ -2256,7 +2356,7 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 			if !okL || !okR {
 				return "unbound register read", false
 			}
-			state.flags = &flagsFact{left: l, right: r, width: width, kind: "and"}
+			state.flags = &flagsFact{left: l, right: r, width: width, kind: "and", indexReg: -1}
 		case "bfc":
 			// Clear the field: the destination with a hole.
 			dest := instr.Operands[0].(Register)
@@ -2379,7 +2479,7 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 				return "unbound register read", false
 			}
 			prior := flagsCondition(code, state.flags)
-			state.flags = &flagsFact{left: l, right: r, width: width, cond: prior, elseNZCV: instr.Operands[2].(Immediate).Value}
+			state.flags = &flagsFact{left: l, right: r, width: width, cond: prior, elseNZCV: instr.Operands[2].(Immediate).Value, indexReg: -1}
 		case "adrp":
 			// A global's page address: a distinguished parameter the
 			// completing `add :lo12:` recognizes.
@@ -2440,9 +2540,9 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 			}
 			switch instr.Mnemonic {
 			case "subs":
-				state.flags = &flagsFact{left: left, right: right, width: widthOf(dest.Class)}
+				state.flags = &flagsFact{left: left, right: right, width: widthOf(dest.Class), indexReg: -1}
 			case "adds":
-				state.flags = &flagsFact{left: left, right: right, width: widthOf(dest.Class), kind: "add"}
+				state.flags = &flagsFact{left: left, right: right, width: widthOf(dest.Class), kind: "add", indexReg: -1}
 			}
 			state.write(dest, binaryTerm(op, left, right))
 		}

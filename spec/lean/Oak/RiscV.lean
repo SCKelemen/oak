@@ -49,6 +49,12 @@ def sra (a b : X) : X := a.sshiftRight (b.truncate 6).toNat
 def slt (a b : X) : X := if a.slt b then 1 else 0
 def sltu (a b : X) : X := if a.ult b then 1 else 0
 
+/-- The high halves of the 128-bit products (`mulhu`, `mulh`): the operands
+    zero- or sign-extended, as the verifier's `umulh`/`smulh` terms compute
+    them (`asm/isa_semantics.go`). -/
+def mulhu (a b : X) : X := ((a.zeroExtend 128 * b.zeroExtend 128) >>> 64).truncate 64
+def mulh (a b : X) : X := ((a.signExtend 128 * b.signExtend 128) >>> 64).truncate 64
+
 def divu (a b : X) : X := if b = 0 then BitVec.allOnes 64 else a / b
 def remu (a b : X) : X := if b = 0 then a else a % b
 def div (a b : X) : X :=

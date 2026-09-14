@@ -777,8 +777,8 @@ side as well. Verdicts on the SIMD corpus (`compiler/e2e_native_simd_test.go`):
 proven on both halves of their vector results, `check_blocks` evidence
 (the two-block composition exceeds the node budget), the loop kernel
 `valid_with` **evidence** since the loop increment below (76 concrete
-inputs; the tail array has no machine image and the `error` obligation
-exceeds the node budget). The lane functions are stated in Lean as
+inputs; every loop variable of its three loops is coupled, and the
+`error` obligation exceeds the node budget). The lane functions are stated in Lean as
 `Oak.NeonSemantics` (`spec/lean/Oak/NeonSemantics.lean`) and each is
 proved to be the `Oak.Simd` operation the lowering uses it for:
 `uqsub_eq_subSat`, `cmeq_eq_eqMask`, `add_eq_addWrap`, `ushr_eq_shr`,
@@ -883,9 +883,41 @@ has no machine image, since the byte copy into it stores at a
 data-dependent index and the frame region is opaque after it (a frame
 array as a loop-carried memory is the next step), and the `error`
 accumulator's one-iteration obligation is the `check_blocks` composition,
-beyond the node budget. Left for the
-next increment: the frame array as a loop-carried memory
-(`docs/notes/proof-chain-audit-2026-09.md`).
+beyond the node budget.
+
+**The frame array as a loop-carried memory (2026-09-14).** The tail copy
+stores at a data-dependent index (`strb wV, [xB, wI, uxtw]`), and the
+checker admits it only under a dominating guard `cmp wI, #K; b.hs <trap>`
+(§9). The executor now keeps that bound: the path falling through the
+guard records `wI < K` (`symbolicState.bounds`, cleared when the register
+is written), and a store at the register's index then names the K
+possible slots, each taking `ite(index = e, value, old)` in place — a
+byte inside a wider slot as a bit-field replace, so the slot keeps its
+width and the frame keeps its shape. The loop summary finds the slots
+such a store reaches by running the body once on the fresh register
+state before the slots' symbols exist (a body with inner loops or calls
+is not probed), and carries each changed slot at its width; the coupling
+pairs the array's lanes singly with byte slots, or packed when the
+machine holds the array as words (`TestVerifyFrameArrayLoop`: a
+sixteen-byte tail copy proven under both layouts, the store at a fixed
+index refuted). **The search, conflict-directed.** With sixteen tail
+slots between an accumulator and the register it was wrongly paired
+with, chronological backtracking re-enumerated the tail on every
+failure; the search now returns the depths a refutation depended on —
+the slots owning the symbols the obligation mentions, and the slots
+holding the symbols a level could not choose — and a level not among
+them passes the failure up untried. An obligation the bit level cannot
+decide within its budget ends the search: no other pairing shrinks it.
+The valuations try, for every comparison of a symbol with a constant in
+an obligation, the symbol at that constant and its neighbors (an index
+selecting a lane), then the small, boundary, and random values. On the
+kernel every loop variable of the three loops is now coupled — `off`,
+`error`, `prev_input`, `prev_incomplete` to their registers, `i` and the
+sixteen `tail` bytes to theirs — in seventeen seconds, and the one
+obligation left is `error`'s: one iteration of the sixty-four-byte loop
+is the `check_blocks` composition, whose decision exceeds the node budget
+as it does straight-line. `valid_with` is **evidence** for exactly that
+reason (`docs/notes/proof-chain-audit-2026-09.md`).
 
 **The floating-point forms (2026-09-14).** `spec/sail/arm_primitives.sail`
 gains Arm's execute bodies for `fadd`/`faddp`, `fsub`, `fmul`, `fmla`/
@@ -915,7 +947,7 @@ applies the same operations to the same lanes; and the identification of
 `Sail.FPAdd` with the verifier's `fadd` — IEEE addition under Arm's NaN
 rules — is what the silicon differential checks on the host core and
 `Oak.FloatOps` models at the bit level. The loop increment's remainder
-above (the frame array as a loop-carried memory) is what is left.
+above (the `check_blocks` obligation's node budget) is what is left.
 
 **Floating point as uninterpreted operations (eighth increment,
 2026-09-14; `asm/floats_ops.go`, `asm/verify_float.go`).** Until this
@@ -2454,15 +2486,28 @@ register values: `addw`, `subw`, `sllw`, `srlw`, `sraw` (the
 comparisons), and the six branch conditions of `execute_BTYPE`. The
 register plumbing (`wX_bits rd <expression>`, `if taken then jump_to`) is
 read off the generated definitions by inspection; the data semantics are
-the theorems. The second half, `spec/lean-sail/`, states the same theorems
+the theorems. The second half, `spec/lean-sail/`, states the theorems
 against the export itself, imported as a lake dependency, so nothing is
-restated there; it builds once the export compiles. It does not compile
-today: the opam release of Sail (0.20.2) emits type-level variables
-unbound in `Defs.lean` and an `Int` shift amount the pinned lean-sail has
-no instance for — sail-riscv's own CI uses Sail from git, whose opam
-build fails in the sandbox at its manifest step on this host. The
-generation and build steps are in `spec/lean-sail/README.md`; the Go test
-builds the project when the export is present and skips otherwise.
+restated there. It builds (2026-09-14) against the export of sail-riscv
+497209b9 generated by Sail from git under lean-sail v5 — the last model
+commit whose export compiles; the current one exports `vmem_types.sail`'s
+type-level `root_level('v)` with unbound variables, and sail-riscv's own
+Lean workflow is red for it — and it is the wider half: beyond the RTYPEW,
+comparison and branch theorems it bridges the register ALU (`add`, `sub`,
+`and`, `or`, `xor`, `sll`, `srl`, `sra` with the count the low six bits),
+the immediate forms (`addi`, `andi`, `ori`, `xori`, `slti`, `sltiu`, the
+immediate sign-extended), the shifts by immediate at both widths, `addiw`,
+the multiplies `mul`, `mulw`, `mulh`, `mulhu` (`BitVec.ofInt` a ring
+homomorphism, so the model's integer product truncated is the bit-vector
+product, its high half the high half of the extended product), and the
+divisions and remainders `div`, `divu`, `rem`, `remu` (the model computes
+on `Int` with `tdiv`/`tmod` and spells the zero-divisor and overflow cases
+out; `BitVec.toInt_sdiv`/`toInt_srem` and the bound `|a tdiv b| ≤ |a|`
+carry them to Oak's totalized `sdiv`/`srem`) — 42 theorems, every integer
+instruction the verifier's tables decide except the W-form divisions,
+whose 32-bit totalization `Oak.RiscV` does not yet state. The generation
+and build steps are in `spec/lean-sail/README.md`; the Go test builds the
+project when the export is present and skips otherwise.
 
 **F and D under LP64D (landed).** The floating-point file is a register
 class of its own (`f0`–`f31`, `ft*`, `fs*`, `fa*`); the generated table
@@ -3260,15 +3305,15 @@ table. `spec/lean-sail/OakSailBridge/Encoding.lean` states, for every
 register number, immediate, or branch offset, that the word Oak writes for
 a mnemonic is `encdec_forwards` of the instruction it spells — so the
 machine words follow from the specification, and, `encdec` being a
-bijection, the decoder reads them back. The statements build against the
-export: with Sail built from git the export generates (nine minutes) but
-its `Defs.lean` does not yet compile under lean-sail v5 at sail-riscv 0.14
-(`PTW_Output`, unbound type-level variables), the same class of failure
-the earlier attempt recorded; the theorems are stated and their tactic
-script written, awaiting an export that compiles (the export from
-sail-riscv master fails at the same place: the generated `Defs.lean`
-declares a structure over a type not yet in scope, a Sail Lean-backend
-matter).
+bijection, the decoder reads them back. The thirty statements build
+against the export (2026-09-14; sail-riscv 497209b9, see above). Two
+shapes mattered: `encdec_forwards` is a 232-arm match, which `simp` cannot
+unfold within the heartbeat budget, so each theorem `unfold`s it and
+rewrites the concrete arm; and the model's branch arm is defined only for
+even offsets (it guards on bit 0 and fails the match otherwise), so the
+branch theorems carry the hypothesis `delta &&& 1 = 0`, which Oak's
+B-form offsets — differences of instruction addresses — satisfy by
+construction.
 
 **Statement conditionals and `i32` indices (2026-09-13).** Three statement
 shapes the standard library uses stayed with the C backend on both lanes:
