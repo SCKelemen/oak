@@ -1401,12 +1401,12 @@ func (c coupling) show() string {
 }
 
 // widen applies a coupling's widening to a 32-bit term.
-func widen(t *term, ext string) *term {
+func widen(t *term, ext string, width int) *term {
 	switch ext {
 	case "zext":
-		return zeroExtend(t, 64)
+		return zeroExtend(t, width)
 	case "sext":
-		return extendTerm(zeroExtend(t, 64), 32, 64, true)
+		return extendTerm(zeroExtend(t, width), 32, width, true)
 	}
 	return t
 }
@@ -1739,6 +1739,10 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				widenings = []string{""}
 			case len(s.locals) == 1 && asmEv.width[reg] == 64 && s.width() == 32 && strings.HasPrefix(reg, "r"):
 				widenings = []string{"zext", "sext"}
+			case len(s.locals) == 1 && s.width() == 1 && (asmEv.width[reg] == 32 || asmEv.width[reg] == 64) && strings.HasPrefix(reg, "r"):
+				// A Bool local: 0 or 1 in a general register, zero-extended
+				// (the C enum's word, `cset`, `sltu`).
+				widenings = []string{"zext"}
 			case len(s.locals) == 1 && oakEv.floats[s.name] && asmEv.width[reg] == 64 && s.width() == 32 && (strings.HasPrefix(reg, "v") || strings.HasPrefix(reg, "f")):
 				// An f32 local in the low lane of a v register (a scalar
 				// write zeroes the rest) or in an RV64 f register (the file's
@@ -1751,7 +1755,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				signs = []int{1}
 			}
 			for _, ext := range widenings {
-				hx := widen(hx, ext)
+				hx := widen(hx, ext, asmEv.width[reg])
 				hr := substitute(asmEv.header[reg], sigma)
 				for _, a := range signs {
 					var b *term
@@ -1843,7 +1847,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	preservation := func(s loopSlot, c coupling) (premise, next, asmNext *term, isResolved bool) {
 		oakEv, asmEv := oakLoops[s.event], asmLoops[s.event]
 		asmNext = substitute(asmEv.next[c.reg], sigma)
-		next = widen(substitute(s.pack(oakEv.next), sigma), c.ext)
+		next = widen(substitute(s.pack(oakEv.next), sigma), c.ext, asmEv.width[c.reg])
 		if c.a == 1 {
 			next = binaryTerm("add", next, c.b)
 		} else {
@@ -1900,7 +1904,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		candidates, _ := candidatesFor(s)
 		for _, c := range candidates {
 			asmName := asmLoops[s.event].freshName(c.reg)
-			sigma[asmName] = widen(s.pack(oakLoops[s.event].fresh), c.ext)
+			sigma[asmName] = widen(s.pack(oakLoops[s.event].fresh), c.ext, asmLoops[s.event].width[c.reg])
 			if c.a == 1 {
 				sigma[asmName] = binaryTerm("add", sigma[asmName], c.b)
 			} else {
@@ -1958,7 +1962,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 					c := chosen[s.key]
 					// r' = a*x' + b must hold after one iteration.
 					next := substitute(s.pack(oakEv.next), sigma)
-					next = widen(next, c.ext)
+					next = widen(next, c.ext, asmEv.width[c.reg])
 					if c.a == 1 {
 						next = binaryTerm("add", next, c.b)
 					} else {
@@ -1998,7 +2002,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			depthOf[asmName] = i
 			// r = a*x + b: the register's fresh symbol expressed for x (the
 			// pack of the lanes' symbols for a group).
-			x := widen(s.pack(oakLoops[s.event].fresh), c.ext)
+			x := widen(s.pack(oakLoops[s.event].fresh), c.ext, asmLoops[s.event].width[c.reg])
 			if c.a == 1 {
 				sigma[asmName] = binaryTerm("add", x, c.b)
 			} else {
