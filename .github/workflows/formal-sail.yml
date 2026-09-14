@@ -17,6 +17,12 @@ name: Formal Verification (Sail)
 #   - asm/rv64_test.go: every RV64 mnemonic against GNU as
 #   - asm/rv64_sail_bridge_test.go: the RV64 bridge's restated definitions
 #     have not drifted from spec/lean/Oak/RiscV.lean
+#   - rv64-bridge (second job): the Sail RISC-V model's Lean export is
+#     generated from the pinned sail-riscv release, repaired by
+#     spec/lean-sail/patch-export.py, built, and spec/lean-sail is proved
+#     against it (the data semantics, the execute bodies, the encodings);
+#     the export is cached by its pins, since generating it takes half an
+#     hour and building it a few minutes more
 
 on:
   push:
@@ -44,6 +50,16 @@ env:
   SAIL_RISCV_RELEASE: "0.14"
   SAIL_RISCV_SHA256: 363f851ba91c674cd818040e232c4baf0ec382406a0a9696b1dde687ea160b2a
   SAIL_ARM_COMMIT: 1bf2e5574ba9d704639a28401b6a387dcb113cae
+  # The RV64 export needs Sail built from git (spec/lean-sail/README.md):
+  # the 0.20.2 release's Lean backend predates the `LeanRV64D` namespace and
+  # the lean-sail v5 pin that sail-riscv 0.14's hand-written RiscvExtras.lean
+  # expects, so its export does not compile. sail-riscv's own Lean CI builds
+  # Sail from source for the same reason.
+  SAIL_GIT_COMMIT: dba5f0078f3a4c8d854ddda1d7ba5f59370c1d02
+  OCAML_VERSION: 5.2.1
+  # The sail-riscv commit whose Lean export compiles (spec/lean-sail/README.md,
+  # Status): later models export vmem_types.sail with unbound `k_v`.
+  SAIL_RISCV_COMMIT: 497209b9298bf11b040e000095fe24c51a598a1d
 
 jobs:
   sail:
@@ -118,3 +134,92 @@ jobs:
         env:
           OAK_REQUIRE_ORACLES: "1"
         run: go test ./asm -run 'TestSailLeanGenerationCurrent|TestSailDecodeCoverage|TestRV64SailDifferential|TestRV64QEMUDifferential|TestRV64EncoderAgreesWithGNUAs|TestRV64RVC|TestRV64Vector|TestRV64SailBridgeDefinitionsMatch' -count=1 -v
+
+  rv64-bridge:
+    name: RV64 bridge against the Sail export
+    runs-on: ubuntu-24.04
+    # Sail from source (~25 min) and the export (~90 min) on a cold cache;
+    # minutes with both caches warm.
+    timeout-minutes: 300
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install the export's build tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libgmp-dev zlib1g-dev python3 pkg-config opam z3
+
+      # The opam switch holding Sail, keyed by the commit and the compiler.
+      - name: Restore Sail built from git
+        id: sail-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.opam
+          key: sail-git-${{ env.SAIL_GIT_COMMIT }}-ocaml-${{ env.OCAML_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Build Sail from git
+        if: steps.sail-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          opam init --yes --no-setup --bare --disable-sandboxing
+          opam switch create sail-dev "ocaml-base-compiler.${OCAML_VERSION}" --yes
+          git clone -q https://github.com/rems-project/sail.git /tmp/sail
+          git -C /tmp/sail checkout -q "${SAIL_GIT_COMMIT}"
+          # Every package pinned from the one checkout: libsail's build runs
+          # `sail_maker embed`, so sail_maker must come from the same tree.
+          opam pin add --switch sail-dev --no-action --yes /tmp/sail
+          opam install --switch sail-dev --yes sail_maker libsail sail sail_lean_backend
+
+      - name: Put Sail on PATH
+        run: |
+          set -euo pipefail
+          echo "$HOME/.opam/sail-dev/bin" >> "$GITHUB_PATH"
+          "$HOME/.opam/sail-dev/bin/sail" --version
+
+      - name: Install elan
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
+          tar -xzf /tmp/elan.tar.gz -C /tmp
+          /tmp/elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      # The export, generated and built, keyed by everything that shapes it:
+      # the Sail commit, the sail-riscv commit, and the bridge's lean-sail pin.
+      - name: Restore the built export
+        id: export-cache
+        uses: actions/cache@v4
+        with:
+          path: external/sail-riscv/build/model/Lean_RV64D
+          key: rv64-export-${{ env.SAIL_GIT_COMMIT }}-${{ env.SAIL_RISCV_COMMIT }}-${{ hashFiles('spec/lean-sail/lake-manifest.json', 'spec/lean-sail/lean-toolchain') }}
+
+      - name: Generate and build the export
+        if: steps.export-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git init -q external/sail-riscv
+          git -C external/sail-riscv remote add origin https://github.com/riscv/sail-riscv.git
+          git -C external/sail-riscv fetch -q --depth 1 origin "${SAIL_RISCV_COMMIT}"
+          git -C external/sail-riscv checkout -q FETCH_HEAD
+          cmake -S external/sail-riscv -B external/sail-riscv/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build external/sail-riscv/build --target generated_lean_rv64d
+          cd external/sail-riscv/build/model/Lean_RV64D
+          lake update
+          lake build
+
+      - name: Prove the bridge against the export
+        working-directory: spec/lean-sail
+        run: lake build
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+
+      - name: Run the bridge tests, the export required
+        env:
+          OAK_REQUIRE_ORACLES: "1"
+        run: go test ./asm -run 'TestRV64SailBridge' -count=1 -v

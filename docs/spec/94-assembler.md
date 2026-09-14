@@ -3583,7 +3583,13 @@ rewrites the concrete arm; and the model's branch arm is defined only for
 even offsets (it guards on bit 0 and fails the match otherwise), so the
 branch theorems carry the hypothesis `delta &&& 1 = 0`, which Oak's
 B-form offsets — differences of instruction addresses — satisfy by
-construction.
+construction. Beyond the data theorems, `OakSailBridge/Execute.lean`
+rewrites the generated `execute_RTYPEW`, `execute_RTYPE` and
+`execute_BTYPE` bodies to their canonical monadic shape — read the two
+sources, write Oak's function of them, or branch on Oak's `Br.holds` —
+through the monad laws, so the register plumbing is checked as well; and
+the `rv64-bridge` job of `formal-sail.yml` builds Sail from git, the
+export, and the bridge on every pull request (the export required).
 
 **Statement conditionals and `i32` indices (2026-09-13).** Three statement
 shapes the standard library uses stayed with the C backend on both lanes:
