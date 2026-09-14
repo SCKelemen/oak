@@ -122,8 +122,10 @@ in: `bench_dispatch` 68 → 60 instructions (its seven-arm match chain
 lost every `movz`), `bench_search` 57 → 54 (`!found` is one `cbnz`, and
 the inner loop is eleven instructions from the exit test to the key
 load), `bench_page_probe` 93 → 90; `crc32c`, `blake3`, `sum`, `dot`
-unchanged. Verdicts unchanged (`dispatch` proven, `search` witnessed,
-`page_probe` trusted). Timing deferred to the quiet-host rerun.
+unchanged. With the compare of a conditional chain reused at its else
+label (the checker carrying flags across the label): `bench_search` 53,
+`bench_page_probe` 89. Verdicts unchanged (`dispatch` proven, `search`
+witnessed, `page_probe` trusted). Timing deferred to the quiet-host rerun.
 
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows

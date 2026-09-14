@@ -3583,11 +3583,18 @@ inside the type's mask is not masked again (`and w9, w5, #7; and w6, w9,
 `bench_dispatch` 68 to 60 instructions (seven `movz` gone from its match
 chain), `bench_search` 57 to 54, `bench_page_probe` 93 to 90, the verdicts
 unchanged (`compiler/e2e_native_condition_test.go` asserts the shapes and
-the value against the C backend). Left for the checker: the second `cmp`
-of a conditional chain (`k == t ? … | k < t ? …`) repeats the first with
-no flag writer between them, but a label lies between and the checker's
-flags fact does not cross labels; carrying it across a label whose every
-predecessor produced the same flags is the next selection.
+the value against the C backend). A fifth, the same day: the second
+`cmp` of a conditional chain (`k == t ? … | k < t ? …`) repeated the
+first with no flag writer between them, but a label lay between and the
+checker's flags fact did not cross labels. The checker now carries flag
+validity through the same label fixpoint as its guard facts
+(`guardState.flags`: valid at a label when every predecessor arrives
+with flags a producer set), and the lowering reuses a compare at an else
+label whose every transfer is that compare's branch and which nothing
+falls through into (`Lane.ReuseFlags`; a refusal re-lowers without the
+reuse). `bench_search`'s inner loop reads `cmp x26, x6; b.ne else; …;
+else: b.hs else2`: 53 instructions from 54, `bench_page_probe` 89 from
+90, verdicts unchanged.
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries

@@ -118,6 +118,11 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// untested divisions; the checker and the verifier decide, and a
 		// refusal or a lost proof lowers the body again without it.
 		lane.Strength = lane.Arch == asm.ArchArm64
+		// Compare reuse across a conditional chain (docs/spec/94-assembler.md
+		// §9 "Condition selection"): the checker carries flags across a
+		// label every predecessor reaches with them, or the body lowers
+		// again without the reuse.
+		lane.ReuseFlags = lane.Arch == asm.ArchArm64
 		lane.Globals = globals
 		lane.Aggregates = aggregates
 		asmFn, err := nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
@@ -170,6 +175,16 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d element guard(s) elided under the checker's own facts", fn.Name.Value, elided)))
 			}
 		}
+		if len(findings) != 0 && lane.ReuseFlags && nativegen.ReusedCompares(asmFn) > 0 {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s repeats its compares (the checker did not admit the reused form: %s)", fn.Name.Value, findings[0])))
+			lane.ReuseFlags = false
+			asmFn, err = nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
+			if err != nil {
+				diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
+				continue
+			}
+			findings = asm.Check(asmFn, source, symbols)
+		}
 		if len(findings) != 0 && lane.Strength && nativegen.Reduced(asmFn) > 0 {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its plain arithmetic (the checker did not admit the strength-reduced form: %s)", fn.Name.Value, findings[0])))
 			lane.Strength = false
@@ -218,7 +233,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			// The reduced form did not prove: the plain arithmetic is
 			// lowered and verified too, and kept when it proves — a
 			// faster body is not worth a weaker verdict.
-			if plain, plainErr := nativegen.CompileFor(nativegen.Lane{Arch: lane.Arch, SoftFloat: lane.SoftFloat, ElideProven: lane.ElideProven, Globals: lane.Globals, Aggregates: lane.Aggregates, Tables: lane.Tables, PackedStackArgs: lane.PackedStackArgs, Vector: lane.Vector}, source, functions, records, adts, constants, tc); plainErr == nil && len(asm.Check(plain, source, symbols)) == 0 {
+			if plain, plainErr := nativegen.CompileFor(nativegen.Lane{Arch: lane.Arch, SoftFloat: lane.SoftFloat, ElideProven: lane.ElideProven, GuardLines: lane.GuardLines, ReuseFlags: lane.ReuseFlags, Globals: lane.Globals, Aggregates: lane.Aggregates, Tables: lane.Tables, PackedStackArgs: lane.PackedStackArgs, Vector: lane.Vector}, source, functions, records, adts, constants, tc); plainErr == nil && len(asm.Check(plain, source, symbols)) == 0 {
 				plainKey := ""
 				if cacheDir != "" {
 					plainKey = verdictCacheKey(plain, source, functions, declarations)

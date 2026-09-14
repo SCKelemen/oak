@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/diagnostic"
 )
 
@@ -52,6 +53,30 @@ func TestE2ENativeGuardLines(t *testing.T) {
 			infos = append(infos, d.Message)
 		}
 	})
+	// The chain `k == target ? … | k < target ? …` compares once: the else
+	// label's first instruction is the branch reading the guard's flags
+	// (docs/spec/94-assembler.md §9 "Condition selection").
+	model, err := comp.Check().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reused := false
+	for _, f := range model.AsmFunctions {
+		if f.Name != "count_hits" {
+			continue
+		}
+		for i := 1; i < len(f.Items); i++ {
+			if _, isLabel := f.Items[i-1].(asm.Label); !isLabel {
+				continue
+			}
+			if instr, isInstr := f.Items[i].(asm.Instruction); isInstr && instr.Mnemonic == "b." {
+				reused = true
+			}
+		}
+	}
+	if !reused {
+		t.Errorf("the else arm of the key comparison must reuse the guard's compare (a b.cond right after its label)")
+	}
 	_, code, abnormal := buildAndRunFrom(t, "native_guard_lines", comp)
 	joined := strings.Join(infos, "\n")
 	if abnormal || code != 42 {

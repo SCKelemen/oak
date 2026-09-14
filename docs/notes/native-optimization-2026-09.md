@@ -140,9 +140,9 @@ negation materialized before its branch" and the match chains'
 `movz; cmp` pairs: negations invert the branch, Bool homes are tested in
 place, small constants are compare immediates, in-range bitwise constants
 are not re-masked (`94-assembler.md` §9 "Condition selection";
-`bench_dispatch` 68 → 60 instructions). The repeated `cmp` of a
-conditional chain waits on the checker carrying a flags fact across a
-label whose predecessors all produced it.
+`bench_dispatch` 68 → 60 instructions), and the repeated `cmp` of a
+conditional chain is reused now that the checker carries flag validity
+across a label through its guard-fact fixpoint (`bench_search` 53).
 
 **The verified profile is the gate.** An increment that turns a proven
 body witnessed or trusted does not land; the count under

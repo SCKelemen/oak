@@ -22,7 +22,7 @@ func TestCheckerRejections(t *testing.T) {
 		{"width mismatch", "f: (x: u32) -> u32", "  bind w0 = x\n  clobber x9\n  add x9, w0, w0\n  ret", "width discipline"},
 		{"uninitialized read", "f: (x: u32) -> u32", "  bind w0 = x\n  clobber w9\n  add w0, w0, w9\n  ret", "uninitialized register"},
 		{"flags without producer", "f: (x: u32) -> u32", "  bind w0 = x\n  b.eq done\ndone:\n  ret", "consumes flags"},
-		{"flags invalidated by label", "f: (x: u32) -> u32", "  bind w0 = x\n  cmp w0, #0\nagain:\n  b.eq again\n  ret", "consumes flags"},
+		{"flags invalidated by a flagless predecessor", "f: (x: u32) -> u32", "  bind w0 = x\n  cbz w0, again\n  cmp w0, #0\nagain:\n  b.eq again\n  ret", "consumes flags"},
 		{"csel without producer", "f: (x, y: u32) -> u32", "  bind w0 = x\n  bind w1 = y\n  csel w0, w0, w1, lo\n  ret", "consumes flags"},
 		{"csel width mismatch", "f: (x, y: u32) -> u32", "  bind w0 = x\n  bind w1 = y\n  cmp w0, w1\n  csel w0, x1, w0, lo\n  ret", "width discipline"},
 		{"memory without frame", "f: (x: u64) -> u64", "  bind x0 = x\n  str x0, [sp, #-16]!\n  ldr x0, [sp], #16\n  ret", "without a declared frame"},
@@ -82,6 +82,11 @@ func TestCheckerAccepts(t *testing.T) {
 		{"barrier", "fence: () -> ()", "  dmb sy\n  isb\n  ret"},
 		{"callee-saved save and restore", "scratch: (a: u64) -> u64", "  bind x0 = a\n  clobber x19, x20\n  frame 16\n  stp x19, x20, [sp, #-16]!\n  mov x19, #40\n  mov x20, #2\n  add x0, x19, x20\n  ldp x19, x20, [sp], #16\n  ret"},
 		{"call with lr saved", "caller: (a: u64) -> u64", "  bind x0 = a\n  clobber x29, x30\n  frame 16\n  stp x29, x30, [sp, #-16]!\n  bl helper\n  ldp x29, x30, [sp], #16\n  ret"},
+		// Flags cross a label every predecessor reaches with them: the
+		// fall-through from the compare and the back edge that reads it.
+		{"flags across a label", "f: (x: u32) -> u32", "  bind w0 = x\n  cmp w0, #0\nagain:\n  b.eq again\n  ret"},
+		// A conditional chain's else arm reads its guard's compare.
+		{"compare reused at the else label", "f: (x, y: u32) -> u32", "  bind w0 = x\n  bind w1 = y\n  cmp w0, w1\n  b.ne other\n  mov w0, #1\n  ret\nother:\n  b.hs above\n  mov w0, #2\n  ret\nabove:\n  mov w0, #3\n  ret"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
