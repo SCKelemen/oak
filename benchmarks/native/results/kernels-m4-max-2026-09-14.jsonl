@@ -57,3 +57,9 @@
 {"impl":"oak-native-after-dispatch-fix","kernel":"sha256","size":1048576,"checksum":"c7f83242f7967cc3ff4cacc879c31c6fde4596b95b1820a9c061e83df73d0d6f","ns_per_op_median":751666.7,"samples":[677000.0,751666.7,776000.0]}
 {"impl":"oak-native-after-dispatch-fix","kernel":"sha256","size":1048576,"checksum":"c7f83242f7967cc3ff4cacc879c31c6fde4596b95b1820a9c061e83df73d0d6f","ns_per_op_median":677666.7,"samples":[676333.3,677666.7,681666.7]}
 {"impl":"oak-native-after-dispatch-fix","kernel":"sha256","size":1048576,"checksum":"c7f83242f7967cc3ff4cacc879c31c6fde4596b95b1820a9c061e83df73d0d6f","ns_per_op_median":677333.3,"samples":[676333.3,677333.3,678666.7]}
+{"impl":"oak-c","kernel":"tiled","size":1048576,"checksum":"14e5aa48","ns_per_op_median":133000.0,"samples":[131333.3,133000.0,140333.3]}
+{"impl":"oak-native-head-30ca36eb","kernel":"tiled","size":1048576,"checksum":"14e5aa48","ns_per_op_median":379333.3,"samples":[371666.7,379333.3,2114000.0]}
+{"impl":"oak-c","kernel":"tiled","size":1048576,"checksum":"14e5aa48","ns_per_op_median":142000.0,"samples":[142000.0,142000.0,199333.3]}
+{"impl":"oak-native-head-30ca36eb","kernel":"tiled","size":1048576,"checksum":"14e5aa48","ns_per_op_median":393333.3,"samples":[390666.7,393333.3,394000.0]}
+{"impl":"oak-c","kernel":"tiled","size":1048576,"checksum":"14e5aa48","ns_per_op_median":142333.3,"samples":[142000.0,142333.3,161000.0]}
+{"impl":"oak-native-head-30ca36eb","kernel":"tiled","size":1048576,"checksum":"14e5aa48","ns_per_op_median":780333.3,"samples":[431666.7,780333.3,1103333.3]}

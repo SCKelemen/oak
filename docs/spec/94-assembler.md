@@ -4381,3 +4381,33 @@ shape over its normalized-length facts), the constant and frame-address
 facts a move also carries, and the derived facts `deriveSpan` and
 `deriveElement` add after the alias.
 
+### 9.ab The RV64 checker's register moves refined (2026-09-14)
+
+The RV64 checker's facts about integer registers — a span's base naming
+the raw length register it was bound with, a normalized copy of a length,
+a parked raw length, a constant, a region, and the raw length registers
+written since binding — are maintained across `addi rd, rs, 0` by two
+rules (`asm/rv64_check.go`): `forgetRegister` at every write drops the
+register's own facts, marks it dead as a raw length, and lets the proven
+minimum of the spans it measured lapse while the copies that name it stay
+(the length of a span never changes); `deriveShift` then copies what the
+source held, read from the snapshot taken before the write — a normalized
+length, a constant, a span base, a raw length canonicalized through its
+alias, a region. `spec/lean/Oak/RiscVSpanAlias.lean` transliterates both
+over the fact maps, maintained line for line with the Go, and proves them
+sound (`forget_sound`, `mv_sound`) against a register file and a fixed
+world of spans and regions with one length per raw name: a base
+addresses its span, a normalized copy holds the length, a parked raw copy
+holds it in its low 32 bits, a bound raw register not yet dead still
+holds it, constants and regions as stated. The corner the by-name design
+buys is checked: when the raw length register itself is overwritten by a
+base copy, the parked and normalized copies keep naming it, the span's
+minimum lapses, and the copied base keeps the snapshot's minimum, which
+the world's length by name justifies. `TestRV64SpanAliasMatchesLeanTransliteration`
+(`asm/rv64_span_alias_refinement_test.go`) runs the checker's rules for
+eleven moves over two fact states and renders what every named register
+then holds as the `example … := by decide` lines the Lean file states.
+Outside the model, as on the AArch64 lane: the index, scaled, half,
+remaining-count, and difference facts the write also forgets, which `mv`
+copies none of, and the frame-address and widened facts.
+
