@@ -848,8 +848,39 @@ with its Oak body on 76 concrete inputs and is **evidence** — the coupling
 proof pairs a scalar Oak variable with a register, and the kernel's loop
 variables are lanes, so its loops are witnessed, not proven. Left for the
 next increments: coupling for vector lanes (a lane variable against a
-register half), `simd.store` (a write the straight-line model does not
-follow) and float vectors (`docs/notes/proof-chain-audit-2026-09.md`).
+register half) and `simd.store` (a write the straight-line model does not
+follow) (`docs/notes/proof-chain-audit-2026-09.md`); the float vectors
+follow.
+
+**The floating-point forms (2026-09-14).** `spec/sail/arm_primitives.sail`
+gains Arm's execute bodies for `fadd`/`faddp`, `fsub`, `fmul`, `fmla`/
+`fmls`, `fmin`/`fmax` (the 1985 forms), `fminnm`/`fmaxnm` (2008),
+`fsqrt`, and `fneg`/`fabs`, with the register operands and `FPCR` as
+parameters, and Arm's `FPNeg`/`FPAbs` as written. The IEEE operations
+themselves — `FPAdd`, `FPSub`, `FPMul`, `FPMulAdd`, `FPMin`, `FPMax`,
+`FPMinNum`, `FPMaxNum`, `FPSqrt`, defined in Arm's text over reals — are
+declared without bodies and mapped by Sail's `lean` extern binding to
+uninterpreted constants of the same names in the support library
+(`spec/sail/lean-sail-4.33.patch` carries them): exactly the standing the
+verifier gives them (`asm/floats_ops.go`, `Oak.Uninterpreted`). The
+bridge then proves, against the generated code, that each instruction
+applies its operation lane for lane — `fadd_lanes`, `fsub_lanes`,
+`fmul_lanes`, `fmla_lanes` (`FPMulAdd` of the accumulator's lane and the
+multiplicands', the verifier's `fma`), `fmls_lanes` (the first
+multiplicand negated), `fmin_lanes`/`fmax_lanes`, `fminnm_lanes`/
+`fmaxnm_lanes`, `fsqrt_lanes`, `fneg_lanes`/`fabs_lanes`, and
+`faddp_lanes` (lane `j` is `FPAdd` of lanes `2j` and `2j+1` of the
+concatenation `operand2 @ operand1`, the adjacent-pair shape the
+verifier's `faddp` builds and the `reduce_add` tree is made of) — and
+that `FPNeg` flips the sign bit and `FPAbs` clears it at both widths
+(`FPNeg_32`, `FPNeg_64`, `FPAbs_32`, `FPAbs_64`, decided). So the chain
+for a float unit is: the verifier proves the unit equal to its Oak body
+up to the operation terms; the bridge proves Arm's instruction text
+applies the same operations to the same lanes; and the identification of
+`Sail.FPAdd` with the verifier's `fadd` — IEEE addition under Arm's NaN
+rules — is what the silicon differential checks on the host core and
+`Oak.FloatOps` models at the bit level. The loop increment's remainder
+above (lane coupling, `simd.store`) is what is left.
 
 **Floating point as uninterpreted operations (eighth increment,
 2026-09-14; `asm/floats_ops.go`, `asm/verify_float.go`).** Until this
@@ -2895,7 +2926,12 @@ and executable writers' tests.
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
-transliteration is checked against). The term language and the BDD
+transliteration is checked against). Retried 2026-09-14 with Sail built
+from git master (`dba5f00`, still versioned 0.20.2) against sail-riscv
+master (`22fad38`): the export generates, and its `Defs.lean` fails as
+before — `k_v` unbound at `root_level`, `PTW_Output` out of scope — a
+Sail Lean-backend matter, not ours; the theorems stay checked against the
+verbatim copies (`Oak.SailRiscVBridge`). The term language and the BDD
 blaster carry over unchanged.
 
 §5 named the roadmap: shrink the trust in an asm unit from "the author's
