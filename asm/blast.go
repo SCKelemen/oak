@@ -835,6 +835,35 @@ func (bl *blaster) counterexampleOf(node int) map[string]uint64 {
 		}
 		env[owner.param] |= uint64(1) << uint(owner.bit)
 	}
+	// The element reads the diagrams gave values to: each select at the
+	// index its bits take under the assignment is the element parameter
+	// `v[k]` with the value its variables take, so that evaluating the
+	// terms on this input reads the memory the diagrams chose (an
+	// uninterpreted operation's application, index nil, is not reported:
+	// the evaluation computes the operation itself, which is what tells a
+	// difference under the abstraction from a counterexample).
+	for _, sel := range bl.selects {
+		if sel.index == nil {
+			continue
+		}
+		var k uint64
+		for i, bit := range sel.idx {
+			if bl.bdd.holdsUnder(bit, assignment) {
+				k |= uint64(1) << uint(i)
+			}
+		}
+		name := spanElemName(sel.span, int64(k))
+		if _, given := env[name]; given {
+			continue // a constant-index read of the same element: a parameter already reported
+		}
+		var value uint64
+		for i, variable := range sel.vars {
+			if assignment[variable] {
+				value |= uint64(1) << uint(i)
+			}
+		}
+		env[name] = value
+	}
 	return env
 }
 

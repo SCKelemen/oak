@@ -23,6 +23,7 @@ package asm
 import (
 	"fmt"
 	"github.com/SCKelemen/oak/typechecker"
+	"math"
 	"math/bits"
 	"os"
 	"sort"
@@ -392,7 +393,53 @@ func binaryTerm(op string, left, right *term) *term {
 	if left.kind == termConst && left.value == 0 && op == "add" && right.width == t.width {
 		return right
 	}
+	// A mask of every bit at the width is the identity: `x & 0xFFFFFFFF`
+	// at 32 bits is x. Without the fold two reads of one address, one of
+	// them masked, are different terms, and a coupling offset that is zero
+	// (`hr - hx`) looks like a memory difference the diagrams must decide.
+	if op == "and" && right.kind == termConst && right.value&mask(left.width) == mask(left.width) && left.width == t.width {
+		return left
+	}
+	if op == "and" && left.kind == termConst && left.value&mask(right.width) == mask(right.width) && right.width == t.width {
+		return right
+	}
+	// x - x and x ^ x are zero; x & x and x | x are x. The two sides are
+	// often distinct nodes for one value — two reads of one address, each
+	// built afresh — so the comparison is structural, to a small depth.
+	if (op == "sub" || op == "xor" || op == "and" || op == "or") && left.width == right.width && left.width == t.width {
+		budget := sameTermBudget
+		if sameTerm(left, right, &budget) {
+			if op == "sub" || op == "xor" {
+				return constTerm(0, t.width)
+			}
+			return left
+		}
+	}
 	return t
+}
+
+// sameTermBudget bounds the nodes a structural comparison of two terms
+// visits (sameTerm): enough for a read's index arithmetic, not a DAG.
+const sameTermBudget = 48
+
+// sameTerm reports two terms structurally equal, visiting at most *budget
+// nodes; false when the budget runs out.
+func sameTerm(a, b *term, budget *int) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil || *budget <= 0 {
+		return false
+	}
+	*budget--
+	if a.kind != b.kind || a.width != b.width || a.op != b.op || a.name != b.name || a.value != b.value {
+		return false
+	}
+	switch a.kind {
+	case termConst, termParam:
+		return true
+	}
+	return sameTerm(a.cond, b.cond, budget) && sameTerm(a.left, b.left, budget) && sameTerm(a.right, b.right, budget)
 }
 
 // adaptWidth views a term at another width: a narrower term zero-extends,
@@ -447,7 +494,13 @@ func (t *term) evalUncached(env map[string]uint64, memo termMemo) uint64 {
 	case termConst:
 		return t.value & m
 	case termSelect:
-		return elementValue(t.name, memo.eval(t.left, env)&mask(32), t.width) & m
+		// The element the diagrams' counterexample chose, when it named
+		// one (counterexampleOf); else the fixed memory.
+		k := memo.eval(t.left, env) & mask(32)
+		if value, chosen := env[spanElemName(t.name, int64(k))]; chosen {
+			return value & m
+		}
+		return elementValue(t.name, k, t.width) & m
 	case termQuant:
 		// The body under every value of the bound parameter, in a memo of
 		// its own per value (its subterms depend on the binding); the
@@ -773,11 +826,40 @@ type symbolicState struct {
 	// before the entry memory, and the final logs are compared with the
 	// Oak body's.
 	writes map[string][]*spanWrite
+	// notes is the execution's shared record (pathNotes); nil in a state
+	// that reports nothing (a callee's summary, a witness run).
+	notes *pathNotes
 }
 
 type frameSlot struct {
 	value *term
 	width int // bytes
+}
+
+// pathNotes is what every path of one execution reports back to the
+// verdict, shared by the states of a fork (clone copies the pointer):
+// shiftGuardMax is the largest trap bound under which a register-count
+// shift ran — math.MaxUint64 for a count no guard bounded — so the Oak
+// lowering admits a variable shift count only when the machine trapped
+// at or below Oak's width on every such shift (docs/spec/94-assembler.md
+// §8, variable shift counts; lowerVariableShift).
+type pathNotes struct {
+	shiftGuardMax uint64
+}
+
+// noteVariableShift records a shift whose count came from register num,
+// guarded on this path by the trap bound bounds[num] if any.
+func (s *symbolicState) noteVariableShift(num int) {
+	if s.notes == nil {
+		return
+	}
+	bound, guarded := s.bounds[num]
+	if !guarded {
+		bound = math.MaxUint64
+	}
+	if bound > s.notes.shiftGuardMax {
+		s.notes.shiftGuardMax = bound
+	}
 }
 
 // flagsFact records what produced the flags: cmp/subs leave NZCV as the
@@ -897,6 +979,11 @@ func truncate(t *term, width int) *term {
 		return &term{kind: termParam, width: width, name: t.name}
 	case termCmp:
 		return &term{kind: termCmp, width: width, op: t.op, left: t.left, right: t.right}
+	case termBinary:
+		// Truncating a zero-extension back to its width is the extended term.
+		if t.op == "and" && t.right.kind == termConst && t.right.value == mask(width) && t.left.width == width {
+			return t.left
+		}
 	}
 	return &term{kind: termBinary, width: width, op: "and", left: t, right: constTerm(mask(width), width)}
 }
@@ -912,6 +999,11 @@ func zeroExtend(t *term, width int) *term {
 		return &term{kind: termParam, width: width, name: t.name}
 	case termCmp:
 		return &term{kind: termCmp, width: width, op: t.op, left: t.left, right: t.right}
+	case termBinary:
+		// Extending a truncation of a wider term is the wider term masked.
+		if t.op == "and" && t.right.kind == termConst && t.right.value == mask(t.width) && t.left.width == width {
+			return &term{kind: termBinary, width: width, op: "and", left: t.left, right: constTerm(mask(t.width), width)}
+		}
 	}
 	// The narrow computation's wrap is preserved by masking to its width.
 	return &term{kind: termBinary, width: width, op: "and", left: t, right: constTerm(mask(t.width), width)}
@@ -935,7 +1027,7 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 // executeBodyChunk is executeBody delivering, for a record result of two
 // register chunks (9 to 16 bytes: x0 and x1, a0 and a1), the given chunk.
 func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64, half, chunk int) (*term, *pathExecutor, string, bool) {
-	state := &symbolicState{arch: fn.Arch, regs: map[int]*term{}}
+	state := &symbolicState{arch: fn.Arch, regs: map[int]*term{}, notes: &pathNotes{}}
 	params := map[string]RegClass{}
 	spans := map[string]int64{} // span/view parameter -> element size in bytes
 	declared := map[string]int{}
@@ -1155,7 +1247,7 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 			return nil, nil, "alignment directives", false
 		}
 	}
-	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass, spans: spans, declared: declared, concrete: concrete != nil, env: concrete, records: composites, arch: fn.Arch, globals: fn.Globals, fn: fn}
+	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass, spans: spans, declared: declared, concrete: concrete != nil, env: concrete, records: composites, arch: fn.Arch, globals: fn.Globals, fn: fn, notes: state.notes}
 	exec.resultReg = Register{Class: resultClass, Num: chunk}
 	exec.resultHalf = half
 	exec.floatResult = floatResult
@@ -1242,6 +1334,9 @@ type pathExecutor struct {
 	// of the whole body): the equivalence is decided outside it.
 	trap      *term
 	callSites int
+	// notes is the record every path shares (pathNotes): the shift
+	// count guards, read by the verdict's lowering.
+	notes *pathNotes
 	// freshCount numbers the unspecified lane values of the RV64 vector
 	// model (asm/rv64_verify_vector.go freshLane).
 	freshCount int
@@ -1440,12 +1535,31 @@ func (s *symbolicState) clone() *symbolicState {
 			bounds[reg] = bound
 		}
 	}
-	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, fregs: fregs, rvcfg: rvcfg, globals: globals, writes: cloneWrites(s.writes), unknownFrom: s.unknownFrom, bounds: bounds}
+	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, fregs: fregs, rvcfg: rvcfg, globals: globals, writes: cloneWrites(s.writes), unknownFrom: s.unknownFrom, bounds: bounds, notes: s.notes}
 }
 
 // noteTrapGuard records, on the path that falls through a `b.hs <trap>`
 // reading `cmp wI, #K`, that wI < K: the index bound of a frame array.
 func (s *symbolicState) noteTrapGuard(instr Instruction) {
+	if instr.Mnemonic == "bgeu" && len(instr.Operands) == 3 {
+		// The RV64 lane's guard: `li rK, K; bgeu rI, rK, trap` bounds rI
+		// below K on the fall-through path (the shift count guard,
+		// nativegen/rv64.go).
+		index, okI := instr.Operands[0].(Register)
+		limit, okK := instr.Operands[1].(Register)
+		if !okI || !okK {
+			return
+		}
+		bound, ok := s.read(limit)
+		if !ok || bound.kind != termConst {
+			return
+		}
+		if s.bounds == nil {
+			s.bounds = map[int]uint64{}
+		}
+		s.bounds[index.Num] = bound.value
+		return
+	}
 	if instr.Mnemonic != "b." || (instr.Cond != "hs" && instr.Cond != "cs") || s.flags == nil || s.flags.unknown || s.flags.indexReg < 0 || s.flags.kind != "" {
 		return
 	}
@@ -2638,6 +2752,10 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 				state.flags = &flagsFact{left: left, right: right, width: widthOf(dest.Class), indexReg: -1}
 			case "adds":
 				state.flags = &flagsFact{left: left, right: right, width: widthOf(dest.Class), kind: "add", indexReg: -1}
+			case "lsl", "lsr", "asr":
+				if count, isReg := instr.Operands[2].(Register); isReg {
+					state.noteVariableShift(count.Num)
+				}
 			}
 			state.write(dest, binaryTerm(op, left, right))
 		}
@@ -2725,6 +2843,40 @@ func operandTerm(state *symbolicState, operand Operand, width int) (*term, bool)
 
 var oakOps = map[string]string{"+": "add", "-": "sub", "*": "mul", "&": "and", "|": "or", "^": "xor", "<<": "shl", ">>": "shr"}
 
+// lowerVariableShift lowers `x << n` / `x >> n` of an unsigned operand
+// whose count may reach the width for the assembler verifier
+// (docs/spec/94-assembler.md §8, variable shift counts). Oak traps at the
+// width (docs/spec/10-syntax.md §3b) and so does the native code — the
+// backends guard the count and the executor drops the trapping path — so
+// the equivalence is over the counts below the width, where Oak's shift is
+// the machine's. The machine shifts at its register width modulo that
+// width: the term is the shift at the register width, truncated back, so
+// that on the dropped counts it is the machine's value rather than a
+// claim about Oak (Oak.Shifts.shift_below_width; a claim over every
+// input, with the trapping path's condition forgotten at the fork). A
+// signed operand keeps the refusal: the backends leave those bodies to C.
+func (lo *oakLowering) lowerVariableShift(e *ast.InfixExpression, op string, left, right *term, width int) (*term, string, bool) {
+	_, signed, isScalar := lo.operandContract(e)
+	if !isScalar || signed {
+		return nil, "a non-constant shift count of a signed operand", false
+	}
+	if lo.shiftGuardMax > uint64(width) {
+		// The machine's shift ran under no trap guard at Oak's width, so
+		// Oak traps where the machine wraps: no claim.
+		return nil, "a non-constant shift count (the machine's shift is not guarded at the width)", false
+	}
+	reg := 64
+	if width <= 32 && (lo.arch != ArchRV64 || width == 32) {
+		// AArch64 shifts a narrow operand in a w register; RV64 shifts
+		// a 32-bit operand with sllw/srlw and a narrower one at XLEN.
+		reg = 32
+	}
+	if reg == width {
+		return binaryTerm(op, left, right), "", true
+	}
+	return truncate(binaryTerm(op, zeroExtend(left, reg), zeroExtend(right, reg)), width), "", true
+}
+
 // oakComparisons maps Oak's comparison operators to the condition code
 // whose flag reading is that comparison, per signedness of the operands.
 var oakComparisons = map[string][2]string{
@@ -2811,6 +2963,10 @@ type oakLowering struct {
 	// the inputs on which the machine trapped — where Oak traps too, on
 	// the same guard — leave the input domain (domainCondition).
 	machineTrap *term
+	// shiftGuardMax: the executor's largest trap bound over the register
+	// count shifts it ran (pathNotes); a variable shift count lowers only
+	// under a guard at or below its width.
+	shiftGuardMax uint64
 	// floats names the parameters and locals of f32/f64 type (their width),
 	// whose operations and comparisons are IEEE (asm/floats_lowering.go).
 	floats      map[string]int
@@ -5145,12 +5301,16 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			// Oak traps at the width; the machine wraps the count. Under
 			// the theorem decider the trap is a recorded obligation and
 			// the shift below the width is the machine's.
-			if !lo.trapsTracked && lo.maxValue(right) >= uint64(width) {
+			if lo.trapsTracked {
+				lo.addTrap(cmpTerm("hs", right, constTerm(uint64(width), width)))
+				return binaryTerm(op, left, right), "", true
+			}
+			if lo.maxValue(right) < uint64(width) {
 				// A count whose range stays below the width never traps,
 				// so Oak's shift is the machine's (asm/range.go).
-				return nil, "a non-constant shift count", false
+				return binaryTerm(op, left, right), "", true
 			}
-			lo.addTrap(cmpTerm("hs", right, constTerm(uint64(width), width)))
+			return lo.lowerVariableShift(e, op, left, right, width)
 		}
 		return binaryTerm(op, left, right), "", true
 	case *ast.BlockExpression:
@@ -5605,6 +5765,9 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	lowering := prepareLowering(fn, sig, nil)
 	lowering.resultChunk = chunk
 	lowering.machineTrap = exec.trap
+	if exec.notes != nil {
+		lowering.shiftGuardMax = exec.notes.shiftGuardMax
+	}
 	for name, width := range exec.freshSyms {
 		lowering.fresh[name] = width // a summarized call's unspecified result bits
 	}
