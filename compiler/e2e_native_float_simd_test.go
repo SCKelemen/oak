@@ -128,6 +128,14 @@ func TestE2ENativeFloatSimd(t *testing.T) {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
+	// The verifier decides the float units up to the IEEE operations
+	// (docs/spec/94-assembler.md §8, eighth increment): each is proven
+	// equal to its Oak body, the vector-signature entry on both halves.
+	for _, fn := range []string{"arith", "dot", "pairwise", "minmax", "doubles", "scale_neon_abi", "scaled", "words_view"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven") {
+			t.Errorf("%s was not proven by the verifier; diagnostics:\n%s", fn, joined)
+		}
+	}
 	// The C backend (NEON intrinsics) agrees bit for bit.
 	if _, code, abnormal := buildAndRunFrom(t, "native_float_simd_c", New().WithSource("native_float_simd.oak", nativeFloatSimdProgram)); abnormal || code != 42 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)

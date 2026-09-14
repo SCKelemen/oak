@@ -851,6 +851,71 @@ next increments: coupling for vector lanes (a lane variable against a
 register half), `simd.store` (a write the straight-line model does not
 follow) and float vectors (`docs/notes/proof-chain-audit-2026-09.md`).
 
+**Floating point as uninterpreted operations (eighth increment,
+2026-09-14; `asm/floats_ops.go`, `asm/verify_float.go`).** Until this
+increment a unit touching the floating-point file was *trusted*: IEEE
+addition is not a bit operation the decider can blast. It need not be.
+The unit and its body must apply the *same* operations to the *same*
+operands in the *same* order to agree bit for bit on every input, and that
+is a property the bit level can decide with the operations left
+uninterpreted. Each of `fadd`/`fsub`/`fmul`/`fdiv`, `fsqrt`, `fma`, the
+number-preferring `fminnm`/`fmaxnm`, the conversions (`fcvt` between the
+widths, `scvtf`/`ucvtf` from an integer of its width, `fcvtzs`/`fcvtzu`
+to one), and the NaN a `min`/`max` yields on a NaN operand (`fnan`, some
+NaN whose payload the platform chooses — one function of the operands on
+both sides, since no law may rely on it) is a term of its own kind at its
+width, built by the same constructor on both sides: on the Oak side from
+`a + b`, `fma(a, b, c)`, `sqrt(x)`, `min_num`, `f64(x)`, `u32(x)`, and the
+simd float operations (`add_f32x4` … `fma_f64x2`, `sqrt`/`neg`/`abs`,
+`insert`/`extract` at a literal lane, `reduce_add` as the pairwise tree
+`(l0 + l1) + (l2 + l3)` whose grouping is the semantics); on the machine
+side from the scalar instructions over `s`/`d` views (`fmadd`/`fmsub`/
+`fnmadd`/`fnmsub` as one `fma` over sign-adjusted operands, `fmov` with a
+float immediate as the literal's bits, `fcmp` leaving the IEEE comparison
+as the flags and every condition code reading them as the predicate the
+compilers use it for — `mi` is `<`, `ls` is `<=`, `gt`, `ge`, `eq`, `ne`,
+`hi`/`lt`/`le`/`hs` the unordered-inclusive forms — `fcsel` as the
+select) and the lane instructions over `2s`/`4s`/`2d` (`fmla`/`fmls` as
+`fma` into the accumulator lane, `faddp` as the adjacent-pair sums of both
+sources, `dup`/`mov` of a lane, `mov vD.s[i], …` as one lane replaced).
+The sign operations, `min`/`max` (754-2019 minimum/maximum, `fmin`/`fmax`),
+the comparisons, and the classifiers stay bit operations as before. The
+witness evaluator computes each operation as IEEE arithmetic (Go's
+float32/float64, an exactly rounded 32-bit fma with subnormals at their
+own grid, and NaN operands under Arm's `FPProcessNaNs`: a signaling NaN
+wins over a quiet one, earlier operands over later, the addend of a fused
+multiply-add first, the result quieted — written out rather than left to
+Go's `+`, whose operand order the compiler may swap), so a disagreement
+on a witness is a definite mismatch under the real semantics; the silicon
+differential (`asm/silicon_test.go`) now runs the float instructions too
+— the scalar and lane arithmetic, the fused forms, `fmin`/`fmax`/
+`fminnm`/`fmaxnm`, `faddp`, the conversions, `fcmp`/`fcsel` under every
+condition code — over the same NaN-, denormal-, and boundary-laden
+inputs as the integer ones, and the model agrees with the core bit for
+bit (it found two modeling errors before they shipped: the NaN operand
+order and the subnormal rounding of the 32-bit fma); the bit-level
+decision abstracts each application as a fresh block shared by every
+application of the same operation to the same operand bits, under
+Ackermann's functional consistency (`asm/blast.go`, the select
+machinery). A proof therefore says *equal up to the IEEE operations
+themselves* — `Oak.Uninterpreted.ackermann_sound`: terms equal under
+every consistent table of application values are equal under any
+interpretation, IEEE's included — whose bit-level model is
+`Oak.FloatOps` and whose agreement with the hardware the differentials
+check. No algebraic law is assumed (`no_commutativity_assumed`): `a - x`
+against `fsub d0, d1, d0` is a mismatch, `a * x + y` against `fmadd` is a
+mismatch (the backends never contract), the left-fold reduction against
+`reduce_add` is a mismatch, `min` against `fminnm` is a mismatch (a NaN
+operand suppressed rather than propagated); `fma` against `fmadd`, the
+two-instruction `fmul`/`fadd` against `a * x + y`, `f32(n)` against
+`ucvtf`, `sqrt(abs(-x))`, `a < b ? a | b` through `fcmp`/`fcsel`, the
+pairwise dot product `reduce_add(mul(a, b))` against `fmul`/`faddp`/
+`faddp`, and `fma_f32x4` against `fmla` are proven
+(`asm/verify_float_test.go`). What stays trusted: the rounding
+intrinsics (`floor`, `ceil`, `trunc`, `round`), a float converted to `u8`
+or `u16` (the narrow saturation), and the RV64 lane's floating-point and
+vector files, which the next increments bring to the same terms.
+
 ## 9. Native encoding, and the architectures to come
 
 **The encoder (`asm/encode.go`, table `asm/encodings_gen.go`).** Oak emits

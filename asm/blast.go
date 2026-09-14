@@ -364,6 +364,25 @@ func (bl *blaster) blastUncached(t *term) []int {
 			return nil
 		}
 		return bl.selectBits(t.name, idx, t.width)
+	case termFloat:
+		// An uninterpreted operation: its value is a fresh block shared by
+		// every application of the same operation to the same operand
+		// bits, and the consistency constraint ties applications whose
+		// operands are equal (Ackermann's reduction over the operations,
+		// Oak.Uninterpreted.ackermann_sound). The "span" is the operation
+		// at its width; the "index" is the operands' bits in order.
+		var idx []int
+		for _, arg := range []*term{t.left, t.right, t.cond} {
+			if arg == nil {
+				continue
+			}
+			bits := bl.blast(arg)
+			if bits == nil {
+				return nil
+			}
+			idx = append(idx, bits...)
+		}
+		return bl.selectBits(floatOpSpan(t.op, t.width), idx, t.width)
 	case termCmp:
 		// The comparison is the flag reading of `left - right` at the
 		// operands' width: NZCV from the subtraction chain, then the ARM

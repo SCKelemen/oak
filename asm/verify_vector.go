@@ -328,6 +328,9 @@ func (x *pathExecutor) stepVector(instr Instruction, state *symbolicState) (stri
 	refuse := func() (string, bool) {
 		return "a floating-point or vector instruction (" + instr.Mnemonic + ")", false
 	}
+	if handled, reason, ok := x.stepFloat(instr, state); handled {
+		return reason, ok
+	}
 	ops := instr.Operands
 	reg := func(i int) (Register, bool) {
 		if i >= len(ops) {
@@ -735,7 +738,7 @@ func vectorShape(expr ast.Expression) (typechecker.SimdShape, bool) {
 		return typechecker.SimdShape{}, false
 	}
 	for _, shape := range typechecker.SimdShapes {
-		if shape.TypeName == name[len("simd."):] && !shape.Float {
+		if shape.TypeName == name[len("simd."):] {
 			return shape, true
 		}
 	}

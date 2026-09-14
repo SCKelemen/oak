@@ -689,7 +689,7 @@ func upperClear(t *term, declared map[string]int) bool {
 		return strings.HasPrefix(t.name, "loop") && t.width <= 32
 	case termCmp:
 		return true
-	case termSelect:
+	case termSelect, termFloat:
 		return t.width <= 32
 	case termIte:
 		return upperClear(t.left, declared) && upperClear(t.right, declared)

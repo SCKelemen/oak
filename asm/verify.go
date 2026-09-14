@@ -71,6 +71,12 @@ const (
 	termCmp    // a condition code over two operands; the value is 1 or 0
 	termIte    // cond ? left : right
 	termSelect // name[left]: a span element at a symbolic 32-bit index
+	// termFloat is a floating-point operation (op over the IEEE bit
+	// patterns left, right, cond — up to three operands, the third in
+	// cond) at the result width: evaluated as the IEEE operation on a
+	// witness, decided as an uninterpreted function (asm/floats_ops.go,
+	// Oak.Uninterpreted).
+	termFloat
 )
 
 // selectTerm is the element of span at index: a constant index is the
@@ -214,6 +220,12 @@ func conditionFromFlags(code string, n, z, c, v bool) bool {
 // flagsCondition is the condition term for a code read from the flags a
 // cmp/subs (subtraction) or adds (addition) produced.
 func flagsCondition(code string, flags *flagsFact) *term {
+	if flags.float {
+		if t, ok := floatCondition(code, flags.left, flags.right, flags.width); ok {
+			return t
+		}
+		return paramTerm("fcmp#"+code, 1) // a code without an IEEE reading: an unknown
+	}
 	bare := code
 	if flags.kind != "" {
 		code = flags.kind + ":" + code
@@ -337,6 +349,16 @@ func (t *term) evalUncached(env map[string]uint64, memo termMemo) uint64 {
 		return t.value & m
 	case termSelect:
 		return elementValue(t.name, memo.eval(t.left, env)&mask(32), t.width) & m
+	case termFloat:
+		args := make([]uint64, 0, 3)
+		widths := make([]int, 0, 3)
+		for _, arg := range []*term{t.left, t.right, t.cond} {
+			if arg != nil {
+				args = append(args, memo.eval(arg, env)&mask(arg.width))
+				widths = append(widths, arg.width)
+			}
+		}
+		return floatEval(t.op, t.width, args, widths) & m
 	case termCmp:
 		// The comparison happens at the operands' width; t.width is only
 		// the width the 1/0 result is used at.
@@ -406,6 +428,14 @@ func (t *term) stringBounded(budget *int) string {
 		return fmt.Sprintf("(%s ? %s : %s)", t.cond.stringBounded(budget), t.left.stringBounded(budget), t.right.stringBounded(budget))
 	case termSelect:
 		return fmt.Sprintf("%s[%s]", t.name, t.left.stringBounded(budget))
+	case termFloat:
+		parts := []string{}
+		for _, arg := range []*term{t.left, t.right, t.cond} {
+			if arg != nil {
+				parts = append(parts, arg.stringBounded(budget))
+			}
+		}
+		return fmt.Sprintf("%s%d(%s)", t.op, t.width, strings.Join(parts, ", "))
 	}
 	return fmt.Sprintf("(%s %s %s)", t.left.stringBounded(budget), t.op, t.right.stringBounded(budget))
 }
@@ -446,7 +476,7 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		return &linearForm{width: w, coeffs: map[string]uint64{t.name: 1}}
 	case termConst:
 		return &linearForm{width: w, constant: t.value & m}
-	case termCmp, termIte, termSelect:
+	case termCmp, termIte, termSelect, termFloat:
 		return nil
 	}
 	switch t.op {
@@ -597,6 +627,9 @@ type flagsFact struct {
 	width       int
 	kind        string // "" (cmp/subs: left - right), "add" (adds: left + right), "and" (tst: left & right)
 	unknown     bool
+	// float: fcmp left, right — the codes read as IEEE predicates
+	// (asm/verify_float.go floatCondition).
+	float bool
 	// ccmp: the comparison's flags when cond holds, else the immediate NZCV.
 	cond     *term
 	elseNZCV int64
@@ -761,8 +794,19 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 			}
 			continue
 		}
-		if !ok || class == ClassV {
+		if !ok {
 			return nil, nil, "vector or non-integer parameters", false
+		}
+		if class == ClassV {
+			// A float: its IEEE bit pattern in the low lane of its vector
+			// register (asm/verify_float.go).
+			bits, _, isFloat := contractBits(param.Type)
+			if !isFloat {
+				return nil, nil, "vector or non-integer parameters", false
+			}
+			params[param.Name.Value] = class
+			declared[param.Name.Value] = bits
+			continue
 		}
 		params[param.Name.Value] = class
 		bits, _, _ := contractBits(param.Type)
@@ -820,6 +864,11 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 		class := params[binding.Param]
 		bits := declared[binding.Param]
 		switch {
+		case class == ClassV:
+			if binding.Register.Class != ClassV {
+				return nil, nil, "a float parameter bound outside the vector file", false
+			}
+			state.writeVec(binding.Register.Num, vecFromLow(zeroExtend(input(binding.Param, bits), 64)))
 		case class == ClassX:
 			state.regs[binding.Register.Num] = input(binding.Param, 64)
 		case boolParams[binding.Param]:
@@ -843,8 +892,13 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 		resultClass, hasResult = ClassX, true
 	}
 	_, vectorResult := vectorShape(sig.ReturnType)
+	floatResult := 0
 	if hasResult && resultClass == ClassV && !vectorResult {
-		return nil, nil, "no integer result", false
+		bits, _, isFloat := contractBits(sig.ReturnType)
+		if !isFloat {
+			return nil, nil, "no integer result", false
+		}
+		floatResult = bits // an f32/f64 result: the low lane of v0 at its width
 	}
 	labels := map[string]int{}
 	for index, item := range fn.Items {
@@ -858,6 +912,7 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass, spans: spans, declared: declared, concrete: concrete != nil, env: concrete, records: composites, arch: fn.Arch, globals: fn.Globals, fn: fn}
 	exec.resultReg = Register{Class: resultClass, Num: 0}
 	exec.resultHalf = half
+	exec.floatResult = floatResult
 	if fn.Arch == ArchRV64 {
 		exec.resultReg = rv64ResultRegister
 	}
@@ -901,6 +956,9 @@ type pathExecutor struct {
 	arch        string   // the lane
 	resultReg   Register // the register ret delivers: w0/x0, or a0 on rv64
 	resultClass RegClass
+	// floatResult is the width of an f32/f64 result (the low lane of v0),
+	// zero for the other result kinds.
+	floatResult int
 	resultHalf  int               // a vector result: the 64-bit half of v0 delivered (asm/verify_vector.go)
 	spans       map[string]int64  // span parameter -> element size in bytes
 	declared    map[string]int    // parameter -> declared width
@@ -1474,6 +1532,9 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 				value, ok := state.readVec(0)
 				if !ok {
 					return nil, nil, "result register never written", false
+				}
+				if x.floatResult != 0 {
+					return value.lanesAt(x.floatResult)[0], state.effects(), "", true
 				}
 				return value.halves()[x.resultHalf], state.effects(), "", true
 			}
@@ -4178,9 +4239,34 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		switch ident.Value {
 		case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64":
 			target = ident.Value
+			// The integer constructor over a float is the conversion toward
+			// zero (asm/floats_lowering.go); the `_bits_` forms below stay
+			// bit moves.
+			if len(e.Arguments) == 1 {
+				if _, srcFloat := lo.floatWidthOf(e.Arguments[0]); srcFloat {
+					return lo.floatConversion(target, e.Arguments[0], width)
+				}
+			}
+		case "f32", "f64":
+			if len(e.Arguments) == 1 {
+				return lo.floatConversion(ident.Value, e.Arguments[0], width)
+			}
 		default:
-			if t, op, _, isConv := typechecker.ConversionParts(ident.Value); isConv && (op == "trunc" || op == "bits") {
-				target = t
+			if t, op, src, isConv := typechecker.ConversionParts(ident.Value); isConv {
+				floatSource := src == "f32" || src == "f64"
+				floatTarget := t == "f32" || t == "f64"
+				switch {
+				case floatSource && op == "bits":
+					target = t // a bit move, below
+				case (floatSource || floatTarget) && (op == "trunc" || op == "round" || op == "saturating") && len(e.Arguments) == 1:
+					// A float converted toward zero (trunc: the backend traps
+					// out of range, so the value on the non-trapping paths is
+					// the conversion's; saturating: it saturates, as fcvtz*
+					// does), or a float rounded to another width (round).
+					return lo.floatConversion(t, e.Arguments[0], width)
+				case op == "trunc" || op == "bits":
+					target = t
+				}
 			}
 		}
 		if target != "" {
@@ -4222,11 +4308,30 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			}
 			return zeroExtend(truncate(cond, width), width), "", true
 		}
-		if _, isFloat := lo.floatWidthOf(e.Left); isFloat {
-			return nil, fmt.Sprintf("floating-point %s (not a bit operation)", e.Operator), false
-		}
-		if _, isFloat := lo.floatWidthOf(e.Right); isFloat {
-			return nil, fmt.Sprintf("floating-point %s (not a bit operation)", e.Operator), false
+		if w, isFloat := lo.floatWidthOf(e.Left); isFloat || func() bool { w, isFloat = lo.floatWidthOf(e.Right); return isFloat }() {
+			// Floating-point arithmetic: the IEEE operation at the operands'
+			// width as an uninterpreted term (asm/floats_ops.go); the
+			// backends never contract, so `a * b + c` is two operations.
+			if w == 0 {
+				if other, ok := lo.floatWidthOf(e.Right); ok && other != 0 {
+					w = other
+				} else {
+					w = width
+				}
+			}
+			op, known := map[string]string{"+": "fadd", "-": "fsub", "*": "fmul", "/": "fdiv"}[e.Operator]
+			if !known {
+				return nil, fmt.Sprintf("floating-point %s", e.Operator), false
+			}
+			left, reason, okL := lo.lower(e.Left, w)
+			if !okL {
+				return nil, reason, false
+			}
+			right, reason, okR := lo.lower(e.Right, w)
+			if !okR {
+				return nil, reason, false
+			}
+			return adaptWidth(floatTerm(op, w, left, right), width), "", true
 		}
 		if e.Operator == "/" || e.Operator == "%" {
 			// Unsigned division and remainder by a constant power of two
@@ -4559,6 +4664,11 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 	boundary := func(w int) []uint64 {
 		m := mask(w)
 		values := []uint64{0, 1, 2, 3, 7, 8, 15, 16, 31, 32, 127, 128, 255, 256, m - 1, m, m >> 1, (m >> 1) + 1}
+		if w == 32 || w == 64 {
+			// A parameter of a float's width may be one: ordinary values,
+			// signed zeros, an infinity, and a NaN beside the patterns.
+			values = append(values, floatWitnessValues(w)...)
+		}
 		for i := range values {
 			values[i] &= m // a witness is a value of the parameter's width
 		}

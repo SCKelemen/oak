@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"math/big"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -477,18 +476,6 @@ done:
 			index++
 		}
 	}
-}
-
-// fma32 is a*b + c rounded once to f32 (round to nearest even), the
-// semantics of vfmacc.vv under frm = rne: the exact value is formed in a
-// big.Float wide enough to hold it, then rounded to 24 bits.
-func fma32(a, b, c float32) float32 {
-	exact := new(big.Float).SetPrec(256).SetFloat64(float64(a))
-	exact.Mul(exact, new(big.Float).SetPrec(256).SetFloat64(float64(b)))
-	exact.Add(exact, new(big.Float).SetPrec(256).SetFloat64(float64(c)))
-	rounded := exact.SetMode(big.ToNearestEven).SetPrec(24)
-	f, _ := rounded.Float32()
-	return f
 }
 
 // quoteAsmRV64 spells assembly text as a C string literal.
