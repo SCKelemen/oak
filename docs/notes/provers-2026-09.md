@@ -179,8 +179,14 @@ minute. Elimination was the decisive step, as the ParaFROST and CaDiCaL
 reading predicted: the arithmetic obligations whose learned clauses
 spanned every decision level become unit-heavy once the Tseitin gate
 variables are resolved away. The two rows still open are the widest
-(178k and 244k BDD nodes); subsumption and failed-literal probing are the
-next techniques, still ahead of any GPU question. First run with CaDiCaL 3.0.1:
+(178k and 244k BDD nodes). Failed-literal probing landed next (2026-09-14):
+it shrinks several certificates but finds no unit in those two rows —
+Tseitin arithmetic after elimination has no failed literal at level one —
+and they close only past the budget, at 562k and 1.4M conflicts, where
+CaDiCaL itself needs 7 and 112 seconds. The measurement also showed the
+text path spending half its wall time in the kernel: the driver writes
+one byte per `write` call. Buffering that, a budget the caller can raise,
+and subsumption are the next steps, still ahead of any GPU question. First run with CaDiCaL 3.0.1:
 `spec/oak/machines.oak`'s `bounded__step` — 14,987 BDD nodes under the
 blocked order — closes with a 204-step certificate checked in Go and in
 Oak; `spec/oak/shapes.oak`'s nine rows all agree):

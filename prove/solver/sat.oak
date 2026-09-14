@@ -56,7 +56,7 @@ SatLayout: type = struct {
   watch_head_at: u32,
   watch_next_at: u32,
   learnt_at: u32,
-  resolved_at: u32,
+  probe_at: u32,
   hints_at: u32,
   hints_cap: u32,
   remap_at: u32,
@@ -89,7 +89,7 @@ ST_SINCE_RESTART: u32 = 11
 ST_LEARNT_LEN: u32 = 12
 ST_HINTS_LEN: u32 = 13
 ST_BUDGET: u32 = 14
-ST_RESOLVED_LEN: u32 = 15
+ST_PROBED: u32 = 15
 ST_LEARNED: u32 = 16
 ST_INITIAL: u32 = 17
 ST_REDUCE_LIMIT: u32 = 18
@@ -108,6 +108,7 @@ ST_RECORD_ON: u32 = 27
 ST_ADDED_LITS: u32 = 28
 ST_PRINT: u32 = 29
 ST_RECORD_OVERFLOW: u32 = 30
+ST_PROBE_UNITS: u32 = 31 // units from probing: failed literals and both-polarity implications
 ST_WORDS: u32 = 32
 
 // sat_layout sizes the arena for a variable count, a clause capacity
@@ -130,8 +131,8 @@ sat_layout: (vars: u32, clause_cap: u32, store_cap: u32, record_cap: u32): SatLa
   watch_head_at: u32 = store_at + store_cap
   watch_next_at: u32 = watch_head_at + u32(2) * v
   learnt_at: u32 = watch_next_at + u32(2) * clause_cap
-  resolved_at: u32 = learnt_at + v + u32(1)
-  hints_at: u32 = resolved_at + v + u32(1)
+  probe_at: u32 = learnt_at + v + u32(1)
+  hints_at: u32 = probe_at + u32(3) * v
   hints_cap: u32 = u32(2) * v + u32(4)
   remap_at: u32 = hints_at + hints_cap
   lock_at: u32 = remap_at + clause_cap
@@ -149,7 +150,7 @@ sat_layout: (vars: u32, clause_cap: u32, store_cap: u32, record_cap: u32): SatLa
     phase_at: phase_at, activity_at: activity_at, trail_at: trail_at, lim_at: lim_at,
     starts_at: starts_at, lengths_at: lengths_at, ids_at: ids_at, store_at: store_at,
     watch_head_at: watch_head_at, watch_next_at: watch_next_at,
-    learnt_at: learnt_at, resolved_at: resolved_at, hints_at: hints_at, hints_cap: hints_cap,
+    learnt_at: learnt_at, probe_at: probe_at, hints_at: hints_at, hints_cap: hints_cap,
     remap_at: remap_at, lock_at: lock_at, cact_at: cact_at, touched_at: touched_at,
     occ_count_at: occ_count_at, occ_start_at: occ_start_at, occ_list_at: occ_list_at, elim_at: elim_at,
     record_at: record_at, record_cap: record_cap,
@@ -613,11 +614,20 @@ sat_bump_clause: (l: SatLayout, mem: [*]u32, c: u32): () {
 // the clause, a level-zero literal, or an earlier replayed one), so each
 // reason is unit when the checker reaches it, and the conflict clause
 // closes the chain.
-sat_analyze: (l: SatLayout, mem: [*]u32, conflict: u32): u32 {
+sat_analyze: (l: SatLayout, mem: [*]u32, conflict: u32): u32 = sat_analyze_from(l, mem, conflict, SAT_NONE, false)
+
+// sat_analyze_from is the analysis over a starting clause whose literal
+// `skip` (SAT_NONE for a conflict clause, whose literals are all false) is
+// passed over, resolving to the first UIP or, with `to_decision`, past
+// every UIP to the decision of the current level. Probing derives the
+// implication "not the decision, or u" this way from u's reason with u
+// skipped (docs/spec/125-verification.md §3 "By certificate"; the chain is
+// `Oak.SolverLaws.replay_propagates`).
+sat_analyze_from: (l: SatLayout, mem: [*]u32, conflict: u32, skip: u32, to_decision: Bool): u32 {
   current: u32 = sat_state(l, mem, ST_LEVEL)
   sat_set(l, mem, ST_LEARNT_LEN, current == u32(0) ? { u32(0) } | { u32(1) })
   sat_bump_clause(l, mem, conflict)
-  path: u32 = sat_mark_clause(l, mem, conflict, SAT_NONE, current, u32(0))
+  path: u32 = sat_mark_clause(l, mem, conflict, skip, current, u32(0))
   index: u32 = sat_state(l, mem, ST_TRAIL_LEN)
   done: Bool = current == u32(0)
   while !done && index > u32(0) {
@@ -626,7 +636,7 @@ sat_analyze: (l: SatLayout, mem: [*]u32, conflict: u32): u32 {
     v: u32 = p / u32(2)
     mem[l.seen_at + v] == u32(1) && mem[l.level_at + v] >= current ? {
       path = path - u32(1)
-      path == u32(0) ? {
+      path == u32(0) && (!to_decision || mem[l.reason_at + v] == SAT_NONE) ? {
         mem[l.seen_at + v] = u32(0)
         mem[l.learnt_at] = p ^ u32(1)
         done = true
@@ -1204,19 +1214,288 @@ sat_decide: (l: SatLayout, mem: [*]u32): Bool {
     } | { }
     v = v + u32(1)
   }
-  best != SAT_NONE ? {
-    level: u32 = sat_state(l, mem, ST_LEVEL)
-    mem[l.lim_at + level] = sat_state(l, mem, ST_TRAIL_LEN)
-    sat_set(l, mem, ST_LEVEL, level + u32(1))
-    sat_enqueue(l, mem, u32(2) * best + mem[l.phase_at + best], SAT_NONE)
-  } | { }
+  best != SAT_NONE ? { sat_assume(l, mem, u32(2) * best + mem[l.phase_at + best]) } | { }
   best != SAT_NONE
 }
 
-// sat_solve runs the search to a verdict: satisfiable (the assignment is
-// in the arena), unsatisfiable (the certificate has been written), or
-// exceeded (the conflict budget or a capacity).
+// sat_solve probes once, then runs the search to a verdict: satisfiable
+// (the assignment is in the arena), unsatisfiable (the certificate has
+// been written), or exceeded (the conflict budget or a capacity).
+// Failed-literal probing (docs/notes/provers-2026-09.md; CaDiCaL's
+// probing, Lynce and Marques-Silva 2003) runs once before the search, at
+// level zero after elimination: each free variable with watches on both
+// sides is assumed true, then false, at level one. A polarity that
+// propagates to a conflict is analyzed like any conflict, learning a unit
+// (the first UIP negated) with its hints. A literal implied by both
+// polarities is a unit too, recorded through two implications the
+// checkers accept — "not the literal, or u" from each probe's implication
+// graph resolved to the decision (sat_analyze_from with u skipped) — and
+// the unit from those two as hints, the implications then deleted. Work
+// is bounded by literals assigned while probing.
+
+PROBE_BUDGET: u32 = 4000000
+
+// sat_assume opens a new level with `lit` as its decision.
+sat_assume: (l: SatLayout, mem: [*]u32, lit: u32): () {
+  level: u32 = sat_state(l, mem, ST_LEVEL)
+  mem[l.lim_at + level] = sat_state(l, mem, ST_TRAIL_LEN)
+  sat_set(l, mem, ST_LEVEL, level + u32(1))
+  sat_enqueue(l, mem, lit, SAT_NONE)
+}
+
+// sat_probe_clear clears the marks of the first `n` probe-buffer literals.
+sat_probe_clear: (l: SatLayout, mem: [*]u32, n: u32): () {
+  i: u32 = 0
+  while i < n {
+    mem[l.seen_at + mem[l.probe_at + i] / u32(2)] = u32(0)
+    i = i + u32(1)
+  }
+}
+
+// sat_probe_derive records "not the decision, or u" for a literal u
+// implied at level one, with the hints of its implication graph resolved
+// to the decision, and returns the step's id.
+sat_probe_derive: (l: SatLayout, mem: [*]u32, u: u32): u32 {
+  reason: u32 = mem[l.reason_at + u / u32(2)]
+  sat_analyze_from(l, mem, reason, u, true)
+  n: u32 = sat_state(l, mem, ST_LEARNT_LEN)
+  mem[l.learnt_at + n] = u
+  sat_set(l, mem, ST_LEARNT_LEN, n + u32(1))
+  id: u32 = sat_state(l, mem, ST_NEXT_ID)
+  sat_set(l, mem, ST_NEXT_ID, id + u32(1))
+  sat_emit(l, mem, id)
+  id
+}
+
+// sat_delete_pair writes a deletion line for two certificate ids.
+sat_delete_pair: (l: SatLayout, mem: [*]u32, a: u32, b: u32): () {
+  last: u32 = sat_state(l, mem, ST_NEXT_ID) - u32(1)
+  sat_state(l, mem, ST_RECORD_ON) == u32(1) ? {
+    sat_record_word(l, mem, u32(1))
+    sat_record_word(l, mem, last)
+    sat_record_word(l, mem, u32(2))
+    sat_record_word(l, mem, a)
+    sat_record_word(l, mem, b)
+  } | { }
+  sat_state(l, mem, ST_PRINT) == u32(1) ? {
+    write_u32(last)
+    write_byte(u8(32))
+    write_byte(u8(100))
+    write_byte(u8(32))
+    write_u32(a)
+    write_byte(u8(32))
+    write_u32(b)
+    write_byte(u8(32))
+    write_byte(u8(48))
+    write_byte(u8(10))
+  } | { }
+}
+
+// sat_probe_units derives the `common` unit candidates of variable v held
+// in the probe buffer's second third: each polarity is assumed again and,
+// for every candidate still implied, the implication recorded; the second
+// polarity then records the unit from the two implications and deletes
+// them. The units are added at level zero and propagated. Returns the
+// literals assigned on the way.
+sat_probe_units: (l: SatLayout, mem: [*]u32, v: u32, common: u32): u32 {
+  v1: u32 = l.vars + u32(1)
+  work: u32 = 0
+  pol: u32 = 0
+  while pol < u32(2) && sat_state(l, mem, ST_STATUS) == SAT_RUNNING {
+    lit: u32 = u32(2) * v + pol
+    sat_assume(l, mem, lit)
+    conflict: u32 = sat_propagate(l, mem)
+    work = work + sat_state(l, mem, ST_TRAIL_LEN) - mem[l.lim_at]
+    conflict != SAT_NONE ? {
+      // The same propagation as the probe, so not expected; learned
+      // like any conflict and the candidates dropped.
+      sat_learn(l, mem, conflict)
+      common = u32(0)
+    } | {
+      i: u32 = 0
+      while i < common && sat_state(l, mem, ST_STATUS) == SAT_RUNNING {
+        u: u32 = mem[l.probe_at + v1 + i]
+        w: u32 = u / u32(2)
+        implied: Bool = mem[l.assign_at + w] == sat_lit_true(u) && mem[l.level_at + w] == u32(1)
+        pol == u32(0) ? {
+          mem[l.probe_at + u32(2) * v1 + i] = implied ? { sat_probe_derive(l, mem, u) } | { SAT_NONE }
+        } | {
+          a: u32 = mem[l.probe_at + u32(2) * v1 + i]
+          a != SAT_NONE && implied ? {
+            b: u32 = sat_probe_derive(l, mem, u)
+            mem[l.learnt_at] = u
+            sat_set(l, mem, ST_LEARNT_LEN, u32(1))
+            mem[l.hints_at] = a
+            mem[l.hints_at + u32(1)] = b
+            sat_set(l, mem, ST_HINTS_LEN, u32(2))
+            id: u32 = sat_state(l, mem, ST_NEXT_ID)
+            sat_set(l, mem, ST_NEXT_ID, id + u32(1))
+            sat_emit(l, mem, id)
+            sat_delete_pair(l, mem, a, b)
+            mem[l.probe_at + u32(2) * v1 + i] = id
+          } | { mem[l.probe_at + u32(2) * v1 + i] = SAT_NONE }
+        }
+        i = i + u32(1)
+      }
+      sat_backtrack(l, mem, u32(0))
+    }
+    pol = pol + u32(1)
+  }
+  i: u32 = 0
+  while i < common && sat_state(l, mem, ST_STATUS) == SAT_RUNNING {
+    id: u32 = mem[l.probe_at + u32(2) * v1 + i]
+    id != SAT_NONE ? {
+      u: u32 = mem[l.probe_at + v1 + i]
+      mem[l.learnt_at] = u
+      c: u32 = sat_add_learnt(l, mem, u32(1), id)
+      c != SAT_NONE && mem[l.assign_at + u / u32(2)] == u32(0) ? { sat_enqueue(l, mem, u, c) } | { }
+      sat_set(l, mem, ST_PROBE_UNITS, sat_state(l, mem, ST_PROBE_UNITS) + u32(1))
+    } | { }
+    i = i + u32(1)
+  }
+  sat_state(l, mem, ST_STATUS) == SAT_RUNNING ? {
+    c0: u32 = sat_propagate(l, mem)
+    c0 != SAT_NONE ? { sat_learn(l, mem, c0) } | { }
+  } | { }
+  work
+}
+
+// sat_probe_variable probes both polarities of a free variable at level
+// one and returns the literals assigned. The first polarity's implied
+// literals are marked (seen 1 or 2 by polarity) and kept in the probe
+// buffer; the second polarity's implied literals that match are unit
+// candidates.
+sat_probe_variable: (l: SatLayout, mem: [*]u32, v: u32): u32 {
+  v1: u32 = l.vars + u32(1)
+  work: u32 = 0
+  first: u32 = 0
+  sat_set(l, mem, ST_PROBED, sat_state(l, mem, ST_PROBED) + u32(1))
+  pol: u32 = 0
+  while pol < u32(2) && sat_state(l, mem, ST_STATUS) == SAT_RUNNING && mem[l.assign_at + v] == u32(0) {
+    lit: u32 = u32(2) * v + pol
+    sat_assume(l, mem, lit)
+    conflict: u32 = sat_propagate(l, mem)
+    base: u32 = mem[l.lim_at]
+    end: u32 = sat_state(l, mem, ST_TRAIL_LEN)
+    work = work + end - base
+    conflict != SAT_NONE ? {
+      // A failed literal: the marks go before analysis, the unit is
+      // learned and propagated at level zero.
+      sat_probe_clear(l, mem, first)
+      first = u32(0)
+      sat_learn(l, mem, conflict)
+      sat_set(l, mem, ST_PROBE_UNITS, sat_state(l, mem, ST_PROBE_UNITS) + u32(1))
+      sat_state(l, mem, ST_STATUS) == SAT_RUNNING ? {
+        c0: u32 = sat_propagate(l, mem)
+        c0 != SAT_NONE ? { sat_learn(l, mem, c0) } | { }
+      } | { }
+    } | {
+      pol == u32(0) ? {
+        i: u32 = base + u32(1)
+        while i < end && first < v1 {
+          q: u32 = mem[l.trail_at + i]
+          mem[l.seen_at + q / u32(2)] = u32(1) + q % u32(2)
+          mem[l.probe_at + first] = q
+          first = first + u32(1)
+          i = i + u32(1)
+        }
+        sat_backtrack(l, mem, u32(0))
+      } | {
+        common: u32 = 0
+        i: u32 = base + u32(1)
+        while i < end && common < v1 {
+          q: u32 = mem[l.trail_at + i]
+          mem[l.seen_at + q / u32(2)] == u32(1) + q % u32(2) ? {
+            mem[l.probe_at + v1 + common] = q
+            common = common + u32(1)
+          } | { }
+          i = i + u32(1)
+        }
+        sat_probe_clear(l, mem, first)
+        first = u32(0)
+        sat_backtrack(l, mem, u32(0))
+        common > u32(0) ? { work = work + sat_probe_units(l, mem, v, common) } | { }
+      }
+    }
+    pol = pol + u32(1)
+  }
+  sat_probe_clear(l, mem, first)
+  work
+}
+
+// sat_probe runs failed-literal probing over the free variables watched
+// on both sides, within PROBE_BUDGET assigned literals. A conflict in the
+// level-zero propagation beforehand is left pending for the search.
+sat_probe: (l: SatLayout, mem: [*]u32): () {
+  conflict: u32 = sat_propagate(l, mem)
+  conflict != SAT_NONE ? { sat_set(l, mem, ST_PENDING, conflict) } | {
+    work: u32 = 0
+    v: u32 = 0
+    while v < l.vars && work < PROBE_BUDGET && sat_state(l, mem, ST_STATUS) == SAT_RUNNING {
+      mem[l.assign_at + v] == u32(0) && mem[l.watch_head_at + u32(2) * v] != SAT_NONE && mem[l.watch_head_at + u32(2) * v + u32(1)] != SAT_NONE ? {
+        work = work + sat_probe_variable(l, mem, v)
+      } | { }
+      v = v + u32(1)
+    }
+  }
+}
+
+// sat_learn handles one conflict: analyzes it, records the learned clause,
+// and either settles the run (an empty clause) or stores the clause,
+// back-jumps, asserts it, and runs the restart and reduction policies.
+sat_learn: (l: SatLayout, mem: [*]u32, conflict: u32): () {
+  back: u32 = sat_analyze(l, mem, conflict)
+  sat_state(l, mem, ST_STATUS) == SAT_RUNNING ? {
+    id: u32 = sat_state(l, mem, ST_NEXT_ID)
+    sat_set(l, mem, ST_NEXT_ID, id + u32(1))
+    sat_emit(l, mem, id)
+    n: u32 = sat_state(l, mem, ST_LEARNT_LEN)
+    n == u32(0) ? { sat_set(l, mem, ST_STATUS, SAT_UNSATISFIABLE) } | {
+      c: u32 = sat_add_learnt(l, mem, n, id)
+      retried: Bool = c == SAT_NONE
+      c == SAT_NONE ? {
+        // The store is full: restart, reduce, and try once more;
+        // the learned clause is then added at level zero, where it
+        // is simply another clause (unit when it has one literal).
+        sat_set(l, mem, ST_STATUS, SAT_RUNNING)
+        sat_backtrack(l, mem, u32(0))
+        sat_reduce(l, mem)
+        c = sat_add_learnt(l, mem, n, id)
+        back = u32(0)
+      } | { }
+      c != SAT_NONE ? {
+        sat_set(l, mem, ST_LEARNED, sat_state(l, mem, ST_LEARNED) + u32(1))
+        sat_backtrack(l, mem, back)
+        // The learned clause asserts its first literal at the
+        // back-jump level, where every other literal is false. After
+        // a reduce-and-retry the trail is at level zero and the
+        // clause may not be unit: it is then only added, and
+        // propagation finds it when it becomes unit.
+        retried ? {
+          // A unit learned clause is unit at level zero too.
+          asserting: u32 = mem[l.learnt_at]
+          n == u32(1) && mem[l.assign_at + asserting / u32(2)] == u32(0) ? { sat_enqueue(l, mem, asserting, c) } | { }
+        } | { sat_enqueue(l, mem, mem[l.learnt_at], c) }
+        inc: u32 = sat_state(l, mem, ST_ACTIVITY_INC)
+        sat_set(l, mem, ST_ACTIVITY_INC, inc + inc / u32(20) + u32(1))
+        since: u32 = sat_state(l, mem, ST_SINCE_RESTART) + u32(1)
+        since >= sat_state(l, mem, ST_RESTART_LIMIT) ? {
+          sat_backtrack(l, mem, u32(0))
+          sat_set(l, mem, ST_SINCE_RESTART, u32(0))
+          restarts: u32 = sat_state(l, mem, ST_RESTARTS) + u32(1)
+          sat_set(l, mem, ST_RESTARTS, restarts)
+          sat_set(l, mem, ST_RESTART_LIMIT, u32(100) * sat_luby(restarts))
+          cinc: u32 = sat_state(l, mem, ST_CLAUSE_INC)
+          sat_set(l, mem, ST_CLAUSE_INC, cinc + cinc / u32(20) + u32(1))
+          sat_state(l, mem, ST_LEARNED) >= sat_state(l, mem, ST_REDUCE_LIMIT) || sat_state(l, mem, ST_STORE_USED) >= l.store_cap / u32(4) * u32(3) ? { sat_reduce(l, mem) } | { }
+        } | { sat_set(l, mem, ST_SINCE_RESTART, since) }
+      } | { }
+    }
+  } | { }
+}
+
 sat_solve: (l: SatLayout, mem: [*]u32): u32 {
+  sat_state(l, mem, ST_PENDING) == SAT_NONE && sat_state(l, mem, ST_STATUS) == SAT_RUNNING && sat_state(l, mem, ST_CONFLICTS) == u32(0) ? { sat_probe(l, mem) } | { }
   while sat_state(l, mem, ST_STATUS) == SAT_RUNNING {
     pending: u32 = sat_state(l, mem, ST_PENDING)
     sat_set(l, mem, ST_PENDING, SAT_NONE)
@@ -1225,54 +1504,7 @@ sat_solve: (l: SatLayout, mem: [*]u32): u32 {
       conflicts: u32 = sat_state(l, mem, ST_CONFLICTS) + u32(1)
       sat_set(l, mem, ST_CONFLICTS, conflicts)
       conflicts > sat_state(l, mem, ST_BUDGET) ? { sat_set(l, mem, ST_STATUS, SAT_EXCEEDED) } | {
-        back: u32 = sat_analyze(l, mem, conflict)
-        sat_state(l, mem, ST_STATUS) == SAT_RUNNING ? {
-          id: u32 = sat_state(l, mem, ST_NEXT_ID)
-          sat_set(l, mem, ST_NEXT_ID, id + u32(1))
-          sat_emit(l, mem, id)
-          n: u32 = sat_state(l, mem, ST_LEARNT_LEN)
-          n == u32(0) ? { sat_set(l, mem, ST_STATUS, SAT_UNSATISFIABLE) } | {
-            c: u32 = sat_add_learnt(l, mem, n, id)
-            retried: Bool = c == SAT_NONE
-            c == SAT_NONE ? {
-              // The store is full: restart, reduce, and try once more;
-              // the learned clause is then added at level zero, where it
-              // is simply another clause (unit when it has one literal).
-              sat_set(l, mem, ST_STATUS, SAT_RUNNING)
-              sat_backtrack(l, mem, u32(0))
-              sat_reduce(l, mem)
-              c = sat_add_learnt(l, mem, n, id)
-              back = u32(0)
-            } | { }
-            c != SAT_NONE ? {
-              sat_set(l, mem, ST_LEARNED, sat_state(l, mem, ST_LEARNED) + u32(1))
-              sat_backtrack(l, mem, back)
-              // The learned clause asserts its first literal at the
-              // back-jump level, where every other literal is false. After
-              // a reduce-and-retry the trail is at level zero and the
-              // clause may not be unit: it is then only added, and
-              // propagation finds it when it becomes unit.
-              retried ? {
-                // A unit learned clause is unit at level zero too.
-                asserting: u32 = mem[l.learnt_at]
-                n == u32(1) && mem[l.assign_at + asserting / u32(2)] == u32(0) ? { sat_enqueue(l, mem, asserting, c) } | { }
-              } | { sat_enqueue(l, mem, mem[l.learnt_at], c) }
-              inc: u32 = sat_state(l, mem, ST_ACTIVITY_INC)
-              sat_set(l, mem, ST_ACTIVITY_INC, inc + inc / u32(20) + u32(1))
-              since: u32 = sat_state(l, mem, ST_SINCE_RESTART) + u32(1)
-              since >= sat_state(l, mem, ST_RESTART_LIMIT) ? {
-                sat_backtrack(l, mem, u32(0))
-                sat_set(l, mem, ST_SINCE_RESTART, u32(0))
-                restarts: u32 = sat_state(l, mem, ST_RESTARTS) + u32(1)
-                sat_set(l, mem, ST_RESTARTS, restarts)
-                sat_set(l, mem, ST_RESTART_LIMIT, u32(100) * sat_luby(restarts))
-                cinc: u32 = sat_state(l, mem, ST_CLAUSE_INC)
-                sat_set(l, mem, ST_CLAUSE_INC, cinc + cinc / u32(20) + u32(1))
-                sat_state(l, mem, ST_LEARNED) >= sat_state(l, mem, ST_REDUCE_LIMIT) || sat_state(l, mem, ST_STORE_USED) >= l.store_cap / u32(4) * u32(3) ? { sat_reduce(l, mem) } | { }
-              } | { sat_set(l, mem, ST_SINCE_RESTART, since) }
-            } | { }
-          }
-        } | { }
+        sat_learn(l, mem, conflict)
       }
     } | {
       sat_decide(l, mem) ? { } | {
