@@ -143,3 +143,38 @@ func TestVerifyNestedLoops(t *testing.T) {
 		t.Fatalf("differing loop counts must be trusted, got %s: %s", flat.Kind, flat.Message)
 	}
 }
+
+// A loop guarded by a conjunction (`len(v) >= 4 && i <= len(v) - 4`, the
+// vector kernels' idiom) lowers to two exit tests at the header with a
+// `sub` between them; the loop's continue condition is that neither exit
+// is taken (docs/spec/94-assembler.md §8, the vector increment).
+func TestVerifyConjunctiveExitLoop(t *testing.T) {
+	decl := "strided: (v: []u32) -> u32"
+	oak := "{\n  acc: u32 = u32(0)\n  i: u32 = u32(0)\n  while len(v) >= u32(4) && i <= len(v) - u32(4) {\n    acc = acc + v[i]\n    i = i + u32(4)\n  }\n  acc\n}"
+	walk := `  bind x0, w1 = v
+  clobber w9, w10, w11, w12
+  mov w9, #0
+  mov w10, #0
+loop:
+  cmp w1, #4
+  b.lo done
+  sub w12, w1, #4
+  cmp w9, w12
+  b.hi done
+  ldr w11, [x0, w9, uxtw #2]
+  add w10, w10, w11
+  add w9, w9, #4
+  b loop
+done:
+  mov w0, w10
+  ret`
+	verdict := verifyCase(t, decl, oak, walk)
+	if verdict.Kind == VerdictTrusted || verdict.Kind == VerdictMismatch {
+		t.Fatalf("the conjunctively guarded loop must be verified, got %s: %s", verdict.Kind, verdict.Message)
+	}
+	// Striding by eight in the asm against four in Oak: a concrete input refutes it.
+	stride := verifyCase(t, decl, oak, strings.Replace(walk, "add w9, w9, #4", "add w9, w9, #8", 1))
+	if stride.Kind != VerdictMismatch {
+		t.Fatalf("the wrong stride must be a mismatch, got %s: %s", stride.Kind, stride.Message)
+	}
+}

@@ -131,7 +131,9 @@ func (s *symbolicState) readVec(num int) (vecValue, bool) {
 	if value, bound := s.vregs[num]; bound {
 		return value, true
 	}
-	if calleeSavedVector(num) {
+	if s.arch != ArchRV64 && calleeSavedVector(num) {
+		// AAPCS64 preserves the low halves of v8–v15; the RVV psABI
+		// preserves no vector register, so on RV64 an unwritten one is unbound.
 		value := vecValue{bits: 64, lanes: []*term{paramTerm(fmt.Sprintf("entry.v%d.lo", num), 64), paramTerm(fmt.Sprintf("entry.v%d.hi", num), 64)}}
 		s.writeVec(num, value)
 		return value, true
@@ -327,6 +329,9 @@ func laneAll(lanes []*term) *term {
 func (x *pathExecutor) stepVector(instr Instruction, state *symbolicState) (string, bool) {
 	refuse := func() (string, bool) {
 		return "a floating-point or vector instruction (" + instr.Mnemonic + ")", false
+	}
+	if handled, reason, ok := x.stepFloat(instr, state); handled {
+		return reason, ok
 	}
 	ops := instr.Operands
 	reg := func(i int) (Register, bool) {
@@ -638,15 +643,21 @@ func (x *pathExecutor) vectorFrameAccessAt(instr Instruction, state *symbolicSta
 				state.storeSlot(offset, narrowLane(halves[0], int(size)*8), size)
 			}
 		} else {
+			slot := func(at, width int64) (*term, bool) {
+				if value, ok := state.loadSlot(at, width); ok {
+					return value, true
+				}
+				return state.opaqueSlot(at, width)
+			}
 			if size == 16 {
-				low, okL := state.loadSlot(offset, 8)
-				high, okH := state.loadSlot(offset+8, 8)
+				low, okL := slot(offset, 8)
+				high, okH := slot(offset+8, 8)
 				if !okL || !okH {
 					return "a load from a frame slot never stored on this path", false
 				}
 				state.writeVec(reg.Num, vecOfLanes([]*term{low, high}, 64))
 			} else {
-				value, ok := state.loadSlot(offset, size)
+				value, ok := slot(offset, size)
 				if !ok {
 					return "a load from a frame slot never stored on this path", false
 				}
@@ -729,7 +740,7 @@ func vectorShape(expr ast.Expression) (typechecker.SimdShape, bool) {
 		return typechecker.SimdShape{}, false
 	}
 	for _, shape := range typechecker.SimdShapes {
-		if shape.TypeName == name[len("simd."):] && !shape.Float {
+		if shape.TypeName == name[len("simd."):] {
 			return shape, true
 		}
 	}
@@ -775,6 +786,9 @@ func verifyVectorResult(fn *Function, sig *ast.FunctionStatement, oakBody ast.Ex
 	lanes := make([]*term, len(value.elems))
 	for k, elem := range value.elems {
 		lanes[k] = elem.scalar
+		if shape.Float {
+			lanes[k] = floatCanonicalNaN(narrowLane(elem.scalar, laneWidth(shape)), laneWidth(shape))
+		}
 	}
 	oakHalves := packLanes(lanes, laneWidth(shape))
 	var verdicts []Verdict
@@ -792,6 +806,15 @@ func verifyVectorResult(fn *Function, sig *ast.FunctionStatement, oakBody ast.Ex
 		note := " (low half of the vector result)"
 		if half == 1 {
 			note = " (high half of the vector result)"
+		}
+		if shape.Float {
+			// The machine's lanes up to their NaN payloads, as the Oak side's.
+			bits := laneWidth(shape)
+			machine := vecValue{bits: 64, lanes: []*term{asmTerm, constTerm(0, 64)}}.lanesAt(bits)[:vecBits/bits/2]
+			for k := range machine {
+				machine[k] = floatCanonicalNaN(machine[k], bits)
+			}
+			asmTerm = packLanes(machine, bits)[0]
 		}
 		verdict := decideEqual(fn, lowering, asmTerm, oakHalves[half], 64, note)
 		if verdict.Kind == VerdictMismatch {

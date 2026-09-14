@@ -18,8 +18,10 @@ import (
 // bits the platform's addition chooses, so here it yields a fresh symbol
 // no law can pin down; equal operands pick by sign; the rest by order),
 // and total_order compares the backend's total keys signed. Arithmetic,
-// rounding, sqrt, fma, min_num/max_num, and width conversions are not bit
-// operations and fail closed.
+// sqrt, fma, min_num/max_num, and the conversions are not bit operations:
+// they are uninterpreted operation terms (asm/floats_ops.go), so a unit
+// is verified up to the IEEE operations themselves. The rounding
+// intrinsics (floor, ceil, trunc, round, round_even) still fail closed.
 
 // floatWidthOf reports the width of a floating-point expression, or false.
 // A literal has no width of its own (the context decides).
@@ -46,7 +48,18 @@ func (lo *oakLowering) floatWidthOf(expr ast.Expression) (int, bool) {
 		if whenTrue, _, isBool := boolConditional(e); isBool {
 			return lo.floatWidthOf(whenTrue)
 		}
+	case *ast.IndexExpression:
+		// An element of a float span is a float of the element width.
+		if base, isIdent := e.Left.(*ast.Identifier); isIdent && !e.Dot {
+			if contract, isSpan := lo.spans[base.Value]; isSpan && contract.float {
+				return contract.elemWidth, true
+			}
+		}
 	case *ast.InvocationExpression:
+		if member, isSimd := simdMember(e.Function); isSimd {
+			// extract/reduce_add over a float vector yield its lane type.
+			return simdFloatScalarWidth(member)
+		}
 		ident, isIdent := e.Function.(*ast.Identifier)
 		if !isIdent {
 			return 0, false
@@ -203,25 +216,154 @@ func (lo *oakLowering) lowerFloatIntrinsic(name string, call *ast.InvocationExpr
 		}
 		return asBool(cmpTerm("le", key(args[0]), key(args[1])))
 	case "min", "max":
-		a, b := args[0], args[1]
-		nan := orBit(floatIsNaN(a, w), floatIsNaN(b, w))
-		eq, _ := floatCompare("==", a, b, w)
-		lt, _ := floatCompare("<", a, b, w)
-		sa := bit(binaryTerm("shr", a, constTerm(uint64(w-1), w)))
-		var ordered *term
-		if name == "min" {
-			ordered = iteTerm(eq, iteTerm(sa, a, b), iteTerm(lt, a, b))
-		} else {
-			ordered = iteTerm(eq, iteTerm(sa, b, a), iteTerm(lt, b, a))
-		}
-		// A NaN operand: the backend returns a + b, whose payload the
-		// platform chooses — a value no law may rely on.
-		lo.freshFloats++
-		fresh := fmt.Sprintf("%s#nan%d", name, lo.freshFloats)
-		lo.fresh[fresh] = w
-		return asFloat(iteTerm(nan, paramTerm(fresh, w), ordered))
+		return asFloat(floatMinMax(name, args[0], args[1], w))
+	case "sqrt":
+		return asFloat(floatTerm("fsqrt", w, args[0]))
+	case "fma":
+		return asFloat(floatTerm("fma", w, args[0], args[1], args[2]))
+	case "min_num":
+		return asFloat(floatMinMaxNum("min", args[0], args[1], w))
+	case "max_num":
+		return asFloat(floatMinMaxNum("max", args[0], args[1], w))
 	}
 	return nil, fmt.Sprintf("the float intrinsic %s (not a bit operation)", name), false
+}
+
+// floatMinMax is IEEE 754-2019 minimum/maximum over w-bit patterns
+// (docs/spec/20-types.md §11.3.5, the semantics of fmin/fmax on AArch64):
+// equal operands pick by sign (-0.0 below +0.0), the rest by order, and a
+// NaN operand yields a NaN whose payload the platform chooses — the
+// uninterpreted `fnan` of the two operands, one function on both sides,
+// since no law may rely on the payload.
+func floatMinMax(name string, a, b *term, w int) *term {
+	nan := orBit(floatIsNaN(a, w), floatIsNaN(b, w))
+	eq, _ := floatCompare("==", a, b, w)
+	lt, _ := floatCompare("<", a, b, w)
+	sa := bit(binaryTerm("shr", a, constTerm(uint64(w-1), w)))
+	var ordered *term
+	if name == "min" {
+		ordered = iteTerm(eq, iteTerm(sa, a, b), iteTerm(lt, a, b))
+	} else {
+		ordered = iteTerm(eq, iteTerm(sa, b, a), iteTerm(lt, b, a))
+	}
+	return iteTerm(nan, floatSomeNaN(a, b, w), ordered)
+}
+
+// floatSomeNaN is the NaN a min or max yields on a NaN operand: the
+// operation term `fnan` (the platform's choice of payload) with the
+// exponent and quiet bits forced, so the decider knows the value is a
+// quiet NaN whatever the payload — and floatCanonicalNaN identifies it
+// with every other NaN. The witness value is unchanged: `fnan` evaluates
+// to a quiet NaN already.
+func floatSomeNaN(a, b *term, w int) *term {
+	_, _, exponent, mantissa := floatMasks(w)
+	return binaryTerm("or", floatTerm("fnan", w, a, b), constTerm(exponent|(mantissa+1)>>1, w))
+}
+
+// floatMinMaxNum is IEEE 754-2008 minNum/maxNum over w-bit patterns
+// (Oak's `min_num`/`max_num`; Arm's fminnm/fmaxnm, RISC-V's fmin/fmax,
+// RVV's vfmin/vfmax): on numbers it is the same order as minimum/maximum
+// (-0.0 below +0.0), so that part is the bit-level chain floatMinMax
+// uses; a NaN operand yields the `fminnm`/`fmaxnm` operation term (the
+// other operand for a quiet NaN, a quieted signaling NaN on Arm, the
+// canonical NaN for two NaNs on RISC-V — the platform's rule, left to the
+// operation). Both sides build the same shape, so a unit's min/max on
+// numbers is decided exactly and its NaN handling up to the operation.
+func floatMinMaxNum(name string, a, b *term, w int) *term {
+	nan := orBit(floatIsNaN(a, w), floatIsNaN(b, w))
+	eq, _ := floatCompare("==", a, b, w)
+	lt, _ := floatCompare("<", a, b, w)
+	sa := bit(binaryTerm("shr", a, constTerm(uint64(w-1), w)))
+	var ordered *term
+	op := "fminnm"
+	if name == "min" {
+		ordered = iteTerm(eq, iteTerm(sa, a, b), iteTerm(lt, a, b))
+	} else {
+		ordered = iteTerm(eq, iteTerm(sa, b, a), iteTerm(lt, b, a))
+		op = "fmaxnm"
+	}
+	return iteTerm(nan, floatTerm(op, w, a, b), ordered)
+}
+
+// floatCanonicalNaN maps every NaN pattern of a w-bit float to the
+// canonical quiet NaN: the verdict on a float result is taken up to the
+// NaN payload, which docs/spec/20-types.md §11.3.5 leaves to the platform
+// (no law may rely on it), so two units that yield NaNs of different
+// payloads on the same input agree.
+func floatCanonicalNaN(t *term, w int) *term {
+	_, _, exponent, mantissa := floatMasks(w)
+	canonical := constTerm(exponent|(mantissa+1)>>1, w)
+	return iteTerm(floatIsNaN(t, w), canonical, t)
+}
+
+// floatConversion lowers `f32(x)`, `f64(x)`, and the integer constructors
+// over a float operand to conversion terms: between float widths `fcvt`,
+// from an integer `scvtf`/`ucvtf` at the integer's width, to an integer
+// `fcvtzs`/`fcvtzu` (toward zero, saturating, NaN to zero — the backends'
+// rule) at the integer's width.
+func (lo *oakLowering) floatConversion(target string, operand ast.Expression, width int) (*term, string, bool) {
+	targetBits, targetSigned, ok := contractBits(&ast.Identifier{Value: target})
+	if !ok {
+		return nil, fmt.Sprintf("conversion to %s", target), false
+	}
+	targetFloat := target == "f32" || target == "f64"
+	srcFloatWidth, srcFloat := lo.floatWidthOf(operand)
+	if srcFloat && srcFloatWidth == 0 {
+		// A literal: it is the target's constant.
+		if !targetFloat {
+			return nil, "a float literal converted to an integer", false
+		}
+		value, reason, ok := lo.lower(operand, targetBits)
+		if !ok {
+			return nil, reason, false
+		}
+		return adaptWidth(value, width), "", true
+	}
+	var converted *term
+	switch {
+	case targetFloat && srcFloat:
+		value, reason, ok := lo.lower(operand, srcFloatWidth)
+		if !ok {
+			return nil, reason, false
+		}
+		converted = value
+		if srcFloatWidth != targetBits {
+			converted = floatTerm("fcvt", targetBits, value)
+		}
+	case targetFloat:
+		srcWidth, srcSigned, known := lo.operandContract(operand)
+		if !known {
+			return nil, fmt.Sprintf("conversion to %s from an operand of unknown width", target), false
+		}
+		value, reason, ok := lo.lower(operand, srcWidth)
+		if !ok {
+			return nil, reason, false
+		}
+		op := "ucvtf"
+		if srcSigned {
+			op = "scvtf"
+		}
+		converted = floatTerm(op, targetBits, value)
+	case srcFloat:
+		if targetBits < 32 {
+			return nil, fmt.Sprintf("conversion of a float to %s (the narrow saturation is not modeled)", target), false
+		}
+		value, reason, ok := lo.lower(operand, srcFloatWidth)
+		if !ok {
+			return nil, reason, false
+		}
+		op := "fcvtzu"
+		if targetSigned {
+			op = "fcvtzs"
+		}
+		converted = floatTerm(op, targetBits, value)
+	default:
+		return nil, fmt.Sprintf("conversion to %s", target), false
+	}
+	if targetBits < width {
+		return extendTerm(converted, targetBits, width, targetSigned), "", true
+	}
+	return truncate(converted, width), "", true
 }
 
 // floatLiteralBits is a literal at the context's width.

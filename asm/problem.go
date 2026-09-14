@@ -185,6 +185,12 @@ func serializeProblem(bl *blaster, claim *term, traps []*term, budget int, order
 			}
 			op = id
 			a = operand(t.left)
+		case termFloat:
+			// A floating-point operation: outside the Oak solver's subset
+			// (it reports unsupported); the Go decider abstracts it.
+			kind = 6
+			op = problemNone
+			a, b, c = operand(t.left), operand(t.right), operand(t.cond)
 		}
 		words = append(words, kind, op, uint32(t.width), a, b, c, vlo, vhi)
 	}

@@ -36,16 +36,47 @@ import (
 // within itself (or through recognized inner loops), and an unconditional
 // back edge.
 type loopShape struct {
-	header, cmp, exit, exitLabel int // cmp is -1 for a compare-and-branch exit
+	header, cmp, exit, exitLabel int // the first exit test: cmp is -1 for a compare-and-branch exit
 	bodyStart, bodyEnd           int // body instructions are items [bodyStart, bodyEnd)
+	// exits are the header's exit branches in order (the first is exit):
+	// a conjunctive condition (`len >= 64 && off <= len - 64`, the vector
+	// kernels' guard) lowers to several compare-and-branch tests with pure
+	// setup instructions between them, every one leaving to exitLabel. The
+	// loop continues when none of them is taken.
+	exits []int
+	// internal are the header's forward branches to labels inside the
+	// header (a short-circuit's skip): they fork the header's paths.
+	internal []int
 }
 
 // findLoops recognizes loops by their back edges, keyed by the exit branch.
 // Back edges are met in item order, so an inner loop is recognized before
 // the outer body containing it is examined.
 func findLoops(items []Item, labels map[string]int) map[int]loopShape {
+	return findLoopsIn("", items, labels, nil)
+}
+
+// findLoopsIn is findLoops naming the function for the OAK_VERIFY_TRACE
+// report of the back edges it does not recognize, and knowing the
+// program's functions: a call to one of them, in a header or a body, is
+// summarized in place (summarizeCall), so it is not a reason to refuse
+// the loop; a call to anything else is.
+func findLoopsIn(function string, items []Item, labels map[string]int, callees map[string]*ast.FunctionStatement) map[int]loopShape {
+	summarizable := func(instr Instruction) bool {
+		if (instr.Mnemonic != "bl" && instr.Mnemonic != "call") || len(instr.Operands) == 0 {
+			return false
+		}
+		sym, isSym := instr.Operands[0].(Symbol)
+		return isSym && callees[sym.Name] != nil
+	}
 	loops := map[int]loopShape{}
 	innerHeaders := map[int]int{} // header index -> back edge index of a recognized loop
+	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
+	reject := func(back int, why string) {
+		if trace {
+			fmt.Fprintf(os.Stderr, "loop: %s: back edge at item %d not recognized: %s\n", function, back, why)
+		}
+	}
 	for back, item := range items {
 		branch, isBranch := item.(Instruction)
 		if !isBranch || !isUnconditionalJump(branch.Mnemonic) {
@@ -55,39 +86,125 @@ func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 		if !ok || header >= back || header+2 >= back {
 			continue
 		}
-		// The exit test: `cmp` then `b.cond`, or a compare-and-branch
-		// (cbz/cbnz/tbz/tbnz) on its own; on the RV64 lane, whose branches
-		// compare two registers, one data-processing instruction may set
-		// up a comparison operand first (`sext.w t0, len` or `li t0, k`,
-		// as the native backend's loops spell it).
-		cmpIndex, exitIndex := -1, header+1
-		if first, isInstr := items[header+1].(Instruction); isInstr {
-			if first.Mnemonic == "cmp" || (isRV64Setup(first) && !isConditionalBranch(first.Mnemonic)) {
-				if next, isNext := items[header+2].(Instruction); isNext && isConditionalBranch(next.Mnemonic) {
-					cmpIndex, exitIndex = header+1, header+2
+		// The header: every exit test from the label to the last branch
+		// leaving the loop. An exit test is a run of pure register
+		// instructions ending in a conditional branch to the exit label
+		// (past the back edge); a conjunction (`len >= 64 && off <= len -
+		// 64`) is several such tests; an element guard — a branch to the
+		// trap block — and the guarded load an exit test reads (`while n >
+		// 0 && digits[n-1] == 48`) are part of the header too; and a
+		// short-circuit spelled with a forward branch to a label inside
+		// the header (the RV64 lane's `&&`: `beqz t0, short; ...; short:
+		// beqz t0, done`) forks the header's paths, which the summary
+		// walks (headerCondition). The body starts after the last exit.
+		var exits []int
+		type forward struct{ at, target int }
+		var forwards []forward    // forward branches to labels before the back edge
+		pending := map[int]bool{} // labels forward branches target
+		exitLabel, bodyStart := -1, -1
+		wellFormed := true
+		headerWhy := ""
+		for scan := header + 1; scan < back; scan++ {
+			if label, isLabel := items[scan].(Label); isLabel {
+				if pending[labels[label.Name]] {
+					delete(pending, labels[label.Name])
+					continue
 				}
+				break // a label no header branch targets: the body has begun
+			}
+			instr, isInstr := items[scan].(Instruction)
+			if !isInstr {
+				break
+			}
+			if isGuardBranch(items, labels, instr) || isHeaderLoad(instr) || isFrameSpill(instr) {
+				continue // a guard, a guarded load, or a temporary spilled around a call
+			}
+			if isConditionalBranch(instr.Mnemonic) {
+				target, ok := labels[instr.Operands[len(instr.Operands)-1].(Symbol).Name]
+				switch {
+				case !ok:
+					wellFormed = false
+					headerWhy = "a branch to an unknown label"
+				case target > back:
+					if exitLabel < 0 {
+						exitLabel = target
+					}
+					if target != exitLabel {
+						wellFormed = false
+						headerWhy = "exit tests leaving to two different labels (" + instr.Mnemonic + ")"
+					}
+					exits = append(exits, scan)
+					bodyStart = scan + 1
+				case target > scan:
+					forwards = append(forwards, forward{at: scan, target: target})
+					pending[target] = true
+				default:
+					wellFormed = false
+					headerWhy = "a backward branch in the header (" + instr.Mnemonic + ")"
+				}
+				if !wellFormed {
+					break
+				}
+				continue
+			}
+			if isUnconditionalJump(instr.Mnemonic) || isStoreMnemonic(instr.Mnemonic) || isLoad(instr.Mnemonic) || isFrameMemory(instr) || hasVectorOperand(instr) {
+				if len(exits) == 0 {
+					headerWhy = "no exit test before " + instr.Mnemonic
+				}
+				break
+			}
+			switch instr.Mnemonic {
+			case "bl", "ret", "eret", "jal", "jalr", "auipc", "jr", "call":
+				if summarizable(instr) {
+					continue // a program function in an exit test: summarized
+				}
+				wellFormed = false
+				headerWhy = "a call or return in the header (" + instr.Mnemonic + ")"
+			}
+			if !wellFormed {
+				break
 			}
 		}
-		if exitIndex >= back {
+		if !wellFormed || len(exits) == 0 || bodyStart >= back {
+			if headerWhy == "" {
+				headerWhy = fmt.Sprintf("header (%d exits, body start %d)", len(exits), bodyStart)
+			}
+			reject(back, headerWhy)
 			continue
 		}
-		exit, isExit := items[exitIndex].(Instruction)
-		if !isExit || !isConditionalBranch(exit.Mnemonic) {
+		// A forward branch before the last exit is a header path fork; its
+		// label must lie inside the header too (a jump into the body past
+		// an exit test is not a loop this recognizer knows). One after the
+		// last exit is the body's own conditional.
+		var internal []int
+		for _, fwd := range forwards {
+			if fwd.at >= bodyStart {
+				continue
+			}
+			if fwd.target >= bodyStart {
+				wellFormed = false
+			}
+			internal = append(internal, fwd.at)
+		}
+		if !wellFormed {
+			reject(back, "a header branch into the body")
 			continue
 		}
-		exitLabel, ok := labels[exit.Operands[len(exit.Operands)-1].(Symbol).Name]
-		if !ok || exitLabel <= back {
-			continue
-		}
-		wellFormed := true
-		for i := exitIndex + 1; i < back; i++ {
+		exitIndex := exits[0]
+		cmpIndex := -1
+		bodyWhy := ""
+		for i := bodyStart; i < back; i++ {
 			instr, isInstr := items[i].(Instruction)
 			if !isInstr {
 				continue // an inner label
 			}
 			switch instr.Mnemonic {
 			case "bl", "ret", "eret", "jal", "jalr", "auipc", "jr", "call":
+				if summarizable(instr) {
+					continue // a program function in the body: summarized
+				}
 				wellFormed = false
+				bodyWhy = "the body calls or returns (" + instr.Mnemonic + ")"
 			case "b", "j", "b.", "cbz", "cbnz", "tbz", "tbnz", "beq", "bne", "blt", "bge", "bltu", "bgeu", "beqz", "bnez", "bgez", "bltz", "blez", "bgtz":
 				target, ok := labels[instr.Operands[len(instr.Operands)-1].(Symbol).Name]
 				if !ok || target >= back {
@@ -95,20 +212,29 @@ func findLoops(items []Item, labels map[string]int) map[int]loopShape {
 					// path it takes delivers no result (docs/spec/94-assembler.md §8).
 					if !ok || !isTrapBlock(items, target) || isUnconditionalJump(instr.Mnemonic) {
 						wellFormed = false
+						bodyWhy = "the body leaves the loop (" + instr.Mnemonic + " past the back edge)"
 					}
 				} else if target <= i {
 					// A backward branch inside the body: admitted only as
 					// the back edge of a recognized inner loop lying inside.
 					if innerBack, isInner := innerHeaders[target]; !isInner || innerBack != i || target <= header {
 						wellFormed = false
+						bodyWhy = "the body has a backward branch that is not a recognized inner loop"
 					}
 				}
 			}
 		}
 		if !wellFormed {
+			reject(back, bodyWhy)
 			continue
 		}
-		loops[exitIndex] = loopShape{header: header, cmp: cmpIndex, exit: exitIndex, exitLabel: exitLabel, bodyStart: exitIndex + 1, bodyEnd: back}
+		shape := loopShape{header: header, cmp: cmpIndex, exit: exitIndex, exitLabel: exitLabel, bodyStart: bodyStart, bodyEnd: back, exits: exits, internal: internal}
+		for _, at := range exits {
+			loops[at] = shape // an undecided branch at any exit test summarizes the loop
+		}
+		for _, at := range internal {
+			loops[at] = shape // an undecided short-circuit branch in the header too
+		}
 		innerHeaders[header] = back
 	}
 	return loops
@@ -124,6 +250,46 @@ func isTrapBlock(items []Item, index int) bool {
 		}
 	}
 	return false
+}
+
+// isGuardBranch reports a conditional branch to the trap block: an
+// element guard (`cmp wI, wL; b.hs trap`), a zero-divisor check. Its taken
+// path delivers no result, so it is neither an exit nor a fork of the
+// loop's paths.
+func isGuardBranch(items []Item, labels map[string]int, instr Instruction) bool {
+	if !isConditionalBranch(instr.Mnemonic) || len(instr.Operands) == 0 {
+		return false
+	}
+	sym, isSym := instr.Operands[len(instr.Operands)-1].(Symbol)
+	if !isSym {
+		return false
+	}
+	target, ok := labels[sym.Name]
+	return ok && isTrapBlock(items, target)
+}
+
+// isFrameSpill reports a scalar load or store of the frame (a temporary
+// spilled around a call and reloaded), which a loop header may hold.
+func isFrameSpill(instr Instruction) bool {
+	if !isFrameMemory(instr) || hasVectorOperand(instr) {
+		return false
+	}
+	return isLoad(instr.Mnemonic) || isStoreMnemonic(instr.Mnemonic) || rv64Loads[instr.Mnemonic] != 0 || rv64Stores[instr.Mnemonic] != 0
+}
+
+// isHeaderLoad reports a scalar load through a register base (a span or
+// table element) that an exit test may read: not the frame, not a vector.
+func isHeaderLoad(instr Instruction) bool {
+	if !isLoad(instr.Mnemonic) || isFrameMemory(instr) || hasVectorOperand(instr) || len(instr.Operands) < 2 {
+		return false
+	}
+	if _, isMem := instr.Operands[len(instr.Operands)-1].(Memory); !isMem {
+		return false
+	}
+	if dest, isReg := instr.Operands[0].(Register); !isReg || dest.Class == ClassV {
+		return false
+	}
+	return rv64Loads[instr.Mnemonic] != 0 || isPlainLoad(instr.Mnemonic)
 }
 
 // isRV64Setup reports an RV64 data-processing instruction that may precede
@@ -202,13 +368,31 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// header value is already zero-extended from 32 bits, else 64-bit.
 	written := map[int]bool{}
 	allW := map[int]bool{}
-	// The exit test's operand setup (RV64: `sext.w t0, len` before the
-	// branch) writes a register that holds no loop-carried value: the
-	// state at the branch has it, so it is dropped here rather than paired.
-	setupDest := -1
-	if shape.cmp >= 0 && x.arch == ArchRV64 {
-		if dest, isReg := x.items[shape.cmp].(Instruction).Operands[0].(Register); isReg {
-			setupDest = dest.Num
+	// The exit tests' temporaries (a compare operand's setup, a loaded
+	// element, a short-circuit's flag) hold no loop-carried value: the
+	// state at the branch has whichever were written before it, so they
+	// are scratch here rather than paired, and unbound past the loop.
+	headerWritten := map[int]bool{}
+	resultRegs := []int{0, 1} // a summarized call's result chunks: temporaries too
+	if x.arch == ArchRV64 {
+		resultRegs = []int{10, 11}
+	}
+	for at := shape.header + 1; at < shape.bodyEnd; at++ {
+		instr, isInstr := x.items[at].(Instruction)
+		if !isInstr || instr.Mnemonic == "cmp" || instr.Mnemonic == "tst" || isConditionalBranch(instr.Mnemonic) || len(instr.Operands) == 0 {
+			continue
+		}
+		if instr.Mnemonic == "bl" || instr.Mnemonic == "call" {
+			for _, reg := range resultRegs {
+				headerWritten[reg] = true
+			}
+			continue
+		}
+		if at >= shape.bodyStart {
+			continue // a body write: loop-carried unless a header temporary
+		}
+		if dest, isReg := instr.Operands[0].(Register); isReg && !dest.ZeroRegister() && dest.Class != ClassV {
+			headerWritten[dest.Num] = true
 		}
 	}
 	for i := shape.bodyStart; i < shape.bodyEnd; i++ {
@@ -217,8 +401,8 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 			continue // no register written: compares, branches, stores
 		}
 		dest, isReg := instr.Operands[0].(Register)
-		if !isReg || dest.ZeroRegister() {
-			continue
+		if !isReg || dest.ZeroRegister() || dest.Class == ClassV {
+			continue // the vector file is carried separately below
 		}
 		if !written[dest.Num] {
 			allW[dest.Num] = true
@@ -226,6 +410,66 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		written[dest.Num] = true
 		if dest.Class != ClassW {
 			allW[dest.Num] = false
+		}
+	}
+	// The vector registers and the frame slots the body writes are
+	// loop-carried too (asm/verify_vector.go): a vector local lives in a
+	// v register or, spilled, in a sixteen-byte slot. Each is two 64-bit
+	// symbols (its halves; a slot per eight bytes).
+	writtenV := map[int]bool{}
+	// writtenSlots: the frame slots the body stores, by address, with the
+	// store's width (4 or 8 bytes: a spilled w register or an x one); a
+	// slot stored at two widths, or two stores overlapping, is refused.
+	writtenSlots := map[int64]int64{}
+	for i := shape.bodyStart; i < shape.bodyEnd; i++ {
+		instr, isInstr := x.items[i].(Instruction)
+		if !isInstr || isConditionalBranch(instr.Mnemonic) || isUnconditionalJump(instr.Mnemonic) {
+			continue
+		}
+		if isFrameMemory(instr) && (isStoreMnemonic(instr.Mnemonic) || rv64Stores[instr.Mnemonic] != 0) {
+			mem := instr.Operands[len(instr.Operands)-1].(Memory)
+			if mem.Mode != MemOffset {
+				return nil, "a frame access moving sp in a loop body", false
+			}
+			addr := -state.disp + mem.Offset
+			for _, reg := range registerOperands(instr.Operands[:len(instr.Operands)-1]) {
+				size := int64(rv64Stores[instr.Mnemonic])
+				if size == 0 {
+					size = memorySizeReg(instr.Mnemonic, reg)
+					if isPairAccess(instr.Mnemonic) {
+						size /= 2
+					}
+				}
+				// A w register's spill is a 4-byte slot; an x register's,
+				// a pair's, or a vector's a run of 8-byte slots.
+				var pieces []int64
+				switch {
+				case size == 4 && addr%4 == 0:
+					pieces = []int64{4}
+				case size%8 == 0 && addr%8 == 0:
+					for k := int64(0); k < size; k += 8 {
+						pieces = append(pieces, 8)
+					}
+				default:
+					return nil, "a frame slot written in a loop body at a width other than 4 or a multiple of 8 bytes, or unaligned", false
+				}
+				for _, piece := range pieces {
+					for other, otherSize := range writtenSlots {
+						if other < addr+piece && addr < other+otherSize && (other != addr || otherSize != piece) {
+							return nil, "frame slots written at overlapping addresses in a loop body", false
+						}
+					}
+					writtenSlots[addr] = piece
+					addr += piece
+				}
+			}
+			continue
+		}
+		if isStoreMnemonic(instr.Mnemonic) || rv64Stores[instr.Mnemonic] != 0 {
+			continue
+		}
+		if dest, isReg := instr.Operands[0].(Register); isReg && dest.Class == ClassV {
+			writtenV[dest.Num] = true
 		}
 	}
 	ev := &loopEvent{index: len(x.loops) + 1, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}}
@@ -240,6 +484,56 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	sort.Ints(regs)
 	freshState := state.clone()
 	scratch := map[int]bool{}
+	scratchV := map[int]bool{}
+	scratchSlots := map[int64]bool{}
+	vregs := make([]int, 0, len(writtenV))
+	for reg := range writtenV {
+		vregs = append(vregs, reg)
+	}
+	sort.Ints(vregs)
+	for _, reg := range vregs {
+		value, bound := state.readVec(reg)
+		halves := []*term{nil, nil}
+		for h, side := range []string{"lo", "hi"} {
+			name := fmt.Sprintf("v%d.%s", reg, side)
+			fresh := paramTerm(ev.freshName(name), 64)
+			x.declared[fresh.name] = 64
+			halves[h] = fresh
+			if !bound {
+				scratchV[reg] = true
+				continue
+			}
+			ev.vars = append(ev.vars, name)
+			ev.width[name] = 64
+			ev.header[name] = value.halves()[h]
+			ev.fresh[name] = fresh
+		}
+		freshState.writeVec(reg, vecOfLanes(halves, 64))
+	}
+	slots := make([]int64, 0, len(writtenSlots))
+	for addr := range writtenSlots {
+		slots = append(slots, addr)
+	}
+	sort.Slice(slots, func(i, j int) bool { return slots[i] < slots[j] })
+	if freshState.frame == nil {
+		freshState.frame = map[int64]frameSlot{}
+	}
+	for _, addr := range slots {
+		size := writtenSlots[addr]
+		name := fmt.Sprintf("s%d:%d", addr, size)
+		fresh := paramTerm(ev.freshName(name), int(size)*8)
+		x.declared[fresh.name] = int(size) * 8
+		value, bound := state.loadSlot(addr, size)
+		freshState.storeSlot(addr, fresh, size)
+		if !bound {
+			scratchSlots[addr] = true
+			continue
+		}
+		ev.vars = append(ev.vars, name)
+		ev.width[name] = int(size) * 8
+		ev.header[name] = value
+		ev.fresh[name] = fresh
+	}
 	for _, reg := range regs {
 		name := fmt.Sprintf("r%d", reg)
 		width := 64
@@ -248,8 +542,8 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		}
 		fresh := paramTerm(ev.freshName(name), width)
 		value, bound := state.regs[reg]
-		if reg == setupDest {
-			bound = false
+		if headerWritten[reg] {
+			bound = false // an exit test's temporary: scratch, never paired
 		}
 		if !bound {
 			// Written in the body but holding nothing at the header: a
@@ -274,26 +568,15 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		x.declared[fresh.name] = width
 		freshState.regs[reg] = zeroExtend(fresh, 64)
 	}
-	// The continue condition: the exit test on the fresh state, negated.
-	condState := freshState.clone()
-	if shape.cmp >= 0 {
-		setup := x.items[shape.cmp].(Instruction)
-		var reason string
-		var ok bool
-		if x.arch == ArchRV64 {
-			reason, ok = x.stepRV64(setup, condState)
-		} else {
-			reason, ok = step(setup, condState)
-		}
-		if !ok {
-			return nil, reason, false
-		}
-	}
-	exitCond, reason, ok := branchCondition(exit, condState)
+	// The continue condition: no exit test taken along the header's paths,
+	// each test evaluated on the fresh state after the header instructions
+	// before it (headerCondition).
+	cond, reason, ok := x.headerCondition(shape, freshState)
 	if !ok {
 		return nil, reason, false
 	}
-	ev.cond = binaryTerm("xor", truncate(exitCond, 1), constTerm(1, 1))
+	ev.cond = cond
+	_ = exit
 	// One iteration of the body on the fresh state: its paths (a branch
 	// inside the body forks on its condition; an inner loop is summarized
 	// in place) all reach the back edge and merge register by register
@@ -305,19 +588,135 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		return nil, reason + " (in a loop body)", false
 	}
 	for _, name := range ev.vars {
-		var reg int
-		fmt.Sscanf(name, "r%d", &reg)
-		merged := ends[len(ends)-1].valueOf(reg, freshState)
+		merged := ends[len(ends)-1].valueOfVar(name, freshState)
 		for i := len(ends) - 2; i >= 0; i-- {
-			merged = iteTerm(ends[i].cond, ends[i].valueOf(reg, freshState), merged)
+			merged = iteTerm(ends[i].cond, ends[i].valueOfVar(name, freshState), merged)
 		}
 		ev.next[name] = truncate(merged, ev.width[name])
+	}
+	// A body that stored into a frame array at a data-dependent index
+	// forgot the region on its paths; the state past the loop forgets it too.
+	for _, end := range ends {
+		if end.state.unknownFrom != nil {
+			freshState.forgetFrameFrom(*end.state.unknownFrom)
+		}
 	}
 	for reg := range scratch {
 		delete(freshState.regs, reg)
 	}
+	for reg := range scratchV {
+		delete(freshState.vregs, reg)
+	}
+	for addr := range scratchSlots {
+		delete(freshState.frame, addr)
+	}
 	freshState.flags = nil
 	return freshState, "", true
+}
+
+// summarizeCallInLoop is summarizeCall inside a loop's header or body: the
+// callee's result is a term over the iteration's fresh symbols; a callee
+// with memory effects (stores through spans, package cells) is refused,
+// since the loop summary carries registers and frame slots, not memories.
+func (x *pathExecutor) summarizeCallInLoop(instr Instruction, st *symbolicState) (string, bool) {
+	writesBefore, cellsBefore := 0, len(st.globals)
+	for _, log := range st.writes {
+		writesBefore += len(log)
+	}
+	reason, ok := x.summarizeCall(instr, st)
+	if !ok {
+		return reason, false
+	}
+	writesAfter := 0
+	for _, log := range st.writes {
+		writesAfter += len(log)
+	}
+	if writesAfter != writesBefore || len(st.globals) != cellsBefore {
+		return "a call with memory effects in a loop", false
+	}
+	return "", true
+}
+
+// headerPathBudget bounds the paths a loop header's short-circuit
+// branches may fork into.
+const headerPathBudget = 16
+
+// headerCondition is the loop's continue condition over the fresh state:
+// the disjunction, over the header's paths, of "this path is taken and no
+// exit test on it is taken". A guard's branch is skipped (its taken path
+// traps, as the Oak side's element read does), an exit branch narrows the
+// path to its fall-through, a forward branch to a label inside the header
+// forks, a load reads the span as the executor does.
+func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*term, string, bool) {
+	type headerPath struct {
+		pc    int
+		cond  *term
+		state *symbolicState
+	}
+	work := []headerPath{{pc: shape.header + 1, cond: constTerm(1, 1), state: fresh.clone()}}
+	var cont *term
+	paths := 0
+	for len(work) > 0 {
+		cur := work[len(work)-1]
+		work = work[:len(work)-1]
+		pc, cond, st := cur.pc, cur.cond, cur.state
+		for pc < shape.bodyStart {
+			instr, isInstr := x.items[pc].(Instruction)
+			if !isInstr {
+				pc++
+				continue
+			}
+			if isGuardBranch(x.items, x.labels, instr) {
+				pc++
+				continue
+			}
+			if isConditionalBranch(instr.Mnemonic) {
+				taken, reason, ok := branchCondition(instr, st)
+				if !ok {
+					return nil, reason, false
+				}
+				taken = truncate(taken, 1)
+				target := x.labels[instr.Operands[len(instr.Operands)-1].(Symbol).Name]
+				if target < shape.bodyStart {
+					if paths+len(work)+1 > headerPathBudget {
+						return nil, "more header paths than the verifier's budget", false
+					}
+					work = append(work, headerPath{pc: target, cond: binaryTerm("and", cond, taken), state: st.clone()})
+				}
+				cond = binaryTerm("and", cond, binaryTerm("xor", taken, constTerm(1, 1)))
+				pc++
+				continue
+			}
+			var reason string
+			var ok bool
+			switch {
+			case instr.Mnemonic == "bl" || instr.Mnemonic == "call":
+				reason, ok = x.summarizeCallInLoop(instr, st)
+			case x.arch == ArchRV64:
+				reason, ok = x.stepRV64(instr, st)
+			case isFrameMemory(instr):
+				reason, ok = x.frameAccess(instr, st)
+			case isHeaderLoad(instr):
+				reason, ok = x.load(instr, st)
+			default:
+				reason, ok = step(instr, st)
+			}
+			if !ok {
+				return nil, reason, false
+			}
+			pc++
+		}
+		paths++
+		if cont == nil {
+			cont = cond
+		} else {
+			cont = binaryTerm("or", cont, cond)
+		}
+	}
+	if cont == nil {
+		return constTerm(0, 1), "", true
+	}
+	return cont, "", true
 }
 
 // loopEventBudget bounds the data-dependent loops one body may hold.
@@ -337,6 +736,38 @@ func (e bodyEnd) valueOf(reg int, header *symbolicState) *term {
 		return value
 	}
 	return header.regs[reg]
+}
+
+// valueOfVar is a loop-carried variable's value at the end of the path:
+// a general register (`r9`), a half of a vector register (`v8.lo`,
+// `v8.hi`), or a frame slot with its width in bytes (`s-144:8`, `s-100:4`).
+func (e bodyEnd) valueOfVar(name string, header *symbolicState) *term {
+	var reg int
+	var side string
+	var addr int64
+	switch {
+	case len(name) > 1 && name[0] == 'r':
+		fmt.Sscanf(name, "r%d", &reg)
+		return e.valueOf(reg, header)
+	case len(name) > 1 && name[0] == 'v':
+		fmt.Sscanf(name, "v%d.%s", &reg, &side)
+		value, bound := e.state.vregs[reg]
+		if !bound {
+			value = header.vregs[reg]
+		}
+		if side == "hi" {
+			return value.halves()[1]
+		}
+		return value.halves()[0]
+	default:
+		size := int64(8)
+		fmt.Sscanf(name, "s%d:%d", &addr, &size)
+		if value, ok := e.state.loadSlot(addr, size); ok {
+			return value
+		}
+		value, _ := header.loadSlot(addr, size)
+		return value
+	}
 }
 
 // bodyPathBudget bounds the paths one loop body may fork into.
@@ -410,12 +841,42 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 				cond = binaryTerm("and", cond, notTaken)
 				pc++
 				continue
+			case "bl", "call":
+				// A program function in the body: summarized on the path's
+				// state, its result a term over the fresh symbols.
+				if reason, ok := x.summarizeCallInLoop(instr, st); !ok {
+					return nil, reason, false
+				}
+				pc++
+				continue
 			case "ldr", "ldrb", "ldrh", "str", "strb", "strh", "ldp", "stp":
 				if isFrameMemory(instr) {
-					return nil, "frame memory in a loop body", false
+					// A spill or a reload: the frame slots are loop-carried
+					// state (summarizeLoop), so the frame model follows them.
+					if reason, ok := x.frameAccess(instr, st); !ok {
+						return nil, reason, false
+					}
+					pc++
+					continue
+				}
+				if mem, base, isFrame := registerFrameMemory(instr, st); isFrame {
+					// An element of a frame array through its address register;
+					// at a data-dependent index the store forgets the region.
+					if reason, ok := x.registerFrameAccess(instr, st, mem, base); !ok {
+						return nil, reason, false
+					}
+					pc++
+					continue
 				}
 				if !isLoad(instr.Mnemonic) {
 					return nil, "a store in a loop body", false
+				}
+				if dest, isReg := instr.Operands[0].(Register); isReg && dest.Class == ClassV {
+					if reason, ok := x.loadVector(instr, st); !ok {
+						return nil, reason, false
+					}
+					pc++
+					continue
 				}
 				if reason, ok := x.load(instr, st); !ok {
 					return nil, reason, false
@@ -426,14 +887,18 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 					// stores stay outside a summarized body as on AArch64.
 					base := rv64Base(instr)
 					if len(base.Operands) == 2 {
-						if mem, isMem := base.Operands[1].(Memory); isMem && (mem.Base.Class == ClassSP || rv64Stores[base.Mnemonic] != 0) {
-							if mem.Base.Class == ClassSP {
-								return nil, "frame memory in a loop body", false
-							}
+						if mem, isMem := base.Operands[1].(Memory); isMem && mem.Base.Class != ClassSP && rv64Stores[base.Mnemonic] != 0 {
 							return nil, "a store in a loop body", false
 						}
 					}
 					if reason, ok := x.stepRV64(instr, st); !ok {
+						return nil, reason, false
+					}
+					pc++
+					continue
+				}
+				if hasVectorOperand(instr) {
+					if reason, ok := x.stepVector(instr, st); !ok {
 						return nil, reason, false
 					}
 					pc++
@@ -465,7 +930,7 @@ func upperClear(t *term, declared map[string]int) bool {
 		return strings.HasPrefix(t.name, "loop") && t.width <= 32
 	case termCmp:
 		return true
-	case termSelect:
+	case termSelect, termFloat:
 		return t.width <= 32
 	case termIte:
 		return upperClear(t.left, declared) && upperClear(t.right, declared)
@@ -492,11 +957,10 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	if len(lo.loops) >= loopEventBudget {
 		return "more data-dependent loops than the verifier's budget", false
 	}
-	if lo.hasAggregates() {
-		return "an aggregate local across a data-dependent loop", false
-	}
 	// The loop-carried locals are those the body assigns and that exist
 	// before the loop; a local declared inside the body is the body's own.
+	// An aggregate local (a vector, an owned array) is carried leaf by
+	// leaf: each lane or element is its own variable (`error[3]`).
 	assigned := map[string]bool{}
 	assignedLocals(loop.Body, assigned)
 	declared := map[string]bool{}
@@ -505,17 +969,41 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	if n := len(lo.loopStack); n > 0 {
 		ev.parent = lo.loopStack[n-1]
 	}
+	var carried []string
 	for name := range assigned {
 		if !declared[name] {
-			ev.vars = append(ev.vars, name)
+			carried = append(carried, name)
 		}
 	}
-	sort.Strings(ev.vars)
-	for _, name := range ev.vars {
+	sort.Strings(carried)
+	aggregates := map[string]bool{}
+	for _, name := range carried {
 		local, isLocal := lo.locals[name]
 		if !isLocal {
 			return fmt.Sprintf("an assignment to %s (not a local)", name), false
 		}
+		if local.agg != nil {
+			aggregates[name] = true
+			leaves := map[string]*oakValue{}
+			leafRefs(local.agg, name, leaves)
+			paths := make([]string, 0, len(leaves))
+			for path := range leaves {
+				paths = append(paths, path)
+			}
+			sort.Strings(paths)
+			for _, path := range paths {
+				leaf := leaves[path]
+				ev.vars = append(ev.vars, path)
+				ev.width[path] = leaf.typ.width
+				ev.header[path] = leaf.scalar
+				fresh := paramTerm(ev.freshName(path), leaf.typ.width)
+				lo.fresh[fresh.name] = leaf.typ.width
+				ev.fresh[path] = fresh
+				leaf.scalar = fresh
+			}
+			continue
+		}
+		ev.vars = append(ev.vars, name)
 		ev.width[name] = local.width
 		ev.header[name] = local.value
 		fresh := paramTerm(ev.freshName(name), local.width)
@@ -536,10 +1024,40 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		return reason, false
 	}
 	for _, name := range ev.vars {
-		ev.next[name] = lo.locals[name].value
-		lo.locals[name].value = ev.fresh[name]
+		if local, isLocal := lo.locals[name]; isLocal && local.agg == nil {
+			ev.next[name] = local.value
+			local.value = ev.fresh[name]
+		}
+	}
+	for name := range aggregates {
+		// The body may have replaced the aggregate's leaves (an assignment
+		// copies), so the leaves are found again by path.
+		leaves := map[string]*oakValue{}
+		leafRefs(lo.locals[name].agg, name, leaves)
+		for path, leaf := range leaves {
+			if _, carried := ev.fresh[path]; !carried {
+				return fmt.Sprintf("the aggregate %s changed shape across the loop", name), false
+			}
+			ev.next[path] = leaf.scalar
+			leaf.scalar = ev.fresh[path]
+		}
 	}
 	return "", true
+}
+
+// leafRefs lists an aggregate's scalar leaves by access path, as leafTerms
+// names them, with the values themselves so a leaf can be rebound.
+func leafRefs(v *oakValue, prefix string, into map[string]*oakValue) {
+	if v.scalar != nil {
+		into[prefix] = v
+		return
+	}
+	for name, field := range v.fields {
+		leafRefs(field, prefix+"."+name, into)
+	}
+	for k, elem := range v.elems {
+		leafRefs(elem, fmt.Sprintf("%s[%d]", prefix, k), into)
+	}
 }
 
 func assignedLocals(body *ast.BlockStatement, into map[string]bool) {
@@ -550,6 +1068,11 @@ func assignedLocals(body *ast.BlockStatement, into map[string]bool) {
 		switch s := stmt.(type) {
 		case *ast.AssignmentStatement:
 			into[s.Name.Value] = true
+		case *ast.IndexAssignmentStatement:
+			// An element or field write: the aggregate it lands in is carried.
+			if root := indexRootIdent(s.Target); root != "" {
+				into[root] = true
+			}
 		case *ast.WhileStatement:
 			assignedLocals(s.Body, into)
 		case *ast.ExpressionStatement:
@@ -563,6 +1086,21 @@ func assignedLocals(body *ast.BlockStatement, into map[string]bool) {
 			}
 		}
 	}
+}
+
+// indexRootIdent is the local an index chain `a[i].f[j]` starts from.
+func indexRootIdent(e ast.Expression) string {
+	for e != nil {
+		switch n := e.(type) {
+		case *ast.Identifier:
+			return n.Value
+		case *ast.IndexExpression:
+			e = n.Left
+		default:
+			return ""
+		}
+	}
+	return ""
 }
 
 func declaredLocals(body *ast.BlockStatement, into map[string]bool) {
@@ -595,7 +1133,11 @@ func loopWitnessInputs(fn *Function, sig *ast.FunctionStatement) []map[string]ui
 		names = append(names, param.Name.Value)
 	}
 	names = append(names, compositeParamLeaves(fn, sig)...)
-	small := []uint64{0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 33}
+	// The larger values clear the bounds checks of a body that reads a
+	// table of several 16-byte vectors before its loops (a UTF-8 kernel
+	// reads 64 bytes of tables): under the small ones alone every input
+	// traps there and no witness decides anything.
+	small := []uint64{0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 33, 63, 64, 65, 80, 81}
 	var inputs []map[string]uint64
 	if len(names) == 0 {
 		return []map[string]uint64{{}}
@@ -660,16 +1202,23 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// Witnesses: concrete inputs decide every loop.
 	checked := 0
 	for _, env := range loopWitnessInputs(fn, sig) {
-		asmValue, _, _, okA := executeBody(fn, sig, env)
+		if !lowering.inDomain(env) {
+			continue // a union tag outside its variants: not a well-typed input
+		}
+		asmValue, _, reasonA, okA := executeBodyChunk(fn, sig, env, 0, exec.resultChunk)
 		concrete := prepareLowering(fn, sig, env)
-		oakValue, _, _, okO := concrete.resultTerm(fn, sig, oakBody)
+		concrete.resultChunk = exec.resultChunk
+		oakValue, _, reasonO, okO := concrete.resultTerm(fn, sig, oakBody)
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "witness %s %v: asm ok=%v %q trap=%v; oak ok=%v %q\n", fn.Name, env, okA, reasonA, asmValue == trapPath, okO, reasonO)
+		}
 		if !okA || !okO || asmValue == trapPath {
 			// Beyond the unrolling budget on this input, or an input on
 			// which the body traps (an element read past a length the
 			// input set to zero): no value to compare on either side.
 			continue
 		}
-		got, want := truncate(maskResult(fn, sig, asmValue), width).eval(env), oakValue.eval(env)
+		got, want := truncate(maskResult(fn, sig, asmValue, exec.resultChunk), width).eval(env), oakValue.eval(env)
 		if got != want {
 			names := make([]string, 0, len(env))
 			for name := range env {

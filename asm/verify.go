@@ -71,6 +71,12 @@ const (
 	termCmp    // a condition code over two operands; the value is 1 or 0
 	termIte    // cond ? left : right
 	termSelect // name[left]: a span element at a symbolic 32-bit index
+	// termFloat is a floating-point operation (op over the IEEE bit
+	// patterns left, right, cond — up to three operands, the third in
+	// cond) at the result width: evaluated as the IEEE operation on a
+	// witness, decided as an uninterpreted function (asm/floats_ops.go,
+	// Oak.Uninterpreted).
+	termFloat
 )
 
 // selectTerm is the element of span at index: a constant index is the
@@ -214,6 +220,12 @@ func conditionFromFlags(code string, n, z, c, v bool) bool {
 // flagsCondition is the condition term for a code read from the flags a
 // cmp/subs (subtraction) or adds (addition) produced.
 func flagsCondition(code string, flags *flagsFact) *term {
+	if flags.float {
+		if t, ok := floatCondition(code, flags.left, flags.right, flags.width); ok {
+			return t
+		}
+		return paramTerm("fcmp#"+code, 1) // a code without an IEEE reading: an unknown
+	}
 	bare := code
 	if flags.kind != "" {
 		code = flags.kind + ":" + code
@@ -337,6 +349,16 @@ func (t *term) evalUncached(env map[string]uint64, memo termMemo) uint64 {
 		return t.value & m
 	case termSelect:
 		return elementValue(t.name, memo.eval(t.left, env)&mask(32), t.width) & m
+	case termFloat:
+		args := make([]uint64, 0, 3)
+		widths := make([]int, 0, 3)
+		for _, arg := range []*term{t.left, t.right, t.cond} {
+			if arg != nil {
+				args = append(args, memo.eval(arg, env)&mask(arg.width))
+				widths = append(widths, arg.width)
+			}
+		}
+		return floatEval(t.op, t.width, args, widths) & m
 	case termCmp:
 		// The comparison happens at the operands' width; t.width is only
 		// the width the 1/0 result is used at.
@@ -406,6 +428,14 @@ func (t *term) stringBounded(budget *int) string {
 		return fmt.Sprintf("(%s ? %s : %s)", t.cond.stringBounded(budget), t.left.stringBounded(budget), t.right.stringBounded(budget))
 	case termSelect:
 		return fmt.Sprintf("%s[%s]", t.name, t.left.stringBounded(budget))
+	case termFloat:
+		parts := []string{}
+		for _, arg := range []*term{t.left, t.right, t.cond} {
+			if arg != nil {
+				parts = append(parts, arg.stringBounded(budget))
+			}
+		}
+		return fmt.Sprintf("%s%d(%s)", t.op, t.width, strings.Join(parts, ", "))
 	}
 	return fmt.Sprintf("(%s %s %s)", t.left.stringBounded(budget), t.op, t.right.stringBounded(budget))
 }
@@ -446,7 +476,7 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		return &linearForm{width: w, coeffs: map[string]uint64{t.name: 1}}
 	case termConst:
 		return &linearForm{width: w, constant: t.value & m}
-	case termCmp, termIte, termSelect:
+	case termCmp, termIte, termSelect, termFloat:
 		return nil
 	}
 	switch t.op {
@@ -569,6 +599,16 @@ type symbolicState struct {
 	// vregs is the vector file: register number -> 128-bit value as lanes
 	// (asm/verify_vector.go); nil until a vector instruction runs.
 	vregs map[int]vecValue
+	// unknownFrom, when set, is the lowest frame address a store at a
+	// data-dependent index reached: slots from there up hold opaque values.
+	unknownFrom *int64
+	// fregs is the RV64 lane's floating-point file (f0–f31, a class of its
+	// own): register number -> the IEEE bit pattern at its width
+	// (asm/rv64_verify_float.go); nil until a float instruction runs.
+	fregs map[int]*term
+	// rvcfg is the RV64 lane's fixed vector configuration (K lanes of S
+	// bits, asm/rv64_verify_vector.go); nil until a vsetivli sets one.
+	rvcfg *rvVectorConfigVerify
 	// globals: the package-global cells this path has written, by Oak
 	// name, at the cell's width (docs/spec/94-assembler.md §9); a cell not
 	// here still holds its entry value, the parameter `global:NAME`.
@@ -594,6 +634,9 @@ type flagsFact struct {
 	width       int
 	kind        string // "" (cmp/subs: left - right), "add" (adds: left + right), "and" (tst: left & right)
 	unknown     bool
+	// float: fcmp left, right — the codes read as IEEE predicates
+	// (asm/verify_float.go floatCondition).
+	float bool
 	// ccmp: the comparison's flags when cond holds, else the immediate NZCV.
 	cond     *term
 	elseNZCV int64
@@ -602,6 +645,21 @@ type flagsFact struct {
 func (s *symbolicState) read(reg Register) (*term, bool) {
 	if reg.ZeroRegister() {
 		return constTerm(0, widthOf(reg.Class)), true
+	}
+	if reg.Class == ClassRV64F {
+		value, bound := s.fregs[reg.Num]
+		if !bound && rv64FloatCalleeSaved(reg.Num) {
+			// A callee-saved float register (fs0–fs11) carries the caller's
+			// pattern on entry: an opaque symbol the save/restore pair
+			// round-trips (LP64D, docs/spec/94-assembler.md §9).
+			value = paramTerm(fmt.Sprintf("entry.f%d", reg.Num), 64)
+			if s.fregs == nil {
+				s.fregs = map[int]*term{}
+			}
+			s.fregs[reg.Num] = value
+			bound = true
+		}
+		return value, bound
 	}
 	value, ok := s.regs[reg.Num]
 	if !ok && ((s.arch == ArchRV64 && rv64Preserved(reg.Num)) || (s.arch != ArchRV64 && calleeSavedRegister(reg.Num))) {
@@ -622,6 +680,13 @@ func (s *symbolicState) read(reg Register) (*term, bool) {
 
 func (s *symbolicState) write(reg Register, value *term) {
 	if reg.ZeroRegister() {
+		return
+	}
+	if reg.Class == ClassRV64F {
+		if s.fregs == nil {
+			s.fregs = map[int]*term{}
+		}
+		s.fregs[reg.Num] = value
 		return
 	}
 	if reg.Class == ClassW {
@@ -697,12 +762,18 @@ var verifiableOps = map[string]string{"add": "add", "sub": "sub", "adds": "add",
 // term, "", true) or ("", reason, false) when the body is outside the
 // verified subset.
 func executeBody(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64) (*term, *pathExecutor, string, bool) {
-	return executeBodyHalf(fn, sig, concrete, 0)
+	return executeBodyChunk(fn, sig, concrete, 0, 0)
 }
 
 // executeBodyHalf is executeBody delivering, for a vector result, the
 // given 64-bit half of v0 (asm/verify_vector.go verifyVectorResult).
 func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64, half int) (*term, *pathExecutor, string, bool) {
+	return executeBodyChunk(fn, sig, concrete, half, 0)
+}
+
+// executeBodyChunk is executeBody delivering, for a record result of two
+// register chunks (9 to 16 bytes: x0 and x1, a0 and a1), the given chunk.
+func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64, half, chunk int) (*term, *pathExecutor, string, bool) {
 	state := &symbolicState{arch: fn.Arch, regs: map[int]*term{}}
 	params := map[string]RegClass{}
 	spans := map[string]int64{} // span/view parameter -> element size in bytes
@@ -720,7 +791,7 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	}
 	if fn.Arch == ArchRV64 {
 		// The RV64 lane binds under the LP64 psABI (asm/rv64_verify.go).
-		if reason, ok := bindRV64Params(fn, sig, state, input, spans, declared); !ok {
+		if reason, ok := bindRV64Params(fn, sig, state, input, spans, declared, composites); !ok {
 			return nil, nil, reason, false
 		}
 	}
@@ -758,8 +829,19 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 			}
 			continue
 		}
-		if !ok || class == ClassV {
+		if !ok {
 			return nil, nil, "vector or non-integer parameters", false
+		}
+		if class == ClassV {
+			// A float: its IEEE bit pattern in the low lane of its vector
+			// register (asm/verify_float.go).
+			bits, _, isFloat := contractBits(param.Type)
+			if !isFloat {
+				return nil, nil, "vector or non-integer parameters", false
+			}
+			params[param.Name.Value] = class
+			declared[param.Name.Value] = bits
+			continue
 		}
 		params[param.Name.Value] = class
 		bits, _, _ := contractBits(param.Type)
@@ -817,6 +899,11 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 		class := params[binding.Param]
 		bits := declared[binding.Param]
 		switch {
+		case class == ClassV:
+			if binding.Register.Class != ClassV {
+				return nil, nil, "a float parameter bound outside the vector file", false
+			}
+			state.writeVec(binding.Register.Num, vecFromLow(zeroExtend(input(binding.Param, bits), 64)))
 		case class == ClassX:
 			state.regs[binding.Register.Num] = input(binding.Param, 64)
 		case boolParams[binding.Param]:
@@ -830,18 +917,37 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 			state.regs[binding.Register.Num] = zeroExtend(input(binding.Param, 32), 64)
 		}
 	}
+	// The program's constant tables read as spans named by their Oak
+	// identifiers: `adrl`/`la` binds a register to the base `&T`, and a
+	// load through it is the element term T[k] — the same term the Oak
+	// side gives T[k] (docs/spec/94-assembler.md §9, constant tables).
+	for symbol, table := range fn.Tables {
+		if table.Elem > 0 {
+			spans[TableName(symbol)] = table.Elem
+		}
+	}
 	resultClass, hasResult := contractClass(sig.ReturnType)
 	if comp, isComposite := fn.Composites[typeText(sig.ReturnType)]; isComposite && len(comp.Fields) > 0 {
-		// A record result of one chunk comes back in x0; larger ones (two
-		// chunks, or the area addressed by x8) are outside the subset.
-		if comp.Size > 8 {
-			return nil, nil, "a record result beyond one register chunk", false
+		// A record result of one chunk comes back in x0, of two in x0 and
+		// x1 (a0 and a1), each chunk verified in its own run (Verify);
+		// larger ones come back through the area x8 addresses, outside the
+		// subset.
+		if comp.Size > 16 {
+			return nil, nil, "a record result beyond two register chunks (returned through memory)", false
+		}
+		if chunk >= int((comp.Size+7)/8) {
+			return nil, nil, "a result chunk past the record", false
 		}
 		resultClass, hasResult = ClassX, true
 	}
 	_, vectorResult := vectorShape(sig.ReturnType)
+	floatResult := 0
 	if hasResult && resultClass == ClassV && !vectorResult {
-		return nil, nil, "no integer result", false
+		bits, _, isFloat := contractBits(sig.ReturnType)
+		if !isFloat {
+			return nil, nil, "no integer result", false
+		}
+		floatResult = bits // an f32/f64 result: the low lane of v0 at its width
 	}
 	labels := map[string]int{}
 	for index, item := range fn.Items {
@@ -853,13 +959,18 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 		}
 	}
 	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass, spans: spans, declared: declared, concrete: concrete != nil, env: concrete, records: composites, arch: fn.Arch, globals: fn.Globals, fn: fn}
-	exec.resultReg = Register{Class: resultClass, Num: 0}
+	exec.resultReg = Register{Class: resultClass, Num: chunk}
 	exec.resultHalf = half
+	exec.floatResult = floatResult
+	exec.resultChunk = chunk
 	if fn.Arch == ArchRV64 {
-		exec.resultReg = rv64ResultRegister
+		exec.resultReg = Register{Class: rv64ResultRegister.Class, Num: rv64ResultRegister.Num + chunk}
+		if floatResult != 0 {
+			exec.resultReg = rv64FloatResultRegister
+		}
 	}
 	exec.hasResult = hasResult
-	exec.loopExits = findLoops(fn.Items, labels)
+	exec.loopExits = findLoopsIn(fn.Name, fn.Items, labels, fn.Callees)
 	result, effects, reason, ok := exec.run(0, state)
 	if effects != nil {
 		exec.cells, exec.writes = effects.cells, effects.writes
@@ -898,7 +1009,11 @@ type pathExecutor struct {
 	arch        string   // the lane
 	resultReg   Register // the register ret delivers: w0/x0, or a0 on rv64
 	resultClass RegClass
+	// floatResult is the width of an f32/f64 result (the low lane of v0),
+	// zero for the other result kinds.
+	floatResult int
 	resultHalf  int               // a vector result: the 64-bit half of v0 delivered (asm/verify_vector.go)
+	resultChunk int               // a record result of two chunks: the chunk delivered (0: x0/a0, 1: x1/a1)
 	spans       map[string]int64  // span parameter -> element size in bytes
 	declared    map[string]int    // parameter -> declared width
 	globals     map[string]Global // the globals the body addresses (fn.Globals)
@@ -927,6 +1042,9 @@ type pathExecutor struct {
 	summarized []string
 	freshSyms  map[string]int
 	callSites  int
+	// freshCount numbers the unspecified lane values of the RV64 vector
+	// model (asm/rv64_verify_vector.go freshLane).
+	freshCount int
 }
 
 // compositeArg is a record or union parameter: its scalar leaves and size
@@ -1048,6 +1166,25 @@ func chunkTerm(leaves []compositeLeaf, k int64, input func(name string, width in
 	return chunk
 }
 
+// definedMask is the bit mask of the cells the leaves inside chunk k
+// occupy — what a callee's result defines: a Bool's whole 4-byte cell (the
+// C enum, written as a word holding 0 or 1), every other leaf its width.
+// The rest of the chunk is padding the ABI leaves unspecified.
+func definedMask(leaves []compositeLeaf, k int64) uint64 {
+	var m uint64
+	for _, leaf := range leaves {
+		if leaf.offset < 8*k || leaf.offset >= 8*k+8 {
+			continue
+		}
+		cell := leaf.width
+		if cell == 1 {
+			cell = 32
+		}
+		m |= mask(cell) << uint((leaf.offset-8*k)*8)
+	}
+	return m
+}
+
 // leafMask is the bit mask of the leaves inside chunk k (the bytes a
 // comparison of chunks may look at).
 func leafMask(leaves []compositeLeaf, k int64) uint64 {
@@ -1084,7 +1221,19 @@ func (s *symbolicState) clone() *symbolicState {
 			globals[name] = value
 		}
 	}
-	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, globals: globals, writes: cloneWrites(s.writes)}
+	var fregs map[int]*term
+	if s.fregs != nil {
+		fregs = make(map[int]*term, len(s.fregs))
+		for reg, value := range s.fregs {
+			fregs[reg] = value
+		}
+	}
+	var rvcfg *rvVectorConfigVerify
+	if s.rvcfg != nil {
+		cfg := *s.rvcfg
+		rvcfg = &cfg
+	}
+	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, fregs: fregs, rvcfg: rvcfg, globals: globals, writes: cloneWrites(s.writes), unknownFrom: s.unknownFrom}
 }
 
 // frameAccess executes a load or store through the sp frame: the address
@@ -1148,7 +1297,10 @@ func (x *pathExecutor) frameAccessAt(instr Instruction, state *symbolicState, ad
 		return "", true
 	}
 	for i, reg := range regs {
-		value, ok := state.loadSlot(addr+int64(i)*size, size)
+		value, ok := x.loadFrame(state, addr+int64(i)*size, size)
+		if !ok {
+			value, ok = state.opaqueSlot(addr+int64(i)*size, size)
+		}
 		if !ok {
 			return "a load from a frame slot never stored on this path", false
 		}
@@ -1159,6 +1311,51 @@ func (x *pathExecutor) frameAccessAt(instr Instruction, state *symbolicState, ad
 		}
 	}
 	return "", true
+}
+
+// loadFrame reads size bytes at addr from the frame. A byte no store on
+// the path reached is unspecified — the padding of a record chunk stored
+// at a narrower width, the payload bytes of a union variant not
+// constructed — and becomes a fresh unknown (`frame#<addr>`, zero in a
+// witness run) that later loads of the same byte see again; the Oak side
+// never reads such a byte, so the unknown can only fail a proof, never
+// forge one. A byte that lies inside no frame slot at all (a read outside
+// the declared frame) is still refused.
+func (x *pathExecutor) loadFrame(state *symbolicState, addr, size int64) (*term, bool) {
+	if value, ok := state.loadSlot(addr, size); ok {
+		return value, true
+	}
+	if state.frame == nil {
+		state.frame = map[int64]frameSlot{}
+	}
+	for b := addr; b < addr+size; b++ {
+		covered := false
+		for start, slot := range state.frame {
+			if start <= b && b < start+int64(slot.width) {
+				covered = true
+				break
+			}
+		}
+		if covered {
+			continue
+		}
+		var fresh *term
+		if x.concrete {
+			fresh = constTerm(0, 8)
+		} else {
+			name := fmt.Sprintf("frame#%d", b)
+			if x.freshSyms == nil {
+				x.freshSyms = map[string]int{}
+			}
+			if _, known := x.freshSyms[name]; !known {
+				x.freshSyms[name] = 8
+				x.declared[name] = 8
+			}
+			fresh = paramTerm(name, 8)
+		}
+		state.storeSlot(b, fresh, 1)
+	}
+	return state.loadSlot(addr, size)
 }
 
 // storeSlot records size bytes at addr, splitting any older slot the store
@@ -1278,11 +1475,43 @@ func (x *pathExecutor) registerFrameAccess(instr Instruction, state *symbolicSta
 			return "unbound register read", false
 		}
 		if index.kind != termConst {
-			return "a frame access at a data-dependent index", false
+			// A store at a data-dependent index into a frame array (a loop
+			// filling a tail buffer): no single slot is named, so every slot
+			// from the array's base up is forgotten and reads there become
+			// opaque symbols (an evidence verdict at most). A load at such an
+			// index stays outside the subset.
+			if !isStoreMnemonic(instr.Mnemonic) {
+				return "a frame load at a data-dependent index", false
+			}
+			state.forgetFrameFrom(addr)
+			return "", true
 		}
 		addr += int64(index.value&mask(32)) << uint(mem.Shift)
 	}
 	return x.frameAccessAt(instr, state, addr)
+}
+
+// opaqueSlot is the value of a slot in the forgotten region: a fresh
+// symbol per address and width, the same on every read.
+func (s *symbolicState) opaqueSlot(addr, size int64) (*term, bool) {
+	if s.unknownFrom == nil || addr < *s.unknownFrom {
+		return nil, false
+	}
+	return paramTerm(fmt.Sprintf("frame#%d", addr), int(size)*8), true
+}
+
+// forgetFrameFrom drops every frame slot at or above addr and marks the
+// region unknown: a later load there reads an opaque symbol `frame#addr`.
+func (s *symbolicState) forgetFrameFrom(addr int64) {
+	for start := range s.frame {
+		if start >= addr {
+			delete(s.frame, start)
+		}
+	}
+	if s.unknownFrom == nil || *s.unknownFrom > addr {
+		at := addr
+		s.unknownFrom = &at
+	}
 }
 
 // trapPath marks a path that ends in a trap (brk): it yields no result and
@@ -1353,6 +1582,9 @@ func (x *pathExecutor) globalStore(instr Instruction, state *symbolicState) (han
 	global, known := x.globals[name]
 	if !known {
 		return true, "a store through the address of an undeclared global", false
+	}
+	if global.Aggregate {
+		return true, "a store into a top-level record or array (not modeled)", false
 	}
 	src, isReg := instr.Operands[0].(Register)
 	if !isReg || src.Class == ClassV {
@@ -1429,10 +1661,19 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			if !x.hasResult {
 				return unitResult, state.effects(), "", true
 			}
-			if x.resultClass == ClassV {
-				value, ok := state.readVec(0)
+			if x.resultClass == ClassV && (x.arch != ArchRV64 || x.floatResult == 0) {
+				// A vector result: v0 on AArch64, v8 on RV64 (the RVV psABI);
+				// an AArch64 float result is the low lane of v0.
+				vreg := 0
+				if x.arch == ArchRV64 {
+					vreg = rv64VectorResultRegister
+				}
+				value, ok := state.readVec(vreg)
 				if !ok {
 					return nil, nil, "result register never written", false
+				}
+				if x.floatResult != 0 {
+					return value.lanesAt(x.floatResult)[0], state.effects(), "", true
 				}
 				return value.halves()[x.resultHalf], state.effects(), "", true
 			}
@@ -1442,7 +1683,12 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			}
 			if x.arch == ArchRV64 {
 				// a0 holds the widened result; the contract width reads it.
-				result = truncate(result, widthOf(x.resultClass))
+				// An f32/f64 result is fa0 at its width (LP64D).
+				if x.floatResult != 0 {
+					result = truncate(result, x.floatResult)
+				} else {
+					result = truncate(result, widthOf(x.resultClass))
+				}
 			}
 			return result, state.effects(), "", true
 		case "brk", "ebreak":
@@ -1455,6 +1701,22 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			if reason, ok := x.summarizeCall(instr, state); !ok {
 				return nil, nil, reason, false
 			}
+			continue
+		case "adrl":
+			// A constant table's address: the base of the span its Oak
+			// name denotes (executeBodyChunk).
+			dest := instr.Operands[0].(Register)
+			sym, isSym := instr.Operands[1].(Symbol)
+			if !isSym {
+				return nil, nil, "adrl without a symbol", false
+			}
+			if x.fn == nil {
+				return nil, nil, "adrl of a symbol that is not a constant table", false
+			}
+			if _, known := x.fn.Tables[sym.Name]; !known {
+				return nil, nil, "adrl of a symbol that is not a constant table", false
+			}
+			state.write(dest, paramTerm(spanBaseName(TableName(sym.Name)), 64))
 			continue
 		case "b", "j":
 			target, ok := x.labels[instr.Operands[0].(Symbol).Name]
@@ -1588,6 +1850,9 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		global, known := x.globals[name]
 		if !known {
 			return "a load through the address of an undeclared global", false
+		}
+		if global.Aggregate {
+			return "a load from a top-level record or array (not modeled)", false
 		}
 		if mem.Index != nil || mem.Mode != MemOffset || mem.Offset != 0 {
 			return "a load through a global's address away from its cell", false
@@ -2160,14 +2425,24 @@ var oakComparisons = map[string][2]string{
 // signedness (i8/i16/i32/i64 compare signed, everything else unsigned),
 // and the span/view parameters with their element widths.
 type oakLowering struct {
-	params    map[string]int
-	signed    map[string]bool
-	spans     map[string]spanContract
+	params map[string]int
+	signed map[string]bool
+	spans  map[string]spanContract
+	// tagDomains: every union tag parameter with its variants' tag values
+	// (recordTagDomains); the decision is over inputs inside them.
+	tagDomains map[string][]int64
+	// tableLens: the program's constant tables by Oak name with their
+	// element counts; a table reads as a span (spans holds its contract)
+	// whose length is the constant (declareTables).
+	tableLens map[string]int64
 	locals    map[string]*oakLocal // statement-body locals, in declaration scope
 	concrete  map[string]uint64    // a witness run: parameters are these constants
 	loops     []*loopEvent         // data-dependent loops met, in creation order
 	loopStack []int                // indices of the loops whose bodies are being lowered
 	fresh     map[string]int       // loop-carried fresh symbols -> width
+	// resultChunk: for a record result of two register chunks, the chunk
+	// this lowering's resultTerm packs (Verify runs one chunk at a time).
+	resultChunk int
 	// globals are the mutable top-level scalars the body addresses
 	// (Function.Globals): a read of one is the parameter `global:NAME` of
 	// the proof, the value the cell holds on entry; a write leaves the body
@@ -2182,6 +2457,10 @@ type oakLowering struct {
 	// parameter, in program order, each under its path condition
 	// (asm/effects.go); reads consult them before the entry memory.
 	writes map[string][]*spanWrite
+	// spanAlias maps an inlined callee's span parameter to the caller's
+	// span it was passed (asm/effects.go): the callee's reads and writes
+	// are spelled in the caller's names, so they share its memory.
+	spanAlias map[string]string
 	// functions are the program's functions a body may call; a call to one
 	// in the subset is inlined (inlineCall). Nil outside the theorem decider.
 	functions map[string]*ast.FunctionStatement
@@ -2780,18 +3059,118 @@ func (lo *oakLowering) assignUnderIndex(base *oakValue, indexExpr ast.Expression
 // scalar leaf the parameter term named by its access path (the executor's
 // compositeLeaves spelling), a concrete value in a witness run.
 func (lo *oakLowering) paramAggregate(typ *oakType, prefix string) (*oakValue, bool) {
+	lo.recordTagDomains(typ, prefix)
+	return aggregateFrom(typ, prefix, func(name string, leaf *oakType) *term {
+		lo.params[name] = leaf.width
+		lo.signed[name] = leaf.signed
+		if value, isConcrete := lo.concrete[name]; isConcrete {
+			return constTerm(value&mask(leaf.width), leaf.width)
+		}
+		return paramTerm(name, leaf.width)
+	})
+}
+
+// recordTagDomains notes, for every union inside a parameter's type, the
+// tag values its variants take (tagDomains): the equivalence is decided
+// over well-typed inputs, where a tag is one of them. On a tag outside
+// the variants the asm traps where the Oak match defaults through its
+// last arm, and a union's payload leaves — assembled under the tag on the
+// asm side (compositeLeaf.guarded), free on the Oak side — need not agree.
+func (lo *oakLowering) recordTagDomains(typ *oakType, prefix string) {
+	switch typ.kind {
+	case oakRecord:
+		for _, f := range typ.fields {
+			lo.recordTagDomains(f.typ, prefix+"."+f.name)
+		}
+	case oakADT:
+		tags := make([]int64, 0, len(typ.variants))
+		for _, v := range typ.variants {
+			tags = append(tags, v.tag)
+			if v.payload != nil {
+				lo.recordTagDomains(v.payload, prefix+"."+v.name)
+			}
+		}
+		if lo.tagDomains == nil {
+			lo.tagDomains = map[string][]int64{}
+		}
+		lo.tagDomains[prefix+".tag"] = tags
+	case oakArray:
+		for k := int64(0); k < typ.length; k++ {
+			lo.recordTagDomains(typ.elem, fmt.Sprintf("%s[%d]", prefix, k))
+		}
+	}
+}
+
+// domainCondition is the 1-bit term "every union tag parameter holds one
+// of its variants' values", or nil when the parameters have no unions.
+func (lo *oakLowering) domainCondition() *term {
+	var cond *term
+	names := make([]string, 0, len(lo.tagDomains))
+	for name := range lo.tagDomains {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		var member *term
+		for _, tag := range lo.tagDomains[name] {
+			is := truncate(cmpTerm("eq", paramTerm(name, 32), constTerm(uint64(tag), 32)), 1)
+			if member == nil {
+				member = is
+			} else {
+				member = binaryTerm("or", member, is)
+			}
+		}
+		if member == nil {
+			continue
+		}
+		if cond == nil {
+			cond = member
+		} else {
+			cond = binaryTerm("and", cond, member)
+		}
+	}
+	return cond
+}
+
+// inDomain reports whether a witness assignment gives every union tag one
+// of its variants' values.
+func (lo *oakLowering) inDomain(env map[string]uint64) bool {
+	for name, tags := range lo.tagDomains {
+		value, bound := env[name]
+		if !bound {
+			continue
+		}
+		member := false
+		for _, tag := range tags {
+			if value == uint64(tag) {
+				member = true
+				break
+			}
+		}
+		if !member {
+			return false
+		}
+	}
+	return true
+}
+
+// aggregateFrom builds an aggregate value of the type from a term per
+// scalar leaf, the leaves named by access path under prefix (`.f`,
+// `.tag`, `.Variant.x`, `[k]`) — the names compositeLeaves and leafTerms
+// use, so a value built here packs (packAggregateChunk) to the chunks it
+// was read from.
+func aggregateFrom(typ *oakType, prefix string, leaf func(name string, typ *oakType) *term) (*oakValue, bool) {
 	switch typ.kind {
 	case oakScalar:
-		lo.params[prefix] = typ.width
-		lo.signed[prefix] = typ.signed
-		if value, isConcrete := lo.concrete[prefix]; isConcrete {
-			return &oakValue{typ: typ, scalar: constTerm(value&mask(typ.width), typ.width)}, true
+		t := leaf(prefix, typ)
+		if t == nil {
+			return nil, false
 		}
-		return &oakValue{typ: typ, scalar: paramTerm(prefix, typ.width)}, true
+		return &oakValue{typ: typ, scalar: t}, true
 	case oakRecord:
 		out := &oakValue{typ: typ, fields: map[string]*oakValue{}}
 		for _, f := range typ.fields {
-			value, ok := lo.paramAggregate(f.typ, prefix+"."+f.name)
+			value, ok := aggregateFrom(f.typ, prefix+"."+f.name, leaf)
 			if !ok {
 				return nil, false
 			}
@@ -2800,14 +3179,14 @@ func (lo *oakLowering) paramAggregate(typ *oakType, prefix string) (*oakValue, b
 		return out, true
 	case oakADT:
 		out := &oakValue{typ: typ, fields: map[string]*oakValue{}}
-		tag, ok := lo.paramAggregate(&oakType{kind: oakScalar, width: 32}, prefix+".tag")
+		tag, ok := aggregateFrom(&oakType{kind: oakScalar, width: 32}, prefix+".tag", leaf)
 		if !ok {
 			return nil, false
 		}
 		out.fields["tag"] = tag
 		for _, v := range typ.variants {
 			if v.payload != nil {
-				value, ok := lo.paramAggregate(v.payload, prefix+"."+v.name)
+				value, ok := aggregateFrom(v.payload, prefix+"."+v.name, leaf)
 				if !ok {
 					return nil, false
 				}
@@ -2818,7 +3197,7 @@ func (lo *oakLowering) paramAggregate(typ *oakType, prefix string) (*oakValue, b
 	default:
 		out := &oakValue{typ: typ}
 		for k := int64(0); k < typ.length; k++ {
-			value, ok := lo.paramAggregate(typ.elem, fmt.Sprintf("%s[%d]", prefix, k))
+			value, ok := aggregateFrom(typ.elem, fmt.Sprintf("%s[%d]", prefix, k), leaf)
 			if !ok {
 				return nil, false
 			}
@@ -2826,6 +3205,63 @@ func (lo *oakLowering) paramAggregate(typ *oakType, prefix string) (*oakValue, b
 		}
 		return out, true
 	}
+}
+
+// bindAggregateArgument binds a summarized callee's record or union
+// parameter of up to two chunks from the argument registers at next
+// (unpackAggregate); it reports the registers consumed.
+func (x *pathExecutor) bindAggregateArgument(lo *oakLowering, param *ast.FunctionParameter, comp Composite, next, argBase int, state *symbolicState, name string) (int, string, bool) {
+	paramText := typeText(param.Type)
+	typ, isType := lo.oakTypeOf(param.Type)
+	if len(comp.Fields) == 0 || !isType || typ.kind == oakScalar {
+		return 0, fmt.Sprintf("a call to %s: parameter %s has a type without a model", name, param.Name.Value), false
+	}
+	leaves, _, ok := compositeLeaves(x.fn.Composites, paramText, "", 0, nil)
+	if !ok {
+		return 0, fmt.Sprintf("a call to %s: parameter %s (no layout)", name, param.Name.Value), false
+	}
+	chunks := make([]*term, (comp.Size+7)/8)
+	if next+len(chunks) > argBase+8 {
+		return 0, fmt.Sprintf("a call to %s with arguments beyond the registers", name), false
+	}
+	for k := range chunks {
+		value, has := state.regs[next+k]
+		if !has {
+			return 0, "unbound register read", false
+		}
+		chunks[k] = value
+	}
+	value, ok := unpackAggregate(typ, leaves, chunks)
+	if !ok {
+		return 0, fmt.Sprintf("a call to %s: parameter %s has a leaf the layout lacks", name, param.Name.Value), false
+	}
+	lo.locals[param.Name.Value] = &oakLocal{agg: value}
+	return len(chunks), "", true
+}
+
+// unpackAggregate reads an aggregate value of the type from its register
+// chunks (the inverse of packAggregateChunk): each leaf is the slice of
+// the chunk at its offset and width.
+func unpackAggregate(typ *oakType, leaves []compositeLeaf, chunks []*term) (*oakValue, bool) {
+	byName := map[string]compositeLeaf{}
+	for _, leaf := range leaves {
+		byName[leaf.name] = leaf
+	}
+	return aggregateFrom(typ, "", func(name string, leafType *oakType) *term {
+		leaf, has := byName[name]
+		if !has {
+			return nil
+		}
+		k := leaf.offset / 8
+		if k < 0 || int(k) >= len(chunks) {
+			return nil
+		}
+		shifted := chunks[k]
+		if shift := (leaf.offset - 8*k) * 8; shift > 0 {
+			shifted = binaryTerm("shr", shifted, constTerm(uint64(shift), 64))
+		}
+		return adaptWidth(truncate(shifted, leaf.width), leafType.width)
+	})
 }
 
 // bindAggregateParams binds every record or union parameter as an
@@ -2868,6 +3304,12 @@ func leafTerms(v *oakValue, prefix string, into map[string]*term) {
 // packAggregate lays an aggregate's leaves into register chunk 0 as the
 // executor assembles a composite (chunkTerm), for a one-chunk result.
 func packAggregate(v *oakValue, leaves []compositeLeaf) (*term, bool) {
+	return packAggregateChunk(v, leaves, 0)
+}
+
+// packAggregateChunk packs the leaves inside register chunk k (bytes 8k
+// to 8k+7) of an aggregate value, each at its offset from the chunk.
+func packAggregateChunk(v *oakValue, leaves []compositeLeaf, k int64) (*term, bool) {
 	terms := map[string]*term{}
 	leafTerms(v, "", terms)
 	tagTerm := func(name string) *term {
@@ -2878,13 +3320,16 @@ func packAggregate(v *oakValue, leaves []compositeLeaf) (*term, bool) {
 	}
 	var chunk *term
 	for _, leaf := range leaves {
+		if leaf.offset < 8*k || leaf.offset >= 8*k+8 {
+			continue
+		}
 		t, has := terms[leaf.name]
 		if !has {
 			return nil, false
 		}
 		placed := zeroExtend(leaf.guarded(adaptWidth(t, leaf.width), tagTerm), 64)
-		if leaf.offset > 0 {
-			placed = binaryTerm("shl", placed, constTerm(uint64(leaf.offset*8), 64))
+		if shift := (leaf.offset - 8*k) * 8; shift > 0 {
+			placed = binaryTerm("shl", placed, constTerm(uint64(shift), 64))
 		}
 		if chunk == nil {
 			chunk = placed
@@ -3544,6 +3989,7 @@ func scalarType(expr ast.Expression) (width int, signed bool, ok bool) {
 type spanContract struct {
 	elemWidth int
 	signed    bool
+	float     bool // f32/f64 elements: an element read is a float of elemWidth
 }
 
 // spanElement recognizes v[k] over a span parameter with a constant index
@@ -3565,7 +4011,16 @@ func (lo *oakLowering) spanElement(expr ast.Expression) (name string, contract s
 	if !isConst || k < 0 {
 		return "", spanContract{}, false
 	}
-	return spanElemName(ident.Value, k), contract, true
+	return spanElemName(lo.spanRoot(ident.Value), k), contract, true
+}
+
+// spanRoot is the caller's span an inlined callee's span parameter
+// stands for, or the name itself.
+func (lo *oakLowering) spanRoot(name string) string {
+	if root, aliased := lo.spanAlias[name]; aliased {
+		return root
+	}
+	return name
 }
 
 // spanElementTerm lowers v[e] over a span parameter with any index
@@ -3573,7 +4028,7 @@ func (lo *oakLowering) spanElement(expr ast.Expression) (name string, contract s
 // select (the loop-carried counter of a data-dependent loop).
 func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanContract, string, bool) {
 	if name, contract, isConst := lo.spanElement(index); isConst {
-		span := index.Left.(*ast.Identifier).Value
+		span := lo.spanRoot(index.Left.(*ast.Identifier).Value)
 		_, k, _ := elementParam(name)
 		entry := paramTerm(name, contract.elemWidth)
 		if lo.concrete != nil {
@@ -3593,21 +4048,25 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 	if !ok {
 		return nil, spanContract{}, reason, false
 	}
+	span := lo.spanRoot(ident.Value)
 	if lo.concrete != nil && idx.kind == termConst {
-		if length, known := lo.concrete[spanLenName(ident.Value)]; known && idx.value >= length {
+		if length, known := lo.concrete[spanLenName(span)]; known && idx.value >= length {
 			// Oak traps on this input; the witness has no value to compare.
 			return nil, spanContract{}, fmt.Sprintf("an index past len(%s) on this input", ident.Value), false
 		}
-		return memoryAt(lo.writes[ident.Value], idx, constTerm(elementValue(ident.Value, idx.value, contract.elemWidth), contract.elemWidth)), contract, "", true
+		if length, isTable := lo.tableLens[ident.Value]; isTable && idx.value >= uint64(length) {
+			return nil, spanContract{}, fmt.Sprintf("an index past len(%s) on this input", ident.Value), false
+		}
+		return memoryAt(lo.writes[span], idx, constTerm(elementValue(span, idx.value, contract.elemWidth), contract.elemWidth)), contract, "", true
 	}
-	entry := selectTerm(ident.Value, idx, contract.elemWidth)
+	entry := selectTerm(span, idx, contract.elemWidth)
 	if !lo.trapsTracked {
 		// The asm verifier's side: reads split over a conditional in the
 		// index, as the machine's branches read (selectSplit). The theorem
 		// decider keeps the read whole, as its Oak twin builds it.
-		entry = selectSplit(ident.Value, idx, contract.elemWidth, 0)
+		entry = selectSplit(span, idx, contract.elemWidth, 0)
 	}
-	return memoryAt(lo.writes[ident.Value], idx, entry), contract, "", true
+	return memoryAt(lo.writes[span], idx, entry), contract, "", true
 }
 
 // selectSplit builds a span read at an index holding a conditional by
@@ -3753,6 +4212,8 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	}
 	bound := map[string]*oakLocal{}
 	calleeFloats := map[string]int{}
+	calleeSpans := map[string]spanContract{}
+	calleeAlias := map[string]string{}
 	// A span or view parameter borrows a caller's array: the callee works
 	// on a copy and, since the conditional lowering re-points locals at
 	// copies, the final contents are written back leaf by leaf on return.
@@ -3769,6 +4230,18 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 		if isBorrowType(param.Type) {
 			owner := addressOfOperand(arg)
 			local, isLocal := lo.locals[owner]
+			if contract, isSpanParam := lo.spans[owner]; !isLocal && isSpanParam {
+				// A span parameter passed on: the callee's parameter is an
+				// alias of the caller's span, sharing its memory
+				// (asm/effects.go).
+				elem, _, _ := spanShape(param.Type)
+				if int(elem)*8 != contract.elemWidth {
+					return nil, fmt.Sprintf("a call to %s: the span argument %s has %d-bit elements where %d-bit ones are expected", name, owner, contract.elemWidth, elem*8), false
+				}
+				calleeSpans[param.Name.Value] = contract
+				calleeAlias[param.Name.Value] = lo.spanRoot(owner)
+				continue
+			}
 			if !isLocal || local.agg == nil || local.agg.typ.kind != oakArray {
 				return nil, fmt.Sprintf("a call to %s: the span argument %s is not a borrow of an aggregate local", name, arg.String()), false
 			}
@@ -3809,14 +4282,19 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	}
 	saved := lo.locals
 	savedFloats := lo.floats
+	savedSpans, savedAlias := lo.spans, lo.spanAlias
 	lo.locals = bound
 	lo.floats = calleeFloats
+	// The callee sees only its own span parameters, each spelled in the
+	// caller's names through the alias.
+	lo.spans, lo.spanAlias = calleeSpans, calleeAlias
 	if lo.inlining == nil {
 		lo.inlining = map[string]bool{}
 	}
 	lo.inlining[name] = true
 	return func() {
 		lo.floats = savedFloats
+		lo.spans, lo.spanAlias = savedSpans, savedAlias
 		for _, b := range borrows {
 			if final, has := lo.locals[b.param]; has && final.agg != nil {
 				leaves(final.agg, b.owner, func(from, to *oakValue) { to.scalar = from.scalar })
@@ -3929,6 +4407,41 @@ func instructionFunction(call *ast.InvocationExpression) (op string, width int, 
 	return "", 0, false
 }
 
+// declareTables makes the program's constant tables readable as spans:
+// T[k] is the element term the asm side's load through `adrl`/`la` gives,
+// len(T) the constant element count.
+func (lo *oakLowering) declareTables(tables map[string]Table) {
+	for symbol, table := range tables {
+		if table.Elem <= 0 {
+			continue
+		}
+		name := TableName(symbol)
+		if _, isSpan := lo.spans[name]; isSpan {
+			continue // a parameter shadows the table
+		}
+		lo.spans[name] = spanContract{elemWidth: int(table.Elem) * 8, signed: table.Signed}
+		if lo.tableLens == nil {
+			lo.tableLens = map[string]int64{}
+		}
+		lo.tableLens[name] = table.Size / table.Elem
+	}
+}
+
+// tableLength recognizes len(T) over a constant table: the element count.
+func (lo *oakLowering) tableLength(expr ast.Expression) (int64, bool) {
+	call, isCall := expr.(*ast.InvocationExpression)
+	if !isCall || len(call.Arguments) != 1 {
+		return 0, false
+	}
+	fn, isIdent := call.Function.(*ast.Identifier)
+	arg, argIsIdent := call.Arguments[0].(*ast.Identifier)
+	if !isIdent || !argIsIdent || fn.Value != "len" {
+		return 0, false
+	}
+	length, isTable := lo.tableLens[arg.Value]
+	return length, isTable
+}
+
 // spanLength recognizes len(v) over a span parameter.
 func (lo *oakLowering) spanLength(expr ast.Expression) (string, bool) {
 	call, isCall := expr.(*ast.InvocationExpression)
@@ -3943,7 +4456,7 @@ func (lo *oakLowering) spanLength(expr ast.Expression) (string, bool) {
 	if _, isSpan := lo.spans[arg.Value]; !isSpan {
 		return "", false
 	}
-	return spanLenName(arg.Value), true
+	return spanLenName(lo.spanRoot(arg.Value)), true
 }
 
 // lower turns a pure expression over the parameters into a term of the
@@ -4060,6 +4573,9 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			}
 			return constTerm(uint64(place.typ.length), width), "", true
 		}
+		if length, isTable := lo.tableLength(e); isTable {
+			return constTerm(uint64(length), width), "", true
+		}
 		if name, isLen := lo.spanLength(e); isLen {
 			if value, isConcrete := lo.concrete[name]; isConcrete {
 				return constTerm(value, width), "", true
@@ -4101,9 +4617,34 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		switch ident.Value {
 		case "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64":
 			target = ident.Value
+			// The integer constructor over a float is the conversion toward
+			// zero (asm/floats_lowering.go); the `_bits_` forms below stay
+			// bit moves.
+			if len(e.Arguments) == 1 {
+				if _, srcFloat := lo.floatWidthOf(e.Arguments[0]); srcFloat {
+					return lo.floatConversion(target, e.Arguments[0], width)
+				}
+			}
+		case "f32", "f64":
+			if len(e.Arguments) == 1 {
+				return lo.floatConversion(ident.Value, e.Arguments[0], width)
+			}
 		default:
-			if t, op, _, isConv := typechecker.ConversionParts(ident.Value); isConv && (op == "trunc" || op == "bits") {
-				target = t
+			if t, op, src, isConv := typechecker.ConversionParts(ident.Value); isConv {
+				floatSource := src == "f32" || src == "f64"
+				floatTarget := t == "f32" || t == "f64"
+				switch {
+				case floatSource && op == "bits":
+					target = t // a bit move, below
+				case (floatSource || floatTarget) && (op == "trunc" || op == "round" || op == "saturating") && len(e.Arguments) == 1:
+					// A float converted toward zero (trunc: the backend traps
+					// out of range, so the value on the non-trapping paths is
+					// the conversion's; saturating: it saturates, as fcvtz*
+					// does), or a float rounded to another width (round).
+					return lo.floatConversion(t, e.Arguments[0], width)
+				case op == "trunc" || op == "bits":
+					target = t
+				}
 			}
 		}
 		if target != "" {
@@ -4145,11 +4686,30 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			}
 			return zeroExtend(truncate(cond, width), width), "", true
 		}
-		if _, isFloat := lo.floatWidthOf(e.Left); isFloat {
-			return nil, fmt.Sprintf("floating-point %s (not a bit operation)", e.Operator), false
-		}
-		if _, isFloat := lo.floatWidthOf(e.Right); isFloat {
-			return nil, fmt.Sprintf("floating-point %s (not a bit operation)", e.Operator), false
+		if w, isFloat := lo.floatWidthOf(e.Left); isFloat || func() bool { w, isFloat = lo.floatWidthOf(e.Right); return isFloat }() {
+			// Floating-point arithmetic: the IEEE operation at the operands'
+			// width as an uninterpreted term (asm/floats_ops.go); the
+			// backends never contract, so `a * b + c` is two operations.
+			if w == 0 {
+				if other, ok := lo.floatWidthOf(e.Right); ok && other != 0 {
+					w = other
+				} else {
+					w = width
+				}
+			}
+			op, known := map[string]string{"+": "fadd", "-": "fsub", "*": "fmul", "/": "fdiv"}[e.Operator]
+			if !known {
+				return nil, fmt.Sprintf("floating-point %s", e.Operator), false
+			}
+			left, reason, okL := lo.lower(e.Left, w)
+			if !okL {
+				return nil, reason, false
+			}
+			right, reason, okR := lo.lower(e.Right, w)
+			if !okR {
+				return nil, reason, false
+			}
+			return adaptWidth(floatTerm(op, w, left, right), width), "", true
 		}
 		if e.Operator == "/" || e.Operator == "%" {
 			// Unsigned division and remainder by a constant power of two
@@ -4189,7 +4749,9 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			// Oak traps at the width; the machine wraps the count. Under
 			// the theorem decider the trap is a recorded obligation and
 			// the shift below the width is the machine's.
-			if !lo.trapsTracked {
+			if !lo.trapsTracked && maxValue(right) >= uint64(width) {
+				// A count whose range stays below the width never traps,
+				// so Oak's shift is the machine's (asm/range.go).
 				return nil, "a non-constant shift count", false
 			}
 			lo.addTrap(cmpTerm("hs", right, constTerm(uint64(width), width)))
@@ -4480,6 +5042,11 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 	boundary := func(w int) []uint64 {
 		m := mask(w)
 		values := []uint64{0, 1, 2, 3, 7, 8, 15, 16, 31, 32, 127, 128, 255, 256, m - 1, m, m >> 1, (m >> 1) + 1}
+		if w == 32 || w == 64 {
+			// A parameter of a float's width may be one: ordinary values,
+			// signed zeros, an infinity, and a NaN beside the patterns.
+			values = append(values, floatWitnessValues(w)...)
+		}
 		for i := range values {
 			values[i] &= m // a witness is a value of the parameter's width
 		}
@@ -4516,12 +5083,37 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 	return inputs
 }
 
-// Verify checks one asm function against its Oak fallback body.
+// Verify checks one asm function against its Oak fallback body. A record
+// result of two register chunks (9 to 16 bytes) is verified chunk by
+// chunk — x0 then x1 (a0 then a1) — each run of the paths delivering one
+// chunk against the same chunk packed from the Oak body's value; the
+// verdict is proof only when both are proven, otherwise the first that
+// is not.
 func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Verdict {
-	if shape, isVector := vectorShape(sig.ReturnType); isVector && fn.Arch != ArchRV64 {
+	if shape, isVector := vectorShape(sig.ReturnType); isVector {
 		return verifyVectorResult(fn, sig, oakBody, shape)
 	}
-	asmTerm, exec, reason, ok := executeBody(fn, sig, nil)
+	if _, chunks, isComposite := resultComposite(fn, sig); isComposite && chunks == 2 {
+		first := verifyChunk(fn, sig, oakBody, 0)
+		if first.Kind == VerdictMismatch || first.Kind == VerdictTrusted {
+			return first
+		}
+		second := verifyChunk(fn, sig, oakBody, 1)
+		if second.Kind != VerdictProven {
+			return second
+		}
+		if first.Kind != VerdictProven {
+			return first
+		}
+		return Verdict{Kind: VerdictProven, Message: first.Message + " (both result chunks)"}
+	}
+	return verifyChunk(fn, sig, oakBody, 0)
+}
+
+// verifyChunk is Verify for one result chunk (0 for a scalar or a
+// one-chunk record).
+func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int) Verdict {
+	asmTerm, exec, reason, ok := executeBodyChunk(fn, sig, nil, 0, chunk)
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
@@ -4529,6 +5121,7 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (every path traps) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
 	}
 	lowering := prepareLowering(fn, sig, nil)
+	lowering.resultChunk = chunk
 	for name, width := range exec.freshSyms {
 		lowering.fresh[name] = width // a summarized call's unspecified result bits
 	}
@@ -4551,7 +5144,12 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (the Oak body contains %s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
-	asmTerm = maskResult(fn, sig, asmTerm)
+	asmTerm = maskResult(fn, sig, asmTerm, chunk)
+	if name := typeText(sig.ReturnType); name == "f32" || name == "f64" {
+		// A float result is decided up to its NaN payload (floatCanonicalNaN).
+		asmTerm = floatCanonicalNaN(truncate(asmTerm, width), width)
+		oakTerm = floatCanonicalNaN(truncate(oakTerm, width), width)
+	}
 	if len(exec.loops) > 0 || len(lowering.loops) > 0 {
 		if len(exec.cells) > 0 || len(lowering.writtenCells()) > 0 || len(exec.writes) > 0 || len(lowering.writes) > 0 {
 			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
@@ -4642,23 +5240,48 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		return opaque, false
 	}
 	callee := x.fn.Callees[sym.Name]
+	if callee == nil {
+		// A vector-contract callee is reached at its native entry, the Oak
+		// name under the lane's suffix (VectorEntrySuffix).
+		if base, suffixed := strings.CutSuffix(sym.Name, VectorEntrySuffix(x.arch)); suffixed {
+			callee = x.fn.Callees[base]
+		}
+	}
 	if callee == nil || callee.Body == nil || callee.Name == nil || callee.Receiver != nil || len(callee.TypeParams) != 0 || callee.ExternSymbol != "" {
 		return opaque, false
 	}
 	name := callee.Name.Value
-	// A unit callee (no result) is summarized for the package state it
-	// writes: a body that neither returns nor touches state has nothing to
-	// summarize.
+	// A unit callee (no result) is summarized for the package state and
+	// the span memory it writes.
 	unit := unitFunction(callee)
-	if unit && len(x.globals) == 0 {
-		return fmt.Sprintf("a call to %s, which returns nothing", name), false
-	}
 	var resultWidth int
 	var resultSigned bool
-	if !unit {
+	// A record or union result of up to two register chunks (x0 and x1,
+	// a0 and a1) is summarized chunk by chunk from the callee's aggregate
+	// value; its padding bits are fresh unknowns, as the ABI leaves them.
+	var aggLeaves []compositeLeaf
+	aggChunks := 0
+	// A fixed-vector result comes back whole in the lane's vector result
+	// register (v0 on AArch64, v8 on RV64 — the RVV psABI; docs/spec/
+	// 94-assembler.md §9, vectors across the call boundary): the callee's
+	// lanes packed as the register holds them.
+	var vecResult *typechecker.SimdShape
+	if shape, isVector := vectorShape(callee.ReturnType); isVector && !unit {
+		vecResult = &shape
+	}
+	if !unit && vecResult == nil {
 		w, signed, ok := contractBits(callee.ReturnType)
 		if class, isClass := contractClass(callee.ReturnType); !ok || !isClass || class == ClassV {
-			return fmt.Sprintf("a call to %s returning %s", name, typeText(callee.ReturnType)), false
+			returned := typeText(callee.ReturnType)
+			comp, isComposite := x.fn.Composites[returned]
+			if !isComposite || len(comp.Fields) == 0 || comp.Size > 16 {
+				return fmt.Sprintf("a call to %s returning %s", name, returned), false
+			}
+			leaves, _, ok := compositeLeaves(x.fn.Composites, returned, "", 0, nil)
+			if !ok {
+				return fmt.Sprintf("a call to %s returning %s (no layout)", name, returned), false
+			}
+			aggLeaves, aggChunks = leaves, int((comp.Size+7)/8)
 		}
 		resultWidth, resultSigned = w, signed
 	}
@@ -4668,6 +5291,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	lo := newLowering(callee)
 	lo.records, lo.adts, lo.constants = x.fn.Records, x.fn.ADTs, x.fn.Constants
 	lo.functions = x.fn.Callees
+	lo.declareTables(x.fn.Tables)
 	lo.inlining = map[string]bool{name: true}
 	// The callee sees the cells as this path holds them — a store on the
 	// path, else the entry value — and its writes come back into the path
@@ -4685,30 +5309,152 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	if x.arch == ArchRV64 {
 		argBase = 10 // a0
 	}
-	for i, param := range callee.Parameters {
+	lo.concrete = x.env // a witness run: the callee's leaves are the caller's constants
+	lo.writes = cloneWrites(state.writes)
+	next := argBase // the next argument register, by the shared layout (asm/abi.go)
+	// Vector arguments travel in the vector file's argument registers, in
+	// declaration order: v0–v7 on AArch64, v8–v23 on RV64.
+	vecArg0, vecArgs := 0, 8
+	if x.arch == ArchRV64 {
+		vecArg0, vecArgs = rv64VectorResultRegister, 16
+	}
+	nextVec := 0
+	for _, param := range callee.Parameters {
 		if param.Variadic {
 			return fmt.Sprintf("a call to %s: parameter %s is variadic", name, param.Name.Value), false
+		}
+		if shape, isVector := vectorShape(param.Type); isVector {
+			if nextVec >= vecArgs {
+				return fmt.Sprintf("a call to %s with vector arguments beyond the registers", name), false
+			}
+			value, has := state.readVec(vecArg0 + nextVec)
+			nextVec++
+			if !has {
+				return "unbound vector register read", false
+			}
+			lanes := value.lanesAt(laneWidth(shape))[:shape.Lanes]
+			lo.locals[param.Name.Value] = &oakLocal{agg: vectorOfLanes(lanes, lo.vectorType(shape))}
+			continue
+		}
+		if comp, isComposite := x.fn.Composites[typeText(param.Type)]; isComposite {
+			// A record argument: by reference beyond 16 bytes, the register
+			// holding the caller's own record parameter's address — the
+			// callee's leaves are then the caller's leaves by name.
+			if comp.HFA {
+				return fmt.Sprintf("a call to %s: parameter %s is a record passed in floating-point registers", name, param.Name.Value), false
+			}
+			if comp.Size <= 16 {
+				// By value, in one or two register chunks: the callee's
+				// parameter is the aggregate unpacked from them.
+				consumed, reason, ok := x.bindAggregateArgument(lo, param, comp, next, argBase, state, name)
+				if !ok {
+					return reason, false
+				}
+				next += consumed
+				continue
+			}
+			if next >= argBase+8 {
+				return fmt.Sprintf("a call to %s with arguments beyond the registers", name), false
+			}
+			base, has := state.regs[next]
+			next++
+			if !has {
+				return "unbound register read", false
+			}
+			owner, offset, isBase := spanBaseOf(base)
+			if _, isRecord := x.records[owner]; !isBase || offset != 0 || !isRecord {
+				return fmt.Sprintf("a call to %s: the record argument %s is not a record parameter of the caller", name, param.Name.Value), false
+			}
+			typ, ok := lo.oakTypeOf(param.Type)
+			if !ok || typ.kind == oakScalar {
+				return fmt.Sprintf("a call to %s: parameter %s has a type without a model", name, param.Name.Value), false
+			}
+			agg, ok := lo.paramAggregate(typ, owner)
+			if !ok {
+				return fmt.Sprintf("a call to %s: parameter %s has a type without a model", name, param.Name.Value), false
+			}
+			lo.locals[param.Name.Value] = &oakLocal{agg: agg}
+			continue
+		}
+		if elem, _, isSpan := spanShape(param.Type); isSpan {
+			// A span argument: the {base, len} pair of one of the caller's
+			// span parameters, whole — the callee's parameter is an alias
+			// of the caller's span and shares its memory (asm/effects.go).
+			if next+2 > argBase+8 {
+				return fmt.Sprintf("a call to %s with arguments beyond the registers", name), false
+			}
+			base, hasBase := state.regs[next]
+			length, hasLen := state.regs[next+1]
+			next += 2
+			whole := hasBase && hasLen
+			var owner string
+			if whole {
+				var offset int64
+				owner, offset, whole = spanBaseOf(base)
+				_, isRecord := x.records[owner]
+				whole = whole && !isRecord && offset == 0 && x.spans[owner] == elem && isParamNamed(length, spanLenName(owner))
+			}
+			if !whole {
+				return fmt.Sprintf("a call to %s: the span argument %s is not a span parameter of the caller passed whole", name, param.Name.Value), false
+			}
+			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
+			lo.spans[param.Name.Value] = spanContract{elemWidth: int(elem) * 8, signed: strings.HasPrefix(elemType, "i")}
+			if lo.spanAlias == nil {
+				lo.spanAlias = map[string]string{}
+			}
+			lo.spanAlias[param.Name.Value] = owner
+			continue
 		}
 		w, signed, isScalar := contractBits(param.Type)
 		if class, isClass := contractClass(param.Type); !isScalar || !isClass || class == ClassV {
 			return fmt.Sprintf("a call to %s: parameter %s is not a fixed-width integer", name, param.Name.Value), false
 		}
-		value, has := state.regs[argBase+i]
+		if next >= argBase+8 {
+			return fmt.Sprintf("a call to %s with arguments beyond the registers", name), false
+		}
+		value, has := state.regs[next]
+		next++
 		if !has {
 			return "unbound register read", false
 		}
 		lo.locals[param.Name.Value] = &oakLocal{value: truncate(value, w), width: w, signed: signed}
+	}
+	if x.arch == ArchRV64 {
+		// Every vector register is caller-saved and the configuration is
+		// not preserved (the RVV psABI): the arguments are read, the file
+		// is forgotten, and a vector result is written to v8 below.
+		state.vregs, state.rvcfg = nil, nil
 	}
 	body := callee.Body
 	if loop, isTail := tailRecursionAsLoop(callee, body); isTail {
 		body = loop
 	}
 	var result *term
-	if unit {
+	var aggregate *oakValue
+	var vecLanes []*term
+	switch {
+	case unit:
 		if reason, ok := lo.lowerUnitBody(body); !ok {
 			return fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
 		}
-	} else {
+	case vecResult != nil:
+		var reason string
+		var ok bool
+		vecLanes, reason, ok = lo.vectorLanes(body, *vecResult)
+		if !ok {
+			return fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
+		}
+	case aggLeaves != nil:
+		typ, ok := lo.oakTypeOf(callee.ReturnType)
+		if !ok || typ.kind == oakScalar {
+			return fmt.Sprintf("a call to %s returning %s (no model)", name, typeText(callee.ReturnType)), false
+		}
+		var reason string
+		aggregate, reason, ok = lo.aggregateValue(body, typ)
+		if !ok {
+			return fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
+		}
+	default:
 		var reason string
 		var ok bool
 		result, reason, ok = lo.lower(body, resultWidth)
@@ -4719,6 +5465,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	if len(lo.loops) > 0 {
 		return fmt.Sprintf("a call to %s whose body has a data-dependent loop", name), false
 	}
+	state.writes = lo.writes // the callee's stores through the caller's spans
 	for cellName, cell := range lo.cells {
 		if cell.value != seeds[cellName] {
 			if state.globals == nil {
@@ -4739,6 +5486,88 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 			}
 			delete(state.regs, 30)
 			state.flags = nil
+		}
+		for _, seen := range x.summarized {
+			if seen == name {
+				return "", true
+			}
+		}
+		x.summarized = append(x.summarized, name)
+		return "", true
+	}
+	if vecResult != nil {
+		// The caller-saved registers are dead after the call: on RV64 the
+		// whole vector file and its configuration, on AArch64 v0–v7 and
+		// v16–v31 (the low halves of v8–v15 are preserved, kept as they
+		// were). The result register receives the callee's lanes.
+		if x.arch == ArchRV64 {
+			for _, r := range []int{1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31} {
+				delete(state.regs, r)
+			}
+		} else {
+			for r := 0; r <= 17; r++ {
+				delete(state.regs, r)
+			}
+			delete(state.regs, 30)
+			state.flags = nil
+			for r := 0; r <= 31; r++ {
+				if r < 8 || r >= 16 {
+					delete(state.vregs, r)
+				}
+			}
+		}
+		state.writeVec(vecArg0, vecOfLanes(vecLanes, laneWidth(*vecResult)))
+		for _, seen := range x.summarized {
+			if seen == name {
+				return "", true
+			}
+		}
+		x.summarized = append(x.summarized, name)
+		return "", true
+	}
+	if aggregate != nil {
+		chunks := make([]*term, aggChunks)
+		for k := range chunks {
+			chunk, ok := packAggregateChunk(aggregate, aggLeaves, int64(k))
+			if !ok {
+				return fmt.Sprintf("a call to %s returning %s with a leaf the layout lacks", name, typeText(callee.ReturnType)), false
+			}
+			if m := definedMask(aggLeaves, int64(k)); m != ^uint64(0) {
+				// The padding bytes: unspecified by the ABI, zero in a
+				// witness run (the callee's own code cleared them).
+				var pad *term
+				if x.concrete {
+					pad = constTerm(0, 64)
+				} else {
+					x.callSites++
+					padName := fmt.Sprintf("call%d#pad%d", x.callSites, k)
+					if x.freshSyms == nil {
+						x.freshSyms = map[string]int{}
+					}
+					x.freshSyms[padName] = 64
+					x.declared[padName] = 64
+					pad = paramTerm(padName, 64)
+				}
+				chunk = binaryTerm("or", binaryTerm("and", chunk, constTerm(m, 64)), binaryTerm("and", pad, constTerm(^m, 64)))
+			}
+			chunks[k] = chunk
+		}
+		if x.arch == ArchRV64 {
+			for _, r := range []int{1, 5, 6, 7, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31} {
+				delete(state.regs, r)
+			}
+			for k, chunk := range chunks {
+				state.regs[10+k] = chunk
+			}
+		} else {
+			for r := 0; r <= 17; r++ {
+				delete(state.regs, r)
+			}
+			delete(state.regs, 30)
+			state.flags = nil
+			for k, chunk := range chunks {
+				state.regs[k] = chunk
+			}
 		}
 		for _, seen := range x.summarized {
 			if seen == name {
@@ -4807,6 +5636,7 @@ func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	lowering.constants = fn.Constants
 	lowering.globals = fn.Globals
 	lowering.functions = fn.Callees // the Oak body's calls inline (inlineCall)
+	lowering.declareTables(fn.Tables)
 	lowering.concrete = concrete
 	lowering.bindAggregateParams(sig)
 	lowering.declareCells()
@@ -4906,21 +5736,22 @@ func (lo *oakLowering) lowerUnitBody(body ast.Expression) (string, bool) {
 
 // resultComposite is the function's record or union result when the
 // executor binds it (one register chunk), with its leaves.
-func resultComposite(fn *Function, sig *ast.FunctionStatement) ([]compositeLeaf, bool) {
+func resultComposite(fn *Function, sig *ast.FunctionStatement) ([]compositeLeaf, int, bool) {
 	name := typeText(sig.ReturnType)
 	comp, isComposite := fn.Composites[name]
-	if !isComposite || len(comp.Fields) == 0 || comp.Size > 8 {
-		return nil, false
+	if !isComposite || len(comp.Fields) == 0 || comp.Size > 16 {
+		return nil, 0, false
 	}
 	leaves, _, ok := compositeLeaves(fn.Composites, name, "", 0, nil)
-	return leaves, ok
+	return leaves, int((comp.Size + 7) / 8), ok
 }
 
 // resultTerm lowers the Oak body to the term the executor's result is
-// compared with: a scalar at the contract width, or a one-chunk record
-// packed from its leaves (width 64).
+// compared with: a scalar at the contract width, or a record's register
+// chunk (lo.resultChunk: the first for a one-chunk record) packed from
+// its leaves (width 64).
 func (lo *oakLowering) resultTerm(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) (*term, int, string, bool) {
-	if leaves, isComposite := resultComposite(fn, sig); isComposite {
+	if leaves, _, isComposite := resultComposite(fn, sig); isComposite {
 		typ, ok := lo.oakTypeOf(sig.ReturnType)
 		if !ok || typ.kind == oakScalar {
 			return nil, 0, "a result whose type has no model", false
@@ -4929,7 +5760,7 @@ func (lo *oakLowering) resultTerm(fn *Function, sig *ast.FunctionStatement, oakB
 		if !ok {
 			return nil, 0, reason, false
 		}
-		packed, ok := packAggregate(value, leaves)
+		packed, ok := packAggregateChunk(value, leaves, int64(lo.resultChunk))
 		if !ok {
 			return nil, 0, "a record result with a leaf the layout lacks", false
 		}
@@ -4940,14 +5771,14 @@ func (lo *oakLowering) resultTerm(fn *Function, sig *ast.FunctionStatement, oakB
 	return t, width, reason, ok
 }
 
-// maskResult hides the padding bytes of a one-chunk record result (the Oak
+// maskResult hides the padding bytes of a record result's chunk (the Oak
 // side never reads them, so the comparison is over the fields alone).
-func maskResult(fn *Function, sig *ast.FunctionStatement, asmTerm *term) *term {
-	leaves, isComposite := resultComposite(fn, sig)
+func maskResult(fn *Function, sig *ast.FunctionStatement, asmTerm *term, chunk int) *term {
+	leaves, _, isComposite := resultComposite(fn, sig)
 	if !isComposite {
 		return asmTerm
 	}
-	return binaryTerm("and", zeroExtend(asmTerm, 64), constTerm(leafMask(leaves, 0), 64))
+	return binaryTerm("and", zeroExtend(asmTerm, 64), constTerm(leafMask(leaves, int64(chunk)), 64))
 }
 
 // compositeParamLeaves names every leaf of the record and union
@@ -5074,7 +5905,7 @@ func newLowering(sig *ast.FunctionStatement) *oakLowering {
 	for _, param := range sig.Parameters {
 		if elem, _, isSpan := spanShape(param.Type); isSpan {
 			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
-			lowering.spans[param.Name.Value] = spanContract{elemWidth: int(elem) * 8, signed: strings.HasPrefix(elemType, "i")}
+			lowering.spans[param.Name.Value] = spanContract{elemWidth: int(elem) * 8, signed: strings.HasPrefix(elemType, "i"), float: elemType == "f32" || elemType == "f64"}
 			continue
 		}
 		bits, signed, _ := contractBits(param.Type)
@@ -5130,6 +5961,12 @@ func upperBitsName(param string) string { return param + "#hi" }
 // the linear normal form, then the bit level. note is appended to a proof.
 func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, width int, note string) Verdict {
 	asmTerm = truncate(asmTerm, width)
+	if domain := lowering.domainCondition(); domain != nil {
+		// Over well-typed inputs only: outside a union tag's variants both
+		// sides are the same zero, so equality there is equality inside.
+		asmTerm = iteTerm(domain, asmTerm, constTerm(0, width))
+		oakTerm = iteTerm(domain, adaptWidth(oakTerm, width), constTerm(0, width))
+	}
 
 	// The unknowns are every parameter either side mentions: scalars, span
 	// lengths, span elements, and span bases — at the width each is
@@ -5148,6 +5985,9 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	// Witnesses first: a disagreement is a definite mismatch regardless of
 	// what normalization would say.
 	for _, env := range witnessInputs(names, params) {
+		if !lowering.inDomain(env) {
+			continue
+		}
 		got := asmTerm.eval(env)
 		want := oakTerm.eval(env)
 		if got != want {

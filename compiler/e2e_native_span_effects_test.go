@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/target"
 )
 
 // Memory effects through span parameters are verified (docs/spec/94-assembler.md
@@ -102,5 +103,36 @@ func TestE2ENativeSpanEffects(t *testing.T) {
 	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_span_effects_c", New().WithSource("effects.oak", nativeSpanEffectsProgram)); abnormal || code != 42 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)
+	}
+}
+
+// The RV64 lane records stores through spans in the same write log, so
+// the same bodies are proven in their span memories there (a QEMU run is
+// the exec test's; here the verdicts).
+func TestE2ENativeSpanEffectsRV64(t *testing.T) {
+	var infos []string
+	tgt, err := target.Parse("linux/riscv64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	comp := New().WithSource("effects.oak", nativeSpanEffectsProgram).WithTarget(tgt).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
+		if d.Source == "native" {
+			infos = append(infos, d.Message)
+		}
+	})
+	if _, err := comp.EmitC().Get(); err != nil {
+		t.Fatalf("rv64 native build: %v", err)
+	}
+	joined := strings.Join(infos, "\n")
+	for _, fn := range []string{"put", "put3", "set_flag", "swap"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven equal to its Oak body in the span memory it writes (v)") {
+			t.Errorf("rv64: %s must be proven in its span memory; diagnostics:\n%s", fn, joined)
+		}
+	}
+	if !strings.Contains(joined, "asm unit bump: proven equal to its Oak body") || !strings.Contains(joined, "and the span memory it writes (v)") {
+		t.Errorf("rv64: bump must be proven in its result and its span memory; diagnostics:\n%s", joined)
+	}
+	if !strings.Contains(joined, "asm unit fill: not verified (") {
+		t.Errorf("rv64: fill stores inside a data-dependent loop and must stay trusted; diagnostics:\n%s", joined)
 	}
 }

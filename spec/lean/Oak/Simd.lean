@@ -375,6 +375,85 @@ theorem chunked_all_eq (chunks : List (List Nat)) (xs : List Nat) (h : IsChunkin
     rw [List.all_cons, List.flatten_cons, ih]
     simp only [allLanes, List.all_append]
 
+/-! ### The floating-point reduction's grouping (docs/spec/93-simd.md §1.2a)
+
+`reduce_add` over a float vector is `(l0 + l1) + (l2 + l3)` for four lanes
+and `l0 + l1` for two: the grouping is the semantics, since float addition
+is not associative. The NEON lowering (nativegen/simd.go) spells it as
+`faddp Vd.4s, Vn.4s, Vn.4s` — adjacent pairs of the concatenation `n ++ n`,
+`[n0+n1, n2+n3, n0+n1, n2+n3]` — then the scalar `faddp Sd, Vd.2s` over
+the low pair; the two-lane form is one scalar `faddp Dd, Vn.2d`. Over an
+arbitrary binary operation (float addition is opaque here) the lowering
+computes exactly the specified tree. -/
+
+/-- `faddp`'s lane rule: adjacent pairs of the operand concatenation. -/
+def pairs (f : α → α → α) : List α → List α
+  | a :: b :: rest => f a b :: pairs f rest
+  | _ => []
+
+/-- The specification's grouping of a four-lane reduction. -/
+def reduceTree4 (f : α → α → α) (a b c d : α) : α := f (f a b) (f c d)
+
+/-- The vector `faddp` of a four-lane value with itself, then the scalar
+    `faddp` over the low pair (`pairs` of the first two lanes), is the
+    specified tree. -/
+theorem neon_reduce4 (f : α → α → α) (a b c d : α) :
+    pairs f ((pairs f ([a, b, c, d] ++ [a, b, c, d])).take 2) = [reduceTree4 f a b c d] := by
+  rfl
+
+/-- The two-lane reduction is one scalar `faddp`. -/
+theorem neon_reduce2 (f : α → α → α) (a b : α) : pairs f [a, b] = [f a b] := by
+  rfl
+
+/-! ### The RV64 lane's float sequences (nativegen/rv64_simd.go)
+
+RVV has no pairwise add; the lowering builds the specification's tree from
+`vslidedown.vi` and `vfadd.vv`. A slide by `n` puts lane `i + n` at lane `i`
+and something unspecified (the register's tail past `vl`) in the last `n`
+lanes; the result is read at lane 0 only, so the unspecified lanes never
+reach it. -/
+
+/-- `vslidedown.vi` by `n`: lanes `n ..` then `n` unspecified lanes. -/
+def slidedown (n : Nat) (tail : α) (xs : List α) : List α :=
+  xs.drop n ++ List.replicate (min n xs.length) tail
+
+/-- Four lanes: `t = x + slide(x, 1)`, then `(t + slide(t, 2))[0]` is the
+specification's `(l0 + l1) + (l2 + l3)`, whatever the tail lanes read. -/
+theorem rvv_reduce4 (f : α → α → α) (a b c d t₁ t₂ : α) :
+    let x := [a, b, c, d]
+    let t := List.zipWith f x (slidedown 1 t₁ x)
+    (List.zipWith f t (slidedown 2 t₂ t))[0]? = some (reduceTree4 f a b c d) := by
+  rfl
+
+/-- Two lanes: one slide-and-add step is `l0 + l1`. -/
+theorem rvv_reduce2 (f : α → α → α) (a b t₁ : α) :
+    (List.zipWith f [a, b] (slidedown 1 t₁ [a, b]))[0]? = some (f a b) := by
+  rfl
+
+/-- The catalog's minimum/maximum on RVV: `vfmin`/`vfmax` are IEEE
+minimumNumber/maximumNumber (`minNum`: a NaN operand suppressed), so the
+lowering merges each operand's NaN lanes back — `x` where `x ≠ x`, then `y`
+where `y ≠ y` (Oak's spec: a NaN operand yields NaN; which payload is left
+to the platform). -/
+def rvvMinMax (isNaN : α → Bool) (minNum : α → α → α) (x y : α) : α :=
+  if isNaN y then y else if isNaN x then x else minNum x y
+
+/-- A NaN operand yields a NaN. -/
+theorem rvvMinMax_nan (isNaN : α → Bool) (minNum : α → α → α) (x y : α)
+    (h : isNaN x = true ∨ isNaN y = true) : isNaN (rvvMinMax isNaN minNum x y) = true := by
+  unfold rvvMinMax
+  rcases h with hx | hy
+  · by_cases hy' : isNaN y = true
+    · simp [hy', hy']
+    · simp [hy', hx]
+  · simp [hy]
+
+/-- On numbers the sequence is the number-preferring operation itself,
+which orders `-0.0` below `+0.0` as the catalog requires. -/
+theorem rvvMinMax_numbers (isNaN : α → Bool) (minNum : α → α → α) (x y : α)
+    (hx : isNaN x = false) (hy : isNaN y = false) : rvvMinMax isNaN minNum x y = minNum x y := by
+  simp [rvvMinMax, hx, hy]
+
 /-- Counting chunks is not extent-independent: two chunkings of the same
     sequence with different chunk counts. -/
 theorem chunk_count_depends_on_extent :

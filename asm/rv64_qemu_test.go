@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"math/big"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -303,6 +302,45 @@ done:
 			}
 			return uint64(math.Float32bits(total))
 		}, body: rv64VFSumBody})
+	// The fixed vector at a guarded index (the native backend's idiom): the
+	// four elements at k summed when k + 4 <= len, else zero.
+	oracles = append(oracles, rv64Oracle{decl: rv64VSlackDecl, cType: "unsigned int", width: 32, span: "v", inputs: [][2]uint64{{0, 0}, {3, 0}, {4, 0}, {4, 1}, {5, 1}, {8, 4}, {8, 5}, {16, 12}, {16, 13}},
+		spanExpect: func(elems []uint64, k uint64) uint64 {
+			if k+4 > uint64(len(elems)) {
+				return 0
+			}
+			total := uint32(0)
+			for _, e := range elems[k : k+4] {
+				total += uint32(e)
+			}
+			return uint64(total)
+		}, body: rv64VSlackBody})
+	// The float vectors' fixed-lane forms: x = float(v[i]) / k, |x| rooted,
+	// the NaN-propagating minimum against 1.0, 2.0 at lane 1, the pairwise
+	// tree; expected from Go's float32 arithmetic (0/0 gives the default
+	// NaN on both machines, the same bits).
+	oracles = append(oracles, rv64Oracle{decl: rv64VFPairDecl, cType: "unsigned int", width: 32, span: "v", inputs: [][2]uint64{{0, 7}, {3, 1}, {4, 0}, {4, 1}, {5, 9}, {8, 3}, {13, 0xffffffff}, {16, 2}},
+		spanExpect: func(elems []uint64, k uint64) uint64 {
+			if len(elems) < 4 {
+				return 0
+			}
+			kf := float32(uint32(k))
+			lanes := make([]float32, 4)
+			for i := range lanes {
+				x := float32(uint32(elems[i]))
+				y := float32(x / kf)
+				z := float32(math.Sqrt(float64(float32(math.Abs(float64(y))))))
+				// IEEE 754-2019 minimum against 1.0: a NaN propagates.
+				if z != z || z < 1.0 {
+					lanes[i] = z
+				} else {
+					lanes[i] = 1.0
+				}
+			}
+			lanes[1] = 2.0
+			total := float32(float32(lanes[0]+lanes[1]) + float32(lanes[2]+lanes[3]))
+			return uint64(math.Float32bits(total))
+		}, body: rv64VFPairBody})
 	// OAK_RV64_ORACLE=name narrows the run to one unit while diagnosing.
 	if only := os.Getenv("OAK_RV64_ORACLE"); only != "" {
 		var kept []rv64Oracle
@@ -464,18 +502,6 @@ done:
 			index++
 		}
 	}
-}
-
-// fma32 is a*b + c rounded once to f32 (round to nearest even), the
-// semantics of vfmacc.vv under frm = rne: the exact value is formed in a
-// big.Float wide enough to hold it, then rounded to 24 bits.
-func fma32(a, b, c float32) float32 {
-	exact := new(big.Float).SetPrec(256).SetFloat64(float64(a))
-	exact.Mul(exact, new(big.Float).SetPrec(256).SetFloat64(float64(b)))
-	exact.Add(exact, new(big.Float).SetPrec(256).SetFloat64(float64(c)))
-	rounded := exact.SetMode(big.ToNearestEven).SetPrec(24)
-	f, _ := rounded.Float32()
-	return f
 }
 
 // quoteAsmRV64 spells assembly text as a C string literal.

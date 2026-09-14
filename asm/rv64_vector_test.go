@@ -174,11 +174,123 @@ done:
   fmv.x.w a0, ft1
   ret`
 
+// A fixed vector at a guarded index (docs/spec/94-assembler.md §9, the
+// native backend's idiom): the slack guard `li k, 4; bltu len, k; sub t,
+// len, k; bltu t, idx` proves idx + 4 <= len (Oak.RiscV.slack_guard), so the
+// four elements at &v[idx] are inside the span
+// (Oak.RiscV.slack_access_in_bounds) and an immediate AVL of 4 loads them.
+// The result is their wrapping sum, or zero when the span is too short.
+const rv64VSlackDecl = "vslack: (v: []u32, k: u32) -> u32"
+const rv64VSlackBody = `
+  bind a0, a1 = v
+  bind a2 = k
+  clobber t0, t1, t2, t3, v1, v2, v3
+  slli t1, a1, 32
+  srli t1, t1, 32
+  slli t0, a2, 32
+  srli t0, t0, 32
+  li t2, 4
+  bltu t1, t2, none
+  sub t3, t1, t2
+  bltu t3, t0, none
+  slli t0, t0, 2
+  add t0, a0, t0
+  vsetivli zero, 4, e32, m1, ta, ma
+  vle32.v v1, (t0)
+  vmv.v.x v2, zero
+  vredsum.vs v3, v1, v2
+  vmv.x.s a0, v3
+  ret
+none:
+  li a0, 0
+  ret`
+
+// A fixed vector through the frame (a vector local's slot): an immediate
+// AVL at a frame address inside the declared frame
+// (Oak.RiscV.frame_vector_in_bounds).
+const rv64VFrameDecl = "vframe: (v: []u32) -> u32"
+const rv64VFrameBody = `
+  bind a0, a1 = v
+  clobber t0, t1, t2, v1, v2
+  frame 16
+  addi sp, sp, -16
+  slli t1, a1, 32
+  srli t1, t1, 32
+  li t0, 4
+  bltu t1, t0, none
+  vsetivli zero, 4, e32, m1, ta, ma
+  vle32.v v1, (a0)
+  addi t2, sp, 0
+  vse32.v v1, (t2)
+  vle32.v v2, (t2)
+  vmv.x.s a0, v2
+  addi sp, sp, 16
+  ret
+none:
+  li a0, 0
+  addi sp, sp, 16
+  ret`
+
+// The float vectors' fixed-lane forms (docs/spec/93-simd.md §1.2a, the
+// native lowering's sequences, nativegen/rv64_simd.go): four u32 elements
+// at the span base converted to f32, divided by k, negated then made
+// absolute, rooted, the catalog's NaN-propagating minimum against 1.0
+// rebuilt from vfmin/vmfne/vmerge, 2.0 inserted at lane 1 through
+// vid/vmseq.vx/vfmerge, and the pairwise tree (l0 + l1) + (l2 + l3)
+// through two slide-and-add steps (Oak.Simd.rvv_reduce4). The result is
+// the f32's bits, or zero when the span is shorter than four.
+const rv64VFPairDecl = "vfpair: (v: []u32, k: u32) -> u32"
+const rv64VFPairBody = `
+  bind a0, a1 = v
+  bind a2 = k
+  clobber t0, t1, t2, ft0, ft1, v0, v1, v8, v9, v10
+  slli t1, a1, 32
+  srli t1, t1, 32
+  li t0, 4
+  bltu t1, t0, short
+  vsetivli zero, 4, e32, m1, ta, ma
+  vle32.v v8, (a0)
+  vfcvt.f.xu.v v8, v8
+  fcvt.s.wu ft0, a2
+  vfmv.v.f v9, ft0
+  vfdiv.vv v8, v8, v9
+  vfsgnjn.vv v8, v8, v8
+  vfsgnjx.vv v8, v8, v8
+  vfsqrt.v v8, v8
+  li t2, 1065353216
+  fmv.w.x ft1, t2
+  vfmv.v.f v10, ft1
+  vfmin.vv v1, v8, v10
+  vmfne.vv v0, v8, v8
+  vmerge.vvm v1, v1, v8, v0
+  vmfne.vv v0, v10, v10
+  vmerge.vvm v8, v1, v10, v0
+  vid.v v1
+  li t2, 1
+  vmseq.vx v0, v1, t2
+  li t2, 1073741824
+  fmv.w.x ft1, t2
+  vfmerge.vfm v8, v8, ft1, v0
+  vslidedown.vi v1, v8, 1
+  vfadd.vv v8, v8, v1
+  vslidedown.vi v1, v8, 2
+  vfadd.vv v8, v8, v1
+  vfmv.f.s ft0, v8
+  fmv.x.w a0, ft0
+  ret
+short:
+  li a0, 0
+  ret`
+
 func TestRV64VectorChecker(t *testing.T) {
 	accept := map[string][2]string{
 		"strip-mined sum":      {rv64VStripDecl, rv64VStripBody},
+		"slack guard":          {rv64VSlackDecl, rv64VSlackBody},
+		"frame vector":         {rv64VFrameDecl, rv64VFrameBody},
+		"slack guard by addi":  {rv64VSlackDecl, strings.Replace(rv64VSlackBody, "  sub t3, t1, t2\n", "  addi t3, t1, -4\n", 1)},
 		"fractional LMUL":      {rv64VFracDecl, rv64VFracBody},
 		"floating-point strip": {rv64VFSumDecl, rv64VFSumBody},
+		"float lane forms":     {rv64VFPairDecl, rv64VFPairBody},
 		"64-bit elements at m2": {"v64: (v: []u64) -> u64", `
   bind a0, a1 = v
   clobber t0, t1, v2, v3
@@ -260,6 +372,13 @@ empty:
 		"float form at e16":                        {rv64VFSumDecl, strings.Replace(rv64VFSumBody, "  vfcvt.f.xu.v v4, v2\n", "  vsetvli t3, t2, e16, m1, ta, ma\n  vfcvt.f.xu.v v4, v2\n", 1), "need e32 or e64"},
 		"multiply-add accumulator unwritten":       {rv64VFSumDecl, strings.Replace(rv64VFSumBody, "  vfmacc.vv v6, v4, v8\n", "  vfmacc.vv v12, v4, v8\n", 1), "read of v12, which is neither bound nor written"},
 		"float register unclobbered":               {rv64VFSumDecl, strings.Replace(rv64VFSumBody, ", ft0, ft1", ", ft0", 1), "nor a declared clobber"},
+		"slack guard without the length guard":     {rv64VSlackDecl, strings.Replace(rv64VSlackBody, "  bltu t1, t2, none\n", "", 1), "only a bound span base"},
+		"AVL past the slack":                       {rv64VSlackDecl, strings.Replace(rv64VSlackBody, "vsetivli zero, 4, e32", "vsetivli zero, 8, e32", 1), "slack guard proved"},
+		"slack guard over another constant":        {rv64VSlackDecl, strings.Replace(rv64VSlackBody, "  sub t3, t1, t2\n", "  li t3, 2\n  sub t3, t1, t3\n", 1), "slack guard proved"},
+		"frame vector past the frame":              {rv64VFrameDecl, strings.Replace(rv64VFrameBody, "vsetivli zero, 4, e32, m1, ta, ma\n  vle32.v v1, (a0)\n  addi t2, sp, 0\n  vse32.v v1, (t2)", "vsetivli zero, 4, e32, m1, ta, ma\n  vle32.v v1, (a0)\n  addi t2, sp, 8\n  vse32.v v1, (t2)", 1), "outside the declared frame"},
+		"frame vector with a register AVL":         {rv64VFrameDecl, strings.Replace(rv64VFrameBody, "  addi t2, sp, 0\n  vse32.v v1, (t2)", "  addi t2, sp, 0\n  vsetvli t0, t0, e32, m1, ta, ma\n  vse32.v v1, (t2)", 1), "needs an immediate AVL"},
+		"gather over its own source":               {rv64VSlackDecl, strings.Replace(rv64VSlackBody, "  vmv.v.x v2, zero\n", "  vmv.v.x v2, zero\n  vrgather.vv v1, v1, v2\n", 1), "overlaps the source group"},
+		"slide up over its own source":             {rv64VSlackDecl, strings.Replace(rv64VSlackBody, "  vmv.v.x v2, zero\n", "  vmv.v.x v2, zero\n  vslideup.vi v2, v2, 1\n", 1), "overlaps the source group"},
 		"e64 at a fractional LMUL":                 {rv64VFracDecl, strings.Replace(rv64VFracBody, "e32, mf2, ta, ma", "e64, mf2, ta, ma", 1), "past ELEN=64"},
 		"extension below mf8":                      {rv64VFracDecl, strings.Replace(rv64VFracBody, "  vsetvli t3, t2, e32, mf2, ta, ma\n  slli t4", "  vsetvli t3, t2, e8, mf8, ta, ma\n  vzext.vf2 v6, v2\n  slli t4", 1), "narrower than 8 bits"},
 		"no configuration":                         {rv64VStripDecl, strings.Replace(rv64VStripBody, "  vsetvli t3, t2, e32, m1, ta, ma\n", "  li t3, 4\n", 1), "without a vector configuration"},
@@ -346,6 +465,7 @@ func TestRV64VectorFloatParse(t *testing.T) {
 		"integer register as F": {strings.Replace(rv64VFSumBody, "  vfmv.v.f v8, ft0\n", "  vfmv.v.f v8, t3\n", 1), "vfmv.v.f: operand 2 must be a floating-point register"},
 		"vector register as F":  {strings.Replace(rv64VFSumBody, "  vfmv.f.s ft1, v12\n", "  vfmv.f.s v2, v12\n", 1), "vfmv.f.s: operand 1 must be a floating-point register"},
 	}
+	refused["float merge mask"] = [2]string{strings.Replace(rv64VFPairBody, "  vfmerge.vfm v8, v8, ft1, v0\n", "  vfmerge.vfm v8, v8, ft1, v1\n", 1), "vfmerge.vfm takes its mask from v0"}
 	for name, tc := range refused {
 		_, errs := rv64Unit(t, rv64VFSumDecl, tc[0])
 		if len(errs) == 0 || !strings.Contains(errs[0].Error(), tc[1]) {
@@ -437,6 +557,38 @@ func TestRV64VectorEncoderAgreesWithGNUAs(t *testing.T) {
   vfredosum.vs v4, v2, v3, v0.t
   vfcvt.f.xu.v v2, v1
   vfcvt.f.xu.v v2, v1, v0.t
+  vfdiv.vv v4, v3, v2
+  vfdiv.vv v4, v3, v2, v0.t
+  vfsqrt.v v2, v1
+  vfsqrt.v v2, v1, v0.t
+  vfmin.vv v4, v3, v2
+  vfmin.vv v4, v3, v2, v0.t
+  vfmax.vv v4, v3, v2
+  vfmax.vv v4, v3, v2, v0.t
+  vfsgnjn.vv v2, v1, v1
+  vfsgnjn.vv v2, v1, v1, v0.t
+  vfsgnjx.vv v2, v1, v1
+  vfsgnjx.vv v2, v1, v1, v0.t
+  vmfne.vv v0, v1, v2
+  vmfne.vv v0, v1, v2, v0.t
+  vid.v v3
+  vid.v v3, v0.t
+  vmseq.vx v0, v1, a2
+  vmseq.vx v0, v1, a2, v0.t
+  vfmerge.vfm v4, v3, ft0, v0
+  vssubu.vv v2, v1, v1
+  vssubu.vv v2, v1, v1, v0.t
+  vsrl.vx v2, v1, a2
+  vsrl.vx v2, v1, a2, v0.t
+  vmslt.vx v0, v1, a2
+  vmsltu.vx v0, v1, a2, v0.t
+  vrgather.vv v4, v1, v2
+  vrgather.vv v4, v1, v2, v0.t
+  vslideup.vi v4, v1, 3
+  vslideup.vi v4, v1, 31, v0.t
+  vslidedown.vi v4, v1, 0
+  vslidedown.vi v4, v1, 13, v0.t
+  vsetivli zero, 4, e32, m1, ta, ma
   mv a0, t2
   ret`
 	fn, errs := rv64Unit(t, "venc: (v: [*]u32, k: u32) -> u32", body)
@@ -456,5 +608,39 @@ func TestRV64VectorEncoderAgreesWithGNUAs(t *testing.T) {
 			offset += 4
 		}
 		t.Fatalf("encodings differ at byte %d: ours %x, GNU as %x", offset, ours[offset:min(offset+4, len(ours))], theirs[offset:min(offset+4, len(theirs))])
+	}
+}
+
+// Vectors across the call boundary (docs/spec/94-assembler.md §9, the RVV
+// psABI): a fixed-vector parameter is bound to v8–v23 in declaration
+// order, a fixed-vector result is written to v8 before ret.
+func TestRV64VectorContract(t *testing.T) {
+	decl := "double: (v: simd.U8x16) -> simd.U8x16"
+	body := `  bind v8 = v
+  clobber v8, v9
+  vsetivli zero, 16, e8, m1, ta, ma
+  vadd.vv v8, v8, v8
+  ret`
+	if findings := rv64Check(t, decl, body); len(findings) != 0 {
+		t.Fatalf("the vector contract unit must check: %v", findings)
+	}
+	two := "blend: (a: simd.U8x16, k: u32, b: simd.U8x16) -> simd.U8x16"
+	if findings := rv64Check(t, two, "  bind v8 = a\n  bind a0 = k\n  bind v9 = b\n  clobber v8, v9\n  vsetivli zero, 16, e8, m1, ta, ma\n  vadd.vv v8, v8, v9\n  ret"); len(findings) != 0 {
+		t.Fatalf("two vector parameters bind v8 and v9 beside the integer file: %v", findings)
+	}
+	rejections := map[string][3]string{
+		"bound to the wrong register":  {decl, strings.Replace(body, "bind v8 = v", "bind v9 = v", 1), "must be bound to v8"},
+		"result never written":         {"fill: (k: u32) -> simd.U8x16", "  bind a0 = k\n  clobber v8, v9\n  vsetivli zero, 16, e8, m1, ta, ma\n  vmv.v.x v9, a0\n  ret", "without writing the result register v8"},
+		"bound to an integer register": {decl, strings.Replace(body, "bind v8 = v", "bind a0 = v", 1), "must be bound to v8"},
+	}
+	for name, tc := range rejections {
+		findings := rv64Check(t, tc[0], tc[1])
+		if len(findings) == 0 {
+			t.Errorf("%s: accepted", name)
+			continue
+		}
+		if !strings.Contains(strings.Join(findings, "\n"), tc[2]) {
+			t.Errorf("%s: findings %v lack %q", name, findings, tc[2])
+		}
 	}
 }

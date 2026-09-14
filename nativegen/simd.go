@@ -3,6 +3,7 @@ package nativegen
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
@@ -17,16 +18,25 @@ import (
 // parameters and results in v0–v7 — and every `simd.op_shape(...)` call
 // lowers to the NEON instruction the C backend's helper wraps: the
 // portable lane semantics are the specification, the selection is not.
-// Whatever this file does not lower (float vectors, vectors inside records
-// or arrays, a shift by a non-literal count) is reported Unsupported and
-// the function stays on the C backend.
+// The floating-point vectors simd.F32x4 and F64x2 (section 1.2a) lower the
+// same way: `fadd`/`fsub`/`fmul`/`fdiv`, `fmla` for the one-rounding
+// `fma`, `fmin`/`fmax` (NEON's are IEEE 754-2019 minimum/maximum: a NaN
+// operand yields NaN, -0.0 orders below +0.0), `fsqrt`/`fneg`/`fabs`,
+// `mov` to and from a literal lane for `extract`/`insert`, and the
+// pairwise `faddp` tree for `reduce_add` — `(l0 + l1) + (l2 + l3)`, the
+// grouping the specification fixes (Oak.Simd.pairwise_reduce). Whatever
+// this file does not lower (vectors inside records or arrays, a shift by
+// a non-literal count, a non-literal lane index) is reported Unsupported
+// and the function stays on the C backend.
 
-// vecShapes are the integer vector types by their qualified spelling.
+// vecShapes are the fixed vector types by their qualified spelling.
 var vecShapes = map[string]scalar{
 	"U8x16": {name: "simd.U8x16", bits: 128, isVec: true, lanes: 16, laneBits: 8},
 	"U16x8": {name: "simd.U16x8", bits: 128, isVec: true, lanes: 8, laneBits: 16},
 	"U32x4": {name: "simd.U32x4", bits: 128, isVec: true, lanes: 4, laneBits: 32},
 	"U64x2": {name: "simd.U64x2", bits: 128, isVec: true, lanes: 2, laneBits: 64},
+	"F32x4": {name: "simd.F32x4", bits: 128, isVec: true, lanes: 4, laneBits: 32, laneFloat: true},
+	"F64x2": {name: "simd.F64x2", bits: 128, isVec: true, lanes: 2, laneBits: 64, laneFloat: true},
 }
 
 // The vector types join the scalar table under their qualified spelling,
@@ -37,14 +47,48 @@ func init() {
 	}
 }
 
-// vecShapeBySuffix: the op suffix ("u8x16") to its type.
+// vecShapeBySuffix: the op suffix ("u8x16", "f32x4") to its type.
 func vecShapeBySuffix(suffix string) (scalar, bool) {
 	for name, s := range vecShapes {
-		if "u"+name[1:] == suffix {
+		if strings.ToLower(name) == suffix {
 			return s, true
 		}
 	}
 	return scalar{}, false
+}
+
+// laneReg spells lane k of vector register n in the view of its lanes
+// ("v3.s[1]"): the source of a lane extract or splat, the destination of
+// a lane insert.
+func laneReg(n int, view string, k int64) asm.Register {
+	return asm.Register{Text: "v" + strconv.Itoa(n) + "." + view + "[" + strconv.FormatInt(k, 10) + "]", Class: asm.ClassV, Num: n, Vec: view, Lane: int(k)}
+}
+
+// laneView is the scalar view letter of a vector type's lanes.
+func (s scalar) laneView() string {
+	switch s.laneBits {
+	case 8:
+		return "b"
+	case 16:
+		return "h"
+	case 32:
+		return "s"
+	}
+	return "d"
+}
+
+// floatVecOps and intVecOps are the operations each family of shapes
+// admits (docs/spec/93-simd.md sections 1.2 and 1.2a); the typechecker
+// refuses the rest, so a mismatch here is a defect, reported Unsupported.
+var floatVecOps = map[string]bool{"splat": true, "load": true, "store": true, "add": true, "sub": true, "mul": true, "div": true, "fma": true, "min": true, "max": true, "sqrt": true, "neg": true, "abs": true, "extract": true, "insert": true, "reduce_add": true}
+var intVecOps = map[string]bool{"splat": true, "load": true, "store": true, "add": true, "sub": true, "and": true, "or": true, "xor": true, "min": true, "max": true, "eq": true, "subs": true, "shr": true, "any": true, "all": true, "tbl": true, "prev": true, "movemask": true}
+
+// admitsOp reports the operation belongs to the shape's family.
+func (s scalar) admitsOp(op string) bool {
+	if s.laneFloat {
+		return floatVecOps[op]
+	}
+	return intVecOps[op]
 }
 
 // arr is the NEON arrangement of a vector type's lanes.
@@ -141,14 +185,19 @@ func (g *generator) simdResultType(member string, args []ast.Expression) (scalar
 	if !ok {
 		return scalar{}, unsupported("the simd operation %s", member)
 	}
+	if !shape.admitsOp(op) {
+		return scalar{}, unsupported("the simd operation %s", member)
+	}
 	switch op {
 	case "any", "all":
 		return scalars["Bool"], nil
 	case "movemask":
 		return scalars["u32"], nil
+	case "extract", "reduce_add":
+		return scalars[shape.laneName()], nil
 	case "store":
 		return scalar{}, unsupported("simd.%s in value position", member)
-	case "splat", "load", "add", "sub", "and", "or", "xor", "min", "max", "eq", "subs", "shr", "tbl", "prev":
+	case "splat", "load", "add", "sub", "and", "or", "xor", "min", "max", "eq", "subs", "shr", "tbl", "prev", "mul", "div", "fma", "sqrt", "neg", "abs", "insert":
 		return shape, nil
 	}
 	return scalar{}, unsupported("the simd operation %s", member)
@@ -167,9 +216,10 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 	if !ok {
 		return 0, unsupported("the simd operation %s", member)
 	}
-	arity := map[string]int{"splat": 1, "load": 2, "store": 3, "add": 2, "sub": 2, "and": 2, "or": 2, "xor": 2, "min": 2, "max": 2, "eq": 2, "subs": 2, "shr": 2, "any": 1, "all": 1, "tbl": 2, "prev": 3, "movemask": 1}
+	arity := map[string]int{"splat": 1, "load": 2, "store": 3, "add": 2, "sub": 2, "and": 2, "or": 2, "xor": 2, "min": 2, "max": 2, "eq": 2, "subs": 2, "shr": 2, "any": 1, "all": 1, "tbl": 2, "prev": 3, "movemask": 1,
+		"mul": 2, "div": 2, "fma": 3, "sqrt": 1, "neg": 1, "abs": 1, "extract": 2, "insert": 3, "reduce_add": 1}
 	want, known := arity[op]
-	if !known {
+	if !known || !shape.admitsOp(op) {
 		return 0, unsupported("the simd operation %s", member)
 	}
 	if len(args) != want {
@@ -186,7 +236,13 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		g.emit("dup", vreg(v-vecBase, shape.arr()), reg(r, elem))
+		if shape.laneFloat {
+			// A float scalar lives in lane 0 of its register: the element
+			// form of dup broadcasts it.
+			g.emit("dup", vreg(v-vecBase, shape.arr()), laneReg(r-vecBase, shape.laneView(), 0))
+		} else {
+			g.emit("dup", vreg(v-vecBase, shape.arr()), reg(r, elem))
+		}
 		g.release(r)
 		return v, nil
 	case "load":
@@ -205,11 +261,6 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 		if sp.elem.name != shape.laneName() {
 			return 0, unsupported("simd.%s over a view of %s", member, sp.elem.name)
 		}
-		if shape.laneBits != 8 {
-			// A q load indexes by bytes or by sixteens, never by a lane
-			// size in between; wider lanes wait for the scaled-index idiom.
-			return 0, unsupported("simd.%s (a vector load over %s lanes needs a scaled index)", member, shape.laneName())
-		}
 		idx, err := g.vecGuardedIndex(sp, args[0], args[1], shape)
 		if err != nil {
 			return 0, err
@@ -218,8 +269,13 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		g.emit("ldr", qreg(v-vecBase), g.vecAddress(sp, idx, shape))
+		addr, addrReg, err := g.vecAddress(sp, idx, shape)
+		if err != nil {
+			return 0, err
+		}
+		g.emit("ldr", qreg(v-vecBase), addr)
 		g.release(idx)
+		g.releaseAddr(addrReg)
 		return v, nil
 	case "store":
 		if arr, k, ok := g.vecArrayOperand(args[0], args[1], shape, true); ok {
@@ -241,9 +297,6 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 		if sp.elem.name != shape.laneName() {
 			return 0, unsupported("simd.%s over a span of %s", member, sp.elem.name)
 		}
-		if shape.laneBits != 8 {
-			return 0, unsupported("simd.%s (a vector store over %s lanes needs a scaled index)", member, shape.laneName())
-		}
 		v, err := g.expr(args[2], &shape)
 		if err != nil {
 			return 0, err
@@ -252,13 +305,23 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		g.emit("str", qreg(v-vecBase), g.vecAddress(sp, idx, shape))
+		addr, addrReg, err := g.vecAddress(sp, idx, shape)
+		if err != nil {
+			return 0, err
+		}
+		g.emit("str", qreg(v-vecBase), addr)
 		g.release(idx)
+		g.releaseAddr(addrReg)
 		g.release(v)
 		return -1, nil
-	case "add", "sub", "and", "or", "xor", "min", "max", "eq", "subs":
+	case "add", "sub", "and", "or", "xor", "min", "max", "eq", "subs", "mul", "div":
 		mnemonic := map[string]string{"add": "add", "sub": "sub", "and": "and", "or": "orr", "xor": "eor", "min": "umin", "max": "umax", "eq": "cmeq", "subs": "uqsub"}[op]
-		if (op == "min" || op == "max") && shape.laneBits == 64 {
+		if shape.laneFloat {
+			// Lane-wise IEEE arithmetic, one rounding each; fmin/fmax are
+			// the 754-2019 minimum/maximum the catalog specifies.
+			mnemonic = map[string]string{"add": "fadd", "sub": "fsub", "mul": "fmul", "div": "fdiv", "min": "fmin", "max": "fmax"}[op]
+		}
+		if (op == "min" || op == "max") && shape.laneBits == 64 && !shape.laneFloat {
 			return 0, unsupported("simd.%s (NEON has no 64-bit lane form)", member)
 		}
 		a, err := g.expr(args[0], &shape)
@@ -276,6 +339,99 @@ func (g *generator) simdOp(member string, args []ast.Expression) (int, error) {
 		g.emit(mnemonic, vreg(a-vecBase, arr), vreg(a-vecBase, arr), vreg(b-vecBase, arr))
 		g.release(b)
 		return a, nil
+	case "fma":
+		// fma(a, b, c) = a*b + c in one rounding: fmla accumulates into
+		// its destination, so c's register receives the result.
+		a, err := g.expr(args[0], &shape)
+		if err != nil {
+			return 0, err
+		}
+		b, err := g.expr(args[1], &shape)
+		if err != nil {
+			return 0, err
+		}
+		c, err := g.expr(args[2], &shape)
+		if err != nil {
+			return 0, err
+		}
+		g.emit("fmla", vreg(c-vecBase, shape.arr()), vreg(a-vecBase, shape.arr()), vreg(b-vecBase, shape.arr()))
+		g.release(a)
+		g.release(b)
+		return c, nil
+	case "sqrt", "neg", "abs":
+		a, err := g.expr(args[0], &shape)
+		if err != nil {
+			return 0, err
+		}
+		mnemonic := map[string]string{"sqrt": "fsqrt", "neg": "fneg", "abs": "fabs"}[op]
+		g.emit(mnemonic, vreg(a-vecBase, shape.arr()), vreg(a-vecBase, shape.arr()))
+		return a, nil
+	case "extract":
+		// A literal lane index is checked here against the lane count; a
+		// non-literal one needs the C backend's run-time check.
+		k, isConst := constantValue(args[1])
+		if !isConst {
+			return 0, unsupported("simd.%s with a lane index that is not a literal", member)
+		}
+		if k < 0 || k >= int64(shape.lanes) {
+			return 0, unsupported("simd.%s at lane %d (the index reaches the lane count and traps)", member, k)
+		}
+		a, err := g.expr(args[0], &shape)
+		if err != nil {
+			return 0, err
+		}
+		elem := scalars[shape.laneName()]
+		r, err := g.alloc(elem)
+		if err != nil {
+			return 0, err
+		}
+		g.emit("mov", reg(r, elem), laneReg(a-vecBase, shape.laneView(), k))
+		g.release(a)
+		return r, nil
+	case "insert":
+		k, isConst := constantValue(args[1])
+		if !isConst {
+			return 0, unsupported("simd.%s with a lane index that is not a literal", member)
+		}
+		if k < 0 || k >= int64(shape.lanes) {
+			return 0, unsupported("simd.%s at lane %d (the index reaches the lane count and traps)", member, k)
+		}
+		a, err := g.expr(args[0], &shape)
+		if err != nil {
+			return 0, err
+		}
+		elem := scalars[shape.laneName()]
+		x, err := g.expr(args[2], &elem)
+		if err != nil {
+			return 0, err
+		}
+		g.emit("mov", laneReg(a-vecBase, shape.laneView(), k), laneReg(x-vecBase, shape.laneView(), 0))
+		g.release(x)
+		return a, nil
+	case "reduce_add":
+		// The pairwise tree of docs/spec/93-simd.md section 1.2a: faddp
+		// over the four lanes leaves (l0+l1, l2+l3, l0+l1, l2+l3), and
+		// the scalar faddp over the low pair adds them — exactly
+		// (l0 + l1) + (l2 + l3) (Oak.Simd.pairwise_reduce); two lanes are
+		// one scalar faddp.
+		a, err := g.expr(args[0], &shape)
+		if err != nil {
+			return 0, err
+		}
+		elem := scalars[shape.laneName()]
+		r, err := g.alloc(elem)
+		if err != nil {
+			return 0, err
+		}
+		n := a - vecBase
+		if shape.lanes == 4 {
+			g.emit("faddp", vreg(n, "4s"), vreg(n, "4s"), vreg(n, "4s"))
+			g.emit("faddp", reg(r, elem), vreg(n, "2s"))
+		} else {
+			g.emit("faddp", reg(r, elem), vreg(n, "2d"))
+		}
+		g.release(a)
+		return r, nil
 	case "shr":
 		count, isConst := constantValue(args[1])
 		if !isConst {
@@ -379,7 +535,12 @@ func (g *generator) vecArrayOperand(operand, index ast.Expression, shape scalar,
 }
 
 // laneName is the lane's scalar type name.
-func (s scalar) laneName() string { return "u" + strconv.Itoa(s.laneBits) }
+func (s scalar) laneName() string {
+	if s.laneFloat {
+		return "f" + strconv.Itoa(s.laneBits)
+	}
+	return "u" + strconv.Itoa(s.laneBits)
+}
 
 // loopFact: an enclosing `while len(span) >= u32(N) && index <= len(span)
 // - u32(N)` proves index + N <= len(span) in its body until index is
@@ -515,11 +676,32 @@ func (g *generator) vecGuardedIndex(sp span, operand, index ast.Expression, shap
 	return r, nil
 }
 
-// vecAddress is [base, wIdx, uxtw #s]: the element index scaled by the
-// lane size, sixteen bytes from there.
-func (g *generator) vecAddress(sp span, idx int, shape scalar) asm.Memory {
+// vecAddress is the address of the sixteen bytes at element index wIdx.
+// Over byte lanes it is `[base, wIdx, uxtw]` (a q load indexes by bytes
+// or by sixteens, never by a lane size between); over wider lanes the
+// element address is formed first, `add xE, xB, wIdx, uxtw #s`, which the
+// checker records as the region of the guard's lanes (the slack guard
+// `wIdx + lanes <= len` proves every byte inside the span,
+// Oak.Assembler.index_access_lanes), and the access is `[xE]`. The second
+// result is the address register to release, or -1.
+func (g *generator) vecAddress(sp span, idx int, shape scalar) (asm.Memory, int, error) {
 	w := wr(idx)
-	return asm.Memory{Base: xr(sp.baseReg), Index: &w, Shift: log2Bytes(shape.laneBits / 8), Extend: "uxtw"}
+	if shape.laneBits == 8 {
+		return asm.Memory{Base: xr(sp.baseReg), Index: &w, Shift: 0, Extend: "uxtw"}, -1, nil
+	}
+	element, err := g.alloc(scalars["u64"])
+	if err != nil {
+		return asm.Memory{}, -1, err
+	}
+	g.emit("add", xr(element), xr(sp.baseReg), asm.Extended{Reg: w, Kind: "uxtw", Amount: int64(log2Bytes(shape.laneBits / 8))})
+	return asm.Memory{Base: xr(element)}, element, nil
+}
+
+// releaseAddr releases the address register vecAddress allocated, if any.
+func (g *generator) releaseAddr(r int) {
+	if r >= 0 {
+		g.release(r)
+	}
 }
 
 // simdMovemask: one bit per lane, bit i the top bit of lane i. Bytes: the
@@ -626,7 +808,15 @@ func (g *generator) simdPopcount(member string, args []ast.Expression) (int, err
 // backend's lane-array struct does not, so the C emitter defines the Oak
 // name as a converting shim over the suffixed native entry
 // (codegen/codegen.go emitVectorShim). Identifiers never end in it.
-const VectorContractSuffix = "_neon_abi"
+const VectorContractSuffix = "_neon_abi" // asm.VectorEntrySuffix(asm.ArchArm64)
+
+// RVVContractSuffix is the RV64 lane's counterpart (docs/spec/94-assembler.md
+// §9, "vectors across the call boundary"): the native entry takes its
+// vectors in the RVV psABI's argument registers v8–v23 and returns one in
+// v8, where the C backend's lane-array struct crosses in the integer
+// registers, so the C emitter defines the Oak name as a converting shim
+// over the suffixed entry (codegen/codegen.go emitVectorShim).
+const RVVContractSuffix = "_rvv_abi" // asm.VectorEntrySuffix(asm.ArchRV64)
 
 // VectorContract reports a function whose parameters or result include a
 // fixed vector type.
@@ -648,10 +838,17 @@ func VectorContract(fn *ast.FunctionStatement) bool {
 }
 
 // NativeSymbol is the Oak-level name the native lowering of fn is encoded
-// under: the function's own name, suffixed under the vector contract.
+// under on the AArch64 lane: the function's own name, suffixed under the
+// vector contract.
 func NativeSymbol(fn *ast.FunctionStatement) string {
+	return NativeSymbolFor(asm.ArchArm64, fn)
+}
+
+// NativeSymbolFor is NativeSymbol on the given lane: the vector contract's
+// suffix is the lane's (`_neon_abi`, `_rvv_abi`).
+func NativeSymbolFor(arch string, fn *ast.FunctionStatement) string {
 	if VectorContract(fn) {
-		return fn.Name.Value + VectorContractSuffix
+		return fn.Name.Value + asm.VectorEntrySuffix(arch)
 	}
 	return fn.Name.Value
 }
