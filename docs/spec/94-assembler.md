@@ -2361,10 +2361,15 @@ comparison and branch theorems it bridges the register ALU (`add`, `sub`,
 `and`, `or`, `xor`, `sll`, `srl`, `sra` with the count the low six bits),
 the immediate forms (`addi`, `andi`, `ori`, `xori`, `slti`, `sltiu`, the
 immediate sign-extended), the shifts by immediate at both widths, `addiw`,
-and the low-half multiplies `mulw` and `mul` (`BitVec.ofInt` a ring
+the multiplies `mul`, `mulw`, `mulh`, `mulhu` (`BitVec.ofInt` a ring
 homomorphism, so the model's integer product truncated is the bit-vector
-product) — 36 theorems, every integer instruction the verifier's tables
-decide except the high-half multiplies and the divisions. The generation
+product, its high half the high half of the extended product), and the
+divisions and remainders `div`, `divu`, `rem`, `remu` (the model computes
+on `Int` with `tdiv`/`tmod` and spells the zero-divisor and overflow cases
+out; `BitVec.toInt_sdiv`/`toInt_srem` and the bound `|a tdiv b| ≤ |a|`
+carry them to Oak's totalized `sdiv`/`srem`) — 42 theorems, every integer
+instruction the verifier's tables decide except the W-form divisions,
+whose 32-bit totalization `Oak.RiscV` does not yet state. The generation
 and build steps are in `spec/lean-sail/README.md`; the Go test builds the
 project when the export is present and skips otherwise.
 
