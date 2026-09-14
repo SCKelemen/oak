@@ -2338,7 +2338,8 @@ bare machine under QEMU against the C backend's realization;
 `asm/stack_params_test.go`).
 
 **Thirty-fourth increment — the RV64 lane's span locals and value-less
-records (2026-09-15; `nativegen/rv64.go`).** A `main` that named a view
+records (2026-09-15; `nativegen/rv64.go`; `spec/lean/Oak/SpanLocals.lean`).**
+A `main` that named a view
 of its own array (`whole: []u32 = view(&buf)`), or declared a record
 without an initializer, stayed with the C backend on the rv64 lane ("a
 local of type ([]u32)", "the record local p without an initializer"),
@@ -2351,7 +2352,10 @@ checker's guarded-index idiom, passes on as a `{base, len}` pair, and
 another named span aliases by copying the registers; a subslice stays with
 the C backend in this increment. A record local without an initializer is
 zero-filled from the zero register, word by word (docs/spec/90-backend.md
-§6), and the verifier's Oak side now holds every value-less aggregate
+§6). The Lean model states the pair's two facts — a guarded element access
+(`i < n`) stays inside the array's slots and so below the frame, as an
+instance of the checker's span access rule, and the word-by-word zero fill
+is the record's zero value — and the verifier's Oak side now holds every value-less aggregate
 local — an array, a record, a sum — at its zero value, as both backends
 fill it, where it refused a record or a sum. `compiler/e2e_native_rv64_span_locals_test.go`
 runs a program with both on the bare machine under QEMU and on the
