@@ -3590,6 +3590,33 @@ budget, continue conditions and results after loops the coupling does
 not prove, and two stores under conditions the proof does not relate.
 Pinned: `compiler/e2e_native_loop_bool_test.go` (both lanes).
 
+**The induction's base, and what the loop memory still leaves out
+(2026-09-14).** The span memories through loops were an induction with
+the step alone: the two markers made the memories at the exit one unknown
+memory whatever either side had stored before the loop, so a body whose
+asm stored `x + 1` at `v[0]` before a fill loop where Oak stored `x` was
+proven. The base is now an obligation of the coupling
+(`coupledEntryMemories`): for every marked span, the stores before the
+loop over the span's entry memory, at a fresh index, equal on the two
+sides under the coupling and — for a nested loop — the parent's body
+premise. Alongside: the concrete layer compares the memories the two
+runs leave, at every index either side stored, so a wrong store in a
+loop body (and a differing store before it) is a mismatch with a concrete
+input rather than evidence, and a unit function's loops have witnesses
+as a result's do; when the iteration's stores do not pair one for one
+(`coupledWrites`), the memories they leave are compared whole at a fresh
+index over the loop's unknown memory before the verdict falls to
+evidence; and a callee summarized inside a loop body may store through
+the caller's spans, its stores joining the iteration's log (a callee
+writing package cells stays refused). On the prover the proven count is
+unchanged at 354 — no body relied on the gap, and none of the bodies
+still evidence pairs differently — and the gap is pinned:
+`asm/effects_test.go` `TestVerifyLoopStores` (a fill loop proven, a wrong
+body store a mismatch, a result after the loop, a store before the loop
+read after it, and the differing store before the loop refuted) and
+`compiler/e2e_native_loop_stores_test.go` (a loop storing through a
+callee, both lanes).
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built

@@ -346,6 +346,12 @@ type loopEvent struct {
 	// under the body path condition it happens on. The coupling proof
 	// compares the two sides' stores pairwise (verifyLoops).
 	writes map[string][]*spanWrite
+	// entry: each marked span's write log at the loop's entry, over the
+	// span's entry memory — what the marker replaced. The coupling proof
+	// requires the two sides' entry memories equal (the induction's base;
+	// without it a store before the loop that differs between the sides
+	// would vanish under the markers).
+	entry map[string][]*spanWrite
 }
 
 func (ev *loopEvent) freshName(v string) string { return fmt.Sprintf("loop%d.%s", ev.index, v) }
@@ -661,7 +667,9 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	for _, span := range writtenSpans {
 		storedSpans[span] = true
 	}
+	ev.entry = map[string][]*spanWrite{}
 	for _, span := range writtenSpans {
+		ev.entry[span] = freshState.writes[span]
 		freshState.writes = appendMarker(freshState.writes, span, ev.index)
 	}
 	// One iteration of the body on the fresh state: its paths (a branch
@@ -754,20 +762,16 @@ func writableSpanParams(fn *Function, spans map[string]int64) []string {
 // with memory effects (stores through spans, package cells) is refused,
 // since the loop summary carries registers and frame slots, not memories.
 func (x *pathExecutor) summarizeCallInLoop(instr Instruction, st *symbolicState) (string, bool) {
-	writesBefore, cellsBefore := 0, len(st.globals)
-	for _, log := range st.writes {
-		writesBefore += len(log)
-	}
+	cellsBefore := len(st.globals)
 	reason, ok := x.summarizeCall(instr, st)
 	if !ok {
 		return reason, false
 	}
-	writesAfter := 0
-	for _, log := range st.writes {
-		writesAfter += len(log)
-	}
-	if writesAfter != writesBefore || len(st.globals) != cellsBefore {
-		return "a call with memory effects in a loop", false
+	// A callee's stores through the caller's spans join the iteration's
+	// write log (the loop's memory); a callee writing package cells is
+	// refused, since the loop summary carries no cells.
+	if len(st.globals) != cellsBefore {
+		return "a call writing package state in a loop", false
 	}
 	return "", true
 }
@@ -1215,7 +1219,9 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	}
 	sort.Strings(storedSpans)
 	before := map[string]int{}
+	ev.entry = map[string][]*spanWrite{}
 	for _, span := range storedSpans {
+		ev.entry[span] = lo.writes[span]
 		lo.writes = appendMarker(lo.writes, span, ev.index)
 		lo.spans[loopMemoryName(ev.index, span)] = lo.spans[span] // the unknown memory's element width
 		before[span] = len(lo.writes[span])
@@ -1544,18 +1550,22 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// result term: the span memories are the comparison) has none here;
 	// its proof is the coupling alone.
 	checked := 0
-	witnessInputs := loopWitnessInputs(fn, sig)
-	if asmTerm == nil {
-		witnessInputs = nil
-	}
-	for _, env := range witnessInputs {
+	for _, env := range loopWitnessInputs(fn, sig) {
 		if !lowering.inDomain(env) {
 			continue // a union tag outside its variants: not a well-typed input
 		}
-		asmValue, _, reasonA, okA := executeBodyChunk(fn, sig, env, 0, exec.resultChunk)
+		asmValue, asmRun, reasonA, okA := executeBodyChunk(fn, sig, env, 0, exec.resultChunk)
 		concrete := prepareLowering(fn, sig, env)
 		concrete.resultChunk = exec.resultChunk
-		oakValue, _, reasonO, okO := concrete.resultTerm(fn, sig, oakBody)
+		var oakValue *term
+		var reasonO string
+		var okO bool
+		if asmTerm != nil {
+			oakValue, _, reasonO, okO = concrete.resultTerm(fn, sig, oakBody)
+		} else {
+			// A unit function: the concrete run's memories are the comparison.
+			reasonO, okO = concrete.lowerUnitBody(oakBody)
+		}
 		if os.Getenv("OAK_VERIFY_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "witness %s %v: asm ok=%v %q trap=%v; oak ok=%v %q\n", fn.Name, env, okA, reasonA, asmValue == trapPath, okO, reasonO)
 		}
@@ -1565,14 +1575,23 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			// input set to zero): no value to compare on either side.
 			continue
 		}
-		got, want := truncate(maskResult(fn, sig, asmValue, exec.resultChunk), width).eval(env), oakValue.eval(env)
-		if got != want {
-			names := make([]string, 0, len(env))
-			for name := range env {
-				names = append(names, name)
+		names := make([]string, 0, len(env))
+		for name := range env {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		if asmTerm != nil {
+			got, want := truncate(maskResult(fn, sig, asmValue, exec.resultChunk), width).eval(env), oakValue.eval(env)
+			if got != want {
+				return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (fixed element contents): asm yields %d, Oak yields %d", fn.Name, describeEnv(names, env), got, want)}
 			}
-			sort.Strings(names)
-			return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (fixed element contents): asm yields %d, Oak yields %d", fn.Name, describeEnv(names, env), got, want)}
+		}
+		// The memories the concrete runs leave: every store's index is a
+		// constant on a concrete input, so the two logs are compared at
+		// every index either side stored (elsewhere both hold the fixed
+		// memory) — a wrong store in a loop body is refuted here.
+		if span, index, got, want, differ := concreteMemoriesDiffer(asmRun.writes, concrete.writes, lowering, env); differ {
+			return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (fixed element contents) in the span %s at index %d: asm leaves %d, Oak leaves %d", fn.Name, describeEnv(names, env), span, index, got, want)}
 		}
 		checked++
 	}
@@ -2057,8 +2076,25 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// an inner loop's marker matches its counterpart by name.
 	for k, oakEv := range oakLoops {
 		asmEv := asmLoops[k]
-		if reason, ok := coupledWrites(k, oakEv, asmEv, sigma, bodyPremise(k, sigma, true), lowering, implies); !ok {
+		// The induction's base: the memories at the loop's entry agree —
+		// each span's stores before the loop over its entry memory, at a
+		// fresh index, the asm side under the coupling; under the parent
+		// loop's body premise when nested.
+		entryPremise := constTerm(1, 1)
+		if oakEv.parent > 0 {
+			entryPremise = bodyPremise(oakEv.parent-1, sigma, true)
+		}
+		if reason, ok := coupledEntryMemories(k, oakEv, asmEv, sigma, entryPremise, lowering, implies); !ok {
 			return evidence(reason)
+		}
+		if reason, ok := coupledWrites(k, oakEv, asmEv, sigma, bodyPremise(k, sigma, true), lowering, implies); !ok {
+			// The stores did not pair one for one; the memories they leave
+			// may still be one memory (stores in another order, a guarded
+			// store against a split path): the iteration's memories are
+			// compared whole at a fresh index.
+			if memReason, memOk := coupledIterationMemories(k, oakEv, asmEv, sigma, bodyPremise(k, sigma, true), lowering, implies); !memOk {
+				return evidence(reason + "; " + memReason)
+			}
 		}
 	}
 	// The exit comparison, under every top-level loop's exit premise. A
@@ -2071,9 +2107,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	for name := range mentioned {
 		var k int
 		var reg string
-		if n, _ := fmt.Sscanf(name, "loop%d.%s", &k, &reg); n == 2 && sigma[name] == nil {
+		if n, _ := fmt.Sscanf(name, "loop%d.%s", &k, &reg); n == 2 && sigma[name] == nil && !strings.Contains(reg, "[") {
 			// The asm result mentions only asm symbols: a register, a vector
-			// register half or a frame slot of a loop.
+			// register half or a frame slot of a loop. An element of a
+			// loop's unknown memory (`loop1.v[0]`) is spelled the same on
+			// both sides and needs no coupling.
 			return evidence(fmt.Sprintf("the result reads loop-carried %s of loop %d, which no Oak variable is coupled to", reg, k))
 		}
 	}
@@ -2202,6 +2240,139 @@ func coupledWrites(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premi
 		}
 	}
 	return "", true
+}
+
+// coupledEntryMemories requires the two sides' memories at loop k's
+// entry equal, span by span: the stores before the loop over the span's
+// entry memory, at a fresh index, the asm side under the coupling. This
+// is the induction's base; the iteration's stores are its step.
+func coupledEntryMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premise *term, lowering *oakLowering, implies func(premise, a, b *term) (bool, bool)) (string, bool) {
+	spans := map[string]bool{}
+	for span := range oakEv.entry {
+		spans[span] = true
+	}
+	for span := range asmEv.entry {
+		spans[span] = true
+	}
+	names := make([]string, 0, len(spans))
+	for span := range spans {
+		names = append(names, span)
+	}
+	sort.Strings(names)
+	for _, span := range names {
+		oakLog, oakHas := oakEv.entry[span]
+		asmLog, asmHas := asmEv.entry[span]
+		if !oakHas || !asmHas {
+			return fmt.Sprintf("loop %d marks the memory of %s on one side only", k+1, span), false
+		}
+		if len(oakLog) == 0 && len(asmLog) == 0 {
+			continue // both the entry memory itself
+		}
+		contract, isSpan := lowering.spans[span]
+		if !isSpan {
+			return fmt.Sprintf("loop %d marks %s, which the signature does not declare as a span", k+1, span), false
+		}
+		lowering.fresh[spanIndexName(span)] = 32
+		at := paramTerm(spanIndexName(span), 32)
+		entry := selectTerm(span, at, contract.elemWidth)
+		oakMemory := memoryAt(oakLog, at, entry)
+		asmMemory := substitute(memoryAt(asmLog, at, entry), sigma)
+		if equal, decided := implies(premise, oakMemory, asmMemory); !decided || !equal {
+			reason := fmt.Sprintf("the memory of %s at loop %d's entry was not proven equal", span, k+1)
+			if !decided {
+				reason += " (the bit-level decision exceeded its node budget)"
+			}
+			return reason, false
+		}
+	}
+	return "", true
+}
+
+// coupledIterationMemories compares the memories one iteration of loop k
+// leaves, span by span, as memories rather than store by store: the
+// iteration's stores over the loop's unknown memory, at a fresh index,
+// the asm side under the coupling and the body premise.
+func coupledIterationMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*term, premise *term, lowering *oakLowering, implies func(premise, a, b *term) (bool, bool)) (string, bool) {
+	spans := map[string]bool{}
+	for span := range oakEv.writes {
+		spans[span] = true
+	}
+	for span := range asmEv.writes {
+		spans[span] = true
+	}
+	names := make([]string, 0, len(spans))
+	for span := range spans {
+		names = append(names, span)
+	}
+	sort.Strings(names)
+	for _, span := range names {
+		contract, isSpan := lowering.spans[span]
+		if !isSpan {
+			return fmt.Sprintf("loop %d stores through %s, which the signature does not declare as a span", k+1, span), false
+		}
+		lowering.fresh[spanIndexName(span)] = 32
+		at := paramTerm(spanIndexName(span), 32)
+		unknown := selectTerm(loopMemoryName(oakEv.index, span), at, contract.elemWidth)
+		oakMemory := memoryAt(oakEv.writes[span], at, unknown)
+		asmMemory := substitute(memoryAt(asmEv.writes[span], at, unknown), sigma)
+		if equal, decided := implies(premise, oakMemory, asmMemory); !decided || !equal {
+			reason := fmt.Sprintf("one iteration of loop %d was not proven to leave the memory of %s equal", k+1, span)
+			if !decided {
+				reason += " (the bit-level decision exceeded its node budget)"
+			}
+			return reason, false
+		}
+	}
+	return "", true
+}
+
+// concreteMemoriesDiffer compares two write logs of a concrete run as
+// memories: at every index either side stored (a constant on a concrete
+// input), the values left must agree; elsewhere both hold the fixed
+// memory. Reports the first difference.
+func concreteMemoriesDiffer(asmLogs, oakLogs map[string][]*spanWrite, lowering *oakLowering, env map[string]uint64) (span string, index uint64, got, want uint64, differ bool) {
+	spans := map[string]bool{}
+	for name := range asmLogs {
+		spans[name] = true
+	}
+	for name := range oakLogs {
+		spans[name] = true
+	}
+	names := make([]string, 0, len(spans))
+	for name := range spans {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		contract, isSpan := lowering.spans[name]
+		if !isSpan {
+			continue
+		}
+		indices := map[uint64]bool{}
+		for _, log := range [][]*spanWrite{asmLogs[name], oakLogs[name]} {
+			for _, w := range log {
+				if w.memory != "" || w.index.kind != termConst {
+					return "", 0, 0, 0, false // not a concrete run's log
+				}
+				indices[w.index.value&mask(32)] = true
+			}
+		}
+		sorted := make([]uint64, 0, len(indices))
+		for k := range indices {
+			sorted = append(sorted, k)
+		}
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+		for _, k := range sorted {
+			at := constTerm(k, 32)
+			entry := constTerm(elementValue(name, k, contract.elemWidth), contract.elemWidth)
+			a := memoryAt(asmLogs[name], at, entry).eval(env)
+			o := memoryAt(oakLogs[name], at, entry).eval(env)
+			if a != o {
+				return name, k, a, o, true
+			}
+		}
+	}
+	return "", 0, 0, 0, false
 }
 
 // substitute replaces parameters by terms (the asm loop symbols by their

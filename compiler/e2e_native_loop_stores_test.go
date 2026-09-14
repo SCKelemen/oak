@@ -39,6 +39,19 @@ zero_odd: (v: [*]u32, n: u32) -> () {
   }
 }
 
+put: (v: [*]u32, i: u32, x: u32) -> () {
+  v[i] = x
+}
+
+fill_via: (v: [*]u32, n: u32) -> u32 {
+  i: u32 = u32(0)
+  while i < n {
+    put(v, i, i * u32(3))
+    i = i + u32(1)
+  }
+  i
+}
+
 main: (): i32 {
   buf: [4]u32
   bytes: [4]u8 = [4]u8{7, 8, 9, 10}
@@ -46,7 +59,9 @@ main: (): i32 {
   fill(span(&buf), u32(3), u32(5))
   n: u32 = copy_into(span(&out), view(&bytes), u32(4))
   zero_odd(span(&buf), u32(4))
-  i32_bits_u32(buf[0] + buf[2] + buf[3] + u32(out[3]) + n - u32(14))
+  via: [4]u32
+  m: u32 = fill_via(span(&via), u32(3))
+  i32_bits_u32(buf[0] + buf[2] + buf[3] + u32(out[3]) + n - u32(14) + via[2] + m - u32(9))
 }
 `
 
@@ -67,7 +82,7 @@ func TestE2ENativeLoopStores(t *testing.T) {
 			t.Fatalf("%s: native build: %v", tname, err)
 		}
 		joined := strings.Join(native, "\n")
-		for _, fn := range []string{"fill", "copy_into", "zero_odd"} {
+		for _, fn := range []string{"fill", "copy_into", "zero_odd", "fill_via"} {
 			verdict := ""
 			for _, m := range native {
 				if strings.Contains(m, "asm unit "+fn+":") {
