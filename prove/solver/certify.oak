@@ -17,6 +17,20 @@ CERT_REFUSED: u32 = 5
 CERT_MODEL_UNCONFIRMED: u32 = 6
 
 CERT_CONFLICTS: u32 = 200000
+
+// cert_conflicts is the conflict budget: OAK_PROVE_CONFLICTS (`oak prove
+// -conflicts N`) when set to digits, else CERT_CONFLICTS.
+cert_conflicts: (): u32 {
+  buf: [16]u8
+  n: u32 = copy_env(c_getenv(c.cstr("OAK_PROVE_CONFLICTS\0")), span(&buf))
+  value: u32 = 0
+  k: u32 = 0
+  while k < n {
+    value = value * u32(10) + u32(buf[k] - u8(48))
+    k = k + u32(1)
+  }
+  value == u32(0) ? { CERT_CONFLICTS } | { value }
+}
 CERT_RECORD_WORDS: u32 = 16777216
 
 // certify_in_oak runs the rung over the problem in the built buffer b0
@@ -45,7 +59,8 @@ certify_over: (whole: []u32, n0: u32, node_budget: u32, out: [*]u32): () {
     outcome == CNF_PROVEN ? { out[u32(0)] = CERT_CONSTANT_TRUE } | {
     outcome == CNF_REFUTED ? { out[u32(0)] = CERT_CONSTANT_FALSE } | {
     outcome == CNF_CLAUSE ? {
-      cnf_set_capacities(span(&arena), clause_layout.clauses_at, CERT_CONFLICTS)
+      conflicts: u32 = cert_conflicts()
+      cnf_set_capacities(span(&arena), clause_layout.clauses_at, conflicts)
       region_view: []u32 = view(&arena)
       variables: u32 = region_view[clause_layout.clauses_at + u32(1)]
       literal_words: u32 = region_view[clause_layout.clauses_at + u32(3)]
@@ -55,7 +70,7 @@ certify_over: (whole: []u32, n0: u32, node_budget: u32, out: [*]u32): () {
       sat_raw: c.Ptr = malloc(c.Size(sl.total * u32(4)))
       sat_arena: Buffer[u32] = c.own[u32](sat_raw, sl.total)
       status: u32 = SAT_MALFORMED
-      sat_init(sl, span(&sat_arena), subslice(region_view, clause_layout.clauses_at, LRAT_HEADER_WORDS + literal_words), CERT_CONFLICTS, true) ? {
+      sat_init(sl, span(&sat_arena), subslice(region_view, clause_layout.clauses_at, LRAT_HEADER_WORDS + literal_words), conflicts, true) ? {
         status = sat_solve(sl, span(&sat_arena))
       } | { }
       status == SAT_UNSATISFIABLE ? {

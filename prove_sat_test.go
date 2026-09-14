@@ -145,3 +145,26 @@ func TestOakShellCertificates(t *testing.T) {
 		t.Fatalf("a certificate row disagrees:\n%s", text)
 	}
 }
+
+// -conflicts bounds the solver on both paths: under a budget of one
+// conflict every row that needs learning gives up, on the Go-driven rung
+// and inside the shell, and the rows keep the ladder's verdict.
+func TestCertificateRungBudget(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := proveCommand([]string{"-solver", "sat", "-conflicts", "1", filepath.Join("spec", "oak", "machines.oak")}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s%s", code, out.String(), errOut.String())
+	}
+	if text := out.String(); !strings.Contains(text, "the solver gave up") || strings.Contains(text, "an LRAT certificate of") {
+		t.Fatalf("-solver sat -conflicts 1 must give up on every learned row:\n%s", text)
+	}
+	out.Reset()
+	errOut.Reset()
+	code = proveCommand([]string{"-solver", "self", "-cross", "none", "-conflicts", "1", filepath.Join("spec", "oak", "machines.oak")}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s%s", code, out.String(), errOut.String())
+	}
+	if text := out.String(); !strings.Contains(text, "the certificate rung gave no verdict") || strings.Contains(text, "an LRAT certificate of") || !strings.Contains(text, "bounded__step: at the bit level") {
+		t.Fatalf("-solver self -conflicts 1 must give up on every learned row and keep the diagram's verdict:\n%s", text)
+	}
+}

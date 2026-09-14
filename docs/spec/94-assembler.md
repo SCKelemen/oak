@@ -3616,6 +3616,21 @@ body store a mismatch, a result after the loop, a store before the loop
 read after it, and the differing store before the loop refuted) and
 `compiler/e2e_native_loop_stores_test.go` (a loop storing through a
 callee, both lanes).
+**Asserts under the verifier (2026-09-14).** A body with an `assert`, or
+a call to a unit callee whose body asserts (`text_require`), was trusted:
+the Oak lowering refused the assert wherever traps are not tracked, and
+the assembler verifier's lowering does not track them — it has no
+obligations to prove, since the executor drops a trapping path from its
+fork (`brk` delivers no result) and the equivalence is over the inputs
+on which every guard holds. An assert is therefore a no-op on the Oak
+side of the verifier: the trapping inputs are outside the equivalence on
+both sides, exactly as an element guard's or a divisor's are. The
+theorem decider's reading (a trap obligation to prove impossible) is
+unchanged. Proven bodies rose to 201 on AArch64 and 179 on RV64; the
+asserting callees that remain trusted do so for their span arguments,
+not their asserts. Pinned: `compiler/e2e_native_assert_callee_test.go`
+(a body with an assert, a caller of an asserting unit callee; both
+lanes).
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the

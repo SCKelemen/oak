@@ -278,7 +278,9 @@ lrat_mode: (): Bool {
 }
 
 main: (): i32 {
-  shell_mode() ? { shell_main() } | { lrat_mode() ? { lrat_main() } | { sat_mode() ? { sat_main() } | { cnf_mode() ? { cnf_main() } | { stream_main() } } } }
+  code: i32 = shell_mode() ? { shell_main() } | { lrat_mode() ? { lrat_main() } | { sat_mode() ? { sat_main() } | { cnf_mode() ? { cnf_main() } | { stream_main() } } } }
+  write_flush()
+  code
 }
 
 // lrat_fill copies n words from src into dst.
@@ -1112,6 +1114,12 @@ const OakSATBudget = 200000
 // in as words, the certificate lines, verdict, and model come back as text
 // parsed like an external solver's (prove.ParseSolverOutput).
 func runOakSAT(cnf asm.CNF) (prove.SATOutcome, error) {
+	return runOakSATWithin(cnf, OakSATBudget)
+}
+
+// runOakSATWithin is runOakSAT under a conflict budget of the caller's
+// (`oak prove -conflicts N`).
+func runOakSATWithin(cnf asm.CNF, budget int) (prove.SATOutcome, error) {
 	words, err := prove.EncodeLRATWords(cnf.Text, "")
 	if err != nil {
 		return prove.SATOutcome{}, err
@@ -1121,7 +1129,7 @@ func runOakSAT(cnf asm.CNF) (prove.SATOutcome, error) {
 	literals := words[6]
 	words[5] = 8*words[2] + 65536
 	words[6] = 64*literals + 1<<20
-	words[7] = OakSATBudget
+	words[7] = uint32(budget)
 	solver, err := oakSolverBinary()
 	if err != nil {
 		return prove.SATOutcome{}, err
@@ -1158,12 +1166,18 @@ type OakClauseRun struct {
 // and solves them in the same process (prove/solver/sat.oak), reading back
 // the formula, the certificate, and the verdict.
 func runOakClauses(problem asm.Problem) (OakClauseRun, error) {
+	return runOakClausesWithin(problem, OakSATBudget)
+}
+
+// runOakClausesWithin is runOakClauses under a conflict budget of the
+// caller's.
+func runOakClausesWithin(problem asm.Problem, budget int) (OakClauseRun, error) {
 	solver, err := oakSolverBinary()
 	if err != nil {
 		return OakClauseRun{}, err
 	}
 	clauseWords := uint32(problem.Terms)*6144 + 65536
-	words := append([]uint32{uint32(len(problem.Words)), uint32(asm.NodeBudget), clauseWords, uint32(OakSATBudget)}, problem.Words...)
+	words := append([]uint32{uint32(len(problem.Words)), uint32(asm.NodeBudget), clauseWords, uint32(budget)}, problem.Words...)
 	encoded := make([]byte, 4*len(words))
 	for i, w := range words {
 		binary.LittleEndian.PutUint32(encoded[4*i:], w)

@@ -314,6 +314,7 @@ spawn_wait: (argv: []u8, path: []u8, env: []u8, actions_raw: c.Ptr): u32 {
   // the C compiler may warn; a failed build is reported by its status.
   opened: c.Int = spawn_actions_addopen(actions_raw, c.Int(i32(1)), c.cstr("/dev/null\0"), c.Int(i32(1)), c.Int(i32(0)))
   opened2: c.Int = spawn_actions_addopen(actions_raw, c.Int(i32(2)), c.cstr("/dev/null\0"), c.Int(i32(1)), c.Int(i32(0)))
+  write_flush()
   r: c.Int = posix_spawn(c.out(pid), c.cstr(path), actions_raw, c.null(), c.argv_of(argv, slots), c.argv_of(env, env_slots))
   destroyed: c.Int = spawn_actions_destroy(actions_raw)
   out: u32 = NONE
