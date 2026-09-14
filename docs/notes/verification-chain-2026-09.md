@@ -193,7 +193,13 @@ or the verifier, not in the program:
    sound against a register file, `TestSpanAliasMatchesLeanTransliteration`,
    §9.aa), and the RV64 checker's move rule (`Oak.RiscVSpanAlias`,
    `TestRV64SpanAliasMatchesLeanTransliteration`, §9.ab). The checker
-   facts named in STATUS are all refined.
+   facts named in STATUS are all refined. **Proof-guided elision widened
+   (2026-09-15, §9.ac):** the checker carries a guard through `add #0`,
+   reads the exclusive slack guard, and keeps guards in callee-saved
+   registers across calls; a hole (slack facts admitted without their
+   minimum, and offsets weakening the minimum required) is closed with the
+   fact's `need`. Refusals 22 → 14, guards elided 58 → 112 on the
+   stdlib-bearing program.
 6. **The checkers are linear over the block.** Base facts (spans,
    regions, frame addresses) are definitions, not per-path state; guard
    facts already flow through labels by a fixpoint on AArch64. The two

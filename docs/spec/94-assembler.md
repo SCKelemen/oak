@@ -4411,3 +4411,73 @@ Outside the model, as on the AArch64 lane: the index, scaled, half,
 remaining-count, and difference facts the write also forgets, which `mv`
 copies none of, and the frame-address and widened facts.
 
+### 9.ac Proof-guided elision: the guards the checker carries (2026-09-15)
+
+The native lowering elides an element guard the typechecker proved
+(`IndexProven`, §9 "Check elision under the checker's own facts") only
+where the seam checker admits the guardless access from the facts on the
+path; where it refuses, the body is lowered again with every guard. On the
+stdlib-bearing program the checker refused 22 of the 58 bodies the
+typechecker had proven something in, for four reasons the lowered text
+makes exact. Three are closed:
+
+- **A copy carries its guard.** `add wJ, wI, #0` (the lowering's spelling of
+  an index at offset zero) now carries wI's guard to wJ as a `mov` does
+  (`Oak.SpanAlias.idxMeans_preserved`).
+- **The exclusive slack guard.** `sub wT, wL, #K; cmp wI, wT; b.hs trap`
+  — the wrap-free remaining guard `i < len(v) - K` before reads at
+  `i + k`, `k < K` — records the slack fact `wI + K ≤ len`, one element
+  weaker than the guard (`Oak.Assembler.slack_guard_strict`), which
+  `add wJ, wI, #k` then lowers to `wJ + (K - k) ≤ len` as before.
+- **Guards survive a call in callee-saved registers.** A call forgot every
+  guard. An index guard whose index register is callee-saved and whose
+  bound is an immediate or a length some callee-saved register still holds
+  after the call now survives, rebound to that register; so does a slack
+  register in callee-saved registers, and the proven minimum of a span
+  whose base survives. The callee preserves x19–x28 under AAPCS64 (every
+  Oak callee's save and restore is checked), so the guard's registers hold
+  their values and what it says of them still holds
+  (`Oak.SpanAlias.idxMeans_preserved`); the length is a fact about memory
+  no call changes. Loop bodies that call between the exit test and the
+  access (`random_fill`, the json scanners) are the beneficiaries.
+
+Closing them found a hole. A slack fact is exact only under `len ≥ K`
+(`Oak.Assembler.slack_guard`'s hypothesis: below it the subtraction
+wrapped and the compare proves nothing), and the checker required the
+minimum only for vector accesses, and there against the fact's current
+bound rather than the `K` it came from — `add wJ, wI, #3` under `K = 4`
+left a fact of bound 1 that a minimum of 1 satisfied. A scalar read under
+a slack fact with no minimum proven was admitted. The fact now carries
+`need`, the `K` of its subtraction, unchanged by offsets, and every
+admission — the element region (`elementRegionOf`, refined in
+`Oak.CheckerRefinement.spanElement`), the vector access, and the scalar
+access — requires `need ≤ minLen`; a plain register bound admits nothing
+for a slack fact. The refinement's pinned examples carry the field
+(`TestCheckerDecisionsMatchLeanTransliteration`), and
+`TestCheckerGuardFacts` states the accepted shapes and the refused ones,
+the wrap among them. No emitted body relied on the hole: the lowering
+emits the slack idiom only under the minimum guard.
+
+Measured on the stdlib-bearing program (AArch64): the checker refuses 14
+bodies where it refused 22, 44 bodies elide 112 guards where 36 elided 58,
+241 bodies stay proven and none mismatch. What remains, by shape: an
+index reloaded from a frame slot after its guard (`append_byte`: the
+guard is on the register the compare read, the store indexes a fresh load
+of the same field — a fact about the slot would carry it); a bound through
+another register (`bytes_compare`'s `limit = min(len(a), len(b))`,
+`uuid_compare`, `text_equal_ascii_fold`: the guard is against a register
+the checker cannot relate to the span's length across the select's join —
+`leFacts` through the label fixpoint); and the json and url scanners'
+guards still to be read. On the RV64 lane elision stays off until its
+index representation admits it.
+
+**Where optimizing passes live (decision, 2026-09-15).** Two levels carry
+proofs and admit passes: the AST, where the typechecker's facts are keyed
+by position (a rewrite keeps provenance, as the inliner does — the home of
+proof-preserving inlining), and the emitted item list, a linear register
+program the verifier re-proves whatever is rewritten (the home of the
+peephole and a liveness allocator, with def-use chains computed on demand).
+A mid-level IR is not introduced: it would re-derive how the facts reach
+the lowering across ten thousand lines for what the item list can carry
+until an allocator shows otherwise.
+

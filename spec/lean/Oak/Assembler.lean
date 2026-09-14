@@ -189,6 +189,13 @@ theorem index_access_lanes (elem len i K : Nat) (hguard : i + K ≤ len) :
 theorem slack_guard (len i K : Nat) (hmin : K ≤ len) (hle : i ≤ len - K) : i + K ≤ len := by
   omega
 
+/-- The exclusive form of the slack guard, `sub wT, wL, #K; cmp wI, wT; b.hs
+    trap`: with `len ≥ K`, `i < len - K` gives `i + K ≤ len` as well — the
+    checker records the same slack fact for it, one element weaker than
+    the guard, so the reads at `i + k` for `k < K` are admitted. -/
+theorem slack_guard_strict (len i K : Nat) (hmin : K ≤ len) (hlt : i < len - K) : i + K ≤ len := by
+  omega
+
 /-- **Guard facts across a merge.** A label holds the meet of its
     predecessors' facts: for proven minimum lengths, the smaller of the
     two — which is a valid minimum whichever predecessor control came
