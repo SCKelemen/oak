@@ -252,7 +252,12 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   admitted only under a **dominating index guard**: `cmp w9, w1` then
   `b.hs <exit>` proves `w9 < len` on the fall-through path (or `cmp w9,
   #K` then `b.hs` with `len >= K` already established), so the access lies
-  inside the span (`Oak.Assembler.index_access`). Index facts die like
+  inside the span (`Oak.Assembler.index_access`). A second span walked in
+  step under `cmp wLa, wLb` then `b.ne <exit>` needs no guard of its own:
+  the fall-through path knows the two lengths equal, so an index guarded
+  below one is below the other (`Oak.Assembler.index_under_equal_len`;
+  the fact dies with a write to either register, at labels, and at
+  calls). Index facts die like
   length guards: at calls, and on any write to the index or the register
   it was compared against. **At a label a fact survives exactly when every
   predecessor carries it** — fall-through and every branch targeting the

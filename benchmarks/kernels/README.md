@@ -1,8 +1,12 @@
 # Kernel comparison: Oak against Go and Rust
 
-`run.py` builds the same ten kernels three ways and times them on identical
+`run.py` builds the same ten kernels four ways and times them on identical
 data: Oak (`oak/kernels.oak`, compiled through `oak build` to C and `cc -O3`,
-with the bounds checks the checker cannot discharge left in), Go
+with the bounds checks the checker cannot discharge left in), Oak through
+the native backend (`oak-native`: the same package lowered by the Oak
+assembler where its subset reaches, the companion object linked beside the
+C shell — `benchmarks/native/emit`; the bodies it cannot lower stay in the
+C shell, so a kernel's row is native only where its whole call tree is), Go
 (`go/main.go`, `go build`), and Rust (`rust/main.rs`, `rustc -O`, standard
 library only). Every implementation prints the checksum of its result and the
 driver refuses to record a timing until all agree.

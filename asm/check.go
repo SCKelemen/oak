@@ -286,6 +286,12 @@ type checker struct {
 	leFacts   map[int]int
 	diffFacts map[int]diffFact
 	subFacts  map[int]subFact
+	// lenEqual: `cmp wA, wB; b.ne <exit>` proves wA = wB on the fall-through
+	// path, so an index guarded below one is below the other — the
+	// guard of a second span walked in step with the first (`len(a) ==
+	// len(b) ? { ... a[i] ... b[i] ... }`, Oak.Assembler.index_under_equal_len).
+	// Dies with a write to either register, at labels, and at calls.
+	lenEqual map[int]int
 	// constFacts: w register -> the constant a `movz`/`mov` just put in it
 	// (the stride of an array of records for `umaddl`); dies with a write,
 	// at labels, and at calls.
@@ -388,6 +394,18 @@ type spanFact struct {
 
 // holdsLen reports whether w register n holds the span's length.
 func (f *spanFact) holdsLen(n int) bool { return f.lenRegs[n] }
+
+// boundsLen reports whether an index guarded below w register n is below
+// the span's length: n holds the length, or n is proven equal to a
+// register that does (`cmp wA, wB; b.ne`, checker.lenEqual;
+// Oak.Assembler.index_under_equal_len).
+func (c *checker) boundsLen(f *spanFact, n int) bool {
+	if f.holdsLen(n) {
+		return true
+	}
+	other, equal := c.lenEqual[n]
+	return equal && f.holdsLen(other)
+}
 
 // dropLen forgets that w register n holds the length (it was written); the
 // primary moves to any remaining copy.
@@ -1025,6 +1043,7 @@ func (c *checker) forgetGuards() {
 	c.diffFacts = map[int]diffFact{}
 	c.subFacts = map[int]subFact{}
 	c.constFacts = map[int]int64{}
+	c.lenEqual = map[int]int{}
 }
 
 // instruction checks one instruction and reports whether it ends control.
@@ -1106,6 +1125,16 @@ func (c *checker) instruction(instr Instruction) bool {
 		// a span (Oak.Assembler.index_access).
 		if guard.valid && (instr.Cond == "hs" || instr.Cond == "cs") {
 			c.idxFacts[guard.left] = idxFact{boundReg: guard.rightReg, bound: guard.imm}
+		}
+		// `cmp wA, wB` then `b.ne exit`: the fall-through path knows the
+		// two registers are equal — two spans' lengths, so an index guarded
+		// below one is below the other (Oak.Assembler.index_under_equal_len).
+		if guard.valid && guard.rightReg >= 0 && instr.Cond == "ne" && guard.left != guard.rightReg {
+			if c.lenEqual == nil {
+				c.lenEqual = map[int]int{}
+			}
+			c.lenEqual[guard.left] = guard.rightReg
+			c.lenEqual[guard.rightReg] = guard.left
 		}
 		// `sub wT, wL, #K` then `cmp wI, wT` then `b.hi trap`: the
 		// fall-through path knows wI + K <= len — the guard of a K-element
@@ -1617,6 +1646,10 @@ func (c *checker) boundVector(num int) bool {
 // the result register, or a declared clobber. wN/xN alias: writing either
 // width is a write of the physical register.
 func (c *checker) write(instr Instruction, reg Register) {
+	if other, equal := c.lenEqual[reg.Num]; equal && (reg.Class == ClassW || reg.Class == ClassX) {
+		delete(c.lenEqual, reg.Num)
+		delete(c.lenEqual, other)
+	}
 	if reg.Class == ClassSP {
 		c.errorf(instr.Line, "sp may only move by add/sub sp, sp, #imm or pre/post-index addressing")
 		return
@@ -2404,7 +2437,7 @@ func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFac
 		// not wrap): the whole access lies inside the span.
 		lanes := size / fact.elem
 		switch {
-		case bound.boundReg < 0 || !fact.holdsLen(bound.boundReg):
+		case bound.boundReg < 0 || !c.boundsLen(fact, bound.boundReg):
 			c.errorf(instr.Line, "%s: %s is guarded against w%d, which is not this span's length register (w%d)", instr.Mnemonic, index.Text, bound.boundReg, fact.lenReg)
 			return
 		case bound.bound < lanes:
@@ -2429,8 +2462,8 @@ func (c *checker) indexedSpanAccess(instr Instruction, mem Memory, fact *spanFac
 	case !guarded:
 		c.errorf(instr.Line, "%s indexed by %s without a dominating index guard: `cmp %s, w%d` then `b.hs <exit>` proves the index below the span's length for the fall-through path", instr.Mnemonic, index.Text, index.Text, fact.lenReg)
 		return
-	case bound.boundReg >= 0 && fact.holdsLen(bound.boundReg):
-		// index < len: in bounds.
+	case bound.boundReg >= 0 && c.boundsLen(fact, bound.boundReg):
+		// index < len: in bounds (or below a register proven equal to it).
 	case bound.boundReg < 0 && fact.hasMin && bound.bound <= fact.minLen:
 		// index < K <= len.
 	case bound.boundReg < 0:

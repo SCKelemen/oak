@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Kernel comparison: Oak against Go and Rust on the same workloads.
 
-Builds the Oak kernels through the compiler (oak build -> C -> cc -O3), the Go
+Builds the Oak kernels through the compiler (oak build -> C -> cc -O3), through
+the native backend (the Oak assembler's companion object beside the C shell,
+the oak-native row), the Go
 program (go build), and the Rust program (rustc -O), runs each kernel with the
 same command line, checks that every implementation produced the same
 checksum before accepting any timing, and writes one JSON file with the raw
@@ -57,10 +59,17 @@ def main():
         build = Path(tmp)
         subprocess.run(["go", "run", ".", "build", "-o", str(build / "kernels.c"), str(HERE / "oak")], cwd=ROOT, check=True)
         subprocess.run([args.cc, "-std=c99", *flags, "-I" + str(build), "-o", str(build / "oak-runner"), str(HERE / "runner.c"), "-lm"], check=True)
+        # The native backend: the same package through the Oak assembler,
+        # the C shell plus the companion object (benchmarks/native/emit),
+        # linked into a second runner labeled oak-native.
+        native = build / "native"
+        native.mkdir()
+        subprocess.run(["go", "run", "./benchmarks/native/emit", str(HERE / "oak"), str(native / "kernels")], cwd=ROOT, check=True, stderr=subprocess.DEVNULL)
+        subprocess.run([args.cc, "-std=c99", *flags, "-DOAK_IMPL=\"oak-native\"", "-I" + str(native), "-o", str(build / "oak-native-runner"), str(HERE / "runner.c"), str(native / "kernels.o"), "-lm"], check=True)
         subprocess.run(["go", "build", "-o", str(build / "go-runner"), "."], cwd=HERE / "go", check=True)
         subprocess.run(["rustc", "-O", "-o", str(build / "rust-runner"), str(HERE / "rust" / "main.rs")], check=True)
         for kernel in args.kernels:
-            runs = [[str(build / "oak-runner"), kernel]]
+            runs = [[str(build / "oak-runner"), kernel], [str(build / "oak-native-runner"), kernel]]
             for impl in GO_IMPLS.get(kernel, []):
                 runs.append([str(build / "go-runner"), impl, kernel])
             if kernel in RUST_KERNELS:

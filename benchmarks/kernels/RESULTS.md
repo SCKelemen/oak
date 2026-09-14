@@ -146,3 +146,31 @@ as it would a `switch`, over rustc's lowering of the same match. `page_probe` an
 are the same generated C shape as `search` and `dot`, ahead of both twins
 by the same margin.
 
+## Native backend baseline, 2026-09-15
+
+The `oak-native` row (the same kernels through the Oak assembler,
+`benchmarks/native/emit`) beside the C backend, on a machine carrying a
+load average near 200 from other work — so the absolute numbers are
+noise, and only the ratios and the instruction counts are read. Best of
+the samples, 1 MiB / 2^20 elements.
+
+| Kernel | C backend | oak-native | native / C | Lowered natively | What the loop does |
+| --- | ---: | ---: | ---: | --- | --- |
+| sum | 113 µs | 376 µs | 3.3× | whole, proven | 6 instructions per element already; clang unrolls and vectorizes the u64 reduction |
+| dot | 797 µs | 2,560 µs | 3.2× | whole, proven | 13 instructions per element: two guards the checker could not admit (`b[i]` under `len(a) == len(b)`), and the f32 accumulator copied through a scratch register twice per iteration |
+| tiled | 172 µs | 468 µs | 2.7× | whole, evidence | the eight-accumulator array lives in frame slots (a load and a store per accumulator per iteration), `a[i + k]` loaded twice, `i + k` computed twice |
+| search | 9.8 ms | 24.0 ms | 2.4× | whole, evidence | element guards kept (the index guard is lost across the search's statements) |
+| page_probe | 10.2 ms | 23.7 ms | 2.3× | whole, trusted | as `search`, twice |
+| dispatch | 18.4 ms | 8.1 ms | 0.44× | whole, proven | the native dispatch loop beats clang's over the C backend's checked bytecode reads |
+| bitmap | 326 µs | 184 µs | — | C (`arm64.cnt64` in value position) | both rows are the C backend |
+| crc32c | 137 µs | 2,995 µs | 22× | partly | the hardware `crc32cx` unit is reached through four levels of calls per step on the native side, where clang inlines the chain |
+| sha256 | 608 µs | 912 µs | 1.5× | partly (array parameters stay C) | |
+| blake3 | 2.84 ms | 4.91 ms | 1.7× | partly (array parameters stay C) | |
+
+The first change from this table: the checker now admits a second span's
+index under a proven length equality (`Oak.Assembler.index_under_equal_len`),
+which drops `dot`'s loop from 13 to 9 instructions per element. The
+ranking of the rest — accumulator arrays in registers, the copy through the
+scratch register, common subexpressions within a statement, inlining the
+call chain, then unrolling — is the native optimization program's order.
+

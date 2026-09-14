@@ -141,6 +141,15 @@ theorem span_access (elem minLen len off size : Nat)
   calc off + size ≤ elem * minLen := hacc
     _ ≤ elem * len := Nat.mul_le_mul_left elem hguard
 
+/-- **Index under an equal length** (the checker's `lenEqual` fact,
+    docs/spec/94-assembler.md §7): `cmp wA, wB; b.ne <exit>` proves the two
+    lengths equal on the fall-through path, so an index guarded below one
+    span's length is below the other's — the second span walked in step
+    (`len(a) == len(b) ? { ... a[i] ... b[i] ... }`) needs no guard of its
+    own. -/
+theorem index_under_equal_len (i la lb : Nat) (hi : i < la) (heq : la = lb) : i < lb := by
+  omega
+
 /-- Every byte of an admitted span access lies inside the span. -/
 theorem span_access_bytes (elem minLen len off size b : Nat)
     (hguard : minLen ≤ len) (hacc : SpanAccessOk elem minLen off size)
