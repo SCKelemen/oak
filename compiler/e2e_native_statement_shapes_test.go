@@ -76,6 +76,18 @@ func TestE2ENativeStatementShapes(t *testing.T) {
 				t.Errorf("%s: %s: no native verdict:\n%s", tname, fn, strings.Join(native, "\n"))
 			}
 		}
+		// mark_bits stores before its body forks on the bit test: the
+		// store is proven through the coupling (docs/spec/94-assembler.md
+		// §8, thirtieth increment).
+		proven := false
+		for _, m := range native {
+			if strings.Contains(m, "asm unit mark_bits: proven") {
+				proven = true
+			}
+		}
+		if !proven {
+			t.Errorf("%s: mark_bits was not proven by the verifier:\n%s", tname, strings.Join(native, "\n"))
+		}
 	}
 	if _, exit, abnormal := buildAndRunFrom(t, "native_statement_shapes", New().WithSource("shapes.oak", nativeStatementShapesProgram)); abnormal || exit != 0 {
 		t.Fatalf("program: exit = (%d, abnormal=%v), want 0", exit, abnormal)

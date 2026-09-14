@@ -383,3 +383,127 @@ trap_3:
 		t.Fatalf("the running difference against the sum must be a mismatch, got %s: %s", v.Kind, v.Message)
 	}
 }
+
+// A body that stores and then forks: the store before the fork is the
+// same entry on every path and stays unconditional; the native lowering
+// of mark_bits on both lanes.
+func TestVerifyLoopStoresForkedBody(t *testing.T) {
+	oak := "{\n  count: u32 = u32(0)\n  bits: u32 = lanes\n  while bits != u32(0) && count < len(marks) {\n    marks[count] = bits\n    count = count + u32(1)\n    (bits & u32(1)) == u32(1) ? { count = count + u32(0) }\n    bits = bits >> u32(1)\n  }\n  count\n}"
+	decl := "mark_bits: (marks: [*]u32, lanes: u32) -> u32"
+	arm := `  bind x0, w1 = marks
+  bind w2 = lanes
+  clobber x9, x19, x20, x2, x3, x4
+  frame 80
+  sub sp, sp, #80
+  stp x19, x20, [sp]
+  mov x19, x0
+  mov w20, w1
+head_1:
+  mov w3, wzr
+  mov w4, w2
+loop_4:
+  cmp w4, #0
+  b.eq done_5
+  cmp w3, w20
+  b.hs done_5
+  mov w9, w4
+  str w9, [x19, w3, uxtw #2]
+  add w3, w3, #1
+  and w9, w4, #1
+  cmp w9, #1
+  cset w9, eq
+  cbz w9, else_6
+  add w3, w3, #0
+  b endif_7
+else_6:
+endif_7:
+  lsr w4, w4, #1
+  b loop_4
+done_5:
+  mov w9, w3
+  mov w0, w9
+ret_2:
+  ldp x19, x20, [sp]
+  add sp, sp, #80
+  ret`
+	if v := verifyCase(t, decl, oak, arm); v.Kind != VerdictProven || !strings.Contains(v.Message, "span memory it writes (marks)") {
+		t.Fatalf("mark_bits must be proven in the span memory, got %s: %s", v.Kind, v.Message)
+	}
+	rv := `  bind a0, a1 = marks
+  bind a2 = lanes
+  clobber t0, t1, t2, a3
+  frame 96
+  addi sp, sp, -96
+  sd s1, 0(sp)
+  sd s2, 8(sp)
+  sd s4, 24(sp)
+  sd s5, 32(sp)
+  sd s6, 40(sp)
+  mv s1, a0
+  mv s2, a1
+  slli a3, s2, 32
+  srli a3, a3, 32
+  mv s4, a2
+head_1:
+  li t0, 0
+  mv s5, t0
+  mv t0, s4
+  mv s6, t0
+loop_4:
+  mv t1, s6
+  li t2, 0
+  sub t1, t1, t2
+  sltu t1, zero, t1
+  mv t0, t1
+  beqz t0, short_6
+  mv t1, s5
+  sext.w t2, a3
+  sltu t1, t1, t2
+  mv t0, t1
+short_6:
+  beqz t0, done_5
+  mv t0, s6
+  mv t1, s5
+  slli t1, t1, 32
+  srli t1, t1, 32
+  bgeu t1, a3, trap_3
+  slli t1, t1, 2
+  add t1, s1, t1
+  sw t0, 0(t1)
+  mv t0, s5
+  li t1, 1
+  addw t0, t0, t1
+  mv s5, t0
+  mv t0, s6
+  li t1, 1
+  and t0, t0, t1
+  li t1, 1
+  bne t0, t1, else_7
+  mv t1, s5
+  li t0, 0
+  addw t1, t1, t0
+  mv s5, t1
+  j endif_8
+else_7:
+endif_8:
+  mv t1, s6
+  srliw t1, t1, 1
+  mv s6, t1
+  j loop_4
+done_5:
+  mv t1, s5
+  mv a0, t1
+ret_2:
+  ld s1, 0(sp)
+  ld s2, 8(sp)
+  ld s4, 24(sp)
+  ld s5, 32(sp)
+  ld s6, 40(sp)
+  addi sp, sp, 96
+  ret
+trap_3:
+  ebreak`
+	if v := rv64Verify(t, decl, oak, rv); v.Kind != VerdictProven || !strings.Contains(v.Message, "span memory it writes (marks)") {
+		t.Fatalf("mark_bits on RV64 must be proven in the span memory, got %s: %s", v.Kind, v.Message)
+	}
+}

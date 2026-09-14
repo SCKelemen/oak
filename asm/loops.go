@@ -338,11 +338,13 @@ type loopEvent struct {
 	width  map[string]int
 	cond   *term            // continue condition over the fresh symbols (1/0)
 	next   map[string]*term // value after one iteration, over the fresh symbols
-	// writes: the one store per span an iteration makes, over the fresh
-	// symbols (index, value, guard); the coupling proves the two sides'
-	// stores hit the same element with the same value each iteration
-	// (verifyLoops, Oak.LoopStores).
-	writes map[string]*spanWrite
+	// writes: the stores an iteration makes through each span, in order,
+	// over the fresh symbols (index, value, guard — a store on some of the
+	// body's paths under their conditions); the coupling proves the two
+	// sides' stores hit the same elements with the same values under the
+	// same guards each iteration, position by position (verifyLoops,
+	// Oak.LoopStores).
+	writes map[string][]*spanWrite
 }
 
 func (ev *loopEvent) freshName(v string) string { return fmt.Sprintf("loop%d.%s", ev.index, v) }
@@ -659,22 +661,58 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 			return reason + " (in a loop body)", false
 		}
 		reads = x.spanReads
+		// The iteration's stores: a write made before the body forks is
+		// the same entry in every end's log (the paths share the prefix)
+		// and stays unconditional; a write on some paths only happens
+		// under the disjunction of their conditions. First occurrence
+		// order, which is program order along the first path.
+		type seen struct {
+			write *spanWrite
+			conds []*term
+		}
+		order := map[string][]*seen{}
+		var spans []string
 		for _, end := range ends {
 			for span, log := range end.state.writes {
 				body := log[len(freshState.writes[span]):]
 				if len(body) == 0 {
 					continue
 				}
-				if len(ends) > 1 {
-					return fmt.Sprintf("a store through %s in a loop body with more than one path", span), false
+				if _, known := order[span]; !known {
+					spans = append(spans, span)
 				}
-				if len(body) > 1 {
-					return fmt.Sprintf("more than one store through %s in a loop body", span), false
+				for _, w := range body {
+					found := false
+					for _, entry := range order[span] {
+						if entry.write == w {
+							entry.conds = append(entry.conds, end.cond)
+							found = true
+						}
+					}
+					if !found {
+						order[span] = append(order[span], &seen{write: w, conds: []*term{end.cond}})
+					}
+				}
+			}
+		}
+		sort.Strings(spans)
+		for _, span := range spans {
+			for _, entry := range order[span] {
+				w := entry.write
+				if len(entry.conds) < len(ends) {
+					guard := entry.conds[0]
+					for _, cond := range entry.conds[1:] {
+						guard = binaryTerm("or", guard, cond)
+					}
+					if w.guard != nil {
+						guard = binaryTerm("and", truncate(w.guard, 1), guard)
+					}
+					w = &spanWrite{index: w.index, value: w.value, guard: guard}
 				}
 				if ev.writes == nil {
-					ev.writes = map[string]*spanWrite{}
+					ev.writes = map[string][]*spanWrite{}
 				}
-				ev.writes[span] = body[0]
+				ev.writes[span] = append(ev.writes[span], w)
 			}
 		}
 		return "", true
@@ -1220,13 +1258,10 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		if len(body) == 0 {
 			continue
 		}
-		if len(body) > 1 {
-			return fmt.Sprintf("more than one store through %s in a loop body", span), false
-		}
 		if ev.writes == nil {
-			ev.writes = map[string]*spanWrite{}
+			ev.writes = map[string][]*spanWrite{}
 		}
-		ev.writes[span] = body[0]
+		ev.writes[span] = append([]*spanWrite{}, body...)
 		if lo.loopWritten == nil {
 			lo.loopWritten = map[string]bool{}
 		}
@@ -2005,45 +2040,54 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 		sort.Strings(sorted)
 		for _, span := range sorted {
-			ow, aw := oakEv.writes[span], asmEv.writes[span]
-			if ow == nil || aw == nil {
+			ows, aws := oakEv.writes[span], asmEv.writes[span]
+			if len(ows) == 0 || len(aws) == 0 {
 				return evidence(fmt.Sprintf("loop %d stores through %s on one side only", k+1, span))
+			}
+			if len(ows) != len(aws) {
+				return evidence(fmt.Sprintf("loop %d stores through %s %d times on the Oak side and %d on the asm side", k+1, span, len(ows), len(aws)))
 			}
 			contract, isSpan := lowering.spans[span]
 			if !isSpan {
 				return evidence(fmt.Sprintf("loop %d stores through %s, which the Oak signature does not declare as a span", k+1, span))
 			}
-			mentioned := map[string]bool{}
-			collectParams(aw.index, mentioned)
-			collectParams(aw.value, mentioned)
-			collectParams(aw.guard, mentioned)
-			for name := range mentioned {
-				var j int
-				var reg string
-				if n, _ := fmt.Sscanf(name, "loop%d.%s", &j, &reg); n == 2 && sigma[name] == nil {
-					return evidence(fmt.Sprintf("loop %d's store through %s reads loop-carried %s, which no Oak variable is coupled to", k+1, span, reg))
-				}
-			}
 			bodyPremiseK := bodyPremise(k, sigma, true)
-			if equal, decided := impliesEqual(bodyPremiseK, truncate(ow.index, 32), substitute(truncate(aw.index, 32), sigma), widthOfName); !decided || !equal {
-				return evidence(fmt.Sprintf("loop %d's store through %s was not proven to reach the same element on both sides", k+1, span))
-			}
-			w := contract.elemWidth
-			if equal, decided := impliesEqual(bodyPremiseK, truncate(ow.value, w), substitute(truncate(aw.value, w), sigma), widthOfName); !decided || !equal {
-				if trace {
-					fmt.Fprintf(os.Stderr, "verify %s: loop %d's store through %s: values not proven equal (decided=%v)\n  oak: %s\n  asm: %s\n", fn.Name, k+1, span, decided, truncate(ow.value, w), substitute(truncate(aw.value, w), sigma))
+			for i := range ows {
+				ow, aw := ows[i], aws[i]
+				mentioned := map[string]bool{}
+				collectParams(aw.index, mentioned)
+				collectParams(aw.value, mentioned)
+				collectParams(aw.guard, mentioned)
+				for name := range mentioned {
+					var j int
+					var reg string
+					if n, _ := fmt.Sscanf(name, "loop%d.%s", &j, &reg); n == 2 && sigma[name] == nil {
+						return evidence(fmt.Sprintf("loop %d's store through %s reads loop-carried %s, which no Oak variable is coupled to", k+1, span, reg))
+					}
 				}
-				return evidence(fmt.Sprintf("loop %d's store through %s was not proven to store the same value on both sides", k+1, span))
-			}
-			og, ag := ow.guard, aw.guard
-			if og == nil {
-				og = constTerm(1, 1)
-			}
-			if ag == nil {
-				ag = constTerm(1, 1)
-			}
-			if equal, decided := impliesEqual(bodyPremiseK, truncate(og, 1), substitute(truncate(ag, 1), sigma), widthOfName); !decided || !equal {
-				return evidence(fmt.Sprintf("loop %d's store through %s was not proven to happen under the same condition on both sides", k+1, span))
+				if equal, decided := impliesEqual(bodyPremiseK, truncate(ow.index, 32), substitute(truncate(aw.index, 32), sigma), widthOfName); !decided || !equal {
+					return evidence(fmt.Sprintf("loop %d's store through %s was not proven to reach the same element on both sides", k+1, span))
+				}
+				w := contract.elemWidth
+				if equal, decided := impliesEqual(bodyPremiseK, truncate(ow.value, w), substitute(truncate(aw.value, w), sigma), widthOfName); !decided || !equal {
+					if trace {
+						fmt.Fprintf(os.Stderr, "verify %s: loop %d's store through %s: values not proven equal (decided=%v)\n  oak: %s\n  asm: %s\n", fn.Name, k+1, span, decided, truncate(ow.value, w), substitute(truncate(aw.value, w), sigma))
+					}
+					return evidence(fmt.Sprintf("loop %d's store through %s was not proven to store the same value on both sides", k+1, span))
+				}
+				og, ag := ow.guard, aw.guard
+				if og == nil {
+					og = constTerm(1, 1)
+				}
+				if ag == nil {
+					ag = constTerm(1, 1)
+				}
+				if equal, decided := impliesEqual(bodyPremiseK, truncate(og, 1), substitute(truncate(ag, 1), sigma), widthOfName); !decided || !equal {
+					if trace {
+						fmt.Fprintf(os.Stderr, "verify %s: loop %d's store through %s: guards not proven equal (decided=%v)\n  oak: %s\n  asm: %s\n", fn.Name, k+1, span, decided, og, substitute(truncate(ag, 1), sigma))
+					}
+					return evidence(fmt.Sprintf("loop %d's store through %s was not proven to happen under the same condition on both sides", k+1, span))
+				}
 			}
 			spansNote = append(spansNote, span)
 		}

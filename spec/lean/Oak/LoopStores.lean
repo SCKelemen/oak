@@ -41,24 +41,32 @@ structure Write (ι α : Type) where
 def Mem.apply {ι α : Type} [DecidableEq ι] (m : Mem ι α) (w : Write ι α) : Mem ι α :=
   fun j => if w.guard ∧ j = w.index then w.value else m j
 
+/-- Applying an iteration's stores in order (the body's stores through one
+    span: those made before a fork on every path, those on some paths
+    under their conditions). -/
+def Mem.applyAll {ι α : Type} [DecidableEq ι] (m : Mem ι α) : List (Write ι α) → Mem ι α
+  | [] => m
+  | w :: ws => (m.apply w).applyAll ws
+
 /-- A loop over states `σ`: its continue condition, one iteration's
-    successor state, and the store one iteration makes — a function of the
-    state and of the memory at the start of the iteration (the body's
-    reads of the span it stores to). -/
+    successor state, and the stores one iteration makes, in order — a
+    function of the state and of the memory at the start of the iteration
+    (the body's reads of the span it stores to). -/
 structure Loop (σ ι α : Type) where
   cond : σ → Bool
   step : σ → σ
-  write : σ → Mem ι α → Write ι α
+  write : σ → Mem ι α → List (Write ι α)
 
 /-- Running the loop for at most `fuel` iterations: the state and memory
     it leaves. -/
 def run {σ ι α : Type} [DecidableEq ι] (L : Loop σ ι α) : Nat → σ → Mem ι α → σ × Mem ι α
   | 0, s, m => (s, m)
-  | n + 1, s, m => if L.cond s = true then run L n (L.step s) (m.apply (L.write s m)) else (s, m)
+  | n + 1, s, m => if L.cond s = true then run L n (L.step s) (m.applyAll (L.write s m)) else (s, m)
 
 /-- The coupling the verifier establishes between the Oak loop `L₁` and
     the asm loop `L₂`: under `R` the conditions agree, an iteration
-    preserves `R`, and the iteration's stores are equal. -/
+    preserves `R`, and the iteration's stores are equal — position by
+    position, as the verifier pairs them. -/
 structure Coupled {σ₁ σ₂ ι α : Type} (L₁ : Loop σ₁ ι α) (L₂ : Loop σ₂ ι α) (R : σ₁ → σ₂ → Prop) : Prop where
   cond : ∀ s₁ s₂, R s₁ s₂ → L₁.cond s₁ = L₂.cond s₂
   step : ∀ s₁ s₂, R s₁ s₂ → L₁.cond s₁ = true → R (L₁.step s₁) (L₂.step s₂)

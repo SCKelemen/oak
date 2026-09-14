@@ -2194,22 +2194,41 @@ equal under it leave equal memories after any number of steps. The
 witness layer refutes: on each concrete input the loops unroll and the
 two logs are compared element by element below the input's length, so
 `s[i] = x - u16_trunc_u32(i)` against the `fill` lowering is a mismatch
-naming the element (`asm/loop_store_test.go`, both lanes). What the
-method excludes it refuses with the reason: a body reading the span it
-stores to (the summary has no memory for the previous iterations' writes
-to reach), more than one store per span per iteration or a store on a
-body of more than one path (the pairing is by position), and any read or
-store of a loop-written span after the loop (its final memory is the
-loop's, so the span is closed: `loopWritten`, a taint the verdict
-reports). With it `fill` and `fill_f64` are proven on both lanes and
-the native span corpus asserts it; package cells written around a
-data-dependent loop stay trusted.
+naming the element (`asm/loop_store_test.go`, both lanes). A body that
+reads the span it stores to — `v[i] = v[i] * k`, the running sum `v[i] =
+v[i] + v[i - 1]` reading what the previous iteration wrote — reads the
+span's memory at the start of the iteration, which both sides name by
+one fresh memory symbol (`v@loop1`, `spanMemoryName`; the asm summary
+runs the body again with it once it has seen the body store to a span it
+read, the Oak side pre-scans the body's stores) under the iteration's own
+earlier writes; the obligation then compares the stores over the same
+memory, and `run_mem_eq` threads that memory through the iterations (the
+write is a function of the state and the memory). The obligations are
+decided by structure first (`termEquivalent`: equal in the low bits up to
+the width adapters' masks and the RV64 extension idiom `(x shl 32) sar
+32`), since a 32-bit multiply of two unknowns is beyond every diagram's
+budget, then by the diagrams. An iteration's stores through a span are a
+sequence: a store made before the body forks is the same entry in every
+path's log and stays unconditional, a store on some paths only happens
+under the disjunction of their conditions (the Oak side's stores carry
+the path condition of their conditional arms), and the two sides'
+sequences are paired position by position — first-occurrence order along
+the first path, which is program order — each pair under the three
+obligations (`run_mem_eq` over a list of writes per iteration,
+`Mem.applyAll`); so `mark_bits`, whose body stores and then forks on a
+bit test, is proven. What the method excludes it refuses with the
+reason: any read or store of a loop-written span after the loop (its
+final memory is the loop's, so the span is closed: `loopWritten`, a taint
+the verdict reports); sequences that differ in length or order are
+evidence, not proof. With it `fill`, `fill_f64`, `scale_in_place`,
+`running`, and `mark_bits` are proven on both lanes and the native
+corpora assert it; package cells written around a data-dependent loop
+stay trusted.
 
 Next increments: stack arguments in the call summary (the outgoing area's
-slots are frame slots the executor already holds); loop stores through
-more than one path or several per iteration (pairing by guard rather
-than by position), and a body reading the elements it wrote (a memory
-carried through the coupling); guard elision from the
+slots are frame slots the executor already holds); loop stores whose
+order differs between the sides (pairing by guard rather than by
+position); guard elision from the
 checker's facts; the foreign-call subset only if the shell itself is to
 be verified —
 calls by inlining or by the callee's proven contract, and effects through
