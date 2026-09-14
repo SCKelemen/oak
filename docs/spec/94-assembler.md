@@ -946,6 +946,30 @@ pairwise dot product `reduce_add(mul(a, b))` against `fmul`/`faddp`/
 intrinsics (`floor`, `ceil`, `trunc`, `round`) and a float converted to
 `u8` or `u16` (the narrow saturation).
 
+**Vector stores as memories (2026-09-14; `asm/effects.go`,
+`asm/verify_simd.go`).** The twenty-eighth increment's write log takes
+vector stores: a `str qN` (or `dN`) through a span base — indexed,
+through an element address, or at an offset — appends one write per lane
+at consecutive indices, and so does `vse8.v`/`vse16.v`/`vse32.v`/
+`vse64.v` through a span element address on RV64 under the fixed
+configuration; on the Oak side `simd.store_<shape>(v, i, x)` in
+statement position appends the lanes of `x` at `i .. i+lanes-1` under the
+path condition (or writes an owned array local's elements at a literal
+offset), and a vector load on either side consults the log first, so a
+load after a vector store reads the stored lanes (`Oak.Simd.store_lane`:
+element `off + k` of a store is lane `k`). Two logs that are the same
+sequence of unconditional writes at the same indices decide as one
+equality per write (`alignedWrites`) — a sixteen-lane store is sixteen
+small decisions rather than one sixteen-way conditional at the fresh
+index, which exceeded the budget — and otherwise the memories compare at
+the fresh index as before. With it the `simd.store` units of the native
+corpora are proven on both lanes (`combine_store`, `unary`), the AArch64
+bridge's "`simd.store`" remainder has its verifier half, and the tally of
+the native simd corpora is: every function proven (`asm/effects_vector_test.go`:
+a byte increment stored back proven, the wrong increment refuted, a store
+forwarded to a reload, a float negation stored through an element
+address proven and `fabs` for `fneg` refuted, on both lanes).
+
 **The RV64 lane's floating-point and vector files (ninth increment,
 2026-09-14; `asm/rv64_verify_float.go`, `asm/rv64_verify_vector.go`).**
 The same terms through the RV64 mnemonics, so an RV64 unit and a NEON
@@ -2789,6 +2813,18 @@ at VLEN 128 and 256 and under the C backend alone;
 the RV64 lane lowers every function of the AArch64 simd corpora but the
 `ctz`/`popcount` helpers (no Zbb), and the two lanes' native backends
 stand at parity on the fixed vectors.
+
+**RV64 lane, thirteenth increment — IEEE `min`/`max` (2026-09-14).** Oak's
+`min`/`max` (754-2019 minimum/maximum: a NaN operand yields NaN, `-0.0`
+below `+0.0`) had no single F/D instruction on RISC-V — `fmin`/`fmax` are
+the number-selecting minNum/maxNum — and stayed with the C backend. They
+now lower as `fmin`/`fmax` behind two NaN tests (`rvMinMax`: `feq` of each
+operand with itself is false exactly on a NaN, which is then kept as the
+result), the scalar form of the mask merge the vector lowering uses. The
+verifier proves both against the Oak body up to the NaN payload (`least`,
+`most` in the shared float corpus, `compiler/e2e_native_float_test.go`,
+proven on both lanes), and the AArch64 lane's `fmin`/`fmax` stay the one
+instruction they were.
 
 **Executables linked by the Oak assembler (landed; `asm/executable.go`,
 `oak build -link oak`).** A program whose every body the native backend

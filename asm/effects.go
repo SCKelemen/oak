@@ -240,8 +240,16 @@ func (x *pathExecutor) spanStore(instr Instruction, state *symbolicState) (handl
 		return true, "a pair store to a span", false
 	}
 	src, isReg := instr.Operands[0].(Register)
-	if !isReg || src.Class == ClassV {
-		return true, "a vector-register store to a span", false
+	if !isReg {
+		return true, "a store to a span from an operand that is not a register", false
+	}
+	// A vector register's store (`str qN` / `str dN`) writes its bytes as
+	// whole elements: one write per lane, at consecutive indices — the
+	// native lowering's `simd.store` (nativegen/simd.go), the Oak side's
+	// simdStore (asm/verify_simd.go).
+	vector := src.Class == ClassV
+	if vector && (src.Lane >= 0 || instr.Mnemonic != "str" || (src.VecBytes() != 16 && src.VecBytes() != 8)) {
+		return true, "a vector-register store to a span through the " + src.Vec + " view", false
 	}
 	if len(x.loopStack) > 0 {
 		return true, "a span store in a data-dependent loop body", false
@@ -249,7 +257,11 @@ func (x *pathExecutor) spanStore(instr Instruction, state *symbolicState) (handl
 	if mem.Mode != MemOffset {
 		return true, "a span base moved by pre/post-index", false
 	}
-	if size := memorySize(instr.Mnemonic, src.Class); size != elem {
+	if vector {
+		if int64(src.VecBytes())%elem != 0 {
+			return true, fmt.Sprintf("a %d-byte vector store over %d-byte elements", src.VecBytes(), elem), false
+		}
+	} else if size := memorySize(instr.Mnemonic, src.Class); size != elem {
 		return true, fmt.Sprintf("a %d-byte store over %d-byte elements", size, elem), false
 	}
 	if baseOffset%elem != 0 || mem.Offset%elem != 0 {
@@ -281,6 +293,22 @@ func (x *pathExecutor) spanStore(instr Instruction, state *symbolicState) (handl
 	}
 	if extra != 0 {
 		index = binaryTerm("add", index, constTerm(uint64(extra), 32))
+	}
+	if vector {
+		value, okVec := state.readVec(src.Num)
+		if !okVec {
+			return true, "unbound vector register read", false
+		}
+		bits := int(elem) * 8
+		lanes := value.lanesAt(bits)[:int64(src.VecBytes())/elem]
+		for k, lane := range lanes {
+			at := index
+			if k > 0 {
+				at = binaryTerm("add", index, constTerm(uint64(k), 32))
+			}
+			state.writes = appendWrite(state.writes, param, at, truncate(lane, bits), nil)
+		}
+		return true, "", true
 	}
 	value, okValue := state.read(src)
 	if !okValue {
@@ -390,6 +418,29 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 		lowering.fresh[spanIndexName(name)] = 32
 		at := paramTerm(spanIndexName(name), 32)
 		entry := selectTerm(name, at, width)
+		// Two logs of the same unconditional writes at the same indices in
+		// the same order leave the same memory exactly when each pair of
+		// values agrees: a vector store's sixteen lanes decide as sixteen
+		// small equalities rather than one sixteen-way conditional at a
+		// symbolic index (Oak.Simd.store_lane). Otherwise the memories are
+		// compared at the fresh index.
+		if pairs, aligned := alignedWrites(exec.writes[name], lowering.writes[name]); aligned {
+			decided := true
+			for _, pair := range pairs {
+				verdict := decideEqual(fn, lowering, pair[0], pair[1], width, "")
+				if verdict.Kind == VerdictMismatch {
+					verdict.Message = strings.Replace(verdict.Message, "asm unit "+fn.Name, fmt.Sprintf("asm unit %s (the span %s)", fn.Name, name), 1)
+					return verdict
+				}
+				if verdict.Kind != VerdictProven {
+					decided = false
+					break
+				}
+			}
+			if decided {
+				continue
+			}
+		}
 		asmMemory := memoryAt(exec.writes[name], at, entry)
 		oakMemory := memoryAt(lowering.writes[name], at, entry)
 		verdict := decideEqual(fn, lowering, asmMemory, oakMemory, width, "")
@@ -403,6 +454,28 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 		return Verdict{Kind: VerdictProven, Message: result.Message + " and " + spans}
 	}
 	return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body in %s", fn.Name, spans)}
+}
+
+// alignedWrites pairs the values of two write logs that are the same
+// sequence of unconditional writes at the same indices (each index pair
+// equal in linear normal form); false when the logs differ in length, a
+// write is guarded, or an index pair is not known equal.
+func alignedWrites(asm, oak []*spanWrite) ([][2]*term, bool) {
+	if len(asm) == 0 || len(asm) != len(oak) {
+		return nil, false
+	}
+	pairs := make([][2]*term, len(asm))
+	for i := range asm {
+		if asm[i].guard != nil || oak[i].guard != nil {
+			return nil, false
+		}
+		known, equal := indexRelation(asm[i].index.linearAt(32), oak[i].index)
+		if !known || !equal {
+			return nil, false
+		}
+		pairs[i] = [2]*term{asm[i].value, oak[i].value}
+	}
+	return pairs, true
 }
 
 // decideEffects decides the package cells and then the span memories

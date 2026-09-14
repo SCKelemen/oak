@@ -158,9 +158,21 @@ activity-based reduction, and bounded variable elimination at load; the
 encoder's laws are stated in `Oak.Tseitin` and its code checked against
 them by truth table; the clause engine written in Oak (`cnf.oak`) now
 sits beside the Go one and is the rung's default, the two agreeing clause
-for clause in count over the corpus, so nothing on the path from the
-problem table to the certificate is Go — the Go engine and the Go checker
-are the twins that must agree. On the corpus the solver agrees with the ladder
+for clause in count over the corpus; and the rung runs inside the prover
+written in Oak too (`certify.oak`), the solver recording its steps as
+words for the checker in the same process, so `-solver self` goes from
+the law file to a checked certificate with no Go on the path — the Go
+engine, the Go checker, and the Go ladder are the twins that must agree;
+and the solver's own laws are stated in `Oak.SolverLaws`, over the relation
+`Oak.RupCheck` decides — the resolvent step as a two-hint chain implied by
+its parents, the replayed reasons in trail order then the conflict as a
+chain from the learned clause's negation, the mark discipline of
+`sat_analyze` over a propagation trail giving that condition, and
+`sat_extend`'s reconstruction modeling the eliminated clauses whenever the
+resolvents hold. `Oak.RupCheck` is why an accepted record refutes the
+formula; `Oak.SolverLaws` is why the solver's record is accepted, a
+completeness statement about the recording, with the code itself still
+checked by fixtures and the corpus rather than proved. On the corpus the solver agrees with the ladder
 on every bit-level row of `machines`, `shapes`, `lattice`, and `effects`,
 and on twenty-two of `extents`' twenty-four, the whole corpus in about a
 minute. Elimination was the decisive step, as the ParaFROST and CaDiCaL

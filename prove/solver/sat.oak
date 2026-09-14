@@ -67,6 +67,8 @@ SatLayout: type = struct {
   occ_start_at: u32,
   occ_list_at: u32,
   elim_at: u32,
+  record_at: u32,
+  record_cap: u32,
   state_at: u32,
   total: u32
 }
@@ -98,12 +100,20 @@ ST_CLAUSE_INC: u32 = 22
 ST_ELIM_USED: u32 = 23
 ST_ELIMINATED: u32 = 24
 ST_RESOLVENTS: u32 = 25
+// The certificate record (lrat.oak's word protocol, header and clauses
+// copied at init, every step appended as it is written) for an in-process
+// check; ST_PRINT says whether the text lines are written too.
+ST_RECORD_USED: u32 = 26
+ST_RECORD_ON: u32 = 27
+ST_ADDED_LITS: u32 = 28
+ST_PRINT: u32 = 29
+ST_RECORD_OVERFLOW: u32 = 30
 ST_WORDS: u32 = 32
 
 // sat_layout sizes the arena for a variable count, a clause capacity
 // (initial plus learned), and a literal store capacity; occurrence nodes
 // are one per stored literal.
-sat_layout: (vars: u32, clause_cap: u32, store_cap: u32): SatLayout {
+sat_layout: (vars: u32, clause_cap: u32, store_cap: u32, record_cap: u32): SatLayout {
   v: u32 = vars + u32(1)
   assign_at: u32 = 0
   level_at: u32 = assign_at + v
@@ -131,7 +141,8 @@ sat_layout: (vars: u32, clause_cap: u32, store_cap: u32): SatLayout {
   occ_start_at: u32 = occ_count_at + u32(2) * v + u32(2)
   occ_list_at: u32 = occ_start_at + u32(2) * v + u32(2)
   elim_at: u32 = occ_list_at + store_cap
-  state_at: u32 = elim_at + store_cap
+  record_at: u32 = elim_at + store_cap
+  state_at: u32 = record_at + record_cap
   SatLayout {
     vars: vars, clause_cap: clause_cap, store_cap: store_cap,
     assign_at: assign_at, level_at: level_at, reason_at: reason_at, seen_at: seen_at,
@@ -141,6 +152,7 @@ sat_layout: (vars: u32, clause_cap: u32, store_cap: u32): SatLayout {
     learnt_at: learnt_at, resolved_at: resolved_at, hints_at: hints_at, hints_cap: hints_cap,
     remap_at: remap_at, lock_at: lock_at, cact_at: cact_at, touched_at: touched_at,
     occ_count_at: occ_count_at, occ_start_at: occ_start_at, occ_list_at: occ_list_at, elim_at: elim_at,
+    record_at: record_at, record_cap: record_cap,
     state_at: state_at, total: state_at + ST_WORDS
   }
 }
@@ -232,7 +244,7 @@ sat_dedupe: (l: SatLayout, mem: [*]u32, n: u32): u32 {
 // sat_init clears the arena and loads the formula from the word table
 // (lrat.oak's protocol: header, then `n, lit...` per clause). Units are
 // enqueued at level zero; an empty clause settles the run at once.
-sat_init: (l: SatLayout, mem: [*]u32, words: []u32, budget: u32): Bool {
+sat_init: (l: SatLayout, mem: [*]u32, words: []u32, budget: u32, quiet: Bool): Bool {
   i: u32 = 0
   while i < l.total {
     mem[i] = u32(0)
@@ -254,10 +266,23 @@ sat_init: (l: SatLayout, mem: [*]u32, words: []u32, budget: u32): Bool {
   sat_set(l, mem, ST_CLAUSE_INC, u32(1024))
   sat_set(l, mem, ST_RESTART_LIMIT, u32(100))
   sat_set(l, mem, ST_BUDGET, budget)
+  sat_set(l, mem, ST_PRINT, quiet ? { u32(0) } | { u32(1) })
+  sat_set(l, mem, ST_RECORD_ON, u32(0))
   ok: Bool = len(words) >= LRAT_HEADER_WORDS && words[u32(0)] == LRAT_MAGIC && words[u32(1)] == l.vars
   clause_count: u32 = ok ? { words[u32(2)] } | { u32(0) }
   literal_words: u32 = ok ? { words[u32(3)] } | { u32(0) }
   ok = ok && LRAT_HEADER_WORDS + literal_words <= len(words)
+  // The record: the header and the clauses as given, the steps to follow.
+  copy: u32 = LRAT_HEADER_WORDS + literal_words
+  ok && l.record_cap >= copy ? {
+    i = u32(0)
+    while i < copy {
+      mem[l.record_at + i] = words[i]
+      i = i + u32(1)
+    }
+    sat_set(l, mem, ST_RECORD_USED, copy)
+    sat_set(l, mem, ST_RECORD_ON, u32(1))
+  } | { }
   at: u32 = LRAT_HEADER_WORDS
   end: u32 = LRAT_HEADER_WORDS + literal_words
   c: u32 = 0
@@ -310,20 +335,38 @@ sat_delete_marked: (l: SatLayout, mem: [*]u32): () {
   n: u32 = sat_state(l, mem, ST_TRAIL_LEN)
   c: u32 = 0
   i: u32 = 0
-  write_u32(sat_state(l, mem, ST_NEXT_ID) - u32(1))
-  write_byte(u8(32))
-  write_byte(u8(100))
+  marked: u32 = 0
   c = u32(0)
   while c < clauses {
-    mem[l.lock_at + c] == u32(2) ? {
-      write_byte(u8(32))
-      write_u32(mem[l.ids_at + c])
-    } | { }
+    mem[l.lock_at + c] == u32(2) ? { marked = marked + u32(1) } | { }
     c = c + u32(1)
   }
-  write_byte(u8(32))
-  write_byte(u8(48))
-  write_byte(u8(10))
+  sat_state(l, mem, ST_RECORD_ON) == u32(1) ? {
+    sat_record_word(l, mem, u32(1))
+    sat_record_word(l, mem, sat_state(l, mem, ST_NEXT_ID) - u32(1))
+    sat_record_word(l, mem, marked)
+    c = u32(0)
+    while c < clauses {
+      mem[l.lock_at + c] == u32(2) ? { sat_record_word(l, mem, mem[l.ids_at + c]) } | { }
+      c = c + u32(1)
+    }
+  } | { }
+  sat_state(l, mem, ST_PRINT) == u32(1) ? {
+    write_u32(sat_state(l, mem, ST_NEXT_ID) - u32(1))
+    write_byte(u8(32))
+    write_byte(u8(100))
+    c = u32(0)
+    while c < clauses {
+      mem[l.lock_at + c] == u32(2) ? {
+        write_byte(u8(32))
+        write_u32(mem[l.ids_at + c])
+      } | { }
+      c = c + u32(1)
+    }
+    write_byte(u8(32))
+    write_byte(u8(48))
+    write_byte(u8(10))
+  } | { }
   // Compact: kept clauses slide down in index order.
   kept: u32 = 0
   used: u32 = 0
@@ -908,23 +951,43 @@ sat_eliminate: (l: SatLayout, mem: [*]u32): () {
                 r != SAT_NONE ? {
                   id: u32 = sat_state(l, mem, ST_NEXT_ID)
                   sat_set(l, mem, ST_NEXT_ID, id + u32(1))
-                  write_u32(id)
                   j: u32 = 0
                   while j < r {
-                    write_byte(u8(32))
-                    sat_write_lit(mem[l.learnt_at + j])
                     mem[l.touched_at + mem[l.learnt_at + j] / u32(2)] = u32(1)
                     j = j + u32(1)
                   }
-                  write_byte(u8(32))
-                  write_byte(u8(48))
-                  write_byte(u8(32))
-                  write_u32(mem[l.ids_at + a])
-                  write_byte(u8(32))
-                  write_u32(mem[l.ids_at + b])
-                  write_byte(u8(32))
-                  write_byte(u8(48))
-                  write_byte(u8(10))
+                  sat_state(l, mem, ST_RECORD_ON) == u32(1) ? {
+                    sat_record_word(l, mem, u32(0))
+                    sat_record_word(l, mem, id)
+                    sat_record_word(l, mem, r)
+                    j = u32(0)
+                    while j < r {
+                      sat_record_word(l, mem, mem[l.learnt_at + j])
+                      j = j + u32(1)
+                    }
+                    sat_record_word(l, mem, u32(2))
+                    sat_record_word(l, mem, mem[l.ids_at + a])
+                    sat_record_word(l, mem, mem[l.ids_at + b])
+                    sat_set(l, mem, ST_ADDED_LITS, sat_state(l, mem, ST_ADDED_LITS) + r)
+                  } | { }
+                  sat_state(l, mem, ST_PRINT) == u32(1) ? {
+                    write_u32(id)
+                    j = u32(0)
+                    while j < r {
+                      write_byte(u8(32))
+                      sat_write_lit(mem[l.learnt_at + j])
+                      j = j + u32(1)
+                    }
+                    write_byte(u8(32))
+                    write_byte(u8(48))
+                    write_byte(u8(32))
+                    write_u32(mem[l.ids_at + a])
+                    write_byte(u8(32))
+                    write_u32(mem[l.ids_at + b])
+                    write_byte(u8(32))
+                    write_byte(u8(48))
+                    write_byte(u8(10))
+                  } | { }
                   added: u32 = sat_add_learnt(l, mem, r, id)
                   sat_set(l, mem, ST_RESOLVENTS, sat_state(l, mem, ST_RESOLVENTS) + u32(1))
                   r == u32(0) ? { sat_set(l, mem, ST_STATUS, SAT_UNSATISFIABLE) } | { }
@@ -1003,14 +1066,71 @@ sat_extend: (l: SatLayout, mem: [*]u32): () {
   }
 }
 
+// sat_record_word appends one word to the certificate record, turning the
+// record off (and marking the overflow) when it is full.
+sat_record_word: (l: SatLayout, mem: [*]u32, w: u32): () {
+  used: u32 = sat_state(l, mem, ST_RECORD_USED)
+  used < l.record_cap ? {
+    mem[l.record_at + used] = w
+    sat_set(l, mem, ST_RECORD_USED, used + u32(1))
+  } | {
+    sat_set(l, mem, ST_RECORD_ON, u32(0))
+    sat_set(l, mem, ST_RECORD_OVERFLOW, u32(1))
+  }
+}
+
+// sat_record_learnt appends the learned clause in the learnt buffer with
+// the hints buffer as an addition step.
+sat_record_learnt: (l: SatLayout, mem: [*]u32, id: u32): () {
+  sat_state(l, mem, ST_RECORD_ON) == u32(1) ? {
+    n: u32 = sat_state(l, mem, ST_LEARNT_LEN)
+    h: u32 = sat_state(l, mem, ST_HINTS_LEN)
+    sat_record_word(l, mem, u32(0))
+    sat_record_word(l, mem, id)
+    sat_record_word(l, mem, n)
+    j: u32 = 0
+    while j < n {
+      sat_record_word(l, mem, mem[l.learnt_at + j])
+      j = j + u32(1)
+    }
+    sat_record_word(l, mem, h)
+    j = u32(0)
+    while j < h {
+      sat_record_word(l, mem, mem[l.hints_at + j])
+      j = j + u32(1)
+    }
+    sat_set(l, mem, ST_ADDED_LITS, sat_state(l, mem, ST_ADDED_LITS) + n)
+  } | { }
+}
+
+// sat_record_finish completes the record's header — the step words, the
+// last id, the store the checker needs — and returns the record's length,
+// or 0 when there is no complete record.
+sat_record_finish: (l: SatLayout, mem: [*]u32): u32 {
+  sat_state(l, mem, ST_RECORD_ON) == u32(1) ? {
+    used: u32 = sat_state(l, mem, ST_RECORD_USED)
+    literal_words: u32 = mem[l.record_at + u32(3)]
+    mem[l.record_at + u32(4)] = used - LRAT_HEADER_WORDS - literal_words
+    mem[l.record_at + u32(5)] = sat_state(l, mem, ST_NEXT_ID) - u32(1)
+    mem[l.record_at + u32(6)] = literal_words + sat_state(l, mem, ST_ADDED_LITS)
+    used
+  } | { u32(0) }
+}
+
 // sat_write_lit writes a literal as a DIMACS integer.
 sat_write_lit: (lit: u32): () {
   lit % u32(2) == u32(0) ? { write_byte(u8(45)) } | { }
   write_u32(lit / u32(2) + u32(1))
 }
 
-// sat_emit writes the learned clause and its hints as one LRAT line.
+// sat_emit writes the learned clause and its hints as one LRAT line, and
+// records the step.
 sat_emit: (l: SatLayout, mem: [*]u32, id: u32): () {
+  sat_record_learnt(l, mem, id)
+  sat_state(l, mem, ST_PRINT) == u32(1) ? { sat_emit_text(l, mem, id) } | { }
+}
+
+sat_emit_text: (l: SatLayout, mem: [*]u32, id: u32): () {
   write_u32(id)
   n: u32 = sat_state(l, mem, ST_LEARNT_LEN)
   j: u32 = 0

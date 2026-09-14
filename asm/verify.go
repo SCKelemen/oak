@@ -2875,6 +2875,10 @@ func (lo *oakLowering) lowerUnitCall(expr ast.Expression) (handled bool, reason 
 	if !isCall {
 		return false, "", false
 	}
+	if handled, reason, ok := lo.simdStore(call); handled {
+		// simd.store_<shape>: lanes into a span's write log (asm/verify_simd.go).
+		return true, reason, ok
+	}
 	ident, isIdent := call.Function.(*ast.Identifier)
 	if !isIdent || call.ResolvedMethod != "" {
 		return false, "", false

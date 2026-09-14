@@ -376,6 +376,12 @@ func selfProve(target string, cases int, crossCheck bool, leanOut string, witnes
 		return 2
 	}
 	results, err := prove.Theorems(model, cases)
+	if err == nil {
+		// The same ladder the shell runs: the certificate rung follows the
+		// diagram on the Go side too, so a row the diagram left over its
+		// budget and the certificate decided compares like with like.
+		results = certificateRung(model, results, true, "", io.Discard)
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "oak prove: %v\n", err)
 		return 2
