@@ -321,9 +321,16 @@ for a workload):
    address formed in the base register; `Oak.RiscV.index_guard_widened`,
    `widened_scale`), on rv64; and for `oak_store` against the guarded
    element write `v[i] = x`, proven on both lanes as the span memory the
-   unit writes. Still open: the compare-exchange helper once the
-   verifier's memory model reaches the atomics
-   (`compare_exchange_refinement_test.go` pins its text today).
+   unit writes; and for the strong compare-exchange helper
+   `__oak_cas_u32_acq_rel_acquire` on a cell reached through a guarded
+   span element, proven against `atomic_compare_exchange_acq_rel_acquire`
+   in both of clang's spellings — the exclusive loop (armv8.0) and `casal`
+   (armv8.1-a, a second arm64 lane) — once the verifier's memory model
+   reached the atomics under the sequential model (`65-machine-memory.md`
+   §7a, `asm/atomics.go`: the exclusive store succeeds, so the retry is
+   decided). GCC's rv64 `lr.w`/`sc.w` loop is outside the rv64 unit
+   language and is reported so. **Item complete** for the helpers the
+   prelude has.
 5. **Finish the RISC-V bridge** (rv64 is dbs's second target): **landed
    2026-09-14** for the integer instructions. With Sail built from git
    (every package of the rems-project/sail checkout pinned in one opam

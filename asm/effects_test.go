@@ -141,3 +141,95 @@ func TestVerifyBoundedShift(t *testing.T) {
 		t.Fatalf("a shift by an unbounded count must stay trusted, got %s: %s", unbounded.Kind, unbounded.Message)
 	}
 }
+
+// Loop-carried memory (span memories through loops, and the entry
+// memories they are inducted from): a fill loop is proven in its memory
+// by coupling, a wrong body store is a mismatch on a concrete input, a
+// result after the loop is proven with the memory, a store before the
+// loop is read after it through the loop's unknown memory — and a store
+// before the loop that differs between the sides is never proven, since
+// the entry memories are the induction's base.
+func TestVerifyLoopStores(t *testing.T) {
+	fillOak := "{\n  i: u32 = u32(0)\n  while i < n {\n    v[i] = x\n    i = i + u32(1)\n  }\n}"
+	fillAsm := "  bind x0, w1 = v\n  bind w2 = n\n  bind w3 = x\n  clobber w9, w10\n  mov w9, #0\nloop:\n  cmp w9, w2\n  b.hs done\n  cmp w9, w1\n  b.hs trap\n  str w3, [x0, w9, uxtw #2]\n  add w9, w9, #1\n  b loop\ndone:\n  ret\ntrap:\n  brk #1"
+	fill := verifyCase(t, "fill: (v: [*]u32, n: u32, x: u32) -> ()", fillOak, fillAsm)
+	if fill.Kind != VerdictProven || !strings.Contains(fill.Message, "the span memory it writes (v)") || !strings.Contains(fill.Message, "coupled inductively") {
+		t.Fatalf("a fill loop must be proven in its span memory by coupling, got %s: %s", fill.Kind, fill.Message)
+	}
+	wrong := verifyCase(t, "fill_x: (v: [*]u32, n: u32, x: u32) -> ()", fillOak, strings.Replace(fillAsm, "  str w3, [x0, w9, uxtw #2]", "  add w10, w3, #1\n  str w10, [x0, w9, uxtw #2]", 1))
+	if wrong.Kind != VerdictMismatch || !strings.Contains(wrong.Message, "in the span v") {
+		t.Fatalf("a wrong loop store must be a mismatch on a concrete input naming the span, got %s: %s", wrong.Kind, wrong.Message)
+	}
+	counted := verifyCase(t, "fill_count: (v: [*]u32, n: u32, x: u32) -> u32", "{\n  i: u32 = u32(0)\n  while i < n {\n    v[i] = x\n    i = i + u32(1)\n  }\n  i\n}", strings.Replace(fillAsm, "done:\n  ret", "done:\n  mov w0, w9\n  ret", 1))
+	if counted.Kind != VerdictProven || !strings.Contains(counted.Message, "the span memory it writes (v)") {
+		t.Fatalf("a fill loop with a result must be proven in both, got %s: %s", counted.Kind, counted.Message)
+	}
+	thenOak := "{\n  v[0] = x\n  i: u32 = u32(1)\n  while i < n {\n    v[i] = x + i\n    i = i + u32(1)\n  }\n  v[0]\n}"
+	thenAsm := "  bind x0, w1 = v\n  bind w2 = n\n  bind w3 = x\n  clobber w9, w10\n  cmp w1, #1\n  b.lo trap\n  str w3, [x0]\n  mov w9, #1\nloop:\n  cmp w9, w2\n  b.hs done\n  cmp w9, w1\n  b.hs trap\n  add w10, w3, w9\n  str w10, [x0, w9, uxtw #2]\n  add w9, w9, #1\n  b loop\ndone:\n  ldr w0, [x0]\n  ret\ntrap:\n  brk #1"
+	after := verifyCase(t, "fill_then: (v: [*]u32, n: u32, x: u32) -> u32", thenOak, thenAsm)
+	if after.Kind != VerdictProven {
+		t.Fatalf("a read of the loop's memory after the loop must be proven, got %s: %s", after.Kind, after.Message)
+	}
+	// The base of the induction: the asm stores x + 1 before the loop
+	// where the body stores x. The markers hide the difference from the
+	// exit comparison; the entry memories must catch it.
+	entry := verifyCase(t, "fill_entry: (v: [*]u32, n: u32, x: u32) -> ()", strings.Replace(thenOak, "\n  v[0]\n}", "\n}", 1), strings.Replace(strings.Replace(thenAsm, "  str w3, [x0]\n", "  add w10, w3, #1\n  str w10, [x0]\n", 1), "done:\n  ldr w0, [x0]\n  ret", "done:\n  ret", 1))
+	if entry.Kind == VerdictProven {
+		t.Fatalf("a differing store before the loop must never be proven, got %s: %s", entry.Kind, entry.Message)
+	}
+	if entry.Kind != VerdictMismatch {
+		t.Fatalf("a differing store before the loop must be a mismatch on a concrete input, got %s: %s", entry.Kind, entry.Message)
+	}
+}
+
+// A callee with a data-dependent loop is summarized (docs/spec/94-assembler.md
+// §9): the callee's loop events become the caller's, numbered after the
+// caller's own, and the Oak side inlining the same body creates the same
+// events, which the coupling pairs by identity — a summing callee behind a
+// result, a filling unit callee behind a unit caller.
+func TestVerifySummarizedLoops(t *testing.T) {
+	sum, err := parseSignatureWithBody("sum_loop: (v: []u32, n: u32) -> u32 {\n  acc: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < n {\n    acc = acc + v[i]\n    i = i + u32(1)\n  }\n  acc\n}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fill, err := parseSignatureWithBody("fill: (v: [*]u32, n: u32, x: u32) -> () {\n  i: u32 = u32(0)\n  while i < n {\n    v[i] = x\n    i = i + u32(1)\n  }\n}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	callees := map[string]*ast.FunctionStatement{"sum_loop": sum, "fill": fill}
+	pair := func(t *testing.T, decl, asmBody, oakBody string) Verdict {
+		t.Helper()
+		unit, errs := ParseUnit("v.oakasm", decl+" = {\n"+asmBody+"\n}\n")
+		if len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		sig, err := parseSignature(decl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unit.Functions[0].Callees = callees
+		if findings := Check(unit.Functions[0], sig, map[string]bool{"sum_loop": true, "fill": true}); len(findings) != 0 {
+			t.Fatalf("checker: %v", findings)
+		}
+		spec, err := parseSignatureWithBody(decl + " = " + oakBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return Verify(unit.Functions[0], sig, spec.Body)
+	}
+	frame := "  clobber x29, x30\n  frame 16\n  sub sp, sp, #16\n  stp x29, x30, [sp]\n"
+	leave := "  ldp x29, x30, [sp]\n  add sp, sp, #16\n  ret"
+	summed := pair(t, "sum_plus: (v: []u32, n: u32) -> u32", "  bind x0, w1 = v\n  bind w2 = n\n"+frame+"  bl sum_loop\n  add w0, w0, #1\n"+leave, "{\n  sum_loop(v, n) + u32(1)\n}")
+	if summed.Kind != VerdictProven || !strings.Contains(summed.Message, "coupled inductively") {
+		t.Fatalf("a caller of a summing loop must be proven by coupling the callee's loop, got %s: %s", summed.Kind, summed.Message)
+	}
+	filled := pair(t, "fill_seven: (v: [*]u32, n: u32) -> ()", "  bind x0, w1 = v\n  bind w2 = n\n  clobber x3\n"+strings.Replace(frame, "clobber x29, x30", "clobber x29, x30", 1)+"  movz w3, #7\n  bl fill\n"+leave, "{\n  fill(v, n, u32(7))\n}")
+	if filled.Kind != VerdictProven || !strings.Contains(filled.Message, "the span memory it writes (v)") {
+		t.Fatalf("a caller of a filling loop must be proven in its span memory, got %s: %s", filled.Kind, filled.Message)
+	}
+	// The wrong constant: refuted on a concrete input in the span.
+	wrong := pair(t, "fill_eight: (v: [*]u32, n: u32) -> ()", "  bind x0, w1 = v\n  bind w2 = n\n  clobber x3\n"+frame+"  movz w3, #8\n  bl fill\n"+leave, "{\n  fill(v, n, u32(7))\n}")
+	if wrong.Kind != VerdictMismatch {
+		t.Fatalf("a caller passing the wrong value must be a mismatch, got %s: %s", wrong.Kind, wrong.Message)
+	}
+}

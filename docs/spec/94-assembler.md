@@ -2250,6 +2250,61 @@ whole root package runs on a busy host. Pinned:
 arguments on the stack of mixed widths — `u16`, `u32`, `u64`, a `Bool` —
 summarized into a unit caller proven in its span and into a caller
 proven in its result and its span; the C backend the oracle).
+
+**Thirty-first increment — integer division as an uninterpreted
+operation (2026-09-15; `asm/floats_ops.go`, `asm/verify.go`,
+`asm/rv64_verify.go`, `Oak.IntegerDivision`).** `/` and `%` by a divisor
+that is not a constant power of two left a unit trusted on both lanes
+("operator / (only by an unsigned constant power of two)"): the diagrams
+have no division, and a 32-bit multiply of two unknowns exceeds every
+budget. The increment treats the quotient as the same kind of term the
+floats are — `udiv`/`sdiv` in the operation table, an application shared
+under Ackermann's functional consistency by every side that divides the
+same operands (`Oak.Uninterpreted.ackermann_sound`) — and spells every
+remainder as `a - (a / b) * b`: the Oak `%`, the AArch64 lowering's
+`sdiv`/`udiv` followed by `msub`, and RISC-V's `rem`/`remu`, which the
+RV64 executor expands the same way (`rv64ALUTerm`). That spelling is
+the machines' definition (`Oak.IntegerDivision.umod_eq_sub_udiv_mul` at
+every width through the natural numbers, `srem_eq_sub_sdiv_mul_8` at the
+bit level; RISC-V unprivileged spec §7.2, Arm's `msub` after a zero
+quotient), so an RV64 `remw` and an AArch64 `msub` are one term. Both
+lanes trap on a zero divisor before dividing and the Oak semantics trap
+too, so the applications compared lie off `b = 0`; the theorem decider
+states the zero divisor as a trap obligation, and the witness evaluation
+returns the AArch64 result there. A structural decision follows the
+diagrams' budget in the straight-line decider and precedes them in the
+coupling's obligations (`termEquivalent`: equal in the low bits up to
+the width adapters' masks and the RV64 extension idiom `(x shl 32) sar
+32`): `(a / b) * 100 + a % b` is
+the same term on both sides once the quotient is shared, and `divmod`,
+`quot`, and `rem` are proven on both lanes (`asm/division_test.go`;
+swapped operands and signed against unsigned division are mismatches).
+The lowering written in Oak mirrors the rule (`FOP_UDIV`, `FOP_SDIV`, the
+trap, `int_sdiv` for the fold), and `spec/oak/intrinsics.oak` states
+`rem_is_sub_div`, `signed_rem_is_sub_div`, and `div_same_operands`.
+
+**Thirty-second increment — parameters in the caller's outgoing area
+(2026-09-15; `asm/verify.go` executeBodyChunk, `asm/unit.go`,
+`Oak.StackArguments`).** The thirtieth increment read a callee's stack
+arguments from the caller's side; the callee's own side still refused
+them ("parameters beyond the register contract (the incoming stack area
+is not modeled)"), so `nine`, `twelve`, `tail_sum`, and `records_last`
+of the stack-argument corpus were trusted. The executor now holds such
+a parameter in the frame slot at its offset above the entry sp (the
+binding's `Stack`, the layout the checker and the backend share), at the
+size the caller stored it — a narrow scalar its own bytes, a `Bool` the
+four of the C int, a 64-bit scalar eight, a span its base at the offset
+and its length eight on, a by-value record its chunks, a by-reference one
+its address — and the body's `ldrb`/`ldrh`/`ldr` of the slot reads the
+parameter as it reads any frame slot (`Oak.StackArguments`: the slot
+round-trips at its width, the span pair's slots are disjoint). A unit may
+now spell the binding as the compiler does, `bind [sp, #N] = p`, under
+the packed convention. `nine` is proven; `twelve`, a 64-bit sum of
+twelve unknowns, reads them all and stays evidence at the diagrams'
+budget; dropping a stack parameter from the body is a mismatch
+(`asm/stack_params_test.go`); `tail_sum`, whose span arrives on the
+stack and is walked in a loop, is proven.
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
@@ -3591,6 +3646,74 @@ What the witnessed verdicts leave now: bodies past the bit-level node
 budget, continue conditions and results after loops the coupling does
 not prove, and two stores under conditions the proof does not relate.
 Pinned: `compiler/e2e_native_loop_bool_test.go` (both lanes).
+
+**The induction's base, and what the loop memory still leaves out
+(2026-09-14).** The span memories through loops were an induction with
+the step alone: the two markers made the memories at the exit one unknown
+memory whatever either side had stored before the loop, so a body whose
+asm stored `x + 1` at `v[0]` before a fill loop where Oak stored `x` was
+proven. The base is now an obligation of the coupling
+(`coupledEntryMemories`): for every marked span, the stores before the
+loop over the span's entry memory, at a fresh index, equal on the two
+sides under the coupling and — for a nested loop — the parent's body
+premise. Alongside: the concrete layer compares the memories the two
+runs leave, at every index either side stored, so a wrong store in a
+loop body (and a differing store before it) is a mismatch with a concrete
+input rather than evidence, and a unit function's loops have witnesses
+as a result's do; when the iteration's stores do not pair one for one
+(`coupledWrites`), the memories they leave are compared whole at a fresh
+index over the loop's unknown memory before the verdict falls to
+evidence; and a callee summarized inside a loop body may store through
+the caller's spans, its stores joining the iteration's log (a callee
+writing package cells stays refused). On the prover the proven count is
+unchanged at 354 — no body relied on the gap, and none of the bodies
+still evidence pairs differently — and the gap is pinned:
+`asm/effects_test.go` `TestVerifyLoopStores` (a fill loop proven, a wrong
+body store a mismatch, a result after the loop, a store before the loop
+read after it, and the differing store before the loop refuted) and
+`compiler/e2e_native_loop_stores_test.go` (a loop storing through a
+callee, both lanes).
+**Asserts under the verifier (2026-09-14).** A body with an `assert`, or
+a call to a unit callee whose body asserts (`text_require`), was trusted:
+the Oak lowering refused the assert wherever traps are not tracked, and
+the assembler verifier's lowering does not track them — it has no
+obligations to prove, since the executor drops a trapping path from its
+fork (`brk` delivers no result) and the equivalence is over the inputs
+on which every guard holds. An assert is therefore a no-op on the Oak
+side of the verifier: the trapping inputs are outside the equivalence on
+both sides, exactly as an element guard's or a divisor's are. The
+theorem decider's reading (a trap obligation to prove impossible) is
+unchanged. Proven bodies rose to 201 on AArch64 and 179 on RV64; the
+asserting callees that remain trusted do so for their span arguments,
+not their asserts. Pinned: `compiler/e2e_native_assert_callee_test.go`
+(a body with an assert, a caller of an asserting unit callee; both
+lanes).
+
+**Callees with loops in the call summary (2026-09-14).** A call to a
+function whose body has a data-dependent loop (`sb_str`, `px_acc_list`,
+the syntax walkers) left the summary at "whose body has a data-dependent
+loop". The callee's loop events are now the caller's: the callee's
+lowering inside the summary numbers its events after the caller's
+(`oakLowering.loopBase`) and nests them under the loop being executed,
+its fresh symbols are declared for the verdict, and its markers are
+keyed by the caller-rooted span names (`writableSpans` with
+`rootContracts`, since the callee's names are aliases). The Oak side
+inlines the same body and creates the same events in the same order, so
+the coupling pairs them by identity — the same fresh names on both
+sides — and the obligations are the callee's own; a witness run inside
+the summary takes the caller's concrete span length for the callee's
+(`isSpanLength`). On the prover: proven 354 to 362 (`bytes_equal`,
+`find_tdecl`, `root_ident`, `taken_inside`, the mark walkers), no
+disagreement, the rows identical; the callers of `sb_str` now stop at
+its `%` by a data-dependent divisor. The verifier's time is unchanged by
+this, but one body, `sat_extend`, went from a fast refusal to 75 seconds
+of coupling search under the Bool-variable pairings that landed the same
+morning (a `satisfied` flag pairing with every register of the enclosing
+loops); the search budget bounds it and the verdict is evidence either
+way, and it is the next thing to tighten. Pinned: `asm/effects_test.go`
+`TestVerifySummarizedLoops` (a summing callee behind a result and a
+filling callee behind a unit caller proven by coupling the callee's
+loop; the wrong constant to the callee a mismatch).
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the

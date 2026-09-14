@@ -32,4 +32,13 @@ popcount64_not: theorem (x: u64) { arm64.cnt64(^x) + arm64.cnt64(x) == u64(64) }
 // popcount_eq_zero_iff: the count is zero exactly on the zero word.
 popcount32_eq_zero_iff: theorem (x: u32) { (arm64.cnt32(x) == u32(0)) == (x == u32(0)) }
 
+// Division by a divisor that is not a constant power of two is the
+// uninterpreted quotient of the operands (asm/floats_ops.go udiv, sdiv),
+// and a remainder is the dividend less the quotient times the divisor on
+// every side (Oak.IntegerDivision); a zero divisor traps, so the laws
+// hypothesize a nonzero one.
+rem_is_sub_div: theorem (a: u32) { a % u32(3) == a - (a / u32(3)) * u32(3) }
+signed_rem_is_sub_div: theorem (a: i32) { a % i32(3) == a - (a / i32(3)) * i32(3) }
+div_same_operands: theorem (a: u32, b: u32) { b == u32(0) || (a | u32(0)) / b == a / (b | u32(0)) }
+
 main: (): i32 = 0

@@ -53,6 +53,11 @@ type validatedHelper struct {
 	spec    string // Oak body: the helper's specification
 	cSource string // C wrapper calling the prelude helper
 	bar     verdictBar
+	// outside names the lanes whose compiler emits a shape the verifier's
+	// unit language does not have, with the reason; the helper is reported
+	// outside the decided subset there (a mismatch still fails) and held to
+	// bar on the other lanes.
+	outside map[string]string
 }
 
 func translationValidationHelpers() []validatedHelper {
@@ -128,6 +133,19 @@ func translationValidationHelpers() []validatedHelper {
 			bar:     proofRequired,
 		})
 	}
+	// The strong compare-exchange helper on a cell reached through a span
+	// element under the index guard: the value observed and the guarded
+	// store (docs/spec/65-machine-memory.md section 7a). clang spells it as
+	// the exclusive loop (armv8.0) or `casal` (LSE); GCC's rv64 `lr.w`/`sc.w`
+	// are not in the rv64 unit language.
+	helpers = append(helpers, validatedHelper{
+		name:    "tv_cas_u32",
+		decl:    "tv_cas_u32: (v: [*]Atomic[u32], i: u32, expected, desired: u32) -> u32",
+		spec:    "atomic_compare_exchange_acq_rel_acquire(v[i], expected, desired)",
+		cSource: "u32 tv_cas_u32(_Atomic(u32) *base, u32 len, u32 i, u32 expected, u32 desired) { if ((u64)(i) >= (u64)(len)) { __builtin_trap(); } return __oak_cas_u32_acq_rel_acquire(base + i, expected, desired); }\n",
+		bar:     proofRequired,
+		outside: map[string]string{"rv64": "GCC's lr.w/sc.w loop is outside the rv64 unit language"},
+	})
 	for _, conv := range []string{"u8_trunc_u32", "u16_trunc_u64", "u32_trunc_u64", "i8_trunc_i32", "i16_trunc_i64", "i32_trunc_i64", "i32_bits_u32", "u32_bits_i32", "u64_bits_i64", "i64_bits_u64", "u8_trunc_i32", "i8_trunc_u64"} {
 		target, _, source, ok := typechecker.ConversionParts(conv)
 		if !ok {
@@ -144,6 +162,15 @@ func translationValidationHelpers() []validatedHelper {
 	}
 	return helpers
 }
+
+// casHelperText is the prelude's strong compare-exchange helper for u32 at
+// acq_rel/acquire, as `generateC` emits it (the text
+// spec/lean/Oak/CompareExchangeRefinement.lean transliterates).
+const casHelperText = "static inline u32 __oak_cas_u32_acq_rel_acquire(_Atomic(u32) *cell, u32 expected, u32 desired) {\n" +
+	"  u32 observed = expected;\n" +
+	"  (void)atomic_compare_exchange_strong_explicit(cell, &observed, desired, OAK_ORDER_CAS_ACQ_REL, memory_order_acquire);\n" +
+	"  return observed;\n" +
+	"}\n"
 
 // guardMacroLines are the prelude's guarded element read and checked
 // shift helpers, pinned to the emitted text like arithmeticMacroLines:
@@ -165,6 +192,15 @@ func TestGuardMacrosMatchValidatedText(t *testing.T) {
 			t.Fatalf("emitted prelude lacks the pinned line\n%s\n— update guardMacroLines (codegen/translation_validation_test.go); output:\n%s", line, output)
 		}
 	}
+	// The compare-exchange helper and the order macros, from a program
+	// that uses the helper.
+	withCAS := generateC(t, "package main\n\ncell: Atomic[u32]\n\nmain: (): i32 {\n  atomic_store_relaxed(cell, u32(1))\n  seen: u32 = atomic_compare_exchange_acq_rel_acquire(cell, u32(1), u32(2))\n  i32_bits_u32(atomic_load_acquire(cell) - seen - u32(1))\n}\n")
+	if !strings.Contains(withCAS, casHelperText) {
+		t.Fatalf("emitted C lacks the pinned compare-exchange helper\n%s\n— update casHelperText (codegen/translation_validation_test.go); output:\n%s", casHelperText, withCAS)
+	}
+	if !strings.Contains(withCAS, atomicOrderMacros) {
+		t.Fatalf("emitted C lacks the atomic order macros; output:\n%s", withCAS)
+	}
 }
 
 // translationValidationC is a freestanding C translation unit: the prelude
@@ -176,6 +212,9 @@ func translationValidationC(helpers []validatedHelper) string {
 	b.WriteString("#define INT8_MIN (-128)\n#define INT16_MIN (-32768)\n#define INT32_MIN (-2147483647-1)\n#define INT64_MIN (-9223372036854775807LL-1)\n")
 	b.WriteString(strings.Join(arithmeticMacroLines, "\n") + "\n")
 	b.WriteString(strings.Join(guardMacroLines, "\n") + "\n")
+	b.WriteString("#include <stdatomic.h>\n")
+	b.WriteString(atomicOrderMacros)
+	b.WriteString(casHelperText)
 	seen := map[string]bool{}
 	for _, h := range helpers {
 		if strings.HasPrefix(h.name, "tv_") && strings.Contains(h.name, "_trunc_") || strings.Contains(h.name, "_bits_") {
@@ -372,6 +411,10 @@ func validateTranslation(t *testing.T, arch string, compile func(cPath, sPath st
 		}
 		sig := parseOakSpec(t, h.decl)
 		spec := parseOakSpec(t, h.decl+" = "+h.spec)
+		if reason, isOutside := h.outside[arch]; isOutside {
+			t.Logf("%s %s: %s", arch, h.name, reason)
+			h.bar = mismatchForbidden
+		}
 		unitText := unitFor(arch, h, sig, body)
 		unit, errs := asm.ParseUnit("helpers."+arch+".oakasm", unitText)
 		if len(errs) != 0 {
@@ -419,6 +462,23 @@ func TestTranslationValidationArm64(t *testing.T) {
 	}
 	validateTranslation(t, asm.ArchArm64, func(cPath, sPath string) error {
 		out, err := exec.Command(clang, "--target=aarch64-none-elf", "-std=c11", "-O1", "-ffreestanding",
+			"-fno-asynchronous-unwind-tables", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-S", cPath, "-o", sPath).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%v\n%s", err, out)
+		}
+		return nil
+	}, "//")
+}
+
+// The LSE lane: armv8.1-a spells the atomics as single instructions
+// (`casal`) where armv8.0 loops on the exclusives; both are decided.
+func TestTranslationValidationArm64LSE(t *testing.T) {
+	clang, err := exec.LookPath("clang")
+	if err != nil {
+		t.Skip("clang is required to compile the prelude helpers for arm64")
+	}
+	validateTranslation(t, asm.ArchArm64, func(cPath, sPath string) error {
+		out, err := exec.Command(clang, "--target=aarch64-none-elf", "-march=armv8.1-a", "-std=c11", "-O1", "-ffreestanding",
 			"-fno-asynchronous-unwind-tables", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-S", cPath, "-o", sPath).CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("%v\n%s", err, out)
