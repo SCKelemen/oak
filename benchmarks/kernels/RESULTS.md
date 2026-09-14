@@ -187,9 +187,15 @@ The fourth: the checker reads the guard `len(v) >= i + K` in the shape the
 generator spells it (`add wS, wI, #K; cmp wL, wS; b.lo`) as the slack fact
 `i + K <= len`, so the eight byte reads of `crc32c_word_at` under
 `len(chunk) >= at + 8` keep no guards of their own — the 56-byte chunk
-step drops from about 500 to 386 instructions; the word assembly itself
-(eight loads, shifts, and ors per word where clang loads the word once)
-is the next item.
+step drops from about 500 to 386 instructions. The 22× of the baseline
+was not the guards: that build lowered `crc32c_step7`, a function that
+`dispatch`es on the `crc` feature, natively as its portable table loop,
+fifty-six table lookups per chunk; upstream since leaves a dispatching
+function to the C backend, which keeps the selection, so the hardware
+`crc32cx` unit is reached again. Measured on the same object (loaded
+machine, best samples): `crc32c` 1.8× the C backend, `dot` 1.0×, `tiled`
+0.67×, `sum` 2.75×. The word assembly itself (eight loads, shifts, and ors
+per word where clang loads the word once) is the next item.
 
 What remains, in the program's order:
 
