@@ -1,6 +1,9 @@
 package asm
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // The RV64 lane's floating-point instructions as terms (docs/spec/
 // 94-assembler.md §8 and §9): the F/D registers are a file of their own
@@ -232,17 +235,35 @@ func (x *pathExecutor) stepRV64Float(instr Instruction, state *symbolicState) (s
 		state.write(reg(0), value)
 		return "", true
 	}
+	// flw/fld/fsw/fsd: through the sp frame as slots, or through a span
+	// element address (`&v + (idx << s)`, rv64SpanAddress) as the element
+	// at the access width — an f32/f64 span's element, the pattern itself
+	// (docs/spec/94-assembler.md §9, floats in loop bodies).
 	if width, isLoad := rv64FloatLoads[name]; isLoad {
 		mem, isMem := ops[1].(Memory)
-		if !isMem || mem.Base.Class != ClassSP {
-			return refuse("floating-point memory is frame memory")
+		if !isMem {
+			return refuse("a load without a memory operand")
+		}
+		if mem.Base.Class != ClassSP {
+			span, index, reason, ok := x.rv64SpanAddress(mem, state)
+			if !ok {
+				return reason, false
+			}
+			if int64(width) != x.spans[span] {
+				return fmt.Sprintf("a %d-byte floating-point load over %d-byte elements", width, x.spans[span]), false
+			}
+			state.write(reg(0), x.elementIn(state, span, index, width*8))
+			return "", true
 		}
 		return x.frameAccessRV64Float(reg(0), mem, width, false, state)
 	}
 	if width, isStore := rv64FloatStores[name]; isStore {
 		mem, isMem := ops[1].(Memory)
-		if !isMem || mem.Base.Class != ClassSP {
-			return refuse("floating-point memory is frame memory")
+		if !isMem {
+			return refuse("a store without a memory operand")
+		}
+		if mem.Base.Class != ClassSP {
+			return x.spanStoreRV64(reg(0), mem, width, state)
 		}
 		return x.frameAccessRV64Float(reg(0), mem, width, true, state)
 	}

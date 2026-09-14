@@ -1027,9 +1027,25 @@ prefix operand carries its contract (`f64_round_i64(-n)` converts a
 signed 64-bit source); `-diff(a, b)` against `bl diff`/`fneg` is proven
 naming the callee, `-diff(b, a)` and the un-negated call are mismatches,
 on both lanes (`asm/float_call_test.go`; `spec/oak/floats.oak`
-`neg_of_call`, `call_is_its_body`, `from_signed_of_neg`). What stays
-trusted: the rounding intrinsics (`floor`, `ceil`, `trunc`, `round`) and
-a float converted to `u8` or `u16` (the narrow saturation).
+`neg_of_call`, `call_is_its_body`, `from_signed_of_neg`). Floats in loop
+bodies: an f32 span's element loads through the `s` view (`ldr sN, [xB,
+wI, uxtw #2]`, the element into the low lane, the rest of the register
+zero as every scalar write leaves it) and an f32/f64 element through
+`flw`/`fld` at a span element address on RV64 (`fsw`/`fsd` store one,
+outside a loop body; inside, a store keeps the loop trusted like every
+storing loop); the RV64 lane's floating-point registers the body writes
+are loop-carried variables (`f8`, one symbol at the pattern's width, as
+the `v8.lo`/`v8.hi` halves are), and the coupling pairs a 32-bit float
+local with a 64-bit `v` half or `f` register zero-extended
+(`Oak.RiscV.zext_coupling_preserved`: a body reading the register at 32
+bits and writing back zero-extended preserves `r = zext x`). With it the
+native `total` — the accumulator in `d8`/`fs0`, the counter in
+`w2`/`s4` — is proven on both lanes; `acc - v[i]` against `fadd` is a
+mismatch and the swapped `v[i] + acc` evidence only (another
+application of `fadd`, which the witnesses cannot tell apart:
+`asm/float_loop_test.go`). What stays trusted: the rounding intrinsics
+(`floor`, `ceil`, `trunc`, `round`), a float converted to `u8` or `u16`
+(the narrow saturation), and a loop body that stores (`fill_f64`).
 
 **Vector stores as memories (2026-09-14; `asm/effects.go`,
 `asm/verify_simd.go`).** The twenty-eighth increment's write log takes
@@ -1074,7 +1090,8 @@ the NEON `fmin`/`fmax` match — the sign injections `fsgnj`/`fsgnjn`/
 extended) and the other bit moves, `fcvt` between the widths and from
 the integer file at its width and signedness, and to the integer file
 under `rtz` (the contract converts toward zero; without `rtz` the unit
-stays trusted); `flw`/`fld`/`fsw`/`fsd` through the frame. The vector
+stays trusted); `flw`/`fld`/`fsw`/`fsd` through the frame or, at a span
+element address, the element at the access width. The vector
 file is modeled under a *fixed configuration*: `vsetivli zero, K, eS, m1`
 with `K·S ≤ 128`, under which `vl = K` on every VLEN ≥ 128
 (`Oak.RiscV.fixed_config_vl`, `fixed_lanes_fit`) and the instructions are

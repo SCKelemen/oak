@@ -338,6 +338,9 @@ type loopEvent struct {
 	width  map[string]int
 	cond   *term            // continue condition over the fresh symbols (1/0)
 	next   map[string]*term // value after one iteration, over the fresh symbols
+	// floats marks the Oak side's f32/f64 locals: only they pair with a
+	// vector register half or an RV64 f register zero-extended.
+	floats map[string]bool
 }
 
 func (ev *loopEvent) freshName(v string) string { return fmt.Sprintf("loop%d.%s", ev.index, v) }
@@ -419,6 +422,10 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// v register or, spilled, in a sixteen-byte slot. Each is two 64-bit
 	// symbols (its halves; a slot per eight bytes).
 	writtenV := map[int]bool{}
+	// The RV64 lane's floating-point registers the body writes: each one
+	// symbol at the width of the pattern it holds at the header (the file
+	// holds patterns at the width of the instruction that wrote them).
+	writtenF := map[int]bool{}
 	// writtenSlots: the frame slots the body stores, by address, with the
 	// store's width (4 or 8 bytes: a spilled w register or an x one); a
 	// slot stored at two widths, or two stores overlapping, is refused.
@@ -428,7 +435,7 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		if !isInstr || isConditionalBranch(instr.Mnemonic) || isUnconditionalJump(instr.Mnemonic) {
 			continue
 		}
-		if isFrameMemory(instr) && (isStoreMnemonic(instr.Mnemonic) || rv64Stores[instr.Mnemonic] != 0) {
+		if isFrameMemory(instr) && (isStoreMnemonic(instr.Mnemonic) || rv64Stores[instr.Mnemonic] != 0 || rv64FloatStores[instr.Mnemonic] != 0) {
 			mem := instr.Operands[len(instr.Operands)-1].(Memory)
 			if mem.Mode != MemOffset {
 				return nil, "a frame access moving sp in a loop body", false
@@ -436,6 +443,9 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 			addr := -state.disp + mem.Offset
 			for _, reg := range registerOperands(instr.Operands[:len(instr.Operands)-1]) {
 				size := int64(rv64Stores[instr.Mnemonic])
+				if size == 0 {
+					size = int64(rv64FloatStores[instr.Mnemonic])
+				}
 				if size == 0 {
 					size = memorySizeReg(instr.Mnemonic, reg)
 					if isPairAccess(instr.Mnemonic) {
@@ -467,11 +477,16 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 			}
 			continue
 		}
-		if isStoreMnemonic(instr.Mnemonic) || rv64Stores[instr.Mnemonic] != 0 {
+		if isStoreMnemonic(instr.Mnemonic) || rv64Stores[instr.Mnemonic] != 0 || rv64FloatStores[instr.Mnemonic] != 0 {
 			continue
 		}
-		if dest, isReg := instr.Operands[0].(Register); isReg && dest.Class == ClassV {
-			writtenV[dest.Num] = true
+		if dest, isReg := instr.Operands[0].(Register); isReg {
+			switch dest.Class {
+			case ClassV:
+				writtenV[dest.Num] = true
+			case ClassRV64F:
+				writtenF[dest.Num] = true
+			}
 		}
 	}
 	ev := &loopEvent{index: len(x.loops) + 1, header: map[string]*term{}, fresh: map[string]*term{}, width: map[string]int{}, next: map[string]*term{}}
@@ -511,6 +526,33 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 			ev.fresh[name] = fresh
 		}
 		freshState.writeVec(reg, vecOfLanes(halves, 64))
+	}
+	scratchF := map[int]bool{}
+	fregs := make([]int, 0, len(writtenF))
+	for reg := range writtenF {
+		fregs = append(fregs, reg)
+	}
+	sort.Ints(fregs)
+	for _, reg := range fregs {
+		// A callee-saved register (fs0–fs11) read before any write carries
+		// the caller's pattern (entry.fN), as state.read binds it.
+		value, bound := state.read(Register{Class: ClassRV64F, Num: reg, Lane: -1})
+		width := 64
+		if bound {
+			width = value.width
+		}
+		name := fmt.Sprintf("f%d", reg)
+		fresh := paramTerm(ev.freshName(name), width)
+		x.declared[fresh.name] = width
+		freshState.write(Register{Class: ClassRV64F, Num: reg, Lane: -1}, fresh)
+		if !bound {
+			scratchF[reg] = true
+			continue
+		}
+		ev.vars = append(ev.vars, name)
+		ev.width[name] = width
+		ev.header[name] = value
+		ev.fresh[name] = fresh
 	}
 	for _, reg := range regs {
 		name := fmt.Sprintf("r%d", reg)
@@ -634,6 +676,9 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	}
 	for reg := range scratchV {
 		delete(freshState.vregs, reg)
+	}
+	for reg := range scratchF {
+		delete(freshState.fregs, reg)
 	}
 	for addr := range scratchSlots {
 		delete(freshState.frame, addr)
@@ -768,7 +813,8 @@ func (e bodyEnd) valueOf(reg int, header *symbolicState) *term {
 
 // valueOfVar is a loop-carried variable's value at the end of the path:
 // a general register (`r9`), a half of a vector register (`v8.lo`,
-// `v8.hi`), or a frame slot with its width in bytes (`s-144:8`, `s-100:4`).
+// `v8.hi`), an RV64 floating-point register (`f8`), or a frame slot with
+// its width in bytes (`s-144:8`, `s-100:4`).
 func (e bodyEnd) valueOfVar(name string, header *symbolicState) *term {
 	var reg int
 	var side string
@@ -777,6 +823,12 @@ func (e bodyEnd) valueOfVar(name string, header *symbolicState) *term {
 	case len(name) > 1 && name[0] == 'r':
 		fmt.Sscanf(name, "r%d", &reg)
 		return e.valueOf(reg, header)
+	case len(name) > 1 && name[0] == 'f':
+		fmt.Sscanf(name, "f%d", &reg)
+		if value, written := e.state.fregs[reg]; written {
+			return value
+		}
+		return header.fregs[reg]
 	case len(name) > 1 && name[0] == 'v':
 		fmt.Sscanf(name, "v%d.%s", &reg, &side)
 		value, bound := e.state.vregs[reg]
@@ -948,7 +1000,7 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 					// stores stay outside a summarized body as on AArch64.
 					base := rv64Base(instr)
 					if len(base.Operands) == 2 {
-						if mem, isMem := base.Operands[1].(Memory); isMem && mem.Base.Class != ClassSP && rv64Stores[base.Mnemonic] != 0 {
+						if mem, isMem := base.Operands[1].(Memory); isMem && mem.Base.Class != ClassSP && (rv64Stores[base.Mnemonic] != 0 || rv64FloatStores[base.Mnemonic] != 0) {
 							return nil, "a store in a loop body", false
 						}
 					}
@@ -1067,6 +1119,12 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		ev.vars = append(ev.vars, name)
 		ev.width[name] = local.width
 		ev.header[name] = local.value
+		if _, isFloat := lo.floats[name]; isFloat {
+			if ev.floats == nil {
+				ev.floats = map[string]bool{}
+			}
+			ev.floats[name] = true
+		}
 		fresh := paramTerm(ev.freshName(name), local.width)
 		lo.fresh[fresh.name] = local.width
 		ev.fresh[name] = fresh
@@ -1541,6 +1599,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			// widening is a candidate image; the coupling is r = ext(x) + b at
 			// 64 bits and one iteration must preserve it. A lane group is
 			// paired at its packed width, as r = pack(x) + b only.
+			if strings.HasPrefix(reg, "f") && !oakEv.floats[s.name] {
+				continue // the RV64 float file holds float locals only
+			}
 			var widenings []string
 			signs := []int{1, -1}
 			switch {
@@ -1548,6 +1609,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 				widenings = []string{""}
 			case len(s.locals) == 1 && asmEv.width[reg] == 64 && s.width() == 32 && strings.HasPrefix(reg, "r"):
 				widenings = []string{"zext", "sext"}
+			case len(s.locals) == 1 && oakEv.floats[s.name] && asmEv.width[reg] == 64 && s.width() == 32 && (strings.HasPrefix(reg, "v") || strings.HasPrefix(reg, "f")):
+				// An f32 local in the low lane of a v register (a scalar
+				// write zeroes the rest) or in an RV64 f register (the file's
+				// low-bits convention): zero-extended only.
+				widenings = []string{"zext"}
 			default:
 				continue
 			}
