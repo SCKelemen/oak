@@ -104,8 +104,8 @@ backend (`oak build -native`, the Oak assembler alone, `docs/spec/94-assembler.m
 §9) was measured against it on the same kernels on 2026-09-14, on an Apple
 M4 Max under load; `benchmarks/native/README.md` has the table, the raw
 samples (`benchmarks/native/results/`), and the reasons. The short form:
-the hash kernels and the branchy kernels are within 1.1–1.9× of the C
-backend, the scalar reductions (`sum`, `dot`) are 3.2–3.4× behind because
+the hash kernels are within 1.1–1.5× of the C backend, the branchy kernels
+went from 1.8–1.9× to 0.9–1.2× once a division by two became a shift, the scalar reductions (`sum`, `dot`) are 3.2–3.4× behind because
 the backend neither unrolls nor vectorizes a loop clang vectorizes, the
 bytecode `dispatch` kernel is faster natively, and CRC-32C was 23× behind
 until this pass — the native backend had lowered the dispatching function's

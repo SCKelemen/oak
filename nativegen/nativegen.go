@@ -4919,6 +4919,31 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 	if mnemonic, direct := directArithmetic[e.Operator]; direct && !typ.isFloat && !typ.isVec {
 		return g.directInfix(e, typ, mnemonic)
 	}
+	if (e.Operator == "/" || e.Operator == "%") && !typ.signed && !typ.isFloat && !typ.isVec {
+		// Unsigned division and remainder by a constant power of two are a
+		// shift and a mask (the Oak-side lowering spells them the same way,
+		// asm/verify.go), not a udiv behind a zero check: the binary
+		// search's `(hi - lo) / u32(2)` sits on the loop's latency chain.
+		if k, isConst := constantValue(e.Right); isConst && k > 1 && k&(k-1) == 0 && uint64(k) <= uint64(1)<<uint(typ.bits-1) {
+			l, lfixed, err := g.operand(e.Left, typ)
+			if err != nil {
+				return 0, err
+			}
+			out := l
+			if lfixed {
+				if out, err = g.alloc(typ); err != nil {
+					return 0, err
+				}
+			}
+			if e.Operator == "/" {
+				g.emit("lsr", reg(out, typ), reg(l, typ), imm(int64(log2Bytes(int(k)))))
+			} else {
+				g.emit("and", reg(out, typ), reg(l, typ), imm(k-1))
+			}
+			g.normalize(out, typ)
+			return out, nil
+		}
+	}
 	if (e.Operator == "<<" || e.Operator == ">>") && !typ.signed && !typ.isFloat && !typ.isVec {
 		if count, isConst := constantValue(e.Right); isConst && count >= 0 && count < int64(typ.bits) {
 			// A constant-count shift reads its operand where it lies.

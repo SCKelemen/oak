@@ -89,8 +89,8 @@ noise at about twenty percent. Raw samples:
 | `blake3` | 3.115 | 4.808 | 1.54 | trusted |
 | `dot` | 0.835 | 2.704 | 3.24 | proven |
 | `sum` | 0.115 | 0.393 | 3.40 | proven |
-| `search` | 11.50 | 20.30 | 1.76 | proven |
-| `page_probe` | 11.13 | 21.51 | 1.93 | proven |
+| `search` | 11.50 | 20.30 → 17.2 (C 19.3 in that run) with `/ 2` as a shift | 1.76 → 0.89 | witnessed |
+| `page_probe` | 11.13 | 21.51 → 21.2 (C 17.5 in that run) with `/ 2` as a shift | 1.93 → 1.21 | trusted (loop-body path budget) |
 | `bitmap` | 0.192 | 0.229 | 1.19 | C helper on both sides (noise floor) |
 | `dispatch` | 10.82 | 9.03 | 0.83 | proven |
 | `tiled` | 0.135 | 0.375 (at 30ca36eb) | 2.8 | witnessed; refuted at aade7acd by a verifier false alarm since fixed upstream (see below) |
@@ -135,10 +135,16 @@ What the rows say, in the order they matter:
   price of every reduction until the backend unrolls (the register
   allocator across calls from the UTF-8 case is a separate prerequisite;
   these kernels make no calls in their loops).
-- **Branchy kernels are within 2×.** `search` and `page_probe` are compare
-  and branch chains over loads the predictor cannot help; the native code
-  is 1.8–1.9× behind, the difference being the frame traffic around the
-  binary-search helper and the guards the checker cannot elide. The
+- **Branchy kernels were within 2×, and the cause was a division.**
+  `search` and `page_probe` are compare and branch chains over loads the
+  predictor cannot help; the native code was 1.8–1.9× behind. The inner
+  loop's `mid = lo + (hi - lo) / u32(2)` lowered to a `udiv` behind a zero
+  check on the loop's latency chain; the backend now lowers unsigned
+  division and remainder by a constant power of two to `lsr`/`and`
+  (`94-assembler.md` §9), and the same run measured `search` at 0.89× and
+  `page_probe` at 1.21× (on a host at load average 300, so the ratios are
+  the claim, not the times). What remains in `page_probe` is the guard on
+  the fence-key and in-page loads the checker did not admit elided. The
   bytecode `dispatch` kernel measured faster natively (0.83×), a
   difference near the noise band of this host that was not investigated.
 - **The hash kernels' wrappers are trusted, not proven**, because every

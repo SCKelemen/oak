@@ -1394,6 +1394,16 @@ on CRC-32C (`benchmarks/native/README.md`): fifty-six guarded `ldrb`s per
 1.1×. Byte elements only in this increment; the C backend's realization
 is unchanged.
 
+**Division by a constant power of two.** Unsigned `/` and `%` by a literal
+power of two lower to `lsr` and `and` with the mask, as the Oak-side
+lowering already spelled them (asm/verify.go), instead of a `udiv` behind
+a zero check: the quotient is then a term the verifier decides at the bit
+level rather than an uninterpreted operation, and the binary search's
+`(hi - lo) / u32(2)` leaves the loop's latency chain (`benchmarks/native/README.md`:
+`search` 1.8× to 0.9×, `page_probe` 1.9× to 1.2× against the C backend).
+Any other divisor keeps the check and the `udiv`; signed operands keep
+`sdiv`.
+
 The subset: parameters, locals, and results of the fixed-width integers
 and `Bool` (or a unit result); literals; wrapping `+ - * & | ^`; `/` and
 `%` with the C helpers' edge cases (zero traps through `brk #1`; `MIN /
