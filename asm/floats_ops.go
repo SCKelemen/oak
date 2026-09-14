@@ -37,6 +37,17 @@ var floatOps = map[string]int{
 	// NaN whose payload the platform chooses (docs/spec/20-types.md
 	// §11.3.5), one function of the operands on both sides.
 	"fnan": 2,
+	// Integer division: the quotient as an uninterpreted operation of its
+	// operands (docs/spec/94-assembler.md §8, thirty-first increment); the
+	// remainder is a - (a / b) * b on every side (the machines' definition,
+	// Oak.IntegerDivision). Both lanes trap on a zero divisor, so the
+	// applications compared lie off b = 0; the evaluation returns the
+	// AArch64 result there (0).
+	"udiv": 2, "sdiv": 2,
+	// The RV64 lane's quotients: the same functions off b = 0, where the
+	// M extension yields all ones (unprivileged spec §7.2) and the QEMU
+	// differential reads them (asm/rv64_qemu_test.go).
+	"rv.udiv": 2, "rv.sdiv": 2,
 	// Conversions: fcvt changes the float width (operand width to the
 	// term's), scvtf/ucvtf make a float from a signed/unsigned integer of
 	// the operand's width, fcvtzs/fcvtzu make an integer of the term's
@@ -201,6 +212,28 @@ func floatEval(op string, width int, args []uint64, widths []int) uint64 {
 		return math.Float64bits(x)
 	}
 	switch op {
+	case "udiv", "rv.udiv":
+		a, b := args[0]&mask(width), args[1]&mask(width)
+		if b == 0 {
+			if op == "rv.udiv" {
+				return mask(width)
+			}
+			return 0
+		}
+		return a / b
+	case "sdiv", "rv.sdiv":
+		shift := uint(64 - width)
+		a, b := int64(args[0]<<shift)>>shift, int64(args[1]<<shift)>>shift
+		if b == 0 {
+			if op == "rv.sdiv" {
+				return mask(width) // -1
+			}
+			return 0
+		}
+		if b == -1 {
+			return uint64(-a) & mask(width) // the minimum divided by -1 wraps to itself
+		}
+		return uint64(a/b) & mask(width)
 	case "fadd", "fsub", "fmul", "fdiv", "fnan":
 		if nan, isNaN := armNaN(width, args[0], args[1]); isNaN {
 			return nan
