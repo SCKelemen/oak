@@ -292,6 +292,12 @@ type checker struct {
 	// len(b) ? { ... a[i] ... b[i] ... }`, Oak.Assembler.index_under_equal_len).
 	// Dies with a write to either register, at labels, and at calls.
 	lenEqual map[int]int
+	// sumFacts: w register -> the index register and constant it is the
+	// sum of (`add wS, wI, #K`), so that `cmp wL, wS; b.lo <exit>` over a
+	// span's length wL proves wI + K <= len on the fall-through — the
+	// guard `len(v) >= i + K` spelled as the generator spells it
+	// (Oak.Assembler.sum_guard_slack). Dies like the other guard facts.
+	sumFacts map[int]sumFact
 	// constFacts: w register -> the constant a `movz`/`mov` just put in it
 	// (the stride of an array of records for `umaddl`); dies with a write,
 	// at labels, and at calls.
@@ -456,6 +462,12 @@ type idxFact struct {
 	// wI < len — the vector idiom `sub wT, wL, #K; cmp wI, wT; b.hi trap`
 	// under len >= K, admitting an access of K elements at wI.
 	slack bool
+}
+
+// sumFact: the register is wI + K for the index register wI.
+type sumFact struct {
+	idx int
+	k   int64
 }
 
 // slackFact: wT = wL - K for a span's length register wL, under len >= K.
@@ -1044,6 +1056,7 @@ func (c *checker) forgetGuards() {
 	c.subFacts = map[int]subFact{}
 	c.constFacts = map[int]int64{}
 	c.lenEqual = map[int]int{}
+	c.sumFacts = map[int]sumFact{}
 }
 
 // instruction checks one instruction and reports whether it ends control.
@@ -1125,6 +1138,33 @@ func (c *checker) instruction(instr Instruction) bool {
 		// a span (Oak.Assembler.index_access).
 		if guard.valid && (instr.Cond == "hs" || instr.Cond == "cs") {
 			c.idxFacts[guard.left] = idxFact{boundReg: guard.rightReg, bound: guard.imm}
+		}
+		// `add wS, wI, #K` then `cmp wL, wS` then `b.lo exit` over a span's
+		// length wL: the fall-through path knows len >= wI + K — the guard
+		// `len(v) >= i + K` as the generator spells it — the slack fact
+		// under which wI's element and the K - 1 after it are inside the
+		// span (Oak.Assembler.sum_guard_slack). Symmetric: `cmp wS, wL`
+		// then `b.hi exit`.
+		if guard.valid && guard.rightReg >= 0 {
+			var lenReg, sumReg int
+			switch {
+			case (instr.Cond == "lo" || instr.Cond == "cc"):
+				lenReg, sumReg = guard.left, guard.rightReg
+			case instr.Cond == "hi":
+				lenReg, sumReg = guard.rightReg, guard.left
+			default:
+				lenReg = -1
+			}
+			if lenReg >= 0 {
+				if sum, isSum := c.sumFacts[sumReg]; isSum {
+					for _, fact := range c.spans {
+						if fact.holdsLen(lenReg) {
+							c.idxFacts[sum.idx] = idxFact{boundReg: lenReg, bound: sum.k, slack: true}
+							break
+						}
+					}
+				}
+			}
 		}
 		// `cmp wA, wB` then `b.ne exit`: the fall-through path knows the
 		// two registers are equal — two spans' lengths, so an index guarded
@@ -1419,6 +1459,7 @@ func (c *checker) instruction(instr Instruction) bool {
 	// wJ + (K - k) <= len (a vector access k lanes on from a guarded index).
 	var slack *slackFact
 	var carried *idxFact
+	var sum *sumFact
 	if (instr.Mnemonic == "sub" || instr.Mnemonic == "add") && dest.Class == ClassW && len(instr.Operands) == 3 {
 		if src, isReg := instr.Operands[1].(Register); isReg && src.Class == ClassW {
 			// The constant: an immediate, or a register a movz just filled
@@ -1441,6 +1482,9 @@ func (c *checker) instruction(instr Instruction) bool {
 				} else if f, has := c.idxFacts[src.Num]; has && f.slack && f.bound > k.Value {
 					carried = &idxFact{boundReg: f.boundReg, bound: f.bound - k.Value, slack: true}
 				}
+				if instr.Mnemonic == "add" && dest.Num != src.Num {
+					sum = &sumFact{idx: src.Num, k: k.Value}
+				}
 			}
 		}
 	}
@@ -1455,6 +1499,12 @@ func (c *checker) instruction(instr Instruction) bool {
 	c.write(instr, dest)
 	if slack != nil {
 		c.slackFacts[dest.Num] = *slack
+	}
+	if sum != nil {
+		if c.sumFacts == nil {
+			c.sumFacts = map[int]sumFact{}
+		}
+		c.sumFacts[dest.Num] = *sum
 	}
 	if carried != nil {
 		c.idxFacts[dest.Num] = *carried
@@ -1649,6 +1699,14 @@ func (c *checker) write(instr Instruction, reg Register) {
 	if other, equal := c.lenEqual[reg.Num]; equal && (reg.Class == ClassW || reg.Class == ClassX) {
 		delete(c.lenEqual, reg.Num)
 		delete(c.lenEqual, other)
+	}
+	if reg.Class == ClassW || reg.Class == ClassX {
+		delete(c.sumFacts, reg.Num)
+		for r, f := range c.sumFacts {
+			if f.idx == reg.Num {
+				delete(c.sumFacts, r)
+			}
+		}
 	}
 	if reg.Class == ClassSP {
 		c.errorf(instr.Line, "sp may only move by add/sub sp, sp, #imm or pre/post-index addressing")

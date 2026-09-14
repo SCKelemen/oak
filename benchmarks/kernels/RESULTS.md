@@ -183,6 +183,14 @@ samples: `dot` 1.36× the C backend (from 3.2×), `tiled` 0.35× (the native
 loop is now ahead of clang over the C backend's checked reads), `sum`
 unchanged at 3.4×.
 
+The fourth: the checker reads the guard `len(v) >= i + K` in the shape the
+generator spells it (`add wS, wI, #K; cmp wL, wS; b.lo`) as the slack fact
+`i + K <= len`, so the eight byte reads of `crc32c_word_at` under
+`len(chunk) >= at + 8` keep no guards of their own — the 56-byte chunk
+step drops from about 500 to 386 instructions; the word assembly itself
+(eight loads, shifts, and ors per word where clang loads the word once)
+is the next item.
+
 What remains, in the program's order:
 
 1. **Reductions unrolled with several accumulators** (`sum`): clang takes

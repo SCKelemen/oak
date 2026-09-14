@@ -257,7 +257,12 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   the fall-through path knows the two lengths equal, so an index guarded
   below one is below the other (`Oak.Assembler.index_under_equal_len`;
   the fact dies with a write to either register, at labels, and at
-  calls). Index facts die like
+  calls). The guard `len(v) >= i + K` as the generator spells it — `add
+  wS, wI, #K` then `cmp wL, wS` then `b.lo <exit>` (or `cmp wS, wL` then
+  `b.hi`) — proves `wI + K <= len` on the fall-through, the slack fact
+  under which `wI`'s element and the `K - 1` after it (`add wJ, wI, #k`,
+  `k < K`) need no guard of their own (`Oak.Assembler.sum_guard_slack`).
+  Index facts die like
   length guards: at calls, and on any write to the index or the register
   it was compared against. **At a label a fact survives exactly when every
   predecessor carries it** — fall-through and every branch targeting the

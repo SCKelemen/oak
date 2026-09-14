@@ -141,6 +141,14 @@ theorem span_access (elem minLen len off size : Nat)
   calc off + size ≤ elem * minLen := hacc
     _ ≤ elem * len := Nat.mul_le_mul_left elem hguard
 
+/-- **The sum shape of a slack guard** (the checker's `sumFacts`,
+    docs/spec/94-assembler.md §7): `len(v) >= i + K` as the generator spells
+    it — `add wS, wI, #K; cmp wL, wS; b.lo <exit>` — proves `i + K ≤ len` on
+    the fall-through, the slack fact under which element `i + k` for every
+    `k < K` lies inside the span. -/
+theorem sum_guard_slack (len i K k : Nat) (hguard : i + K ≤ len) (hk : k < K) : i + k < len := by
+  omega
+
 /-- **Index under an equal length** (the checker's `lenEqual` fact,
     docs/spec/94-assembler.md §7): `cmp wA, wB; b.ne <exit>` proves the two
     lengths equal on the fall-through path, so an index guarded below one
