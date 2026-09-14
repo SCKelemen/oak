@@ -4952,7 +4952,9 @@ func (lo *oakLowering) declareTables(tables map[string]Table) {
 	}
 }
 
-// tableLength recognizes len(T) over a constant table: the element count.
+// tableLength recognizes len(T) over a constant table, or over a callee's
+// span parameter aliased to one (`sum_view(view(&TABLE))`): the element
+// count.
 func (lo *oakLowering) tableLength(expr ast.Expression) (int64, bool) {
 	call, isCall := expr.(*ast.InvocationExpression)
 	if !isCall || len(call.Arguments) != 1 {
@@ -4963,8 +4965,23 @@ func (lo *oakLowering) tableLength(expr ast.Expression) (int64, bool) {
 	if !isIdent || !argIsIdent || fn.Value != "len" {
 		return 0, false
 	}
-	length, isTable := lo.tableLens[arg.Value]
+	length, isTable := lo.tableLens[lo.spanRoot(arg.Value)]
 	return length, isTable
+}
+
+// isTableLength reports a constant term that is a table's element count:
+// the length a caller passes beside the table's address (`adrl xB, T; movz
+// wL, #N`), so `view(&T)` handed to a callee is the table passed whole.
+func (x *pathExecutor) isTableLength(length *term, owner string) bool {
+	if length.kind != termConst || x.fn == nil {
+		return false
+	}
+	for symbol, table := range x.fn.Tables {
+		if TableName(symbol) == owner && table.Elem > 0 {
+			return int64(length.value&mask(32)) == table.Size/table.Elem
+		}
+	}
+	return false
 }
 
 // spanLength recognizes len(v) over a span parameter.
@@ -5979,6 +5996,9 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	lo := newLowering(callee)
 	lo.arch = x.arch
 	lo.records, lo.adts, lo.constants = x.fn.Records, x.fn.ADTs, x.fn.Constants
+	// The span arguments bound to the caller's owned frame arrays, written
+	// back after the body (asm/span_args.go).
+	var frameBorrows []frameBorrow
 	lo.functions = x.fn.Callees
 	lo.declareTables(x.fn.Tables)
 	lo.inlining = map[string]bool{name: true}
@@ -6149,10 +6169,19 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 				var offset int64
 				owner, offset, whole = spanBaseOf(base)
 				_, isRecord := x.records[owner]
-				whole = whole && !isRecord && offset == 0 && x.spans[owner] == arg.elem && x.isSpanLength(length, owner)
+				whole = whole && !isRecord && offset == 0 && x.spans[owner] == arg.elem && (x.isSpanLength(length, owner) || x.isTableLength(length, owner))
 			}
 			if !whole {
-				return fmt.Sprintf("a call to %s: the span argument %s is not one of the caller's span parameters passed whole", name, param.Name.Value), false
+				// A span or view over the caller's owned frame array
+				// (`span(&buf)`): the callee's parameter is the array's
+				// contents as an aggregate local, written back after the
+				// body when the span is writable (asm/span_args.go).
+				borrow, reason, ok := x.frameArrayArgument(state, lo, name, param.Name.Value, param.Type, arg.elem, base, length, hasBase && hasLen)
+				if !ok {
+					return reason, false
+				}
+				frameBorrows = append(frameBorrows, borrow)
+				break
 			}
 			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
 			lo.spans[param.Name.Value] = spanContract{elemWidth: int(arg.elem) * 8, signed: strings.HasPrefix(elemType, "i")}
@@ -6230,6 +6259,11 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		}
 	}
 	state.writes = lo.writes // the callee's stores through the caller's spans
+	for _, borrow := range frameBorrows {
+		if reason, ok := borrow.writeBack(state, lo); !ok {
+			return fmt.Sprintf("a call to %s: %s", name, reason), false
+		}
+	}
 	for cellName, cell := range lo.cells {
 		if cell.value != seeds[cellName] {
 			if state.globals == nil {

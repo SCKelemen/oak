@@ -105,6 +105,7 @@ import Oak.TrapArms
 import Oak.StackArguments
 import Oak.SpanLocals
 import Oak.Shifts
+import Oak.SpanArguments
 import Oak.Regions
 import Oak.SessionObligations
 import Oak.SessionObligationsProved

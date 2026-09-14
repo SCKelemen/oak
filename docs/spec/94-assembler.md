@@ -2443,6 +2443,35 @@ refusal, as the backends leave those bodies to C. `shifts` and `byte_shift` are 
 on both lanes (`asm/shift_test.go`; `compiler/e2e_native_rv64_test.go`);
 the theorem decider's treatment — the trap as a recorded obligation — is
 unchanged.
+**Thirty-sixth increment — span arguments over the caller's owned arrays
+(2026-09-15; `asm/span_args.go`, `Oak.SpanArguments`).** The call summary
+took a span argument only as one of the caller's span parameters passed
+whole, so every `main` that handed its own array to a helper —
+`put(span(&buf), …)`, `fill(span(&buf), …)`, `sum(view(&buf))` — was
+trusted ("the span argument v is not one of the caller's span parameters
+passed whole"), on both lanes. The summary now recognizes the pair the
+backends build for `span(&buf)` / `view(&buf)`: the array's frame address
+(`add xN, sp, #off`; `addi rN, sp, off`) and its constant length, and
+binds the callee's parameter as the Oak side's inline binds it — an
+aggregate local holding the array's elements, each read from its frame
+slot (a zero-filled array reads as zeros through the slot tiling), so the
+body's element reads and writes, its `len`, and its data-dependent loops
+(which carry the aggregate's leaves as fresh symbols, the same symbols on
+both sides) are the aggregate's. After the body a writable span's final
+leaves are stored back, leaf `i` into slot `i` (`Oak.SpanArguments`: the
+slots are pairwise disjoint and lie inside the array, a leaf written back
+is read back from its slot, and a second element's write-back leaves the
+first's bytes). An array that follows a store at a data-dependent index
+(the frame's unknown region), a length that is not a constant, or an
+array beyond the summary's budget stays trusted with the reason. The
+span-effects `main` is proven on both lanes, as are `filled` and `squares`
+of the rv64 corpus, whose callees loop over the array
+(`asm/span_args_test.go`; `compiler/e2e_native_span_effects_test.go`,
+`compiler/e2e_native_rv64_test.go`). A constant table handed to a callee
+(`sum_view(view(&TABLE))`) is the table passed whole: its address beside
+its constant element count takes the span-parameter alias, and `len` over
+the callee's parameter resolves through the alias to the table's count, so
+`table_sum` is proven too (`compiler/e2e_native_tables_test.go`).
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
