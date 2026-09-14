@@ -117,6 +117,10 @@ func (c *checker) applyGuards(gs *guardState) {
 	}
 	c.idxFacts = map[int]idxFact{}
 	c.slackFacts = map[int]slackFact{}
+	// A materialized condition is not carried through the meet: a
+	// boolean tested after a label proves nothing (the join's other
+	// predecessors may have written it).
+	c.condFacts = map[int]condFact{}
 	for reg, fact := range gs.idx {
 		c.idxFacts[reg] = fact
 	}
@@ -241,6 +245,7 @@ type checker struct {
 	// any write to the index or bound register, any label, and any call.
 	idxFacts   map[int]idxFact
 	slackFacts map[int]slackFact
+	condFacts  map[int]condFact
 	// frameAddrs: register -> the frame address it holds, relative to the
 	// entry sp (`add xN, sp, #imm`): the base of an owned array in the
 	// frame. Memory through it is checked against the declared frame like
@@ -446,6 +451,16 @@ type idxFact struct {
 	need int64
 }
 
+// condFact: wB = 1 when `cond` held of the compare `cmp` and 0 otherwise
+// (`cset wB, cond` right after the compare), so a later `cbz wB` /
+// `cbnz wB` tests the compare's condition: the lowering's spelling of
+// `a && b` and `a || b` (short-circuit through a boolean). Dies with a
+// write to wB or to either compared register, at labels, and at calls.
+type condFact struct {
+	cmp  cmpFact
+	cond string
+}
+
 // slackFact: wT = wL - K for a span's length register wL, under len >= K.
 type slackFact struct {
 	len int
@@ -584,6 +599,7 @@ func (c *checker) bindContract() {
 	c.spans = map[int]*spanFact{}
 	c.idxFacts = map[int]idxFact{}
 	c.slackFacts = map[int]slackFact{}
+	c.condFacts = map[int]condFact{}
 	c.spanParams = map[string]spanParam{}
 	c.compositeParams = map[string]compositeParam{}
 	c.regions = map[int]region{}
@@ -1006,11 +1022,62 @@ func (c *checker) enterLabel(label Label) {
 		c.forgetGuards()
 	case c.labelIn == nil:
 		c.pendingCmp = cmpFact{}
+		c.condFacts = map[int]condFact{}
 	default:
 		if assumed, known := c.labelIn[label.Name]; known {
 			c.applyGuards(assumed)
 		} else {
 			c.forgetGuards() // no predecessor reached it: unreachable label
+		}
+	}
+}
+
+// guardFacts reads what the fall-through of a conditional branch on the
+// compare `guard` proves when the branch condition is `cond` — the branch
+// leaves on `cond`, so the path after it has its negation. The same
+// reading serves `b.cond` itself and a condition materialized by `cset`
+// and tested by `cbz`/`cbnz` (condFacts, Oak.Assembler.cset_cbz).
+func (c *checker) guardFacts(guard cmpFact, cond string) {
+	// `cmp wL, #N` then `b.lo fail`: the fall-through path knows
+	// len >= N for every span whose length register is wL.
+	if guard.valid && guard.rightReg < 0 && (cond == "lo" || cond == "cc") {
+		for _, fact := range c.spans {
+			if fact.holdsLen(guard.left) {
+				fact.hasMin = true
+				fact.minLen = guard.imm
+			}
+		}
+	}
+	// `cmp wI, wL` / `cmp wI, #K` then `b.hs exit`: the fall-through
+	// path knows wI < len / wI < K — the index guard of a loop walking
+	// a span (Oak.Assembler.index_access).
+	if guard.valid && (cond == "hs" || cond == "cs") {
+		if slack, isSlack := c.slackFacts[guard.rightReg]; isSlack {
+			// `sub wT, wL, #K` then `cmp wI, wT` then `b.hs trap`: the
+			// exclusive form of the slack guard, wI < len - K, which
+			// under len >= K gives wI + K <= len as well
+			// (Oak.Assembler.slack_guard_strict) — the wrap-free
+			// remaining guard `i < len(v) - K` before reads at i + k, k < K.
+			c.idxFacts[guard.left] = idxFact{boundReg: slack.len, bound: slack.k, slack: true, need: slack.k}
+		} else {
+			c.idxFacts[guard.left] = idxFact{boundReg: guard.rightReg, bound: guard.imm}
+		}
+	}
+	// `sub wT, wL, #K` then `cmp wI, wT` then `b.hi trap`: the
+	// fall-through path knows wI + K <= len — the guard of a K-element
+	// vector access at wI (Oak.Assembler.index_access, K lanes).
+	if guard.valid && guard.rightReg >= 0 && cond == "hi" {
+		if slack, isSlack := c.slackFacts[guard.rightReg]; isSlack {
+			c.idxFacts[guard.left] = idxFact{boundReg: slack.len, bound: slack.k, slack: true, need: slack.k}
+		}
+	}
+	// `cmp wS, wL` then `b.hi trap`: the fall-through path knows
+	// wS <= wL; against a difference register wT = wL - wS this is the
+	// subslice count bound wN <= wL - wS.
+	if guard.valid && guard.rightReg >= 0 && cond == "hi" {
+		c.leFacts[guard.left] = guard.rightReg
+		if diff, isDiff := c.diffFacts[guard.rightReg]; isDiff {
+			c.subFacts[guard.left] = subFact{start: diff.start, len: diff.len}
 		}
 	}
 }
@@ -1024,6 +1091,7 @@ func (c *checker) forgetGuards() {
 	c.pendingCmp = cmpFact{}
 	c.idxFacts = map[int]idxFact{}
 	c.slackFacts = map[int]slackFact{}
+	c.condFacts = map[int]condFact{}
 	c.frameAddrs = map[int]int64{}
 	c.globalPages = map[int]string{}
 	c.globalAddrs = map[int]string{}
@@ -1097,48 +1165,7 @@ func (c *checker) instruction(instr Instruction) bool {
 			c.errorf(instr.Line, "b.%s consumes flags no dominating instruction produced (cmp/adds/subs must precede it with no intervening label or call)", instr.Cond)
 		}
 		c.branch(instr, false)
-		// `cmp wL, #N` then `b.lo fail`: the fall-through path knows
-		// len >= N for every span whose length register is wL.
-		if guard.valid && guard.rightReg < 0 && (instr.Cond == "lo" || instr.Cond == "cc") {
-			for _, fact := range c.spans {
-				if fact.holdsLen(guard.left) {
-					fact.hasMin = true
-					fact.minLen = guard.imm
-				}
-			}
-		}
-		// `cmp wI, wL` / `cmp wI, #K` then `b.hs exit`: the fall-through
-		// path knows wI < len / wI < K — the index guard of a loop walking
-		// a span (Oak.Assembler.index_access).
-		if guard.valid && (instr.Cond == "hs" || instr.Cond == "cs") {
-			if slack, isSlack := c.slackFacts[guard.rightReg]; isSlack {
-				// `sub wT, wL, #K` then `cmp wI, wT` then `b.hs trap`: the
-				// exclusive form of the slack guard, wI < len - K, which
-				// under len >= K gives wI + K <= len as well
-				// (Oak.Assembler.slack_guard_strict) — the wrap-free
-				// remaining guard `i < len(v) - K` before reads at i + k, k < K.
-				c.idxFacts[guard.left] = idxFact{boundReg: slack.len, bound: slack.k, slack: true, need: slack.k}
-			} else {
-				c.idxFacts[guard.left] = idxFact{boundReg: guard.rightReg, bound: guard.imm}
-			}
-		}
-		// `sub wT, wL, #K` then `cmp wI, wT` then `b.hi trap`: the
-		// fall-through path knows wI + K <= len — the guard of a K-element
-		// vector access at wI (Oak.Assembler.index_access, K lanes).
-		if guard.valid && guard.rightReg >= 0 && instr.Cond == "hi" {
-			if slack, isSlack := c.slackFacts[guard.rightReg]; isSlack {
-				c.idxFacts[guard.left] = idxFact{boundReg: slack.len, bound: slack.k, slack: true, need: slack.k}
-			}
-		}
-		// `cmp wS, wL` then `b.hi trap`: the fall-through path knows
-		// wS <= wL; against a difference register wT = wL - wS this is the
-		// subslice count bound wN <= wL - wS.
-		if guard.valid && guard.rightReg >= 0 && instr.Cond == "hi" {
-			c.leFacts[guard.left] = guard.rightReg
-			if diff, isDiff := c.diffFacts[guard.rightReg]; isDiff {
-				c.subFacts[guard.left] = subFact{start: diff.start, len: diff.len}
-			}
-		}
+		c.guardFacts(guard, instr.Cond)
 		return false
 	case "retaa", "retab":
 		return c.ret(instr) // an authenticated return
@@ -1239,6 +1266,16 @@ func (c *checker) instruction(instr Instruction) bool {
 			}
 		}
 		c.branch(instr, false)
+		if fact, has := c.condFacts[reg.Num]; has && (instr.Mnemonic == "cbz" || instr.Mnemonic == "cbnz") {
+			// `cbz wB` leaves when the condition failed, so its
+			// fall-through has the condition: read as `b.<not cond>`;
+			// `cbnz wB` the reverse (Oak.Assembler.cset_cbz, cset_cbnz).
+			cond := fact.cond
+			if instr.Mnemonic == "cbz" {
+				cond = invertCondition(fact.cond)
+			}
+			c.guardFacts(fact.cmp, cond)
+		}
 		return false
 	case "bl":
 		c.call(instr)
@@ -1446,6 +1483,11 @@ func (c *checker) instruction(instr Instruction) bool {
 		priorRegion, hadRegion = c.regions[regs[1].Num]
 	}
 	c.write(instr, dest)
+	if instr.Mnemonic == "cset" && guard.valid && c.flagsValid && len(instr.Operands) == 2 {
+		if cond, isCond := instr.Operands[1].(Condition); isCond {
+			c.condFacts[dest.Num] = condFact{cmp: guard, cond: strings.ToLower(cond.Code)}
+		}
+	}
 	if slack != nil {
 		c.slackFacts[dest.Num] = *slack
 	}
@@ -1714,6 +1756,12 @@ func (c *checker) forgetRegisterFacts(num int) {
 	for reg, fact := range c.slackFacts {
 		if fact.len == num {
 			delete(c.slackFacts, reg)
+		}
+	}
+	delete(c.condFacts, num)
+	for reg, fact := range c.condFacts {
+		if fact.cmp.left == num || fact.cmp.rightReg == num {
+			delete(c.condFacts, reg)
 		}
 	}
 	delete(c.frameAddrs, num)

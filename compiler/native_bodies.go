@@ -128,6 +128,11 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		findings := asm.Check(asmFn, source, symbols)
 		if len(findings) != 0 && lane.ElideProven && nativegen.ElidedGuards(asmFn) > 0 {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its element guards (the checker did not admit the elided form: %s)", fn.Name.Value, findings[0])))
+			if os.Getenv("OAK_NATIVE_DUMP") != "" {
+				// The refused form, for reading the checker's gap
+				// (docs/spec/94-assembler.md §9.ac).
+				fmt.Fprintf(os.Stderr, "// refused elided form of %s: %s\n%s", fn.Name.Value, findings[0], nativegen.Describe(asmFn))
+			}
 			lane.ElideProven = false
 			asmFn, err = nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
 			if err != nil {
