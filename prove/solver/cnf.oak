@@ -174,6 +174,16 @@ cnf_obligation: (l: Layout, mem: [*]u32, p: []u32): u32 {
   }
 }
 
+// cnf_set_capacities writes the solver's capacities into the clause
+// region's header words 5, 6, and 7 from its counts: eight learned clauses
+// per clause plus a floor, sixty-four literal words per literal plus a
+// floor, and the conflict budget.
+cnf_set_capacities: (region: [*]u32, at: u32, conflict_budget: u32): () {
+  region[at + u32(5)] = u32(8) * region[at + u32(2)] + u32(65536)
+  region[at + u32(6)] = u32(64) * region[at + u32(3)] + u32(1048576)
+  region[at + u32(7)] = conflict_budget
+}
+
 // cnf_header fills the region's eight header words for sat.oak and
 // lrat.oak: the magic, the variable count (nodes less the terminal), the
 // clause count, the literal words, no steps, and the capacities the

@@ -125,3 +125,23 @@ func TestCertificateRungWithSolver(t *testing.T) {
 		run(t)
 	})
 }
+
+// The prover written in Oak certifies in its own process: a row the
+// diagram decided also carries an LRAT certificate lowered, solved, and
+// checked in Oak, and the Go ladder agrees on every row.
+func TestOakShellCertificates(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := proveCommand([]string{"-solver", "self", "-cross", "go", filepath.Join("spec", "oak", "machines.oak")}, &out, &errOut)
+	text := out.String()
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s%s", code, text, errOut.String())
+	}
+	for _, want := range []string{"bounded__step: at the bit level", "an LRAT certificate of", "lowered to clauses in Oak and checked in Oak", "the Go ladder agrees on 15 of 15 rows"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("output lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "disagrees") {
+		t.Fatalf("a certificate row disagrees:\n%s", text)
+	}
+}
