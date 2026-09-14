@@ -899,13 +899,13 @@ func (bl *blaster) counterexampleOf(node int) map[string]uint64 {
 }
 
 // quantify eliminates a quantifier's bound parameter from its body's
-// diagram (docs/spec/10-syntax.md section 3e): under the diagram engine,
-// `forall` is the conjunction and `exists` the disjunction of the two
-// cofactors at each of the parameter's variables, innermost bit first —
-// the diagram of the body with the variables gone, sound by Shannon's
-// expansion. Under the clause engine there is no cofactor, so the domain
-// is expanded: the body under every constant value of the parameter, up
-// to 256 values; a wider binder is declined there.
+// diagram (docs/spec/10-syntax.md section 3e): `forall` is the
+// conjunction and `exists` the disjunction of the two cofactors at each
+// of the parameter's variables, bit 0 first — the diagram of the body
+// with the variables gone, sound by Shannon's expansion. The clause
+// engine has no cofactor and declines, as its twin written in Oak does
+// (prove/solver/bdd.oak blast_term): the certificate rung leaves a
+// quantified theorem to the diagrams.
 func (bl *blaster) quantify(t *term) (int, bool) {
 	op := opAnd
 	if t.op == "exists" {
@@ -913,21 +913,7 @@ func (bl *blaster) quantify(t *term) (int, bool) {
 	}
 	width := int(t.value)
 	if bl.cnf != nil {
-		if width > 8 {
-			return 0, false
-		}
-		acc := bddTrue
-		if op == opOr {
-			acc = bddFalse
-		}
-		for v := uint64(0); v < uint64(1)<<uint(width); v++ {
-			body := bl.blast(substitute(t.left, map[string]*term{t.name: constTerm(v, width)}))
-			if body == nil {
-				return 0, false
-			}
-			acc = bl.apply(op, acc, body[0])
-		}
-		return acc, !bl.exceeded()
+		return 0, false
 	}
 	body := bl.blast(t.left)
 	if body == nil {

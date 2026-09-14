@@ -1,0 +1,26 @@
+// Bounded quantifiers inside theorems (docs/spec/10-syntax.md section 3e;
+// docs/spec/125-verification.md section 2), stated over u32 parameters
+// so the bit level decides them: a binder is a fresh leaf of the blast
+// and the quantifier is eliminated from the body's diagram by cofactors,
+// in the Go decider and in the solver written in Oak alike. One theorem
+// over a u8 parameter goes to the exhaustive rung, where the quantifier
+// is the evaluator's enumeration.
+
+// low_byte_exists: every low byte is some u8.
+low_byte_exists: theorem (y: u32) { exists (x: u8) { u32(x) == (y & u32(255)) } }
+
+// or_grows: a bitwise or with a byte never decreases the word.
+or_grows: theorem (y: u32) { forall (x: u8) { (y | u32(x)) >= y } }
+
+// and_shrinks: a bitwise and with a half-word never increases the word.
+and_shrinks: theorem (y: u32) { forall (x: u16) { (y & u32(x)) <= y } }
+
+// bool_domain: a Bool binder ranges over both truth values.
+bool_domain: theorem (y: u32) { exists (b: Bool) { b == (y == u32(0)) } }
+
+// complement_pairs: every byte has a complement to 255, under a nested
+// existential.
+complement_pairs: theorem (y: u32) { forall (a: u8) { exists (b: u8) { u32(a) + u32(b) == u32(255) + (y & u32(0)) } } }
+
+// add_commutes_bounded: commutativity over a bounded partner, enumerated.
+add_commutes_bounded: theorem (y: u8) { forall (x: u8) { x + y == y + x } }

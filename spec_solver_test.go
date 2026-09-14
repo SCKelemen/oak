@@ -105,7 +105,7 @@ func shellAgrees(t *testing.T) {
 // witnessedLawFiles are the law files with a theorem the compiled
 // witness's driver enumerates (the rest have only bit-level rows over
 // wide or aggregate parameters).
-var witnessedLawFiles = map[string]bool{"discharge.oak": true, "effects.oak": true, "floats.oak": true, "intrinsics.oak": true, "lattice.oak": true, "machines.oak": true, "patterns.oak": true, "protocols.oak": true, "shapes.oak": true, "witnesses.oak": true}
+var witnessedLawFiles = map[string]bool{"discharge.oak": true, "effects.oak": true, "floats.oak": true, "intrinsics.oak": true, "lattice.oak": true, "machines.oak": true, "patterns.oak": true, "protocols.oak": true, "quantifiers.oak": true, "shapes.oak": true, "witnesses.oak": true}
 
 // TestOakLeanAgrees projects the law files whose theorems are left to Lean
 // (the ones the ladder reports open) with the prover written in Oak and
