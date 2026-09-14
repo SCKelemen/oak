@@ -120,6 +120,12 @@ func certificateRung(model *compiler.SemanticModel, results []prove.Result, run 
 				results[i].Detail += "; the SAT solver's model is not a counterexample under the clause engine's evaluation, so its verdict does not count"
 				continue
 			}
+			if !cnf.Confirms(params) {
+				// The model falsifies the clauses' abstraction of an
+				// uninterpreted operation, not the claim: no counterexample.
+				results[i].Detail += "; the SAT solver's model is not a counterexample on the terms (it falsifies only the abstraction of an uninterpreted operation), so its verdict does not count"
+				continue
+			}
 			counterexample := cnf.Counterexample(outcome.Model)
 			switch r.Status {
 			case prove.Refuted:
@@ -250,6 +256,12 @@ func oakClauseRung(model *compiler.SemanticModel, r prove.Result, goCNF asm.CNF,
 					set = append(set, variable)
 				}
 			}
+		}
+		if !goCNF.Confirms(problem.Params(set)) {
+			// The model falsifies the clauses' abstraction of an
+			// uninterpreted operation, not the claim: no counterexample.
+			r.Detail += "; the Oak solver's model is not a counterexample on the terms (it falsifies only the abstraction of an uninterpreted operation), so its verdict does not count"
+			return r
 		}
 		counterexample := problem.Counterexample(set)
 		switch r.Status {

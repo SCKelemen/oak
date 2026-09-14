@@ -165,7 +165,7 @@ lower_and_solve: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, table_raw: c.P
     bits: []u32 = view(&witness)
     report_lowered(index, verdict, u32(0), u32(1), subslice(bits, u32(1), listed), listed, ser, ser_raw)
   } | {
-    n < u32(0x80000000) ? { solve_lowered(l, lw, table_raw, built_raw, n, index, ser, ser_raw) } | {
+    n < u32(0x80000000) ? { solve_lowered(l, lw, work_raw, table_raw, built_raw, n, index, ser, ser_raw) } | {
       reason: u32 = NONE - n
       report(index, reason == REASON_ORDER ? { STATUS_EXCEEDED } | { STATUS_UNSUPPORTED }, reason, u32(1), view(&none), u32(0))
     }

@@ -534,8 +534,18 @@ arithmetic, sqrt, fma, and the conversions lower to *uninterpreted*
 operation terms (`asm/floats_ops.go`, `94-assembler.md` §8): a theorem
 whose two sides apply the same IEEE operations to the same operands in the
 same order decides, and one that needs a law of the arithmetic — `x * 2 =
-x + x`, commutativity — is refuted, conservatively, since the decider
-assumes no such law (`Oak.Uninterpreted`). What is not yet restated:
+x + x`, commutativity — stays **open**, since the decider assumes no such
+law (`Oak.Uninterpreted`). A path the diagrams or the clauses find under
+that abstraction is a **counterexample only when the terms confirm it**:
+every reported refutation — the Go decider's, the Oak solver's (its own
+evaluator, `confirm_at`), the SAT solver's model, and the clause engines'
+models — is re-evaluated on the lowered claim and traps at the
+assignment, with the operation itself computed (IEEE arithmetic, integer
+division), and an assignment at which the claim holds refutes nothing:
+`!(a < b) || a + (b - a) / 3 < b` is true under division, whatever the
+diagrams made of the uninterpreted quotient, and stays open for Lean
+(2026-09-14; before, such a path was reported as a counterexample).
+What is not yet restated:
 `Oak.Floats`' rounding contract itself (the bit-level `Oak.FloatOps` is
 the Lean side of it; the decider keeps the operations opaque), and the
 laws over lists and layouts, which have no fixed-width statement.

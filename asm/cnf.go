@@ -246,6 +246,10 @@ type CNF struct {
 	// obligation is the final clause's literals (edges), for evaluation.
 	obligation []int
 	inputs     map[int]int
+	// claim and traps are the lowered terms the clauses encode, for
+	// confirming a model on the terms themselves (Confirms).
+	claim *term
+	traps []*term
 }
 
 // ExportCNF lowers a theorem to its obligation clauses. The reason names
@@ -276,7 +280,7 @@ func ExportCNF(sig *ast.FunctionStatement, functions map[string]*ast.FunctionSta
 	if claim == nil || bl.exceeded() {
 		return CNF{}, "the obligation exceeded the clause budget or uses an operation beyond the bit level", false
 	}
-	out := CNF{Owners: map[int]VariableOwner{}, Names: lowered.names, gates: bl.cnf.gates, inputs: bl.cnf.inputs}
+	out := CNF{Owners: map[int]VariableOwner{}, Names: lowered.names, gates: bl.cnf.gates, inputs: bl.cnf.inputs, claim: lowered.claim, traps: lowered.traps}
 	for v, dimacs := range bl.cnf.inputs {
 		if owner, isParam := bl.owners[v]; isParam {
 			out.Owners[dimacs] = VariableOwner{Param: owner.param, Bit: owner.bit}
@@ -316,6 +320,27 @@ func ExportCNF(sig *ast.FunctionStatement, functions map[string]*ast.FunctionSta
 	}
 	out.Text = b.String()
 	return out, "", true
+}
+
+// Confirms evaluates the lowered claim and traps at a parameter
+// assignment and reports whether it is a counterexample on the terms
+// themselves: the claim false, or a trap fired. The clauses abstract an
+// uninterpreted operation (integer division by a constant that is not a
+// power of two, a floating-point operation) as free variables, so a model
+// of the clauses may satisfy the claim — division by three is not any
+// function of its operands; only an assignment the evaluation confirms
+// refutes the theorem.
+func (c CNF) Confirms(params map[string]uint64) bool {
+	if c.claim == nil {
+		return true // a settled obligation has no terms to evaluate
+	}
+	evaluator := newTermEvaluator(append([]*term{c.claim}, c.traps...)...)
+	for _, trap := range c.traps {
+		if evaluator.evaluate(trap, params) != 0 {
+			return true
+		}
+	}
+	return evaluator.evaluate(c.claim, params) != 1
 }
 
 // Counterexample reads a model (positive literals of the input variables)

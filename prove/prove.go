@@ -797,6 +797,12 @@ func ResolvePending(results []Result, verdicts map[string]SolverVerdict, goDecid
 				label = ", " + map[string]string{"blocks": "parameters in blocks", "control": "control bits first"}[order]
 			}
 			settled = Result{Name: r.Name, Status: Decided, Detail: fmt.Sprintf("at the bit level (%d BDD nodes%s; the Oak solver)", v.Nodes, label), Order: order, Nodes: v.Nodes}
+		case has && v.Status == 1 && v.Winner >= 0 && v.Winner < len(r.Problems) && !r.Problems[v.Winner].Confirms(v.Vars):
+			// The path falsifies the problem's abstraction of an
+			// uninterpreted operation, not the claim: no counterexample,
+			// and the bit level is undecided.
+			settled = r.fallback()
+			settled.Detail += " (bit-level: the Oak solver's path falsifies only the abstraction of an uninterpreted operation; the claim holds at it)"
 		case has && v.Status == 1 && v.Winner >= 0 && v.Winner < len(r.Problems):
 			settled = Result{Name: r.Name, Status: Refuted, Detail: "counterexample " + r.Problems[v.Winner].Counterexample(v.Vars) + " (the Oak solver)"}
 		case has && v.Status == 3 && goDecider != nil:
