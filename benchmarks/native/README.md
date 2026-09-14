@@ -95,6 +95,26 @@ noise at about twenty percent. Raw samples:
 | `dispatch` | 10.82 | 9.03 | 0.83 | proven |
 | `tiled` | 0.135 | 0.375 (at 30ca36eb) | 2.8 | witnessed; refuted at aade7acd by a verifier false alarm since fixed upstream (see below) |
 
+**Strength reduction of constant arithmetic (2026-09-15,
+`docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
+were attributed below to frame traffic; the lowered bodies say otherwise —
+neither kernel calls, and every local sits in a register. Their inner
+loops paid for arithmetic: `(hi - lo) / u32(2)` lowered as `movz w10, #2;
+cbz w10, trap; udiv w9, w9, w10` on the mid-to-load critical path, and
+`mid * u32(512)` as `movz; mul`. With the first increment of the
+optimization system the same loops read `lsr w9, w9, #1` and `lsl #9`:
+`bench_search`'s loop is three instructions shorter and free of the
+multi-cycle divide, `bench_page_probe` goes from three `udiv`, two `mul`,
+and six `cbz` to three `lsr`, two `lsl`, and three `cbz`, and nine bodies
+of the kernel package report `constant operation(s) strength-reduced,
+proven` with no fallback. The timing rows are not updated here: the
+measurement run on 2026-09-15 found the host at a load average above 200
+from other suites, and two byte-identical `sum` bodies timed two-fold
+apart across the three runners, so no ratio from it is a result. The
+protocol to rerun on a quiet host: the C runner, the native runner from
+the previous revision, and the native runner from this one, alternated
+over five rounds of five samples at 1 MiB, checksums equal on every row.
+
 What the rows say, in the order they matter:
 
 - **A dispatching function lowered natively lost its hardware unit** (fixed

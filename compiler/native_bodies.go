@@ -113,6 +113,11 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// path, the body is lowered again with every guard. The checker
 		// decides safety; the elision is only what it already knows.
 		lane.ElideProven = lane.Arch == asm.ArchArm64
+		// Strength reduction (docs/spec/90-backend.md §16): constant
+		// multiplications, divisions, and remainders as shifts, masks, and
+		// untested divisions; the checker and the verifier decide, and a
+		// refusal or a lost proof lowers the body again without it.
+		lane.Strength = lane.Arch == asm.ArchArm64
 		lane.Globals = globals
 		lane.Aggregates = aggregates
 		asmFn, err := nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
@@ -137,6 +142,16 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			findings = asm.Check(asmFn, source, symbols)
 		} else if elided := nativegen.ElidedGuards(asmFn); elided > 0 && len(findings) == 0 {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d element guard(s) elided under the checker's own facts", fn.Name.Value, elided)))
+		}
+		if len(findings) != 0 && lane.Strength && nativegen.Reduced(asmFn) > 0 {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its plain arithmetic (the checker did not admit the strength-reduced form: %s)", fn.Name.Value, findings[0])))
+			lane.Strength = false
+			asmFn, err = nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
+			if err != nil {
+				diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
+				continue
+			}
+			findings = asm.Check(asmFn, source, symbols)
 		}
 		// The verifier takes calls to program functions at their Oak bodies
 		// (asm.Function.Callees, docs/spec/94-assembler.md §8).
@@ -172,6 +187,28 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			fromCache++
 		}
 		verified++
+		if verdict.Kind != asm.VerdictProven && lane.Strength && nativegen.Reduced(asmFn) > 0 {
+			// The reduced form did not prove: the plain arithmetic is
+			// lowered and verified too, and kept when it proves — a
+			// faster body is not worth a weaker verdict.
+			if plain, plainErr := nativegen.CompileFor(nativegen.Lane{Arch: lane.Arch, SoftFloat: lane.SoftFloat, ElideProven: lane.ElideProven, Globals: lane.Globals, Aggregates: lane.Aggregates, Tables: lane.Tables, PackedStackArgs: lane.PackedStackArgs, Vector: lane.Vector}, source, functions, records, adts, constants, tc); plainErr == nil && len(asm.Check(plain, source, symbols)) == 0 {
+				plainKey := ""
+				if cacheDir != "" {
+					plainKey = verdictCacheKey(plain, source, functions, declarations)
+				}
+				plainVerdict, plainCached := cachedVerdict(cacheDir, plainKey)
+				if !plainCached {
+					plainVerdict = asm.Verify(plain, source, source.Body)
+					storeVerdict(cacheDir, plainKey, plainVerdict)
+				}
+				if plainVerdict.Kind == asm.VerdictProven {
+					diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its plain arithmetic (the verifier proved it and not the strength-reduced form: %s)", fn.Name.Value, verdict.Message)))
+					asmFn, verdict = plain, plainVerdict
+				}
+			}
+		} else if reduced := nativegen.Reduced(asmFn); reduced > 0 && verdict.Kind == asm.VerdictProven {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d constant operation(s) strength-reduced, proven", fn.Name.Value, reduced)))
+		}
 		if os.Getenv("OAK_NATIVE_TIMING") != "" {
 			// A profiling aid: how long each body's verification took.
 			note := ""
