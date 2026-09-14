@@ -181,7 +181,9 @@ or the verifier, not in the program:
    work. **Closed for the discharge (2026-09-13):**
    `spec/lean/Oak/ExtentsRefinement.lean` transliterates `indexUnder` and
    proves `indexUnder_sound`; the fact extraction and kills remain
-   transliterations with laws. The seam checkers' new facts (frame element
+   transliterations with laws. **Pinned (2026-09-14):** the Go decision is
+   rendered against the Lean model's examples
+   (`typechecker/extents_refinement_test.go`), as the lowering seam is. The seam checkers' new facts (frame element
    regions, span aliases, composites) remain proof debt in STATUS.
 6. **The checkers are linear over the block.** Base facts (spans,
    regions, frame addresses) are definitions, not per-path state; guard
