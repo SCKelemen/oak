@@ -92,6 +92,11 @@ or the verifier, not in the program:
 
 ## 4. What is missing, in the order to close it
 
+**RV64 frame slots (2026-09-14, 94-assembler.md §9):** the RV64 executor's
+one-width slots refused 48 bodies ("a load whose width differs from the
+slot's store"); it now uses the AArch64 lane's byte-precise `storeSlot` /
+`loadSlot`. RV64 proven 42 → 57.
+
 1. **CI does not check the Sail links.** `formal.yml` builds `spec/lean`
    (160 jobs, passing). Not in CI: `spec/sail/lean` (the Arm bridge; needs
    the lean-sail checkout of `spec/sail/setup.sh` and `sail` for the

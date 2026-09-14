@@ -344,8 +344,13 @@ func (x *pathExecutor) spanLoadRV64(dest Register, mem Memory, width int, name s
 
 // frameAccessRV64 executes a load or store through the sp frame: the
 // address is entry-relative (-disp + offset) as the checker computes it;
-// a store records the value at its width, a load reads back a slot stored
-// at the same width and extends it as the load spells.
+// a store records the value's bytes (storeSlot: a store inside a wider
+// slot splits it, as Oak.AssemblerSemantics.storeSlot), and a load reads
+// back the bytes of its range — a slot, a sub-range of one, or the exact
+// concatenation of the pieces tiling it (loadSlot) — extended as the load
+// spells. The backend assembles a record result in a slot this way: the
+// whole zeroed by `sd`, the fields written by `sw`/`sh`/`sb`, the result
+// read back by `ld`.
 func (x *pathExecutor) frameAccessRV64(reg Register, mem Memory, width int, name string, store bool, state *symbolicState) (string, bool) {
 	if mem.Base.Class != ClassSP {
 		return "memory through a register other than sp", false
@@ -359,17 +364,14 @@ func (x *pathExecutor) frameAccessRV64(reg Register, mem Memory, width int, name
 		if !ok {
 			return "unbound register read", false
 		}
-		state.frame[addr] = frameSlot{value: truncate(value, 8*width), width: width}
+		state.storeSlot(addr, truncate(value, 8*width), int64(width))
 		return "", true
 	}
-	slot, stored := state.frame[addr]
+	loaded, stored := state.loadSlot(addr, int64(width))
 	if !stored {
 		return "a load from a frame slot never stored on this path", false
 	}
-	if slot.width != width {
-		return "a load whose width differs from the slot's store", false
-	}
-	value := zeroExtend(slot.value, 64)
+	value := zeroExtend(loaded, 64)
 	switch name {
 	case "lw", "lh", "lb":
 		value = extendTerm(value, 8*width, 64, true)

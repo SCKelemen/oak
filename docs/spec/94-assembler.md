@@ -2861,3 +2861,19 @@ runs at 0.28 ns/byte where the call tree ran at 0.85 and the C backend at
 kernel that declares some forty vector locals over its expansions. What
 would take the rest: an allocator with liveness across the whole body
 instead of declaration order within it.
+
+### 9.x Byte-precise frame slots on the RV64 lane (2026-09-14)
+
+The RV64 executor kept a frame slot as one value at one width and refused
+a load of another width ("a load whose width differs from the slot's
+store"): 48 bodies of the standard-library builder, most of them a record
+result assembled in a slot — the whole zeroed by `sd`, the fields written
+by `sw`/`sh`/`sb`, the result read back by `ld`. The AArch64 executor had
+already modeled slots byte-wise (`storeSlot` splits a wider slot a store
+lands inside, `loadSlot` reads a slot, a sub-range of one, or the exact
+concatenation of the pieces tiling the range — `Oak.AssemblerSemantics.storeSlot`
+/ `loadSlot_storeSlot`); `frameAccessRV64` now goes through the same two
+helpers, extending as the load spells. Standard-library builder, RV64:
+proven 42 → 57, trusted 326 → 310, the width reason gone.
+`TestRV64VerifyFrameSlotPieces`: the assembled record, a byte read inside
+a doubleword store, the wrong byte a mismatch.

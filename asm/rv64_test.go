@@ -969,3 +969,25 @@ func TestRV64CheckerComposites(t *testing.T) {
 		}
 	}
 }
+
+// Frame slots on the rv64 lane are byte-precise (frameAccessRV64 through
+// storeSlot/loadSlot): a record assembled in a slot — the whole zeroed by
+// `sd`, a field written by `sw`, the result read back by `ld` — and a
+// narrow load from a wider store both read the bytes they name.
+func TestRV64VerifyFrameSlotPieces(t *testing.T) {
+	assembled := rv64Verify(t, "widen: (x: u32) -> u64", "u64(x)",
+		"  bind a0 = x\n  clobber t0\n  frame 16\n  addi sp, sp, -16\n  sd zero, 8(sp)\n  sw a0, 8(sp)\n  ld a0, 8(sp)\n  addi sp, sp, 16\n  ret")
+	if assembled.Kind != VerdictProven {
+		t.Errorf("a slot zeroed by sd, a field by sw, read whole by ld: %s", assembled.Message)
+	}
+	sub := rv64Verify(t, "second: (x: u64) -> u8", "u8_trunc_u64(x >> u64(8))",
+		"  bind a0 = x\n  clobber t0\n  frame 16\n  addi sp, sp, -16\n  sd a0, 8(sp)\n  lbu a0, 9(sp)\n  addi sp, sp, 16\n  ret")
+	if sub.Kind != VerdictProven {
+		t.Errorf("a byte load inside a doubleword store reads that byte: %s", sub.Message)
+	}
+	wrong := rv64Verify(t, "second: (x: u64) -> u8", "u8_trunc_u64(x >> u64(16))",
+		"  bind a0 = x\n  clobber t0\n  frame 16\n  addi sp, sp, -16\n  sd a0, 8(sp)\n  lbu a0, 9(sp)\n  addi sp, sp, 16\n  ret")
+	if wrong.Kind != VerdictMismatch {
+		t.Errorf("the wrong byte must mismatch: %s", wrong.Message)
+	}
+}
