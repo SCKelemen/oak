@@ -78,8 +78,10 @@ var rv64Virt = nativeRV64Machine{
 	// A trap (an ebreak from a failed guard) lands in the machine-mode
 	// handler, which prints TRAP and exits, so a trapping run is a fast
 	// verdict rather than a hung machine.
-	// mstatus.FS is set so the FPU is on for the hard-float runs.
-	startAsm: ".section .text.init\n.globl _start\n_start:\n  la sp, _stack_top\n  li t0, 0x6000\n  csrs mstatus, t0\n  la t0, trap_handler\n  csrw mtvec, t0\n  call cmain\n1: j 1b\n" +
+	// mstatus.FS is set so the FPU is on for the hard-float runs, and
+	// mstatus.VS so the vector unit is on for the runs with V (the bits are
+	// ignored on a processor without it).
+	startAsm: ".section .text.init\n.globl _start\n_start:\n  la sp, _stack_top\n  li t0, 0x6600\n  csrs mstatus, t0\n  la t0, trap_handler\n  csrw mtvec, t0\n  call cmain\n1: j 1b\n" +
 		"trap_handler:\n  li t0, 0x10000000\n  li t1, 84\n  sb t1, 0(t0)\n  li t1, 82\n  sb t1, 0(t0)\n  li t1, 65\n  sb t1, 0(t0)\n  li t1, 80\n  sb t1, 0(t0)\n  li t1, 10\n  sb t1, 0(t0)\n  li t0, 0x100000\n  li t1, 0x5555\n  sw t1, 0(t0)\n2: j 2b\n",
 	origin: "0x80000000",
 }
@@ -100,6 +102,22 @@ func runNativeRV64Bare(t *testing.T, name string, native NativeOutput) string {
 // freestanding target's soft-float lp64.
 func runNativeRV64BareABI(t *testing.T, name string, native NativeOutput, hardFloat bool) string {
 	t.Helper()
+	return runNativeRV64BareWith(t, name, native, nativeRV64Run{hardFloat: hardFloat})
+}
+
+// nativeRV64Run selects the machine a bare run needs: the hard-float ABI,
+// and the vector extension at a VLEN (the C backend's RVV realization and
+// the native lane's vector units both need V on the processor;
+// mstatus.VS is enabled by the start code).
+type nativeRV64Run struct {
+	hardFloat bool
+	vector    bool
+	vlen      int
+}
+
+func runNativeRV64BareWith(t *testing.T, name string, native NativeOutput, run nativeRV64Run) string {
+	t.Helper()
+	hardFloat := run.hardFloat
 	bare := target.Target{OS: target.OSFreestanding, Arch: target.ArchRiscv64}
 	if _, err := exec.LookPath(rv64Virt.qemu); err != nil {
 		t.Skipf("%s not present", rv64Virt.qemu)
@@ -120,6 +138,9 @@ func runNativeRV64BareABI(t *testing.T, name string, native NativeOutput, hardFl
 	cpu, abi := bare.DefaultCPU(), "lp64"
 	if hardFloat {
 		cpu, abi = "generic_rv64+m+a+f+d", "lp64d"
+	}
+	if run.vector {
+		cpu += "+v"
 	}
 	objArgs := []string{"cc", "--target=" + bare.ZigTriple(), "-mcpu=" + cpu, "-mabi=" + abi, "-mcmodel=medany", "-ffreestanding", "-nostdlib", "-fno-unwind-tables", "-fno-asynchronous-unwind-tables", "-DOAK_FREESTANDING", "-std=c99", "-O1", "-ffp-contract=off"}
 	if hardFloat {
@@ -167,6 +188,13 @@ func runNativeRV64BareABI(t *testing.T, name string, native NativeOutput, hardFl
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	args := append([]string{"-M", "virt", "-bios", "none", "-nographic", "-monitor", "none", "-kernel", image}, rv64Virt.extraArgs...)
+	if run.vector {
+		vlen := run.vlen
+		if vlen == 0 {
+			vlen = 128
+		}
+		args = append(args, "-cpu", fmt.Sprintf("rv64,v=true,vlen=%d", vlen))
+	}
 	cmd := exec.CommandContext(ctx, rv64Virt.qemu, args...)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out

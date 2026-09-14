@@ -58,8 +58,8 @@ func TestVerifyCallSummary(t *testing.T) {
 		t.Fatalf("without callees the call stays opaque, got %s: %s", opaque.Kind, opaque.Message)
 	}
 	spanned := arm(t, map[string]*ast.FunctionStatement{"inc": fill}, "inc(a) + inc(a)")
-	if spanned.Kind != VerdictTrusted || !strings.Contains(spanned.Message, "not a fixed-width integer") {
-		t.Fatalf("a span parameter is outside the summary, got %s: %s", spanned.Kind, spanned.Message)
+	if spanned.Kind != VerdictTrusted || !strings.Contains(spanned.Message, "span argument") {
+		t.Fatalf("a span parameter the caller does not hold is outside the summary, got %s: %s", spanned.Kind, spanned.Message)
 	}
 }
 

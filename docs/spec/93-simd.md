@@ -188,14 +188,34 @@ operation is its NEON instruction: `splat` → `dup`, `load`/`store` →
 `all` → `cmeq #0` then `any`, `tbl` → `tbl`, `prev` by a literal → `ext
 #(16-n)`, `movemask` over bytes → `sshr #7`, an `and` with the lane bits,
 `addv` per half, `ctz` → `rbit`/`clz`, `popcount` → `cnt`/`addv`. A
-vector load or store indexes a byte span by element index under the
-checker's slack guard (`len >= 16` and `off <= len - 16`, `94-assembler.md`
-§7, `Oak.Assembler.index_access_lanes`); a literal index into an owned
-array local is a frame slot. What the native lowering leaves to the C
-backend, reported as such: float vectors, vectors inside records or
-arrays, loads and stores over lanes wider than a byte (a `q` load
-indexes by bytes or by sixteens, never by a lane size between), a shift
-or `prev` count that is not a literal, `movemask` over wider lanes.
+vector load or store indexes a span by element index under the checker's
+slack guard (`len >= L` and `off <= len - L` for `L` lanes,
+`94-assembler.md` §7, `Oak.Assembler.index_access_lanes`): a byte span
+directly, `[base, wI, uxtw]`; a span of wider elements through the
+element address `add xE, xB, wI, uxtw #s`, which the checker records as
+the region of the guard's `L` elements, then `[xE]` (a `q` load indexes
+by bytes or by sixteens, never by a lane size between). A literal index
+into an owned array local is a frame slot. **The floating-point vectors
+(2026-09-14).** `simd.F32x4` and `F64x2` lower the same way: `splat` →
+`dup` from lane 0 of the scalar's register, `add`/`sub`/`mul`/`div` →
+`fadd`/`fsub`/`fmul`/`fdiv`, `fma` → `fmla` into the addend's register
+(one rounding), `min`/`max` → `fmin`/`fmax` (NEON's are the 754-2019
+minimum/maximum of §1.2a: a NaN operand yields NaN, `-0.0` orders below
+`+0.0`), `sqrt`/`neg`/`abs` → `fsqrt`/`fneg`/`fabs`, `extract`/`insert`
+at a literal lane → `mov` from or to `v.s[i]`/`v.d[i]`, and `reduce_add`
+→ `faddp` over the four lanes then the scalar `faddp` of the low pair —
+exactly `(l0 + l1) + (l2 + l3)` (`Oak.Simd.neon_reduce4`), one scalar
+`faddp` for two lanes (`neon_reduce2`). A function whose signature carries
+a float vector takes the vector register contract like the integer ones;
+its C shim converts through `vld1q_f32`/`vst1q_f32`. The native program
+agrees bit for bit with the C backend and the portable loops
+(`compiler/e2e_native_float_simd_test.go`). What the native lowering
+leaves to the C backend, reported as such: vectors inside records or
+arrays, a shift or `prev` count that is not a literal, a lane index that
+is not a literal (the C backend's run-time check), `movemask` over wider
+lanes. The verifier trusts a body with a floating-point instruction (its
+terms are integers), so the float vector functions carry the checker's
+guarantees and the differential against the C backend, not a proof.
 
 A function whose signature carries a vector follows the vector register
 contract at its native entry, named with the suffix `_neon_abi`; the C
@@ -203,6 +223,43 @@ emitter defines the Oak name as a converting shim over it (the lane-array
 struct in, NEON values through, the struct back), so C callers and
 natively lowered callers agree, and a native function that passes vectors
 to a callee the C backend realizes is itself left to the C backend.
+
+**The RV64 lane (landed 2026-09-14; `nativegen/rv64_simd.go`).** The same
+integer vectors lower on the RV64 lane when the processor carries the
+vector extension (`-cpu ...+v`, `94-assembler.md` §9): a fixed vector is
+one LMUL=1 register whatever the VLEN (VLEN ≥ 128 on every processor with
+V, so the same code runs at 128 and 256), under a configuration the
+lowering sets itself — `vsetivli zero, <lanes>, e<bits>, m1, ta, ma`
+before every vector instruction group, since the checker's configuration
+is straight-line state that labels and calls forget. `v8`–`v15` are the
+operand stack, `v0` the mask, `v1`/`v2` the helpers of the multi-instruction
+operations; every vector register is caller-saved under the psABI, so a
+vector local lives in a sixteen-byte frame slot and a live scratch is
+spilled to one around a call (`t6` addresses the slots). Each operation is
+its RVV instruction: `splat` → `vmv.v.x`; `load`/`store` → `vle`/`vse` of
+the lane width — through a span under the *slack guard* `li k, K; bltu
+len, k; sub t, len, k; bltu t, idx` (`Oak.RiscV.slack_guard`,
+`slack_access_in_bounds`: idx + K ≤ len), through an owned array's literal
+index or a local's slot at a frame address (`frame_vector_in_bounds`);
+`add`/`sub`/`and`/`or`/`xor`/`min`/`max`/`subs` → `vadd`/`vsub`/`vand`/
+`vor`/`vxor`/`vminu`/`vmaxu`/`vssubu .vv`; `eq` → `vmseq.vv` into `v0`
+then `vmerge.vvm` of all-ones over zero; `shr` by a literal → `vsrl.vx`;
+`any`/`all` → `vmsne.vx` against zero then `vcpop.m`; `movemask` →
+`vmslt.vx` against zero (the top bit is the sign) then the mask
+register's low bits through `vmv.x.s` at `e32`; `tbl` → `vrgather.vv`
+under the index-below-16 mask (`vmsltu.vx`, the C realization's rule, so
+the result is the same on every VLEN); `prev` by a literal →
+`vslidedown.vi` then `vslideup.vi`. Unlike the AArch64 lane, wider lanes
+load and store through spans of their own element type (the guard's
+index scales by the lane size). Left to the C backend, reported: the
+float vectors, vectors in signatures (the LP64 lane-array contract has no
+native entry yet), records or arrays of vectors, non-literal shift and
+`prev` counts, and `ctz`/`popcount` (no Zbb assumed). Without V on the
+processor every function mentioning a vector stays with the C backend,
+whose portable lane loop realizes it. The corpus runs under QEMU at VLEN
+128 and 256 against the C backend's RVV realization
+(`compiler/e2e_native_rv64_simd_test.go`); the units are checked and
+trusted — the RV64 verifier's terms do not yet reach the vector file.
 
 The verifier follows the lowering (`94-assembler.md` §8, the seventh
 increment): each NEON instruction above is the lane function `Oak.Simd`

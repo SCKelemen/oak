@@ -3,6 +3,8 @@ package asm
 import (
 	"strings"
 	"testing"
+
+	"github.com/SCKelemen/oak/ast"
 )
 
 // Memory effects through span parameters are verified, not trusted
@@ -68,5 +70,74 @@ func TestVerifySpanWriters(t *testing.T) {
 		"  bind x0, w1 = v\n  bind w2 = x\n  clobber x9\n  cmp w1, #1\n  b.lo trap\n  ldr w9, [x0]\n  str w2, [x0]\n  add w0, w9, w2\n  ret\ntrap:\n  brk #1")
 	if extra.Kind != VerdictMismatch || !strings.Contains(extra.Message, "the span v") {
 		t.Fatalf("a store the body does not make must be a mismatch, got %s: %s", extra.Kind, extra.Message)
+	}
+}
+
+// A unit callee's stores reach its caller through the call summary
+// (twenty-ninth increment): the callee's span parameter is an alias of
+// the caller's span passed whole, so its writes land in the caller's
+// memory and a read after the call sees them; a caller that passes a
+// subslice, or a callee whose stores the Oak body does not make, stays
+// trusted or is refuted.
+func TestVerifyCalleeEffects(t *testing.T) {
+	putBody := "put: (v: [*]u32, i: u32, x: u32) -> () {\n  v[i] = x\n}"
+	put, err := parseSignatureWithBody(putBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair := func(t *testing.T, decl, asmBody, oakBody string) Verdict {
+		t.Helper()
+		unit, errs := ParseUnit("v.oakasm", decl+" = {\n"+asmBody+"\n}\n")
+		if len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		sig, err := parseSignature(decl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unit.Functions[0].Callees = map[string]*ast.FunctionStatement{"put": put}
+		if findings := Check(unit.Functions[0], sig, map[string]bool{"put": true}); len(findings) != 0 {
+			t.Fatalf("checker: %v", findings)
+		}
+		spec, err := parseSignatureWithBody(decl + " = " + oakBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return Verify(unit.Functions[0], sig, spec.Body)
+	}
+	call := "  bind x0, w1 = v\n  bind w2 = k\n  clobber x3, x9, x19, x20, x21, x29, x30\n  frame 48\n  sub sp, sp, #48\n  stp x29, x30, [sp]\n  stp x19, x20, [sp, #16]\n  str x21, [sp, #32]\n  mov x19, x0\n  mov w20, w1\n  mov w21, w2\n  movz w3, #7\n  bl put\n"
+	ret := "  ldp x19, x20, [sp, #16]\n  ldr x21, [sp, #32]\n  ldp x29, x30, [sp]\n  add sp, sp, #48\n  ret"
+	trapping := ret + "\ntrap:\n  brk #1"
+	// put_seven: (v: [*]u32, k: u32) -> () { put(v, k, u32(7)) }: the callee's store is the caller's effect.
+	unit := pair(t, "put_seven: (v: [*]u32, k: u32) -> ()", call+ret, "{\n  put(v, k, u32(7))\n}")
+	if unit.Kind != VerdictProven || !strings.Contains(unit.Message, "the span memory it writes (v)") {
+		t.Fatalf("a unit caller of a unit writer must be proven in its span, got %s: %s", unit.Kind, unit.Message)
+	}
+	// after_put reads back what the callee stored: the summary's write is
+	// visible to the caller's own load.
+	after := pair(t, "after_put: (v: [*]u32, k: u32) -> u32", call+"  cmp w21, w20\n  b.hs trap\n  ldr w9, [x19, w21, uxtw #2]\n  add w0, w9, #1\n"+trapping, "{\n  put(v, k, u32(7))\n  v[k] + u32(1)\n}")
+	if after.Kind != VerdictProven || !strings.Contains(after.Message, "and the span memory it writes (v)") {
+		t.Fatalf("a read after a summarized store must be proven, got %s: %s", after.Kind, after.Message)
+	}
+	// The Oak body stores 8 where the callee stores 7: refuted in the span.
+	wrong := pair(t, "put_eight: (v: [*]u32, k: u32) -> ()", call+ret, "{\n  v[k] = u32(8)\n}")
+	if wrong.Kind != VerdictMismatch || !strings.Contains(wrong.Message, "the span v") {
+		t.Fatalf("a callee storing another value must be refuted, got %s: %s", wrong.Kind, wrong.Message)
+	}
+}
+
+// A shift count that cannot reach the width (asm/range.go) is admitted:
+// Oak's trapping shift and the machine's wrapping one agree below the
+// width; a count whose range reaches it stays outside the subset.
+func TestVerifyBoundedShift(t *testing.T) {
+	bounded := verifyCase(t, "byte_of: (w: u32, at: u32) -> u32", "(w >> ((at % u32(4)) * u32(8))) & u32(255)",
+		"  bind w0 = w\n  bind w1 = at\n  clobber x9\n  and w9, w1, #3\n  lsl w9, w9, #3\n  lsr w0, w0, w9\n  and w0, w0, #255\n  ret")
+	if bounded.Kind != VerdictProven {
+		t.Fatalf("a shift by a count below the width must be proven, got %s: %s", bounded.Kind, bounded.Message)
+	}
+	unbounded := verifyCase(t, "shift_by: (w: u32, n: u32) -> u32", "w << n",
+		"  bind w0 = w\n  bind w1 = n\n  lsl w0, w0, w1\n  ret")
+	if unbounded.Kind != VerdictTrusted || !strings.Contains(unbounded.Message, "non-constant shift count") {
+		t.Fatalf("a shift by an unbounded count must stay trusted, got %s: %s", unbounded.Kind, unbounded.Message)
 	}
 }

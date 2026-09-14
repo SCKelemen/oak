@@ -776,8 +776,8 @@ side as well. Verdicts on the SIMD corpus (`compiler/e2e_native_simd_test.go`):
 (`benchmarks/native/utf8_valid.oak`): `special_cases` and `check_block`
 proven on both halves of their vector results, `check_blocks` evidence
 (the two-block composition exceeds the node budget), the loop kernel
-`valid_with` trusted (a data-dependent loop with forks in its body, as
-its scalar counterparts are). The lane functions are stated in Lean as
+`valid_with` **evidence** since the loop increment below (76 concrete
+inputs; the coupling proof pairs scalars only). The lane functions are stated in Lean as
 `Oak.NeonSemantics` (`spec/lean/Oak/NeonSemantics.lean`) and each is
 proved to be the `Oak.Simd` operation the lowering uses it for:
 `uqsub_eq_subSat`, `cmeq_eq_eqMask`, `add_eq_addWrap`, `ushr_eq_shr`,
@@ -813,10 +813,43 @@ recursive `Reduce` — stated by hand as `reduceAdd`, since Sail's Lean
 backend cannot discharge its termination — sums eight bytes as `addv`'s
 fold (`reduceAdd_eight_bytes`), and `cnt` is the population count of each
 lane — Arm's `BitCount` loop as `Oak.Intrinsics.popcount` (`cnt_lanes`).
-Every vector instruction the backend emits is bridged to Arm's text. Left
-for the next increments: `simd.store` (a write the straight-line model
-does not follow) and float vectors
-(`docs/notes/proof-chain-audit-2026-09.md`).
+Every vector instruction the backend emits is bridged to Arm's text.
+
+**Loops over the vector file (the loop increment, 2026-09-14).** The
+loop kernel `valid_with` is three data-dependent loops in one body — a
+sixty-four-byte step, a sixteen-byte step, and a byte copy into a
+sixteen-byte frame array — and the sixth increment's loop machinery
+refused it four ways in turn, each now admitted. The **recognized loop
+shape** allows setup instructions between the header label and the first
+exit test (the `sub wT, wL, #K` the conjunction `len(v) >= K && i <= len(v)
+- K` lowers to) and several exit tests to one exit label: the continue
+condition is that none is taken (`TestVerifyConjunctiveExitLoop`; the
+wrong stride is still refuted on a concrete input). **Loop-carried state**
+is now the vector file and the frame as well as the scalar registers: a
+vector register written in the body gets fresh 64-bit symbols per half
+(`loopK.vN.lo`, `.hi`), a frame slot written in the body a fresh symbol
+per eight-byte slot (`loopK.s<addr>`), both with header values and
+one-iteration values like the scalars (a narrow slot written in a loop
+body stays outside the subset). The **body executor** runs frame spills
+and reloads, frame-array element accesses through an address register,
+vector `ldr q` loads and every vector instruction. A **frame store at a
+data-dependent index** (`strb w9, [x11, w10, uxtw]`, the tail copy) names
+no single slot: the store forgets every slot from the array's base up and
+marks the region unknown, so a later load there — the `ldr q` of the tail
+— reads an opaque symbol `frame#addr` (a load at a data-dependent index
+stays outside the subset). On the Oak side the loop-carried locals may be
+**aggregates** (the `simd.U8x16` locals, the `[16]u8` tail): they are
+carried leaf by leaf with a fresh symbol per lane, and an index assignment
+`tail[i] = ...` marks its root as assigned. The witness inputs gained the
+span lengths 63, 64, 65, 80, 81: under the small ones alone every input of
+a body that reads sixty-four bytes of tables before its loops traps at the
+table loads and no witness decides anything. Result: `valid_with` agrees
+with its Oak body on 76 concrete inputs and is **evidence** — the coupling
+proof pairs a scalar Oak variable with a register, and the kernel's loop
+variables are lanes, so its loops are witnessed, not proven. Left for the
+next increments: coupling for vector lanes (a lane variable against a
+register half), `simd.store` (a write the straight-line model does not
+follow) and float vectors (`docs/notes/proof-chain-audit-2026-09.md`).
 
 **Floating point as uninterpreted operations (eighth increment,
 2026-09-14; `asm/floats_ops.go`, `asm/verify_float.go`).** Until this
@@ -1860,9 +1893,57 @@ forwarded write, a swap proven and its reordered lowering refuted at
 `compiler/e2e_native_span_effects_test.go` (the same shapes through the
 backend, `fill`'s loop store trusted with the reason, the C backend the
 oracle for the values).
-Next increments: the callee's effects through the call summary — a unit
-callee's log appended to the caller's under the argument substitution,
-which is where the 106 remaining unit functions wait — and stores in
+**Twenty-ninth increment — a callee's effects through the call summary,
+and shifts below the width.** Three things kept the arena emitters
+(`ap_close` calling `ap_lits` calling `ab_push`) trusted after the
+twenty-eighth. First, the call summary took only scalar arguments. It now
+takes a span argument that is one of the caller's span parameters passed
+whole — the `{base, len}` pair holding `&v` and `len(v)` — as an alias:
+the callee's parameter is spelled in the caller's name wherever the
+lowering names a span (its elements, its length, its write log,
+`oakLowering.spanAlias`), so the callee's reads see the caller's stores so
+far and its stores land in the caller's log; a by-reference record
+argument (beyond 16 bytes) that is one of the caller's record parameters
+binds the callee's parameter to the caller's leaves by name; the argument
+registers follow the shared layout (a span two, a record one, a scalar
+one). The Oak side inlines the same calls with the same alias
+(`enterCall`), so both sides' logs agree in their spelling. Second, a
+unit callee's loop whose count is a constant argument (`ap_lits(le, ew,
+lo, hi, u32(1))`) unrolls inside the summary, since the summary lowers the
+callee's body under the argument substitution. Third, `ab_push` shifts by
+`(at % 4) * 8` — a data-dependent count, which the verifier refused
+because Oak traps at the width where the machine wraps. A syntactic range
+bound (asm/range.go: constants, masks, products and sums by constants,
+shifts, the wider arm of a conditional) shows such a count never reaches
+the width, where the two agree; a count whose bound reaches the width
+stays outside the subset. The bound is memoized over the term DAG — its
+first form recomputed shared subterms and turned a two-minute build into
+ten. And a write log's read no longer builds an index equality for every
+write it meets: two indices in linear normal form over the same unknowns
+(`le.state_at + 9` against `le.state_at + 16`) are equal or unequal by
+their constants alone, so the arena's `base + k` addressing folds before
+the diagrams see it. On the prover: proven 265 to 281 of 879; 35 bodies
+that were trusted are now evidence (agreeing on every witness, the
+bit-level decision over the node budget — the byte extractors and the
+longer emitters, whose write-after-write chains through symbolic word
+indices outgrow the diagrams); no disagreement, the rows identical. Found
+on the way: `oak build` compiled the program twice — once through the C
+emitter up front, once through `emitFor` in the chosen asm mode — so
+every native build ran the backend and the verifier twice; the first
+compile now happens only for `-emit-c`, halving the native build. What
+keeps the rest trusted: 18 callers pass more than eight argument words
+(`px_node`), which the summary does not yet read from the outgoing area;
+17 call the byte writer that reaches foreign code; 17 call `sb_str`,
+whose loop count is data (an aggregate across a data-dependent loop);
+and the deeper syntax walkers whose callees have data-dependent loops.
+Pinned: `asm/effects_test.go` (`TestVerifyCalleeEffects`: a unit caller
+proven in its span through the summary, a read after the summarized
+store, a callee storing another value refuted; `TestVerifyBoundedShift`)
+and `compiler/e2e_native_callee_effects_test.go` (the arena shape: a
+record and a span passed through two levels of unit callees, the constant
+count unrolled, the bounded shift proven, a data count trusted).
+Next increments: stack arguments in the call summary (the outgoing area's
+slots are frame slots the executor already holds); stores in
 data-dependent loops as a summarized memory; guard elision from the
 checker's facts; the foreign-call subset only if the shell itself is to
 be verified —
@@ -2452,6 +2533,36 @@ bodies addressing owned arrays through a frame address stay trusted on
 both lanes. `OAK_VERIFY_TRACE=1` prints each failed coupling attempt with
 the two sides' terms.
 
+**RV64 lane, tenth increment — the fixed vectors (landed 2026-09-14;
+`nativegen/rv64_simd.go`).** The native backend lowers `simd.U8x16`/
+`U16x8`/`U32x4`/`U64x2` on this lane when the processor carries V
+(`93-simd.md` §1.4 "The RV64 lane"): one LMUL=1 register per vector under
+a `vsetivli` the lowering emits before every vector instruction group,
+`v8`–`v15` the operand stack, sixteen-byte frame slots for locals and
+call spills. The checker gains what the lowering needs. **The slack
+guard**: `li k, K; bltu len, k, trap` proves `len ≥ K` (the span's minimum
+length, as before); `sub t, len, k` (or `addi t, len, -K`) under that
+minimum records `t = len − K` (`deriveSlack` — the subtraction cannot
+wrap); `bltu t, idx, trap` then records `idx + K ≤ len` on the
+fall-through (an index fact with slack K, `Oak.RiscV.slack_guard`); the
+element address `base + (idx << s)` formed from it is a region K lanes
+deep, and a vector access through it with an immediate AVL at most K is
+in bounds (`slack_access_in_bounds`, `slack_vector_in_bounds`). A slack
+narrower than the AVL is refused. **Frame vectors**: a vector access
+through a frame address (`addi t, sp, off`) with an immediate AVL of K
+elements is admitted when the K·SEW bytes lie inside the declared frame
+at an aligned entry-relative address (`frame_vector_in_bounds`); a
+register AVL through the frame is refused. **The table** gains
+`vssubu.vv`, `vsrl.vx`, `vmslt.vx`, `vmsltu.vx`, `vrgather.vv`,
+`vslideup.vi`, and `vslidedown.vi` (208 encodings, GNU as agreement for
+each, masked and unmasked); the gather's and the slides' destinations
+must not overlap their sources (RVV 1.0 §16.3, §16.4, fail-closed), and
+the less-than masks are single registers like the other comparisons. The
+differentials carry `vslack` — the four elements at a guarded index summed,
+or zero when the span is too short — under QEMU and Sail against Go. The
+units are checked and trusted: the RV64 verifier's terms do not yet reach
+the vector file.
+
 **Executables linked by the Oak assembler (landed; `asm/executable.go`,
 `oak build -link oak`).** A program whose every body the native backend
 lowered links into a final ELF64 executable here, with no system linker
@@ -2555,8 +2666,22 @@ an addressed global external linkage under the assembler label
 can produce), the symbol the companion object's `adrp`/`add` relocations
 (PAGE21/PAGEOFF12 on Mach-O, ADR_PREL_PG_HI21/ADD_ABS_LO12_NC on ELF)
 name; the inline-asm mode spells the pair through `OAK_ASM_PAGE` and
-`OAK_ASM_PAGEOFF`. Constant globals keep folding (above); the rv64 lane
-leaves globals to the C backend (the OS pilot's N3).
+`OAK_ASM_PAGEOFF`. A top-level record, or an array some statement writes
+(an unwritten array is a constant table, above), is an aggregate global
+(the OS pilot's N9): the same `adrp`/`add` pair names it and the body
+holds it as a record or array place at that address — a field at its
+offset, an element of an array field under the constant guard, an
+element of an array of records through the scaled add or `umaddl` from
+the field's base — while the checker reads the `add :lo12:` of an
+aggregate as a writable region of the aggregate's size, bounds every
+field offset inside it, and derives element regions under the guard as
+it does for a frame array. The verifier leaves a body that reads or
+writes an aggregate global trusted. Constant globals keep folding (above). The rv64 lane
+spells the address as `la rd, G` (auipc then addi, relocated as
+`R_RISCV_PCREL_HI20` and `PCREL_LO12_I`) and reads or writes the cell with
+one `lw`/`sw` (or the width's load and store); its checker admits the
+whole cell at offset 0 alone, and its verifier reads and writes the same
+cells (the OS pilot's N3).
 
 **Atomics.** The builtins of `65-machine-memory.md` lower on the AArch64
 lane when the cell is reached through a writable span (§7a there): the
@@ -2826,7 +2951,13 @@ with memory or a call reports "not verified: trusted per §5".
 
 The native backend lowers the fixed vectors (`93-simd.md` §1.4 "The native
 backend"): values in the vector register file, one NEON instruction per
-operation, loads and stores under the slack guard of §7. A function whose
+operation, loads and stores under the slack guard of §7 — over lanes wider
+than a byte through the element address `add xE, xB, wI, uxtw #s`, which
+the checker records under the slack guard `wI + K ≤ len` (and `len ≥ K`)
+as a region of `K` elements (`elementRegion`, `index_access_lanes`), so
+the sixteen-byte `ldr`/`str q` through `xE` is a region access proven
+inside the span; the floating-point vectors landed 2026-09-14 (§1.4 of
+`93-simd.md`). A function whose
 signature carries a vector follows the vector register contract this
 chapter's `contractClass` already assigns to `simd.*` (v0–v7), which the C
 backend's lane-array struct does not (AAPCS64 passes a sixteen-byte

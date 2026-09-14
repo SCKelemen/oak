@@ -302,6 +302,19 @@ done:
 			}
 			return uint64(math.Float32bits(total))
 		}, body: rv64VFSumBody})
+	// The fixed vector at a guarded index (the native backend's idiom): the
+	// four elements at k summed when k + 4 <= len, else zero.
+	oracles = append(oracles, rv64Oracle{decl: rv64VSlackDecl, cType: "unsigned int", width: 32, span: "v", inputs: [][2]uint64{{0, 0}, {3, 0}, {4, 0}, {4, 1}, {5, 1}, {8, 4}, {8, 5}, {16, 12}, {16, 13}},
+		spanExpect: func(elems []uint64, k uint64) uint64 {
+			if k+4 > uint64(len(elems)) {
+				return 0
+			}
+			total := uint32(0)
+			for _, e := range elems[k : k+4] {
+				total += uint32(e)
+			}
+			return uint64(total)
+		}, body: rv64VSlackBody})
 	// OAK_RV64_ORACLE=name narrows the run to one unit while diagnosing.
 	if only := os.Getenv("OAK_RV64_ORACLE"); only != "" {
 		var kept []rv64Oracle

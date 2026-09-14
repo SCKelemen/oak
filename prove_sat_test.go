@@ -111,6 +111,11 @@ func TestCertificateRungWithSolver(t *testing.T) {
 	t.Run("oak solver", func(t *testing.T) {
 		t.Setenv("OAK_SAT_SOLVER", "")
 		run(t)
+		var out, errOut bytes.Buffer
+		proveCommand([]string{"-solver", "sat", filepath.Join("spec", "oak", "machines.oak")}, &out, &errOut)
+		if !strings.Contains(out.String(), "lowered to clauses in Oak, checked in Go and in Oak; the Go clause engine agrees") {
+			t.Fatalf("the Oak path must lower, solve, and check in Oak with the Go engine agreeing:\n%s", out.String())
+		}
 	})
 	t.Run("cadical", func(t *testing.T) {
 		if _, err := exec.LookPath("cadical"); err != nil {

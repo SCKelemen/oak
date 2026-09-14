@@ -65,7 +65,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 	}
 	specializeInstantiations(tc, templates, records, adts)
 	constants := constantGlobals(root, tc)
-	globals, globalDecls := addressableGlobals(root, tc, constants)
+	globals, aggregates, globalDecls := addressableGlobals(root, tc, constants, records)
 	tables, data := nativeGlobalArrays(root)
 	var lowered []*asm.Function
 	for _, stmt := range root.Statements {
@@ -79,6 +79,9 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// its `static const`.
 		source := fn
 		lane := nativegen.Lane{Arch: comp.options.Target.AsmArch(), SoftFloat: comp.options.Target.Freestanding() && comp.options.Target.Arch == target.ArchRiscv64, Tables: tables, PackedStackArgs: comp.options.Target.OS == target.OSDarwin}
+		// The processor decides the rv64 lane's vector lowering: the fixed
+		// simd vectors need V (docs/spec/93-simd.md §1.4, 94-assembler.md §9).
+		lane.Vector = comp.options.Target.Arch == target.ArchRiscv64 && comp.options.Target.CPUFeatures(comp.options.CPU)["v"]
 		// Check elision (docs/spec/94-assembler.md §9): an element access the
 		// typechecker proved in range is lowered without its guard first;
 		// if the seam checker cannot admit the body from the facts on the
@@ -86,6 +89,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// decides safety; the elision is only what it already knows.
 		lane.ElideProven = lane.Arch == asm.ArchArm64
 		lane.Globals = globals
+		lane.Aggregates = aggregates
 		asmFn, err := nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
 		if err != nil {
 			if _, outside := err.(nativegen.Unsupported); outside {
@@ -361,11 +365,12 @@ var constantScalarTypes = map[string]bool{
 // may address (docs/spec/94-assembler.md §9, the OS pilot's N3): a typed
 // scalar binding some statement writes (the constant ones are folded
 // instead), neither measured nor a target constant.
-func addressableGlobals(root *ast.Program, tc *typechecker.TypeChecker, constants map[string]asm.Constant) (map[string]asm.Global, map[string]*ast.VariableDeclaration) {
+func addressableGlobals(root *ast.Program, tc *typechecker.TypeChecker, constants map[string]asm.Constant, records map[string]*ast.RecordLiteral) (map[string]asm.Global, map[string]*ast.VariableDeclaration, map[string]*ast.VariableDeclaration) {
 	globals := map[string]asm.Global{}
+	aggregates := map[string]*ast.VariableDeclaration{}
 	decls := map[string]*ast.VariableDeclaration{}
 	if root == nil {
-		return globals, decls
+		return globals, aggregates, decls
 	}
 	mutated := codegen.MutatedGlobals(root)
 	targetConstants := map[string]bool{}
@@ -380,7 +385,26 @@ func addressableGlobals(root *ast.Program, tc *typechecker.TypeChecker, constant
 			continue
 		}
 		name := decl.Name.Value
-		if _, isConst := constants[name]; isConst || !mutated[name] || targetConstants[name] {
+		if _, isConst := constants[name]; isConst || targetConstants[name] {
+			continue
+		}
+		// A top-level record, or a written array (an unwritten array is a
+		// constant table, nativegen.Lane.Tables): an aggregate the body
+		// addresses as a place (the OS pilot's N9).
+		if typeName, isIdent := decl.Type.(*ast.Identifier); isIdent {
+			if _, isRecord := records[typeName.Value]; isRecord {
+				aggregates[name] = decl
+				decls[name] = decl
+				continue
+			}
+		} else if index, isIndex := decl.Type.(*ast.IndexExpression); isIndex && !index.Dot {
+			if _, isLit := index.Index.(*ast.IntegerLiteral); isLit && mutated[name] {
+				aggregates[name] = decl
+				decls[name] = decl
+			}
+			continue
+		}
+		if !mutated[name] {
 			continue
 		}
 		typeName, isIdent := decl.Type.(*ast.Identifier)
@@ -394,7 +418,7 @@ func addressableGlobals(root *ast.Program, tc *typechecker.TypeChecker, constant
 		globals[name] = global
 		decls[name] = decl
 	}
-	return globals, decls
+	return globals, aggregates, decls
 }
 
 func constantGlobals(root *ast.Program, tc *typechecker.TypeChecker) map[string]asm.Constant {

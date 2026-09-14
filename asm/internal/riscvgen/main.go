@@ -119,6 +119,11 @@ var rvVectorSubset = map[string]bool{
 	"vle64.v": true, "vse64.v": true,
 	"vfadd.vv": true, "vfsub.vv": true, "vfmul.vv": true, "vfmacc.vv": true,
 	"vfmv.v.f": true, "vfmv.f.s": true, "vfcvt.f.xu.v": true, "vfredosum.vs": true,
+	// The fixed-vector catalog on the native lane (docs/spec/93-simd.md
+	// §1.4): saturating subtract, the shift by a register, the signed and
+	// unsigned less-than masks, the gather, and the slides.
+	"vssubu.vv": true, "vsrl.vx": true, "vmslt.vx": true, "vmsltu.vx": true,
+	"vrgather.vv": true, "vslideup.vi": true, "vslidedown.vi": true,
 }
 
 // rvCompressedSubset is the RVC subset: the 16-bit forms of the lane's

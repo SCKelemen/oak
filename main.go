@@ -195,10 +195,18 @@ func buildOne(dir, output, header, leanOut, leanFloats, metalOut, profile, asmMo
 	if strings.HasSuffix(output, ".c") {
 		emitC = true
 	}
-	code, err := comp.EmitC().Get()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		return 1
+	// The C is emitted once, by emitFor below in the chosen asm mode; only
+	// -emit-c needs it here (the inline-__asm__ form). Compiling the
+	// program up front as well ran the native backend and its verifier
+	// twice per build.
+	var code string
+	if emitC {
+		emitted, err := comp.EmitC().Get()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 1
+		}
+		code = emitted
 	}
 	if leanOut != "" {
 		if leanFloats != "" && leanFloats != "bits" {

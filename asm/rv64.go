@@ -116,7 +116,20 @@ var rv64VectorShapes = map[string]string{
 	"vle64.v": "vm", "vse64.v": "vm",
 	"vfadd.vv": "vvv", "vfsub.vv": "vvv", "vfmul.vv": "vvv", "vfmacc.vv": "vvv",
 	"vfmv.v.f": "vf", "vfmv.f.s": "fv", "vfcvt.f.xu.v": "vv", "vfredosum.vs": "vvv",
+	// The fixed-vector catalog on the native lane (docs/spec/93-simd.md
+	// §1.4, 94-assembler.md §9): saturating subtract, the shift by a
+	// register, the less-than masks (signed for movemask's top bit,
+	// unsigned for tbl's index rule), the gather, and the slides — the
+	// gather's and the slides' destinations must not overlap their
+	// sources (RVV 1.0 §16.3, §16.4, applied fail-closed).
+	"vssubu.vv": "vvv", "vsrl.vx": "vvx", "vmslt.vx": "vvx", "vmsltu.vx": "vvx",
+	"vrgather.vv": "vvv", "vslideup.vi": "vvi", "vslidedown.vi": "vvi",
 }
+
+// rv64VectorDisjoint are the forms whose destination group must not
+// overlap any source group (RVV 1.0 §16.3.1 vslideup, §16.4 vrgather;
+// vslidedown is held to the same rule, fail-closed).
+var rv64VectorDisjoint = map[string]bool{"vrgather.vv": true, "vslideup.vi": true, "vslidedown.vi": true}
 
 // rv64VectorFloat are the vector forms that operate on floating-point
 // elements: they need e32 or e64 (Zve32f/Zve64d; e16 is Zvfh, not
@@ -162,6 +175,8 @@ var rv64Maskable = map[string]bool{
 	"vzext.vf2": true, "vsext.vf2": true, "vnsrl.wi": true,
 	"vle64.v": true, "vse64.v": true,
 	"vfadd.vv": true, "vfsub.vv": true, "vfmul.vv": true, "vfmacc.vv": true, "vfcvt.f.xu.v": true, "vfredosum.vs": true,
+	"vssubu.vv": true, "vsrl.vx": true, "vmslt.vx": true, "vmsltu.vx": true,
+	"vrgather.vv": true, "vslideup.vi": true, "vslidedown.vi": true,
 }
 
 // rv64Masked reports a vector instruction spelled with the `v0.t` mask.

@@ -80,14 +80,57 @@ func cloneWrites(log map[string][]*spanWrite) map[string][]*spanWrite {
 func memoryAt(log []*spanWrite, index, base *term) *term {
 	value := base
 	index = truncate(index, 32)
+	var form *linearForm
+	if len(log) > 0 {
+		form = index.linearAt(32)
+	}
 	for _, w := range log {
-		hit := truncate(cmpTerm("eq", index, w.index), 1)
+		// Two indices in linear normal form over the same unknowns are
+		// equal or unequal by their constants alone — the arena's
+		// `base + k` addressing — which spares the diagrams an equality
+		// over the index bits for every write met by a read.
+		known, equal := indexRelation(form, w.index)
+		if known && !equal {
+			continue
+		}
+		var hit *term
+		if !known {
+			hit = truncate(cmpTerm("eq", index, w.index), 1)
+		}
 		if w.guard != nil {
-			hit = binaryTerm("and", truncate(w.guard, 1), hit)
+			if hit == nil {
+				hit = truncate(w.guard, 1)
+			} else {
+				hit = binaryTerm("and", truncate(w.guard, 1), hit)
+			}
+		}
+		if hit == nil {
+			value = w.value
+			continue
 		}
 		value = iteTerm(hit, w.value, value)
 	}
 	return value
+}
+
+// indexRelation decides, syntactically, whether an index (in linear normal
+// form at 32 bits, nil when it has none) equals another: both linear over
+// the same unknowns with the same coefficients, they are equal exactly
+// when their constants agree, modulo 2^32; otherwise unknown.
+func indexRelation(form *linearForm, other *term) (known, equal bool) {
+	if form == nil {
+		return false, false
+	}
+	lb := other.linearAt(32)
+	if lb == nil || len(form.coeffs) != len(lb.coeffs) {
+		return false, false
+	}
+	for name, c := range form.coeffs {
+		if lb.coeffs[name] != c {
+			return false, false
+		}
+	}
+	return true, form.constant == lb.constant
 }
 
 // guardWrites conjoins cond onto the guard of every write in the slice.
@@ -281,13 +324,27 @@ func (lo *oakLowering) assignSpanElement(name string, contract spanContract, s *
 	if !ok {
 		return reason, false
 	}
+	root := lo.spanRoot(name)
 	if lo.concrete != nil && index.kind == termConst {
-		if length, known := lo.concrete[spanLenName(name)]; known && index.value >= length {
+		if length, known := lo.concrete[spanLenName(root)]; known && index.value >= length {
 			return fmt.Sprintf("an index past len(%s) on this input", name), false
 		}
 	}
-	lo.writes = appendWrite(lo.writes, name, index, truncate(value, contract.elemWidth), lo.path)
+	lo.writes = appendWrite(lo.writes, root, index, truncate(value, contract.elemWidth), lo.path)
 	return "", true
+}
+
+// isParamNamed reports a term that is the parameter name at any width:
+// the node itself, or its zero-extension by a mask (the width adapters
+// copy a parameter node at the use width).
+func isParamNamed(t *term, name string) bool {
+	switch t.kind {
+	case termParam:
+		return t.name == name
+	case termBinary:
+		return t.op == "and" && t.right.kind == termConst && isParamNamed(t.left, name)
+	}
+	return false
 }
 
 // --- the decision ----------------------------------------------------------
