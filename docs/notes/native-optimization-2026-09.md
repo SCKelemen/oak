@@ -123,15 +123,26 @@ source and both gated by the verifier's loop coupling as it stands:
 - *Bottom-tested loops.* The test at the bottom, the entry jumping to
   it: one conditional branch per iteration instead of a compare, a
   conditional exit, and an unconditional back edge. Every loop kernel.
-- *A guard the loop test already decided.* `bench_search`'s inner loop
-  reads `probes[i]` under `while i < len(probes)`, and the lowering
-  emits `cmp w5, w22; b.hs done` for the test and `cmp w5, w22; b.hs
-  trap` for the guard on the same registers; the index is proven, and
-  the elision is refused only where the checker cannot read the proof
-  off the dominating compare. Teaching the checker the equalities the
-  extent facts carry (a bound copied to another register, a length read
-  through an alias) removes the guard where the proof exists. `search`,
-  `page_probe`, and every loop over a span.
+- *A guard the loop test already decided.* `bench_search`'s outer loop
+  read `probes[p]` under `while p < len(probes)` with both the exit test
+  and the guard comparing the same registers: the index was proven and
+  the checker admits it, but a second access in the body (`keys[mid]`,
+  proven by the decreasing-bound law the checker cannot read) made the
+  compiler fall back to every guard. Landed 2026-09-15: the fallback is
+  per source line (`94-assembler.md` §9 "Check elision"), so the admitted
+  accesses stay elided. Next: teaching the checker the equalities the
+  extent facts carry (a bound copied to another register, a decreasing
+  bound below a length) removes the remaining guards where the proof
+  exists.
+
+**Condition selection (landed 2026-09-15).** The survey's "a Bool
+negation materialized before its branch" and the match chains'
+`movz; cmp` pairs: negations invert the branch, Bool homes are tested in
+place, small constants are compare immediates, in-range bitwise constants
+are not re-masked (`94-assembler.md` §9 "Condition selection";
+`bench_dispatch` 68 → 60 instructions). The repeated `cmp` of a
+conditional chain waits on the checker carrying a flags fact across a
+label whose predecessors all produced it.
 
 **The verified profile is the gate.** An increment that turns a proven
 body witnessed or trusted does not land; the count under

@@ -95,6 +95,36 @@ noise at about twenty percent. Raw samples:
 | `dispatch` | 10.82 | 9.03 | 0.83 | proven |
 | `tiled` | 0.135 | 0.375 (at 30ca36eb) | 2.8 | witnessed; refuted at aade7acd by a verifier false alarm since fixed upstream (see below) |
 
+**Guard elision falls back per source line (2026-09-15,
+`docs/spec/94-assembler.md` §9 "Check elision").** `bench_search` and
+`bench_page_probe` had every element guard, because one access in each
+— `keys[mid]` under the decreasing bound, the fence key under the
+quotient bound — is proven by a law the seam checker cannot read, and
+the refusal re-lowered the whole body guarded. The compiler now keeps
+the guards of the refused line only: `bench_search` reads `probes[p]`
+unguarded (one guard, two instructions, out of its outer loop; the
+key read keeps its `cmp; b.hs`), `bench_page_probe` likewise loses the
+guard of its probe read and keeps lines 76 and 85. Structural counts
+from `OAK_NATIVE_DUMP=1` at 5004065a, whole bodies: `bench_search` 57
+instructions and one guard to the trap (from 61 and three before this
+and the strength reduction), `bench_page_probe` 93 and two (from 102
+and six). The verdicts are unchanged (`bench_search` witnessed, the
+loop's `hits` coupling; `bench_page_probe` trusted, the path budget), so
+the rows stand; timing on a quiet host with the rerun of the strength
+reduction below.
+
+**Condition selection (2026-09-15, `docs/spec/94-assembler.md` §9
+"Condition selection").** Negations invert their branch, Bool homes are
+tested in place, small constants are compare immediates in comparisons
+and match arms, and an in-range bitwise constant is not re-masked.
+Structural counts at 5004065a with the per-line fallback above already
+in: `bench_dispatch` 68 → 60 instructions (its seven-arm match chain
+lost every `movz`), `bench_search` 57 → 54 (`!found` is one `cbnz`, and
+the inner loop is eleven instructions from the exit test to the key
+load), `bench_page_probe` 93 → 90; `crc32c`, `blake3`, `sum`, `dot`
+unchanged. Verdicts unchanged (`dispatch` proven, `search` witnessed,
+`page_probe` trusted). Timing deferred to the quiet-host rerun.
+
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
 were attributed below to frame traffic; the lowered bodies say otherwise —

@@ -1251,6 +1251,9 @@ type generator struct {
 	// test) or to refuse — on refusal the compiler lowers again with
 	// guards (compiler/native_bodies.go). Safety stays the checker's.
 	elide bool
+	// guardLines: accesses on these source lines keep their guards even
+	// when proven (Lane.GuardLines, the compiler's per-line fallback).
+	guardLines map[int]bool
 	// elided counts the guards left out under elide (reported).
 	elided int
 	// strength lowers constant multiplications, divisions, and remainders
@@ -1296,6 +1299,11 @@ type Lane struct {
 	// without their guards on the AArch64 lane; the checker admits or
 	// refuses the body, and the compiler falls back to guards on refusal.
 	ElideProven bool
+	// GuardLines names source lines whose element accesses keep their
+	// guards under ElideProven: the compiler adds the line of an access
+	// the checker could not admit and lowers again, so the accesses the
+	// checker does admit stay elided (compiler/native_bodies.go).
+	GuardLines map[int]bool
 	// Strength lowers a multiplication, division, or remainder by a
 	// constant to the cheaper instruction on the AArch64 lane — a power
 	// of two as a shift or a mask, a nonzero divisor without its zero
@@ -1432,7 +1440,7 @@ func tableSizes(tables map[string]GlobalArray) map[string]asm.Table {
 func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	switch lane.Arch {
 	case "", asm.ArchArm64:
-		return compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.Strength, lane.Tables, lane.PackedStackArgs)
+		return compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.Tables, lane.PackedStackArgs)
 	case asm.ArchRV64:
 		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector)
 	}
@@ -1445,7 +1453,7 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 // constant globals (docs/spec/90-backend.md §8a); tc is the checker that
 // typed the program.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
-	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, false, nil, false)
+	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, nil, false)
 }
 
 // ElidedGuards reports how many element guards a lowering left out under
@@ -1464,7 +1472,7 @@ var reducedOps = map[*asm.Function]int{}
 // caller-saved home or a frame slot: the second pass is worth its cost.
 var pressured = map[*asm.Function]bool{}
 
-func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, strength bool, tables map[string]GlobalArray, packed bool) (*asm.Function, error) {
+func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, tables map[string]GlobalArray, packed bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
@@ -1474,13 +1482,13 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	if body := inlineBody(fn, functions); body != fn.Body {
 		expanded := *fn
 		expanded.Body = body
-		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, aggregates, tc, elide, strength, tables, packed); err == nil {
+		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, tables, packed); err == nil {
 			return out, nil
 		} else if _, outside := err.(Unsupported); !outside {
 			return nil, err
 		}
 	}
-	return compileArm64Body(fn, functions, records, adts, constants, globals, aggregates, tc, elide, strength, tables, packed)
+	return compileArm64Body(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, tables, packed)
 }
 
 // compileArm64Body lowers one function body as given — twice: the first
@@ -1491,8 +1499,8 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 // in registers instead of frame slots. A second pass the lowering refuses
 // (it should not: a variable in a register needs no temporary a slot did)
 // leaves the first pass's code.
-func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, strength bool, tables map[string]GlobalArray, packed bool) (*asm.Function, error) {
-	first, peak, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, strength, tables, packed, 0)
+func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, tables map[string]GlobalArray, packed bool) (*asm.Function, error) {
+	first, peak, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, tables, packed, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1500,7 +1508,7 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	if spare <= 0 || !pressured[first] {
 		return first, nil // nothing to gain: every variable already has a register
 	}
-	second, _, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, strength, tables, packed, spare)
+	second, _, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, tables, packed, spare)
 	if err != nil {
 		return first, nil
 	}
@@ -1511,8 +1519,8 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 // registers, from x15 down, serve as variable homes instead of
 // temporaries. It reports the peak number of integer scratch registers
 // live at once.
-func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, strength bool, tables map[string]GlobalArray, packed bool, spare int) (*asm.Function, int, error) {
-	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, aggregates: aggregates, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, elide: elide, strength: strength, packedStack: packed, stackParams: map[string]asm.ArgPlace{}}
+func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, tables map[string]GlobalArray, packed bool, spare int) (*asm.Function, int, error) {
+	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, aggregates: aggregates, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, elide: elide, guardLines: guardLines, strength: strength, packedStack: packed, stackParams: map[string]asm.ArgPlace{}}
 	// A span pair parked in callee-saved registers survives a call, and a
 	// result: the result leaves in x0 (and x1), where a span parameter's
 	// pair is bound, and the checker's span facts flow in text order — a
@@ -2293,12 +2301,18 @@ func (g *generator) lowerMatch(match *ast.MatchExpression, arm func(body ast.Exp
 		next := g.newLabel("arm")
 		switch pattern := matchArm.Pattern.(type) {
 		case *ast.LiteralPattern:
-			lit, err := g.expr(pattern.Value, &typ)
-			if err != nil {
-				return err
+			// A small literal is the compare's immediate; anything else
+			// is materialized.
+			if op, isImm := g.simpleOperand(pattern.Value, typ, true); isImm && !typ.isFloat {
+				g.emit("cmp", reg(value, typ), op)
+			} else {
+				lit, err := g.expr(pattern.Value, &typ)
+				if err != nil {
+					return err
+				}
+				g.emit("cmp", reg(value, typ), reg(lit, typ))
+				g.release(lit)
 			}
-			g.emit("cmp", reg(value, typ), reg(lit, typ))
-			g.release(lit)
 			g.branch("ne", next)
 		default:
 			if !isWildcard(matchArm.Pattern) {
@@ -4429,6 +4443,26 @@ var inverseCondition = map[string]string{"eq": "ne", "ne": "eq", "lo": "hs", "hs
 // as `cmp` then `b.cond`, the shape the checker's guards and the
 // verifier's loop recognizer read.
 func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFalse bool) error {
+	// Selection in condition position (docs/spec/94-assembler.md §9 "Condition
+	// selection"): a negation inverts the branch instead of materializing
+	// a Bool, and a Bool variable in a register is tested where it lives.
+	switch e := expr.(type) {
+	case *ast.PrefixExpression:
+		if e.Operator == "!" {
+			return g.conditionBranch(e.Right, target, !jumpIfFalse)
+		}
+	case *ast.Identifier:
+		if v, inReg := g.regs[e.Value]; inReg && v >= 0 && v < vecBase {
+			if t, ok := g.types[e.Value]; ok && t.isBool {
+				if jumpIfFalse {
+					g.emit("cbz", wr(v), asm.Symbol{Name: target})
+				} else {
+					g.emit("cbnz", wr(v), asm.Symbol{Name: target})
+				}
+				return nil
+			}
+		}
+	}
 	if infix, ok := expr.(*ast.InfixExpression); ok {
 		// Short-circuit connectives branch per operand, so each comparison
 		// keeps the `cmp; b.cond` shape whose facts the checker reads
@@ -4472,6 +4506,13 @@ func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFa
 			if operand, err := g.operandType(infix); err == nil && !operand.isFloat {
 				left, leftOK := g.simpleOperand(infix.Left, operand, false)
 				right, rightOK := g.simpleOperand(infix.Right, operand, true)
+				if leftOK && !rightOK {
+					// A named constant, or a folded conversion: the compare
+					// immediate, as a literal's.
+					if c, isConst := g.constantOperand(infix.Right, operand); isConst && c < 4096 {
+						right, rightOK = imm(int64(c)), true
+					}
+				}
 				computed := -1
 				if leftOK && !rightOK {
 					// A computed right operand (`len(v) - u32(N)`): into a
@@ -5156,7 +5197,11 @@ func (g *generator) directInfix(e *ast.InfixExpression, typ scalar, mnemonic str
 	if r >= 0 && !rfixed {
 		g.release(r)
 	}
-	g.normalize(out, typ)
+	// A bitwise operation with a constant inside the type's mask leaves a
+	// normalized unsigned operand normalized: no mask after it.
+	if c, isConst := g.constantOperand(right, typ); !(isConst && !typ.signed && (mnemonic == "and" || mnemonic == "orr" || mnemonic == "eor") && c <= mask64(typ.bits)) {
+		g.normalize(out, typ)
+	}
 	return out, nil
 }
 
@@ -6325,7 +6370,7 @@ func (g *generator) guardedIndex(sp span, index ast.Expression) (int, error) {
 // test compared, so the checker's fact from that test admits the access
 // without a second compare.
 func (g *generator) guardedIndexAt(sp span, index ast.Expression, tok *token.Token) (int, error) {
-	if g.elide && tok != nil && g.tc != nil && g.tc.IndexProven(*tok) {
+	if g.elide && tok != nil && g.tc != nil && !g.guardLines[tok.Line] && g.tc.IndexProven(*tok) {
 		idxType, err := g.typeOf(index, nil)
 		if err == nil && !idxType.signed && !idxType.isBool && !idxType.isFloat && !idxType.wide() {
 			if ident, isIdent := index.(*ast.Identifier); isIdent {

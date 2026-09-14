@@ -131,17 +131,44 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			continue
 		}
 		findings := asm.Check(asmFn, source, symbols)
-		if len(findings) != 0 && lane.ElideProven && nativegen.ElidedGuards(asmFn) > 0 {
-			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its element guards (the checker did not admit the elided form: %s)", fn.Name.Value, findings[0])))
-			lane.ElideProven = false
+		// A refused elision falls back one source line at a time
+		// (docs/spec/94-assembler.md §9 "Check elision"): the finding
+		// names the line of the access the checker could not admit, that
+		// line's accesses keep their guards, and the body is lowered
+		// again, so the accesses the checker does admit stay elided. A
+		// finding without a line, or a line already kept, or the eighth
+		// round, falls back to every guard as before.
+		var kept []int
+		for round := 0; len(findings) != 0 && lane.ElideProven && nativegen.ElidedGuards(asmFn) > 0; round++ {
+			line, hasLine := findingLine(findings[0], fn.Name.Value)
+			if round >= 8 || !hasLine || lane.GuardLines[line] {
+				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its element guards (the checker did not admit the elided form: %s)", fn.Name.Value, findings[0])))
+				lane.ElideProven = false
+				lane.GuardLines = nil
+				kept = nil
+			} else {
+				if lane.GuardLines == nil {
+					lane.GuardLines = map[int]bool{}
+				}
+				lane.GuardLines[line] = true
+				kept = append(kept, line)
+			}
 			asmFn, err = nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
 			if err != nil {
-				diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
-				continue
+				break
 			}
 			findings = asm.Check(asmFn, source, symbols)
-		} else if elided := nativegen.ElidedGuards(asmFn); elided > 0 && len(findings) == 0 {
-			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d element guard(s) elided under the checker's own facts", fn.Name.Value, elided)))
+		}
+		if err != nil {
+			diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
+			continue
+		}
+		if elided := nativegen.ElidedGuards(asmFn); elided > 0 && len(findings) == 0 {
+			if len(kept) > 0 {
+				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d element guard(s) elided under the checker's own facts, the guards of line(s) %s kept (the checker did not admit their elided form)", fn.Name.Value, elided, joinLines(kept))))
+			} else {
+				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d element guard(s) elided under the checker's own facts", fn.Name.Value, elided)))
+			}
 		}
 		if len(findings) != 0 && lane.Strength && nativegen.Reduced(asmFn) > 0 {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its plain arithmetic (the checker did not admit the strength-reduced form: %s)", fn.Name.Value, findings[0])))
@@ -575,4 +602,32 @@ func constantGlobals(root *ast.Program, tc *typechecker.TypeChecker) map[string]
 		}
 	}
 	return out
+}
+
+// findingLine reads the source line a seam-checker finding names: the
+// checker prefixes every finding with `function:line:` (asm/check.go
+// errorf).
+func findingLine(finding, function string) (int, bool) {
+	rest, hasPrefix := strings.CutPrefix(finding, function+":")
+	if !hasPrefix {
+		return 0, false
+	}
+	digits, _, hasColon := strings.Cut(rest, ":")
+	if !hasColon {
+		return 0, false
+	}
+	line, err := strconv.Atoi(digits)
+	if err != nil || line <= 0 {
+		return 0, false
+	}
+	return line, true
+}
+
+// joinLines spells the kept lines for the diagnostic.
+func joinLines(lines []int) string {
+	parts := make([]string, len(lines))
+	for i, line := range lines {
+		parts[i] = strconv.Itoa(line)
+	}
+	return strings.Join(parts, ", ")
 }
