@@ -1221,7 +1221,19 @@ func (s *symbolicState) clone() *symbolicState {
 			globals[name] = value
 		}
 	}
-	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, globals: globals, writes: cloneWrites(s.writes), unknownFrom: s.unknownFrom}
+	var fregs map[int]*term
+	if s.fregs != nil {
+		fregs = make(map[int]*term, len(s.fregs))
+		for reg, value := range s.fregs {
+			fregs[reg] = value
+		}
+	}
+	var rvcfg *rvVectorConfigVerify
+	if s.rvcfg != nil {
+		cfg := *s.rvcfg
+		rvcfg = &cfg
+	}
+	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, fregs: fregs, rvcfg: rvcfg, globals: globals, writes: cloneWrites(s.writes), unknownFrom: s.unknownFrom}
 }
 
 // frameAccess executes a load or store through the sp frame: the address
