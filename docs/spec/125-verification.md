@@ -734,10 +734,14 @@ In order of payoff, each reusing a surface that exists:
   engine, the two LRAT checkers, `Oak.RupCheck`, and the solver written in
   Oak (`prove/solver/sat.oak`) as the rung's default, with clause-database
   reduction, two-watched-literal propagation, minimization, Luby
-  restarts, bounded variable elimination at load, and failed-literal
+  restarts, bounded variable elimination at load, failed-literal
   probing before the search (a failed polarity learned as a unit, a
   literal implied by both polarities recorded through two implications
-  and their unit, every step a hint chain the checkers accept); the encoder's laws
+  and their unit, every step a hint chain the checkers accept), and
+  subsumption with self-subsuming resolution at load (a clause holding
+  another deleted, a clause holding another but for one negated literal
+  strengthened through a two-hint addition);
+  the encoder's laws
   in `Oak.Tseitin`, its code checked against them by truth table; and the
   clause engine as an Oak program beside `asm/cnf.go`, and the whole rung
   inside the prover written in Oak (`certify.oak`), so `-solver self` runs
@@ -755,7 +759,9 @@ In order of payoff, each reusing a surface that exists:
   one `write` call per byte: the first of those rows went from 101 to 10
   seconds on the text path). The budget scales with the clause count by
   default, so `vector_under_literal_bound` closes by certificate in the
-  corpus (`TestScaledBudgetClosesWideRow`). Next: subsumption. The BDD's failure mode
+  corpus (`TestScaledBudgetClosesWideRow`). Subsumption and
+  strengthening landed last (`TestOakSATSubsumption`), the last technique
+  the notes list ahead of any GPU question. The BDD's failure mode
   is the node budget on multipliers and wide aggregates, which CDCL
   solvers treat routinely. The rung is the one Lean's `bv_decide` already
   runs:
