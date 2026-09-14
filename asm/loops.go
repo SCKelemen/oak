@@ -965,7 +965,7 @@ func (x *pathExecutor) headerCondition(shape loopShape, fresh *symbolicState) (*
 }
 
 // loopEventBudget bounds the data-dependent loops one body may hold.
-const loopEventBudget = 8
+const loopEventBudget = 16
 
 // bodyEnd is one path through a loop body: the condition under which the
 // path is taken and the state it reaches the back edge with.

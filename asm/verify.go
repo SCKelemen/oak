@@ -6862,9 +6862,8 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		}
 		resultWidth, resultSigned = w, signed
 	}
-	if len(callee.Parameters) > 8 {
-		return fmt.Sprintf("a call to %s with %d parameters", name, len(callee.Parameters)), false
-	}
+	// More parameters than the registers hold are read from the caller's
+	// outgoing area below (the shared layout), so their count is no bar.
 	lo := newLowering(callee)
 	lo.arch = x.arch
 	lo.records, lo.adts, lo.constants = x.fn.Records, x.fn.ADTs, x.fn.Constants

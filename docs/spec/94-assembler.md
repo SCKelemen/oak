@@ -4485,7 +4485,18 @@ literal as an f64 against f32 bits and the Oak side refuted itself —
 which had hidden behind an undecided asm term until the fold made the
 asm side definite and the mismatch confirmed (`floatWidthOf`;
 `TestFloatElementWidth`, `TestShiftCountWrapsAtWidth`). With the
-upstream commits of the same hour: proven 470.
+upstream commits of the same hour: proven 470. A call summary
+refused a callee with more than eight parameters before it laid them
+out, though it reads the ones beyond the registers from the outgoing
+area; the count is no bar now (`term_new` with eleven, `sr_emit` with
+ten). The loop-event budget is sixteen where it was eight: a body that
+reaches its loops through summaries counts the callees' loops among its
+own. And a division by a constant power of two on the asm side was
+tried as the shift it equals, so that the `i / 8` of a bit-set walk
+would meet the Oak side's shift rather than an uninterpreted quotient;
+it proved four bodies and cost the build ten CPU-minutes in bodies
+whose divisions had ended quickly as uninterpreted, so it is not kept.
+Proven 477.
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
