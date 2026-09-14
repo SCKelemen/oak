@@ -131,6 +131,10 @@ type term struct {
 	left  *term
 	right *term
 	cond  *term // termIte
+	// The known-bits memo (knownBits, asm/floats_ops.go): set once computed.
+	kbDone  bool
+	kbValue uint64
+	kbKnown uint64
 }
 
 // conditionHolds is the ARM condition-code semantics over the NZCV flags

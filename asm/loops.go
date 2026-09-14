@@ -1762,7 +1762,22 @@ func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term
 		}
 		return t
 	}
+	if t.kind == termFloat {
+		// An operation is rebuilt through its constructor: known operands
+		// after the substitution fold as they would have at construction.
+		args := []*term{substituteMemo(t.left, sigma, memo)}
+		if t.right != nil {
+			args = append(args, substituteMemo(t.right, sigma, memo))
+		}
+		if t.cond != nil {
+			args = append(args, substituteMemo(t.cond, sigma, memo))
+		}
+		rebuilt := floatTerm(t.op, t.width, args...)
+		memo[t] = rebuilt
+		return rebuilt
+	}
 	out := *t
+	out.kbDone = false
 	out.cond = substituteMemo(t.cond, sigma, memo)
 	out.left = substituteMemo(t.left, sigma, memo)
 	out.right = substituteMemo(t.right, sigma, memo)
