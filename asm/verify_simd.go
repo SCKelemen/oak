@@ -175,8 +175,13 @@ func (lo *oakLowering) simdVectorValue(member string, args []ast.Expression, typ
 	switch op {
 	case "splat":
 		// The operand at its own width, masked to the lane (a wider
-		// parameter keeps its low bits, as dup does).
-		value, reason, ok := lo.lower(args[0], 64)
+		// parameter keeps its low bits, as dup does); a float operand at
+		// the lane's format (a literal's bits are those of its width).
+		width := 64
+		if shape.Float {
+			width = bits
+		}
+		value, reason, ok := lo.lower(args[0], width)
 		if !ok {
 			return nil, reason, false
 		}

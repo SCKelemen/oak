@@ -125,4 +125,12 @@ func TestVerifyFloatVector(t *testing.T) {
 	if v := verifyCase(t, "fill: (x: f32) -> simd.F32x4", "simd.splat_f32x4(x)", "  bind s0 = x\n  dup v0.4s, v0.s[0]\n  ret"); v.Kind != VerdictProven {
 		t.Fatalf("splat against dup must be proven, got %s: %s", v.Kind, v.Message)
 	}
+	// A splat of a float literal is the literal at the lane's format (the
+	// native backend's `fmov` then `dup`), not its 64-bit pattern.
+	if v := verifyCase(t, "twice: (v: simd.F32x4) -> simd.F32x4", "simd.mul_f32x4(v, simd.splat_f32x4(2.0))", "  bind v0 = v\n  clobber v1\n  fmov s1, #2.0\n  dup v1.4s, v1.s[0]\n  fmul v0.4s, v0.4s, v1.4s\n  ret"); v.Kind != VerdictProven {
+		t.Fatalf("a splat literal must be proven at the lane width, got %s: %s", v.Kind, v.Message)
+	}
+	if v := verifyCase(t, "double: (v: simd.F64x2) -> simd.F64x2", "simd.mul_f64x2(v, simd.splat_f64x2(2.0))", "  bind v0 = v\n  clobber v1\n  fmov d1, #2.0\n  dup v1.2d, v1.d[0]\n  fmul v0.2d, v0.2d, v1.2d\n  ret"); v.Kind != VerdictProven {
+		t.Fatalf("an f64 splat literal must be proven, got %s: %s", v.Kind, v.Message)
+	}
 }
