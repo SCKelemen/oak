@@ -166,3 +166,20 @@ func TestVerifyVectorFrameRoundTrip(t *testing.T) {
 		t.Fatalf("the frame round trip must be proven, got %s: %s", verdict.Kind, verdict.Message)
 	}
 }
+
+// The any/all reductions over free lanes: the umaxv chain compared with
+// zero distributes into per-lane tests (cmpTerm, Oak.NeonSemantics
+// umaxv_ne_zero_iff), where the chain's own diagram exceeded the budget.
+func TestVerifyVectorAnyFreeLanes(t *testing.T) {
+	decl := "anyv: (a: simd.U8x16) -> u32"
+	body := "  bind v0 = a\n  clobber w10\n  umaxv b0, v0.16b\n  umov w10, v0.b[0]\n  cmp w10, #0\n  cset w0, ne\n  ret"
+	verdict := verifyCase(t, decl, "simd.any_u8x16(a) ? u32(1) | u32(0)", body)
+	if verdict.Kind != VerdictProven {
+		t.Fatalf("any over free lanes must be proven, got %s: %s", verdict.Kind, verdict.Message)
+	}
+	// uminv for umaxv: some lane zero and another nonzero refutes it.
+	wrong := verifyCase(t, decl, "simd.any_u8x16(a) ? u32(1) | u32(0)", strings.Replace(body, "umaxv", "uminv", 1))
+	if wrong.Kind != VerdictMismatch {
+		t.Fatalf("the min reduction must be a mismatch, got %s: %s", wrong.Kind, wrong.Message)
+	}
+}

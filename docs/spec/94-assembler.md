@@ -777,7 +777,8 @@ side as well. Verdicts on the SIMD corpus (`compiler/e2e_native_simd_test.go`):
 proven on both halves of their vector results, `check_blocks` evidence
 (the two-block composition exceeds the node budget), the loop kernel
 `valid_with` **evidence** since the loop increment below (76 concrete
-inputs; the coupling proof pairs scalars only). The lane functions are stated in Lean as
+inputs; the tail array has no machine image and the `error` obligation
+exceeds the node budget). The lane functions are stated in Lean as
 `Oak.NeonSemantics` (`spec/lean/Oak/NeonSemantics.lean`) and each is
 proved to be the `Oak.Simd` operation the lowering uses it for:
 `uqsub_eq_subSat`, `cmeq_eq_eqMask`, `add_eq_addWrap`, `ushr_eq_shr`,
@@ -843,6 +844,7 @@ carried leaf by leaf with a fresh symbol per lane, and an index assignment
 `tail[i] = ...` marks its root as assigned. The witness inputs gained the
 span lengths 63, 64, 65, 80, 81: under the small ones alone every input of
 a body that reads sixty-four bytes of tables before its loops traps at the
+<<<<<<< HEAD
 table loads and no witness decides anything. Result: `valid_with` agrees
 with its Oak body on 76 concrete inputs and is **evidence** — the coupling
 proof pairs a scalar Oak variable with a register, and the kernel's loop
@@ -1064,6 +1066,50 @@ decided in `asm/rv64_verify_vector_test.go`: the min sequence proven and
 bare `vfmin` a mismatch; div/sqrt/abs/neg with a slid extract; the
 vid/vmseq/vfmerge insert; the pairwise reduce through slides proven and
 `vfredosum`'s fold a mismatch.
+=======
+table loads and no witness decides anything. **Lane coupling.** The
+coupling proof pairs the lanes of an aggregate local as a group: the
+lanes `acc[0]`..`acc[n-1]` of one width w dividing 64 form slots of 64/w
+consecutive lanes (`acc[0..7]`, `acc[8..15]`), and a slot is paired with a
+64-bit machine symbol — a vector register half or a frame slot — through
+`r = pack(x) + b`, lane k at bits k·w (`packLanes`), so that the
+substitution carries the register half as the pack of the lanes' symbols
+and one iteration must preserve the pack. The obligations are decided as
+before, with two additions: **valuations first** — a valuation of the
+symbols satisfying the premise under which the two sides differ refutes an
+obligation before any diagram is built (span elements read the fixed
+memory, as the witness layer does), and the same refutation prunes the
+search as soon as a chosen pairing's register value mentions only coupled
+symbols; slots are ordered by how many of the event's own variables their
+one-iteration value mentions, so accumulators that fold the others in are
+paired last and a wrong pairing is refuted at once — and the **variable
+orders of `equalityBlasters`** (interleaved, per parameter, each leaf's
+bits in a block, control bits first) race for every implication as they do
+for a straight-line equality. A slot none of whose candidates survives its
+own obligation fails the coupling before any search, and the search
+itself is bounded (4,096 pairings). `TestVerifyVectorLoopCoupling`: a
+vector accumulator `acc = or(acc, load(v, i))` over a data-dependent loop
+is **proven** with `acc[0..7]↔v16.lo`, `acc[8..15]↔v16.hi`, `i↔r9`; `and`
+for `orr` is refuted on a concrete input. **The reductions against zero.**
+`any` lowers to `umaxv`, a sixteen-deep chain of `ite(l hi r, l, r)`,
+whose diagram over sixteen free byte lanes exceeds the node budget even in
+a straight-line body; the term constructor now applies
+`Oak.NeonSemantics.umaxv_ne_zero_iff` and its dual: a max or min chain
+compared with zero (`cmp #0` then `cset eq/ne`) distributes into per-lane
+zero tests — `max(l, r) ≠ 0 ⇔ l ≠ 0 ∨ r ≠ 0`, `min(l, r) ≠ 0 ⇔ l ≠ 0 ∧ r
+≠ 0` — looking through the masks that keep every significant bit (a
+zero-extension, the lane's extraction). `any` over free lanes is proven
+(`TestVerifyVectorAnyFreeLanes`; `uminv` for `umaxv` refuted). Result on
+the kernel: `valid_with` agrees with its Oak body on 76 concrete inputs
+and is **evidence**, now for a stated reason — the tail array `tail[0..7]`
+has no machine image, since the byte copy into it stores at a
+data-dependent index and the frame region is opaque after it (a frame
+array as a loop-carried memory is the next step), and the `error`
+accumulator's one-iteration obligation is the `check_blocks` composition,
+beyond the node budget. Left for the next increments: the frame array as
+a memory, `simd.store` (a write the straight-line model does not follow)
+and float vectors (`docs/notes/proof-chain-audit-2026-09.md`).
+>>>>>>> 5bd8bbfb (feat(asm): the coupling proof pairs vector lanes with register halves)
 
 ## 9. Native encoding, and the architectures to come
 
