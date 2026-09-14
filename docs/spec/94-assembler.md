@@ -4119,7 +4119,18 @@ symbolic index of eight parameters went to the diagrams, where it
 exceeded the budget. A truncation now drops an `or` operand shifted
 entirely above its width, and the two sides are the same term. On the
 prover: proven 429 to 455, evidence 125 to 105, no disagreement, the
-rows identical.
+rows identical. Two
+corrections the fold surfaced: the term algebra's shift count wraps at
+the width, as the machine's does (`y shl 32` at 32 bits is `y`), so the
+fold drops an operand only when its shift's own width exceeds the count,
+and the range bound reads a count modulo the width; and a float element
+of a local array, or a float field of a record local, compared against a
+literal at the literal's default width — `out[3] == -1.0` read the
+literal as an f64 against f32 bits and the Oak side refuted itself —
+which had hidden behind an undecided asm term until the fold made the
+asm side definite and the mismatch confirmed (`floatWidthOf`;
+`TestFloatElementWidth`, `TestShiftCountWrapsAtWidth`). With the
+upstream commits of the same hour: proven 470.
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
