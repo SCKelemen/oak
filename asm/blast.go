@@ -55,9 +55,10 @@ type variableOwner struct {
 }
 
 type selectAbstraction struct {
-	span string
-	idx  []int // canonical index bits
-	vars []int // the fresh variable indices holding the value
+	span  string
+	idx   []int // canonical index bits
+	vars  []int // the fresh variable indices holding the value
+	index *term // the index term (nil for an uninterpreted operation's operand)
 }
 
 const blastNodeBudget = 2000000
@@ -194,7 +195,7 @@ func (bl *blaster) selectVariable(slot, bit int) int {
 // selectBits abstracts a select as fresh variables — one block per distinct
 // (span, index) — sound for equality proofs: terms equal under independent
 // element values are equal under every memory.
-func (bl *blaster) selectBits(span string, idx []int, width int) []int {
+func (bl *blaster) selectBits(span string, idx []int, width int, index *term) []int {
 	for _, known := range bl.selects {
 		if known.span != span || len(known.idx) != len(idx) {
 			continue
@@ -215,7 +216,7 @@ func (bl *blaster) selectBits(span string, idx []int, width int) []int {
 	for i := range vars {
 		vars[i] = bl.selectVariable(slot, i)
 	}
-	bl.selects = append(bl.selects, selectAbstraction{span: span, idx: idx, vars: vars})
+	bl.selects = append(bl.selects, selectAbstraction{span: span, idx: idx, vars: vars, index: index})
 	return bl.varsBits(vars, width)
 }
 
@@ -272,13 +273,30 @@ func (bl *blaster) consistency() int {
 		}
 		cons = bl.apply(opAnd, cons, bl.apply(opOr, bl.not(premise), conclusion))
 	}
+	// Two indices in linear normal form over the same unknowns are equal
+	// or unequal by their constants alone (asm/effects.go indexRelation):
+	// a pair provably at different elements — the arena's `base + 9`
+	// against `base + 16` — needs no implication, which keeps the
+	// constraint linear in the reads of such a body rather than quadratic.
+	forms := make([]*linearForm, len(bl.selects))
+	for k := range bl.selects {
+		if bl.selects[k].index != nil {
+			forms[k] = bl.selects[k].index.linearAt(32)
+		}
+	}
 	for k := range bl.selects {
 		a := bl.selects[k]
+		formA := forms[k]
 		aVal := bl.varsBits(a.vars, len(a.vars))
 		for l := k + 1; l < len(bl.selects); l++ {
 			b := bl.selects[l]
 			if b.span != a.span {
 				continue
+			}
+			if b.index != nil {
+				if known, equal := indexRelation(formA, b.index); known && !equal {
+					continue
+				}
 			}
 			implies(equalBits(a.idx, b.idx), equalBits(aVal, bl.varsBits(b.vars, len(b.vars))))
 			if bl.bdd.exceeded {
@@ -292,6 +310,9 @@ func (bl *blaster) consistency() int {
 			}
 			k, err := strconv.ParseInt(name[len(a.span)+1:len(name)-1], 10, 64)
 			if err != nil || k < 0 {
+				continue
+			}
+			if known, equal := indexRelation(formA, constTerm(uint64(k), 32)); known && !equal {
 				continue
 			}
 			elem := bl.blast(paramTerm(name, bl.widths[name]))
@@ -363,7 +384,7 @@ func (bl *blaster) blastUncached(t *term) []int {
 		if idx == nil {
 			return nil
 		}
-		return bl.selectBits(t.name, idx, t.width)
+		return bl.selectBits(t.name, idx, t.width, t.left)
 	case termFloat:
 		// An uninterpreted operation: its value is a fresh block shared by
 		// every application of the same operation to the same operand
@@ -385,7 +406,7 @@ func (bl *blaster) blastUncached(t *term) []int {
 			}
 			idx = append(idx, bits...)
 		}
-		return bl.selectBits(floatOpSpan(t.op, t.width), idx, t.width)
+		return bl.selectBits(floatOpSpan(t.op, t.width), idx, t.width, nil)
 	case termCmp:
 		// The comparison is the flag reading of `left - right` at the
 		// operands' width: NZCV from the subtraction chain, then the ARM

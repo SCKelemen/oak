@@ -597,52 +597,37 @@ func (c *checker) bindContract() {
 	}
 	var ints []intParam
 	nextVector := 0
-	for _, param := range c.fn.Signature.Parameters {
-		if comp, isComposite := c.fn.Composites[typeText(param.Type)]; isComposite {
-			// AAPCS64 composites: up to 16 bytes in consecutive x registers
-			// (each an 8-byte chunk of the memory image), larger by reference
-			// to a copy the caller owns.
-			if comp.HFA {
-				c.errorf(c.fn.Line, "parameter %s: %s is a homogeneous floating-point aggregate (v registers); v1 leaves it to the C backend", param.Name.Value, typeText(param.Type))
-				continue
-			}
-			regs, indirect := 1, comp.Size > 16
-			if !indirect {
-				regs = int((comp.Size + 7) / 8)
-			}
+	// The classification is the shared one (asm/abi.go classifyArguments):
+	// the backend places arguments by it and the call summary reads them
+	// by it, so the three never disagree.
+	for _, arg := range classifyArguments(c.fn.Signature.Parameters, c.fn.Composites) {
+		param := arg.param
+		if arg.problem != "" {
+			c.errorf(c.fn.Line, "%s", arg.problem)
+			continue
+		}
+		switch arg.kind {
+		case argRecord:
 			c.paramClass[param.Name.Value] = ClassX
-			ints = append(ints, intParam{param: param, class: ArgClass{Words: regs, Bytes: int64(regs) * 8, Align: 8}, comp: &compositeParam{regs: regs, size: comp.Size, indirect: indirect}})
-			continue
-		}
-		if elem, writable, isSpan := c.spanShapeOf(param.Type); isSpan {
+			ints = append(ints, intParam{param: param, class: arg.class, comp: &compositeParam{regs: arg.class.Words, size: arg.comp.Size, indirect: arg.indirect}})
+		case argSpan:
 			c.paramClass[param.Name.Value] = ClassX
-			ints = append(ints, intParam{param: param, class: ArgClass{Words: 2, Bytes: 16, Align: 8}, span: &spanParam{elem: elem, writable: writable}})
-			continue
-		}
-		class, ok := contractClass(param.Type)
-		if !ok {
-			c.errorf(c.fn.Line, "parameter %s: type %s cannot cross the asm boundary in v1 (fixed-width integers, Bool, simd vectors)", param.Name.Value, typeText(param.Type))
-			continue
-		}
-		c.paramClass[param.Name.Value] = class
-		c.paramView[param.Name.Value] = floatView(param.Type)
-		if class == ClassV {
+			ints = append(ints, intParam{param: param, class: arg.class, span: &spanParam{elem: arg.elem, writable: arg.writable}})
+		case argVector:
+			c.paramClass[param.Name.Value] = ClassV
+			c.paramView[param.Name.Value] = floatView(param.Type)
 			if nextVector > 7 {
 				c.errorf(c.fn.Line, "more than eight vector parameters exceed the register contract")
 				continue
 			}
 			c.paramRegister[param.Name.Value] = nextVector
 			nextVector++
-			continue
+		default:
+			class, _ := contractClass(param.Type)
+			c.paramClass[param.Name.Value] = class
+			c.paramView[param.Name.Value] = floatView(param.Type)
+			ints = append(ints, intParam{param: param, class: arg.class, scalarSz: arg.scalarSz})
 		}
-		size := int64(8)
-		if bits, _, known := contractBits(param.Type); known && bits <= 32 {
-			size = 4 // a narrow scalar's stack slot under the packing convention: the C int it widens to
-			if typeText(param.Type) != "Bool" {
-				size = int64(bits+7) / 8
-			}
-		}
-		ints = append(ints, intParam{param: param, class: ArgClass{Words: 1, Bytes: size, Align: size}, scalarSz: size})
 	}
 	classes := make([]ArgClass, len(ints))
 	for i, ip := range ints {
