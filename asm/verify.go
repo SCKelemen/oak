@@ -3941,9 +3941,9 @@ func (lo *oakLowering) declareLocal(s *ast.VariableDeclaration) (string, bool) {
 		return "", true
 	}
 	if s.Value == nil {
-		if typ.kind != oakArray {
-			return fmt.Sprintf("the %s local %s without an initializer", typ.name, s.Name.Value), false
-		}
+		// Value-less storage is zero (docs/spec/90-backend.md §6): an
+		// array's elements, a record's fields, a sum's tag and payloads,
+		// as both backends fill them.
 		lo.locals[s.Name.Value] = &oakLocal{agg: zeroValue(typ)}
 		return "", true
 	}
