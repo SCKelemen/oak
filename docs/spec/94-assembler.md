@@ -2283,6 +2283,26 @@ The lowering written in Oak mirrors the rule (`FOP_UDIV`, `FOP_SDIV`, the
 trap, `int_sdiv` for the fold), and `spec/oak/intrinsics.oak` states
 `rem_is_sub_div`, `signed_rem_is_sub_div`, and `div_same_operands`.
 
+**Thirty-second increment — an assert as a trap arm (2026-09-15;
+`asm/verify.go` lowerAssert, `Oak.TrapArms`).** A body with an `assert`
+was trusted ("the Oak body contains an assert"), and so was every caller
+whose summary reached one (`check_all`, `corner_sum`, the `main`s of the
+corpora). The lowering emits `cbz <cond>, trap` (`beqz` on RV64) for an
+assert, and the executor already drops a branch to a trap block — the
+checker's element guards are the same shape — so the asm side's term is
+the fall-through path's, on which the assert held. The Oak side now
+lowers the assert the same way: the condition for its shape, then
+nothing (an assert has no value and, where it holds, no effect); under
+the theorem decider it stays the trap obligation it was. The two sides
+are thus compared on the paths where the assert held
+(`Oak.TrapArms.guarded_congr`: two computations under one guard agree
+exactly when their values do where the guard holds), which is what a
+verdict on a trapping body can mean; a unit body that only asserts has
+nothing to compare and stays at "no integer result" (`check_all`). The
+nested corpus's `corner_sum` and the callers reaching it are proven on
+both lanes (`asm/assert_test.go`: a body with two asserts proven, the
+wrong result after them a mismatch).
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to

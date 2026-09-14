@@ -3160,8 +3160,13 @@ func notTerm(t *term) *term { return binaryTerm("xor", truncate(t, 1), constTerm
 
 // lowerAssert records `assert(cond)` as a trap obligation under the
 // theorem decider (docs/spec/85-discipline.md section 5: an assert is
-// never elided; here the decider proves it cannot fire), and refuses it
-// where traps are not tracked.
+// never elided; here the decider proves it cannot fire). On the asm
+// verifier's side an assert is a trap arm like the checker's guards: the
+// lowering emits `cbz/beqz <cond>, trap` and the executor drops the arm
+// (isTrapBlock), so the paths compared are those on which the assert
+// held, and the Oak side's condition is lowered for its shape and then
+// left out, the statement's value being none (docs/spec/94-assembler.md
+// §8, thirty-second increment; Oak.TrapArms.guarded_congr).
 func (lo *oakLowering) lowerAssert(expr ast.Expression) (reason string, isAssert bool, ok bool) {
 	call, isCall := expr.(*ast.InvocationExpression)
 	if !isCall || len(call.Arguments) != 1 {
@@ -3170,14 +3175,13 @@ func (lo *oakLowering) lowerAssert(expr ast.Expression) (reason string, isAssert
 	if fn, isIdent := call.Function.(*ast.Identifier); !isIdent || fn.Value != "assert" {
 		return "", false, false
 	}
-	if !lo.trapsTracked {
-		return "an assert", true, false
-	}
 	cond, reason, ok := lo.lowerCondition(call.Arguments[0])
 	if !ok {
 		return reason, true, false
 	}
-	lo.addTrap(binaryTerm("xor", truncate(cond, 1), constTerm(1, 1)))
+	if lo.trapsTracked {
+		lo.addTrap(binaryTerm("xor", truncate(cond, 1), constTerm(1, 1)))
+	}
 	return "", true, true
 }
 
