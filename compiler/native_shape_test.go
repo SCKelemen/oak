@@ -39,6 +39,13 @@ tiled: (a: []f32): f32 {
   (acc[0] + acc[1]) + (acc[2] + acc[3])
 }
 
+word_at: (chunk: []u8, at: u32): u64 {
+  len(chunk) >= at + u32(8) ? {
+    u64(chunk[at]) | (u64(chunk[at + u32(1)]) << u64(8)) | (u64(chunk[at + u32(2)]) << u64(16)) | (u64(chunk[at + u32(3)]) << u64(24)) |
+      (u64(chunk[at + u32(4)]) << u64(32)) | (u64(chunk[at + u32(5)]) << u64(40)) | (u64(chunk[at + u32(6)]) << u64(48)) | (u64(chunk[at + u32(7)]) << u64(56))
+  } | { u64(0) }
+}
+
 main: (): i32 {
   xs: [8]f32 = [8]f32{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0 }
   d: f32 = dot(view(&xs), view(&xs))
@@ -117,5 +124,31 @@ func TestNativeShapesRegistersInLoops(t *testing.T) {
 	}
 	if fmuls != 4 {
 		t.Errorf("tiled's loop must hold four multiplications, got %d", fmuls)
+	}
+	// The little-endian word assembly is one wide load (nativegen/word_fusion.go).
+	word, ok := units["word_at"]
+	if !ok {
+		t.Fatal("word_at was not lowered natively")
+	}
+	loads, wide := 0, 0
+	for _, item := range word.Items {
+		ins, isIns := item.(asm.Instruction)
+		if !isIns {
+			continue
+		}
+		switch ins.Mnemonic {
+		case "ldrb":
+			loads++
+		case "ldr":
+			if dst, isReg := ins.Operands[0].(asm.Register); isReg && dst.Class == asm.ClassX {
+				wide++
+			}
+		}
+	}
+	if loads != 0 || wide != 1 {
+		t.Errorf("word_at must load its word once (%d byte loads, %d wide loads)", loads, wide)
+	}
+	if !strings.Contains(model.NativeVerdicts["word_at"].Message, "proven") {
+		t.Errorf("word_at's fused load must stay proven: %s", model.NativeVerdicts["word_at"].Message)
 	}
 }

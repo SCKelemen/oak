@@ -2592,6 +2592,35 @@ and array corpora are proven on both lanes (`asm/agg_views_test.go`;
 `compiler/e2e_native_array_test.go`); `Oak.Subslice.view_index_in_owner`
 states that the translated index of a view stays inside its owner.
 
+**Forty-second increment — the native optimization program's first
+steps (2026-09-15; `benchmarks/kernels/RESULTS.md`, `nativegen/scalar_arrays.go`,
+`nativegen/word_fusion.go`).** With the kernel harness's `oak-native` row
+as the measure (the native backend 2.3–3.3× behind clang over the C
+backend on the plain loops at the start), the lowering gained, each landed
+under the verifier's verdict: a float local's register home read in place
+and written by the operation (the accumulator's two copies through a
+scratch register per iteration gone); an array local whose every use is an
+element at a literal index — never borrowed, passed, assigned whole, or
+indexed by a computed value — lowered as its elements in registers
+(`acc: [8]f32` as eight accumulators in `d8`–`d15`, the array's liveness
+theirs); a squared operand evaluated once; and the little-endian word
+assembly `u64(v[i]) | u64(v[i+1]) << 8 | … | u64(v[i+7]) << 56` over a byte
+span lowered as one wide load under the slack guard `i + 8 <= len` — the
+checker admits a wide scalar access under a slack guard as it admits a
+vector one, and the verifier reads a load wider than the span's element as
+the or of the elements shifted to their positions
+(`Oak.Assembler.wide_load_assembles`, `wide_load_assembles32`), so the
+fused load is proven equal to the eight reads and a big-endian body is
+refuted. Two checker facts came with them (§7): a length equality and the
+sum shape of a slack guard. `dot` went from 13 to 8 instructions per
+element and from 3.2× to 1.0× of the C backend, `tiled` from about twelve
+per element to four (0.67×), `crc32c`'s 56-byte step from about 500 to 178
+instructions, `sha256` to 0.92×; `sum` stays 2.75× (a multi-accumulator
+reduction needs a coupling image that is a sum of registers), `crc32c`
+1.86× (two calls per chunk where clang inlines), `search` and `page_probe`
+2.3× (bounds facts through arithmetic). The order of the rest is in
+`RESULTS.md`.
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to

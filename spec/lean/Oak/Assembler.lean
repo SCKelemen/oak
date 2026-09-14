@@ -1,3 +1,4 @@
+import Std.Tactic.BVDecide
 /-!
 # The typed assembler: seam laws
 
@@ -140,6 +141,25 @@ theorem span_access (elem minLen len off size : Nat)
   unfold SpanAccessOk at hacc
   calc off + size ≤ elem * minLen := hacc
     _ ≤ elem * len := Nat.mul_le_mul_left elem hguard
+
+/-- **A wide load assembles the elements** (the executor's model of a load
+    wider than the span's element, docs/spec/94-assembler.md §8): eight
+    consecutive bytes read as one 64-bit little-endian word are the or of
+    each byte zero-extended and shifted to its position — the term Oak's
+    `u64(v[i]) | u64(v[i+1]) << 8 | … | u64(v[i+7]) << 56` spells — so the
+    native backend's one `ldr x` is the same value as the eight byte reads. -/
+theorem wide_load_assembles (b0 b1 b2 b3 b4 b5 b6 b7 : BitVec 8) :
+    (b7 ++ b6 ++ b5 ++ b4 ++ b3 ++ b2 ++ b1 ++ b0 : BitVec 64) =
+      b0.zeroExtend 64 ||| (b1.zeroExtend 64 <<< 8) ||| (b2.zeroExtend 64 <<< 16) |||
+      (b3.zeroExtend 64 <<< 24) ||| (b4.zeroExtend 64 <<< 32) ||| (b5.zeroExtend 64 <<< 40) |||
+      (b6.zeroExtend 64 <<< 48) ||| (b7.zeroExtend 64 <<< 56) := by
+  bv_decide
+
+/-- The 32-bit form: four bytes. -/
+theorem wide_load_assembles32 (b0 b1 b2 b3 : BitVec 8) :
+    (b3 ++ b2 ++ b1 ++ b0 : BitVec 32) =
+      b0.zeroExtend 32 ||| (b1.zeroExtend 32 <<< 8) ||| (b2.zeroExtend 32 <<< 16) ||| (b3.zeroExtend 32 <<< 24) := by
+  bv_decide
 
 /-- **The sum shape of a slack guard** (the checker's `sumFacts`,
     docs/spec/94-assembler.md §7): `len(v) >= i + K` as the generator spells

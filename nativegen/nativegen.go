@@ -1126,9 +1126,12 @@ type generator struct {
 	// scalarArrays: the array locals lowered as their elements
 	// (nativegen/scalar_arrays.go).
 	scalarArrays map[string]*scalarArray
-	tc           *typechecker.TypeChecker
-	functions    map[string]*ast.FunctionStatement
-	result       *scalar
+	// fusedWords counts the word assemblies lowered as one load
+	// (nativegen/word_fusion.go).
+	fusedWords int
+	tc         *typechecker.TypeChecker
+	functions  map[string]*ast.FunctionStatement
+	result     *scalar
 
 	items  []asm.Item
 	slots  map[string]int64       // variable → frame offset (relative to the frame base after the prologue)
@@ -4856,6 +4859,11 @@ var floatIntrinsicOps = map[string]string{
 }
 
 func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
+	if !g.rvLane {
+		if w, isWord := g.recognizeWordAssembly(e, typ); isWord {
+			return g.fusedWordLoad(w, typ) // nativegen/word_fusion.go
+		}
+	}
 	switch e.Operator {
 	case "&&", "||":
 		out, err := g.alloc(scalars["Bool"])

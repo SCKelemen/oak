@@ -194,8 +194,14 @@ fifty-six table lookups per chunk; upstream since leaves a dispatching
 function to the C backend, which keeps the selection, so the hardware
 `crc32cx` unit is reached again. Measured on the same object (loaded
 machine, best samples): `crc32c` 1.8× the C backend, `dot` 1.0×, `tiled`
-0.67×, `sum` 2.75×. The word assembly itself (eight loads, shifts, and ors
-per word where clang loads the word once) is the next item.
+0.67×, `sum` 2.75×. The fifth: the word assembly is one wide load
+(`nativegen/word_fusion.go`; the verifier models a load wider than the
+element as the assembly, `Oak.Assembler.wide_load_assembles`) — the chunk
+step is 178 instructions, `sha256` 0.92× of the C backend, `blake3` 1.00×;
+`crc32c` itself did not move (1.86×), so its remaining cost is the two
+calls per 56-byte chunk (the chunk step, then the dispatching `step7` in
+the C shell) with their spills, where clang inlines the chain — item 3
+below.
 
 What remains, in the program's order:
 
