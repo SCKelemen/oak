@@ -132,14 +132,218 @@ func elementValue(span string, k uint64, width int) uint64 {
 // elementParam decodes an element parameter name v[k].
 func elementParam(name string) (span string, k uint64, ok bool) {
 	open := strings.IndexByte(name, '[')
-	if open <= 0 || !strings.HasSuffix(name, "]") {
+	if open <= 0 {
 		return "", 0, false
 	}
-	index, err := strconv.ParseUint(name[open+1:len(name)-1], 10, 64)
+	close := strings.IndexByte(name[open:], ']')
+	if close < 0 {
+		return "", 0, false
+	}
+	close += open
+	index, err := strconv.ParseUint(name[open+1:close], 10, 64)
 	if err != nil {
 		return "", 0, false
 	}
-	return name[:open], index, true
+	// A record span's leaf: `v[k].f` is element k of the memory `v.f`
+	// (docs/spec/94-assembler.md §9); the suffix names the leaf.
+	return name[:open] + name[close+1:], index, true
+}
+
+// recordSpanArg is a span parameter of records: the element size and the
+// record's scalar leaves, offsets relative to the element, names starting
+// with the dot (`.f`, `.a.b`, `.buf[2]`).
+type recordSpanArg struct {
+	size   int64
+	leaves []compositeLeaf
+}
+
+// recordSpanOf recognizes `[*]T` / `[]T` with T a composite of the
+// function: isRecordSpan says the shape matched, ok that the leaves model
+// it.
+func recordSpanOf(comps map[string]Composite, typ ast.Expression) (arg recordSpanArg, reason string, isRecordSpan, ok bool) {
+	indexExpr, isIndex := typ.(*ast.IndexExpression)
+	if !isIndex || indexExpr.Dot {
+		return recordSpanArg{}, "", false, false
+	}
+	marker, isMarker := indexExpr.Index.(*ast.Identifier)
+	if !isMarker || (marker.Value != "*" && marker.Value != "") {
+		return recordSpanArg{}, "", false, false
+	}
+	name := typeText(indexExpr.Left)
+	comp, isComposite := comps[name]
+	if !isComposite || comp.Size <= 0 {
+		return recordSpanArg{}, "", false, false
+	}
+	leaves, reason, ok := compositeLeaves(comps, name, "", 0, nil)
+	if !ok {
+		return recordSpanArg{}, reason, true, false
+	}
+	return recordSpanArg{size: comp.Size, leaves: leaves}, "", true, true
+}
+
+// leafAt is the leaf at an offset with a width in bytes (a Bool leaf is
+// one bit in its 4-byte cell).
+func (arg recordSpanArg) leafAt(offset, size int64) (compositeLeaf, bool) {
+	for _, leaf := range arg.leaves {
+		if leaf.offset != offset {
+			continue
+		}
+		if int64(leaf.width) == size*8 || (leaf.width == 1 && size == 4) {
+			return leaf, true
+		}
+	}
+	return compositeLeaf{}, false
+}
+
+// arrayFieldAt is the array field starting at an offset — its leaf-name
+// prefix (`.entries`), its length, and its element stride — read off the
+// enumerated leaves `.entries[0]`, `.entries[1]`, ….
+func (arg recordSpanArg) arrayFieldAt(offset int64) (prefix string, length, stride int64, ok bool) {
+	for _, leaf := range arg.leaves {
+		if leaf.offset != offset || !strings.HasSuffix(leaf.name, "[0]") {
+			continue
+		}
+		prefix = strings.TrimSuffix(leaf.name, "[0]")
+		stride = int64(leaf.width+7) / 8
+		if leaf.width == 1 {
+			stride = 4
+		}
+		for _, other := range arg.leaves {
+			if strings.HasPrefix(other.name, prefix+"[") {
+				length++
+			}
+		}
+		return prefix, length, stride, true
+	}
+	return "", 0, 0, false
+}
+
+// recordFieldTerm is a record span's leaf at an element index: the
+// parameter `v[k].f` for a constant index (its witness value the memory
+// `v.f` at k), else a select over that memory.
+func recordFieldTerm(span string, index *term, leafName string, width int, concrete bool) *term {
+	memory := span + leafName
+	if index.kind == termConst {
+		k := index.value & mask(32)
+		if concrete {
+			return constTerm(elementValue(memory, k, width), width)
+		}
+		return paramTerm(spanElemName(span, int64(k))+leafName, width)
+	}
+	return &term{kind: termSelect, width: width, name: memory, left: truncate(index, 32)}
+}
+
+// recordElementOf recognizes a record span element's address: `&v` plus
+// the index scaled by the element size — a shift for a power-of-two
+// stride, the product of the umaddl otherwise — with any constant offsets
+// gathered; also `&v + K` with a constant element. Reports the span, the
+// element index, and the byte offset inside the element.
+func (x *pathExecutor) recordElementOf(address *term, extra int64) (span string, index *term, offset int64, ok bool) {
+	t := address
+	offset = extra
+	for t != nil && t.kind == termBinary && t.op == "add" && (t.left.kind == termConst || t.right.kind == termConst) {
+		if t.right.kind == termConst {
+			offset += int64(t.right.value)
+			t = t.left
+		} else {
+			offset += int64(t.left.value)
+			t = t.right
+		}
+	}
+	if param, baseOffset, isBase := spanBaseOf(t); isBase {
+		arg, isRecord := x.recordSpans[param]
+		if !isRecord {
+			return "", nil, 0, false
+		}
+		total := baseOffset + offset
+		if total < 0 {
+			return "", nil, 0, false
+		}
+		return param, constTerm(uint64(total/arg.size), 32), total % arg.size, true
+	}
+	if t == nil || t.kind != termBinary || t.op != "add" {
+		return "", nil, 0, false
+	}
+	for _, sides := range [][2]*term{{t.left, t.right}, {t.right, t.left}} {
+		param, baseOffset, isBase := spanBaseOf(sides[0])
+		if !isBase {
+			continue
+		}
+		arg, isRecord := x.recordSpans[param]
+		if !isRecord {
+			return "", nil, 0, false
+		}
+		scaled := sides[1]
+		var idx *term
+		switch {
+		case scaled.kind == termBinary && scaled.op == "shl" && scaled.right.kind == termConst && int64(1)<<scaled.right.value == arg.size:
+			idx = scaled.left
+		case scaled.kind == termBinary && scaled.op == "mul" && scaled.right.kind == termConst && int64(scaled.right.value) == arg.size:
+			idx = scaled.left
+		case scaled.kind == termBinary && scaled.op == "mul" && scaled.left.kind == termConst && int64(scaled.left.value) == arg.size:
+			idx = scaled.right
+		case arg.size == 1:
+			idx = scaled
+		default:
+			return "", nil, 0, false
+		}
+		total := baseOffset + offset
+		if total < 0 || total >= arg.size {
+			return "", nil, 0, false
+		}
+		return param, truncate(idx, 32), total, true
+	}
+	return "", nil, 0, false
+}
+
+// recordSpanLoad executes a load through a record span element's address:
+// a scalar leaf at the offset, or — with a register index — an element of
+// an array field, the select over `v.f` at the linear index i*N + j.
+// Reports whether the load was through a record span.
+func (x *pathExecutor) recordSpanLoad(instr Instruction, dest Register, mem Memory, base *term, state *symbolicState) (handled bool, reason string, ok bool) {
+	if len(x.recordSpans) == 0 || mem.Mode != MemOffset {
+		return false, "", false
+	}
+	span, index, offset, isElement := x.recordElementOf(base, mem.Offset)
+	if !isElement {
+		return false, "", false
+	}
+	arg := x.recordSpans[span]
+	size := memorySize(instr.Mnemonic, dest.Class)
+	var value *term
+	var leafWidth int
+	var signed bool
+	if mem.Index != nil {
+		prefix, length, stride, isArray := arg.arrayFieldAt(offset)
+		if !isArray {
+			return true, fmt.Sprintf("an indexed load through %s at offset %d, which starts no array field", span, offset), false
+		}
+		if int64(1)<<uint(mem.Shift) != stride || size != stride {
+			return true, fmt.Sprintf("an indexed load through %s.%s whose scale is not the element size", span, prefix), false
+		}
+		j, okJ := state.read(*mem.Index)
+		if !okJ {
+			return true, "unbound register read", false
+		}
+		leaf, _ := arg.leafAt(offset, stride)
+		leafWidth, signed = leaf.width, leaf.signed
+		linear := binaryTerm("add", binaryTerm("mul", truncate(index, 32), constTerm(uint64(length), 32)), truncate(j, 32))
+		value = recordFieldTerm(span, linear, prefix, leafWidth, x.concrete)
+	} else {
+		leaf, isLeaf := arg.leafAt(offset, size)
+		if !isLeaf {
+			return true, fmt.Sprintf("a %d-byte load at offset %d of a %s element, which is no field", size, offset, span), false
+		}
+		leafWidth, signed = leaf.width, leaf.signed
+		value = recordFieldTerm(span, index, leaf.name, leafWidth, x.concrete)
+	}
+	_ = signed
+	if isSignExtendingLoad(instr.Mnemonic) && leafWidth == int(size)*8 {
+		state.write(dest, extendTerm(value, leafWidth, widthOf(dest.Class), true))
+	} else {
+		state.write(dest, zeroExtend(value, widthOf(dest.Class)))
+	}
+	return true, "", true
 }
 
 // term is a fixed-width bitvector expression. Width is 32 or 64.
@@ -1070,6 +1274,7 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 	spans := map[string]int64{} // span/view parameter -> element size in bytes
 	declared := map[string]int{}
 	composites := map[string]compositeArg{}
+	recordSpans := map[string]recordSpanArg{}
 	boolParams := map[string]bool{}
 	vectors := map[string]typechecker.SimdShape{} // vector parameter -> shape
 	// input is a parameter's entry term: symbolic, or the witness value in
@@ -1106,6 +1311,18 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 		}
 		if elem, _, isSpan := spanShape(param.Type); isSpan {
 			spans[param.Name.Value] = elem
+			declared[spanLenName(param.Name.Value)] = 32
+			declared[spanBaseName(param.Name.Value)] = 64
+			continue
+		}
+		if arg, reason, isRecordSpan, ok := recordSpanOf(fn.Composites, param.Type); isRecordSpan {
+			// A span of records: its element size is the record's, and a
+			// field read through an element address is a leaf's select term.
+			if !ok {
+				return nil, nil, reason, false
+			}
+			spans[param.Name.Value] = arg.size
+			recordSpans[param.Name.Value] = arg
 			declared[spanLenName(param.Name.Value)] = 32
 			declared[spanBaseName(param.Name.Value)] = 64
 			continue
@@ -1285,7 +1502,7 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 			return nil, nil, "alignment directives", false
 		}
 	}
-	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass, spans: spans, declared: declared, concrete: concrete != nil, env: concrete, records: composites, arch: fn.Arch, globals: fn.Globals, fn: fn, notes: state.notes}
+	exec := &pathExecutor{items: fn.Items, labels: labels, resultClass: resultClass, spans: spans, declared: declared, concrete: concrete != nil, env: concrete, records: composites, arch: fn.Arch, globals: fn.Globals, fn: fn, notes: state.notes, recordSpans: recordSpans}
 	exec.resultReg = Register{Class: resultClass, Num: chunk}
 	exec.resultHalf = half
 	exec.floatResult = floatResult
@@ -1344,6 +1561,11 @@ type pathExecutor struct {
 	spans       map[string]int64  // span parameter -> element size in bytes
 	declared    map[string]int    // parameter -> declared width
 	globals     map[string]Global // the globals the body addresses (fn.Globals)
+	// recordSpans: span parameters whose elements are records, by name —
+	// the element size and the record's scalar leaves (relative to the
+	// element), so a field read through an element address is the leaf's
+	// select term (docs/spec/94-assembler.md §9).
+	recordSpans map[string]recordSpanArg
 	// hasResult: the function delivers a scalar result; false for a unit
 	// function that writes package state, whose paths return unitResult.
 	// cells: the written cells after run, merged across every path.
@@ -2413,6 +2635,9 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		}
 		return "", true
 	}
+	if handled, reason, ok := x.recordSpanLoad(instr, dest, mem, base, state); handled {
+		return reason, ok
+	}
 	param, baseOffset, isSpan := spanBaseOf(base)
 	if !isSpan {
 		// A span element's address in the base (an atomic cell reached by
@@ -2799,6 +3024,19 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 				return "unbound register read", false
 			}
 			state.write(dest, floatTerm(instr.Mnemonic, width, n, m))
+		case "umaddl", "smaddl":
+			// xD = xA + ext32(wN) * ext32(wM): the element idiom's stride
+			// multiply (docs/spec/94-assembler.md §9).
+			dest := instr.Operands[0].(Register)
+			n, okN := operandTerm(state, instr.Operands[1], 32)
+			m, okM := operandTerm(state, instr.Operands[2], 32)
+			a, okA := operandTerm(state, instr.Operands[3], 64)
+			if !okN || !okM || !okA {
+				return "unbound register read", false
+			}
+			signed := instr.Mnemonic == "smaddl"
+			product := binaryTerm("mul", extendTerm(n, 32, 64, signed), extendTerm(m, 32, 64, signed))
+			state.write(dest, binaryTerm("add", a, product))
 		case "madd", "msub":
 			dest := instr.Operands[0].(Register)
 			width := widthOf(dest.Class)
@@ -3081,6 +3319,10 @@ type oakLowering struct {
 	// the proof, the value the cell holds on entry; a write leaves the body
 	// trusted (docs/spec/94-assembler.md §9).
 	globals map[string]Global
+	// recordSpans are the span parameters of records (recordSpanArg): a
+	// field of an element lowers to the same select term the executor
+	// forms from the element address.
+	recordSpans map[string]recordSpanArg
 	// cells: the globals as statement-body locals — declared by
 	// prepareLowering at their entry values, so assignments, reads, and the
 	// conditional merging of locals model the cells; their final values
@@ -5351,7 +5593,9 @@ func (lo *oakLowering) spanLength(expr ast.Expression) (string, bool) {
 		return "", false
 	}
 	if _, isSpan := lo.spans[arg.Value]; !isSpan {
-		return "", false
+		if _, isRecord := lo.recordSpans[arg.Value]; !isRecord {
+			return "", false
+		}
 	}
 	return spanLenName(lo.spanRoot(arg.Value)), true
 }
@@ -5423,6 +5667,12 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		}
 		return constTerm(0, width), "", true
 	case *ast.IndexExpression:
+		if t, _, handled, reason, ok := lo.recordSpanField(e); handled {
+			if !ok {
+				return nil, reason, false
+			}
+			return adaptWidth(t, width), "", true
+		}
 		if lo.aggregateChain(e) {
 			// A scalar leaf of an aggregate: a field, an element, or a field
 			// of a call's or a literal's value.
@@ -6855,12 +7105,146 @@ func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 	lowering.records, lowering.adts = fn.Records, fn.ADTs
 	lowering.constants = fn.Constants
 	lowering.globals = fn.Globals
+	lowering.bindRecordSpans(fn, sig)
 	lowering.functions = fn.Callees // the Oak body's calls inline (inlineCall)
 	lowering.declareTables(fn.Tables)
 	lowering.concrete = concrete
 	lowering.bindAggregateParams(sig)
 	lowering.declareCells()
 	return lowering
+}
+
+// bindRecordSpans registers the span-of-record parameters (the executor
+// binds the same shape) and takes them out of the scalar parameters
+// newLowering guessed them into.
+func (lo *oakLowering) bindRecordSpans(fn *Function, sig *ast.FunctionStatement) {
+	for _, param := range sig.Parameters {
+		if param == nil || param.Name == nil {
+			continue
+		}
+		arg, _, isRecordSpan, ok := recordSpanOf(fn.Composites, param.Type)
+		if !isRecordSpan || !ok {
+			continue
+		}
+		if lo.recordSpans == nil {
+			lo.recordSpans = map[string]recordSpanArg{}
+		}
+		lo.recordSpans[param.Name.Value] = arg
+		delete(lo.params, param.Name.Value)
+		delete(lo.signed, param.Name.Value)
+	}
+}
+
+// recordSpanField lowers `v[i].f…` (a scalar leaf) or `v[i].f…[j]` (an
+// element of an array field) over a span parameter of records to the
+// leaf's select term; handled reports the shape matched.
+func (lo *oakLowering) recordSpanField(e *ast.IndexExpression) (t *term, width int, handled bool, reason string, ok bool) {
+	if len(lo.recordSpans) == 0 {
+		return nil, 0, false, "", false
+	}
+	// Peel a trailing array-field index, then the field path, down to the
+	// element `v[i]`.
+	var arrayIndex ast.Expression
+	cur := e
+	if !cur.Dot {
+		left, isIndex := cur.Left.(*ast.IndexExpression)
+		if !isIndex || !left.Dot {
+			return nil, 0, false, "", false
+		}
+		arrayIndex = cur.Index
+		cur = left
+	}
+	path := ""
+	for cur.Dot {
+		field, isName := cur.Index.(*ast.Identifier)
+		if !isName {
+			return nil, 0, false, "", false
+		}
+		path = "." + field.Value + path
+		next, isIndex := cur.Left.(*ast.IndexExpression)
+		if !isIndex {
+			return nil, 0, false, "", false
+		}
+		cur = next
+	}
+	root, isIdent := cur.Left.(*ast.Identifier)
+	if !isIdent {
+		return nil, 0, false, "", false
+	}
+	arg, isRecord := lo.recordSpans[root.Value]
+	if !isRecord {
+		return nil, 0, false, "", false
+	}
+	if _, isLocal := lo.locals[root.Value]; isLocal {
+		return nil, 0, false, "", false
+	}
+	idx, reason, okIdx := lo.lower(cur.Index, 32)
+	if !okIdx {
+		return nil, 0, true, reason, false
+	}
+	span := lo.spanRoot(root.Value)
+	if lo.concrete != nil && idx.kind == termConst {
+		if length, known := lo.concrete[spanLenName(span)]; known && idx.value >= length {
+			return nil, 0, true, fmt.Sprintf("an index past len(%s) on this input", root.Value), false
+		}
+	}
+	if arrayIndex != nil {
+		j, reason, okJ := lo.lower(arrayIndex, 32)
+		if !okJ {
+			return nil, 0, true, reason, false
+		}
+		var length int64
+		var elemLeaf compositeLeaf
+		found := false
+		for _, leaf := range arg.leaves {
+			if strings.HasPrefix(leaf.name, path+"[") {
+				if !found {
+					elemLeaf, found = leaf, true
+				}
+				length++
+			}
+		}
+		if !found {
+			return nil, 0, true, fmt.Sprintf("%s is not an array field of %s's element", path, root.Value), false
+		}
+		if j.kind == termConst {
+			if int64(j.value) >= length {
+				return nil, 0, true, fmt.Sprintf("an index past the %d elements of %s", length, path), false
+			}
+			leaf, isLeaf := arg.leafAt(elemLeaf.offset+int64(j.value)*int64((elemLeaf.width+7)/8), int64((elemLeaf.width+7)/8))
+			if !isLeaf {
+				return nil, 0, true, fmt.Sprintf("%s[%d] is not a leaf of %s's element", path, j.value, root.Value), false
+			}
+			return recordFieldTerm(span, idx, leaf.name, leaf.width, lo.concrete != nil), leaf.width, true, "", true
+		}
+		linear := binaryTerm("add", binaryTerm("mul", idx, constTerm(uint64(length), 32)), j)
+		return recordFieldTerm(span, linear, path, elemLeaf.width, lo.concrete != nil), elemLeaf.width, true, "", true
+	}
+	for _, leaf := range arg.leaves {
+		if leaf.name == path {
+			return recordFieldTerm(span, idx, leaf.name, leaf.width, lo.concrete != nil), leaf.width, true, "", true
+		}
+	}
+	return nil, 0, true, fmt.Sprintf("%s is not a scalar leaf of %s's element", path, root.Value), false
+}
+
+// recordLeafWidth is the width of a record span's leaf named by a
+// parameter `v[k].f` (elementParam folds it to the memory `v.f`).
+func (lo *oakLowering) recordLeafWidth(memory string) (int, bool) {
+	dot := strings.IndexByte(memory, '.')
+	if dot <= 0 {
+		return 0, false
+	}
+	arg, isRecord := lo.recordSpans[lo.spanRoot(memory[:dot])]
+	if !isRecord {
+		return 0, false
+	}
+	for _, leaf := range arg.leaves {
+		if leaf.name == memory[dot:] {
+			return leaf.width, true
+		}
+	}
+	return 0, false
 }
 
 // declareCells gives every global the body addresses a local at its entry
@@ -7467,6 +7851,11 @@ func (lo *oakLowering) declaredWidth(name string) int {
 	if bracket := strings.IndexByte(name, '['); bracket > 0 {
 		if contract, isSpan := lo.spans[name[:bracket]]; isSpan {
 			return contract.elemWidth
+		}
+		if memory, _, isElement := elementParam(name); isElement {
+			if w, isLeaf := lo.recordLeafWidth(memory); isLeaf {
+				return w
+			}
 		}
 	}
 	return 64
