@@ -339,6 +339,19 @@ func (b *bdd) restrict(e, variable int, value bool) int {
 
 // satisfyingPath assigns variables along one path from n to the true
 // terminal (every non-false node of a reduced BDD has such a path).
+// holdsUnder evaluates an edge under a variable assignment (a variable
+// the assignment lacks is false).
+func (b *bdd) holdsUnder(e int, assignment map[int]bool) bool {
+	for e>>1 != 0 {
+		if assignment[b.variableOf(e)] {
+			e = b.high(e)
+		} else {
+			e = b.low(e)
+		}
+	}
+	return e == bddTrue
+}
+
 func (b *bdd) satisfyingPath(e int) map[int]bool {
 	assignment := map[int]bool{}
 	for e>>1 != 0 {

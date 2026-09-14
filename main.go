@@ -128,6 +128,7 @@ func buildPackage(args []string) int {
 	fs.StringVar(&asmMode, "asm", "", "asm units: native (Oak assembler companion object) or c (inline __asm__; default native where the target has a lane; docs/spec/94-assembler.md section 9)")
 	fs.BoolVar(&lines, "lines", false, "emit #line directives so C diagnostics point at Oak source")
 	fs.BoolVar(&nativeBodies, "native", false, "lower Oak bodies through the native backend where its subset reaches (docs/spec/94-assembler.md section 9)")
+	fs.BoolVar(&verifyFresh, "verify-fresh", false, "verify every natively lowered body anew, bypassing the verdict cache under the temporary directory (the full check; OAK_VERIFY_CACHE=0 does the same; docs/spec/94-assembler.md section 9)")
 	fs.StringVar(&linkMode, "link", "c", "link: c (the target's C compiler links the emitted C and the companion object), oak (the Oak assembler alone realizes the natively lowered bodies: a static ELF executable on Linux, a relocatable object on a freestanding target; implies -native), or oak-image (a standalone freestanding image with Oak's start stub, for an emulator or a bare board)")
 	fs.BoolVar(&verified, "verified", false, "hold the build to the verified native profile: every body lowered natively with a proven verdict, none witnessed, trusted, or left to C; the refusal lists what holds the program back (implies -link oak; docs/spec/94-assembler.md section 9)")
 	rest, code, stop := parseFlags(fs, args)
@@ -183,6 +184,10 @@ func buildPackage(args []string) int {
 }
 
 // buildOne builds a single package or file.
+// verifyFresh is `oak build -verify-fresh`: every natively lowered body is
+// verified anew, the verdict cache bypassed (compiler/verdict_cache.go).
+var verifyFresh bool
+
 func buildOne(dir, output, header, leanOut, leanFloats, metalOut, profile, asmMode, linkMode string, tgt target.Target, cpu string, lines, emitC, nativeBodies, metalCheck, asmGiven, verified bool) int {
 	comp, err := compilationFor(dir)
 	if err != nil {
@@ -195,6 +200,9 @@ func buildOne(dir, output, header, leanOut, leanFloats, metalOut, profile, asmMo
 	}
 	if nativeBodies {
 		comp = comp.WithNativeBodies()
+	}
+	if verifyFresh {
+		comp = comp.WithVerifyFresh()
 	}
 	if verified {
 		comp = comp.WithVerifiedProfile()
