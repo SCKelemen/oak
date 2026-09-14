@@ -493,7 +493,13 @@ func (t *term) evalUncached(env map[string]uint64, memo termMemo) uint64 {
 	case termConst:
 		return t.value & m
 	case termSelect:
-		return elementValue(t.name, memo.eval(t.left, env)&mask(32), t.width) & m
+		// The element the diagrams' counterexample chose, when it named
+		// one (counterexampleOf); else the fixed memory.
+		k := memo.eval(t.left, env) & mask(32)
+		if value, chosen := env[spanElemName(t.name, int64(k))]; chosen {
+			return value & m
+		}
+		return elementValue(t.name, k, t.width) & m
 	case termQuant:
 		// The body under every value of the bound parameter, in a memo of
 		// its own per value (its subterms depend on the binding); the

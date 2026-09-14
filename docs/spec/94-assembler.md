@@ -3821,7 +3821,23 @@ in the next — because the backend returned dead variables' registers to
 its pools in map order (`popScope`, `releaseDead`). The pools are filled
 in name order now; two builds produce identical assembly, verdicts, and
 objects, and the warm rebuild of the prover takes fifteen seconds with
-every verdict from the cache.
+every verdict from the cache. **A counterexample reads the memory the
+diagrams chose.** Integer division became an uninterpreted operation the
+same afternoon, and nineteen bodies that divide by a constant the
+machine shifts by (`at / 4`, `lit / 2`) were reported as mismatches —
+"asm yields 51, Oak yields 51": the diagrams differ under values of the
+operation that the operation never takes, and the terms agree on the
+input. The bit-level difference is now confirmed by evaluating both
+terms on the counterexample's input before it is a mismatch (the
+thirty-first increment's rule, landed alongside). For that evaluation to
+be the arbiter it must read the memory the diagrams chose, so a
+counterexample reports each element read at the index its bits took
+with the value its variables took (`v[k]`), and the evaluator reads such
+an element from the input before the fixed memory — a compare-exchange
+storing the wrong value under a symbolic index stays a mismatch
+(`TestVerifyAtomicsCompareExchange`) rather than evaluating equal on the
+fixed memory. On the prover the nineteen are evidence, and the native
+build, which a mismatch fails, builds again: proven 376.
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
