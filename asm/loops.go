@@ -1802,15 +1802,37 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	depthOf := map[string]int{}
 	// conflictOf is the set of depths whose choices an obligation depends
 	// on: the slots owning the asm symbols its asm side mentions.
+	// An asm loop symbol the obligation mentions that no slot has paired
+	// (a register that mirrors a variable, chosen for it while the loop's
+	// own register went unpaired) could be taken by a slot at any depth:
+	// such a failure depends on every depth, so the search backtracks to
+	// each of them rather than passing the failure up.
 	conflictOf := func(terms ...*term) map[int]bool {
 		mentioned := map[string]bool{}
 		for _, t := range terms {
 			collectParams(t, mentioned)
 		}
 		set := map[int]bool{}
+		unpairedEvents := map[int]bool{}
 		for name := range mentioned {
 			if depth, paired := depthOf[name]; paired {
 				set[depth] = true
+				continue
+			}
+			var k int
+			var reg string
+			if n, _ := fmt.Sscanf(name, "loop%d.%s", &k, &reg); n == 2 && k >= 1 && k <= len(asmLoops) {
+				if _, isVar := asmLoops[k-1].width[reg]; isVar {
+					unpairedEvents[k-1] = true
+				}
+			}
+		}
+		if len(unpairedEvents) > 0 {
+			// The slots of the same event could have taken the symbol.
+			for _, depth := range depthOf {
+				if depth < len(slots) && unpairedEvents[slots[depth].event] {
+					set[depth] = true
+				}
 			}
 		}
 		return set
@@ -1900,7 +1922,6 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		}
 	}
 	visited := 0
-	steps := 0 // the candidates tried, against loopSearchBudget
 	// The search is conflict-directed: a failure below returns the depths
 	// its refutation depended on, and a level whose choice is not among
 	// them passes the failure up without trying its other candidates (the
@@ -1922,10 +1943,10 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 						fmt.Fprintf(os.Stderr, "verify %s: %s (decided=%v)\n  oak: %s\n  asm: %s\n  premise: %s\n", fn.Name, failure, decided, substitute(oakEv.cond, sigma), substitute(asmEv.cond, sigma), bodyPremise(k, sigma, false))
 					}
 					if !decided {
-						// The obligation, not the pairing, is beyond the budget:
-						// no other pairing shrinks it, so the search ends here.
+						// Beyond the node budget under this pairing; another
+						// pairing may decide (the proof's own budget,
+						// nodeBudget, bounds the search).
 						failure += " (the bit-level decision exceeded its node budget)"
-						return false, nil
 					}
 					return false, conflictOf(asmEv.cond)
 				}
@@ -1950,7 +1971,6 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 						}
 						if !decided {
 							failure += " (the bit-level decision exceeded its node budget)"
-							return false, nil
 						}
 						conflict := conflictOf(asmEv.next[c.reg])
 						conflict[depthOf[asmEv.freshName(c.reg)]] = true
@@ -1969,11 +1989,6 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			total[depthOf[name]] = true
 		}
 		for _, c := range candidates {
-			steps++
-			if steps > loopSearchBudget {
-				failure = fmt.Sprintf("the coupling search tried %d candidates, its budget", loopSearchBudget)
-				return false, total
-			}
 			asmName := asmLoops[s.event].freshName(c.reg)
 			if trace {
 				fmt.Fprintf(os.Stderr, "verify %s: search depth %d: %s\n", fn.Name, i, c.show())
@@ -2229,10 +2244,6 @@ func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term
 	memo[t] = &out
 	return &out
 }
-
-// loopSearchBudget bounds the coupling candidates one loop proof's search
-// tries.
-const loopSearchBudget = 1500
 
 // loopTermNodeBudget bounds the distinct nodes of the loop events' terms
 // (headers, conditions, next values, stores) the coupling search works
