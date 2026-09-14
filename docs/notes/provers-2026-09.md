@@ -198,7 +198,12 @@ subterms of an unrolled loop, memoized the same day by a parallel
 increment). Subsumption with self-subsuming resolution landed last, at
 load; over the learned clauses at every reduction it was measured and left
 out — one wide row 31% fewer conflicts, the other 43% more — which closes
-the list of techniques the reading named ahead of any GPU question. First run with CaDiCaL 3.0.1:
+the list of techniques the reading named ahead of any GPU question. The
+checkers were then profiled on the largest certificate the corpus makes
+(439,601 additions, 132 MB): the checker written in Oak takes 0.42 s, the
+Go checker took 3.4 s and takes 1.0 s after its parsing and assignment
+stopped allocating — the checking itself is about half a second on either
+side, the rest is reading a hundred megabytes of text. First run with CaDiCaL 3.0.1:
 `spec/oak/machines.oak`'s `bounded__step` — 14,987 BDD nodes under the
 blocked order — closes with a 204-step certificate checked in Go and in
 Oak; `spec/oak/shapes.oak`'s nine rows all agree):
