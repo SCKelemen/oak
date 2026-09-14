@@ -2516,6 +2516,35 @@ scaled) reads the same merged elements, a store is the bounded frame
 store, and `signed_bytes` is proven on that lane too
 (`compiler/e2e_native_rv64_test.go`).
 
+**Thirty-ninth increment — derived spans in the verifier (2026-09-16;
+`asm/derived_spans.go`, `Oak.Subslice`).** A derived span —
+`subslice(v, start, n)` of a span parameter, as a local or as an argument
+— was opaque to the verifier on both lanes: the call summary took a span
+argument only as a whole span parameter, the Oak side refused a span-typed
+local ("a local of type (u8.)"), and the executor resolved an element
+address only as one add over a span's base, so a load or store through a
+derived base was "not a span element" and `fields`, `clear_middle`, and
+`edge` of the subslice corpus were trusted. A derived span is now the root
+span at an offset: the Oak lowering's span alias carries an index offset
+term and a length term, so a callee's or a local's `w[i]` reads and writes
+translate to the root at `start + i`, `len(w)` is the count, and a re-slice
+composes the offsets (the C helper's check is a trap obligation, as the
+decider records it); a span-typed local declared from another span or a
+subslice is such an alias; the summary binds a span argument whose base is
+a span's base plus scaled 32-bit index terms and whole-element constants
+(spanAddressOf flattens the nested adds, a constant start having folded
+into the base) and whose length is any 32-bit term; and both lanes' element
+resolution flattens the same shapes — with or without a further scaled
+index in the addressing mode, the rv64 lane's constant base offset counted
+as whole elements. `Oak.Subslice`: every translated index below the count
+names an element of the root, the element's bytes lie inside the root's, a
+re-slice composes, and the count is below the width. `fields`,
+`clear_middle`, and `edge` are proven on both lanes
+(`compiler/e2e_native_subslice_test.go`,
+`compiler/e2e_native_rv64_subslice_test.go`; `asm/derived_spans_test.go`);
+`main`, which hands an owned array into `fields`, stays trusted — a span
+local over an aggregate-bound parameter is the next shape.
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to

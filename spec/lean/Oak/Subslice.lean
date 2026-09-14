@@ -46,3 +46,22 @@ theorem reslice_in_bounds (len start n start' n' i : Nat)
   omega
 
 end Oak.Subslice
+
+namespace Oak.Subslice
+
+/-- **Alias translation composes**: a re-slice's offset into the root is
+    the outer start plus the inner, so the translated index of a re-sliced
+    alias is `(start + start') + i`, the root's element for the inner
+    alias's `start' + i` (the verifier's spanIndex applied twice). -/
+theorem alias_offset_assoc (start start' i : Nat) :
+    (start + start') + i = start + (start' + i) := by
+  omega
+
+/-- **The translated length**: an alias's `len` is its count, not the
+    root's length, and every count the guards admit fits the root:
+    `start + n ≤ len`. -/
+theorem alias_len_fits (len start n : Nat) (hstart : start ≤ len) (hn : n ≤ len - start) :
+    start + n ≤ len := by
+  omega
+
+end Oak.Subslice

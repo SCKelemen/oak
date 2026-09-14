@@ -25,6 +25,14 @@ func TestE2ENativeRV64Subslice(t *testing.T) {
 	if !strings.Contains(joined, "asm unit sum: proven") {
 		t.Errorf("sum was not proven by the verifier; diagnostics:\n%s", joined)
 	}
+	// The derived spans are proven on this lane too (docs/spec/94-assembler.md
+	// §8, derived spans): a constant start folds into the base as a
+	// whole-element offset, a symbolic one is a scaled index term.
+	for _, fn := range []string{"fields", "clear_middle", "edge"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven equal to its Oak body") {
+			t.Errorf("rv64: %s must be proven through its derived spans; diagnostics:\n%s", fn, joined)
+		}
+	}
 	skipInShort(t)
 	bare := target.Target{OS: target.OSFreestanding, Arch: target.ArchRiscv64}
 	bareNative, _ := nativeRV64Lower(t, bare, nativeSubsliceProgram)

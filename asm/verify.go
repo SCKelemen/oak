@@ -2392,10 +2392,31 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		// A span element's address in the base (an atomic cell reached by
 		// storage path): the element is the index term's.
 		name, offset, index, shift, isElement := elementBaseOf(base)
-		if !isElement || mem.Index != nil || mem.Mode != MemOffset {
+		if !isElement || mem.Mode != MemOffset {
 			return "a load through a register that is not a span base", false
 		}
 		elem, known := x.spans[name]
+		if derived, at, isDerived := spanAddressOf(base, elem); isDerived && known && elem > 0 {
+			// A derived span's base (`subslice`), possibly re-sliced, with
+			// or without a scaled index in the addressing mode: the root's
+			// element at the indices' sum (asm/derived_spans.go).
+			name, index, offset, shift = derived, at, 0, log2(elem)
+			if mem.Index != nil {
+				if int64(1)<<uint(mem.Shift) != elem {
+					return "an indexed load whose scale is not the element size", false
+				}
+				further, ok := state.read(*mem.Index)
+				if !ok {
+					return "unbound register read", false
+				}
+				index = addIndex(index, truncate(further, 32))
+			}
+			if index == nil {
+				index = constTerm(0, 32)
+			}
+		} else if mem.Index != nil {
+			return "a load through a register that is not a span base", false
+		}
 		if !known || elem == 0 || int64(1)<<uint(shift) != elem || offset%elem != 0 || mem.Offset%elem != 0 {
 			return "a load through an element address not aligned to an element", false
 		}
@@ -2407,7 +2428,12 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		if extra := offset/elem + mem.Offset/elem; extra != 0 {
 			at = binaryTerm("add", at, constTerm(uint64(extra), 32))
 		}
-		state.write(dest, zeroExtend(x.elementIn(state, name, at, int(elem)*8), widthOf(dest.Class)))
+		value := x.elementIn(state, name, at, int(elem)*8)
+		if isSignExtendingLoad(instr.Mnemonic) {
+			state.write(dest, extendTerm(value, int(elem)*8, widthOf(dest.Class), true))
+		} else {
+			state.write(dest, zeroExtend(value, widthOf(dest.Class)))
+		}
 		return "", true
 	}
 	if record, isRecord := x.records[param]; isRecord {
@@ -3042,6 +3068,11 @@ type oakLowering struct {
 	// span it was passed (asm/effects.go): the callee's reads and writes
 	// are spelled in the caller's names, so they share its memory.
 	spanAlias map[string]string
+	// spanOffset and spanLen: for a span parameter standing for a derived
+	// span (`subslice(v, start, n)` of the caller's span), the 32-bit index
+	// offset into the root and the length term (asm/derived_spans.go).
+	spanOffset map[string]*term
+	spanLen    map[string]*term
 	// bounds memoizes maxValue over the lowering's terms (asm/range.go).
 	bounds map[*term]uint64
 	// loopBase offsets the indices of the loop events this lowering
@@ -4199,6 +4230,9 @@ func (lo *oakLowering) declareLocal(s *ast.VariableDeclaration) (string, bool) {
 	if s.Type == nil {
 		return "a local without a type", false
 	}
+	if isBorrowType(s.Type) && s.Value != nil {
+		return lo.declareSpanLocal(s)
+	}
 	typ, ok := lo.oakTypeOf(s.Type)
 	if !ok {
 		return fmt.Sprintf("a local of type %s", typeText(s.Type)), false
@@ -4232,6 +4266,72 @@ func (lo *oakLowering) declareLocal(s *ast.VariableDeclaration) (string, bool) {
 	}
 	lo.locals[s.Name.Value] = &oakLocal{agg: value}
 	return "", true
+}
+
+// declareSpanLocal declares a span or view local over one of the
+// function's spans (docs/spec/94-assembler.md §8, derived spans): `w: []T
+// = v` is an alias of v (with v's own offset and length when v is
+// derived), `w: []T = subslice(v, start, n)` an alias of v's root at the
+// offset start (plus v's) of length n, the C helper's check a trap
+// obligation. The local's reads, writes, and `len` translate to the root
+// (asm/derived_spans.go); a view over an owned array stays outside.
+func (lo *oakLowering) declareSpanLocal(s *ast.VariableDeclaration) (string, bool) {
+	name := s.Name.Value
+	elem, _, ok := spanShape(s.Type)
+	if !ok {
+		return fmt.Sprintf("a local of type %s", typeText(s.Type)), false
+	}
+	bind := func(src string, offset, length *term) (string, bool) {
+		contract, isSpan := lo.spans[src]
+		if _, isLocal := lo.locals[src]; isLocal || !isSpan {
+			return fmt.Sprintf("the span local %s over %s, which is not a span", name, src), false
+		}
+		if int(elem)*8 != contract.elemWidth {
+			return fmt.Sprintf("the span local %s over %s with %d-bit elements", name, src, contract.elemWidth), false
+		}
+		delete(lo.locals, name)
+		lo.spans[name] = contract
+		if lo.spanAlias == nil {
+			lo.spanAlias = map[string]string{}
+		}
+		if lo.spanOffset == nil {
+			lo.spanOffset, lo.spanLen = map[string]*term{}, map[string]*term{}
+		}
+		lo.spanAlias[name] = lo.spanRoot(src)
+		delete(lo.spanOffset, name)
+		delete(lo.spanLen, name)
+		if offset != nil {
+			lo.spanOffset[name] = offset
+		}
+		if length != nil {
+			lo.spanLen[name] = length
+		} else if srcLen, derived := lo.spanLen[src]; derived {
+			lo.spanLen[name] = srcLen
+		}
+		return "", true
+	}
+	if src, isIdent := s.Value.(*ast.Identifier); isIdent {
+		return bind(src.Value, lo.spanOffset[src.Value], nil)
+	}
+	sub, isSub := subsliceOf(s.Value)
+	if !isSub {
+		return fmt.Sprintf("the span local %s from %s", name, s.Value.String()), false
+	}
+	if _, isSpan := lo.spans[sub.span]; !isSpan {
+		return fmt.Sprintf("the span local %s over %s, which is not a span", name, sub.span), false
+	}
+	start, reason, ok := lo.lower(sub.start, 32)
+	if !ok {
+		return reason, false
+	}
+	count, reason, ok := lo.lower(sub.count, 32)
+	if !ok {
+		return reason, false
+	}
+	length := lo.spanLenTerm(sub.span, 32)
+	lo.addTrap(cmpTerm("hi", start, length))
+	lo.addTrap(cmpTerm("hi", count, binaryTerm("sub", length, start)))
+	return bind(sub.span, lo.spanIndex(sub.span, start), count)
 }
 
 // assignPlace stores into a place: a scalar leaf at its width, an
@@ -4647,7 +4747,7 @@ func (lo *oakLowering) spanRoot(name string) string {
 // expression: a constant index is the element parameter, a symbolic one a
 // select (the loop-carried counter of a data-dependent loop).
 func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanContract, string, bool) {
-	if name, contract, isConst := lo.spanElement(index); isConst {
+	if name, contract, isConst := lo.spanElement(index); isConst && lo.spanOffset[index.Left.(*ast.Identifier).Value] == nil {
 		span := lo.spanRoot(index.Left.(*ast.Identifier).Value)
 		_, k, _ := elementParam(name)
 		entry := paramTerm(name, contract.elemWidth)
@@ -4668,6 +4768,7 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 	if !ok {
 		return nil, spanContract{}, reason, false
 	}
+	idx = lo.spanIndex(ident.Value, idx) // a derived span: start + i in the root
 	span := lo.spanRoot(ident.Value)
 	if lo.concrete != nil && idx.kind == termConst {
 		if length, known := lo.concrete[spanLenName(span)]; known && idx.value >= length {
@@ -4834,6 +4935,8 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	calleeFloats := map[string]int{}
 	calleeSpans := map[string]spanContract{}
 	calleeAlias := map[string]string{}
+	calleeOffset := map[string]*term{}
+	calleeLen := map[string]*term{}
 	// A span or view parameter borrows a caller's array: the callee works
 	// on a copy and, since the conditional lowering re-points locals at
 	// copies, the final contents are written back leaf by leaf on return.
@@ -4853,13 +4956,50 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 			if contract, isSpanParam := lo.spans[owner]; !isLocal && isSpanParam {
 				// A span parameter passed on: the callee's parameter is an
 				// alias of the caller's span, sharing its memory
-				// (asm/effects.go).
+				// (asm/effects.go) — with the caller's own offset and
+				// length when the caller's parameter is a derived span.
 				elem, _, _ := spanShape(param.Type)
 				if int(elem)*8 != contract.elemWidth {
 					return nil, fmt.Sprintf("a call to %s: the span argument %s has %d-bit elements where %d-bit ones are expected", name, owner, contract.elemWidth, elem*8), false
 				}
 				calleeSpans[param.Name.Value] = contract
 				calleeAlias[param.Name.Value] = lo.spanRoot(owner)
+				if offset, derived := lo.spanOffset[owner]; derived {
+					calleeOffset[param.Name.Value] = offset
+				}
+				if length, derived := lo.spanLen[owner]; derived {
+					calleeLen[param.Name.Value] = length
+				}
+				continue
+			}
+			if sub, isSub := subsliceOf(arg); isSub {
+				// `subslice(w, start, n)` of a span parameter: an alias of
+				// the root at the offset start (plus w's own), of length n
+				// (asm/derived_spans.go); the C helper's check is a trap
+				// obligation.
+				contract, isSpanParam := lo.spans[sub.span]
+				if _, isLocal := lo.locals[sub.span]; isLocal || !isSpanParam {
+					return nil, fmt.Sprintf("a call to %s: subslice of %s, which is not a span parameter", name, sub.span), false
+				}
+				elem, _, _ := spanShape(param.Type)
+				if int(elem)*8 != contract.elemWidth {
+					return nil, fmt.Sprintf("a call to %s: the span argument %s has %d-bit elements where %d-bit ones are expected", name, sub.span, contract.elemWidth, elem*8), false
+				}
+				start, reason, ok := lo.lower(sub.start, 32)
+				if !ok {
+					return nil, reason, false
+				}
+				count, reason, ok := lo.lower(sub.count, 32)
+				if !ok {
+					return nil, reason, false
+				}
+				length := lo.spanLenTerm(sub.span, 32)
+				lo.addTrap(cmpTerm("hi", start, length))
+				lo.addTrap(cmpTerm("hi", count, binaryTerm("sub", length, start)))
+				calleeSpans[param.Name.Value] = contract
+				calleeAlias[param.Name.Value] = lo.spanRoot(sub.span)
+				calleeOffset[param.Name.Value] = lo.spanIndex(sub.span, start)
+				calleeLen[param.Name.Value] = count
 				continue
 			}
 			if !isLocal || local.agg == nil || local.agg.typ.kind != oakArray {
@@ -4903,11 +5043,13 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	saved := lo.locals
 	savedFloats := lo.floats
 	savedSpans, savedAlias := lo.spans, lo.spanAlias
+	savedOffset, savedLen := lo.spanOffset, lo.spanLen
 	lo.locals = bound
 	lo.floats = calleeFloats
 	// The callee sees only its own span parameters, each spelled in the
 	// caller's names through the alias.
 	lo.spans, lo.spanAlias = calleeSpans, calleeAlias
+	lo.spanOffset, lo.spanLen = calleeOffset, calleeLen
 	if lo.inlining == nil {
 		lo.inlining = map[string]bool{}
 	}
@@ -4915,6 +5057,7 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	return func() {
 		lo.floats = savedFloats
 		lo.spans, lo.spanAlias = savedSpans, savedAlias
+		lo.spanOffset, lo.spanLen = savedOffset, savedLen
 		for _, b := range borrows {
 			if final, has := lo.locals[b.param]; has && final.agg != nil {
 				leaves(final.agg, b.owner, func(from, to *oakValue) { to.scalar = from.scalar })
@@ -5214,6 +5357,9 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			return constTerm(uint64(length), width), "", true
 		}
 		if name, isLen := lo.spanLength(e); isLen {
+			if arg := e.Arguments[0].(*ast.Identifier).Value; lo.spanLen[arg] != nil {
+				return lo.spanLenTerm(arg, width), "", true // a derived span's count
+			}
 			if value, isConcrete := lo.concrete[name]; isConcrete {
 				return constTerm(value, width), "", true
 			}
@@ -6265,6 +6411,31 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 				owner, offset, whole = spanBaseOf(base)
 				_, isRecord := x.records[owner]
 				whole = whole && !isRecord && offset == 0 && x.spans[owner] == arg.elem && (x.isSpanLength(length, owner) || x.isTableLength(length, owner))
+			}
+			if !whole && hasBase && hasLen {
+				// A derived span of one of the caller's spans (`subslice(v,
+				// start, n)`): the base is the span's plus scaled index
+				// terms, the length any term — the callee's parameter is an
+				// alias at that offset with that length
+				// (asm/derived_spans.go).
+				if root, offset, isDerived := spanAddressOf(base, arg.elem); isDerived && x.spans[root] == arg.elem {
+					if _, isRecord := x.records[root]; !isRecord {
+						elemType := typeText(param.Type.(*ast.IndexExpression).Left)
+						lo.spans[param.Name.Value] = spanContract{elemWidth: int(arg.elem) * 8, signed: strings.HasPrefix(elemType, "i")}
+						if lo.spanAlias == nil {
+							lo.spanAlias = map[string]string{}
+						}
+						lo.spanAlias[param.Name.Value] = root
+						if lo.spanOffset == nil {
+							lo.spanOffset, lo.spanLen = map[string]*term{}, map[string]*term{}
+						}
+						if offset != nil {
+							lo.spanOffset[param.Name.Value] = offset
+						}
+						lo.spanLen[param.Name.Value] = truncate(length, 32)
+						break
+					}
+				}
 			}
 			if !whole {
 				// A span or view over the caller's owned frame array

@@ -298,6 +298,25 @@ func (x *pathExecutor) spanStore(instr Instruction, state *symbolicState) (handl
 		}
 		param, offset, index, shift = name, off, idx, sh
 		elem := x.spans[param]
+		if derived, at, isDerived := spanAddressOf(base, elem); isDerived && elem > 0 {
+			// A derived span's base (asm/derived_spans.go): the root's
+			// index is the sum, a scaled index in the addressing mode added.
+			param, index, offset, shift = derived, at, 0, log2(elem)
+			if mem.Index != nil {
+				if int64(1)<<uint(mem.Shift) != elem {
+					return true, "an indexed store whose scale is not the element size", false
+				}
+				further, ok := state.read(*mem.Index)
+				if !ok {
+					return true, "unbound register read", false
+				}
+				index = addIndex(index, truncate(further, 32))
+				mem.Index = nil
+			}
+			if index == nil {
+				index = constTerm(0, 32)
+			}
+		}
 		if elem == 0 || int64(1)<<uint(shift) != elem || offset%elem != 0 {
 			return true, "a store through an element address not aligned to an element", false
 		}
@@ -418,6 +437,7 @@ func (lo *oakLowering) assignSpanElement(name string, contract spanContract, s *
 		return reason, false
 	}
 	root := lo.spanRoot(name)
+	index = lo.spanIndex(name, index) // a derived span: start + i in the root
 	if lo.concrete != nil && index.kind == termConst {
 		if length, known := lo.concrete[spanLenName(root)]; known && index.value >= length {
 			return fmt.Sprintf("an index past len(%s) on this input", name), false

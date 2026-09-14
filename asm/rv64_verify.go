@@ -490,6 +490,15 @@ func (x *pathExecutor) rv64SpanAddress(mem Memory, state *symbolicState) (span s
 		}
 		return param, constTerm(uint64(offset/elem), 32), "", true
 	}
+	if address.kind == termBinary && address.op == "add" && mem.Offset == 0 {
+		// A derived span's base (`subslice`, asm/derived_spans.go), possibly
+		// re-sliced and then indexed: the root's index is the sum.
+		for _, elem := range []int64{1, 2, 4, 8, 16} {
+			if root, index, isDerived := spanAddressOf(address, elem); isDerived && x.spans[root] == elem && index != nil && !isSimpleElement(address) {
+				return root, index, "", true
+			}
+		}
+	}
 	if address.kind == termBinary && address.op == "add" {
 		// &v + (idx << s), either order.
 		base, scaled := address.left, address.right
@@ -497,18 +506,29 @@ func (x *pathExecutor) rv64SpanAddress(mem Memory, state *symbolicState) (span s
 			base, scaled = address.right, address.left
 		}
 		param, offset, isBase := spanBaseOf(base)
-		if !isBase || offset != 0 || mem.Offset != 0 {
+		if !isBase || mem.Offset != 0 {
 			return "", nil, "a load through an address that is not a span element", false
 		}
+		elem := x.spans[param]
+		if elem == 0 || offset%elem != 0 || offset < 0 {
+			return "", nil, "an element address whose base is not aligned to an element", false
+		}
+		// A constant base offset — a subslice at a constant start folded
+		// into the base (asm/derived_spans.go) — is whole elements ahead.
+		var index *term
 		switch {
-		case x.spans[param] == 1:
+		case elem == 1:
 			// Byte elements: the index is the offset, unscaled.
-			return param, truncate(scaled, 32), "", true
-		case scaled.kind == termBinary && scaled.op == "shl" && scaled.right.kind == termConst && int64(1)<<scaled.right.value == x.spans[param]:
-			return param, truncate(scaled.left, 32), "", true
+			index = truncate(scaled, 32)
+		case scaled.kind == termBinary && scaled.op == "shl" && scaled.right.kind == termConst && int64(1)<<scaled.right.value == elem:
+			index = truncate(scaled.left, 32)
 		default:
 			return "", nil, "an element address whose scale is not the element size", false
 		}
+		if offset != 0 {
+			index = binaryTerm("add", index, constTerm(uint64(offset/elem), 32))
+		}
+		return param, index, "", true
 	}
 	return "", nil, "a load through a register that is not a span base", false
 }
@@ -576,4 +596,16 @@ func (x *pathExecutor) frameAccessRV64(reg Register, mem Memory, width int, name
 	}
 	state.write(reg, value)
 	return "", true
+}
+
+// isSimpleElement reports `&v + (idx << s)` / `&v + idx`: the one-add
+// shape rv64SpanAddress resolves itself (its scale check names the
+// element size); anything deeper is a derived span's address.
+func isSimpleElement(address *term) bool {
+	if address.kind != termBinary || address.op != "add" {
+		return false
+	}
+	_, _, leftBase := spanBaseOf(address.left)
+	_, _, rightBase := spanBaseOf(address.right)
+	return leftBase || rightBase
 }
