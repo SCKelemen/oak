@@ -440,16 +440,28 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 						size /= 2
 					}
 				}
-				if size != 4 && size != 8 || addr%size != 0 {
-					return nil, "a frame slot written in a loop body at a width other than 4 or 8 bytes, or unaligned", false
-				}
-				for other, otherSize := range writtenSlots {
-					if other < addr+size && addr < other+otherSize && (other != addr || otherSize != size) {
-						return nil, "frame slots written at overlapping addresses in a loop body", false
+				// A w register's spill is a 4-byte slot; an x register's,
+				// a pair's, or a vector's a run of 8-byte slots.
+				var pieces []int64
+				switch {
+				case size == 4 && addr%4 == 0:
+					pieces = []int64{4}
+				case size%8 == 0 && addr%8 == 0:
+					for k := int64(0); k < size; k += 8 {
+						pieces = append(pieces, 8)
 					}
+				default:
+					return nil, "a frame slot written in a loop body at a width other than 4 or a multiple of 8 bytes, or unaligned", false
 				}
-				writtenSlots[addr] = size
-				addr += size
+				for _, piece := range pieces {
+					for other, otherSize := range writtenSlots {
+						if other < addr+piece && addr < other+otherSize && (other != addr || otherSize != piece) {
+							return nil, "frame slots written at overlapping addresses in a loop body", false
+						}
+					}
+					writtenSlots[addr] = piece
+					addr += piece
+				}
 			}
 			continue
 		}
