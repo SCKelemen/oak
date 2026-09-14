@@ -1131,6 +1131,25 @@ func chunkTerm(leaves []compositeLeaf, k int64, input func(name string, width in
 	return chunk
 }
 
+// definedMask is the bit mask of the cells the leaves inside chunk k
+// occupy — what a callee's result defines: a Bool's whole 4-byte cell (the
+// C enum, written as a word holding 0 or 1), every other leaf its width.
+// The rest of the chunk is padding the ABI leaves unspecified.
+func definedMask(leaves []compositeLeaf, k int64) uint64 {
+	var m uint64
+	for _, leaf := range leaves {
+		if leaf.offset < 8*k || leaf.offset >= 8*k+8 {
+			continue
+		}
+		cell := leaf.width
+		if cell == 1 {
+			cell = 32
+		}
+		m |= mask(cell) << uint((leaf.offset-8*k)*8)
+	}
+	return m
+}
+
 // leafMask is the bit mask of the leaves inside chunk k (the bytes a
 // comparison of chunks may look at).
 func leafMask(leaves []compositeLeaf, k int64) uint64 {
@@ -5200,7 +5219,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 			if !ok {
 				return fmt.Sprintf("a call to %s returning %s with a leaf the layout lacks", name, typeText(callee.ReturnType)), false
 			}
-			if m := leafMask(aggLeaves, int64(k)); m != ^uint64(0) {
+			if m := definedMask(aggLeaves, int64(k)); m != ^uint64(0) {
 				// The padding bytes: unspecified by the ABI, zero in a
 				// witness run (the callee's own code cleared them).
 				var pad *term

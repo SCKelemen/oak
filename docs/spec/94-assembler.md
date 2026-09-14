@@ -3004,6 +3004,18 @@ of the program's functions, so a summarized call returning a record or
 sum type finds its layout. Pinned: `compiler/e2e_native_tables_test.go`
 (the table-reading bodies proven on both lanes).
 
+**Span arguments in call summaries; a Bool's cell (2026-09-14).** The
+call summary's span aliases (the twenty-ninth increment above) landed
+the same day as a second implementation of the same idea, which is
+dropped in its favor; what remains of it is a finding: a summarized
+`Bool` field's cell is the C enum's whole word, defined 0 or 1 by the
+callee, so the summary's padding unknowns must leave it alone
+(`definedMask`, over `leafMask`'s single bit). The first tally with
+aliased span arguments reported one mismatch (`path_get_esc`) that was
+exactly that, and none after. Pinned:
+`compiler/e2e_native_verdict_aggregates_test.go` (`head_sum` over
+`first_two`).
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built

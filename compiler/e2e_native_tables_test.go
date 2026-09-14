@@ -77,8 +77,9 @@ func TestE2ENativeConstantTables(t *testing.T) {
 		}
 		// A table read is the element term of the span the table's Oak name
 		// denotes, on both sides: the bodies reading tables are proven
-		// (table_sum passes a view of a table to a callee: a span argument
-		// in a call summary, a later increment).
+		// (table_sum passes a view of a table to a callee: the summary's
+		// span alias takes a caller's span parameter passed whole, not a
+		// table, so it stays trusted for now).
 		for _, fn := range []string{"digit_at", "word", "third"} {
 			for _, m := range native {
 				if strings.Contains(m, "asm unit "+fn+":") && !strings.Contains(m, "proven equal") {
