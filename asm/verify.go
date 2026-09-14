@@ -915,6 +915,13 @@ func (s *symbolicState) read(reg Register) (*term, bool) {
 		return nil, false
 	}
 	if reg.Class == ClassW {
+		// A w view reads back the 32-bit term a w write zero-extended (not
+		// a mask over the extension): the machine then spells an element
+		// index exactly as the Oak side does, and the two sides' reads of
+		// one element share a single abstraction in the decision.
+		if value.kind == termBinary && value.op == "and" && value.right.kind == termConst && value.right.value == mask(32) && value.left.width == 32 {
+			return value.left, true
+		}
 		return truncate(value, 32), true
 	}
 	return value, true
@@ -1744,8 +1751,15 @@ func (s *symbolicState) loadSlot(addr, size int64) (*term, bool) {
 				if take > addr+size-cursor {
 					take = addr + size - cursor
 				}
-				piece := truncate(binaryTerm("shr", slot.value, constTerm(uint64((cursor-start)*8), slot.value.width)), int(take)*8)
-				placed := zeroExtend(piece, int(size)*8)
+				// The piece is placed as packLanes places a lane — masked to
+				// its width at the full width — so a word assembled from byte
+				// slots is a recognizable pack of them (unpackLane).
+				shifted := slot.value
+				if cursor > start {
+					shifted = binaryTerm("shr", slot.value, constTerm(uint64((cursor-start)*8), slot.value.width))
+				}
+				piece := truncate(shifted, int(take)*8)
+				placed := widenLane(piece, int(take)*8, int(size)*8)
 				if cursor > addr {
 					placed = binaryTerm("shl", placed, constTerm(uint64((cursor-addr)*8), int(size)*8))
 				}
@@ -6800,6 +6814,9 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	if equalTerms(asmTerm, adaptWidth(oakTerm, width)) {
 		// The same term on both sides (a memory both sides built from the
 		// same stores, a call summary's result): no diagram needed.
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "verify %s: the same term on both sides (%d nodes)\n", fn.Name, termSize(asmTerm, map[*term]int{}))
+		}
 		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (the same term on both sides)%s", fn.Name, note)}
 	}
 
@@ -6836,6 +6853,14 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 		// quotient times a divisor, say, whose diagram no budget affords):
 		// equal by structure (asm/loops.go termEquivalent).
 		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (the same term on both sides, beyond the diagrams' budget)%s", fn.Name, note)}
+	}
+	// Past the budget under every order: a case split on the largest
+	// branch, each case decided with the branches it settles pruned
+	// (splitDecide). A proof there is a proof; a refutation or an
+	// undecided case keeps the evidence verdict, the witnesses having
+	// agreed.
+	if holds, decided := splitDecide(constTerm(1, 1), asmTerm, adaptWidth(oakTerm, width), lowering.declaredWidth, nil, 0); decided && holds {
+		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level (%d-bit result, under a case split on its branch conditions)%s", fn.Name, width, note)}
 	}
 	return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exceeded its node budget)", fn.Name)}
 }
@@ -6891,7 +6916,13 @@ func hasUninterpreted(t *term) bool {
 // first and stopped this one).
 func blastEqual(bl *blaster, fn *Function, names []string, asmTerm, oakTerm *term, width int, note string) (Verdict, bool) {
 	asmBits := bl.blast(asmTerm)
+	if os.Getenv("OAK_VERIFY_TRACE") != "" {
+		fmt.Fprintf(os.Stderr, "verify %s: (%s) asm: %d term nodes, %d selects, %d bdd nodes, exceeded=%v\n", fn.Name, bl.label, termSize(asmTerm, map[*term]int{}), len(bl.selects), len(bl.bdd.nodes), bl.bdd.exceeded)
+	}
 	oakBits := bl.blast(oakTerm)
+	if os.Getenv("OAK_VERIFY_TRACE") != "" {
+		fmt.Fprintf(os.Stderr, "verify %s: (%s) oak: %d term nodes, %d selects, %d bdd nodes, exceeded=%v\n", fn.Name, bl.label, termSize(oakTerm, map[*term]int{}), len(bl.selects), len(bl.bdd.nodes), bl.bdd.exceeded)
+	}
 	if asmBits == nil || oakBits == nil || bl.bdd.exceeded {
 		return Verdict{}, true
 	}

@@ -47,6 +47,14 @@ type blaster struct {
 	// owners maps a parameter variable back to its parameter bit, for
 	// counterexamples under either order.
 	owners map[int]variableOwner
+	// assume, when assumed is set, is a diagram the decision holds under
+	// (an implication's premise, a case split's condition): an ite whose
+	// condition the assumption implies or refutes blasts as that arm
+	// alone, so a branch on a condition over many inputs never multiplies
+	// its arms' diagrams.
+	assume  int
+	assumed bool
+	pruned  int // branches the assumption settled (trace)
 }
 
 type variableOwner struct {
@@ -434,9 +442,25 @@ func (bl *blaster) blastUncached(t *term) []int {
 		return out
 	case termIte:
 		cond := bl.blast(t.cond)
+		if cond == nil {
+			return nil
+		}
+		if bl.assumed && bl.cnf == nil {
+			if bl.bdd.apply(opAnd, bl.assume, bl.bdd.not(cond[0])) == bddFalse {
+				bl.pruned++
+				return bl.adapt(bl.blast(t.left), t.width) // the assumption implies the condition
+			}
+			if bl.bdd.apply(opAnd, bl.assume, cond[0]) == bddFalse {
+				bl.pruned++
+				return bl.adapt(bl.blast(t.right), t.width) // the assumption refutes it
+			}
+			if bl.bdd.exceeded {
+				return nil
+			}
+		}
 		left := bl.adapt(bl.blast(t.left), t.width)
 		right := bl.adapt(bl.blast(t.right), t.width)
-		if cond == nil || left == nil || right == nil {
+		if left == nil || right == nil {
 			return nil
 		}
 		for i := range out {
