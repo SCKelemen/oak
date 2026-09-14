@@ -1001,8 +1001,27 @@ func truncate(t *term, width int) *term {
 		if t.op == "and" && t.right.kind == termConst && t.right.value == mask(width) && t.left.width == width {
 			return t.left
 		}
+		// Bits placed above the width vanish under it: a call's result with
+		// its unspecified upper bits (`(r and mask) or (hi shl 32)`) read
+		// at its width is the result — the same term the Oak side builds,
+		// where the wrapper kept a select at a symbolic index from being
+		// one term on both sides.
+		if t.op == "or" {
+			if shiftedAbove(t.right, width) {
+				return truncate(t.left, width)
+			}
+			if shiftedAbove(t.left, width) {
+				return truncate(t.right, width)
+			}
+		}
 	}
 	return &term{kind: termBinary, width: width, op: "and", left: t, right: constTerm(mask(width), width)}
+}
+
+// shiftedAbove reports a term whose every set bit lies at or above the
+// width: a left shift by a constant of at least the width.
+func shiftedAbove(t *term, width int) bool {
+	return t.kind == termBinary && t.op == "shl" && t.right.kind == termConst && t.right.value >= uint64(width)
 }
 
 func zeroExtend(t *term, width int) *term {

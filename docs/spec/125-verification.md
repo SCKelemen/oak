@@ -707,7 +707,7 @@ In order of payoff, each reusing a surface that exists:
   whole program compiled through the verified native backend
   (`94-assembler.md` §9, sixteenth increment; `OAK_SOLVER_NATIVE=1`):
   879 of its 954 functions lowered to machine code the seam checker
-  admits and the Oak assembler encodes, 429 of them proven equal to
+  admits and the Oak assembler encodes, 455 of them proven equal to
   their Oak bodies — their results, the package cells they write, and,
   since the twenty-eighth increment, the span memories they store
   through, compared at a fresh index, a callee's stores reaching its

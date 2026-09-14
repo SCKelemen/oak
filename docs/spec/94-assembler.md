@@ -4108,6 +4108,19 @@ rows identical; the verifier's share of a cold build is about eight
 CPU-minutes, four of them in the seventy-five witness-free bodies that
 end in evidence, and a warm build takes it from the cache.
 
+**A call's upper bits vanish under the width (2026-09-14).** Eighteen
+bodies whose loops coupled still ended in evidence at the result: the
+`node_*` and `variant_*` accessors, whose result is one element read at
+an index the layout's loop determines. The two sides had the same select
+at the same index, but the asm side carried the summarized call's
+unspecified upper bits — `(r and mask) or (call#hi shl 32)` — under a
+32-bit truncation, so the terms were not one term and a select at a
+symbolic index of eight parameters went to the diagrams, where it
+exceeded the budget. A truncation now drops an `or` operand shifted
+entirely above its width, and the two sides are the same term. On the
+prover: proven 429 to 455, evidence 125 to 105, no disagreement, the
+rows identical.
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built
