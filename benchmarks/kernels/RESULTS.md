@@ -172,7 +172,13 @@ index under a proven length equality (`Oak.Assembler.index_under_equal_len`),
 which drops `dot`'s loop from 13 to 9 instructions per element; the second,
 reading a float local's register home in place and renaming a float
 operation's result into the home (as the integer path already did), drops
-it to 8: `ldr, ldr, fmul, fadd s8, s8, s16, add, cmp, b.hs, b`. The
+it to 8: `ldr, ldr, fmul, fadd s8, s8, s16, add, cmp, b.hs, b`. The third:
+an array local whose every use is an element at a literal index becomes
+its elements in registers (`acc: [8]f32` is eight accumulators in
+`s8`–`s15`), and a squared operand is loaded once — `tiled`'s loop goes from
+about twelve instructions per element (a frame load and store per
+accumulator, the element loaded twice) to four (`add, ldr, fmul, fadd`),
+under a six-instruction header. The
 ranking of the rest — accumulator arrays in registers, the copy through the
 scratch register, common subexpressions within a statement, inlining the
 call chain, then unrolling — is the native optimization program's order.

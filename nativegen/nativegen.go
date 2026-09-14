@@ -1121,11 +1121,14 @@ func unsupported(format string, args ...interface{}) Unsupported {
 type generator struct {
 	// rvLane marks the rv64 lane's embedding: the AArch64-only lowerings
 	// (the atomics) leave the function to the C backend there.
-	rvLane    bool
-	fn        *ast.FunctionStatement
-	tc        *typechecker.TypeChecker
-	functions map[string]*ast.FunctionStatement
-	result    *scalar
+	rvLane bool
+	fn     *ast.FunctionStatement
+	// scalarArrays: the array locals lowered as their elements
+	// (nativegen/scalar_arrays.go).
+	scalarArrays map[string]*scalarArray
+	tc           *typechecker.TypeChecker
+	functions    map[string]*ast.FunctionStatement
+	result       *scalar
 
 	items  []asm.Item
 	slots  map[string]int64       // variable → frame offset (relative to the frame base after the prologue)
@@ -1268,6 +1271,8 @@ type slotBinding struct {
 	rec    *recordLocal // an owned record local (offset/typ/reg unused)
 	sp     *span        // a local span or view, register-resident
 	freed  bool         // register or slot already returned after the last use
+	// sa: a scalar-replaced array (nativegen/scalar_arrays.go).
+	sa *scalarArray
 }
 
 const scratchLow, scratchHigh = 9, 15
@@ -3191,6 +3196,22 @@ func (g *generator) lowerArrayDeclaration(s *ast.VariableDeclaration, elem scala
 	if elem.isFloat {
 		g.usedFloat = true
 	}
+	if !elem.isVec && !elem.isBool && scalarReplaceable(g.fn, s.Name.Value, length) {
+		// Every use an element at a literal index: the elements are
+		// scalars in registers (nativegen/scalar_arrays.go).
+		var literal *ast.ArrayLiteral
+		if s.Value != nil {
+			lit, isLiteral := s.Value.(*ast.ArrayLiteral)
+			if !isLiteral {
+				return unsupported("an array local initialized from %s", s.Value.String())
+			}
+			if int64(len(lit.Elements)) != length {
+				return unsupported("an array literal of %d elements for [%d]%s", len(lit.Elements), length, elem.name)
+			}
+			literal = lit
+		}
+		return g.declareScalarArray(s, elem, length, literal)
+	}
 	if s.Value == nil {
 		arr := g.declareArray(s.Name.Value, elem, length)
 		zero, err := g.alloc(scalars["u64"])
@@ -4953,9 +4974,11 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		r, rfixed, err := g.operand(e.Right, typ)
-		if err != nil {
-			return 0, err
+		r, rfixed := l, true
+		if !g.sameOperand(e) {
+			if r, rfixed, err = g.operand(e.Right, typ); err != nil {
+				return 0, err
+			}
 		}
 		op, ok := map[string]string{"+": "fadd", "-": "fsub", "*": "fmul", "/": "fdiv"}[e.Operator]
 		if !ok {
@@ -5074,9 +5097,14 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 			}
 		}
 	}
-	r, err := g.expr(e.Right, &typ)
-	if err != nil {
-		return 0, err
+	// The same pure expression on both sides (`x * x`) is evaluated once.
+	same := g.sameOperand(e)
+	r := l
+	if !same {
+		var err error
+		if r, err = g.expr(e.Right, &typ); err != nil {
+			return 0, err
+		}
 	}
 	switch e.Operator {
 	case "+":
@@ -5114,7 +5142,9 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 	default:
 		return 0, unsupported("operator %s", e.Operator)
 	}
-	g.release(r)
+	if !same {
+		g.release(r)
+	}
 	g.normalize(l, typ)
 	return l, nil
 }
@@ -5179,10 +5209,31 @@ func (g *generator) directInfix(e *ast.InfixExpression, typ scalar, mnemonic str
 // operand evaluates an expression as a source operand: a variable of the
 // type in its callee-saved register is read there (fixed: the caller never
 // releases it); anything else evaluates into a fresh scratch register.
+// sameOperand reports a binary operation whose two operands are the same
+// pure expression (`a[i] * a[i]`: the square): evaluated once, the one
+// register serves both sides. Pure means no call to a program function
+// (a call could observe or change what the second evaluation reads).
+func (g *generator) sameOperand(e *ast.InfixExpression) bool {
+	if e.Left == nil || e.Right == nil {
+		return false
+	}
+	if _, isLiteral := e.Left.(*ast.IntegerLiteral); isLiteral {
+		return false
+	}
+	return e.Left.String() == e.Right.String() && !g.callsProgramFunction(e.Left)
+}
+
 func (g *generator) operand(expr ast.Expression, typ scalar) (int, bool, error) {
 	if ident, isIdent := expr.(*ast.Identifier); isIdent && !typ.isVec {
 		if v, inReg := g.regs[ident.Value]; inReg && v >= 0 {
 			if t, ok := g.types[ident.Value]; ok && t == typ {
+				return v, true, nil
+			}
+		}
+	}
+	if index, isIndex := expr.(*ast.IndexExpression); isIndex && !typ.isVec {
+		if hidden, elem, isScalar := g.scalarElement(index); isScalar && elem == typ {
+			if v, inReg := g.regs[hidden]; inReg && v >= 0 {
 				return v, true, nil
 			}
 		}
@@ -6476,6 +6527,9 @@ func (g *generator) staticArrayOf(expr ast.Expression) (elem scalar, elemLayout 
 		if arr, isArray := g.arrays[e.Value]; isArray {
 			return arr.elem, arr.elemLayout, arr.length, true
 		}
+		if sa, isScalar := g.scalarArrays[e.Value]; isScalar {
+			return sa.elem, nil, sa.length, true
+		}
 		if gl, isTable := g.tables[e.Value]; isTable {
 			return scalars[gl.Elem], nil, gl.Length, true
 		}
@@ -6699,6 +6753,15 @@ func (g *generator) element(e *ast.IndexExpression) (int, error) {
 			return g.arrayElementReg(arr, e.Index, r)
 		}
 	}
+	if hidden, elem, isScalar := g.scalarElement(e); isScalar {
+		// An element of a scalar-replaced array: its hidden local.
+		r, err := g.alloc(elem)
+		if err != nil {
+			return 0, err
+		}
+		g.put(g.loadVar(hidden, r))
+		return r, nil
+	}
 	arr, err := g.arrayOperand(e.Left)
 	if err != nil {
 		return 0, err
@@ -6844,6 +6907,18 @@ func (g *generator) placeStore(s *ast.IndexAssignmentStatement) error {
 func (g *generator) elementStore(s *ast.IndexAssignmentStatement) error {
 	if s.Target.Dot {
 		return g.placeStore(s)
+	}
+	if hidden, elem, isScalar := g.scalarElement(s.Target); isScalar {
+		// An element of a scalar-replaced array: an assignment to its
+		// hidden local, renamed into its home when the value's last
+		// instruction allows (assignVar).
+		r, err := g.expr(s.Value, &elem)
+		if err != nil {
+			return err
+		}
+		g.assignVar(hidden, r)
+		g.killLoopFacts(hidden)
+		return nil
 	}
 	if layout := g.recordArrayElementLayout(s.Target.Left); layout != nil {
 		// `pool[i] = r`: a record element replaced.
