@@ -210,6 +210,13 @@ func serializeProblem(bl *blaster, claim *term, traps []*term, budget int, order
 			kind = 6
 			op = problemFloatOps[t.op]
 			a, b, c = operand(t.left), operand(t.right), operand(t.cond)
+		case termQuant:
+			// A bounded quantifier is outside the solver's subset: the
+			// unsupported operator makes it decline, and the Go decider
+			// eliminates the binder on the diagram (asm/blast.go).
+			kind = 2
+			op = problemNone
+			a = operand(t.left)
 		}
 		words = append(words, kind, op, uint32(t.width), a, b, c, vlo, vhi)
 	}

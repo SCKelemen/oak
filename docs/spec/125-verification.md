@@ -49,9 +49,24 @@ it (a test, a debug assertion). The logic is Oak's `Bool`: conjunction
 `&&`, disjunction `||`, negation `!`, implication spelled `!a || b` or
 `a ? b | true`, equality `==` including the structural equality of sum
 types and records (`30-adts-patterns.md` §14, `40-records.md` §16), and
-case analysis by `match`. There is no separate proposition language and no
-quantifier syntax: `∀` is the parameter list, and an existential is stated
-by the function that produces the witness.
+case analysis by `match`, and the bounded quantifiers `forall (x: T) {
+… }` and `exists (x: T) { … }` over finite domains — `Bool`, the 8- and
+16-bit integers, payload-free sum types (`10-syntax.md` §3e). There is no
+separate proposition language: the outer `∀` is the parameter list, a
+quantifier inside the body is an ordinary `Bool` expression the program
+can evaluate, and an existential over a wider type is stated by the
+function that produces the witness. In the exhaustive rung a quantifier
+is the interpreter's enumeration; at the bit level each binder is a fresh
+leaf of the blast and the quantifier is eliminated from the body's
+diagram bit by bit — `forall` the conjunction and `exists` the disjunction
+of the two cofactors at each of the binder's variables (Shannon's
+expansion; under the clause engine the domain is expanded, up to 256
+values) — so `exists (x: u8) { u32(x) == (y & u32(255)) }` over a `u32`
+parameter decides in a few hundred nodes, and a counterexample names the
+theorem's parameters only. A binder over a sum type is decided by
+enumeration (the bit level takes `Bool` and the integers); the Lean
+projection (§5) renders a quantifier as `List.all`/`List.any` over the
+explicit list of the domain, so `decide` evaluates the same enumeration.
 
 Shape (`OAK-V0001`): a theorem is monomorphic (state it at the types it is
 about), has no receiver, no variadic tail, no effect clauses, and no
@@ -738,10 +753,14 @@ In order of payoff, each reusing a surface that exists:
   engine, the two LRAT checkers, `Oak.RupCheck`, and the solver written in
   Oak (`prove/solver/sat.oak`) as the rung's default, with clause-database
   reduction, two-watched-literal propagation, minimization, Luby
-  restarts, bounded variable elimination at load, and failed-literal
+  restarts, bounded variable elimination at load, failed-literal
   probing before the search (a failed polarity learned as a unit, a
   literal implied by both polarities recorded through two implications
-  and their unit, every step a hint chain the checkers accept); the encoder's laws
+  and their unit, every step a hint chain the checkers accept), and
+  subsumption with self-subsuming resolution at load (a clause holding
+  another deleted, a clause holding another but for one negated literal
+  strengthened through a two-hint addition);
+  the encoder's laws
   in `Oak.Tseitin`, its code checked against them by truth table; and the
   clause engine as an Oak program beside `asm/cnf.go`, and the whole rung
   inside the prover written in Oak (`certify.oak`), so `-solver self` runs
@@ -759,7 +778,9 @@ In order of payoff, each reusing a surface that exists:
   one `write` call per byte: the first of those rows went from 101 to 10
   seconds on the text path). The budget scales with the clause count by
   default, so `vector_under_literal_bound` closes by certificate in the
-  corpus (`TestScaledBudgetClosesWideRow`). Next: subsumption. The BDD's failure mode
+  corpus (`TestScaledBudgetClosesWideRow`). Subsumption and
+  strengthening landed last (`TestOakSATSubsumption`), the last technique
+  the notes list ahead of any GPU question. The BDD's failure mode
   is the node budget on multipliers and wide aggregates, which CDCL
   solvers treat routinely. The rung is the one Lean's `bv_decide` already
   runs:
