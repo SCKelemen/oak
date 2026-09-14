@@ -261,13 +261,32 @@ Every order maps to a form at least as strong as it asks (the CAS load is
 the one place a weaker failure order shares the success order's form).
 The checker admits an exclusive store or LSE atomic through an element
 region as it does through a span base (`asm/check.go`, `atomicAccess`);
-the verifier reads `ldar`/`ldxr`/`ldaxr` as the element's value through
-the element address and models an atomic load on the Oak side as the
-read of the cell, so a straight-line function of atomic loads verifies;
-functions that store or retry are trusted, with the C backend as the
-oracle (`compiler/e2e_native_atomics_test.go`: every builtin kind, native
-against C and the interpreter). Local cells and the rv64 lane stay with
-the C backend.
+the verifier decides the atomics under its sequential model
+(`asm/atomics.go`): on the Oak side an atomic is the read of the cell its
+storage path names and a write into the span's log — `atomic_store` the
+value, `atomic_fetch_add` and `atomic_exchange` the sum or the value with
+the old value as the result, `atomic_compare_exchange` the desired value
+under the guard `old = expected` with the old value as the result (the
+strong CAS's observed value); on the machine side `ldar`/`ldxr`/`ldaxr`
+are the element's value, `cas*` the same guarded write with the compare
+register receiving the observed value, `ldadd*`/`swp*`/`ldset*`/`ldclr*`/
+`ldeor*` and their `st*` forms the read-modify-write, and `stxr`/`stlxr`
+the store with the status register zero — the exclusive store succeeds in
+the sequential model, so the retry branch is decided and the loop runs
+once (`clrex` is a no-op). The ordering stays the checker's concern and
+the memory-model chapters' (§7, 69); the verifier compares values, so a
+function of atomics is proven in its result and its span memory as any
+span writer is (`asm/atomics_test.go`: the LSE and exclusive-loop
+spellings of a compare-exchange, fetch-add and exchange; a wrong stored
+value refuted), and the prelude's compare-exchange helper is
+translation-validated on both arm64 spellings
+(`codegen/translation_validation_test.go`). Not modeled: the minimum and
+maximum atomics, pair forms, and cells inside record elements; local
+cells stay with the C backend. The rv64 lane decides `lr`/`sc` and the
+`amo*` the same way (`asm/rv64_atomics.go`): `lr` the element, `sc` the
+store with its status register zero, an `amo` the read-modify-write, so
+GCC's `lr.w`/`sc.w` compare-exchange loop is proven as clang's exclusive
+loop is.
 
 ## 8. Reference evaluator
 

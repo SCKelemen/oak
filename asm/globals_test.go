@@ -139,3 +139,31 @@ func TestCheckerGlobalAggregates(t *testing.T) {
 		}
 	}
 }
+
+// A region narrowed in place: the second add of a field past one
+// immediate's reach (`add x12, x10, #96, lsl #12` then `add x12, x12,
+// #48`) keeps the region the source held before the write (the OS pilot's
+// N8, shape 2: `s[dom].entry_count[i]` behind a 393 216-byte array).
+func TestCheckerRegionNarrowedInPlace(t *testing.T) {
+	decl := "poke: (i: u32) -> u32"
+	// Dom { pages: [49152]u64, free_stack: [24]u16, entry_count: [24]u16, pool_base: u64 }: 393 320 bytes.
+	globals := map[string]Global{"dom": {Type: "Dom", Aggregate: true, Size: 393320}}
+	check := func(body string) []string {
+		unit, errs := ParseUnit("narrow.oakasm", decl+" = {\n"+body+"\n}\n")
+		if len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		unit.Functions[0].Globals = globals
+		sig, _ := parseSignature(decl)
+		return Check(unit.Functions[0], sig, nil)
+	}
+	address := "  adrp x10, dom\n  add x10, x10, :lo12:dom\n"
+	accept := "  bind w0 = i\n  clobber x10, x12\n" + address + "  add x12, x10, #96, lsl #12\n  add x12, x12, #48\n  cmp w0, #24\n  b.hs trap\n  strh w0, [x12, w0, uxtw #1]\n  ldrh w0, [x12, w0, uxtw #1]\n  ret\ntrap:\n  brk #1"
+	if findings := check(accept); len(findings) != 0 {
+		t.Fatalf("a field reached by two adds, the second in place, must keep its region: %v", findings)
+	}
+	past := "  bind w0 = i\n  clobber x10, x12\n" + address + "  add x12, x10, #96, lsl #12\n  add x12, x12, #48\n  cmp w0, #64\n  b.hs trap\n  ldrh w0, [x12, w0, uxtw #1]\n  ret\ntrap:\n  brk #1"
+	if findings := check(past); len(findings) == 0 {
+		t.Fatalf("a guard admitting elements past the narrowed region must be refused")
+	}
+}

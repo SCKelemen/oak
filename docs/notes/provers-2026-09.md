@@ -179,8 +179,26 @@ minute. Elimination was the decisive step, as the ParaFROST and CaDiCaL
 reading predicted: the arithmetic obligations whose learned clauses
 spanned every decision level become unit-heavy once the Tseitin gate
 variables are resolved away. The two rows still open are the widest
-(178k and 244k BDD nodes); subsumption and failed-literal probing are the
-next techniques, still ahead of any GPU question. First run with CaDiCaL 3.0.1:
+(178k and 244k BDD nodes). Failed-literal probing landed next (2026-09-14):
+it shrinks several certificates but finds no unit in those two rows —
+Tseitin arithmetic after elimination has no failed literal at level one —
+and they close only past the budget, at 562k and 1.4M conflicts, where
+CaDiCaL itself needs 7 and 112 seconds. The measurement also showed the
+text path spending half its wall time in the kernel: the driver writes
+one byte per `write` call. Both landed the same day: the driver buffers
+its output (flushed when full, before a spawn, at exit; the 562k-conflict
+row from 101 to 10 seconds, kernel time from 42 seconds to nil), and `oak
+prove -conflicts N` sets the solver's budget on both paths, so a row past
+the default can be asked for its certificate rather than the corpus paying
+for it on every run; the default budget then became 100 conflicts per
+clause with a floor of 200,000, which closes the 562k-conflict row in the
+corpus and leaves the 1.4M one to give up. The buffered writer also exposed an exponential
+walk in the native backend's verifier (`significantBits` over shared
+subterms of an unrolled loop, memoized the same day by a parallel
+increment). Subsumption with self-subsuming resolution landed last, at
+load; over the learned clauses at every reduction it was measured and left
+out — one wide row 31% fewer conflicts, the other 43% more — which closes
+the list of techniques the reading named ahead of any GPU question. First run with CaDiCaL 3.0.1:
 `spec/oak/machines.oak`'s `bounded__step` — 14,987 BDD nodes under the
 blocked order — closes with a 204-step certificate checked in Go and in
 Oak; `spec/oak/shapes.oak`'s nine rows all agree):

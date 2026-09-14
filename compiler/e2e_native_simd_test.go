@@ -171,11 +171,11 @@ func TestE2ENativeSimd(t *testing.T) {
 }
 
 // The UTF-8 kernel of benchmarks/native (the simdutf lookup algorithm):
-// the straight-line vector helpers are proven, the two-block composition
-// is evidence (the bit-level decision exceeds its budget), and the loop
-// kernel is evidence too (its three data-dependent loops summarized, the
-// witnesses agree; the tail array has no machine image and the error
-// accumulator's obligation exceeds the node budget) — the verdicts
+// the straight-line vector helpers, the four-block composition, and the
+// loop kernel itself are proven — the kernel's three data-dependent loops
+// coupled inductively, every obligation decided as the same term on both
+// sides once the machine's branch is settled by a case split
+// (docs/spec/94-assembler.md §8) — the verdicts
 // docs/notes/proof-chain-audit-2026-09.md records for the vector link.
 func TestE2ENativeSimdKernelVerdicts(t *testing.T) {
 	requireArm64Host(t)
@@ -198,10 +198,10 @@ func TestE2ENativeSimdKernelVerdicts(t *testing.T) {
 			t.Errorf("%s must be proven on both halves of the vector result; diagnostics:\n%s", fn, joined)
 		}
 	}
-	if !strings.Contains(joined, "asm unit check_blocks_neon_abi: agrees with its Oak body on every witness input") && !strings.Contains(joined, "asm unit check_blocks_neon_abi: proven") {
-		t.Errorf("check_blocks_neon_abi must be evidence or proof; diagnostics:\n%s", joined)
+	if !strings.Contains(joined, "asm unit check_blocks_neon_abi: proven") {
+		t.Errorf("check_blocks_neon_abi must be proven; diagnostics:\n%s", joined)
 	}
-	if !strings.Contains(joined, "asm unit valid_with: agrees with its Oak body on") || !strings.Contains(joined, "concrete inputs (evidence, not proof:") {
-		t.Errorf("valid_with must be witnessed evidence, never trusted; diagnostics:\n%s", joined)
+	if !strings.Contains(joined, "asm unit valid_with: proven equal to its Oak body at the bit level — 3 data-dependent loops coupled inductively") {
+		t.Errorf("valid_with must be proven by loop coupling; diagnostics:\n%s", joined)
 	}
 }

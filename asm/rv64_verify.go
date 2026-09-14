@@ -72,7 +72,32 @@ func bindRV64Params(fn *Function, sig *ast.FunctionStatement, state *symbolicSta
 	}
 	for _, binding := range fn.Bindings {
 		if binding.OnStack {
-			return "parameters beyond the register contract (the incoming stack area is not modeled)", false
+			// A scalar beyond a0–a7: the caller's outgoing area holds it
+			// widened in an XLEN-sized slot at Stack above the entry sp
+			// (the LP64 psABI), as a register would (Oak.RiscV.widen); the
+			// body's `ld` of the slot reads the parameter. A span or record
+			// there is outside this increment.
+			if _, isComposite := composites[binding.Param]; isComposite {
+				return "a record parameter beyond the register contract (the incoming stack area holds scalars only)", false
+			}
+			if _, isSpan := spans[binding.Param]; isSpan {
+				return "a span parameter beyond the register contract (the incoming stack area holds scalars only)", false
+			}
+			bits := declared[binding.Param]
+			_, signed, _ := contractBits(sigParamType(sig, binding.Param))
+			value := zeroExtend(input(binding.Param, bits), 64)
+			switch {
+			case bits == 64:
+			case signed:
+				value = extendTerm(value, bits, 64, true)
+			case bits == 32:
+				value = extendTerm(value, 32, 64, true)
+			}
+			if state.frame == nil {
+				state.frame = map[int64]frameSlot{}
+			}
+			state.storeSlot(binding.Stack, value, 8)
+			continue
 		}
 		if cp, isComposite := composites[binding.Param]; isComposite {
 			if cp.size > 16 {
@@ -158,6 +183,26 @@ func rv64BranchCondition(instr Instruction, state *symbolicState) (*term, string
 var rv64ALU = map[string]string{"add": "add", "sub": "sub", "and": "and", "or": "or", "xor": "xor", "sll": "shl", "srl": "shr", "sra": "sar", "mul": "mul",
 	"div": "rv.div", "divu": "rv.divu", "rem": "rv.rem", "remu": "rv.remu", "mulhu": "umulh", "mulh": "smulh"}
 var rv64ALUImm = map[string]string{"addi": "add", "andi": "and", "ori": "or", "xori": "xor", "slli": "shl", "srli": "shr", "srai": "sar"}
+
+// rv64ALUTerm builds an ALU result; the M extension's division and
+// remainder are the uninterpreted quotient (asm/floats_ops.go) and
+// a - (a / b) * b, RISC-V's definition of rem (unprivileged spec §7.2;
+// Oak.IntegerDivision), so an RV64 unit and a NEON unit decide against
+// one term.
+func rv64ALUTerm(op string, l, r *term, width int) *term {
+	switch op {
+	case "rv.div":
+		return floatTerm("rv.sdiv", width, l, r)
+	case "rv.divu":
+		return floatTerm("rv.udiv", width, l, r)
+	case "rv.rem":
+		return binaryTerm("sub", l, binaryTerm("mul", floatTerm("rv.sdiv", width, l, r), r))
+	case "rv.remu":
+		return binaryTerm("sub", l, binaryTerm("mul", floatTerm("rv.udiv", width, l, r), r))
+	}
+	return binaryTerm(op, l, r)
+}
+
 var rv64ALUW = map[string]string{"addw": "add", "subw": "sub", "sllw": "shl", "srlw": "shr", "sraw": "sar", "mulw": "mul", "divw": "rv.div", "divuw": "rv.divu", "remw": "rv.rem", "remuw": "rv.remu"}
 var rv64ALUImmW = map[string]string{"addiw": "add", "slliw": "shl", "srliw": "shr", "sraiw": "sar"}
 
@@ -190,7 +235,10 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 		if !okL || !okR {
 			return "unbound register read", false
 		}
-		state.write(reg(0), binaryTerm(op, l, r))
+		if op == "shl" || op == "shr" || op == "sar" {
+			state.noteVariableShift(reg(2).Num) // the count's trap guard, if any
+		}
+		state.write(reg(0), rv64ALUTerm(op, l, r, 64))
 		return "", true
 	}
 	if op, isALU := rv64ALUImm[name]; isALU {
@@ -233,7 +281,10 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 		if !okL || !okR {
 			return "unbound register read", false
 		}
-		state.write(reg(0), extendTerm(binaryTerm(op, truncate(l, 32), truncate(r, 32)), 32, 64, true))
+		if op == "shl" || op == "shr" || op == "sar" {
+			state.noteVariableShift(reg(2).Num)
+		}
+		state.write(reg(0), extendTerm(rv64ALUTerm(op, truncate(l, 32), truncate(r, 32), 32), 32, 64, true))
 		return "", true
 	}
 	if op, isALU := rv64ALUImmW[name]; isALU {
@@ -297,6 +348,11 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 	case "jal", "jalr":
 		return "a call", false
 	}
+	if kind, width, isAtomic := rv64Atomic(name); isAtomic {
+		// lr/sc and the amos through a span element under the sequential
+		// model (asm/rv64_atomics.go).
+		return x.atomicRV64(kind, width, ops, state)
+	}
 	if width, isLoad := rv64Loads[name]; isLoad {
 		mem := ops[1].(Memory)
 		if mem.Base.Class != ClassSP {
@@ -304,6 +360,9 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 				if global, isGlobal := globalAddrOf(base); isGlobal {
 					return x.globalLoadRV64(reg(0), mem, width, name, global, state)
 				}
+			}
+			if base, index, bound, size, isElement := rv64FrameElement(state, mem); isElement {
+				return x.rv64FrameElementLoad(reg(0), width, name, base, index, bound, size, state)
 			}
 			return x.spanLoadRV64(reg(0), mem, width, name, state)
 		}
@@ -316,6 +375,9 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 				if global, isGlobal := globalAddrOf(base); isGlobal {
 					return x.globalStoreRV64(reg(0), mem, width, global, state)
 				}
+			}
+			if base, index, bound, size, isElement := rv64FrameElement(state, mem); isElement {
+				return x.rv64FrameElementStore(reg(0), width, base, index, bound, size, state)
 			}
 			return x.spanStoreRV64(reg(0), mem, width, state)
 		}
@@ -456,9 +518,6 @@ func (x *pathExecutor) rv64SpanAddress(mem Memory, state *symbolicState) (span s
 // width, in the path's write log (asm/effects.go), as the AArch64 lane's
 // spanStore does; the Oak side's assignments are compared as memories.
 func (x *pathExecutor) spanStoreRV64(src Register, mem Memory, width int, state *symbolicState) (string, bool) {
-	if len(x.loopStack) > 0 {
-		return "a span store in a data-dependent loop body", false
-	}
 	if address, bound := state.regs[mem.Base.Num]; bound {
 		if param, _, isBase := spanBaseOf(address); isBase {
 			if _, isRecord := x.records[param]; isRecord {

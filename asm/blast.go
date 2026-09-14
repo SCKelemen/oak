@@ -47,6 +47,14 @@ type blaster struct {
 	// owners maps a parameter variable back to its parameter bit, for
 	// counterexamples under either order.
 	owners map[int]variableOwner
+	// assume, when assumed is set, is a diagram the decision holds under
+	// (an implication's premise, a case split's condition): an ite whose
+	// condition the assumption implies or refutes blasts as that arm
+	// alone, so a branch on a condition over many inputs never multiplies
+	// its arms' diagrams.
+	assume  int
+	assumed bool
+	pruned  int // branches the assumption settled (trace)
 }
 
 type variableOwner struct {
@@ -55,9 +63,10 @@ type variableOwner struct {
 }
 
 type selectAbstraction struct {
-	span string
-	idx  []int // canonical index bits
-	vars []int // the fresh variable indices holding the value
+	span  string
+	idx   []int // canonical index bits
+	vars  []int // the fresh variable indices holding the value
+	index *term // the index term (nil for an uninterpreted operation's operand)
 }
 
 const blastNodeBudget = 2000000
@@ -194,7 +203,7 @@ func (bl *blaster) selectVariable(slot, bit int) int {
 // selectBits abstracts a select as fresh variables — one block per distinct
 // (span, index) — sound for equality proofs: terms equal under independent
 // element values are equal under every memory.
-func (bl *blaster) selectBits(span string, idx []int, width int) []int {
+func (bl *blaster) selectBits(span string, idx []int, width int, index *term) []int {
 	for _, known := range bl.selects {
 		if known.span != span || len(known.idx) != len(idx) {
 			continue
@@ -215,7 +224,7 @@ func (bl *blaster) selectBits(span string, idx []int, width int) []int {
 	for i := range vars {
 		vars[i] = bl.selectVariable(slot, i)
 	}
-	bl.selects = append(bl.selects, selectAbstraction{span: span, idx: idx, vars: vars})
+	bl.selects = append(bl.selects, selectAbstraction{span: span, idx: idx, vars: vars, index: index})
 	return bl.varsBits(vars, width)
 }
 
@@ -272,13 +281,30 @@ func (bl *blaster) consistency() int {
 		}
 		cons = bl.apply(opAnd, cons, bl.apply(opOr, bl.not(premise), conclusion))
 	}
+	// Two indices in linear normal form over the same unknowns are equal
+	// or unequal by their constants alone (asm/effects.go indexRelation):
+	// a pair provably at different elements — the arena's `base + 9`
+	// against `base + 16` — needs no implication, which keeps the
+	// constraint linear in the reads of such a body rather than quadratic.
+	forms := make([]*linearForm, len(bl.selects))
+	for k := range bl.selects {
+		if bl.selects[k].index != nil {
+			forms[k] = bl.selects[k].index.linearAt(32)
+		}
+	}
 	for k := range bl.selects {
 		a := bl.selects[k]
+		formA := forms[k]
 		aVal := bl.varsBits(a.vars, len(a.vars))
 		for l := k + 1; l < len(bl.selects); l++ {
 			b := bl.selects[l]
 			if b.span != a.span {
 				continue
+			}
+			if b.index != nil {
+				if known, equal := indexRelation(formA, b.index); known && !equal {
+					continue
+				}
 			}
 			implies(equalBits(a.idx, b.idx), equalBits(aVal, bl.varsBits(b.vars, len(b.vars))))
 			if bl.bdd.exceeded {
@@ -292,6 +318,9 @@ func (bl *blaster) consistency() int {
 			}
 			k, err := strconv.ParseInt(name[len(a.span)+1:len(name)-1], 10, 64)
 			if err != nil || k < 0 {
+				continue
+			}
+			if known, equal := indexRelation(formA, constTerm(uint64(k), 32)); known && !equal {
 				continue
 			}
 			elem := bl.blast(paramTerm(name, bl.widths[name]))
@@ -349,7 +378,14 @@ func (bl *blaster) blastUncached(t *term) []int {
 		}
 		return out
 	case termParam:
-		declared := bl.widths[t.name]
+		declared, known := bl.widths[t.name]
+		if !known {
+			// A parameter the decision was not told of would blast to a
+			// constant zero and could turn a difference into a proof; the
+			// diagram fails closed instead, as if over budget.
+			bl.bdd.exceeded = true
+			return nil
+		}
 		for i := 0; i < t.width; i++ {
 			if i < declared {
 				out[i] = bl.variable(bl.variableIndex(t.name, i))
@@ -363,18 +399,28 @@ func (bl *blaster) blastUncached(t *term) []int {
 		if idx == nil {
 			return nil
 		}
-		return bl.selectBits(t.name, idx, t.width)
+		return bl.selectBits(t.name, idx, t.width, t.left)
+	case termQuant:
+		holds, ok := bl.quantify(t)
+		if !ok {
+			return nil
+		}
+		for i := range out {
+			out[i] = bddFalse
+		}
+		out[0] = holds
+		return out
 	case termFloat:
 		// An uninterpreted operation: its value is a fresh block shared by
 		// every application of the same operation to the same operand
 		// bits, and the consistency constraint ties applications whose
 		// operands are equal (Ackermann's reduction over the operations,
 		// Oak.Uninterpreted.ackermann_sound). The "span" is the operation
-		// at its width; the "index" is the operands' bits in order.
+		// at its width; the "index" is the operands' bits in order. An
+		// application over known operands folded when it was built
+		// (floatTerm); the blaster folds nothing more, so the solver
+		// written in Oak blasts the same terms to the same diagrams.
 		var idx []int
-		var args []uint64
-		var widths []int
-		constant := true
 		for _, arg := range []*term{t.left, t.right, t.cond} {
 			if arg == nil {
 				continue
@@ -384,35 +430,8 @@ func (bl *blaster) blastUncached(t *term) []int {
 				return nil
 			}
 			idx = append(idx, bits...)
-			// An operand whose every bit the diagram has settled is a
-			// constant: the operation folds to its IEEE value, as the
-			// constructor folds a constant application (a mask bit that
-			// the tail unknowns cannot reach settles this way).
-			var value uint64
-			for i, b := range bits {
-				switch b {
-				case bddTrue:
-					value |= uint64(1) << uint(i)
-				case bddFalse:
-				default:
-					constant = false
-				}
-			}
-			args = append(args, value)
-			widths = append(widths, arg.width)
 		}
-		if constant {
-			value := floatEval(t.op, t.width, args, widths) & mask(t.width)
-			out := make([]int, t.width)
-			for i := range out {
-				out[i] = bddFalse
-				if (value>>uint(i))&1 == 1 {
-					out[i] = bddTrue
-				}
-			}
-			return out
-		}
-		return bl.selectBits(floatOpSpan(t.op, t.width), idx, t.width)
+		return bl.selectBits(floatOpSpan(t.op, t.width), idx, t.width, nil)
 	case termCmp:
 		// The comparison is the flag reading of `left - right` at the
 		// operands' width: NZCV from the subtraction chain, then the ARM
@@ -430,9 +449,25 @@ func (bl *blaster) blastUncached(t *term) []int {
 		return out
 	case termIte:
 		cond := bl.blast(t.cond)
+		if cond == nil {
+			return nil
+		}
+		if bl.assumed && bl.cnf == nil {
+			if bl.bdd.apply(opAnd, bl.assume, bl.bdd.not(cond[0])) == bddFalse {
+				bl.pruned++
+				return bl.adapt(bl.blast(t.left), t.width) // the assumption implies the condition
+			}
+			if bl.bdd.apply(opAnd, bl.assume, cond[0]) == bddFalse {
+				bl.pruned++
+				return bl.adapt(bl.blast(t.right), t.width) // the assumption refutes it
+			}
+			if bl.bdd.exceeded {
+				return nil
+			}
+		}
 		left := bl.adapt(bl.blast(t.left), t.width)
 		right := bl.adapt(bl.blast(t.right), t.width)
-		if cond == nil || left == nil || right == nil {
+		if left == nil || right == nil {
 			return nil
 		}
 		for i := range out {
@@ -831,5 +866,80 @@ func (bl *blaster) counterexampleOf(node int) map[string]uint64 {
 		}
 		env[owner.param] |= uint64(1) << uint(owner.bit)
 	}
+	// The element reads the diagrams gave values to: each select at the
+	// index its bits take under the assignment is the element parameter
+	// `v[k]` with the value its variables take, so that evaluating the
+	// terms on this input reads the memory the diagrams chose (an
+	// uninterpreted operation's application, index nil, is not reported:
+	// the evaluation computes the operation itself, which is what tells a
+	// difference under the abstraction from a counterexample).
+	for _, sel := range bl.selects {
+		if sel.index == nil {
+			continue
+		}
+		var k uint64
+		for i, bit := range sel.idx {
+			if bl.bdd.holdsUnder(bit, assignment) {
+				k |= uint64(1) << uint(i)
+			}
+		}
+		name := spanElemName(sel.span, int64(k))
+		if _, given := env[name]; given {
+			continue // a constant-index read of the same element: a parameter already reported
+		}
+		var value uint64
+		for i, variable := range sel.vars {
+			if assignment[variable] {
+				value |= uint64(1) << uint(i)
+			}
+		}
+		env[name] = value
+	}
 	return env
+}
+
+// quantify eliminates a quantifier's bound parameter from its body's
+// diagram (docs/spec/10-syntax.md section 3e): under the diagram engine,
+// `forall` is the conjunction and `exists` the disjunction of the two
+// cofactors at each of the parameter's variables, innermost bit first —
+// the diagram of the body with the variables gone, sound by Shannon's
+// expansion. Under the clause engine there is no cofactor, so the domain
+// is expanded: the body under every constant value of the parameter, up
+// to 256 values; a wider binder is declined there.
+func (bl *blaster) quantify(t *term) (int, bool) {
+	op := opAnd
+	if t.op == "exists" {
+		op = opOr
+	}
+	width := int(t.value)
+	if bl.cnf != nil {
+		if width > 8 {
+			return 0, false
+		}
+		acc := bddTrue
+		if op == opOr {
+			acc = bddFalse
+		}
+		for v := uint64(0); v < uint64(1)<<uint(width); v++ {
+			body := bl.blast(substitute(t.left, map[string]*term{t.name: constTerm(v, width)}))
+			if body == nil {
+				return 0, false
+			}
+			acc = bl.apply(op, acc, body[0])
+		}
+		return acc, !bl.exceeded()
+	}
+	body := bl.blast(t.left)
+	if body == nil {
+		return 0, false
+	}
+	f := body[0]
+	for bit := 0; bit < width; bit++ {
+		v := bl.variableIndex(t.name, bit)
+		f = bl.bdd.apply(op, bl.bdd.restrict(f, v, false), bl.bdd.restrict(f, v, true))
+		if bl.exceeded() {
+			return 0, false
+		}
+	}
+	return f, true
 }

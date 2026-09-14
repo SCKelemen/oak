@@ -763,6 +763,47 @@ func (te *TryExpression) String() string {
 	return "try " + te.Operand.String()
 }
 
+// QuantifierExpression is a bounded quantifier (docs/spec/10-syntax.md
+// section 3e): `forall (x: T) { body }` and `exists (x: T) { body }` are
+// Bool expressions whose binders range over finite types — Bool, the 8-
+// and 16-bit integers, payload-free sum types. Universal reads the
+// conjunction of the body over the domain, otherwise the disjunction.
+// `forall` and `exists` are contextual: an identifier followed by `(`,
+// an identifier, and `:` is the quantifier, anything else a name.
+type QuantifierExpression struct {
+	BaseNode
+	Token     token.Token // 'forall' or 'exists'
+	Universal bool
+	Binders   []*FunctionParameter
+	Body      *BlockExpression
+}
+
+func (qe *QuantifierExpression) expressionNode()      {}
+func (qe *QuantifierExpression) TokenLiteral() string { return qe.Token.Literal }
+func (qe *QuantifierExpression) String() string {
+	var out strings.Builder
+	if qe.Universal {
+		out.WriteString("forall (")
+	} else {
+		out.WriteString("exists (")
+	}
+	for i, binder := range qe.Binders {
+		if i > 0 {
+			out.WriteString(", ")
+		}
+		out.WriteString(binder.Name.String())
+		out.WriteString(": ")
+		if binder.Type != nil {
+			out.WriteString(binder.Type.String())
+		}
+	}
+	out.WriteString(") ")
+	if qe.Body != nil {
+		out.WriteString(qe.Body.String())
+	}
+	return out.String()
+}
+
 // FieldAccessorExpression is Elm-style .field sugar. It is a contextual,
 // structurally polymorphic function: .name(value) is value.name.
 type FieldAccessorExpression struct {
@@ -1863,6 +1904,8 @@ func ExpressionToken(expr Expression) (token.Token, bool) {
 	case *FunctionLiteral:
 		return e.Token, true
 	case *TryExpression:
+		return e.Token, true
+	case *QuantifierExpression:
 		return e.Token, true
 	case *FieldAccessorExpression:
 		return e.Token, true
