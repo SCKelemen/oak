@@ -2676,6 +2676,35 @@ func operandTerm(state *symbolicState, operand Operand, width int) (*term, bool)
 
 var oakOps = map[string]string{"+": "add", "-": "sub", "*": "mul", "&": "and", "|": "or", "^": "xor", "<<": "shl", ">>": "shr"}
 
+// lowerVariableShift lowers `x << n` / `x >> n` of an unsigned operand
+// whose count may reach the width for the assembler verifier
+// (docs/spec/94-assembler.md §8, variable shift counts). Oak traps at the
+// width (docs/spec/10-syntax.md §3b) and so does the native code — the
+// backends guard the count and the executor drops the trapping path — so
+// the equivalence is over the counts below the width, where Oak's shift is
+// the machine's. The machine shifts at its register width modulo that
+// width: the term is the shift at the register width, truncated back, so
+// that on the dropped counts it is the machine's value rather than a
+// claim about Oak (Oak.Shifts.shift_below_width; a claim over every
+// input, with the trapping path's condition forgotten at the fork). A
+// signed operand keeps the refusal: the backends leave those bodies to C.
+func (lo *oakLowering) lowerVariableShift(e *ast.InfixExpression, op string, left, right *term, width int) (*term, string, bool) {
+	_, signed, isScalar := lo.operandContract(e)
+	if !isScalar || signed {
+		return nil, "a non-constant shift count of a signed operand", false
+	}
+	reg := 64
+	if width <= 32 && (lo.arch != ArchRV64 || width == 32) {
+		// AArch64 shifts a narrow operand in a w register; RV64 shifts
+		// a 32-bit operand with sllw/srlw and a narrower one at XLEN.
+		reg = 32
+	}
+	if reg == width {
+		return binaryTerm(op, left, right), "", true
+	}
+	return truncate(binaryTerm(op, zeroExtend(left, reg), zeroExtend(right, reg)), width), "", true
+}
+
 // oakComparisons maps Oak's comparison operators to the condition code
 // whose flag reading is that comparison, per signedness of the operands.
 var oakComparisons = map[string][2]string{
@@ -5071,12 +5100,16 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			// Oak traps at the width; the machine wraps the count. Under
 			// the theorem decider the trap is a recorded obligation and
 			// the shift below the width is the machine's.
-			if !lo.trapsTracked && lo.maxValue(right) >= uint64(width) {
+			if lo.trapsTracked {
+				lo.addTrap(cmpTerm("hs", right, constTerm(uint64(width), width)))
+				return binaryTerm(op, left, right), "", true
+			}
+			if lo.maxValue(right) < uint64(width) {
 				// A count whose range stays below the width never traps,
 				// so Oak's shift is the machine's (asm/range.go).
-				return nil, "a non-constant shift count", false
+				return binaryTerm(op, left, right), "", true
 			}
-			lo.addTrap(cmpTerm("hs", right, constTerm(uint64(width), width)))
+			return lo.lowerVariableShift(e, op, left, right, width)
 		}
 		return binaryTerm(op, left, right), "", true
 	case *ast.BlockExpression:
