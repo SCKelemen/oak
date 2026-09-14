@@ -370,7 +370,13 @@ for a workload):
    the model's address translation and memory access in the monad, for
    which the checker's bounds and the verifier's flat element memory
    stand in. The rv64 verifier decides no atomics, so the AMOs the memory
-   refinement pins at the C level have nothing to bridge yet.
+   refinement pins at the C level have nothing to bridge yet. **Execute
+   bodies and CI (2026-09-14):** `spec/lean-sail/OakSailBridge/Execute.lean`
+   rewrites the generated `execute_RTYPEW`, `execute_RTYPE` and
+   `execute_BTYPE` to their canonical monadic shape through the monad laws
+   and the data theorems, so the register plumbing is checked too; and the
+   `rv64-bridge` job of `formal-sail.yml` builds Sail from git, the export,
+   and this bridge on every pull request, with the export required.
 6. **An amd64 lane and an x86 semantics** — **deferred** (2026-09-13: no x86-64 workload exists; amd64 stays a C-only target until one does). The native backend's third lane,
    with instruction semantics bridged to a machine-readable x86-64
    specification. Scoped 2026-09-13, in the order that pays first:

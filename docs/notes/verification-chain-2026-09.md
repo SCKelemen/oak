@@ -22,7 +22,7 @@ or can exist for them until a lane does (REMS's `sail-x86` is partial).
 | Types, borrows, extents | the checked tree; `IndexProven` facts | Go decision procedures in `typechecker/` | laws in Lean: `Oak.Extents` (35 theorems), `Oak.Borrowing`, `Oak.Reborrow`; refinements of the admission procedures in `Oak.ReborrowRefinement`, `Oak.ViewRefinement`, `Oak.BorrowStateRefinement` | the differential corpus (compiled C against the interpreter) | the extents decision procedure itself: each rule cites its law, none is refined |
 | Lowering to asm | `asm.Function` per body (`nativegen`) | the seam checker (`asm/check.go`, `asm/rv64_check.go`) and the verifier (`asm/verify.go`), per function | checker laws in `Oak.Assembler` (24), `Oak.RiscV` (54); verifier semantics `Oak.AssemblerSemantics` (64) | the C backend under `OAK_PORTABLE_INTRINSICS`; the differential corpus | bodies the verifier labels trusted (§2), the checker's and verifier's own code as transliterations |
 | Instruction semantics, AArch64 | the term semantics | — | `Oak.AssemblerSemantics` ≡ `Oak.ArmASL` (19) ≡ Sail-generated Lean (`spec/sail/lean/Bridge.lean`, 17 bridge theorems) | the silicon differential: 181 bodies × 60 inputs on an M-series core | the Go executor is a transliteration of the Lean, checked on the silicon, not extracted |
-| Instruction semantics, RV64 | the term semantics | — | `Oak.RiscV` ≡ the Sail RISC-V definitions restated verbatim (`Oak.SailRiscVBridge`, 14; `asm/rv64_sail_bridge_test.go` fails on drift) | QEMU and the Sail C emulator on the same units | the restatement: the export does not compile under Sail 0.20.2, so the theorems are not yet against the import (`spec/lean-sail/README.md`) |
+| Instruction semantics, RV64 | the term semantics | — | `Oak.RiscV` ≡ the Sail RISC-V model's Lean export (`spec/lean-sail`, 15 theorems against the imported prelude operators; `Oak.SailRiscVBridge` keeps the verbatim restatement, 14, and `asm/rv64_sail_bridge_test.go` fails on drift) | QEMU and the Sail C emulator on the same units | the `execute_*` bodies are read by inspection: the export's whole library still does not compile (`Vmem`, rems-project/sail#1729), so the bridge imports `LeanRV64D.Prelude` (`spec/lean-sail/README.md`) |
 | Encoding | machine words | table-driven encoders from Arm's ISA XML and riscv-opcodes | `Oak.Assembler` frame/align laws; `Oak.RiscV` RVC immediates | llvm-mc (2471 fuzzed encodings, 254 SVE/SME spellings), `riscv64-elf-as` on every mnemonic, the Sail decoder audit (`asm/sail_coverage_test.go`), the ISA XML operand audit | the encoder's bytes: tested against two assemblers, not proved against a decoder |
 | Object and executable | ELF/Mach-O relocatable objects, static ELF executables | `asm/object.go`, `asm/executable.go` | — | llvm-objdump/nm on the objects; QEMU runs the executables on both lanes | the writers, by construction ("every offset computed and checked") |
 
@@ -107,21 +107,37 @@ or the verifier, not in the program:
    and runs the oracle tests with `OAK_REQUIRE_ORACLES=1`, under which an
    absent oracle fails the test instead of skipping it
    (`asm/oracles_test.go`). The RISC-V GNU tools resolve under their
-   Debian spelling as well as Homebrew's. Still outside CI: the ISA XML
-   audit (Arm's license) and the RV64 bridge against the export (item 2).
+   Debian spelling as well as Homebrew's. **The RV64 bridge joined
+   (2026-09-14):** a second job of `formal-sail.yml` generates the export
+   from the pinned sail-riscv release with the pinned Sail, repairs it
+   (`spec/lean-sail/patch-export.py`), builds it, proves `spec/lean-sail`
+   against it, and runs the bridge tests with the export required; the
+   built export is cached by its pins. Still outside CI: the ISA XML audit
+   (Arm's license).
 2. **The RV64 bridge proves against a restatement.** `Oak.SailRiscVBridge`
    restates the library and prelude definitions verbatim because the Sail
    0.20.2 export does not compile. Building Sail from git (as sail-riscv's
    own CI does) and compiling `spec/lean-sail` turns the restatement into
    an import; the drift test keeps the restatement honest until then.
-   **Attempted (2026-09-13):** Sail built from git in its own opam switch
-   (`sail-dev`, every Sail package pinned) generates the export from
-   sail-riscv 0.14 and from master in nine minutes each, but both exports
-   fail to compile at the same place: the generated `Defs.lean` declares
-   `PTW_Output` over a `pte_bits` not yet in scope, so `PTW_Result` finds
-   no `PTW_Output`. The fix is in Sail's Lean backend or sail-riscv's
-   module order, not in Oak; `spec/lean-sail` builds the moment an export
-   compiles, and its drift tests keep the restatements honest until then.
+   **Attempted, then closed (2026-09-13):** Sail built from git in its own
+   opam switch (`sail-dev`, every Sail package pinned) generates the export
+   from sail-riscv 0.14; it fails to compile in the generated `Defs.lean`
+   (`PTW_Output` over a `pte_bits` the Lean backend left in Sail syntax,
+   rems-project/sail#1729) and then in `Vmem.lean`. The fix is upstream's,
+   but a pinned repair is not: `spec/lean-sail/patch-export.py` restates
+   the seven virtual-memory type sites and, in `Vmem`, three shadowed type
+   synonyms and the two-stage translation's termination measure — nothing
+   about instruction semantics — and the whole export builds. `spec/lean-sail`
+   then proves against the import: the data theorems, and the
+   `execute_RTYPEW`/`execute_RTYPE`/`execute_BTYPE` bodies rewritten to
+   Oak's canonical form through the monad laws (`OakSailBridge/Execute.lean`).
+   `TestRV64SailBridgeBuilds` and `TestRV64SailBridgeStubsMatchSail` run
+   instead of skipping; the patch goes when upstream fixes #1729. Also
+   closed the same day: rv64 translation validation had skipped silently
+   in `ci.yml` (the RISC-V GNU toolchain was installed only in
+   `formal-sail.yml`); the `packages` shard now installs it,
+   `TestTranslationValidationRV64` accepts the Debian spelling, and
+   `OAK_REQUIRE_RV64_GCC=1` turns the skip into a failure there.
 3. **The encoder is tested, not proved.** Both Sail models carry decoders
    (sail-riscv's `encdec` mappings; Arm's decode tree). The natural
    connection is a round-trip theorem, `decode (encode i) = i`, for every
@@ -134,7 +150,16 @@ or the verifier, not in the program:
    `asm/rv64_encoding_lean_test.go`), and
    `spec/lean-sail/OakSailBridge/Encoding.lean` states thirty theorems
    `encdec_forwards (instruction) = pure (encode …)` against the export.
-   They await an export that compiles (item 2).
+   **Checked (2026-09-14):** with the export compiling (item 2) all thirty
+   prove. Meeting the export corrected them: `encdec_forwards` and the
+   operand mappings live in `LeanRV64D.Functions`; the four-thousand-line
+   match unfolds once rather than through per-clause equations; `congrArg
+   pure` replaces `congr` on the monadic result (the word's width is a
+   nest of `hi - lo + 1` sums); and the six branch theorems were false as
+   stated — the model encodes a branch only for an even offset and errors
+   otherwise, so they carry the evenness as a hypothesis. The encoder is
+   now proved against the ISA's `encdec` for the decided RV64 mnemonics;
+   AArch64's remains tested.
 4. **Calls are the largest trusted class.** The verifier did not model
    `bl`/`call`: 159 of 304 trusted AArch64 bodies and 119 of 295 on RV64
    were trusted for that reason alone. **Closed (2026-09-13):** the
@@ -156,8 +181,17 @@ or the verifier, not in the program:
    work. **Closed for the discharge (2026-09-13):**
    `spec/lean/Oak/ExtentsRefinement.lean` transliterates `indexUnder` and
    proves `indexUnder_sound`; the fact extraction and kills remain
-   transliterations with laws. The seam checkers' new facts (frame element
-   regions, span aliases, composites) remain proof debt in STATUS.
+   transliterations with laws. **Pinned (2026-09-14):** the Go decision is
+   rendered against the Lean model's examples
+   (`typechecker/extents_refinement_test.go`), as the lowering seam is. The
+   seam checkers' new facts are refined too (2026-09-14): frame element
+   regions and the accesses through them (`Oak.CheckerRefinement`, pinned
+   by `asm/checker_refinement_test.go`), the argument layout and record
+   chunks (`Oak.ArgumentLayout`,
+   `TestArgumentLayoutMatchesLeanTransliteration`, `94-assembler.md` §9.z),
+   and span aliases (`Oak.SpanAlias`: `forgetRegisterFacts` and `aliasSpan`
+   sound against a register file, `TestSpanAliasMatchesLeanTransliteration`,
+   §9.aa); the RV64 checker's move rule remains.
 6. **The checkers are linear over the block.** Base facts (spans,
    regions, frame addresses) are definitions, not per-path state; guard
    facts already flow through labels by a fixpoint on AArch64. The two

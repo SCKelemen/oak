@@ -69,3 +69,20 @@ branch theorems checkable inside Oak's own project, against verbatim
 copies of the library and prelude definitions, for hosts without the
 export; `asm/rv64_sail_bridge_test.go` holds those copies to the fetched
 sources and builds this project when the export is present.
+
+## The execution bodies, and CI
+
+`OakSailBridge/Execute.lean` goes one step past the data theorems: it
+rewrites the generated `execute_RTYPEW`, `execute_RTYPE` and
+`execute_BTYPE` (`LeanRV64D/InstsEnd.lean`) to their canonical monadic
+shape — read the two sources, write Oak's function of them, or branch on
+Oak's `Br.holds` — through the monad laws and the data theorems, so the
+register plumbing of those bodies is checked, not read.
+
+The `rv64-bridge` job of `.github/workflows/formal-sail.yml` runs all of
+this on every pull request: it builds Sail from git at the commit above in
+an opam switch (cached by commit and compiler), generates and builds the
+export of the pinned sail-riscv commit (cached likewise), builds this
+project against it, and runs `asm/rv64_sail_bridge_test.go` with
+`OAK_REQUIRE_ORACLES=1`, so a missing export fails rather than skips.
+

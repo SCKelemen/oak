@@ -40,6 +40,11 @@ import (
 type Verdict struct {
 	Kind    VerdictKind
 	Message string
+	// Callees are the program functions the verdict took at their Oak
+	// bodies (call summaries, docs/spec/94-assembler.md §8): a proven
+	// verdict is relative to theirs, so the verified profile accepts the
+	// body only when every one of them is proven too (compiler.verifiedProfile).
+	Callees []string
 }
 
 type VerdictKind int
@@ -6059,17 +6064,22 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if len(exec.cells) > 0 || len(lowering.writtenCells()) > 0 {
 			return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (package state written around a data-dependent loop) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
 		}
-		return verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
+		verdict := verifyLoops(fn, sig, oakBody, exec, lowering, asmTerm, oakTerm, width)
+		verdict.Callees = exec.summarized
+		return verdict
 	}
 	note := ""
 	if len(exec.summarized) > 0 {
 		note = " (callees taken at their Oak bodies: " + strings.Join(exec.summarized, ", ") + ")"
 	}
 	verdict := decideEqual(fn, lowering, asmTerm, oakTerm, width, note)
+	verdict.Callees = exec.summarized
 	if verdict.Kind != VerdictProven {
 		return verdict
 	}
-	return decideEffects(fn, lowering, exec, &verdict)
+	effects := decideEffects(fn, lowering, exec, &verdict)
+	effects.Callees = exec.summarized
+	return effects
 }
 
 // decideCells decides, for every package-global cell either side writes,

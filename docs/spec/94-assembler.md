@@ -3612,7 +3612,13 @@ rewrites the concrete arm; and the model's branch arm is defined only for
 even offsets (it guards on bit 0 and fails the match otherwise), so the
 branch theorems carry the hypothesis `delta &&& 1 = 0`, which Oak's
 B-form offsets — differences of instruction addresses — satisfy by
-construction.
+construction. Beyond the data theorems, `OakSailBridge/Execute.lean`
+rewrites the generated `execute_RTYPEW`, `execute_RTYPE` and
+`execute_BTYPE` bodies to their canonical monadic shape — read the two
+sources, write Oak's function of them, or branch on Oak's `Br.holds` —
+through the monad laws, so the register plumbing is checked as well; and
+the `rv64-bridge` job of `formal-sail.yml` builds Sail from git, the
+export, and the bridge on every pull request (the export required).
 
 **Statement conditionals and `i32` indices (2026-09-13).** Three statement
 shapes the standard library uses stayed with the C backend on both lanes:
@@ -3685,7 +3691,13 @@ the path budget, table reads (`adrl`/`la`), unit callees, and calls
 returning a `Result` — the order in which the verifier grows next.
 Pinned: `compiler/e2e_verified_profile_test.go` (a proven program links
 on both lanes; a variable shift count is refused with its reason; a body
-left to C is refused with its reason).
+left to C is refused with its reason). A proven verdict is relative to the callees its
+summaries took at their Oak bodies (§8, call summaries), so the profile
+accepts a body only when every one of them is accepted too, to a fixpoint
+(`compiler.provenRestingOnUnproven`); a body that rests on a callee that
+is trusted, witnessed, left to the C backend, or outside the native lane
+is refused as "proven, resting on a callee that is not proven", naming
+the callee — the chain the profile stands on is closed, not assumed.
 
 **Record results of two chunks, aggregate call summaries, unknown frame
 bytes (2026-09-14).** The first burn-down of the verified profile. A
@@ -4218,3 +4230,30 @@ runs at 0.28 ns/byte where the call tree ran at 0.85 and the C backend at
 kernel that declares some forty vector locals over its expansions. What
 would take the rest: an allocator with liveness across the whole body
 instead of declaration order within it.
+
+### 9.x The region rules refined (2026-09-14)
+
+The seam checker's derived-base rules — `elementRegion` (what
+`xE = xB + wI·size` addresses under the index guard: one element of a frame
+array, a span of records, or a constant table, or `K` elements under a
+slack guard), `regionAccess` (an access inside such a region), and
+`frameArrayAccess` (an access through a frame address) — were the checker
+facts STATUS listed as proof debt. `spec/lean/Oak/CheckerRefinement.lean`
+transliterates the three decisions (`elementRegion`, `regionAdmits`,
+`frameArrayAdmits`; the Go is factored onto the same pure functions,
+`asm.elementRegionOf`, `asm.regionAdmits`, `asm.frameArrayAdmits`) and
+proves them sound against new laws in `Oak.Assembler` — `frame_element`,
+`span_element`, `span_element_lanes`, `region_element`,
+`region_offset_bytes` — with the guard's meaning stated once
+(`GuardMeans`: an immediate bound is `i < bound`; a register bound holding
+the length is `i < len`, or `i + bound ≤ len` with `bound ≥ 1` for the
+slack form, which is what `sub wT, wL, #K` records only for `K > 0`).
+`frameElement_sound`, `spanElement_sound`, `regionElement_sound`,
+`regionAdmits_offset_sound`/`_index_sound`, `frameArrayAdmits_offset_sound`
+/`_index_sound`, the fail-closed corollaries, and the compositions
+`frame_element_then_access` / `span_element_then_access` (a derived region,
+then an access inside it, lands inside the frame or the span). The pin:
+`asm/checker_refinement_test.go` renders the Go decisions on a corpus as
+the `example … := by decide` lines the Lean file states, so a change on
+either side fails the other. Still debt: `aliasSpan` (a base or length
+copied between registers) and the composite layout facts.
