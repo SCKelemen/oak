@@ -138,7 +138,7 @@ QEMU where present.
 | Target | Source → C | C → object | Asm/native lane | ISA semantics the lane is held to | Encoding | Execution check |
 | --- | --- | --- | --- | --- | --- | --- |
 | linux/arm64, darwin/arm64, freestanding/arm64 | refined core + differential | trusted (cc); the trusted-core helpers translation-validated through the verifier | arm64: verifier proof/evidence/trusted | **proved to Arm's ASL**: `Oak.ArmASL` transliterates the Sail Armv8.5-A primitives with the Sail text beside each, proved equal to `Oak.AssemblerSemantics`; the hand transliteration is proved against Sail's mechanically generated Lean (`spec/sail/lean/Out.lean`); the decode tree **audited** (`asm/sail_coverage_test.go`), operand forms audited against the A64 ISA XML | table **generated from the ISA XML**, checked against `llvm-mc` | silicon **differential** (181 bodies × 60 inputs on the host core) |
-| linux/riscv64, freestanding/riscv64 | refined core + differential; RVWMO mapping proved | trusted (cc); the trusted-core helpers translation-validated through the verifier | rv64: same verifier, RISC-V semantics (`Oak.RiscV`) | **bridged to the Sail RISC-V model** for `RTYPE`, `RTYPEW`, `BTYPE` (`Oak.SailRiscVBridge` restates the export's primitives verbatim, a Go test keeps the copies honest against the fetched sources); loads, stores, AMOs, `auipc`, calls are outside the decided subset; the Lean-against-export project (`spec/lean-sail`) waits on a Sail newer than the opam release | own encoder (`rv64_encodings_gen`) checked against GNU `as`; RVC | `qemu-system-riscv64` where present |
+| linux/riscv64, freestanding/riscv64 | refined core + differential; RVWMO mapping proved | trusted (cc); every trusted-core helper translation-validated through the verifier (75 proven, 18 witnessed) | rv64: same verifier, RISC-V semantics (`Oak.RiscV`); loads, stores and the A extension's `lr`/`sc`/`amo*` through spans decided under the sequential model | **bridged to the Sail RISC-V model**: `spec/lean-sail` builds against the export itself (Sail from git, sail-riscv 497209b9) — 53 semantics theorems (every integer instruction the verifier decides, the pure parts of loads and stores) and 30 encoding theorems; `Oak.SailRiscVBridge` keeps the R/W/B subset checkable without the export; the memory monad stays audited | own encoder (`rv64_encodings_gen`, RV64IMAFD + the V and C subsets) checked against GNU `as`; RVC | `qemu-system-riscv64` where present |
 | linux/amd64, darwin/amd64, freestanding/amd64 | refined core + differential | trusted (cc) | **none** (`Oak.Target.lane = none`) | **none**: no Oak semantics of x86-64 and no bridge to a machine-readable x86 specification | none | host execution (differential) |
 | freestanding/arm (Cortex-M), freestanding/riscv32 | refined core + differential; ILP32 proved | trusted (cc) | none | none (Arm's M-profile ASL is not public; `docs/notes/oak-cortex-m-deferred`) | none | cross build only |
 
@@ -281,9 +281,10 @@ Done on 2026-09-13:
    witnessed: the multiplications and the narrow and signed divisions);
    what it does not decide
    is the shift helpers under a variable count (Oak traps, the verifier
-   refuses) — the constant-count specializations are proven — and, on
-   rv64, the compare-exchange helper (`lr`/`sc` are not in the RV64IM unit
-   language).
+   refuses) — the constant-count specializations are proven. Every helper
+   is decided on rv64 too (80 proven, 13 witnessed) since the unit
+   language gained the A extension (GCC's `lr.w`/`sc.w` compare-exchange
+   loop, the element address formed before the loop head).
 
 Next, arm64 first (2026-09-13: every workload runs on arm64, so the lane
 whose chain is proved end to end is the one to deepen; the others wait

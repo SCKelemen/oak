@@ -329,7 +329,9 @@ func rv64Number(reg Register) int {
 func parseRV64Instruction(fields []string, lineNo int) ([]Instruction, error) {
 	mnemonic := strings.ToLower(fields[0])
 	if _, base := rv64Table[mnemonic]; !base && !rv64Pseudo[mnemonic] {
-		return nil, fmt.Errorf("unknown instruction %q (not in the RV64IM table)", mnemonic)
+		if _, _, _, isAtomic := rv64AtomicSpelling(mnemonic); !isAtomic {
+			return nil, fmt.Errorf("unknown instruction %q (not in the RV64IMA table)", mnemonic)
+		}
 	}
 	var operands []Operand
 	for _, text := range fields[1:] {
@@ -431,6 +433,9 @@ func rv64CheckShape(instr Instruction) error {
 		return nil
 	}
 	name := instr.Mnemonic
+	if _, _, isAtomic := rv64Atomic(name); isAtomic {
+		return rv64AtomicShape(instr)
+	}
 	if shape, isFloat := rv64FloatShapes[name]; isFloat {
 		return rv64CheckFloatShape(instr, shape)
 	}

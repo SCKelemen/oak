@@ -2357,7 +2357,11 @@ features beyond the M4's.
 **RISC-V: the RV64 lane (first increment landed).** The second
 architecture, RV64IM first (the base integer set with multiplication,
 control transfer, loads and stores — what a hypervisor's or a database
-engine's hot integer paths need), then the F/D and V extensions. A unit
+engine's hot integer paths need), then the F/D and V extensions, and the
+A extension's `lr`/`sc` and `amo*` (`asm/rv64_atomics.go`: through a span
+element as the plain accesses, with their `.aq`/`.rl`/`.aqrl` suffixes,
+the checker holding them to the same bounds and the verifier deciding
+them under the sequential model of `65-machine-memory.md` §7a). A unit
 names the lane in its path (`name.rv64.oakasm`) or with an `arch rv64`
 directive before its bindings; every phase dispatches on it
 (`Function.Arch`). The specification situation is better than Arm's: the

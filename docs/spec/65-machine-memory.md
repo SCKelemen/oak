@@ -282,7 +282,11 @@ value refuted), and the prelude's compare-exchange helper is
 translation-validated on both arm64 spellings
 (`codegen/translation_validation_test.go`). Not modeled: the minimum and
 maximum atomics, pair forms, and cells inside record elements; local
-cells and the rv64 lane's `lr`/`sc` stay with the C backend.
+cells stay with the C backend. The rv64 lane decides `lr`/`sc` and the
+`amo*` the same way (`asm/rv64_atomics.go`): `lr` the element, `sc` the
+store with its status register zero, an `amo` the read-modify-write, so
+GCC's `lr.w`/`sc.w` compare-exchange loop is proven as clang's exclusive
+loop is.
 
 ## 8. Reference evaluator
 
