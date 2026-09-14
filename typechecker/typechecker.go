@@ -507,6 +507,11 @@ func (t *FunctionType) Equals(other Type) bool {
 
 // TypeChecker performs type checking on AST nodes
 type TypeChecker struct {
+	// indexDecisionHook, when set (tests), observes every extent decision
+	// indexUnder makes: the live facts, the index, the container, its
+	// type, and the verdict — what typechecker/extents_refinement_test.go
+	// renders against Oak.ExtentsRefinement's examples.
+	indexDecisionHook func(facts []extentFact, indexExpr ast.Expression, name string, arr *ArrayType, proven bool)
 	// Module-system facts (typechecker/modules.go): opaque types by internal
 	// name and the loaded package paths.
 	opaqueTypes map[string]string
