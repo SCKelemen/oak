@@ -47,12 +47,26 @@ jobs:
     - name: Install TLC
       run: curl -fsSL -o /tmp/tla2tools.jar https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
 
+    # Translation validation of the trusted core on rv64
+    # (codegen/translation_validation_test.go) compiles the prelude helpers
+    # with the RISC-V GNU toolchain and skips without it; the packages shard
+    # is where that test runs, so give it the toolchain.
+    - name: Install the RISC-V GNU toolchain (rv64 translation validation)
+      if: matrix.shard == 'packages'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf
+        riscv64-unknown-elf-gcc --version | head -1
+
     - name: Check nested array store regression
       run: go test -v ./compiler -run '^TestE2ENestedArrayFieldStores$' -count=1
 
     - name: Run tests
       env:
         OAK_TLA2TOOLS_JAR: /tmp/tla2tools.jar
+        # The packages shard installed the RISC-V GNU toolchain above; the
+        # rv64 translation validation must run there, not skip.
+        OAK_REQUIRE_RV64_GCC: ${{ matrix.shard == 'packages' && '1' || '' }}
       run: |
         case "${{ matrix.shard }}" in
           e2e-a-r) go test -v -race -timeout 45m ./compiler -run '^TestE2E[A-R]' ;;

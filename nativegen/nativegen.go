@@ -3080,7 +3080,15 @@ func (g *generator) pushScope() { g.scopes = append(g.scopes, map[string]slotBin
 func (g *generator) popScope() {
 	top := g.scopes[len(g.scopes)-1]
 	g.scopes = g.scopes[:len(g.scopes)-1]
+	// In name order: the pools' order decides which register a later
+	// declaration takes, and a map's order would make the lowering differ
+	// between two builds of one source.
+	names := make([]string, 0, len(top))
 	for name := range top {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
 		// The variable's register or slot returns to the pool for the
 		// declarations that follow.
 		if b := top[name]; b.arr == nil && b.rec == nil && b.sp == nil && !b.freed {
@@ -4696,6 +4704,11 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 			return 0, err
 		}
 		return g.expr(es.Expression, &typ)
+	}
+	if _, isQuantifier := expr.(*ast.QuantifierExpression); isQuantifier {
+		// A bounded quantifier enumerates a domain: the C backend's loop
+		// realizes it (docs/spec/10-syntax.md section 3e).
+		return 0, unsupported("a bounded quantifier")
 	}
 	return 0, unsupported("%T", expr)
 }
@@ -6368,7 +6381,14 @@ func (g *generator) staticArrayOf(expr ast.Expression) (elem scalar, elemLayout 
 func (g *generator) arrayAddress(arr *arrayLocal, index ast.Expression) (address asm.Memory, indexReg, baseReg int, err error) {
 	size := int64(arr.elem.bits / 8)
 	if k, isConst := constantValue(index); isConst && k >= 0 && k < arr.length {
-		return g.memOf(arr.loc().plus(k * size)), -1, -1, nil
+		// A constant element: its place — rebased through a temporary when
+		// the offset is past the load's immediate (a field far into a large
+		// element, the OS pilot's N8), returned as the base to release.
+		mem, temp, err := g.reachable(arr.loc().plus(k*size), size)
+		if err != nil {
+			return asm.Memory{}, 0, 0, err
+		}
+		return mem, -1, temp, nil
 	}
 	r, err := g.indexValue(index)
 	if err != nil {

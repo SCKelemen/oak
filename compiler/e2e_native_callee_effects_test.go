@@ -94,11 +94,22 @@ func TestE2ENativeCalleeEffects(t *testing.T) {
 	if !strings.Contains(joined, "asm unit push_byte (the span w): agrees with its Oak body on every witness input") && !strings.Contains(joined, "asm unit push_byte: proven equal to its Oak body in the span memory it writes (w)") {
 		t.Errorf("push_byte must be decided in its span memory (proven or evidence); diagnostics:\n%s", joined)
 	}
+	// push_lits shifts a u64 by the loop counter under `cmp x, #64; b.hs
+	// trap`: the 64-bit guard bounds the count, so the body is decided in
+	// its span memory (proven or evidence), not trusted
+	// (docs/spec/94-assembler.md §8, variable shift counts).
+	if strings.Contains(joined, "asm unit push_lits: not verified") {
+		t.Errorf("push_lits must be decided under its 64-bit shift guard; diagnostics:\n%s", joined)
+	}
 	if !strings.Contains(joined, "asm unit push_then_count: proven equal to its Oak body") || !strings.Contains(joined, "and the span memory it writes (w)") {
 		t.Errorf("push_then_count must be proven in its result and its span memory; diagnostics:\n%s", joined)
 	}
-	if !strings.Contains(joined, "asm unit push_n: not verified (") {
-		t.Errorf("push_n calls into a data-dependent loop and must stay trusted; diagnostics:\n%s", joined)
+	// push_n calls into a data-dependent loop shifting by the loop counter:
+	// the callee's loop is the caller's event on both sides and the shift,
+	// taken at the callee's Oak body on both, needs no machine guard
+	// (docs/spec/94-assembler.md §8, variable shift counts).
+	if !strings.Contains(joined, "asm unit push_n: proven equal to its Oak body") || !strings.Contains(joined, "and the span memory it writes (w)") {
+		t.Errorf("push_n must be proven through its callee's loop; diagnostics:\n%s", joined)
 	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_callee_effects_c", New().WithSource("callee_effects.oak", nativeCalleeEffectsProgram)); abnormal || code != 42 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)

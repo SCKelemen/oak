@@ -255,6 +255,22 @@ type Binding struct {
 	Stack   int64
 }
 
+// parseStackBinding reads `[sp, #N]`, the place of a parameter beyond
+// the register contract: N bytes above the entry sp.
+func parseStackBinding(text string) (int64, bool) {
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "[sp,") || !strings.HasSuffix(text, "]") {
+		return 0, false
+	}
+	inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, "[sp,"), "]"))
+	inner = strings.TrimPrefix(inner, "#")
+	offset, err := strconv.ParseInt(inner, 0, 64)
+	if err != nil || offset < 0 {
+		return 0, false
+	}
+	return offset, true
+}
+
 // Operand kinds.
 type Operand interface{ operandKind() string }
 
@@ -593,6 +609,13 @@ func ParseUnit(path, text string) (*Unit, []error) {
 			// bind w0 = left  |  bind x0, w1 = frame
 			switch {
 			case len(fields) == 4 && fields[2] == "=":
+				if offset, onStack := parseStackBinding(fields[1]); onStack {
+					// bind [sp, #N] = p: a parameter beyond the register
+					// contract, N bytes above the entry sp (the compiler's
+					// spelling for native bodies, Describe's output).
+					current.Bindings = append(current.Bindings, Binding{Register: Register{Class: ClassSP, Text: "sp", Lane: -1}, Param: fields[3], Line: lineNo, OnStack: true, Stack: offset})
+					continue
+				}
 				reg, ok := parseReg(fields[1])
 				if !ok {
 					fail(lineNo, "bind: unknown register %q", fields[1])

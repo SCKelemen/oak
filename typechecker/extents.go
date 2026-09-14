@@ -1042,6 +1042,15 @@ func (tc *TypeChecker) indexUnder(indexExpr ast.Expression, name string, arr *Ar
 			}
 		}
 	}
+	if tc.indexDecisionHook != nil {
+		var live []extentFact
+		for _, fact := range tc.extentFacts {
+			if !fact.dead {
+				live = append(live, fact)
+			}
+		}
+		tc.indexDecisionHook(live, indexExpr, name, arr, proven)
+	}
 	return proven
 }
 

@@ -61,9 +61,17 @@ FOP_SCVTF: u32 = 10
 FOP_UCVTF: u32 = 11
 FOP_FCVTZS: u32 = 12
 FOP_FCVTZU: u32 = 13
+// Integer division as an uninterpreted operation (asm/floats_ops.go udiv,
+// sdiv): the quotient; a remainder is a - (a / b) * b.
+FOP_UDIV: u32 = 14
+FOP_SDIV: u32 = 15
+// The RV64 lane's quotients (all ones for a zero divisor); the theorem
+// lowering never builds them.
+FOP_RV_UDIV: u32 = 16
+FOP_RV_SDIV: u32 = 17
 
 // fop_arity is an operation's operand count.
-fop_arity: (op: u32): u32 = op == FOP_FMA ? { u32(3) } | { (op == FOP_FSQRT || op >= FOP_FCVT) ? { u32(1) } | { u32(2) } }
+fop_arity: (op: u32): u32 = op == FOP_FMA ? { u32(3) } | { (op == FOP_FSQRT || (op >= FOP_FCVT && op <= FOP_FCVTZU)) ? { u32(1) } | { u32(2) } }
 
 // The select slot key of an operation at a width: apart from every span's
 // (the spans are numbered from 0).

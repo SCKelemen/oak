@@ -126,6 +126,12 @@ func TestE2ENativeArrays(t *testing.T) {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
+	// A load from an owned array at a data-dependent index reads the
+	// elements merged under the guarded index, on both sides
+	// (docs/spec/94-assembler.md §8, frame loads at a data-dependent index).
+	if !strings.Contains(joined, "asm unit signed_bytes: proven equal to its Oak body") {
+		t.Errorf("signed_bytes must be proven through the guarded element load; diagnostics:\n%s", joined)
+	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_arrays_c", New().WithSource("arrays.oak", nativeArrayProgram)); abnormal || code != 42 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)
 	}

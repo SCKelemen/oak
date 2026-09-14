@@ -55,11 +55,13 @@ func TestRV64SailBridgeBuilds(t *testing.T) {
 	// rebuild the dependency in place.
 	export := filepath.Join("..", "external", "sail-riscv", "build", "model", "Lean_RV64D", ".lake", "build", "lib", "lean", "LeanRV64D.olean")
 	if _, err := os.Stat(export); err != nil {
-		t.Skip("the Sail RISC-V Lean export is not built under external/sail-riscv (see spec/lean-sail/README.md)")
+		requireOracle(t, "the Sail RISC-V Lean export is not built under external/sail-riscv (see spec/lean-sail/README.md)")
+		return
 	}
 	lake, err := exec.LookPath("lake")
 	if err != nil {
-		t.Skip("lake not present")
+		requireOracle(t, "lake not present")
+		return
 	}
 	cmd := exec.Command(lake, "build")
 	cmd.Dir = filepath.Join("..", "spec", "lean-sail")
@@ -94,7 +96,8 @@ func TestRV64SailBridgeStubsMatchSail(t *testing.T) {
 	prelude, preErr := os.ReadFile(filepath.Join(export, "LeanRV64D", "Prelude.lean"))
 	defs, defErr := os.ReadFile(filepath.Join(export, "LeanRV64D", "Defs.lean"))
 	if len(libraryFiles) == 0 || preErr != nil || defErr != nil {
-		t.Skip("the Sail Lean library and export are not fetched under external/sail-riscv")
+		requireOracle(t, "the Sail Lean library and export are not fetched under external/sail-riscv")
+		return
 	}
 	normalize := func(text string) string {
 		return strings.Join(strings.Fields(text), " ")

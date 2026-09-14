@@ -49,9 +49,24 @@ it (a test, a debug assertion). The logic is Oak's `Bool`: conjunction
 `&&`, disjunction `||`, negation `!`, implication spelled `!a || b` or
 `a ? b | true`, equality `==` including the structural equality of sum
 types and records (`30-adts-patterns.md` §14, `40-records.md` §16), and
-case analysis by `match`. There is no separate proposition language and no
-quantifier syntax: `∀` is the parameter list, and an existential is stated
-by the function that produces the witness.
+case analysis by `match`, and the bounded quantifiers `forall (x: T) {
+… }` and `exists (x: T) { … }` over finite domains — `Bool`, the 8- and
+16-bit integers, payload-free sum types (`10-syntax.md` §3e). There is no
+separate proposition language: the outer `∀` is the parameter list, a
+quantifier inside the body is an ordinary `Bool` expression the program
+can evaluate, and an existential over a wider type is stated by the
+function that produces the witness. In the exhaustive rung a quantifier
+is the interpreter's enumeration; at the bit level each binder is a fresh
+leaf of the blast and the quantifier is eliminated from the body's
+diagram bit by bit — `forall` the conjunction and `exists` the disjunction
+of the two cofactors at each of the binder's variables (Shannon's
+expansion; under the clause engine the domain is expanded, up to 256
+values) — so `exists (x: u8) { u32(x) == (y & u32(255)) }` over a `u32`
+parameter decides in a few hundred nodes, and a counterexample names the
+theorem's parameters only. A binder over a sum type is decided by
+enumeration (the bit level takes `Bool` and the integers); the Lean
+projection (§5) renders a quantifier as `List.all`/`List.any` over the
+explicit list of the domain, so `decide` evaluates the same enumeration.
 
 Shape (`OAK-V0001`): a theorem is monomorphic (state it at the types it is
 about), has no receiver, no variadic tail, no effect clauses, and no
@@ -175,7 +190,7 @@ the checker and are the next `decided` rung.
 ## 4. `oak prove`
 
 ```text
-oak prove [-lean out.lean [-check [-lean-binary lean]]] [-cases N] [-solver oak|go|sat] [-cnf dir] [dir|file.oak]
+oak prove [-lean out.lean [-check [-lean-binary lean]]] [-cases N] [-solver oak|go|sat|self] [-cnf dir] [-conflicts N] [dir|file.oak]
 ```
 
 type-checks the package (a directory through the module loader, or one
@@ -233,7 +248,14 @@ A verdict without an accepted certificate, and a model the clause engine
 does not confirm, change nothing and are reported as such: the solver is
 untrusted, the checkers settle the row. An invariant candidate's summary
 row is read through its generated base and step obligations, since the
-predicate alone is not a theorem over every state. `-cnf dir` writes every bit-level
+predicate alone is not a theorem over every state. `-conflicts N` is the
+conflicts the solver written in Oak may spend on one obligation, on the
+Go-driven rung and inside `-solver self` alike; by default the budget
+scales with the obligation — 200,000 or 100 per clause, whichever is
+larger (`sat_conflicts`), so a 6,442-clause extents row that needs 562,050
+conflicts closes in the corpus while the one needing 1.4 million gives up
+cheaply — and `-conflicts N` sets a flat budget instead; a row past the
+budget keeps the ladder's verdict and says the rung gave no verdict. `-cnf dir` writes every bit-level
 obligation's clauses as DIMACS (`name.cnf`) for any solver or checker to
 read; the clause engine agrees with the diagram engine input for input over
 the corpus (`prove/lrat_test.go`), the two checkers accept and refuse the
@@ -462,7 +484,7 @@ the toolchain.
 | `chain_error`, `tree_is_grouping`, `groupings_differ` | `reduce.chain` over `n` values is within `((1+u)^(n−1) − 1) Σ\|xᵢ\|`; `reduce.tree` is the rounded sum of a grouping of the leaves; two groupings differ by at most the sum of their bounds (`55-parallelism.md` §4, `order bounded`) | proved in Lean |
 | `tree_depth_log`, `tree_error_log` | the tree's grouping has depth at most `bitlen n` (`⌊log₂ n⌋ + 1`), so `reduce.tree` over `n` values is within `((1+u)^(⌊log₂ n⌋+1) − 1) Σ\|xᵢ\|` (`55-parallelism.md` §4) | proved in Lean |
 
-The decider models an `f32` or `f64` as its bit pattern (`asm/floats_lowering.go`): negation, abs, copysign, the classifiers, the comparisons, `min`, `max`, and `total_order` are the circuits `Oak.FloatBits` defines. Arithmetic, `sqrt`, `fma`, `min_num`/`max_num` beside a NaN, and the width and integer conversions are uninterpreted operation terms (`asm/floats_ops.go`, `Oak.Uninterpreted`): a fresh value shared by every application of one operation to equal operand bits, so a law holds when it holds for every function in the operation's place — equal operand patterns give equal results (`sqrt(abs(-x))` is `sqrt(abs(x))`), nothing algebraic (`x + y == y + x` is refuted: two applications, `TestFloatBitLevel`). A NaN operand of `min`/`max` yields the `fnan` operation with the exponent and quiet bits forced: a quiet NaN whose payload the platform's `a + b` chooses, so `is_nan(min(x, y))` is decided and no law about the payload can be. An application whose operand bits are all fixed by the term — a literal, a mask no parameter reaches — folds to its IEEE value when the term is built (`Oak.KnownBits`), in the Go lowering and the lowering written in Oak alike. A call to a program function returning `f32` or `f64` is a float of that width in both lowerings — its body inlines, so `-diff(x, y)` flips the sign bit of `x - y` (`neg_of_call`, `call_is_its_body`) — and a prefix operand carries its contract: `f64_round_i64(-n)` converts a signed 64-bit source, the same application as `f64_round_i64(i64(0) - n)` (`from_signed_of_neg`). Rounding (`floor`, `ceil`, `trunc`, `round`, `round_even`) stays open at this rung; those laws live in `Oak.Floats`.
+The decider models an `f32` or `f64` as its bit pattern (`asm/floats_lowering.go`): negation, abs, copysign, the classifiers, the comparisons, `min`, `max`, and `total_order` are the circuits `Oak.FloatBits` defines. Arithmetic, `sqrt`, `fma`, `min_num`/`max_num` beside a NaN, and the width and integer conversions are uninterpreted operation terms (`asm/floats_ops.go`, `Oak.Uninterpreted`): a fresh value shared by every application of one operation to equal operand bits, so a law holds when it holds for every function in the operation's place — equal operand patterns give equal results (`sqrt(abs(-x))` is `sqrt(abs(x))`), nothing algebraic (`x + y == y + x` is refuted: two applications, `TestFloatBitLevel`). A NaN operand of `min`/`max` yields the `fnan` operation with the exponent and quiet bits forced: a quiet NaN whose payload the platform's `a + b` chooses, so `is_nan(min(x, y))` is decided and no law about the payload can be. An application whose operand bits are all fixed by the term — a literal, a mask no parameter reaches — folds to its IEEE value when the term is built (`Oak.KnownBits`), in the Go lowering and the lowering written in Oak alike. A call to a program function returning `f32` or `f64` is a float of that width in both lowerings — its body inlines, so `-diff(x, y)` flips the sign bit of `x - y` (`neg_of_call`, `call_is_its_body`) — and a prefix operand carries its contract: `f64_round_i64(-n)` converts a signed 64-bit source, the same application as `f64_round_i64(i64(0) - n)` (`from_signed_of_neg`). Integer `/` and `%` by a divisor that is not a constant power of two are the same kind of term: the quotient an uninterpreted `udiv`/`sdiv` of the operands, the remainder `a - (a / b) * b` (`Oak.IntegerDivision`), a zero divisor a trap obligation — so `rem_is_sub_div` and `signed_rem_is_sub_div` are decided by structure and `div_same_operands` by functional consistency (`spec/oak/intrinsics.oak`). Rounding (`floor`, `ceil`, `trunc`, `round`, `round_even`) stays open at this rung; those laws live in `Oak.Floats`.
 
 | Discharge law (`Oak.Discharge`, `spec/oak/discharge.oak`) | Statement | Rung |
 | --- | --- | --- |
@@ -503,7 +525,11 @@ implements and decided exhaustively. The instruction functions decide because th
 `arm64.rev32`, `rbit`, `clz`, and `cnt` to the verifier's own instruction
 terms — the semantics the assembler lane is checked against — with `cnt`
 as a population-count term (an adder tree over the operand's bits), and
-divides by an unsigned constant power of two as a shift or a mask. Floating-point
+divides by an unsigned constant power of two as a shift or a mask, and by
+any other divisor through the uninterpreted quotient `udiv`/`sdiv` with the
+remainder `a - (a / b) * b` (`94-assembler.md` §8; `20-types.md` §11.1: a
+zero divisor traps — a recorded obligation under the theorem decider, the
+machine's own guard under the asm verifier). Floating-point
 arithmetic, sqrt, fma, and the conversions lower to *uninterpreted*
 operation terms (`asm/floats_ops.go`, `94-assembler.md` §8): a theorem
 whose two sides apply the same IEEE operations to the same operands in the
@@ -671,11 +697,13 @@ In order of payoff, each reusing a surface that exists:
   whole program compiled through the verified native backend
   (`94-assembler.md` §9, sixteenth increment; `OAK_SOLVER_NATIVE=1`):
   879 of its 954 functions lowered to machine code the seam checker
-  admits and the Oak assembler encodes, 281 of them proven equal to
+  admits and the Oak assembler encodes, 429 of them proven equal to
   their Oak bodies — their results, the package cells they write, and,
   since the twenty-eighth increment, the span memories they store
   through, compared at a fresh index, a callee's stores reaching its
-  caller through the call summary since the twenty-ninth — the C build the oracle with
+  caller through the call summary since the twenty-ninth, the stores of
+  a data-dependent loop as loop memory inducted from equal entry
+  memories — the C build the oracle with
   identical rows over the corpus — verification carried to the object,
   with the verifier's reach the measure that remains; and the first performance step is
   measured there too: the source-level inliner reaching the prover's
@@ -725,10 +753,14 @@ In order of payoff, each reusing a surface that exists:
   engine, the two LRAT checkers, `Oak.RupCheck`, and the solver written in
   Oak (`prove/solver/sat.oak`) as the rung's default, with clause-database
   reduction, two-watched-literal propagation, minimization, Luby
-  restarts, bounded variable elimination at load, and failed-literal
+  restarts, bounded variable elimination at load, failed-literal
   probing before the search (a failed polarity learned as a unit, a
   literal implied by both polarities recorded through two implications
-  and their unit, every step a hint chain the checkers accept); the encoder's laws
+  and their unit, every step a hint chain the checkers accept), and
+  subsumption with self-subsuming resolution at load (a clause holding
+  another deleted, a clause holding another but for one negated literal
+  strengthened through a two-hint addition);
+  the encoder's laws
   in `Oak.Tseitin`, its code checked against them by truth table; and the
   clause engine as an Oak program beside `asm/cnf.go`, and the whole rung
   inside the prover written in Oak (`certify.oak`), so `-solver self` runs
@@ -741,9 +773,14 @@ In order of payoff, each reusing a surface that exists:
   widest extents rows (`vector_under_offset_bound`,
   `vector_under_literal_bound`) stop at the rung's two-hundred-thousand-
   conflict budget and close at 562,050 and 1,406,520 conflicts; probing
-  finds no unit in them (CaDiCaL needs 7 and 112 seconds). Next: the text
-  path's output buffered (one write per byte today, half the wall time of
-  a long certificate), and a budget the caller can raise for a row. The BDD's failure mode
+  finds no unit in them (CaDiCaL needs 7 and 112 seconds); `-conflicts N`
+  raises the budget for a run, and the solver's output is buffered (it was
+  one `write` call per byte: the first of those rows went from 101 to 10
+  seconds on the text path). The budget scales with the clause count by
+  default, so `vector_under_literal_bound` closes by certificate in the
+  corpus (`TestScaledBudgetClosesWideRow`). Subsumption and
+  strengthening landed last (`TestOakSATSubsumption`), the last technique
+  the notes list ahead of any GPU question. The BDD's failure mode
   is the node budget on multipliers and wide aggregates, which CDCL
   solvers treat routinely. The rung is the one Lean's `bv_decide` already
   runs:

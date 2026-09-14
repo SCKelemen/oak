@@ -307,8 +307,51 @@ func (b *bdd) ite(c, t, e int) int {
 	return b.apply(opOr, b.apply(opAnd, c, t), b.apply(opAnd, b.not(c), e))
 }
 
+// restrict is the cofactor of e at variable = value: the diagram with the
+// variable's nodes replaced by the chosen branch (Oak.BddComplement's
+// cofactors through complemented edges). Variables are ordered ascending
+// from the root, so a subgraph rooted past the variable is unchanged.
+func (b *bdd) restrict(e, variable int, value bool) int {
+	memo := map[int]int{}
+	var walk func(e int) int
+	walk = func(e int) int {
+		if e>>1 == 0 || b.variableOf(e) > variable {
+			return e
+		}
+		if done, seen := memo[e]; seen {
+			return done
+		}
+		var out int
+		if b.variableOf(e) == variable {
+			if value {
+				out = b.high(e)
+			} else {
+				out = b.low(e)
+			}
+		} else {
+			out = b.mk(b.variableOf(e), walk(b.low(e)), walk(b.high(e)))
+		}
+		memo[e] = out
+		return out
+	}
+	return walk(e)
+}
+
 // satisfyingPath assigns variables along one path from n to the true
 // terminal (every non-false node of a reduced BDD has such a path).
+// holdsUnder evaluates an edge under a variable assignment (a variable
+// the assignment lacks is false).
+func (b *bdd) holdsUnder(e int, assignment map[int]bool) bool {
+	for e>>1 != 0 {
+		if assignment[b.variableOf(e)] {
+			e = b.high(e)
+		} else {
+			e = b.low(e)
+		}
+	}
+	return e == bddTrue
+}
+
 func (b *bdd) satisfyingPath(e int) map[int]bool {
 	assignment := map[int]bool{}
 	for e>>1 != 0 {

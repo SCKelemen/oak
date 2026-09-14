@@ -49,6 +49,29 @@ def sra (a b : X) : X := a.sshiftRight (b.truncate 6).toNat
 def slt (a b : X) : X := if a.slt b then 1 else 0
 def sltu (a b : X) : X := if a.ult b then 1 else 0
 
+/-- The high halves of the 128-bit products (`mulhu`, `mulh`): the operands
+    zero- or sign-extended, as the verifier's `umulh`/`smulh` terms compute
+    them (`asm/isa_semantics.go`). -/
+def mulhu (a b : X) : X := ((a.zeroExtend 128 * b.zeroExtend 128) >>> 64).truncate 64
+def mulh (a b : X) : X := ((a.signExtend 128 * b.signExtend 128) >>> 64).truncate 64
+
+/-- The divisions at any width, totalized as the ISA says: a zero divisor
+    yields all ones for the quotient and the dividend for the remainder;
+    the signed overflow (the minimum by minus one) yields the dividend and
+    remainder zero (`rv64Divide` in `asm/isa_semantics.go`). The 64-bit
+    instances below are the register forms; the W forms compute at 32 bits
+    and sign-extend. -/
+def divuN {w : Nat} (a b : BitVec w) : BitVec w := if b = 0 then BitVec.allOnes w else a / b
+def remuN {w : Nat} (a b : BitVec w) : BitVec w := if b = 0 then a else a % b
+def divN {w : Nat} (a b : BitVec w) : BitVec w :=
+  if b = 0 then BitVec.allOnes w
+  else if a = BitVec.intMin w ∧ b = BitVec.allOnes w then a
+  else a.sdiv b
+def remN {w : Nat} (a b : BitVec w) : BitVec w :=
+  if b = 0 then a
+  else if a = BitVec.intMin w ∧ b = BitVec.allOnes w then 0
+  else a.srem b
+
 def divu (a b : X) : X := if b = 0 then BitVec.allOnes 64 else a / b
 def remu (a b : X) : X := if b = 0 then a else a % b
 def div (a b : X) : X :=
@@ -59,6 +82,31 @@ def rem (a b : X) : X :=
   if b = 0 then a
   else if a = BitVec.intMin 64 ∧ b = BitVec.allOnes 64 then 0
   else a.srem b
+
+theorem divu_eq_divuN (a b : X) : divu a b = divuN a b := rfl
+theorem remu_eq_remuN (a b : X) : remu a b = remuN a b := rfl
+theorem div_eq_divN (a b : X) : div a b = divN a b := rfl
+theorem rem_eq_remN (a b : X) : rem a b = remN a b := rfl
+
+/-- The W-form divisions (`divw`, `divuw`, `remw`, `remuw`): the low
+    halves divided at 32 bits with the same totalization, the result
+    sign-extended (the verifier's `rv.div*` terms at width 32, widened). -/
+def divuw (a b : X) : X := sextW (divuN (a.truncate 32) (b.truncate 32))
+def divw (a b : X) : X := sextW (divN (a.truncate 32) (b.truncate 32))
+def remuw (a b : X) : X := sextW (remuN (a.truncate 32) (b.truncate 32))
+def remw (a b : X) : X := sextW (remN (a.truncate 32) (b.truncate 32))
+
+/-- The pure parts of a load or store the verifier decides (`spanLoadRV64`,
+    `spanStoreRV64`, `frameAccessRV64` in `asm/rv64_verify.go`): the
+    effective address is the base plus the sign-extended 12-bit immediate;
+    a load's value is the element zero-extended (`lbu`, `lhu`, `lwu`) or
+    sign-extended (`lb`, `lh`, `lw`); a store's data is the register's low
+    bytes. The access itself — which element the address names, and that
+    it lies inside the span or the frame — is the checker's obligation. -/
+def effectiveAddress (base : X) (imm : BitVec 12) : X := base + imm.signExtend 64
+def loadValue {w : Nat} (unsigned : Bool) (v : BitVec w) : X :=
+  if unsigned then v.zeroExtend 64 else v.signExtend 64
+def storeData (w : Nat) (x : X) : BitVec w := x.truncate w
 
 /-- The W-forms are the 64-bit operation truncated and sign-extended: the
     verifier may compute either way. -/
@@ -174,6 +222,20 @@ theorem widen_truncate_u8 (v : BitVec 8) : (widen 8 false v).truncate 8 = v := b
   simp only [widen, sextW]; bv_decide
 theorem widen_truncate_i8 (v : BitVec 8) : (widen 8 true v).truncate 8 = v := by
   simp only [widen, sextW]; bv_decide
+
+/-- A 32-bit loop local carried zero-extended in a 64-bit register — an
+    RV64 `f` register under the file's low-bits convention, the low half of
+    an AArch64 `v` register, which every scalar write zero-fills
+    (`asm/loops.go`, the coupling's `zext` widening for `f`/`v` variables):
+    a body that reads the register at 32 bits and writes its result back
+    zero-extended preserves the coupling `r = zext x`, whatever the body's
+    function `f` — the float reduction's `fadd.s`/`fadd sN` over the
+    accumulator included. -/
+theorem zext_coupling_preserved (f : BitVec 32 → BitVec 32) (x : BitVec 32) (r : X)
+    (h : r = x.setWidth 64) : (f (r.setWidth 32)).setWidth 64 = (f x).setWidth 64 := by
+  subst h
+  have low : (x.setWidth 64).setWidth 32 = x := by bv_decide
+  rw [low]
 
 /-- A widened `u32` parameter is already a W-form fixed point: `sext.w`
     on it is the identity, which is why `addw` on two widened `u32`s is

@@ -769,6 +769,8 @@ fe_to_int: (x0: f64, w: u32, signed: Bool): u64 {
 // (a at width wa, which fixes a conversion's source format or integer
 // width; y and z at w).
 float_eval: (op: u32, w: u32, a: u64, y: u64, z: u64, wa: u32): u64 {
+  op == FOP_UDIV ? { (y & mask64(w)) == u64(0) ? { u64(0) } | { (a & mask64(w)) / (y & mask64(w)) } } | {
+  op == FOP_SDIV ? { int_sdiv(a, y, w) } | {
   (op == FOP_FADD || op == FOP_FSUB || op == FOP_FMUL || op == FOP_FDIV || op == FOP_FNAN) ? { fe_arith(op, w, a, y) } | {
   (op == FOP_FMINNM || op == FOP_FMAXNM) ? { fe_minmax(op, w, a, y) } | {
   op == FOP_FSQRT ? {
@@ -796,7 +798,25 @@ float_eval: (op: u32, w: u32, a: u64, y: u64, z: u64, wa: u32): u64 {
   } | {
   op == FOP_UCVTF ? { fe_bits(f64_round_u64(a), w) } | {
     fe_to_int(fe_f64(a, wa), w, op == FOP_FCVTZS)
-  } } } } } } }
+  } } } } } } } } }
+}
+
+// int_sdiv is the signed quotient of two w-bit patterns (Go's floatEval
+// "sdiv"): 0 for a zero divisor, the dividend negated for a divisor of -1
+// (the minimum wraps to itself), else the truncated quotient.
+int_sdiv: (a: u64, y: u64, w: u32): u64 {
+  m: u64 = mask64(w)
+  sign: u64 = u64(1) << u64(w - u32(1))
+  ya: u64 = y & m
+  ya == u64(0) ? { u64(0) } | {
+  ya == m ? { (u64(0) - a) & m } | {
+    neg_a: Bool = (a & sign) != u64(0)
+    neg_y: Bool = (ya & sign) != u64(0)
+    mag_a: u64 = neg_a ? { (u64(0) - a) & m } | { a & m }
+    mag_y: u64 = neg_y ? { (u64(0) - ya) & m } | { ya }
+    q: u64 = mag_a / mag_y
+    (neg_a != neg_y) ? { (u64(0) - q) & m } | { q }
+  } }
 }
 
 // t_float builds an operation term at width over its operands (y, z NONE
@@ -1414,23 +1434,37 @@ step_infix: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, f: u32, node: u32, widt
     }
   } | {
   (op == IOP_DIV || op == IOP_MOD) ? {
+    // Division and remainder (the Go lowering's rule): by an unsigned
+    // constant power of two a shift and a mask; otherwise the quotient
+    // is the uninterpreted udiv/sdiv of the operands at their contract
+    // width, the remainder a - (a / b) * b, and a zero divisor a trap
+    // obligation. Word 4 holds the divisor, word 5 the operands' width,
+    // word 6 the signedness.
     phase == u32(0) ? {
       contract: Contract = contract_of(lw, w, sx, node)
-      (contract.ok && !contract.signed) ? {
+      contract.ok ? {
         w[f + u32(3)] = u32(1)
-        push_frame_l(lw, w, F_EXPR, node_c(sx, node), width)
+        w[f + u32(5)] = contract.width == u32(0) ? { width } | { contract.width }
+        w[f + u32(6)] = contract.signed ? { u32(1) } | { u32(0) }
+        push_frame_l(lw, w, F_EXPR, node_c(sx, node), w[f + u32(5)])
       } | { fail_at(lw, w, u32(8)) }
     } | {
     phase == u32(1) ? {
-      v: u64 = tvalue(lw, w, b, ret)
-      (is_const(lw, w, b, ret) && v != u64(0) && (v & (v - u64(1))) == u64(0)) ? {
-        w[f + u32(4)] = ret
-        w[f + u32(3)] = u32(2)
-        push_frame_l(lw, w, F_EXPR, node_b(sx, node), width)
-      } | { fail_at(lw, w, u32(9)) }
+      w[f + u32(4)] = ret
+      w[f + u32(3)] = u32(2)
+      push_frame_l(lw, w, F_EXPR, node_b(sx, node), w[f + u32(5)])
     } | {
-      v2: u64 = tvalue(lw, w, b, w[f + u32(4)])
-      set_state(lw, w, LS_RET, op == IOP_MOD ? { t_binary(lw, w, b, BOP_AND, ret, t_const64(lw, w, b, v2 - u64(1), width)) } | { t_binary(lw, w, b, BOP_SHR, ret, t_const(lw, w, b, trailing_zeros(v2), width)) })
+      divisor: u32 = w[f + u32(4)]
+      cw: u32 = w[f + u32(5)]
+      signed: Bool = w[f + u32(6)] != u32(0)
+      v2: u64 = tvalue(lw, w, b, divisor)
+      (!signed && is_const(lw, w, b, divisor) && v2 != u64(0) && (v2 & (v2 - u64(1))) == u64(0)) ? {
+        set_state(lw, w, LS_RET, t_adapt(lw, w, b, op == IOP_MOD ? { t_binary(lw, w, b, BOP_AND, ret, t_const64(lw, w, b, v2 - u64(1), cw)) } | { t_binary(lw, w, b, BOP_SHR, ret, t_const(lw, w, b, trailing_zeros(v2), cw)) }, width))
+      } | {
+        add_trap(lw, w, b, t_cmp(lw, w, b, CC_EQ, divisor, t_const(lw, w, b, u32(0), cw)))
+        quotient: u32 = t_float(lw, w, b, signed ? { FOP_SDIV } | { FOP_UDIV }, cw, ret, divisor, NONE)
+        set_state(lw, w, LS_RET, t_extend(lw, w, b, op == IOP_MOD ? { t_binary(lw, w, b, BOP_SUB, ret, t_binary(lw, w, b, BOP_MUL, quotient, divisor)) } | { quotient }, cw, width, signed))
+      }
       pop_frame_l(lw, w)
     } }
   } | {

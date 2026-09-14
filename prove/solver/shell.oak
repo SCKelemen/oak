@@ -44,8 +44,7 @@ write_u64: (v: u64): () {
     buf[start] = u8(48) + u8_trunc_u32(u32_trunc_u64(n % u64(10)))
     n = n / u64(10)
   }
-  digits: []u8 = view(&buf)
-  host.host_write_all(host.host_stdout(), subslice(digits, start, u32(24) - start)) ? { } | { }
+  write_span(view(&buf), start, u32(24) - start)
 }
 
 txt_decided: (): () {

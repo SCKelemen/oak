@@ -145,3 +145,51 @@ func TestOakShellCertificates(t *testing.T) {
 		t.Fatalf("a certificate row disagrees:\n%s", text)
 	}
 }
+
+// -conflicts bounds the solver on both paths: under a budget of one
+// conflict every row that needs learning gives up, on the Go-driven rung
+// and inside the shell, and the rows keep the ladder's verdict.
+func TestCertificateRungBudget(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := proveCommand([]string{"-solver", "sat", "-conflicts", "1", filepath.Join("spec", "oak", "machines.oak")}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s%s", code, out.String(), errOut.String())
+	}
+	if text := out.String(); !strings.Contains(text, "the solver gave up") || strings.Contains(text, "an LRAT certificate of") {
+		t.Fatalf("-solver sat -conflicts 1 must give up on every learned row:\n%s", text)
+	}
+	out.Reset()
+	errOut.Reset()
+	code = proveCommand([]string{"-solver", "self", "-cross", "none", "-conflicts", "1", filepath.Join("spec", "oak", "machines.oak")}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s%s", code, out.String(), errOut.String())
+	}
+	if text := out.String(); !strings.Contains(text, "the certificate rung gave no verdict") || strings.Contains(text, "an LRAT certificate of") || !strings.Contains(text, "bounded__step: at the bit level") {
+		t.Fatalf("-solver self -conflicts 1 must give up on every learned row and keep the diagram's verdict:\n%s", text)
+	}
+}
+
+// The default budget scales with the obligation: the extents row that
+// needs 562,050 conflicts closes by certificate under the scaled budget
+// (100 per clause over 6,442 clauses), while the row that needs 1.4
+// million still gives up, so the corpus pays only for what closes.
+func TestScaledBudgetClosesWideRow(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := proveCommand([]string{"-solver", "sat", filepath.Join("spec", "oak", "extents.oak")}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s%s", code, out.String(), errOut.String())
+	}
+	rows := map[string]string{}
+	for _, line := range strings.Split(out.String(), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			rows[strings.TrimSuffix(fields[1], ":")] = line
+		}
+	}
+	if row := rows["vector_under_literal_bound"]; !strings.Contains(row, "an LRAT certificate of") {
+		t.Fatalf("vector_under_literal_bound must close by certificate under the scaled budget:\n%s", row)
+	}
+	if row := rows["vector_under_offset_bound"]; !strings.Contains(row, "the solver gave up") {
+		t.Fatalf("vector_under_offset_bound is expected to give up under the scaled budget:\n%s", row)
+	}
+}
