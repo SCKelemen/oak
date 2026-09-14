@@ -3,6 +3,7 @@ package nativegen
 import (
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/token"
 )
 
 // Word fusion (docs/spec/94-assembler.md §9, wide loads): the little-endian
@@ -22,6 +23,11 @@ type wordAssembly struct {
 	span  string
 	index ast.Expression
 	bytes int64
+	// proven: the typechecker proved every byte access in range, so under
+	// Lane.ElideProven the load needs no guard of its own — the source's
+	// own guard (`len(chunk) >= at + 8`) is the slack fact the checker
+	// admits the wide access under (sumFacts, docs/spec/94-assembler.md §7).
+	proven bool
 }
 
 // wordTerm is one term of the or tree: the span, the index base, the
@@ -31,6 +37,7 @@ type wordTerm struct {
 	base   ast.Expression
 	offset int64
 	shift  int64
+	tok    *token.Token // the element access, for the typechecker's proof
 }
 
 // recognizeWordAssembly reads an `|` expression as a word assembly at the
@@ -73,7 +80,13 @@ func (g *generator) recognizeWordAssembly(e *ast.InfixExpression, typ scalar) (w
 	if g.callsProgramFunction(first.base) {
 		return wordAssembly{}, false
 	}
-	return wordAssembly{span: first.span, index: first.base, bytes: width}, true
+	proven := g.elide && g.tc != nil
+	for _, t := range terms {
+		if t.tok == nil || !g.tc.IndexProven(*t.tok) {
+			proven = false
+		}
+	}
+	return wordAssembly{span: first.span, index: first.base, bytes: width, proven: proven}, true
 }
 
 // wordTermOf reads one term: `conv(v[base])`, `conv(v[base + k])`, or
@@ -116,7 +129,8 @@ func (g *generator) wordTermOf(expr ast.Expression, typ scalar) (wordTerm, bool)
 			base, offset = sum.Left, k
 		}
 	}
-	return wordTerm{span: spanName.Value, base: base, offset: offset, shift: shift}, true
+	tok := access.Token
+	return wordTerm{span: spanName.Value, base: base, offset: offset, shift: shift, tok: &tok}, true
 }
 
 // fusedWordLoad emits the recognized word assembly as one wide load under
@@ -127,17 +141,22 @@ func (g *generator) fusedWordLoad(w wordAssembly, typ scalar) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	limit, err := g.alloc(scalars["u32"])
-	if err != nil {
-		return 0, err
+	if w.proven {
+		// Every byte proven in range: the source's guard is the fact.
+		g.elided++
+	} else {
+		limit, err := g.alloc(scalars["u32"])
+		if err != nil {
+			return 0, err
+		}
+		g.usedTrap = true
+		g.emit("cmp", wr(sp.lenReg), imm(w.bytes))
+		g.branch("lo", g.trap)
+		g.emit("sub", wr(limit), wr(sp.lenReg), imm(w.bytes))
+		g.emit("cmp", wr(idx), wr(limit))
+		g.branch("hi", g.trap)
+		g.release(limit)
 	}
-	g.usedTrap = true
-	g.emit("cmp", wr(sp.lenReg), imm(w.bytes))
-	g.branch("lo", g.trap)
-	g.emit("sub", wr(limit), wr(sp.lenReg), imm(w.bytes))
-	g.emit("cmp", wr(idx), wr(limit))
-	g.branch("hi", g.trap)
-	g.release(limit)
 	out, err := g.alloc(typ)
 	if err != nil {
 		return 0, err

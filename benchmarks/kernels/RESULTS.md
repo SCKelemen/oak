@@ -224,4 +224,9 @@ What remains, in the program's order:
    register allocator that keeps the flattened body's locals in registers.
 4. **Loop-invariant header arithmetic** (`tiled`'s `len(a) - 8` recomputed
    every iteration under the slack idiom).
+5. **The typechecker's extent fact for `len(v) >= i + K`** (`word_at`'s
+   guard with `i` a parameter): the C backend keeps the eight checked
+   accessors and the fused native load keeps its own slack guard, since
+   neither side's prover reads that guard as the bound; the fact would
+   drop both.
 
