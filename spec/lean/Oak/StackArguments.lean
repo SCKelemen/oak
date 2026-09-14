@@ -1,4 +1,5 @@
 import Std.Tactic.BVDecide
+import Oak.RiscV
 
 /-!
 # Oak.StackArguments — parameters in the caller's outgoing area
@@ -37,5 +38,13 @@ theorem bool_slot_roundtrip (b : BitVec 1) : (b.setWidth 32).setWidth 1 = b := b
     bytes eight on: the two slots are disjoint. -/
 theorem span_pair_disjoint (off : Nat) : off + 8 ≤ off + 8 ∧ off + 8 + 4 > off + 8 := by
   omega
+
+/-- On the RV64 lane a scalar beyond the registers lies in an XLEN-sized
+    slot widened as a register holds it (`Oak.RiscV.widen`): the callee's
+    `ld` reads back the canonical form, whose low bits are the parameter —
+    `Oak.RiscV.widen_truncate_u8`, `widen_truncate_u32` and their signed
+    twins state it; the slot model adds nothing to them. -/
+theorem rv64_slot_is_widened (v : BitVec 8) : (Oak.RiscV.widen 8 false v).truncate 8 = v :=
+  Oak.RiscV.widen_truncate_u8 v
 
 end Oak.StackArguments

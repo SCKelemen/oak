@@ -144,3 +144,53 @@ ret_2:
 		t.Fatalf("dropping the halfword parameter must be a mismatch, got %s: %s", v.Kind, v.Message)
 	}
 }
+
+// The RV64 lane: a scalar beyond a0–a7 lies widened in an XLEN-sized slot
+// of the caller's outgoing area, read by `ld` in the prologue.
+func TestRV64VerifyStackParameters(t *testing.T) {
+	decl := "nine: (a, b, c, d, e, f, g, h: u32, i: u8) -> u32"
+	body := `  bind a0 = a
+  bind a1 = b
+  bind a2 = c
+  bind a3 = d
+  bind a4 = e
+  bind a5 = f
+  bind a6 = g
+  bind a7 = h
+  bind [sp, #0] = i
+  clobber t0, t1
+  frame 16
+  addi sp, sp, -16
+  sd s1, 0(sp)
+  ld t0, 16(sp)
+  mv s1, t0
+head_1:
+  mv t0, a0
+  mv t1, a1
+  addw t0, t0, t1
+  mv t1, a2
+  addw t0, t0, t1
+  mv t1, a3
+  addw t0, t0, t1
+  mv t1, a4
+  addw t0, t0, t1
+  mv t1, a5
+  addw t0, t0, t1
+  mv t1, a6
+  addw t0, t0, t1
+  mv t1, a7
+  addw t0, t0, t1
+  mv t1, s1
+  addw t0, t0, t1
+  mv a0, t0
+ret_2:
+  ld s1, 0(sp)
+  addi sp, sp, 16
+  ret`
+	if v := rv64Verify(t, decl, "a + b + c + d + e + f + g + h + u32(i)", body); v.Kind != VerdictProven {
+		t.Fatalf("nine must be proven on RV64, got %s: %s", v.Kind, v.Message)
+	}
+	if v := rv64Verify(t, decl, "a + b + c + d + e + f + g + h", body); v.Kind != VerdictMismatch {
+		t.Fatalf("dropping the stack parameter must be a mismatch, got %s: %s", v.Kind, v.Message)
+	}
+}
