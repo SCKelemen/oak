@@ -111,6 +111,12 @@ func TestE2ENativeNestedRecords(t *testing.T) {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
+	// corner_sum asserts before it computes: the assert is the trap arm
+	// the executor drops (docs/spec/94-assembler.md §8, thirty-second
+	// increment), so the body is proven on the paths where it held.
+	if !strings.Contains(joined, "asm unit corner_sum: proven") {
+		t.Errorf("corner_sum was not proven by the verifier; diagnostics:\n%s", joined)
+	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_nested_c", New().WithSource("nested.oak", nativeNestedProgram)); abnormal || code != 42 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)
 	}

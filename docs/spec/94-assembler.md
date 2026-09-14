@@ -2250,6 +2250,61 @@ whole root package runs on a busy host. Pinned:
 arguments on the stack of mixed widths — `u16`, `u32`, `u64`, a `Bool` —
 summarized into a unit caller proven in its span and into a caller
 proven in its result and its span; the C backend the oracle).
+
+**Thirty-first increment — integer division as an uninterpreted
+operation (2026-09-15; `asm/floats_ops.go`, `asm/verify.go`,
+`asm/rv64_verify.go`, `Oak.IntegerDivision`).** `/` and `%` by a divisor
+that is not a constant power of two left a unit trusted on both lanes
+("operator / (only by an unsigned constant power of two)"): the diagrams
+have no division, and a 32-bit multiply of two unknowns exceeds every
+budget. The increment treats the quotient as the same kind of term the
+floats are — `udiv`/`sdiv` in the operation table, an application shared
+under Ackermann's functional consistency by every side that divides the
+same operands (`Oak.Uninterpreted.ackermann_sound`) — and spells every
+remainder as `a - (a / b) * b`: the Oak `%`, the AArch64 lowering's
+`sdiv`/`udiv` followed by `msub`, and RISC-V's `rem`/`remu`, which the
+RV64 executor expands the same way (`rv64ALUTerm`). That spelling is
+the machines' definition (`Oak.IntegerDivision.umod_eq_sub_udiv_mul` at
+every width through the natural numbers, `srem_eq_sub_sdiv_mul_8` at the
+bit level; RISC-V unprivileged spec §7.2, Arm's `msub` after a zero
+quotient), so an RV64 `remw` and an AArch64 `msub` are one term. Both
+lanes trap on a zero divisor before dividing and the Oak semantics trap
+too, so the applications compared lie off `b = 0`; the theorem decider
+states the zero divisor as a trap obligation, and the witness evaluation
+returns the AArch64 result there. A structural decision follows the
+diagrams' budget in the straight-line decider and precedes them in the
+coupling's obligations (`termEquivalent`: equal in the low bits up to
+the width adapters' masks and the RV64 extension idiom `(x shl 32) sar
+32`): `(a / b) * 100 + a % b` is
+the same term on both sides once the quotient is shared, and `divmod`,
+`quot`, and `rem` are proven on both lanes (`asm/division_test.go`;
+swapped operands and signed against unsigned division are mismatches).
+The lowering written in Oak mirrors the rule (`FOP_UDIV`, `FOP_SDIV`, the
+trap, `int_sdiv` for the fold), and `spec/oak/intrinsics.oak` states
+`rem_is_sub_div`, `signed_rem_is_sub_div`, and `div_same_operands`.
+
+**Thirty-second increment — parameters in the caller's outgoing area
+(2026-09-15; `asm/verify.go` executeBodyChunk, `asm/unit.go`,
+`Oak.StackArguments`).** The thirtieth increment read a callee's stack
+arguments from the caller's side; the callee's own side still refused
+them ("parameters beyond the register contract (the incoming stack area
+is not modeled)"), so `nine`, `twelve`, `tail_sum`, and `records_last`
+of the stack-argument corpus were trusted. The executor now holds such
+a parameter in the frame slot at its offset above the entry sp (the
+binding's `Stack`, the layout the checker and the backend share), at the
+size the caller stored it — a narrow scalar its own bytes, a `Bool` the
+four of the C int, a 64-bit scalar eight, a span its base at the offset
+and its length eight on, a by-value record its chunks, a by-reference one
+its address — and the body's `ldrb`/`ldrh`/`ldr` of the slot reads the
+parameter as it reads any frame slot (`Oak.StackArguments`: the slot
+round-trips at its width, the span pair's slots are disjoint). A unit may
+now spell the binding as the compiler does, `bind [sp, #N] = p`, under
+the packed convention. `nine` is proven; `twelve`, a 64-bit sum of
+twelve unknowns, reads them all and stays evidence at the diagrams'
+budget; dropping a stack parameter from the body is a mismatch
+(`asm/stack_params_test.go`); `tail_sum`, whose span arrives on the
+stack and is walked in a loop, is proven.
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to

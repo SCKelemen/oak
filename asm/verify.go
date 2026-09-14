@@ -980,9 +980,45 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 			break
 		}
 		if binding.OnStack {
-			// A parameter in the caller's outgoing area: the executor does
-			// not model the incoming stack (a body reading it stays trusted).
-			return nil, nil, "parameters beyond the register contract (the incoming stack area is not modeled)", false
+			// A parameter in the caller's outgoing area: the frame slot at
+			// Stack bytes above the entry sp holds it, at the size the
+			// caller stored it (classifyArguments: a narrow scalar its own
+			// bytes, a Bool the four of the C int, a 64-bit scalar eight),
+			// a span's base at Stack and its 32-bit length at Stack+8, a
+			// by-value record its chunks, a by-reference one its address
+			// (docs/spec/94-assembler.md §8, thirty-second increment;
+			// Oak.StackArguments). The body's loads then read the
+			// parameters as they read any frame slot.
+			if state.frame == nil {
+				state.frame = map[int64]frameSlot{}
+			}
+			switch {
+			case composites[binding.Param].leaves != nil:
+				cp := composites[binding.Param]
+				if cp.size > 16 {
+					state.storeSlot(binding.Stack, paramTerm(spanBaseName(binding.Param), 64), 8)
+					continue
+				}
+				state.storeSlot(binding.Stack, chunkTerm(cp.leaves, 0, input), 8)
+				if cp.size > 8 {
+					state.storeSlot(binding.Stack+8, chunkTerm(cp.leaves, 1, input), 8)
+				}
+			case spans[binding.Param] != 0:
+				state.storeSlot(binding.Stack, paramTerm(spanBaseName(binding.Param), 64), 8)
+				state.storeSlot(binding.Stack+8, input(spanLenName(binding.Param), 32), 4)
+			case params[binding.Param] == ClassX:
+				state.storeSlot(binding.Stack, input(binding.Param, 64), 8)
+			case boolParams[binding.Param]:
+				state.storeSlot(binding.Stack, zeroExtend(input(binding.Param, 1), 32), 4)
+			default:
+				bits := declared[binding.Param]
+				if bits < 32 {
+					state.storeSlot(binding.Stack, input(binding.Param, bits), int64(bits+7)/8)
+				} else {
+					state.storeSlot(binding.Stack, input(binding.Param, 32), 4)
+				}
+			}
+			continue
 		}
 		if cp, isComposite := composites[binding.Param]; isComposite {
 			if cp.size > 16 {
@@ -2428,6 +2464,17 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 				hole := constTerm(^mask(int(fieldWidth))&mask(width), width)
 				state.write(dest, binaryTerm("or", binaryTerm("and", current, hole), extracted))
 			}
+		case "udiv", "sdiv":
+			// The quotient as the uninterpreted operation (asm/floats_ops.go);
+			// the lowering's msub then forms the remainder a - q*b.
+			dest := instr.Operands[0].(Register)
+			width := widthOf(dest.Class)
+			n, okN := operandTerm(state, instr.Operands[1], width)
+			m, okM := operandTerm(state, instr.Operands[2], width)
+			if !okN || !okM {
+				return "unbound register read", false
+			}
+			state.write(dest, floatTerm(instr.Mnemonic, width, n, m))
 		case "madd", "msub":
 			dest := instr.Operands[0].(Register)
 			width := widthOf(dest.Class)
@@ -2659,6 +2706,10 @@ type oakLowering struct {
 	loops     []*loopEvent         // data-dependent loops met, in creation order
 	loopStack []int                // indices of the loops whose bodies are being lowered
 	fresh     map[string]int       // loop-carried fresh symbols -> width
+	// arch is the lane an asm unit's Oak body is lowered against ("" for
+	// the theorem decider): the RV64 lane's quotients are its own
+	// operations (asm/floats_ops.go rv.udiv, rv.sdiv).
+	arch string
 	// resultChunk: for a record result of two register chunks, the chunk
 	// this lowering's resultTerm packs (Verify runs one chunk at a time).
 	resultChunk int
@@ -3178,7 +3229,9 @@ func (lo *oakLowering) lowerAssert(expr ast.Expression) (reason string, isAssert
 	if !ok {
 		return reason, true, false
 	}
-	lo.addTrap(binaryTerm("xor", truncate(cond, 1), constTerm(1, 1)))
+	if lo.trapsTracked {
+		lo.addTrap(binaryTerm("xor", truncate(cond, 1), constTerm(1, 1)))
+	}
 	return "", true, true
 }
 
@@ -4958,25 +5011,49 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		}
 		if e.Operator == "/" || e.Operator == "%" {
 			// Unsigned division and remainder by a constant power of two
-			// are a shift and a mask; anything else stays outside the
-			// subset (the Lean projection states it).
-			if _, signed, isScalar := lo.operandContract(e); isScalar && !signed {
-				right, reason, okR := lo.lower(e.Right, width)
-				if !okR {
-					return nil, reason, false
-				}
-				if right.kind == termConst && right.value != 0 && right.value&(right.value-1) == 0 {
-					left, reason, okL := lo.lower(e.Left, width)
-					if !okL {
-						return nil, reason, false
-					}
-					if e.Operator == "%" {
-						return binaryTerm("and", left, constTerm(right.value-1, width)), "", true
-					}
-					return binaryTerm("shr", left, constTerm(uint64(bits.TrailingZeros64(right.value)), width)), "", true
-				}
+			// are a shift and a mask. Any other divisor: the quotient is
+			// the uninterpreted operation udiv/sdiv of the operands at
+			// their width (asm/floats_ops.go) and the remainder is
+			// a - (a / b) * b, the machines' definition (Oak.IntegerDivision;
+			// the AArch64 lowering's msub, RISC-V's rem); a zero divisor
+			// traps, which the theorem decider states as an obligation and
+			// the asm verifier meets in the lowering's guard.
+			w, signed, isScalar := lo.operandContract(e)
+			if !isScalar {
+				return nil, fmt.Sprintf("operator %s over operands without a contract", e.Operator), false
 			}
-			return nil, fmt.Sprintf("operator %s (only by an unsigned constant power of two)", e.Operator), false
+			if w == 0 {
+				w = width
+			}
+			right, reason, okR := lo.lower(e.Right, w)
+			if !okR {
+				return nil, reason, false
+			}
+			left, reason, okL := lo.lower(e.Left, w)
+			if !okL {
+				return nil, reason, false
+			}
+			if !signed && right.kind == termConst && right.value != 0 && right.value&(right.value-1) == 0 {
+				if e.Operator == "%" {
+					return adaptWidth(binaryTerm("and", left, constTerm(right.value-1, w)), width), "", true
+				}
+				return adaptWidth(binaryTerm("shr", left, constTerm(uint64(bits.TrailingZeros64(right.value)), w)), width), "", true
+			}
+			if lo.trapsTracked {
+				lo.addTrap(cmpTerm("eq", right, constTerm(0, w)))
+			}
+			op := "udiv"
+			if signed {
+				op = "sdiv"
+			}
+			if lo.arch == ArchRV64 {
+				op = "rv." + op
+			}
+			quotient := floatTerm(op, w, left, right)
+			if e.Operator == "%" {
+				return extendTerm(binaryTerm("sub", left, binaryTerm("mul", quotient, right)), w, width, signed), "", true
+			}
+			return extendTerm(quotient, w, width, signed), "", true
 		}
 		op, ok := oakOps[e.Operator]
 		if !ok {
@@ -5592,6 +5669,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		return fmt.Sprintf("a call to %s with %d parameters", name, len(callee.Parameters)), false
 	}
 	lo := newLowering(callee)
+	lo.arch = x.arch
 	lo.records, lo.adts, lo.constants = x.fn.Records, x.fn.ADTs, x.fn.Constants
 	lo.functions = x.fn.Callees
 	lo.declareTables(x.fn.Tables)
@@ -6037,6 +6115,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 // aggregates, and (in a witness run) the concrete inputs.
 func prepareLowering(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64) *oakLowering {
 	lowering := newLowering(sig)
+	lowering.arch = fn.Arch
 	lowering.records, lowering.adts = fn.Records, fn.ADTs
 	lowering.constants = fn.Constants
 	lowering.globals = fn.Globals
@@ -6457,6 +6536,12 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 			stop.Store(true)
 			return a.verdict
 		}
+	}
+	if termEquivalent(truncate(asmTerm, width), truncate(oakTerm, width), width, map[[3]any]bool{}) {
+		// The same term on both sides up to the width adapters' masks (a
+		// quotient times a divisor, say, whose diagram no budget affords):
+		// equal by structure (asm/loops.go termEquivalent).
+		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (the same term on both sides, beyond the diagrams' budget)%s", fn.Name, note)}
 	}
 	return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exceeded its node budget)", fn.Name)}
 }
