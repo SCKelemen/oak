@@ -36,6 +36,7 @@ func TestVerifyFrameLoadAtIndex(t *testing.T) {
 		t.Fatalf("an unguarded frame load at a data-dependent index must be refused by the checker")
 	}
 }
+<<<<<<< HEAD
 
 // The RV64 lane: the element address is formed by the scaled add after
 // the guard (`li k, N; bgeu i, k, trap; slli i, i, s; add i, b, i`), the
@@ -56,3 +57,5 @@ func TestRV64VerifyFrameLoadAtIndex(t *testing.T) {
 		t.Fatalf("a guarded word load at a data-dependent index must be proven on rv64, got %s: %s", v.Kind, v.Message)
 	}
 }
+=======
+>>>>>>> origin/specification

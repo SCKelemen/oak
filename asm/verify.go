@@ -1953,9 +1953,24 @@ func (x *pathExecutor) boundedFrameLoad(instr Instruction, state *symbolicState,
 	if state.unknownFrom != nil && base+int64(bound)*size > *state.unknownFrom {
 		return "a frame load at a data-dependent index into the frame's unknown region", false
 	}
+<<<<<<< HEAD
 	merged, reason, ok := x.mergedFrameElements(state, base, index, bound, size)
 	if !ok {
 		return reason, false
+=======
+	var merged *term
+	for e := int64(bound) - 1; e >= 0; e-- {
+		value, ok := x.loadFrame(state, base+e*size, size)
+		if !ok {
+			return "a frame load at a data-dependent index over a slot never stored on this path", false
+		}
+		value = truncate(value, int(size)*8)
+		if merged == nil {
+			merged = value // the last element: the default beyond the bound
+			continue
+		}
+		merged = iteTerm(cmpTerm("eq", index, constTerm(uint64(e), 32)), value, merged)
+>>>>>>> origin/specification
 	}
 	if isSignExtendingLoad(instr.Mnemonic) {
 		state.write(regs[0], extendTerm(merged, int(size)*8, widthOf(regs[0].Class), true))
@@ -1965,6 +1980,7 @@ func (x *pathExecutor) boundedFrameLoad(instr Instruction, state *symbolicState,
 	return "", true
 }
 
+<<<<<<< HEAD
 // mergedFrameElements reads the bound elements of size bytes at base,
 // merged under `index == e` from the last element down, the last the
 // default (Oak.FrameIndex) — the value of a frame load at a guarded
@@ -1992,6 +2008,8 @@ func (x *pathExecutor) mergedFrameElements(state *symbolicState, base int64, ind
 	return merged, "", true
 }
 
+=======
+>>>>>>> origin/specification
 // opaqueSlot is the value of a slot in the forgotten region: a fresh
 // symbol per address and width, the same on every read.
 func (s *symbolicState) opaqueSlot(addr, size int64) (*term, bool) {
