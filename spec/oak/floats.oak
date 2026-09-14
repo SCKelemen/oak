@@ -98,4 +98,14 @@ sqrt_of_known_bits: theorem (n: u32) { u32_bits_f32(sqrt(f32_bits_u32((n & u32(0
 fma_of_literals: theorem () { u64_bits_f64(fma(f64_bits_u64(u64(4611686018427387904)), f64_bits_u64(u64(4613937818241073152)), f64_bits_u64(u64(4607182418800017408)))) == u64(4619567317775286272) }
 from_unsigned_literal: theorem () { u32_bits_f32(f32_round_u32(u32(3))) == u32(1077936128) }
 
+// A program function returning a float is a float of its return width in
+// both lowerings (its body inlines): negating the call flips the sign bit,
+// so abs of the negation is abs of the call. The operand of a prefix
+// carries its contract: -n converts as a signed 64-bit source, the same
+// application as 0 - n.
+diff: (a: f32, b: f32) -> f32 = a - b
+neg_of_call: theorem (x: f32, y: f32) { u32_bits_f32(abs(-diff(x, y))) == u32_bits_f32(abs(diff(x, y))) }
+call_is_its_body: theorem (x: f32, y: f32) { u32_bits_f32(diff(x, y)) == u32_bits_f32(x - y) }
+from_signed_of_neg: theorem (n: i64) { u64_bits_f64(f64_round_i64(-n)) == u64_bits_f64(f64_round_i64(i64(0) - n)) }
+
 main: (): i32 = 0

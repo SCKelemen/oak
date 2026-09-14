@@ -5018,6 +5018,13 @@ func (lo *oakLowering) operandContract(expr ast.Expression) (int, bool, bool) {
 			return w, s, true
 		}
 		return lo.operandContract(e.Right)
+	case *ast.PrefixExpression:
+		// `!x` is Bool; `-x` and `^x` have their operand's contract, so
+		// `f64_round_i64(-n)` converts a signed 64-bit source.
+		if e.Operator == "!" {
+			return 1, false, true
+		}
+		return lo.operandContract(e.Right)
 	case *ast.InvocationExpression:
 		if _, isLen := lo.spanLength(e); isLen {
 			return 32, false, true
@@ -5300,6 +5307,35 @@ func decideCells(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 // names the callees taken so. A call the summary cannot take — no callee
 // known, a span or record in the signature, a body outside the term
 // language — leaves the function trusted with the reason, as before.
+// forgetCallerSaved drops the registers a call may clobber: x0–x17, x30
+// and the flags, v0–v7 and v16–v31 (the low halves of v8–v15 are
+// preserved, kept whole as they were) on AArch64; ra, t0–t6, a0–a7 and
+// ft0–ft11, fa0–fa7 (f0–f7, f10–f17, f28–f31) on RV64, where the vector
+// file and its configuration are forgotten as the arguments are read.
+func (x *pathExecutor) forgetCallerSaved(state *symbolicState) {
+	if x.arch == ArchRV64 {
+		for _, r := range []int{1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31} {
+			delete(state.regs, r)
+		}
+		for r := 0; r <= 31; r++ {
+			if !rv64FloatCalleeSaved(r) {
+				delete(state.fregs, r)
+			}
+		}
+		return
+	}
+	for r := 0; r <= 17; r++ {
+		delete(state.regs, r)
+	}
+	delete(state.regs, 30)
+	state.flags = nil
+	for r := 0; r <= 31; r++ {
+		if !calleeSavedVector(r) {
+			delete(state.vregs, r)
+		}
+	}
+}
+
 func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (string, bool) {
 	opaque := "instruction " + instr.Mnemonic
 	if x.arch == ArchRV64 {
@@ -5342,9 +5378,21 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	if shape, isVector := vectorShape(callee.ReturnType); isVector && !unit {
 		vecResult = &shape
 	}
+	// An f32/f64 result comes back in the lane's float result register:
+	// the low lane of v0 (AAPCS64), fa0 (LP64D); the callee's body lowers
+	// as a float at that width (docs/spec/94-assembler.md §8, floats).
+	floatResult := 0
+	if !unit && vecResult == nil {
+		switch typeText(callee.ReturnType) {
+		case "f32":
+			floatResult = 32
+		case "f64":
+			floatResult = 64
+		}
+	}
 	if !unit && vecResult == nil {
 		w, signed, ok := contractBits(callee.ReturnType)
-		if class, isClass := contractClass(callee.ReturnType); !ok || !isClass || class == ClassV {
+		if class, isClass := contractClass(callee.ReturnType); !ok || !isClass || (class == ClassV && floatResult == 0) {
 			returned := typeText(callee.ReturnType)
 			comp, isComposite := x.fn.Composites[returned]
 			if !isComposite || len(comp.Fields) == 0 || comp.Size > 16 {
@@ -5392,9 +5440,39 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		vecArg0, vecArgs = rv64VectorResultRegister, 16
 	}
 	nextVec := 0
+	// f32/f64 arguments share v0–v7 with the vector arguments on AArch64
+	// and travel in fa0–fa7 (f10–f17) on RV64, in declaration order.
+	nextFloat := 0
 	for _, param := range callee.Parameters {
 		if param.Variadic {
 			return fmt.Sprintf("a call to %s: parameter %s is variadic", name, param.Name.Value), false
+		}
+		if floatWidth, isFloat := map[string]int{"f32": 32, "f64": 64}[typeText(param.Type)]; isFloat {
+			var value *term
+			var has bool
+			if x.arch == ArchRV64 {
+				if nextFloat >= 8 {
+					return fmt.Sprintf("a call to %s with floating-point arguments beyond the registers", name), false
+				}
+				value, has = state.read(Register{Class: ClassRV64F, Num: 10 + nextFloat})
+				nextFloat++
+				if !has {
+					return "unbound floating-point register read", false
+				}
+			} else {
+				if nextVec >= vecArgs {
+					return fmt.Sprintf("a call to %s with floating-point arguments beyond the registers", name), false
+				}
+				vec, bound := state.readVec(nextVec)
+				nextVec++
+				if !bound {
+					return "unbound vector register read", false
+				}
+				value, has = vec.lanesAt(floatWidth)[0], true
+			}
+			lo.locals[param.Name.Value] = &oakLocal{value: truncate(value, floatWidth), width: floatWidth}
+			lo.floats[param.Name.Value] = floatWidth
+			continue
 		}
 		if shape, isVector := vectorShape(param.Type); isVector {
 			if nextVec >= vecArgs {
@@ -5548,18 +5626,9 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		}
 	}
 	if unit {
-		// x0–x17 (a0–a7, t0–t6 on rv64) are dead after the call; no result.
-		if x.arch == ArchRV64 {
-			for _, r := range []int{1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31} {
-				delete(state.regs, r)
-			}
-		} else {
-			for r := 0; r <= 17; r++ {
-				delete(state.regs, r)
-			}
-			delete(state.regs, 30)
-			state.flags = nil
-		}
+		// x0–x17 (a0–a7, t0–t6 on rv64) and the caller-saved float and
+		// vector registers are dead after the call; no result.
+		x.forgetCallerSaved(state)
 		for _, seen := range x.summarized {
 			if seen == name {
 				return "", true
@@ -5641,6 +5710,42 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 			for k, chunk := range chunks {
 				state.regs[k] = chunk
 			}
+		}
+		for _, seen := range x.summarized {
+			if seen == name {
+				return "", true
+			}
+		}
+		x.summarized = append(x.summarized, name)
+		return "", true
+	}
+	if floatResult != 0 {
+		// The caller-saved registers are dead after the call; the float
+		// result register receives the callee's pattern at its width — on
+		// AArch64 the low lane of v0, its upper bits unspecified (fresh),
+		// the upper half zero as every scalar write leaves it.
+		x.forgetCallerSaved(state)
+		if x.arch == ArchRV64 {
+			state.write(rv64FloatResultRegister, result)
+		} else {
+			low := zeroExtend(result, 64)
+			if floatResult < 64 {
+				var upper *term
+				if x.concrete {
+					upper = constTerm(0, 64-floatResult) // a witness run: the callee's own scalar write cleared them
+				} else {
+					x.callSites++
+					hi := fmt.Sprintf("call%d#hi", x.callSites)
+					if x.freshSyms == nil {
+						x.freshSyms = map[string]int{}
+					}
+					x.freshSyms[hi] = 64 - floatResult
+					x.declared[hi] = 64 - floatResult
+					upper = paramTerm(hi, 64-floatResult)
+				}
+				low = binaryTerm("or", low, binaryTerm("shl", zeroExtend(upper, 64), constTerm(uint64(floatResult), 64)))
+			}
+			state.writeVec(0, vecFromLow(low))
 		}
 		for _, seen := range x.summarized {
 			if seen == name {
