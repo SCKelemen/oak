@@ -5,6 +5,7 @@ import (
 	"os"
 	"reflect"
 	"strconv"
+	"time"
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
@@ -129,7 +130,12 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			}
 			continue
 		}
+		verifyStart := time.Now()
 		verdict := asm.Verify(asmFn, source, source.Body)
+		if os.Getenv("OAK_NATIVE_TIMING") != "" {
+			// A profiling aid: how long each body's verification took.
+			fmt.Fprintf(os.Stderr, "timing: %s: %.2fs (%s)\n", fn.Name.Value, time.Since(verifyStart).Seconds(), verdict.Kind)
+		}
 		if verdict.Kind == asm.VerdictMismatch {
 			diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", "native backend: "+verdict.Message))
 			continue

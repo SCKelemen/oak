@@ -321,30 +321,38 @@ for a workload):
    address formed in the base register; `Oak.RiscV.index_guard_widened`,
    `widened_scale`), on rv64; and for `oak_store` against the guarded
    element write `v[i] = x`, proven on both lanes as the span memory the
-   unit writes. Still open: the compare-exchange helper once the
-   verifier's memory model reaches the atomics
-   (`compare_exchange_refinement_test.go` pins its text today).
-5. **Finish the RISC-V bridge** (rv64 is dbs's second target): build `spec/lean-sail` against a Sail
-   built from git so the theorems are checked against the export itself
-   rather than verbatim copies; extend the decided subset to loads and
-   stores through the frame and to the AMOs the memory refinement already
-   pins. Attempted 2026-09-13; the blocker is now exact. The opam release
-   0.20.2 exports do not compile (§2.5 of `94-assembler.md`), and a
-   `libsail` pinned from git fails to build against a release install
-   because git's `libsail` runs `sail_maker embed` at build time and
-   `sail_maker` is a separate opam package there — pinning only `libsail`,
-   `sail` and `sail_lean_backend` leaves the release `sail_maker` 0.20.2
-   on the path, which has no `embed`, so the rule prints its usage and
-   fails. The recipe is therefore: pin every package of the Sail
-   repository from one checkout (`opam pin add -n .` in it, `sail_maker`
-   included, then `opam install sail_maker libsail sail
-   sail_lean_backend`), then `cmake -S external/sail-riscv -B
-   external/sail-riscv/build && cmake --build external/sail-riscv/build
-   --target generated_lean_rv64d`, `lake build` in
-   `build/model/Lean_RV64D`, and `lake build` in `spec/lean-sail`;
-   `asm/rv64_sail_bridge_test.go` then runs the bridge. The export's
-   `lake build` is large (gigabytes of `.olean`); the attempt stopped
-   when the host had about one gigabyte of disk left.
+   unit writes; and for the strong compare-exchange helper
+   `__oak_cas_u32_acq_rel_acquire` on a cell reached through a guarded
+   span element, proven against `atomic_compare_exchange_acq_rel_acquire`
+   in both of clang's spellings — the exclusive loop (armv8.0) and `casal`
+   (armv8.1-a, a second arm64 lane) — once the verifier's memory model
+   reached the atomics under the sequential model (`65-machine-memory.md`
+   §7a, `asm/atomics.go`: the exclusive store succeeds, so the retry is
+   decided). GCC's rv64 `lr.w`/`sc.w` loop is outside the rv64 unit
+   language and is reported so. **Item complete** for the helpers the
+   prelude has.
+5. **Finish the RISC-V bridge** (rv64 is dbs's second target): **landed
+   2026-09-14** for the integer instructions. With Sail built from git
+   (every package of the rems-project/sail checkout pinned in one opam
+   switch, `sail_maker` included) the export of sail-riscv 497209b9
+   (2026-08-19) generates in minutes and builds under lean-sail v5 in
+   135 jobs (130 MB, not gigabytes); `spec/lean-sail` builds against it,
+   53 semantics theorems and 30 encoding theorems checked against the
+   export itself (`94-assembler.md` §9, `spec/lean-sail/README.md`), and
+   `asm/rv64_sail_bridge_test.go` runs the build when the export is
+   present. Two facts to keep: sail-riscv's current model does not export
+   (`vmem_types.sail`'s type-level `root_level('v)` comes out with unbound
+   `k_v`; upstream's own `compile-lean` workflow has been red since
+   2026-09-04), so the checkout under `external/` is pinned to the last
+   commit whose export compiles; and the model's `encdec` branch arm is
+   defined only for even offsets, so the branch encoding theorems carry
+   that hypothesis. Every integer instruction the verifier decides is
+   bridged, and of the loads and stores the address, alignment guard,
+   extension and truncation are; what stays audited rather than proved is
+   the model's address translation and memory access in the monad, for
+   which the checker's bounds and the verifier's flat element memory
+   stand in. The rv64 verifier decides no atomics, so the AMOs the memory
+   refinement pins at the C level have nothing to bridge yet.
 6. **An amd64 lane and an x86 semantics** — **deferred** (2026-09-13: no x86-64 workload exists; amd64 stays a C-only target until one does). The native backend's third lane,
    with instruction semantics bridged to a machine-readable x86-64
    specification. Scoped 2026-09-13, in the order that pays first:

@@ -64,7 +64,20 @@ func (lo *oakLowering) floatWidthOf(expr ast.Expression) (int, bool) {
 		if !isIdent {
 			return 0, false
 		}
-		if _, shadowed := lo.functions[ident.Value]; shadowed {
+		if callee, known := lo.functions[ident.Value]; known {
+			// A call to a program function returning f32 or f64 is a float
+			// of that width: its body inlines at that width (inlineCall),
+			// so `-sum(a, b)` flips a sign bit and `sum(a, b) < 0.0`
+			// compares at the callee's width (docs/spec/125-verification.md
+			// section 6).
+			if callee.ReturnType != nil {
+				switch typeText(callee.ReturnType) {
+				case "f32":
+					return 32, true
+				case "f64":
+					return 64, true
+				}
+			}
 			return 0, false
 		}
 		switch ident.Value {
