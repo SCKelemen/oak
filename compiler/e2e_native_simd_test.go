@@ -97,6 +97,21 @@ bits: () -> u32 {
   simd.ctz_u32(u32(40)) + simd.popcount_u32(u32(255)) + u32_trunc_u64(simd.ctz_u64(u64(0))) + u32_trunc_u64(simd.popcount_u64(u64(18446744073709551615)))
 }
 
+// A vector-valued conditional in expression position: the arms meet in a
+// vector register the backend defines before them (movi #0, not the
+// scalar zero register). any(hi & 128) picks or: every lane has bit 7,
+// movemask 65535; any(a & 128) on 0..15 picks and: no lane does, 0.
+vec_pick: (a: simd.U8x16, b: simd.U8x16): simd.U8x16 {
+  simd.any_u8x16(simd.and_u8x16(a, simd.splat_u8x16(u8(128)))) ? simd.or_u8x16(a, b) | simd.and_u8x16(a, b)
+}
+
+picked: (b: []u8) -> u32 {
+  a: simd.U8x16 = simd.load_u8x16(b, u32(0))
+  hi: simd.U8x16 = simd.or_u8x16(a, simd.splat_u8x16(u8(128)))
+  lo: simd.U8x16 = simd.load_u8x16(b, u32(16))
+  simd.movemask_u8x16(vec_pick(hi, lo)) + simd.movemask_u8x16(vec_pick(a, lo))
+}
+
 main: (): u32 {
   data: [32]u8
   i: u32 = u32(0)
@@ -123,7 +138,8 @@ main: (): u32 {
   ok7: Bool = bits() == u32(139)
   ok8: Bool = doubled_mask(view(&data)) == u32(128)
   ok9: Bool = c_side(view(&data), view(&data), view(&data), view(&data), view(&data)) == u32(128)
-  ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 ? u32(42) | (ok1 ? u32(0) | u32(1)) + (ok2 ? u32(0) | u32(2)) + (ok3 ? u32(0) | u32(4)) + (ok4 ? u32(0) | u32(8)) + (ok5 ? u32(0) | u32(16)) + (ok6 ? u32(0) | u32(32)) + (ok7 ? u32(0) | u32(64)) + (ok8 ? u32(0) | u32(128)) + (ok9 ? u32(0) | u32(200))
+  ok10: Bool = picked(view(&data)) == u32(65535)
+  ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 ? u32(42) | (ok1 ? u32(0) | u32(1)) + (ok2 ? u32(0) | u32(2)) + (ok3 ? u32(0) | u32(4)) + (ok4 ? u32(0) | u32(8)) + (ok5 ? u32(0) | u32(16)) + (ok6 ? u32(0) | u32(32)) + (ok7 ? u32(0) | u32(64)) + (ok8 ? u32(0) | u32(128)) + (ok9 ? u32(0) | u32(200)) + (ok10 ? u32(0) | u32(210))
 }
 `
 

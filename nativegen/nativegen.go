@@ -6846,7 +6846,7 @@ func (g *generator) resultExpr(expr ast.Expression) error {
 			// Defined before the arms: an arm that calls before writing it
 			// spills it, and a spill of a never-written register is a read
 			// the checker and the verifier refuse.
-			g.emit("mov", reg(out, *g.result), zeroReg(*g.result))
+			g.zeroInit(out, *g.result)
 			if err := g.resultInto(e, out); err != nil {
 				return err
 			}
@@ -6943,6 +6943,20 @@ func (g *generator) valueOnly(expr ast.Expression) bool {
 		}
 	}
 	return true
+}
+
+// zeroInit defines a register as zero at a scalar's kind: the zero
+// register moved for an integer, `movi #0` for a fixed vector (the zero
+// register has no vector form), `fmov` from the zero register for a float.
+func (g *generator) zeroInit(r int, s scalar) {
+	switch {
+	case s.isVec:
+		g.emit("movi", reg(r, s), imm(0))
+	case s.isFloat:
+		g.emit("fmov", reg(r, s), zeroReg(s))
+	default:
+		g.emit("mov", reg(r, s), zeroReg(s))
+	}
 }
 
 // zeroReg spells the zero register at a scalar's width.
