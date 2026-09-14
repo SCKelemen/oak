@@ -672,7 +672,10 @@ func (x *pathExecutor) vectorFrameAccessAt(instr Instruction, state *symbolicSta
 // loadVector executes `ldr qD, [xB, wI, uxtw #s]` / `ldr qD, [xB, #off]`
 // through a span base: the sixteen bytes from element wI (the seam checker
 // has placed the access under a guard proving wI + 16/elem <= len), one
-// element term per lane. A d view reads eight bytes into the low half.
+// element term per lane. A d view reads eight bytes into the low half; an
+// s view one four-byte element — an f32 span's element into the low lane,
+// the rest of the register zero as every scalar write leaves it
+// (docs/spec/94-assembler.md §8, floats in loop bodies).
 func (x *pathExecutor) loadVector(instr Instruction, state *symbolicState) (string, bool) {
 	dest := instr.Operands[0].(Register)
 	mem, isMem := instr.Operands[1].(Memory)
@@ -680,7 +683,7 @@ func (x *pathExecutor) loadVector(instr Instruction, state *symbolicState) (stri
 		return "a vector load outside the modeled subset (" + instr.Mnemonic + ")", false
 	}
 	size := dest.VecBytes()
-	if size != 16 && size != 8 {
+	if size != 16 && size != 8 && size != 4 {
 		return "a vector load through the " + dest.Vec + " view", false
 	}
 	if mem.Base.Class == ClassSP {
