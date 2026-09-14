@@ -784,4 +784,10 @@ func TestE2ENativeRV64LoopVerdicts(t *testing.T) {
 	if !strings.Contains(verdicts["fact"], "agrees with its Oak body") {
 		t.Errorf("fact must be witnessed (its product exceeds the proof budget): %s", verdicts["fact"])
 	}
+	// A unit body without effects (check_all: an assert over a call) is
+	// proven: neither side writes package state or a span memory
+	// (docs/spec/94-assembler.md §8, unit bodies without effects).
+	if !strings.Contains(verdicts["check_all"], "proven equal to its Oak body") {
+		t.Errorf("check_all must be proven as a unit body without effects: %s", verdicts["check_all"])
+	}
 }
