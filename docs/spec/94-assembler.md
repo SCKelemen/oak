@@ -4411,3 +4411,39 @@ Outside the model, as on the AArch64 lane: the index, scaled, half,
 remaining-count, and difference facts the write also forgets, which `mv`
 copies none of, and the frame-address and widened facts.
 
+### 9.ac Strength reduction of constant arithmetic (2026-09-15)
+
+The first increment of the optimization system (`90-backend.md` §16). On
+the AArch64 lane a multiplication, division, or remainder whose right
+operand is a constant lowers to the instruction the constant licenses:
+`x * 2^k` to `lsl #k` (signed or unsigned — a wrapping product is a
+shift in two's complement); unsigned `x / 2^k` to `lsr #k` and unsigned
+`x % 2^k` to `and #(2^k-1)` (`x / 1` to nothing, `x % 1` to zero); and a
+division or remainder by any other nonzero constant to `udiv`/`sdiv`
+(with `msub` for `%`) without the zero test, since a constant cannot be
+zero at run time. A signed division by a power of two keeps `sdiv`: the
+round-toward-zero bias is a later idiom. A variable divisor keeps its
+`cbz` to the trap and its division; a constant zero divisor keeps the
+test, which traps as the language says.
+
+The verifier is the gate. The Oak-side model already lowers an unsigned
+division or remainder by a constant power of two to `shr` and `and`
+(§8, `Oak.IntegerDivision`), a multiplication by a constant to a linear
+scaling, and any other division to the uninterpreted quotient with the
+zero divisor as a trap obligation — which a constant nonzero divisor
+discharges. So each reduced body proves equal to its Oak body by the
+same canonical forms as before, and the compiler reports it: `N constant
+operation(s) strength-reduced, proven`. Should the seam checker refuse a
+reduced body, or the verifier return less than proven for it, the
+compiler lowers the body again without the reduction and keeps the plain
+form when that one proves (`compiler/native_bodies.go`; the diagnostic
+names which). The RV64 lane is untouched: its division and shift
+emitters are its own, and `Lane.Strength` is set for AArch64 only.
+
+Read off `benchmarks/kernels` through `benchmarks/native/emit`: nine
+bodies of the package reduce and prove; `bench_search`'s inner loop, a
+`/ u32(2)` that lowered to `movz; cbz; udiv` on the path from the
+midpoint to its load, reads one `lsr #1`, and `bench_page_probe` loses
+its three `udiv`, two `mul`, and three zero tests. The timing rows wait
+for a quiet host (`benchmarks/native/README.md`). The end-to-end test is
+`compiler/e2e_native_strength_test.go`.

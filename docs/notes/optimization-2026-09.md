@@ -59,13 +59,18 @@ that layer, and `-opt 0` against `-opt 2` measures how much of it there
 was to do.
 
 **The native backend** (`nativegen/`, AArch64 7,300 lines, RV64 4,000)
-lowers a checked function directly to instructions with no IR. Values
-live in frame slots; expressions run on an operand stack x9–x15; a
-two-pass scheme hands scratch registers the expressions did not need to
-variables as caller-saved homes; a register or slot is released after
-its last use; call sites spill and reload live homes mechanically. No
-allocator with liveness across calls, no scheduling, no peephole, no
-unrolling, no vectorization. One proof fact is consumed: `IndexProven`
+lowers a checked function directly to instructions with no IR. Scalar
+locals take homes by a liveness pre-pass: a caller-saved register when
+the variable never crosses a call, a callee-saved register x19–x28
+(saved and restored once in the prologue and epilogue) when it does, a
+caller-saved home spilled around calls past those ten, a frame slot
+last; expressions run on an operand stack x9–x15, and a two-pass scheme
+hands the scratch registers the expressions did not need to variables;
+a register or slot is released after its last use. Vector locals of a
+function that calls live in sixteen-byte slots, since AAPCS64 preserves
+only the low halves of v8–v15. No scheduling, no peephole, no unrolling,
+no vectorization, and no constant folding of the arithmetic the lowering
+emits: a division by a constant was a zero-tested `udiv`. One proof fact is consumed: `IndexProven`
 elides an element guard on AArch64 when the seam checker can read the
 proof off a dominating compare; a refusal re-lowers with every guard.
 
@@ -82,8 +87,12 @@ facts.
 backend runs the kernels at 0.84–1.10× of Rust and the JSON case at
 1.1–1.4× of simdjson. The native backend against the C backend, Apple
 M4 Max: `sum` 3.40×, `dot` 3.24× behind (a correct scalar loop against a
-vectorized one); `search` 1.76×, `page_probe` 1.93× (frame traffic
-around a helper, guards the checker cannot elide); `crc32c` 5.7× (fifty-six
+vectorized one); `search` 1.76×, `page_probe` 1.93× — read from the
+lowered bodies on 2026-09-15, not frame traffic as the README had it
+(the kernels make no calls and hold every local in a register) but
+arithmetic: a `/ u32(2)` lowered as `movz; cbz; udiv` on the
+mid-to-load critical path, a `* u32(512)` as `movz; mul`, a Bool
+negation materialized before its branch; `crc32c` 5.7× (fifty-six
 guarded byte loads assembled into seven words the C compiler reads with
 seven loads); the UTF-8 validator 5× (calls spilling nine vector
 locals); `sha256` 1.00×, `dispatch` 0.83×. Guard elision alone, measured
@@ -118,16 +127,21 @@ Each increment names its gap, its gate, and its measurement; none lands
 without the measurement rerun on the kernels it targets and the verdict
 column unchanged or improved.
 
-1. **Callee-saved homes across calls** (AArch64). Scalar locals of a
-   function that calls live in x19–x28, saved and restored once in the
-   prologue and epilogue, instead of frame slots reloaded around every
-   call. Gate: the seam checker's AAPCS64 preservation rule and the
-   verifier's frame model. Target: `search`, `page_probe` (1.8–1.9×).
-   The prerequisite the native README names; the first increment.
-2. **A liveness-based allocator for vector and scalar locals**, the
-   general form of 1: the thirty-two vector registers hold a flattened
-   kernel's forty vector locals only with liveness. Target: UTF-8 (5×),
-   then inlining pays instead of hurting.
+1. **Strength reduction of constant arithmetic** (AArch64; landed
+   2026-09-15, `94-assembler.md` §9.ac). A multiplication by a power of
+   two is a shift, an unsigned division or remainder by one a shift or a
+   mask, a division by a nonzero constant loses its zero test. Gate: the
+   verifier's existing models (the Oak side already reads these as
+   shifts and masks), with fallback to the plain form when a body would
+   prove less. Target: `search`, `page_probe` (1.8–1.9×). Landed at the
+   instruction level — `search`'s loop three instructions shorter and
+   without the divide, `page_probe` without its three divides and two
+   multiplies — with the timing rows deferred to a quiet host.
+2. **Vector locals in registers across calls**, then a liveness-based
+   allocator for the flattened kernels: the thirty-two vector registers
+   hold a flattened kernel's forty vector locals only with liveness.
+   Target: UTF-8 (5×), then inlining pays instead of hurting. (Scalar
+   locals already live in callee-saved registers across calls.)
 3. **Idioms the verifier can already equate**: a little-endian word
    assembled from consecutive guarded byte reads is one load under one
    guard (the verifier's memory model gains reads wider than the element;
