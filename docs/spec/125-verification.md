@@ -725,7 +725,10 @@ In order of payoff, each reusing a surface that exists:
   engine, the two LRAT checkers, `Oak.RupCheck`, and the solver written in
   Oak (`prove/solver/sat.oak`) as the rung's default, with clause-database
   reduction, two-watched-literal propagation, minimization, Luby
-  restarts, and bounded variable elimination at load; the encoder's laws
+  restarts, bounded variable elimination at load, and failed-literal
+  probing before the search (a failed polarity learned as a unit, a
+  literal implied by both polarities recorded through two implications
+  and their unit, every step a hint chain the checkers accept); the encoder's laws
   in `Oak.Tseitin`, its code checked against them by truth table; and the
   clause engine as an Oak program beside `asm/cnf.go`, and the whole rung
   inside the prover written in Oak (`certify.oak`), so `-solver self` runs
@@ -734,8 +737,13 @@ In order of payoff, each reusing a surface that exists:
   two-hint chain implied by its parents, the replayed reasons in trail
   order then the conflict are a chain from the learned clause's negation,
   the analysis's marks over a propagation trail give that condition, and
-  reconstruction after elimination models the eliminated clauses. Next:
-  subsumption and failed-literal probing when a corpus row asks for them. The BDD's failure mode
+  reconstruction after elimination models the eliminated clauses. The two
+  widest extents rows (`vector_under_offset_bound`,
+  `vector_under_literal_bound`) stop at the rung's two-hundred-thousand-
+  conflict budget and close at 562,050 and 1,406,520 conflicts; probing
+  finds no unit in them (CaDiCaL needs 7 and 112 seconds). Next: the text
+  path's output buffered (one write per byte today, half the wall time of
+  a long certificate), and a budget the caller can raise for a row. The BDD's failure mode
   is the node budget on multipliers and wide aggregates, which CDCL
   solvers treat routinely. The rung is the one Lean's `bv_decide` already
   runs:
