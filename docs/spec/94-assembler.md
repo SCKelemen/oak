@@ -2930,6 +2930,12 @@ declared layout without emitting code, so the same read repeated, inside
 a comparison, or in nested `?` arms costs one element address per read
 and no scratch register between reads (the OS pilot's N4). Through a
 view the field is readable and a store into it is refused.
+When the index or the stored value calls a program function, the call is
+evaluated before the place: a `bl` clobbers the scratch registers and,
+to the checker, every fact about them, so an element address computed
+first would return from its spill slot without provenance (the OS
+pilot's N8, `s[dom].pages[cell(i, j)]`); the guard and the region
+bounds are unchanged.
 
 **Package globals.** A mutable top-level scalar (`st: u32 = u32(0)`,
 assigned by some function) is addressed storage on the AArch64 lane: the
