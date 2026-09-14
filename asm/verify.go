@@ -269,28 +269,39 @@ func cmpTerm(code string, left, right *term) *term {
 func isLowMask(m uint64) bool { return m&(m+1) == 0 }
 
 // significantBits bounds the position of a term's highest set bit: its
-// width, or less for a masked, compared, or selected value.
+// width, or less for a masked, compared, or selected value. Terms are
+// DAGs (a value read through a chain of summarized stores shares its
+// subterms many times over), so the walk is memoized per call.
 func significantBits(t *term) int {
+	return significantBitsMemo(t, map[*term]int{})
+}
+
+func significantBitsMemo(t *term, memo map[*term]int) int {
+	if n, seen := memo[t]; seen {
+		return n
+	}
+	n := t.width
 	switch t.kind {
 	case termConst:
-		return bits.Len64(t.value)
+		n = bits.Len64(t.value)
 	case termCmp:
-		return 1
+		n = 1
 	case termIte:
-		return min(t.width, max(significantBits(t.left), significantBits(t.right)))
+		n = min(t.width, max(significantBitsMemo(t.left, memo), significantBitsMemo(t.right, memo)))
 	case termBinary:
 		switch t.op {
 		case "and":
-			n := t.width
+			n = t.width
 			if t.right.kind == termConst {
 				n = min(n, bits.Len64(t.right.value))
 			}
-			return min(n, significantBits(t.left))
+			n = min(n, significantBitsMemo(t.left, memo))
 		case "or", "xor":
-			return min(t.width, max(significantBits(t.left), significantBits(t.right)))
+			n = min(t.width, max(significantBitsMemo(t.left, memo), significantBitsMemo(t.right, memo)))
 		}
 	}
-	return t.width
+	memo[t] = n
+	return n
 }
 
 // zeroTestOfReduction distributes a zero test over a max or min chain — the
@@ -2630,6 +2641,8 @@ type oakLowering struct {
 	// span it was passed (asm/effects.go): the callee's reads and writes
 	// are spelled in the caller's names, so they share its memory.
 	spanAlias map[string]string
+	// bounds memoizes maxValue over the lowering's terms (asm/range.go).
+	bounds map[*term]uint64
 	// functions are the program's functions a body may call; a call to one
 	// in the subset is inlined (inlineCall). Nil outside the theorem decider.
 	functions map[string]*ast.FunctionStatement
@@ -4922,7 +4935,7 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			// Oak traps at the width; the machine wraps the count. Under
 			// the theorem decider the trap is a recorded obligation and
 			// the shift below the width is the machine's.
-			if !lo.trapsTracked && maxValue(right) >= uint64(width) {
+			if !lo.trapsTracked && lo.maxValue(right) >= uint64(width) {
 				// A count whose range stays below the width never traps,
 				// so Oak's shift is the machine's (asm/range.go).
 				return nil, "a non-constant shift count", false
@@ -5532,7 +5545,31 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	}
 	lo.concrete = x.env // a witness run: the callee's leaves are the caller's constants
 	lo.writes = cloneWrites(state.writes)
-	next := argBase // the next argument register, by the shared layout (asm/abi.go)
+	// The arguments by the shared layout (asm/abi.go): registers while
+	// they fit, then the caller's outgoing area — slots of this path's
+	// frame at the call's sp, which the executor holds as the caller
+	// stored them.
+	args := classifyArguments(callee.Parameters, x.fn.Composites)
+	classes := make([]ArgClass, 0, len(args))
+	ints := make([]int, 0, len(args)) // the index into places of each integer-class argument
+	for _, arg := range args {
+		if arg.param.Variadic {
+			return fmt.Sprintf("a call to %s: parameter %s is variadic", name, arg.param.Name.Value), false
+		}
+		if arg.kind == argRecord && arg.comp.HFA {
+			return fmt.Sprintf("a call to %s: parameter %s is a record passed in floating-point registers", name, arg.param.Name.Value), false
+		}
+		if arg.problem != "" {
+			return fmt.Sprintf("a call to %s: parameter %s is not a fixed-width integer", name, arg.param.Name.Value), false
+		}
+		if arg.kind == argVector {
+			ints = append(ints, -1)
+			continue
+		}
+		ints = append(ints, len(classes))
+		classes = append(classes, arg.class)
+	}
+	places, _ := LayoutArguments(classes, x.fn.PackedStackArgs)
 	// Vector arguments travel in the vector file's argument registers, in
 	// declaration order: v0–v7 on AArch64, v8–v23 on RV64.
 	vecArg0, vecArgs := 0, 8
@@ -5540,13 +5577,28 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		vecArg0, vecArgs = rv64VectorResultRegister, 16
 	}
 	nextVec := 0
+	// word reads word k of an argument: its register, or its bytes in the
+	// outgoing area (a span's length is the 4-byte word after its base;
+	// a scalar its natural size, zero-extended as the callee's load is).
+	word := func(place ArgPlace, k int, size int64) (*term, bool) {
+		if !place.OnStack {
+			value, has := state.regs[argBase+place.Reg+k]
+			return value, has
+		}
+		if x.arch == ArchRV64 {
+			return nil, false
+		}
+		value, ok := state.loadSlot(-state.disp+place.Offset+int64(k)*8, size)
+		if !ok {
+			return nil, false
+		}
+		return zeroExtend(value, 64), true
+	}
 	// f32/f64 arguments share v0–v7 with the vector arguments on AArch64
 	// and travel in fa0–fa7 (f10–f17) on RV64, in declaration order.
 	nextFloat := 0
-	for _, param := range callee.Parameters {
-		if param.Variadic {
-			return fmt.Sprintf("a call to %s: parameter %s is variadic", name, param.Name.Value), false
-		}
+	for i, arg := range args {
+		param := arg.param
 		if floatWidth, isFloat := map[string]int{"f32": 32, "f64": 64}[typeText(param.Type)]; isFloat {
 			var value *term
 			var has bool
@@ -5574,7 +5626,8 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 			lo.floats[param.Name.Value] = floatWidth
 			continue
 		}
-		if shape, isVector := vectorShape(param.Type); isVector {
+		if arg.kind == argVector {
+			shape, _ := vectorShape(param.Type)
 			if nextVec >= vecArgs {
 				return fmt.Sprintf("a call to %s with vector arguments beyond the registers", name), false
 			}
@@ -5587,30 +5640,26 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 			lo.locals[param.Name.Value] = &oakLocal{agg: vectorOfLanes(lanes, lo.vectorType(shape))}
 			continue
 		}
-		if comp, isComposite := x.fn.Composites[typeText(param.Type)]; isComposite {
-			// A record argument: by reference beyond 16 bytes, the register
-			// holding the caller's own record parameter's address — the
-			// callee's leaves are then the caller's leaves by name.
-			if comp.HFA {
-				return fmt.Sprintf("a call to %s: parameter %s is a record passed in floating-point registers", name, param.Name.Value), false
-			}
-			if comp.Size <= 16 {
-				// By value, in one or two register chunks: the callee's
-				// parameter is the aggregate unpacked from them.
-				consumed, reason, ok := x.bindAggregateArgument(lo, param, comp, next, argBase, state, name)
-				if !ok {
+		place := places[ints[i]]
+		switch arg.kind {
+		case argRecord:
+			// A record argument: by value in one or two register chunks,
+			// the callee's parameter is the aggregate unpacked from them;
+			// by reference beyond 16 bytes, the word holding the caller's
+			// own record parameter's address — the callee's leaves are
+			// then the caller's leaves by name.
+			if !arg.indirect {
+				if place.OnStack {
+					return fmt.Sprintf("a call to %s: parameter %s is a record passed by value on the stack", name, param.Name.Value), false
+				}
+				if _, reason, ok := x.bindAggregateArgument(lo, param, arg.comp, argBase+place.Reg, argBase, state, name); !ok {
 					return reason, false
 				}
-				next += consumed
 				continue
 			}
-			if next >= argBase+8 {
-				return fmt.Sprintf("a call to %s with arguments beyond the registers", name), false
-			}
-			base, has := state.regs[next]
-			next++
+			base, has := word(place, 0, 8)
 			if !has {
-				return "unbound register read", false
+				return fmt.Sprintf("a call to %s: the record argument %s is not a record parameter of the caller", name, param.Name.Value), false
 			}
 			owner, offset, isBase := spanBaseOf(base)
 			if _, isRecord := x.records[owner]; !isBase || offset != 0 || !isRecord {
@@ -5625,50 +5674,37 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 				return fmt.Sprintf("a call to %s: parameter %s has a type without a model", name, param.Name.Value), false
 			}
 			lo.locals[param.Name.Value] = &oakLocal{agg: agg}
-			continue
-		}
-		if elem, _, isSpan := spanShape(param.Type); isSpan {
+		case argSpan:
 			// A span argument: the {base, len} pair of one of the caller's
 			// span parameters, whole — the callee's parameter is an alias
 			// of the caller's span and shares its memory (asm/effects.go).
-			if next+2 > argBase+8 {
-				return fmt.Sprintf("a call to %s with arguments beyond the registers", name), false
-			}
-			base, hasBase := state.regs[next]
-			length, hasLen := state.regs[next+1]
-			next += 2
+			base, hasBase := word(place, 0, 8)
+			length, hasLen := word(place, 1, 4)
 			whole := hasBase && hasLen
 			var owner string
 			if whole {
 				var offset int64
 				owner, offset, whole = spanBaseOf(base)
 				_, isRecord := x.records[owner]
-				whole = whole && !isRecord && offset == 0 && x.spans[owner] == elem && isParamNamed(length, spanLenName(owner))
+				whole = whole && !isRecord && offset == 0 && x.spans[owner] == arg.elem && isParamNamed(length, spanLenName(owner))
 			}
 			if !whole {
-				return fmt.Sprintf("a call to %s: the span argument %s is not a span parameter of the caller passed whole", name, param.Name.Value), false
+				return fmt.Sprintf("a call to %s: the span argument %s is not one of the caller's span parameters passed whole", name, param.Name.Value), false
 			}
 			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
-			lo.spans[param.Name.Value] = spanContract{elemWidth: int(elem) * 8, signed: strings.HasPrefix(elemType, "i")}
+			lo.spans[param.Name.Value] = spanContract{elemWidth: int(arg.elem) * 8, signed: strings.HasPrefix(elemType, "i")}
 			if lo.spanAlias == nil {
 				lo.spanAlias = map[string]string{}
 			}
 			lo.spanAlias[param.Name.Value] = owner
-			continue
+		default:
+			w, signed, _ := contractBits(param.Type)
+			value, has := word(place, 0, arg.scalarSz)
+			if !has {
+				return "unbound register read", false
+			}
+			lo.locals[param.Name.Value] = &oakLocal{value: truncate(value, w), width: w, signed: signed}
 		}
-		w, signed, isScalar := contractBits(param.Type)
-		if class, isClass := contractClass(param.Type); !isScalar || !isClass || class == ClassV {
-			return fmt.Sprintf("a call to %s: parameter %s is not a fixed-width integer", name, param.Name.Value), false
-		}
-		if next >= argBase+8 {
-			return fmt.Sprintf("a call to %s with arguments beyond the registers", name), false
-		}
-		value, has := state.regs[next]
-		next++
-		if !has {
-			return "unbound register read", false
-		}
-		lo.locals[param.Name.Value] = &oakLocal{value: truncate(value, w), width: w, signed: signed}
 	}
 	if x.arch == ArchRV64 {
 		// Every vector register is caller-saved and the configuration is
@@ -6237,6 +6273,10 @@ func upperBitsName(param string) string { return param + "#hi" }
 
 // decideEqual is the equality decision for two lowered terms: witnesses,
 // the linear normal form, then the bit level. note is appended to a proof.
+// witnessVisitBudget bounds the node visits of decideEqual's witness pass
+// (the terms' DAG size times the inputs evaluated).
+const witnessVisitBudget = 4000000
+
 func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, width int, note string) Verdict {
 	asmTerm = truncate(asmTerm, width)
 	if domain := lowering.domainCondition(); domain != nil {
@@ -6261,13 +6301,27 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	sort.Strings(names)
 
 	// Witnesses first: a disagreement is a definite mismatch regardless of
-	// what normalization would say.
-	for _, env := range witnessInputs(names, params) {
+	// what normalization would say. The terms are numbered once and
+	// evaluated through slices (termEvaluator); a memory built by a chain
+	// of summarized stores is a large DAG, and the pass is thinned so that
+	// it visits a bounded number of nodes — the witnesses are the early
+	// refutation, the decision below is the proof.
+	evaluator := newTermEvaluator(asmTerm, oakTerm)
+	inputs := witnessInputs(names, params)
+	if visits := len(evaluator.terms) * len(inputs); visits > witnessVisitBudget {
+		stride := (visits + witnessVisitBudget - 1) / witnessVisitBudget
+		thinned := inputs[:0:0]
+		for i := 0; i < len(inputs); i += stride {
+			thinned = append(thinned, inputs[i])
+		}
+		inputs = thinned
+	}
+	for _, env := range inputs {
 		if !lowering.inDomain(env) {
 			continue
 		}
-		got := asmTerm.eval(env)
-		want := oakTerm.eval(env)
+		got := evaluator.evaluate(asmTerm, env)
+		want := evaluator.evaluate(oakTerm, env)
 		if got != want {
 			return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s: asm yields %d, Oak yields %d (asm term %s; Oak term %s)", fn.Name, describeEnv(names, env), got, want, asmTerm, oakTerm)}
 		}

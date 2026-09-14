@@ -10,6 +10,17 @@ func maxValue(t *term) uint64 {
 	return maxValueMemo(t, map[*term]uint64{})
 }
 
+// maxValue is the bound under the lowering's own memo, which every shift
+// the lowering meets shares: a count that reads memory written by earlier
+// summarized calls is a large DAG, and bounding it afresh at each shift
+// was a visible share of a build.
+func (lo *oakLowering) maxValue(t *term) uint64 {
+	if lo.bounds == nil {
+		lo.bounds = map[*term]uint64{}
+	}
+	return maxValueMemo(t, lo.bounds)
+}
+
 // maxValueMemo is maxValue over a term DAG: shared subterms bound once.
 func maxValueMemo(t *term, memo map[*term]uint64) uint64 {
 	if bound, seen := memo[t]; seen {

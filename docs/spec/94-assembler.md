@@ -2184,10 +2184,58 @@ store, a callee storing another value refuted; `TestVerifyBoundedShift`)
 and `compiler/e2e_native_callee_effects_test.go` (the arena shape: a
 record and a span passed through two levels of unit callees, the constant
 count unrolled, the bounded shift proven, a data count trusted).
-Next increments: stack arguments in the call summary (the outgoing area's
-slots are frame slots the executor already holds); stores in
-data-dependent loops as a summarized memory; guard elision from the
-checker's facts; the foreign-call subset only if the shell itself is to
+**Thirtieth increment — stack arguments in the call summary.** A call
+whose arguments exceed the eight registers (`px_node` with eleven, the
+syntax-node constructors `mk_*` behind it) left the summary at "arguments
+beyond the registers". The summary now lays the callee's parameters out
+by the shared rule and reads the ones beyond the registers from the
+caller's outgoing area, which is the path's frame at the call's sp: a
+scalar its natural size at its offset, zero-extended as the callee's
+load is; a span's base and, eight bytes on, its four-byte length; a
+by-reference record's address. The classification is one function now
+(`classifyArguments`, asm/abi.go): the checker's contract binding, the
+backend's placement, and the summary's reading share it, so the three
+cannot disagree on a slot. On the prover: proven 281 to 299 of 879 (the
+`mk_*` constructors, `cnf_header`/`cnf_lit`, `add_fn`, `trailing_zeros`),
+no disagreement, the rows identical. **Where the build's time went.** With
+the summaries reaching the arena emitters, the verifier's share of a
+native prover build rose to about four CPU-minutes, and sampling put it
+not in the diagrams but in the witness pass of `decideEqual`: each of
+the 324 boundary inputs evaluated the two memory terms through a map
+memo, and a memory built by a chain of summarized stores is a DAG of
+tens of thousands of nodes. The pass now numbers the terms once and
+evaluates them through slices (`termEvaluator`, which the theorem
+decider already used) and thins the inputs so that it visits a bounded
+number of nodes (`witnessVisitBudget`; the witnesses are the early
+refutation, the decision that follows is the proof), which took the
+slowest evidence verdicts from twenty seconds to two; the range bound of
+a shift count is memoized per lowering rather than per shift (a count
+that reads memory written by earlier summarized calls is a large DAG),
+and `significantBits`, which a zero test's flag reading consults, walks
+that DAG once per call rather than once per path through it — an
+emitter with fourteen string literals (`reason_text`) took the verifier
+past thirty minutes there before the memo, and takes a second after.
+Alongside, the functional consistency constraint skips a pair of reads
+whose indices are provably at different elements by their linear forms
+(the `base + 9` against `base + 16` of the arena), keeping it linear
+rather than quadratic in such a body's reads. The cost that remains is
+the reach itself, measured on one machine with the two compilers
+interleaved: the native prover build took about 30 CPU-seconds per
+compile before the twenty-eighth increment and takes about 220 after the
+thirtieth (the verifier's share about 150: evidence verdicts running the
+three orders to the node budget about 90, `emit_header` alone about 40
+exhausting the path budget across its conditional pushes, the proofs
+about 20). `TestOakShellAgreesNative` builds both provers and runs the
+corpus on each in about seven minutes on a loaded machine — under CI's
+45-minute package timeout, over `go test`'s ten-minute default when the
+whole root package runs on a busy host. Pinned:
+`compiler/e2e_native_stack_summary_test.go` (a callee with three
+arguments on the stack of mixed widths — `u16`, `u32`, `u64`, a `Bool` —
+summarized into a unit caller proven in its span and into a caller
+proven in its result and its span; the C backend the oracle).
+Next increments: stores in data-dependent loops as a summarized memory
+(the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
+with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
 be verified —
 calls by inlining or by the callee's proven contract, and effects through
 spans as the result — so that "trusted" shrinks toward the foreign
