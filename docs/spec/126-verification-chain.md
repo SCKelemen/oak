@@ -95,7 +95,10 @@ element shape, and GCC's `bgeu i, len` on the psABI's widened `u32` pair,
 fused `slli 32; srli 32−s` zero-extend-and-scale, and `add` into the base
 register is the rv64 checker's second admitted shape
 (`Oak.RiscV.index_guard_widened`, `widened_scale`; `94-assembler.md` §9);
-the pinned prelude text of these helpers is what `generateC` emits,
+the guarded element write `oak_store` over a `[*]T` parameter is proven
+against `v[i] = x` on both lanes as the span memory the unit writes
+(the verifier's memory effects, `asm/effects.go`), the same shapes with a
+store; the pinned prelude text of these helpers is what `generateC` emits,
 `TestGuardMacrosMatchValidatedText`); and
 every differential test executes the object. The
 driver selection itself is **proved** (`Oak.Target`: lane and object
@@ -316,10 +319,10 @@ for a workload):
    checker admits GCC's shape (`bgeu i, len` on the raw widened `u32`
    pair, `slli 32; srli 32−s` zero-extending and scaling in one step, the
    address formed in the base register; `Oak.RiscV.index_guard_widened`,
-   `widened_scale`), on rv64. Still open: `oak_store`'s bounds check against the guarded
-   element write (the verifier decides a returned value; a store helper's
-   effect needs the unit's memory postcondition), and the compare-exchange
-   helper once the verifier's memory model reaches the atomics
+   `widened_scale`), on rv64; and for `oak_store` against the guarded
+   element write `v[i] = x`, proven on both lanes as the span memory the
+   unit writes. Still open: the compare-exchange helper once the
+   verifier's memory model reaches the atomics
    (`compare_exchange_refinement_test.go` pins its text today).
 5. **Finish the RISC-V bridge** (rv64 is dbs's second target): build `spec/lean-sail` against a Sail
    built from git so the theorems are checked against the export itself
