@@ -1,0 +1,231 @@
+// The certificate rung inside the prover written in Oak (shell.oak): a
+// theorem's problem table, built in Oak by lower.oak, lowered to clauses by
+// cnf.oak, solved by sat.oak with its steps recorded, and the record
+// checked by lrat.oak — all in this process, no text between the stages
+// and no Go anywhere on the path from the law file to the verdict
+// (docs/spec/125-verification.md §4 `-solver self`). The outcome goes to
+// the shell as words: out[0] the kind (CERT_*), out[1] the certificate's
+// step count, and for a model the marked counterexample bits from out[4]
+// in the shape race_views produces, out[3] their count.
+
+CERT_NONE: u32 = 0
+CERT_PROVEN: u32 = 1
+CERT_MODEL: u32 = 2
+CERT_CONSTANT_TRUE: u32 = 3
+CERT_CONSTANT_FALSE: u32 = 4
+CERT_REFUSED: u32 = 5
+CERT_MODEL_UNCONFIRMED: u32 = 6
+
+CERT_CONFLICTS: u32 = 200000
+CERT_RECORD_WORDS: u32 = 16777216
+
+// certify_in_oak runs the rung over the problem in the built buffer b0
+// (its first n0 words), allocating what it needs for this theorem alone.
+certify_in_oak: (lw: Lower, b0: c.Ptr, n0: u32, node_budget: u32, out: [*]u32): () {
+  out[u32(0)] = CERT_NONE
+  out[u32(1)] = u32(0)
+  out[u32(3)] = u32(0)
+  unsafe {
+    built0: Buffer[u32] = c.own[u32](b0, lw.built_total)
+    certify_over(view(&built0), n0, node_budget, out)
+    released: c.Ptr = c.disown(built0)
+  }
+}
+
+// certify_over is the rung over the problem in the first n0 words of the
+// built buffer's view.
+certify_over: (whole: []u32, n0: u32, node_budget: u32, out: [*]u32): () {
+  unsafe {
+    p: []u32 = subslice(whole, u32(0), n0)
+    terms: u32 = problem_terms(p)
+    clause_layout: Layout = layout_for_clauses(node_budget, terms + u32(1), terms * u32(6144) + u32(65536))
+    arena_raw: c.Ptr = malloc(c.Size(clause_layout.total * u32(4)))
+    arena: Buffer[u32] = c.own[u32](arena_raw, clause_layout.total)
+    outcome: u32 = cnf_lower(clause_layout, span(&arena), p)
+    outcome == CNF_PROVEN ? { out[u32(0)] = CERT_CONSTANT_TRUE } | {
+    outcome == CNF_REFUTED ? { out[u32(0)] = CERT_CONSTANT_FALSE } | {
+    outcome == CNF_CLAUSE ? {
+      cnf_set_capacities(span(&arena), clause_layout.clauses_at, CERT_CONFLICTS)
+      region_view: []u32 = view(&arena)
+      variables: u32 = region_view[clause_layout.clauses_at + u32(1)]
+      literal_words: u32 = region_view[clause_layout.clauses_at + u32(3)]
+      clause_cap: u32 = region_view[clause_layout.clauses_at + u32(5)]
+      store_cap: u32 = region_view[clause_layout.clauses_at + u32(6)]
+      sl: SatLayout = sat_layout(variables, clause_cap, store_cap, CERT_RECORD_WORDS)
+      sat_raw: c.Ptr = malloc(c.Size(sl.total * u32(4)))
+      sat_arena: Buffer[u32] = c.own[u32](sat_raw, sl.total)
+      status: u32 = SAT_MALFORMED
+      sat_init(sl, span(&sat_arena), subslice(region_view, clause_layout.clauses_at, LRAT_HEADER_WORDS + literal_words), CERT_CONFLICTS, true) ? {
+        status = sat_solve(sl, span(&sat_arena))
+      } | { }
+      status == SAT_UNSATISFIABLE ? {
+        length: u32 = sat_record_finish(sl, span(&sat_arena))
+        length == u32(0) ? { out[u32(0)] = CERT_REFUSED } | {
+          sat_view: []u32 = view(&sat_arena)
+          record: []u32 = subslice(sat_view, sl.record_at, length)
+          ids: u32 = record[u32(5)] + u32(1)
+          store_words: u32 = record[u32(6)] + u32(1)
+          vars: u32 = variables + u32(1)
+          starts_raw: c.Ptr = malloc(c.Size(ids * u32(4)))
+          lengths_raw: c.Ptr = malloc(c.Size(ids * u32(4)))
+          alive_raw: c.Ptr = malloc(c.Size(ids))
+          store_raw: c.Ptr = malloc(c.Size(store_words * u32(4)))
+          assign_raw: c.Ptr = malloc(c.Size(vars))
+          trail_raw: c.Ptr = malloc(c.Size(vars * u32(4)))
+          starts: Buffer[u32] = c.own[u32](starts_raw, ids)
+          lengths: Buffer[u32] = c.own[u32](lengths_raw, ids)
+          alive: Buffer[u8] = c.own[u8](alive_raw, ids)
+          store: Buffer[u32] = c.own[u32](store_raw, store_words)
+          assign: Buffer[u8] = c.own[u8](assign_raw, vars)
+          trail: Buffer[u32] = c.own[u32](trail_raw, vars)
+          checked: [3]u32
+          accepted: u32 = lrat_check(record, span(&starts), span(&lengths), span(&alive), span(&store), span(&assign), span(&trail), span(&checked))
+          accepted == LRAT_ACCEPTED ? {
+            out[u32(0)] = CERT_PROVEN
+            out[u32(1)] = checked[u32(1)] + checked[u32(2)]
+          } | { out[u32(0)] = CERT_REFUSED }
+          free(c.disown(trail))
+          free(c.disown(assign))
+          free(c.disown(store))
+          free(c.disown(alive))
+          free(c.disown(lengths))
+          free(c.disown(starts))
+        }
+      } | {
+        status == SAT_SATISFIABLE ? {
+          // The model against every clause of the region_view, then the
+          // input nodes set true read back as blaster variables.
+          sat_view: []u32 = view(&sat_arena)
+          at: u32 = clause_layout.clauses_at + LRAT_HEADER_WORDS
+          end: u32 = at + literal_words
+          holds: Bool = true
+          while at < end && holds {
+            n: u32 = region_view[at]
+            satisfied: Bool = false
+            j: u32 = 0
+            while j < n && !satisfied {
+              lit: u32 = region_view[at + u32(1) + j]
+              satisfied = sat_view[sl.assign_at + lit / u32(2)] == sat_lit_true(lit)
+              j = j + u32(1)
+            }
+            holds = satisfied
+            at = at + u32(1) + n
+          }
+          holds ? {
+            kept: u32 = 0
+            node: u32 = 1
+            nodes: u32 = region_view[clause_layout.state_at + STATE_COUNT]
+            while node < nodes && kept + u32(4) < len(out) {
+              key: u32 = region_view[clause_layout.var_at + node]
+              (key & CNF_VAR_KEY) != u32(0) && (key & CNF_ITE_KEY) == u32(0) && sat_view[sl.assign_at + node - u32(1)] == u32(2) ? {
+                lb: u32 = leaf_bit_of(p, key ^ CNF_VAR_KEY)
+                lb == NONE ? { } | {
+                  out[u32(4) + kept] = lb
+                  kept = kept + u32(1)
+                }
+              } | { }
+              node = node + u32(1)
+            }
+            marked: u32 = mentioned_marks(p, out, u32(4) + kept)
+            out[u32(3)] = marked - u32(4)
+            out[u32(0)] = CERT_MODEL
+          } | { out[u32(0)] = CERT_MODEL_UNCONFIRMED }
+        } | { }
+      }
+      free(c.disown(sat_arena))
+    } | { } } }
+    free(c.disown(arena))
+  }
+}
+
+// The row phrases (shell.oak's literal encoding).
+ap_cert_of: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x41524c206e61203b), u64(0x6669747265632054), u32(16))
+  ap_lits(le, ew, u64(0x666f206574616369), u64(0x20), u32(9))
+}
+
+ap_cert_steps: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x202c737065747320), u64(0x2064657265776f6c), u32(16))
+  ap_lits(le, ew, u64(0x7375616c63206f74), u64(0x614f206e69207365), u32(16))
+  ap_lits(le, ew, u64(0x686320646e61206b), u64(0x6e692064656b6365), u32(16))
+  ap_lits(le, ew, u64(0x6b614f20), u64(0x0), u32(4))
+}
+
+ap_cert_bit_level: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x205441524c206e61), u64(0x6369666974726563), u32(16))
+  ap_lits(le, ew, u64(0x20666f20657461), u64(0x0), u32(7))
+}
+
+ap_cert_agrees: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x656320656874203b), u64(0x7461636966697472), u32(16))
+  ap_lits(le, ew, u64(0x6120676e75722065), u64(0x7365657267), u32(13))
+}
+
+ap_cert_disagrees: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x656320656874203b), u64(0x7461636966697472), u32(16))
+  ap_lits(le, ew, u64(0x6420676e75722065), u64(0x7365657267617369), u32(16))
+  ap_lits(le, ew, u64(0x6874206874697720), u64(0x6172676169642065), u32(16))
+  ap_lits(le, ew, u64(0x6d), u64(0x0), u32(1))
+}
+
+ap_cert_none: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x656320656874203b), u64(0x7461636966697472), u32(16))
+  ap_lits(le, ew, u64(0x6720676e75722065), u64(0x76206f6e20657661), u32(16))
+  ap_lits(le, ew, u64(0x746369647265), u64(0x0), u32(6))
+}
+
+ap_cert_refused: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x656320656874203b), u64(0x7461636966697472), u32(16))
+  ap_lits(le, ew, u64(0x6572207361772065), u64(0x7962206465737566), u32(16))
+  ap_lits(le, ew, u64(0x6568632065687420), u64(0x72656b63), u32(12))
+}
+
+ap_cert_model: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x614f206568742820), u64(0x7265766c6f73206b), u32(16))
+  ap_lits(le, ew, u64(0x6c65646f6d207327), u64(0x7269666e6f63202c), u32(16))
+  ap_lits(le, ew, u64(0x696167612064656d), u64(0x207374692074736e), u32(16))
+  ap_lits(le, ew, u64(0x2973657375616c63), u64(0x0), u32(8))
+}
+
+ap_cert_constant: (le: Lem, ew: [*]u32): () {
+  ap_lits(le, ew, u64(0x696c626f20656874), u64(0x66206e6f69746167), u32(16))
+  ap_lits(le, ew, u64(0x206f742073646c6f), u64(0x6174736e6f632061), u32(16))
+  ap_lits(le, ew, u64(0x6874206e6920746e), u64(0x657375616c632065), u32(16))
+  ap_lits(le, ew, u64(0x656e69676e6520), u64(0x0), u32(7))
+}
+
+// ap_certificate appends the rung's verdict to a row the diagram decided,
+// and reports whether the two agree.
+ap_certificate_after_proven: (le: Lem, ew: [*]u32, cert: []u32): Bool {
+  kind: u32 = cert[u32(0)]
+  agree: Bool = true
+  kind == CERT_PROVEN ? {
+    ap_cert_of(le, ew)
+    sb_dec(le, ew, u64(cert[u32(1)]))
+    ap_cert_steps(le, ew)
+  } | {
+  kind == CERT_CONSTANT_TRUE ? {
+    ap_sep(le, ew)
+    ap_cert_constant(le, ew)
+  } | {
+  (kind == CERT_MODEL || kind == CERT_CONSTANT_FALSE) ? {
+    ap_cert_disagrees(le, ew)
+    agree = false
+  } | {
+  kind == CERT_REFUSED ? { ap_cert_refused(le, ew) } | { ap_cert_none(le, ew) }
+  } } }
+  agree
+}
+
+ap_certificate_after_refuted: (le: Lem, ew: [*]u32, cert: []u32): Bool {
+  kind: u32 = cert[u32(0)]
+  agree: Bool = true
+  (kind == CERT_MODEL || kind == CERT_CONSTANT_FALSE) ? { ap_cert_agrees(le, ew) } | {
+  (kind == CERT_PROVEN || kind == CERT_CONSTANT_TRUE) ? {
+    ap_cert_disagrees(le, ew)
+    agree = false
+  } | {
+  kind == CERT_REFUSED ? { ap_cert_refused(le, ew) } | { ap_cert_none(le, ew) }
+  } }
+  agree
+}

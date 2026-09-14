@@ -308,11 +308,21 @@ written in Oak end to end (`prove/solver/shell.oak`): the solver program
 reads the law file itself, parses it, decides every theorem it declares
 in source order by the same ladder — the exhaustive rung when the domains
 fit the bound and the body has no loop, else the witness pass and the
-three variable orders raced in one process — and prints the rows in the
-command's format; no Go is on the path from the file to the rows, and
-with `-cross go` the Go ladder decides the same file and every row's
-status must agree (`the Go ladder agrees on N of N rows`;
-`TestOakShellAgrees` requires it over the corpus). With `-lean out.lean`
+three variable orders raced in one process, then the **certificate rung
+in the same process** (`prove/solver/certify.oak`: the problem table the
+Oak lowering built goes to the clause engine, the solver records its
+steps as words beside the clauses instead of printing them, and the
+checker written in Oak reads the record) — and prints the rows in the
+command's format, a decided row carrying `an LRAT certificate of N steps,
+lowered to clauses in Oak and checked in Oak`, a row the diagram left
+over its budget decided or refuted by the certificate alone (two of
+`extents_lean.oak`'s rows are), and a row
+whose diagram and certificate disagree left `open` naming it; no Go is on
+the path from the file to the rows, and with `-cross go` the Go ladder
+decides the same file, its own certificate rung following the diagram as
+the shell's does, and every row's status must agree (`the Go ladder
+agrees on N of N rows`; `TestOakShellAgrees` requires it over the corpus,
+`TestOakShellCertificates` the certificate rows). With `-lean out.lean`
 the shell writes the Lean projection too (`prove/solver/lean.oak`: the
 theorems, the functions they reach, and the record and sum types those
 mention, rendered to the text of §5 from the raw parse tree, the
@@ -702,12 +712,12 @@ In order of payoff, each reusing a surface that exists:
   reduction, two-watched-literal propagation, minimization, Luby
   restarts, and bounded variable elimination at load; the encoder's laws
   in `Oak.Tseitin`, its code checked against them by truth table; and the
-  clause engine as an Oak program beside `asm/cnf.go`, so no Go is on the
-  path from the problem table to the certificate. Next: the solver's own
-  laws (a learned clause is implied by its hints; a resolvent by its
-  parents) stated over the arena; subsumption and failed-literal probing
-  when a corpus row asks for them; the problem table itself built in Oak
-  (`lower.oak` already does, for the diagram) feeding the clause engine. The BDD's failure mode
+  clause engine as an Oak program beside `asm/cnf.go`, and the whole rung
+  inside the prover written in Oak (`certify.oak`), so `-solver self` runs
+  from the law file to a checked certificate with no Go anywhere on the
+  path. Next: the solver's own laws (a learned clause is implied by its
+  hints; a resolvent by its parents) stated over the arena; subsumption
+  and failed-literal probing when a corpus row asks for them. The BDD's failure mode
   is the node budget on multipliers and wide aggregates, which CDCL
   solvers treat routinely. The rung is the one Lean's `bv_decide` already
   runs:
