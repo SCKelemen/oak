@@ -198,8 +198,9 @@ or the verifier, not in the program:
    reads the exclusive slack guard, and keeps guards in callee-saved
    registers across calls; a hole (slack facts admitted without their
    minimum, and offsets weakening the minimum required) is closed with the
-   fact's `need`. Refusals 22 → 14, guards elided 58 → 112 on the
-   stdlib-bearing program.
+   fact's `need`. Refusals 22 → 10, guards elided 58 → 136 on the
+   stdlib-bearing program (conditions materialized by `cset` and tested
+   by `cbz`/`cbnz` read as the branch would).
 6. **The checkers are linear over the block.** Base facts (spans,
    regions, frame addresses) are definitions, not per-path state; guard
    facts already flow through labels by a fixpoint on AArch64. The two

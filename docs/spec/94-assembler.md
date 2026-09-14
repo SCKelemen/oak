@@ -4440,6 +4440,19 @@ makes exact. Three are closed:
   (`Oak.SpanAlias.idxMeans_preserved`); the length is a fact about memory
   no call changes. Loop bodies that call between the exit test and the
   access (`random_fill`, the json scanners) are the beneficiaries.
+- **A condition materialized, then tested.** The lowering spells `a && b`
+  and `a || b` through a boolean: `cmp wI, wL; cset wB, lo; cbz wB, skip`
+  and the access follows. The checker read guards only off `cmp; b.cond`.
+  It now records the compare's condition on wB at the `cset` (a
+  `condFact`, dying with a write to wB or to either compared register,
+  at labels, and at calls) and reads `cbz wB` as `b.<not cond>` and
+  `cbnz wB` as `b.cond` on that compare — the same facts, the same
+  laws (`Oak.Assembler.cset_cbz`, `cset_cbnz`). A boolean tested after a
+  label proves nothing: the join's other predecessors may have written
+  it, and the fact is not part of the label fixpoint's meet. The
+  conjunction's second stage (`short: mov w9, w10; cbz w9`) therefore
+  stays unread; a meet of "wB ≠ 0 implies these conditions", vacuous on
+  the predecessor that wrote zero, would read it.
 
 Closing them found a hole. A slack fact is exact only under `len ≥ K`
 (`Oak.Assembler.slack_guard`'s hypothesis: below it the subtraction
@@ -4458,17 +4471,22 @@ for a slack fact. The refinement's pinned examples carry the field
 the wrap among them. No emitted body relied on the hole: the lowering
 emits the slack idiom only under the minimum guard.
 
-Measured on the stdlib-bearing program (AArch64): the checker refuses 14
-bodies where it refused 22, 44 bodies elide 112 guards where 36 elided 58,
-241 bodies stay proven and none mismatch. What remains, by shape: an
+Measured on the stdlib-bearing program (AArch64): the checker refuses 10
+bodies where it refused 22, 48 bodies elide 136 guards where 36 elided 58,
+241 bodies stay proven and none mismatch. `OAK_NATIVE_DUMP=1` now prints
+the refused elided form of a body under a `// refused elided form of`
+header, which is how these shapes were read. What remains, by shape: an
 index reloaded from a frame slot after its guard (`append_byte`: the
 guard is on the register the compare read, the store indexes a fresh load
 of the same field — a fact about the slot would carry it); a bound through
 another register (`bytes_compare`'s `limit = min(len(a), len(b))`,
 `uuid_compare`, `text_equal_ascii_fold`: the guard is against a register
 the checker cannot relate to the span's length across the select's join —
-`leFacts` through the label fixpoint); and the json and url scanners'
-guards still to be read. On the RV64 lane elision stays off until its
+`leFacts` through the label fixpoint); the conjunction's second stage
+above (`json_value_boundary`, `url_parse`); and index arithmetic the
+typechecker discharges by `scaled_under_bound` (`unicode_lookup`,
+`normalize_find`: `at = low * 5` under `low < len / 5`), which the
+checker has no fact for. On the RV64 lane elision stays off until its
 index representation admits it.
 
 **Where optimizing passes live (decision, 2026-09-15).** Two levels carry
