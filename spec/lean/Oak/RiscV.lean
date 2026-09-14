@@ -542,6 +542,36 @@ theorem frame_vector_in_bounds (frame addr k width i : Int) (hlo : -frame ≤ ad
     (hi : 0 ≤ i) (hik : i < k * width) : -frame ≤ addr + i ∧ addr + i < 0 := by
   omega
 
+/-! ### Fixed configurations in the verifier (asm/rv64_verify_vector.go)
+
+The verifier models the vector file under `vsetivli zero, K, eS, m1` when
+`K · S ≤ 128`: on every implementation with `VLEN ≥ 128` the maximum
+length at `eS/m1` is at least `K`, so `vl = min(K, VLMAX) = K` exactly and
+the instructions act on `K` lanes whatever the VLEN. The lanes past `vl`
+are tail-agnostic (RVV 1.0 §3.4.3): the verifier gives them fresh unknown
+values, so a unit whose result depends on them is a mismatch and one that
+masks them out is proven. -/
+
+/-- With `VLEN ≥ 128`, `K` lanes of `S` bits with `K · S ≤ 128` fit: `K ≤ VLMAX`. -/
+theorem fixed_lanes_fit (vlen K S : Nat) (hS : 0 < S) (hvlen : 128 ≤ vlen) (hKS : K * S ≤ 128) :
+    K ≤ vlmax vlen S 1 := by
+  unfold vlmax
+  rw [Nat.one_mul]
+  exact (Nat.le_div_iff_mul_le hS).2 (by omega)
+
+/-- Under such a configuration `vl` is `K` exactly, on every VLEN. -/
+theorem fixed_config_vl (vlen K S : Nat) (hK : 0 < K) (hS : 0 < S) (hvlen : 128 ≤ vlen) (hKS : K * S ≤ 128) :
+    vsetvlOK K (vlmax vlen S 1) (min K (vlmax vlen S 1)) ∧ min K (vlmax vlen S 1) = K := by
+  refine ⟨vsetvl_min_ok _ _ ?_, Nat.min_eq_left (fixed_lanes_fit vlen K S hS hvlen hKS)⟩
+  unfold vlmax
+  rw [Nat.one_mul]
+  have hSK : S ≤ K * S := Nat.le_mul_of_pos_left S hK
+  exact Nat.div_pos (by omega) hS
+
+/-- The sixteen bytes, eight halfwords, four words, and two doublewords of
+the fixed vectors all fit, as does the one-element `e32` read of a mask. -/
+theorem fixed_shapes_fit : 16 * 8 ≤ 128 ∧ 8 * 16 ≤ 128 ∧ 4 * 32 ≤ 128 ∧ 2 * 64 ≤ 128 ∧ 1 * 32 ≤ 128 := by decide
+
 /-- A masked element is one of the vl elements: whatever the mask, the
     strip-mining bound covers it. -/
 theorem masked_access_in_bounds (len idx vlmax vl i : Nat) (hguard : idx < len)

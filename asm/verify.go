@@ -602,6 +602,13 @@ type symbolicState struct {
 	// unknownFrom, when set, is the lowest frame address a store at a
 	// data-dependent index reached: slots from there up hold opaque values.
 	unknownFrom *int64
+	// fregs is the RV64 lane's floating-point file (f0–f31, a class of its
+	// own): register number -> the IEEE bit pattern at its width
+	// (asm/rv64_verify_float.go); nil until a float instruction runs.
+	fregs map[int]*term
+	// rvcfg is the RV64 lane's fixed vector configuration (K lanes of S
+	// bits, asm/rv64_verify_vector.go); nil until a vsetivli sets one.
+	rvcfg *rvVectorConfigVerify
 	// globals: the package-global cells this path has written, by Oak
 	// name, at the cell's width (docs/spec/94-assembler.md §9); a cell not
 	// here still holds its entry value, the parameter `global:NAME`.
@@ -639,6 +646,10 @@ func (s *symbolicState) read(reg Register) (*term, bool) {
 	if reg.ZeroRegister() {
 		return constTerm(0, widthOf(reg.Class)), true
 	}
+	if reg.Class == ClassRV64F {
+		value, bound := s.fregs[reg.Num]
+		return value, bound
+	}
 	value, ok := s.regs[reg.Num]
 	if !ok && ((s.arch == ArchRV64 && rv64Preserved(reg.Num)) || (s.arch != ArchRV64 && calleeSavedRegister(reg.Num))) {
 		// A callee-saved register carries the caller's value on entry: an
@@ -658,6 +669,13 @@ func (s *symbolicState) read(reg Register) (*term, bool) {
 
 func (s *symbolicState) write(reg Register, value *term) {
 	if reg.ZeroRegister() {
+		return
+	}
+	if reg.Class == ClassRV64F {
+		if s.fregs == nil {
+			s.fregs = map[int]*term{}
+		}
+		s.fregs[reg.Num] = value
 		return
 	}
 	if reg.Class == ClassW {
@@ -936,6 +954,9 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 	exec.resultChunk = chunk
 	if fn.Arch == ArchRV64 {
 		exec.resultReg = Register{Class: rv64ResultRegister.Class, Num: rv64ResultRegister.Num + chunk}
+		if floatResult != 0 {
+			exec.resultReg = rv64FloatResultRegister
+		}
 	}
 	exec.hasResult = hasResult
 	exec.loopExits = findLoops(fn.Items, labels)
@@ -1010,6 +1031,9 @@ type pathExecutor struct {
 	summarized []string
 	freshSyms  map[string]int
 	callSites  int
+	// freshCount numbers the unspecified lane values of the RV64 vector
+	// model (asm/rv64_verify_vector.go freshLane).
+	freshCount int
 }
 
 // compositeArg is a record or union parameter: its scalar leaves and size
@@ -1614,7 +1638,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			if !x.hasResult {
 				return unitResult, state.effects(), "", true
 			}
-			if x.resultClass == ClassV {
+			if x.resultClass == ClassV && x.arch != ArchRV64 {
 				value, ok := state.readVec(0)
 				if !ok {
 					return nil, nil, "result register never written", false
@@ -1630,7 +1654,12 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			}
 			if x.arch == ArchRV64 {
 				// a0 holds the widened result; the contract width reads it.
-				result = truncate(result, widthOf(x.resultClass))
+				// An f32/f64 result is fa0 at its width (LP64D).
+				if x.floatResult != 0 {
+					result = truncate(result, x.floatResult)
+				} else {
+					result = truncate(result, widthOf(x.resultClass))
+				}
 			}
 			return result, state.effects(), "", true
 		case "brk", "ebreak":
@@ -3931,6 +3960,7 @@ func scalarType(expr ast.Expression) (width int, signed bool, ok bool) {
 type spanContract struct {
 	elemWidth int
 	signed    bool
+	float     bool // f32/f64 elements: an element read is a float of elemWidth
 }
 
 // spanElement recognizes v[k] over a span parameter with a constant index
@@ -5762,7 +5792,7 @@ func newLowering(sig *ast.FunctionStatement) *oakLowering {
 	for _, param := range sig.Parameters {
 		if elem, _, isSpan := spanShape(param.Type); isSpan {
 			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
-			lowering.spans[param.Name.Value] = spanContract{elemWidth: int(elem) * 8, signed: strings.HasPrefix(elemType, "i")}
+			lowering.spans[param.Name.Value] = spanContract{elemWidth: int(elem) * 8, signed: strings.HasPrefix(elemType, "i"), float: elemType == "f32" || elemType == "f64"}
 			continue
 		}
 		bits, signed, _ := contractBits(param.Type)

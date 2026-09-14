@@ -943,9 +943,64 @@ two-instruction `fmul`/`fadd` against `a * x + y`, `f32(n)` against
 pairwise dot product `reduce_add(mul(a, b))` against `fmul`/`faddp`/
 `faddp`, and `fma_f32x4` against `fmla` are proven
 (`asm/verify_float_test.go`). What stays trusted: the rounding
-intrinsics (`floor`, `ceil`, `trunc`, `round`), a float converted to `u8`
-or `u16` (the narrow saturation), and the RV64 lane's floating-point and
-vector files, which the next increments bring to the same terms.
+intrinsics (`floor`, `ceil`, `trunc`, `round`) and a float converted to
+`u8` or `u16` (the narrow saturation).
+
+**The RV64 lane's floating-point and vector files (ninth increment,
+2026-09-14; `asm/rv64_verify_float.go`, `asm/rv64_verify_vector.go`).**
+The same terms through the RV64 mnemonics, so an RV64 unit and a NEON
+unit of one Oak body decide against the same lane terms. The F/D
+registers are a file of their own in the executor (`fregs`), each holding
+a pattern at the width of the instruction that wrote it; f32/f64
+parameters bind in `fa0`–`fa7` and an f32/f64 result is read from `fa0`
+(LP64D). `fadd`/`fsub`/`fmul`/`fdiv`/`fsqrt .s/.d` under the dynamic
+rounding mode (a static mode leaves the unit trusted), `fmadd`/`fmsub`/
+`fnmsub`/`fnmadd` as one `fma` over sign-adjusted operands, `fmin`/`fmax`
+as `fminnm`/`fmaxnm` — RISC-V's are IEEE minimumNumber/maximumNumber, so
+they match Oak's `min_num`/`max_num` and mismatch its `min`/`max`, which
+the NEON `fmin`/`fmax` match — the sign injections `fsgnj`/`fsgnjn`/
+`fsgnjx` as the bit operations (`fneg`, `fabs`, `copysign`), `feq`/`flt`/
+`fle` into the integer file as the IEEE predicates, `fmv.x.w` (sign-
+extended) and the other bit moves, `fcvt` between the widths and from
+the integer file at its width and signedness, and to the integer file
+under `rtz` (the contract converts toward zero; without `rtz` the unit
+stays trusted); `flw`/`fld`/`fsw`/`fsd` through the frame. The vector
+file is modeled under a *fixed configuration*: `vsetivli zero, K, eS, m1`
+with `K·S ≤ 128`, under which `vl = K` on every VLEN ≥ 128
+(`Oak.RiscV.fixed_config_vl`, `fixed_lanes_fit`) and the instructions are
+the lane functions of the NEON model over `K` lanes of `S` bits —
+`vle`/`vse` at the SEW through a span element address (the guarded-index
+and slack idioms of §9) or a register-held frame address (`addi rD, sp,
+imm`, two 8-byte slots, whole-register spills), `vadd`/`vsub`/`vand`/
+`vor`/`vxor`/`vminu`/`vmaxu`/`vssubu .vv`, `vsrl.vx`, `vmv.v.x`, `vmv.x.s`
+(sign-extended), the comparisons `vmseq.vv`/`vmsne.vx`/`vmslt.vx`/
+`vmsltu.vx` into a mask register holding one bit per lane in its low
+bits, `vmerge.vvm` by those bits, `vcpop.m` as the population count of
+the low `K` bits, `vredsum.vs` as the sum and `vfredosum.vs` as the
+ordered float sum from `vs1[0]`, `vrgather.vv` as the byte-table lookup
+for an index below sixteen, `vslidedown.vi`/`vslideup.vi`, and the float
+forms `vfadd`/`vfsub`/`vfmul .vv`, `vfmacc.vv` as `fma` into the
+accumulator, `vfcvt.f.xu.v`, `vfmv.v.f`/`vfmv.f.s`. What the ISA leaves
+unspecified is a fresh unknown of the verification: the lanes past `vl`
+after a write under `K·S < 128`, a mask register's bits past `vl`, a
+reduction's tail lanes, the elements a gather or a slide reads past `vl`
+(they lie in the tail of a wider VLEN's register). So the native
+lowering's `movemask`, which reads the mask through element 0 at `e32`
+and then clears the bits above the lane count, is proven, and the same
+read without the clearing is a mismatch naming the tail; the masked
+gather of `tbl` is proven and the unmasked one a mismatch. A register
+AVL (`vsetvli`), a configuration whose `vl` depends on VLEN, a masked
+form (`v0.t`), and the widening forms keep the unit trusted. Verdicts
+(`asm/rv64_verify_float_test.go`, `asm/rv64_verify_vector_test.go`):
+`fma` against `fmadd.d` proven and `a*x + y` a mismatch; `min_num`
+against `fmin.s` proven and `min` a mismatch; `sqrt(abs(-x))` through
+the sign injections; `copysign` against `fsgnj.d`; `a < b` against
+`flt.d`; `f32(n)` against `fcvt.s.wu` proven and `fcvt.s.w` a mismatch;
+`u64(x)` against `fcvt.lu.d rtz`; a frame round trip; the zero mask
+through the slack idiom, `any` through `vcpop.m`, the masked gather, the
+slides for `prev`, a whole-register spill, and the ordered f32 dot product
+`(((0 + a₀b₀) + a₁b₁) + a₂b₂) + a₃b₃` against `vfmul`/`vfredosum` proven,
+with the pairwise grouping a mismatch.
 
 ## 9. Native encoding, and the architectures to come
 

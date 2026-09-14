@@ -48,6 +48,13 @@ func (lo *oakLowering) floatWidthOf(expr ast.Expression) (int, bool) {
 		if whenTrue, _, isBool := boolConditional(e); isBool {
 			return lo.floatWidthOf(whenTrue)
 		}
+	case *ast.IndexExpression:
+		// An element of a float span is a float of the element width.
+		if base, isIdent := e.Left.(*ast.Identifier); isIdent && !e.Dot {
+			if contract, isSpan := lo.spans[base.Value]; isSpan && contract.float {
+				return contract.elemWidth, true
+			}
+		}
 	case *ast.InvocationExpression:
 		if member, isSimd := simdMember(e.Function); isSimd {
 			// extract/reduce_add over a float vector yield its lane type.
