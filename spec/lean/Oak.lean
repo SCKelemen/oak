@@ -103,6 +103,7 @@ import Oak.Semver
 import Oak.Loops
 import Oak.TrapArms
 import Oak.StackArguments
+import Oak.UnitBodies
 import Oak.FrameIndex
 import Oak.SpanLocals
 import Oak.Shifts

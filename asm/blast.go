@@ -378,7 +378,14 @@ func (bl *blaster) blastUncached(t *term) []int {
 		}
 		return out
 	case termParam:
-		declared := bl.widths[t.name]
+		declared, known := bl.widths[t.name]
+		if !known {
+			// A parameter the decision was not told of would blast to a
+			// constant zero and could turn a difference into a proof; the
+			// diagram fails closed instead, as if over budget.
+			bl.bdd.exceeded = true
+			return nil
+		}
 		for i := 0; i < t.width; i++ {
 			if i < declared {
 				out[i] = bl.variable(bl.variableIndex(t.name, i))

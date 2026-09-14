@@ -2473,6 +2473,18 @@ its constant element count takes the span-parameter alias, and `len` over
 the callee's parameter resolves through the alias to the table's count, so
 `table_sum` is proven too (`compiler/e2e_native_tables_test.go`).
 
+**Thirty-seventh increment — unit bodies without effects (2026-09-15;
+`asm/effects.go` decideEffects, `Oak.UnitBodies`).** A unit function whose
+body has no effect the model tracks — `check_all`, an assert over a call,
+on both lanes — was trusted ("no integer result"): a unit body is decided
+in the package cells and the span memories it writes, and with neither
+side writing any there was nothing to compare. Nothing to compare is the
+agreement: both sides leave the entry state as it is, so the body is
+proven "(a unit body that writes no package state and no span memory on
+either side)" (`Oak.UnitBodies`: the empty effect log is the identity, and
+two empty logs agree exactly when the entry states do). A body that does
+store through a span the signature lacks, or writes a cell the Oak body
+does not, is decided as before (`asm/unit_bodies_test.go`).
 **Thirty-eighth increment — frame loads at a data-dependent index
 (2026-09-15; `asm/verify.go` boundedFrameLoad, `Oak.FrameIndex`).** A load
 from an owned frame array at an index that is not a constant — `bytes[i]`
@@ -3971,6 +3983,28 @@ storing the wrong value under a symbolic index stays a mismatch
 (`TestVerifyAtomicsCompareExchange`) rather than evaluating equal on the
 fixed memory. On the prover the nineteen are evidence, and the native
 build, which a mismatch fails, builds again: proven 376.
+
+**The domain conjoined lazily; the coupling without a witness
+(2026-09-14).** The trap domain that joined the decision the same
+afternoon — the equivalence holds where the machine does not trap, and
+where Oak traps on the same guard — wrapped both terms in the domain
+before the diagrams saw them, and twenty-seven proofs on the prover fell
+to the node budget under the wrapping. The domain is now handled as the
+reads' consistency is: checked on every witness input, and conjoined at
+the bit level only once a bit differs, since equality everywhere is
+equality inside the domain; its own unknowns (a union tag, the operands
+of the guard) join the decision's parameters — a parameter the diagrams
+were not told of blasted to a constant zero, which made the domain false
+and every difference a proof for the length of one test run, and the
+blaster now fails closed on such a parameter, as if over budget. And a
+body whose loops no concrete input decided within budget (a callee's
+loop over a count the memory holds) was left trusted before the
+coupling; the coupling is an induction that needs no witness, so the
+decision proceeds and the verdict says how many inputs agreed, eighty
+bodies among them. On the prover: proven 376 to 391, trusted 513 to 427,
+evidence 63 to 134 — most of the new evidence is loops whose carried
+record local (`params`) has no register image at the header, and loops
+over the node budget — no disagreement, the rows identical.
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the

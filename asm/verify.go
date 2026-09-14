@@ -6843,12 +6843,14 @@ const witnessVisitBudget = 4000000
 
 func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, width int, note string) Verdict {
 	asmTerm = truncate(asmTerm, width)
-	if domain := lowering.domainCondition(); domain != nil {
-		// Over well-typed inputs only: outside a union tag's variants both
-		// sides are the same zero, so equality there is equality inside.
-		asmTerm = iteTerm(domain, asmTerm, constTerm(0, width))
-		oakTerm = iteTerm(domain, adaptWidth(oakTerm, width), constTerm(0, width))
-	}
+	oakTerm = adaptWidth(oakTerm, width)
+	// The input domain — every union tag one of its variants, the machine
+	// not trapping — restricts the equality: it is checked on the
+	// witnesses and conjoined at the bit level only once a bit differs,
+	// as the reads' consistency is, since equality everywhere is equality
+	// inside the domain and most bodies prove without it (wrapping both
+	// terms in the domain cost the diagrams a quarter of the proofs).
+	domain := lowering.domainCondition()
 
 	// The unknowns are every parameter either side mentions: scalars, span
 	// lengths, span elements, and span bases — at the width each is
@@ -6856,6 +6858,13 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	mentioned := map[string]bool{}
 	collectParams(asmTerm, mentioned)
 	collectParams(oakTerm, mentioned)
+	if domain != nil {
+		// The domain's own unknowns (a union tag, the operands of the
+		// guard the machine traps on) are variables of the decision too;
+		// a parameter the blaster does not know would blast to a constant
+		// and the domain to false, and every difference with it.
+		collectParams(domain, mentioned)
+	}
 	params := map[string]int{}
 	names := make([]string, 0, len(mentioned))
 	for name := range mentioned {
@@ -6881,7 +6890,7 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 		inputs = thinned
 	}
 	for _, env := range inputs {
-		if !lowering.inDomain(env) {
+		if !lowering.inDomain(env) || (domain != nil && domain.eval(env)&1 == 0) {
 			continue
 		}
 		got := evaluator.evaluate(asmTerm, env)
@@ -6920,7 +6929,7 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	for _, bl := range blasters {
 		bl.bdd.stop = &stop
 		go func(bl *blaster) {
-			verdict, exceeded := blastEqual(bl, fn, names, asmTerm, oakTerm, width, note)
+			verdict, exceeded := blastEqual(bl, fn, names, asmTerm, oakTerm, domain, width, note)
 			results <- attempt{verdict, exceeded}
 		}(bl)
 	}
@@ -6996,7 +7005,7 @@ func hasUninterpreted(t *term) bool {
 // blastEqual decides the equality under one variable order: proof, a
 // counterexample, or the budget exceeded (also when another order finished
 // first and stopped this one).
-func blastEqual(bl *blaster, fn *Function, names []string, asmTerm, oakTerm *term, width int, note string) (Verdict, bool) {
+func blastEqual(bl *blaster, fn *Function, names []string, asmTerm, oakTerm, domain *term, width int, note string) (Verdict, bool) {
 	asmBits := bl.blast(asmTerm)
 	if os.Getenv("OAK_VERIFY_TRACE") != "" {
 		fmt.Fprintf(os.Stderr, "verify %s: (%s) asm: %d term nodes, %d selects, %d bdd nodes, exceeded=%v\n", fn.Name, bl.label, termSize(asmTerm, map[*term]int{}), len(bl.selects), len(bl.bdd.nodes), bl.bdd.exceeded)
@@ -7007,6 +7016,18 @@ func blastEqual(bl *blaster, fn *Function, names []string, asmTerm, oakTerm *ter
 	}
 	if asmBits == nil || oakBits == nil || bl.bdd.exceeded {
 		return Verdict{}, true
+	}
+	// The input domain joins the constraint a differing bit is judged
+	// under, built once with the consistency constraint.
+	inDomain := func() int {
+		if domain == nil {
+			return bddTrue
+		}
+		bits := bl.blast(domain)
+		if bits == nil || len(bits) == 0 {
+			return bddTrue
+		}
+		return bits[0]
 	}
 	// Element reads at different index terms are independent values in the
 	// diagrams (sound for a proof); a differing bit is a counterexample
@@ -7019,7 +7040,7 @@ func blastEqual(bl *blaster, fn *Function, names []string, asmTerm, oakTerm *ter
 			continue
 		}
 		if !consBuilt {
-			cons, consBuilt = bl.consistency(), true
+			cons, consBuilt = bl.apply(opAnd, bl.consistency(), inDomain()), true
 			if bl.bdd.exceeded {
 				return Verdict{}, true // the budget: another order may still decide
 			}
