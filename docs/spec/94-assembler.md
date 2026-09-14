@@ -2305,7 +2305,7 @@ budget; dropping a stack parameter from the body is a mismatch
 (`asm/stack_params_test.go`); `tail_sum`, whose span arrives on the
 stack and is walked in a loop, is proven.
 
-**Thirty-fourth increment — the RV64 lane's parameters beyond the
+**Thirty-third increment — the RV64 lane's parameters beyond the
 registers (2026-09-15; `nativegen/rv64.go`, `asm/rv64_check.go`,
 `asm/rv64_verify.go`).** The rv64 lane left every function with more than
 eight argument words to the C backend ("more than eight parameters", "the
@@ -2336,6 +2336,30 @@ with the C backend with the reason
 (`compiler/e2e_native_rv64_stack_args_test.go`, the corpus run on the
 bare machine under QEMU against the C backend's realization;
 `asm/stack_params_test.go`).
+
+**Thirty-fourth increment — the RV64 lane's span locals and value-less
+records (2026-09-15; `nativegen/rv64.go`; `spec/lean/Oak/SpanLocals.lean`).**
+A `main` that named a view
+of its own array (`whole: []u32 = view(&buf)`), or declared a record
+without an initializer, stayed with the C backend on the rv64 lane ("a
+local of type ([]u32)", "the record local p without an initializer"),
+while the AArch64 lane lowered both. The lane now binds a span or view
+local over an owned frame array as it binds a parked span parameter: the
+array's frame address (`addi sB, sp, off`) and its constant length (`li
+sL, N`) in two callee-saved registers, the length register serving as the
+raw and the normalized length, so the local reads and stores through the
+checker's guarded-index idiom, passes on as a `{base, len}` pair, and
+another named span aliases by copying the registers; a subslice stays with
+the C backend in this increment. A record local without an initializer is
+zero-filled from the zero register, word by word (docs/spec/90-backend.md
+§6). The Lean model states the pair's two facts — a guarded element access
+(`i < n`) stays inside the array's slots and so below the frame, as an
+instance of the checker's span access rule, and the word-by-word zero fill
+is the record's zero value — and the verifier's Oak side now holds every value-less aggregate
+local — an array, a record, a sum — at its zero value, as both backends
+fill it, where it refused a record or a sum. `compiler/e2e_native_rv64_span_locals_test.go`
+runs a program with both on the bare machine under QEMU and on the
+AArch64 host against the C backend.
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies

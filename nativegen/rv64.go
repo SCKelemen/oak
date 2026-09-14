@@ -897,6 +897,12 @@ func (g *rvGenerator) lowerStatements(stmts []ast.Statement, functionBody bool) 
 				}
 				continue
 			}
+			if target, isSpan := spanOf(s.Type); isSpan {
+				if err := g.lowerSpanDeclaration(s, target); err != nil {
+					return err
+				}
+				continue
+			}
 			if s.Value == nil {
 				return unsupported("a local without an initializer")
 			}
@@ -2663,6 +2669,73 @@ func (g *rvGenerator) arrayAddress(arr *arrayLocal, index ast.Expression) (asm.M
 	return asm.Memory{Base: R, Offset: 0, Mode: asm.MemOffset}, r, nil
 }
 
+// lowerSpanDeclaration lowers a span or view local: `v: []T = view(&buf)`
+// / `span(&buf)` over an owned frame array binds the array's frame address
+// and its constant length in two callee-saved registers — the length
+// register serves as the raw and the normalized length, a constant being
+// both — so the local reads, stores, and passes on like a parked span
+// parameter (docs/spec/94-assembler.md §9, span locals on the rv64 lane);
+// another named span aliases by copying its registers. A subslice stays
+// with the C backend in this increment.
+func (g *rvGenerator) lowerSpanDeclaration(s *ast.VariableDeclaration, target span) error {
+	if s.Value == nil {
+		return unsupported("the span local %s without an initializer", s.Name.Value)
+	}
+	if g.usedCallee+2 > len(rvCallee) {
+		return unsupported("the span local %s: the callee-saved registers are exhausted", s.Name.Value)
+	}
+	baseReg, lenReg := rvCallee[g.usedCallee], rvCallee[g.usedCallee+1]
+	local := span{elem: target.elem, elemLayout: target.elemLayout, writable: target.writable, baseReg: baseReg, lenReg: lenReg, norm: lenReg, argBase: -1, argLen: -1}
+	switch v := s.Value.(type) {
+	case *ast.Identifier:
+		src, isSpan := g.spans[v.Value]
+		if !isSpan {
+			return unsupported("the span local %s from %s, which is not a span", s.Name.Value, v.Value)
+		}
+		if !sameElements(src, target) || (target.writable && !src.writable) {
+			return unsupported("the span local %s: %s does not fit the span type", s.Name.Value, v.Value)
+		}
+		g.emit("mv", rvReg(baseReg), rvReg(src.baseReg))
+		g.emit("mv", rvReg(lenReg), rvReg(src.norm))
+		local.frameLen, local.array = src.frameLen, src.array
+	case *ast.InvocationExpression:
+		fn, isIdent := v.Function.(*ast.Identifier)
+		if !isIdent || (fn.Value != "view" && fn.Value != "span") || len(v.Arguments) != 1 {
+			return unsupported("the span local %s from %s (only view(&buf) or span(&buf) over an owned array, or another span)", s.Name.Value, s.Value.String())
+		}
+		if target.writable && fn.Value != "span" {
+			return unsupported("the span local %s: a view where a span is expected", s.Name.Value)
+		}
+		borrow, isBorrow := v.Arguments[0].(*ast.PrefixExpression)
+		if !isBorrow || borrow.Operator != "&" {
+			return unsupported("the span local %s: %s of %s (only &buf over an owned array)", s.Name.Value, fn.Value, v.Arguments[0].String())
+		}
+		arr, err := g.arrayOperand(borrow.Right)
+		if err != nil {
+			return err
+		}
+		if arr == nil || arr.inReg {
+			return unsupported("the span local %s: %s of %s (only an owned frame array)", s.Name.Value, fn.Value, borrow.Right.String())
+		}
+		if arr.elemLayout != nil || arr.elem != target.elem {
+			return unsupported("the span local %s: %s over %s where the span type's elements are expected", s.Name.Value, fn.Value, borrow.Right.String())
+		}
+		g.emit("addi", rvReg(baseReg), rvSP(), imm(g.slotMem(arr.offset).Offset))
+		g.emit("li", rvReg(lenReg), imm(arr.length))
+		local.frameLen, local.array = arr.length, arr
+	default:
+		return unsupported("the span local %s from %s", s.Name.Value, s.Value.String())
+	}
+	g.usedCallee += 2
+	g.saveArea = 8 * int64(len(rvCallee))
+	delete(g.slots, s.Name.Value)
+	delete(g.types, s.Name.Value)
+	delete(g.regs, s.Name.Value)
+	g.spans[s.Name.Value] = local
+	g.scopes[len(g.scopes)-1][s.Name.Value] = slotBinding{reg: -1, sp: &local}
+	return nil
+}
+
 // arraySpanArgument lowers `view(&buf)` / `span(&buf)` as a call argument
 // for a span-typed parameter: the array's frame address and its constant
 // length in two scratch registers (a `[*]T` parameter takes only `span`).
@@ -3173,7 +3246,14 @@ func (g *rvGenerator) lowerRecordDeclaration(s *ast.VariableDeclaration, typeNam
 		return err
 	}
 	if s.Value == nil {
-		return unsupported("the record local %s without an initializer", s.Name.Value)
+		// Value-less storage is zero (docs/spec/90-backend.md §6: the C
+		// emitter's `{0}`, the interpreter's zero value): the slots are
+		// zero-filled whole from the zero register, as on AArch64.
+		rec := g.declareRecord(s.Name.Value, layout)
+		for w := int64(0); w < (layout.size+7)/8; w++ {
+			g.emit("sd", rvReg(0), g.slotMem(rec.offset+8*w))
+		}
+		return nil
 	}
 	if literal, isLiteral := s.Value.(*ast.RecordLiteral); isLiteral {
 		if literal.TypeName != nil && literal.TypeName.Value != typeName {
