@@ -2305,7 +2305,7 @@ budget; dropping a stack parameter from the body is a mismatch
 (`asm/stack_params_test.go`); `tail_sum`, whose span arrives on the
 stack and is walked in a loop, is proven.
 
-**Thirty-fourth increment — the RV64 lane's parameters beyond the
+**Thirty-third increment — the RV64 lane's parameters beyond the
 registers (2026-09-15; `nativegen/rv64.go`, `asm/rv64_check.go`,
 `asm/rv64_verify.go`).** The rv64 lane left every function with more than
 eight argument words to the C backend ("more than eight parameters", "the
@@ -2337,7 +2337,7 @@ with the C backend with the reason
 bare machine under QEMU against the C backend's realization;
 `asm/stack_params_test.go`).
 
-**Thirty-third increment — the RV64 lane's span locals and value-less
+**Thirty-fourth increment — the RV64 lane's span locals and value-less
 records (2026-09-15; `nativegen/rv64.go`).** A `main` that named a view
 of its own array (`whole: []u32 = view(&buf)`), or declared a record
 without an initializer, stayed with the C backend on the rv64 lane ("a
