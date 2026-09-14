@@ -5,6 +5,7 @@ import (
 	"os"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/SCKelemen/oak/asm"
@@ -74,6 +75,25 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 	for _, stmt := range root.Statements {
 		fn, ok := stmt.(*ast.FunctionStatement)
 		if !ok || fn.Name == nil || fn.Body == nil || fn.AsmBacked || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 {
+			continue
+		}
+		// A function with a dispatch clause (docs/spec/93-simd.md §6) is the
+		// selection between its realizations, decided once at startup by
+		// the processor's probed features; its Oak body is only the
+		// portable one. The C backend emits that selection, so the function
+		// stays there: lowering the body natively would define the symbol
+		// as the portable realization and leave the hardware unit
+		// unreachable (measured on CRC-32C: 23x behind the C backend,
+		// benchmarks/native/README.md). Its callers lower as usual and
+		// call the C backend's dispatching definition.
+		if len(fn.Dispatch) > 0 {
+			slots := make([]string, 0, len(fn.Dispatch))
+			for _, slot := range fn.Dispatch {
+				slots = append(slots, slot.Feature)
+			}
+			reason := fmt.Sprintf("it dispatches on %s; the C backend keeps the selection between its realizations", strings.Join(slots, ", "))
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s left to the C backend (%s)", fn.Name.Value, reason)))
+			result.Fallbacks[fn.Name.Value] = reason
 			continue
 		}
 		// A read of a constant top-level scalar (the OS pilot's N1:
