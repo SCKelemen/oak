@@ -192,7 +192,8 @@ prove -conflicts N` sets the solver's budget on both paths, so a row past
 the default can be asked for its certificate rather than the corpus paying
 for it on every run. The buffered writer also exposed an exponential
 walk in the native backend's verifier (`significantBits` over shared
-subterms of an unrolled loop, now memoized on the term). Subsumption is
+subterms of an unrolled loop, memoized the same day by a parallel
+increment). Subsumption is
 the next technique, still ahead of any GPU question. First run with CaDiCaL 3.0.1:
 `spec/oak/machines.oak`'s `bounded__step` — 14,987 BDD nodes under the
 blocked order — closes with a 204-step certificate checked in Go and in
