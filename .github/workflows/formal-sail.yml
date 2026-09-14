@@ -74,7 +74,9 @@ jobs:
           echo "${SAIL_SHA256}  /tmp/sail.tar.gz" | sha256sum -c -
           tar -xzf /tmp/sail.tar.gz -C "$HOME"
           echo "$HOME/sail/bin" >> "$GITHUB_PATH"
-          "$HOME/sail/bin/sail" --version
+          # The release bundles the z3 Sail shells out to; within this step
+          # PATH does not yet carry GITHUB_PATH, so name the directory.
+          PATH="$HOME/sail/bin:$PATH" sail --version
 
       - name: Install the pinned Sail RISC-V emulator
         run: |
@@ -144,7 +146,9 @@ jobs:
           echo "${SAIL_SHA256}  /tmp/sail.tar.gz" | sha256sum -c -
           tar -xzf /tmp/sail.tar.gz -C "$HOME"
           echo "$HOME/sail/bin" >> "$GITHUB_PATH"
-          "$HOME/sail/bin/sail" --version
+          # The release bundles the z3 Sail shells out to; within this step
+          # PATH does not yet carry GITHUB_PATH, so name the directory.
+          PATH="$HOME/sail/bin:$PATH" sail --version
 
       - name: Install elan
         shell: bash
