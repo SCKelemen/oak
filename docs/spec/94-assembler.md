@@ -2305,6 +2305,37 @@ budget; dropping a stack parameter from the body is a mismatch
 (`asm/stack_params_test.go`); `tail_sum`, whose span arrives on the
 stack and is walked in a loop, is proven.
 
+**Thirty-fourth increment — the RV64 lane's parameters beyond the
+registers (2026-09-15; `nativegen/rv64.go`, `asm/rv64_check.go`,
+`asm/rv64_verify.go`).** The rv64 lane left every function with more than
+eight argument words to the C backend ("more than eight parameters", "the
+parameters exhaust the eight argument registers"), and every call with
+more than eight arguments. It now lays the integer-class parameters out
+by the shared rule (`asm.LayoutArguments`, unpacked: XLEN-sized slots in
+order, as the LP64 psABI passes them) and reads a scalar beyond a0–a7
+from the caller's outgoing area in the prologue — `ld t0, frame+N(sp)`,
+the slot holding the value widened as a register would (`Oak.RiscV.widen`,
+so the callee's homes hold the canonical form) — and a native caller
+stores its scalar arguments beyond the registers into the outgoing area
+at its frame's bottom (the return address and the callee-saved area move
+up by it), each into its slot as it is evaluated when no later argument
+calls. The checker learns the incoming area (a load of a whole slot binds
+the parameter, widened for a `u32`; a store into the area is refused) and
+the binding `bind [sp, #N] = p`, which a unit may now spell on either
+lane; the verifier holds the slot as a frame slot at its offset above the
+entry sp. A span or a record beyond the registers stays with the C backend
+in this increment — the psABI may split a two-word aggregate across the
+last register and the stack, which the shared layout does not model — and
+the lane says so. On the stack-argument corpus `nine` lowers and is
+proven and `twelve` is evidence as on AArch64; `tail_sum` and
+`records_last` stay with the C backend with the reason, and so does
+`through_c`, whose eight register arguments alone exceed the lane's
+operand stack (the AArch64 lane spares scratch by reading variables and
+constants at the move, a separate increment)
+(`compiler/e2e_native_rv64_stack_args_test.go`, the corpus run on the
+bare machine under QEMU against the C backend's realization;
+`asm/stack_params_test.go`).
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to

@@ -156,10 +156,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
-	if len(fn.Parameters) > 8 {
-		return nil, unsupported("more than eight parameters")
-	}
-	g := &rvGenerator{generator: generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line}, softFloat: softFloat, twoChunk: map[string]bool{}}
+	g := &rvGenerator{generator: generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, stackParams: map[string]asm.ArgPlace{}}, softFloat: softFloat, twoChunk: map[string]bool{}}
 	g.rvLane = true
 	g.vector = vector
 	usesFloat := rvMentionsFloat(fn) || g.recordsMentionFloat(fn)
@@ -191,6 +188,10 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 		g.saveAreaV = 8 * int64(len(rvFCallee))
 	}
 	g.hasCalls = mentionsCall(fn.Body)
+	// The outgoing argument area at the frame's bottom: the bytes the
+	// body's calls pass beyond the eight argument registers, in XLEN-sized
+	// slots (the LP64 psABI; asm.LayoutArguments unpacked).
+	g.outgoing = g.outgoingArea(fn.Body)
 	// A parked span pair survives a call, and a result: the result leaves
 	// in a0 (and a1), where a span parameter's pair is bound, and the
 	// checker's span facts flow in text order.
@@ -233,9 +234,41 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	// span or view two (base, then the raw length), a record of up to 16
 	// bytes one chunk per 8 bytes and a larger one its address; a float
 	// takes fa0–fa7 by its own count (LP64D).
+	// The integer-class parameters' places by the shared layout: a scalar
+	// one register, a record its chunks or one, a span two; past the
+	// registers the caller's outgoing area in XLEN-sized slots, in order
+	// (docs/spec/94-assembler.md §9, parameters beyond the registers). A
+	// span or a record on the stack stays with the C backend in this
+	// increment (the psABI may split a two-word aggregate across the last
+	// register and the stack).
+	var intClasses []asm.ArgClass
+	for _, p := range fn.Parameters {
+		if class, ok := g.argClassOf(p.Type); ok {
+			intClasses = append(intClasses, class)
+		}
+	}
+	intPlaces, stackBytes := asm.LayoutArguments(intClasses, false)
+	if g.resultIndirect {
+		// The hidden result address takes a0: every register place moves
+		// up one; the layout counted from a0 without it.
+		for i := range intPlaces {
+			if !intPlaces[i].OnStack {
+				intPlaces[i].Reg++
+			}
+		}
+		if len(intPlaces) > 0 && !intPlaces[len(intPlaces)-1].OnStack && intPlaces[len(intPlaces)-1].Reg+intPlaces[len(intPlaces)-1].Regs > 8 {
+			return nil, unsupported("the parameters and the result address exhaust the eight argument registers")
+		}
+	}
+	intIndex := 0
 	for _, p := range fn.Parameters {
 		if p.Variadic {
 			return nil, unsupported("variadic parameter %s", p.Name.Value)
+		}
+		var place asm.ArgPlace
+		if _, isInt := g.argClassOf(p.Type); isInt {
+			place = intPlaces[intIndex]
+			intIndex++
 		}
 		if name, isRecord := g.recordTypeName(p.Type); isRecord {
 			layout, err := g.layoutOf(name)
@@ -244,6 +277,9 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 			}
 			if layout.hasFloat {
 				return nil, unsupported("parameter %s: %s carries floating-point fields (the hardware floating-point calling convention)", p.Name.Value, name)
+			}
+			if place.OnStack {
+				return nil, unsupported("parameter %s: a record beyond the register contract stays with the C backend on the rv64 lane", p.Name.Value)
 			}
 			regs, indirect := 1, layout.size > 16
 			if !indirect {
@@ -254,6 +290,10 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 			continue
 		}
 		if sc, ok := scalarOf(p.Type); ok {
+			if !sc.isVec && !sc.isFloat && place.OnStack {
+				g.stackParams[p.Name.Value] = place
+				continue
+			}
 			if sc.isVec {
 				// A vector parameter arrives in v8–v23 in declaration order
 				// (the RVV psABI), independent of the integer and float files.
@@ -272,6 +312,9 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 			continue
 		}
 		if sp, ok := spanOf(p.Type); ok {
+			if place.OnStack {
+				return nil, unsupported("parameter %s: a span beyond the register contract stays with the C backend on the rv64 lane", p.Name.Value)
+			}
 			sp.argBase, sp.argLen = rvArg0+nextReg, rvArg0+nextReg+1
 			sp.baseReg, sp.lenReg = sp.argBase, sp.argLen
 			nextReg += 2
@@ -295,6 +338,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	if nextReg > 8 || nextFReg > 8 {
 		return nil, unsupported("the parameters exhaust the eight argument registers")
 	}
+	g.stackArgs = stackBytes
 	// The save area exists whenever a callee-saved register is written:
 	// a variable, a parked span pair (a call, or a result leaving through
 	// the pair's registers), or the result area's address.
@@ -350,7 +394,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 		prologue = append(prologue, g.ins("addi", rvSP(), rvSP(), imm(-frame)))
 	}
 	if g.hasCalls {
-		prologue = append(prologue, g.ins("sd", rvReg(rvRA), rvMem(0)))
+		prologue = append(prologue, g.ins("sd", rvReg(rvRA), rvMem(g.outgoing)))
 	}
 	for i := 0; i < g.usedCallee; i++ {
 		prologue = append(prologue, g.ins("sd", rvReg(rvCallee[i]), rvMem(g.saveBase()+int64(8*i))))
@@ -368,6 +412,15 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 		regIndex = 1
 	}
 	for _, p := range fn.Parameters {
+		if place, onStack := g.stackParams[p.Name.Value]; onStack {
+			// Beyond the register contract: the scalar lies widened in an
+			// XLEN-sized slot of the caller's outgoing area, place.Offset
+			// above the entry sp — frame + place.Offset from the moved sp —
+			// and comes into its home through t0 (nothing is live yet).
+			out.Bindings = append(out.Bindings, asm.Binding{Param: p.Name.Value, OnStack: true, Stack: place.Offset, Line: fn.Token.Line})
+			prologue = append(prologue, g.ins("ld", rvReg(rvScratch[0]), rvMem(frame+place.Offset)), g.storeVar(p.Name.Value, rvScratch[0]))
+			continue
+		}
 		if rp, isRecord := g.recordParams[p.Name.Value]; isRecord {
 			binding := asm.Binding{Register: rvReg(rp.reg), Param: p.Name.Value, Line: fn.Token.Line}
 			if rp.regs == 2 {
@@ -417,6 +470,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	// in their homes.
 	prologue = append(prologue, asm.Label{Name: g.head, Line: fn.Token.Line})
 	out.Items = append(prologue, body...)
+	out.StackArgs = g.stackArgs
 	// Clobbers: the scratch registers, and the argument registers a call
 	// writes beyond the bound parameters (a0 is the result register when
 	// there is a result). Callee-saved registers are saved, never clobbered.
@@ -536,9 +590,9 @@ func (g *rvGenerator) jump(label string) { g.emit("j", asm.Symbol{Name: label}) 
 // 16-byte slot when the body calls.
 func (g *rvGenerator) saveBase() int64 {
 	if g.hasCalls {
-		return 16
+		return g.outgoing + 16
 	}
-	return 0
+	return g.outgoing
 }
 
 func (g *rvGenerator) frameSize() int64 {
@@ -802,7 +856,7 @@ func (g *rvGenerator) epilogue() {
 		g.emit("ld", rvReg(rvCallee[i]), rvMem(g.saveBase()+int64(8*i)))
 	}
 	if g.hasCalls {
-		g.emit("ld", rvReg(rvRA), rvMem(0))
+		g.emit("ld", rvReg(rvRA), rvMem(g.outgoing))
 	}
 	if frame > 0 {
 		g.emit("addi", rvSP(), rvSP(), imm(frame))
@@ -1681,12 +1735,44 @@ func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *record
 	if !ok {
 		return 0, unsupported("a call to %s", ident.Value)
 	}
-	if len(e.Arguments) != len(callee.Parameters) || len(e.Arguments) > 8 {
+	if len(e.Arguments) != len(callee.Parameters) {
 		return 0, unsupported("a call to %s with %d arguments", ident.Value, len(e.Arguments))
 	}
 	var resultType *scalar
 	var regs []int
 	fixed := map[int]bool{} // a parked span's registers, passed on: never released
+	// The integer-class arguments' places by the shared layout: beyond
+	// a0–a7 the outgoing area at the frame's bottom, XLEN-sized slots in
+	// order (a scalar's slot holds it widened, as a register would); a
+	// span or a record beyond the registers stays with the C backend in
+	// this increment. stackOf maps an argument's scratch register to its
+	// slot's offset from sp.
+	var argClasses []asm.ArgClass
+	for _, p := range callee.Parameters {
+		if class, ok := g.argClassOf(p.Type); ok {
+			argClasses = append(argClasses, class)
+		}
+	}
+	argPlaces, stackBytes := asm.LayoutArguments(argClasses, false)
+	if stackBytes > g.outgoing {
+		return 0, unsupported("a call to %s: %d bytes of stack arguments, more than the frame reserved", ident.Value, stackBytes)
+	}
+	argPlaceIndex := 0
+	placeOfNext := func(typ ast.Expression) (asm.ArgPlace, bool) {
+		if _, isInt := g.argClassOf(typ); !isInt {
+			return asm.ArgPlace{}, false
+		}
+		place := argPlaces[argPlaceIndex]
+		argPlaceIndex++
+		return place, true
+	}
+	stackOf := map[int]int64{}
+	// laterCalls[i]: an argument after the i-th calls, so a slot stored
+	// before it would be overwritten by the nested call's own arguments.
+	laterCalls := make([]bool, len(e.Arguments)+1)
+	for i := len(e.Arguments) - 1; i >= 0; i-- {
+		laterCalls[i] = laterCalls[i+1] || mentionsCall(e.Arguments[i])
+	}
 	if callee.ReturnType != nil && callee.ReturnType.String() != "()" {
 		if name, isRecord := g.recordTypeName(callee.ReturnType); isRecord {
 			if recordResult == nil {
@@ -1724,7 +1810,11 @@ func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *record
 		if p.Variadic {
 			return 0, unsupported("a call to %s (parameter %s is variadic)", ident.Value, p.Name.Value)
 		}
+		argPlace, _ := placeOfNext(p.Type)
 		if name, isRecord := g.recordTypeName(p.Type); isRecord {
+			if argPlace.OnStack {
+				return 0, unsupported("a call to %s: the record argument %s lies beyond the register contract (the C backend's call)", ident.Value, p.Name.Value)
+			}
 			layout, err := g.layoutOf(name)
 			if err != nil {
 				return 0, err
@@ -1766,6 +1856,9 @@ func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *record
 			continue
 		}
 		if target, isSpan := spanOf(p.Type); isSpan {
+			if argPlace.OnStack {
+				return 0, unsupported("a call to %s: the span argument %s lies beyond the register contract (the C backend's call)", ident.Value, p.Name.Value)
+			}
 			if name, isIdent := arg.(*ast.Identifier); isIdent {
 				// A span parameter passed on: its parked pair.
 				sp, isNamed := g.spans[name.Value]
@@ -1796,6 +1889,17 @@ func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *record
 		if err != nil {
 			return 0, err
 		}
+		if argPlace.OnStack && !s.isFloat && !s.isVec {
+			if !laterCalls[i+1] {
+				// Into its slot now, its register released: the operand
+				// stack holds the register arguments alone (a later call
+				// would rewrite the area, so the slot waits when one follows).
+				g.emit("sd", rvReg(r), rvMem(argPlace.Offset))
+				g.release(r)
+				continue
+			}
+			stackOf[r] = argPlace.Offset
+		}
 		regs = append(regs, r)
 	}
 
@@ -1807,6 +1911,13 @@ func (g *rvGenerator) callWith(e *ast.InvocationExpression, recordResult *record
 			// are the operand stack, so the move waits until every live
 			// vector is spilled and reads the argument from its slot.
 			vectorArgs = append(vectorArgs, r)
+			continue
+		}
+		if offset, onStack := stackOf[r]; onStack {
+			// Beyond a0–a7: into the outgoing area's slot, widened as the
+			// register form is (every temporary holds the canonical form).
+			g.emit("sd", rvReg(r), rvMem(offset))
+			g.release(r)
 			continue
 		}
 		if r >= vecBase {

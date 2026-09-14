@@ -36,6 +36,12 @@ type rvChecker struct {
 	fn      *Function
 	symbols map[string]bool
 	errors  []string
+	// stackParams maps the entry-relative offset of a scalar parameter
+	// beyond the register contract to its name, stackArgs the incoming
+	// area's size (docs/spec/94-assembler.md §9, parameters beyond the
+	// registers); a load from the area binds what it reads.
+	stackParams map[int64]string
+	stackArgs   int64
 
 	hasResult bool
 	never     bool
@@ -328,6 +334,7 @@ func (c *rvChecker) bindContract() {
 	expectLen := map[string]int{}
 	expectFloat := map[string]int{}
 	expectVector := map[string]int{}
+	expectStack := map[string]int64{}
 	if sig.ReturnType != nil {
 		if comp, isComposite := c.fn.Composites[typeText(sig.ReturnType)]; isComposite && comp.Size > 16 {
 			// The caller's result area arrives in a0: the parameters follow.
@@ -397,12 +404,21 @@ func (c *rvChecker) bindContract() {
 			continue
 		}
 		if next > 17 {
-			c.errorf(c.fn.Line, "parameter %s: the integer register contract a0–a7 is exhausted", param.Name.Value)
+			// Beyond a0–a7: the caller's outgoing area, XLEN-sized slots in
+			// order (the LP64 psABI), the scalar widened as a register holds
+			// it.
+			if c.stackParams == nil {
+				c.stackParams = map[int64]string{}
+			}
+			c.stackParams[c.stackArgs] = param.Name.Value
+			expectStack[param.Name.Value] = c.stackArgs
+			c.stackArgs += 8
 			continue
 		}
 		expect[param.Name.Value] = next
 		next++
 	}
+	c.stackArgs = (c.stackArgs + 15) / 16 * 16
 	if sig.ReturnType != nil && typeText(sig.ReturnType) != "()" {
 		if comp, isComposite := c.fn.Composites[typeText(sig.ReturnType)]; isComposite {
 			switch {
@@ -431,7 +447,8 @@ func (c *rvChecker) bindContract() {
 		want, declared := expect[b.Param]
 		_, isFloat := expectFloat[b.Param]
 		_, isVector := expectVector[b.Param]
-		if !declared && !isFloat && !isVector {
+		offset, isStack := expectStack[b.Param]
+		if !declared && !isFloat && !isVector && !isStack {
 			c.errorf(b.Line, "bind names %s, which is not a parameter", b.Param)
 			continue
 		}
@@ -440,6 +457,12 @@ func (c *rvChecker) bindContract() {
 			continue
 		}
 		seen[b.Param] = true
+		if isStack || b.OnStack {
+			if !isStack || !b.OnStack || b.Stack != offset {
+				c.errorf(b.Line, "bind: parameter %s arrives on the stack at entry sp + %d (the register contract is exhausted): bind [sp, #%d] = %s", b.Param, offset, offset, b.Param)
+			}
+			continue
+		}
 		if vreg, isVec := expectVector[b.Param]; isVec {
 			if b.Register.Class != ClassRV64V || b.Register.Num != vreg || b.Length != nil {
 				c.errorf(b.Line, "parameter %s must be bound to v%d (its vector contract register), not %s", b.Param, vreg, b.Register.Text)
@@ -500,6 +523,11 @@ func (c *rvChecker) bindContract() {
 	for name, reg := range expect {
 		if !seen[name] {
 			c.errorf(c.fn.Line, "parameter %s is not bound (`bind %s = %s`)", name, rv64RegisterName(reg), name)
+		}
+	}
+	for name, offset := range expectStack {
+		if !seen[name] {
+			c.errorf(c.fn.Line, "parameter %s is not bound (`bind [sp, #%d] = %s`)", name, offset, name)
 		}
 	}
 	for name, reg := range expectFloat {
@@ -929,8 +957,12 @@ func (c *rvChecker) frameAddress(mem Memory, width int64, line int) (int64, bool
 		return 0, false
 	}
 	addr := -c.disp + mem.Offset
-	if addr < -c.fn.Frame || addr+width > 0 {
-		c.errorf(line, "frame access at entry-relative %d..%d is outside the declared frame [-%d, 0)", addr, addr+width, c.fn.Frame)
+	if addr < -c.fn.Frame || (addr+width > 0 && (addr < 0 || addr+width > c.stackArgs)) {
+		if c.stackArgs > 0 {
+			c.errorf(line, "frame access at entry-relative %d..%d is outside the declared frame [-%d, 0) and the %d-byte incoming argument area", addr, addr+width, c.fn.Frame, c.stackArgs)
+		} else {
+			c.errorf(line, "frame access at entry-relative %d..%d is outside the declared frame [-%d, 0)", addr, addr+width, c.fn.Frame)
+		}
 		return 0, false
 	}
 	if addr%width != 0 {
@@ -1173,6 +1205,21 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 		}
 		addr, ok := c.frameAddress(mem, int64(width), line)
 		dest := reg(0)
+		if ok && addr >= 0 {
+			// The incoming argument area: a whole slot of a scalar
+			// parameter beyond the registers, read into a general
+			// register as the widened value the caller stored.
+			name, isParam := c.stackParams[addr]
+			if !isParam || width != 8 || dest.Class != ClassRV64X {
+				c.errorf(line, "%s reads entry sp + %d, which holds no whole stack parameter", instr.Mnemonic, addr)
+				return false
+			}
+			c.write(dest, line)
+			if bits, signed, isInt := contractBits(sigParamType(c.fn.Signature, name)); isInt && bits == 32 && !signed {
+				c.entryWidened[dest.Num] = true
+			}
+			return false
+		}
 		if ok && dest.Class == ClassRV64X && rv64Preserved(dest.Num) {
 			state := c.saved[dest.Num]
 			if state.saved && width == 8 && state.slot == addr {
@@ -1202,6 +1249,10 @@ func (c *rvChecker) instruction(instr Instruction) bool {
 			return false
 		}
 		addr, ok := c.frameAddress(mem, int64(width), line)
+		if ok && addr >= 0 {
+			c.errorf(line, "%s writes the caller's argument area at entry sp + %d", instr.Mnemonic, addr)
+			return false
+		}
 		if ok && src.Class == ClassRV64X && rv64Preserved(src.Num) && width == 8 {
 			state := c.saved[src.Num]
 			if !state.saved && !state.written {
