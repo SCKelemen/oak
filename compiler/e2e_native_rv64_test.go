@@ -803,13 +803,12 @@ func TestE2ENativeRV64LoopVerdicts(t *testing.T) {
 	if !strings.Contains(verdicts["fact"], "coupled inductively") && !strings.Contains(verdicts["fact"], "agrees with its Oak body") {
 		t.Errorf("fact must be proven by coupling or witnessed: %s", verdicts["fact"])
 	}
-<<<<<<< HEAD
 	// A unit body without effects (check_all: an assert over a call) is
 	// proven: neither side writes package state or a span memory
 	// (docs/spec/94-assembler.md §8, unit bodies without effects).
 	if !strings.Contains(verdicts["check_all"], "proven equal to its Oak body") {
 		t.Errorf("check_all must be proven as a unit body without effects: %s", verdicts["check_all"])
-=======
+	}
 	// A caller passing a span over its own array to a looping callee is
 	// proven through the summary: the callee's parameter is the array's
 	// contents, its loop carries the elements (docs/spec/94-assembler.md
@@ -818,6 +817,5 @@ func TestE2ENativeRV64LoopVerdicts(t *testing.T) {
 		if !strings.Contains(verdicts[fn], "proven equal to its Oak body") || !strings.Contains(verdicts[fn], "callees taken at their Oak bodies") {
 			t.Errorf("%s must be proven through its callee's summary over the owned array: %s", fn, verdicts[fn])
 		}
->>>>>>> origin/specification
 	}
 }
