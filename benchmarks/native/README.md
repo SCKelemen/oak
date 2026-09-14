@@ -93,7 +93,7 @@ noise at about twenty percent. Raw samples:
 | `page_probe` | 11.13 | 21.51 | 1.93 | proven |
 | `bitmap` | 0.192 | 0.229 | 1.19 | C helper on both sides (noise floor) |
 | `dispatch` | 10.82 | 9.03 | 0.83 | proven |
-| `tiled` | — | not built | — | refuted by the verifier (see below) |
+| `tiled` | 0.135 | 0.375 (at 30ca36eb) | 2.8 | witnessed; refuted at aade7acd by a verifier false alarm since fixed upstream (see below) |
 
 What the rows say, in the order they matter:
 
@@ -140,20 +140,23 @@ What the rows say, in the order they matter:
 
 ## The refuted kernel
 
-`bench_tiled` (an `f32` sum of squares over eight accumulators in a
-`[8]f32` local, a stride-8 loop and a remainder loop) is the one kernel the
-native build refuses: the verifier reports a mismatch at `len(a) = 8`,
-with the asm producing `+Inf` and the Oak model `0xF66F…` — a negative
-value, which a sum of squares cannot produce, and which no float
-accumulator that started at zero can reach in one iteration. The lowered
-asm (`results/bench_tiled-native-2026-09-14.asm`) performs the Oak body's
-operations in the Oak body's order; the accumulators live in frame slots
-across the two data-dependent loops, and the refutation is most likely
-the verifier's model of float slots across loop summaries, not the
-backend. It is recorded here as a verifier finding to reproduce in
-isolation; the gate is not bypassed for a measurement (a mismatch rejects
-the build, by design), so the kernel has no native row. The C backend
-runs it at the speed `BENCHMARKS.md` records.
+At the measurement revision (aade7acd) the native build refused
+`bench_tiled` (an `f32` sum of squares over eight accumulators in an
+`[8]f32` local, a stride-8 loop and a remainder loop): the verifier
+reported a mismatch at `len(a) = 8`, the asm producing `+Inf` and the Oak
+model `0xF66F…`, a negative value a sum of squares cannot produce. The
+lowered asm (`results/bench_tiled-native-2026-09-14.asm`) performs the Oak
+body's operations in the Oak body's order. The gate was not bypassed for a
+measurement (a mismatch rejects the build, by design); the kernel was
+reduced instead. Reduced in isolation the refutation did not reproduce at
+the current revision, and rebuilding the emitter at aade7acd reproduced it
+on the same source, so it was a verifier false alarm that an upstream
+commit between aade7acd and dc714aee has since fixed (a bisect narrowed it
+to one of `deb20e52` "a counterexample reports the element values the
+diagrams chose", `5038ac25`, `e7f6fdb6`; the other two candidates were
+build skips). At 30ca36eb the kernel lowers, is witnessed on nineteen
+inputs, agrees with the C backend's checksum, and runs at 2.8× the C
+backend's time — the same scalar-loop gap as `sum` and `dot`.
 
 ## Found on the way
 
@@ -178,6 +181,6 @@ runs it at the speed `BENCHMARKS.md` records.
 - A little-endian word assembled from eight guarded byte reads at
   constant offsets is fifty-six guarded `ldrb`s in the native body and one
   `ldr` under clang; the idiom is the next CRC and hash win.
-- The verifier refutes `bench_tiled` with a value the Oak body cannot
-  produce (a negative sum of squares); a probable false alarm in the
-  float-slot model across two loops, to be reduced to a unit case.
+- The verifier refuted `bench_tiled` at aade7acd with a value the Oak body
+  cannot produce (a negative sum of squares); reproduced there, gone at
+  30ca36eb — a false alarm an upstream verifier fix closed.
