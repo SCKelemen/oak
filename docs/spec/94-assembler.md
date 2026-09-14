@@ -977,9 +977,27 @@ two-instruction `fmul`/`fadd` against `a * x + y`, `f32(n)` against
 `ucvtf`, `sqrt(abs(-x))`, `a < b ? a | b` through `fcmp`/`fcsel`, the
 pairwise dot product `reduce_add(mul(a, b))` against `fmul`/`faddp`/
 `faddp`, and `fma_f32x4` against `fmla` are proven
-(`asm/verify_float_test.go`). What stays trusted: the rounding
-intrinsics (`floor`, `ceil`, `trunc`, `round`) and a float converted to
-`u8` or `u16` (the narrow saturation).
+(`asm/verify_float_test.go`). A call to a program function with `f32`/
+`f64` parameters or result is summarized like an integer one (the
+twenty-ninth increment's call summary): the arguments are read from the
+low lanes of `v0`–`v7` (`fa0`–`fa7` on RV64) in declaration order, the
+callee's parameters are floats of the callee's lowering, its body lowers
+at its return width, and the result lands in the low lane of `v0`
+(`fa0`) with the upper bits of the half fresh — AAPCS64 leaves them
+unspecified; `Oak.Uninterpreted.float_result_low_lane`: the `s` view
+reads the result whatever they are. Every summarized call, a unit
+callee's included, forgets the caller-saved vector and float registers
+(`v0`–`v7`, `v16`–`v31`; `ft0`–`ft11`, `fa0`–`fa7`), which the summary
+had left standing. On the Oak side a call returning a float is a float
+of the callee's return width in both lowerings — `-diff(a, b)` flips the
+sign bit, `sum(a, b) < 0.0` compares at the callee's width — and a
+prefix operand carries its contract (`f64_round_i64(-n)` converts a
+signed 64-bit source); `-diff(a, b)` against `bl diff`/`fneg` is proven
+naming the callee, `-diff(b, a)` and the un-negated call are mismatches,
+on both lanes (`asm/float_call_test.go`; `spec/oak/floats.oak`
+`neg_of_call`, `call_is_its_body`, `from_signed_of_neg`). What stays
+trusted: the rounding intrinsics (`floor`, `ceil`, `trunc`, `round`) and
+a float converted to `u8` or `u16` (the narrow saturation).
 
 **Vector stores as memories (2026-09-14; `asm/effects.go`,
 `asm/verify_simd.go`).** The twenty-eighth increment's write log takes
@@ -1012,7 +1030,8 @@ unit of one Oak body decide against the same lane terms. The F/D
 registers are a file of their own in the executor (`fregs`), each holding
 a pattern at the width of the instruction that wrote it; f32/f64
 parameters bind in `fa0`–`fa7` and an f32/f64 result is read from `fa0`
-(LP64D). `fadd`/`fsub`/`fmul`/`fdiv`/`fsqrt .s/.d` under the dynamic
+(LP64D), and a summarized callee's float arguments and result travel the
+same way (`asm/float_call_test.go`). `fadd`/`fsub`/`fmul`/`fdiv`/`fsqrt .s/.d` under the dynamic
 rounding mode (a static mode leaves the unit trusted), `fmadd`/`fmsub`/
 `fnmsub`/`fnmadd` as one `fma` over sign-adjusted operands, `fmin`/`fmax`
 as `fminnm`/`fmaxnm` — RISC-V's are IEEE minimumNumber/maximumNumber, so

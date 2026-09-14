@@ -893,7 +893,8 @@ float_shape: (sx: []u32, node: u32): u32 {
       } | { }
     } | {
     kind == SYN_COND ? { stack[sp] = node_b(sx, n) ; sp = sp + u32(1) } | {
-    kind == SYN_CALL ? { } | {
+    // A call to a program function is a float of its return type's width
+    // (the node's type is the callee's return type), as in Go.
     (kind == SYN_FLOATCALL && node_a(sx, n) >= FI_IS_NAN && node_a(sx, n) <= FI_TOTAL_ORDER) ? { } | {
     is_float_type(sx, node_type(sx, n)) ? {
       out = scalar_width(sx, node_type(sx, n))
@@ -902,7 +903,7 @@ float_shape: (sx: []u32, node: u32): u32 {
     kind == SYN_FLOATCALL ? {
       out = u32(1)
       found = true
-    } | { } } } } } } } }
+    } | { } } } } } } }
   }
   out
 }
@@ -1138,6 +1139,8 @@ contract_of: (lw: Lower, w: [*]u32, sx: []u32, node: u32): Contract {
       sym: u32 = node_a(sx, n)
       (sym_value(lw, w, sym) != NONE && sym_value(lw, w, sym) != AGG) ? { out = Contract { width: scalar_width(sx, sym_type(lw, w, sym)), signed: scalar_signed(sx, sym_type(lw, w, sym)), ok: true } } | { }
     } | {
+    // `!x` is Bool; `-x` and `^x` have their operand's contract.
+    kind == SYN_PREFIX ? { node_a(sx, n) == u32(0) ? { out = Contract { width: u32(1), signed: false, ok: true } } | { stack[sp] = node_b(sx, n) ; sp = sp + u32(1) } } | {
     (kind == SYN_CONV || kind == SYN_FLOATCONV) ? { out = Contract { width: node_a(sx, n), signed: node_b(sx, n) != u32(0), ok: true } } | {
     ((kind == SYN_CALL || kind == SYN_FLOATCALL) && is_scalar_type(sx, typ)) ? { out = Contract { width: scalar_width(sx, typ), signed: scalar_signed(sx, typ), ok: true } } | {
     kind == SYN_INSTR ? { out = Contract { width: node_b(sx, n), signed: false, ok: true } } | {
@@ -1150,7 +1153,7 @@ contract_of: (lw: Lower, w: [*]u32, sx: []u32, node: u32): Contract {
         stack[sp + u32(1)] = node_b(sx, n)
         sp = sp + u32(2)
       } | { }
-    } | { } } } } } } } }
+    } | { } } } } } } } } }
   }
   out
 }

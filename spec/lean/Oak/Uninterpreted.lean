@@ -1,3 +1,5 @@
+import Std.Tactic.BVDecide
+
 /-!
 # Uninterpreted operations in the bit-level decider
 
@@ -122,5 +124,22 @@ theorem canon_ne_of_nan_not_nan {α : Type} (isNaN : α → Prop) [DecidablePred
     (hc : isNaN c) (hx : isNaN x) (hy : ¬ isNaN y) : canon isNaN c x ≠ canon isNaN c y := by
   simp only [canon, hx, hy, ↓reduceIte]
   intro h; exact hy (h ▸ hc)
+
+/-! ## Float results across the call boundary
+
+The call summary (docs/spec/94-assembler.md §8, floats) places a callee's
+`f32` result in the low lane of `v0` with the upper bits of the low half
+fresh (`call#hi`, `asm/verify.go` summarizeCall) — AAPCS64 leaves them
+unspecified — and reads a result through the `s` view. The read is the
+result whatever the fresh bits are; an `f64` result fills the half. On
+RV64 the result is written to `fa0` at its width and read back at that
+width (`state.write`, `truncate`), the same identity at no offset. -/
+
+theorem float_result_low_lane (t hi : BitVec 32) :
+    ((t.setWidth 64) ||| ((hi.setWidth 64) <<< 32)).setWidth 32 = t := by
+  bv_decide
+
+theorem float_result_whole (t : BitVec 64) : (t.setWidth 64).setWidth 64 = t := by
+  simp
 
 end Oak.Uninterpreted
