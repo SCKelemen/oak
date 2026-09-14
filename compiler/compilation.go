@@ -76,6 +76,10 @@ type Options struct {
 	// verified asm function and realized like an asm unit; the rest keep
 	// the C backend (docs/spec/94-assembler.md §9).
 	NativeBodies bool
+	// VerifyFresh verifies every native body anew, bypassing the verdict
+	// cache (compiler/verdict_cache.go): the full check, for a release or
+	// a doubt about the cache.
+	VerifyFresh bool
 	// InlineHelpers runs the source-level inlining of private leaf helpers
 	// before type checking (compiler/inline.go, docs/spec/90-backend.md
 	// section 9), so the caller's extent facts prove the helper's element
@@ -278,6 +282,13 @@ func (comp Compilation) Target() target.Target { return comp.options.Target }
 // (nativegen) where its subset reaches, realizing them like asm units.
 func (comp Compilation) WithNativeBodies() Compilation {
 	comp.options.NativeBodies = true
+	return comp
+}
+
+// WithVerifyFresh returns a compilation that verifies every native body
+// anew, ignoring the verdict cache.
+func (comp Compilation) WithVerifyFresh() Compilation {
+	comp.options.VerifyFresh = true
 	return comp
 }
 

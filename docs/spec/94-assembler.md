@@ -3775,6 +3775,54 @@ way, and it is the next thing to tighten. Pinned: `asm/effects_test.go`
 filling callee behind a unit caller proven by coupling the callee's
 loop; the wrong constant to the callee a mismatch).
 
+**The verdict cache, identity masks, and the coupling's candidates
+(2026-09-14).** Three things, found in order. First, the builds were
+cached but the verifications were not: every `oak build -native`
+re-verified every body. A verdict is a function of what the verifier
+reads — the lowered assembly as the checker sees it, the Oak body after
+inlining, the bodies of the program functions the body can reach through
+calls (the summaries inline them), the program's type, global, and
+constant declarations, the record layouts and addressed globals of the
+unit, the lane and its stack convention, and the compiler executable
+itself — and `compiler/verdict_cache.go` keys a verdict on all of it and
+keeps it under `$TMPDIR/oak-verify-cache`. A rebuild of an unchanged
+program takes every verdict from the cache; an edit re-verifies the
+edited function and the functions that reach it, no other; a changed
+compiler (its size and modification time, as the solver caches key)
+invalidates everything. The build reports `N of M verdicts from the
+verdict cache`; `oak build -verify-fresh` and `OAK_VERIFY_CACHE=0` bypass
+it for the full check. `TestVerdictCache` pins the cold build, the warm
+build with identical verdicts, the callee change that re-verifies the
+callee, its caller, and `main` but not an unrelated body, and the
+bypass. On the prover a warm rebuild takes 30 seconds where the cold
+build takes over three minutes. Second, a mask of every bit at a term's
+width is now the identity in the constructors (`x & 0xFFFFFFFF` at 32
+bits is `x`; a truncation of a zero-extension is the extended term), and
+`x - x`, `x ^ x`, `x & x`, `x | x` fold when the two sides are the same
+term to a small structural depth (two reads of one address are built as
+distinct nodes): nine more bodies prove, `fact`'s 64-bit product on RV64
+among them, and several proofs close as "the same term on both sides".
+Third, the coupling search's candidates: a Bool variable pairs only with
+a register whose header holds a 0/1 value (once an outer loop's register
+is coupled, the outer variable's declared width decides; an uncoupled
+one stays a candidate for the viability pass), and a variable the
+iteration changes never pairs with a register the iteration leaves as it
+found it, nor the reverse. `sat_extend` — three nested loops over the
+SAT arena, the Bool `satisfied` inside — went from 96 seconds of search
+to about a minute under this machine's load, still the slowest body by
+far, still evidence; what remains there is a genuine pairing (`end` with
+a register carrying `mem[l.state_at + 23]`) whose preservation is a
+decision over the arena's memory terms, and it is bounded by the loop
+proof's budgets. On the prover: proven 362 to 371, no disagreement, the
+rows identical. **Found by the cache:** a warm rebuild missed 146 of the
+979 verdicts, and the lowered assembly of those bodies differed between
+two builds of one source — a register chosen as `w24` in one and `w25`
+in the next — because the backend returned dead variables' registers to
+its pools in map order (`popScope`, `releaseDead`). The pools are filled
+in name order now; two builds produce identical assembly, verdicts, and
+objects, and the warm rebuild of the prover takes fifteen seconds with
+every verdict from the cache.
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built

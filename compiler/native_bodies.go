@@ -67,6 +67,8 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		}
 	}
 	specializeInstantiations(tc, templates, records, adts)
+	declarations := programDeclarations(root)
+	verified, fromCache := 0, 0 // the verdict cache's tally, reported once
 	constants := constantGlobals(root, tc)
 	globals, aggregates, globalDecls := addressableGlobals(root, tc, constants, records)
 	tables, data := nativeGlobalArrays(root)
@@ -131,10 +133,32 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			continue
 		}
 		verifyStart := time.Now()
-		verdict := asm.Verify(asmFn, source, source.Body)
+		// The verdict cache (compiler/verdict_cache.go): a body verified
+		// before under the same key — the same assembly, Oak body, reachable
+		// callees, declarations, and compiler — keeps its verdict.
+		cacheDir := verdictCacheDir()
+		if comp.options.VerifyFresh {
+			cacheDir = ""
+		}
+		cacheKey := ""
+		if cacheDir != "" {
+			cacheKey = verdictCacheKey(asmFn, source, functions, declarations)
+		}
+		verdict, cached := cachedVerdict(cacheDir, cacheKey)
+		if !cached {
+			verdict = asm.Verify(asmFn, source, source.Body)
+			storeVerdict(cacheDir, cacheKey, verdict)
+		} else {
+			fromCache++
+		}
+		verified++
 		if os.Getenv("OAK_NATIVE_TIMING") != "" {
 			// A profiling aid: how long each body's verification took.
-			fmt.Fprintf(os.Stderr, "timing: %s: %.2fs (%s)\n", fn.Name.Value, time.Since(verifyStart).Seconds(), verdict.Kind)
+			note := ""
+			if cached {
+				note = ", cached"
+			}
+			fmt.Fprintf(os.Stderr, "timing: %s: %.2fs (%s%s)\n", fn.Name.Value, time.Since(verifyStart).Seconds(), verdict.Kind, note)
 		}
 		if verdict.Kind == asm.VerdictMismatch {
 			diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", "native backend: "+verdict.Message))
@@ -178,6 +202,11 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			kept = append(kept, asmFn)
 		}
 		lowered = kept
+	}
+	if verified > 0 {
+		// The verdict cache's tally: how many of the verified bodies kept a
+		// verdict from an earlier build under the same key.
+		diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %d of %d verdicts from the verdict cache", fromCache, verified)))
 	}
 	result.Functions, result.Data, result.Diagnostics = lowered, data, diagnostics
 	return result
