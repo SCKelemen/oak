@@ -347,6 +347,12 @@ type loopEvent struct {
 	// under the body path condition it happens on. The coupling proof
 	// compares the two sides' stores pairwise (verifyLoops).
 	writes map[string][]*spanWrite
+	// oakDerived marks an event a call summary took from a callee's Oak
+	// body (summarizeCall): its variables are the callee's locals, named
+	// as the Oak side names them, not registers — the register-class
+	// readings of a variable's name (`r9`, `v8.lo`, `f10`, `s-16:8`) do
+	// not apply to it.
+	oakDerived bool
 	// entry: each marked span's write log at the loop's entry, over the
 	// span's entry memory — what the marker replaced. The coupling proof
 	// requires the two sides' entry memories equal (the induction's base;
@@ -1624,7 +1630,19 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		return lowering.declaredWidth(name)
 	}
 	// Every implication of this proof spends from one budget.
-	budget := &nodeBudget{remaining: loopProofNodeBudget}
+	// A body no concrete input decided within budget gets an eighth of the
+	// proof's budgets, each
+	// implication bounded by what is left: its
+	// coupling is as sound as any, but without
+	// a witness the search over a hopeless pairing has nothing to refute
+	// it early. On the prover the forty-five such bodies that prove do so
+	// in under three seconds each, and the seventy-five that end in
+	// evidence spent minutes on the way there under the full budgets.
+	proofNodes, searchBudget := loopProofNodeBudget, couplingSearchBudget
+	if checked == 0 {
+		proofNodes, searchBudget = loopProofNodeBudget/8, couplingSearchBudget/8
+	}
+	budget := &nodeBudget{remaining: proofNodes}
 	implies := func(premise, a, b *term) (bool, bool) {
 		return impliesEqualWithin(premise, a, b, widthOfName, budget)
 	}
@@ -1749,6 +1767,12 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		oakEv, asmEv := oakLoops[s.event], asmLoops[s.event]
 		hx := s.pack(oakEv.header)
 		for _, reg := range asmEv.vars {
+			if asmEv.oakDerived && reg != s.name {
+				// A callee's loop taken from its Oak body on both sides: the
+				// variables are the same locals under the same names, and
+				// the pairing is the identity — no search over the others.
+				continue
+			}
 			if used[asmEv.freshName(reg)] {
 				taken = append(taken, asmEv.freshName(reg))
 				continue
@@ -1760,7 +1784,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			// widening is a candidate image; the coupling is r = ext(x) + b at
 			// 64 bits and one iteration must preserve it. A lane group is
 			// paired at its packed width, as r = pack(x) + b only.
-			if strings.HasPrefix(reg, "f") && !oakEv.floats[s.name] {
+			if !asmEv.oakDerived && strings.HasPrefix(reg, "f") && !oakEv.floats[s.name] {
 				continue // the RV64 float file holds float locals only
 			}
 			var widenings []string
@@ -1782,8 +1806,8 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			default:
 				continue
 			}
-			if len(s.locals) > 1 {
-				signs = []int{1}
+			if len(s.locals) > 1 || asmEv.oakDerived || s.width() == 1 {
+				signs = []int{1} // a lane group, a callee's own local, or a Bool: never negated
 			}
 			// A register the iteration leaves as it found it cannot be an
 			// affine image of a variable the iteration changes, nor a
@@ -1955,6 +1979,13 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		viable := false
 		var last string
 		candidates, _ := candidatesFor(s)
+		if trace {
+			shows := make([]string, 0, len(candidates))
+			for _, c := range candidates {
+				shows = append(shows, c.show())
+			}
+			fmt.Fprintf(os.Stderr, "verify %s: slot %s of loop %d (asm vars %v): candidates %v\n", fn.Name, s.name, s.event+1, asmLoops[s.event].vars, shows)
+		}
 		for _, c := range candidates {
 			asmName := asmLoops[s.event].freshName(c.reg)
 			sigma[asmName] = widen(s.pack(oakLoops[s.event].fresh), c.ext, asmLoops[s.event].width[c.reg])
@@ -1987,7 +2018,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	var search func(i int) (bool, map[int]bool)
 	search = func(i int) (bool, map[int]bool) {
 		visited++
-		if visited > couplingSearchBudget {
+		if visited > searchBudget {
 			failure = "the coupling search exceeded its budget"
 			return false, nil
 		}
@@ -2075,7 +2106,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			delete(chosen, s.key)
 			delete(sigma, asmName)
 			delete(depthOf, asmName)
-			if visited > couplingSearchBudget {
+			if visited > searchBudget {
 				return false, nil
 			}
 			if !conflict[i] {
@@ -2583,6 +2614,12 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 	results := make(chan attempt, len(blasters))
 	for _, bl := range blasters {
 		bl.bdd.stop = &stop
+		if budget != nil && budget.remaining < bl.bdd.budget {
+			// One implication spends no more than the proof has left: the
+			// shared budget bounds the diagrams as they grow, not only the
+			// number of implications tried.
+			bl.bdd.budget = budget.remaining
+		}
 		go func(bl *blaster) {
 			holds, decided := impliesEqualUnder(bl, premise, a, b, width)
 			results <- attempt{holds, decided}
@@ -3013,6 +3050,18 @@ func refutedByValuation(premise, a, b *term, names []string, widths map[string]i
 	if len(targets) > couplingTargets {
 		targets = targets[:couplingTargets]
 	}
+	// The terms are numbered once and evaluated through slices
+	// (termEvaluator, as decideEqual's witness pass evaluates); the
+	// valuations are thinned so the pass visits a bounded number of nodes,
+	// since an obligation over summarized callees is a large DAG.
+	evaluator := newTermEvaluator(premise, a, b)
+	rounds := couplingValuations
+	if visits := len(evaluator.terms) * (3*len(targets) + rounds); visits > witnessVisitBudget {
+		rounds = witnessVisitBudget / (3*len(targets) + 1) / max(len(evaluator.terms), 1)
+		if rounds < 8 {
+			rounds = 8
+		}
+	}
 	for _, target := range targets {
 		for _, delta := range []uint64{0, 1, ^uint64(0)} {
 			env := map[string]uint64{}
@@ -3020,12 +3069,12 @@ func refutedByValuation(premise, a, b *term, names []string, widths map[string]i
 				env[name] = random() & mask(widths[name])
 			}
 			env[target.name] = (target.value + delta) & mask(widths[target.name])
-			if premise.eval(env) != 0 && a.eval(env) != b.eval(env) {
+			if evaluator.evaluate(premise, env) != 0 && evaluator.evaluate(a, env) != evaluator.evaluate(b, env) {
 				return true
 			}
 		}
 	}
-	for round := 0; round < couplingValuations; round++ {
+	for round := 0; round < rounds; round++ {
 		env := map[string]uint64{}
 		for _, name := range free {
 			value := random()
@@ -3044,10 +3093,10 @@ func refutedByValuation(premise, a, b *term, names []string, widths map[string]i
 			}
 			env[name] = value & mask(widths[name])
 		}
-		if premise.eval(env) == 0 {
+		if evaluator.evaluate(premise, env) == 0 {
 			continue
 		}
-		if a.eval(env) != b.eval(env) {
+		if evaluator.evaluate(a, env) != evaluator.evaluate(b, env) {
 			return true
 		}
 	}

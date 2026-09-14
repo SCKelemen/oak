@@ -6337,6 +6337,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	// the same body and creates the same events, which the coupling pairs
 	// by identity (asm/loops.go).
 	for _, ev := range lo.loops {
+		ev.oakDerived = true
 		x.loops = append(x.loops, ev)
 	}
 	for symbol, width := range lo.fresh {

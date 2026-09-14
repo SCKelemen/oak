@@ -4011,6 +4011,29 @@ evidence 63 to 134 — most of the new evidence is loops whose carried
 record local (`params`) has no register image at the header, and loops
 over the node budget — no disagreement, the rows identical.
 
+**A callee's loop pairs by identity; the budgets without a witness
+(2026-09-14).** The forty-seven bodies whose loop variable `params` had
+"no register image at the header" were the callers of `syn_param_total`
+through the call summary: a loop the summary takes from the callee's
+Oak body names its variables as the Oak side does (`f`, `params`), and
+the coupling read `f` as a register of the RV64 float file and never
+offered it. An event a summary derived is marked (`loopEvent.oakDerived`)
+and its variables pair by identity alone — the two sides lowered one
+body — with no search over the others, no negated relation, and no
+register-class reading of a name; a Bool variable is never paired
+negated either. With the coupling proceeding without a deciding witness,
+the bodies that end in evidence spent minutes under the full budgets
+(a search over hopeless pairings that no witness could refute early),
+so such a body gets an eighth of the proof's node and search budgets,
+and every implication is now bounded by what the proof has left rather
+than by its own order's budget; the coupling's valuations evaluate their
+terms through the slice evaluator under the witness pass's visit budget.
+On the prover: proven 391 to 429 — `type_kind`, `node_word`, the
+`syn_*_at` layout accessors, and their callers — no disagreement, the
+rows identical; the verifier's share of a cold build is about eight
+CPU-minutes, four of them in the seventy-five witness-free bodies that
+end in evidence, and a warm build takes it from the cache.
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built
