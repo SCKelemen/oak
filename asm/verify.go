@@ -3099,6 +3099,8 @@ type oakLowering struct {
 	// offset into the root and the length term (asm/derived_spans.go).
 	spanOffset map[string]*term
 	spanLen    map[string]*term
+	// views: the span or view locals over aggregate locals (asm/agg_views.go).
+	views map[string]aggView
 	// bounds memoizes maxValue over the lowering's terms (asm/range.go).
 	bounds map[*term]uint64
 	// loopBase offsets the indices of the loop events this lowering
@@ -3654,6 +3656,21 @@ func (lo *oakLowering) placeIn(expr ast.Expression, read bool) (*oakValue, strin
 		}
 		return lo.aggregateValue(e, typ)
 	case *ast.IndexExpression:
+		if view, isView := lo.viewOf(e.Left); isView && !e.Dot {
+			// A view's element: the owner's under offset + i (asm/agg_views.go).
+			if !read {
+				return nil, "a view element as a write place", false
+			}
+			owner, reason, ok := lo.viewOwner(view)
+			if !ok {
+				return nil, reason, false
+			}
+			index, reason, ok := lo.lower(e.Index, 32)
+			if !ok {
+				return nil, reason, false
+			}
+			return lo.elementUnderIndexTerm(owner, viewIndex(view, index), view.length)
+		}
 		base, reason, ok := lo.placeIn(e.Left, read)
 		if !ok {
 			return nil, reason, false
@@ -3695,10 +3712,20 @@ func (lo *oakLowering) elementUnderIndex(base *oakValue, indexExpr ast.Expressio
 	if !ok {
 		return nil, reason, false
 	}
+	return lo.elementUnderIndexTerm(base, index, nil)
+}
+
+// elementUnderIndexTerm is elementUnderIndex at an index term; bound, when
+// given, is a view's length, the index checked against it as the view's
+// own bounds check (the owner's is the view's construction guard).
+func (lo *oakLowering) elementUnderIndexTerm(base *oakValue, index *term, bound *term) (*oakValue, string, bool) {
 	if len(base.elems) == 0 {
 		return nil, "an element of an empty array", false
 	}
-	lo.addTrap(cmpTerm("hs", index, constTerm(uint64(base.typ.length), 32)))
+	if bound == nil {
+		bound = constTerm(uint64(base.typ.length), 32)
+	}
+	lo.addTrap(cmpTerm("hs", index, bound))
 	out := base.elems[len(base.elems)-1].copy()
 	for k := len(base.elems) - 2; k >= 0; k-- {
 		out = mergeValues(cmpTerm("eq", index, constTerm(uint64(k), 32)), base.elems[k], out)
@@ -3713,10 +3740,19 @@ func (lo *oakLowering) assignUnderIndex(base *oakValue, indexExpr ast.Expression
 	if !ok {
 		return reason, false
 	}
+	return lo.assignUnderIndexTerm(base, index, nil, value)
+}
+
+// assignUnderIndexTerm is assignUnderIndex at an index term; bound as in
+// elementUnderIndexTerm.
+func (lo *oakLowering) assignUnderIndexTerm(base *oakValue, index *term, bound *term, value ast.Expression) (string, bool) {
 	if len(base.elems) == 0 {
 		return "an element of an empty array", false
 	}
-	lo.addTrap(cmpTerm("hs", index, constTerm(uint64(base.typ.length), 32)))
+	if bound == nil {
+		bound = constTerm(uint64(base.typ.length), 32)
+	}
+	lo.addTrap(cmpTerm("hs", index, bound))
 	fresh := base.elems[0].copy()
 	if reason, ok := lo.assignPlace(fresh, value); !ok {
 		return reason, false
@@ -4222,6 +4258,9 @@ func (lo *oakLowering) aggregateRoot(expr ast.Expression) (*oakType, bool) {
 func (lo *oakLowering) aggregateChain(expr ast.Expression) bool {
 	switch e := expr.(type) {
 	case *ast.Identifier:
+		if _, isView := lo.views[e.Value]; isView {
+			return true
+		}
 		return lo.aggregateLocal(e.Value)
 	case *ast.IndexExpression:
 		if lo.aggregateChain(e.Left) {
@@ -4308,7 +4347,11 @@ func (lo *oakLowering) declareSpanLocal(s *ast.VariableDeclaration) (string, boo
 	if !ok {
 		return fmt.Sprintf("a local of type %s", typeText(s.Type)), false
 	}
+	if handled, reason, ok := lo.declareView(s, elem); handled {
+		return reason, ok // a view over an aggregate local (asm/agg_views.go)
+	}
 	bind := func(src string, offset, length *term) (string, bool) {
+		delete(lo.views, name)
 		contract, isSpan := lo.spans[src]
 		if _, isLocal := lo.locals[src]; isLocal || !isSpan {
 			return fmt.Sprintf("the span local %s over %s, which is not a span", name, src), false
@@ -4467,6 +4510,20 @@ func (lo *oakLowering) assignLocal(s *ast.AssignmentStatement) (string, bool) {
 func (lo *oakLowering) assignIndexed(s *ast.IndexAssignmentStatement) (string, bool) {
 	if name, contract, isSpan := lo.spanAssignment(s); isSpan {
 		return lo.assignSpanElement(name, contract, s)
+	}
+	if index := s.Target; index != nil && !index.Dot {
+		if view, isView := lo.viewOf(index.Left); isView {
+			// A view's element takes the value in its owner (asm/agg_views.go).
+			owner, reason, ok := lo.viewOwner(view)
+			if !ok {
+				return reason, false
+			}
+			idx, reason, ok := lo.lower(index.Index, 32)
+			if !ok {
+				return reason, false
+			}
+			return lo.assignUnderIndexTerm(owner, viewIndex(view, idx), view.length, s.Value)
+		}
 	}
 	if index := s.Target; index != nil && !index.Dot {
 		if _, isConst := lo.constantIndexValue(index.Index); !isConst {
@@ -4964,6 +5021,7 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	calleeAlias := map[string]string{}
 	calleeOffset := map[string]*term{}
 	calleeLen := map[string]*term{}
+	calleeViews := map[string]aggView{}
 	// A span or view parameter borrows a caller's array: the callee works
 	// on a copy and, since the conditional lowering re-points locals at
 	// copies, the final contents are written back leaf by leaf on return.
@@ -4999,11 +5057,11 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 				}
 				continue
 			}
-			if sub, isSub := subsliceOf(arg); isSub {
+			if sub, isSub := subsliceOf(arg); isSub && !lo.aggregateChain(&ast.Identifier{Value: sub.span}) {
 				// `subslice(w, start, n)` of a span parameter: an alias of
 				// the root at the offset start (plus w's own), of length n
 				// (asm/derived_spans.go); the C helper's check is a trap
-				// obligation.
+				// obligation. (Over an aggregate or a view: below.)
 				contract, isSpanParam := lo.spans[sub.span]
 				if _, isLocal := lo.locals[sub.span]; isLocal || !isSpanParam {
 					return nil, fmt.Sprintf("a call to %s: subslice of %s, which is not a span parameter", name, sub.span), false
@@ -5028,6 +5086,35 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 				calleeOffset[param.Name.Value] = lo.spanIndex(sub.span, start)
 				calleeLen[param.Name.Value] = count
 				continue
+			}
+			if view, isView := lo.viewOf(arg); isView {
+				// A view passed on: the callee's parameter is the same view
+				// over a copy of the owner, written back on return
+				// (asm/agg_views.go).
+				ownerAgg, reason, ok := lo.viewOwner(view)
+				if !ok {
+					return nil, reason, false
+				}
+				hidden := "view#" + view.owner
+				bound[hidden] = &oakLocal{agg: ownerAgg.copy()}
+				calleeViews[param.Name.Value] = aggView{owner: hidden, offset: view.offset, length: view.length}
+				if isWritableSpan(param.Type) {
+					borrows = append(borrows, borrow{param: hidden, owner: ownerAgg})
+				}
+				continue
+			}
+			if sub, isSub := subsliceOf(arg); isSub {
+				if view, ownerAgg, reason, ok := lo.subsliceView(sub); ok {
+					hidden := "view#" + view.owner
+					bound[hidden] = &oakLocal{agg: ownerAgg.copy()}
+					calleeViews[param.Name.Value] = aggView{owner: hidden, offset: view.offset, length: view.length}
+					if isWritableSpan(param.Type) {
+						borrows = append(borrows, borrow{param: hidden, owner: ownerAgg})
+					}
+					continue
+				} else if reason != "" {
+					return nil, fmt.Sprintf("a call to %s: %s", name, reason), false
+				}
 			}
 			if !isLocal || local.agg == nil || local.agg.typ.kind != oakArray {
 				return nil, fmt.Sprintf("a call to %s: the span argument %s is not a borrow of an aggregate local", name, arg.String()), false
@@ -5071,12 +5158,14 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	savedFloats := lo.floats
 	savedSpans, savedAlias := lo.spans, lo.spanAlias
 	savedOffset, savedLen := lo.spanOffset, lo.spanLen
+	savedViews := lo.views
 	lo.locals = bound
 	lo.floats = calleeFloats
 	// The callee sees only its own span parameters, each spelled in the
 	// caller's names through the alias.
 	lo.spans, lo.spanAlias = calleeSpans, calleeAlias
 	lo.spanOffset, lo.spanLen = calleeOffset, calleeLen
+	lo.views = calleeViews
 	if lo.inlining == nil {
 		lo.inlining = map[string]bool{}
 	}
@@ -5085,6 +5174,7 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 		lo.floats = savedFloats
 		lo.spans, lo.spanAlias = savedSpans, savedAlias
 		lo.spanOffset, lo.spanLen = savedOffset, savedLen
+		lo.views = savedViews
 		for _, b := range borrows {
 			if final, has := lo.locals[b.param]; has && final.agg != nil {
 				leaves(final.agg, b.owner, func(from, to *oakValue) { to.scalar = from.scalar })
@@ -5368,6 +5458,11 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 				return zeroExtend(value, width), "", true
 			}
 			return truncate(value, width), "", true
+		}
+		if ident, isIdent := e.Function.(*ast.Identifier); isIdent && ident.Value == "len" && len(e.Arguments) == 1 {
+			if view, isView := lo.viewOf(e.Arguments[0]); isView {
+				return adaptWidth(view.length, width), "", true // a view's length (asm/agg_views.go)
+			}
 		}
 		if ident, isIdent := e.Function.(*ast.Identifier); isIdent && ident.Value == "len" && len(e.Arguments) == 1 && lo.aggregateChain(e.Arguments[0]) {
 			// len of an owned array: its declared length.

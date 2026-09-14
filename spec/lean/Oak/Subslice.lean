@@ -65,3 +65,20 @@ theorem alias_len_fits (len start n : Nat) (hstart : start ≤ len) (hn : n ≤ 
   omega
 
 end Oak.Subslice
+
+namespace Oak.Subslice
+
+/-- **A view stays inside its owner**: a view of `n` elements at `start`
+    over an owner of `len` elements, admitted by the subslice guards, reads
+    and writes the owner's element `start + i` for every `i < n`, an index
+    below `len` (the view's own bounds check is `i < n`). -/
+theorem view_index_in_owner (len start n i : Nat)
+    (hstart : start ≤ len) (hn : n ≤ len - start) (hi : i < n) : start + i < len :=
+  derived_index_in_bounds len start n i hstart hn hi
+
+/-- A whole-array view (`view(&buf)`) is the owner at offset 0 with the
+    owner's length: its index is the owner's. -/
+theorem whole_view_index (i : Nat) : 0 + i = i := by
+  omega
+
+end Oak.Subslice

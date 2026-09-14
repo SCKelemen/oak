@@ -28,9 +28,9 @@ func TestE2ENativeRV64Subslice(t *testing.T) {
 	// The derived spans are proven on this lane too (docs/spec/94-assembler.md
 	// §8, derived spans): a constant start folds into the base as a
 	// whole-element offset, a symbolic one is a scaled index term.
-	for _, fn := range []string{"fields", "clear_middle", "edge"} {
+	for _, fn := range []string{"fields", "clear_middle", "edge", "main"} {
 		if !strings.Contains(joined, "asm unit "+fn+": proven equal to its Oak body") {
-			t.Errorf("rv64: %s must be proven through its derived spans; diagnostics:\n%s", fn, joined)
+			t.Errorf("rv64: %s must be proven through its derived spans and views; diagnostics:\n%s", fn, joined)
 		}
 	}
 	skipInShort(t)

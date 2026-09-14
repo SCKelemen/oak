@@ -1173,6 +1173,13 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	sort.Strings(carried)
 	aggregates := map[string]bool{}
 	for _, name := range carried {
+		if view, isView := lo.views[name]; isView {
+			// A store through a view: its owner is the carried aggregate.
+			if aggregates[view.owner] {
+				continue
+			}
+			name = view.owner
+		}
 		local, isLocal := lo.locals[name]
 		if !isLocal {
 			if _, isSpan := lo.spans[name]; isSpan {

@@ -2552,6 +2552,28 @@ re-slice composes, and the count is below the width. `fields`,
 `main`, which hands an owned array into `fields`, stays trusted — a span
 local over an aggregate-bound parameter is the next shape.
 
+**Fortieth increment — views over aggregates (2026-09-16;
+`asm/agg_views.go`, `Oak.Subslice`).** A span or view local over an
+aggregate local — `w: []u32 = view(&buf)`, `field: []u8 = subslice(v,
+start, n)` where `v` is an owned array or a span parameter the summary or
+the inline bound to a caller's array — was refused ("the span local field
+over v, which is not a span"), so the `main`s of the subslice and array
+corpora, which hand their own arrays to helpers that slice them, stayed
+trusted. Such a local is now an aggregate view: it names its owner,
+resolved through the locals at every use (the conditional lowering
+re-points locals at copies), a 32-bit index offset, and a length term.
+`w[i]` reads the owner's element merged under `offset + i`, `w[i] = e`
+writes it, `len(w)` is the length, the bounds check against the view's
+length is a trap obligation and the subslice guards are too; a view passed
+on binds the callee's parameter to the same view over a copy of the owner,
+written back on return as a borrowed array is; a store through a view in a
+data-dependent loop carries the owner's leaves. The `main`s of the subslice
+and array corpora are proven on both lanes (`asm/agg_views_test.go`;
+`compiler/e2e_native_subslice_test.go`,
+`compiler/e2e_native_rv64_subslice_test.go`,
+`compiler/e2e_native_array_test.go`); `Oak.Subslice.view_index_in_owner`
+states that the translated index of a view stays inside its owner.
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
