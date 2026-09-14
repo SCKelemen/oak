@@ -32,11 +32,31 @@ import (
 // register pair, or of a vector register is outside the subset and leaves
 // the function trusted with the reason.
 
-// spanWrite is one store to a span parameter along a path.
+// spanWrite is one store to a span parameter along a path — or, with
+// memory set, a loop memory marker: from here the span's contents are the
+// unknown memory `loop<K>.<span>` (the span as some iteration of loop K
+// sees it, and as the loop leaves it), whose element at an index is a
+// select over that name. Both sides place the marker at the same loop,
+// and the coupling proof shows the loops' iterations store alike
+// (verifyLoops), so the two unknown memories are the same memory.
 type spanWrite struct {
-	index *term // 32-bit element index
-	value *term // at the element width
-	guard *term // 1-bit condition under which the store happens; nil: always
+	index  *term  // 32-bit element index
+	value  *term  // at the element width
+	guard  *term  // 1-bit condition under which the store happens; nil: always
+	memory string // a loop memory marker's name, "" for a store
+}
+
+// loopMemoryName is the unknown memory of a span across loop K.
+func loopMemoryName(loop int, span string) string { return fmt.Sprintf("loop%d.%s", loop, span) }
+
+// appendMarker records that from here the span's contents are the loop's
+// unknown memory.
+func appendMarker(log map[string][]*spanWrite, span string, loop int) map[string][]*spanWrite {
+	if log == nil {
+		log = map[string][]*spanWrite{}
+	}
+	log[span] = append(log[span][:len(log[span]):len(log[span])], &spanWrite{memory: loopMemoryName(loop, span)})
+	return log
 }
 
 // pathEffects is what a path through the asm body leaves behind besides
@@ -85,6 +105,17 @@ func memoryAt(log []*spanWrite, index, base *term) *term {
 		form = index.linearAt(32)
 	}
 	for _, w := range log {
+		if w.memory != "" {
+			// A loop memory marker: the element is the unknown memory's,
+			// under the marker's guard when it has one (an inner loop
+			// reached on some of the enclosing body's paths).
+			at := selectTerm(w.memory, index, base.width)
+			if w.guard != nil {
+				at = iteTerm(truncate(w.guard, 1), at, value)
+			}
+			value = at
+			continue
+		}
 		// Two indices in linear normal form over the same unknowns are
 		// equal or unequal by their constants alone — the arena's
 		// `base + k` addressing — which spares the diagrams an equality
@@ -141,7 +172,7 @@ func guardWrites(writes []*spanWrite, cond *term) []*spanWrite {
 		if w.guard != nil {
 			guard = binaryTerm("and", truncate(w.guard, 1), cond)
 		}
-		out = append(out, &spanWrite{index: w.index, value: w.value, guard: guard})
+		out = append(out, &spanWrite{index: w.index, value: w.value, guard: guard, memory: w.memory})
 	}
 	return out
 }
@@ -251,9 +282,6 @@ func (x *pathExecutor) spanStore(instr Instruction, state *symbolicState) (handl
 	if vector && (src.Lane >= 0 || instr.Mnemonic != "str" || (src.VecBytes() != 16 && src.VecBytes() != 8)) {
 		return true, "a vector-register store to a span through the " + src.Vec + " view", false
 	}
-	if len(x.loopStack) > 0 {
-		return true, "a span store in a data-dependent loop body", false
-	}
 	if mem.Mode != MemOffset {
 		return true, "a span base moved by pre/post-index", false
 	}
@@ -341,9 +369,6 @@ func (lo *oakLowering) spanAssignment(s *ast.IndexAssignmentStatement) (name str
 // (the store is dominated by a length guard); the verifier records which
 // element takes which value.
 func (lo *oakLowering) assignSpanElement(name string, contract spanContract, s *ast.IndexAssignmentStatement) (string, bool) {
-	if len(lo.loopStack) > 0 {
-		return "a span store in a data-dependent loop body", false
-	}
 	index, reason, ok := lo.lower(s.Target.Index, 32)
 	if !ok {
 		return reason, false

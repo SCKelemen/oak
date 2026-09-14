@@ -3508,6 +3508,38 @@ carried through the summary — the next shape. Pinned:
 `compiler/e2e_native_loop_header_loads_test.go` (`skip_blank`, `weigh`:
 a `pub` callee in an exit test and in a body, both lanes).
 
+**Span memories through loops (2026-09-14).** A store through a span
+inside a data-dependent loop body was the last shape the loop summary
+refused, and with the loops themselves recognized it was the largest
+reason left after vectors and floats. The write log (`spanWrite`) now
+has a marker: from a loop's marker on, a span's contents are the unknown
+memory `loop<K>.<span>` — the span as some iteration of loop K sees it,
+and as the loop leaves it — whose element at an index is a select over
+that name (`memoryAt`). Both sides place the marker at the loop for every
+span the body stores through: the asm side finds those spans by a
+discovery run of the body whose other traces are undone, the Oak side by
+a walk of the body (`spanStoresIn`). The iteration then runs on the
+marked memory — its reads see the unknown memory, its stores layer on it
+— and each side's loop event records the iteration's stores, each under
+the body path it happens on (`loopEvent.writes`). The coupling proof
+compares them pairwise (`coupledWrites`): the same spans, the same
+number of stores, indices and values proven equal under the coupling and
+the body premise, guards equal, an inner loop's marker matched by name.
+The memories after the loops are then compared as `decideSpans` compares
+them — the final element at a fresh index over the entry memory — under
+the coupling and the exit premise; a unit function whose only effect is
+the memory takes this path with no result term (its proof is the coupling
+alone, with no witness run). This is an induction: equal memories at
+entry, iterations proven to store alike on equal state, so the two
+unknown memories are one memory. Found on landing: the executor returned
+the effects of the state at a loop's exit branch, not of the run past
+it, so the marker never reached the comparison. On the stdlib-bearing
+program the bodies trusted for a store in a loop body (23 and 14) are
+gone; proven bodies rose to 174 on AArch64 and 165 on RV64. Pinned:
+`compiler/e2e_native_loop_stores_test.go` (a unit fill, a copy with a
+result, a conditional store; both lanes), the `fill` case of
+`compiler/e2e_native_span_effects_test.go`, now proven on both lanes.
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built

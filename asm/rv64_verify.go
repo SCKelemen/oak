@@ -456,9 +456,6 @@ func (x *pathExecutor) rv64SpanAddress(mem Memory, state *symbolicState) (span s
 // width, in the path's write log (asm/effects.go), as the AArch64 lane's
 // spanStore does; the Oak side's assignments are compared as memories.
 func (x *pathExecutor) spanStoreRV64(src Register, mem Memory, width int, state *symbolicState) (string, bool) {
-	if len(x.loopStack) > 0 {
-		return "a span store in a data-dependent loop body", false
-	}
 	if address, bound := state.regs[mem.Base.Num]; bound {
 		if param, _, isBase := spanBaseOf(address); isBase {
 			if _, isRecord := x.records[param]; isRecord {
