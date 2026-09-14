@@ -2485,6 +2485,26 @@ either side)" (`Oak.UnitBodies`: the empty effect log is the identity, and
 two empty logs agree exactly when the entry states do). A body that does
 store through a span the signature lacks, or writes a cell the Oak body
 does not, is decided as before (`asm/unit_bodies_test.go`).
+**Thirty-eighth increment — frame loads at a data-dependent index
+(2026-09-15; `asm/verify.go` boundedFrameLoad, `Oak.FrameIndex`).** A load
+from an owned frame array at an index that is not a constant — `bytes[i]`
+in `signed_bytes`, `ldrsb w0, [x10, w0, uxtw]` under the checker's guard
+`cmp w0, #3; b.hs trap` — left the body trusted ("a frame load at a
+data-dependent index"): the executor stored at such an index as a memory
+(the bounded frame store) but read only at a constant one. The load now
+reads the guard's K elements merged under the index, from the last element
+down with the last as the default — the fold the Oak side already uses for
+an array element under a symbolic index (elementUnderIndex) — so below the
+bound both sides read element `i`, and on an index at or past the bound,
+the path the guard's trap removes, both read the last element and no
+mismatch is invented there (`Oak.FrameIndex`: `chain_select`,
+`chain_beyond`). The value is extended as the load extends it (`ldrsb`
+signed). An element in the frame's unknown region, a slot never stored, or
+a bound past the subset's budget stays trusted with the reason.
+`signed_bytes` is proven on the AArch64 lane (`asm/frame_index_test.go`;
+`compiler/e2e_native_array_test.go`); the rv64 lane, whose element
+address is formed by a scaled add rather than the addressing mode, follows
+once its guard bounds reach the executor's index terms.
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
