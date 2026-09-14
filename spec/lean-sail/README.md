@@ -30,7 +30,7 @@ cd ../../../../spec/lean-sail && lake update && lake build
 
 ## Status
 
-Builds (2026-09-14): 42 semantics theorems and 30 encoding theorems check
+Builds (2026-09-14): 53 semantics theorems and 30 encoding theorems check
 against the export itself. The export is sail-riscv at 497209b9
 (2026-08-19), the last commit whose Lean export compiles — the model's
 `vmem_types.sail` gained type-level `root_level('v)` definitions the Sail
@@ -51,9 +51,18 @@ model computes on `Int` (`mult_to_bits_half`, `Int.tdiv`/`Int.tmod` with
 the zero-divisor and overflow cases spelled out) and truncates, and
 `BitVec.ofInt` is a ring homomorphism with `toInt_sdiv`/`toInt_srem` core
 lemmas, so the model's integer results are Oak's `mul`/`mulh`/`mulhu` and
-`div`/`divu`/`rem`/`remu` on bit vectors. Not yet bridged: the W-form
-divisions (Oak's Lean model states the totalization at 64 bits only), and
-the loads, stores and AMOs (monadic memory).
+`div`/`divu`/`rem`/`remu` on bit vectors, and likewise the W forms
+through the width-generic `divN`/`remN` at 32 bits. Every integer
+instruction the verifier's tables decide is bridged. Of the loads and
+stores, the pure parts are: the effective address (`rX rs1 + sign_extend
+imm`), the alignment guard (`is_aligned_vaddr`), the loaded value's
+extension (`extend_value`) and the stored data's truncation, against
+`Oak.RiscV.effectiveAddress`, `loadValue`, `storeData`. What is not a
+theorem: the model's address translation and memory access
+(`translateAddr`, `mem_read`, `mem_write` in `SailM`), for which the
+checker's bounds and the verifier's flat element memory stand in — an
+audited hop, not a proved one. The rv64 verifier decides no atomics, so
+there is nothing to bridge for the AMOs.
 
 `spec/lean/Oak/SailRiscVBridge.lean` keeps the RTYPEW, comparison and
 branch theorems checkable inside Oak's own project, against verbatim
