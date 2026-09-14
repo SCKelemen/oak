@@ -210,6 +210,9 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 		if !okL || !okR {
 			return "unbound register read", false
 		}
+		if op == "shl" || op == "shr" || op == "sar" {
+			state.noteVariableShift(reg(2).Num) // the count's trap guard, if any
+		}
 		state.write(reg(0), rv64ALUTerm(op, l, r, 64))
 		return "", true
 	}
@@ -252,6 +255,9 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 		r, okR := read(2)
 		if !okL || !okR {
 			return "unbound register read", false
+		}
+		if op == "shl" || op == "shr" || op == "sar" {
+			state.noteVariableShift(reg(2).Num)
 		}
 		state.write(reg(0), extendTerm(rv64ALUTerm(op, truncate(l, 32), truncate(r, 32), 32), 32, 64, true))
 		return "", true

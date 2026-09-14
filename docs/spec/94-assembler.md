@@ -2322,8 +2322,15 @@ trap removes the term is the machine's wrapped value rather than a claim
 about Oak's (trapping) result; below the width the two coincide
 (`Oak.Shifts`: the widened shift masked back is the narrow shift for
 every count below the width, and a count below the width is its own
-remainder at the register width). A signed operand keeps the refusal, as
-the backends leave those bodies to C. `shifts` and `byte_shift` are proven
+remainder at the register width). The claim rests on the machine's
+guard: the executor records, on every path, the trap bound under which a
+register-count shift ran (`cmp wN, #K; b.hs trap` bounds wN below K, and
+so does `li rK, K; bgeu rN, rK, trap` on the rv64 lane), and the Oak side
+admits the variable count only when every such shift was guarded at or
+below Oak's width — a shift with no guard, or one guarded at the
+register's width rather than the operand's, stays trusted as before, since
+there Oak traps where the machine delivers. A signed operand keeps the
+refusal, as the backends leave those bodies to C. `shifts` and `byte_shift` are proven
 on both lanes (`asm/shift_test.go`; `compiler/e2e_native_rv64_test.go`);
 the theorem decider's treatment — the trap as a recorded obligation — is
 unchanged.

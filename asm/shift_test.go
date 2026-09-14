@@ -1,6 +1,9 @@
 package asm
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Variable shift counts (docs/spec/94-assembler.md §8, variable shift
 // counts): Oak traps at the width and so does the native code — `cmp wN,
@@ -26,6 +29,16 @@ func TestVerifyVariableShift(t *testing.T) {
 	if v := verifyCase(t, "shl8: (x: i8, n: i8) -> i8", "x << n", byte); v.Kind != VerdictTrusted {
 		t.Fatalf("a signed variable shift must stay trusted, got %s: %s", v.Kind, v.Message)
 	}
+	// A guard at the register's width rather than the operand's leaves
+	// counts in [8, 32) where Oak traps and the machine delivers: no claim.
+	wide := strings.Replace(byte, "cmp w10, #8", "cmp w10, #32", 1)
+	if v := verifyCase(t, "shl8: (x: u8, n: u8) -> u8", "x << n", wide); v.Kind != VerdictTrusted || !strings.Contains(v.Message, "not guarded at the width") {
+		t.Fatalf("a shift guarded above the operand's width must stay trusted, got %s: %s", v.Kind, v.Message)
+	}
+	// A guard on another register is no guard on the count.
+	if v := verifyCase(t, "shl32: (x: u32, n: u32) -> u32", "x << n", strings.Replace(word, "cmp w10, #32", "cmp w9, #32", 1)); v.Kind != VerdictTrusted {
+		t.Fatalf("a shift whose count is unguarded must stay trusted, got %s: %s", v.Kind, v.Message)
+	}
 }
 
 // The RV64 lane: sllw for a 32-bit operand, sll at XLEN with the mask
@@ -41,5 +54,8 @@ func TestRV64VerifyVariableShift(t *testing.T) {
 	byte := "  bind a0 = x\n  bind a1 = n\n  clobber t0, t1, t2\n  frame 96\n  addi sp, sp, -96\n  sd s1, 0(sp)\n  sd s2, 8(sp)\n  mv s1, a0\n  mv s2, a1\nhead_1:\n  mv t0, s1\n  mv t1, s2\n  li t2, 8\n  bgeu t1, t2, trap_3\n  sll t0, t0, t1\n  andi t0, t0, 255\n  mv a0, t0\nret_2:\n  ld s1, 0(sp)\n  ld s2, 8(sp)\n  addi sp, sp, 96\n  ret\ntrap_3:\n  ebreak"
 	if v := rv64Verify(t, "shl8: (x: u8, n: u8) -> u8", "x << n", byte); v.Kind != VerdictProven {
 		t.Fatalf("shl8 must be proven, got %s: %s", v.Kind, v.Message)
+	}
+	if v := rv64Verify(t, "shl8: (x: u8, n: u8) -> u8", "x << n", strings.Replace(byte, "li t2, 8", "li t2, 64", 1)); v.Kind != VerdictTrusted {
+		t.Fatalf("a shift guarded at XLEN rather than the byte must stay trusted, got %s: %s", v.Kind, v.Message)
 	}
 }
