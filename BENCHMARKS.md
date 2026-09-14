@@ -111,9 +111,9 @@ bytecode `dispatch` kernel is faster natively, and CRC-32C was 23× behind
 until this pass — the native backend had lowered the dispatching function's
 portable body over its hardware unit — and is 5.7× behind after it, the
 rest being fifty-six guarded byte loads where clang reads seven words.
-`tiled` has no native row: the verifier refutes its lowering with a value
-the Oak body cannot produce, a probable false alarm recorded there for
-reduction. Every native row's checksum agrees with the C backend's.
+`tiled` was refused at the measurement revision by a verifier false alarm
+that upstream has since fixed; at 30ca36eb it runs natively at 2.8×, the
+scalar-loop gap. Every native row's checksum agrees with the C backend's.
 
 ## What is not measured yet
 
@@ -121,7 +121,7 @@ Kernels shaped like the database's page and B-tree paths, the hypervisor's
 dispatch and bitmap scans, and the ml runtime's tiled reductions; Rust's
 `sha2`/`crc32c` crates (the harness is offline and uses the standard
 library only); anything with allocation; anything on x86 for the kernels; the native
-backend on any machine but one loaded M4 Max, and its `tiled` row.
+backend on any machine but one loaded M4 Max.
 Each of these is a row to add to `benchmarks/kernels`, not a claim to
 make in advance.
 
