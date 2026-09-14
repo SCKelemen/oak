@@ -119,6 +119,13 @@ var rvVectorSubset = map[string]bool{
 	"vle64.v": true, "vse64.v": true,
 	"vfadd.vv": true, "vfsub.vv": true, "vfmul.vv": true, "vfmacc.vv": true,
 	"vfmv.v.f": true, "vfmv.f.s": true, "vfcvt.f.xu.v": true, "vfredosum.vs": true,
+	// The float vectors on the native lane (docs/spec/93-simd.md §1.2a):
+	// division, square root, the number-preferring minimum and maximum,
+	// the sign injections (neg, abs), the NaN test (vmfne of a lane with
+	// itself), and the lane insert — element indices, a compare against
+	// a scalar, and the float merge under the mask.
+	"vfdiv.vv": true, "vfsqrt.v": true, "vfmin.vv": true, "vfmax.vv": true, "vfsgnjn.vv": true, "vfsgnjx.vv": true,
+	"vmfne.vv": true, "vid.v": true, "vmseq.vx": true, "vfmerge.vfm": true,
 	// The fixed-vector catalog on the native lane (docs/spec/93-simd.md
 	// §1.4): saturating subtract, the shift by a register, the signed and
 	// unsigned less-than masks, the gather, and the slides.

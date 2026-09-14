@@ -173,7 +173,7 @@ func rv64GroupOf(lmul8 int64) int64 {
 // vector register operand is a group of LMUL registers aligned to LMUL.
 func rv64GroupSingle(name string, position int) bool {
 	switch name {
-	case "vmseq.vv", "vmsne.vx", "vmslt.vx", "vmsltu.vx":
+	case "vmseq.vv", "vmsne.vx", "vmslt.vx", "vmsltu.vx", "vmseq.vx", "vmfne.vv":
 		return position == 0
 	case "vredsum.vs", "vfredosum.vs":
 		// A reduction's scalar input and result live in element 0 of a
@@ -184,7 +184,7 @@ func rv64GroupSingle(name string, position int) bool {
 		return position == 1
 	case "vcpop.m":
 		return position == 1
-	case "vmerge.vvm":
+	case "vmerge.vvm", "vfmerge.vfm":
 		return position == 3
 	}
 	return false
