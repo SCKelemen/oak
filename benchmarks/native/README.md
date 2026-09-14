@@ -84,7 +84,7 @@ noise at about twenty percent. Raw samples:
 
 | Kernel | C backend ns/byte | Native ns/byte | Native / C | Verdict on the native body |
 | --- | --- | --- | --- | --- |
-| `crc32c` | 0.144 | 3.311 → 0.817 after the dispatch fix | 23.0 → 5.7 | trusted (indexes a package table) |
+| `crc32c` | 0.144 | 3.311 → 0.817 after the dispatch fix → 0.295 with the word idiom → 0.144 with its guards elided | 23.0 → 5.7 → 1.7 → 1.1 | trusted (indexes a package table) |
 | `sha256` | 0.639 | 0.719 → 0.646 after the dispatch fix | 1.12 → 1.00 | trusted (indexes a package table) |
 | `blake3` | 3.115 | 4.808 | 1.54 | trusted |
 | `dot` | 0.835 | 2.704 | 3.24 | proven |
@@ -109,15 +109,24 @@ What the rows say, in the order they matter:
   as usual (`compiler/native_bodies.go`, `compiler/e2e_native_dispatch_test.go`).
   `sha256_block_hw` dispatches the same way (`sha2`) and had been lowered
   the same way; after the fix the SHA-256 row is 1.00×, from 1.12×.
-- **The remaining CRC gap is byte-wise word assembly.** `crc32c_chunk`
-  reads seven little-endian words through `crc32c_word_at`; the native
-  body of the chunk helper is 499 lines: 56 `ldrb`s, each behind its own
-  `cmp`/`b.hs` guard, shifted and or-ed into a word, although the caller
-  established `len(chunk) >= 56` and every offset is a constant. clang
-  turns the same source into seven unaligned `ldr`s. Two idioms the
-  backend does not have yet: a little-endian word assembled from eight
-  guarded byte reads is one load, and constant-offset guards under a
-  length fact proven at the call are redundant.
+- **The next CRC gap was byte-wise word assembly** (fixed in this pass).
+  `crc32c_chunk` reads seven little-endian words through
+  `crc32c_word_at`; the native body of the chunk helper was 499 lines: 56
+  `ldrb`s, each behind its own `cmp`/`b.hs` guard, shifted and or-ed into
+  a word. clang turns the same source into seven unaligned `ldr`s. The
+  backend now recognizes the idiom (`nativegen/wide_load.go`,
+  `94-assembler.md` §9) and emits one `ldr x` per word under one slack
+  guard, and the verifier reads the wide load as the bytes' concatenation
+  so the bodies stay proven: the chunk helper is 177 lines with seven
+  loads, and CRC-32C went from 5.7× to 1.7× (0.295 against 0.174 ns/byte
+  in that run; the C side drifted from 0.144 under load). The guards went
+  next: every `at` is a literal the inliner had copied into a temporary,
+  leaving `len(chunk) >= t + 8`, from which the extents checker cannot
+  prove `chunk[t + 3]` (the sum may wrap). The inliner now substitutes
+  literal arguments (`90-backend.md` §9) and the checker folds constant
+  sums, so the fifty-six accesses are proven under the caller's
+  `len(chunk) >= 56` and each word is one `ldr x, [xB, #k]` with no guard:
+  0.144 against 0.127 ns/byte, 1.1×, on a host at load average 300.
 - **Scalar loops are not unrolled or vectorized.** `sum` lowers to the
   tight loop one would write by hand — one `ldr`, one `add`, an increment
   and two branches per element — and `dot` to the same shape with a
@@ -178,9 +187,11 @@ backend's time — the same scalar-loop gap as `sum` and `dot`.
 - A function with a `dispatch` clause lowered natively defined the
   dispatched symbol as its portable body and hid its hardware unit
   (the 23× CRC-32C row above); such functions now stay with the C backend.
-- A little-endian word assembled from eight guarded byte reads at
-  constant offsets is fifty-six guarded `ldrb`s in the native body and one
-  `ldr` under clang; the idiom is the next CRC and hash win.
+- A little-endian word assembled from eight guarded byte reads was
+  fifty-six guarded `ldrb`s in the native body and one `ldr` under clang;
+  the word idiom now lowers it to one load (landed), unguarded where the
+  inliner's substituted literal offsets and the checker's folded constants
+  prove the bytes (landed).
 - The verifier refuted `bench_tiled` at aade7acd with a value the Oak body
   cannot produce (a negative sum of squares); reproduced there, gone at
   30ca36eb — a false alarm an upstream verifier fix closed.

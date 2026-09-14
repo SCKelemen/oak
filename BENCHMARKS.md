@@ -109,8 +109,10 @@ backend, the scalar reductions (`sum`, `dot`) are 3.2–3.4× behind because
 the backend neither unrolls nor vectorizes a loop clang vectorizes, the
 bytecode `dispatch` kernel is faster natively, and CRC-32C was 23× behind
 until this pass — the native backend had lowered the dispatching function's
-portable body over its hardware unit — and is 5.7× behind after it, the
-rest being fifty-six guarded byte loads where clang reads seven words.
+portable body over its hardware unit — 5.7× after that fix, 1.7× once
+the backend read a byte-assembled word with one load instead of fifty-six
+guarded byte loads, and 1.1× once the inliner's literal offsets let the
+checker prove those loads and drop their guards.
 `tiled` was refused at the measurement revision by a verifier false alarm
 that upstream has since fixed; at 30ca36eb it runs natively at 2.8×, the
 scalar-loop gap. Every native row's checksum agrees with the C backend's.

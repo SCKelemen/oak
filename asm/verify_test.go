@@ -243,14 +243,34 @@ func TestVerifySpanMemory(t *testing.T) {
 	if signedMax.Kind != VerdictProven {
 		t.Fatalf("signed element max must be proven, got %s: %s", signedMax.Kind, signedMax.Message)
 	}
-	// Outside the subset: a byte span read as a word. A store through a
-	// span is inside it since the twenty-eighth increment (asm/effects.go):
-	// a lowering that bumps the element the body only reads is refuted.
-	bytes := verifyCase(t, "b0: (v: []u8) -> u32", "len(v) < u32(4) ? u32(0) | u32(v[0])",
-		"  bind x0, w1 = v\n  cmp w1, #4\n  b.lo short\n  ldr w0, [x0]\n  ret\nshort:\n  mov w0, #0\n  ret")
-	if bytes.Kind != VerdictTrusted {
-		t.Fatalf("a word load over bytes must be trusted, got %s: %s", bytes.Kind, bytes.Message)
+	// A byte span read as a word is the little-endian concatenation of the
+	// bytes (the word idiom, nativegen/wide_load.go): the body spelling the
+	// same word from its bytes is proven, and a body reading one byte where
+	// the asm reads four is refuted with the bytes named.
+	wordIdiom := "len(v) < u32(4) ? u32(0) | (u32(v[0]) | (u32(v[1]) << u32(8)) | (u32(v[2]) << u32(16)) | (u32(v[3]) << u32(24)))"
+	wordAsm := "  bind x0, w1 = v\n  cmp w1, #4\n  b.lo short\n  ldr w0, [x0]\n  ret\nshort:\n  mov w0, #0\n  ret"
+	word := verifyCase(t, "b0: (v: []u8) -> u32", wordIdiom, wordAsm)
+	if word.Kind != VerdictProven {
+		t.Fatalf("a word load over bytes against the byte-assembled word must be proven, got %s: %s", word.Kind, word.Message)
 	}
+	oneByte := verifyCase(t, "b0: (v: []u8) -> u32", "len(v) < u32(4) ? u32(0) | u32(v[0])", wordAsm)
+	if oneByte.Kind != VerdictMismatch || !strings.Contains(oneByte.Message, "v[1]=") {
+		t.Fatalf("a word load over bytes against one byte must be a mismatch naming the bytes, got %s: %s", oneByte.Kind, oneByte.Message)
+	}
+	// The indexed form under the slack guard the lowering emits: len >= 4
+	// and i <= len - 4, then `ldr w, [x0, wI, uxtw]` reads bytes i..i+3.
+	indexed := verifyCase(t, "w_at: (v: []u8, i: u32) -> u32",
+		"len(v) >= u32(4) && i <= len(v) - u32(4) ? (u32(v[i]) | (u32(v[i + u32(1)]) << u32(8)) | (u32(v[i + u32(2)]) << u32(16)) | (u32(v[i + u32(3)]) << u32(24))) | u32(0)",
+		"  bind x0, w1 = v\n  bind w2 = i\n  clobber w9\n  cmp w1, #4\n  b.lo short\n  sub w9, w1, #4\n  cmp w2, w9\n  b.hi short\n  ldr w0, [x0, w2, uxtw]\n  ret\nshort:\n  mov w0, #0\n  ret")
+	if indexed.Kind != VerdictProven {
+		t.Fatalf("an indexed word load over bytes under the slack guard must be proven, got %s: %s", indexed.Kind, indexed.Message)
+	}
+	// A slack guard one byte short never reaches the verifier: the seam
+	// checker refuses the load ("the guard leaves 3 elements after w2 but
+	// the access reads 4", asm/check.go indexedSpanAccess).
+	// A store through a span is inside the subset since the twenty-eighth
+	// increment (asm/effects.go): a lowering that bumps the element the
+	// body only reads is refuted.
 	store := verifyCase(t, "bump: (v: [*]u32) -> u32", "len(v) < u32(1) ? u32(0) | v[0]",
 		"  bind x0, w1 = v\n  clobber w9\n  cmp w1, #1\n  b.lo short\n  ldr w9, [x0]\n  add w9, w9, #1\n  str w9, [x0]\n  mov w0, w9\n  ret\nshort:\n  mov w0, #0\n  ret")
 	if store.Kind != VerdictMismatch {

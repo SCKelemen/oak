@@ -2490,16 +2490,27 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 	baseIndex := baseOffset / elem
 	// The access size is the element size; a narrower load extends the
 	// element into its register — zero-extending, or sign-extending for
-	// the ldrs* family.
+	// the ldrs* family. A zero-extending load wider than the element (an
+	// `ldr x` over `[]u8`, the little-endian word idiom) reads the
+	// size/elem consecutive elements from its index and is their
+	// little-endian concatenation — the term the Oak body's
+	// `u64(v[i]) | (u64(v[i+1]) << 8) | …` lowers to; the seam checker
+	// admitted the access only under a guard with that much slack
+	// (asm/check.go indexedSpanAccess).
 	size := memorySize(instr.Mnemonic, dest.Class)
-	if size != elem {
+	wide := size > elem && size%elem == 0 && !isSignExtendingLoad(instr.Mnemonic)
+	if size != elem && !wide {
 		return fmt.Sprintf("a %d-byte load over %d-byte elements", size, elem), false
 	}
-	extend := func(element *term) *term {
-		if isSignExtendingLoad(instr.Mnemonic) {
-			return extendTerm(element, int(elem)*8, widthOf(dest.Class), true)
+	read := func(index *term) *term {
+		if !wide {
+			element := x.elementIn(state, param, index, int(elem)*8)
+			if isSignExtendingLoad(instr.Mnemonic) {
+				return extendTerm(element, int(elem)*8, widthOf(dest.Class), true)
+			}
+			return zeroExtend(element, widthOf(dest.Class))
 		}
-		return zeroExtend(element, widthOf(dest.Class))
+		return zeroExtend(x.wideElementIn(state, param, index, elem, size), widthOf(dest.Class))
 	}
 	if mem.Index != nil {
 		// [base, wI, uxtw #s]: element wI. Along an unrolled counted loop the
@@ -2515,14 +2526,45 @@ func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bo
 		if baseIndex != 0 {
 			index = binaryTerm("add", truncate(index, 32), constTerm(uint64(baseIndex), 32))
 		}
-		state.write(dest, extend(x.elementIn(state, param, index, int(elem)*8)))
+		state.write(dest, read(index))
 		return "", true
 	}
 	if mem.Offset < 0 || mem.Offset%elem != 0 {
 		return "a load not aligned to an element", false
 	}
-	state.write(dest, extend(x.elementIn(state, param, constTerm(uint64(mem.Offset/elem+baseIndex), 32), int(elem)*8)))
+	state.write(dest, read(constTerm(uint64(mem.Offset/elem+baseIndex), 32)))
 	return "", true
+}
+
+// wideElementIn is the size-byte little-endian word at element index of a
+// span of elem-byte elements: element k of the size/elem read lands at
+// bit 8*elem*k, as the machine's little-endian load places it and as the
+// Oak body's `T(v[i + k]) << (8*elem*k)` spells it. The index terms are
+// the body's own — `i` for the first element, `i + k` after — so the same
+// element parameters meet on both sides.
+func (x *pathExecutor) wideElementIn(state *symbolicState, span string, index *term, elem, size int64) *term {
+	width := int(size) * 8
+	var word *term
+	for k := int64(0); k < size/elem; k++ {
+		at := index
+		if k != 0 {
+			if index.kind == termConst {
+				at = constTerm((index.value+uint64(k))&mask(32), 32)
+			} else {
+				at = binaryTerm("add", truncate(index, 32), constTerm(uint64(k), 32))
+			}
+		}
+		placed := zeroExtend(x.elementIn(state, span, at, int(elem)*8), width)
+		if shift := k * elem * 8; shift > 0 {
+			placed = binaryTerm("shl", placed, constTerm(uint64(shift), width))
+		}
+		if word == nil {
+			word = placed
+		} else {
+			word = binaryTerm("or", word, placed)
+		}
+	}
+	return word
 }
 
 // leafInput is a leaf parameter's term: its witness value in a concrete
@@ -4917,6 +4959,27 @@ func (lo *oakLowering) constantIndexValue(expr ast.Expression) (int64, bool) {
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
 		return e.Value, true
+	case *ast.InfixExpression:
+		// A sum or product of literals (`u32(0) + u32(3)`, an inlined
+		// helper's constant offsets) folds as the extents checker folds it.
+		left, leftConst := lo.constantIndexValue(e.Left)
+		right, rightConst := lo.constantIndexValue(e.Right)
+		if !leftConst || !rightConst || left < 0 || right < 0 {
+			return 0, false
+		}
+		var value int64
+		switch e.Operator {
+		case "+":
+			value = left + right
+		case "*":
+			value = left * right
+		default:
+			return 0, false
+		}
+		if value < 0 || value >= 1<<32 {
+			return 0, false
+		}
+		return value, true
 	case *ast.Identifier:
 		if local, isLocal := lo.locals[e.Value]; isLocal && local.value.kind == termConst {
 			return int64(local.value.value), true

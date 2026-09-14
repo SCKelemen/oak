@@ -419,8 +419,13 @@ verifier asks only *which* element is read (`Oak.AssemblerSemantics.Span`,
 `loadElem_at`, `guarded_index_in_bounds`). The Oak side lowers `len(v)` and
 constant-index `v[k]` to the same parameters, with the element type's width
 and signedness (`[]i32` elements compare signed). Stores through a span,
-frame memory, moving bases, and loads whose width differs from the element
-(`ldr w` over `[]u8`) stay outside the subset (trusted). Executed: a
+frame memory, and moving bases stay outside the subset (trusted). A
+zero-extending load wider than the element (`ldr w` or `ldr x` over
+`[]u8`) is inside it since the word idiom landed: it reads the size/elem
+consecutive elements from its index and is their little-endian
+concatenation, the term `u32(v[i]) | (u32(v[i+1]) << 8) | …` lowers to
+(asm/verify.go `wideElementIn`); a body reading one byte where the asm
+reads four is refuted with the bytes named. Executed: a
 guarded `pair_sum` over `[]u32` proven and run both ways; reading element 0
 twice refuted with the elements named in the counterexample; a guard
 constant of 3 for Oak's 2 refuted at `len(v) = 2`; a 64-bit first-or-default
@@ -1367,6 +1372,27 @@ and only the C backend emits that selection; lowering its Oak body would
 define the symbol as the portable realization and leave the hardware unit
 unreachable (measured on CRC-32C, 23× behind, `benchmarks/native/README.md`).
 Its callers lower as usual and call the C backend's definition.
+
+**The little-endian word idiom** (`nativegen/wide_load.go`). An `|` chain
+of one span's consecutive bytes, each converted to the result type and
+shifted to its position — `u64(v[i]) | (u64(v[i + u32(1)]) << u64(8)) | …
+| (u64(v[i + u32(7)]) << u64(56))`, the shape `stdlib/hash.oak` reads a
+word from a byte view with, with a constant or a common base index and
+every byte position exactly once — lowers to one `ldrh`/`ldr w`/`ldr x`
+`[xB, wI, uxtw]` under the vector lowering's slack guard (`len >= N` and
+`i <= len - N`), which the seam checker admits for an N-byte access
+(`indexedSpanAccess`); an enclosing loop condition that proves the N
+bytes (`provenLanes`) elides the guard, and a constant base whose every
+byte the typechecker proved in range (an inlined `word_at(chunk, u32(48))`
+under the caller's `len(chunk) >= u32(56)`: the inliner substitutes the
+literal, `90-backend.md` §9, and the extents checker folds the constant
+offsets) is one load at the immediate offset with no guard, bounded by the
+span's proven minimum length. The verifier reads the wide load
+as the concatenation above, so the body is proven, not trusted. Measured
+on CRC-32C (`benchmarks/native/README.md`): fifty-six guarded `ldrb`s per
+56-byte chunk became seven unguarded `ldr x`s, 5.7× behind the C backend to
+1.1×. Byte elements only in this increment; the C backend's realization
+is unchanged.
 
 The subset: parameters, locals, and results of the fixed-width integers
 and `Bool` (or a unit result); literals; wrapping `+ - * & | ^`; `/` and

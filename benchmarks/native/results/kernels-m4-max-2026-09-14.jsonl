@@ -63,3 +63,9 @@
 {"impl":"oak-native-head-30ca36eb","kernel":"tiled","size":1048576,"checksum":"14e5aa48","ns_per_op_median":393333.3,"samples":[390666.7,393333.3,394000.0]}
 {"impl":"oak-c","kernel":"tiled","size":1048576,"checksum":"14e5aa48","ns_per_op_median":142333.3,"samples":[142000.0,142333.3,161000.0]}
 {"impl":"oak-native-head-30ca36eb","kernel":"tiled","size":1048576,"checksum":"14e5aa48","ns_per_op_median":780333.3,"samples":[431666.7,780333.3,1103333.3]}
+{"impl":"oak-native-wide-load","kernel":"crc32c","size":1048576,"checksum":"9a26588f","ns_per_op_median":194666.7,"samples":[183333.3,194666.7,197000.0]}
+{"impl":"oak-native-wide-load","kernel":"crc32c","size":1048576,"checksum":"9a26588f","ns_per_op_median":309666.7,"samples":[183000.0,309666.7,759000.0]}
+{"impl":"oak-native-wide-load","kernel":"crc32c","size":1048576,"checksum":"9a26588f","ns_per_op_median":388333.3,"samples":[247333.3,388333.3,401666.7]}
+{"impl":"oak-native-wide-load-elided","kernel":"crc32c","size":1048576,"checksum":"9a26588f","ns_per_op_median":159333.3,"samples":[159000.0,159333.3,161666.7]}
+{"impl":"oak-native-wide-load-elided","kernel":"crc32c","size":1048576,"checksum":"9a26588f","ns_per_op_median":151333.3,"samples":[151333.3,151333.3,151333.3]}
+{"impl":"oak-native-wide-load-elided","kernel":"crc32c","size":1048576,"checksum":"9a26588f","ns_per_op_median":151333.3,"samples":[151333.3,151333.3,163333.3]}

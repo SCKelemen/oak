@@ -4813,6 +4813,18 @@ var floatIntrinsicOps = map[string]string{
 }
 
 func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
+	if k, isConst := constantValue(e); isConst && !typ.isBool && !typ.isFloat && !typ.isVec && !typ.signed {
+		// A sum or product of literals (`u32(8) + u32(8)`, an inlined
+		// helper's constant guard) is its folded constant: a compare
+		// against it then takes the immediate form the seam checker reads
+		// a minimum length off (`cmp wL, #16; b.lo`).
+		r, err := g.alloc(typ)
+		if err != nil {
+			return 0, err
+		}
+		g.constant(r, uint64(k), typ)
+		return r, nil
+	}
 	switch e.Operator {
 	case "&&", "||":
 		out, err := g.alloc(scalars["Bool"])
@@ -4896,6 +4908,13 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 		}
 		g.emit("cset", wr(out), asm.Condition{Code: code})
 		return out, nil
+	}
+	if e.Operator == "|" {
+		// The little-endian word idiom: one load for the or of a span's
+		// consecutive bytes (nativegen/wide_load.go).
+		if out, handled, err := g.wideLoad(e, typ); handled || err != nil {
+			return out, err
+		}
 	}
 	if mnemonic, direct := directArithmetic[e.Operator]; direct && !typ.isFloat && !typ.isVec {
 		return g.directInfix(e, typ, mnemonic)
@@ -5195,6 +5214,28 @@ func constantValue(expr ast.Expression) (int64, bool) {
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
 		return e.Value, true
+	case *ast.InfixExpression:
+		// A sum or product of literals folds (the extents checker folds the
+		// same shape, typechecker/extents.go constantIndex), inside the
+		// 32-bit index range.
+		left, leftConst := constantValue(e.Left)
+		right, rightConst := constantValue(e.Right)
+		if !leftConst || !rightConst || left < 0 || right < 0 {
+			return 0, false
+		}
+		var value int64
+		switch e.Operator {
+		case "+":
+			value = left + right
+		case "*":
+			value = left * right
+		default:
+			return 0, false
+		}
+		if value < 0 || value >= 1<<32 {
+			return 0, false
+		}
+		return value, true
 	case *ast.InvocationExpression:
 		if ident, ok := e.Function.(*ast.Identifier); ok && len(e.Arguments) == 1 {
 			if _, isConv := scalars[ident.Value]; isConv {
