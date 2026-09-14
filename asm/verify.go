@@ -1019,9 +1019,11 @@ func truncate(t *term, width int) *term {
 }
 
 // shiftedAbove reports a term whose every set bit lies at or above the
-// width: a left shift by a constant of at least the width.
+// width: a left shift, at a width the count stays below (a count at the
+// term's width wraps to zero in this algebra, as the machine's does), by
+// a constant of at least the width truncated to.
 func shiftedAbove(t *term, width int) bool {
-	return t.kind == termBinary && t.op == "shl" && t.right.kind == termConst && t.right.value >= uint64(width)
+	return t.kind == termBinary && t.op == "shl" && t.right.kind == termConst && t.right.value < uint64(t.width) && t.right.value >= uint64(width)
 }
 
 func zeroExtend(t *term, width int) *term {
@@ -3249,7 +3251,8 @@ func (lo *oakLowering) oakTypeOf(expr ast.Expression) (*oakType, bool) {
 		return lo.vectorType(shape), true
 	}
 	if width, signed, ok := contractBits(expr); ok {
-		return &oakType{kind: oakScalar, width: width, signed: signed}, true
+		text := typeText(expr)
+		return &oakType{kind: oakScalar, width: width, signed: signed, float: text == "f32" || text == "f64"}, true
 	}
 	switch e := expr.(type) {
 	case *ast.Identifier:
