@@ -63,13 +63,18 @@ const rvVBase = 300
 var rvVScratch = []int{8, 9, 10, 11, 12, 13, 14, 15}
 
 // rvVAddr is t6 (x31), the frame-address register of the vector spills and
-// locals; rvVMask, rvVHelp1, rvVHelp2 are v0, v1, v2.
+// locals; rvVMask, rvVHelp1, rvVHelp2 are v0, v1, v2. rvVArg0 and rvVArgs
+// are the RVV psABI's vector argument registers v8–v23 (a vector result
+// returns in v8), the contract of a function whose signature carries a
+// fixed vector (docs/spec/94-assembler.md §9, Oak.RiscV.lp64dBinding).
 const (
 	rvVAddr  = 31
 	rvVMask  = 0
 	rvVHelp1 = 1
 	rvVHelp2 = 2
 	rvVCount = 16 // v0–v15 are the registers a vector function clobbers
+	rvVArg0  = 8
+	rvVArgs  = 16
 )
 
 func rvVReg(n int) asm.Register {
@@ -192,6 +197,17 @@ func (g *rvGenerator) vecSlotStore(r int, offset int64) {
 	g.emit("addi", rvReg(rvVAddr), rvSP(), imm(g.slotMem(offset).Offset))
 	g.vconfBytes()
 	g.emit("vse8.v", vsr(r), vmem(rvVAddr))
+}
+
+// vecSlotStoreItems is vecSlotStore as prologue items (a vector parameter
+// stored to its slot before the body).
+func (g *rvGenerator) vecSlotStoreItems(r int, offset int64) []asm.Item {
+	g.usedVector = true
+	return []asm.Item{
+		g.ins("addi", rvReg(rvVAddr), rvSP(), imm(g.slotMem(offset).Offset)),
+		g.ins("vsetivli", rvReg(rvZero), imm(16), vopt("e8"), vopt("m1"), vopt("ta"), vopt("ma")),
+		g.ins("vse8.v", vsr(r), vmem(rvVAddr)),
+	}
 }
 
 func (g *rvGenerator) vecSlotLoad(r int, offset int64) {

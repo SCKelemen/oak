@@ -266,3 +266,32 @@ func TestRV64VerifyFloatVector(t *testing.T) {
 		t.Fatalf("the ordered reduction against the pairwise tree must be a mismatch, got %s: %s", v.Kind, v.Message)
 	}
 }
+
+// A vector parameter and a vector result under the RVV psABI contract: the
+// lanes bound in v8, both 64-bit halves of the v8 result decided against
+// the Oak lanes (the AArch64 lane's v0 contract, asm/verify_vector_test.go).
+func TestRV64VerifyVectorContract(t *testing.T) {
+	decl := "double: (v: simd.U8x16) -> simd.U8x16"
+	proven := rv64Verify(t, decl, "simd.add_u8x16(v, v)", "  bind v8 = v\n  clobber v8\n  vsetivli zero, 16, e8, m1, ta, ma\n  vadd.vv v8, v8, v8\n  ret")
+	if proven.Kind != VerdictProven || !strings.Contains(proven.Message, "both halves") {
+		t.Fatalf("doubling must be proven on both halves, got %s: %s", proven.Kind, proven.Message)
+	}
+	wrong := rv64Verify(t, decl, "simd.add_u8x16(v, v)", "  bind v8 = v\n  clobber v8\n  vsetivli zero, 16, e8, m1, ta, ma\n  vsub.vv v8, v8, v8\n  ret")
+	if wrong.Kind != VerdictMismatch {
+		t.Fatalf("subtracting for adding must be a mismatch, got %s: %s", wrong.Kind, wrong.Message)
+	}
+	// The wrong lane width differs where a byte lane carries out.
+	lanes := rv64Verify(t, decl, "simd.add_u8x16(v, v)", "  bind v8 = v\n  clobber v8\n  vsetivli zero, 4, e32, m1, ta, ma\n  vadd.vv v8, v8, v8\n  ret")
+	if lanes.Kind != VerdictMismatch {
+		t.Fatalf("adding at the wrong lane width must be a mismatch, got %s: %s", lanes.Kind, lanes.Message)
+	}
+	// A float vector through the contract: scaled by a splat literal.
+	scale := rv64Verify(t, "scale: (v: simd.F32x4) -> simd.F32x4", "simd.mul_f32x4(v, simd.splat_f32x4(2.0))", "  bind v8 = v\n  clobber t0, ft0, v8, v9\n  li t0, 1073741824\n  fmv.w.x ft0, t0\n  vsetivli zero, 4, e32, m1, ta, ma\n  vfmv.v.f v9, ft0\n  vfmul.vv v8, v8, v9\n  ret")
+	if scale.Kind != VerdictProven {
+		t.Fatalf("the float scale through the contract must be proven, got %s: %s", scale.Kind, scale.Message)
+	}
+	// Two vector parameters, the second in v9.
+	if v := rv64Verify(t, "sum: (a: simd.U32x4, b: simd.U32x4) -> simd.U32x4", "simd.add_u32x4(a, b)", "  bind v8 = a\n  bind v9 = b\n  clobber v8\n  vsetivli zero, 4, e32, m1, ta, ma\n  vadd.vv v8, v8, v9\n  ret"); v.Kind != VerdictProven {
+		t.Fatalf("two vector parameters must be proven, got %s: %s", v.Kind, v.Message)
+	}
+}

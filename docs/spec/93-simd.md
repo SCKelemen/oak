@@ -242,8 +242,15 @@ is straight-line state that labels and calls forget. `v8`–`v15` are the
 operand stack, `v0` the mask, `v1`/`v2` the helpers of the multi-instruction
 operations; every vector register is caller-saved under the psABI, so a
 vector local lives in a sixteen-byte frame slot and a live scratch is
-spilled to one around a call (`t6` addresses the slots). Each operation is
-its RVV instruction: `splat` → `vmv.v.x`; `load`/`store` → `vle`/`vse` of
+spilled to one around a call (`t6` addresses the slots). A function whose
+signature carries a vector follows the RVV psABI's vector calling
+convention at its native entry `<name>_rvv_abi` (`94-assembler.md` §9,
+twelfth increment): vector parameters in `v8`–`v23` in declaration order,
+a vector result in `v8`, the integer and float files as before; the C
+emitter defines the Oak name as a converting shim over the entry (the
+lane-array struct loaded with `__riscv_vle*` and stored back with
+`__riscv_vse*`), and native callers reach the entry directly. Each
+operation is its RVV instruction: `splat` → `vmv.v.x`; `load`/`store` → `vle`/`vse` of
 the lane width — through a span under the *slack guard* `li k, K; bltu
 len, k; sub t, len, k; bltu t, idx` (`Oak.RiscV.slack_guard`,
 `slack_access_in_bounds`: idx + K ≤ len), through an owned array's literal

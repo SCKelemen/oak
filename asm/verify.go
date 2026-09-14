@@ -1661,8 +1661,14 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			if !x.hasResult {
 				return unitResult, state.effects(), "", true
 			}
-			if x.resultClass == ClassV && x.arch != ArchRV64 {
-				value, ok := state.readVec(0)
+			if x.resultClass == ClassV && (x.arch != ArchRV64 || x.floatResult == 0) {
+				// A vector result: v0 on AArch64, v8 on RV64 (the RVV psABI);
+				// an AArch64 float result is the low lane of v0.
+				vreg := 0
+				if x.arch == ArchRV64 {
+					vreg = rv64VectorResultRegister
+				}
+				value, ok := state.readVec(vreg)
 				if !ok {
 					return nil, nil, "result register never written", false
 				}
@@ -5084,7 +5090,7 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 // verdict is proof only when both are proven, otherwise the first that
 // is not.
 func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Verdict {
-	if shape, isVector := vectorShape(sig.ReturnType); isVector && fn.Arch != ArchRV64 {
+	if shape, isVector := vectorShape(sig.ReturnType); isVector {
 		return verifyVectorResult(fn, sig, oakBody, shape)
 	}
 	if _, chunks, isComposite := resultComposite(fn, sig); isComposite && chunks == 2 {
@@ -5234,6 +5240,13 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		return opaque, false
 	}
 	callee := x.fn.Callees[sym.Name]
+	if callee == nil {
+		// A vector-contract callee is reached at its native entry, the Oak
+		// name under the lane's suffix (VectorEntrySuffix).
+		if base, suffixed := strings.CutSuffix(sym.Name, VectorEntrySuffix(x.arch)); suffixed {
+			callee = x.fn.Callees[base]
+		}
+	}
 	if callee == nil || callee.Body == nil || callee.Name == nil || callee.Receiver != nil || len(callee.TypeParams) != 0 || callee.ExternSymbol != "" {
 		return opaque, false
 	}
@@ -5248,7 +5261,15 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	// value; its padding bits are fresh unknowns, as the ABI leaves them.
 	var aggLeaves []compositeLeaf
 	aggChunks := 0
-	if !unit {
+	// A fixed-vector result comes back whole in the lane's vector result
+	// register (v0 on AArch64, v8 on RV64 — the RVV psABI; docs/spec/
+	// 94-assembler.md §9, vectors across the call boundary): the callee's
+	// lanes packed as the register holds them.
+	var vecResult *typechecker.SimdShape
+	if shape, isVector := vectorShape(callee.ReturnType); isVector && !unit {
+		vecResult = &shape
+	}
+	if !unit && vecResult == nil {
 		w, signed, ok := contractBits(callee.ReturnType)
 		if class, isClass := contractClass(callee.ReturnType); !ok || !isClass || class == ClassV {
 			returned := typeText(callee.ReturnType)
@@ -5291,9 +5312,29 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	lo.concrete = x.env // a witness run: the callee's leaves are the caller's constants
 	lo.writes = cloneWrites(state.writes)
 	next := argBase // the next argument register, by the shared layout (asm/abi.go)
+	// Vector arguments travel in the vector file's argument registers, in
+	// declaration order: v0–v7 on AArch64, v8–v23 on RV64.
+	vecArg0, vecArgs := 0, 8
+	if x.arch == ArchRV64 {
+		vecArg0, vecArgs = rv64VectorResultRegister, 16
+	}
+	nextVec := 0
 	for _, param := range callee.Parameters {
 		if param.Variadic {
 			return fmt.Sprintf("a call to %s: parameter %s is variadic", name, param.Name.Value), false
+		}
+		if shape, isVector := vectorShape(param.Type); isVector {
+			if nextVec >= vecArgs {
+				return fmt.Sprintf("a call to %s with vector arguments beyond the registers", name), false
+			}
+			value, has := state.readVec(vecArg0 + nextVec)
+			nextVec++
+			if !has {
+				return "unbound vector register read", false
+			}
+			lanes := value.lanesAt(laneWidth(shape))[:shape.Lanes]
+			lo.locals[param.Name.Value] = &oakLocal{agg: vectorOfLanes(lanes, lo.vectorType(shape))}
+			continue
 		}
 		if comp, isComposite := x.fn.Composites[typeText(param.Type)]; isComposite {
 			// A record argument: by reference beyond 16 bytes, the register
@@ -5378,15 +5419,29 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		}
 		lo.locals[param.Name.Value] = &oakLocal{value: truncate(value, w), width: w, signed: signed}
 	}
+	if x.arch == ArchRV64 {
+		// Every vector register is caller-saved and the configuration is
+		// not preserved (the RVV psABI): the arguments are read, the file
+		// is forgotten, and a vector result is written to v8 below.
+		state.vregs, state.rvcfg = nil, nil
+	}
 	body := callee.Body
 	if loop, isTail := tailRecursionAsLoop(callee, body); isTail {
 		body = loop
 	}
 	var result *term
 	var aggregate *oakValue
+	var vecLanes []*term
 	switch {
 	case unit:
 		if reason, ok := lo.lowerUnitBody(body); !ok {
+			return fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
+		}
+	case vecResult != nil:
+		var reason string
+		var ok bool
+		vecLanes, reason, ok = lo.vectorLanes(body, *vecResult)
+		if !ok {
 			return fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
 		}
 	case aggLeaves != nil:
@@ -5432,6 +5487,36 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 			delete(state.regs, 30)
 			state.flags = nil
 		}
+		for _, seen := range x.summarized {
+			if seen == name {
+				return "", true
+			}
+		}
+		x.summarized = append(x.summarized, name)
+		return "", true
+	}
+	if vecResult != nil {
+		// The caller-saved registers are dead after the call: on RV64 the
+		// whole vector file and its configuration, on AArch64 v0–v7 and
+		// v16–v31 (the low halves of v8–v15 are preserved, kept as they
+		// were). The result register receives the callee's lanes.
+		if x.arch == ArchRV64 {
+			for _, r := range []int{1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31} {
+				delete(state.regs, r)
+			}
+		} else {
+			for r := 0; r <= 17; r++ {
+				delete(state.regs, r)
+			}
+			delete(state.regs, 30)
+			state.flags = nil
+			for r := 0; r <= 31; r++ {
+				if r < 8 || r >= 16 {
+					delete(state.vregs, r)
+				}
+			}
+		}
+		state.writeVec(vecArg0, vecOfLanes(vecLanes, laneWidth(*vecResult)))
 		for _, seen := range x.summarized {
 			if seen == name {
 				return "", true

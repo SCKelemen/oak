@@ -59,6 +59,7 @@ type rvChecker struct {
 	// fa0 the result; fs0–fs11 are callee-saved under the same obligation
 	// as s0–s11; ft0–ft11 and the fa registers are clobberable.
 	floatResult   bool
+	vectorResult  bool // a fixed vector result in v8 (the RVV psABI)
 	fbound        map[int]bool
 	fclobbered    map[int]bool
 	fwritten      map[int]bool
@@ -301,9 +302,11 @@ func (c *rvChecker) bindContract() {
 	sig := c.fn.Signature
 	next := 10
 	nextFloat := 10 // fa0–fa7
+	nextVector := 8 // v8–v23, the RVV psABI's vector argument registers
 	expect := map[string]int{}
 	expectLen := map[string]int{}
 	expectFloat := map[string]int{}
+	expectVector := map[string]int{}
 	if sig.ReturnType != nil {
 		if comp, isComposite := c.fn.Composites[typeText(sig.ReturnType)]; isComposite && comp.Size > 16 {
 			// The caller's result area arrives in a0: the parameters follow.
@@ -333,6 +336,19 @@ func (c *rvChecker) bindContract() {
 			continue
 		}
 		if class, ok := contractClass(param.Type); ok && class == ClassV {
+			if strings.HasPrefix(typeText(param.Type), "simd.") {
+				// A fixed vector: v8–v23 in declaration order, a file of its
+				// own beside the integer and float ones (the RVV psABI,
+				// Oak.RiscV.lp64dBinding with the vector kind); the native
+				// entry's contract (docs/spec/94-assembler.md §9).
+				if nextVector > 23 {
+					c.errorf(c.fn.Line, "parameter %s: the vector register contract v8–v23 is exhausted", param.Name.Value)
+					continue
+				}
+				expectVector[param.Name.Value] = nextVector
+				nextVector++
+				continue
+			}
 			// f32/f64 under LP64D: fa0–fa7 in declaration order, independent
 			// of the integer registers (Oak.RiscV.lp64dBinding).
 			if !strings.HasPrefix(typeText(param.Type), "simd.") {
@@ -380,7 +396,10 @@ func (c *rvChecker) bindContract() {
 			c.never = true
 		} else if class, ok := contractClass(sig.ReturnType); ok && class == ClassV && !strings.HasPrefix(typeText(sig.ReturnType), "simd.") {
 			c.floatResult = true // f32/f64 in fa0
-		} else if !ok || class == ClassV {
+		} else if ok && class == ClassV {
+			c.vectorResult = true // a fixed vector in v8
+			c.usesVectorFile = true
+		} else if !ok {
 			c.errorf(c.fn.Line, "result type %s is not carried by the rv64 contract", typeText(sig.ReturnType))
 		} else {
 			c.hasResult = true
@@ -389,7 +408,9 @@ func (c *rvChecker) bindContract() {
 	seen := map[string]bool{}
 	for _, b := range c.fn.Bindings {
 		want, declared := expect[b.Param]
-		if _, isFloat := expectFloat[b.Param]; !declared && !isFloat {
+		_, isFloat := expectFloat[b.Param]
+		_, isVector := expectVector[b.Param]
+		if !declared && !isFloat && !isVector {
 			c.errorf(b.Line, "bind names %s, which is not a parameter", b.Param)
 			continue
 		}
@@ -398,6 +419,16 @@ func (c *rvChecker) bindContract() {
 			continue
 		}
 		seen[b.Param] = true
+		if vreg, isVec := expectVector[b.Param]; isVec {
+			if b.Register.Class != ClassRV64V || b.Register.Num != vreg || b.Length != nil {
+				c.errorf(b.Line, "parameter %s must be bound to v%d (its vector contract register), not %s", b.Param, vreg, b.Register.Text)
+				continue
+			}
+			// Bound whole: readable as written, on entry.
+			c.vwritten[vreg] = true
+			c.usesVectorFile = true
+			continue
+		}
 		if freg, isFloat := expectFloat[b.Param]; isFloat {
 			if b.Register.Class != ClassRV64F || b.Register.Num != freg || b.Length != nil {
 				c.errorf(b.Line, "parameter %s must be bound to %s (its LP64D contract register), not %s", b.Param, rv64FloatRegisterName(freg), b.Register.Text)
@@ -450,6 +481,11 @@ func (c *rvChecker) bindContract() {
 	for name, reg := range expectFloat {
 		if !seen[name] {
 			c.errorf(c.fn.Line, "parameter %s is not bound (`bind %s = %s`)", name, rv64FloatRegisterName(reg), name)
+		}
+	}
+	for name, reg := range expectVector {
+		if !seen[name] {
+			c.errorf(c.fn.Line, "parameter %s is not bound (`bind v%d = %s`)", name, reg, name)
 		}
 	}
 	for _, reg := range c.fn.Clobbers {
@@ -885,9 +921,11 @@ func (c *rvChecker) call(target string, line int) {
 		}
 	}
 	// The callee's floating-point result is readable in fa0, as its integer
-	// result is in a0: the checker sees no callee signature, so it gives
-	// the two result registers the same latitude (the AArch64 checker's v0).
+	// result is in a0, and a vector result in v8: the checker sees no
+	// callee signature, so it gives the result registers the same latitude
+	// (the AArch64 checker's v0).
 	c.fwritten[10] = true
+	c.vwritten[8] = true
 	for num := 5; num <= 31; num++ {
 		if num >= 5 && num <= 7 || num >= 10 && num <= 17 || num >= 28 {
 			delete(c.written, num)
@@ -1212,6 +1250,9 @@ func (c *rvChecker) ret(line int) bool {
 		if state != nil && state.written && !state.restored {
 			c.errorf(line, "ret with %s written but not restored from its frame slot", rv64FloatRegisterName(num))
 		}
+	}
+	if c.vectorResult && !c.vwritten[8] {
+		c.errorf(line, "ret without writing the result register v8")
 	}
 	if c.floatResult && !c.fwritten[10] && !c.fbound[10] {
 		c.errorf(line, "ret without writing the result register fa0")

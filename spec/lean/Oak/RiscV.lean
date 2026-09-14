@@ -270,11 +270,13 @@ parameters never share a register and a binding names each register at
 most once. -/
 
 inductive Kind where
-  | int | float
+  | int | float | vector
   deriving DecidableEq, Repr
 
-/-- A register of the contract: the file and the index into `a0`–`a7` or
-    `fa0`–`fa7`. -/
+/-- A register of the contract: the file and the index into `a0`–`a7`,
+    `fa0`–`fa7`, or `v8`–`v23` (the vector kind's index `i` is register
+    `v(8 + i)`, RVV psABI: vector arguments in `v8`–`v23`, a vector result in
+    `v8`). -/
 structure Reg where
   kind : Kind
   index : Nat
@@ -283,27 +285,28 @@ structure Reg where
 /-- The placement of a parameter list: the k-th parameter of each kind
     takes the k-th register of its file. -/
 def lp64dBinding : List Kind → List Reg
-  | ks => go ks 0 0
+  | ks => go ks 0 0 0
 where
-  go : List Kind → Nat → Nat → List Reg
-    | [], _, _ => []
-    | .int :: rest, i, f => ⟨.int, i⟩ :: go rest (i + 1) f
-    | .float :: rest, i, f => ⟨.float, f⟩ :: go rest i (f + 1)
+  go : List Kind → Nat → Nat → Nat → List Reg
+    | [], _, _, _ => []
+    | .int :: rest, i, f, v => ⟨.int, i⟩ :: go rest (i + 1) f v
+    | .float :: rest, i, f, v => ⟨.float, f⟩ :: go rest i (f + 1) v
+    | .vector :: rest, i, f, v => ⟨.vector, v⟩ :: go rest i f (v + 1)
 
 theorem lp64dBinding_length (ks : List Kind) : (lp64dBinding ks).length = ks.length := by
-  suffices h : ∀ ks i f, (lp64dBinding.go ks i f).length = ks.length from h ks 0 0
+  suffices h : ∀ ks i f v, (lp64dBinding.go ks i f v).length = ks.length from h ks 0 0 0
   intro ks
   induction ks with
   | nil => intros; rfl
-  | cons k rest ih => intro i f; cases k <;> simp [lp64dBinding.go, ih]
+  | cons k rest ih => intro i f v; cases k <;> simp [lp64dBinding.go, ih]
 
 /-- Each parameter keeps its kind's file. -/
 theorem lp64dBinding_kinds (ks : List Kind) : (lp64dBinding ks).map Reg.kind = ks := by
-  suffices h : ∀ ks i f, (lp64dBinding.go ks i f).map Reg.kind = ks from h ks 0 0
+  suffices h : ∀ ks i f v, (lp64dBinding.go ks i f v).map Reg.kind = ks from h ks 0 0 0
   intro ks
   induction ks with
   | nil => intros; rfl
-  | cons k rest ih => intro i f; cases k <;> simp [lp64dBinding.go, ih]
+  | cons k rest ih => intro i f v; cases k <;> simp [lp64dBinding.go, ih]
 
 /-- Every list of kinds up to the contract's width (eight of each file)
     places its parameters in distinct registers: decided exhaustively. -/
@@ -317,6 +320,39 @@ theorem lp64dBinding_nodup_upto8 : ∀ ks ∈ allKinds 8, (lp64dBinding ks).Nodu
 /-- Two examples the tests use: `(a, b, c : f64)` and `(n : u32, x : f64)`. -/
 theorem lp64dBinding_fma : lp64dBinding [.float, .float, .float] = [⟨.float, 0⟩, ⟨.float, 1⟩, ⟨.float, 2⟩] := rfl
 theorem lp64dBinding_mixed : lp64dBinding [.int, .float, .int, .float] = [⟨.int, 0⟩, ⟨.float, 0⟩, ⟨.int, 1⟩, ⟨.float, 1⟩] := rfl
+
+/-! ### Vectors across the call boundary
+
+A function whose signature carries a fixed `simd` vector follows the RVV
+psABI's vector calling convention at its native entry (`<name>_rvv_abi`,
+docs/spec/94-assembler.md §9): the k-th vector parameter arrives in
+`v(8 + k)`, independently of the integer and float files, and a vector
+result leaves in `v8`. The C backend's lane-array struct crosses in the
+integer registers instead, so the C emitter converts at the boundary. -/
+
+/-- The vector register of the k-th vector parameter. -/
+def vectorArgReg (k : Nat) : Nat := 8 + k
+
+/-- The argument registers are `v8`–`v23`: sixteen of them. -/
+theorem vectorArgReg_within (k : Nat) (hk : k < 16) : 8 ≤ vectorArgReg k ∧ vectorArgReg k ≤ 23 := by
+  unfold vectorArgReg; omega
+
+/-- The result register is the first argument register (a unary vector
+function's parameter and result share `v8`). -/
+theorem vectorResultReg_eq : vectorArgReg 0 = 8 := rfl
+
+/-- The vector file is placed beside the others: `(a : simd.U8x16, k : u32,
+b : simd.U8x16)` binds `v8`, `a0`, `v9`. -/
+theorem lp64dBinding_vector : lp64dBinding [.vector, .int, .vector] = [⟨.vector, 0⟩, ⟨.int, 0⟩, ⟨.vector, 1⟩] := rfl
+
+/-- Every list of kinds of up to six parameters over the three files places
+    its parameters in distinct registers: decided exhaustively. -/
+def allKinds3 : Nat → List (List Kind)
+  | 0 => [[]]
+  | n + 1 => [] :: ((allKinds3 n).flatMap fun ks => [Kind.int :: ks, Kind.float :: ks, Kind.vector :: ks])
+
+set_option maxRecDepth 20000 in
+theorem lp64dBinding_nodup_vectors_upto6 : ∀ ks ∈ allKinds3 6, (lp64dBinding ks).Nodup := by decide
 
 /-- The move instructions between the files are bit identities: a value
     moved to the floating-point file and back is unchanged, so an integer

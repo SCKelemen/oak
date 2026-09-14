@@ -82,6 +82,20 @@ words_view: (w: []u32) -> u32 {
   simd.any_u32x4(simd.eq_u32x4(v, simd.splat_u32x4(u32(7)))) ? u32(1) | u32(0)
 }
 
+// A float vector across a native-to-native call: scale keeps the vector
+// register contract at its native entry (v8 in, v8 out under the RVV psABI).
+scale: (v: simd.F32x4) -> simd.F32x4 = simd.mul_f32x4(v, simd.splat_f32x4(2.0))
+
+scaled: (xs: []f32) -> f32 = simd.reduce_add_f32x4(scale(simd.load_f32x4(xs, u32(0))))
+
+// The same through the C boundary: a foreign pointer local keeps this
+// caller on the C backend, which reaches scale through the converting shim.
+c_scaled: (xs: []f32) -> f32 {
+  nothing: c.Ptr = c.null()
+  _ = nothing
+  simd.reduce_add_f32x4(scale(simd.load_f32x4(xs, u32(0))))
+}
+
 main: (): u32 {
   xs: [4]f32 = [4]f32{1.0, 2.0, 3.0, 4.0}
   ys: [4]f32 = [4]f32{0.5, 0.25, 2.0, -1.0}
@@ -95,13 +109,15 @@ main: (): u32 {
   ok6: Bool = out[3] == -1.0 && out[0] == -0.5
   ok7: Bool = doubles() == u32(3)
   ok8: Bool = words_view(view(&ws)) == u32(1)
-  ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 ? u32(42) | (ok1 ? u32(0) | u32(1)) + (ok2 ? u32(0) | u32(2)) + (ok3 ? u32(0) | u32(4)) + (ok4 ? u32(0) | u32(8)) + (ok5 ? u32(0) | u32(16)) + (ok6 ? u32(0) | u32(32)) + (ok7 ? u32(0) | u32(64)) + (ok8 ? u32(0) | u32(128))
+  ok9: Bool = scaled(view(&xs)) == 20.0
+  ok10: Bool = c_scaled(view(&xs)) == 20.0
+  ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 ? u32(42) | (ok1 ? u32(0) | u32(1)) + (ok2 ? u32(0) | u32(2)) + (ok3 ? u32(0) | u32(4)) + (ok4 ? u32(0) | u32(8)) + (ok5 ? u32(0) | u32(16)) + (ok6 ? u32(0) | u32(32)) + (ok7 ? u32(0) | u32(64)) + (ok8 ? u32(0) | u32(128)) + (ok9 ? u32(0) | u32(200)) + (ok10 ? u32(0) | u32(210))
 }
 `
 
 // The functions the rv64 lane lowers (main addresses owned arrays and stays
 // with the C backend on both lanes).
-var nativeRV64FloatSimdFunctions = []string{"arith", "dot", "pairwise", "minmax", "unary", "doubles", "words_view"}
+var nativeRV64FloatSimdFunctions = []string{"arith", "dot", "pairwise", "minmax", "unary", "doubles", "words_view", "scale_rvv_abi", "scaled"}
 
 // rv64LinuxVector is the hard-float processor with V the float vectors need.
 const rv64LinuxVectorCPU = "generic_rv64+m+a+f+d+v"
@@ -125,6 +141,13 @@ func TestE2ENativeRV64FloatSimdLowers(t *testing.T) {
 		}
 		if !strings.Contains(joined, "asm unit "+fn+": proven") {
 			t.Errorf("%s was not proven by the verifier; diagnostics:\n%s", fn, joined)
+		}
+	}
+	// The C emitter's shim over the float entry, called from the C side.
+	native, _ := nativeRV64LowerCPU(t, rv64Linux, rv64LinuxVectorCPU, nativeRV64FloatSimdProgram)
+	for _, text := range []string{"vfloat32m1_t", "scale_rvv_abi", "__riscv_vle32_v_f32m1", "__riscv_vse32_v_f32m1"} {
+		if !strings.Contains(native.C, text) {
+			t.Errorf("the emitted C lacks %q (the RVV shim)", text)
 		}
 	}
 	// Without V the float vector bodies stay with the C backend.

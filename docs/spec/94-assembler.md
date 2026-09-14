@@ -2724,6 +2724,51 @@ the AArch64 lane's `_neon_abi`), records or arrays of vectors, a
 non-literal shift, `prev`, `extract`, or `insert` count, and the
 ctz/popcount helpers.
 
+**RV64 lane, twelfth increment — vectors across the call boundary (landed
+2026-09-14; `nativegen/rv64.go`, `codegen/codegen.go`).** A function whose
+signature carries a fixed vector lowers on the RV64 lane under the RVV
+psABI's vector calling convention: its native entry is the Oak name
+suffixed `_rvv_abi` (`asm.VectorEntrySuffix`, the AArch64 lane's
+`_neon_abi`), vector parameters arrive in `v8`–`v23` in declaration order
+— a file of their own beside `a0`–`a7` and `fa0`–`fa7`
+(`Oak.RiscV.lp64dBinding` with the vector kind, `lp64dBinding_vector`,
+`vectorArgReg_within`, and distinct registers decided for every list of
+up to six parameters over the three files) — and a vector result leaves
+in `v8`. The generator binds each vector parameter whole and stores it to
+its frame slot in the prologue, moves a vector result to `v8` (`vor.vv`
+over the whole register), and at a call spills every live vector
+(the operand stack `v8`–`v15` is the argument file) before reloading the
+vector arguments from their slots straight into `v8`, `v9`, …, copying a
+vector result out of `v8` into a fresh register before the spills reload;
+a call that passes or receives a vector clobbers `v16`–`v23` too. The C
+backend's lane-array struct crosses a C call in the integer registers,
+so the C emitter defines the Oak name as a converting shim over the entry
+under `defined(__riscv_vector)`: each vector argument is
+`__riscv_vle{8,16,32,64}_v_*m1( arg.lanes, lanes )`, the entry's
+prototype spells `vuint8m1_t`/`vfloat32m1_t` parameters and result (the
+compiler's vector calling convention for such prototypes: `v8`–`v23`, a
+result in `v8`, every vector register caller-saved), and a vector result
+is stored back with `__riscv_vse*`; the Oak fallback body serves where
+the entry's types do not (no V). The checker binds `bind v8 = a` in
+declaration order (v8–v23; a wrong register, an integer register, or an
+unbound parameter is a finding), a bound register is readable on entry,
+a fixed-vector result must be written to `v8` before `ret`, and `v8` is
+readable after a call as `a0` and `fa0` are. The verifier binds the
+lanes `p[k]` into the parameter's register, reads a vector result from
+`v8` one 64-bit half at a time (the AArch64 lane's `v0`), and takes a
+vector-contract callee at its Oak body through the suffixed entry name
+— vector arguments read from `v8`–`v23`, the callee's lanes written to
+`v8`, the vector file and configuration forgotten across the call — so
+`doubled_mask` and `scaled` are proven through their calls to
+`double_it_rvv_abi` and `scale_rvv_abi`, which are proven on both
+halves (`compiler/e2e_native_rv64_simd_test.go`,
+`compiler/e2e_native_rv64_float_simd_test.go`, exit 42 under QEMU with V
+at VLEN 128 and 256 and under the C backend alone;
+`asm/rv64_vector_test.go`, `asm/rv64_verify_vector_test.go`). With this
+the RV64 lane lowers every function of the AArch64 simd corpora but the
+`ctz`/`popcount` helpers (no Zbb), and the two lanes' native backends
+stand at parity on the fixed vectors.
+
 **Executables linked by the Oak assembler (landed; `asm/executable.go`,
 `oak build -link oak`).** A program whose every body the native backend
 lowered links into a final ELF64 executable here, with no system linker
