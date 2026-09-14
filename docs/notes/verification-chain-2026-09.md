@@ -107,8 +107,13 @@ or the verifier, not in the program:
    and runs the oracle tests with `OAK_REQUIRE_ORACLES=1`, under which an
    absent oracle fails the test instead of skipping it
    (`asm/oracles_test.go`). The RISC-V GNU tools resolve under their
-   Debian spelling as well as Homebrew's. Still outside CI: the ISA XML
-   audit (Arm's license) and the RV64 bridge against the export (item 2).
+   Debian spelling as well as Homebrew's. **The RV64 bridge joined
+   (2026-09-14):** a second job of `formal-sail.yml` generates the export
+   from the pinned sail-riscv release with the pinned Sail, repairs it
+   (`spec/lean-sail/patch-export.py`), builds it, proves `spec/lean-sail`
+   against it, and runs the bridge tests with the export required; the
+   built export is cached by its pins. Still outside CI: the ISA XML audit
+   (Arm's license).
 2. **The RV64 bridge proves against a restatement.** `Oak.SailRiscVBridge`
    restates the library and prelude definitions verbatim because the Sail
    0.20.2 export does not compile. Building Sail from git (as sail-riscv's
