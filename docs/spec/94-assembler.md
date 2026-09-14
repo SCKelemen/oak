@@ -507,7 +507,9 @@ body is summarized in place, with fresh symbols namespaced per event
 (`loop2.j`), and the body continues at its exit; the asm shape admits
 recognized inner loops inside a body, and Oak loop bodies admit local
 declarations (a body-local counter is the body's own, not an outer
-loop-carried variable). The coupling pairs every event's variables in one
+loop-carried variable — declared at the body's top level, in a nested
+loop, or in the arm of a conditional, as the Teddy verifier's inner
+literal loop declares its counter). The coupling pairs every event's variables in one
 search (an inner header mentions the outer symbols, so candidates are read
 under the substitution so far) and checks each event under its premise:
 its invariant and guard, its ancestors' invariants and guards, and its

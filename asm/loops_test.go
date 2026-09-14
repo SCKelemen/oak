@@ -265,3 +265,23 @@ trap:
 		}
 	}
 }
+
+// A local declared in the arm of a conditional inside a loop body and
+// assigned in a loop nested there is the body's own, not a loop-carried
+// variable of the outer loop (docs/spec/94-assembler.md §8): both loops
+// summarize.
+func TestOakLoopEventLocalDeclaredInArm(t *testing.T) {
+	decl := "acc_of: (v: []u8) -> u32"
+	oak := "{\n  acc: u32 = u32(0)\n  i: u32 = u32(0)\n  while i < len(v) {\n    v[i] > u8(5) ? {\n      j: u32 = u32(0)\n      while j < len(v) {\n        acc = acc + j\n        j = j + u32(1)\n      }\n    } | { }\n    i = i + u32(1)\n  }\n  acc\n}"
+	spec, err := parseSignatureWithBody(decl + " = " + oak)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lo := newLowering(spec)
+	if _, reason, ok := lo.lower(spec.Body, 32); !ok {
+		t.Fatalf("the body must lower with both loops summarized, got: %s", reason)
+	}
+	if len(lo.loops) != 2 {
+		t.Fatalf("two loop events expected, got %d", len(lo.loops))
+	}
+}
