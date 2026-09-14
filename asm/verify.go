@@ -1990,6 +1990,14 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			}
 			continue
 		}
+		if handled, reason, ok := x.atomicInstruction(instr, state); handled {
+			// An exclusive store, an LSE atomic, or clrex through a span
+			// element (asm/atomics.go).
+			if !ok {
+				return nil, nil, reason, false
+			}
+			continue
+		}
 		if isLoad(instr.Mnemonic) {
 			if dest, isReg := instr.Operands[0].(Register); isReg && dest.Class == ClassV {
 				if reason, ok := x.loadVector(instr, state); !ok {
@@ -3089,6 +3097,12 @@ func (lo *oakLowering) lowerUnitCall(expr ast.Expression) (handled bool, reason 
 	ident, isIdent := call.Function.(*ast.Identifier)
 	if !isIdent || call.ResolvedMethod != "" {
 		return false, "", false
+	}
+	if spec, isAtomic := semir.LookupAtomicBuiltin(ident.Value); isAtomic {
+		// An atomic in statement position: its write (a fence has none;
+		// a returned value is dropped), asm/atomics.go.
+		_, reason, ok := lo.lowerAtomic(spec, call, 64)
+		return true, reason, ok
 	}
 	callee := lo.functions[ident.Value]
 	if callee == nil || !unitFunction(callee) || callee.Body == nil {
@@ -4797,16 +4811,16 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 			}
 			return zeroExtend(truncate(paramTerm(name, 32), width), width), "", true
 		}
-		// An atomic load is the read of the cell its storage path names
-		// (docs/spec/65-machine-memory.md section 7a): the order is the
-		// checker's concern, the value the element's. The other atomics
-		// write, which this straight-line model does not follow.
+		// An atomic is a read of the cell its storage path names and a
+		// write into its span's log (docs/spec/65-machine-memory.md
+		// section 7a, asm/atomics.go): the order is the checker's concern,
+		// the values the terms'.
 		if ident, isIdent := e.Function.(*ast.Identifier); isIdent {
 			if spec, isAtomic := semir.LookupAtomicBuiltin(ident.Value); isAtomic {
-				if spec.Kind == semir.AtomicBuiltinLoad && len(e.Arguments) == 1 {
-					return lo.lower(e.Arguments[0], width)
+				if !spec.ReturnsValue() {
+					return nil, "the atomic " + ident.Value + " in value position", false
 				}
-				return nil, "the atomic " + ident.Value + " (a write the straight-line model does not follow)", false
+				return lo.lowerAtomic(spec, e, width)
 			}
 		}
 		// A call to a program function in the subset is inlined
