@@ -3528,3 +3528,36 @@ runs at 0.28 ns/byte where the call tree ran at 0.85 and the C backend at
 kernel that declares some forty vector locals over its expansions. What
 would take the rest: an allocator with liveness across the whole body
 instead of declaration order within it.
+
+### 9.aa Span aliases refined (2026-09-14)
+
+The AArch64 checker's facts about general registers — a span's base and
+the `w` registers holding its length, a record's region, an index's guard
+— are maintained across register moves by two rules (`asm/check.go`):
+`forgetRegisterFacts` at every write drops what the register's old value
+supported (the span it based, its place among every span's length
+registers with the proven minimum lapsing at the last one, an index fact
+on it or bounded by it, a region in it), and `aliasSpan` at a `mov` copies
+what the source supports (`mov xD, xB`: xD bases xB's span and addresses
+xB's region; `mov wD, wL`: wD holds the length of every span wL measures
+and carries wL's guard). `spec/lean/Oak/SpanAlias.lean` transliterates
+both over the fact maps as association lists, maintained line for line
+with the Go, and proves them sound against a register file: whatever the
+facts said of the registers before the move, the maintained facts say of
+the registers after it. Facts mean something relative to a world that
+says which addresses carry a span of which length and which a region,
+fixed across a move since no memory changes; a `w` read is the low 32 bits
+and `mov wD, wL` zero-extends. `forget_sound` covers any write to the
+register; `movX_sound` and `movW_sound` cover the two moves, including
+the corner where the destination was itself a length register or the
+source (the write forgets first, so `mov x0, x0` loses x0's span exactly
+as the Go does). `TestSpanAliasMatchesLeanTransliteration`
+(`asm/span_alias_refinement_test.go`) builds two fact states, runs the
+Go's forgetting and aliasing for eight moves, and renders what every named
+register then holds as the `example … := by decide` lines the Lean file
+states, so a change to either side fails the test until the other follows.
+Outside the model: the RV64 checker's move rule (`rv64_check.go`, the same
+shape over its normalized-length facts), the constant and frame-address
+facts a move also carries, and the derived facts `deriveSpan` and
+`deriveElement` add after the alias.
+

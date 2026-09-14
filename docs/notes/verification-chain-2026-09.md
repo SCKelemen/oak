@@ -157,7 +157,12 @@ or the verifier, not in the program:
    `spec/lean/Oak/ExtentsRefinement.lean` transliterates `indexUnder` and
    proves `indexUnder_sound`; the fact extraction and kills remain
    transliterations with laws. The seam checkers' new facts (frame element
-   regions, span aliases, composites) remain proof debt in STATUS.
+   regions, span aliases, composites) remain proof debt in STATUS. **Span
+   aliases closed (2026-09-14):** `spec/lean/Oak/SpanAlias.lean`
+   transliterates `forgetRegisterFacts` and `aliasSpan` over the fact maps
+   and proves them sound against a register file (`forget_sound`,
+   `movX_sound`, `movW_sound`); `TestSpanAliasMatchesLeanTransliteration`
+   pins the Go (`94-assembler.md` §9.aa).
 6. **The checkers are linear over the block.** Base facts (spans,
    regions, frame addresses) are definitions, not per-path state; guard
    facts already flow through labels by a fixpoint on AArch64. The two

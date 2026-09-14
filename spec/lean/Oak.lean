@@ -71,6 +71,7 @@ import Oak.Propagation
 import Oak.ChoiceTape
 import Oak.FieldTags
 import Oak.Assembler
+import Oak.SpanAlias
 import Oak.AssemblerSemantics
 import Oak.ArmASL
 import Oak.Extents
