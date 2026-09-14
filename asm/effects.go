@@ -195,13 +195,17 @@ func (x *pathExecutor) mergeEffects(cond *term, taken, fallThrough *pathEffects)
 // (element), which in a concrete run is the witness memory's value.
 func (x *pathExecutor) elementIn(state *symbolicState, span string, index *term, width int) *term {
 	x.noteSpanRead(span)
-	return memoryAt(state.writes[span], index, x.element(span, index, width))
+	log := state.writes[span]
+	if base, carried := x.loopMemoryBase[span]; carried && base <= len(log) {
+		log = log[base:] // the iteration's own writes over the loop's fresh memory
+	}
+	return memoryAt(log, index, x.element(span, index, width))
 }
 
 // noteSpanRead records a span read for the loop summaries (asm/loops.go):
-// a loop body may not read a span it stores to, since the summary carries
-// registers, not memories, and a span a data-dependent loop wrote is
-// closed to reads afterwards (its final memory is the loop's).
+// a loop body reading a span it stores to reads the loop's fresh memory
+// (the summary is rerun with it), and a span a data-dependent loop wrote
+// is closed to reads afterwards (its final memory is the loop's).
 func (x *pathExecutor) noteSpanRead(span string) {
 	if x.spanReads != nil {
 		x.spanReads[span] = true

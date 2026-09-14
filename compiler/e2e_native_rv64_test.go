@@ -398,10 +398,13 @@ func TestE2ENativeRV64SpansUnderQEMU(t *testing.T) {
 			t.Fatalf("%s was not lowered by the rv64 lane; diagnostics:\n%s", fn, joined)
 		}
 	}
-	// The store in fill's loop body is proven through the coupling
-	// (docs/spec/94-assembler.md §8, thirtieth increment).
-	if !strings.Contains(joined, "asm unit fill: proven") {
-		t.Errorf("fill was not proven by the verifier; diagnostics:\n%s", joined)
+	// The stores in the loop bodies are proven through the coupling
+	// (docs/spec/94-assembler.md §8, thirtieth increment), the in-place
+	// loops reading the loop's memory.
+	for _, fn := range []string{"fill", "scale_in_place", "running"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven") {
+			t.Errorf("%s was not proven by the verifier; diagnostics:\n%s", fn, joined)
+		}
 	}
 	// The guarded element load, the coupled loops, and the tail recursion
 	// as a loop are proven, as on the AArch64 lane.

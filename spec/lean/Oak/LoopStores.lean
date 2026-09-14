@@ -14,10 +14,16 @@ same memory (`run_mem_eq`), whatever the states themselves are. The
 verifier discharges each obligation at the bit level under the body
 premise; the theorem is why those obligations suffice.
 
-A span a loop stores to is closed to reads inside the loop (the summary
-carries registers, not memories) and afterwards (the final memory is the
-loop's); the memories before and after the loops are straight-line logs,
-compared at a fresh index as `asm/effects.go` does.
+A body that reads a span it stores to reads the memory at the start of
+the iteration, which the verifier names by one fresh memory symbol on both
+sides (`v@loop1`, `spanMemoryName`): the write of an iteration is a
+function of the state and of that memory, and the obligation compares the
+two sides' writes over the same memory. `run_mem_eq` threads the memory
+through the iterations, so equal writes over equal memories keep the
+memories equal. A span a loop stores to is closed to reads afterwards
+(the final memory is the loop's); the memories before and after the loops
+are straight-line logs, compared at a fresh index as `asm/effects.go`
+does.
 -/
 
 namespace Oak.LoopStores
@@ -36,17 +42,19 @@ def Mem.apply {ι α : Type} [DecidableEq ι] (m : Mem ι α) (w : Write ι α) 
   fun j => if w.guard ∧ j = w.index then w.value else m j
 
 /-- A loop over states `σ`: its continue condition, one iteration's
-    successor state, and the store one iteration makes. -/
+    successor state, and the store one iteration makes — a function of the
+    state and of the memory at the start of the iteration (the body's
+    reads of the span it stores to). -/
 structure Loop (σ ι α : Type) where
   cond : σ → Bool
   step : σ → σ
-  write : σ → Write ι α
+  write : σ → Mem ι α → Write ι α
 
 /-- Running the loop for at most `fuel` iterations: the state and memory
     it leaves. -/
 def run {σ ι α : Type} [DecidableEq ι] (L : Loop σ ι α) : Nat → σ → Mem ι α → σ × Mem ι α
   | 0, s, m => (s, m)
-  | n + 1, s, m => if L.cond s = true then run L n (L.step s) (m.apply (L.write s)) else (s, m)
+  | n + 1, s, m => if L.cond s = true then run L n (L.step s) (m.apply (L.write s m)) else (s, m)
 
 /-- The coupling the verifier establishes between the Oak loop `L₁` and
     the asm loop `L₂`: under `R` the conditions agree, an iteration
@@ -54,7 +62,7 @@ def run {σ ι α : Type} [DecidableEq ι] (L : Loop σ ι α) : Nat → σ → 
 structure Coupled {σ₁ σ₂ ι α : Type} (L₁ : Loop σ₁ ι α) (L₂ : Loop σ₂ ι α) (R : σ₁ → σ₂ → Prop) : Prop where
   cond : ∀ s₁ s₂, R s₁ s₂ → L₁.cond s₁ = L₂.cond s₂
   step : ∀ s₁ s₂, R s₁ s₂ → L₁.cond s₁ = true → R (L₁.step s₁) (L₂.step s₂)
-  write : ∀ s₁ s₂, R s₁ s₂ → L₁.cond s₁ = true → L₁.write s₁ = L₂.write s₂
+  write : ∀ s₁ s₂ m, R s₁ s₂ → L₁.cond s₁ = true → L₁.write s₁ m = L₂.write s₂ m
 
 /-- Coupled loops run from coupled states over one memory leave the same
     memory and coupled states, for every fuel. -/
@@ -71,7 +79,7 @@ theorem run_mem_eq {σ₁ σ₂ ι α : Type} [DecidableEq ι] {L₁ : Loop σ�
     by_cases h1 : L₁.cond s₁ = true
     · have h2 : L₂.cond s₂ = true := by rw [← hc]; exact h1
       simp only [run, h1, h2, ↓reduceIte]
-      rw [h.write s₁ s₂ hR h1]
+      rw [h.write s₁ s₂ m hR h1]
       exact ih _ _ _ (h.step s₁ s₂ hR h1)
     · have h1' : L₁.cond s₁ = false := by simpa using h1
       have h2 : L₂.cond s₂ = false := by rw [← hc]; exact h1'

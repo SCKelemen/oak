@@ -1103,8 +1103,15 @@ type pathExecutor struct {
 	loopWritten map[string]bool
 	spanReads   map[string]bool
 	taint       string
-	paths       int
-	steps       int
+	// loopMemory: while a loop that stores to a span is summarized, the
+	// span's memory at the start of an iteration is a fresh memory symbol
+	// (`v@loop1`) shared by both sides; loopMemoryBase is the length of
+	// the running log before the loop, so a body read sees the iteration's
+	// own earlier writes over that memory (asm/loops.go, Oak.LoopStores).
+	loopMemory     map[string]string
+	loopMemoryBase map[string]int
+	paths          int
+	steps          int
 	// records: record and union parameters by name (their leaves), env the
 	// concrete inputs of a witness run (nil when symbolic).
 	records map[string]compositeArg
@@ -2142,7 +2149,29 @@ func (x *pathExecutor) element(span string, index *term, width int) *term {
 	if x.concrete && index.kind == termConst {
 		return constTerm(elementValue(span, index.value&mask(32), width), width)
 	}
+	if memory, carried := x.loopMemory[span]; carried {
+		return selectTerm(memory, index, width)
+	}
 	return selectTerm(span, index, width)
+}
+
+// spanMemoryName is the fresh memory of span at the start of an iteration
+// of loop k, the same symbol on both sides (the events correspond in
+// creation order).
+func spanMemoryName(k int, span string) string { return fmt.Sprintf("%s@loop%d", span, k) }
+
+// spanMemoryAt is the Oak side's element read: the span's log over the
+// entry memory, or — inside a loop that stores to the span — the
+// iteration's own writes over the loop's fresh memory.
+func (lo *oakLowering) spanMemoryAt(span string, index, entry *term) *term {
+	log := lo.writes[span]
+	if memory, carried := lo.loopMemory[span]; carried {
+		entry = selectTerm(memory, index, entry.width)
+		if base := lo.loopMemoryBase[span]; base <= len(log) {
+			log = log[base:]
+		}
+	}
+	return memoryAt(log, index, entry)
 }
 
 // step executes one data-processing instruction on the state.
@@ -2519,7 +2548,14 @@ type oakLowering struct {
 	loopWritten map[string]bool
 	spanReads   map[string]bool
 	taint       string
-	fresh       map[string]int // loop-carried fresh symbols -> width
+	// loopMemory: while a loop that stores to a span is summarized, the
+	// span's memory at the start of an iteration is a fresh memory symbol
+	// (`v@loop1`) shared by both sides; loopMemoryBase is the length of
+	// the running log before the loop, so a body read sees the iteration's
+	// own earlier writes over that memory (asm/loops.go, Oak.LoopStores).
+	loopMemory     map[string]string
+	loopMemoryBase map[string]int
+	fresh          map[string]int // loop-carried fresh symbols -> width
 	// resultChunk: for a record result of two register chunks, the chunk
 	// this lowering's resultTerm packs (Verify runs one chunk at a time).
 	resultChunk int
@@ -4119,7 +4155,7 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 			entry = constTerm(elementValue(span, k, contract.elemWidth), contract.elemWidth)
 		}
 		lo.noteSpanRead(span)
-		return memoryAt(lo.writes[span], constTerm(k, 32), entry), contract, "", true
+		return lo.spanMemoryAt(span, constTerm(k, 32), entry), contract, "", true
 	}
 	ident, isIdent := index.Left.(*ast.Identifier)
 	if !isIdent || index.Dot {
@@ -4152,7 +4188,7 @@ func (lo *oakLowering) spanElementTerm(index *ast.IndexExpression) (*term, spanC
 		// decider keeps the read whole, as its Oak twin builds it.
 		entry = selectSplit(span, idx, contract.elemWidth, 0)
 	}
-	return memoryAt(lo.writes[span], idx, entry), contract, "", true
+	return lo.spanMemoryAt(span, idx, entry), contract, "", true
 }
 
 // selectSplit builds a span read at an index holding a conditional by

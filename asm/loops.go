@@ -617,59 +617,109 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// The continue condition: no exit test taken along the header's paths,
 	// each test evaluated on the fresh state after the header instructions
 	// before it (headerCondition).
+	_ = exit
+	// The header's continue condition and one iteration of the body on the
+	// fresh state: the body's paths (a branch inside the body forks on its
+	// condition; an inner loop is summarized in place) all reach the back
+	// edge and merge register by register into selects on the path
+	// conditions. The iteration's stores through spans — one per span, on
+	// a body of one path — are lifted out of the running log (the state
+	// past the loop holds the writes before it) and close the span; the
+	// coupling proves them element for element (verifyLoops). A body that
+	// reads a span it stores to is run again with the span's memory at the
+	// start of the iteration as a fresh memory symbol shared with the Oak
+	// side (spanMemoryName): its reads then see that memory under the
+	// iteration's own earlier writes (Oak.LoopStores, a memory-dependent
+	// write).
 	savedReads := x.spanReads
-	x.spanReads = map[string]bool{}
-	cond, reason, ok := x.headerCondition(shape, freshState)
-	if !ok {
+	loopsBefore, writtenBefore, taintBefore := len(x.loops), map[string]bool{}, x.taint
+	for span := range x.loopWritten {
+		writtenBefore[span] = true
+	}
+	var ends []bodyEnd
+	var reads map[string]bool
+	attempt := func() (string, bool) {
+		x.loops = x.loops[:loopsBefore]
+		x.loopWritten = map[string]bool{}
+		for span := range writtenBefore {
+			x.loopWritten[span] = true
+		}
+		x.taint = taintBefore
+		x.spanReads = map[string]bool{}
+		ev.writes = nil
+		cond, reason, ok := x.headerCondition(shape, freshState)
+		if !ok {
+			return reason, false
+		}
+		ev.cond = cond
+		x.loopStack = append(x.loopStack, ev.index)
+		ends, reason, ok = x.runBody(shape, freshState.clone())
+		x.loopStack = x.loopStack[:len(x.loopStack)-1]
+		if !ok {
+			return reason + " (in a loop body)", false
+		}
+		reads = x.spanReads
+		for _, end := range ends {
+			for span, log := range end.state.writes {
+				body := log[len(freshState.writes[span]):]
+				if len(body) == 0 {
+					continue
+				}
+				if len(ends) > 1 {
+					return fmt.Sprintf("a store through %s in a loop body with more than one path", span), false
+				}
+				if len(body) > 1 {
+					return fmt.Sprintf("more than one store through %s in a loop body", span), false
+				}
+				if ev.writes == nil {
+					ev.writes = map[string]*spanWrite{}
+				}
+				ev.writes[span] = body[0]
+			}
+		}
+		return "", true
+	}
+	if reason, ok := attempt(); !ok {
+		x.spanReads = savedReads
 		return nil, reason, false
 	}
-	ev.cond = cond
-	_ = exit
-	// One iteration of the body on the fresh state: its paths (a branch
-	// inside the body forks on its condition; an inner loop is summarized
-	// in place) all reach the back edge and merge register by register
-	// into selects on the path conditions.
-	x.loopStack = append(x.loopStack, ev.index)
-	ends, reason, ok := x.runBody(shape, freshState.clone())
-	x.loopStack = x.loopStack[:len(x.loopStack)-1]
-	if !ok {
-		return nil, reason + " (in a loop body)", false
+	var carried []string
+	for span := range ev.writes {
+		if reads[span] {
+			if _, already := x.loopMemory[span]; !already {
+				carried = append(carried, span)
+			}
+		}
 	}
-	// The iteration's stores through spans: one per span, on a body of one
-	// path, to a span the header and body never read. They leave the
-	// running log (the state past the loop holds the writes before it) and
-	// close the span: the coupling proves them element for element.
-	reads := x.spanReads
+	if len(carried) > 0 {
+		if x.loopMemory == nil {
+			x.loopMemory, x.loopMemoryBase = map[string]string{}, map[string]int{}
+		}
+		for _, span := range carried {
+			x.loopMemory[span] = spanMemoryName(ev.index, span)
+			x.loopMemoryBase[span] = len(freshState.writes[span])
+		}
+		reason, ok := attempt()
+		for _, span := range carried {
+			delete(x.loopMemory, span)
+			delete(x.loopMemoryBase, span)
+		}
+		if !ok {
+			x.spanReads = savedReads
+			return nil, reason, false
+		}
+	}
 	x.spanReads = savedReads
 	for span := range reads {
 		if x.spanReads != nil {
 			x.spanReads[span] = true
 		}
 	}
-	for _, end := range ends {
-		for span, log := range end.state.writes {
-			body := log[len(freshState.writes[span]):]
-			if len(body) == 0 {
-				continue
-			}
-			if len(ends) > 1 {
-				return nil, fmt.Sprintf("a store through %s in a loop body with more than one path", span), false
-			}
-			if len(body) > 1 {
-				return nil, fmt.Sprintf("more than one store through %s in a loop body", span), false
-			}
-			if reads[span] {
-				return nil, fmt.Sprintf("a loop body reading the span %s it stores to", span), false
-			}
-			if ev.writes == nil {
-				ev.writes = map[string]*spanWrite{}
-			}
-			ev.writes[span] = body[0]
-			if x.loopWritten == nil {
-				x.loopWritten = map[string]bool{}
-			}
-			x.loopWritten[span] = true
+	for span := range ev.writes {
+		if x.loopWritten == nil {
+			x.loopWritten = map[string]bool{}
 		}
+		x.loopWritten[span] = true
 	}
 	for _, name := range ev.vars {
 		merged := ends[len(ends)-1].valueOfVar(name, freshState)
@@ -1119,6 +1169,30 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	for span, log := range lo.writes {
 		before[span] = len(log)
 	}
+	// The spans the body stores to read the loop's fresh memory inside the
+	// loop (spanMemoryAt), as the asm summary's rerun does.
+	stored := map[string]bool{}
+	lo.storedSpans(loop.Body, stored)
+	var carriedMemory []string
+	for span := range stored {
+		if _, already := lo.loopMemory[span]; !already {
+			carriedMemory = append(carriedMemory, span)
+		}
+	}
+	sort.Strings(carriedMemory)
+	if len(carriedMemory) > 0 && lo.loopMemory == nil {
+		lo.loopMemory, lo.loopMemoryBase = map[string]string{}, map[string]int{}
+	}
+	for _, span := range carriedMemory {
+		lo.loopMemory[span] = spanMemoryName(ev.index, span)
+		lo.loopMemoryBase[span] = before[span]
+	}
+	defer func() {
+		for _, span := range carriedMemory {
+			delete(lo.loopMemory, span)
+			delete(lo.loopMemoryBase, span)
+		}
+	}()
 	cond, reason, ok := lo.lowerCondition(loop.Condition)
 	if !ok {
 		return reason, false
@@ -1148,9 +1222,6 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		}
 		if len(body) > 1 {
 			return fmt.Sprintf("more than one store through %s in a loop body", span), false
-		}
-		if reads[span] {
-			return fmt.Sprintf("a loop body reading the span %s it stores to", span), false
 		}
 		if ev.writes == nil {
 			ev.writes = map[string]*spanWrite{}
@@ -1224,6 +1295,32 @@ func assignedLocals(body *ast.BlockStatement, into map[string]bool) {
 				for _, arm := range match.Arms {
 					if block, isBlock := arm.Body.(*ast.BlockExpression); isBlock {
 						assignedLocals(block.Block, into)
+					}
+				}
+			}
+		}
+	}
+}
+
+// storedSpans collects the span parameters a loop body stores to, nested
+// loops and conditional arms included (the roots of aliases).
+func (lo *oakLowering) storedSpans(body *ast.BlockStatement, into map[string]bool) {
+	if body == nil {
+		return
+	}
+	for _, stmt := range body.Statements {
+		switch s := stmt.(type) {
+		case *ast.IndexAssignmentStatement:
+			if name, _, isSpan := lo.spanAssignment(s); isSpan {
+				into[lo.spanRoot(name)] = true
+			}
+		case *ast.WhileStatement:
+			lo.storedSpans(s.Body, into)
+		case *ast.ExpressionStatement:
+			if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
+				for _, arm := range match.Arms {
+					if block, isBlock := arm.Body.(*ast.BlockExpression); isBlock {
+						lo.storedSpans(block.Block, into)
 					}
 				}
 			}
@@ -1933,6 +2030,9 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 			}
 			w := contract.elemWidth
 			if equal, decided := impliesEqual(bodyPremiseK, truncate(ow.value, w), substitute(truncate(aw.value, w), sigma), widthOfName); !decided || !equal {
+				if trace {
+					fmt.Fprintf(os.Stderr, "verify %s: loop %d's store through %s: values not proven equal (decided=%v)\n  oak: %s\n  asm: %s\n", fn.Name, k+1, span, decided, truncate(ow.value, w), substitute(truncate(aw.value, w), sigma))
+				}
 				return evidence(fmt.Sprintf("loop %d's store through %s was not proven to store the same value on both sides", k+1, span))
 			}
 			og, ag := ow.guard, aw.guard
@@ -2062,6 +2162,77 @@ func witnessSpansDisagree(fn *Function, lowering *oakLowering, exec *pathExecuto
 	return Verdict{}, false
 }
 
+// termEquivalent reports two terms equal in their low w bits by structure:
+// a mask covering those bits is transparent, the operations whose low bits
+// depend on their operands' low bits alone (and, or, xor, add, sub, mul)
+// recurse at w, a select compares its memory and index, everything else
+// must agree exactly. Sound and cheap; it decides what the diagrams cannot
+// afford (a 32-bit multiply of two unknowns), which is the common shape of
+// a store's value after the coupling's substitution.
+func termEquivalent(a, b *term, w int, memo map[[3]any]bool) bool {
+	a, b = stripLowMask(a, w), stripLowMask(b, w)
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil || a.kind != b.kind {
+		return false
+	}
+	key := [3]any{a, b, w}
+	if seen, done := memo[key]; done {
+		return seen
+	}
+	memo[key] = true // a DAG: a pair under comparison is assumed equal while its children are compared
+	equal := false
+	switch a.kind {
+	case termConst:
+		equal = a.width >= w && b.width >= w && a.value&mask(w) == b.value&mask(w)
+	case termParam:
+		equal = a.name == b.name && a.width >= w && b.width >= w
+	case termSelect:
+		equal = a.name == b.name && a.width == b.width && a.width >= w && termEquivalent(a.left, b.left, 32, memo)
+	case termBinary:
+		switch a.op {
+		case "and", "or", "xor", "add", "sub", "mul":
+			equal = a.op == b.op && a.width >= w && b.width >= w && termEquivalent(a.left, b.left, w, memo) && termEquivalent(a.right, b.right, w, memo)
+		default:
+			equal = a.op == b.op && a.width == b.width && termEquivalent(a.left, b.left, a.width, memo) && termEquivalent(a.right, b.right, a.width, memo)
+		}
+	case termIte:
+		equal = a.width >= w && b.width >= w && termEquivalent(a.cond, b.cond, 1, memo) && termEquivalent(a.left, b.left, w, memo) && termEquivalent(a.right, b.right, w, memo)
+	case termCmp:
+		equal = a.op == b.op && a.left.width == b.left.width && termEquivalent(a.left, b.left, a.left.width, memo) && termEquivalent(a.right, b.right, a.left.width, memo)
+	case termFloat:
+		equal = a.op == b.op && a.width == b.width && a.width >= w && termEquivalent(a.left, b.left, widthOrZero(a.left), memo) && termEquivalent(a.right, b.right, widthOrZero(a.right), memo) && termEquivalent(a.cond, b.cond, widthOrZero(a.cond), memo)
+	}
+	memo[key] = equal
+	return equal
+}
+
+func widthOrZero(t *term) int {
+	if t == nil {
+		return 0
+	}
+	return t.width
+}
+
+// stripLowMask drops what leaves the low w bits alone: `t and c` when c
+// covers them, and the extension idiom `(t shl k) sar k` / `(t shl k) shr
+// k` (the RV64 lane's sext.w and zext) when the low w bits lie below k.
+func stripLowMask(t *term, w int) *term {
+	for t != nil && t.kind == termBinary {
+		if t.op == "and" && t.right != nil && t.right.kind == termConst && t.right.value&mask(w) == mask(w) && t.left != nil {
+			t = t.left
+			continue
+		}
+		if (t.op == "sar" || t.op == "shr") && t.right != nil && t.right.kind == termConst && t.left != nil && t.left.kind == termBinary && t.left.op == "shl" && t.left.right != nil && t.left.right.kind == termConst && t.left.right.value == t.right.value && int(t.right.value) <= t.width && w <= t.width-int(t.right.value) && t.left.left != nil {
+			t = t.left.left
+			continue
+		}
+		break
+	}
+	return t
+}
+
 // substitute replaces parameters by terms (the asm loop symbols by their
 // expression in the Oak variables' symbols).
 func substitute(t *term, sigma map[string]*term) *term {
@@ -2119,6 +2290,13 @@ func impliesEqual(premise, a, b *term, widthOf func(string) int) (holds bool, de
 		width = b.width
 	}
 	a, b = adaptWidth(a, width), adaptWidth(b, width)
+	if termEquivalent(a, b, width, map[[3]any]bool{}) {
+		// The same term on both sides up to redundant masks (a store's
+		// value after the substitution is often the Oak value itself):
+		// equal under any premise, without a diagram — a 32-bit multiply
+		// of two unknowns, say, exceeds every diagram's budget.
+		return true, true
+	}
 	mentioned := map[string]bool{}
 	collectParams(premise, mentioned)
 	collectParams(a, mentioned)

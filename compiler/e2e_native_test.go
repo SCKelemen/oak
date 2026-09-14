@@ -145,6 +145,24 @@ fill: (s: [*]u16, x: u16) -> () {
 
 at: (v: []u32, i: u32) -> u32 = v[i]
 
+// In place: the element read, then stored; the running sum reads the
+// element the previous iteration wrote.
+scale_in_place: (v: [*]u32, k: u32) -> () {
+  i: u32 = u32(0)
+  while i < len(v) {
+    v[i] = v[i] * k
+    i = i + u32(1)
+  }
+}
+
+running: (v: [*]u32) -> () {
+  i: u32 = u32(1)
+  while i < len(v) {
+    v[i] = v[i] + v[i - u32(1)]
+    i = i + u32(1)
+  }
+}
+
 // A tail self-call: the loop form.
 count_down: (n: u32, acc: u32) -> u32 = n == u32(0) ? acc | count_down(n - u32(1), acc + n)
 
@@ -168,6 +186,16 @@ main: (): i32 {
   assert(halves[0] == u16(40))
   assert(halves[2] == u16(42))
   assert(count_down(u32(4), u32(0)) == u32(10))
+  nums: [4]u32
+  nums[0] = u32(10)
+  nums[1] = u32(20)
+  nums[2] = u32(5)
+  nums[3] = u32(7)
+  scale_in_place(span(&nums), u32(2))
+  assert(nums[3] == u32(14))
+  running(span(&nums))
+  assert(nums[1] == u32(60))
+  assert(nums[3] == u32(84))
   42
 }
 `
@@ -197,14 +225,14 @@ func TestE2ENativeSpans(t *testing.T) {
 	if abnormal || code != 42 {
 		t.Fatalf("native spans: exit = (%d, abnormal=%v), want 42\n%s", code, abnormal, joined)
 	}
-	for _, fn := range []string{"sum", "byte_total", "fill", "at", "count_down"} {
+	for _, fn := range []string{"sum", "byte_total", "fill", "at", "count_down", "scale_in_place", "running"} {
 		if !strings.Contains(joined, "asm unit "+fn+":") {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
-	for _, fn := range []string{"at", "sum", "byte_total", "count_down", "fill"} {
+	for _, fn := range []string{"at", "sum", "byte_total", "count_down", "fill", "scale_in_place", "running"} {
 		if !strings.Contains(joined, "asm unit "+fn+": proven") {
-			t.Errorf("%s must be proven equal to its Oak body (the guarded element load, the coupled loops, the tail recursion as a loop, the store in a loop body); diagnostics:\n%s", fn, joined)
+			t.Errorf("%s must be proven equal to its Oak body (the guarded element load, the coupled loops, the tail recursion as a loop, the stores in loop bodies); diagnostics:\n%s", fn, joined)
 		}
 	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_spans_c", New().WithSource("spans.oak", nativeSpanProgram)); abnormal || code != 42 {

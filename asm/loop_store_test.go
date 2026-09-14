@@ -83,11 +83,87 @@ func TestVerifyLoopStores(t *testing.T) {
 	if v := verifyCase(t, f64, fillBody("s[i] = x - f64_round_i32(i32_bits_u32(i))"), fillF64Arm); v.Kind != VerdictMismatch {
 		t.Fatalf("fill_f64 with a difference must be a mismatch, got %s: %s", v.Kind, v.Message)
 	}
-	// A body that reads the span it stores to is outside the summary: the
-	// summary carries registers, not memories.
+	// A body that reads the span it stores to reads the loop's memory at
+	// the start of the iteration, a fresh memory shared by both sides.
 	reading := "  bind x0, w1 = s\n  bind w2 = x\n  clobber x9, x10, x2, x3\n  frame 80\n  sub sp, sp, #80\nhead_1:\n  mov w3, wzr\nloop_4:\n  cmp w3, w1\n  b.hs done_5\n  ldrh w9, [x0, w3, uxtw #1]\n  add w10, w2, w9\n  strh w10, [x0, w3, uxtw #1]\n  add w3, w3, #1\n  b loop_4\ndone_5:\nret_2:\n  add sp, sp, #80\n  ret"
-	if v := verifyCase(t, decl, fillBody("s[i] = x + s[i]"), reading); v.Kind != VerdictTrusted || !strings.Contains(v.Message, "reading the span s it stores to") {
-		t.Fatalf("a body reading the span it stores to must stay trusted with the reason, got %s: %s", v.Kind, v.Message)
+	if v := verifyCase(t, decl, fillBody("s[i] = x + s[i]"), reading); v.Kind != VerdictProven {
+		t.Fatalf("a body reading the span it stores to must be proven, got %s: %s", v.Kind, v.Message)
+	}
+	if v := verifyCase(t, decl, fillBody("s[i] = x - s[i]"), reading); v.Kind != VerdictMismatch {
+		t.Fatalf("the wrong in-place value must be a mismatch, got %s: %s", v.Kind, v.Message)
+	}
+}
+
+// In-place loops: the native lowering of `v[i] = v[i] * k` and of the
+// running sum `v[i] = v[i] + v[i - 1]`, which reads the element the
+// previous iteration wrote — the loop's memory carries it.
+func TestVerifyLoopStoresInPlace(t *testing.T) {
+	scale := `  bind x0, w1 = v
+  bind w2 = k
+  clobber x9, x2, x3
+  frame 80
+  sub sp, sp, #80
+head_1:
+  mov w3, wzr
+loop_4:
+  cmp w3, w1
+  b.hs done_5
+  ldr w9, [x0, w3, uxtw #2]
+  mul w9, w9, w2
+  str w9, [x0, w3, uxtw #2]
+  add w3, w3, #1
+  b loop_4
+done_5:
+ret_2:
+  add sp, sp, #80
+  ret`
+	decl := "scale_in_place: (v: [*]u32, k: u32) -> ()"
+	body := func(store string) string {
+		return "{\n  i: u32 = u32(0)\n  while i < len(v) {\n    " + store + "\n    i = i + u32(1)\n  }\n}"
+	}
+	if v := verifyCase(t, decl, body("v[i] = v[i] * k"), scale); v.Kind != VerdictProven || !strings.Contains(v.Message, "span memory it writes (v)") {
+		t.Fatalf("scale_in_place must be proven, got %s: %s", v.Kind, v.Message)
+	}
+	if v := verifyCase(t, decl, body("v[i] = v[i] + k"), scale); v.Kind != VerdictMismatch {
+		t.Fatalf("the wrong in-place operation must be a mismatch, got %s: %s", v.Kind, v.Message)
+	}
+	running := `  bind x0, w1 = v
+  clobber x9, x10, x2
+  frame 80
+  sub sp, sp, #80
+head_1:
+  movz w2, #1
+loop_4:
+  cmp w2, w1
+  b.hs done_5
+  cmp w2, w1
+  b.hs trap_3
+  ldr w9, [x0, w2, uxtw #2]
+  sub w10, w2, #1
+  cmp w10, w1
+  b.hs trap_3
+  ldr w10, [x0, w10, uxtw #2]
+  add w9, w9, w10
+  cmp w2, w1
+  b.hs trap_3
+  str w9, [x0, w2, uxtw #2]
+  add w2, w2, #1
+  b loop_4
+done_5:
+ret_2:
+  add sp, sp, #80
+  ret
+trap_3:
+  brk #1`
+	runDecl := "running: (v: [*]u32) -> ()"
+	runBody := func(store string) string {
+		return "{\n  i: u32 = u32(1)\n  while i < len(v) {\n    " + store + "\n    i = i + u32(1)\n  }\n}"
+	}
+	if v := verifyCase(t, runDecl, runBody("v[i] = v[i] + v[i - u32(1)]"), running); v.Kind != VerdictProven {
+		t.Fatalf("the running sum must be proven, got %s: %s", v.Kind, v.Message)
+	}
+	if v := verifyCase(t, runDecl, runBody("v[i] = v[i] - v[i - u32(1)]"), running); v.Kind != VerdictMismatch {
+		t.Fatalf("the running difference against the sum must be a mismatch, got %s: %s", v.Kind, v.Message)
 	}
 }
 
@@ -190,5 +266,120 @@ trap_3:
 	}
 	if v := rv64Verify(t, f64, fillBody("s[i] = x - f64_round_i32(i32_bits_u32(i))"), fillF64); v.Kind != VerdictMismatch {
 		t.Fatalf("fill_f64 with a difference must be a mismatch, got %s: %s", v.Kind, v.Message)
+	}
+	// In place: the element read through the loop's memory, then stored.
+	scale := `  bind a0, a1 = v
+  bind a2 = k
+  clobber t0, t1, a3
+  frame 96
+  addi sp, sp, -96
+  sd s1, 0(sp)
+  sd s2, 8(sp)
+  slli a3, a1, 32
+  srli a3, a3, 32
+  mv s1, a2
+head_1:
+  li t0, 0
+  mv s2, t0
+loop_4:
+  sext.w t0, a3
+  bgeu s2, t0, done_5
+  mv t0, s2
+  slli t0, t0, 32
+  srli t0, t0, 32
+  bgeu t0, a3, trap_3
+  slli t0, t0, 2
+  add t0, a0, t0
+  lw t0, 0(t0)
+  mv t1, s1
+  mulw t0, t0, t1
+  mv t1, s2
+  slli t1, t1, 32
+  srli t1, t1, 32
+  bgeu t1, a3, trap_3
+  slli t1, t1, 2
+  add t1, a0, t1
+  sw t0, 0(t1)
+  mv t0, s2
+  li t1, 1
+  addw t0, t0, t1
+  mv s2, t0
+  j loop_4
+done_5:
+ret_2:
+  ld s1, 0(sp)
+  ld s2, 8(sp)
+  addi sp, sp, 96
+  ret
+trap_3:
+  ebreak`
+	scaleDecl := "scale_in_place: (v: [*]u32, k: u32) -> ()"
+	scaleBody := func(store string) string {
+		return "{\n  i: u32 = u32(0)\n  while i < len(v) {\n    " + store + "\n    i = i + u32(1)\n  }\n}"
+	}
+	if v := rv64Verify(t, scaleDecl, scaleBody("v[i] = v[i] * k"), scale); v.Kind != VerdictProven {
+		t.Fatalf("scale_in_place must be proven, got %s: %s", v.Kind, v.Message)
+	}
+	if v := rv64Verify(t, scaleDecl, scaleBody("v[i] = v[i] + k"), scale); v.Kind != VerdictMismatch {
+		t.Fatalf("the wrong in-place operation must be a mismatch, got %s: %s", v.Kind, v.Message)
+	}
+	running := `  bind a0, a1 = v
+  clobber t0, t1, t2, a2
+  frame 96
+  addi sp, sp, -96
+  sd s1, 0(sp)
+  slli a2, a1, 32
+  srli a2, a2, 32
+head_1:
+  li t0, 1
+  mv s1, t0
+loop_4:
+  sext.w t0, a2
+  bgeu s1, t0, done_5
+  mv t0, s1
+  slli t0, t0, 32
+  srli t0, t0, 32
+  bgeu t0, a2, trap_3
+  slli t0, t0, 2
+  add t0, a0, t0
+  lw t0, 0(t0)
+  mv t1, s1
+  li t2, 1
+  subw t1, t1, t2
+  slli t1, t1, 32
+  srli t1, t1, 32
+  bgeu t1, a2, trap_3
+  slli t1, t1, 2
+  add t1, a0, t1
+  lw t1, 0(t1)
+  addw t0, t0, t1
+  mv t1, s1
+  slli t1, t1, 32
+  srli t1, t1, 32
+  bgeu t1, a2, trap_3
+  slli t1, t1, 2
+  add t1, a0, t1
+  sw t0, 0(t1)
+  mv t0, s1
+  li t1, 1
+  addw t0, t0, t1
+  mv s1, t0
+  j loop_4
+done_5:
+ret_2:
+  ld s1, 0(sp)
+  addi sp, sp, 96
+  ret
+trap_3:
+  ebreak`
+	runDecl := "running: (v: [*]u32) -> ()"
+	runBody := func(store string) string {
+		return "{\n  i: u32 = u32(1)\n  while i < len(v) {\n    " + store + "\n    i = i + u32(1)\n  }\n}"
+	}
+	if v := rv64Verify(t, runDecl, runBody("v[i] = v[i] + v[i - u32(1)]"), running); v.Kind != VerdictProven {
+		t.Fatalf("the running sum must be proven, got %s: %s", v.Kind, v.Message)
+	}
+	if v := rv64Verify(t, runDecl, runBody("v[i] = v[i] - v[i - u32(1)]"), running); v.Kind != VerdictMismatch {
+		t.Fatalf("the running difference against the sum must be a mismatch, got %s: %s", v.Kind, v.Message)
 	}
 }

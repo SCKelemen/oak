@@ -381,7 +381,7 @@ func (lo *oakLowering) vectorLoad(source, index ast.Expression, shape typechecke
 		} else {
 			entry = selectTerm(ident.Value, position, bits)
 		}
-		lanes[k] = memoryAt(lo.writes[root], position, entry)
+		lanes[k] = lo.spanMemoryAt(root, position, entry)
 	}
 	lo.noteSpanRead(root)
 	return lanes, "", true
