@@ -175,28 +175,48 @@ func constantIndex(expr ast.Expression) (int64, bool) {
 	case *ast.IntegerLiteral:
 		return e.Value, true
 	case *ast.InfixExpression:
-		// A sum or product of literals (`u32(0) + u32(3)`, the shape an
-		// inlined helper's constant argument leaves in its offsets) is the
-		// literal it folds to, kept inside the 32-bit index range so the
-		// fixed-width sum cannot have wrapped.
+		// A sum or product of two literals converted to one unsigned type
+		// (`u32(0) + u32(3)`, the shape an inlined helper's constant
+		// argument leaves in its offsets) is the literal it folds to when
+		// the result fits the type, so the fixed-width operation cannot
+		// have wrapped; `u8(200) + u8(100)` is not folded.
+		if e.Operator != "+" && e.Operator != "*" {
+			return 0, false
+		}
+		typeName := ""
+		for _, side := range []ast.Expression{e.Left, e.Right} {
+			call, isCall := side.(*ast.InvocationExpression)
+			if !isCall || len(call.Arguments) != 1 {
+				return 0, false
+			}
+			conv, isIdent := call.Function.(*ast.Identifier)
+			if !isIdent || (typeName != "" && conv.Value != typeName) {
+				return 0, false
+			}
+			typeName = conv.Value
+		}
+		width, isPrim := conversionPrimitives[typeName]
+		if !isPrim || !strings.HasPrefix(typeName, "u") || width > 64 {
+			return 0, false
+		}
 		left, leftConst := constantIndex(e.Left)
 		right, rightConst := constantIndex(e.Right)
 		if !leftConst || !rightConst || left < 0 || right < 0 {
 			return 0, false
 		}
-		var value int64
-		switch e.Operator {
-		case "+":
-			value = left + right
-		case "*":
-			value = left * right
-		default:
+		var value uint64
+		if e.Operator == "+" {
+			value = uint64(left) + uint64(right)
+		} else {
+			if right != 0 && uint64(left) > ^uint64(0)/uint64(right) {
+				return 0, false
+			}
+			value = uint64(left) * uint64(right)
+		}
+		if width < 64 && value >= uint64(1)<<uint(width) || value >= 1<<32 {
 			return 0, false
 		}
-		if value < 0 || value >= 1<<32 {
-			return 0, false
-		}
-		return value, true
+		return int64(value), true
 	case *ast.InvocationExpression:
 		ident, isIdent := e.Function.(*ast.Identifier)
 		if !isIdent || len(e.Arguments) != 1 {

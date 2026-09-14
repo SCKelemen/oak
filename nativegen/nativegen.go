@@ -4822,7 +4822,7 @@ func (g *generator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		g.constant(r, uint64(k), typ)
+		g.constant(r, uint64(k)&mask64(typ.bits), typ)
 		return r, nil
 	}
 	switch e.Operator {
@@ -5240,27 +5240,13 @@ func constantValue(expr ast.Expression) (int64, bool) {
 	case *ast.IntegerLiteral:
 		return e.Value, true
 	case *ast.InfixExpression:
-		// A sum or product of literals folds (the extents checker folds the
-		// same shape, typechecker/extents.go constantIndex), inside the
-		// 32-bit index range.
-		left, leftConst := constantValue(e.Left)
-		right, rightConst := constantValue(e.Right)
-		if !leftConst || !rightConst || left < 0 || right < 0 {
-			return 0, false
-		}
-		var value int64
-		switch e.Operator {
-		case "+":
-			value = left + right
-		case "*":
-			value = left * right
-		default:
-			return 0, false
-		}
-		if value < 0 || value >= 1<<32 {
-			return 0, false
-		}
-		return value, true
+		// A sum or product of two literals converted to one unsigned type,
+		// `u32(8) + u32(3)` (an inlined helper's constant offsets), folds
+		// when the result fits the type, so the fold is exact whatever the
+		// context: `u8(200) + u8(100)` wraps at run time and is left to the
+		// instructions. The extents checker and the Oak-side lowering fold
+		// the same shape by the same rule.
+		return foldLiteralPair(e, constantValue)
 	case *ast.InvocationExpression:
 		if ident, ok := e.Function.(*ast.Identifier); ok && len(e.Arguments) == 1 {
 			if _, isConv := scalars[ident.Value]; isConv {
@@ -5269,6 +5255,49 @@ func constantValue(expr ast.Expression) (int64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// foldLiteralPair folds `T(a) + T(b)` and `T(a) * T(b)` for an unsigned
+// integer type T when the result fits T, reading each side with value; a
+// wrapping result, a signed or mixed type, or a bare literal is not folded.
+func foldLiteralPair(e *ast.InfixExpression, value func(ast.Expression) (int64, bool)) (int64, bool) {
+	if e.Operator != "+" && e.Operator != "*" {
+		return 0, false
+	}
+	typeName := ""
+	for _, side := range []ast.Expression{e.Left, e.Right} {
+		call, isCall := side.(*ast.InvocationExpression)
+		if !isCall || len(call.Arguments) != 1 {
+			return 0, false
+		}
+		conv, isIdent := call.Function.(*ast.Identifier)
+		if !isIdent || (typeName != "" && conv.Value != typeName) {
+			return 0, false
+		}
+		typeName = conv.Value
+	}
+	typ, isScalar := scalars[typeName]
+	if !isScalar || typ.signed || typ.isFloat || typ.isBool || typ.isVec || typ.bits > 64 {
+		return 0, false
+	}
+	left, leftConst := value(e.Left)
+	right, rightConst := value(e.Right)
+	if !leftConst || !rightConst || left < 0 || right < 0 {
+		return 0, false
+	}
+	var result uint64
+	if e.Operator == "+" {
+		result = uint64(left) + uint64(right)
+	} else {
+		if right != 0 && uint64(left) > ^uint64(0)/uint64(right) {
+			return 0, false
+		}
+		result = uint64(left) * uint64(right)
+	}
+	if typ.bits < 64 && result >= uint64(1)<<uint(typ.bits) || result > 1<<62 {
+		return 0, false
+	}
+	return int64(result), true
 }
 
 // isConversion reports the conversion spellings the subset lowers inline
