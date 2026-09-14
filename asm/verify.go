@@ -829,6 +829,11 @@ type symbolicState struct {
 	// notes is the execution's shared record (pathNotes); nil in a state
 	// that reports nothing (a callee's summary, a witness run).
 	notes *pathNotes
+	// termBounds: the RV64 lane's index guards by the index's term —
+	// `li rK, K; bgeu rI, rK, trap` bounds the value rI held below K —
+	// which survives the scaling and the add that rewrite the register
+	// (`slli rI, rI, s; add rI, rB, rI`, asm/rv64_frame_index.go).
+	termBounds map[*term]uint64
 }
 
 type frameSlot struct {
@@ -1542,7 +1547,14 @@ func (s *symbolicState) clone() *symbolicState {
 			bounds[reg] = bound
 		}
 	}
-	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, fregs: fregs, rvcfg: rvcfg, globals: globals, writes: cloneWrites(s.writes), unknownFrom: s.unknownFrom, bounds: bounds, notes: s.notes}
+	var termBounds map[*term]uint64
+	if len(s.termBounds) > 0 {
+		termBounds = make(map[*term]uint64, len(s.termBounds))
+		for t, bound := range s.termBounds {
+			termBounds[t] = bound
+		}
+	}
+	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, fregs: fregs, rvcfg: rvcfg, globals: globals, writes: cloneWrites(s.writes), unknownFrom: s.unknownFrom, bounds: bounds, notes: s.notes, termBounds: termBounds}
 }
 
 // noteTrapGuard records, on the path that falls through a `b.hs <trap>`
@@ -1565,6 +1577,12 @@ func (s *symbolicState) noteTrapGuard(instr Instruction) {
 			s.bounds = map[int]uint64{}
 		}
 		s.bounds[index.Num] = bound.value
+		if value, ok := s.read(index); ok {
+			if s.termBounds == nil {
+				s.termBounds = map[*term]uint64{}
+			}
+			s.termBounds[value] = bound.value
+		}
 		return
 	}
 	if instr.Mnemonic != "b." || (instr.Cond != "hs" && instr.Cond != "cs") || s.flags == nil || s.flags.unknown || s.flags.indexReg < 0 || s.flags.kind != "" {
@@ -1872,7 +1890,13 @@ func (x *pathExecutor) boundedFrameStore(instr Instruction, state *symbolicState
 	if !ok {
 		return false
 	}
-	value = truncate(value, int(size)*8)
+	return state.boundedFrameStoreAt(base, index, bound, size, truncate(value, int(size)*8))
+}
+
+// boundedFrameStoreAt is boundedFrameStore's store proper: value, size
+// bytes wide, into element index (below bound) of the frame array at
+// base, each element taking ite(index = e, value, old) in its slot.
+func (state *symbolicState) boundedFrameStoreAt(base int64, index *term, bound uint64, size int64, value *term) bool {
 	type target struct {
 		start int64
 		slot  frameSlot
@@ -1929,11 +1953,34 @@ func (x *pathExecutor) boundedFrameLoad(instr Instruction, state *symbolicState,
 	if state.unknownFrom != nil && base+int64(bound)*size > *state.unknownFrom {
 		return "a frame load at a data-dependent index into the frame's unknown region", false
 	}
+	merged, reason, ok := x.mergedFrameElements(state, base, index, bound, size)
+	if !ok {
+		return reason, false
+	}
+	if isSignExtendingLoad(instr.Mnemonic) {
+		state.write(regs[0], extendTerm(merged, int(size)*8, widthOf(regs[0].Class), true))
+	} else {
+		state.write(regs[0], zeroExtend(merged, widthOf(regs[0].Class)))
+	}
+	return "", true
+}
+
+// mergedFrameElements reads the bound elements of size bytes at base,
+// merged under `index == e` from the last element down, the last the
+// default (Oak.FrameIndex) — the value of a frame load at a guarded
+// data-dependent index on either lane.
+func (x *pathExecutor) mergedFrameElements(state *symbolicState, base int64, index *term, bound uint64, size int64) (*term, string, bool) {
+	if bound == 0 || bound > 64 {
+		return nil, "a frame load at a data-dependent index (the guard's bound is outside the subset)", false
+	}
+	if state.unknownFrom != nil && base+int64(bound)*size > *state.unknownFrom {
+		return nil, "a frame load at a data-dependent index into the frame's unknown region", false
+	}
 	var merged *term
 	for e := int64(bound) - 1; e >= 0; e-- {
 		value, ok := x.loadFrame(state, base+e*size, size)
 		if !ok {
-			return "a frame load at a data-dependent index over a slot never stored on this path", false
+			return nil, "a frame load at a data-dependent index over a slot never stored on this path", false
 		}
 		value = truncate(value, int(size)*8)
 		if merged == nil {
@@ -1942,12 +1989,7 @@ func (x *pathExecutor) boundedFrameLoad(instr Instruction, state *symbolicState,
 		}
 		merged = iteTerm(cmpTerm("eq", index, constTerm(uint64(e), 32)), value, merged)
 	}
-	if isSignExtendingLoad(instr.Mnemonic) {
-		state.write(regs[0], extendTerm(merged, int(size)*8, widthOf(regs[0].Class), true))
-	} else {
-		state.write(regs[0], zeroExtend(merged, widthOf(regs[0].Class)))
-	}
-	return "", true
+	return merged, "", true
 }
 
 // opaqueSlot is the value of a slot in the forgotten region: a fresh

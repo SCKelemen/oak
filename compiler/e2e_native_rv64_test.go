@@ -809,6 +809,13 @@ func TestE2ENativeRV64LoopVerdicts(t *testing.T) {
 	if !strings.Contains(verdicts["check_all"], "proven equal to its Oak body") {
 		t.Errorf("check_all must be proven as a unit body without effects: %s", verdicts["check_all"])
 	}
+	// A load from an owned array at a data-dependent index reads the
+	// elements merged under the guarded index on this lane too, the bound
+	// following the index term through the scaled add
+	// (docs/spec/94-assembler.md §8, frame loads at a data-dependent index).
+	if !strings.Contains(verdicts["signed_bytes"], "proven equal to its Oak body") {
+		t.Errorf("signed_bytes must be proven through the guarded element load: %s", verdicts["signed_bytes"])
+	}
 	// A caller passing a span over its own array to a looping callee is
 	// proven through the summary: the callee's parameter is the array's
 	// contents, its loop carries the elements (docs/spec/94-assembler.md
