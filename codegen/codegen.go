@@ -85,6 +85,7 @@ type CodeGenerator struct {
 	seqCounter         int
 	seqTypeofFallbacks int
 	noSequence         bool
+	quantifierCounter  int
 	// globalTypes classifies top-level bindings (static globals) the same
 	// way localTypes classifies function locals.
 	globalTypes map[string]localContainer
@@ -3497,6 +3498,8 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 	case *ast.MatchExpression:
 		// Pattern matching - this is complex, emit as a block
 		cg.emitMatchExpressionInline(e, tc)
+	case *ast.QuantifierExpression:
+		cg.emitQuantifierExpression(e, tc)
 	case *ast.ArrayLiteral:
 		cg.emitArrayLiteral(e, tc)
 	case *ast.RecordLiteral:

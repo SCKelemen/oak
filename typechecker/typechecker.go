@@ -1769,6 +1769,8 @@ func (tc *TypeChecker) checkExpression(expr ast.Expression, expectedType ...Type
 		return tc.checkInvocationExpression(e)
 	case *ast.MatchExpression:
 		return tc.checkMatchExpression(e, expected)
+	case *ast.QuantifierExpression:
+		return tc.checkQuantifierExpression(e)
 	case *ast.VariantExpression:
 		return tc.checkVariantExpression(e, expected)
 	case *ast.RecordLiteral:

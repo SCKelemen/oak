@@ -79,7 +79,24 @@ const (
 	// witness, decided as an uninterpreted function (asm/floats_ops.go,
 	// Oak.Uninterpreted).
 	termFloat
+	// termQuant is a bounded quantifier over a fresh parameter (name, its
+	// width in value): op "forall" or "exists", left the 1-bit body
+	// (docs/spec/10-syntax.md section 3e). A witness enumerates the
+	// domain; the blaster eliminates the parameter's variables from the
+	// body's diagram bit by bit (asm/blast.go).
+	termQuant
 )
+
+// quantTerm is the quantifier op over the bound parameter name of the
+// given width, body a 1-bit term.
+func quantTerm(op, name string, width int, body *term) *term {
+	return &term{kind: termQuant, width: 1, op: op, name: name, value: uint64(width), left: truncate(body, 1)}
+}
+
+// quantifierBound reports a name the theorem lowering minted for a
+// quantifier's binder (`x@q1`): a leaf of the blast, never a parameter a
+// counterexample names.
+func quantifierBound(name string) bool { return strings.Contains(name, "@q") }
 
 // selectTerm is the element of span at index: a constant index is the
 // element parameter v[k]; a symbolic one is a select node, evaluated
@@ -431,6 +448,29 @@ func (t *term) evalUncached(env map[string]uint64, memo termMemo) uint64 {
 		return t.value & m
 	case termSelect:
 		return elementValue(t.name, memo.eval(t.left, env)&mask(32), t.width) & m
+	case termQuant:
+		// The body under every value of the bound parameter, in a memo of
+		// its own per value (its subterms depend on the binding); the
+		// enumeration stops at the deciding value, as the interpreter's.
+		saved, wasBound := env[t.name]
+		universal := t.op == "forall"
+		holds := universal
+		for v := uint64(0); v < uint64(1)<<uint(t.value); v++ {
+			env[t.name] = v
+			if (mapMemo{}.eval(t.left, env)&1 == 1) != universal {
+				holds = !universal
+				break
+			}
+		}
+		if wasBound {
+			env[t.name] = saved
+		} else {
+			delete(env, t.name)
+		}
+		if holds {
+			return 1
+		}
+		return 0
 	case termFloat:
 		args := make([]uint64, 0, 3)
 		widths := make([]int, 0, 3)
@@ -536,6 +576,8 @@ func (t *term) stringBounded(budget *int) string {
 		return fmt.Sprintf("(%s ? %s : %s)", t.cond.stringBounded(budget), t.left.stringBounded(budget), t.right.stringBounded(budget))
 	case termSelect:
 		return fmt.Sprintf("%s[%s]", t.name, t.left.stringBounded(budget))
+	case termQuant:
+		return fmt.Sprintf("(%s %s:%d. %s)", t.op, t.name, t.value, t.left.stringBounded(budget))
 	case termFloat:
 		parts := []string{}
 		for _, arg := range []*term{t.left, t.right, t.cond} {
@@ -584,7 +626,7 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		return &linearForm{width: w, coeffs: map[string]uint64{t.name: 1}}
 	case termConst:
 		return &linearForm{width: w, constant: t.value & m}
-	case termCmp, termIte, termSelect, termFloat:
+	case termCmp, termIte, termSelect, termFloat, termQuant:
 		return nil
 	}
 	switch t.op {
@@ -1128,7 +1170,7 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 	exec.loopExits = findLoopsIn(fn.Name, fn.Items, labels, fn.Callees)
 	result, effects, reason, ok := exec.run(0, state)
 	if effects != nil {
-		exec.cells, exec.writes = effects.cells, effects.writes
+		exec.cells, exec.writes, exec.trap = effects.cells, effects.writes, effects.trap
 	}
 	return result, exec, reason, ok
 }
@@ -1196,7 +1238,10 @@ type pathExecutor struct {
 	fn         *Function
 	summarized []string
 	freshSyms  map[string]int
-	callSites  int
+	// trap is the condition under which the machine traps (pathEffects.trap
+	// of the whole body): the equivalence is decided outside it.
+	trap      *term
+	callSites int
 	// freshCount numbers the unspecified lane values of the RV64 vector
 	// model (asm/rv64_verify_vector.go freshLane).
 	freshCount int
@@ -1933,8 +1978,10 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			// A trap: this path delivers no result. The Oak body traps on
 			// the same inputs (a failed bounds check, division by zero, an
 			// overflowing shift, a failed assert), so the path is outside
-			// the equivalence and drops from the fork it came from.
-			return trapPath, nil, "", true
+			// the equivalence: it drops from the fork it came from, and
+			// the condition that reached it leaves the input domain
+			// (pathEffects.trap).
+			return trapPath, &pathEffects{trap: constTerm(1, 1)}, "", true
 		case "bl":
 			if reason, ok := x.summarizeCall(instr, state); !ok {
 				return nil, nil, reason, false
@@ -2004,9 +2051,9 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			}
 			switch {
 			case taken == trapPath:
-				return fallThrough, fallEffects, "", true
+				return fallThrough, withTrap(fallEffects, mergeTrap(cond, takenEffects, fallEffects)), "", true
 			case fallThrough == trapPath:
-				return taken, takenEffects, "", true
+				return taken, withTrap(takenEffects, mergeTrap(cond, takenEffects, fallEffects)), "", true
 			}
 			return iteTerm(cond, taken, fallThrough), x.mergeEffects(cond, takenEffects, fallEffects), "", true
 		}
@@ -2280,7 +2327,9 @@ func spanBaseOf(t *term) (param string, offset int64, ok bool) {
 // not the term's; docs/spec/65-machine-memory.md section 7).
 func isLoad(mnemonic string) bool {
 	switch mnemonic {
-	case "ldar", "ldarb", "ldarh", "ldxr", "ldxrb", "ldxrh", "ldaxr", "ldaxrb", "ldaxrh":
+	case "ldar", "ldarb", "ldarh", "ldxr", "ldxrb", "ldxrh", "ldaxr", "ldaxrb", "ldaxrh", "ldapr", "ldaprb", "ldaprh":
+		// ldapr: the RCpc acquire load (Armv8.3, what clang emits for an
+		// acquire load on the Apple cores and other LRCPC targets).
 		return true
 	}
 	return isPlainLoad(mnemonic)
@@ -2709,7 +2758,8 @@ type oakLowering struct {
 	// arch is the lane an asm unit's Oak body is lowered against ("" for
 	// the theorem decider): the RV64 lane's quotients are its own
 	// operations (asm/floats_ops.go rv.udiv, rv.sdiv).
-	arch string
+	arch        string
+	quantifiers int // quantifier binders minted (lowerQuantifier)
 	// resultChunk: for a record result of two register chunks, the chunk
 	// this lowering's resultTerm packs (Verify runs one chunk at a time).
 	resultChunk int
@@ -2757,6 +2807,10 @@ type oakLowering struct {
 	// verifier leaves it off: there the machine wraps where Oak traps.
 	trapsTracked bool
 	traps        []*term
+	// machineTrap is the asm side's trap condition (pathExecutor.trap):
+	// the inputs on which the machine trapped — where Oak traps too, on
+	// the same guard — leave the input domain (domainCondition).
+	machineTrap *term
 	// floats names the parameters and locals of f32/f64 type (their width),
 	// whose operations and comparisons are IEEE (asm/floats_lowering.go).
 	floats      map[string]int
@@ -3403,6 +3457,9 @@ func (lo *oakLowering) recordTagDomains(typ *oakType, prefix string) {
 // of its variants' values", or nil when the parameters have no unions.
 func (lo *oakLowering) domainCondition() *term {
 	var cond *term
+	if lo.machineTrap != nil {
+		cond = binaryTerm("xor", truncate(lo.machineTrap, 1), constTerm(1, 1))
+	}
 	names := make([]string, 0, len(lo.tagDomains))
 	for name := range lo.tagDomains {
 		names = append(names, name)
@@ -3898,9 +3955,9 @@ func (lo *oakLowering) declareLocal(s *ast.VariableDeclaration) (string, bool) {
 		return "", true
 	}
 	if s.Value == nil {
-		if typ.kind != oakArray {
-			return fmt.Sprintf("the %s local %s without an initializer", typ.name, s.Name.Value), false
-		}
+		// Value-less storage is zero (docs/spec/90-backend.md §6): an
+		// array's elements, a record's fields, a sum's tag and payloads,
+		// as both backends fill them.
 		lo.locals[s.Name.Value] = &oakLocal{agg: zeroValue(typ)}
 		return "", true
 	}
@@ -5098,6 +5155,12 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		return binaryTerm(op, left, right), "", true
 	case *ast.BlockExpression:
 		return lo.lowerBlock(e.Block, width)
+	case *ast.QuantifierExpression:
+		t, reason, ok := lo.lowerQuantifier(e)
+		if !ok {
+			return nil, reason, false
+		}
+		return zeroExtend(t, width), "", true
 	case *ast.MatchExpression:
 		// A value-position Bool conditional over a comparison of parameters:
 		// `a < b ? b | a`. The comparison happens at the operands' own width
@@ -5135,6 +5198,73 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 		return iteTerm(cond, left, right), "", true
 	}
 	return nil, fmt.Sprintf("%T", expr), false
+}
+
+// lowerQuantifier lowers `forall (x: T) { body }` / `exists (x: T) { body }`
+// (docs/spec/10-syntax.md section 3e): each binder is a fresh parameter
+// of its scalar width (`x@qN`; Bool 1, u8/i8 8, u16/i16 16), the body is
+// lowered to its bit with the binders as locals, and the result is the
+// quantifier term over the innermost binder outward. A binder over a sum
+// type is left to the enumeration rung (the tag would need its domain
+// hypothesis inside the elimination). A trap the body may take under some
+// value of a binder is the quantifier's trap: the obligation is decided
+// over the binder as a free leaf.
+func (lo *oakLowering) lowerQuantifier(expr *ast.QuantifierExpression) (*term, string, bool) {
+	if expr.Body == nil || expr.Body.Block == nil {
+		return nil, "a quantifier without a body", false
+	}
+	if lo.locals == nil {
+		lo.locals = map[string]*oakLocal{}
+	}
+	type bound struct {
+		name  string
+		fresh string
+		width int
+		prev  *oakLocal
+		had   bool
+	}
+	binders := make([]bound, 0, len(expr.Binders))
+	restore := func() {
+		for i := len(binders) - 1; i >= 0; i-- {
+			b := binders[i]
+			if b.had {
+				lo.locals[b.name] = b.prev
+			} else {
+				delete(lo.locals, b.name)
+			}
+		}
+	}
+	for _, binder := range expr.Binders {
+		width, signed, isScalar := contractBits(binder.Type)
+		if typeText(binder.Type) == "Bool" {
+			width, signed, isScalar = 1, false, true
+		}
+		if !isScalar || width > 16 {
+			restore()
+			return nil, fmt.Sprintf("a quantifier over %s (the bit level takes Bool and the 8- and 16-bit integers)", typeText(binder.Type)), false
+		}
+		lo.quantifiers++
+		fresh := fmt.Sprintf("%s@q%d", binder.Name.Value, lo.quantifiers)
+		lo.params[fresh] = width
+		lo.signed[fresh] = signed
+		prev, had := lo.locals[binder.Name.Value]
+		lo.locals[binder.Name.Value] = &oakLocal{value: paramTerm(fresh, width), width: width, signed: signed}
+		binders = append(binders, bound{name: binder.Name.Value, fresh: fresh, width: width, prev: prev, had: had})
+	}
+	body, reason, ok := lo.lowerBlock(expr.Body.Block, 1)
+	restore()
+	if !ok {
+		return nil, reason, false
+	}
+	op := "exists"
+	if expr.Universal {
+		op = "forall"
+	}
+	t := truncate(body, 1)
+	for i := len(binders) - 1; i >= 0; i-- {
+		t = quantTerm(op, binders[i].fresh, binders[i].width, t)
+	}
+	return t, "", true
 }
 
 // lowerCondition lowers a Bool condition — a comparison, or comparisons
@@ -5474,6 +5604,7 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	}
 	lowering := prepareLowering(fn, sig, nil)
 	lowering.resultChunk = chunk
+	lowering.machineTrap = exec.trap
 	for name, width := range exec.freshSyms {
 		lowering.fresh[name] = width // a summarized call's unspecified result bits
 	}
@@ -6608,6 +6739,24 @@ func equalityBlasters(names []string, widths map[string]int, asmTerm, oakTerm *t
 	return blasters
 }
 
+// hasUninterpreted reports a term with an uninterpreted operation node
+// (termFloat: a floating-point operation or an integer quotient).
+func hasUninterpreted(t *term) bool {
+	seen := map[*term]bool{}
+	var walk func(t *term) bool
+	walk = func(t *term) bool {
+		if t == nil || seen[t] {
+			return false
+		}
+		seen[t] = true
+		if t.kind == termFloat {
+			return true
+		}
+		return walk(t.left) || walk(t.right) || walk(t.cond)
+	}
+	return walk(t)
+}
+
 // blastEqual decides the equality under one variable order: proof, a
 // counterexample, or the budget exceeded (also when another order finished
 // first and stopped this one).
@@ -6641,6 +6790,16 @@ func blastEqual(bl *blaster, fn *Function, names []string, asmTerm, oakTerm *ter
 			continue // equal under every memory, though not node for node
 		}
 		env := bl.counterexampleOf(differs)
+		if asmTerm.eval(env) == oakTerm.eval(env) && (hasUninterpreted(asmTerm) || hasUninterpreted(oakTerm)) {
+			// The diagrams abstract an uninterpreted operation — a quotient
+			// at another width, or one under an arm the other side folds
+			// away — as an independent value, so this counterexample is the
+			// abstraction's, not the terms': the evaluation agrees on it.
+			// The bit level cannot decide such a pair; the verdict is the
+			// witness set's (asm/floats_ops.go, docs/spec/94-assembler.md
+			// §8, the thirty-first increment).
+			return Verdict{}, true
+		}
 		return Verdict{Kind: VerdictMismatch, Message: fmt.Sprintf("asm unit %s disagrees with its Oak body at %s (bit %d differs): asm yields %d, Oak yields %d (asm term %s; Oak term %s)", fn.Name, describeEnv(names, env), i, asmTerm.eval(env), oakTerm.eval(env), asmTerm, oakTerm)}, false
 	}
 	order := ""
@@ -6707,6 +6866,9 @@ func (lo *oakLowering) declaredWidth(name string) int {
 func describeEnv(names []string, env map[string]uint64) string {
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
+		if quantifierBound(name) {
+			continue // a quantifier's binder: the body ranged over it
+		}
 		parts = append(parts, fmt.Sprintf("%s=%d", name, env[name]))
 	}
 	return strings.Join(parts, ", ")

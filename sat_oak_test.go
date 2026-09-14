@@ -178,9 +178,11 @@ func TestOakSATFixtures(t *testing.T) {
 // the probing steps come first.
 func TestOakSATProbing(t *testing.T) {
 	// x forces a and b, they force c, and x forbids c; not x forces d
-	// and not d. Both polarities fail: the first probe learns a unit of
-	// x, whose propagation at level zero closes the derivation.
-	variables, failed := padded([][]int{{-1, 2}, {-1, 3}, {-2, -3, 4}, {-1, -4}, {1, 5}, {1, -5}}, 5, 1, 2, 3, 4, 5)
+	// and e, they force f, and not x forbids f. Both polarities fail (and
+	// no pair of clauses subsumes or strengthens another): the first probe
+	// learns a unit of x, whose propagation at level zero closes the
+	// derivation.
+	variables, failed := padded([][]int{{-1, 2}, {-1, 3}, {-2, -3, 4}, {-1, -4}, {1, 5}, {1, 6}, {-5, -6, 7}, {1, -7}}, 7, 1, 2, 3, 4, 5, 6, 7)
 	cnf := cnfOf(variables, failed)
 	outcome, err := runOakSAT(cnf)
 	if err != nil {
@@ -195,9 +197,27 @@ func TestOakSATProbing(t *testing.T) {
 	}
 	checkBoth(t, "failed literal", cnf, outcome.Certificate)
 	// u follows from x through a and from not x through b, so u is a
-	// unit though neither polarity fails; under u the four sign patterns
-	// over p and q are left, which no single propagation reaches.
-	variables, both := padded([][]int{{-1, 2}, {1, 3}, {-2, 4}, {-3, 4}, {-4, 5, 6}, {-4, -5, 6}, {-4, 5, -6}, {-4, -5, -6}}, 6, 1, 2, 3, 4, 5, 6)
+	// unit though neither polarity fails; beside it the pigeonhole formula
+	// on fresh variables keeps the whole unsatisfiable without any pair of
+	// clauses subsuming or strengthening another.
+	holes, pigeons := pigeonhole(3)
+	core := [][]int{{-1, 2}, {1, 3}, {-2, 4}, {-3, 4}}
+	protect := []int{1, 2, 3, 4}
+	for _, c := range pigeons {
+		shifted := make([]int, len(c))
+		for i, l := range c {
+			if l > 0 {
+				shifted[i] = l + 4
+			} else {
+				shifted[i] = l - 4
+			}
+		}
+		core = append(core, shifted)
+	}
+	for v := 5; v <= 4+holes; v++ {
+		protect = append(protect, v)
+	}
+	variables, both := padded(core, 4+holes, protect...)
 	cnf = cnfOf(variables, both)
 	outcome, err = runOakSAT(cnf)
 	if err != nil {
@@ -223,6 +243,44 @@ func TestOakSATProbing(t *testing.T) {
 		t.Fatalf("both polarities: want the empty clause last, got %+v", steps[len(steps)-1])
 	}
 	checkBoth(t, "both polarities", cnf, outcome.Certificate)
+}
+
+// Subsumption at load: a clause holding another is deleted, and a clause
+// holding another but for one negated literal loses that literal through
+// a two-hint addition, before anything else is derived.
+func TestOakSATSubsumption(t *testing.T) {
+	// {1,2} subsumes {1,2,3} and strengthens {-1,2,4} to {2,4}; the
+	// contradiction on 2 through 5 and 6 makes the whole unsatisfiable.
+	variables, clauses := padded([][]int{{1, 2}, {1, 2, 3}, {-1, 2, 4}, {-2, 5}, {-2, -5}, {2, 6}, {2, -6}}, 6, 1, 2, 3, 4, 5, 6)
+	cnf := cnfOf(variables, clauses)
+	outcome, err := runOakSAT(cnf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Unsatisfiable {
+		t.Fatalf("subsumption: want unsatisfiable, got %+v", outcome)
+	}
+	steps := certificateSteps(outcome.Certificate)
+	if len(steps) == 0 || len(steps[0].literals) != 2 || steps[0].literals[0] != 2 || steps[0].literals[1] != 4 || len(steps[0].hints) != 2 || steps[0].hints[0] != 3 || steps[0].hints[1] != 1 {
+		t.Fatalf("subsumption: want the first step to strengthen clause 3 by clause 1 into 2 4, got %+v\n%s", steps, outcome.Certificate)
+	}
+	deleted := false
+	for _, line := range strings.Split(outcome.Certificate, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 2 && fields[1] == "d" {
+			has := map[string]bool{}
+			for _, f := range fields[2:] {
+				has[f] = true
+			}
+			if has["2"] && has["3"] {
+				deleted = true
+			}
+		}
+	}
+	if !deleted {
+		t.Fatalf("subsumption: the subsumed clause 2 and the strengthened clause 3 must be deleted together:\n%s", outcome.Certificate)
+	}
+	checkBoth(t, "subsumption", cnf, outcome.Certificate)
 }
 
 // padded appends, for each listed variable, eleven clauses holding it

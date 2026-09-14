@@ -26,6 +26,12 @@ var loweringRenders = []struct {
 	{"f: (a: u32) -> u32", "a * 3", "(a mul 3)"},
 	{"f: (a: u32) -> u32", "a / 8", "(a shr 3)"},
 	{"f: (a: u32) -> u32", "a % 8", "(a and 7)"},
+	// Division by a variable: the uninterpreted quotient, the remainder
+	// a - (a / b) * b, then the type's identity extension (Term.uop, divT).
+	{"f: (a, b: u32) -> u32", "a / b", "(udiv32(a, b) and 4294967295)"},
+	{"f: (a, b: u32) -> u32", "a % b", "((a sub (udiv32(a, b) mul b)) and 4294967295)"},
+	{"f: (a, b: i32) -> i32", "a / b", "(((sdiv32(a, b) and 4294967295) shl 0) sar 0)"},
+	{"f: (a, b: i8) -> i8", "a % b", "((((a sub (sdiv8(a, b) mul b)) and 255) shl 0) sar 0)"},
 	{"f: (a: u32) -> u32", "-a", "(0 sub a)"},
 	{"f: (a: u32) -> u32", "^a", "(a xor 4294967295)"},
 	{"f: (a, b: u32) -> u32", "(a << 3) | (b >> 5)", "((a shl 3) or (b shr 5))"},

@@ -1954,6 +1954,8 @@ func (em *emitter) exprValue(expr ast.Expression, want string) (string, error) {
 		return em.armValue(e, want)
 	case *ast.InvocationExpression:
 		return em.call(e, want)
+	case *ast.QuantifierExpression:
+		return em.quantifier(e)
 	}
 	return "", fmt.Errorf("expression %T is outside the extracted subset", expr)
 }
@@ -2757,6 +2759,8 @@ func walkExpressions(expr ast.Expression, visit func(ast.Expression)) {
 		}
 		visit(e)
 		switch x := e.(type) {
+		case *ast.QuantifierExpression:
+			exprs(x.Body)
 		case *ast.BlockExpression:
 			if x.Block != nil {
 				stmts(x.Block.Statements)

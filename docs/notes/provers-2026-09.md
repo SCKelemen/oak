@@ -195,8 +195,10 @@ clause with a floor of 200,000, which closes the 562k-conflict row in the
 corpus and leaves the 1.4M one to give up. The buffered writer also exposed an exponential
 walk in the native backend's verifier (`significantBits` over shared
 subterms of an unrolled loop, memoized the same day by a parallel
-increment). Subsumption is
-the next technique, still ahead of any GPU question. First run with CaDiCaL 3.0.1:
+increment). Subsumption with self-subsuming resolution landed last, at
+load; over the learned clauses at every reduction it was measured and left
+out — one wide row 31% fewer conflicts, the other 43% more — which closes
+the list of techniques the reading named ahead of any GPU question. First run with CaDiCaL 3.0.1:
 `spec/oak/machines.oak`'s `bounded__step` — 14,987 BDD nodes under the
 blocked order — closes with a 204-step certificate checked in Go and in
 Oak; `spec/oak/shapes.oak`'s nine rows all agree):
