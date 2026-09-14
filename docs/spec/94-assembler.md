@@ -2360,6 +2360,35 @@ local — an array, a record, a sum — at its zero value, as both backends
 fill it, where it refused a record or a sum. `compiler/e2e_native_rv64_span_locals_test.go`
 runs a program with both on the bare machine under QEMU and on the
 AArch64 host against the C backend.
+**Thirty-fifth increment — variable shift counts (2026-09-15;
+`asm/verify.go` lowerVariableShift, `Oak.Shifts`).** A body shifting by a
+count that is not a constant — `shifts`, `byte_shift` of the rv64 extra
+corpus — was trusted ("the Oak body contains a non-constant shift count")
+unless the count's range stayed below the width. Oak traps at the width
+(docs/spec/10-syntax.md §3b) and so does the native code — both backends
+guard the count (`cmp wN, #width; b.hs trap`, `bgeu n, width, trap`)
+before the register shift — and the executor already drops a trapping
+path from its fork, so the equivalence is over the counts below the width,
+where the guarded machine shift is Oak's. The Oak side now lowers the
+shift at the machine's register width — a w register on AArch64 for
+operands up to 32 bits, `sllw`/`srlw` on RV64 for a 32-bit operand and
+XLEN for a narrower one — and truncates back, so that on the counts the
+trap removes the term is the machine's wrapped value rather than a claim
+about Oak's (trapping) result; below the width the two coincide
+(`Oak.Shifts`: the widened shift masked back is the narrow shift for
+every count below the width, and a count below the width is its own
+remainder at the register width). The claim rests on the machine's
+guard: the executor records, on every path, the trap bound under which a
+register-count shift ran (`cmp wN, #K; b.hs trap` bounds wN below K, and
+so does `li rK, K; bgeu rN, rK, trap` on the rv64 lane), and the Oak side
+admits the variable count only when every such shift was guarded at or
+below Oak's width — a shift with no guard, or one guarded at the
+register's width rather than the operand's, stays trusted as before, since
+there Oak traps where the machine delivers. A signed operand keeps the
+refusal, as the backends leave those bodies to C. `shifts` and `byte_shift` are proven
+on both lanes (`asm/shift_test.go`; `compiler/e2e_native_rv64_test.go`);
+the theorem decider's treatment — the trap as a recorded obligation — is
+unchanged.
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies

@@ -326,9 +326,11 @@ func TestE2ENativeRV64ExtraUnderQEMU(t *testing.T) {
 			t.Fatalf("%s was not lowered by the rv64 lane; diagnostics:\n%s", fn, joined)
 		}
 	}
-	// The rest are trusted (calls, a non-constant shift count, division by
-	// a variable) or agree on every witness (the u16 product's BDD).
-	for _, fn := range []string{"wide", "short_neg", "cmp_u", "cmp_s", "either", "many", "mix2", "widen_u", "widen_s", "narrow8", "narrow_s8", "big_neg", "flip"} {
+	// The rest are trusted (calls) or agree on every witness (the u16
+	// product's BDD). A variable shift count is proven below the width,
+	// where the guarded native shift is Oak's (docs/spec/94-assembler.md
+	// §8, variable shift counts).
+	for _, fn := range []string{"wide", "short_neg", "shifts", "byte_shift", "cmp_u", "cmp_s", "either", "many", "mix2", "widen_u", "widen_s", "narrow8", "narrow_s8", "big_neg", "flip"} {
 		if !strings.Contains(joined, "asm unit "+fn+": proven") {
 			t.Errorf("%s must be proven equal to its Oak body; diagnostics:\n%s", fn, joined)
 		}
@@ -349,9 +351,23 @@ func TestE2ENativeRV64ExtraUnderQEMU(t *testing.T) {
 // two native lanes, the C backend as the oracle for both.
 func TestE2ENativeRV64ExtraOnArm64(t *testing.T) {
 	requireArm64Host(t)
-	comp := New().WithSource("native.oak", nativeRV64Extra).WithNativeBodies().WithNativeAsm()
+	var infos []string
+	comp := New().WithSource("native.oak", nativeRV64Extra).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
+		if d.Source == "native" {
+			infos = append(infos, d.Message)
+		}
+	})
 	if _, code, abnormal := buildAndRunFrom(t, "native_extra_arm64", comp); abnormal || code != 7 {
-		t.Fatalf("arm64 native bodies: exit = (%d, abnormal=%v), want 7", code, abnormal)
+		t.Fatalf("arm64 native bodies: exit = (%d, abnormal=%v), want 7\n%s", code, abnormal, strings.Join(infos, "\n"))
+	}
+	// The variable shift counts are proven on this lane too: the guarded
+	// w-register shift below the width is Oak's (docs/spec/94-assembler.md
+	// §8, variable shift counts).
+	joined := strings.Join(infos, "\n")
+	for _, fn := range []string{"shifts", "byte_shift"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven") {
+			t.Errorf("%s must be proven equal to its Oak body; diagnostics:\n%s", fn, joined)
+		}
 	}
 }
 
