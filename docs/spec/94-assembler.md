@@ -2649,6 +2649,42 @@ or zero when the span is too short — under QEMU and Sail against Go. The
 units are checked and trusted: the RV64 verifier's terms do not yet reach
 the vector file.
 
+**RV64 lane, eleventh increment — the float vectors (landed 2026-09-14;
+`nativegen/rv64_simd.go`).** `simd.F32x4`/`F64x2` lower on this lane under
+`e32`/`e64` configurations on a hard-float processor with V (`93-simd.md`
+§1.2a): `splat` → `vfmv.v.f`; `add`/`sub`/`mul`/`div` → `vfadd`/`vfsub`/
+`vfmul`/`vfdiv .vv`; `fma` → `vfmacc.vv` into the addend's register (one
+rounding); `sqrt` → `vfsqrt.v`; `neg`/`abs` → `vfsgnjn`/`vfsgnjx .vv` of a
+value with itself; `min`/`max` → `vfmin`/`vfmax .vv` (IEEE minimumNumber/
+maximumNumber: `-0.0` below `+0.0`, a NaN operand suppressed) with the
+catalog's NaN propagation restored lane by lane — `vmfne.vv v0, x, x`
+marks `x`'s NaN lanes and `vmerge.vvm` puts `x` back there, for each
+operand (`Oak.Simd.rvvMinMax`, `rvvMinMax_nan`, `rvvMinMax_numbers`);
+`extract` at a literal lane → `vslidedown.vi` then `vfmv.f.s`; `insert`
+at a literal lane → `vid.v`, `vmseq.vx` against the lane, `vfmerge.vfm`;
+`reduce_add` → the specification's pairwise tree `(l0 + l1) + (l2 + l3)`
+as two slide-and-add steps, `t = x + slide(x, 1)` then `(t + slide(t,
+2))[0]` (`Oak.Simd.rvv_reduce4`, `rvv_reduce2`; the slides read the
+register's tail past `vl` into lanes the result never reads), never
+`vfredosum`'s sequential fold; loads and stores through `[]f32`/`[*]f64`
+spans under the slack guard and through frame addresses as the integer
+vectors. **The table** gains `vfdiv.vv`, `vfsqrt.v`, `vfmin.vv`,
+`vfmax.vv`, `vfsgnjn.vv`, `vfsgnjx.vv`, `vmfne.vv`, `vid.v`, `vmseq.vx`,
+and `vfmerge.vfm` (218 encodings, GNU as agreement for each, masked and
+unmasked); the float forms need `e32`/`e64`, `vmfne.vv`'s and `vmseq.vx`'s
+destinations are single mask registers, `vfmerge.vfm` takes its mask
+from `v0` like `vmerge.vvm`. The differentials carry `vfpair` — four `u32`
+elements converted, divided by `k`, negated and made absolute, rooted,
+the NaN-propagating minimum against `1.0`, `2.0` inserted at lane 1, and
+the pairwise tree — under QEMU and Sail against Go's `float32`
+arithmetic; the float corpus (`compiler/e2e_native_rv64_float_simd_test.go`)
+runs under QEMU at VLEN 128 and 256 beside the C backend. Left to the C
+backend on this lane: vectors in signatures (the LP64 lane-array
+contract; an `_rvv_abi` entry with a converting shim is the design, as
+the AArch64 lane's `_neon_abi`), records or arrays of vectors, a
+non-literal shift, `prev`, `extract`, or `insert` count, and the
+ctz/popcount helpers.
+
 **Executables linked by the Oak assembler (landed; `asm/executable.go`,
 `oak build -link oak`).** A program whose every body the native backend
 lowered links into a final ELF64 executable here, with no system linker

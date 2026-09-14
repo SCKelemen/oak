@@ -225,7 +225,14 @@ natively lowered callers agree, and a native function that passes vectors
 to a callee the C backend realizes is itself left to the C backend.
 
 **The RV64 lane (landed 2026-09-14; `nativegen/rv64_simd.go`).** The same
-integer vectors lower on the RV64 lane when the processor carries the
+integer vectors — and, on a hard-float processor, the float vectors
+`F32x4`/`F64x2` (`vfmv.v.f`, `vfadd`/`vfsub`/`vfmul`/`vfdiv`, `vfmacc` for
+`fma`, `vfsqrt`, `vfsgnjn`/`vfsgnjx` for `neg`/`abs`, `vfmin`/`vfmax` with
+the catalog's NaN propagation restored through `vmfne`/`vmerge`,
+`vslidedown`+`vfmv.f.s` for `extract`, `vid`/`vmseq.vx`/`vfmerge.vfm` for
+`insert`, and `reduce_add` as the pairwise tree from two slide-and-add
+steps, `Oak.Simd.rvv_reduce4`; `94-assembler.md` §9, eleventh increment)
+— lower on the RV64 lane when the processor carries the
 vector extension (`-cpu ...+v`, `94-assembler.md` §9): a fixed vector is
 one LMUL=1 register whatever the VLEN (VLEN ≥ 128 on every processor with
 V, so the same code runs at 128 and 256), under a configuration the

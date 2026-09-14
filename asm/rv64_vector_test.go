@@ -231,6 +231,57 @@ none:
   addi sp, sp, 16
   ret`
 
+// The float vectors' fixed-lane forms (docs/spec/93-simd.md §1.2a, the
+// native lowering's sequences, nativegen/rv64_simd.go): four u32 elements
+// at the span base converted to f32, divided by k, negated then made
+// absolute, rooted, the catalog's NaN-propagating minimum against 1.0
+// rebuilt from vfmin/vmfne/vmerge, 2.0 inserted at lane 1 through
+// vid/vmseq.vx/vfmerge, and the pairwise tree (l0 + l1) + (l2 + l3)
+// through two slide-and-add steps (Oak.Simd.rvv_reduce4). The result is
+// the f32's bits, or zero when the span is shorter than four.
+const rv64VFPairDecl = "vfpair: (v: []u32, k: u32) -> u32"
+const rv64VFPairBody = `
+  bind a0, a1 = v
+  bind a2 = k
+  clobber t0, t1, t2, ft0, ft1, v0, v1, v8, v9, v10
+  slli t1, a1, 32
+  srli t1, t1, 32
+  li t0, 4
+  bltu t1, t0, short
+  vsetivli zero, 4, e32, m1, ta, ma
+  vle32.v v8, (a0)
+  vfcvt.f.xu.v v8, v8
+  fcvt.s.wu ft0, a2
+  vfmv.v.f v9, ft0
+  vfdiv.vv v8, v8, v9
+  vfsgnjn.vv v8, v8, v8
+  vfsgnjx.vv v8, v8, v8
+  vfsqrt.v v8, v8
+  li t2, 1065353216
+  fmv.w.x ft1, t2
+  vfmv.v.f v10, ft1
+  vfmin.vv v1, v8, v10
+  vmfne.vv v0, v8, v8
+  vmerge.vvm v1, v1, v8, v0
+  vmfne.vv v0, v10, v10
+  vmerge.vvm v8, v1, v10, v0
+  vid.v v1
+  li t2, 1
+  vmseq.vx v0, v1, t2
+  li t2, 1073741824
+  fmv.w.x ft1, t2
+  vfmerge.vfm v8, v8, ft1, v0
+  vslidedown.vi v1, v8, 1
+  vfadd.vv v8, v8, v1
+  vslidedown.vi v1, v8, 2
+  vfadd.vv v8, v8, v1
+  vfmv.f.s ft0, v8
+  fmv.x.w a0, ft0
+  ret
+short:
+  li a0, 0
+  ret`
+
 func TestRV64VectorChecker(t *testing.T) {
 	accept := map[string][2]string{
 		"strip-mined sum":      {rv64VStripDecl, rv64VStripBody},
@@ -239,6 +290,7 @@ func TestRV64VectorChecker(t *testing.T) {
 		"slack guard by addi":  {rv64VSlackDecl, strings.Replace(rv64VSlackBody, "  sub t3, t1, t2\n", "  addi t3, t1, -4\n", 1)},
 		"fractional LMUL":      {rv64VFracDecl, rv64VFracBody},
 		"floating-point strip": {rv64VFSumDecl, rv64VFSumBody},
+		"float lane forms":     {rv64VFPairDecl, rv64VFPairBody},
 		"64-bit elements at m2": {"v64: (v: []u64) -> u64", `
   bind a0, a1 = v
   clobber t0, t1, v2, v3
@@ -413,6 +465,7 @@ func TestRV64VectorFloatParse(t *testing.T) {
 		"integer register as F": {strings.Replace(rv64VFSumBody, "  vfmv.v.f v8, ft0\n", "  vfmv.v.f v8, t3\n", 1), "vfmv.v.f: operand 2 must be a floating-point register"},
 		"vector register as F":  {strings.Replace(rv64VFSumBody, "  vfmv.f.s ft1, v12\n", "  vfmv.f.s v2, v12\n", 1), "vfmv.f.s: operand 1 must be a floating-point register"},
 	}
+	refused["float merge mask"] = [2]string{strings.Replace(rv64VFPairBody, "  vfmerge.vfm v8, v8, ft1, v0\n", "  vfmerge.vfm v8, v8, ft1, v1\n", 1), "vfmerge.vfm takes its mask from v0"}
 	for name, tc := range refused {
 		_, errs := rv64Unit(t, rv64VFSumDecl, tc[0])
 		if len(errs) == 0 || !strings.Contains(errs[0].Error(), tc[1]) {
@@ -504,6 +557,25 @@ func TestRV64VectorEncoderAgreesWithGNUAs(t *testing.T) {
   vfredosum.vs v4, v2, v3, v0.t
   vfcvt.f.xu.v v2, v1
   vfcvt.f.xu.v v2, v1, v0.t
+  vfdiv.vv v4, v3, v2
+  vfdiv.vv v4, v3, v2, v0.t
+  vfsqrt.v v2, v1
+  vfsqrt.v v2, v1, v0.t
+  vfmin.vv v4, v3, v2
+  vfmin.vv v4, v3, v2, v0.t
+  vfmax.vv v4, v3, v2
+  vfmax.vv v4, v3, v2, v0.t
+  vfsgnjn.vv v2, v1, v1
+  vfsgnjn.vv v2, v1, v1, v0.t
+  vfsgnjx.vv v2, v1, v1
+  vfsgnjx.vv v2, v1, v1, v0.t
+  vmfne.vv v0, v1, v2
+  vmfne.vv v0, v1, v2, v0.t
+  vid.v v3
+  vid.v v3, v0.t
+  vmseq.vx v0, v1, a2
+  vmseq.vx v0, v1, a2, v0.t
+  vfmerge.vfm v4, v3, ft0, v0
   vssubu.vv v2, v1, v1
   vssubu.vv v2, v1, v1, v0.t
   vsrl.vx v2, v1, a2
