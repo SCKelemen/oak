@@ -2636,7 +2636,12 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 				return "unbound register read", false
 			}
 			state.flags = &flagsFact{left: l, right: r, width: width, indexReg: -1}
-			if imm, isImm := instr.Operands[1].(Immediate); isImm && left.Class == ClassW && imm.Shift == 0 {
+			// `cmp wI, #K` bounds an index; `cmp xN, #K` bounds a 64-bit
+			// shift count (the backend's guard before `lsl xD, xS, xN`,
+			// docs/spec/94-assembler.md §8, variable shift counts). The
+			// bound is kept by register number: below K in xN, the low
+			// half wN is below K too.
+			if imm, isImm := instr.Operands[1].(Immediate); isImm && (left.Class == ClassW || left.Class == ClassX) && imm.Shift == 0 {
 				state.flags.indexReg, state.flags.bound = left.Num, uint64(imm.Value)
 			}
 		case "csel", "cset":

@@ -2438,8 +2438,13 @@ so does `li rK, K; bgeu rN, rK, trap` on the rv64 lane), and the Oak side
 admits the variable count only when every such shift was guarded at or
 below Oak's width — a shift with no guard, or one guarded at the
 register's width rather than the operand's, stays trusted as before, since
-there Oak traps where the machine delivers. A signed operand keeps the
-refusal, as the backends leave those bodies to C. `shifts` and `byte_shift` are proven
+there Oak traps where the machine delivers. The guard of a 64-bit shift
+compares the x register (`cmp xN, #64`), recorded as a w compare's bound
+is — below K in xN, the low half is below K too — so `push_lits`, which
+shifts a `u64` by its loop counter, is decided in its span memory where it
+was trusted (`compiler/e2e_native_callee_effects_test.go`;
+`Oak.Shifts.count_below_width_wraps_to_itself64`). A signed operand keeps
+the refusal, as the backends leave those bodies to C. `shifts` and `byte_shift` are proven
 on both lanes (`asm/shift_test.go`; `compiler/e2e_native_rv64_test.go`);
 the theorem decider's treatment — the trap as a recorded obligation — is
 unchanged.
