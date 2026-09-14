@@ -91,6 +91,7 @@ var problemFlagKinds = map[string]uint32{"": 0, "add": 1, "and": 2}
 var problemFloatOps = map[string]uint32{
 	"fadd": 0, "fsub": 1, "fmul": 2, "fdiv": 3, "fsqrt": 4, "fma": 5, "fminnm": 6, "fmaxnm": 7, "fnan": 8,
 	"fcvt": 9, "scvtf": 10, "ucvtf": 11, "fcvtzs": 12, "fcvtzu": 13,
+	"udiv": 14, "sdiv": 15, "rv.udiv": 16, "rv.sdiv": 17,
 }
 
 // orderNames maps a blaster's label to the order name a Problem carries.

@@ -158,6 +158,26 @@ func rv64BranchCondition(instr Instruction, state *symbolicState) (*term, string
 var rv64ALU = map[string]string{"add": "add", "sub": "sub", "and": "and", "or": "or", "xor": "xor", "sll": "shl", "srl": "shr", "sra": "sar", "mul": "mul",
 	"div": "rv.div", "divu": "rv.divu", "rem": "rv.rem", "remu": "rv.remu", "mulhu": "umulh", "mulh": "smulh"}
 var rv64ALUImm = map[string]string{"addi": "add", "andi": "and", "ori": "or", "xori": "xor", "slli": "shl", "srli": "shr", "srai": "sar"}
+
+// rv64ALUTerm builds an ALU result; the M extension's division and
+// remainder are the uninterpreted quotient (asm/floats_ops.go) and
+// a - (a / b) * b, RISC-V's definition of rem (unprivileged spec §7.2;
+// Oak.IntegerDivision), so an RV64 unit and a NEON unit decide against
+// one term.
+func rv64ALUTerm(op string, l, r *term, width int) *term {
+	switch op {
+	case "rv.div":
+		return floatTerm("rv.sdiv", width, l, r)
+	case "rv.divu":
+		return floatTerm("rv.udiv", width, l, r)
+	case "rv.rem":
+		return binaryTerm("sub", l, binaryTerm("mul", floatTerm("rv.sdiv", width, l, r), r))
+	case "rv.remu":
+		return binaryTerm("sub", l, binaryTerm("mul", floatTerm("rv.udiv", width, l, r), r))
+	}
+	return binaryTerm(op, l, r)
+}
+
 var rv64ALUW = map[string]string{"addw": "add", "subw": "sub", "sllw": "shl", "srlw": "shr", "sraw": "sar", "mulw": "mul", "divw": "rv.div", "divuw": "rv.divu", "remw": "rv.rem", "remuw": "rv.remu"}
 var rv64ALUImmW = map[string]string{"addiw": "add", "slliw": "shl", "srliw": "shr", "sraiw": "sar"}
 
@@ -190,7 +210,7 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 		if !okL || !okR {
 			return "unbound register read", false
 		}
-		state.write(reg(0), binaryTerm(op, l, r))
+		state.write(reg(0), rv64ALUTerm(op, l, r, 64))
 		return "", true
 	}
 	if op, isALU := rv64ALUImm[name]; isALU {
@@ -233,7 +253,7 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 		if !okL || !okR {
 			return "unbound register read", false
 		}
-		state.write(reg(0), extendTerm(binaryTerm(op, truncate(l, 32), truncate(r, 32)), 32, 64, true))
+		state.write(reg(0), extendTerm(rv64ALUTerm(op, truncate(l, 32), truncate(r, 32), 32), 32, 64, true))
 		return "", true
 	}
 	if op, isALU := rv64ALUImmW[name]; isALU {

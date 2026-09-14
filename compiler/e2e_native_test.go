@@ -94,7 +94,7 @@ func TestE2ENativeBodies(t *testing.T) {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
-	for _, fn := range []string{"mix", "byte_sum", "clamp8", "between", "widen", "narrow"} {
+	for _, fn := range []string{"mix", "byte_sum", "clamp8", "between", "widen", "narrow", "divmod"} {
 		if !strings.Contains(joined, "asm unit "+fn+": proven") {
 			t.Errorf("%s must be proven equal to its Oak body; diagnostics:\n%s", fn, joined)
 		}
