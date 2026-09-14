@@ -24,10 +24,12 @@ import (
 	"fmt"
 	"github.com/SCKelemen/oak/typechecker"
 	"math/bits"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/semir"
@@ -2680,6 +2682,15 @@ type oakLowering struct {
 	spanAlias map[string]string
 	// bounds memoizes maxValue over the lowering's terms (asm/range.go).
 	bounds map[*term]uint64
+	// loopBase offsets the indices of the loop events this lowering
+	// creates: a callee lowered inside a call summary numbers its loops
+	// after the caller's, so the fresh symbols `loop<k>.<var>` of the two
+	// sides — which inline the same callee body — coincide (asm/loops.go).
+	loopBase int
+	// rootContracts holds the element contracts of the caller-rooted
+	// writable spans a loop marks (loopEvent), for a callee lowering whose
+	// own span names are aliases of them.
+	rootContracts map[string]spanContract
 	// functions are the program's functions a body may call; a call to one
 	// in the subset is inlined (inlineCall). Nil outside the theorem decider.
 	functions map[string]*ast.FunctionStatement
@@ -3145,8 +3156,9 @@ func notTerm(t *term) *term { return binaryTerm("xor", truncate(t, 1), constTerm
 
 // lowerAssert records `assert(cond)` as a trap obligation under the
 // theorem decider (docs/spec/85-discipline.md section 5: an assert is
-// never elided; here the decider proves it cannot fire), and refuses it
-// where traps are not tracked.
+// never elided; here the decider proves it cannot fire); under the
+// assembler verifier it is a no-op, the trapping inputs being outside
+// the equivalence on both sides.
 func (lo *oakLowering) lowerAssert(expr ast.Expression) (reason string, isAssert bool, ok bool) {
 	call, isCall := expr.(*ast.InvocationExpression)
 	if !isCall || len(call.Arguments) != 1 {
@@ -3156,7 +3168,11 @@ func (lo *oakLowering) lowerAssert(expr ast.Expression) (reason string, isAssert
 		return "", false, false
 	}
 	if !lo.trapsTracked {
-		return "an assert", true, false
+		// The assembler verifier's side: a failed assert traps, and the
+		// executor drops a trapping path from its fork (a `brk` delivers
+		// no result), so the equivalence is over the inputs on which the
+		// assert holds and the statement itself is a no-op here.
+		return "", true, true
 	}
 	cond, reason, ok := lo.lowerCondition(call.Arguments[0])
 	if !ok {
@@ -5326,6 +5342,12 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 // verdict is proof only when both are proven, otherwise the first that
 // is not.
 func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Verdict {
+	if os.Getenv("OAK_VERIFY_TRACE") != "" {
+		started := time.Now()
+		defer func() {
+			fmt.Fprintf(os.Stderr, "verify %s: %s\n", fn.Name, time.Since(started).Round(time.Millisecond))
+		}()
+	}
 	if shape, isVector := vectorShape(sig.ReturnType); isVector {
 		return verifyVectorResult(fn, sig, oakBody, shape)
 	}
@@ -5592,6 +5614,14 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	}
 	lo.concrete = x.env // a witness run: the callee's leaves are the caller's constants
 	lo.writes = cloneWrites(state.writes)
+	lo.loopBase = len(x.loops)
+	lo.loopStack = append([]int(nil), x.loopStack...)
+	lo.writableSpans = map[string]bool{}
+	lo.rootContracts = map[string]spanContract{}
+	for _, span := range writableSpanParams(x.fn, x.spans) {
+		lo.writableSpans[span] = true
+		lo.rootContracts[span] = spanContract{elemWidth: int(x.spans[span]) * 8}
+	}
 	// The arguments by the shared layout (asm/abi.go): registers while
 	// they fit, then the caller's outgoing area — slots of this path's
 	// frame at the call's sp, which the executor holds as the caller
@@ -5733,7 +5763,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 				var offset int64
 				owner, offset, whole = spanBaseOf(base)
 				_, isRecord := x.records[owner]
-				whole = whole && !isRecord && offset == 0 && x.spans[owner] == arg.elem && isParamNamed(length, spanLenName(owner))
+				whole = whole && !isRecord && offset == 0 && x.spans[owner] == arg.elem && x.isSpanLength(length, owner)
 			}
 			if !whole {
 				return fmt.Sprintf("a call to %s: the span argument %s is not one of the caller's span parameters passed whole", name, param.Name.Value), false
@@ -5796,8 +5826,22 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 			return fmt.Sprintf("a call to %s whose body contains %s", name, reason), false
 		}
 	}
-	if len(lo.loops) > 0 {
-		return fmt.Sprintf("a call to %s whose body has a data-dependent loop", name), false
+	// The callee's data-dependent loops are the caller's events: numbered
+	// after the caller's (loopBase), nested under the loop being executed,
+	// their fresh symbols declared for the verdict; the Oak side inlines
+	// the same body and creates the same events, which the coupling pairs
+	// by identity (asm/loops.go).
+	for _, ev := range lo.loops {
+		x.loops = append(x.loops, ev)
+	}
+	for symbol, width := range lo.fresh {
+		if x.freshSyms == nil {
+			x.freshSyms = map[string]int{}
+		}
+		if _, known := x.freshSyms[symbol]; !known {
+			x.freshSyms[symbol] = width
+			x.declared[symbol] = width
+		}
 	}
 	state.writes = lo.writes // the callee's stores through the caller's spans
 	for cellName, cell := range lo.cells {
@@ -6262,11 +6306,12 @@ func newLowering(sig *ast.FunctionStatement) *oakLowering {
 	// body, or a block or match in result position (resultTerm through
 	// aggregateValue) — writes into a map; the dbs pilot's `-native` panic
 	// was a nil map on the result path (docs/notes/dbs-feedback-2026-09.md).
-	lowering := &oakLowering{params: map[string]int{}, signed: map[string]bool{}, spans: map[string]spanContract{}, fresh: map[string]int{}, floats: map[string]int{}, locals: map[string]*oakLocal{}, writableSpans: map[string]bool{}}
+	lowering := &oakLowering{params: map[string]int{}, signed: map[string]bool{}, spans: map[string]spanContract{}, fresh: map[string]int{}, floats: map[string]int{}, locals: map[string]*oakLocal{}, writableSpans: map[string]bool{}, rootContracts: map[string]spanContract{}}
 	for _, param := range sig.Parameters {
 		if elem, _, isSpan := spanShape(param.Type); isSpan {
 			if isWritableSpan(param.Type) {
 				lowering.writableSpans[param.Name.Value] = true
+				lowering.rootContracts[param.Name.Value] = lowering.spans[param.Name.Value]
 			}
 			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
 			lowering.spans[param.Name.Value] = spanContract{elemWidth: int(elem) * 8, signed: strings.HasPrefix(elemType, "i"), float: elemType == "f32" || elemType == "f64"}
