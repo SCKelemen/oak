@@ -311,6 +311,15 @@ func controlParams(terms []*term) map[string]bool {
 // second result reports a blown node budget, which the caller may answer
 // with another variable order.
 func decideBlasted(bl *blaster, traps []*term, t *term, names []string) (Decision, bool) {
+	// A refutation is the assignment the diagrams found, evaluated on the
+	// terms themselves: the diagrams abstract an uninterpreted operation
+	// (integer division by a constant that is not a power of two, a
+	// floating-point operation) as a fresh block, so an assignment that
+	// falsifies the abstraction may satisfy the claim — division by three
+	// is not any function of its operands. Only an assignment the
+	// evaluation confirms is a counterexample; otherwise the claim stays
+	// undecided at the bit level (open for Lean, as before).
+	evaluator := newTermEvaluator(append([]*term{t}, traps...)...)
 	for _, trap := range traps {
 		bits := bl.blast(trap)
 		if bits == nil || bl.exceeded() {
@@ -318,6 +327,9 @@ func decideBlasted(bl *blaster, traps []*term, t *term, names []string) (Decisio
 		}
 		if bits[0] != bddFalse {
 			env := bl.counterexample(bits[0], bddFalse)
+			if evaluator.evaluate(trap, env) == 0 {
+				return Decision{Kind: DecisionUndecided, Message: "the diagrams fire a trap only under the abstraction of an uninterpreted operation; the body does not trap at the assignment they chose"}, false
+			}
 			return Decision{Kind: DecisionRefuted, Message: "the body traps (a shift count at the width, a failed assert, or a construction outside its predicate) at " + describeEnv(names, env)}, false
 		}
 	}
@@ -333,6 +345,9 @@ func decideBlasted(bl *blaster, traps []*term, t *term, names []string) (Decisio
 		return Decision{Kind: DecisionProven, Message: fmt.Sprintf("at the bit level (%d BDD nodes%s)", len(bl.bdd.nodes), order), Order: orderNames[bl.label], Nodes: len(bl.bdd.nodes)}, false
 	}
 	env := bl.counterexample(bits[0], bddTrue)
+	if evaluator.evaluate(t, env) == 1 {
+		return Decision{Kind: DecisionUndecided, Message: "the diagrams differ only under the abstraction of an uninterpreted operation; the claim holds at the assignment they chose"}, false
+	}
 	return Decision{Kind: DecisionRefuted, Message: "counterexample " + describeEnv(names, env)}, false
 }
 

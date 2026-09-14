@@ -103,18 +103,20 @@ func maxValueOfWith(t *term, memo map[*term]uint64, sub func(*term) uint64) uint
 			}
 			return l * r
 		case "shl":
-			if t.right.kind != termConst || t.right.value >= 64 {
+			// The count wraps at the width, as the evaluation's does.
+			if t.right.kind != termConst {
 				return m
 			}
-			if l > m>>uint(t.right.value) {
+			count := t.right.value % uint64(t.width)
+			if l > m>>uint(count) {
 				return m
 			}
-			return (l << uint(t.right.value)) & m
+			return (l << uint(count)) & m
 		case "shr":
-			if t.right.kind != termConst || t.right.value >= 64 {
+			if t.right.kind != termConst {
 				return m
 			}
-			return l >> uint(t.right.value)
+			return l >> uint(t.right.value%uint64(t.width))
 		}
 	}
 	return m

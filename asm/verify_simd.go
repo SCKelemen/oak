@@ -351,13 +351,16 @@ func (lo *oakLowering) vectorLoad(source, index ast.Expression, shape typechecke
 			return lanes, "", true
 		}
 	}
-	ident, isIdent := source.(*ast.Identifier)
-	if !isIdent {
+	// A span parameter by name, or a constant table of the program under
+	// `view(&T)` / `span(&T)`: declared as the span T (declareTables), its
+	// elements the terms the machine's load through `adrl` gives.
+	name := addressOfOperand(source)
+	if name == "" {
 		return nil, "a vector load from an operand that is not a span parameter", false
 	}
-	contract, isSpan := lo.spans[ident.Value]
+	contract, isSpan := lo.spans[name]
 	if !isSpan {
-		return nil, fmt.Sprintf("a vector load from %s (not a span parameter)", ident.Value), false
+		return nil, fmt.Sprintf("a vector load from %s (not a span parameter)", name), false
 	}
 	if contract.elemWidth != bits {
 		return nil, fmt.Sprintf("a vector load of %s lanes over %d-bit elements", shape.ElemName, contract.elemWidth), false
@@ -366,7 +369,7 @@ func (lo *oakLowering) vectorLoad(source, index ast.Expression, shape typechecke
 	if !ok {
 		return nil, reason, false
 	}
-	root := lo.spanRoot(ident.Value)
+	root := lo.spanRoot(name)
 	lanes := make([]*term, shape.Lanes)
 	for k := range lanes {
 		position := at
@@ -377,9 +380,9 @@ func (lo *oakLowering) vectorLoad(source, index ast.Expression, shape typechecke
 		// load after a vector store reads the stored lanes.
 		var entry *term
 		if lo.concrete != nil && position.kind == termConst {
-			entry = constTerm(elementValue(ident.Value, position.value, bits), bits)
+			entry = constTerm(elementValue(name, position.value, bits), bits)
 		} else {
-			entry = selectTerm(ident.Value, position, bits)
+			entry = selectTerm(name, position, bits)
 		}
 		lanes[k] = memoryAt(lo.writes[root], position, entry)
 	}

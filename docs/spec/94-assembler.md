@@ -507,7 +507,9 @@ body is summarized in place, with fresh symbols namespaced per event
 (`loop2.j`), and the body continues at its exit; the asm shape admits
 recognized inner loops inside a body, and Oak loop bodies admit local
 declarations (a body-local counter is the body's own, not an outer
-loop-carried variable). The coupling pairs every event's variables in one
+loop-carried variable — declared at the body's top level, in a nested
+loop, or in the arm of a conditional, as the Teddy verifier's inner
+literal loop declares its counter). The coupling pairs every event's variables in one
 search (an inner header mentions the outer symbols, so candidates are read
 under the substitution so far) and checks each event under its premise:
 its invariant and guard, its ancestors' invariants and guards, and its
@@ -775,10 +777,11 @@ side as well. Verdicts on the SIMD corpus (`compiler/e2e_native_simd_test.go`):
 `double_it_neon_abi` proven on both halves; on the UTF-8 kernel
 (`benchmarks/native/utf8_valid.oak`): `special_cases` and `check_block`
 proven on both halves of their vector results, `check_blocks` proven
-(the same term on both sides), and the loop kernel `valid_with`
-**proven** since the increments below: its three data-dependent loops
-coupled inductively, every obligation the same term on both sides once
-the machine's branch is settled by a case split. The lane functions are stated in Lean as
+(the same term on both sides), and the loop kernel `valid_with` and the
+validator's entry `valid` **proven** since the increments below: their
+three data-dependent loops coupled inductively, every obligation the same
+term on both sides once the machine's branch is settled by a case split.
+The lane functions are stated in Lean as
 `Oak.NeonSemantics` (`spec/lean/Oak/NeonSemantics.lean`) and each is
 proved to be the `Oak.Simd` operation the lowering uses it for:
 `uqsub_eq_subSat`, `cmeq_eq_eqMask`, `add_eq_addWrap`, `ushr_eq_shr`,
@@ -969,9 +972,15 @@ slots), every continue condition, one-iteration obligation, and the
 result after the loops decided — in eight seconds, no diagram of a
 `check_block` lane among them. The RV64 `fact` loop's 64-bit product,
 witnessed before, is proven the same way (the same term once the w view
-reads back what it wrote). `TestE2ENativeSimdKernelVerdicts` asserts the
-kernel's proof; the trace (`OAK_VERIFY_TRACE`) prints each case split,
-the pruned sizes, and whether the sides became one term.
+reads back what it wrote). And the validator's entry `valid`, which reads
+its four tables from package globals (`view(&table_high1)`, …) rather
+than a span parameter, is proven the same way in four seconds: a vector
+load from `view(&T)` over a constant table reads the span the table is
+declared as (§9, `declareTables`), the elements `T[k]` the machine's
+`adrl` then `ldr q` gives — so the UTF-8 validator is verified from its
+entry to its kernel. `TestE2ENativeSimdKernelVerdicts` asserts both
+proofs; the trace (`OAK_VERIFY_TRACE`) prints each case split, the pruned
+sizes, and whether the sides became one term.
 
 **The floating-point forms (2026-09-14).** `spec/sail/arm_primitives.sail`
 gains Arm's execute bodies for `fadd`/`faddp`, `fsub`, `fmul`, `fmla`/
@@ -1351,7 +1360,13 @@ rejects), the encoder and object writer realize it, and the Oak body stays
 as the portable realization under `OAK_PORTABLE_INTRINSICS` — the
 differential oracle. `Compilation.WithNativeBodies()` (CLI `-native`)
 switches it on; a function outside the subset is left to the C backend
-with the reason reported.
+with the reason reported. So is a function with a `dispatch` clause
+(`93-simd.md` §6), whatever its body: the function is the selection
+between its realizations, made once from the processor's probed features,
+and only the C backend emits that selection; lowering its Oak body would
+define the symbol as the portable realization and leave the hardware unit
+unreachable (measured on CRC-32C, 23× behind, `benchmarks/native/README.md`).
+Its callers lower as usual and call the C backend's definition.
 
 The subset: parameters, locals, and results of the fixed-width integers
 and `Bool` (or a unit result); literals; wrapping `+ - * & | ^`; `/` and
@@ -2544,6 +2559,28 @@ re-slice composes, and the count is below the width. `fields`,
 `compiler/e2e_native_rv64_subslice_test.go`; `asm/derived_spans_test.go`);
 `main`, which hands an owned array into `fields`, stays trusted — a span
 local over an aggregate-bound parameter is the next shape.
+
+**Fortieth increment — views over aggregates (2026-09-16;
+`asm/agg_views.go`, `Oak.Subslice`).** A span or view local over an
+aggregate local — `w: []u32 = view(&buf)`, `field: []u8 = subslice(v,
+start, n)` where `v` is an owned array or a span parameter the summary or
+the inline bound to a caller's array — was refused ("the span local field
+over v, which is not a span"), so the `main`s of the subslice and array
+corpora, which hand their own arrays to helpers that slice them, stayed
+trusted. Such a local is now an aggregate view: it names its owner,
+resolved through the locals at every use (the conditional lowering
+re-points locals at copies), a 32-bit index offset, and a length term.
+`w[i]` reads the owner's element merged under `offset + i`, `w[i] = e`
+writes it, `len(w)` is the length, the bounds check against the view's
+length is a trap obligation and the subslice guards are too; a view passed
+on binds the callee's parameter to the same view over a copy of the owner,
+written back on return as a borrowed array is; a store through a view in a
+data-dependent loop carries the owner's leaves. The `main`s of the subslice
+and array corpora are proven on both lanes (`asm/agg_views_test.go`;
+`compiler/e2e_native_subslice_test.go`,
+`compiler/e2e_native_rv64_subslice_test.go`,
+`compiler/e2e_native_array_test.go`); `Oak.Subslice.view_index_in_owner`
+states that the translated index of a view stays inside its owner.
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
@@ -4107,6 +4144,30 @@ On the prover: proven 391 to 429 — `type_kind`, `node_word`, the
 rows identical; the verifier's share of a cold build is about eight
 CPU-minutes, four of them in the seventy-five witness-free bodies that
 end in evidence, and a warm build takes it from the cache.
+
+**A call's upper bits vanish under the width (2026-09-14).** Eighteen
+bodies whose loops coupled still ended in evidence at the result: the
+`node_*` and `variant_*` accessors, whose result is one element read at
+an index the layout's loop determines. The two sides had the same select
+at the same index, but the asm side carried the summarized call's
+unspecified upper bits — `(r and mask) or (call#hi shl 32)` — under a
+32-bit truncation, so the terms were not one term and a select at a
+symbolic index of eight parameters went to the diagrams, where it
+exceeded the budget. A truncation now drops an `or` operand shifted
+entirely above its width, and the two sides are the same term. On the
+prover: proven 429 to 455, evidence 125 to 105, no disagreement, the
+rows identical. Two
+corrections the fold surfaced: the term algebra's shift count wraps at
+the width, as the machine's does (`y shl 32` at 32 bits is `y`), so the
+fold drops an operand only when its shift's own width exceeds the count,
+and the range bound reads a count modulo the width; and a float element
+of a local array, or a float field of a record local, compared against a
+literal at the literal's default width — `out[3] == -1.0` read the
+literal as an f64 against f32 bits and the Oak side refuted itself —
+which had hidden behind an undecided asm term until the fold made the
+asm side definite and the mismatch confirmed (`floatWidthOf`;
+`TestFloatElementWidth`, `TestShiftCountWrapsAtWidth`). With the
+upstream commits of the same hour: proven 470.
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the

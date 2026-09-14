@@ -49,10 +49,28 @@ func (lo *oakLowering) floatWidthOf(expr ast.Expression) (int, bool) {
 			return lo.floatWidthOf(whenTrue)
 		}
 	case *ast.IndexExpression:
-		// An element of a float span is a float of the element width.
-		if base, isIdent := e.Left.(*ast.Identifier); isIdent && !e.Dot {
-			if contract, isSpan := lo.spans[base.Value]; isSpan && contract.float {
+		// An element of a float span is a float of the element width; so
+		// is an element of a local float array, and a float field of a
+		// record local (`out[3] == -1.0` compared at the element's width,
+		// not the literal's default).
+		if base, isIdent := e.Left.(*ast.Identifier); isIdent {
+			if contract, isSpan := lo.spans[base.Value]; isSpan && !e.Dot && contract.float {
 				return contract.elemWidth, true
+			}
+			if local, isLocal := lo.locals[base.Value]; isLocal && local.agg != nil {
+				typ := local.agg.typ
+				switch {
+				case !e.Dot && typ.kind == oakArray && typ.elem != nil && typ.elem.kind == oakScalar && typ.elem.float:
+					return typ.elem.width, true
+				case e.Dot && typ.kind == oakRecord:
+					if field, isName := e.Index.(*ast.Identifier); isName {
+						for _, f := range typ.fields {
+							if f.name == field.Value && f.typ.kind == oakScalar && f.typ.float {
+								return f.typ.width, true
+							}
+						}
+					}
+				}
 			}
 		}
 	case *ast.InvocationExpression:

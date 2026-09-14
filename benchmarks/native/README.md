@@ -64,6 +64,97 @@ Apple arm64, 2026-09-13.
   (`compiler/e2e_native_simd_test.go`) checks every operation's result
   against the C backend, so the gap is speed, not meaning.
 
+## The kernels
+
+The same question over `benchmarks/kernels` (the ten kernels timed against
+Go and Rust in `BENCHMARKS.md`): `emit` takes the kernel package directory,
+so the whole package — the kernels and the `hash` package they import —
+goes through the native backend, and the C backend's build of the same
+package is the control. The runner is `benchmarks/kernels/runner.c` with
+the emitted C included and the companion object linked; the two runners
+were run alternately, three rounds each of three samples over three inner
+rounds, 1 MiB per kernel, and the checksums agree on every row.
+
+Apple M4 Max, Apple clang 21.0.0, 2026-09-14, revision aade7acd. The host
+was loaded (load average 35–40 from another session's test suites), so
+the ratios are the measurement, not the absolute times; `bitmap`, which
+is the same C-realized helper (`arm64.cnt64`) on both sides, bounds the
+noise at about twenty percent. Raw samples:
+`results/kernels-m4-max-2026-09-14.jsonl`.
+
+| Kernel | C backend ns/byte | Native ns/byte | Native / C | Verdict on the native body |
+| --- | --- | --- | --- | --- |
+| `crc32c` | 0.144 | 3.311 → 0.817 after the dispatch fix | 23.0 → 5.7 | trusted (indexes a package table) |
+| `sha256` | 0.639 | 0.719 → 0.646 after the dispatch fix | 1.12 → 1.00 | trusted (indexes a package table) |
+| `blake3` | 3.115 | 4.808 | 1.54 | trusted |
+| `dot` | 0.835 | 2.704 | 3.24 | proven |
+| `sum` | 0.115 | 0.393 | 3.40 | proven |
+| `search` | 11.50 | 20.30 | 1.76 | proven |
+| `page_probe` | 11.13 | 21.51 | 1.93 | proven |
+| `bitmap` | 0.192 | 0.229 | 1.19 | C helper on both sides (noise floor) |
+| `dispatch` | 10.82 | 9.03 | 0.83 | proven |
+| `tiled` | — | not built | — | refuted by the verifier (see below) |
+
+What the rows say, in the order they matter:
+
+- **A dispatching function lowered natively lost its hardware unit** (fixed
+  in this pass). `crc32c_step7` carries `dispatch { crc: crc32c_step7_asm }`
+  (`docs/spec/93-simd.md` §6): the C backend's definition probes the
+  processor once and branches to the seven-`crc32cx` unit. The native
+  backend lowered the function's Oak body — the portable table walk —
+  under the same symbol, and the native build's C compiles the dispatching
+  definition out on AArch64, so the unit sat in the object unreachable and
+  CRC-32C ran the byte table: 23× behind. The native backend now leaves a
+  function with a dispatch clause to the C backend and lowers its callers
+  as usual (`compiler/native_bodies.go`, `compiler/e2e_native_dispatch_test.go`).
+  `sha256_block_hw` dispatches the same way (`sha2`) and had been lowered
+  the same way; after the fix the SHA-256 row is 1.00×, from 1.12×.
+- **The remaining CRC gap is byte-wise word assembly.** `crc32c_chunk`
+  reads seven little-endian words through `crc32c_word_at`; the native
+  body of the chunk helper is 499 lines: 56 `ldrb`s, each behind its own
+  `cmp`/`b.hs` guard, shifted and or-ed into a word, although the caller
+  established `len(chunk) >= 56` and every offset is a constant. clang
+  turns the same source into seven unaligned `ldr`s. Two idioms the
+  backend does not have yet: a little-endian word assembled from eight
+  guarded byte reads is one load, and constant-offset guards under a
+  length fact proven at the call are redundant.
+- **Scalar loops are not unrolled or vectorized.** `sum` lowers to the
+  tight loop one would write by hand — one `ldr`, one `add`, an increment
+  and two branches per element — and `dot` to the same shape with a
+  multiply-add, both proven; clang at `-O3` vectorizes both. The 3.2–3.4×
+  is the gap between a correct scalar loop and a SIMD one, and it is the
+  price of every reduction until the backend unrolls (the register
+  allocator across calls from the UTF-8 case is a separate prerequisite;
+  these kernels make no calls in their loops).
+- **Branchy kernels are within 2×.** `search` and `page_probe` are compare
+  and branch chains over loads the predictor cannot help; the native code
+  is 1.8–1.9× behind, the difference being the frame traffic around the
+  binary-search helper and the guards the checker cannot elide. The
+  bytecode `dispatch` kernel measured faster natively (0.83×), a
+  difference near the noise band of this host that was not investigated.
+- **The hash kernels' wrappers are trusted, not proven**, because every
+  path indexes a package-level table (`CRC32C_TABLE`, `SHA256_K`), which
+  the verifier does not yet model as memory (`docs/spec/126-verification-chain.md`
+  §3). The verdict is the C backend's realization agreeing on the
+  checksums, which every row above shows.
+
+## The refuted kernel
+
+`bench_tiled` (an `f32` sum of squares over eight accumulators in a
+`[8]f32` local, a stride-8 loop and a remainder loop) is the one kernel the
+native build refuses: the verifier reports a mismatch at `len(a) = 8`,
+with the asm producing `+Inf` and the Oak model `0xF66F…` — a negative
+value, which a sum of squares cannot produce, and which no float
+accumulator that started at zero can reach in one iteration. The lowered
+asm (`results/bench_tiled-native-2026-09-14.asm`) performs the Oak body's
+operations in the Oak body's order; the accumulators live in frame slots
+across the two data-dependent loops, and the refutation is most likely
+the verifier's model of float slots across loop summaries, not the
+backend. It is recorded here as a verifier finding to reproduce in
+isolation; the gate is not bypassed for a measurement (a mismatch rejects
+the build, by design), so the kernel has no native row. The C backend
+runs it at the speed `BENCHMARKS.md` records.
+
 ## Found on the way
 
 - The native backend has no globals: `view(&table_high1)` of a
@@ -81,3 +172,12 @@ Apple arm64, 2026-09-13.
   (`literals.longest` with `len(starts) = 0`): the asm traps, the Oak model
   reads a fixed value. It fails a native build of any program containing
   such a function.
+- A function with a `dispatch` clause lowered natively defined the
+  dispatched symbol as its portable body and hid its hardware unit
+  (the 23× CRC-32C row above); such functions now stay with the C backend.
+- A little-endian word assembled from eight guarded byte reads at
+  constant offsets is fifty-six guarded `ldrb`s in the native body and one
+  `ldr` under clang; the idiom is the next CRC and hash win.
+- The verifier refutes `bench_tiled` with a value the Oak body cannot
+  produce (a negative sum of squares); a probable false alarm in the
+  float-slot model across two loops, to be reduced to a unit case.

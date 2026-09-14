@@ -1173,6 +1173,13 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	sort.Strings(carried)
 	aggregates := map[string]bool{}
 	for _, name := range carried {
+		if view, isView := lo.views[name]; isView {
+			// A store through a view: its owner is the carried aggregate.
+			if aggregates[view.owner] {
+				continue
+			}
+			name = view.owner
+		}
 		local, isLocal := lo.locals[name]
 		if !isLocal {
 			if _, isSpan := lo.spans[name]; isSpan {
@@ -1345,6 +1352,10 @@ func indexRootIdent(e ast.Expression) string {
 	return ""
 }
 
+// declaredLocals collects the locals a loop body declares — at its top
+// level, in nested loops, and in the arms of statement-level conditionals
+// (a local declared in an arm and assigned in a loop nested there is the
+// body's own, not loop-carried), mirroring assignedLocals.
 func declaredLocals(body *ast.BlockStatement, into map[string]bool) {
 	if body == nil {
 		return
@@ -1355,6 +1366,14 @@ func declaredLocals(body *ast.BlockStatement, into map[string]bool) {
 			into[s.Name.Value] = true
 		case *ast.WhileStatement:
 			declaredLocals(s.Body, into)
+		case *ast.ExpressionStatement:
+			if match, isMatch := s.Expression.(*ast.MatchExpression); isMatch {
+				for _, arm := range match.Arms {
+					if block, isBlock := arm.Body.(*ast.BlockExpression); isBlock {
+						declaredLocals(block.Block, into)
+					}
+				}
+			}
 		}
 	}
 }

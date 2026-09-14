@@ -448,6 +448,11 @@ decide_serialized: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw
       race_in_oak(l, lw, t0, t1, t2, b0, b2, b1, n0, n2, n0, variants, span(&out))
     }
     status: u32 = out[u32(0)]
+    // A refutation stands only where the evaluation confirms it
+    // (refutation_confirmed): otherwise the diagrams differed under the
+    // abstraction of an uninterpreted operation alone, and the bit level
+    // is undecided.
+    status = (status == STATUS_REFUTED && !refutation_confirmed(lw, work_raw, b0, view(&out), u32(4), out[u32(3)])) ? { STATUS_EXCEEDED } | { status }
     winner: u32 = out[u32(1)]
     order: u32 = winner == u32(0) ? { u32(0) } | { (winner == u32(1) && has1) ? { u32(1) } | { u32(2) } }
     // The certificate rung (certify.oak): the interleaved problem lowered
@@ -489,7 +494,7 @@ decide_serialized: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw
         ap_cert_constant(le, ew)
         ap_close(le, ew)
       } | {
-      cert[u32(0)] == CERT_MODEL ? {
+      (cert[u32(0)] == CERT_MODEL && refutation_confirmed(lw, work_raw, b0, view(&cert), u32(4), cert[u32(3)])) ? {
         kind = ROW_REFUTED
         ap_counterexample_word(le, ew)
         listed: u32 = cert[u32(3)]

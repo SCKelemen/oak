@@ -30,6 +30,32 @@ type Problem struct {
 	// failing root) reads as a counterexample over the parameters.
 	Owners map[uint32]VariableOwner
 	names  []string
+	// claim and traps are the lowered terms the words encode, for
+	// confirming a reported path on the terms themselves (Confirms).
+	claim *term
+	traps []*term
+}
+
+// Confirms evaluates the lowered claim and traps at the assignment a
+// failing path names and reports whether it is a counterexample on the
+// terms: the claim false, or a trap fired. The problem abstracts an
+// uninterpreted operation (integer division by a constant that is not a
+// power of two, a floating-point operation) as a select slot, so a path
+// falsifying the abstraction may satisfy the claim — division by three is
+// not any function of its operands; only a path the evaluation confirms
+// refutes the theorem.
+func (p Problem) Confirms(setVars []uint32) bool {
+	if p.claim == nil {
+		return true
+	}
+	env := p.Params(setVars)
+	evaluator := newTermEvaluator(append([]*term{p.claim}, p.traps...)...)
+	for _, trap := range p.traps {
+		if evaluator.evaluate(trap, env) != 0 {
+			return true
+		}
+	}
+	return evaluator.evaluate(p.claim, env) != 1
 }
 
 // VariableOwner is the parameter bit a diagram variable stands for.
@@ -48,6 +74,22 @@ func (p Problem) Counterexample(setVars []uint32) string {
 		}
 	}
 	return describeEnv(p.names, env)
+}
+
+// Params reads the variables set on a failing path as the parameter
+// assignment they name (every unset bit zero), for confirming the path on
+// the terms (CNF.Confirms).
+func (p Problem) Params(setVars []uint32) map[string]uint64 {
+	env := map[string]uint64{}
+	for _, name := range p.names {
+		env[name] = 0
+	}
+	for _, v := range setVars {
+		if owner, isParam := p.Owners[v]; isParam {
+			env[owner.Param] |= uint64(1) << uint(owner.Bit)
+		}
+	}
+	return env
 }
 
 // ExportProblems serializes the theorem under every variable order that
@@ -233,5 +275,5 @@ func serializeProblem(bl *blaster, claim *term, traps []*term, budget int, order
 	for v, owner := range bl.owners {
 		owners[uint32(v)] = VariableOwner{Param: owner.param, Bit: owner.bit}
 	}
-	return Problem{Words: words, Order: order, Terms: len(terms), Leaves: len(bl.params), Owners: owners, names: bl.params}
+	return Problem{Words: words, Order: order, Terms: len(terms), Leaves: len(bl.params), Owners: owners, names: bl.params, claim: claim, traps: traps}
 }

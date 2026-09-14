@@ -132,6 +132,11 @@ func TestE2ENativeArrays(t *testing.T) {
 	if !strings.Contains(joined, "asm unit signed_bytes: proven equal to its Oak body") {
 		t.Errorf("signed_bytes must be proven through the guarded element load; diagnostics:\n%s", joined)
 	}
+	// main hands its arrays to the helpers as spans and views: proven
+	// through the summaries and the views over the arrays.
+	if !strings.Contains(joined, "asm unit main: proven equal to its Oak body") {
+		t.Errorf("main must be proven through its callees over its own arrays; diagnostics:\n%s", joined)
+	}
 	if _, code, abnormal := buildAndRunFrom(t, "native_arrays_c", New().WithSource("arrays.oak", nativeArrayProgram)); abnormal || code != 42 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 42", code, abnormal)
 	}

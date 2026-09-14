@@ -539,8 +539,18 @@ arithmetic, sqrt, fma, and the conversions lower to *uninterpreted*
 operation terms (`asm/floats_ops.go`, `94-assembler.md` §8): a theorem
 whose two sides apply the same IEEE operations to the same operands in the
 same order decides, and one that needs a law of the arithmetic — `x * 2 =
-x + x`, commutativity — is refuted, conservatively, since the decider
-assumes no such law (`Oak.Uninterpreted`). What is not yet restated:
+x + x`, commutativity — stays **open**, since the decider assumes no such
+law (`Oak.Uninterpreted`). A path the diagrams or the clauses find under
+that abstraction is a **counterexample only when the terms confirm it**:
+every reported refutation — the Go decider's, the Oak solver's (its own
+evaluator, `confirm_at`), the SAT solver's model, and the clause engines'
+models — is re-evaluated on the lowered claim and traps at the
+assignment, with the operation itself computed (IEEE arithmetic, integer
+division), and an assignment at which the claim holds refutes nothing:
+`!(a < b) || a + (b - a) / 3 < b` is true under division, whatever the
+diagrams made of the uninterpreted quotient, and stays open for Lean
+(2026-09-14; before, such a path was reported as a counterexample).
+What is not yet restated:
 `Oak.Floats`' rounding contract itself (the bit-level `Oak.FloatOps` is
 the Lean side of it; the decider keeps the operations opaque), and the
 laws over lists and layouts, which have no fixed-width statement.
@@ -702,7 +712,7 @@ In order of payoff, each reusing a surface that exists:
   whole program compiled through the verified native backend
   (`94-assembler.md` §9, sixteenth increment; `OAK_SOLVER_NATIVE=1`):
   879 of its 954 functions lowered to machine code the seam checker
-  admits and the Oak assembler encodes, 429 of them proven equal to
+  admits and the Oak assembler encodes, 470 of them proven equal to
   their Oak bodies — their results, the package cells they write, and,
   since the twenty-eighth increment, the span memories they store
   through, compared at a fresh index, a callee's stores reaching its

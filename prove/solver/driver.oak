@@ -326,7 +326,7 @@ mentioned_marks_s: (p: [*]u32, out: [*]u32, start: u32): u32 {
   count
 }
 
-solve_prefix: (l: Layout, mem: [*]u32, whole: []u32, n: u32, index: u32, ser: Ser, ser_raw: c.Ptr): () {
+solve_prefix: (l: Layout, lw: Lower, mem: [*]u32, w: [*]u32, b: [*]u32, whole: []u32, n: u32, index: u32, ser: Ser, ser_raw: c.Ptr): () {
   p: []u32 = subslice(whole, u32(0), n)
   dump_problem(p, index)
   status: u32 = solve(l, mem, p)
@@ -342,6 +342,12 @@ solve_prefix: (l: Layout, mem: [*]u32, whole: []u32, n: u32, index: u32, ser: Se
     }
     i = i + u32(1)
   }
+  // A refutation stands only where the evaluation confirms it (confirm_at):
+  // otherwise the diagrams differed under the abstraction of an
+  // uninterpreted operation alone, and the bit level is undecided.
+  confirmed: Bool = status == STATUS_REFUTED ? { confirm_at(lw, w, b, view(&vars), u32(0), kept) } | { true }
+  status = confirmed ? { status } | { STATUS_EXCEEDED }
+  kept = confirmed ? { kept } | { u32(0) }
   kept = status == STATUS_REFUTED ? { mentioned_marks(p, span(&vars), kept) } | { kept }
   report_lowered(index, status, node_count(l, mem), u32(1), view(&vars), kept, ser, ser_raw)
 }
@@ -413,13 +419,74 @@ witness_check: (lw: Lower, w: [*]u32, b: [*]u32, witness: [*]u32): u32 {
   verdict
 }
 
+// refutation_confirmed evaluates the lowered problem at a counterexample —
+// the set leaf bits `leaf * 64 + bit`, count of them from bits[start]; the
+// marks after them carry a high bit and are skipped — and reports whether
+// the claim really fails or a trap really fires there. The diagrams and
+// the clause engine abstract an uninterpreted operation (integer division
+// by a constant that is not a power of two, a floating-point operation) as
+// a fresh block, so an assignment that falsifies the abstraction may
+// satisfy the claim: division by three is not any function of its
+// operands. An assignment the evaluation does not confirm is no
+// counterexample; a problem beyond the evaluator (a select) keeps the
+// diagrams' word.
+refutation_confirmed: (lw: Lower, work_raw: c.Ptr, built_raw: c.Ptr, bits: []u32, start: u32, count: u32): Bool {
+  confirmed: Bool = true
+  unsafe {
+    wbuf: Buffer[u32] = c.own[u32](work_raw, lw.total)
+    bbuf: Buffer[u32] = c.own[u32](built_raw, lw.built_total)
+    confirmed = confirm_at(lw, span(&wbuf), span(&bbuf), bits, start, count)
+    released_w: c.Ptr = c.disown(wbuf)
+    released_b: c.Ptr = c.disown(bbuf)
+  }
+  confirmed
+}
+
+confirm_at: (lw: Lower, w: [*]u32, b: [*]u32, bits: []u32, start: u32, count: u32): Bool {
+  nterms: u32 = b[u32(0)]
+  leaves: u32 = b[u32(1)]
+  roots: u32 = b[u32(2)]
+  root_base: u32 = HEADER_WORDS + leaves * LEAF_WORDS + nterms * TERM_WORDS
+  ntraps: u32 = roots - u32(1)
+  claim: u32 = b[root_base + ntraps]
+  li: u32 = 0
+  while li < leaves {
+    w[lw.snap_at + li * u32(2)] = u32(0)
+    w[lw.snap_at + li * u32(2) + u32(1)] = u32(0)
+    li = li + u32(1)
+  }
+  i: u32 = 0
+  while i < count {
+    lb: u32 = bits[start + i]
+    lb < leaves * u32(64) ? {
+      leaf: u32 = lb / u32(64)
+      bit: u32 = lb % u32(64)
+      at: u32 = lw.snap_at + leaf * u32(2) + (bit < u32(32) ? { u32(0) } | { u32(1) })
+      w[at] = w[at] | (u32(1) << (bit % u32(32)))
+    } | { }
+    i = i + u32(1)
+  }
+  fails: Bool = true
+  eval_terms(lw, w, b, nterms) ? {
+    fails = (term_value(lw, w, claim) & u64(1)) != u64(1)
+    r: u32 = 0
+    while r < ntraps {
+      fails = fails || (term_value(lw, w, b[root_base + r]) & u64(1)) != u64(0)
+      r = r + u32(1)
+    }
+  } | { }
+  fails
+}
+
 // solve_lowered solves the problem the Oak lowering built (n words at the
 // built buffer's memory) and reports it as lowered in Oak.
-solve_lowered: (l: Layout, lw: Lower, table_raw: c.Ptr, built_raw: c.Ptr, n: u32, index: u32, ser: Ser, ser_raw: c.Ptr): () {
+solve_lowered: (l: Layout, lw: Lower, work_raw: c.Ptr, table_raw: c.Ptr, built_raw: c.Ptr, n: u32, index: u32, ser: Ser, ser_raw: c.Ptr): () {
   unsafe {
+    wbuf: Buffer[u32] = c.own[u32](work_raw, lw.total)
     tbuf: Buffer[u32] = c.own[u32](table_raw, l.total)
     bbuf: Buffer[u32] = c.own[u32](built_raw, lw.built_total)
-    solve_prefix(l, span(&tbuf), view(&bbuf), n, index, ser, ser_raw)
+    solve_prefix(l, lw, span(&tbuf), span(&wbuf), span(&bbuf), view(&bbuf), n, index, ser, ser_raw)
+    released_w: c.Ptr = c.disown(wbuf)
     released_t: c.Ptr = c.disown(tbuf)
     released_b: c.Ptr = c.disown(bbuf)
   }

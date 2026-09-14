@@ -73,6 +73,39 @@ main: (): i32 = 0
 	}
 }
 
+// A theorem over an uninterpreted operation — integer division by a
+// constant that is not a power of two — is never refuted by a path that
+// falsifies only the operation's abstraction: the decider confirms every
+// counterexample on the terms, and a claim that holds at the assignment
+// stays open (for Lean), as docs/spec/125-verification.md states.
+func TestTheoremOverUninterpretedDivisionIsNotRefuted(t *testing.T) {
+	src := `
+midpoint_under_bound_3: theorem (a: u32, b: u32) { !(a < b) || a + (b - a) / u32(3) < b }
+
+third_over: theorem (a: u32) { a / u32(3) > a }
+
+main: (): i32 = 0
+`
+	results, err := Theorems(check(t, src), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range results {
+		switch r.Name {
+		case "midpoint_under_bound_3":
+			if r.Status == Refuted {
+				t.Errorf("midpoint_under_bound_3 holds under real division and must not be refuted: %s", r.Detail)
+			}
+		case "third_over":
+			// False under real division at every nonzero a: a confirmed
+			// counterexample is still a refutation.
+			if r.Status != Refuted {
+				t.Errorf("third_over is false and must be refuted, got %s (%s)", r.Status, r.Detail)
+			}
+		}
+	}
+}
+
 // Shape errors are reported with their code; a theorem's body must be Bool.
 func TestTheoremShape(t *testing.T) {
 	for _, tc := range []struct{ name, src, want string }{
