@@ -154,9 +154,10 @@ func TestE2ENativeSimd(t *testing.T) {
 	// straight-line vector body is proven against its Oak body, the
 	// vector-contract callee on both halves of v0, and doubled_mask
 	// through the expanded callee (nativegen/inline.go) inlined on the Oak
-	// side too. combine_store has no result and across_call makes a call:
-	// trusted, as their scalar counterparts are.
-	for _, fn := range []string{"lanes_mask", "logic", "shuffle", "words", "bits", "double_it_neon_abi", "doubled_mask"} {
+	// side too, and combine_store in the span memory its vector store
+	// leaves (asm/effects.go). across_call makes a call: trusted, as its
+	// scalar counterparts are.
+	for _, fn := range []string{"lanes_mask", "logic", "combine_store", "shuffle", "words", "bits", "double_it_neon_abi", "doubled_mask"} {
 		if !strings.Contains(joined, "asm unit "+fn+": proven") {
 			t.Errorf("%s must be proven equal to its Oak body; diagnostics:\n%s", fn, joined)
 		}

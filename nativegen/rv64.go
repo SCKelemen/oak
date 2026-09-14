@@ -2624,9 +2624,38 @@ func (g *rvGenerator) floatCompare(operator string, l, r int, typ scalar) (int, 
 // rvFloatIntrinsics are the correctly rounded intrinsics that are one F/D
 // instruction each: fmin/fmax are the number-selecting minimum and maximum
 // (a NaN operand yields the other, IEEE 754-2008 minNum/maxNum), fma is
-// fmadd (nothing else is ever contracted). floor/ceil/trunc/round and the
-// NaN-propagating min/max have no single instruction and stay with C.
+// fmadd (nothing else is ever contracted). floor/ceil/trunc/round have no
+// single instruction and stay with C; the NaN-propagating min/max are
+// fmin/fmax behind two NaN tests (rvMinMax).
 var rvFloatIntrinsics = map[string]string{"sqrt": "fsqrt", "abs": "fsgnjx", "min_num": "fmin", "max_num": "fmax", "fma": "fmadd"}
+
+// rvMinMax lowers Oak's `min`/`max` (IEEE 754-2019 minimum/maximum,
+// docs/spec/20-types.md §11.3.5: a NaN operand yields NaN, -0.0 orders
+// below +0.0): on numbers RISC-V's fmin/fmax are that order, so the
+// sequence tests each operand against itself (`feq` is false exactly on a
+// NaN), keeps a NaN operand as the result, and takes fmin/fmax otherwise —
+// the same shape the vector lowering merges with masks (rv64_simd.go). The
+// verifier decides it against the Oak body up to the NaN payload.
+func (g *rvGenerator) rvMinMax(op string, typ scalar, a, b int) error {
+	suffix := fsuffix(typ)
+	flag, err := g.alloc(scalars["u32"])
+	if err != nil {
+		return err
+	}
+	done := g.newLabel("minmax_done")
+	second := g.newLabel("minmax_second")
+	g.emit("feq"+suffix, rvReg(flag), rvReg(a), rvReg(a))
+	g.emit("beqz", rvReg(flag), asm.Symbol{Name: done}) // a is NaN: the result is a
+	g.emit("feq"+suffix, rvReg(flag), rvReg(b), rvReg(b))
+	g.emit("beqz", rvReg(flag), asm.Symbol{Name: second}) // b is NaN: the result is b
+	g.emit(op+suffix, rvReg(a), rvReg(a), rvReg(b))
+	g.jump(done)
+	g.label(second)
+	g.emit("fsgnj"+suffix, rvReg(a), rvReg(b), rvReg(b))
+	g.label(done)
+	g.release(flag)
+	return nil
+}
 
 // intrinsic lowers a float intrinsic at the call's recorded width
 // (narrower operands widen exactly first).
@@ -2636,6 +2665,9 @@ func (g *rvGenerator) intrinsic(e *ast.InvocationExpression, typ scalar) (int, e
 		return 0, unsupported("a call through a value")
 	}
 	op, ok := rvFloatIntrinsics[ident.Value]
+	if !ok && (ident.Value == "min" || ident.Value == "max") && len(e.Arguments) == 2 {
+		op, ok = map[string]string{"min": "fmin", "max": "fmax"}[ident.Value], true
+	}
 	if !ok {
 		return 0, unsupported("the intrinsic %s (no single F/D instruction)", ident.Value)
 	}
@@ -2665,6 +2697,11 @@ func (g *rvGenerator) intrinsic(e *ast.InvocationExpression, typ scalar) (int, e
 		g.emit(op+suffix, R(0), R(0), R(0))
 	case len(regs) == 1:
 		g.emit(op+suffix, R(0), R(0))
+	case len(regs) == 2 && (ident.Value == "min" || ident.Value == "max"):
+		if err := g.rvMinMax(op, typ, regs[0], regs[1]); err != nil {
+			return 0, err
+		}
+		g.release(regs[1])
 	case len(regs) == 2:
 		g.emit(op+suffix, R(0), R(0), R(1))
 		g.release(regs[1])

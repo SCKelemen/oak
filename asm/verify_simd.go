@@ -366,19 +366,99 @@ func (lo *oakLowering) vectorLoad(source, index ast.Expression, shape typechecke
 	if !ok {
 		return nil, reason, false
 	}
+	root := lo.spanRoot(ident.Value)
 	lanes := make([]*term, shape.Lanes)
 	for k := range lanes {
 		position := at
 		if k > 0 {
 			position = binaryTerm("add", at, constTerm(uint64(k), 32))
 		}
+		// The entry memory, behind the path's writes (asm/effects.go): a
+		// load after a vector store reads the stored lanes.
+		var entry *term
 		if lo.concrete != nil && position.kind == termConst {
-			lanes[k] = constTerm(elementValue(ident.Value, position.value, bits), bits)
-			continue
+			entry = constTerm(elementValue(ident.Value, position.value, bits), bits)
+		} else {
+			entry = selectTerm(ident.Value, position, bits)
 		}
-		lanes[k] = selectTerm(ident.Value, position, bits)
+		lanes[k] = memoryAt(lo.writes[root], position, entry)
 	}
 	return lanes, "", true
+}
+
+// simdStore lowers `simd.store_<shape>(v, i, x)` in statement position:
+// the lanes of x become the span's elements i .. i+lanes-1 in the path's
+// write log under the path condition (asm/effects.go; Oak.Simd.store,
+// store_lane), or the elements of an owned array local at a literal offset.
+// The bound is the checker's (the store is dominated by a length guard).
+// Reports whether the call was a vector store.
+func (lo *oakLowering) simdStore(call *ast.InvocationExpression) (handled bool, reason string, ok bool) {
+	member, isSimd := simdMember(call.Function)
+	if !isSimd {
+		return false, "", false
+	}
+	op, shape, isOp := simdOpShape(member)
+	if !isOp || op != "store" {
+		return false, "", false
+	}
+	if len(call.Arguments) != 3 {
+		return true, fmt.Sprintf("simd.%s with %d operands", member, len(call.Arguments)), false
+	}
+	if len(lo.loopStack) > 0 {
+		return true, "a vector store in a data-dependent loop body", false
+	}
+	bits := laneWidth(shape)
+	lanes, reason, okLanes := lo.vectorLanes(call.Arguments[2], shape)
+	if !okLanes {
+		return true, reason, false
+	}
+	source := call.Arguments[0]
+	if name := addressOfOperand(source); name != "" {
+		if local, isLocal := lo.locals[name]; isLocal && local.agg != nil {
+			// An owned array: its elements at a literal offset take the lanes.
+			if local.agg.typ.kind != oakArray || local.agg.typ.elem.width != bits {
+				return true, fmt.Sprintf("a vector store into %s (not an array of %s)", name, shape.ElemName), false
+			}
+			offset, isConst := lo.constantIndexValue(call.Arguments[1])
+			if !isConst || offset < 0 || offset+int64(shape.Lanes) > local.agg.typ.length {
+				return true, "a vector store into an owned array at an index that is not a constant inside it", false
+			}
+			if lo.path != nil {
+				return true, "a conditional vector store into an owned array", false
+			}
+			for k, lane := range lanes {
+				local.agg.elems[offset+int64(k)].scalar = lane
+			}
+			return true, "", true
+		}
+	}
+	ident, isIdent := source.(*ast.Identifier)
+	if !isIdent {
+		return true, "a vector store through an operand that is not a span parameter", false
+	}
+	if _, shadowed := lo.locals[ident.Value]; shadowed {
+		return true, fmt.Sprintf("a vector store through %s (a local, not a span parameter)", ident.Value), false
+	}
+	contract, isSpan := lo.spans[ident.Value]
+	if !isSpan {
+		return true, fmt.Sprintf("a vector store through %s (not a span parameter)", ident.Value), false
+	}
+	if contract.elemWidth != bits {
+		return true, fmt.Sprintf("a vector store of %s lanes over %d-bit elements", shape.ElemName, contract.elemWidth), false
+	}
+	index, reason, okIndex := lo.lower(call.Arguments[1], 32)
+	if !okIndex {
+		return true, reason, false
+	}
+	root := lo.spanRoot(ident.Value)
+	for k, lane := range lanes {
+		at := index
+		if k > 0 {
+			at = binaryTerm("add", index, constTerm(uint64(k), 32))
+		}
+		lo.writes = appendWrite(lo.writes, root, at, truncate(lane, bits), lo.path)
+	}
+	return true, "", true
 }
 
 // simdScalar lowers a scalar-producing simd call at the context width:
@@ -465,7 +545,7 @@ func (lo *oakLowering) simdScalar(member string, call *ast.InvocationExpression,
 			return zeroExtend(truncate(laneAll(lanes), 1), width), "", true
 		}
 	case "store":
-		return nil, fmt.Sprintf("simd.%s (a write the straight-line model does not follow)", member), false
+		return nil, fmt.Sprintf("simd.%s in value position (a statement)", member), false
 	}
 	if _, isVectorOp := simdVectorOps[op]; isVectorOp {
 		return nil, fmt.Sprintf("the vector simd.%s in scalar position", member), false

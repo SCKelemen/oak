@@ -131,7 +131,7 @@ func TestE2ENativeFloatSimd(t *testing.T) {
 	// The verifier decides the float units up to the IEEE operations
 	// (docs/spec/94-assembler.md §8, eighth increment): each is proven
 	// equal to its Oak body, the vector-signature entry on both halves.
-	for _, fn := range []string{"arith", "dot", "pairwise", "minmax", "doubles", "scale_neon_abi", "scaled", "words_view"} {
+	for _, fn := range []string{"arith", "dot", "pairwise", "minmax", "unary", "doubles", "scale_neon_abi", "scaled", "words_view"} {
 		if !strings.Contains(joined, "asm unit "+fn+": proven") {
 			t.Errorf("%s was not proven by the verifier; diagnostics:\n%s", fn, joined)
 		}

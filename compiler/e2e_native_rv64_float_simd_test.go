@@ -136,9 +136,6 @@ func TestE2ENativeRV64FloatSimdLowers(t *testing.T) {
 	// slid extracts, the vid/vmseq/vfmerge inserts, and the pairwise
 	// reduce through slides are proven.
 	for _, fn := range nativeRV64FloatSimdFunctions {
-		if fn == "unary" {
-			continue // a store through a span: a memory effect the verifier does not follow
-		}
 		if !strings.Contains(joined, "asm unit "+fn+": proven") {
 			t.Errorf("%s was not proven by the verifier; diagnostics:\n%s", fn, joined)
 		}
