@@ -2303,6 +2303,31 @@ nested corpus's `corner_sum` and the callers reaching it are proven on
 both lanes (`asm/assert_test.go`: a body with two asserts proven, the
 wrong result after them a mismatch).
 
+**Thirty-third increment — parameters in the caller's outgoing area
+(2026-09-15; `asm/verify.go` executeBodyChunk, `asm/unit.go`,
+`Oak.StackArguments`).** The thirtieth increment read a callee's stack
+arguments from the caller's side; the callee's own side still refused
+them ("parameters beyond the register contract (the incoming stack area
+is not modeled)"), so `nine`, `twelve`, `tail_sum`, and `records_last`
+of the stack-argument corpus were trusted. The executor now holds such
+a parameter in the frame slot at its offset above the entry sp (the
+binding's `Stack`, the layout the checker and the backend share), at the
+size the caller stored it — a narrow scalar its own bytes, a `Bool` the
+four of the C int, a 64-bit scalar eight, a span its base at the offset
+and its length eight on, a by-value record its chunks, a by-reference one
+its address — and the body's `ldrb`/`ldrh`/`ldr` of the slot reads the
+parameter as it reads any frame slot (`Oak.StackArguments`: the slot
+round-trips at its width, the span pair's slots are disjoint). A unit may
+now spell the binding as the compiler does, `bind [sp, #N] = p`, under
+the packed convention. `nine` is proven; `twelve`, a 64-bit sum of
+twelve unknowns, reads them all and stays evidence at the diagrams'
+budget; dropping a stack parameter from the body is a mismatch
+(`asm/stack_params_test.go`). `tail_sum`, whose span arrives on the
+stack, reads it and is evidence too: the coupling search pairs its
+counter with the accumulator's register, whose header value is an
+affine image of the counter's, and does not back out of the choice — a
+limit of the search, not of the slot model.
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to

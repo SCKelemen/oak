@@ -978,9 +978,45 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 			break
 		}
 		if binding.OnStack {
-			// A parameter in the caller's outgoing area: the executor does
-			// not model the incoming stack (a body reading it stays trusted).
-			return nil, nil, "parameters beyond the register contract (the incoming stack area is not modeled)", false
+			// A parameter in the caller's outgoing area: the frame slot at
+			// Stack bytes above the entry sp holds it, at the size the
+			// caller stored it (classifyArguments: a narrow scalar its own
+			// bytes, a Bool the four of the C int, a 64-bit scalar eight),
+			// a span's base at Stack and its 32-bit length at Stack+8, a
+			// by-value record its chunks, a by-reference one its address
+			// (docs/spec/94-assembler.md §8, thirty-third increment;
+			// Oak.StackArguments). The body's loads then read the
+			// parameters as they read any frame slot.
+			if state.frame == nil {
+				state.frame = map[int64]frameSlot{}
+			}
+			switch {
+			case composites[binding.Param].leaves != nil:
+				cp := composites[binding.Param]
+				if cp.size > 16 {
+					state.storeSlot(binding.Stack, paramTerm(spanBaseName(binding.Param), 64), 8)
+					continue
+				}
+				state.storeSlot(binding.Stack, chunkTerm(cp.leaves, 0, input), 8)
+				if cp.size > 8 {
+					state.storeSlot(binding.Stack+8, chunkTerm(cp.leaves, 1, input), 8)
+				}
+			case spans[binding.Param] != 0:
+				state.storeSlot(binding.Stack, paramTerm(spanBaseName(binding.Param), 64), 8)
+				state.storeSlot(binding.Stack+8, input(spanLenName(binding.Param), 32), 4)
+			case params[binding.Param] == ClassX:
+				state.storeSlot(binding.Stack, input(binding.Param, 64), 8)
+			case boolParams[binding.Param]:
+				state.storeSlot(binding.Stack, zeroExtend(input(binding.Param, 1), 32), 4)
+			default:
+				bits := declared[binding.Param]
+				if bits < 32 {
+					state.storeSlot(binding.Stack, input(binding.Param, bits), int64(bits+7)/8)
+				} else {
+					state.storeSlot(binding.Stack, input(binding.Param, 32), 4)
+				}
+			}
+			continue
 		}
 		if cp, isComposite := composites[binding.Param]; isComposite {
 			if cp.size > 16 {

@@ -102,6 +102,7 @@ import Oak.LoweringRefinement
 import Oak.Semver
 import Oak.Loops
 import Oak.TrapArms
+import Oak.StackArguments
 import Oak.Regions
 import Oak.SessionObligations
 import Oak.SessionObligationsProved
