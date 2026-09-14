@@ -50,7 +50,10 @@ func bindRV64Params(fn *Function, sig *ast.FunctionStatement, state *symbolicSta
 				return "span binding of a non-span parameter", false
 			}
 			state.regs[binding.Register.Num] = paramTerm(spanBaseName(binding.Param), 64)
-			state.regs[binding.Length.Num] = zeroExtend(input(spanLenName(binding.Param), 32), 64)
+			// The length is a u32 argument, widened like any other
+			// (Oak.RiscV.widen): a raw comparison of two widened u32s is
+			// their 32-bit comparison (Oak.RiscV.index_guard_widened).
+			state.regs[binding.Length.Num] = extendTerm(zeroExtend(input(spanLenName(binding.Param), 32), 64), 32, 64, true)
 			continue
 		}
 		bits := declared[binding.Param]
@@ -146,11 +149,18 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 		if !ok {
 			return "unbound register read", false
 		}
-		if name == "srli" && ops[2].(Immediate).Value == 32 && l.kind == termBinary && l.op == "shl" && l.right.kind == termConst && l.right.value == 32 {
+		if count := ops[2].(Immediate).Value; name == "srli" && count >= 1 && count <= 32 && l.kind == termBinary && l.op == "shl" && l.right.kind == termConst && l.right.value == 32 {
 			// (x << 32) >> 32 is the zero extension of x's low half
 			// (Oak.RiscV.normalize_eq): the checker's length normalization,
-			// folded so a normalized length is the length's own term.
-			state.write(reg(0), zeroExtend(truncate(l.left, 32), 64))
+			// folded so a normalized length is the length's own term; and
+			// (x << 32) >> (32 - s) is that zero extension shifted by s
+			// (Oak.RiscV.widened_scale): GCC's fused zero-extend-and-scale
+			// of an index, folded to the element shape `idx << s`.
+			low := zeroExtend(truncate(l.left, 32), 64)
+			if count < 32 {
+				low = binaryTerm("shl", low, constTerm(uint64(32-count), 64))
+			}
+			state.write(reg(0), low)
 			return "", true
 		}
 		state.write(reg(0), binaryTerm(op, l, imm(2, 64)))

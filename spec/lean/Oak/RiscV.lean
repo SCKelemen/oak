@@ -184,9 +184,11 @@ theorem addw_widen (x y : BitVec 32) :
 
 /-! ## The index guard (span element memory, `94-assembler.md` §9)
 
-The LP64 pair leaves a span's `u32` length in the low half of its register
-with padding above; the checker admits a bound only from the *normalized*
-copy `(len << 32) >> 32`. On the fall-through of `bgeu idx, lenN, exit`
+The LP64 pair carries a span's `u32` length widened like any `u32`
+argument (sign-extended from bit 31); the checker admits a bound from the
+*normalized* copy `(len << 32) >> 32` against any index, or from the raw
+pair when both are widened `u32` parameters (`index_guard_widened`,
+below). On the fall-through of `bgeu idx, lenN, exit`
 the branch did not hold, so `idx <u lenN`; since `lenN < 2^32`, the index
 is below the length and fits 32 bits, and `idx << s` for `2^s` the element
 size addresses element `idx` without wrapping — what `deriveRegion`
@@ -225,6 +227,63 @@ theorem scaled_index_exact (idx len : X) (s : Nat) (hs : s ≤ 31)
   calc idx.toNat * 2 ^ s < 2 ^ 32 * 2 ^ s := Nat.mul_lt_mul_of_pos_right hidx (Nat.two_pow_pos s)
     _ = 2 ^ (32 + s) := by rw [Nat.pow_add]
     _ ≤ 2 ^ 64 := Nat.pow_le_pow_right (by decide) (by omega)
+
+/-- The normalization pair is the zero extension of the low half: the
+    verifier folds `(x << 32) >> 32` to it (`asm/rv64_verify.go`). -/
+theorem normalize_eq (len : X) : normalize len = (len.truncate 32).zeroExtend 64 := by
+  apply BitVec.eq_of_toNat_eq
+  have h := len.isLt
+  rw [normalize, BitVec.toNat_ushiftRight, BitVec.toNat_shiftLeft, BitVec.toNat_setWidth, BitVec.toNat_setWidth,
+    Nat.shiftLeft_eq, Nat.shiftRight_eq_div_pow]
+  simp only [Nat.reducePow] at *
+  omega
+
+/-! ### GCC's shape of the guarded read
+
+A C compiler compares the psABI pair raw: `bgeu idx, len` with both
+registers holding widened `u32` parameters (`widen`), then zero-extends
+and scales the index in one `slli 32; srli 32-s`, and adds into the base
+register. The widening makes the raw comparison the 32-bit comparison, and
+the fused pair is the scaled zero extension — the shapes `deriveRegion`
+admits through the `widened` and `half` facts. -/
+
+/-- The fall-through of `bgeu idx, len` on two widened `u32` values proves
+    the 32-bit comparison: sign extension preserves unsigned order between
+    values of one width. -/
+theorem index_guard_widened (i len : BitVec 32)
+    (h : Br.holds .bgeu (widen 32 false i) (widen 32 false len) = false) :
+    i.toNat < len.toNat := by
+  simp only [Br.holds, Bool.not_eq_false', widen, sextW] at h
+  have hlt : i.ult len = true := by bv_decide
+  exact BitVec.ult_iff_toNat_lt.mp hlt
+
+/-- A widened `u32` is the parameter modulo `2^32`. -/
+theorem widen_toNat_mod (i : BitVec 32) : (widen 32 false i).toNat % 2 ^ 32 = i.toNat := by
+  have h := congrArg BitVec.toNat (widen_truncate_u32 i)
+  simpa [BitVec.toNat_setWidth] using h
+
+/-- `slli 32` then `srli 32-s` on a widened index is the zero extension
+    shifted by `s`: the index scaled by `2^s`, without wrap. -/
+theorem widened_scale (i : BitVec 32) (s : Nat) (hs : s ≤ 32) :
+    ((widen 32 false i) <<< 32) >>> (32 - s) = (i.zeroExtend 64) <<< s := by
+  apply BitVec.eq_of_toNat_eq
+  have hi := i.isLt
+  have hmod := widen_toNat_mod i
+  have hW := (widen 32 false i).isLt
+  rw [BitVec.toNat_ushiftRight, BitVec.toNat_shiftLeft, BitVec.toNat_shiftLeft, BitVec.toNat_setWidth,
+    Nat.shiftLeft_eq, Nat.shiftLeft_eq, Nat.shiftRight_eq_div_pow]
+  have hpow : 2 ^ s * 2 ^ (32 - s) = (2:Nat) ^ 32 := by
+    rw [← Nat.pow_add, Nat.add_sub_of_le hs]
+  have hs' : (2:Nat) ^ s ≤ 2 ^ 32 := Nat.pow_le_pow_right (by decide) hs
+  have hleft : (widen 32 false i).toNat * 2 ^ 32 % 2 ^ 64 = i.toNat * 2 ^ 32 := by
+    generalize (widen 32 false i).toNat = W at *
+    simp only [Nat.reducePow] at *
+    omega
+  have hsmall : i.toNat * 2 ^ s < 2 ^ 64 :=
+    calc i.toNat * 2 ^ s < 2 ^ 32 * 2 ^ 32 := Nat.mul_lt_mul_of_lt_of_le hi hs' (by decide)
+      _ = 2 ^ 64 := by decide
+  rw [hleft, ← hpow, ← Nat.mul_assoc, Nat.mul_div_cancel _ (Nat.two_pow_pos _),
+    Nat.mod_eq_of_lt (Nat.lt_trans hi (by decide)), Nat.mod_eq_of_lt hsmall]
 
 /-! ## Loop couplings of widened variables (`94-assembler.md` §9)
 

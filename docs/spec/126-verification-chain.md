@@ -89,13 +89,13 @@ width − 1 proven — the count below the width, the helper's trap check
 folds away and the verifier admits the constant shift — multiplication
 witnessed, division and remainder outside the lowering's subset because
 the divisor is a variable; the guarded element read `oak_index` over a
-`[]T` parameter is proven against `v[i]` on arm64, where clang's
-`cmp w2, w1; b.hs; ldr [x0, w2, uxtw #s]` is the checker's guarded
-element shape, and reported outside the checker's admitted shapes on
-rv64, where GCC compares the psABI's sign-extended `u32` pair raw,
-zero-extends and scales the index in one `slli 32; srli 32−s`, and adds
-into the base register — a shape the checker does not yet admit; the
-pinned prelude text of these helpers is what `generateC` emits,
+`[]T` parameter is proven against `v[i]` on both lanes — clang's
+`cmp w2, w1; b.hs; ldr [x0, w2, uxtw #s]` is the arm64 checker's guarded
+element shape, and GCC's `bgeu i, len` on the psABI's widened `u32` pair,
+fused `slli 32; srli 32−s` zero-extend-and-scale, and `add` into the base
+register is the rv64 checker's second admitted shape
+(`Oak.RiscV.index_guard_widened`, `widened_scale`; `94-assembler.md` §9);
+the pinned prelude text of these helpers is what `generateC` emits,
 `TestGuardMacrosMatchValidatedText`); and
 every differential test executes the object. The
 driver selection itself is **proved** (`Oak.Target`: lane and object
@@ -312,14 +312,11 @@ for a workload):
    checked shift helpers under constant-count specializations (1, 3,
    width − 1 at every unsigned width; the verifier admits a constant
    count, the helper's trap check folds away) and for `oak_index` against
-   the guarded element read `v[i]` — proven on arm64; on rv64 GCC's shape
-   (`bgeu i, len` on the raw sign-extended pair, `slli 32; srli 32−s`
-   zero-extending and scaling in one step, the address formed in the base
-   register) is outside the rv64 checker's admitted shapes and is reported
-   so, the exact gap to close when the rv64 lane is next (a
-   sign-extended-pair guard lemma beside `Oak.RiscV.index_guard`, the
-   fused zero-extend-and-scale, and an element address that replaces the
-   base). Still open: `oak_store`'s bounds check against the guarded
+   the guarded element read `v[i]` — proven on arm64 and, since the rv64
+   checker admits GCC's shape (`bgeu i, len` on the raw widened `u32`
+   pair, `slli 32; srli 32−s` zero-extending and scaling in one step, the
+   address formed in the base register; `Oak.RiscV.index_guard_widened`,
+   `widened_scale`), on rv64. Still open: `oak_store`'s bounds check against the guarded
    element write (the verifier decides a returned value; a store helper's
    effect needs the unit's memory postcondition), and the compare-exchange
    helper once the verifier's memory model reaches the atomics
