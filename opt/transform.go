@@ -97,6 +97,17 @@ type Counted interface {
 	Fired(c *Candidate) int
 }
 
+// Gated is a transform whose candidates ship only on a verifier's
+// verdict: when a body cannot be judged (a trusted verdict is the absence
+// of a check), a candidate carrying such a transform is set aside for the
+// cheapest one without it, at worst the plain lowering. A transform that
+// is not Gated ships on the seam checker's admission alone, as the lane's
+// transforms did before the search; a new transform is Gated until it has
+// earned that standing (docs/spec/90-backend.md §16 rule 3).
+type Gated interface {
+	NeedsVerdict() bool
+}
+
 // Refinable is a transform that can narrow a candidate the checker
 // refused — verifier-guided search in its smallest form
 // (docs/notes/proof-guided-optimization-2026-09.md §16): the finding

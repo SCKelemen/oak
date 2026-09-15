@@ -40,6 +40,8 @@ const (
 	TransformHoist       = "hoist-invariants"
 	TransformUnroll      = "unroll-reductions"
 	TransformVectorHomes = "vector-homes"
+	TransformCleanup     = "late-cleanup"
+	TransformReallocate  = "reallocate"
 )
 
 // laneTransform is one of the lane's transforms as a toggle of the Lane
@@ -89,6 +91,13 @@ func laneArch(lane Lane) string {
 	}
 	return lane.Arch
 }
+
+// gatedTransform ships only on a verifier's verdict (opt.Gated): a body
+// the verifier cannot judge keeps a form without it.
+type gatedTransform struct{ laneTransform }
+
+// NeedsVerdict marks the transform as gated.
+func (t *gatedTransform) NeedsVerdict() bool { return true }
 
 // elideTransform is the guard elision, refinable by source line: the
 // checker's finding names the line of the access it could not admit, that
@@ -153,17 +162,20 @@ var bothLanes = map[string]bool{asm.ArchArm64: true, asm.ArchRV64: true}
 func Transforms() []opt.Transform {
 	return []opt.Transform{
 		&laneTransform{
-			// Strength reduction (docs/spec/90-backend.md §16, §9.ac): a
-			// multiplication by a power of two as a shift, an unsigned
-			// division or remainder by one as a shift or a mask, a
-			// division by a nonzero constant without its zero test — local
-			// equalities of the fixed-width semantics with their theorems
-			// in Oak.StrengthReduction (spec/lean/Oak/StrengthReduction.lean).
+			// Strength reduction (docs/spec/90-backend.md §16, §9.ac, §9.ag):
+			// in layer A, on every lane, a multiplication by a power of two
+			// as a shift and an unsigned division or remainder by one as a
+			// shift or a mask, each site decided at the bit level before it
+			// applies (Oak.StrengthReduction states the laws); on the
+			// AArch64 lane also a division by a nonzero constant without
+			// its zero test, the verifier judging the body.
 			name: TransformStrength, phase: opt.PhaseCanonical, proof: opt.Canonical,
 			arches:  bothLanes,
 			applied: func(l Lane) bool { return l.Strength },
 			apply:   func(l Lane) Lane { l.Strength = true; return l },
-			fired:   Reduced,
+			// Layer A's decided sites (nativegen/rewrite.go, both lanes) and
+			// the AArch64 emitter's zero tests dropped.
+			fired: func(fn *asm.Function) int { return StrengthReduced(fn) + Reduced(fn) },
 		},
 		&elideTransform{laneTransform{
 			// Guard elision: an element access the typechecker proved in
@@ -208,6 +220,19 @@ func Transforms() []opt.Transform {
 			apply:   func(l Lane) Lane { l.VectorHomes = true; return l },
 			fired:   func(fn *asm.Function) int { return VectorHomes(fn) + LeafVectorHomes(fn) },
 		},
+		&gatedTransform{laneTransform{
+			// Global register reallocation and frame-slot promotion (package
+			// machine, Phase B): the body's def-use webs recolored by a
+			// linear scan, its slots moved into registers, its copies
+			// coalesced, within the registers the lowering wrote; machine
+			// shape only, judged by the checker and the verifier — and, new,
+			// shipping only on the verifier's verdict.
+			name: TransformReallocate, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.Reallocate },
+			apply:   func(l Lane) Lane { l.Reallocate = true; return l },
+			fired:   Reallocated,
+		}},
 		&laneTransform{
 			// Reduction unrolling over four independent accumulators
 			// (nativegen/reduction.go): a source rewrite licensed by the
@@ -218,14 +243,23 @@ func Transforms() []opt.Transform {
 			arches:  bothLanes,
 			applied: func(l Lane) bool { return !l.NoReductions },
 			apply:   func(l Lane) Lane { l.NoReductions = false; return l },
-			fired: func(fn *asm.Function) int {
-				if fn.Body != nil {
-					return 1
-				}
-				return 0
-			},
+			fired:   Unrolled,
 		},
+		cleanupTransform,
 	}
+}
+
+// cleanupTransform is the late copy and branch cleanup (nativegen/cleanup.go).
+var cleanupTransform = &laneTransform{
+	// Late cleanup (docs/spec/94-assembler.md §9 "Late cleanup"): a copy
+	// read once by the next instruction is forwarded, a definition copied
+	// once writes its destination, a branch to the following label goes —
+	// machine shape only, judged by the checker and the verifier.
+	name: TransformCleanup, phase: opt.PhaseMachine, proof: opt.Mechanical,
+	arches:  arm64Only,
+	applied: func(l Lane) bool { return l.Cleanup },
+	apply:   func(l Lane) Lane { l.Cleanup = true; return l },
+	fired:   CleanedCopies,
 }
 
 // Registry is the lane's transform registry.
@@ -242,6 +276,8 @@ func PlainLane(lane Lane) Lane {
 	lane.ReuseFlags = false
 	lane.HoistInvariants = false
 	lane.VectorHomes = false
+	lane.Cleanup = false
+	lane.Reallocate = false
 	lane.NoReductions = true
 	return lane
 }
@@ -403,9 +439,20 @@ func Metrics(fn *asm.Function) opt.Metrics {
 				}
 			}
 		}
+		// The index register: compared in the loop, written exactly once
+		// in it, by `add r, r, #k` — its stride. A register the loop
+		// rounds or rebuilds (an `add r, r, #7` before a shift) is not one.
+		defs := map[int]int{}
+		for i := loop.from; i <= loop.to; i++ {
+			if ins, ok := fn.Items[i].(asm.Instruction); ok {
+				for _, r := range writtenGeneral(ins) {
+					defs[r]++
+				}
+			}
+		}
 		body.Stride, indices[k] = 1, -1
 		for i := loop.from; i <= loop.to; i++ {
-			if reg, step, ok := increment(fn.Arch, fn.Items[i]); ok && compared[reg] {
+			if reg, step, ok := increment(fn.Arch, fn.Items[i]); ok && compared[reg] && defs[reg] == 1 {
 				body.Stride, indices[k] = step, reg
 				break
 			}

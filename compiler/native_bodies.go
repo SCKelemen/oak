@@ -157,6 +157,11 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		for _, reason := range setAsideReasons(report, fn.Name.Value, selection.Candidate) {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", "native backend: "+reason))
 		}
+		// Layer A's rewrites and their obligations (nativegen/rewrite.go,
+		// docs/spec/94-assembler.md §9.ag), reported per body.
+		if sites := nativegen.RewriteSites(asmFn); len(sites) > 0 {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: layer A — %s", fn.Name.Value, describeRewrites(sites))))
+		}
 		if elided := nativegen.ElidedGuards(asmFn); elided > 0 {
 			if kept := nativegen.GuardLinesKept(chosen); len(kept) > 0 {
 				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d element guard(s) elided under the checker's own facts, the guards of line(s) %s kept (the checker did not admit their elided form)", fn.Name.Value, elided, joinLines(kept))))
@@ -169,6 +174,9 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d vector local(s) kept in registers across calls", fn.Name.Value, kept)))
 		} else if homed := nativegen.LeafVectorHomes(asmFn); homed > 0 && verdict.Kind == asm.VerdictProven {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d vector local(s) homed in the argument registers", fn.Name.Value, homed)))
+		}
+		if promoted := nativegen.PromotedSlots(asmFn); promoted > 0 && verdict.Kind == asm.VerdictProven {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d frame slot(s) promoted to registers", fn.Name.Value, promoted)))
 		}
 		if reduced := nativegen.Reduced(asmFn); reduced > 0 && verdict.Kind == asm.VerdictProven {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d constant operation(s) strength-reduced, proven", fn.Name.Value, reduced)))
@@ -562,4 +570,48 @@ func verifiedBody(asmFn *asm.Function, source *ast.FunctionStatement) ast.Expres
 		return asmFn.Body
 	}
 	return source.Body
+}
+
+// describeRewrites summarizes a body's layer-A rewrite sites by rewrite
+// and obligation: decided per site, law-backed, or left as written.
+func describeRewrites(sites []nativegen.RewriteSite) string {
+	type tally struct {
+		decided, law, left int
+		lawName            string
+	}
+	var order []string
+	tallies := map[string]*tally{}
+	for _, s := range sites {
+		t, seen := tallies[s.Rewrite]
+		if !seen {
+			t = &tally{}
+			tallies[s.Rewrite] = t
+			order = append(order, s.Rewrite)
+		}
+		switch {
+		case s.Decided:
+			t.decided++
+		case s.Law != "":
+			t.law++
+			t.lawName = s.Law
+		default:
+			t.left++
+		}
+	}
+	var parts []string
+	for _, name := range order {
+		t := tallies[name]
+		var kinds []string
+		if t.decided > 0 {
+			kinds = append(kinds, fmt.Sprintf("×%d decided at the bit level", t.decided))
+		}
+		if t.law > 0 {
+			kinds = append(kinds, fmt.Sprintf("×%d under %s", t.law, t.lawName))
+		}
+		if t.left > 0 {
+			kinds = append(kinds, fmt.Sprintf("×%d left as written", t.left))
+		}
+		parts = append(parts, name+" "+strings.Join(kinds, ", "))
+	}
+	return strings.Join(parts, "; ")
 }

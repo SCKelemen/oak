@@ -177,8 +177,14 @@ func TestE2ENativeSimd(t *testing.T) {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
-	if !strings.Contains(joined, "nine left to the C backend (parameter i: more than eight floating-point or vector parameters") {
-		t.Errorf("nine (nine vector parameters) must be left to the C backend, reported; diagnostics:\n%s", joined)
+	// Nine vector parameters: the ninth arrives in the caller's outgoing
+	// area (the vector class of asm.LayoutArguments), read whole by the
+	// prologue's q load — lowered natively and proven, its caller ninth
+	// storing the ninth argument before the call.
+	for _, fn := range []string{"nine_neon_abi", "ninth"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven") {
+			t.Errorf("%s (the ninth vector argument on the stack) must be proven; diagnostics:\n%s", fn, joined)
+		}
 	}
 	if !strings.Contains(joined, "c_side left to the C backend") {
 		t.Errorf("c_side must stay on the C backend (the shim's caller); diagnostics:\n%s", joined)
