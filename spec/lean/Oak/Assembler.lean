@@ -371,6 +371,17 @@ theorem masked_index_bound (x M : Nat) : x &&& M < M + 1 :=
     admits the access without a compare. -/
 theorem narrow_value_bound (w : Nat) (x : BitVec w) : x.toNat < 2 ^ w := x.isLt
 
+/-- A register holding the constant `k` is an index below `k + 1`: the
+    checker's fact for a materialized constant, under which a span with a
+    proven minimum of `k + 1` elements admits the constant element read
+    without a compare. -/
+theorem constant_index_bound (k : Nat) : k < k + 1 := Nat.lt_succ_self k
+
+/-- A value reloaded from a frame slot is the value stored there, so a
+    guard on the one bounds the other: the checker carries an index fact
+    through a slot the store and the load bracket unchanged (`slotIdx`). -/
+theorem guard_through_slot (i j len : Nat) (h : i = j) (g : j < len) : i < len := h ▸ g
+
 /-- A condition materialized and tested: `cset wB, cond` writes 1 when the
     compare's condition held and 0 otherwise, so the fall-through of
     `cbz wB, L` has the condition and that of `cbnz wB, L` its negation —

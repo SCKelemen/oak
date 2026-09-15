@@ -41,6 +41,7 @@ const (
 	TransformUnroll      = "unroll-reductions"
 	TransformVectorHomes = "vector-homes"
 	TransformCleanup     = "late-cleanup"
+	TransformVectorize   = "vectorize-reductions"
 	TransformReallocate  = "reallocate"
 	TransformRotate      = "rotate-loops"
 )
@@ -217,6 +218,21 @@ func Transforms() []opt.Transform {
 			fired:   Unrolled,
 		},
 		&laneTransform{
+			// Reduction vectorization (nativegen/vector_reduction.go): the
+			// four accumulators as the lanes of fixed vectors — two
+			// simd.U64x2 or one simd.U32x4 — under the same license
+			// (Oak.Reduction.vector4_eq). It takes the loop the unrolling
+			// would, so the search prices the two forms against each
+			// other; beside the unrolling at the head of the loop phase,
+			// so the invariant pass and the rotation see its shape too.
+			name: TransformVectorize, phase: opt.PhaseLoop, proof: opt.LawLicensed,
+			reqs:    []opt.Requirement{opt.Require(opt.Prop(FactAssociative), opt.ProvedKernel)},
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.VectorReductions },
+			apply:   func(l Lane) Lane { l.VectorReductions = true; return l },
+			fired:   Vectorized,
+		},
+		&laneTransform{
 			// Loop-invariant code motion with copy propagation and guard
 			// peeling (nativegen/licm.go; §9 "Loop invariants"): machine
 			// shape only, judged by the checker and the verifier.
@@ -297,6 +313,7 @@ func PlainLane(lane Lane) Lane {
 	lane.VectorHomes = false
 	lane.Cleanup = false
 	lane.Reallocate = false
+	lane.VectorReductions = false
 	lane.NoReductions = true
 	return lane
 }

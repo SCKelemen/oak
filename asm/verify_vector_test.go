@@ -203,3 +203,25 @@ func TestVerifyVectorSelfXor(t *testing.T) {
 		t.Fatalf("a move where the body xors must be a mismatch, got %s: %s", moved.Kind, moved.Message)
 	}
 }
+
+// A vector load through an element address (docs/spec/94-assembler.md §8,
+// the vector increment): for lanes wider than a byte the lowering forms
+// `add xE, xB, wI, uxtw #s` and loads `[xE]` (nativegen/simd.go
+// vecAddress), the form a vector reduction over a `[]u64` span emits. The
+// verifier reads it as the span's elements from wI, as it reads the
+// `[base, wI, uxtw]` form for byte lanes; a wrong scale or a wrong lane is
+// refuted.
+func TestVerifyVectorLoadThroughElementAddress(t *testing.T) {
+	decl := "pair: (v: []u64, i: u32) -> u64"
+	oak := "len(v) >= u32(2) && i <= len(v) - u32(2) ? (v[i] + v[i + u32(1)]) | u64(0)"
+	body := "  bind x0, w1 = v\n  bind w2 = i\n  clobber x9, x10, x11, v0\n  cmp w1, #2\n  b.lo short\n  sub w9, w1, #2\n  cmp w2, w9\n  b.hi short\n  add x10, x0, w2, uxtw #3\n  ldr q0, [x10]\n  umov x0, v0.d[0]\n  umov x11, v0.d[1]\n  add x0, x0, x11\n  ret\nshort:\n  mov x0, xzr\n  ret"
+	proven := verifyCase(t, decl, oak, body)
+	if proven.Kind != VerdictProven {
+		t.Fatalf("a q load through an element address must be proven, got %s: %s", proven.Kind, proven.Message)
+	}
+	// Reading one lane twice is a different function: refuted.
+	twice := verifyCase(t, decl, oak, strings.Replace(body, "umov x11, v0.d[1]", "umov x11, v0.d[0]", 1))
+	if twice.Kind != VerdictMismatch {
+		t.Fatalf("reading one lane twice must be a mismatch, got %s: %s", twice.Kind, twice.Message)
+	}
+}

@@ -479,6 +479,11 @@ func (x *pathExecutor) recordSpanLoad(instr Instruction, dest Register, mem Memo
 type term struct {
 	kind  termKind
 	width int
+	// declared is a parameter's declared width when the term reads it at
+	// another (a zero-extension or truncation copies the parameter at the
+	// use width): an element parameter's fixed-memory value is its
+	// declared width's, whatever width it is read at. Zero: the width.
+	declared int
 	// id is the term's index in the termEvaluator that last numbered it,
 	// one-based; zero before any numbering. Only the witness pass sets it,
 	// before the variable orders' goroutines start reading the terms.
@@ -716,7 +721,16 @@ func constTerm(value uint64, width int) *term {
 }
 
 func paramTerm(name string, width int) *term {
-	return &term{kind: termParam, width: width, name: name}
+	return &term{kind: termParam, width: width, name: name, declared: width}
+}
+
+// declaredWidth is a parameter term's declared width: the width it was
+// created at, carried through re-widthed copies.
+func (t *term) declaredWidth() int {
+	if t.declared > 0 {
+		return t.declared
+	}
+	return t.width
 }
 
 func binaryTerm(op string, left, right *term) *term {
@@ -826,7 +840,7 @@ func (t *term) evalUncached(env map[string]uint64, memo termMemo) uint64 {
 		// An element parameter outside the witness environment reads the
 		// fixed memory, consistently with symbolic selects.
 		if span, k, isElement := elementParam(t.name); isElement {
-			return elementValue(span, k, t.width) & m
+			return elementValue(span, k, t.declaredWidth()) & m
 		}
 		return 0
 	case termConst:
@@ -1338,7 +1352,7 @@ func truncate(t *term, width int) *term {
 	case termConst:
 		return constTerm(t.value, width)
 	case termParam:
-		return &term{kind: termParam, width: width, name: t.name}
+		return &term{kind: termParam, width: width, name: t.name, declared: t.declaredWidth()}
 	case termCmp:
 		return &term{kind: termCmp, width: width, op: t.op, left: t.left, right: t.right}
 	case termBinary:
@@ -1379,7 +1393,7 @@ func zeroExtend(t *term, width int) *term {
 	case termConst:
 		return constTerm(t.value&mask(t.width), width)
 	case termParam:
-		return &term{kind: termParam, width: width, name: t.name}
+		return &term{kind: termParam, width: width, name: t.name, declared: t.declaredWidth()}
 	case termCmp:
 		return &term{kind: termCmp, width: width, op: t.op, left: t.left, right: t.right}
 	case termBinary:
@@ -2765,7 +2779,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 				// it from the slot the body stored, at its offset and width.
 				chunk, reason, okArea := x.resultAreaChunk(state)
 				if !okArea {
-					return nil, nil, reason, false
+					return nil, nil, atInstruction(reason, instr), false
 				}
 				return x.end(chunk, state)
 			}
@@ -2794,7 +2808,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			return nil, nil, "", true
 		case "bl":
 			if reason, ok := x.summarizeCall(instr, state); !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		case "adrl":
@@ -2823,7 +2837,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 		case "b.", "cbz", "cbnz", "tbz", "tbnz", "beq", "bne", "blt", "bge", "bltu", "bgeu", "beqz", "bnez", "bgez", "bltz", "blez", "bgtz":
 			cond, reason, ok := branchCondition(instr, state)
 			if !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			target, ok := x.labels[instr.Operands[len(instr.Operands)-1].(Symbol).Name]
 			if !ok {
@@ -2890,7 +2904,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			join, hasJoin := x.joins[pc]
 			if !hasJoin || target <= pc || join <= pc {
 				if _, _, reason, ok := x.run(target, takenState); !ok {
-					return nil, nil, reason, false
+					return nil, nil, atInstruction(reason, instr), false
 				}
 				return x.run(pc+1, state)
 			}
@@ -2902,7 +2916,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			}
 			x.stops = x.stops[:len(x.stops)-1]
 			if !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			parked := append([]*symbolicState(nil), x.joined[mark:]...)
 			x.joined = x.joined[:mark]
@@ -2913,7 +2927,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			if !mergeable {
 				for _, parkedState := range parked {
 					if _, _, reason, ok := x.run(join, parkedState); !ok {
-						return nil, nil, reason, false
+						return nil, nil, atInstruction(reason, instr), false
 					}
 				}
 				return nil, nil, "", true
@@ -2922,19 +2936,19 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 		}
 		if x.arch == ArchRV64 {
 			if reason, ok := x.stepRV64(instr, state); !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		}
 		if isFrameMemory(instr) {
 			if reason, ok := x.frameAccess(instr, state); !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		}
 		if mem, base, isFrame := registerFrameMemory(instr, state); isFrame {
 			if reason, ok := x.registerFrameAccess(instr, state, mem, base); !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		}
@@ -2942,51 +2956,61 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			// An exclusive store, an LSE atomic, or clrex through a span
 			// element (asm/atomics.go).
 			if !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		}
 		if instr.Mnemonic == "ldp" {
 			if reason, ok := x.loadPair(instr, state); !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		}
 		if isLoad(instr.Mnemonic) {
 			if dest, isReg := instr.Operands[0].(Register); isReg && dest.Class == ClassV {
 				if reason, ok := x.loadVector(instr, state); !ok {
-					return nil, nil, reason, false
+					return nil, nil, atInstruction(reason, instr), false
 				}
 				continue
 			}
 			if reason, ok := x.load(instr, state); !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		}
 		if handled, reason, ok := x.globalStore(instr, state); handled {
 			if !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		}
 		if handled, reason, ok := x.spanStore(instr, state); handled {
 			if !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		}
 		if hasVectorOperand(instr) {
 			if reason, ok := x.stepVector(instr, state); !ok {
-				return nil, nil, reason, false
+				return nil, nil, atInstruction(reason, instr), false
 			}
 			continue
 		}
 		if reason, ok := step(instr, state); !ok {
-			return nil, nil, reason, false
+			return nil, nil, atInstruction(reason, instr), false
 		}
 	}
 	return nil, nil, "no ret reached", false
+}
+
+// atInstruction names the instruction behind a refusal that says nothing
+// of where it arose (an unbound register read: which register, which
+// line), so the verdict points at the code.
+func atInstruction(reason string, instr Instruction) string {
+	if reason == "unbound register read" {
+		return fmt.Sprintf("unbound register read at line %d (%s)", instr.Line, instr.String())
+	}
+	return reason
 }
 
 // pathEnd is one path's outcome: its result and effects, or trapPath, with
@@ -5792,15 +5816,23 @@ func (lo *oakLowering) lowerWhile(loop *ast.WhileStatement) (string, bool) {
 // before the loop); above it the copies exceed the event budget.
 const countedUnrollLimit = 4
 
+// countedTripLimit is the trip count from which any counted loop is
+// summarized rather than unrolled, loop inside or not: a loop clearing
+// or copying a table of two thousand words unrolls into a write log the
+// decision cannot afford (and, guarded at every iteration, meets the
+// path budget first), where its induction is a few steps. Sixty-four:
+// above it the unrolled copies cost more than the induction (the
+// interpreter's `step_binding` took five minutes unrolled, under a
+// second inducted), and only a few loops of 128 and 512 trips prove
+// unrolled where their coupling does not yet.
+const countedTripLimit = 64
+
 // summarizeCounted decides, at a counted loop's entry, whether the loop
 // is summarized: its body holds a loop (bodyHasLoop) and its trip count —
 // the bound of `i < c` or `i <= c` less the counter's value, both
 // constant here — is past countedUnrollLimit. A condition of another
 // shape unrolls as before.
 func (lo *oakLowering) summarizeCounted(loop *ast.WhileStatement) bool {
-	if !bodyHasLoop(loop.Body, lo.functions) {
-		return false
-	}
 	infix, isInfix := loop.Condition.(*ast.InfixExpression)
 	if !isInfix || (infix.Operator != "<" && infix.Operator != "<=") {
 		return false
@@ -5814,7 +5846,7 @@ func (lo *oakLowering) summarizeCounted(loop *ast.WhileStatement) bool {
 	if infix.Operator == "<=" {
 		trips++
 	}
-	return trips > countedUnrollLimit
+	return trips > countedTripLimit || (trips > countedUnrollLimit && bodyHasLoop(loop.Body, lo.functions))
 }
 
 // summarizeCounted is the machine side's reading of the same decision at
@@ -5822,9 +5854,6 @@ func (lo *oakLowering) summarizeCounted(loop *ast.WhileStatement) bool {
 // (loopsInside) and the flags compare the counter with its bound, both
 // constant, the exit taken at or above the bound.
 func (x *pathExecutor) summarizeCounted(shape loopShape, exit Instruction, state *symbolicState) bool {
-	if !x.loopsInside(shape) {
-		return false
-	}
 	var left, right *term
 	var atOrAbove bool
 	switch exit.Mnemonic {
@@ -5870,7 +5899,7 @@ func (x *pathExecutor) summarizeCounted(shape loopShape, exit Instruction, state
 	if !atOrAbove {
 		trips++
 	}
-	return trips > countedUnrollLimit
+	return trips > countedTripLimit || (trips > countedUnrollLimit && x.loopsInside(shape))
 }
 
 // lowerLoopBody executes one iteration of a loop body.
@@ -9092,6 +9121,38 @@ func canonicalMemo(t *term, memo map[*term]*term) *term {
 					out = binaryTerm("shl", left, constTerm(uint64(bits.TrailingZeros64(right.value)), t.width))
 				case left.kind == termConst && left.value != 0 && left.value&(left.value-1) == 0 && right.width == t.width:
 					out = binaryTerm("shl", right, constTerm(uint64(bits.TrailingZeros64(left.value)), t.width))
+				}
+			}
+			if out == nil && t.op == "and" && right.kind == termConst && isLowMask(right.value) {
+				switch {
+				case left.kind == termIte:
+					// A mask over a conditional is a conditional of masked
+					// arms (pushMask's rule): the two sides' arms then meet
+					// arm for arm where one side masks the whole.
+					// The arms are canonical already (children first); the
+					// mask is applied to each without re-entering the
+					// canonicalizer, a nested conditional arm by arm.
+					var arm func(x *term) *term
+					arm = func(x *term) *term {
+						if x.kind == termIte {
+							return iteTerm(x.cond, arm(x.left), arm(x.right))
+						}
+						switch {
+						case right.value == mask(left.width) && left.width < t.width:
+							return zeroExtend(adaptWidth(x, left.width), t.width)
+						case right.value == mask(t.width):
+							return adaptWidth(x, t.width)
+						}
+						return adaptWidth(binaryTerm("and", adaptWidth(x, t.width), right), t.width)
+					}
+					out = iteTerm(left.cond, arm(left.left), arm(left.right))
+				case right.value == mask(t.width) && left.width > t.width:
+					// A full mask at the term's width over a wider operand is
+					// its truncation, which folds a zero-extension away; a
+					// truncation that only wraps the operand again is left.
+					if tr := truncate(left, t.width); !(tr.kind == termBinary && tr.op == "and" && tr.left == left) {
+						out = canonicalMemo(tr, memo)
+					}
 				}
 			}
 			if out == nil && left.width == right.width {

@@ -1191,15 +1191,31 @@ when zero; and the decision's canonical spelling puts a **product's
 constant first and a sum's last**, drops an or or xor with zero and an
 and with a full mask (`canonical`, upstream's shift rule beside them).
 The loop event budget is thirty-two. With these the step functions'
-loops couple and their witnesses agree — evidence on 21 inputs each, no
-longer trusted — and `verify_first` and `verify_count` stay proven
-through the joins. What keeps the step functions from proof is the
-`found` obligation: the four `classify` results, inlined on the Oak side
-and summarized from the expanded body on the machine side, spell their
-sixteen lane lookups in different orders, and the diagram of four
-`check_block`-scale terms is beyond any budget — the next step is one
-spelling for a vector reduction's lanes on both sides. `count` (its
-step loop's callee loops nest differently on the two sides) and
+loops couple and their witnesses agree, and `verify_first` and
+`verify_count` stay proven through the joins. Their `found` obligation
+then fell to three more rules. **Congruence** (`impliesEqualCongruent`):
+two terms of one shape — the same operation, comparison, or span read —
+are proven by their operands pairwise (a commutative operation also
+crossed), a proof-only rule like the arm rule, so `found + hits` against
+the machine's sum is two small decisions where the diagram of the sum,
+four `classify` results inside it, is beyond any budget. The canonical
+spelling **pushes a mask over a conditional into its arms** and reads a
+full mask at a narrower width over a wider operand as the truncation:
+the machine's `w17` read of a merged 64-bit select is
+`add32(and32(ite64, mask), hits)` where the Oak body spells
+`add32(ite32, hits)`, and after the push both are one conditional of
+masked arms. And **an element parameter keeps its declared width**
+through a zero-extension or truncation (`term.declared`): the fixed
+memory's value of a byte element read at a word's width was the hash at
+32 bits where the Oak body's read at 8 bits saw the byte — the valuation
+refuter then refuted two equal terms, which the pushed masks first made
+visible (`TestElementParameterKeepsItsDeclaredWidth`). With these
+`step_count` is **proven** — thirteen nested loops coupled inductively:
+the group loop and, four times, `verify_count`'s two loops and
+`literal_at`'s — in under eight seconds. `step_first` stays evidence:
+its `here < found ? here : found` over four conditional results is a
+select under a case split whose sides run past a million nodes. `count`
+(its step loop's callee loops nest differently on the two sides) and
 `find_from` (a loop reached on two paths with different carried
 variables) stay trusted.
 
@@ -2997,6 +3013,10 @@ boundary"): a returned local built in the `x8` area, a read-only
 aggregate argument passed as the caller's storage, a call's result
 received in the local it initializes (`Oak.BoundaryCopies.read_in_place`,
 `build_in_place`).
+The fifty-fourth increment is aggregate helpers (§9 "Aggregate helpers"):
+the native lane expands small record- and array-typed helpers at their
+calls, a field-path argument standing for a read-only parameter without
+a copy (`Oak.Inlining.eval_subst`).
 
 The fifty-third increment is fields in registers (§9 "Fields in
 registers"): the scalar fields a loop touches of a top-level record
@@ -3008,6 +3028,18 @@ The fiftieth increment is slot forwarding (§9 "Slot forwarding"): a
 frame slot's value is read from the register that stored or loaded it
 while that register stands, and a comparison on a computed operand
 branches on its compare (`Oak.Forwarding.load_store`, `cbz_cset`).
+The fifty-seventh increment is read-only borrows (§9 "Read-only
+borrows"): `view(&p…)` leaves a by-value parameter untouched, so it is
+read in place and passed as the caller's storage
+(`Oak.ReadOnlyBorrow.view_of_copy`).
+
+The fifty-eighth increment is reduction vectorization (§9 "Reduction
+vectorization"): the recognized integer reduction's eight accumulators as
+the lanes of fixed vectors, licensed by the same law at eight
+accumulators (`Oak.Reduction.vector8_eq`), with the verifier's vector
+load gaining the element-address form the wider lanes use. A `u32`
+reduction runs at 1.6× the scalar unrolling; a `u64` one keeps the scalar
+form on cost.
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
@@ -4193,6 +4225,38 @@ other statement, another stride, or an accumulator read elsewhere in the
 body; a use of the index after the loop reads `len(v)` on both sides.
 `bench_sum` went from six instructions per element to nineteen per four.
 
+**Reduction vectorization (2026-09-16, AArch64 lane;
+`nativegen/vector_reduction.go`, the `vectorize-reductions` candidate).**
+The same recognized reduction, vectorized: eight elements an iteration
+whose eight accumulators are the lanes of fixed vectors — two
+`simd.U32x4` for a `u32` accumulator, four `simd.U64x2` for a `u64` one —
+under the same slack guard, the remainder loop as written, and a combine
+that folds the vector accumulators pairwise in the vector domain, stores
+the one vector left into a frame array of its lanes, and adds the lanes
+to the scalar as a balanced tree. The lanes reach the scalar through
+memory because the integer vectors have no lane `extract` in v1
+(`93-simd.md` §1.2a reserves it with the comparison masks); the round
+trip runs once after the loops. The license is the same law at eight
+accumulators (`Oak.Reduction.vector8_eq`, `vector8_sum`), and the
+verifier proves the assembly against the rewritten body, the lanes
+coupled as packs to the halves of their registers.
+
+Eight elements an iteration, not four, because a single vector
+accumulator is one loop-carried chain: measured over 2^20 `u32`
+elements, one `simd.U32x4` accumulator runs at 0.18 ns an element against
+the scalar unrolling's 0.14, and two accumulators at 0.08 —
+1.6× the scalar form, which is what the search selects
+(`benchmarks/native/README.md`). A `u64` reduction keeps the scalar
+unrolling: two lanes to a vector means four accumulators and an address
+register per 128-bit load, and the cost model prices that above the four
+scalar accumulators with their pair loads — the candidates line records
+both. The vector loads are the form §8's `loadVector` gained with this
+increment: `add xE, xB, wI, uxtw #s` then `ldr q, [xE]`, the address the
+lowering forms for lanes wider than a byte, read as the span's elements
+from `wI` (`asm/verify_vector_test.go`), where before only the
+byte-lane form `[base, wI, uxtw]` was modeled and a wider-lane vector
+kernel was trusted.
+
 **Pair loads (2026-09-16, AArch64 lane; `nativegen/pair_loads.go`).**
 Within one basic block, two element loads of one span at consecutive
 indices — `ldr x9, [x19, w3, uxtw #3]` and, after its index add, `ldr
@@ -4549,6 +4613,56 @@ increments, comes to ten instructions where clang's is thirteen.
 `TestE2ENativeFieldPromotion` agrees with the C backend, including a
 record assigned whole inside its loop (`a = seed`, the homes reloading).
 The RV64 lane is untouched.
+
+**Aggregate helpers (2026-09-16, AArch64 lane; `nativegen/inline.go`,
+`spec/lean/Oak/Inlining.lean`).** The native lane's helper inliner, so far
+the vector helpers' (§9 "Vector helpers expanded"), also expands a small
+helper that takes or returns a record or an owned array — the shape the
+source-level inliner leaves alone, since an aggregate temporary is a
+binding of its own there: a body of at most eight statements and no loop,
+every parameter a scalar, record, owned array, span, or view, the result a
+scalar, record, owned array, or unit, no dispatch and no effects row
+(`aggregateHelper`). The call's argument copies, the callee's prologue,
+epilogue, and result copy go with the `bl`. Binding: an identifier
+argument to a parameter the callee never assigns substitutes as before; a
+field-path argument — `next.h`, `acc.h` — to a parameter the callee never
+assigns, borrows, or addresses (`recordParamTouched`), when no parameter of
+the callee is a writable span (through which it could reach the path's
+storage) and the callee does not mention the path's root, stands for the
+parameter at every use with no copy (`substituteBound`); every other
+argument is declared as a copy under a fresh name. A record- or
+array-valued call in expression position becomes a block expression, which
+the record lowering evaluates as its statements then its tail
+(`recordValueAs`); a record local the tail names keeps its storage past
+the block's scope. The verifier still compares against the body as written,
+the callees taken at their Oak bodies. The theorem is the substitution
+lemma over a small expression language: evaluating the body with the
+parameter replaced by the argument equals evaluating it in the environment
+that binds the parameter to the argument's value, the declared copy
+(`Oak.Inlining.eval_subst`). `TestNativeShapesAggregateInline` pins
+`absorb`, whose loop drives `acc.h = step(acc.h, k)` and `fold(acc.h)`
+with no `bl`; `TestE2ENativeAggregateInline` agrees with the C backend.
+On the SHA-256 path, `sha256_compress` and `sha256_block` fold into
+`sha256_update`'s loop once owned arrays travel as values (#472).
+**Read-only borrows (2026-09-16, AArch64 lane; `spec/lean/Oak/ReadOnlyBorrow.lean`).**
+A by-value record or array parameter counted as touched when its address
+was taken — any `&p…` — so `sha256_compress`'s `sha256_block(h,
+view(&block))` copied the 64-byte block into the callee's frame and made
+the caller copy it into a temp first. A read-only borrow, the address as
+the argument of `view(…)`, reads the parameter and nothing else: it no
+longer touches it (`recordParamTouched`), so the callee reads the
+parameter in place through its park register, the caller passes its own
+storage (`readsInPlace`, which still refuses when the callee has a writable
+span parameter through which that storage could change — `bump_first(b.block,
+span(&b.block))` keeps its copy and reads the value before the write, as
+Oak's by-value semantics say), and the native inliner substitutes a field
+path for the parameter. `span(&p…)` and every other address taken still
+touch. The theorem: reading through a view of the copy is reading the
+storage (`Oak.ReadOnlyBorrow.view_of_copy`), and a store outside the
+aggregate leaves the view's reads unchanged (`view_unchanged`).
+`TestNativeShapesReadOnlyBorrow` pins `sum` reading its block in place and
+`main` copying the block once, for the call with the writable span;
+`TestE2ENativeReadOnlyBorrow` agrees with the C backend.
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
@@ -5334,6 +5448,27 @@ and runs (`TestE2ENativeSelectDoesNotSpeculateAGuardedShift`). Prover
 build after the fix: proven 565, evidence 154, trusted 311, no
 disagreement.
 
+**Long counted loops inducted (2026-09-16).** A counted loop unrolled
+whatever its trip count, and a loop clearing or copying a table of two
+thousand words (`set_clear`, `set_copy`, `clear_depth`) unrolled into a
+write log no decision affords — guarded at every iteration, it met the
+path budget first. The counted loop's exception (`summarizeCounted`, both
+sides: a loop over a loop past four trips is summarized rather than
+unrolled) now takes any counted loop past sixty-four trips
+(`countedTripLimit`), loop inside or not: both sides read the same
+constant bound from the loop's compare, summarize the loop at its first
+iteration, and the coupling proves it inductively — a store per
+iteration, the loop memory equal — where the unrolling could not.
+Sixty-four: above it the unrolled copies cost more than the induction
+(`step_binding` took five minutes unrolled, under a second inducted);
+four bodies of 128 and 512 trips proved unrolled where their coupling
+does not yet (`intern_long`, `positional_arms_ahead`).
+`TestVerifyLongCountedLoopInducted`: eighty trips are inducted and
+proven, a wrong store is refuted on a witness input long enough, and
+forty trips still unroll. Prover build (per body, the optimizer's
+candidates aside): proven 565 → 577, evidence 141 → 147, trusted
+266 → 253, no disagreement.
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built
@@ -5829,6 +5964,67 @@ Candidates the report still shows losing: an index reloaded from a frame
 slot (`append_byte`) and a bound through another register
 (`json_key_decoded_equal`, `text_equal_ascii_fold`), as §9.ad lists.
 
+
+**Constant span indices (2026-09-15).** The typechecker's new facts from
+`assert`, exact lengths, and length aliases (`50-borrowing.md`) prove
+constant reads such as `state[0]` under `assert(len(state) == u32(1))` and
+`src[3]` under `n >= u32(4)`, but the lane still guarded them: the
+elision hook read the index's inferred type, which a bare literal fails.
+A proven constant index is now the constant in a register with no guard
+(`guardedIndexAt`), and the checker admits the read from two facts it
+now records: a register that `movz` fills with `k` is an index below
+`k + 1` (`Oak.Assembler.constant_index_bound`), and `cmp wL, #K; b.ne`
+— the compare an assert or a `len(v) == u32(K)` test spells — leaves the
+span's proven minimum at `K` (`Oak.Extents.exact_length_min`), beside the
+`b.lo` form it already read. The proven minimum then admits the read
+(`TestCheckerGuardFacts`, `TestE2ENativeConstantIndexElision`). Finding
+it took a detour worth recording: the lowering spells the constant zero
+as `mov wD, wzr`, and the checker's constant rule read only an immediate
+operand, so a proven `state[0]` carried no bound, the elided read was
+refused, and the per-line fallback put the guard back — the zero register
+is now read as the constant it is. On the stdlib-bearing program the rule
+elides 15 more guards, all of them in `text_bom`, whose five byte-order
+tests read `src[0]` through `src[3]` under `n >= u32(4)`: that body drops
+from 15 trap branches to none and from 125 instructions to 94, and no
+other body changes.
+
+**An index reloaded from a frame slot (2026-09-15).** The remaining
+refusal the optimizer's report named was the standard library's builders:
+`storage[state.length] = value` under `state.length < len(storage)`, where
+`state.length` is a record field the lowering loads from its frame slot
+once for the guard and again for the index, leaving the store's index
+register with no fact. The checker now carries an index guard through the
+slot, both ways: a 4-byte `w` load records the slot it came from
+(`loadedFrom`), and a guard on such a register records the fact on the
+slot as well (`slotIdx`, `recordIdxFact`) — the value is the one the guard
+tested, so it bounds the reload (`Oak.Assembler.guard_through_slot`); a
+store to the slot carries a guarded value's fact into it, and any store
+the checker cannot place by slot address — through a span, a region, a
+frame array, or a global, since a span over an owned array aliases the
+frame — drops every slot fact, as a write to a fact's bound register and
+a call do. The facts join the label fixpoint's meet, so a slot guarded on
+every path into a label stays guarded after it
+(`TestCheckerGuardFacts`: the spill-and-reload shape accepted, a slot
+overwritten with an unguarded value and a bound register rewritten
+refused; `TestE2ENativeSlotIndexElision` end to end).
+
+Measured on the stdlib-bearing program against the exact commit this work
+merged (the head moves hourly; pinning the base is what makes the diff
+this change and nothing else, with the verdict cache off): 56 bodies
+elide 129 guards where 54 elided 113, the bodies' `b.hs trap` branches
+fall from 746 to 730, their instructions from 28,733 to 28,700, and
+**exactly two bodies change** — `text_bom` by the constant-index rule and
+`append_byte` by the slot rule (1 trap branch and 2 instructions). No
+verdict moves in either direction (280 proven). The slot rule's reach is
+small here because slot forwarding (§9 "Slot forwarding") already removes
+most reloads before the checker sees them; it pays where the reload
+survives, as the builders' store does.
+
+An earlier reading of this change credited it with 203 changed bodies and
+285 more instructions, and a lost proof in `json_copy_run`. That was the
+stale-base confound: the branch had been measured against a head carrying
+work the branch did not have, so the diff showed their improvements as
+regressions. The rule is to pin the base to the commit the branch merged.
 ### 9.ae Check elision on the RV64 lane (2026-09-15)
 
 The RV64 lane kept every guard: its values are canonical (a u32

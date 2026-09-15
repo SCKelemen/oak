@@ -114,7 +114,35 @@ operand order and which branch continues. Constant bounds produce an exact
 trip count only when mathematical monotonicity and the final update prove that
 no Oak fixed-width wrap occurs; otherwise the recurrence remains useful but the
 count is absent. `Compilation.OptIR()` exposes these facts on the original CFG.
-They authorize no transform or emission yet.
+They authorize no emission; each consumer must still establish its own legality.
+
+The first consumer is an analysis-only loop-invariant code-motion candidate.
+It moves an operation to a canonical preheader only when every operand is
+already available there and the operation is in the same closed total-pure
+vocabulary as CSE/DCE. Division, remainder, shifts, calls, memory, effects,
+unknown operations, and loops without a canonical preheader remain unchanged.
+Relational or path-derived facts pin an operation; the one exception is the
+result-local `checked.type` fact, which merely restates the typed SSA
+definition. Nested loops are considered outermost first, allowing a value
+invariant across both loops to move directly to the outer preheader. Input and
+output are independently verified, and `Compilation.OptIR()` exposes the
+post-CSE/DCE LICM candidate and a deterministic movement report. Emission still
+consumes neither.
+
+These analyses, transforms, validations, and compiler stages do not yet run as
+one artifact DAG. Source stages are linear, candidate search branches, and
+individual IR analyses are called manually, so validation and loop analysis
+can currently be recomputed. The intended scheduler makes checked models, IR
+versions, analysis results, proof obligations, validation verdicts, costs, and
+selected artifacts explicit immutable nodes. Dependency and invalidation edges
+then permit independent analyses to run in parallel and ensure that a transform
+can consume only facts computed for its exact IR version. The first generic
+substrate is implemented in `opt/artifact.go`: exact `(kind, name, version)`
+keys, derived recipe digests, graph validation, deterministic topological
+execution, exact-once shared dependencies, cancellation, and a process-local
+cache. The compiler is not migrated yet, and the first executor is deliberately
+single-threaded. `optimizer-artifact-dag-2026-09.md` gives the full design,
+including analysis preservation and bounded ready-node concurrency.
 
 **The native backend** (`nativegen/`, AArch64 7,300 lines, RV64 4,000)
 lowers a checked function directly to instructions with no IR. Scalar
