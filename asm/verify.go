@@ -2843,6 +2843,24 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 			} else {
 				state.write(dest, binaryTerm("sub", a, product))
 			}
+		case "csinc":
+			// Wd = cond ? Wn : Wm + 1 — the if-converted arm assigning 1
+			// (`found = true`) selects from wzr (nativegen/select.go).
+			if state.flags == nil || state.flags.unknown {
+				return "csinc reading flags not produced by cmp/subs", false
+			}
+			code := instr.Operands[3].(Condition).Code
+			if !verifiableConditions[code] {
+				return fmt.Sprintf("condition code %s", code), false
+			}
+			dest := instr.Operands[0].(Register)
+			width := widthOf(dest.Class)
+			whenTrue, okT := operandTerm(state, instr.Operands[1], width)
+			other, okF := operandTerm(state, instr.Operands[2], width)
+			if !okT || !okF {
+				return "unbound register read", false
+			}
+			state.write(dest, iteTerm(flagsCondition(code, state.flags), whenTrue, binaryTerm("add", other, constTerm(1, width))))
 		case "cinc", "cneg":
 			if state.flags == nil || state.flags.unknown {
 				return fmt.Sprintf("%s reading flags not produced by cmp/subs", instr.Mnemonic), false
