@@ -2997,6 +2997,10 @@ boundary"): a returned local built in the `x8` area, a read-only
 aggregate argument passed as the caller's storage, a call's result
 received in the local it initializes (`Oak.BoundaryCopies.read_in_place`,
 `build_in_place`).
+The fifty-fourth increment is aggregate helpers (§9 "Aggregate helpers"):
+the native lane expands small record- and array-typed helpers at their
+calls, a field-path argument standing for a read-only parameter without
+a copy (`Oak.Inlining.eval_subst`).
 
 The fifty-third increment is fields in registers (§9 "Fields in
 registers"): the scalar fields a loop touches of a top-level record
@@ -4549,6 +4553,37 @@ increments, comes to ten instructions where clang's is thirteen.
 `TestE2ENativeFieldPromotion` agrees with the C backend, including a
 record assigned whole inside its loop (`a = seed`, the homes reloading).
 The RV64 lane is untouched.
+
+**Aggregate helpers (2026-09-16, AArch64 lane; `nativegen/inline.go`,
+`spec/lean/Oak/Inlining.lean`).** The native lane's helper inliner, so far
+the vector helpers' (§9 "Vector helpers expanded"), also expands a small
+helper that takes or returns a record or an owned array — the shape the
+source-level inliner leaves alone, since an aggregate temporary is a
+binding of its own there: a body of at most eight statements and no loop,
+every parameter a scalar, record, owned array, span, or view, the result a
+scalar, record, owned array, or unit, no dispatch and no effects row
+(`aggregateHelper`). The call's argument copies, the callee's prologue,
+epilogue, and result copy go with the `bl`. Binding: an identifier
+argument to a parameter the callee never assigns substitutes as before; a
+field-path argument — `next.h`, `acc.h` — to a parameter the callee never
+assigns, borrows, or addresses (`recordParamTouched`), when no parameter of
+the callee is a writable span (through which it could reach the path's
+storage) and the callee does not mention the path's root, stands for the
+parameter at every use with no copy (`substituteBound`); every other
+argument is declared as a copy under a fresh name. A record- or
+array-valued call in expression position becomes a block expression, which
+the record lowering evaluates as its statements then its tail
+(`recordValueAs`); a record local the tail names keeps its storage past
+the block's scope. The verifier still compares against the body as written,
+the callees taken at their Oak bodies. The theorem is the substitution
+lemma over a small expression language: evaluating the body with the
+parameter replaced by the argument equals evaluating it in the environment
+that binds the parameter to the argument's value, the declared copy
+(`Oak.Inlining.eval_subst`). `TestNativeShapesAggregateInline` pins
+`absorb`, whose loop drives `acc.h = step(acc.h, k)` and `fold(acc.h)`
+with no `bl`; `TestE2ENativeAggregateInline` agrees with the C backend.
+On the SHA-256 path, `sha256_compress` and `sha256_block` fold into
+`sha256_update`'s loop once owned arrays travel as values (#472).
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
