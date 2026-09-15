@@ -6548,6 +6548,43 @@ func (lo *oakLowering) inlineCall(callee *ast.FunctionStatement, call *ast.Invoc
 	return truncate(result, width), "", true
 }
 
+// sameOakType is type identity: records and unions by their one declared
+// instance, arrays by length and element (an owned array type is built
+// afresh at each spelling, `[4]u64` in a signature and in a field), scalars
+// by width, sign, and floatness.
+func sameOakType(a, b *oakType) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil || a.kind != b.kind {
+		return false
+	}
+	switch a.kind {
+	case oakScalar:
+		return a.width == b.width && a.signed == b.signed && a.float == b.float
+	case oakArray:
+		return a.length == b.length && sameOakType(a.elem, b.elem)
+	}
+	return false
+}
+
+// describe spells a type for a message: its name, or its shape.
+func (t *oakType) describe() string {
+	if t == nil {
+		return "nothing"
+	}
+	if t.name != "" {
+		return t.name
+	}
+	switch t.kind {
+	case oakArray:
+		return fmt.Sprintf("[%d]%s", t.length, t.elem.describe())
+	case oakScalar:
+		return fmt.Sprintf("a %d-bit scalar", t.width)
+	}
+	return "an aggregate"
+}
+
 // inlineCallValue inlines a call whose result is a record or a sum type
 // (docs/spec/125-verification.md section 3): the body as an aggregate
 // value, the arms of its matches merged leaf by leaf.
@@ -6557,8 +6594,8 @@ func (lo *oakLowering) inlineCallValue(callee *ast.FunctionStatement, call *ast.
 		return nil, fmt.Sprintf("a call to %s, which returns nothing", name), false
 	}
 	returned, ok := lo.oakTypeOf(callee.ReturnType)
-	if !ok || returned != typ {
-		return nil, fmt.Sprintf("a call to %s returning %s where %s is expected", name, typeText(callee.ReturnType), typ.name), false
+	if !ok || !sameOakType(returned, typ) {
+		return nil, fmt.Sprintf("a call to %s returning %s where %s is expected", name, typeText(callee.ReturnType), typ.describe()), false
 	}
 	restore, reason, ok := lo.enterCall(callee, call)
 	if !ok {
