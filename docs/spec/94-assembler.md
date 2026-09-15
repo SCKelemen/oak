@@ -2760,6 +2760,11 @@ against the rewritten body and Lean proving the rewrite
 (`asm.Function.Body`) so the verifier and the verdict cache judge the
 right one.
 
+The forty-ninth increment is slot forwarding (§9 "Slot forwarding"): a
+frame slot's value is read from the register that stored or loaded it
+while that register stands, and a comparison on a computed operand
+branches on its compare (`Oak.Forwarding.load_store`, `cbz_cset`).
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
@@ -3869,6 +3874,35 @@ a float accumulator (its addition does not reassociate), a loop with any
 other statement, another stride, or an accumulator read elsewhere in the
 body; a use of the index after the loop reads `len(v)` on both sides.
 `bench_sum` went from six instructions per element to nineteen per four.
+
+**Slot forwarding (2026-09-16, AArch64 lane; `nativegen/forward.go`,
+`spec/lean/Oak/Forwarding.lean`).** The generator keeps, per frame slot
+addressed from `sp`, the integer register whose value the slot holds: a
+store records the register it stored, a load the register it loaded into.
+A later load of the same slot at the same width, while that register has
+not been written since, is the register's value already — the load
+becomes a `mov`, or nothing when its destination is that register. So
+the increment of a record field, `ldr w9, [sp, #304]; add w9, w9, #1;
+str w9, [sp, #304]`, followed by the field's test, no longer reloads what
+it just stored (`sha256_update`'s `next.filled`). Every write of a
+register drops the slots it held; a label (paths meet), a call (the
+callee owns the scratch registers and may write frame memory through a
+span), a store through a base other than `sp` (frame memory reached by
+address), an `sp` move, a truncation of the emitted items, and the
+retargeting of an emitted instruction's destination drop them all. The
+rule is the frame's write-then-read (`Oak.Forwarding.load_store`,
+`forward`), and a store elsewhere leaves a held slot in place
+(`held_survives`) — the generator forgets exactly the slots a store's
+extent overlaps. Alongside it, a comparison whose left operand is
+computed — a record field, `next.filled == u32(64)` — evaluates it into
+a scratch and branches on the compare, `cmp w9, #64; b.ne`, where before
+the Bool was materialized and tested (`cmp; cset; cbz`;
+`Oak.Forwarding.cbz_cset`, `cbnz_cset`); the flags such a compare leaves
+are not offered for reuse at the else label, since a scratch's spelling
+names no operand. `TestNativeShapesForwarding` pins the byte loop of an
+absorber: no `cset`, no reload after a store, the `== 64` test on the
+register the increment was stored from; `TestE2ENativeForwarding` agrees
+with the C backend. The RV64 lane is untouched.
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
