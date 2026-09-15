@@ -138,9 +138,12 @@ they read. CSE/DCE's checked certificate proves `CFGTopology` unchanged, so v1
 reuses v0 dominance/natural-loop structure but recomputes induction facts from
 the changed SSA. Certificates carry exact artifact/content identities and
 per-aspect digests; they prove reuse eligibility only, never semantic
-equivalence or emission permission. The executor remains deliberately
-single-threaded. `optimizer-artifact-dag-2026-09.md` gives the full design and
-the remaining native migration and bounded-concurrency work.
+equivalence or emission permission. The executor now supports deterministic
+ready waves with a fixed worker bound; OptIR uses three workers for SCCP,
+loop-structure analysis, and CSE/DCE fan-out. A failed wave publishes nothing,
+and traces/errors are independent of worker completion order.
+`optimizer-artifact-dag-2026-09.md` gives the full design and the remaining
+native migration work.
 
 **The native backend** (`nativegen/`, AArch64 7,300 lines, RV64 4,000)
 lowers a checked function directly to instructions with no IR. Scalar

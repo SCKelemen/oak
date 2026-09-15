@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -307,5 +308,208 @@ func TestMemoryArtifactCacheSupportsConcurrentCompilerWork(t *testing.T) {
 	wait.Wait()
 	if cache.Len() != workers {
 		t.Fatalf("cache has %d entries, want %d", cache.Len(), workers)
+	}
+}
+
+func TestArtifactGraphParallelRunBoundsConcurrentReadyWork(t *testing.T) {
+	a := artifactTestKey(ArtifactAnalysis, "a", "v1")
+	b := artifactTestKey(ArtifactAnalysis, "b", "v1")
+	c := artifactTestKey(ArtifactAnalysis, "c", "v1")
+	started := make(chan ArtifactKey, 3)
+	release := make(chan struct{})
+	var active atomic.Int32
+	var maximum atomic.Int32
+	compute := func(key ArtifactKey) ArtifactCompute {
+		return func(context.Context, []Artifact) (any, error) {
+			current := active.Add(1)
+			defer active.Add(-1)
+			for {
+				prior := maximum.Load()
+				if current <= prior || maximum.CompareAndSwap(prior, current) {
+					break
+				}
+			}
+			started <- key
+			<-release
+			return key.Name, nil
+		}
+	}
+	graph, err := NewArtifactGraph(
+		artifactTestTask(c, nil, compute(c)),
+		artifactTestTask(a, nil, compute(a)),
+		artifactTestTask(b, nil, compute(b)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type outcome struct {
+		run ArtifactRun
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		run, err := graph.RunParallel(context.Background(), nil, 2, c, b, a)
+		done <- outcome{run: run, err: err}
+	}()
+	first, second := <-started, <-started
+	firstWave := map[ArtifactKey]bool{first: true, second: true}
+	activeAtBound := active.Load()
+	var unexpected ArtifactKey
+	select {
+	case unexpected = <-started:
+	default:
+	}
+	close(release)
+	result := <-done
+	if !firstWave[a] || !firstWave[b] || len(firstWave) != 2 || activeAtBound != 2 {
+		t.Fatalf("first parallel wave = %s, %s; active=%d", first, second, activeAtBound)
+	}
+	if unexpected != (ArtifactKey{}) {
+		t.Fatalf("worker bound admitted third task %s", unexpected)
+	}
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if maximum.Load() != 2 || !reflect.DeepEqual(result.run.Executed, []ArtifactKey{a, b, c}) || !reflect.DeepEqual(result.run.Targets, []Artifact{{Key: a, Value: "a"}, {Key: b, Value: "b"}, {Key: c, Value: "c"}}) {
+		t.Fatalf("parallel run = %+v, maximum=%d", result.run, maximum.Load())
+	}
+}
+
+func TestArtifactGraphParallelRunIsIndependentOfCompletionOrder(t *testing.T) {
+	root := artifactTestKey(ArtifactIR, "cfg", "v0")
+	left := artifactTestKey(ArtifactAnalysis, "dominance", "v1")
+	right := artifactTestKey(ArtifactAnalysis, "loops", "v1")
+	final := artifactTestKey(ArtifactCandidate, "licm", "v1")
+	rightReached := make(chan struct{})
+	graph, err := NewArtifactGraph(
+		artifactTestTask(final, []ArtifactKey{right, left}, func(_ context.Context, dependencies []Artifact) (any, error) {
+			return []ArtifactKey{dependencies[0].Key, dependencies[1].Key}, nil
+		}),
+		artifactTestTask(left, []ArtifactKey{root}, func(context.Context, []Artifact) (any, error) {
+			<-rightReached
+			return "left", nil
+		}),
+		artifactTestTask(right, []ArtifactKey{root}, func(context.Context, []Artifact) (any, error) {
+			close(rightReached)
+			return "right", nil
+		}),
+		artifactTestTask(root, nil, func(context.Context, []Artifact) (any, error) { return "root", nil }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := graph.RunParallel(context.Background(), nil, 2, final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(run.Executed, []ArtifactKey{root, left, right, final}) {
+		t.Fatalf("completion order affected trace: %v", run.Executed)
+	}
+	artifact, exists := run.Artifact(final)
+	if !exists || !reflect.DeepEqual(artifact.Value, []ArtifactKey{right, left}) {
+		t.Fatalf("parallel dependency order = %+v", artifact)
+	}
+}
+
+func TestArtifactGraphParallelRunChoosesDeterministicFailureAndDiscardsWave(t *testing.T) {
+	a := artifactTestKey(ArtifactAnalysis, "a", "v1")
+	b := artifactTestKey(ArtifactAnalysis, "b", "v1")
+	c := artifactTestKey(ArtifactAnalysis, "c", "v1")
+	aError := errors.New("a refused")
+	bError := errors.New("b refused first")
+	bReached := make(chan struct{})
+	var cRuns atomic.Int32
+	graph, err := NewArtifactGraph(
+		artifactTestTask(c, nil, func(context.Context, []Artifact) (any, error) {
+			cRuns.Add(1)
+			return "must not run", nil
+		}),
+		artifactTestTask(b, nil, func(context.Context, []Artifact) (any, error) {
+			close(bReached)
+			return nil, bError
+		}),
+		artifactTestTask(a, nil, func(context.Context, []Artifact) (any, error) {
+			<-bReached
+			return nil, aError
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := NewMemoryArtifactCache()
+	run, err := graph.RunParallel(context.Background(), cache, 2, c, b, a)
+	var failure *ArtifactTaskError
+	if !errors.As(err, &failure) || failure.Key != a || !errors.Is(err, aError) {
+		t.Fatalf("parallel failure choice: run=%+v err=%v", run, err)
+	}
+	if len(run.Executed) != 0 || len(run.Targets) != 0 || cache.Len() != 0 || cRuns.Load() != 0 {
+		t.Fatalf("failed wave leaked state: run=%+v cache=%d c=%d", run, cache.Len(), cRuns.Load())
+	}
+}
+
+func TestArtifactGraphParallelRunCancellationAndConfigurationFailClosed(t *testing.T) {
+	key := artifactTestKey(ArtifactAnalysis, "cancel", "v1")
+	ctx, cancel := context.WithCancel(context.Background())
+	graph, err := NewArtifactGraph(artifactTestTask(key, nil, func(context.Context, []Artifact) (any, error) {
+		cancel()
+		return "private", nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := NewMemoryArtifactCache()
+	run, err := graph.RunParallel(ctx, cache, 1, key)
+	var failure *ArtifactTaskError
+	if !errors.As(err, &failure) || failure.Key != key || !errors.Is(err, context.Canceled) || len(run.Executed) != 0 || cache.Len() != 0 {
+		t.Fatalf("parallel cancellation: run=%+v err=%v cache=%d", run, err, cache.Len())
+	}
+	if _, err := graph.RunParallel(nil, nil, 1, key); err == nil || !strings.Contains(err.Error(), "nil context") {
+		t.Fatalf("nil parallel context error = %v", err)
+	}
+	if _, err := graph.RunParallel(context.Background(), nil, 0, key); err == nil || !strings.Contains(err.Error(), "worker count") {
+		t.Fatalf("invalid parallel worker error = %v", err)
+	}
+}
+
+func TestArtifactGraphParallelRunCacheHitCutsOffDependencies(t *testing.T) {
+	root := artifactTestKey(ArtifactIR, "cfg", "v0")
+	analysis := artifactTestKey(ArtifactAnalysis, "sccp", "v1")
+	candidate := artifactTestKey(ArtifactCandidate, "fold", "v1")
+	var rootRuns, analysisRuns, candidateRuns atomic.Int32
+	graph, err := NewArtifactGraph(
+		artifactTestTask(candidate, []ArtifactKey{analysis}, func(context.Context, []Artifact) (any, error) {
+			candidateRuns.Add(1)
+			return "candidate", nil
+		}),
+		artifactTestTask(analysis, []ArtifactKey{root}, func(context.Context, []Artifact) (any, error) {
+			analysisRuns.Add(1)
+			return "analysis", nil
+		}),
+		artifactTestTask(root, nil, func(context.Context, []Artifact) (any, error) {
+			rootRuns.Add(1)
+			return "root", nil
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := NewMemoryArtifactCache()
+	first, err := graph.RunParallel(context.Background(), cache, 4, analysis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := graph.RunParallel(context.Background(), cache, 4, analysis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := graph.RunParallel(context.Background(), cache, 4, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(first.Executed, []ArtifactKey{root, analysis}) || !reflect.DeepEqual(second.CacheHits, []ArtifactKey{analysis}) || !reflect.DeepEqual(third.Executed, []ArtifactKey{candidate}) || !reflect.DeepEqual(third.CacheHits, []ArtifactKey{analysis}) {
+		t.Fatalf("parallel cache runs: first=%+v second=%+v third=%+v", first, second, third)
+	}
+	if rootRuns.Load() != 1 || analysisRuns.Load() != 1 || candidateRuns.Load() != 1 {
+		t.Fatalf("parallel cache counts = %d/%d/%d", rootRuns.Load(), analysisRuns.Load(), candidateRuns.Load())
 	}
 }
