@@ -204,9 +204,8 @@ or the verifier, not in the program:
    §9.ae):** the exit test `i < len(v)` compares the zero-extended index
    with the normalized length and the proven access reuses that register;
    two verifier gaps closed on the way (header temporaries carried into
-   the body; the `(x << 32) >> 32` fold only for 32-bit symbols), moving
-   34 bodies from trusted to proven across the two lanes with none
-   regressing.
+   the body; the `(x << 32) >> 32` fold only for 32-bit symbols), with
+   no existing verdict changing on either lane.
 6. **The checkers are linear over the block.** Base facts (spans,
    regions, frame addresses) are definitions, not per-path state; guard
    facts already flow through labels by a fixpoint on AArch64. The two

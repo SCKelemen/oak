@@ -5073,13 +5073,12 @@ half set; the fold now asks `upperClear` and otherwise masks. The old
 lowering had hidden this behind its guard, whose fall-through premise
 excluded the offending values.
 
-Measured on the stdlib-bearing program: on the RV64 lane 8 bodies elide 8
-guards where none did (the mechanism's reach today), and the verified
-profile moves 13 bodies from trusted to proven and 16 from trusted to
-witnessed with no body losing its proof; on the AArch64 lane, from the
-verifier changes alone, 21 bodies move from trusted to proven and 10 from
-trusted to witnessed, none regress, while the guards elided fall from 134
-to 105 because the compiler keeps the plain form where the elided form
-proves less (§9 "Check elision") — the verifier proves a guard's shape
-more readily than a loop condition's, the next gap to close there.
+Measured on the stdlib-bearing program, like for like against the head
+this merged onto and with the verdict cache off: on the RV64 lane 8 bodies
+elide 8 guards where none did (the mechanism's reach today: a plain `i <
+len(v)` head), and no verdict changes on either lane — the two verifier
+fixes are what the new shape needs to prove, and they alter no existing
+body's verdict. An earlier reading of this change credited it with 34
+bodies moving from trusted to proven; those came from the verifier work
+that landed upstream between the two snapshots compared, not from this.
 
