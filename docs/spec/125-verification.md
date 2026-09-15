@@ -594,6 +594,20 @@ pair, where the list form compares types pairwise.
 Every law is also witnessed in the compiled program; the file proves in
 about eight seconds.
 
+`typechecker/lattice_semantics_test.go` additionally enumerates every pair of
+binary join/meet formulas through five syntax nodes over three opaque atoms and
+compares the Go `IsSubtype` result with an independent pointwise truth-table
+containment oracle. This is bounded executable correspondence evidence for the
+maintained Go transliteration; it is not code extraction from Lean.
+
+The ordinary value-flow boundary consumes this decision only for
+representation-neutral exact and bottom flow. The verified semantic fact
+`never <= T` therefore applies to returns, arguments, assignments, and match
+arms. The lattice theorem alone does not authorize an implicit runtime
+representation for `any`, unions, or intersections; `20-types.md` §3.1 states
+that boundary, and separate tests cover numeric/refinement, structural, and
+alignment relations.
+
 ### 6.2 Effects and patterns
 
 `spec/oak/effects.oak` restates `Oak.Effects` (the subsumption order
