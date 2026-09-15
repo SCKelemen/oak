@@ -1392,7 +1392,8 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64, half, chunk int) (*term, *pathExecutor, string, bool) {
 	state := &symbolicState{arch: fn.Arch, regs: map[int]*term{}, notes: &pathNotes{}}
 	params := map[string]RegClass{}
-	spans := map[string]int64{} // span/view parameter -> element size in bytes
+	var resultArea []compositeLeaf // a record result returned through memory: its leaves
+	spans := map[string]int64{}    // span/view parameter -> element size in bytes
 	declared := map[string]int{}
 	composites := map[string]compositeArg{}
 	recordSpans := map[string]recordSpanArg{}
@@ -1597,13 +1598,28 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 		// x1 (a0 and a1), each chunk verified in its own run (Verify);
 		// larger ones come back through the area x8 addresses, outside the
 		// subset.
-		if comp.Size > 16 {
-			return nil, nil, "a record result beyond two register chunks (returned through memory)", false
-		}
 		if chunk >= int((comp.Size+7)/8) {
 			return nil, nil, "a result chunk past the record", false
 		}
 		resultClass, hasResult = ClassX, true
+		if comp.Size > 16 {
+			// Returned through memory: the caller passes the result area
+			// in x8 (a0 on RV64 is outside the subset). The area is modeled
+			// as frame memory at an address of its own, far above the
+			// frame and the incoming arguments, so the body's stores through
+			// x8 tile it as they tile the frame (registerFrameAccess) and
+			// the ret delivers the chunk assembled from its slots, leaf by
+			// leaf (docs/spec/94-assembler.md §9).
+			if fn.Arch == ArchRV64 {
+				return nil, nil, "a record result beyond two register chunks (returned through memory) on RV64", false
+			}
+			leaves, _, ok := compositeLeaves(fn.Composites, typeText(sig.ReturnType), "", 0, nil)
+			if !ok {
+				return nil, nil, "a record result whose layout has no leaves", false
+			}
+			state.regs[8] = frameAddressTerm(resultAreaBase)
+			resultArea = leaves
+		}
 	}
 	_, vectorResult := vectorShape(sig.ReturnType)
 	floatResult := 0
@@ -1628,6 +1644,7 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 	exec.resultHalf = half
 	exec.floatResult = floatResult
 	exec.resultChunk = chunk
+	exec.resultArea = resultArea
 	if fn.Arch == ArchRV64 {
 		exec.resultReg = Register{Class: rv64ResultRegister.Class, Num: rv64ResultRegister.Num + chunk}
 		if floatResult != 0 {
@@ -1679,6 +1696,7 @@ type pathExecutor struct {
 	floatResult int
 	resultHalf  int               // a vector result: the 64-bit half of v0 delivered (asm/verify_vector.go)
 	resultChunk int               // a record result of two chunks: the chunk delivered (0: x0/a0, 1: x1/a1)
+	resultArea  []compositeLeaf   // a record result returned through memory (x8): its leaves; nil otherwise
 	spans       map[string]int64  // span parameter -> element size in bytes
 	declared    map[string]int    // parameter -> declared width
 	globals     map[string]Global // the globals the body addresses (fn.Globals)
@@ -2194,6 +2212,39 @@ func frameAddressOf(t *term) (int64, bool) {
 // frameAddressTerm names a frame address.
 func frameAddressTerm(addr int64) *term { return paramTerm(fmt.Sprintf("sp#%d", addr), 64) }
 
+// resultAreaBase is the entry-relative address the executor gives the
+// result area a caller passes in x8: far above any frame or incoming
+// argument, so the area's slots never meet the function's own.
+const resultAreaBase = int64(1) << 40
+
+// resultAreaChunk assembles chunk resultChunk of a record result returned
+// through memory from the slots the body stored in the x8 area: every
+// leaf in the chunk read at its offset and width, placed at its bit
+// position; a leaf the body never stored leaves the chunk undefined.
+func (x *pathExecutor) resultAreaChunk(state *symbolicState) (*term, string, bool) {
+	var missing string
+	chunk := chunkTerm(x.resultArea, int64(x.resultChunk), func(name string, width int) *term {
+		for _, leaf := range x.resultArea {
+			if leaf.name != name {
+				continue
+			}
+			size := (int64(leaf.width) + 7) / 8
+			value, ok := state.loadSlot(resultAreaBase+leaf.offset, size)
+			if !ok {
+				missing = name
+				return constTerm(0, width)
+			}
+			return truncate(value, width)
+		}
+		missing = name
+		return constTerm(0, width)
+	})
+	if missing != "" {
+		return nil, fmt.Sprintf("the result field %s was never stored to the result area", missing), false
+	}
+	return chunk, "", true
+}
+
 // registerFrameAccess executes a load or store whose base register holds a
 // frame address (an array or record element in the frame): the address is
 // the base's plus the offset, or plus a constant index scaled — a symbolic
@@ -2546,6 +2597,15 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 					return value.lanesAt(x.floatResult)[0], state.effects(), "", true
 				}
 				return value.halves()[x.resultHalf], state.effects(), "", true
+			}
+			if x.resultArea != nil {
+				// The chunk of the result area the caller reads: each leaf in
+				// it from the slot the body stored, at its offset and width.
+				chunk, reason, okArea := x.resultAreaChunk(state)
+				if !okArea {
+					return nil, nil, reason, false
+				}
+				return chunk, state.effects(), "", true
 			}
 			result, ok := state.read(x.resultReg)
 			if !ok {
@@ -6616,14 +6676,19 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 	if shape, isVector := vectorShape(sig.ReturnType); isVector {
 		return verifyVectorResult(fn, sig, oakBody, shape)
 	}
-	if _, chunks, isComposite := resultComposite(fn, sig); isComposite && chunks == 2 {
+	if _, chunks, isComposite := resultComposite(fn, sig); isComposite && chunks >= 2 {
+		// Each chunk of the record — two registers, or the words of the
+		// result area beyond them — verified in its own run.
 		first := verifyChunk(fn, sig, oakBody, 0)
 		if first.Kind == VerdictMismatch || first.Kind == VerdictTrusted {
 			return first
 		}
-		second := verifyChunk(fn, sig, oakBody, 1)
-		if second.Kind != VerdictProven {
-			return second
+		var second Verdict
+		for k := 1; k < chunks; k++ {
+			second = verifyChunk(fn, sig, oakBody, k)
+			if second.Kind != VerdictProven {
+				return second
+			}
 		}
 		if first.Kind != VerdictProven {
 			return first
@@ -7659,7 +7724,7 @@ func (lo *oakLowering) lowerUnitBody(body ast.Expression) (string, bool) {
 func resultComposite(fn *Function, sig *ast.FunctionStatement) ([]compositeLeaf, int, bool) {
 	name := typeText(sig.ReturnType)
 	comp, isComposite := fn.Composites[name]
-	if !isComposite || len(comp.Fields) == 0 || comp.Size > 16 {
+	if !isComposite || len(comp.Fields) == 0 {
 		return nil, 0, false
 	}
 	leaves, _, ok := compositeLeaves(fn.Composites, name, "", 0, nil)
@@ -7887,9 +7952,79 @@ func upperBitsName(param string) string { return param + "#hi" }
 // (the terms' DAG size times the inputs evaluated).
 const witnessVisitBudget = 4000000
 
+// canonical rewrites a term for the decision so that one value has one
+// spelling on both sides: a product by a constant power of two is the
+// shift the backend's strength reduction emits (`n * 8` against `lsl
+// #3`), rebuilt through the constructors so their folds apply. The
+// lowering itself keeps the product, which the refinement model renders
+// (Oak.LoweringRefinement); only the comparison canonicalizes.
+func canonical(t *term) *term {
+	return canonicalMemo(t, map[*term]*term{})
+}
+
+func canonicalMemo(t *term, memo map[*term]*term) *term {
+	if t == nil {
+		return nil
+	}
+	if done, seen := memo[t]; seen {
+		return done
+	}
+	var out *term
+	switch t.kind {
+	case termConst, termParam:
+		out = t
+	case termFloat, termQuant:
+		out = t // an operation's spelling is its identity; a binder's body stays as built
+	default:
+		left, right, cond := canonicalMemo(t.left, memo), canonicalMemo(t.right, memo), canonicalMemo(t.cond, memo)
+		switch t.kind {
+		case termBinary:
+			if t.op == "mul" && left.width == t.width {
+				switch {
+				case right.kind == termConst && right.value != 0 && right.value&(right.value-1) == 0:
+					out = binaryTerm("shl", left, constTerm(uint64(bits.TrailingZeros64(right.value)), t.width))
+				case left.kind == termConst && left.value != 0 && left.value&(left.value-1) == 0 && right.width == t.width:
+					out = binaryTerm("shl", right, constTerm(uint64(bits.TrailingZeros64(left.value)), t.width))
+				}
+			}
+			if out == nil {
+				if left == t.left && right == t.right {
+					out = t
+				} else {
+					out = binaryTerm(t.op, left, right)
+					out = adaptWidth(out, t.width)
+				}
+			}
+		case termCmp:
+			if left == t.left && right == t.right {
+				out = t
+			} else {
+				out = &term{kind: termCmp, width: t.width, op: t.op, left: left, right: right}
+			}
+		case termIte:
+			if left == t.left && right == t.right && cond == t.cond {
+				out = t
+			} else {
+				out = iteTerm(cond, left, right)
+				out = adaptWidth(out, t.width)
+			}
+		case termSelect:
+			if left == t.left {
+				out = t
+			} else {
+				out = selectTerm(t.name, left, t.width)
+			}
+		default:
+			out = t
+		}
+	}
+	memo[t] = out
+	return out
+}
+
 func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, width int, note string) Verdict {
-	asmTerm = truncate(asmTerm, width)
-	oakTerm = adaptWidth(oakTerm, width)
+	asmTerm = canonical(truncate(asmTerm, width))
+	oakTerm = canonical(adaptWidth(oakTerm, width))
 	// The input domain — every union tag one of its variants, the machine
 	// not trapping — restricts the equality: it is checked on the
 	// witnesses and conjoined at the bit level only once a bit differs,

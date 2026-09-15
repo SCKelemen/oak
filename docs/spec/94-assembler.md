@@ -4498,6 +4498,27 @@ it proved four bodies and cost the build ten CPU-minutes in bodies
 whose divisions had ended quickly as uninterpreted, so it is not kept.
 Proven 477.
 
+**A record returned through memory (2026-09-15).** A record result
+beyond two register chunks comes back through the area the caller
+passes in x8, and twenty-eight bodies stopped there ("returned through
+memory"). The executor now binds x8 to a frame address of the area's own
+— far above the frame and the incoming arguments (`resultAreaBase`), so
+the body's stores through x8 tile it as they tile the frame — and the
+`ret` delivers each word of the record assembled from the area's slots,
+leaf by leaf; a leaf the body never stored leaves the body trusted with
+its name. Verify runs one chunk per word, as it runs two for a two-chunk
+record, and the Oak side packs the same chunk from its aggregate
+(`packAggregateChunk`). Seven of the twenty-eight prove, eight are
+evidence, and thirteen stop at a callee returning such a record — the
+call summary does not carry the area yet. Alongside, the decision
+canonicalizes a product by a constant power of two into the shift the
+backend's strength reduction emits (`n * 8` against `lsl #3`; the
+lowering keeps the product, which the refinement model renders), which
+returned five proofs the reduction had unmade and added two. With the
+strength reduction and the other commits of the evening: proven 529,
+evidence 97, trusted 333, no disagreement, the rows identical
+(`TestE2ENativeWideResult`).
+
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
 transliteration is checked against). Retried 2026-09-14 with Sail built

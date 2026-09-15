@@ -2717,6 +2717,9 @@ func impliesEqualWithin(premise, a, b *term, widthOf func(string) int, budget *n
 // of the largest branch in the terms and decides both cases under it
 // (splitDecide), up to splitDepth deep.
 func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+	if depth == 0 {
+		premise, a, b = canonical(premise), canonical(a), canonical(b)
+	}
 	width := a.width
 	if b.width > width {
 		width = b.width
