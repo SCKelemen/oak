@@ -2046,7 +2046,17 @@ func (c *checker) deriveSpan(instr Instruction, dest Register, regs []Register) 
 		if primary < 0 {
 			return
 		}
-		c.spans[dest.Num] = &spanFact{lenReg: primary, elem: fact.elem, writable: fact.writable, lenRegs: lens}
+		derived := &spanFact{lenReg: primary, elem: fact.elem, writable: fact.writable, lenRegs: lens}
+		// A count register holding a constant is the derived span's exact
+		// length: the fixed-size page `subslice(keys, start, u32(512))`
+		// has minimum length 512, so an index guarded below the constant
+		// (a compare against a register holding it) is inside it.
+		for n := range lens {
+			if k, isConst := c.constFacts[n]; isConst && k >= 0 && (!derived.hasMin || k < derived.minLen) {
+				derived.hasMin, derived.minLen = true, k
+			}
+		}
+		c.spans[dest.Num] = derived
 	}
 }
 
@@ -2214,6 +2224,13 @@ func (c *checker) aliasSpan(dest, src Register) {
 			c.regions[dest.Num] = extent
 		}
 		return
+	}
+	if (dest.Class == ClassW || dest.Class == ClassX) && dest.Class == src.Class {
+		// A copy of a register holding a constant holds it (the length
+		// register of a fixed-size subslice copied into a callee-saved home).
+		if k, isConst := c.constFacts[src.Num]; isConst {
+			c.constFacts[dest.Num] = k
+		}
 	}
 	if dest.Class == ClassW && src.Class == ClassW {
 		for _, fact := range c.spans {

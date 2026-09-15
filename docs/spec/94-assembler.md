@@ -2740,6 +2740,17 @@ still bounded the index at the header. The state is now the whole
 register state, met across every predecessor
 (`asm/bounds_arith_test.go`).
 
+The forty-fourth increment is if-conversion (§9): a conditional chain over
+one comparison whose arms only assign lowers as one compare and a select
+per variable (`nativegen/select.go`, `Oak.Assembler.selectChain_firstArm`,
+`select_upper`, `select_index`), the checker carrying the bound facts
+through `csel`. Two branch-shape items were examined and deferred because
+the verifier's loop recognizer (`asm/loops.go` findLoops) admits one
+unconditional back edge and no body exit: leaving a loop from the arm that
+sets its exit flag (`found = true` then `b done`) and threading a branch
+into the back edge (`b endif; endif: b loop`) both demote a proven loop to
+evidence. They wait on a loop summary that admits break paths.
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
@@ -3779,6 +3790,44 @@ its kept lines by the line the emitted instructions carry — the
 statement's — which is the line a finding names; an access token on a
 later line of a multi-line statement had escaped the first version and
 sent the body to every guard.
+
+**If-conversion (2026-09-16, AArch64 lane; `nativegen/select.go`).** A
+conditional chain in statement position whose every condition compares
+the same two operands and whose every arm only assigns register-homed
+integer locals from expressions safe to evaluate on either path —
+identifiers, literals, conversions, and the wrap-free operators; no
+memory through a guard, no call, no division — lowers as one `cmp` and a
+`csel` per assigned variable, no branch and no label: `k == target ? {
+found = true } | k < target ? { lo = mid + u32(1) } | { hi = mid }` is
+`cmp x26, x6; csel w24, w10, w24, eq; csel w7, w9, w7, lo; csel w23, w25,
+w23, hi` after the arms' right-hand sides. Each arm's condition is the set
+of comparison outcomes (below, equal, above) its operator accepts less the
+outcomes of the arms before it, so the conditions are disjoint and the
+nested selects, the first arm outermost and the variable's old value
+innermost, equal the first matching arm
+(`Oak.Assembler.selectChain_firstArm`); an arm whose set is empty is never
+taken and is not evaluated. Consecutive arms over one comparison share a
+compare; a chain over several comparisons (`x < lo ? { y = lo } | x > hi
+? { y = hi } | { }`) is one compare per group, the groups' selects nested
+from the last group to the first, so first-match order holds without an
+exclusivity condition across compares. The first condition is evaluated
+on every path, as the source does, so its operands may be computed (a
+guarded element read, `keys[mid * u32(512)] <= target`); every later
+condition is evaluated speculatively, so its operands are registers and
+immediates. The right-hand sides are evaluated before the compare, every
+arm's, so within an arm none may read a variable the arm assigned before
+it. The compare a chain's guard left live is reused when no evaluation
+wrote the flags (`asm.SetsFlags`). The select that produces a variable's
+final value writes the variable's home directly when no later instruction
+of the chain reads the value or the home (retargetSelect). The checker keeps the
+facts through the select: a `csel` of two values at most a referent is at
+most it, and of two indices below one bound is below it
+(`Oak.Assembler.select_upper`, `select_index`; §7 "Bounds through
+arithmetic"), so the if-converted binary search's `hi = mid` still bounds
+the next midpoint. A loop body that is one block is also the shape the
+verifier's loop recognizer reads and the shape the branch predictor has
+nothing to learn from: the search kernels' inner loops went from five
+branches per step to the header's two exits and the back edge.
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries

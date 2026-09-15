@@ -317,3 +317,34 @@ chained `b endif_11; endif_11: endif_9: b loop_6` is one branch). The
 bounds facts stay necessary: they are what makes the guard-free form
 admissible, and the if-converted arms must keep the facts they had.
 
+## If-conversion, 2026-09-16
+
+The conditional chains of both search kernels lower as one compare and a
+select per variable (docs/spec/94-assembler.md §9 "If-conversion"): the
+binary search's inner loop is thirteen instructions with the header's two
+exits and the back edge as its only branches, the page probe's outer loop
+twelve with one exit. Two runs under a load average near 70
+(`results/m-series-2026-09-16-select-a.json`, `-b.json`; best samples, ns
+per operation; medians were up to twice the bests and are not read):
+
+| Kernel | C backend | oak-native | native / C | Rust |
+| --- | ---: | ---: | ---: | ---: |
+| search (a) | 7,483,333 (prior run) | 7,186,667 | 0.96× | 7,532,056 |
+| search (b) | 9,881,333 | 8,705,667 | 0.88× | 9,549,653 |
+| page_probe (a) | 6,964,000 | 11,362,667 | 1.63× | 9,982,569 |
+| page_probe (b) | 7,188,667 | 12,639,667 | 1.76× | 9,004,903 |
+
+Reading: `search` went from 1.56× of clang to parity or ahead, and ahead
+of the hand-written Rust, once its inner loop had no branch to predict;
+the guards' elision (the previous section) was the precondition, the
+branch shape the cost. `page_probe` remains 1.6–1.8×: its inner loop
+still tests the `found` flag at the header every step (`cbnz`), builds
+the constant `1` for the flag inside the loop (`movz w10, #1` per
+iteration, a loop-invariant clang hoists), and copies the midpoint before
+scaling it (`mov w10, w23; lsl w10, w10, #9` where `lsl w10, w23, #9`
+serves); and each probe's page walk touches eleven cache lines four
+kilobytes apart, a memory cost both backends pay. Next in this kernel's
+order: loop-invariant constants hoisted to the loop's preheader, the
+copy-before-shift fused, and the exit flag once the verifier's loop
+summary admits a break path.
+
