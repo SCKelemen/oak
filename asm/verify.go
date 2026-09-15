@@ -114,7 +114,33 @@ func selectTerm(span string, index *term, width int) *term {
 	if index.kind == termConst {
 		return paramTerm(spanElemName(span, int64(index.value&mask(32))), width)
 	}
-	return &term{kind: termSelect, width: width, name: span, left: truncate(index, 32)}
+	return &term{kind: termSelect, width: width, name: span, left: canonicalIndex(index)}
+}
+
+// canonicalIndex spells a memory read's index one way on both sides, so
+// the same read is one term (the linear normal form's atom): a mask of
+// low ones covering every bit its operand can have set is dropped — the
+// machine's read of a u32 argument register under `and 0xFFFFFFFF` is
+// the parameter, whose wide reading is zero-extended by convention — and
+// the index is taken at 32 bits.
+func canonicalIndex(index *term) *term {
+	for index.kind == termBinary && index.op == "and" {
+		var maskTerm, operand *term
+		switch {
+		case index.right.kind == termConst:
+			maskTerm, operand = index.right, index.left
+		case index.left.kind == termConst:
+			maskTerm, operand = index.left, index.right
+		default:
+			return truncate(index, 32)
+		}
+		k := lowOnes(maskTerm.value & mask(index.width))
+		if k < 0 || operand.knownBits() > k {
+			break
+		}
+		index = operand
+	}
+	return truncate(index, 32)
 }
 
 // elementValue is the witness evaluator's fixed memory: element k of span
@@ -306,7 +332,7 @@ func recordFieldTerm(span string, index *term, leafName string, width int, concr
 		}
 		return paramTerm(spanElemName(span, int64(k))+leafName, width)
 	}
-	return &term{kind: termSelect, width: width, name: memory, left: truncate(index, 32)}
+	return &term{kind: termSelect, width: width, name: memory, left: canonicalIndex(index)}
 }
 
 // recordElementOf recognizes a record span element's address: `&v` plus
@@ -1033,7 +1059,19 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		return &linearForm{width: w, coeffs: map[string]uint64{t.name: 1}}
 	case termConst:
 		return &linearForm{width: w, constant: t.value & m}
-	case termCmp, termIte, termSelect, termFloat, termQuant:
+	case termSelect:
+		// A memory read at a symbolic index is an atom of the form — the
+		// same read on both sides (one memory, one index term) is one
+		// unknown, so `s[dom].pool_base + u64(s[dom].root) * page_size`
+		// (the OS pilot's get_root_pa) decides linearly, where the
+		// 64-bit sum at the bit level exceeded the budget. Only a read
+		// whose element fits the form's width (a narrower one is
+		// zero-extended by the convention over parameters).
+		if t.width > w {
+			return nil
+		}
+		return &linearForm{width: w, coeffs: map[string]uint64{t.String(): 1}}
+	case termCmp, termIte, termFloat, termQuant:
 		return nil
 	}
 	switch t.op {

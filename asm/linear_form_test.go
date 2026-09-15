@@ -32,6 +32,21 @@ func TestLinearFormSeesThroughLowMasks(t *testing.T) {
 	if v := viaRegister.linearAt(64); v == nil || !v.equal(l) {
 		t.Fatalf("the register read must strip its upper bits: %v vs %s", v, l)
 	}
+	// A memory read at a symbolic index is an atom: the same read on both
+	// sides (one memory, one index) is one unknown.
+	dom := paramTerm("dom", 32)
+	poolBase := selectTerm("s.pool_base", dom, 64)
+	root := selectTerm("s.root", dom, 16)
+	oakRead := binaryTerm("add", poolBase, binaryTerm("mul", zeroExtend(root, 64), constTerm(4096, 64)))
+	machineRead := binaryTerm("add", selectTerm("s.pool_base", dom, 64), binaryTerm("shl", binaryTerm("and", zeroExtend(selectTerm("s.root", dom, 16), 64), constTerm(0xFFFF, 64)), constTerm(12, 64)))
+	lr, rr := oakRead.linearAt(64), machineRead.linearAt(64)
+	if lr == nil || rr == nil || !lr.equal(rr) {
+		t.Fatalf("reads must be atoms of one form: %v vs %v", lr, rr)
+	}
+	other := binaryTerm("add", selectTerm("s.pool_base", paramTerm("k", 32), 64), constTerm(0, 64))
+	if o := other.linearAt(64); o == nil || o.equal(poolBase.linearAt(64)) {
+		t.Fatalf("reads at different indices must be different atoms")
+	}
 	// A mask narrower than the parameter is not the identity.
 	narrow := binaryTerm("and", index, constTerm(0xFF, 64))
 	if narrow.linearAt(64) != nil {

@@ -52,3 +52,45 @@ func TestE2ENativePagePaLinearForm(t *testing.T) {
 		t.Errorf("get_root_pa must be proven; diagnostics:\n%s", joined)
 	}
 }
+
+// A getter over a span of records — the OS pilot's get_root_pa,
+// `page_pa(s[dom].pool_base, s[dom].root)` — decides in the linear normal
+// form with its memory reads as atoms: the same read on both sides is one
+// unknown once the index is spelled canonically (the machine's `dom and
+// 0xFFFFFFFF` is the parameter). At the bit level the 64-bit sum exceeded
+// the node budget.
+const nativeGetterLinearProgram = `page_size: u64 = u64(16384)
+
+Regime: type = struct {
+  pages: [16]u64
+  root: u16
+  pool_base: u64
+}
+
+page_pa: (pool_base: u64, index: u16): u64 { pool_base + u64(index) * page_size }
+
+get_root_pa: (s: [*]Regime, dom: u32): u64 { page_pa(s[dom].pool_base, s[dom].root) }
+
+main: (): i32 {
+  r: [1]Regime = [Regime { pages: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], root: 3, pool_base: u64(65536) }]
+  (get_root_pa(span(&r), u32(0)) == u64(65536 + 3 * 16384)) ? 42 | 1
+}
+`
+
+func TestE2ENativeGetterLinearForm(t *testing.T) {
+	requireArm64Host(t)
+	var infos []string
+	comp := New().WithSource("getter.oak", nativeGetterLinearProgram).WithNativeBodies().WithNativeAsm().WithDiagnosticSink(func(d *diagnostic.Diagnostic) {
+		if d.Source == "native" {
+			infos = append(infos, d.Message)
+		}
+	})
+	_, code, abnormal := buildAndRunFrom(t, "getter", comp)
+	joined := strings.Join(infos, "\n")
+	if abnormal || code != 42 {
+		t.Fatalf("native: exit = (%d, abnormal=%v), want 42\n%s", code, abnormal, joined)
+	}
+	if !strings.Contains(joined, "asm unit get_root_pa: proven equal to its Oak body (linear normal form 1*s.pool_base[dom] + 16384*s.root[dom] + 0 (mod 2^64))") {
+		t.Errorf("get_root_pa must be proven in the linear normal form; diagnostics:\n%s", joined)
+	}
+}
