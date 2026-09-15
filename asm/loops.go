@@ -736,6 +736,49 @@ type loopEvent struct {
 
 func (ev *loopEvent) freshName(v string) string { return fmt.Sprintf("loop%d.%s", ev.index, v) }
 
+// entryCondition is the loop's continue condition at the header's entry
+// values: the test that decides whether the loop runs at all. A loop that
+// does not run leaves its memories alone, so the memory marker holds only
+// under this condition, and both sides guard theirs with it — without it,
+// a side whose code tests entry before the loop and one whose model does
+// not disagree exactly where the trip count is zero. nil means the loop
+// is always entered (a constant true condition), and needs no guard.
+func (ev *loopEvent) entryCondition() *term {
+	if ev.cond == nil {
+		return nil
+	}
+	sigma := map[string]*term{}
+	for name, fresh := range ev.fresh {
+		header, known := ev.header[name]
+		if !known || fresh == nil || header == nil {
+			continue
+		}
+		sigma[fresh.name] = header
+	}
+	entry := truncate(substitute(ev.cond, sigma), 1)
+	if entry.kind == termConst && entry.value&1 == 1 {
+		return nil
+	}
+	return entry
+}
+
+// guardMarker conjoins cond onto the loop memory marker at the end of a
+// span's write log, which appendMarker has just placed there.
+func guardMarker(log []*spanWrite, cond *term) {
+	if cond == nil || len(log) == 0 {
+		return
+	}
+	marker := log[len(log)-1]
+	if marker.memory == "" {
+		return
+	}
+	if marker.guard != nil {
+		marker.guard = binaryTerm("and", truncate(marker.guard, 1), cond)
+		return
+	}
+	marker.guard = cond
+}
+
 // substituteAll rewrites every term of the event under sigma: the
 // condition, the header and next values, and the stores. The memo is
 // shared across the terms (and across events): a subterm is rewritten once.
@@ -1191,9 +1234,11 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 		storedSpans[span] = true
 	}
 	ev.entry = map[string][]*spanWrite{}
+	entryCond := ev.entryCondition()
 	for _, span := range writtenSpans {
 		ev.entry[span] = freshState.writes[span]
 		freshState.writes = appendMarker(freshState.writes, span, ev.index)
+		guardMarker(freshState.writes[span], entryCond)
 	}
 	// One iteration of the body on the fresh state: its paths (a branch
 	// inside the body forks on its condition; an inner loop is summarized
@@ -1266,6 +1311,29 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 				return nil, "a store through a span that is not a writable parameter (in a loop body)", false
 			}
 		}
+	}
+	// A memory no path of the iteration stores to is unchanged by the loop,
+	// so its marker stands for nothing and is dropped for the entry memory
+	// it replaced. It matters because a record span marks one memory per
+	// leaf: a loop writing one field marked every field, and the memory
+	// past the loop then became an unknown function of the entry memory
+	// that the Oak side's own marker had to match under the same path
+	// conditions. Where the asm tests loop entry before the loop and the
+	// Oak model does not, those conditions differ, and a leaf nothing
+	// writes was the one thing left unproven (the os pilot's page-zeroing
+	// loop, compiler/e2e_native_licm_test.go). The two sides prune the
+	// same way, and a divergence fails closed in coupledEntryMemories.
+	for _, span := range writtenSpans {
+		if len(ev.writes[span]) > 0 {
+			continue
+		}
+		if len(ev.entry[span]) == 0 {
+			delete(freshState.writes, span)
+		} else {
+			freshState.writes[span] = ev.entry[span]
+		}
+		delete(ev.writes, span)
+		delete(ev.entry, span)
 	}
 	for _, name := range ev.vars {
 		merged := ends[len(ends)-1].valueOfVar(name, freshState)
@@ -2711,6 +2779,14 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 			fmt.Fprintf(os.Stderr, "verify oak loop %d:   %s header %s\n", ev.index, name, ev.header[name])
 		}
 	}
+	// A `while` whose condition is already false touches no memory, so the
+	// marker holds only where the loop is entered (entryCondition), on top
+	// of the enclosing arm's condition when the loop is inside one.
+	if entryCond := ev.entryCondition(); entryCond != nil {
+		for _, span := range storedSpans {
+			guardMarker(lo.writes[span][:before[span]], entryCond)
+		}
+	}
 	lo.loops = append(lo.loops, ev)
 	lo.loopStack = append(lo.loopStack, ev.index)
 	reason, ok = lo.lowerLoopBody(loop.Body)
@@ -2727,6 +2803,22 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 		}
 		ev.writes[span] = append([]*spanWrite{}, log[before[span]:]...)
 		lo.writes[span] = log[:before[span]:before[span]]
+	}
+	// The marker of a memory the iteration never stores to is dropped for
+	// the entry memory, as the asm side drops it (summarizeLoop): a record
+	// span marks one memory per leaf, and a loop writing one field left
+	// every other field an unknown memory that nothing had written.
+	for _, span := range storedSpans {
+		if len(ev.writes[span]) > 0 {
+			continue
+		}
+		if len(ev.entry[span]) == 0 {
+			delete(lo.writes, span)
+		} else {
+			lo.writes[span] = ev.entry[span]
+		}
+		delete(ev.writes, span)
+		delete(ev.entry, span)
 	}
 	for _, name := range ev.vars {
 		if local, isLocal := lo.locals[name]; isLocal && local.agg == nil {
