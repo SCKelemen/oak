@@ -2861,6 +2861,9 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 			}
 			return nil
 		}
+		if arm, isConstant := constantArm(e); isConstant && arm != nil {
+			return g.resultRecordExpr(arm)
+		}
 		if _, _, isBool := boolConditional(e); !isBool {
 			return g.lowerMatch(e, g.resultRecordExpr)
 		}
@@ -2928,6 +2931,9 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 func (g *generator) resultRecordInto(expr ast.Expression, outs []int) error {
 	switch e := expr.(type) {
 	case *ast.MatchExpression:
+		if arm, isConstant := constantArm(e); isConstant && arm != nil {
+			return g.resultRecordInto(arm, outs)
+		}
 		if whenTrue, whenFalse, ok := boolConditional(e); ok {
 			elseLabel, end := g.newLabel("else"), g.newLabel("endif")
 			if err := g.condition(e.Scrutinee, elseLabel); err != nil {
@@ -4968,6 +4974,13 @@ func (g *generator) lowerConditionalStatement(match *ast.MatchExpression) error 
 	if !ok {
 		return g.lowerMatch(match, g.lowerArm)
 	}
+	if arm, isConstant := constantArm(match); isConstant {
+		// `true ? { … }`: the arm alone; `false ? { … }`: nothing.
+		if arm == nil {
+			return nil
+		}
+		return g.lowerArm(arm)
+	}
 	// If-conversion (nativegen/select.go): a chain over one comparison
 	// whose arms only assign lowers as compare and select.
 	if arms, final, isChain := conditionalArms(match); isChain {
@@ -5034,6 +5047,12 @@ func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFa
 	// selection"): a negation inverts the branch instead of materializing
 	// a Bool, and a Bool variable in a register is tested where it lives.
 	switch e := expr.(type) {
+	case *ast.Boolean:
+		// A literal condition: the branch is always or never taken.
+		if e.Value != jumpIfFalse {
+			g.emit("b", asm.Symbol{Name: target})
+		}
+		return nil
 	case *ast.PrefixExpression:
 		if e.Operator == "!" {
 			return g.conditionBranch(e.Right, target, !jumpIfFalse)
@@ -5310,6 +5329,9 @@ func (g *generator) expr(expr ast.Expression, hint *scalar) (int, error) {
 		}
 		return g.call(e)
 	case *ast.MatchExpression:
+		if arm, isConstant := constantArm(e); isConstant && arm != nil {
+			return g.expr(arm, &typ)
+		}
 		whenTrue, whenFalse, isBool := boolConditional(e)
 		if !isBool {
 			out, err := g.alloc(typ)
@@ -6939,6 +6961,30 @@ func spillReg(r int) asm.Register {
 
 // boolConditional recognizes `cond ? a | b`: two arms on the Bool literals,
 // or one literal and a trailing wildcard.
+// constantArm is the arm a Boolean-literal scrutinee selects — `true ? {
+// … }`, a source idiom for a scope, or a `false` that disables a branch —
+// so the conditional lowers as that arm alone: no Bool materialized and
+// tested, no label, no dead arm (docs/spec/94-assembler.md §9 "Constant
+// conditions"). The arm may be nil (a statement conditional without an
+// else arm whose literal is false): nothing to lower.
+func constantArm(match *ast.MatchExpression) (ast.Expression, bool) {
+	lit, isLit := match.Scrutinee.(*ast.Boolean)
+	if !isLit {
+		return nil, false
+	}
+	whenTrue, whenFalse, ok := boolConditional(match)
+	if !ok {
+		whenTrue, whenFalse, ok = statementConditional(match)
+	}
+	if !ok {
+		return nil, false
+	}
+	if lit.Value {
+		return whenTrue, true
+	}
+	return whenFalse, true
+}
+
 func boolConditional(match *ast.MatchExpression) (whenTrue, whenFalse ast.Expression, ok bool) {
 	if match.Scrutinee == nil || len(match.Arms) != 2 {
 		return nil, nil, false
@@ -7852,6 +7898,9 @@ func (g *generator) resultExpr(expr ast.Expression) error {
 			g.release(out)
 			return nil
 		}
+		if arm, isConstant := constantArm(e); isConstant && arm != nil {
+			return g.resultExpr(arm)
+		}
 		if _, _, isBool := boolConditional(e); !isBool {
 			return g.lowerMatch(e, g.resultExpr)
 		}
@@ -7971,6 +8020,9 @@ func zeroReg(s scalar) asm.Register {
 func (g *generator) resultInto(expr ast.Expression, out int) error {
 	switch e := expr.(type) {
 	case *ast.MatchExpression:
+		if arm, isConstant := constantArm(e); isConstant && arm != nil {
+			return g.resultInto(arm, out)
+		}
 		if whenTrue, whenFalse, ok := boolConditional(e); ok {
 			elseLabel, end := g.newLabel("else"), g.newLabel("endif")
 			if err := g.condition(e.Scrutinee, elseLabel); err != nil {

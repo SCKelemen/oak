@@ -2773,6 +2773,10 @@ The forty-sixth increment is the pair loads (§9): adjacent element loads
 of one span become a block address and `ldp` pairs, the verifier reading
 a pair as two loads (`asm/pair_loads_test.go`).
 
+The fifty-sixth increment is constant conditions (§9 "Constant
+conditions"): a literal scrutinee lowers as its arm alone, and the
+verifier reads it as its bit (`Oak.ConstantConditions.select_true`).
+
 The forty-seventh increment is vector operands in place (§9,
 `nativegen/simd.go` `vecOperand`). A vector variable in its own register
 is read where it lies by every simd operation; the operation writes a
@@ -4018,6 +4022,23 @@ records; that summary is the next step for the SHA-256 path, whose
 `sha256_rounds`, `sha256_compress`, `sha256_block`, `sha256_compress_view`,
 `sha256_init`, `sha256_update`, and `sha256_final` this increment moves
 from the C backend to the native lane.
+
+**Constant conditions (2026-09-16, both lanes; `spec/lean/Oak/ConstantConditions.lean`).**
+A conditional whose scrutinee is the literal `true` or `false` — `true ?
+{ … }`, the source's idiom for a scope (the hash library's `sha256_block`
+opens one around its span), or a `false` that disables an arm — lowers as
+the selected arm alone, in statement, value, and result position
+(`constantArm`): no Bool materialized and tested (`movz w11, #1; cbz w11`),
+no else label, no dead arm for the checker to find unreachable; a literal
+in condition position branches always or never (`conditionBranch`). The
+verifier's Oak lowering reads a literal condition as its bit where it
+refused "a condition that is not a comparison", so `sha256_block` and the
+bodies that call it are no longer trusted for that reason alone. The
+model is the conditional itself (`Oak.ConstantConditions.select_true`,
+`select_false`, `bit_true`). `TestNativeShapesConstantConditions` pins
+`scope` and `pick` — no branch, select, or conditional label —
+`TestE2ENativeConstantConditions` proves both and agrees with the C
+backend.
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
