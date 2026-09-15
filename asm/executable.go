@@ -113,10 +113,20 @@ spin:
 		if top%65536 != 0 || top>>16 > 0xffff {
 			return "", fmt.Errorf("executable: the stack top %#x is not a multiple of 65536 below 2^32", top)
 		}
+		// The FP/SIMD unit is off at reset (CPACR_EL1.FPEN = 0b00): a
+		// program whose reductions run in vector lanes (§9 "Reduction
+		// vectorization") would take an undefined-instruction trap the
+		// stub has no handler for. FPEN = 0b11 (bits 20–21) enables it at
+		// EL1 and EL0; the `isb` makes the write visible to what follows.
 		// Semihosting SYS_EXIT (0x18) with the parameter block
 		// {ADP_Stopped_ApplicationExit, code} on the stack: the emulator
 		// exits with the code.
 		return fmt.Sprintf(`start: () -> () = {
+  system
+  mrs x9, cpacr_el1
+  orr x9, x9, #3145728
+  msr cpacr_el1, x9
+  isb
   movz x9, #%d, lsl #16
   add sp, x9, #0
   bl %s
