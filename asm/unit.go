@@ -113,6 +113,11 @@ type Function struct {
 	// verdict is relative to it. Set by the native backend; nil leaves
 	// every call opaque (trusted).
 	Callees map[string]*ast.FunctionStatement
+	// Body: the Oak body the lowering realized when it differs from the
+	// source's — a verified rewrite (nativegen/reduction.go: the plain
+	// integer reductions unrolled four ways) — so the verifier judges the
+	// assembly against the body it was lowered from; nil when the source's.
+	Body ast.Expression
 	// Tables are the program's constant data symbols an `adrl` (AArch64)
 	// or `la` (RV64) may address, by symbol, with their sizes in bytes: the
 	// checker admits guarded element reads inside them (a read-only
