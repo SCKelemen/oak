@@ -116,9 +116,10 @@ func findGeneratorLoops(items []asm.Item) []invariantLoop {
 // registers the renames took, and how many instructions moved or
 // disappeared (the compiler's fallback lowers the body again without the
 // pass when the checker refuses the hoisted form).
-func hoistInvariants(items []asm.Item, mentioned map[int]bool, homes map[int]bool, trap string) ([]asm.Item, []int, int) {
+func hoistInvariants(items []asm.Item, mentioned map[int]bool, loopHomes map[string]map[int]bool, reserve []int, globals map[string]asm.Global, trap string) ([]asm.Item, []int, int, int) {
 	var taken []int
-	changed := 0
+	changed, wanted := 0, 0
+	pool := &registerPool{reserve: reserve, mentioned: mentioned}
 	done := map[string]bool{}
 	for {
 		var next *invariantLoop
@@ -130,29 +131,51 @@ func hoistInvariants(items []asm.Item, mentioned map[int]bool, homes map[int]boo
 			}
 		}
 		if next == nil {
-			return items, taken, changed
+			return items, taken, changed, wanted
 		}
 		done[next.name] = true
 		before := len(items)
-		var used []int
-		var out []asm.Item
-		out, used = hoistLoop(items, *next, mentioned, homes, trap)
+		out, used, missed := hoistLoop(items, *next, pool, loopHomes[next.name], globals, trap)
 		if len(out) != before || used != nil {
 			changed++
 		}
+		wanted += missed
 		items = out
-		for _, r := range used {
-			mentioned[r] = true
-			taken = append(taken, r)
-		}
+		taken = append(taken, used...)
 	}
 }
 
-// hoistLoop processes one loop. homes are the registers variables live in:
-// a write into one is the variable's value, read where no block analysis
-// sees (after the loop, at the header, in another arm), so it is neither
-// moved nor propagated away.
-func hoistLoop(items []asm.Item, loop invariantLoop, mentioned map[int]bool, homes map[int]bool, trap string) ([]asm.Item, []int) {
+// registerPool hands out the registers a hoisted value may take: the
+// callee-saved registers reserved for the pass first (they survive calls),
+// then the scratch registers the function never names (not across a call).
+type registerPool struct {
+	reserve   []int
+	mentioned map[int]bool
+}
+
+func (p *registerPool) take(acrossCall bool) (asm.Register, bool) {
+	if len(p.reserve) > 0 {
+		r := p.reserve[0]
+		p.reserve = p.reserve[1:]
+		return xr(r), true
+	}
+	if acrossCall {
+		return asm.Register{}, false
+	}
+	for _, r := range []int{15, 14, 13, 12, 11, 10, 9, 16, 17} {
+		if !p.mentioned[r] {
+			p.mentioned[r] = true
+			return xr(r), true
+		}
+	}
+	return asm.Register{}, false
+}
+
+// hoistLoop processes one loop. homes are the registers of the variables
+// in scope at the loop's header: a write into one is the variable's value,
+// read where no block analysis sees (after the loop, at the header, in
+// another arm), so it is neither moved nor propagated away.
+func hoistLoop(items []asm.Item, loop invariantLoop, pool *registerPool, homes map[int]bool, globals map[string]asm.Global, trap string) ([]asm.Item, []int, int) {
 	h, b := loop.header, loop.back
 	// Registers the loop writes; a call writes every caller-saved register.
 	written := map[int]bool{}
@@ -178,6 +201,55 @@ func hoistLoop(items []asm.Item, loop invariantLoop, mentioned map[int]bool, hom
 	invariant := func(reg asm.Register) bool {
 		return reg.ZeroRegister() || reg.Class == asm.ClassSP || !written[reg.Num]
 	}
+	// A scalar global's value is invariant when the loop neither stores
+	// to a global's address nor calls: a span cannot alias a scalar
+	// global (its elements lie in arrays and aggregates), so the loop's
+	// span stores leave it alone (docs/spec/94-assembler.md §9). The
+	// global-address registers the loop forms, and whether any store
+	// goes through one.
+	globalAddr := map[int]string{}
+	storesGlobal := false
+	for i := h; i <= b; i++ {
+		ins, isIns := items[i].(asm.Instruction)
+		if !isIns {
+			continue
+		}
+		if ins.Mnemonic == "add" && len(ins.Operands) == 3 {
+			if sym, isSym := ins.Operands[2].(asm.Symbol); isSym && sym.Lo12 {
+				if d, isReg := ins.Operands[0].(asm.Register); isReg {
+					globalAddr[d.Num] = sym.Name
+				}
+			}
+		}
+	}
+	for i := h; i <= b; i++ {
+		ins, isIns := items[i].(asm.Instruction)
+		if !isIns || !strings.HasPrefix(ins.Mnemonic, "st") || len(ins.Operands) == 0 {
+			continue
+		}
+		if mem, isMem := ins.Operands[len(ins.Operands)-1].(asm.Memory); isMem {
+			if _, isGlobal := globalAddr[mem.Base.Num]; isGlobal {
+				storesGlobal = true
+			}
+		}
+	}
+	// scalarGlobalLoad reports a load of a scalar global through an
+	// address the loop formed, hoistable when nothing writes globals.
+	scalarGlobalLoad := func(ins asm.Instruction) bool {
+		if hasCall || storesGlobal || !isPlainLoadMnemonic(ins.Mnemonic) || ins.Mnemonic == "ldp" || len(ins.Operands) != 2 {
+			return false
+		}
+		mem, isMem := ins.Operands[1].(asm.Memory)
+		if !isMem || mem.Index != nil || mem.Mode != asm.MemOffset || mem.Offset != 0 {
+			return false
+		}
+		sym, isGlobal := globalAddr[mem.Base.Num]
+		if !isGlobal {
+			return false
+		}
+		global, known := globals[sym]
+		return known && !global.Aggregate
+	}
 	// The exit tests: the header's run of compares and branches leaving
 	// the loop; the body begins after the last exit branch.
 	bodyStart := h + 1
@@ -199,8 +271,7 @@ func hoistLoop(items []asm.Item, loop invariantLoop, mentioned map[int]bool, hom
 			continue
 		}
 		if isPlainLoadMnemonic(ins.Mnemonic) {
-			exitPure = false // a header load: the exit tests cannot be copied
-			continue
+			continue // a load: the header's when an exit branch follows (judged below), else the body's
 		}
 		break
 	}
@@ -256,6 +327,12 @@ func hoistLoop(items []asm.Item, loop invariantLoop, mentioned map[int]bool, hom
 				continue
 			}
 			if readsGeneral(ins, reg) {
+				// A read the same block writes first (`ldrh w10; lsl w10,
+				// w10, #11` before the zero copy into w10) reads that
+				// write, not the value that left.
+				if j < from && writtenEarlierInBlock(body, removed, j, reg) {
+					continue
+				}
 				return true
 			}
 		}
@@ -304,25 +381,20 @@ func hoistLoop(items []asm.Item, loop invariantLoop, mentioned map[int]bool, hom
 		}
 		return !readOutside(from, end, old)
 	}
+	missed := 0
 	free := func() (asm.Register, bool) {
-		if hasCall {
-			return asm.Register{}, false
+		r, ok := pool.take(hasCall)
+		if ok {
+			used = append(used, r.Num)
 		}
-		for _, r := range []int{15, 14, 13, 12, 11, 10, 9, 16, 17} {
-			if !mentioned[r] {
-				mentioned[r] = true
-				used = append(used, r)
-				return xr(r), true
-			}
-		}
-		return asm.Register{}, false
+		return r, ok
 	}
 	for i := 0; i < len(body); i++ {
 		ins, isIns := body[i].(asm.Instruction)
 		if !isIns || removed[i] {
 			continue
 		}
-		if !pureInvariantMnemonics[ins.Mnemonic] || len(ins.Operands) < 2 {
+		if (!pureInvariantMnemonics[ins.Mnemonic] && !scalarGlobalLoad(ins)) || len(ins.Operands) < 2 {
 			continue
 		}
 		dest, isReg := ins.Operands[0].(asm.Register)
@@ -357,7 +429,7 @@ func hoistLoop(items []asm.Item, loop invariantLoop, mentioned map[int]bool, hom
 				// The zero register reaches a store's data operand alone:
 				// a compare or an index through it carries no fact the
 				// checker can key (the constant index of `cursor[0]`).
-				if zeroStoreOnly(body, removed, i+1, blockEnd(i), dest.Num) {
+				if zeroStoreOnly(body, removed, i+1, blockEnd(i), dest.Num) || (zeroStoreReaders(body, removed, i+1, blockEnd(i), dest.Num) && !readOutside(i+1, blockEnd(i), dest.Num)) {
 					renameUses(i+1, dest.Num, dest.Class, asm.Register{Text: "xzr", Class: asm.ClassX, Num: 31, Lane: -1}, true)
 					removed[i] = true
 				}
@@ -392,7 +464,8 @@ func hoistLoop(items []asm.Item, loop invariantLoop, mentioned map[int]bool, hom
 		}
 		r, ok := free()
 		if !ok {
-			break
+			missed++
+			continue
 		}
 		renamed := asm.Register{Text: dest.Text[:1] + itoa(r.Num), Class: dest.Class, Num: r.Num}
 		if dest.Class == asm.ClassX {
@@ -403,6 +476,9 @@ func hoistLoop(items []asm.Item, loop invariantLoop, mentioned map[int]bool, hom
 		hoisted := ins
 		hoisted.Operands = append([]asm.Operand(nil), ins.Operands...)
 		hoisted.Operands[0] = renamed
+		if sym, isGlobal := globalAddr[dest.Num]; isGlobal {
+			globalAddr[renamed.Num] = sym // the global's address under its new name
+		}
 		preheader = append(preheader, hoisted)
 		moved = append(moved, movedItem{at: i, item: hoisted})
 		removed[i] = true
@@ -446,7 +522,7 @@ func hoistLoop(items []asm.Item, loop invariantLoop, mentioned map[int]bool, hom
 		}
 	}
 	if len(preheader) == 0 && len(peeled) == 0 && len(removed) == 0 {
-		return items, nil
+		return items, nil, missed
 	}
 	var out []asm.Item
 	out = append(out, items[:h]...)
@@ -480,7 +556,7 @@ func hoistLoop(items []asm.Item, loop invariantLoop, mentioned map[int]bool, hom
 		}
 	}
 	out = append(out, items[b:]...)
-	return out, used
+	return out, used, missed
 }
 
 func itoa(n int) string {
@@ -756,3 +832,55 @@ func zeroStoreOnly(body []asm.Item, removed map[int]bool, from, end, dest int) b
 	}
 	return false
 }
+
+// zeroStoreReaders reports whether every reader of dest in [from, end) is
+// a store's data operand and the block ends without writing dest again
+// (the readers then take `xzr` when nothing outside the block reads it).
+func zeroStoreReaders(body []asm.Item, removed map[int]bool, from, end, dest int) bool {
+	readers := 0
+	for j := from; j < end; j++ {
+		ins, isIns := body[j].(asm.Instruction)
+		if !isIns || removed[j] {
+			continue
+		}
+		if readsGeneral(ins, dest) {
+			if !strings.HasPrefix(ins.Mnemonic, "st") || len(ins.Operands) < 2 {
+				return false
+			}
+			data, isReg := ins.Operands[0].(asm.Register)
+			if !isReg || data.Num != dest {
+				return false
+			}
+			if mem, isMem := ins.Operands[len(ins.Operands)-1].(asm.Memory); isMem && (mem.Base.Num == dest || (mem.Index != nil && mem.Index.Num == dest)) {
+				return false
+			}
+			readers++
+		}
+		if writesGeneral(ins, dest) {
+			return false
+		}
+	}
+	return readers > 0
+}
+
+// writtenEarlierInBlock reports a write of reg between the start of the
+// basic block holding index at and at itself (no label between).
+func writtenEarlierInBlock(body []asm.Item, removed map[int]bool, at, reg int) bool {
+	for k := at - 1; k >= 0; k-- {
+		if _, isLabel := body[k].(asm.Label); isLabel {
+			return false
+		}
+		ins, isIns := body[k].(asm.Instruction)
+		if !isIns || removed[k] {
+			continue
+		}
+		if isBranchMnemonic(ins.Mnemonic) && ins.Mnemonic != "b." && ins.Mnemonic != "cbz" && ins.Mnemonic != "cbnz" && ins.Mnemonic != "tbz" && ins.Mnemonic != "tbnz" {
+			return false // an unconditional transfer: another block
+		}
+		if writesGeneral(ins, reg) {
+			return true
+		}
+	}
+	return false
+}
+

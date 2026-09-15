@@ -1192,10 +1192,11 @@ type generator struct {
 	leafHomes []int
 	argHomes  map[string]int
 	homesUsed map[int]bool // every argument register handed out as a home
-	// everHome: every general register any variable ever lived in — the
-	// loop-invariant pass never moves or removes a write into one (its
-	// value is the variable's, read where the block cannot see).
-	everHome map[int]bool
+	// loopHomes: per loop header label, the registers of the variables in
+	// scope when the loop began — the loop-invariant pass never moves or
+	// removes a write into one (the value is the variable's, read where
+	// the block cannot see: after the loop, at the header, in another arm).
+	loopHomes map[string]map[int]bool
 	// callerHomes: in a function that calls, the caller-saved registers a
 	// variable may live in once the callee-saved ones are taken — x16, x17
 	// and the argument registers no parameter occupies — each saved before
@@ -1547,15 +1548,22 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 // (it should not: a variable in a register needs no temporary a slot did)
 // leaves the first pass's code.
 func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, reuse bool, tables map[string]GlobalArray, packed bool, hoist bool) (*asm.Function, error) {
-	first, peak, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, reuse, tables, packed, hoist, 0)
+	first, peak, wanted, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, reuse, tables, packed, hoist, 0, 0)
 	if err != nil {
 		return nil, err
 	}
 	spare := scratchHigh - scratchLow + 1 - peak
 	if spare <= 0 || !pressured[first] {
-		return first, nil // nothing to gain: every variable already has a register
+		spare = 0 // nothing to gain: every variable already has a register
 	}
-	second, _, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, reuse, tables, packed, hoist, spare)
+	// The loop-invariant pass reports the values it could not hoist for
+	// want of a register (nativegen/licm.go): a second lowering reserves
+	// that many callee-saved registers for them, four at most.
+	reserve := min(wanted, 4)
+	if spare == 0 && reserve == 0 {
+		return first, nil
+	}
+	second, _, _, err := compileArm64Pass(fn, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, reuse, tables, packed, hoist, spare, reserve)
 	if err != nil {
 		return first, nil
 	}
@@ -1566,7 +1574,7 @@ func compileArm64Body(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 // registers, from x15 down, serve as variable homes instead of
 // temporaries. It reports the peak number of integer scratch registers
 // live at once.
-func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, reuse bool, tables map[string]GlobalArray, packed bool, hoist bool, spare int) (*asm.Function, int, error) {
+func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, reuse bool, tables map[string]GlobalArray, packed bool, hoist bool, spare int, reserve int) (*asm.Function, int, int, error) {
 	g := &generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, aggregates: aggregates, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, elide: elide, guardLines: guardLines, strength: strength, reuseFlags: reuse, flagsTo: map[string]string{}, packedStack: packed, stackParams: map[string]asm.ArgPlace{}}
 	// A span pair parked in callee-saved registers survives a call, and a
 	// result: the result leaves in x0 (and x1), where a span parameter's
@@ -1576,7 +1584,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	g.hasCalls = mentionsCall(fn.Body)
 	g.argHomes = map[string]int{}
 	g.homesUsed = map[int]bool{}
-	g.everHome = map[int]bool{}
+	g.loopHomes = map[string]map[int]bool{}
 	if g.hasCalls {
 		g.outgoing = g.outgoingArea(fn.Body)
 	}
@@ -1620,7 +1628,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	vectorParams := 0
 	for _, p := range fn.Parameters {
 		if p.Variadic {
-			return nil, 0, unsupported("variadic parameter %s", p.Name.Value)
+			return nil, 0, 0, unsupported("variadic parameter %s", p.Name.Value)
 		}
 		if s, ok := scalarOf(p.Type); ok {
 			if s.isFloat || s.isVec {
@@ -1629,7 +1637,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 				// not spell — the function stays with the C backend.
 				vectorParams++
 				if vectorParams > 8 {
-					return nil, 0, unsupported("parameter %s: more than eight floating-point or vector parameters (the register contract passes eight, in v0–v7)", p.Name.Value)
+					return nil, 0, 0, unsupported("parameter %s: more than eight floating-point or vector parameters (the register contract passes eight, in v0–v7)", p.Name.Value)
 				}
 				continue
 			}
@@ -1644,10 +1652,10 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 		if name, isRecord := g.recordTypeName(p.Type); isRecord {
 			layout, err := g.layoutOf(name)
 			if err != nil {
-				return nil, 0, err
+				return nil, 0, 0, err
 			}
 			if layout.isHFA() {
-				return nil, 0, unsupported("parameter %s: %s is a homogeneous floating-point aggregate", p.Name.Value, name)
+				return nil, 0, 0, unsupported("parameter %s: %s is a homogeneous floating-point aggregate", p.Name.Value, name)
 			}
 			regs := 1
 			if layout.size <= 16 {
@@ -1662,7 +1670,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			classes = append(classes, asm.ArgClass{Words: 2, Bytes: 16, Align: 8})
 			continue
 		}
-		return nil, 0, unsupported("parameter %s of type %s", p.Name.Value, p.Type.String())
+		return nil, 0, 0, unsupported("parameter %s of type %s", p.Name.Value, p.Type.String())
 	}
 	places, stackArgs := asm.LayoutArguments(classes, g.packedStack)
 	g.stackArgs = stackArgs
@@ -1715,7 +1723,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			if parkSpans || place.OnStack {
 				// Two callee-saved registers, from the pool variables use.
 				if g.usedCallee+2 > calleeHigh-calleeLow+1 {
-					return nil, 0, unsupported("the span parameters and locals exhaust the callee-saved registers")
+					return nil, 0, 0, unsupported("the span parameters and locals exhaust the callee-saved registers")
 				}
 				sp.baseReg, sp.lenReg = calleeLow+g.usedCallee, calleeLow+g.usedCallee+1
 				g.usedCallee += 2
@@ -1759,10 +1767,10 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			if name, isRecord := g.recordTypeName(fn.ReturnType); isRecord {
 				layout, err := g.layoutOf(name)
 				if err != nil {
-					return nil, 0, err
+					return nil, 0, 0, err
 				}
 				if layout.isHFA() {
-					return nil, 0, unsupported("result of type %s (a homogeneous floating-point aggregate)", name)
+					return nil, 0, 0, unsupported("result of type %s (a homogeneous floating-point aggregate)", name)
 				}
 				g.resultRecord = layout
 				g.resultIndirect = layout.size > 16
@@ -1770,7 +1778,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 				if g.resultIndirect && g.hasCalls {
 					// A call clobbers x8: park the result area's address.
 					if g.usedCallee+1 > calleeHigh-calleeLow+1 {
-						return nil, 0, unsupported("the parameters and locals exhaust the callee-saved registers")
+						return nil, 0, 0, unsupported("the parameters and locals exhaust the callee-saved registers")
 					}
 					g.resultAreaReg = calleeLow + g.usedCallee
 					g.usedCallee++
@@ -1778,7 +1786,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 			} else {
 				s, ok := scalarOf(fn.ReturnType)
 				if !ok {
-					return nil, 0, unsupported("result of type %s", fn.ReturnType.String())
+					return nil, 0, 0, unsupported("result of type %s", fn.ReturnType.String())
 				}
 				g.result = &s
 			}
@@ -1803,15 +1811,23 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 		}
 	}
 	g.head = g.newLabel("head")
+	// Callee-saved registers reserved for the loop-invariant pass, saved
+	// and restored with the variables' (the count the first lowering
+	// wanted; the epilogue and the prologue read usedCallee after this).
+	var licmReserve []int
+	for k := 0; k < reserve && g.usedCallee < calleeHigh-calleeLow+1; k++ {
+		licmReserve = append(licmReserve, calleeLow+g.usedCallee)
+		g.usedCallee++
+	}
 	body, err := g.lowerBody(fn.Body)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	// The frame: [x29, x30] when the body calls, then the slots, rounded to
 	// 16 bytes; sp moves once at entry and once before ret.
 	frame := g.frameSize()
 	if frame > 4080 {
-		return nil, 0, unsupported("a frame of %d bytes", frame)
+		return nil, 0, 0, unsupported("a frame of %d bytes", frame)
 	}
 	out := &asm.Function{Name: NativeSymbol(fn), Signature: fn, Line: fn.Token.Line, Fallback: true, Records: records, ADTs: adts, System: g.system, Tables: tableSizes(g.tables)}
 	if len(g.usedGlobals) > 0 {
@@ -1947,11 +1963,12 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	prologue = append(prologue, asm.Label{Name: g.head, Line: fn.Token.Line})
 	// Loop-invariant code motion (nativegen/licm.go): the registers a rename
 	// may take are those neither the prologue nor the body names.
+	hoistWanted := 0
 	if hoist {
 		named := registersNamed(append(append([]asm.Item(nil), prologue...), body...))
 		var hoistedInto []int
 		var moved int
-		body, hoistedInto, moved = hoistInvariants(body, named, g.everHome, g.trap)
+		body, hoistedInto, moved, hoistWanted = hoistInvariants(body, named, g.loopHomes, licmReserve, g.globals, g.trap)
 		hoistedLoops[out] = moved
 		for _, r := range hoistedInto {
 			if r >= 16 && r-16 >= g.ipScratch {
@@ -2065,7 +2082,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 	if g.reused > 0 {
 		reusedCompares[out] = g.reused
 	}
-	return out, g.peakScratch, nil
+	return out, g.peakScratch, hoistWanted, nil
 }
 
 // copyIn copies a record from the memory a register addresses into a
@@ -3275,7 +3292,6 @@ func (g *generator) popScope() {
 					g.spans[name] = *b.sp
 				} else {
 					g.slots[name], g.types[name], g.regs[name] = b.offset, b.typ, b.reg
-					g.noteHome(b.reg)
 				}
 				break
 			}
@@ -3915,15 +3931,18 @@ func (g *generator) declare(name string, s scalar) int64 {
 	}
 	g.slots[name], g.types[name], g.regs[name] = offset, s, r
 	g.scopes[len(g.scopes)-1][name] = slotBinding{offset: offset, typ: s, reg: r}
-	g.noteHome(r)
 	return offset
 }
 
-// noteHome records a register a variable lives in (everHome).
-func (g *generator) noteHome(r int) {
-	if r >= 0 && r < vecBase && g.everHome != nil {
-		g.everHome[r] = true
+// liveHomes is the set of general registers the variables in scope live in.
+func (g *generator) liveHomes() map[int]bool {
+	homes := map[int]bool{}
+	for _, r := range g.regs {
+		if r >= 0 && r < vecBase {
+			homes[r] = true
+		}
 	}
+	return homes
 }
 
 // declareAt binds a scalar variable to a given register: a leaf's
@@ -3932,7 +3951,6 @@ func (g *generator) declareAt(name string, s scalar, r int) {
 	g.homesUsed[r] = true
 	g.slots[name], g.types[name], g.regs[name] = -1, s, r
 	g.scopes[len(g.scopes)-1][name] = slotBinding{offset: -1, typ: s, reg: r}
-	g.noteHome(r)
 }
 
 // slotMem is the frame address of a slot: past the [x29, x30] pair and the
@@ -4463,6 +4481,9 @@ func (g *generator) effect(expr ast.Expression) error {
 func (g *generator) lowerWhile(loop *ast.WhileStatement) error {
 	head, end := g.newLabel("loop"), g.newLabel("done")
 	g.label(head)
+	if g.loopHomes != nil {
+		g.loopHomes[head] = g.liveHomes() // for the loop-invariant pass
+	}
 	if err := g.condition(loop.Condition, end); err != nil {
 		return err
 	}
