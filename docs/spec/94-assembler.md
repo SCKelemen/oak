@@ -2668,6 +2668,29 @@ and array corpora are proven on both lanes (`asm/agg_views_test.go`;
 `compiler/e2e_native_array_test.go`); `Oak.Subslice.view_index_in_owner`
 states that the translated index of a view stays inside its owner.
 
+**Forty-first increment — tables in a callee, records from the frame,
+and the rv64 lane's register-held frame addresses (2026-09-16;
+`asm/verify.go` frameRecordArgument, `asm/rv64_verify.go`).** Three small
+gaps the corpus tally kept: an inlined callee saw only its parameters as
+spans, so `sum_view(view(&TABLE))` inside `table_sum` was "not a borrow
+of an aggregate local" and the tables `main` was trusted — the callee's
+span table now carries the program's constant tables as the caller's
+does; a by-reference record argument that is the caller's own copy in its
+frame — a record local passed on, and on the rv64 lane every by-reference
+record passed on, which the lane copies before the call — was "not a
+record parameter of the caller" — the summary now reads the record's
+8-byte chunks from the frame slots and unpacks them leaf by leaf, as a
+by-value record's register chunks are (a chunk's unstored bytes the
+frame's unknowns), so `push_ab`, `push_n`, `push_then_count`, and the
+callee-effects `main` are proven on both lanes; and the rv64 executor
+routes a load or store through a register holding a frame address —
+`addi t0, sp, off; lw a0, 4(t0)`, or the address advanced by a constant
+(`add t0, t0, t1` with a field's offset) — to the frame slot, as the
+AArch64 executor's registerFrameMemory does. `Oak.SpanArguments.
+record_chunks_disjoint`: the copy's chunks are disjoint slots, so reading
+them back is the record. (`compiler/e2e_native_tables_test.go`,
+`compiler/e2e_native_callee_effects_test.go`.)
+
 **Forty-second increment — the native optimization program's first
 steps (2026-09-15; `benchmarks/kernels/RESULTS.md`, `nativegen/scalar_arrays.go`,
 `nativegen/word_fusion.go`).** With the kernel harness's `oak-native` row
@@ -2689,7 +2712,13 @@ the or of the elements shifted to their positions
 fused load is proven equal to the eight reads and a big-endian body is
 refuted; the rv64 lane fuses the same shape (`ld` at the element address
 under its slack guard, the checker admitting a wider scalar access through
-a region the guard marked K lanes deep). Two checker facts came with them (§7): a length equality and the
+a region the guard marked K lanes deep). A word assembly whose base is a
+literal and whose every byte the typechecker proved — the inlined
+`crc32c_word_at(chunk, u32(48))` under the caller's `len(chunk) >= u32(56)`,
+once the inliner substitutes the literal (`90-backend.md` §9) and the
+extents checker folds `u32(48) + u32(3)` — is one load at the immediate
+offset, `ldr x, [xB, #48]`, bounded by the span's proven minimum length,
+and its `?` guard `len(chunk) >= u32(48) + u32(8)` folds to `cmp wL, #56`. Two checker facts came with them (§7): a length equality and the
 sum shape of a slack guard. `dot` went from 13 to 8 instructions per
 element and from 3.2× to 1.0× of the C backend, `tiled` from about twelve
 per element to four (0.67×), `crc32c`'s 56-byte step from about 500 to 178
@@ -3576,6 +3605,24 @@ to the checker, every fact about them, so an element address computed
 first would return from its spill slot without provenance (the OS
 pilot's N8, `s[dom].pages[cell(i, j)]`); the guard and the region
 bounds are unchanged.
+
+**Spans of records, verified.** A parameter `[*]T` or `[]T` with `T` a
+record binds in the verifier as a span of `T`'s size whose element
+fields are the record's scalar leaves: a field of element `i` is the
+select term over the memory `v.f` at `i` (the parameter `v[k].f` for a
+constant `k`), an element of an array field `v[i].a[j]` the select over
+`v.a` at the linear index `i·N + j`, and both sides form the same terms —
+the executor from the element address (the shifted add or the `umaddl`
+term, then the field offset) and the Oak lowering from the expression —
+over the same deterministic witness memory. Readers of spans of records
+are therefore proven against their Oak bodies, and a lowering that reads
+the wrong field or element is a mismatch. Stores go into the same
+memories' write logs (the effects model above), one memory per scalar
+leaf and one per array field, guarded by the path condition, marked at a
+data-dependent loop, and the verdict compares each written memory at a
+fresh index — so writers of spans of records are proven too, and a store
+into the wrong field is a mismatch (the OS pilot's V1: `stage2` and
+`addr_space` enter the proof chain, readers and writers).
 
 **Package globals.** A mutable top-level scalar (`st: u32 = u32(0)`,
 assigned by some function) is addressed storage on the AArch64 lane: the

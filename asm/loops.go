@@ -711,6 +711,14 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	}
 	ev.entry = map[string][]*spanWrite{}
 	for _, span := range writtenSpans {
+		if arg, isRecord := x.recordSpans[span]; isRecord {
+			// A span of records: one marker per leaf memory.
+			for _, memory := range arg.memories(span) {
+				ev.entry[memory] = freshState.writes[memory]
+				freshState.writes = appendMarker(freshState.writes, memory, ev.index)
+			}
+			continue
+		}
 		ev.entry[span] = freshState.writes[span]
 		freshState.writes = appendMarker(freshState.writes, span, ev.index)
 	}
@@ -1323,6 +1331,14 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	storedSpans := make([]string, 0, len(lo.writableSpans))
 	contracts := map[string]spanContract{}
 	for span := range lo.writableSpans {
+		if arg, isRecord := lo.recordSpans[span]; isRecord {
+			// A span of records: one marker per leaf memory, at the leaf's width.
+			for memory, width := range arg.memoryWidths(span) {
+				contracts[memory] = spanContract{elemWidth: width}
+				storedSpans = append(storedSpans, memory)
+			}
+			continue
+		}
 		if contract, isSpan := lo.spans[span]; isSpan {
 			contracts[span] = contract
 		} else if contract, isRoot := lo.rootContracts[span]; isRoot {
