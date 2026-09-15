@@ -135,10 +135,20 @@ its own, and the two affected bodies were exactly the trusted ones. The
 overlap test now weighs every access at a neighboring offset at its own
 width, with a regression test.
 
-Not in this increment: spilling and live-range splitting (the pool never
-grows the frame: a slot across a call moves only into a callee-saved
-register the prologue already saves), a lowering that emits virtual
-registers directly, scheduling, and the RV64 lane.
+Third increment: the callee-saved pool grows. A slot live across a call
+with no saved callee-saved register free takes the next of x19–x28 the
+body does not write, and the promotion adds its save after the prologue's
+last save and its restore before the epilogue restores the frame pair, at
+the next eight-byte slot of the lowering's save area — when the prologue
+and the single epilogue have the lowering's shapes, the slot lies within
+the frame, and it overlaps no other frame access (`growCalleeSaved`). A
+callee-saved register's own save slot is never promoted: that would only
+move the obligation. The checker's save/restore obligations judge the
+edited prologue and epilogue like any other body.
+
+Not in this increment: live-range splitting, vector callee-saved growth
+(d8–d15), a lowering that emits virtual registers directly, scheduling,
+and the RV64 lane.
 
 Not yet: OptIR and the analyses (Phase C), OptIR and the analyses
 (Phase C), vector plans (Phase D), and the proof-obligation service of
