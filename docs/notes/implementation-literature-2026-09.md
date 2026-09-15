@@ -152,7 +152,7 @@ the stdlib-bearing program: of the 89 bodies the checker refuses, the
 findings are dominated by structural refusals no context affects, and
 every elision-relevant refusal reports the same missing fact under each
 arriving state. The limit is missing fact rules — the largest class by far
-is an index the typechecker proved by `scaled_under_bound` that the
+is an index the typechecker proved by `div_bound_scaled` that the
 checker has no rule for — and the join is not where the reach is lost.
 The mechanism is kept, gated to the findings a lost guard could explain,
 because the shapes it does fix are real and because each new fact rule is

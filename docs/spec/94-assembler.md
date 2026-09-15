@@ -6344,9 +6344,14 @@ refusal no context changes. The elision-relevant findings number about 85,
 and for every one of them each arriving state reports the same refusal:
 the fact is missing on every path, not lost at the join. The largest
 single class, 50 findings of `without a dominating constant index guard`,
-is an index the typechecker proved through `Oak.Extents.scaled_under_bound`
-— `at = low * 5` under `low < len / 5` — for which the checker has no
-fact at all. That, not the meet, is the limit on elision reach here.
+is one shape in three bodies — `normalize_compose_pair`, `grapheme_class`,
+`normalize_props`, each a binary search over a three-word table read
+through `view(&table)`, indexing `mid * 3 + j` and `low * 3 + j` under
+`mid < high <= entries` and `low < entries` where `entries = len(table) /
+3`. The typechecker discharges those by `Oak.Extents.div_bound_scaled`,
+and the checker has no fact for them: it sees `udiv wE, wLen, wK` with
+`wK` a known constant and draws nothing from it. That, not the meet, is
+the limit on elision reach here.
 
 So the mechanism lands gated: the extra passes run only for a body whose
 findings are ones a lost guard could explain (`anyJoinSensitive`), which
