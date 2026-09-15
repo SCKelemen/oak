@@ -3004,6 +3004,11 @@ local live in callee-saved registers, flushed where the record is used
 whole and reloaded where it is written whole
 (`Oak.FieldPromotion.promoted_reads`, `flushed_memory`).
 
+The fifty-seventh increment is read-only borrows (§9 "Read-only
+borrows"): `view(&p…)` leaves a by-value parameter untouched, so it is
+read in place and passed as the caller's storage
+(`Oak.ReadOnlyBorrow.view_of_copy`).
+
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
 with a store in a loop body); guard elision from the checker's facts; the foreign-call subset only if the shell itself is to
@@ -4510,6 +4515,26 @@ increments, comes to ten instructions where clang's is thirteen.
 `TestE2ENativeFieldPromotion` agrees with the C backend, including a
 record assigned whole inside its loop (`a = seed`, the homes reloading).
 The RV64 lane is untouched.
+
+**Read-only borrows (2026-09-16, AArch64 lane; `spec/lean/Oak/ReadOnlyBorrow.lean`).**
+A by-value record or array parameter counted as touched when its address
+was taken — any `&p…` — so `sha256_compress`'s `sha256_block(h,
+view(&block))` copied the 64-byte block into the callee's frame and made
+the caller copy it into a temp first. A read-only borrow, the address as
+the argument of `view(…)`, reads the parameter and nothing else: it no
+longer touches it (`recordParamTouched`), so the callee reads the
+parameter in place through its park register, the caller passes its own
+storage (`readsInPlace`, which still refuses when the callee has a writable
+span parameter through which that storage could change — `bump_first(b.block,
+span(&b.block))` keeps its copy and reads the value before the write, as
+Oak's by-value semantics say), and the native inliner substitutes a field
+path for the parameter. `span(&p…)` and every other address taken still
+touch. The theorem: reading through a view of the copy is reading the
+storage (`Oak.ReadOnlyBorrow.view_of_copy`), and a store outside the
+aggregate leaves the view's reads unchanged (`view_unchanged`).
+`TestNativeShapesReadOnlyBorrow` pins `sum` reading its block in place and
+`main` copying the block once, for the call with the writable span;
+`TestE2ENativeReadOnlyBorrow` agrees with the C backend.
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries

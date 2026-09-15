@@ -3913,6 +3913,22 @@ func (g *generator) bindArrayParamRef(name string, rp *recordParam, elem scalar,
 // address_of), or calls the function itself (a tail self-call rebinds the
 // parameters) — the uses under which the parameter needs a copy of its own.
 func recordParamTouched(fn *ast.FunctionStatement, name string) bool {
+	// A read-only borrow, `view(&p…)`, reads the parameter and nothing
+	// else: it leaves the parameter untouched (docs/spec/94-assembler.md §9
+	// "Read-only borrows"; Oak.ReadOnlyBorrow.view_of_copy). A writable
+	// span, `span(&p…)`, and the address taken by any other call touch it.
+	readOnly := map[*ast.PrefixExpression]bool{}
+	walk(fn.Body, func(n ast.Node) {
+		call, isCall := n.(*ast.InvocationExpression)
+		if !isCall || len(call.Arguments) != 1 {
+			return
+		}
+		if fnName, isIdent := call.Function.(*ast.Identifier); isIdent && fnName.Value == "view" {
+			if borrow, isBorrow := call.Arguments[0].(*ast.PrefixExpression); isBorrow && borrow.Operator == "&" {
+				readOnly[borrow] = true
+			}
+		}
+	})
 	touched := false
 	walk(fn.Body, func(n ast.Node) {
 		switch e := n.(type) {
@@ -3925,7 +3941,7 @@ func recordParamTouched(fn *ast.FunctionStatement, name string) bool {
 				touched = true
 			}
 		case *ast.PrefixExpression:
-			if e.Operator == "&" {
+			if e.Operator == "&" && !readOnly[e] {
 				if root, ok := pathRoot(e.Right); ok && root == name {
 					touched = true
 				}
