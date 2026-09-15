@@ -178,6 +178,20 @@ unchanged: `sum`, `dot`, `dispatch` proven with their loops coupled
 inductively; `search` witnessed; `page_probe` trusted; `tiled`
 witnessed. Timing deferred to the quiet-host rerun.
 
+**Invariant exit tests peeled (2026-09-16, `docs/spec/94-assembler.md`
+§9 "Loop invariants").** The unrolled reduction's header `cmp wL, #4;
+b.lo done; sub wT, wL, #4; cmp wI, wT; b.hi done` ran a length test and a
+subtraction every trip and could not rotate. The invariant pass now peels
+the length test before the header and hoists the subtraction, the header
+is `cmp wI, wT; b.hi done`, and the rotation takes it: `bench_sum`'s
+four-way loop is `add; ldp; add; add; ldp; add; add; add; cmp; b.ls` —
+ten instructions and one branch a trip, from fourteen and three — and the
+remainder loop rotates too, the body proven with both loops coupled (the
+verifier reads the peeled test as the loop's entry-only test, so the
+loops keep their order). The whole body grows by two (the entry tests
+paid once), 38 → 40 by the dump's line count; the trip shrinks by four
+instructions and two branches.
+
 **Strength reduction of constant arithmetic (2026-09-15,
 `docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
 were attributed below to frame traffic; the lowered bodies say otherwise —

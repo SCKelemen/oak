@@ -11,9 +11,11 @@ import (
 type Allocation struct {
 	Webs []*Web
 	// Promoted counts the frame slots moved into registers (Promote);
-	// Renamed the webs that changed register; Coalesced the copies removed
-	// because their source and destination share a register.
-	Promoted, Renamed, Coalesced int
+	// Propagated the copies whose reads moved to their source and
+	// Eliminated the dead instructions removed (Simplify); Renamed the webs
+	// that changed register; Coalesced the copies removed because their
+	// source and destination share a register.
+	Promoted, Propagated, Eliminated, Renamed, Coalesced int
 	// Pool lists the registers allocation may use: the ones the lowering
 	// already wrote (so every callee-saved one among them is saved and
 	// restored by the prologue and epilogue as emitted).
@@ -42,13 +44,17 @@ func Reallocate(fn *asm.Function) (*asm.Function, *Allocation, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	propagated, eliminated, err := lifted.Simplify()
+	if err != nil {
+		return nil, nil, err
+	}
 	webs, err := lifted.Webs()
 	if err != nil {
 		return nil, nil, err
 	}
 	lifted.Liveness(webs)
 	t := lifted.t
-	alloc := &Allocation{Webs: webs, Pool: map[Reg]bool{}, Promoted: promoted}
+	alloc := &Allocation{Webs: webs, Pool: map[Reg]bool{}, Promoted: promoted, Propagated: propagated, Eliminated: eliminated}
 	for _, ins := range lifted.Instrs {
 		for _, d := range ins.Defs {
 			if !d.Implicit && !t.reserved(d.Reg) {
@@ -311,4 +317,9 @@ type uncolorable struct{ web *Web }
 
 func (u *uncolorable) Error() string {
 	return fmt.Sprintf("machine: no register for the web of %s at positions %d–%d", u.web.Reg, u.web.From, u.web.To)
+}
+
+// Sites is how many sites reallocation changed in all.
+func (a *Allocation) Sites() int {
+	return a.Promoted + a.Propagated + a.Eliminated + a.Renamed + a.Coalesced
 }
