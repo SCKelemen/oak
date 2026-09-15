@@ -1154,9 +1154,12 @@ type generator struct {
 	resultRecord   *recordLayout
 	resultIndirect bool
 	resultAreaReg  int // the register holding the result area's address (x8 or its parked copy)
-	usedX8         bool
-	temps          int
-	head           string // the loop header a tail self-call jumps to
+	// returnSlot names the record local built in the result area itself
+	// (docs/spec/94-assembler.md §9 "Copies at the boundary"), "" for none.
+	returnSlot string
+	usedX8     bool
+	temps      int
+	head       string // the loop header a tail self-call jumps to
 	// Variables live in the callee-saved registers x19–x28 in declaration
 	// order (saved in the prologue, restored before ret), and in frame
 	// slots once those run out; regs maps a variable to its register.
@@ -1694,7 +1697,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 				rp.reg = -1
 				g.stackParams[name] = place
 			}
-			if indirect && !recordParamTouched(fn, name) && !layoutHasArray(layout) && g.usedCallee < calleeHigh-calleeLow+1 {
+			if indirect && !recordParamTouched(fn, name) && g.usedCallee < calleeHigh-calleeLow+1 {
 				// Read in place: the address parked in a callee-saved
 				// register, the fields loaded through it (the checker's
 				// region rule), no copy into the frame. Types drive it: a
@@ -1770,6 +1773,9 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 				g.resultRecord = layout
 				g.resultIndirect = layout.size > 16
 				g.resultAreaReg = 8
+				if g.resultIndirect {
+					g.returnSlot = returnSlotLocal(fn)
+				}
 				if g.resultIndirect && g.hasCalls {
 					// A call clobbers x8: park the result area's address.
 					if g.usedCallee+1 > calleeHigh-calleeLow+1 {
@@ -2661,6 +2667,11 @@ func (g *generator) resultRecordExpr(expr ast.Expression) error {
 		return unsupported("a %s result where %s is declared", rec.layout.name, g.resultRecord.name)
 	}
 	if g.resultIndirect {
+		if rec.inReg && rec.reg == g.resultAreaReg && rec.offset == 0 {
+			// The local built in the result area: nothing to copy.
+			g.releaseTemps(rec.temps)
+			return nil
+		}
 		err := g.copyOut(g.resultAreaReg, rec)
 		g.releaseTemps(rec.temps)
 		return err
@@ -3437,14 +3448,95 @@ func layoutHasArray(l *recordLayout) bool {
 }
 
 func (g *generator) declareRecord(name string, layout *recordLayout) *recordLocal {
+	rec := g.allocRecord(layout)
+	if name != "" && name == g.returnSlot && layout == g.resultRecord {
+		// The local the body returns is the caller's result area: its
+		// fields live behind the parked result register and no copy
+		// closes the function (docs/spec/94-assembler.md §9 "Copies at
+		// the boundary"; Oak.BoundaryCopies.build_in_place).
+		rec = &recordLocal{inReg: true, reg: g.resultAreaReg, layout: layout}
+	}
+	g.bindRecord(name, rec)
+	return rec
+}
+
+// allocRecord reserves a record's frame storage without binding a name.
+func (g *generator) allocRecord(layout *recordLayout) *recordLocal {
 	rec := &recordLocal{offset: 8 * g.nslots, layout: layout}
 	g.nslots += (layout.size + 7) / 8
+	return rec
+}
+
+// bindRecord brings a record's storage into scope under a name.
+func (g *generator) bindRecord(name string, rec *recordLocal) {
 	delete(g.slots, name)
 	delete(g.types, name)
 	delete(g.regs, name)
 	g.records[name] = rec
 	g.scopes[len(g.scopes)-1][name] = slotBinding{reg: -1, rec: rec}
-	return rec
+}
+
+// returnSlotLocal names the record local a function builds in its result
+// area: the body's tail is the bare name of a local declared once, at the
+// body's top level, of the result type, not from a literal (a literal
+// fills frame slots), and whose address is never taken — the local then
+// is the area the caller passed in x8, and the return copies nothing.
+func returnSlotLocal(fn *ast.FunctionStatement) string {
+	block, isBlock := fn.Body.(*ast.BlockExpression)
+	if !isBlock || block.Block == nil || len(block.Block.Statements) < 2 || fn.ReturnType == nil {
+		return ""
+	}
+	stmts := block.Block.Statements
+	tail, isExpr := stmts[len(stmts)-1].(*ast.ExpressionStatement)
+	if !isExpr || tail.Discard {
+		return ""
+	}
+	ident, isIdent := tail.Expression.(*ast.Identifier)
+	if !isIdent {
+		return ""
+	}
+	name := ident.Value
+	for _, p := range fn.Parameters {
+		if p.Name != nil && p.Name.Value == name {
+			return ""
+		}
+	}
+	topLevel := false
+	for _, stmt := range stmts[:len(stmts)-1] {
+		decl, isDecl := stmt.(*ast.VariableDeclaration)
+		if !isDecl || decl.Name == nil || decl.Name.Value != name {
+			continue
+		}
+		if decl.Type == nil || decl.Type.String() != fn.ReturnType.String() {
+			return ""
+		}
+		if _, isLiteral := decl.Value.(*ast.RecordLiteral); isLiteral {
+			return ""
+		}
+		topLevel = true
+	}
+	if !topLevel {
+		return ""
+	}
+	declarations, ok := 0, true
+	walk(fn.Body, func(n ast.Node) {
+		switch e := n.(type) {
+		case *ast.VariableDeclaration:
+			if e.Name != nil && e.Name.Value == name {
+				declarations++
+			}
+		case *ast.PrefixExpression:
+			if e.Operator == "&" {
+				if root, has := pathRoot(e.Right); has && root == name {
+					ok = false
+				}
+			}
+		}
+	})
+	if declarations != 1 || !ok {
+		return ""
+	}
+	return name
 }
 
 // lowerSpanDeclaration lowers `w: []T = subslice(v, s, n)` / `w: [*]T = …`
@@ -3634,11 +3726,20 @@ func (g *generator) lowerRecordDeclaration(s *ast.VariableDeclaration, typeName 
 		}
 		g.emit("mov", xr(zero), imm(0))
 		words := (layout.size + 7) / 8
+		if rec.inReg {
+			// The result area: a record's size, not whole slots.
+			words = layout.size / 8
+		}
 		for w := int64(0); w < words; w += 2 {
 			if w+1 < words {
-				g.zeroPair(zero, g.slotMem(rec.offset+8*w))
+				g.zeroPair(zero, g.memOf(rec.loc().plus(8*w)))
 			} else {
-				g.emit("str", xr(zero), g.slotMem(rec.offset+8*w))
+				g.emit("str", xr(zero), g.memOf(rec.loc().plus(8*w)))
+			}
+		}
+		if rec.inReg {
+			for off := 8 * words; off < layout.size; off += 4 {
+				g.emit("str", wr(zero), g.memOf(rec.loc().plus(off)))
 			}
 		}
 		g.release(zero)
@@ -3650,6 +3751,20 @@ func (g *generator) lowerRecordDeclaration(s *ast.VariableDeclaration, typeName 
 		}
 		_, err := g.fillRecord(layout, literal, s.Name.Value)
 		return err
+	}
+	if call, isCall := s.Value.(*ast.InvocationExpression); isCall && layout.size > 16 && g.callReturns(call, typeName) {
+		// `y: Big = f(x)`: the callee writes the fresh local through x8;
+		// the storage is reserved before the arguments evaluate and bound
+		// after (an argument may name an outer binding of the same name).
+		rec := g.allocRecord(layout)
+		if s.Name.Value == g.returnSlot && layout == g.resultRecord {
+			rec = &recordLocal{inReg: true, reg: g.resultAreaReg, layout: layout}
+		}
+		if _, err := g.callWith(call, rec); err != nil {
+			return err
+		}
+		g.bindRecord(s.Name.Value, rec)
+		return nil
 	}
 	// A copy of another record value: a local, a parameter, a call's
 	// result, a variant literal.
@@ -3664,6 +3779,40 @@ func (g *generator) lowerRecordDeclaration(s *ast.VariableDeclaration, typeName 
 	err = g.copyRecord(rec, src)
 	g.releaseTemps(src.temps)
 	return err
+}
+
+// callReturns reports a call to a program function whose declared result
+// is the named record type.
+func (g *generator) callReturns(call *ast.InvocationExpression, typeName string) bool {
+	ident, isIdent := call.Function.(*ast.Identifier)
+	if !isIdent {
+		return false
+	}
+	callee, known := g.functions[g.calleeName(ident)]
+	if !known || callee.ReturnType == nil {
+		return false
+	}
+	name, isRecord := g.recordTypeName(callee.ReturnType)
+	return isRecord && name == typeName
+}
+
+// readsInPlace reports a by-reference argument the callee only reads: its
+// body never assigns, borrows, or addresses the parameter (and is a body,
+// not an extern or a unit), and no parameter of the callee is a writable
+// span, through which the callee could reach the caller's storage. The
+// caller then passes the address of its own storage instead of a copy's
+// (docs/spec/94-assembler.md §9 "Copies at the boundary";
+// Oak.BoundaryCopies.read_in_place).
+func (g *generator) readsInPlace(callee *ast.FunctionStatement, param *ast.FunctionParameter) bool {
+	if callee.Body == nil || callee.ExternSymbol != "" || param.Name == nil || recordParamTouched(callee, param.Name.Value) {
+		return false
+	}
+	for _, q := range callee.Parameters {
+		if sp, isSpan := g.spanTypeOf(q.Type); isSpan && sp.writable {
+			return false
+		}
+	}
+	return true
 }
 
 // copyRecord copies a record slot-wise (the padding travels too, as the C
@@ -6080,6 +6229,24 @@ func (g *generator) callWith(e *ast.InvocationExpression, recordResult *recordLo
 				// callee copies it if it writes its own; a read-only one
 				// reads the caller's memory, which nothing writes meanwhile).
 				push(i, argument{regs: []int{rec.reg}, types: []scalar{scalars["u64"]}, fixed: true})
+				continue
+			}
+			if layout.size > 16 && g.readsInPlace(callee, p) {
+				// The callee only reads: the address of the caller's own
+				// storage, no copy.
+				base, err := g.alloc(scalars["u64"])
+				if err != nil {
+					return 0, err
+				}
+				if rec.inReg {
+					if err := g.addOffset(base, rec.reg, rec.offset); err != nil {
+						return 0, err
+					}
+				} else {
+					g.emit("add", xr(base), sp(), imm(g.slotMem(rec.offset).Offset))
+				}
+				g.releaseTemps(rec.temps)
+				push(i, argument{regs: []int{base}, types: []scalar{scalars["u64"]}})
 				continue
 			}
 			if layout.size > 16 {
