@@ -32,6 +32,9 @@ Oak language execution model
         |
 Lean AArch64 local-order model
         +----> kernel-checked instruction-class capability proofs
+        |
+Lean Arm ordered-before projection
+        +----> kernel-checked MP / SB / IRIW / full-DMB outcomes
 ```
 
 These layers make different claims.
@@ -43,6 +46,8 @@ These layers make different claims.
   acquire/release/RCsc capabilities Oak requires.
 - Litmus tests verify the language model permits and forbids the intended
   outcomes.
+- Lean proves the corresponding machine outcomes from the `bob`, `obs`, and
+  irreflexive/transitive `ob` consequences of Arm's official A-profile model.
 
 No one of these alone is called a complete C/LLVM/Arm axiomatic refinement
 proof.
@@ -169,6 +174,9 @@ does not yet prove a cycle-level WCET bound.
 
 `semir/memory_litmus_test.go` exercises canonical small-state outcomes using the
 same execution/HB/MO/SC validators that define Oak's language model.
+`Oak.AArch64WeakMemory` proves the matching forbidden machine outcomes from the
+ordered-before projection used by Arm's official `aarch64hwreqs.cat` and
+`aarch64.cat` model.
 
 ### 7.1 Message passing (MP)
 
@@ -203,7 +211,7 @@ before both stores in one valid global order.
 This negative/positive pair matters: the checker must implement Oak's actual
 memory contract rather than merely rejecting every weak-looking outcome.
 
-## 8. Formal instruction-class model
+## 8. Formal instruction-class and weak-memory models
 
 `spec/lean/Oak/AArch64Memory.lean` models local ordering capabilities:
 
@@ -232,8 +240,23 @@ Lean proves:
 - `LDAPR` does **not** satisfy that profile requirement;
 - seq-cst load/store/fence select the intended local instruction classes.
 
-These proofs are intentionally local. `Oak.SequentialConsistency` remains the
-separate global-order proof layer.
+`spec/lean/Oak/AArch64WeakMemory.lean` then exposes the exact global consequences
+used from Arm's model: `bob` edges for STLR, LDAR, STLR-followed-by-LDAR, and full
+DMB; external reads-from and coherence-after edges through `obs`; and the
+irreflexive transitive `ob` relation. Lean proves:
+
+- release/acquire message passing orders the payload and forbids a stale
+  initial-value observation;
+- STLR/LDAR seq-cst store buffering cannot return both initial values;
+- two LDAR seq-cst readers cannot make the IRIW split observation;
+- a full DMB in each thread also excludes the store-buffering outcome;
+- Oak's selected instruction classes are exactly STLR, LDAR, and DMB ISH for
+  the corresponding source operations.
+
+This is an axiomatic projection with each assumption named after its source CAT
+relation, not yet a mechanical translation of the CAT file.  The local mapping,
+the projection theorems, and `Oak.SequentialConsistency` are separate proof
+layers so none is silently substituted for another.
 
 ## 9. CI gate
 
@@ -262,6 +285,8 @@ This chapter does **not** claim:
 
 - a complete formal refinement of C11 through LLVM IR to the official Arm
   axiomatic model;
+- a mechanical proof that every projected `bob`/`obs` premise follows from a
+  pinned revision of Arm's CAT sources;
 - exhaustive compiler-version correctness;
 - stochastic execution of weak-memory litmus tests on real AArch64 hardware;
 - cache/coherency/DMA/device-memory correctness;
@@ -275,11 +300,14 @@ than a full verified compiler/ISA stack.
 
 The next machine-memory work should add:
 
-1. retained assembly artifacts/version metadata so failures are diagnosable;
-2. real AArch64 hardware litmus execution when a CI runner is available;
-3. MMIO address spaces and AArch64 `DMB`/`DSB`/`ISB` contracts;
-4. DMA/coherency and interrupt-boundary ordering;
-5. selective implementation-to-Lean refinement where the proof cost is
+1. pinned Herd executions of MP/SB/LB/IRIW against Arm's official CAT model,
+   with the CAT revision recorded and drift checked;
+2. a mechanical CAT-to-Lean bridge for the small `bob`/`obs` projection;
+3. retained assembly artifacts/version metadata so failures are diagnosable;
+4. real AArch64 hardware litmus execution when a CI runner is available;
+5. MMIO address spaces and AArch64 `DMB`/`DSB`/`ISB` contracts;
+6. DMA/coherency and interrupt-boundary ordering;
+7. selective implementation-to-Lean refinement where the proof cost is
    justified.
 
 Once this AArch64 refinement gate is stable, Oak has enough demonstrated
