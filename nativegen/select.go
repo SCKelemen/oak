@@ -56,12 +56,24 @@ var outcomeCodes = map[uint8][2]string{
 	outcomeBelow | outcomeEqual: {"ls", "le"}, outcomeEqual | outcomeAbove: {"hs", "ge"}, outcomeBelow | outcomeAbove: {"ne", "ne"},
 }
 
-// selectAssign is one assignment inside an arm.
+// selectAssign is one assignment inside an arm: its value evaluated into
+// a temporary (formValue), the constant one selected from wzr by `csinc`
+// (formOne: `found = true`, `n = 1`), or the variable's own increment by
+// `cinc` (formInc: `hits = hits + u32(1)`).
 type selectAssign struct {
 	name string
 	typ  scalar
 	rhs  ast.Expression
+	form assignForm
 }
+
+type assignForm uint8
+
+const (
+	formValue assignForm = iota
+	formOne
+	formInc
+)
 
 // selectArm is one arm of the chain: its condition's outcomes and its
 // assignments (none for an empty arm).
@@ -101,8 +113,76 @@ const (
 
 // chainArm is a conditional's syntax before recognition.
 type chainArm struct {
-	cond *ast.InfixExpression
+	cond ast.Expression
 	body []ast.Statement
+}
+
+// selectCondition is a chain condition read as a compare: an integer
+// comparison's operands, or a Bool local against zero (`found ? {…}` is
+// `cmp wF, #0` with `ne`, `!found` with `eq`).
+type selectCondition struct {
+	left, right asm.Operand
+	leftExpr    ast.Expression // set when the operand is computed
+	rightExpr   ast.Expression
+	typ         scalar
+	operator    string
+}
+
+// selectConditionOf reads a chain condition; computed operands are
+// admitted only when allowed (the first condition, evaluated on every path).
+func (g *generator) selectConditionOf(cond ast.Expression, computed bool) (selectCondition, bool) {
+	switch e := cond.(type) {
+	case *ast.Identifier:
+		if v, inReg := g.regs[e.Value]; inReg && v >= 0 && v < vecBase {
+			if t, ok := g.types[e.Value]; ok && t.isBool {
+				return selectCondition{left: wr(v), right: imm(0), typ: t, operator: "!="}, true
+			}
+		}
+		return selectCondition{}, false
+	case *ast.PrefixExpression:
+		if e.Operator != "!" {
+			return selectCondition{}, false
+		}
+		inner, ok := g.selectConditionOf(e.Right, computed)
+		if !ok || inner.leftExpr != nil || inner.rightExpr != nil {
+			return selectCondition{}, false
+		}
+		if _, isIdent := e.Right.(*ast.Identifier); !isIdent {
+			return selectCondition{}, false
+		}
+		inner.operator = "=="
+		return inner, true
+	case *ast.InfixExpression:
+		if _, isComparison := conditionCodes[e.Operator]; !isComparison {
+			return selectCondition{}, false
+		}
+		operand, err := g.operandType(e)
+		if err != nil || operand.isFloat || operand.isVec {
+			return selectCondition{}, false
+		}
+		left, leftOK := g.simpleOperand(e.Left, operand, false)
+		right, rightOK := g.simpleOperand(e.Right, operand, true)
+		if leftOK && !rightOK {
+			if c, isConst := g.constantOperand(e.Right, operand); isConst && c < 4096 {
+				right, rightOK = imm(int64(c)), true
+			}
+		}
+		sc := selectCondition{left: left, right: right, typ: operand, operator: e.Operator}
+		switch {
+		case leftOK && rightOK:
+		case computed:
+			if !leftOK {
+				sc.leftExpr = e.Left
+			}
+			if !rightOK {
+				sc.rightExpr = e.Right
+			}
+		default:
+			return selectCondition{}, false
+		}
+		return sc, true
+	}
+	return selectCondition{}, false
 }
 
 // conditionalArms flattens `c1 ? {…} | c2 ? {…} | {…}` in statement
@@ -112,15 +192,11 @@ func conditionalArms(match *ast.MatchExpression) ([]chainArm, []ast.Statement, b
 	if !ok {
 		return nil, nil, false
 	}
-	cond, isInfix := match.Scrutinee.(*ast.InfixExpression)
-	if !isInfix {
-		return nil, nil, false
-	}
 	body, isBlock := blockStatements(whenTrue)
 	if !isBlock {
 		return nil, nil, false
 	}
-	arms := []chainArm{{cond: cond, body: body}}
+	arms := []chainArm{{cond: match.Scrutinee, body: body}}
 	switch alt := whenFalse.(type) {
 	case nil:
 		return arms, nil, true
@@ -141,11 +217,10 @@ func conditionalArms(match *ast.MatchExpression) ([]chainArm, []ast.Statement, b
 
 // ifArms flattens `if c1 {…} else if c2 {…} else {…}`.
 func ifArms(s *ast.IfStatement) ([]chainArm, []ast.Statement, bool) {
-	cond, isInfix := s.Condition.(*ast.InfixExpression)
-	if !isInfix || s.Consequence == nil {
+	if s.Consequence == nil {
 		return nil, nil, false
 	}
-	arms := []chainArm{{cond: cond, body: s.Consequence.Statements}}
+	arms := []chainArm{{cond: s.Condition, body: s.Consequence.Statements}}
 	switch alt := s.Alternative.(type) {
 	case nil:
 		return arms, nil, true
@@ -187,50 +262,28 @@ func (g *generator) recognizeSelectChain(arms []chainArm, final []ast.Statement)
 	spelling := ""
 	seen := uint8(0)
 	for i, arm := range arms {
-		if _, isComparison := conditionCodes[arm.cond.Operator]; !isComparison {
+		sc, ok := g.selectConditionOf(arm.cond, i == 0)
+		if !ok {
 			return nil, false
 		}
-		operand, err := g.operandType(arm.cond)
-		if err != nil || operand.isFloat || operand.isVec {
-			return nil, false
-		}
-		left, leftOK := g.simpleOperand(arm.cond.Left, operand, false)
-		right, rightOK := g.simpleOperand(arm.cond.Right, operand, true)
-		if leftOK && !rightOK {
-			if c, isConst := g.constantOperand(arm.cond.Right, operand); isConst && c < 4096 {
-				right, rightOK = imm(int64(c)), true
-			}
-		}
+		operand := sc.operator
 		spelled := ""
-		var leftExpr, rightExpr ast.Expression
-		switch {
-		case leftOK && rightOK:
-			spelled = fmt.Sprintf("%v %v", left, right)
-		case i == 0:
-			// The first condition is evaluated on every path: computed
-			// operands are allowed (a guarded element read, `v[i] <= t`).
-			if !leftOK {
-				leftExpr = arm.cond.Left
-			}
-			if !rightOK {
-				rightExpr = arm.cond.Right
-			}
-		default:
-			return nil, false
+		if sc.leftExpr == nil && sc.rightExpr == nil {
+			spelled = fmt.Sprintf("%v %v", sc.left, sc.right)
 		}
 		body, ok := g.selectAssigns(arm.body)
 		if !ok {
 			return nil, false
 		}
 		chain.assigns += len(body)
-		mask := outcomeMasks[arm.cond.Operator]
-		if i > 0 && spelled != "" && spelled == spelling && operand.signed == chain.groups[len(chain.groups)-1].signed {
+		mask := outcomeMasks[operand]
+		if i > 0 && spelled != "" && spelled == spelling && sc.typ.signed == chain.groups[len(chain.groups)-1].signed {
 			group := &chain.groups[len(chain.groups)-1]
 			group.arms = append(group.arms, selectArm{mask: mask &^ seen, assigns: body})
 			seen |= mask
 			continue
 		}
-		chain.groups = append(chain.groups, selectGroup{left: left, right: right, leftExpr: leftExpr, rightExpr: rightExpr, typ: operand, signed: operand.signed, arms: []selectArm{{mask: mask, assigns: body}}})
+		chain.groups = append(chain.groups, selectGroup{left: sc.left, right: sc.right, leftExpr: sc.leftExpr, rightExpr: sc.rightExpr, typ: sc.typ, signed: sc.typ.signed, arms: []selectArm{{mask: mask, assigns: body}}})
 		spelling, seen = spelled, mask
 	}
 	if final != nil {
@@ -244,6 +297,18 @@ func (g *generator) recognizeSelectChain(arms []chainArm, final []ast.Statement)
 	}
 	if chain.assigns == 0 || chain.assigns > maxSelectAssigns {
 		return nil, false
+	}
+	// An arm taken whenever its group is reached assigns its value as a
+	// value: the increment forms are conditional instructions.
+	for gi := range chain.groups {
+		for a := range chain.groups[gi].arms {
+			arm := &chain.groups[gi].arms[a]
+			if arm.mask == outcomeAll {
+				for k := range arm.assigns {
+					arm.assigns[k].form = formValue
+				}
+			}
+		}
 	}
 	return chain, true
 }
@@ -277,9 +342,37 @@ func (g *generator) selectAssigns(body []ast.Statement) ([]selectAssign, bool) {
 				return nil, false
 			}
 		}
-		out = append(out, selectAssign{name: name, typ: typ, rhs: assign.Value})
+		out = append(out, selectAssign{name: name, typ: typ, rhs: assign.Value, form: g.assignFormOf(name, typ, assign.Value)})
 	}
 	return out, true
+}
+
+// assignFormOf classifies an arm's right-hand side: the constant one
+// (`true`, `1`, `u32(1)`) selects from wzr by csinc; the variable's own
+// increment by one is cinc; anything else is a value in a temporary.
+func (g *generator) assignFormOf(name string, typ scalar, rhs ast.Expression) assignForm {
+	if lit, isBool := rhs.(*ast.Boolean); isBool {
+		if lit.Value {
+			return formOne
+		}
+		return formValue
+	}
+	if c, isConst := g.constantOperand(rhs, typ); isConst {
+		if c == 1 {
+			return formOne
+		}
+		return formValue
+	}
+	if e, isInfix := rhs.(*ast.InfixExpression); isInfix && e.Operator == "+" {
+		for _, pair := range [2][2]ast.Expression{{e.Left, e.Right}, {e.Right, e.Left}} {
+			ident, isIdent := pair[0].(*ast.Identifier)
+			c, isConst := g.constantOperand(pair[1], typ)
+			if isIdent && ident.Value == name && isConst && c == 1 {
+				return formInc
+			}
+		}
+	}
+	return formValue
 }
 
 // speculable reports whether an expression may be evaluated on a path
@@ -370,6 +463,9 @@ func (g *generator) lowerSelectChain(chain *selectChain) error {
 			}
 			for k := range arm.assigns {
 				assign := &arm.assigns[k]
+				if assign.form != formValue {
+					continue // a conditional increment needs no value
+				}
 				r, inPlace, err := g.operand(assign.rhs, assign.typ)
 				if err != nil {
 					return err
@@ -450,7 +546,16 @@ func (g *generator) lowerSelectChain(chain *selectChain) error {
 					if err != nil {
 						return err
 					}
-					g.emit("csel", reg(t, typ), reg(value.reg, typ), reg(cur.reg, typ), asm.Condition{Code: code})
+					switch assign.form {
+					case formOne:
+						// cond ? 1 : cur — csinc selects cur when the
+						// inverse holds, else wzr + 1.
+						g.emit("csinc", reg(t, typ), reg(cur.reg, typ), reg(31, typ), asm.Condition{Code: inverseCondition[code]})
+					case formInc:
+						g.emit("cinc", reg(t, typ), reg(cur.reg, typ), asm.Condition{Code: code})
+					default:
+						g.emit("csel", reg(t, typ), reg(value.reg, typ), reg(cur.reg, typ), asm.Condition{Code: code})
+					}
 					if cur.owned {
 						release(cur.reg)
 					}
@@ -502,7 +607,7 @@ func (g *generator) retargetSelect(r, v int, typ scalar, from int) bool {
 	at := -1
 	for i := len(g.items) - 1; i >= from; i-- {
 		ins, isIns := g.items[i].(asm.Instruction)
-		if !isIns || ins.Mnemonic != "csel" || len(ins.Operands) != 4 {
+		if !isIns || !selectMnemonics[ins.Mnemonic] || len(ins.Operands) < 3 {
 			continue
 		}
 		if dst, isReg := ins.Operands[0].(asm.Register); isReg && dst.Num == r && dst.Class != asm.ClassV {
@@ -531,3 +636,6 @@ func (g *generator) retargetSelect(r, v int, typ scalar, from int) bool {
 	g.items[at] = ins
 	return true
 }
+
+// selectMnemonics are the conditional instructions a chain emits.
+var selectMnemonics = map[string]bool{"csel": true, "csinc": true, "cinc": true}

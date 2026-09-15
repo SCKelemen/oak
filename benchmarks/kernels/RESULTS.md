@@ -378,3 +378,19 @@ marked four lanes deep — then the invariant hoisted out of the header,
 and the vector form of the same rewrite (the `simd` types the language
 has) once the verifier couples a lane sum.
 
+## Select forms, 2026-09-16
+
+The three costs named above for `page_probe` are gone from its loops
+(docs/spec/94-assembler.md §9 "If-conversion"): `found = true` is `csinc
+w26, w26, wzr, ne` with no constant built in the loop, `hits = hits +
+u32(1)` under the Bool is `cmp w26, #0; cinc w4, w4, ne` with no branch,
+and `mid * u32(512)` is `lsl w10, w23, #9` reading the midpoint where it
+lies. The inner loop is thirteen instructions with the header's two exits
+and the back edge as its only branches, the outer twelve with one exit.
+The run (`results/m-series-2026-09-16-select-forms.json`) fell under a
+load average above 80 — `page_probe`'s C row itself moved from 7.0 to
+10.3 million ns — so its ratios are not read; the instruction shapes are
+the evidence, and the kernels are re-measured with the next quiet run.
+`search` stayed at parity with clang (7.97 against 7.36 million ns, best
+samples) with the hand-written Rust at 5.98 in this run.
+

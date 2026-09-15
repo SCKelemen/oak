@@ -3828,7 +3828,15 @@ arm's, so within an arm none may read a variable the arm assigned before
 it. The compare a chain's guard left live is reused when no evaluation
 wrote the flags (`asm.SetsFlags`). The select that produces a variable's
 final value writes the variable's home directly when no later instruction
-of the chain reads the value or the home (retargetSelect). The checker keeps the
+of the chain reads the value or the home (retargetSelect). An arm
+assigning `true` or `1` is `csinc wD, wCur, wzr, !cond` (`cond ? 1 :
+cur`, no constant built in the loop) and an arm assigning `v + 1` to `v`
+is `cinc wD, wCur, cond`; a Bool local as the chain's condition, or its
+negation, compares against zero (`cmp wF, #0` with `ne` or `eq`), so
+`found ? { hits = hits + u32(1) }` is a compare and a `cinc`. `csinc` is
+the checker's and the verifier's as `csel` is (`Wd = cond ? Wn : Wm + 1`).
+The strength-reduced power of two reads its operand where it lies (`lsl
+w10, w23, #9` for `mid * u32(512)`), as the constant shift does. The checker keeps the
 facts through the select: a `csel` of two values at most a referent is at
 most it, and of two indices below one bound is below it
 (`Oak.Assembler.select_upper`, `select_index`; §7 "Bounds through

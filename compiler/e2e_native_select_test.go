@@ -71,8 +71,20 @@ count_hits: (keys: []u64, target: u64): u32 {
   found ? { steps + u32(100) } | { steps }
 }
 
+tally: (v: []u32): u32 {
+  hits: u32 = 0
+  i: u32 = 0
+  while i < len(v) {
+    big: Bool = v[i] > u32(100)
+    big ? { hits = hits + u32(1) }
+    i = i + u32(1)
+  }
+  hits
+}
+
 main: (): i32 {
   keys: [8]u64 = [8]u64{ 1, 2, 3, 5, 8, 13, 21, 34 }
+  vals: [4]u32 = [4]u32{ 5, 500, 105, 1 }
   // clamp_step: 5 (inside), -3 -> 0, 12 -> 9; order(4, 9) = 9004; sign_code(0/-5/5) = 1, 2, 3;
   // dead_arm(2, 3) = 5, (4, 4) = 1; pick_if(5, 3) = 5 + 5 (its equal arm never fires), pick_if(2, 6) = 6 + 6;
   // count_hits finds 13 in 3 steps (mid 3 -> 5 -> 5), misses 4 in 3 steps.
@@ -80,8 +92,10 @@ main: (): i32 {
   t: u32 = order(u32(4), u32(9)) + sign_code(0) + sign_code(-5) * u32(10) + sign_code(5) * u32(100)
   u: u32 = dead_arm(u32(2), u32(3)) + dead_arm(u32(4), u32(4)) * u32(10) + pick_if(u32(5), u32(3)) + pick_if(u32(2), u32(6))
   v: u32 = count_hits(view(&keys), u64(13)) + count_hits(view(&keys), u64(4)) * u32(1000)
-  // (9004 + 1 + 20 + 300) + (5 + 10 + 10 + 12) + (103 + 3000) = 12465, 177 modulo 256; plus 14 the exit code is 191.
-  i32_bits_u32((t + u + v) & u32(255)) + s
+  // tally counts the two values above 100.
+  w: u32 = tally(view(&vals))
+  // (9004 + 1 + 20 + 300) + (5 + 10 + 10 + 12) + (103 + 3000) + 2 = 12467, 179 modulo 256; plus 14 the exit code is 193.
+  i32_bits_u32((t + u + v + w) & u32(255)) + s
 }
 `
 
@@ -101,7 +115,7 @@ func TestE2ENativeIfConversion(t *testing.T) {
 	for _, fn := range model.AsmFunctions {
 		units[fn.Name] = fn
 	}
-	for _, name := range []string{"clamp_step", "order", "sign_code", "dead_arm", "pick_if", "count_hits"} {
+	for _, name := range []string{"clamp_step", "order", "sign_code", "dead_arm", "pick_if", "count_hits", "tally"} {
 		fn, ok := units[name]
 		if !ok {
 			t.Fatalf("%s was not lowered natively:\n%s", name, strings.Join(infos, "\n"))
@@ -112,7 +126,7 @@ func TestE2ENativeIfConversion(t *testing.T) {
 			if !isIns {
 				continue
 			}
-			if ins.Mnemonic == "csel" {
+			if ins.Mnemonic == "csel" || ins.Mnemonic == "csinc" || ins.Mnemonic == "cinc" {
 				selects++
 			}
 			if ins.Mnemonic == "b." {
@@ -136,11 +150,26 @@ func TestE2ENativeIfConversion(t *testing.T) {
 	if branches != 3 {
 		t.Errorf("count_hits's loop must hold exactly its two exits and the back edge, got %d branches", branches)
 	}
-	_, code, abnormal := buildAndRunFrom(t, "native_select", comp)
-	if abnormal || code != 191 {
-		t.Fatalf("native: exit = (%d, abnormal=%v), want 191\n%s", code, abnormal, strings.Join(infos, "\n"))
+	// `found = true` is a csinc from wzr, no constant built in the loop;
+	// `hits = hits + u32(1)` under a Bool is a cinc after `cmp wB, #0`.
+	mnemonics := func(name string) map[string]int {
+		counts := map[string]int{}
+		for _, ins := range loopBody(units[name]) {
+			counts[ins.Mnemonic]++
+		}
+		return counts
 	}
-	if _, code, abnormal := buildAndRunFrom(t, "native_select_c", New().WithSource("select.oak", nativeSelectProgram)); abnormal || code != 191 {
-		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 191", code, abnormal)
+	if counts := mnemonics("count_hits"); counts["csinc"] != 1 || counts["movz"] != 0 {
+		t.Errorf("count_hits's flag must be one csinc with no constant in the loop, got %v", counts)
+	}
+	if counts := mnemonics("tally"); counts["cinc"] != 1 || counts["cbz"]+counts["cbnz"] != 0 {
+		t.Errorf("tally's conditional increment must be one cinc with no branch on the Bool, got %v", counts)
+	}
+	_, code, abnormal := buildAndRunFrom(t, "native_select", comp)
+	if abnormal || code != 193 {
+		t.Fatalf("native: exit = (%d, abnormal=%v), want 193\n%s", code, abnormal, strings.Join(infos, "\n"))
+	}
+	if _, code, abnormal := buildAndRunFrom(t, "native_select_c", New().WithSource("select.oak", nativeSelectProgram)); abnormal || code != 193 {
+		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 193", code, abnormal)
 	}
 }

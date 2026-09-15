@@ -111,3 +111,21 @@ func TestCheckSelectKeepsUpperBound(t *testing.T) {
 		t.Fatalf("hi selected from mid + 1 is not below the length, got %v", findings)
 	}
 }
+
+// The if-converted increment forms (nativegen/select.go): `csinc wD, wCur,
+// wzr, !cond` is `cond ? 1 : cur` and `cinc wD, wCur, cond` is `cond ? cur
+// + 1 : cur`; the verifier reads both as the Oak conditional.
+func TestVerifyConditionalIncrements(t *testing.T) {
+	set := verifyCase(t, "flag_set: (v: u32, f: u32) -> u32", "{\n  v == u32(0) ? { u32(1) } | { f }\n}", "  bind w0 = v\n  bind w1 = f\n  cmp w0, #0\n  csinc w0, w1, wzr, ne\n  ret")
+	if set.Kind != VerdictProven {
+		t.Fatalf("csinc from wzr must be proven as the conditional one, got %s: %s", set.Kind, set.Message)
+	}
+	wrong := verifyCase(t, "flag_set: (v: u32, f: u32) -> u32", "{\n  v == u32(0) ? { u32(1) } | { f }\n}", "  bind w0 = v\n  bind w1 = f\n  cmp w0, #0\n  csinc w0, w1, wzr, eq\n  ret")
+	if wrong.Kind == VerdictProven {
+		t.Fatal("the inverted condition must be refuted")
+	}
+	inc := verifyCase(t, "count: (v: u32, n: u32) -> u32", "{\n  v == u32(0) ? { n + u32(1) } | { n }\n}", "  bind w0 = v\n  bind w1 = n\n  cmp w0, #0\n  cinc w0, w1, eq\n  ret")
+	if inc.Kind != VerdictProven {
+		t.Fatalf("cinc must be proven as the conditional increment, got %s: %s", inc.Kind, inc.Message)
+	}
+}
