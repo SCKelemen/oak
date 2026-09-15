@@ -763,15 +763,15 @@ The existing native optimizations should be migrated into the candidate interfac
 - guard elimination from proven extents;
 - byte-assembly to wide-load fusion;
 - pair loads;
-- vector block loads — **next, claimed 2026-09-16 by the oak session at
-  ~/oakmcu/oak**: the vectorized reduction's four `ldr q` each pay an
-  index add and an address add, where one element address and the
-  immediate offsets `#16`, `#32`, `#48` would serve. The seam checker
-  already admits them (a slack guard of sixteen `u32` elements marks a
-  64-byte region, and `regionAdmits` takes every offset inside it) and
-  the verifier already models them (`loadVector`'s element-address form
-  with a non-zero offset), so this is a machine peephole only — about
-  seven of the loop's seventeen instructions;
+- vector block loads — **landed 2026-09-16** (`vector-blocks`,
+  `nativegen/vector_blocks.go`): the vector loads of one basic block read
+  off a single element address at immediate offsets, so the vectorized
+  reduction's `u32` main loop is eleven instructions for sixteen elements
+  where it was eighteen. The checker and the verifier already admitted
+  the form, so it is a machine peephole only. Measured neutral on a
+  bandwidth-bound 4 MiB stream and about eight percent on an L1-resident
+  array — the instruction count is what it buys, and a core with less
+  spare issue than an M4 is where that would tell;
 - scalar-array element promotion;
 - constant-offset addressing forms.
 

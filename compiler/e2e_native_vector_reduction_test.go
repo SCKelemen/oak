@@ -128,6 +128,21 @@ func TestE2ENativeVectorReduction(t *testing.T) {
 		if vecLoads != 4 || vecAdds != 4 || scalarLoads != 0 {
 			t.Errorf("%s's main loop must be four vector loads and four lane-wise adds, got %d, %d, and %d scalar loads:\n%s", shape.unit, vecLoads, vecAdds, scalarLoads, nativegen.Describe(units[shape.unit]))
 		}
+		// The four loads read one element address at immediate offsets
+		// (§9 "Vector block loads"): one address instruction in the loop,
+		// not one per load.
+		addresses := 0
+		for _, ins := range mainLoopOf(units[shape.unit]) {
+			if ins.Mnemonic != "add" || len(ins.Operands) != 3 {
+				continue
+			}
+			if _, isExt := ins.Operands[2].(asm.Extended); isExt {
+				addresses++
+			}
+		}
+		if addresses != 1 {
+			t.Errorf("%s's main loop must form one element address for its four loads, got %d:\n%s", shape.unit, addresses, nativegen.Describe(units[shape.unit]))
+		}
 	}
 	// The float accumulator is never rewritten: one load, one fadd.
 	for _, ins := range mainLoopOf(units["fsum"]) {
