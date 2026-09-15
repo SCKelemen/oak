@@ -67,3 +67,92 @@ func TestImpliesEqualByArmsAndBudget(t *testing.T) {
 		t.Fatalf("an arm that carries the sum's carry past 32 bits differs: holds=%v decided=%v", holds, decided)
 	}
 }
+
+// The negation of a comparison canonicalizes to the opposite comparison:
+// the Oak body's `here < found` and the machine's `not (here >= found)`
+// (a branch taken the other way) are one term, and notTerm spells a
+// comparison's negation the same way; a double negation is the
+// comparison itself.
+func TestCanonicalNegatedComparison(t *testing.T) {
+	here, found := paramTerm("here", 32), paramTerm("found", 32)
+	lo := truncate(cmpTerm("lo", here, found), 1)
+	hs := truncate(cmpTerm("hs", here, found), 1)
+	if got := canonical(binaryTerm("xor", hs, constTerm(1, 1))); !equalTerms(got, lo) {
+		t.Fatalf("not (here hs found) canonicalizes to %s, want %s", got, lo)
+	}
+	if got := canonical(binaryTerm("xor", constTerm(1, 1), hs)); !equalTerms(got, lo) {
+		t.Fatalf("xor with the constant first: %s, want %s", got, lo)
+	}
+	if got := canonical(notTerm(notTerm(cmpTerm("eq", here, found)))); !equalTerms(got, truncate(cmpTerm("eq", here, found), 1)) {
+		t.Fatalf("double negation: %s", got)
+	}
+	if got := notTerm(cmpTerm("hs", here, found)); !equalTerms(got, lo) {
+		t.Fatalf("notTerm of a comparison: %s, want %s", got, lo)
+	}
+	// A one-bit parameter has no opposite comparison: its negation stays.
+	if got := canonical(notTerm(paramTerm("p", 1))); got.kind != termBinary || got.op != "xor" {
+		t.Fatalf("negated parameter: %s", got)
+	}
+}
+
+// The boolean algebra a machine's branches leave behind folds: a path
+// condition joined with its complement is a tautology or a
+// contradiction, a conditional with one value on both arms is that
+// value, and the conjunct that was a tautology drops out.
+func TestCanonicalComplementaryConditions(t *testing.T) {
+	x, n := paramTerm("x", 32), paramTerm("n", 32)
+	eq, ne := truncate(cmpTerm("eq", x, n), 1), truncate(cmpTerm("ne", x, n), 1)
+	if got := canonical(binaryTerm("or", ne, eq)); got.kind != termConst || got.value != 1 {
+		t.Fatalf("x != n or x == n: %s", got)
+	}
+	if got := canonical(binaryTerm("and", eq, binaryTerm("xor", eq, constTerm(1, 1)))); got.kind != termConst || got.value != 0 {
+		t.Fatalf("c and not c: %s", got)
+	}
+	if got := canonical(binaryTerm("and", eq, binaryTerm("or", ne, eq))); !equalTerms(got, eq) {
+		t.Fatalf("a conjunct with a tautology: %s, want %s", got, eq)
+	}
+	if got := canonical(iteTerm(eq, binaryTerm("add", x, constTerm(1, 32)), binaryTerm("add", x, constTerm(1, 32)))); !equalTerms(got, binaryTerm("add", x, constTerm(1, 32))) {
+		t.Fatalf("one value on both arms: %s", got)
+	}
+	if got := canonical(binaryTerm("and", eq, constTerm(0, 1))); got.kind != termConst || got.value != 0 {
+		t.Fatalf("and with zero: %s", got)
+	}
+}
+
+// A 1/0 value's spellings meet: the machine's `cset` of a condition is
+// the condition, its zero test is the value (or its negation), and a
+// truncation through a mask covering the width is a truncation.
+func TestCanonicalBooleanValued(t *testing.T) {
+	x, y := paramTerm("x", 32), paramTerm("y", 32)
+	c := cmpTerm("ne", x, y) // width 32, a 1/0 value
+	cset := iteTerm(c, constTerm(1, 32), constTerm(0, 32))
+	if got := canonical(cset); !equalTerms(got, c) {
+		t.Fatalf("cset: %s, want %s", got, c)
+	}
+	if got := canonical(cmpTerm("ne", cset, constTerm(0, 32))); !equalTerms(got, c) {
+		t.Fatalf("cset != 0: %s, want %s", got, c)
+	}
+	if got := canonical(cmpTerm("eq", binaryTerm("or", c, cmpTerm("ne", y, x)), constTerm(0, 32))); got.kind != termBinary || got.op != "xor" {
+		t.Fatalf("(c or d) == 0: %s", got)
+	}
+	// A sum is not 1/0: its zero test stays a comparison.
+	if got := canonical(cmpTerm("ne", binaryTerm("add", x, y), constTerm(0, 32))); got.kind != termCmp {
+		t.Fatalf("sum != 0: %s", got)
+	}
+	p, q := paramTerm("p", 64), paramTerm("q", 64)
+	if got := truncate(binaryTerm("and", binaryTerm("add", p, q), constTerm(0xFFFFFFFF, 64)), 32); !equalTerms(got, truncate(binaryTerm("add", p, q), 32)) {
+		t.Fatalf("masked then truncated: %s", got)
+	}
+	// Over a parameter the mask stays: its extension back would forget it.
+	if got := truncate(binaryTerm("and", p, constTerm(0xFFFFFFFF, 64)), 32); equalTerms(got, paramTerm("p", 32)) || zeroExtend(got, 64).eval(map[string]uint64{"p": 1 << 40}) != 0 {
+		t.Fatalf("a masked parameter truncated: %s", got)
+	}
+	// The machine's any (a reduction, cset, cmp #0) and the Oak side's
+	// (an or of lane tests) are equal reductions after the cset rule.
+	l0, l1 := paramTerm("l0", 8), paramTerm("l1", 8)
+	oak := binaryTerm("or", truncate(cmpTerm("ne", l0, constTerm(0, 8)), 1), truncate(cmpTerm("ne", l1, constTerm(0, 8)), 1))
+	machine := cmpTerm("ne", iteTerm(binaryTerm("or", zeroExtend(cmpTerm("ne", l1, constTerm(0, 8)), 32), zeroExtend(cmpTerm("ne", l0, constTerm(0, 8)), 32)), constTerm(1, 32), constTerm(0, 32)), constTerm(0, 32))
+	if !equalReductions(oak, truncate(machine, 1)) || !equalReductions(oak, truncate(canonical(machine), 1)) {
+		t.Fatalf("any spelled both ways: %s vs %s", oak, canonical(machine))
+	}
+}

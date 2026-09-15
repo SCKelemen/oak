@@ -1212,12 +1212,35 @@ refuter then refuted two equal terms, which the pushed masks first made
 visible (`TestElementParameterKeepsItsDeclaredWidth`). With these
 `step_count` is **proven** — thirteen nested loops coupled inductively:
 the group loop and, four times, `verify_count`'s two loops and
-`literal_at`'s — in under eight seconds. `step_first` stays evidence:
-its `here < found ? here : found` over four conditional results is a
-select under a case split whose sides run past a million nodes. `count`
-(its step loop's callee loops nest differently on the two sides) and
-`find_from` (a loop reached on two paths with different carried
-variables) stay trusted.
+`literal_at`'s — in under eight seconds. `step_first` followed once the
+**1/0 values** the two sides compute were one spelling. Its
+`here < found ? here | found` over four conditional results was a
+select under a case split whose sides ran past a million nodes, and the
+mismatch was in the conditions, not the arms: the Oak body's `here <
+found` against the machine's `not (here ≥ found)` from a branch taken
+the other way; its `any(cb)` (an or of lane tests) against the
+machine's reduction, `cset`, and `cmp #0`; its `here == n` against a
+join's `here == n ∧ (here ≠ n ∨ here == n)`, the path condition and
+its complement the two merged paths carried. The canonical spelling now
+reads **the negation of a comparison as the opposite comparison**
+(`xor1(x ≥ y, 1)` is `x < y`, and `notTerm` spells it so), **a
+condition joined with its complement** as the tautology or
+contradiction it is (`complementary`), a conditional with **one value
+on both arms** as that value, and the machine's `cset` of a 1/0
+condition (`c ? 1 : 0`) as the condition, its zero test (`v ≠ 0`, `v
+== 0`) as the value or its negation — a **1/0 value** being a
+comparison, a one-bit term, or a bitwise combination or conditional of
+such (`booleanValued`); `laneTests` reads `(c ? 1 : 0) ≠ 0` as `c` so
+the reductions meet as before; and a truncation through a mask that
+covers the width is the truncation (`(x and 0xFFFFFFFF)` at 32 bits is
+`x` at 32 bits) — except over a parameter, since a parameter at a width
+extends back as the parameter (the Oak lowering's convention, its own
+masks beside it: `u32(a)` for a `u8` parameter is `(a and 255)`), so
+stripping the mask there would forget it (the twelve-diamond join test
+refuted the first attempt). With these `step_first` is **proven**,
+thirteen loops coupled like `step_count`'s. `count` (its step loop's callee loops nest differently
+on the two sides) and `find_from` (a loop reached on two paths with
+different carried variables) stay trusted.
 
 **The floating-point forms (2026-09-14).** `spec/sail/arm_primitives.sail`
 gains Arm's execute bodies for `fadd`/`faddp`, `fsub`, `fmul`, `fmla`/
@@ -5471,7 +5494,11 @@ four bodies of 128 and 512 trips proved unrolled where their coupling
 does not yet (`intern_long`, `positional_arms_ahead`).
 `TestVerifyLongCountedLoopInducted`: eighty trips are inducted and
 proven, a wrong store is refuted on a witness input long enough, and
-forty trips still unroll. Prover build (per body, the optimizer's
+forty trips still unroll. The theorem decider takes neither rule: with
+no machine side to couple with, a summarized loop is a law left open
+(the lattice laws' loops over loops, `dnf_product_denotes`, went "Go
+open, Oak decided" under the loop-over-loop rule), so it unrolls every
+counted loop. Prover build (per body, the optimizer's
 candidates aside): proven 565 → 577, evidence 141 → 147, trusted
 266 → 253, no disagreement.
 

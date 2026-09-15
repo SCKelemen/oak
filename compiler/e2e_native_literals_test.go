@@ -60,13 +60,15 @@ func TestE2ENativeLiteralsVerdicts(t *testing.T) {
 	// The scanner's step functions: their group loop calls classify four
 	// times and verify_* under four conditions; the loop bodies' forks
 	// merge at their joins and the calls' loops are summarized, so the
-	// loops couple and the witnesses agree (a proof waits on the classify
-	// results spelled alike on both sides).
-	if !strings.Contains(joined, "asm unit step_count_neon_abi: proven equal to its Oak body at the bit level — 13 nested data-dependent loops coupled inductively") {
-		t.Errorf("step_count must be proven by coupling its thirteen loops; diagnostics:\n%s", joined)
-	}
-	if !strings.Contains(joined, "asm unit step_first_neon_abi: proven") && !strings.Contains(joined, "asm unit step_first_neon_abi: agrees with its Oak body on") {
-		t.Errorf("step_first must be proven or witnessed; diagnostics:\n%s", joined)
+	// thirteen loops couple. step_first's `here == n && any(cb)` chain
+	// and `here < found ? here | found` meet the machine's negated
+	// comparisons, csets, and zero tests through the canonical rules for
+	// 1/0 values (docs/spec/94-assembler.md §8, "The scanner's step
+	// functions").
+	for _, fn := range []string{"step_count_neon_abi", "step_first_neon_abi"} {
+		if !strings.Contains(joined, "asm unit "+fn+": proven equal to its Oak body at the bit level — 13 nested data-dependent loops coupled inductively") {
+			t.Errorf("%s must be proven by coupling its thirteen loops; diagnostics:\n%s", fn, joined)
+		}
 	}
 	if strings.Contains(joined, "left to the C backend") {
 		t.Errorf("every function of the module must be taken by the native backend; diagnostics:\n%s", joined)

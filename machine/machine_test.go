@@ -758,3 +758,124 @@ func TestSimplifyKeepsUnsafeCopies(t *testing.T) {
 		t.Fatalf("propagated a narrowing copy:\n%s", text(out.Items))
 	}
 }
+
+func TestHoistInvariants(t *testing.T) {
+	// `movz w9, #3; mul w10, w20, w9` is the same every trip: both move
+	// to the preheader. The counter's increment, the compare, and a csel
+	// on the loop's flags stay.
+	f := fn(
+		ins("mov", w(20), w(1)),
+		ins("mov", w(21), w(31)),
+		ins("mov", w(22), w(31)),
+		label("loop_1"),
+		ins("cmp", w(21), w(0)),
+		bcond("hs", "done_2"),
+		ins("movz", w(9), imm(3)),
+		ins("mul", w(10), w(20), w(9)),
+		ins("add", w(22), w(22), w(10)),
+		ins("csel", w(11), w(22), w(20), asm.Condition{Code: "lo"}),
+		ins("add", w(22), w(22), w(11)),
+		ins("add", w(21), w(21), imm(1)),
+		ins("b", sym("loop_1")),
+		label("done_2"),
+		ins("mov", w(0), w(22)),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{x(9), x(10), x(11), x(20), x(21), x(22)}
+	lifted, err := Lift(cloneFunction(f))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hoisted, err := lifted.HoistInvariants()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := text(lifted.Items())
+	if hoisted != 2 {
+		t.Fatalf("hoisted %d:\n%s", hoisted, got)
+	}
+	loopAt := strings.Index(got, "loop_1:")
+	if strings.Index(got, "movz w9") > loopAt || strings.Index(got, "mul w10") > loopAt || strings.Index(got, "csel") < loopAt || strings.Index(got, "add w21") < loopAt {
+		t.Fatalf("placement:\n%s", got)
+	}
+}
+
+func TestHoistRefusals(t *testing.T) {
+	// A frame load stays when the loop stores to the frame; an invariant
+	// whose register is busy inside the loop stays.
+	f := framed(
+		ins("sub", sp(), sp(), imm(64)),
+		ins("mov", w(20), w(1)),
+		ins("mov", w(21), w(31)),
+		ins("str", w(20), mem(sp(), 16)),
+		label("loop_1"),
+		ins("cmp", w(21), w(0)),
+		bcond("hs", "done_2"),
+		ins("ldr", w(9), mem(sp(), 16)),
+		ins("add", w(9), w(9), w(21)),
+		ins("str", w(9), mem(sp(), 16)),
+		ins("movz", w(10), imm(7)),
+		ins("add", w(21), w(21), w(10)),
+		ins("mul", w(10), w(21), w(21)),
+		ins("add", w(21), w(21), w(10)),
+		ins("b", sym("loop_1")),
+		label("done_2"),
+		ins("ldr", w(0), mem(sp(), 16)),
+		ins("add", sp(), sp(), imm(64)),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{x(9), x(10), x(20), x(21)}
+	lifted, err := Lift(cloneFunction(f))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hoisted, err := lifted.HoistInvariants()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := text(lifted.Items())
+	loopAt := strings.Index(got, "loop_1:")
+	if hoisted != 0 || strings.Index(got, "ldr w9") < loopAt || strings.Index(got, "movz w10") < loopAt {
+		t.Fatalf("hoisted %d:\n%s", hoisted, got)
+	}
+}
+
+func TestHoistNestedLoops(t *testing.T) {
+	// An invariant of the inner loop climbs to the inner preheader, then,
+	// being invariant in the outer loop too, out of both.
+	f := fn(
+		ins("mov", w(20), w(1)),
+		ins("mov", w(21), w(31)),
+		ins("mov", w(23), w(31)),
+		label("outer_1"),
+		ins("cmp", w(21), w(0)),
+		bcond("hs", "done_4"),
+		ins("mov", w(22), w(31)),
+		label("inner_2"),
+		ins("cmp", w(22), w(0)),
+		bcond("hs", "next_3"),
+		ins("lsl", w(9), w(20), imm(2)),
+		ins("add", w(23), w(23), w(9)),
+		ins("add", w(22), w(22), imm(1)),
+		ins("b", sym("inner_2")),
+		label("next_3"),
+		ins("add", w(21), w(21), imm(1)),
+		ins("b", sym("outer_1")),
+		label("done_4"),
+		ins("mov", w(0), w(23)),
+		ins("ret"),
+	)
+	f.Clobbers = []asm.Register{x(9), x(20), x(21), x(22), x(23)}
+	lifted, err := Lift(cloneFunction(f))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hoisted, err := lifted.HoistInvariants()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := text(lifted.Items())
+	if hoisted != 2 || strings.Index(got, "lsl w9") > strings.Index(got, "outer_1:") {
+		t.Fatalf("hoisted %d:\n%s", hoisted, got)
+	}
+}

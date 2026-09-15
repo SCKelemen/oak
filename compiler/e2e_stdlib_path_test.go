@@ -222,8 +222,12 @@ main: (): i32 {
 }
 
 func TestE2EStdlibPathQualified(t *testing.T) {
+	// A package names the byte comparison through its own package: the flat
+	// `bytes_equal` is the `import(std)` prelude's spelling, not a package's
+	// (docs/spec/75-standard-library.md section 5).
 	src := `package main
 import("path")
+import("bytes")
 main: (): i32 {
   out: [16]u8
   n: u32 = u32(0)
@@ -232,7 +236,7 @@ main: (): i32 {
     n = path.path_written(path.path_clean(dst, text_literal("a//b/../c/")))
   }
   whole: []u8 = view(&out)
-  assert(n == u32(3) && bytes_equal(whole[u32(0):n], text_literal("a/c")))
+  assert(n == u32(3) && bytes.equal(whole[u32(0):n], text_literal("a/c")))
   ext: path.PathRange = path.path_ext(text_literal("x/y.oak"))
   assert(ext.start == u32(3) && ext.end == u32(7))
   path.path_matched(path.path_match_glob(text_literal("**/*.oak"), text_literal("x/y.oak"))) ? { 42 } | { 0 }

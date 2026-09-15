@@ -25,23 +25,37 @@ type LICMReport struct {
 // effects, potentially trapping or unknown semantics, or facts beyond the
 // result-local checked type fact, and it never mutates the caller's CFG.
 func HoistLoopInvariants(cfg CFG) (CFG, LICMReport, error) {
-	if err := validateAnalysisCFG(cfg); err != nil {
-		return CFG{}, LICMReport{}, err
-	}
 	analysis, err := AnalyzeLoops(cfg)
 	if err != nil {
 		return CFG{}, LICMReport{}, err
 	}
+	return HoistLoopInvariantsWithAnalysis(cfg, analysis)
+}
+
+// HoistLoopInvariantsWithAnalysis is the artifact-oriented LICM entry point.
+// It consumes loop and dominance facts previously produced for this exact CFG,
+// rejecting stale or mutated evidence instead of silently recomputing it.
+func HoistLoopInvariantsWithAnalysis(cfg CFG, analysis LoopAnalysis) (CFG, LICMReport, error) {
+	if err := validateAnalysisCFG(cfg); err != nil {
+		return CFG{}, LICMReport{}, err
+	}
+	if analysis.inputFingerprint == "" || analysis.inputFingerprint != fingerprintCFG(cfg) {
+		return CFG{}, LICMReport{}, fmt.Errorf("optir: LICM loop analysis belongs to a different CFG")
+	}
+	if analysis.integrity == "" || analysis.integrity != fingerprintLoopAnalysis(analysis) {
+		return CFG{}, LICMReport{}, fmt.Errorf("optir: LICM loop analysis was mutated")
+	}
 	result := cloneCFG(cfg)
 	blocks := make(map[BlockID]*Block, len(result.Blocks))
-	reachable := make(map[BlockID]bool, len(result.Blocks))
 	for index := range result.Blocks {
 		block := &result.Blocks[index]
 		blocks[block.ID] = block
-		reachable[block.ID] = true
 	}
-	definitions, predecessors := transformGraphInfo(result)
-	dominators := computeDominators(result.Entry, reachable, predecessors)
+	definitions, _ := transformGraphInfo(result)
+	dominators, err := dominatorSetsFromLoopAnalysis(result, analysis)
+	if err != nil {
+		return CFG{}, LICMReport{}, err
+	}
 	definitionBlocks := make(map[ValueID]BlockID, len(definitions))
 	for value, definition := range definitions {
 		definitionBlocks[value] = definition.block
@@ -86,6 +100,52 @@ func HoistLoopInvariants(cfg CFG) (CFG, LICMReport, error) {
 		return CFG{}, LICMReport{}, fmt.Errorf("optir: LICM produced invalid CFG: %w", err)
 	}
 	return result, report, nil
+}
+
+func dominatorSetsFromLoopAnalysis(cfg CFG, analysis LoopAnalysis) (map[BlockID]map[BlockID]bool, error) {
+	blocks := make(map[BlockID]bool, len(cfg.Blocks))
+	for _, block := range cfg.Blocks {
+		blocks[block.ID] = true
+	}
+	records := make(map[BlockID]Dominator, len(analysis.Dominators))
+	for _, record := range analysis.Dominators {
+		if !blocks[record.Block] {
+			return nil, fmt.Errorf("optir: LICM loop analysis names missing dominator block %d", record.Block)
+		}
+		if _, exists := records[record.Block]; exists {
+			return nil, fmt.Errorf("optir: LICM loop analysis repeats dominator block %d", record.Block)
+		}
+		records[record.Block] = record
+	}
+	if len(records) != len(blocks) {
+		return nil, fmt.Errorf("optir: LICM loop analysis has %d dominators for %d blocks", len(records), len(blocks))
+	}
+
+	sets := make(map[BlockID]map[BlockID]bool, len(records))
+	for block, record := range records {
+		set := map[BlockID]bool{block: true}
+		seen := map[BlockID]bool{block: true}
+		current := record
+		depth := 0
+		for current.HasImmediate {
+			parent, exists := records[current.Immediate]
+			if !exists {
+				return nil, fmt.Errorf("optir: LICM dominator %d has missing parent %d", current.Block, current.Immediate)
+			}
+			if seen[parent.Block] {
+				return nil, fmt.Errorf("optir: LICM dominator chain for block %d contains a cycle", block)
+			}
+			seen[parent.Block] = true
+			set[parent.Block] = true
+			current = parent
+			depth++
+		}
+		if current.Block != cfg.Entry || depth != record.Depth {
+			return nil, fmt.Errorf("optir: LICM dominator chain for block %d is inconsistent", block)
+		}
+		sets[block] = set
+	}
+	return sets, nil
 }
 
 func canHoistLoopOperation(operation Operation, preheader BlockID, members map[BlockID]bool, definitions map[ValueID]BlockID, dominators map[BlockID]map[BlockID]bool) bool {
