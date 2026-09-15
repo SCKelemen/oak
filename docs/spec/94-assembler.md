@@ -987,6 +987,64 @@ entry to its kernel. `TestE2ENativeSimdKernelVerdicts` asserts both
 proofs; the trace (`OAK_VERIFY_TRACE`) prints each case split, the pruned
 sizes, and whether the sides became one term.
 
+**The literal scanner's kernel (2026-09-15).** `verify_first` of
+`stdlib/literals.oak` — a frame array of the candidate lanes read at the
+outer loop's index, an inner loop over the literals of a bucket calling
+`literal_at`, whose own loop compares bytes — was evidence: the coupling
+search exhausted its budget with the right pairing first in line. Five
+things, found in order by tracing where the diagrams went. **The proof's
+node budget is charged.** Each implication had been bounded by what the
+proof had left, but nothing spent it; every undecided obligation ran
+its full 2M nodes under four orders, and the search went on to refute
+the wrong pairings one diagram at a time. The largest diagram a decision
+built is now taken from the budget, so a search that keeps failing near
+the per-decision budget ends as evidence in a few tries. **Select slots
+interleave with the last block.** Under the grouped orders the element
+reads' variables sat past every parameter's, so `k < starts[j+1] −
+starts[j]` in the inner loop's exit premise had to remember `k` whole
+before it read either element: exponential. The first eight slots now
+interleave with the last block (the data parameters, under the
+control-first orders), and the comparison is linear again. **Selectors
+first.** In `l == 0 ? cand[0] : l == 1 ? cand[1] : … ≠ 0` — the frame
+array read — the index and the lanes are both control parameters to
+`controlParams`; a fifth order (`selectorParams`: what a condition reads
+directly, through nested conditions but never through an arm) interleaves
+the index's bits before the lanes' at every level, so the diagram narrows
+the arms as it reads and stays linear in the lanes, where reading the
+lanes first must remember which is which. **Widths narrowed under the
+premise.** A conjunct `p < 16` over a parameter leaves its bits from the
+fourth up zero wherever the premise holds; the decision reads `p` at four
+bits (`narrowByPremise`) — the implication is unchanged, and an adder over
+the index is copied sixteen times rather than once per value of a word.
+**Conditionals proven by their parts.** The inner loop's `found` after one
+iteration is `literal occurs here ? base + l : found` on both sides, the
+test spelled over the same inputs as the arm; a diagram of the whole
+repeats the test's diagram in every result bit — 250K nodes, thirty-two
+times over. `impliesEqualByArms` proves the conditions equal under the
+premise, then each pair of arms under the premise and the condition (or
+its negation): the parts cost the test once, and the arms are one term.
+The rule proves and never refutes — conditionals on different conditions
+may agree where their arms do — so a part that fails leaves the decision
+to the whole; a mask over a conditional is pushed into its arms first
+(`pushMask`), which is how a narrower side's zero-extension meets the
+wider side arm for arm. Last, a body's **invariant registers** — written
+but left at their header value after one iteration, a spill reloaded —
+are not loop-carried, and their symbols stand for the header value in
+every term of the body: this event's, and those of the loops and calls
+summarized inside it (`substituteAll`), where `loop2.r17` in the callee's
+byte comparison otherwise had no Oak counterpart. With these,
+`verify_first` is **proven** — three nested data-dependent loops coupled
+inductively (`l↔r17`, `found↔r16`, `j↔r14`, the inner `found↔r16`, and
+the callee's `k`, `same` as themselves) in three seconds — alongside
+`longest`; `TestE2ENativeLiteralsVerdicts` asserts both. Left to C in the
+same module: the functions with more than eight vector parameters
+(`classify` and its callers) and, as evidence or trusted, `groups_of`
+(budget), `build` (an expression statement in a loop body),
+`verify_count` (an inner loop summarized per path past the event budget).
+The trace (`OAK_VERIFY_TRACE`) now also prints, for an undecided
+implication, each order's node count and the stage it exceeded at, and
+under `OAK_VERIFY_DIAGNOSE`, walks the largest subterm's diagram sizes (`diagnoseBlast`), a diagram per subterm.
+
 **The floating-point forms (2026-09-14).** `spec/sail/arm_primitives.sail`
 gains Arm's execute bodies for `fadd`/`faddp`, `fsub`, `fmul`, `fmla`/
 `fmls`, `fmin`/`fmax` (the 1985 forms), `fminnm`/`fmaxnm` (2008),
@@ -1394,15 +1452,14 @@ on CRC-32C (`benchmarks/native/README.md`): fifty-six guarded `ldrb`s per
 1.1×. Byte elements only in this increment; the C backend's realization
 is unchanged.
 
-**Division by a constant power of two.** Unsigned `/` and `%` by a literal
-power of two lower to `lsr` and `and` with the mask, as the Oak-side
-lowering already spelled them (asm/verify.go), instead of a `udiv` behind
-a zero check: the quotient is then a term the verifier decides at the bit
-level rather than an uninterpreted operation, and the binary search's
-`(hi - lo) / u32(2)` leaves the loop's latency chain (`benchmarks/native/README.md`:
-`search` 1.8× to 0.9×, `page_probe` 1.9× to 1.2× against the C backend).
-Any other divisor keeps the check and the `udiv`; signed operands keep
-`sdiv`.
+**Division by a constant power of two** is the optimization system's
+first increment (§9.ac, strength reduction, `#459`): unsigned `/` and `%`
+by a literal power of two lower to `lsr` and `and`, as the Oak-side
+lowering already spelled them, so the quotient is decided at the bit level
+rather than left an uninterpreted `udiv`, and the binary search's
+`(hi - lo) / u32(2)` leaves the loop's latency chain
+(`benchmarks/native/README.md`: `search` 1.8× to 0.9×, `page_probe` 1.9×
+to 1.2× against the C backend, on a loaded host).
 
 The subset: parameters, locals, and results of the fixed-width integers
 and `Bool` (or a unit result); literals; wrapping `+ - * & | ^`; `/` and
@@ -3588,6 +3645,58 @@ compares canonical (sign-extended) values while the guard fact needs the
 zero-extended index, so its guards stay until the index representation
 changes; the C backend elides through `IndexProven` as before.
 
+*The fallback is per source line (2026-09-15).* A refused elision no
+longer costs the body every guard: the checker's finding names the line
+of the access it could not admit (`function:line:`), the compiler adds
+that line to the lane's `GuardLines` and lowers the body again with the
+guards of those lines kept, and repeats — at most eight rounds, a finding
+without a line or on a line already kept falling back to every guard as
+before — so the accesses the checker does admit stay elided. A binary
+search reads `probes[p]` under `while p < len(probes)` (admitted off the
+exit test) and `keys[mid]` under `mid < hi ≤ len(keys)` (proven by the
+decreasing-bound law, which the checker cannot read at the seam): the
+probe read is now unguarded and the key read keeps its guard, where
+before both were guarded (`compiler/e2e_native_guard_lines_test.go`;
+`bench_search` and `bench_page_probe` each lose one guard, their verdicts
+unchanged, `benchmarks/native/README.md`). The optimizer still decides
+nothing about safety: every unguarded access is one the checker admitted.
+
+**Condition selection (2026-09-15, AArch64 lane).** Four selections in
+the lowering of conditions and compares, each the mechanical layer's
+(`90-backend.md` §16 rule 2) and each gated by the verifier as every body
+is: a negation in condition position inverts the branch instead of
+materializing a Bool (`!found` was `mov; eor #1; cbz`, is `cbnz` on the
+variable's own register); a Bool variable homed in a register is tested
+where it lives, no copy; a small constant on a comparison's right — a
+literal, a folded conversion, a named constant — or in a match arm's
+literal pattern is the compare's immediate (`movz w10, #1; cmp w9, w10`
+is `cmp w9, #1`); and a bitwise `and`, `orr`, or `eor` with a constant
+inside the type's mask is not masked again (`and w9, w5, #7; and w6, w9,
+#255` is the first alone). On the kernels (`OAK_NATIVE_DUMP=1`):
+`bench_dispatch` 68 to 60 instructions (seven `movz` gone from its match
+chain), `bench_search` 57 to 54, `bench_page_probe` 93 to 90, the verdicts
+unchanged (`compiler/e2e_native_condition_test.go` asserts the shapes and
+the value against the C backend). A fifth, the same day: the second
+`cmp` of a conditional chain (`k == t ? … | k < t ? …`) repeated the
+first with no flag writer between them, but a label lay between and the
+checker's flags fact did not cross labels. The checker now carries flag
+validity through the same label fixpoint as its guard facts
+(`guardState.flags`: valid at a label when every predecessor arrives
+with flags a producer set), and the lowering reuses a compare at an else
+label whose every transfer is that compare's branch and which nothing
+falls through into (`Lane.ReuseFlags`; a refusal re-lowers without the
+reuse). `bench_search`'s inner loop reads `cmp x26, x6; b.ne else; …;
+else: b.hs else2`: 53 instructions from 54, `bench_page_probe` 89 from
+90, verdicts unchanged. Two more of the same kind: an unsigned value
+shifted right by a constant is not masked after the `lsr` (it stays
+inside its width), and a scalar match whose scrutinee is a variable in a
+register compares that register in every arm instead of a copy
+(`bench_dispatch` 58 from 60, still proven). The per-line fallback keys
+its kept lines by the line the emitted instructions carry — the
+statement's — which is the line a finding names; an access token on a
+later line of a multi-line statement had escaped the first version and
+sent the body to every guard.
+
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
 (`examples/stdlib_builder.oak`, some six hundred bodies) found the seam
@@ -4447,3 +4556,39 @@ Outside the model, as on the AArch64 lane: the index, scaled, half,
 remaining-count, and difference facts the write also forgets, which `mv`
 copies none of, and the frame-address and widened facts.
 
+### 9.ac Strength reduction of constant arithmetic (2026-09-15)
+
+The first increment of the optimization system (`90-backend.md` §16). On
+the AArch64 lane a multiplication, division, or remainder whose right
+operand is a constant lowers to the instruction the constant licenses:
+`x * 2^k` to `lsl #k` (signed or unsigned — a wrapping product is a
+shift in two's complement); unsigned `x / 2^k` to `lsr #k` and unsigned
+`x % 2^k` to `and #(2^k-1)` (`x / 1` to nothing, `x % 1` to zero); and a
+division or remainder by any other nonzero constant to `udiv`/`sdiv`
+(with `msub` for `%`) without the zero test, since a constant cannot be
+zero at run time. A signed division by a power of two keeps `sdiv`: the
+round-toward-zero bias is a later idiom. A variable divisor keeps its
+`cbz` to the trap and its division; a constant zero divisor keeps the
+test, which traps as the language says.
+
+The verifier is the gate. The Oak-side model already lowers an unsigned
+division or remainder by a constant power of two to `shr` and `and`
+(§8, `Oak.IntegerDivision`), a multiplication by a constant to a linear
+scaling, and any other division to the uninterpreted quotient with the
+zero divisor as a trap obligation — which a constant nonzero divisor
+discharges. So each reduced body proves equal to its Oak body by the
+same canonical forms as before, and the compiler reports it: `N constant
+operation(s) strength-reduced, proven`. Should the seam checker refuse a
+reduced body, or the verifier return less than proven for it, the
+compiler lowers the body again without the reduction and keeps the plain
+form when that one proves (`compiler/native_bodies.go`; the diagnostic
+names which). The RV64 lane is untouched: its division and shift
+emitters are its own, and `Lane.Strength` is set for AArch64 only.
+
+Read off `benchmarks/kernels` through `benchmarks/native/emit`: nine
+bodies of the package reduce and prove; `bench_search`'s inner loop, a
+`/ u32(2)` that lowered to `movz; cbz; udiv` on the path from the
+midpoint to its load, reads one `lsr #1`, and `bench_page_probe` loses
+its three `udiv`, two `mul`, and three zero tests. The timing rows wait
+for a quiet host (`benchmarks/native/README.md`). The end-to-end test is
+`compiler/e2e_native_strength_test.go`.

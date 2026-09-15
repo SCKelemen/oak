@@ -95,6 +95,60 @@ noise at about twenty percent. Raw samples:
 | `dispatch` | 10.82 | 9.03 | 0.83 | proven |
 | `tiled` | 0.135 | 0.375 (at 30ca36eb) | 2.8 | witnessed; refuted at aade7acd by a verifier false alarm since fixed upstream (see below) |
 
+**Guard elision falls back per source line (2026-09-15,
+`docs/spec/94-assembler.md` §9 "Check elision").** `bench_search` and
+`bench_page_probe` had every element guard, because one access in each
+— `keys[mid]` under the decreasing bound, the fence key under the
+quotient bound — is proven by a law the seam checker cannot read, and
+the refusal re-lowered the whole body guarded. The compiler now keeps
+the guards of the refused line only: `bench_search` reads `probes[p]`
+unguarded (one guard, two instructions, out of its outer loop; the
+key read keeps its `cmp; b.hs`), `bench_page_probe` likewise loses the
+guard of its probe read and keeps lines 76 and 85. Structural counts
+from `OAK_NATIVE_DUMP=1` at 5004065a, whole bodies: `bench_search` 57
+instructions and one guard to the trap (from 61 and three before this
+and the strength reduction), `bench_page_probe` 93 and two (from 102
+and six). The verdicts are unchanged (`bench_search` witnessed, the
+loop's `hits` coupling; `bench_page_probe` trusted, the path budget), so
+the rows stand; timing on a quiet host with the rerun of the strength
+reduction below.
+
+**Condition selection (2026-09-15, `docs/spec/94-assembler.md` §9
+"Condition selection").** Negations invert their branch, Bool homes are
+tested in place, small constants are compare immediates in comparisons
+and match arms, and an in-range bitwise constant is not re-masked.
+Structural counts at 5004065a with the per-line fallback above already
+in: `bench_dispatch` 68 → 60 instructions (its seven-arm match chain
+lost every `movz`), `bench_search` 57 → 54 (`!found` is one `cbnz`, and
+the inner loop is eleven instructions from the exit test to the key
+load), `bench_page_probe` 93 → 90; `crc32c`, `blake3`, `sum`, `dot`
+unchanged. With the compare of a conditional chain reused at its else
+label (the checker carrying flags across the label): `bench_search` 53,
+`bench_page_probe` 89; with no mask after an unsigned right shift and a
+match scrutinee compared from its own register, `bench_dispatch` 58.
+Verdicts unchanged (`dispatch` proven, `search`
+witnessed, `page_probe` trusted). Timing deferred to the quiet-host rerun.
+
+**Strength reduction of constant arithmetic (2026-09-15,
+`docs/spec/94-assembler.md` §9.ac).** The `search` and `page_probe` rows
+were attributed below to frame traffic; the lowered bodies say otherwise —
+neither kernel calls, and every local sits in a register. Their inner
+loops paid for arithmetic: `(hi - lo) / u32(2)` lowered as `movz w10, #2;
+cbz w10, trap; udiv w9, w9, w10` on the mid-to-load critical path, and
+`mid * u32(512)` as `movz; mul`. With the first increment of the
+optimization system the same loops read `lsr w9, w9, #1` and `lsl #9`:
+`bench_search`'s loop is three instructions shorter and free of the
+multi-cycle divide, `bench_page_probe` goes from three `udiv`, two `mul`,
+and six `cbz` to three `lsr`, two `lsl`, and three `cbz`, and nine bodies
+of the kernel package report `constant operation(s) strength-reduced,
+proven` with no fallback. The timing rows are not updated here: the
+measurement run on 2026-09-15 found the host at a load average above 200
+from other suites, and two byte-identical `sum` bodies timed two-fold
+apart across the three runners, so no ratio from it is a result. The
+protocol to rerun on a quiet host: the C runner, the native runner from
+the previous revision, and the native runner from this one, alternated
+over five rounds of five samples at 1 MiB, checksums equal on every row.
+
 What the rows say, in the order they matter:
 
 - **A dispatching function lowered natively lost its hardware unit** (fixed
@@ -139,12 +193,14 @@ What the rows say, in the order they matter:
   `search` and `page_probe` are compare and branch chains over loads the
   predictor cannot help; the native code was 1.8–1.9× behind. The inner
   loop's `mid = lo + (hi - lo) / u32(2)` lowered to a `udiv` behind a zero
-  check on the loop's latency chain; the backend now lowers unsigned
-  division and remainder by a constant power of two to `lsr`/`and`
-  (`94-assembler.md` §9), and the same run measured `search` at 0.89× and
-  `page_probe` at 1.21× (on a host at load average 300, so the ratios are
-  the claim, not the times). What remains in `page_probe` is the guard on
-  the fence-key and in-page loads the checker did not admit elided. The
+  check on the loop's latency chain; the strength reduction above
+  (`94-assembler.md` §9.ac) lowers it to `lsr`, and a run with that
+  lowering measured `search` at 0.89× and `page_probe` at 1.21× (on a host
+  at load average 300, alternating the two runners; the ratios are the
+  claim, not the times, and the quiet-host protocol above stands). What
+  remains in `page_probe` is the guard on the fence-key and in-page loads
+  the checker did not admit elided (`keys[mid * u32(512)]`, a scaled
+  index, and `page[m]` inside a `subslice`). The
   bytecode `dispatch` kernel measured faster natively (0.83×), a
   difference near the noise band of this host that was not investigated.
 - **The hash kernels' wrappers are trusted, not proven**, because every

@@ -526,6 +526,141 @@ the same step relation under every interpretation of guards and effects
 only is a reported line, and an empty report means the line sets agree
 (`report_complete`, `empty_report_agrees`).
 
+## 4b. The Tamarin projection
+
+```text
+oak protocol -tamarin Name.spthy [-check [-tamarin-binary tamarin-prover]] file.oak
+```
+
+A third reading of the declaration, beside the model-checker module (§4)
+and `oak prove` (`125-verification.md` §2a): the machine as a multiset
+rewriting theory in Tamarin's input language, one rule per transition
+line, with the invariant theorems as lemmas. It is a **state-machine
+sanity export** — the same closed machine under a symbolic prover's
+every-line reading — not a security reading; what a security reading
+needs is listed at the end and in §7. This section specifies the
+projection; it is not implemented (STATUS: S only).
+
+**The state.** One linear fact `St(state, data…)` holds the control state
+as a public constant (`'Running'`) and the data fields in declaration
+order. Linear facts are consumed and re-produced, which is exactly a
+state that moves; the initial rule produces `St('Initial', init…)` from
+nothing and marks itself with an `Init()` action so a lemma can
+require it once.
+
+**A line.** `name(p): From -> To when g then { e }` is one rule:
+
+```text
+rule name_From_To:
+    [ St('From', f1, …, fn), In(p) ]
+  --[ Step_name(p), Guard(g') ]->
+    [ St('To', f1', …, fn') ]
+```
+
+`In(p)` reads the payload from the public channel, as the model-checker
+module lets the environment choose it (§4). The guard becomes a
+restriction `Guard(x) ==> x = 'true'` over the action `Guard(g')`, where
+`g'` is the guard rewritten over the fact's arguments; the effects give
+the primed arguments, a field the line does not store carried through
+unchanged. A line without a payload has no `In`; without a guard, no
+`Guard` action. Two lines with the same name and source are two rules
+(`tick_Running_Running`, `tick_Running_Yielded`): Tamarin explores every
+enabled rule, so the projection is the every-line reading TLC takes, and
+the §1 exclusivity rows say where that differs from the code's first-line
+reading.
+
+**Data and payload types.** `Bool` is the constants `'true'` and
+`'false'`; a payload-free sum type is its variant names as constants; a
+fixed-width integer is a natural of the `natural-numbers` builtin — `+`,
+`%1`, and the order are available, subtraction and the fixed width are
+not. Every arithmetic guard and effect over widths is therefore an
+**abstraction whose direction is stated in the file's header comment**:
+the naturals reading admits every trace the width reading admits and
+more (a counter that would wrap keeps counting), so a lemma verified
+there holds here for the width reading only when no field reaches its
+width — `oak prove` decides the width reading exactly, and a row it
+refutes at the width (`paid__step` at `coins: 255`) is a difference the
+projection cannot see. Subtraction `a - b` under a guard `a >= b` is the
+natural `a` written as `b %+ d` in the premise with `d` fresh-bound by
+the guard; without such a guard the line is not projected and the file
+says why. `/`, `%`, bit operations, and index bounds are not projected: a
+line using them leaves a comment in its place, and the file counts them
+in its header. `[N]Bool` fields and the quantifier forms over them are
+unrolled to N arguments, as §4 unrolls them.
+
+**Lemmas.** For every control state, an `exists-trace` lemma says the
+state is reachable (the sanity check that the rules are not vacuous):
+
+```text
+lemma reach_Yielded: exists-trace "Ex d1 … dn #i. State('Yielded', d1, …, dn) @ i"
+```
+
+over an action `State(s, d…)` every rule emits with its produced fact.
+Every invariant theorem of the declaration's file (§4: a Bool function of
+`(state, data)` in the guard subset) is an `all-traces` lemma over the
+same action:
+
+```text
+lemma budget_bounded: all-traces "All s b p #i. State(s, b, p) @ i ==> (b = '0' | b = '1' | b = '2')"
+```
+
+with the predicate rewritten as the guards are; a theorem outside the
+subset is omitted and named in the header. The `eventually` entries and
+`fair` are out of scope — Tamarin is a trace-safety tool — and are listed
+as not projected.
+
+**`-check`.** With `-check`, the command runs `tamarin-prover --prove
+Name.spthy` (the binary on PATH or named by `-tamarin-binary`), reads the
+summary of the lemmas back by name — `verified (N steps)`,
+`falsified - found trace (N steps)`, or a timeout — and prints one row per
+lemma in the `oak prove` row shape: `verified`, `falsified`, or `open`
+with the prover's words. A falsified `all-traces` lemma is a trace over
+the naturals reading, to be replayed against `oak prove` before it counts
+as a refutation of the declaration; a falsified `exists-trace` lemma is an
+unreachable state, which the model-checker module (§4) would also report.
+Without the binary, the file is written and the check is skipped by name,
+as `-lean -check` skips without Lean.
+
+**The worked example.** The `Quantum` declaration of §1 projects to:
+
+```text
+theory Quantum
+begin
+builtins: natural-numbers
+// oak protocol -tamarin: Quantum, spec/oak/machines.oak
+// Reading: fixed-width fields as naturals (u32 budget); 0 lines not projected.
+
+rule Init:
+    [ ] --[ Init(), State('Running', %1 %+ %1, 'false') ]-> [ St('Running', %1 %+ %1, 'false') ]
+
+rule tick_Running_Running:
+    [ St('Running', budget, pending) ]
+  --[ Step_tick(), Guard(budget), State('Running', budget %+ %1, pending) ]->  // budget > 1: budget = d %+ %1 %+ %1 …
+    [ St('Running', budget, pending) ]
+…
+restriction Init_once: "All #i #j. Init() @ i & Init() @ j ==> #i = #j"
+restriction Guards: "All x #i. Guard(x) @ i ==> x = 'true'"
+
+lemma reach_Running: exists-trace "Ex b p #i. State('Running', b, p) @ i"
+lemma reach_Yielded: exists-trace "Ex b p #i. State('Yielded', b, p) @ i"
+lemma reach_Parked: exists-trace "Ex b p #i. State('Parked', b, p) @ i"
+end
+```
+
+The full text, line by line, is in `docs/notes/tamarin-projection-2026-09.md`,
+where the comparison rule "the naturals reading admits every trace of the
+width reading" is worked for `tick`.
+
+**What the export is not.** Message terms with an equational theory,
+cryptographic primitives, fresh names (`init` constants and enumerated
+payload domains are not unguessable), channels and an adversary, roles
+over unbounded sessions, and properties over the trace rather than over
+`(state, data)`: the declaration has no spelling for them
+(`docs/notes/provers-2026-09.md`, "What maps onto a protocol
+declaration"). Adding them is the language decision §7 records; until
+then this projection is a sanity reading to compare pairwise with TLC and
+`oak prove` (`docs/checklists/correctness.md` §2).
+
 ## 5. Resource protocols (`via`)
 
 A transition line ending in `via f` binds the transition to the function `f`
@@ -779,9 +914,10 @@ the first of those to land.
   configuration chooses per step rather than the default four values.
 - A symbolic-prover reading (`docs/notes/provers-2026-09.md`). States,
   lines, payloads, and data map onto Tamarin's multiset rewriting one rule
-  per line — the every-line reading TLC also takes — and a sanity export
+  per line — the every-line reading TLC also takes — and the sanity export
   (`exists-trace` for each state, the invariant theorems as `all-traces`
-  lemmas) would be a third reading to compare with TLC and `oak prove`. A
+  lemmas) is specified as §4b, a third reading to compare with TLC and
+  `oak prove`, not yet implemented. A
   security reading needs what the declaration has no spelling for: message
   terms with an equational theory, fresh names, channels, an adversary,
   roles over unbounded sessions, and properties over the trace rather than
