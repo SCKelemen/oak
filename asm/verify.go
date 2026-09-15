@@ -9419,18 +9419,30 @@ func canonicalMemo(t *term, memo map[*term]*term, boolean map[*term]bool) *term 
 					// The arms are canonical already (children first); the
 					// mask is applied to each without re-entering the
 					// canonicalizer, a nested conditional arm by arm.
+					// Memoized over the arms: the conditional is a DAG whose
+					// arms share subterms (a merge of many paths), and the
+					// walk must visit each once.
+					arms := map[*term]*term{}
 					var arm func(x *term) *term
 					arm = func(x *term) *term {
+						if done, seen := arms[x]; seen {
+							return done
+						}
+						var masked *term
 						if x.kind == termIte {
-							return iteTerm(x.cond, arm(x.left), arm(x.right))
+							masked = iteTerm(x.cond, arm(x.left), arm(x.right))
+						} else {
+							switch {
+							case right.value == mask(left.width) && left.width < t.width:
+								masked = zeroExtend(adaptWidth(x, left.width), t.width)
+							case right.value == mask(t.width):
+								masked = adaptWidth(x, t.width)
+							default:
+								masked = adaptWidth(binaryTerm("and", adaptWidth(x, t.width), right), t.width)
+							}
 						}
-						switch {
-						case right.value == mask(left.width) && left.width < t.width:
-							return zeroExtend(adaptWidth(x, left.width), t.width)
-						case right.value == mask(t.width):
-							return adaptWidth(x, t.width)
-						}
-						return adaptWidth(binaryTerm("and", adaptWidth(x, t.width), right), t.width)
+						arms[x] = masked
+						return masked
 					}
 					out = iteTerm(left.cond, arm(left.left), arm(left.right))
 				case right.value == mask(t.width) && left.width > t.width:
