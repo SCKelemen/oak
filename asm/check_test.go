@@ -132,9 +132,16 @@ func TestCheckerFrameArrays(t *testing.T) {
 		// immediate would: the checker knows the value (constFacts) until
 		// the register is written.
 		{"guard against a register holding a constant", prologue + "  add x9, sp, #0\n  mov w10, #4\n  cmp w0, w10\n  b.hs trap\n  ldr w0, [x9, w0, uxtw #2]\n  add sp, sp, #16\n  ret\ntrap:\n  brk #1", ""},
-		// Two predecessors with different frame addresses in x9: the merge
-		// holds neither.
-		{"address lost at a merge", prologue + "  cbz w0, other\n  add x9, sp, #0\n  b join\nother:\n  add x9, sp, #8\njoin:\n  ldr w0, [x9, #4]\n  add sp, sp, #16\n  ret", "memory operands go through the declared sp frame or a bound span base"},
+		// Two predecessors with different frame addresses in x9: the meet
+		// holds neither, and block versioning checks the access once per
+		// arriving address (docs/spec/94-assembler.md, "Block versioning by
+		// fact context"). Inside the frame under both, it is admitted;
+		// outside under one of them, refused.
+		{"an address that differs per path is admitted per context", prologue + "  cbz w0, other\n  add x9, sp, #0\n  b join\nother:\n  add x9, sp, #8\njoin:\n  ldr w0, [x9, #4]\n  add sp, sp, #16\n  ret", ""},
+		// The surviving finding keeps the meet's wording; what the version
+		// pass decides is whether the place is refused at all, and the
+		// place is what the per-line fallback reads.
+		{"an address outside the frame on one path is refused", prologue + "  cbz w0, other\n  add x9, sp, #0\n  b join\nother:\n  add x9, sp, #12\njoin:\n  ldr w0, [x9, #8]\n  add sp, sp, #16\n  ret", "x9 is neither"},
 		// One predecessor: the address and the index guard flow through the label.
 		{"facts flow through a single-predecessor label", prologue + "  add x9, sp, #0\n  cmp w0, #4\n  b.hs trap\nagain:\n  ldr w0, [x9, w0, uxtw #2]\n  add sp, sp, #16\n  ret\ntrap:\n  brk #1", ""},
 		{"fact lost at a call", "  bind w0 = i\n  clobber x9, x29, x30\n  frame 32\n  sub sp, sp, #32\n  stp x29, x30, [sp]\n  add x9, sp, #16\n  bl helper\n  ldr w0, [x9, #0]\n  ldp x29, x30, [sp]\n  add sp, sp, #32\n  ret", "memory operands go through the declared sp frame or a bound span base"},

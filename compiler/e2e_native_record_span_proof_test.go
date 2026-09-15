@@ -17,6 +17,7 @@ const nativeRecordSpanProofProgram = `
 Node: type = struct { value: u32, next: u32, weight: u64 }
 Leaf: type = struct { entries: [512]u64, level: u32, flags: u32 }
 Dom: type = struct { pending: [8]u32, count: u32 }
+LargeDom: type = struct { entries: [65]u32, count: u32 }
 
 peek: (pool: []Node, i: u32): u32 {
   i < len(pool) ? { pool[i].value + pool[i].next } | { u32(0) }
@@ -70,6 +71,25 @@ fill: (doms: [*]Dom, d: u32, base: u32): u32 {
   } | { u32(0) }
 }
 
+// A counted loop just past the verifier's unrolling limit is summarized.
+// The writer and a caller that renames the record span must retain the leaf
+// memory effects instead of treating the span root as a loop-carried local.
+fill_large: (tables: [*]LargeDom, d: u32): u32 {
+  d < len(tables) ? {
+    i: u32 = u32(0)
+    while i < u32(65) {
+      tables[d].entries[i] = i + u32(1)
+      i = i + u32(1)
+    }
+    tables[d].count = u32(65)
+    tables[d].entries[u32(64)] + tables[d].count
+  } | { u32(0) }
+}
+
+fill_large_via_alias: (state: [*]LargeDom, d: u32): u32 {
+  fill_large(state, d)
+}
+
 main: (): i32 {
   nodes: [3]Node
   nodes[u32(1)].value = u32(6)
@@ -77,13 +97,15 @@ main: (): i32 {
   nodes[u32(2)].weight = u64(11)
   leaves: [1]Leaf
   doms: [2]Dom
+  large: [1]LargeDom
   doms[u32(1)].pending[u32(2)] = u32(8)
   doms[u32(1)].count = u32(1)
   set_level(span(&leaves), u32(0), u32(3))
   f: u32 = fill(span(&doms), u32(0), u32(1))   // 7 + 8 = 15
+  g: u32 = fill_large_via_alias(span(&large), u32(0)) // 65 + 65 = 130
   t: u32 = total(span(&nodes), u32(1))          // (6 + 1) + 4 = 11; peek then sees 7 + 4 = 11
-  // 11 + 11 + (40 + 3) + 5 + 9 + 15 + 11 = 105
-  i32_bits_u32(peek(view(&nodes), u32(1)) + u32_trunc_u64(heavy(span(&nodes), u32(2)) + walk(span(&leaves), u32(0), u32(9)) + fixed(view(&leaves), u32(0))) + pend(span(&doms), u32(1), u32(2)) + f + t)
+  // 11 + 11 + (40 + 3) + 5 + 9 + 15 + 130 + 11 = 235
+  i32_bits_u32(peek(view(&nodes), u32(1)) + u32_trunc_u64(heavy(span(&nodes), u32(2)) + walk(span(&leaves), u32(0), u32(9)) + fixed(view(&leaves), u32(0))) + pend(span(&doms), u32(1), u32(2)) + f + g + t)
 }
 `
 
@@ -97,8 +119,8 @@ func TestE2ENativeRecordSpanReadersProven(t *testing.T) {
 	})
 	_, code, abnormal := buildAndRunFrom(t, "native_record_span_proof", comp)
 	joined := strings.Join(infos, "\n")
-	if abnormal || code != 105 {
-		t.Fatalf("native: exit = (%d, abnormal=%v), want 105\n%s", code, abnormal, joined)
+	if abnormal || code != 235 {
+		t.Fatalf("native: exit = (%d, abnormal=%v), want 235\n%s", code, abnormal, joined)
 	}
 	for _, fn := range []string{"peek", "heavy", "walk", "fixed", "pend"} {
 		if !strings.Contains(joined, "asm unit "+fn+": proven") {
@@ -119,7 +141,16 @@ func TestE2ENativeRecordSpanReadersProven(t *testing.T) {
 	if !strings.Contains(joined, "asm unit fill: proven") || !strings.Contains(joined, "span memory it writes (doms.count, doms.pending)") {
 		t.Errorf("fill (a counted loop of stores, then a read back) must be proven in result and memories; diagnostics:\n%s", joined)
 	}
-	if _, code, abnormal := buildAndRunFrom(t, "native_record_span_proof_c", New().WithSource("record_span_proof.oak", nativeRecordSpanProofProgram)); abnormal || code != 105 {
-		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 105", code, abnormal)
+	// The inducted loop's stores are collected per leaf memory on both
+	// sides, so the summarized loop over the record span is proven, not
+	// merely witnessed.
+	if !strings.Contains(joined, "asm unit fill_large: proven") || !strings.Contains(joined, "span memory it writes (tables.count, tables.entries)") {
+		t.Errorf("fill_large (a summarized loop over a record span) must be proven with its leaf memories; diagnostics:\n%s", joined)
+	}
+	if !strings.Contains(joined, "asm unit fill_large_via_alias: proven") || !strings.Contains(joined, "span memory it writes (state.count, state.entries)") {
+		t.Errorf("fill_large_via_alias must be proven through the renamed record span and its leaf memories; diagnostics:\n%s", joined)
+	}
+	if _, code, abnormal := buildAndRunFrom(t, "native_record_span_proof_c", New().WithSource("record_span_proof.oak", nativeRecordSpanProofProgram)); abnormal || code != 235 {
+		t.Fatalf("C backend: exit = (%d, abnormal=%v), want 235", code, abnormal)
 	}
 }

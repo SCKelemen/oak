@@ -1,16 +1,19 @@
 # Optimizer artifact DAG
 
 Status: OptIR analysis DAG with exact identities, checked selective reuse, and
-bounded deterministic parallel execution. This note refines the optimizer
-search design; it does not change Oak semantics or authorize OptIR emission.
+bounded deterministic parallel execution; the complete native candidate path
+from materialization through selection is also live. This note refines the
+optimizer search design; it does not change Oak semantics or authorize OptIR
+emission.
 
 ## 1. Decision
 
 Oak's compiler stages, optimizer analyses, transforms, validation, costing, and
 selection should be represented as one dependency graph of immutable
 artifacts. `compiler.Stage.Then` remains linear and native candidate search
-still owns an internal branching search. OptIR's first generic analysis chain,
-however, now executes through the artifact graph rather than direct calls.
+still owns an internal branching proposal search. OptIR's first generic
+analysis chain and every proposed native candidate's materialization and gates
+now execute through artifact graphs rather than direct calls.
 
 The graph is about computation and evidence, not control-flow. An OptIR CFG may
 contain cycles while the artifact graph that produced and analyzed that CFG is
@@ -23,7 +26,7 @@ structured OptIR
      |
     CFG v0 --------------------+
      |          |              |
-    SCCP   loop structure    CSE/DCE
+    SCCP   loop structure    GVN/DCE
                 |               |
                 |             CFG v1
                 |          /     |
@@ -105,7 +108,7 @@ also include the compiler build identity in the producer revision.
 | checked | checked semantic model, proof facts | only as a stated source license |
 | IR | structured OptIR, CFG, MachineIR | no |
 | analysis | SCCP, dominance, loops, alias/range facts | no |
-| candidate | CSE/DCE, LICM, vector or allocation plan | no |
+| candidate | GVN/DCE, LICM, vector or allocation plan | no |
 | admission | CFG verifier, seam checker, cheap structural checks | only the boundary it explicitly checks |
 | metrics | size, pressure, branch and memory estimates | no |
 | cost | target-neutral or target-specific score | no |
@@ -160,7 +163,7 @@ checked against digest equality and the whole certificate has an integrity
 digest. It is analysis-reuse evidence only, never semantic equivalence or
 permission to emit a candidate.
 
-CSE/DCE is the first consumer. It preserves CFG topology but may change SSA
+GVN/DCE is the first consumer. It preserves CFG topology but may change SSA
 identity, operation semantics, types, and proof-fact placement. Loop analysis
 is split accordingly: dominance and the natural-loop tree consume only
 `CFGTopology`, so CFG v1 reuses the checked structure from v0. Affine
@@ -198,7 +201,7 @@ Waves deliberately trade some pipeline utilization for reproducibility: worker
 timing cannot change which later nodes start, the selected error, cache
 contents, or trace. `ArtifactRun` still reports executed/cache-hit keys in the
 canonical graph order. OptIR uses three workers, matching its current SCCP,
-loop-structure, and CSE/DCE fan-out. Artifact computations must remain isolated
+loop-structure, and GVN/DCE fan-out. Artifact computations must remain isolated
 producers; the scheduler coordinates all cache reads and writes itself.
 
 ## 8. Cache rules
@@ -240,15 +243,27 @@ Completed:
 2. The current OptIR analysis API is projected onto graph nodes without
    changing its analysis results or emission behavior.
 3. CFG v0 has a canonical fingerprint over every ordered semantic field. SCCP,
-   loop analysis, and CSE/DCE consume that exact key. CSE/DCE publishes CFG v1,
+   loop analysis, and GVN/DCE consume that exact key. GVN/DCE publishes CFG v1,
    a second loop node analyzes v1, and LICM consumes both v1 artifacts. LICM no
    longer recomputes loop analysis or dominance internally. Its loop facts are
    privately bound to their input fingerprint and integrity digest, so stale or
    mutated facts fail closed.
 4. OptIR has closed analysis-aspect declarations and checked preservation
-   certificates. CSE/DCE's certificate is an admission artifact over exact CFG
+   certificates. GVN/DCE's certificate is an admission artifact over exact CFG
    v0/v1 identities. The loop-structure artifact declares only `CFGTopology`,
    so v1 reuses dominance/natural loops while recomputing induction facts.
+5. Native search gives every proposal a canonical, pre-lowering recipe over
+   its complete lane configuration, source/program inputs, and the checked fact
+   domains nativegen reads. A checked input node feeds materialization, then
+   typed candidate, admission, metrics, and cost nodes. Failed lowering
+   publishes no candidate. The bounded validation loop requests one verdict
+   target at a time in established cost order, so proof early-stop and budgets
+   are unchanged. Final selection is an artifact whose possible choices each
+   contribute explicit candidate, clean-admission, cost, and verdict edges. A
+   weak verdict on a gated transform cannot produce a selection target without
+   a separately validated ungated fallback. The per-search cache remains
+   ephemeral while backend-owned `Config` and `Body` values lack canonical
+   serialization and a deep freeze boundary.
 6. The graph has bounded deterministic ready-wave concurrency. OptIR runs with
    three workers; reverse completion, worker bounds, deterministic failures,
    cancellation, exact-once dependencies, and cache pruning are race-tested.
@@ -261,8 +276,6 @@ complete dependent invalidation after an input change.
 
 Remaining:
 
-5. Move native candidate materialization, seam checking, semantic validation,
-   cost, and selection onto typed graph builders while retaining identity.
 7. Add persistent content-addressed caching only after canonical serialization
    and version invalidation are stable.
 

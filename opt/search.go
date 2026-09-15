@@ -50,19 +50,26 @@ type Verdict struct {
 // candidate's configuration into a body, identifies and measures the
 // body, and validates it. The search never inspects a body itself.
 type Driver interface {
+	// MaterializationKey identifies the complete lowering recipe before a
+	// body exists: the backend configuration, checked source inputs, target
+	// facts, and producer revision. Equal keys must materialize equal bodies.
+	MaterializationKey(c *Candidate) (string, error)
 	// Materialize lowers c.Config into c.Body. An error means the
 	// configuration does not lower (the lane does not support the form);
-	// the candidate is dropped with a remark.
+	// the candidate is dropped with a remark. It may replace c.Body, but
+	// must not mutate shared values reachable through the candidate.
 	Materialize(c *Candidate) error
 	// Key identifies the materialized body so equal bodies are one
 	// candidate.
 	Key(c *Candidate) string
-	// Measure reads the body's structural metrics.
+	// Measure reads the body's structural metrics without mutating c or its
+	// backend-owned body.
 	Measure(c *Candidate) Metrics
 	// Check runs the cheap admissibility check (the seam checker): the
-	// findings, none when admitted.
+	// findings, none when admitted. It does not mutate c or its body.
 	Check(c *Candidate) []string
-	// Validate runs the expensive validation (the semantic verifier).
+	// Validate runs the expensive validation (the semantic verifier) without
+	// mutating c or its body.
 	Validate(c *Candidate) Verdict
 }
 
@@ -139,13 +146,22 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 	if costs == nil {
 		costs = AArch64Costs
 	}
+	pipeline, err := newCandidateArtifactPipeline(function, d, costs)
+	if err != nil {
+		return nil, err
+	}
+	artifacts := map[*Candidate]candidateArtifactKeys{}
 	sel := &Selection{Identity: identity, Considered: 1}
-	if err := d.Materialize(identity); err != nil {
+	identityArtifacts, err := pipeline.materialize(identity)
+	if err != nil {
 		return nil, err
 	}
 	sel.Materialized++
-	identity.Key = d.Key(identity)
-	if findings := s.check(function, identity, d, rounds); len(findings) > 0 {
+	identityArtifacts, findings, err := s.check(function, identity, pipeline, identityArtifacts, rounds)
+	if err != nil {
+		return nil, err
+	}
+	if len(findings) > 0 {
 		// The plain lowering is not admitted: no transform mends a body
 		// the checker refuses as written, so the refusal is the answer.
 		sel.Candidate = identity
@@ -153,8 +169,11 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 		s.Report.Missed(function, "check", "the checker refuses the plain lowering: "+findings[0])
 		return sel, nil
 	}
-	identity.Metrics = d.Measure(identity)
-	identity.Cost = s.cost(costs, identity)
+	identity.Metrics, identity.Cost, err = pipeline.measureAndCost(identityArtifacts)
+	if err != nil {
+		return nil, err
+	}
+	artifacts[identity] = identityArtifacts
 
 	frontier := []*Candidate{identity}
 	seen := map[string]*Candidate{identity.Key: identity}
@@ -172,7 +191,8 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 				}
 				sel.Considered++
 				next.Facts = append(next.Facts, used...)
-				if err := d.Materialize(next); err != nil {
+				nextArtifacts, err := pipeline.materialize(next)
+				if err != nil {
 					s.Report.Missed(function, t.Name(), fmt.Sprintf("the %s form did not lower: %v", next.Name(), err))
 					continue
 				}
@@ -183,7 +203,6 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 					}
 					continue
 				}
-				next.Key = d.Key(next)
 				if prev, dup := seen[next.Key]; dup {
 					if parent.IsIdentity() {
 						s.Report.Missed(function, t.Name(), "the same body as "+prev.Name())
@@ -191,13 +210,20 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 					continue
 				}
 				seen[next.Key] = next
-				if findings := s.check(function, next, d, rounds); len(findings) > 0 {
+				nextArtifacts, findings, err := s.check(function, next, pipeline, nextArtifacts, rounds)
+				if err != nil {
+					return nil, err
+				}
+				if len(findings) > 0 {
 					s.Report.Missed(function, t.Name(), fmt.Sprintf("the checker did not admit the %s form: %s", next.Name(), findings[0]))
 					continue
 				}
 				seen[next.Key] = next // the refinement may have changed the key
-				next.Metrics = d.Measure(next)
-				next.Cost = s.cost(costs, next)
+				next.Metrics, next.Cost, err = pipeline.measureAndCost(nextArtifacts)
+				if err != nil {
+					return nil, err
+				}
+				artifacts[next] = nextArtifacts
 				proposals = append(proposals, next)
 			}
 			frontier = prune(append(frontier, proposals...), beam, identity)
@@ -223,7 +249,10 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 			s.Report.Missed(function, "verify", fmt.Sprintf("the %s form was not verified: %d of %d validations spent on cheaper candidates", c.Name(), len(sel.Validations), budget))
 			continue
 		}
-		verdict := d.Validate(c)
+		verdict, err := pipeline.validate(artifacts[c])
+		if err != nil {
+			return nil, err
+		}
 		sel.Validations = append(sel.Validations, Validated{Candidate: c, Verdict: verdict})
 		v := &sel.Validations[len(sel.Validations)-1]
 		if best == nil || verdict.Outcome > best.Verdict.Outcome {
@@ -254,7 +283,10 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 				}
 			}
 			if replacement == nil {
-				verdict := d.Validate(c)
+				verdict, err := pipeline.validate(artifacts[c])
+				if err != nil {
+					return nil, err
+				}
 				sel.Validations = append(sel.Validations, Validated{Candidate: c, Verdict: verdict})
 				replacement = &sel.Validations[len(sel.Validations)-1]
 			}
@@ -263,14 +295,21 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 		s.Report.Missed(function, "verify", fmt.Sprintf("the %s form was not verified (a trusted verdict) and %s ships only on a verdict: the %s form is kept", best.Candidate.Name(), s.gatedNames(best.Candidate), replacement.Candidate.Name()))
 		best = replacement
 	}
-	sel.Candidate, sel.Verdict = best.Candidate, best.Verdict
+	choice, err := pipeline.choose(sel.Validations, order, artifacts, s.gated)
+	if err != nil {
+		return nil, err
+	}
+	for candidate, nodes := range artifacts {
+		if nodes.candidate == choice.candidate {
+			sel.Candidate, sel.Verdict = candidate, choice.verdict
+			break
+		}
+	}
+	if sel.Candidate == nil {
+		return nil, fmt.Errorf("opt: selected candidate artifact %s has no search candidate", choice.candidate)
+	}
 	s.remark(function, sel)
 	return sel, nil
-}
-
-// cost estimates a candidate from its metrics.
-func (s *Search) cost(costs CostModel, c *Candidate) float64 {
-	return costs.Estimate(c.Metrics)
 }
 
 // discharge finds the facts a transform requires, or records the missing
@@ -291,9 +330,13 @@ func (s *Search) discharge(function string, t Transform, facts *Facts) ([]Fact, 
 // check runs the checker on a candidate, refining it through its
 // Refinable transforms while the checker refuses and a transform can act
 // on the finding; the candidate is updated in place through its
-// configuration and body. It returns the findings that remain.
-func (s *Search) check(function string, c *Candidate, d Driver, rounds int) []string {
-	findings := d.Check(c)
+// configuration and body. It returns the final candidate artifacts and the
+// findings that remain.
+func (s *Search) check(function string, c *Candidate, pipeline *candidateArtifactPipeline, nodes candidateArtifactKeys, rounds int) (candidateArtifactKeys, []string, error) {
+	findings, err := pipeline.admit(nodes)
+	if err != nil {
+		return candidateArtifactKeys{}, nil, err
+	}
 	for round := 0; len(findings) > 0 && round < rounds; round++ {
 		if s.Refused != nil {
 			s.Refused(c, round, findings)
@@ -302,14 +345,18 @@ func (s *Search) check(function string, c *Candidate, d Driver, rounds int) []st
 		if !ok {
 			break
 		}
-		if err := d.Materialize(refined); err != nil {
+		refinedNodes, err := pipeline.materialize(refined)
+		if err != nil {
 			break
 		}
-		refined.Key = d.Key(refined)
 		*c = *refined
-		findings = d.Check(c)
+		nodes = refinedNodes
+		findings, err = pipeline.admit(nodes)
+		if err != nil {
+			return candidateArtifactKeys{}, nil, err
+		}
 	}
-	return findings
+	return nodes, findings, nil
 }
 
 // refine asks the candidate's transforms, last applied first, to narrow

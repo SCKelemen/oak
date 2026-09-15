@@ -22,7 +22,7 @@ type OptIRFunction struct {
 	Constants      optir.SCCPResult
 	Loops          optir.LoopAnalysis
 	Simplified     optir.CFG
-	Simplification optir.CSEDCEReport
+	Simplification optir.GVNDCEReport
 	LoopInvariant  optir.CFG
 	LoopMotion     optir.LICMReport
 }

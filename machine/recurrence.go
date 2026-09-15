@@ -149,15 +149,7 @@ func (f *Function) Shapes() ([]*LoopShape, error) {
 						} else if len(regs) == 2 {
 							other := regs[1-i]
 							ow := siteWeb[site{ins, ins.Uses[1-i], false}]
-							invariant := ow != nil
-							if ow != nil {
-								for _, d := range ow.Defs {
-									if d.Instr != nil && inLoop[d.Instr.Block] {
-										invariant = false
-									}
-								}
-							}
-							if invariant {
+							if ow != nil && f.invariantWeb(ow, inLoop, siteWeb, 3) {
 								sh.BoundReg = other
 							} else {
 								sh.Index = nil
@@ -239,4 +231,31 @@ func (s *LoopShape) String() string {
 		out += fmt.Sprintf(", <= %d trips", s.MaxTrips)
 	}
 	return out
+}
+
+// invariantWeb reports a web whose value is the same every trip: every
+// definition lies outside the loop, or is a pure instruction inside it
+// computing from invariant webs (a bound like `sub w9, w20, #16` in the
+// header), to a small depth.
+func (f *Function) invariantWeb(w *Web, inLoop map[*Block]bool, siteWeb map[site]*Web, depth int) bool {
+	for _, d := range w.Defs {
+		if d.Instr == nil || !inLoop[d.Instr.Block] {
+			continue
+		}
+		if depth == 0 || !f.t.pure(d.Instr.Asm) || f.t.readsFlags(d.Instr.Asm) {
+			return false
+		}
+		for _, op := range d.Instr.Asm.Operands {
+			if _, isMem := op.(asm.Memory); isMem {
+				return false // a load may see a different value each trip
+			}
+		}
+		for _, u := range d.Instr.Uses {
+			uw := siteWeb[site{d.Instr, u, false}]
+			if uw == nil || uw == w || !f.invariantWeb(uw, inLoop, siteWeb, depth-1) {
+				return false
+			}
+		}
+	}
+	return true
 }

@@ -74,8 +74,8 @@ func LoopAnalysisRequirements() AnalysisRequirements {
 	return knownAnalysisRequirements("Loops", AspectCFGTopology, AspectSSAIdentity, AspectOperationSemantics, AspectTypes)
 }
 
-func CSEDCERequirements() AnalysisRequirements {
-	return knownAnalysisRequirements("CSE/DCE", AspectCFGTopology, AspectSSAIdentity, AspectOperationSemantics, AspectMemoryEffects, AspectTypes, AspectProofFacts)
+func GVNDCERequirements() AnalysisRequirements {
+	return knownAnalysisRequirements("GVN/DCE", AspectCFGTopology, AspectSSAIdentity, AspectOperationSemantics, AspectMemoryEffects, AspectTypes, AspectProofFacts)
 }
 
 func LICMRequirements() AnalysisRequirements {

@@ -70,13 +70,23 @@ type fakeDriver struct {
 	verdicts  map[string]Outcome  // by body key; absent means Proven
 	findings  map[string][]string // by body key; absent means admitted
 	unlowered map[string]bool     // bodies that do not lower
+	lowerErrs map[string]error    // exact lowering errors used by artifact tests
 	validated []string
+	checked   []string
+	measured  []string
 	lowered   []string
+}
+
+func (d *fakeDriver) MaterializationKey(c *Candidate) (string, error) {
+	return "fake:" + c.Config.(config).key(), nil
 }
 
 func (d *fakeDriver) Materialize(c *Candidate) error {
 	key := c.Config.(config).key()
 	d.lowered = append(d.lowered, key)
+	if err := d.lowerErrs[key]; err != nil {
+		return err
+	}
 	if d.unlowered[key] {
 		return errors.New("unsupported form")
 	}
@@ -85,12 +95,16 @@ func (d *fakeDriver) Materialize(c *Candidate) error {
 }
 func (d *fakeDriver) Key(c *Candidate) string { return c.Body.(string) }
 func (d *fakeDriver) Measure(c *Candidate) Metrics {
+	d.measured = append(d.measured, c.Body.(string))
 	if m, ok := d.metrics[c.Body.(string)]; ok {
 		return m
 	}
 	return Metrics{Instructions: 10, Branches: 2, Loads: 2, Guards: 1}
 }
-func (d *fakeDriver) Check(c *Candidate) []string { return d.findings[c.Body.(string)] }
+func (d *fakeDriver) Check(c *Candidate) []string {
+	d.checked = append(d.checked, c.Body.(string))
+	return d.findings[c.Body.(string)]
+}
 func (d *fakeDriver) Validate(c *Candidate) Verdict {
 	key := c.Body.(string)
 	d.validated = append(d.validated, key)

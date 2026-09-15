@@ -667,13 +667,19 @@ and the `adds` form `l + r` (`AddWithCarry_sub_result`/`_add_result`); its
 N, Z, and C flags are our `flagsOf`/`addFlagsOf` at every width
 (`subFlags_n/z/c`, `addFlags_n/z/c` — C is the "no borrow" reading, `r ≤
 l`), and V — Arm's `SInt` overflow against our sign-bit formula — is
-checked exhaustively by the kernel at width 5 and by the silicon
-differential at 32 and 64 bits; `ConditionHolds` on the A64 condition-code
+proved at every nonempty width for subtraction and every width for addition
+(`subFlags_v`/`addFlags_v`): the proof identifies Arm's untruncated signed
+sum mismatch with Lean's signed-overflow predicates and then with the operand
+and result sign bits. The width-5 exhaustive check remains as an executable
+cross-check, and 32-/64-bit corollaries name the AArch64 register views;
+`ConditionHolds` on the A64 condition-code
 encodings is our `Cond.holds` for every code and every flag pattern
 (`holds_eq_ConditionHolds`); the conditional-select family is Arm's
 `integer_conditional_select` with its `else_inv`/`else_inc` switches
-(`csel_asl`, `csinc_asl`, `csinv_asl`, `csneg_asl`); `ccmp`'s flags are
-Arm's `integer_conditional_compare` (`ccmp_asl_n`); `tst`'s flags are the
+(`csel_asl`, `csinc_asl`, `csinv_asl`, `csneg_asl`); the complete NZCV
+record produced by `ccmp` is Arm's `integer_conditional_compare`
+(`ccmp_asl`, with component theorems for N, Z, C and architectural-width
+V); `tst`'s flags are the
 logical-result flags (`tst_asl`); `HighestSetBit`/`CountLeadingZeroBits`
 are stated with `clz_zero`, and `udiv` by zero is zero as Arm specifies.
 The chain is now: Arm's ASL ≡ `Oak.ArmASL` ≡ `Oak.AssemblerSemantics`
@@ -3126,6 +3132,12 @@ borrows"): `view(&p…)` leaves a by-value parameter untouched, so it is
 read in place and passed as the caller's storage
 (`Oak.ReadOnlyBorrow.view_of_copy`).
 
+The fifty-ninth increment is vector block loads (§9 "Vector block
+loads"): the vector loads of one basic block read off a single element
+address at immediate offsets, dropping an index add and an address add
+each. The `u32` reduction's main loop goes from eighteen instructions to
+eleven; the checker and the verifier already admitted the form.
+
 The fifty-eighth increment is reduction vectorization (§9 "Reduction
 vectorization"): the recognized integer reduction's accumulators as the
 lanes of four fixed vectors, licensed by the same law at as many
@@ -4027,12 +4039,27 @@ induction's base — the two sides' memories at the loop's entry — is
 compared under the machine's condition for reaching the loop: a store
 before a loop inside an arm (`ok ? { s[dom].free_count = …; while … }`)
 is unguarded on the machine's path and guarded by `ok` on the Oak side,
-and the two agree exactly there (the OS pilot's `alloc_table`). A span of records passed
+and the two agree exactly there (the OS pilot's `alloc_table`). Counted loops past the 64-trip
+unrolling limit use the same per-leaf markers on both sides; the Oak
+lowering treats the record-span root as memory rather than a carried
+local, and an inlined callee's parameter resolves through its alias to
+the caller's writable root. A span of records passed
 to a callee binds as the callee's alias of the caller's span — in the
 call summary as in the inlined call — so its leaf memories are the
 caller's and the caller is proven through its callees (the OS pilot's
 V1: `stage2` and `addr_space` enter the proof chain, readers, writers,
-and the functions that call them).
+and the functions that call them). A view or span of an array field of
+one element passed to a callee — `total(view(&stages[k].coeffs))`,
+`fill(span(&stages[k].state), v)` (`50-borrowing.md` §2) — binds the
+callee's span parameter as an alias of that field's leaf memory
+(`stages.coeffs`) at the linear offset `k·N` with the field's constant
+length, a derived span like `subslice`'s: the executor reads it off the
+argument's base (the element address plus the field's offset) and
+length, the Oak lowering off the expression, and a constant element of
+the leaf memory is named as the record span names it (`stages[3].coeffs`),
+so the two meet in one unknown. The SIMD pilot's span-of-record kernels
+are proven through the callees they hand a stage's coefficients to
+(`compiler/e2e_native_field_view_proof_test.go`).
 
 **Package globals.** A mutable top-level scalar (`st: u32 = u32(0)`,
 assigned by some function) is addressed storage on the AArch64 lane: the
@@ -4379,6 +4406,37 @@ trusted. And the cost model's assumed trip count, 32, made a
 sixteen-element main loop's fifteen-trip remainder half the work, so no
 strided form could pay for its tail; it is 256 now, calibrated from
 these rows (`opt/cost.go`, §16 of `90-backend.md`).
+
+**Vector block loads (2026-09-16, AArch64 lane;
+`nativegen/vector_blocks.go`).** For lanes wider than a byte the lowering
+forms a vector load's address in a register (`vecAddress`), so the
+vectorized reduction's four loads each paid an index add and an address
+add. Within one basic block, a vector load whose address is `add xA, xB,
+wJ, uxtw #s` with `wJ` the group's index — directly, through a copy
+(`mov wJ, wI`, before the late cleanup forwards it), or at an offset
+(`add wJ, wI, #k`) — reads the same span at element `wI + k`, so it is
+the first load's address at the byte offset `k << s`, and the address and
+index instructions it owned are dropped. The pass requires that nothing
+between the two loads writes the base, the index, or the kept address,
+and that the dropped registers are dead after the load, which the
+whole-function liveness of the general registers answers (the cleanup
+pass's `liveAfter`). The offset must be a multiple of sixteen inside the
+`ldr q` immediate's range.
+
+Neither the seam checker nor the verifier needed extending: the slack
+guard that admits the first load marks a region of its bound's elements
+(`elementRegionOf`; sixteen `u32` elements is 64 bytes) and
+`regionAdmits` takes every offset inside it, while the verifier reads a
+vector load through an element address at a non-zero offset as the span's
+elements from that index (`loadVector`, §8). The `u32` reduction's main
+loop is eleven instructions for sixteen elements where it was eighteen —
+one address, four `ldr q`, four `add v.4s`, the index step, the test —
+and stays proven. Measured: no change on a 4 MiB stream, which is
+bandwidth-bound at 0.057 ns an element either way, and about eight
+percent on a 16 KiB array that fits L1 (0.039–0.042 against
+0.044–0.047); the instructions are what the increment buys, which is
+where a core with less spare issue than an M4 — the RV64 lane, an MCU —
+would feel it.
 
 **Pair loads (2026-09-16, AArch64 lane; `nativegen/pair_loads.go`).**
 Within one basic block, two element loads of one span at consecutive
@@ -5592,7 +5650,31 @@ forty trips still unroll. The theorem decider takes neither rule: with
 no machine side to couple with, a summarized loop is a law left open
 (the lattice laws' loops over loops, `dnf_product_denotes`, went "Go
 open, Oak decided" under the loop-over-loop rule), so it unrolls every
-counted loop. Prover build (per body, the optimizer's
+counted loop.
+
+**Bounded decisions (2026-09-16).** Three walks without a bound came to
+light when the natively built prover took hours to build under load.
+The mask-pushing rule's walk over a conditional's arms had no memo and
+went exponential on a merge of many paths (a body spent twenty minutes
+in it); it visits each arm once now. A body's summarized callees add
+their loop events past what one body may hold (`loopEventBudget` bounds
+each summary, not the sum): `add_bits` gathered twenty-one and its
+coupling searched for an hour, so the coupling refuses more events than
+the budget. And an implication's terms were canonicalized, pruned, and
+substituted — linear walks — before any diagram budget applied, over
+thousands of implications of a write coupling on a memory's selects:
+each implication now costs a call from the proof's allowance
+(`implicationCallLimit`, 2048) first, and terms over
+`implicationNodeLimit` distinct nodes (65536) are undecided at once,
+charged a failed diagram. `add_bits` is evidence in two minutes a
+candidate. The native prover's shell on `adts.oak`, which ran three
+hours and three quarters without finishing in the root suite, agrees on
+7 of 7 rows once its build completes. Prover build per body: proven
+551, evidence 136, trusted 265, no disagreement — the backend's
+small-helper expansion (#486) now inlines thirty-two of the bodies the
+earlier count proved separately (`append_byte`, `bitset_set`,
+`buffer_reset`), so the counts are not comparable body for body.
+ Prover build (per body, the optimizer's
 candidates aside): proven 565 → 577, evidence 141 → 147, trusted
 266 → 253, no disagreement.
 
@@ -6375,4 +6457,95 @@ shim, against the C build; `TestE2ENativeSimd`'s `nine` and `ninth`, left
 to C the day before, are proven. The nineteen-parameter body itself is
 witnessed, not proven: its nine-word sum beside a call summary over ten
 vectors exceeds the diagram budget under every order.
+
+### 9.ai Block versioning by fact context (2026-09-15)
+
+Every guard the checker reads is a fact about a register at a program
+point, and every fact dies where control merges: the label fixpoint keeps
+at a label exactly what all of its predecessors carry (`meetGuards`), so a
+fact that holds on one path into a join is not available after it. That
+single limitation is what four of this month's elision increments each
+worked around — the fixpoint built for the RV64 lane, the condition
+materialized into a boolean whose provenance is lost at the join, the
+per-line guard fallback that exists because one refused access costs a
+body its elision, and the frame address that differs between two paths so
+the meet holds neither.
+
+The remedy is the one basic block versioning uses for types (Chevalier-
+Boisvert and Feeley; `docs/notes/implementation-literature-2026-09.md`
+§5), applied to facts and moved into the checker rather than the lowering:
+check a region once per incoming fact context instead of once against
+their meet. Nothing is duplicated in the emitted code, so the verifier
+sees the same body it saw before and no program grows.
+
+- Each label keeps the distinct states that reach it, up to
+  `maxLabelVersions`, beside the meet the fixpoint iterates on (`arrive`).
+  The meet still decides the fixpoint, so a body the checker admits today
+  is checked exactly as it was and keeps its verdict.
+- A body the meet refuses gets a second chance (`dischargeByVersion`).
+  For each label more than one state reaches, the body is checked again
+  once per state, entering that label with it (`runVersionPass`), up to
+  `maxVersionPasses` extra passes for the body.
+- A version pass prunes what its context cannot reach: where the context
+  knows the register a `cbz` or `cbnz` tests, the branch is decided, and
+  the items after it on the not-taken side are not checked until the next
+  label (`contextDead`). The taken edge of a `cbz` also records that the
+  register is zero, which is how the boolean of a short-circuit reaches
+  the join as a fact rather than as an unknown.
+- A finding that no version pass reports **at the same place** is
+  discharged. The place, not the wording, is what counts: a context with
+  more facts may refuse the same access for a more specific reason, and
+  that is still a refusal. A surviving finding keeps the meet's wording,
+  which is also what the per-line fallback reads.
+
+Soundness is the conjunction. A finding is discharged only when every
+state that actually arrives at the label either admits the access or
+cannot reach it, and every path through that label arrives with one of
+those states. The other labels in a version pass keep their meets, which
+are weaker than any of their own arrivals, so an admission under a version
+pass is an admission under a weaker assumption than the path really
+provides. Findings are only ever removed, never added, so no body that
+passes today can begin to fail, and the caps cost reach rather than
+soundness. `OAK_CHECK_TRACE=1` prints the meet's findings, the versions
+per label, and each version pass's findings.
+
+Measured on the stdlib-bearing program against the commit this work
+merged, with the verdict cache off: **nothing changed** — the same 55
+bodies elide the same 126 guards, the same 743 trap branches remain, and
+all 283 proven bodies keep their verdicts. The trace says why, and the
+answer corrects the premise this increment was built on. Of the 89 bodies
+the checker refuses there, the findings are 218 writes to an undeclared
+register, 198 reads of an uninitialized one, and 101 memory operands
+through a base the checker cannot place — bodies outside the subset, whose
+refusal no context changes. The elision-relevant findings number about 85,
+and for every one of them each arriving state reports the same refusal:
+the fact is missing on every path, not lost at the join. The largest
+single class, 50 findings of `without a dominating constant index guard`,
+is one shape in three bodies — `normalize_compose_pair`, `grapheme_class`,
+`normalize_props`, each a binary search over a three-word table read
+through `view(&table)`, indexing `mid * 3 + j` and `low * 3 + j` under
+`mid < high <= entries` and `low < entries` where `entries = len(table) /
+3`. The typechecker discharges those by `Oak.Extents.div_bound_scaled`,
+and the checker has no fact for them: it sees `udiv wE, wLen, wK` with
+`wK` a known constant and draws nothing from it. That, not the meet, is
+the limit on elision reach here.
+
+So the mechanism lands gated: the extra passes run only for a body whose
+findings are ones a lost guard could explain (`anyJoinSensitive`), which
+is a small minority, and never for the structural refusals above. What it
+buys today is the shapes its tests state — a frame address that differs
+between two paths, and a guard whose join the other path cannot reach —
+and a place to stand when the missing fact rules arrive, since each new
+rule is worth more once a fact that holds on one path is no longer lost
+at the next label.
+
+What versioning does not do: it does not invent facts, so a path that
+genuinely reaches an access without a guard is still refused
+(`TestCheckerFrameArrays`, `TestCheckerGuardFacts`, and the index cases
+each carry the accepted and the refused shape). It is also not the
+multi-versioning of implementations that
+`docs/notes/mojo-futhark-optimization-2026-09.md` §8 records: that chooses
+between whole implementations of one operation and may defer the choice to
+run time, while this chooses nothing at all — it only checks the one
+implementation more carefully.
 

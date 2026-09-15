@@ -7,16 +7,16 @@ import (
 	"strings"
 )
 
-// ValueReplacement records one SSA identity eliminated by CSE. To always
+// ValueReplacement records one SSA identity eliminated by GVN. To always
 // names a definition that dominates every former use of From.
 type ValueReplacement struct {
 	From ValueID
 	To   ValueID
 }
 
-// CSEReport is deterministic evidence about common subexpressions removed
+// GVNReport is deterministic evidence about congruent expressions removed
 // from a verified CFG.
-type CSEReport struct {
+type GVNReport struct {
 	EliminatedOperations int
 	Replacements         []ValueReplacement
 }
@@ -28,8 +28,8 @@ type DCEReport struct {
 	EliminatedValues     []ValueID
 }
 
-type CSEDCEReport struct {
-	CSE CSEReport
+type GVNDCEReport struct {
+	GVN GVNReport
 	DCE DCEReport
 }
 
@@ -38,12 +38,14 @@ type operationLocation struct {
 	index int
 }
 
-// EliminateCommonSubexpressions returns a new CFG. It shares only operations
-// in the closed, total, pure Oak vocabulary below and only when the retained
-// definition dominates the removed definition. The caller's CFG is unchanged.
-func EliminateCommonSubexpressions(cfg CFG) (CFG, CSEReport, error) {
+// EliminateGlobalValueRedundancies returns a new CFG. It shares only
+// operations in the closed, total, pure Oak vocabulary below and only when
+// the retained definition dominates the removed definition. Copy results use
+// their operand's number, and exact commutative/inverse comparisons have one
+// canonical expression key. The caller's CFG is unchanged.
+func EliminateGlobalValueRedundancies(cfg CFG) (CFG, GVNReport, error) {
 	if err := validateAnalysisCFG(cfg); err != nil {
-		return CFG{}, CSEReport{}, err
+		return CFG{}, GVNReport{}, err
 	}
 	result := cloneCFG(cfg)
 	definitions, predecessors := transformGraphInfo(result)
@@ -77,10 +79,14 @@ func EliminateCommonSubexpressions(cfg CFG) (CFG, CSEReport, error) {
 		results  []ValueID
 	}
 	available := map[string][]candidate{}
+	valueNumbers := make(map[ValueID]ValueID, len(definitions))
+	for value := range definitions {
+		valueNumbers[value] = value
+	}
 	replacements := map[ValueID]ValueID{}
 	removed := map[operationLocation]bool{}
 	pendingFacts := map[operationLocation][]Fact{}
-	report := CSEReport{}
+	report := GVNReport{}
 
 	for _, ordered := range order {
 		block := &result.Blocks[ordered.index]
@@ -91,9 +97,10 @@ func EliminateCommonSubexpressions(cfg CFG) (CFG, CSEReport, error) {
 				operation.Facts[factIndex].Values = remapReplacements(operation.Facts[factIndex].Values, replacements)
 			}
 			if !isClosedPureOperation(*operation) {
+				assignFreshValueNumbers(*operation, valueNumbers)
 				continue
 			}
-			key := commonExpressionKey(*operation)
+			key := globalValueExpressionKey(*operation, valueNumbers)
 			current := operationLocation{block: block.ID, index: index}
 			var selected *candidate
 			var movedFacts []Fact
@@ -116,12 +123,14 @@ func EliminateCommonSubexpressions(cfg CFG) (CFG, CSEReport, error) {
 			}
 			if selected == nil {
 				available[key] = append(available[key], candidate{location: current, results: valueIDs(operation.Results)})
+				assignOperationValueNumbers(*operation, valueNumbers)
 				continue
 			}
 			removed[current] = true
 			report.EliminatedOperations++
 			for resultIndex, value := range operation.Results {
 				replacements[value.ID] = selected.results[resultIndex]
+				valueNumbers[value.ID] = valueNumberOf(selected.results[resultIndex], valueNumbers)
 				report.Replacements = append(report.Replacements, ValueReplacement{From: value.ID, To: selected.results[resultIndex]})
 			}
 			pendingFacts[selected.location] = append(pendingFacts[selected.location], movedFacts...)
@@ -151,7 +160,7 @@ func EliminateCommonSubexpressions(cfg CFG) (CFG, CSEReport, error) {
 	}
 	sort.Slice(report.Replacements, func(i, j int) bool { return report.Replacements[i].From < report.Replacements[j].From })
 	if err := validateAnalysisCFG(result); err != nil {
-		return CFG{}, CSEReport{}, fmt.Errorf("optir: CSE produced invalid CFG: %w", err)
+		return CFG{}, GVNReport{}, fmt.Errorf("optir: GVN produced invalid CFG: %w", err)
 	}
 	return result, report, nil
 }
@@ -199,19 +208,20 @@ func EliminateDeadCode(cfg CFG) (CFG, DCEReport, error) {
 	return result, report, nil
 }
 
-// SimplifyCSEDCE is the generic scalar cleanup order. CSE exposes unused
-// duplicate producers and DCE then removes dead pure chains. The result remains
-// an analysis-only candidate until an emission equivalence gate consumes it.
-func SimplifyCSEDCE(cfg CFG) (CFG, CSEDCEReport, error) {
-	common, cse, err := EliminateCommonSubexpressions(cfg)
+// SimplifyGVNDCE is the generic scalar cleanup order. GVN exposes unused
+// congruent producers and copies, and DCE then removes dead pure chains. The
+// result remains an analysis-only candidate until an emission equivalence gate
+// consumes it.
+func SimplifyGVNDCE(cfg CFG) (CFG, GVNDCEReport, error) {
+	common, gvn, err := EliminateGlobalValueRedundancies(cfg)
 	if err != nil {
-		return CFG{}, CSEDCEReport{}, err
+		return CFG{}, GVNDCEReport{}, err
 	}
 	dead, dce, err := EliminateDeadCode(common)
 	if err != nil {
-		return CFG{}, CSEDCEReport{}, err
+		return CFG{}, GVNDCEReport{}, err
 	}
-	return dead, CSEDCEReport{CSE: cse, DCE: dce}, nil
+	return dead, GVNDCEReport{GVN: gvn, DCE: dce}, nil
 }
 
 func validateAnalysisCFG(cfg CFG) error {
@@ -256,15 +266,37 @@ func isClosedPureOperation(operation Operation) bool {
 	}
 }
 
-func commonExpressionKey(operation Operation) string {
+func globalValueExpressionKey(operation Operation, valueNumbers map[ValueID]ValueID) string {
+	code := operation.Code
+	operands := make([]ValueID, len(operation.Operands))
+	for index, operand := range operation.Operands {
+		operands[index] = valueNumberOf(operand, valueNumbers)
+	}
+	// Unknown attributes remain ordered and operand-sensitive. The checked
+	// projection emits no attributes on these algebraic operations; refusing
+	// normalization when an extension adds one keeps the transform closed.
+	if len(operands) == 2 && len(operation.Attributes) == 0 {
+		switch code {
+		case OpGreater:
+			code = OpLess
+			operands[0], operands[1] = operands[1], operands[0]
+		case OpGreaterEqual:
+			code = OpLessEqual
+			operands[0], operands[1] = operands[1], operands[0]
+		case OpIntAdd, OpIntMul, OpIntAnd, OpIntOr, OpIntXor, OpEqual, OpNotEqual:
+			if operands[1] < operands[0] {
+				operands[0], operands[1] = operands[1], operands[0]
+			}
+		}
+	}
 	var key strings.Builder
-	writeKeyString(&key, operation.Code)
+	writeKeyString(&key, code)
 	writeKeyUint(&key, uint64(len(operation.Results)))
 	for _, result := range operation.Results {
 		writeKeyString(&key, string(result.Type))
 	}
-	writeKeyUint(&key, uint64(len(operation.Operands)))
-	for _, operand := range operation.Operands {
+	writeKeyUint(&key, uint64(len(operands)))
+	for _, operand := range operands {
 		writeKeyUint(&key, uint64(operand))
 	}
 	writeKeyUint(&key, uint64(len(operation.Attributes)))
@@ -273,6 +305,27 @@ func commonExpressionKey(operation Operation) string {
 		writeKeyString(&key, attribute.Value)
 	}
 	return key.String()
+}
+
+func assignOperationValueNumbers(operation Operation, valueNumbers map[ValueID]ValueID) {
+	if operation.Code == OpCopy && len(operation.Results) == 1 && len(operation.Operands) == 1 && len(operation.Attributes) == 0 {
+		valueNumbers[operation.Results[0].ID] = valueNumberOf(operation.Operands[0], valueNumbers)
+		return
+	}
+	assignFreshValueNumbers(operation, valueNumbers)
+}
+
+func assignFreshValueNumbers(operation Operation, valueNumbers map[ValueID]ValueID) {
+	for _, result := range operation.Results {
+		valueNumbers[result.ID] = result.ID
+	}
+}
+
+func valueNumberOf(value ValueID, valueNumbers map[ValueID]ValueID) ValueID {
+	if number, exists := valueNumbers[value]; exists {
+		return number
+	}
+	return value
 }
 
 func writeKeyString(key *strings.Builder, value string) {
