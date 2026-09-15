@@ -183,3 +183,23 @@ func TestVerifyVectorAnyFreeLanes(t *testing.T) {
 		t.Fatalf("the min reduction must be a mismatch, got %s: %s", wrong.Kind, wrong.Message)
 	}
 }
+
+// A vector exclusive-or of a register with itself is zero, not the move
+// that `orr vD, vN, vN` is: the backend spells `xor(v, v)` so once it reads
+// v in place (nativegen/simd.go vecOperand), and a model that read it as a
+// move refuted the correct body (and would have proven `xor(v, v) = v`).
+func TestVerifyVectorSelfXor(t *testing.T) {
+	decl := "selfxor: (v: []u8) -> u32"
+	oak := "{\n  x: simd.U8x16 = simd.load_u8x16(v, u32(0))\n  simd.any_u8x16(simd.xor_u8x16(x, x)) ? u32(1) | u32(0)\n}"
+	asm := "  bind x0, w1 = v\n  clobber w9, w10, v16, v17\n  cmp w1, #16\n  b.lo trap\n  sub w10, w1, #16\n  cmp wzr, w10\n  b.hi trap\n  ldr q16, [x0]\n  eor v17.16b, v16.16b, v16.16b\n  umaxv b17, v17.16b\n  umov w9, v17.b[0]\n  cmp w9, #0\n  cset w0, ne\n  ret\ntrap:\n  brk #1"
+	proven := verifyCase(t, decl, oak, asm)
+	if proven.Kind != VerdictProven {
+		t.Fatalf("xor(x, x) as eor vD, vN, vN must be proven zero, got %s: %s", proven.Kind, proven.Message)
+	}
+	// The move in its place is a different function: refuted with the
+	// bytes named.
+	moved := verifyCase(t, decl, oak, strings.Replace(asm, "eor v17.16b, v16.16b, v16.16b", "orr v17.16b, v16.16b, v16.16b", 1))
+	if moved.Kind != VerdictMismatch {
+		t.Fatalf("a move where the body xors must be a mismatch, got %s: %s", moved.Kind, moved.Message)
+	}
+}

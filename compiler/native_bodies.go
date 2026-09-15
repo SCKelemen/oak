@@ -112,17 +112,25 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// if the seam checker cannot admit the body from the facts on the
 		// path, the body is lowered again with every guard. The checker
 		// decides safety; the elision is only what it already knows.
-		lane.ElideProven = lane.Arch == asm.ArchArm64
+		lane.ElideProven = true
 		// Strength reduction (docs/spec/90-backend.md §16): constant
 		// multiplications, divisions, and remainders as shifts, masks, and
 		// untested divisions; the checker and the verifier decide, and a
 		// refusal or a lost proof lowers the body again without it.
 		lane.Strength = lane.Arch == asm.ArchArm64
+		// Vector homes across calls (docs/spec/94-assembler.md §9.ad): a
+		// calling function's vector locals in v16–v31, saved around a call
+		// only when live after it; the checker and the verifier decide.
+		lane.VectorHomes = lane.Arch == asm.ArchArm64
 		// Compare reuse across a conditional chain (docs/spec/94-assembler.md
 		// §9 "Condition selection"): the checker carries flags across a
 		// label every predecessor reaches with them, or the body lowers
 		// again without the reuse.
 		lane.ReuseFlags = lane.Arch == asm.ArchArm64
+		// Loop-invariant code motion (§9 "Loop invariants"): hoisted
+		// values, propagated copies, peeled guards; the checker judges the
+		// result, or the body lowers again with its loops as written.
+		lane.HoistInvariants = lane.Arch == asm.ArchArm64
 		lane.Globals = globals
 		lane.Aggregates = aggregates
 		asmFn, err := nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
@@ -180,9 +188,29 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d element guard(s) elided under the checker's own facts", fn.Name.Value, elided)))
 			}
 		}
+		if len(findings) != 0 && lane.HoistInvariants && nativegen.Hoisted(asmFn) > 0 {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its loop invariants in place (the checker did not admit the hoisted form: %s)", fn.Name.Value, findings[0])))
+			lane.HoistInvariants = false
+			asmFn, err = nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
+			if err != nil {
+				diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
+				continue
+			}
+			findings = asm.Check(asmFn, source, symbols)
+		}
 		if len(findings) != 0 && lane.ReuseFlags && nativegen.ReusedCompares(asmFn) > 0 {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s repeats its compares (the checker did not admit the reused form: %s)", fn.Name.Value, findings[0])))
 			lane.ReuseFlags = false
+			asmFn, err = nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
+			if err != nil {
+				diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
+				continue
+			}
+			findings = asm.Check(asmFn, source, symbols)
+		}
+		if len(findings) != 0 && lane.VectorHomes && nativegen.VectorHomes(asmFn)+nativegen.LeafVectorHomes(asmFn) > 0 {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its vector slots (the checker did not admit the vector homes: %s)", fn.Name.Value, findings[0])))
+			lane.VectorHomes = false
 			asmFn, err = nativegen.CompileFor(lane, source, functions, records, adts, constants, tc)
 			if err != nil {
 				diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %v", fn.Name.Value, err)))
@@ -258,11 +286,44 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 				}
 			}
 		}
+		if verdict.Kind != asm.VerdictProven && lane.VectorHomes && nativegen.VectorHomes(asmFn)+nativegen.LeafVectorHomes(asmFn) > 0 {
+			// The body with vector homes did not prove: the slot form is
+			// lowered and verified too, and kept when it proves.
+			slotLane := lane
+			slotLane.VectorHomes = false
+			if plain, plainErr := nativegen.CompileFor(slotLane, source, functions, records, adts, constants, tc); plainErr == nil && len(asm.Check(plain, source, symbols)) == 0 {
+				plain.Callees = functions
+				plainKey := ""
+				if cacheDir != "" {
+					plainKey = verdictCacheKey(plain, source, functions, declarations)
+				}
+				plainVerdict, plainCached := cachedVerdict(cacheDir, plainKey)
+				if !plainCached {
+					plainVerdict = asm.Verify(plain, source, verifiedBody(plain, source))
+					storeVerdict(cacheDir, plainKey, plainVerdict)
+				}
+				if plainVerdict.Kind == asm.VerdictProven {
+					diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its vector slots (the verifier proved them and not the vector homes: %s)", fn.Name.Value, verdict.Message)))
+					asmFn, verdict = plain, plainVerdict
+					lane.VectorHomes = false
+				} else {
+					diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its vector homes (neither form proved; the slot form: %s)", fn.Name.Value, plainVerdict.Message)))
+				}
+			} else if plainErr != nil {
+				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its vector homes (the slot form did not lower: %v)", fn.Name.Value, plainErr)))
+			} else {
+				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its vector homes (the checker refused the slot form)", fn.Name.Value)))
+			}
+		} else if kept := nativegen.VectorHomes(asmFn); kept > 0 && verdict.Kind == asm.VerdictProven {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d vector local(s) kept in registers across calls", fn.Name.Value, kept)))
+		} else if homed := nativegen.LeafVectorHomes(asmFn); homed > 0 && verdict.Kind == asm.VerdictProven {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d vector local(s) homed in the argument registers", fn.Name.Value, homed)))
+		}
 		if verdict.Kind != asm.VerdictProven && lane.Strength && nativegen.Reduced(asmFn) > 0 {
 			// The reduced form did not prove: the plain arithmetic is
 			// lowered and verified too, and kept when it proves — a
 			// faster body is not worth a weaker verdict.
-			if plain, plainErr := nativegen.CompileFor(nativegen.Lane{Arch: lane.Arch, SoftFloat: lane.SoftFloat, ElideProven: lane.ElideProven, GuardLines: lane.GuardLines, ReuseFlags: lane.ReuseFlags, Globals: lane.Globals, Aggregates: lane.Aggregates, Tables: lane.Tables, PackedStackArgs: lane.PackedStackArgs, Vector: lane.Vector}, source, functions, records, adts, constants, tc); plainErr == nil && len(asm.Check(plain, source, symbols)) == 0 {
+			if plain, plainErr := nativegen.CompileFor(nativegen.Lane{Arch: lane.Arch, SoftFloat: lane.SoftFloat, ElideProven: lane.ElideProven, VectorHomes: lane.VectorHomes, GuardLines: lane.GuardLines, ReuseFlags: lane.ReuseFlags, Globals: lane.Globals, Aggregates: lane.Aggregates, Tables: lane.Tables, PackedStackArgs: lane.PackedStackArgs, Vector: lane.Vector}, source, functions, records, adts, constants, tc); plainErr == nil && len(asm.Check(plain, source, symbols)) == 0 {
 				plainKey := ""
 				if cacheDir != "" {
 					plainKey = verdictCacheKey(plain, source, functions, declarations)

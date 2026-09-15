@@ -2742,6 +2742,13 @@ still bounded the index at the header. The state is now the whole
 register state, met across every predecessor
 (`asm/bounds_arith_test.go`).
 
+The forty-fourth increment is the loop-invariant code motion (§9 "Loop
+invariants"): a machine-level pass over the emitted items — hoisting,
+copy propagation, guard peeling behind the exit test — that the seam
+checker and the verifier judge as they judge the lowering itself
+(`compiler/e2e_native_licm_test.go`: the hoisted form admitted and
+proven, a loop that never runs not trapping on its peeled guard).
+
 The forty-fourth increment is if-conversion (§9): a conditional chain over
 one comparison whose arms only assign lowers as one compare and a select
 per variable (`nativegen/select.go`, `Oak.Assembler.selectChain_firstArm`,
@@ -2762,7 +2769,32 @@ against the rewritten body and Lean proving the rewrite
 (`asm.Function.Body`) so the verifier and the verdict cache judge the
 right one.
 
-The forty-seventh increment is owned arrays as values (§9 "Arrays as
+The forty-sixth increment is the pair loads (§9): adjacent element loads
+of one span become a block address and `ldp` pairs, the verifier reading
+a pair as two loads (`asm/pair_loads_test.go`).
+
+The forty-seventh increment is vector operands in place (§9,
+`nativegen/simd.go` `vecOperand`). A vector variable in its own register
+is read where it lies by every simd operation; the operation writes a
+fresh scratch when its first operand is a variable's home (its own
+scratch otherwise); the result retargets to the assigned variable's
+register as scalar results do (`retargetLast`, the arrangement `v16.16b`
+renamed to the home's), the operations that accumulate into or insert
+into their destination (`fmla`, a lane `mov`) copying a home first; and a
+literal splat is one `movi` (zero in any arrangement, a byte in the byte
+lanes) instead of `movz`, a mask and `dup` through a general register.
+Before it every vector read was an `orr` copy into a scratch and every
+result an `orr` copy back — the UTF-8 validator's `or(or(a, b), or(c, d))`
+was eight instructions for three, its body 611 lines with fifty copies
+and fifty frame-slot accesses; it is 330 lines with no copies and
+thirty-six slot accesses, every unit proven at the bit level, at
+0.12–0.14 ns per byte against the previous lowering's 0.17–0.18 and the
+C backend's 0.10–0.11 in one alternated run (`benchmarks/native/README.md`).
+The verifier's model of `eor vD, vN, vN` had read it as the vector move
+`orr vD, vN, vN` is; it is zero (`asm/verify_vector_test.go`), and the
+in-place `xor(v, v)` was the first body to spell it.
+
+The forty-eighth increment is owned arrays as values (§9 "Arrays as
 values"): `[N]T` parameters, results, arguments, initializers, and
 whole-array assignments and stores follow the record rules under the
 one-field composite the C backend's wrapper struct is, the verifier
@@ -3810,6 +3842,56 @@ statement's — which is the line a finding names; an access token on a
 later line of a multi-line statement had escaped the first version and
 sent the body to every guard.
 
+**Loop invariants (2026-09-16, AArch64 lane; `nativegen/licm.go`).** A
+pass over the emitted items of a function, judged like every lowering by
+the seam checker and the verifier. A loop is the generator's shape — the
+`loop_N` header, its exit tests to `done_M`, the body, the back edge —
+and, innermost first, three things leave the body for a preheader before
+the header. A pure instruction (a constant, a global's address, an element
+address, arithmetic) whose sources the loop never writes is hoisted, its
+destination renamed to a scratch register the whole function never names
+and its readers in the block renamed with it — either the old destination
+is written again in the same block, or no instruction anywhere in the
+loop reads it, the exit tests and the next iteration's header included,
+so no path reaches a reader through the old name. A copy of a register
+(`mov wD, wS`, `add xD, xS, #0`) is propagated instead of moved when the
+source holds until the copy's last reader: its readers take the source
+and the copy disappears; a copy of the zero register makes `str xzr`. The
+first trapping instruction of the body, when it is an element guard `cmp
+wA, wB; b.cond trap` over invariant registers and only pure instructions
+and loads precede it, is peeled into the preheader behind a copy of the
+loop's exit tests — the preheader runs exactly when the body would have
+run once, so the trap fires on the same inputs as before, once — and the
+fact it establishes holds at the header on both edges, so the element
+address it licenses hoists after it (§7: constants, global addresses,
+element regions, and index guards are in the label state). A write into a
+register a variable lives in is the variable's value, read where no block
+sees — after the loop, at the header, in another arm — so it is neither
+moved nor propagated away (the verifier refuted a `result = true` hoisted
+and an `x = y` propagated during development, `dec_prefix_less`,
+`utf8_first_error_at`); a write into an argument, result, or platform
+register belongs to a call or a return and stays too (a call reads its
+argument registers without naming them — the pass once dropped `mov x1,
+x24` before a `bl`, and the linked program faulted where the verifier's
+witnesses had not reached). A hoisted value takes a scratch register the
+function never names, or one of the callee-saved registers the lowering
+reserves for the pass: the first lowering reports the values it could
+not place, and the second reserves that many (four at most), saved and
+restored with the variables'. A loop that calls hoists nothing into a
+scratch register (a call clobbers every one); its copies still propagate
+and its guard still peels, and its reserved registers survive the call.
+A load of a scalar global (`ldrh w10, [x15]` after the hoisted `adrp;
+add :lo12:`) leaves a loop that stores to no global's address and calls
+nothing: a span cannot alias a scalar global — its elements lie in arrays
+and aggregates — so the loop's span stores leave it alone, a fact the
+type system gives and C's aliasing rules do not. Other loads stay (a span
+the loop stores through may alias one it reads), as do stores and calls.
+The os pilot's page-zeroing loop (`alloc_table`, sampled at 87 percent
+of its decoder cycle) went from twenty-two instructions per element to
+nine: the exit test, the index's add, the element guard, `str xzr, [x17,
+w6, uxtw #3]`, the increment, the back edge, and one constant the reserve
+did not reach; the C backend under clang runs it in five. A 64-bit constant is a `movz` and up to three `movk` into one register; the pass hoists the whole chain or none of it — the first two alone left the later `movk` extending a register the loop had taken for something else, a defect the verifier caught on an inlined JSON scan (`TestE2ENativeLICMConstantChain`), and a `movk` that extends a register past a hoisted point refuses the rename.
+
 **If-conversion (2026-09-16, AArch64 lane; `nativegen/select.go`).** A
 conditional chain in statement position whose every condition compares
 the same two operands and whose every arm only assigns register-homed
@@ -3880,6 +3962,25 @@ other statement, another stride, or an accumulator read elsewhere in the
 body; a use of the index after the loop reads `len(v)` on both sides.
 `bench_sum` went from six instructions per element to nineteen per four.
 
+**Pair loads (2026-09-16, AArch64 lane; `nativegen/pair_loads.go`).**
+Within one basic block, two element loads of one span at consecutive
+indices — `ldr x9, [x19, w3, uxtw #3]` and, after its index add, `ldr
+x10, [x19, w10, uxtw #3]` with `w10 = w3 + 1` — become the block's element
+address formed once, `add x15, x19, w3, uxtw #3`, and one pair load at
+the immediate offset, `ldp x9, x10, [x15]`; the next pair reads `[x15,
+#16]`. The second load moves up to the first, so nothing between them may
+write the base, the index, or the block address, read or write the second
+destination, or store; the index temporary the second load consumed dies
+with it, and the block address is a scratch register the whole function
+never names (a register the second lowering pass gave a variable is live
+across blocks that never mention it). The seam checker admits the pair
+through the element region the index's slack guard marks (§7: `add xE, xB,
+wI, uxtw #s` under `wI + K <= len` is a region of K elements, and a pair
+of two elements at offset `2j` lies inside it for `2j + 2 <= K`); the
+verifier reads a pair load as two loads of the register width, in a
+straight path and in a loop body alike. The unrolled reduction's four
+loads are two pairs: `bench_sum`'s main loop is thirteen instructions per
+four elements.
 **Arrays as values (2026-09-16, AArch64 lane; `spec/lean/Oak/ArrayValues.lean`).**
 An owned array of scalars `[N]T` crosses the boundary as a value under the
 record rules: it is the one-field composite the C backend's wrapper struct
@@ -4533,7 +4634,101 @@ literal as an f64 against f32 bits and the Oak side refuted itself —
 which had hidden behind an undecided asm term until the fold made the
 asm side definite and the mismatch confirmed (`floatWidthOf`;
 `TestFloatElementWidth`, `TestShiftCountWrapsAtWidth`). With the
-upstream commits of the same hour: proven 470.
+upstream commits of the same hour: proven 470. A call summary
+refused a callee with more than eight parameters before it laid them
+out, though it reads the ones beyond the registers from the outgoing
+area; the count is no bar now (`term_new` with eleven, `sr_emit` with
+ten). The loop-event budget is sixteen where it was eight: a body that
+reaches its loops through summaries counts the callees' loops among its
+own. And a division by a constant power of two on the asm side was
+tried as the shift it equals, so that the `i / 8` of a bit-set walk
+would meet the Oak side's shift rather than an uninterpreted quotient;
+it proved four bodies and cost the build ten CPU-minutes in bodies
+whose divisions had ended quickly as uninterpreted, so it is not kept.
+Proven 477.
+
+**A record returned through memory (2026-09-15).** A record result
+beyond two register chunks comes back through the area the caller
+passes in x8, and twenty-eight bodies stopped there ("returned through
+memory"). The executor now binds x8 to a frame address of the area's own
+— far above the frame and the incoming arguments (`resultAreaBase`), so
+the body's stores through x8 tile it as they tile the frame — and the
+`ret` delivers each word of the record assembled from the area's slots,
+leaf by leaf; a leaf the body never stored leaves the body trusted with
+its name. Verify runs one chunk per word, as it runs two for a two-chunk
+record, and the Oak side packs the same chunk from its aggregate
+(`packAggregateChunk`). Seven of the twenty-eight prove, eight are
+evidence, and thirteen stop at a callee returning such a record — the
+call summary does not carry the area yet. Alongside, the decision
+canonicalizes a product by a constant power of two into the shift the
+backend's strength reduction emits (`n * 8` against `lsl #3`; the
+lowering keeps the product, which the refinement model renders), which
+returned five proofs the reduction had unmade and added two. With the
+strength reduction and the other commits of the evening: proven 529,
+evidence 97, trusted 333, no disagreement, the rows identical
+(`TestE2ENativeWideResult`).
+
+**The area a callee returns through, in the summary (2026-09-15).** The
+thirteen bodies that stopped at "a call to `rs_name` returning `Name16`"
+called a callee whose record result exceeds two chunks. Their caller
+passes the address of a frame slot in x8 (`add x8, sp, #off` before the
+`bl`) and reads the fields from that slot afterward. The summary now
+takes the address x8 holds — it must be a frame address, as the backend
+emits it — lowers the callee's body to its aggregate value as the
+register-returned case does, and stores every leaf into the caller's
+frame at the leaf's offset and width (a Bool as its 4-byte cell); the
+padding bytes between leaves keep what the frame held, which the Oak
+body never reads; the caller-saved registers are forgotten as after any
+call. The caller's loads then find the callee's leaves as frame slots,
+and a load from the wrong offset is refuted (`TestVerifyMemoryReturnedCallee`:
+a caller reading `w.a + w.b`, a narrow leaf `w.c`, and a caller reading
+`b` where its Oak body reads `a`). A record holding a union stays
+outside — its inactive payload bytes are unspecified, which a leaf-wise
+store does not express — as does RV64, where the area's address arrives
+in a0 and shifts the arguments. Alongside, the inliner's literal
+substitution now reaches the field map of a record literal (a field whose
+whole value was a parameter kept the renamed temporary;
+`TestE2EInlineLiteralArgumentsIntoRecordLiteral`). Prover build: proven
+538, evidence 100, trusted 329, no disagreement, no body left at a
+record-returning callee; the rows identical.
+
+**One loop event per site (2026-09-15).** The executor enumerates paths
+by forking at every undecided branch, and every path reaching a loop
+head — or a call whose callee has loops — appended an event of its own,
+so a body with a diamond before its loop counted two events where its
+Oak body counts one: thirty-nine bodies stopped at "the asm body has N
+data-dependent loops, the Oak body M" (`lstr`: three summaries of one
+call to `ap_lits`, one per path through the inlined `sb_begin`), and the
+duplicates spent the loop budget of others (`span_owner_of`: forty
+events for three loops). Events are now keyed by their site — the loop
+head's position, or the call instruction's line — and a path reaching a
+site another path summarized reuses its index and symbols and merges
+its summary into the event field by field: each header value, the
+continue condition, each next value selects the summary of the path
+taken (`ite(path, fresh, prior)`), the entry memories and the
+iteration's stores merge as a fork's write logs do; the loop's shape —
+its variables, widths, symbols, nesting — must agree, else the body is
+trusted ("a loop whose shape differs between two paths"). The path is
+carried on the state as the chain of forks it took (`pathNode`: the
+fork, the side, the condition), so the relation of two reaches is
+structural: paths that left one fork on different sides are exclusive,
+and the select is exact under both; a path that extends another's
+(an unrolled counted loop calling the same callee twice) is the same
+path reaching the site again, and its events stay distinct instances.
+The loop budget counts sites. `TestVerifyLoopSitesAcrossPaths`: a
+looping callee called with a count from either arm of a diamond is
+proven, and an arm passing the wrong count is refuted. A trap guard's
+fork is left out of the path: its taken side summarizes nothing, and the
+inputs it excludes are outside the comparison on both sides, so a merged
+event's selects spell the conditions the Oak body's guards spell (with
+the guard in the path, the entry memory of a caller that stores under a
+bounds check before its loop did not prove equal). Prover build: proven
+546, evidence 129, trusted 292, no disagreement; two bodies still count
+differently, five stop at a callee whose loops differ between two paths
+(a constant argument on one path unrolls a loop the other keeps), and
+the merged bodies mostly reach the coupling proof, where their diagram
+budgets run out — the next work, with the path budget (eighty-five
+bodies: sequential diamonds enumerate exponentially).
 
 Still to come in this lane:
 the sail-riscv bridge's export side (the Lean export as the semantics the
@@ -4799,7 +4994,12 @@ scaling, and any other division to the uninterpreted quotient with the
 zero divisor as a trap obligation — which a constant nonzero divisor
 discharges. So each reduced body proves equal to its Oak body by the
 same canonical forms as before, and the compiler reports it: `N constant
-operation(s) strength-reduced, proven`. Should the seam checker refuse a
+operation(s) strength-reduced, proven`. The laws the models rest on are
+`Oak.StrengthReduction`: at 8, 16, and 32 bits, for every shift count
+`k` — at or past the width included — `x * (1 << k) = x << k`,
+`x / (1 << k) = x >> k`, and `x % (1 << k) = x & ((1 << k) - 1)`, by
+`bv_decide`; the 64-bit case exceeds the tactic's budget and is carried
+by the verifier per body. Should the seam checker refuse a
 reduced body, or the verifier return less than proven for it, the
 compiler lowers the body again without the reduction and keeps the plain
 form when that one proves (`compiler/native_bodies.go`; the diagnostic
@@ -4896,8 +5096,7 @@ length", `docs/notes/native-optimization-2026-09.md`); the conjunction's second 
 above (`json_value_boundary`, `url_parse`); and index arithmetic the
 typechecker discharges by `scaled_under_bound` (`unicode_lookup`,
 `normalize_find`: `at = low * 5` under `low < len / 5`), which the
-checker has no fact for. On the RV64 lane elision stays off until its
-index representation admits it.
+checker has no fact for. The RV64 lane elides too, since §9.ae.
 
 **Where optimizing passes live (decision, 2026-09-15).** Two levels carry
 proofs and admit passes: the AST, where the typechecker's facts are keyed
@@ -4908,4 +5107,123 @@ peephole and a liveness allocator, with def-use chains computed on demand).
 A mid-level IR is not introduced: it would re-derive how the facts reach
 the lowering across ten thousand lines for what the item list can carry
 until an allocator shows otherwise.
+
+### 9.ad Vector homes across calls (2026-09-15)
+
+The second increment of the optimization system (`90-backend.md` §16).
+A function that makes calls keeps its vector locals in the caller-saved
+vector registers v16–v31 rather than in sixteen-byte frame slots reloaded
+at every use (`Lane.VectorHomes`). The pool is what the deepest
+expression (`vecTempReserve`) and the widest call's vector and float
+arguments leave of the sixteen; a local takes the next home, and a home
+released at its last use returns to the pool. A home is saved before a
+call and reloaded after it only when its variable is live after the call
+(`callerHomesLive`, the liveness pre-pass of the scalar homes), as a
+whole q register in a sixteen-aligned spill slot; a home dead after the
+call costs nothing. Past the pool, locals take slots as before. Scalar
+locals already lived in x19–x28 across calls; leaves keep their vector
+locals in v8–v15 and the scratch registers, unchanged.
+
+Two seams learned the shape. The seam checker forgets every vector
+register but the low halves of v8–v15 at a `bl` — it forgot v0–v7 alone
+before, so a value read from v16–v31 after a call without a reload went
+unrefused, a gap the increment closes whether or not homes are on. The
+verifier models a whole q-register store as its two sixty-four-bit
+halves; a reload gave the halves back as a two-lane value, and a
+sixteen-lane vector saved around a call lost its lane structure to the
+proof, exceeding the diagram budget. The low half's frame slot now
+remembers the vector value stored and the term written to the high half,
+and a whole reload returns the value lane for lane while both halves
+still stand — sound because the halves are the value's, and exact.
+
+The compiler reports `N vector local(s) kept in registers across calls`
+when the body proves; a body the checker refuses is lowered again with
+slots (`keeps its vector slots`); a body that proves less than the slot
+form keeps the slot form, and one where neither form proves keeps the
+homes and says so (`compiler/native_bodies.go`). Read off the fixture
+(`compiler/e2e_native_vector_homes_test.go`): a vector dead before its
+function's call goes from one store and one load to none; a loop-carried
+vector across a call from three and three to two and two; fourteen
+locals across a call from sixteen and sixteen to fifteen and fifteen,
+twelve of them in homes; a vector used once after a call is one store
+and one load either way. The kernel package has no calling vector body
+left — the helper expansion (§9.y) flattens them — so the increment moves
+no kernel row today; it stands for bodies the expansion refuses and for
+the allocator the flattened kernels need next, where forty vector locals
+meet thirty-two registers and only liveness among them decides who spills.
+
+### 9.ae Check elision on the RV64 lane (2026-09-15)
+
+The RV64 lane kept every guard: its values are canonical (a u32
+sign-extended from bit 31) and the loop's exit test compared them so —
+`sext.w t, norm; bgeu i, t` — while the checker's index fact wants the
+zero-extended index compared with the normalized length, so the exit test
+proved nothing the element access could use. The lane now lowers the
+guard `i < len(v)` at the head of a `while`, an `if`, or a statement
+conditional — `i` a u32 variable in a register, `v` a span — as `slli z,
+i, 32; srli z, z, 32; bgeu z, norm, exit` (`indexLengthTest`): the index
+zero-extended into a register the construct's body keeps, compared with
+the normalized length, which is the u32 comparison exactly (both operands
+are the 32-bit values as 64-bit numbers). The checker reads `bgeu z, norm`
+as its index fact on `z` (Oak.RiscV.index_guard). An element access in
+the body that the typechecker proved (`IndexProven`) and that indexes by
+that variable then reads `z` scaled through the base — `slli t, z, s; add
+t, base, t` or `add t, base, z` for bytes — with no guard of its own
+(`guardedAddress`), and the checker admits it from the fact through the
+scaled-index and element-region rules it already had for GCC's shape
+(`deriveRegion`). Where it refuses, the compiler's per-line fallback keeps
+that line's guards. Outside the mechanism, and still guarded: a
+conjunction (`while i < len(v) && cond`), a bound that is not `len(v)`,
+an index that is not the tested variable, and an access after a label
+inside the body (the RV64 checker forgets index facts at labels).
+
+Two verifier gaps opened by the new shape were closed, and both pay on the
+AArch64 lane too. First, a header temporary the body reads — here `z` —
+started the body as a fresh symbol: the loop's iteration ran from the
+fresh header state, not from the state after the exit test's setup
+instructions, so the body's address was unrelated to the index and no
+pairing of the accumulator survived. When the header falls through on one
+path, the body now starts from that path's values for the registers the
+header wrote (`headerCondition` returns the fall-through states;
+`loopEvent` carries them over). Second, the model of `(x << 32) >> 32`
+folded it to `x`'s own term for any symbol, right when the symbol is
+declared 32 bits wide (the length as bound, a normalized copy) and wrong
+for a loop's fresh 64-bit symbol holding a canonical u32 with its upper
+half set; the fold now asks `upperClear` and otherwise masks. The old
+lowering had hidden this behind its guard, whose fall-through premise
+excluded the offending values.
+
+Measured on the stdlib-bearing program, like for like against the head
+this merged onto and with the verdict cache off: on the RV64 lane 8 bodies
+elide 8 guards where none did (the mechanism's reach today: a plain `i <
+len(v)` head), and no verdict changes on either lane — the two verifier
+fixes are what the new shape needs to prove, and they alter no existing
+body's verdict. An earlier reading of this change credited it with 34
+bodies moving from trusted to proven; those came from the verifier work
+that landed upstream between the two snapshots compared, not from this.
+
+### 9.af A leaf's vector locals in the argument registers (2026-09-15)
+
+The third increment of the optimization system (`90-backend.md` §16),
+read off the flattened UTF-8 validator (`benchmarks/native/utf8_valid.oak`):
+its sixty-four-byte loop stored and reloaded five vector temporaries of
+the expanded `check_blocks` on every step — forty q-register frame
+accesses an iteration — because declaration order had spent the leaf's
+twenty vector homes (v8–v15 and the twelve scratch registers past
+`vecTempReserve`) on the locals declared before them. A leaf now homes
+its vector locals in the argument registers no parameter occupies as
+well, v1–v7 past the vector and float parameters, which arrive in v0
+upward — the scalar leaf homes in x2–x7 (§9, the twenty-second
+increment) for the vector file; v0 is left for the result. Nothing is
+saved: a leaf makes no call. A home released at a local's last use
+returns to its pool. The registers taken are declared as clobbers and
+`Lane.VectorHomes` gates the shape with the same fallback as §9.ad.
+
+The validator's loop goes from forty q-register frame accesses to none,
+its whole body from forty-one to one, and both bodies still prove (the
+three data-dependent loops coupled inductively as before). The fixture
+(`compiler/e2e_native_vector_homes_test.go`, `wide_leaf`) holds
+twenty-four vector locals live at once and reports the ones the argument
+registers took. The timing row waits for a quiet host
+(`benchmarks/native/README.md`); the instruction count is the result.
 

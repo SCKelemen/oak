@@ -2,7 +2,7 @@
 # Owned arrays as values
 
 The native lane's model of an owned array of scalars `[N]T` crossing the
-function boundary (docs/spec/94-assembler.md §9, forty-seventh increment):
+function boundary (docs/spec/94-assembler.md §9, forty-eighth increment):
 the array is the one-field composite the C backend's wrapper struct is, so
 the record rules apply unchanged — leaves at `k * size`, register chunks of
 eight bytes up to sixteen, by reference beyond — and the verifier names its

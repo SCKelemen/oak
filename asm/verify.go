@@ -1159,6 +1159,11 @@ type symbolicState struct {
 	// notes is the execution's shared record (pathNotes); nil in a state
 	// that reports nothing (a callee's summary, a witness run).
 	notes *pathNotes
+	// path is the chain of branches this path took at every undecided
+	// fork, nil before the first (pathNode). A loop or a call with loops
+	// reached again on another path merges its event's fields under the
+	// path's condition (loopSite, mergeLoopEvents).
+	path *pathNode
 	// termBounds: the RV64 lane's index guards by the index's term —
 	// `li rK, K; bgeu rI, rK, trap` bounds the value rI held below K —
 	// which survives the scaling and the add that rewrite the register
@@ -1169,6 +1174,13 @@ type symbolicState struct {
 type frameSlot struct {
 	value *term
 	width int // bytes
+	// vec, on the low half of a whole q-register store, is the vector
+	// value stored, and hi the term written to the high half: a whole
+	// reload gives the value back lane for lane while both halves stand
+	// (vectorFrameAccessAt), so a vector kept in a caller-saved home and
+	// saved around a call keeps its lane structure for the proof.
+	vec *vecValue
+	hi  *term
 }
 
 // pathNotes is what every path of one execution reports back to the
@@ -1392,7 +1404,8 @@ func executeBodyHalf(fn *Function, sig *ast.FunctionStatement, concrete map[stri
 func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[string]uint64, half, chunk int) (*term, *pathExecutor, string, bool) {
 	state := &symbolicState{arch: fn.Arch, regs: map[int]*term{}, notes: &pathNotes{}}
 	params := map[string]RegClass{}
-	spans := map[string]int64{} // span/view parameter -> element size in bytes
+	var resultArea []compositeLeaf // a record result returned through memory: its leaves
+	spans := map[string]int64{}    // span/view parameter -> element size in bytes
 	declared := map[string]int{}
 	composites := map[string]compositeArg{}
 	recordSpans := map[string]recordSpanArg{}
@@ -1597,13 +1610,28 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 		// x1 (a0 and a1), each chunk verified in its own run (Verify);
 		// larger ones come back through the area x8 addresses, outside the
 		// subset.
-		if comp.Size > 16 {
-			return nil, nil, "a record result beyond two register chunks (returned through memory)", false
-		}
 		if chunk >= int((comp.Size+7)/8) {
 			return nil, nil, "a result chunk past the record", false
 		}
 		resultClass, hasResult = ClassX, true
+		if comp.Size > 16 {
+			// Returned through memory: the caller passes the result area
+			// in x8 (a0 on RV64 is outside the subset). The area is modeled
+			// as frame memory at an address of its own, far above the
+			// frame and the incoming arguments, so the body's stores through
+			// x8 tile it as they tile the frame (registerFrameAccess) and
+			// the ret delivers the chunk assembled from its slots, leaf by
+			// leaf (docs/spec/94-assembler.md §9).
+			if fn.Arch == ArchRV64 {
+				return nil, nil, "a record result beyond two register chunks (returned through memory) on RV64", false
+			}
+			leaves, _, ok := compositeLeaves(fn.Composites, typeText(sig.ReturnType), "", 0, nil)
+			if !ok {
+				return nil, nil, "a record result whose layout has no leaves", false
+			}
+			state.regs[8] = frameAddressTerm(resultAreaBase)
+			resultArea = leaves
+		}
 	}
 	_, vectorResult := vectorShape(sig.ReturnType)
 	floatResult := 0
@@ -1628,6 +1656,7 @@ func executeBodyChunk(fn *Function, sig *ast.FunctionStatement, concrete map[str
 	exec.resultHalf = half
 	exec.floatResult = floatResult
 	exec.resultChunk = chunk
+	exec.resultArea = resultArea
 	if fn.Arch == ArchRV64 {
 		exec.resultReg = Register{Class: rv64ResultRegister.Class, Num: rv64ResultRegister.Num + chunk}
 		if floatResult != 0 {
@@ -1679,6 +1708,7 @@ type pathExecutor struct {
 	floatResult int
 	resultHalf  int               // a vector result: the 64-bit half of v0 delivered (asm/verify_vector.go)
 	resultChunk int               // a record result of two chunks: the chunk delivered (0: x0/a0, 1: x1/a1)
+	resultArea  []compositeLeaf   // a record result returned through memory (x8): its leaves; nil otherwise
 	spans       map[string]int64  // span parameter -> element size in bytes
 	declared    map[string]int    // parameter -> declared width
 	globals     map[string]Global // the globals the body addresses (fn.Globals)
@@ -1697,8 +1727,13 @@ type pathExecutor struct {
 	loopExits map[int]loopShape
 	loops     []*loopEvent // data-dependent loops met, in creation order
 	loopStack []int        // indices of the loops whose bodies are being executed
-	paths     int
-	steps     int
+	// sites: the loop events by the site that created them — a loop head
+	// (`loop@<pc>`) or a call whose callee has loops (`call@<line>`) — as
+	// the range of indices the site's events occupy. A site reached again
+	// on another path reuses them (asm/loops.go, loopSite).
+	sites map[string]loopSite
+	paths int
+	steps int
 	// records: record and union parameters by name (their leaves), env the
 	// concrete inputs of a witness run (nil when symbolic).
 	records map[string]compositeArg
@@ -1796,7 +1831,7 @@ func compositeLeaves(comps map[string]Composite, typeName, prefix string, base i
 				elemName := fmt.Sprintf("%s.%s[%d]", prefix, field.Name, k)
 				if field.Name == "" {
 					// An owned array as a value (docs/spec/94-assembler.md
-					// §9, forty-seventh increment): the composite is the
+					// §9, forty-eighth increment): the composite is the
 					// array itself, its leaves the elements `p[k]`, as the
 					// Oak side names them (aggregateFrom).
 					elemName = fmt.Sprintf("%s[%d]", prefix, k)
@@ -1930,7 +1965,67 @@ func (s *symbolicState) clone() *symbolicState {
 			termBounds[t] = bound
 		}
 	}
-	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, fregs: fregs, rvcfg: rvcfg, globals: globals, writes: cloneWrites(s.writes), unknownFrom: s.unknownFrom, bounds: bounds, notes: s.notes, termBounds: termBounds}
+	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, fregs: fregs, rvcfg: rvcfg, globals: globals, writes: cloneWrites(s.writes), unknownFrom: s.unknownFrom, bounds: bounds, notes: s.notes, termBounds: termBounds, path: s.path}
+}
+
+// pathNode is one fork on a path: the condition (1 bit) the path took
+// there, which side of the fork it is, and the fork itself (one mark per
+// fork, shared by its two sides), so two paths' relation is structural:
+// they are exclusive when they left one fork on different sides.
+type pathNode struct {
+	parent *pathNode
+	cond   *term
+	fork   *forkMark
+	side   bool
+	term   *term // the conjunction down to here, built on demand
+}
+
+// forkMark identifies one fork; it carries a field so that every mark is
+// a distinct allocation (pointers to zero-size values may coincide).
+type forkMark struct {
+	pc int
+}
+
+// assume narrows the path to one side of a fork: the inputs on which cond
+// (its low bit) holds.
+func (s *symbolicState) assume(cond *term, fork *forkMark, side bool) {
+	s.path = &pathNode{parent: s.path, cond: truncate(cond, 1), fork: fork, side: side}
+}
+
+// pathCondition is the path's condition: the conjunction of the branches
+// it took, nil before the first fork.
+func (s *symbolicState) pathCondition() *term {
+	return s.path.condition()
+}
+
+func (n *pathNode) condition() *term {
+	if n == nil {
+		return nil
+	}
+	if n.term == nil {
+		if parent := n.parent.condition(); parent != nil {
+			n.term = binaryTerm("and", parent, n.cond)
+		} else {
+			n.term = n.cond
+		}
+	}
+	return n.term
+}
+
+// exclusive reports whether two paths cannot both be taken: they left
+// one fork on different sides. Otherwise one is a prefix of the other —
+// the same path, reaching a site again (an unrolled iteration's call).
+func (n *pathNode) exclusive(other *pathNode) bool {
+	sides := map[*forkMark]bool{}
+	for at := other; at != nil; at = at.parent {
+		sides[at.fork] = at.side
+	}
+	for at := n; at != nil; at = at.parent {
+		if side, shared := sides[at.fork]; shared && side != at.side {
+			return true
+		}
+	}
+	return false
 }
 
 // noteTrapGuard records, on the path that falls through a `b.hs <trap>`
@@ -2200,6 +2295,39 @@ func frameAddressOf(t *term) (int64, bool) {
 
 // frameAddressTerm names a frame address.
 func frameAddressTerm(addr int64) *term { return paramTerm(fmt.Sprintf("sp#%d", addr), 64) }
+
+// resultAreaBase is the entry-relative address the executor gives the
+// result area a caller passes in x8: far above any frame or incoming
+// argument, so the area's slots never meet the function's own.
+const resultAreaBase = int64(1) << 40
+
+// resultAreaChunk assembles chunk resultChunk of a record result returned
+// through memory from the slots the body stored in the x8 area: every
+// leaf in the chunk read at its offset and width, placed at its bit
+// position; a leaf the body never stored leaves the chunk undefined.
+func (x *pathExecutor) resultAreaChunk(state *symbolicState) (*term, string, bool) {
+	var missing string
+	chunk := chunkTerm(x.resultArea, int64(x.resultChunk), func(name string, width int) *term {
+		for _, leaf := range x.resultArea {
+			if leaf.name != name {
+				continue
+			}
+			size := (int64(leaf.width) + 7) / 8
+			value, ok := state.loadSlot(resultAreaBase+leaf.offset, size)
+			if !ok {
+				missing = name
+				return constTerm(0, width)
+			}
+			return truncate(value, width)
+		}
+		missing = name
+		return constTerm(0, width)
+	})
+	if missing != "" {
+		return nil, fmt.Sprintf("the result field %s was never stored to the result area", missing), false
+	}
+	return chunk, "", true
+}
 
 // registerFrameAccess executes a load or store whose base register holds a
 // frame address (an array or record element in the frame): the address is
@@ -2554,6 +2682,15 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 				}
 				return value.halves()[x.resultHalf], state.effects(), "", true
 			}
+			if x.resultArea != nil {
+				// The chunk of the result area the caller reads: each leaf in
+				// it from the slot the body stored, at its offset and width.
+				chunk, reason, okArea := x.resultAreaChunk(state)
+				if !okArea {
+					return nil, nil, reason, false
+				}
+				return chunk, state.effects(), "", true
+			}
 			result, ok := state.read(x.resultReg)
 			if !ok {
 				return nil, nil, "result register never written", false
@@ -2632,12 +2769,25 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			}
 			// Any other undecided branch forks; backward or forward alike —
 			// an unrecognized loop unfolds until the budgets stop it.
-			taken, takenEffects, reason, ok := x.run(target, state.clone())
+			// The path records the fork, except a trap guard's: its taken
+			// side summarizes nothing, and the inputs it excludes are
+			// outside the comparison on both sides, so the fall-through
+			// keeps the path it had (its loop events then select on the
+			// conditions the Oak body's guards spell).
+			guard := isTrapBlock(x.items, target)
+			fork := &forkMark{pc: pc}
+			takenState := state.clone()
+			if !guard {
+				takenState.assume(cond, fork, true)
+			}
+			taken, takenEffects, reason, ok := x.run(target, takenState)
 			if !ok {
 				return nil, nil, reason, false
 			}
-			if isTrapBlock(x.items, target) {
+			if guard {
 				state.noteTrapGuard(instr)
+			} else {
+				state.assume(notTerm(cond), fork, false)
 			}
 			fallThrough, fallEffects, reason, ok := x.run(pc+1, state)
 			if !ok {
@@ -2673,6 +2823,12 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			// An exclusive store, an LSE atomic, or clrex through a span
 			// element (asm/atomics.go).
 			if !ok {
+				return nil, nil, reason, false
+			}
+			continue
+		}
+		if instr.Mnemonic == "ldp" {
+			if reason, ok := x.loadPair(instr, state); !ok {
 				return nil, nil, reason, false
 			}
 			continue
@@ -2719,6 +2875,27 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 // verifier's only question is which element it reads. The offset must be a
 // whole element and the register width the element's width; loads from the
 // frame, stores, and moving bases are outside the subset.
+// loadPair reads `ldp xA, xB, [xE, #off]` off a span element address
+// (nativegen/pair_loads.go) as two loads of the register width, the
+// second one width on; the frame's pairs are read before this.
+func (x *pathExecutor) loadPair(instr Instruction, state *symbolicState) (string, bool) {
+	if len(instr.Operands) != 3 {
+		return "a pair load in a form the verifier does not read", false
+	}
+	first, okA := instr.Operands[0].(Register)
+	second, okB := instr.Operands[1].(Register)
+	mem, okM := instr.Operands[2].(Memory)
+	if !okA || !okB || !okM || first.Class == ClassV || mem.Mode != MemOffset {
+		return "a pair load the verifier does not read (a vector pair, or a pre/post-indexed form outside the frame)", false
+	}
+	if reason, ok := x.load(Instruction{Mnemonic: "ldr", Operands: []Operand{first, mem}, Line: instr.Line}, state); !ok {
+		return reason, false
+	}
+	next := mem
+	next.Offset += int64(widthOf(first.Class) / 8)
+	return x.load(Instruction{Mnemonic: "ldr", Operands: []Operand{second, next}, Line: instr.Line}, state)
+}
+
 func (x *pathExecutor) load(instr Instruction, state *symbolicState) (string, bool) {
 	dest, isReg := instr.Operands[0].(Register)
 	if !isReg || dest.Class == ClassV {
@@ -6623,19 +6800,27 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Ve
 	if shape, isVector := vectorShape(sig.ReturnType); isVector {
 		return verifyVectorResult(fn, sig, oakBody, shape)
 	}
-	if _, chunks, isComposite := resultComposite(fn, sig); isComposite && chunks == 2 {
+	if _, chunks, isComposite := resultComposite(fn, sig); isComposite && chunks >= 2 {
+		// Each chunk of the record — two registers, or the words of the
+		// result area beyond them — verified in its own run.
 		first := verifyChunk(fn, sig, oakBody, 0)
 		if first.Kind == VerdictMismatch || first.Kind == VerdictTrusted {
 			return first
 		}
-		second := verifyChunk(fn, sig, oakBody, 1)
-		if second.Kind != VerdictProven {
-			return second
+		var second Verdict
+		for k := 1; k < chunks; k++ {
+			second = verifyChunk(fn, sig, oakBody, k)
+			if second.Kind != VerdictProven {
+				return second
+			}
 		}
 		if first.Kind != VerdictProven {
 			return first
 		}
-		return Verdict{Kind: VerdictProven, Message: first.Message + " (both result chunks)"}
+		if chunks == 2 {
+			return Verdict{Kind: VerdictProven, Message: first.Message + " (both result chunks)"}
+		}
+		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("%s (all %d result chunks)", first.Message, chunks)}
 	}
 	return verifyChunk(fn, sig, oakBody, 0)
 }
@@ -6833,6 +7018,10 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	// value; its padding bits are fresh unknowns, as the ABI leaves them.
 	var aggLeaves []compositeLeaf
 	aggChunks := 0
+	// A record result beyond two chunks is stored leaf by leaf into the
+	// caller's frame at the address x8 held (memResultBase).
+	memResult := false
+	memResultBase := int64(0)
 	// A fixed-vector result comes back whole in the lane's vector result
 	// register (v0 on AArch64, v8 on RV64 — the RVV psABI; docs/spec/
 	// 94-assembler.md §9, vectors across the call boundary): the callee's
@@ -6858,20 +7047,42 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		if class, isClass := contractClass(callee.ReturnType); !ok || !isClass || (class == ClassV && floatResult == 0) {
 			returned := typeText(callee.ReturnType)
 			comp, isComposite := x.fn.Composites[returned]
-			if !isComposite || len(comp.Fields) == 0 || comp.Size > 16 {
+			if !isComposite || len(comp.Fields) == 0 {
 				return fmt.Sprintf("a call to %s returning %s", name, returned), false
 			}
 			leaves, _, ok := compositeLeaves(x.fn.Composites, returned, "", 0, nil)
 			if !ok {
 				return fmt.Sprintf("a call to %s returning %s (no layout)", name, returned), false
 			}
+			if comp.Size > 16 {
+				// Returned through memory: the caller passed the address of
+				// a frame area in x8 (nativegen: `add x8, sp, #off` before
+				// the call), and the callee's leaves land there at their
+				// offsets and widths; the caller's later loads read them
+				// as frame slots (docs/spec/94-assembler.md §9). RV64
+				// passes the area in a0, shifting the arguments, outside
+				// the subset; a union's inactive payload bytes are left as
+				// they were, which the leaf-wise store cannot express.
+				if x.arch == ArchRV64 {
+					return fmt.Sprintf("a call to %s returning %s through memory on RV64", name, returned), false
+				}
+				addr, isFrame := frameAddressOf(state.regs[8])
+				if !isFrame {
+					return fmt.Sprintf("a call to %s returning %s through an area x8 does not address in the frame", name, returned), false
+				}
+				for _, leaf := range leaves {
+					if len(leaf.guards) > 0 {
+						return fmt.Sprintf("a call to %s returning %s holding a union", name, returned), false
+					}
+				}
+				memResultBase, memResult = addr, true
+			}
 			aggLeaves, aggChunks = leaves, int((comp.Size+7)/8)
 		}
 		resultWidth, resultSigned = w, signed
 	}
-	if len(callee.Parameters) > 8 {
-		return fmt.Sprintf("a call to %s with %d parameters", name, len(callee.Parameters)), false
-	}
+	// More parameters than the registers hold are read from the caller's
+	// outgoing area below (the shared layout), so their count is no bar.
 	lo := newLowering(callee)
 	lo.arch = x.arch
 	lo.records, lo.adts, lo.constants = x.fn.Records, x.fn.ADTs, x.fn.Constants
@@ -6899,7 +7110,21 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	}
 	lo.concrete = x.env // a witness run: the callee's leaves are the caller's constants
 	lo.writes = cloneWrites(state.writes)
-	lo.loopBase = len(x.loops)
+	// The callee's loop events take the indices this call site's events
+	// took the first time the site was reached (loopSite): a second path
+	// through the same call merges its events with the first's below.
+	callSite := fmt.Sprintf("call@%d", instr.Line)
+	priorSite, siteSeen := x.sites[callSite]
+	if siteSeen && !priorSite.diverged(state.path) {
+		// The same path reaching the call again (an unrolled counted
+		// loop's body): a distinct instance, its events its own.
+		siteSeen = false
+	}
+	if siteSeen {
+		lo.loopBase = priorSite.base
+	} else {
+		lo.loopBase = len(x.loops)
+	}
 	lo.loopStack = append([]int(nil), x.loopStack...)
 	lo.writableSpans = map[string]bool{}
 	lo.rootContracts = map[string]spanContract{}
@@ -7162,7 +7387,28 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	// by identity (asm/loops.go).
 	for _, ev := range lo.loops {
 		ev.oakDerived = true
-		x.loops = append(x.loops, ev)
+	}
+	if siteSeen {
+		if len(lo.loops) != priorSite.count {
+			return fmt.Sprintf("a call to %s whose loops differ between two paths", name), false
+		}
+		for k, ev := range lo.loops {
+			merged, reason, ok := mergeLoopEvents(state.pathCondition(), ev, x.loops[priorSite.base+k])
+			if !ok {
+				return fmt.Sprintf("a call to %s %s", name, reason), false
+			}
+			x.loops[priorSite.base+k] = merged
+		}
+		priorSite.paths = append(priorSite.paths, state.path)
+		x.sites[callSite] = priorSite
+	} else {
+		if len(lo.loops) > 0 && x.sites[callSite].count == 0 {
+			if x.sites == nil {
+				x.sites = map[string]loopSite{}
+			}
+			x.sites[callSite] = loopSite{base: len(x.loops), count: len(lo.loops), paths: []*pathNode{state.path}}
+		}
+		x.loops = append(x.loops, lo.loops...)
 	}
 	for symbol, width := range lo.fresh {
 		if x.freshSyms == nil {
@@ -7221,6 +7467,33 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 			}
 		}
 		state.writeVec(vecArg0, vecOfLanes(vecLanes, laneWidth(*vecResult)))
+		for _, seen := range x.summarized {
+			if seen == name {
+				return "", true
+			}
+		}
+		x.summarized = append(x.summarized, name)
+		return "", true
+	}
+	if aggregate != nil && memResult {
+		terms := map[string]*term{}
+		leafTerms(aggregate, "", terms)
+		for _, leaf := range aggLeaves {
+			t, has := terms[leaf.name]
+			if !has {
+				return fmt.Sprintf("a call to %s returning %s with a leaf the layout lacks", name, typeText(callee.ReturnType)), false
+			}
+			// A Bool leaf is its 4-byte C enum cell holding 0 or 1; every
+			// other leaf is stored at its width. The padding bytes between
+			// leaves keep what the frame held: the callee's contract says
+			// nothing about them and the Oak body never reads them.
+			cell := leaf.width
+			if cell == 1 {
+				cell = 32
+			}
+			state.storeSlot(memResultBase+leaf.offset, zeroExtend(adaptWidth(t, leaf.width), cell), int64(cell/8))
+		}
+		x.forgetCallerSaved(state)
 		for _, seen := range x.summarized {
 			if seen == name {
 				return "", true
@@ -7667,7 +7940,7 @@ func (lo *oakLowering) lowerUnitBody(body ast.Expression) (string, bool) {
 func resultComposite(fn *Function, sig *ast.FunctionStatement) ([]compositeLeaf, int, bool) {
 	name := typeText(sig.ReturnType)
 	comp, isComposite := fn.Composites[name]
-	if !isComposite || len(comp.Fields) == 0 || comp.Size > 16 {
+	if !isComposite || len(comp.Fields) == 0 {
 		return nil, 0, false
 	}
 	leaves, _, ok := compositeLeaves(fn.Composites, name, "", 0, nil)
@@ -7895,9 +8168,79 @@ func upperBitsName(param string) string { return param + "#hi" }
 // (the terms' DAG size times the inputs evaluated).
 const witnessVisitBudget = 4000000
 
+// canonical rewrites a term for the decision so that one value has one
+// spelling on both sides: a product by a constant power of two is the
+// shift the backend's strength reduction emits (`n * 8` against `lsl
+// #3`), rebuilt through the constructors so their folds apply. The
+// lowering itself keeps the product, which the refinement model renders
+// (Oak.LoweringRefinement); only the comparison canonicalizes.
+func canonical(t *term) *term {
+	return canonicalMemo(t, map[*term]*term{})
+}
+
+func canonicalMemo(t *term, memo map[*term]*term) *term {
+	if t == nil {
+		return nil
+	}
+	if done, seen := memo[t]; seen {
+		return done
+	}
+	var out *term
+	switch t.kind {
+	case termConst, termParam:
+		out = t
+	case termFloat, termQuant:
+		out = t // an operation's spelling is its identity; a binder's body stays as built
+	default:
+		left, right, cond := canonicalMemo(t.left, memo), canonicalMemo(t.right, memo), canonicalMemo(t.cond, memo)
+		switch t.kind {
+		case termBinary:
+			if t.op == "mul" && left.width == t.width {
+				switch {
+				case right.kind == termConst && right.value != 0 && right.value&(right.value-1) == 0:
+					out = binaryTerm("shl", left, constTerm(uint64(bits.TrailingZeros64(right.value)), t.width))
+				case left.kind == termConst && left.value != 0 && left.value&(left.value-1) == 0 && right.width == t.width:
+					out = binaryTerm("shl", right, constTerm(uint64(bits.TrailingZeros64(left.value)), t.width))
+				}
+			}
+			if out == nil {
+				if left == t.left && right == t.right {
+					out = t
+				} else {
+					out = binaryTerm(t.op, left, right)
+					out = adaptWidth(out, t.width)
+				}
+			}
+		case termCmp:
+			if left == t.left && right == t.right {
+				out = t
+			} else {
+				out = &term{kind: termCmp, width: t.width, op: t.op, left: left, right: right}
+			}
+		case termIte:
+			if left == t.left && right == t.right && cond == t.cond {
+				out = t
+			} else {
+				out = iteTerm(cond, left, right)
+				out = adaptWidth(out, t.width)
+			}
+		case termSelect:
+			if left == t.left {
+				out = t
+			} else {
+				out = selectTerm(t.name, left, t.width)
+			}
+		default:
+			out = t
+		}
+	}
+	memo[t] = out
+	return out
+}
+
 func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, width int, note string) Verdict {
-	asmTerm = truncate(asmTerm, width)
-	oakTerm = adaptWidth(oakTerm, width)
+	asmTerm = canonical(truncate(asmTerm, width))
+	oakTerm = canonical(adaptWidth(oakTerm, width))
 	// The input domain — every union tag one of its variants, the machine
 	// not trapping — restricts the equality: it is checked on the
 	// witnesses and conjoined at the bit level only once a bit differs,

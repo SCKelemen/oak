@@ -393,6 +393,74 @@ load average above 80 — `page_probe`'s C row itself moved from 7.0 to
 the evidence, and the kernels are re-measured with the next quiet run.
 `search` stayed at parity with clang (7.97 against 7.36 million ns, best
 samples) with the hand-written Rust at 5.98 in this run.
+## Pair loads, 2026-09-16
+
+The unrolled reduction's four loads are two `ldp` pairs off one block
+address, and the main loop's header reads the span's length register in
+place (docs/spec/94-assembler.md §9 "Pair loads"): `bench_sum`'s main
+loop is twelve instructions per four elements, proven as before (the
+verifier reads a pair load as two loads, in a loop body too). Run under
+a load average between 40 and 75 (`results/m-series-2026-09-16-pairs.json`,
+best samples, ns per operation):
+
+| Kernel | C backend | oak-native | native / C | Rust |
+| --- | ---: | ---: | ---: | ---: |
+| sum | 221,333 | 200,000 | 0.90× | 116,139 |
+| dot | 898,000 | 1,028,000 | 1.14× | 910,250 |
+| tiled | 204,333 | 217,333 | 1.06× | 253,167 |
+
+Reading: the run is noisier than the previous one (the C row itself
+moved), so the ratio is read against the shape: `sum` is at twelve
+instructions per four elements where clang's NEON loop is about six per
+four (two `ldp q`, two `add v.2d` per eight elements); the remaining gap
+is the vector form of the same reduction. `tiled` and `dot` are
+unchanged by this increment (their loads are float lanes, which the
+pair pass leaves alone).
+
+## The pilots under the native backend, 2026-09-16
+
+The three test systems (github.com/SCKelemen/dbs, os, ml) built with `oak
+build -native` and measured against their own baselines, on the machine
+carrying a load average between 60 and 180 from other work (ratios within
+one run are comparable; runs are not).
+
+**dbs, frame scan** (`tools/bench-frame-scan/run.sh`: read and validate
+every frame of a 64 MiB segment, CRC-32C and the SHA-256 chain; the Zig
+engine is 1.00×). At the start of the day the native build did not link
+(`out[0] = time.time_source_native()`, #469) and, once it did, ran at 208
+ms against the C backend's 122. With the inliner reaching an
+index-assignment's target (#470) and the loop-invariant pass (#471):
+
+| Backend | min ms | ns per byte | vs Zig |
+| --- | ---: | ---: | ---: |
+| Oak, C backend under clang | 112.0 | 1.78 | 0.44× |
+| Oak, native | 131.7 | 2.26 | 0.76× |
+| Zig | 170.0–252.7 | | 1.00× |
+| Go | 181.4–195.7 | | |
+
+The native scan is within 18 percent of the C backend and ahead of Zig
+and Go; the two rows ran minutes apart, so the ratio to Zig differs
+between them.
+
+**os, stage-2 page tables** (`zig build bench-stage2-native
+-Doakc=…`): the decoder cycle's cost was `alloc_table`'s page-zeroing
+loop (sampled at 87 percent of the cycle), 2048 iterations of `s[dom]
+.pages[cell(alloc_idx, j)] = u64(0)`, lowered as 35 instructions with a
+call to `cell` per element: 6.7× Zig where the C backend runs 0.57×. The
+inliner fix removed the call (22 per element), the loop-invariant pass the
+global's address and value, the stride constant, the element address and
+its guard (9 per element, `str xzr` the store): 1.57× Zig at the last
+measurement (875 against 556 ns per cycle), the C backend 0.43×. The
+pilot's `translate` benchmark, a different loop, runs 2× the C backend
+natively (7.3 against 4.8 ns per op under this load) and is the next
+thing to sample. Clang
+zeroes the page in five instructions per element and, with the store
+vectorized, fewer; the store loop's unrolling with `stp` pairs is the
+next item for this shape.
+
+**ml, emit pilot** (`run.sh`): passes with every compiler of the day
+(bit-exact against its oracle); it is an emitter, not a kernel, and has
+no timing.
 
 ## Arrays as values, 2026-09-16
 
