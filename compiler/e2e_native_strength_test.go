@@ -66,12 +66,17 @@ func TestE2ENativeStrengthReduction(t *testing.T) {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
-	// The reduced bodies prove: the shift and the mask meet the Oak
-	// semantics in the verifier, and the untested constant division too.
-	for fn, want := range map[string]string{"midpoint": "1 constant operation(s) strength-reduced, proven", "page_of": "2 constant operation(s) strength-reduced, proven", "thirds": "2 constant operation(s) strength-reduced, proven", "halves": "1 constant operation(s) strength-reduced, proven"} {
+	// The power-of-two sites rewrite in layer A (nativegen/rewrite.go),
+	// each decided at the bit level before it applies; the untested
+	// constant divisions by three and the signed division by four stay
+	// the lowering's, proven by the verifier.
+	for fn, want := range map[string]string{"midpoint": "layer A — strength reduction ×1 decided at the bit level", "page_of": "layer A — strength reduction ×2 decided at the bit level", "thirds": "2 constant operation(s) strength-reduced, proven", "halves": "1 constant operation(s) strength-reduced, proven"} {
 		if !strings.Contains(joined, fn+": "+want) {
 			t.Errorf("%s: want %q; diagnostics:\n%s", fn, want, joined)
 		}
+	}
+	if strings.Contains(joined, "left as written") {
+		t.Errorf("every power-of-two site must decide; diagnostics:\n%s", joined)
 	}
 	if strings.Contains(joined, "divide: 1 constant operation") || strings.Contains(joined, "keeps its plain arithmetic") {
 		t.Errorf("a variable divisor must keep its test, and no body may fall back; diagnostics:\n%s", joined)

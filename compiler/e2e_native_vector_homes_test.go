@@ -138,7 +138,14 @@ func TestE2ENativeVectorHomes(t *testing.T) {
 			t.Errorf("%s was not lowered by the native backend; diagnostics:\n%s", fn, joined)
 		}
 	}
-	for _, want := range []string{"live_across: 1 vector local(s) kept in registers across calls", "dead_before: 1 vector local(s) kept in registers across calls", "carried: 1 vector local(s) kept in registers across calls"} {
+	// live_across holds one vector local across one call and reads it
+	// once after: the home form saves and reloads it around the call
+	// exactly as the slot form stores and loads it, so the candidate search
+	// (compiler/native_search.go) prices the reallocated slot form lower
+	// and selects it; the report says so (-opt-report). dead_before and
+	// carried gain registers for their reads between the calls and keep
+	// their homes.
+	for _, want := range []string{"dead_before: 1 vector local(s) kept in registers across calls", "carried: 1 vector local(s) kept in registers across calls"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("want %q; diagnostics:\n%s", want, joined)
 		}

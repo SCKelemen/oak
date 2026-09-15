@@ -37,6 +37,7 @@ import (
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/machine"
 	"github.com/SCKelemen/oak/semir"
 	"github.com/SCKelemen/oak/token"
 	"github.com/SCKelemen/oak/typechecker"
@@ -1479,6 +1480,12 @@ type Lane struct {
 	// ...+v`): the rv64 lane lowers the fixed simd vectors there
 	// (nativegen/rv64_simd.go) and leaves them to the C backend otherwise.
 	Vector bool
+	// Reallocate recolors the lowered body's registers with the machine
+	// package's global allocator (machine.Reallocate): def-use webs as
+	// virtual registers, copies coalesced, the frame and the prologue as
+	// emitted. A body the lift refuses does not lower under the flag, so
+	// the candidate search keeps the body as emitted.
+	Reallocate bool
 	// PackedStackArgs selects Apple's arm64 convention for arguments beyond
 	// the registers (natural size and alignment on the stack) over the
 	// standard 8-byte slots (asm/abi.go).
@@ -1592,7 +1599,20 @@ func tableSizes(tables map[string]GlobalArray) map[string]asm.Table {
 func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	switch lane.Arch {
 	case "", asm.ArchArm64:
-		return compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants)
+		out, err := compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.HoistInvariants)
+		if err != nil || !lane.Reallocate {
+			return out, err
+		}
+		// Global register reallocation (machine.Reallocate): the body's
+		// webs recolored and its copies coalesced; a lift the package
+		// refuses leaves this configuration without a lowering.
+		re, alloc, rerr := machine.Reallocate(out)
+		if rerr != nil {
+			return nil, unsupported("%v", rerr)
+		}
+		out.Items, out.Clobbers = re.Items, re.Clobbers
+		reallocated[out] = alloc.Renamed + alloc.Coalesced
+		return out, nil
 	case asm.ArchRV64:
 		return compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.ElideProven, lane.GuardLines, lane.Strength)
 	}
@@ -1607,6 +1627,12 @@ func CompileFor(lane Lane, fn *ast.FunctionStatement, functions map[string]*ast.
 func Compile(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker) (*asm.Function, error) {
 	return compileArm64(fn, functions, records, adts, constants, nil, nil, tc, false, nil, false, false, false, nil, false, true, false)
 }
+
+// Reallocated reports how many webs a lowering recolored and copies it
+// coalesced under Lane.Reallocate.
+func Reallocated(fn *asm.Function) int { return reallocated[fn] }
+
+var reallocated = map[*asm.Function]int{}
 
 // ElidedGuards reports how many element guards a lowering left out under
 // Lane.ElideProven (for the compiler's diagnostics).
@@ -1659,28 +1685,20 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
-	// The vector helpers the body calls are expanded first (nativegen/inline.go);
-	// the lowering sees the expanded body, the verifier the original. An
-	// expansion the lowering refuses falls back to the body as written.
-	// The plain integer reductions are then unrolled (nativegen/reduction.go);
-	// the verifier sees that rewritten body (asm.Function.Body), the rewrite
-	// being its own theorem. A lowering the rewrite makes unsupported falls
-	// back to the body before it.
-	inlined := inlineBody(fn, functions)
-	if unrolled, changed := unrollReductions(fn, inlined); changed && unroll {
-		expanded := *fn
-		expanded.Body = unrolled
-		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist); err == nil {
-			out.Body = unrolled
-			return out, nil
-		} else if _, outside := err.(Unsupported); !outside {
-			return nil, err
+	// Layer A (nativegen/rewrite.go): the body's verified rewrites, the
+	// most rewritten shape tried first; a lowering a rewritten shape makes
+	// unsupported falls back to the shape before it, the source last.
+	for _, stage := range rewriteStages(fn, functions, true, unroll, strength) {
+		if stage.body == fn.Body {
+			break
 		}
-	}
-	if inlined != fn.Body {
 		expanded := *fn
-		expanded.Body = inlined
+		expanded.Body = stage.body
 		if out, err := compileArm64Body(&expanded, functions, records, adts, constants, globals, aggregates, tc, elide, guardLines, strength, vhomes, reuse, tables, packed, hoist); err == nil {
+			if stage.judged {
+				out.Body = stage.body
+			}
+			rewriteSitesOf[out] = stage.sites
 			return out, nil
 		} else if _, outside := err.(Unsupported); !outside {
 			return nil, err
