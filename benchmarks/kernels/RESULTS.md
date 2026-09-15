@@ -625,16 +625,20 @@ value position), so 1.18× is this run's noise floor; `dot`, `sha256`,
   (`machine: line N: operand of an unknown kind`, across `bench_sum`,
   `bench_dot`, `bench_page_probe`, `bench_sha256`, the CRC chunk and
   update, the SHA rounds, and the deque helpers).
-- **`sum` 1.7×** is the strided header. The unrolled loop is fourteen
+- **`sum` 1.7×** was the strided header. The unrolled loop was fourteen
   instructions per four elements, five of them the header
   `cmp w20, #4; b.lo done; sub w9, w20, #4; cmp w3, w9; b.hi done` —
   `len(v) >= 4` and `len(v) - 4` are loop-invariant, but the
-  loop-invariant pass reports no site on this shape and rotation leaves
-  the same count. Hoisting the peelable guard and the limit needs the
-  checker to carry the slack fact `i <= len - 4` across the loop's
-  label as it carries the proven minimum; that is the next lever for
-  every strided loop (the SIMD kernels' `len >= N && off <= len - N`
-  headers included), worth three of fourteen instructions here.
+  loop-invariant pass scanned the body, not the header, and ran before
+  the unrolling in its phase, so it reported no site. The register-budget
+  increment landed the same evening (`94-assembler.md` §9 "Loop
+  invariants": the exit tests as groups, an invariant group peeled before
+  the header, a setup instruction hoisted under a new name, the unrolling
+  first in the loop phase) and the selected `sum` body is the
+  eight-instruction body under `cmp w3, w14; b.ls` — ten per four
+  elements, proven, against clang's NEON loop at about six per four. The
+  remaining gap is the vector form of the same reduction
+  (`compiler/e2e_native_header_hoist_test.go` pins the shape).
 
 **The search itself**, read off the report over the 49 natively lowered
 functions: 15 select the identity; the rest select one to five
