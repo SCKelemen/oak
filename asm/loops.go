@@ -1255,6 +1255,15 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 					pc++
 					continue
 				}
+				if instr.Mnemonic == "ldp" {
+					// A pair load off a span element address: two loads
+					// (nativegen/pair_loads.go).
+					if reason, ok := x.loadPair(instr, st); !ok {
+						return nil, reason, false
+					}
+					pc++
+					continue
+				}
 				if !isLoad(instr.Mnemonic) {
 					// A store through a span: into the iteration's memory
 					// (the loop's marker), recorded for the coupling proof.
@@ -1277,6 +1286,21 @@ func (x *pathExecutor) runBody(shape loopShape, state *symbolicState) ([]bodyEnd
 				if reason, ok := x.load(instr, st); !ok {
 					return nil, reason, false
 				}
+			case "adrl":
+				// A constant table's address inside the body (the CRC table
+				// of a byte loop): the base of the span its Oak name
+				// denotes, as on a straight path.
+				dest := instr.Operands[0].(Register)
+				sym, isSym := instr.Operands[1].(Symbol)
+				if !isSym || x.fn == nil {
+					return nil, "adrl without a constant table", false
+				}
+				if _, known := x.fn.Tables[sym.Name]; !known {
+					return nil, "adrl of a symbol that is not a constant table", false
+				}
+				st.write(dest, paramTerm(spanBaseName(TableName(sym.Name)), 64))
+				pc++
+				continue
 			default:
 				if x.arch == ArchRV64 {
 					// The RV64 lane: its own semantics; frame memory and
