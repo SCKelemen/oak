@@ -419,8 +419,12 @@ func Metrics(fn *asm.Function) opt.Metrics {
 				}
 			}
 		}
+		// The index steps last, right before the back edge, so the stride
+		// is read from the last increment of a compared register: a value
+		// stepped earlier in the body (`add x9, x9, #7` after a compare of
+		// w9's copy) is not the stride.
 		body.Stride, indices[k] = 1, -1
-		for i := loop.from; i <= loop.to; i++ {
+		for i := loop.to; i >= loop.from; i-- {
 			if reg, step, ok := increment(fn.Arch, fn.Items[i]); ok && compared[reg] {
 				body.Stride, indices[k] = step, reg
 				break

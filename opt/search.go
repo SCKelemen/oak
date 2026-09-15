@@ -214,7 +214,7 @@ func (s *Search) Run(function string, identity *Candidate, facts *Facts, d Drive
 			order = append(order, c)
 		}
 	}
-	sort.SliceStable(order, func(i, j int) bool { return order[i].Cost < order[j].Cost })
+	sort.SliceStable(order, func(i, j int) bool { return cheaper(order[i], order[j]) })
 	order = append(order, identity)
 	sel.Frontier = order
 	var best *Validated
@@ -304,13 +304,27 @@ func (s *Search) refine(c *Candidate, finding string) (*Candidate, bool) {
 	return nil, false
 }
 
+// cheaper orders candidates by the model's cost; at one cost the
+// candidate with more transforms applied comes first, since the static
+// model cannot see what a residency transform saves (a vector home
+// against a slot round trip is one load and one store either way) and an
+// admitted transformed body is preferred to a plainer one at equal price
+// (docs/notes/optimizer-search-2026-09.md §0, the tie-break).
+func cheaper(a, b *Candidate) bool {
+	if a.Cost != b.Cost {
+		return a.Cost < b.Cost
+	}
+	return len(a.Applied) > len(b.Applied)
+}
+
 // prune keeps the beam cheapest candidates, the identity always among
-// them; order among equal costs is the order proposed.
+// them; order among equal costs is by transforms applied, then the order
+// proposed.
 func prune(candidates []*Candidate, beam int, identity *Candidate) []*Candidate {
 	if len(candidates) <= beam {
 		return candidates
 	}
-	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].Cost < candidates[j].Cost })
+	sort.SliceStable(candidates, func(i, j int) bool { return cheaper(candidates[i], candidates[j]) })
 	kept := candidates[:beam]
 	for _, c := range kept {
 		if c == identity {
