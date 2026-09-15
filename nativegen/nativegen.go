@@ -3941,7 +3941,6 @@ func (g *generator) bindRecord(name string, rec *recordLocal) {
 	g.records[name] = rec
 	g.scopes[len(g.scopes)-1][name] = slotBinding{reg: -1, rec: rec}
 	g.promoteFields(name, rec)
-	return rec
 }
 
 // returnSlotLocal names the record local a function builds in its result
