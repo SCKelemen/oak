@@ -90,6 +90,32 @@ checked shift/division traps. Results are deterministic evidence and do not
 rewrite the CFG. No backend consumes this IR yet; equivalence validation remains
 mandatory before SCCP, CSE, or DCE can affect emitted code.
 
+The first target-independent cleanup candidate now runs beside that evidence.
+Dominance-scoped CSE shares exact operations only from a closed vocabulary of
+total pure scalar operations; code, result types, canonical SSA operands, and
+ordered attributes must all match. It retains sibling computations, trapping
+arithmetic, calls, memory, synchronization, unknown operations, and any
+operation carrying an effect. Proof facts move to the dominating definition
+only when all of their values are valid there. Fixed-point DCE then removes
+unused chains from the same closed vocabulary, treating terminators, other
+operations' facts, and function facts as roots. A definition's own fact leaves
+with the definition. Both transforms clone their input and independently verify
+input and output. `Compilation.OptIR()` exposes the simplified CFG and a
+deterministic report, but emission still consumes neither.
+
+The generic control-flow analysis now gives that CFG a reusable semantic loop
+model. It reports reverse postorder, immediate dominators, back edges, natural
+loop blocks/latches/exits, canonical preheaders, and nesting. For each header
+parameter it follows only all-path-preserving block arguments and copies, then
+accepts an affine recurrence only when every latch supplies the same
+fixed-width `current + constant` or `current - constant` update. A unique loop
+exit comparison is normalized to `induction relation bound`, independent of
+operand order and which branch continues. Constant bounds produce an exact
+trip count only when mathematical monotonicity and the final update prove that
+no Oak fixed-width wrap occurs; otherwise the recurrence remains useful but the
+count is absent. `Compilation.OptIR()` exposes these facts on the original CFG.
+They authorize no transform or emission yet.
+
 **The native backend** (`nativegen/`, AArch64 7,300 lines, RV64 4,000)
 lowers a checked function directly to instructions with no IR. Scalar
 locals take homes by a liveness pre-pass: a caller-saved register when
@@ -169,6 +195,23 @@ per-processor cost data for layer B's selection and scheduling, still to
 come. The chain: source equals rewritten body (A), rewritten body equals
 instructions (B), instructions mean what Arm's ASL and the RISC-V Sail
 export say (the assembler's proofs); `-verified` demands all of it.
+
+## Generic optimization coverage index
+
+The familiar compiler-optimization taxonomy is a completeness index, not one
+destructive pass order. Oak places every family at the highest semantic layer
+that still has the facts needed to prove it, and leaves profitability to
+candidate selection.
+
+| Family | Techniques tracked for Oak | Placement |
+| --- | --- | --- |
+| Basic block and local | basic-block formation; peephole optimization; local value numbering | OptIR for semantic identities, MachineIR for representation-only peepholes |
+| Data flow and SSA | available expressions; common-subexpression elimination; constant folding; dead-store elimination; induction-variable recognition/elimination; live-variable analysis; upwards-exposed uses; use-definition chains; reaching definitions; global value numbering; sparse conditional constant propagation | generic OptIR analyses; CSE/DCE and analysis-only SCCP are the first executable pieces |
+| Loops and parallelism | automatic parallelization; automatic vectorization; induction variables; loop fusion; loop-invariant code motion; inversion; interchange; nest optimization; splitting; unrolling; unswitching; software pipelining; strength reduction | structured OptIR before flattening, then target-neutral plans; ISA costing and scheduling only after the plan |
+| Control and whole program | bounds-check elimination; compile-time function execution; dead-code elimination; expression templates/specialization; inline expansion; interprocedural optimization; jump threading; partial evaluation; profile-guided optimization | checked specialization and proof-derived facts first; bounded compile-, load-, or runtime candidate selection where facts remain dynamic |
+| Functional | deforestation/fusion; tail-call elimination | semantic operation graph and structured control before physical allocation |
+| Static analysis | alias, array-access, control-flow, data-flow, dependence, escape, pointer, shape, and value-range analysis | reusable proof domains feeding legality, representation choice, and costs |
+| Machine code | instruction scheduling; instruction selection; register allocation; rematerialization | MachineIR and per-target backends; AArch64 first, the same contracts reused by RV64 |
 
 ## The program, in measured order
 

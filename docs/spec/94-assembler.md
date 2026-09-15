@@ -1153,6 +1153,56 @@ trusted; `classify` and its callers stay with C for their vector
 parameters beyond eight. `TestE2ENativeLiteralsVerdicts` asserts the
 proofs and the witnesses.
 
+**The scanner's step functions (2026-09-15).** `step_count` and
+`step_first` — a loop over groups calling `classify` four times and
+`verify_count` or `verify_first` under four conditions — were trusted
+for "more paths than the verifier's budget", and behind that message
+stood six obstacles, taken in order. The loop finder refused a body
+calling a **vector-contract entry** (`classify_neon_abi`: the Oak name
+under the lane's suffix, which `summarizable` now strips as
+`summarizeCall` does). The body's stores into the **outgoing argument
+area** — a call's arguments, read by the `bl` that follows on the same
+path — were read as loop-carried frame slots, and two callees' layouts
+overlap there (`outgoingArea`, sized as the backend sizes it, marks
+them call scratch). On the Oak side a **vector store in a loop body**
+and a **conditional store into a local array** were refused: the first
+is the iteration's store like an indexed assignment, the second an arm's
+on the snapshot the statement conditional merges leaf by leaf. The
+body's **forks now merge at their joins** (`runBody`, the executor's
+`joinPoints` and `mergeTwo`): each side runs to the fork's immediate
+post-dominator inside the body and parks, the parked states merge into
+one continuation — the fall-through side the select's first arm, the
+shape `c ? then : else` the backend lays out and the Oak side spells — and
+a select nested in a select's arm with the other arm shared,
+`c1 ? (c2 ? x : y) : y` from a fork inside a fork's side, flattens to
+`c1 ∧ c2 ? x : y` (`flattenSelects`), the one condition the arm rule
+compares. The arm rule itself takes conditions that are each other's
+**negation** with the arms swapped (`x == 0 ? p : q` against
+`x != 0 ? q : p`, a branch taken on the other side). And three
+economies of the decision: **small sides are decided without the
+premise first** (`g < n` against `¬(g ≥ n)` under a conjunction of four
+inner loops' exit facts over their element reads, which cost every order
+its budget for nothing); the premise's **conjuncts sharing no symbol**
+with the sides, even through other conjuncts, are dropped for a first
+attempt (`relevantPremise`, a weaker premise so a proof under it is a
+proof); a coupling's **offset that normalizes to a constant**
+(`linearAt`: `16 * g` against `g * 16`) is that constant, an equality
+when zero; and the decision's canonical spelling puts a **product's
+constant first and a sum's last**, drops an or or xor with zero and an
+and with a full mask (`canonical`, upstream's shift rule beside them).
+The loop event budget is thirty-two. With these the step functions'
+loops couple and their witnesses agree — evidence on 21 inputs each, no
+longer trusted — and `verify_first` and `verify_count` stay proven
+through the joins. What keeps the step functions from proof is the
+`found` obligation: the four `classify` results, inlined on the Oak side
+and summarized from the expanded body on the machine side, spell their
+sixteen lane lookups in different orders, and the diagram of four
+`check_block`-scale terms is beyond any budget — the next step is one
+spelling for a vector reduction's lanes on both sides. `count` (its
+step loop's callee loops nest differently on the two sides) and
+`find_from` (a loop reached on two paths with different carried
+variables) stay trusted.
+
 **The floating-point forms (2026-09-14).** `spec/sail/arm_primitives.sail`
 gains Arm's execute bodies for `fadd`/`faddp`, `fsub`, `fmul`, `fmla`/
 `fmls`, `fmin`/`fmax` (the 1985 forms), `fminnm`/`fmaxnm` (2008),
@@ -2858,6 +2908,15 @@ The forty-sixth increment is the pair loads (§9): adjacent element loads
 of one span become a block address and `ldp` pairs, the verifier reading
 a pair as two loads (`asm/pair_loads_test.go`).
 
+The fifty-fifth increment is the register budget (§9 "The register
+budget"): a single-use span local is forwarded into its call, and the
+loop invariants' reserve yields to a declaration that would otherwise
+refuse the body (`Oak.SpanForward.let_forward`).
+
+The fifty-sixth increment is constant conditions (§9 "Constant
+conditions"): a literal scrutinee lowers as its arm alone, and the
+verifier reads it as its bit (`Oak.ConstantConditions.select_true`).
+
 The forty-seventh increment is vector operands in place (§9,
 `nativegen/simd.go` `vecOperand`). A vector variable in its own register
 is read where it lies by every simd operation; the operation writes a
@@ -2938,6 +2997,17 @@ boundary"): a returned local built in the `x8` area, a read-only
 aggregate argument passed as the caller's storage, a call's result
 received in the local it initializes (`Oak.BoundaryCopies.read_in_place`,
 `build_in_place`).
+
+The fifty-third increment is fields in registers (§9 "Fields in
+registers"): the scalar fields a loop touches of a top-level record
+local live in callee-saved registers, flushed where the record is used
+whole and reloaded where it is written whole
+(`Oak.FieldPromotion.promoted_reads`, `flushed_memory`).
+
+The fiftieth increment is slot forwarding (§9 "Slot forwarding"): a
+frame slot's value is read from the register that stored or loaded it
+while that register stands, and a comparison on a computed operand
+branches on its compare (`Oak.Forwarding.load_store`, `cbz_cset`).
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
@@ -3988,7 +4058,20 @@ pass over the emitted items of a function, judged like every lowering by
 the seam checker and the verifier. A loop is the generator's shape — the
 `loop_N` header, its exit tests to `done_M`, the body, the back edge —
 and, innermost first, three things leave the body for a preheader before
-the header. A pure instruction (a constant, a global's address, an element
+the header, and a fourth leaves the header itself: an exit test whose
+operands the loop never writes (the unrolled reduction's `cmp wL, #4;
+b.lo done`) decides the same way on every iteration, so it is peeled —
+placed once right before the header label, where the verifier reads it
+as the loop's entry-only test ("Bottom-tested loops" below), gone from
+the header — and a pure setup instruction over invariant sources that
+feeds a test (`sub wT, wL, #4; cmp wI, wT`) is hoisted under a new name
+when its old destination is dead after the header (the body writes it
+before reading it, or never reads it); the tests are conjuncts, pure
+compares in any order, and the header keeps at least one. When a guard
+is peeled the invariant tests stay in the header, so the guard's copy of
+the exit tests holds every test. In the candidate search the unrolling
+comes first in the loop phase, so the invariant pass and the rotation
+see the unrolled shape. A pure instruction (a constant, a global's address, an element
 address, arithmetic) whose sources the loop never writes is hoisted, its
 destination renamed to a scratch register the whole function never names
 and its readers in the block renamed with it — either the old destination
@@ -4025,8 +4108,15 @@ A load of a scalar global (`ldrh w10, [x15]` after the hoisted `adrp;
 add :lo12:`) leaves a loop that stores to no global's address and calls
 nothing: a span cannot alias a scalar global — its elements lie in arrays
 and aggregates — so the loop's span stores leave it alone, a fact the
-type system gives and C's aliasing rules do not. Other loads stay (a span
-the loop stores through may alias one it reads), as do stores and calls.
+type system gives and C's aliasing rules do not. A register is the
+global's address from the `add :lo12:` that forms it until the loop
+writes it again — the lowering reuses a spent temporary's register for
+an element base — so whether a store or a load goes through a global's
+address is read at the instruction, straight back to the register's last
+write; a write the walk cannot see (past a label, or before the header)
+leaves it uncertain, and then a store counts as the global's and a load
+stays. Other loads stay (a span the loop stores through may alias one it
+reads), as do stores and calls.
 The os pilot's page-zeroing loop (`alloc_table`, sampled at 87 percent
 of its decoder cycle) went from twenty-two instructions per element to
 nine: the exit test, the index's add, the element guard, `str xzr, [x17,
@@ -4287,16 +4377,30 @@ loop finder reads the top-tested shape; the exit run ends at its last
 exit branch, so a guard's compare first in the body (the hoisted loop's
 `cmp wI, #64; b.hs trap`) is the body's and the hoisted form rotates too;
 a header whose exit test hides a later test behind a setup instruction
-(the unrolled reduction's `sub wT, wL, #4; cmp wI, wT; b.hi done`) is
-left as it is. The search's cost
+is left as it is — the unrolled reduction's `cmp wL, #4; b.lo done; sub
+wT, wL, #4; cmp wI, wT; b.hi done` until the invariant pass peels the
+first test and hoists the setup (2026-09-16, "Loop invariants" above),
+after which its header is `cmp wI, wT; b.hi done` and rotates: the
+four-accumulator loop runs ten instructions and one branch a trip, from
+fourteen and three, and proves (`sum`, `bench_sum`). The search's cost
 model decides where the rotation pays: it rotates a plain byte sum over
 the unrolled form when both are evidence, and leaves a three-trip
-remainder loop top-tested rather than pay the peeled test. The verifier recognizes the shape by its conditional
-back edge (`asm/loops.go` `tailLoopShape`): the tail test is a run of
-compares and branches to the exit label ending in the back edge, the
-entry test right before the header label is the same run with its last
-branch to the exit under the complementary condition, and nothing else
-branches to the header. Such a loop runs its body exactly as the
+remainder loop top-tested rather than pay the peeled test. The verifier
+recognizes the shape by its conditional back edge (`asm/loops.go`
+`tailLoopShape`): the tail test is a run of compares and branches to the
+exit label ending in the back edge, the entry test right before the
+header label is the same run with its last branch to the exit under the
+complementary condition, and nothing else branches to the header. Before
+the entry test (or a top-tested header) may stand the loop's entry-only
+tests (`invariantEntryTests`): compares and branches to the same exit
+label over registers the loop never writes, the peeled invariant
+conjunct. They are exits of the shape — the executor meets the loop at
+the first undecided one, before any path forks around it, so the loops
+keep their program order and pair with the Oak body's — and conjuncts of
+its continue condition (`headerCondition` walks them first): a test the
+loop cannot change decides every iteration as it decided the first, so
+the summary over "entry tests and header tests" is the machine's loop
+without a lemma the shape does not carry. Such a loop runs its body exactly as the
 top-tested loop with that test at its header — the entry test is the
 first iteration's, the tail test every later one's — so the shape is the
 top-tested one with its test range at the tail: `headerCondition` walks
@@ -4332,6 +4436,119 @@ retargeting then lands the computation in the variable's home
 w9`). A function whose result is a variable in its home register moves it
 to the result register directly (`mov w0, w3`, from `mov w9, w3; mov w0,
 w9`). `bench_dispatch` 57 instructions, `bench_sum` 20.
+**Slot forwarding (2026-09-16, AArch64 lane; `nativegen/forward.go`,
+`spec/lean/Oak/Forwarding.lean`).** The generator keeps, per memory word
+addressed as a constant offset from a base register — a frame slot from
+`sp`, a field of a record behind a register (an in-place parameter, the
+`x8` result area) — the integer register whose value the word holds: a
+store records the register it stored, a load the register it loaded into.
+A later load of the same word at the same width — or a 32-bit load of a
+word a 64-bit register was stored to, which reads that register's low
+half — while that register has not been written since, is the register's
+value already: the load becomes a `mov`, or nothing when its destination
+is that register. So
+the increment of a record field, `ldr w9, [sp, #304]; add w9, w9, #1;
+str w9, [sp, #304]`, followed by the field's test, no longer reloads what
+it just stored (`sha256_update`'s `next.filled`). Every write of a
+register drops the words it held and the words addressed through it; a
+store drops the words under every other base (two bases may address the
+same memory) and the words its extent overlaps under its own; a label
+(paths meet), a call (the callee owns the scratch registers and may write
+memory through a span), an `sp` move, an indexed store, a truncation of
+the emitted items, and the retargeting of an emitted instruction's
+destination drop them all. The
+rule is the frame's write-then-read (`Oak.Forwarding.load_store`,
+`forward`), and a store elsewhere leaves a held slot in place
+(`held_survives`) — the generator forgets exactly the slots a store's
+extent overlaps. Alongside it, a comparison whose left operand is
+computed — a record field, `next.filled == u32(64)` — evaluates it into
+a scratch and branches on the compare, `cmp w9, #64; b.ne`, where before
+the Bool was materialized and tested (`cmp; cset; cbz`;
+`Oak.Forwarding.cbz_cset`, `cbnz_cset`); the flags such a compare leaves
+are not offered for reuse at the else label, since a scratch's spelling
+names no operand. `TestNativeShapesForwarding` pins the byte loop of an
+absorber: no `cset`, no reload after a store, the `== 64` test on the
+register the increment was stored from; `TestE2ENativeForwarding` agrees
+with the C backend. The RV64 lane is untouched.
+
+**The register budget (2026-09-16, AArch64 lane; `nativegen/span_forward.go`,
+`spec/lean/Oak/SpanForward.lean`).** Two rules against the callee-saved
+file running out, which is what left the SHA-256 chain a call after the
+aggregate helpers could have folded it (RESULTS.md "Aggregate helpers").
+A span or view local used exactly once, in the statement that follows its
+declaration, as an argument of a call to a program function — `hs: [*]u32
+= span(&state); sha256_block_hw(hs, block, k)`, `w: []u8 = subslice(a, i,
+u32(4)); total = total + sum4(w)` — is forwarded: the declaration goes and
+the argument is the span expression itself, which the call evaluates into
+a fresh pair for the call alone (`forwardSingleUseSpans`), so no
+callee-saved pair is taken for the local's whole scope (a span local's
+pair is never returned to the pool). The expression is pure — an address,
+a length, a subslice's guard — so `let x = a in f x` is `f a`
+(`Oak.SpanForward.let_forward`); a lowering the rewrite makes unsupported
+falls back to the body before it, and the verifier reads the body as
+written. And the callee-saved registers the second lowering pass reserves
+for the loop invariants (up to four) yield to a declaration that would
+otherwise refuse the body or fall to a slot: a span local's pair, an
+overflowing scratch, a scalar's home take them back (`reclaimReserve`,
+`takeCalleePair`), and the pass hoists into what remains.
+`TestE2ENativeRegisterBudget` pins a loop with three span parameters, a
+real call, and a span local that refused as "the callee-saved registers
+are exhausted" and now lowers natively; the C backend agrees. The RV64
+lane keeps its own pools.
+
+**Constant conditions (2026-09-16, both lanes; `spec/lean/Oak/ConstantConditions.lean`).**
+A conditional whose scrutinee is the literal `true` or `false` — `true ?
+{ … }`, the source's idiom for a scope (the hash library's `sha256_block`
+opens one around its span), or a `false` that disables an arm — lowers as
+the selected arm alone, in statement, value, and result position
+(`constantArm`): no Bool materialized and tested (`movz w11, #1; cbz w11`),
+no else label, no dead arm for the checker to find unreachable; a literal
+in condition position branches always or never (`conditionBranch`). The
+verifier's Oak lowering reads a literal condition as its bit where it
+refused "a condition that is not a comparison", so `sha256_block` and the
+bodies that call it are no longer trusted for that reason alone. The
+model is the conditional itself (`Oak.ConstantConditions.select_true`,
+`select_false`, `bit_true`). `TestNativeShapesConstantConditions` pins
+`scope` and `pick` — no branch, select, or conditional label —
+`TestE2ENativeConstantConditions` proves both and agrees with the C
+backend.
+
+**Fields in registers (2026-09-16, AArch64 lane; `nativegen/fields.go`,
+`spec/lean/Oak/FieldPromotion.lean`).** A record local declared once at
+the body's top level whose scalar fields a loop reads or writes keeps
+those fields in callee-saved registers, as hidden locals named
+`record.field` — the fields of a loop's accumulator record are then the
+loop's variables. A field read is the register (in place for compares
+and operands, as a local's home is), a field store writes it
+(`assignVar`), and the record's memory sees the values only where the
+record is used whole — copied, passed to a callee by address or by
+chunks, returned, or reached as a place by any other path — when the
+homes are written back first (`flushPromoted`, at `placeOf` of the
+record as a whole); a whole write of the record — an assignment from
+another record, an initialization by copy, literal, call, or zero —
+reloads the homes from memory afterward (`reloadPromoted`). Between,
+register and memory may differ, and every read goes to the register.
+Promoted: 32- and 64-bit integer and Bool fields, most-touched first,
+while callee-saved registers remain beyond a reserve of two for the
+locals declared after the record. Not promoted: fields whose address is
+taken (`&r.f`, `&r`, or a deeper path under `r`), fields of records
+declared more than once or inside a loop, of parameters, of tagged
+unions, and float or narrow fields. The theorem: along any sequence of
+stores, flushes, and whole writes, the register reads what the
+memory-resident field would hold (`Oak.FieldPromotion.promoted_reads`),
+at a flush the memory holds it too (`flushed_memory`), and after a whole
+write the register holds what memory holds (`reloaded`).
+An index in its own register — a local's home or a promoted field's —
+is guarded and read where it lies (`indexHome`: `cmp w21, #64; b.hs
+trap; strb w9, [x10, w21, uxtw]`), where before it was copied into a
+scratch first. `TestNativeShapesFieldPromotion` pins the byte loop of an
+absorber whose `filled`, `blocks`, and `total` live in `w21`, `w22`,
+`x23`: the loop's only memory operations are the byte load from the view
+and the byte store into the block — `sha256_update`'s loop, with the pending
+increments, comes to ten instructions where clang's is thirteen.
+`TestE2ENativeFieldPromotion` agrees with the C backend, including a
+record assigned whole inside its loop (`a = seed`, the homes reloading).
+The RV64 lane is untouched.
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries

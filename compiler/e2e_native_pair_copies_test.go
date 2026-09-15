@@ -100,14 +100,15 @@ func TestNativeShapesPairCopies(t *testing.T) {
 			}
 		}
 	}
-	// The 40-byte copy in (from the parameter's address) and the copy out
-	// (into the x8 area): two pairs and one word each. The single words
-	// are the two tails, the three field updates (a load and a store
-	// each), and the saved register's store and reload.
-	if ldp < 4 || stp < 4 {
-		t.Errorf("shift must copy its record by pairs; got %d ldp and %d stp:\n%s", ldp, stp, fmt.Sprint(shift.Items))
+	// The result is built in the x8 area (§9 "Copies at the boundary"), so
+	// the 40-byte record is copied once, from the parameter's address into
+	// that area: two pairs and one word. The copy out is gone. The single
+	// words are the copy's tail, the three field updates (a load and a
+	// store each), and the saved register's store and reload.
+	if ldp != 2 || stp != 2 {
+		t.Errorf("shift must copy its record by pairs, once; got %d ldp and %d stp:\n%s", ldp, stp, fmt.Sprint(shift.Items))
 	}
-	if singles > 12 {
-		t.Errorf("shift moves too many single words (%d) for a 40-byte record copied twice:\n%s", singles, fmt.Sprint(shift.Items))
+	if singles > 10 {
+		t.Errorf("shift moves too many single words (%d) for a 40-byte record copied once:\n%s", singles, fmt.Sprint(shift.Items))
 	}
 }

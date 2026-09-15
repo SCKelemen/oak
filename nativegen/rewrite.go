@@ -119,6 +119,14 @@ func computeStages(fn *ast.FunctionStatement, functions map[string]*ast.Function
 			push()
 		}
 	}
+	// Single-use span locals fold into the call that uses them
+	// (nativegen/span_forward.go): a substitution, so the source stays the
+	// verifier's reference.
+	if forwarded, changed := forwardSingleUseSpans(cloneNode(body).(ast.Expression)); changed {
+		sites = append(sites, RewriteSite{Rewrite: "span forwarding", Law: "Oak.SpanForward.let_forward", Detail: "a span local used once, in the next statement, as a call argument stands for its expression"})
+		body = forwarded
+		push()
+	}
 	if unroll {
 		if unrolled, changed := unrollReductions(fn, body); changed {
 			sites = append(sites, RewriteSite{Rewrite: "reduction unrolling", Law: "Oak.Reduction.unrolled4_eq", Detail: "the strided four-way fold equals the sequential fold; integer addition reassociates at every width", Line: fn.Token.Line})
