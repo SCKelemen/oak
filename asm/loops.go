@@ -1130,7 +1130,21 @@ func (x *pathExecutor) summarizeLoop(shape loopShape, exit Instruction, state *s
 	// order; the state past the loop keeps the marker alone (the loop's
 	// memory is the iteration's unknown memory, which the coupling proof
 	// identifies with the Oak side's).
+	// The memories the iteration may store into: a scalar span's own, a
+	// span of records' per-leaf memories (`s.pages`, `s.free_count`) — the
+	// Oak side's loopEvent marks and collects the same names.
+	var storedMemories []string
 	for _, span := range writtenSpans {
+		if arg, isRecord := x.recordSpans[span]; isRecord {
+			for _, memory := range arg.memories(span) {
+				storedSpans[memory] = true
+				storedMemories = append(storedMemories, memory)
+			}
+			continue
+		}
+		storedMemories = append(storedMemories, span)
+	}
+	for _, span := range storedMemories {
 		before := len(freshState.writes[span])
 		var stores []*spanWrite
 		for _, end := range ends {
@@ -2231,6 +2245,9 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 			if _, isSpan := lo.spans[name]; isSpan {
 				continue // a store through a span: the loop's memory, below
 			}
+			if _, isRecordSpan := lo.recordSpans[name]; isRecordSpan {
+				continue // a store through a span of records: its leaf memories, below
+			}
 			return fmt.Sprintf("an assignment to %s (not a local)", name), false
 		}
 		if local.agg != nil {
@@ -2301,6 +2318,14 @@ func (lo *oakLowering) loopEvent(loop *ast.WhileStatement) (string, bool) {
 	for _, span := range storedSpans {
 		ev.entry[span] = lo.writes[span]
 		lo.writes = appendMarker(lo.writes, span, ev.index)
+		if lo.path != nil {
+			// A loop inside a conditional's arm: past the conditional the
+			// memory is the loop's on the paths that ran it and the entry
+			// memory on the others — the guard the asm side's join gives
+			// its marker (mergeWrites).
+			log := lo.writes[span]
+			log[len(log)-1].guard = lo.path
+		}
 		lo.spans[loopMemoryName(ev.index, span)] = contracts[span] // the unknown memory's element width
 		before[span] = len(lo.writes[span])
 	}
@@ -3426,7 +3451,7 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	}
 	sort.Strings(writtenSpans)
 	for _, name := range writtenSpans {
-		contract, isSpan := lowering.spans[name]
+		contract, isSpan := lowering.memoryContract(name)
 		if !isSpan {
 			return trusted(fmt.Sprintf("a store through %s, which the Oak signature does not declare as a span", name))
 		}
@@ -3555,7 +3580,7 @@ func coupledEntryMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*term
 		if len(oakLog) == 0 && len(asmLog) == 0 {
 			continue // both the entry memory itself
 		}
-		contract, isSpan := lowering.spans[span]
+		contract, isSpan := lowering.memoryContract(span)
 		if !isSpan {
 			return fmt.Sprintf("loop %d marks %s, which the signature does not declare as a span", k+1, span), false
 		}
@@ -3593,7 +3618,7 @@ func coupledIterationMemories(k int, oakEv, asmEv *loopEvent, sigma map[string]*
 	}
 	sort.Strings(names)
 	for _, span := range names {
-		contract, isSpan := lowering.spans[span]
+		contract, isSpan := lowering.memoryContract(span)
 		if !isSpan {
 			return fmt.Sprintf("loop %d stores through %s, which the signature does not declare as a span", k+1, span), false
 		}

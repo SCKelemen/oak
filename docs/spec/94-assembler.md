@@ -3951,7 +3951,13 @@ memories' write logs (the effects model above), one memory per scalar
 leaf and one per array field, guarded by the path condition, marked at a
 data-dependent loop, and the verdict compares each written memory at a
 fresh index — so writers of spans of records are proven too, and a store
-into the wrong field is a mismatch A span of records passed
+into the wrong field is a mismatch. In a data-dependent loop body the
+iteration's stores through a span of records are collected per leaf
+memory on both sides (`s.pages`, `s.entry_count` — the loop's marker per
+leaf, the coupling proof per leaf at its width), so the table-zeroing
+loops of the OS pilot's `reset` and `alloc_table` are proven rather than
+trusted for "a store through a span that is not a writable parameter",
+and a loop that assigns through the span carries no local for it. A span of records passed
 to a callee binds as the callee's alias of the caller's span — in the
 call summary as in the inlined call — so its leaf memories are the
 caller's and the caller is proven through its callees (the OS pilot's
@@ -3978,7 +3984,17 @@ calls: a callee's summary starts from the cells as the caller's path
 holds them and its writes return to the path, a unit callee is
 summarized for its writes alone, and on the Oak side the inlined callee
 shares the caller's cell locals; only state written around a
-data-dependent loop stays trusted. The C emitter gives
+data-dependent loop stays trusted. A unit's `Function.Globals` names the
+cells its callees reach as well as its own (`nativegen`'s
+`reachableGlobals`, the call graph walked from the body), so a summary
+of `alloc_table` inside `walk_leaf` finds the cell `st` declared though
+`walk_leaf` never addresses it; declaring a cell the body never names
+admits nothing at the checker, whose facts arise only from an `adrp`. A
+cell assigned inside the arm of a value-position conditional (`ok ? {
+st = u8(1); idx } | { u16(0) }`) is merged on the condition like a local
+the statement conditional assigns — every conditional form runs its arms
+from one snapshot of the locals and selects the outcomes (`forkLocals`,
+`selectMatch`), so an assignment cannot escape its arm's condition. The C emitter gives
 an addressed global external linkage under the assembler label
 `oak_0g_G` (a digit after the prefix, which no function's mangled name
 can produce), the symbol the companion object's `adrp`/`add` relocations

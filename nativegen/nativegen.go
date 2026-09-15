@@ -2157,9 +2157,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, functions map[string]*ast.Funct
 		return nil, 0, 0, unsupported("a frame of %d bytes", frame)
 	}
 	out := &asm.Function{Name: NativeSymbol(fn), Signature: fn, Line: fn.Token.Line, Fallback: true, Records: records, ADTs: adts, System: g.system, Tables: tableSizes(g.tables)}
-	if len(g.usedGlobals) > 0 {
-		out.Globals = g.usedGlobals
-	}
+	out.Globals = g.reachableGlobals()
 	g.line = fn.Token.Line
 	var prologue []asm.Item
 	if frame > 0 {
@@ -3399,6 +3397,67 @@ func writesFirstOperand(mnemonic string) bool {
 // returnsValue reports whether a function has a result (anything but unit).
 func returnsValue(fn *ast.FunctionStatement) bool {
 	return fn.ReturnType != nil && fn.ReturnType.String() != "()"
+}
+
+// reachableGlobals is the package state a unit's verification ranges
+// over: the globals this body addressed (usedGlobals), and every global a
+// callee's body names, transitively — the verifier summarizes a callee at
+// its Oak body over the package cells (docs/spec/94-assembler.md §9), so
+// a cell only the callee touches (`st = u8(1)` in alloc_table, reached
+// from walk_leaf) must be declared to the caller's unit too. Declaring a
+// global the body never addresses admits nothing at the checker: a fact
+// arises only from an `adrp` of the name. Nil when there are none.
+func (g *generator) reachableGlobals() map[string]asm.Global {
+	out := map[string]asm.Global{}
+	for name, global := range g.usedGlobals {
+		out[name] = global
+	}
+	seen := map[string]bool{}
+	var visit func(fn *ast.FunctionStatement)
+	visit = func(fn *ast.FunctionStatement) {
+		walk(fn.Body, func(n ast.Node) {
+			switch e := n.(type) {
+			case *ast.Identifier:
+				if global, isGlobal := g.globals[e.Value]; isGlobal {
+					if _, has := out[e.Value]; !has {
+						out[e.Value] = global
+					}
+				}
+			case *ast.AssignmentStatement:
+				if e.Name != nil {
+					if global, isGlobal := g.globals[e.Name.Value]; isGlobal {
+						if _, has := out[e.Name.Value]; !has {
+							out[e.Name.Value] = global
+						}
+					}
+				}
+			case *ast.InvocationExpression:
+				if ident, isIdent := e.Function.(*ast.Identifier); isIdent && !seen[ident.Value] {
+					if callee, declared := g.functions[ident.Value]; declared && callee.Body != nil {
+						seen[ident.Value] = true
+						visit(callee)
+					}
+				}
+			}
+		})
+	}
+	if g.fn != nil {
+		seen[g.fn.Name.Value] = true
+		walk(g.fn.Body, func(n ast.Node) {
+			if call, isCall := n.(*ast.InvocationExpression); isCall {
+				if ident, isIdent := call.Function.(*ast.Identifier); isIdent && !seen[ident.Value] {
+					if callee, declared := g.functions[ident.Value]; declared && callee.Body != nil {
+						seen[ident.Value] = true
+						visit(callee)
+					}
+				}
+			}
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // globalOf resolves a name to an addressable global (Lane.Globals) when no
