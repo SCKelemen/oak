@@ -136,7 +136,13 @@ can currently be recomputed. The intended scheduler makes checked models, IR
 versions, analysis results, proof obligations, validation verdicts, costs, and
 selected artifacts explicit immutable nodes. Dependency and invalidation edges
 then permit independent analyses to run in parallel and ensure that a transform
-can consume only facts computed for its exact IR version.
+can consume only facts computed for its exact IR version. The first generic
+substrate is implemented in `opt/artifact.go`: exact `(kind, name, version)`
+keys, derived recipe digests, graph validation, deterministic topological
+execution, exact-once shared dependencies, cancellation, and a process-local
+cache. The compiler is not migrated yet, and the first executor is deliberately
+single-threaded. `optimizer-artifact-dag-2026-09.md` gives the full design,
+including analysis preservation and bounded ready-node concurrency.
 
 **The native backend** (`nativegen/`, AArch64 7,300 lines, RV64 4,000)
 lowers a checked function directly to instructions with no IR. Scalar
