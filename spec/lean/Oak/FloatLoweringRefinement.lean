@@ -1,0 +1,365 @@
+import Oak.FloatOps
+
+/-!
+# The first floating-point source/lowering refinement
+
+`Oak.LoweringRefinement` relates the extraction and verifier lowerings for the
+shared integer and aggregate language.  This module starts the corresponding
+floating-point seam with the binary32 operations emitted by
+`oak build -lean-floats bits`: `+`, `-`, `*`, and the six comparisons.
+
+The source side uses the exact `Oak.FloatOps` carriers, modulo their documented
+canonical-NaN reading of Lean's `Float32`. The verifier side has
+the operation names used by `asm/floats_lowering.go` and
+`asm/floats_ops.go`: `fadd`, `fsub`, and `fmul`, each at width 32.  The Go
+render test in `asm/lowering_refinement_test.go` pins production lowering to
+the `lowerF` shapes below.
+
+The second increment adds literals after decimal parsing has rounded them to
+binary32 bits, plus straight-line local declarations and rebindings.  The
+third adds the total sign operations: negation, absolute value, and copysign,
+under that same result-level NaN quotient. Payload-observing bitcasts are not
+part of this theorem. The fourth adds IEEE equality and ordering: NaNs are
+unordered and the two signed zeros are equal.
+Decimal parsing itself, conversions, spans, control flow, calls, binary64, and
+SIMD remain outside this theorem.
+-/
+
+namespace Oak.FloatLoweringRefinement
+
+/-- The binary32 operations whose extraction uses the bit-exact carriers in
+`Oak.FloatOps`. -/
+inductive SourceOp
+  | add
+  | sub
+  | mul
+  deriving DecidableEq, Repr
+
+/-- The corresponding `termFloat` operation names in the verifier. -/
+inductive VerifierOp
+  | fadd
+  | fsub
+  | fmul
+  deriving DecidableEq, Repr
+
+/-- Exact unary operations on a binary32 bit pattern. -/
+inductive SourceUnaryOp
+  | neg
+  | abs
+  deriving DecidableEq, Repr
+
+/-- The bit operations emitted by the verifier lowering. -/
+inductive VerifierUnaryOp
+  | xorSign
+  | clearSign
+  deriving DecidableEq, Repr
+
+/-- IEEE comparison operations in the source syntax. -/
+inductive SourceCompareOp
+  | eq
+  | ne
+  | lt
+  | le
+  | gt
+  | ge
+  deriving DecidableEq, Repr
+
+/-- The corresponding predicates built by the verifier's `floatCompare`. -/
+inductive VerifierCompareOp
+  | eq
+  | ne
+  | lt
+  | le
+  | gt
+  | ge
+  deriving DecidableEq, Repr
+
+/-- The spelling map in `oakLowering.lower` for binary32 arithmetic. -/
+def lowerOp : SourceOp → VerifierOp
+  | .add => .fadd
+  | .sub => .fsub
+  | .mul => .fmul
+
+/-- The spelling map for unary sign operations. -/
+def lowerUnaryOp : SourceUnaryOp → VerifierUnaryOp
+  | .neg => .xorSign
+  | .abs => .clearSign
+
+def lowerCompareOp : SourceCompareOp → VerifierCompareOp
+  | .eq => .eq
+  | .ne => .ne
+  | .lt => .lt
+  | .le => .le
+  | .gt => .gt
+  | .ge => .ge
+
+/-- The extraction's `-lean-floats bits` reading of the three operations. -/
+def SourceOp.eval : SourceOp → Float32 → Float32 → Float32
+  | .add => Oak.FloatOps.add32
+  | .sub => Oak.FloatOps.sub32
+  | .mul => Oak.FloatOps.mul32
+
+/-- The formal reading of the verifier's `termFloat` names.  The verifier
+treats a non-constant application as uninterpreted when deciding equality;
+this evaluator gives that shared application its Oak binary32 meaning. -/
+def VerifierOp.eval : VerifierOp → Float32 → Float32 → Float32
+  | .fadd => Oak.FloatOps.add32
+  | .fsub => Oak.FloatOps.sub32
+  | .fmul => Oak.FloatOps.mul32
+
+/-- The extraction's bit-level reading of binary32 sign operations. -/
+def SourceUnaryOp.eval : SourceUnaryOp → Float32 → Float32
+  | .neg => Oak.FloatOps.neg32
+  | .abs => Oak.FloatOps.abs32
+
+/-- The verifier's xor-sign and clear-sign terms have the same reading. -/
+def VerifierUnaryOp.eval : VerifierUnaryOp → Float32 → Float32
+  | .xorSign => Oak.FloatOps.neg32
+  | .clearSign => Oak.FloatOps.abs32
+
+/-- The bit-level comparison carriers used by extraction. -/
+def SourceCompareOp.eval : SourceCompareOp → Float32 → Float32 → Bool
+  | .eq => Oak.FloatOps.eq32
+  | .ne => Oak.FloatOps.ne32
+  | .lt => Oak.FloatOps.lt32
+  | .le => Oak.FloatOps.le32
+  | .gt => Oak.FloatOps.gt32
+  | .ge => Oak.FloatOps.ge32
+
+/-- The semantic reading of the verifier's `floatCompare` result. -/
+def VerifierCompareOp.eval : VerifierCompareOp → Float32 → Float32 → Bool
+  | .eq => Oak.FloatOps.eq32
+  | .ne => Oak.FloatOps.ne32
+  | .lt => Oak.FloatOps.lt32
+  | .le => Oak.FloatOps.le32
+  | .gt => Oak.FloatOps.gt32
+  | .ge => Oak.FloatOps.ge32
+
+/-- Mapping a source operation to the verifier operation preserves its exact
+binary32 meaning. -/
+@[simp] theorem lowerOp_eval (op : SourceOp) (a b : Float32) :
+    (lowerOp op).eval a b = op.eval a b := by
+  cases op <;> rfl
+
+@[simp] theorem lowerUnaryOp_eval (op : SourceUnaryOp) (a : Float32) :
+    (lowerUnaryOp op).eval a = op.eval a := by
+  cases op <;> rfl
+
+@[simp] theorem lowerCompareOp_eval (op : SourceCompareOp) (a b : Float32) :
+    (lowerCompareOp op).eval a b = op.eval a b := by
+  cases op <;> rfl
+
+/-- The shared straight-line source subset for this increment. -/
+inductive Expr
+  | param (name : String)
+  | literal (bits : UInt32)
+  | binary (op : SourceOp) (left right : Expr)
+  | unary (op : SourceUnaryOp) (operand : Expr)
+  | copysign (magnitude sign : Expr)
+  /-- A local declaration or rebinding.  The initializer is evaluated in the
+  old scope; the body sees the new value. -/
+  | letIn (name : String) (value body : Expr)
+  deriving Repr
+
+/-- A source parameter environment. -/
+abbrev SourceEnv := String → Float32
+
+/-- Rebind one name in the extraction's current scope. -/
+def SourceEnv.set (ρ : SourceEnv) (name : String) (value : Float32) : SourceEnv :=
+  fun candidate => if candidate = name then value else ρ candidate
+
+/-- The extraction-side interpretation. -/
+def Expr.eval : Expr → SourceEnv → Float32
+  | .param name, ρ => ρ name
+  | .literal bits, _ => Float32.ofBits bits
+  | .binary op left right, ρ => op.eval (left.eval ρ) (right.eval ρ)
+  | .unary op operand, ρ => op.eval (operand.eval ρ)
+  | .copysign magnitude sign, ρ =>
+      Oak.FloatOps.copysign32 (magnitude.eval ρ) (sign.eval ρ)
+  | .letIn name value body, ρ => body.eval (ρ.set name (value.eval ρ))
+
+/-- The verifier term subset reached by `lowerF`. -/
+inductive Term
+  | param (name : String)
+  | literal (bits : UInt32)
+  | float (op : VerifierOp) (left right : Term)
+  | unary (op : VerifierUnaryOp) (operand : Term)
+  | copysign (magnitude sign : Term)
+  deriving Repr
+
+/-- The verifier's symbolic bindings.  A local maps directly to the term of
+its initializer, which is how `declareLocal` and `assignLocal` substitute
+straight-line locals in `asm/verify.go`. -/
+abbrev TermEnv := String → Term
+
+/-- Rebind one symbolic local. -/
+def TermEnv.set (σ : TermEnv) (name : String) (value : Term) : TermEnv :=
+  fun candidate => if candidate = name then value else σ candidate
+
+/-- The verifier-side interpretation under the same source parameters. -/
+def Term.eval : Term → SourceEnv → Float32
+  | .param name, ρ => ρ name
+  | .literal bits, _ => Float32.ofBits bits
+  | .float op left right, ρ => op.eval (left.eval ρ) (right.eval ρ)
+  | .unary op operand, ρ => op.eval (operand.eval ρ)
+  | .copysign magnitude sign, ρ =>
+      Oak.FloatOps.copysign32 (magnitude.eval ρ) (sign.eval ρ)
+
+/-- The float branch of `oakLowering.lower`: operands keep their source order,
+each source operation becomes one width-32 `termFloat`, and a local is
+substituted by its initializer's already-lowered term. -/
+def lowerWith : Expr → TermEnv → Term
+  | .param name, σ => σ name
+  | .literal bits, _ => .literal bits
+  | .binary op left right, σ =>
+      .float (lowerOp op) (lowerWith left σ) (lowerWith right σ)
+  | .unary op operand, σ =>
+      .unary (lowerUnaryOp op) (lowerWith operand σ)
+  | .copysign magnitude sign, σ =>
+      .copysign (lowerWith magnitude σ) (lowerWith sign σ)
+  | .letIn name value body, σ =>
+      lowerWith body (σ.set name (lowerWith value σ))
+
+/-- A symbolic environment agrees with the extraction's current scope when
+every bound term evaluates, under the immutable function parameters, to the
+scope value of the same name. -/
+def Agree (parameters current : SourceEnv) (σ : TermEnv) : Prop :=
+  ∀ name, (σ name).eval parameters = current name
+
+private theorem agree_set (parameters current : SourceEnv) (σ : TermEnv)
+    (name : String) (value : Float32) (lowered : Term)
+    (hσ : Agree parameters current σ)
+    (hv : lowered.eval parameters = value) :
+    Agree parameters (current.set name value) (σ.set name lowered) := by
+  intro candidate
+  by_cases h : candidate = name
+  · simp [SourceEnv.set, TermEnv.set, h, hv]
+  · simp [SourceEnv.set, TermEnv.set, h, hσ candidate]
+
+/-- Generalized refinement invariant used under local bindings. -/
+theorem lowerWith_eval (e : Expr) (parameters current : SourceEnv) (σ : TermEnv)
+    (hσ : Agree parameters current σ) :
+    (lowerWith e σ).eval parameters = e.eval current := by
+  induction e generalizing current σ with
+  | param name => exact hσ name
+  | literal => rfl
+  | binary op left right ihLeft ihRight =>
+      simp only [lowerWith, Term.eval, Expr.eval]
+      rw [ihLeft current σ hσ, ihRight current σ hσ]
+      exact lowerOp_eval op (left.eval current) (right.eval current)
+  | unary op operand ih =>
+      simp only [lowerWith, Term.eval, Expr.eval]
+      rw [ih current σ hσ]
+      exact lowerUnaryOp_eval op (operand.eval current)
+  | copysign magnitude sign ihMagnitude ihSign =>
+      simp only [lowerWith, Term.eval, Expr.eval]
+      rw [ihMagnitude current σ hσ, ihSign current σ hσ]
+  | letIn name value body ihValue ihBody =>
+      simp only [lowerWith, Expr.eval]
+      exact ihBody
+        (current.set name (value.eval current))
+        (σ.set name (lowerWith value σ))
+        (agree_set parameters current σ name (value.eval current)
+          (lowerWith value σ) hσ (ihValue current σ hσ))
+
+/-- The initial symbolic scope maps every name to its parameter term. -/
+def parameterTerms : TermEnv := Term.param
+
+@[simp] theorem parameterTerms_agree (ρ : SourceEnv) : Agree ρ ρ parameterTerms := by
+  intro name
+  rfl
+
+/-- Lower an expression from the function's initial parameter scope. -/
+def lowerF (e : Expr) : Term := lowerWith e parameterTerms
+
+/-- **Source-to-verifier seam for exact binary32 arithmetic.**  Every
+straight-line expression in the subset has the same value under the
+extraction reading and the verifier-term reading, for every parameter
+assignment. -/
+theorem lowerF_eval (e : Expr) (ρ : SourceEnv) :
+    (lowerF e).eval ρ = e.eval ρ := by
+  exact lowerWith_eval e ρ ρ parameterTerms (parameterTerms_agree ρ)
+
+/-- A Boolean condition over two float expressions. -/
+inductive Condition
+  | compare (op : SourceCompareOp) (left right : Expr)
+  deriving Repr
+
+/-- The verifier-side Boolean term produced by `floatCompare`. -/
+inductive BoolTerm
+  | compare (op : VerifierCompareOp) (left right : Term)
+  deriving Repr
+
+def Condition.eval : Condition → SourceEnv → Bool
+  | .compare op left right, ρ => op.eval (left.eval ρ) (right.eval ρ)
+
+def BoolTerm.eval : BoolTerm → SourceEnv → Bool
+  | .compare op left right, ρ => op.eval (left.eval ρ) (right.eval ρ)
+
+def lowerConditionWith : Condition → TermEnv → BoolTerm
+  | .compare op left right, σ =>
+      .compare (lowerCompareOp op) (lowerWith left σ) (lowerWith right σ)
+
+/-- Float comparison lowering preserves the IEEE predicate in every agreeing
+scope. The comparison carriers treat every NaN alike, so this result is
+independent of Lean's NaN-payload canonicalization. -/
+theorem lowerConditionWith_eval (condition : Condition)
+    (parameters current : SourceEnv) (σ : TermEnv)
+    (hσ : Agree parameters current σ) :
+    (lowerConditionWith condition σ).eval parameters = condition.eval current := by
+  cases condition with
+  | compare op left right =>
+      simp only [lowerConditionWith, BoolTerm.eval, Condition.eval]
+      rw [lowerWith_eval left parameters current σ hσ,
+          lowerWith_eval right parameters current σ hσ]
+      exact lowerCompareOp_eval op (left.eval current) (right.eval current)
+
+def lowerCondition (condition : Condition) : BoolTerm :=
+  lowerConditionWith condition parameterTerms
+
+theorem lowerCondition_eval (condition : Condition) (ρ : SourceEnv) :
+    (lowerCondition condition).eval ρ = condition.eval ρ := by
+  exact lowerConditionWith_eval condition ρ ρ parameterTerms
+    (parameterTerms_agree ρ)
+
+private def a : Expr := .param "a"
+private def b : Expr := .param "b"
+private def c : Expr := .param "c"
+
+/-- Render pins mirrored by `asm/lowering_refinement_test.go`. -/
+example : lowerF (.binary .add a b) = .float .fadd (.param "a") (.param "b") := rfl
+example : lowerF (.binary .sub a b) = .float .fsub (.param "a") (.param "b") := rfl
+example : lowerF (.binary .mul a b) = .float .fmul (.param "a") (.param "b") := rfl
+example : lowerF (.unary .neg a) = .unary .xorSign (.param "a") := rfl
+example : lowerF (.unary .abs a) = .unary .clearSign (.param "a") := rfl
+example : lowerF (.copysign (.unary .neg a) b) =
+    .copysign (.unary .xorSign (.param "a")) (.param "b") := rfl
+example : lowerCondition (.compare .eq a b) =
+    .compare .eq (.param "a") (.param "b") := rfl
+example : lowerCondition (.compare .ne a b) =
+    .compare .ne (.param "a") (.param "b") := rfl
+example : lowerCondition (.compare .lt a b) =
+    .compare .lt (.param "a") (.param "b") := rfl
+example : lowerCondition (.compare .le a b) =
+    .compare .le (.param "a") (.param "b") := rfl
+example : lowerCondition (.compare .gt a b) =
+    .compare .gt (.param "a") (.param "b") := rfl
+example : lowerCondition (.compare .ge a b) =
+    .compare .ge (.param "a") (.param "b") := rfl
+example : lowerF (.binary .add (.binary .mul a b) c) =
+    .float .fadd (.float .fmul (.param "a") (.param "b")) (.param "c") := rfl
+example : lowerF (.binary .add a (.literal 0x3FC00000)) =
+    .float .fadd (.param "a") (.literal 0x3FC00000) := rfl
+example : lowerF (.letIn "y" (.binary .add a (.literal 0x3FC00000))
+    (.binary .mul (.param "y") (.param "y"))) =
+    .float .fmul
+      (.float .fadd (.param "a") (.literal 0x3FC00000))
+      (.float .fadd (.param "a") (.literal 0x3FC00000)) := rfl
+example : lowerF (.letIn "y" a
+    (.letIn "y" (.binary .add (.param "y") (.literal 0x3F800000))
+      (.binary .mul (.param "y") (.literal 0x40000000)))) =
+    .float .fmul
+      (.float .fadd (.param "a") (.literal 0x3F800000))
+      (.literal 0x40000000) := rfl
+
+end Oak.FloatLoweringRefinement

@@ -8,10 +8,11 @@ import Oak.FloatBounds
 `round_even` among the correctly rounded intrinsics. Lean's `Float` and
 `Float32` carry `sqrt`, `abs`, `floor`, `ceil`, `round` (ties away) and the
 classifications with the same contract, so the extraction
-(`docs/spec/95-extraction.md` section 2) maps those directly. The three
-below have no counterpart in the core library, so this file defines them
-from the bit pattern, where every step is integer arithmetic and therefore
-exact:
+(`docs/spec/95-extraction.md` section 2) maps those directly. The operations
+below are defined from the bit pattern, where every step is integer arithmetic
+and therefore exact. `fma`, `copysign`, and `roundEven` fill gaps in Lean's
+core library; `neg32` and `abs32` give the bit-level extraction transparent
+counterparts of otherwise opaque `Float32` operations:
 
 * `copysign x y` replaces the sign bit of `x` with that of `y`: a bit
   operation, total on NaN, exactly the C `copysign` the backend emits.
@@ -31,7 +32,8 @@ exact:
   file makes beyond IEEE (stated in `95-extraction.md` section 3).
 
 Both widths share the code through `Fmt`; `Float` and `Float32` wrappers
-convert through `toBits`/`ofBits`, which are exact.
+convert through `toBits`/`ofBits`. Finite values, infinities, and signed zeros
+round-trip exactly; Lean canonicalizes NaNs as detailed below.
 
 **The bridge to `Oak.Floats`** (the ml pilot's E4). Lean's `Float32`
 arithmetic is opaque, so a theorem about extracted code cannot see how `+`
@@ -48,6 +50,13 @@ functions. What remains for a full bridge is the decode of `encode`'s
 result back to `±m · 2^e` in the normal range; the differential test
 (`compiler/lean_float_bits_test.go`) holds the three functions to the
 host's binary32 on random and edge operands meanwhile.
+
+The same extraction mode renders binary32 negation and absolute value through
+`neg32` and `abs32`. Together with `copysign32`, these operations are total
+sign-bit transformations, exact on finite values, signed zeros, and infinities.
+Lean's `Float32.ofBits` canonicalizes NaN sign and payload; the verifier applies
+the same quotient to float results, while payload-observing bitcasts remain
+outside this refinement.
 -/
 
 namespace Oak.FloatOps
@@ -153,6 +162,48 @@ def copysign64 (x y : Float) : Float :=
 
 def copysign32 (x y : Float32) : Float32 :=
   Float32.ofBits (UInt32.ofNat (binary32.copysign x.toBits.toNat y.toBits.toNat))
+
+/-- Binary32 negation is the IEEE sign-bit flip. `Float32.ofBits` preserves
+signed zeros, infinities, and finite values exactly; it canonicalizes every
+NaN result, which is the extraction's documented NaN quotient. -/
+def neg32 (x : Float32) : Float32 :=
+  Float32.ofBits (x.toBits ^^^ 0x80000000)
+
+/-- Binary32 absolute value clears only the sign bit before reconstruction.
+Finite values, signed zeros, and infinities are exact; NaNs are canonicalized
+by `Float32.ofBits`. -/
+def abs32 (x : Float32) : Float32 :=
+  Float32.ofBits (x.toBits &&& 0x7FFFFFFF)
+
+/-- IEEE binary32 equality from the interchange bits: NaNs are unequal to
+everything, while both encodings of zero are equal. -/
+def eq32 (a b : Float32) : Bool :=
+  let ab := a.toBits.toNat
+  let bb := b.toBits.toNat
+  !(binary32.isNaN ab || binary32.isNaN bb) &&
+    (decide (ab = bb) || (binary32.isZero ab && binary32.isZero bb))
+
+def ne32 (a b : Float32) : Bool := !eq32 a b
+
+/-- IEEE binary32 strict order from the interchange bits. NaNs and two zeros
+are unordered; negative values reverse the magnitude comparison. -/
+def lt32 (a b : Float32) : Bool :=
+  let ab := a.toBits.toNat
+  let bb := b.toBits.toNat
+  let nan := binary32.isNaN ab || binary32.isNaN bb
+  let bothZero := binary32.isZero ab && binary32.isZero bb
+  let sa := binary32.sign ab
+  let sb := binary32.sign bb
+  let ma := ab % binary32.signBit
+  let mb := bb % binary32.signBit
+  !nan && !bothZero &&
+    ((sa && !sb) ||
+      (sa && sb && decide (mb < ma)) ||
+      (!sa && !sb && decide (ma < mb)))
+
+def gt32 (a b : Float32) : Bool := lt32 b a
+def le32 (a b : Float32) : Bool := lt32 a b || eq32 a b
+def ge32 (a b : Float32) : Bool := lt32 b a || eq32 a b
 
 def fma64 (a b c : Float) : Float :=
   Float.ofBits (UInt64.ofNat (binary64.fma a.toBits.toNat b.toBits.toNat c.toBits.toNat))

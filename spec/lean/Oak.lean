@@ -82,6 +82,7 @@ import Oak.ArmASL
 import Oak.Extents
 import Oak.ExtentsRefinement
 import Oak.CheckerRefinement
+import Oak.CheckerMeetRefinement
 import Oak.Dispatch
 import Oak.Discharge
 import Oak.FloatBits
@@ -105,6 +106,7 @@ import Oak.CheckedArithmeticRefinement
 import Oak.ConversionRefinement
 import Oak.LiteralFitRefinement
 import Oak.LoweringRefinement
+import Oak.FloatLoweringRefinement
 import Oak.Semver
 import Oak.Loops
 import Oak.TrapArms

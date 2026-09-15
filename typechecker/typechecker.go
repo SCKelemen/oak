@@ -2495,9 +2495,13 @@ func (tc *TypeChecker) checkFunctionLiteral(fn *ast.FunctionLiteral) Type {
 	// Restore environment
 	tc.env = oldEnv
 
-	if typed && !returnType.Equals(declaredReturn) {
+	if typed && !tc.isAssignable(returnType, declaredReturn) {
 		if _, unitBody := returnType.(*UnitType); !(unitBody && fn.ReturnType == nil) {
-			tc.addError(fn, "function literal: expected return type %s, got %s", declaredReturn, returnType)
+			if returnType.Equals(declaredReturn) && !tc.alignmentAssignable(returnType, declaredReturn) {
+				tc.addError(fn, "function literal: returns %s, but the body yields %s: a declaration may not claim more than the borrow gives", declaredReturn, returnType)
+			} else {
+				tc.addError(fn, "function literal: expected return type %s, got %s", declaredReturn, returnType)
+			}
 			return nil
 		}
 	}
@@ -3934,6 +3938,8 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedT
 		if armType == nil {
 			// Unreachable or error - use never type
 			armType = &NeverType{}
+		} else if expected != nil && !tc.isAssignable(armType, expected) {
+			tc.addError(arm.Body, "match arm: expected type %s, got %s", expected, armType)
 		}
 		armTypes = append(armTypes, armType)
 
@@ -3945,20 +3951,26 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedT
 	tc.restoreDead(armsAfter)
 	returnType := Join(armTypes...)
 
-	// Strict mode: if join is any and we didn't explicitly request any, it's an error
-	// (This prevents accidental type widening)
-	if _, isAny := returnType.(*AnyType); isAny {
-		// Check if all non-never types are the same
-		nonNeverTypes := []Type{}
-		for _, at := range armTypes {
-			if _, ok := at.(*NeverType); !ok {
-				nonNeverTypes = append(nonNeverTypes, at)
-			}
+	// Expected typing keeps branch-local widening, shape satisfaction, and
+	// never elimination out of the runtime representation. A mismatch already
+	// has a located arm diagnostic; returning the expected type is error
+	// recovery and prevents an unrepresentable union from leaking downstream.
+	if expected != nil {
+		if _, allNever := returnType.(*NeverType); allNever {
+			return returnType
 		}
+		return expected
+	}
 
-		if len(nonNeverTypes) > 1 {
-			// Multiple different types - this is an error in strict mode
-			tc.addError(expr, "match expression has branches with incompatible types. Use explicit 'any' return type if intentional.")
+	// Without an expected representation, a heterogeneous join is useful to
+	// the checker for diagnostics but is not a runtime value. Oak has not
+	// specified implicit union tags or `any` boxing, so fail closed here.
+	switch returnType.(type) {
+	case *UnionType:
+		tc.addError(expr, "match expression has branches with incompatible runtime types (semantic join %s has no implicit representation)", returnType)
+	case *AnyType:
+		if len(nonNeverDistinctTypes(armTypes)) > 1 {
+			tc.addError(expr, "match expression requires runtime `any`, whose representation is not specified")
 		}
 	}
 
@@ -3966,6 +3978,26 @@ func (tc *TypeChecker) checkMatchExpression(expr *ast.MatchExpression, expectedT
 		return &NeverType{} // No branches matched - unreachable
 	}
 	return returnType
+}
+
+func nonNeverDistinctTypes(types []Type) []Type {
+	result := make([]Type, 0, len(types))
+	for _, typ := range types {
+		if _, isNever := typ.(*NeverType); isNever {
+			continue
+		}
+		distinct := true
+		for _, existing := range result {
+			if typ.Equals(existing) {
+				distinct = false
+				break
+			}
+		}
+		if distinct {
+			result = append(result, typ)
+		}
+	}
+	return result
 }
 
 func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type {
@@ -4655,8 +4687,9 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 	}
 }
 
-// isAssignable checks if a value type can be assigned to a variable type
-// Allows widening conversions (u8 -> u16, etc.) but not narrowing or sign changes
+// isAssignable is the single ordinary value-flow boundary. It composes the
+// proved semantic lattice with the separately specified representation-aware
+// relations; semantic subtyping never silently chooses a runtime layout.
 func (tc *TypeChecker) isAssignable(valueType, varType Type) bool {
 	// Open targets use width matching; source representation remains intact.
 	if target, ok := varType.(*RecordType); ok && target.Open {
@@ -4687,8 +4720,10 @@ func (tc *TypeChecker) isAssignable(valueType, varType Type) bool {
 		return false
 	}
 
-	// Exact match
-	if valueType.Equals(varType) {
+	// The lattice admits exact types and bottom without introducing a runtime
+	// representation. Top and nontrivial joins/meets remain static until Oak
+	// specifies their value representation explicitly.
+	if latticeSubtypeWithoutRepresentation(valueType, varType) {
 		return true
 	}
 
@@ -4998,9 +5033,18 @@ func (tc *TypeChecker) checkFunctionStatement(stmt *ast.FunctionStatement) {
 		bodyType = &UnitType{}
 	}
 
-	// Check that body type matches return type
-	if !bodyType.Equals(returnType) {
-		tc.addError(stmt, "function %s: expected return type %s, got %s", stmt.Name.Value, returnType, bodyType)
+	// Check the body through the same expected-position relation as arguments,
+	// initializers, assignments, and match arms. In particular, never is
+	// bottom and a refined value may flow to its base representation.
+	if !tc.isAssignable(bodyType, returnType) {
+		if bodyType.Equals(returnType) && !tc.alignmentAssignable(bodyType, returnType) {
+			// The declared fact on a returned view or span is a claim about
+			// the body, checked like any other position (docs/spec/50-borrowing.md
+			// section 2a): a declaration may not claim more than the borrow gives.
+			tc.addError(stmt, "function %s: returns %s, but the body yields %s: a declaration may not claim more than the borrow gives", stmt.Name.Value, returnType, bodyType)
+		} else {
+			tc.addError(stmt, "function %s: expected return type %s, got %s", stmt.Name.Value, returnType, bodyType)
+		}
 	} else if !tc.alignmentAssignable(bodyType, returnType) {
 		// The declared fact on a returned view or span is a claim about
 		// the body, checked like any other position (docs/spec/50-borrowing.md

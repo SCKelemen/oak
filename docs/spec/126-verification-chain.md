@@ -126,6 +126,15 @@ agrees, **trusted** when the unit reaches outside the decided subset
 labeled. Then the assembler encodes the words itself (§9) and writes the
 companion object; the object format and lane are those of `Oak.Target`.
 
+The seam checker's join rule for index bounds is **refined**:
+`Oak.CheckerMeetRefinement.meetFact` transliterates `meetIdx`'s
+per-register equality/reconciliation decision, and `meetFact_sound` proves
+that every retained bound holds on both predecessor register states. The Go
+decision table is pinned to executable Lean examples by
+`asm/check_meet_test.go`. This closes that join rule only; it does not turn
+the whole seam checker or semantic verifier into a certificate-checked
+implementation.
+
 ### 2.6 Object → binary
 
 Linking is the C compiler's driver (`compileC`), static for Linux cross
@@ -260,9 +269,25 @@ same terms. A data-dependent loop is covered up to the meaning of its
 fresh symbols: the theorem holds for every parameter assignment that
 reads them as the exit values, which is what the symbols stand for, and
 the event's condition and body are instances of the same theorem over any
-iteration's values. Outside the subset — floats and the vector operations
-— the verifier's lowering is still the Go's alone, related to the
-extraction by tests.
+iteration's values.
+
+The first float seam is `Oak.FloatLoweringRefinement` (2026-09-15). Its
+`lowerF_eval` proves, for every straight-line expression over `f32` parameters,
+post-rounding bit-pattern literals, and local declarations or rebindings using
+`+`, `-`, and `*`, plus unary negation, `abs`, and `copysign`, that the
+extraction's exact `Oak.FloatOps` reading equals the verifier term's matching
+arithmetic or sign-bit reading. The generalized `lowerWith_eval` maintains
+the agreement invariant while the verifier substitutes a local's lowered
+initializer. The operation map, operand order, literal bits, and substitution
+shapes are pinned to `oakLowering.lower` by
+`asm/lowering_refinement_test.go`, including the non-contraction of
+`a * b + c` and the sign-mask forms. `lowerCondition_eval` adds all six IEEE
+comparisons over those expressions; the bit-level predicates make NaN
+unordered and signed zeros equal, and the production render pins include the
+verifier's complete `floatCompare` expansions. This is deliberately still a
+first slice: decimal parsing into the literal bits, conversions, spans, control
+flow, calls, `f64`, and vector operations remain related to the extraction by
+tests rather than this theorem.
 
 For the C route (every function the native lane does not cover, and every
 function on amd64 and the microcontrollers), the source-level proofs reach
@@ -323,12 +348,20 @@ for a workload):
    What the native bodies use is covered, data-dependent loops included
    (`whileEvent`: the carried locals as fresh symbols after the loop, the
    theorem under assignments where the symbols denote the exit values);
-   what remains is at the edges: floats and vectors — so `lowerT_eval`
-   covers the
-   bodies `oak build -native` actually verifies rather than their
+   what remains is at the edges: most floats and vectors — so `lowerT_eval`
+   covers the bodies `oak build -native` actually verifies rather than their
    arithmetic alone. This is the step that turns "source theorem implies
    machine behavior" from a statement about expressions into one about
-   functions on arm64.
+   functions on arm64. **First float slice (2026-09-15):**
+   `Oak.FloatLoweringRefinement.lowerF_eval` connects exact `f32` `+`, `-`,
+   `*`, unary negation, `abs`, and `copysign` over parameters, post-rounding
+   literal bits, and straight-line local declaration/rebinding to the verifier's
+   width-32 operation/sign-bit terms and local substitution; the production
+   render pins cover those shapes and a multiply followed by an add.
+   `lowerCondition_eval` covers `==`, `!=`, `<`, `<=`, `>`, and `>=` over the
+   same expressions and pins the verifier's bit-level comparison expansion.
+   Decimal parsing, conversions, memory, control flow, calls, and the rest of
+   the float/vector edge stay open.
 4. **Widen translation validation** (§2.4) on arm64: landed for the
    checked shift helpers under constant-count specializations (1, 3,
    width − 1 at every unsigned width; the verifier admits a constant

@@ -122,7 +122,33 @@ func selectTerm(span string, index *term, width int) *term {
 		}
 		return paramTerm(spanElemName(span, k), width)
 	}
-	return &term{kind: termSelect, width: width, name: span, left: truncate(index, 32)}
+	return &term{kind: termSelect, width: width, name: span, left: canonicalIndex(index)}
+}
+
+// canonicalIndex spells a memory read's index one way on both sides, so
+// the same read is one term (the linear normal form's atom): a mask of
+// low ones covering every bit its operand can have set is dropped — the
+// machine's read of a u32 argument register under `and 0xFFFFFFFF` is
+// the parameter, whose wide reading is zero-extended by convention — and
+// the index is taken at 32 bits.
+func canonicalIndex(index *term) *term {
+	for index.kind == termBinary && index.op == "and" {
+		var maskTerm, operand *term
+		switch {
+		case index.right.kind == termConst:
+			maskTerm, operand = index.right, index.left
+		case index.left.kind == termConst:
+			maskTerm, operand = index.left, index.right
+		default:
+			return truncate(index, 32)
+		}
+		k := lowOnes(maskTerm.value & mask(index.width))
+		if k < 0 || operand.knownBits() > k {
+			break
+		}
+		index = operand
+	}
+	return truncate(index, 32)
 }
 
 // elementValue is the witness evaluator's fixed memory: element k of span
@@ -314,7 +340,7 @@ func recordFieldTerm(span string, index *term, leafName string, width int, concr
 		}
 		return paramTerm(spanElemName(span, int64(k))+leafName, width)
 	}
-	return &term{kind: termSelect, width: width, name: memory, left: truncate(index, 32)}
+	return &term{kind: termSelect, width: width, name: memory, left: canonicalIndex(index)}
 }
 
 // recordElementOf recognizes a record span element's address: `&v` plus
@@ -1041,7 +1067,19 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		return &linearForm{width: w, coeffs: map[string]uint64{t.name: 1}}
 	case termConst:
 		return &linearForm{width: w, constant: t.value & m}
-	case termCmp, termIte, termSelect, termFloat, termQuant:
+	case termSelect:
+		// A memory read at a symbolic index is an atom of the form — the
+		// same read on both sides (one memory, one index term) is one
+		// unknown, so `s[dom].pool_base + u64(s[dom].root) * page_size`
+		// (the OS pilot's get_root_pa) decides linearly, where the
+		// 64-bit sum at the bit level exceeded the budget. Only a read
+		// whose element fits the form's width (a narrower one is
+		// zero-extended by the convention over parameters).
+		if t.width > w {
+			return nil
+		}
+		return &linearForm{width: w, coeffs: map[string]uint64{t.String(): 1}}
+	case termCmp, termIte, termFloat, termQuant:
 		return nil
 	}
 	switch t.op {
@@ -1051,6 +1089,30 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		}
 		if t.left.kind == termConst && t.left.value&m == m {
 			return t.right.linearAtMemo(w, memo, seen)
+		}
+		// A mask of low ones that covers every bit the operand can have
+		// set is the identity: `u64(index)` over a u16 parameter is
+		// `index and 0xFFFF` on the Oak side and `and w1, w1, #65535` read
+		// as x1 on the machine's — both the parameter itself, so
+		// `pool_base + index * 4096` and `pool_base + (index << 12)`
+		// decide in the linear normal form rather than at the bit level,
+		// where the 64-bit sum of two unknowns exceeds the budget.
+		for _, sides := range [2][2]*term{{t.right, t.left}, {t.left, t.right}} {
+			maskTerm, operand := sides[0], sides[1]
+			if maskTerm.kind != termConst {
+				continue
+			}
+			k := lowOnes(maskTerm.value & m)
+			if k < 0 {
+				continue
+			}
+			// The operand's bits at or above the mask are gone: the
+			// machine's read of a u16 argument register is
+			// `(index#hi shl 16) or index`, the unspecified upper bits
+			// beside the value, and `and 65535` leaves the value.
+			if kept := stripAbove(operand, k); kept != nil && kept.knownBits() <= k {
+				return kept.linearAtMemo(w, memo, seen)
+			}
 		}
 		return nil
 	case "add", "sub":
@@ -1112,6 +1174,88 @@ func (t *term) linearAtUncached(w int, memo map[*term]*linearForm, seen map[*ter
 		return out.trim()
 	}
 	return nil
+}
+
+// lowOnes is the count of a mask's low ones when the mask is exactly that
+// (2^k - 1), else -1.
+func lowOnes(mask uint64) int {
+	if mask&(mask+1) != 0 {
+		return -1
+	}
+	return bits.Len64(mask)
+}
+
+// stripAbove is the term equal to t under a mask of k low ones, when the
+// bits at or above k are separable: a term whose known bits fit is
+// itself, a constant is masked, a shift by at least k is zero, and an or
+// or xor strips each side (a side that vanishes leaves the other). Nil
+// when the bits cannot be separated.
+func stripAbove(t *term, k int) *term {
+	if k <= 0 || k > t.width {
+		return nil
+	}
+	if t.knownBits() <= k {
+		return t
+	}
+	switch {
+	case t.kind == termConst:
+		return constTerm(t.value&(uint64(1)<<uint(k)-1), t.width)
+	case t.kind == termBinary && t.op == "shl" && t.right.kind == termConst && t.right.value >= uint64(k) && t.right.value < uint64(t.width):
+		return constTerm(0, t.width)
+	case t.kind == termBinary && (t.op == "or" || t.op == "xor"):
+		left, right := stripAbove(t.left, k), stripAbove(t.right, k)
+		if left == nil || right == nil {
+			return nil
+		}
+		if left.kind == termConst && left.value == 0 {
+			return right
+		}
+		if right.kind == termConst && right.value == 0 {
+			return left
+		}
+		return binaryTerm(t.op, left, right)
+	case t.kind == termBinary && t.op == "and":
+		left, right := stripAbove(t.left, k), stripAbove(t.right, k)
+		if left == nil || right == nil {
+			return nil
+		}
+		return binaryTerm("and", left, right)
+	}
+	return nil
+}
+
+// knownBits is the number of low bits a term can have set: a parameter's
+// declared width (a u16 parameter read at 64 bits is zero-extended, the
+// convention of zeroExtend and truncate over parameters), a constant's
+// length, a mask's low ones, else the term's width.
+func (t *term) knownBits() int {
+	switch t.kind {
+	case termParam:
+		if t.declared > 0 && t.declared < t.width {
+			return t.declared
+		}
+		return t.width
+	case termConst:
+		return bits.Len64(t.value & mask(t.width))
+	case termBinary:
+		if t.op == "and" {
+			known := t.width
+			for _, side := range [2]*term{t.left, t.right} {
+				if side.kind == termConst {
+					if ones := lowOnes(side.value & mask(t.width)); ones >= 0 && ones < known {
+						known = ones
+					}
+				} else if k := side.knownBits(); k < known {
+					known = k
+				}
+			}
+			return known
+		}
+		if t.op == "shr" && t.right.kind == termConst && t.right.value < uint64(t.width) {
+			return t.width - int(t.right.value)
+		}
+	}
+	return t.width
 }
 
 func (f *linearForm) trim() *linearForm {
@@ -9703,6 +9847,8 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	}
 	if a, o := asmTerm.linearAt(width), oakTerm.linearAt(width); a != nil && o != nil && a.equal(o) {
 		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (linear normal form %s)%s", fn.Name, a, note)}
+	} else if os.Getenv("OAK_VERIFY_TRACE") != "" {
+		fmt.Fprintf(os.Stderr, "verify %s: not one linear form\n  asm: %s -> %v\n  oak: %s -> %v\n", fn.Name, asmTerm, a, oakTerm, o)
 	}
 	if equalTerms(asmTerm, adaptWidth(oakTerm, width)) {
 		// The same term on both sides (a memory both sides built from the

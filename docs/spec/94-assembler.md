@@ -276,8 +276,12 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   still holding its initial constant, which the compare records as an
   immediate, while the back edge compares it against the narrowed
   register; the register form holds on both (2026-09-16, the page
-  probe's inner loop rotates with its key read unguarded). An access
-  admits an index guarded below a register
+  probe's inner loop rotates with its key read unguarded). The exact
+  per-register decision is transliterated by
+  `Oak.CheckerMeetRefinement.meetFact`; `meetFact_sound` proves that every
+  retained fact holds on both predecessor register states, and
+  `asm/check_meet_test.go` pins the production branches and results to the
+  executable Lean examples. An access admits an index guarded below a register
   whose upper chain ends at a register holding the span's length, proven
   equal to one, or holding a constant no larger than one such holds
   (`Oak.Assembler.index_under_upper`). A label's state is the whole
@@ -565,7 +569,14 @@ sign bit, `vs` after `adds` the signed overflow). `cbz`/`cbnz` and
 flags (the checker reads the register and bounds the bit index); the
 executor, the loop-body executor, and loop recognition treat them like
 `b.cond`, so a count-down loop exiting through `cbz` is proven by the
-affine coupling and a `tbz` bit test verifies. Byte-offset pointer walks
+affine coupling and a `tbz` bit test verifies. A `u16` or `u8` (`i16`,
+`i8`) loop counter lives in a 32-bit general register, zero- or
+sign-extended after each step (`and #0xFFFF`, `uxth`, `sxth`); the
+coupling pairs the narrow Oak variable with the register through a
+widening image, each extension a candidate one iteration must preserve
+(the OS pilot's `i: u16` over `max_pages` in `reset`, which had "no
+register as an affine image"; `compiler/e2e_native_narrow_counter_test.go`).
+Byte-offset pointer walks
 (`[xB, xO]`) remain deliberately outside the subset: the scaled-index form
 is the idiom and costs nothing on AArch64, and a byte offset would need
 value tracking the seam checker fails closed on. **Instruction breadth.**
@@ -2658,6 +2669,19 @@ arguments on the stack of mixed widths — `u16`, `u32`, `u64`, a `Bool` —
 summarized into a unit caller proven in its span and into a caller
 proven in its result and its span; the C backend the oracle).
 
+**The linear normal form sees through a covering mask.** A mask of low
+ones that covers every bit its operand can have set is the identity to
+the normal form — a parameter's declared width, a constant's length, a
+mask's ones are the bits a term can have set (`knownBits`), and an `or`,
+`xor`, or shift by at least the mask's width strips what lies above it
+(`stripAbove`) — so `u64(index)` over a `u16` parameter (`index and
+0xFFFF` on the Oak side; the machine's read of the argument register,
+`(index#hi shl 16) or index` under `and 65535`) is the parameter, and
+`pool_base + u64(index) * page_size` (the OS pilot's `page_pa`) is proven
+as `4096*index + pool_base` rather than left as evidence where the
+64-bit sum of two unknowns exceeded the bit-level budget
+(`asm/linear_form_test.go`, `compiler/e2e_native_linear_mask_test.go`).
+
 **Thirty-first increment — integer division as an uninterpreted
 operation (2026-09-15; `asm/floats_ops.go`, `asm/verify.go`,
 `asm/rv64_verify.go`, `Oak.IntegerDivision`).** `/` and `%` by a divisor
@@ -2830,6 +2854,17 @@ of the rv64 corpus, whose callees loop over the array
 its constant element count takes the span-parameter alias, and `len` over
 the callee's parameter resolves through the alias to the table's count, so
 `table_sum` is proven too (`compiler/e2e_native_tables_test.go`).
+
+An owned frame array of records passed the same way (`span(&t)` over `t:
+[2]Table`, `view(&stages)` over an array of stages) binds each element's
+leaves from the frame at their offsets inside the element — the layout
+the checker and the backend share (`compositeLeaves`), as a record
+argument in the frame is read — and a writable span's final leaves are
+stored back leaf by leaf at those offsets (a `Bool` leaf into its 4-byte
+cell), so a `main` that hands its table of records to a writer and then
+reads the fields the writer changed is proven through its callees rather
+than trusted for "elements without a scalar model at the span's width"
+(`compiler/e2e_native_frame_record_span_test.go`).
 
 **Thirty-seventh increment — unit bodies without effects (2026-09-15;
 `asm/effects.go` decideEffects, `Oak.UnitBodies`).** A unit function whose
@@ -3131,6 +3166,12 @@ The fifty-seventh increment is read-only borrows (§9 "Read-only
 borrows"): `view(&p…)` leaves a by-value parameter untouched, so it is
 read in place and passed as the caller's storage
 (`Oak.ReadOnlyBorrow.view_of_copy`).
+
+The sixtieth increment is multiply-add forms (§9 "Multiply-add forms"):
+an integer product and its addend in one instruction — `madd`, `msub`,
+`mneg` — which the verifier already modeled, so no extension came with
+it. Integers only, since Oak's float expression is two roundings where
+`fmla` is one.
 
 The fifty-ninth increment is vector block loads (§9 "Vector block
 loads"): the vector loads of one basic block read off a single element
@@ -4420,6 +4461,36 @@ trusted. And the cost model's assumed trip count, 32, made a
 sixteen-element main loop's fifteen-trip remainder half the work, so no
 strided form could pay for its tail; it is 256 now, calibrated from
 these rows (`opt/cost.go`, §16 of `90-backend.md`).
+
+**Multiply-add forms (2026-09-16, AArch64 lane;
+`nativegen/multiply_add.go`).** AArch64 computes a product and its addend
+in one instruction, so the integer expressions `a + b * c`, `b * c + a`,
+`a - b * c`, and `T(0) - b * c` are `madd dD, dB, dC, dA`, `msub`, and
+`mneg dD, dB, dC` where the lowering emitted a `mul` and an `add`, a
+`sub`, or a zero and a `sub`. A dot-product-shaped loop
+(`acc = acc + x[i] * y[i]`) pays one instruction less an element. The
+verifier reads all three as the product and its term — it modeled `madd`
+and `msub` already — so the bodies stay proven with no extension. The
+operands are evaluated in the order the source writes them: `a + f() * g()`
+reads `a` before it calls anything, `f() * g() + a` after, so a fused form
+observes what the unfused one did.
+
+Integers only: Oak's `a + b * c` over floats is two roundings, the
+multiplication's and the addition's (`20-types.md` §11.3.3, and the C
+backend's `-ffp-contract=off`), where `fmla` is one. The fused float
+form is a different function and is reached only through `simd.fma`. A
+product whose operand is a constant is left alone as well, since the
+strength reduction lowers `b * 4` to a shift and a shift with an add is
+two instructions where materializing the constant for a `madd` would be
+three.
+
+Measured on a `u32` dot product over 2^12 elements: the loop is seven
+instructions an element and becomes six, at 0.389–0.459 ns an element
+without the fused form and 0.425–0.458 with it — no change on this core,
+whose spare issue slots absorbed the separate multiply, as with the
+vector block loads (`benchmarks/native/README.md` "Multiply-add forms").
+What the increment buys is the instruction itself, and the lanes whose
+cores have less spare issue than an M4 are where that tells.
 
 **Vector block loads (2026-09-16, AArch64 lane;
 `nativegen/vector_blocks.go`).** For lanes wider than a byte the lowering

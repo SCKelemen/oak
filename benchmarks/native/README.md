@@ -366,6 +366,42 @@ count itself: code size, instruction cache, and the lanes whose cores
 have less spare issue than an M4 (the RV64 lane, an MCU) — the sort of
 gain this harness cannot see and should not claim.
 
+## Multiply-add forms, 2026-09-16
+
+An integer product and its addend are one instruction
+(`docs/spec/94-assembler.md` §9 "Multiply-add forms"). The whole of the
+change, on a `u32` dot product over a span:
+
+```
+  ldr   w9,  [x0,  w5, uxtw #2]        ldr   w9,  [x0,  w5, uxtw #2]
+  ldr   w10, [x21, w5, uxtw #2]        ldr   w10, [x21, w5, uxtw #2]
+  mul   w9,  w9, w10              ->   madd  w4,  w9, w10, w4
+  add   w4,  w4, w9
+  add   w5,  w5, #1                    add   w5,  w5, #1
+  cmp   w5,  w1                        cmp   w5,  w1
+  b.lo  loop_0                         b.lo  loop_0
+```
+
+Seven instructions an element become six, and the body stays proven —
+the verifier modeled `madd`, `msub`, and `mneg` before the lowering
+emitted them.
+
+| `u32` dot product, 2^12 elements (32 KiB, L1-resident) | best of seven, five runs |
+| --- | ---: |
+| `mul` then `add` | 0.389–0.459 ns/element |
+| `madd` | 0.425–0.458 ns/element |
+
+No difference: the ranges overlap and neither end is reliably ahead. One
+fewer instruction in a seven-instruction loop is fourteen percent of the
+issue, and this core had the slot to spare — the third increment in a row
+(with the reduction's remainder and the vector block loads) whose static
+saving an M4 absorbs. The saving is real and it is the instruction, not
+the nanosecond: it is worth the same to code size and to a core with a
+narrower issue width, and worth nothing here. Recording that is the
+point. The cost model counts instructions, so on this host it ranks
+candidates by something the clock does not measure, and a port-pressure
+or dependency-chain term is what would tell them apart.
+
 ## Found on the way## Found on the way
 
 - The native backend has no globals: `view(&table_high1)` of a
