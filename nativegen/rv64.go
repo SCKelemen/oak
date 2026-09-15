@@ -51,6 +51,7 @@ package nativegen
 
 import (
 	"math"
+	"math/bits"
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
@@ -188,7 +189,7 @@ func (g *rvGenerator) zextRelease(mark int) {
 	}
 }
 
-func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool, tables map[string]GlobalArray, globals map[string]asm.Global, vector bool, unroll bool, elide bool, guardLines map[int]bool) (*asm.Function, error) {
+func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool, tables map[string]GlobalArray, globals map[string]asm.Global, vector bool, unroll bool, elide bool, guardLines map[int]bool, strength bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
 	}
@@ -197,7 +198,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	if unrolled, changed := unrollReductions(fn, fn.Body); changed && unroll {
 		expanded := *fn
 		expanded.Body = unrolled
-		if out, err := compileRV64(&expanded, functions, records, adts, constants, tc, softFloat, tables, globals, vector, false, elide, guardLines); err == nil {
+		if out, err := compileRV64(&expanded, functions, records, adts, constants, tc, softFloat, tables, globals, vector, false, elide, guardLines, strength); err == nil {
 			out.Body = unrolled
 			return out, nil
 		} else if _, outside := err.(Unsupported); !outside {
@@ -209,6 +210,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	g.vector = vector
 	g.elide = elide
 	g.guardLines = guardLines
+	g.strength = strength
 	g.zextIdx = map[string]int{}
 	usesFloat := rvMentionsFloat(fn) || g.recordsMentionFloat(fn)
 	if usesFloat && softFloat {
@@ -604,6 +606,9 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 	}
 	if g.elided > 0 {
 		elidedGuards[out] = g.elided
+	}
+	if g.reduced > 0 {
+		reducedOps[out] = g.reduced
 	}
 	return out, nil
 }
@@ -1767,6 +1772,66 @@ func (g *rvGenerator) infix(e *ast.InfixExpression, typ scalar) (int, error) {
 		g.release(r)
 		g.normalize(l, typ)
 		return l, nil
+	}
+	// Strength reduction (Lane.Strength, docs/spec/90-backend.md §16): a
+	// constant right operand of *, /, or % lowers to the instruction the
+	// constant licenses — a power of two as a shift (or a mask for %), a
+	// nonzero divisor without the zero test — as on the AArch64 lane, with
+	// the W forms keeping a 32-bit type canonical and the narrow types
+	// re-normalized (Oak.StrengthReduction: mul_pow_two, udiv_pow_two,
+	// umod_pow_two, nonzero_divisor_no_trap). The verifier proves the body
+	// against the Oak semantics or the search keeps the plain lowering.
+	if g.strength && !typ.isFloat && !typ.isVec && (e.Operator == "*" || e.Operator == "/" || e.Operator == "%") {
+		if c, isConst := g.constantOperand(e.Right, typ); isConst {
+			c &= mask64(typ.bits)
+			power := c != 0 && c&(c-1) == 0
+			k := int64(bits.TrailingZeros64(c))
+			wide := typ.bits != 32
+			switch {
+			case e.Operator == "*" && power && k > 0:
+				g.emit(pick(wide, "slli", "slliw"), L, L, imm(k))
+				g.reduced++
+				g.normalize(l, typ)
+				return l, nil
+			case e.Operator == "/" && power && !typ.signed:
+				if k > 0 {
+					g.emit(pick(wide, "srli", "srliw"), L, L, imm(k))
+				}
+				g.reduced++
+				g.normalize(l, typ)
+				return l, nil
+			case e.Operator == "%" && power && !typ.signed:
+				switch {
+				case k == 0:
+					g.emit("li", L, imm(0))
+				case c-1 <= 2047:
+					g.emit("andi", L, L, imm(int64(c-1)))
+				default:
+					m, err := g.alloc(scalars["u64"])
+					if err != nil {
+						return 0, err
+					}
+					g.emit("li", rvReg(m), imm(int64(c-1)))
+					g.emit("and", L, L, rvReg(m))
+					g.release(m)
+				}
+				g.reduced++
+				g.normalize(l, typ)
+				return l, nil
+			case (e.Operator == "/" || e.Operator == "%") && c != 0:
+				// A nonzero constant divisor cannot trap: the quotient or
+				// remainder without the zero test.
+				r, err := g.exprAs(e.Right, typ)
+				if err != nil {
+					return 0, err
+				}
+				g.emit(rvALU(e.Operator, typ), L, L, rvReg(r))
+				g.reduced++
+				g.release(r)
+				g.normalize(l, typ)
+				return l, nil
+			}
+		}
 	}
 	r, err := g.exprAs(e.Right, typ)
 	if err != nil {
