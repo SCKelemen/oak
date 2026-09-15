@@ -54,9 +54,31 @@ forced-inline emission of the same shape and the hot codec helpers,
 tail-recursion to loops and mutual tail groups to trampolines, constant
 globals folded to `static const` so `/` and `%` become shifts, byte-pack
 recognition, protocol tables. No expression folding, CSE, LICM, strength
-reduction, or dead-code elimination of Oak's own: the C compiler does
-that layer, and `-opt 0` against `-opt 2` measures how much of it there
-was to do.
+reduction, or dead-code elimination of Oak's own was present in the initial
+survey. The first target-independent expression increment landed on
+2026-09-15: after type-driven monomorphization,
+`source.canonical.bool.v1` removes redundant built-in Boolean identities for
+every backend; `source.canonical.integer.v1` removes fixed-width `+ 0`, `- 0`,
+`* 1`, `/ 1`, `| 0`, `^ 0`, and shifts by zero when the retained operand has
+the exact checked result type. The changed program is checked again. Both
+deliberately keep every non-literal operand; widening expressions, CSE, SCCP, and
+dead-path removal wait for OptIR to carry effects and traps explicitly. Literal
+negation also waits for typed OptIR so canonicalization never mutates a source
+token that keys checked facts. The independent validation clone receives only
+the concrete generic ADT declarations recorded by the specializing checker;
+they are rebuilt through checked type substitution and never enter emission. `-opt
+0` against `-opt 2` still measures how much generic scalar work the C compiler
+has left to do.
+
+The first target-neutral middle-end substrate now lives in `optir/`. It keeps
+structured conditionals and pre-test loops with explicit loop-carried SSA
+values, operation effects, attributes, and proof facts, while also projecting
+deterministically to a typed block-argument CFG. Its independent verifier
+rejects undefined or non-dominating values, invalid same-block order,
+unreachable blocks, malformed edges and terminators, non-Bool conditions, and
+wrong returns. No backend consumes this IR yet; this increment establishes the
+fail-closed representation and analysis boundary before compiler projection or
+SCCP/CSE/DCE can affect emitted code.
 
 **The native backend** (`nativegen/`, AArch64 7,300 lines, RV64 4,000)
 lowers a checked function directly to instructions with no IR. Scalar
@@ -121,22 +143,40 @@ and none of the others; Rust's borrow rules give LLVM `noalias`, which is
 the second row alone. That is the whole of the information advantage, and
 it is why "at least as fast" is the floor and not the ceiling.
 
+## The layers (2026-09-15)
+
+The system is three layers, each checked against its input
+(`90-backend.md` §16). Layer A rewrites the checked body once for every
+lane, each rewrite decided per site by the bit-level decider or backed
+by a Lean law, and refused otherwise (`94-assembler.md` §9.ag;
+`nativegen/rewrite.go`): strength reduction moved here from the AArch64
+emitter and now reaches RV64; helper expansion and reduction unrolling
+sit on the same footing with their obligations named. Layer B lowers and
+optimizes per ISA under the seam checker and the verifier, today as a
+candidate search over the lane's transforms
+(`optimizer-search-2026-09.md`, another session's work). Layer C is
+per-processor cost data for layer B's selection and scheduling, still to
+come. The chain: source equals rewritten body (A), rewritten body equals
+instructions (B), instructions mean what Arm's ASL and the RISC-V Sail
+export say (the assembler's proofs); `-verified` demands all of it.
+
 ## The program, in measured order
 
 Each increment names its gap, its gate, and its measurement; none lands
 without the measurement rerun on the kernels it targets and the verdict
 column unchanged or improved.
 
-1. **Strength reduction of constant arithmetic** (AArch64; landed
-   2026-09-15, `94-assembler.md` §9.ac). A multiplication by a power of
+1. **Strength reduction of constant arithmetic** (landed 2026-09-15,
+   `94-assembler.md` §9.ac, then §9.ag). A multiplication by a power of
    two is a shift, an unsigned division or remainder by one a shift or a
-   mask, a division by a nonzero constant loses its zero test. Gate: the
-   verifier's existing models (the Oak side already reads these as
-   shifts and masks), with fallback to the plain form when a body would
-   prove less. Target: `search`, `page_probe` (1.8–1.9×). Landed at the
-   instruction level — `search`'s loop three instructions shorter and
-   without the divide, `page_probe` without its three divides and two
-   multiplies — with the timing rows deferred to a quiet host.
+   mask, a division by a nonzero constant loses its zero test. First in
+   the AArch64 emitter; since layer A (§9.ag) the power-of-two sites are a
+   body rewrite on every lane, each decided at the bit level before it
+   applies, proposed by the `strength-reduce` transform of the candidate
+   search, the plain body the identity. Read off the kernels: `search`'s
+   loop three instructions shorter and without the divide, `page_probe`
+   without its three divides and two multiplies; timing rows deferred to
+   a quiet host.
 2. **Vector locals in registers across calls** (landed 2026-09-15,
    `94-assembler.md` §9.ad): homes in v16–v31 saved around a call only
    when live after it; the checker now forgets v16–v31 at a call (a gap
@@ -167,20 +207,20 @@ are the allocator's case above.
    still ahead for bodies wider than twenty-seven vector locals; the
    validator no longer needs it. Target: UTF-8 (5×) measured on a quiet
    host, then inlining pays instead of hurting.
-3. **Idioms the verifier can already equate**: a little-endian word
+4. **Idioms the verifier can already equate**: a little-endian word
    assembled from consecutive guarded byte reads is one load under one
    guard (the verifier's memory model gains reads wider than the element;
    `asm/verify.go` refuses a width mismatch today); constant-offset
    guards under a proven length fact are redundant (extent propositions
    at the seam, row 7). Target: `crc32c` (5.7×) and every codec's word
    reads.
-4. **Reductions unrolled with independent accumulators** under a declared
+5. **Reductions unrolled with independent accumulators** under a declared
    associativity law (row 5) — integer `+` and `|`, `&`, `^`, `max`,
    `min` have it by the language; floats never do. Target: `sum`, `dot`
    (3.2–3.4×). Gate: the verifier's loop invariants over the unrolled
    shape; where it cannot yet couple two loop shapes, the fallback is the
    scalar loop, and the verifier's reach is the next item.
-5. **Non-aliasing to the C backend** as `restrict` on span parameters and
+6. **Non-aliasing to the C backend** as `restrict` on span parameters and
    the local pointers loaded from them, alignment facts as
    `__builtin_assume_aligned`, refinements and extents as
    `__builtin_assume` at loop headers: the C backend "a real backend"
@@ -198,7 +238,7 @@ are the allocator's case above.
    or checks what Oak has proved. The native lane is where the aliasing
    fact pays (row 2's consumer is the verifier's store log), not the C
    compiler.
-6. **Scheduling and selection** for the two lanes' pipelines once the
+7. **Scheduling and selection** for the two lanes' pipelines once the
    allocator exists: load latency hidden across the loop body, `madd`
    and `csel` forms, conditional compares.
 

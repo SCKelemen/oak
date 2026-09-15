@@ -117,8 +117,9 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// simd vectors need V (docs/spec/93-simd.md §1.4, 94-assembler.md §9).
 		lane.Vector = comp.options.Target.Arch == target.ArchRiscv64 && comp.options.Target.CPUFeatures(comp.options.CPU)["v"]
 		// The lane's transforms — check elision, strength reduction, compare
-		// reuse, loop-invariant motion, reduction unrolling — are the candidate
-		// search's to turn on (nativegen.Transforms, below), not the lane's.
+		// reuse, loop-invariant motion, loop rotation, reduction unrolling —
+		// are the candidate search's to turn on (nativegen.Transforms,
+		// below), not the lane's.
 		lane.Globals = globals
 		lane.Aggregates = aggregates
 		// The candidate search (compiler/native_search.go, package opt;
@@ -157,6 +158,11 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		for _, reason := range setAsideReasons(report, fn.Name.Value, selection.Candidate) {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", "native backend: "+reason))
 		}
+		// Layer A's rewrites and their obligations (nativegen/rewrite.go,
+		// docs/spec/94-assembler.md §9.ag), reported per body.
+		if sites := nativegen.RewriteSites(asmFn); len(sites) > 0 {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: layer A — %s", fn.Name.Value, describeRewrites(sites))))
+		}
 		if elided := nativegen.ElidedGuards(asmFn); elided > 0 {
 			if kept := nativegen.GuardLinesKept(chosen); len(kept) > 0 {
 				diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d element guard(s) elided under the checker's own facts, the guards of line(s) %s kept (the checker did not admit their elided form)", fn.Name.Value, elided, joinLines(kept))))
@@ -170,6 +176,9 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		} else if homed := nativegen.LeafVectorHomes(asmFn); homed > 0 && verdict.Kind == asm.VerdictProven {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d vector local(s) homed in the argument registers", fn.Name.Value, homed)))
 		}
+		if promoted := nativegen.PromotedSlots(asmFn); promoted > 0 && verdict.Kind == asm.VerdictProven {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d frame slot(s) promoted to registers", fn.Name.Value, promoted)))
+		}
 		if reduced := nativegen.Reduced(asmFn); reduced > 0 && verdict.Kind == asm.VerdictProven {
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d constant operation(s) strength-reduced, proven", fn.Name.Value, reduced)))
 		}
@@ -177,6 +186,9 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 			// Rotations spelled with shifts lowered to `ror`
 			// (docs/spec/94-assembler.md §9 "Rotates").
 			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d rotation(s) lowered to ror", fn.Name.Value, rotated)))
+		}
+		if rotated := nativegen.RotatedLoops(asmFn); rotated > 0 && verdict.Kind == asm.VerdictProven {
+			diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s: %d loop(s) bottom-tested, proven", fn.Name.Value, rotated)))
 		}
 		if verdict.Kind == asm.VerdictMismatch {
 			diagnostics = append(diagnostics, diagnostic.NewDiagnostic(lsp.Range{}, "native", "native backend: "+verdict.Message))
@@ -359,49 +371,8 @@ func pathRoot(expr ast.Expression) (string, bool) {
 // the one substitution authority) — so the native backend and the verifier
 // see exactly the types the C backend emits for them.
 func specializeInstantiations(tc *typechecker.TypeChecker, templates map[string]*ast.ADTType, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType) {
-	if tc == nil {
-		return
-	}
-	for _, inst := range tc.ADTInstantiations() {
-		template, declared := templates[inst.ADT]
-		if !declared || len(template.TypeParams) != len(inst.Args) {
-			continue
-		}
-		bindings := make(map[string]ast.Expression, len(inst.Args))
-		for i, param := range template.TypeParams {
-			if param == nil || param.Name == nil {
-				continue
-			}
-			bindings[param.Name.Value] = argumentExpressionOf(inst.Args[i])
-		}
-		mangled := inst.MangledName()
-		specialized := &ast.ADTType{BaseNode: template.BaseNode, Token: template.Token, EndToken: template.EndToken, Name: &ast.Identifier{Token: template.Name.Token, Value: mangled}, TagValues: template.TagValues}
-		ok := true
-		for _, variant := range template.Variants {
-			payload, okPayload := typechecker.SubstituteTypeAST(variant.Payload, bindings)
-			if !okPayload {
-				ok = false
-				break
-			}
-			literal := variant.Literal
-			if recordLit, isRecord := variant.Literal.(*ast.RecordLiteral); isRecord {
-				substituted := &ast.RecordLiteral{BaseNode: recordLit.BaseNode, Token: recordLit.Token, EndToken: recordLit.EndToken, Fields: map[string]ast.Expression{}, Layout: recordLit.Layout, TypeName: recordLit.TypeName}
-				for _, field := range recordLit.FieldOrder {
-					fieldType, okField := typechecker.SubstituteTypeAST(field.Value, bindings)
-					if !okField {
-						ok = false
-						break
-					}
-					substituted.Fields[field.Name] = fieldType
-					substituted.FieldOrder = append(substituted.FieldOrder, ast.RecordField{Token: field.Token, Name: field.Name, Value: fieldType, Align: field.Align})
-				}
-				literal = substituted
-			}
-			specialized.Variants = append(specialized.Variants, &ast.ADTVariant{Token: variant.Token, Name: variant.Name, Payload: payload, Literal: literal, Result: variant.Result})
-		}
-		if !ok {
-			continue
-		}
+	for _, specialized := range specializedInstantiationDeclarations(tc, templates) {
+		mangled := specialized.Name.Value
 		if literal, isRecord := recordShape(specialized); isRecord {
 			records[mangled] = literal
 		} else {
@@ -562,4 +533,48 @@ func verifiedBody(asmFn *asm.Function, source *ast.FunctionStatement) ast.Expres
 		return asmFn.Body
 	}
 	return source.Body
+}
+
+// describeRewrites summarizes a body's layer-A rewrite sites by rewrite
+// and obligation: decided per site, law-backed, or left as written.
+func describeRewrites(sites []nativegen.RewriteSite) string {
+	type tally struct {
+		decided, law, left int
+		lawName            string
+	}
+	var order []string
+	tallies := map[string]*tally{}
+	for _, s := range sites {
+		t, seen := tallies[s.Rewrite]
+		if !seen {
+			t = &tally{}
+			tallies[s.Rewrite] = t
+			order = append(order, s.Rewrite)
+		}
+		switch {
+		case s.Decided:
+			t.decided++
+		case s.Law != "":
+			t.law++
+			t.lawName = s.Law
+		default:
+			t.left++
+		}
+	}
+	var parts []string
+	for _, name := range order {
+		t := tallies[name]
+		var kinds []string
+		if t.decided > 0 {
+			kinds = append(kinds, fmt.Sprintf("×%d decided at the bit level", t.decided))
+		}
+		if t.law > 0 {
+			kinds = append(kinds, fmt.Sprintf("×%d under %s", t.law, t.lawName))
+		}
+		if t.left > 0 {
+			kinds = append(kinds, fmt.Sprintf("×%d left as written", t.left))
+		}
+		parts = append(parts, name+" "+strings.Join(kinds, ", "))
+	}
+	return strings.Join(parts, "; ")
 }

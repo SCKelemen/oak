@@ -1,0 +1,148 @@
+// Contiguous byte queues and value-state builders over caller-owned storage.
+// No operation allocates, retains a borrow, or compacts implicitly.
+package buffer
+
+// Live bytes occupy [start, end). Keep the cursor paired with its storage.
+pub Cursor: type = struct {
+  start: u32
+  end: u32
+}
+
+pub Error: type = Full | InsufficientData
+
+check: (cursor: [*]Cursor, capacity: u32): () {
+  assert(len(cursor) == u32(1))
+  assert(cursor[0].start <= cursor[0].end)
+  assert(cursor[0].end <= capacity)
+}
+
+pub live_len: (cursor: [*]Cursor, capacity: u32): u32 {
+  check(cursor, capacity)
+  cursor[0].end - cursor[0].start
+}
+
+pub tail_space: (cursor: [*]Cursor, capacity: u32): u32 {
+  check(cursor, capacity)
+  capacity - cursor[0].end
+}
+
+// Append requires contiguous tail space. Reclaim a consumed prefix explicitly
+// with compact. A capacity error changes neither cursor nor storage.
+pub append: (cursor: [*]Cursor, storage: [*]u8, src: []u8): Result[u32, Error] {
+  check(cursor, len(storage))
+  n: u32 = len(src)
+  n <= len(storage) - cursor[0].end ? {
+    i: u32 = 0
+    while i < n {
+      storage[cursor[0].end + i] = src[i]
+      i = i + u32(1)
+    }
+    cursor[0].end = cursor[0].end + n
+    .Ok(n)
+  } | { .Err(.Full) }
+}
+
+// Exact read into a separate destination. Does not consume buffered bytes.
+// Insufficient data leaves the destination unchanged.
+pub peek_into: (cursor: [*]Cursor, storage: []u8, dst: [*]u8): Result[u32, Error] {
+  check(cursor, len(storage))
+  n: u32 = len(dst)
+  n <= cursor[0].end - cursor[0].start ? {
+    i: u32 = 0
+    while i < n {
+      dst[i] = storage[cursor[0].start + i]
+      i = i + u32(1)
+    }
+    .Ok(n)
+  } | { .Err(.InsufficientData) }
+}
+
+// Consuming the last byte resets both offsets, making all capacity available.
+pub consume: (cursor: [*]Cursor, capacity: u32, count: u32): Result[u32, Error] {
+  check(cursor, capacity)
+  count <= cursor[0].end - cursor[0].start ? {
+    cursor[0].start = cursor[0].start + count
+    cursor[0].start == cursor[0].end ? {
+      cursor[0].start = u32(0)
+      cursor[0].end = u32(0)
+    }
+    .Ok(count)
+  } | { .Err(.InsufficientData) }
+}
+
+pub read_into: (cursor: [*]Cursor, storage: []u8, dst: [*]u8): Result[u32, Error] {
+  copied: Result[u32, Error] = peek_into(cursor, storage, dst)
+  copied ?
+    | .Ok(count) => consume(cursor, len(storage), count)
+    | .Err(reason) => .Err(reason)
+}
+
+// O(live length). Forward copying is overlap-safe because the destination
+// begins no later than the source.
+pub compact: (cursor: [*]Cursor, storage: [*]u8): u32 {
+  check(cursor, len(storage))
+  n: u32 = cursor[0].end - cursor[0].start
+  cursor[0].start > u32(0) ? {
+    i: u32 = 0
+    while i < n {
+      storage[i] = storage[cursor[0].start + i]
+      i = i + u32(1)
+    }
+  }
+  cursor[0].start = u32(0)
+  cursor[0].end = n
+  n
+}
+
+// Logical reset only: bytes are not erased and external authority is unchanged.
+pub reset: (cursor: [*]Cursor): () {
+  assert(len(cursor) == u32(1))
+  cursor[0].start = u32(0)
+  cursor[0].end = u32(0)
+}
+
+// Builder is value state only. Storage remains explicit on every append, so
+// constructing and copying a Builder never allocates or retains a pointer.
+pub Builder: type = struct {
+  length: u32
+  failed: Bool
+}
+
+pub builder: (): Builder {
+  initial: Builder = Builder { length: u32(0), failed: false }
+  initial
+}
+
+// A failed append is sticky. It writes nothing; the successful prefix remains.
+pub append_bytes: (state: Builder, storage: [*]u8, src: []u8): Builder {
+  next: Builder = state
+  state.failed ? { next } | {
+    assert(state.length <= len(storage))
+    n: u32 = len(src)
+    n <= len(storage) - state.length ? {
+      i: u32 = 0
+      while i < n {
+        storage[state.length + i] = src[i]
+        i = i + u32(1)
+      }
+      next.length = state.length + n
+    } | { next.failed = true }
+    next
+  }
+}
+
+pub append_byte: (state: Builder, storage: [*]u8, value: u8): Builder {
+  next: Builder = state
+  state.failed ? { next } | {
+    assert(state.length <= len(storage))
+    state.length < len(storage) ? {
+      storage[state.length] = value
+      next.length = state.length + u32(1)
+    } | { next.failed = true }
+    next
+  }
+}
+
+pub finish: (state: Builder): Result[u32, Error] {
+  state.failed ? { .Err(.Full) } | { .Ok(state.length) }
+}

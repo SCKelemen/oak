@@ -464,6 +464,49 @@ The reserved names keep arguments and locals apart — `__inl<N>_arg<i>` for
 a copied argument, `__inl<N>_l_<name>` for a renamed local — so a helper's
 local named `a1` never meets the temporary of its second argument.
 
+### 9.1 Optimization remarks, candidates, and admission
+
+Executable-oriented compilation produces an `OptimizationReport`. Every
+remark contains the function, transform, Passed/Missed/Analysis kind, an
+explanation, and the facts used or missing. The report is output only: neither
+an API consumer nor a later compiler pass can present a remark or a fact as
+permission to transform code.
+
+The planning substrate is `opt/`. Its transform registry orders proposal
+generators by phase and records the proof kind and fact requirements of each.
+The bounded beam search materializes, de-duplicates, measures, seam-checks, and
+validates candidates through a lane-supplied driver. Static target costs guide
+selection but are never correctness evidence. The identity is always retained
+as the final fallback; checker-driven refinement may narrow a refused
+candidate, and verifier-gated transforms cannot ship on a trusted (unchecked)
+verdict.
+
+The first source and native rules are:
+
+| Transform | Admission | Validation | Observable effect |
+| --- | --- | --- | --- |
+| `source.inline.leaf.v1` | the private-leaf, effect, evaluation-order, and borrow-shape decision above | the executable-oriented program passes ordinary checking | the call is beta-reduced; caller extent facts can remove checks in the helper body |
+| `source.canonical.bool.v1` | a built-in Bool identity after type checking and monomorphization; every non-literal operand remains exactly once, and no literal token is mutated | a fresh checker accepts the changed monomorphic program; the original specializing checker retains fact authority | double negation, `&&`/`\|\|` identities, and identity Bool comparisons are absent for every backend; literal negation waits for typed OptIR |
+| `source.canonical.integer.v1` | a zero/one identity whose checked result and retained operand have the same exact fixed-width integer type; floats, widening expressions, and user-defined operators are excluded, and the non-literal operand remains exactly once | the same cloned post-specialization recheck | redundant `+ 0`, `- 0`, `* 1`, `/ 1`, `\| 0`, `^ 0`, and shifts by zero are absent for every backend |
+| `elide-guards` | the exact accesses carry checked extent facts | the guardless assembly passes the lane seam checker and the selected body passes the native validation policy | per-access bounds guards are absent only where independently admitted |
+
+The native lane proposes its strength reduction, guard elimination, flag reuse,
+invariant motion, vector homes, reduction unrolling, MachineIR reallocation and
+promotion, and late cleanup through `opt.Search`. A refused composition is not
+reinterpreted as permission for one of its parts: each alternative is a
+separate candidate and every selected body passes the ordinary seam checker.
+Transforms marked verifier-gated are set aside when equivalence is not judged,
+at worst selecting the checked identity lowering.
+
+`Compilation.Optimizations()` requests the executable-oriented source pass and
+returns the remarks; native remarks are included when native bodies are enabled.
+Plain semantic `Check()` does not optimize and reports no remarks, so tooling and
+proof extraction continue to observe the program as written. Each future rule
+must add an admission-negative test, a semantics test, and a generated-code or
+instruction-count test. Cross-language speed claims require named benchmark
+corpora, target/toolchain versions, and statistical results; an optimization
+remark alone is never such a claim.
+
 ## 10. Owned arrays as values
 
 An owned array `[N]T` is a value, and its C representation is a struct
@@ -625,6 +668,32 @@ The rules a backend optimization obeys, restating `05-ergonomics-and-cost.md`
 "The mechanical backend" for the compiler's own passes. The design note is
 `docs/notes/optimization-2026-09.md`.
 
+Executable-oriented compilation has an explicit specialization boundary.
+Cheap transforms that reduce generic source run before type checking and
+monomorphization; transforms that need concrete types and values run after the
+first successful type check has produced the monomorphic program. A changed
+post-specialization program is checked again before any backend consumes it.
+The specializing checker remains the authority for template ownership,
+resource, extent, and per-expression facts: a post-specialization rewrite may
+reuse those checked nodes and facts, but a fresh check cannot manufacture their
+provenance after the templates have been erased. When prior normalization has
+exposed a mangled generic-ADT name, the validation clone alone receives the
+matching monomorphic declaration synthesized from the specializing checker's
+recorded instantiation and the declared template through the ordinary checked
+type-substitution routine. It neither accepts candidate-invented type names nor
+adds the validation declaration to the emitted program.
+
+The target-independent middle-end substrate is `optir/`. Its primary form
+retains scalar operations, explicit effects and facts, structured `if` regions,
+and pre-test `while` regions with explicit loop-carried values. Its canonical
+CFG projection represents joins and loop recurrences as typed block arguments.
+Projection is deterministic and fails closed through an independent verifier
+for definitions, dominance, same-block order, reachability, terminators, edge
+arity/types, Bool conditions, and return types. This substrate is not yet an
+emission path: no backend consumes OptIR and no OptIR analysis can authorize a
+code-generation change until checked Oak projection and equivalence validation
+are connected.
+
 1. **Licensed removals only.** The compiler removes a check, a guard, a
    copy, a reload, or a trap only on a fact it has proved: an index under
    its extent (§8), a value within its refinement, two spans that cannot
@@ -665,12 +734,46 @@ The rules a backend optimization obeys, restating `05-ergonomics-and-cost.md`
    typechecker proved, reduction unrolling the operator's associativity
    law), and proposes a configuration from a candidate; a static cost
    model orders the admitted bodies; the checker and the verifier judge
-   them in that order, and the cheapest proven body is kept — else the
-   strongest verdict, the plain lowering last, so no body ships on a
-   verdict weaker than the plain lowering earns. The search records an
+   them in that order; the first body to prove is kept, the plain
+   lowering validated last and preferred only when nothing else earns
+   as strong a verdict — so no body ships on a verdict weaker than the
+   plain lowering earns, and an admitted body the model prices near the
+   plain one is preferred to it on a tie. The search records an
    optimization report (`-opt-report`, `OAK_OPT_REPORT`): every
    transform taken with the fact that licensed it, every one set aside
    with the checker's or the verifier's reason, and the body's
    structural counts before and after. Cost is never correctness: a
    wrong estimate makes a body slower, and only the verdict decides
    what ships.
+
+**The layers, and what checks each.** The system is three layers, each
+verified against its input, the checks composing from source to silicon.
+
+- **Layer A, body rewrites, one for every lane** (`94-assembler.md`
+  §9.ag): transforms of the checked Oak body whose legality is a fact,
+  not a machine — strength reduction of constant arithmetic, helper
+  expansion, reduction unrolling, and the folds and idioms to come. Each
+  rewrite carries its obligation: *decided*, proved per site by the
+  bit-level decider as the theorem that the new expression equals the old
+  on every input, or *law-backed*, a schema proved once in Lean and
+  instantiated by a matcher. A site the decider does not prove is left as
+  written. The rewritten body is what layer B lowers and the verifier
+  judges, so "source equals rewritten body" is layer A's proof and
+  "rewritten body equals instructions" layer B's.
+- **Layer B, lowering and per-ISA optimization**: register homes,
+  selection, addressing, pairing, if-conversion, peephole, on each lane's
+  instruction stream, under the seam checker and the verifier; today a
+  candidate search over the lane's transforms keeps the cheapest proven
+  body (`docs/notes/optimizer-search-2026-09.md`).
+- **Layer C, per-processor tuning**: cost tables keyed by the `-cpu`
+  name, consumed by layer B's selection and scheduling; data, not passes,
+  with no obligation of their own, since the verifier judges the tuned
+  output and a wrong table costs speed, never meaning.
+
+Layer A's rewrites are transforms of the search like the lane's own: the
+identity candidate is the plain body, a transform proposes the rewritten
+one, and the site theorems are proved once per body, not per candidate.
+The `-verified` profile is the end-to-end mode: every body natively
+lowered with a proven verdict, every layer-A rewrite applied decided or
+law-backed — the layer applies nothing else, and reports the sites it
+left as written — nothing left to C.

@@ -1,11 +1,12 @@
 // Bitset algebra preserves bits outside the logical domain, including padding.
 package bitset_algebra
 
+import("bitset")
 
 pub BitSetOperation: type = Union | Intersection | Difference | SymmetricDifference
 
-pub bitset_combine: (dst: [*]u8, src: []u8, bits: u32, operation: BitSetOperation): Result[Bool, BitSetError] {
-  n: u32 = bitset_storage_bytes(bits)
+pub bitset_combine: (dst: [*]u8, src: []u8, bits: u32, operation: BitSetOperation): Result[Bool, bitset.Error] {
+  n: u32 = bitset.storage_bytes(bits)
   len(dst) < n || len(src) < n ? { .Err(.StorageTooSmall) } | {
     changed: Bool = false
     i: u32 = 0
@@ -30,8 +31,8 @@ pub bitset_combine: (dst: [*]u8, src: []u8, bits: u32, operation: BitSetOperatio
   }
 }
 
-pub bitset_find_next: (storage: []u8, bits: u32, start: u32, value: Bool): Result[Option[u32], BitSetError] {
-  len(storage) < bitset_storage_bytes(bits) ? { .Err(.StorageTooSmall) } | {
+pub bitset_find_next: (storage: []u8, bits: u32, start: u32, value: Bool): Result[Option[u32], bitset.Error] {
+  len(storage) < bitset.storage_bytes(bits) ? { .Err(.StorageTooSmall) } | {
     index: u32 = start
     found: Bool = false
     while index < bits && !found {

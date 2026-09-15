@@ -6,6 +6,7 @@ This note is the Oak-native companion to:
 
 - `docs/notes/optimizer-search-2026-09.md` — candidate-search architecture;
 - `docs/notes/llvm-optimization-catalog-2026-09.md` — conventional optimization techniques worth adapting;
+- `docs/notes/mojo-futhark-optimization-2026-09.md` — staged specialization, structured/algebraic planning, index properties, destination forwarding, storage coloring, and multi-versioning;
 - `docs/notes/optimization-2026-09.md` and `docs/notes/native-optimization-2026-09.md` — current implementation and benchmark program;
 - `docs/spec/90-backend.md` §16 and `docs/spec/94-assembler.md` §9 — normative backend and native verification rules.
 
@@ -215,6 +216,43 @@ optimizer exploits it only if established
 
 The theorem search can remain heuristic and untrusted.
 
+### 4.1 Shared index-property domain
+
+Array, view, and pointer optimizations need a compact shared vocabulary for
+index functions. The initial proof domain should include:
+
+```text
+equivalent
+range
+injective
+bijective
+monotonic
+filtering
+partitioning
+```
+
+These propositions are deliberately reusable:
+
+| Property | Immediate optimizer uses |
+| --- | --- |
+| equivalent | replace/reuse index maps, prove view equality |
+| range | bounds elimination, legal vector widths |
+| injective | race-free scatter, independent writes |
+| bijective | permutation/layout transformations, complete overwrite |
+| monotonic | contiguous regions, coalescing, ordered partitioning |
+| filtering | sparse/filtered representation and fusion |
+| partitioning | disjoint regions, parallel placement, in-place construction |
+
+Derived propositions such as `disjoint`, `covers`, and `permutation` can be
+recorded when the primitive facts establish them. Consumers include
+destination forwarding, fusion, vectorization, layout choice, storage reuse,
+and dead initialization.
+
+This should be a deterministic, incomplete analysis with explicit provenance.
+Failure to derive a property retains the conservative candidate. More difficult
+queries can use Oak's solver/certificate path without making every ordinary
+index query an open-ended proof search.
+
 ## 5. Proof-mined dead paths
 
 SCCP and range propagation remove paths that are syntactically or abstractly unreachable. Oak can go further when a solver or formal model proves a condition cannot occur under the current specialization.
@@ -317,6 +355,19 @@ Proved state/range bounds can choose narrower table entries, offsets, indices, a
 
 Where Oak's representation contract allows backend choice and an injective mapping can be proved, candidate representations can exploit unused values/niches. This must never silently change an explicitly stable FFI/wire/persisted layout.
 
+### 7.6 Extent- and uniformity-selected representations
+
+Extent proofs can choose a representation family rather than merely eliminate
+checks:
+
+- fixed extent -> fixed/unrolled representation candidate;
+- equal extents -> zipped/vector representation candidate;
+- uniform inner extents -> rectangular representation candidate;
+- unproved/nonuniform extents -> segmented or guarded representation candidate.
+
+The representation proof must cover every observable index and preserve any
+explicit FFI, wire, persistence, or ABI layout contract.
+
 ## 8. Ownership-guided memory elimination
 
 Ownership can license transformations that a conventional compiler approaches through alias analysis.
@@ -346,6 +397,28 @@ A record/array can remain decomposed into SSA values across calls as long as aut
 Safe disjoint spans can vectorize directly rather than generating LLVM-style pointer-overlap tests plus fast/slow loop versions.
 
 Runtime overlap checks should remain mainly for raw/unsafe/FFI boundaries where Oak lacks a proof.
+
+### 8.7 Destination forwarding
+
+If authority, lifetime, extent, and index proofs establish that a producer may
+construct its result directly in the final destination, eliminate the
+intermediate allocation and copy:
+
+```text
+tmp = produce(...)
+write(dst[slice], tmp)
+
+        becomes
+
+produce_into(dst[slice], ...)
+```
+
+The proof must show that the forwarded writes do not conflict with producer
+reads, the destination mapping covers the result, alignment/extent obligations
+hold, and no observer can distinguish the temporary's storage identity.
+Possible consumers include return values, codecs, packets, tensors, builders,
+and database pages. `SCKelemen/ml`'s existing `realize_into` path is the first
+useful end-to-end forcing case.
 
 ## 9. Effect-proof optimization
 
@@ -454,6 +527,21 @@ Prove the overlapped iteration schedule preserves dependence distances and obser
 ### 11.8 Proof-driven loop deletion
 
 Delete a loop only when it has no observable effects/results and termination/finite execution is established under Oak semantics.
+
+### 11.9 Interior/boundary specialization
+
+Derive a maximal proved interior region and split a loop into:
+
+```text
+guarded prologue
+proved wide/vector interior
+guarded or masked epilogue
+```
+
+The interior proof can eliminate bounds and alignment checks from every
+iteration. Candidate planning still compares scalar, peeled, masked, and split
+forms because the transformation can lose on short extents or code-size-bound
+targets.
 
 ## 12. Proof-directed vectorization
 
@@ -1040,38 +1128,45 @@ The model/refinement proof establishes all candidates implement the same declare
 8. exact effect-based load/call CSE and LICM;
 9. ownership-driven noalias vectorization;
 10. typestate/protocol branch elimination;
-11. proof-guided integer reduction vectorization.
+11. proof-guided integer reduction vectorization;
+12. destination forwarding for proved non-conflicting producers;
+13. proof-derived interior/boundary loop specialization.
 
 ### P1: proof-producing optimization analysis
 
-12. solver-assisted loop invariant discovery;
-13. theorem-backed dependence queries for loop transforms;
-14. proof-mined unreachable-path elimination;
-15. proof-derived alignment/slack propagation;
-16. optimization-specific theorem/certificate caching.
+14. shared index-property analysis and provenance;
+15. solver-assisted loop invariant discovery;
+16. theorem-backed dependence queries for loop transforms;
+17. proof-mined unreachable-path elimination;
+18. proof-derived alignment/slack propagation;
+19. optimization-specific theorem/certificate caching.
 
 ### P2: model synthesis
 
-17. generalized finite-state/table representation planner;
-18. codec/table/SIMD candidate synthesis;
-19. bitset/quorum representation synthesis;
-20. representation selection with encode/decode/injectivity proofs.
+20. generalized finite-state/table representation planner;
+21. codec/table/SIMD candidate synthesis;
+22. bitset/quorum representation synthesis;
+23. representation selection with encode/decode/injectivity proofs;
+24. uniform/segmented representation selection from extent proofs;
+25. storage interference coloring from authority and lifetime facts.
 
 ### P2: verifier-guided machine search
 
-21. bounded straight-line superoptimizer;
-22. multiple schedule/allocation candidates for hot regions;
-23. verifier refusal classification fed back into search;
-24. proof-cost-aware tie breaking;
-25. promote frequently winning search results into named transforms.
+26. bounded straight-line superoptimizer;
+27. multiple schedule/allocation candidates for hot regions;
+28. verifier refusal classification fed back into search;
+29. proof-cost-aware tie breaking;
+30. promote frequently winning search results into named transforms.
 
 ### P3: cross-layer proof-guided optimization
 
-26. verified loop fusion/distribution/interchange;
-27. verified software pipelining;
-28. atomic/fence minimization from formal memory models;
-29. cross-ISA candidate synthesis;
-30. larger search regions/equality saturation plus final proof gate.
+31. verified producer/consumer and loop fusion/distribution/interchange;
+32. verified software pipelining and double buffering;
+33. atomic/fence minimization from formal memory models;
+34. cross-ISA candidate synthesis;
+35. bounded runtime multi-versioning of independently proved bodies;
+36. heterogeneous placement with transfer/synchronization proofs;
+37. larger search regions/equality saturation plus final proof gate.
 
 ## 30. Landing rule for proof-guided optimizations
 

@@ -61,7 +61,13 @@ Use these terms precisely:
 - `56-kernels.md` — kernels: the kernel subset, its Metal and C realizations, fault semantics, launch descriptors
 - `60-effects-allocation.md` — effects, arenas, slabs, handles, realtime prohibitions
 - `70-strings.md` — encoded text, validation, borrowing and representation
+- `75-standard-library.md` — standard-library architecture, package layers, API contracts, proof-directed performance, and the v1 bootstrap boundary
+- `76-bytes.md` — allocation-free byte ranges, copying, movement, equality, ordering, and search over caller-owned views and spans
+- `77-bitset.md` — bounded allocation-free logical bitsets over caller-owned byte storage
+- `78-endian.md` — explicit fixed-width little- and big-endian integers over caller-owned byte storage
+- `79-buffer.md` — allocation-free contiguous byte queues and fluent value-state builders over explicit storage
 - `80-metadata.md` — typed attributes/tags and phantom semantic types
+- `81-array-list.md` — bounded generic array lists over caller-owned storage, with atomic failures and ordered or constant-time removal
 - `82-package-semver.md` — checked public API snapshots and automatic SemVer
 - `83-modules.md` — packages, modules (`oak.mod`), imports, `pub`/`pub(opaque)` visibility, sealed imports, injective internal naming
 - `71-codecs.md` — phantom-typed producer/consumer codecs: formats, encodings, policies, and validation state as erased type parameters (normative design)

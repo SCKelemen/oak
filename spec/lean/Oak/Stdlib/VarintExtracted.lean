@@ -56,7 +56,7 @@ def varint_size (value : UInt64) (fuel : Nat) : Option (UInt32) := do
   let (n, rest) ← varint_size.loop1 n rest fuel
   pure n
 
-def bytes_range_fits (length : UInt32) (offset : UInt32) (width : UInt32) (fuel : Nat) : Option (Bool) := do
+def range_fits (length : UInt32) (offset : UInt32) (width : UInt32) (fuel : Nat) : Option (Bool) := do
   pure (if (decide (offset > length)) then false else (decide (width <= (length - offset))))
 
 def varint_encode.loop1 (dst : Array UInt8) (offset : UInt32) (n : UInt32) (rest : UInt64) (i : UInt32) : Nat → Option (Array UInt8 × UInt64 × UInt32)
@@ -73,7 +73,7 @@ def varint_encode.loop1 (dst : Array UInt8) (offset : UInt32) (n : UInt32) (rest
 def varint_encode (dst : Array UInt8) (offset : UInt32) (value : UInt64) (fuel : Nat) : Option (Result_u32_VarintError × Array UInt8) := do
   let r1 ← varint_size value fuel
   let n : UInt32 := r1
-  let r2 ← bytes_range_fits (dst.size.toUInt32) offset n fuel
+  let r2 ← range_fits (dst.size.toUInt32) offset n fuel
   let (r3, dst) ← (
     if (!r2) then (do
       pure ((Result_u32_VarintError.Err VarintError.DestinationTooSmall), dst))

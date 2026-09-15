@@ -22,6 +22,8 @@ func TestArgumentLayoutMatchesLeanTransliteration(t *testing.T) {
 	scalar := func(bytes int64) ArgClass { return ArgClass{Words: 1, Bytes: bytes, Align: bytes} }
 	span := ArgClass{Words: 2, Bytes: 16, Align: 8}
 	record := func(chunks int) ArgClass { return ArgClass{Words: chunks, Bytes: int64(chunks) * 8, Align: 8} }
+	vector := ArgClass{Words: 1, Bytes: 16, Align: 16, Vector: true}
+	float := func(bytes int64) ArgClass { return ArgClass{Words: 1, Bytes: bytes, Align: bytes, Vector: true} }
 	type layoutCase struct {
 		name   string
 		args   []ArgClass
@@ -34,25 +36,22 @@ func TestArgumentLayoutMatchesLeanTransliteration(t *testing.T) {
 		{"a span that does not fit goes to the stack with what follows", []ArgClass{scalar(8), scalar(8), scalar(8), scalar(8), scalar(8), scalar(8), scalar(8), span, scalar(8)}, false},
 		{"packed narrow scalars", []ArgClass{scalar(8), scalar(8), scalar(8), scalar(8), scalar(8), scalar(8), scalar(8), scalar(8), scalar(1), scalar(2), scalar(4), record(2)}, true},
 		{"standard rounding of narrow scalars", []ArgClass{scalar(8), scalar(8), scalar(8), scalar(8), scalar(8), scalar(8), scalar(8), scalar(8), scalar(1), scalar(2)}, false},
+		{"ten vectors, the ninth and tenth on the stack", []ArgClass{vector, vector, vector, vector, vector, vector, vector, vector, vector, vector}, true},
+		{"vectors and words overflowing together share the stack in order", []ArgClass{span, span, span, span, scalar(4), vector, vector, vector, vector, vector, vector, vector, vector, vector, scalar(4), vector}, true},
+		{"a float past the vector registers under the standard convention", []ArgClass{vector, vector, vector, vector, vector, vector, vector, vector, float(4), scalar(1), float(8)}, false},
 	}
 	var missing []string
 	for _, tc := range cases {
 		places, total := LayoutArguments(tc.args, tc.packed)
 		var argText, placeText []string
 		for i, a := range tc.args {
-			argText = append(argText, fmt.Sprintf("⟨%d, %d, %d⟩", a.Words, a.Bytes, a.Align))
+			argText = append(argText, fmt.Sprintf("⟨%d, %d, %d, %v⟩", a.Words, a.Bytes, a.Align, a.Vector))
 			p := places[i]
 			size, align := int64(0), int64(0)
 			if p.OnStack {
-				size, align = int64(a.Words)*8, 8
-				if tc.packed {
-					size, align = a.Bytes, a.Align
-				}
-				if align < 1 {
-					align = 1
-				}
+				size, align = stackSize(tc.packed, a), stackAlign(tc.packed, a)
 			}
-			placeText = append(placeText, fmt.Sprintf("⟨%d, %d, %v, %d, %d, %d⟩", p.Reg, p.Regs, p.OnStack, p.Offset, size, align))
+			placeText = append(placeText, fmt.Sprintf("⟨%d, %d, %v, %d, %d, %d, %v⟩", p.Reg, p.Regs, p.OnStack, p.Offset, size, align, p.Vector))
 		}
 		line := fmt.Sprintf("example : layoutArguments [%s] %v = ([%s], %d) := by decide", strings.Join(argText, ", "), tc.packed, strings.Join(placeText, ", "), total)
 		if !strings.Contains(text, line) {

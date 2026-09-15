@@ -1000,6 +1000,6 @@ little-endian reversed; a record's bytes are its fields' in order, its size
 their widths' sum, and decoding the encoding returns every field
 (`decodeFields_encodeFields`, `_exact`); with presence fields and byte
 runs as items, `decodeItems_encodeItems` says the same of the whole
-layout; a valid Bool byte decodes to the Bool that wrote it. The endian byte helpers of the prelude
-(`bytes_read_u32_be` and kin) remain for hand-written formats; a header
-that is a record no longer needs them.
+layout; a valid Bool byte decodes to the Bool that wrote it. The qualified
+`endian` package (`endian.read_u32_be` and kin) remains for hand-written
+formats; a header that is a record no longer needs it.

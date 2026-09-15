@@ -12,6 +12,38 @@ func ins(mnemonic string, operands ...asm.Operand) asm.Instruction {
 	return asm.Instruction{Mnemonic: mnemonic, Operands: operands}
 }
 
+// The stride is the index's increment — the register a test compares and
+// the loop writes only there. A scratch register a guard compares and the
+// body reloads before adding a constant is not the stride.
+func TestMetricsStrideIsTheInductionVariable(t *testing.T) {
+	w := func(n int) asm.Register { return asm.Register{Text: "w", Num: n} }
+	x := func(n int) asm.Register { return asm.Register{Text: "x", Num: n} }
+	bc := func(cond, target string) asm.Instruction {
+		return asm.Instruction{Mnemonic: "b.", Cond: cond, Operands: []asm.Operand{asm.Symbol{Name: target}}}
+	}
+	fn := &asm.Function{Arch: asm.ArchArm64, Items: []asm.Item{
+		asm.Label{Name: "loop_4"},
+		ins("cmp", w(4), w(3)),
+		bc("hs", "done_5"),
+		ins("mov", w(9), w(2)),
+		ins("cmp", w(9), w(1)),
+		bc("hs", "trap_3"),
+		ins("ldr", w(9), x(11)),
+		ins("add", x(9), x(9), asm.Immediate{Value: 7}),
+		ins("str", x(9), x(12)),
+		ins("add", w(4), w(4), asm.Immediate{Value: 2}),
+		ins("b", asm.Symbol{Name: "loop_4"}),
+		asm.Label{Name: "done_5"},
+		ins("ret"),
+		asm.Label{Name: "trap_3"},
+		ins("brk"),
+	}}
+	m := Metrics(fn)
+	if len(m.LoopBodies) != 1 || m.LoopBodies[0].Stride != 2 {
+		t.Fatalf("stride: got %+v, want one loop of stride 2 (the index w4, not the reloaded w9)", m.LoopBodies)
+	}
+}
+
 func TestMetricsCountsLoopsAndGuards(t *testing.T) {
 	x := func(n int) asm.Register { return asm.Register{Text: "x", Num: n} }
 	fn := &asm.Function{Arch: asm.ArchArm64, Items: []asm.Item{
@@ -84,11 +116,11 @@ func TestFindingLine(t *testing.T) {
 
 func TestTransformsToggleTheLane(t *testing.T) {
 	registry := Registry()
-	if got := len(registry.Transforms()); got != 6 {
+	if got := len(registry.Transforms()); got != 9 {
 		t.Fatalf("%d transforms", got)
 	}
-	plain := PlainLane(Lane{Arch: asm.ArchArm64, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, VectorHomes: true})
-	if plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.VectorHomes || !plain.NoReductions {
+	plain := PlainLane(Lane{Arch: asm.ArchArm64, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, VectorHomes: true, Reallocate: true, Cleanup: true})
+	if plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.RotateLoops || plain.VectorHomes || plain.Reallocate || plain.Cleanup || !plain.NoReductions {
 		t.Fatalf("plain lane %+v keeps a transform on", plain)
 	}
 	identity := opt.Identity(plain)
@@ -101,15 +133,16 @@ func TestTransformsToggleTheLane(t *testing.T) {
 			t.Fatalf("%s applied twice", tr.Name())
 		}
 		lane := PlainLane(next.Config.(Lane))
-		if lane.Arch != plain.Arch || lane.Strength || lane.ElideProven || lane.ReuseFlags || lane.HoistInvariants || lane.VectorHomes || !lane.NoReductions {
+		if lane.Arch != plain.Arch || lane.Strength || lane.ElideProven || lane.ReuseFlags || lane.HoistInvariants || lane.VectorHomes || lane.Reallocate || lane.Cleanup || !lane.NoReductions {
 			t.Fatalf("%s changed more than its switch: %+v", tr.Name(), lane)
 		}
 	}
-	// The rv64 lane has the law-licensed unrolling and check elision.
+	// The rv64 lane has the law-licensed unrolling, check elision, and
+	// layer A's strength reduction (nativegen/rewrite.go, both lanes).
 	rv := opt.Identity(PlainLane(Lane{Arch: asm.ArchRV64}))
 	for _, tr := range registry.Transforms() {
 		applied := tr.Apply(rv) != nil
-		if applied != (tr.Name() == TransformUnroll || tr.Name() == TransformElide) {
+		if applied != (tr.Name() == TransformUnroll || tr.Name() == TransformElide || tr.Name() == TransformStrength) {
 			t.Errorf("%s on rv64: applied %v", tr.Name(), applied)
 		}
 	}
@@ -125,5 +158,29 @@ func TestTransformsToggleTheLane(t *testing.T) {
 	}
 	if _, noLine := elide.(opt.Refinable).Refine(refined, "no line"); noLine {
 		t.Fatal("refined without a line")
+	}
+}
+
+func TestMetricsStrideNeedsOneIncrement(t *testing.T) {
+	w := func(n int) asm.Register { return asm.Register{Text: "w", Class: asm.ClassW, Num: n} }
+	imm := func(v int64) asm.Immediate { return asm.Immediate{Value: v} }
+	// x9 is rounded up (add #7, lsr #3) and compared: not an index with
+	// stride 7; w3 counts by one.
+	fn := &asm.Function{Arch: asm.ArchArm64, Items: []asm.Item{
+		asm.Label{Name: "loop_1"},
+		ins("add", w(9), w(9), imm(7)),
+		ins("lsr", w(9), w(9), imm(3)),
+		ins("cmp", w(9), w(20)),
+		asm.Instruction{Mnemonic: "b", Cond: "hs", Operands: []asm.Operand{asm.Symbol{Name: "done_2"}}},
+		ins("cmp", w(3), w(21)),
+		asm.Instruction{Mnemonic: "b", Cond: "hs", Operands: []asm.Operand{asm.Symbol{Name: "done_2"}}},
+		ins("add", w(3), w(3), imm(1)),
+		ins("b", asm.Symbol{Name: "loop_1"}),
+		asm.Label{Name: "done_2"},
+		ins("ret"),
+	}}
+	m := Metrics(fn)
+	if len(m.LoopBodies) != 1 || m.LoopBodies[0].Stride != 1 {
+		t.Fatalf("loop bodies %+v", m.LoopBodies)
 	}
 }

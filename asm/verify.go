@@ -128,6 +128,14 @@ func elementValue(span string, k uint64, width int) uint64 {
 	h ^= h >> 29
 	h *= 0xBF58476D1CE4E5B9
 	h ^= h >> 32
+	if width > 8 {
+		// A wider element is, in the bodies the witnesses run, an index
+		// or a count into another span (a literal's start, a table
+		// offset): kept below the witness lengths (loopWitnessInputs), so
+		// the reads it drives fall inside them rather than trap on every
+		// input. Bytes keep the whole mix — the high bit matters to them.
+		return h % 23
+	}
 	return h & mask(width)
 }
 
@@ -1541,6 +1549,17 @@ func executeBodyChunkJoining(fn *Function, sig *ast.FunctionStatement, concrete 
 			case spans[binding.Param] != 0:
 				state.storeSlot(binding.Stack, paramTerm(spanBaseName(binding.Param), 64), 8)
 				state.storeSlot(binding.Stack+8, input(spanLenName(binding.Param), 32), 4)
+			case vectors[binding.Param].Lanes != 0:
+				// A vector past v0–v7: its sixteen bytes in the outgoing
+				// area, the lanes packed as the register would hold them,
+				// two eight-byte slots the body's `ldr q` reads whole.
+				halves := vectorParamValue(binding.Param, vectors[binding.Param], input).halves()
+				state.storeSlot(binding.Stack, halves[0], 8)
+				state.storeSlot(binding.Stack+8, halves[1], 8)
+			case params[binding.Param] == ClassV:
+				// A float past v0–v7: its bit pattern at its own size.
+				bits := declared[binding.Param]
+				state.storeSlot(binding.Stack, input(binding.Param, bits), int64(bits)/8)
 			case params[binding.Param] == ClassX:
 				state.storeSlot(binding.Stack, input(binding.Param, 64), 8)
 			case boolParams[binding.Param]:
@@ -1758,9 +1777,11 @@ type pathExecutor struct {
 	joined []*symbolicState
 	// ends are the paths' outcomes — a result with its effects, or a trap
 	// — each under the path's condition; runAll folds them.
-	ends  []pathEnd
-	paths int
-	steps int
+	ends []pathEnd
+	// loopsInsideMemo caches loopsInside per loop shape (by its body's start).
+	loopsInsideMemo map[int]bool
+	paths           int
+	steps           int
 	// records: record and union parameters by name (their leaves), env the
 	// concrete inputs of a witness run (nil when symbolic).
 	records map[string]compositeArg
@@ -2713,7 +2734,7 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			continue // a label is a position
 		}
 		x.steps++
-		if x.steps > stepBudget {
+		if x.steps > stepBudget || (x.concrete && x.steps > witnessStepBudget) {
 			return nil, nil, "more instructions than the verifier's unrolling budget (a loop whose trip count depends on the inputs)", false
 		}
 		switch instr.Mnemonic {
@@ -2811,7 +2832,16 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 				// branch always lands here — on every path, since the
 				// counter it compares is constant whatever the inputs did
 				// inside the loop; the path and step budgets bound the
-				// unfolding of forks inside it.
+				// unfolding of forks inside it. A counted loop whose body
+				// holds a loop (its own, or a callee's) is the exception:
+				// unrolled, each copy of the body would summarize the inner
+				// loop again — sixteen copies of a verifier's inner search
+				// against a budget of eight events — so it is summarized
+				// as a loop like a data-dependent one, and the Oak side
+				// summarizes the same loop (lowerWhile).
+				if shape, isLoopExit := x.loopExits[pc]; isLoopExit && cond.value == 0 && !x.concrete && x.summarizeCounted(shape, instr, state) {
+					return x.loopEvent(shape, instr, state)
+				}
 				if cond.value != 0 {
 					pc = target - 1
 				}
@@ -2852,6 +2882,9 @@ func (x *pathExecutor) run(pc int, state *symbolicState) (*term, *pathEffects, s
 			takenState := state.clone()
 			takenState.assume(cond, fork, true)
 			state.assume(notTerm(cond), fork, false)
+			// Each side learns what the branch decided about its register.
+			bindZeroTest(instr, takenState, true)
+			bindZeroTest(instr, state, false)
 			join, hasJoin := x.joins[pc]
 			if !hasJoin || target <= pc || join <= pc {
 				if _, _, reason, ok := x.run(target, takenState); !ok {
@@ -3951,6 +3984,39 @@ func step(instr Instruction, state *symbolicState) (string, bool) {
 	return "", true
 }
 
+// bindZeroTest records, on one side of a fork over a register's zero test
+// (`cbz`, `cbnz`, `beqz`, `bnez`), what that side knows of the register:
+// zero where the test says so, one where a one-bit value (a `cset`) is
+// nonzero. An `assert(a && b)` lowers to a `cset` tested twice — once to
+// skip the second test, once for the trap — and without this the path
+// that skipped the second test forked on it again, a contradictory path
+// that summarized every loop after the assert a second time.
+func bindZeroTest(instr Instruction, state *symbolicState, taken bool) {
+	var zeroWhenTaken bool
+	switch instr.Mnemonic {
+	case "cbz", "beqz":
+		zeroWhenTaken = true
+	case "cbnz", "bnez":
+		zeroWhenTaken = false
+	default:
+		return
+	}
+	reg, isReg := instr.Operands[0].(Register)
+	if !isReg {
+		return
+	}
+	value, ok := state.read(reg)
+	if !ok {
+		return
+	}
+	width := widthOf(reg.Class)
+	if taken == zeroWhenTaken {
+		state.write(reg, constTerm(0, width))
+	} else if significantBits(value) == 1 {
+		state.write(reg, constTerm(1, width))
+	}
+}
+
 // branchCondition is the taken-condition of a conditional branch: b.cond
 // reads the flags; cbz/cbnz compare a register with zero; tbz/tbnz test one
 // bit (Oak.AssemblerSemantics.cbz, tbz).
@@ -4677,6 +4743,13 @@ func (lo *oakLowering) lowerAssert(expr ast.Expression) (reason string, isAssert
 			lo.addTrap(notTerm(cond)) // evaluated on the input under the path
 			if lo.witnessTrapped {
 				return "a failed assert on this input", true, false
+			}
+		} else if bodyHasLoop(call.Arguments[0], lo.functions) {
+			// The loops a call in the condition runs: the machine side
+			// executes the call and summarizes them, so the condition is
+			// lowered for its loop events and its stores, its truth dropped.
+			if _, reason, ok := lo.lowerCondition(call.Arguments[0]); !ok {
+				return reason, true, false
 			}
 		}
 		return "", true, true
@@ -5546,6 +5619,16 @@ func (lo *oakLowering) assignPlace(target *oakValue, value ast.Expression) (stri
 // loopBudget bounds the iterations a `while` may unroll.
 const loopBudget = 4096
 
+// witnessLoopBudget and witnessStepBudget bound a witness run — one
+// concrete input through the body — far below the symbolic budgets: a
+// witness is evidence, and a body chasing the fixed memory's small
+// elements around a cycle (a unique table's chain) would otherwise run
+// the whole unrolling budget on each of its hundreds of inputs.
+const (
+	witnessLoopBudget = 256
+	witnessStepBudget = 1 << 13
+)
+
 // lowerBlock executes a statement body symbolically: typed local
 // declarations and assignments update the locals, a `while` whose
 // condition folds to a constant unrolls (a data-dependent condition is
@@ -5671,7 +5754,7 @@ func (lo *oakLowering) assignIndexed(s *ast.IndexAssignmentStatement) (string, b
 // constant before every iteration.
 func (lo *oakLowering) lowerWhile(loop *ast.WhileStatement) (string, bool) {
 	for iteration := 0; ; iteration++ {
-		if iteration > loopBudget {
+		if iteration > loopBudget || (lo.concrete != nil && iteration > witnessLoopBudget) {
 			return "a loop beyond the verifier's unrolling budget", false
 		}
 		cond, reason, ok := lo.lowerCondition(loop.Condition)
@@ -5686,10 +5769,106 @@ func (lo *oakLowering) lowerWhile(loop *ast.WhileStatement) (string, bool) {
 		if cond.value == 0 {
 			return "", true
 		}
+		if iteration == 0 && lo.concrete == nil && lo.summarizeCounted(loop) {
+			// A counted loop over a loop, past the unrolling limit:
+			// summarized rather than unrolled, as the machine side
+			// summarizes it (the counted loop's exception in the
+			// executor's branch handling).
+			return lo.loopEvent(loop)
+		}
 		if reason, ok := lo.lowerLoopBody(loop.Body); !ok {
 			return reason, false
 		}
 	}
+}
+
+// countedUnrollLimit is the trip count from which a counted loop over a
+// loop is summarized rather than unrolled: below it the unrolled copies
+// are few and each summarizes the inner loop on its own path (a
+// two-sided body whose sides read different lengths keeps two inner
+// events on the machine side where the Oak side merges them into one
+// before the loop); above it the copies exceed the event budget.
+const countedUnrollLimit = 4
+
+// summarizeCounted decides, at a counted loop's entry, whether the loop
+// is summarized: its body holds a loop (bodyHasLoop) and its trip count —
+// the bound of `i < c` or `i <= c` less the counter's value, both
+// constant here — is past countedUnrollLimit. A condition of another
+// shape unrolls as before.
+func (lo *oakLowering) summarizeCounted(loop *ast.WhileStatement) bool {
+	if !bodyHasLoop(loop.Body, lo.functions) {
+		return false
+	}
+	infix, isInfix := loop.Condition.(*ast.InfixExpression)
+	if !isInfix || (infix.Operator != "<" && infix.Operator != "<=") {
+		return false
+	}
+	left, _, okL := lo.lower(infix.Left, 32)
+	right, _, okR := lo.lower(infix.Right, 32)
+	if !okL || !okR || left.kind != termConst || right.kind != termConst || right.value < left.value {
+		return false
+	}
+	trips := right.value - left.value
+	if infix.Operator == "<=" {
+		trips++
+	}
+	return trips > countedUnrollLimit
+}
+
+// summarizeCounted is the machine side's reading of the same decision at
+// the decided exit branch of a recognized loop: the body holds a loop
+// (loopsInside) and the flags compare the counter with its bound, both
+// constant, the exit taken at or above the bound.
+func (x *pathExecutor) summarizeCounted(shape loopShape, exit Instruction, state *symbolicState) bool {
+	if !x.loopsInside(shape) {
+		return false
+	}
+	var left, right *term
+	var atOrAbove bool
+	switch exit.Mnemonic {
+	case "b.":
+		if state.flags == nil || state.flags.kind != "" || state.flags.cond != nil || state.flags.float {
+			return false
+		}
+		left, right = state.flags.left, state.flags.right
+		switch exit.Cond {
+		case "hs", "cs", "ge":
+			atOrAbove = true
+		case "hi", "gt":
+		default:
+			return false
+		}
+	case "bgeu", "bge", "bltu", "blt":
+		// RV64: `bgeu counter, bound, exit`; `bltu bound, counter, exit`.
+		if len(exit.Operands) < 2 {
+			return false
+		}
+		a, okA := exit.Operands[0].(Register)
+		b, okB := exit.Operands[1].(Register)
+		if !okA || !okB {
+			return false
+		}
+		va, boundA := state.read(a)
+		vb, boundB := state.read(b)
+		if !boundA || !boundB {
+			return false
+		}
+		if exit.Mnemonic == "bgeu" || exit.Mnemonic == "bge" {
+			left, right, atOrAbove = va, vb, true
+		} else {
+			left, right = vb, va
+		}
+	default:
+		return false
+	}
+	if left == nil || right == nil || left.kind != termConst || right.kind != termConst || right.value < left.value {
+		return false
+	}
+	trips := right.value - left.value
+	if !atOrAbove {
+		trips++
+	}
+	return trips > countedUnrollLimit
 }
 
 // lowerLoopBody executes one iteration of a loop body.
@@ -5716,6 +5895,15 @@ func (lo *oakLowering) lowerLoopBody(body *ast.BlockStatement) (string, bool) {
 		case *ast.ExpressionStatement:
 			match, isMatch := s.Expression.(*ast.MatchExpression)
 			if !isMatch {
+				if reason, isAssert, ok := lo.lowerAssert(s.Expression); isAssert {
+					// A failed assert traps; the machine side's trap arm
+					// leaves its body path (runBody), so the iteration is
+					// compared on the inputs where the assert holds.
+					if !ok {
+						return reason, false
+					}
+					continue
+				}
 				if handled, reason, ok := lo.lowerUnitCall(s.Expression); handled {
 					if !ok {
 						return reason, false
@@ -6210,6 +6398,7 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	bound := map[string]*oakLocal{}
 	calleeFloats := map[string]int{}
 	calleeSpans := map[string]spanContract{}
+	calleeRecordSpans := map[string]recordSpanArg{}
 	calleeAlias := map[string]string{}
 	calleeOffset := map[string]*term{}
 	calleeLen := map[string]*term{}
@@ -6237,6 +6426,13 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 		if isBorrowType(param.Type) {
 			owner := addressOfOperand(arg)
 			local, isLocal := lo.locals[owner]
+			if recordArg, isRecordSpan := lo.recordSpans[owner]; !isLocal && isRecordSpan {
+				// A span of records passed on: the callee's parameter is an
+				// alias of the caller's, sharing its leaf memories.
+				calleeRecordSpans[param.Name.Value] = recordArg
+				calleeAlias[param.Name.Value] = lo.spanRoot(owner)
+				continue
+			}
 			if contract, isSpanParam := lo.spans[owner]; !isLocal && isSpanParam {
 				// A span parameter passed on: the callee's parameter is an
 				// alias of the caller's span, sharing its memory
@@ -6358,6 +6554,7 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	savedSpans, savedAlias := lo.spans, lo.spanAlias
 	savedOffset, savedLen := lo.spanOffset, lo.spanLen
 	savedViews := lo.views
+	savedRecordSpans := lo.recordSpans
 	lo.locals = bound
 	lo.floats = calleeFloats
 	// The callee sees only its own span parameters, each spelled in the
@@ -6365,6 +6562,7 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	lo.spans, lo.spanAlias = calleeSpans, calleeAlias
 	lo.spanOffset, lo.spanLen = calleeOffset, calleeLen
 	lo.views = calleeViews
+	lo.recordSpans = calleeRecordSpans
 	if lo.inlining == nil {
 		lo.inlining = map[string]bool{}
 	}
@@ -6374,6 +6572,7 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 		lo.spans, lo.spanAlias = savedSpans, savedAlias
 		lo.spanOffset, lo.spanLen = savedOffset, savedLen
 		lo.views = savedViews
+		lo.recordSpans = savedRecordSpans
 		for _, b := range borrows {
 			if final, has := lo.locals[b.param]; has && final.agg != nil {
 				leaves(final.agg, b.owner, func(from, to *oakValue) { to.scalar = from.scalar })
@@ -7796,8 +7995,8 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		if arg.problem != "" {
 			return fmt.Sprintf("a call to %s: parameter %s is not a fixed-width integer", name, arg.param.Name.Value), false
 		}
-		if arg.kind == argVector {
-			ints = append(ints, -1)
+		if arg.kind == argVector && x.arch == ArchRV64 {
+			ints = append(ints, -1) // RV64: v8–v23 by count, outside the layout
 			continue
 		}
 		ints = append(ints, len(classes))
@@ -7845,12 +8044,14 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 				if !has {
 					return "unbound floating-point register read", false
 				}
-			} else {
-				if nextVec >= vecArgs {
-					return fmt.Sprintf("a call to %s with floating-point arguments beyond the registers", name), false
+			} else if place := places[ints[i]]; place.OnStack {
+				// Past v0–v7: its bit pattern in the outgoing area.
+				value, has = word(place, 0, int64(floatWidth)/8)
+				if !has {
+					return "unbound stack argument read", false
 				}
-				vec, bound := state.readVec(nextVec)
-				nextVec++
+			} else {
+				vec, bound := state.readVec(place.Reg)
 				if !bound {
 					return "unbound vector register read", false
 				}
@@ -7862,13 +8063,34 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		}
 		if arg.kind == argVector {
 			shape, _ := vectorShape(param.Type)
-			if nextVec >= vecArgs {
-				return fmt.Sprintf("a call to %s with vector arguments beyond the registers", name), false
-			}
-			value, has := state.readVec(vecArg0 + nextVec)
-			nextVec++
-			if !has {
-				return "unbound vector register read", false
+			var value vecValue
+			switch {
+			case x.arch == ArchRV64:
+				if nextVec >= vecArgs {
+					return fmt.Sprintf("a call to %s with vector arguments beyond the registers", name), false
+				}
+				var has bool
+				value, has = state.readVec(vecArg0 + nextVec)
+				nextVec++
+				if !has {
+					return "unbound vector register read", false
+				}
+			case places[ints[i]].OnStack:
+				// Past v0–v7: sixteen bytes in the outgoing area, the two
+				// eight-byte words the caller's `str q` left.
+				place := places[ints[i]]
+				lo64, hasLo := word(place, 0, 8)
+				hi64, hasHi := word(place, 1, 8)
+				if !hasLo || !hasHi {
+					return "unbound stack argument read", false
+				}
+				value = vecOfLanes([]*term{lo64, hi64}, 64)
+			default:
+				var has bool
+				value, has = state.readVec(places[ints[i]].Reg)
+				if !has {
+					return "unbound vector register read", false
+				}
 			}
 			lanes := value.lanesAt(laneWidth(shape))[:shape.Lanes]
 			lo.locals[param.Name.Value] = &oakLocal{agg: vectorOfLanes(lanes, lo.vectorType(shape))}
@@ -7969,11 +8191,21 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 				frameBorrows = append(frameBorrows, borrow)
 				break
 			}
-			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
-			lo.spans[param.Name.Value] = spanContract{elemWidth: int(arg.elem) * 8, signed: strings.HasPrefix(elemType, "i")}
 			if lo.spanAlias == nil {
 				lo.spanAlias = map[string]string{}
 			}
+			if recordArg, isRecordSpan := x.recordSpans[owner]; isRecordSpan {
+				// A span of records passed on: the callee's parameter is an
+				// alias of the caller's, its leaf memories the caller's.
+				if lo.recordSpans == nil {
+					lo.recordSpans = map[string]recordSpanArg{}
+				}
+				lo.recordSpans[param.Name.Value] = recordArg
+				lo.spanAlias[param.Name.Value] = owner
+				break
+			}
+			elemType := typeText(param.Type.(*ast.IndexExpression).Left)
+			lo.spans[param.Name.Value] = spanContract{elemWidth: int(arg.elem) * 8, signed: strings.HasPrefix(elemType, "i")}
 			lo.spanAlias[param.Name.Value] = owner
 		default:
 			w, signed, _ := contractBits(param.Type)

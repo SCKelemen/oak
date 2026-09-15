@@ -4,9 +4,10 @@ Status: design note, September 2026.
 
 This note proposes the architecture for Oak's optimizing native backend after the first verified optimization increments in `nativegen/`: strength reduction, condition selection and if-conversion, aggregate promotion, wide-load fusion, reduction unrolling, and pair loads. It complements `docs/notes/optimization-2026-09.md`, `docs/notes/native-optimization-2026-09.md`, `docs/spec/90-backend.md` §16, and the semantic verifier in `docs/spec/94-assembler.md` §9.
 
-Two companion catalogs feed this architecture:
+Three companion catalogs feed this architecture:
 
 - `docs/notes/llvm-optimization-catalog-2026-09.md` records conventional compiler analyses, transforms, vectorization, IPO, register allocation, scheduling, and target-cost patterns worth adapting from LLVM;
+- `docs/notes/mojo-futhark-optimization-2026-09.md` records staged specialization, structured and algebraic planning, index properties, destination forwarding, storage coloring, and compile-time/runtime candidate versioning;
 - `docs/notes/proof-guided-optimization-2026-09.md` records Oak-native optimizations enabled by checked type facts, ownership, effects, refinements, extents, typestate/protocol models, declared laws, proof infrastructure, and semantic verification down to the selected assembly body.
 
 The central rule is:
@@ -29,15 +30,21 @@ The planning substrate of §16 Phase A is implemented on `specification`:
   `opt/opt_test.go` covers selection, fallback, requirement gating,
   pruning of unchanged and duplicate bodies, refinement, and budgets
   against a fake lane.
-- `nativegen/opt.go` — the native lane's side: the five transforms the
-  lane already performed (`strength-reduce`, `elide-guards`,
-  `reuse-flags`, `hoist-invariants`, `unroll-reductions`) as
+- `nativegen/opt.go` — the native lane's side: the six transforms the
+  lane performs (`strength-reduce`, `elide-guards`, `reuse-flags`,
+  `hoist-invariants`, `vector-homes`, `unroll-reductions`), then
+  `reallocate` and the first transform written for the registry,
+  `late-cleanup` (§11 "Machine", late copy/branch cleanup:
+  `nativegen/cleanup.go`, a block-local peephole under a whole-function
+  register liveness, 2026-09-16), as
   `opt.Transform`s over `Lane` configurations, each with its phase,
   proof kind, and requirements; `FunctionFacts` reading the
   typechecker's proved indices and the language's integer associativity
   laws into facts; `Metrics` over a lowered body (instruction classes,
   guards, and per loop the counts, the stride read off the index
-  register's increment, and the trip bound of a remainder loop after a
+  register's increment (the register a test compares and the loop
+  writes only there: a scratch register a guard compares and the body
+  reloads before adding a constant is not the index), and the trip bound of a remainder loop after a
   strided one); `Registry`, `PlainLane`, `FindingLine`.
 - The cost model (`opt.TargetCosts`) is static and per class: straight-line
   code at weight one, each loop body at `LoopWeight` trips divided by its
@@ -57,6 +64,14 @@ The planning substrate of §16 Phase A is implemented on `specification`:
   phrasing; `-opt-report` / `OAK_OPT_REPORT=1` print the report;
   `OAK_OPT_BEAM` overrides the beam for experiments. `-opt` keeps its
   one meaning (the C compiler's level).
+- The executable-oriented source pipeline has an explicit specialization
+  boundary. Conservative private-leaf inlining runs before specialization;
+  built-in Bool identities and exact fixed-width integer zero/one identities
+  run after concrete types are known. A fresh checker validates every changed
+  monomorphic program. Its validation clone receives only generic ADT
+  declarations recorded by the specializing checker, rebuilt through the same
+  checked substitution used by native lowering; those declarations never enter
+  emission. Source and native remarks share `opt.Report`.
 
 Policy as landed: the identity is the fallback and is verified last, so
 an admitted transformed body is preferred to the plain lowering even when
@@ -67,13 +82,96 @@ where that mattered: before the vector operands moved in place (#484),
 saved and reloaded it around the call exactly as the slot form stored and
 loaded it, plus two moves per trip, and the search kept the hoisted slot
 form; after #484 the home form is the cheaper and is selected. What a
-vector move and a frame-slot round trip cost, and whether residency
-transforms deserve a tie-break, is calibration work for the benchmarks
-(§8); the report's `candidates` line is where to read it.
+vector move and a frame-slot round trip cost is calibration work for the
+benchmarks (§8); the report's `candidates` line is where to read it. The
+tie-break landed with `late-cleanup` (2026-09-16): at one cost the
+candidate with more transforms applied comes first in the beam and the
+validation order (`opt.cheaper`), and the loop stride is read from the
+last increment of a compared register, the index's step before the back
+edge, not the first.
 
-Not yet: MachineIR and the allocator (Phase B), OptIR and the analyses
-(Phase C), vector plans (Phase D), and the proof-obligation service of
-the proof-guided note §26 beyond the requirement/fact matching here.
+### Phase B, first increment: `machine/`
+
+The machine-level representation and the global allocator exist as a
+lift of the emitted body rather than a new lowering target: `machine.Lift`
+reads an AArch64 `asm.Function` into blocks and instructions with every
+definition and use explicit (a per-mnemonic shape table; an instruction,
+operand, or control shape it does not know refuses the lift), builds the
+control-flow graph, computes reaching definitions and the def-use webs
+that serve as virtual registers, global liveness with precise live
+segments (a value saved before a call and reloaded after it is not live
+across it), and recolors the webs nothing pins — entry values, the
+procedure-call contract, reserved registers, dead definitions — with a
+linear scan: a copy partner's register when free (the copy is then
+removed), else its own, else the lowest free register of the pool, which
+is the registers the lowering already wrote, so the frame, the prologue,
+and the epilogue stand as emitted. Ranges crossing a call take
+callee-saved registers only, wide vector webs never v8–v15 across a
+call, and a copy narrower than its source's writes or its destination's
+reads is never removed. A web that finds no register is pinned and
+allocation restarts, so at worst every web keeps the lowering's coloring.
+`nativegen`'s `reallocate` transform runs it as a machine-phase candidate;
+on the vector-homes test bodies the verifier proves every reallocated
+form and the search selects it, two to seventeen copies fewer per body.
+
+Second increment: frame-slot promotion (`machine.Promote`), the inverse
+of spilling. A frame slot every access of which is a plain load or store
+of one width and class, that overlaps no other frame access, whose
+address is never taken, that lies within the declared frame, and whose
+every read a store reaches, joins the web machinery as a pseudo-register;
+its value moves into a register free over its live range (a saved
+callee-saved one when the range crosses a call, never v8–v15 for a wide
+vector), the store and the loads become copies, and reallocation
+coalesces them. The allocation pool also gains the caller-saved registers
+the body never wrote, for ranges that cross no call. On the vector-homes
+test bodies the general promotion now does what the hand-written
+`vector-homes` transform did and the search selects the cheaper of the
+two forms; the test asserts the outcome (the locals' slot traffic) rather
+than the mechanism, and the compiler reports promoted slots beside kept
+homes.
+
+Two rules this increment forced. A trusted verdict is the absence of a
+check, so when no candidate is judged (the verifier cannot yet follow a
+body — a call returning an array, say) a transform that ships only on a
+verdict (`opt.Gated`) is set aside for the cheapest form without it, at
+worst the plain lowering, whatever the cost model says; the lane's
+long-standing transforms ship on the checker's admission as they did
+before the search, and `reallocate` is gated until it earns that standing
+(`opt.Search`, docs/spec/90-backend.md §16 rule 3). The rule came
+from a real miscompile the tests caught: promotion had treated a `u32`
+element stored as a word inside a chunk the body reads whole as a slot of
+its own, and the two affected bodies were exactly the trusted ones. The
+overlap test now weighs every access at a neighboring offset at its own
+width, with a regression test.
+
+Third increment: the callee-saved pool grows. A slot live across a call
+with no saved callee-saved register free takes the next of x19–x28 the
+body does not write, and the promotion adds its save after the prologue's
+last save and its restore before the epilogue restores the frame pair, at
+the next eight-byte slot of the lowering's save area — when the prologue
+and the single epilogue have the lowering's shapes, the slot lies within
+the frame, and it overlaps no other frame access (`growCalleeSaved`). A
+callee-saved register's own save slot is never promoted: that would only
+move the obligation. The checker's save/restore obligations judge the
+edited prologue and epilogue like any other body.
+
+Not in this increment: live-range splitting, vector callee-saved growth
+(d8–d15), a lowering that emits virtual registers directly, scheduling,
+and the RV64 lane.
+
+### Phase C, first substrate: `optir/`
+
+The target-neutral structured representation now exists independently of
+emission. It retains typed scalar operations, effects, attributes, proof facts,
+conditionals, and pre-test loops with explicit loop-carried values. Its
+deterministic projection introduces typed block arguments at joins, loop
+headers, bodies, and exits. An independent verifier checks structured
+arity/types and CFG definitions, same-block order, dominance, reachability,
+terminators, exact edge types, Bool branches, and returns.
+
+Not yet: checked Oak-to-OptIR projection, OptIR analyses and validated emission,
+vector plans (Phase D), and the proof-obligation service of the proof-guided
+note §26 beyond the requirement/fact matching here.
 
 ## 1. Why this architecture
 
@@ -565,7 +663,8 @@ The existing native optimizations should be migrated into the candidate interfac
 - multiply-add/select forms;
 - scheduling alternatives;
 - allocation alternatives;
-- late copy/branch cleanup.
+- late copy/branch cleanup (landed 2026-09-16: `late-cleanup`, 2.2 percent
+  of the kernel package's instructions, verdicts unchanged).
 
 ## 12. Vector planning
 
