@@ -1,6 +1,7 @@
 // Strict JSON string codecs. All storage is supplied by the caller.
 package json
 
+import("bytes")
 import("strings")
 
 pub JsonError: type = InvalidEncoding | InvalidSyntax | DestinationTooSmall | SizeOverflow
@@ -250,7 +251,7 @@ pub json_string_write_at: (dst: [*]u8, offset: u32, src: []u8): u32 {
 // Atomic on error, including at nonzero output offsets.
 pub json_string_encode_at: (dst: [*]u8, offset: u32, src: []u8): Result[u32, JsonError] {
  measured: Result[u32, JsonError] = json_string_encode_size(src)
- !json_result_ok(measured) ? { measured } | !bytes_range_fits(len(dst), offset, json_result_value(measured)) ? { .Err(.DestinationTooSmall) } | {
+ !json_result_ok(measured) ? { measured } | !bytes.range_fits(len(dst), offset, json_result_value(measured)) ? { .Err(.DestinationTooSmall) } | {
   written: u32 = json_string_write_at(dst, offset, src)
   assert(written == json_result_value(measured))
   measured
@@ -396,15 +397,15 @@ pub json_bool_write_at: (dst: [*]u8, offset: u32, value: Bool): u32 {
 }
 pub json_u64_encode_at: (dst: [*]u8, offset: u32, value: u64): Result[u32, JsonError] {
  digits: u32 = json_u64_size(value)
- !bytes_range_fits(len(dst), offset, digits) ? { .Err(.DestinationTooSmall) } | { .Ok(json_u64_write_at(dst, offset, value)) }
+ !bytes.range_fits(len(dst), offset, digits) ? { .Err(.DestinationTooSmall) } | { .Ok(json_u64_write_at(dst, offset, value)) }
 }
 pub json_i64_encode_at: (dst: [*]u8, offset: u32, value: i64): Result[u32, JsonError] {
  size: u32 = json_i64_size(value)
- !bytes_range_fits(len(dst), offset, size) ? { .Err(.DestinationTooSmall) } | { .Ok(json_i64_write_at(dst, offset, value)) }
+ !bytes.range_fits(len(dst), offset, size) ? { .Err(.DestinationTooSmall) } | { .Ok(json_i64_write_at(dst, offset, value)) }
 }
 pub json_bool_encode_at: (dst: [*]u8, offset: u32, value: Bool): Result[u32, JsonError] {
  size: u32 = json_bool_size(value)
- !bytes_range_fits(len(dst), offset, size) ? { .Err(.DestinationTooSmall) } | { .Ok(json_bool_write_at(dst, offset, value)) }
+ !bytes.range_fits(len(dst), offset, size) ? { .Err(.DestinationTooSmall) } | { .Ok(json_bool_write_at(dst, offset, value)) }
 }
 
 

@@ -47,21 +47,19 @@ func Reallocate(fn *asm.Function) (*asm.Function, *Allocation, error) {
 		return nil, nil, err
 	}
 	lifted.Liveness(webs)
+	t := lifted.t
 	alloc := &Allocation{Webs: webs, Pool: map[Reg]bool{}, Promoted: promoted}
 	for _, ins := range lifted.Instrs {
 		for _, d := range ins.Defs {
-			if !d.Implicit && !reserved(d.Reg) {
+			if !d.Implicit && !t.reserved(d.Reg) {
 				alloc.Pool[d.Reg] = true
 			}
 		}
 	}
 	// The caller-saved registers the body leaves alone are free for
 	// ranges that cross no call (allocation declares what it writes).
-	for n := 9; n <= 17; n++ {
-		alloc.Pool[Reg{GPR, n}] = true
-	}
-	for n := 16; n <= 31; n++ {
-		alloc.Pool[Reg{VEC, n}] = true
+	for _, r := range t.callerSaved {
+		alloc.Pool[r] = true
 	}
 	// A web that finds no register keeps its own — pinned — and allocation
 	// starts over, so at worst every web keeps the lowering's coloring.
@@ -100,7 +98,7 @@ func Reallocate(fn *asm.Function) (*asm.Function, *Allocation, error) {
 				continue
 			}
 			if w := webAt[site{ins, d, true}]; w != nil {
-				setRegAt(&ins.Asm, d, w.Assigned)
+				t.setRegAt(&ins.Asm, d, w.Assigned)
 			}
 		}
 		for _, u := range ins.Uses {
@@ -108,7 +106,7 @@ func Reallocate(fn *asm.Function) (*asm.Function, *Allocation, error) {
 				continue
 			}
 			if w := webAt[site{ins, u, false}]; w != nil {
-				setRegAt(&ins.Asm, u, w.Assigned)
+				t.setRegAt(&ins.Asm, u, w.Assigned)
 			}
 		}
 	}
@@ -132,7 +130,7 @@ func Reallocate(fn *asm.Function) (*asm.Function, *Allocation, error) {
 	// clobbers, plus any caller-saved register allocation newly used.
 	declared := map[Reg]bool{}
 	for _, c := range out.Clobbers {
-		if r, _, _, ok, err := regOf(c); err == nil && ok {
+		if r, _, _, ok, err := t.regOf(c); err == nil && ok {
 			declared[r] = true
 		}
 	}
@@ -142,11 +140,11 @@ func Reallocate(fn *asm.Function) (*asm.Function, *Allocation, error) {
 				continue
 			}
 			w := webAt[site{ins, d, true}]
-			if w == nil || declared[w.Assigned] || calleeSaved(w.Assigned) {
+			if w == nil || declared[w.Assigned] || t.calleeSaved(w.Assigned) || t.reserved(w.Assigned) {
 				continue
 			}
 			declared[w.Assigned] = true
-			out.Clobbers = append(out.Clobbers, clobberRegister(w.Assigned))
+			out.Clobbers = append(out.Clobbers, t.clobber(w.Assigned))
 		}
 	}
 	return out, alloc, nil
@@ -244,17 +242,16 @@ func allocate(f *Function, webs []*Web, alloc *Allocation) error {
 		}
 		return pool[i].Num < pool[j].Num
 	})
+	t := f.t
 	admissible := func(r Reg, w *Web) bool {
-		if r.Class != w.Reg.Class || reserved(r) {
+		if r.Class != w.Reg.Class || t.reserved(r) {
 			return false
 		}
-		if crossesCall(w) {
-			if r.Class == GPR && !calleeSaved(r) {
-				return false
-			}
-			if r.Class == VEC && (!calleeSaved(r) || w.Wide) {
-				return false
-			}
+		if crossesCall(w) && (!t.calleeSaved(r) || w.Wide) {
+			// Across a call only a callee-saved register, and never one
+			// whose preserved part is narrower than the value (v8–v15 keep
+			// 64 bits).
+			return false
 		}
 		return free(r, w)
 	}
@@ -290,14 +287,6 @@ func allocate(f *Function, webs []*Web, alloc *Allocation) error {
 		assigned[chosen] = append(assigned[chosen], w)
 	}
 	return nil
-}
-
-// clobberRegister spells a register for the clobber list.
-func clobberRegister(r Reg) asm.Register {
-	if r.Class == VEC {
-		return asm.Register{Text: "v" + itoa(r.Num), Class: asm.ClassV, Num: r.Num, Lane: -1}
-	}
-	return asm.Register{Text: "x" + itoa(r.Num), Class: asm.ClassX, Num: r.Num, Lane: -1}
 }
 
 func itoa(n int) string { return fmt.Sprintf("%d", n) }

@@ -12,6 +12,38 @@ func ins(mnemonic string, operands ...asm.Operand) asm.Instruction {
 	return asm.Instruction{Mnemonic: mnemonic, Operands: operands}
 }
 
+// The stride is the index's increment — the register a test compares and
+// the loop writes only there. A scratch register a guard compares and the
+// body reloads before adding a constant is not the stride.
+func TestMetricsStrideIsTheInductionVariable(t *testing.T) {
+	w := func(n int) asm.Register { return asm.Register{Text: "w", Num: n} }
+	x := func(n int) asm.Register { return asm.Register{Text: "x", Num: n} }
+	bc := func(cond, target string) asm.Instruction {
+		return asm.Instruction{Mnemonic: "b.", Cond: cond, Operands: []asm.Operand{asm.Symbol{Name: target}}}
+	}
+	fn := &asm.Function{Arch: asm.ArchArm64, Items: []asm.Item{
+		asm.Label{Name: "loop_4"},
+		ins("cmp", w(4), w(3)),
+		bc("hs", "done_5"),
+		ins("mov", w(9), w(2)),
+		ins("cmp", w(9), w(1)),
+		bc("hs", "trap_3"),
+		ins("ldr", w(9), x(11)),
+		ins("add", x(9), x(9), asm.Immediate{Value: 7}),
+		ins("str", x(9), x(12)),
+		ins("add", w(4), w(4), asm.Immediate{Value: 2}),
+		ins("b", asm.Symbol{Name: "loop_4"}),
+		asm.Label{Name: "done_5"},
+		ins("ret"),
+		asm.Label{Name: "trap_3"},
+		ins("brk"),
+	}}
+	m := Metrics(fn)
+	if len(m.LoopBodies) != 1 || m.LoopBodies[0].Stride != 2 {
+		t.Fatalf("stride: got %+v, want one loop of stride 2 (the index w4, not the reloaded w9)", m.LoopBodies)
+	}
+}
+
 func TestMetricsCountsLoopsAndGuards(t *testing.T) {
 	x := func(n int) asm.Register { return asm.Register{Text: "x", Num: n} }
 	fn := &asm.Function{Arch: asm.ArchArm64, Items: []asm.Item{
@@ -84,11 +116,11 @@ func TestFindingLine(t *testing.T) {
 
 func TestTransformsToggleTheLane(t *testing.T) {
 	registry := Registry()
-	if got := len(registry.Transforms()); got != 8 {
+	if got := len(registry.Transforms()); got != 9 {
 		t.Fatalf("%d transforms", got)
 	}
-	plain := PlainLane(Lane{Arch: asm.ArchArm64, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, VectorHomes: true, Reallocate: true, Cleanup: true})
-	if plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.VectorHomes || plain.Reallocate || plain.Cleanup || !plain.NoReductions {
+	plain := PlainLane(Lane{Arch: asm.ArchArm64, Strength: true, ElideProven: true, GuardLines: map[int]bool{3: true}, ReuseFlags: true, HoistInvariants: true, RotateLoops: true, VectorHomes: true, Reallocate: true, Cleanup: true})
+	if plain.Strength || plain.ElideProven || plain.GuardLines != nil || plain.ReuseFlags || plain.HoistInvariants || plain.RotateLoops || plain.VectorHomes || plain.Reallocate || plain.Cleanup || !plain.NoReductions {
 		t.Fatalf("plain lane %+v keeps a transform on", plain)
 	}
 	identity := opt.Identity(plain)
@@ -110,7 +142,7 @@ func TestTransformsToggleTheLane(t *testing.T) {
 	rv := opt.Identity(PlainLane(Lane{Arch: asm.ArchRV64}))
 	for _, tr := range registry.Transforms() {
 		applied := tr.Apply(rv) != nil
-		if applied != (tr.Name() == TransformUnroll || tr.Name() == TransformElide || tr.Name() == TransformStrength) {
+		if applied != (tr.Name() == TransformUnroll || tr.Name() == TransformElide || tr.Name() == TransformStrength || tr.Name() == TransformReallocate) {
 			t.Errorf("%s on rv64: applied %v", tr.Name(), applied)
 		}
 	}

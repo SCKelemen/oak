@@ -233,7 +233,7 @@ func (f *Function) Webs() ([]*Web, error) {
 		webOf[root].Uses = append(webOf[root].Uses, us...)
 	}
 	for _, w := range webs {
-		w.pin()
+		w.pin(f.t)
 	}
 	return webs, nil
 }
@@ -257,7 +257,7 @@ func sameRD(a, b map[Reg]map[int]bool) bool {
 }
 
 // pin decides whether the web keeps its register, and measures its views.
-func (w *Web) pin() {
+func (w *Web) pin(t *target) {
 	for _, d := range w.Defs {
 		if d.Instr == nil {
 			w.Pinned, w.Why = true, "holds a value at entry"
@@ -285,7 +285,7 @@ func (w *Web) pin() {
 	if len(w.Uses) == 0 && !w.Pinned {
 		w.Pinned, w.Why = true, "written and never read (a restore or a clobber)"
 	}
-	if reserved(w.Reg) && !w.Pinned {
+	if t.reserved(w.Reg) && !w.Pinned {
 		w.Pinned, w.Why = true, "a reserved register"
 	}
 }
