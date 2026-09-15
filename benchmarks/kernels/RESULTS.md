@@ -462,3 +462,69 @@ next item for this shape.
 (bit-exact against its oracle); it is an emitter, not a kernel, and has
 no timing.
 
+## Arrays as values, 2026-09-16
+
+Owned arrays of scalars now cross the native boundary as values
+(docs/spec/94-assembler.md §9 "Arrays as values"), which moves the whole
+SHA-256 path of the dbs frame scan — `sha256_rounds`, `sha256_compress`,
+`sha256_block`, `sha256_compress_view`, `sha256_init`, `sha256_update`,
+`sha256_final` — from the C backend to the native lane: the scan's
+`oak build -native` leaves 74 bodies to C where it left 89, the chain
+hash agrees, and every array-valued body runs under the trusted verdict
+(the verifier stops at a result returned through memory, arrays as
+records). The scan itself got slower, not faster: interleaved with the
+C build under a loaded machine (the compiler suites running), the native
+binary scanned the 64 MiB segment in 187–353 ms against C's 99–122 ms,
+where the C-hashed native binary before this change stood at 131.7 ms
+under the pending loop-invariant work. The reason is in the dump of
+`sha256_rounds`, and it is codegen, not the feature. Each `rotr32(x,
+u32(7))` — `(x >> n) | (x << (u32(32) - n))` inlined with a literal `n` —
+is eight instructions: `lsr w9, w3, #7`, then `mov w10, w3; movz w11,
+#32; sub w11, w11, #7; cmp w11, #32; b.hs trap; lsl w10, w10, w11; orr
+w5, w9, w10`, because `u32(32) - u32(7)` is not folded (the folder covers
+`+` and `*`), so the left shift takes a variable amount with its trap
+guard. Clang emits one `ror w5, w3, #7`. Six rotates per round, 64
+rounds per block, a million blocks: the difference alone is the gap. The
+message-schedule loop also recomputes `add x10, sp, #80` before each of
+its five element accesses and guards `w[i - u32(15)]` under `i < 64`
+without a lower bound for `i`, the round loop rebuilds `adrl x10,
+data_SHA256_K; add x12, x10, #0` each iteration and rotates eight
+working variables through seven `mov`s, and the 256-byte copy of
+`w_in` is 32 `ldr`/`str` pairs through one register. In order: fold `-`
+and recognize the rotate as `ror` (the next increment), the loop
+invariants (pending, PR #471) for the frame and table addresses, a lower
+bound for the induction variable in the checker so the schedule's back
+references need no guard, pair copies for array values.
+
+## Rotates, 2026-09-16
+
+`rotr32(x, u32(7))` inlined is one `ror w5, w3, #7` (docs/spec/94-assembler.md
+§9 "Rotates"); the dbs frame scan's native build carries 46 of them, the
+SHA-256 round loop is 55 instructions where it was 91, and its six
+variable-shift trap guards are gone. The scan did not move (interleaved
+with the C build under load, 232–273 ms against 110–137 ms), and the
+profile says why: on this machine the rounds are not on the path. Both
+builds dispatch the block compression to the FEAT_SHA256 unit, and both
+spend their time in `sha256_update` — the tail loop that feeds one byte at
+a time into the partial block, which after the 32-byte chain leaves
+`filled` nonzero takes every payload byte (the source's bulk path only
+runs from an empty block; a realignment fast path is the library's fix,
+not the compiler's). Read side by side (`sample` over a twenty-scan loop,
+`dbs-loop-native-sample.txt` and `dbs-loop-c-sample.txt`), clang's byte
+loop is ten instructions — the `filled` load, its guard, `ldrb`/`strb`,
+the increment stored back, `cmp #64; b.ne` — and the native lane's is
+fifteen: the increment's result is reloaded from its slot after the store
+(`str w9, [sp, #304]; ldr w9, [sp, #304]`), the `== 64` test is `cmp;
+cset; cbz` where a compare-and-branch would do, and the block's frame
+address is rebuilt each iteration (the pending loop invariants take
+that one). Per 64 bytes the native lane then copies `next.h` and
+`next.block` into temps (forty `ldr`/`str`), calls `sha256_compress`,
+which calls `sha256_block`, which copies `h` again before the unit runs,
+and copies the result back twice; clang inlines the chain and moves the
+same bytes as `ldp`/`stp` of `q` registers, twenty instructions in all,
+building `next` in the caller's result area so no copy remains at the
+return. That is the order of the next increments: the slot reload and
+the Bool compare in the byte loop, the result built in the `x8` area,
+by-reference arguments passed as the caller's own storage when the
+callee reads them in place, and pair copies for aggregates.
+

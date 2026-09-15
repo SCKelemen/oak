@@ -51,6 +51,7 @@ import Oak.CInterop
 import Oak.Simd
 import Oak.Uninterpreted
 import Oak.IntegerDivision
+import Oak.StrengthReduction
 import Oak.KnownBits
 import Oak.NeonSemantics
 import Oak.Monomorphization
@@ -181,3 +182,4 @@ import Oak.SolverLaws
 import Oak.Tseitin
 import Oak.RVWMO
 import Oak.Reduction
+import Oak.ArrayValues

@@ -265,7 +265,14 @@ func (x *pathExecutor) stepRV64(instr Instruction, state *symbolicState) (string
 			// (x << 32) >> (32 - s) is that zero extension shifted by s
 			// (Oak.RiscV.widened_scale): GCC's fused zero-extend-and-scale
 			// of an index, folded to the element shape `idx << s`.
-			low := zeroExtend(truncate(l.left, 32), 64)
+			// The fold to x's own term holds when x's upper half is known
+			// clear (a 32-bit symbol: the length as bound, a normalized
+			// copy); otherwise the low half is x masked — a loop's fresh
+			// 64-bit symbol may hold a canonical (sign-extended) u32.
+			low := binaryTerm("and", l.left, constTerm(mask(32), 64))
+			if upperClear(l.left, x.declared) {
+				low = zeroExtend(truncate(l.left, 32), 64)
+			}
 			if count < 32 {
 				low = binaryTerm("shl", low, constTerm(uint64(32-count), 64))
 			}

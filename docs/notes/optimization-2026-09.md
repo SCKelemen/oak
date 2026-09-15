@@ -121,47 +121,102 @@ and none of the others; Rust's borrow rules give LLVM `noalias`, which is
 the second row alone. That is the whole of the information advantage, and
 it is why "at least as fast" is the floor and not the ceiling.
 
+## The layers (2026-09-15)
+
+The system is three layers, each checked against its input
+(`90-backend.md` §16). Layer A rewrites the checked body once for every
+lane, each rewrite decided per site by the bit-level decider or backed
+by a Lean law, and refused otherwise (`94-assembler.md` §9.ag;
+`nativegen/rewrite.go`): strength reduction moved here from the AArch64
+emitter and now reaches RV64; helper expansion and reduction unrolling
+sit on the same footing with their obligations named. Layer B lowers and
+optimizes per ISA under the seam checker and the verifier, today as a
+candidate search over the lane's transforms
+(`optimizer-search-2026-09.md`, another session's work). Layer C is
+per-processor cost data for layer B's selection and scheduling, still to
+come. The chain: source equals rewritten body (A), rewritten body equals
+instructions (B), instructions mean what Arm's ASL and the RISC-V Sail
+export say (the assembler's proofs); `-verified` demands all of it.
+
 ## The program, in measured order
 
 Each increment names its gap, its gate, and its measurement; none lands
 without the measurement rerun on the kernels it targets and the verdict
 column unchanged or improved.
 
-1. **Strength reduction of constant arithmetic** (AArch64; landed
-   2026-09-15, `94-assembler.md` §9.ac). A multiplication by a power of
+1. **Strength reduction of constant arithmetic** (landed 2026-09-15,
+   `94-assembler.md` §9.ac, then §9.ag). A multiplication by a power of
    two is a shift, an unsigned division or remainder by one a shift or a
-   mask, a division by a nonzero constant loses its zero test. Gate: the
-   verifier's existing models (the Oak side already reads these as
-   shifts and masks), with fallback to the plain form when a body would
-   prove less. Target: `search`, `page_probe` (1.8–1.9×). Landed at the
-   instruction level — `search`'s loop three instructions shorter and
-   without the divide, `page_probe` without its three divides and two
-   multiplies — with the timing rows deferred to a quiet host.
-2. **Vector locals in registers across calls**, then a liveness-based
-   allocator for the flattened kernels: the thirty-two vector registers
-   hold a flattened kernel's forty vector locals only with liveness.
-   Target: UTF-8 (5×), then inlining pays instead of hurting. (Scalar
-   locals already live in callee-saved registers across calls.)
-3. **Idioms the verifier can already equate**: a little-endian word
+   mask, a division by a nonzero constant loses its zero test. First in
+   the AArch64 emitter; since layer A (§9.ag) the power-of-two sites are a
+   body rewrite on every lane, each decided at the bit level before it
+   applies, proposed by the `strength-reduce` transform of the candidate
+   search, the plain body the identity. Read off the kernels: `search`'s
+   loop three instructions shorter and without the divide, `page_probe`
+   without its three divides and two multiplies; timing rows deferred to
+   a quiet host.
+2. **Vector locals in registers across calls** (landed 2026-09-15,
+   `94-assembler.md` §9.ad): homes in v16–v31 saved around a call only
+   when live after it; the checker now forgets v16–v31 at a call (a gap
+   closed) and the verifier reloads a saved vector lane for lane. Read
+   off the fixture, not the kernels: the helper expansion has flattened
+   every calling vector body in the kernel package, so the row that
+   remains is the flattened one — forty vector locals against
+   thirty-two registers, where the leaf path hands out twenty homes and
+   the rest spill. The next step is therefore **a liveness-based
+   allocator for leaves**: registers reused across disjoint live ranges
+   (the last-use release exists; the pool must be sized by simultaneous
+   liveness, not by declaration count) and spills chosen by use count.
+   Target: UTF-8 (5×), then inlining pays instead of hurting. **Also landed 2026-09-16
+(`94-assembler.md` §9, forty-seventh increment):** the flattened
+validator copied every vector operand into a scratch and every result
+back — fifty `orr`s — because the vector path had none of the in-place
+reads and result retargeting the scalar path has; with them and literal
+splats as `movi`, the body is 330 lines from 611 and the validator 1.2×
+the C backend from 1.65× in one alternated run. The five spilled locals
+are the allocator's case above.
+3. **A leaf's vector locals in the argument registers** (landed
+   2026-09-15, `94-assembler.md` §9.af): v1–v7 past the vector
+   parameters as homes, the scalar leaf scheme for the vector file. The
+   validator's loop goes from forty q-register frame accesses to none,
+   its body from forty-one to one, both bodies still proven. The
+   liveness allocator proper — registers reused across disjoint live
+   ranges beyond the last-use release, spills chosen by use count — is
+   still ahead for bodies wider than twenty-seven vector locals; the
+   validator no longer needs it. Target: UTF-8 (5×) measured on a quiet
+   host, then inlining pays instead of hurting.
+4. **Idioms the verifier can already equate**: a little-endian word
    assembled from consecutive guarded byte reads is one load under one
    guard (the verifier's memory model gains reads wider than the element;
    `asm/verify.go` refuses a width mismatch today); constant-offset
    guards under a proven length fact are redundant (extent propositions
    at the seam, row 7). Target: `crc32c` (5.7×) and every codec's word
    reads.
-4. **Reductions unrolled with independent accumulators** under a declared
+5. **Reductions unrolled with independent accumulators** under a declared
    associativity law (row 5) — integer `+` and `|`, `&`, `^`, `max`,
    `min` have it by the language; floats never do. Target: `sum`, `dot`
    (3.2–3.4×). Gate: the verifier's loop invariants over the unrolled
    shape; where it cannot yet couple two loop shapes, the fallback is the
    scalar loop, and the verifier's reach is the next item.
-5. **Non-aliasing to the C backend** as `restrict` on span parameters and
+6. **Non-aliasing to the C backend** as `restrict` on span parameters and
    the local pointers loaded from them, alignment facts as
    `__builtin_assume_aligned`, refinements and extents as
    `__builtin_assume` at loop headers: the C backend "a real backend"
    (`performance.md` §9). Measured by `-opt 2` before and after on the
-   kernels; the C compiler's vectorizer is the consumer.
-6. **Scheduling and selection** for the two lanes' pipelines once the
+   kernels; the C compiler's vectorizer is the consumer. **Measured
+   2026-09-16 before landing, and found neutral on clang 21:** two store
+   loops over a span and a view (`dst[i] = dst[i] + src[i] * k` over
+   `u32`, `dst[i] = src[i] ^ k` over bytes) vectorize identically with
+   and without `restrict` base pointers (`-Rpass=loop-vectorize`: width
+   4×4 and 16×4 both ways) and time the same within noise (0.10–0.15 and
+   0.016–0.026 ns per element, alternated), because clang versions the
+   loop on a runtime overlap check whose cost is a compare per call. The
+   `restrict` emission is therefore not landed; the alignment and extent
+   assumptions wait for a loop where the C compiler demonstrably peels
+   or checks what Oak has proved. The native lane is where the aliasing
+   fact pays (row 2's consumer is the verifier's store log), not the C
+   compiler.
+7. **Scheduling and selection** for the two lanes' pipelines once the
    allocator exists: load latency hidden across the loop body, `madd`
    and `csel` forms, conditional compares.
 
