@@ -178,6 +178,131 @@ theorem sum_guard_slack (len i K k : Nat) (hguard : i + K ≤ len) (hk : k < K) 
 theorem index_under_equal_len (i la lb : Nat) (hi : i < la) (heq : la = lb) : i < lb := by
   omega
 
+/-! ### Bounds through arithmetic (asm/bounds_arith.go, docs/spec/94-assembler.md §7)
+
+The checker follows a proven bound through the arithmetic between the
+guard and the access: the binary search midpoint, a bound narrowed by a
+copy, an index scaled back to the units of a length divided by a power of
+two. Each rule is one of the lemmas below; the register values are
+naturals below `2^32`, and each lemma's conclusion is below its
+hypotheses' bound, so none of the operations wraps. -/
+
+/-- **The midpoint** (`midFact`): `sub wT, wHi, wLo` under `wLo < wHi`,
+    `lsr wT, wT, #1`, `add wMid, wLo, wT` — `lo + (hi - lo) / 2 < hi`, so
+    the element at the midpoint is below the bound `hi` is. The subtraction
+    is exact under `lo < hi` and the sum is below `hi`, so neither wraps. -/
+theorem midpoint_below (lo hi : Nat) (h : lo < hi) : lo + (hi - lo) / 2 < hi := by
+  omega
+
+/-- Halving more than once keeps the midpoint below `hi`. -/
+theorem midpoint_below_shift (lo hi k : Nat) (h : lo < hi) (hk : 1 ≤ k) :
+    lo + (hi - lo) / 2 ^ k < hi := by
+  have h2 : 2 ≤ 2 ^ k := by
+    have := Nat.pow_le_pow_right (show 2 > 0 by decide) hk
+    rwa [Nat.pow_one] at this
+  have hdiv : (hi - lo) / 2 ^ k ≤ (hi - lo) / 2 := Nat.div_le_div_left h2 (by decide)
+  omega
+
+/-- **The narrowing copy** (`upperFact`): `mov wHi, wMid` under `wMid < wHi`
+    with `wHi ≤ len` leaves the new `hi` at most `len`. -/
+theorem narrowed_upper (m h len : Nat) (hm : m < h) (hh : h ≤ len) : m ≤ len := by
+  omega
+
+/-- **An index under an upper bound**: guarded below a register that is at
+    most the length, the index is below the length — the access rule's
+    reading of an upper chain (`checker.boundsLen`). -/
+theorem index_under_upper (i b len : Nat) (hi : i < b) (hb : b ≤ len) : i < len := by
+  omega
+
+/-- An upper chain composes: `r ≤ s >>> a` and `s ≤ t >>> b` give
+    `r ≤ t >>> (a + b)` (`checker.resolveUpper` sums the shifts). -/
+theorem upper_chain (r s t a b : Nat) (hr : r ≤ s / 2 ^ a) (hs : s ≤ t / 2 ^ b) :
+    r ≤ t / 2 ^ (a + b) := by
+  have h1 : s / 2 ^ a ≤ (t / 2 ^ b) / 2 ^ a := Nat.div_le_div_right hs
+  rw [Nat.div_div_eq_div_mul, ← Nat.pow_add, Nat.add_comm] at h1
+  omega
+
+/-- **The scaled index** (`lsl wD, wI, #k`): under `wI < wB`, `wB ≤ len / 2^s`,
+    and `k ≤ s`, the `2^k` elements from `wI · 2^k` lie inside the span —
+    the slack fact `wD + 2^k ≤ len` — and `wI · 2^k` is below `len`, so the
+    32-bit shift does not wrap. -/
+theorem shifted_index_slack (i b len k s : Nat) (hi : i < b) (hb : b ≤ len / 2 ^ s) (hk : k ≤ s) :
+    i * 2 ^ k + 2 ^ k ≤ len := by
+  have h1 : (i + 1) * 2 ^ k ≤ b * 2 ^ k := Nat.mul_le_mul_right _ hi
+  have h2 : b * 2 ^ k ≤ b * 2 ^ s := Nat.mul_le_mul_left b (Nat.pow_le_pow_right (show 2 > 0 by decide) hk)
+  have h3 : b * 2 ^ s ≤ (len / 2 ^ s) * 2 ^ s := Nat.mul_le_mul_right _ hb
+  have h4 : (len / 2 ^ s) * 2 ^ s ≤ len := Nat.div_mul_le_self len (2 ^ s)
+  have h5 : (i + 1) * 2 ^ k = i * 2 ^ k + 2 ^ k := by rw [Nat.add_mul, Nat.one_mul]
+  omega
+
+/-- A slack fact carried through `add wJ, wD, #j` with `j < 2^k` admits the
+    element `wD + j` (the rule `add` carries, restated for the scaled index). -/
+theorem shifted_index_element (i len k j : Nat) (hslack : i * 2 ^ k + 2 ^ k ≤ len) (hj : j < 2 ^ k) :
+    i * 2 ^ k + j < len := by
+  omega
+
+/-! ### If-conversion (nativegen/select.go, docs/spec/94-assembler.md §9)
+
+A conditional chain over one comparison lowers as one compare and a select
+per assigned variable. The comparison has three outcomes; an operator
+accepts a set of them; an arm fires on the outcomes its operator accepts
+less those the arms before it accept, so the arms' conditions are disjoint
+and the nested selects, from the last arm to the first, equal the first
+matching arm. The checker's rule: a select of two bounded values is bounded. -/
+
+/-- The outcomes of one integer comparison: below, equal, above. -/
+inductive Outcome where
+  | below | equal | above
+  deriving DecidableEq
+
+/-- An operator accepts a set of outcomes; an arm carries its acceptance
+    and the value it assigns. -/
+abbrev Accepts := Outcome → Bool
+
+/-- The chain's meaning: the value of the first arm whose operator accepts
+    the outcome, or the variable's old value. -/
+def firstArm (arms : List (Accepts × Nat)) (o : Outcome) (old : Nat) : Nat :=
+  match arms with
+  | [] => old
+  | (m, v) :: rest => if m o then v else firstArm rest o old
+
+/-- An arm's exclusive condition: its operator's outcomes less the earlier
+    arms' (`outcomeMasks[op] &^ seen`). -/
+def exclusive (seen m : Accepts) (o : Outcome) : Bool := m o && !seen o
+
+/-- The lowered chain: `csel` under each arm's exclusive condition, the
+    first arm outermost, the old value innermost. -/
+def selectChain (arms : List (Accepts × Nat)) (seen : Accepts) (o : Outcome) (old : Nat) : Nat :=
+  match arms with
+  | [] => old
+  | (m, v) :: rest => if exclusive seen m o then v else selectChain rest (fun o' => seen o' || m o') o old
+
+/-- **If-conversion is the chain**: with nothing seen before the first
+    arm, the selects equal the first matching arm. -/
+theorem selectChain_firstArm (arms : List (Accepts × Nat)) (seen : Accepts) (o : Outcome) (old : Nat)
+    (h : seen o = false) : selectChain arms seen o old = firstArm arms o old := by
+  induction arms generalizing seen with
+  | nil => rfl
+  | cons a rest ih =>
+    obtain ⟨m, v⟩ := a
+    simp only [selectChain, firstArm, exclusive, h, Bool.not_false, Bool.and_true]
+    by_cases hm : m o = true
+    · simp [hm]
+    · simp only [Bool.not_eq_true] at hm
+      simp only [hm, Bool.false_eq_true, ↓reduceIte]
+      exact ih _ (by simp [h, hm])
+
+/-- **A select of bounded values is bounded** (the checker's `csel` rule,
+    asm/bounds_arith.go): both sources at most the referent, the result is. -/
+theorem select_upper (c : Bool) (a b bound : Nat) (ha : a ≤ bound) (hb : b ≤ bound) :
+    (if c then a else b) ≤ bound := by
+  cases c <;> simp [ha, hb]
+
+/-- The same for an index fact: both sources below the bound. -/
+theorem select_index (c : Bool) (a b bound : Nat) (ha : a < bound) (hb : b < bound) :
+    (if c then a else b) < bound := by
+  cases c <;> simp [ha, hb]
+
 /-- Every byte of an admitted span access lies inside the span. -/
 theorem span_access_bytes (elem minLen len off size b : Nat)
     (hguard : minLen ≤ len) (hacc : SpanAccessOk elem minLen off size)

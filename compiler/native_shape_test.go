@@ -190,3 +190,97 @@ func TestNativeShapesRV64WordFusion(t *testing.T) {
 	}
 	t.Fatal("word_at was not lowered on the rv64 lane")
 }
+
+// Bounds through arithmetic (docs/spec/94-assembler.md §7; asm/bounds_arith.go):
+// the binary search and the page probe read their keys with no element
+// guard of their own — the midpoint is below `hi`, `hi` stays at most the
+// length (or the length shifted), and the scaled page index is inside the
+// span — so no `b.hs` to a trap remains in either unit.
+const nativeSearchProgram = `search: (keys: []u64, probes: []u64): u32 {
+  hits: u32 = 0
+  p: u32 = 0
+  while p < len(probes) {
+    target: u64 = probes[p]
+    lo: u32 = 0
+    hi: u32 = len(keys)
+    found: Bool = false
+    while lo < hi && !found {
+      mid: u32 = lo + (hi - lo) / u32(2)
+      k: u64 = keys[mid]
+      k == target ? { found = true }
+      | k < target ? { lo = mid + u32(1) }
+      | { hi = mid }
+    }
+    found ? { hits = hits + u32(1) }
+    p = p + u32(1)
+  }
+  hits
+}
+
+page_probe: (keys: []u64, probes: []u64): u32 {
+  hits: u32 = 0
+  pages: u32 = len(keys) / u32(512)
+  p: u32 = 0
+  while pages > u32(0) && p < len(probes) {
+    target: u64 = probes[p]
+    lo: u32 = 0
+    hi: u32 = pages
+    while lo < hi {
+      mid: u32 = lo + (hi - lo) / u32(2)
+      keys[mid * u32(512)] <= target ? { lo = mid + u32(1) } | { hi = mid }
+    }
+    lo > u32(0) ? {
+      page: []u64 = subslice(keys, (lo - u32(1)) * u32(512), u32(512))
+      a: u32 = 0
+      b: u32 = 512
+      found: Bool = false
+      while a < b && !found {
+        m: u32 = a + (b - a) / u32(2)
+        k: u64 = page[m]
+        k == target ? { found = true }
+        | k < target ? { a = m + u32(1) }
+        | { b = m }
+      }
+      found ? { hits = hits + u32(1) }
+    }
+    p = p + u32(1)
+  }
+  hits
+}
+
+main: (): i32 {
+  keys: [8]u64 = [8]u64{ 1, 2, 3, 5, 8, 13, 21, 34 }
+  search(view(&keys), view(&keys)) == u32(8) ? 42 | 1
+}
+`
+
+func TestNativeShapesSearchElidesGuards(t *testing.T) {
+	model, err := New().WithSource("search.oak", nativeSearchProgram).WithNativeBodies().WithNativeAsm().SemanticModel().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	units := map[string]*asm.Function{}
+	for _, fn := range model.AsmFunctions {
+		units[fn.Name] = fn
+	}
+	for _, name := range []string{"search", "page_probe"} {
+		fn, ok := units[name]
+		if !ok {
+			t.Fatalf("%s was not lowered natively", name)
+		}
+		exits := 0
+		for _, item := range fn.Items {
+			ins, isIns := item.(asm.Instruction)
+			if !isIns || ins.Mnemonic != "b." || ins.Cond != "hs" {
+				continue
+			}
+			exits++
+			if target, isSym := ins.Operands[0].(asm.Symbol); isSym && strings.HasPrefix(target.Name, "trap") {
+				t.Errorf("%s keeps an element guard the checker's facts discharge: b.hs %s at line %d", name, target.Name, ins.Line)
+			}
+		}
+		if exits == 0 {
+			t.Errorf("%s must still leave its loops by `b.hs` (the loop guards stay)", name)
+		}
+	}
+}

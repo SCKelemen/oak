@@ -269,3 +269,196 @@ items of the program — the reduction, the bounds facts through arithmetic,
 and the call chain — plus the array-parameter bodies (`sha256`, `blake3`)
 that the native lane does not lower yet and the C shell runs.
 
+## Bounds through arithmetic, 2026-09-16
+
+`search` and `page_probe` now elide every element guard (the midpoint
+below `hi`, `hi = mid` at most the length, `mid * 512` inside the span
+under `mid < len / 512`; docs/spec/94-assembler.md §7). The two kernels
+re-measured under the same load (`results/m-series-2026-09-16-bounds.json`,
+best samples, ns per operation):
+
+| Kernel | C backend | oak-native | native / C | Rust |
+| --- | ---: | ---: | ---: | ---: |
+| search | 7,483,333 | 11,672,000 | 1.56× | 8,161,264 |
+| page_probe | 6,923,000 | 13,298,667 | 1.92× | 8,029,611 |
+
+Reading: the guards were not the cost. A guard that never traps is a
+compare and a branch the predictor learns; the binary search is bound by
+the dependent load and by its branch shape, and the native inner loop
+carries five branches per probe step against clang's two:
+
+```
+loop_6:                          ; the native inner loop, guards elided
+  cmp w7, w23 ; b.hs done_7      ; lo < hi
+  cbnz w24, done_7               ; !found — tested every iteration
+  sub/lsr/add → w25              ; mid
+  ldr x26, [x19, w25, uxtw #3]
+  cmp x26, x6 ; b.ne else_8
+  movz w24, #1 ; b endif_9       ; found = true, then back to the header
+else_8:
+  b.hs else_10                   ; k < target
+  add w7, w25, #1 ; b endif_11   ; lo = mid + 1
+else_10:
+  mov w23, w25                   ; hi = mid
+endif_11: endif_9:
+  b loop_6
+```
+
+Clang lowers the same body with a `csel` pair for the two-way assignment
+and leaves the loop directly where `found` is set. The item ahead of
+`search` and `page_probe` is therefore the branch shape, three
+optimizations LLVM's middle end performs: **if-conversion** of a
+conditional chain whose arms each assign a variable and nothing else
+(`csel`, reusing the guard's compare — the flags survive the arms), **jump
+threading** of an arm that sets a flag the loop condition tests next
+(`found = true` leaves the loop), and **branch chaining** (an unconditional
+branch to a label followed by an unconditional branch retargets; the
+chained `b endif_11; endif_11: endif_9: b loop_6` is one branch). The
+bounds facts stay necessary: they are what makes the guard-free form
+admissible, and the if-converted arms must keep the facts they had.
+
+## If-conversion, 2026-09-16
+
+The conditional chains of both search kernels lower as one compare and a
+select per variable (docs/spec/94-assembler.md §9 "If-conversion"): the
+binary search's inner loop is thirteen instructions with the header's two
+exits and the back edge as its only branches, the page probe's outer loop
+twelve with one exit. Two runs under a load average near 70
+(`results/m-series-2026-09-16-select-a.json`, `-b.json`; best samples, ns
+per operation; medians were up to twice the bests and are not read):
+
+| Kernel | C backend | oak-native | native / C | Rust |
+| --- | ---: | ---: | ---: | ---: |
+| search (a) | 7,483,333 (prior run) | 7,186,667 | 0.96× | 7,532,056 |
+| search (b) | 9,881,333 | 8,705,667 | 0.88× | 9,549,653 |
+| page_probe (a) | 6,964,000 | 11,362,667 | 1.63× | 9,982,569 |
+| page_probe (b) | 7,188,667 | 12,639,667 | 1.76× | 9,004,903 |
+
+Reading: `search` went from 1.56× of clang to parity or ahead, and ahead
+of the hand-written Rust, once its inner loop had no branch to predict;
+the guards' elision (the previous section) was the precondition, the
+branch shape the cost. `page_probe` remains 1.6–1.8×: its inner loop
+still tests the `found` flag at the header every step (`cbnz`), builds
+the constant `1` for the flag inside the loop (`movz w10, #1` per
+iteration, a loop-invariant clang hoists), and copies the midpoint before
+scaling it (`mov w10, w23; lsl w10, w10, #9` where `lsl w10, w23, #9`
+serves); and each probe's page walk touches eleven cache lines four
+kilobytes apart, a memory cost both backends pay. Next in this kernel's
+order: loop-invariant constants hoisted to the loop's preheader, the
+copy-before-shift fused, and the exit flag once the verifier's loop
+summary admits a break path.
+
+## Verified reduction unrolling, 2026-09-16
+
+`bench_sum` is the first kernel rewritten before lowering under a proof of
+the rewrite (docs/spec/94-assembler.md §9 "Reductions";
+`spec/lean/Oak/Reduction.lean`): the plain integer reduction becomes a
+four-accumulator main loop, a remainder loop, and the combine, the
+verifier proving the assembly against the rewritten body (two loops
+coupled inductively, all five element reads elided under the checker's
+facts) and Lean proving the rewrite equal to the sequential sum. Run
+under a load average near 30 (`results/m-series-2026-09-16-reduction.json`,
+best samples, ns per operation):
+
+| Kernel | C backend | oak-native | native / C | Rust |
+| --- | ---: | ---: | ---: | ---: |
+| sum | 114,000 | 180,333 | 1.58× | 122,167 |
+| dot | 875,667 | 971,333 | 1.11× | 820,667 |
+
+Reading: `sum` went from 3.20× of clang to 1.58×. The main loop is
+nineteen instructions per four elements — the header recomputes `len(v)
+- 4` each iteration (a loop-invariant clang hoists), each of the last
+three loads is preceded by its own index add (`add w10, w3, #1; ldr x10,
+[x19, w10, uxtw #3]`), and the four accumulators are four `add`s where
+clang's NEON `add v.2d` does two lanes per instruction. Next in this
+kernel's order: the element address formed once per block (`add xA, x19,
+w3, uxtw #3`) with the four loads as two `ldp` pairs off it — the
+checker already admits a wider access through a region a slack guard
+marked four lanes deep — then the invariant hoisted out of the header,
+and the vector form of the same rewrite (the `simd` types the language
+has) once the verifier couples a lane sum.
+
+## Select forms, 2026-09-16
+
+The three costs named above for `page_probe` are gone from its loops
+(docs/spec/94-assembler.md §9 "If-conversion"): `found = true` is `csinc
+w26, w26, wzr, ne` with no constant built in the loop, `hits = hits +
+u32(1)` under the Bool is `cmp w26, #0; cinc w4, w4, ne` with no branch,
+and `mid * u32(512)` is `lsl w10, w23, #9` reading the midpoint where it
+lies. The inner loop is thirteen instructions with the header's two exits
+and the back edge as its only branches, the outer twelve with one exit.
+The run (`results/m-series-2026-09-16-select-forms.json`) fell under a
+load average above 80 — `page_probe`'s C row itself moved from 7.0 to
+10.3 million ns — so its ratios are not read; the instruction shapes are
+the evidence, and the kernels are re-measured with the next quiet run.
+`search` stayed at parity with clang (7.97 against 7.36 million ns, best
+samples) with the hand-written Rust at 5.98 in this run.
+## Pair loads, 2026-09-16
+
+The unrolled reduction's four loads are two `ldp` pairs off one block
+address, and the main loop's header reads the span's length register in
+place (docs/spec/94-assembler.md §9 "Pair loads"): `bench_sum`'s main
+loop is twelve instructions per four elements, proven as before (the
+verifier reads a pair load as two loads, in a loop body too). Run under
+a load average between 40 and 75 (`results/m-series-2026-09-16-pairs.json`,
+best samples, ns per operation):
+
+| Kernel | C backend | oak-native | native / C | Rust |
+| --- | ---: | ---: | ---: | ---: |
+| sum | 221,333 | 200,000 | 0.90× | 116,139 |
+| dot | 898,000 | 1,028,000 | 1.14× | 910,250 |
+| tiled | 204,333 | 217,333 | 1.06× | 253,167 |
+
+Reading: the run is noisier than the previous one (the C row itself
+moved), so the ratio is read against the shape: `sum` is at twelve
+instructions per four elements where clang's NEON loop is about six per
+four (two `ldp q`, two `add v.2d` per eight elements); the remaining gap
+is the vector form of the same reduction. `tiled` and `dot` are
+unchanged by this increment (their loads are float lanes, which the
+pair pass leaves alone).
+
+## The pilots under the native backend, 2026-09-16
+
+The three test systems (github.com/SCKelemen/dbs, os, ml) built with `oak
+build -native` and measured against their own baselines, on the machine
+carrying a load average between 60 and 180 from other work (ratios within
+one run are comparable; runs are not).
+
+**dbs, frame scan** (`tools/bench-frame-scan/run.sh`: read and validate
+every frame of a 64 MiB segment, CRC-32C and the SHA-256 chain; the Zig
+engine is 1.00×). At the start of the day the native build did not link
+(`out[0] = time.time_source_native()`, #469) and, once it did, ran at 208
+ms against the C backend's 122. With the inliner reaching an
+index-assignment's target (#470) and the loop-invariant pass (#471):
+
+| Backend | min ms | ns per byte | vs Zig |
+| --- | ---: | ---: | ---: |
+| Oak, C backend under clang | 112.0 | 1.78 | 0.44× |
+| Oak, native | 131.7 | 2.26 | 0.76× |
+| Zig | 170.0–252.7 | | 1.00× |
+| Go | 181.4–195.7 | | |
+
+The native scan is within 18 percent of the C backend and ahead of Zig
+and Go; the two rows ran minutes apart, so the ratio to Zig differs
+between them.
+
+**os, stage-2 page tables** (`zig build bench-stage2-native
+-Doakc=…`): the decoder cycle's cost was `alloc_table`'s page-zeroing
+loop (sampled at 87 percent of the cycle), 2048 iterations of `s[dom]
+.pages[cell(alloc_idx, j)] = u64(0)`, lowered as 35 instructions with a
+call to `cell` per element: 6.7× Zig where the C backend runs 0.57×. The
+inliner fix removed the call (22 per element), the loop-invariant pass the
+global's address and value, the stride constant, the element address and
+its guard (9 per element, `str xzr` the store): 1.57× Zig at the last
+measurement (875 against 556 ns per cycle), the C backend 0.43×. The
+pilot's `translate` benchmark, a different loop, runs 2× the C backend
+natively (7.3 against 4.8 ns per op under this load) and is the next
+thing to sample. Clang
+zeroes the page in five instructions per element and, with the store
+vectorized, fewer; the store loop's unrolling with `stp` pairs is the
+next item for this shape.
+
+**ml, emit pilot** (`run.sh`): passes with every compiler of the day
+(bit-exact against its oracle); it is an emitter, not a kernel, and has
+no timing.
+

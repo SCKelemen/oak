@@ -92,6 +92,7 @@ var instructionTable = map[string]instructionSpec{
 	"cmp":   {forms: []form{{opX, opX}, {opW, opW}, {opX, opImm}, {opW, opImm}}, setsFlags: true, sysregOperand: -1},
 	"csel":  {forms: []form{{opX, opX, opX, opCond}, {opW, opW, opW, opCond}}, readsFlags: true, sysregOperand: -1},
 	"cset":  {forms: []form{{opX, opCond}, {opW, opCond}}, readsFlags: true, sysregOperand: -1},
+	"csinc": {forms: []form{{opX, opX, opX, opCond}, {opW, opW, opW, opCond}}, readsFlags: true, sysregOperand: -1},
 	"ldr":   {forms: []form{{opX, opMem}, {opW, opMem}}, memory: true, sysregOperand: -1},
 	"str":   {forms: []form{{opX, opMem}, {opW, opMem}}, memory: true, sysregOperand: -1},
 	"ldrb":  {forms: []form{{opW, opMem}}, memory: true, sysregOperand: -1},
@@ -229,3 +230,8 @@ func accessBytes(mnemonic string, class operandClass) int64 {
 	}
 	return memorySize(mnemonic, regClass)
 }
+
+// SetsFlags reports whether the AArch64 mnemonic writes NZCV — the
+// generator's if-conversion keeps a compare's flags live across the arm
+// evaluations only when none of them does (nativegen/select.go).
+func SetsFlags(mnemonic string) bool { return instructionTable[mnemonic].setsFlags }

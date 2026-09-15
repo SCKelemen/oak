@@ -1,0 +1,137 @@
+{
+  "schema": "oak-kernels-benchmark-v1",
+  "machine": "arm64",
+  "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+  "cpu": "Apple M4 Max",
+  "oak": "1d5aaa366a7f14c971685f845e7d26942387bec2",
+  "cc": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+  "go": "go version go1.27.1 darwin/arm64",
+  "rustc": "rustc 1.93.0 (254b59607 2026-01-19) (Homebrew)",
+  "c_flags": [
+    "-O3",
+    "-DNDEBUG"
+  ],
+  "rust_flags": [
+    "-O"
+  ],
+  "go_flags": [],
+  "size": 1048576,
+  "rounds": 3,
+  "samples": 5,
+  "core_affinity": "not controlled",
+  "cache_flush": false,
+  "results": [
+    {
+      "impl": "oak",
+      "kernel": "sum",
+      "size": 1048576,
+      "checksum": "0000e8ff7f010000",
+      "ns_per_op_median": 115000.0,
+      "samples": [
+        114000.0,
+        114333.3,
+        115000.0,
+        118333.3,
+        120333.3
+      ]
+    },
+    {
+      "impl": "oak-native",
+      "kernel": "sum",
+      "size": 1048576,
+      "checksum": "0000e8ff7f010000",
+      "ns_per_op_median": 192333.3,
+      "samples": [
+        180333.3,
+        185000.0,
+        192333.3,
+        195000.0,
+        412333.3
+      ]
+    },
+    {
+      "impl": "go",
+      "kernel": "sum",
+      "size": 1048576,
+      "checksum": "0000e8ff7f010000",
+      "ns_per_op_median": 404430.7,
+      "samples": [
+        396903.0,
+        400055.7,
+        404430.7,
+        416500.0,
+        421028.0
+      ]
+    },
+    {
+      "impl": "rust",
+      "kernel": "sum",
+      "size": 1048576,
+      "checksum": "0000e8ff7f010000",
+      "ns_per_op_median": 126264.0,
+      "samples": [
+        122166.7,
+        123680.7,
+        126264.0,
+        140930.3,
+        141958.3
+      ]
+    },
+    {
+      "impl": "oak",
+      "kernel": "dot",
+      "size": 1048576,
+      "checksum": "032c8048",
+      "ns_per_op_median": 877000.0,
+      "samples": [
+        875666.7,
+        876000.0,
+        877000.0,
+        935333.3,
+        1572333.3
+      ]
+    },
+    {
+      "impl": "oak-native",
+      "kernel": "dot",
+      "size": 1048576,
+      "checksum": "032c8048",
+      "ns_per_op_median": 1020333.3,
+      "samples": [
+        971333.3,
+        1018333.3,
+        1020333.3,
+        1064333.3,
+        1167666.7
+      ]
+    },
+    {
+      "impl": "go",
+      "kernel": "dot",
+      "size": 1048576,
+      "checksum": "032c8048",
+      "ns_per_op_median": 1362597.3,
+      "samples": [
+        1247958.3,
+        1306555.7,
+        1362597.3,
+        1380847.3,
+        1420055.3
+      ]
+    },
+    {
+      "impl": "rust",
+      "kernel": "dot",
+      "size": 1048576,
+      "checksum": "032c8048",
+      "ns_per_op_median": 874583.3,
+      "samples": [
+        820666.7,
+        874208.3,
+        874583.3,
+        874986.0,
+        876000.0
+      ]
+    }
+  ]
+}

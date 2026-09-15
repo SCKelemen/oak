@@ -137,9 +137,8 @@ type rvGenerator struct {
 	// zextIdx: for a u32 variable whose `< len(v)` test a construct's
 	// condition compiled as `bgeu z, norm`, the register z holding its
 	// zero-extension — valid through that construct's body and read by
-	// the elided element access (docs/spec/94-assembler.md §9, "Check
-	// elision on the RV64 lane"); captureZext is set while such a
-	// condition is compiled.
+	// the elided element access (docs/spec/94-assembler.md §9.ae);
+	// captureZext is set while such a condition is compiled.
 	zextIdx     map[string]int
 	zextStack   []zextEntry
 	captureZext bool
@@ -189,9 +188,21 @@ func (g *rvGenerator) zextRelease(mark int) {
 	}
 }
 
-func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool, tables map[string]GlobalArray, globals map[string]asm.Global, vector bool, elide bool, guardLines map[int]bool) (*asm.Function, error) {
+func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, tc *typechecker.TypeChecker, softFloat bool, tables map[string]GlobalArray, globals map[string]asm.Global, vector bool, unroll bool, elide bool, guardLines map[int]bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
 		return nil, unsupported("not an ordinary function body")
+	}
+	// The plain integer reductions unrolled (nativegen/reduction.go), as on
+	// the AArch64 lane; the rewritten body is the one the verifier sees.
+	if unrolled, changed := unrollReductions(fn, fn.Body); changed && unroll {
+		expanded := *fn
+		expanded.Body = unrolled
+		if out, err := compileRV64(&expanded, functions, records, adts, constants, tc, softFloat, tables, globals, vector, false, elide, guardLines); err == nil {
+			out.Body = unrolled
+			return out, nil
+		} else if _, outside := err.(Unsupported); !outside {
+			return nil, err
+		}
 	}
 	g := &rvGenerator{generator: generator{fn: fn, tc: tc, functions: functions, slots: map[string]int64{}, types: map[string]scalar{}, spans: map[string]span{}, arrays: map[string]*arrayLocal{}, recordDecls: records, adtDecls: adts, layouts: map[string]*recordLayout{}, records: map[string]*recordLocal{}, recordParams: map[string]*recordParam{}, regs: map[string]int{}, spill: map[int]int64{}, defined: map[int]bool{}, constants: constants, globals: globals, usedGlobals: map[string]asm.Global{}, tables: tables, line: fn.Token.Line, stackParams: map[string]asm.ArgPlace{}}, softFloat: softFloat, twoChunk: map[string]bool{}}
 	g.rvLane = true
@@ -1273,8 +1284,9 @@ var rvBranchWhenFalse = map[string][2]string{
 // the checker's index fact on z (`bgeu idx, len` against a normalized
 // length register, Oak.RiscV.index_guard), and an element access the
 // typechecker proved under this test reads z scaled, with no guard of its
-// own (guardedAddress). Only under elision, and only for `<`: the other
-// operators give the checker nothing to read.
+// own (guardedAddress; docs/spec/94-assembler.md §9.ae). Only under
+// elision, and only for `<`: the other operators give the checker nothing
+// to read.
 func (g *rvGenerator) indexLengthTest(infix *ast.InfixExpression, target string, jumpIfFalse bool) (bool, error) {
 	if !g.elide || !g.captureZext || infix.Operator != "<" {
 		return false, nil
@@ -2493,7 +2505,7 @@ func (g *rvGenerator) guardedAddress(sp span, index ast.Expression, tok *token.T
 	if idxType.isBool || idxType.isFloat || (idxType.signed && idxType.bits != 32) {
 		return 0, unsupported("an element index of type %s (indices are unsigned or i32)", idxType.name)
 	}
-	// Check elision on the RV64 lane (docs/spec/94-assembler.md §9): an
+	// Check elision on the RV64 lane (docs/spec/94-assembler.md §9.ae): an
 	// access the typechecker proved in range, indexed by a variable whose
 	// `< len(v)` test this construct compiled as `bgeu z, norm`
 	// (indexLengthTest), reads z scaled through the base with no guard;
