@@ -115,12 +115,17 @@ func (g *generator) forward(ins asm.Instruction) (asm.Instruction, bool) {
 				g.hold(key, heldSlot{reg: r.Num, wide: wide})
 				return ins, true
 			}
-			if h, ok := g.held[key]; ok && h.wide == wide {
+			if h, ok := g.held[key]; ok && (h.wide == wide || (h.wide && !wide)) {
+				// The word held at the same width, or its low half: a
+				// 32-bit load from a slot a 64-bit register was stored to
+				// reads that register's low word (little-endian).
 				if h.reg == r.Num {
 					return ins, false
 				}
 				g.forget(r.Num)
-				g.hold(key, h)
+				if h.wide == wide {
+					g.hold(key, h)
+				}
 				src := wr(h.reg)
 				if wide {
 					src = xr(h.reg)
