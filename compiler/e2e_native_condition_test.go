@@ -96,6 +96,12 @@ func TestE2ENativeConditionSelection(t *testing.T) {
 		// The remaining movz are the multiplier 3 and the Bool `true`.
 		t.Errorf("no literal should be materialized for a compare: %d; mnemonics: %v", materializedCompares, counts)
 	}
+	if counts["and"] != 1 || counts["lsr"] != 1 {
+		// `b & u8(7)` is one and; `b >> u8(3)` is one lsr with no mask after
+		// either (an unsigned value shifted right, or masked inside its
+		// width, stays normalized).
+		t.Errorf("want one and and one lsr with no normalizing mask, got %d and %d; mnemonics: %v", counts["and"], counts["lsr"], counts)
+	}
 	if cmpImmediates < 5 {
 		// Four literal arms and `arg == u32(31)`.
 		t.Errorf("want the match arms and the equality to compare against immediates, got %d", cmpImmediates)

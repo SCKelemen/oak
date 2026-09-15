@@ -992,6 +992,64 @@ entry to its kernel. `TestE2ENativeSimdKernelVerdicts` asserts both
 proofs; the trace (`OAK_VERIFY_TRACE`) prints each case split, the pruned
 sizes, and whether the sides became one term.
 
+**The literal scanner's kernel (2026-09-15).** `verify_first` of
+`stdlib/literals.oak` — a frame array of the candidate lanes read at the
+outer loop's index, an inner loop over the literals of a bucket calling
+`literal_at`, whose own loop compares bytes — was evidence: the coupling
+search exhausted its budget with the right pairing first in line. Five
+things, found in order by tracing where the diagrams went. **The proof's
+node budget is charged.** Each implication had been bounded by what the
+proof had left, but nothing spent it; every undecided obligation ran
+its full 2M nodes under four orders, and the search went on to refute
+the wrong pairings one diagram at a time. The largest diagram a decision
+built is now taken from the budget, so a search that keeps failing near
+the per-decision budget ends as evidence in a few tries. **Select slots
+interleave with the last block.** Under the grouped orders the element
+reads' variables sat past every parameter's, so `k < starts[j+1] −
+starts[j]` in the inner loop's exit premise had to remember `k` whole
+before it read either element: exponential. The first eight slots now
+interleave with the last block (the data parameters, under the
+control-first orders), and the comparison is linear again. **Selectors
+first.** In `l == 0 ? cand[0] : l == 1 ? cand[1] : … ≠ 0` — the frame
+array read — the index and the lanes are both control parameters to
+`controlParams`; a fifth order (`selectorParams`: what a condition reads
+directly, through nested conditions but never through an arm) interleaves
+the index's bits before the lanes' at every level, so the diagram narrows
+the arms as it reads and stays linear in the lanes, where reading the
+lanes first must remember which is which. **Widths narrowed under the
+premise.** A conjunct `p < 16` over a parameter leaves its bits from the
+fourth up zero wherever the premise holds; the decision reads `p` at four
+bits (`narrowByPremise`) — the implication is unchanged, and an adder over
+the index is copied sixteen times rather than once per value of a word.
+**Conditionals proven by their parts.** The inner loop's `found` after one
+iteration is `literal occurs here ? base + l : found` on both sides, the
+test spelled over the same inputs as the arm; a diagram of the whole
+repeats the test's diagram in every result bit — 250K nodes, thirty-two
+times over. `impliesEqualByArms` proves the conditions equal under the
+premise, then each pair of arms under the premise and the condition (or
+its negation): the parts cost the test once, and the arms are one term.
+The rule proves and never refutes — conditionals on different conditions
+may agree where their arms do — so a part that fails leaves the decision
+to the whole; a mask over a conditional is pushed into its arms first
+(`pushMask`), which is how a narrower side's zero-extension meets the
+wider side arm for arm. Last, a body's **invariant registers** — written
+but left at their header value after one iteration, a spill reloaded —
+are not loop-carried, and their symbols stand for the header value in
+every term of the body: this event's, and those of the loops and calls
+summarized inside it (`substituteAll`), where `loop2.r17` in the callee's
+byte comparison otherwise had no Oak counterpart. With these,
+`verify_first` is **proven** — three nested data-dependent loops coupled
+inductively (`l↔r17`, `found↔r16`, `j↔r14`, the inner `found↔r16`, and
+the callee's `k`, `same` as themselves) in three seconds — alongside
+`longest`; `TestE2ENativeLiteralsVerdicts` asserts both. Left to C in the
+same module: the functions with more than eight vector parameters
+(`classify` and its callers) and, as evidence or trusted, `groups_of`
+(budget), `build` (an expression statement in a loop body),
+`verify_count` (an inner loop summarized per path past the event budget).
+The trace (`OAK_VERIFY_TRACE`) now also prints, for an undecided
+implication, each order's node count and the stage it exceeded at, and
+under `OAK_VERIFY_DIAGNOSE`, walks the largest subterm's diagram sizes (`diagnoseBlast`), a diagram per subterm.
+
 **The floating-point forms (2026-09-14).** `spec/sail/arm_primitives.sail`
 gains Arm's execute bodies for `fadd`/`faddp`, `fsub`, `fmul`, `fmla`/
 `fmls`, `fmin`/`fmax` (the 1985 forms), `fminnm`/`fmaxnm` (2008),
@@ -3635,7 +3693,15 @@ label whose every transfer is that compare's branch and which nothing
 falls through into (`Lane.ReuseFlags`; a refusal re-lowers without the
 reuse). `bench_search`'s inner loop reads `cmp x26, x6; b.ne else; …;
 else: b.hs else2`: 53 instructions from 54, `bench_page_probe` 89 from
-90, verdicts unchanged.
+90, verdicts unchanged. Two more of the same kind: an unsigned value
+shifted right by a constant is not masked after the `lsr` (it stays
+inside its width), and a scalar match whose scrutinee is a variable in a
+register compares that register in every arm instead of a copy
+(`bench_dispatch` 58 from 60, still proven). The per-line fallback keys
+its kept lines by the line the emitted instructions carry — the
+statement's — which is the line a finding names; an access token on a
+later line of a multi-line statement had escaped the first version and
+sent the body to every guard.
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
@@ -4532,3 +4598,99 @@ midpoint to its load, reads one `lsr #1`, and `bench_page_probe` loses
 its three `udiv`, two `mul`, and three zero tests. The timing rows wait
 for a quiet host (`benchmarks/native/README.md`). The end-to-end test is
 `compiler/e2e_native_strength_test.go`.
+
+### 9.ad Proof-guided elision: the guards the checker carries (2026-09-15)
+
+The native lowering elides an element guard the typechecker proved
+(`IndexProven`, §9 "Check elision under the checker's own facts") only
+where the seam checker admits the guardless access from the facts on the
+path; where it refuses, the body is lowered again with every guard. On the
+stdlib-bearing program the checker refused 22 of the 58 bodies the
+typechecker had proven something in, for four reasons the lowered text
+makes exact. Three are closed:
+
+- **A copy carries its guard.** `add wJ, wI, #0` (the lowering's spelling of
+  an index at offset zero) now carries wI's guard to wJ as a `mov` does
+  (`Oak.SpanAlias.idxMeans_preserved`).
+- **The exclusive slack guard.** `sub wT, wL, #K; cmp wI, wT; b.hs trap`
+  — the wrap-free remaining guard `i < len(v) - K` before reads at
+  `i + k`, `k < K` — records the slack fact `wI + K ≤ len`, one element
+  weaker than the guard (`Oak.Assembler.slack_guard_strict`), which
+  `add wJ, wI, #k` then lowers to `wJ + (K - k) ≤ len` as before.
+- **Guards survive a call in callee-saved registers.** A call forgot every
+  guard. An index guard whose index register is callee-saved and whose
+  bound is an immediate or a length some callee-saved register still holds
+  after the call now survives, rebound to that register; so does a slack
+  register in callee-saved registers, and the proven minimum of a span
+  whose base survives. The callee preserves x19–x28 under AAPCS64 (every
+  Oak callee's save and restore is checked), so the guard's registers hold
+  their values and what it says of them still holds
+  (`Oak.SpanAlias.idxMeans_preserved`); the length is a fact about memory
+  no call changes. Loop bodies that call between the exit test and the
+  access (`random_fill`, the json scanners) are the beneficiaries.
+- **A condition materialized, then tested.** The lowering spells `a && b`
+  and `a || b` through a boolean: `cmp wI, wL; cset wB, lo; cbz wB, skip`
+  and the access follows. The checker read guards only off `cmp; b.cond`.
+  It now records the compare's condition on wB at the `cset` (a
+  `condFact`, dying with a write to wB or to either compared register,
+  at labels, and at calls) and reads `cbz wB` as `b.<not cond>` and
+  `cbnz wB` as `b.cond` on that compare — the same facts, the same
+  laws (`Oak.Assembler.cset_cbz`, `cset_cbnz`). A boolean tested after a
+  label proves nothing: the join's other predecessors may have written
+  it, and the fact is not part of the label fixpoint's meet. The
+  conjunction's second stage (`short: mov w9, w10; cbz w9`) therefore
+  stays unread; a meet of "wB ≠ 0 implies these conditions", vacuous on
+  the predecessor that wrote zero, would read it.
+
+Closing them found a hole. A slack fact is exact only under `len ≥ K`
+(`Oak.Assembler.slack_guard`'s hypothesis: below it the subtraction
+wrapped and the compare proves nothing), and the checker required the
+minimum only for vector accesses, and there against the fact's current
+bound rather than the `K` it came from — `add wJ, wI, #3` under `K = 4`
+left a fact of bound 1 that a minimum of 1 satisfied. A scalar read under
+a slack fact with no minimum proven was admitted. The fact now carries
+`need`, the `K` of its subtraction, unchanged by offsets, and every
+admission — the element region (`elementRegionOf`, refined in
+`Oak.CheckerRefinement.spanElement`), the vector access, and the scalar
+access — requires `need ≤ minLen`; a plain register bound admits nothing
+for a slack fact. The refinement's pinned examples carry the field
+(`TestCheckerDecisionsMatchLeanTransliteration`), and
+`TestCheckerGuardFacts` states the accepted shapes and the refused ones,
+the wrap among them. No emitted body relied on the hole: the lowering
+emits the slack idiom only under the minimum guard.
+
+Measured on the stdlib-bearing program (AArch64), like for like on the
+head these admissions merged onto (the per-line fallback and the
+condition selection of §9 "Check elision" already in place): 48 bodies
+elide 134 guards where 41 elided 74, one body keeps the guards of one
+line where four did, one keeps them all as before, 250 bodies stay
+proven and none mismatch. Against the whole-body fallback they were
+developed on, the checker refused 10 elided bodies where it refused 22
+and 136 guards went where 58 went. `OAK_NATIVE_DUMP=1` prints each
+refused elided form under a `// refused elided form of` header, which is
+how the shapes were read. What remains, by shape: an
+index reloaded from a frame slot after its guard (`append_byte`: the
+guard is on the register the compare read, the store indexes a fresh load
+of the same field — a fact about the slot would carry it); a bound through
+another register (`bytes_compare`'s `limit = min(len(a), len(b))`,
+`uuid_compare`, `text_equal_ascii_fold`: the guard is against a register
+the checker cannot relate to the span's length across the select's join —
+`leFacts` through the label fixpoint — on the optimization program's list
+as "a bound copied to another register, a decreasing bound below a
+length", `docs/notes/native-optimization-2026-09.md`); the conjunction's second stage
+above (`json_value_boundary`, `url_parse`); and index arithmetic the
+typechecker discharges by `scaled_under_bound` (`unicode_lookup`,
+`normalize_find`: `at = low * 5` under `low < len / 5`), which the
+checker has no fact for. On the RV64 lane elision stays off until its
+index representation admits it.
+
+**Where optimizing passes live (decision, 2026-09-15).** Two levels carry
+proofs and admit passes: the AST, where the typechecker's facts are keyed
+by position (a rewrite keeps provenance, as the inliner does — the home of
+proof-preserving inlining), and the emitted item list, a linear register
+program the verifier re-proves whatever is rewritten (the home of the
+peephole and a liveness allocator, with def-use chains computed on demand).
+A mid-level IR is not introduced: it would re-derive how the facts reach
+the lowering across ten thousand lines for what the item list can carry
+until an allocator shows otherwise.
+

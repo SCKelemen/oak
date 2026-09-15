@@ -226,6 +226,27 @@ theorem index_access_lanes (elem len i K : Nat) (hguard : i + K ≤ len) :
 theorem slack_guard (len i K : Nat) (hmin : K ≤ len) (hle : i ≤ len - K) : i + K ≤ len := by
   omega
 
+/-- The exclusive form of the slack guard, `sub wT, wL, #K; cmp wI, wT; b.hs
+    trap`: with `len ≥ K`, `i < len - K` gives `i + K ≤ len` as well — the
+    checker records the same slack fact for it, one element weaker than
+    the guard, so the reads at `i + k` for `k < K` are admitted. -/
+theorem slack_guard_strict (len i K : Nat) (hmin : K ≤ len) (hlt : i < len - K) : i + K ≤ len := by
+  omega
+
+/-- A condition materialized and tested: `cset wB, cond` writes 1 when the
+    compare's condition held and 0 otherwise, so the fall-through of
+    `cbz wB, L` has the condition and that of `cbnz wB, L` its negation —
+    the same facts as `b.<not cond>` and `b.cond` on the compare. -/
+theorem cset_cbz (c : Prop) [Decidable c] (h : (if c then (1 : Nat) else 0) ≠ 0) : c := by
+  by_cases hc : c
+  · exact hc
+  · simp [hc] at h
+
+theorem cset_cbnz (c : Prop) [Decidable c] (h : (if c then (1 : Nat) else 0) = 0) : ¬ c := by
+  by_cases hc : c
+  · simp [hc] at h
+  · exact hc
+
 /-- **Guard facts across a merge.** A label holds the meet of its
     predecessors' facts: for proven minimum lengths, the smaller of the
     two — which is a valid minimum whichever predecessor control came

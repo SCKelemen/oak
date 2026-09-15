@@ -7358,6 +7358,10 @@ func equalityBlasters(names []string, widths map[string]int, asmTerm, oakTerm *t
 	if len(control) > 0 && len(control) < len(names) {
 		blasters = append(blasters, newControlFirstBlaster(names, widths, control))
 	}
+	selectors := selectorParams([]*term{asmTerm, oakTerm})
+	if len(selectors) > 0 && len(selectors) < len(names) {
+		blasters = append(blasters, newSelectorFirstBlaster(names, widths, selectors))
+	}
 	return blasters
 }
 
