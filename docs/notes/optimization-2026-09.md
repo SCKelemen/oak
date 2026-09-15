@@ -129,20 +129,18 @@ output are independently verified, and `Compilation.OptIR()` exposes the
 post-CSE/DCE LICM candidate and a deterministic movement report. Emission still
 consumes neither.
 
-These analyses, transforms, validations, and compiler stages do not yet run as
-one artifact DAG. Source stages are linear, candidate search branches, and
-individual IR analyses are called manually, so validation and loop analysis
-can currently be recomputed. The intended scheduler makes checked models, IR
-versions, analysis results, proof obligations, validation verdicts, costs, and
-selected artifacts explicit immutable nodes. Dependency and invalidation edges
-then permit independent analyses to run in parallel and ensure that a transform
-can consume only facts computed for its exact IR version. The first generic
-substrate is implemented in `opt/artifact.go`: exact `(kind, name, version)`
-keys, derived recipe digests, graph validation, deterministic topological
-execution, exact-once shared dependencies, cancellation, and a process-local
-cache. The compiler is not migrated yet, and the first executor is deliberately
-single-threaded. `optimizer-artifact-dag-2026-09.md` gives the full design,
-including analysis preservation and bounded ready-node concurrency.
+The whole compiler does not yet run as one artifact DAG: source stages remain
+linear and native candidate search branches internally. The generic OptIR chain
+does. Exact-version immutable nodes now represent CFG v0, SCCP, loop structure
+and recurrences, CSE/DCE, CFG v1, preservation evidence, and LICM. Analyses
+declare the topology, SSA, operation, effect, type, fact, and layout aspects
+they read. CSE/DCE's checked certificate proves `CFGTopology` unchanged, so v1
+reuses v0 dominance/natural-loop structure but recomputes induction facts from
+the changed SSA. Certificates carry exact artifact/content identities and
+per-aspect digests; they prove reuse eligibility only, never semantic
+equivalence or emission permission. The executor remains deliberately
+single-threaded. `optimizer-artifact-dag-2026-09.md` gives the full design and
+the remaining native migration and bounded-concurrency work.
 
 **The native backend** (`nativegen/`, AArch64 7,300 lines, RV64 4,000)
 lowers a checked function directly to instructions with no IR. Scalar

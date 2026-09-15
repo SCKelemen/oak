@@ -1,8 +1,8 @@
 # Optimizer artifact DAG
 
-Status: generic executor plus the first OptIR analysis migration. This note
-refines the optimizer search design; it does not change Oak semantics or
-authorize OptIR emission.
+Status: OptIR analysis DAG with exact identities and first checked selective
+reuse. This note refines the optimizer search design; it does not change Oak
+semantics or authorize OptIR emission.
 
 ## 1. Decision
 
@@ -23,13 +23,15 @@ structured OptIR
      |
     CFG v0 --------------------+
      |          |              |
-    SCCP     loop facts      CSE/DCE
-                                |
-                              CFG v1
-                                |
-                           loop facts v1
-                                |
-                               LICM
+    SCCP   loop structure    CSE/DCE
+                |               |
+                |             CFG v1
+                |          /     |
+                +-- preservation |
+                         \        |
+                     loop facts v1
+                            |
+                           LICM
                                 |
                               CFG v2
                                 |
@@ -137,10 +139,8 @@ node with the refusal and original candidate as dependencies.
 ## 6. Analysis reuse and invalidation
 
 The conservative rule is simple: a new IR version invalidates every analysis.
-That is always correct and is the first migration target.
-
-Later, a transform may publish a checked preservation certificate over named IR
-aspects:
+That is always correct. Selective reuse is permitted only when a transform
+publishes a checked preservation certificate over named IR aspects:
 
 ```text
 CFGTopology
@@ -152,11 +152,25 @@ ProofFacts
 Layout
 ```
 
-For example, CSE/DCE preserves CFG topology but changes SSA identity and
-operation semantics; dominance and the natural-loop block tree can be reused,
-while recurrence and value-use analyses cannot. Reuse occurs only through an
-explicit preservation edge checked against the analysis's declared aspect
-dependencies. There is no implicit "probably unchanged" reuse.
+Each current OptIR analysis has an immutable requirement declaration. A
+certificate independently verifies both CFGs, binds their full content
+fingerprints and exact artifact keys, then records domain-separated before and
+after digests for every requested aspect. The redundant `preserved` field is
+checked against digest equality and the whole certificate has an integrity
+digest. It is analysis-reuse evidence only, never semantic equivalence or
+permission to emit a candidate.
+
+CSE/DCE is the first consumer. It preserves CFG topology but may change SSA
+identity, operation semantics, types, and proof-fact placement. Loop analysis
+is split accordingly: dominance and the natural-loop tree consume only
+`CFGTopology`, so CFG v1 reuses the checked structure from v0. Affine
+recurrences and trip counts are recomputed from v1's values and operations.
+Unknown, trapping, call, and explicitly effectful operations all participate in
+the conservative `MemoryEffects` digest; missing metadata never implies purity.
+
+Reuse occurs only through the explicit certificate edge and only when it
+covers every aspect in the consumer's declaration. There is no implicit
+"probably unchanged" reuse.
 
 ## 7. Scheduling
 
@@ -222,6 +236,10 @@ Completed:
    longer recomputes loop analysis or dominance internally. Its loop facts are
    privately bound to their input fingerprint and integrity digest, so stale or
    mutated facts fail closed.
+4. OptIR has closed analysis-aspect declarations and checked preservation
+   certificates. CSE/DCE's certificate is an admission artifact over exact CFG
+   v0/v1 identities. The loop-structure artifact declares only `CFGTopology`,
+   so v1 reuses dominance/natural loops while recomputing induction facts.
 
 The compiler currently runs this graph without a cross-call cache. Public
 OptIR results contain mutable slice-backed Go values, so sharing cached payloads
@@ -231,7 +249,6 @@ complete dependent invalidation after an input change.
 
 Remaining:
 
-4. Add analysis-aspect declarations and checked preservation certificates.
 5. Move native candidate materialization, seam checking, semantic validation,
    cost, and selection onto typed graph builders while retaining identity.
 6. Add bounded ready-node concurrency and deterministic tracing.
@@ -242,7 +259,7 @@ Remaining:
 
 - no code-emission change;
 - no persistent cache;
-- no speculative analysis reuse across IR versions;
+- no analysis reuse across IR versions without a checked aspect certificate;
 - no parallel executor yet;
 - no claim that a graph kind replaces a proof or verifier verdict;
 - no requirement that language users understand or configure the graph.

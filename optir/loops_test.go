@@ -67,6 +67,57 @@ func TestAnalyzeLoopsFindsDominanceNaturalLoopAndExactTripCount(t *testing.T) {
 	}
 }
 
+func TestLoopStructureReuseRequiresCheckedTopologyPreservation(t *testing.T) {
+	before := canonicalLoopCFG("reuse", "u32", "0", "4", "1", OpLess, OpIntAdd)
+	before.Blocks[0].Operations = append(before.Blocks[0].Operations, integerConstant(9, "u32", "99"))
+	structure, err := AnalyzeLoopStructure(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _, err := SimplifyCSEDCE(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeKey := aspectTestKey("cfg.v0", "before")
+	afterKey := aspectTestKey("cfg.v1", "after")
+	certificate, err := CheckCFGPreservation(beforeKey, before, afterKey, after, orderedAnalysisAspects...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reused, err := AnalyzeLoopsWithPreservedStructure(after, structure, certificate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := AnalyzeLoops(after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reused, fresh) {
+		t.Fatalf("reused loop analysis differs from fresh analysis:\nreused: %#v\nfresh:  %#v", reused, fresh)
+	}
+	if _, err := AnalyzeLoopsWithStructure(after, structure); err == nil || !strings.Contains(err.Error(), "different CFG") {
+		t.Fatalf("exact-input API admitted old structure: %v", err)
+	}
+
+	changedTopology := after
+	changedTopology.Blocks = append([]Block(nil), after.Blocks...)
+	changedTopology.Blocks[1].Terminator.True, changedTopology.Blocks[1].Terminator.False = changedTopology.Blocks[1].Terminator.False, changedTopology.Blocks[1].Terminator.True
+	changedCertificate, err := CheckCFGPreservation(beforeKey, before, afterKey, changedTopology, orderedAnalysisAspects...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AnalyzeLoopsWithPreservedStructure(changedTopology, structure, changedCertificate); err == nil || !strings.Contains(err.Error(), "does not satisfy") {
+		t.Fatalf("topology-changing certificate admitted reuse: %v", err)
+	}
+
+	mutated := structure
+	mutated.ReversePostOrder = append([]BlockID(nil), structure.ReversePostOrder...)
+	mutated.ReversePostOrder[0] = 99
+	if _, err := AnalyzeLoopsWithPreservedStructure(after, mutated, certificate); err == nil || !strings.Contains(err.Error(), "mutated") {
+		t.Fatalf("mutated loop structure admitted reuse: %v", err)
+	}
+}
+
 func TestAnalyzeLoopsTripCountRespectsDirectionZeroTripsAndWrapping(t *testing.T) {
 	tests := []struct {
 		name      string
