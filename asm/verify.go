@@ -1794,6 +1794,13 @@ func compositeLeaves(comps map[string]Composite, typeName, prefix string, base i
 			stride := field.Size / field.Length
 			for k := int64(0); k < field.Length; k++ {
 				elemName := fmt.Sprintf("%s.%s[%d]", prefix, field.Name, k)
+				if field.Name == "" {
+					// An owned array as a value (docs/spec/94-assembler.md
+					// §9, forty-seventh increment): the composite is the
+					// array itself, its leaves the elements `p[k]`, as the
+					// Oak side names them (aggregateFrom).
+					elemName = fmt.Sprintf("%s[%d]", prefix, k)
+				}
 				if field.ElemType != "" {
 					nested, reason, ok := compositeLeaves(comps, field.ElemType, elemName, at+k*stride, fieldGuards)
 					if !ok {

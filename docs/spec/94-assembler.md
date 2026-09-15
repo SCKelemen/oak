@@ -1653,7 +1653,9 @@ call's record into a temp (chunks stored from `x0`/`x1`, or `add x8, sp,
 admitted wherever a record value is needed (initializers, assignments,
 arguments, results, conditional result arms). Homogeneous floating-point
 aggregates (all fields one float type, at most four), which AAPCS64
-passes in `v` registers, are left to the C backend. The checker learned
+passes in `v` registers, are left to the C backend. An owned array of
+scalars `[N]T` travels under the same rules as the one-field composite
+its C wrapper struct is (§9 "Arrays as values"). The checker learned
 the same rules from a composites table the compiler builds from the
 program's record declarations (`asm.Function.Composites`, never from the
 unit text; hand-written units get it too): a record parameter binds `bind
@@ -2759,6 +2761,14 @@ against the rewritten body and Lean proving the rewrite
 (`Oak.Reduction.unrolled4_eq`). The lowering records the body it realized
 (`asm.Function.Body`) so the verifier and the verdict cache judge the
 right one.
+
+The forty-seventh increment is owned arrays as values (§9 "Arrays as
+values"): `[N]T` parameters, results, arguments, initializers, and
+whole-array assignments and stores follow the record rules under the
+one-field composite the C backend's wrapper struct is, the verifier
+naming its leaves `p[k]` as the Oak side does
+(`Oak.ArrayValues.leaf_names_agree`, `leaf_inside`, `chunk_lt_two`), and
+HFA classification counting an array's elements as members.
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies
@@ -3869,6 +3879,44 @@ a float accumulator (its addition does not reassociate), a loop with any
 other statement, another stride, or an accumulator read elsewhere in the
 body; a use of the index after the loop reads `len(v)` on both sides.
 `bench_sum` went from six instructions per element to nineteen per four.
+
+**Arrays as values (2026-09-16, AArch64 lane; `spec/lean/Oak/ArrayValues.lean`).**
+An owned array of scalars `[N]T` crosses the boundary as a value under the
+record rules: it is the one-field composite the C backend's wrapper struct
+is (a `T v[N]` member at offset zero, the element's alignment, no
+padding), so a parameter of up to 16 bytes arrives as `ceil(N*size/8)`
+register chunks and a larger one by reference to a copy the caller owns,
+a result of up to 16 bytes comes back in `x0`/`x1` and a larger one is
+written into the `x8` area, and an argument loads its chunks or passes
+`add xN, sp, #off` to a temp copy. The lowering gives an array parameter
+its frame storage as an array local the prologue fills (chunk stores or
+the word-and-tail copy), reads an untouched by-reference one in place
+through the parked address register as it reads an untouched record
+parameter, and admits an array value wherever a record value is:
+`state: [8]u32 = h` and `= f(…)` initializers, `h = bump(h, 1)` and
+`next.h = sha256_block(next.h, …)` whole-array assignments and stores
+(previously "a store to the array"), `[8]u32{…}` literals built in fresh
+storage, and results by chunk or through `x8`. The composites table
+carries the array type under its spelling (`(u32[8])`), so the checker's
+binding rules and the verifier's leaf model follow: the leaves of the
+array composite are the elements themselves, named `p[k]` on both sides
+(`Oak.ArrayValues.leaf_names_agree`), at offsets `k*size` inside the
+composite (`leaf_inside`, `leaf_disjoint`), in at most two chunks when
+it travels by value (`chunk_lt_two`). Homogeneous floating-point
+aggregates count an array field's elements as members (AAPCS64 §5.9.5.3:
+`[4]f32` is an HFA, `[8]f32` a 32-byte composite by reference;
+`isHFA_float`), which also corrects a record with a float array field.
+Executed (`TestE2ENativeArrayValues`): `sum8: (h: [8]u32) -> u32` by
+reference and in place, `pair_sum`/`quad_sum` from one and two chunks,
+`halves: (x: u32) -> [2]u32` returned in `x0` — all four proven — and
+`bump: (h: [8]u32, by: u32) -> [8]u32` through `x8` with `next.h =
+bump(next.h, u32(1))` in a record-returning `step`, agreeing with the C
+backend. The verifier still stops at a result returned through memory
+("a record result beyond two register chunks"), for arrays as for
+records; that summary is the next step for the SHA-256 path, whose
+`sha256_rounds`, `sha256_compress`, `sha256_block`, `sha256_compress_view`,
+`sha256_init`, `sha256_update`, and `sha256_final` this increment moves
+from the C backend to the native lane.
 
 **The whole standard library through the checker (2026-09-13).** Running
 the native backend over every function a stdlib-bearing program carries
