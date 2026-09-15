@@ -198,10 +198,19 @@ exact constants plus executable blocks and edges. Integer folding follows Oak's
 fixed-width wrapping, signedness, division-overflow, and logical-shift semantics;
 it does not rewrite the CFG or authorize emission.
 
-Not yet: OptIR transformation with equivalence-validated emission, CSE/DCE and
-loop analyses beyond explicit recurrence shape, vector plans (Phase D), and the
-proof-obligation service of the proof-guided note §26 beyond the
-requirement/fact matching here.
+The first generic transformation candidate is also connected. CSE uses exact
+operation identity and dominance, and DCE removes the resulting unused pure
+chains to a fixed point. Both are restricted to a closed vocabulary of total
+scalar operations: missing effect metadata never makes calls, traps, memory, or
+unknown operations removable. Proof facts are remapped only where they remain
+valid. Input and output pass the independent verifier, and
+`Compilation.OptIR()` retains the original CFG beside the simplified candidate
+and its deterministic report.
+
+Not yet: equivalence-validated emission of the candidate, available-expression
+and GVN generalization, dead stores, loop analyses beyond explicit recurrence
+shape, vector plans (Phase D), and the proof-obligation service of the
+proof-guided note §26 beyond the requirement/fact matching here.
 
 ## 1. Why this architecture
 
