@@ -126,7 +126,13 @@ func memoryAt(log []*spanWrite, index, base *term) *term {
 		// equal or unequal by their constants alone — the arena's
 		// `base + k` addressing — which spares the diagrams an equality
 		// over the index bits for every write met by a read.
-		known, equal := indexRelation(form, w.index)
+		var known, equal bool
+		if index.kind == termConst && w.index.kind == termConst {
+			// Two constants (a witness run): compared outright.
+			known, equal = true, index.value&mask(32) == w.index.value&mask(32)
+		} else {
+			known, equal = indexRelation(form, w.index)
+		}
 		if known && !equal {
 			continue
 		}
@@ -440,12 +446,15 @@ func (lo *oakLowering) assignSpanElement(name string, contract spanContract, s *
 		return reason, false
 	}
 	root := lo.spanRoot(name)
-	index = lo.spanIndex(name, index) // a derived span: start + i in the root
-	if lo.concrete != nil && index.kind == termConst {
-		if length, known := lo.concrete[spanLenName(root)]; known && index.value >= length {
+	if lo.concrete != nil {
+		// Past the span's own length: Oak traps on this input (noted by
+		// the witness run under the path).
+		lo.addTrap(cmpTerm("hs", index, lo.witnessBound(name)))
+		if lo.witnessTrapped {
 			return fmt.Sprintf("an index past len(%s) on this input", name), false
 		}
 	}
+	index = lo.spanIndex(name, index) // a derived span: start + i in the root
 	lo.writes = appendWrite(lo.writes, root, index, truncate(value, contract.elemWidth), lo.path)
 	return "", true
 }

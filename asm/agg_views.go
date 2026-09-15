@@ -116,6 +116,9 @@ func (lo *oakLowering) declareView(s *ast.VariableDeclaration, elem int64) (hand
 	}
 	lo.addTrap(cmpTerm("hi", start, base.length))
 	lo.addTrap(cmpTerm("hi", count, binaryTerm("sub", base.length, start)))
+	if lo.witnessTrapped {
+		return true, fmt.Sprintf("a subslice of %s past its length on this input", sub.span), false
+	}
 	return bind(aggView{owner: base.owner, offset: viewIndex(base, start), length: count})
 }
 

@@ -370,6 +370,14 @@ func (lo *oakLowering) vectorLoad(source, index ast.Expression, shape typechecke
 		return nil, reason, false
 	}
 	root := lo.spanRoot(name)
+	if lo.concrete != nil {
+		// The vector reaching past the length: Oak traps on this input
+		// (noted by the witness run under the path).
+		lo.addTrap(cmpTerm("hi", binaryTerm("add", at, constTerm(uint64(shape.Lanes), 32)), lo.witnessBound(name)))
+		if lo.witnessTrapped {
+			return nil, fmt.Sprintf("a vector load past len(%s) on this input", name), false
+		}
+	}
 	lanes := make([]*term, shape.Lanes)
 	for k := range lanes {
 		position := at
@@ -454,6 +462,14 @@ func (lo *oakLowering) simdStore(call *ast.InvocationExpression) (handled bool, 
 		return true, reason, false
 	}
 	root := lo.spanRoot(ident.Value)
+	if lo.concrete != nil {
+		// The vector reaching past the length: Oak traps on this input
+		// (noted by the witness run under the path).
+		lo.addTrap(cmpTerm("hi", binaryTerm("add", index, constTerm(uint64(len(lanes)), 32)), lo.witnessBound(ident.Value)))
+		if lo.witnessTrapped {
+			return true, fmt.Sprintf("a vector store past len(%s) on this input", ident.Value), false
+		}
+	}
 	for k, lane := range lanes {
 		at := index
 		if k > 0 {
