@@ -561,6 +561,30 @@ return. That is the order of the next increments: the slot reload and
 the Bool compare in the byte loop, the result built in the `x8` area,
 by-reference arguments passed as the caller's own storage when the
 callee reads them in place, and pair copies for aggregates.
+## The register budget, 2026-09-16
+
+With the single-use span local forwarded into its call
+(docs/spec/94-assembler.md §9 "The register budget"), the aggregate
+helpers fold: `sha256_update`'s loop no longer calls `sha256_compress`
+and `sha256_block` but the FEAT_SHA256 dispatch itself (`bl
+sha256_block_hw` twice in the body, once per loop), the chaining value
+and the block copied by pairs around it. Over every open branch merged
+(#473–#488, a fresh measurement tree from `specification`), the dbs
+frame scan's native build stands at 121–143 ms against the C build's
+118–122 ms under the suites' load, and at 94–112 ms against 88–105 ms
+once the load fell (five interleaved runs each; best 93.6 against 88.3)
+— parity within five percent, from 1.8× at the start of the day — with the chain
+hash agreeing, 70 bodies left to C (89 at the start), 384 proven and no
+refutation. The byte loop is ten instructions and its control two;
+clang's is ten and three. What the dump still shows, in order: the loop
+invariants' form was rejected for `sha256_update` because both forms
+verify as trusted and the policy keeps the plain one on a tie
+(`keeps its loop invariants in place`), so `add x11, x22, #32` is
+rebuilt each byte; `sha256_block`'s `true ? { … }` scope lowers as `movz
+w11, #1; cbz w11`, a constant condition not folded; and the per-block
+path copies the block into a temp for the callee's `view(&block)`, as
+the source asks. The next increments are those three, then a
+bottom-tested loop shape for the verifier's recognizer.
 
 
 ## The native backend after the day's increments, 2026-09-16 (evening)
