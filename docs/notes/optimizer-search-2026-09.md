@@ -52,7 +52,12 @@ The planning substrate of §16 Phase A is implemented on `specification`:
   strided one); `Registry`, `PlainLane`, `FindingLine`.
 - The cost model (`opt.TargetCosts`) is static and per class: straight-line
   code at weight one, each loop body at `LoopWeight` trips divided by its
-  stride and bounded by its shape's trips, so a four-way unrolled
+  stride and bounded by its shape's trips — and, since 2026-09-16,
+  multiplied by the trips of every loop around it: a nested loop's items
+  are its own (`LoopMetrics.Depth`, `Outer`), not its outer loops', and
+  weigh `LoopWeight` squared at depth one, where the additive reading
+  before priced the search kernel's inner-loop rotation a two-point loss
+  and now a six-percent win — so a four-way unrolled
   reduction is priced per element against the plain loop and its
   remainder loop as its expected few trips. The weights are uncalibrated
   heuristics (§8); the report's `candidates` line lists every admitted

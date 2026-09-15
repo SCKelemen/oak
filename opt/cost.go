@@ -30,8 +30,10 @@ type Metrics struct {
 	LoopStores       int
 	LoopGuards       int
 
-	// LoopBodies are the loops in body order; an inner loop's items count
-	// in its outer loops too, as they run that many times more.
+	// LoopBodies are the loops in body order, each with its own items: a
+	// nested loop's items are its own, not its outer loops', and the cost
+	// model charges them by its trips times its outer loops' (Outer), as
+	// they run that many times more.
 	LoopBodies []LoopMetrics
 }
 
@@ -49,6 +51,12 @@ type LoopMetrics struct {
 	Guards       int
 	Stride       int
 	MaxTrips     int
+	// Depth is how many loops enclose this one; Outer the 1-based index
+	// in LoopBodies of the innermost of them, 0 at the top level. An
+	// inner loop's body runs its own trips for every trip of its outer
+	// loops, so its items weigh the product (Estimate).
+	Depth int
+	Outer int
 }
 
 // String spells the metrics in one line.
@@ -71,6 +79,9 @@ func (m Metrics) String() string {
 		}
 		if loop.MaxTrips > 0 {
 			shape += fmt.Sprintf(", <= %d trips", loop.MaxTrips)
+		}
+		if loop.Depth > 0 {
+			shape += fmt.Sprintf(", depth %d", loop.Depth)
 		}
 		parts = append(parts, shape+"]")
 	}
@@ -138,9 +149,11 @@ type CostModel interface {
 //
 // straight-line code at weight one and a loop body at LoopWeight trips
 // (fewer when its shape bounds them, divided by the elements one trip
-// advances), so a candidate that shortens a loop body by one instruction
-// beats one that shortens the prologue by several, and a wider trip pays
-// per element. The weights are heuristics to be calibrated from
+// advances, multiplied by the trips of every loop around it), so a
+// candidate that shortens a loop body by one instruction beats one that
+// shortens the prologue by several, one that shortens an inner loop
+// beats one that shortens its outer loop, and a wider trip pays per
+// element. The weights are heuristics to be calibrated from
 // microbenchmarks; nothing semantic depends on them.
 type TargetCosts struct {
 	Arch       string
@@ -200,7 +213,12 @@ func (t TargetCosts) Estimate(m Metrics) float64 {
 	// each body at its own trip weight.
 	inLoops := t.weigh(m.LoopInstructions-m.LoopBranches-m.LoopLoads-m.LoopStores, m.LoopBranches, m.LoopLoads, m.LoopStores, m.LoopGuards)
 	cost := total - inLoops
-	for _, loop := range m.LoopBodies {
+	// Each loop's own trips; a nested loop's body runs them for every
+	// trip of its outer loops, so its factor is the product along the
+	// chain (an inner loop's instruction weighs LoopWeight squared: a
+	// probe loop inside a loop over probes runs its body that often).
+	factors := make([]float64, len(m.LoopBodies))
+	for k, loop := range m.LoopBodies {
 		trips := weight
 		if loop.MaxTrips > 0 && float64(loop.MaxTrips) < trips {
 			// A bounded loop runs anywhere from none to its bound: its
@@ -211,7 +229,11 @@ func (t TargetCosts) Estimate(m Metrics) float64 {
 		if loop.Stride > 1 {
 			trips /= float64(loop.Stride)
 		}
-		cost += t.weigh(loop.Instructions-loop.Branches-loop.Loads-loop.Stores, loop.Branches, loop.Loads, loop.Stores, loop.Guards) * trips
+		factors[k] = trips
+		if loop.Outer > 0 && loop.Outer-1 < k {
+			factors[k] *= factors[loop.Outer-1]
+		}
+		cost += t.weigh(loop.Instructions-loop.Branches-loop.Loads-loop.Stores, loop.Branches, loop.Loads, loop.Stores, loop.Guards) * factors[k]
 	}
 	return cost
 }

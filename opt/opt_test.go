@@ -369,6 +369,22 @@ func TestCostPrefersShorterLoops(t *testing.T) {
 	}
 }
 
+// A nested loop's body runs its trips for every trip of its outer loop:
+// an instruction saved there is worth LoopWeight times one saved in the
+// outer loop's own body, and the two loops' items are not double-counted.
+func TestCostWeighsNesting(t *testing.T) {
+	nested := func(outer, inner int) Metrics {
+		return Metrics{Instructions: outer + inner + 4, Branches: 4, Loops: 2, LoopInstructions: outer + inner, LoopBranches: 4,
+			LoopBodies: []LoopMetrics{{Instructions: outer, Branches: 2, Stride: 1}, {Instructions: inner, Branches: 2, Stride: 1, Depth: 1, Outer: 1}}}
+	}
+	base := AArch64Costs.Estimate(nested(10, 10))
+	innerSaved := AArch64Costs.Estimate(nested(10, 9))
+	outerSaved := AArch64Costs.Estimate(nested(9, 10))
+	if base-innerSaved != AArch64Costs.LoopWeight*AArch64Costs.LoopWeight || base-outerSaved != AArch64Costs.LoopWeight {
+		t.Errorf("an inner instruction weighs %.1f and an outer one %.1f; want %.1f and %.1f", base-innerSaved, base-outerSaved, AArch64Costs.LoopWeight*AArch64Costs.LoopWeight, AArch64Costs.LoopWeight)
+	}
+}
+
 func TestPruneKeepsIdentity(t *testing.T) {
 	identity := Identity(config{})
 	identity.Cost = 100
