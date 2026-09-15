@@ -348,6 +348,52 @@ order: loop-invariant constants hoisted to the loop's preheader, the
 copy-before-shift fused, and the exit flag once the verifier's loop
 summary admits a break path.
 
+## Verified reduction unrolling, 2026-09-16
+
+`bench_sum` is the first kernel rewritten before lowering under a proof of
+the rewrite (docs/spec/94-assembler.md §9 "Reductions";
+`spec/lean/Oak/Reduction.lean`): the plain integer reduction becomes a
+four-accumulator main loop, a remainder loop, and the combine, the
+verifier proving the assembly against the rewritten body (two loops
+coupled inductively, all five element reads elided under the checker's
+facts) and Lean proving the rewrite equal to the sequential sum. Run
+under a load average near 30 (`results/m-series-2026-09-16-reduction.json`,
+best samples, ns per operation):
+
+| Kernel | C backend | oak-native | native / C | Rust |
+| --- | ---: | ---: | ---: | ---: |
+| sum | 114,000 | 180,333 | 1.58× | 122,167 |
+| dot | 875,667 | 971,333 | 1.11× | 820,667 |
+
+Reading: `sum` went from 3.20× of clang to 1.58×. The main loop is
+nineteen instructions per four elements — the header recomputes `len(v)
+- 4` each iteration (a loop-invariant clang hoists), each of the last
+three loads is preceded by its own index add (`add w10, w3, #1; ldr x10,
+[x19, w10, uxtw #3]`), and the four accumulators are four `add`s where
+clang's NEON `add v.2d` does two lanes per instruction. Next in this
+kernel's order: the element address formed once per block (`add xA, x19,
+w3, uxtw #3`) with the four loads as two `ldp` pairs off it — the
+checker already admits a wider access through a region a slack guard
+marked four lanes deep — then the invariant hoisted out of the header,
+and the vector form of the same rewrite (the `simd` types the language
+has) once the verifier couples a lane sum.
+
+## Select forms, 2026-09-16
+
+The three costs named above for `page_probe` are gone from its loops
+(docs/spec/94-assembler.md §9 "If-conversion"): `found = true` is `csinc
+w26, w26, wzr, ne` with no constant built in the loop, `hits = hits +
+u32(1)` under the Bool is `cmp w26, #0; cinc w4, w4, ne` with no branch,
+and `mid * u32(512)` is `lsl w10, w23, #9` reading the midpoint where it
+lies. The inner loop is thirteen instructions with the header's two exits
+and the back edge as its only branches, the outer twelve with one exit.
+The run (`results/m-series-2026-09-16-select-forms.json`) fell under a
+load average above 80 — `page_probe`'s C row itself moved from 7.0 to
+10.3 million ns — so its ratios are not read; the instruction shapes are
+the evidence, and the kernels are re-measured with the next quiet run.
+`search` stayed at parity with clang (7.97 against 7.36 million ns, best
+samples) with the hand-written Rust at 5.98 in this run.
+
 ## The pilots under the native backend, 2026-09-16
 
 The three test systems (github.com/SCKelemen/dbs, os, ml) built with `oak

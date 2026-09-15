@@ -242,12 +242,36 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		}
 		verdict, cached := cachedVerdict(cacheDir, cacheKey)
 		if !cached {
-			verdict = asm.Verify(asmFn, source, source.Body)
+			verdict = asm.Verify(asmFn, source, verifiedBody(asmFn, source))
 			storeVerdict(cacheDir, cacheKey, verdict)
 		} else {
 			fromCache++
 		}
 		verified++
+		if asmFn.Body != nil && verdict.Kind != asm.VerdictProven {
+			// The unrolled reduction did not prove (nativegen/reduction.go):
+			// the loop as written is lowered and verified too, and kept
+			// when its verdict is the stronger — a faster body is not
+			// worth a weaker verdict.
+			plainLane := lane
+			plainLane.NoReductions = true
+			if plain, plainErr := nativegen.CompileFor(plainLane, source, functions, records, adts, constants, tc); plainErr == nil && len(asm.Check(plain, source, symbols)) == 0 {
+				plain.Callees = functions
+				plainKey := ""
+				if cacheDir != "" {
+					plainKey = verdictCacheKey(plain, source, functions, declarations)
+				}
+				plainVerdict, plainCached := cachedVerdict(cacheDir, plainKey)
+				if !plainCached {
+					plainVerdict = asm.Verify(plain, source, verifiedBody(plain, source))
+					storeVerdict(cacheDir, plainKey, plainVerdict)
+				}
+				if verdictRank(plainVerdict.Kind) > verdictRank(verdict.Kind) {
+					diagnostics = append(diagnostics, diagnostic.NewInformation(lsp.Range{}, "native", fmt.Sprintf("native backend: %s keeps its plain reduction (the verifier judged it %s and the unrolled form %s: %s)", fn.Name.Value, plainVerdict.Kind, verdict.Kind, verdict.Message)))
+					asmFn, verdict = plain, plainVerdict
+				}
+			}
+		}
 		if verdict.Kind != asm.VerdictProven && lane.Strength && nativegen.Reduced(asmFn) > 0 {
 			// The reduced form did not prove: the plain arithmetic is
 			// lowered and verified too, and kept when it proves — a
@@ -259,7 +283,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 				}
 				plainVerdict, plainCached := cachedVerdict(cacheDir, plainKey)
 				if !plainCached {
-					plainVerdict = asm.Verify(plain, source, source.Body)
+					plainVerdict = asm.Verify(plain, source, verifiedBody(plain, source))
 					storeVerdict(cacheDir, plainKey, plainVerdict)
 				}
 				if plainVerdict.Kind == asm.VerdictProven {
@@ -664,4 +688,28 @@ func joinLines(lines []int) string {
 		parts[i] = strconv.Itoa(line)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// verifiedBody is the Oak body the verifier judges a lowering against: the
+// body the lowering realized when it rewrote the source's (a verified
+// rewrite, asm.Function.Body), else the source's.
+func verifiedBody(asmFn *asm.Function, source *ast.FunctionStatement) ast.Expression {
+	if asmFn.Body != nil {
+		return asmFn.Body
+	}
+	return source.Body
+}
+
+// verdictRank orders verdicts by strength: proven, then witnessed
+// (evidence), then trusted; a mismatch is the weakest.
+func verdictRank(kind asm.VerdictKind) int {
+	switch kind {
+	case asm.VerdictProven:
+		return 3
+	case asm.VerdictWitnessed:
+		return 2
+	case asm.VerdictTrusted:
+		return 1
+	}
+	return 0
 }
