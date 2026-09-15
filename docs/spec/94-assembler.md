@@ -257,7 +257,25 @@ AArch64 host — `compiler/e2e_asm_test.go`; laws in `Oak.Assembler`):
   the fall-through path knows the two lengths equal, so an index guarded
   below one is below the other (`Oak.Assembler.index_under_equal_len`;
   the fact dies with a write to either register, at labels, and at
-  calls). The guard `len(v) >= i + K` as the generator spells it — `add
+  calls). **Bounds through arithmetic** (`asm/bounds_arith.go`): the
+  checker follows a bound through the arithmetic between the guard and
+  the access. `sub wT, wHi, wLo` under `wLo < wHi`, `lsr wT, wT, #1`, and
+  `add wMid, wLo, wT` prove `wMid < wHi` (`Oak.Assembler.midpoint_below`);
+  a narrowing copy `mov wHi, wMid` under `wMid < wHi` keeps the new `hi`
+  at most the register the old one was at most — the span's length, or a
+  length shifted by `lsr wP, wL, #s` (an upper fact `reg <= ref >> shift`,
+  `Oak.Assembler.narrowed_upper`, `upper_chain`); and `lsl wD, wI, #k`
+  under `wI < wB` with `wB <= wL >> s` and `k <= s` proves the slack fact
+  `wD + 2^k <= len` (`Oak.Assembler.shifted_index_slack`) — the binary
+  search reads its midpoint, and the page probe its page's keys, with no
+  guard of their own. An access admits an index guarded below a register
+  whose upper chain ends at a register holding the span's length, proven
+  equal to one, or holding a constant no larger than one such holds
+  (`Oak.Assembler.index_under_upper`). A label's state is the whole
+  register state — the span each base addresses and the registers holding
+  its length, regions, globals, constants, and every guard fact — met
+  across its predecessors, so a length register rewritten inside a loop
+  or a base advanced on the back edge is not assumed at the header. The guard `len(v) >= i + K` as the generator spells it — `add
   wS, wI, #K` then `cmp wL, wS` then `b.lo <exit>` (or `cmp wS, wL` then
   `b.hi`) — proves `wI + K <= len` on the fall-through, the slack fact
   under which `wI`'s element and the `K - 1` after it (`add wJ, wI, #k`,
@@ -2709,6 +2727,18 @@ reduction needs a coupling image that is a sum of registers), `crc32c`
 1.86× (two calls per chunk where clang inlines), `search` and `page_probe`
 2.3× (bounds facts through arithmetic). The order of the rest is in
 `RESULTS.md`.
+
+The forty-third increment is the bounds through arithmetic (§7): the
+binary search midpoint, the narrowing copy, and the scaled index under a
+shifted length, so `search` and `page_probe` elide their element guards
+(`asm/bounds_arith.go`, `Oak.Assembler.midpoint_below`,
+`narrowed_upper`, `upper_chain`, `shifted_index_slack`). It came with a
+soundness repair: the label fixpoint's state was the guard facts alone,
+so a span's length registers, its base, regions, and globals were read
+linearly across a loop header — a length copy grown on the back edge
+still bounded the index at the header. The state is now the whole
+register state, met across every predecessor
+(`asm/bounds_arith_test.go`).
 
 Next increments: stores in data-dependent loops as a summarized memory
 (the span-writing loops behind `sb_str`, `px_acc_list`, and the 52 bodies

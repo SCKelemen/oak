@@ -178,6 +178,69 @@ theorem sum_guard_slack (len i K k : Nat) (hguard : i + K ≤ len) (hk : k < K) 
 theorem index_under_equal_len (i la lb : Nat) (hi : i < la) (heq : la = lb) : i < lb := by
   omega
 
+/-! ### Bounds through arithmetic (asm/bounds_arith.go, docs/spec/94-assembler.md §7)
+
+The checker follows a proven bound through the arithmetic between the
+guard and the access: the binary search midpoint, a bound narrowed by a
+copy, an index scaled back to the units of a length divided by a power of
+two. Each rule is one of the lemmas below; the register values are
+naturals below `2^32`, and each lemma's conclusion is below its
+hypotheses' bound, so none of the operations wraps. -/
+
+/-- **The midpoint** (`midFact`): `sub wT, wHi, wLo` under `wLo < wHi`,
+    `lsr wT, wT, #1`, `add wMid, wLo, wT` — `lo + (hi - lo) / 2 < hi`, so
+    the element at the midpoint is below the bound `hi` is. The subtraction
+    is exact under `lo < hi` and the sum is below `hi`, so neither wraps. -/
+theorem midpoint_below (lo hi : Nat) (h : lo < hi) : lo + (hi - lo) / 2 < hi := by
+  omega
+
+/-- Halving more than once keeps the midpoint below `hi`. -/
+theorem midpoint_below_shift (lo hi k : Nat) (h : lo < hi) (hk : 1 ≤ k) :
+    lo + (hi - lo) / 2 ^ k < hi := by
+  have h2 : 2 ≤ 2 ^ k := by
+    have := Nat.pow_le_pow_right (show 2 > 0 by decide) hk
+    rwa [Nat.pow_one] at this
+  have hdiv : (hi - lo) / 2 ^ k ≤ (hi - lo) / 2 := Nat.div_le_div_left h2 (by decide)
+  omega
+
+/-- **The narrowing copy** (`upperFact`): `mov wHi, wMid` under `wMid < wHi`
+    with `wHi ≤ len` leaves the new `hi` at most `len`. -/
+theorem narrowed_upper (m h len : Nat) (hm : m < h) (hh : h ≤ len) : m ≤ len := by
+  omega
+
+/-- **An index under an upper bound**: guarded below a register that is at
+    most the length, the index is below the length — the access rule's
+    reading of an upper chain (`checker.boundsLen`). -/
+theorem index_under_upper (i b len : Nat) (hi : i < b) (hb : b ≤ len) : i < len := by
+  omega
+
+/-- An upper chain composes: `r ≤ s >>> a` and `s ≤ t >>> b` give
+    `r ≤ t >>> (a + b)` (`checker.resolveUpper` sums the shifts). -/
+theorem upper_chain (r s t a b : Nat) (hr : r ≤ s / 2 ^ a) (hs : s ≤ t / 2 ^ b) :
+    r ≤ t / 2 ^ (a + b) := by
+  have h1 : s / 2 ^ a ≤ (t / 2 ^ b) / 2 ^ a := Nat.div_le_div_right hs
+  rw [Nat.div_div_eq_div_mul, ← Nat.pow_add, Nat.add_comm] at h1
+  omega
+
+/-- **The scaled index** (`lsl wD, wI, #k`): under `wI < wB`, `wB ≤ len / 2^s`,
+    and `k ≤ s`, the `2^k` elements from `wI · 2^k` lie inside the span —
+    the slack fact `wD + 2^k ≤ len` — and `wI · 2^k` is below `len`, so the
+    32-bit shift does not wrap. -/
+theorem shifted_index_slack (i b len k s : Nat) (hi : i < b) (hb : b ≤ len / 2 ^ s) (hk : k ≤ s) :
+    i * 2 ^ k + 2 ^ k ≤ len := by
+  have h1 : (i + 1) * 2 ^ k ≤ b * 2 ^ k := Nat.mul_le_mul_right _ hi
+  have h2 : b * 2 ^ k ≤ b * 2 ^ s := Nat.mul_le_mul_left b (Nat.pow_le_pow_right (show 2 > 0 by decide) hk)
+  have h3 : b * 2 ^ s ≤ (len / 2 ^ s) * 2 ^ s := Nat.mul_le_mul_right _ hb
+  have h4 : (len / 2 ^ s) * 2 ^ s ≤ len := Nat.div_mul_le_self len (2 ^ s)
+  have h5 : (i + 1) * 2 ^ k = i * 2 ^ k + 2 ^ k := by rw [Nat.add_mul, Nat.one_mul]
+  omega
+
+/-- A slack fact carried through `add wJ, wD, #j` with `j < 2^k` admits the
+    element `wD + j` (the rule `add` carries, restated for the scaled index). -/
+theorem shifted_index_element (i len k j : Nat) (hslack : i * 2 ^ k + 2 ^ k ≤ len) (hj : j < 2 ^ k) :
+    i * 2 ^ k + j < len := by
+  omega
+
 /-- Every byte of an admitted span access lies inside the span. -/
 theorem span_access_bytes (elem minLen len off size b : Nat)
     (hguard : minLen ≤ len) (hacc : SpanAccessOk elem minLen off size)
