@@ -4022,12 +4022,23 @@ memories' write logs (the effects model above), one memory per scalar
 leaf and one per array field, guarded by the path condition, marked at a
 data-dependent loop, and the verdict compares each written memory at a
 fresh index — so writers of spans of records are proven too, and a store
-into the wrong field is a mismatch A span of records passed
+into the wrong field is a mismatch. A span of records passed
 to a callee binds as the callee's alias of the caller's span — in the
 call summary as in the inlined call — so its leaf memories are the
 caller's and the caller is proven through its callees (the OS pilot's
 V1: `stage2` and `addr_space` enter the proof chain, readers, writers,
-and the functions that call them).
+and the functions that call them). A view or span of an array field of
+one element passed to a callee — `total(view(&stages[k].coeffs))`,
+`fill(span(&stages[k].state), v)` (`50-borrowing.md` §2) — binds the
+callee's span parameter as an alias of that field's leaf memory
+(`stages.coeffs`) at the linear offset `k·N` with the field's constant
+length, a derived span like `subslice`'s: the executor reads it off the
+argument's base (the element address plus the field's offset) and
+length, the Oak lowering off the expression, and a constant element of
+the leaf memory is named as the record span names it (`stages[3].coeffs`),
+so the two meet in one unknown. The SIMD pilot's span-of-record kernels
+are proven through the callees they hand a stage's coefficients to
+(`compiler/e2e_native_field_view_proof_test.go`).
 
 **Package globals.** A mutable top-level scalar (`st: u32 = u32(0)`,
 assigned by some function) is addressed storage on the AArch64 lane: the
