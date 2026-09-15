@@ -1,0 +1,92 @@
+// Bounded, allocation-free vectors over caller-owned contiguous storage.
+// The cursor records the initialized prefix; storage ownership stays outside.
+package array_list
+
+pub Error: type = Full | Empty | OutOfBounds
+
+pub Cursor: type = struct { length: u32 }
+
+check: (cursor: [*]Cursor, capacity: u32): () {
+  assert(len(cursor) == u32(1))
+  assert(cursor[0].length <= capacity)
+}
+
+pub push[T]: (cursor: [*]Cursor, storage: [*]T, value: T): Result[u32, Error] {
+  check(cursor, len(storage))
+  index: u32 = cursor[0].length
+  index == len(storage) ? { .Err(.Full) } | {
+    storage[index] = value
+    cursor[0].length = index + u32(1)
+    .Ok(index)
+  }
+}
+
+pub get[T]: (cursor: [*]Cursor, storage: []T, index: u32): Result[T, Error] {
+  check(cursor, len(storage))
+  index >= cursor[0].length ? { .Err(.OutOfBounds) } | { .Ok(storage[index]) }
+}
+
+pub set[T]: (cursor: [*]Cursor, storage: [*]T, index: u32, value: T): Result[T, Error] {
+  check(cursor, len(storage))
+  index >= cursor[0].length ? { .Err(.OutOfBounds) } | {
+    previous: T = storage[index]
+    storage[index] = value
+    .Ok(previous)
+  }
+}
+
+pub pop[T]: (cursor: [*]Cursor, storage: [*]T): Result[T, Error] {
+  check(cursor, len(storage))
+  cursor[0].length == u32(0) ? { .Err(.Empty) } | {
+    cursor[0].length = cursor[0].length - u32(1)
+    .Ok(storage[cursor[0].length])
+  }
+}
+
+pub insert[T]: (cursor: [*]Cursor, storage: [*]T, index: u32, value: T): Result[u32, Error] {
+  check(cursor, len(storage))
+  index > cursor[0].length ? { .Err(.OutOfBounds) } | {
+    cursor[0].length == len(storage) ? { .Err(.Full) } | {
+      i: u32 = cursor[0].length
+      while i > index {
+        storage[i] = storage[i - u32(1)]
+        i = i - u32(1)
+      }
+      storage[index] = value
+      cursor[0].length = cursor[0].length + u32(1)
+      .Ok(index)
+    }
+  }
+}
+
+pub remove[T]: (cursor: [*]Cursor, storage: [*]T, index: u32): Result[T, Error] {
+  check(cursor, len(storage))
+  index >= cursor[0].length ? { .Err(.OutOfBounds) } | {
+    value: T = storage[index]
+    i: u32 = index
+    last: u32 = cursor[0].length - u32(1)
+    while i < last {
+      storage[i] = storage[i + u32(1)]
+      i = i + u32(1)
+    }
+    cursor[0].length = last
+    .Ok(value)
+  }
+}
+
+pub swap_remove[T]: (cursor: [*]Cursor, storage: [*]T, index: u32): Result[T, Error] {
+  check(cursor, len(storage))
+  index >= cursor[0].length ? { .Err(.OutOfBounds) } | {
+    value: T = storage[index]
+    last: u32 = cursor[0].length - u32(1)
+    storage[index] = storage[last]
+    cursor[0].length = last
+    .Ok(value)
+  }
+}
+
+// Logical reset only: elements outside the live prefix are not erased.
+pub clear: (cursor: [*]Cursor, capacity: u32): () {
+  check(cursor, capacity)
+  cursor[0].length = u32(0)
+}

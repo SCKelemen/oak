@@ -54,9 +54,41 @@ forced-inline emission of the same shape and the hot codec helpers,
 tail-recursion to loops and mutual tail groups to trampolines, constant
 globals folded to `static const` so `/` and `%` become shifts, byte-pack
 recognition, protocol tables. No expression folding, CSE, LICM, strength
-reduction, or dead-code elimination of Oak's own: the C compiler does
-that layer, and `-opt 0` against `-opt 2` measures how much of it there
-was to do.
+reduction, or dead-code elimination of Oak's own was present in the initial
+survey. The first target-independent expression increment landed on
+2026-09-15: after type-driven monomorphization,
+`source.canonical.bool.v1` removes redundant built-in Boolean identities for
+every backend; `source.canonical.integer.v1` removes fixed-width `+ 0`, `- 0`,
+`* 1`, `/ 1`, `| 0`, `^ 0`, and shifts by zero when the retained operand has
+the exact checked result type. The changed program is checked again. Both
+deliberately keep every non-literal operand; widening rewrites, CSE, and
+dead-path removal wait for validated OptIR transformation and emission. Literal
+negation also stays out of source rewriting so canonicalization never mutates a
+source token that keys checked facts. The independent validation clone receives only
+the concrete generic ADT declarations recorded by the specializing checker;
+they are rebuilt through checked type substitution and never enter emission. `-opt
+0` against `-opt 2` still measures how much generic scalar work the C compiler
+has left to do.
+
+The first target-neutral middle-end substrate now lives in `optir/`. It keeps
+structured conditionals and pre-test loops with explicit loop-carried SSA
+values, operation effects, attributes, and proof facts, while also projecting
+deterministically to a typed block-argument CFG. `Compilation.OptIR()` projects
+the checked, concrete scalar subset: fixed-width integers, Bool, unit, local
+assignments, structured branches and short-circuiting, exhaustive Bool matches,
+pre-test loops with explicit carried locals, value-preserving integer widening,
+and effect-marked ordinary calls. Unsupported memory, method, kernel, protocol,
+and richer algebraic forms produce per-function refusals rather than partial IR.
+The independent verifier rejects undefined or non-dominating values, invalid
+same-block order, unreachable blocks, malformed edges and terminators, non-Bool
+conditions, and wrong returns.
+
+The first analysis-only SCCP validates operation arity, types, attributes, and
+cast legality, then computes exact constants and executable CFG edges with Oak's
+8/16/32/64/128-bit wrapping semantics, signed division edge behavior, and
+checked shift/division traps. Results are deterministic evidence and do not
+rewrite the CFG. No backend consumes this IR yet; equivalence validation remains
+mandatory before SCCP, CSE, or DCE can affect emitted code.
 
 **The native backend** (`nativegen/`, AArch64 7,300 lines, RV64 4,000)
 lowers a checked function directly to instructions with no IR. Scalar

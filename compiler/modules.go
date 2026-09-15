@@ -2094,6 +2094,12 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 				libraryNames[name] = modules.Mangle(path, name)
 			}
 		}
+		for _, compatibility := range stdlib.CompatibilityNames[path] {
+			member, exported := pkg.Exports[compatibility.Member]
+			if exported && member.Exported {
+				libraryNames[compatibility.Name] = modules.Mangle(path, compatibility.Member)
+			}
+		}
 	}
 	// Module ownership of every loaded package, for per-module discipline
 	// profiles (docs/spec/85-discipline.md section 1): the module whose path

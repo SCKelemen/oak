@@ -182,9 +182,23 @@ func TestBinaryCodecLowering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if emitted != directC {
+	if withoutCSourceMetadata(emitted) != withoutCSourceMetadata(directC) {
 		t.Fatal("the fluent codec spellings emitted different C from the direct calls")
 	}
+}
+
+// Source coordinates describe the spelling at the call site, so an equivalent
+// fluent call may legitimately have different columns from its direct form.
+// The zero-cost assertion compares every executable and structural C line.
+func withoutCSourceMetadata(code string) string {
+	lines := strings.Split(code, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "// @source: ") {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "\n")
 }
 
 // binaryDefinition cuts a derived function's definition out of the emitted
